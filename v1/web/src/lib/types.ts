@@ -356,7 +356,7 @@ export interface RecycleDetail extends RecycleItem { snapshot: RecycleSnapshot }
 // ---- 设置页：API 密钥、告警通知渠道（契约见 COMMON.md） ----
 export type ApiScope = 'read' | 'write' | 'secrets' | 'exec';
 export interface ApiKey { id: string; name: string; prefix: string; scopes: ApiScope[] | string[]; created_at: string; expires_at: string | null; last_used_at: string | null; revoked_at: string | null }
-export type NotifyKind = 'telegram' | 'wecom' | 'webhook';
+export type NotifyKind = 'telegram' | 'feishu';
 export type NotifySeverity = 'info' | 'warning' | 'critical';
 export interface NotifyChannel { id: string; name: string; kind: NotifyKind | string; min_severity: NotifySeverity | string; enabled: boolean; created_at: string; config_hint: string }
 /** channel_name：渠道删了之后为 null（发送记录还留着） */

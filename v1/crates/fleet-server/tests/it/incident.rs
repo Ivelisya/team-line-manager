@@ -60,8 +60,8 @@ async fn ack(t: &T, id: Uuid) { sqlx::query("update incident set ack_at = now(),
 async fn reconcile_reopens_throttles_and_clears_ack_like_machine_alerts() {
     let t = setup().await;
     let mock = Mock::start().await;
-    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "webhook", "config": {"url": mock.url("/hook/a")}, "min_severity": "info", "enabled": true})).await;
-    let events = || mock.bodies("/hook/a").iter().map(|b| b["event"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "feishu", "config": {"url": mock.url("/hook/a")}, "min_severity": "info", "enabled": true})).await;
+    let events = || mock.events("/hook/a");
     let subject = Uuid::now_v7();
     let base = OffsetDateTime::now_utc();
     let at = |s: i64| base + time::Duration::seconds(s);
@@ -96,7 +96,7 @@ async fn reconcile_reopens_throttles_and_clears_ack_like_machine_alerts() {
     assert_eq!((s[0].3, s[0].4.as_str()), (false, "critical"), "升级后确认清掉：{s:?}");
     log_settles(&t, 4).await;
     stamp_last_notice(&t, at(400)).await;
-    assert_eq!(mock.bodies("/hook/a").last().unwrap()["severity"], "critical");
+    assert!(mock.texts("/hook/a").last().unwrap().starts_with("【严重】"));
 
     // 恢复（报过触发：报恢复）；5 分钟内又抖一下就恢复：重开但不通知，也不重复报恢复
     round(&t, at(460), None, resolve).await;
@@ -132,7 +132,7 @@ async fn reconcile_reopens_throttles_and_clears_ack_like_machine_alerts() {
     let items = t.get("/api/v1/incidents?state=all").await["items"].as_array().unwrap().clone();
     let counts: Vec<_> = items.iter().filter(|i| i["rule"] == RULE).map(|i| i["recent_count"].as_i64().unwrap()).collect();
     assert_eq!(counts, [3, 3, 3], "{items:?}");
-    assert!(mock.bodies("/hook/a").iter().any(|b| b["summary"].as_str().unwrap().ends_with("（近 24 小时第 3 次）")));
+    assert!(mock.texts("/hook/a").iter().any(|x| x.contains("（近 24 小时第 3 次）\n时间：")));
 }
 
 /// 一轮：这个引擎此刻成立的问题只有 `w`，不成立的恢复（`exists` 恒真）

@@ -1287,7 +1287,7 @@ async fn set_nic(t: &T, machine: Uuid, hour: OffsetDateTime, mb: i64) {
 async fn traffic_quota_alert_lifecycle() {
     let t = setup().await;
     let mock = Mock::start().await;
-    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "webhook", "config": {"url": mock.url("/hook/a")}, "min_severity": "info", "enabled": true})).await;
+    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "feishu", "config": {"url": mock.url("/hook/a")}, "min_severity": "info", "enabled": true})).await;
     let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
     let team = seed_team(&t, "团队1").await;
     let (node, _) = seed_node(&t, relay, team, 1, "203.0.113.5", 20000).await;
@@ -1366,8 +1366,8 @@ async fn traffic_quota_alert_lifecycle() {
     pass(&t, &mut state, base, 90).await;
     assert!(incidents(&t, "firing").await.is_empty());
     log_settles(&t, 3).await;
-    let sent: Vec<(String, String)> = mock.bodies("/hook/a").iter().map(|b| (b["event"].as_str().unwrap().into(), b["severity"].as_str().unwrap().into())).collect();
-    let want = [("firing", "warning"), ("firing", "critical"), ("resolved", "critical")].map(|(e, s)| (e.to_string(), s.to_string()));
+    let sent: Vec<(&str, String)> = mock.events("/hook/a").into_iter().zip(mock.texts("/hook/a")).map(|(e, x)| (e, x.chars().take(4).collect())).collect();
+    let want = [("firing", "【警告】"), ("firing", "【严重】"), ("resolved", "【严重】")].map(|(e, s)| (e, s.to_string()));
     assert_eq!(sent, want);
 }
 
@@ -1439,9 +1439,10 @@ async fn notify_channel_crud_and_test_endpoint() {
     for body in [
         json!({"name": "x", "kind": "email", "config": {}}),
         json!({"name": "x", "kind": "telegram", "config": {"bot_token": "1:a"}}),
-        json!({"name": "x", "kind": "webhook", "config": {"url": "ftp://x"}}),
-        json!({"name": "x", "kind": "webhook", "config": {"url": "http://x.test"}, "min_severity": "fatal"}),
-        json!({"name": " ", "kind": "webhook", "config": {"url": "http://x.test"}}),
+        json!({"name": "x", "kind": "wecom", "config": {"url": "http://x.test"}}),
+        json!({"name": "x", "kind": "feishu", "config": {"url": "ftp://x"}}),
+        json!({"name": "x", "kind": "feishu", "config": {"url": "http://x.test"}, "min_severity": "fatal"}),
+        json!({"name": " ", "kind": "feishu", "config": {"url": "http://x.test"}}),
     ] {
         let (s, v) = t.req("POST", "/api/v1/notify-channels", Some(body.clone()), None).await;
         assert_eq!(s, StatusCode::BAD_REQUEST, "{body} → {v}");
@@ -1458,23 +1459,21 @@ async fn notify_channel_crud_and_test_endpoint() {
     let (s, _) = t.req("PATCH", &format!("/api/v1/notify-channels/{}", Uuid::now_v7()), Some(json!({"name": "x"})), None).await;
     assert_eq!(s, StatusCode::NOT_FOUND);
 
-    // 测试接口：不可达地址返回 ok:false 而不是 500；可达返回 ok:true；对方拒绝（errcode≠0）也是 ok:false
-    let dead = t.post("/api/v1/notify-channels", json!({"name": "死链接", "kind": "webhook", "config": {"url": "http://127.0.0.1:9/hook"}, "min_severity": "info", "enabled": true})).await["id"].as_str().unwrap().to_string();
+    // 测试接口：不可达地址返回 ok:false 而不是 500；可达返回 ok:true；对方拒绝（code≠0）也是 ok:false
+    let dead = t.post("/api/v1/notify-channels", json!({"name": "死链接", "kind": "feishu", "config": {"url": "http://127.0.0.1:9/hook"}, "min_severity": "info", "enabled": true})).await["id"].as_str().unwrap().to_string();
     let (s, v) = t.req("POST", &format!("/api/v1/notify-channels/{dead}/test"), None, None).await;
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(v["data"]["ok"], false);
     assert!(v["data"]["error"].as_str().is_some_and(|e| !e.is_empty()), "{v}");
-    let good = t.post("/api/v1/notify-channels", json!({"name": "好 hook", "kind": "webhook", "config": {"url": mock.url("/hook/ok")}, "min_severity": "info", "enabled": false})).await["id"].as_str().unwrap().to_string();
+    let good = t.post("/api/v1/notify-channels", json!({"name": "好 hook", "kind": "feishu", "config": {"url": mock.url("/hook/ok")}, "min_severity": "info", "enabled": false})).await["id"].as_str().unwrap().to_string();
     let r = t.post(&format!("/api/v1/notify-channels/{good}/test"), json!({})).await;
     assert_eq!((r["ok"].as_bool(), r["error"].is_null()), (Some(true), true), "停用的渠道也能测试：{r}");
-    let b = &mock.bodies("/hook/ok")[0];
-    assert_eq!(b["event"], "test");
-    let wc = t.post("/api/v1/notify-channels", json!({"name": "企微拒绝", "kind": "wecom", "config": {"url": mock.url("/wecom/bad")}, "min_severity": "info", "enabled": true})).await["id"].as_str().unwrap().to_string();
+    assert_eq!(mock.events("/hook/ok"), ["test"]);
+    let wc = t.post("/api/v1/notify-channels", json!({"name": "飞书拒绝", "kind": "feishu", "config": {"url": mock.url("/feishu/bad")}, "min_severity": "info", "enabled": true})).await["id"].as_str().unwrap().to_string();
     let r = t.post(&format!("/api/v1/notify-channels/{wc}/test"), json!({})).await;
     assert_eq!(r["ok"], false);
-    assert!(r["error"].as_str().unwrap().contains("invalid webhook url"), "{r}");
-    let bad = mock.bodies("/wecom/bad").remove(0);
-    assert_eq!(bad["msgtype"], "markdown");
+    assert!(r["error"].as_str().unwrap().contains("Key Words Not Found"), "{r}");
+    assert_eq!(mock.bodies("/feishu/bad")[0]["msg_type"], "post");
     let tgm = t.post("/api/v1/notify-channels", json!({"name": "TG 假服务", "kind": "telegram", "config": {"bot_token": "9:XYZ", "chat_id": "7", "api_base": mock.url("")}, "min_severity": "info", "enabled": true})).await["id"].as_str().unwrap().to_string();
     let r = t.post(&format!("/api/v1/notify-channels/{tgm}/test"), json!({})).await;
     assert_eq!(r["ok"], true, "{r}");
@@ -1510,17 +1509,22 @@ async fn notify_channel_crud_and_test_endpoint() {
 #[tokio::test]
 async fn notify_refuses_private_destinations() {
     let t = common::boot(false, "").await;
-    for url in ["http://127.0.0.1:9/hook", "http://10.1.2.3/x", "http://169.254.169.254/latest", "http://[::1]:8080/", "http://[::ffff:192.168.1.1]/", "http://100.64.0.1/", "http://0x7f.1/"] {
-        let (s, v) = t.req("POST", "/api/v1/notify-channels", Some(json!({"name": "x", "kind": "webhook", "config": {"url": url}})), None).await;
+    // 飞书只许飞书自己的 https 主机
+    for url in ["http://127.0.0.1:9/hook", "https://10.1.2.3/x", "https://evil.example.com/open-apis/bot/v2/hook/k", "http://open.feishu.cn/open-apis/bot/v2/hook/k", "https://open.feishu.cn.evil.com/x"] {
+        let (s, v) = t.req("POST", "/api/v1/notify-channels", Some(json!({"name": "x", "kind": "feishu", "config": {"url": url}})), None).await;
         assert_eq!(s, StatusCode::BAD_REQUEST, "{url} → {v}");
     }
-    let (s, _) = t.req("POST", "/api/v1/notify-channels", Some(json!({"name": "x", "kind": "telegram", "config": {"bot_token": "1:a", "chat_id": 1, "api_base": "http://192.168.0.1"}})), None).await;
-    assert_eq!(s, StatusCode::BAD_REQUEST);
-    let id = t.post("/api/v1/notify-channels", json!({"name": "本机", "kind": "webhook", "config": {"url": "http://localhost:9/hook"}})).await["id"].as_str().unwrap().to_string();
+    let (s, v) = t.req("POST", "/api/v1/notify-channels", Some(json!({"name": "x", "kind": "feishu", "config": {"url": "https://open.feishu.cn/open-apis/bot/v2/hook/k", "secret": "s"}})), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    for base in ["http://192.168.0.1", "http://169.254.169.254/latest", "http://[::1]:8080/", "http://[::ffff:192.168.1.1]/", "http://100.64.0.1/", "http://0x7f.1/"] {
+        let (s, v) = t.req("POST", "/api/v1/notify-channels", Some(json!({"name": "x", "kind": "telegram", "config": {"bot_token": "1:a", "chat_id": 1, "api_base": base}})), None).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{base} → {v}");
+    }
+    let id = t.post("/api/v1/notify-channels", json!({"name": "本机", "kind": "telegram", "config": {"bot_token": "1:a", "chat_id": 1, "api_base": "http://localhost:9"}})).await["id"].as_str().unwrap().to_string();
     let r = t.post(&format!("/api/v1/notify-channels/{id}/test"), json!({})).await;
     assert_eq!(r["ok"], false);
     assert!(r["error"].as_str().unwrap().contains("内网"), "{r}");
-    let (s, _) = t.req("PATCH", &format!("/api/v1/notify-channels/{id}"), Some(json!({"config": {"url": "http://127.0.0.1/x"}})), None).await;
+    let (s, _) = t.req("PATCH", &format!("/api/v1/notify-channels/{id}"), Some(json!({"config": {"bot_token": "2:b", "api_base": "http://127.0.0.1/x"}})), None).await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
 }
 
@@ -1530,10 +1534,10 @@ async fn alert_notifications_firing_repeat_silence_and_resolved() {
     let mock = Mock::start().await;
     let mk = |name: &str, kind: &str, config: Value, sev: &str, enabled: bool| json!({"name": name, "kind": kind, "config": config, "min_severity": sev, "enabled": enabled});
     t.post("/api/v1/notify-channels", mk("tg", "telegram", json!({"bot_token": "123:ABC", "chat_id": 42, "api_base": mock.url("")}), "info", true)).await;
-    t.post("/api/v1/notify-channels", mk("wc", "wecom", json!({"url": mock.url("/wecom/send")}), "critical", true)).await;
-    t.post("/api/v1/notify-channels", mk("wh", "webhook", json!({"url": mock.url("/hook/a")}), "warning", true)).await;
-    t.post("/api/v1/notify-channels", mk("off", "webhook", json!({"url": mock.url("/disabled/x")}), "info", false)).await;
-    t.post("/api/v1/notify-channels", mk("broken", "webhook", json!({"url": mock.url("/fail/x")}), "info", true)).await;
+    t.post("/api/v1/notify-channels", mk("wc", "feishu", json!({"url": mock.url("/feishu/send"), "secret": "sec"}), "critical", true)).await;
+    t.post("/api/v1/notify-channels", mk("wh", "feishu", json!({"url": mock.url("/hook/a")}), "warning", true)).await;
+    t.post("/api/v1/notify-channels", mk("off", "feishu", json!({"url": mock.url("/disabled/x")}), "info", false)).await;
+    t.post("/api/v1/notify-channels", mk("broken", "feishu", json!({"url": mock.url("/fail/x")}), "info", true)).await;
 
     // 线路机：Xray 挂了（严重）+ 配置 5 分钟没应用（警告）
     let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
@@ -1549,23 +1553,24 @@ async fn alert_notifications_firing_repeat_silence_and_resolved() {
     assert_eq!(incidents(&t, "firing").await.len(), 2);
     // 严重：tg、wc、wh、broken；警告：tg、wh、broken（wc 只收严重）；off 停用不发
     mock.wait("/bot123:ABC", 2).await;
-    mock.wait("/wecom/send", 1).await;
+    mock.wait("/feishu/send", 1).await;
     mock.wait("/hook/a", 2).await;
     mock.wait("/fail/x", 2).await;
     // 坏渠道一直 500：第一条按 0.5 s、2 s、10 s… 退避重发（入队满 30 分钟才放弃），第二条排在它后面；别的渠道照常发完
     log_settles(&t, 5).await;
-    assert_eq!((mock.count("/bot123:ABC"), mock.count("/wecom/send"), mock.count("/hook/a"), mock.count("/disabled")), (2, 1, 2, 0));
+    assert_eq!((mock.count("/bot123:ABC"), mock.count("/feishu/send"), mock.count("/hook/a"), mock.count("/disabled")), (2, 1, 2, 0));
     let tg: Vec<String> = mock.bodies("/bot123:ABC").iter().map(|b| b["text"].as_str().unwrap().to_string()).collect();
     let crit = tg.iter().find(|x| x.contains("Xray 未运行")).expect("严重告警的 Telegram 消息");
     assert!(crit.contains("【严重】告警触发") && crit.contains("机器：线路机1") && crit.contains("规则：Xray 未运行") && crit.contains("（北京时间）"), "{crit}");
     assert_eq!(mock.bodies("/bot123:ABC")[0]["chat_id"], "42");
-    let wc = &mock.bodies("/wecom/send")[0];
-    assert_eq!(wc["msgtype"], "markdown");
-    assert!(wc["markdown"]["content"].as_str().unwrap().contains("线路机1"));
-    let wh = mock.bodies("/hook/a");
-    let wh_crit = wh.iter().find(|b| b["rule"] == "relay_xray_down").unwrap();
-    assert_eq!((wh_crit["event"].as_str(), wh_crit["severity"].as_str(), wh_crit["machine"].as_str(), wh_crit["rule_name"].as_str()), (Some("firing"), Some("critical"), Some("线路机1"), Some("Xray 未运行")));
-    assert!(wh.iter().any(|b| b["rule"] == "relay_apply_lag" && b["rule_name"] == "配置未应用"));
+    let wc = &mock.bodies("/feishu/send")[0];
+    assert_eq!((wc["msg_type"].as_str(), wc["sign"].is_string(), wc["timestamp"].is_string()), (Some("post"), true, true), "配了密钥的带签名");
+    assert!(mock.texts("/feishu/send")[0].contains("线路机1"));
+    assert!(mock.bodies("/hook/a").iter().all(|b| b.get("sign").is_none()));
+    let wh = mock.texts("/hook/a");
+    let wh_crit = wh.iter().find(|x| x.contains("规则：Xray 未运行")).unwrap();
+    assert!(wh_crit.starts_with("【严重】告警触发\n机器：线路机1\n"), "{wh_crit}");
+    assert!(wh.iter().any(|x| x.starts_with("【警告】告警触发\n") && x.contains("规则：配置未应用")));
     // 记录：发出去的都记成功；坏渠道的两条还在库里排着重试（不记），渠道记着连续失败与原因。一个渠道失败不影响别的
     let log = t.get("/api/v1/notify-log?limit=100").await;
     let log = log.as_array().unwrap();
@@ -1581,29 +1586,29 @@ async fn alert_notifications_firing_repeat_silence_and_resolved() {
     sqlx::query("update incident set notified_at = now() - interval '5 hours'").execute(&t.st.db).await.unwrap();
     pass(&t, &mut state, base, 91).await;
     mock.wait("/bot123:ABC", 3).await;
-    mock.wait("/wecom/send", 2).await;
+    mock.wait("/feishu/send", 2).await;
     mock.wait("/hook/a", 3).await;
     pass(&t, &mut state, base, 121).await;
     tokio::time::sleep(Duration::from_millis(400)).await;
-    assert_eq!((mock.count("/bot123:ABC"), mock.count("/wecom/send"), mock.count("/hook/a")), (3, 2, 3), "提醒后计时重置");
-    assert!(mock.bodies("/hook/a").iter().any(|b| b["event"] == "repeat" && b["rule"] == "relay_xray_down"));
+    assert_eq!((mock.count("/bot123:ABC"), mock.count("/feishu/send"), mock.count("/hook/a")), (3, 2, 3), "提醒后计时重置");
+    assert!(mock.texts("/hook/a").iter().any(|x| x.starts_with("【严重】告警仍未恢复") && x.contains("规则：Xray 未运行")));
 
     // 静默：被静默的规则不再提醒。建、删此刻生效的静默本身各通知所有启用的渠道一次（不看渠道级别）
     let f = time::format_description::well_known::Rfc3339;
     let now = OffsetDateTime::now_utc();
     let sil = t.post("/api/v1/silences", json!({"subject_id": relay, "rule": "relay_xray_down", "comment": "", "starts_at": (now - time::Duration::minutes(1)).format(&f).unwrap(), "ends_at": (now + time::Duration::hours(1)).format(&f).unwrap()})).await["id"].as_str().unwrap().to_string();
     mock.wait("/bot123:ABC", 4).await;
-    mock.wait("/wecom/send", 3).await;
+    mock.wait("/feishu/send", 3).await;
     mock.wait("/hook/a", 4).await;
-    assert!(mock.bodies("/wecom/send")[2]["markdown"]["content"].as_str().unwrap().contains("静默 / 维护变更"));
+    assert!(mock.texts("/feishu/send")[2].contains("静默 / 维护变更"));
     sqlx::query("update incident set notified_at = now() - interval '5 hours'").execute(&t.st.db).await.unwrap();
     pass(&t, &mut state, base, 151).await;
     tokio::time::sleep(Duration::from_millis(400)).await;
-    assert_eq!((mock.count("/bot123:ABC"), mock.count("/wecom/send")), (4, 3), "被静默的不发");
+    assert_eq!((mock.count("/bot123:ABC"), mock.count("/feishu/send")), (4, 3), "被静默的不发");
     let (s, _) = t.req("DELETE", &format!("/api/v1/silences/{sil}"), None, None).await;
     assert_eq!(s, StatusCode::OK);
     mock.wait("/bot123:ABC", 5).await;
-    mock.wait("/wecom/send", 4).await;
+    mock.wait("/feishu/send", 4).await;
     mock.wait("/hook/a", 5).await;
 
     // 恢复：Xray 起来、配置也应用了；原因消失满 60 秒后各发一条「恢复」（只发给收到过触发的渠道）
@@ -1615,12 +1620,12 @@ async fn alert_notifications_firing_repeat_silence_and_resolved() {
     assert_eq!(incidents(&t, "firing").await.len(), 2);
     pass(&t, &mut state, base, 241).await;
     assert!(incidents(&t, "firing").await.is_empty());
-    mock.wait("/wecom/send", 5).await;
+    mock.wait("/feishu/send", 5).await;
     mock.wait("/bot123:ABC", 7).await;
     mock.wait("/hook/a", 7).await;
-    let last_wc = mock.bodies("/wecom/send").pop().unwrap();
-    assert!(last_wc["markdown"]["content"].as_str().unwrap().contains("告警已恢复"), "{last_wc}");
-    assert!(mock.bodies("/hook/a").iter().any(|b| b["event"] == "resolved" && b["rule"] == "relay_xray_down"));
+    let last_wc = mock.texts("/feishu/send").pop().unwrap();
+    assert!(last_wc.contains("告警已恢复"), "{last_wc}");
+    assert!(mock.texts("/hook/a").iter().any(|x| x.contains("告警已恢复") && x.contains("规则：Xray 未运行")));
 
     // 机器退役后，记录里的对象名带「（已退役）」，不和接过同名的新机器混淆
     sqlx::query("update machine set lifecycle = 'retired', retired_at = now() where id = $1").bind(relay).execute(&t.st.db).await.unwrap();
@@ -1635,7 +1640,7 @@ async fn queued_notices_survive_restart_and_retry_until_delivered() {
     let t = setup().await;
     let mock = Mock::start().await;
     for (name, path) in [("a", "/flaky/a"), ("b", "/hook/b")] {
-        t.post("/api/v1/notify-channels", json!({"name": name, "kind": "webhook", "config": {"url": mock.url(path)}, "min_severity": "info", "enabled": true})).await;
+        t.post("/api/v1/notify-channels", json!({"name": name, "kind": "feishu", "config": {"url": mock.url(path)}, "min_severity": "info", "enabled": true})).await;
     }
     seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
     // 「旧进程」入队后还没来得及发就退出了：不起发送循环，通知只在库里
@@ -1657,7 +1662,7 @@ async fn queued_notices_survive_restart_and_retry_until_delivered() {
     fleet_server::notify::start(&st2);
     mock.wait("/flaky/a", 3).await;
     log_settles(&t, 2).await;
-    assert_eq!((mock.bodies("/flaky/a")[0]["event"].as_str(), mock.count("/hook/b")), (Some("firing"), 0));
+    assert_eq!((mock.events("/flaky/a")[0], mock.count("/hook/b")), ("firing", 0));
     assert_eq!(t.count("select count(*) from notify_log where ok and kind = 'firing'").await, 1);
     let (fails, since): (i32, Option<OffsetDateTime>) = sqlx::query_as("select fail_count, failing_since from notify_channel where name = 'a'").fetch_one(&t.st.db).await.unwrap();
     assert_eq!((fails, since), (0, None));
@@ -1672,31 +1677,30 @@ async fn queued_notices_survive_restart_and_retry_until_delivered() {
 async fn resolved_only_to_channels_that_got_firing() {
     let t = setup().await;
     let mock = Mock::start().await;
-    let wc = t.post("/api/v1/notify-channels", json!({"name": "企微", "kind": "wecom", "config": {"url": mock.url("/wecom/bad")}, "min_severity": "info", "enabled": true})).await["id"]
+    let wc = t.post("/api/v1/notify-channels", json!({"name": "飞书", "kind": "feishu", "config": {"url": mock.url("/feishu/bad")}, "min_severity": "info", "enabled": true})).await["id"]
         .as_str()
         .unwrap()
         .to_string();
-    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "webhook", "config": {"url": mock.url("/hook/a")}, "min_severity": "info", "enabled": true})).await;
+    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "feishu", "config": {"url": mock.url("/hook/a")}, "min_severity": "info", "enabled": true})).await;
     seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
     let mut state = AlertState::default();
     let base = OffsetDateTime::now_utc();
     xray_report(&t, 1, false).await;
     pass(&t, &mut state, base, 0).await;
     pass(&t, &mut state, base, 61).await;
-    // 企业微信拒绝（errcode，重试也没用）：记一条失败；webhook 收到触发
+    // 飞书拒绝（code≠0，重试也没用）：记一条失败；另一个渠道收到触发
     log_settles(&t, 2).await;
     assert_eq!(t.count("select count(*) from notify_log where not ok").await, 1);
-    // 企业微信改好了地址，之后告警恢复
-    let (s, v) = t.req("PATCH", &format!("/api/v1/notify-channels/{wc}"), Some(json!({"config": {"url": mock.url("/wecom/ok")}})), None).await;
+    // 改好了地址，之后告警恢复
+    let (s, v) = t.req("PATCH", &format!("/api/v1/notify-channels/{wc}"), Some(json!({"config": {"url": mock.url("/feishu/ok")}})), None).await;
     assert_eq!(s, StatusCode::OK, "{v}");
     xray_report(&t, 2, true).await;
     pass(&t, &mut state, base, 91).await;
     pass(&t, &mut state, base, 151).await;
     assert!(incidents(&t, "firing").await.is_empty());
     log_settles(&t, 3).await;
-    assert_eq!(mock.count("/wecom/ok"), 0, "没收到触发的渠道不发恢复");
-    let events: Vec<Value> = mock.bodies("/hook/a").iter().map(|b| b["event"].clone()).collect();
-    assert_eq!(events, [json!("firing"), json!("resolved")]);
+    assert_eq!(mock.count("/feishu/ok"), 0, "没收到触发的渠道不发恢复");
+    assert_eq!(mock.events("/hook/a"), ["firing", "resolved"]);
     assert_eq!(t.count("select count(*) from notify_outbox").await, 0);
 }
 
@@ -1706,7 +1710,7 @@ async fn resolved_only_to_channels_that_got_firing() {
 async fn silence_changes_are_announced() {
     let t = setup().await;
     let mock = Mock::start().await;
-    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "webhook", "config": {"url": mock.url("/hook/a")}, "min_severity": "critical", "enabled": true})).await;
+    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "feishu", "config": {"url": mock.url("/hook/a")}, "min_severity": "critical", "enabled": true})).await;
     let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
     let key = t.post("/api/v1/api-keys", json!({"name": "ops", "scopes": ["read", "write"], "password": common::ADMIN_PW})).await["token"].as_str().unwrap().to_string();
     let f = time::format_description::well_known::Rfc3339;
@@ -1719,15 +1723,14 @@ async fn silence_changes_are_announced() {
     let (s, v) = t.req("POST", "/api/v1/silences", Some(global(23 * 60)), Some(&key)).await;
     assert_eq!(s, StatusCode::OK, "{v}");
     mock.wait("/hook/a", 1).await;
-    let b = &mock.bodies("/hook/a")[0];
-    assert_eq!((b["event"].as_str(), b["machine"].as_str(), b["incident_id"].is_null()), (Some("silence"), Some("全部机器"), true));
-    let text = b["text"].as_str().unwrap();
+    assert_eq!(mock.events("/hook/a"), ["silence"]);
+    let text = &mock.texts("/hook/a")[0];
     assert!(text.starts_with("【静默 / 维护变更】apikey:ops 新建了维护窗口\n对象：全部机器\n起止：") && text.contains("\n备注：机房迁移 预计一天\n"), "{text}");
     // 删掉全部机器的：照样发
     let (s, _) = t.req("DELETE", &format!("/api/v1/silences/{}", v["data"]["id"].as_str().unwrap()), None, None).await;
     assert_eq!(s, StatusCode::OK);
     mock.wait("/hook/a", 2).await;
-    assert!(mock.bodies("/hook/a")[1]["text"].as_str().unwrap().contains("admin 删除了维护窗口"));
+    assert!(mock.texts("/hook/a")[1].contains("admin 删除了维护窗口"));
     // 单台：预约的（还没开始）建、删都不发；此刻生效的发
     let one = |start: i64, end: i64| json!({"subject_id": relay, "rule": "relay_xray_down", "comment": "", "starts_at": at(start), "ends_at": at(end)});
     let later = t.post("/api/v1/silences", one(60, 120)).await["id"].as_str().unwrap().to_string();
@@ -1736,9 +1739,9 @@ async fn silence_changes_are_announced() {
     t.post("/api/v1/silences", one(-1, 60)).await;
     mock.wait("/hook/a", 3).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
-    let all = mock.bodies("/hook/a");
+    let all = mock.texts("/hook/a");
     assert_eq!(all.len(), 3);
-    assert!(all[2]["text"].as_str().unwrap().contains("admin 新建了静默\n对象：线路机1（只静默「Xray 未运行」）"), "{}", all[2]["text"]);
+    assert!(all[2].contains("admin 新建了静默\n对象：线路机1（只静默「Xray 未运行」）"), "{}", all[2]);
     // 账号建全部机器的不受 24 小时限制；静默期间这类通知照发
     t.post("/api/v1/silences", global(3 * 24 * 60)).await;
     mock.wait("/hook/a", 4).await;
@@ -1753,11 +1756,11 @@ async fn silence_changes_are_announced() {
 async fn failing_channel_opens_central_alert() {
     let t = setup().await;
     let mock = Mock::start().await;
-    let broken = t.post("/api/v1/notify-channels", json!({"name": "坏渠道", "kind": "webhook", "config": {"url": mock.url("/fail/x")}, "min_severity": "info", "enabled": true})).await["id"]
+    let broken = t.post("/api/v1/notify-channels", json!({"name": "坏渠道", "kind": "feishu", "config": {"url": mock.url("/fail/x")}, "min_severity": "info", "enabled": true})).await["id"]
         .as_str()
         .unwrap()
         .to_string();
-    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "webhook", "config": {"url": mock.url("/hook/a")}, "min_severity": "info", "enabled": true})).await;
+    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "feishu", "config": {"url": mock.url("/hook/a")}, "min_severity": "info", "enabled": true})).await;
     seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
     let mut state = AlertState::default();
     let base = OffsetDateTime::now_utc();
@@ -1778,10 +1781,10 @@ async fn failing_channel_opens_central_alert() {
         (Some("critical"), true, true, Some("中控"), Some("通知渠道发送失败"))
     );
     let summary = inc[0]["summary"].as_str().unwrap();
-    assert!(summary.starts_with("中控：通知渠道「坏渠道」连续发送失败超过 5 分钟：webhook 返回 HTTP 500"), "{summary}");
+    assert!(summary.starts_with("中控：通知渠道「坏渠道」连续发送失败超过 5 分钟：飞书拒绝（HTTP 500）"), "{summary}");
     mock.wait("/hook/a", 2).await;
-    let b = mock.bodies("/hook/a").pop().unwrap();
-    assert_eq!((b["event"].as_str(), b["rule"].as_str(), b["machine"].as_str()), (Some("firing"), Some("central_channel_failing"), Some("中控")));
+    let b = mock.texts("/hook/a").pop().unwrap();
+    assert!(b.starts_with("【严重】告警触发\n机器：中控\n规则：通知渠道发送失败\n"), "{b}");
     let to_itself = format!("select count(*) from notify_outbox o join incident i on i.id = o.incident_id where o.channel_id = '{broken}' and i.rule = 'central_channel_failing'");
     assert_eq!(t.count(&to_itself).await, 0, "不发给失败的渠道自己");
     // 渠道修好、测试发成功：下一轮恢复，「恢复」发给收到过触发的渠道
@@ -1791,8 +1794,8 @@ async fn failing_channel_opens_central_alert() {
     selfmon::check_once(&t.st, OffsetDateTime::now_utc() + time::Duration::minutes(7)).await.unwrap();
     assert!(central().await.is_empty());
     mock.wait("/hook/a", 3).await;
-    let b = mock.bodies("/hook/a").pop().unwrap();
-    assert_eq!((b["event"].as_str(), b["rule"].as_str()), (Some("resolved"), Some("central_channel_failing")));
+    let b = mock.texts("/hook/a").pop().unwrap();
+    assert!(b.contains("告警已恢复") && b.contains("规则：通知渠道发送失败"), "{b}");
     assert_eq!(t.count(&to_itself).await, 0);
 }
 
@@ -1883,9 +1886,9 @@ async fn stamp_last_notice(t: &T, at: OffsetDateTime) {
 async fn flapping_alert_reopens_same_incident_without_spam() {
     let t = setup().await;
     let mock = Mock::start().await;
-    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "webhook", "config": {"url": mock.url("/hook/a")}, "min_severity": "info", "enabled": true})).await;
+    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "feishu", "config": {"url": mock.url("/hook/a")}, "min_severity": "info", "enabled": true})).await;
     seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
-    let events = || mock.bodies("/hook/a").iter().map(|b| b["event"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    let events = || mock.events("/hook/a");
     let mut state = AlertState::default();
     let base = OffsetDateTime::now_utc();
     let at = |s: i64| base + time::Duration::seconds(s);
@@ -2513,20 +2516,20 @@ async fn same_rule_firings_are_sent_as_one_message() {
     let t = setup().await;
     let mock = Mock::start().await;
     t.post("/api/v1/notify-channels", json!({"name": "tg", "kind": "telegram", "config": {"bot_token": "1:A", "chat_id": 1, "api_base": mock.url("")}, "min_severity": "info", "enabled": true})).await;
-    t.post("/api/v1/notify-channels", json!({"name": "wc", "kind": "wecom", "config": {"url": mock.url("/wecom/send")}, "min_severity": "info", "enabled": true})).await;
-    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "webhook", "config": {"url": mock.url("/hook/a")}, "min_severity": "info", "enabled": true})).await;
+    t.post("/api/v1/notify-channels", json!({"name": "wc", "kind": "feishu", "config": {"url": mock.url("/feishu/send")}, "min_severity": "info", "enabled": true})).await;
+    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "feishu", "config": {"url": mock.url("/hook/a")}, "min_severity": "info", "enabled": true})).await;
     t.st.notify_started.store(true, Ordering::Relaxed);
     let names = ["团队2-07", "团队2-08", "团队2-09"];
     machine_round(&t, &names.map(|n| (Uuid::new_v4(), "egress_fail", n))).await;
     send_queued(&t, 0);
     log_settles(&t, 9).await;
-    assert_eq!((mock.count("/bot1:A"), mock.count("/wecom/send"), mock.count("/hook/a")), (1, 1, 1));
+    assert_eq!((mock.count("/bot1:A"), mock.count("/feishu/send"), mock.count("/hook/a")), (1, 1, 1));
     let tg = mock.bodies("/bot1:A")[0]["text"].as_str().unwrap().to_string();
     assert!(tg.starts_with("【严重】告警触发：3 台 出口不通\n· 团队2-0") && names.iter().all(|n| tg.contains(&format!("· {n}：出口不通：timeout"))), "{tg}");
-    let wc = mock.bodies("/wecom/send")[0]["markdown"]["content"].as_str().unwrap().to_string();
-    assert!(wc.contains("告警触发：3 台 出口不通</font>\n> **团队2-0") && wc.contains("\n> 时间："), "{wc}");
-    let wh = &mock.bodies("/hook/a")[0];
-    assert_eq!((wh["event"].as_str(), wh["rule"].as_str(), wh["count"].as_u64(), wh["items"].as_array().unwrap().len()), (Some("firing"), Some("egress_fail"), Some(3), 3));
+    let wc = &mock.texts("/feishu/send")[0];
+    assert!(wc.starts_with("【严重】告警触发：3 台 出口不通\n· 团队2-0") && wc.contains("\n时间："), "{wc}");
+    let wh = &mock.texts("/hook/a")[0];
+    assert_eq!((wh.lines().filter(|l| l.starts_with("· ")).count(), mock.bodies("/hook/a")[0]["content"]["post"]["zh_cn"]["content"].as_array().unwrap().len()), (3, 4));
     assert_eq!(t.count("select count(distinct incident_id) from notify_log where ok and kind = 'firing'").await, 3);
 }
 
@@ -2535,7 +2538,7 @@ async fn same_rule_firings_are_sent_as_one_message() {
 async fn different_rules_and_kinds_are_not_merged() {
     let t = setup().await;
     let mock = Mock::start().await;
-    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "webhook", "config": {"url": mock.url("/hook/a")}, "min_severity": "info", "enabled": true})).await;
+    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "feishu", "config": {"url": mock.url("/hook/a")}, "min_severity": "info", "enabled": true})).await;
     t.st.notify_started.store(true, Ordering::Relaxed);
     let (a, b, c) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
     machine_round(&t, &[(c, "egress_fail", "团队2-09")]).await;
@@ -2549,12 +2552,10 @@ async fn different_rules_and_kinds_are_not_merged() {
         incident::reconcile(&st2, Engine::Central, vec![], want, "true", OffsetDateTime::now_utc(), |_| Close::Keep).await.unwrap();
     }
     mock.wait("/hook/a", 1).await;
-    let first = mock.bodies("/hook/a");
-    assert_eq!((first.len(), first[0]["rule"].as_str()), (1, Some("central_disk_low")), "中控自身告警不等合并");
+    let first = mock.texts("/hook/a");
+    assert!(first.len() == 1 && first[0].contains("磁盘只剩 3%"), "中控自身告警不等合并：{first:?}");
     log_settles(&t, 5).await;
-    let got: Vec<(String, String, u64)> =
-        mock.bodies("/hook/a").iter().map(|b| (b["event"].as_str().unwrap().into(), b["rule"].as_str().unwrap().into(), b["count"].as_u64().unwrap())).collect();
-    let want = [("firing", "central_disk_low", 1), ("firing", "egress_fail", 2), ("firing", "relay_xray_down", 1), ("resolved", "egress_fail", 1)];
-    assert_eq!(got, want.map(|(e, r, n)| (e.to_string(), r.to_string(), n)));
-    assert_eq!(mock.bodies("/hook/a")[3]["machine"], "团队2-09");
+    let texts = mock.texts("/hook/a");
+    assert_eq!(mock.events("/hook/a"), ["firing", "firing", "firing", "resolved"]);
+    assert!(texts[1].contains("告警触发：2 台 出口不通") && texts[2].contains("规则：Xray 未运行") && texts[3].contains("机器：团队2-09"), "{texts:?}");
 }

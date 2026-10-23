@@ -206,7 +206,7 @@ async fn expiry_boundaries_by_billing_timezone() {
     let bj = Uuid::now_v7();
     sqlx::query("insert into job (id, kind, target_id, state, created_by) values ($1, 'upgrade_agent', $2, 'queued', 'test')").bind(bj).bind(busy).execute(&t.st.db).await.unwrap();
     // 只收「严重」的渠道也要收到自动回收（不看级别）
-    sqlx::query("insert into notify_channel (id, kind, name, config_enc, min_severity) values ($1, 'webhook', 'wh', '\\x00', 'critical')")
+    sqlx::query("insert into notify_channel (id, kind, name, config_enc, min_severity) values ($1, 'feishu', 'wh', '\\x00', 'critical')")
         .bind(Uuid::now_v7())
         .execute(&t.st.db)
         .await

@@ -1,8 +1,8 @@
-// 设置：API 密钥（创建时 token 只显示一次）、告警通知渠道（Telegram / 企业微信 / Webhook，可发测试、看最近发送记录）、
+// 设置：API 密钥（创建时 token 只显示一次）、告警通知渠道（Telegram / 飞书，可发测试、看最近发送记录）、
 // 账户安全（两步验证、修改密码、登录会话，见 features/AccountTab）、数据保留（features/RetentionTab）、汇率（计费折成美元，见 features/FxTab）、探测点与主探测来源（features/ProbeTab）、三网 PING 的全局目标（features/PingTab）、客户端订阅（features/SubsTab）。
 import * as React from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Ban, Bell, BellOff, Eye, EyeOff, FlaskConical, KeyRound, MessagesSquare, Pencil, Plus, Send, ShieldAlert, Trash2, Webhook } from 'lucide-react';
+import { Ban, Bell, BellOff, Eye, EyeOff, Feather, FlaskConical, KeyRound, Pencil, Plus, Send, ShieldAlert, Trash2 } from 'lucide-react';
 import { RetentionTab } from '@/features/RetentionTab';
 import { FxTab } from '@/features/FxTab';
 import { ProbeTab } from '@/features/ProbeTab';
@@ -171,10 +171,9 @@ function ApiKeysSection() {
 }
 
 /* ================================================================ 告警通知 */
-const KINDS: Record<string, { label: string; icon: React.ReactNode; fields: { key: string; label: string; ph: string; secret?: boolean }[] }> = {
+const KINDS: Record<string, { label: string; icon: React.ReactNode; fields: { key: string; label: string; ph: string; secret?: boolean; optional?: boolean; wide?: boolean }[] }> = {
   telegram: { label: 'Telegram', icon: <Send />, fields: [{ key: 'bot_token', label: 'Bot Token', ph: '123456:ABC-DEF…', secret: true }, { key: 'chat_id', label: 'Chat ID', ph: '-1001234567890' }] },
-  wecom: { label: '企业微信群机器人', icon: <MessagesSquare />, fields: [{ key: 'url', label: 'Webhook 地址', ph: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=…', secret: true }] },
-  webhook: { label: 'Webhook', icon: <Webhook />, fields: [{ key: 'url', label: '接收地址', ph: 'https://hooks.example.com/fleet', secret: true }] },
+  feishu: { label: '飞书群机器人', icon: <Feather />, fields: [{ key: 'url', label: 'Webhook 地址', ph: 'https://open.feishu.cn/open-apis/bot/v2/hook/…', secret: true, wide: true }, { key: 'secret', label: '签名密钥（可选）', ph: '机器人开了签名校验才填', secret: true, optional: true, wide: true }] },
 };
 const SEVERITIES = [{ value: 'info', label: '提示及以上（全部）' }, { value: 'warning', label: '警告及以上' }, { value: 'critical', label: '只发严重' }];
 /** 发送记录的种类（服务端 notify::Kind） */
@@ -289,8 +288,10 @@ const ChannelDialog = resetOnOpen(function ChannelDialog({ target, open, onClose
   const [reveal, setReveal] = React.useState(false);
   const k = KINDS[kind];
   const filled = k.fields.filter((f) => (cfg[f.key] ?? '').trim() !== '').length;
-  // 配置整体替换：新建必须填全；编辑时留空 = 不改，只填一部分则要求补全
-  const cfgOk = isNew ? filled === k.fields.length : filled === 0 || filled === k.fields.length;
+  const required = k.fields.filter((f) => !f.optional);
+  const requiredFilled = required.filter((f) => (cfg[f.key] ?? '').trim() !== '').length;
+  // 必填字段：新建必须填全；编辑时留空 = 不改，只填一部分则要求补全（可选字段随意）
+  const cfgOk = isNew ? requiredFilled === required.length : requiredFilled === 0 || requiredFilled === required.length;
   const valid = name.trim().length > 0 && cfgOk;
   const config = Object.fromEntries(k.fields.map((f) => [f.key, (cfg[f.key] ?? '').trim()]));
   const busy = add.isPending || patch.isPending;
@@ -308,16 +309,16 @@ const ChannelDialog = resetOnOpen(function ChannelDialog({ target, open, onClose
       </div>
       <div className="form-grid">
         {k.fields.map((f) => (
-          <Field key={f.key} label={f.label} className={k.fields.length === 1 ? 'span-2' : undefined} >
+          <Field key={f.key} label={f.label} className={f.wide || k.fields.length === 1 ? 'span-2' : undefined} >
             {/* 密钥类字段默认遮住，旁边可切换显示（核对粘贴进来的地址、token） */}
             <div className="row" style={{ flexWrap: 'nowrap', gap: 'var(--sp-6)' }}>
-              <Input type={f.secret && !reveal ? 'password' : 'text'} value={cfg[f.key] ?? ''} onChange={(e) => { setCfg((c) => ({ ...c, [f.key]: e.target.value })); setTouched(true); }} placeholder={ch ? `留空不改（当前：${ch.config_hint}）` : f.ph} autoComplete="off" spellCheck={false} data-1p-ignore data-lpignore="true" />
+              <Input type={f.secret && !reveal ? 'password' : 'text'} value={cfg[f.key] ?? ''} onChange={(e) => { setCfg((c) => ({ ...c, [f.key]: e.target.value })); setTouched(true); }} placeholder={ch ? (f.optional ? '留空不改' : `留空不改（当前：${ch.config_hint}）`) : f.ph} autoComplete="off" spellCheck={false} data-1p-ignore data-lpignore="true" />
               {f.secret && <IconButton label={reveal ? '隐藏' : '显示'} aria-pressed={reveal} onClick={() => setReveal((v) => !v)}>{reveal ? <EyeOff size={15} /> : <Eye size={15} />}</IconButton>}
             </div>
           </Field>
         ))}
       </div>
-      {!cfgOk && touched && <div className="hint is-error">{isNew ? '请把配置填写完整' : '要改配置，请把所有字段重新填上'}</div>}
+      {!cfgOk && touched && <div className="hint is-error">{isNew ? '请把配置填写完整' : '要改配置，请把必填字段重新填上'}</div>}
       <div className="form-grid">
         <Field label="最低级别"><Select value={sev} onChange={setSev} options={SEVERITIES} /></Field>
         <Field label="状态"><label className="check-row" style={{ gap: 10, height: 'var(--h-lg)' }}><Switch checked={enabled} onCheckedChange={setEnabled} /><span>{enabled ? '启用' : '已停用'}</span></label></Field>
