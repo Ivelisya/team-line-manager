@@ -1,5 +1,5 @@
 // 从 MachineView 推导卡片/表格要显示的数据（纯函数，便于复用）
-import type { AvailabilityDay, DueState, EntryView, MachineView, Meta, Plan, ProbeBucket, ProbeResult, Provider, SubField, Subscription, TrafficReset, UsageMetric } from './types';
+import type { AvailabilityDay, DueState, EntryView, MachineView, Meta, Plan, ProbeBucket, ProbeResult, Provider, SubField, Subscription, TrafficReset, UsageMetric, UsdTotal } from './types';
 import * as F from './format';
 import { tzLabel } from './tz';
 
@@ -382,7 +382,9 @@ export function remainingValue(s: Subscription | null) {
   if (!s) return null;
   const days = s.period_days;
   const frac = days > 0 ? Math.max(0, s.due_days / days) : 0;
-  return { cents: Math.round(s.price_cents * frac), currency: s.currency, frac, days };
+  // 计费统一按 USD：每期价格用服务端折好的 price_usd_cents；没有汇率时按原币种
+  const usd = s.price_usd_cents != null;
+  return { cents: Math.round((usd ? s.price_usd_cents! : s.price_cents) * frac), currency: usd ? 'USD' : s.currency, frac, days };
 }
 
 /** 标签配色：固定语义的用固定色（类型：线路机青、家宽橙；同机关系紫；维护中琥珀），
@@ -395,10 +397,28 @@ export function tagColor(text: string): TagColor {
   return TAG_COLORS[h % TAG_COLORS.length];
 }
 
+/** 计费统一按 USD：服务端按汇率折好的月费（monthly_usd_cents，分）。没有汇率（或旧接口）时为 null，调用方写原币种并标「未折算」 */
+export const usdMonthly = (s: Subscription | null | undefined) => (s?.monthly_usd_cents != null ? s.monthly_usd_cents : null);
+/** 月费的文字：「$37.50/月」；没有汇率时「¥299.99/月」（原币种，悬停见 priceHint 说明未折算） */
 export const subLabel = (m: MachineView) => {
   const s = m.subscription; if (!s) return null;
-  return `${F.money(s.price_cents, s.currency)}/${cycleLabel(s.cycle)}`;
+  const u = usdMonthly(s);
+  return u != null ? `${F.money(u, 'USD')}/月` : `${F.money(s.monthly_cents, s.currency)}/月`;
 };
-/** 不是按月付的费用旁边给的月均（服务端折好的 monthly_cents）：「≈ $26.60/月」；按月付的为 null */
-export const monthlyHint = (s: Subscription | null | undefined) =>
-  (s && meta().cycles.find((c) => c.key === s.cycle)?.months !== 1 ? `≈ ${F.money(s.monthly_cents, s.currency)}/月` : null);
+/** 原价说明（月费旁的小字或悬停）：原币种不是 USD 或不是按月付时写原价「原价 ¥299.99/月 · 1 CNY = 0.1404 USD」；
+ *  没有汇率写「未折算」；USD 按月付的为 null */
+export function priceHint(s: Subscription | null | undefined): string | null {
+  if (!s) return null;
+  const orig = `原价 ${F.money(s.price_cents, s.currency)}/${cycleLabel(s.cycle)}`;
+  if (s.monthly_usd_cents == null) return `${orig} · 未折算：没有 ${s.currency} 的汇率（设置 → 汇率）`;
+  const monthly = meta().cycles.find((c) => c.key === s.cycle)?.months === 1;
+  if (s.currency === 'USD') return monthly ? null : orig;
+  return `${orig} · ${F.fxRate(s.currency, s.usd_per_unit ?? 0)}`;
+}
+/** 月费合计（USD）的悬停说明：各原币种金额与所用汇率，没有汇率的单列 */
+export function usdTotalTip(t: UsdTotal | undefined): string {
+  if (!t) return '';
+  const parts = t.by_currency.map((p) => (p.currency === 'USD' ? `USD ${F.money(p.cents, 'USD')}` : `${F.money(p.cents, p.currency)} ≈ ${F.money(p.usd_cents, 'USD')}（${F.fxRate(p.currency, p.usd_per_unit)}）`));
+  const un = t.unconverted.map((p) => F.money(p.cents, p.currency));
+  return [...parts, ...(un.length ? [`未折算（没有汇率，不在合计里）：${un.join(' + ')}`] : [])].join('；');
+}

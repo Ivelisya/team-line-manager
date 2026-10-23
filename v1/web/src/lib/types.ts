@@ -18,6 +18,9 @@ export interface Subscription {
   /** 服务端算好的：due_state 到期状态（同续费告警）、monthly_cents 折成每月的价格（分）、next_due 续一个周期后的到期日（续费的默认值）、
    *  period_days 当前这期的天数（到期日往前推一个周期 → 到期日） */
   due_state: DueState; monthly_cents: number; next_due: string; period_days: number;
+  /** 计费统一按 USD 展示：服务端按汇率折好的月费、每期价格（分），usd_per_unit 是所用汇率（1 单位合多少 USD）。
+   *  没有该币种的汇率时三个都是 null（未折算，不当 1:1）；旧接口没有这几个字段 */
+  monthly_usd_cents?: number | null; price_usd_cents?: number | null; usd_per_unit?: number | null;
 }
 /** overdue 已过期；soon 到期前 remind_days 天内且不是自动续费；其余 ok */
 export type DueState = 'ok' | 'soon' | 'overdue';
@@ -108,7 +111,22 @@ export interface MachineView {
 }
 
 /** spare：唯一的备用团队（系统管理，不能删、不能取消；里面在用的机器订阅过期满 1 天后自动回收） */
-export interface Team { id: string; name: string; sort_order: number; spare: boolean; node_count: number }
+export interface Team { id: string; name: string; sort_order: number; spare: boolean; node_count: number;
+  /** 在用机器的月费合计（USD，同总览）；旧接口没有 */
+  monthly_usd?: UsdTotal }
+/** 月费合计（USD）：cents 是能折算部分的合计；by_currency 各原币种的金额、折成的 USD 与所用汇率；unconverted 没有汇率、没算进合计的 */
+export interface UsdTotal {
+  cents: number;
+  by_currency: { currency: string; cents: number; usd_cents: number; usd_per_unit: number }[];
+  unconverted: { currency: string; cents: number }[];
+}
+/** GET /settings/fx-rates：汇率设置（折算凭据）。rates 在用的币种排前面；source：base（USD）/ manual 手动 / auto 自动 / null 没有汇率 */
+export interface FxRates {
+  base: 'USD'; auto: boolean; url: string; fetched_at: string | null; rates_date: string | null; source: string | null;
+  last_attempt_at: string | null; last_error: string | null; missing: string[];
+  rates: { currency: string; usd_per_unit: number | null; per_usd: number | null; source: 'base' | 'manual' | 'auto' | null; auto_per_usd: number | null;
+    manual: { usd_per_unit: number; by: string; at: string } | null; in_use: boolean }[];
+}
 /** 供应商怎么计量流量额度：网卡本周期下行、上行总量取小 / 取大 / 相加 / 只算上行 */
 export type TrafficRule = 'min' | 'max' | 'sum' | 'out';
 /** 供应商也是名下机器订阅的模板：账单时区（null = 跟随组织时区）、流量重置（自然月 / 账单日）、提前提醒天数 */
@@ -117,6 +135,8 @@ export interface Plan {
   id: string; provider_id: string; name: string; cpu_cores: number | null; mem_mb: number | null; disk_gb: number | null;
   bandwidth_mbps: number | null; traffic_gb: number | null; price_cents: number; currency: string; cycle: Cycle; notes: string | null;
   archived_at: string | null; machine_count: number;
+  /** 服务端折好的 USD（分）：每期价格、按周期折成的月费；没有汇率为 null */
+  price_usd_cents?: number | null; monthly_usd_cents?: number | null; usd_per_unit?: number | null;
 }
 
 export interface Overview {
@@ -128,8 +148,10 @@ export interface Overview {
   provisioning: number; retiring: number; failed: number;
   /** 在用机器里即将到期（due_state = soon）与已过期（overdue）的台数 */
   due_soon: number; overdue: number;
-  /** 各币种的月费合计（每台的 monthly_cents 相加） */
+  /** 各币种的月费合计（每台的 monthly_cents 相加，不折算；旧字段） */
   monthly_cost: { currency: string; cents: number }[];
+  /** 月费合计折成 USD（每台的 monthly_usd_cents 相加；没有汇率的单列）；旧接口没有 */
+  monthly_usd?: UsdTotal;
   traffic_month: { up: number; down: number }; net_rx_bps: number; net_tx_bps: number;
 }
 

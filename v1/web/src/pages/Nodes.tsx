@@ -8,7 +8,7 @@ import { ChevronRight, RotateCcw, SearchX, X } from 'lucide-react';
 import { useMachines, usePlans, useTeams } from '@/lib/queries';
 import { setDrawerOrder, useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
-import { cycleLabel, healthLabel, kindLabel, lifecycleLabel, meta, monthFlow, statusOf, statusRank, trafficTotal } from '@/lib/derive';
+import { cycleLabel, healthLabel, kindLabel, lifecycleLabel, meta, monthFlow, priceHint, statusOf, statusRank, trafficTotal } from '@/lib/derive';
 import { HEALTH_TONE, KIND_ORDER, useStableOrder } from '@/lib/sort';
 import type { MachineView } from '@/lib/types';
 import { Button } from '@/components/ui/button';
@@ -40,15 +40,15 @@ const filterOpts = () => (opts ??= {
 });
 const SCOPES: { value: Scope; label: string }[] = [{ value: 'live', label: '在用' }, { value: 'recycle', label: '回收站' }];
 const entryOf = (e: MachineView['entries'][number]) => `${e.relay.name}:${e.port}`;
-/** 不是按月付的：费用列副行再写一份月均 */
-const notMonthly = (cycle: string) => meta().cycles.find((c) => c.key === cycle)?.months !== 1;
+/** 费用列副行写原价：原币种不是 USD 或不是按月付的 */
+const showOrig = (s: NonNullable<MachineView['subscription']>) => s.currency !== 'USD' || meta().cycles.find((c) => c.key === s.cycle)?.months !== 1;
 /** 行签名：这页的列只显示资产信息（流量按显示精度），不显示实时读数，推送只改读数时行不重渲染（MachineGrid sig）。
  *  列里显示的东西都要在这里——每加一列、列里多显示一个字段，都要同步改这里；悬浮卡不传 m，打开时自己取这台的最新数据 */
 const rowSig = (m: MachineView) => {
   const f = monthFlow(m); const s = m.subscription;
   return [m.name, m.ip, m.country, m.country_set, m.kind, m.lifecycle, m.maintenance, m.health.status, m.health.reasons.map((r) => `${r.severity}${r.text}`).join(),
     m.host_machine?.id, m.host_machine?.name, m.ip_nodes.map((x) => `${x.id}:${x.name}`).join(), m.entries.map(entryOf).join(), m.plan?.name, m.provider?.name, f.kind, F.str(F.bytes(f.total)), F.str(F.bytes(f.down)), F.str(F.bytes(f.up)), f.from,
-    s?.due_days, s?.due_state, s?.due_date, s?.price_cents, s?.monthly_cents, s?.currency, s?.cycle, m.spare_from].join('\u0001');
+    s?.due_days, s?.due_state, s?.due_date, s?.price_cents, s?.monthly_cents, s?.monthly_usd_cents, s?.currency, s?.cycle, m.spare_from].join('\u0001');
 };
 
 /** 入口列：线路机写入口条数；节点写第一条「线路机:端口」，其余几条收成「+N」小标签，悬停列出 */
@@ -135,9 +135,13 @@ function LiveNodes({ sp, upd, tools }: { sp: URLSearchParams; upd: (patch: Recor
       // 没有订阅的（无值）不论升降序都排在最后
       { id: 'due', header: '到期', size: 112, r: true, ...byNum((m) => m.subscription?.due_days ?? null, 'asc'),
         cell: (m) => (m.subscription ? <><Due days={m.subscription.due_days} state={m.subscription.due_state} /><span className="sub">{m.subscription.due_date}</span></> : <span className="t-muted">—</span>) },
-      // 主数字按原周期，按月付以外的副行写月均（服务端折好的 monthly_cents），排序也按月均
-      { id: 'cost', header: '费用', size: 104, r: true, drop: 2, ...byNum((m) => m.subscription?.monthly_cents ?? null),
-        cell: (m) => { const s = m.subscription; return s ? <><Num f={{ v: F.money(s.price_cents, s.currency), u: `/ ${cycleLabel(s.cycle)}` }} />{notMonthly(s.cycle) && <span className="sub">≈ {F.money(s.monthly_cents, s.currency)}/月</span>}</> : <span className="t-muted">—</span>; } },
+      // 计费统一按 USD：主数字是服务端折好的月费（monthly_usd_cents），排序也按它；原币种不是 USD 或不是按月付的，副行写原价（悬停有汇率）。
+      // 没有汇率的写原币种月费、副行标未折算，排在最后
+      { id: 'cost', header: '费用', size: 104, r: true, drop: 2, ...byNum((m) => m.subscription?.monthly_usd_cents ?? null),
+        cell: (m) => { const s = m.subscription; if (!s) return <span className="t-muted">—</span>;
+          return s.monthly_usd_cents != null
+            ? <><Num f={{ v: F.money(s.monthly_usd_cents, 'USD'), u: '/ 月' }} />{showOrig(s) && <span className="sub" data-tip={priceHint(s) ?? undefined}>{F.money(s.price_cents, s.currency)} / {cycleLabel(s.cycle)}</span>}</>
+            : <><Num f={{ v: F.money(s.monthly_cents, s.currency), u: '/ 月' }} /><span className="sub" data-tip={priceHint(s) ?? undefined}>未折算</span></>; } },
       { id: 'chev', header: '', size: 36, cell: () => <ChevronRight size={14} /> },
     ];
     return c;

@@ -13,6 +13,9 @@ static META: OnceLock<Option<Value>> = OnceLock::new();
 pub fn init(url: &str, token: &str) { let _ = SOURCE.set((url.to_string(), token.to_string())); }
 
 fn get() -> Option<&'static Value> {
+    // 单元测试并发跑：哪个测试先用到都拿测试用的那份，不因为先跑了没调 test_init 的测试而落成「没取到」
+    #[cfg(test)]
+    test_init();
     META.get_or_init(|| {
         let (url, token) = SOURCE.get()?;
         Client::new(url, Cred::Bearer(token.clone())).ok()?.get("/meta").ok()

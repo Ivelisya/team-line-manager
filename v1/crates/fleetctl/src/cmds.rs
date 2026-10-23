@@ -165,7 +165,8 @@ pub fn status(ctx: &Ctx) -> anyhow::Result<u8> {
             let parts: Vec<String> = ["ok", "degraded", "down", "unknown", "maintenance"].iter().map(|h| format!("{} {}", health_cn(h), n(h))).collect();
             format!("共 {} · {}", n("total"), parts.join(" · "))
         };
-        let cost = ov["monthly_cost"].as_array().map(|a| a.iter().map(|c| money(c["cents"].as_i64().unwrap_or(0), c["currency"].as_str().unwrap_or(""))).collect::<Vec<_>>().join(" + ")).unwrap_or_default();
+        // 月费统一折成 USD（中控按汇率算好），括注原币种；没有汇率的单列
+        let cost = crate::fx::cost_cn(&ov);
         let mut s = table::kv(&[
             ("节点", bucket("nodes")),
             ("线路机", bucket("relays")),
@@ -174,7 +175,7 @@ pub fn status(ctx: &Ctx) -> anyhow::Result<u8> {
             // 即将到期 / 已过期：中控按每台的提前提醒天数算（同续费告警）
             (meta::label("due_states", "soon"), st(&ov, "/due_soon")),
             (meta::label("due_states", "overdue"), st(&ov, "/overdue")),
-            ("每月费用", if cost.is_empty() { "-".into() } else { cost }),
+            ("每月费用", cost),
             ("本月业务流量", format!("下载 {} / 上传 {}", traffic(num(&ov, "/traffic_month/down").unwrap_or(0.0)), traffic(num(&ov, "/traffic_month/up").unwrap_or(0.0)))),
             ("网卡速率", format!("下行 {} / 上行 {}", bps(num(&ov, "/net_rx_bps").unwrap_or(0.0)), bps(num(&ov, "/net_tx_bps").unwrap_or(0.0)))),
         ]);
@@ -301,6 +302,7 @@ pub fn ls(ctx: &Ctx, team: Option<&str>, kind: Option<&str>, status: Option<&str
                 ];
                 if due.is_some() {
                     r.insert(1, due_cell(i));
+                    r.insert(2, crate::fx::monthly_cell(&i["fee"]));
                 }
                 r
             })
@@ -308,6 +310,7 @@ pub fn ls(ctx: &Ctx, team: Option<&str>, kind: Option<&str>, status: Option<&str
         let mut head = vec!["名称", "种类", "生命周期", "健康", "IP", "agent", "调优", "CPU", "内存", "磁盘", "入口", "告警", "作业"];
         if due.is_some() {
             head.insert(1, "到期");
+            head.insert(2, "月费");
         }
         format!("{}\n共 {} 台", table::render(&head, &rows), list.len())
     });
@@ -315,7 +318,8 @@ pub fn ls(ctx: &Ctx, team: Option<&str>, kind: Option<&str>, status: Option<&str
 }
 
 /// `ls` 的一行：与表格同列（另带 id），百分比取整；`--json` 输出这些而不是完整视图（完整视图用 show 取单台）。
-/// `with_due`（`--due`）：表格多一列到期，这里同样多 `due_date` / `due_days` / `auto_renew`；平时不带（上百台时整个列表要多出两成）
+/// `with_due`（`--due`）：表格多到期、月费两列，这里同样多 `due_date` / `due_days` / `auto_renew` 与
+/// `fee{monthly_cents, currency, monthly_usd_cents, usd_per_unit}`（月费的原币种与折成的 USD，没有汇率时 USD 两项为 null）；平时不带（上百台时整个列表要多出两成）
 fn ls_item(m: &Value, with_due: bool) -> Value {
     let pct = |used: &str, total: &str| match (num(m, used), num(m, total)) {
         (Some(u), Some(t)) if t > 0.0 => Some((u * 100.0 / t).round() as i64),
@@ -336,6 +340,12 @@ fn ls_item(m: &Value, with_due: bool) -> Value {
         for k in ["due_date", "due_days", "auto_renew"] {
             i[k] = m["subscription"][k].clone();
         }
+        let s = &m["subscription"];
+        i["fee"] = if s.is_null() {
+            Value::Null
+        } else {
+            json!({"monthly_cents": s["monthly_cents"], "currency": s["currency"], "monthly_usd_cents": s["monthly_usd_cents"], "usd_per_unit": s["usd_per_unit"]})
+        };
     }
     i
 }
@@ -444,11 +454,12 @@ pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
             rows.push((
                 "订阅",
                 format!(
-                    "{}（每{}）到期 {}（{}）",
+                    "{}（每{}）到期 {}（{}）{}",
                     money(m["subscription"]["price_cents"].as_i64().unwrap_or(0), &st(&m, "/subscription/currency")),
                     cycle_cn(&st(&m, "/subscription/cycle")),
                     st(&m, "/subscription/due_date"),
-                    due_cn(m["subscription"]["due_days"].as_i64().unwrap_or(0))
+                    due_cn(m["subscription"]["due_days"].as_i64().unwrap_or(0)),
+                    crate::fx::sub_usd_cn(&m["subscription"])
                 ),
             ));
         }
@@ -1093,7 +1104,13 @@ mod tests {
         let auto = ls_item(&json!({"subscription": {"due_date": "2026-10-25", "due_days": 3, "auto_renew": true}}), true);
         assert_eq!(due_cell(&auto), "2026-10-25（3 天后到期，自动续费）");
         // 到期三项只在 --due 时带，平时的精简对象不变
-        assert!(ls_item(&m("active", 3), false).get("due_days").is_none());
+        assert!(ls_item(&m("active", 3), false).get("due_days").is_none() && ls_item(&m("active", 3), false).get("fee").is_none());
+        // --due 带月费：原币种与折成的 USD
+        let cny = json!({"lifecycle": "active", "subscription": {"due_date": "2026-10-25", "due_days": 3, "auto_renew": false,
+            "monthly_cents": 29999, "currency": "CNY", "monthly_usd_cents": 3750, "usd_per_unit": 0.125, "price_cents": 29999}});
+        let i = ls_item(&cny, true);
+        assert_eq!(i["fee"], json!({"monthly_cents": 29999, "currency": "CNY", "monthly_usd_cents": 3750, "usd_per_unit": 0.125}));
+        assert_eq!(crate::fx::monthly_cell(&i["fee"]), "37.50 USD（299.99 CNY）");
     }
 
     #[test]

@@ -10,7 +10,7 @@ import { SPRING } from '@/lib/motion';
 import { ArrowDown, ArrowDownUp, ArrowUp, Calendar, CircleDollarSign, Cpu, Database, Gauge, Globe, HardDrive, MemoryStick, MoreHorizontal, Radar, RefreshCw, Settings2, PanelRightOpen, ServerOff, Wallet } from 'lucide-react';
 import type { DueState, MachineView, ProbeBeats, Subscription } from '@/lib/types';
 import * as F from '@/lib/format';
-import { BEAT_LEGEND, BEAT_LEGEND_RELAY, beatCells, beatRate, beatTitles, dueTone, entryText, errText, hasHost, hostRel, isQuiet, limitGb, liveRate, monthFlow, monthFlowTip, monthlyHint, monthTraffic, probeSummary, quota, quotaGb, quotaTip, quotaUsedLabel, recycleOn, remainingValue, resourceMeters, subLabel, trafficTotal } from '@/lib/derive';
+import { BEAT_LEGEND, BEAT_LEGEND_RELAY, beatCells, beatRate, beatTitles, dueTone, entryText, errText, hasHost, hostRel, isQuiet, limitGb, liveRate, monthFlow, monthFlowTip, monthTraffic, priceHint, probeSummary, quota, quotaGb, quotaTip, quotaUsedLabel, recycleOn, remainingValue, resourceMeters, subLabel, trafficTotal } from '@/lib/derive';
 import { useProbeBeats } from '@/lib/queries';
 import { useLiveSeries } from '@/lib/live';
 import { useNow } from '@/lib/useNow';
@@ -340,7 +340,7 @@ const CardBody = memo(function CardBody({ m, view, current, onOpen: open, layout
   const proxy = m.kind === 'proxy';
   const quiet = isQuiet(m);
   const info: Info = { id: m.id, ip: m.ip, sshPort: m.ssh_port, entry: entryText(m), plan: m.plan, host: m.host_machine, nodes: m.ip_nodes };
-  const tags = <Tags code={m.provider_code} provider={m.provider} kind={m.kind} maintenance={m.maintenance} price={subLabel(m)} priceTip={monthlyHint(m.subscription)} id={m.id} host={m.host_machine} nodes={m.ip_nodes} />;
+  const tags = <Tags code={m.provider_code} provider={m.provider} kind={m.kind} maintenance={m.maintenance} price={subLabel(m)} priceTip={priceHint(m.subscription)} id={m.id} host={m.host_machine} nodes={m.ip_nodes} />;
   const reason = m.lifecycle === 'active' && m.health.status === 'down' && m.health.reasons[0] ? errText(m.health.reasons[0].text) : undefined;
   const beat = <section className="slot-seg"><BeatSlot id={m.id} kind={m.kind} lifecycle={m.lifecycle} reason={reason} reasonKey={m.health.reasons[0]?.key} onOpen={onOpen} {...probeSummary(m)} /></section>;
   const sv = showOf(m, show, view);

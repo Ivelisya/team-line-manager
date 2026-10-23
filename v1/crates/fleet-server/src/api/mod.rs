@@ -3,6 +3,7 @@ pub mod account;
 pub mod audit;
 pub mod catalog;
 pub mod exec;
+pub mod fx;
 pub mod incidents;
 pub mod ipintel;
 pub mod jobs;
@@ -119,6 +120,10 @@ pub fn router() -> Router<AppState> {
         .route("/machines/{id}/access", get(access::machine))
         // 访问记录保留期
         .route("/settings/access-retention", get(settings::get_access_retention).put(settings::put_access_retention))
+        // 汇率（计费折成 USD）
+        .route("/settings/fx-rates", get(fx::get_rates))
+        .route("/settings/fx-rates/refresh", post(fx::refresh))
+        .route("/settings/fx-rates/{currency}", axum::routing::put(fx::put_manual).delete(fx::delete_manual))
         // 来源 IP 画像
         .route("/ipintel", get(ipintel::batch))
         .route("/ipintel/status", get(ipintel::status))

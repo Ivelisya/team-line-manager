@@ -8,7 +8,8 @@ import { Button } from '@/components/ui/button';
 import { Field, InfoTip, Input, Label, Switch, UnitInput } from '@/components/ui/form';
 import { Segmented } from '@/components/ui/overlays';
 import { DateField } from '@/components/ui/date-field';
-import { inheritedValue, inheritSource, inheritText, inheritValueText, isOverridden, limitGb, monthFlow, monthFlowTip, quota, quotaCycleText, quotaGb, quotaNotes, quotaRuleText, quotaUsedLabel, recycleOn, remainingValue, cycleLabel, currencyOptions, cycleOptions, meta } from '@/lib/derive';
+import { useUsdPreview } from '@/lib/fx';
+import { inheritedValue, inheritSource, inheritText, inheritValueText, isOverridden, limitGb, monthFlow, monthFlowTip, quota, quotaCycleText, quotaGb, quotaNotes, quotaRuleText, quotaUsedLabel, recycleOn, remainingValue, cycleLabel, priceHint, currencyOptions, cycleOptions, meta } from '@/lib/derive';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
 import { resetOnOpen } from '@/lib/useHeld';
@@ -34,8 +35,11 @@ export function BillingTab({ m }: { m: MachineView }) {
         <Section>
           <SectionHeader title="当前订阅" />
           <LabelValueGrid>
-            <LabelValue label="费用"><span className="num">{F.money(s.price_cents, s.currency)}</span> <span className="unit">/ {cycleLabel(s.cycle)}</span>
-              {m.sub_template && <div className="hint">{(['price_cents', 'currency', 'cycle'] as const).some((k) => isOverridden(s, k)) ? '单独设置' : inheritSource(m, 'price_cents')}</div>}</LabelValue>
+            {/* 计费统一按 USD：主数字是服务端折好的月费；原价（供应商收的币种与周期）与汇率在下面一行，没有汇率的写原价、标未折算 */}
+            <LabelValue label="费用">{s.monthly_usd_cents != null
+              ? <><span className="num">{F.money(s.monthly_usd_cents, 'USD')}</span> <span className="unit">/ 月</span></>
+              : <><span className="num">{F.money(s.price_cents, s.currency)}</span> <span className="unit">/ {cycleLabel(s.cycle)}</span></>}
+              {(priceHint(s) || m.sub_template) && <div className="hint">{[priceHint(s), m.sub_template && ((['price_cents', 'currency', 'cycle'] as const).some((k) => isOverridden(s, k)) ? '单独设置' : inheritSource(m, 'price_cents'))].filter(Boolean).join(' · ')}</div>}</LabelValue>
             <LabelValue label="到期日">{s.due_date}（<Due days={s.due_days} state={s.due_state} />）{recycleOn(m) && <div className="hint"><SpareDue on={recycleOn(m)!} /></div>}</LabelValue>
             {/* 剩余比例只写一个百分数，天数在悬停里；预付了多期只写金额，期数在 (i) 里 */}
             <LabelValue label="剩余价值">{rv ? <><span className="num">{F.money(rv.cents, rv.currency)}</span> {rv.frac > 1
@@ -91,8 +95,8 @@ const OV_FIELDS: SubField[] = ['price_cents', 'currency', 'cycle', 'billing_tz',
 const OV_ITEMS = [{ value: 'follow', label: '跟随' }, { value: 'own', label: '单独' }];
 /** 可跟随的一项：标签右边一个紧凑的「跟随 / 单独」切换。跟随时显示套餐 / 供应商给的值（灰色文字，不是输入框），切到「单独」才能改；
  *  跟随的来源与值在切换的悬停里（提交的字段不变：单独的带值，跟随的为 null） */
-function OvField({ m, k, label, info, on, setOn, due, error, locked, onTouch, children }: {
-  m: MachineView; k: SubField; label: string; info?: string; on: boolean; setOn: (on: boolean) => void; due: string; error?: string; locked?: boolean; onTouch: () => void; children: React.ReactElement;
+function OvField({ m, k, label, info, on, setOn, due, error, hint, locked, onTouch, children }: {
+  m: MachineView; k: SubField; label: string; info?: string; on: boolean; setOn: (on: boolean) => void; due: string; error?: string; hint?: string | null; locked?: boolean; onTouch: () => void; children: React.ReactElement;
 }) {
   const id = React.useId();
   // 同机 IP 节点没有套餐：流量上限跟随的是宿主机的额度
@@ -109,6 +113,7 @@ function OvField({ m, k, label, info, on, setOn, due, error, locked, onTouch, ch
       </div>
       {on ? React.cloneElement(children as React.ReactElement<{ id?: string }>, { id }) : <div id={id} className="ov-follow">{shared ? follow : inheritValueText(m, k, due)}</div>}
       {on && error && <div className="hint is-error">{error}</div>}
+      {on && !error && hint && <div className="hint">{hint}</div>}
     </div>
   );
 }
@@ -162,9 +167,12 @@ function SubForm({ m }: { m: MachineView }) {
     save.mutate({ id: m.id, ...body }, { onSuccess: () => { saved.current = sig; toast.ok('订阅已保存'); }, onError: toast.err });
   };
   // 费用框里的单位：生效的币种 / 周期（单独设置的取输入，跟随的取套餐 / 供应商的）
-  const priceUnit = `${ov.currency ? currency : m.sub_template?.currency ?? currency} / ${cycleLabel(ov.cycle ? cycle : m.sub_template?.cycle ?? cycle)}`;
+  const priceCur = ov.currency ? currency : m.sub_template?.currency ?? currency;
+  const priceUnit = `${priceCur} / ${cycleLabel(ov.cycle ? cycle : m.sub_template?.cycle ?? cycle)}`;
+  // 价格按供应商收的币种录入，旁边提示折合多少美元（按设置里的汇率）
+  const usdHint = useUsdPreview(price.trim() === '' || priceBad ? null : Math.round(priceNum * 100), priceCur);
   const o = (k: SubField, label: string, children: React.ReactElement, error?: string, info?: string) => (
-    <OvField m={m} k={k} label={label} info={info} on={ov[k]} setOn={setOn(k)} due={dueDate} error={touched[k] ? error : undefined} onTouch={touch(k)} locked={legacy || (k === 'price_cents' && priceLocked)}>{children}</OvField>
+    <OvField m={m} k={k} label={label} info={info} on={ov[k]} setOn={setOn(k)} due={dueDate} error={touched[k] ? error : undefined} hint={k === 'price_cents' ? usdHint : undefined} onTouch={touch(k)} locked={legacy || (k === 'price_cents' && priceLocked)}>{children}</OvField>
   );
   return (
     <div className="form-grid" onBlur={(e) => { if (!(e.target as HTMLElement).closest('[data-due]')) touch('due')(); }}>
@@ -191,13 +199,14 @@ export const RenewDialog = resetOnOpen(function RenewDialog({ m, s, open, onOpen
   const [note, setNote] = React.useState('');
   const amountBad = amount.trim() !== '' && !(isFinite(Number(amount)) && Number(amount) >= 0);
   const ok = /^\d{4}-\d{2}-\d{2}$/.test(newDue) && newDue > s.due_date && amount.trim() !== '' && !amountBad;
+  const usdHint = useUsdPreview(amount.trim() === '' || amountBad ? null : Math.round(Number(amount) * 100), s.currency);
   const submit = () => renew.mutate({ id: m.id, new_due: newDue, amount_cents: Math.round(Number(amount) * 100), note: note.trim() || undefined }, { onSuccess: () => { toast.ok(`已登记续费，到期日 ${newDue}`); onOpenChange(false); }, onError: toast.err });
   return (
     <FormDialog open={open} onOpenChange={onOpenChange} dirty={!!note.trim() || amount !== String(s.price_cents / 100) || newDue !== s.next_due} title={`登记续费 · ${m.name}`} desc={<>当前到期日 {s.due_date} <InfoTip text="只记录「已续费」，到期日顺延；不会向供应商付款。" /></>}
       submitLabel="登记续费" busy={renew.isPending} valid={ok} onSubmit={submit}>
       <div className="form-grid">
         <Field label="新到期日" error={newDue && newDue <= s.due_date ? '应晚于当前到期日' : undefined}><DateField value={newDue} onChange={setNewDue} min={F.addDays(s.due_date, 1)} /></Field>
-        <Field label={`实付金额（${s.currency}）`} error={amountBad ? '应为 0 或正数' : amount.trim() === '' ? '请填写金额，免费填 0' : undefined}><Input inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} aria-invalid={amountBad || undefined} /></Field>
+        <Field label={`实付金额（${s.currency}）`} error={amountBad ? '应为 0 或正数' : amount.trim() === '' ? '请填写金额，免费填 0' : undefined}><Input inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} aria-invalid={amountBad || undefined} />{usdHint && <div className="hint">{usdHint}</div>}</Field>
         <Field label="备注（选填）" className="span-2"><Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="例如：账单 #2041" /></Field>
       </div>
     </FormDialog>

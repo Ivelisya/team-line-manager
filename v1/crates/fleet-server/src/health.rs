@@ -414,6 +414,9 @@ pub(crate) mod tests {
             traffic_reset_day: Some(1),
             overrides: vec![],
             monthly_cents: 100,
+            monthly_usd_cents: Some(100),
+            price_usd_cents: Some(100),
+            usd_per_unit: Some(1.0),
             next_due: time::macros::date!(2030 - 02 - 01),
             period_days: 31,
         }
