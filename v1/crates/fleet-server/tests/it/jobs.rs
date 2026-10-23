@@ -13,6 +13,9 @@ use serde_json::{json, Value};
 use std::time::Duration;
 use uuid::Uuid;
 
+/// 「没有被再领」这类反向断言只能等一段时间再看：集中在这里，调快调慢只改一处
+const NOT_RECLAIMED_WAIT: Duration = Duration::from_millis(1500);
+
 /// 上架一台连不上的 VPS，返回 (machine_id, job_id)
 async fn provision_unreachable_vps(t: &common::T, team: Uuid, relay: Uuid) -> (Uuid, String) {
     let created = t
@@ -884,7 +887,7 @@ async fn engine_does_not_reclaim_a_job_it_is_still_running() {
 
     sqlx::query("update job set lease_until = now() - interval '1 second' where id = $1::uuid").bind(&job).execute(&t.st.db).await.unwrap();
     t.st.wake_jobs();
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    tokio::time::sleep(NOT_RECLAIMED_WAIT).await;
     let after: Option<String> = sqlx::query_scalar(owner).bind(&job).fetch_one(&t.st.db).await.unwrap();
     assert_eq!(after, before, "没有被再领一次");
     assert_eq!(lock_waiters(&t, FINALIZE).await, 1, "「完成退役」只有一个任务在跑");
@@ -963,7 +966,7 @@ async fn drain_lets_the_running_step_finish_then_lets_go() {
     assert!(logs.as_array().unwrap().iter().any(|l| l["msg"] == "中控正在重启：「完成退役」等重启后接着做"), "{logs}");
     // 租约放开、到点了，也没人再领
     t.st.wake_jobs();
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    tokio::time::sleep(NOT_RECLAIMED_WAIT).await;
     let (owner, step4): (Option<String>, String) =
         sqlx::query_as("select j.lease_owner, s.state from job j join job_step s on s.job_id = j.id and s.idx = 4 where j.id = $1::uuid")
             .bind(&job)

@@ -106,7 +106,7 @@ async fn reports_feed_beats_series_and_hourly() {
     let v = t.get(&format!("/api/v1/machines/{relay}/ping-series?range=1h")).await;
     assert_eq!((v["step_s"].clone(), v["series"][0]["points"].as_array().unwrap().len()), (json!(60), 3), "{v}");
     assert_eq!(v["series"][0]["points"][1]["loss_pct"], json!(20.0));
-    assert_eq!(fleet_server::ping::rollup(&t.st.db).await.unwrap() >= 2, true);
+    assert!(fleet_server::ping::rollup(&t.st.db).await.unwrap() >= 2);
     let v = t.get(&format!("/api/v1/machines/{relay}/ping-series?range=7d")).await;
     let pts = v["series"][0]["points"].as_array().unwrap();
     assert!(!pts.is_empty() && pts.iter().all(|p| p["rtt_ms"].as_f64().is_some()), "{v}");

@@ -2,7 +2,7 @@
 //! 都是先看预检/校验、确认后才提交作业；作业本身的进度用 `fleetctl job <id> --follow` 看。
 
 use crate::cmds::{self, outln, st, Ctx};
-use crate::ops::{confirm, lookup};
+use crate::ops::confirm;
 use crate::resolve::Want;
 use crate::table;
 use anyhow::bail;
@@ -18,27 +18,12 @@ fn find_relay(ctx: &Ctx, q: &str) -> anyhow::Result<Value> {
     Ok(m)
 }
 
-fn follow_jobs(ctx: &Ctx, d: &Value) -> anyhow::Result<u8> {
-    let mut code = 0;
-    let jobs: Vec<Value> = match d["jobs"].as_array() {
-        Some(a) => a.clone(),
-        None => vec![d.clone()],
-    };
-    for j in jobs {
-        code = code.max(cmds::follow_job(ctx, &st(&j, "/job_id"))?);
-    }
-    Ok(code)
-}
-
 /// 预览里要改的软路由出口（替换、换线路机、搬空同一个格式）：软路由、状态、出口、现在、改成
 fn exit_rows(routers: &[Value], node: Option<&str>) -> Vec<Vec<String>> {
     let mut t = vec![];
     for r in routers {
-        let state = match r["state"].as_str() {
-            Some("online") => "在线",
-            Some("offline") => "离线",
-            _ => "未接入",
-        };
+        let state = st(r, "/state");
+        let state = crate::routers::state_cn(&state);
         for e in r["exits"].as_array().cloned().unwrap_or_default() {
             let to = e["error"].as_str().map_or_else(|| st(&e, "/to"), |x| format!("对不上：{x}"));
             let mut row = vec![st(r, "/name"), state.to_string(), st(&e, "/exit"), st(&e, "/from"), to];
@@ -171,7 +156,8 @@ pub fn evacuate(ctx: &Ctx, relay: &str, to: &str, no_routers: bool, yes: bool, f
         s
     });
     let skipped = d["skipped"].as_array().map(|a| a.len()).unwrap_or(0);
-    let mut code = if follow { follow_jobs(ctx, &d)? } else { 0 };
+    // 提交结果是 {jobs:[…]} 或单个作业
+    let mut code = if follow { cmds::follow_jobs(ctx, d["jobs"].as_array().map_or(std::slice::from_ref(&d), Vec::as_slice))? } else { 0 };
     if skipped > 0 {
         code = code.max(1);
     }
@@ -197,7 +183,7 @@ pub fn replace(ctx: &Ctx, o: ReplaceOpts) -> anyhow::Result<u8> {
     let mut q: Vec<(&str, String)> = vec![("new_machine_id", st(&new, "/id"))];
     let mut old_to = json!({});
     if let Some(t) = o.to {
-        let tid = lookup(&ctx.teams()?, t, &["name"], "团队")?;
+        let tid = ctx.team_id(t)?;
         old_to["team_id"] = json!(tid);
         q.push(("team_id", tid));
     }

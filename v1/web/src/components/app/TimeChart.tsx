@@ -2,7 +2,7 @@
 // memo：抽屉随实时推送重渲染时，曲线点没变（lines / 格式化函数由调用方放在模块常量里）就不重画
 import { memo, useCallback, useId, useMemo, useState } from 'react';
 import type { SeriesPoint } from '@/lib/types';
-import { pad2 as p2 } from '@/lib/format';
+import { dt, hm } from '@/lib/format';
 import { ChartContainer, ChartLegend, chartTooltip, Recharts, axisProps, type ChartConfig } from '@/components/ui/chart';
 
 const { AreaChart, Area, LineChart, Line, XAxis, YAxis, CartesianGrid, ReferenceArea, ReferenceDot } = Recharts;
@@ -11,8 +11,7 @@ export const RANGES = [{ value: '1h', label: '1 小时' }, { value: '6h', label:
 /** 按天的标日期；按小时的标时刻，落在零点的标日期（一两天的曲线跨日，不会出现两个一样的 06:00 分不清哪天） */
 const xFmt = (range: string) => (t: string | number) => {
   const d = new Date(t);
-  const date = `${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
-  return range === '7d' || range === '30d' || (d.getHours() === 0 && d.getMinutes() === 0) ? date : `${p2(d.getHours())}:${p2(d.getMinutes())}`;
+  return range === '7d' || range === '30d' || (d.getHours() === 0 && d.getMinutes() === 0) ? dt(t).slice(0, 5) : hm(t);
 };
 
 const MIN = 60_000; const HOUR = 60 * MIN; const DAY = 24 * HOUR;
@@ -157,7 +156,7 @@ export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 
       {holes.map((h) => <ReferenceArea key={h.a} x1={h.a} x2={h.b} fill={`url(#${hatch})`} fillOpacity={1} stroke="none" ifOverflow="hidden" label={wide(h.a, h.b) ? { value: h.label, position: 'center', fill: 'var(--chart-axis)', fontSize: 11 } : undefined} />)}
       <XAxis dataKey="t" type="number" scale="time" domain={span ?? ['dataMin', 'dataMax']} allowDataOverflow ticks={xTicks} tickFormatter={xFmt(xRange)} {...axisProps} minTickGap={32} />
       <YAxis width={60} tickFormatter={yFmt} {...axisProps} interval={0} ticks={y.ticks} allowDataOverflow={y.out.length > 0} domain={y.ceil != null ? [0, y.ceil] : domain ?? [0, 'auto']} />
-      {chartTooltip(config, (l) => { const d = new Date(Number(l)); return `${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`; }, valueFmt)}
+      {chartTooltip(config, (l) => dt(Number(l)), valueFmt)}
       {y.out.map((o) => <ReferenceDot key={`${o.key}${o.t}`} x={o.t} y={y.ceil!} r={0} shape={OUT_TRI(`var(--color-${o.key})`)} ifOverflow="visible" />)}
     </>
   );

@@ -1,13 +1,11 @@
 //! 访问策略：团队/节点的域名黑白名单。`set` 只改草稿；`publish` 才会生效并应用到线路机。
 
 use crate::cmds::{st, Ctx};
-use crate::ops::{confirm, lookup};
+use crate::ops::confirm;
 use crate::resolve::Want;
 use crate::table;
 use anyhow::{anyhow, bail};
 use serde_json::{json, Value};
-
-pub const MODES: [&str; 5] = ["observe", "allowlist", "denylist", "blocked", "inherit"];
 
 /// 策略模式的中文名（中控 /meta 的 policy_modes）
 fn mode_cn(m: &str) -> &str { crate::meta::label("policy_modes", m) }
@@ -41,9 +39,8 @@ pub struct Target {
 /// 在 `GET /policies` 的结果里按名字或 id 找团队或节点（团队名优先；节点名可用显示名、IP 等机器引用）
 pub fn resolve_target(ctx: &Ctx, list: &Value, q: &str) -> anyhow::Result<Target> {
     let teams = list["teams"].clone();
-    if let Ok(id) = lookup(&teams, q, &["name"], "团队") {
-        let t = teams.as_array().and_then(|a| a.iter().find(|t| st(t, "/id") == id)).cloned().unwrap_or(Value::Null);
-        return Ok(Target { scope: "team", id, name: st(&t, "/name"), policy: t["policy"].clone(), effective: None });
+    if let Ok(t) = crate::resolve::team(teams.as_array().map_or(&[][..], Vec::as_slice), q) {
+        return Ok(Target { scope: "team", id: st(t, "/id"), name: st(t, "/name"), policy: t["policy"].clone(), effective: None });
     }
     let m = ctx.find(q, Want::Live).map_err(|e| anyhow!("{q} 既不是团队也不是节点：{e}"))?;
     if st(&m, "/kind") == "relay" {
@@ -172,9 +169,6 @@ pub struct SetOpts<'a> {
 fn base_of(p: &Value) -> &Value { if p["draft"].is_null() { p } else { &p["draft"] } }
 
 pub fn set(ctx: &Ctx, o: SetOpts) -> anyhow::Result<u8> {
-    if !MODES.contains(&o.mode) {
-        bail!("模式只能是 {}（得到「{}」）", MODES.join("、"), o.mode);
-    }
     let list = ctx.c.get("/policies")?;
     let t = resolve_target(ctx, &list, o.who)?;
     if o.mode == "inherit" && t.scope == "team" {
@@ -191,7 +185,7 @@ pub fn set(ctx: &Ctx, o: SetOpts) -> anyhow::Result<u8> {
         None => base["note"].as_str().unwrap_or("").to_string(),
     };
     let body = json!({"mode": o.mode, "domains": domains, "note": note, "expected_revision": t.policy["revision"]});
-    let r = ctx.c.call(reqwest::Method::PUT, &format!("/policies/{}/{}", t.scope, t.id), &[], Some(&body), std::time::Duration::from_secs(30))?;
+    let r = ctx.c.put(&format!("/policies/{}/{}", t.scope, t.id), &body)?;
     ctx.emit(&r, || {
         let d = &r["policy"]["draft"];
         let tail = if d.is_null() { "草稿与生效值相同，没有未发布的改动".to_string() } else { format!("已保存为草稿：{}", brief(&st(d, "/mode"), domains_of(&d["domains"]).len())) };

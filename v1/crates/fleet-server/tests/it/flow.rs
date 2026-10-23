@@ -4,12 +4,10 @@
 use crate::common;
 
 use axum::http::StatusCode;
-use common::{seed_relay, setup, T};
+use common::{now_ms, seed_relay, setup, T};
 use fleet_proto::{ApplyReport, DesiredState, EntryApply, ProbeKind, ProbeSample, Report};
 use serde_json::{json, Value};
 use std::time::Duration;
-
-fn now_ms() -> i64 { (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64 }
 
 /// 模拟线路机 agent：拉期望状态、回报全部成功，并给每个入口报一个成功的出口探测
 async fn relay_round(t: &T, tok: &str, _after: u64, seq: &mut u64) -> DesiredState {

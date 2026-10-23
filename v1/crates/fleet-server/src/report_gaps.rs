@@ -82,8 +82,7 @@ impl ReportGaps {
 
     /// 把最近一小时的时段存进库里（启动时、库中断恢复后）
     pub async fn save(&self, db: &sqlx::PgPool) -> sqlx::Result<()> {
-        let fmt = |t: OffsetDateTime| t.format(&time::format_description::well_known::Rfc3339).unwrap_or_default();
-        let v: Vec<[String; 2]> = self.0.lock().unwrap().done.iter().map(|(f, t)| [fmt(*f), fmt(*t)]).collect();
+                let v: Vec<[String; 2]> = self.0.lock().unwrap().done.iter().map(|(f, t)| [crate::meta::fmt_ts(*f), crate::meta::fmt_ts(*t)]).collect();
         sqlx::query(
             "insert into app_setting (key, value, updated_by) values ($1, $2, 'fleet-server')
              on conflict (key) do update set value = excluded.value, updated_at = now(), updated_by = excluded.updated_by",
@@ -100,7 +99,7 @@ impl ReportGaps {
         if self.0.lock().unwrap().alive_saved.is_some_and(|t| (now - t).whole_seconds() < ALIVE_EVERY_S) {
             return Ok(());
         }
-        let at = now.format(&time::format_description::well_known::Rfc3339).unwrap_or_default();
+        let at = crate::meta::fmt_ts(now);
         sqlx::query(
             "insert into app_setting (key, value, updated_by) values ($1, $2, 'fleet-server')
              on conflict (key) do update set value = excluded.value, updated_at = now(), updated_by = excluded.updated_by",

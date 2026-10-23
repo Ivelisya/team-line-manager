@@ -1025,8 +1025,12 @@ async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<
         .await?;
         let got: HashMap<Uuid, QuotaUsed> = rows.into_iter().map(|(m, b, cal, s0)| (m, (b, cal, s0))).collect();
         for k in miss {
-            // 每个键都有一行（q 是 unnest 出来的，两支都按 q 聚合）；万一缺了记 0，不让一台打断整个视图与实时推送
-            slot.1.insert(k.clone(), got.get(&k.0).copied().unwrap_or((0, false, k.1.midnight().assume_utc())));
+            // 每个键都有一行（q 是 unnest 出来的，两支都按 q 聚合）；缺了是 SQL 的 bug：记下机器 id 并按 0 算，不让一台打断整个视图与实时推送
+            let used = got.get(&k.0).copied().unwrap_or_else(|| {
+                tracing::warn!(machine = %k.0, "流量额度查询没有返回这台机器的一行，按已用 0 算");
+                (0, false, k.1.midnight().assume_utc())
+            });
+            slot.1.insert(k.clone(), used);
         }
     }
     Ok(keys.into_iter().map(|k| (k.0, slot.1[&k])).collect())
@@ -1408,10 +1412,20 @@ pub async fn overview(st: &AppState) -> sqlx::Result<Value> {
     Ok(overview_of(&ms, &*traffic(st).await?))
 }
 
+/// 总览里节点、线路机各一份的健康计数
+#[derive(Default, Serialize)]
+struct Bucket {
+    total: i64,
+    ok: i64,
+    degraded: i64,
+    down: i64,
+    unknown: i64,
+    maintenance: i64,
+}
+
 /// 总览 KPI，只统计 active 的机器；本月业务流量是全部入口（`traffic`）的合计，数据不完整时带起点（`traffic_month.counted_from`）
 pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Value {
-    let mut nodes = json!({"total": 0, "ok": 0, "degraded": 0, "down": 0, "unknown": 0, "maintenance": 0});
-    let mut relays = nodes.clone();
+    let (mut nodes, mut relays) = (Bucket::default(), Bucket::default());
     let (mut provisioning, mut retiring, mut failed, mut rx, mut tx) = (0, 0, 0, 0f64, 0f64);
     // 本月业务流量：每条入口的字节只在它的线路机上统计一次，全部入口直接相加不重复，含已移除的入口和月中退役、替换掉的机器。
     // 网卡流量不做合计：同一个字节在线路机和节点的网卡上各算一次
@@ -1428,8 +1442,7 @@ pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Valu
     // 在线/离线按 agent 连通（同前端 isQuiet）：agent 没有近期上报为离线。只数有自己 agent 的机器：
     // 家宽代理没有 agent、同机 IP 节点借宿主机的 agent，都不计。和健康无关
     let (mut online, mut offline) = (0, 0);
-    // 月费按币种分别汇总（monthly_cost，旧字段，不折算），另按汇率折成 USD 合计（monthly_usd，见 fx.rs）
-    let mut cost: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
+    // 月费按汇率折成 USD 合计（monthly_usd，见 fx.rs）
     let mut usd = crate::fx::Total::default();
     for m in ms {
         match m.lifecycle.as_str() {
@@ -1443,15 +1456,14 @@ pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Valu
             continue;
         }
         let bucket = if m.kind == "relay" { &mut relays } else { &mut nodes };
-        let key = match m.health.status {
-            Status::Ok => "ok",
-            Status::Degraded => "degraded",
-            Status::Down => "down",
-            Status::Maintenance => "maintenance",
-            _ => "unknown",
-        };
-        bucket["total"] = json!(bucket["total"].as_i64().unwrap_or(0) + 1);
-        bucket[key] = json!(bucket[key].as_i64().unwrap_or(0) + 1);
+        bucket.total += 1;
+        *match m.health.status {
+            Status::Ok => &mut bucket.ok,
+            Status::Degraded => &mut bucket.degraded,
+            Status::Down => &mut bucket.down,
+            Status::Maintenance => &mut bucket.maintenance,
+            _ => &mut bucket.unknown,
+        } += 1;
         if let Some(s) = &m.subscription {
             // 备用团队的不续费（替换下来等到期丢弃的），不算要续的（同前端 nextDue 与机器页「即将到期」筛选）
             match s.due_state {
@@ -1459,8 +1471,6 @@ pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Valu
                 "overdue" if !m.spare => overdue += 1,
                 _ => {}
             }
-            // 月费：各台折好的 monthly_cents 按币种（大写）相加
-            *cost.entry(s.currency.trim().to_ascii_uppercase()).or_default() += s.monthly_cents;
             usd.add(&s.currency, s.monthly_cents, s.monthly_usd_cents.zip(s.usd_per_unit));
         }
         // 实时速率只算数据没过期的：agent 离线的机器，最后一份上报的速率不算（同前端 liveRate）。
@@ -1480,7 +1490,7 @@ pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Valu
     }
     json!({
         "nodes": nodes, "relays": relays, "provisioning": provisioning, "retiring": retiring, "failed": failed, "due_soon": due_soon, "overdue": overdue, "online": online, "offline": offline,
-        "monthly_cost": cost.into_iter().map(|(c, v)| json!({"currency": c, "cents": v})).collect::<Vec<_>>(), "monthly_usd": usd, "traffic_month": {"up": up, "down": down, "counted_from": counted_from.map(|t| t.format(&time::format_description::well_known::Rfc3339).unwrap_or_default())}, "net_rx_bps": rx, "net_tx_bps": tx,
+        "monthly_usd": usd, "traffic_month": {"up": up, "down": down, "counted_from": counted_from.map(|t| t.format(&time::format_description::well_known::Rfc3339).unwrap_or_default())}, "net_rx_bps": rx, "net_tx_bps": tx,
     })
 }
 
@@ -1591,8 +1601,6 @@ mod tests {
         (spare_soon.spare, spare_over.spare) = (true, true);
         let ov2 = overview_of(&[spare_soon, spare_over], &HashMap::new());
         assert_eq!((ov2["due_soon"].as_i64(), ov2["overdue"].as_i64()), (Some(0), Some(0)), "备用团队的不算");
-        // 月费是各台 monthly_cents 之和
-        assert_eq!(ov["monthly_cost"], json!([{"currency": "USD", "cents": 433}]));
         assert_eq!(ov["monthly_usd"]["cents"], 433, "测试用的订阅是 USD，汇率 1");
         // 折算：逐台的 monthly_usd_cents 相加；没有汇率的单列，不算进合计
         let cny = |cents: i64, usd: Option<i64>| {

@@ -8,6 +8,11 @@ use common::{seed_relay, seed_team, setup, T};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+/// (供应商, 套餐, 价格, 时区, 流量, 重置日, 到期日)
+type Row<'a> = (Uuid, Uuid, i32, &'a str, Option<i32>, Option<i32>, &'a str);
+/// 订阅里存下来的单独设置：价格、币种、周期、时区、提醒天数、流量、重置日
+type StoredSub = (Option<i32>, Option<String>, Option<String>, Option<String>, Option<i32>, Option<i32>, Option<i32>);
+
 fn upstream() -> Value { json!({"protocol": "socks5", "host": "p.example", "port": 1080}) }
 
 async fn machine(t: &T, id: &str) -> Value { t.get(&format!("/api/v1/machines/{id}")).await }
@@ -61,8 +66,8 @@ async fn subscription_follows_plan_and_provider() {
     assert_eq!((s["overrides"].clone(), m["provider"]["id"].clone()), (json!([]), pv.clone()), "供应商取套餐的");
     assert_eq!((m["sub_template"]["traffic_reset"].as_str(), m["quota"]["limit_gb"].as_i64(), m["quota"]["limit_source"].as_str()), (Some("billing"), Some(2000), Some("plan")));
     // 月费按生效值折算（季付 3000 → 每月 1000）
-    let cost = t.get("/api/v1/overview").await["monthly_cost"].clone();
-    assert_eq!(cost, json!([{"currency": "CNY", "cents": 1000}]));
+    let cost = t.get("/api/v1/overview").await["monthly_usd"]["unconverted"].clone();
+    assert_eq!(cost, json!([{"currency": "CNY", "cents": 1000}]), "测试里没有汇率，CNY 单列未折算");
 
     // 改套餐：没单独设置的机器立即跟着变
     t.req("PATCH", &plan_path, Some(json!({"price_cents": 3600, "traffic_gb": 3000})), None).await;
@@ -191,7 +196,7 @@ async fn migration_normalizes_hard_coded_subscriptions() {
     let gm_plan = t.post("/api/v1/plans", json!({"provider_id": gm, "name": "Mini", "price_cents": 3946, "traffic_gb": 2000})).await["id"].as_str().unwrap().parse::<Uuid>().unwrap();
     let att_plan = t.post("/api/v1/plans", json!({"provider_id": att, "name": "Base", "price_cents": 1000})).await["id"].as_str().unwrap().parse::<Uuid>().unwrap();
     // (供应商, 套餐, 价格, 时区, 流量, 重置日, 到期日)：上架时抄的价格 / 时区、手填的套餐流量与账单日
-    let rows: [(Uuid, Uuid, i32, &str, Option<i32>, Option<i32>, &str); 4] = [
+    let rows: [Row; 4] = [
         (gm, gm_plan, 3946, "America/Los_Angeles", Some(2000), Some(13), "2026-11-13"),
         (gm, gm_plan, 4200, "America/Los_Angeles", Some(2000), Some(25), "2026-11-25"),
         (att, att_plan, 1000, "Asia/Shanghai", None, Some(1), "2026-11-05"),
@@ -228,7 +233,7 @@ async fn migration_normalizes_hard_coded_subscriptions() {
     let reset: Vec<(String, String)> = sqlx::query_as("select code, traffic_reset from provider order by code").fetch_all(db).await.unwrap();
     assert_eq!(reset, [("ATT".into(), "month".into()), ("GM".into(), "billing".into())], "GM 的重置日都是到期日；ATT 只有 1 号的不算证据");
     let got = |id: Uuid| async move {
-        let s: (Option<i32>, Option<String>, Option<String>, Option<String>, Option<i32>, Option<i32>, Option<i32>) = sqlx::query_as(
+        let s: StoredSub = sqlx::query_as(
             "select price_cents, currency, cycle::text, billing_tz, remind_days, traffic_gb, traffic_reset_day from subscription where machine_id = $1",
         )
         .bind(id)

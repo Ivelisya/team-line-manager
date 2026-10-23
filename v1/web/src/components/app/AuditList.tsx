@@ -42,7 +42,6 @@ function describe(a: AuditEntry): Desc {
   return { ...base, rest: cmd.split('\n')[0], res, more };
 }
 
-const p2 = F.pad2;
 const isToday = (iso: string) => new Date(iso).toDateString() === new Date().toDateString();
 
 /** onOpen：给了就让涉及机器的记录里的对象名可点（打开这台机器的抽屉）；抽屉里自己的记录不需要。
@@ -57,8 +56,7 @@ export function AuditList({ items, onOpen, byDay }: { items: AuditEntry[]; onOpe
         const link = onOpen && p.machine && p.target ? p.machine : null;
         const can = p.more.length > 0;
         const on = can && open.has(a.id);
-        const d = new Date(a.ts);
-        const when = byDay && !isToday(a.ts) ? `${p2(d.getHours())}:${p2(d.getMinutes())}` : F.ago(a.ts);
+        const when = byDay && !isToday(a.ts) ? F.hm(a.ts) : F.ago(a.ts);
         return (
           <li key={a.id} className={cn(can && 'is-link')} data-open={on ? '' : undefined} role={can ? 'button' : undefined} tabIndex={can ? 0 : undefined} aria-expanded={can ? on : undefined}
             onClick={can ? () => toggle(a.id) : undefined} onKeyDown={can ? (e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); toggle(a.id); } } : undefined}>

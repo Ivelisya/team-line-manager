@@ -346,7 +346,7 @@ pub fn rollback_script() -> String { ROLLBACK.replace("__ORIG__", ORIG) }
 /// 单个键的结果
 enum Status<'a> {
     Ok,
-    /// 改之前的值（旧版输出没有冒号时为空）
+    /// 改之前的值
     Applied(&'a str),
     Kept,
     Missing,
@@ -357,7 +357,6 @@ fn knob_status(s: &str) -> Option<Status<'_>> {
     Some(match s.split_once(':') {
         None => match s {
             "ok" => Status::Ok,
-            "applied" => Status::Applied(""),
             "missing" => Status::Missing,
             _ => return None,
         },
@@ -612,10 +611,10 @@ mod tests {
         assert!(r.warns.iter().any(|w| w.contains("时钟")) && r.warns.iter().any(|w| w.contains("4096")), "{:?}", r.warns);
     }
 
-    /// 推导核对、残留检测、旧版输出（applied 没带原值）
+    /// 推导核对、残留检测、改之前的值是空串
     #[test]
     fn parse_checks_the_derivation_and_reports_residue() {
-        let r = parse("bw=1000\nrtt=200\nmem_kb=2000000\nbuf_max=16777216\ntune.net.ipv4.tcp_congestion_control=applied\nsnapshot=created_tuned\n\
+        let r = parse("bw=1000\nrtt=200\nmem_kb=2000000\nbuf_max=16777216\ntune.net.ipv4.tcp_congestion_control=applied:\nsnapshot=created_tuned\n\
                        residue=tcpfit_conf\nresidue=htb:eth0,ens3\ncontainer=0\ntune_profile=tune-v2\n");
         assert!(r.warns.iter().any(|w| w.contains("核对不一致") && w.contains("52097152")), "{:?}", r.warns);
         assert!(r.warns.iter().any(|w| w.contains("99-tcpfit.conf")) && r.warns.iter().any(|w| w.contains("eth0,ens3")), "{:?}", r.warns);

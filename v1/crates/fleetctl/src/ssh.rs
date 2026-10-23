@@ -3,9 +3,8 @@
 //! 主机指纹只认中控记下的（StrictHostKeyChecking=yes）；登录前经 API 记一条审计（哪把密钥、哪台、带没带命令，命令内容不记），
 //! 记不上就不登录。ssh 选项同 fleet-server ssh.rs 的 Target：不读 ~/.ssh/config 与系统 known_hosts，要用的选项全在这里给出。
 
-use crate::client::ApiError;
 use crate::cmds::Ctx;
-use crate::resolve::Want;
+use crate::resolve::{s, Want};
 use anyhow::{anyhow, bail, Context};
 use serde_json::{json, Value};
 use std::path::Path;
@@ -69,8 +68,6 @@ pub fn router_args(id: &str, tunnel_port: u16, command: Option<&str>) -> Vec<Str
     finish(a, tunnel_port, "root@127.0.0.1".into(), command)
 }
 
-fn s<'a>(v: &'a Value, k: &str) -> &'a str { v.get(k).and_then(Value::as_str).unwrap_or("") }
-
 fn port_of(v: &Value, k: &str) -> Option<u16> { v.get(k).and_then(Value::as_u64).and_then(|p| u16::try_from(p).ok()) }
 
 /// 机器（完整视图）的 SSH 地址；同机 IP 节点没有自己的 SSH，用宿主机的（`host` 是宿主机的完整视图，同中控的远程执行）
@@ -79,23 +76,6 @@ pub fn endpoint(m: &Value, host: Option<&Value>) -> anyhow::Result<(String, u16)
     let ip = Some(s(v, "ip")).filter(|ip| !ip.is_empty()).ok_or_else(|| anyhow!("{} 没有 IP", s(v, "name")))?;
     let port = port_of(v, "ssh_port").ok_or_else(|| anyhow!("{} 没有 SSH 端口", s(v, "name")))?;
     Ok((ip.to_string(), port))
-}
-
-/// 按 id（可前缀，至少 6 位）或名称找软路由；歧义时报错并列出候选
-pub fn find_router<'a>(list: &'a [Value], q: &str) -> Result<&'a Value, String> {
-    let q = q.trim();
-    let ql = q.to_lowercase();
-    let id = |r: &Value| s(r, "id").to_lowercase();
-    let mut hits: Vec<&Value> = list.iter().filter(|r| id(r) == ql || s(r, "name") == q).collect();
-    if hits.is_empty() && q.len() >= 6 && q.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
-        hits = list.iter().filter(|r| id(r).starts_with(&ql)).collect();
-    }
-    match hits.len() {
-        1 => Ok(hits[0]),
-        0 if list.is_empty() => Err(format!("没有软路由「{q}」：中控上还没有接入任何软路由")),
-        0 => Err(format!("没有软路由「{q}」，现有：{}", list.iter().map(|r| s(r, "name")).collect::<Vec<_>>().join("、"))),
-        n => Err(format!("「{q}」匹配到 {n} 台软路由，请用 id 指定：\n{}", hits.iter().map(|r| format!("  {}  (id {})", s(r, "name"), s(r, "id"))).collect::<Vec<_>>().join("\n"))),
-    }
 }
 
 /// 登录前记审计（POST /audit/ssh）；记不上就不登录，同 exec「先有记录再动手」
@@ -133,11 +113,7 @@ pub fn run(ctx: &Ctx, target: &[String], command: &[String]) -> anyhow::Result<u
             machine_args(&ip, port, command.as_deref())
         }
         Target::Router(q) => {
-            let list = ctx.c.get("/routers").map_err(|e| match e.downcast_ref::<ApiError>() {
-                Some(a) if a.status == 404 => anyhow!("这个中控还不能管理软路由（GET /routers 404），先升级中控"),
-                _ => e,
-            })?;
-            let r = find_router(list.as_array().map(Vec::as_slice).unwrap_or_default(), &q).map_err(|e| anyhow!(e))?;
+            let r = &crate::routers::find(&ctx.list("/routers")?, &q)?;
             let (id, name) = (s(r, "id").to_string(), s(r, "name").to_string());
             let port = port_of(r, "tunnel_port").ok_or_else(|| anyhow!("软路由「{name}」没有隧道端口"))?;
             match s(r, "state") {
@@ -224,19 +200,6 @@ mod tests {
         assert_eq!(opt(&a, "StrictHostKeyChecking"), Some("yes"));
         assert!(a.windows(2).any(|w| w == v(&["-i", KEY])));
         assert_eq!(a[a.len() - 5..], v(&["-p", "23001", "--", "root@127.0.0.1", "logread | tail -20"]));
-    }
-
-    #[test]
-    fn finds_router_by_name_or_id() {
-        let rs = vec![
-            json!({"id": "0193a5b0-0000-7000-8000-000000000001", "name": "团队2-路由A", "tunnel_port": 23001, "state": "online"}),
-            json!({"id": "0193a5b0-0000-7000-8000-000000000002", "name": "团队2-路由B", "tunnel_port": 23002, "state": "pending"}),
-        ];
-        assert_eq!(find_router(&rs, "团队2-路由B").unwrap()["tunnel_port"], 23002);
-        assert_eq!(find_router(&rs, "0193A5B0-0000-7000-8000-000000000001").unwrap()["name"], "团队2-路由A");
-        assert!(find_router(&rs, "0193a5b0").unwrap_err().contains("匹配到 2 台"));
-        assert!(find_router(&rs, "团队1-路由").unwrap_err().contains("现有：团队2-路由A、团队2-路由B"));
-        assert!(find_router(&[], "x").unwrap_err().contains("还没有接入任何软路由"));
     }
 
     #[test]

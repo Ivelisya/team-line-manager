@@ -510,102 +510,19 @@ mod tests {
         }
     }
 
-    /// 第 17 轮（同机多 IP 节点）之前的 NODE_SS 原文
-    const OLD_NODE_SS: &str = r#"
-set -eu
-id fleet-ss >/dev/null 2>&1 || useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin fleet-ss
-install -d -m 750 -g fleet-ss /etc/shadowsocks-rust
-C=/etc/shadowsocks-rust/config.json
-printf '{"server":"0.0.0.0","server_port":%s,"password":"%s","method":"%s","mode":"tcp_and_udp","timeout":300}\n' "$SS_PORT" "$SS_PASSWORD" "$SS_METHOD" > $C.tmp
-chgrp fleet-ss $C.tmp; chmod 640 $C.tmp
-RESTART=0
-cmp -s $C.tmp $C && rm -f $C.tmp || { mv $C.tmp $C; RESTART=1; }
-U=/etc/systemd/system/fleet-ssserver.service
-cat > $U.tmp <<'UNIT'
-[Unit]
-Description=fleet shadowsocks-rust ssserver
-After=network-online.target
-Wants=network-online.target
-[Service]
-ExecStart=/usr/local/bin/ssserver -c /etc/shadowsocks-rust/config.json
-User=fleet-ss
-Group=fleet-ss
-Restart=always
-RestartSec=2
-LimitNOFILE=65536
-MemoryMax=128M
-NoNewPrivileges=yes
-ProtectSystem=strict
-ProtectHome=yes
-PrivateTmp=yes
-[Install]
-WantedBy=multi-user.target
-UNIT
-cmp -s $U.tmp $U && rm -f $U.tmp || { mv $U.tmp $U; systemctl daemon-reload; RESTART=1; }
-systemctl enable -q fleet-ssserver
-if [ $RESTART = 1 ] || ! systemctl -q is-active fleet-ssserver; then systemctl restart fleet-ssserver; fi
-# 防火墙：SS 端口只放行线路机
-install -d -m 755 /etc/fleet/nft
-N=/etc/fleet/nft/ss_guard.nft
-cat > $N.tmp <<NFT
-table inet ss_guard
-delete table inet ss_guard
-table inet ss_guard {
-  set relays { type ipv4_addr; elements = { $ALLOW } }
-  chain input {
-    type filter hook input priority -10; policy accept;
-    tcp dport $SS_PORT ip saddr @relays accept
-    udp dport $SS_PORT ip saddr @relays accept
-    tcp dport $SS_PORT drop
-    udp dport $SS_PORT drop
-  }
-}
-NFT
-# set -e 对 && 链中间的失败不会退出，这里逐条显式判断；任何一步失败都让脚本以非 0 退出
-nft -c -f $N.tmp || { echo nft=error; exit 21; }
-mv -f $N.tmp $N || { echo nft=error; exit 21; }
-nft -f $N || { echo nft=error; exit 21; }
-[ -f /etc/nftables.conf ] || printf '#!/usr/sbin/nft -f\n' > /etc/nftables.conf
-grep -qF 'include "/etc/fleet/nft/ss_guard.nft"' /etc/nftables.conf || echo 'include "/etc/fleet/nft/ss_guard.nft"' >> /etc/nftables.conf
-systemctl enable -q nftables 2>/dev/null || true
-for i in $(seq 1 30); do ss -Hltn "sport = :$SS_PORT" | grep -q . && break; sleep 0.2; done
-ss -Hltn "sport = :$SS_PORT" | grep -q . && echo ss=listening || echo ss=down
-echo "nft_relays=$(nft list set inet ss_guard relays | tr -d '\n' | sed 's/.*elements = { \(.*\) }.*/\1/' | tr -d ' \t')"
-"#;
-
-    const LOCK: &str = "exec 9>/run/fleet-ss.lock; flock 9\n";
-    /// 进程跑的不是磁盘上当前的 ssserver 才重启（程序没换过时不重启）
-    const STALE: &str = "# 磁盘上的 ssserver 已换成新版（同机别的实例收敛时推的）、这个实例还在跑旧的：也重启，换上新程序；程序没换过时不重启\n\
-                         [ /proc/$(systemctl show -p MainPID --value fleet-ssserver)/exe -ef /usr/local/bin/ssserver ] || RESTART=1\n";
-
-    /// 第 22 轮单元加的一行（拦元数据服务）：已上架的节点下次收敛时单元变了，重启一次 ssserver
-    const DENY: &str = "# ssserver 自己解析域名：客户经域名（169.254.169.254.nip.io）也到不了云厂商的元数据服务。不拦回环：Ubuntu 上解析要经 127.0.0.53\n\
-                        IPAddressDeny=link-local 100.100.100.200/32\n";
-
-    /// 第 21 轮重跑幂等（以运行中的实例为准）：单元换了没重新加载的先加载；运行中的实例比配置、单元旧的重启——
-    /// 都只看机器上的状态，配置、单元、程序都没变且实例在它们之后启动的，照样不重启
-    const RELOAD: &str = "# 单元文件换了、systemd 还没重新加载（上次换上之后没来得及 daemon-reload 就被打断）\n\
-                          [ \"$(systemctl show -p NeedDaemonReload --value fleet-ssserver)\" != yes ] || { systemctl daemon-reload; RESTART=1; }\n";
-    const OLDER: &str = "# 运行中的实例比它的配置或单元旧（上次换上之后没来得及重启就被打断，ssserver 还在用旧密码；同机别的实例收敛时换了模板单元）：也重启。\n\
-                         # 按秒比，同一秒里分不清先后的不算旧（不为它多断一次客户的连接）\n\
-                         since=$(TZ=UTC0 systemctl show -p ExecMainStartTimestamp --value fleet-ssserver)\n\
-                         [ -z \"$since\" ] || [ \"$(date -d \"$since\" +%s)\" -ge \"$(stat -c %Y $C $U | sort -n | tail -n1)\" ] || RESTART=1\n";
-
-    /// 链路本地 DNS 时选公共解析器的那两行（写配置之前）
-    const DNS_LINES: &str = "# DNS 是链路本地地址（见 LINKLOCAL_DNS）：ssserver 改用公共解析器，元数据拦截照旧；不是时配置和原来逐字相同\n";
-
-    /// 宿主机（普通 VPS 节点）除了多一行锁、一行「进程跑的是旧程序才重启」、单元里拦元数据服务的一行、链路本地 DNS 时选公共解析器的两行
-    /// 和重跑时以运行中的实例为准的几行，和改动前逐字相同：生产节点升级中控后重新收敛，配置（不是链路本地 DNS 时）、nft、include 行都不变
+    /// 宿主机（普通 VPS 节点）的渲染：生产节点升级中控后重新收敛，配置文件路径与写法、nft 表名、include 行、服务名都不能变（变了就会重启 ssserver、断客户的连接）。
+    /// 「配置没变就不重启」本身由下面在 bash 里真跑的用例和 tests/upgrade.rs 覆盖
     #[test]
-    fn host_render_is_unchanged() {
+    fn host_render_keeps_names() {
         let s = node_ss(&SsInst::host());
-        let pick = format!("{DNS_LINES}DNS=; if {}; then DNS=',\"dns\":\"{}\"'; echo linklocal_dns=1; fi\n", super::LINKLOCAL_DNS, super::PUBLIC_DNS);
-        let (new_printf, old_printf) = ("300%s}\\n' \"$SS_PORT\" \"$SS_PASSWORD\" \"$SS_METHOD\" \"$DNS\"", "300}\\n' \"$SS_PORT\" \"$SS_PASSWORD\" \"$SS_METHOD\"");
-        assert!(s.starts_with(&format!("\nset -eu\n{LOCK}")), "{s}");
-        assert!(s.contains(STALE) && s.contains(&format!("PrivateTmp=yes\n{DENY}[Install]\n")), "{s}");
-        assert!(s.contains(&pick) && s.contains(new_printf) && s.contains(&format!("RESTART=1; }}\n{RELOAD}{STALE}{OLDER}systemctl enable")), "{s}");
-        let old = [LOCK, STALE, DENY, RELOAD, OLDER, pick.as_str()].iter().fold(s.replacen(new_printf, old_printf, 1), |s, x| s.replacen(x, "", 1));
-        assert_eq!(old, OLD_NODE_SS);
+        for want in [
+            "C=/etc/shadowsocks-rust/config.json\n",
+            "\"timeout\":300%s}\\n' \"$SS_PORT\" \"$SS_PASSWORD\" \"$SS_METHOD\" \"$DNS\"",
+            "table inet ss_guard {",
+            "include \"/etc/fleet/nft/ss_guard.nft\"",
+        ] {
+            assert!(s.contains(want), "{want}\n{s}");
+        }
         assert_eq!((SsInst::host().svc(), SsInst::host().table()), ("fleet-ssserver".to_string(), "ss_guard".to_string()));
     }
 

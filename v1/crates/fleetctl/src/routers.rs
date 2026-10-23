@@ -3,8 +3,9 @@
 //! 给 --host 就一键部署（中控能直接连到路由的 SSH 时用：中控登录上去装好隧道；密码只从标准输入读）。
 
 use crate::cmds::{num, st, Ctx};
-use crate::ops::{confirm, lookup};
-use crate::table::{self, bps, bytes};
+use crate::ops::confirm;
+use crate::resolve;
+use crate::table::{self, bps, bytes, pct};
 use anyhow::{anyhow, bail};
 use serde_json::{json, Value};
 use std::io::BufRead;
@@ -13,7 +14,7 @@ use std::time::Duration;
 /// 速率：路由还没算出来（null）显示「—」，不是 0
 fn rate(v: &Value, ptr: &str) -> String { num(v, ptr).map_or_else(|| "—".to_string(), bps) }
 
-fn state_cn(s: &str) -> &str {
+pub(crate) fn state_cn(s: &str) -> &str {
     match s {
         "pending" => "等待接入",
         "online" => "在线",
@@ -49,34 +50,11 @@ fn uptime_cn(s: i64) -> String {
     }
 }
 
-fn pct(a: Option<f64>, b: Option<f64>) -> String {
-    match (a, b) {
-        (Some(a), Some(b)) if b > 0.0 => format!("{:.0}%", a * 100.0 / b),
-        _ => "-".into(),
-    }
-}
 
-fn list(ctx: &Ctx) -> anyhow::Result<Vec<Value>> { Ok(ctx.c.get("/routers")?.as_array().cloned().unwrap_or_default()) }
-
-/// 找一台路由：id、id 前缀（至少 6 位）、名称（不分大小写）
-fn find(all: &[Value], q: &str) -> anyhow::Result<Value> {
-    let q = q.trim();
-    let ql = q.to_lowercase();
-    let mut hits: Vec<&Value> = all.iter().filter(|r| st(r, "/id") == ql).collect();
-    if hits.is_empty() && ql.len() >= 6 && ql.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
-        hits = all.iter().filter(|r| st(r, "/id").starts_with(&ql)).collect();
-    }
-    if hits.is_empty() {
-        hits = all.iter().filter(|r| st(r, "/name").to_lowercase() == ql).collect();
-    }
-    match hits.len() {
-        1 => Ok(hits[0].clone()),
-        0 => bail!("没有找到软路由「{q}」（可用 id、id 前缀、名称；先 fleetctl routers 看列表）"),
-        n => {
-            let lines: Vec<String> = hits.iter().map(|r| format!("  {}  (id {})", st(r, "/name"), st(r, "/id"))).collect();
-            bail!("「{q}」匹配到 {n} 台软路由，请用 id 指定：\n{}", lines.join("\n"))
-        }
-    }
+/// 找一台路由：id、id 前缀（至少 6 位）、名称（不分大小写）；规则同 `resolve::named`
+pub(crate) fn find(all: &[Value], q: &str) -> anyhow::Result<Value> {
+    let name = |r: &Value| st(r, "/name");
+    resolve::named(all, q, "软路由", &[&name], &name).cloned().map_err(|e| anyhow!("{e}（先 fleetctl routers 看列表）"))
 }
 
 fn row(r: &Value) -> Vec<String> {
@@ -113,7 +91,7 @@ fn row(r: &Value) -> Vec<String> {
 const HEAD: [&str; 10] = ["名称", "团队", "状态", "出口通/总", "客户端", "CPU", "内存", "WAN", "最近在线", "id"];
 
 pub fn ls(ctx: &Ctx, team: Option<&str>) -> anyhow::Result<u8> {
-    let mut all = list(ctx)?;
+    let mut all = ctx.list("/routers")?;
     if let Some(t) = team {
         all.retain(|r| r["team"]["name"].as_str() == Some(t) || st(r, "/team/id") == t);
     }
@@ -134,7 +112,7 @@ pub fn ls(ctx: &Ctx, team: Option<&str>) -> anyhow::Result<u8> {
 }
 
 pub fn show(ctx: &Ctx, q: &str) -> anyhow::Result<u8> {
-    let r = find(&list(ctx)?, q)?;
+    let r = find(&ctx.list("/routers")?, q)?;
     let d = ctx.c.get(&format!("/routers/{}", st(&r, "/id")))?;
     ctx.emit(&d, || human_show(&d));
     Ok(0)
@@ -252,7 +230,7 @@ fn human_show(d: &Value) -> String {
 
 /// 一个出口在所选范围内的统计（`GET /routers/{id}/exits/metrics` 的点，按时间顺序）。口径按点的粒度 `step` 分：
 /// - 测试 / 失败次数：各点的 `tests` / `tests - tests_ok` 相加（中控每 5 分钟测一轮，没通的当场重测一次、重测通了算通，一轮算一次），三种粒度都准。
-///   旧中控的点没有 `tests`：原始点与 5 分钟点按 `alive` 数（非 null 算测了一次、false 算失败），小时点数不出来，报错。
+///   点里没有 `tests` / `tests_ok` 当作中控返回有误，报错，不当成 0 次。
 /// - 连续两轮失败（`streaks`）：按时间顺序，一轮 = 原始点（30 秒，1h）里测了的那一点，或一个 5 分钟点（6h / 24h：这 5 分钟里有一次没通就算没通）；
 ///   没测的（`alive` 为 null）跳过、不打断；连着 ≥2 轮不通算一段（true / 开头 → false → false），同告警 router_exits_down 的「连续两次不通」。
 ///   小时点（7d / 30d）只有这一小时测了几次、通了几次，看不出先后：为 None。
@@ -271,11 +249,7 @@ fn exit_stats(step: i64, points: &[Value]) -> anyhow::Result<ExitStats> {
     let mut run = 0;
     for p in points {
         let alive = p["alive"].as_bool();
-        let (n, ok) = match (p["tests"].as_i64(), p["tests_ok"].as_i64()) {
-            (Some(n), Some(k)) => (n, k),
-            _ if hourly => bail!("中控版本较旧：小时汇总的点没有 tests，数不出 7d / 30d 的测试次数（用 --range 24h，或升级中控）"),
-            _ => (i64::from(alive.is_some()), i64::from(alive == Some(true))),
-        };
+        let (Some(n), Some(ok)) = (p["tests"].as_i64(), p["tests_ok"].as_i64()) else { bail!("中控返回的出口指标点缺 tests / tests_ok，数不出测试次数") };
         x.tests += n;
         x.fails += n - ok;
         if let Some(d) = p["delay_ms"].as_f64() {
@@ -385,7 +359,7 @@ fn exits_human(d: &Value, snapshot: bool) -> String {
 
 /// `router exits <路由> [--range 1h|6h|24h|7d|30d]`：每个出口在这段时间里的测试次数、失败次数、成功率、连续两轮失败的次数、延迟中位数与最大值、当前连接数
 pub fn exits(ctx: &Ctx, q: &str, range: &str) -> anyhow::Result<u8> {
-    let r = find(&list(ctx)?, q)?;
+    let r = find(&ctx.list("/routers")?, q)?;
     let id = st(&r, "/id");
     let m = ctx.c.get_q(&format!("/routers/{id}/exits/metrics"), &[("range", range.to_string())])?;
     let det = ctx.c.get(&format!("/routers/{id}"))?;
@@ -481,7 +455,7 @@ pub struct AddOpts<'a> {
 pub fn add(ctx: &Ctx, o: AddOpts<'_>) -> anyhow::Result<u8> {
     let mut body = json!({"name": o.name, "note": o.note.unwrap_or("")});
     if let Some(t) = o.team {
-        body["team_id"] = json!(lookup(&ctx.teams()?, t, &["name"], "团队")?);
+        body["team_id"] = json!(ctx.team_id(t)?);
     }
     if o.ssh.host.is_some() {
         confirm(&deploy_prompt(o.name, &o.ssh), o.yes)?;
@@ -510,7 +484,7 @@ pub fn add(ctx: &Ctx, o: AddOpts<'_>) -> anyhow::Result<u8> {
 }
 
 pub fn bootstrap(ctx: &Ctx, q: &str, yes: bool) -> anyhow::Result<u8> {
-    let r = find(&list(ctx)?, q)?;
+    let r = find(&ctx.list("/routers")?, q)?;
     let name = st(&r, "/name");
     confirm(&format!("确认给「{name}」重新生成接入命令？它现在的隧道密钥立刻作废（隧道换端口，要在路由上执行新的命令才连得回来）"), yes)?;
     let d = ctx.c.post(&format!("/routers/{}/bootstrap", st(&r, "/id")), &json!({}))?;
@@ -522,7 +496,7 @@ pub fn deploy(ctx: &Ctx, q: &str, ssh: SshOpts<'_>, yes: bool, follow: bool) -> 
     if ssh.host.is_none() {
         bail!("一键部署要给 --host（路由的 IP 或主机名，中控要连得到它的 SSH）");
     }
-    let r = find(&list(ctx)?, q)?;
+    let r = find(&ctx.list("/routers")?, q)?;
     let (id, name) = (st(&r, "/id"), st(&r, "/name"));
     confirm(&deploy_prompt(&name, &ssh), yes)?;
     let body = ssh.body()?.ok_or_else(|| anyhow!("缺 --host"))?;
@@ -538,14 +512,14 @@ pub fn edit(ctx: &Ctx, q: &str, name: Option<&str>, team: Option<&str>, note: Op
     if name.is_none() && team.is_none() && note.is_none() {
         bail!("没有要改的内容：给 --name / --team / --note 之一（--team none 清掉团队）");
     }
-    let r = find(&list(ctx)?, q)?;
+    let r = find(&ctx.list("/routers")?, q)?;
     let mut body = json!({});
     if let Some(n) = name {
         body["name"] = json!(n);
     }
     match team {
         Some("none") => body["team_id"] = Value::Null,
-        Some(t) => body["team_id"] = json!(lookup(&ctx.teams()?, t, &["name"], "团队")?),
+        Some(t) => body["team_id"] = json!(ctx.team_id(t)?),
         None => {}
     }
     if let Some(n) = note {
@@ -557,7 +531,7 @@ pub fn edit(ctx: &Ctx, q: &str, name: Option<&str>, team: Option<&str>, note: Op
 }
 
 pub fn rm(ctx: &Ctx, q: &str, yes: bool) -> anyhow::Result<u8> {
-    let r = find(&list(ctx)?, q)?;
+    let r = find(&ctx.list("/routers")?, q)?;
     let name = st(&r, "/name");
     confirm(&format!("确认删除软路由「{name}」？它的隧道公钥立刻撤销、状态与指标一起删掉，不可恢复"), yes)?;
     let d = ctx.c.delete(&format!("/routers/{}", st(&r, "/id")))?;
@@ -580,9 +554,7 @@ mod tests {
     fn find_by_id_prefix_and_name() {
         let all = routers();
         assert_eq!(find(&all, "团队2-路由b").unwrap()["state"], "pending", "名称不分大小写");
-        assert_eq!(find(&all, "01a162a9-39").unwrap()["name"], "团队2-路由A");
-        assert!(find(&all, "01a162a9").unwrap_err().to_string().contains("匹配到 2 台"));
-        assert!(find(&all, "路由C").unwrap_err().to_string().contains("没有找到"));
+        assert!(find(&all, "01a162a9").unwrap_err().to_string().contains("匹配到 2 个软路由"));
     }
 
     #[test]
@@ -623,13 +595,10 @@ mod tests {
         let x = exit_stats(30, &pts).unwrap();
         assert_eq!((x.tests, x.fails, x.streaks), (9, 6, Some(2)), "f·f·f 算一段，单独一次不算，结尾的 f·f 算一段");
         assert_eq!(delay_json(&x.delays), (json!(100), json!(120)));
-        // 旧中控没有 tests：按 alive 数，结果一样
-        let old: Vec<Value> = pts.iter().map(|v| json!({"alive": v["alive"], "delay_ms": v["delay_ms"]})).collect();
-        assert_eq!(exit_stats(30, &old).unwrap(), x);
         assert_eq!(exit_stats(30, &[]).unwrap(), ExitStats { streaks: Some(0), ..Default::default() });
     }
 
-    /// 5 分钟点：次数按 tests / tests_ok（一点可能 0 或 2 次），一点算一轮；小时点：次数准、连续失败为 None，旧中控报错
+    /// 5 分钟点：次数按 tests / tests_ok（一点可能 0 或 2 次），一点算一轮；小时点：次数准、连续失败为 None；点里缺 tests 报错
     #[test]
     fn aggregated_points() {
         let pts = [
@@ -644,7 +613,7 @@ mod tests {
         let hours = [json!({"alive": false, "alive_pct": 91.6, "delay_ms": 85.0, "tests": 12, "tests_ok": 11}), json!({"alive": true, "alive_pct": 100.0, "delay_ms": 95.0, "tests": 11, "tests_ok": 11})];
         let x = exit_stats(3600, &hours).unwrap();
         assert_eq!((x.tests, x.fails, x.streaks), (23, 1, None));
-        assert!(exit_stats(3600, &[json!({"alive": true, "alive_pct": 100.0, "delay_ms": 95.0})]).unwrap_err().to_string().contains("--range 24h"));
+        assert!(exit_stats(3600, &[json!({"alive": true, "alive_pct": 100.0, "delay_ms": 95.0})]).unwrap_err().to_string().contains("缺 tests"));
     }
 
     #[test]

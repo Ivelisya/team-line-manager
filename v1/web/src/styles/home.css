@@ -19,7 +19,6 @@
   font: var(--fw-semibold) var(--fs-label) / 1 var(--font-sans); color: var(--fg); white-space: nowrap;
 }
 .hsec-badge .lucide { width: var(--icon-xs); height: var(--icon-xs); stroke-width: var(--icon-stroke-strong); }
-.hsec-actions { display: flex; align-items: center; gap: var(--control-gap); flex-wrap: wrap; min-width: 0; }
 .hsec-titles { display: grid; gap: var(--sp-4); min-width: 0; }
 .hsec-title { margin: 0; font: var(--fw-bold) var(--fs-section) / var(--lh-section) var(--font-sans); letter-spacing: -0.015em; color: var(--fg); }
 .hero-greet { margin: 0; font: var(--fw-bold) clamp(21px, 2vw, 26px) / 1.25 var(--font-sans); letter-spacing: -0.025em; color: var(--fg); }

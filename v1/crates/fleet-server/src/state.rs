@@ -30,7 +30,7 @@ pub enum Event {
     ApiKeys,
     /// 访问策略的草稿/版本变化
     Policies,
-    /// 面板设置变了（目前只有访问记录保留期，见 settings.rs）
+    /// 面板设置变了（访问记录保留期、汇率、主探测来源、三网 PING 目标等，存在 app_setting 表）
     Settings,
     /// 软路由：增删改、接入 / 部署进度、状态与摘要变化（采集每轮最多一次）
     Routers,

@@ -13,7 +13,8 @@ use crate::util::{backoff, load_json, now_ms, save_json};
 use crate::xray::access::{local_utc_offset_s, Cursor, Tailer};
 use crate::xray::stats::{add_carry, carry_samples, StatsFile, StatsState};
 use fleet_proto::{AgentHealth, Report};
-use std::sync::atomic::Ordering;
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use tokio::sync::watch;
@@ -323,12 +324,28 @@ impl Reporter {
     }
 }
 
+/// 本地状态文件（stats.json、access.json）连续写失败的次数：只在第 1 到 3 次和之后每 100 次打日志，成功就清零
+static STATE_SAVE_FAILS: AtomicU64 = AtomicU64::new(0);
+
+/// 写状态文件。写不进去（磁盘满、权限不对）不能悄悄吞掉：重启后会按旧基线重复算流量、重复上报访问事件
+fn save_state<T: serde::Serialize>(path: &Path, v: &T, what: &str) {
+    match save_json(path, v, false) {
+        Ok(()) => STATE_SAVE_FAILS.store(0, Ordering::Relaxed),
+        Err(e) => {
+            let n = STATE_SAVE_FAILS.fetch_add(1, Ordering::Relaxed) + 1;
+            if n <= 3 || n.is_multiple_of(100) {
+                tracing::warn!(fails = n, "{what} 写不进磁盘：{e:#}（重启后可能重复算流量或重复上报访问事件）");
+            }
+        }
+    }
+}
+
 /// 服务端永久拒绝的报告移入 dead/；`Queue::dead_letter` 交回的入口流量并进结转表（随 stats.json 落盘），由下一份报告补报
 fn reject(sh: &Shared, c: &mut Core, seq: u64) {
     let es = c.queue.dead_letter(seq);
     if !es.is_empty() {
         add_carry(&mut c.stats.carry, &es);
-        let _ = save_json(&stats_path(&sh.cfg), &c.stats, false);
+        save_state(&stats_path(&sh.cfg), &c.stats, "stats.json");
     }
 }
 
@@ -339,7 +356,7 @@ fn commit(sh: &Shared, tailer: &mut Option<Tailer>, cursor: Option<Cursor>, stat
         t.commit(cursor);
         if changed {
             if let Some(c) = t.cursor {
-                let _ = save_json(&access_cursor_path(&sh.cfg), &c, false);
+                save_state(&access_cursor_path(&sh.cfg), &c, "access.json");
             }
         }
     }
@@ -348,7 +365,7 @@ fn commit(sh: &Shared, tailer: &mut Option<Tailer>, cursor: Option<Cursor>, stat
         stats.base = b;
     }
     if dirty {
-        let _ = save_json(&stats_path(&sh.cfg), &*stats, false);
+        save_state(&stats_path(&sh.cfg), &*stats, "stats.json");
     }
 }
 
@@ -471,12 +488,7 @@ mod tests {
         assert_eq!(build_interval(120, 3), Duration::from_secs(120));
     }
 
-    fn tmp(n: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("fa-rep-{n}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
-    }
+    fn tmp(n: &str) -> crate::util::TmpDir { crate::util::TmpDir::new(&format!("rep-{n}")) }
 
     fn shared(d: &std::path::Path) -> Arc<Shared> {
         let mut cfg = crate::config::Config::relay_default();
@@ -518,7 +530,6 @@ mod tests {
         assert_eq!(r.entries.iter().map(|e| (e.entry_id, e.up_bytes, e.down_bytes)).collect::<Vec<_>>(), [(id, 100, 200)]);
         assert!(c.stats.carry.is_empty());
         assert_eq!(carried(), Some(Carry::new()));
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
@@ -546,7 +557,6 @@ mod tests {
         reject(&sh, &mut lock(&core), second);
         assert!(lock(&core).stats.carry.is_empty());
         assert_eq!(lock(&core).queue.dead, 2);
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
@@ -568,7 +578,6 @@ mod tests {
         let c = lock(&core);
         let r: Report = serde_json::from_slice(&std::fs::read(c.queue.file_path(c.queue.oldest().unwrap())).unwrap()).unwrap();
         assert_eq!(r.access.len(), 1);
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
@@ -604,7 +613,6 @@ mod tests {
         let c = core(&d, d.join("state.json"), None);
         std::fs::remove_dir_all(d.join("queue")).unwrap();
         check(&c, "queue");
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// 写不进磁盘的那份排在队列之后从内存发出：中控先收到队列里更早的（序号小，否则会被当重复丢掉），再收到它；
@@ -614,7 +622,7 @@ mod tests {
         let d = tmp("unsaved");
         let sh = shared(&d);
         let (base, seen) = crate::server::tests::mock_server().await;
-        let (client, tok_dir) = crate::server::tests::client_for(&base, "unsaved");
+        let (client, _tok_dir) = crate::server::tests::client_for(&base, "unsaved");
         let mut r = Reporter::new(sh.clone(), Arc::new(client)).unwrap();
         sh.buf.lock().unwrap().info = Some(Default::default());
         r.build_and_push(true).await;
@@ -636,8 +644,6 @@ mod tests {
         assert_eq!(errs, [false, true]);
         assert!(r.unsaved.is_none() && lock(&r.core).queue.is_empty());
         assert!(lock(&r.core).stats.base.initialized, "入库后才提交流量基线");
-        let _ = std::fs::remove_dir_all(&d);
-        let _ = std::fs::remove_dir_all(&tok_dir);
     }
 
     /// 429（中控那边这台机器的上一份还在处理）不算失败：fails 不变、按 Retry-After 再发同一份
@@ -646,7 +652,7 @@ mod tests {
         let d = tmp("busy");
         let sh = shared(&d);
         let (base, seen) = crate::server::tests::mock_server_busy(1).await;
-        let (client, tok_dir) = crate::server::tests::client_for(&base, "busy");
+        let (client, _tok_dir) = crate::server::tests::client_for(&base, "busy");
         let mut r = Reporter::new(sh.clone(), Arc::new(client)).unwrap();
         sh.buf.lock().unwrap().info = Some(Default::default());
         r.build_and_push(true).await;
@@ -656,7 +662,5 @@ mod tests {
         assert!(r.next_send > Instant::now() + Duration::from_millis(500) && r.next_send <= Instant::now() + Duration::from_secs(1));
         r.flush(&mut sd).await;
         assert_eq!((r.fails, lock(&r.core).queue.len(), seen.lock().unwrap().len()), (0, 0, 2));
-        let _ = std::fs::remove_dir_all(&d);
-        let _ = std::fs::remove_dir_all(&tok_dir);
     }
 }

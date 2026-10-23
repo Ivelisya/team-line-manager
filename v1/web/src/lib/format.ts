@@ -90,10 +90,16 @@ export function since(iso: string | null | undefined, now = Date.now()): Fmt {
   return { v: String(Math.floor(s / 86400)), u: '天' };
 }
 const p2 = (n: number) => String(n).padStart(2, '0');
-export function dt(iso: string | null | undefined): string {
-  if (!iso) return '—';
+/** 本机时区的 `HH:MM` */
+export function hm(t: string | number): string {
+  const d = new Date(t);
+  return `${p2(d.getHours())}:${p2(d.getMinutes())}`;
+}
+/** 本机时区的 `MM-DD HH:MM`；时间戳（毫秒）或 ISO 字符串，空为「—」 */
+export function dt(iso: string | number | null | undefined): string {
+  if (iso == null || iso === '') return '—';
   const d = new Date(iso);
-  return `${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
+  return `${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${hm(d.getTime())}`;
 }
 /** 月-日（MM-DD） */
 export const md = (iso: string | null | undefined): string => (iso ? dt(iso).slice(0, 5) : '—');

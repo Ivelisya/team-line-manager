@@ -12,15 +12,15 @@ export type Cycle = 'monthly' | 'quarterly' | 'semiannual' | 'yearly' | string;
 export interface Subscription {
   price_cents: number; currency: string; cycle: Cycle; due_date: string; due_days: number;
   billing_tz: string; auto_renew: boolean; remind_days: number; traffic_gb: number | null; traffic_reset_day: number | null;
-  overrides?: SubField[];
-  /** 账单日（每月几号）：直接设到期日时记下，按周期续费不变（31 号的在 2-28 时仍是 31）；按账单日重置的流量重置日跟它。旧接口没有 */
-  billing_day?: number;
+  overrides: SubField[];
+  /** 账单日（每月几号）：直接设到期日时记下，按周期续费不变（31 号的在 2-28 时仍是 31）；按账单日重置的流量重置日跟它 */
+  billing_day: number;
   /** 服务端算好的：due_state 到期状态（同续费告警）、monthly_cents 折成每月的价格（分）、next_due 续一个周期后的到期日（续费的默认值）、
    *  period_days 当前这期的天数（到期日往前推一个周期 → 到期日） */
   due_state: DueState; monthly_cents: number; next_due: string; period_days: number;
   /** 计费统一按 USD 展示：服务端按汇率折好的月费、每期价格（分），usd_per_unit 是所用汇率（1 单位合多少 USD）。
-   *  没有该币种的汇率时三个都是 null（未折算，不当 1:1）；旧接口没有这几个字段 */
-  monthly_usd_cents?: number | null; price_usd_cents?: number | null; usd_per_unit?: number | null;
+   *  没有该币种的汇率时三个都是 null（未折算，不当 1:1） */
+  monthly_usd_cents: number | null; price_usd_cents: number | null; usd_per_unit: number | null;
 }
 /** overdue 已过期；soon 到期前 remind_days 天内且不是自动续费；其余 ok */
 export type DueState = 'ok' | 'soon' | 'overdue';
@@ -83,9 +83,9 @@ export interface MachineView {
   lifecycle: Lifecycle; lifecycle_reason: string | null; note: string; revision: number;
   created_at: string; activated_at: string | null; retired_at: string | null;
   subscription: Subscription | null;
-  sub_template?: SubTemplate;
-  /** cores：agent 报的可用核数（容器里是限额），没报过为 null */
-  /** health：agent 自报的健康数据（自 agent 进程启动起累计；旧 agent 没报过为 null），不随实时推送更新 */
+  sub_template: SubTemplate;
+  /** cores：agent 报的可用核数（容器里是限额），没报过为 null；
+   *  health：agent 自报的健康数据（自 agent 进程启动起累计；旧 agent 没报过为 null），不随实时推送更新 */
   agent: { version: string | null; last_report_at: string | null; online: boolean; xray_running: boolean | null; cores: number | null; health: AgentHealth | null; nic_ifaces?: string[] } | null;
   host: HostMetrics | null;
   entries: EntryView[];
@@ -97,9 +97,9 @@ export interface MachineView {
   /** 流量额度周期：起点（YYYY-MM-DD，有流量重置日按它，否则本月 1 号）与周期内已用（字节）。有 agent 的机器按网卡、照供应商的
    *  rule 算；家宽代理与同机 IP 节点 rule 为 null，是业务流量。
    *  period_end：下次重置日（滚动 30 天为 null）；mode：monthly 按重置日、rolling30 滚动 30 天；counted_from：数据不完整时从哪天起才有；
-   *  base：接入前的面板读数（字节，割接遗留、只读，下个周期起不再使用），没有为 null */
-  /** limit_gb / limit_source：生效的流量上限（GB，没有为 null）与来源——subscription 单独设置、plan 跟随套餐、host 同机 IP 节点与宿主机共用、none 不限 */
-  quota: { used: number; period_start: string; period_end: string | null; mode: 'monthly' | 'rolling30'; counted_from: string | null; rule: TrafficRule | null; base: number | null; limit_gb?: number | null; limit_source?: 'subscription' | 'plan' | 'host' | 'none' };
+   *  base：接入前的面板读数（字节，割接遗留、只读，下个周期起不再使用），没有为 null；
+   *  limit_gb / limit_source：生效的流量上限（GB，没有为 null）与来源——subscription 单独设置、plan 跟随套餐、host 同机 IP 节点与宿主机共用、none 不限 */
+  quota: { used: number; period_start: string; period_end: string | null; mode: 'monthly' | 'rolling30'; counted_from: string | null; rule: TrafficRule | null; base: number | null; limit_gb: number | null; limit_source: 'subscription' | 'plan' | 'host' | 'none' };
   health: { status: HealthStatus; reasons: HealthReason[] };
   active_job: { id: string; kind: string; state: string } | null;
   /** 上架失败（lifecycle = failed）：失败的上架/恢复作业；退役中（retiring）且最近的退役作业失败：那个退役作业 */
@@ -121,8 +121,8 @@ export interface TuneParams {
 
 /** spare：唯一的备用团队（系统管理，不能删、不能取消；里面在用的机器订阅过期满 1 天后自动回收） */
 export interface Team { id: string; name: string; sort_order: number; spare: boolean; node_count: number;
-  /** 在用机器的月费合计（USD，同总览）；旧接口没有 */
-  monthly_usd?: UsdTotal }
+  /** 在用机器的月费合计（USD，同总览） */
+  monthly_usd: UsdTotal }
 /** 月费合计（USD）：cents 是能折算部分的合计；by_currency 各原币种的金额、折成的 USD 与所用汇率；unconverted 没有汇率、没算进合计的 */
 export interface UsdTotal {
   cents: number;
@@ -139,7 +139,7 @@ export interface FxRates {
 /** 供应商怎么计量流量额度：网卡本周期下行、上行总量取小 / 取大 / 相加 / 只算上行 */
 export type TrafficRule = 'min' | 'max' | 'sum' | 'out';
 /** 供应商也是名下机器订阅的模板：账单时区（null = 跟随组织时区）、流量重置（自然月 / 账单日）、提前提醒天数 */
-export interface Provider { id: string; name: string; code: string; panel_url: string | null; timezone: string | null; traffic_rule: TrafficRule; traffic_reset?: TrafficReset; remind_days?: number }
+export interface Provider { id: string; name: string; code: string; panel_url: string | null; timezone: string | null; traffic_rule: TrafficRule; traffic_reset: TrafficReset; remind_days: number }
 export interface Plan {
   id: string; provider_id: string; name: string; cpu_cores: number | null; mem_mb: number | null; disk_gb: number | null;
   bandwidth_mbps: number | null; traffic_gb: number | null; price_cents: number; currency: string; cycle: Cycle; notes: string | null;
@@ -157,10 +157,8 @@ export interface Overview {
   provisioning: number; retiring: number; failed: number;
   /** 在用机器里即将到期（due_state = soon）与已过期（overdue）的台数 */
   due_soon: number; overdue: number;
-  /** 各币种的月费合计（每台的 monthly_cents 相加，不折算；旧字段） */
-  monthly_cost: { currency: string; cents: number }[];
-  /** 月费合计折成 USD（每台的 monthly_usd_cents 相加；没有汇率的单列）；旧接口没有 */
-  monthly_usd?: UsdTotal;
+  /** 月费合计折成 USD（每台的 monthly_usd_cents 相加；没有汇率的单列） */
+  monthly_usd: UsdTotal;
   /** counted_from：本月数据不完整时的起点（RFC 3339，agent 接入晚于月初），完整则 null */
   traffic_month: { up: number; down: number; counted_from: string | null }; net_rx_bps: number; net_tx_bps: number;
 }
@@ -230,7 +228,7 @@ export interface ProvisionItem {
 }
 /** ss_port：同机 IP 节点暂定的 SS 端口（作业在宿主机上核对时被占用会换），其它为 null */
 /** warnings：不影响通过的提醒（发行版已过标准支持期、用中控密钥试登录没有结果）；旧中控没有这个字段 */
-export interface ProvisionCheckItem { ok: boolean; errors: string[]; warnings?: string[]; name: string; number: number | null; relay_port?: number; ss_port: number | null }
+export interface ProvisionCheckItem { ok: boolean; errors: string[]; warnings: string[]; name: string; number: number | null; ss_port: number | null }
 
 // ---- 以 API.md「返回形状补充」为准 ----
 /** series：{metric, range, resolution, points}，点里时间字段叫 ts。

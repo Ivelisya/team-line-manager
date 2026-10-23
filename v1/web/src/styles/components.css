@@ -111,7 +111,7 @@
 
 /* ========== pill / chip / mark / dot ========== */
 .pill {
-  --pill-bg: var(--neutral-bg); --pill-fg: var(--neutral-text); --pill-dot: var(--neutral);
+  --pill-bg: var(--neutral-bg); --pill-fg: var(--neutral-text);
   display: inline-flex; align-items: center; gap: var(--sp-6); flex: none;
   height: var(--h-chip); box-sizing: border-box; padding: 0 var(--sp-8);
   border-radius: var(--r-pill); background: var(--pill-bg); color: var(--pill-fg);

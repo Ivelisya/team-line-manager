@@ -105,7 +105,7 @@ pub fn fmt_duration(secs: i64) -> String {
     }
 }
 
-/// 字节数，二进制单位，写法同网页 format.ts 的 bytes：`1.84 TiB`、`950 MiB`、`2 TiB`
+/// 字节数，二进制单位，写法同网页 format.ts 的 mem（网页的流量用十进制，那是 bytes）：`1.84 TiB`、`950 MiB`、`2 TiB`
 pub fn fmt_bytes(n: f64) -> String {
     const UNITS: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
     let (mut x, mut i) = (n.max(0.0), 0);
@@ -224,7 +224,7 @@ pub fn webhook_body(n: &Notice) -> Value {
         "severity": n.severity,
         "machine": n.machine,
         "summary": n.summary,
-        "time": n.at.format(&time::format_description::well_known::Rfc3339).unwrap_or_default(),
+        "time": crate::meta::fmt_ts(n.at),
         "time_beijing": beijing(n.at),
         "text": format_text(n),
     })

@@ -39,6 +39,11 @@ pub fn tz_label(tz: &str) -> String {
 
 pub fn org_tz_label() -> String { tz_label(&org_tz()) }
 
+/// RFC 3339（UTC 偏移原样）：接口里的时间戳统一写法
+pub fn fmt_ts(t: OffsetDateTime) -> String {
+    t.format(&time::format_description::well_known::Rfc3339).unwrap_or_default()
+}
+
 /// 组织时区的 `2026-10-20 15:04:05`
 pub fn org_time(t: OffsetDateTime) -> String {
     let f = time::macros::format_description!("[year]-[month]-[day] [hour]:[minute]:[second]");
@@ -296,7 +301,6 @@ pub const RULES: Labels = &[
 /// 查中文名；没收录的原样返回
 pub fn label(table: Labels, key: &str) -> &str { table.iter().find(|(k, _)| *k == key).map_or(key, |(_, v)| v) }
 
-pub fn kind_label(k: &str) -> &str { label(KINDS, k) }
 pub fn lifecycle_label(l: &str) -> &str { label(LIFECYCLES, l) }
 pub fn job_kind_label(k: &str) -> &str { label(JOB_KINDS, k) }
 pub fn rule_label(k: &str) -> &str { label(RULES, k) }
@@ -393,7 +397,7 @@ mod tests {
 
     #[test]
     fn labels_and_meta_shape() {
-        assert_eq!((kind_label("vps"), job_kind_label("restore_vps"), rule_label("new_rule")), ("VPS 节点", "恢复 VPS 节点", "new_rule"));
+        assert_eq!((job_kind_label("restore_vps"), rule_label("new_rule")), ("恢复 VPS 节点", "new_rule"));
         assert_eq!((severity_label("critical"), severity_label("x")), ("严重", "提示"));
         let m = to_json();
         assert_eq!(m["org_timezone"], DEFAULT_ORG_TZ);

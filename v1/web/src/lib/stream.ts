@@ -13,7 +13,12 @@ import { useEffect } from 'react';
 import { useQueryClient, type Query } from '@tanstack/react-query';
 import { eventKeys, type StreamEvent } from './queries';
 import { applyMetrics, LIVE_KEYS, type MetricsMsg } from './live';
-import { setStreamState as setStatus, useStreamState } from './streamState';
+import { createStore } from './store';
+
+// 连接状态的小仓库：顶栏指示据此显示（断开期间不轮询，重连后让全部查询失效补上）
+const status = createStore<'connecting' | 'open' | 'error'>('connecting');
+const setStatus = status.set;
+const useStreamState = status.use;
 
 const MERGE_MS = 300;
 const LIST_MS = 2000;

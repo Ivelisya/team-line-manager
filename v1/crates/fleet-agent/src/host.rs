@@ -531,12 +531,11 @@ mod tests {
     #[test]
     fn count_visible_threads() {
         // 假 /proc：两个进程（1 个、3 个线程），非数字目录与没有 task 的条目不算
-        let root = std::env::temp_dir().join(format!("fleet-proc-{}", std::process::id()));
+        let root = crate::util::TmpDir::new("proc");
         for d in ["1/task/1", "77/task/77", "77/task/78", "77/task/79", "self/task/1", "sys/kernel", "123"] {
             std::fs::create_dir_all(root.join(d)).unwrap();
         }
         let n = visible_threads(&root);
-        std::fs::remove_dir_all(&root).unwrap();
         assert_eq!(n, 4);
         assert_eq!(parse_load1("0.1 0.1 0.1 1/4 77", n), Some(0.1));
     }
@@ -596,8 +595,7 @@ mod tests {
     #[test]
     fn nic_meter_persists_across_restart_and_boot() {
         let r = |v: &[(&str, u64, u64)]| v.iter().map(|&(n, a, b)| (n.to_string(), a, b)).collect::<Vec<_>>();
-        let d = std::env::temp_dir().join(format!("fa-nic-{}", std::process::id()));
-        std::fs::create_dir_all(&d).unwrap();
+        let d = crate::util::TmpDir::new("nic");
         let p = d.join("nic.json");
         // 首次安装：只记基线，开机以来的读数不当初值（升级那一刻不能有 TB 级跳变）
         let mut m = NicMeter::load(&p, "boot-a", r(&[("eth0", 1_000_000, 2_000_000)]));
@@ -617,7 +615,6 @@ mod tests {
         // 开机了：选中网卡开机以来的读数全部计入
         let m = NicMeter::load(&p, "boot-b", r(&[("eth0", 30, 40)]));
         assert_eq!((m.rx, m.tx), (495, 717));
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
@@ -628,8 +625,7 @@ mod tests {
         assert_eq!(parse_usage_usec("usage_usec 16189068909\nuser_usec 14881704451\n"), Some(16_189_068_909));
 
         // 假 cgroup 目录：根 cgroup（没有 memory.current）不用
-        let root = std::env::temp_dir().join(format!("fleet-cg-{}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
+        let root = crate::util::TmpDir::new("cg");
         assert!(Cgroup::detect(&root).is_none());
         let w = |n: &str, v: &str| std::fs::write(root.join(n), v).unwrap();
         w("memory.current", "3000\n");
@@ -660,7 +656,6 @@ mod tests {
         assert!((p - 50.0).abs() < 5.0, "{p}");
         // 没有新用量为 0
         assert_eq!(cg.cpu_pct(4.0), 0.0);
-        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

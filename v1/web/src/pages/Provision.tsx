@@ -40,7 +40,7 @@ function PubkeyButton() {
   return <Button variant="link" onClick={copyPubkey}><KeyRound size={13} />复制中控公钥</Button>;
 }
 /** 检查结果里的提醒条数（不影响通过） */
-const warnCount = (rs: ProvisionCheckItem[]) => rs.reduce((n, r) => n + (r.warnings?.length ?? 0), 0);
+const warnCount = (rs: ProvisionCheckItem[]) => rs.reduce((n, r) => n + r.warnings.length, 0);
 
 /** 离开上架页再回来不丢：表格（含登录密码，只在这个标签页的内存里，刷新、退出登录即无）、模式与检查结果留在模块里；上架成功后清掉 */
 interface Draft { mode: 'single' | 'batch'; rows: Row[]; results: ProvisionCheckItem[] | null; localErrs: string[][] | null; checked: string[]; sig: string }
@@ -212,7 +212,7 @@ export function ProvisionPage() {
         <ul className="reason-list" style={{ maxHeight: 220, overflow: 'auto' }}>
           {results?.map((r, i) => (
             <li key={i}><span className="dot" /><span><b>{r.name}</b> <span className="t-sub">
-              {isIpNode(active[i]) ? `同机 · ${hostName(active[i].host_id)}` : kindLabel(active[i].kind)} · {active[i].ip}{r.relay_port ? ` · 入口端口 ${r.relay_port}` : ''}{r.ss_port ? ` · SS 端口暂定 ${r.ss_port}` : ''}
+              {isIpNode(active[i]) ? `同机 · ${hostName(active[i].host_id)}` : kindLabel(active[i].kind)} · {active[i].ip}{r.ss_port ? ` · SS 端口暂定 ${r.ss_port}` : ''}
             </span></span></li>
           ))}
         </ul>
@@ -391,9 +391,9 @@ function CheckOutput({ rows, resOf, errOf, stale }: { rows: Row[]; resOf: (id: s
     const res = resOf(r.id);
     if (le.length) lines.push(<li key={i}><TriangleAlert size={14} style={{ color: 'var(--bad)', marginTop: 3 }} /><span>{rows.length > 1 ? `第 ${i + 1} 行：` : ''}{le.join('；')}</span></li>);
     else if (res && !res.ok) lines.push(<li key={i}><TriangleAlert size={14} style={{ color: 'var(--bad)', marginTop: 3 }} /><span>{rows.length > 1 ? `第 ${i + 1} 行：` : ''}{res.errors.join('；')}</span></li>);
-    else if (res) lines.push(<li key={i}><CheckCircle2 size={14} style={{ color: 'var(--ok)', marginTop: 3 }} /><span>{rows.length > 1 ? `第 ${i + 1} 行：` : ''}将创建 <b>{res.name}</b>{res.relay_port ? `，入口端口 ${res.relay_port}` : ''}{res.ss_port ? `，SS 端口暂定 ${res.ss_port}` : ''}</span></li>);
+    else if (res) lines.push(<li key={i}><CheckCircle2 size={14} style={{ color: 'var(--ok)', marginTop: 3 }} /><span>{rows.length > 1 ? `第 ${i + 1} 行：` : ''}将创建 <b>{res.name}</b>{res.ss_port ? `，SS 端口暂定 ${res.ss_port}` : ''}</span></li>);
     // 提醒（发行版已过标准支持期等）不影响通过，跟在这一行的结果后面
-    if (!le.length) res?.warnings?.forEach((w, j) => lines.push(<li key={`${i}-w${j}`}><Info size={14} style={{ color: 'var(--warn)', marginTop: 3 }} /><span>{rows.length > 1 ? `第 ${i + 1} 行提醒：` : '提醒：'}{w}</span></li>));
+    if (!le.length) res?.warnings.forEach((w, j) => lines.push(<li key={`${i}-w${j}`}><Info size={14} style={{ color: 'var(--warn)', marginTop: 3 }} /><span>{rows.length > 1 ? `第 ${i + 1} 行提醒：` : '提醒：'}{w}</span></li>));
   });
   if (!lines.length) return null;
   return (
@@ -448,7 +448,7 @@ function BatchGrid({ rows, setRows, ctx, resOf, errOf, checkedAny, stale }: { ro
               {rows.map((r, ri) => {
                 const le = errOf(r.id) ?? []; const res = resOf(r.id);
                 const bad = le.length > 0 || (res && !res.ok);
-                const warns = !le.length && res?.warnings?.length ? res.warnings : null;
+                const warns = !le.length && res?.warnings.length ? res.warnings : null;
                 return (
                   <tr key={r.id} className={bad ? 'is-row-bad' : undefined}>
                     <td className="idx">{ri + 1}</td>
@@ -459,7 +459,7 @@ function BatchGrid({ rows, setRows, ctx, resOf, errOf, checkedAny, stale }: { ro
                     ))}
                     <td className="gc-res" data-tip={le.length || (res && !res.ok) || warns ? [...le, ...(res?.errors ?? []), ...(warns ?? [])].join('\n') : undefined}>
                       {le.length ? <span style={{ color: 'var(--bad-text)' }}>{le.join('；')}</span>
-                        : res ? (res.ok ? <span style={{ color: stale ? 'var(--fg-3)' : 'var(--ok-text)' }}>✓ {res.name}{res.relay_port ? ` · :${res.relay_port}` : ''}{res.ss_port ? ` · SS ${res.ss_port}` : ''}</span> : <span style={{ color: 'var(--bad-text)' }}>{res.errors.join('；')}</span>)
+                        : res ? (res.ok ? <span style={{ color: stale ? 'var(--fg-3)' : 'var(--ok-text)' }}>✓ {res.name}{res.ss_port ? ` · SS ${res.ss_port}` : ''}</span> : <span style={{ color: 'var(--bad-text)' }}>{res.errors.join('；')}</span>)
                         : <span className="t-muted">—</span>}
                       {warns && <span style={{ color: stale ? 'var(--fg-3)' : 'var(--warn-text)' }}> · {warns.join('；')}</span>}
                     </td>

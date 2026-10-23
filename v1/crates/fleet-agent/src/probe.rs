@@ -45,8 +45,8 @@ fn timeout_text(secs: u64) -> String { format!("超时 {secs} 秒") }
 
 // ── TCP 探测 ────────────────────────────────────────────────────────────────
 
-/// TCP 探测的超时。SYN 丢了内核按 1 s、2 s、4 s 退避重发（第 0、1、3、7 秒各发一次）：原来的 5 秒只等到第二次重发，
-/// 第三次重发才连上的被记成「超时」；10 秒盖住第三次重发和它的回包
+/// TCP 探测的超时。SYN 丢了内核按 1 s、2 s、4 s 退避重发（第 0、1、3、7 秒各发一次）：10 秒盖住第三次重发和它的回包，
+/// 慢连上的不记成「超时」
 pub const TCP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// 已连上的套接字的 (往返时间 µs, SYN 重发次数)，取自内核 TCP_INFO。往返时间是内核拿 SYN-ACK 量的：
@@ -223,8 +223,8 @@ const ALT_CHECK_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// 出口探测；经入口没拿到 IP 时核对两次，任一说明问题不在这个入口的出口，就返回 None（这次不上报，只记 debug 日志）：
 /// 1. 用 `direct`（`direct_client`）从线路机直连回显服务：也拿不到 IP，是回显服务本身（中控的 /echo：重启、部署）不可达；
-/// 2. 经入口访问备用目标 `alt_url`：通，说明出口好好的，只是从节点去回显服务的那条路不通——10-22 22:50 起半小时，
-///    边缘机的反代配置被部署覆盖，所有节点经出口访问 /echo 都 TLS 握手失败，而线路机直连仍拿得到 IP，全部入口被记成出口不通。
+/// 2. 经入口访问备用目标 `alt_url`：通，说明出口好好的，只是从节点去回显服务的那条路不通——例如边缘机的反代配置被部署覆盖时，
+///    所有节点经出口访问 /echo 都 TLS 握手失败，而线路机直连仍拿得到 IP，不能因此把全部入口记成出口不通。
 ///
 /// 回了 IP 但不是期望的（出口错了）不核对，照常上报失败
 #[allow(clippy::too_many_arguments)]
@@ -251,40 +251,45 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
+    /// 测试用 SOCKS5 服务端的握手：读问候、选无认证，再读 CONNECT 请求，返回目标（主机，端口）；CONNECT 的结果由调用方回
+    async fn socks_accept(s: &mut tokio::net::TcpStream) -> (String, u16) {
+        let mut g = [0u8; 3];
+        s.read_exact(&mut g).await.unwrap();
+        assert_eq!(g, [5, 1, 0]);
+        s.write_all(&[5, 0]).await.unwrap();
+        let mut h = [0u8; 4];
+        s.read_exact(&mut h).await.unwrap();
+        assert_eq!(&h[..3], &[5, 1, 0]);
+        let host = match h[3] {
+            3 => {
+                let mut n = [0u8; 1];
+                s.read_exact(&mut n).await.unwrap();
+                let mut v = vec![0u8; n[0] as usize];
+                s.read_exact(&mut v).await.unwrap();
+                String::from_utf8(v).unwrap()
+            }
+            1 => {
+                let mut v = [0u8; 4];
+                s.read_exact(&mut v).await.unwrap();
+                std::net::Ipv4Addr::from(v).to_string()
+            }
+            _ => panic!(),
+        };
+        let mut p = [0u8; 2];
+        s.read_exact(&mut p).await.unwrap();
+        (host, u16::from_be_bytes(p))
+    }
+
     /// 测试用最小 SOCKS5 服务器：接受 CONNECT，记录目标，然后回一个固定 HTTP 响应
     async fn fake_socks(reply_ok: bool, body: &'static str) -> (SocketAddr, tokio::task::JoinHandle<(String, u16)>) {
         let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = l.local_addr().unwrap();
         let h = tokio::spawn(async move {
             let (mut s, _) = l.accept().await.unwrap();
-            let mut g = [0u8; 3];
-            s.read_exact(&mut g).await.unwrap();
-            assert_eq!(g, [5, 1, 0]);
-            s.write_all(&[5, 0]).await.unwrap();
-            let mut h = [0u8; 4];
-            s.read_exact(&mut h).await.unwrap();
-            assert_eq!(&h[..3], &[5, 1, 0]);
-            let host = match h[3] {
-                3 => {
-                    let mut n = [0u8; 1];
-                    s.read_exact(&mut n).await.unwrap();
-                    let mut v = vec![0u8; n[0] as usize];
-                    s.read_exact(&mut v).await.unwrap();
-                    String::from_utf8(v).unwrap()
-                }
-                1 => {
-                    let mut v = [0u8; 4];
-                    s.read_exact(&mut v).await.unwrap();
-                    std::net::Ipv4Addr::from(v).to_string()
-                }
-                _ => panic!(),
-            };
-            let mut p = [0u8; 2];
-            s.read_exact(&mut p).await.unwrap();
-            let port = u16::from_be_bytes(p);
+            let target = socks_accept(&mut s).await;
             if !reply_ok {
                 s.write_all(&[5, 5, 0, 1, 0, 0, 0, 0, 0, 0]).await.unwrap();
-                return (host, port);
+                return target;
             }
             s.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await.unwrap();
             let mut buf = vec![0u8; 1024];
@@ -292,7 +297,7 @@ mod tests {
             assert!(String::from_utf8_lossy(&buf[..n]).starts_with("GET /ip HTTP/1.1\r\n"));
             let resp = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}", body.len(), body);
             s.write_all(resp.as_bytes()).await.unwrap();
-            (host, port)
+            target
         });
         (addr, h)
     }
@@ -367,25 +372,7 @@ mod tests {
             let mut hosts = vec![];
             for resp in resps {
                 let (mut s, _) = l.accept().await.unwrap();
-                let mut g = [0u8; 3];
-                s.read_exact(&mut g).await.unwrap();
-                s.write_all(&[5, 0]).await.unwrap();
-                let mut h = [0u8; 4];
-                s.read_exact(&mut h).await.unwrap();
-                let host = if h[3] == 3 {
-                    let mut n = [0u8; 1];
-                    s.read_exact(&mut n).await.unwrap();
-                    let mut v = vec![0u8; n[0] as usize];
-                    s.read_exact(&mut v).await.unwrap();
-                    String::from_utf8(v).unwrap()
-                } else {
-                    let mut v = [0u8; 4];
-                    s.read_exact(&mut v).await.unwrap();
-                    std::net::Ipv4Addr::from(v).to_string()
-                };
-                let mut p = [0u8; 2];
-                s.read_exact(&mut p).await.unwrap();
-                hosts.push(host);
+                hosts.push(socks_accept(&mut s).await.0);
                 s.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await.unwrap();
                 let mut buf = vec![0u8; 1024];
                 let _ = s.read(&mut buf).await.unwrap();

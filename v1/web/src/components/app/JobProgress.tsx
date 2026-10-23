@@ -1,4 +1,4 @@
-// 作业进度可视化：横向步骤条（StepBar）、总进度（JobProgressBar）。作业页、作业详情、顶栏进度浮层共用。
+// 作业进度可视化：横向步骤条（StepBar）、总进度（JobProgressBar）。只在作业详情里用。
 import { Check, CircleDashed, Loader2, Minus, Undo2, X } from 'lucide-react';
 import type { Job, JobStep, JobSummary } from '@/lib/types';
 import { currentStepTitle, errorKindLabel, jobLive, jobProgress, stepKind, type StepKind } from '@/lib/jobs';
@@ -53,11 +53,11 @@ export function StepBar({ job, now }: { job: Job; now?: number }) {
 }
 
 /** 总进度条 + 文字：done/total 步 · 百分比，右侧当前步骤或已用时 */
-export function JobProgressBar({ job, now, showStep = true }: { job: JobSummary; now?: number; showStep?: boolean }) {
+export function JobProgressBar({ job, now }: { job: JobSummary; now?: number }) {
   const p = jobProgress(job);
   const live = jobLive(job.state);
   const tone = job.state === 'failed' ? 'bad' : job.state === 'succeeded' ? 'ok' : job.state === 'cancelled' ? 'warn' : undefined;
-  const cur = showStep && live ? currentStepTitle(job) : null;
+  const cur = live ? currentStepTitle(job) : null;
   return (
     <div className="job-prog">
       <div className="job-prog-head">

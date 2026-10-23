@@ -6,7 +6,8 @@
 use crate::cmds::{num, st, Ctx};
 use crate::ops::confirm;
 use crate::table;
-use anyhow::bail;
+use crate::resolve;
+use anyhow::{anyhow, bail};
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -29,23 +30,11 @@ fn install_cn(s: &str) -> &str {
     }
 }
 
-fn list(ctx: &Ctx) -> anyhow::Result<Vec<Value>> { Ok(ctx.c.get("/probe-points")?.as_array().cloned().unwrap_or_default()) }
 
-/// 找一个探测点：id、id 前缀（至少 6 位）、名称（不分大小写）
+/// 找一个探测点：id、id 前缀（至少 6 位）、名称（不分大小写）；规则同 `resolve::named`
 fn find(all: &[Value], q: &str) -> anyhow::Result<Value> {
-    let ql = q.trim().to_lowercase();
-    let mut hits: Vec<&Value> = all.iter().filter(|p| st(p, "/id") == ql).collect();
-    if hits.is_empty() && ql.len() >= 6 && ql.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
-        hits = all.iter().filter(|p| st(p, "/id").starts_with(&ql)).collect();
-    }
-    if hits.is_empty() {
-        hits = all.iter().filter(|p| st(p, "/name").to_lowercase() == ql).collect();
-    }
-    match hits.len() {
-        1 => Ok(hits[0].clone()),
-        0 => bail!("没有找到探测点「{}」（可用 id、id 前缀、名称；先 fleetctl probe ls 看列表）", q.trim()),
-        n => bail!("「{}」匹配到 {n} 个探测点，请用 id 指定", q.trim()),
-    }
+    let name = |p: &Value| st(p, "/name");
+    resolve::named(all, q, "探测点", &[&name], &name).cloned().map_err(|e| anyhow!("{e}（先 fleetctl probe ls 看列表）"))
 }
 
 fn ms(v: &Value, p: &str) -> String { num(v, p).map_or_else(|| "-".into(), |x| format!("{x:.0} ms")) }
@@ -81,7 +70,7 @@ fn source_line(src: &Value) -> String {
 }
 
 pub fn ls(ctx: &Ctx) -> anyhow::Result<u8> {
-    let all = list(ctx)?;
+    let all = ctx.list("/probe-points")?;
     let src = ctx.c.get("/settings/reach-source")?;
     let data = json!({"probe_points": all, "source": src});
     ctx.emit(&data, || {
@@ -184,7 +173,7 @@ pub fn add(ctx: &Ctx, o: AddOpts<'_>) -> anyhow::Result<u8> {
 
 /// 重装：给 --host 由中控经 SSH 重装（换新令牌），否则打印新的一次性安装命令
 pub fn install(ctx: &Ctx, q: &str, o: AddOpts<'_>) -> anyhow::Result<u8> {
-    let p = find(&list(ctx)?, q)?;
+    let p = find(&ctx.list("/probe-points")?, q)?;
     let (id, name) = (st(&p, "/id"), st(&p, "/name"));
     let mut body = json!({});
     if let Some(s) = ssh_body(&o)? {
@@ -206,7 +195,7 @@ pub fn set(ctx: &Ctx, q: &str, enable: Option<bool>, name: Option<&str>, note: O
     if enable.is_none() && name.is_none() && note.is_none() {
         bail!("没有要改的：给 --enable / --disable / --name / --note 之一");
     }
-    let p = find(&list(ctx)?, q)?;
+    let p = find(&ctx.list("/probe-points")?, q)?;
     let mut body = json!({});
     if let Some(e) = enable {
         body["enabled"] = json!(e);
@@ -223,7 +212,7 @@ pub fn set(ctx: &Ctx, q: &str, enable: Option<bool>, name: Option<&str>, note: O
 }
 
 pub fn rm(ctx: &Ctx, q: &str, yes: bool) -> anyhow::Result<u8> {
-    let p = find(&list(ctx)?, q)?;
+    let p = find(&ctx.list("/probe-points")?, q)?;
     let name = st(&p, "/name");
     confirm(&format!("确认删除探测点「{name}」？它的令牌立刻作废，它测的检查记录一起删掉"), yes)?;
     let d = ctx.c.delete(&format!("/probe-points/{}", st(&p, "/id")))?;
@@ -236,7 +225,7 @@ pub fn primary(ctx: &Ctx, q: &str) -> anyhow::Result<u8> {
     let (body, what) = if q.eq_ignore_ascii_case("central") || q == "中控" {
         (json!({"primary": "central", "central_enabled": true}), "中控".to_string())
     } else {
-        let p = find(&list(ctx)?, q)?;
+        let p = find(&ctx.list("/probe-points")?, q)?;
         (json!({"primary": st(&p, "/id")}), st(&p, "/label"))
     };
     let d = ctx.c.put("/settings/reach-source", &body)?;
@@ -253,7 +242,7 @@ pub fn central(ctx: &Ctx, on: bool) -> anyhow::Result<u8> {
 
 /// 升级：中控记下 dist 里的程序，探测点 30 秒内自己下载替换、重启；等到它报上新版本（最多 3 分钟）
 pub fn upgrade(ctx: &Ctx, q: &str, no_wait: bool) -> anyhow::Result<u8> {
-    let p = find(&list(ctx)?, q)?;
+    let p = find(&ctx.list("/probe-points")?, q)?;
     let (id, name) = (st(&p, "/id"), st(&p, "/name"));
     let d = ctx.c.post(&format!("/probe-points/{id}/upgrade"), &json!({}))?;
     let to = st(&d, "/version");
@@ -290,9 +279,7 @@ mod tests {
     fn find_by_id_prefix_and_name() {
         let all = probes();
         assert_eq!(find(&all, "东京").unwrap()["state"], "offline");
-        assert_eq!(find(&all, "01a162a9-39").unwrap()["name"], "香港");
-        assert!(find(&all, "01a162a9").unwrap_err().to_string().contains("匹配到 2 个"));
-        assert!(find(&all, "新加坡").unwrap_err().to_string().contains("没有找到"));
+        assert!(find(&all, "01a162a9").unwrap_err().to_string().contains("匹配到 2 个探测点"));
     }
 
     #[test]

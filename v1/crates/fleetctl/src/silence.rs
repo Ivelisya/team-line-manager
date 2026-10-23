@@ -69,11 +69,10 @@ fn row(i: &Value, now: OffsetDateTime) -> Vec<String> {
     ]
 }
 
-fn list(ctx: &Ctx) -> anyhow::Result<Vec<Value>> { Ok(ctx.c.get("/silences")?.as_array().cloned().unwrap_or_default()) }
 
 pub fn ls(ctx: &Ctx) -> anyhow::Result<u8> {
     let now = OffsetDateTime::now_utc();
-    let items = Value::Array(list(ctx)?.iter().map(|s| item(s, now)).collect());
+    let items = Value::Array(ctx.list("/silences")?.iter().map(|s| item(s, now)).collect());
     ctx.emit(&items, || {
         let rows: Vec<Vec<String>> = items.as_array().map(Vec::as_slice).unwrap_or_default().iter().map(|i| row(i, now)).collect();
         if rows.is_empty() { "没有进行中或已预约的静默".into() } else { format!("{}\n共 {} 条", table::render(&HEAD, &rows), rows.len()) }
@@ -177,7 +176,7 @@ pub fn add(ctx: &Ctx, o: AddOpts<'_>) -> anyhow::Result<u8> {
     });
     let id = st(&ctx.c.post("/silences", &body)?, "/id");
     // 回读：对象名、规则中文名以中控为准，输出与 ls 同形
-    let s = list(ctx)?.into_iter().find(|s| s["id"] == id.as_str()).ok_or_else(|| anyhow!("刚建的静默 {id} 不在列表里"))?;
+    let s = ctx.list("/silences")?.into_iter().find(|s| s["id"] == id.as_str()).ok_or_else(|| anyhow!("刚建的静默 {id} 不在列表里"))?;
     let now = OffsetDateTime::now_utc();
     let it = item(&s, now);
     ctx.emit(&it, || {
@@ -196,7 +195,7 @@ pub fn rm(ctx: &Ctx, q: &str) -> anyhow::Result<u8> {
     if q.is_empty() {
         bail!("给要删的静默的 id 前缀（fleetctl silence ls 的 id 列）");
     }
-    let all = list(ctx)?;
+    let all = ctx.list("/silences")?;
     let hits: Vec<&Value> = all.iter().filter(|s| st(s, "/id").starts_with(&q)).collect();
     let now = OffsetDateTime::now_utc();
     let s = match hits.len() {
