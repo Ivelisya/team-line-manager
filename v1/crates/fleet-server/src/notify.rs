@@ -1,9 +1,8 @@
-//! 告警通知：渠道配置校验、消息格式化、发送（Telegram / 企业微信群机器人 / 通用 webhook）。
+//! 告警通知：渠道配置校验、消息格式化、发送（Telegram / 飞书自定义机器人）。
 //!
 //! 渠道配置（`notify_channel.config_enc`，SecretBox 加密的 JSON）：
 //! - telegram：`{bot_token, chat_id, api_base?}`（`api_base` 默认 `https://api.telegram.org`，可指向反代）
-//! - wecom：`{url}`（群机器人 webhook 地址）
-//! - webhook：`{url}`，POST JSON
+//! - feishu：`{url, secret?}`（自定义机器人的 webhook 地址，只许 open.feishu.cn / open.larksuite.com；`secret` 是开了「签名校验」时的密钥）
 //!
 //! 触发时机在 `alerts.rs`（中控自身的告警在 `selfmon.rs`）；这里管「给定一条通知，排进所有符合条件的渠道、发出去，并记 `notify_log`」。
 //! 待发的写在库里（`notify_outbox`）：中控重启、部署后接着发；失败的按退避重试，入队满 30 分钟还没发出才放弃。
@@ -131,7 +130,7 @@ fn title(n: &Notice) -> String {
     }
 }
 
-/// 纯文本（Telegram、webhook 的 text 字段）
+/// 纯文本（Telegram；飞书按行拆开）
 pub fn format_text(n: &Notice) -> String {
     if n.kind == Kind::Test {
         return format!("【测试通知】团队线路管理的告警通知渠道可用\n时间：{}", when(n.at));
@@ -151,58 +150,6 @@ pub fn format_text(n: &Notice) -> String {
         n.machine,
         crate::meta::rule_label_of(&n.rule, &n.severity),
         n.summary,
-        when(n.at)
-    )
-}
-
-/// 插进企业微信 markdown 的文本（机器名、摘要里有 agent 上报的内容）：markdown 控制字符换成全角、换行换成空格，截到 `max` 个字，
-/// 免得拼出链接、标题、字体标签
-fn md(s: &str, max: usize) -> String {
-    s.chars()
-        .take(max)
-        .map(|c| match c {
-            '[' => '［',
-            ']' => '］',
-            '(' => '（',
-            ')' => '）',
-            '<' => '＜',
-            '>' => '＞',
-            '*' => '＊',
-            '_' => '＿',
-            '`' => '｀',
-            '#' => '＃',
-            '\\' => '＼',
-            c if c.is_control() => ' ',
-            c => c,
-        })
-        .collect()
-}
-
-/// 企业微信 markdown（颜色：warning 橙红、comment 灰、info 绿）
-pub fn format_wecom(n: &Notice) -> String {
-    if n.kind == Kind::Test {
-        return format!("### 测试通知\n> 团队线路管理的告警通知渠道可用\n> 时间：{}", when(n.at));
-    }
-    // 摘要里有备注、机器名：逐行转义
-    if n.kind == Kind::Silence {
-        let body: Vec<String> = n.summary.lines().map(|l| format!("> {}", md(l, 300))).collect();
-        return format!("### <font color=\"warning\">{}</font>\n{}\n> 时间：{}", title(n), body.join("\n"), when(n.at));
-    }
-    if n.kind == Kind::Auto {
-        return format!("### <font color=\"warning\">【{}】{}</font>\n> {}\n> 时间：{}", title(n), md(&n.machine, 64), md(&n.summary, 500), when(n.at));
-    }
-    let color = match (n.kind, n.severity.as_str()) {
-        (Kind::Resolved, _) => "info",
-        (_, "critical") | (_, "warning") => "warning",
-        _ => "comment",
-    };
-    format!(
-        "### <font color=\"{color}\">【{}】{}</font>\n> 机器：**{}**\n> 规则：{}\n> 摘要：{}\n> 时间：{}",
-        crate::meta::severity_label(&n.severity),
-        title(n),
-        md(&n.machine, 64),
-        md(crate::meta::rule_label_of(&n.rule, &n.severity), 64),
-        md(&n.summary, 500),
         when(n.at)
     )
 }
@@ -254,58 +201,38 @@ pub fn text_of(ns: &[Notice]) -> String {
     lines.join("\n")
 }
 
-/// 企业微信 markdown，一条或合并的一批（群机器人一条最多 4096 字节：每台的摘要截得比单条短）
-pub fn wecom_of(ns: &[Notice]) -> String {
-    if let [n] = ns {
-        return format_wecom(n);
-    }
-    let color = if ns[0].kind == Kind::Resolved { "info" } else { "warning" };
-    let (items, more) = group_items(ns, 56);
-    let mut lines = vec![format!("### <font color=\"{color}\">【{}】{}</font>", crate::meta::severity_label(top_severity(ns)), md(&group_title(ns), 80))];
-    lines.extend(items.into_iter().map(|(m, s)| format!("> **{}**：{}", md(m, 32), md(&s, 90))));
-    if more > 0 {
-        lines.push(format!("> 另 {more} 台"));
-    }
-    lines.push(format!("> 时间：{}", when(ns[0].at)));
-    lines.join("\n")
+// ── 飞书 ────────────────────────────────────────────────────────────────────
+
+/// 飞书一条消息最多约 30 KB：正文最多留这么多字（中文 3 字节一个字，留足余量）
+const FEISHU_MAX_CHARS: usize = 8000;
+
+/// 飞书自定义机器人的签名（开了「签名校验」时）：HMAC-SHA256，密钥是 `{timestamp}\n{secret}`，消息为空，结果 Base64；timestamp 是秒
+fn feishu_sign(timestamp: i64, secret: &str) -> String {
+    use base64::Engine as _;
+    use hmac::{Hmac, Mac};
+    let m = Hmac::<sha2::Sha256>::new_from_slice(format!("{timestamp}\n{secret}").as_bytes()).expect("HMAC 接受任意长度的密钥");
+    base64::engine::general_purpose::STANDARD.encode(m.finalize().into_bytes())
 }
 
-/// 通用 webhook 的 JSON 体：顶层字段是第一条的（只有一条时就是它），`severity` 取最高；`items` 列出每一条（只有一条时也有），`count` 是条数
-pub fn webhook_body(ns: &[Notice]) -> Value {
-    let n = &ns[0];
-    let sev = top_severity(ns);
-    let items: Vec<Value> = ns
-        .iter()
-        .map(|n| {
-            json!({
-                "incident_id": n.incident_id,
-                "severity": n.severity,
-                "machine": n.machine,
-                "summary": n.summary,
-                "time": crate::meta::fmt_ts(n.at),
-                "time_beijing": crate::meta::org_time(n.at),
-            })
-        })
-        .collect();
-    json!({
-        "event": n.kind.as_str(),
-        "incident_id": n.incident_id,
-        "rule": n.rule,
-        "rule_name": crate::meta::rule_label_of(&n.rule, sev),
-        "severity": sev,
-        "machine": n.machine,
-        "summary": n.summary,
-        "time": crate::meta::fmt_ts(n.at),
-        "time_beijing": crate::meta::org_time(n.at),
-        "text": text_of(ns),
-        "count": ns.len(),
-        "items": items,
-    })
+/// 飞书富文本消息（post）：纯文本的第一行（【级别】标题）作标题，其余每行一段；有 `secret` 的带上 timestamp 和 sign
+fn feishu_body(ns: &[Notice], timestamp: i64, secret: Option<&str>) -> Value {
+    let text: String = text_of(ns).chars().take(FEISHU_MAX_CHARS).collect();
+    let mut lines = text.lines().filter(|l| !l.trim().is_empty());
+    let title = lines.next().unwrap_or_default();
+    let paras: Vec<Value> = lines.map(|l| json!([{"tag": "text", "text": l}])).collect();
+    let mut body = json!({"msg_type": "post", "content": {"post": {"zh_cn": {"title": title, "content": paras}}}});
+    if let Some(s) = secret {
+        body["timestamp"] = json!(timestamp.to_string());
+        body["sign"] = json!(feishu_sign(timestamp, s));
+    }
+    body
 }
 
 // ── 渠道配置 ────────────────────────────────────────────────────────────────
 
-pub const KINDS: [&str; 3] = ["telegram", "wecom", "webhook"];
+pub const KINDS: [&str; 2] = ["telegram", "feishu"];
+
+const FEISHU_HOSTS: [&str; 2] = ["open.feishu.cn", "open.larksuite.com"];
 
 /// 校验 http(s) 地址（供应商控制台地址也用它）
 pub fn http_url(s: &str, what: &str) -> Result<String, String> {
@@ -356,17 +283,24 @@ pub fn non_global(ip: IpAddr) -> bool {
     }
 }
 
-/// 渠道地址（webhook / 企业微信的 url、Telegram 的 api_base）的主机是字面 IP 且不是公网地址时拒绝。
-/// 域名在发送时由 [`PublicOnly`] 解析时过滤；字面 IP 不经过解析，在这里拦
-pub fn check_destination(c: &Value, allow_private: bool) -> Result<(), String> {
+/// 渠道地址的目的地检查：飞书的 url 只许飞书的 https 地址（open.feishu.cn / open.larksuite.com）；
+/// Telegram 的 api_base 的主机是字面 IP 且不是公网地址时拒绝（域名在发送时由 [`PublicOnly`] 解析时过滤，字面 IP 不经过解析，在这里拦）。
+/// `allow_private`（只给测试：假服务在本机）放行
+pub fn check_destination(kind: &str, c: &Value, allow_private: bool) -> Result<(), String> {
     if allow_private {
         return Ok(());
     }
-    for k in ["url", "api_base"] {
-        let Some(u) = c[k].as_str().and_then(|s| reqwest::Url::parse(s).ok()) else { continue };
+    if kind == "feishu" {
+        let u = c["url"].as_str().and_then(|s| reqwest::Url::parse(s).ok());
+        return match u {
+            Some(u) if u.scheme() == "https" && u.host_str().is_some_and(|h| FEISHU_HOSTS.contains(&h)) => Ok(()),
+            _ => Err("url 只能是飞书自定义机器人的地址（https://open.feishu.cn/open-apis/bot/v2/hook/…）".into()),
+        };
+    }
+    if let Some(u) = c["api_base"].as_str().and_then(|s| reqwest::Url::parse(s).ok()) {
         let host = u.host_str().unwrap_or("").trim_start_matches('[').trim_end_matches(']');
         if host.parse::<IpAddr>().is_ok_and(non_global) {
-            return Err(format!("{k} 指向内网 / 保留地址（{host}），不能用作通知渠道"));
+            return Err(format!("api_base 指向内网 / 保留地址（{host}），不能用作通知渠道"));
         }
     }
     Ok(())
@@ -394,16 +328,25 @@ pub fn normalize_config(kind: &str, c: &Value) -> Result<Value, String> {
             }
             Ok(out)
         }
-        "wecom" | "webhook" => Ok(json!({"url": http_url_v(&c["url"], "url")?})),
-        _ => Err("不支持的渠道类型（telegram / wecom / webhook）".into()),
+        "feishu" => {
+            let mut out = json!({"url": http_url_v(&c["url"], "url")?});
+            if let Some(s) = c["secret"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                out["secret"] = json!(s);
+            }
+            Ok(out)
+        }
+        _ => Err("不支持的渠道类型（telegram / feishu）".into()),
     }
 }
 
-/// 列表里显示的提示：telegram 显示 `chat 123456`，其它显示 URL 的主机名
+/// 列表里显示的提示：telegram 显示 `chat 123456`，飞书显示 URL 的主机名（配了签名密钥的加「 · 已加签」）
 pub fn config_hint(kind: &str, c: &Value) -> String {
     match kind {
         "telegram" => format!("chat {}", c["chat_id"].as_str().unwrap_or("?")),
-        _ => c["url"].as_str().and_then(|u| reqwest::Url::parse(u).ok()).and_then(|u| u.host_str().map(String::from)).unwrap_or_default(),
+        _ => {
+            let host = c["url"].as_str().and_then(|u| reqwest::Url::parse(u).ok()).and_then(|u| u.host_str().map(String::from)).unwrap_or_default();
+            if c["secret"].is_string() { format!("{host} · 已加签") } else { host }
+        }
     }
 }
 
@@ -424,7 +367,7 @@ impl reqwest::dns::Resolve for PublicOnly {
     }
 }
 
-/// `allow_private`（配置 `[notify] allow_private`）为假时用只解析公网地址的客户端。
+/// `allow_private`（只给测试，不从 fleet.toml 读）为假时用只解析公网地址的客户端。
 /// 不走环境变量里的代理（HTTP(S)_PROXY、ALL_PROXY）：经代理时目标域名由代理去解析，PublicOnly 就管不住了
 fn client(allow_private: bool) -> &'static reqwest::Client {
     static OPEN: OnceLock<reqwest::Client> = OnceLock::new();
@@ -494,19 +437,15 @@ fn retry_after(header: Option<&str>, body: &Value) -> Option<Duration> {
 /// 渠道的回复只取 HTTP 状态和它 JSON 里的错误说明（截短），不记原始响应体：发送记录 read 密钥也能看
 async fn send_once(kind: &str, config: &Value, ns: &[Notice], allow_private: bool) -> Result<(), SendErr> {
     let cfg = normalize_config(kind, config).map_err(SendErr::fatal)?;
-    check_destination(&cfg, allow_private).map_err(SendErr::fatal)?;
+    check_destination(kind, &cfg, allow_private).map_err(SendErr::fatal)?;
     let c = client(allow_private);
-    let (req, expect_json_code) = match kind {
+    let req = match kind {
         "telegram" => {
             let base = cfg["api_base"].as_str().unwrap_or(TELEGRAM_BASE);
             let url = format!("{base}/bot{}/sendMessage", cfg["bot_token"].as_str().unwrap_or_default());
-            (c.post(url).json(&json!({"chat_id": cfg["chat_id"], "text": text_of(ns), "disable_web_page_preview": true})), "telegram")
+            c.post(url).json(&json!({"chat_id": cfg["chat_id"], "text": text_of(ns), "disable_web_page_preview": true}))
         }
-        "wecom" => {
-            let url = cfg["url"].as_str().unwrap_or_default();
-            (c.post(url).json(&json!({"msgtype": "markdown", "markdown": {"content": wecom_of(ns)}})), "wecom")
-        }
-        _ => (c.post(cfg["url"].as_str().unwrap_or_default()).json(&webhook_body(ns)), "webhook"),
+        _ => c.post(cfg["url"].as_str().unwrap_or_default()).json(&feishu_body(ns, OffsetDateTime::now_utc().unix_timestamp(), cfg["secret"].as_str())),
     };
     let res = req.send().await.map_err(|e| {
         // 最里层的原因（连接被拒、只解析到内网地址…），reqwest 自己的文字只有「error sending request」
@@ -521,16 +460,19 @@ async fn send_once(kind: &str, config: &Value, ns: &[Notice], allow_private: boo
     let wait = if limited { retry_after(header.as_deref(), &j) } else { None };
     let fail = |msg: String| Err(SendErr { msg: short(&msg), retry, wait });
     let why = |k: &str| j[k].as_str().map(|s| s.chars().take(200).collect::<String>()).unwrap_or_else(|| "（没有说明）".into());
-    match expect_json_code {
+    if kind == "telegram" {
         // Telegram：HTTP 非 2xx 或 ok=false，说明在 description
-        "telegram" if !status.is_success() || j["ok"] == json!(false) => fail(format!("Telegram 拒绝（HTTP {}）：{}", status.as_u16(), why("description"))),
-        // 企业微信：HTTP 200 但 errcode != 0 也是失败
-        "wecom" if !status.is_success() || j["errcode"].as_i64().is_some_and(|c| c != 0) => {
-            fail(format!("企业微信拒绝（HTTP {}）：{}", status.as_u16(), why("errmsg")))
+        if !status.is_success() || j["ok"] == json!(false) {
+            return fail(format!("Telegram 拒绝（HTTP {}）：{}", status.as_u16(), why("description")));
         }
-        "webhook" if !status.is_success() => fail(format!("webhook 返回 HTTP {}", status.as_u16())),
-        _ => Ok(()),
+        return Ok(());
     }
+    // 飞书：HTTP 200 且 code == 0（旧版回 StatusCode）才算成功，说明在 msg（旧版 StatusMessage）
+    let code = j["code"].as_i64().or_else(|| j["StatusCode"].as_i64());
+    if status.is_success() && code == Some(0) {
+        return Ok(());
+    }
+    fail(format!("飞书拒绝（HTTP {}）：{}", status.as_u16(), if j["msg"].is_string() { why("msg") } else { why("StatusMessage") }))
 }
 
 #[derive(sqlx::FromRow)]
@@ -860,30 +802,24 @@ mod tests {
     }
 
     #[test]
-    fn wecom_markdown_and_webhook_body() {
-        let w = format_wecom(&notice(Kind::Firing));
-        assert!(w.starts_with("### <font color=\"warning\">【严重】告警触发</font>"), "{w}");
-        assert!(w.contains("> 机器：**团队1-02**") && w.contains("> 规则：出口不通"));
-        assert!(format_wecom(&notice(Kind::Resolved)).contains("color=\"info\""));
-        let b = webhook_body(&[notice(Kind::Firing)]);
-        assert_eq!(b["event"], "firing");
-        assert_eq!(b["rule"], "egress_fail");
-        assert_eq!(b["rule_name"], "出口不通");
-        assert_eq!(b["machine"], "团队1-02");
-        assert_eq!(b["time_beijing"], "2026-10-20 15:04:05");
-        assert_eq!(b["time"], "2026-10-20T07:04:05Z");
-        assert!(b["text"].as_str().unwrap().contains("团队1-02"));
-        assert_eq!((b["count"].as_u64(), b["items"][0]["machine"].as_str()), (Some(1), Some("团队1-02")));
-    }
-
-    #[test]
-    fn wecom_escapes_reported_text() {
-        let n = Notice { machine: "a](http://x)".into(), summary: "**粗** <font>\n### 标题 `x` _y_ #z \\".into(), ..notice(Kind::Firing) };
-        let w = format_wecom(&n);
-        assert!(w.contains("> 机器：**a］（http://x）**"), "{w}");
-        assert!(w.contains("> 摘要：＊＊粗＊＊ ＜font＞ ＃＃＃ 标题 ｀x｀ ＿y＿ ＃z ＼\n"), "{w}");
-        let long = Notice { summary: "x".repeat(2000), ..notice(Kind::Firing) };
-        assert!(format_wecom(&long).chars().count() < 700);
+    fn feishu_post_body_and_sign() {
+        // 手算值：HMAC-SHA256(key = "1599360473\ndemo-secret", msg = 空) 的 Base64（openssl 交叉核对过）
+        assert_eq!(feishu_sign(1599360473, "demo-secret"), "3/MaVZ8JLIy4TUG+7KSFJqvUkTKd+HWY8g+56DZWq8s=");
+        let b = feishu_body(&[notice(Kind::Firing)], 1599360473, Some("demo-secret"));
+        assert_eq!((b["timestamp"].as_str(), b["sign"].as_str()), (Some("1599360473"), Some("3/MaVZ8JLIy4TUG+7KSFJqvUkTKd+HWY8g+56DZWq8s=")));
+        let post = &b["content"]["post"]["zh_cn"];
+        assert_eq!((b["msg_type"].as_str(), post["title"].as_str()), (Some("post"), Some("【严重】告警触发")));
+        assert_eq!(post["content"][0][0]["text"], "机器：团队1-02");
+        assert_eq!(post["content"].as_array().unwrap().len(), 4);
+        // 没配密钥不带签名；合并的一批每台一行，超过 10 台写「另 N 台」
+        let many: Vec<Notice> = (0..12).map(|_| notice(Kind::Firing)).collect();
+        let g = feishu_body(&many, 1, None);
+        assert!(g.get("sign").is_none() && g.get("timestamp").is_none());
+        let lines: Vec<&str> = g["content"]["post"]["zh_cn"]["content"].as_array().unwrap().iter().map(|p| p[0]["text"].as_str().unwrap()).collect();
+        assert_eq!(g["content"]["post"]["zh_cn"]["title"], "【严重】告警触发：12 台 出口不通");
+        assert_eq!((lines.len(), lines[0], lines[10]), (12, "· 团队1-02：线路机1:20001 出口不通：timeout", "另 2 台"));
+        let long = Notice { summary: "长".repeat(20000), ..notice(Kind::Firing) };
+        assert!(feishu_body(&[long], 1, None).to_string().len() < 30 * 1024);
     }
 
     #[test]
@@ -900,9 +836,6 @@ mod tests {
         let t = format_text(&n);
         assert!(t.starts_with("【静默 / 维护变更】apikey:ops 新建了维护窗口\n对象：全部机器（全部规则）\n"), "{t}");
         assert!(t.ends_with("\n时间：2026-10-20 15:04:05（北京时间）"), "{t}");
-        let w = format_wecom(&n);
-        assert!(w.contains("\n> 对象：全部机器（全部规则）\n> 备注：换 ＊＊内核＊＊ ［点我］（http://x）\n> 时间："), "{w}");
-        assert_eq!((webhook_body(std::slice::from_ref(&n))["event"].as_str(), webhook_body(std::slice::from_ref(&n))["machine"].as_str()), (Some("silence"), Some("全部机器")));
     }
 
     #[test]
@@ -918,9 +851,6 @@ mod tests {
         };
         let t = format_text(&n);
         assert!(t.starts_with("【自动回收】备用-03\n备用节点已过期满 1 天（到期日 2026-10-20）：已自动发起退役\n时间："), "{t}");
-        let w = format_wecom(&n);
-        assert!(w.starts_with("### <font color=\"warning\">【自动回收】备用-03</font>\n> 备用节点已过期满 1 天（到期日 2026-10-20）：已自动发起退役\n> 时间："), "{w}");
-        assert_eq!(webhook_body(std::slice::from_ref(&n))["event"], "auto");
         assert!(Kind::Auto.to_all() && Kind::Silence.to_all() && !Kind::Firing.to_all());
     }
 
@@ -936,11 +866,19 @@ mod tests {
         for ip in ["64:ff9b::a9fe:a9fe", "64:ff9b::808:808", "64:ff9b:1::a00:1", "2001:0:4136:e378:8000:63bf:3fff:fdd2", "2002:a9fe:a9fe::1", "2002:808:808::1"] {
             assert!(non_global(ip.parse().unwrap()), "{ip}");
         }
-        assert!(check_destination(&json!({"url": "http://[64:ff9b::a9fe:a9fe]/latest/meta-data"}), false).is_err());
-        assert!(check_destination(&json!({"url": "http://[::ffff:127.0.0.1]:8080/x"}), false).is_err());
-        assert!(check_destination(&json!({"api_base": "http://2130706433"}), false).is_err());
-        assert!(check_destination(&json!({"url": "https://qyapi.weixin.qq.com/x"}), false).is_ok());
-        assert!(check_destination(&json!({"url": "http://127.0.0.1/x"}), true).is_ok());
+        assert!(check_destination("telegram", &json!({"api_base": "http://[64:ff9b::a9fe:a9fe]/latest/meta-data"}), false).is_err());
+        assert!(check_destination("telegram", &json!({"api_base": "http://[::ffff:127.0.0.1]:8080/x"}), false).is_err());
+        assert!(check_destination("telegram", &json!({"api_base": "http://2130706433"}), false).is_err());
+        assert!(check_destination("telegram", &json!({"api_base": "https://tg.example.com"}), false).is_ok());
+        assert!(check_destination("telegram", &json!({"api_base": "http://127.0.0.1/x"}), true).is_ok());
+        // 飞书只许飞书自己的 https 主机
+        let hook = |h: &str| json!({"url": format!("{h}/open-apis/bot/v2/hook/abc")});
+        for ok in ["https://open.feishu.cn", "https://open.larksuite.com"] {
+            assert!(check_destination("feishu", &hook(ok), false).is_ok(), "{ok}");
+        }
+        for bad in ["http://open.feishu.cn", "https://open.feishu.cn.evil.com", "https://evil.com", "https://127.0.0.1", "https://open.feishu.cn@evil.com"] {
+            assert!(check_destination("feishu", &hook(bad), false).is_err(), "{bad}");
+        }
     }
 
     #[test]
@@ -979,10 +917,14 @@ mod tests {
         assert!(normalize_config("telegram", &json!({"bot_token": "1:a"})).is_err());
         let base = normalize_config("telegram", &json!({"bot_token": "1:a", "chat_id": "1", "api_base": "https://tg.example.com/"})).unwrap();
         assert_eq!(base["api_base"], "https://tg.example.com");
-        let wc = normalize_config("wecom", &json!({"url": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=k"})).unwrap();
-        assert_eq!(config_hint("wecom", &wc), "qyapi.weixin.qq.com");
-        assert!(normalize_config("webhook", &json!({"url": "ftp://x"})).is_err());
-        assert!(normalize_config("webhook", &json!({})).is_err());
-        assert!(normalize_config("email", &json!({})).is_err());
+        let fs = normalize_config("feishu", &json!({"url": "https://open.feishu.cn/open-apis/bot/v2/hook/k", "secret": " s ", "junk": 1})).unwrap();
+        assert_eq!(fs, json!({"url": "https://open.feishu.cn/open-apis/bot/v2/hook/k", "secret": "s"}));
+        assert_eq!(config_hint("feishu", &fs), "open.feishu.cn · 已加签");
+        let fs = normalize_config("feishu", &json!({"url": "https://open.larksuite.com/open-apis/bot/v2/hook/k", "secret": " "})).unwrap();
+        assert_eq!(config_hint("feishu", &fs), "open.larksuite.com");
+        assert!(normalize_config("feishu", &json!({"url": "ftp://x"})).is_err());
+        assert!(normalize_config("feishu", &json!({})).is_err());
+        assert!(normalize_config("wecom", &json!({"url": "https://qyapi.weixin.qq.com/x"})).is_err());
+        assert!(normalize_config("webhook", &json!({"url": "https://x.test"})).is_err());
     }
 }

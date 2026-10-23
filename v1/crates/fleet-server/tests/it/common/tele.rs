@@ -163,7 +163,7 @@ pub fn blank_report(seq: u64) -> Report {
 }
 
 /// 本机 HTTP 假服务：记下每次请求的 (路径, JSON 体, 收到的时刻)。
-/// 路径含 `fail` 回 500；含 `flaky` 的前两次回 500、之后 200；含 `bad` 回企业微信风格的 errcode 错误；含 `bot` 回 Telegram 风格；其余回 200。
+/// 路径含 `fail` 回 500；含 `flaky` 的前两次回 500、之后 200；含 `bad` 回飞书风格的 code 错误；含 `bot` 回 Telegram 风格；其余回飞书的成功（code 0）。
 /// 路径含 `hold` 的收下请求（先记录）后一直不回，直到测试 `release`：「还在发」的状态由测试决定，不靠睡多久
 pub type Hits = Arc<Mutex<Vec<(String, Value, Instant)>>>;
 
@@ -193,13 +193,11 @@ impl Mock {
             } else if path.contains("fail") || (path.contains("flaky") && n <= 2) {
                 (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({})))
             } else if path.contains("bad") {
-                (StatusCode::OK, Json(json!({"errcode": 93000, "errmsg": "invalid webhook url"})))
+                (StatusCode::OK, Json(json!({"code": 19024, "msg": "Key Words Not Found"})))
             } else if path.contains("/bot") {
                 (StatusCode::OK, Json(json!({"ok": true, "result": {}})))
-            } else if path.contains("wecom") {
-                (StatusCode::OK, Json(json!({"errcode": 0, "errmsg": "ok"})))
             } else {
-                (StatusCode::OK, Json(json!({})))
+                (StatusCode::OK, Json(json!({"code": 0, "msg": "success"})))
             }
         }
         let app = Router::new().fallback(handler).with_state((hits.clone(), gate.clone()));
@@ -221,6 +219,32 @@ impl Mock {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
         panic!("等不到 {path_part} 的 {n} 次请求，实际 {:?}", self.hits.lock().unwrap());
+    }
+    /// 飞书 post 消息的纯文本（同 notify.rs 的 `text_of`）：标题一行，各段各一行
+    pub fn texts(&self, path_part: &str) -> Vec<String> {
+        let line = |p: &Value| p[0]["text"].as_str().unwrap_or_default().to_string();
+        self.bodies(path_part)
+            .iter()
+            .map(|b| {
+                let post = &b["content"]["post"]["zh_cn"];
+                let mut lines = vec![post["title"].as_str().unwrap_or_default().to_string()];
+                lines.extend(post["content"].as_array().into_iter().flatten().map(line));
+                lines.join("\n")
+            })
+            .collect()
+    }
+    /// 各条通知的种类，按标题认：firing / repeat / resolved / test / silence / auto
+    pub fn events(&self, path_part: &str) -> Vec<&'static str> {
+        self.texts(path_part)
+            .iter()
+            .map(|t| {
+                let title = t.lines().next().unwrap_or_default();
+                [("仍未恢复", "repeat"), ("已恢复", "resolved"), ("告警触发", "firing"), ("测试通知", "test"), ("静默 / 维护变更", "silence"), ("自动回收", "auto")]
+                    .into_iter()
+                    .find(|(k, _)| title.contains(k))
+                    .map_or("?", |(_, e)| e)
+            })
+            .collect()
     }
     pub fn bodies(&self, path_part: &str) -> Vec<Value> {
         self.hits.lock().unwrap().iter().filter(|(p, ..)| p.contains(path_part)).map(|(_, b, _)| b.clone()).collect()

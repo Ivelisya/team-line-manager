@@ -120,8 +120,9 @@ impl RoutersConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct NotifyConfig {
-    /// 允许通知渠道指向内网 / 环回 / 保留地址。默认不允许：渠道地址由有 write 权限的人填，不能借它探中控所在的内网；
-    /// 只有测试或自建在内网的 webhook 才打开
+    /// 放开通知渠道的目的地检查（飞书只许飞书的主机、Telegram 的 api_base 不许内网地址）。不从 fleet.toml 读，只给测试改（假服务在本机）：
+    /// 渠道地址由有 write 权限的人填，不能借它探中控所在的内网
+    #[serde(skip)]
     pub allow_private: bool,
     /// 机器、软路由同一规则的触发 / 恢复合并成一条发（notify.rs `drain_queue`）：最近一条入队后这么多秒没有新的同类就发，
     /// 最晚首条入队后 60 秒。不从 fleet.toml 读（固定 20 秒），只给测试改（设 0：只合并已经排着的）

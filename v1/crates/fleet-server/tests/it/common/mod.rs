@@ -220,6 +220,8 @@ pub async fn boot_in(dir: tempfile::TempDir, background: bool, extra: &str) -> T
     .unwrap();
     // 通知不等合并（只合并已经排着的）：各用例不用每条多等 20 秒
     cfg.notify.group_wait_s = 0;
+    // 通知渠道指向本机假服务：extra 里写 `notify.allow_private = true`（不从 fleet.toml 读，只在这里认）
+    cfg.notify.allow_private = extra.contains("notify.allow_private = true");
     let st = AppState::new(cfg, pool.clone(), SecretBox::from_key(&[9u8; 32]).unwrap());
     if background {
         fleet_server::spawn_background(&st);

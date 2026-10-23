@@ -565,7 +565,7 @@ fn snap(running: bool, streaks: [u32; 2], wan_up: bool) -> Value {
 async fn alerts_open_notify_and_recover() {
     let t = setup().await;
     let mock = Mock::start().await;
-    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "webhook", "config": {"url": mock.url("/hook/a")}, "min_severity": "info", "enabled": true})).await;
+    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "feishu", "config": {"url": mock.url("/hook/a")}, "min_severity": "info", "enabled": true})).await;
     let (id, _) = create(&t, "团队2-路由A").await;
     issue_key(&t, &id).await;
     let mut st = alerts::AlertState::default();
@@ -585,8 +585,8 @@ async fn alerts_open_notify_and_recover() {
     let summary = inc[0]["summary"].as_str().unwrap();
     assert!(summary.starts_with("团队2-路由A：连不上已 ") && summary.ends_with(" 分钟：经隧道连不上路由：Connection refused"), "{summary}");
     mock.wait("/hook/a", 1).await;
-    let b = mock.bodies("/hook/a").pop().unwrap();
-    assert_eq!((b["event"].as_str(), b["rule"].as_str(), b["machine"].as_str()), (Some("firing"), Some("router_offline"), Some("团队2-路由A")));
+    let b = mock.texts("/hook/a").pop().unwrap();
+    assert!(b.starts_with("【严重】告警触发\n机器：团队2-路由A\n规则：软路由离线\n"), "{b}");
     // 连不上时其余几条无从判断：快照里 OpenClash 没在跑也不开
     status(&t, &id, false, 400, snap(false, [3, 3], false)).await;
     alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(100)).await.unwrap();
@@ -604,8 +604,8 @@ async fn alerts_open_notify_and_recover() {
     let firing = incidents(&t, "firing").await;
     assert_eq!(rules(&firing), ["router_exits_down", "router_openclash_down", "router_wan_down"].map(String::from).into());
     mock.wait("/hook/a", 5).await;
-    let events: Vec<(String, String)> = mock.bodies("/hook/a").iter().map(|b| (b["event"].as_str().unwrap().into(), b["rule"].as_str().unwrap().into())).collect();
-    assert!(events.contains(&("resolved".into(), "router_offline".into())), "{events:?}");
+    let sent: Vec<(&str, String)> = mock.events("/hook/a").into_iter().zip(mock.texts("/hook/a")).collect();
+    assert!(sent.iter().any(|(e, x)| *e == "resolved" && x.contains("规则：软路由离线")), "{sent:?}");
     // 发送记录里对象也是路由
     let log = t.get("/api/v1/notify-log?limit=20").await;
     let l = log.as_array().unwrap().iter().find(|l| l["kind"] == "firing").unwrap();
@@ -658,7 +658,7 @@ fn pairs(v: &[(&str, &str)]) -> std::collections::BTreeSet<(String, String)> { v
 async fn router_maintenance_and_silence() {
     let t = setup().await;
     let mock = Mock::start().await;
-    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "webhook", "config": {"url": mock.url("/hook/m")}, "min_severity": "info", "enabled": true})).await;
+    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "feishu", "config": {"url": mock.url("/hook/m")}, "min_severity": "info", "enabled": true})).await;
     let (a, _) = create(&t, "团队2-路由M").await;
     let (b, _) = create(&t, "团队2-路由N").await;
     issue_key(&t, &a).await;
@@ -694,7 +694,7 @@ async fn router_maintenance_and_silence() {
     let list = t.get("/api/v1/silences").await;
     assert_eq!((list[0]["subject_kind"].as_str(), list[0]["subject_id"].as_str(), list[0]["subject_name"].as_str()), (Some("router"), Some(a.as_str()), Some("团队2-路由M")), "{list}");
     mock.wait("/hook/m", 2).await;
-    let text = mock.bodies("/hook/m")[1]["text"].as_str().unwrap().to_string();
+    let text = mock.texts("/hook/m")[1].clone();
     assert!(text.contains("新建了维护窗口\n对象：软路由「团队2-路由M」\n") && text.contains("期间不开新告警、开着的保持原状、不发通知"), "{text}");
     let log = t.get(&format!("/api/v1/audit?target_id={win}")).await;
     assert!(log[0]["summary"].as_str().unwrap().starts_with("软路由「团队2-路由M」 · 维护窗口 · "), "{log}");
@@ -716,8 +716,8 @@ async fn router_maintenance_and_silence() {
     assert_eq!(firing_set(&t).await, pairs(&[("团队2-路由M", "router_offline"), ("团队2-路由N", "router_offline")]));
     mock.wait("/hook/m", 3).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
-    let events: Vec<(String, String)> = mock.bodies("/hook/m").iter().skip(2).map(|b| (b["event"].as_str().unwrap().into(), b["machine"].as_str().unwrap().into())).collect();
-    assert_eq!(events, [("firing".to_string(), "团队2-路由N".to_string())], "维护中的 A 不发任何通知");
+    let sent: Vec<(&str, String)> = mock.events("/hook/m").into_iter().zip(mock.texts("/hook/m")).skip(2).collect();
+    assert!(sent.len() == 1 && sent[0].0 == "firing" && sent[0].1.contains("机器：团队2-路由N"), "维护中的 A 不发任何通知：{sent:?}");
 
     // 到期：离线满 60 秒恢复（发恢复），WAN 断开开出来
     sqlx::query("update silence set ends_at = now() - interval '1 second' where id = $1::uuid").bind(&win).execute(&t.st.db).await.unwrap();
@@ -728,8 +728,8 @@ async fn router_maintenance_and_silence() {
     assert_eq!(routers_events(), 1, "窗口自己到期的那一轮也发一次 routers 事件，没人点「结束维护」也一样");
     assert_eq!(firing_set(&t).await, pairs(&[("团队2-路由M", "router_wan_down"), ("团队2-路由N", "router_offline")]));
     mock.wait("/hook/m", 5).await;
-    let events: Vec<(String, String)> = mock.bodies("/hook/m").iter().map(|b| (b["event"].as_str().unwrap().into(), b["rule"].as_str().unwrap().into())).collect();
-    assert!(events.contains(&("resolved".into(), "router_offline".into())) && events.contains(&("firing".into(), "router_wan_down".into())), "{events:?}");
+    let sent: Vec<(&str, String)> = mock.events("/hook/m").into_iter().zip(mock.texts("/hook/m")).collect();
+    assert!(sent.iter().any(|(e, x)| *e == "resolved" && x.contains("规则：软路由离线")) && sent.iter().any(|(e, x)| *e == "firing" && x.contains("规则：软路由 WAN 口断开")), "{sent:?}");
 
     // 只静默 B 的出口告警：出口不通不开，OpenClash 没在跑照开
     t.post("/api/v1/silences", json!({"subject_kind": "router", "subject_id": b, "rule": "router_exits_down", "starts_at": at(-1), "ends_at": at(60)})).await;
@@ -755,7 +755,7 @@ async fn router_maintenance_and_silence() {
 async fn rebootstrap_closes_offline_quietly_then_warns() {
     let t = setup().await;
     let mock = Mock::start().await;
-    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "webhook", "config": {"url": mock.url("/hook/r")}, "min_severity": "info", "enabled": true})).await;
+    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "feishu", "config": {"url": mock.url("/hook/r")}, "min_severity": "info", "enabled": true})).await;
     let (id, _) = create(&t, "团队2-路由R").await;
     issue_key(&t, &id).await;
     let mut st = alerts::AlertState::default();

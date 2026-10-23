@@ -1,4 +1,4 @@
-//! 告警通知渠道：增删改查、发测试消息、查发送记录。配置（令牌、webhook 地址）用 SecretBox 加密存库，接口永不返回明文。
+//! 告警通知渠道：增删改查、发测试消息、查发送记录。配置（令牌、webhook 地址、签名密钥）用 SecretBox 加密存库，接口永不返回明文。
 
 use super::ok;
 use crate::auth::Actor;
@@ -88,7 +88,7 @@ pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Ne
     let name = check_name(&b.name)?;
     check_severity(&b.min_severity)?;
     let cfg = notify::normalize_config(&b.kind, &b.config).map_err(ApiError::bad_request)?;
-    notify::check_destination(&cfg, st.cfg.notify.allow_private).map_err(ApiError::bad_request)?;
+    notify::check_destination(&b.kind, &cfg, st.cfg.notify.allow_private).map_err(ApiError::bad_request)?;
     let id = new_id();
     let mut tx = st.db.begin().await?;
     sqlx::query("insert into notify_channel (id, kind, name, config_enc, min_severity, enabled) values ($1, $2, $3, $4, $5::severity, $6)")
@@ -127,7 +127,7 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     let enabled = b.enabled.unwrap_or(cur.enabled);
     let enc = match &b.config {
         Some(newc) => {
-            // 令牌/地址不会回显给前端，所以编辑时没填的字段沿用旧值，填了的覆盖
+            // 令牌/地址/密钥不会回显给前端，所以编辑时没填的字段沿用旧值，填了的覆盖
             let old = open_config(&st, &cur.config_enc).unwrap_or_else(|| json!({}));
             let mut merged = old.clone();
             let given = |k: &str| newc[k].as_str().is_some_and(|s| !s.trim().is_empty());
@@ -147,7 +147,7 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
             if cur.kind == "telegram" && cfg.get("api_base").is_some() && cfg.get("api_base") != old.get("api_base") && !given("bot_token") {
                 return Err(ApiError::bad_request("改 api_base 时要同时重新填写 bot_token"));
             }
-            notify::check_destination(&cfg, st.cfg.notify.allow_private).map_err(ApiError::bad_request)?;
+            notify::check_destination(&cur.kind, &cfg, st.cfg.notify.allow_private).map_err(ApiError::bad_request)?;
             st.secrets.seal_str(&cfg.to_string())
         }
         None => cur.config_enc.clone(),
