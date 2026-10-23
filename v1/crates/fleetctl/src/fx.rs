@@ -114,17 +114,29 @@ fn text(v: &Value) -> String {
     s
 }
 
-pub struct FxOpts<'a> {
-    pub currency: Option<&'a str>,
+// `fleetctl settings fx` 的参数（clap 直接解析成它）
+#[derive(clap::Args)]
+pub struct FxOpts {
+    /// 币种代码，如 CNY
+    pub currency: Option<String>,
+    /// 1 单位该币种合多少 USD，如 0.1404
+    #[arg(long)]
     pub usd: Option<f64>,
+    /// 1 USD 合多少该币种，如 7.12（和 --usd 二选一）
+    #[arg(long)]
     pub per_usd: Option<f64>,
+    /// 取消手动汇率，改回自动更新的值
+    #[arg(long)]
     pub auto: bool,
+    /// 立即从汇率源更新
+    #[arg(long)]
     pub refresh: bool,
+    #[arg(long)]
     pub yes: bool,
 }
 
 /// `settings fx`：不带参数看汇率；`--refresh` 立即更新；`<币种> --usd 0.14` / `--per-usd 7.1` 手动覆盖；`<币种> --auto` 取消覆盖
-pub fn fx(ctx: &Ctx, o: FxOpts<'_>) -> anyhow::Result<u8> {
+pub fn fx(ctx: &Ctx, o: FxOpts) -> anyhow::Result<u8> {
     if o.refresh {
         if o.currency.is_some() || o.usd.is_some() || o.per_usd.is_some() || o.auto {
             bail!("--refresh 单独用");
@@ -133,7 +145,7 @@ pub fn fx(ctx: &Ctx, o: FxOpts<'_>) -> anyhow::Result<u8> {
         ctx.emit(&d, || format!("已从汇率源更新\n{}", text(&d)));
         return Ok(0);
     }
-    let Some(cur) = o.currency.map(|c| c.trim().to_ascii_uppercase()) else {
+    let Some(cur) = o.currency.as_deref().map(|c| c.trim().to_ascii_uppercase()) else {
         if o.usd.is_some() || o.per_usd.is_some() || o.auto {
             bail!("要给币种，如 fleetctl settings fx CNY --usd 0.14");
         }

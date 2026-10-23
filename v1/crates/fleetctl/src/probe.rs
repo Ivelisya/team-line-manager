@@ -147,56 +147,64 @@ fn print_bootstrap(ctx: &Ctx, d: &Value, name: &str) {
     });
 }
 
-pub struct AddOpts<'a> {
-    pub name: &'a str,
-    pub note: Option<&'a str>,
-    pub host: Option<&'a str>,
+/// 探测点的安装方式：给 --host 由中控 SSH 登录装（中控用自己的密钥登录 root）；不给就打印一次性安装命令
+#[derive(clap::Args)]
+pub struct InstallArgs {
+    /// 探测点的 IP 或主机名（中控 SSH 连得到的）；不给就打印一次性安装命令（30 分钟内有效、只能用一次），在探测点上用 root 执行
+    #[arg(long)]
+    pub host: Option<String>,
+    /// 探测点的 SSH 端口（默认 22）
+    #[arg(long)]
     pub ssh_port: Option<u16>,
+    /// 主机指纹和中控记下的不一样时（确认是重装过系统）重新记录
+    #[arg(long)]
     pub reset_host_key: bool,
+    /// 不等安装结束（默认等到收到首次上报）
+    #[arg(long)]
     pub no_wait: bool,
 }
 
-fn ssh_body(o: &AddOpts) -> anyhow::Result<Option<Value>> {
-    match o.host {
+fn ssh_body(o: &InstallArgs) -> anyhow::Result<Option<Value>> {
+    match o.host.as_deref() {
         Some(h) => Ok(Some(json!({"host": h, "port": o.ssh_port.unwrap_or(22), "reset_host_key": o.reset_host_key}))),
         None if o.ssh_port.is_some() || o.reset_host_key => bail!("--ssh-port / --reset-host-key 要和 --host 一起用"),
         None => Ok(None),
     }
 }
 
-pub fn add(ctx: &Ctx, o: AddOpts<'_>) -> anyhow::Result<u8> {
-    let mut body = json!({"name": o.name, "note": o.note.unwrap_or("")});
-    if let Some(s) = ssh_body(&o)? {
+pub fn add(ctx: &Ctx, name: &str, note: Option<&str>, o: &InstallArgs) -> anyhow::Result<u8> {
+    let mut body = json!({"name": name, "note": note.unwrap_or("")});
+    if let Some(s) = ssh_body(o)? {
         body["ssh"] = s;
     }
     let d = ctx.c.post("/probe-points", &body)?;
     let id = st(&d, "/id");
-    if o.host.is_none() {
-        print_bootstrap(ctx, &d, o.name);
+    let Some(host) = o.host.as_deref() else {
+        print_bootstrap(ctx, &d, name);
         return Ok(0);
-    }
+    };
     if o.no_wait {
-        ctx.emit(&d, || format!("已新建「{}」，中控正在登录 {} 安装：fleetctl probe ls 看进度", o.name, o.host.unwrap_or("")));
+        ctx.emit(&d, || format!("已新建「{name}」，中控正在登录 {host} 安装：fleetctl probe ls 看进度"));
         return Ok(0);
     }
     follow_install(ctx, &id)
 }
 
 /// 重装：给 --host 由中控经 SSH 重装（换新令牌），否则打印新的一次性安装命令
-pub fn install(ctx: &Ctx, q: &str, o: AddOpts<'_>) -> anyhow::Result<u8> {
+pub fn install(ctx: &Ctx, q: &str, o: &InstallArgs) -> anyhow::Result<u8> {
     let p = find(&ctx.list("/probe-points")?, q)?;
     let (id, name) = (st(&p, "/id"), st(&p, "/name"));
     let mut body = json!({});
-    if let Some(s) = ssh_body(&o)? {
+    if let Some(s) = ssh_body(o)? {
         body["ssh"] = s;
     }
     let d = ctx.c.post(&format!("/probe-points/{id}/install"), &body)?;
-    if o.host.is_none() {
+    let Some(host) = o.host.as_deref() else {
         print_bootstrap(ctx, &d, &name);
         return Ok(0);
-    }
+    };
     if o.no_wait {
-        ctx.emit(&d, || format!("中控正在登录 {} 重装「{name}」：fleetctl probe ls 看进度", o.host.unwrap_or("")));
+        ctx.emit(&d, || format!("中控正在登录 {host} 重装「{name}」：fleetctl probe ls 看进度"));
         return Ok(0);
     }
     follow_install(ctx, &id)
@@ -314,9 +322,9 @@ mod tests {
 
     #[test]
     fn ssh_options_need_host() {
-        let o = AddOpts { name: "香港", note: None, host: None, ssh_port: Some(2222), reset_host_key: false, no_wait: false };
+        let o = InstallArgs { host: None, ssh_port: Some(2222), reset_host_key: false, no_wait: false };
         assert!(ssh_body(&o).is_err());
-        let o = AddOpts { host: Some("47.0.0.1"), ssh_port: None, ..o };
+        let o = InstallArgs { host: Some("47.0.0.1".into()), ssh_port: None, ..o };
         assert_eq!(ssh_body(&o).unwrap().unwrap(), json!({"host": "47.0.0.1", "port": 22, "reset_host_key": false}));
     }
 }

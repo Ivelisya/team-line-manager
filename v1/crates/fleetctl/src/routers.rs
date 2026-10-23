@@ -377,23 +377,32 @@ pub fn exits(ctx: &Ctx, q: &str, range: &str) -> anyhow::Result<u8> {
     Ok(0)
 }
 
-/// 一键部署的目标：密码只从标准输入读一行（不能写在参数里：会进 shell 历史与进程列表）
-pub struct SshOpts<'a> {
-    pub host: Option<&'a str>,
+/// 一键部署的目标（中控要能直接连到路由的 SSH）。密码只从标准输入读，不收参数：写在参数里会进 shell 历史与进程列表
+#[derive(clap::Args)]
+pub struct SshOpts {
+    /// 路由的 IP 或主机名（中控连得到的）；给了就一键部署
+    #[arg(long)]
+    pub host: Option<String>,
+    /// 路由的 SSH 端口（默认 22）
+    #[arg(long)]
     pub port: Option<u16>,
-    pub user: Option<&'a str>,
+    /// 登录用户（默认 root）
+    #[arg(long)]
+    pub user: Option<String>,
+    /// 从标准输入读一行密码（不给就用中控自己的密钥登录：路由上已经授权过中控公钥时）
+    #[arg(long)]
     pub password_stdin: bool,
 }
 
-impl SshOpts<'_> {
+impl SshOpts {
     fn body(&self) -> anyhow::Result<Option<Value>> {
-        let Some(host) = self.host else {
+        let Some(host) = self.host.as_deref() else {
             if self.port.is_some() || self.user.is_some() || self.password_stdin {
                 bail!("--port / --user / --password-stdin 要和 --host 一起用（一键部署）");
             }
             return Ok(None);
         };
-        let mut b = json!({"host": host, "port": self.port.unwrap_or(22), "user": self.user.unwrap_or("root")});
+        let mut b = json!({"host": host, "port": self.port.unwrap_or(22), "user": self.user.as_deref().unwrap_or("root")});
         if self.password_stdin {
             let mut l = String::new();
             std::io::stdin().lock().read_line(&mut l)?;
@@ -406,7 +415,7 @@ impl SshOpts<'_> {
         Ok(Some(b))
     }
 
-    fn target(&self) -> String { format!("{}@{}:{}", self.user.unwrap_or("root"), self.host.unwrap_or("?"), self.port.unwrap_or(22)) }
+    fn target(&self) -> String { format!("{}@{}:{}", self.user.as_deref().unwrap_or("root"), self.host.as_deref().unwrap_or("?"), self.port.unwrap_or(22)) }
 }
 
 fn deploy_prompt(name: &str, s: &SshOpts) -> String {
@@ -450,22 +459,31 @@ fn follow_deploy(ctx: &Ctx, id: &str) -> anyhow::Result<u8> {
     bail!("等了 15 分钟部署还没结束：fleetctl router show {id} 看进度")
 }
 
-pub struct AddOpts<'a> {
-    pub name: &'a str,
-    pub team: Option<&'a str>,
-    pub note: Option<&'a str>,
-    pub ssh: SshOpts<'a>,
+// `fleetctl router add` 的参数（clap 直接解析成它）
+#[derive(clap::Args)]
+pub struct AddOpts {
+    pub name: String,
+    #[arg(long)]
+    pub team: Option<String>,
+    #[arg(long)]
+    pub note: Option<String>,
+    #[command(flatten)]
+    pub ssh: SshOpts,
+    /// 一键部署要确认
+    #[arg(long)]
     pub yes: bool,
+    /// 一键部署：等它结束（失败退出码 1）
+    #[arg(long)]
     pub follow: bool,
 }
 
-pub fn add(ctx: &Ctx, o: AddOpts<'_>) -> anyhow::Result<u8> {
-    let mut body = json!({"name": o.name, "note": o.note.unwrap_or("")});
-    if let Some(t) = o.team {
+pub fn add(ctx: &Ctx, o: AddOpts) -> anyhow::Result<u8> {
+    let mut body = json!({"name": o.name, "note": o.note.as_deref().unwrap_or("")});
+    if let Some(t) = o.team.as_deref() {
         body["team_id"] = json!(ctx.team_id(t)?);
     }
     if o.ssh.host.is_some() {
-        confirm(&deploy_prompt(o.name, &o.ssh), o.yes)?;
+        confirm(&deploy_prompt(&o.name, &o.ssh), o.yes)?;
     }
     if let Some(ssh) = o.ssh.body()? {
         body["ssh"] = ssh;
@@ -499,7 +517,7 @@ pub fn bootstrap(ctx: &Ctx, q: &str, yes: bool) -> anyhow::Result<u8> {
     Ok(0)
 }
 
-pub fn deploy(ctx: &Ctx, q: &str, ssh: SshOpts<'_>, yes: bool, follow: bool) -> anyhow::Result<u8> {
+pub fn deploy(ctx: &Ctx, q: &str, ssh: SshOpts, yes: bool, follow: bool) -> anyhow::Result<u8> {
     if ssh.host.is_none() {
         bail!("一键部署要给 --host（路由的 IP 或主机名，中控要连得到它的 SSH）");
     }
@@ -619,7 +637,7 @@ mod tests {
     fn ssh_options_need_host() {
         let o = SshOpts { host: None, port: Some(2222), user: None, password_stdin: false };
         assert!(o.body().is_err());
-        let o = SshOpts { host: Some("10.0.0.1"), port: None, user: None, password_stdin: false };
+        let o = SshOpts { host: Some("10.0.0.1".into()), port: None, user: None, password_stdin: false };
         assert_eq!(o.body().unwrap().unwrap(), json!({"host": "10.0.0.1", "port": 22, "user": "root"}));
         assert_eq!(o.target(), "root@10.0.0.1:22");
     }
