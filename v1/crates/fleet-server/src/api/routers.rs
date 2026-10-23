@@ -6,7 +6,7 @@ use crate::auth::{Actor, ClientIp};
 use crate::db::{audit, new_id};
 use crate::error::{ApiError, ApiJson, ApiPath, ApiQuery, ApiResult};
 use crate::lock;
-use crate::routers::{self, deploy, scripts::Bootstrap, tunnel};
+use crate::routers::{self, deploy, scripts::Bootstrap, switch, tunnel};
 use crate::silence::Silences;
 use crate::state::{AppState, Event};
 use axum::extract::State;
@@ -29,14 +29,20 @@ const MAX_NOTE: usize = 2000;
 pub const CLEANUP: &str = "/etc/init.d/fleet-tunnel disable; /etc/init.d/fleet-tunnel stop; rm -rf /etc/init.d/fleet-tunnel /etc/fleet-tunnel；\
      再从 /etc/dropbear/authorized_keys 删掉中控的公钥（不再让中控登录时）";
 
+/// 列表与详情都带 `switches`：进行中的临时切换（routers/switch.rs）
 pub async fn list(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
-    let (rows, sil) = tokio::try_join!(routers::load(&st.db, None), Silences::load(&st.db))?;
-    Ok(ok(rows.iter().map(|r| r.view(false, sil.maintenance(r.id))).collect::<Vec<_>>()))
+    let (rows, sil, sw) = tokio::try_join!(routers::load(&st.db, None), Silences::load(&st.db), switch::active(&st.db, None))?;
+    Ok(ok(rows.iter().map(|r| with_switches(r.view(false, sil.maintenance(r.id)), r.id, &sw)).collect::<Vec<_>>()))
 }
 
 pub async fn get_one(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
-    let (rows, sil) = tokio::try_join!(routers::load(&st.db, Some(id)), Silences::load(&st.db))?;
-    rows.first().map(|r| ok(r.view(true, sil.maintenance(r.id)))).ok_or_else(|| ApiError::not_found("没有这台软路由"))
+    let (rows, sil, sw) = tokio::try_join!(routers::load(&st.db, Some(id)), Silences::load(&st.db), switch::active(&st.db, Some(id)))?;
+    rows.first().map(|r| ok(with_switches(r.view(true, sil.maintenance(r.id)), r.id, &sw))).ok_or_else(|| ApiError::not_found("没有这台软路由"))
+}
+
+fn with_switches(mut v: Value, id: Uuid, sw: &[switch::Active]) -> Value {
+    v["switches"] = json!(sw.iter().filter(|s| s.router_id == id).map(switch::Active::view).collect::<Vec<_>>());
+    v
 }
 
 fn check_name(n: &str) -> ApiResult<String> {

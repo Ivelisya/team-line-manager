@@ -1,0 +1,268 @@
+//! 临时切换出口：经隧道调路由上 mihomo 的 API（`PUT /proxies/<组>`，collect.uc 的 MODE=switch）把一个 select 组切到组里已有的另一个出口，
+//! 不改 OpenClash 的配置、不重启（不断连接；只有经这个组的新连接走新出口）。用途：某节点被打、临时把客户切到备用出口，恢复后切回。
+//!
+//! - 只对 select（mihomo 类型 Selector）组：url-test / fallback / load-balance 由 mihomo 自己选，拒绝并说明。只能选组里已有的出口。
+//! - 一组同时只有一条进行中的记录（router_switch，state = active）：from_exit 是第一次切之前选中的，再切一次只改 to_exit，
+//!   切回（手动 `--back`、或到 back_at 自动）总是回到 from_exit；手动切到的正好是 from_exit 也算切回。
+//! - 路由重启、OpenClash 重载（替换节点、改出口指向都会重启它）之后组选择由 OpenClash 自己恢复（配置默认值或它记住的选择）：
+//!   采集时发现组现在选中的不是 to_exit（或组没了），记录结束（reverted / gone），待切回随之取消，记审计。只看切换生效之后才开始的采集。
+//! - 全部记审计：router.switch（切换）、router.switch_back（切回，自动的操作者是「系统」）、router.switch_reverted（路由自己改回了）。
+//! - 切换、切回在中控上串行（一把锁）：每次一两秒，不值得按路由分锁。
+
+use super::collect::{Group, Snapshot};
+use super::tunnel;
+use crate::db::{audit, new_id};
+use crate::error::{ApiError, ApiResult};
+use crate::state::{AppState, Event};
+use serde_json::{json, Value};
+use std::time::Duration;
+use time::OffsetDateTime;
+use uuid::Uuid;
+
+/// 自动切回最多这么久之后（更久的就该替换节点 / 改出口指向）
+pub const MAX_BACK_S: i64 = 7 * 86400;
+/// 一次切换最多等这么久
+const TIMEOUT: Duration = Duration::from_secs(25);
+/// 自动切回的操作者
+pub const AUTO: &str = crate::spare::ACTOR;
+
+static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// 进行中的一条
+#[derive(sqlx::FromRow, Clone)]
+pub struct Active {
+    pub id: Uuid,
+    pub router_id: Uuid,
+    pub grp: String,
+    pub from_exit: String,
+    pub to_exit: String,
+    pub back_at: Option<OffsetDateTime>,
+    pub created_by: String,
+    pub switched_at: OffsetDateTime,
+}
+
+impl Active {
+    pub fn view(&self) -> Value {
+        json!({
+            "group": self.grp, "from": self.from_exit, "to": self.to_exit,
+            "back_at": self.back_at.map(crate::meta::fmt_ts), "by": self.created_by, "switched_at": crate::meta::fmt_ts(self.switched_at),
+        })
+    }
+}
+
+const ACTIVE: &str = "select id, router_id, grp, from_exit, to_exit, back_at, created_by, switched_at from router_switch where state = 'active'";
+
+/// 进行中的临时切换（`router` 给了只要这台的；列表与详情里给出）
+pub async fn active(db: &sqlx::PgPool, router: Option<Uuid>) -> sqlx::Result<Vec<Active>> {
+    sqlx::query_as(&format!("{ACTIVE} and ($1::uuid is null or router_id = $1) order by grp")).bind(router).fetch_all(db).await
+}
+
+/// 按最近一次采集核对能不能切：组在、是 select、出口在组里
+pub fn check<'a>(snap: &'a Snapshot, group: &str, to: &str) -> ApiResult<&'a Group> {
+    let g = snap.groups.iter().find(|g| g.name == group).ok_or_else(|| ApiError::bad_request(format!("最近一次采集里没有策略组「{group}」")))?;
+    if !g.selectable() {
+        return Err(ApiError::bad_request(format!(
+            "「{group}」是 {} 组：由 mihomo 按延迟 / 可用性自己选出口，不能手动切换；只有 select 组可以（要换它里面的出口，改配置或用 fleetctl repoint）",
+            kind_cn(&g.kind)
+        )));
+    }
+    if !g.all.iter().any(|x| x == to) {
+        return Err(ApiError::bad_request(format!("策略组「{group}」里没有「{to}」：只能切到组里已有的出口（{}）", g.all.join("、"))));
+    }
+    Ok(g)
+}
+
+fn kind_cn(k: &str) -> &str {
+    match k {
+        "URLTest" => "url-test（自动测速）",
+        "Fallback" => "fallback（故障转移）",
+        "LoadBalance" => "load-balance（负载均衡）",
+        "Relay" => "relay（链式）",
+        k => k,
+    }
+}
+
+/// 在路由上切：返回切之前选中的。失败返回原因
+async fn exec(st: &AppState, id: Uuid, group: &str, to: &str) -> Result<Option<String>, String> {
+    let port: Option<i32> = sqlx::query_scalar("select tunnel_port from router where id = $1").bind(id).fetch_optional(&st.db).await.map_err(|e| e.to_string())?;
+    let Some(port) = port else { return Err("这台软路由已经删掉了".into()) };
+    let out = crate::ssh::exec(tunnel::via_tunnel(&st.cfg, id, port), &super::collect::switch_script(group, to), TIMEOUT).await.map_err(|e| format!("{e:#}"))?;
+    if out.code == 255 {
+        return Err(tunnel::explain(&out, true));
+    }
+    let sw = out.stdout.lines().rev().find_map(|l| serde_json::from_str::<Value>(l.trim()).ok()).map(|v| v["sw"].clone()).unwrap_or(Value::Null);
+    if sw["ok"] == true {
+        return Ok(sw["was"].as_str().map(String::from));
+    }
+    Err(sw["error"].as_str().map(String::from).unwrap_or_else(|| format!("切换脚本出错（退出码 {}）：{}", out.code, out.stderr.trim().chars().take(200).collect::<String>())))
+}
+
+/// 切换：`back_after_s` 给了就到时自动切回。返回 {group, from, to, back_at}
+pub async fn switch(st: &AppState, actor: &str, id: Uuid, group: &str, to: &str, back_after_s: Option<i64>) -> ApiResult<Value> {
+    if let Some(s) = back_after_s.filter(|s| !(60..=MAX_BACK_S).contains(s)) {
+        return Err(ApiError::bad_request(format!("自动切回的时间要在 1 分钟到 7 天之间（给的是 {s} 秒）")));
+    }
+    let _g = LOCK.lock().await;
+    let r = super::load(&st.db, Some(id)).await?.into_iter().next().ok_or_else(|| ApiError::not_found("没有这台软路由"))?;
+    if r.state() != "online" {
+        return Err(ApiError::conflict(format!("软路由「{}」现在不在线，切不了", r.name)));
+    }
+    let snap = r.snapshot().unwrap_or_default();
+    let g = check(&snap, group, to)?;
+    let cur = sqlx::query_as::<_, Active>(&format!("{ACTIVE} and router_id = $1 and grp = $2")).bind(id).bind(group).fetch_optional(&st.db).await?;
+    if g.now.as_deref() == Some(to) && cur.as_ref().is_none_or(|c| c.to_exit == to) {
+        return Err(ApiError::conflict(format!("策略组「{group}」现在选中的已经是「{to}」")));
+    }
+    let was = exec(st, id, group, to).await.map_err(|e| ApiError::conflict(format!("软路由「{}」：{e}", r.name)))?;
+    let from = cur.as_ref().map(|c| c.from_exit.clone()).or(was.clone()).or(g.now.clone()).unwrap_or_default();
+    let now = OffsetDateTime::now_utc();
+    let back_at = back_after_s.map(|s| now + time::Duration::seconds(s));
+    let mut tx = st.db.begin().await?;
+    // 切到的正好是第一次切之前的：等于切回，记录结束
+    let ended = cur.is_some() && to == from;
+    match &cur {
+        Some(c) if ended => {
+            sqlx::query("update router_switch set state = 'back', ended_at = now(), end_note = '手动切回原来的出口' where id = $1").bind(c.id).execute(&mut *tx).await?;
+        }
+        Some(c) => {
+            sqlx::query("update router_switch set to_exit = $2, back_at = $3, created_by = $4, switched_at = $5 where id = $1")
+                .bind(c.id)
+                .bind(to)
+                .bind(back_at)
+                .bind(actor)
+                .bind(now)
+                .execute(&mut *tx)
+                .await?;
+        }
+        // 快照旧了、路由上本来就是它：没有要记的
+        None if to == from => {}
+        None => {
+            sqlx::query("insert into router_switch (id, router_id, grp, from_exit, to_exit, back_at, created_by, switched_at) values ($1, $2, $3, $4, $5, $6, $7, $8)")
+                .bind(new_id())
+                .bind(id)
+                .bind(group)
+                .bind(&from)
+                .bind(to)
+                .bind(back_at)
+                .bind(actor)
+                .bind(now)
+                .execute(&mut *tx)
+                .await?;
+        }
+    }
+    let was_now = was.unwrap_or_default();
+    let detail = json!({"name": r.name, "group": group, "from": was_now, "to": to, "original": from, "back_at": back_at.map(crate::meta::fmt_ts)});
+    audit(&mut tx, actor, if ended { "router.switch_back" } else { "router.switch" }, "router", Some(id), detail).await?;
+    tx.commit().await?;
+    st.routers_refresh.ask([id]);
+    st.emit(Event::Routers);
+    Ok(json!({"group": group, "from": was_now, "to": to, "original": from, "back_at": back_at.map(crate::meta::fmt_ts), "ended": ended}))
+}
+
+/// 手动切回第一次切之前的出口（`--back`）
+pub async fn back(st: &AppState, actor: &str, id: Uuid, group: &str) -> ApiResult<Value> {
+    let _g = LOCK.lock().await;
+    let c = sqlx::query_as::<_, Active>(&format!("{ACTIVE} and router_id = $1 and grp = $2"))
+        .bind(id)
+        .bind(group)
+        .fetch_optional(&st.db)
+        .await?
+        .ok_or_else(|| ApiError::not_found(format!("策略组「{group}」没有进行中的临时切换（没切过，或已经切回 / 被路由自己改回）")))?;
+    back_one(st, actor, &c, "手动切回").await
+}
+
+async fn back_one(st: &AppState, actor: &str, c: &Active, why: &str) -> ApiResult<Value> {
+    let name: String = sqlx::query_scalar("select name from router where id = $1").bind(c.router_id).fetch_one(&st.db).await?;
+    let was = exec(st, c.router_id, &c.grp, &c.from_exit).await.map_err(|e| ApiError::conflict(format!("软路由「{name}」：{e}")))?;
+    let mut tx = st.db.begin().await?;
+    let n = sqlx::query("update router_switch set state = 'back', ended_at = now(), end_note = $2 where id = $1 and state = 'active'")
+        .bind(c.id)
+        .bind(why)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    let from = was.unwrap_or_else(|| c.to_exit.clone());
+    if n > 0 {
+        audit(&mut tx, actor, "router.switch_back", "router", Some(c.router_id), json!({"name": name, "group": c.grp, "from": from, "to": c.from_exit, "why": why})).await?;
+    }
+    tx.commit().await?;
+    st.routers_refresh.ask([c.router_id]);
+    st.emit(Event::Routers);
+    Ok(json!({"group": c.grp, "from": from, "to": c.from_exit, "ended": true}))
+}
+
+/// 到时间的切回去（采集循环每轮整轮之后调）。切不了的（路由不在线、mihomo 不通）留着，下一轮再试，失败只记日志
+pub async fn due(st: &AppState) {
+    let rows: Vec<Active> = match sqlx::query_as(&format!("{ACTIVE} and back_at <= now() order by back_at")).fetch_all(&st.db).await {
+        Ok(r) => r,
+        Err(e) => return tracing::warn!("查到时切回的临时切换失败：{e}"),
+    };
+    for c in rows {
+        let _g = LOCK.lock().await;
+        if let Err(e) = back_one(st, AUTO, &c, "到时自动切回").await {
+            tracing::warn!(router = %c.router_id, group = %c.grp, "到时自动切回没成，下一轮再试：{}", e.message);
+        }
+    }
+}
+
+/// 采集成功之后核对：组现在选中的不是记录里切到的（或组没了）= 路由自己改回了（重启、OpenClash 重载），记录结束、待切回取消。
+/// `started` 是这次采集开始的时刻：切换生效之前开始的采集读到的可能是切之前的，不算。mihomo 的 API 没调通（没有组）时不判
+pub async fn reconcile(st: &AppState, router: Uuid, snap: &Snapshot, started: OffsetDateTime) -> anyhow::Result<()> {
+    if snap.groups.is_empty() {
+        return Ok(());
+    }
+    let rows: Vec<Active> = sqlx::query_as(&format!("{ACTIVE} and router_id = $1 and switched_at < $2")).bind(router).bind(started).fetch_all(&st.db).await?;
+    let mut changed = false;
+    for c in rows {
+        let g = snap.groups.iter().find(|g| g.name == c.grp);
+        if g.is_some_and(|g| g.now.as_deref() == Some(c.to_exit.as_str())) {
+            continue;
+        }
+        let (state, note) = match g {
+            Some(g) => ("reverted", format!("已被路由自己改回（现在选中的是「{}」）", g.now.as_deref().unwrap_or("?"))),
+            None => ("gone", "路由上已经没有这个策略组".to_string()),
+        };
+        let mut tx = st.db.begin().await?;
+        // 只结束这次核对看到的那一条（期间又切了一次的，switched_at 变了，不动）
+        let n = sqlx::query("update router_switch set state = $2, ended_at = now(), end_note = $3 where id = $1 and state = 'active' and switched_at = $4")
+            .bind(c.id)
+            .bind(state)
+            .bind(&note)
+            .bind(c.switched_at)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        if n > 0 {
+            let name: String = sqlx::query_scalar("select name from router where id = $1").bind(router).fetch_one(&mut *tx).await?;
+            let detail = json!({"name": name, "group": c.grp, "to": c.to_exit, "now": g.and_then(|g| g.now.clone()), "back_at": c.back_at.map(crate::meta::fmt_ts), "note": note});
+            audit(&mut tx, AUTO, "router.switch_reverted", "router", Some(router), detail).await?;
+            changed = true;
+        }
+        tx.commit().await?;
+    }
+    if changed {
+        st.emit(Event::Routers);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn snap() -> Snapshot {
+        let g = |name: &str, kind: &str| Group { name: name.into(), kind: kind.into(), now: Some("节点01".into()), all: vec!["节点01".into(), "节点02".into()] };
+        Snapshot { groups: vec![g("手动", "Selector"), g("自动", "URLTest")], ..Snapshot::default() }
+    }
+
+    /// 只能切 select 组、只能切到组里已有的出口
+    #[test]
+    fn only_select_groups_and_members() {
+        let s = snap();
+        assert_eq!(check(&s, "手动", "节点02").unwrap().name, "手动");
+        let e = check(&s, "自动", "节点02").unwrap_err();
+        assert!(e.message.contains("url-test（自动测速） 组") && e.message.contains("只有 select 组可以"), "{}", e.message);
+        assert!(check(&s, "手动", "节点09").unwrap_err().message.contains("只能切到组里已有的出口（节点01、节点02）"));
+        assert!(check(&s, "没有", "节点01").unwrap_err().message.contains("没有策略组「没有」"));
+    }
+}

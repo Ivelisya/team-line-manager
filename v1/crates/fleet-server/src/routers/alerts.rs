@@ -12,6 +12,7 @@
 //! | router_exits_down | 警告；全部 fleet 出口都不通升严重 | 有 fleet 出口（对上了 fleet 入口的）连续两次延迟测试不通（每 5 分钟测一次）；客户自己的出口不算。摘要附上不通的出口指向的节点 / 线路机此刻在维护或告警中的（「其中 2 个指向的团队2-03 正在维护」）；不通的出口指向的都在维护中时不开（维护期间预期不通，开着的保持） |
 //! | router_wan_down | 严重 | WAN 口（逻辑接口 wan）断开（满 60 秒） |
 //! | router_resource_high | 警告 | CPU > 90% 持续 10 分钟、内存 > 90%、存储 > 90%、连接表 > 80%（后三项满 60 秒） |
+//! | router_exit_drift | 警告 | 有出口对上了 fleet 入口、但参数和入口现在的不一致（凭据轮换后没同步、入口已删除 / 停用，见 clash.rs），持续两轮采集（满 30 秒）。抽屉与告警里可以一键同步（作业 router_sync） |
 //!
 //! 恢复：离线的连上就恢复（隧道一回来中控马上采一次，见 collect.rs `watch_tunnels`）；出口不通的，不通的出口连续两次测通就恢复
 //! （不通、还在确认的出口每轮采集单独重测，不等 5 分钟一轮；确认期间又不通仍算连续不通，告警不关）；其余原因消失满 60 秒。连不上、采集出错的路由其余几条无从判断，保持原状（不开也不关）。
@@ -36,6 +37,7 @@ pub const OPENCLASH_DOWN: &str = "router_openclash_down";
 pub const EXITS_DOWN: &str = "router_exits_down";
 pub const WAN_DOWN: &str = "router_wan_down";
 pub const RESOURCE_HIGH: &str = "router_resource_high";
+pub const EXIT_DRIFT: &str = "router_exit_drift";
 
 /// 重新接入后这么久还没连上，开离线警告（接入命令的有效期）
 const REBOOTSTRAP_S: i64 = super::BOOTSTRAP_MINUTES * 60;
@@ -45,6 +47,8 @@ const DEBOUNCE_S: i64 = 60;
 const OFFLINE_S: i64 = 60;
 /// CPU 持续偏高满这么久
 const CPU_SUSTAIN_S: i64 = 600;
+/// 出口参数不一致持续这么久（两轮采集）才开：替换、改出口指向的作业改配置的那一会儿不报
+const DRIFT_HOLD_S: i64 = 30;
 /// 时长判定的余量：采集每 30 秒一轮、每轮耗时不一，「满 60 秒」实际量到的是 59.x 秒，差这几秒不该再多等一轮
 const SLACK_S: i64 = 5;
 
@@ -108,6 +112,15 @@ fn down_exits(s: &Snapshot) -> impl Iterator<Item = &Exit> { s.exits.iter().filt
 fn exits_paused(s: &Snapshot, tg: &Targets) -> bool {
     let mut down = down_exits(s).peekable();
     down.peek().is_some() && down.all(|e| tg.why(e).is_some_and(|(_, m)| m))
+}
+
+/// 出口参数为什么和入口对不上：入口已删除 / 停用，否则是凭据（uuid、SNI、公钥、short-id、flow）和入口现在的不一样
+pub fn drift_why(lifecycle: &str) -> &'static str {
+    match lifecycle {
+        "removed" | "removing" => "入口已删除",
+        "disabled" => "入口已停用",
+        _ => "凭据和入口现在的不一样",
+    }
 }
 
 /// 此刻成立的一个问题
@@ -207,6 +220,10 @@ pub fn problems(v: &View, cpu_high_since: Option<OffsetDateTime>, tg: &Targets, 
     }
     if !res.is_empty() {
         out.push(Problem { rule: RESOURCE_HIGH, severity: "warning", text: format!("资源吃紧：{}", res.join("；")), hold_s: DEBOUNCE_S });
+    }
+    let drift: Vec<String> = s.exits.iter().filter(|e| e.sync == "drift").filter_map(|e| e.entry.as_ref().map(|er| format!("{}（{}，{}）", e.name, er.name, drift_why(&er.lifecycle)))).collect();
+    if !drift.is_empty() {
+        out.push(Problem { rule: EXIT_DRIFT, severity: "warning", text: format!("{} 个出口的参数和对应的面板入口不一致：{}", drift.len(), drift.join("、")), hold_s: DRIFT_HOLD_S });
     }
     (out, true)
 }
@@ -489,7 +506,7 @@ mod tests {
 
     #[test]
     fn rules_have_names() {
-        for r in [OFFLINE, COLLECT_ERROR, OPENCLASH_DOWN, EXITS_DOWN, WAN_DOWN, RESOURCE_HIGH] {
+        for r in [OFFLINE, COLLECT_ERROR, OPENCLASH_DOWN, EXITS_DOWN, WAN_DOWN, RESOURCE_HIGH, EXIT_DRIFT] {
             assert_ne!(crate::meta::rule_label(r), r, "{r} 没有中文名");
         }
         assert_eq!(subject(Uuid::nil(), None)["name"], "（已删除）");

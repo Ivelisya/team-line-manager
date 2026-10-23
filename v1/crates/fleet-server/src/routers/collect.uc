@@ -3,6 +3,7 @@
 // FLEET_MODE=delay 时只测出口延迟（每 5 分钟一次，中控另起一次执行、单独的时限），输出 {v, now, oc: {delay}}；
 // FLEET_MANAGED 是 fleet 出口（对上了 fleet 入口的）的名字（JSON 数组）：先测它们，没通的重测名额也先给它们。
 // FLEET_ONLY（JSON 数组，可空）：只测这几个出口（中控每轮单独重测不通、刚测通还在确认的 fleet 出口），其余记进 untested、不当场重测。
+// FLEET_MODE=switch 时把 select 组 FLEET_GROUP 临时切到 FLEET_TO（经 mihomo API，不改配置、不重启），输出 {v, now, sw}。
 // mihomo 的 API 密钥（uci 的 dashboard_password）只在本机读来用，写在 0600 的 /tmp/fleet-collect/auth 里给 curl，不回传。
 // 上一次的 CPU 计数、各连接的字节数存在 /tmp/fleet-collect/（tmpfs），用来算 CPU 使用率与各出口这段时间的流量
 // （同一连接两次之差累加，新连接全算，关掉的连接最后一段会漏掉：估计值）。
@@ -178,21 +179,24 @@ function uci(k) {
 	return (s == '') ? null : s;
 }
 
-// 调 mihomo 的 API：{code, data} 或 {code, error}
-function api(port, path, tmo) {
-	let s = run(sprintf("curl -sS -m %d -H @%s -w '\\n%%{http_code}' %s 2>&1", tmo, D + '/auth', q('http://127.0.0.1:' + port + path)));
+// 调 mihomo 的 API：{code, data} 或 {code, error}。给了 put（JSON 文本）就是 PUT，成功回 204（没有正文）时 data 为 {}
+function api(port, path, tmo, put) {
+	let m = (put != null) ? ' -X PUT -H ' + q('Content-Type: application/json') + ' --data-binary ' + q(put) : '';
+	let s = run(sprintf("curl -sS -m %d -H @%s%s -w '\\n%%{http_code}' %s 2>&1", tmo, D + '/auth', m, q('http://127.0.0.1:' + port + path)));
 	if (s == null)
 		return { code: 0, error: 'curl 运行失败' };
 	let i = rindex(s, '\n');
 	let code = int(trim(substr(s, i + 1)));
 	let body = (i > 0) ? substr(s, 0, i) : '';
-	if (code != 200)
+	if (code < 200 || code > 299)
 		return { code: code, error: substr(trim(body), 0, 200) };
+	if (trim(body) == '')
+		return { code: code, data: {} };
 	try {
-		return { code: 200, data: json(body) };
+		return { code: code, data: json(body) };
 	}
 	catch (e) {
-		return { code: 200, error: 'API 返回的不是 JSON' };
+		return { code: code, error: 'API 返回的不是 JSON' };
 	}
 }
 
@@ -272,10 +276,16 @@ function proxies(oc, port) {
 	if (r.data == null)
 		return;
 	oc.proxies = [];
+	oc.groups = [];
 	let all = r.data.proxies || {};
 	for (let name in all) {
 		let p = all[name];
-		if (SKIP[p.type] || type(p.all) == 'array')
+		// 策略组：记下类型、成员与当前选中的（select 组可以临时切换，见中控 routers/switch.rs）
+		if (type(p.all) == 'array') {
+			push(oc.groups, { name: name, type: p.type, now: p.now, all: p.all });
+			continue;
+		}
+		if (SKIP[p.type])
 			continue;
 		let h = p.history || [];
 		let last = (length(h) > 0) ? h[length(h) - 1] : null;
@@ -420,6 +430,48 @@ function delay_only() {
 	if (DELAY_URL)
 		delay(oc, port);
 	delete oc.proxies;
+	delete oc.groups;
+}
+
+// 临时切换（FLEET_MODE=switch）：经 mihomo API 把 select 组 FLEET_GROUP 切到组里已有的出口 FLEET_TO（PUT /proxies/<组>），
+// 不改配置、不重启 OpenClash。切之前核对组是 select（Selector）、FLEET_TO 在组里，切完读回确认。输出 {v, now, sw: {ok, type, was, now, error}}
+function switch_group() {
+	let sw = { ok: false };
+	out.sw = sw;
+	let group = getenv('FLEET_GROUP'), to = getenv('FLEET_TO');
+	let port = uci('cn_port');
+	if (!words(run('pidof clash 2>/dev/null || pidof mihomo 2>/dev/null'))[0] || port == null || !match(port, /^[0-9]+$/)) {
+		sw.error = 'OpenClash 没在运行';
+		return;
+	}
+	let secret = uci('dashboard_password');
+	fs.writefile(D + '/auth', (secret != null) ? 'Authorization: Bearer ' + secret + '\n' : '');
+	let path = '/proxies/' + enc(group);
+	let g = api(port, path, 5);
+	if (g.data == null) {
+		sw.error = (g.code == 404) ? '路由上没有策略组「' + group + '」' : 'mihomo 的 API 调不通：' + g.error;
+		return;
+	}
+	sw.type = g.data.type;
+	sw.was = g.data.now;
+	if (g.data.type != 'Selector') {
+		sw.error = '「' + group + '」是 ' + g.data.type + ' 组，由 mihomo 自己选出口，不能手动切换';
+		return;
+	}
+	if (index(g.data.all || [], to) < 0) {
+		sw.error = '策略组「' + group + '」里没有出口「' + to + '」';
+		return;
+	}
+	let p = api(port, path, 5, sprintf('%J', { name: to }));
+	if (p.data == null) {
+		sw.error = '切换失败：' + p.error;
+		return;
+	}
+	let c = api(port, path, 5);
+	sw.now = c.data ? c.data.now : null;
+	sw.ok = (sw.now == to);
+	if (!sw.ok)
+		sw.error = '切换后读回来选中的是「' + (sw.now || '?') + '」，不是「' + to + '」';
 }
 
 function clients() {
@@ -445,7 +497,7 @@ function clients() {
 	}
 }
 
-for (let step in ((MODE == 'delay') ? [delay_only] : [system, ifaces, openclash, clients])) {
+for (let step in ((MODE == 'delay') ? [delay_only] : (MODE == 'switch') ? [switch_group] : [system, ifaces, openclash, clients])) {
 	try {
 		step();
 	}

@@ -4,6 +4,8 @@ mod batch;
 mod lifecycle;
 mod replace;
 
+pub use replace::sync_exit;
+
 use super::scripts::{self, vars, SsInst};
 use super::{clip, log, tune, JobRow, Outcome};
 use crate::crypto::{random_token, sha256};

@@ -148,7 +148,8 @@ const AUDIT_ACTIONS: &[&str] = &[
     "apikey.revoke", "auth.login", "auth.login_failed", "auth.logout", "auth.totp_enabled", "auth.totp_disabled", "auth.totp_recovery_used",
     "auth.totp_recovery_regenerated", "auth.user_removed", "auth.user_disabled", "auth.password_changed", "auth.session_revoked", "auth.verify_failed", "policy.draft", "policy.discard", "policy.publish", "policy.rollback",
     "settings.access_retention", "settings.fx_rate", "terminal.open", "terminal.close", "ssh.login",
-    "router.create", "router.update", "router.delete", "router.bootstrap", "router.bootstrap_used", "router.deploy",
+    "router.create", "router.update", "router.delete", "router.bootstrap", "router.bootstrap_used", "router.deploy", "router.sync", "router.switch", "router.switch_back",
+    "router.switch_reverted",
     "client_sub.create", "client_sub.update", "client_sub.rotate", "client_sub.delete",
 ];
 
@@ -237,6 +238,10 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "router.bootstrap" => "重新生成接入命令",
         "router.bootstrap_used" => "路由取走接入脚本",
         "router.deploy" => "一键部署软路由",
+        "router.sync" => "同步软路由出口",
+        "router.switch" => "临时切换出口",
+        "router.switch_back" => "切回出口",
+        "router.switch_reverted" => "临时切换被路由改回",
         "client_sub.create" => "新建客户端订阅",
         "client_sub.update" => "修改客户端订阅",
         "client_sub.rotate" => "轮换订阅链接",
@@ -294,6 +299,19 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         // 「线路机1-直出 · 线路机1:20010 → 线路机3-直出 · 线路机3:20000（改 2 台软路由）」
         "entry.repoint" => format!("{} → {}（改 {} 台软路由）", s("from"), s("to"), d["routers"].as_array().map_or(0, |a| a.len())),
         "relay.evacuate" => format!("{} → {}（{} 个作业）", s("from"), s("to"), d["jobs"].as_array().map_or(0, |a| a.len())),
+        // 「团队2-路由A 的 节点01、节点02」
+        "router.sync" => format!("{} 的 {}", s("name"), d["exits"].as_array().into_iter().flatten().filter_map(Value::as_str).collect::<Vec<_>>().join("、")),
+        // 「团队2-路由A · 手动选择：节点03 → 备用01（10-24 18:00 自动切回）」
+        "router.switch" => {
+            let back = d["back_at"].as_str().and_then(|t| OffsetDateTime::parse(t, &time::format_description::well_known::Rfc3339).ok());
+            let back = back.map(|t| format!("（{} 自动切回）", crate::meta::org_time(t))).unwrap_or_default();
+            format!("{} · {}：{} → {}{back}", s("name"), s("group"), s("from"), s("to"))
+        }
+        "router.switch_back" => format!("{} · {}：{} → {}（{}）", s("name"), s("group"), s("from"), s("to"), d["why"].as_str().unwrap_or("手动切回")),
+        "router.switch_reverted" => {
+            let cancelled = if d["back_at"].is_string() { "，待切回已取消" } else { "" };
+            format!("{} · {}：{}{cancelled}", s("name"), s("group"), s("note"))
+        }
         // 「团队2-01 由 团队2-20 接替，旧节点改为 备用-03（改 2 台软路由）」
         "machine.replace" => {
             let n = d["routers"].as_array().map_or(0, |a| a.len());

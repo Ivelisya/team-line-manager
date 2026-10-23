@@ -3,6 +3,8 @@
 //! 换线路机（move_entry）在验收新入口之后、摘旧入口之前也走这里的「改软路由出口」（计划见 api/lifecycle.rs，新入口取参数 `entry_id`）。
 //! 改出口指向（repoint）只有这一步（计划见 api/repoint.rs）：出口从 `old_entry_id` 改成 `new_entry_id`（属于 `new_id` 那台），
 //! 匹配与换线路机相同；`router_ids` 不空时只改这几台路由。新入口不叫 `entry_id`：取消作业时 compensate 会把 `entry_id` 当成作业建的入口摘掉。
+//! 同步软路由出口（router_sync，计划见 api/router_ops.rs）也只有这一步：目标是路由（`router_ids` 就是它），参数和对上的入口不一致（drift）的出口
+//! 改成这个入口现在的参数（server:port 不变，换 uuid / SNI / 公钥 / short-id），`exits` 不空时只改这几个；入口不在用的同步不了。
 //!
 //! 改路由：要改哪些出口按执行时路由的配置重新确定（经隧道读源配置，同一套匹配：api::replace::replace_exit / api::lifecycle::move_exit），
 //! 发起时的计划只作展示。不在线的路由按最近一次采集看，有出口要改就一台都不改。出口对不上新入口（同预览的原因）也一台都不改。
@@ -75,11 +77,11 @@ struct NewEntry {
     reality_public_key: String,
 }
 
-/// 入口的参数：只取属于这几个节点（各作业的新入口所在的节点）、在用的入口
-async fn new_entry(db: &sqlx::PgPool, id: Uuid, nodes: &[Uuid]) -> sqlx::Result<Option<NewEntry>> {
+/// 入口的参数：只取属于这几个节点（各作业的新入口所在的节点；同步出口不限，None）、在用的入口
+async fn new_entry(db: &sqlx::PgPool, id: Uuid, nodes: Option<&[Uuid]>) -> sqlx::Result<Option<NewEntry>> {
     sqlx::query_as(
         "select e.client_uuid, e.short_id, e.port, r.reality_sni, r.reality_public_key from entry e join relay r on r.machine_id = e.relay_id
-         where e.id = $1 and e.node_id = any($2) and e.lifecycle = 'active'",
+         where e.id = $1 and ($2::uuid[] is null or e.node_id = any($2)) and e.lifecycle = 'active'",
     )
     .bind(id)
     .bind(nodes)
@@ -104,11 +106,17 @@ enum Pick {
     Move { old_entry: Uuid, new: (Uuid, u16), from_ip: String, to: (String, String) },
     /// 替换：旧节点没删除的入口 → 新节点在用的入口
     Replace { old: Vec<Ent>, new: Vec<Ent> },
+    /// 同步：参数不一致的出口 → 它对上的入口现在的参数（`exits` 空 = 这台路由上全部不一致的）
+    Sync { exits: Vec<String> },
 }
 
 impl Pick {
     /// `node`：作业的目标（替换是旧节点，换线路机是节点自己）
     async fn load(db: &sqlx::PgPool, job: &JobRow, node: Uuid) -> anyhow::Result<Pick> {
+        if job.kind == "router_sync" {
+            let exits = job.params["exits"].as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from).collect();
+            return Ok(Pick::Sync { exits });
+        }
         if job.kind == "replace" {
             let mut conn = db.acquire().await?;
             let (old, new) = replace_entries(&mut conn, node, uuid_of(&job.params, "new_id")?).await?;
@@ -130,10 +138,12 @@ impl Pick {
         Ok(Pick::Move { old_entry: uuid_of(&job.params, "old_entry_id")?, new: (eid, port as u16), from_ip, to })
     }
 
-    fn exit(&self, er: &clash::EntryRef, srv: &str, port: u16) -> Option<Result<ExitPlan, String>> {
+    /// 出口 `name`（同步状态 `sync`，对上入口 `er`，现在指向 `srv:port`）要不要改、改成什么
+    fn exit(&self, name: &str, sync: &str, er: &clash::EntryRef, srv: &str, port: u16) -> Option<Result<ExitPlan, String>> {
         match self {
             Pick::Move { old_entry, new, from_ip, to } => move_exit(er, *old_entry, Some(*new), from_ip, to, srv, port).map(Ok),
             Pick::Replace { old, new } => replace_exit(old, new, er, srv, port),
+            Pick::Sync { exits } => sync_exit(exits, name, sync, er, srv, port),
         }
     }
 
@@ -142,8 +152,22 @@ impl Pick {
         match self {
             Pick::Move { old_entry: o, .. } => *o == old_entry,
             Pick::Replace { old, .. } => old.iter().any(|e| e.id == old_entry),
+            Pick::Sync { .. } => true,
         }
     }
+}
+
+/// 同步：参数不一致的出口改成对上的入口现在的参数，server:port 不变。`only` 不空时只看这几个出口。
+/// 入口不在用（已删除、停用、还没生效）的同步不了：点了名的返回原因，没点名的跳过。预览（api/router_ops.rs）与执行共用
+pub fn sync_exit(only: &[String], name: &str, sync: &str, er: &clash::EntryRef, srv: &str, port: u16) -> Option<Result<ExitPlan, String>> {
+    if sync != "drift" || (!only.is_empty() && !only.iter().any(|x| x == name)) {
+        return None;
+    }
+    if er.lifecycle != "active" {
+        let why = format!("对应的入口「{}」{}，没有可同步的参数：改指向别的入口（fleetctl repoint）", er.name, routers::alerts::drift_why(&er.lifecycle));
+        return (!only.is_empty()).then_some(Err(why));
+    }
+    Some(Ok(ExitPlan { exit: name.to_string(), old_entry_id: er.id, new_entry_id: Some(er.id), old_server: srv.to_string(), old_port: port, server: srv.to_string(), port: Some(port), error: None }))
 }
 
 fn uuid_of(params: &Value, k: &str) -> anyhow::Result<Uuid> {
@@ -165,11 +189,15 @@ struct Part {
 impl Part {
     async fn load(db: &sqlx::PgPool, job: &JobRow) -> anyhow::Result<Part> {
         let node = job.target_id.ok_or_else(|| anyhow!("作业没有目标机器"))?;
-        let new = if job.kind == "move_entry" { node } else { uuid_of(&job.params, "new_id")? };
+        // 同步出口的目标是路由：出口对上的入口属于哪个节点都算（见 covers），新入口就是原来那个
+        let new = if matches!(job.kind.as_str(), "move_entry" | "router_sync") { node } else { uuid_of(&job.params, "new_id")? };
         let pick = Pick::load(db, job, node).await?;
         let plan = serde_json::from_value(job.params["plan"]["routers"].clone()).unwrap_or_default();
         Ok(Part { job: job.id, node, new, pick, plan })
     }
+
+    /// 对上的入口属于节点 `node` 的出口归不归它看
+    fn covers(&self, node: Uuid) -> bool { matches!(self.pick, Pick::Sync { .. }) || self.node == node }
 }
 
 /// 同一台软路由同时只有一个作业在改：PG 会话级 advisory lock，键由路由 id 算出。第一次拿到锁时把那条连接从连接池拿走（detach），
@@ -290,13 +318,13 @@ async fn read_config(c: &Ctx<'_>, r: &routers::Row) -> Result<Vec<clash::Proxy>,
 fn exits_in(proxies: &[clash::Proxy], entries: &[clash::Entry], parts: &[Part]) -> Result<Vec<ExitPlan>, (String, String)> {
     let mut out = vec![];
     for p in proxies {
-        let (Some(er), _) = clash::match_entry(p, entries) else { continue };
+        let (Some(er), sync) = clash::match_entry(p, entries) else { continue };
         let (Some(srv), Some(port)) = (p.server.as_deref(), p.port) else { continue };
         if er.lifecycle == "removed" {
             continue;
         }
-        for part in parts.iter().filter(|x| x.node == er.node_id) {
-            match part.pick.exit(&er, srv, port) {
+        for part in parts.iter().filter(|x| x.covers(er.node_id)) {
+            match part.pick.exit(&p.name, sync, &er, srv, port) {
                 Some(Ok(e)) => out.push(ExitPlan { exit: p.name.clone(), ..e }),
                 Some(Err(why)) => return Err((p.name.clone(), why)),
                 None => {}
@@ -311,7 +339,11 @@ fn snap_uses(r: &routers::Row, parts: &[Part]) -> bool {
     let Some(snap) = r.snapshot() else { return false };
     parts.iter().any(|part| {
         // 先放进变量：迭代器借着 snap，不能是闭包的尾表达式
-        let used = routers::exits_to(&snap, part.node).any(|(x, er)| matches!((x.server.as_deref(), x.port), (Some(s), Some(p)) if part.pick.exit(er, s, p).is_some()));
+        let used = snap
+            .exits
+            .iter()
+            .filter_map(|x| x.entry.as_ref().filter(|er| er.lifecycle != "removed" && part.covers(er.node_id)).map(|er| (x, er)))
+            .any(|(x, er)| matches!((x.server.as_deref(), x.port), (Some(s), Some(p)) if part.pick.exit(&x.name, &x.sync, er, s, p).is_some()));
         used
     })
 }
@@ -324,8 +356,10 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let (what, redo, kept) = match c.job.kind.as_str() {
         "move_entry" => ("旧入口", "重新发起换线路机", "旧入口没摘"),
         "repoint" => ("旧入口", "重新发起改出口指向", "入口都没动"),
+        "router_sync" => ("参数对不上的入口", "重新发起同步", "入口都没动"),
         _ => ("旧节点", "重新发起替换", "编号没改"),
     };
+    let syncing = c.job.kind == "router_sync";
     let mut locks = Locks::new(&c.st.db);
     // 排队中：只等那台路由的锁，别的都不做
     let queued_on = if c.first { None } else { c.job.params["routers_queued_id"].as_str().and_then(|s| Uuid::try_parse(s).ok()) };
@@ -371,6 +405,7 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         parts.push(Part::load(&c.st.db, f).await.with_context(|| format!("同批一起改的「{name}」"))?);
     }
     let owners: Vec<Uuid> = parts.iter().map(|p| p.new).collect();
+    let owners = (!syncing).then_some(owners.as_slice());
     let entries: Vec<clash::Entry> = sqlx::query_as(clash::ENTRIES).fetch_all(&c.st.db).await?;
     let mut rows = routers::load(&c.st.db, None).await?;
     // 改出口指向可以只改选中的几台路由
@@ -446,7 +481,7 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         return give_up(c, &mut locks, &applied, None, format!("{}{none_yet}", blocked.join("；")), ErrKind::Remote, kept).await;
     }
     if todo.is_empty() && applied.is_empty() {
-        return Ok(Outcome::Skipped(format!("没有软路由的出口指向{what}")));
+        return Ok(Outcome::Skipped(if syncing { "出口的参数已经和入口一致，没有要同步的".into() } else { format!("没有软路由的出口指向{what}") }));
     }
     // 和发起时的计划不一样（之后路由的配置改过）：写一行，免得对着预览找不到
     let names = |rs: Vec<(Uuid, &str, Vec<&str>)>| rs.into_iter().map(|(_, n, xs)| format!("{n} 的 {}", xs.join("、"))).collect::<Vec<_>>();
@@ -472,7 +507,7 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         let jobs: Vec<Uuid> = exits.iter().map(|x| parts.iter().find(|p| p.pick.owns(x.old_entry_id)).map_or(c.job.id, |p| p.job)).collect();
         for x in exits {
             let e = match x.new_entry_id {
-                Some(id) => new_entry(&c.st.db, id, &owners).await?,
+                Some(id) => new_entry(&c.st.db, id, owners).await?,
                 None => None,
             };
             let Some(e) = e else { return give_up(c, &mut locks, &applied, None, format!("新入口（{}）已经不在用了：{redo}", x.to()), ErrKind::Remote, kept).await };

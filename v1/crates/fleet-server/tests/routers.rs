@@ -3,7 +3,7 @@
 //!
 //! 路由是假的：PATH 最前面放假 ssh、sshpass、ssh-keyscan。远端按 `-p <端口>` 分「路由根目录」`<临时目录>/<端口>/`，脚本经 stdin 来，
 //! 把 /etc/ 换到根目录里再用本机 sh 跑（/usr/bin/ssh 用本机的 OpenSSH）；采集脚本（含 FLEET_UC）回根目录里的 collect.json，
-//! 延迟测试脚本（MODE='delay'）回 delay.json（没有时回「没测成」），取配置文件（含 head -c）回 config.yaml。根目录里有 refuse-key 时中控密钥登录被拒、有 down 时连不上、有 hostkey 时 keyscan 回它。
+//! 延迟测试脚本（MODE='delay'）回 delay.json（没有时回「没测成」），取配置文件（含 head -c）回 config.yaml，临时切换脚本（MODE='switch'）把组名记进 switch.log、选中的出口写进 group.now（回读的「切之前」是它原来的内容）。根目录里有 refuse-key 时中控密钥登录被拒、有 down 时连不上、有 hostkey 时 keyscan 回它。
 //! sshpass 核对 SSHPASS（环境变量）是不是根目录里的 password，并记下有没有拿到、参数里有什么。PATH 是整个进程共用的，所以单独一个测试文件。
 
 #![cfg(unix)]
@@ -48,6 +48,12 @@ script=$(cat)
 case $script in *"echo fleet_keys=ok"*) [ -e "$R/slow-keys" ] && sleep 2 ;; esac
 case $script in
   "MODE='delay'"*) cat "$R/delay.json" 2>/dev/null || echo '{"v":1,"now":0,"oc":{"delay":{"ok":false,"error":"没有 delay.json"}}}'; exit 0 ;;
+  "MODE='switch'"*)
+    to=$(printf '%s\n' "$script" | sed -n "s/^TO='\(.*\)'$/\1/p")
+    printf '%s\n' "$script" | sed -n "s/^GROUP='\(.*\)'$/\1/p" >> "$R/switch.log"
+    was=$(cat "$R/group.now" 2>/dev/null)
+    printf '%s' "$to" > "$R/group.now"
+    echo "{\"v\":1,\"now\":0,\"sw\":{\"ok\":true,\"type\":\"Selector\",\"was\":\"$was\",\"now\":\"$to\"}}"; exit 0 ;;
   *FLEET_UC*) cat "$R/collect.json"; exit 0 ;;
   *"head -c"*) cat "$R/config.yaml"; exit 0 ;;
 esac
@@ -455,7 +461,9 @@ async fn collect_error_is_not_offline() {
     assert!(t.get(&format!("/api/v1/routers/{id}")).await["error"].is_null());
     alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(100)).await.unwrap();
     alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(161)).await.unwrap();
-    assert!(incidents(&t, "firing").await.is_empty());
+    // 配置里的 节点02 凭据和入口对不上：读到状态之后另开「出口参数不一致」
+    let rules: Vec<Value> = incidents(&t, "firing").await.iter().map(|i| i["rule"].clone()).collect();
+    assert_eq!(rules, [json!("router_exit_drift")]);
 }
 
 // ── 告警 ──────────────────────────────────────────────────────────────────
@@ -1046,4 +1054,57 @@ async fn redeploy_restore_skips_taken_port() {
     let err = d["deploy"]["error"].as_str().unwrap();
     assert!(err.contains(&format!("改回原来的隧道密钥也失败了（原来的隧道端口 {old} 已经分给了软路由「路由B」）")), "{err}");
     assert_ne!(i64::from(router_row(&t, &id).await.0), old);
+}
+
+/// 临时切换：只能切 select 组；切到组里另一个出口、到时自动切回（操作者「系统」）；
+/// 路由自己改回了（重启、OpenClash 重载后组回到默认选择）：采集核对时记录结束、待切回取消、记审计（切换生效之前开始的采集不算）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn switch_and_auto_back() {
+    let t = setup().await;
+    let (id, _) = create(&t, "团队2-路由W").await;
+    issue_key(&t, &id).await;
+    let port = 23940;
+    sqlx::query("update router set tunnel_port = $2 where id = $1::uuid").bind(&id).bind(port).execute(&t.st.db).await.unwrap();
+    let r = root(port.into());
+    let _ = std::fs::remove_dir_all(&r);
+    std::fs::create_dir_all(&r).unwrap();
+    std::fs::write(r.join("group.now"), "节点01").unwrap();
+    let groups = |now: &str| json!([{"name": "手动选择", "type": "Selector", "now": now, "all": ["节点01", "节点02"]}, {"name": "自动", "type": "URLTest", "now": "节点01", "all": ["节点01", "节点02"]}]);
+    let mut s = snap(true, [0, 0], true);
+    s["groups"] = groups("节点01");
+    status(&t, &id, true, 0, s.clone()).await;
+    let path = format!("/api/v1/routers/{id}/switch");
+    let (code, v) = t.req("POST", &path, Some(json!({"group": "自动", "to": "节点02"})), None).await;
+    assert_eq!(code, StatusCode::BAD_REQUEST);
+    assert!(v["error"]["message"].as_str().unwrap().contains("只有 select 组可以"), "{v}");
+    assert!(read(&r.join("switch.log")).is_empty(), "没去动路由");
+    // 切到 节点02，1 小时后自动切回
+    let d = t.post(&path, json!({"group": "手动选择", "to": "节点02", "back_after_s": 3600})).await;
+    assert_eq!((d["from"].as_str(), d["to"].as_str(), d["back_at"].is_string()), (Some("节点01"), Some("节点02"), true), "{d}");
+    assert_eq!((read(&r.join("switch.log")), read(&r.join("group.now"))), ("手动选择\n".to_string(), "节点02".to_string()));
+    let sw = t.get(&format!("/api/v1/routers/{id}")).await["switches"].clone();
+    assert_eq!((sw[0]["group"].as_str(), sw[0]["from"].as_str(), sw[0]["to"].as_str()), (Some("手动选择"), Some("节点01"), Some("节点02")), "{sw}");
+    let audit = |_: &T| async { t.get(&format!("/api/v1/audit?target_id={id}")).await[0].clone() };
+    assert_eq!(audit(&t).await["title"], "临时切换出口");
+    // 没到时间不动；到时间切回 节点01，操作者是「系统」
+    let rid = Uuid::parse_str(&id).unwrap();
+    routers::switch::due(&t.st).await;
+    assert_eq!(read(&r.join("group.now")), "节点02");
+    sqlx::query("update router_switch set back_at = now() - interval '1 second'").execute(&t.st.db).await.unwrap();
+    routers::switch::due(&t.st).await;
+    assert_eq!(read(&r.join("group.now")), "节点01");
+    assert_eq!(t.get(&format!("/api/v1/routers/{id}")).await["switches"], json!([]));
+    let a = audit(&t).await;
+    assert_eq!((a["title"].as_str(), a["actor"].as_str(), a["summary"].as_str()), (Some("切回出口"), Some("系统"), Some("团队2-路由W · 手动选择：节点02 → 节点01（到时自动切回）")), "{a}");
+    // 再切一次；之后路由重启、组回到 节点01
+    t.post(&path, json!({"group": "手动选择", "to": "节点02", "back_after_s": 3600})).await;
+    let back: collect::Snapshot = serde_json::from_value(s).unwrap();
+    let now = OffsetDateTime::now_utc();
+    routers::switch::reconcile(&t.st, rid, &back, now - time::Duration::seconds(60)).await.unwrap();
+    assert_eq!(t.get(&format!("/api/v1/routers/{id}")).await["switches"].as_array().map(Vec::len), Some(1), "切换之前开始的采集不算");
+    routers::switch::reconcile(&t.st, rid, &back, now + time::Duration::seconds(1)).await.unwrap();
+    assert_eq!(t.get(&format!("/api/v1/routers/{id}")).await["switches"], json!([]));
+    let a = audit(&t).await;
+    assert_eq!((a["title"].as_str(), a["summary"].as_str()), (Some("临时切换被路由改回"), Some("团队2-路由W · 手动选择：已被路由自己改回（现在选中的是「节点01」），待切回已取消")), "{a}");
+    assert_eq!(t.req("POST", &format!("{path}/back"), Some(json!({"group": "手动选择"})), None).await.0, StatusCode::NOT_FOUND);
 }
