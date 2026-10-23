@@ -153,6 +153,17 @@ fn reason(e: &std::io::Error) -> String {
     }
 }
 
+/// 测试用：本机一个连上去必定被拒绝的端口。返回的套接字只绑定不监听，测试期间一直拿着：
+/// 端口不会被同一进程里并行的测试 bind 到 :0 分走（先监听再关掉的写法有竞态——关掉之后别的测试马上拿到同一个端口，
+/// 连上去就成了「连通」或「连接被重置」），也不会被选作出站连接的源端口（自连）。不设 SO_REUSEADDR，别人显式绑也绑不上
+#[cfg(test)]
+pub(crate) fn refused_port() -> (tokio::net::TcpSocket, u16) {
+    let s = tokio::net::TcpSocket::new_v4().unwrap();
+    s.bind(([127, 0, 0, 1], 0).into()).unwrap();
+    let p = s.local_addr().unwrap().port();
+    (s, p)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,9 +181,8 @@ mod tests {
     #[tokio::test]
     async fn connect_reports_refused_in_chinese() {
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let p = l.local_addr().unwrap().port();
-        assert_eq!(connect("127.0.0.1".into(), p).await, Ok(()));
-        drop(l);
+        assert_eq!(connect("127.0.0.1".into(), l.local_addr().unwrap().port()).await, Ok(()));
+        let (_held, p) = refused_port();
         assert_eq!(connect("127.0.0.1".into(), p).await, Err("连接被拒绝".into()));
         assert_eq!(connect_addr("nonsense").await, Err("地址无效".into()));
     }
