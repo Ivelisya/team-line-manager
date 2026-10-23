@@ -11,7 +11,8 @@
 # 配置：环境变量，或本机文件 lab/build.env（不进仓库，见 .gitignore；每行 KEY=value，# 开头是注释，不执行其中的代码）。
 # 两处都有时环境变量优先。什么都没配就是 lab，行为与以前一样。
 #   FLEET_BUILD=lab|docker
-#   FLEET_BUILD_HOST=10.172.17.213          docker 必填：ssh 目标（可写 user@host 或 ~/.ssh/config 里的别名）
+#   FLEET_BUILD_HOST=10.172.17.213          docker 必填：ssh 目标（可写 user@host 或 ~/.ssh/config 里的别名）；
+#                                           写 wsl 则在本机 WSL 发行版（FLEET_BUILD_WSL_DISTRO，默认 archlinux）里跑，不经 ssh
 #   FLEET_BUILD_DIR=fleet-v1-dev/src        docker：远端源码目录（相对远端家目录，或绝对路径）
 #   FLEET_BUILD_DIST=fleet-v1-dev/dist      docker：远端放 xray、ssserver、geoip.dat 的目录；不全时 deploy.sh 不带 dist
 #   FLEET_BUILD_MUSL_IMAGE=rust:1.98.1-alpine   FLEET_BUILD_GNU_IMAGE=rust:1.98.1-slim-trixie
@@ -62,6 +63,9 @@ FB_RM_APPLEDOUBLE="find . \\( -name target -o -name 'target-*' \\) -prune -o -na
 # 在编译主机上执行一条 shell 命令（lab：fleet-dev 的 root；docker：编译主机上的登录用户，家目录下）
 fb_ssh() {
   if [ "$FB_MODE" = lab ]; then ssh -F "$HOME/.ssh/fleetlab_config" fleet-dev "$@"
+  elif [ "$FLEET_BUILD_HOST" = wsl ]; then
+    # 本机 WSL（Windows 上的 Git Bash）：参数里的 /src 之类不能被 MSYS 改写成 Windows 路径
+    MSYS2_ARG_CONV_EXCL='*' wsl -d "${FLEET_BUILD_WSL_DISTRO:-archlinux}" --cd '~' --exec bash -c "$*"
   else ssh "$FLEET_BUILD_HOST" "$@"
   fi
 }

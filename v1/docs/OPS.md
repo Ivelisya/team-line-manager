@@ -245,7 +245,8 @@ fleet-server 不编 musl 版：项目没有自定义全局分配器，musl 自�
 ```
 # v1/lab/build.env（或同名环境变量）
 FLEET_BUILD=docker
-FLEET_BUILD_HOST=10.172.17.213        # ssh 目标，可写 user@host 或别名
+FLEET_BUILD_HOST=10.172.17.213        # ssh 目标，可写 user@host 或别名；写 wsl 则用本机 WSL（Windows Git Bash，
+                                      # 发行版 FLEET_BUILD_WSL_DISTRO，默认 archlinux，里面装 docker 即可），不压 PVE
 # 以下可选，括号里是默认
 # FLEET_BUILD_DIR=fleet-v1-dev/src     远端源码目录（相对远端家目录）
 # FLEET_BUILD_DIST=fleet-v1-dev/dist   远端 dist 来源
