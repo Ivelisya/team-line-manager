@@ -26,7 +26,7 @@ pub struct ActionIn {
 }
 
 /// 启用 / 停用 / 轮换凭据。轮换要输入「线路机:端口」确认，没确认时的 400 里列出指向这个入口的软路由出口（detail.router_exits，同 GET /entries/{id}/routers）；
-/// 停用、轮换的结果也带上 router_exits：这些出口之后就连不上了（替换节点、换线路机会自动改路由，轮换、停用不会），要到路由上处理
+/// 停用、轮换的结果也带上 router_exits：这些出口之后就连不上了（替换节点、换线路机会自动改路由，轮换、停用不会）：轮换的用 router sync 同步新凭据，停用的用 repoint 改指向
 pub async fn entry_action(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<ActionIn>) -> ApiResult<Json<Value>> {
     let (relay_label, port): (String, i32) =
         sqlx::query_as("select m.label, e.port from entry e join machine m on m.id = e.relay_id where e.id = $1")

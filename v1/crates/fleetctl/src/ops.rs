@@ -721,7 +721,14 @@ fn router_note(rs: &Value, done: &str) -> String {
     if list.is_empty() {
         return String::new();
     }
-    format!("。这些软路由出口指向它，{done}后会连不上（不会自动改路由，要到路由上处理）：{}", list.join("；"))
+    // 轮换后路由上的旧凭据与入口对不上（会开 router_exit_drift），用 router sync 一键换成新的；停用没有可换的，只能改指向（repoint）
+    let fix = if done == "轮换凭据" {
+        let cmds: Vec<String> = rs.as_array().into_iter().flatten().map(|r| format!("fleetctl router sync {}", st(r, "/name"))).collect();
+        format!("。同步到新凭据：{}", cmds.join("；"))
+    } else {
+        "。要让它们继续可用，用 fleetctl repoint 改指向别的入口".to_string()
+    };
+    format!("。这些软路由出口指向它，{done}后会连不上（不会自动改路由）：{}{fix}", list.join("；"))
 }
 
 // ── 远程执行 ─────────────────────────────────────────────────────────
@@ -1021,7 +1028,7 @@ mod tests {
     #[test]
     fn entry_router_note() {
         let rs = json!([{"id": "a", "name": "路由A", "state": "online", "exits": ["节点01", "节点01备"]}, {"id": "b", "name": "路由B", "state": "offline", "exits": ["x"]}]);
-        assert_eq!(router_note(&rs, "轮换凭据"), "。这些软路由出口指向它，轮换凭据后会连不上（不会自动改路由，要到路由上处理）：路由A 的 节点01、节点01备；路由B 的 x");
+        assert_eq!(router_note(&rs, "轮换凭据"), "。这些软路由出口指向它，轮换凭据后会连不上（不会自动改路由）：路由A 的 节点01、节点01备；路由B 的 x。同步到新凭据：fleetctl router sync 路由A；fleetctl router sync 路由B");
         assert_eq!(router_note(&json!([]), "停用"), "");
         assert_eq!(router_note(&Value::Null, "停用"), "", "旧中控的结果里没有 router_exits");
     }

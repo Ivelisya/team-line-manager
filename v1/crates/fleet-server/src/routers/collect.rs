@@ -1042,14 +1042,14 @@ async fn collect(st: &AppState, t: &Target, m: &mut Mem, entries: &[Entry], now:
         None => (None, None),
     };
     // 测延迟：采集成功、mihomo 的出口列表拿到了才测；没测成（超时、出错）这一轮也算测过，不每轮重来。
-    // 没到 5 分钟时只重测不通、还在确认的 fleet 出口（多于 RETEST_MAX 个多半是路由自己的网络断了，不重测）
+    // 没到 5 分钟时只重测上次测不通、还在确认的 fleet 出口（刚不通一次的也算：同步、轮换后不用等 5 分钟才更新）（多于 RETEST_MAX 个多半是路由自己的网络断了，不重测）
     if delay_ok && raw.pointer("/oc/proxies").is_some() {
         let only: Option<Vec<String>> = if m.last_delay.is_none_or(|t| (now - t).whole_seconds() >= DELAY_EVERY_S) {
             m.last_delay = Some(now);
             Some(vec![])
         } else {
             let again: Vec<String> =
-                m.last.iter().flat_map(|l| &l.exits).filter(|e| e.sync != "unmanaged" && (e.fail_streak >= 2 || e.recovering)).map(|e| e.name.clone()).collect();
+                m.last.iter().flat_map(|l| &l.exits).filter(|e| e.sync != "unmanaged" && (e.fail_streak >= 1 || e.recovering)).map(|e| e.name.clone()).collect();
             (!again.is_empty() && again.len() <= RETEST_MAX).then_some(again)
         };
         if let Some(only) = only {
