@@ -577,6 +577,16 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 
 网页的分档（`lib/ping.ts`）：延迟 ≤ 220 ms 绿、≤ 320 ms 黄、更高红（跨境 150–200 ms 是常态，不按国内标准标红）；丢包 0 绿、≤ 10% 黄、更高红。
 
+## 放置矩阵（线路机 × 节点的往返）
+线路机上的 agent 每 5 分钟对全部在用 VPS 节点各测一次到节点 IP 的往返（ICMP，系统 ping 用不了时 TCP 建连 SSH 端口，被拒也算通；并发 4、每个 3 秒），中控据此给出每个节点的最优线路机（`placement.rs`、agent 的 `rtt.rs`，口径见 DESIGN.md「放置矩阵」）。只读、不开告警。
+
+- 下发：`DesiredState.rtt = {interval_s: 300, targets: [{node_id, host（节点 IP）, port（SSH 端口，TCP 退回时用）}]}`；没有节点为 null。节点清单变了（上架、退役、换 IP）后台 5 分钟内给所有在用线路机代数 +1。旧 agent 不认识这个字段、照常应用，只是不测。
+- 上报：`Report.rtt = [{node_id, ts_ms, ok, rtt_ms}]`（旧 agent 不带、旧中控忽略）。只收线路机的、7 天以内的；已不存在的节点跳过。按 (线路机, 节点, 小时) 累加进 `relay_node_rtt_hourly (relay_id, node_id, hour, samples, ok, p50_ms, max_ms, rtts)`，保留 30 天，迁移 0083。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/placement?team=` | `team`：团队 id 或名称（不填 = 全部；没有这个团队 404）。`{relays: [{id, name, status, quota:{limit_gb, used, forecast_full_at}}]（在用、非备用，按名称）, nodes: [{id, name, team, ip, current_relay_id（恰有一条在用入口时它的线路机，否则 null）, entries（在用入口数）, cells: [{relay_id, samples, ok, success_pct, p50_ms}]（与 relays 同序；近 24 小时，没测过 samples 为 0、全不通 p50_ms 为 null）, tcp_fail_7d（近 7 天 tcp_fail 告警次数，含恢复后又触发的）, daily_bytes（换过去后目标每天多出的流量，按近 7 天折算）, best_relay_id, suggest, reason（「慢 23 ms」「当前成功率 97.2%」）, no_room（更快但额度放不下而跳过的线路机 id）}], suggestions: [{to:{id,name}, nodes:[{id, name, from:{id,name}, port, reason}], command（「fleetctl move A,B --to X」）}]（每台目标线路机一条）, window_h: 24, interval_s: 300, min_success_pct: 99, min_gain_ms: 10}`。最优：成功率 ≥ 99%、非故障、额度放得下（`Q::fits`，同一轮建议的流量累计）的线路机里 p50 最小的；`suggest` = 最优不是当前，且当前比最优慢 ≥ 10 ms 或当前成功率 < 99%。执行是 `POST /moves`（不带 `from_relay_id`：建议里的节点都只有一条在用入口） |
+
 ## 软路由（节选）
 `GET /routers`、`GET /routers/{id}`：`state` 为 `pending`（还没接入，或重新接入后还没连上）/ `online` / `offline`（接入过、隧道连不上；采集每 30 秒一轮，隧道连上、断开时中控马上采这台一次，`state` 随即变、发 `routers` 事件）；`error` 在 offline / pending 时是连不上的原因，在 online 时不为空 = 连得上但采集出错（脚本出错、输出读不了、超时而隧道还通），`summary` / `detail` 是上一次成功采集的。`detail.openclash` 另有 `config_error`（配置取不回、解析不了的原因）、`config_stale`（这时出口与入口的对应沿用上次读到的）、`delay_error`（最近一次延迟测试没做成的原因，测成了为 null；出口沿用上一次）；`detail.system.clock_skew_s` = 中控时间 − 路由时间，正数是路由慢。`maintenance`：在维护窗口里（它自己的或全部的，见 `/silences`），卡片显示「维护」。实时事件 `{type:"routers"}` 只在状态、错误或快照里看得见的部分（接口通断、OpenClash 状态与配置、出口的对应与延迟测试结果、在线客户端）变了时发，CPU / 速率等每轮都变的数值不触发。
 `DELETE /routers/{id}`：还有没做完的作业改过它的出口、没确认改回（参数 `routers_applied` 里有它）时 409，消息与 `detail.jobs` 给出作业 id。`?force=true`（路由回不来了）照删：把它从这些作业的 `routers_applied` / `routers_stuck` 里摘掉、作业日志记一条「改回放弃」，作业能重试收尾或取消；这些作业里有正在执行的仍 409。返回多带 `jobs`（摘掉了哪些作业），审计详情带 `force`、`jobs`。
