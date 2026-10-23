@@ -2489,3 +2489,72 @@ async fn desired_format_change_bumps_relays_once() {
     let (s, v) = t.req("GET", &format!("/agent/v1/desired?after={}", ga + 1), None, Some("tok1")).await;
     assert_eq!((s, v["generation"].as_i64()), (StatusCode::OK, Some(ga + 2)), "{v}");
 }
+
+/// 机器告警这一轮：`fire` 里的（对象, 规则）成立，开着的别的恢复。通知只入队（发送循环没起），之后由 `send_queued` 一起发
+async fn machine_round(t: &T, fire: &[(Uuid, &'static str, &'static str)]) {
+    use fleet_server::incident::{self, Close, Engine, Want};
+    let open = incident::firing(&t.st.db, Engine::Machine).await.unwrap();
+    let want = fire.iter().map(|&(subject, rule, name)| Want { rule, subject, name, severity: "critical", text: "出口不通：timeout".into(), detail: None, ready: true }).collect();
+    incident::reconcile(&t.st, Engine::Machine, open, want, "true", OffsetDateTime::now_utc(), |_| Close::Resolve("团队2-09")).await.unwrap();
+}
+
+/// 起发送循环（另一份内存状态，同一个库）：排着的一起发；`wait_s` 是合并时等多久没有新的同类就发
+fn send_queued(t: &T, wait_s: u64) -> AppState {
+    let mut cfg = t.st.cfg.clone();
+    cfg.notify.group_wait_s = wait_s;
+    let st = AppState::new(cfg, t.st.db.clone(), SecretBox::from_key(&[9u8; 32]).unwrap());
+    fleet_server::notify::start(&st);
+    st
+}
+
+/// 同一规则的几台同时触发：每个渠道合成一条消息（标题「N 台 规则」，逐台列出），发送记录仍每条告警各记一条
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn same_rule_firings_are_sent_as_one_message() {
+    let t = setup().await;
+    let mock = Mock::start().await;
+    t.post("/api/v1/notify-channels", json!({"name": "tg", "kind": "telegram", "config": {"bot_token": "1:A", "chat_id": 1, "api_base": mock.url("")}, "min_severity": "info", "enabled": true})).await;
+    t.post("/api/v1/notify-channels", json!({"name": "wc", "kind": "wecom", "config": {"url": mock.url("/wecom/send")}, "min_severity": "info", "enabled": true})).await;
+    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "webhook", "config": {"url": mock.url("/hook/a")}, "min_severity": "info", "enabled": true})).await;
+    t.st.notify_started.store(true, Ordering::Relaxed);
+    let names = ["团队2-07", "团队2-08", "团队2-09"];
+    machine_round(&t, &names.map(|n| (Uuid::new_v4(), "egress_fail", n))).await;
+    send_queued(&t, 0);
+    log_settles(&t, 9).await;
+    assert_eq!((mock.count("/bot1:A"), mock.count("/wecom/send"), mock.count("/hook/a")), (1, 1, 1));
+    let tg = mock.bodies("/bot1:A")[0]["text"].as_str().unwrap().to_string();
+    assert!(tg.starts_with("【严重】告警触发：3 台 出口不通\n· 团队2-0") && names.iter().all(|n| tg.contains(&format!("· {n}：出口不通：timeout"))), "{tg}");
+    let wc = mock.bodies("/wecom/send")[0]["markdown"]["content"].as_str().unwrap().to_string();
+    assert!(wc.contains("告警触发：3 台 出口不通</font>\n> **团队2-0") && wc.contains("\n> 时间："), "{wc}");
+    let wh = &mock.bodies("/hook/a")[0];
+    assert_eq!((wh["event"].as_str(), wh["rule"].as_str(), wh["count"].as_u64(), wh["items"].as_array().unwrap().len()), (Some("firing"), Some("egress_fail"), Some(3), 3));
+    assert_eq!(t.count("select count(distinct incident_id) from notify_log where ok and kind = 'firing'").await, 3);
+}
+
+/// 不同规则不合并，触发与恢复不合并（同一条告警的恢复排在它的触发之后发）；等着合并的时候，不合并的（中控自身的告警）不被挡住、马上发
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn different_rules_and_kinds_are_not_merged() {
+    let t = setup().await;
+    let mock = Mock::start().await;
+    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "webhook", "config": {"url": mock.url("/hook/a")}, "min_severity": "info", "enabled": true})).await;
+    t.st.notify_started.store(true, Ordering::Relaxed);
+    let (a, b, c) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+    machine_round(&t, &[(c, "egress_fail", "团队2-09")]).await;
+    // 下一轮：C 恢复，A（同规则）、B（另一条规则）触发——四条一起排着
+    machine_round(&t, &[(a, "egress_fail", "团队2-07"), (b, "relay_xray_down", "团队2-08")]).await;
+    // 合并等 2 秒：等的时候中控自身告警了，马上发、排在前面
+    let st2 = send_queued(&t, 2);
+    {
+        use fleet_server::incident::{self, Close, Engine, Want};
+        let want = vec![Want { rule: "central_disk_low", subject: Uuid::new_v4(), name: "中控", severity: "critical", text: "磁盘只剩 3%".into(), detail: None, ready: true }];
+        incident::reconcile(&st2, Engine::Central, vec![], want, "true", OffsetDateTime::now_utc(), |_| Close::Keep).await.unwrap();
+    }
+    mock.wait("/hook/a", 1).await;
+    let first = mock.bodies("/hook/a");
+    assert_eq!((first.len(), first[0]["rule"].as_str()), (1, Some("central_disk_low")), "中控自身告警不等合并");
+    log_settles(&t, 5).await;
+    let got: Vec<(String, String, u64)> =
+        mock.bodies("/hook/a").iter().map(|b| (b["event"].as_str().unwrap().into(), b["rule"].as_str().unwrap().into(), b["count"].as_u64().unwrap())).collect();
+    let want = [("firing", "central_disk_low", 1), ("firing", "egress_fail", 2), ("firing", "relay_xray_down", 1), ("resolved", "egress_fail", 1)];
+    assert_eq!(got, want.map(|(e, r, n)| (e.to_string(), r.to_string(), n)));
+    assert_eq!(mock.bodies("/hook/a")[3]["machine"], "团队2-09");
+}

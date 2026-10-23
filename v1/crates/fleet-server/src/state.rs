@@ -82,6 +82,8 @@ pub struct Inner {
     pub metrics_dirty: AtomicBool,
     /// 有新的待发通知了（`notify::enqueue` 写进 notify_outbox 之后）：唤醒发送循环（`notify::run_forever`），不等它兜底重查
     pub notify_wake: Notify,
+    /// 同上，唤醒各渠道的发送任务（`notify::drain_queue` 等合并时边等边听：新排进来的不可合并项马上发）
+    pub notify_queued: Notify,
     /// 发送循环起了没有（每个进程一个，`notify::start`）
     pub notify_started: AtomicBool,
     /// 机器告警该马上评估了（`wake_alerts`）：上报里探测结果翻转、agent 从离线回来、Xray 状态变了，连通性结论、静默或维护变了。
@@ -143,6 +145,7 @@ impl AppState {
             live,
             metrics_dirty: AtomicBool::new(false),
             notify_wake: Notify::new(),
+            notify_queued: Notify::new(),
             notify_started: AtomicBool::new(false),
             alerts_wake: Notify::new(),
             jobs_wake: Notify::new(),

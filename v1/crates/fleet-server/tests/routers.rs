@@ -570,6 +570,8 @@ async fn alerts_open_notify_and_recover() {
     status(&t, &id, false, 600, snap(true, [0, 0], true)).await;
     alerts::evaluate(&t.st, &mut st, t1 + time::Duration::seconds(500)).await.unwrap();
     assert_eq!(incidents(&t, "firing").await.len(), 1);
+    // 等这条重开的离线告警的触发发出去（之前 9 条：4 触发、4 恢复、1 静默变更）
+    mock.wait("/hook/a", 10).await;
     let sent = mock.count("/hook/a");
     assert_eq!(t.req("DELETE", &format!("/api/v1/routers/{id}"), None, None).await.0, StatusCode::OK);
     alerts::evaluate(&t.st, &mut st, t1 + time::Duration::seconds(600)).await.unwrap();
