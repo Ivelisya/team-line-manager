@@ -354,7 +354,7 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 ## 访问监控
 线路机 agent 解析 Xray 访问日志上报，服务端写入 `access_event`（原始记录，默认留 7 天），并每 5 分钟把当前小时和被标脏的小时重算进小时汇总（`access_hourly` / `access_source_hourly`，默认留 31 天；同一事务里重算那个小时所在那天（UTC）的天汇总 `access_daily`，留得一样久——窗口里整天的部分读它，首尾不满一天的读小时表，7d / 30d 主要读天表，结果与只读小时表相同；窗口最长 30d 且不超过汇总的保留期；`access_target_seen` 记每个目标的首次 / 最近出现，最近一次出现超过汇总的保留期就删；留多久见下文「访问记录保留期」；幂等；agent 断网后补传的旧记录在上报时把所在小时记进 `access_dirty`，下一轮补算；启动时补算缺口）。24h/7d/30d 的结果在进程内缓存：每轮汇总成功后整体作废；`summary` / `targets`（第一页）/ `sources` 最多缓存 `access_cache_secs`（默认 300）秒，单台机器的 `/machines/{id}/access` 与 `/machines/{id}/sources`（带最近原始记录、来源基线与异常）最多 30 秒；设 0 关闭。全部为只读 GET，读权限即可。
 
-公共筛选参数（空串等同没给，非法值返回 400）：`window=1h|24h|7d|30d`（默认 24h，events 默认 7d；除 events 外不能比汇总的保留期 `hourly_days` 长，超了 400，见「访问记录保留期」）、`team=<团队id>`、`node=<节点id>`、`search=`（大小写不敏感的子串，`%` `_` 按字面）、`action=all|blocked|routed`、`kind=all|domain|ip`。
+公共筛选参数（空串等同没给，非法值返回 400）：`window=1h|6h|24h|7d|30d`（默认 24h，events 默认 7d；1h 读原始记录，其余读小时汇总；除 events 外不能比汇总的保留期 `hourly_days` 长，超了 400，见「访问记录保留期」）、`team=<团队id>`、`node=<节点id>`、`search=`（大小写不敏感的子串，`%` `_` 按字面）、`action=all|blocked|routed`、`kind=all|domain|ip`。
 
 - **窗口口径**：`1h` 直接查原始记录；`24h` 及以上查小时汇总，起点对齐到整点（`window_start` 返回实际起点），最新数据最多晚 5 分钟。
 - **随机子域名合并**：注册域名之下的标签含 UUID、或 ≥8 位纯十六进制且 ≥2 位数字、或 ≥20 位字母数字且 ≥4 位数字，则整条合并为 `*.<注册域名>`（注册域名取最后两段，倒数第二段是 com/net/org/gov/edu/co 且最后一段是两字母国家码时取最后三段）。`events` 返回的是未合并的原始目标。

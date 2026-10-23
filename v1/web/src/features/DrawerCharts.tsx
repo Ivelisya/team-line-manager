@@ -34,7 +34,8 @@ const L_DISK = [{ key: 'disk_pct', label: '磁盘', color: 'var(--m-disk)' }];
 const L_LOAD = [{ key: 'load_pct', label: '负载', color: 'var(--m-load)' }];
 const L_NET = [{ key: 'net_rx_bps', label: '↓ 下行', color: 'var(--chart-1)' }, { key: 'net_tx_bps', label: '↑ 上行', color: 'var(--chart-2)' }];
 const PCT_DOMAIN: [number, number] = [0, 100];
-const yBytes = (v: number) => (v ? F.str(F.bytes(v)) : '0');
+// 坐标轴刻度是整齐的数（2、4、6 GB），不用固定小数位
+const yBytes = (v: number) => { if (!v) return '0'; const s = F.bytesScale(v); return `${F.inScale(v, s)} ${s.u}`; };
 const vBytes = (_: string, v: number) => { const b = F.bytes(v); return `${b.v} ${b.u}`; };
 
 export function RangeBar({ range, setRange }: { range: string; setRange: (r: string) => void }) {

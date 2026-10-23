@@ -162,9 +162,9 @@ export function IncidentsPage() {
 const ALL = '__all__';
 /** 静默对象类型的叫法（同服务端 api/incidents.rs KINDS） */
 const KIND_LABEL: Record<SilenceKind, string> = { machine: '机器', router: '软路由', probe_point: '探测点' };
-/** 对象在确认框、提示里的叫法：机器是名字，软路由、探测点带上类型，全部是「全部机器」（同服务端通知） */
+/** 对象在确认框标题里的叫法：机器是名字，软路由、探测点带上类型，全部是「全部机器」。同套餐、供应商的删除框（「删除套餐 · 名字」），不加引号 */
 const subjectText = (s: Pick<Silence, 'subject_kind' | 'subject_name'>) =>
-  !s.subject_name ? '全部机器' : s.subject_kind && s.subject_kind !== 'machine' ? `${KIND_LABEL[s.subject_kind]}「${s.subject_name}」` : `「${s.subject_name}」`;
+  !s.subject_name ? '全部机器' : s.subject_kind && s.subject_kind !== 'machine' ? `${KIND_LABEL[s.subject_kind]} ${s.subject_name}` : s.subject_name;
 const AHEAD_DAYS = 90; // 最多提前 90 天预约（同中控）
 const MIN = 60_000;
 type StartMode = 'now' | 'at';

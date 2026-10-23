@@ -30,18 +30,18 @@ export function Num({ f }: { f: Fmt }) {
   return <span className="num">{f.v}{f.u && <> <span className="unit">{f.u}</span></>}</span>;
 }
 
-/** 数据不完整时，数字后面的灰字「10-22 起」（全句说明放悬停 tip / 费用页签） */
-export function FromTag({ from, start, tip, sep }: { from: string | null | undefined; start?: string | null; tip?: string; sep?: boolean }) {
-  return from ? <>{sep ? ' · ' : ' '}<span className="unit" data-tip={tip}>{fromLabel(from, start)} 起</span></> : null;
+/** 数据不完整时，数字后面的灰字「10-22 起」（全句说明放悬停 tip / 费用页签）。dateOnly：只写日期、不带时分（表格副行放不下） */
+export function FromTag({ from, start, tip, sep, dateOnly }: { from: string | null | undefined; start?: string | null; tip?: string; sep?: boolean; dateOnly?: boolean }) {
+  return from ? <>{sep ? ' · ' : ' '}<span className="unit" data-tip={tip}>{dateOnly ? fromLabel(from, start).slice(0, 5) : fromLabel(from, start)} 起</span></> : null;
 }
 /** 表格「本月流量」格（首页表格、机器页共用）：主值 = 下行 + 上行（家宽代理、同机 IP 节点是下载 + 上传），副行「↓ X ↑ Y」（口径见悬停），
- *  不完整时副行末尾灰字「10-22 起」：日期不拼在主值后面，右对齐的一列数字才对得齐 */
+ *  不完整时副行末尾灰字「10-22 起」（只写日期，时分在悬停里）：日期不拼在主值后面，右对齐的一列数字才对得齐 */
 export function MonthFlowCell({ m }: { m: MachineView }) {
   const f = monthFlow(m);
   return (
     <div data-tip={`${f.kind === 'nic' ? `↓ 下行 ${str(bytes(f.down))} · ↑ 上行 ${str(bytes(f.up))}` : `下载 ${str(bytes(f.down))} · 上传 ${str(bytes(f.up))}`}\n${monthFlowTip(m)}`}>
       <Num f={bytes(f.total)} />
-      <span className="sub">{`↓ ${str(bytes(f.down))} ↑ ${str(bytes(f.up))}`}<FromTag from={f.from} sep /></span>
+      <span className="sub">{`↓ ${str(bytes(f.down))} ↑ ${str(bytes(f.up))}`}<FromTag from={f.from} sep dateOnly /></span>
     </div>
   );
 }

@@ -214,8 +214,8 @@ const ruleOptions = () => Object.entries(meta().traffic_rules).map(([value, labe
 /** 流量重置：每个流量周期从哪天起（括注只是说明） */
 const RESET_NOTE: Record<string, string> = { month: '（每月 1 号）', billing: '（到期日那天）', rolling30: '（含今天往前 30 天）' };
 const resetOptions = () => Object.keys(meta().traffic_resets).map((value) => ({ value, label: `${trafficResetText(value)}${RESET_NOTE[value] ?? ''}` }));
-/** 留空的账单时区跟随组织时区：「跟随组织 · 上海（UTC+8）」 */
-const orgTz = () => `跟随组织 · ${tzLabel(meta().org_timezone)}`;
+/** 留空的账单时区跟随组织时区：「跟随组织（北京时间）」，同 fleetctl（中控给的叫法；没有专门叫法的时区写城市与时差） */
+const orgTz = () => { const m = meta(); return `跟随组织（${m.org_timezone_label === m.org_timezone ? tzLabel(m.org_timezone) : m.org_timezone_label}）`; };
 const PROVIDER_COLS = [
   { id: 'name', header: '名称', first: 'asc' as const }, { id: 'code', header: '代码', first: 'asc' as const }, { id: 'tz', header: '账单时区' }, { id: 'rule', header: '流量计量' },
   { id: 'reset', header: '流量重置' }, { id: 'remind', header: '到期提醒', first: 'desc' as const }, { id: 'plans', header: '在用套餐', r: true, first: 'desc' as const },

@@ -69,7 +69,7 @@ export function NodeDrawer() {
             <header className="drawer-head m-drawer-head" style={{ paddingRight: 56 }}>
               <Flag country={m.country} manual={!!m.country_set} ip={m.ip} />
               <div className="m-head" style={{ flex: 1 }}>
-                <div className="m-head-row"><SheetTitle className="drawer-title ellipsis">{m.name}</SheetTitle><HealthPill m={m} /><UnreachPill m={m} /><MachineTags m={m} /></div>
+                <div className="m-head-row"><SheetTitle className="drawer-title ellipsis">{m.name}</SheetTitle><HealthPill m={m} /><UnreachPill m={m} />{/* 维护中已由状态胶囊写了，标签里不再重复 */}<MachineTags m={m.maintenance ? { ...m, maintenance: false } : m} /></div>
                 <SheetDescription className="drawer-sub ellipsis">{m.ip} · {m.host_machine ? `同机 · ${m.host_machine.name}` : m.plan?.name ?? '未设套餐'}{!m.provider && ' · 未设供应商'}{m.spare_from && ` · 原 ${m.spare_from}`}</SheetDescription>
               </div>
               {sib && (

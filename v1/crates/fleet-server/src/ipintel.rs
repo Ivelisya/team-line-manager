@@ -840,7 +840,7 @@ pub async fn sources_profile(st: &AppState, machine_id: Uuid, window: Window, li
         .collect();
 
     Ok(json!({
-        "window": match window { Window::H1 => "1h", Window::H24 => "24h", Window::D7 => "7d", Window::D30 => "30d" },
+        "window": match window { Window::H1 => "1h", Window::H6 => "6h", Window::H24 => "24h", Window::D7 => "7d", Window::D30 => "30d" },
         "window_start": access::fmt_ts(from),
         "empty": rows.is_empty(),
         "degraded": svc.intel.loaded() == 0,

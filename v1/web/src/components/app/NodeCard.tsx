@@ -18,7 +18,7 @@ import { useNow } from '@/lib/useNow';
 import { sharedObserver, watchSize } from '@/lib/sharedObserver';
 import { type DrawerTab } from '@/lib/drawer';
 import { cn } from '@/lib/utils';
-import { Beat, Due, Flag, FromTag, HealthPill, LabelValue, LinkCounts, Mark, Num, SPARE_TIP } from './primitives';
+import { Beat, Due, Flag, FromTag, HealthPill, LabelValue, LinkCounts, Mark, Num, Pill, SPARE_TIP } from './primitives';
 import { MachineTag, machineTagItems } from './MachineTags';
 import { PingRows } from './PingRows';
 import { CellMeter, Cells, DotTrace, QUOTA_COLORS, Tag } from './viz';
@@ -29,6 +29,8 @@ export type CardView = 'large' | 'small' | 'compact';
 export type CardShow = 'due' | 'traffic';
 type Open = (tab?: DrawerTab) => void;
 type Paused = { readonly current: boolean };
+/** 「仅看异常」里恢复正常、还留在原位的那张卡（首页传 recovered）的「已恢复」标记的说明，环形卡共用 */
+export const RECOVERED_TIP = '开着「仅看异常」时，恢复正常的留在原位；关掉筛选或换分组后不再列出';
 
 // 卡片随实时推送重渲染（m 换了引用）。静态的几块（标题、地址与字段、标签、运行行、footer、心跳条）各自 memo、只收用到的字段，
 // 推送只重画读数（资源格条、速率、剩余流量）。滚出视口（含上下 200px 余量）的卡冻结在最后一份数据上，回到视口时换成最新的（见 NodeCardImpl）。
@@ -314,11 +316,11 @@ const Tags = memo(function Tags({ code, provider, kind, maintenance, price, pric
   );
 });
 
-/** footer：状态胶囊（健康原因在它的悬停里）、按到期 / 流量排序时的排序依据、详情与管理 */
-const Foot = memo(function Foot({ health, lifecycle, maintenance, show, showTone, showTip, onOpen }: Pick<MachineView, 'health' | 'lifecycle' | 'maintenance'> & { show?: string; showTone?: string; showTip?: string; onOpen: Open }) {
+/** footer：状态胶囊（健康原因在它的悬停里）、「仅看异常」里已恢复的标记、按到期 / 流量排序时的排序依据、详情与管理 */
+const Foot = memo(function Foot({ health, lifecycle, maintenance, recovered, show, showTone, showTip, onOpen }: Pick<MachineView, 'health' | 'lifecycle' | 'maintenance'> & { recovered?: boolean; show?: string; showTone?: string; showTip?: string; onOpen: Open }) {
   return (
     <footer className="nc-foot">
-      <span className="nc-foot-left"><HealthPill m={{ health, lifecycle, maintenance }} />{show && <span className="nc-show" data-tone={showTone || undefined} data-tip={showTip}>{show}</span>}</span>
+      <span className="nc-foot-left"><HealthPill m={{ health, lifecycle, maintenance }} />{recovered && <Pill tone="neutral" dot="none" tip={RECOVERED_TIP}>已恢复</Pill>}{show && <span className="nc-show" data-tone={showTone || undefined} data-tip={showTip}>{show}</span>}</span>
       <div className="nc-foot-right">
         <Button variant="text" size="sm" onClick={() => onOpen()}><PanelRightOpen size={14} /><span>详情</span></Button>
         <Button variant="text" size="sm" onClick={() => onOpen('manage')}><Settings2 size={14} /><span>管理</span></Button>
@@ -333,7 +335,7 @@ function showOf(m: MachineView, show: CardShow | undefined, view: CardView): { t
     const d = F.dueFmt(s.due_days, dueTone(s.due_state));
     return { text: `${d.pre}${d.f ? F.str(d.f) : ''}${d.post}${d.past ? '' : '到期'}`, tone: d.tone };
   }
-  if (show === 'traffic' && !(view === 'large' && hasHost(m))) return { text: `${monthFlow(m).kind === 'biz' ? '本月业务' : '本月'} ${F.str(F.bytes(trafficTotal(m)))}`, tip: monthFlowTip(m) };
+  if (show === 'traffic' && !(view === 'large' && hasHost(m))) return { text: `本月流量 ${F.str(F.bytes(trafficTotal(m)))}`, tip: monthFlowTip(m) };
   return {};
 }
 
@@ -341,7 +343,7 @@ function showOf(m: MachineView, show: CardShow | undefined, view: CardView): { t
 // 回到视口时换成最新的。一页 96 张紧凑卡，一条推送原来要把视口外的几十张一起重画
 const watchNear = sharedObserver<IntersectionObserverEntry>((cb) => new IntersectionObserver(cb, { rootMargin: '200px 0px' }));
 
-type CardProps = { m: MachineView; view: CardView; current?: boolean; onOpen: (id: string, tab?: DrawerTab) => void; layoutKey: string | null; show?: CardShow };
+type CardProps = { m: MachineView; view: CardView; current?: boolean; onOpen: (id: string, tab?: DrawerTab) => void; layoutKey: string | null; show?: CardShow; recovered?: boolean };
 /** 卡片只吃稳定的 props（onOpen 回调不随地址变化），配合 memo，抽屉开关时只有变了的那张重渲染。
  *  layoutKey：筛选/排序/视图的签名，变了才量位置做布局动画（layoutDependency），平时重渲染不量；null = 不做布局动画（卡片太多时由首页传）。
  *  出现时的淡入走 CSS（cards.css），不等 motion 特性包：特性包到位之前 initial 的透明度会一直停在 0 */
@@ -355,7 +357,7 @@ function NodeCardImpl(p: CardProps) {
   return <CardBody {...p} m={held.current} cardRef={ref} paused={paused} />;
 }
 
-const CardBody = memo(function CardBody({ m, view, current, onOpen: open, layoutKey, show, cardRef, paused }: CardProps & { cardRef: React.RefObject<HTMLElement | null>; paused: Paused }) {
+const CardBody = memo(function CardBody({ m, view, current, onOpen: open, layoutKey, show, recovered, cardRef, paused }: CardProps & { cardRef: React.RefObject<HTMLElement | null>; paused: Paused }) {
   const onOpen = useCallback<Open>((tab) => open(m.id, tab), [open, m.id]);
   const proxy = m.kind === 'proxy';
   const quiet = isQuiet(m);
@@ -400,7 +402,7 @@ const CardBody = memo(function CardBody({ m, view, current, onOpen: open, layout
         {beat}
       </>}
 
-      <Foot health={m.health} lifecycle={m.lifecycle} maintenance={m.maintenance} show={sv.text} showTone={sv.tone} showTip={sv.tip} onOpen={onOpen} />
+      <Foot health={m.health} lifecycle={m.lifecycle} maintenance={m.maintenance} recovered={recovered} show={sv.text} showTone={sv.tone} showTip={sv.tip} onOpen={onOpen} />
     </mo.article>
   );
 });
