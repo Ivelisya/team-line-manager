@@ -5,7 +5,7 @@
 //!
 //! | 规则 | 级别 | 开 |
 //! |---|---|---|
-//! | router_offline | 严重 | 接入过（换了这把隧道密钥之后连上过）、此刻连不上超过 2 分钟（中控收不到上报的时段不算，同 agent 离线，见 report_gaps.rs） |
+//! | router_offline | 严重 | 接入过（换了这把隧道密钥之后连上过）、此刻连不上满 1 分钟（中控收不到上报的时段不算，同 agent 离线，见 report_gaps.rs） |
 //! | router_offline | 警告 | 接入过的路由重新接入（重新生成接入命令、重新部署）之后 30 分钟还没连上 |
 //! | router_collect_error | 警告 | 连得上，但采集脚本出错、输出解析不了、超时（满 60 秒） |
 //! | router_openclash_down | 严重 | OpenClash 启用了、核心没在跑（满 60 秒） |
@@ -13,7 +13,10 @@
 //! | router_wan_down | 严重 | WAN 口（逻辑接口 wan）断开（满 60 秒） |
 //! | router_resource_high | 警告 | CPU > 90% 持续 10 分钟、内存 > 90%、存储 > 90%、连接表 > 80%（后三项满 60 秒） |
 //!
-//! 恢复：原因消失满 60 秒（出口延迟每 5 分钟才测一轮：一轮测通就算原因消失，这 60 秒里不会再测）。连不上、采集出错的路由其余几条无从判断，保持原状（不开也不关）。路由删掉时它的告警直接关掉、不发恢复。
+//! 恢复：离线的连上就恢复（隧道一回来中控马上采一次，见 collect.rs `watch_tunnels`）；出口不通的，不通的出口连续两次测通就恢复
+//! （不通、还在确认的出口每轮采集单独重测，不等 5 分钟一轮）；其余原因消失满 60 秒。连不上、采集出错的路由其余几条无从判断，保持原状（不开也不关）。
+//! 路由删掉时它的告警直接关掉、不发恢复。
+//! 什么时候评估：每轮采集之后（30 秒一轮，隧道连上 / 断开时马上采的那一轮也算），连不上的路由到满 1 分钟的那一刻再评估一次（`evaluate` 的返回值）。
 //! 重新接入后（等待接入）开着的离线告警直接关掉、不发恢复（路由还没连上，不能说「已恢复」），30 分钟还没连上再开上面那条警告。
 //! 严重度只升不降（升到严重马上再发一次「触发」），同 alerts.rs。
 
@@ -38,6 +41,8 @@ pub const RESOURCE_HIGH: &str = "router_resource_high";
 const REBOOTSTRAP_S: i64 = super::BOOTSTRAP_MINUTES * 60;
 /// 开（不带时长的条件）、关的去抖
 const DEBOUNCE_S: i64 = 60;
+/// 连不上满这么久开离线告警（扣掉中控收不到上报的时段）：采集每 30 秒一轮，隧道断开时还马上采一次，至少两次没连上
+const OFFLINE_S: i64 = 60;
 /// CPU 持续偏高满这么久
 const CPU_SUSTAIN_S: i64 = 600;
 /// 时长判定的余量：采集每 30 秒一轮、每轮耗时不一，「满 60 秒」实际量到的是 59.x 秒，差这几秒不该再多等一轮
@@ -206,8 +211,9 @@ pub fn problems(v: &View, cpu_high_since: Option<OffsetDateTime>, tg: &Targets, 
     (out, true)
 }
 
-/// 评估一轮，把路由的告警对齐到 incident 表（incident.rs）。`now` 由调用方给（测试可以快进）
-pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime) -> anyhow::Result<()> {
+/// 评估一轮，把路由的告警对齐到 incident 表（incident.rs）。`now` 由调用方给（测试可以快进）。
+/// 返回多久之后该再评估一次：有连不上、还没满 `OFFLINE_S` 的路由时，到它满的那一刻（不等下一轮采集）
+pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime) -> anyhow::Result<Option<std::time::Duration>> {
     let rows = super::load(&st.db, None).await?;
     let views: Vec<View> = rows
         .iter()
@@ -217,12 +223,18 @@ pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime
             state: r.state(),
             error: r.error.clone(),
             last_ok_at: r.last_ok_at,
-            // 余量同 held：往前挪 SLACK_S 秒再按 agent 的口径判
-            offline_held: r.last_ok_at.is_some_and(|ok| !st.report_gaps.online(ok - time::Duration::seconds(SLACK_S), now)),
+            offline_held: r.last_ok_at.is_some_and(|ok| st.report_gaps.silent_s(ok, now) + SLACK_S >= OFFLINE_S),
             pending_since: r.pending_since,
             snap: r.snapshot(),
         })
         .collect();
+    let recheck = views
+        .iter()
+        .filter(|v| v.state == "offline" && !v.offline_held)
+        .filter_map(|v| v.last_ok_at)
+        .map(|ok| OFFLINE_S - SLACK_S - st.report_gaps.silent_s(ok, now))
+        .min()
+        .map(|s| std::time::Duration::from_secs(s.max(1) as u64));
     let tg = targets(&st.db, &views).await?;
     // 维护窗口自己开始 / 结束（预约的到点、到期）时没有人操作、也就没有事件：路由列表里的「维护」靠这里发 Routers 才跟上（新建 / 删除静默时 api/incidents.rs 已发）
     let maintenance: HashSet<Uuid> = {
@@ -275,6 +287,8 @@ pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime
         }
     }
     let names: HashMap<Uuid, (&str, &str)> = views.iter().map(|v| (v.id, (v.name.as_str(), v.state))).collect();
+    // 刚测通、还要再确认一次的 fleet 出口：出口告警先不关
+    let confirming: HashSet<Uuid> = views.iter().filter(|v| v.snap.as_ref().is_some_and(|s| s.exits.iter().any(|e| e.sync != "unmanaged" && e.recovering))).map(|v| v.id).collect();
     let clean_since = &mut state.clean_since;
     incident::reconcile(st, Engine::Router, open, want, "exists (select 1 from router where id = $3)", now, |inc| {
         // 路由已经删了（删除接口会关掉，这里兜底）：关掉、不发恢复
@@ -289,8 +303,14 @@ pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime
             clean_since.remove(&inc.id);
             return Close::Keep;
         }
+        // 离线的连上就恢复；出口不通的，不通的出口连续两次测通（没有还在确认的）就恢复；其余满去抖时长
         let since = *clean_since.entry(inc.id).or_insert(now);
-        if !held(since, now, DEBOUNCE_S) {
+        let ok = match inc.rule.as_str() {
+            OFFLINE => state == "online",
+            EXITS_DOWN => !confirming.contains(&inc.subject_id),
+            _ => held(since, now, DEBOUNCE_S),
+        };
+        if !ok {
             return Close::Keep;
         }
         clean_since.remove(&inc.id);
@@ -300,7 +320,7 @@ pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime
     state.clean_since.retain(|id, _| open_ids.contains(id));
     let ids: HashSet<Uuid> = views.iter().map(|v| v.id).collect();
     state.cpu_high_since.retain(|id, _| ids.contains(id));
-    Ok(())
+    Ok(recheck)
 }
 
 /// 各路由不通的出口指向的节点、线路机里，此刻在维护（静默表的维护，同机 IP 节点看宿主机）、有机器告警在告警的。没有不通的出口时不查库
@@ -349,7 +369,7 @@ mod tests {
             state,
             error: (state != "online").then(|| "经隧道连不上路由：Connection refused".into()),
             last_ok_at: Some(ok),
-            offline_held: held(ok, now, crate::views::AGENT_OFFLINE_S),
+            offline_held: held(ok, now, OFFLINE_S),
             pending_since: None,
             snap,
         }
@@ -368,7 +388,7 @@ mod tests {
     #[test]
     fn offline_after_two_minutes_only() {
         let now = OffsetDateTime::now_utc();
-        assert!(problems(&view("offline", None, 90, now), None, &Targets::default(), now).0.is_empty(), "不到 2 分钟");
+        assert!(problems(&view("offline", None, 40, now), None, &Targets::default(), now).0.is_empty(), "不到 1 分钟");
         let (p, judged) = problems(&view("offline", Some(healthy()), 300, now), None, &Targets::default(), now);
         assert!(!judged, "连不上时其余几条无从判断");
         assert_eq!((p.len(), p[0].rule, p[0].severity), (1, OFFLINE, "critical"));

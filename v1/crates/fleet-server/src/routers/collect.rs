@@ -10,6 +10,8 @@
 //!   这一轮也算测过（不每轮重来）。fleet 出口（对上了 fleet 入口的）先测；没通的 fleet 出口（不超过 5 个时）当场单独重测一次，
 //!   通了就算这一轮通；超了时间预算没轮到的、mihomo 没回话的沿用上一次（delay.untested）；
 //!   结果进快照与那一点的 router_exit_metric，连续失败次数（fail_streak）随快照存着，告警 router_exits_down 看它。
+//!   不通的 fleet 出口（连续两次不通）、刚测通还要再确认一次的（`Exit::recovering`）不等 5 分钟：每轮采集单独重测它们（不超过 5 个时，同上），
+//!   出口恢复后约一分钟告警就恢复。
 //! - 出口与 fleet 入口：配置文件的 sha256 变了才取回来解析（见 clash.rs），解析结果只在内存里。解析不了（或取不回来）时沿用
 //!   上一次解析成功的出口（openclash.config_stale；中控重启后内存里没有，就沿用上一份快照里各出口对上的入口），不整体退化成「不是 fleet 的」：
 //!   替换、退役预览、备用到期提醒靠它看出指向节点的出口。
@@ -53,20 +55,20 @@ if ! command -v ucode >/dev/null 2>&1; then echo '{"v":1,"error":"路由上没�
 cat > /tmp/fleet-collect/collect.uc <<'FLEET_UC'
 @@PROGRAM@@
 FLEET_UC
-FLEET_MODE="$MODE" FLEET_DELAY_URL="$DELAY_URL" FLEET_MANAGED="$MANAGED" exec ucode /tmp/fleet-collect/collect.uc
+FLEET_MODE="$MODE" FLEET_DELAY_URL="$DELAY_URL" FLEET_MANAGED="$MANAGED" FLEET_ONLY="$ONLY" exec ucode /tmp/fleet-collect/collect.uc
 }
 main </dev/null
 "#;
 
 /// 采集脚本
-pub fn script() -> String { program("collect", &[]) }
+pub fn script() -> String { program("collect", &[], &[]) }
 
-/// 延迟测试脚本：`managed` 是 fleet 出口的名字（先测、重测名额先给它们）
-pub fn delay_script(managed: &[String]) -> String { program("delay", managed) }
+/// 延迟测试脚本：`managed` 是 fleet 出口的名字（先测、重测名额先给它们）；`only` 不为空时只测这几个（每轮的单独重测）
+pub fn delay_script(managed: &[String], only: &[String]) -> String { program("delay", managed, only) }
 
-fn program(mode: &str, managed: &[String]) -> String {
-    let managed = serde_json::to_string(managed).unwrap_or_else(|_| "[]".into());
-    crate::jobs::scripts::vars(&[("MODE", mode), ("DELAY_URL", &delay_url_param()), ("MANAGED", &managed)])
+fn program(mode: &str, managed: &[String], only: &[String]) -> String {
+    let json = |v: &[String]| serde_json::to_string(v).unwrap_or_else(|_| "[]".into());
+    crate::jobs::scripts::vars(&[("MODE", mode), ("DELAY_URL", &delay_url_param()), ("MANAGED", &json(managed)), ("ONLY", &json(only))])
         + &WRAPPER.replace("@@PROGRAM@@", include_str!("collect.uc").trim_end())
 }
 
@@ -171,6 +173,8 @@ pub struct Exit {
     pub delay_at: Option<OffsetDateTime>,
     /// 连续几次延迟测试不通（两次起告警）
     pub fail_streak: u32,
+    /// 不通（连续两次以上）之后刚测通一次：再测通一次才算恢复（router_exits_down 这之前不关），这之间每轮采集都重测它
+    pub recovering: bool,
     pub conns: i64,
     pub up_bps: Option<i64>,
     pub down_bps: Option<i64>,
@@ -454,18 +458,20 @@ fn exits(oc: &Value, last: Option<&Snapshot>, config: Option<&[Proxy]>, entries:
                 Some(p) => clash::match_entry(p, entries),
                 None => (None, "unmanaged"),
             };
-            let (alive, delay_ms, delay_at, fail_streak) = match results.filter(|_| !untested.contains(name.as_str())) {
+            let (alive, delay_ms, delay_at, fail_streak, recovering) = match results.filter(|_| !untested.contains(name.as_str())) {
                 Some(r) => match r.get(&name).and_then(Value::as_i64).filter(|d| *d > 0) {
-                    Some(d) => (Some(true), Some(d), Some(now), 0),
-                    None => (Some(false), None, Some(now), prev.map_or(0, |p| p.fail_streak) + 1),
+                    // 不通之后第一次测通：还在确认（下一次也通才算恢复）
+                    Some(d) => (Some(true), Some(d), Some(now), 0, prev.is_some_and(|p| p.fail_streak >= 2)),
+                    None => (Some(false), None, Some(now), prev.map_or(0, |p| p.fail_streak) + 1, false),
                 },
                 None => match prev {
-                    Some(p) => (p.alive, p.delay_ms, p.delay_at, p.fail_streak),
+                    Some(p) => (p.alive, p.delay_ms, p.delay_at, p.fail_streak, p.recovering),
                     None => (
                         api.and_then(|a| a.get("alive")).and_then(Value::as_bool),
                         api.and_then(|a| a.get("delay")).and_then(Value::as_i64).filter(|d| *d > 0),
                         api.and_then(|a| ts(a, "at")),
                         0,
+                        false,
                     ),
                 },
             };
@@ -481,6 +487,7 @@ fn exits(oc: &Value, last: Option<&Snapshot>, config: Option<&[Proxy]>, entries:
                 delay_ms,
                 delay_at,
                 fail_streak,
+                recovering,
                 conns: i(&st, "conns").unwrap_or(0),
                 up_bps: bps("up"),
                 down_bps: bps("down"),
@@ -617,6 +624,15 @@ impl Default for Refresh {
 impl Refresh {
     /// 马上采这几台，等这一轮做完（最多 [`NOW_WAIT`]）；采集循环没在跑就不等
     pub async fn now(&self, ids: impl IntoIterator<Item = Uuid>) {
+        let seq = self.ask(ids);
+        if self.running.load(Ordering::Relaxed) {
+            let mut rx = self.served.subscribe();
+            let _ = tokio::time::timeout(NOW_WAIT, rx.wait_for(|s| *s >= seq)).await;
+        }
+    }
+
+    /// 马上采这几台，不等它做完（隧道连上、断开时，见 [`watch_tunnels`]）。返回这次请求的序号
+    pub fn ask(&self, ids: impl IntoIterator<Item = Uuid>) -> u64 {
         let seq = {
             let mut d = self.due.lock().unwrap();
             d.0 += 1;
@@ -624,10 +640,7 @@ impl Refresh {
             d.0
         };
         self.wake.notify_one();
-        if self.running.load(Ordering::Relaxed) {
-            let mut rx = self.served.subscribe();
-            let _ = tokio::time::timeout(NOW_WAIT, rx.wait_for(|s| *s >= seq)).await;
-        }
+        seq
     }
 
     fn take(&self) -> (u64, Vec<Uuid>) {
@@ -651,10 +664,19 @@ pub async fn run_forever(st: AppState) {
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let refresh = &st.routers_refresh;
     refresh.running.store(true, Ordering::Relaxed);
+    // 连不上的路由满 1 分钟的那一刻再评估告警（alerts::evaluate 的返回值）
+    let mut eval_at: Option<tokio::time::Instant> = None;
     loop {
-        let full = tokio::select! {
-            _ = tick.tick() => true,
-            _ = refresh.wake.notified() => false,
+        let due_eval = async move {
+            match eval_at {
+                Some(t) => tokio::time::sleep_until(t).await,
+                None => std::future::pending().await,
+            }
+        };
+        let (full, eval_only) = tokio::select! {
+            _ = tick.tick() => (true, false),
+            _ = refresh.wake.notified() => (false, false),
+            _ = due_eval => (false, true),
         };
         // 排着的立即采集一起取走：整轮会采到它们，否则只采它们
         let (seq, due) = refresh.take();
@@ -670,12 +692,65 @@ pub async fn run_forever(st: AppState) {
             }
         }
         refresh.served.send_replace(seq);
-        if full {
-            if let Err(e) = super::alerts::evaluate(&st, &mut alerts, OffsetDateTime::now_utc()).await {
-                tracing::error!("软路由告警评估失败：{e:#}");
+        // 每轮（含马上采的那几台）之后评估告警：隧道连上马上采成功，离线告警当场恢复
+        if full || eval_only || !due.is_empty() {
+            eval_at = None;
+            match super::alerts::evaluate(&st, &mut alerts, OffsetDateTime::now_utc()).await {
+                Ok(next) => eval_at = next.map(|d| tokio::time::Instant::now() + d),
+                Err(e) => tracing::error!("软路由告警评估失败：{e:#}"),
             }
         }
     }
+}
+
+/// 多久看一次本机的隧道端口（只读 /proc/net/tcp，不连路由）
+const WATCH_EVERY: Duration = Duration::from_secs(2);
+
+/// 盯着本机隧道端口的监听：路由的反向隧道连上（中控 sshd 开始在 127.0.0.1:<端口> 上监听）或断开（监听没了）时马上采一次这几台，
+/// 不等 30 秒一轮——界面上的在线 / 离线随即跟上（采完发 `Event::Routers`），连上了离线告警当场恢复。
+/// 路由断电、断网这类没告别的断开，中控 sshd 要 ClientAlive 约 30 秒才发现（deploy/central/sshd-fleet-tunnel.conf）；
+/// 离线告警本身按「连不上满 1 分钟」开（alerts.rs），不靠它。读不了 /proc/net/tcp（不是 Linux）就不盯，照 30 秒一轮
+pub async fn watch_tunnels(st: AppState) {
+    let (lo, hi) = (st.cfg.routers.port_min, st.cfg.routers.port_max);
+    let mut prev: Option<HashSet<u16>> = None;
+    let mut tick = tokio::time::interval(WATCH_EVERY);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tick.tick().await;
+        let cur = match tokio::fs::read_to_string("/proc/net/tcp").await {
+            Ok(text) => listening_ports(&text, lo, hi),
+            Err(e) => {
+                tracing::warn!("读不了 /proc/net/tcp，隧道连上 / 断开不马上采集（照每 30 秒一轮）：{e}");
+                return std::future::pending().await;
+            }
+        };
+        let changed: Vec<i32> = prev.as_ref().map(|p| p.symmetric_difference(&cur).map(|x| i32::from(*x)).collect()).unwrap_or_default();
+        prev = Some(cur);
+        if changed.is_empty() {
+            continue;
+        }
+        match sqlx::query_scalar::<_, Uuid>("select id from router where tunnel_port = any($1)").bind(&changed).fetch_all(&st.db).await {
+            Ok(ids) if !ids.is_empty() => {
+                st.routers_refresh.ask(ids);
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!("查隧道端口对应的路由失败：{e}"),
+        }
+    }
+}
+
+/// /proc/net/tcp 里 127.0.0.1 上在监听（状态 0A）、端口在 `lo..=hi` 之间的（本地地址按小端十六进制：0100007F:5A3C）
+fn listening_ports(text: &str, lo: u16, hi: u16) -> HashSet<u16> {
+    text.lines()
+        .skip(1)
+        .filter_map(|l| {
+            let mut f = l.split_whitespace();
+            let (local, state) = (f.nth(1)?, f.nth(1)?);
+            let (addr, port) = local.split_once(':')?;
+            let port = u16::from_str_radix(port, 16).ok()?;
+            (addr == "0100007F" && state == "0A" && (lo..=hi).contains(&port)).then_some(port)
+        })
+        .collect()
 }
 
 /// 采集一轮（全部路由并发，最多 8 台同时）。有路由的状态或摘要变了就发一次实时事件
@@ -931,14 +1006,24 @@ async fn collect(st: &AppState, t: &Target, m: &mut Mem, entries: &[Entry], now:
         Some((_, Err(e))) => (m.good.as_deref(), Some(e.clone())),
         None => (None, None),
     };
-    // 测延迟：采集成功、mihomo 的出口列表拿到了才测；没测成（超时、出错）这一轮也算测过，不每轮重来
-    if delay_ok && raw.pointer("/oc/proxies").is_some() && m.last_delay.is_none_or(|t| (now - t).whole_seconds() >= DELAY_EVERY_S) {
-        m.last_delay = Some(now);
-        let managed = managed_names(config, m.last.as_ref(), entries);
-        raw["oc"]["delay"] = match delay(st, t, &managed).await {
-            Ok(d) => d,
-            Err(e) => serde_json::json!({"ok": false, "error": e}),
+    // 测延迟：采集成功、mihomo 的出口列表拿到了才测；没测成（超时、出错）这一轮也算测过，不每轮重来。
+    // 没到 5 分钟时只重测不通、还在确认的 fleet 出口（多于 RETEST_MAX 个多半是路由自己的网络断了，不重测）
+    if delay_ok && raw.pointer("/oc/proxies").is_some() {
+        let only: Option<Vec<String>> = if m.last_delay.is_none_or(|t| (now - t).whole_seconds() >= DELAY_EVERY_S) {
+            m.last_delay = Some(now);
+            Some(vec![])
+        } else {
+            let again: Vec<String> =
+                m.last.iter().flat_map(|l| &l.exits).filter(|e| e.sync != "unmanaged" && (e.fail_streak >= 2 || e.recovering)).map(|e| e.name.clone()).collect();
+            (!again.is_empty() && again.len() <= RETEST_MAX).then_some(again)
         };
+        if let Some(only) = only {
+            let managed = managed_names(config, m.last.as_ref(), entries);
+            raw["oc"]["delay"] = match delay(st, t, &managed, &only).await {
+                Ok(d) => d,
+                Err(e) => serde_json::json!({"ok": false, "error": e}),
+            };
+        }
     }
     let mut b = build(&raw, &m.prev, m.last.as_ref(), config, entries, now);
     if config_error.is_some() {
@@ -947,6 +1032,9 @@ async fn collect(st: &AppState, t: &Target, m: &mut Mem, entries: &[Entry], now:
     b.snap.openclash.config_error = config_error;
     Outcome::Ok(Box::new(b))
 }
+
+/// 每轮单独重测的出口最多这么多个（同 collect.uc 的 RETEST_MAX）
+const RETEST_MAX: usize = 5;
 
 /// 输出里最后一行 JSON
 fn last_json(stdout: &str) -> Option<Value> { stdout.lines().rev().find(|l| l.trim_start().starts_with('{')).and_then(|l| serde_json::from_str(l).ok()) }
@@ -987,8 +1075,8 @@ fn carry_mapping(exits: &mut [Exit], last: Option<&Snapshot>) -> bool {
 }
 
 /// 测一次出口延迟（单独一次执行、单独的时限）：返回采集脚本的 oc.delay（mihomo 调不通时 ok = false 带原因）；执行本身失败返回原因
-async fn delay(st: &AppState, t: &Target, managed: &[String]) -> Result<Value, String> {
-    let out = crate::ssh::exec(tunnel::via_tunnel(&st.cfg, t.id, t.tunnel_port), &delay_script(managed), DELAY_TIMEOUT)
+async fn delay(st: &AppState, t: &Target, managed: &[String], only: &[String]) -> Result<Value, String> {
+    let out = crate::ssh::exec(tunnel::via_tunnel(&st.cfg, t.id, t.tunnel_port), &delay_script(managed, only), DELAY_TIMEOUT)
         .await
         .map_err(|e| format!("延迟测试：{e:#}"))?;
     if out.code == 255 {
@@ -1197,6 +1285,11 @@ mod tests {
         assert_eq!((e[0].alive, e[0].delay_ms, e[0].fail_streak), (Some(true), Some(90), 0));
         assert_eq!((e[1].alive, e[1].fail_streak, e[1].delay_at), (Some(false), 2, b3.snap.exits[1].delay_at));
         assert_eq!((b4.exits[0].alive, b4.exits[1].alive), (Some(true), None));
+        // 不通之后第一次测通：还在确认；再测通一次才算恢复
+        let ok = |prev: &Built, at: i64| build(&raw(0, 0, 0, tested(json!({"节点01": 90, "节点02": 70}))), &prev.prev, Some(&prev.snap), Some(&proxies()), &[], t0 + time::Duration::seconds(at));
+        let b5 = ok(&b4, 630);
+        assert_eq!((b5.snap.exits[1].fail_streak, b5.snap.exits[1].recovering, b5.snap.exits[0].recovering), (0, true, false));
+        assert!(!ok(&b5, 660).snap.exits[1].recovering);
     }
 
     /// 延迟测试没做成（单独那次执行超时、OpenClash 没在跑）：出口沿用上一次，原因记在 delay_error，没测的轮次沿用它，测成了清掉
@@ -1273,13 +1366,24 @@ mod tests {
     }
 
     #[test]
+    fn tunnel_listeners_from_proc() {
+        let text = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0100007F:59D8 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 1 1 0 100 0 0 10 0
+   1: 0100007F:59D9 0100007F:C350 01 00000000:00000000 00:00000000 00000000     0        0 2 1 0 100 0 0 10 0
+   2: 00000000:59DA 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 3 1 0 100 0 0 10 0
+   3: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 4 1 0 100 0 0 10 0";
+        // 只认 127.0.0.1 上在监听的、隧道端口段里的（23000 = 0x59D8）
+        assert_eq!(listening_ports(text, 23000, 23999), HashSet::from([23000]));
+    }
+
+    #[test]
     fn script_carries_program_and_parameters() {
         let s = script();
-        assert!(s.starts_with("MODE='collect'\nDELAY_URL='https%3A%2F%2Fwww.gstatic.com%2Fgenerate_204'\nMANAGED='[]'\n"), "{}", &s[..120]);
+        assert!(s.starts_with("MODE='collect'\nDELAY_URL='https%3A%2F%2Fwww.gstatic.com%2Fgenerate_204'\nMANAGED='[]'\nONLY='[]'\n"), "{}", &s[..120]);
         assert!(s.contains("'use strict';") && s.contains("\nFLEET_UC\n") && s.trim_end().ends_with("main </dev/null"));
         // 延迟测试：fleet 出口的名字按 JSON 数组传（单引号照样转义）
-        let d = delay_script(&["节点01".into(), "it's".into()]);
-        assert!(d.starts_with("MODE='delay'\n") && d.contains("MANAGED='[\"节点01\",\"it'\\''s\"]'\n"), "{}", &d[..160]);
+        let d = delay_script(&["节点01".into(), "it's".into()], &["节点01".into()]);
+        assert!(d.starts_with("MODE='delay'\n") && d.contains("MANAGED='[\"节点01\",\"it'\\''s\"]'\nONLY='[\"节点01\"]'\n"), "{}", &d[..180]);
         // 程序里不能有单独一行的结束标记
         assert!(!include_str!("collect.uc").lines().any(|l| l == "FLEET_UC"));
     }
