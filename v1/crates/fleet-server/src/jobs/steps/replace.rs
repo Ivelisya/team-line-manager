@@ -12,7 +12,7 @@
 //! （旧节点进备用、到期回收后客户的出口就断了）；确认它没用的，重新发起时选不改软路由。路由上根本没有源配置（OpenClash 没配）的算没有出口。
 //! 同一台路由同时只有一个作业在改（替换、换线路机、重试都一样，见 `Locks`）：别的作业在改就排队（Outcome::Queue），作业的其余步骤照常并行。
 //! 排队时只等那台路由的锁（`routers_queued_id`），不读配置、不占连接。
-//! 搬空线路机同批的换线路机作业由一个带头的一起改（见 batch.rs）：要改的出口是几个作业合起来的，每台路由只改一次、重启一次，
+//! 同批的换线路机作业（搬空、批量换线路机）由一个带头的一起改（见 batch.rs）：要改的出口是几个作业合起来的，每台路由只改一次、重启一次，
 //! 任何一台失败全部换回、几个节点的旧入口都不摘。
 //! 再一台一台改（备份 → 改出口 → 重启 OpenClash → 测延迟）。哪台失败了，它自己已经改回（脚本做），之前改好的也按各自的备份改回去，
 //! 作业失败：路由保持一致，修好后重试从头改。改回只动本作业改过、现在还是本作业写的那几个出口（routers::replace），
@@ -174,7 +174,7 @@ fn uuid_of(params: &Value, k: &str) -> anyhow::Result<Uuid> {
     params[k].as_str().and_then(|s| Uuid::try_parse(s).ok()).ok_or_else(|| anyhow!("作业参数缺少 {k}"))
 }
 
-/// 一起改软路由的一个作业：本作业，或搬空时同批由本作业带头一起改的（batch.rs）
+/// 一起改软路由的一个作业：本作业，或同批由本作业带头一起改的（batch.rs）
 struct Part {
     job: Uuid,
     /// 出口对上的入口属于哪个节点：替换是旧节点，换线路机是节点自己
@@ -379,7 +379,7 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         let reset = if resumed { json!({"routers_queued": null, "routers_queued_id": null}) } else { json!({"routers_queued": null, "routers_queued_id": null, "routers_batch": null}) };
         c.set_params(reset).await?;
     }
-    // 搬空同批：一起改（batch.rs）。带头认领过的接着带（排队等锁之后、接着做完）
+    // 同批换线路机：一起改（batch.rs）。带头认领过的接着带（排队等锁之后、接着做完）
     let mut followers: Vec<JobRow> = vec![];
     if let Some(b) = c.job.params["batch"].as_str().filter(|_| moving) {
         let claimed: Vec<Uuid> = c.job.params["routers_batch"].as_array().into_iter().flatten().filter_map(|x| x.as_str()).filter_map(|s| Uuid::try_parse(s).ok()).collect();

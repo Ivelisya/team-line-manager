@@ -198,9 +198,10 @@ fleetctl tune <机器>[,<机器>…] | --team <团队> | --all [--yes] [--follow
 fleetctl tune <机器>[,<机器>…] --rollback --yes [--follow]   # 撤销调优：按机器上第一次调优前记的原值写回、删掉调优的 sysctl 配置（没有原值快照的机器作业失败，什么都不改）；先向用户确认
 fleetctl ss-refresh <机器>[,<机器>…] | --team <团队> | --all [--yes] [--follow]   # 重新下发节点的 SS 配置：升级中控后把新的 ssserver 配置（如出站目标黑名单 fleet.acl）推到存量节点；配置有变化才重启 ssserver（该节点连接断开几秒），同机 IP 节点随宿主机一起刷，做完经入口验收出口（失败不自动回滚）；--team/--all 只含在用的 VPS 节点，先做一台并跟到结束，成功后其余逐台提交，有进行中作业的跳过并列出；--all 要 --yes；线路机、家宽代理、同机 IP 节点单独下发、没有入口的节点 409
 fleetctl renumber <团队> --yes                             # 不加 --yes 只预览
-fleetctl move <节点> --to <线路机> --yes [--from <线路机>] [--no-routers] [--follow]   # 换线路机：新入口验收后改软路由出口（同替换，失败全部换回、旧入口不摘）、再摘旧入口，不断网；分享链接会变，完成后 fleetctl share <节点> 取新链接。不加 --yes 先看预览
+fleetctl move <节点> --to <线路机> --yes [--from <线路机>] [--no-routers] [--follow]   # 换线路机：新入口验收后改软路由出口（同替换，失败全部换回、旧入口不摘）、再摘旧入口，不断网；入口线路机和端口都会变：用订阅链接的客户端自动更新，用分享链接的要换（完成后 fleetctl share <节点> 取新链接）。不加 --yes 先看预览
+fleetctl move <节点A>,<节点B>,<节点C> --to <线路机> --yes [--from <线路机>] [--follow]   # 多个节点换线一律用这一条批量命令（逗号分隔），不要逐个 move：同搬空一起改软路由，每台路由只改一次、OpenClash 只重启一次（逐个 move 每个都重启一次、客户断线一次）。有一个不能换就一个都不提交；失败 / 重试 / 取消同搬空
 fleetctl evacuate <线路机> --to <线路机> --yes [--no-routers] [--follow]          # 搬空线路机（退役前）：每个在用节点一个换线路机作业，软路由出口跟着改；作业并行建新入口，都验收完后由一个「带头」的一起改，每台路由只改一次、重启一次（任何一台失败全部换回、旧入口都不摘，同批一起失败，修好后都重试）。预览写「软路由 X 的 N 个节点的出口一起改，OpenClash 重启 1 次（断开它上面全部连接）」，确认前告诉用户
-fleetctl rebalance <线路机> [--target <线路机>] [--exclude <节点>]…   # 搬迁建议（只读）：按近 7 天的速度重置前会用满的线路机，挑出搬走后能撑到重置日的最少入口和目标线路机（默认额度余量最多、在用、非故障），打印可直接执行的 fleetctl move 命令；--exclude 的节点不动（分享给别人的入口所在节点）。billing / show 的「预计用满」一行同源
+fleetctl rebalance <线路机> [--target <线路机>] [--exclude <节点>]…   # 搬迁建议（只读）：按近 7 天的速度重置前会用满的线路机，挑出搬走后能撑到重置日的最少入口和目标线路机（默认额度余量最多、在用、非故障），打印一条可直接执行的批量 fleetctl move A,B,C --to X 命令（照抄执行，不要拆成逐个 move）；--exclude 的节点不动（分享给别人的入口所在节点）。billing / show 的「预计用满」一行同源
 fleetctl replace <旧节点> --with <新节点> [--to <团队>] [--number N] [--no-routers] --yes [--follow]   # 替换节点：不加 --yes 只预览（见下）
 fleetctl router switch <路由> <组> <出口> [--for 4h]   # 临时切换出口：select 组经 mihomo API 切到组里已有的另一个出口，不改配置、不重启 OpenClash、不断已有连接；--for 到时自动切回（30m / 4h / 1d，最长 7 天）
 fleetctl router switch <路由> <组> --back               # 切回第一次切之前的出口

@@ -1,10 +1,10 @@
-//! 生命周期操作：换线路机（move_entry）、搬空线路机（evacuate）。
+//! 生命周期操作：换线路机（move_entry，单个或批量）、搬空线路机（evacuate）。
 //! 都是作业：这里只做校验、预览、建作业和写审计，真正的步骤在 jobs/steps。
 //!
 //! 软路由：指向要摘掉的旧入口的出口，在新入口验收之后、摘旧入口之前改成新入口（作业的「改软路由出口」一步，
 //! 和替换节点同一套：全部在线才动手，逐台备份 → 改 → 重启 OpenClash → 测延迟，一台失败已改的全部换回、旧入口不摘）。
 //! 预览按快照列出要改的出口；执行时按路由当时的配置重新确定（`move_exit`），同一台路由同时只有一个作业在改。
-//! 搬空时各节点的作业参数带同一个 `batch`：都验收完新入口后由一个带头的一起改（每台路由只改一次、重启一次，见 jobs/steps/batch.rs）。
+//! 搬空、批量换线路机时各节点的作业参数带同一个 `batch`：都验收完新入口后由一个带头的一起改（每台路由只改一次、重启一次，见 jobs/steps/batch.rs）。
 //! 出口写的是旧线路机的 IP 就改成新线路机的 IP，否则改成新线路机的 public_host；端口是新入口的。
 //! `routers = false` 只换入口，路由上的出口留着指向旧入口（摘掉后就断了）。
 
@@ -29,7 +29,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-const SHARE_NOTE: &str = "换线路机后分享链接会变：客户端需要换成新的分享链接（作业完成后到节点的入口里复制；命令行用 fleetctl share <节点> 取）";
+/// 受影响的是换走的入口（线路机和端口都变，列在 `old_entry`）
+pub(crate) const SHARE_NOTE: &str = "入口换到新线路机、端口也会变：用订阅链接的客户端更新订阅后自动换成新入口，用分享链接的要换成新的分享链接（作业完成后到节点的入口里复制，或 fleetctl share <节点>）";
 
 // ── 换线路机 ──────────────────────────────────────────────────────────────
 
@@ -42,6 +43,7 @@ struct MovePlan {
     from_name: String,
     to_name: String,
     old_entry: Uuid,
+    old_port: i32,
     routers_enabled: bool,
     /// 指向旧入口、要改成新入口的出口
     routers: Vec<RouterPlan>,
@@ -53,12 +55,15 @@ struct MovePlan {
 impl MovePlan {
     fn view(&self) -> Value {
         json!({
-            "name": self.node_name, "from": self.from_name, "to": self.to_name,
+            "name": self.node_name, "from": self.from_name, "to": self.to_name, "old_entry": self.old_entry_view(),
             "routers_enabled": self.routers_enabled, "routers": routers_view(&self.routers),
             "ok": self.blockers.is_empty(), "blockers": self.blockers, "warnings": self.warnings,
             "share_changed": true, "note": SHARE_NOTE,
         })
     }
+
+    /// 换走的入口（新入口的端口建好时才分配，作业完成后见作业的 result）
+    fn old_entry_view(&self) -> Value { json!({"id": self.old_entry, "relay": self.from_name, "port": self.old_port}) }
 }
 
 /// 校验并规划一次换线路机。外层 Err = 数据库/不存在；内层 Err = 业务上不能换（给用户看的原因，evacuate 用它做「跳过」）。
@@ -103,15 +108,15 @@ async fn plan_move(
     if let Some((k,)) = busy {
         return Ok(Err(format!("「{name}」还有进行中的作业（{}）：等它结束再换线路机", meta::job_kind_label(&k))));
     }
-    let live: Vec<(Uuid, Uuid, String, String)> = sqlx::query_as(
-        "select e.id, e.relay_id, e.lifecycle::text, coalesce(rm.label, '') from entry e join machine rm on rm.id = e.relay_id
+    let live: Vec<(Uuid, Uuid, String, String, i32)> = sqlx::query_as(
+        "select e.id, e.relay_id, e.lifecycle::text, coalesce(rm.label, ''), e.port from entry e join machine rm on rm.id = e.relay_id
          where e.node_id = $1 and e.lifecycle in ('pending', 'active', 'disabled') order by e.created_at",
     )
     .bind(node_id)
     .fetch_all(&mut **tx)
     .await?;
-    let cands: Vec<&(Uuid, Uuid, String, String)> = live.iter().filter(|e| from.is_none_or(|f| f == e.1)).collect();
-    let (old_entry, from_relay, elc, from_name) = match cands.as_slice() {
+    let cands: Vec<&(Uuid, Uuid, String, String, i32)> = live.iter().filter(|e| from.is_none_or(|f| f == e.1)).collect();
+    let (old_entry, from_relay, elc, from_name, old_port) = match cands.as_slice() {
         [] => return Ok(Err(format!("「{name}」{}没有在用的入口", if from.is_some() { "在指定的线路机上" } else { "" }))),
         [one] => (*one).clone(),
         many => {
@@ -140,7 +145,7 @@ async fn plan_move(
     let rs = scan_routers(routers, node_id, team_id, routers_on, routers_on, ("换线路机", "这个入口"), &mut blockers, &mut warnings, |er, srv, port| {
         move_exit(er, old_entry, None, &from_ip, &to_addr, srv, port).map(Ok)
     });
-    Ok(Ok(MovePlan { node_name: name, from_relay, from_name, to_name, old_entry, routers_enabled: routers_on, routers: rs, blockers, warnings }))
+    Ok(Ok(MovePlan { node_name: name, from_relay, from_name, to_name, old_entry, old_port, routers_enabled: routers_on, routers: rs, blockers, warnings }))
 }
 
 /// 线路机的 (IP, public_host)
@@ -163,7 +168,7 @@ pub fn move_exit(er: &EntryRef, old_entry: Uuid, new: Option<(Uuid, u16)>, from_
     })
 }
 
-/// `batch`：搬空同批的标识（一起改软路由），单独换线路机为 None
+/// `batch`：同批换线路机的标识（一起改软路由），单独换线路机为 None
 async fn enqueue_move(tx: &mut Tx<'_>, actor: &str, node: Uuid, p: &MovePlan, to: Uuid, via: &str, batch: Option<Uuid>) -> ApiResult<Uuid> {
     let routers = if p.routers_enabled { p.routers.as_slice() } else { &[] };
     let mut params = json!({
@@ -182,7 +187,7 @@ async fn enqueue_move(tx: &mut Tx<'_>, actor: &str, node: Uuid, p: &MovePlan, to
         "machine",
         Some(node),
         json!({"name": p.node_name, "from": p.from_name, "to": p.to_name, "from_relay_id": p.from_relay, "to_relay_id": to, "old_entry_id": p.old_entry, "job_id": job, "via": via,
-               "routers": changed, "routers_enabled": p.routers_enabled}),
+               "routers": changed, "routers_enabled": p.routers_enabled, "batch": batch}),
     )
     .await?;
     Ok(job)
@@ -247,7 +252,7 @@ impl Evac {
             .iter()
             .enumerate()
             .map(|(i, (node, p))| {
-                let mut v = json!({"machine_id": node, "name": p.node_name, "routers": routers_view(&p.routers)});
+                let mut v = json!({"machine_id": node, "name": p.node_name, "from": p.from_name, "old_entry": p.old_entry_view(), "routers": routers_view(&p.routers)});
                 if let Some(j) = jobs {
                     v["job_id"] = json!(j[i]);
                 }
@@ -307,13 +312,20 @@ async fn plan_evacuate(st: &AppState, tx: &mut Tx<'_>, relay: Uuid, to: Uuid, ro
     .fetch_all(&mut **tx)
     .await?;
     let routers = crate::routers::load(&st.db, None).await?;
-    let mut plans = vec![];
-    let mut skipped = vec![];
+    let mut e = Evac { from_name, to_name, plans: vec![], skipped: vec![] };
     for (node,) in nodes {
-        let reason = match plan_move(tx, node, Some(relay), to, &routers, routers_on).await? {
+        e.plan(tx, node, Some(relay), to, &routers, routers_on).await?;
+    }
+    Ok(e)
+}
+
+impl Evac {
+    /// 规划一个节点：能换的进 plans，不能换的连同原因进 skipped
+    async fn plan(&mut self, tx: &mut Tx<'_>, node: Uuid, from: Option<Uuid>, to: Uuid, routers: &[crate::routers::Row], routers_on: bool) -> ApiResult<()> {
+        let reason = match plan_move(tx, node, from, to, routers, routers_on).await? {
             Ok(plan) if plan.blockers.is_empty() => {
-                plans.push((node, plan));
-                continue;
+                self.plans.push((node, plan));
+                return Ok(());
             }
             Ok(plan) => plan.blockers.join("；"),
             Err(reason) => reason,
@@ -325,9 +337,9 @@ async fn plan_evacuate(st: &AppState, tx: &mut Tx<'_>, relay: Uuid, to: Uuid, ro
         .bind(node)
         .fetch_optional(&mut **tx)
         .await?;
-        skipped.push(json!({"machine_id": node, "name": name.map(|(n,)| n), "reason": reason}));
+        self.skipped.push(json!({"machine_id": node, "name": name.map(|(n,)| n), "reason": reason}));
+        Ok(())
     }
-    Ok(Evac { from_name, to_name, plans, skipped })
 }
 
 /// 搬空预览：会搬哪些节点、各自要改的软路由出口、哪些暂时不能搬（不写库，同 move_preview）
@@ -370,6 +382,102 @@ pub async fn evacuate(a: Actor, State(st): State<AppState>, ApiPath(relay): ApiP
     Ok(ok(v))
 }
 
+// ── 批量换线路机 ──────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct MovesIn {
+    machine_ids: Vec<Uuid>,
+    to_relay_id: Uuid,
+    /// 都换掉这台线路机上的入口（节点有多个入口时要填）
+    from_relay_id: Option<Uuid>,
+    /// 改软路由（默认 true）
+    routers: Option<bool>,
+}
+
+/// 预览的查询参数：machine_ids 逗号分隔
+#[derive(Deserialize)]
+pub struct MovesQ {
+    machine_ids: String,
+    to_relay_id: Uuid,
+    from_relay_id: Option<Uuid>,
+    routers: Option<bool>,
+}
+
+/// 批量换线路机的计划：各节点的换线路机计划（同 plan_move），有一个不能换就不能发起（skipped 里写原因）
+async fn plan_moves(st: &AppState, tx: &mut Tx<'_>, ids: &[Uuid], from: Option<Uuid>, to: Uuid, routers_on: bool) -> ApiResult<Evac> {
+    if ids.is_empty() {
+        return Err(ApiError::bad_request("要换的节点（machine_ids）不能为空"));
+    }
+    if ids.iter().collect::<HashSet<_>>().len() != ids.len() {
+        return Err(ApiError::bad_request("machine_ids 里有重复的节点"));
+    }
+    let to_name: Option<String> = sqlx::query_scalar("select coalesce(label, '') from machine where id = $1 and kind = 'relay'").bind(to).fetch_optional(&mut **tx).await?;
+    let to_name = to_name.ok_or_else(|| ApiError::not_found("目标线路机不存在"))?;
+    let routers = crate::routers::load(&st.db, None).await?;
+    let mut e = Evac { from_name: String::new(), to_name, plans: vec![], skipped: vec![] };
+    for &node in ids {
+        e.plan(tx, node, from, to, &routers, routers_on).await?;
+    }
+    let mut froms: Vec<&str> = e.plans.iter().map(|(_, p)| p.from_name.as_str()).collect();
+    froms.sort();
+    froms.dedup();
+    e.from_name = froms.join("、");
+    Ok(e)
+}
+
+/// 同搬空的结果，另有 ok / blockers（不能换的节点，前面带节点名）
+fn moves_view(e: &Evac, jobs: Option<&[Uuid]>) -> Value {
+    let mut v = e.view(jobs);
+    let blockers: Vec<String> = e
+        .skipped
+        .iter()
+        .map(|k| {
+            let (n, r) = (k["name"].as_str().unwrap_or("节点"), k["reason"].as_str().unwrap_or(""));
+            if r.contains(n) { r.to_string() } else { format!("{n}：{r}") }
+        })
+        .collect();
+    v["ok"] = json!(blockers.is_empty());
+    v["blockers"] = json!(blockers);
+    v
+}
+
+/// 批量换线路机预览（不写库，同 move_preview）：各节点要改的软路由出口、每台路由只重启一次、不能换的原因
+pub async fn moves_preview(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<MovesQ>) -> ApiResult<Json<Value>> {
+    let ids = q
+        .machine_ids
+        .split(',')
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.trim().parse().map_err(|_| ApiError::bad_request("machine_ids 要填节点 id（逗号分隔）")))
+        .collect::<Result<Vec<Uuid>, _>>()?;
+    let mut tx = st.db.begin().await?;
+    let e = plan_moves(&st, &mut tx, &ids, q.from_relay_id, q.to_relay_id, q.routers != Some(false)).await?;
+    Ok(ok(moves_view(&e, None)))
+}
+
+/// 批量换线路机：几个节点一起换到同一台线路机，各建一个换线路机作业，参数带同一个 `batch`（同搬空）：
+/// 都验收完新入口后由一个带头的一起改软路由，每台路由只改一次、OpenClash 只重启一次。有一个不能换就都不建（409，原因在 blockers）
+pub async fn moves(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<MovesIn>) -> ApiResult<Json<Value>> {
+    let mut tx = st.db.begin().await?;
+    let e = plan_moves(&st, &mut tx, &b.machine_ids, b.from_relay_id, b.to_relay_id, b.routers != Some(false)).await?;
+    let pv = moves_view(&e, None);
+    if pv["ok"] != true {
+        let why: Vec<&str> = pv["blockers"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+        return Err(ApiError::conflict(why.join("；")).with_detail(json!({"blockers": pv["blockers"], "skipped": e.skipped})));
+    }
+    let batch = (e.plans.len() > 1).then(crate::db::new_id);
+    let mut created = vec![];
+    for (node, plan) in &e.plans {
+        created.push(enqueue_move(&mut tx, &a.name, *node, plan, b.to_relay_id, "moves", batch).await?);
+    }
+    tx.commit().await?;
+    st.wake_jobs();
+    for ((node, _), job) in e.plans.iter().zip(&created) {
+        st.emit(Event::Job { id: *job, target: Some(*node) });
+    }
+    st.emit(Event::Machines);
+    Ok(ok(moves_view(&e, Some(&created))))
+}
+
 // ── 搬迁建议 ──────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -388,7 +496,7 @@ fn quota_q(m: &MachineView, now: OffsetDateTime) -> Q {
 
 /// 搬迁建议（只读，不动任何东西）：这台线路机按近 7 天的速度重置前会用满的话，挑出搬走后能撑到重置日的最少入口，
 /// 并给出搬去哪台线路机。每个入口每天的流量按近 7 天（窗口同日均）的业务流量算，再按「线路机网卡日均 ÷ 各入口合计」折算
-/// （网卡口径与入口上下行合计不完全相等）。真正执行是对每个节点 `POST /machines/{id}/move`（fleetctl move）
+/// （网卡口径与入口上下行合计不完全相等）。真正执行是一次批量换线路机 `POST /moves`（fleetctl move A,B,C --to X），每台软路由只重启一次
 pub async fn rebalance(_a: Actor, State(st): State<AppState>, ApiPath(relay): ApiPath<Uuid>, ApiQuery(b): ApiQuery<RebalanceIn>) -> ApiResult<Json<Value>> {
     let all = views::live(&st).await?;
     let src = all.iter().find(|m| m.id == relay && m.kind == "relay").ok_or_else(|| ApiError::not_found("没有这台在用的线路机"))?;

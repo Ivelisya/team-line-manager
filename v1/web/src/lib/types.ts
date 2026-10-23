@@ -284,7 +284,9 @@ export interface RenumberPreview { changes: { machine_id: string; old_name: stri
 /** 软路由上要改的出口（替换节点、换线路机、搬空同一个格式）；换线路机的 new_entry_id 为 null、to 写「server:新端口」 */
 export interface RouterExitPlan { id: string; name: string; state: 'online' | 'offline' | 'pending' | string; exits: { exit: string; old_entry_id: string; new_entry_id: string | null; from: string; to: string | null; error?: string | null }[] }
 /** 换线路机 / 搬空线路机（API.md「生命周期操作」）：GET 是预览（没有 job_id），POST 的响应同样的内容加 job_id */
-export interface MovePreview { name?: string; from?: string; to?: string; routers_enabled: boolean; routers: RouterExitPlan[]; ok: boolean; blockers: string[]; warnings: string[]; share_changed: boolean; note: string }
+/** 换走的入口（线路机和端口都会变；新入口的端口作业建好时才分配） */
+export interface OldEntry { id: string; relay: string; port: number }
+export interface MovePreview { name?: string; from?: string; to?: string; old_entry?: OldEntry; routers_enabled: boolean; routers: RouterExitPlan[]; ok: boolean; blockers: string[]; warnings: string[]; share_changed: boolean; note: string }
 /** 搬迁建议（GET /relays/{id}/rebalance，只读）：重置前会用满时，搬走哪些入口、搬去哪台；daily_bytes 是搬走后这台每天少的流量 */
 export interface RebalancePlan {
   relay: { id: string; name: string }; limit_gb: number; used: number; period_end: string; daily_avg: number | null; forecast_full_at: string | null; projected_pct: number | null;
@@ -294,9 +296,11 @@ export interface RebalancePlan {
   after?: { daily_avg: number; projected_pct: number }; target_after?: { fits: boolean; projected_pct: number | null };
 }
 export interface MoveResult extends MovePreview { job_id: string; name: string; from: string; to: string }
-export interface EvacuateResult { from: string; to: string; /** job_id 只在真正搬空（POST）的结果里有，预览没有 */ jobs: { machine_id: string; name: string; job_id?: string; routers: RouterExitPlan[] }[]; skipped: { machine_id: string; name: string | null; reason: string }[]; warnings: string[];
+export interface EvacuateResult { from: string; to: string; /** job_id 只在真正搬空（POST）的结果里有，预览没有 */ jobs: { machine_id: string; name: string; from: string; old_entry: OldEntry; job_id?: string; routers: RouterExitPlan[] }[]; skipped: { machine_id: string; name: string | null; reason: string }[]; warnings: string[];
   /** 要改的软路由：同批一起改，每台只重启 1 次 OpenClash（times 恒为 1）；nodes 是有出口要改的节点数 */
   router_restarts?: { id: string; name: string; times: number; nodes: number }[]; share_changed: boolean; note: string }
+/** 批量换线路机（GET / POST /moves）：同搬空；有一个节点不能换（skipped，原因带节点名的在 blockers）就 ok 为 false、整批不能提交 */
+export interface MovesResult extends EvacuateResult { ok: boolean; blockers: string[] }
 /** 替换节点预览（GET /machines/{old}/replace）：新节点接旧编号（new_name），旧节点去 old_to（默认同团队的备用团队）；
  *  routers：出口指向旧节点、会改成新节点入口的软路由（state 不是 online 时 blockers 里有原因）；renames：新节点原来的团队压缩编号 */
 export interface ReplaceSide { id: string; name: string; kind: Kind; team: { id: string; name: string } | null }

@@ -129,7 +129,7 @@ pub(super) async fn firewall_narrow(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         .fetch_optional(&c.st.db)
         .await?;
     if let Some((relay, port)) = row {
-        c.log(format!("换线路机完成：新入口 {relay}:{port}。客户端需要换成新的分享链接（旧链接已失效）")).await;
+        c.log(format!("换线路机完成：新入口 {relay}:{port}。用订阅链接的客户端更新订阅后自动换成新入口，用分享链接的要换成新的分享链接（旧链接已失效）")).await;
     }
     Ok(out)
 }

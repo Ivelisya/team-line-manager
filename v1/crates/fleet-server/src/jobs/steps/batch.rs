@@ -1,6 +1,6 @@
-//! 搬空线路机（evacuate）同批的换线路机作业一起改软路由：每台路由只改一次、只重启一次 OpenClash（每次重启都断开路由上的全部连接）。
+//! 同批的换线路机作业（搬空线路机 evacuate、批量换线路机 POST /moves）一起改软路由：每台路由只改一次、只重启一次 OpenClash（每次重启都断开路由上的全部连接）。
 //!
-//! 搬空时每个节点一个 move_entry 作业，参数 `batch` 相同（api/lifecycle.rs）。各作业照常并行建新入口、验收；走到「改软路由出口」时：
+//! 每个节点一个 move_entry 作业，参数 `batch` 相同（api/lifecycle.rs）。各作业照常并行建新入口、验收；走到「改软路由出口」时：
 //! - 同批还有作业没走到这一步（建新入口、等线路机、验收）：等它们（排队，路由没动，能取消）；
 //! - 都到了：id 最小的那个带头，把同批停在这一步的作业认领下来（被认领的参数记 `routers_batch_leader`，带头的记 `routers_batch`），
 //!   按各自的新入口把全部出口一起改：每台路由一次备份、一次改完、一次重启（replace.rs，改回、加锁、改不了的判断同单个作业）。
@@ -46,9 +46,9 @@ impl Sib {
     fn stuck(&self) -> bool { self.stuck.as_array().is_some_and(|a| !a.is_empty()) }
 }
 
-const BEHIND: &str = "等同批搬空的其它节点建好新入口，再一起改软路由（每台路由只改一次、重启一次）";
-const TURN: &str = "等同批搬空的作业一起改软路由";
-const BUSY: &str = "同批搬空的另一个作业正在改软路由，等它改完";
+const BEHIND: &str = "等同批换线路机的其它节点建好新入口，再一起改软路由（每台路由只改一次、重启一次）";
+const TURN: &str = "等同批换线路机的作业一起改软路由";
+const BUSY: &str = "同批换线路机的另一个作业正在改软路由，等它改完";
 
 /// 本作业在同批里该做什么
 #[derive(Debug, PartialEq)]
@@ -192,7 +192,7 @@ pub(super) async fn join(c: &Ctx<'_>, batch: &str) -> anyhow::Result<Result<Vec<
     let sibs = siblings(&c.st.db, batch, me).await?;
     match role(me, flag, &sibs) {
         Role::Follow(l) => {
-            let why = format!("同批搬空的「{}」带头一起改软路由出口（本节点的也在里面），等它改完", l.name);
+            let why = format!("同批换线路机的「{}」带头一起改软路由出口（本节点的也在里面），等它改完", l.name);
             Ok(Err(wait(c, why, json!({"routers_batch_leader": l.id})).await?))
         }
         Role::Wait(why) => {
@@ -203,7 +203,7 @@ pub(super) async fn join(c: &Ctx<'_>, batch: &str) -> anyhow::Result<Result<Vec<
             release(c, flag).await?;
             c.set_params(json!({"routers_queued": null})).await?;
             let mine = only(&l.output, me);
-            let done = format!("同批搬空的「{}」带头一起改了软路由出口", l.name);
+            let done = format!("同批换线路机的「{}」带头一起改了软路由出口", l.name);
             c.log(&done).await;
             Ok(Err(if mine.is_empty() { Outcome::Skipped(format!("{done}，没有出口指向本节点的旧入口")) } else { Outcome::Done(json!({"routers": mine, "batch_leader": l.id})) }))
         }
@@ -211,11 +211,11 @@ pub(super) async fn join(c: &Ctx<'_>, batch: &str) -> anyhow::Result<Result<Vec<
             let err = l.error.as_deref().unwrap_or("原因见它的作业");
             let msg = if l.stuck() {
                 c.set_params(json!({"routers_queued": null, "routers_batch_leader": l.id, "routers_stuck": l.stuck})).await?;
-                format!("同批搬空的「{}」带头一起改软路由出口（本节点的也在里面），改回失败、需要人工处理：{err}。先处理好并重试它那个作业，它改完之后再重试本作业", l.name)
+                format!("同批换线路机的「{}」带头一起改软路由出口（本节点的也在里面），改回失败、需要人工处理：{err}。先处理好并重试它那个作业，它改完之后再重试本作业", l.name)
             } else {
                 release(c, flag).await?;
                 c.set_params(json!({"routers_queued": null, "routers_stuck": []})).await?;
-                format!("同批搬空的「{}」带头一起改软路由出口（本节点的也在里面）没成，已一起换回：{err}", l.name)
+                format!("同批换线路机的「{}」带头一起改软路由出口（本节点的也在里面）没成，已一起换回：{err}", l.name)
             };
             Err(StepError::err(ErrKind::Remote, msg))
         }
@@ -249,7 +249,7 @@ pub(super) async fn join(c: &Ctx<'_>, batch: &str) -> anyhow::Result<Result<Vec<
             tx.commit().await?;
             if !claimed.is_empty() {
                 let names: Vec<&str> = sibs.iter().filter(|s| ids.contains(&s.id)).map(|s| s.name.as_str()).collect();
-                c.log(format!("同批搬空的 {} 个节点（{}）一起改软路由出口：每台路由只改一次、重启一次", claimed.len() + 1, names.join("、"))).await;
+                c.log(format!("同批换线路机的 {} 个节点（{}）一起改软路由出口：每台路由只改一次、重启一次", claimed.len() + 1, names.join("、"))).await;
             }
             Ok(Ok(claimed))
         }

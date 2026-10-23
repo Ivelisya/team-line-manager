@@ -8,7 +8,7 @@ use crate::table;
 use anyhow::bail;
 use serde_json::{json, Value};
 
-const SHARE_HINT: &str = "换线路机后分享链接会变：客户端需要换成新的分享链接（作业完成后到节点的入口里复制；命令行用 fleetctl share <节点> 取）";
+const SHARE_HINT: &str = "入口换到新线路机、端口也会变：用订阅链接的客户端更新订阅后自动换成新入口，用分享链接的要换成新的分享链接（作业完成后 fleetctl share <节点> 取）";
 
 fn find_relay(ctx: &Ctx, q: &str) -> anyhow::Result<Value> {
     let m = ctx.find(q, Want::Live)?;
@@ -40,8 +40,36 @@ const EXITS_HEAD: &str = "要改的软路由出口（按最近一次采集；新
 
 pub(crate) fn blockers(v: &Value) -> String { v["blockers"].as_array().map(|a| a.iter().filter_map(|s| s.as_str()).collect::<Vec<_>>().join("；")).unwrap_or_default() }
 
-/// `fleetctl move <节点> --to <线路机>`：先 GET 预览（要改的软路由出口、不能换的原因），确认后提交
+/// 换走的入口「线路机:端口」（预览与提交结果里的 old_entry）
+fn old_addr(v: &Value) -> String { format!("{}:{}", st(v, "/old_entry/relay"), st(v, "/old_entry/port")) }
+
+/// 作业建好的新入口「线路机:端口」（attach_new 这一步的输出）
+fn new_addr(ctx: &Ctx, job: &str) -> anyhow::Result<String> {
+    let j = ctx.c.get(&format!("/jobs/{job}"))?;
+    let s = j["steps"].as_array().into_iter().flatten().find(|s| s["key"] == "attach_new").cloned().unwrap_or_default();
+    Ok(format!("{}:{}", st(&s, "/output/relay"), st(&s, "/output/port")))
+}
+
+/// 换完之后列出受影响的入口（原地址 → 新地址）和怎么换链接
+fn moved_report(ctx: &Ctx, jobs: &[Value]) -> anyhow::Result<()> {
+    if ctx.json {
+        return Ok(());
+    }
+    let mut rows = vec![];
+    for j in jobs {
+        rows.push(vec![st(j, "/name"), old_addr(j), new_addr(ctx, &st(j, "/job_id"))?]);
+    }
+    outln(format!("已完成，入口变了：\n{}\n{SHARE_HINT}", table::render(&["节点", "原入口", "新入口"], &rows)));
+    Ok(())
+}
+
+/// `fleetctl move <节点>[,<节点>…] --to <线路机>`：先 GET 预览（要改的软路由出口、不能换的原因），确认后提交。
+/// 逗号分隔的多个节点走批量换线路机（POST /moves）：一起改软路由，每台路由只改一次、OpenClash 只重启一次
 pub fn mv(ctx: &Ctx, node: &str, to: &str, from: Option<&str>, no_routers: bool, yes: bool, follow: bool) -> anyhow::Result<u8> {
+    let names: Vec<&str> = node.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+    if names.len() > 1 {
+        return mv_many(ctx, &names, to, from, no_routers, yes, follow);
+    }
     let n = ctx.find(node, Want::Live)?;
     let (id, name) = (st(&n, "/id"), st(&n, "/name"));
     let target = find_relay(ctx, to)?;
@@ -57,7 +85,7 @@ pub fn mv(ctx: &Ctx, node: &str, to: &str, from: Option<&str>, no_routers: bool,
     }
     let pv = ctx.c.get_q(&format!("/machines/{id}/move"), &q)?;
     if !ctx.json {
-        outln(format!("将把 {name} 换到线路机 {}：先在新线路机建入口并验收，通过后才改软路由、摘旧入口，换线期间不断网。", st(&target, "/name")));
+        outln(format!("将把 {name}（入口 {}）换到线路机 {}：先在新线路机建入口并验收，通过后才改软路由、摘旧入口，换线期间不断网。", old_addr(&pv), st(&target, "/name")));
         let rows = exit_rows(pv["routers"].as_array().map(Vec::as_slice).unwrap_or_default(), None);
         if no_routers {
             outln(format!("软路由：不改（--no-routers）{}", if rows.is_empty() { String::new() } else { format!("，{} 个出口指向旧入口，摘掉后就断了", rows.len()) }));
@@ -79,15 +107,83 @@ pub fn mv(ctx: &Ctx, node: &str, to: &str, from: Option<&str>, no_routers: bool,
     });
     if follow {
         let code = cmds::follow_job(ctx, &st(&d, "/job_id"))?;
-        if code == 0 && !ctx.json {
-            outln(format!("已完成。{SHARE_HINT}"));
+        if code == 0 {
+            moved_report(ctx, std::slice::from_ref(&d))?;
         }
         return Ok(code);
     }
     Ok(0)
 }
 
-/// 搬空预览的 router_restarts：同批一起改，每台路由只重启 1 次 OpenClash（断开这台路由上的全部连接）
+/// 批量换线路机：几个节点一起换到同一台线路机（各一个作业，同批一起改软路由）；有一个不能换就都不提交
+fn mv_many(ctx: &Ctx, names: &[&str], to: &str, from: Option<&str>, no_routers: bool, yes: bool, follow: bool) -> anyhow::Result<u8> {
+    let mut ids = vec![];
+    for n in names {
+        let (id, _) = ctx.find_id(n, Want::Live)?;
+        if ids.contains(&id) {
+            bail!("节点「{n}」重复了");
+        }
+        ids.push(id);
+    }
+    let target = find_relay(ctx, to)?;
+    let tname = st(&target, "/name");
+    let mut body = json!({"machine_ids": ids, "to_relay_id": target["id"]});
+    let mut q: Vec<(&str, String)> = vec![("machine_ids", ids.join(",")), ("to_relay_id", st(&target, "/id"))];
+    if let Some(f) = from {
+        body["from_relay_id"] = find_relay(ctx, f)?["id"].clone();
+        q.push(("from_relay_id", st(&body, "/from_relay_id")));
+    }
+    if no_routers {
+        body["routers"] = json!(false);
+        q.push(("routers", "false".into()));
+    }
+    let pv = ctx.c.get_q("/moves", &q)?;
+    let jobs = pv["jobs"].as_array().cloned().unwrap_or_default();
+    if !ctx.json {
+        let rows: Vec<Vec<String>> = jobs.iter().map(|j| vec![st(j, "/name"), old_addr(j)]).collect();
+        outln(format!(
+            "将把 {} 个节点换到线路机 {tname}：各自先在新线路机建入口并验收，都通过后一起改软路由，再摘旧入口，换线期间不断网。\n{}",
+            names.len(),
+            table::render(&["节点", "原入口"], &rows)
+        ));
+        let mut ex = vec![];
+        for j in &jobs {
+            ex.extend(exit_rows(j["routers"].as_array().map(Vec::as_slice).unwrap_or_default(), Some(&st(j, "/name"))));
+        }
+        if no_routers {
+            outln(format!("软路由：不改（--no-routers）{}", if ex.is_empty() { String::new() } else { format!("，{} 个出口指向这些入口，摘掉后就断了", ex.len()) }));
+        } else if !ex.is_empty() {
+            outln(format!("{EXITS_HEAD}；每台软路由只改一次：\n{}", table::render(&["节点", "软路由", "状态", "出口", "现在", "改成"], &ex)));
+            for line in restart_lines(&pv) {
+                outln(format!("注意：{line}"));
+            }
+        }
+        for w in pv["warnings"].as_array().cloned().unwrap_or_default() {
+            outln(format!("注意：{}", w.as_str().unwrap_or("")));
+        }
+        outln(SHARE_HINT);
+    }
+    if pv["ok"] != true {
+        bail!("现在不能换线路机（一个都没提交）：{}", blockers(&pv));
+    }
+    confirm(&format!("确认把这 {} 个节点换到 {tname}？", names.len()), yes)?;
+    let d = ctx.c.post("/moves", &body)?;
+    let jobs = d["jobs"].as_array().cloned().unwrap_or_default();
+    ctx.emit(&d, || {
+        let rows: Vec<Vec<String>> = jobs.iter().map(|j| vec![st(j, "/name"), old_addr(j), st(j, "/job_id")]).collect();
+        format!("已提交 {} 个换线路机作业（同批一起改软路由）：\n{}", jobs.len(), table::render(&["节点", "原入口", "job_id"], &rows))
+    });
+    if follow {
+        let code = cmds::follow_jobs(ctx, &jobs)?;
+        if code == 0 {
+            moved_report(ctx, &jobs)?;
+        }
+        return Ok(code);
+    }
+    Ok(0)
+}
+
+/// 搬空、批量换线路机预览的 router_restarts：同批一起改，每台路由只重启 1 次 OpenClash（断开这台路由上的全部连接）
 fn restart_lines(pv: &Value) -> Vec<String> {
     pv["router_restarts"]
         .as_array()
@@ -177,15 +273,13 @@ pub fn evacuate(ctx: &Ctx, relay: &str, to: &str, no_routers: bool, yes: bool, f
     Ok(code)
 }
 
-/// 搬迁建议里每个入口一条可直接执行的 `fleetctl move`
-fn rebalance_commands(d: &Value) -> Vec<String> {
-    let (from, to) = (st(d, "/relay/name"), st(d, "/target/name"));
-    d["moves"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|m| format!("fleetctl move {} --to {}{}", shell_quote(&st(m, "/node/name")), shell_quote(&to), if m["needs_from"] == true { format!(" --from {}", shell_quote(&from)) } else { String::new() }))
-        .collect()
+/// 搬迁建议的入口合成一条可直接执行的批量 `fleetctl move A,B,C --to X`（每台软路由只重启一次）；没有要搬的为 None。
+/// 有节点在别处还有在用入口时带 --from（换的都是这台线路机上的入口，对其余节点也成立）
+fn rebalance_command(d: &Value) -> Option<String> {
+    let ms = d["moves"].as_array().filter(|m| !m.is_empty())?;
+    let nodes: Vec<String> = ms.iter().map(|m| shell_quote(&st(m, "/node/name"))).collect();
+    let from = if ms.iter().any(|m| m["needs_from"] == true) { format!(" --from {}", shell_quote(&st(d, "/relay/name"))) } else { String::new() };
+    Some(format!("fleetctl move {} --to {}{from}", nodes.join(","), shell_quote(&st(d, "/target/name"))))
 }
 
 /// `fleetctl rebalance <线路机> [--target <线路机>] [--exclude <节点>…]`：这台线路机按近 7 天的速度重置前会用满的话，
@@ -201,8 +295,8 @@ pub fn rebalance(ctx: &Ctx, relay: &str, target: Option<&str>, exclude: &[String
         q.push(("exclude", ids.join(",")));
     }
     let mut d = ctx.c.get_q(&format!("/relays/{}/rebalance", st(&src, "/id")), &q)?;
-    let cmds = rebalance_commands(&d);
-    d["commands"] = json!(cmds);
+    let cmd = rebalance_command(&d);
+    d["command"] = json!(cmd);
     ctx.emit(&d, || {
         let g = |p: &str| table::gb(num_of(&d, p));
         let name = st(&d, "/relay/name");
@@ -236,8 +330,8 @@ pub fn rebalance(ctx: &Ctx, relay: &str, target: Option<&str>, exclude: &[String
         if let Some(r) = d["reason"].as_str() {
             s += &format!("\n注意：{r}");
         }
-        s += "\n\n只是建议，没有执行。要搬就逐个执行（每个会先预览再确认，加 --yes 跳过确认）：\n";
-        s += &cmds.join("\n");
+        s += "\n\n只是建议，没有执行。要搬就执行这一条（一起换，每台软路由只重启一次；先预览再确认，加 --yes 跳过确认）：\n";
+        s += cmd.as_deref().unwrap_or("");
         s += &format!("\n{SHARE_HINT}");
         s
     });

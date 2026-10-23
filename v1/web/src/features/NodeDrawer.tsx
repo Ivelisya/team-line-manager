@@ -239,7 +239,7 @@ function OverviewTab({ m }: { m: MachineView }) {
         {/* 入口表只在这里放一份（状态、TCP、出口、本月业务流量）；连接质量、流量页签只留计数链回这里。
             线路机的入口多（几十条）：异常的排前面，先露 10 条，表尾展开全部 */}
         <SectionHeader title={m.kind === 'relay' ? '挂载的入口' : '入口'} meta={entriesMeta(m)} />
-        <EntriesTable m={m} traffic />
+        <EntriesTable m={m} traffic pick />
       </Section>
       <RecentIncidents m={m} />
       <Section>
