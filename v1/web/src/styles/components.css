@@ -202,6 +202,9 @@
 .beat-cap b { font: var(--fw-semibold) var(--fs-label) / var(--lh-label) var(--font-sans); font-variant-numeric: var(--num-variant); color: var(--fg); }
 .beat-main { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .beat-win { flex: none; font-size: var(--fs-micro); line-height: var(--lh-micro); }
+.beat-win[data-tone="ok"] { color: var(--ok-text); }
+.beat-win[data-tone="warn"] { color: var(--warn-text); }
+.beat-win[data-tone="bad"] { color: var(--bad-text); }
 .beat-cells { display: flex; gap: var(--beat-gap); width: 100%; overflow: hidden; height: var(--beat-h); }
 .beat-cells > i { display: block; flex: 1 1 0; min-width: 2px; max-width: var(--beat-w-max); height: var(--beat-h); background: var(--line); border-radius: 2px; } /* 换色不过渡（同 .cells） */
 .beat-cells > i[data-t="ok"] { background: var(--latency-ok); }

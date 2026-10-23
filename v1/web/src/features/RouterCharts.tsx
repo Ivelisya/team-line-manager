@@ -80,16 +80,19 @@ function ExitDelays({ r, range, few }: { r: RouterView; range: string; few: stri
   const cur = exits?.find((x) => x.name === pick) ?? exits?.[0];
   const opts = React.useMemo(() => (exits ?? []).map((x) => ({ value: x.name, label: x.name })), [exits]);
   const bins = beatBins(range);
-  const beats = React.useMemo(() => (exits ?? []).map((x) => ({ name: x.name, ...exitBeats(x.points, range, bins, Date.now()) })), [exits, range, bins]);
+  // 所选范围比数据长（新接入的路由）：格子从有数据的那刻起切，和上面的曲线横轴一致，左边写「数据从 … 起」
+  const since = React.useMemo(() => Math.min(Infinity, ...(exits ?? []).flatMap((x) => x.points.map((p) => Date.parse(p.ts)))), [exits]);
+  const late = Number.isFinite(since) && since > Date.now() - (RANGE_MS[range] ?? 0) + (RANGE_MS[range] ?? 0) / bins;
+  const beats = React.useMemo(() => (exits ?? []).map((x) => ({ name: x.name, ...exitBeats(x.points, range, bins, Date.now(), late ? since : undefined) })), [exits, range, bins, late, since]);
   return (
     <Section>
-      <SectionHeader title={<>各出口延迟<InfoTip text={'每 5 分钟经出口访问一次 generate_204。\n每格是一段时间（从现在往前等分）：全部成功绿、有测试失败黄、失败过半红，斜纹是那段没有数据。\n延迟高低看下面的曲线，曲线的缺口是那次测试失败'} /></>} />
+      <SectionHeader meta={late ? `数据从 ${F.dt(new Date(since).toISOString())} 起` : undefined} title={<>各出口延迟<InfoTip text={'每 5 分钟经出口访问一次 generate_204。\n每格是一段时间（从现在往前等分）：全部成功绿、有测试失败黄、失败过半红，斜纹是那段没有数据；右边是整段的成功率。\n延迟高低看下面的曲线，曲线的缺口是那次测试失败'} /></>} />
       {q.isError && !q.data ? <ErrorNote error={q.error} onRetry={() => void q.refetch()}>出口曲线加载失败：</ErrorNote>
         : q.isLoading ? <Skeleton h={180} className="is-float" />
         : !exits?.length ? <div className="chart-empty" style={{ height: 120 }}>{few}</div> : (
           <div className="chart-frame stack-sm" data-stale={q.isPlaceholderData}>
             <div className="rt-exit-beats">
-              {beats.map((b) => <Beat key={b.name} n={bins} cells={b.cells} titles={b.titles} caption={<b>{b.name}</b>} win={b.cells.some((c) => c === 'bad') ? '有失败' : undefined} />)}
+              {beats.map((b) => <Beat key={b.name} n={bins} cells={b.cells} titles={b.titles} caption={<b>{b.name}</b>} win={b.rate != null ? `${Math.round(b.rate * 100)}%` : undefined} winTone={b.rate == null ? undefined : b.rate >= 1 ? 'ok' : b.rate < 0.5 ? 'bad' : 'warn'} />)}
             </div>
             <ChartCard c="var(--chart-1)" icon={<Radar />} title="延迟曲线" tools={<Select sm value={cur?.name ?? ''} onChange={setPick} options={opts} aria-label="出口" className="w-[160px]" />}>
               {cur && cur.points.length > 1 ? <TimeChart points={cur.points} range={range} kind="line" lines={L_DELAY} yFmt={yMs} valueFmt={vMs} height={160} /> : <div className="chart-empty" style={{ height: 160 }}>{few}</div>}

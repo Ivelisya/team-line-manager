@@ -272,12 +272,12 @@ export function CopyButton({ text, label = '内容', className, size = 14, show 
 
 /** 心跳条：n 格（默认 20 格 = 卡片上的近 1 小时），ok/warn/bad/空；titles 与 cells 一一对应，作每格的悬停说明（只给数据）；
  *  颜色含义（legend）放在右上角时间窗的悬停里 */
-export function Beat({ cells, titles, caption, win, legend, stale, empty, n = 20 }: { cells: BeatCell[]; titles?: string[]; caption: React.ReactNode; win?: string; legend?: string; stale?: boolean; empty?: boolean; n?: number }) {
+export function Beat({ cells, titles, caption, win, winTone, legend, stale, empty, n = 20 }: { cells: BeatCell[]; titles?: string[]; caption: React.ReactNode; win?: string; winTone?: 'ok' | 'warn' | 'bad'; legend?: string; stale?: boolean; empty?: boolean; n?: number }) {
   const pad = Math.max(0, n - cells.length);
   const shown = cells.slice(-n); const tips = titles?.slice(-n);
   return (
     <div className={cn('beat', stale && 'is-stale', empty && 'is-empty')}>
-      <div className="beat-cap"><span className="beat-main ellipsis">{caption}</span>{win && <span className="beat-win" data-tip={legend}>{win}</span>}</div>
+      <div className="beat-cap"><span className="beat-main ellipsis">{caption}</span>{win && <span className="beat-win" data-tone={winTone} data-tip={legend}>{win}</span>}</div>
       <div className="beat-cells">{Array.from({ length: pad + shown.length }, (_, i) => i < pad ? <i key={i} /> : <i key={i} data-t={shown[i - pad] ?? undefined} data-tip={tips?.[i - pad]} />)}</div>
     </div>
   );
