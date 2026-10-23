@@ -1,9 +1,14 @@
-//! 告警对齐（中控自身 selfmon.rs、软路由 routers/alerts.rs、来源画像 ipintel.rs 共用）：把此刻成立的问题对齐到 incident 表——
-//! 开（被静默的不开）、摘要实质变了才改、严重度只升不降（升了马上再发一次「触发」）、开的时候没能入队的补发「触发」、
-//! 按 `alerts::repeat_interval_s` 发提醒、不再成立的由调用方决定留着 / 恢复（报过触发、没被静默的发「恢复」）/ 悄悄关掉。
-//! 摘要没变的「最近仍在」最多 5 分钟刷新一次（同机器的告警）。机器的告警（alerts.rs）另有复发重开与限流，不走这里。
+//! 告警对齐（中控自身 selfmon.rs、软路由 routers/alerts.rs、探测点 probe_points/、来源画像 ipintel.rs 共用）：把此刻成立的问题对齐到 incident 表——
+//! 开（被静默的不开）、摘要实质变了才改、严重度只升不降（升了马上再发一次「触发」、清掉之前的确认）、开的时候没能入队的补发「触发」、
+//! 按 `alerts::repeat_interval_s` 发提醒、不再成立的由调用方决定留着 / 恢复 / 悄悄关掉。
+//! 摘要没变的「最近仍在」最多 5 分钟刷新一次。
+//!
+//! 复发与限流同机器的告警（alerts.rs，判断函数共用）：
+//! - 恢复后 30 分钟内同一 (规则, 对象) 又成立（`ready`）：重开原告警（`reopen_count` +1、清掉确认），不新建；悄悄关掉的（带 closed_by：对象删了、停用了、来源画像过期）不重开；
+//! - 重开时已报过恢复的，距那条恢复通知满 5 分钟才发「触发」（不满则等满 5 分钟仍在触发再发），恢复只在上次恢复通知之后发过触发 / 提醒时才报：
+//!   反复抖动的告警每 5 分钟最多一对触发 / 恢复，真故障最多晚 5 分钟报。被静默的不发任何通知。
 
-use crate::alerts::{rank, repeat_interval_s, same_summary};
+use crate::alerts::{due, rank, same_summary, told_firing, REOPEN_WINDOW_S, TOLD_RESOLVED_SQL};
 use crate::notify::{self, Kind, Notice};
 use crate::silence::Silences;
 use crate::state::{AppState, Event};
@@ -24,14 +29,16 @@ pub struct Firing {
     opened_at: OffsetDateTime,
     /// 最近一次把触发 / 提醒写进发送队列的时间；null = 开的时候入队失败
     notified_at: Option<OffsetDateTime>,
+    /// 最近一条送达的通知是「恢复」时它的发送时间（复发重开后还没再通知过）
+    told_resolved_at: Option<OffsetDateTime>,
 }
 
 /// 规则以 `<prefix>_` 开头的在告警的
 pub async fn firing(db: &sqlx::PgPool, prefix: &str) -> sqlx::Result<Vec<Firing>> {
-    sqlx::query_as(
-        "select id, rule, subject_id, severity::text severity, summary, detail, opened_at, notified_at from incident
-         where state = 'firing' and rule like $1 escape '!'",
-    )
+    sqlx::query_as(&format!(
+        "select id, rule, subject_id, severity::text severity, summary, detail, opened_at, notified_at, {TOLD_RESOLVED_SQL} told_resolved_at from incident
+         where state = 'firing' and rule like $1 escape '!'"
+    ))
     .bind(format!("{prefix}!_%"))
     .fetch_all(db)
     .await
@@ -62,7 +69,7 @@ pub enum Close<'a> {
     Quiet(&'static str),
 }
 
-/// 这一轮开、改、关了多少条
+/// 这一轮开（含重开）、改、关了多少条
 #[derive(Default)]
 pub struct Tally {
     pub opened: usize,
@@ -101,28 +108,55 @@ pub async fn reconcile<'n>(
             let escalated = rank(w.severity) > rank(&inc.severity);
             let sev = if escalated { w.severity } else { inc.severity.as_str() };
             if escalated || !same_summary(&inc.summary, &summary) || w.detail.as_ref().is_some_and(|d| *d != inc.detail) {
-                sqlx::query("update incident set summary = $2, severity = $3::severity, detail = coalesce($4, detail), last_seen_at = now() where id = $1")
-                    .bind(inc.id)
-                    .bind(&summary)
-                    .bind(sev)
-                    .bind(&w.detail)
-                    .execute(&st.db)
-                    .await?;
+                // 升级时清掉之前的确认（同机器的告警）：确认的是警告，严重是新情况
+                sqlx::query(
+                    "update incident set summary = $2, severity = $3::severity, detail = coalesce($4, detail), last_seen_at = now(),
+                         ack_at = case when $5 then null else ack_at end, ack_by = case when $5 then null else ack_by end
+                     where id = $1",
+                )
+                .bind(inc.id)
+                .bind(&summary)
+                .bind(sev)
+                .bind(&w.detail)
+                .bind(escalated)
+                .execute(&st.db)
+                .await?;
                 t.updated += 1;
             } else {
                 touch.push(inc.id);
             }
-            let kind = match inc.notified_at {
-                _ if escalated => Some(Kind::Firing),
-                None => Some(Kind::Firing),
-                Some(n) => repeat_interval_s(w.rule, sev).filter(|every| (now - n).whole_seconds() >= *every).map(|_| Kind::Repeat),
-            };
+            // 升级马上再发一次「触发」；否则按 `due`：重开后报过恢复的满 5 分钟发「触发」、没入队过的补发、到间隔的提醒
+            let kind = if escalated { Some(Kind::Firing) } else { due(w.rule, sev, inc.notified_at, inc.told_resolved_at, now) };
             if let Some(kind) = kind.filter(|_| !silenced) {
                 notify::enqueue(st, notice(kind, inc.id, w.rule, sev, w.name, &w.text, inc.opened_at)).await;
             }
             continue;
         }
         if !w.ready || silenced {
+            continue;
+        }
+        // 窗口内刚恢复过（不是悄悄关掉的）：重开原告警（复发计数 +1、清掉确认），按 `due` 决定马上通知还是等满限流时长。对象也要还在（`exists`）
+        let reopened: Option<(Uuid, OffsetDateTime, Option<OffsetDateTime>, Option<OffsetDateTime>)> = sqlx::query_as(&format!(
+            "update incident set state = 'firing', resolved_at = null, ack_at = null, ack_by = null, reopen_count = reopen_count + 1, last_seen_at = now(),
+                 severity = $2::severity, summary = $4, detail = coalesce($6, detail)
+             where id = (select id from incident where rule = $1 and subject_id = $3 and state = 'resolved' and resolved_at > $5 and not detail ? 'closed_by'
+                         order by resolved_at desc limit 1)
+               and {exists}
+             returning id, opened_at, notified_at, {TOLD_RESOLVED_SQL} told_resolved_at"
+        ))
+        .bind(w.rule)
+        .bind(w.severity)
+        .bind(w.subject)
+        .bind(&summary)
+        .bind(now - time::Duration::seconds(REOPEN_WINDOW_S))
+        .bind(&w.detail)
+        .fetch_optional(&st.db)
+        .await?;
+        if let Some((id, opened_at, notified_at, told_resolved_at)) = reopened {
+            t.opened += 1;
+            if let Some(kind) = due(w.rule, w.severity, notified_at, told_resolved_at, now) {
+                notify::enqueue(st, notice(kind, id, w.rule, w.severity, w.name, &w.text, opened_at)).await;
+            }
             continue;
         }
         let id = crate::db::new_id();
@@ -159,7 +193,8 @@ pub async fn reconcile<'n>(
             .execute(&st.db)
             .await?;
         t.resolved += 1;
-        if let Some(name) = name.filter(|_| inc.notified_at.is_some() && !silences.matches(&inc.rule, inc.subject_id)) {
+        // 上次恢复通知之后发过触发 / 提醒才报恢复（复发后还没再通知过的不重复报）
+        if let Some(name) = name.filter(|_| told_firing(inc.notified_at, inc.told_resolved_at) && !silences.matches(&inc.rule, inc.subject_id)) {
             let text = notify::strip_machine(&inc.summary, name);
             notify::enqueue(st, notice(Kind::Resolved, inc.id, &inc.rule, &inc.severity, name, text, inc.opened_at)).await;
         }

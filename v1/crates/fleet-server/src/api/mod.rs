@@ -74,6 +74,7 @@ pub fn router() -> Router<AppState> {
         .route("/machines/{id}", get(machines::get_one).patch(machines::patch))
         .route("/machines/{id}/series", get(machines::series))
         .route("/machines/{id}/availability", get(machines::availability))
+        .route("/machines/{id}/reach-quality", get(probe_points::relay_quality))
         // 退役：默认移进备用团队，now = 立即回收（作业）；回收站只读，旧面板的退役机器从这里导入
         .route("/machines/{id}/retire", get(machines::retire_preview).post(machines::retire))
         .route("/recycle-bin", get(recycle::list))

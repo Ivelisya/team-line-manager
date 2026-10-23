@@ -838,16 +838,17 @@ async fn probes_of(db: &sqlx::PgPool, eids: &[Uuid]) -> sqlx::Result<HashMap<(Uu
 }
 
 /// 在用入口各自端口上主探测来源（`src`，中控或探测点，见 probe_points::Effective）最近一次 TCP 检查，
-/// 沿 (relay_id, probe_point_id, port, ts desc) 索引逐个取最新一条，失败的再数连续失败了几次；检查早于入口创建的（端口复用）不算
+/// 沿 (relay_id, probe_point_id, port, ts desc) 索引逐个取最新一条，失败的再数连续失败了几次。
+/// 端口永不复用（entries::create 从 relay.port_next 分），同一端口上的检查都是这条入口的
 async fn reach_of(db: &sqlx::PgPool, es: &[(Uuid, Uuid, i32)], src: &crate::probe_points::Effective) -> sqlx::Result<HashMap<Uuid, Reach>> {
     let (cf, cg, cr) = (src.cond("f"), src.cond("g"), src.cond("rr"));
     let rs = sqlx::query_as::<_, (Uuid, bool, OffsetDateTime, Option<String>, i32)>(&format!(
         "select e.id, x.ok, x.ts, x.detail, x.fails from unnest($1::uuid[], $2::uuid[], $3::int[]) e(id, relay, port)
-         join entry en on en.id = e.id cross join lateral (
+         cross join lateral (
             select ok, ts, detail, case when ok then 0 else (
-                     select count(*)::int from relay_reach f where f.relay_id = e.relay and {cf} and f.port = e.port and f.ts >= en.created_at and not f.ok
+                     select count(*)::int from relay_reach f where f.relay_id = e.relay and {cf} and f.port = e.port and not f.ok
                        and f.ts > coalesce((select max(g.ts) from relay_reach g where g.relay_id = e.relay and {cg} and g.port = e.port and g.ok), '-infinity')) end fails
-            from relay_reach rr where rr.relay_id = e.relay and {cr} and rr.port = e.port and rr.ts >= en.created_at
+            from relay_reach rr where rr.relay_id = e.relay and {cr} and rr.port = e.port
             order by rr.ts desc limit 1) x",
     ))
     .bind(es.iter().map(|e| e.0).collect::<Vec<_>>())
@@ -1040,7 +1041,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
     let db = &st.db;
     let lc = scope.cond();
     // 线路机客户入口的连通性看哪一路检查（主探测来源；离线时退回中控或标灰，见 probe_points/）
-    let reach_src = crate::probe_points::effective(db).await?;
+    let reach_src = crate::probe_points::effective(st).await?;
     // 同机 IP 节点没有自己的 agent：agent 状态取宿主机的
     let sql = format!(
         "select m.id, m.kind::text kind, m.team_id, t.name team_name, t.spare team_spare, m.spare_from, m.spare_since, m.number, m.label, host(m.primary_ip) ip, coalesce(hm.ssh_port, m.ssh_port) ssh_port,

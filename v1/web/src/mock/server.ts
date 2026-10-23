@@ -771,7 +771,7 @@ R('GET', '/probe-beats', () => probeBeats());
 // 探测点（设置「探测点」）：演示数据只有一个在线的香港探测点、主来源是中控；改主来源、开关、新增只改内存
 const MOCK_PROBES: Record<string, unknown>[] = [{
   id: 'pp-hk', name: '香港', label: '香港探测点', enabled: true, note: '阿里云香港 · Alpine', state: 'online', installed: true, primary: false,
-  last_seen_at: iso(), last_ip: '47.242.0.10', version: '0.1.0+mock', created_at: iso(), bootstrap_expires_at: null, install: null, upgrade: null,
+  last_seen_at: iso(), last_kept_at: iso(), discard_reason: null, last_ip: '47.242.0.10', version: '0.1.0+mock', created_at: iso(), bootstrap_expires_at: null, install: null, upgrade: null,
   relays: [{ relay_id: 'r1', name: '线路机1', avg_ms: 158, median_ms: 156, total: 120, ok: 120 }],
 }];
 const reachSrc = { primary: 'central', central_enabled: true };
@@ -788,7 +788,20 @@ R('PUT', '/settings/reach-source', ({ body }) => {
   MOCK_PROBES.forEach((p) => { p.primary = p.id === reachSrc.primary; });
   emit({ type: 'settings' }); return reachView();
 });
-R('GET', '/probe-points', () => clone(MOCK_PROBES));
+// 到各线路机的统计窗口（同服务端 ?window=）：每 30 秒一次，1 小时 120 次；长窗口偶尔断几次
+const WIN_HOURS: Record<string, number> = { '1h': 1, '24h': 24, '7d': 168, '30d': 720 };
+R('GET', '/probe-points', ({ query }) => {
+  const window = query.get('window') ?? '1h'; const h = WIN_HOURS[window] ?? 1;
+  return clone(MOCK_PROBES).map((p) => ({ ...p, window, relays: (p.relays as { total: number; ok: number }[]).map((r) => ({ ...r, total: r.total * h, ok: r.ok * h - Math.floor(h / 24) * 3 })) }));
+});
+// 线路机抽屉的客户入口连通性（同服务端 /reach-quality）：中控只判通不通，香港探测点带建连延迟
+R('GET', '/machines/([^/]+)/reach-quality', ({ params }) => {
+  const m = machine(params[0]);
+  if (m.kind !== 'relay') throw bad('只有线路机有客户入口连通性');
+  const win = (h: number, ms: number | null) => ({ total: 120 * h, ok: 120 * h - Math.floor(h / 24) * 2, avg_ms: ms, median_ms: ms == null ? null : ms - 2 });
+  const w = (ms: number | null) => ({ '24h': win(24, ms), '7d': win(168, ms), '30d': win(720, ms) });
+  return { sources: [{ source: 'central', label: '中控', primary: reachSrc.primary === 'central', windows: w(null) }, { source: 'pp-hk', label: '香港探测点', primary: reachSrc.primary === 'pp-hk', windows: w(158) }] };
+});
 R('POST', '/probe-points', ({ body }) => {
   const b = body as { name: string; note?: string };
   const id = `pp-${MOCK_PROBES.length + 1}`;

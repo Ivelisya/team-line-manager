@@ -8,7 +8,7 @@
 //!   旧 agent 不认识这个字段、照常应用，只是不测。
 //! - 测：线路机上的 fleet-agent 每 60 秒一轮，每个目标发 5 次（TCP 建连 / 系统 ping），记通了的那几次的延迟中位数与丢了几次，随上报带回
 //!   （`Report::ping`，agent_api 调 [`ingest`]）。节点不测：客户不直连节点。
-//! - 存：`ping_result` 每台每目标每分钟一行，保留 7 天；`ping_hourly` 小时汇总，保留 90 天。本模块的后台循环每 5 分钟重算最近 7 小时的汇总、
+//! - 存：`ping_result` 每台每目标每分钟一行，保留 [retention] ping_days（默认 7 天）；`ping_hourly` 小时汇总，保留 ping_hourly_days（默认 90 天）。本模块的后台循环每 5 分钟重算最近 7 小时的汇总、
 //!   每小时清一次过期的。
 //! - 看：`/ping-beats`（卡片：每个目标一行，近 1 小时 20 格的延迟与丢包）、`/machines/{id}/ping`（这台的目标、覆盖、当前读数）、
 //!   `/machines/{id}/ping-series`（抽屉里的曲线）。
@@ -38,8 +38,6 @@ pub const SLOTS: usize = 8;
 pub const INTERVAL_S: u32 = 60;
 pub const COUNT: u32 = 5;
 const KEY: &str = "ping_targets";
-const RAW_DAYS: i64 = 7;
-const HOURLY_DAYS: i64 = 90;
 pub const MODES: [&str; 2] = ["tcp", "icmp"];
 const MAX_NAME: usize = 20;
 
@@ -296,7 +294,7 @@ pub async fn run_forever(st: AppState) {
             tracing::error!("三网 PING 小时汇总失败：{e:#}");
         }
         if n.is_multiple_of(12) {
-            if let Err(e) = cleanup(&st.db).await {
+            if let Err(e) = cleanup(&st.db, &st.cfg.retention).await {
                 tracing::error!("三网 PING 保留期清理失败：{e:#}");
             }
         }
@@ -318,9 +316,9 @@ pub async fn rollup(db: &sqlx::PgPool) -> sqlx::Result<u64> {
     .rows_affected())
 }
 
-pub async fn cleanup(db: &sqlx::PgPool) -> sqlx::Result<()> {
-    sqlx::query("delete from ping_result where ts < now() - make_interval(days => $1)").bind(RAW_DAYS as i32).execute(db).await?;
-    sqlx::query("delete from ping_hourly where hour < now() - make_interval(days => $1)").bind(HOURLY_DAYS as i32).execute(db).await?;
+pub async fn cleanup(db: &sqlx::PgPool, r: &crate::config::Retention) -> sqlx::Result<()> {
+    sqlx::query("delete from ping_result where ts < now() - make_interval(days => $1)").bind(r.ping_days as i32).execute(db).await?;
+    sqlx::query("delete from ping_hourly where hour < now() - make_interval(days => $1)").bind(r.ping_hourly_days as i32).execute(db).await?;
     Ok(())
 }
 

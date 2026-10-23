@@ -135,7 +135,7 @@ mod tests {
 
     #[test]
     fn defaults_follow_config_and_stay_in_range() {
-        let r = |access_days| AccessRetention::default_for(&Retention { raw_days: 3, access_days });
+        let r = |access_days| AccessRetention::default_for(&Retention { raw_days: 3, access_days, ..Retention::default() });
         assert_eq!(r(7), AccessRetention { raw_days: 7, hourly_days: 31 });
         // 配置文件里写得比 31 天还长：汇总跟着拉长；超出 1–90 的收进范围
         assert_eq!(r(40), AccessRetention { raw_days: 40, hourly_days: 40 });

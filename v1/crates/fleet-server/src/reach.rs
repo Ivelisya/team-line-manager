@@ -15,12 +15,13 @@
 //! 不连 SSH 口：每 30 秒一次未认证就断开的连接会刷 sshd 日志，线路机上若有 fail2ban 还可能把中控封掉。
 //! Xray 的 REALITY 入站对只建连、不发数据的连接不记访问日志。
 //!
-//! 测的这一方自己的网络有问题（刚重启网络没好、出口断了）时不能记成线路机故障，整轮作废、不写（`fleet_proto::keep_round`，两路同一条规则）：
-//! - 对照目标（公共 DNS 的 443 口）一个都连不上；
-//! - 或三台以上线路机全部连不上（不会每台都同时坏）。对照目标通时两台同时连不上照记：
-//!   生产两台线路机在同一家供应商的同一个 /24，一起出问题并不罕见，正是要报的时候。
+//! 测的这一方自己的网络有问题（刚重启网络没好、出口断了）时不能记成线路机故障：对照目标（公共 DNS 的 443 口）一个都连不上，整轮作废、不写（两路同一条规则）。
+//! 对照目标通、三台以上线路机却全部连不上（`fleet_proto::all_down`）照记，行上标 all_down：以前当成测的这一方的问题整轮作废，
+//! 但生产几台线路机在同一家供应商的同一个 /24，供应商整段故障时就是这样，正是要报的时候；relay_unreachable 的摘要写明
+//! 「全部线路机同时连不上（可能是供应商整段故障）」，看的人一眼知道该先查供应商还是测的这一方。
 //!
-//! 结果进 relay_reach，保留 2 天（db::cleanup_retention）。查询都按来源过滤，索引带着来源（迁移 0046）。
+//! 结果进 relay_reach，保留 [retention] reach_days（默认 2 天，db::cleanup_retention）；每小时汇总进 relay_reach_hourly（db::rollup_hour，一直留着），
+//! 探测点页与线路机抽屉的 24 小时 / 7 天 / 30 天成功率读它（[`quality`]）。查询都按来源过滤，索引带着来源（迁移 0046）。
 
 use crate::probe_points::Effective;
 use crate::state::{AppState, Event};
@@ -63,25 +64,31 @@ pub async fn run_forever(st: AppState) {
 /// - 整台不通：最近 3 轮（5 分钟内）都连不上，取这 3 次的原因；
 /// - 单个口坏了：某个在用入口端口最近 3 次都连不上（轮流连，N 个口每 N 轮才轮到一次：看 30 分钟与 3 遍轮换里取长的），取它最近一次的原因。
 ///
+/// 用到的检查里有全部线路机同时连不上的轮次（all_down）时，后面加「；全部线路机同时连不上（可能是供应商整段故障）」。
+///
 /// 视图的 `RelayInfo::unreachable` 与写入前后的比对共用
 pub(crate) fn unreachable_sql(relay: &str, src: &Effective) -> String {
     if src.state == "none" {
         return "null::text".into();
     }
     format!(
-        "(with x as (select rr.port, rr.ok, coalesce(rr.detail, '-') detail, rr.ts > now() - interval '5 minutes' fresh,
+        "(with x as (select rr.port, rr.ok, coalesce(rr.detail, '-') detail, rr.all_down, rr.ts > now() - interval '5 minutes' fresh,
                             row_number() over (order by rr.ts desc) n, row_number() over (partition by rr.port order by rr.ts desc) np
                      from relay_reach rr where rr.relay_id = {relay} and {cond} and rr.ts > now() - greatest(interval '30 minutes',
                        interval '90 seconds' * (select count(*) from entry e where e.relay_id = {relay} and e.lifecycle = 'active'))),
                whole as (select count(*) = 3 and not bool_or(ok) down from x where n <= 3 and fresh),
                bad as (select port from x where np <= 3 and port in (select e.port from entry e where e.relay_id = {relay} and e.lifecycle = 'active')
                        group by port having count(*) = 3 and not bool_or(ok))
-          select {label} || '连续 3 次连不上客户入口（' || string_agg(distinct detail, '；' order by detail) || '）' from x
+          select {label} || '连续 3 次连不上客户入口（' || string_agg(distinct detail, '；' order by detail) || '）'
+                 || case when bool_or(all_down) then '；{ALL_DOWN}' else '' end from x
           where (n <= 3 and fresh and (select down from whole)) or (np = 1 and port in (select port from bad)))",
         cond = src.cond("rr"),
         label = src.label_sql()
     )
 }
+
+/// relay_unreachable 摘要里全部线路机同时连不上时的说法
+pub const ALL_DOWN: &str = "全部线路机同时连不上（可能是供应商整段故障）";
 
 /// 线路机 `relay` 整台连不连得上判不出：有在用入口，5 分钟内 `src` 那一路的检查却不到 3 轮（中控 / 探测点刚重启、整轮作废），
 /// 或此刻没有可用的来源（标灰）、暂由中控代替离线的探测点（中控连得上不能当成探测点那边恢复了）。
@@ -117,18 +124,18 @@ pub(crate) struct Sample {
     pub rtt_ms: Option<f32>,
 }
 
-/// 写一轮检查（`src`：None = 中控，否则是探测点）。这一路正是此刻用来判断的那一路时，
+/// 写一轮检查（`src`：None = 中控，否则是探测点；`all_down`：这一轮三台以上线路机全部连不上，见 `fleet_proto::all_down`）。这一路正是此刻用来判断的那一路时，
 /// 写入后连不上的结论（`unreachable_sql`）或判不判得出（`unknown_sql`）变了的线路机发 `Event::Machine`：视图不用等完整重算
-pub(crate) async fn record(st: &AppState, src: Option<Uuid>, ts: OffsetDateTime, samples: &[Sample]) -> anyhow::Result<()> {
+pub(crate) async fn record(st: &AppState, src: Option<Uuid>, ts: OffsetDateTime, samples: &[Sample], all_down: bool) -> anyhow::Result<()> {
     let db = &st.db;
-    let eff = crate::probe_points::effective(db).await?;
+    let eff = crate::probe_points::effective(st).await?;
     let ids: Vec<Uuid> = samples.iter().map(|s| s.relay).collect();
     let judge = eff.uses(src) && !ids.is_empty();
     let unreach = format!("select {}, {} from unnest($1::uuid[]) with ordinality u(id, i) order by i", unreachable_sql("u.id", &eff), unknown_sql("u.id", &eff));
     let before: Vec<(Option<String>, bool)> = if judge { sqlx::query_as(&unreach).bind(&ids).fetch_all(db).await? } else { vec![] };
     sqlx::query(
-        "insert into relay_reach (relay_id, ts, ok, detail, port, probe_point_id, rtt_ms)
-         select u.id, $2, u.ok, u.detail, u.port, $6, u.rtt from unnest($1::uuid[], $3::bool[], $4::text[], $5::int[], $7::real[]) u(id, ok, detail, port, rtt)",
+        "insert into relay_reach (relay_id, ts, ok, detail, port, probe_point_id, rtt_ms, all_down)
+         select u.id, $2, u.ok, u.detail, u.port, $6, u.rtt, $8 from unnest($1::uuid[], $3::bool[], $4::text[], $5::int[], $7::real[]) u(id, ok, detail, port, rtt)",
     )
     .bind(&ids)
     .bind(ts)
@@ -137,6 +144,7 @@ pub(crate) async fn record(st: &AppState, src: Option<Uuid>, ts: OffsetDateTime,
     .bind(samples.iter().map(|s| s.port).collect::<Vec<_>>())
     .bind(src)
     .bind(samples.iter().map(|s| s.rtt_ms).collect::<Vec<_>>())
+    .bind(all_down)
     .execute(db)
     .await?;
     if judge {
@@ -150,7 +158,7 @@ pub(crate) async fn record(st: &AppState, src: Option<Uuid>, ts: OffsetDateTime,
     Ok(())
 }
 
-/// 中控的一轮：每台线路机连它第 `turn`（对入口数取余）个在用入口端口，返回写入的行数（整轮作废为 0）。写入与事件见 `record`
+/// 中控的一轮：每台线路机连它第 `turn`（对入口数取余）个在用入口端口，返回写入的行数（对照目标都连不上、整轮作废为 0）。写入与事件见 `record`
 pub async fn round(st: &AppState, controls: &[&str], turn: usize) -> anyhow::Result<usize> {
     let targets = targets(&st.db).await?;
     if targets.is_empty() {
@@ -161,12 +169,11 @@ pub async fn round(st: &AppState, controls: &[&str], turn: usize) -> anyhow::Res
     let relays = futures::future::join_all(targets.iter().zip(&ports).map(|((_, host, _), port)| connect(host.clone(), *port)));
     let ctl = futures::future::join_all(controls.iter().map(|a| connect_addr(a)));
     let (res, ctl) = tokio::join!(relays, ctl);
-    let control_ok = controls.is_empty() || ctl.iter().any(|r| r.is_ok());
-    let oks: Vec<bool> = res.iter().map(|r| r.is_ok()).collect();
-    if !keep_round(&oks, control_ok) {
-        tracing::warn!(control_ok, relays = oks.len(), "中控 → 线路机：中控自己的网络像是有问题，这一轮不记");
+    if !(controls.is_empty() || ctl.iter().any(|r| r.is_ok())) {
+        tracing::warn!("中控 → 线路机：对照目标都连不上，中控自己的网络像是有问题，这一轮不记");
         return Ok(0);
     }
+    let oks: Vec<bool> = res.iter().map(|r| r.is_ok()).collect();
     // 失败原因带上端口：轮流连的，告警摘要里要看得出是哪个口
     let samples: Vec<Sample> = targets
         .iter()
@@ -174,12 +181,80 @@ pub async fn round(st: &AppState, controls: &[&str], turn: usize) -> anyhow::Res
         .zip(&res)
         .map(|(((id, _, _), port), r)| Sample { relay: *id, port: i32::from(*port), ok: r.is_ok(), detail: r.as_ref().err().map(|e| format!("端口 {port}：{e}")), rtt_ms: None })
         .collect();
-    record(st, None, ts, &samples).await?;
+    record(st, None, ts, &samples, fleet_proto::all_down(&oks)).await?;
     Ok(targets.len())
 }
 
-/// 这一轮记不记：同 `fleet_proto::keep_round`（探测点用同一条规则）
-pub fn keep_round(oks: &[bool], control_ok: bool) -> bool { fleet_proto::keep_round(oks, control_ok) }
+/// 成功率统计的时间窗：1h 读原始记录，其余读小时汇总（按整点，含当前这一小时）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Window {
+    H1,
+    H24,
+    D7,
+    D30,
+}
+
+impl Window {
+    pub fn parse(s: Option<&str>) -> Option<Self> {
+        Some(match s.unwrap_or("1h") {
+            "1h" => Self::H1,
+            "24h" => Self::H24,
+            "7d" => Self::D7,
+            "30d" => Self::D30,
+            _ => return None,
+        })
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::H1 => "1h",
+            Self::H24 => "24h",
+            Self::D7 => "7d",
+            Self::D30 => "30d",
+        }
+    }
+    fn hours(self) -> i32 {
+        match self {
+            Self::H1 => 1,
+            Self::H24 => 24,
+            Self::D7 => 24 * 7,
+            Self::D30 => 24 * 30,
+        }
+    }
+}
+
+/// 一路来源到一台线路机在一个时间窗里的检查：次数、通的次数、通的那些的建连往返时间（中控那一路不记，为 null）
+#[derive(Debug, sqlx::FromRow)]
+pub struct Quality {
+    /// None = 中控
+    pub probe_point_id: Option<Uuid>,
+    pub relay_id: Uuid,
+    pub relay_name: String,
+    pub total: i64,
+    pub ok: i64,
+    pub avg_ms: Option<f64>,
+    /// 1h 是真正的中位数；小时汇总的窗口是各小时中位数的中位数（近似）
+    pub median_ms: Option<f64>,
+}
+
+/// 各路来源到各线路机（`relay` 给了就只算这一台）在 `w` 里的检查统计，按线路机名排。1h 读原始记录（relay_reach），
+/// 24h / 7d / 30d 读小时汇总（relay_reach_hourly：原始记录只留几天）。平均延迟按各小时通的次数加权
+pub async fn quality(db: &sqlx::PgPool, w: Window, relay: Option<Uuid>) -> sqlx::Result<Vec<Quality>> {
+    let sql = if w == Window::H1 {
+        "select r.probe_point_id, r.relay_id, display_name(m.kind::text, m.label, t.name, m.number) relay_name, count(*) total, count(*) filter (where r.ok) ok,
+                (avg(r.rtt_ms) filter (where r.ok))::float8 avg_ms, (percentile_cont(0.5) within group (order by r.rtt_ms) filter (where r.ok))::float8 median_ms
+         from relay_reach r join machine m on m.id = r.relay_id left join team t on t.id = m.team_id
+         where r.ts > now() - make_interval(hours => $1) and ($2::uuid is null or r.relay_id = $2)
+         group by 1, 2, 3 order by 3, 1 nulls first"
+    } else {
+        "select h.probe_point_id, h.relay_id, display_name(m.kind::text, m.label, t.name, m.number) relay_name, sum(h.total)::int8 total, sum(h.ok)::int8 ok,
+                (sum(h.rtt_avg * h.ok) filter (where h.rtt_avg is not null) / nullif(sum(h.ok) filter (where h.rtt_avg is not null), 0))::float8 avg_ms,
+                (percentile_cont(0.5) within group (order by h.rtt_p50))::float8 median_ms
+         from relay_reach_hourly h join machine m on m.id = h.relay_id left join team t on t.id = m.team_id
+         where h.hour > date_trunc('hour', now()) - make_interval(hours => $1) and ($2::uuid is null or h.relay_id = $2)
+         group by 1, 2, 3 order by 3, 1 nulls first"
+    };
+    sqlx::query_as(sql).bind(w.hours()).bind(relay).fetch_all(db).await
+}
 
 async fn connect(host: String, port: u16) -> Result<(), String> {
     match tokio::time::timeout(TIMEOUT, TcpStream::connect((host.as_str(), port))).await {
@@ -224,13 +299,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn central_side_failures_discard_the_round() {
-        assert!(keep_round(&[true, false], true), "一台不通照记");
-        assert!(keep_round(&[false], true), "只有一台线路机：靠对照目标判断");
-        assert!(keep_round(&[false, false], true), "两台全不通照记：同一家供应商一起出问题");
-        assert!(!keep_round(&[false, false, false], true), "三台以上全不通：中控自己的问题");
-        assert!(!keep_round(&[true, true], false), "对照目标都连不上：不记");
-        assert!(keep_round(&[], true));
+    fn windows() {
+        assert_eq!(Window::parse(None), Some(Window::H1));
+        assert_eq!(Window::parse(Some("7d")).map(Window::as_str), Some("7d"));
+        assert_eq!(Window::parse(Some("2d")), None);
+        assert_eq!(Window::D30.hours(), 720);
     }
 
     #[tokio::test]

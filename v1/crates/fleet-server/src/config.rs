@@ -199,9 +199,16 @@ pub struct Retention {
     pub raw_days: u32,
     /// 访问记录（原始）保留天数的默认值：访问记录的保留期在面板里设（settings.rs），没设过时用它
     pub access_days: u32,
+    /// 客户入口连通性原始记录（relay_reach，中控与探测点每 30 秒一轮）保留天数。读它的地方最多看 1 小时，
+    /// 更长的窗口读小时汇总 relay_reach_hourly（一直留着，同 probe_hourly）
+    pub reach_days: u32,
+    /// 三网 PING 原始记录（ping_result，每分钟一轮）保留天数：抽屉 24 小时以内的曲线读它
+    pub ping_days: u32,
+    /// 三网 PING 小时汇总（ping_hourly）保留天数：抽屉 7 天 / 30 天的曲线读它
+    pub ping_hourly_days: u32,
 }
 impl Default for Retention {
-    fn default() -> Self { Self { raw_days: 3, access_days: 7 } }
+    fn default() -> Self { Self { raw_days: 3, access_days: 7, reach_days: 2, ping_days: 7, ping_hourly_days: 90 } }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -235,7 +242,9 @@ mod tests {
     #[test]
     fn partial_tables_keep_defaults() {
         let r: Retention = toml::from_str("raw_days = 30").unwrap();
-        assert_eq!((r.raw_days, r.access_days), (30, 7));
+        assert_eq!((r.raw_days, r.access_days, r.reach_days, r.ping_days, r.ping_hourly_days), (30, 7, 2, 7, 90));
+        let r: Retention = toml::from_str("reach_days = 5\nping_hourly_days = 400").unwrap();
+        assert_eq!((r.raw_days, r.reach_days, r.ping_days, r.ping_hourly_days), (3, 5, 7, 400));
         let n: Numbering = toml::from_str("").unwrap();
         assert!(n.auto_compact);
         let s: SelfmonConfig = toml::from_str("heartbeat_url = \"https://hc-ping.com/x\"").unwrap();

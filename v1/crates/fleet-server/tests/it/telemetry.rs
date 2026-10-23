@@ -2316,7 +2316,7 @@ async fn retention_cleanup_removes_only_expired_rows() {
     }
     // 访问记录（汇总、来源画像）按面板里设的保留期删，见 tests/it/retention.rs
     let sessions_before = t.count("select count(*) from session").await;
-    db::cleanup_retention(db).await.unwrap();
+    db::cleanup_retention(db, &t.st.cfg.retention).await.unwrap();
     assert_eq!(t.count("select count(*) from silence").await, 1, "结束超 90 天的静默删掉");
     assert_eq!(t.count("select count(*) from incident").await, 2, "只删已恢复超 180 天的");
     assert_eq!(t.count("select count(*) from incident where state = 'firing'").await, 1);
