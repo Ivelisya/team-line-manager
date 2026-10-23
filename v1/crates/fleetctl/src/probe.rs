@@ -14,7 +14,7 @@ use std::time::Duration;
 fn state_cn(s: &str) -> &str {
     match s {
         "online" => "在线",
-        "blind" => "在线（检查都作废了）",
+        "blind" => "在线（探测无效）",
         "offline" => "离线",
         "pending" => "等待安装",
         "disabled" => "已停用",
@@ -294,7 +294,7 @@ mod tests {
         let q = json!({"id": "x", "name": "东京", "state": "pending", "install": {"state": "failed"}, "upgrade": {"sha256": "a"}, "relays": []});
         assert_eq!(row(&q)[1..3], ["", "等待安装（安装失败）（升级中）"]);
         let b = json!({"id": "y", "name": "新加坡", "state": "blind", "relays": []});
-        assert_eq!(row(&b)[2], "在线（检查都作废了）");
+        assert_eq!(row(&b)[2], "在线（探测无效）");
     }
 
     #[test]

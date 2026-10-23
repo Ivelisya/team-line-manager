@@ -69,7 +69,7 @@ fleetctl ssh router <名称> [-- 'logread | tail -50']        # 软路由（Open
 | 供应商（缩写、账单时区、流量计量与重置、提前提醒、套餐数） | `fleetctl --json provider ls` |
 | 套餐（供应商、规格、价格 / 周期、在用机器数） | `fleetctl --json plan ls [--provider <供应商>] [--all 含已归档]` |
 | 三网 PING：线路机往外到各目标（默认武汉电信 / 联通 / 移动）的延迟与丢包 | `fleetctl --json ping <线路机>`（`current[]`：`name target mode cur_ms cur_loss`，`cur_loss` 是 %；`show <线路机>` 的 `ping` 字段相同）；全局目标 `fleetctl --json ping-targets` |
-| 探测点与主探测来源：谁在测线路机的客户入口、此刻用的是哪一路、各探测点到各线路机的近 1 小时平均延迟 | `fleetctl --json probe ls`（`{probe_points:[…], source:{primary, central_enabled, effective:{state,label}}}`；`state`：online / blind（在线但检查都作废了）/ offline / pending / disabled） |
+| 探测点与主探测来源：谁在测线路机的客户入口、此刻用的是哪一路、各探测点到各线路机的近 1 小时平均延迟 | `fleetctl --json probe ls`（`{probe_points:[…], source:{primary, central_enabled, effective:{state,label}}}`；`state`：online / blind（在线但探测无效）/ offline / pending / disabled） |
 
 访问规则的健康提示：节点被设为 `blocked` 时健康原因里有 `policy_blocked`（info，不降级、不开告警）。
 
@@ -111,7 +111,7 @@ fleetctl exec --team 团队1 --timeout 30 -- uptime           # 多台并发 4�
 
 中控在德国，客户在中国大陆：中控连不连得上线路机不代表客户。探测点是放在靠近客户的地方（如香港）的小机器，跑 `fleet-agent probe`，每 30 秒连一遍各线路机的客户入口（同中控的轮换与作废规则），另记建连延迟。「主探测来源」（中控或某个探测点）决定线路机卡片的心跳格、入口的「连不上」与 `relay_unreachable`；主来源离线（3 分钟没上报），或在线但 3 分钟里的检查都作废了（它自己连不上对照目标，摘要写「中控（代替探测无效的香港探测点）…」）时，中控的检查开着就由中控代替（连不上照报、连得上不算恢复，摘要写「中控（代替离线的香港探测点）…」），关着就标灰。离线、作废都扣掉中控停机的时段。对照目标通、三台以上线路机全部连不上的轮次照记，`relay_unreachable` 摘要后面会带「；所有线路机同时连不上，可能是供应商整体故障」：这时先查供应商（同一家、同一网段的几台），不要逐台排查。
 
-- 查看：`fleetctl --json probe ls`（`state` 多一种 `blind`：在线但检查都作废了，`discard_reason` 写原因）。24 小时 / 7 天 / 30 天到各线路机的成功率与延迟在网页（设置 → 探测点切时间窗；线路机抽屉「连接质量」的「入口连通性」，中控与各探测点并排），数据来自小时汇总，用来对比香港与中控、核对某次投诉的时段。
+- 查看：`fleetctl --json probe ls`（`state` 多一种 `blind`：在线但探测无效，`discard_reason` 写原因）。24 小时 / 7 天 / 30 天到各线路机的成功率与延迟在网页（设置 → 探测点切时间窗；线路机抽屉「连接质量」的「入口连通性」，中控与各探测点并排），数据来自小时汇总，用来对比香港与中控、核对某次投诉的时段。
 - 加一台（会登录 / 改那台机器，先向用户确认）：中控能 SSH 到它就 `fleetctl probe add <名称> --host <IP> [--ssh-port 22]`（中控用自己的密钥登录 root，等到首次上报；登不进时报错里有中控公钥全文，转给用户加进探测点的 `/root/.ssh/authorized_keys`，再 `fleetctl probe install <名称> --host <IP>`）；否则 `fleetctl probe add <名称>` 打印一次性安装命令（30 分钟、只能用一次），让用户在探测点上用 root 执行，过期了 `fleetctl probe install <名称>`。
 - 设主来源：`fleetctl probe primary <名称|central>`；中控自己的检查：`fleetctl probe central on|off`（主来源是中控时不能关）。改主来源会改变告警的判断依据，先向用户确认。
 - 启停、改名：`fleetctl probe set <名称> --enable|--disable [--name …] [--note …]`（主来源不能停用、删除）；升级成中控 dist 里的 fleet-agent：`fleetctl probe upgrade <名称>`（探测点自己下载替换，等到报上新版本；新版本 5 分钟内一次都没上报成功会自己换回旧版本、不再换成这个版本，`probe ls` 一直显示升级中，告诉用户这个版本在探测点上跑不起来）；删除：`fleetctl probe rm <名称> --yes`，输出里的 `cleanup` 是要在探测点上执行的清理命令，转给用户。

@@ -502,7 +502,7 @@ url = "https://api.frankfurter.dev/v1/latest?base=USD"   # 回包 {base:"USD", d
 **服务**：OpenRC（Alpine）是 `/etc/init.d/fleet-probe`（`supervise-daemon` 守护、挂了 5 秒后拉起、开机启动），日志 `/var/log/fleet-probe.log`（只在出问题时写、同一个问题 10 分钟一条，不轮转也涨得很慢）；systemd 是 `fleet-probe.service`（`journalctl -u fleet-probe`）。以系统用户 `fleet-probe` 跑。
 
 **它判不了的时候**：
-- 每轮对照目标（1.1.1.1 / 8.8.8.8 的 443）都连不上：这一轮作废，只算心跳。在线、但 3 分钟里没有一轮被采纳（`fleetctl probe ls` 状态「在线（检查都作废了）」，网页「探测无效」并写原因）就当它离线：主来源退回中控（卡片写「中控（代替探测无效的香港探测点）」），开 `probe_point_offline`。离线后刚回来的那一轮作废不算，从回来时算起。
+- 每轮对照目标（1.1.1.1 / 8.8.8.8 的 443）都连不上：这一轮作废，只算心跳。在线、但 3 分钟里没有一轮被采纳（`fleetctl probe ls` 状态「在线（探测无效）」，网页「探测无效」并写原因）就当它离线：主来源退回中控（卡片写「中控（代替探测无效的香港探测点）」），开 `probe_point_offline`。离线后刚回来的那一轮作废不算，从回来时算起。
 - 对照目标通、三台以上线路机全部连不上：照记（以前整轮作废），`relay_unreachable` 摘要写「所有线路机同时连不上，可能是供应商整体故障」。
 - 「多久没上报」「多久没采纳」都扣掉中控收不到上报的时段（中控或库停一阵恢复后不会先判离线、退回中控再切回来，同 agent 离线）。
 
