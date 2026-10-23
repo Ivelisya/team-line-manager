@@ -157,6 +157,9 @@ pub struct Client {
     pub hostname: Option<String>,
     pub online: bool,
     pub conns: i64,
+    /// 经 OpenClash 的速率（bit/s，按 mihomo 连接的来源 IP 汇总，取差同出口）：没有连接为 0，中控重启后第一轮算不出为 None
+    pub down_bps: Option<i64>,
+    pub up_bps: Option<i64>,
     pub exits: Vec<ClientExit>,
 }
 
@@ -445,7 +448,7 @@ fn exits(oc: &Value, last: Option<&Snapshot>, config: Option<&[Proxy]>, entries:
 }
 
 /// 客户端：DHCP 租约（主机名、MAC）+ 邻居表（REACHABLE / STALE / DELAY / PROBE 算在线；WAN 口那一侧的不算：旁路由的 WAN 就是 br-lan，
-/// 整个家里的局域网都在邻居表里，它的客户端靠下一条）+ mihomo 连接里的来源 IP（有连接即在线）。在线的在前，按连接数
+/// 整个家里的局域网都在邻居表里，它的客户端靠下一条）+ mihomo 连接里的来源 IP（有连接即在线，速率由它算）。在线的在前，按连接数
 fn clients(raw: &Value, oc: &Value, ifaces: &[Iface]) -> Vec<Client> {
     let wan_dev: HashSet<&str> = ifaces.iter().filter(|i| i.name == "wan" || i.name == "wan6").filter_map(|i| i.device.as_deref()).collect();
     let mut by: BTreeMap<String, Client> = BTreeMap::new();
@@ -471,6 +474,8 @@ fn clients(raw: &Value, oc: &Value, ifaces: &[Iface]) -> Vec<Client> {
         }
         c.online |= matches!(state.as_str(), "REACHABLE" | "STALE" | "DELAY" | "PROBE" | "PERMANENT");
     }
+    let dt = f(oc, "conn_dt").filter(|x| *x > 0.0);
+    let bps = |v: &Value, k: &str| dt.and_then(|dt| f(v, k).map(|b| (b * 8.0 / dt).round() as i64));
     if let Some(m) = oc.get("clients").and_then(Value::as_object) {
         for (ip, v) in m {
             if ip.starts_with("127.") || ip == "::1" {
@@ -479,6 +484,8 @@ fn clients(raw: &Value, oc: &Value, ifaces: &[Iface]) -> Vec<Client> {
             let c = by.entry(ip.clone()).or_insert_with(|| Client { ip: ip.clone(), ..Client::default() });
             c.conns = i(v, "conns").unwrap_or(0);
             c.online |= c.conns > 0;
+            c.down_bps = bps(v, "down");
+            c.up_bps = bps(v, "up");
             let mut ex: Vec<ClientExit> = v
                 .get("exits")
                 .and_then(Value::as_object)
@@ -489,6 +496,9 @@ fn clients(raw: &Value, oc: &Value, ifaces: &[Iface]) -> Vec<Client> {
         }
     }
     let mut v: Vec<Client> = by.into_values().collect();
+    for c in v.iter_mut().filter(|c| c.down_bps.is_none()) {
+        (c.down_bps, c.up_bps) = (dt.map(|_| 0), dt.map(|_| 0));
+    }
     v.sort_by(|a, b| b.online.cmp(&a.online).then_with(|| b.conns.cmp(&a.conns)).then_with(|| ip_key(&a.ip).cmp(&ip_key(&b.ip))));
     v.truncate(500);
     v
@@ -933,7 +943,7 @@ mod tests {
             "enabled": true, "running": true, "mode": "fake-ip-mix", "config_path": "/etc/openclash/config/x.yaml", "config_mtime": 1761000000,
             "config_sha256": "abc", "rss": 52428800, "version": "alpha-g99e68e9", "up_total": up_total, "down_total": up_total * 4, "conns": 3,
             "exits": {"节点01": {"conns": 2, "up": 3000, "down": 30000, "clients": 1}, "DIRECT": {"conns": 1, "up": 10, "down": 10, "clients": 1}},
-            "clients": {"192.168.124.100": {"conns": 2, "exits": {"节点01": 2}}, "192.168.124.9": {"conns": 1, "exits": {"DIRECT": 1}}},
+            "clients": {"192.168.124.100": {"conns": 2, "exits": {"节点01": 2}, "up": 3000, "down": 30000}, "192.168.124.9": {"conns": 1, "exits": {"DIRECT": 1}, "up": 10, "down": 10}},
             "conn_dt": 30,
             "proxies": [
                 {"name": "节点01", "type": "Vless", "alive": true, "delay": 120, "at": "2026-10-22T08:00:00Z"},
@@ -1033,6 +1043,13 @@ mod tests {
         assert_eq!(c, [("192.168.124.100", true, 2, Some("laptop")), ("192.168.124.9", true, 1, None), ("192.168.124.101", false, 0, None)]);
         assert_eq!(b.snap.clients[0].exits[0].name, "节点01");
         assert_eq!((b.metric.clients, summary(&b.snap)["clients"].as_i64()), (2, Some(2)));
+        // 速率：这段时间（conn_dt 30 秒）各自连接的字节数之差；没有连接的为 0；算不出间隔（第一轮）为 None
+        let r: Vec<(Option<i64>, Option<i64>)> = b.snap.clients.iter().map(|c| (c.down_bps, c.up_bps)).collect();
+        assert_eq!(r, [(Some(8000), Some(800)), (Some(3), Some(3)), (Some(0), Some(0))]);
+        let mut first = raw(0, 0, 0, None);
+        first["oc"]["conn_dt"] = Value::Null;
+        let b = build(&first, &Prev::default(), None, None, &[], now);
+        assert!(b.snap.clients.iter().all(|c| c.down_bps.is_none() && c.up_bps.is_none()));
     }
 
     #[test]

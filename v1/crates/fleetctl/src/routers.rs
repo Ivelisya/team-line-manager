@@ -236,10 +236,11 @@ fn human_show(d: &Value) -> String {
             .iter()
             .map(|c| {
                 let ex = c["exits"].as_array().map(|a| a.iter().map(|x| format!("{}×{}", st(x, "/name"), st(x, "/conns"))).collect::<Vec<_>>().join(" ")).unwrap_or_default();
-                vec![st(c, "/ip"), st(c, "/hostname"), st(c, "/mac"), if c["online"] == true { "在线".into() } else { "离线".into() }, st(c, "/conns"), ex]
+                let rate = format!("↓{} ↑{}", bps(num(c, "/down_bps").unwrap_or(0.0)), bps(num(c, "/up_bps").unwrap_or(0.0)));
+                vec![st(c, "/ip"), st(c, "/hostname"), st(c, "/mac"), if c["online"] == true { "在线".into() } else { "离线".into() }, st(c, "/conns"), rate, ex]
             })
             .collect();
-        out.push_str(&format!("\n\n客户端\n{}", table::render(&["IP", "主机名", "MAC", "状态", "连接", "出口"], &rows)));
+        out.push_str(&format!("\n\n客户端\n{}", table::render(&["IP", "主机名", "MAC", "状态", "连接", "速率", "出口"], &rows)));
     }
     out
 }
