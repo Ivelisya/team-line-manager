@@ -861,12 +861,16 @@ enum RouterCmd {
         note: Option<String>,
     },
     /// 同步出口参数：参数和对应入口不一致的出口（凭据轮换后没同步，告警「软路由出口参数不一致」）改成入口现在的参数。
-    /// 备份后改，改完重启 OpenClash（断开经它的全部连接）并测延迟，失败自动改回。不加 --yes 只打印预览
+    /// 备份后改，改完重启 OpenClash（断开经它的全部连接）并测延迟，失败自动改回。不加 --yes 只打印预览。
+    /// 不点名时只同步「已建立对应」的出口（中控作业写过的，或曾经参数一致的）；从没对上过的（路由上有人加的？）列出来、不动
     Sync {
         router: String,
-        /// 只同步这个出口（可重复；不给 = 全部不一致的）
+        /// 只同步这个出口（可重复；不给 = 全部已建立对应、不一致的）
         #[arg(long = "exit")]
         exits: Vec<String>,
+        /// 点名的出口从没对上过入口、而且入口是直出 / 备用团队 / 别的团队的：确认是自己的，仍要同步
+        #[arg(long)]
+        force: bool,
         #[arg(long)]
         yes: bool,
         #[arg(long)]
@@ -1090,7 +1094,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             RouterCmd::Deploy { router, ssh, yes, follow } => routers::deploy(x, &router, ssh, yes, follow),
             RouterCmd::Edit { router, name, team, note } => routers::edit(x, &router, name.as_deref(), team.as_deref(), note.as_deref()),
             RouterCmd::Rm { router, yes, force } => routers::rm(x, &router, yes, force),
-            RouterCmd::Sync { router, exits, yes, follow } => routers::sync(x, &router, &exits, yes, follow),
+            RouterCmd::Sync { router, exits, force, yes, follow } => routers::sync(x, &router, &exits, force, yes, follow),
             RouterCmd::Switch { router, group, to, dur, back } => routers::switch(x, &router, &group, to.as_deref(), dur.as_deref(), back),
         },
         Cmd::Probe { cmd } => match cmd {

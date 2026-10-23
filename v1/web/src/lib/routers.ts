@@ -110,11 +110,17 @@ export const usePatchRouter = () => useWrite(({ id, ...b }: { id: string; name?:
 /** 有没做完的作业改过它的出口、没确认改回时 409（错误信息直接给用户看）；force：照删，这些作业不再改回它（返回摘掉了哪些作业） */
 export const useDeleteRouter = () => useWrite(({ id, force }: { id: string; force?: boolean }) => del<{ jobs?: string[] }>(`/routers/${id}${force ? '?force=true' : ''}`), K);
 /** 同步出口参数的预览：要改的出口（from / to 都是 server:port，不变，换的是凭据）、同步不了的（入口不在用）、不能做的原因 */
-export interface SyncPreview { ok: boolean; blockers: string[]; skipped: string[]; warnings: string[]; routers: { exits: { exit: string; from: string; to: string | null }[] }[] }
-export const useSyncPreview = (id: string | null, exits: string[]) =>
-  useQuery({ queryKey: ['router-sync', id, exits.join(',')], queryFn: ({ signal }) => get<SyncPreview>(`/routers/${id}/sync?exits=${encodeURIComponent(exits.join(','))}`, signal), enabled: !!id, staleTime: 0, gcTime: 0 });
+export interface SyncPreview {
+  ok: boolean; blockers: string[]; skipped: string[]; warnings: string[]; routers: { exits: { exit: string; from: string; to: string | null }[] }[];
+  /** 从没对上过入口的出口（路由上有人加的？）：不点名时不同步 */
+  untrusted: { exit: string; entry: string }[];
+  /** 点名要同步、但从没对上过入口、入口又不属于这台路由的团队的：没有 force 进 blockers */
+  need_force: { exit: string; entry: string; why: string }[];
+}
+export const useSyncPreview = (id: string | null, exits: string[], force: boolean) =>
+  useQuery({ queryKey: ['router-sync', id, exits.join(','), force], queryFn: ({ signal }) => get<SyncPreview>(`/routers/${id}/sync?exits=${encodeURIComponent(exits.join(','))}${force ? '&force=true' : ''}`, signal), enabled: !!id, staleTime: 0, gcTime: 0 });
 /** 发起同步作业（router_sync：备份、改、重启 OpenClash、测延迟，失败自动改回） */
-export const useSyncRouter = () => useWrite(({ id, exits }: { id: string; exits: string[] }) => post<{ job_id: string }>(`/routers/${id}/sync`, { exits }), [...K, ['jobs']]);
+export const useSyncRouter = () => useWrite(({ id, exits, force }: { id: string; exits: string[]; force?: boolean }) => post<{ job_id: string }>(`/routers/${id}/sync`, { exits, force: !!force }), [...K, ['jobs']]);
 /** 临时切换：back_after_s 不给 = 不自动切回。返回切之前选中的（from）与第一次切之前的（original） */
 export const useSwitchGroup = () => useWrite(({ id, ...b }: { id: string; group: string; to: string; back_after_s?: number }) => post<{ from: string; to: string; original: string; back_at: string | null; ended: boolean }>(`/routers/${id}/switch`, b), K);
 export const useSwitchBack = () => useWrite(({ id, group }: { id: string; group: string }) => post<{ from: string; to: string }>(`/routers/${id}/switch/back`, { group }), K);

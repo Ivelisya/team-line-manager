@@ -194,6 +194,9 @@ pub struct Exit {
     pub entry: Option<EntryRef>,
     /// ok / drift / unmanaged
     pub sync: String,
+    /// 这个出口和它对上的入口是「已建立的对应」：参数曾经一致，或中控作业曾把它写成指向该入口的（router_exit_link）。
+    /// drift 的出口没有它 = 路由上有人加的，不进默认的同步（api/router_ops.rs）
+    pub linked: bool,
     pub alive: Option<bool>,
     pub delay_ms: Option<i64>,
     #[serde(with = "time::serde::rfc3339::option")]
@@ -513,6 +516,8 @@ fn exits(oc: &Value, last: Option<&Snapshot>, config: Option<&[Proxy]>, entries:
                 port: cfg.and_then(|c| c.port),
                 entry,
                 sync: sync.to_string(),
+                // 采集成功落库时按库里记的对应补上（mark_linked）
+                linked: false,
                 alive,
                 delay_ms,
                 delay_at,
@@ -889,13 +894,14 @@ async fn one(st: &AppState, t: &Target, m: &mut Mem, entries: &[Entry], delay: b
             .await?;
             Ok(before.is_none_or(|b| !b.0 || b.1.as_deref() != Some(err.as_str())))
         }
-        Outcome::Ok(b, change) => {
+        Outcome::Ok(mut b, change) => {
             let mut tx = st.db.begin().await?;
             // 路由刚被删掉：外键挡住，什么都不写
             let exists: Option<i32> = sqlx::query_scalar("select 1 from router where id = $1 for share").bind(t.id).fetch_optional(&mut *tx).await?;
             if exists.is_none() {
                 return Ok(false);
             }
+            mark_linked(&mut tx, t.id, &mut b.snap.exits, now).await?;
             sqlx::query(
                 "insert into router_status (router_id, ts, reachable, error, data, last_ok_at) values ($1, $2, true, null, $3, $2)
                  on conflict (router_id) do update set ts = $2, reachable = true, error = null, data = $3, last_ok_at = $2",
@@ -975,6 +981,32 @@ async fn one(st: &AppState, t: &Target, m: &mut Mem, entries: &[Entry], delay: b
     }
 }
 
+/// 标出已建立对应的出口（[`Exit::linked`]）：库里记过的，或这一轮参数一致的；这一轮才一致的记下来。按（出口名，入口）一对记，
+/// 之后凭据轮换变成 drift 仍算数，出口改指向别的入口就是另一对
+async fn mark_linked(tx: &mut sqlx::PgConnection, router: Uuid, exits: &mut [Exit], now: OffsetDateTime) -> sqlx::Result<()> {
+    let known: HashSet<(String, Uuid)> = sqlx::query_as("select exit, entry_id from router_exit_link where router_id = $1").bind(router).fetch_all(&mut *tx).await?.into_iter().collect();
+    let (mut names, mut ids) = (vec![], vec![]);
+    for e in exits.iter_mut() {
+        let Some(id) = e.entry.as_ref().map(|er| er.id) else { continue };
+        e.linked = known.contains(&(e.name.clone(), id));
+        if !e.linked && e.sync == "ok" {
+            e.linked = true;
+            names.push(e.name.clone());
+            ids.push(id);
+        }
+    }
+    if !names.is_empty() {
+        sqlx::query("insert into router_exit_link (router_id, exit, entry_id, since, source) select $1, u.n, u.e, $2, 'observed' from unnest($3::text[], $4::uuid[]) u(n, e) on conflict do nothing")
+            .bind(router)
+            .bind(now)
+            .bind(&names)
+            .bind(&ids)
+            .execute(&mut *tx)
+            .await?;
+    }
+    Ok(())
+}
+
 /// 采集成功这一轮要不要发实时事件：之前不在线 / 有错误，或快照里看得见的状态（[`signature`]）变了。
 /// CPU、内存、速率、连接数这些每轮都在变的数值不算：否则每 30 秒必发一次，所有打开的网页都重取全部路由（它们另按 [`NUMBERS_EVERY`] 推）
 fn ok_changed(before: Option<&(bool, Option<String>)>, last: Option<&Snapshot>, new: &Snapshot) -> bool {
@@ -988,7 +1020,7 @@ fn signature(s: &Snapshot) -> Value {
         "os": s.system.os, "kernel": s.system.kernel,
         "ifaces": s.interfaces.iter().map(|i| (&i.name, &i.device, i.up, &i.ip)).collect::<Vec<_>>(),
         "oc": (o.enabled, o.running, &o.version, &o.mode, &o.config_path, o.config_mtime.map(|t| t.unix_timestamp()), &o.error, &o.config_error, o.config_stale, &o.delay_error),
-        "exits": s.exits.iter().map(|e| serde_json::json!([e.name, e.server, e.port, e.entry, e.sync, e.alive, e.delay_ms, e.delay_at.map(|t| t.unix_timestamp()), e.fail_streak])).collect::<Vec<_>>(),
+        "exits": s.exits.iter().map(|e| serde_json::json!([e.name, e.server, e.port, e.entry, e.sync, e.linked, e.alive, e.delay_ms, e.delay_at.map(|t| t.unix_timestamp()), e.fail_streak])).collect::<Vec<_>>(),
         "groups": s.groups.iter().map(|g| (&g.name, &g.now)).collect::<Vec<_>>(),
         "clients": s.clients.iter().filter(|c| c.online).map(|c| (&c.ip, &c.hostname)).collect::<Vec<_>>(),
     })

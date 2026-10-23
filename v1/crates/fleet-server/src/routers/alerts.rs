@@ -221,7 +221,7 @@ pub fn problems(v: &View, cpu_high_since: Option<OffsetDateTime>, tg: &Targets, 
     if !res.is_empty() {
         out.push(Problem { rule: RESOURCE_HIGH, severity: "warning", text: format!("资源吃紧：{}", res.join("；")), hold_s: DEBOUNCE_S });
     }
-    let drift: Vec<String> = s.exits.iter().filter(|e| e.sync == "drift").filter_map(|e| e.entry.as_ref().map(|er| format!("{}（{}，{}）", e.name, er.name, drift_why(&er.lifecycle)))).collect();
+    let drift: Vec<String> = s.exits.iter().filter(|e| e.sync == "drift").filter_map(|e| e.entry.as_ref().map(|er| format!("{}（{}，{}{}）", e.name, er.name, drift_why(&er.lifecycle), if e.linked { "" } else { "；从未对上过，未自动同步" }))).collect();
     if !drift.is_empty() {
         out.push(Problem { rule: EXIT_DRIFT, severity: "warning", text: format!("{} 个出口的参数和对应的面板入口不一致：{}", drift.len(), drift.join("、")), hold_s: DRIFT_HOLD_S });
     }

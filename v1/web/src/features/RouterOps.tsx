@@ -6,7 +6,7 @@ import * as React from 'react';
 import { ConfirmDialog, FormDialog } from '@/components/app/dialogs';
 import { ErrorNote, Note, Section, SectionHeader } from '@/components/app/primitives';
 import { Button } from '@/components/ui/button';
-import { Field, InfoTip } from '@/components/ui/form';
+import { Checkbox, Field, InfoTip } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
@@ -56,19 +56,28 @@ export function GroupsSection({ r, groups }: { r: RouterView; groups: RouterGrou
 
 /** 同步出口参数：先取预览（要改哪些出口、同步不了的），确认后建作业 */
 const SyncDialog = resetOnOpen(function SyncDialog({ open, t }: { open: boolean; t: SyncTarget }) {
-  const pv = useSyncPreview(open ? t.id : null, t.exits);
+  const [force, setForce] = React.useState(false);
+  const pv = useSyncPreview(open ? t.id : null, t.exits, force);
   const run = useSyncRouter();
   const p = pv.data;
   const exits = p?.routers[0]?.exits ?? [];
+  const needForce = p?.need_force ?? [];
+  // 需要勾选确认的那几条不重复写成错误
+  const blockers = (p?.blockers ?? []).filter((b) => !needForce.some((u) => b.includes(`「${u.exit}」从没对上过`)));
   return (
     <ConfirmDialog open={open} onOpenChange={(o) => !o && showSync(null)} title={`同步出口参数 · ${t.name}`} confirmLabel="同步" confirmDisabled={!p?.ok}
       description={<>改成对应入口现在的凭据，地址和端口不变<InfoTip text={'先备份配置，改完重启 OpenClash 并测延迟，测不通自动改回\n重启时经这台路由的连接会全部断开、马上重连'} /></>}
-      onConfirm={async () => { await run.mutateAsync({ id: t.id, exits: t.exits }); toast.ok(`已提交「${t.name}」的出口同步作业`); }}>
+      onConfirm={async () => { await run.mutateAsync({ id: t.id, exits: t.exits, force }); toast.ok(`已提交「${t.name}」的出口同步作业`); }}>
       {pv.isLoading ? <Skeleton h={48} /> : pv.isError ? <ErrorNote error={pv.error} onRetry={() => void pv.refetch()} /> : p && (
         <>
           {exits.length > 0 && <p style={{ margin: 0 }}>{exits.map((e) => e.exit).join('、')} <span className="t-sub mono">（{[...new Set(exits.map((e) => e.from))].join('、')}）</span></p>}
           {p.skipped.length > 0 && <Note tone="warn">入口已不在用，同步不了：{p.skipped.join('、')}<InfoTip text="要换成别的入口，用「改出口指向」" /></Note>}
-          {!p.ok && <Note tone="bad">{p.blockers.join('；')}</Note>}
+          {p.untrusted.length > 0 && <Note tone="warn">从没对上过对应的入口，可能是路由上有人加的，没有同步：{p.untrusted.map((u) => u.exit).join('、')}<InfoTip text="确认是自己的，在出口页签里单独选它同步" /></Note>}
+          {needForce.length > 0 && (
+            <label className="check-row"><Checkbox checked={force} onCheckedChange={(v) => setForce(v === true)} />
+              <span>{needForce.map((u) => `${u.exit}（${u.entry}，${u.why}）`).join('、')} 从没对上过这个入口，可能是路由上有人加的；确认是自己的，仍要同步</span></label>
+          )}
+          {!p.ok && blockers.length > 0 && <Note tone="bad">{blockers.join('；')}</Note>}
         </>
       )}
     </ConfirmDialog>
