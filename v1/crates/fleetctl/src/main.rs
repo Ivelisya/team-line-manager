@@ -670,7 +670,7 @@ enum Cmd {
         #[arg(long)]
         team: Option<String>,
     },
-    /// 软路由：详情、接入（接入命令或一键部署）、重新生成接入命令、改名、删除
+    /// 软路由：详情、接入（接入命令或一键部署）、重新生成接入命令、改名、删除、同步出口参数、临时切换出口
     Router {
         #[command(subcommand)]
         cmd: RouterCmd,
@@ -830,6 +830,33 @@ enum RouterCmd {
         team: Option<String>,
         #[arg(long)]
         note: Option<String>,
+    },
+    /// 同步出口参数：参数和对应入口不一致的出口（凭据轮换后没同步，告警「软路由出口参数不一致」）改成入口现在的参数。
+    /// 备份后改，改完重启 OpenClash（断开经它的全部连接）并测延迟，失败自动改回。不加 --yes 只打印预览
+    Sync {
+        router: String,
+        /// 只同步这个出口（可重复；不给 = 全部不一致的）
+        #[arg(long = "exit")]
+        exits: Vec<String>,
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        follow: bool,
+    },
+    /// 临时切换出口：把 select 组经 mihomo API 切到组里另一个出口（不改配置、不重启 OpenClash、不断已有连接），
+    /// --for 4h 到时自动切回；--back 切回第一次切之前的出口。url-test / fallback 组不能手动切。组与当前出口见 router show
+    Switch {
+        router: String,
+        /// 策略组名（带空格、表情的加引号）
+        group: String,
+        /// 切到组里的哪个出口
+        to: Option<String>,
+        /// 多久后自动切回：30m / 4h / 1d（最长 7 天）
+        #[arg(long = "for")]
+        dur: Option<String>,
+        /// 切回第一次切之前的出口
+        #[arg(long)]
+        back: bool,
     },
     /// 删除：撤销隧道公钥，状态与指标一起删掉；路由上中控加的东西要在路由上自己清（会打印命令）
     Rm {
@@ -1028,6 +1055,8 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             RouterCmd::Deploy { router, ssh, yes, follow } => routers::deploy(x, &router, ssh, yes, follow),
             RouterCmd::Edit { router, name, team, note } => routers::edit(x, &router, name.as_deref(), team.as_deref(), note.as_deref()),
             RouterCmd::Rm { router, yes, force } => routers::rm(x, &router, yes, force),
+            RouterCmd::Sync { router, exits, yes, follow } => routers::sync(x, &router, &exits, yes, follow),
+            RouterCmd::Switch { router, group, to, dur, back } => routers::switch(x, &router, &group, to.as_deref(), dur.as_deref(), back),
         },
         Cmd::Probe { cmd } => match cmd {
             ProbeCmd::Ls => probe::ls(x),

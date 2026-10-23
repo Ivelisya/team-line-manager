@@ -93,7 +93,7 @@ pub fn ls(ctx: &Ctx) -> anyhow::Result<u8> {
 }
 
 /// `--for`：`30m` / `4h` / `2d`，可组合（`1h30m`）；时长上限由中控判
-fn parse_for(s: &str) -> anyhow::Result<Duration> {
+pub(crate) fn parse_for(s: &str) -> anyhow::Result<Duration> {
     let bad = || anyhow!("--for 写成 30m / 4h / 2d（分钟 / 小时 / 天，可组合，如 1h30m）");
     let (mut total, mut n) = (Duration::ZERO, String::new());
     for c in s.trim().chars() {

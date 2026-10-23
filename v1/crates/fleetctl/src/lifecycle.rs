@@ -19,7 +19,7 @@ fn find_relay(ctx: &Ctx, q: &str) -> anyhow::Result<Value> {
 }
 
 /// 预览里要改的软路由出口（替换、换线路机、搬空同一个格式）：软路由、状态、出口、现在、改成
-fn exit_rows(routers: &[Value], node: Option<&str>) -> Vec<Vec<String>> {
+pub(crate) fn exit_rows(routers: &[Value], node: Option<&str>) -> Vec<Vec<String>> {
     let mut t = vec![];
     for r in routers {
         let state = st(r, "/state");
@@ -38,7 +38,7 @@ fn exit_rows(routers: &[Value], node: Option<&str>) -> Vec<Vec<String>> {
 
 const EXITS_HEAD: &str = "要改的软路由出口（按最近一次采集；新入口验收后、摘旧入口前按路由当时的配置再定一次：备份后改，改完重启 OpenClash 并测延迟；任何一台失败全部换回、旧入口不摘）";
 
-fn blockers(v: &Value) -> String { v["blockers"].as_array().map(|a| a.iter().filter_map(|s| s.as_str()).collect::<Vec<_>>().join("；")).unwrap_or_default() }
+pub(crate) fn blockers(v: &Value) -> String { v["blockers"].as_array().map(|a| a.iter().filter_map(|s| s.as_str()).collect::<Vec<_>>().join("；")).unwrap_or_default() }
 
 /// `fleetctl move <节点> --to <线路机>`：先 GET 预览（要改的软路由出口、不能换的原因），确认后提交
 pub fn mv(ctx: &Ctx, node: &str, to: &str, from: Option<&str>, no_routers: bool, yes: bool, follow: bool) -> anyhow::Result<u8> {
