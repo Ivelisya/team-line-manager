@@ -458,6 +458,8 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 - **取消**：只在开始改路由之前——排队中、`routers` 排队等路由，或 `routers` 失败（路由都已换回）停在第一步；之后只能重试到完成。重试从失败那一步重来。
 
 ## 软路由（节选）
+`GET /routers/{id}/metrics?range=` 与 `GET /routers/{id}/exits/metrics?range=`：`range` 为 `1h`（30 秒一点，原始点）/ `6h` / `24h`（5 分钟一点，原始点取平均；不传为 24h）/ `7d` / `30d`（1 小时一点，小时汇总），别的值 400，路由不存在 404。出口的返回 `{step_s, exits:[{name, points:[{ts, delay_ms, alive, conns, up_bps, down_bps, tests, tests_ok}]}]}`（按出口名、点按时间排）：延迟每 5 分钟测一轮，`tests` / `tests_ok` 是这一点里测了几次、通了几次——原始点测了的那一点 1 / (1 或 0)，没测的 0 / 0（`alive`、`delay_ms` 为 null）；5 分钟点是这 5 分钟的次数（一般 1 次），`alive` = 全通（没测为 null），`delay_ms` = 通了的平均；小时点是这一小时的次数，`alive` = 全通，另带 `alive_pct`（测通的百分比），`delay_ms` = 通了的平均。`conns` / 速率在聚合点里是平均。`fleetctl router exits` 按这些点算每个出口的统计。
+
 `GET /routers/{id}` 的 `detail`（最近一次采集的快照）里 `clients[]`：`{ip, mac, hostname, online, conns, down_bps, up_bps, exits:[{name, conns}]}`。`down_bps` / `up_bps` 是这台客户端经 OpenClash 的下载 / 上传速率（bit/s）：按 mihomo 连接的来源 IP（`sourceIP`）汇总，取差方式同出口速率（同一连接两次采集的字节数之差累加、新连接全算，除以两次采集的间隔）；没有连接的客户端为 0；路由上第一次采集（没有上一次的读数）、mihomo API 调不通时为 null（同出口的 `up_bps` / `down_bps`）。上一次的读数存在路由上，中控重启不影响它们；只有 WAN 与 OpenClash 总速率（`summary.wan.rx_bps` / `tx_bps`、`openclash.up_bps` / `down_bps`）用中控内存里的上一次读数，中控重启后的第一轮为 null。
 
 ## 访问策略（域名黑白名单）

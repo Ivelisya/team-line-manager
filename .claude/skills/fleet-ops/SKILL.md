@@ -1,6 +1,6 @@
 ---
 name: fleet-ops
-description: 团队线路管理（fleet）的运维入口。查节点或线路机状态、排查告警、处理到期与续费提醒（看订阅、登记续费、改订阅）、维护前开维护窗口或静默告警（可预约）、看服务日志、在节点上执行命令、登录机器或软路由、上架新机器、替换节点（新机器接替旧节点、软路由跟着换、旧的放备用）、退役（进备用、立即回收）与回收站（含旧面板导入）、改名与编号、升级 agent、取入口分享链接、查看与接入软路由（OpenWrt + OpenClash：状态、出口、客户端、接入命令、一键部署）时使用，在中控上运维也用它；一律先用 fleetctl（登录用 fleetctl ssh），不要直接 ssh、psql 或手拼 curl。
+description: 团队线路管理（fleet）的运维入口。查节点或线路机状态、排查告警、处理到期与续费提醒（看订阅、登记续费、改订阅）、维护前开维护窗口或静默告警（可预约）、看服务日志、在节点上执行命令、登录机器或软路由、上架新机器、管理供应商与套餐（新建、改价、归档、删除）、替换节点（新机器接替旧节点、软路由跟着换、旧的放备用）、退役（进备用、立即回收）与回收站（含旧面板导入）、改名与编号、升级 agent、取入口分享链接、查看与接入软路由（OpenWrt + OpenClash：状态、出口、出口历史成功率与延迟、客户端、接入命令、一键部署）时使用，在中控上运维也用它；一律先用 fleetctl（登录用 fleetctl ssh），不要直接 ssh、psql 或手拼 curl。
 ---
 
 # fleet-ops
@@ -15,7 +15,7 @@ fleetctl --json <命令>      # AI 一律加 --json，输出一行 JSON
 ```
 
 - 配置：在中控上已经配好（见下文「在中控上运维」）。别处用环境变量 `FLEET_URL`、`FLEET_TOKEN`，或 `fleetctl login --url <地址>`（密钥从标准输入读一行，如 `< 密钥文件`；`--token <密钥>` 仍可用，但会留在 shell 历史与进程列表里）。实验室中控是 `http://192.168.31.60:8080`。
-- `--json` 的 `ls` / `entries` / `incidents` / `policy ls` / `silence` 是与表格同列的精简对象（字段见文末速查），一台机器的完整视图用 `show`、一个团队或节点的完整策略用 `policy show`；`billing` 是订阅、流量额度与最近续费记录合成的对象；其余命令是 API 的 data 原样。机器上百台时 `ls` 仍有几万字符，先用 `--team` / `--kind` / `--status` 缩小。
+- `--json` 的 `ls` / `entries` / `incidents` / `policy ls` / `silence` 是与表格同列的精简对象（字段见文末速查），一台机器的完整视图用 `show`、一个团队或节点的完整策略用 `policy show`；`billing` 是订阅、流量额度与最近续费记录合成的对象；`router exits` 是按出口算好的统计；`provider` / `plan` 的 `add`、`set` 是改完后的那一项；其余命令是 API 的 data 原样。机器上百台时 `ls` 仍有几万字符，先用 `--team` / `--kind` / `--status` 缩小。
 - 成功退出码 0；失败退出码 1，错误 JSON 在 stderr（`{"error":{"code","message","status"}}`）。`exec` 单台时退出码等于远端命令的退出码。`job` / `job --follow`（以及各命令的 `--follow`）遇到作业失败或取消也退出 1，stderr 给 `{"error":{"code":"job_failed"|"job_cancelled","message",…}}`。
 - 没拿到中控响应时 `status` 为 null、`code` 是 `unreachable`（连不上，请求没发出去，可直接重试；`message` 带最底层原因）或 `timeout`（请求已发出、等响应超时）。`timeout` 时操作可能已在中控执行：先 `fleetctl --json jobs --active` / `fleetctl --json audit --limit 10` 核对，再决定是否重试，尤其是上架、退役、换线路机这类会建作业的命令。
 - `<机器>` 写机器 id、显示名（`团队1-06`）、线路机名（`线路机2`）或 IP。歧义时命令报错并列出候选，照候选里的 id 重试。
@@ -64,6 +64,9 @@ fleetctl ssh router <名称> [-- 'logread | tail -50']        # 软路由（Open
 | 访问规则（域名黑白名单，按团队/节点） | `fleetctl policy ls`、`policy show <团队\|节点>`；`policy set <团队\|节点> --mode observe\|allowlist\|denylist\|blocked\|inherit --domains a.com,=exact.org [--note …]`（只存草稿，不生效）；`policy preview`（最近 24h 每节点会阻止多少）→ `policy publish --yes`；`policy discard --yes`；`policy versions`；`policy rollback <版本> --yes`。`=` 开头是精确匹配，否则含子域。发布 / 回滚会立即改写线路机路由规则，先向用户确认 |
 | 软路由列表（状态、出口通 / 总、客户端、CPU、内存、WAN） | `fleetctl --json routers [--team 团队2]` |
 | 一台软路由的详情：系统、接口、OpenClash、每个出口对应的 fleet 入口与参数是否一致、延迟、连接、客户端 | `fleetctl --json router show <路由>`（`<路由>` 写 id、id 前缀或名称） |
+| 软路由出口历史：每个出口测了几次、失败几次、成功率、连续两轮失败几次、延迟中位 / 最大、当前连接 | `fleetctl --json router exits <路由> [--range 1h\|6h\|24h\|7d]`（默认 24h；口径见文末速查。客户说「某个出口时好时坏」先看它，不要去路由上翻日志） |
+| 供应商（缩写、账单时区、流量计量与重置、提前提醒、套餐数） | `fleetctl --json provider ls` |
+| 套餐（供应商、规格、价格 / 周期、在用机器数） | `fleetctl --json plan ls [--provider <供应商>] [--all 含已归档]` |
 
 访问规则的健康提示：节点被设为 `blocked` 时健康原因里有 `policy_blocked`（info，不降级、不开告警）。
 
@@ -130,7 +133,7 @@ fleetctl silence rm <id 前缀>                                                 
    ```
    推周期时目标月没有那一天按月末（1-31 推一个月是 2-28，闰年 2-29）。`--amount` 是订阅币种的金额，写 `39.46`（最多两位小数），实付和订阅价格不同就按实付填。登记后续费类告警下一轮评估（≤30 秒）自动恢复。
 4. 不续了：不登记；机器不再用就按用户的意思退役（`retire`）。不要拿静默盖住到期提醒。
-5. 订阅跟随模板：价格、币种、周期、流量上限跟随**套餐**，账单时区、提前提醒天数、流量重置（自然月 / 账单日 / 滚动 30 天）跟随**供应商**；订阅自己只存到期日、自动续费和「单独设置」的项。同一套餐的机器要一起调价 / 改额度，请用户在网页「团队与套餐」里改套餐（立即对没单独设置的机器生效），不要逐台 `subscription set`。`billing` 的每项后面写着「（跟随套餐）」「（跟随供应商）」「（单独设置）」，`--json` 里 `subscription.overrides` 列出单独设置了的字段、`sub_template` 是跟随的值。
+5. 订阅跟随模板：价格、币种、周期、流量上限跟随**套餐**，账单时区、提前提醒天数、流量重置（自然月 / 账单日 / 滚动 30 天）跟随**供应商**；订阅自己只存到期日、自动续费和「单独设置」的项。同一套餐的机器要一起调价 / 改额度，改套餐：`fleetctl plan set <套餐> --price 45 --yes`（`--traffic-gb`、`--currency`、`--cycle` 同理；立即对用它、没单独设置的机器生效，确认语写了几台在用机器跟着变，先向用户确认），不要逐台 `subscription set`；账单时区、提醒天数、流量重置整家一起改用 `fleetctl provider set <供应商> … --yes`。`billing` 的每项后面写着「（跟随套餐）」「（跟随供应商）」「（单独设置）」，`--json` 里 `subscription.overrides` 列出单独设置了的字段、`sub_template` 是跟随的值。
 6. 只有这一台和套餐不一样（调价、换周期、改提醒天数、自动续费、流量上限）时：`fleetctl subscription set <机器> [--price 45|none] [--currency USD|none] [--cycle monthly|quarterly|semiannual|yearly|none] [--due YYYY-MM-DD] [--auto-renew true|false] [--remind-days 7|none] [--tz Asia/Shanghai|none] [--traffic-gb 2000|0|none] [--reset-day 15|none] --yes`。给了值 = 这台单独设置，给 `none` = 改回跟随；和模板相同的值中控也按跟随存。只改给了的字段（命令先读现有订阅再整份提交），确认语逐项列出「旧 → 新」（带来源），没有变化不提交；没有订阅时新建只要 `--due`（没有套餐的机器还要 `--price`）。
    - 续费用 `renew`（留续费记录）；`subscription set --due` 只用来改正填错的到期日。
    - `--auto-renew true`：到期后中控按周期自动顺延到期日、记一条续费记录（操作人「系统」），到期前不提醒，到期日次日还没顺延才算过期；不会扣款，只是记账。
@@ -167,8 +170,17 @@ fleetctl router add <名称> --host <IP> --password-stdin --yes --follow   # 软
 fleetctl router deploy <路由> --host <IP> [--password-stdin] --yes --follow   # 重新部署：换一把隧道密钥
 fleetctl router bootstrap <路由> --yes                      # 重新生成接入命令：现在的隧道立刻作废，要在路由上执行新命令才连得回来
 fleetctl router rm <路由> --yes                             # 删软路由：撤销隧道公钥、删掉状态与指标；路由上的清理命令在输出里，转给用户
+fleetctl provider add <名称> --code ATT [--tz Asia/Shanghai] [--panel-url https://…] [--traffic-rule min|max|sum|out] [--traffic-reset month|billing|rolling30] [--remind-days 7]   # 新建供应商（不用 --yes）；不给的用默认：跟随组织时区、流量取大、自然月、提前 7 天提醒
+fleetctl provider set <供应商> [--name …] [--code …] [--tz …|none] [--panel-url …|none] [--traffic-rule …] [--traffic-reset …] [--remind-days N] --yes   # 只改给了的项，确认语列出「旧 → 新」；时区、计量、重置、提醒立即对名下没单独设置的机器生效
+fleetctl provider rm <供应商> --yes                         # 还有套餐（含归档的）或机器（含退役的）时中控拒绝
+fleetctl plan add <名称> --provider <供应商> --price 299.99 --currency CNY --cycle monthly [--cpu 2 --mem-mb 2048 --disk-gb 40 --bandwidth-mbps 1000 --traffic-gb 2000] [--notes …]   # 新建套餐（不用 --yes）；价格写主单位（同 provision 的 --price），--traffic-gb 0 = 不限
+fleetctl plan set <套餐> [--name …] [--price …] [--currency …] [--cycle …] [--cpu N|none …] [--traffic-gb N|none] [--notes …] [--provider <供应商>] [--archive|--unarchive] --yes   # 只改给了的项；价格、币种、周期、流量上限立即对用它、没单独设置的机器生效；不再上架的 --archive（用着的机器不受影响）
+fleetctl plan rm <套餐> --yes                               # 还有机器（含退役的）用着时中控拒绝，改用 --archive
 ```
 
+- 供应商、套餐：`<供应商>` 写 id、id 前缀、名称或缩写；`<套餐>` 写 id、id 前缀或名称，不同供应商有同名套餐时写 `供应商/套餐`（如 `GOMAMI/Mini`）。匹配到多个时报错并列出候选，照候选重试，不要猜。新建只是加一条目录，不碰机器，告诉用户建了什么即可；`set` 改价、改额度、改时区会立即影响已有机器的订阅（续费提醒、流量周期、`billing` 的价格），`rm` 删目录项，都先向用户确认。
+
+- 上架前先确认供应商、套餐存在：`fleetctl --json provider ls`、`fleetctl --json plan ls --provider <供应商>`。不存在就先建——`fleetctl provider add <名称> --code <缩写>`、`fleetctl plan add <名称> --provider <供应商> --price 299.99 --currency CNY --cycle monthly [--traffic-gb 2000]`（名称、缩写、价格、币种、周期、流量额度问用户或照供应商的账单填，不要编）；已归档的套餐要用就 `plan set <套餐> --unarchive --yes`。不要手拼 curl 调 `/providers`、`/plans`，也不要 psql 去插。
 - 上架：`fleetctl --json provision --file batch.json --dry-run` 只校验；通过后让用户确认名单，再去掉 `--dry-run` 加 `--yes --follow`。单台参数：`--kind vps --ip 1.2.3.4 --team 团队1 --relay 线路机2 --provider ATTVPS --plan 基础版 --due 2026-12-01`。选了套餐必须给 `--due`（到期日；价格、流量等跟随套餐，时区、提醒跟随供应商，`--provider` 可不给、取套餐的）；只有这台和套餐不同时才加 `--price 45` / `--currency` / `--cycle` / `--tz` / `--traffic-gb` / `--reset-day`（单独设置）。没有套餐时给了 `--due` 就要给 `--price`。root 密码放环境变量，用 `--ssh-password-env VAR` 传名字。`--ss-port`（批量文件里 `ss_port`）是线路机连节点用的公网（NAT 映射）端口，节点上 ssserver 固定监听 8388；非 NAT 机不要填。价格一律用 `--price 39.46`（主单位，同 `subscription set`）；`--price-cents` 是旧写法，不再用。
 - 同机 IP 节点（已有 VPS 节点上多出来的 IP 当一台独立节点，按 IP 计节点）：`fleetctl provision --kind vps --host <宿主机> --ip <新 IP> --team 团队1 --relay 线路机2 --yes --follow`（批量文件条目写 `"host": "<宿主机>"`）。宿主机要是在用的普通 VPS 节点；IP 要已直接配在宿主机网卡上。不填 SSH 端口 / 密码 / SS 端口（SSH 与 agent 用宿主机的，SS 端口中控从 8389 起分配），供应商取宿主机的、费用默认不记。作业 `provision_ip` 第一步「在宿主机上核对 IP」：报「不在宿主机网卡上」或「中控看到的来源是 …」时是机器网络配置问题，让用户去供应商面板 / 机器上配好再 `fleetctl retry`。
 - 升级 agent：新版本起不来、2 分钟内没上报，或线路机上新版本报的 Xray 不正常（没在跑、配置没应用到升级开始时的代数、有应用错误；升级前就这样的项不查），作业自动换回旧版本后失败（错误「…，已回滚到 <旧版本>」，线路机的写「线路机检查没通过（…）」：机器照常上报，把错误告诉用户即可）；错误里写「需要人工处理」时 agent 可能没在运行，按 `docs/OPS.md` §7 处理。`--all` 的金丝雀或任何一台线路机换上新版本后出问题，没开始的作业都取消（`error` 写明是哪台），不要逐台去重试或再 `--all`，先查失败的原因；推送之前就失败的（SSH 连不上、登录被拒）只算那一台，后面的照常继续，修好那台后 `retry` 它的作业。用户要停下 `--all`：排队中的作业 `fleetctl cancel <作业>`，等它的跟着取消；进行中的不能取消。错误是「中控上的 agent 在升级过程中换了版本…」时是中途重新部署过中控，问过用户后重新 `--all`。失败的升级作业 `retry` 从推送重来。
@@ -203,5 +215,7 @@ fleetctl router rm <路由> --yes                             # 删软路由：�
 
 - `routers`：API 的 data 原样，每台 `{id name team{id,name} note tunnel_port created_at state(pending|online|offline) last_seen_at error summary deploy bootstrap_expires_at}`；`summary`（从没采集成功过为 null）：`uptime_s cpu_pct load1 cores mem_used mem_total disk_used disk_total conntrack conntrack_max temp_c wan{up,ip,rx_bps,tx_bps} openclash{enabled,running,version,mode,conns,up_bps,down_bps} exits{total,alive,managed,drift} clients`（速率 bit/s，字节为单位的是内存、存储）。
 - `router show`：上面这些加 `detail{system interfaces[] openclash exits[] clients[] collected_at}`；`exits[]` 每个 `{name type server port entry{id,name,node_id,relay_id,node_name,relay_name,port,lifecycle}|null sync(ok|drift|unmanaged) alive delay_ms delay_at fail_streak conns up_bps down_bps clients}`（`entry.name` 形如「团队2-03 · 线路机2:20003」；各出口的速率是按连接估的）；`clients[]` 每个 `{ip mac hostname online conns exits[{name,conns}]}`。`router add` 不带 --host 输出 `{id, bootstrap{cmd, expires_at}}`。
+- `router exits`（算好的统计，不是原始点）：`{router{id,name} range step_s exits[{name tests fails success_pct fail_streaks delay_median_ms delay_max_ms conns current}] total{exits tests fails success_pct fail_streaks delay_median_ms delay_max_ms conns}}`。`tests` / `fails` 是这段时间测了几次延迟、几次没通（每 5 分钟一轮，没通的当场重测一次、重测通了算通，一轮算一次；三种范围都准）；`success_pct` 是通的比例（%，一位小数，没测过为 null）；`fail_streaks` 是「连着 ≥2 轮不通」出现了几段（同告警 `router_exits_down` 的条件）：1h 按每一轮数，6h / 24h 按 5 分钟一点数（一点一般一轮，有一次没通算没通），没测的点跳过不打断；7d / 30d 是小时汇总、看不出先后，为 null（要看用 `--range 24h`）。延迟只算通了的：1h 是每次的，6h / 24h 是每 5 分钟的平均，7d / 30d 是每小时的平均（最大值偏小）。`conns` 是最近一次采集的当前连接数；`current: false` 的出口已不在路由现在的配置里（`conns` 为 null）；范围内没有点、现在配置里有的出口也列出（`tests` 为 0）。
+- `provider ls`：API 原样，每家 `{id name code panel_url timezone traffic_rule(min|max|sum|out) traffic_reset(month|billing|rolling30) remind_days}`，`timezone` 为 null = 跟随组织时区。`plan ls`：API 原样（按 `--provider` 筛、默认去掉已归档的），每个 `{id provider_id name cpu_cores mem_mb disk_gb bandwidth_mbps traffic_gb price_cents currency cycle notes archived_at machine_count}`，`price_cents` 是分（29999 = 299.99），`traffic_gb` null / 0 = 不限，`archived_at` 非 null = 已归档，`machine_count` 是在用（未退役）的机器数。`provider add / set`、`plan add / set` 输出改完后的那一项（同 ls 的一项；没有变化时不提交，输出现在的），`rm` 输出 `{id}`。
 
 完整接口见仓库 `docs/API.md`，运维流程与何时才需要直接 ssh 见 `docs/OPS.md`。

@@ -1,4 +1,4 @@
-//! 软路由：routers（列表）、router show / add / bootstrap / deploy / edit / rm。
+//! 软路由：routers（列表）、router show / exits（出口历史统计）/ add / bootstrap / deploy / edit / rm。
 //! 接入有两种：`router add` 不给 --host 打印接入命令（在路由上用 root 执行，路由在 NAT 后面、中控连不到它时用）；
 //! 给 --host 就一键部署（中控能直接连到路由的 SSH 时用：中控登录上去装好隧道；密码只从标准输入读）。
 
@@ -248,6 +248,154 @@ fn human_show(d: &Value) -> String {
     out
 }
 
+// ── 出口历史：router exits ──────────────────────────────────────────────
+
+/// 一个出口在所选范围内的统计（`GET /routers/{id}/exits/metrics` 的点，按时间顺序）。口径按点的粒度 `step` 分：
+/// - 测试 / 失败次数：各点的 `tests` / `tests - tests_ok` 相加（中控每 5 分钟测一轮，没通的当场重测一次、重测通了算通，一轮算一次），三种粒度都准。
+///   旧中控的点没有 `tests`：原始点与 5 分钟点按 `alive` 数（非 null 算测了一次、false 算失败），小时点数不出来，报错。
+/// - 连续两轮失败（`streaks`）：按时间顺序，一轮 = 原始点（30 秒，1h）里测了的那一点，或一个 5 分钟点（6h / 24h：这 5 分钟里有一次没通就算没通）；
+///   没测的（`alive` 为 null）跳过、不打断；连着 ≥2 轮不通算一段（true / 开头 → false → false），同告警 router_exits_down 的「连续两次不通」。
+///   小时点（7d / 30d）只有这一小时测了几次、通了几次，看不出先后：为 None。
+/// - 延迟（`delays`）：通了的那几次。原始点是每次的延迟；5 分钟点是这 5 分钟里通了的平均（一般就一次）；小时点是这一小时的平均（最大值因此偏小）
+#[derive(Debug, PartialEq, Default)]
+struct ExitStats {
+    tests: i64,
+    fails: i64,
+    streaks: Option<i64>,
+    delays: Vec<f64>,
+}
+
+fn exit_stats(step: i64, points: &[Value]) -> anyhow::Result<ExitStats> {
+    let hourly = step >= 3600;
+    let mut x = ExitStats { streaks: (!hourly).then_some(0), ..Default::default() };
+    let mut run = 0;
+    for p in points {
+        let alive = p["alive"].as_bool();
+        let (n, ok) = match (p["tests"].as_i64(), p["tests_ok"].as_i64()) {
+            (Some(n), Some(k)) => (n, k),
+            _ if hourly => bail!("中控版本较旧：小时汇总的点没有 tests，数不出 7d / 30d 的测试次数（用 --range 24h，或升级中控）"),
+            _ => (i64::from(alive.is_some()), i64::from(alive == Some(true))),
+        };
+        x.tests += n;
+        x.fails += n - ok;
+        if let Some(d) = p["delay_ms"].as_f64() {
+            x.delays.push(d);
+        }
+        if let Some(c) = x.streaks.as_mut() {
+            match alive {
+                Some(false) => {
+                    run += 1;
+                    if run == 2 {
+                        *c += 1;
+                    }
+                }
+                Some(true) => run = 0,
+                None => {}
+            }
+        }
+    }
+    Ok(x)
+}
+
+/// 中位数（偶数个取中间两个的平均）与最大值，四舍五入到整毫秒；没有为 null
+fn delay_json(v: &[f64]) -> (Value, Value) {
+    let mut v: Vec<f64> = v.iter().copied().filter(|x| x.is_finite()).collect();
+    if v.is_empty() {
+        return (Value::Null, Value::Null);
+    }
+    v.sort_by(f64::total_cmp);
+    let n = v.len();
+    let med = if n % 2 == 1 { v[n / 2] } else { (v[n / 2 - 1] + v[n / 2]) / 2.0 };
+    (json!(med.round() as i64), json!(v[n - 1].round() as i64))
+}
+
+/// 成功率（%，一位小数）；没有测试为 null
+fn success_pct(tests: i64, fails: i64) -> Value {
+    if tests == 0 {
+        return Value::Null;
+    }
+    json!(((tests - fails) as f64 * 1000.0 / tests as f64).round() / 10.0)
+}
+
+/// `router exits --json` 的 data：每个出口一行统计（指标里有的，加上现在配置里有、范围内还没有点的），`total` 是合计。
+/// `current` 是最近一次采集的出口（`router show` 的 detail.exits；从没采集成功过为空），给「当前连接」与「还在不在配置里」
+fn exits_report(range: &str, metrics: &Value, current: &[Value]) -> anyhow::Result<Value> {
+    let step = metrics["step_s"].as_i64().unwrap_or(300);
+    let series = metrics["exits"].as_array().cloned().unwrap_or_default();
+    let mut names: Vec<String> = series.iter().map(|e| st(e, "/name")).collect();
+    for e in current {
+        let n = st(e, "/name");
+        if !names.contains(&n) {
+            names.push(n);
+        }
+    }
+    let (mut all, mut tot) = (vec![], ExitStats { streaks: (step < 3600).then_some(0), ..Default::default() });
+    let mut conns_sum = 0;
+    for name in &names {
+        let pts = series.iter().find(|e| e["name"] == name.as_str()).and_then(|e| e["points"].as_array()).cloned().unwrap_or_default();
+        let x = exit_stats(step, &pts).map_err(|e| anyhow!("出口「{name}」：{e}"))?;
+        let now = current.iter().find(|e| e["name"] == name.as_str());
+        let conns = now.and_then(|e| e["conns"].as_i64());
+        conns_sum += conns.unwrap_or(0);
+        let (med, max) = delay_json(&x.delays);
+        all.push(json!({
+            "name": name, "tests": x.tests, "fails": x.fails, "success_pct": success_pct(x.tests, x.fails), "fail_streaks": x.streaks,
+            "delay_median_ms": med, "delay_max_ms": max, "conns": conns, "current": now.is_some(),
+        }));
+        tot.tests += x.tests;
+        tot.fails += x.fails;
+        tot.streaks = tot.streaks.zip(x.streaks).map(|(a, b)| a + b);
+        tot.delays.extend(x.delays);
+    }
+    let (med, max) = delay_json(&tot.delays);
+    Ok(json!({
+        "range": range, "step_s": step, "exits": all,
+        "total": {"exits": names.len(), "tests": tot.tests, "fails": tot.fails, "success_pct": success_pct(tot.tests, tot.fails), "fail_streaks": tot.streaks,
+                  "delay_median_ms": med, "delay_max_ms": max, "conns": conns_sum},
+    }))
+}
+
+fn exits_human(d: &Value, snapshot: bool) -> String {
+    let ms = |v: &Value| v.as_i64().map_or_else(|| "-".to_string(), |x| format!("{x} ms"));
+    let pct = |v: &Value| v.as_f64().map_or_else(|| "-".to_string(), |x| format!("{x}%"));
+    let row = |name: String, e: &Value| {
+        vec![name, st(e, "/tests"), st(e, "/fails"), pct(&e["success_pct"]), st(e, "/fail_streaks"), ms(&e["delay_median_ms"]), ms(&e["delay_max_ms"]), st(e, "/conns")]
+    };
+    let exits = d["exits"].as_array().cloned().unwrap_or_default();
+    if exits.is_empty() {
+        return format!("{} 内没有出口数据（路由还没接入、一直离线，或 OpenClash 没有代理出口）", st(d, "/range"));
+    }
+    let mut rows: Vec<Vec<String>> = exits
+        .iter()
+        .map(|e| row(if snapshot && e["current"] == false { format!("{}（已不在配置里）", st(e, "/name")) } else { st(e, "/name") }, e))
+        .collect();
+    let t = &d["total"];
+    rows.push(row(format!("合计（{} 个出口）", st(t, "/exits")), t));
+    let how = match d["step_s"].as_i64() {
+        Some(30) => "原始点：每 5 分钟测一轮（没通的当场重测一次，重测通了算通），连续两轮失败 = 按时间连着 ≥2 轮不通算一段（同告警 router_exits_down）",
+        Some(300) => "5 分钟一点：一点一般是一轮测试，这 5 分钟里有一次没通算这一轮没通；连续两轮失败 = 连着 ≥2 点不通算一段；延迟是每点通了的平均",
+        _ => "小时汇总：测试、失败次数是准的；看不出先后，连续两轮失败不统计（要看用 --range 24h）；延迟是每小时的平均，最大值偏小",
+    };
+    format!(
+        "{}\n{}：{how}。成功率、延迟只算测了的；当前连接是最近一次采集的",
+        table::render(&["出口", "测试", "失败", "成功率", "连续两轮失败", "延迟中位", "延迟最大", "当前连接"], &rows),
+        st(d, "/range")
+    )
+}
+
+/// `router exits <路由> [--range 1h|6h|24h|7d|30d]`：每个出口在这段时间里的测试次数、失败次数、成功率、连续两轮失败的次数、延迟中位数与最大值、当前连接数
+pub fn exits(ctx: &Ctx, q: &str, range: &str) -> anyhow::Result<u8> {
+    let r = find(&list(ctx)?, q)?;
+    let id = st(&r, "/id");
+    let m = ctx.c.get_q(&format!("/routers/{id}/exits/metrics"), &[("range", range.to_string())])?;
+    let det = ctx.c.get(&format!("/routers/{id}"))?;
+    let current = det["detail"]["exits"].as_array().cloned();
+    let mut d = exits_report(range, &m, current.as_deref().unwrap_or_default())?;
+    d["router"] = json!({"id": id, "name": r["name"]});
+    ctx.emit(&d, || format!("{}\n{}", st(&r, "/name"), exits_human(&d, current.is_some())));
+    Ok(0)
+}
+
 /// 一键部署的目标：密码只从标准输入读一行（不能写在参数里：会进 shell 历史与进程列表）
 pub struct SshOpts<'a> {
     pub host: Option<&'a str>,
@@ -464,6 +612,62 @@ mod tests {
         let o = SshOpts { host: Some("10.0.0.1"), port: None, user: None, password_stdin: false };
         assert_eq!(o.body().unwrap().unwrap(), json!({"host": "10.0.0.1", "port": 22, "user": "root"}));
         assert_eq!(o.target(), "root@10.0.0.1:22");
+    }
+
+    /// 原始点（1h）：没测的点（alive null）跳过、不打断；连着 ≥2 轮不通算一段
+    #[test]
+    fn raw_points_streaks() {
+        let p = |a: Option<bool>, d: Option<i64>| json!({"alive": a, "delay_ms": d, "tests": i64::from(a.is_some()), "tests_ok": i64::from(a == Some(true))});
+        let (t, f) = (Some(true), Some(false));
+        let pts = [p(t, Some(80)), p(None, None), p(f, None), p(None, None), p(f, None), p(f, None), p(t, Some(120)), p(f, None), p(t, Some(100)), p(f, None), p(f, None)];
+        let x = exit_stats(30, &pts).unwrap();
+        assert_eq!((x.tests, x.fails, x.streaks), (9, 6, Some(2)), "f·f·f 算一段，单独一次不算，结尾的 f·f 算一段");
+        assert_eq!(delay_json(&x.delays), (json!(100), json!(120)));
+        // 旧中控没有 tests：按 alive 数，结果一样
+        let old: Vec<Value> = pts.iter().map(|v| json!({"alive": v["alive"], "delay_ms": v["delay_ms"]})).collect();
+        assert_eq!(exit_stats(30, &old).unwrap(), x);
+        assert_eq!(exit_stats(30, &[]).unwrap(), ExitStats { streaks: Some(0), ..Default::default() });
+    }
+
+    /// 5 分钟点：次数按 tests / tests_ok（一点可能 0 或 2 次），一点算一轮；小时点：次数准、连续失败为 None，旧中控报错
+    #[test]
+    fn aggregated_points() {
+        let pts = [
+            json!({"alive": true, "delay_ms": 90.5, "tests": 1, "tests_ok": 1}),
+            json!({"alive": false, "delay_ms": 70.0, "tests": 2, "tests_ok": 1}),
+            json!({"alive": null, "delay_ms": null, "tests": 0, "tests_ok": 0}),
+            json!({"alive": false, "delay_ms": null, "tests": 1, "tests_ok": 0}),
+        ];
+        let x = exit_stats(300, &pts).unwrap();
+        assert_eq!((x.tests, x.fails, x.streaks), (4, 2, Some(1)));
+        assert_eq!(delay_json(&x.delays), (json!(80), json!(91)), "偶数个取中间两个的平均");
+        let hours = [json!({"alive": false, "alive_pct": 91.6, "delay_ms": 85.0, "tests": 12, "tests_ok": 11}), json!({"alive": true, "alive_pct": 100.0, "delay_ms": 95.0, "tests": 11, "tests_ok": 11})];
+        let x = exit_stats(3600, &hours).unwrap();
+        assert_eq!((x.tests, x.fails, x.streaks), (23, 1, None));
+        assert!(exit_stats(3600, &[json!({"alive": true, "alive_pct": 100.0, "delay_ms": 95.0})]).unwrap_err().to_string().contains("--range 24h"));
+    }
+
+    #[test]
+    fn exits_report_and_table() {
+        let m = json!({"step_s": 30, "exits": [
+            {"name": "节点01", "points": [{"alive": false, "tests": 1, "tests_ok": 0}, {"alive": false, "tests": 1, "tests_ok": 0}, {"alive": true, "delay_ms": 60, "tests": 1, "tests_ok": 1}]},
+            {"name": "旧出口", "points": [{"alive": true, "delay_ms": 200, "tests": 1, "tests_ok": 1}]},
+        ]});
+        let current = [json!({"name": "节点01", "conns": 5}), json!({"name": "节点02", "conns": 0})];
+        let d = exits_report("1h", &m, &current).unwrap();
+        assert_eq!(d["exits"][0], json!({"name": "节点01", "tests": 3, "fails": 2, "success_pct": 33.3, "fail_streaks": 1, "delay_median_ms": 60, "delay_max_ms": 60, "conns": 5, "current": true}));
+        assert_eq!((d["exits"][1]["conns"].is_null(), &d["exits"][1]["current"]), (true, &json!(false)));
+        assert_eq!(d["exits"][2], json!({"name": "节点02", "tests": 0, "fails": 0, "success_pct": null, "fail_streaks": 0, "delay_median_ms": null, "delay_max_ms": null, "conns": 0, "current": true}));
+        assert_eq!(d["total"], json!({"exits": 3, "tests": 4, "fails": 2, "success_pct": 50.0, "fail_streaks": 1, "delay_median_ms": 130, "delay_max_ms": 200, "conns": 5}));
+        let t = exits_human(&d, true);
+        let lines: Vec<&str> = t.lines().collect();
+        assert!(lines[1].starts_with("节点01") && lines[1].contains("33.3%") && lines[1].contains("60 ms"), "{t}");
+        assert!(lines[2].starts_with("旧出口（已不在配置里）"), "{t}");
+        assert!(lines[4].starts_with("合计（3 个出口）") && lines[4].contains("50%"), "{t}");
+        // 小时汇总：连续失败为 null，表格写「-」
+        let h = exits_report("7d", &json!({"step_s": 3600, "exits": [{"name": "节点01", "points": [{"alive": true, "tests": 12, "tests_ok": 12, "delay_ms": 80.0}]}]}), &[]).unwrap();
+        assert_eq!((h["exits"][0]["fail_streaks"].is_null(), h["total"]["fail_streaks"].is_null(), h["total"]["success_pct"].as_f64()), (true, true, Some(100.0)));
+        assert!(exits_human(&h, false).contains("看不出先后"));
     }
 
     #[test]
