@@ -166,7 +166,7 @@ async fn primary_probe_drives_beats_alerts_and_fallback() {
     let inc = t.get("/api/v1/incidents?state=firing").await;
     let p = inc["items"].as_array().unwrap().iter().find(|i| i["rule"] == "probe_point_offline").cloned().unwrap_or_else(|| panic!("{inc}"));
     assert_eq!((p["severity"].clone(), p["subject"].clone(), p["subject_name"].clone(), p["rule_name"].clone()), (json!("warning"), Value::Null, json!("香港"), json!("探测点离线")));
-    assert!(p["summary"].as_str().unwrap().starts_with("香港：10 分钟没有上报") && p["summary"].as_str().unwrap().contains("暂由中控代替"), "{p}");
+    assert!(p["summary"].as_str().unwrap().starts_with("香港：10 分钟没有上报") && p["summary"].as_str().unwrap().contains("暂由中控代测"), "{p}");
     // 中控的检查关掉：标灰（判不出，不报）
     let r = t.req("PUT", "/api/v1/settings/reach-source", Some(json!({"central_enabled": false})), None).await;
     assert_eq!(r.1["data"]["effective"]["state"], "none", "{}", r.1);
@@ -261,12 +261,12 @@ async fn blind_primary_probe_falls_back_and_alerts() {
     sqlx::query("update probe_point set last_kept_at = now() - interval '4 minutes' where id = $1").bind(id).execute(&t.st.db).await.unwrap();
     report_json(&t, id, &tok, discard.clone()).await;
     let e = eff().await;
-    assert_eq!((e["state"].clone(), e["label"].clone()), (json!("fallback"), json!("中控（代替检查都作废了的香港探测点）")), "{e}");
+    assert_eq!((e["state"].clone(), e["label"].clone()), (json!("fallback"), json!("中控（代替探测无效的香港探测点）")), "{e}");
     let p = &t.get("/api/v1/probe-points").await[0];
     assert_eq!((p["state"].clone(), p["discard_reason"].clone()), (json!("blind"), json!(CONTROLS_DOWN)), "{p}");
     probe_points::check_once(&t.st, OffsetDateTime::now_utc()).await.unwrap();
     let s: String = sqlx::query_scalar("select summary from incident where rule = 'probe_point_offline' and state = 'firing'").fetch_one(&t.st.db).await.unwrap();
-    assert_eq!(s, format!("香港：在线，但最近 4 分钟的检查都作废了：{CONTROLS_DOWN}；它是主探测来源，线路机的连通性暂由中控代替（连不上照报，连得上不算恢复）"));
+    assert_eq!(s, format!("香港：在线，但最近 4 分钟的探测都无效：{CONTROLS_DOWN}；它是主探测来源，暂由中控代测（连不上照常告警，连得上不算恢复）"));
     // 有一轮被采纳：回来，告警恢复
     report(&t, id, &tok, &[(relay, 20001, true, Some(150.0))]).await;
     assert_eq!(eff().await["state"], "probe");
@@ -302,7 +302,7 @@ async fn all_relays_down_is_recorded_with_note() {
     let m = machine(&t, relays[0]).await;
     assert_eq!(
         reason_text(&m, "relay_unreachable").as_deref(),
-        Some("香港探测点连续 3 次连不上客户入口（端口 20001：超时 10 秒）；全部线路机同时连不上（可能是供应商整段故障）"),
+        Some("香港探测点连续 3 次连不上客户入口（端口 20001：超时 10 秒）；所有线路机同时连不上，可能是供应商整体故障"),
         "{m}"
     );
     // 中控的一轮：对照目标通、三台都连不上，照记（标 all_down）

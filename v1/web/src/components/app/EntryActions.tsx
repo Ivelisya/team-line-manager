@@ -28,8 +28,8 @@ function RouterExitsNote({ entryId, open, verb }: { entryId: string; open: boole
   const q = useEntryRouterExits(entryId, open);
   if (!q.data?.length) return null;
   return (
-    <Note tone="warn">这些软路由出口指向这个入口，{verb}后会连不上，要到路由上处理：
-      <ul className="reason-list">{q.data.map((r) => <li key={r.id}><b>{r.name}</b> 的 {r.exits.join('、')}</li>)}</ul>
+    <Note tone="warn">{verb}后，这些软路由出口会连不上，需要到路由上手动改：
+      <ul className="reason-list">{q.data.map((r) => <li key={r.id}><b>{r.name}</b>：{r.exits.join('、')}</li>)}</ul>
     </Note>
   );
 }

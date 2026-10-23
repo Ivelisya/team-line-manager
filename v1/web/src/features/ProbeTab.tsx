@@ -3,7 +3,7 @@
 // 经 SSH 安装、升级用 fleetctl（要等、要看步骤，见 OPS.md「探测点」）。
 import * as React from 'react';
 import { Plus, Radar, RefreshCw, Trash2 } from 'lucide-react';
-import { useAddProbePoint, useDelProbePoint, usePatchProbePoint, useProbePoints, useReachSource, useReinstallProbePoint, useSaveReachSource, type Bootstrap, type ProbePoint, type ProbeWindow } from '@/lib/probePoints';
+import { useAddProbePoint, useDelProbePoint, usePatchProbePoint, useProbePoints, useReachSource, useReinstallProbePoint, useSaveReachSource, type Bootstrap, type ProbePoint, type ProbeWindow, primaryIssue } from '@/lib/probePoints';
 import * as F from '@/lib/format';
 import { successPct } from '@/lib/derive';
 import { Button, IconButton } from '@/components/ui/button';
@@ -15,9 +15,9 @@ import { ConfirmDialog, FormDialog } from '@/components/app/dialogs';
 import { CopyButton, Empty, ErrorNote, Note, Panel, Pill, TableWrap } from '@/components/app/primitives';
 
 const STATE: Record<ProbePoint['state'], { label: string; tone: 'ok' | 'bad' | 'neutral' | 'warn' }> = {
-  online: { label: '在线', tone: 'ok' }, blind: { label: '检查都作废了', tone: 'warn' }, offline: { label: '离线', tone: 'bad' }, pending: { label: '等待安装', tone: 'warn' }, disabled: { label: '已停用', tone: 'neutral' },
+  online: { label: '在线', tone: 'ok' }, blind: { label: '探测无效', tone: 'warn' }, offline: { label: '离线', tone: 'bad' }, pending: { label: '等待安装', tone: 'warn' }, disabled: { label: '已停用', tone: 'neutral' },
 };
-const SOURCE_TIP = '线路机的心跳格、入口的「连不上」和相关告警，都以它的结果为准\n主来源离线超过 3 分钟，或在线但检查都作废了（它自己连不上对照目标）：中控探测开着就由中控代测，关着就显示灰色\n代测时连不上照常告警，连得上不算恢复';
+const SOURCE_TIP = '线路机的心跳格、入口的「连不上」和相关告警，都以它的结果为准\n主来源离线超过 3 分钟，或在线但探测无效（它自己的网络不通）：中控探测开着就由中控代测，关着就显示灰色\n代测时连不上照常告警，连得上不算恢复';
 const WINDOWS: { value: ProbeWindow; label: string }[] = [{ value: '1h', label: '1 小时' }, { value: '24h', label: '24 小时' }, { value: '7d', label: '7 天' }, { value: '30d', label: '30 天' }];
 const WINDOW_LABEL: Record<ProbeWindow, string> = { '1h': '近 1 小时', '24h': '近 24 小时', '7d': '近 7 天', '30d': '近 30 天' };
 
@@ -50,25 +50,27 @@ export function ProbeTab() {
               <Switch checked={s.central_enabled} disabled={save.isPending || s.primary === 'central'} onCheckedChange={(v) => save.mutate({ central_enabled: v }, { onError: toast.err })} />
               中控自己的探测<InfoTip text="中控自己连各线路机的入口。主来源是中控时不能关；主来源是探测点时建议开着，探测点离线时由它代测" />
             </label>
-            {s.effective.state === 'fallback' && <Note tone="warn">{s.effective.label.replace(/^中控（代替(.*)）$/, '$1')}，暂由中控代测。连不上照常告警，连得上不算恢复</Note>}
-            {s.effective.state === 'none' && <Note tone="bad">{s.effective.primary_label ?? '主来源'}离线，中控探测也关着，暂时判断不了入口通不通</Note>}
+            {/* 主探测点为什么用不了按服务端给的原因说（离线、探测无效、已停用…），不一律写成离线 */}
+            {s.effective.state === 'fallback' && <Note tone="warn">{primaryIssue(s.effective)}，暂由中控代测。连不上照常告警，连得上不算恢复</Note>}
+            {s.effective.state === 'none' && <Note tone="bad">{s.effective.primary_label ? primaryIssue(s.effective) : '中控探测关着'}，{s.effective.primary_label ? '中控探测也关着，' : ''}暂时判断不了入口通不通</Note>}
           </div>
         )}
       </Panel>
       <Panel title={<>探测点<InfoTip text="放在离客户近的地方（比如香港）的小机器，定时连各线路机的入口，记录通不通和延迟" /></>}
-        tools={<><Segmented sm label="统计时间窗" value={win} onChange={setWin} items={WINDOWS} /><Button size="sm" onClick={() => setAdding(true)}><Plus />新增</Button></>}>
+        tools={<><Segmented sm label="时间范围" value={win} onChange={setWin} items={WINDOWS} /><Button size="sm" onClick={() => setAdding(true)}><Plus />新增</Button></>}>
         {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
         {q.isLoading ? <SkeletonRows rows={2} /> : !list.length ? <Empty icon={<Radar size={22} />} text="还没有探测点" hint="新增后，在探测点上执行安装命令。中控能 SSH 到它的话，也可以用 fleetctl probe add <名称> --host <IP> 直接装" /> : (
           <TableWrap data-stale={q.isPlaceholderData}>
-            <table className="table">
-              <thead><tr><th>名称</th><th>状态</th><th>最近上报</th><th>版本</th><th>{WINDOW_LABEL[win]}到各线路机（平均延迟 · 成功率）<InfoTip text="1 小时内是逐次结果，更长的时间窗按小时汇总" /></th><th>启用</th><th /></tr></thead>
+            <table className="dt" style={{ minWidth: 860 }}>
+              <colgroup><col style={{ width: 150 }} /><col style={{ width: 170 }} /><col style={{ width: 110 }} /><col style={{ width: 110 }} /><col /><col style={{ width: 64 }} /><col style={{ width: 84 }} /></colgroup>
+              <thead><tr><th>名称</th><th>状态</th><th>最近上报</th><th>版本</th><th>{WINDOW_LABEL[win]}到各线路机（平均延迟 · 成功率）<InfoTip text="超过 1 小时的按小时汇总" /></th><th>启用</th><th /></tr></thead>
               <tbody>
                 {list.map((p) => (
                   <tr key={p.id}>
                     <td><span className="cell-main strong">{p.name}</span>{p.primary && <span className="sub">主来源</span>}{p.note && <span className="sub">{p.note}</span>}</td>
                     <td>
                       <Pill tone={STATE[p.state].tone}>{STATE[p.state].label}</Pill>
-                      {p.state === 'blind' && <span className="sub" data-tip={p.last_kept_at ? `最近一次被采纳：${F.dt(p.last_kept_at)}` : ''}>{p.discard_reason ?? '原因不明'}</span>}
+                      {p.state === 'blind' && <span className="sub" data-tip={p.last_kept_at ? `上次有效 ${F.dt(p.last_kept_at)}` : ''}>{p.discard_reason ?? '原因不明'}</span>}
                       {p.install?.state === 'running' && <span className="sub">安装中：{p.install.step}</span>}
                       {p.install?.state === 'failed' && <span className="sub" data-tip={p.install.error ?? ''}>安装失败</span>}
                       {p.upgrade && <span className="sub">升级中</span>}
@@ -80,10 +82,10 @@ export function ProbeTab() {
                       <div key={r.relay_id} className="t-sub">{r.name} · <b className="num">{r.avg_ms == null ? '—' : `${Math.round(r.avg_ms)} ms`}</b> · <span data-tip={`${r.ok}/${r.total} 次连上`}>{successPct(r.total ? (100 * r.ok) / r.total : null)}</span></div>
                     )) : '—'}</td>
                     <td><Switch checked={p.enabled} disabled={patch.isPending || (p.primary && p.enabled)} onCheckedChange={(v) => patch.mutate({ id: p.id, enabled: v }, { onError: toast.err })} aria-label="启用" /></td>
-                    <td className="row" style={{ gap: 4, justifyContent: 'flex-end' }}>
+                    <td className="r"><span className="row" style={{ gap: 4, justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
                       <IconButton label="重新生成安装命令" onClick={() => reinstall.mutate(p.id, { onSuccess: (d) => d.bootstrap && setBoot({ name: p.name, b: d.bootstrap }), onError: toast.err })}><RefreshCw size={14} /></IconButton>
                       <IconButton label={p.primary ? '主来源不能删除' : '删除'} disabled={p.primary} onClick={() => setDel(p)}><Trash2 size={14} /></IconButton>
-                    </td>
+                    </span></td>
                   </tr>
                 ))}
               </tbody>

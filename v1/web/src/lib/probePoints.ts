@@ -4,12 +4,15 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import { del, get, patch, post, put } from './api';
 
 /** 此刻实际用哪一路：central 中控；probe 探测点；fallback 主来源的探测点离线、暂由中控代替（连不上照报、连得上不算恢复）；none 标灰 */
-export interface ReachEffective { state: 'central' | 'probe' | 'fallback' | 'none'; probe_point_id: string | null; label: string; primary_label: string | null }
+/** primary_issue：主来源的探测点为什么用不了（fallback / none 时）：「香港探测点离线」「香港探测点探测无效」「香港探测点已停用」…，旧中控没有这个字段 */
+export interface ReachEffective { state: 'central' | 'probe' | 'fallback' | 'none'; probe_point_id: string | null; label: string; primary_label: string | null; primary_issue?: string | null }
+/** 主来源为什么用不了，一句话；旧中控没给原因时按离线说 */
+export const primaryIssue = (e: ReachEffective) => e.primary_issue ?? `${e.primary_label ?? '主探测点'}离线`;
 export interface ReachSource { primary: 'central' | string; primary_name: string; central_enabled: boolean; effective: ReachEffective; offline_after_s: number }
 export interface ProbeRelayStat { relay_id: string; name: string; avg_ms: number | null; median_ms: number | null; total: number; ok: number }
 /** 到各线路机的统计窗口：1h 读原始记录，其余读小时汇总 */
 export type ProbeWindow = '1h' | '24h' | '7d' | '30d';
-/** blind：在线、但最近 3 分钟的检查都作废了（对照目标连不上，discard_reason），同离线处理 */
+/** blind：在线、但最近 3 分钟的探测都无效（对照目标连不上，discard_reason），同离线处理；界面叫「探测无效」 */
 export interface ProbePoint {
   id: string; name: string; label: string; enabled: boolean; note: string; state: 'online' | 'blind' | 'offline' | 'pending' | 'disabled'; installed: boolean; primary: boolean;
   last_seen_at: string | null; last_kept_at: string | null; discard_reason: string | null; window: ProbeWindow;

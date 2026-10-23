@@ -777,7 +777,7 @@ const MOCK_PROBES: Record<string, unknown>[] = [{
 const reachSrc = { primary: 'central', central_enabled: true };
 const reachView = () => {
   const p = MOCK_PROBES.find((x) => x.id === reachSrc.primary);
-  const effective = p ? { state: 'probe', probe_point_id: p.id, label: p.label, primary_label: p.label } : { state: 'central', probe_point_id: null, label: '中控', primary_label: null };
+  const effective = p ? { state: 'probe', probe_point_id: p.id, label: p.label, primary_label: p.label, primary_issue: null } : { state: 'central', probe_point_id: null, label: '中控', primary_label: null, primary_issue: null };
   return { primary: reachSrc.primary, primary_name: p ? p.name : '中控', central_enabled: reachSrc.central_enabled, effective, offline_after_s: 180 };
 };
 R('GET', '/settings/reach-source', () => reachView());

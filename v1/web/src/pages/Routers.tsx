@@ -4,7 +4,7 @@ import * as React from 'react';
 import { Plus, Router as RouterIcon, Shuffle, Users, Waypoints } from 'lucide-react';
 import * as F from '@/lib/format';
 import { useTeams } from '@/lib/queries';
-import { useRouterDrawer, useRouters, type RouterView } from '@/lib/routers';
+import { setRouterOrder, useRouterDrawer, useRouters, type RouterView } from '@/lib/routers';
 import { Button } from '@/components/ui/button';
 import { Segmented } from '@/components/ui/overlays';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -43,6 +43,10 @@ export function RoutersPage() {
   // 当前分组没了（最后一台删掉、改了团队）就回到全部
   const cur = groups.some((g) => g.value === team) ? team : 'all';
   const shown = cur === 'all' ? all : all.filter((r) => (r.team?.id ?? NO_TEAM) === cur);
+  // 抽屉的上一台 / 下一台按这一页看到的顺序走；离开页面时清掉
+  const order = shown.map((r) => r.id).join();
+  React.useEffect(() => { setRouterOrder(order ? order.split(',') : null); }, [order]);
+  React.useEffect(() => () => setRouterOrder(null), []);
   const add = <Button variant="primary" onClick={() => setAdding(true)}><Plus />接入软路由</Button>;
   return (
     <div className="stack">
@@ -60,7 +64,8 @@ export function RoutersPage() {
             caption={<><span>下载 <Num f={F.rate(sum.down_bps)} /></span><span>上传 <Num f={F.rate(sum.up_bps)} /></span></>} />
         </div>
       )}
-      {groups.length > 2 && <div className="hgroups" role="group" aria-label="筛选"><Segmented label="团队" value={cur} onChange={setTeam} items={groups} className="seg-fill" /></div>}
+      {/* 团队分段按内容宽、靠左（同机器页的分段），不拉满整行 */}
+      {groups.length > 2 && <div className="hgroups" role="group" aria-label="筛选"><Segmented label="团队" value={cur} onChange={setTeam} items={groups} /></div>}
       {q.isLoading && <div className="cards" data-view="large">{Array.from({ length: 3 }, (_, i) => <Skeleton key={i} h={520} style={{ borderRadius: 'var(--r-card)', marginBottom: 'var(--grid-gap)' }} />)}</div>}
       {q.data && all.length === 0 && (
         // 空状态放在卡片底板上（同作业页）
