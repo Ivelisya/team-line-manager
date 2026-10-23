@@ -8,7 +8,7 @@ import { makeDefaultCompare } from '@/lib/sort';
 import { cycleMonths, META, subCalc } from './meta';
 
 const LIFECYCLE_LABEL = META.lifecycles;
-import { buildDb, countryOf, hashStr, IP_STEPS, refreshFollowers, rng, SUB_FIELDS, syncSub, templateOf, trafficOf, type Db } from './fixtures';
+import { billingDay, buildDb, countryOf, hashStr, IP_STEPS, refreshFollowers, rng, SUB_FIELDS, syncSub, templateOf, trafficOf, type Db } from './fixtures';
 import { installAccessMock } from './access';
 import { installFxMock, toUsd, usdPerUnit, usdTotal } from './fx';
 import { installPolicyMock } from './policy';
@@ -642,7 +642,7 @@ R('PUT', '/machines/([^/]+)/subscription', ({ params, body }) => {
   const m = machine(params[0]);
   if (body.traffic_used_gb !== undefined) throw bad('流量已用改为由 agent 按网卡统计，不再按面板校准', 400, 'bad_request');
   // 单独设置的带值，null = 跟随：先按套餐 / 供应商的值填上，再由 syncSub 判定哪些算单独设置（和跟随值相同的按跟随，同服务端）
-  const s = { auto_renew: false, ...(m.subscription ?? {}), due_date: body.due_date, billing_day: Number(String(body.due_date).slice(8)), due_days: 0 } as any;
+  const s = { auto_renew: false, ...(m.subscription ?? {}), due_date: body.due_date, billing_day: billingDay(String(body.due_date), m.subscription?.billing_day), due_days: 0 } as any;
   if (body.auto_renew !== undefined) s.auto_renew = body.auto_renew;
   m.subscription = s;
   for (const k of SUB_FIELDS) s[k] = body[k] ?? inheritedValue(m, k, s.due_date) ?? (k === 'price_cents' ? 0 : null);
@@ -654,10 +654,12 @@ R('POST', '/machines/([^/]+)/renewals', ({ params, body }) => {
   const m = machine(params[0]); if (!m.subscription) throw bad('这台机器还没有订阅信息，请先保存订阅');
   // new_due 与 cycles（续几个周期，从当前到期日一次加够）二选一，同服务端
   if ((body.new_due == null) === (body.cycles == null)) throw bad('new_due 与 cycles 要给且只给一个');
-  const newDue: string = body.new_due ?? addMonths(m.subscription.due_date, cycleMonths(m.subscription.cycle) * Number(body.cycles));
+  // 按周期推从账单日算（同服务端：账单日 31 号的 1-31 → 2-28 → 3-31）
+  const onBday = `${m.subscription.due_date.slice(0, 8)}${String(m.subscription.billing_day).padStart(2, '0')}`;
+  const newDue: string = body.new_due ?? addMonths(onBday, cycleMonths(m.subscription.cycle) * Number(body.cycles));
   if (!/^\d{4}-\d{2}-\d{2}$/.test(newDue)) throw bad('新到期日格式应为 YYYY-MM-DD');
   const r = { id: `rn${db.seq++}`, old_due: m.subscription.due_date, new_due: newDue, amount_cents: body.amount_cents ?? m.subscription.price_cents, currency: m.subscription.currency, note: body.note ?? null, actor: db.user, created_at: iso() };
-  (db.renewals[m.id] ??= []).unshift(r); m.subscription.due_date = newDue; recomputeDue(m);
+  (db.renewals[m.id] ??= []).unshift(r); m.subscription.billing_day = billingDay(newDue, m.subscription.billing_day); m.subscription.due_date = newDue; recomputeDue(m);
   emit({ type: 'machine', id: m.id }); emit({ type: 'machines' }); return { id: r.id, old_due: r.old_due, new_due: r.new_due };
 });
 R('POST', '/provision/check', ({ body }) => ({ items: checkProvision(body.items ?? []) }));
@@ -771,7 +773,7 @@ R('GET', '/probe-beats', () => probeBeats());
 // 探测点（设置「探测点」）：演示数据只有一个在线的香港探测点、主来源是中控；改主来源、开关、新增只改内存
 const MOCK_PROBES: Record<string, unknown>[] = [{
   id: 'pp-hk', name: '香港', label: '香港探测点', enabled: true, note: '阿里云香港 · Alpine', state: 'online', installed: true, primary: false,
-  last_seen_at: iso(), last_kept_at: iso(), discard_reason: null, last_ip: '47.242.0.10', version: '0.1.0+mock', created_at: iso(), bootstrap_expires_at: null, install: null, upgrade: null,
+  last_seen_at: iso(), last_kept_at: iso(), discard_reason: null, last_ip: '47.242.0.10', version: '0.1.0+mock', created_at: iso(), bootstrap_expires_at: null, install: null, upgrade: null, upgrade_failed: null,
   relays: [{ relay_id: 'r1', name: '线路机1', avg_ms: 158, median_ms: 156, total: 120, ok: 120 }],
 }];
 const reachSrc = { primary: 'central', central_enabled: true };
@@ -805,7 +807,7 @@ R('GET', '/machines/([^/]+)/reach-quality', ({ params }) => {
 R('POST', '/probe-points', ({ body }) => {
   const b = body as { name: string; note?: string };
   const id = `pp-${MOCK_PROBES.length + 1}`;
-  MOCK_PROBES.push({ id, name: b.name, label: `${b.name}探测点`, enabled: true, note: b.note ?? '', state: 'pending', installed: false, primary: false, last_seen_at: null, last_ip: null, version: null, created_at: iso(), bootstrap_expires_at: iso(), install: null, upgrade: null, relays: [] });
+  MOCK_PROBES.push({ id, name: b.name, label: `${b.name}探测点`, enabled: true, note: b.note ?? '', state: 'pending', installed: false, primary: false, last_seen_at: null, last_ip: null, version: null, created_at: iso(), bootstrap_expires_at: iso(), install: null, upgrade: null, upgrade_failed: null, relays: [] });
   emit({ type: 'settings' });
   return { id, bootstrap: { cmd: `{ curl -fsS https://fleet.example/api/v1/probe-bootstrap/MOCK 2>/dev/null || wget -qO- https://fleet.example/api/v1/probe-bootstrap/MOCK; } | sh`, expires_at: iso() } };
 });

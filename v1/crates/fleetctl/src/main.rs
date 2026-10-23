@@ -969,6 +969,9 @@ enum RouterCmd {
         router: String,
         #[arg(long)]
         yes: bool,
+        /// 有没做完的作业改过它的出口时也删（路由确实回不来了）：作业不再改回它、能收尾，它上面被改过的出口要自己处理
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -1174,7 +1177,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             RouterCmd::Bootstrap { router, yes } => routers::bootstrap(x, &router, yes),
             RouterCmd::Deploy { router, ssh, yes, follow } => routers::deploy(x, &router, ssh.opts(), yes, follow),
             RouterCmd::Edit { router, name, team, note } => routers::edit(x, &router, name.as_deref(), team.as_deref(), note.as_deref()),
-            RouterCmd::Rm { router, yes } => routers::rm(x, &router, yes),
+            RouterCmd::Rm { router, yes, force } => routers::rm(x, &router, yes, force),
         },
         Cmd::Probe { cmd } => match cmd {
             ProbeCmd::Ls => probe::ls(x),

@@ -92,7 +92,8 @@ export const useDeployRouter = () => useWrite(({ id, ...b }: { id: string } & Ss
 export const useRegenBootstrap = () => useWrite((id: string) => post<Bootstrap>(`/routers/${id}/bootstrap`), K);
 /** team_id 传 null = 不分团队 */
 export const usePatchRouter = () => useWrite(({ id, ...b }: { id: string; name?: string; team_id?: string | null; note?: string }) => patch(`/routers/${id}`, b), K);
-export const useDeleteRouter = () => useWrite((id: string) => del(`/routers/${id}`), K);
+/** 有没做完的作业改过它的出口、没确认改回时 409（错误信息直接给用户看）；force：照删，这些作业不再改回它（返回摘掉了哪些作业） */
+export const useDeleteRouter = () => useWrite(({ id, force }: { id: string; force?: boolean }) => del<{ jobs?: string[] }>(`/routers/${id}${force ? '?force=true' : ''}`), K);
 
 // ---- 抽屉：?r=<路由id>&rtab=<页签>，与机器抽屉（?m=）各管各的 ----
 export type RouterTab = 'overview' | 'exits' | 'clients' | 'charts';

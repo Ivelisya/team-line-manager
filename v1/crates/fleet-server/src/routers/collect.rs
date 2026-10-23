@@ -39,6 +39,9 @@ const CONFIG_TIMEOUT: Duration = Duration::from_secs(20);
 const ROUND_LIMIT: Duration = Duration::from_secs(120);
 /// 多久测一次全部出口的延迟
 const DELAY_EVERY_S: i64 = 300;
+/// 立即采集最多等这么久：正赶上一轮带延迟测试的完整采集时，要等它做完（一台最多 ROUND_LIMIT）才轮得到，
+/// 立即采集本身只采集、取配置（不测延迟）
+const NOW_WAIT: Duration = Duration::from_secs(ROUND_LIMIT.as_secs() + TIMEOUT.as_secs() + CONFIG_TIMEOUT.as_secs());
 pub const DELAY_URL: &str = "https://www.gstatic.com/generate_204";
 
 /// 交给 `sh -s` 的采集脚本：整段包在函数里（sh 读完整个函数才开始执行，命令读 stdin 吃不到后面的脚本），ucode 程序写到 tmpfs 再跑
@@ -612,7 +615,7 @@ impl Default for Refresh {
 }
 
 impl Refresh {
-    /// 马上采这几台，等这一轮做完（最多一台的采集时限多一点）；采集循环没在跑就不等
+    /// 马上采这几台，等这一轮做完（最多 [`NOW_WAIT`]）；采集循环没在跑就不等
     pub async fn now(&self, ids: impl IntoIterator<Item = Uuid>) {
         let seq = {
             let mut d = self.due.lock().unwrap();
@@ -623,7 +626,7 @@ impl Refresh {
         self.wake.notify_one();
         if self.running.load(Ordering::Relaxed) {
             let mut rx = self.served.subscribe();
-            let _ = tokio::time::timeout(TIMEOUT + Duration::from_secs(5), rx.wait_for(|s| *s >= seq)).await;
+            let _ = tokio::time::timeout(NOW_WAIT, rx.wait_for(|s| *s >= seq)).await;
         }
     }
 
@@ -1067,6 +1070,12 @@ pub async fn cleanup(db: &sqlx::PgPool, raw_days: u32) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// 立即采集等得够：正在跑的一轮带延迟测试（采集 + 取配置 + 延迟测试），之后它自己那一轮（采集 + 取配置，不测延迟）
+    #[test]
+    fn refresh_wait_covers_a_full_round() {
+        assert!(NOW_WAIT >= (TIMEOUT + CONFIG_TIMEOUT + DELAY_TIMEOUT) + (TIMEOUT + CONFIG_TIMEOUT));
+    }
 
     /// 立即采集：采集循环没在跑时只排上、不等；在跑时等到这一轮（取走了这次请求的那一轮）做完
     #[tokio::test]

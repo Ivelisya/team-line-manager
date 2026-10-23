@@ -233,6 +233,92 @@ async fn upgrade_via_targets() {
     assert_eq!(t.get("/api/v1/probe-points").await[0]["version"], "0.1.0+new");
 }
 
+/// 升级失败不反复下发：下载过程序、过了试运行时长（5 分钟）还没报上目标 sha256（新版本没能上报、探测点换回了旧版本），
+/// 它下次取目标时清掉升级请求、记下 upgrade_failed，列表显示；手动再升级清掉记录重新下发；之后报上了目标 sha256 也清掉
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn failed_upgrade_is_not_retried() {
+    let t = setup().await;
+    let (id, tok) = add_probe(&t, "香港").await;
+    report(&t, id, &tok, &[]).await;
+    common::dist_agent(&t, "0.1.0+new");
+    let sha = t.post(&format!("/api/v1/probe-points/{id}/upgrade"), json!({})).await["sha256"].as_str().unwrap().to_string();
+    let targets = || async { t.req("GET", "/agent/v1/probe/targets", None, Some(&tok)).await.1 };
+    let download = || async {
+        use axum::body::Body;
+        use tower::ServiceExt;
+        let req = axum::http::Request::get("/agent/v1/probe/binary").header("authorization", format!("Bearer {tok}")).body(Body::empty()).unwrap();
+        assert_eq!(t.app.clone().oneshot(req).await.unwrap().status(), StatusCode::OK);
+    };
+    // 还没下载：过多久都照旧下发（探测点可能一直关着）
+    sqlx::query("update probe_point set updated_at = now() - interval '1 hour' where id = $1").bind(id).execute(&t.st.db).await.unwrap();
+    assert_eq!(targets().await["upgrade"]["sha256"], json!(sha));
+    download().await;
+    let fetched = || async { sqlx::query_scalar::<_, Option<OffsetDateTime>>("select upgrade_fetched_at from probe_point where id = $1").bind(id).fetch_one(&t.st.db).await.unwrap() };
+    let first = fetched().await.expect("记下第一次下载的时刻");
+    download().await;
+    assert_eq!(fetched().await, Some(first), "再下载不改");
+    // 下载后不到 5 分钟（试运行中）：照旧下发
+    assert_eq!(targets().await["upgrade"]["sha256"], json!(sha));
+    // 5 分钟过了、报上来的还是旧版本：算失败，不再下发
+    sqlx::query("update probe_point set upgrade_fetched_at = now() - interval '6 minutes' where id = $1").bind(id).execute(&t.st.db).await.unwrap();
+    assert!(targets().await.get("upgrade").is_none());
+    let p = &t.get("/api/v1/probe-points").await[0];
+    assert_eq!(p["upgrade"], Value::Null, "{p}");
+    assert_eq!((p["upgrade_failed"]["sha256"].clone(), p["upgrade_failed"]["to"].clone(), p["upgrade_failed"]["from"].clone()), (json!(sha), json!("0.1.0+new"), json!("0.1.0+test")), "{p}");
+    report(&t, id, &tok, &[]).await;
+    assert!(t.get("/api/v1/probe-points").await[0]["upgrade_failed"].is_object(), "旧版本照常上报，记录留着");
+    // 手动再升级：清掉记录，重新下发
+    t.post(&format!("/api/v1/probe-points/{id}/upgrade"), json!({})).await;
+    assert_eq!(t.get("/api/v1/probe-points").await[0]["upgrade_failed"], Value::Null);
+    assert_eq!(targets().await["upgrade"]["sha256"], json!(sha));
+    assert_eq!(fetched().await, None, "重新从下载算起");
+    // 又记成失败之后，其实换成了（报上了目标 sha256）：清掉记录
+    download().await;
+    sqlx::query("update probe_point set upgrade_fetched_at = now() - interval '6 minutes' where id = $1").bind(id).execute(&t.st.db).await.unwrap();
+    targets().await;
+    report_json(&t, id, &tok, json!({"version": "0.1.0+new", "sha256": sha, "results": []})).await;
+    let p = &t.get("/api/v1/probe-points").await[0];
+    assert_eq!((p["upgrade"].clone(), p["upgrade_failed"].clone(), p["version"].clone()), (Value::Null, Value::Null, json!("0.1.0+new")), "{p}");
+}
+
+/// 停用过的探测点重新启用：最近被采纳从启用那一刻算起（停用期间照收心跳、不测，last_kept_at 停在停用前），
+/// 下一份上报到来之前不会被当成「在线但检查都作废了」误开 probe_point_offline
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reenabled_probe_is_not_blind() {
+    let t = setup().await;
+    let (id, tok) = add_probe(&t, "香港").await;
+    report(&t, id, &tok, &[]).await;
+    let path = format!("/api/v1/probe-points/{id}");
+    let patch = |on: bool| t.req("PATCH", &path, Some(json!({"enabled": on})), None);
+    patch(false).await;
+    // 停用了 10 分钟，期间照常发心跳
+    sqlx::query("update probe_point set last_kept_at = now() - interval '10 minutes', discard_reason = 'x' where id = $1").bind(id).execute(&t.st.db).await.unwrap();
+    report(&t, id, &tok, &[]).await;
+    patch(true).await;
+    let p = &t.get("/api/v1/probe-points").await[0];
+    assert_eq!((p["state"].clone(), p["discard_reason"].clone()), (json!("online"), Value::Null), "{p}");
+    probe_points::check_once(&t.st, OffsetDateTime::now_utc()).await.unwrap();
+    assert_eq!(t.count("select count(*) from incident where rule = 'probe_point_offline'").await, 0);
+}
+
+/// 入口表的最近一次检查不算早于入口创建的：端口以前被别的入口用过（0050 之前复用过，或推算偏低），保留期里还留着它的检查
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn entry_reach_ignores_checks_before_entry() {
+    let t = setup().await;
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let team = seed_team(&t, "团队1").await;
+    seed_node(&t, relay, team, 1, "203.0.113.5", 20001).await;
+    sqlx::query("insert into relay_reach (relay_id, ts, ok, detail, port) select $1, now() - interval '1 hour' + make_interval(secs => g), false, '端口 20001：超时', 20001 from generate_series(1, 5) g")
+        .bind(relay)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    assert_eq!(machine(&t, relay).await["entries"][0]["reach"], Value::Null, "旧入口的检查不算");
+    sqlx::query("insert into relay_reach (relay_id, ts, ok, detail, port) values ($1, now(), false, '端口 20001：超时', 20001)").bind(relay).execute(&t.st.db).await.unwrap();
+    let r = machine(&t, relay).await["entries"][0]["reach"].clone();
+    assert_eq!((r["ok"].clone(), r["fails"].clone()), (json!(false), json!(1)), "{r}");
+}
+
 /// 探测点上报任意一份（JSON 原样）：同 `report`，先把最近上报往前挪 20 秒
 async fn report_json(t: &T, id: Uuid, tok: &str, body: Value) -> (StatusCode, Value) {
     sqlx::query("update probe_point set last_seen_at = last_seen_at - interval '20 seconds' where id = $1").bind(id).execute(&t.st.db).await.unwrap();

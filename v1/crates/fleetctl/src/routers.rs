@@ -537,18 +537,36 @@ pub fn edit(ctx: &Ctx, q: &str, name: Option<&str>, team: Option<&str>, note: Op
     Ok(0)
 }
 
-pub fn rm(ctx: &Ctx, q: &str, yes: bool) -> anyhow::Result<u8> {
+pub fn rm(ctx: &Ctx, q: &str, yes: bool, force: bool) -> anyhow::Result<u8> {
     let r = find(&ctx.list("/routers")?, q)?;
     let name = st(&r, "/name");
-    confirm(&format!("确认删除软路由「{name}」？它的隧道公钥立刻撤销、状态与指标一起删掉，不可恢复"), yes)?;
-    let d = ctx.c.delete(&format!("/routers/{}", st(&r, "/id")))?;
-    ctx.emit(&d, || format!("已删除「{name}」。路由上中控加的东西没有动，不再接入的话在路由上执行：\n  {}", st(&d, "/cleanup")));
+    let forced = if force { "；有没做完的作业改过它的出口的话，作业不再改回它（它上面被改过的出口要自己处理）" } else { "" };
+    confirm(&format!("确认删除软路由「{name}」？它的隧道公钥立刻撤销、状态与指标一起删掉，不可恢复{forced}"), yes)?;
+    let path = format!("/routers/{}{}", st(&r, "/id"), if force { "?force=true" } else { "" });
+    let d = ctx.c.delete(&path)?;
+    ctx.emit(&d, || format!("已删除「{name}」{}。路由上中控加的东西没有动，不再接入的话在路由上执行：\n  {}", rm_jobs_note(&d), st(&d, "/cleanup")));
     Ok(0)
+}
+
+/// 强制删除时摘掉了哪些作业的改回：「（作业 x、y 不再改回它，可以重试收尾或取消）」，没有为空
+fn rm_jobs_note(d: &Value) -> String {
+    let ids: Vec<&str> = d["jobs"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+    if ids.is_empty() {
+        return String::new();
+    }
+    format!("（作业 {} 不再改回它，可以重试收尾或取消）", ids.join("、"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rm_forced_jobs_wording() {
+        assert_eq!(rm_jobs_note(&json!({"ok": true, "jobs": []})), "");
+        assert_eq!(rm_jobs_note(&json!({"ok": true})), "", "旧中控不回 jobs");
+        assert_eq!(rm_jobs_note(&json!({"jobs": ["a", "b"]})), "（作业 a、b 不再改回它，可以重试收尾或取消）");
+    }
 
     fn routers() -> Vec<Value> {
         vec![

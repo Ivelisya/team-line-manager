@@ -838,17 +838,18 @@ async fn probes_of(db: &sqlx::PgPool, eids: &[Uuid]) -> sqlx::Result<HashMap<(Uu
 }
 
 /// 在用入口各自端口上主探测来源（`src`，中控或探测点，见 probe_points::Effective）最近一次 TCP 检查，
-/// 沿 (relay_id, probe_point_id, port, ts desc) 索引逐个取最新一条，失败的再数连续失败了几次。
-/// 端口永不复用（entries::create 从 relay.port_next 分），同一端口上的检查都是这条入口的
+/// 沿 (relay_id, probe_point_id, port, ts desc) 索引逐个取最新一条，失败的再数连续失败了几次；检查早于入口创建的不算：
+/// 现在端口不再复用（entries::create 从 relay.port_next 分），但 0050 之前已经复用过的端口、0050 按标签对不上回收站快照而推算偏低的端口，
+/// 保留期（reach_days）里还留着旧入口的检查
 async fn reach_of(db: &sqlx::PgPool, es: &[(Uuid, Uuid, i32)], src: &crate::probe_points::Effective) -> sqlx::Result<HashMap<Uuid, Reach>> {
     let (cf, cg, cr) = (src.cond("f"), src.cond("g"), src.cond("rr"));
     let rs = sqlx::query_as::<_, (Uuid, bool, OffsetDateTime, Option<String>, i32)>(&format!(
         "select e.id, x.ok, x.ts, x.detail, x.fails from unnest($1::uuid[], $2::uuid[], $3::int[]) e(id, relay, port)
-         cross join lateral (
+         join entry en on en.id = e.id cross join lateral (
             select ok, ts, detail, case when ok then 0 else (
-                     select count(*)::int from relay_reach f where f.relay_id = e.relay and {cf} and f.port = e.port and not f.ok
+                     select count(*)::int from relay_reach f where f.relay_id = e.relay and {cf} and f.port = e.port and f.ts >= en.created_at and not f.ok
                        and f.ts > coalesce((select max(g.ts) from relay_reach g where g.relay_id = e.relay and {cg} and g.port = e.port and g.ok), '-infinity')) end fails
-            from relay_reach rr where rr.relay_id = e.relay and {cr} and rr.port = e.port
+            from relay_reach rr where rr.relay_id = e.relay and {cr} and rr.port = e.port and rr.ts >= en.created_at
             order by rr.ts desc limit 1) x",
     ))
     .bind(es.iter().map(|e| e.0).collect::<Vec<_>>())

@@ -911,4 +911,7 @@ async fn entry_ports_are_never_reused() {
     sqlx::raw_sql(mig).execute(db).await.unwrap();
     assert_eq!(next().await, 20010, "只升不降");
     assert_eq!(create(node(4).await).await.1, 20010);
+    // port_next 偏低（回退到旧版中控建过入口、迁移推算对不上）：不低于现有入口的最大端口 + 1，不撞唯一索引
+    sqlx::query("update relay set port_next = 20001 where machine_id = $1").bind(relay).execute(db).await.unwrap();
+    assert_eq!(create(node(5).await).await.1, 20011);
 }

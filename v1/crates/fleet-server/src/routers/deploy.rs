@@ -152,15 +152,16 @@ fn remote_reason(o: &crate::ssh::Output) -> String {
     format!("退出码 {}：{}", o.code, tail.into_iter().rev().collect::<Vec<_>>().join(" / "))
 }
 
-/// 在路由上跑一段脚本，要求输出里有 `marker`。失败时给 (原因, 脚本已经输出的)
-async fn remote(st: &AppState, id: Uuid, l: &Login, kh: &PathBuf, script: &str, marker: &str, what: &str) -> Result<(), (String, String)> {
-    let o = crate::ssh::exec(tunnel::direct(&st.cfg, id, l, kh), script, Duration::from_secs(60)).await.map_err(|e| (format!("{what}失败：{e:#}"), String::new()))?;
+/// 在路由上跑一段脚本，要求输出里有 `marker`。失败时给 (原因, 脚本已经输出的)；输出为 None = 不知道脚本跑到了哪（ssh 超时：
+/// 已经收到的输出随之丢掉，见 ssh::exec），不能当成「什么都没输出」
+async fn remote(st: &AppState, id: Uuid, l: &Login, kh: &PathBuf, script: &str, marker: &str, what: &str) -> Result<(), (String, Option<String>)> {
+    let o = crate::ssh::exec(tunnel::direct(&st.cfg, id, l, kh), script, Duration::from_secs(60)).await.map_err(|e| (format!("{what}失败：{e:#}"), None))?;
     let o = tunnel::normalize(o, l.password.is_some());
     if o.code == 255 {
-        return Err((format!("{what}失败：{}", tunnel::explain(&o, false)), o.stdout));
+        return Err((format!("{what}失败：{}", tunnel::explain(&o, false)), Some(o.stdout)));
     }
     if !o.stdout.contains(marker) {
-        return Err((format!("{what}失败：{}", remote_reason(&o)), o.stdout));
+        return Err((format!("{what}失败：{}", remote_reason(&o)), Some(o.stdout)));
     }
     Ok(())
 }
@@ -168,18 +169,26 @@ async fn remote(st: &AppState, id: Uuid, l: &Login, kh: &PathBuf, script: &str, 
 /// 换密钥之前这台路由的隧道公钥、发密钥的时间、端口、主机公钥
 type Before = (Option<String>, Option<time::OffsetDateTime>, i32, Option<String>);
 
-/// 重新部署没成、路由上还是旧隧道：把换密钥之前的写回去（库里还是这次换上的那把才写，别的操作之后又换过就不动）
+/// 重新部署没成、路由上还是旧隧道：把换密钥之前的写回去（库里还是这次换上的那把才写，别的操作之后又换过就不动）。
+/// 原来的隧道端口换走之后空出来了，可能已经分给了别的路由（同时在部署 / 重新接入）：那样写不回，返回原因
 async fn restore(st: &AppState, id: Uuid, old: &Before, new_pub: &str) -> Result<(), String> {
-    sqlx::query("update router set tunnel_pubkey = $2, tunnel_key_at = $3, tunnel_port = $4, host_key = $5, updated_at = now() where id = $1 and tunnel_pubkey = $6")
-        .bind(id)
-        .bind(&old.0)
-        .bind(old.1)
-        .bind(old.2)
-        .bind(&old.3)
-        .bind(new_pub)
-        .execute(&st.db)
-        .await
-        .map_err(|e| format!("写库失败：{e}"))?;
+    let taken: Option<String> = sqlx::query_scalar(
+        "with u as (update router set tunnel_pubkey = $2, tunnel_key_at = $3, tunnel_port = $4, host_key = $5, updated_at = now()
+                    where id = $1 and tunnel_pubkey = $6 and not exists (select 1 from router o where o.tunnel_port = $4 and o.id <> $1) returning 1)
+         select name from router where tunnel_port = $4 and id <> $1 and not exists (select 1 from u)",
+    )
+    .bind(id)
+    .bind(&old.0)
+    .bind(old.1)
+    .bind(old.2)
+    .bind(&old.3)
+    .bind(new_pub)
+    .fetch_optional(&st.db)
+    .await
+    .map_err(|e| format!("写库失败：{e}"))?;
+    if let Some(other) = taken {
+        return Err(format!("原来的隧道端口 {} 已经分给了软路由「{other}」", old.2));
+    }
     super::sync_files(st).await.map_err(|e| format!("写隧道公钥清单失败：{e:#}"))?;
     tunnel::close_master(&st.cfg, id).await;
     Ok(())
@@ -256,15 +265,20 @@ async fn run_steps(st: &AppState, id: Uuid, l: &Login, kh: &PathBuf, key: &str) 
         central_hostkey: &central.host_key,
         central_pubkey: &central.login_pub,
     };
+    // 失败时第三项：启动隧道那一步不知道跑到了哪（超时）。上传密钥只把新私钥写成 .new，没跑完也不影响路由上的现用密钥
     let up = async {
-        remote(st, id, l, kh, &b.keys(), "fleet_keys=ok", "上传密钥").await?;
-        step(st, id, "启动隧道").await.map_err(|e| (e, String::new()))?;
-        remote(st, id, l, kh, &b.service(), "fleet_service=ok", "启动隧道").await
+        remote(st, id, l, kh, &b.keys(), "fleet_keys=ok", "上传密钥").await.map_err(|(w, o)| (w, o.unwrap_or_default(), false))?;
+        step(st, id, "启动隧道").await.map_err(|e| (e, String::new(), false))?;
+        remote(st, id, l, kh, &b.service(), "fleet_service=ok", "启动隧道").await.map_err(|(w, o)| (w, o.clone().unwrap_or_default(), o.is_none()))
     };
-    if let Err((why, out)) = up.await {
+    if let Err((why, out, unsure)) = up.await {
         // 之前没发过密钥（第一次部署），或路由上已经换成新密钥：不写回
         if before.0.is_none() || out.contains("fleet_switched=1") {
             return Err(why);
+        }
+        // 可能已经换上了新密钥、新端口（换上的标记随丢掉的输出没了）：写回旧的反而会让换好了的路由连不上。库里留着新的，没换上的话路由会离线
+        if unsure {
+            return Err(format!("{why}。不知道路由上换没换成新的隧道密钥，中控这边留着新的：路由连不上中控的话，再重新部署一次"));
         }
         return Err(match restore(st, id, &before, &tk.public).await {
             Ok(()) => format!("{why}。路由上还是原来的隧道，已改回原来的隧道密钥与端口，在线的照常在线"),

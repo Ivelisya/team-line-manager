@@ -104,7 +104,7 @@ fleetctl exec --team 团队1 --timeout 30 -- uptime           # 多台并发 4�
 - 接入（会改路由，先向用户确认，见下一节的命令）有两种，路由上执行的是同一份脚本：
   - 中控连不到路由（路由在 NAT 后面，三台现场路由都是）：`fleetctl router add <名称> [--team 团队2]` 打印接入命令（30 分钟、只能用一次），让用户在路由上用 root 执行；过期了 `fleetctl router bootstrap <路由> --yes` 重新生成（现在的隧道密钥立刻作废，在线的路由马上掉线）。
   - 中控能直接连到路由的 SSH（公网映射、同一网段）：一键部署 `fleetctl router add <名称> --host <IP> [--port 22] [--user root] --password-stdin --yes --follow`（密码从标准输入读一行，不要写在参数里）；路由上已经授权过中控公钥时不用密码。已有的路由重新部署用 `router deploy`；上传密钥、启动隧道这两步失败时中控把原来的隧道密钥与端口写回，在线的路由不掉线（错误里写「已改回原来的隧道密钥与端口」）。失败原因原样转告用户；中控连不到它就改用接入命令。
-- 删路由（`router rm --yes`）只撤销中控这边（隧道公钥、状态与指标）；输出里的 `cleanup` 是要在路由上执行的清理命令，转给用户。还有没做完的作业改过它的出口、没确认改回（「需要人工处理」）时删不了，报错里有作业 id：先把作业处理完。
+- 删路由（`router rm --yes`）只撤销中控这边（隧道公钥、状态与指标）；输出里的 `cleanup` 是要在路由上执行的清理命令，转给用户。还有没做完的作业改过它的出口、没确认改回（「需要人工处理」）时删不了，报错里有作业 id：先把作业处理完；路由确实回不来了（扔了、刷机）才用 `router rm <路由> --force --yes`（先向用户确认：作业不再改回它，它上面被改过的出口要自己处理），之后作业能重试收尾或取消。
 - 轮换入口凭据、停用入口不会改软路由：`entry rotate` / `entry disable` 的确认语会列出指向这个入口的软路由出口（之后它们就连不上了），先告诉用户。要换节点让路由跟着改用 `replace` / `move`。
 
 ## 探测点
@@ -114,7 +114,7 @@ fleetctl exec --team 团队1 --timeout 30 -- uptime           # 多台并发 4�
 - 查看：`fleetctl --json probe ls`（`state` 多一种 `blind`：在线但检查都作废了，`discard_reason` 写原因）。24 小时 / 7 天 / 30 天到各线路机的成功率与延迟在网页（设置 → 探测点切时间窗；线路机抽屉「连接质量」的「客户入口连通性」，中控与各探测点并排），数据来自小时汇总，用来对比香港与中控、核对某次投诉的时段。
 - 加一台（会登录 / 改那台机器，先向用户确认）：中控能 SSH 到它就 `fleetctl probe add <名称> --host <IP> [--ssh-port 22]`（中控用自己的密钥登录 root，等到首次上报；登不进时报错里有中控公钥全文，转给用户加进探测点的 `/root/.ssh/authorized_keys`，再 `fleetctl probe install <名称> --host <IP>`）；否则 `fleetctl probe add <名称>` 打印一次性安装命令（30 分钟、只能用一次），让用户在探测点上用 root 执行，过期了 `fleetctl probe install <名称>`。
 - 设主来源：`fleetctl probe primary <名称|central>`；中控自己的检查：`fleetctl probe central on|off`（主来源是中控时不能关）。改主来源会改变告警的判断依据，先向用户确认。
-- 启停、改名：`fleetctl probe set <名称> --enable|--disable [--name …] [--note …]`（主来源不能停用、删除）；升级成中控 dist 里的 fleet-agent：`fleetctl probe upgrade <名称>`（探测点自己下载替换，等到报上新版本；新版本 5 分钟内一次都没上报成功会自己换回旧版本、不再换成这个版本，`probe ls` 一直显示升级中，告诉用户这个版本在探测点上跑不起来）；删除：`fleetctl probe rm <名称> --yes`，输出里的 `cleanup` 是要在探测点上执行的清理命令，转给用户。
+- 启停、改名：`fleetctl probe set <名称> --enable|--disable [--name …] [--note …]`（主来源不能停用、删除）；升级成中控 dist 里的 fleet-agent：`fleetctl probe upgrade <名称>`（探测点自己下载替换，等到报上新版本；新版本 5 分钟内一次都没上报成功会自己换回旧版本、不再换成这个版本，中控过 5 分钟记成升级失败、不再下发，`probe ls` 显示「升级到 X 失败，已回到 Y」，告诉用户这个版本在探测点上跑不起来，修好后再 `probe upgrade`）；删除：`fleetctl probe rm <名称> --yes`，输出里的 `cleanup` 是要在探测点上执行的清理命令，转给用户。
 - 告警 `probe_point_offline`（warning，对象是探测点：`subject_id` 为 null、`subject_name` 是探测点名）：探测点超过 3 分钟没上报，或在线但 3 分钟里的检查都作废了（摘要「在线，但最近 N 分钟的检查都作废了：对照目标（…）都连不上」：探测点自己的出网坏了，不是线路机的问题）。转告用户在探测点上看 `rc-service fleet-probe status`、`/var/log/fleet-probe.log`（systemd：`journalctl -u fleet-probe`），见 OPS.md §17。
 
 ## 三网 PING

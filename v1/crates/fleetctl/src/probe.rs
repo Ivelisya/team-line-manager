@@ -48,6 +48,9 @@ fn row(p: &Value) -> Vec<String> {
     if p["upgrade"].is_object() {
         state.push_str("（升级中）");
     }
+    if let Some(f) = upgrade_failed(p) {
+        state.push_str(&format!("（{f}）"));
+    }
     let relays = p["relays"].as_array().map(|rs| rs.iter().map(|r| format!("{} {}", st(r, "/name"), ms(r, "/avg_ms"))).collect::<Vec<_>>().join("，")).unwrap_or_default();
     vec![
         st(p, "/name"),
@@ -59,6 +62,13 @@ fn row(p: &Value) -> Vec<String> {
         if relays.is_empty() { "-".into() } else { relays },
         st(p, "/id").chars().take(13).collect(),
     ]
+}
+
+/// 上次升级失败（中控记的 upgrade_failed）：「升级到 X 失败，已回到 Y」
+fn upgrade_failed(p: &Value) -> Option<String> {
+    let f = p["upgrade_failed"].as_object()?;
+    let v = |k: &str| f.get(k).and_then(Value::as_str).unwrap_or("?").to_string();
+    Some(format!("升级到 {} 失败，已回到 {}", v("to"), v("from")))
 }
 
 const HEAD: [&str; 8] = ["名称", "主来源", "状态", "最近上报", "版本", "来源地址", "近 1 小时平均延迟", "id"];
@@ -257,12 +267,15 @@ pub fn upgrade(ctx: &Ctx, q: &str, no_wait: bool) -> anyhow::Result<u8> {
     for _ in 0..120 {
         std::thread::sleep(Duration::from_millis(1500));
         let p = ctx.c.get(&format!("/probe-points/{id}"))?;
+        if p["upgrade_failed"]["sha256"] == d["sha256"] {
+            bail!("「{name}」{}：新版本没能上报，探测点自己换回了旧版本。在它上面看日志（OpenRC：tail /var/log/fleet-probe.log；systemd：journalctl -u fleet-probe），修好后再 probe upgrade", upgrade_failed(&p).unwrap_or_default());
+        }
         if p["upgrade"].is_null() && p["state"] == "online" {
             ctx.emit(&p, || format!("「{name}」已升级到 {}", st(&p, "/version")));
             return Ok(0);
         }
     }
-    bail!("3 分钟内「{name}」没换上新版本：在它上面看日志（OpenRC：tail /var/log/fleet-probe.log；systemd：journalctl -u fleet-probe）。升级请求还留着，它下次取目标时会再试")
+    bail!("3 分钟内「{name}」没换上新版本：在它上面看日志（OpenRC：tail /var/log/fleet-probe.log；systemd：journalctl -u fleet-probe）。升级请求还留着；下载后 5 分钟还没报上新版本，中控记成升级失败、不再下发（probe ls 里看）")
 }
 
 #[cfg(test)]
@@ -295,6 +308,8 @@ mod tests {
         assert_eq!(row(&q)[1..3], ["", "等待安装（安装失败）（升级中）"]);
         let b = json!({"id": "y", "name": "新加坡", "state": "blind", "relays": []});
         assert_eq!(row(&b)[2], "在线（检查都作废了）");
+        let f = json!({"id": "z", "name": "首尔", "state": "online", "upgrade": null, "upgrade_failed": {"sha256": "a", "to": "0.2.0+new", "from": "0.1.0+old", "at": "2026-10-22T08:10:54Z"}, "relays": []});
+        assert_eq!(row(&f)[2], "在线（升级到 0.2.0+new 失败，已回到 0.1.0+old）");
     }
 
     #[test]

@@ -41,6 +41,7 @@ mkdir -p "$R"
 case " $* " in *PubkeyAuthentication=no*) ;; *) [ -e "$R/refuse-key" ] && { echo "root@127.0.0.1: Permission denied (publickey)." >&2; exit 255; } ;; esac
 [ "$last" = "sh -s" ] || exit 2
 script=$(cat)
+case $script in *"echo fleet_keys=ok"*) [ -e "$R/slow-keys" ] && sleep 2 ;; esac
 case $script in
   "MODE='delay'"*) cat "$R/delay.json" 2>/dev/null || echo '{"v":1,"now":0,"oc":{"delay":{"ok":false,"error":"没有 delay.json"}}}'; exit 0 ;;
   *FLEET_UC*) cat "$R/collect.json"; exit 0 ;;
@@ -633,6 +634,48 @@ async fn delete_blocked_by_unfinished_router_job() {
     assert_eq!(t.req("DELETE", &format!("/api/v1/routers/{id}"), None, None).await.0, StatusCode::OK);
 }
 
+/// 强制删路由（路由回不来了）：把它从没做完的作业的 routers_applied / routers_stuck 里摘掉、作业日志记一条，作业不再被它卡住
+/// （没有别的路由要改回时能取消，「需要人工处理」消失）；作业正在执行时不摘，409
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn force_delete_releases_unfinished_router_job() {
+    let t = setup().await;
+    let (id, _) = create(&t, "团队2-路由D").await;
+    let id: Uuid = id.parse().unwrap();
+    let other = Uuid::now_v7();
+    let job = Uuid::now_v7();
+    let applied = |r: Uuid, n: &str| json!({"id": r, "name": n, "port": 23000, "stamp": "S"});
+    let stuck = |r: Uuid, n: &str| json!({"id": r, "name": n, "exits": ["节点01"], "was": ["1.2.3.4:20001"]});
+    sqlx::query("insert into job (id, kind, params, state, step, created_by) values ($1, 'replace', $2, 'running', 0, 't')")
+        .bind(job)
+        .bind(json!({"routers_applied": [applied(id, "团队2-路由D"), applied(other, "路由E")], "routers_stuck": [stuck(id, "团队2-路由D")]}))
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let (plain, forced) = (format!("/api/v1/routers/{id}"), format!("/api/v1/routers/{id}?force=true"));
+    let del = |force: bool| t.req("DELETE", if force { &forced } else { &plain }, None, None);
+    let (s, v) = del(false).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().contains("强制删除"), "{v}");
+    let (s, v) = del(true).await;
+    assert_eq!(s, StatusCode::CONFLICT, "作业正在执行：{v}");
+    assert!(v["error"]["message"].as_str().unwrap().contains("正在执行"), "{v}");
+    sqlx::query("update job set state = 'failed' where id = $1").bind(job).execute(&t.st.db).await.unwrap();
+    let (s, v) = del(true).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["data"]["jobs"], json!([job]));
+    let p: Value = sqlx::query_scalar("select params from job where id = $1").bind(job).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!((p["routers_applied"].clone(), p["routers_stuck"].clone()), (json!([applied(other, "路由E")]), json!([])), "{p}");
+    let log: String = sqlx::query_scalar("select msg from job_log where job_id = $1").bind(job).fetch_one(&t.st.db).await.unwrap();
+    assert!(log.contains("团队2-路由D") && log.contains("改回放弃"), "{log}");
+    let a: Value = sqlx::query_scalar("select detail from audit_log where action = 'router.delete'").fetch_one(&t.st.db).await.unwrap();
+    assert_eq!((a["force"].clone(), a["jobs"].clone()), (json!(true), json!([job])), "{a}");
+    let j = t.get(&format!("/api/v1/jobs/{job}")).await;
+    assert_eq!((j["manual"].clone(), j["cancellable"].clone()), (Value::Null, json!(false)), "路由E 还没改回，照旧不能取消：{j}");
+    // 路由E 也摘掉（同样强制删了）之后能取消
+    sqlx::query("update job set params = params || '{\"routers_applied\": []}' where id = $1").bind(job).execute(&t.st.db).await.unwrap();
+    assert_eq!(t.get(&format!("/api/v1/jobs/{job}")).await["cancellable"], json!(true));
+}
+
 /// 轮换凭据 / 停用入口：列出指向它的软路由出口（确认处与结果里）
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn entry_actions_list_router_exits() {
@@ -821,4 +864,30 @@ async fn one_click_deploy() {
     routers::deploy::mark_interrupted(&t.st).await.unwrap();
     let d = t.get(&format!("/api/v1/routers/{id}")).await;
     assert_eq!((d["deploy"]["state"].as_str(), d["deploy"]["error"].as_str()), (Some("failed"), Some("中控重启，部署中断：请重新部署")));
+}
+
+/// 重新部署失败要写回旧隧道端口时，那个端口已经分给了别的路由（换走之后空出来，同时有别的部署 / 重新接入）：不写回、明说
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn redeploy_restore_skips_taken_port() {
+    let t = setup().await;
+    let (_l, sport, r) = fake_router("pw");
+    let (id, _) = create(&t, "部署A").await;
+    let (other, _) = create(&t, "路由B").await;
+    let old = issue_key(&t, &id).await;
+    // 上传密钥失败（没有 /etc/dropbear），而且慢一点：失败之前把 A 原来的端口分给 B
+    std::fs::remove_dir_all(r.join("etc/dropbear")).unwrap();
+    std::fs::write(r.join("slow-keys"), "").unwrap();
+    t.post(&format!("/api/v1/routers/{id}/deploy"), json!({"host": "127.0.0.1", "port": sport, "password": "pw"})).await;
+    for _ in 0..100 {
+        if i64::from(router_row(&t, &id).await.0) != old {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_ne!(i64::from(router_row(&t, &id).await.0), old, "上传密钥之前换了端口");
+    sqlx::query("update router set tunnel_port = $2 where id = $1::uuid").bind(&other).bind(old as i32).execute(&t.st.db).await.unwrap();
+    let d = wait_deploy(&t, &id).await;
+    let err = d["deploy"]["error"].as_str().unwrap();
+    assert!(err.contains(&format!("改回原来的隧道密钥也失败了（原来的隧道端口 {old} 已经分给了软路由「路由B」）")), "{err}");
+    assert_ne!(i64::from(router_row(&t, &id).await.0), old);
 }

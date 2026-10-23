@@ -72,6 +72,7 @@ export function ProbeTab() {
                       {p.install?.state === 'running' && <span className="sub">安装中：{p.install.step}</span>}
                       {p.install?.state === 'failed' && <span className="sub" data-tip={p.install.error ?? ''}>安装失败</span>}
                       {p.upgrade && <span className="sub">升级中</span>}
+                      {p.upgrade_failed && <span className="sub" data-tip={`新版本没能上报，探测点已换回旧版本（${F.dt(p.upgrade_failed.at)}）；修好后再升级`}>升级到 {p.upgrade_failed.to ?? '?'} 失败，已回到 {p.upgrade_failed.from ?? '?'}</span>}
                       {p.bootstrap_expires_at && <span className="sub">安装命令 {F.dt(p.bootstrap_expires_at)} 前有效</span>}
                     </td>
                     <td>{p.last_seen_at ? <span data-tip={F.dt(p.last_seen_at)}>{F.ago(p.last_seen_at)}</span> : '—'}{p.last_ip && <span className="sub">{p.last_ip}</span>}</td>

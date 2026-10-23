@@ -511,7 +511,7 @@ url = "https://api.frankfurter.dev/v1/latest?base=USD"   # 回包 {base:"USD", d
 **排障**：
 - `probe_point_offline` / `fleetctl probe ls` 显示离线：在探测点上 `rc-service fleet-probe status`（或 `systemctl status fleet-probe`）、看日志。「连不上中控」查它的出网与 DNS；「中控说令牌无效」是探测点被删除或重装过（重装：`fleetctl probe install <名>`）；「这一轮作废：对照目标都连不上」是探测点自己的出网坏了（只算心跳，不判线路机）。
 - 卡片上写「中控（代替离线的香港探测点）」：主来源离线，暂由中控代替——连不上照报，连得上不算恢复，等它回来再判。
-- 升级：`fleetctl probe upgrade 香港`，探测点 30 秒内自己从中控下载 dist 里的 fleet-agent、核对 sha256、换上（旧的留成 `/opt/fleet/fleet-agent.prev`）、重启，命令等到它报上新版本。新版本 5 分钟内一次都没上报成功（起来了但连不上中控、一启动就崩溃被反复拉起）时自己换回 `.prev`、退出由服务管理器拉起旧版本，日志写「升级后 300 秒内一次都没能上报成功：已换回旧版本」；这个版本记在 `/opt/fleet/.fleet-agent.bad-sha256`，之后中控再要它升级到同一个版本时不换（`fleetctl probe ls` 一直显示升级中：修好后发新版本再 `probe upgrade`）。试运行标记是 `/opt/fleet/.fleet-agent.trial`。
+- 升级：`fleetctl probe upgrade 香港`，探测点 30 秒内自己从中控下载 dist 里的 fleet-agent、核对 sha256、换上（旧的留成 `/opt/fleet/fleet-agent.prev`）、重启，命令等到它报上新版本。新版本 5 分钟内一次都没上报成功（起来了但连不上中控、一启动就崩溃被反复拉起）时自己换回 `.prev`、退出由服务管理器拉起旧版本，日志写「升级后 300 秒内一次都没能上报成功：已换回旧版本」；这个版本记在 `/opt/fleet/.fleet-agent.bad-sha256`，之后探测点不再换成它；中控那边下载过程序、5 分钟后还没报上新版本的就记成升级失败、不再下发（旧版本不认 bad-sha256，不这样会反复换上、换回），`fleetctl probe ls` 显示「升级到 X 失败，已回到 Y」：修好后再 `probe upgrade`（手动再触发才再试）。试运行标记是 `/opt/fleet/.fleet-agent.trial`（读配置之前就看，新版本读不了配置这类启动就失败的也会换回；试运行期间不接受新的升级）；重装探测点会删掉这两个标记。
 - 删除：`fleetctl probe rm 香港 --yes`（主来源要先改走）；令牌立刻作废，探测点上的东西按打印出来的清理命令自己清。
 
 ## 18. 三网 PING（线路机往外测线路质量）
