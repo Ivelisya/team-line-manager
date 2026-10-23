@@ -55,13 +55,7 @@ where
     F: Fn() -> Fut,
     Fut: std::future::Future<Output = bool>,
 {
-    for _ in 0..150 {
-        if f().await {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    panic!("等不到：{what}");
+    common::eventually(what, Duration::from_secs(15), || async { f().await.then_some(()) }).await;
 }
 
 async fn log_msgs(t: &T, job: &str) -> Vec<String> {

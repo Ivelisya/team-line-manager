@@ -23,13 +23,7 @@ async fn put(t: &T, raw: i64, hourly: i64) -> (StatusCode, Value) { t.req("PUT",
 
 /// 等后台清理删到 `sql` 数出来是 `want`（接口改完保留期在后台清，测试没法直接等它）；20 秒还不到就失败
 async fn wait_count(t: &T, sql: &str, want: i64) {
-    for _ in 0..200 {
-        if count(t, sql).await == want {
-            return;
-        }
-        tokio::time::sleep(StdDuration::from_millis(100)).await;
-    }
-    panic!("20 秒内没等到 {sql} = {want}（现在是 {}）", count(t, sql).await);
+    common::eventually(&format!("{sql} = {want}"), StdDuration::from_secs(20), || async { (count(t, sql).await == want).then_some(()) }).await;
 }
 
 /// 某天的 access_event 分区还在不在
