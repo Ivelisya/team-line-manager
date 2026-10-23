@@ -3,7 +3,7 @@
 import { MoreHorizontal } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
 import * as F from '@/lib/format';
-import { isQuiet, liveRate, priceHint, quota, quotaGb, quotaTip, quotaUsedLabel, remainingValue, resourceMeters, statusRank, trafficTotal } from '@/lib/derive';
+import { feeView, isQuiet, liveRate, quota, quotaGb, quotaTip, quotaUsedLabel, remainingValue, resourceMeters, statusRank, trafficTotal } from '@/lib/derive';
 import { Due, Flag, HealthPill, HostTag, MonthFlowCell, Num, type SortState } from '@/components/app/primitives';
 import { MachineGrid, byNum, byStr, sortByCol, type Col } from '@/components/app/MachineGrid';
 import { Cells, MiniMeter, quotaColors } from '@/components/app/viz';
@@ -42,11 +42,11 @@ const cols: Col[] = [
     } },
   { id: 'due', header: '到期', size: 96, r: true, ...byNum((m) => m.subscription?.due_days ?? null, 'asc'), cell: (m) => (m.subscription ? <Due days={m.subscription.due_days} state={m.subscription.due_state} /> : <span className="t-muted">—</span>) },
   { id: 'value', header: '剩余价值', size: 76, r: true, drop: 2, ...byNum((m) => remainingValue(m.subscription)?.cents ?? null), cell: (m) => { const v = remainingValue(m.subscription); return v ? <span className="num">{F.money(v.cents, v.currency)}</span> : <span className="t-muted">—</span>; } },
-  // 月费统一按 USD（服务端折好的 monthly_usd_cents），悬停写原价与汇率；没有汇率的写原币种、标未折算，排在最后
+  // 月费统一按 USD（feeView），悬停写原价与汇率；没有汇率的写原币种、标未折算，排在最后
   { id: 'fee', header: '月费', size: 72, r: true, drop: 1, ...byNum((m) => m.subscription?.monthly_usd_cents ?? null),
     cell: (m) => { const s = m.subscription; if (!s) return <span className="t-muted">—</span>;
-      return s.monthly_usd_cents != null ? <span className="num" data-tip={priceHint(s) ?? undefined}>{F.money(s.monthly_usd_cents, 'USD')}</span>
-        : <span className="num t-sub" data-tip={priceHint(s) ?? undefined}>{F.money(s.monthly_cents, s.currency)}*</span>; } },
+      const v = feeView(s);
+      return <><span className="num" data-tip={v.tip ?? undefined}>{v.main}</span>{!v.converted && <span className="sub" data-tip={v.tip ?? undefined}>{v.sub}</span>}</>; } },
   { id: 'menu', header: '', size: 48, cell: () => <IconButton label="更多操作" tip={false} data-node-menu="" aria-haspopup="menu"><MoreHorizontal size={16} /></IconButton> },
 ];
 export const sortTable = (rows: MachineView[], sort: SortState | null) => sortByCol(rows, cols, sort);

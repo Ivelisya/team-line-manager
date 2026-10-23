@@ -158,7 +158,7 @@ function NodeDropdownItems({ m }: { m: MachineView }) {
 }
 
 /** 网格 / 表格级的节点菜单：整个容器（children，须是 DOM 元素）只挂一个右键菜单和一个“⋯”下拉。
- *  以前每张卡、每行各一对 Radix 菜单根：每个根都给 document 加一个 keydown 捕获监听，卡片随推送重渲染时也跟着重画。
+ *  不要给每张卡、每行各挂一对 Radix 菜单根：每个根都给 document 加一个 keydown 捕获监听，卡片随推送重渲染时也跟着重画。
  *  右键：按最近的 [data-id] 找到机器，Radix ContextMenu 照常定位在指针处（触屏长按、Shift+F10 也照常）；
  *  “⋯”：卡片 / 行里带 data-node-menu 的按钮，锚定共享下拉见 useAnchoredDropdown。
  *  rows：容器里渲染着的机器，菜单内容随推送更新 */

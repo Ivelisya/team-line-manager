@@ -8,7 +8,7 @@ import { ChevronRight, RotateCcw, SearchX, X } from 'lucide-react';
 import { useMachines, usePlans, useTeams } from '@/lib/queries';
 import { setDrawerOrder, useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
-import { cycleLabel, healthLabel, kindLabel, lifecycleLabel, meta, monthFlow, priceHint, statusOf, statusRank, trafficTotal } from '@/lib/derive';
+import { feeView, healthLabel, kindLabel, lifecycleLabel, monthFlow, statusOf, statusRank, trafficTotal } from '@/lib/derive';
 import { HEALTH_TONE, KIND_ORDER, useStableOrder } from '@/lib/sort';
 import type { MachineView } from '@/lib/types';
 import { Button } from '@/components/ui/button';
@@ -40,8 +40,6 @@ const filterOpts = () => (opts ??= {
 });
 const SCOPES: { value: Scope; label: string }[] = [{ value: 'live', label: '在用' }, { value: 'recycle', label: '回收站' }];
 const entryOf = (e: MachineView['entries'][number]) => `${e.relay.name}:${e.port}`;
-/** 费用列副行写原价：原币种不是 USD 或不是按月付的 */
-const showOrig = (s: NonNullable<MachineView['subscription']>) => s.currency !== 'USD' || meta().cycles.find((c) => c.key === s.cycle)?.months !== 1;
 /** 行签名：这页的列只显示资产信息（流量按显示精度），不显示实时读数，推送只改读数时行不重渲染（MachineGrid sig）。
  *  列里显示的东西都要在这里——每加一列、列里多显示一个字段，都要同步改这里；悬浮卡不传 m，打开时自己取这台的最新数据 */
 const rowSig = (m: MachineView) => {
@@ -135,13 +133,12 @@ function LiveNodes({ sp, upd, tools }: { sp: URLSearchParams; upd: (patch: Recor
       // 没有订阅的（无值）不论升降序都排在最后
       { id: 'due', header: '到期', size: 112, r: true, ...byNum((m) => m.subscription?.due_days ?? null, 'asc'),
         cell: (m) => (m.subscription ? <><Due days={m.subscription.due_days} state={m.subscription.due_state} /><span className="sub">{m.subscription.due_date}</span></> : <span className="t-muted">—</span>) },
-      // 计费统一按 USD：主数字是服务端折好的月费（monthly_usd_cents），排序也按它；原币种不是 USD 或不是按月付的，副行写原价（悬停有汇率）。
+      // 计费统一按 USD（feeView）：排序按服务端折好的月费；原币种不是 USD 或不是按月付的，副行写原价（悬停有汇率）。
       // 没有汇率的写原币种月费、副行标未折算，排在最后
       { id: 'cost', header: '费用', size: 104, r: true, drop: 2, ...byNum((m) => m.subscription?.monthly_usd_cents ?? null),
         cell: (m) => { const s = m.subscription; if (!s) return <span className="t-muted">—</span>;
-          return s.monthly_usd_cents != null
-            ? <><Num f={{ v: F.money(s.monthly_usd_cents, 'USD'), u: '/ 月' }} />{showOrig(s) && <span className="sub" data-tip={priceHint(s) ?? undefined}>{F.money(s.price_cents, s.currency)} / {cycleLabel(s.cycle)}</span>}</>
-            : <><Num f={{ v: F.money(s.monthly_cents, s.currency), u: '/ 月' }} /><span className="sub" data-tip={priceHint(s) ?? undefined}>未折算</span></>; } },
+          const v = feeView(s);
+          return <><Num f={{ v: v.main, u: v.unit }} />{v.sub && <span className="sub" data-tip={v.tip ?? undefined}>{v.sub}</span>}</>; } },
       { id: 'chev', header: '', size: 36, cell: () => <ChevronRight size={14} /> },
     ];
     return c;
