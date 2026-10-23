@@ -220,9 +220,9 @@ pub(crate) fn repeat_interval_s(rule: &str, severity: &str) -> Option<i64> {
 /// 评估一轮（读最多旧 3 s 的视图）。`now` 由调用方给（测试可以快进去抖时间）
 pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDateTime) -> anyhow::Result<()> { evaluate(st, state, now, false).await }
 
-/// 评估一轮。`fresh`：被唤醒的，读刚补过指标的视图；否则与列表、实时指标共用在用机器视图（最多旧 3 s）
+/// 评估一轮。`fresh`：被唤醒的，读等到锁、刚补过指标的视图（不回上一份：它可能早于刚入库的上报）；否则与列表、实时指标共用在用机器视图（最多旧 3 s）
 pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime, fresh: bool) -> anyhow::Result<()> {
-    let ms = if fresh { views::live_fresh(st).await? } else { views::live(st).await? };
+    let ms = if fresh { views::live_synced(st).await? } else { views::live(st).await? };
     // 只读写机器引擎（incident::Engine::Machine）的告警：来源画像、中控自身、软路由、探测点由各自的引擎开和关，这里不碰，否则会被当成「原因消失」恢复掉
     let open = incident::firing(&st.db, Engine::Machine).await?;
     let open_ids: HashSet<Uuid> = open.iter().map(|o| o.id).collect();

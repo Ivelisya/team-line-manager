@@ -628,24 +628,31 @@ impl LiveCache {
 
 /// 在用机器的完整视图，走 `LiveCache`
 pub async fn live(st: &AppState) -> sqlx::Result<Arc<Vec<MachineView>>> {
-    cached(st, LIVE_TTL).await
+    cached(st, LIVE_TTL, false).await
 }
 
 /// 同 `live`，但不复用短缓存：至少补一次指标（实时指标比对用，比对间隔与 TTL 同为 3 s，复用的话会隔一轮才拿到新数据）
 pub async fn live_fresh(st: &AppState) -> sqlx::Result<Arc<Vec<MachineView>>> {
-    cached(st, std::time::Duration::ZERO).await
+    cached(st, std::time::Duration::ZERO, false).await
+}
+
+/// 同 `live_fresh`，但一定是等到锁、补过一次指标之后的视图：不回锁被占时或失败后的上一份（上一份可能早于刚入库的那次上报）。
+/// 被唤醒的告警评估用；等锁最多 `VIEW_WAIT`，超时报错（评估失败，下个 30 秒轮次接着评）
+pub async fn live_synced(st: &AppState) -> sqlx::Result<Arc<Vec<MachineView>>> {
+    cached(st, std::time::Duration::ZERO, true).await
 }
 
 /// 取视图：锁空着就自己算（或用缓存）；锁被占（别的请求正在重算）时，之后没有资源变更的话直接回上一份、不排队等它，
 /// 有资源变更才等（改完马上重取的要看到改动）。等锁、重算各最多 `VIEW_WAIT`：前一个算得久，排在后面的拿到锁后照样有完整的时限
 /// （多半直接用前一个刚算成的那份）。失败或超时回上一份（旧不过 `STALE_MAX`、之后没有资源变更），
-/// 否则报错——超时报 `PoolTimedOut`、视图池的语句超时报 57014（接口都回 503，同等不到连接；前端查询会重试）
-async fn cached(st: &AppState, ttl: std::time::Duration) -> sqlx::Result<Arc<Vec<MachineView>>> {
+/// 否则报错——超时报 `PoolTimedOut`、视图池的语句超时报 57014（接口都回 503，同等不到连接；前端查询会重试）。
+/// `synced`：不回上一份——锁被占就等，失败或超时直接报错（见 `live_synced`）
+async fn cached(st: &AppState, ttl: std::time::Duration, synced: bool) -> sqlx::Result<Arc<Vec<MachineView>>> {
     let c = &st.live;
     let got = match c.slot.try_lock() {
         Ok(slot) => tokio::time::timeout(VIEW_WAIT, fill(st, slot, ttl)).await,
         Err(_) => {
-            if let Some(v) = c.stale(true) {
+            if let Some(v) = c.stale(true).filter(|_| !synced) {
                 return Ok(v);
             }
             match tokio::time::timeout(VIEW_WAIT, c.slot.lock()).await {
@@ -661,7 +668,7 @@ async fn cached(st: &AppState, ttl: std::time::Duration) -> sqlx::Result<Arc<Vec
     };
     let msg = if matches!(e, sqlx::Error::PoolTimedOut) { format!("{} 秒内没算出来", VIEW_WAIT.as_secs()) } else { e.to_string() };
     c.failing.lock().unwrap().get_or_insert((OffsetDateTime::now_utc(), String::new())).1 = msg;
-    match c.stale(false) {
+    match c.stale(false).filter(|_| !synced) {
         Some(v) => {
             tracing::warn!("机器视图没算出来，先用上一份：{e}");
             Ok(v)
