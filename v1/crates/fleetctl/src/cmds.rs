@@ -1124,7 +1124,6 @@ mod tests {
 
     #[test]
     fn due_and_cycle_wording() {
-        crate::meta::test_init();
         assert_eq!((due_cn(3), due_cn(0), due_cn(-2)), ("3 天后到期".to_string(), "今天到期".to_string(), "已过期 2 天".to_string()));
         assert_eq!((cycle_cn("monthly"), cycle_cn("semiannual"), cycle_cn("yearly")), ("月", "半年", "年"));
     }

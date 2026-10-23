@@ -459,7 +459,6 @@ mod tests {
 
     #[test]
     fn provider_diff_lists_only_changes() {
-        crate::meta::test_init();
         let old = json!({"name": "甲", "code": "A", "timezone": null, "panel_url": null, "traffic_rule": "max", "traffic_reset": "month", "remind_days": 7});
         let a = ProviderArgs { code: Some("A".into()), tz: Some("Asia/Tokyo".into()), traffic_rule: Some("min".into()), remind_days: Some(7), ..Default::default() };
         let ch = changes(&old, &provider_body(None, &a), &PROVIDER_CN, &|k, v, _| provider_field(k, v));
@@ -490,7 +489,6 @@ mod tests {
 
     #[test]
     fn plan_wording() {
-        crate::meta::test_init();
         let p = json!({"cpu_cores": 2, "mem_mb": 2048, "disk_gb": null, "bandwidth_mbps": 1000, "traffic_gb": 2000, "price_cents": 29999, "currency": "CNY", "cycle": "quarterly"});
         assert_eq!(spec_cn(&p), "2 核 · 2048 MB · 1000 Mbps · 流量 2000 GB");
         assert_eq!(price_cn(&p), "299.99 CNY / 季");

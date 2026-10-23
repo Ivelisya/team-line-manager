@@ -547,7 +547,7 @@ mod tests {
         assert_eq!(ssh_probe("127.0.0.1", serve(b"hello\r\nSSH-2.0-x\r\n").await, t).await, Ok(()));
         let e = ssh_probe("127.0.0.1", serve(b"HTTP/1.1 400 Bad Request\r\n\r\n").await, t).await.unwrap_err();
         assert!(e.contains("不是 SSH"), "{e}");
-        let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap().port();
+        let (_held, closed) = crate::reach::refused_port();
         let e = ssh_probe("127.0.0.1", closed, t).await.unwrap_err();
         assert!(e.starts_with("连不上"), "{e}");
     }

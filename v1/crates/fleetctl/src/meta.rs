@@ -1,6 +1,7 @@
 //! 中控的 `GET /meta`：枚举的中文名、组织时区、计费周期等只在中控定义一次，这里不再各写一份。
 //! 一次命令最多取一次，而且要用到时才取（`--json` 输出原值，一般用不着）；取不到时中文名退回原值、时间按 UTC 写。
 
+#[cfg(not(test))]
 use crate::client::{Client, Cred};
 use serde_json::Value;
 use std::sync::OnceLock;
@@ -12,21 +13,20 @@ static META: OnceLock<Option<Value>> = OnceLock::new();
 /// 记下中控地址与密钥（make_ctx 调）；不在这里请求
 pub fn init(url: &str, token: &str) { let _ = SOURCE.set((url.to_string(), token.to_string())); }
 
-fn get() -> Option<&'static Value> {
-    // 单元测试并发跑：哪个测试先用到 meta 都拿测试的那一份（不然没调 test_init 的测试先跑会把它定成 None，别的测试跟着按 UTC 写）
-    #[cfg(test)]
-    test_init();
-    META.get_or_init(|| {
-        let (url, token) = SOURCE.get()?;
-        Client::new(url, Cred::Bearer(token.clone())).ok()?.get("/meta").ok()
-    })
-    .as_ref()
+fn get() -> Option<&'static Value> { META.get_or_init(fetch).as_ref() }
+
+#[cfg(not(test))]
+fn fetch() -> Option<Value> {
+    let (url, token) = SOURCE.get()?;
+    Client::new(url, Cred::Bearer(token.clone())).ok()?.get("/meta").ok()
 }
 
-/// 单元测试用：和中控默认配置相同的一份（组织时区北京时间）
+/// 单元测试里不请求中控：第一次用到时就是和中控默认配置相同的一份（组织时区北京时间）。
+/// 不能靠各测试先调一个初始化函数：测试并行跑，哪个没调的先用到 meta，就把整个进程的 META 定成「没取到」，
+/// 别的测试的中文名、北京时间随之全错（按执行顺序时好时坏）
 #[cfg(test)]
-pub fn test_init() {
-    let _ = META.set(Some(serde_json::json!({
+fn fetch() -> Option<Value> {
+    Some(serde_json::json!({
         "org_timezone": "Asia/Shanghai", "org_timezone_label": "北京时间", "org_utc_offset_s": 28800,
         "cycles": [{"key": "monthly", "label": "月", "months": 1}, {"key": "quarterly", "label": "季", "months": 3},
                    {"key": "semiannual", "label": "半年", "months": 6}, {"key": "yearly", "label": "年", "months": 12}],
@@ -37,7 +37,7 @@ pub fn test_init() {
         "severities": {"critical": {"label": "严重"}, "warning": {"label": "警告"}, "info": {"label": "提示"}},
         "policy_sync_states": {"applied": "已应用", "applying": "进行中", "failed": "失败", "gone": "已退役"},
         "policy_modes": {"observe": "仅观察", "allowlist": "白名单", "denylist": "黑名单", "blocked": "暂停新连接", "inherit": "跟随团队"},
-    })));
+    }))
 }
 
 /// `table`（kinds / lifecycles / healths / job_kinds / job_states / step_states / entry_states / traffic_rules / traffic_resets / rules / due_states）里的中文名；
