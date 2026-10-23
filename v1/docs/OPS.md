@@ -551,6 +551,7 @@ url = "https://api.frankfurter.dev/v1/latest?base=USD"   # 回包 {base:"USD", d
 - **时钟偏差** `clock_skew_s` = 中控时间 − 路由时间，正数是路由慢（同机器的 `clock_skew_ms`）；网页写「慢 3 秒」「快 2 秒」。
 - **维护窗口**：客户现场计划断电、换宽带、换光猫前开（`fleetctl silence add --router <名称> --for 4h --maintenance --comment …`，或抽屉「管理 → 维护窗口」）。期间开着的告警保持（不恢复、不发通知）、不开新的，卡片显示「维护」、不描红；到期或提前结束（抽屉「结束维护」、`silence rm`）后按那时的状态再判。只想挡一条（如出口不通）用 `--rule router_exits_down`、不加 `--maintenance`。删路由时它的静默一起删。
 - **资源阈值与机器不同**（CPU > 90% 持续 10 分钟，内存、存储 > 90%、连接表 > 80% 满 60 秒，合成一条 `router_resource_high`），原因见 DESIGN.md §6。
+- **出口确认期间又不通**：不通的出口刚测通一次（还在确认）又不通，仍算连续不通（`fail_streak` 记 2），`router_exits_down` 不关、每轮照样重测；之前会当场关掉告警、发一次「已恢复」，等约 5 分钟一轮整测才再开。
 
 ## 20. 客户端订阅（自己的客户端按一个链接拉入口）
 给自己的客户端用（Windows 上的 Clash Verge、家里 OpenClash 的 proxy-provider、v2rayN / Shadowrocket），代替「每次换节点、换线路机、轮换凭据后手写脚本重新生成节点列表再改两边配置」。

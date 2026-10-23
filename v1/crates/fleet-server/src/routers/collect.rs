@@ -462,7 +462,8 @@ fn exits(oc: &Value, last: Option<&Snapshot>, config: Option<&[Proxy]>, entries:
                 Some(r) => match r.get(&name).and_then(Value::as_i64).filter(|d| *d > 0) {
                     // 不通之后第一次测通：还在确认（下一次也通才算恢复）
                     Some(d) => (Some(true), Some(d), Some(now), 0, prev.is_some_and(|p| p.fail_streak >= 2)),
-                    None => (Some(false), None, Some(now), prev.map_or(0, |p| p.fail_streak) + 1, false),
+                    // 还在确认（不通之后刚测通一次）又不通：仍算连续不通（记 2），告警不关、每轮照样重测
+                    None => (Some(false), None, Some(now), prev.map_or(1, |p| if p.recovering { 2 } else { p.fail_streak + 1 }), false),
                 },
                 None => match prev {
                     Some(p) => (p.alive, p.delay_ms, p.delay_at, p.fail_streak, p.recovering),
@@ -1290,6 +1291,9 @@ mod tests {
         let b5 = ok(&b4, 630);
         assert_eq!((b5.snap.exits[1].fail_streak, b5.snap.exits[1].recovering, b5.snap.exits[0].recovering), (0, true, false));
         assert!(!ok(&b5, 660).snap.exits[1].recovering);
+        // 还在确认时又不通：仍算连续不通（告警不关、每轮照样重测），不是从 1 重新数
+        let b6 = build(&raw(0, 0, 0, tested(json!({"节点01": 90}))), &b5.prev, Some(&b5.snap), Some(&proxies()), &[], t0 + time::Duration::seconds(660));
+        assert_eq!((b6.snap.exits[1].fail_streak, b6.snap.exits[1].recovering), (2, false));
     }
 
     /// 延迟测试没做成（单独那次执行超时、OpenClash 没在跑）：出口沿用上一次，原因记在 delay_error，没测的轮次沿用它，测成了清掉
