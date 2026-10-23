@@ -411,9 +411,10 @@ export function buildDb(): Db {
   // 进行中的维护、只静默一条规则的、明天凌晨 2 点预约的割接（本地时间）
   const tomorrow2 = new Date(now()); tomorrow2.setDate(tomorrow2.getDate() + 1); tomorrow2.setHours(2, 0, 0, 0);
   const silences: Silence[] = [
-    { id: 's1', subject_id: 'm-t2-04', subject_name: '团队2-04', rule: null, rule_name: null, starts_at: iso(now() - 3600_000), ends_at: iso(now() + 3 * 3600_000), is_maintenance: true, comment: '换内核，预计 4 小时' },
-    { id: 's2', subject_id: 'm-t1-03', subject_name: '团队1-03', rule: 'clock_skew', rule_name: 'agent 时钟不准', starts_at: iso(now() - 2 * 3600_000), ends_at: iso(now() + 22 * 3600_000), is_maintenance: false, comment: '等供应商校时' },
-    { id: 's3', subject_id: 'r2', subject_name: '线路机2', rule: null, rule_name: null, starts_at: iso(tomorrow2.getTime()), ends_at: iso(tomorrow2.getTime() + 4 * 3600_000), is_maintenance: true, comment: '机房割接（供应商通知）' },
+    { id: 's1', subject_kind: 'machine', subject_id: 'm-t2-04', subject_name: '团队2-04', rule: null, rule_name: null, starts_at: iso(now() - 3600_000), ends_at: iso(now() + 3 * 3600_000), is_maintenance: true, comment: '换内核，预计 4 小时' },
+    { id: 's2', subject_kind: 'machine', subject_id: 'm-t1-03', subject_name: '团队1-03', rule: 'clock_skew', rule_name: 'agent 时钟不准', starts_at: iso(now() - 2 * 3600_000), ends_at: iso(now() + 22 * 3600_000), is_maintenance: false, comment: '等供应商校时' },
+    { id: 's3', subject_kind: 'machine', subject_id: 'r2', subject_name: '线路机2', rule: null, rule_name: null, starts_at: iso(tomorrow2.getTime()), ends_at: iso(tomorrow2.getTime() + 4 * 3600_000), is_maintenance: true, comment: '机房割接（供应商通知）' },
+    { id: 's4', subject_kind: 'router', subject_id: 'rt-b', subject_name: '团队2-路由B', rule: null, rule_name: null, starts_at: iso(now() - 2 * 3600_000), ends_at: iso(now() + 2 * 3600_000), is_maintenance: true, comment: '客户现场换宽带' },
   ];
   const audit: AuditEntry[] = [
     // 下面几条照中控的写法：title / summary 是 audit_text 按 detail 拼的

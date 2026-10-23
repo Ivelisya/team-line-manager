@@ -1,7 +1,7 @@
 // 浏览器内 mock：拦截 /api/v1/* 的 fetch 和实时流 WebSocket。VITE_MOCK=1 时由 main.tsx 安装。
 // 有状态：改名、退役、上架、续费等操作都会改内存里的数据，并通过 mock 实时流通知前端刷新。
 
-import type { Availability, AvailabilityDay, EntryView, Incident, Job, JobLog, JobSummary, MachineView, ProbeBucket, ProvisionCheckItem, ProvisionItem, SeriesPoint } from '@/lib/types';
+import type { Availability, AvailabilityDay, EntryView, Incident, Job, JobLog, JobSummary, MachineView, ProbeBucket, ProvisionCheckItem, ProvisionItem, SeriesPoint, SilenceKind } from '@/lib/types';
 import { addDays, addMonths, displayName } from '@/lib/format';
 import { inheritedValue, isQuiet, liveRate } from '@/lib/derive';
 import { makeDefaultCompare } from '@/lib/sort';
@@ -794,7 +794,7 @@ R('PUT', '/settings/reach-source', ({ body }) => {
 const WIN_HOURS: Record<string, number> = { '1h': 1, '24h': 24, '7d': 168, '30d': 720 };
 R('GET', '/probe-points', ({ query }) => {
   const window = query.get('window') ?? '1h'; const h = WIN_HOURS[window] ?? 1;
-  return clone(MOCK_PROBES).map((p) => ({ ...p, window, relays: (p.relays as { total: number; ok: number }[]).map((r) => ({ ...r, total: r.total * h, ok: r.ok * h - Math.floor(h / 24) * 3 })) }));
+  return clone(MOCK_PROBES).map((p) => ({ ...p, window, maintenance: inMaint(p.id as string), relays: (p.relays as { total: number; ok: number }[]).map((r) => ({ ...r, total: r.total * h, ok: r.ok * h - Math.floor(h / 24) * 3 })) }));
 });
 // 线路机抽屉的客户入口连通性（同服务端 /reach-quality）：中控只判通不通，香港探测点带建连延迟
 R('GET', '/machines/([^/]+)/reach-quality', ({ params }) => {
@@ -871,12 +871,13 @@ R('GET', '/incidents', ({ query }) => {
 R('POST', '/incidents/([^/]+)/ack', ({ params }) => { const i = db.incidents.find((x) => x.id === params[0]); if (!i) throw bad('告警不存在', 404, 'not_found'); i.ack_at = iso(); i.ack_by = db.user; emit({ type: 'incidents' }); return {}; });
 /** 静默同服务端：只列没结束的（含还没开始的预约），按开始时间排；新建的校验顺序与中文原因同服务端 */
 const RULE_NAMES = META.rules;
+/** 正在生效、标记为维护的静默的对象 id（null = 全部）。软路由、探测点按这份算 maintenance（同服务端 silence.rs，只按 id 匹配） */
+const maintIds = () => { const now = Date.now(); return new Set(db.silences.filter((s) => s.is_maintenance && Date.parse(s.starts_at) <= now && Date.parse(s.ends_at) > now).map((s) => s.subject_id)); };
+const inMaint = (id: string) => { const ids = maintIds(); return ids.has(null) || ids.has(id); };
 /** 维护中同服务端：正在生效、标记为维护的静默落在这台、它的宿主机或「全部机器」上；维护中的健康不给原因，结束后回到维护前的健康 */
 const preMaint = new Map<string, MachineView['health']>();
 function syncMaint() {
-  const now = Date.now();
-  const live = db.silences.filter((s) => s.is_maintenance && Date.parse(s.starts_at) <= now && Date.parse(s.ends_at) > now);
-  const ids = new Set(live.map((s) => s.subject_id));
+  const ids = maintIds();
   for (const m of db.machines) {
     if (m.lifecycle !== 'active') continue;
     const on = ids.has(null) || ids.has(m.id) || (!!m.host_machine && ids.has(m.host_machine.id));
@@ -896,16 +897,31 @@ R('POST', '/silences', ({ body }) => {
   if (s > now + 90 * DAY) throw bad('最多提前 90 天预约');
   if (body.rule && !RULE_NAMES[body.rule]) throw bad(`没有「${body.rule}」这条告警规则`);
   if (body.rule && body.is_maintenance) throw bad('维护窗口针对整台机器，不能只选一条规则；只想静默这条告警就不要标记为维护');
-  const m = body.subject_id ? db.machines.find((x) => x.id === body.subject_id) : null;
-  if (body.subject_id && !m) throw bad('subject_id 指向的机器不存在');
+  if (body.subject_kind && !body.subject_id) throw bad('给了 subject_kind 就要给 subject_id；全部对象两个都不给');
+  const kind: SilenceKind | null = body.subject_id ? body.subject_kind ?? 'machine' : null;
+  if (kind && !SILENCE_KINDS[kind]) throw bad('subject_kind 只能是 machine / router / probe_point');
+  if (kind && body.rule && ruleKind(body.rule) !== kind) throw bad(`「${RULE_NAMES[body.rule]}」不是${SILENCE_KINDS[kind]}的告警规则`);
+  const name = kind === 'router' ? routersMock.routers().find((x) => x.id === body.subject_id)?.name
+    : kind === 'probe_point' ? MOCK_PROBES.find((x) => x.id === body.subject_id)?.name as string | undefined
+    : kind ? db.machines.find((x) => x.id === body.subject_id)?.name : null;
+  if (kind && !name) throw bad(`subject_id 指向的${SILENCE_KINDS[kind]}不存在`);
   const id = `s${db.seq++}`;
-  db.silences.push({ id, subject_id: m?.id ?? null, subject_name: m?.name ?? null, rule: body.rule ?? null, rule_name: body.rule ? RULE_NAMES[body.rule] : null, starts_at: body.starts_at, ends_at: body.ends_at, is_maintenance: !!body.is_maintenance, comment: body.comment ?? '' });
-  syncMaint(); emit({ type: 'incidents' }); return { id };
+  db.silences.push({ id, subject_kind: kind, subject_id: kind ? body.subject_id : null, subject_name: name ?? null, rule: body.rule ?? null, rule_name: body.rule ? RULE_NAMES[body.rule] : null, starts_at: body.starts_at, ends_at: body.ends_at, is_maintenance: !!body.is_maintenance, comment: body.comment ?? '' });
+  silenceChanged(kind); return { id };
 });
 R('DELETE', '/silences/([^/]+)', ({ params }) => {
-  if (!db.silences.some((s) => s.id === params[0])) throw bad('没有这条静默', 404, 'not_found');
-  db.silences = db.silences.filter((s) => s.id !== params[0]); syncMaint(); emit({ type: 'incidents' }); return { ok: true };
+  const s = db.silences.find((x) => x.id === params[0]);
+  if (!s) throw bad('没有这条静默', 404, 'not_found');
+  db.silences = db.silences.filter((x) => x.id !== params[0]); silenceChanged(s.subject_kind); return { ok: true };
 });
+/** 同服务端 api/incidents.rs：对象类型的叫法、规则属于哪类对象（中控的只能用在全部上） */
+const SILENCE_KINDS: Record<SilenceKind, string> = { machine: '机器', router: '软路由', probe_point: '探测点' };
+const ruleKind = (r: string): SilenceKind | null => (r.startsWith('router_') ? 'router' : r.startsWith('probe_point_') ? 'probe_point' : r.startsWith('central_') ? null : 'machine');
+/** 静默变了：机器的维护中跟上；软路由的（或全部的）发 routers 事件，路由卡片跟上（探测点列表自己 30 秒重取） */
+function silenceChanged(kind: SilenceKind | null) {
+  syncMaint(); emit({ type: 'incidents' });
+  if (kind == null || kind === 'router') emit({ type: 'routers' });
+}
 /** 同中控 api/misc.rs audit_cat：操作记录的分类 */
 const AUDIT_EXEC = new Set(['exec', 'ssh.login', 'terminal.open', 'terminal.close', 'machine.logs', 'server.logs']);
 const auditCat = (action: string) => (action.startsWith('auth.') ? 'auth' : AUDIT_EXEC.has(action) ? 'exec' : /^(machine|entry|relay|subscription|agent|job|renewal)(\.|$)/.test(action) ? 'machine' : 'config');
@@ -922,7 +938,7 @@ installAccessMock(R, () => db.machines);
 installFxMock(R, () => [...new Set([...db.plans.filter((p) => !p.archived_at).map((p) => p.currency), ...db.machines.filter((m) => m.lifecycle !== 'retired' && m.subscription).map((m) => m.subscription!.currency)])],
   () => db.user, () => { db.machines.forEach(recomputeDue); emit({ type: 'settings' }); }, bad);
 installPolicyMock(R, { teams: () => db.teams, machines: () => db.machines, emit, user: () => db.user, bad });
-const routersMock = installRoutersMock(R, { teams: () => db.teams, machines: () => db.machines, incidents: () => db.incidents, emit, bad });
+const routersMock = installRoutersMock(R, { teams: () => db.teams, machines: () => db.machines, incidents: () => db.incidents, maintenance: inMaint, emit, bad });
 installTerminalMock(R, { machines: () => db.machines, routers: routersMock.routers, bad });
 // ---------- 升级 agent ----------
 const UPSTEPS: [string, string][] = [['push', '推送 agent'], ['restart', '重启 agent'], ['verify', '确认上报']];

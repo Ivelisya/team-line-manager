@@ -15,7 +15,8 @@ import { ConfirmDialog, TypedConfirmDialog } from '@/components/app/dialogs';
 import { CopyButton, ErrorNote, LabelValue, LabelValueGrid, Note, Num, Pill, Section, SectionHeader, SeverityMark, TableWrap } from '@/components/app/primitives';
 import { Tag } from '@/components/app/viz';
 import { DeployTimeline, MiniBeat, RouterMeters, RouterStatePill, Seen, useShowBootstrap } from '@/components/app/RouterCard';
-import { useMachineBriefs, useTeams } from '@/lib/queries';
+import { useEndSubjectMaint, useMachineBriefs, useTeams } from '@/lib/queries';
+import { MaintenanceDialog } from '@/components/app/MaintenanceDialog';
 import { deadExitNames, exitBeats, exitUsable, ROUTER_TABS, routerIssues, routerSiblings, showDeploy, showRemoved, tempTone, uptimeFmt, useDeleteRouter, usePatchRouter, useRouter, useRouterDrawer, useRouterExitMetrics, useRouters, type RouterClient, type RouterDetail, type RouterExit, type RouterTab, type RouterView } from '@/lib/routers';
 import { tagColor } from '@/lib/derive';
 import { useHeld } from '@/lib/useHeld';
@@ -124,12 +125,13 @@ function Head({ r, detail }: { r: RouterView; detail: RouterDetail | null | unde
   );
 }
 
-/** 管理页签（同机器抽屉的「管理」）：改名 / 团队 / 备注的表单，接入与终端一组，删除单成一组（危险） */
+/** 管理页签（同机器抽屉的「管理」）：改名 / 团队 / 备注的表单，接入与终端一组，维护窗口一组，删除单成一组（危险） */
 function ManageTab({ r, onClosed }: { r: RouterView; onClosed: () => void }) {
   return (
     <>
       <RenameSection r={r} />
       <AccessSection r={r} onClosed={onClosed} />
+      <MaintSection r={r} />
       <DeleteSection r={r} onClosed={onClosed} />
     </>
   );
@@ -196,6 +198,25 @@ function AccessSection({ r, onClosed }: { r: RouterView; onClosed: () => void })
       <ConfirmDialog open={askRegen} onOpenChange={setAskRegen} title={`重新生成「${r.name}」的接入命令？`} confirmLabel="重新生成" danger
         description={<>隧道会立即断开<InfoTip text={'旧命令会立即失效，路由在执行新命令前连不上中控\n不影响客户端上网，只是这段时间看不到路由状态'} /></>}
         onConfirm={() => boot.run(r)} />
+    </Section>
+  );
+}
+
+/** 维护窗口（同机器管理页签的那一行，对话框也是同一个）：客户现场计划断电、换宽带前开，期间不发告警、开着的保持；维护中可以提前结束 */
+function MaintSection({ r }: { r: RouterView }) {
+  const [open, setOpen] = React.useState(false);
+  const end = useEndSubjectMaint();
+  return (
+    <Section>
+      <div className="mgroup">
+        <div className="manage-row">
+          <div><div className="t">维护窗口 <InfoTip text={'客户现场断电、换宽带前开\n期间不发告警，开着的告警保持到维护结束，卡片上显示「维护」'} /></div>{r.maintenance && <div className="hint">维护中</div>}</div>
+          {r.maintenance
+            ? <Button variant="secondary" loading={end.isPending} onClick={() => end.mutate({ kind: 'router', id: r.id }, { onSuccess: () => toast.ok(`${r.name} 已结束维护`), onError: toast.err })}>结束维护</Button>
+            : <Button variant="secondary" onClick={() => setOpen(true)}>维护窗口…</Button>}
+        </div>
+      </div>
+      <MaintenanceDialog m={r} kind="router" open={open} onOpenChange={setOpen} />
     </Section>
   );
 }

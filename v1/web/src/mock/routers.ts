@@ -9,6 +9,8 @@ type Ctx = { params: string[]; query: URLSearchParams; body: any }; // eslint-di
 type Reg = (method: string, path: string, h: (c: Ctx) => unknown) => void;
 interface Env {
   teams: () => Team[]; machines: () => MachineView[]; incidents: () => Incident[]; emit: (e: { type: string; id?: string }) => void;
+  /** 在维护窗口里（自己的或全部的，同服务端） */
+  maintenance: (id: string) => boolean;
   bad: (msg: string, status?: number, code?: string) => Error;
 }
 interface Rt { v: RouterView; d: RouterDetail | null; seed: number }
@@ -86,7 +88,7 @@ export function installRoutersMock(R: Reg, env: Env) {
     };
   }
   const base = (id: string, name: string, teamId: string | null, port: number, createdAgo: number): RouterView => ({
-    id, name, team: team(teamId), note: '', tunnel_port: port, created_at: iso(Date.now() - createdAgo), state: 'pending', last_seen_at: null, error: null, summary: null, deploy: null,
+    id, name, team: team(teamId), note: '', tunnel_port: port, created_at: iso(Date.now() - createdAgo), state: 'pending', last_seen_at: null, error: null, summary: null, deploy: null, maintenance: false,
   });
   /** 变在线：第一次采集（新接入的 9 个出口、旁路由，像客户现场的 team2） */
   function goOnline(rt: Rt) {
@@ -141,8 +143,9 @@ export function installRoutersMock(R: Reg, env: Env) {
     return { cmd: `curl -fsS https://fleet.example.com/api/v1/router-bootstrap/${token} | sh`, expires_at: iso(Date.now() + 30 * MIN) };
   }
 
-  R('GET', '/routers', () => list.map((x) => clone(x.v)));
-  R('GET', '/routers/([^/]+)', ({ params }) => { const rt = find(params[0]); return { ...clone(rt.v), detail: rt.v.summary ? clone(rt.d) : null }; });
+  const view = (rt: Rt) => ({ ...clone(rt.v), maintenance: env.maintenance(rt.v.id) });
+  R('GET', '/routers', () => list.map(view));
+  R('GET', '/routers/([^/]+)', ({ params }) => { const rt = find(params[0]); return { ...view(rt), detail: rt.v.summary ? clone(rt.d) : null }; });
   R('POST', '/routers', ({ body }) => {
     const name = String(body?.name ?? '').trim();
     if (!name) throw env.bad('请填写名称');

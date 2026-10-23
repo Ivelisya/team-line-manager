@@ -2,22 +2,27 @@
 // 列表（状态、最近上报、版本、近 1 小时 / 24 小时 / 7 天 / 30 天到各线路机的平均延迟与成功率）、主探测来源（单选：中控或某个探测点）、中控自己的检查开关、新增（打印一次性安装命令）。
 // 经 SSH 安装、升级用 fleetctl（要等、要看步骤，见 OPS.md「探测点」）。
 import * as React from 'react';
-import { Plus, Radar, RefreshCw, Trash2 } from 'lucide-react';
+import { Plus, Radar, RefreshCw, Trash2, Wrench } from 'lucide-react';
 import { useAddProbePoint, useDelProbePoint, usePatchProbePoint, useProbePoints, useReachSource, useReinstallProbePoint, useSaveReachSource, type Bootstrap, type ProbePoint, type ProbeWindow, primaryIssue } from '@/lib/probePoints';
 import * as F from '@/lib/format';
-import { successPct } from '@/lib/derive';
+import { healthLabel, successPct } from '@/lib/derive';
+import { useEndSubjectMaint } from '@/lib/queries';
+import { useHeld } from '@/lib/useHeld';
+import { HEALTH_TONE } from '@/lib/sort';
 import { Button, IconButton } from '@/components/ui/button';
 import { Field, InfoTip, Input, Switch } from '@/components/ui/form';
 import { Segmented } from '@/components/ui/overlays';
 import { SkeletonRows } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
 import { ConfirmDialog, FormDialog } from '@/components/app/dialogs';
+import { MaintenanceDialog } from '@/components/app/MaintenanceDialog';
 import { CopyButton, Empty, ErrorNote, Note, Panel, Pill, TableWrap } from '@/components/app/primitives';
 
 const STATE: Record<ProbePoint['state'], { label: string; tone: 'ok' | 'bad' | 'neutral' | 'warn' }> = {
   online: { label: '在线', tone: 'ok' }, blind: { label: '探测无效', tone: 'warn' }, offline: { label: '离线', tone: 'bad' }, pending: { label: '等待安装', tone: 'warn' }, disabled: { label: '已停用', tone: 'neutral' },
 };
 const SOURCE_TIP = '线路机的心跳格、入口的「连不上」和相关告警，都以它的结果为准\n主来源离线超过 3 分钟，或在线但探测无效（它自己的网络不通）：中控探测开着就由中控代测，关着就显示灰色\n代测时连不上照常告警，连得上不算恢复';
+const MAINT_TIP = '在维护窗口内：离线不告警，开着的告警保持到维护结束';
 const WINDOWS: { value: ProbeWindow; label: string }[] = [{ value: '1h', label: '1 小时' }, { value: '24h', label: '24 小时' }, { value: '7d', label: '7 天' }, { value: '30d', label: '30 天' }];
 const WINDOW_LABEL: Record<ProbeWindow, string> = { '1h': '近 1 小时', '24h': '近 24 小时', '7d': '近 7 天', '30d': '近 30 天' };
 
@@ -29,7 +34,9 @@ export function ProbeTab() {
   const [boot, setBoot] = React.useState<{ name: string; b: Bootstrap } | null>(null);
   const [del, setDel] = React.useState<ProbePoint | null>(null);
   const [cleanup, setCleanup] = React.useState<string | null>(null);
-  const patch = usePatchProbePoint(); const reinstall = useReinstallProbePoint(); const remove = useDelProbePoint();
+  const [maint, setMaint] = React.useState<ProbePoint | null>(null);
+  const maintHeld = useHeld(maint?.id, maint);
+  const patch = usePatchProbePoint(); const reinstall = useReinstallProbePoint(); const remove = useDelProbePoint(); const endMaint = useEndSubjectMaint();
   const list = q.data ?? [];
   const s = src.data;
   const pick = (primary: string) => save.mutate({ primary, ...(primary === 'central' ? { central_enabled: true } : {}) }, { onSuccess: () => toast.ok('主探测来源已保存'), onError: toast.err });
@@ -62,7 +69,7 @@ export function ProbeTab() {
         {q.isLoading ? <SkeletonRows rows={2} /> : !list.length ? <Empty icon={<Radar size={22} />} text="还没有探测点" hint="新增后，在探测点上执行安装命令。中控能 SSH 到它的话，也可以用 fleetctl probe add <名称> --host <IP> 直接装" /> : (
           <TableWrap data-stale={q.isPlaceholderData}>
             <table className="dt" style={{ minWidth: 860 }}>
-              <colgroup><col style={{ width: 150 }} /><col style={{ width: 170 }} /><col style={{ width: 110 }} /><col style={{ width: 110 }} /><col /><col style={{ width: 64 }} /><col style={{ width: 84 }} /></colgroup>
+              <colgroup><col style={{ width: 150 }} /><col style={{ width: 170 }} /><col style={{ width: 110 }} /><col style={{ width: 110 }} /><col /><col style={{ width: 64 }} /><col style={{ width: 116 }} /></colgroup>
               <thead><tr><th>名称</th><th>状态</th><th>最近上报</th><th>版本</th><th>{WINDOW_LABEL[win]}到各线路机（平均延迟 · 成功率）<InfoTip text="超过 1 小时的按小时汇总" /></th><th>启用</th><th /></tr></thead>
               <tbody>
                 {list.map((p) => (
@@ -70,6 +77,7 @@ export function ProbeTab() {
                     <td><span className="cell-main strong">{p.name}</span>{p.primary && <span className="sub">主来源</span>}{p.note && <span className="sub">{p.note}</span>}</td>
                     <td>
                       <Pill tone={STATE[p.state].tone}>{STATE[p.state].label}</Pill>
+                      {p.maintenance && <Pill tone={HEALTH_TONE.maintenance} tip={MAINT_TIP} tabIndex={0}>{healthLabel('maintenance')}</Pill>}
                       {p.state === 'blind' && <span className="sub" data-tip={p.last_kept_at ? `上次有效 ${F.dt(p.last_kept_at)}` : ''}>{p.discard_reason ?? '原因不明'}</span>}
                       {p.install?.state === 'running' && <span className="sub">安装中：{p.install.step}</span>}
                       {p.install?.state === 'failed' && <span className="sub" data-tip={p.install.error ?? ''}>安装失败</span>}
@@ -84,6 +92,9 @@ export function ProbeTab() {
                     )) : '—'}</td>
                     <td><Switch checked={p.enabled} disabled={patch.isPending || (p.primary && p.enabled)} onCheckedChange={(v) => patch.mutate({ id: p.id, enabled: v }, { onError: toast.err })} aria-label="启用" /></td>
                     <td className="r"><span className="row" style={{ gap: 4, justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
+                      {p.maintenance
+                        ? <IconButton label="结束维护" disabled={endMaint.isPending} onClick={() => endMaint.mutate({ kind: 'probe_point', id: p.id }, { onSuccess: () => toast.ok(`${p.label} 已结束维护`), onError: toast.err })}><Wrench size={14} /></IconButton>
+                        : <IconButton label="维护窗口" onClick={() => setMaint(p)}><Wrench size={14} /></IconButton>}
                       <IconButton label="重新生成安装命令" onClick={() => reinstall.mutate(p.id, { onSuccess: (d) => d.bootstrap && setBoot({ name: p.name, b: d.bootstrap }), onError: toast.err })}><RefreshCw size={14} /></IconButton>
                       <IconButton label={p.primary ? '主来源不能删除' : '删除'} disabled={p.primary} onClick={() => setDel(p)}><Trash2 size={14} /></IconButton>
                     </span></td>
@@ -94,6 +105,7 @@ export function ProbeTab() {
           </TableWrap>
         )}
       </Panel>
+      {maintHeld && <MaintenanceDialog m={{ id: maintHeld.id, name: maintHeld.label }} kind="probe_point" open={!!maint} onOpenChange={(o) => !o && setMaint(null)} />}
       <AddDialog open={adding} onClose={() => setAdding(false)} onBootstrap={(name, b) => setBoot({ name, b })} />
       <ConfirmDialog open={!!boot} onOpenChange={(o) => !o && setBoot(null)} title={`在「${boot?.name ?? ''}」上用 root 执行`} confirmLabel="知道了" cancelLabel="关闭"
         description={<>{boot && F.dt(boot.b.expires_at)} 前有效，只能用一次。执行后约半分钟上线</>} onConfirm={() => undefined}>

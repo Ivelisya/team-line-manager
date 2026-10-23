@@ -6,6 +6,7 @@ use crate::auth::{Actor, ClientIp};
 use crate::db::{audit, new_id};
 use crate::error::{ApiError, ApiJson, ApiPath, ApiQuery, ApiResult};
 use crate::routers::{self, deploy, scripts::Bootstrap, tunnel};
+use crate::silence::Silences;
 use crate::state::{AppState, Event};
 use axum::extract::State;
 use axum::http::{header, StatusCode};
@@ -28,13 +29,13 @@ pub const CLEANUP: &str = "/etc/init.d/fleet-tunnel disable; /etc/init.d/fleet-t
      再从 /etc/dropbear/authorized_keys 删掉中控的公钥（不再让中控登录时）";
 
 pub async fn list(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
-    let rows = routers::load(&st.db, None).await?;
-    Ok(ok(rows.iter().map(|r| r.view(false)).collect::<Vec<_>>()))
+    let (rows, sil) = tokio::try_join!(routers::load(&st.db, None), Silences::load(&st.db))?;
+    Ok(ok(rows.iter().map(|r| r.view(false, sil.maintenance(r.id))).collect::<Vec<_>>()))
 }
 
 pub async fn get_one(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
-    let rows = routers::load(&st.db, Some(id)).await?;
-    rows.first().map(|r| ok(r.view(true))).ok_or_else(|| ApiError::not_found("没有这台软路由"))
+    let (rows, sil) = tokio::try_join!(routers::load(&st.db, Some(id)), Silences::load(&st.db))?;
+    rows.first().map(|r| ok(r.view(true, sil.maintenance(r.id)))).ok_or_else(|| ApiError::not_found("没有这台软路由"))
 }
 
 fn check_name(n: &str) -> ApiResult<String> {

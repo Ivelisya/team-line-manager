@@ -6,7 +6,7 @@ import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClie
 import { del, get, patch, post, put } from './api';
 import { collator, makeDefaultCompare } from './sort';
 import { nextDue, offlineNames, quotaTight, setMeta } from './derive';
-import type { ApiKey, Availability, Incident, Job, JobSummary, Paged, JobLog, MachineView, Meta, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RetireResult, RecycleItem, RecycleDetail, ReplaceBody, ReplacePreview, MovePreview, MoveResult, EvacuateResult, ProbeBeats, SeriesResp, Silence, SubField, Team, AuditEntry, NotifyChannel, NotifyLogEntry, AccountSession, TotpSetup, TotpStatus } from './types';
+import type { ApiKey, Availability, Incident, Job, JobSummary, Paged, JobLog, MachineView, Meta, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RetireResult, RecycleItem, RecycleDetail, ReplaceBody, ReplacePreview, MovePreview, MoveResult, EvacuateResult, ProbeBeats, SeriesResp, Silence, SilenceKind, SubField, Team, AuditEntry, NotifyChannel, NotifyLogEntry, AccountSession, TotpSetup, TotpStatus } from './types';
 
 export const useMe = () => useQuery({ queryKey: ['me'], queryFn: () => get<{ username: string }>('/auth/me'), retry: false, staleTime: 5 * 60_000 });
 /** 中文名、枚举、阈值、默认值（服务端 meta.rs），一次会话内不变：取回时同时交给 derive 的同步读取（kindLabel 等）。外壳等它到了才渲染页面 */
@@ -257,8 +257,21 @@ export interface RetryBody { reset_host_key?: boolean; ssh_password?: string }
 export const useRetryJob = () => useWrite(({ id, ...b }: { id: string } & RetryBody) => post(`/jobs/${id}/retry`, b), [...M, ['jobs'], ['job']]);
 export const useCancelJob = () => useWrite((id: string) => post(`/jobs/${id}/cancel`), [...M, ['jobs'], ['job']]);
 export const useAck = () => useWrite((id: string) => post(`/incidents/${id}/ack`), [['incidents']]);
-export const useAddSilence = () => useWrite((b: Partial<Silence>) => post('/silences', b), [['silences'], ['incidents']]);
-export const useDelSilence = () => useWrite((id: string) => del(`/silences/${id}`), [['silences'], ['incidents']]);
+/** 静默变了，软路由、探测点的「维护中」也跟着变（机器的随实时指标推来） */
+const SILENCE_KEYS = [['silences'], ['incidents'], ['routers'], ['probe-points']];
+export const useAddSilence = () => useWrite((b: Partial<Silence>) => post('/silences', b), SILENCE_KEYS);
+export const useDelSilence = () => useWrite((id: string) => del(`/silences/${id}`), SILENCE_KEYS);
+/** 结束一台软路由 / 一个探测点的维护：删掉正在生效的、只针对它的维护窗口；只在「全部」的维护窗口里时报错（到告警页结束） */
+export const useEndSubjectMaint = () => {
+  const qc = useQueryClient();
+  return useWrite(async ({ kind, id }: { kind: SilenceKind; id: string }) => {
+    const list = await qc.fetchQuery({ queryKey: ['silences'], queryFn: () => get<Silence[]>('/silences'), staleTime: 0 });
+    const now = Date.now();
+    const windows = list.filter((s) => s.subject_kind === kind && s.subject_id === id && s.is_maintenance && Date.parse(s.starts_at) <= now && Date.parse(s.ends_at) > now);
+    if (!windows.length) throw new Error('它在「全部」的维护窗口里，请到告警页结束');
+    for (const s of windows) await del(`/silences/${s.id}`);
+  }, SILENCE_KEYS);
+};
 type MaintSubject = Pick<MachineView, 'id' | 'name' | 'host_machine'>;
 /** 让这台机器「维护中」的、正在生效的维护窗口归谁：自己的优先；同机 IP 节点自己没有、宿主机有时是宿主机的（宿主机维护时它也算维护中）。
  *  windows 为空 = 只在「全部机器」的维护窗口里 */

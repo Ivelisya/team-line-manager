@@ -124,6 +124,9 @@ pub async fn ack_incident(a: Actor, State(st): State<AppState>, ApiPath(id): Api
 pub struct Silence {
     #[serde(default)]
     id: Option<Uuid>,
+    /// 对象类型：machine / router / probe_point（[`KINDS`]），全部为 null；新建时给了 subject_id、没给类型的按机器
+    #[serde(default)]
+    subject_kind: Option<String>,
     subject_id: Option<Uuid>,
     rule: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
@@ -150,17 +153,47 @@ impl Silence {
     }
 }
 
-/// 机器名（同列表的 subject_name）：静默的对象、审计里写它
-const SUBJECT_NAME: &str = "(select display_name(m.kind::text, m.label, t.name, m.number) from machine m left join team t on t.id = m.team_id where m.id = s.subject_id)";
+/// 静默对象的类型：(接口里的 subject_kind, 叫法, 取名字的查询)。silence 表每种一列外键（machine_id / router_id / probe_point_id，至多填一列）
+const KINDS: [(&str, &str, &str); 3] = [
+    ("machine", "机器", "select display_name(m.kind::text, m.label, t.name, m.number) from machine m left join team t on t.id = m.team_id where m.id = $1"),
+    ("router", "软路由", "select name from router where id = $1"),
+    ("probe_point", "探测点", "select name from probe_point where id = $1"),
+];
+
+/// 一条告警规则属于哪类对象（静默只针对一个对象时，规则要是这类对象的）；中控自身的规则（central_）没有对象，只能用在「全部」上
+fn rule_kind(rule: &str) -> Option<&'static str> {
+    if rule.starts_with("router_") {
+        Some("router")
+    } else if rule.starts_with("probe_point_") {
+        Some("probe_point")
+    } else if rule.starts_with("central_") {
+        None
+    } else {
+        Some("machine")
+    }
+}
+
+/// 静默对象在通知、审计里的叫法：机器是显示名，软路由、探测点带上类型（「软路由「客户A」」），全部是「全部机器」（全局静默对软路由、探测点同样生效）
+pub(super) fn subject_label(kind: Option<&str>, name: Option<&str>) -> String {
+    match (kind.and_then(|k| KINDS.iter().find(|x| x.0 == k)), name) {
+        (_, None) => "全部机器".into(),
+        (Some((k, what, _)), Some(n)) if *k != "machine" => format!("{what}「{n}」"),
+        (_, Some(n)) => n.into(),
+    }
+}
+
+/// 列表、删除时读出的一行：对象类型、对象 id、对象名（机器同告警列表的 subject_name，软路由、探测点是名字）
+const COLS: &str = "s.id,
+    case when s.machine_id is not null then 'machine' when s.router_id is not null then 'router' when s.probe_point_id is not null then 'probe_point' end subject_kind,
+    coalesce(s.machine_id, s.router_id, s.probe_point_id) subject_id, s.rule, s.starts_at, s.ends_at, s.is_maintenance, s.comment,
+    coalesce((select display_name(m.kind::text, m.label, t.name, m.number) from machine m left join team t on t.id = m.team_id where m.id = s.machine_id),
+             (select r.name from router r where r.id = s.router_id), (select p.name from probe_point p where p.id = s.probe_point_id)) subject_name";
 
 /// 没结束的静默（含还没开始的预约），按开始时间排：进行中的自然在前，已预约的随后
 pub async fn list_silences(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
-    let v: Vec<Silence> = sqlx::query_as(&format!(
-        "select s.id, s.subject_id, s.rule, s.starts_at, s.ends_at, s.is_maintenance, s.comment, {SUBJECT_NAME} subject_name
-         from silence s where s.deleted_at is null and s.ends_at > now() order by s.starts_at"
-    ))
-    .fetch_all(&st.db)
-    .await?;
+    let v: Vec<Silence> = sqlx::query_as(&format!("select {COLS} from silence s where s.deleted_at is null and s.ends_at > now() order by s.starts_at"))
+        .fetch_all(&st.db)
+        .await?;
     Ok(ok(v.into_iter().map(Silence::named).collect::<Vec<_>>()))
 }
 
@@ -186,33 +219,41 @@ pub async fn create_silence(a: Actor, State(st): State<AppState>, ApiJson(b): Ap
     if b.comment.chars().count() > 2000 {
         return Err(ApiError::bad_request("备注最长 2000 个字"));
     }
+    let kind = match (b.subject_id, b.subject_kind.as_deref()) {
+        (None, None) => None,
+        (None, Some(_)) => return Err(ApiError::bad_request("给了 subject_kind 就要给 subject_id；全部对象两个都不给")),
+        (Some(_), k) => Some(KINDS.iter().find(|x| x.0 == k.unwrap_or("machine")).ok_or_else(|| ApiError::bad_request("subject_kind 只能是 machine / router / probe_point"))?),
+    };
     if let Some(r) = b.rule.as_deref() {
         // rule_name 对不认识的规则原样返回
         if crate::notify::rule_name(r) == r {
             return Err(ApiError::bad_request(format!("没有「{r}」这条告警规则")));
         }
-        // 维护是整台机器的（卡片显示「维护中」、暂停健康判定），只静默一条规则时说不通
+        // 维护是整个对象的（卡片显示「维护中」、暂停健康判定 / 冻结告警），只静默一条规则时说不通
         if b.is_maintenance {
             return Err(ApiError::bad_request("维护窗口针对整台机器，不能只选一条规则；只想静默这条告警就不要标记为维护"));
         }
+        if let Some((_, what, _)) = kind.filter(|(k, ..)| rule_kind(r) != Some(*k)) {
+            return Err(ApiError::bad_request(format!("「{}」不是{what}的告警规则", crate::notify::rule_name(r))));
+        }
     }
-    let subject_name = match b.subject_id {
-        Some(sid) => Some(
-            sqlx::query_scalar("select display_name(m.kind::text, m.label, t.name, m.number) from machine m left join team t on t.id = m.team_id where m.id = $1")
-                .bind(sid)
-                .fetch_optional(&st.db)
-                .await?
-                .ok_or_else(|| ApiError::bad_request("subject_id 指向的机器不存在"))?,
+    let subject_name: Option<String> = match (kind, b.subject_id) {
+        (Some((_, what, sql)), Some(sid)) => Some(
+            sqlx::query_scalar(sql).bind(sid).fetch_optional(&st.db).await?.ok_or_else(|| ApiError::bad_request(format!("subject_id 指向的{what}不存在")))?,
         ),
-        None => None,
+        _ => None,
     };
+    let col = |k: &str| b.subject_id.filter(|_| kind.is_some_and(|x| x.0 == k));
     let id = new_id();
     let mut tx = st.db.begin().await?;
     sqlx::query(
-        "insert into silence (id, subject_id, rule, starts_at, ends_at, is_maintenance, comment, created_by) values ($1,$2,$3,$4,$5,$6,$7,$8)",
+        "insert into silence (id, machine_id, router_id, probe_point_id, rule, starts_at, ends_at, is_maintenance, comment, created_by)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
     )
     .bind(id)
-    .bind(b.subject_id)
+    .bind(col("machine"))
+    .bind(col("router"))
+    .bind(col("probe_point"))
     .bind(&b.rule)
     .bind(b.starts_at)
     .bind(b.ends_at)
@@ -221,43 +262,48 @@ pub async fn create_silence(a: Actor, State(st): State<AppState>, ApiJson(b): Ap
     .bind(&a.name)
     .execute(&mut *tx)
     .await?;
-    // 审计详情就是这条静默本身（对象名、规则、起止、备注），摘要见 audit_text
-    let s = Silence { id: Some(id), subject_name, ..b }.named();
+    // 审计详情就是这条静默本身（对象类型与名字、规则、起止、备注），摘要见 audit_text
+    let s = Silence { id: Some(id), subject_kind: kind.map(|k| k.0.to_string()), subject_name, ..b }.named();
     audit_log(&mut tx, &a.name, "silence.create", "silence", Some(id), json!(s)).await?;
     tx.commit().await?;
     tell_channels(&st, &a.name, false, &s).await;
-    // 卡片上的「维护中」随 Incidents 标记的实时指标比对送达（最多 3 s），不发 Machines 让前端整表重取
-    st.emit(Event::Incidents);
+    changed(&st, &s);
     Ok(ok(json!({"id": id})))
 }
 
 pub async fn delete_silence(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
-    let s: Silence = sqlx::query_as(&format!(
-        "update silence s set deleted_at = now() where s.id = $1 and s.deleted_at is null
-         returning s.id, s.subject_id, s.rule, s.starts_at, s.ends_at, s.is_maintenance, s.comment, {SUBJECT_NAME} subject_name"
-    ))
-    .bind(id)
-    .fetch_optional(&mut *tx)
-    .await?
-    .ok_or_else(|| ApiError::not_found("没有这条静默"))?;
+    let s: Silence = sqlx::query_as(&format!("update silence s set deleted_at = now() where s.id = $1 and s.deleted_at is null returning {COLS}"))
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| ApiError::not_found("没有这条静默"))?;
     let s = s.named();
     audit_log(&mut tx, &a.name, "silence.delete", "silence", Some(id), json!(s)).await?;
     tx.commit().await?;
     tell_channels(&st, &a.name, true, &s).await;
-    st.emit(Event::Incidents);
+    changed(&st, &s);
     Ok(ok(json!({"ok": true})))
 }
 
+/// 静默变了：告警页重取。机器卡片上的「维护中」随 Incidents 标记的实时指标比对送达（最多 3 s），不发 Machines 让前端整表重取；
+/// 软路由的（单台或全部的）再发 Routers，路由卡片跟上；探测点列表每 30 秒自己重取
+fn changed(st: &AppState, s: &Silence) {
+    st.emit(Event::Incidents);
+    if s.subject_kind.as_deref().is_none_or(|k| k == "router") {
+        st.emit(Event::Routers);
+    }
+}
+
 /// 新建 / 删除静默、维护窗口时告诉所有启用的渠道（不看渠道的最低级别，也不受任何静默影响），免得有人悄悄开个全局维护、监控就没了：
-/// 全部机器的一律发（含预约的）；只针对一台的，此刻正生效的才发（预约的、已经结束的不影响现在的告警）
+/// 全部机器的一律发（含预约的）；只针对一个对象（机器、软路由、探测点）的，此刻正生效的才发（预约的、已经结束的不影响现在的告警）
 async fn tell_channels(st: &AppState, actor: &str, deleted: bool, s: &Silence) {
     let now = OffsetDateTime::now_utc();
     if s.subject_id.is_some() && !(s.starts_at <= now && now < s.ends_at) {
         return;
     }
     let what = if s.is_maintenance { "维护窗口" } else { "静默" };
-    let object = s.subject_name.as_deref().unwrap_or("全部机器");
+    let object = subject_label(s.subject_kind.as_deref(), s.subject_name.as_deref());
     let rules = match (&s.rule_name, s.is_maintenance) {
         (Some(r), _) => format!("（只静默「{r}」）"),
         (None, true) => String::new(),
@@ -275,17 +321,19 @@ async fn tell_channels(st: &AppState, actor: &str, deleted: bool, s: &Silence) {
     if !comment.is_empty() {
         text.push_str(&format!("\n备注：{comment}"));
     }
-    text.push_str(match (deleted, s.is_maintenance) {
-        (true, _) => "\n告警与通知照常恢复",
-        (false, true) => "\n期间不开告警、不发通知，健康判定暂停",
-        (false, false) => "\n期间不开告警、不发通知",
+    text.push_str(match (deleted, s.is_maintenance, s.subject_kind.as_deref()) {
+        (true, ..) => "\n告警与通知照常恢复",
+        // 软路由、探测点没有健康判定：维护是冻结开着的告警（incident.rs）
+        (false, true, Some("router" | "probe_point")) => "\n期间不开新告警、开着的保持原状、不发通知",
+        (false, true, _) => "\n期间不开告警、不发通知，健康判定暂停",
+        (false, false, _) => "\n期间不开告警、不发通知",
     });
     let n = crate::notify::Notice {
         kind: crate::notify::Kind::Silence,
         incident_id: None,
         rule: s.rule.clone().unwrap_or_default(),
         severity: "info".into(),
-        machine: object.to_string(),
+        machine: object,
         summary: text,
         at: now,
         opened_at: None,

@@ -407,7 +407,8 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
             let what = if d["is_maintenance"] == true { "维护窗口" } else { "静默" };
             let rule = d["rule_name"].as_str().map(|r| format!(" · 只静默「{r}」")).unwrap_or_default();
             let note = d["comment"].as_str().filter(|c| !c.is_empty()).map(|c| format!("（{c}）")).unwrap_or_default();
-            format!("{} · {what}{rule} · {} → {}{note}", d["subject_name"].as_str().unwrap_or("全部机器"), at("starts_at"), at("ends_at"))
+            let object = super::incidents::subject_label(d["subject_kind"].as_str(), d["subject_name"].as_str());
+            format!("{object} · {what}{rule} · {} → {}{note}", at("starts_at"), at("ends_at"))
         }
         "policy.discard" => format!("{} 个草稿", d["drafts"]),
         "router.create" if d["method"] == "deploy" => format!("{} · 一键部署", s("name")),

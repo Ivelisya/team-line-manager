@@ -561,6 +561,106 @@ async fn alerts_open_notify_and_recover() {
     assert_eq!(mock.count("/hook/a"), sent, "删掉的路由不发恢复");
 }
 
+/// 在告警的 (对象名, 规则)
+async fn firing_set(t: &T) -> std::collections::BTreeSet<(String, String)> {
+    incidents(t, "firing").await.iter().map(|i| (i["subject"]["name"].as_str().unwrap().to_string(), i["rule"].as_str().unwrap().to_string())).collect()
+}
+
+fn pairs(v: &[(&str, &str)]) -> std::collections::BTreeSet<(String, String)> { v.iter().map(|(n, r)| (n.to_string(), r.to_string())).collect() }
+
+/// 单台路由的维护窗口与静默（同机器）：维护中开着的告警保持（不恢复、不发通知）、不开新的，别的路由照常；到期后按那时的状态再判；
+/// 只静默一条规则的只挡这一条；全局维护对路由也算维护中；建静默时校验对象与规则；删路由连带删它的静默
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn router_maintenance_and_silence() {
+    let t = setup().await;
+    let mock = Mock::start().await;
+    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "webhook", "config": {"url": mock.url("/hook/m")}, "min_severity": "info", "enabled": true})).await;
+    let (a, _) = create(&t, "团队2-路由M").await;
+    let (b, _) = create(&t, "团队2-路由N").await;
+    issue_key(&t, &a).await;
+    issue_key(&t, &b).await;
+    let mut st = alerts::AlertState::default();
+    let t0 = OffsetDateTime::now_utc();
+    // A 离线：开着严重告警
+    status(&t, &a, false, 300, snap(true, [0, 0], true)).await;
+    status(&t, &b, true, 0, snap(true, [0, 0], true)).await;
+    alerts::evaluate(&t.st, &mut st, t0).await.unwrap();
+    assert_eq!(firing_set(&t).await, pairs(&[("团队2-路由M", "router_offline")]));
+    mock.wait("/hook/m", 1).await;
+
+    // 校验：对象要存在、规则要是这类对象的、类型要认识
+    let now = OffsetDateTime::now_utc();
+    let at = |m: i64| (now + time::Duration::minutes(m)).format(&time::format_description::well_known::Rfc3339).unwrap();
+    for (extra, want) in [
+        (json!({"subject_kind": "router", "subject_id": Uuid::now_v7()}), "subject_id 指向的软路由不存在"),
+        (json!({"subject_kind": "router", "subject_id": b, "rule": "agent_offline"}), "「agent 离线」不是软路由的告警规则"),
+        (json!({"subject_id": b}), "subject_id 指向的机器不存在"),
+        (json!({"subject_kind": "switch", "subject_id": b}), "subject_kind 只能是 machine / router / probe_point"),
+        (json!({"subject_kind": "router"}), "给了 subject_kind 就要给 subject_id；全部对象两个都不给"),
+    ] {
+        let mut body = json!({"starts_at": at(-1), "ends_at": at(60)});
+        body.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        let (s, v) = t.req("POST", "/api/v1/silences", Some(body), None).await;
+        assert_eq!((s, v["error"]["message"].as_str()), (StatusCode::BAD_REQUEST, Some(want)), "{extra}");
+    }
+
+    // A 开维护窗口：列表带对象类型与名字，通知、审计写明是软路由，路由视图显示维护中（B 不算）
+    let win = t.post("/api/v1/silences", json!({"subject_kind": "router", "subject_id": a, "is_maintenance": true, "starts_at": at(-1), "ends_at": at(60), "comment": "客户现场断电"})).await;
+    let win = win["id"].as_str().unwrap().to_string();
+    let list = t.get("/api/v1/silences").await;
+    assert_eq!((list[0]["subject_kind"].as_str(), list[0]["subject_id"].as_str(), list[0]["subject_name"].as_str()), (Some("router"), Some(a.as_str()), Some("团队2-路由M")), "{list}");
+    mock.wait("/hook/m", 2).await;
+    let text = mock.bodies("/hook/m")[1]["text"].as_str().unwrap().to_string();
+    assert!(text.contains("新建了维护窗口\n对象：软路由「团队2-路由M」\n") && text.contains("期间不开新告警、开着的保持原状、不发通知"), "{text}");
+    let log = t.get(&format!("/api/v1/audit?target_id={win}")).await;
+    assert!(log[0]["summary"].as_str().unwrap().starts_with("软路由「团队2-路由M」 · 维护窗口 · "), "{log}");
+    assert_eq!(t.get(&format!("/api/v1/routers/{a}")).await["maintenance"], true);
+    let rs = t.get("/api/v1/routers").await;
+    let maint: Vec<(&str, bool)> = rs.as_array().unwrap().iter().map(|r| (r["name"].as_str().unwrap(), r["maintenance"].as_bool().unwrap())).collect();
+    assert_eq!(maint, [("团队2-路由M", true), ("团队2-路由N", false)]);
+
+    // 维护中：A 连上了但 WAN 断着——离线告警保持（不恢复、不发恢复），WAN 告警不开；B 照常开
+    status(&t, &a, true, 0, snap(true, [0, 0], false)).await;
+    status(&t, &b, false, 300, snap(true, [0, 0], true)).await;
+    for s in [100, 200, 300] {
+        alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(s)).await.unwrap();
+    }
+    assert_eq!(firing_set(&t).await, pairs(&[("团队2-路由M", "router_offline"), ("团队2-路由N", "router_offline")]));
+    mock.wait("/hook/m", 3).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let events: Vec<(String, String)> = mock.bodies("/hook/m").iter().skip(2).map(|b| (b["event"].as_str().unwrap().into(), b["machine"].as_str().unwrap().into())).collect();
+    assert_eq!(events, [("firing".to_string(), "团队2-路由N".to_string())], "维护中的 A 不发任何通知");
+
+    // 到期：离线满 60 秒恢复（发恢复），WAN 断开开出来
+    sqlx::query("update silence set ends_at = now() - interval '1 second' where id = $1::uuid").bind(&win).execute(&t.st.db).await.unwrap();
+    assert_eq!(t.get(&format!("/api/v1/routers/{a}")).await["maintenance"], false);
+    for s in [400, 461] {
+        alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(s)).await.unwrap();
+    }
+    assert_eq!(firing_set(&t).await, pairs(&[("团队2-路由M", "router_wan_down"), ("团队2-路由N", "router_offline")]));
+    mock.wait("/hook/m", 5).await;
+    let events: Vec<(String, String)> = mock.bodies("/hook/m").iter().map(|b| (b["event"].as_str().unwrap().into(), b["rule"].as_str().unwrap().into())).collect();
+    assert!(events.contains(&("resolved".into(), "router_offline".into())) && events.contains(&("firing".into(), "router_wan_down".into())), "{events:?}");
+
+    // 只静默 B 的出口告警：出口不通不开，OpenClash 没在跑照开
+    t.post("/api/v1/silences", json!({"subject_kind": "router", "subject_id": b, "rule": "router_exits_down", "starts_at": at(-1), "ends_at": at(60)})).await;
+    status(&t, &b, true, 0, snap(false, [2, 3], true)).await;
+    for s in [500, 561, 622] {
+        alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(s)).await.unwrap();
+    }
+    assert_eq!(firing_set(&t).await, pairs(&[("团队2-路由M", "router_wan_down"), ("团队2-路由N", "router_openclash_down")]));
+
+    // 全局维护：路由也算维护中
+    let all = t.post("/api/v1/silences", json!({"is_maintenance": true, "starts_at": at(-1), "ends_at": at(60)})).await;
+    assert!(t.get("/api/v1/routers").await.as_array().unwrap().iter().all(|r| r["maintenance"] == true));
+    t.req("DELETE", &format!("/api/v1/silences/{}", all["id"].as_str().unwrap()), None, None).await;
+
+    // 删路由：它的静默一起删
+    assert_eq!(t.req("DELETE", &format!("/api/v1/routers/{b}"), None, None).await.0, StatusCode::OK);
+    let left: i64 = sqlx::query_scalar("select count(*) from silence where router_id = $1::uuid").bind(&b).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(left, 0);
+}
+
 /// 重新接入：开着的离线告警悄悄关掉（不发「已恢复」）；接入过的 30 分钟还没连上开离线警告
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn rebootstrap_closes_offline_quietly_then_warns() {

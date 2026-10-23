@@ -4,7 +4,8 @@
 import { memo, useCallback, useMemo, type CSSProperties, type ReactNode } from 'react';
 import { ArrowDown, ArrowUp, Cable, Clock, Cpu, Gauge, HardDrive, Loader2, MemoryStick, PanelRightOpen, RefreshCw, Router as RouterIcon, Shuffle, Terminal, Thermometer, Unplug, Users, Waypoints } from 'lucide-react';
 import * as F from '@/lib/format';
-import { tagColor } from '@/lib/derive';
+import { healthLabel, tagColor } from '@/lib/derive';
+import { HEALTH_TONE } from '@/lib/sort';
 import { useNow } from '@/lib/useNow';
 import { cn } from '@/lib/utils';
 import { deadExitNames, deploySteps, routerIssues, routerMeters, showBootstrap, showDeploy, tempTone, uptimeFmt, useRegenBootstrap, useRouter, useRouterMetrics, type RouterSummary, type RouterTab, type RouterView } from '@/lib/routers';
@@ -18,13 +19,16 @@ import '@/styles/routers.css';
 
 type Open = (tab?: RouterTab) => void;
 
-/** 状态 pill（只靠底色与文字，不带圆点；要醒目的配一个图标）：部署中（转圈）/ 等待接入 / 在线 /
+/** 维护中的说明（状态 pill、标签共用） */
+const MAINT_TIP = '在维护窗口内，不发告警；开着的告警保持到维护结束';
+/** 状态 pill（只靠底色与文字，不带圆点；要醒目的配一个图标）：部署中（转圈）/ 维护（同机器的维护中）/ 等待接入 / 在线 /
  *  降级（在线但有毛病，悬停点名是哪个出口；同机器的叫法，降级算正常）/ 离线（悬停看连不上的原因，才是故障） */
-export function RouterStatePill({ r }: { r: Pick<RouterView, 'id' | 'state' | 'error' | 'summary' | 'deploy'> }) {
+export function RouterStatePill({ r }: { r: Pick<RouterView, 'id' | 'state' | 'error' | 'summary' | 'deploy' | 'maintenance'> }) {
   // 不通的出口名只在详情里：降级的才取详情（和抽屉同一份缓存）
   const slow = r.state === 'online' && !!r.summary && r.summary.exits.alive < r.summary.exits.total;
   const names = deadExitNames(useRouter(slow ? r.id : null).data?.detail);
   if (r.deploy?.state === 'running') return <Pill tone="info" dot="pulse">部署中</Pill>;
+  if (r.maintenance) return <Pill tone={HEALTH_TONE.maintenance} tip={MAINT_TIP} tabIndex={0}>{healthLabel('maintenance')}</Pill>;
   // 一键部署失败、路由还没连上：时间线里已经红了，状态标也说「部署失败」（故障色），不再是中性的「等待接入」
   if (r.state === 'pending' && r.deploy?.state === 'failed') return <Pill tone="bad" tip={r.deploy.error ?? undefined} tabIndex={r.deploy.error ? 0 : undefined}>部署失败</Pill>;
   if (r.state === 'pending') return <Pill tone="info" tip="路由还没连上过中控">等待接入</Pill>;
@@ -34,8 +38,8 @@ export function RouterStatePill({ r }: { r: Pick<RouterView, 'id' | 'state' | 'e
   const issues = routerIssues(r.summary, names);
   return issues.length ? <Pill tone="warn" tip={issues.join('\n')} tabIndex={0}>降级</Pill> : <Pill tone="ok">在线</Pill>;
 }
-/** 卡片描边：离线红、在线但有毛病黄（同机器卡的故障 / 降级） */
-export const routerHealth = (r: RouterView) => (r.state === 'offline' || (r.state === 'pending' && r.deploy?.state === 'failed') ? 'down' : r.state === 'online' && (r.error || routerIssues(r.summary).length) ? 'degraded' : 'ok');
+/** 卡片描边：离线红、在线但有毛病黄（同机器卡的故障 / 降级）；维护中同机器卡的维护（不描红黄） */
+export const routerHealth = (r: RouterView) => (r.maintenance ? 'maintenance' : r.state === 'offline' || (r.state === 'pending' && r.deploy?.state === 'failed') ? 'down' : r.state === 'online' && (r.error || routerIssues(r.summary).length) ? 'degraded' : 'ok');
 
 /** 资源四项格条（CPU / 内存 / 存储 / 连接表）：卡片与抽屉「当前」共用 */
 export function RouterMeters({ s }: { s: RouterSummary }) {
@@ -205,6 +209,7 @@ function RouterCardImpl({ r, current, onOpen: open }: { r: RouterView; current?:
       <div className="nc-tags">
         <div className="nc-tags-list">
           {r.team ? <Tag c={tagColor(r.team.name)} tip="团队">{r.team.name}</Tag> : <Tag c="gray">未分团队</Tag>}
+          {r.maintenance && <Tag c="amber" tip={`${healthLabel('maintenance')}：${MAINT_TIP}`}>{healthLabel('maintenance')}</Tag>}
           {s && <Tag c="gray" tip="自上次重启起的运行时长">运行 {F.str(uptimeFmt(s.uptime_s))}</Tag>}
         </div>
         {/* 离线多久已经写在中间的占位里：这里不再红字重复「最后在线」，同等待接入写创建时间 */}

@@ -1076,7 +1076,7 @@ async fn purge(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         n += sqlx::query(&format!("delete from {t} where node_id = $1")).bind(id).execute(&mut *tx).await?.rows_affected();
     }
     sqlx::query("delete from incident where subject_id = $1 or subject_id = any($2)").bind(id).bind(&eids).execute(&mut *tx).await?;
-    sqlx::query("delete from silence where subject_id = $1").bind(id).execute(&mut *tx).await?;
+    sqlx::query("delete from silence where machine_id = $1").bind(id).execute(&mut *tx).await?;
     sqlx::query("delete from entry where id = any($1)").bind(&eids).execute(&mut *tx).await?;
     // 其余（令牌、agent 状态、账单、续费、出站、线路机参数）随 machine 级联删除
     sqlx::query("delete from machine where id = $1").bind(id).execute(&mut *tx).await?;

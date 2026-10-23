@@ -15,6 +15,8 @@ export type ProbeWindow = '1h' | '24h' | '7d' | '30d';
 /** blind：在线、但最近 3 分钟的探测都无效（对照目标连不上，discard_reason），同离线处理；界面叫「探测无效」 */
 export interface ProbePoint {
   id: string; name: string; label: string; enabled: boolean; note: string; state: 'online' | 'blind' | 'offline' | 'pending' | 'disabled'; installed: boolean; primary: boolean;
+  /** 在维护窗口里（自己的或「全部」的）：离线告警开着的保持、不开新的、不发通知 */
+  maintenance: boolean;
   last_seen_at: string | null; last_kept_at: string | null; discard_reason: string | null; window: ProbeWindow;
   last_ip: string | null; version: string | null; created_at: string; bootstrap_expires_at: string | null;
   install: { state: 'running' | 'done' | 'failed'; step: string | null; error: string | null; host: string | null; port: number | null; started_at: string | null; finished_at: string | null } | null;
