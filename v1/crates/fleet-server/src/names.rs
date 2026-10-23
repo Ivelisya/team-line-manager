@@ -26,6 +26,25 @@ pub fn entry_name(direct: bool, kind: &str, label: Option<&str>, team: Option<&s
     }
 }
 
+/// 客户端订阅里的入口名（自己的客户端用，带出口 IP）：`US · ATTVPS 家宽 · 团队1-06 · 203.0.113.5 · VLESS Reality`，
+/// 直出 `US · GOMAMI 线路机1 直出 · 198.51.100.1 · VLESS Reality`。没有国家、供应商的省掉那一段；
+/// `via`：节点在几台线路机上都有入口时写上走哪台（`团队1-06（线路机3）`），客户端里名字不能重复
+pub fn sub_name(country: Option<&str>, provider: Option<&str>, who: &str, direct: bool, via: Option<&str>, ip: &str) -> String {
+    let who = match via {
+        Some(v) => format!("{who}（{v}）"),
+        None => who.to_string(),
+    };
+    let mid = if direct { [provider, Some(who.as_str()), Some("直出")] } else { [provider, Some("家宽"), None] };
+    let mid = mid.iter().flatten().copied().collect::<Vec<_>>().join(" ");
+    let mut parts: Vec<&str> = country.into_iter().collect();
+    parts.push(&mid);
+    if !direct {
+        parts.push(&who);
+    }
+    parts.extend([ip, "VLESS Reality"]);
+    parts.join(" · ")
+}
+
 /// 重新编号：按现有编号顺序压缩成 1..n。返回 (machine_id, 旧号, 新号)，只含有变化的。
 /// 新号 ≤ 旧号，所以按新号升序逐条更新不会撞唯一索引。
 pub fn compact_numbers<I: Clone>(mut nodes: Vec<(I, i32)>) -> Vec<(I, i32, i32)> {
@@ -52,6 +71,9 @@ mod tests {
         assert_eq!(display_name("vps", None, Some("团队1"), Some(3)), "团队1-03");
         assert_eq!(entry_name(true, "relay", Some("线路机2"), None, None), "线路机2-直出");
         assert_eq!(entry_name(false, "vps", None, Some("团队1"), Some(3)), "团队1-03");
+        assert_eq!(sub_name(Some("US"), Some("ATTVPS"), "团队1-06", false, None, "203.0.113.5"), "US · ATTVPS 家宽 · 团队1-06 · 203.0.113.5 · VLESS Reality");
+        assert_eq!(sub_name(Some("US"), Some("GOMAMI"), "线路机1", true, None, "198.51.100.1"), "US · GOMAMI 线路机1 直出 · 198.51.100.1 · VLESS Reality");
+        assert_eq!(sub_name(None, None, "团队1-06", false, Some("线路机3"), "203.0.113.5"), "家宽 · 团队1-06（线路机3） · 203.0.113.5 · VLESS Reality");
     }
 
     #[test]

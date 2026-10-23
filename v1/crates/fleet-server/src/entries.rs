@@ -267,7 +267,8 @@ pub async fn on_applied(db: &PgPool, relay_id: Uuid, rep: &ApplyReport) -> anyho
     Ok(n > 0)
 }
 
-fn pct(s: &str) -> String {
+/// 百分号编码（只留 RFC 3986 的非保留字符）
+pub(crate) fn pct(s: &str) -> String {
     let mut o = String::new();
     for b in s.bytes() {
         match b {

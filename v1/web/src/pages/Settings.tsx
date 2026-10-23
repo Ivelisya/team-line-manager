@@ -1,5 +1,5 @@
 // 设置：API 密钥（创建时 token 只显示一次）、告警通知渠道（Telegram / 企业微信 / Webhook，可发测试、看最近发送记录）、
-// 账户安全（两步验证、修改密码、登录会话，见 features/AccountTab）、数据保留（features/RetentionTab）、汇率（计费折成美元，见 features/FxTab）、探测点与主探测来源（features/ProbeTab）、三网 PING 的全局目标（features/PingTab）。
+// 账户安全（两步验证、修改密码、登录会话，见 features/AccountTab）、数据保留（features/RetentionTab）、汇率（计费折成美元，见 features/FxTab）、探测点与主探测来源（features/ProbeTab）、三网 PING 的全局目标（features/PingTab）、客户端订阅（features/SubsTab）。
 import * as React from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Ban, Bell, BellOff, Eye, EyeOff, FlaskConical, KeyRound, MessagesSquare, Pencil, Plus, Send, ShieldAlert, Trash2, Webhook } from 'lucide-react';
@@ -7,6 +7,7 @@ import { RetentionTab } from '@/features/RetentionTab';
 import { FxTab } from '@/features/FxTab';
 import { ProbeTab } from '@/features/ProbeTab';
 import { PingTab } from '@/features/PingTab';
+import { SubsTab } from '@/features/SubsTab';
 import { AccountTab } from '@/features/AccountTab';
 import { useAddChannel, useApiKeys, useCreateApiKey, useDelChannel, useMe, useNotifyChannels, useNotifyLog, usePatchChannel, useRevokeApiKey, useTestChannel, useTotpStatus } from '@/lib/queries';
 import type { ApiKey, NotifyChannel, NotifyLogEntry } from '@/lib/types';
@@ -28,7 +29,7 @@ import '@/styles/settings.css';
 export function SettingsPage() {
   const [sp, setSp] = useSearchParams();
   const sec = sp.get('section');
-  const tab = sec === 'notify' || sec === 'account' || sec === 'retention' || sec === 'fx' || sec === 'probes' || sec === 'ping' ? sec : 'keys';
+  const tab = sec === 'notify' || sec === 'account' || sec === 'retention' || sec === 'fx' || sec === 'probes' || sec === 'ping' || sec === 'subs' ? sec : 'keys';
   return (
     <div className="stack">
       <PageHead title="设置" />
@@ -41,9 +42,10 @@ export function SettingsPage() {
           <TabsTrigger value="fx" noPanel>汇率</TabsTrigger>
           <TabsTrigger value="probes" noPanel>探测点</TabsTrigger>
           <TabsTrigger value="ping" noPanel>三网 PING</TabsTrigger>
+          <TabsTrigger value="subs" noPanel>客户端订阅</TabsTrigger>
         </TabsList>
       </Tabs>
-      {tab === 'keys' ? <ApiKeysSection /> : tab === 'notify' ? <NotifySection /> : tab === 'account' ? <AccountTab /> : tab === 'fx' ? <FxTab /> : tab === 'probes' ? <ProbeTab /> : tab === 'ping' ? <PingTab /> : <RetentionTab />}
+      {tab === 'keys' ? <ApiKeysSection /> : tab === 'notify' ? <NotifySection /> : tab === 'account' ? <AccountTab /> : tab === 'fx' ? <FxTab /> : tab === 'probes' ? <ProbeTab /> : tab === 'ping' ? <PingTab /> : tab === 'subs' ? <SubsTab /> : <RetentionTab />}
     </div>
   );
 }

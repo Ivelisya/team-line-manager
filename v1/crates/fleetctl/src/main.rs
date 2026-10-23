@@ -21,6 +21,7 @@ mod routers;
 mod settings;
 mod silence;
 mod ssh;
+mod subs;
 mod table;
 
 use clap::{Args, Parser, Subcommand};
@@ -147,6 +148,45 @@ enum SubscriptionCmd {
     /// 改订阅：先读现有的，只改给了的字段再整份提交；还没有订阅时新建，要给 --due（没有套餐的机器还要 --price）。
     /// 价格、币种、周期、流量上限默认跟随套餐，账单时区、提前提醒、流量重置日跟随供应商；给了值 = 单独设置，给 none = 改回跟随
     Set(billing::SubSetOpts),
+}
+
+#[derive(Subcommand)]
+enum SubCmd {
+    /// 列表：名称、规则、条目数、启用、最近拉取（时间与来源 IP）
+    Ls,
+    /// 新建：输出一次链接（Clash Verge / OpenClash 用原链接，v2rayN / Shadowrocket 加 ?format=base64）。默认全部团队（不含备用团队）+ 线路机直出
+    Add {
+        name: String,
+        #[command(flatten)]
+        rule: subs::RuleArgs,
+    },
+    /// 改名称、规则（只改给了的）、启用 / 停用（停用后拉取回 404，链接不变）
+    Edit {
+        /// 订阅（id / id 前缀 / 名称）
+        sub: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[command(flatten)]
+        rule: subs::RuleArgs,
+        #[arg(long, conflicts_with = "disable")]
+        enable: bool,
+        #[arg(long)]
+        disable: bool,
+    },
+    /// 轮换链接：旧链接立即失效，输出一次新链接
+    Rotate {
+        sub: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// 删除
+    Rm {
+        sub: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// 规则与现在的条目（客户端里的名字、线路机:端口）；不显示链接
+    Show { sub: String },
 }
 
 #[derive(Subcommand)]
@@ -457,6 +497,11 @@ enum Cmd {
     Share {
         /// 入口 id、`线路机名:端口` 或节点显示名
         entry: String,
+    },
+    /// 客户端订阅：自己的客户端（Clash Verge、OpenClash、v2rayN）按一个链接拉入口，换节点、换线路机、轮换凭据后自动是新的（需要 secrets 权限）
+    Sub {
+        #[command(subcommand)]
+        cmd: SubCmd,
     },
     /// 入口启用/停用/轮换凭据；add-direct 给线路机加直出入口（从线路机自己的 IP 出去，每台至多一条）
     Entry {
@@ -914,6 +959,17 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Tune { machine, team, all, rollback, yes, follow } => ops::tune(x, machine.as_deref(), team.as_deref(), all, rollback, yes, follow),
         Cmd::Entries { machine } => cmds::entries(x, machine.as_deref()),
         Cmd::Share { entry } => ops::share(x, &entry),
+        Cmd::Sub { cmd } => match cmd {
+            SubCmd::Ls => subs::ls(x),
+            SubCmd::Add { name, rule } => subs::add(x, &name, &rule),
+            SubCmd::Edit { sub, name, rule, enable, disable } => {
+                let en = if enable { Some(true) } else if disable { Some(false) } else { None };
+                subs::edit(x, &sub, name.as_deref(), &rule, en)
+            }
+            SubCmd::Rotate { sub, yes } => subs::rotate(x, &sub, yes),
+            SubCmd::Rm { sub, yes } => subs::rm(x, &sub, yes),
+            SubCmd::Show { sub } => subs::show(x, &sub),
+        },
         Cmd::Entry { action, entry, yes, follow } => ops::entry_action(x, action, &entry, yes, follow),
         Cmd::Exec(o) => ops::exec(x, o),
         Cmd::Logs { machine, unit, lines } => cmds::logs(x, &machine, &unit, lines),

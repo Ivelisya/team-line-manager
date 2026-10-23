@@ -6,7 +6,7 @@
 //! 密钥的 scope 矩阵（会话登录的用户拥有全部）：
 //! - `read`：所有 GET，但不含凭据类（`/entries/{id}/share`）与远程执行类（日志）
 //! - `write`：非 GET 的业务写操作
-//! - `secrets`：凭据类 GET（分享链接）
+//! - `secrets`：凭据类 GET（分享链接）与客户端订阅的管理（`/client-subs`，读写都要）
 //! - `exec`：远程执行（`/machines/{id}/exec`、各类日志、`fleetctl ssh` 登录前报的审计 `POST /audit/ssh`）
 //! - 密钥管理（`/api-keys`）、账户安全（`/account/...`：两步验证、会话、改密码）与网页终端（`/terminal/...`）只允许会话用户，API 密钥一律 403
 
@@ -121,6 +121,8 @@ pub fn needed(method: &Method, path: &str) -> Need {
     match segs {
         ["api-keys", ..] | ["account", ..] | ["terminal", ..] => Need::Session,
         ["entries", _, "share"] if get => Need::Scope("secrets"),
+        // 客户端订阅：列表、新建、改、轮换、删都是发凭据（同分享链接）
+        ["client-subs", ..] => Need::Scope("secrets"),
         ["machines", _, "exec"] if !get => Need::Scope("exec"),
         ["machines", _, "logs"] | ["server", "logs"] if get => Need::Scope("exec"),
         // fleetctl ssh 登录前报的审计：只有能执行命令的密钥能写，别的密钥伪造不了登录记录
@@ -271,7 +273,7 @@ pub(crate) async fn begin_attempt(st: &AppState, uname: &str, group: Option<IpAd
     Ok(attempt)
 }
 
-async fn forget_attempt(st: &AppState, attempt: i64) -> sqlx::Result<()> {
+pub(crate) async fn forget_attempt(st: &AppState, attempt: i64) -> sqlx::Result<()> {
     sqlx::query("delete from login_failure where id = $1").bind(attempt).execute(&st.db).await.map(|_| ())
 }
 
@@ -546,6 +548,7 @@ mod tests {
         assert_eq!(needed(&g, "/api/v1/machines"), Need::Scope("read"));
         assert_eq!(needed(&g, "/api/v1/entries/abc/share"), Need::Scope("secrets"));
         assert_eq!(needed(&g, "/entries/abc/share"), Need::Scope("secrets"));
+        assert_eq!(needed(&p, "/api/v1/client-subs/x/rotate"), Need::Scope("secrets"));
         assert_eq!(needed(&p, "/api/v1/entries/abc/actions"), Need::Scope("write"));
         assert_eq!(needed(&p, "/api/v1/machines/x/exec"), Need::Scope("exec"));
         assert_eq!(needed(&g, "/api/v1/machines/x/logs"), Need::Scope("exec"));

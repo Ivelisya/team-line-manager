@@ -2,6 +2,7 @@ pub mod access;
 pub mod account;
 pub mod audit;
 pub mod catalog;
+pub mod client_subs;
 pub mod exec;
 pub mod fx;
 pub mod incidents;
@@ -105,6 +106,10 @@ pub fn router() -> Router<AppState> {
         .route("/entries/{id}/actions", post(relays::entry_action))
         .route("/entries/{id}/routers", get(relays::entry_routers))
         .route("/entries/{id}/share", get(relays::share))
+        // 客户端订阅（拉取的 /sub/{令牌} 不登录，挂在根上，见 lib.rs）
+        .route("/client-subs", get(client_subs::list).post(client_subs::create))
+        .route("/client-subs/{id}", get(client_subs::get_one).patch(client_subs::patch).delete(client_subs::delete))
+        .route("/client-subs/{id}/rotate", post(client_subs::rotate))
         // 作业
         .route("/jobs", get(jobs::list))
         .route("/jobs/{id}", get(jobs::get_one))
