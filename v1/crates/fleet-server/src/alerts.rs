@@ -78,6 +78,8 @@ pub struct AlertState {
     first_seen: HashMap<(String, Uuid), OffsetDateTime>,
     /// incident id → 原因从什么时候起一直没有
     clean_since: HashMap<Uuid, OffsetDateTime>,
+    /// 出口 / TCP 告警最近一次有原因时是哪几条入口失败的（线路机）：原因消失时只看它们判不判得出（health::Health::probe_undecided）
+    probe_failing: HashMap<(String, Uuid), Vec<Uuid>>,
 }
 
 /// 每 30 秒：记下中控还在跑（report_gaps::ReportGaps::alive），评估机器的告警，成功了 ping 死人开关；再检查中控自身（selfmon.rs）
@@ -177,6 +179,7 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
     .collect();
 
     let open_ids: HashSet<Uuid> = open.values().map(|o| o.id).collect();
+    let open_keys: HashSet<(String, Uuid)> = open.keys().cloned().collect();
     let mut current: HashSet<(String, Uuid)> = HashSet::new();
     let mut changed = false;
     let mut touch: Vec<(Uuid, String)> = vec![];
@@ -194,6 +197,9 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
                 continue;
             }
             current.insert(k.clone());
+            if matches!(r.key, "egress_fail" | "tcp_fail") {
+                state.probe_failing.insert(k.clone(), m.health.probe_failing.iter().filter(|f| f.0 == r.key).map(|f| f.1).collect());
+            }
             let since = *state.first_seen.entry(k.clone()).or_insert(now);
             let summary = format!("{}：{}", m.name, r.text);
             let notice = |kind, id, opened_at| Notice {
@@ -317,8 +323,13 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
         }
         // 这一轮判不出（health::Health::undecided）：原因消失不等于恢复，保持原状，等判得出再判（去抖从那时重新算）。
         // 出口 / TCP：探测结果过期（线路机 agent 离线或维护中、探测停了）；持续高负载、时钟偏差：agent 离线（负载还要回来后攒够 5 分钟样本）；
-        // 客户入口连不上：中控重启后新的检查不到 3 轮。否则一离线、一重启这些告警就成批假恢复、之后又重开
-        if m.health.undecided(&inc.rule) {
+        // 客户入口连不上：中控重启后新的检查不到 3 轮。否则一离线、一重启这些告警就成批假恢复、之后又重开。
+        // 出口 / TCP 只看当初失败的那几条入口：另一条入口的线路机在维护、离线不挡这条的恢复（中控重启后不知道是哪几条，按整台算）
+        let undecided = match state.probe_failing.get(&(inc.rule.clone(), inc.subject_id)) {
+            Some(was) if matches!(inc.rule.as_str(), "egress_fail" | "tcp_fail") => was.iter().any(|r| m.health.probe_undecided.contains(r)),
+            _ => m.health.undecided(&inc.rule),
+        };
+        if undecided {
             state.clean_since.remove(&inc.id);
             continue;
         }
@@ -349,6 +360,7 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
     }
     // 已经不在告警的计数清掉
     state.clean_since.retain(|id, _| open_ids.contains(id));
+    state.probe_failing.retain(|k, _| current.contains(k) || open_keys.contains(k));
     if changed {
         st.emit(Event::Incidents);
     }

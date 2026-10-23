@@ -6,6 +6,7 @@ use crate::meta::{CPU_HIGH_PCT, DISK_HIGH_PCT, MEM_HIGH_PCT, QUOTA_OVER_PCT, QUO
 use crate::views::{EntryView, MachineView};
 use serde::Serialize;
 use time::OffsetDateTime;
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -29,6 +30,13 @@ pub struct Health {
     /// 告警引擎不能把这两条规则的原因消失当成恢复（只给告警用，不对外输出）
     #[serde(skip)]
     pub probe_unknown: bool,
+    /// 判不出的那几条入口所在的线路机（同上，`probe_unknown` = 不为空）。开着的出口 / TCP 告警只在当初失败的入口判不出时
+    /// 保持原状（alerts.rs）：另一条入口的线路机在维护、离线，不挡这条的恢复
+    #[serde(skip)]
+    pub probe_undecided: Vec<Uuid>,
+    /// 这一轮出口 / TCP 失败的入口：(规则, 线路机)（只给告警用，记下开着的告警是哪几条入口失败的）
+    #[serde(skip)]
+    pub probe_failing: Vec<(&'static str, Uuid)>,
     /// agent 离线、或回来后样本还不够 5 分钟：CPU / 内存 / 磁盘持续偏高判不出（只给告警用）
     #[serde(skip)]
     pub load_unknown: bool,
@@ -139,7 +147,7 @@ const DETAIL_MAX: usize = 120;
 /// 在用入口的探测结果 → egress_fail / tcp_fail。
 /// 同一条规则一台机器只开一个告警：几个入口同时失败合成一条原因，文字列出全部入口，
 /// 其中一个恢复时摘要随之变化，不会悄悄换成另一个入口
-fn probe_reasons(live: &[&EntryView], rs: &mut Vec<Reason>, unknown: &mut bool, probe_unknown: &mut bool) {
+fn probe_reasons(live: &[&EntryView], rs: &mut Vec<Reason>, unknown: &mut bool, undecided: &mut Vec<Uuid>, failing: &mut Vec<(&'static str, Uuid)>) {
     let (mut egress, mut details, mut tcp) = (vec![], vec![], vec![]);
     for e in live {
         // 线路机的 Xray 没在运行时，经它的探测必然失败：不在节点上重复报严重告警（线路机自己有
@@ -152,16 +160,17 @@ fn probe_reasons(live: &[&EntryView], rs: &mut Vec<Reason>, unknown: &mut bool, 
         // 线路机在维护中同样：维护期间经它的探测失败不是节点的问题
         if e.relay_offline || e.relay_maint {
             *unknown = true;
-            *probe_unknown = true;
+            undecided.push(e.relay.id);
             continue;
         }
         // 15 分钟内没有探测结果（视图只取这么久的）：这条入口通不通不知道。直出入口本来就没有 TCP 探测
         if e.egress.is_none() || (e.tcp.is_none() && !e.direct) {
-            *probe_unknown = true;
+            undecided.push(e.relay.id);
         }
         match &e.egress {
             Some(p) if !p.ok => {
                 egress.push(format!("{}:{}", e.relay.name, e.port));
+                failing.push(("egress_fail", e.relay.id));
                 // 探测详情是线路机报的自由文本，进告警摘要和通知：截到 DETAIL_MAX 个字
                 let d: String = p.detail.as_deref().unwrap_or_default().chars().take(DETAIL_MAX).collect();
                 if !d.is_empty() && !details.contains(&d) {
@@ -173,6 +182,7 @@ fn probe_reasons(live: &[&EntryView], rs: &mut Vec<Reason>, unknown: &mut bool, 
         }
         if e.tcp.as_ref().is_some_and(|p| !p.ok) {
             tcp.push(e.relay.name.clone());
+            failing.push(("tcp_fail", e.relay.id));
         }
     }
     if !egress.is_empty() {
@@ -192,7 +202,7 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
     }
     let mut rs: Vec<Reason> = vec![];
     let mut unknown = false;
-    let mut probe_unknown = false;
+    let (mut probe_undecided, mut probe_failing) = (vec![], vec![]);
     let agent_online = m.agent.as_ref().is_some_and(|a| a.online);
     // 同机 IP 节点的 agent 与主机读数是宿主机的：agent 离线、时钟、持续高负载只由宿主机报，入口和续费照常自己报
     let own_agent = m.host_machine.is_none();
@@ -244,7 +254,7 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
             // 直出入口（节点就是这台线路机）：出口不通照节点入口报 egress_fail；没有 TCP 探测，也不报 no_entry。
             // 挂在它上面的节点入口仍由各自的节点报
             let direct: Vec<&EntryView> = m.entries.iter().filter(|e| e.direct && e.lifecycle == "active").collect();
-            probe_reasons(&direct, &mut rs, &mut unknown, &mut probe_unknown);
+            probe_reasons(&direct, &mut rs, &mut unknown, &mut probe_undecided, &mut probe_failing);
             if let Some(r) = &m.relay {
                 // 从期望代数最近一次变化起算（没有记录就退回上次应用时间）
                 let since = r.generation_at.or(r.applied_at);
@@ -270,7 +280,7 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
             if live.is_empty() {
                 rs.push(Reason { key: "no_entry", severity: "warning", text: "没有在用的入口".into() });
             }
-            probe_reasons(&live, &mut rs, &mut unknown, &mut probe_unknown);
+            probe_reasons(&live, &mut rs, &mut unknown, &mut probe_undecided, &mut probe_failing);
         }
     }
 
@@ -292,7 +302,7 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
     rs.extend(renewal_reason(m));
     rs.extend(quota_reason(m));
     let reach_unknown = m.relay.as_ref().is_some_and(|r| r.reach_unknown);
-    Health { status, reasons: rs, probe_unknown, load_unknown, clock_unknown, reach_unknown }
+    Health { status, reasons: rs, probe_unknown: !probe_undecided.is_empty(), probe_undecided, probe_failing, load_unknown, clock_unknown, reach_unknown }
 }
 
 #[cfg(test)]
@@ -507,9 +517,12 @@ pub(crate) mod tests {
         n.entries[0].relay_maint = true;
         let h = evaluate(&n, now);
         assert!(h.reasons.is_empty() && h.undecided("egress_fail") && h.undecided("tcp_fail"), "线路机维护：{:?}", keys(&h));
-        // 另一条入口的线路机在线、探测失败：照常报
+        // 另一条入口的线路机在线、探测失败：照常报。记下哪条判不出、哪条失败（告警只在当初失败的那条判不出时保持原状）
         n.entries.push(entry(false, false));
-        assert_eq!(keys(&evaluate(&n, now)), ["egress_fail", "tcp_fail"]);
+        let h = evaluate(&n, now);
+        assert_eq!(keys(&h), ["egress_fail", "tcp_fail"]);
+        let (maint, bad) = (n.entries[0].relay.id, n.entries[1].relay.id);
+        assert_eq!((h.probe_undecided, h.probe_failing), (vec![maint], vec![("egress_fail", bad), ("tcp_fail", bad)]));
     }
 
     #[test]

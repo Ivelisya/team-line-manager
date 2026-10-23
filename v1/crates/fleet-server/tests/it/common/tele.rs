@@ -10,6 +10,8 @@ use tokio_tungstenite::tungstenite::Message;
 use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
+use tokio::sync::Semaphore;
 use uuid::Uuid;
 
 pub use super::T;
@@ -166,28 +168,30 @@ pub fn blank_report(seq: u64) -> Report {
     }
 }
 
-/// 本机 HTTP 假服务：记下每次请求的 (路径, JSON 体)。
+/// 本机 HTTP 假服务：记下每次请求的 (路径, JSON 体, 收到的时刻)。
 /// 路径含 `fail` 回 500；含 `flaky` 的前两次回 500、之后 200；含 `bad` 回企业微信风格的 errcode 错误；含 `bot` 回 Telegram 风格；其余回 200。
-/// 路径含 `slow` 的每次等 1.5 秒再回（记录在等之前）。
-pub type Hits = Arc<Mutex<Vec<(String, Value)>>>;
+/// 路径含 `hold` 的收下请求（先记录）后一直不回，直到测试 `release`：「还在发」的状态由测试决定，不靠睡多久
+pub type Hits = Arc<Mutex<Vec<(String, Value, Instant)>>>;
 
 pub struct Mock {
     pub addr: SocketAddr,
     pub hits: Hits,
+    gate: Arc<Semaphore>,
 }
 
 impl Mock {
     pub async fn start() -> Mock {
         let hits: Hits = Arc::default();
-        async fn handler(State(h): State<Hits>, uri: Uri, body: Option<Json<Value>>) -> (StatusCode, Json<Value>) {
+        let gate = Arc::new(Semaphore::new(0));
+        async fn handler(State((h, gate)): State<(Hits, Arc<Semaphore>)>, uri: Uri, body: Option<Json<Value>>) -> (StatusCode, Json<Value>) {
             let path = uri.path().to_string();
             let n = {
                 let mut h = h.lock().unwrap();
-                h.push((path.clone(), body.map(|b| b.0).unwrap_or(Value::Null)));
-                h.iter().filter(|(p, _)| p == &path).count()
+                h.push((path.clone(), body.map(|b| b.0).unwrap_or(Value::Null), Instant::now()));
+                h.iter().filter(|(p, ..)| p == &path).count()
             };
-            if path.contains("slow") {
-                tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+            if path.contains("hold") {
+                drop(gate.acquire().await.unwrap());
             }
             if path.contains("limited") && n == 1 {
                 // 第一次限流（Telegram 的写法），之后放行
@@ -204,14 +208,16 @@ impl Mock {
                 (StatusCode::OK, Json(json!({})))
             }
         }
-        let app = Router::new().fallback(handler).with_state(hits.clone());
+        let app = Router::new().fallback(handler).with_state((hits.clone(), gate.clone()));
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = l.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
-        Mock { addr, hits }
+        Mock { addr, hits, gate }
     }
     pub fn url(&self, path: &str) -> String { format!("http://{}{}", self.addr, path) }
-    pub fn count(&self, path_part: &str) -> usize { self.hits.lock().unwrap().iter().filter(|(p, _)| p.contains(path_part)).count() }
+    /// 放行 `hold` 路径：卡着的和之后的请求都照常回
+    pub fn release(&self) { self.gate.add_permits(1) }
+    pub fn count(&self, path_part: &str) -> usize { self.hits.lock().unwrap().iter().filter(|(p, ..)| p.contains(path_part)).count() }
     /// 等某路径收到至少 `n` 次请求（通知是后台任务发的），最多等 5 秒
     pub async fn wait(&self, path_part: &str, n: usize) {
         for _ in 0..100 {
@@ -223,6 +229,10 @@ impl Mock {
         panic!("等不到 {path_part} 的 {n} 次请求，实际 {:?}", self.hits.lock().unwrap());
     }
     pub fn bodies(&self, path_part: &str) -> Vec<Value> {
-        self.hits.lock().unwrap().iter().filter(|(p, _)| p.contains(path_part)).map(|(_, b)| b.clone()).collect()
+        self.hits.lock().unwrap().iter().filter(|(p, ..)| p.contains(path_part)).map(|(_, b, _)| b.clone()).collect()
+    }
+    /// 各次请求收到的时刻
+    pub fn times(&self, path_part: &str) -> Vec<Instant> {
+        self.hits.lock().unwrap().iter().filter(|(p, ..)| p.contains(path_part)).map(|(.., t)| *t).collect()
     }
 }

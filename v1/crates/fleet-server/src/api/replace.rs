@@ -2,7 +2,8 @@
 //! 再交换编号：旧节点去备用团队（或指定的团队 / 空号），新节点接旧节点的编号（客户看到的名字不变）。
 //! 这里只做校验、预览、建作业和写审计；步骤在 jobs/steps/replace.rs，路由上的脚本在 routers/replace.rs。
 //!
-//! - 要改哪些路由：按各路由最近一次采集的快照，出口对上的入口属于旧节点、且没删除的就改（routers::exits_to，退役预览同一套匹配）。
+//! - 要改哪些路由：预览按各路由最近一次采集的快照，出口对上的入口属于旧节点、且没删除的就改（routers::exits_to，退役预览同一套匹配）；
+//!   作业执行时按路由当时的配置重新确定（同一套匹配，`replace_exit`）。
 //!   新入口按线路机一一对应（旧入口在哪台线路机，就换成新节点在同一台上的入口）；对不上时新节点只有一个在用入口就用它，否则报错说明。
 //! - 改编号与 PATCH /machines/{id} 同一套代码（machines::patch_tx）：同样的校验、审计（machine.rename）、刷新线路机。
 //!   编号先挪开旧节点、再给新节点，`numbering.auto_compact` 打开时新节点原来所在的团队随后压缩（同退役）。旧节点不退役：
@@ -15,7 +16,7 @@ use crate::error::{ApiError, ApiJson, ApiPath, ApiQuery, ApiResult};
 use crate::jobs;
 use crate::meta;
 use crate::names::{compact_numbers, display_name, node_name};
-use crate::routers::clash::host_eq;
+use crate::routers::clash::{host_eq, EntryRef};
 use crate::state::{AppState, Event};
 use axum::extract::State;
 use axum::Json;
@@ -25,8 +26,9 @@ use sqlx::PgConnection;
 use std::collections::HashSet;
 use uuid::Uuid;
 
-/// 路由上要改的一个出口（存进作业参数，作业按它改；凭据不在这里，执行时从库里取）。
-/// 替换节点和换线路机（api/lifecycle.rs）共用；换线路机的新入口在作业里才建，`new_entry_id` / `port` 为空，执行时取参数 `entry_id`
+/// 路由上要改的一个出口。发起时按快照算的存进作业参数（预览、审计里给人看）；执行时按路由当时的配置重新算一遍，按重新算的改
+/// （jobs/steps/replace.rs）。凭据不在这里，执行时从库里取。
+/// 替换节点和换线路机（api/lifecycle.rs）共用；换线路机的新入口在作业里才建，预览里 `new_entry_id` / `port` 为空
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ExitPlan {
     pub exit: String,
@@ -38,6 +40,9 @@ pub struct ExitPlan {
     /// 要改成的 server:port：出口原来写的是线路机 IP 就写新线路机的 IP，否则写它的 public_host
     pub server: String,
     pub port: Option<u16>,
+    /// 改不了的原因（替换时新节点上对不上入口）：预览照样列出这个出口，同时是 blocker
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 impl ExitPlan {
@@ -93,6 +98,28 @@ pub struct Ent {
 const ENTS: &str = "select e.id, e.relay_id, e.port, e.lifecycle::text lifecycle, r.public_host, host(rm.primary_ip) relay_ip, coalesce(rm.label, '') relay_name
     from entry e join relay r on r.machine_id = e.relay_id join machine rm on rm.id = e.relay_id where e.node_id = $1";
 
+/// 旧节点没删除的入口、新节点在用的入口（先建的在前）：出口按它们换（预览与执行共用）
+pub async fn replace_entries(conn: &mut PgConnection, old: Uuid, new: Uuid) -> sqlx::Result<(Vec<Ent>, Vec<Ent>)> {
+    let old_es = sqlx::query_as(&format!("{ENTS} and e.lifecycle <> 'removed'")).bind(old).fetch_all(&mut *conn).await?;
+    let new_es = sqlx::query_as(&format!("{ENTS} and e.lifecycle = 'active' order by e.created_at")).bind(new).fetch_all(&mut *conn).await?;
+    Ok((old_es, new_es))
+}
+
+/// 替换：对上入口 `er`（server:port 是 `srv:port`）的出口改成什么。None = 不是旧节点的入口；Err = 新节点上对不上
+pub fn replace_exit(old_es: &[Ent], new_es: &[Ent], er: &EntryRef, srv: &str, port: u16) -> Option<Result<ExitPlan, String>> {
+    let oe = old_es.iter().find(|e| e.id == er.id)?;
+    Some(map_entry(oe, new_es).map(|ne| ExitPlan {
+        exit: String::new(),
+        old_entry_id: oe.id,
+        new_entry_id: Some(ne.id),
+        old_server: srv.to_string(),
+        old_port: port,
+        server: new_server(srv, &oe.relay_ip, &ne.relay_ip, &ne.public_host),
+        port: Some(ne.port as u16),
+        error: None,
+    }))
+}
+
 /// 旧入口换成新节点的哪个入口：同一台线路机上的；没有时新节点只有一个在用入口就用它，否则说明为什么对不上
 pub fn map_entry<'a>(old: &Ent, new: &'a [Ent]) -> Result<&'a Ent, String> {
     if let Some(e) = new.iter().find(|e| e.relay_id == old.relay_id) {
@@ -116,8 +143,8 @@ pub fn new_server(old_server: &str, old_relay_ip: &str, new_relay_ip: &str, new_
     if host_eq(old_server, old_relay_ip) { new_relay_ip.to_string() } else { new_host.to_string() }
 }
 
-/// 各路由最近一次采集的快照里指向 `node` 的出口，`pick` 决定每个出口怎么改（None = 不改，Err = 改不了的原因，进 blockers）。
-/// 计划里有出口的路由不在线、又要改路由（`enabled`）时阻断；`team` 里的路由没有快照或配置读不了时提醒。
+/// 各路由最近一次采集的快照里指向 `node` 的出口，`pick` 决定每个出口怎么改（None = 不改，Err = 改不了的原因：照样列出、带上原因，
+/// `blocking` 时进 blockers）。计划里有出口的路由不在线、又要改路由（`enabled`）时阻断；`team` 里的路由没有快照或配置读不了时提醒。
 /// `(verb, what)`：「替换」/「旧节点」、「换线路机」/「旧入口」，拼进提示
 #[allow(clippy::too_many_arguments)]
 pub fn scan_routers(
@@ -125,10 +152,11 @@ pub fn scan_routers(
     node: Uuid,
     team: Option<Uuid>,
     enabled: bool,
+    blocking: bool,
     (verb, what): (&str, &str),
     blockers: &mut Vec<String>,
     warnings: &mut Vec<String>,
-    mut pick: impl FnMut(&crate::routers::clash::EntryRef, &str, u16) -> Option<Result<ExitPlan, String>>,
+    mut pick: impl FnMut(&EntryRef, &str, u16) -> Option<Result<ExitPlan, String>>,
 ) -> Vec<RouterPlan> {
     let mut out = vec![];
     for r in rows {
@@ -146,7 +174,21 @@ pub fn scan_routers(
             let (Some(srv), Some(port)) = (x.server.as_deref(), x.port) else { continue };
             match pick(er, srv, port) {
                 Some(Ok(e)) => exits.push(ExitPlan { exit: x.name.clone(), ..e }),
-                Some(Err(why)) => blockers.push(format!("软路由「{}」的出口「{}」：{why}", r.name, x.name)),
+                Some(Err(why)) => {
+                    if blocking {
+                        blockers.push(format!("软路由「{}」的出口「{}」：{why}", r.name, x.name));
+                    }
+                    exits.push(ExitPlan {
+                        exit: x.name.clone(),
+                        old_entry_id: er.id,
+                        new_entry_id: None,
+                        old_server: srv.to_string(),
+                        old_port: port,
+                        server: String::new(),
+                        port: None,
+                        error: Some(why),
+                    });
+                }
                 None => {}
             }
         }
@@ -176,41 +218,10 @@ pub fn routers_view(rs: &[RouterPlan]) -> Value {
             "id": r.id, "name": r.name, "state": r.state,
             "exits": r.exits.iter().map(|e| json!({
                 "exit": e.exit, "old_entry_id": e.old_entry_id, "new_entry_id": e.new_entry_id,
-                "from": format!("{}:{}", e.old_server, e.old_port), "to": e.to(),
+                "from": format!("{}:{}", e.old_server, e.old_port), "to": if e.error.is_some() { Value::Null } else { json!(e.to()) }, "error": e.error,
             })).collect::<Vec<_>>(),
         }))
         .collect::<Vec<_>>())
-}
-
-/// 改软路由的作业（替换、换线路机）排队：同一台路由上还没结束的这类作业结束之后才开始（参数 `routers_after`，见 jobs::claim）。
-/// 搬空一次建很多个换线路机作业，同时改同一台路由会互相覆盖配置、回滚时换回别人改之前的备份。先锁路由行，并发发起的也排得上。
-/// 返回要等的作业与它的机器名
-pub async fn routers_after(tx: &mut Tx<'_>, rs: &[RouterPlan]) -> ApiResult<Option<(Uuid, Option<String>)>> {
-    if rs.is_empty() {
-        return Ok(None);
-    }
-    let ids: Vec<Uuid> = rs.iter().map(|r| r.id).collect();
-    sqlx::query("select 1 from router where id = any($1) order by id for update").bind(&ids).execute(&mut **tx).await?;
-    Ok(sqlx::query_as(
-        "select j.id, display_name(m.kind::text, m.label, t.name, m.number) from job j
-           left join machine m on m.id = j.target_id left join team t on t.id = m.team_id
-         where j.kind in ('replace', 'move_entry') and j.state in ('queued', 'running', 'waiting', 'cancelling')
-           and jsonb_typeof(j.params #> '{plan,routers}') = 'array'
-           and exists (select 1 from jsonb_array_elements(j.params #> '{plan,routers}') r where (r->>'id')::uuid = any($1))
-         order by j.created_at desc, j.id desc limit 1",
-    )
-    .bind(&ids)
-    .fetch_optional(&mut **tx)
-    .await?)
-}
-
-/// 建好作业后在它的日志里记一行在等谁
-pub async fn note_after(tx: &mut Tx<'_>, job: Uuid, after: &Option<(Uuid, Option<String>)>) -> ApiResult<()> {
-    if let Some((id, name)) = after {
-        let msg = format!("排在作业 {id}（{}）之后：它也要改同一台软路由，等它结束再开始", name.as_deref().unwrap_or("已删除的机器"));
-        sqlx::query("insert into job_log (job_id, level, msg) values ($1, 'info', $2)").bind(job).bind(msg).execute(&mut **tx).await?;
-    }
-    Ok(())
 }
 
 /// 没指定团队时旧节点去哪：唯一的备用团队（迁移 0041 保证有且只有一个）
@@ -416,28 +427,15 @@ async fn router_plan(
     blockers: &mut Vec<String>,
     warnings: &mut Vec<String>,
 ) -> ApiResult<Vec<RouterPlan>> {
-    let old_es: Vec<Ent> = sqlx::query_as(&format!("{ENTS} and e.lifecycle <> 'removed'")).bind(old.id).fetch_all(&mut *conn).await?;
-    let new_es: Vec<Ent> = sqlx::query_as(&format!("{ENTS} and e.lifecycle = 'active' order by e.created_at")).bind(new.id).fetch_all(&mut *conn).await?;
+    let (old_es, new_es) = replace_entries(conn, old.id, new.id).await?;
     if new_es.is_empty() {
         blockers.push(format!("新节点「{}」没有在用的入口（上架完成、入口生效后再替换）", new.name()));
     }
     let rows = crate::routers::load(&st.db, None).await?;
     let has_new = !new_es.is_empty();
-    let out = scan_routers(&rows, old.id, Some(old_team), enabled, ("替换", "旧节点"), blockers, warnings, |er, srv, port| {
-        let oe = old_es.iter().find(|e| e.id == er.id)?;
-        match map_entry(oe, &new_es) {
-            Ok(ne) => Some(Ok(ExitPlan {
-                exit: String::new(),
-                old_entry_id: oe.id,
-                new_entry_id: Some(ne.id),
-                old_server: srv.to_string(),
-                old_port: port,
-                server: new_server(srv, &oe.relay_ip, &ne.relay_ip, &ne.public_host),
-                port: Some(ne.port as u16),
-            })),
-            Err(why) if has_new && enabled => Some(Err(why)),
-            Err(_) => None,
-        }
+    // 新节点没有在用的入口时出口也照样列出（原因是这个），只是不再逐个出口重复阻断
+    let out = scan_routers(&rows, old.id, Some(old_team), enabled, enabled && has_new, ("替换", "旧节点"), blockers, warnings, |er, srv, port| {
+        replace_exit(&old_es, &new_es, er, srv, port)
     });
     if enabled && out.is_empty() {
         warnings.push("没有软路由的出口指向旧节点：只交换编号".into());
@@ -496,7 +494,7 @@ pub async fn replace(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<
 
 async fn enqueue(tx: &mut Tx<'_>, actor: &str, p: &Plan) -> ApiResult<Uuid> {
     let (to_team, to_name, _) = p.to_team.clone().ok_or_else(|| ApiError::internal("没有目标团队"))?;
-    let mut params = json!({
+    let params = json!({
         "new_id": p.new.id,
         "old_team_id": p.old.team_id,
         "old_number": p.old.number,
@@ -508,12 +506,7 @@ async fn enqueue(tx: &mut Tx<'_>, actor: &str, p: &Plan) -> ApiResult<Uuid> {
         "old_name": p.old.name(),
         "new_name": p.new.name(),
     });
-    let after = if p.routers_enabled { routers_after(tx, &p.routers).await? } else { None };
-    if let Some((id, _)) = &after {
-        params["routers_after"] = json!(id);
-    }
     let job = jobs::enqueue(tx, "replace", Some(p.old.id), params, actor).await?;
-    note_after(tx, job, &after).await?;
     let routers: Vec<Value> = if p.routers_enabled {
         p.routers.iter().map(|r| json!({"id": r.id, "name": r.name, "exits": r.exits.iter().map(|e| &e.exit).collect::<Vec<_>>()})).collect()
     } else {

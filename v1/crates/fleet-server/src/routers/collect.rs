@@ -533,6 +533,44 @@ enum Outcome {
 /// 每个进程只做一次的收尾：上次没跑完的一键部署（中控重启、部署中断）标为失败
 static STARTED: AtomicBool = AtomicBool::new(false);
 
+/// 请采集循环马上采某几台路由：作业刚改完（或换回）它们的配置，快照别等下一轮 30 秒——紧接着发起的预览要按新配置算出口。
+/// 请求带序号，循环每轮开始时把排着的一起取走，这一轮做完记下做到了哪个序号（`wait` 等它）
+pub struct Refresh {
+    due: std::sync::Mutex<(u64, HashSet<Uuid>)>,
+    wake: tokio::sync::Notify,
+    served: tokio::sync::watch::Sender<u64>,
+    /// 这个 AppState 的采集循环在跑（测试里一般不跑：不等）
+    running: AtomicBool,
+}
+
+impl Default for Refresh {
+    fn default() -> Self {
+        Refresh { due: Default::default(), wake: Default::default(), served: tokio::sync::watch::channel(0).0, running: AtomicBool::new(false) }
+    }
+}
+
+impl Refresh {
+    /// 马上采这几台，等这一轮做完（最多一台的采集时限多一点）；采集循环没在跑就不等
+    pub async fn now(&self, ids: impl IntoIterator<Item = Uuid>) {
+        let seq = {
+            let mut d = self.due.lock().unwrap();
+            d.0 += 1;
+            d.1.extend(ids);
+            d.0
+        };
+        self.wake.notify_one();
+        if self.running.load(Ordering::Relaxed) {
+            let mut rx = self.served.subscribe();
+            let _ = tokio::time::timeout(TIMEOUT + Duration::from_secs(5), rx.wait_for(|s| *s >= seq)).await;
+        }
+    }
+
+    fn take(&self) -> (u64, Vec<Uuid>) {
+        let mut d = self.due.lock().unwrap();
+        (d.0, d.1.drain().collect())
+    }
+}
+
 pub async fn run_forever(st: AppState) {
     if !STARTED.swap(true, Ordering::Relaxed) {
         if let Err(e) = super::deploy::mark_interrupted(&st).await {
@@ -546,31 +584,51 @@ pub async fn run_forever(st: AppState) {
     let mut alerts = super::alerts::AlertState::default();
     let mut tick = tokio::time::interval(Duration::from_secs(30));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let refresh = &st.routers_refresh;
+    refresh.running.store(true, Ordering::Relaxed);
     loop {
-        tick.tick().await;
-        // 文件被删、被改、上次写失败：每轮按库对齐一次（内容没变不写）
-        if let Err(e) = super::sync_files(&st).await {
-            tracing::warn!("对齐隧道公钥清单 / router_known_hosts 失败：{e:#}");
+        let full = tokio::select! {
+            _ = tick.tick() => true,
+            _ = refresh.wake.notified() => false,
+        };
+        // 排着的立即采集一起取走：整轮会采到它们，否则只采它们
+        let (seq, due) = refresh.take();
+        if full {
+            // 文件被删、被改、上次写失败：每轮按库对齐一次（内容没变不写）
+            if let Err(e) = super::sync_files(&st).await {
+                tracing::warn!("对齐隧道公钥清单 / router_known_hosts 失败：{e:#}");
+            }
         }
-        if let Err(e) = round(&st, &mut mem).await {
-            tracing::error!("软路由采集失败：{e:#}");
+        if full || !due.is_empty() {
+            if let Err(e) = round_of(&st, &mut mem, (!full).then_some(due.as_slice())).await {
+                tracing::error!("软路由采集失败：{e:#}");
+            }
         }
-        if let Err(e) = super::alerts::evaluate(&st, &mut alerts, OffsetDateTime::now_utc()).await {
-            tracing::error!("软路由告警评估失败：{e:#}");
+        refresh.served.send_replace(seq);
+        if full {
+            if let Err(e) = super::alerts::evaluate(&st, &mut alerts, OffsetDateTime::now_utc()).await {
+                tracing::error!("软路由告警评估失败：{e:#}");
+            }
         }
     }
 }
 
 /// 采集一轮（全部路由并发，最多 8 台同时）。有路由的状态或摘要变了就发一次实时事件
-pub async fn round(st: &AppState, mem: &mut HashMap<Uuid, Mem>) -> anyhow::Result<()> {
+pub async fn round(st: &AppState, mem: &mut HashMap<Uuid, Mem>) -> anyhow::Result<()> { round_of(st, mem, None).await }
+
+/// 采集一轮：`only` 给了就只采这几台（立即采集，见 `Refresh`）
+async fn round_of(st: &AppState, mem: &mut HashMap<Uuid, Mem>, only: Option<&[Uuid]>) -> anyhow::Result<()> {
     let targets: Vec<Target> = sqlx::query_as(
         "select r.id, r.tunnel_port, r.tunnel_pubkey is not null has_key, r.host_key, s.data
-         from router r left join router_status s on s.router_id = r.id order by r.tunnel_port",
+         from router r left join router_status s on s.router_id = r.id where $1::uuid[] is null or r.id = any($1) order by r.tunnel_port",
     )
+    .bind(only)
     .fetch_all(&st.db)
     .await?;
-    let alive: HashSet<Uuid> = targets.iter().map(|t| t.id).collect();
-    mem.retain(|id, _| alive.contains(id));
+    if only.is_none() {
+        let alive: HashSet<Uuid> = targets.iter().map(|t| t.id).collect();
+        mem.retain(|id, _| alive.contains(id));
+    }
     if targets.is_empty() {
         return Ok(());
     }
@@ -849,6 +907,26 @@ pub async fn cleanup(db: &sqlx::PgPool, raw_days: u32) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// 立即采集：采集循环没在跑时只排上、不等；在跑时等到这一轮（取走了这次请求的那一轮）做完
+    #[tokio::test]
+    async fn refresh_waits_for_its_round() {
+        let r = Arc::new(Refresh::default());
+        let a = Uuid::now_v7();
+        r.now([a]).await;
+        assert_eq!(r.take(), (1, vec![a]));
+        r.running.store(true, Ordering::Relaxed);
+        let h = tokio::spawn({
+            let r = r.clone();
+            async move { r.now([a]).await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!h.is_finished(), "这一轮还没做完");
+        let (seq, due) = r.take();
+        assert_eq!((seq, due), (2, vec![a]));
+        r.served.send_replace(seq);
+        h.await.unwrap();
+    }
 
     fn raw(now: i64, rx: u64, up_total: u64, delay: Option<Value>) -> Value {
         let mut oc = json!({

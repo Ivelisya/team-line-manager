@@ -2,7 +2,7 @@
 import * as React from 'react';
 import type { EntryView, MachineView } from '@/lib/types';
 import * as F from '@/lib/format';
-import { entryBad, probeErr, probeFail, probeFailLabel, reachFail, tcpMs } from '@/lib/derive';
+import { entryBad, probeErr, probeFail, probeFailLabel, reachFail, reachFlaky, tcpMs } from '@/lib/derive';
 import { entryState, Num, Pill } from '@/components/app/primitives';
 import { ShowAll } from '@/components/app/Pagination';
 import { useEntryRouters, useRouterDrawer } from '@/lib/routers';
@@ -27,11 +27,16 @@ export const tcpCell = (e: EntryView) => {
   return <span data-tip={`近 1 小时中位数；最近一次 ${p.latency_ms == null ? '—' : `${Math.round(p.latency_ms)} ms`}`}><Num f={F.ms(tcpMs(p))} /></span>;
 };
 
-/** 入口状态列：中控连不上 > 线路机到节点探测不通 > 配置状态；正常的不写（一整列同一个绿胶囊没有信息，同线路页） */
+/** 检查失败的原因：reach.rs 记的是「端口 N：原因」，提示第一行已经写了端口 */
+const reachErr = (detail: string | null) => (detail ? `\n${probeErr(detail.replace(/^端口 \d+：/, ''))}` : '');
+
+/** 入口状态列：中控连不上 > 线路机到节点探测不通 > 中控刚才连不上 > 配置状态；正常的不写（一整列同一个绿胶囊没有信息，同线路页） */
 export const entryStatus = (e: EntryView) => {
-  const reach = reachFail(e); const fail = probeFail(e);
-  if (reach) return <Pill tone="bad" tip={`中控连不上线路机的 ${e.port} 端口（${F.dt(reach.ts)} 最近一次检查）${reach.detail ? `\n${probeErr(reach.detail)}` : ''}`}>中控连不上</Pill>;
-  return fail ? <Pill tone="bad" tip={probeErr(fail.detail)}>{probeFailLabel(e)}</Pill> : entryState(e, true);
+  const reach = reachFail(e); const fail = probeFail(e); const flaky = reachFlaky(e);
+  if (reach) return <Pill tone="bad" tip={`中控连续 ${reach.fails} 次连不上线路机的 ${e.port} 端口（${F.dt(reach.ts)} 最近一次检查）${reachErr(reach.detail)}`}>中控连不上</Pill>;
+  if (fail) return <Pill tone="bad" tip={probeErr(fail.detail)}>{probeFailLabel(e)}</Pill>;
+  if (flaky) return <Pill tone="warn" tip={`中控最近 ${flaky.fails} 次没连上线路机的 ${e.port} 端口（${F.dt(flaky.ts)} 最近一次检查）；连续 3 次才算连不上、告警${reachErr(flaky.detail)}`}>刚才连不上 {flaky.fails} 次</Pill>;
+  return entryState(e, true);
 };
 
 /** onlyBad：只列异常的入口（线路机概览：正常的几十条不重复列，全部在连接质量页签） */

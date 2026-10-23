@@ -168,6 +168,8 @@ pub struct Reach {
     #[serde(with = "time::serde::rfc3339")]
     pub ts: OffsetDateTime,
     pub detail: Option<String>,
+    /// 这个端口到最近一次为止连续连不上的次数（通的为 0）。告警按同一个端口连续 3 次算（reach::unreachable_sql），界面同一口径
+    pub fails: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -825,12 +827,16 @@ async fn probes_of(db: &sqlx::PgPool, eids: &[Uuid]) -> sqlx::Result<HashMap<(Uu
         .collect())
 }
 
-/// 在用入口各自端口上中控最近一次 TCP 检查，沿 (relay_id, port, ts desc) 索引逐个取最新一条；检查早于入口创建的（端口复用）不算
+/// 在用入口各自端口上中控最近一次 TCP 检查，沿 (relay_id, port, ts desc) 索引逐个取最新一条，失败的再数连续失败了几次；
+/// 检查早于入口创建的（端口复用）不算
 async fn reach_of(db: &sqlx::PgPool, es: &[(Uuid, Uuid, i32)]) -> sqlx::Result<HashMap<Uuid, Reach>> {
-    let rs = sqlx::query_as::<_, (Uuid, bool, OffsetDateTime, Option<String>)>(
-        "select e.id, x.ok, x.ts, x.detail from unnest($1::uuid[], $2::uuid[], $3::int[]) e(id, relay, port)
+    let rs = sqlx::query_as::<_, (Uuid, bool, OffsetDateTime, Option<String>, i32)>(
+        "select e.id, x.ok, x.ts, x.detail, x.fails from unnest($1::uuid[], $2::uuid[], $3::int[]) e(id, relay, port)
          join entry en on en.id = e.id cross join lateral (
-            select ok, ts, detail from relay_reach where relay_id = e.relay and port = e.port and ts >= en.created_at
+            select ok, ts, detail, case when ok then 0 else (
+                     select count(*)::int from relay_reach f where f.relay_id = e.relay and f.port = e.port and f.ts >= en.created_at and not f.ok
+                       and f.ts > coalesce((select max(g.ts) from relay_reach g where g.relay_id = e.relay and g.port = e.port and g.ok), '-infinity')) end fails
+            from relay_reach where relay_id = e.relay and port = e.port and ts >= en.created_at
             order by ts desc limit 1) x",
     )
     .bind(es.iter().map(|e| e.0).collect::<Vec<_>>())
@@ -838,7 +844,7 @@ async fn reach_of(db: &sqlx::PgPool, es: &[(Uuid, Uuid, i32)]) -> sqlx::Result<H
     .bind(es.iter().map(|e| e.2).collect::<Vec<_>>())
     .fetch_all(db)
     .await?;
-    Ok(rs.into_iter().map(|(id, ok, ts, detail)| (id, Reach { ok, ts, detail })).collect())
+    Ok(rs.into_iter().map(|(id, ok, ts, detail, fails)| (id, Reach { ok, ts, detail, fails })).collect())
 }
 
 /// 进行中的作业与失败的上架 / 退役作业，各按机器取最后建的：(进行中, 失败)

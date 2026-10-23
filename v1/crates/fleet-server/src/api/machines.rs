@@ -104,7 +104,7 @@ type PatchCur = (i32, String, Option<Uuid>, Option<i32>, Option<String>, String,
 
 pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<PatchIn>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
-    let relays = patch_tx(&mut tx, &a.name, id, b).await?;
+    let relays = patch_tx(&mut tx, &a.name, id, b).await?.relays;
     tx.commit().await?;
     for r in relays {
         st.relay_bumped(r);
@@ -113,9 +113,17 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     get_one(a, State(st), ApiPath(id)).await
 }
 
-/// PATCH 的全部校验与写入（含审计），在调用方的事务里做；返回要刷新的线路机（提交后调 `relay_bumped`）。
+/// `patch_tx` 的结果
+pub struct Patched {
+    /// 要刷新的线路机（提交后调 `relay_bumped`）
+    pub relays: Vec<Uuid>,
+    /// 进了备用团队、把开着的自动续费关掉了
+    pub auto_renew_off: bool,
+}
+
+/// PATCH 的全部校验与写入（含审计），在调用方的事务里做。
 /// 改团队 / 编号（改名）只走这里：网页、fleetctl rename 与替换节点（jobs/steps/replace.rs）同一套规则与审计
-pub async fn patch_tx(tx: &mut crate::db::Tx<'_>, actor: &str, id: Uuid, b: PatchIn) -> ApiResult<Vec<Uuid>> {
+pub async fn patch_tx(tx: &mut crate::db::Tx<'_>, actor: &str, id: Uuid, b: PatchIn) -> ApiResult<Patched> {
     let country = match &b.country {
         Some(c) => Some(crate::country::normalize(c.as_deref().unwrap_or("")).map_err(ApiError::bad_request)?),
         None => None,
@@ -233,7 +241,7 @@ pub async fn patch_tx(tx: &mut crate::db::Tx<'_>, actor: &str, id: Uuid, b: Patc
         detail["auto_renew_off"] = json!(true);
     }
     audit(tx, actor, if renamed { "machine.rename" } else { "machine.update" }, "machine", Some(id), detail).await?;
-    Ok(relays)
+    Ok(Patched { relays, auto_renew_off })
 }
 
 // ── 时序 ──────────────────────────────────────────────────────────────────
@@ -442,8 +450,6 @@ pub async fn move_to_spare(st: &AppState, actor: &str, id: Uuid, reason: Option<
     }
     let (spare_id, spare_name, taken) = spare_team(&mut tx).await?;
     let mut free = (1..=999).filter(|n| !taken.contains(n));
-    // patch_tx 进备用时关掉自动续费：先记下原来开没开，结果里写明
-    let auto_renew_off: bool = sqlx::query_scalar("select exists (select 1 from subscription where machine_id = $1 and auto_renew)").bind(id).fetch_one(&mut *tx).await?;
     let mut revs: Vec<(Uuid, i32, Option<Uuid>, String)> = sqlx::query_as(
         "select m.id, m.revision, m.team_id, display_name(m.kind::text, m.label, t.name, m.number) from machine m left join team t on t.id = m.team_id
          where m.id = any($1)",
@@ -457,9 +463,15 @@ pub async fn move_to_spare(st: &AppState, actor: &str, id: Uuid, reason: Option<
     // (id, 原名, 新名)，宿主机在前
     let mut moved: Vec<(Uuid, String, String)> = vec![];
     let mut relays = vec![];
+    // patch_tx 进备用时关掉了自动续费的（原名），结果里写明
+    let mut renew_off = vec![];
     for (mid, rev, _, from) in &revs {
         let n = free.next().ok_or_else(|| ApiError::conflict(format!("备用团队「{spare_name}」的编号用完了")))?;
-        relays.extend(patch_tx(&mut tx, actor, *mid, PatchIn::rename(*rev, spare_id, n)).await?);
+        let p = patch_tx(&mut tx, actor, *mid, PatchIn::rename(*rev, spare_id, n)).await?;
+        relays.extend(p.relays);
+        if p.auto_renew_off {
+            renew_off.push(from.clone());
+        }
         sqlx::query("update machine set lifecycle_reason = $2 where id = $1")
             .bind(mid)
             .bind(if *mid == id { reason } else { Some(ip_reason.as_str()) })
@@ -500,16 +512,22 @@ pub async fn move_to_spare(st: &AppState, actor: &str, id: Uuid, reason: Option<
         st.relay_bumped(r);
     }
     st.emit(Event::Machines);
-    let notes = spare_notes(auto_renew_off, compacted.then_some(host_from.as_str()), true);
-    Ok(json!({"mode": "spare", "name": host_to, "from": host_from, "recycle_on": recycle_on, "ip_nodes": ip_out, "auto_renew_off": auto_renew_off, "notes": notes}))
+    let notes = spare_notes(&renew_off, &host_from, compacted.then_some(host_from.as_str()), true);
+    Ok(json!({"mode": "spare", "name": host_to, "from": host_from, "recycle_on": recycle_on, "ip_nodes": ip_out, "auto_renew_off": !renew_off.is_empty(), "notes": notes}))
 }
 
-/// 进备用的提示（预览 `done = false`、结果 `done = true`）：开着的自动续费会关掉（不关的话每到期顺延一期，永远不回收）；
-/// 原团队压缩了编号时，撤销退役（改回原团队）拿到的是那时最小的空号，回不到原来的名字（`renumbered` = 原名）
-fn spare_notes(auto_renew: bool, renumbered: Option<&str>, done: bool) -> Vec<String> {
+/// 进备用的提示（预览 `done = false`、结果 `done = true`）：开着的自动续费会关掉（不关的话每到期顺延一期，永远不回收；`auto_renew` 是开着的那几台，
+/// 只有这台自己时不写名字，同机 IP 节点一起进的写上名字）；原团队压缩了编号时，撤销退役（改回原团队）拿到的是那时最小的空号，回不到原来的名字（`renumbered` = 原名）
+fn spare_notes(auto_renew: &[String], host: &str, renumbered: Option<&str>, done: bool) -> Vec<String> {
     let mut v = vec![];
-    if auto_renew {
-        v.push(if done { "自动续费已关闭（供应商那边的自动扣款要自己去关）" } else { "这台开着自动续费：进备用时会关掉，到期后照常回收（供应商那边的自动扣款要自己去关）" }.to_string());
+    if !auto_renew.is_empty() {
+        let who = (auto_renew != [host]).then(|| auto_renew.join("、"));
+        v.push(match (done, who) {
+            (true, None) => "自动续费已关闭（供应商那边的自动扣款要自己去关）".to_string(),
+            (true, Some(w)) => format!("{w} 的自动续费已关闭（供应商那边的自动扣款要自己去关）"),
+            (false, None) => "这台开着自动续费：进备用时会关掉，到期后照常回收（供应商那边的自动扣款要自己去关）".to_string(),
+            (false, Some(w)) => format!("{w} 开着自动续费：进备用时会关掉，到期后照常回收（供应商那边的自动扣款要自己去关）"),
+        });
     }
     if let Some(n) = renumbered {
         v.push(format!("原团队后面的节点{}前移补号：撤销退役（改回原团队）拿到的是那时最小的空号，回不到 {n}", if done { "已" } else { "会" }));
@@ -734,11 +752,17 @@ pub async fn retire_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
     let to_name = free.next().map(|n| node_name(&spare_name, n));
     let spare_ip: Vec<Value> =
         ip_nodes.iter().filter(|x| !x.3).map(|(i, n, _, _)| json!({"id": i, "name": n, "to_name": free.next().map(|k| node_name(&spare_name, k))})).collect();
-    let auto_renew: bool = sqlx::query_scalar("select exists (select 1 from subscription where machine_id = $1 and auto_renew)").bind(id).fetch_one(&mut *conn).await?;
+    // 一起进备用的（这台和还没退役的同机 IP 节点）里开着自动续费的
+    let going: Vec<(Uuid, &str)> = std::iter::once((id, name.as_str())).chain(ip_nodes.iter().filter(|x| !x.3).map(|x| (x.0, x.1.as_str()))).collect();
+    let on: Vec<Uuid> = sqlx::query_scalar("select machine_id from subscription where machine_id = any($1) and auto_renew")
+        .bind(going.iter().map(|x| x.0).collect::<Vec<_>>())
+        .fetch_all(&mut *conn)
+        .await?;
+    let auto_renew: Vec<String> = going.iter().filter(|x| on.contains(&x.0)).map(|x| x.1.to_string()).collect();
     let spare = json!({
         "ok": eligible.is_ok(), "why": eligible.err(), "team": {"id": spare_id, "name": spare_name}, "to_name": to_name,
         "recycle_on": due.map(crate::spare::recycle_on), "ip_nodes": spare_ip,
-        "notes": spare_notes(auto_renew, (!renames.is_empty()).then_some(name.as_str()), false),
+        "notes": spare_notes(&auto_renew, &name, (!renames.is_empty()).then_some(name.as_str()), false),
     });
     // 软路由出口：按路由归在一起，写明指向的是哪台
     let names: std::collections::HashMap<Uuid, &str> = std::iter::once((id, name.as_str())).chain(ip_nodes.iter().map(|x| (x.0, x.1.as_str()))).collect();

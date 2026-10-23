@@ -145,7 +145,7 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
   open_incidents, maintenance,   // maintenance：同机 IP 节点在宿主机维护时也为 true
   relay: {public_host,generation,applied_generation,applied_at,apply_error,port_min,port_max}|null }
 EntryView = { id, relay:{id,name}, node:{id,name}, direct, port, lifecycle, applied, apply_error,
-  tcp:{ok,latency_ms,detail,ts,median_ms}|null, egress:{…}|null, reach:{ok,ts,detail}|null, traffic:{today_up,today_down,month_up,month_down} }
+  tcp:{ok,latency_ms,detail,ts,median_ms}|null, egress:{…}|null, reach:{ok,ts,detail,fails}|null, traffic:{today_up,today_down,month_up,month_down} }
 // direct：线路机直出入口——节点就是线路机自己（node.id = relay.id，node.name =「线路机名-直出」），出口是线路机自己的 IP；
 //   只出现在线路机的 entries 里（一次）；没有 TCP 探测（tcp 恒为 null），出口不通时线路机自己报 egress_fail
 // tcp：线路机 → 节点出站地址的 TCP 建连，latency_ms 是最近一次（新 agent 报内核量的往返时间，不含 SYN 重发等待），
@@ -153,7 +153,8 @@ EntryView = { id, relay:{id,name}, node:{id,name}, direct, port, lifecycle, appl
 //   latency_ms 是这次出口验证的耗时（经节点去中控），不是线路延迟，median_ms 恒为 null
 // reach：中控 → 线路机上这个入口端口的最近一次 TCP 建连（只建连，不握手），`detail` 是失败原因（带「端口 N：」前缀），通为 null；
 //   只有在用入口有，没检查过（新入口、停用入口、线路机没在探）为 null。中控轮流连各端口，每个口隔「入口数 × 30 秒」才更新一次；
-//   随完整加载更新（至多 5 分钟，连通结论变了立即），不在 metrics 推送里。连续 3 次连不上同时开 relay_unreachable 健康原因
+//   随完整加载更新（至多 5 分钟，连通结论变了立即），不在 metrics 推送里。连续 3 次连不上同时开 relay_unreachable 健康原因；
+//   `fails` 是这个端口到最近一次为止连续连不上的次数（通的为 0），网页 ≥ 3 才写「中控连不上」，1–2 次写「刚才连不上 N 次」
 ```
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -436,22 +437,23 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 | GET | `/relays/{id}/evacuate?to_relay_id=&routers=` | 搬空预览（只读库）：同 POST 的响应，`jobs[]` 没有 `job_id` |
 | POST | `/relays/{id}/evacuate` | `{to_relay_id, routers?（默认 true）}` → `{from, to, jobs:[{machine_id,name,job_id,routers}], skipped:[{machine_id,name,reason}], warnings, share_changed, note}`。为该线路机上每个在用入口的节点各建一个 move_entry 作业；暂时不能搬的（入口停用/还在应用中、节点有别的作业、目标上已有入口、要改的软路由不在线…）列入 `skipped`，不影响其它节点。线路机自己的直出入口不搬、也不列入 `skipped`（退役线路机时随之摘除；退役守卫只数节点入口）。写审计 `relay.evacuate` 与每个节点一条 `entry.move` |
 
-**换线路机作业 `move_entry`**（目标 = 节点，要求节点 active）步骤：`attach_new`（目标线路机建新入口：新端口、新 client_uuid / short_id，pending）→ `firewall_widen`（vps：节点 nft 放行名单加入新线路机 IP；proxy 跳过）→ `wait_applied_new` → `verify_new`（经新入口的出口探测通过）→ `routers`（软路由上指向旧入口的出口改成新入口，同替换节点的「改软路由出口」：全部在线才动手，逐台备份 → 改 → 重启 OpenClash → 测延迟，一台失败已改的全部换回、作业失败、旧入口不摘；出口写的是旧线路机 IP 就换成新线路机 IP，否则换成新线路机的 public_host，端口用新入口的；要改哪些出口发起时按各路由最近的快照算好存进参数，`routers=false` 跳过）→ `detach_old`（旧入口 removing）→ `wait_detached_old` → `firewall_narrow`（节点在旧线路机上不再有入口时，把旧线路机 IP 从放行名单拿掉）。新入口验收通过之前旧入口不动，节点始终至少有一个可用入口。
-- **取消**：`routers` 之前都能取消（`cancellable` 为 true）；补偿 = 摘除新入口、恢复防火墙，旧入口保持不动。`routers` 失败（路由已换回原配置）停在这一步时也能取消；开始改路由之后、摘旧入口之后不能取消（会摘掉路由已经指向的新入口 / 让节点没有入口），失败了只能重试到完成；取消赶在摘除之后到达时保留新入口。
-- **改同一台软路由的作业排队**：替换、换线路机发起时，同一台路由上还有没结束的替换 / 换线路机作业，就记参数 `routers_after`（那个作业的 id），它结束之前不开始（怎么结束都照常开始），作业日志第一行写明排在谁后面。搬空一次建的作业因此一个接一个改路由。
+**换线路机作业 `move_entry`**（目标 = 节点，要求节点 active）步骤：`attach_new`（目标线路机建新入口：新端口、新 client_uuid / short_id，pending）→ `firewall_widen`（vps：节点 nft 放行名单加入新线路机 IP；proxy 跳过）→ `wait_applied_new` → `verify_new`（经新入口的出口探测通过）→ `routers`（软路由上指向旧入口的出口改成新入口，同替换节点的「改软路由出口」：全部在线才动手，逐台备份 → 改 → 重启 OpenClash → 测延迟，一台失败已改的全部换回、作业失败、旧入口不摘；出口写的是旧线路机 IP 就换成新线路机 IP，否则换成新线路机的 public_host，端口用新入口的；要改哪些出口执行时按路由当时的配置重新确定，见替换作业，`routers=false` 跳过）→ `detach_old`（旧入口 removing）→ `wait_detached_old` → `firewall_narrow`（节点在旧线路机上不再有入口时，把旧线路机 IP 从放行名单拿掉）。新入口验收通过之前旧入口不动，节点始终至少有一个可用入口。
+- **取消**：`routers` 之前都能取消（`cancellable` 为 true）；补偿 = 摘除新入口、恢复防火墙，旧入口保持不动。`routers` 排队等别的作业改同一台路由时、失败且路由都已换回原配置停在这一步时也能取消；改路由失败且有路由没换回（参数 `routers_stuck` 非空）时不能取消（会摘掉路由还指着的新入口），人工处理好那台路由后重试；开始改路由之后、摘旧入口之后不能取消（会摘掉路由已经指向的新入口 / 让节点没有入口），失败了只能重试到完成；取消赶在摘除之后到达时保留新入口。
+- **同一台软路由一个一个改**：替换、换线路机（含搬空建的、重试的）的 `routers` 这一步按路由加锁（PG advisory lock，键由路由 id 算出，读配置 → 改 → 重启 → 测 / 换回期间持有，一个作业改几台时按 id 顺序加）。别的作业正在改同一台路由时这一步排队：作业是 waiting、这一步的 `started_at` 为 null（排队不算这一步的超时），参数 `routers_queued` 记着在等哪台，日志写一次「软路由「X」正在被别的作业改，排队等它改完」，每 10 秒再试。作业的其余步骤并行，搬空时几十个节点只在改路由这一步轮流。
 - **分享链接会变**：新入口有新的端口和凭据。`GET /jobs/{id}` 对 move_entry 多返回 `result:{new_entry_id, old_entry_id, from_relay_id, to_relay_id, share_changed:true, note}`；用 `GET /entries/{new_entry_id}/share` 取新链接（需要 secrets 权限）。作业日志里也有「客户端需要换成新的分享链接」。
 - 旧线路机不在线时 `wait_detached_old` 会失败，线路机恢复后重试。
+- `routers` 改完（或换回）路由后马上请采集循环采一次这几台（`routers::collect::Refresh`，等它采完，最多 30 秒）：紧接着发起的预览按新配置算出口，不用等下一轮 30 秒。改配置时 ssh 根本没连上（连接 / 握手 / 登录阶段失败，脚本没跑）的那台算没改过：不去换回它，错误写「（没连上，这台什么都没改）」，可以直接重试或取消。
 - 线路机退役守卫的错误提示里指向「搬空线路机」。
 
 **替换节点**：新节点接替旧节点——软路由上指向旧节点入口的出口改成新节点的入口，新节点接旧编号，旧节点去备用团队（同「退役」的默认去向：不建退役作业，由备用到期自动回收接手；`spare_from` 记下它原来的名字）。
-- 预览 `GET /machines/{old}/replace` 返回 `{old:{id,name,kind,team:{id,name}|null}, new:{同}, new_name（新节点替换后的名字 = 旧节点现在的名字）, old_to:{team:{id,name,spare}|null, number, name}, renames:[{machine_id,old_name,new_name}]（numbering.auto_compact 时新节点原来的团队压缩编号）, routers_enabled, routers:[{id,name,state:online|offline|pending, exits:[{exit,old_entry_id,new_entry_id,from:"server:port",to:"server:port"}]}], ok, blockers[], warnings[]}`。
+- 预览 `GET /machines/{old}/replace` 返回 `{old:{id,name,kind,team:{id,name}|null}, new:{同}, new_name（新节点替换后的名字 = 旧节点现在的名字）, old_to:{team:{id,name,spare}|null, number, name}, renames:[{machine_id,old_name,new_name}]（numbering.auto_compact 时新节点原来的团队压缩编号）, routers_enabled, routers:[{id,name,state:online|offline|pending, exits:[{exit,old_entry_id,new_entry_id,from:"server:port",to:"server:port"|null,error}]}], ok, blockers[], warnings[]}`。新入口对不上的出口照样列出：`to` 为 null、`error` 是原因（同时是 blocker；新节点没有在用入口时只有总的那条 blocker），其余 `error` 为 null。
 - 条件：旧、新都是在用（active）的节点（不是线路机）、都没有进行中的作业、旧节点有团队编号、新节点至少有一个 active 入口。新节点可以在别的团队（替换时改到旧节点的团队，warnings 里提示）。旧节点去备用团队时 warnings 还提示什么时候回收：没有订阅（不会自动回收）、已过期满 1 天（一小时内就回收）、开着自动续费（进备用时关掉）。交换编号时旧节点的 `lifecycle_reason` 记「替换下来：新 接替了 旧」，旧节点的来源画像（`node_source_seen`，连接数记 0）复制给新节点，客户换过来不算新出现、新机器不用重新学。`old_to.team_id` 不给时去唯一的备用团队；编号不给取目标团队最小的空号（作业执行时再取一次）。
 - 要改的路由：按各路由 `router_status.data` 里的出口（见软路由），出口对上的入口属于旧节点、未删除的都算（`routers::exits_to`，退役预览、备用到期提醒同一套匹配）。新入口按线路机一一对应（同一台线路机上的新入口；没有时新节点只有一个 active 入口就用它，否则 blockers 说明对不上）；出口原来写的是线路机 IP 就换成新线路机的 IP，否则换成它的 public_host。`routers_enabled` 时任何一台要改的路由不在线（`state` 不是 online）都是 blocker；`routers=false` 不看路由、只交换编号。
 
-**替换作业 `replace`**（目标 = 旧节点，要求 active）步骤：`routers`「改软路由出口」→ `renumber`「交换编号」。计划（改哪些路由的哪些出口）发起时存进作业参数（不含凭据）。
-- `routers`：先确认计划里的路由全部在线（有不在线的：一台都不改，失败，`error_kind=network`）；再逐台经隧道执行 `routers/replace.rs` 的脚本：备份源配置（`uci get openclash.config.config_path`）到 `/etc/fleet-backup/openclash/<文件名>.<UTC 时间戳>`、只改出口代理块里的 server / port / uuid / servername（或 sni）/ reality-opts 的 public-key / short-id 6 行（核对它现在指向旧入口或已经是新入口，认不出、行数不对一行不写）、重启 OpenClash、等 mihomo API、逐个测出口延迟（generate_204，各 3 次）。一台失败：它自己换回备份，之前改好的按各自的备份换回（`routers_applied` 参数记着时间戳），作业失败；回滚也失败的写明要人工处理及备份位置。凭据执行时从库里取（同分享链接），只进 ssh 的 stdin。步骤输出 `{routers:[{id,name,exits:[{exit,to}],backup,delay_ms[]}]}`。没有路由要改、或 `routers=false` 时跳过。
+**替换作业 `replace`**（目标 = 旧节点，要求 active）步骤：`routers`「改软路由出口」→ `renumber`「交换编号」。发起时按快照算的计划（改哪些路由的哪些出口）存进作业参数 `plan`（不含凭据），只作展示与审计。
+- `routers`：要改的出口执行时重新确定：逐台经隧道读在线路由的 OpenClash 源配置（顶层 `secret:` 行不出路由），出口对上的入口属于旧节点（换线路机：就是旧入口）、未删除的都改，和预览同一套匹配——发起之后路由上新加的指向旧入口的出口照改，已经不指向旧入口的不改；和计划不一样时日志写一行「按软路由现在的配置要改：…（发起时的预览是：…）」。不在线的路由按最近一次采集看，有要改的出口就一台都不改，失败（`error_kind=network`）；计划里的、或快照里有要改的出口的路由配置读不了也一台都不改。要改的路由加锁（见上）后逐台经隧道执行 `routers/replace.rs` 的脚本：备份源配置（`uci get openclash.config.config_path`）到 `/etc/fleet-backup/openclash/<文件名>.<UTC 时间戳>`、只改出口代理块里的 server / port / uuid / servername（或 sni）/ reality-opts 的 public-key / short-id 6 行（核对它现在指向旧入口或已经是新入口，认不出、行数不对一行不写）、重启 OpenClash、等 mihomo API、逐个测出口延迟（generate_204，各 3 次）。一台失败：它自己换回备份，之前改好的按各自的备份换回（`routers_applied` 参数记着时间戳与要改的出口，中控在这一步中途重启后照它接着做），作业失败；回滚也失败的写明要人工处理哪台及备份位置，记进 `routers_stuck`，这时作业不能取消。凭据执行时从库里取（同分享链接），只进 ssh 的 stdin。步骤输出 `{routers:[{id,name,exits:[{exit,to}],backup,delay_ms[]}]}`。没有路由要改、或 `routers=false` 时跳过。
 - `renumber`：一个事务里先锁团队再锁两台机器，旧节点改到 `old_to`、新节点改成旧团队 + 旧编号，与 `PATCH /machines/{id}` 同一段代码（审计各一条 `machine.rename`、刷新入口所在线路机）；`numbering.auto_compact` 时新节点原来的团队压缩编号（审计 `team.renumber`）。已经换好（重跑）的跳过；旧节点的团队编号在发起后被改过则失败（不猜）。
-- **取消**：只在开始改路由之前——排队中，或 `routers` 失败（路由已换回）停在第一步；之后只能重试到完成。重试从失败那一步重来。
+- **取消**：只在开始改路由之前——排队中、`routers` 排队等路由，或 `routers` 失败（路由都已换回）停在第一步；之后只能重试到完成。重试从失败那一步重来。
 
 ## 访问策略（域名黑白名单）
 按团队或节点设置：有效策略 = 节点策略（`mode≠inherit`）> 团队策略 > 默认 `observe`。模式：`observe`（不产生规则）、`allowlist`（只放行名单内域名，其余阻止）、`denylist`（阻止名单内域名，其余放行）、`blocked`（暂停该节点所有新连接）、`inherit`（仅节点：跟随团队）。`allowlist`/`denylist` 至少一个域名。GET 需 `read`，写操作需 `write` 并写审计；预览是 POST 但无副作用（也需 `write`）。

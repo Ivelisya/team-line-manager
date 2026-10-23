@@ -2,7 +2,7 @@
 import * as React from 'react';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, ArrowDownToLine, Check, CircleDashed, Copy, ListChecks, Loader2, Minus, Pause, Play, RotateCw, Square, Undo2, X } from 'lucide-react';
-import { fetchAllLogs, fetchTailLogs, useCancelJob, useJob, useJobs, useMachine, useMachineBriefs, useRecycleBin, useRetryJob } from '@/lib/queries';
+import { fetchAllLogs, fetchTailLogs, useCancelJob, useJob, useJobs, useMachine, useRetryJob } from '@/lib/queries';
 import type { Job, JobLog } from '@/lib/types';
 import { errorKindLabel, jobKindLabel, jobLive, jobProgress, jobText, outputLines, stepKind, type StepKind } from '@/lib/jobs';
 import { jobStateLabel } from '@/lib/derive';
@@ -68,12 +68,6 @@ export function JobsPage() {
   const jobs = useJobs(filter, pg.offset, pg.size, kind);
   if (jobs.data && jobs.data.total !== total) setTotal(jobs.data.total);
   const list = jobs.data?.items ?? [];
-  // 退役进备用后机器改了名：列表标题带上原名（还在备用的取机器视图的 spare_from，已回收的取回收站里那条的退役前的名字）
-  const recycled = useRecycleBin({ q: '', source: 'fleet', offset: 0, limit: 100 }).data?.items;
-  const origin = new Map<string, string | null>([
-    ...(recycled ?? []).flatMap((r) => (r.machine_id ? [[r.machine_id, r.name] as const] : [])),
-    ...(useMachineBriefs().data ?? []).filter((m) => m.spare_from).map((m) => [m.id, m.spare_from] as const),
-  ]);
   const selected = id ?? null;
   // 地址里没有作业时，右栏默认显示最近 24 小时内第一条失败的（没有就第一条）：更早的失败在列表里看不到，右栏却先展示它会让人摸不着头脑；
   // 窄屏（单栏）仍先看列表，所以 data-detail 只认地址
@@ -106,7 +100,7 @@ export function JobsPage() {
             <div key={j.id} data-id={j.id} className="job-item" role="button" tabIndex={0} aria-current={j.id === shown} onClick={() => go(j.id)}
               onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(j.id); } }}>
               <span className="l1">
-                <b className="ellipsis">{jobKindLabel(j.kind)} · {j.target ? <NodeHover id={j.target.id} noFocus><span>{j.target.name}</span></NodeHover> : '—'}{j.target && origin.get(j.target.id) && origin.get(j.target.id) !== j.target.name && <span className="t-sub">（原 {origin.get(j.target.id)}）</span>}</b>
+                <b className="ellipsis">{jobKindLabel(j.kind)} · {j.target ? <NodeHover id={j.target.id} noFocus><span>{j.target.name}</span></NodeHover> : '—'}{/* 退役进备用后机器改了名：带上原名（服务端给的 target.origin） */}{j.target?.origin && j.target.origin !== j.target.name && <span className="t-sub">（原 {j.target.origin}）</span>}</b>
                 <span style={{ marginLeft: 'auto' }}><JobPill state={j.state} /></span>
               </span>
               {jobLive(j.state) && <span className="l-prog"><Progress value={jobProgress(j).pct} live label="总进度" /><span className="num">{jobProgress(j).done}/{jobProgress(j).total}</span></span>}

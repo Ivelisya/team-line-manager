@@ -5,7 +5,7 @@ use crate::cmds::{cycle_cn, due_cn, num, st, Ctx};
 use crate::meta;
 use crate::ops::confirm;
 use crate::resolve::Want;
-use crate::table::{self, gb, money};
+use crate::table::{self, gb, money, traffic};
 use anyhow::{anyhow, bail};
 use serde_json::{json, Map, Value};
 use std::ops::RangeInclusive;
@@ -174,29 +174,29 @@ fn used_cn(m: &Value, limit: Option<i64>, pct: Option<i64>, incl: &str) -> Strin
     format!("{}{lim}{p}，{span}，{}{}{incl}{note}", gb(num(q, "/used").unwrap_or(0.0)), rule_cn(&q["rule"]), nic_cn(m))
 }
 
-/// 本月流量（组织时区）：有 agent 的按网卡 `网卡 ↓ 110 GB / ↑ 108 GB`，家宽代理、同机 IP 节点按业务（下载 / 上传，含已移除入口）；
+/// 本月流量（组织时区，十进制自动单位，同网页）：有 agent 的按网卡 `网卡 ↓ 1.1 TB / ↑ 108.0 GB`，家宽代理、同机 IP 节点按业务（下载 / 上传，含已移除入口）；
 /// 本月中途上架的带「（2026-10-22 起）」。billing 的不限流量行、show 共用
 pub(crate) fn month_cn(m: &Value) -> String {
     let n = |p: &str| num(m, p).unwrap_or(0.0);
     let v = if m["nic"].is_object() {
-        format!("网卡 ↓ {} / ↑ {}", gb(n("/nic/month_rx")), gb(n("/nic/month_tx")))
+        format!("网卡 ↓ {} / ↑ {}", traffic(n("/nic/month_rx")), traffic(n("/nic/month_tx")))
     } else {
         let es = m["entries"].as_array().map(Vec::as_slice).unwrap_or_default();
         let sum = |k: &str| es.iter().filter_map(|e| e["traffic"][k].as_f64()).sum::<f64>() + n(&format!("/removed_traffic/{k}"));
-        format!("业务 下载 {} / 上传 {}", gb(sum("month_down")), gb(sum("month_up")))
+        format!("业务 下载 {} / 上传 {}", traffic(sum("month_down")), traffic(sum("month_up")))
     };
     let from = m["month_counted_from"].as_str().map(|t| format!("（{} 起）", day_of(t))).unwrap_or_default();
     format!("{v}{from}")
 }
 
-/// 备用团队里在用的机器（`spare`，即已退役、等到期回收）：什么时候退役、原名、哪天自动回收（`recycle_on`，账单时区）。
+/// 备用团队里在用的机器（`spare`，即已退役、等到期回收）：哪天退役（组织时区）、原名、哪天自动回收（`recycle_on`，账单时区）。
 /// 不是备用、不在用时为 None（billing、show 共用）
 pub(crate) fn spare_cn(m: &Value) -> Option<String> {
     if m["spare"] != true || m["lifecycle"] != "active" {
         return None;
     }
-    let when = match m["spare_since"].as_str().and_then(|t| t.get(..10)) {
-        Some(d) => format!("已于 {d} 退役"),
+    let when = match m["spare_since"].as_str() {
+        Some(t) => format!("已于 {} 退役", day_of(t)),
         None => "已退役".into(),
     };
     let from = m["spare_from"].as_str().map(|f| format!("（原 {f}）")).unwrap_or_default();
@@ -467,10 +467,11 @@ mod tests {
     #[test]
     fn spare_hint_only_for_active_spare() {
         let m = |spare: bool, lc: &str, on: Value| {
-            json!({"spare": spare, "lifecycle": lc, "recycle_on": on, "spare_from": "团队2-07", "spare_since": "2026-10-21T10:03:00Z"})
+            json!({"spare": spare, "lifecycle": lc, "recycle_on": on, "spare_from": "团队2-07", "spare_since": "2026-10-21T23:36:00Z"})
         };
         let on = json!("2026-10-22");
-        assert_eq!(spare_cn(&m(true, "active", on.clone())).as_deref(), Some("已于 2026-10-21 退役（原 团队2-07），2026-10-22 起自动回收（账单时区）"));
+        // 退役日按组织时区（默认北京时间）：UTC 10-21 23:36 是北京 10-22
+        assert_eq!(spare_cn(&m(true, "active", on.clone())).as_deref(), Some("已于 2026-10-22 退役（原 团队2-07），2026-10-22 起自动回收（账单时区）"));
         assert!(spare_cn(&m(true, "active", Value::Null)).unwrap().contains("没有订阅，不会自动回收"));
         assert_eq!(spare_cn(&m(false, "active", on.clone())), None);
         assert_eq!(spare_cn(&m(true, "retired", on)), None);
@@ -586,9 +587,9 @@ mod tests {
         let q = json!({"agent": {"nic_ifaces": ["eth0"]}, "quota": {"used": 31_900_000, "period_start": "2026-09-24", "period_end": null, "rule": null, "base": null, "counted_from": "2026-10-21T17:10:00Z"}});
         assert_eq!(used_cn(&q, Some(1000), Some(0), ""), "0.03 GB / 1000 GB（0%），2026-09-24 起，业务流量；2026-10-22 起统计，之前的用量不在内");
         // 不限流量只写本月：有 agent 按网卡，家宽代理按业务（含已移除入口）
-        let m = json!({"nic": {"month_rx": 110_000_000_000i64, "month_tx": 108_000_000_000i64}, "month_counted_from": "2026-10-21T17:10:00Z"});
-        assert_eq!(month_cn(&m), "网卡 ↓ 110 GB / ↑ 108 GB（2026-10-22 起）");
+        let m = json!({"nic": {"month_rx": 1_044_400_000_000i64, "month_tx": 108_000_000_000i64}, "month_counted_from": "2026-10-21T17:10:00Z"});
+        assert_eq!(month_cn(&m), "网卡 ↓ 1.0 TB / ↑ 108.0 GB（2026-10-22 起）");
         let m = json!({"nic": null, "entries": [{"traffic": {"month_down": 3_000_000_000i64, "month_up": 1_000_000_000i64}}], "removed_traffic": {"month_down": 500_000_000, "month_up": 0}});
-        assert_eq!(month_cn(&m), "业务 下载 3.5 GB / 上传 1 GB");
+        assert_eq!(month_cn(&m), "业务 下载 3.5 GB / 上传 1.0 GB");
     }
 }

@@ -679,8 +679,10 @@ async fn relay_reach_rounds_feed_relay_beats() {
     assert_eq!((good["ok"].clone(), good["detail"].clone()), (json!(true), Value::Null), "{m}");
     assert!(good["ts"].is_string(), "{m}");
     assert_eq!((bad["ok"].clone(), bad["detail"].clone()), (json!(false), json!(format!("端口 {closed2}：连接被拒绝"))), "{m}");
+    // fails：这个端口到最近一次为止连续连不上几次（告警按连续 3 次）
+    assert_eq!((good["fails"].clone(), bad["fails"].clone()), (json!(0), json!(3)), "{m}");
     let m = t.get(&format!("/api/v1/machines/{down}")).await;
-    assert_eq!(reach(&m, closed as i32)["ok"], json!(false), "{m}");
+    assert_eq!((reach(&m, closed as i32)["ok"].clone(), reach(&m, closed as i32)["fails"].clone()), (json!(false), json!(7)), "{m}");
     // 线路机上的入口表和节点那一侧是同一份；没检查过（线路机3 没有入口，新建的入口还没轮到）为 null
     let node = t.get(&format!("/api/v1/machines/{}", m["entries"][0]["node"]["id"].as_str().unwrap())).await;
     assert_eq!(node["entries"][0]["reach"]["ok"], json!(false), "{node}");
@@ -1107,6 +1109,55 @@ async fn relay_maintenance_freezes_node_probe_alerts() {
     assert!(has_rule(&incidents(&t, "firing").await, "tcp_fail"), "线路机维护中：节点的 TCP 告警不恢复");
     assert!(incidents(&t, "resolved").await.is_empty());
     assert_eq!(t.health(node).await.0, "unknown");
+}
+
+/// 节点两条入口：线路机2 那条 TCP 不通开了告警；之后线路机1 进维护、线路机2 那条恢复了——告警照常恢复
+/// （只看当初失败的那条入口判不判得出，另一条入口的线路机在维护不挡）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn other_relay_maintenance_does_not_hold_node_probe_alerts() {
+    let t = setup().await;
+    let r1 = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let r2 = seed_relay(&t, "线路机2", "198.51.100.2", "tok2").await;
+    let team = seed_team(&t, "团队1").await;
+    let (node, e1) = seed_node(&t, r1, team, 1, "203.0.113.5", 20000).await;
+    let e2 = Uuid::now_v7();
+    sqlx::query("insert into entry (id, relay_id, node_id, port, client_uuid, short_id, lifecycle) values ($1, $2, $3, 20001, $4, 'abcd', 'active')")
+        .bind(e2)
+        .bind(r2)
+        .bind(node)
+        .bind(Uuid::now_v7())
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let report = |tok: &'static str, seq: u64, e: Uuid, tcp_ok: bool| {
+        let t = &t;
+        async move {
+            let mut r = blank_report(seq);
+            r.xray = Some(xray(true));
+            r.probes = vec![probe(e, now_ms() - 2_000, ProbeKind::Egress, true), probe(e, now_ms() - 2_000, ProbeKind::Tcp, tcp_ok)];
+            assert_eq!(t.report(tok, &r).await.0, StatusCode::OK);
+        }
+    };
+    report("tok1", 1, e1, true).await;
+    report("tok2", 1, e2, false).await;
+    let mut state = AlertState::default();
+    let base = OffsetDateTime::now_utc();
+    pass(&t, &mut state, base, 0).await;
+    pass(&t, &mut state, base, 91).await;
+    let firing = incidents(&t, "firing").await;
+    assert!(firing.iter().any(|i| i["rule"] == "tcp_fail" && i["summary"].as_str().unwrap().contains("线路机2 到节点 TCP 不通")), "{firing:?}");
+    let f = time::format_description::well_known::Rfc3339;
+    let now = OffsetDateTime::now_utc();
+    t.post("/api/v1/silences", json!({
+        "subject_id": r1, "is_maintenance": true, "comment": "换内核",
+        "starts_at": (now - time::Duration::minutes(1)).format(&f).unwrap(), "ends_at": (now + time::Duration::hours(4)).format(&f).unwrap(),
+    })).await;
+    report("tok2", 2, e2, true).await;
+    for secs in [121, 181, 241, 301] {
+        pass(&t, &mut state, base, secs).await;
+    }
+    assert!(!has_rule(&incidents(&t, "firing").await, "tcp_fail"), "线路机1 维护不挡线路机2 那条的恢复");
+    assert!(has_rule(&incidents(&t, "resolved").await, "tcp_fail"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1614,19 +1665,21 @@ async fn notifications_sent_in_order_and_wait_on_429() {
     pass(&t, &mut state, base, 0).await;
     pass(&t, &mut state, base, 61).await;
     assert_eq!(incidents(&t, "firing").await.len(), 2);
-    // 第一条被限流（retry_after = 1 s）：等满 1 秒前不重发，第二条也排在后面不并发发出
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    assert_eq!(mock.count("/limited"), 1);
+    // 第一条被限流（retry_after = 1 s）：满 1 秒才重发同一条，第二条排在它后面、不在等的时候并发发出。
+    // 看请求的先后与间隔，不看某一刻收到了几次（机器忙时发送本身就会晚）
     mock.wait("/limited", 3).await;
     log_settles(&t, 2).await;
     assert_eq!(t.count("select count(*) from notify_log where ok").await, 2, "限流后重试成功，两条都送达");
+    let (at, b) = (mock.times("/limited"), mock.bodies("/limited"));
+    assert!(at[1] - at[0] >= Duration::from_secs(1), "限流后等满 retry_after 才重发：{:?}", at[1] - at[0]);
+    assert!(b[0]["text"] == b[1]["text"] && b[2]["text"] != b[0]["text"], "重发的是被限流的那条，第二条在它之后：{b:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn slow_channel_does_not_delay_other_channels() {
     let t = setup().await;
     let mock = Mock::start().await;
-    for (name, path) in [("slow", "/slow/a"), ("fast", "/hook/b")] {
+    for (name, path) in [("slow", "/hold/a"), ("fast", "/hook/b")] {
         t.post("/api/v1/notify-channels", json!({"name": name, "kind": "webhook", "config": {"url": mock.url(path)}, "min_severity": "info", "enabled": true})).await;
     }
     // 同一轮开两条告警（Xray 未运行 + 配置未应用）
@@ -1638,11 +1691,13 @@ async fn slow_channel_does_not_delay_other_channels() {
     pass(&t, &mut state, base, 0).await;
     pass(&t, &mut state, base, 61).await;
     assert_eq!(incidents(&t, "firing").await.len(), 2);
-    // 慢渠道每条 1.5 秒、还在发第一条；快渠道不等它，两条都已送到
-    tokio::time::sleep(Duration::from_millis(800)).await;
-    assert_eq!((mock.count("/slow/a"), mock.count("/hook/b")), (1, 2));
-    // 慢渠道自己仍按顺序把两条发完
-    mock.wait("/slow/a", 2).await;
+    // 慢渠道卡在第一条上（对方一直不回）；快渠道不等它，两条都送到。慢渠道的第二条排在第一条之后，没有并发发出
+    mock.wait("/hook/b", 2).await;
+    mock.wait("/hold/a", 1).await;
+    assert_eq!(mock.count("/hold/a"), 1);
+    // 慢渠道回了之后自己仍按顺序把两条发完
+    mock.release();
+    mock.wait("/hold/a", 2).await;
     log_settles(&t, 4).await;
 }
 
@@ -1650,21 +1705,23 @@ async fn slow_channel_does_not_delay_other_channels() {
 async fn resolved_sent_while_firing_still_queued() {
     let t = setup().await;
     let mock = Mock::start().await;
-    t.post("/api/v1/notify-channels", json!({"name": "slow", "kind": "webhook", "config": {"url": mock.url("/slow/a")}, "min_severity": "info", "enabled": true})).await;
+    t.post("/api/v1/notify-channels", json!({"name": "slow", "kind": "webhook", "config": {"url": mock.url("/hold/a")}, "min_severity": "info", "enabled": true})).await;
     seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
     let mut state = AlertState::default();
     let base = OffsetDateTime::now_utc();
     xray_report(&t, 1, false).await;
     pass(&t, &mut state, base, 0).await;
     pass(&t, &mut state, base, 61).await;
-    // 「触发」还在发（没写进 notify_log）时告警就恢复了：照样报恢复，排在触发之后
+    // 「触发」还在发（对方没回，没写进 notify_log）时告警就恢复了：照样报恢复，排在触发之后
+    mock.wait("/hold/a", 1).await;
     xray_report(&t, 2, true).await;
     pass(&t, &mut state, base, 91).await;
     pass(&t, &mut state, base, 151).await;
     assert!(incidents(&t, "firing").await.is_empty());
-    assert_eq!(t.count("select count(*) from notify_log").await, 0);
+    assert_eq!((t.count("select count(*) from notify_log").await, mock.count("/hold/a")), (0, 1));
+    mock.release();
     log_settles(&t, 2).await;
-    let events: Vec<Value> = mock.bodies("/slow/a").iter().map(|b| b["event"].clone()).collect();
+    let events: Vec<Value> = mock.bodies("/hold/a").iter().map(|b| b["event"].clone()).collect();
     assert_eq!(events, [json!("firing"), json!("resolved")]);
 }
 

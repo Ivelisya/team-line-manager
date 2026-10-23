@@ -78,7 +78,7 @@ function useSettled<T>(v: T, ms: number): T {
 const ROUTER_STATE: Record<string, string> = { offline: '离线', pending: '未接入' };
 
 /** 预览里要改的软路由出口（替换、换线路机、搬空共用）：一张小表「节点 | 软路由 · 出口 | 旧 → 新」，地址写线路机名（IP 放悬停）。
- *  出口里可能有带原因（error）的：映射不到新入口、改不了，和阻断原因一致，在这里标红 */
+ *  出口里可能有带原因（error）的：映射不到新入口，和阻断原因一致，在这里标红 */
 export function RouterExitList({ routers, title }: { routers: { node?: string; plan: RouterExitPlan }[]; title?: React.ReactNode }) {
   const addr = useAddrName();
   const rows = routers.flatMap(({ node, plan }) => plan.exits.map((e) => ({ node, plan, e })));
@@ -91,7 +91,7 @@ export function RouterExitList({ routers, title }: { routers: { node?: string; p
     <div>
       <div className="label" style={{ marginBottom: 6 }}>
         {title ?? (ok.length ? <>改 {new Set(ok.map((r) => r.plan.id)).size} 台软路由的 {ok.length} 个出口</> : '软路由出口')}
-        {bad > 0 && <>{ok.length > 0 && ' · '}<span className="rt-bad">{bad} 个改不了</span></>}
+        {bad > 0 && <>{ok.length > 0 && ' · '}<span className="rt-bad">{bad} 个对不上新入口</span></>}
       </div>
       <div style={{ maxHeight: 200, overflow: 'auto' }}>
         <table className="rx-tbl">
@@ -101,7 +101,7 @@ export function RouterExitList({ routers, title }: { routers: { node?: string; p
               <tr key={`${node ?? ''}-${r.id}-${e.exit}`}>
                 {withNode && <td className="num">{node}</td>}
                 <td><span className="num">{r.name}</span> · <span className="num">{e.exit}</span>{r.state !== 'online' && <> <Pill tone="bad">{ROUTER_STATE[r.state] ?? r.state}</Pill></>}</td>
-                <td className="rx-to">{e.error ? <span className="rt-bad" data-tip={e.error}>改不了</span> : <>{shown(e.from)} → <b>{e.to ? shown(e.to) : '?'}</b></>}</td>
+                <td className="rx-to">{e.error ? <Pill tone="bad" tip={e.error}>对不上新入口</Pill> : <>{shown(e.from)} → <b>{e.to ? shown(e.to) : '?'}</b></>}</td>
               </tr>
             ))}
           </tbody>
