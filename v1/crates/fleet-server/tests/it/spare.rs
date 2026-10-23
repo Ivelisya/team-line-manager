@@ -127,7 +127,7 @@ async fn retire_moves_into_spare() {
         pv["spare"]["notes"],
         json!([
             "这台开着自动续费：进备用时会关掉，到期后照常回收（供应商那边的自动扣款要自己去关）",
-            "原团队后面的节点会前移补号：撤销退役（改回原团队）拿到的是那时最小的空号，回不到 团队1-01"
+            "原团队后面的节点会前移补号：撤销退役（改回原团队）拿到的是那时最小的空号，回不到团队1-01"
         ])
     );
     assert_eq!((pv["spare"]["to_name"].as_str(), pv["spare"]["recycle_on"].as_str()), (Some("备用-02"), Some("2030-01-03")), "{pv}");
@@ -137,7 +137,7 @@ async fn retire_moves_into_spare() {
     assert_eq!(
         r,
         json!({"mode": "spare", "name": "备用-02", "from": "团队1-01", "recycle_on": "2030-01-03", "ip_nodes": [], "auto_renew_off": true,
-               "notes": ["自动续费已关闭（供应商那边的自动扣款要自己去关）", "原团队后面的节点已前移补号：撤销退役（改回原团队）拿到的是那时最小的空号，回不到 团队1-01"]})
+               "notes": ["自动续费已关闭（供应商那边的自动扣款要自己去关）", "原团队后面的节点已前移补号：撤销退役（改回原团队）拿到的是那时最小的空号，回不到团队1-01"]})
     );
     assert!(!auto(n1).await, "进备用关掉自动续费");
     let au = t.get(&format!("/api/v1/audit?target_id={n1}")).await;

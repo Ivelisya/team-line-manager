@@ -1048,7 +1048,7 @@ async fn mass_agent_loss_opens_one_central_alert() {
         pass(&t, &mut state, base, secs).await;
         selfmon::check_once(&t.st, base + time::Duration::seconds(secs)).await.unwrap();
     }
-    assert_eq!(firing().await, [("central_ingress".to_string(), "中控：3/3 台 agent 同时失联：检查边缘机 / Caddy / DNS".to_string())]);
+    assert_eq!(firing().await, [("central_ingress".to_string(), "中控：3/3 台 agent 同时失联：检查边缘机、Caddy、域名解析".to_string())]);
     // a、b 回来了：中控侧的恢复；c 从这时起去抖，满 60 秒按单机报
     for m in [a, b] {
         sqlx::query("update agent_state set last_report_at = now() where machine_id = $1").bind(m).execute(&t.st.db).await.unwrap();

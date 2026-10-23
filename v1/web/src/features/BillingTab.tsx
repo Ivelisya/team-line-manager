@@ -114,7 +114,7 @@ function OvField({ m, k, label, info, on, setOn, due, error, hint, locked, onTou
   const shared = k === 'traffic_gb' && m.host_machine && !m.plan;
   const follow = shared ? '与宿主机共用额度' : inheritText(m, k, due);
   const toggle = !locked && (
-    <span data-tip={`跟随${inheritSource(m, k)}：${follow}`}><Segmented sm label={`${label}：跟随或单独设置`} value={on ? 'own' : 'follow'} onChange={(v) => setOn(v === 'own')} items={OV_ITEMS} /></span>
+    <span data-tip={follow}><Segmented sm label={`${label}：跟随或单独设置`} value={on ? 'own' : 'follow'} onChange={(v) => setOn(v === 'own')} items={OV_ITEMS} /></span>
   );
   return (
     <div className="field" onBlur={onTouch}>

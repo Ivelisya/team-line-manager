@@ -37,7 +37,7 @@ type Paused = { readonly current: boolean };
 
 /** 标题：国旗 + 名称 + 右侧操作（状态只看底部的胶囊，名称旁不再重复标）。紧凑卡的 IP 在名称下面一行小字（同表格名称列） */
 const Head = memo(function Head({ name, from, country, manual, ip, view, onOpen }: { name: string; from: string | null; country: string | null | undefined; manual: boolean; ip: string; view: CardView; onOpen: Open }) {
-  const btn = <button type="button" className="nc-name" data-tip={from ? `打开 ${name}（原 ${from}）的详情` : `打开 ${name} 的详情`} onClick={() => onOpen()}>{name}</button>;
+  const btn = <button type="button" className="nc-name" data-tip={from ? `打开「${name}」（原 ${from}）的详情` : `打开「${name}」的详情`} onClick={() => onOpen()}>{name}</button>;
   return (
     <header className="nc-head">
       <Flag country={country} manual={manual} ip={ip} />
@@ -133,7 +133,7 @@ function Flow({ m, onOpen, totals, compact, paused }: { m: MachineView; onOpen: 
       {totals && (
         <button type="button" className="flow-foot flow-month" data-tip={monthFlowTip(m)} onClick={() => onOpen('traffic')}>
           {t.kind === 'nic' ? <span className="flow-foot-label"><ArrowDownUp />本月</span> : <span className="flow-foot-label"><Globe />本月业务</span>}
-          <span className="flow-vals">{t.kind === 'nic' ? <>↓ 下行 <Num f={F.bytes(t.down)} /> · ↑ 上行 <Num f={F.bytes(t.up)} /></> : <>下载 <Num f={F.bytes(t.down)} /> · 上传 <Num f={F.bytes(t.up)} /></>}<FromTag from={t.from} /></span><span className="sr-only">（查看流量页签）</span>
+          <span className="flow-vals">{t.kind === 'nic' ? <>↓ 下行 <Num f={F.bytes(t.down)} /> · ↑ 上行 <Num f={F.bytes(t.up)} /></> : <>下载 <Num f={F.bytes(t.down)} /> · 上传 <Num f={F.bytes(t.up)} /></>}<FromTag from={t.from} sep /></span><span className="sr-only">（查看流量页签）</span>
         </button>
       )}
     </div>
@@ -158,7 +158,7 @@ function Pair({ cols, tab, label, tip, onOpen }: { cols: { icon: React.ReactNode
 function BizPair({ m, onOpen, today }: { m: MachineView; onOpen: Open; today?: boolean }) {
   const t = monthTraffic(m);
   return <Pair tab="traffic" label="查看流量页签" onOpen={onOpen} tip={monthFlowTip(m)} cols={[
-    { icon: <ArrowDown />, label: '本月下载', value: <Num f={F.bytes(t.down)} />, sub: today && <>今日 <Num f={F.bytes(t.today_down)} /><FromTag from={m.month_counted_from} /></> },
+    { icon: <ArrowDown />, label: '本月下载', value: <Num f={F.bytes(t.down)} />, sub: today && <>今日 <Num f={F.bytes(t.today_down)} /><FromTag from={m.month_counted_from} sep /></> },
     { icon: <ArrowUp />, label: '本月上传', value: <Num f={F.bytes(t.up)} />, sub: today && <>今日 <Num f={F.bytes(t.today_up)} /></> },
   ]} />;
 }
@@ -195,7 +195,7 @@ function QuotaSlot({ m, onOpen, large }: { m: MachineView; onOpen: Open; large?:
             <b className={cn('num', q.rem === 0 && 'is-bad')}>{q.rem == null ? '与宿主机共用' : q.rem > 0 ? <Num f={quotaGb(q.rem)} /> : '已超限'}</b>
           </span>
         )}
-        {q.limit > 0 && <span className="nc-quse" data-tip={quotaTip(m)}>{quotaUsedLabel(q)} <Num f={quotaGb(q.used)} /> / <Num f={limitGb(q.limit)} /><FromTag from={q.from} start={q.start} sep /></span>}
+        {q.limit > 0 && <span className="nc-quse" data-tip={`${quotaUsedLabel(q)} ${F.str(quotaGb(q.used))} / ${F.str(limitGb(q.limit))}\n${quotaTip(m)}`}>{quotaUsedLabel(q)} <Num f={quotaGb(q.used)} /> / <Num f={limitGb(q.limit)} /><FromTag from={q.from} start={q.start} sep /></span>}
       </span>
       {q.rem != null && <Cells pct={q.pct} colors={QUOTA_COLORS} />}
       <span className="sr-only">（查看费用页签）</span>
@@ -211,15 +211,16 @@ function QuotaSlot({ m, onOpen, large }: { m: MachineView; onOpen: Open; large?:
 const BeatSlot = memo(function BeatSlot({ id, kind, lifecycle, reason, reasonKey, onOpen, tcp, tcpTip, egressOk, tcpFail, egressFail, all, off, usable, tcpBad, egressBad, reachBad }: { id: string; kind: MachineView['kind']; lifecycle: MachineView['lifecycle']; reason: string | undefined; reasonKey: string | undefined; onOpen: Open } & ReturnType<typeof probeSummary>) {
   const live = lifecycle === 'active';
   const src = useReachLabel();
-  const relayTip = `能用的入口数：线路机到节点的 TCP 和出口都通才算\nTCP 不通 ${tcpBad} 条 · 出口不通 ${egressBad} 条${off ? ` · 停用 ${off} 条不计` : ''}\n下面的格子是${reachWho(src)}连线路机的结果`;
   const bq = useProbeBeats(useCallback((d: ProbeBeats) => d[id], [id]));
   const beats = bq.data;
   const rtt = kind === 'relay' && live ? relayRttMs(beats) : null;
+  // 有异常原因时，标题行只留原因和入口可用数（放不下会被截断）；延迟放进入口可用数的悬停
+  const relayTip = `能用的入口数：线路机到节点的 TCP 和出口都通才算\nTCP 不通 ${tcpBad} 条 · 出口不通 ${egressBad} 条${off ? ` · 停用 ${off} 条不计` : ''}\n下面的格子是${reachWho(src)}连线路机的结果${rtt != null && reason ? `\n${src?.label ?? '探测点'}连到这台线路机的延迟 ${Math.round(rtt)} ms（近 1 小时中位数）` : ''}`;
   const rttTag = rtt == null ? null : <> · <span data-tip={`${src?.label ?? '探测点'}连到这台线路机的延迟，近 1 小时中位数`}>延迟 <b className="num">{Math.round(rtt)} ms</b></span></>;
   const rate = kind === 'proxy' && live ? beatRate(beats) : null;
   const empty = live && bq.isSuccess && !beats?.some((b) => b[0] > 0); // 整条都没有探测：标题写明、格子画虚线，不是 20 格灰块
   const cap = !live ? <span className="t-muted">{lifecycle === 'retired' ? '已退役' : '还没开始探测'}</span>
-    : kind === 'relay' && reason ? <><span className="nc-reason" data-tip={reason}>{reasonKey === 'relay_unreachable' ? (reachBad ? `${reachWho(src)}连不上 ${reachBad} 个入口` : `${reachWho(src)}连不上入口`) : reason}</span> · <span data-tip={relayTip}>入口可用 <b className="num">{usable}/{all}</b></span>{rttTag}</>
+    : kind === 'relay' && reason ? <><span className="nc-reason" data-tip={reason}>{reasonKey === 'relay_unreachable' ? (reachBad ? `${reachWho(src)}连不上 ${reachBad} 个入口` : `${reachWho(src)}连不上入口`) : reason}</span> · <span data-tip={relayTip}>入口可用 <b className="num">{usable}/{all}</b></span></>
     : reason ? <span className="nc-reason" data-tip={reason}>{reason}</span>
     : empty ? <span className="t-muted">暂无探测</span>
     : kind === 'relay' ? <><span data-tip={relayTip}>入口可用 <b className="num" style={usable < all ? { color: 'var(--warn-text)' } : undefined}>{usable}/{all}</b></span>{rttTag}</>

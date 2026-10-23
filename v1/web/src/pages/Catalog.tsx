@@ -74,7 +74,7 @@ function sortRows<T>(list: T[], sort: SortState | null, key: Record<string, (x: 
 function DeleteDialog({ what, item, onClose, run }: { what: string; item: { id: string; name: string } | null; onClose: () => void; run: (id: string) => Promise<unknown> }) {
   const held = useHeld(item?.id, item);
   return (
-    <ConfirmDialog open={!!item} onOpenChange={(o) => !o && onClose()} danger confirmLabel="删除" title={`删除${what}「${held?.name ?? ''}」？`}
+    <ConfirmDialog open={!!item} onOpenChange={(o) => !o && onClose()} danger confirmLabel="删除" title={`删除${what} · ${held?.name ?? ''}`}
       description={<>删了不能恢复 <InfoTip text={what === '供应商' ? '还有机器（包括已回收、待清除的）或套餐（包括已归档的）在用，就删不掉。会提示是哪些' : '还有机器用着（含回收后等待清除的）时删不掉，会提示还有哪些'} /></>}
       onConfirm={async () => { await run(item!.id); toast.ok(`${what}「${item!.name}」已删除`); }} />
   );
@@ -113,7 +113,7 @@ function TeamsTab() {
   return (
     <>
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
-      <Panel title="团队" count={list.length} sub={<><InfoTip text={"首页和表格按「排序」从小到大排列\n月费是在用机器折成美元的合计，汇率在「设置 → 汇率」"} />{list.length > 0 && <span className="t-sub" style={{ marginLeft: 'var(--sp-8)' }} data-tip={partial ? '带 * 的团队有币种缺汇率，没计入合计' : undefined}>月费合计 <span className="num">{F.money(total, 'USD')}</span>{partial ? '*' : ''}</span>}</>} tools={<Button variant="primary" size="md" onClick={() => setEdit('new')}><Plus />新建团队</Button>} flush>
+      <Panel title="团队" count={list.length} sub={<><InfoTip text={"首页和表格按「排序」从小到大排列\n月费是在用节点折成美元的合计，汇率在「设置 → 汇率」\n只算节点，线路机不归团队，所以合计比首页「每月费用」少线路机那部分"} />{list.length > 0 && <span className="t-sub" style={{ marginLeft: 'var(--sp-8)' }} data-tip={partial ? '带 * 的团队有币种缺汇率，没计入合计' : undefined}>月费合计 <span className="num">{F.money(total, 'USD')}</span>{partial ? '*' : ''}</span>}</>} tools={<Button variant="primary" size="md" onClick={() => setEdit('new')}><Plus />新建团队</Button>} flush>
         <TableWrap>
           <table className="dt is-one" style={{ minWidth: 430 }}>
             <colgroup><col /><col style={{ width: 90 }} /><col style={{ width: 100 }} /><col style={{ width: 110 }} /><col style={{ width: 52 }} /></colgroup>
@@ -124,7 +124,7 @@ function TeamsTab() {
                 const done = compact ? compact[t.id] ?? true : false;
                 return (
                   <tr key={t.id} {...rowProps(() => setEdit(t))}><td className="strong">{t.name}{t.spare && <> <InfoTip text={SPARE_TIP} /></>}</td><td className="r num">{t.sort_order}</td><td className="r num"><CountLink n={t.node_count} to={`/nodes?team=${t.id}`} /></td><td className="r"><TeamCost t={t} /></td>
-                    <td className="c"><RowMenu label={`团队 ${t.name} 的操作`}>
+                    <td className="c"><RowMenu label={`团队「${t.name}」的操作`}>
                       <DropdownMenuItem onSelect={() => setEdit(t)}>改名 / 排序…</DropdownMenuItem>
                       <DropdownMenuItem disabled={done} onSelect={() => setRenum(t)}>{done ? '重新编号（编号已连续）' : '重新编号…'}</DropdownMenuItem>
                       <DropdownMenuSeparator />
@@ -158,7 +158,7 @@ const TeamDialog = resetOnOpen(function TeamDialog({ team, open, onClose }: { te
     else patch.mutate({ id: team.id, name: name.trim() !== team.name ? name.trim() : undefined, sort_order }, { onSuccess: ok, onError: toast.err });
   };
   return (
-    <FormDialog open={open} onOpenChange={(o) => !o && onClose()} title={team === 'new' ? '新建团队' : `修改 ${team.name}`} submitLabel="保存" busy={add.isPending || patch.isPending} valid={name.trim().length > 0}
+    <FormDialog open={open} onOpenChange={(o) => !o && onClose()} title={team === 'new' ? '新建团队' : `修改团队 · ${team.name}`} submitLabel="保存" busy={add.isPending || patch.isPending} valid={name.trim().length > 0}
       dirty={team === 'new' ? !!(name.trim() || order) : name !== team.name || order !== String(team.sort_order)}
       desc={team !== 'new' && <>所有节点的显示名会一起变 <InfoTip text="线路机上的备注会自动同步，不影响现有连接" /></>} onSubmit={save}>
       <Field label="团队名"><Input value={name} onChange={(e) => setName(e.target.value)} autoFocus /></Field>
@@ -252,7 +252,7 @@ function ProvidersTab() {
                 <td>提前 <span className="num">{p.remind_days}</span> 天</td>
                 <td className="r num">{planCount.get(p.id) ?? <span className="t-muted">0</span>}</td>
                 {panel && <td>{p.panel_url && /^https?:\/\//i.test(p.panel_url) ? <a href={p.panel_url} target="_blank" rel="noreferrer noopener" className="btn-link btn" style={{ gap: 4, maxWidth: '100%' }}><span className="ellipsis">{p.panel_url.replace(/^https?:\/\//, '')}</span><ExternalLink size={12} /></a> : (p.panel_url || <span className="t-muted">—</span>)}</td>}
-                <td className="c"><RowMenu label={`供应商 ${p.name} 的操作`}>
+                <td className="c"><RowMenu label={`供应商「${p.name}」的操作`}>
                   <DropdownMenuItem onSelect={() => setEdit(p)}>编辑…</DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem danger onSelect={() => setAskDel(p)}>删除…</DropdownMenuItem>
@@ -357,7 +357,7 @@ function PlansTab() {
                     ? <><span className="num">{F.money(p.monthly_usd_cents, 'USD')}</span> <span className="t-sub">/ 月</span>{(p.currency !== 'USD' || p.cycle !== 'monthly') && <span className="sub" data-tip={p.usd_per_unit != null && p.currency !== 'USD' ? F.fxRate(p.currency, p.usd_per_unit) : undefined}>{F.money(p.price_cents, p.currency)} / {cycleLabel(p.cycle)}</span>}</>
                     : <><span className="num">{F.money(p.price_cents, p.currency)}</span> <span className="t-sub">/ {cycleLabel(p.cycle)}</span><span className="sub" data-tip={`没有 ${p.currency} 的汇率（设置 → 汇率）`}>未折算</span></>}</td>
                   <td className="r num"><CountLink n={p.machine_count} to={`/nodes?plan=${p.id}`} /></td>
-                  <td className="c"><RowMenu label={`套餐 ${p.name} 的操作`}>
+                  <td className="c"><RowMenu label={`套餐「${p.name}」的操作`}>
                     <DropdownMenuItem onSelect={() => setEdit(p)}>编辑…</DropdownMenuItem>
                     {p.archived_at
                       ? <DropdownMenuItem disabled={patch.isPending} onSelect={() => void setArchived(p, false).catch(toast.err)}>取消归档</DropdownMenuItem>
@@ -374,7 +374,7 @@ function PlansTab() {
         </TableWrap>
       </Panel>
       {held && <PlanDialog plan={held} open={edit != null} onClose={() => setEdit(null)} />}
-      <ConfirmDialog open={!!askArchive} onOpenChange={(o) => !o && setAskArchive(null)} title={`归档「${archiveHeld?.name ?? ''}」？`} confirmLabel="归档"
+      <ConfirmDialog open={!!askArchive} onOpenChange={(o) => !o && setAskArchive(null)} title={`归档 · ${archiveHeld?.name ?? ''}`} confirmLabel="归档"
         description={<>有 {archiveHeld?.machine_count} 台机器在用 <InfoTip text="在用的机器不受影响，只是上架时不再显示这个套餐。可以随时取消归档" /></>}
         onConfirm={() => setArchived(askArchive!, true)} />
       <DeleteDialog what="套餐" item={askDel} onClose={() => setAskDel(null)} run={(id) => delPlan.mutateAsync(id)} />

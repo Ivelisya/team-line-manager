@@ -41,7 +41,7 @@ export function ProbeTab() {
           <div className="stack" style={{ gap: 'var(--sp-12)' }}>
             <div role="radiogroup" className="row" style={{ gap: 'var(--sp-16)', flexWrap: 'wrap' }}>
               {[{ id: 'central', label: '中控（德国）', disabled: false }, ...list.map((p) => ({ id: p.id, label: p.label, disabled: !p.enabled }))].map((o) => (
-                <label key={o.id} className="row" style={{ gap: 6, opacity: o.disabled ? 0.5 : 1 }}>
+                <label key={o.id} className="choice" style={{ opacity: o.disabled ? 0.5 : 1, cursor: o.disabled ? 'not-allowed' : undefined }}>
                   <input type="radio" name="reach-primary" checked={s.primary === o.id} disabled={o.disabled || save.isPending} onChange={() => pick(o.id)} />{o.label}
                 </label>
               ))}
@@ -57,7 +57,7 @@ export function ProbeTab() {
         )}
       </Panel>
       <Panel title={<>探测点<InfoTip text="放在离客户近的地方（比如香港）的小机器，定时连各线路机的入口，记录通不通和延迟" /></>}
-        tools={<><Segmented sm label="时间范围" value={win} onChange={setWin} items={WINDOWS} /><Button size="sm" onClick={() => setAdding(true)}><Plus />新增</Button></>}>
+        tools={<><Segmented sm label="时间范围" value={win} onChange={setWin} items={WINDOWS} /><Button variant="primary" size="sm" onClick={() => setAdding(true)}><Plus />新增探测点</Button></>}>
         {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
         {q.isLoading ? <SkeletonRows rows={2} /> : !list.length ? <Empty icon={<Radar size={22} />} text="还没有探测点" hint="新增后，在探测点上执行安装命令。中控能 SSH 到它的话，也可以用 fleetctl probe add <名称> --host <IP> 直接装" /> : (
           <TableWrap data-stale={q.isPlaceholderData}>
@@ -70,11 +70,11 @@ export function ProbeTab() {
                     <td><span className="cell-main strong">{p.name}</span>{p.primary && <span className="sub">主来源</span>}{p.note && <span className="sub">{p.note}</span>}</td>
                     <td>
                       <Pill tone={STATE[p.state].tone}>{STATE[p.state].label}</Pill>
-                      {p.state === 'blind' && <span className="sub" data-tip={p.last_kept_at ? `上次有效 ${F.dt(p.last_kept_at)}` : ''}>{p.discard_reason ?? '原因不明'}</span>}
-                      {p.install?.state === 'running' && <span className="sub">安装中：{p.install.step}</span>}
+                      {p.state === 'blind' && <span className="sub" data-tip={[p.discard_reason ?? '原因不明', p.last_kept_at && `上次有效 ${F.dt(p.last_kept_at)}`].filter(Boolean).join('\n')}>{p.discard_reason ?? '原因不明'}</span>}
+                      {p.install?.state === 'running' && <span className="sub" data-tip={`安装中：${p.install.step}`}>安装中：{p.install.step}</span>}
                       {p.install?.state === 'failed' && <span className="sub" data-tip={p.install.error ?? ''}>安装失败</span>}
                       {p.upgrade && <span className="sub">升级中</span>}
-                      {p.upgrade_failed && <span className="sub" data-tip={`新版本没能上报，探测点已换回旧版本（${F.dt(p.upgrade_failed.at)}）；修好后再升级`}>升级到 {p.upgrade_failed.to ?? '?'} 失败，已回到 {p.upgrade_failed.from ?? '?'}</span>}
+                      {p.upgrade_failed && <span className="sub" data-tip={`升级到 ${p.upgrade_failed.to ?? '?'} 失败，已回到 ${p.upgrade_failed.from ?? '?'}\n新版本没能上报，探测点已换回旧版本（${F.dt(p.upgrade_failed.at)}）；修好后再升级`}>升级到 {p.upgrade_failed.to ?? '?'} 失败，已回到 {p.upgrade_failed.from ?? '?'}</span>}
                       {p.bootstrap_expires_at && <span className="sub">安装命令 {F.dt(p.bootstrap_expires_at)} 前有效</span>}
                     </td>
                     <td>{p.last_seen_at ? <span data-tip={F.dt(p.last_seen_at)}>{F.ago(p.last_seen_at)}</span> : '—'}{p.last_ip && <span className="sub">{p.last_ip}</span>}</td>
@@ -95,11 +95,11 @@ export function ProbeTab() {
         )}
       </Panel>
       <AddDialog open={adding} onClose={() => setAdding(false)} onBootstrap={(name, b) => setBoot({ name, b })} />
-      <ConfirmDialog open={!!boot} onOpenChange={(o) => !o && setBoot(null)} title={`在「${boot?.name ?? ''}」上用 root 执行`} confirmLabel="知道了" cancelLabel="关闭"
+      <ConfirmDialog open={!!boot} onOpenChange={(o) => !o && setBoot(null)} title={`用 root 执行 · ${boot?.name ?? ''}`} confirmLabel="知道了" cancelLabel="关闭"
         description={<>{boot && F.dt(boot.b.expires_at)} 前有效，只能用一次。执行后约半分钟上线</>} onConfirm={() => undefined}>
         {boot && <div className="row" style={{ gap: 8, alignItems: 'flex-start' }}><code style={{ wordBreak: 'break-all', flex: 1 }}>{boot.b.cmd}</code><CopyButton text={boot.b.cmd} label="安装命令" /></div>}
       </ConfirmDialog>
-      <ConfirmDialog open={!!del} onOpenChange={(o) => !o && setDel(null)} danger title={`删除探测点「${del?.name ?? ''}」？`} confirmLabel="删除"
+      <ConfirmDialog open={!!del} onOpenChange={(o) => !o && setDel(null)} danger title={`删除探测点 · ${del?.name ?? ''}`} confirmLabel="删除"
         description="这个探测点会立即失效，它的探测记录也会一起删除" onConfirm={async () => { if (del) { const r = await remove.mutateAsync(del.id); setCleanup(r.cleanup); } }} />
       <ConfirmDialog open={!!cleanup} onOpenChange={(o) => !o && setCleanup(null)} title="已删除" confirmLabel="知道了" cancelLabel="关闭"
         description="中控没有改动探测点这台机器。不再用它时，用 root 在上面执行：" onConfirm={() => undefined}>

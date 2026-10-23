@@ -115,7 +115,7 @@ pub async fn check_once(st: &AppState, now: OffsetDateTime) -> anyhow::Result<()
     match &view {
         Ok(ms) => {
             if let Some((off, total)) = alerts::agents_unreachable(ms) {
-                want.push(problem(INGRESS, CENTRAL, "critical", format!("{off}/{total} 台 agent 同时失联：检查边缘机 / Caddy / DNS")));
+                want.push(problem(INGRESS, CENTRAL, "critical", format!("{off}/{total} 台 agent 同时失联：检查边缘机、Caddy、域名解析")));
             }
         }
         Err(e) => tracing::warn!("中控自检取不到机器视图，这一轮不判断 agent 是否同时失联：{e}"),

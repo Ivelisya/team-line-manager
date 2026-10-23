@@ -72,7 +72,7 @@ export function DeployTimeline({ r, max }: { r: RouterView; max?: number }) {
   if (d.state === 'failed') {
     if (!steps.length) items.push({ key: 'fail', tone: 'bad', text: '部署' });
     items[items.length - 1].extra = <>
-      {d.error && <span className="rt-tl-err">{d.error}</span>}
+      {d.error && <span className="rt-tl-err" data-tip={d.error}>{d.error}</span>}
       <span className="row rt-tl-acts">
         <Button size="sm" loading={boot.pending} onClick={() => void boot.run(r)} data-tip="中控连不上路由时用。生成一条命令，到路由的 SSH 里执行"><Terminal size={13} />改用在路由上执行命令</Button>
         <Button size="sm" variant="text" onClick={() => showDeploy({ id: r.id, name: r.name })}><RefreshCw size={13} />重新部署</Button>
@@ -150,7 +150,7 @@ function RouterCardImpl({ r, current, onOpen: open }: { r: RouterView; current?:
       <header className="nc-head">
         <span className="nc-kind" role="img" aria-label="软路由" data-tip="软路由（OpenWrt + OpenClash）"><RouterIcon /></span>
         {/* 名字后面不再挂状态标：状态在底部的 pill 与描边上，等待接入时卡片中间还有说明 */}
-        <span className="nc-named"><button type="button" className="nc-name" data-tip={`打开 ${r.name} 的详情`} onClick={() => onOpen()}>{r.name}</button></span>
+        <span className="nc-named"><button type="button" className="nc-name" data-tip={`打开「${r.name}」的详情`} onClick={() => onOpen()}>{r.name}</button></span>
       </header>
 
       {/* 地址行：WAN 口地址 + WAN / OpenClash 状态标；还没采集过的写隧道端口 */}
@@ -178,7 +178,7 @@ function RouterCardImpl({ r, current, onOpen: open }: { r: RouterView; current?:
         </div>
       </section>
 
-      {/* 出口：一格一个出口，亮的是最近一次延迟测试通过的；参数与面板入口不一致的单独提醒 */}
+      {/* 出口：一格一个出口，亮的是最近一次延迟测试通过的；参数与入口不一致的单独提醒 */}
       <section className="slot-seg">
         <button type="button" className="nc-quota" onClick={() => onOpen('exits')}>
           <span className="nc-qhead">
@@ -187,7 +187,7 @@ function RouterCardImpl({ r, current, onOpen: open }: { r: RouterView; current?:
             </span>
             {ex!.drift > 0
               ? <span className="nc-quse rt-drift" data-tip={"这些出口的地址和端口能对上入口，但凭据已经变了，可能连不上\n入口换过凭据或线路机时会这样"}>{ex!.drift} 个与入口不一致</span>
-              : <span className="nc-quse" data-tip="和面板入口对得上的出口数。其余是路由上自己加的，不归中控管">{ex!.managed} 个对应面板入口</span>}
+              : <span className="nc-quse" data-tip="和入口对得上的出口数。其余是路由上自己加的，不归中控管">{ex!.managed} 个对应入口</span>}
           </span>
           <Cells pct={ex!.total ? (ex!.alive / ex!.total) * 100 : null} n={ex!.total || 18} color="var(--ok)" />
           <span className="sr-only">（查看出口页签）</span>

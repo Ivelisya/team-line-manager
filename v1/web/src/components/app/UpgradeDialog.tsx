@@ -17,9 +17,9 @@ function UpgradeDialog({ m, open, onOpenChange }: { m: MachineView; open: boolea
   const up = useUpgradeAgent();
   const relay = m.kind === 'relay';
   return (
-    <ConfirmDialog open={open} onOpenChange={onOpenChange} title={`升级 ${m.name} 的 agent？`} confirmLabel="开始升级" confirmDisabled={!!m.active_job}
+    <ConfirmDialog open={open} onOpenChange={onOpenChange} title={`升级 agent · ${m.name}`} confirmLabel="开始升级" confirmDisabled={!!m.active_job}
       description={<>agent 会重启，开始后不能取消 <InfoTip text={tip(relay)} /></>}
-      onConfirm={async () => { await up.mutateAsync(m.id); toast.ok(`已提交 ${m.name} 的升级作业`); }}>
+      onConfirm={async () => { await up.mutateAsync(m.id); toast.ok(`已提交「${m.name}」的升级作业`); }}>
       {relay && <Note tone="warn">可能重启一次 Xray，客户连接会断开 <InfoTip text={XRAY} /></Note>}
     </ConfirmDialog>
   );

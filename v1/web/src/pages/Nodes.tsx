@@ -140,8 +140,8 @@ function LiveNodes({ sp, upd, tools }: { sp: URLSearchParams; upd: (patch: Recor
       { id: 'cost', header: '费用', size: 104, r: true, drop: 2, ...byNum((m) => m.subscription?.monthly_usd_cents ?? null),
         cell: (m) => { const s = m.subscription; if (!s) return <span className="t-muted">—</span>;
           return s.monthly_usd_cents != null
-            ? <><Num f={{ v: F.money(s.monthly_usd_cents, 'USD'), u: '/ 月' }} />{showOrig(s) && <span className="sub" data-tip={priceHint(s) ?? undefined}>{F.money(s.price_cents, s.currency)} / {cycleLabel(s.cycle)}</span>}</>
-            : <><Num f={{ v: F.money(s.monthly_cents, s.currency), u: '/ 月' }} /><span className="sub" data-tip={priceHint(s) ?? undefined}>未折算</span></>; } },
+            ? <div data-tip={[`${F.money(s.monthly_usd_cents, 'USD')} / 月`, priceHint(s)].filter(Boolean).join('\n')}><Num f={{ v: F.money(s.monthly_usd_cents, 'USD'), u: '/ 月' }} />{showOrig(s) && <span className="sub">{F.money(s.price_cents, s.currency)} / {cycleLabel(s.cycle)}</span>}</div>
+            : <div data-tip={priceHint(s) ?? undefined}><Num f={{ v: F.money(s.monthly_cents, s.currency), u: '/ 月' }} /><span className="sub">未折算</span></div>; } },
       { id: 'chev', header: '', size: 36, cell: () => <ChevronRight size={14} /> },
     ];
     return c;

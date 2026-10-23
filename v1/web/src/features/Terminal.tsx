@@ -208,7 +208,7 @@ export function TerminalHost() {
     <>
       {t && <Terminal key={`${t.kind}:${t.id}`} {...t} />}
       <ConfirmDialog open={!!ask} onOpenChange={(o) => { if (!o) cancelTerminalAsk(); }} danger
-        title={a === 'close' || !a ? `断开 ${cur?.name ?? ''} 的终端？` : `断开 ${cur?.name ?? ''}，打开 ${a.name} 的终端？`}
+        title={a === 'close' || !a ? `断开终端 · ${cur?.name ?? ''}` : `切换终端 · ${cur?.name ?? ''} → ${a.name}`}
         description={<>还在跑的命令会随之结束<InfoTip text="连接会立即断开。在 tmux、screen 或 nohup 里跑的命令不受影响" /></>}
         confirmLabel={a === 'close' || !a ? '断开并关闭' : '断开并切换'} onConfirm={() => { if (ask) confirmTerminalAsk(ask); }} />
     </>

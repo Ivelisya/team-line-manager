@@ -48,7 +48,7 @@ export const RetireDialog = resetOnOpen(function RetireDialog({ m, open, onOpenC
   const recycle = p?.spare.recycle_on?.slice(5);
   const go = mode === 'spare' ? '一起移入备用' : inSpare ? '一起回收' : '一起清理并回收';
   return (
-    <TypedConfirmDialog open={open} onOpenChange={onOpenChange} size="md" title={`${inSpare ? '回收' : '退役'} ${m.name}？`} expected={m.name} prompt="请输入显示名"
+    <TypedConfirmDialog open={open} onOpenChange={onOpenChange} size="md" title={`${inSpare ? '回收' : '退役'} · ${m.name}`} expected={m.name} prompt="请输入显示名"
       typed={mode === 'now'} danger={mode === 'now'}
       confirmLabel={mode === 'spare' ? '移入备用' : inSpare ? '立即回收' : '清理并回收'}
       description={p && !canSpare ? <>已有连接会断开 <InfoTip text="入口会立即停用，机器移入回收站，无法恢复。要再用，只能重新上架" /></> : undefined}

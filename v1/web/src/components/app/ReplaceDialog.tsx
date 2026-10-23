@@ -176,7 +176,7 @@ export const ReplaceDialog = resetOnOpen(function ReplaceDialog({ m, open, onOpe
   };
 
   return (
-    <ConfirmDialog asForm scroll dirty={!!pick} open={open} onOpenChange={onOpenChange} size="md" title={`替换 ${m.name}`} confirmLabel="开始替换" confirmDisabled={!ready}
+    <ConfirmDialog asForm scroll dirty={!!pick} open={open} onOpenChange={onOpenChange} size="md" title={`替换 · ${m.name}`} confirmLabel="开始替换" confirmDisabled={!ready}
       description={<>新节点接旧编号，旧节点去备用 <InfoTip text={'先把软路由上指向旧节点的出口改成新节点（每台先备份，改完重启 OpenClash 并测延迟，失败会自动换回），再交换编号\n旧节点放进备用团队，到期满 1 天后自动回收。开始改路由后不能取消'} /></>}
       onConfirm={submit}>
       <div className="form-grid">

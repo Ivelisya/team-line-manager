@@ -148,7 +148,7 @@ function EntrySection({ m }: { m: MachineView }) {
         {/* 入口行的副标题是配置状态（是否已推到线路机），右边的胶囊只标不正常的（中控连不上、探测不通…），两者各说各的 */}
         {m.entries.length > 0 && <div className="mgroup">{shown.map((e) => (
           <div key={e.id} className="manage-row">
-            <div><div className="t">{m.kind === 'relay' ? `${e.port} · ${e.node.name}` : entryLabel(e)}{routers.get(e.id) && <RouterMark users={routers.get(e.id)!} />}</div><div className="hint">{e.apply_error ? errText(e.apply_error) : e.applied ? '配置已应用' : '配置应用中'}</div></div>
+            <div><div className="t">{m.kind === 'relay' ? `${e.port} · ${e.node.name}` : entryLabel(e)}{routers.get(e.id) && <RouterMark users={routers.get(e.id)!} />}</div><div className="hint">{e.apply_error ? errText(e.apply_error) : e.applied ? '配置已应用' : '配置未应用'}</div></div>
             <span className="row" style={{ gap: 8 }}>{entryStatus(e, who)}<EntryMenuButton entry={e} /></span>
           </div>
         ))}<ShowAll total={m.entries.length} cap={cap} open={all} onToggle={() => setAll((v) => !v)} /></div>}
@@ -256,9 +256,9 @@ function TuneRow({ m }: { m: MachineView }) {
         </div>
         <Button variant="secondary" disabled={!!m.active_job} onClick={() => setAsk(true)}>{t.profile ? '重新调优…' : '调优…'}</Button>
       </div>
-      <ConfirmDialog open={ask} onOpenChange={setAsk} title={`${t.profile ? '重新调优' : '调优'} ${m.name}？`} confirmLabel="开始调优" confirmDisabled={!!m.active_job}
+      <ConfirmDialog open={ask} onOpenChange={setAsk} title={`${t.profile ? '重新调优' : '调优'} · ${m.name}`} confirmLabel="开始调优" confirmDisabled={!!m.active_job}
         description="不会重启代理服务，也不会断开客户连接。可能重启一次系统日志服务"
-        onConfirm={async () => { await tune.mutateAsync(m.id); toast.ok(`已提交 ${m.name} 的调优作业`); }} />
+        onConfirm={async () => { await tune.mutateAsync(m.id); toast.ok(`已提交「${m.name}」的调优作业`); }} />
     </>
   );
 }

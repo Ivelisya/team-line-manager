@@ -107,7 +107,7 @@ const DeployDialog = resetOnOpen(function DeployDialog({ open, id, name }: { ope
     });
   };
   return (
-    <FormDialog size="md" open={open} onOpenChange={(o) => !o && closeDeploy()} title={`重新部署「${name}」`} submitLabel="开始部署" busy={deploy.isPending} valid={sshValid(ssh)} dirty={!!ssh.password} onSubmit={submit}>
+    <FormDialog size="md" open={open} onOpenChange={(o) => !o && closeDeploy()} title={`重新部署 · ${name}`} submitLabel="开始部署" busy={deploy.isPending} valid={sshValid(ssh)} dirty={!!ssh.password} onSubmit={submit}>
       {r?.state === 'online' && <Note tone="warn">部署时短暂离线<InfoTip text="会更换隧道密钥并重启隧道服务，不影响客户端上网" /></Note>}
       <SshFields d={ssh} set={setSsh} autoFocus />
       <div className="hint">中控连不上？<button type="button" className="btn btn-link btn-sm" style={{ height: 'auto', padding: 0 }} disabled={boot.pending}
@@ -132,7 +132,7 @@ function BootstrapDialog() {
     <Dialog open={!!t} onOpenChange={(o) => !o && closeBootstrap()}>
       <DialogContent size="md" onInteractOutside={(e) => e.preventDefault()}>
         <DialogHeader>
-          <DialogTitle>{done ? `「${b.name}」已接入` : `接入「${b.name}」`}</DialogTitle>
+          <DialogTitle>{done ? `已接入 · ${b.name}` : `接入软路由 · ${b.name}`}</DialogTitle>
           <DialogDescription>在路由的 SSH 里粘贴执行<InfoTip text={`30 分钟内有效、只能用一次。\n${ONLY_ADDS}`} /></DialogDescription>
         </DialogHeader>
         {b.replaced && !done && <Note tone="warn">旧隧道已断开</Note>}
@@ -157,7 +157,7 @@ function RemovedDialog() {
   return (
     <Dialog open={!!name} onOpenChange={(o) => !o && closeRemoved()}>
       <DialogContent size="md">
-        <DialogHeader><DialogTitle>已删除「{held}」</DialogTitle><DialogDescription>在路由上执行以清理<InfoTip text={"中控已撤销这台路由的授权，路由上的 fleet-tunnel 会一直重试连接。执行这条命令可以停掉并删除它\n原来的 router-tunnel 不受影响"} /></DialogDescription></DialogHeader>
+        <DialogHeader><DialogTitle>已删除 · {held}</DialogTitle><DialogDescription>在路由上执行以清理<InfoTip text={"中控已撤销这台路由的授权，路由上的 fleet-tunnel 会一直重试连接。执行这条命令可以停掉并删除它\n原来的 router-tunnel 不受影响"} /></DialogDescription></DialogHeader>
         <div className="token-box rt-cmd"><code>{TUNNEL_CLEANUP}</code><CopyButton text={TUNNEL_CLEANUP} label="清理命令" size={15} /></div>
         <DialogFooter><Button variant="primary" onClick={closeRemoved}>知道了</Button></DialogFooter>
       </DialogContent>
