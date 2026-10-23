@@ -12,7 +12,7 @@ import { Button } from '@/components/ui/button';
 import { ErrorNote, Note } from './primitives';
 import { resetOnOpen } from '@/lib/useHeld';
 import { TypedConfirmDialog } from './dialogs';
-import { canReplace } from './ReplaceDialog';
+import { canReplace, RenameNote } from './ReplaceDialog';
 import { movableEntries } from './LifecycleDialogs';
 
 type Mode = 'spare' | 'now';
@@ -33,7 +33,6 @@ export const RetireDialog = resetOnOpen(function RetireDialog({ m, open, onOpenC
   const [pick, setPick] = React.useState<Mode>('spare');
   const [cleanup, setCleanup] = React.useState(true);
   const [reason, setReason] = React.useState('');
-  const [allRenames, setAllRenames] = React.useState(false);
   const pv = useRetirePreview(m.id, open);
   // 重开时缓存里还是上一次的预检（关闭动画期间对话框还挂着、观察者没走，gcTime 0 也回收不了）：只认这次打开后取回的
   const done = pv.isFetchedAfterMount;
@@ -105,20 +104,7 @@ export const RetireDialog = resetOnOpen(function RetireDialog({ m, open, onOpenC
           </ul>
         </Note>
       )}
-      {p && p.renames.length > 0 && (
-        <Note>
-          {/* 正常的副作用，不是警告：收成一行，要看逐台再展开 */}
-          <div className="row row-between" style={{ gap: 8 }}>
-            <span>{p.renames.length} 台节点前移补号（{p.renames[0].old_name} → {p.renames[0].new_name}{p.renames.length > 1 ? ' 等' : ''}） <InfoTip text="同团队后面的节点前移补号，编号保持连续" /></span>
-            {p.renames.length > 1 && <button type="button" className="btn btn-link btn-sm" style={{ height: 'auto', padding: 0 }} aria-expanded={allRenames} onClick={() => setAllRenames((v) => !v)}>{allRenames ? '收起' : '展开'}</button>}
-          </div>
-          {allRenames && (
-            <ul className="reason-list" style={{ maxHeight: 200, overflow: 'auto' }}>
-              {p.renames.map((r) => <li key={r.machine_id}><span className="num">{r.old_name} <ArrowRight size={12} style={{ display: 'inline', verticalAlign: -1 }} /> <b>{r.new_name}</b></span></li>)}
-            </ul>
-          )}
-        </Note>
-      )}
+      {p && <RenameNote renames={p.renames} tip="同团队后面的节点前移补号，编号保持连续" />}
       {mode === 'now' && m.kind !== 'relay' && !blocked && (
         <div className="row" style={{ gap: 4 }}>
           <CheckRow checked={cleanup} onChange={setCleanup}>{h ? '清理这个 IP 的服务' : '清理节点上的服务'}</CheckRow>

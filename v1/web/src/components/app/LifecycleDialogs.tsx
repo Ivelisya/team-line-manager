@@ -9,7 +9,7 @@ import { closeEvacuate, closeMove, closeRenew, closeReplace, closeRetire, useEva
 import { ReplaceDialog, RouterExitList } from './ReplaceDialog';
 import { RenewDialog } from '@/features/BillingTab';
 import { useDrawer } from '@/lib/drawer';
-import { healthLabel } from '@/lib/derive';
+import { errText, healthLabel } from '@/lib/derive';
 import { CheckRow, Field, InfoTip } from '@/components/ui/form';
 import { Select, type Option } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
@@ -25,14 +25,17 @@ function RoutersCheck({ checked, onChange }: { checked: boolean; onChange: (v: b
   return <CheckRow checked={checked} onChange={onChange}>同时改软路由 <InfoTip text={'软路由上指向旧入口的出口改成新入口（逐台备份、改完重启 OpenClash 并测延迟，失败全部换回、旧入口不摘）。\n不改的话，这些出口在旧入口摘掉后就断了。'} /></CheckRow>;
 }
 
-/** 换线 / 搬空的目标线路机下拉：在用的线路机，每项写状态、入口数、到期；降级、故障、即将到期、已过期按级别着色 */
+/** 换线 / 搬空的目标线路机下拉：在用的线路机，每项写状态、入口数、到期；降级、故障、即将到期、已过期按级别着色。
+ *  正常的（含降级）排前面，故障的排后面置灰、悬停写原因，仍可选 */
 function targetOptions(relays: MachineView[], keep: (r: MachineView) => boolean): Option[] {
-  return relays.filter((r) => r.lifecycle === 'active' && keep(r)).map((r) => {
+  const down = (r: MachineView) => r.health.status === 'down';
+  const list = relays.filter((r) => r.lifecycle === 'active' && keep(r));
+  return [...list.filter((r) => !down(r)), ...list.filter(down)].map((r) => {
     const tone = HEALTH_TONE[r.health.status];
     const s = r.subscription;
     return {
       value: r.id,
-      label: <span className="opt-relay">{r.name}<span className="t-sub">
+      label: <span className={down(r) ? 'opt-relay is-down' : 'opt-relay'} data-tip={down(r) ? r.health.reasons.map((x) => errText(x.text)).join('\n') || undefined : undefined}>{r.name}<span className="t-sub">
         {' · '}<span className="due" data-tone={tone === 'warn' || tone === 'bad' ? tone : undefined}>{healthLabel(r.health.status)}</span>
         {` · ${r.entries.length} 条入口`}{s && <>{' · '}<Due days={s.due_days} state={s.due_state} tail /></>}
       </span></span>,
@@ -84,8 +87,8 @@ export const MoveDialog = resetOnOpen(function MoveDialog({ m, open, onOpenChang
       {pv && to && (
         <div className="stack-sm" style={{ opacity: q.isFetching ? 0.6 : 1 }}>
           {pv.routers_enabled
-            ? <RouterExitList routers={pv.routers.map((plan) => ({ plan }))} />
-            : pv.routers.length > 0 && <Note tone="warn">不改软路由：{pv.routers.flatMap((r) => r.exits.map((e) => `${r.name} 的 ${e.exit}`)).join('、')} 在旧入口摘掉后就断了</Note>}
+            ? <RouterExitList routers={pv.routers.map((plan) => ({ node: m.name, plan }))} />
+            : pv.routers.length > 0 && <Note tone="bad">不改软路由：{pv.routers.flatMap((r) => r.exits.map((e) => `${r.name} 的 ${e.exit}`)).join('、')} 在旧入口摘掉后就断了</Note>}
           {pv.blockers.map((b) => <Note key={b} tone="bad">{b}</Note>)}
           {pv.warnings.map((w) => <Note key={w} tone="warn">{w}</Note>)}
         </div>
@@ -140,7 +143,7 @@ export const EvacuateDialog = resetOnOpen(function EvacuateDialog({ relay, open,
         <div className="stack-sm" style={{ opacity: q.isFetching ? 0.6 : 1 }}>
           {routers
             ? <RouterExitList routers={pv.jobs.flatMap((j) => j.routers.map((plan) => ({ node: j.name, plan })))} title={<>要改的软路由出口 <InfoTip text="改同一台软路由的节点一个接一个换。" /></>} />
-            : pv.jobs.some((j) => j.routers.length > 0) && <Note tone="warn">不改软路由：指向这些入口的出口在旧入口摘掉后就断了</Note>}
+            : pv.jobs.some((j) => j.routers.length > 0) && <Note tone="bad">不改软路由：指向这些入口的出口在旧入口摘掉后就断了</Note>}
           {pv.skipped.map((k) => <Note key={k.machine_id} tone="warn">{k.name ?? '节点'} 会跳过：{k.reason}</Note>)}
           {pv.warnings.map((w) => <Note key={w} tone="warn">{w}</Note>)}
         </div>
