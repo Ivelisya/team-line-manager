@@ -458,7 +458,7 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 - **取消**：只在开始改路由之前——排队中、`routers` 排队等路由，或 `routers` 失败（路由都已换回）停在第一步；之后只能重试到完成。重试从失败那一步重来。
 
 ## 软路由（节选）
-`GET /routers/{id}` 的 `detail`（最近一次采集的快照）里 `clients[]`：`{ip, mac, hostname, online, conns, down_bps, up_bps, exits:[{name, conns}]}`。`down_bps` / `up_bps` 是这台客户端经 OpenClash 的下载 / 上传速率（bit/s）：按 mihomo 连接的来源 IP（`sourceIP`）汇总，取差方式同出口速率（同一连接两次采集的字节数之差累加、新连接全算，除以两次采集的间隔）；没有连接的客户端为 0；中控重启后的第一轮（没有上一次的读数）、mihomo API 调不通时为 null（同出口的 `up_bps` / `down_bps`）。
+`GET /routers/{id}` 的 `detail`（最近一次采集的快照）里 `clients[]`：`{ip, mac, hostname, online, conns, down_bps, up_bps, exits:[{name, conns}]}`。`down_bps` / `up_bps` 是这台客户端经 OpenClash 的下载 / 上传速率（bit/s）：按 mihomo 连接的来源 IP（`sourceIP`）汇总，取差方式同出口速率（同一连接两次采集的字节数之差累加、新连接全算，除以两次采集的间隔）；没有连接的客户端为 0；路由上第一次采集（没有上一次的读数）、mihomo API 调不通时为 null（同出口的 `up_bps` / `down_bps`）。上一次的读数存在路由上，中控重启不影响它们；只有 WAN 与 OpenClash 总速率（`summary.wan.rx_bps` / `tx_bps`、`openclash.up_bps` / `down_bps`）用中控内存里的上一次读数，中控重启后的第一轮为 null。
 
 ## 访问策略（域名黑白名单）
 按团队或节点设置：有效策略 = 节点策略（`mode≠inherit`）> 团队策略 > 默认 `observe`。模式：`observe`（不产生规则）、`allowlist`（只放行名单内域名，其余阻止）、`denylist`（阻止名单内域名，其余放行）、`blocked`（暂停该节点所有新连接）、`inherit`（仅节点：跟随团队）。`allowlist`/`denylist` 至少一个域名。GET 需 `read`，写操作需 `write` 并写审计；预览是 POST 但无副作用（也需 `write`）。
