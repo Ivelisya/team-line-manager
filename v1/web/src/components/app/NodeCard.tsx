@@ -203,6 +203,7 @@ function QuotaSlot({ m, onOpen, large }: { m: MachineView; onOpen: Open; large?:
   );
 }
 
+const NO_ENTRY_TIP = '探测连的是线路机上客户用的入口端口\n这台还没有入口，分到节点后自动开始探测\n线路本身通不通看下面的三网 PING';
 /** 心跳条：近 1 小时的探测（全部卡片共用一个 /probe-beats 查询，各取自己的那份）；整条可点，打开连接质量页签。
  *  格子：节点是线路机 → 节点的 TCP 建连（线路机的 agent 探）；线路机是主探测来源 → 线路机的连通性（中控，或靠近客户的探测点；
  *  说明文字随来源变，探测点另有建连延迟：标题后面写近 1 小时的中位延迟）。
@@ -222,6 +223,7 @@ const BeatSlot = memo(function BeatSlot({ id, kind, lifecycle, reason, reasonKey
   const cap = !live ? <span className="t-muted">{lifecycle === 'retired' ? '已退役' : '还没开始探测'}</span>
     : kind === 'relay' && reason ? <><span className="nc-reason" data-tip={reason}>{reasonKey === 'relay_unreachable' ? (reachBad ? `${reachWho(src)}连不上 ${reachBad} 个入口` : `${reachWho(src)}连不上入口`) : reason}</span> · <span data-tip={relayTip}>入口可用 <b className="num">{usable}/{all}</b></span></>
     : reason ? <span className="nc-reason" data-tip={reason}>{reason}</span>
+    : kind === 'relay' && all === 0 ? <span className="t-muted" data-tip={NO_ENTRY_TIP}>还没有入口，不用探测</span>
     : empty ? <span className="t-muted">暂无探测</span>
     : kind === 'relay' ? <><span data-tip={relayTip}>入口可用 <b className="num" style={usable < all ? { color: 'var(--warn-text)' } : undefined}>{usable}/{all}</b></span>{rttTag}</>
     : kind === 'proxy' ? <>探测成功 <b className="num">{rate == null ? '—' : `${Math.round(rate)}%`}</b></>
