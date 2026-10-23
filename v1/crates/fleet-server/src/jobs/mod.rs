@@ -115,7 +115,7 @@ const PURGE: &[StepDef] = &[s("purge", "删除数据", 600)];
 const REPLACE: &[StepDef] = &[s("routers", "改软路由出口", 1800), s("renumber", "交换编号", 60)];
 // 推送时旧程序留成 .prev；起不来、或 2 分钟内等不到新版本上报，就换回去并让作业失败（见 steps::agent / wait_report）。重试从推送重来
 const UPGRADE_AGENT: &[StepDef] = &[s("agent", "推送并重启 agent", 600), s("wait_report", "等待新版本上报", 180)];
-// 系统调优（tune-v1，见 tune.rs）：一个幂等脚本，不重启 ssserver / Xray；时间没同步的机器要装 systemd-timesyncd，留足 apt 的时间
+// 系统调优（当前档见 tune.rs；参数 rollback 时按原值快照撤销）：一个幂等脚本，不重启 ssserver / Xray；时间没同步的机器要装 systemd-timesyncd，留足 apt 的时间
 const TUNE: &[StepDef] = &[s("tune", "系统调优", 600)];
 
 pub fn defs(kind: &str) -> &'static [StepDef] {

@@ -130,7 +130,9 @@ export function buildDb(): Db {
     lifecycle: 'active', lifecycle_reason: null, note: '', revision: 1, created_at: iso(now() - 120 * DAY), activated_at: iso(now() - 100 * DAY), retired_at: null, spare_from: null, spare_since: null, recycle_on: null,
     subscription: null, agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, nic: null, month_counted_from: null, quota: { used: 0, period_start: '', period_end: null, mode: 'monthly', counted_from: null, rule: null, base: null }, health: { status: 'ok', reasons: [] },
     active_job: null, failed_job: null, open_incidents: 0, maintenance: false, relay: null,
-    tune: o.kind === 'proxy' || o.host_machine ? null : { profile: 'tune-v1', at: iso(now() - 3 * DAY), current: true }, ...o,
+    tune: o.kind === 'proxy' || o.host_machine ? null : { profile: 'tune-v2', at: iso(now() - 3 * DAY), current: true, params: o.kind === 'relay'
+      ? { bw: 1000, bw_plan: 2560, bw_source: 'plan', rtt: 172, rtt_source: 'sampled', rtt_samples: 41, mem_mb: 3911, buf_max: 45097152 }
+      : { bw: 50, bw_plan: 50, bw_source: 'plan', rtt: 100, rtt_source: 'default', rtt_samples: 0, mem_mb: 3911, buf_max: 16777216 } }, ...o,
   });
 
   // 线路机
@@ -278,9 +280,9 @@ export function buildDb(): Db {
   machines[1].health = { status: 'down', reasons: [{ key: 'relay_unreachable', severity: 'critical', text: `中控连续 3 次连不上客户入口（端口 ${[2, 3, 4].map((i) => m2Entries[i].port).join('、')}）` }, { key: 'relay_apply_lag', severity: 'warning', text: '配置未应用（配置代数 8 · 已应用 7）' }] };
   machines[1].host = hostOf('r2', 58);
   // 调优样本：线路机 2 是旧档，团队1 的 03 号还没调优过
-  machines[1].tune = { profile: 'tune-v0', at: iso(now() - 40 * DAY), current: false };
+  machines[1].tune = { profile: 'tune-v1', at: iso(now() - 40 * DAY), current: false, params: null };
   const untuned = machines.find((x) => x.team?.id === 't1' && x.number === 3 && x.kind === 'vps');
-  if (untuned) untuned.tune = { profile: null, at: null, current: false };
+  if (untuned) untuned.tune = { profile: null, at: null, current: false, params: null };
 
   for (const m of machines) Object.assign(m, trafficOf(m, machines));
   // 统计

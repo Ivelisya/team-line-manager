@@ -350,6 +350,30 @@ fn tune_cn(t: &Value) -> String {
     }
 }
 
+/// 调优的推导参数（`tune.params`，tune-v2 起；步骤结果里同名字段）：「缓冲上限 43.1 MiB ← 带宽 1000 Mbps（套餐 2560，按 1000 算）、
+/// RTT 172 ms（入口连接 25 条的 P90）、内存 3911 MB」。没有（没调优过、旧档、已撤销）为 None
+fn tune_params_cn(p: &Value) -> Option<String> {
+    let buf = p["buf_max"].as_f64()?;
+    let n = |k: &str| p[k].as_i64().map_or("?".to_string(), |v| v.to_string());
+    let bw = match (p["bw_source"].as_str(), p["bw_plan"].as_i64()) {
+        (Some("plan"), Some(plan)) if Some(plan) != p["bw"].as_i64() => format!("套餐 {plan}，按 {} 算", n("bw")),
+        (Some("plan"), _) => "套餐".to_string(),
+        _ => "套餐没写带宽，按默认".to_string(),
+    };
+    let rtt = match p["rtt_source"].as_str() {
+        Some("sampled") => format!("入口连接 {} 条的 P90", n("rtt_samples")),
+        _ if p["rtt_samples"].as_i64().unwrap_or(0) > 0 => format!("样本 {} 条不够，按默认", n("rtt_samples")),
+        _ => "默认".to_string(),
+    };
+    Some(format!(
+        "缓冲上限 {:.1} MiB ← 带宽 {} Mbps（{bw}）、RTT {} ms（{rtt}）、内存 {} MB",
+        buf / 1048576.0,
+        n("bw"),
+        n("rtt"),
+        n("mem_mb")
+    ))
+}
+
 /// 负载同网页：1 分钟平均负载 ÷ agent 报的核数，折成百分比；容器里不报负载（null）
 fn load_cn(load1: Option<f64>, cores: Option<i64>) -> String {
     match (load1, cores) {
@@ -424,6 +448,9 @@ pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
         if !m["tune"].is_null() {
             let at = m["tune"]["at"].as_str().map(|a| format!("（{}）", table::ts(a))).unwrap_or_default();
             rows.push(("调优", format!("{}{at}", tune_cn(&m["tune"]))));
+            if let Some(p) = tune_params_cn(&m["tune"]["params"]) {
+                rows.push(("调优推导", p));
+            }
         }
         if !m["host"].is_null() {
             rows.push((
@@ -778,7 +805,14 @@ fn step_brief(out: &Value) -> Option<String> {
     let mut parts: Vec<String> = if whole { vec![] } else { o.iter().filter_map(scalar).collect() };
     if let Some(t) = tune {
         let n = |k: &str| t[k].as_array().map_or(0, Vec::len);
-        let mut s = format!("调优 {}：已应用 {} 项、本来就是 {} 项、保持 {} 项", st(t, "/profile"), n("applied"), n("ok"), n("kept"));
+        let mut s = if t["rollback"] == true {
+            format!("撤销调优：写回原值 {} 项、本来就是原值 {} 项", n("applied"), n("ok"))
+        } else {
+            format!("调优 {}：已应用 {} 项、本来就是 {} 项、保持 {} 项", st(t, "/profile"), n("applied"), n("ok"), n("kept"))
+        };
+        if let Some(p) = tune_params_cn(&t["params"]) {
+            s.push_str(&format!("；{p}"));
+        }
         let skipped: Vec<String> = t["skipped"]
             .as_array()
             .into_iter()
@@ -1059,6 +1093,18 @@ mod tests {
         assert_eq!(step_brief(&tune).unwrap(), "调优 tune-v1：已应用 2 项、本来就是 1 项、保持 0 项；跳过 net.x（没有这个参数）、net.y（写不进，现为 1）");
         let conv = json!({"bbr": true, "tune": {"profile": "tune-v1", "applied": [], "ok": ["c"], "kept": ["d"], "skipped": []}, "nft_relays": "1.2.3.4", "ssserver_updated": false});
         assert_eq!(step_brief(&conv).unwrap(), "调优 tune-v1：已应用 0 项、本来就是 1 项、保持 1 项，bbr=true，nft_relays=1.2.3.4，ssserver_updated=false");
+        // tune-v2 带推导参数；撤销调优
+        let params = json!({"bw": 1000, "bw_plan": 2560, "bw_source": "plan", "rtt": 172, "rtt_source": "sampled", "rtt_samples": 25, "mem_mb": 3911, "buf_max": 45097152});
+        let tune = json!({"profile": "tune-v2", "applied": ["a"], "ok": [], "kept": [], "skipped": [], "params": params});
+        assert_eq!(
+            step_brief(&tune).unwrap(),
+            "调优 tune-v2：已应用 1 项、本来就是 0 项、保持 0 项；缓冲上限 43.0 MiB ← 带宽 1000 Mbps（套餐 2560，按 1000 算）、RTT 172 ms（入口连接 25 条的 P90）、内存 3911 MB"
+        );
+        let node = json!({"bw": 1000, "bw_plan": null, "bw_source": "default", "rtt": 100, "rtt_source": "default", "rtt_samples": 0, "mem_mb": 976, "buf_max": 27097152});
+        assert_eq!(tune_params_cn(&node).unwrap(), "缓冲上限 25.8 MiB ← 带宽 1000 Mbps（套餐没写带宽，按默认）、RTT 100 ms（默认）、内存 976 MB");
+        assert!(tune_params_cn(&Value::Null).is_none());
+        let rb = json!({"rollback": true, "applied": ["a", "b"], "ok": ["c"], "kept": [], "skipped": [], "before": {}});
+        assert_eq!(step_brief(&rb).unwrap(), "撤销调优：写回原值 2 项、本来就是原值 1 项");
         assert_eq!(step_brief(&json!({"reason": "没有要改的路由"})).unwrap(), "跳过：没有要改的路由");
         assert_eq!(step_brief(&json!({"routers": [1, 2], "port": 20001})).unwrap(), "port=20001，routers=2 项");
         assert!(step_brief(&json!({})).is_none() && step_brief(&Value::Null).is_none());

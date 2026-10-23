@@ -509,13 +509,16 @@ enum Cmd {
         follow: bool,
     },
     /// 重做系统调优（内核网络参数、日志体积、时间同步；不重启 ssserver / Xray、不断客户连接）：机器名（可逗号分隔多台），或 --team / --all：
-    /// 先做一台（线路机优先）并跟到结束，成功后其余逐台提交，有进行中作业的跳过并列出；--all 要确认（--yes）
+    /// 先做一台（线路机优先）并跟到结束，成功后其余逐台提交，有进行中作业的跳过并列出；--all 要确认（--yes）。
+    /// --rollback：撤销指定机器的调优（按机器上第一次调优前记下的原值写回，删掉调优写的 sysctl 配置），要确认（--yes）
     Tune {
         machine: Option<String>,
         #[arg(long, conflicts_with_all = ["machine", "all"])]
         team: Option<String>,
         #[arg(long, conflicts_with = "machine")]
         all: bool,
+        #[arg(long, requires = "machine", conflicts_with_all = ["team", "all"])]
+        rollback: bool,
         #[arg(long)]
         yes: bool,
         #[arg(long)]
@@ -968,7 +971,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             PlanCmd::Rm { plan, yes } => catalog::plan_rm(x, &plan, yes),
         },
         Cmd::UpgradeAgent { machine, all, yes, follow } => ops::upgrade_agent(x, machine.as_deref(), all, yes, follow),
-        Cmd::Tune { machine, team, all, yes, follow } => ops::tune(x, machine.as_deref(), team.as_deref(), all, yes, follow),
+        Cmd::Tune { machine, team, all, rollback, yes, follow } => ops::tune(x, machine.as_deref(), team.as_deref(), all, rollback, yes, follow),
         Cmd::Entries { machine } => cmds::entries(x, machine.as_deref()),
         Cmd::Share { entry } => ops::share(x, &entry),
         Cmd::Entry { action, entry, yes, follow } => ops::entry_action(x, action, &entry, yes, follow),

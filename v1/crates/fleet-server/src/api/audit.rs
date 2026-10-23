@@ -255,6 +255,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "recycle.import" => format!("导入 {} 台，跳过 {} 台", d["inserted"].as_u64().unwrap_or(0), d["skipped"].as_u64().unwrap_or(0)),
         "machine.purge" if d["auto"] == crate::spare::AUTO => format!("{}（回收站自动清除）", s("name")),
         "machine.purge" => s("name"),
+        "machine.tune" if d["rollback"] == true => format!("{} · 撤销调优", s("name")),
         "machine.tune" => format!("{} · {}", s("name"), s("profile")),
         "renewal" => {
             let auto = if d["auto"] == true { "（自动续费）" } else { "" };
@@ -632,6 +633,7 @@ mod tests {
         assert_eq!(t("job.cancel", json!({"kind": "move_entry", "name": "模拟团队C-21"})), ("取消作业".to_string(), "换线路机 · 模拟团队C-21".to_string()));
         assert_eq!(t("job.retry", json!({"kind": "upgrade_agent", "name": null, "step": 0})).1, "升级 agent");
         assert_eq!(t("machine.tune", json!({"name": "团队1-03", "profile": "tune-v1"})), ("系统调优".to_string(), "团队1-03 · tune-v1".to_string()));
+        assert_eq!(t("machine.tune", json!({"name": "团队1-03", "rollback": true})).1, "团队1-03 · 撤销调优");
         assert_eq!(t("job.cancel", json!({})).1, "");
     }
 

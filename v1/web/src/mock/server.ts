@@ -260,7 +260,7 @@ function startProvisionJob(m: MachineView) {
   m.active_job = { id: job.id, kind: job.kind, state: 'running' };
   drive(job, 2800, () => {
     m.lifecycle = 'active'; m.activated_at = iso(); m.active_job = null; m.health = { status: 'ok', reasons: [] };
-    if (!h && m.kind !== 'proxy') { m.tune = { profile: 'tune-v1', at: iso(), current: true }; m.agent = { version: '1.0.3', last_report_at: iso(), online: true, xray_running: null, cores: 2, health: null }; m.host = { ts: iso(), cpu_pct: 6, load1: 0.1, mem_used: 400 * 1024 ** 2, mem_total: 4 * GiB, disk_used: 4 * GiB, disk_total: 60 * GiB, net_rx_bps: 2e5, net_tx_bps: 1e5, tcp_conns: 12 }; }
+    if (!h && m.kind !== 'proxy') { m.tune = { profile: 'tune-v2', at: iso(), current: true, params: { bw: 1000, bw_plan: null, bw_source: 'default' as const, rtt: 100, rtt_source: 'default' as const, rtt_samples: 0, mem_mb: 3911, buf_max: 27097152 } }; m.agent = { version: '1.0.3', last_report_at: iso(), online: true, xray_running: null, cores: 2, health: null }; m.host = { ts: iso(), cpu_pct: 6, load1: 0.1, mem_used: 400 * 1024 ** 2, mem_total: 4 * GiB, disk_used: 4 * GiB, disk_total: 60 * GiB, net_rx_bps: 2e5, net_tx_bps: 1e5, tcp_conns: 12 }; }
     for (const e of m.entries) { e.lifecycle = 'active'; e.applied = true; e.tcp = { ok: true, latency_ms: 52, detail: null, ts: iso() }; e.egress = { ok: true, latency_ms: 190, detail: null, ts: iso() }; }
     refreshCounts();
   }, h ? ipOutputs(m, h) : []);
@@ -392,7 +392,7 @@ function createMachine(it: ProvisionItem, c: ProvisionCheckItem): MachineView {
     subscription: it.subscription?.due_date ? subCalc({ price_cents: it.subscription.price_cents ?? plan?.price_cents ?? 0, currency: plan?.currency ?? META.defaults.currency, cycle: it.subscription.cycle ?? plan?.cycle ?? META.defaults.cycle, due_date: it.subscription.due_date, due_days: 0, billing_tz: it.subscription.billing_tz ?? pv?.timezone ?? META.org_timezone, auto_renew: false, remind_days: pv?.remind_days ?? META.defaults.remind_days, traffic_gb: plan?.traffic_gb || null, traffic_reset_day: 1 } as NonNullable<MachineView['subscription']>) : null,
     agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, nic: null, month_counted_from: null, quota: { used: 0, period_start: '', period_end: null, mode: 'monthly', counted_from: null, rule: null, base: null }, health: { status: 'unknown', reasons: [{ key: 'provisioning', severity: 'info', text: '上架作业进行中' }] }, active_job: null, failed_job: null, open_incidents: 0, maintenance: false,
     relay: it.kind === 'relay' ? { public_host: it.ip, generation: 1, applied_generation: 0, applied_at: null, apply_error: null, port_min: 20001, port_max: 20999 } : null,
-    tune: it.kind === 'proxy' || h ? null : { profile: null, at: null, current: false },
+    tune: it.kind === 'proxy' || h ? null : { profile: null, at: null, current: false, params: null },
   };
   if (h) borrowHost(m, h);
   if (m.kind !== 'relay') {
@@ -862,9 +862,15 @@ R('POST', '/machines/([^/]+)/tune', ({ params }) => {
   const job = newJob('tune', { id: m.id, name: m.name }, [['tune', '系统调优']]);
   job.cancellable = false;
   m.active_job = { id: job.id, kind: 'tune', state: 'running' };
-  drive(job, 2500, () => { m.active_job = null; m.tune = { profile: 'tune-v1', at: iso(), current: true }; }, [{
-    profile: 'tune-v1', applied: ['net.core.rmem_max', 'net.core.wmem_max', 'net.ipv4.tcp_rmem', 'net.ipv4.tcp_wmem'], ok: ['net.ipv4.tcp_congestion_control'], kept: ['net.core.somaxconn'],
-    skipped: [{ key: 'net.netfilter.nf_conntrack_max', why: 'missing', got: null }], journald: 'changed', ntp: 'synced', nofile: '65536', container: false, mem_mb: 3911, swap_mb: 0, bbr: true,
+  const tp = m.kind === 'relay'
+    ? { bw: 1000, bw_plan: 2560, bw_source: 'plan' as const, rtt: 172, rtt_source: 'sampled' as const, rtt_samples: 41, mem_mb: 3911, buf_max: 45097152 }
+    : { bw: 1000, bw_plan: null, bw_source: 'default' as const, rtt: 100, rtt_source: 'default' as const, rtt_samples: 0, mem_mb: 3911, buf_max: 27097152 };
+  drive(job, 2500, () => { m.active_job = null; m.tune = { profile: 'tune-v2', at: iso(), current: true, params: tp }; }, [{
+    profile: 'tune-v2', applied: ['net.core.rmem_max', 'net.core.wmem_max', 'net.ipv4.tcp_rmem', 'net.ipv4.tcp_wmem'], ok: ['net.ipv4.tcp_congestion_control'], kept: ['net.core.somaxconn', 'fs.file-max'],
+    before: { 'net.core.rmem_max': '212992', 'net.core.wmem_max': '212992', 'net.ipv4.tcp_rmem': '4096 131072 6291456', 'net.ipv4.tcp_wmem': '4096 16384 4194304' },
+    skipped: [{ key: 'net.netfilter.nf_conntrack_max', why: 'missing', got: null }], params: tp, snapshot: 'created', warnings: [],
+    route: m.kind === 'relay' ? { initcwnd: 10000, initrwnd: 10000 } : null,
+    journald: 'changed', ntp: 'synced', nofile: '65536', container: false, mem_mb: 3911, swap_mb: 0, bbr: true,
   }]);
   emit({ type: 'machines' });
   return { machine_id: m.id, name: m.name, job_id: job.id };

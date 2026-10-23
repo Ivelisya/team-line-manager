@@ -874,9 +874,17 @@ pub async fn upgrade_agent(a: Actor, State(st): State<AppState>, ApiPath(id): Ap
     v.into_iter().next().map(ok).ok_or_else(|| ApiError::conflict(skipped[0]["reason"].as_str().unwrap_or("这台机器还有进行中的作业")))
 }
 
-/// 重做系统调优（作业 `tune`，当前调优档见 jobs/tune.rs）：写内核参数、journald 体积、补时间同步，不重启 ssserver / Xray、不断客户连接。
+#[derive(Deserialize, Default)]
+pub struct TuneIn {
+    /// true = 撤销调优：按机器上的原值快照写回、删掉调优写的 sysctl 与开机载入文件（作业参数 `rollback`）
+    #[serde(default)]
+    rollback: bool,
+}
+
+/// 重做系统调优（作业 `tune`，当前调优档见 jobs/tune.rs）：写内核参数、journald 体积、补时间同步，不重启 ssserver / Xray、不断客户连接；
+/// `rollback: true` 时撤销（同一个作业类型，参数不同）。
 /// 同机 IP 节点和宿主机共用系统设置，家宽代理没有我们的机器；机器上已有进行中的作业时由唯一索引挡住（409）
-pub async fn tune(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
+pub async fn tune(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<TuneIn>) -> ApiResult<Json<Value>> {
     let (kind, lc, name, host) = brief_of(&st, id).await?;
     if let Some(h) = host {
         return Err(ApiError::conflict(format!("同机 IP 节点和宿主机共用系统设置：对宿主机「{h}」调优")));
@@ -888,8 +896,13 @@ pub async fn tune(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uui
         return Err(ApiError::conflict("只有在用的机器能调优"));
     }
     let mut tx = st.db.begin().await?;
-    let job = jobs::enqueue(&mut tx, "tune", Some(id), json!({}), &a.name).await?;
-    audit(&mut tx, &a.name, "machine.tune", "machine", Some(id), json!({"name": name, "profile": jobs::tune::PROFILE, "job_id": job})).await?;
+    let job = jobs::enqueue(&mut tx, "tune", Some(id), if b.rollback { json!({"rollback": true}) } else { json!({}) }, &a.name).await?;
+    let detail = if b.rollback {
+        json!({"name": name, "rollback": true, "job_id": job})
+    } else {
+        json!({"name": name, "profile": jobs::tune::PROFILE, "job_id": job})
+    };
+    audit(&mut tx, &a.name, "machine.tune", "machine", Some(id), detail).await?;
     tx.commit().await?;
     st.wake_jobs();
     st.emit(Event::Job { id: job, target: Some(id) });
