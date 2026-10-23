@@ -9,7 +9,7 @@
 //! 再一台一台改（备份 → 改出口 → 重启 OpenClash → 测延迟）。哪台失败了，它自己已经改回（脚本做），之前改好的也按各自的备份改回去，
 //! 作业失败：路由保持一致，修好后重试从头改。改回只动本作业改过、现在还是本作业写的那几个出口（routers::replace），
 //! 同一台路由上别的作业之后改的出口不会被抹掉。
-//! 改过的路由、第一次改之前的备份时间戳与要改的出口记在参数 `routers_applied`，确认都改回了（或这一步做完）才清掉：
+//! 改过的路由、第一次改之前的备份时间戳与要改的出口记在参数 `routers_applied`，确认都改回了、或这一步做完（成功时与 `routers_stuck` 一起清）才清掉：
 //! 中途被打断（外层超时、中控重启）或改回失败时它还在，这时作业不能取消（jobs::cancel_blocker），重试照它接着做完（不重新确定出口，
 //! 备份戳沿用第一次的）。改回失败的另记在 `routers_stuck`（哪台、哪些出口、改之前指向哪），作业详情据此给出「需要人工处理」。
 //! 凭据（uuid、公钥、short-id）执行时才从库里取，只进 ssh 的 stdin，不进参数、日志与审计。
@@ -33,8 +33,31 @@ struct Applied {
 }
 
 impl Applied {
-    /// 改回用：出口名与改成的 server:port
-    fn back(&self) -> Vec<(&str, &str, u16)> { self.exits.iter().map(|x| (x.exit.as_str(), x.server.as_str(), x.port.unwrap_or_default())).collect() }
+    /// 改回用：这台上本作业写入的出口的样子（出口名、改成的 server:port 和从库里取回的凭据：路由上整组参数都对上才算「仍是本作业写的」）。
+    /// 记录里没有端口、或入口已经查不到：没法核对，返回原因（不能当成改回了）
+    async fn back(&self, db: &sqlx::PgPool) -> Result<Vec<rr::Edit>, String> {
+        let mut out = vec![];
+        for x in &self.exits {
+            let port = x.port.ok_or_else(|| format!("作业记录里出口「{}」没有改成的端口，没法核对是不是本作业写的", x.exit))?;
+            let e = match x.new_entry_id {
+                Some(id) => new_entry(db, id, None).await.map_err(|e| format!("{e:#}"))?,
+                None => None,
+            };
+            let e = e.ok_or_else(|| format!("出口「{}」改成的入口已经查不到了，没法核对是不是本作业写的", x.exit))?;
+            out.push(rr::Edit {
+                exit: x.exit.clone(),
+                old_server: x.old_server.clone(),
+                old_port: x.old_port,
+                server: x.server.clone(),
+                port,
+                uuid: e.client_uuid.to_string(),
+                sni: e.reality_sni,
+                pbk: e.reality_public_key,
+                sid: e.short_id,
+            });
+        }
+        Ok(out)
+    }
 }
 
 /// 改回失败、要人工处理的一台路由（参数 `routers_stuck`，作业的 `manual` 由它而来，见 jobs::manual）
@@ -55,6 +78,29 @@ struct NewEntry {
     port: i32,
     reality_sni: String,
     reality_public_key: String,
+}
+
+/// 入口的参数。`active_of` 有值时只取属于这个节点、在用的入口（改之前）；没有就不限（改回时，入口可能已经摘了）
+async fn new_entry(db: &sqlx::PgPool, id: Uuid, active_of: Option<Uuid>) -> sqlx::Result<Option<NewEntry>> {
+    sqlx::query_as(
+        "select e.client_uuid, e.short_id, e.port, r.reality_sni, r.reality_public_key from entry e join relay r on r.machine_id = e.relay_id
+         where e.id = $1 and ($2::uuid is null or (e.node_id = $2 and e.lifecycle = 'active'))",
+    )
+    .bind(id)
+    .bind(active_of)
+    .fetch_optional(db)
+    .await
+}
+
+/// 还在用的备份的时间戳：没做完的作业（失败的、在重试的）参数里记着的，改配置时脚本不删它们
+async fn pinned_stamps(db: &sqlx::PgPool) -> sqlx::Result<Vec<String>> {
+    sqlx::query_scalar(
+        "select distinct a->>'stamp' from job j,
+             jsonb_array_elements(case when jsonb_typeof(j.params->'routers_applied') = 'array' then j.params->'routers_applied' else '[]'::jsonb end) a
+         where j.state not in ('succeeded', 'cancelled') and a->>'stamp' is not null",
+    )
+    .fetch_all(db)
+    .await
 }
 
 /// 出口要不要改、改成什么：按库里现在的入口算，同预览
@@ -339,18 +385,15 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     }
     // 3. 一台一台改
     let mut applied = applied;
+    let pins = pinned_stamps(&c.st.db).await?;
     let mut done = vec![];
     for (r, exits) in &todo {
         let mut ed = vec![];
         for x in exits {
-            let e: Option<NewEntry> = sqlx::query_as(
-                "select e.client_uuid, e.short_id, e.port, r.reality_sni, r.reality_public_key from entry e join relay r on r.machine_id = e.relay_id
-                 where e.id = $1 and e.node_id = $2 and e.lifecycle = 'active'",
-            )
-            .bind(x.new_entry_id)
-            .bind(new)
-            .fetch_optional(&c.st.db)
-            .await?;
+            let e = match x.new_entry_id {
+                Some(id) => new_entry(&c.st.db, id, Some(new)).await?,
+                None => None,
+            };
             let Some(e) = e else { return give_up(c, &mut locks, &applied, None, format!("新入口（{}）已经不在用了：{redo}", x.to()), ErrKind::Remote, kept).await };
             ed.push(rr::Edit {
                 exit: x.exit.clone(),
@@ -372,7 +415,7 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         c.set_params(json!({"routers_applied": applied})).await?;
         let what: Vec<String> = ed.iter().map(|e| format!("{} {}:{} → {}:{}", e.exit, e.old_server, e.old_port, e.server, e.port)).collect();
         c.log(format!("软路由「{}」：改出口 {}（先备份，改完重启 OpenClash 并测延迟）", r.name, what.join("，"))).await;
-        let res = ssh::exec(tunnel::via_tunnel(&c.st.cfg, r.id, r.tunnel_port), &rr::apply_script(&ed, t), rr::APPLY_TIMEOUT).await;
+        let res = ssh::exec(tunnel::via_tunnel(&c.st.cfg, r.id, r.tunnel_port), &rr::apply_script(&ed, t, &pins), rr::APPLY_TIMEOUT).await;
         let (kind, why, self_undone) = match res {
             Ok(o) if o.ok() && o.kv("replace") == Some("ok") => {
                 let delays: Vec<String> = (1..=ed.len()).map(|i| format!("{} {} ms", ed[i - 1].exit, o.kv(&format!("delay_{i}")).unwrap_or("?"))).collect();
@@ -405,8 +448,31 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     }
     // 马上采一次改过的路由：快照别等下一轮，紧接着的预览按新配置算
     c.st.routers_refresh.now(todo.iter().map(|(r, _)| r.id)).await;
-    c.set_params(json!({"routers_stuck": []})).await?;
+    c.set_params(json!({"routers_applied": [], "routers_stuck": []})).await?;
     Ok(Outcome::Done(json!({"routers": done})))
+}
+
+/// 一台路由上本作业写的出口改回（先等它的锁）。没改回返回原因
+async fn revert_one(c: &Ctx<'_>, locks: &mut Locks<'_>, a: &Applied) -> anyhow::Result<Result<(), String>> {
+    locks.wait(a.id).await?;
+    let back = match a.back(&c.st.db).await {
+        Ok(b) => b,
+        Err(why) => return Ok(Err(why)),
+    };
+    let out = ssh::exec(tunnel::via_tunnel(&c.st.cfg, a.id, a.port), &rr::rollback_script(&a.stamp, &back), rr::ROLLBACK_TIMEOUT).await;
+    Ok(match out {
+        Ok(o) if o.ok() && matches!(o.kv("rollback"), Some("ok" | "none")) => {
+            // 之后被别的作业改走的出口没动：记一行
+            let notes = own_lines(&o);
+            if !notes.is_empty() {
+                c.warn(format!("软路由「{}」改回时：{}", a.name, notes.join("；"))).await;
+            }
+            Ok(())
+        }
+        Ok(o) if o.code == 255 => Err(ssh_failed(c, &a.name, &o).await),
+        Ok(o) => Err(reason(&o)),
+        Err(e) => Err(format!("{e:#}")),
+    })
 }
 
 /// 改路由没成：之前改好的（和没自己改回的那一台，`undone` 是自己改回了的那台与它这次的备份）按各自第一次改之前的备份改回，作业失败。
@@ -430,25 +496,13 @@ async fn give_up(
         if undone.is_some_and(|(id, stamp)| a.id == id && a.stamp == stamp) {
             continue;
         }
-        locks.wait(a.id).await?;
-        let out = ssh::exec(tunnel::via_tunnel(&c.st.cfg, a.id, a.port), &rr::rollback_script(&a.stamp, &a.back()), rr::ROLLBACK_TIMEOUT).await;
-        let why = match out {
-            Ok(o) if o.ok() && matches!(o.kv("rollback"), Some("ok" | "none")) => {
-                // 之后被别的作业改走的出口没动：记一行
-                let notes = own_lines(&o);
-                if !notes.is_empty() {
-                    c.warn(format!("软路由「{}」改回时：{}", a.name, notes.join("；"))).await;
-                }
-                back.push(a.name.clone());
-                continue;
-            }
-            Ok(o) if o.code == 255 => ssh_failed(c, &a.name, &o).await,
-            Ok(o) => reason(&o),
-            Err(e) => format!("{e:#}"),
-        };
-        whys.push(format!("{}（{why}）", a.name));
-        stuck.push(Stuck { id: a.id, name: a.name.clone(), exits: a.exits.iter().map(|x| x.exit.clone()).collect(), was: a.exits.iter().map(|x| format!("{}:{}", x.old_server, x.old_port)).collect() });
-        left.push(a);
+        if let Err(why) = revert_one(c, locks, a).await? {
+            whys.push(format!("{}（{}）", a.name, why));
+            stuck.push(Stuck { id: a.id, name: a.name.clone(), exits: a.exits.iter().map(|x| x.exit.clone()).collect(), was: a.exits.iter().map(|x| format!("{}:{}", x.old_server, x.old_port)).collect() });
+            left.push(a);
+        } else {
+            back.push(a.name.clone());
+        }
     }
     if !applied.is_empty() {
         c.st.routers_refresh.now(applied.iter().map(|a| a.id)).await;
@@ -469,7 +523,7 @@ async fn give_up(
     Err(StepError::err(kind, msg))
 }
 
-// 交换编号：旧节点挪去目标团队（备用）/ 空号，新节点接旧编号，同一个事务里走 PATCH 的那套（machines::patch_tx）；
+/// 交换编号：旧节点挪去目标团队（备用）/ 空号，新节点接旧编号，同一个事务里走 PATCH 的那套（machines::patch_tx）；
 /// auto_compact 时新节点原来的团队随后压缩。已经换好（中控在提交后重启、接着做）的直接算完成
 pub(super) async fn renumber(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let old = c.target_id()?;
@@ -564,4 +618,19 @@ pub(super) async fn renumber(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let (on, nn) = (name(old), name(new));
     c.log(format!("编号已交换：新节点现在是 {nn}，旧节点现在是 {on}{}", if renumbered > 0 { format!("；{renumbered} 台节点因压缩改了编号（见审计）") } else { String::new() })).await;
     Ok(Outcome::Done(json!({"old": on, "new": nn, "renumbered": renumbered})))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 记录里没有改成的端口：不填 0 放行，按出错处理（还没碰库就返回）
+    #[tokio::test]
+    async fn back_refuses_missing_port() {
+        let x = ExitPlan { exit: "节点01".into(), old_entry_id: Uuid::nil(), new_entry_id: Some(Uuid::nil()), old_server: "a".into(), old_port: 1, server: "b".into(), port: None, error: None };
+        let a = Applied { id: Uuid::nil(), name: "路由A".into(), port: 1, stamp: "S".into(), exits: vec![x] };
+        let db = sqlx::PgPool::connect_lazy("postgres://localhost/none").unwrap();
+        let why = a.back(&db).await.unwrap_err();
+        assert!(why.contains("节点01") && why.contains("没有改成的端口"), "{why}");
+    }
 }

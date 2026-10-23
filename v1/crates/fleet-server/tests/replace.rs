@@ -203,6 +203,8 @@ async fn preview_and_full_run() {
     drive(t).await;
     let j = t.job(&job).await;
     assert_eq!(j["state"], "succeeded", "{j} {}", logs(t, &job).await);
+    let p: Value = sqlx::query_scalar("select params from job where id = $1").bind(Uuid::parse_str(&job).unwrap()).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(p["routers_applied"], json!([]), "改路由这一步做完就清掉：{p}");
     assert_eq!((j["kind"].as_str(), j["steps"][0]["state"].as_str(), j["steps"][1]["state"].as_str()), (Some("replace"), Some("done"), Some("done")));
     assert_eq!((name_of(t, w.new).await, name_of(t, w.old).await), ("团队2-01".to_string(), "团队2备用-01".to_string()));
     assert_eq!(t.machine_lifecycle(w.old).await, "active", "旧节点不退役，放在备用团队");
@@ -725,6 +727,8 @@ async fn half_done_router_stays_protected_until_verified() {
     assert!(!err.contains("都是原样") && !err.contains("一台都没有改"), "{err}");
     assert_eq!((j["state"].as_str(), j["cancellable"].as_bool(), j["manual"]["routers"].clone()), (Some("failed"), Some(false), manual), "{j}");
     assert_eq!(applies(23201).len(), 1, "不在线的不去改");
+    let p: Value = sqlx::query_scalar("select params from job where id = $1").bind(Uuid::parse_str(&job).unwrap()).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(p["routers_applied"][0]["stamp"], json!(stamp1), "备份戳沿用第一次的：{p}");
 
     // 路由恢复后重试：接着改完
     sqlx::query("update router_status set reachable = true, error = null where router_id = $1").bind(a).execute(&t.st.db).await.unwrap();
@@ -738,7 +742,7 @@ async fn half_done_router_stays_protected_until_verified() {
     assert!(ap.len() == 2 && ap[1].contains("NAME_1='节点01'\nOSRV_1='198.51.100.2'\nOPORT_1='20003'\nSRV_1='198.51.100.2'\nPORT_1='20020'"), "{ap:?}");
     assert_eq!(read(root(23201).join("reads")).lines().count(), 1, "接着做的不重读配置");
     let p: Value = sqlx::query_scalar("select params from job where id = $1").bind(Uuid::parse_str(&job).unwrap()).fetch_one(&t.st.db).await.unwrap();
-    assert_eq!(p["routers_applied"][0]["stamp"], json!(stamp1), "备份戳沿用第一次的：{p}");
+    assert_eq!((p["routers_applied"].clone(), p["routers_stuck"].clone()), (json!([]), json!([])), "这一步做完才清掉：{p}");
     assert_eq!(name_of(t, w.new).await, "团队2-01");
 }
 
