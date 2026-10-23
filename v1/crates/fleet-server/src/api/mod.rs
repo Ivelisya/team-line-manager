@@ -21,6 +21,7 @@ pub mod recycle;
 pub mod relays;
 pub mod replace;
 pub mod repoint;
+pub mod router_ops;
 pub mod routers;
 pub mod settings;
 pub mod stream;
@@ -176,6 +177,9 @@ pub fn router() -> Router<AppState> {
         .route("/routers/{id}/exits/metrics", get(routers::exit_metrics))
         .route("/routers/{id}/bootstrap", post(routers::bootstrap))
         .route("/routers/{id}/deploy", post(routers::deploy_one))
+        .route("/routers/{id}/sync", get(router_ops::sync_preview).post(router_ops::sync))
+        .route("/routers/{id}/switch", post(router_ops::switch_to))
+        .route("/routers/{id}/switch/back", post(router_ops::switch_back))
         .route("/router-bootstrap/{token}", get(routers::bootstrap_script))
         // 探测点（probe-bootstrap 是给探测点取安装脚本的，不要登录，靠一次性令牌）
         .route("/probe-points", get(probe_points::list).post(probe_points::create))

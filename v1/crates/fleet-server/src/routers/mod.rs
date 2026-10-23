@@ -19,6 +19,7 @@ pub mod deploy;
 pub mod replace;
 pub mod scripts;
 pub mod selfcheck;
+pub mod switch;
 pub mod tunnel;
 
 use crate::config::Config;

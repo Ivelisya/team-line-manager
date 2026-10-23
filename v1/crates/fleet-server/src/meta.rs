@@ -233,6 +233,7 @@ pub const JOB_KINDS: Labels = &[
     ("tune", "系统调优"),
     ("ss_refresh", "重新下发 SS 配置"),
     ("repoint", "改出口指向"),
+    ("router_sync", "同步软路由出口"),
 ];
 
 pub const JOB_STATES: Labels = &[
@@ -301,6 +302,7 @@ pub const RULES: Labels = &[
     ("router_exits_down", "软路由出口不通"),
     ("router_wan_down", "软路由 WAN 口断开"),
     ("router_resource_high", "软路由资源吃紧"),
+    ("router_exit_drift", "软路由出口参数不一致"),
     ("probe_point_offline", "探测点离线"),
 ];
 

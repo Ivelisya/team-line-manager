@@ -39,10 +39,10 @@ pub struct JobOut {
 }
 
 const SELECT: &str = "select j.id, j.kind, j.target_id,
-    display_name(m.kind::text, m.label, t.name, m.number) target_name,
+    coalesce(display_name(m.kind::text, m.label, t.name, m.number), ro.name) target_name,
     coalesce(m.spare_from, (select rb.name from recycle_bin rb where rb.source = 'fleet' and rb.source_id = j.target_id::text)) target_origin,
     j.state::text state, j.step, j.error, j.created_by, j.created_at, j.started_at, j.finished_at, j.params->'routers_stuck' routers_stuck
-  from job j left join machine m on m.id = j.target_id left join team t on t.id = m.team_id";
+  from job j left join machine m on m.id = j.target_id left join team t on t.id = m.team_id left join router ro on ro.id = j.target_id";
 
 #[derive(Deserialize)]
 pub struct ListQ {
@@ -225,10 +225,13 @@ async fn reset_target(tx: &mut crate::db::Tx<'_>, job: Uuid, step: i32, target: 
     Ok((ip, port.unwrap_or(22) as u16))
 }
 
-/// 审计里写是哪个作业：作业类型与目标机器的显示名（摘要「换线路机 · 团队1-03」）；没有目标、目标已删除的不写 name
+/// 审计里写是哪个作业：作业类型与目标机器（同步软路由出口是路由）的显示名（摘要「换线路机 · 团队1-03」）；没有目标、目标已删除的不写 name
 async fn job_ref(tx: &mut crate::db::Tx<'_>, kind: &str, target: Option<Uuid>) -> sqlx::Result<Value> {
     let name: Option<String> = match target {
-        Some(t) => sqlx::query_scalar("select display_name(m.kind::text, m.label, t.name, m.number) from machine m left join team t on t.id = m.team_id where m.id = $1")
+        Some(t) => sqlx::query_scalar(
+            "select coalesce((select display_name(m.kind::text, m.label, t.name, m.number) from machine m left join team t on t.id = m.team_id where m.id = $1),
+                             (select name from router where id = $1))",
+        )
             .bind(t)
             .fetch_optional(&mut **tx)
             .await?

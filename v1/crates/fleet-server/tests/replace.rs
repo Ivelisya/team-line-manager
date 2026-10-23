@@ -1149,3 +1149,45 @@ async fn repoint_direct_exit_to_other_relay() {
     let rp = au.as_array().unwrap().iter().find(|a| a["action"] == "entry.repoint").unwrap();
     assert_eq!((rp["title"].as_str(), rp["summary"].as_str()), (Some("改出口指向"), Some("线路机2-直出 · 线路机2:20010 → 线路机3-直出 · 线路机3:20030（改 1 台软路由）")));
 }
+
+/// 出口参数和入口不一致（凭据轮换后没同步）：持续两轮采集（满 30 秒）才开警告，告警带建议操作 fleetctl router sync；
+/// 同步作业（目标是路由）把它改成入口现在的参数、server:port 不变，客户自己的出口不动；同步好之后满 60 秒恢复
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn drift_alert_and_sync() {
+    use fleet_server::routers::alerts;
+    let w = world().await;
+    let t = &w.t;
+    let oe = old_entry(&w).await;
+    let ra = router(&w, "团队2-路由S", 23501, &[("节点01", "relay.test", 20003, Some(oe)), ("直连", "203.0.113.99", 8388, None)]).await;
+    let mark = |sync: &'static str| sqlx::query("update router_status set data = jsonb_set(data, '{exits,0,sync}', to_jsonb($2::text)) where router_id = $1").bind(ra).bind(sync);
+    mark("drift").execute(&t.st.db).await.unwrap();
+    let firing = || async { t.get("/api/v1/incidents?state=firing").await["items"].as_array().cloned().unwrap_or_default() };
+    let mut st = alerts::AlertState::default();
+    let t0 = time::OffsetDateTime::now_utc();
+    alerts::evaluate(&t.st, &mut st, t0).await.unwrap();
+    assert!(firing().await.is_empty(), "第一轮不开");
+    alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(31)).await.unwrap();
+    let inc = firing().await;
+    assert_eq!((inc.len(), inc[0]["rule"].as_str(), inc[0]["severity"].as_str()), (1, Some("router_exit_drift"), Some("warning")), "{inc:?}");
+    assert_eq!(inc[0]["summary"], "团队2-路由S：1 个出口的参数和对应的面板入口不一致：节点01（x，凭据和入口现在的不一样）");
+    assert_eq!(inc[0]["suggested"], json!(["fleetctl router sync 团队2-路由S"]));
+    // 预览：server:port 不变；发起后作业目标是路由
+    let p = t.get(&format!("/api/v1/routers/{ra}/sync")).await;
+    assert_eq!((p["ok"].as_bool(), &p["routers"][0]["exits"][0]["from"], &p["routers"][0]["exits"][0]["to"]), (Some(true), &json!("relay.test:20003"), &json!("relay.test:20003")), "{p}");
+    let d = t.post(&format!("/api/v1/routers/{ra}/sync"), json!({})).await;
+    let job = d["job_id"].as_str().unwrap().to_string();
+    drive(t).await;
+    let j = t.job(&job).await;
+    assert_eq!((j["state"].as_str(), j["kind"].as_str(), j["target"]["name"].as_str()), (Some("succeeded"), Some("router_sync"), Some("团队2-路由S")), "{j} {}", logs(t, &job).await);
+    let a = applies(23501);
+    assert_eq!(a.len(), 1);
+    assert!(a[0].contains("N='1'\n") && a[0].contains("OSRV_1='relay.test'\nOPORT_1='20003'\nSRV_1='relay.test'\nPORT_1='20003'\nUUID_1='11111111-1111-4111-8111-111111111111'"), "{}", &a[0][..400]);
+    let au = t.get(&format!("/api/v1/audit?target_id={ra}")).await;
+    assert_eq!((au[0]["title"].as_str(), au[0]["summary"].as_str()), (Some("同步软路由出口"), Some("团队2-路由S 的 节点01")));
+    // 一致了：满 60 秒恢复
+    mark("ok").execute(&t.st.db).await.unwrap();
+    alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(40)).await.unwrap();
+    assert_eq!(firing().await.len(), 1);
+    alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(101)).await.unwrap();
+    assert!(firing().await.is_empty());
+}

@@ -55,7 +55,7 @@ if ! command -v ucode >/dev/null 2>&1; then echo '{"v":1,"error":"路由上没�
 cat > /tmp/fleet-collect/collect.uc <<'FLEET_UC'
 @@PROGRAM@@
 FLEET_UC
-FLEET_MODE="$MODE" FLEET_DELAY_URL="$DELAY_URL" FLEET_MANAGED="$MANAGED" FLEET_ONLY="$ONLY" exec ucode /tmp/fleet-collect/collect.uc
+FLEET_MODE="$MODE" FLEET_DELAY_URL="$DELAY_URL" FLEET_MANAGED="$MANAGED" FLEET_ONLY="$ONLY" FLEET_GROUP="$GROUP" FLEET_TO="$TO" exec ucode /tmp/fleet-collect/collect.uc
 }
 main </dev/null
 "#;
@@ -68,9 +68,13 @@ pub fn delay_script(managed: &[String], only: &[String]) -> String { program("de
 
 fn program(mode: &str, managed: &[String], only: &[String]) -> String {
     let json = |v: &[String]| serde_json::to_string(v).unwrap_or_else(|_| "[]".into());
-    crate::jobs::scripts::vars(&[("MODE", mode), ("DELAY_URL", &delay_url_param()), ("MANAGED", &json(managed)), ("ONLY", &json(only))])
-        + &WRAPPER.replace("@@PROGRAM@@", include_str!("collect.uc").trim_end())
+    crate::jobs::scripts::vars(&[("MODE", mode), ("DELAY_URL", &delay_url_param()), ("MANAGED", &json(managed)), ("ONLY", &json(only))]) + &wrapped()
 }
+
+fn wrapped() -> String { WRAPPER.replace("@@PROGRAM@@", include_str!("collect.uc").trim_end()) }
+
+/// 临时切换脚本（同一段程序 MODE=switch）：把 select 组 `group` 切到组里的出口 `to`，见 routers/switch.rs
+pub fn switch_script(group: &str, to: &str) -> String { crate::jobs::scripts::vars(&[("MODE", "switch"), ("GROUP", group), ("TO", to)]) + &wrapped() }
 
 /// 测延迟的地址按查询参数编码（mihomo 的 `?url=`）：替换节点后测出口延迟也用它（routers::replace）
 pub fn delay_url_param() -> String {
@@ -86,9 +90,29 @@ pub struct Snapshot {
     pub interfaces: Vec<Iface>,
     pub openclash: OpenClash,
     pub exits: Vec<Exit>,
+    /// 策略组（mihomo /proxies 里有成员列表的）与各自当前选中的出口；mihomo 的 API 调不通时为空
+    pub groups: Vec<Group>,
     pub clients: Vec<Client>,
     #[serde(with = "time::serde::rfc3339::option")]
     pub collected_at: Option<OffsetDateTime>,
+}
+
+/// 一个策略组。kind 是 mihomo 的类型：Selector（select，可以手动切换）、URLTest、Fallback、LoadBalance…
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Group {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// 当前选中的出口（或下一层的组）
+    pub now: Option<String>,
+    /// 组里的成员（按配置的顺序）
+    pub all: Vec<String>,
+}
+
+impl Group {
+    /// select 组：只有它能手动选（url-test / fallback / load-balance 由 mihomo 自己选）
+    pub fn selectable(&self) -> bool { self.kind == "Selector" }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -385,6 +409,7 @@ pub fn build(raw: &Value, prev: &Prev, last: Option<&Snapshot>, config: Option<&
         },
     };
     let exits = exits(&oc, last, config, entries, now);
+    let groups = oc.get("groups").and_then(Value::as_array).map(|a| a.iter().filter_map(|g| serde_json::from_value(g.clone()).ok()).collect()).unwrap_or_default();
     let clients = clients(raw, &oc, &interfaces);
     let wan = interfaces.iter().find(|w| w.name == "wan");
     let metric = MetricRow {
@@ -421,7 +446,7 @@ pub fn build(raw: &Value, prev: &Prev, last: Option<&Snapshot>, config: Option<&
             clients: e.clients,
         })
         .collect();
-    let snap = Snapshot { system, interfaces, openclash, exits, clients, collected_at: Some(now) };
+    let snap = Snapshot { system, interfaces, openclash, exits, groups, clients, collected_at: Some(now) };
     Built { snap, prev: Prev { at: Some(now), dev, totals }, metric, exits: exit_rows }
 }
 
@@ -462,7 +487,8 @@ fn exits(oc: &Value, last: Option<&Snapshot>, config: Option<&[Proxy]>, entries:
                 Some(r) => match r.get(&name).and_then(Value::as_i64).filter(|d| *d > 0) {
                     // 不通之后第一次测通：还在确认（下一次也通才算恢复）
                     Some(d) => (Some(true), Some(d), Some(now), 0, prev.is_some_and(|p| p.fail_streak >= 2)),
-                    None => (Some(false), None, Some(now), prev.map_or(0, |p| p.fail_streak) + 1, false),
+                    // 还在确认（不通之后刚测通一次）又不通：仍算连续不通（记 2），告警不关、每轮照样重测
+                    None => (Some(false), None, Some(now), prev.map_or(1, |p| if p.recovering { 2 } else { p.fail_streak + 1 }), false),
                 },
                 None => match prev {
                     Some(p) => (p.alive, p.delay_ms, p.delay_at, p.fail_streak, p.recovering),
@@ -692,6 +718,10 @@ pub async fn run_forever(st: AppState) {
             }
         }
         refresh.served.send_replace(seq);
+        // 到时间的临时切换切回去（每轮整轮采集之后看一次）
+        if full {
+            super::switch::due(&st).await;
+        }
         // 每轮（含马上采的那几台）之后评估告警：隧道连上马上采成功，离线告警当场恢复
         if full || eval_only || !due.is_empty() {
             eval_at = None;
@@ -914,6 +944,10 @@ async fn one(st: &AppState, t: &Target, m: &mut Mem, entries: &[Entry], delay: b
                 .await?;
             }
             tx.commit().await?;
+            // 临时切换的组被路由自己改回了（重启、OpenClash 重载）：待切回取消（routers/switch.rs）
+            if let Err(e) = super::switch::reconcile(st, t.id, &b.snap, now).await {
+                tracing::warn!(router = %t.id, "核对临时切换失败：{e:#}");
+            }
             let changed = ok_changed(before.as_ref(), m.last.as_ref(), &b.snap) || m.told.is_none_or(|t| now - t >= NUMBERS_EVERY);
             if changed {
                 m.told = Some(now);
@@ -939,6 +973,7 @@ fn signature(s: &Snapshot) -> Value {
         "ifaces": s.interfaces.iter().map(|i| (&i.name, &i.device, i.up, &i.ip)).collect::<Vec<_>>(),
         "oc": (o.enabled, o.running, &o.version, &o.mode, &o.config_path, o.config_mtime.map(|t| t.unix_timestamp()), &o.error, &o.config_error, o.config_stale, &o.delay_error),
         "exits": s.exits.iter().map(|e| serde_json::json!([e.name, e.server, e.port, e.entry, e.sync, e.alive, e.delay_ms, e.delay_at.map(|t| t.unix_timestamp()), e.fail_streak])).collect::<Vec<_>>(),
+        "groups": s.groups.iter().map(|g| (&g.name, &g.now)).collect::<Vec<_>>(),
         "clients": s.clients.iter().filter(|c| c.online).map(|c| (&c.ip, &c.hostname)).collect::<Vec<_>>(),
     })
 }
@@ -1290,6 +1325,9 @@ mod tests {
         let b5 = ok(&b4, 630);
         assert_eq!((b5.snap.exits[1].fail_streak, b5.snap.exits[1].recovering, b5.snap.exits[0].recovering), (0, true, false));
         assert!(!ok(&b5, 660).snap.exits[1].recovering);
+        // 还在确认时又不通：仍算连续不通（告警不关、每轮照样重测），不是从 1 重新数
+        let b6 = build(&raw(0, 0, 0, tested(json!({"节点01": 90}))), &b5.prev, Some(&b5.snap), Some(&proxies()), &[], t0 + time::Duration::seconds(660));
+        assert_eq!((b6.snap.exits[1].fail_streak, b6.snap.exits[1].recovering), (2, false));
     }
 
     /// 延迟测试没做成（单独那次执行超时、OpenClash 没在跑）：出口沿用上一次，原因记在 delay_error，没测的轮次沿用它，测成了清掉

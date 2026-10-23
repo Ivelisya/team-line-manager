@@ -21,6 +21,8 @@ pub mod scripts;
 mod steps;
 pub mod tune;
 
+pub use steps::sync_exit;
+
 use crate::db::Tx;
 use crate::error::ApiResult;
 use crate::ssh::{kind_of, ErrKind, StepError};
@@ -116,6 +118,8 @@ const PURGE: &[StepDef] = &[s("purge", "删除数据", 600)];
 const REPLACE: &[StepDef] = &[s("routers", "改软路由出口", 1800), s("renumber", "交换编号", 60)];
 // 改出口指向（api/repoint.rs）：只有改软路由出口这一步，入口都不动
 const REPOINT: &[StepDef] = &[s("routers", "改软路由出口", 1800)];
+// 同步软路由出口参数（api/router_ops.rs）：参数和对应入口不一致的出口改成入口现在的参数（同一步「改软路由出口」，目标是路由），入口不动
+const ROUTER_SYNC: &[StepDef] = &[s("routers", "改软路由出口", 1800)];
 // 推送时旧程序留成 .prev；起不来、或 2 分钟内等不到新版本上报，就换回去并让作业失败（见 steps::agent / wait_report）。重试从推送重来
 const UPGRADE_AGENT: &[StepDef] = &[s("agent", "推送并重启 agent", 600), s("wait_report", "等待新版本上报", 180)];
 // 系统调优（当前档见 tune.rs；参数 rollback 时按原值快照撤销）：一个幂等脚本，不重启 ssserver / Xray；时间没同步的机器要装 systemd-timesyncd，留足 apt 的时间
@@ -136,6 +140,7 @@ pub fn defs(kind: &str) -> &'static [StepDef] {
         "upgrade_agent" => UPGRADE_AGENT,
         "replace" => REPLACE,
         "repoint" => REPOINT,
+        "router_sync" => ROUTER_SYNC,
         "tune" => TUNE,
         "ss_refresh" => SS_REFRESH,
         _ => &[],
@@ -149,10 +154,10 @@ pub fn title_of(kind: &str, key: &str) -> &'static str {
 /// 上架类作业：目标机器处于上架中，失败时机器标为上架失败
 pub fn provisions(kind: &str) -> bool { kind.starts_with("provision_") }
 
-pub fn cancellable(kind: &str) -> bool { provisions(kind) || matches!(kind, "attach_entry" | "move_entry" | "upgrade_agent" | "replace" | "repoint" | "tune" | "ss_refresh") }
+pub fn cancellable(kind: &str) -> bool { provisions(kind) || matches!(kind, "attach_entry" | "move_entry" | "upgrade_agent" | "replace" | "repoint" | "router_sync" | "tune" | "ss_refresh") }
 
 /// 停在「改软路由出口」这一步
-fn at_routers(kind: &str, step: i32) -> bool { (matches!(kind, "replace" | "repoint") && step == 0) || (kind == "move_entry" && step == MOVE_ROUTERS) }
+fn at_routers(kind: &str, step: i32) -> bool { (matches!(kind, "replace" | "repoint" | "router_sync") && step == 0) || (kind == "move_entry" && step == MOVE_ROUTERS) }
 
 /// 作业走到第 `step` 步、处于 `state` 时为什么不能取消；能取消返回 None。`params` 是作业参数（「改软路由出口」记的
 /// `routers_queued` / `routers_applied` / `routers_stuck`，见 steps/replace.rs）。
@@ -188,7 +193,7 @@ pub fn cancel_blocker(kind: &str, step: i32, state: &str, params: &Value) -> Opt
     if !matches!(state, "queued" | "running" | "waiting" | "failed") {
         return Some("作业已结束");
     }
-    if matches!(kind, "replace" | "repoint") && !queued && (step > 0 || !matches!(state, "queued" | "failed")) {
+    if matches!(kind, "replace" | "repoint" | "router_sync") && !queued && (step > 0 || !matches!(state, "queued" | "failed")) {
         return Some("软路由已经开始改（或已经改好），不能再取消：失败了点重试到完成");
     }
     if !matches!(kind, "upgrade_agent" | "tune" | "ss_refresh") || state == "queued" {
@@ -1046,7 +1051,7 @@ mod tests {
     #[test]
     fn outer_timeout_covers_step_timeout() {
         for k in [
-            "provision_vps", "provision_proxy", "provision_relay", "provision_ip", "attach_entry", "retire", "purge", "upgrade_agent", "move_entry", "replace", "repoint", "tune", "ss_refresh",
+            "provision_vps", "provision_proxy", "provision_relay", "provision_ip", "attach_entry", "retire", "purge", "upgrade_agent", "move_entry", "replace", "repoint", "router_sync", "tune", "ss_refresh",
         ] {
             for d in defs(k) {
                 assert!(outer_timeout(d).as_secs() as i64 >= d.timeout_s + 120);

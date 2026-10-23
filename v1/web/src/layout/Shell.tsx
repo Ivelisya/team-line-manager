@@ -17,7 +17,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Toaster } from '@/components/ui/toast';
 import { useDrawer } from '@/lib/drawer';
 import { setOverlay } from '@/lib/palette';
-import { useBootTarget, useDeployTarget, useRemoved, useRouterDrawer } from '@/lib/routers';
+import { useBootTarget, useDeployTarget, useRemoved, useRouterDrawer, useSwitchTarget, useSyncTarget } from '@/lib/routers';
 import { Hotkeys, PaletteTrigger } from '@/features/Hotkeys';
 import { AlertsIndicator } from '@/features/AlertsIndicator';
 import { JobsIndicator } from '@/features/JobsIndicator';
@@ -68,9 +68,9 @@ function DrawerHost() {
 
 function RouterHost() {
   const { id } = useRouterDrawer();
-  const boot = useBootTarget(), deploy = useDeployTarget(), removed = useRemoved();
+  const boot = useBootTarget(), deploy = useDeployTarget(), removed = useRemoved(), sync = useSyncTarget(), sw = useSwitchTarget();
   const drawer = useEver(!!id);
-  const dialogs = useEver(!!(boot || deploy || removed));
+  const dialogs = useEver(!!(boot || deploy || removed || sync || sw));
   return <>{drawer && <React.Suspense fallback={null}><RouterDrawer /></React.Suspense>}{dialogs && <React.Suspense fallback={null}><RouterDialogsHost /></React.Suspense>}</>;
 }
 

@@ -4,6 +4,7 @@ use crate::auth::Actor;
 use crate::db::{audit as audit_log, new_id, Args};
 use crate::incident::Engine;
 use crate::error::{ApiError, ApiJson, ApiPath, ApiQuery, ApiResult};
+use crate::routers;
 use crate::state::{AppState, Event};
 use axum::extract::State;
 use axum::Json;
@@ -34,6 +35,9 @@ struct IncidentOut {
     ack_by: Option<String>,
     /// 恢复后又在重开窗口内复发的次数
     reopen_count: i32,
+    /// 机器告警的对象是哪类机器（relay / vps / proxy / ip），建议操作用
+    #[serde(skip)]
+    subject_kind: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -65,7 +69,8 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQu
             case when i.engine = 'central' then '中控' when i.engine = 'router' then r.name
                  when i.engine = 'probe' then coalesce(pp.name, '探测点（已删除）')
                  else display_name(m.kind::text, m.label, t.name, m.number) end subject_name,
-            i.severity::text severity, i.state::text state, i.summary, i.opened_at, i.last_seen_at, i.resolved_at, i.ack_at, i.ack_by, i.reopen_count
+            i.severity::text severity, i.state::text state, i.summary, i.opened_at, i.last_seen_at, i.resolved_at, i.ack_at, i.ack_by, i.reopen_count,
+            case when i.engine = 'machine' then m.kind::text end subject_kind
          from incident i left join machine m on m.id = i.subject_id left join team t on t.id = m.team_id
               left join router r on r.id = i.subject_id and i.engine = 'router'
               left join probe_point pp on pp.id = i.subject_id and i.engine = 'probe'
@@ -79,6 +84,12 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQu
     // acked：其中已确认的条数（确认不关闭告警，顶栏计数仍含它们，悬停里分开写）
     let sql = format!("select count(*), count(*) filter (where i.ack_at is not null) from incident i where {}", cond(&mut a));
     let (total, acked): (i64, i64) = sqlx::query_as_with(&sql, a.0).fetch_one(&st.db).await?;
+    // 建议操作要看软路由最近一次采集的（出口不通时切到哪个出口）：有这类告警才读
+    let routers = if v.iter().any(|i| i.state == "firing" && matches!(i.rule.as_str(), "egress_fail" | routers::alerts::EXITS_DOWN)) {
+        routers::load(&st.db, None).await?
+    } else {
+        vec![]
+    };
     let out: Vec<Value> = v
         .iter()
         .map(|i| {
@@ -94,12 +105,73 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQu
                 j["subject"] = json!({"id": i.subject_id, "name": i.subject_name.clone().unwrap_or_else(|| "（已删除）".into())});
             }
             j["rule_name"] = json!(crate::meta::rule_label_of(&i.rule, &i.severity));
+            let advice = if i.state == "firing" { suggest(i, &routers) } else { vec![] };
+            j["suggested"] = json!(advice.iter().map(|a| &a.cmd).collect::<Vec<_>>());
+            j["quick_switch"] = json!(advice.iter().filter_map(|a| a.switch.as_ref()).collect::<Vec<_>>());
             j
         })
         .collect();
     let mut r = paged(out, total, offset);
     r.0["data"]["acked"] = json!(acked);
     Ok(r)
+}
+
+// ── 建议操作 ──────────────────────────────────────────────────────────────
+
+/// 一条建议：可以直接执行的 fleetctl 命令；临时切换另给结构化的一份（网页的「临时切到…」用）
+struct Advice {
+    cmd: String,
+    switch: Option<Value>,
+}
+
+fn cmd(c: String) -> Vec<Advice> { vec![Advice { cmd: c, switch: None }] }
+
+type Suggest = fn(&IncidentOut, &[routers::Row]) -> Vec<Advice>;
+
+/// 告警规则 → 建议操作。只这几条：出口不通 → 把用着它的 select 组临时切到别的出口；参数不一致 → 同步；线路机额度吃紧 → 搬迁建议；agent 离线 → 看日志
+const SUGGEST: &[(&str, Suggest)] = &[
+    ("egress_fail", |i, rs| switches(rs, None, |x| x.entry.as_ref().is_some_and(|e| e.node_id == i.subject_id))),
+    (routers::alerts::EXITS_DOWN, |i, rs| switches(rs, Some(i.subject_id), |x| x.sync != "unmanaged" && x.fail_streak >= 2)),
+    (routers::alerts::EXIT_DRIFT, |i, _| cmd(format!("fleetctl router sync {}", sh(i.subject_name.as_deref().unwrap_or_default())))),
+    ("traffic_quota_high", |i, _| if i.subject_kind.as_deref() == Some("relay") { cmd(format!("fleetctl rebalance {}", sh(i.subject_name.as_deref().unwrap_or_default()))) } else { vec![] }),
+    ("agent_offline", |i, _| cmd(format!("fleetctl logs {}", sh(i.subject_name.as_deref().unwrap_or_default())))),
+];
+
+fn suggest(i: &IncidentOut, routers: &[routers::Row]) -> Vec<Advice> {
+    if i.subject_name.is_none() {
+        return vec![];
+    }
+    SUGGEST.iter().find(|(r, _)| *r == i.rule).map(|(_, f)| f(i, routers)).unwrap_or_default()
+}
+
+/// 路由（`only` 给了就只看这台）上当前选中「坏」出口的 select 组：切到组里第一个能用（测通或没测过）、不是坏的出口，4 小时后自动切回
+fn switches(routers: &[routers::Row], only: Option<Uuid>, bad: impl Fn(&routers::collect::Exit) -> bool) -> Vec<Advice> {
+    let mut out = vec![];
+    for r in routers.iter().filter(|r| only.is_none_or(|id| id == r.id) && r.state() == "online") {
+        let Some(snap) = r.snapshot() else { continue };
+        let exit = |n: &str| snap.exits.iter().find(|x| x.name == n);
+        for g in snap.groups.iter().filter(|g| g.selectable()) {
+            let Some(now) = g.now.as_deref().filter(|n| exit(n).is_some_and(&bad)) else { continue };
+            // fleet 的出口优先，其次客户自己的
+            let ok = |x: &&routers::collect::Exit| !bad(x) && routers::collect::usable(x);
+            let cands: Vec<&routers::collect::Exit> = g.all.iter().filter_map(|n| exit(n)).filter(ok).collect();
+            let Some(to) = cands.iter().find(|x| x.sync != "unmanaged").or(cands.first()) else { continue };
+            out.push(Advice {
+                cmd: format!("fleetctl router switch {} {} {} --for 4h", sh(&r.name), sh(&g.name), sh(&to.name)),
+                switch: Some(json!({"router_id": r.id, "router": r.name, "group": g.name, "from": now, "to": to.name})),
+            });
+        }
+    }
+    out
+}
+
+/// 命令行参数：只有字母数字（含中文）与 -_.:/@+=, 的原样，否则加单引号
+fn sh(s: &str) -> String {
+    if !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || "-_.:/@+=,".contains(c)) {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', "'\''"))
+    }
 }
 
 pub async fn ack_incident(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {

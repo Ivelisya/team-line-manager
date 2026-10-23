@@ -1,8 +1,9 @@
-//! 软路由：routers（列表）、router show / exits（出口历史统计）/ add / bootstrap / deploy / edit / rm。
+//! 软路由：routers（列表）、router show / exits（出口历史统计）/ add / bootstrap / deploy / edit / rm，
+//! 以及 router sync（出口参数同步到入口当前参数）/ switch（select 组临时切换出口，可到时自动切回）。
 //! 接入有两种：`router add` 不给 --host 打印接入命令（在路由上用 root 执行，路由在 NAT 后面、中控连不到它时用）；
 //! 给 --host 就一键部署（中控能直接连到路由的 SSH 时用：中控登录上去装好隧道；密码只从标准输入读）。
 
-use crate::cmds::{num, st, Ctx};
+use crate::cmds::{num, outln, st, Ctx};
 use crate::ops::confirm;
 use crate::resolve;
 use crate::table::{self, bps, bytes, pct};
@@ -29,6 +30,17 @@ fn deploy_cn(s: &str) -> &str {
         "failed" => "部署失败",
         "done" => "已部署",
         s => s,
+    }
+}
+
+/// mihomo 的组类型
+fn group_kind_cn(k: &str) -> &str {
+    match k {
+        "Selector" => "select（手动选）",
+        "URLTest" => "url-test（自动测速）",
+        "Fallback" => "fallback（故障转移）",
+        "LoadBalance" => "load-balance（负载均衡）",
+        k => k,
     }
 }
 
@@ -221,6 +233,21 @@ fn human_show(d: &Value) -> String {
             })
             .collect();
         out.push_str(&format!("\n\n出口\n{}", table::render(&["出口", "地址", "对应入口", "参数", "延迟", "连接", "客户端", "速率"], &rows)));
+    }
+    if let Some(gs) = det["groups"].as_array().filter(|a| !a.is_empty()) {
+        let sw = d["switches"].as_array().cloned().unwrap_or_default();
+        let rows: Vec<Vec<String>> = gs
+            .iter()
+            .map(|g| {
+                let s = sw.iter().find(|s| s["group"] == g["name"]);
+                let note = s.map_or_else(String::new, |s| {
+                    let back = s["back_at"].as_str().map(|t| format!("，{} 自动切回", table::ts(t))).unwrap_or_default();
+                    format!("临时切换中（原来是 {}{back}）", st(s, "/from"))
+                });
+                vec![st(g, "/name"), group_kind_cn(&st(g, "/type")).into(), st(g, "/now"), g["all"].as_array().map_or(0, Vec::len).to_string(), note]
+            })
+            .collect();
+        out.push_str(&format!("\n\n策略组（select 组可以临时切换：fleetctl router switch）\n{}", table::render(&["组", "类型", "当前出口", "成员", "临时切换"], &rows)));
     }
     if let Some(cl) = det["clients"].as_array().filter(|a| !a.is_empty()) {
         let rows: Vec<Vec<String>> = cl
@@ -566,6 +593,74 @@ pub fn rm(ctx: &Ctx, q: &str, yes: bool, force: bool) -> anyhow::Result<u8> {
     let path = format!("/routers/{}{}", st(&r, "/id"), if force { "?force=true" } else { "" });
     let d = ctx.c.delete(&path)?;
     ctx.emit(&d, || format!("已删除「{name}」{}。路由上中控加的东西没有动，不再接入的话在路由上执行：\n  {}", rm_jobs_note(&d), st(&d, "/cleanup")));
+    Ok(0)
+}
+
+/// `router sync <路由> [--exit <出口>]…`：参数和对应入口不一致的出口改成入口现在的参数（作业 router_sync：备份、改、重启 OpenClash、测延迟，失败自动改回）。
+/// 先 GET 预览；不加 --yes 只打印预览
+pub fn sync(ctx: &Ctx, q: &str, exits: &[String], yes: bool, follow: bool) -> anyhow::Result<u8> {
+    let r = find(&ctx.list("/routers")?, q)?;
+    let id = st(&r, "/id");
+    let pv = ctx.c.get_q(&format!("/routers/{id}/sync"), &[("exits", exits.join(","))])?;
+    if !ctx.json || !yes {
+        if ctx.json {
+            ctx.emit(&pv, String::new);
+        } else {
+            let t = crate::lifecycle::exit_rows(pv["routers"].as_array().map(Vec::as_slice).unwrap_or_default(), None);
+            if !t.is_empty() {
+                outln(format!("要同步的出口（server:port 不变，换成入口现在的 uuid / SNI / 公钥 / short-id；备份后改，改完重启 OpenClash 并测延迟，失败自动改回）：\n{}", table::render(&["软路由", "状态", "出口", "现在", "改成"], &t)));
+            }
+            for s in pv["skipped"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+                outln(format!("同步不了（改指向别的入口：fleetctl repoint）：{s}"));
+            }
+            for w in pv["warnings"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+                outln(format!("注意：{w}"));
+            }
+        }
+    }
+    if pv["ok"] != true {
+        bail!("现在不能同步：{}", crate::lifecycle::blockers(&pv));
+    }
+    if !yes {
+        if !ctx.json {
+            outln("以上是预览，没有改动。确认无误后加 --yes 执行（--follow 跟进度）");
+        }
+        return Ok(0);
+    }
+    let d = ctx.c.post(&format!("/routers/{id}/sync"), &json!({"exits": exits}))?;
+    ctx.emit(&d, || format!("已提交同步作业 {}（{}）\n看进度：fleetctl job {} --follow", st(&d, "/job_id"), st(&r, "/name"), st(&d, "/job_id")));
+    if follow {
+        return crate::cmds::follow_job(ctx, &st(&d, "/job_id"));
+    }
+    Ok(0)
+}
+
+/// `router switch <路由> <组> <出口> [--for 4h]` / `router switch <路由> <组> --back`：select 组经 mihomo API 临时切到组里另一个出口
+/// （不重启 OpenClash、不断连接），`--for` 到时自动切回；`--back` 切回第一次切之前的出口
+pub fn switch(ctx: &Ctx, q: &str, group: &str, to: Option<&str>, dur: Option<&str>, back: bool) -> anyhow::Result<u8> {
+    let r = find(&ctx.list("/routers")?, q)?;
+    let (id, name) = (st(&r, "/id"), st(&r, "/name"));
+    let d = match (back, to) {
+        (true, None) if dur.is_none() => ctx.c.post(&format!("/routers/{id}/switch/back"), &json!({"group": group}))?,
+        (true, _) => bail!("--back 不带出口和 --for"),
+        (false, None) => bail!("要给切到哪个出口（组里已有的），或 --back 切回"),
+        (false, Some(to)) => {
+            let secs = dur.map(crate::silence::parse_for).transpose()?.map(|d| d.whole_seconds());
+            ctx.c.post(&format!("/routers/{id}/switch"), &json!({"group": group, "to": to, "back_after_s": secs}))?
+        }
+    };
+    ctx.emit(&d, || {
+        let mut s = format!("「{name}」的策略组「{group}」：{} → {}", st(&d, "/from"), st(&d, "/to"));
+        if d["ended"] == true {
+            s.push_str("（已切回原来的出口）");
+        } else if let Some(t) = d["back_at"].as_str() {
+            s.push_str(&format!("，{} 自动切回 {}", table::ts(t), st(&d, "/original")));
+        } else {
+            s.push_str(&format!("。不会自动切回：要切回时 fleetctl router switch {name} {group} --back"));
+        }
+        s.push_str("。已有的连接不受影响，新连接走新出口；路由重启或 OpenClash 重载后组会回到它自己的默认选择");
+        s
+    });
     Ok(0)
 }
 

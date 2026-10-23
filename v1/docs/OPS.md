@@ -41,6 +41,8 @@
 | 在一台机器上执行命令 | `fleetctl exec 团队1-06 -- systemctl status fleet-agent` |
 | 对一个团队的全部节点执行 | `fleetctl exec --team 团队1 -- uptime`（并发 4，汇总退出码） |
 | 软路由出口时好时坏：每个出口的测试次数、失败次数、成功率、连续两轮失败几次、延迟中位 / 最大、当前连接 | `fleetctl router exits 团队2-路由A --range 24h`（1h 按每轮测试数；6h / 24h 按 5 分钟一点；7d / 30d 是小时汇总，次数准、看不出连续失败；延迟只算通了的）；当前状态 `fleetctl router show 团队2-路由A` |
+| 节点被打，软路由的客户临时走备用出口、过几小时切回（不重启 OpenClash、不断连接） | `fleetctl router show 团队2-路由A` 看「策略组」（哪个 select 组选着它）→ `fleetctl router switch 团队2-路由A <组> <备用出口> --for 4h`（到时自动切回；不确定多久就不带 `--for`，之后 `fleetctl router switch 团队2-路由A <组> --back`）。告警 `fleetctl incidents` 末尾的「建议操作」已经算好了切到哪个出口 |
+| 软路由出口参数和入口不一致（告警「软路由出口参数不一致」：轮换凭据后没同步） | `fleetctl router sync 团队2-路由A` 看预览，确认后加 `--yes --follow`（改成入口现在的凭据，地址端口不变；会重启 OpenClash，断开经它的连接）；入口已删除 / 停用的同步不了，用 `fleetctl repoint` 换入口 |
 | 登录机器或软路由（在中控上，见 §14） | `fleetctl ssh 团队1-06`（交互式）、`fleetctl ssh 团队1-06 -- 'df -h'`（退出码同远端）、`fleetctl ssh router <名称>` |
 | 供应商与套餐（上架前先确认存在，没有就建） | `fleetctl provider ls`、`fleetctl plan ls [--provider ATTVPS] [--all]`；新建 `fleetctl provider add ATTVPS --code ATT [--tz America/Los_Angeles] [--traffic-rule min] [--traffic-reset billing] [--remind-days 7]`、`fleetctl plan add 基础版 --provider ATTVPS --price 299.99 --currency CNY --cycle monthly [--cpu 2 --mem-mb 2048 --disk-gb 40 --bandwidth-mbps 1000 --traffic-gb 2000]`；改 `fleetctl provider set <供应商> … --yes`、`fleetctl plan set <套餐> --price 309.99 --yes`（只改给了的项，`--tz none` / 规格 `none` 清空；改价、改额度、改时区立即对没单独设置的机器生效）；不再上架 `fleetctl plan set <套餐> --archive --yes`；删 `provider rm` / `plan rm --yes`（还有套餐 / 机器用着时中控拒绝）。套餐重名写 `供应商/套餐` |
 | 上架 | `fleetctl provision --file batch.json --dry-run`，确认后 `fleetctl provision --file batch.json --yes --follow` |
@@ -551,6 +553,9 @@ url = "https://api.frankfurter.dev/v1/latest?base=USD"   # 回包 {base:"USD", d
 - **时钟偏差** `clock_skew_s` = 中控时间 − 路由时间，正数是路由慢（同机器的 `clock_skew_ms`）；网页写「慢 3 秒」「快 2 秒」。
 - **维护窗口**：客户现场计划断电、换宽带、换光猫前开（`fleetctl silence add --router <名称> --for 4h --maintenance --comment …`，或抽屉「管理 → 维护窗口」）。期间开着的告警保持（不恢复、不发通知）、不开新的，卡片显示「维护」、不描红；到期或提前结束（抽屉「结束维护」、`silence rm`）后按那时的状态再判。只想挡一条（如出口不通）用 `--rule router_exits_down`、不加 `--maintenance`。删路由时它的静默一起删。
 - **资源阈值与机器不同**（CPU > 90% 持续 10 分钟，内存、存储 > 90%、连接表 > 80% 满 60 秒，合成一条 `router_resource_high`），原因见 DESIGN.md §6。
+- **出口参数不一致 `router_exit_drift`**（警告）：出口对上了 fleet 入口、但 uuid / SNI / 公钥 / short-id / flow 和入口现在的不一样，或入口已删除 / 停用，持续两轮采集（满 30 秒）才开，替换、改出口指向的作业改配置的那一会儿不报；一致了满 60 秒恢复。入口还在用的一键同步（抽屉出口页「同步…」、告警页「同步出口参数…」、`fleetctl router sync`，作业 `router_sync`，同替换的改软路由出口：备份 → 改 → 重启 OpenClash → 测延迟，失败自动改回）；flow / 类型不对的同步改不了（脚本只换 server / port / uuid / SNI / 公钥 / short-id 六行），要在路由上改。
+- **临时切换**（`fleetctl router switch`、抽屉出口页「策略组 → 临时切换…」、告警页「临时切到…」）：只对 select 组，经 mihomo API 改当前选择，不改配置、不重启。可到时自动切回（采集循环每 30 秒看一次，路由不在线就下一轮再试）。路由重启、OpenClash 重载（替换节点、改出口指向、同步出口都会重启它）后组回到默认选择，记录自动结束、待切回取消，审计「临时切换被路由改回」。OpenClash 开了「保存节点选择」的路由重启后可能还是切过去的那个出口，这时记录不结束、到时照样切回。
+- **出口确认期间又不通**：不通的出口刚测通一次（还在确认）又不通，仍算连续不通（`fail_streak` 记 2），`router_exits_down` 不关、每轮照样重测；之前会当场关掉告警、发一次「已恢复」，等约 5 分钟一轮整测才再开。
 
 ## 20. 客户端订阅（自己的客户端按一个链接拉入口）
 给自己的客户端用（Windows 上的 Clash Verge、家里 OpenClash 的 proxy-provider、v2rayN / Shadowrocket），代替「每次换节点、换线路机、轮换凭据后手写脚本重新生成节点列表再改两边配置」。

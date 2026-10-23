@@ -231,6 +231,8 @@ fn incident_item(i: &Value) -> Value {
         "subject_id": i["subject_id"], "subject_name": i.pointer("/subject/name").or(i.get("subject_name")),
         "summary": i["summary"], "reopen_count": i["reopen_count"], "state": i["state"],
         "opened_at": i["opened_at"], "resolved_at": i["resolved_at"], "ack_by": i["ack_by"],
+        // 中控按规则给的建议操作（可以直接执行的 fleetctl 命令）；旧中控没有，为 []
+        "suggested": i.get("suggested").cloned().unwrap_or_else(|| json!([])),
     })
 }
 
@@ -721,9 +723,24 @@ pub fn incidents(ctx: &Ctx, all: bool, machine: Option<&str>) -> anyhow::Result<
     let d = incident_items(ctx, if all { "all" } else { "firing" }, id.as_deref())?;
     ctx.emit(&d, || {
         let list = d.as_array().cloned().unwrap_or_default();
-        if list.is_empty() { "没有告警".to_string() } else { format!("{}\n共 {} 条", incident_table(&list, all), list.len()) }
+        if list.is_empty() {
+            return "没有告警".to_string();
+        }
+        let mut s = format!("{}\n共 {} 条", incident_table(&list, all), list.len());
+        let tips = suggested_lines(&list);
+        if !tips.is_empty() {
+            s.push_str(&format!("\n\n建议操作（可以直接执行；--json 里每条告警的 suggested）：\n{}", tips.join("\n")));
+        }
+        s
     });
     Ok(0)
+}
+
+/// 告警的建议操作（中控按规则给出的 fleetctl 命令）：「  <命令>    # <对象> · <规则>」
+fn suggested_lines(list: &[Value]) -> Vec<String> {
+    list.iter()
+        .flat_map(|i| i["suggested"].as_array().into_iter().flatten().filter_map(Value::as_str).map(move |c| format!("  {c}    # {} · {}", st(i, "/subject_name"), st(i, "/rule_name"))))
+        .collect()
 }
 
 pub fn ack(ctx: &Ctx, id: &str) -> anyhow::Result<u8> {
