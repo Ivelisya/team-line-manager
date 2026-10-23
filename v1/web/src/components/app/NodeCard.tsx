@@ -101,7 +101,7 @@ function Meters({ m, compact, onOpen }: { m: MachineView; compact?: boolean; onO
   );
 }
 
-/** 网卡速率一列：方向 + 大号读数（按量级着色）、点阵迹线（点击看主机曲线）。实时 / 离线标两列各一个（保持两列等宽对称）；
+/** 网卡速率一列：方向 + 大号读数（按量级着色）、点阵迹线（点击看主机曲线）。「实时」标两列各一个（保持两列等宽对称）；
  *  不配小圆点，只在悬停卡片时轻轻呼吸（cards.css），平时一页几十张卡不跑无限动画 */
 function FlowCol({ dir, rate, values, dots, live, bw, onOpen }: { dir: 'up' | 'down'; rate: number | null; values: number[]; dots?: number; live: boolean; bw: number | null | undefined; onOpen: Open }) {
   const up = dir === 'up';
@@ -113,7 +113,8 @@ function FlowCol({ dir, rate, values, dots, live, bw, onOpen }: { dir: 'up' | 'd
       </div>
       <button type="button" className="flow-trend" data-tip="查看主机曲线" onClick={() => onOpen('host')} aria-label={`${up ? '上行' : '下行'}速率：查看主机曲线`}>
         <DotTrace values={values} n={dots} />
-        <span className="flow-live" data-live={live && rate != null ? '' : undefined}>{!live ? '离线' : rate == null ? '无读数' : '实时'}</span>
+        {/* 离线不再标：资源位的占位块已写明原因和时长，读数只留「—」 */}
+        <span className="flow-live" data-live={live && rate != null ? '' : undefined}>{!live ? '' : rate == null ? '无读数' : '实时'}</span>
       </button>
     </div>
   );
@@ -250,17 +251,22 @@ const RunRow = memo(function RunRow({ activated, sub, recycle }: { activated: st
 // 标签行收起几枚要排版后才数得出。一页几十张卡各在自己的 layout effect 里「读位置 → 写平移」，读写交替，每张卡都逼浏览器重排一次；
 // 改成登记进队列，同一轮提交（或同一轮 ResizeObserver 回调）里的全部卡片在微任务里先统一读、再统一写：整页只排一次版。
 // 微任务在这一轮提交之后、绘制之前跑，收起数用 flushSync 同步重渲染，「+N」不会晚一帧冒出来
-type TagsJob = { list: HTMLDivElement; more: () => HTMLSpanElement | null; cut: number; setCut: (n: number) => void };
+// 列表元素在冲刷时才取（list()）：排进队列到微任务之间卡片可能已卸载（换密度、换分组、翻页），ref 已是 null，跳过它；
+// 没有标签的卡（没设供应商的 VPS 节点）列表是空的，也跳过。原来排队时就把元素存下、冲刷时不查，卸载的那张会抛 TypeError，
+// 同一批里排在它后面的卡片都没数，「+N」停在旧值
+type TagsJob = { list: () => HTMLDivElement | null; more: () => HTMLSpanElement | null; cut: number; setCut: (n: number) => void };
 const tagsQueue = new Set<TagsJob>();
 function flushTags() {
   const jobs = [...tagsQueue]; tagsQueue.clear();
   // 读：每张卡放不下的枚数，和「+N」该往左挪多少（最后一枚露出的标签右边到列表右边的空白）
-  const reads = jobs.map((j) => {
-    const el = j.list; const top = (el.firstElementChild as HTMLElement).offsetTop;
+  const reads = jobs.flatMap((j) => {
+    const el = j.list();
+    if (!el?.isConnected || !el.firstElementChild) return [];
+    const top = (el.firstElementChild as HTMLElement).offsetTop;
     let n = 0;
     for (const t of el.children) if ((t as HTMLElement).offsetTop > top) n++;
     const last = el.children[el.children.length - 1 - n];
-    return { j, n, dx: last.getBoundingClientRect().right - el.getBoundingClientRect().right };
+    return [{ j, n, dx: last.getBoundingClientRect().right - el.getBoundingClientRect().right }];
   });
   // 写：收起数变了的重渲染（之后的 layout effect 会再排一轮队、量出新的平移）；没变的直接写平移
   const changed = reads.filter((r) => r.n !== r.j.cut);
@@ -285,8 +291,8 @@ const Tags = memo(function Tags({ code, provider, kind, maintenance, price, pric
   const more = useRef<HTMLSpanElement>(null);
   const [cut, setCut] = useState(0);
   const job = useRef<TagsJob | null>(null);
-  job.current ??= { list: null!, more: () => more.current, cut: 0, setCut };
-  const count = useCallback(() => { const j = job.current!; j.list = list.current!; queueTags(j); }, []);
+  job.current ??= { list: () => list.current, more: () => more.current, cut: 0, setCut };
+  const count = useCallback(() => { if (list.current) queueTags(job.current!); }, []);
   useLayoutEffect(() => { job.current!.cut = cut; count(); }, [count, code, provider, kind, maintenance, price, host, nodes, cut]);
   useEffect(() => watchSize(list.current!.parentElement!, count), [count]); // 看整行：行宽只随卡片变，「+N」进出不会让它再触发
   return (
@@ -347,12 +353,14 @@ const CardBody = memo(function CardBody({ m, view, current, onOpen: open, layout
   const quiet = isQuiet(m);
   const info: Info = { id: m.id, ip: m.ip, sshPort: m.ssh_port, entry: entryText(m), plan: m.plan, host: m.host_machine, nodes: m.ip_nodes };
   const tags = <Tags code={m.provider_code} provider={m.provider} kind={m.kind} maintenance={m.maintenance} price={subLabel(m)} priceTip={priceHint(m.subscription)} id={m.id} host={m.host_machine} nodes={m.ip_nodes} />;
-  const reason = m.lifecycle === 'active' && m.health.status === 'down' && m.health.reasons[0] ? errText(m.health.reasons[0].text) : undefined;
+  // 探测行的标题只讲探测：agent 离线已由资源位的占位块和状态标说过，这里跳过它，取下一条原因（没有就照常写读数）
+  const r0 = m.health.reasons.find((r) => r.key !== 'agent_offline');
+  const reason = m.lifecycle === 'active' && m.health.status === 'down' && r0 ? errText(r0.text) : undefined;
   // 线路机：心跳格（主探测来源 → 客户入口，可用性）下面接三网 PING（线路机往外，线路质量）
-  const beat = <section className="slot-seg"><BeatSlot id={m.id} kind={m.kind} lifecycle={m.lifecycle} reason={reason} reasonKey={m.health.reasons[0]?.key} onOpen={onOpen} {...probeSummary(m)} />{m.kind === 'relay' && m.lifecycle === 'active' && <PingRows id={m.id} onOpen={onOpen} />}</section>;
+  const beat = <section className="slot-seg"><BeatSlot id={m.id} kind={m.kind} lifecycle={m.lifecycle} reason={reason} reasonKey={r0?.key} onOpen={onOpen} {...probeSummary(m)} />{m.kind === 'relay' && m.lifecycle === 'active' && <PingRows id={m.id} onOpen={onOpen} />}</section>;
   const sv = showOf(m, show, view);
   const res = proxy ? <BizPair m={m} onOpen={onOpen} today={view === 'large'} /> : <Meters m={m} compact={view !== 'large'} onOpen={onOpen} />;
-  // 还没有主机读数的（上架中、没上报过）照样是速率两列：读数「—」、标「离线」
+  // 还没有主机读数的（上架中、没上报过）照样是速率两列：读数「—」
   const flow = proxy ? <ProbePair m={m} onOpen={onOpen} /> : <Flow m={m} onOpen={onOpen} totals={view === 'large'} compact={view === 'compact'} paused={paused} />;
 
   return (

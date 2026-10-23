@@ -217,7 +217,7 @@ body * { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent;
 /* 独立滚动的面板：滚到头不把滚动链到页面 */
 .drawer-body, .sidebar, .logbox, .cmd-list, .pop-list, .menu, .pol-tree, .table-wrap.is-capped, .pol-chips, .reason-list, .select-content [data-radix-select-viewport] { overscroll-behavior: contain; }
 /* 横向滚动区（表格、分段、页签、步骤条、规则编辑器）：触控板横扫到头不触发浏览器的前进 / 后退手势 */
-.table-wrap, .seg, .tabs-list, .stepbar-wrap, .pol-ta { overscroll-behavior-x: contain; }
+.table-wrap, .seg, .tabs-list, .pol-ta { overscroll-behavior-x: contain; }
 
 /* 放不下而在滚动的区域，边缘渐隐提示“那边还有”：还有内容藏着的一侧淡出 20px，滚到头的一侧不淡（首页分组分段控件窄屏时团队藏在右边，过去看不出来）。
    纯 CSS：滚动驱动动画按滚动位置推 --fs / --fe（开头 / 末尾的渐隐宽度）；不能滚动时滚动时间线不生效，两个值停在初始 0，外观不变；

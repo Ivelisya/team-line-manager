@@ -1,7 +1,6 @@
 // 设置「数据保留」：访问记录的保留期——原始记录（每条连接）与小时汇总（统计、曲线）各保留多少天。
 // 调低后中控马上删掉超出新保留期的数据，删了不能恢复：调低时先确认，说清楚删到哪天。
 import * as React from 'react';
-import { Archive } from 'lucide-react';
 import { useAccessRetention, useSaveRetention, type AccessRetention } from '@/lib/access';
 import { Button } from '@/components/ui/button';
 import { Field, InfoTip, UnitInput } from '@/components/ui/form';
@@ -36,7 +35,7 @@ function RetentionForm({ r }: { r: AccessRetention }) {
   const lowered = [rawN < r.raw_days && `原始记录 ${r.raw_days} → ${rawN} 天`, hourlyN < r.hourly_days && `小时汇总 ${r.hourly_days} → ${hourlyN} 天`].filter(Boolean).join('，');
   return (
     <>
-      {/* 两个输入框与保存按钮收成一组：按钮跟在表单下面，不单独落在面板右下 */}
+      {/* 保存在右下：卡片里的表单统一同对话框的「取消 / 确认」，提交放右边、不配图标 */}
       <div className="row" style={{ gap: 'var(--sp-24)', alignItems: 'flex-start' }}>
         <Field label="原始记录" info="每一条连接的记录，「原始记录」页签查的就是它" error={raw !== '' ? rawErr : undefined}>
           <UnitInput unit="天" width={120} inputMode="numeric" maxLength={3} value={raw} onChange={(e) => setRaw(e.target.value.replace(/\D/g, ''))} />
@@ -45,8 +44,8 @@ function RetentionForm({ r }: { r: AccessRetention }) {
           <UnitInput unit="天" width={120} inputMode="numeric" maxLength={3} value={hourly} onChange={(e) => setHourly(e.target.value.replace(/\D/g, ''))} />
         </Field>
       </div>
-      <div className="row" style={{ marginTop: 'var(--sp-12)' }}>
-        <Button variant="primary" disabled={!dirty || !!rawErr || !!hourlyErr} loading={save.isPending} onClick={() => (lowering ? setAsk(true) : submit())}><Archive />保存</Button>
+      <div className="row" style={{ marginTop: 'var(--sp-12)', justifyContent: 'flex-end' }}>
+        <Button variant="primary" disabled={!dirty || !!rawErr || !!hourlyErr} loading={save.isPending} onClick={() => (lowering ? setAsk(true) : submit())}>保存</Button>
       </div>
       <ConfirmDialog open={ask} onOpenChange={setAsk} danger confirmLabel="调低并删除" title="调低保留期？"
         description={<>{lowered}；超出的数据马上删除，不能恢复 <InfoTip text={[

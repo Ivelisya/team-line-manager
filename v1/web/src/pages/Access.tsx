@@ -92,8 +92,9 @@ export function AccessPage() {
 
   return (
     <div className="stack">
+      {/* 页头只放页面级的视图切换（节点行为 / 访问规则，同机器页「在用 / 回收站」的位置）；时间范围是筛选条件，放进下面的筛选行最右 */}
       <PageHead title="访问监控" note={summary.data ? <>统计自 {F.dt(summary.data.window_start)} <InfoTip text="自动刷新" /></> : undefined}
-        tools={<><IpIntelStatusChip /><Segmented label="时间范围" value={f.window} onChange={onWindow} items={windowItems} /><AccessViewSwitch value="behavior" /></>} /* 视图切换在最右，与访问规则页同位 */ />
+        tools={<><IpIntelStatusChip /><AccessViewSwitch value="behavior" /></>} />
 
       <div className="row" role="search">
         <SearchInput value={text} onChange={(e) => setText(e.target.value)} placeholder="搜索域名或来源 IP…" aria-label="搜索域名或来源 IP" className="w-full sm:w-[260px]" />
@@ -102,6 +103,7 @@ export function AccessPage() {
         <div className="w-[130px]"><Select value={f.kind} onChange={onKind} allowEmpty="全部类型" placeholder="目标类型" options={KIND_OPTS} aria-label="目标类型" /></div>
         <div className="w-[130px]"><Select value={f.action} onChange={onAct} allowEmpty="全部结果" placeholder="处理结果" options={ACT_OPTS} aria-label="处理结果" /></div>
         {filtered && <Button variant="quiet" size="md" onClick={clear}>清除筛选</Button>}
+        <span className="access-range"><Segmented label="时间范围" value={f.window} onChange={onWindow} items={windowItems} /></span>
       </div>
 
       {summary.isError && <ErrNote q={summary} />}
@@ -156,7 +158,7 @@ const TargetsView = React.memo(function TargetsView({ open, f, sort, onSort, fil
   if (ex.pk !== pk) setEx({ pk, open: new Set() });
   const toggle = (h: string) => setEx((s) => { const n = new Set(s.open); if (n.has(h)) n.delete(h); else n.add(h); return { pk, open: n }; });
   return (
-    <Panel ref={pg.anchor} title="域名与 IP" count={q.data ? `${fmtN(q.data.total)} 个` : undefined} sub={<InfoTip text="随机的子域名会合并成 *.域名。点目标名只看它，点整行展开各节点" />}
+    <Panel ref={pg.anchor} title={q.data ? `${fmtN(q.data.total)} 个目标` : '…'} sub={<InfoTip text="随机的子域名会合并成 *.域名。点目标名只看它，点整行展开各节点" />}
       tools={<Segmented sm label="排序" value={sort} onChange={(v) => onSort(v === 'conns' ? '' : v)} items={SORT_ITEMS} />} flush>
       {q.isError && <div style={{ padding: 12 }}><ErrNote q={q} /></div>}
       <TableWrap data-stale={q.isPlaceholderData}>
@@ -225,7 +227,7 @@ const NewView = React.memo(function NewView({ f, filtered, onClear, onPick, open
   if (q.data && q.data.total !== total) setTotal(q.data.total);
   const rows = q.data?.items ?? [];
   return (
-    <Panel ref={pg.anchor} title="新出现（节点 · 目标）" count={q.data ? `${fmtN(q.data.total)} 条` : undefined}
+    <Panel ref={pg.anchor} title={q.data ? `${fmtN(q.data.total)} 条（节点 · 目标）` : '…'}
       sub={<InfoTip text={'节点第一次访问到的域名或 IP。按节点分别计数：同一个目标被 3 个节点首次访问，算 3 个\n新目标不一定有问题，仅供参考'} />} flush>
       {q.isError && <div style={{ padding: 12 }}><ErrNote q={q} /></div>}
       <TableWrap data-stale={q.isPlaceholderData}>
@@ -271,7 +273,7 @@ const SourcesView = React.memo(function SourcesView({ f, filtered, onClear, conn
   return (
     <>
       <IpIntelHint />
-      <Panel ref={pg.anchor} title="来源地址" count={q.data ? (capped ? `前 ${fmtN(SOURCES_LIMIT)} 个` : scanCapped ? `${fmtN(rows.length)} 个（连接数前 5000 内）` : `${fmtN(rows.length)} 个`) : undefined}
+      <Panel ref={pg.anchor} title={q.data ? (capped ? `前 ${fmtN(SOURCES_LIMIT)} 个来源` : scanCapped ? `${fmtN(rows.length)} 个来源（连接数前 5000 内）` : `${fmtN(rows.length)} 个来源`) : '…'}
         sub={<InfoTip text={`连到入口的客户端地址，按连接数排序${capped ? `，最多列 ${SOURCES_LIMIT} 个` : ''}\n运营商、城市和接入方式来自中控本地的库，不会把 IP 发到外面\n搜索框在这里按来源 IP 匹配`} />} flush>
         {q.isError && <div style={{ padding: 12 }}><ErrNote q={q} /></div>}
         <TableWrap data-stale={q.isPlaceholderData}>
@@ -334,7 +336,7 @@ const NodesView = React.memo(function NodesView({ f, filtered, onClear, sort: ra
   }, [q.data, sort]);
   const pg = usePage({ total: q.data ? rows.length : undefined, sizes: SIZES, size: SIZE, reset: [f, raw] });
   return (
-    <Panel ref={pg.anchor} title="节点概览" count={q.data ? `${fmtN(rows.length)} 个节点` : undefined} flush>
+    <Panel ref={pg.anchor} title={q.data ? `${fmtN(rows.length)} 个节点` : '…'} flush>
       {q.isError && <div style={{ padding: 12 }}><ErrNote q={q} /></div>}
       <TableWrap data-stale={q.isPlaceholderData}>
         <table className="dt" style={{ minWidth: 760 }}>
@@ -375,7 +377,7 @@ const EventsView = React.memo(function EventsView({ f, filtered, onClear, open }
   const top = React.useRef<HTMLElement>(null);
   const go = (next: string[]) => { setSt({ fk, cur: next }); scrollBackTo(top.current); };
   return (
-    <Panel ref={top} title="原始记录" sub={<>保留 {rawDays} 天<InfoTip text="最新的在前，不合并相同目标" /></>} flush>
+    <Panel ref={top} title={`保留 ${rawDays} 天`} sub={<InfoTip text="最新的在前，不合并相同目标" />} flush>
       {q.isError && <div style={{ padding: 12 }}><ErrNote q={q} /></div>}
       <TableWrap data-stale={q.isPlaceholderData}>
         <table className="dt is-one" style={{ minWidth: 960 }}>

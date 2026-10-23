@@ -1,14 +1,14 @@
 // 三网 PING：设置页的全局 8 个槽位（名称、目标）与方式，和线路机「管理」页签里这台的单独设置（PingOverrideSection）。
 // 线路机每分钟往外测一轮（每个目标 5 次），只展示延迟与丢包，不开告警。目标留空的槽位不测。
 import * as React from 'react';
-import { Radar, RotateCcw } from 'lucide-react';
+
 import { PING_PLACEHOLDER, useMachinePing, usePingTargets, useSaveMachinePing, useSavePingTargets, type PingOverride, type PingSlot } from '@/lib/ping';
 import { Button } from '@/components/ui/button';
-import { InfoTip, Input } from '@/components/ui/form';
+import { Checkbox, Field, InfoTip, Input } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { SkeletonRows } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
-import { ErrorNote, Panel, TableWrap } from '@/components/app/primitives';
+import { ErrorNote, Panel } from '@/components/app/primitives';
 
 const MODE_ITEMS = [{ value: 'tcp', label: 'TCP 建连' }, { value: 'icmp', label: 'ICMP' }];
 const MODE_TIP = 'TCP：测连接建立的往返时间，目标没写端口就连 80\nICMP：用线路机上的 ping，用不了时这一轮改用 TCP（实际用了哪种，看卡片上的悬停）';
@@ -32,23 +32,25 @@ function GlobalForm({ mode: m0, slots: s0 }: { mode: string; slots: PingSlot[] }
   const set = (i: number, k: keyof PingSlot, v: string) => setSlots((l) => l.map((s, j) => (j === i ? { ...s, [k]: v } : s)));
   return (
     <div className="stack" style={{ gap: 'var(--sp-12)' }}>
-      <label className="row" style={{ gap: 8 }}>方式<InfoTip text={MODE_TIP} /><Select sm aria-label="方式" value={mode} onChange={setMode} options={MODE_ITEMS} /></label>
-      <TableWrap>
-        <table className="table">
-          <thead><tr><th style={{ width: 48 }}>序号</th><th>名称</th><th>目标<InfoTip text={TARGET_TIP} /></th></tr></thead>
+      <Field label="方式" info={MODE_TIP}><Select aria-label="方式" value={mode} onChange={setMode} options={MODE_ITEMS} className="ping-mode" /></Field>
+      {/* 名称定宽、目标撑满（目标是长域名）；输入框用标准尺寸，同别处表单 */}
+      <div className="table-wrap is-boxed">
+        <table className="dt is-one ping-tbl">
+          <colgroup><col style={{ width: 64 }} /><col style={{ width: 176 }} /><col /></colgroup>
+          <thead><tr><th>序号</th><th>名称</th><th>目标<InfoTip text={TARGET_TIP} /></th></tr></thead>
           <tbody>
             {slots.map((s, i) => (
               <tr key={i}>
-                <td className="num">{i + 1}</td>
-                <td><Input sm maxLength={20} value={s.name} onChange={(e) => set(i, 'name', e.target.value)} /></td>
-                <td><Input sm value={s.target} placeholder={PING_PLACEHOLDER[i] ?? 'host[:port]'} onChange={(e) => set(i, 'target', e.target.value)} /></td>
+                <td className="num t-sub">{i + 1}</td>
+                <td><Input aria-label={`第 ${i + 1} 个名称`} maxLength={20} value={s.name} onChange={(e) => set(i, 'name', e.target.value)} /></td>
+                <td><Input aria-label={`第 ${i + 1} 个目标`} value={s.target} placeholder={PING_PLACEHOLDER[i] ?? 'host[:port]'} onChange={(e) => set(i, 'target', e.target.value)} /></td>
               </tr>
             ))}
           </tbody>
         </table>
-      </TableWrap>
-      <div className="row">
-        <Button variant="primary" disabled={!dirty} loading={save.isPending} onClick={() => save.mutate({ mode, slots }, { onSuccess: () => toast.ok('已保存，线路机很快会按新目标测'), onError: toast.err })}><Radar />保存</Button>
+      </div>
+      <div className="row" style={{ justifyContent: 'flex-end' }}>
+        <Button variant="primary" disabled={!dirty} loading={save.isPending} onClick={() => save.mutate({ mode, slots }, { onSuccess: () => toast.ok('已保存，线路机很快会按新目标测'), onError: toast.err })}>保存</Button>
       </div>
     </div>
   );
@@ -77,32 +79,34 @@ function OverrideForm({ id, global, over }: { id: string; global: { mode: string
   };
   return (
     <div className="stack" style={{ gap: 'var(--sp-12)' }}>
-      <label className="row" style={{ gap: 8 }}>方式<InfoTip text={MODE_TIP} />
-        <Select sm aria-label="方式" value={mode} onChange={setMode} options={[{ value: 'global', label: `跟随全局（${global.mode === 'icmp' ? 'ICMP' : 'TCP'}）` }, ...MODE_ITEMS]} />
-      </label>
-      <TableWrap>
-        <table className="table">
-          <thead><tr><th style={{ width: 48 }}>序号</th><th style={{ width: 96 }}>单独设置</th><th>名称</th><th>目标<InfoTip text={TARGET_TIP} /></th></tr></thead>
+      <Field label="方式" info={MODE_TIP}>
+        <Select aria-label="方式" value={mode} onChange={setMode} className="ping-mode" options={[{ value: 'global', label: `跟随全局（${global.mode === 'icmp' ? 'ICMP' : 'TCP'}）` }, ...MODE_ITEMS]} />
+      </Field>
+      <div className="table-wrap is-boxed">
+        <table className="dt is-one ping-tbl" style={{ minWidth: 520 }}>
+          <colgroup><col style={{ width: 64 }} /><col style={{ width: 88 }} /><col style={{ width: 150 }} /><col /></colgroup>
+          <thead><tr><th>序号</th><th>单独设置</th><th>名称</th><th>目标<InfoTip text={TARGET_TIP} /></th></tr></thead>
           <tbody>
             {slots.map((s, i) => (
               <tr key={i}>
-                <td className="num">{i + 1}</td>
-                <td><input type="checkbox" aria-label="单独设置" checked={!!s} onChange={(e) => toggle(i, e.target.checked)} /></td>
+                <td className="num t-sub">{i + 1}</td>
+                <td><Checkbox aria-label={`第 ${i + 1} 个单独设置`} checked={!!s} onCheckedChange={(v) => toggle(i, v === true)} /></td>
                 {s ? <>
-                  <td><Input sm maxLength={20} value={s.name} onChange={(e) => set(i, 'name', e.target.value)} /></td>
-                  <td><Input sm value={s.target} placeholder="留空 = 这台不测" onChange={(e) => set(i, 'target', e.target.value)} /></td>
+                  <td><Input aria-label={`第 ${i + 1} 个名称`} maxLength={20} value={s.name} onChange={(e) => set(i, 'name', e.target.value)} /></td>
+                  <td><Input aria-label={`第 ${i + 1} 个目标`} value={s.target} placeholder="留空 = 这台不测" onChange={(e) => set(i, 'target', e.target.value)} /></td>
                 </> : <>
-                  <td className="t-muted">{global.slots[i]?.name}</td>
-                  <td className="t-muted">{global.slots[i]?.target || '（不测）'}</td>
+                  <td className="t-sub">{global.slots[i]?.name}</td>
+                  <td className="t-sub">{global.slots[i]?.target || '（不测）'}</td>
                 </>}
               </tr>
             ))}
           </tbody>
         </table>
-      </TableWrap>
-      <div className="row" style={{ gap: 8 }}>
-        <Button variant="primary" disabled={!dirty} loading={save.isPending} onClick={submit}><Radar />保存</Button>
-        {(over != null) && <Button onClick={() => save.mutate(null, { onSuccess: () => toast.ok('已全部改回跟随全局'), onError: toast.err })}><RotateCcw />全部跟随全局</Button>}
+      </div>
+      {/* 保存在右下（同对话框的确认）；次要的「全部跟随全局」在它左边 */}
+      <div className="row" style={{ gap: 8, justifyContent: 'flex-end' }}>
+        {(over != null) && <Button onClick={() => save.mutate(null, { onSuccess: () => toast.ok('已全部改回跟随全局'), onError: toast.err })}>全部跟随全局</Button>}
+        <Button variant="primary" disabled={!dirty} loading={save.isPending} onClick={submit}>保存</Button>
       </div>
     </div>
   );

@@ -2,7 +2,7 @@
 // 操作类的行按苹果设置页的分组列表排：一组一个圆角容器（.mgroup），行之间细线分隔，只有行标签，没有重复的小节标题。
 import * as React from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight, PackageOpen, Plus, Repeat2, Replace, Wrench } from 'lucide-react';
+import { ArrowRight } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
 import { maintOwner, useAddEntry, useEndMaintenance, usePatchMachine, useRelayChoices, useSilences, useTeams, useTune } from '@/lib/queries';
 import { openMaint, openUpgrade } from '@/lib/nodeActions';
@@ -159,20 +159,20 @@ function EntrySection({ m }: { m: MachineView }) {
           {canMove && m.kind !== 'relay' && (
             <div className="manage-row">
               <div className="t">换线路机 <InfoTip text={'换的过程中不断网，完成后分享链接会变\n新入口验证通过后，才会移除旧的'} /></div>
-              <Button variant="secondary" disabled={!!m.active_job} onClick={() => setDlg('move')}><Repeat2 />换线路机…</Button>
+              <Button variant="secondary" disabled={!!m.active_job} onClick={() => setDlg('move')}>换线路机…</Button>
             </div>
           )}
           {canMove && m.kind === 'relay' && (
             <div className="manage-row">
               <div className="t">搬空线路机 <InfoTip text={'把上面的节点都换到另一台线路机，之后就可以放心退役这台\n这些节点的分享链接会变'} /></div>
-              <Button variant="secondary" onClick={() => setDlg('evacuate')}><PackageOpen />搬空到…</Button>
+              <Button variant="secondary" onClick={() => setDlg('evacuate')}>搬空到…</Button>
             </div>
           )}
           {canAddDirect && (
             <div className="manage-row">
               <div><div className="t">直出入口</div><div className="hint">从 {m.ip} 直接出去 <InfoTip text={`不经过节点。每台线路机只能有一条，分享链接叫「${m.name}-直出」`} /></div></div>
               <Button variant="secondary" disabled={add.isPending || !!m.active_job} loading={add.isPending}
-                onClick={() => add.mutate({ id: m.id, relay_id: m.id }, { onSuccess: () => toast.ok('已提交，直出入口正在应用'), onError: toast.err })}><Plus />添加直出入口</Button>
+                onClick={() => add.mutate({ id: m.id, relay_id: m.id }, { onSuccess: () => toast.ok('已提交，直出入口正在应用'), onError: toast.err })}>添加直出入口</Button>
             </div>
           )}
           {canAdd && (
@@ -180,7 +180,7 @@ function EntrySection({ m }: { m: MachineView }) {
               <div className="t">加入口 <InfoTip text="挂到另一台线路机，多一条入口和分享链接，原有的不受影响" /></div>
               <span className="row" style={{ gap: 8, flexWrap: 'nowrap' }}>
                 <div style={{ width: 160 }}><Select value={relay} onChange={setRelay} options={opts} placeholder="选择线路机" aria-label="要挂到的线路机" /></div>
-                <Button disabled={!relay || add.isPending} loading={add.isPending} onClick={() => add.mutate({ id: m.id, relay_id: relay }, { onSuccess: () => { toast.ok('已提交，新入口正在应用'); setRelay(''); }, onError: toast.err })}><Plus />添加入口</Button>
+                <Button disabled={!relay || add.isPending} loading={add.isPending} onClick={() => add.mutate({ id: m.id, relay_id: relay }, { onSuccess: () => { toast.ok('已提交，新入口正在应用'); setRelay(''); }, onError: toast.err })}>添加入口</Button>
               </span>
             </div>
           )}
@@ -199,7 +199,7 @@ function ReplaceRow({ m }: { m: MachineView }) {
     <>
       <div className="manage-row">
         <div className="t">替换为另一台节点 <InfoTip text={'新节点沿用这台的编号，软路由上指向这台的出口也会改成新节点\n这台移到备用团队，到期满 1 天后自动回收'} /></div>
-        <Button variant="secondary" disabled={!!m.active_job} onClick={() => setOpen(true)}><Replace />替换为…</Button>
+        <Button variant="secondary" disabled={!!m.active_job} onClick={() => setOpen(true)}>替换为…</Button>
       </div>
       <ReplaceDialog m={m} open={open} onOpenChange={setOpen} onDone={() => setOpen(false)} />
     </>
@@ -214,7 +214,7 @@ function IpNodesRow({ m }: { m: MachineView }) {
         <div className="t">添加 IP 节点 <InfoTip text={"机器上另配了公网 IP 时，每个 IP 可以上架成一个独立节点，有自己的编号、入口和分享链接\nSSH、agent 和主机读数仍用这台的"} /></div>
         {m.ip_nodes.length > 0 && <div className="hint">已有 {m.ip_nodes.length} 个同机 IP 节点</div>}
       </div>
-      <Button asChild variant="secondary"><Link to={`/provision?host=${m.id}`}><Plus />添加 IP 节点…</Link></Button>
+      <Button asChild variant="secondary"><Link to={`/provision?host=${m.id}`}>添加 IP 节点…</Link></Button>
     </div>
   );
 }
@@ -250,8 +250,9 @@ function TuneRow({ m }: { m: MachineView }) {
     <>
       <div className="manage-row">
         <div>
-          <div className="t">系统调优：{state} <InfoTip text={`优化网络参数（缓冲区、拥塞控制、连接队列）、日志体积上限和时间同步\n每一项的结果在作业详情里${old}${t.profile ? `\n版本 ${t.profile}${t.at ? ` · ${F.dtFull(t.at)}` : ''}` : ''}`} /></div>
-          {t.params && <div className="hint">{tuneParamsText(t.params)}</div>}
+          <div className="t">系统调优 <InfoTip text={`优化网络参数（缓冲区、拥塞控制、连接队列）、日志体积上限和时间同步\n每一项的结果在作业详情里${old}${t.profile ? `\n版本 ${t.profile}${t.at ? ` · ${F.dtFull(t.at)}` : ''}` : ''}`} /></div>
+          {/* 同别的行：标题 + 灰色副行（状态 · 推导参数），不写成「系统调优：未调优」 */}
+          <div className="hint">{state}{t.params && <> · {tuneParamsText(t.params)}</>}</div>
         </div>
         <Button variant="secondary" disabled={!!m.active_job} onClick={() => setAsk(true)}>{t.profile ? '重新调优…' : '调优…'}</Button>
       </div>
@@ -272,8 +273,8 @@ function MaintRow({ m }: { m: MachineView }) {
     <div className="manage-row">
         <div><div className="t">维护窗口 <InfoTip text="期间不发告警，卡片上显示「维护」" /></div>{m.maintenance && <div className="hint">{onHost ? `宿主机「${m.host_machine!.name}」在维护中` : '维护中'}</div>}</div>
         {m.maintenance
-          ? <Button variant="secondary" loading={end.isPending} onClick={() => end.mutate(m, { onSuccess: (o) => toast.ok(`${o.name} 已结束维护`), onError: toast.err })}><Wrench />{onHost ? '结束宿主机维护' : '结束维护'}</Button>
-          : <Button variant="secondary" onClick={() => openMaint(m.id)}><Wrench />维护窗口…</Button>}
+          ? <Button variant="secondary" loading={end.isPending} onClick={() => end.mutate(m, { onSuccess: (o) => toast.ok(`${o.name} 已结束维护`), onError: toast.err })}>{onHost ? '结束宿主机维护' : '结束维护'}</Button>
+          : <Button variant="secondary" onClick={() => openMaint(m.id)}>维护窗口…</Button>}
     </div>
   );
 }

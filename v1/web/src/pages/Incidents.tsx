@@ -88,7 +88,8 @@ export function IncidentsPage() {
           <td>{SEV(i)}</td>
           {/* 中控自身的告警（central_ 开头）没有机器可点开：只写对象名「中控」；软路由的（router_ 开头）打开路由抽屉 */}
           <td>{sid && isRouterIncident(i) ? <button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => openRouter(sid, routerIncidentTab(i))}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button>
-            : sid ? <NodeHover id={sid}><button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => open(sid)}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button></NodeHover> : (i.subject_name ?? '—')}</td>
+            : sid ? <NodeHover id={sid}><button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => open(sid)}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button></NodeHover> : (i.subject_name ?? '—')}
+            <span className="sub inc-narrow">{i.rule_name} · {F.ago(i.opened_at)}</span><span className="sub inc-narrow" data-tip={sum}>{sum}</span></td>
           <td>{i.rule_name}{i.reopen_count > 0 && <span className="sub" data-tip={`恢复后 30 分钟内又出现 ${i.reopen_count} 次，已合并成这一条`}>反复 {i.reopen_count + 1} 次</span>}</td>
           <td><span className="cell-main" data-tip={sum}>{sum}</span>{(i.resolved_at || i.ack_at) && <span className="sub">{i.resolved_at
             ? <span data-tip={`恢复于 ${F.dtFull(i.resolved_at)}`}>已恢复 · 持续 {F.span(Date.parse(i.resolved_at) - Date.parse(i.opened_at))}</span>
@@ -109,7 +110,8 @@ export function IncidentsPage() {
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       <Panel flush>
         <TableWrap>
-          <table className="dt" style={{ minWidth: 820 }}>
+          {/* 窄屏（inc-tbl，pages.css）：规则、说明、开始三列收起，并进对象格的第二、三行（规则 · 多久前 / 说明），不用横滑也看得到 */}
+          <table className="dt inc-tbl" style={{ minWidth: 820 }}>
             {/* 末列 120：「登记续费」小按钮 90（边框 2 + 内边距 20 + 图标 14 + 间距 6 + 四个字 48）+ 单元格内边距 12 + 16 = 118，留 2px 余量；多出的从说明列（自适应）让出 */}
             <colgroup><col style={{ width: 100 }} /><col style={{ width: 150 }} /><col style={{ width: 150 }} /><col /><col style={{ width: 110 }} /><col style={{ width: 120 }} /></colgroup>
             <thead><tr><th>级别</th><th>对象</th><th>规则</th><th>说明</th><th>开始</th><th /></tr></thead>
@@ -121,7 +123,7 @@ export function IncidentsPage() {
                   <React.Fragment key={k}>
                     <tr data-open={on ? '' : undefined}>
                       <td>{SEV(r[0])}</td>
-                      <td><button type="button" className="btn btn-link inc-fold" aria-expanded={on} data-tip={on ? '收起' : '展开看每一台'} onClick={() => toggle(k)}>{r.length} 台{foldNoun(r)}<ChevronRight /></button></td>
+                      <td><button type="button" className="btn btn-link inc-fold" aria-expanded={on} data-tip={on ? '收起' : '展开看每一台'} onClick={() => toggle(k)}>{r.length} 台{foldNoun(r)}<ChevronRight /></button><span className="sub inc-narrow">{r[0].rule_name} · {F.ago(r[0].opened_at)}</span></td>
                       <td>{r[0].rule_name}</td>
                       <td>同时出现{r[0].state === 'resolved' && <span className="sub">已恢复</span>}</td>
                       <td>{F.dt(r[0].opened_at)}<span className="sub">{F.ago(r[0].opened_at)}</span></td>
@@ -186,7 +188,7 @@ function Silences() {
           <TableWrap>
             {/* 服务端按开始时间排：进行中的在前，已预约的随后 */}
             <table className="dt" style={{ minWidth: 760 }}>
-              <colgroup><col style={{ width: 150 }} /><col style={{ width: 90 }} /><col style={{ width: 90 }} /><col style={{ width: 230 }} /><col /><col style={{ width: 64 }} /></colgroup>
+              <colgroup><col style={{ width: 150 }} /><col style={{ width: 90 }} /><col style={{ width: 100 }} /><col style={{ width: 230 }} /><col /><col style={{ width: 64 }} /></colgroup>
               <thead><tr><th>对象</th><th>类型</th><th>状态</th><th>时间</th><th>备注</th><th /></tr></thead>
               <tbody>{list.map((s) => {
                 const start = Date.parse(s.starts_at); const on = start <= now;

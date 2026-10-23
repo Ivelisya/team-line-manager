@@ -97,6 +97,8 @@ export function ProvisionPage() {
     return filled.length ? filled : rows.slice(0, 1);
   }, [mode, rows]);
   const items = React.useMemo(() => active.map((r) => toItem(r)), [active]);
+  // 底栏的「共 N 台」只数填了的行（全空时 active 留着第一行是为了让它报「请填写 IP」，不算一台）
+  const filledN = mode === 'single' ? 1 : rows.filter((r) => !isBlank(r)).length;
   const curSig = JSON.stringify([items, active.map((r) => r.unresolved)]);
   const stale = results != null && sig !== curSig;
   const passed = results != null && !stale && results.every((r) => r.ok);
@@ -121,14 +123,15 @@ export function ProvisionPage() {
     const errs = active.map(localErrors);
     setLocalErrs(errs); setChecked(active.map((r) => r.id));
     const bad = errs.filter((e) => e.length).length;
-    if (bad) { setResults(null); setJump((n) => n + 1); checkToast('bad', mode === 'single' ? '信息不完整，见标红的字段' : `${bad} 行信息不完整，见「检查结果」列`); return; }
+    // 不完整、未通过不再弹通知：底栏的状态标和标红的字段（批量是「检查结果」列）已经说了，再弹一条是第三遍
+    if (bad) { setResults(null); setJump((n) => n + 1); return; }
     try {
       const r = await check.mutateAsync(items);
       setResults(r.items); setSig(curSig);
       const failed = r.items.filter((x) => !x.ok).length;
       const warns = warnCount(r.items);
       if (!failed) checkToast('ok', `检查通过：${r.items.length} 台${warns ? `，${warns} 条提醒见「检查结果」` : ''}`);
-      else { setJump((n) => n + 1); checkToast('bad', mode === 'single' ? '检查未通过，见标红的字段' : `${failed} 行未通过，见「检查结果」列`); }
+      else setJump((n) => n + 1);
     } catch (e) { checkToast('bad', errMessage(e)); }
   };
   const start = async () => {
@@ -196,7 +199,7 @@ export function ProvisionPage() {
 
       <StickyBar>
         <div className="row row-between">
-          <div className="row">{summary}{!single && <span className="t-sub">共 {active.length} 台</span>}</div>
+          <div className="row">{summary}{!single && filledN > 0 && <span className="t-sub">共 {filledN} 台</span>}</div>
           <div className="row">
             {/* 单台的清空（批量的在表格面板上）：清空后表单是空的，关页面不再提醒有未提交的内容 */}
             {single && <Button variant="quiet" onClick={reset}>清空</Button>}
@@ -314,6 +317,11 @@ function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; o
   const pubkeyBtn = meta().ssh_public_key ? <PubkeyButton /> : null;
   // 「中控密钥登录不了」的原话带着整行公钥，标在字段旁会把表单撑宽：这里只说结论，原话（含公钥）在下面的检查结果里
   const loginErr = fe.login_pw && '中控密钥登录不上，也没填 root 密码。请填 root 密码，或在供应商面板添加中控公钥';
+  const country = (
+    <Field label="国家" error={fe.country}>
+      <CountrySelect value={row.country} onChange={(v) => onChange({ country: v })} autoLabel="自动（按 IP）" aria-label="国家" />
+    </Field>
+  );
   return (
     <div className="stack prov-form">
       <Panel title="机器">
@@ -330,19 +338,18 @@ function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; o
           )}
           <div className="form-grid">
             {ip && <div className="span-2"><Field label="宿主机" info="这个 IP 所在的 VPS 节点。SSH、agent 和供应商沿用它的，团队与线路机默认也跟它一样（可以改）" error={fe.host_id}><HostSelect value={row.host_id} onChange={pickHost} hosts={ctx.hosts} /></Field></div>}
+            {/* 连着填的放一行：IP | SSH 端口、团队 | 编号、挂在线路机 | 国家、SS 端口 | root 密码（家宽代理没有 SSH，国家跟在 IP 后面） */}
             {T('ip', k === 'proxy' ? '出口 IP' : 'IP', { ph: '198.51.100.20', info: ip ? '必须直接配在宿主机网卡上，EIP 或 NAT 映射的不行。检查时会登录宿主机核对' : undefined, check: true })}
-            <Field label="国家" error={fe.country}>
-              <CountrySelect value={row.country} onChange={(v) => onChange({ country: v })} autoLabel="自动（按 IP）" aria-label="国家" />
-            </Field>
-            {k !== 'proxy' && (ip ? Fixed('SSH 端口', '经宿主机登录，用宿主机的 SSH 端口', host ? String(host.ssh_port) : '') : T('ssh_port', 'SSH 端口', { ph: '22', num: true, check: true }))}
+            {k === 'proxy' ? country : ip ? Fixed('SSH 端口', '经宿主机登录，用宿主机的 SSH 端口', host ? String(host.ssh_port) : '') : T('ssh_port', 'SSH 端口', { ph: '22', num: true, check: true })}
             {k === 'relay' ? <div className="span-2">{T('label', '线路机名', { ph: '线路机3' })}</div> : (
               <>
                 <Field label="团队" error={fe.team_id}><Select value={row.team_id} onChange={(v) => onChange({ team_id: v })} options={o.team} aria-label="团队" /></Field>
                 <Field label="编号" error={fe.number}><Input inputMode="numeric" placeholder="自动（接在末尾）" value={row.number} onChange={(e) => onChange({ number: e.target.value.replace(/\D/g, '') })} /></Field>
                 <Field label="挂在线路机" error={fe.relay_id}><Select value={row.relay_id} onChange={(v) => onChange({ relay_id: v })} options={o.relay} aria-label="挂在线路机" /></Field>
-                {k === 'vps' && (ip ? Fixed('SS 端口', '中控会在宿主机上自动选一个空闲端口', '', `自动分配（${meta().defaults.ss_port + 1} 起）`) : T('ss_port', 'SS 端口', { ph: String(meta().defaults.ss_port), num: true, check: true, info: 'NAT 机填供应商映射后的公网端口' }))}
               </>
             )}
+            {k !== 'proxy' && country}
+            {k === 'vps' && (ip ? Fixed('SS 端口', '中控会在宿主机上自动选一个空闲端口', '', `自动分配（${meta().defaults.ss_port + 1} 起）`) : T('ss_port', 'SS 端口', { ph: String(meta().defaults.ss_port), num: true, check: true, info: 'NAT 机填供应商映射后的公网端口' }))}
             {/* 同机 IP 节点：中控用自己的密钥登录宿主机，没有要填的 */}
             {k !== 'proxy' && !ip && (
               // 「中控密钥登录不了」标在这里时复制入口也留着（错误替换提示的位置）

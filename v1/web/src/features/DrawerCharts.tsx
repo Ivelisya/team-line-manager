@@ -1,7 +1,7 @@
 // 抽屉里带图表的三个页签：连接质量 / 流量 / 主机。单独成文件按需加载，recharts 只在打开这些页签时才下载。
 // 图表卡、加载框与时间范围也给软路由抽屉的「曲线」页签用（RouterCharts）。
 import * as React from 'react';
-import { Cpu, Gauge, Globe, HardDrive, MemoryStick, Network, Radar, ServerOff } from 'lucide-react';
+import { ChevronRight, Cpu, Gauge, Globe, HardDrive, MemoryStick, Network, Radar, ServerOff } from 'lucide-react';
 import type { MachineView, SeriesPoint } from '@/lib/types';
 import { usePingSeries } from '@/lib/ping';
 import type { UseQueryResult } from '@tanstack/react-query';
@@ -14,7 +14,8 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { InfoTip } from '@/components/ui/form';
 import { Beat, Empty, ErrorNote, LabelValue, LabelValueGrid, Note, Num, Section, SectionHeader } from '@/components/app/primitives';
 import { RANGES, TimeChart } from '@/components/app/TimeChart';
-import { EntriesTable, entriesMeta } from './EntriesTable';
+import { entriesMeta } from './EntriesTable';
+import { Button } from '@/components/ui/button';
 
 /** 抽屉开着时曲线的重取间隔（实时流只推当前读数，不推曲线），随范围放大：范围越长点越粗、取一次越贵
  *  （线路机 24 小时流量曲线一次 130–350 ms 数据库时间，每分钟才多一个点） */
@@ -156,11 +157,19 @@ export function QualityTab({ m }: { m: MachineView }) {
           </ChartFrame>
         </ChartCard>
       </Section>
-      <Section>
-        <SectionHeader title="各入口当前探测" meta={entriesMeta(m)} />
-        <EntriesTable m={m} />
-      </Section>
+      <EntriesLink m={m} />
     </>
+  );
+}
+
+/** 连接质量、流量页签不再各放一张入口表（列和概览的几乎一样）：只留一行计数，点「查看」回概览的入口表（含每条的 TCP、出口与本月业务流量） */
+function EntriesLink({ m }: { m: MachineView }) {
+  const { setTab } = useDrawer();
+  if (!m.entries.length) return null;
+  return (
+    <Section>
+      <SectionHeader title="入口" meta={entriesMeta(m)}><Button variant="quiet" size="sm" onClick={() => setTab('overview')}>查看<ChevronRight size={14} /></Button></SectionHeader>
+    </Section>
   );
 }
 
@@ -201,10 +210,7 @@ export function TrafficTab({ m }: { m: MachineView }) {
           </ChartFrame>
         </ChartCard>
       </Section>
-      <Section>
-        <SectionHeader title="按入口" meta={entriesMeta(m)} />
-        <EntriesTable m={m} traffic />
-      </Section>
+      <EntriesLink m={m} />
     </>
   );
 }

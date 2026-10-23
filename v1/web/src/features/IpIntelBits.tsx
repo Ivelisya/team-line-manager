@@ -120,18 +120,20 @@ export function SourceProfile({ id, window, relay }: { id: string; window: Profi
     outside > 0 ? `另有 ${outside.toLocaleString('zh-CN')} 次连接来自自有机器或内网，没有计入` : '',
   ].filter(Boolean).join('\n');
   const span = window === '24h' ? '24 小时' : window === '7d' ? '7 天' : '30 天';
+  const relayTip = relay && <InfoTip text="汇总这台线路机名下所有节点的外部来源" />;
   return (
     <Section>
-      <SectionHeader title="来源画像" meta={<>近 {span} · {d.total_sources} 个来源{relay && <InfoTip text="汇总这台线路机名下所有节点的外部来源" />}</>} />
+      {/* IP 库没装：查不出运营商、城市，计数和三格分布都是空的，只留一行说明（来源 IP 本身在下面的「来源地址」里） */}
+      <SectionHeader title="来源画像" meta={d.degraded ? <>近 {span}{relayTip}</> : <>近 {span} · {d.total_sources} 个来源{relayTip}</>} />
       {/* 换时间范围、新数据未到时沿用的旧画像调淡（components.css [data-stale]） */}
       <div data-stale={q.isPlaceholderData}>
-        {d.degraded && <Note tone="warn" icon={<ShieldQuestion size={16} />}>IP 库未安装 <InfoTip text={INSTALL_CMD} /></Note>}
-        {d.empty ? <div className="hint">这段时间没有来源记录</div> : d.total_conns === 0 && !d.degraded ? <div className="hint">只有自有机器或内网的连接</div> : (
+        {d.degraded ? <Note tone="warn" icon={<ShieldQuestion size={16} />}>IP 库未安装，暂无运营商、城市画像 <InfoTip text={INSTALL_CMD} /></Note>
+          : d.empty ? <div className="hint">这段时间没有来源记录</div> : d.total_conns === 0 ? <div className="hint">只有自有机器或内网的连接</div> : (
           <>
             <div className="dist-grid">
-              <Dist title="运营商" items={d.distribution.isp} empty={d.degraded ? '查不到' : undefined} />
-              <Dist title="城市" items={d.distribution.city} empty={d.degraded ? '查不到' : undefined} />
-              <Dist title="接入方式" items={d.distribution.conn_type} empty={d.degraded ? '查不到' : undefined} />
+              <Dist title="运营商" items={d.distribution.isp} />
+              <Dist title="城市" items={d.distribution.city} />
+              <Dist title="接入方式" items={d.distribution.conn_type} />
             </div>
             <div className="hint" style={{ marginTop: 8 }}>{learningText(d.learning)} <InfoTip text={learnTip} /></div>
             {d.known.isp.some((k) => k.anomaly) && (
