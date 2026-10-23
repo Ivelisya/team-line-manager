@@ -184,6 +184,41 @@ async fn totp_reset_cli() {
     assert_eq!(login(&t, ADMIN_PW, Some(&code(&secret, step + 1))).await.0, StatusCode::OK);
 }
 
+/// 中控上 `fleet-server user-del`：停用 / 删除账号，会话作废；不能动最后一个能登录的账号
+#[tokio::test]
+async fn user_del_cli() {
+    let t = setup().await;
+    let db = &t.st.db;
+    let login_as = |name: &'static str| t.call("POST", "/api/v1/auth/login", Some(json!({"username": name, "password": ADMIN_PW})), Auth::None);
+    let sessions = || async { sqlx::query_scalar::<_, i64>("select count(*) from session s join app_user u on u.id = s.user_id where u.username = 'tmp'").fetch_one(db).await.unwrap() };
+    fleet_server::auth::upsert_user(db, "tmp", ADMIN_PW).await.unwrap();
+    assert_eq!(login_as("tmp").await.0, StatusCode::OK);
+    assert_eq!(sessions().await, 1);
+    // 停用：登不进来、会话没了、账号还在；user-set 重设密码恢复
+    fleet_server::auth::remove_user(db, "tmp", true).await.unwrap();
+    assert_eq!((sessions().await, login_as("tmp").await.0), (0, StatusCode::UNAUTHORIZED));
+    assert_eq!(sqlx::query_scalar::<_, i64>("select count(*) from app_user where username = 'tmp'").fetch_one(db).await.unwrap(), 1);
+    fleet_server::auth::upsert_user(db, "tmp", ADMIN_PW).await.unwrap();
+    assert_eq!(login_as("tmp").await.0, StatusCode::OK);
+    // 删除：账号和会话都没了
+    fleet_server::auth::remove_user(db, "tmp", false).await.unwrap();
+    assert_eq!(sqlx::query_scalar::<_, i64>("select count(*) from app_user where username = 'tmp'").fetch_one(db).await.unwrap(), 0);
+    assert_eq!((sessions().await, login_as("tmp").await.0), (0, StatusCode::UNAUTHORIZED));
+    let acts: Vec<String> = sqlx::query_scalar("select action from audit_log where actor = 'cli' and action like 'auth.user_%' order by id").fetch_all(db).await.unwrap();
+    assert_eq!(acts, ["auth.user_disabled", "auth.user_removed"]);
+    // 没有这个用户、最后一个账号：报错，什么都不动
+    assert!(fleet_server::auth::remove_user(db, "nobody", false).await.is_err());
+    for disable in [false, true] {
+        let e = fleet_server::auth::remove_user(db, "admin", disable).await.unwrap_err().to_string();
+        assert!(e.contains("最后一个"), "{e}");
+    }
+    assert_eq!(login(&t, ADMIN_PW, None).await.0, StatusCode::OK);
+    // 别的账号停用后，admin 就成了最后一个能登录的：停用着的不算
+    fleet_server::auth::upsert_user(db, "other", ADMIN_PW).await.unwrap();
+    fleet_server::auth::remove_user(db, "other", true).await.unwrap();
+    assert!(fleet_server::auth::remove_user(db, "admin", false).await.is_err());
+}
+
 #[tokio::test]
 async fn sessions_list_and_revoke() {
     let t = common::boot(false, "trust_forwarded_for = true").await;

@@ -127,6 +127,7 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 - 登录有限速（15 分钟窗口，来源 = IPv4 地址或 IPv6 /64）：同一用户名从同一来源错 5 次、同一来源错 20 次、同一用户名不分来源错 100 次会被 429 拒绝；最后这条不拦你 30 天内登录成功过的来源（攻击者换很多地址凑满 100 次也锁不住你常用的网络）。别人在别处输错不会把你锁在外面；`fleet-server user-set` 重设密码时清掉该用户的失败记录、全部会话与登录成功过的来源。两步验证码输错另有上限：同一用户名 1 小时 10 次，不分来源（知道密码的人换地址猜码也只能猜这么多；被封时你自己也要等，见到这种情况就该改密码）。
 - **开两步验证**（网页「设置 → 账户安全」）：这个账户能以 root 登录全部机器，密码之外再要手机认证器上的 6 位验证码。开启时会给 10 个恢复码，只显示一次：存进密码管理器或打印出来，和手机分开放；每个只能用一次（登录页的验证码框里直接输），快用完时在同一页重新生成一组（旧的全部作废）。改密码、看 / 撤销登录会话（不认识的设备立即撤销、「退出其它设备」）也在这一页；改密码后其它设备自动退出。开启两步验证、退出其它设备、新建 API 密钥都要再输一次密码（开了两步验证还要验证码）：只偷到浏览器会话的人做不了这些。API 密钥不随改密码失效：怀疑会话或密码泄露时，改密码时勾上「同时撤销所有 API 密钥」，再按需新建。
 - 手机和恢复码都丢了：在中控上以 root 执行 `fleet-server totp-reset -c /etc/fleet/fleet.toml <用户名>` 停用该用户的两步验证（恢复码一并作废，写审计 `auth.totp_disabled`，不输出任何秘密），然后用密码登录、立刻重新开启。忘了密码用 `fleet-server user-set`。
+- 删除或停用账号：在中控上以 root 执行 `fleet-server user-del -c /etc/fleet/fleet.toml <用户名>` 删除（`--disable` 只停用，之后 `user-set` 重设密码即恢复）；该账号的登录会话马上作废，写审计 `auth.user_removed` / `auth.user_disabled`（操作者 cli）；不能删或停用最后一个能登录的账号。API 密钥不属于账号，不受影响。
 - API 密钥（fleetctl、脚本）不经过两步验证，也不能调 `/account/*`：密钥本身就是凭据，按最小 scope 发、设有效期。
 - 有 `write` 权限就能上架线路机、把节点挂过去，那台线路机的 agent 会收到节点的 SS 密码与代理账号：`write` 实际上也能拿到凭据，按凭据级别发。
 - 通知渠道（webhook、企业微信、Telegram 的 `api_base`）不能指向内网、环回、链路本地（云元数据）地址，也不能是内嵌 IPv4 的转换地址（NAT64 `64:ff9b::/32`、6to4 `2002::/16`、Teredo `2001::/32`）；域名在发送时只解析公网地址，发送不走环境变量里的 HTTP 代理（代理会替它解析域名）。确实要用内网 webhook 时在 `fleet.toml` 写 `[notify] allow_private = true`。改 Telegram 的 `api_base` 要同时重新填 `bot_token`。
@@ -388,7 +389,7 @@ heartbeat_url = "https://hc-ping.com/<检查的 uuid>"
 - `apikey:central-local`：中控上的 fleetctl——用户 ssh 进中控后，agent 或人做的。
 - 用户名（如 `kismet`）：在网页上登录的人。
 - `apikey:<其它名称>`：别的 API 密钥（脚本、别处的 fleetctl）。
-- `cli`：中控命令行（`user-set`、`totp-reset`，以及 local-admin 新建 / 撤销 central-local，摘要写「中控命令行 local-admin」）。
+- `cli`：中控命令行（`user-set`、`user-del`、`totp-reset`，以及 local-admin 新建 / 撤销 central-local，摘要写「中控命令行 local-admin」）。
 - `系统`：中控自己做的——备用团队的机器到期自动回收（审计 detail 与作业参数里 `auto` 为 `spare_expiry`，退役原因接上「备用到期自动回收（到期日 …）」）、已退役的机器收进回收站（`machine.recycle`，`auto` 为 `retired_sweep`）、回收站里的机器自动物理删除（`machine.purge`）、自动续费（`renewal`，备注「自动续费」），见 §2。
 
 `fleetctl ssh` 每次登录记一条「SSH 登录」（`ssh.login`：对象、交互式还是带命令；命令内容不记）；要留命令全文的单条命令用 `fleetctl exec`。在中控上绕开 fleetctl 直接 ssh、psql 做的事不进审计。
