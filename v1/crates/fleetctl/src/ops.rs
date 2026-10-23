@@ -667,7 +667,7 @@ pub fn entry_action(ctx: &Ctx, action: EntryAction, entry: &str, yes: bool, foll
     let mut body = json!({"action": api});
     // 轮换、停用之后指向这个入口的软路由出口就连不上了（不会自动改路由）：确认时列出来
     let routers = match action {
-        EntryAction::Rotate | EntryAction::Disable => ctx.c.get(&format!("/entries/{}/routers", st(e, "/id")))?,
+        EntryAction::Rotate | EntryAction::Disable => routers_or_skip(ctx.c.get(&format!("/entries/{}/routers", st(e, "/id"))))?,
         _ => json!([]),
     };
     let note = router_note(&routers, done);
@@ -682,6 +682,17 @@ pub fn entry_action(ctx: &Ctx, action: EntryAction, entry: &str, yes: bool, foll
     let d = ctx.c.post(&format!("/entries/{}/actions", st(e, "/id")), &body)?;
     ctx.emit(&d, || format!("已{done} {label}（期望状态代数 {}）{}", st(&d, "/generation"), router_note(&d["router_exits"], done)));
     Ok(0)
+}
+
+/// 列指向入口的软路由出口的结果：中控是还没有这个接口的旧版本（404）时当成没有，照常停用 / 轮换（只是少了提示）
+fn routers_or_skip(r: anyhow::Result<Value>) -> anyhow::Result<Value> {
+    match r {
+        Err(e) if e.downcast_ref::<ApiError>().is_some_and(|a| a.status == 404) => {
+            eprintln!("（中控版本较旧，列不出指向这个入口的软路由出口，照常执行）");
+            Ok(json!([]))
+        }
+        r => r,
+    }
 }
 
 /// 指向这个入口的软路由出口（`GET /entries/{id}/routers`）：「。这些软路由出口指向它，{停用}后会连不上：路由A 的 节点01；…」，没有为空
@@ -981,6 +992,15 @@ pub fn keys_revoke(ctx: &Ctx, a: &KeyAuth, which: &str) -> anyhow::Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 列软路由出口：旧中控 404 当成没有（照常停用 / 轮换），别的错误照报
+    #[test]
+    fn entry_routers_404_skipped() {
+        let api = |status: u16| Err(anyhow::Error::new(ApiError { status, code: "x".into(), message: "m".into() }));
+        assert_eq!(routers_or_skip(api(404)).unwrap(), json!([]));
+        assert!(routers_or_skip(api(500)).is_err());
+        assert_eq!(routers_or_skip(Ok(json!([{"name": "A"}]))).unwrap(), json!([{"name": "A"}]));
+    }
 
     #[test]
     fn entry_router_note() {

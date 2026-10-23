@@ -36,18 +36,34 @@ pub struct Target {
     pub effective: Option<Value>,
 }
 
-/// 在 `GET /policies` 的结果里按名字或 id 找团队或节点（团队名优先；节点名可用显示名、IP 等机器引用）
+/// 在 `GET /policies` 的结果里按名字或 id 找团队或节点（节点名可用显示名、IP 等机器引用）。
+/// 团队和节点同时对得上（id 前缀两边都命中：UUIDv7 的前缀是时间，同一时段建的团队和机器前缀相同；或团队名恰好是某台机器的引用）时报歧义，
+/// 不替用户挑：草稿写错范围不容易发现
 pub fn resolve_target(ctx: &Ctx, list: &Value, q: &str) -> anyhow::Result<Target> {
-    let teams = list["teams"].clone();
-    if let Ok(t) = crate::resolve::team(teams.as_array().map_or(&[][..], Vec::as_slice), q) {
-        return Ok(Target { scope: "team", id: st(t, "/id"), name: st(t, "/name"), policy: t["policy"].clone(), effective: None });
-    }
-    let m = ctx.find(q, Want::Live).map_err(|e| anyhow!("{q} 既不是团队也不是节点：{e}"))?;
-    if st(&m, "/kind") == "relay" {
+    let teams = list["teams"].as_array().map_or(&[][..], Vec::as_slice);
+    let team = crate::resolve::team(teams, q).ok();
+    pick_target(teams, q, team, ctx.find(q, Want::Live))
+}
+
+/// `resolve_target` 的纯函数部分：`team` 是团队那边的匹配，`machine` 是机器那边的
+fn pick_target(teams: &[Value], q: &str, team: Option<&Value>, machine: anyhow::Result<Value>) -> anyhow::Result<Target> {
+    let machine = match (team, machine) {
+        // 机器那边命中的是线路机（设不了策略）：不算歧义
+        (Some(t), Ok(m)) if st(&m, "/kind") != "relay" => bail!(
+            "「{q}」既对得上团队「{}」（id {}），也对得上节点「{}」（id {}）：用完整 id 或名字指定",
+            st(t, "/name"),
+            st(t, "/id"),
+            st(&m, "/name"),
+            st(&m, "/id")
+        ),
+        (Some(t), _) => return Ok(Target { scope: "team", id: st(t, "/id"), name: st(t, "/name"), policy: t["policy"].clone(), effective: None }),
+        (None, m) => m.map_err(|e| anyhow!("{q} 既不是团队也不是节点：{e}"))?,
+    };
+    if st(&machine, "/kind") == "relay" {
         bail!("「{q}」是线路机，访问策略设在团队或节点上");
     }
-    let id = st(&m, "/id");
-    for t in teams.as_array().into_iter().flatten() {
+    let id = st(&machine, "/id");
+    for t in teams {
         if let Some(node) = t["nodes"].as_array().and_then(|a| a.iter().find(|x| st(x, "/id") == id)) {
             return Ok(Target { scope: "node", id, name: st(node, "/name"), policy: node["policy"].clone(), effective: Some(node["effective"].clone()) });
         }
@@ -337,6 +353,23 @@ pub fn rollback(ctx: &Ctx, version: &str, yes: bool) -> anyhow::Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// id 前缀团队、节点都命中时报歧义；只命中团队（或机器那边是线路机）取团队；只命中节点取节点
+    #[test]
+    fn target_team_vs_node() {
+        let teams = vec![json!({"id": "01a162a9-0000-7000-8000-000000000001", "name": "团队1", "policy": {"mode": "off"},
+            "nodes": [{"id": "01a162a9-1111-7000-8000-000000000002", "name": "团队1-01", "policy": {}, "effective": {"mode": "off"}}]})];
+        let node = || Ok(json!({"id": "01a162a9-1111-7000-8000-000000000002", "name": "团队1-01", "kind": "vps"}));
+        let e = pick_target(&teams, "01a162a9", Some(&teams[0]), node()).unwrap_err().to_string();
+        assert!(e.contains("既对得上团队「团队1」") && e.contains("也对得上节点「团队1-01」"), "{e}");
+        let none = || Err(anyhow!("没有找到"));
+        assert_eq!(pick_target(&teams, "团队1", Some(&teams[0]), none()).unwrap().scope, "team");
+        let relay = Ok(json!({"id": "r", "name": "线路机1", "kind": "relay"}));
+        assert_eq!(pick_target(&teams, "01a162a9", Some(&teams[0]), relay).unwrap().scope, "team");
+        let t = pick_target(&teams, "团队1-01", None, node()).unwrap();
+        assert_eq!((t.scope, t.name.as_str()), ("node", "团队1-01"));
+        assert!(pick_target(&teams, "x", None, none()).unwrap_err().to_string().contains("既不是团队也不是节点"));
+    }
 
     #[test]
     fn version_refs() {

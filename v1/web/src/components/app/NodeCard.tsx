@@ -252,7 +252,7 @@ const RunRow = memo(function RunRow({ activated, sub, recycle }: { activated: st
 // 改成登记进队列，同一轮提交（或同一轮 ResizeObserver 回调）里的全部卡片在微任务里先统一读、再统一写：整页只排一次版。
 // 微任务在这一轮提交之后、绘制之前跑，收起数用 flushSync 同步重渲染，「+N」不会晚一帧冒出来
 // 列表元素在冲刷时才取（list()）：排进队列到微任务之间卡片可能已卸载（换密度、换分组、翻页），ref 已是 null，跳过它；
-// 没有标签的卡（没设供应商的 VPS 节点）列表是空的，也跳过。原来排队时就把元素存下、冲刷时不查，卸载的那张会抛 TypeError，
+// 没有标签的卡（没设供应商的 VPS 节点）列表是空的：收起数记 0（原来有收起的，标签变成 0 枚时「+N」要去掉）。原来排队时就把元素存下、冲刷时不查，卸载的那张会抛 TypeError，
 // 同一批里排在它后面的卡片都没数，「+N」停在旧值
 type TagsJob = { list: () => HTMLDivElement | null; more: () => HTMLSpanElement | null; cut: number; setCut: (n: number) => void };
 const tagsQueue = new Set<TagsJob>();
@@ -261,7 +261,8 @@ function flushTags() {
   // 读：每张卡放不下的枚数，和「+N」该往左挪多少（最后一枚露出的标签右边到列表右边的空白）
   const reads = jobs.flatMap((j) => {
     const el = j.list();
-    if (!el?.isConnected || !el.firstElementChild) return [];
+    if (!el?.isConnected) return [];
+    if (!el.firstElementChild) return [{ j, n: 0, dx: 0 }];
     const top = (el.firstElementChild as HTMLElement).offsetTop;
     let n = 0;
     for (const t of el.children) if ((t as HTMLElement).offsetTop > top) n++;

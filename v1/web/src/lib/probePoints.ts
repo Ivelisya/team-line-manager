@@ -18,7 +18,10 @@ export interface ProbePoint {
   last_seen_at: string | null; last_kept_at: string | null; discard_reason: string | null; window: ProbeWindow;
   last_ip: string | null; version: string | null; created_at: string; bootstrap_expires_at: string | null;
   install: { state: 'running' | 'done' | 'failed'; step: string | null; error: string | null; host: string | null; port: number | null; started_at: string | null; finished_at: string | null } | null;
-  upgrade: { sha256: string } | null; relays: ProbeRelayStat[];
+  upgrade: { sha256: string; version: string | null } | null;
+  /** 上次升级失败（下载后 5 分钟没报上新版本，探测点已换回旧版本）：中控不再下发，要手动再升级 */
+  upgrade_failed: { sha256: string; to: string | null; from: string | null; at: string } | null;
+  relays: ProbeRelayStat[];
 }
 export interface Bootstrap { cmd: string; expires_at: string }
 

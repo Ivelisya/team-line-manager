@@ -165,42 +165,78 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     get_one(a, State(st), ApiPath(id)).await
 }
 
+/// `DELETE /routers/{id}?force=true`
+#[derive(Deserialize)]
+pub struct DeleteQ {
+    force: Option<bool>,
+}
+
 /// 删除：撤销隧道公钥（路由上的 fleet-tunnel 之后连不上；已经连着的那条要等它自己断），关掉它的告警（不发恢复），指标随记录删掉。
 /// 路由上中控加的东西不去动，返回要在路由上执行的清理命令。
 /// 还有没做完的作业改过它的出口、没确认改回（参数 routers_applied 里有它：中途被打断、改回失败等人工处理）时 409，给出作业 id：
-/// 删了作业就连不上它、改不回也收不了尾
-pub async fn delete(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
+/// 删了作业就改不回它。路由确实回不来了（扔了、刷机、长期断电）时作业也改不回，重试、取消都过不去，这时用 `force`：
+/// 把它从这些作业的 routers_applied / routers_stuck 里摘掉、作业日志记一条「改回放弃」，作业能重试收尾或取消。
+/// 作业正在执行（照它内存里的列表接着写参数）时不摘，409 等它停下
+pub async fn delete(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<DeleteQ>) -> ApiResult<Json<Value>> {
+    let force = q.force.unwrap_or(false);
     let mut tx = st.db.begin().await?;
-    let jobs: Vec<Uuid> = sqlx::query_scalar(
-        "select id from job where state not in ('succeeded', 'cancelled') and jsonb_typeof(params->'routers_applied') = 'array'
-           and params->'routers_applied' @> jsonb_build_array(jsonb_build_object('id', $1::text)) order by created_at",
+    let jobs: Vec<(Uuid, String)> = sqlx::query_as(
+        "select id, state::text from job where state not in ('succeeded', 'cancelled') and jsonb_typeof(params->'routers_applied') = 'array'
+           and params->'routers_applied' @> jsonb_build_array(jsonb_build_object('id', $1::text)) order by created_at for update",
     )
     .bind(id.to_string())
     .fetch_all(&mut *tx)
     .await?;
-    if !jobs.is_empty() {
-        let ids: Vec<String> = jobs.iter().map(Uuid::to_string).collect();
+    let ids: Vec<Uuid> = jobs.iter().map(|j| j.0).collect();
+    let list = || ids.iter().map(Uuid::to_string).collect::<Vec<_>>().join("、");
+    if !jobs.is_empty() && !force {
         return Err(ApiError::conflict(format!(
-            "作业 {} 改过这台软路由的出口、还没确认改回：先把作业处理完（重试做完，见作业详情的「需要人工处理」），再删",
-            ids.join("、")
+            "作业 {} 改过这台软路由的出口、还没确认改回：先把作业处理完（让路由恢复连接后重试做完，见作业详情的「需要人工处理」）再删。\
+             路由确实回不来了（扔了、刷机）可以强制删除：作业不再改回它，它上面被改过的出口要自己处理",
+            list()
         ))
-        .with_detail(json!({"jobs": jobs})));
+        .with_detail(json!({"jobs": ids})));
+    }
+    if jobs.iter().any(|j| j.1 == "running") {
+        return Err(ApiError::conflict(format!("作业 {} 正在执行：等它这一轮停下（失败或进入等待）再强制删除", list())).with_detail(json!({"jobs": ids})));
     }
     let (name, port): (String, i32) = sqlx::query_as("delete from router where id = $1 returning name, tunnel_port")
         .bind(id)
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| ApiError::not_found("没有这台软路由"))?;
+    if !ids.is_empty() {
+        sqlx::query(
+            "update job set params = params
+                || jsonb_build_object('routers_applied', coalesce((select jsonb_agg(a) from jsonb_array_elements(params->'routers_applied') a where a->>'id' <> $2), '[]'::jsonb))
+                || jsonb_build_object('routers_stuck', coalesce((select jsonb_agg(s) from jsonb_array_elements(case when jsonb_typeof(params->'routers_stuck') = 'array'
+                                                                  then params->'routers_stuck' else '[]'::jsonb end) s where s->>'id' <> $2), '[]'::jsonb))
+             where id = any($1)",
+        )
+        .bind(&ids)
+        .bind(id.to_string())
+        .execute(&mut *tx)
+        .await?;
+    }
     let closed = routers::alerts::close_all(&mut tx, id).await?;
-    audit(&mut tx, &a.name, "router.delete", "router", Some(id), json!({"name": name, "tunnel_port": port})).await?;
+    let mut detail = json!({"name": name, "tunnel_port": port});
+    if !ids.is_empty() {
+        detail["force"] = json!(true);
+        detail["jobs"] = json!(ids);
+    }
+    audit(&mut tx, &a.name, "router.delete", "router", Some(id), detail).await?;
     tx.commit().await?;
+    for j in &ids {
+        crate::jobs::log(&st, *j, "warn", format!("软路由「{name}」已被 {} 强制删除，改回放弃：它上面被本作业改过的出口没有改回，要在路由上自己处理", a.name)).await;
+        st.emit(Event::Job { id: *j, target: None });
+    }
     tunnel::close_master(&st.cfg, id).await;
     st.emit(Event::Routers);
     if closed > 0 {
         st.emit(Event::Incidents);
     }
     routers::sync_files_or_500(&st).await?;
-    Ok(ok(json!({"ok": true, "cleanup": CLEANUP})))
+    Ok(ok(json!({"ok": true, "cleanup": CLEANUP, "jobs": ids})))
 }
 
 /// 重新生成接入命令：新的一次性令牌（30 分钟），旧隧道密钥立刻撤销、主机公钥清掉（新隧道连上后重记），隧道端口换一个。正在一键部署时 409

@@ -209,7 +209,8 @@ export const SegmentedOverflow = React.memo(function SegmentedOverflow<T extends
   const root = React.useRef<HTMLDivElement>(null);
   const meas = React.useRef<HTMLDivElement>(null);
   const [dim, setDim] = React.useState<{ avail: number; widths: number[]; more: number; gap: number } | null>(null);
-  const sig = items.map((it) => `${it.value}:${it.count ?? ''}`).join('|');
+  // 文字也算进去（团队改名时 id、台数都没变）；label 不是字符串的（图标等）按值认
+  const sig = items.map((it) => `${it.value}:${it.count ?? ''}:${typeof it.label === 'string' || typeof it.label === 'number' ? it.label : ''}`).join('|');
   React.useLayoutEffect(() => {
     const r = root.current; const ms = meas.current;
     if (!r || !ms) return;

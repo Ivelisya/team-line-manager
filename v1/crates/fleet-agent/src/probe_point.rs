@@ -12,8 +12,11 @@
 //! 中控要它升级时（`ProbeTargets::upgrade`）：下载 `/agent/v1/probe/binary`，sha256 对上、`--version` 跑得起来才换，
 //! 旧的留成同目录的 `fleet-agent.prev`，写下试运行标记（[`TRIAL`]），然后退出（退出码 0），由服务管理器（supervise-daemon / systemd）拉起新的。
 //! 新的启动后看到标记就是在试运行：[`TRIAL_WINDOW`] 内有一次上报成功就删掉标记；到时候一次都没成功（起来了但连不上中控、
-//! 主循环卡住、启动就崩溃被反复拉起）就把 `.prev` 换回来、记下这个版本的 sha256（[`BAD`]，之后中控再要它升级到这个版本时不换），
-//! 以非 0 退出，由服务管理器拉起旧版本。
+//! 读不了配置等启动就失败被反复拉起）就把 `.prev` 换回来、记下这个版本的 sha256（[`BAD`]，之后中控再要它升级到这个版本时不换），
+//! 以非 0 退出，由服务管理器拉起旧版本。标记在启动的第一步（读配置之前）看，所以任何启动失败都算在试运行里；
+//! 是否到时只在每轮结束和启动时看：一轮卡住不返回不会回滚（取目标、上报各有 15 秒超时，建连 10 秒，实际卡不住）。
+//! 试运行期间不接受新的升级（`.prev` 留着已知能用的那个版本）。
+//! 中控那边也防反复：下载过程序、过了试运行的时长还没报上新版本的 sha256，就算这次升级失败，不再下发（probe_points/agent.rs）。
 //!
 //! 省内存：不缓冲、不落盘，一轮的结果用完就丢；程序本身的 sha256 启动时边读边算。常驻约几 MB。
 //! 日志只在出问题时写，同一个问题 10 分钟最多一条（探测点的磁盘小，OpenRC 下日志是一个不轮转的文件）。
@@ -129,7 +132,17 @@ impl Client {
 }
 
 /// 常驻：每轮取目标、测、上报，直到收到 SIGTERM / SIGINT，或升级换好了程序（退出让服务管理器拉起新的）
-pub async fn run(path: &Path) -> Result<()> {
+pub async fn run(path: &Path) -> Result<()> { run_as(path, &std::env::current_exe()?).await }
+
+/// `run`，程序路径由调用方给（测试用临时目录里的假程序）
+async fn run_as(path: &Path, exe: &Path) -> Result<()> {
+    // 升级后的试运行：最先看（读配置、建客户端之前），新版本读不了现有配置之类启动就失败的，也会在到时后换回。
+    // 标记写了太久还在（之前几次启动都没能上报成功，或一启动就失败被反复拉起），直接换回旧版本
+    let exe = exe.to_path_buf();
+    let mut trial = Trial::load(&exe);
+    if let Some(t) = trial.as_ref().filter(|t| t.expired()) {
+        return t.roll_back(&exe);
+    }
     let cfg = ProbeConfig::load(path)?;
     anyhow::ensure!(
         !crate::server::plain_http_over_public(&cfg.server_url),
@@ -137,13 +150,12 @@ pub async fn run(path: &Path) -> Result<()> {
         cfg.server_url
     );
     let c = Client::new(&cfg)?;
-    let exe = std::env::current_exe()?;
-    // 升级后的试运行：标记写了太久还在（之前几次启动都没能上报成功，或一启动就崩溃被反复拉起），直接换回旧版本
-    let mut trial = Trial::load(&exe);
-    if let Some(t) = trial.as_ref().filter(|t| t.expired()) {
-        return t.roll_back(&exe);
-    }
-    let own = tokio::task::spawn_blocking(exe_sha256).await?.ok();
+    let own = tokio::task::spawn_blocking({
+        let exe = exe.clone();
+        move || exe_sha256_of(&exe)
+    })
+    .await?
+    .ok();
     tracing::info!(name = %cfg.name, version = fleet_proto::build_version(), server = %c.base, trial = trial.is_some(), "fleet-agent 探测点启动");
     let (stop_tx, mut stop) = tokio::sync::watch::channel(false);
     tokio::spawn(async move {
@@ -156,7 +168,7 @@ pub async fn run(path: &Path) -> Result<()> {
         let start = tokio::time::Instant::now();
         let r = tokio::select! {
             _ = stop.changed() => break,
-            r = round(&c, turn, own.as_deref(), &exe) => r,
+            r = round(&c, turn, own.as_deref(), &exe, trial.is_some()) => r,
         };
         // 试运行中：上报成功（Sleep）就算过了；到时候还没成功就换回旧版本
         if let Some(t) = trial.take() {
@@ -207,11 +219,12 @@ enum Next {
     Upgraded(String),
 }
 
-async fn round(c: &Client, turn: usize, own: Option<&str>, exe: &Path) -> Result<Next, RoundErr> {
+/// `in_trial`：自己还在升级后的试运行里（还没上报成功过）：这时不再升级，免得 `.prev` 被这个没验证过的版本覆盖，等上报成功之后的下一轮再换
+async fn round(c: &Client, turn: usize, own: Option<&str>, exe: &Path, in_trial: bool) -> Result<Next, RoundErr> {
     let t = c.targets().await?;
-    // 上次换成它之后没能上报、已经换回来了的版本（`BAD`）不再换：中控那边会一直显示升级中，修好后发一个新版本再升级
-    if let Some(u) = t.upgrade.as_ref().filter(|u| own != Some(u.sha256.as_str()) && bad_sha(exe).as_deref() != Some(u.sha256.as_str())) {
-        upgrade(c, u).await.map_err(|e| RoundErr::Other(format!("升级失败（照旧用现在的版本）：{e:#}")))?;
+    // 上次换成它之后没能上报、已经换回来了的版本（`BAD`）不再换：中控那边也会在试运行时长过后记成升级失败、不再下发
+    if let Some(u) = t.upgrade.as_ref().filter(|u| !in_trial && wants(own, bad_sha(exe).as_deref(), &u.sha256)) {
+        upgrade(c, u, exe).await.map_err(|e| RoundErr::Other(format!("升级失败（照旧用现在的版本）：{e:#}")))?;
         return Ok(Next::Upgraded(u.version.clone()));
     }
     let m = measure(&t, turn).await;
@@ -219,6 +232,9 @@ async fn round(c: &Client, turn: usize, own: Option<&str>, exe: &Path) -> Result
     c.report(&rep).await?;
     Ok(Next::Sleep(Duration::from_secs(u64::from(t.interval_s.clamp(10, 300))), m.discarded))
 }
+
+/// 中控要换成 `target`：不是正在跑的这个、也不是换上过又换回来的那个（`bad`）才换
+fn wants(own: Option<&str>, bad: Option<&str>, target: &str) -> bool { own != Some(target) && bad != Some(target) }
 
 /// 一轮的结果
 #[derive(Debug)]
@@ -266,9 +282,7 @@ pub async fn measure(t: &ProbeTargets, turn: usize) -> Measured {
     Measured { results, discarded: None, all_down: all_down(&oks) }
 }
 
-/// 正在跑的程序的 sha256（边读边算，不整份读进内存）
-fn exe_sha256() -> Result<String> { exe_sha256_of(&std::env::current_exe()?) }
-
+/// 程序的 sha256（边读边算，不整份读进内存）
 fn exe_sha256_of(path: &Path) -> Result<String> {
     use sha2::Digest;
     let mut f = std::fs::File::open(path)?;
@@ -278,11 +292,10 @@ fn exe_sha256_of(path: &Path) -> Result<String> {
 }
 
 /// 下载、核对、试跑、替换。旧的留成 `<程序>.prev`
-async fn upgrade(c: &Client, u: &ProbeUpgrade) -> Result<()> {
+async fn upgrade(c: &Client, u: &ProbeUpgrade, exe: &Path) -> Result<()> {
     use sha2::Digest;
     use std::os::unix::fs::PermissionsExt;
     use tokio::io::AsyncWriteExt;
-    let exe = std::env::current_exe()?;
     let dir = exe.parent().context("程序所在目录")?.to_path_buf();
     let new = dir.join(".fleet-agent.new");
     let mut r = match c.send(c.http.get(format!("{}/agent/v1/probe/binary", c.base)).timeout(Duration::from_secs(300))).await {
@@ -311,7 +324,7 @@ async fn upgrade(c: &Client, u: &ProbeUpgrade) -> Result<()> {
     if !ok {
         return Err(cleanup(anyhow::anyhow!("下载的程序跑不起来（--version 失败）")));
     }
-    swap(&exe, &new).map_err(cleanup)
+    swap(exe, &new).map_err(cleanup)
 }
 
 fn prev_of(exe: &Path) -> PathBuf { exe.with_file_name(format!("{}.prev", exe.file_name().and_then(|n| n.to_str()).unwrap_or("fleet-agent"))) }
@@ -446,6 +459,37 @@ mod tests {
         assert!(Trial::load(&exe).is_none());
         assert_eq!(std::fs::read_to_string(&exe).unwrap(), "new2");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 试运行在读配置之前看：新版本读不了配置（启动就失败）时，到时照样换回旧版本；没在试运行的照常报配置错误
+    #[tokio::test]
+    async fn trial_checked_before_config() {
+        let d = std::env::temp_dir().join(format!("fa-trial-cfg-{}", Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&d).unwrap();
+        let (exe, new) = (d.join("fleet-agent"), d.join(".fleet-agent.new"));
+        let missing = d.join("probe.toml");
+        std::fs::write(&exe, "old").unwrap();
+        let e = run_as(&missing, &exe).await.unwrap_err();
+        assert!(format!("{e:#}").contains("读取配置"), "{e:#}");
+        std::fs::write(&new, "new").unwrap();
+        swap(&exe, &new).unwrap();
+        // 还没到时：照常因为配置失败退出（服务管理器再拉起），不换回
+        assert!(format!("{:#}", run_as(&missing, &exe).await.unwrap_err()).contains("读取配置"));
+        assert_eq!(std::fs::read_to_string(&exe).unwrap(), "new");
+        std::fs::File::options().write(true).open(d.join(TRIAL)).unwrap().set_modified(std::time::SystemTime::now() - TRIAL_WINDOW).unwrap();
+        let e = run_as(&missing, &exe).await.unwrap_err();
+        assert!(e.to_string().contains("已换回旧版本"), "{e:#}");
+        assert_eq!(std::fs::read_to_string(&exe).unwrap(), "old");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 要不要换成中控给的版本：正在跑的、换回来过的（BAD）都不换
+    #[test]
+    fn upgrade_target_filter() {
+        assert!(wants(Some("a"), None, "b"));
+        assert!(wants(None, Some("c"), "b"));
+        assert!(!wants(Some("b"), None, "b"));
+        assert!(!wants(Some("a"), Some("b"), "b"));
     }
 
     #[test]

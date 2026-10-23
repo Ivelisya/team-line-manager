@@ -80,11 +80,17 @@ export function templateOf(plan: Plan | undefined, pv: Provider | undefined): Su
   };
 }
 const same = (a: unknown, b: unknown) => (a || null) === (b || null); // 流量上限 0 与 null 都是不限
-/** 订阅模板、账单日、单独设置了哪几项：按订阅现有的值和跟随值比（和套餐 / 供应商相同的值按跟随存，同服务端） */
+/** 直接设定到期日后的账单日（同服务端 meta::billing_day）：落在现有账单日上的（小月按月末算，如账单日 31 号的 2-28）沿用现有的，否则改成新到期日几号 */
+export function billingDay(due: string, cur: number | null | undefined): number {
+  const [y, mo, d] = due.split('-').map(Number);
+  const len = new Date(Date.UTC(y, mo, 0)).getUTCDate();
+  return cur != null && d === Math.min(Math.max(cur, 1), 31, len) ? cur : d;
+}
+/** 订阅模板、账单日、单独设置了哪几项：按订阅现有的值和跟随值比（和套餐 / 供应商相同的值按跟随存，同服务端写订阅时的 subscription_normalize） */
 export function syncSub(m: MachineView, plans: Plan[], providers: Provider[]) {
   m.sub_template = templateOf(plans.find((p) => p.id === m.plan?.id), providers.find((p) => p.id === m.provider?.id));
   const s = m.subscription; if (!s) return;
-  s.billing_day = Number(s.due_date.slice(8));
+  s.billing_day = billingDay(s.due_date, s.billing_day);
   s.overrides = SUB_FIELDS.filter((k) => !same(s[k], inheritedValue(m, k, s.due_date)));
 }
 /** 套餐或供应商改了：没单独设置的项跟着变（服务端是视图里现算，这里把值写回订阅） */

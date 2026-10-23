@@ -324,15 +324,17 @@ impl Reporter {
     }
 }
 
-/// 本地状态文件（stats.json、access.json）连续写失败的次数：只在第 1 到 3 次和之后每 100 次打日志，成功就清零
-static STATE_SAVE_FAILS: AtomicU64 = AtomicU64::new(0);
+/// 本地状态文件连续写失败的次数（stats.json、access.json 各一个：一个一直写不进、另一个照常写时不互相清零）：
+/// 只在第 1 到 3 次和之后每 100 次打日志，成功就清零
+static STATS_SAVE_FAILS: AtomicU64 = AtomicU64::new(0);
+static ACCESS_SAVE_FAILS: AtomicU64 = AtomicU64::new(0);
 
-/// 写状态文件。写不进去（磁盘满、权限不对）不能悄悄吞掉：重启后会按旧基线重复算流量、重复上报访问事件
-fn save_state<T: serde::Serialize>(path: &Path, v: &T, what: &str) {
+/// 写状态文件（`fails` 是这个文件自己的连续失败计数）。写不进去（磁盘满、权限不对）不能悄悄吞掉：重启后会按旧基线重复算流量、重复上报访问事件
+fn save_state<T: serde::Serialize>(path: &Path, v: &T, what: &str, fails: &AtomicU64) {
     match save_json(path, v, false) {
-        Ok(()) => STATE_SAVE_FAILS.store(0, Ordering::Relaxed),
+        Ok(()) => fails.store(0, Ordering::Relaxed),
         Err(e) => {
-            let n = STATE_SAVE_FAILS.fetch_add(1, Ordering::Relaxed) + 1;
+            let n = fails.fetch_add(1, Ordering::Relaxed) + 1;
             if n <= 3 || n.is_multiple_of(100) {
                 tracing::warn!(fails = n, "{what} 写不进磁盘：{e:#}（重启后可能重复算流量或重复上报访问事件）");
             }
@@ -345,7 +347,7 @@ fn reject(sh: &Shared, c: &mut Core, seq: u64) {
     let es = c.queue.dead_letter(seq);
     if !es.is_empty() {
         add_carry(&mut c.stats.carry, &es);
-        save_state(&stats_path(&sh.cfg), &c.stats, "stats.json");
+        save_state(&stats_path(&sh.cfg), &c.stats, "stats.json", &STATS_SAVE_FAILS);
     }
 }
 
@@ -356,7 +358,7 @@ fn commit(sh: &Shared, tailer: &mut Option<Tailer>, cursor: Option<Cursor>, stat
         t.commit(cursor);
         if changed {
             if let Some(c) = t.cursor {
-                save_state(&access_cursor_path(&sh.cfg), &c, "access.json");
+                save_state(&access_cursor_path(&sh.cfg), &c, "access.json", &ACCESS_SAVE_FAILS);
             }
         }
     }
@@ -365,7 +367,7 @@ fn commit(sh: &Shared, tailer: &mut Option<Tailer>, cursor: Option<Cursor>, stat
         stats.base = b;
     }
     if dirty {
-        save_state(&stats_path(&sh.cfg), &*stats, "stats.json");
+        save_state(&stats_path(&sh.cfg), &*stats, "stats.json", &STATS_SAVE_FAILS);
     }
 }
 
@@ -489,6 +491,21 @@ mod tests {
     }
 
     fn tmp(n: &str) -> crate::util::TmpDir { crate::util::TmpDir::new(&format!("rep-{n}")) }
+
+    /// 两个状态文件各记各的连续失败：一个一直写不进、另一个照常写时，前一个的计数不被清零（日志照样限流）
+    #[test]
+    fn state_save_fails_counted_per_file() {
+        let d = tmp("savefails");
+        let (a, b) = (AtomicU64::new(0), AtomicU64::new(0));
+        let bad = d.join("no-such-dir/stats.json");
+        for _ in 0..3 {
+            save_state(&bad, &1, "stats.json", &a);
+            save_state(&d.join("access.json"), &1, "access.json", &b);
+        }
+        assert_eq!((a.load(Ordering::Relaxed), b.load(Ordering::Relaxed)), (3, 0));
+        save_state(&d.join("stats.json"), &1, "stats.json", &a);
+        assert_eq!(a.load(Ordering::Relaxed), 0, "写成功清零");
+    }
 
     fn shared(d: &std::path::Path) -> Arc<Shared> {
         let mut cfg = crate::config::Config::relay_default();

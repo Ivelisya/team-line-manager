@@ -202,7 +202,14 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     if new == (old_name.clone(), old_note.clone(), old_enabled) {
         return Ok(ok(one(&st, id).await?));
     }
-    sqlx::query("update probe_point set name = $2, note = $3, enabled = $4, updated_at = now() where id = $1")
+    // 重新启用：最近被采纳从这一刻算起（停用期间照收心跳、不测，last_kept_at 停在停用前：不重置的话启用后、下一份上报之前
+    // 会被当成「在线但检查都作废了」，误开一条 probe_point_offline 又马上恢复）
+    sqlx::query(
+        "update probe_point set name = $2, note = $3, enabled = $4, updated_at = now(),
+                last_kept_at = case when $4 and not enabled then now() else last_kept_at end,
+                discard_reason = case when $4 and not enabled then null else discard_reason end
+         where id = $1",
+    )
         .bind(id)
         .bind(&new.0)
         .bind(&new.1)
@@ -245,16 +252,21 @@ pub async fn delete(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<U
     Ok(ok(json!({"ok": true, "cleanup": install::CLEANUP})))
 }
 
-/// 升级：记下 dist 里程序的 sha256，探测点下次取目标（30 秒内）时自己下载、核对、替换、重启。返回要升到的版本
+/// 升级：记下 dist 里程序的 sha256，探测点下次取目标（30 秒内）时自己下载、核对、替换、重启。返回要升到的版本。
+/// 上次升级失败（upgrade_failed，见 probe_points/agent.rs）的记录随之清掉：手动再触发就是再试一次
 pub async fn upgrade(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
     let path = st.cfg.dist_dir.join("fleet-agent");
     let sha = crate::jobs::dist_agent_sha256(&st).await.map_err(|e| ApiError::conflict(format!("中控上没有可推送的 fleet-agent（{}：{e}）", path.display())))?;
     let version = probe_points::agent::dist_version(&st).await.ok_or_else(|| ApiError::conflict(format!("中控上的 fleet-agent（{}）读不出版本号", path.display())))?;
     let mut tx = st.db.begin().await?;
     let row: Option<(String, Option<String>, bool)> =
-        sqlx::query_as("update probe_point set upgrade_sha256 = $2, updated_at = now() where id = $1 returning name, version, token_hash is not null")
+        sqlx::query_as(
+            "update probe_point set upgrade_sha256 = $2, upgrade_version = $3, upgrade_fetched_at = null, upgrade_failed = null, updated_at = now() where id = $1
+             returning name, version, token_hash is not null",
+        )
             .bind(id)
             .bind(&sha)
+            .bind(&version)
             .fetch_optional(&mut *tx)
             .await?;
     let Some((name, from, installed)) = row else { return Err(ApiError::not_found("没有这个探测点")) };

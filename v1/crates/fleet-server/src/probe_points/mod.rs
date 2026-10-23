@@ -272,7 +272,8 @@ pub async fn check_once(st: &AppState, now: OffsetDateTime) -> anyhow::Result<()
     Ok(())
 }
 
-/// 列表里一个探测点：状态（online / blind：在线但检查都作废了 / offline / pending / disabled）、最近上报、版本、
+/// 列表里一个探测点：状态（online / blind：在线但检查都作废了 / offline / pending / disabled）、最近上报、版本、升级（upgrade：在等它换上；
+/// upgrade_failed：上次升级失败了 {sha256, to, from, at}，见 agent.rs）、
 /// 近 `window`（1h 读原始记录；24h / 7d / 30d 读小时汇总，见 reach::quality）到各线路机的成功次数与延迟
 pub async fn list(st: &AppState, window: crate::reach::Window) -> sqlx::Result<Vec<Value>> {
     let set = setting(&st.db).await?;
@@ -292,6 +293,8 @@ pub async fn list(st: &AppState, window: crate::reach::Window) -> sqlx::Result<V
         install_started_at: Option<OffsetDateTime>,
         install_finished_at: Option<OffsetDateTime>,
         upgrade_sha256: Option<String>,
+        upgrade_version: Option<String>,
+        upgrade_failed: Option<Value>,
         last_seen_at: Option<OffsetDateTime>,
         last_kept_at: Option<OffsetDateTime>,
         discard_reason: Option<String>,
@@ -302,7 +305,7 @@ pub async fn list(st: &AppState, window: crate::reach::Window) -> sqlx::Result<V
     let rows: Vec<PRow> = sqlx::query_as(
         "select id, name, enabled, note, token_hash is not null installed, case when bootstrap_expires_at > now() then bootstrap_expires_at end bootstrap_expires_at,
                 install_state, install_step, install_error, install_host, install_port, install_started_at, install_finished_at, upgrade_sha256,
-                last_seen_at, last_kept_at, discard_reason, host(last_ip) last_ip, version, created_at
+                upgrade_version, upgrade_failed, last_seen_at, last_kept_at, discard_reason, host(last_ip) last_ip, version, created_at
          from probe_point order by created_at, id",
     )
     .fetch_all(&st.db)
@@ -337,7 +340,8 @@ pub async fn list(st: &AppState, window: crate::reach::Window) -> sqlx::Result<V
                 "discard_reason": r.discard_reason.filter(|_| live.online && !live.kept), "last_ip": r.last_ip, "version": r.version,
                 "window": window.as_str(),
                 "created_at": ts(Some(r.created_at)), "bootstrap_expires_at": ts(r.bootstrap_expires_at), "install": install,
-                "upgrade": r.upgrade_sha256.map(|s| json!({"sha256": s})), "relays": per.remove(&r.id).unwrap_or_default(),
+                "upgrade": r.upgrade_sha256.map(|s| json!({"sha256": s, "version": r.upgrade_version})), "upgrade_failed": r.upgrade_failed,
+                "relays": per.remove(&r.id).unwrap_or_default(),
             })
         })
         .collect())
