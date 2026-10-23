@@ -41,6 +41,7 @@
 | 在一台机器上执行命令 | `fleetctl exec 团队1-06 -- systemctl status fleet-agent` |
 | 对一个团队的全部节点执行 | `fleetctl exec --team 团队1 -- uptime`（并发 4，汇总退出码） |
 | 软路由出口时好时坏：每个出口的测试次数、失败次数、成功率、连续两轮失败几次、延迟中位 / 最大、当前连接 | `fleetctl router exits 团队2-路由A --range 24h`（1h 按每轮测试数；6h / 24h 按 5 分钟一点；7d / 30d 是小时汇总，次数准、看不出连续失败；延迟只算通了的）；当前状态 `fleetctl router show 团队2-路由A` |
+| 软路由的配置被谁改了、什么时候改的、改了哪些出口 | `fleetctl router changes 团队2-路由A [--limit 20]`（`--json` 给机器读；每次采集发现配置文件变了记一条：时间、来源——中控作业（替换 / 换线路机 / 改出口指向 / 同步出口，带作业 id）或「路由上改的」（手改、旁路由上的看门服务重新生成）、出口的增删改，凭据只记「变了」；每台留最近 200 条）；`fleetctl router show` 末尾也带最近 5 条。网页：软路由抽屉的「变更」页签。只记录，不提供回滚 |
 | 节点被打，软路由的客户临时走备用出口、过几小时切回（不重启 OpenClash、不断连接） | `fleetctl router show 团队2-路由A` 看「策略组」（哪个 select 组选着它）→ `fleetctl router switch 团队2-路由A <组> <备用出口> --for 4h`（到时自动切回；不确定多久就不带 `--for`，之后 `fleetctl router switch 团队2-路由A <组> --back`）。告警 `fleetctl incidents` 末尾的「建议操作」已经算好了切到哪个出口 |
 | 软路由出口参数和入口不一致（告警「软路由出口参数不一致」：轮换凭据后没同步） | `fleetctl router sync 团队2-路由A` 看预览，确认后加 `--yes --follow`（改成入口现在的凭据，地址端口不变；会重启 OpenClash，断开经它的连接）；入口已删除 / 停用的同步不了，用 `fleetctl repoint` 换入口 |
 | 登录机器或软路由（在中控上，见 §14） | `fleetctl ssh 团队1-06`（交互式）、`fleetctl ssh 团队1-06 -- 'df -h'`（退出码同远端）、`fleetctl ssh router <名称>` |

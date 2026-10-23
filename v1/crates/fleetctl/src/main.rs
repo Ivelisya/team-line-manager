@@ -34,7 +34,7 @@ use std::process::ExitCode;
     name = "fleetctl",
     version,
     about = "团队线路管理 运维命令行",
-    after_help = "连接配置：环境变量 FLEET_URL、FLEET_TOKEN，或 `fleetctl login` 写入的配置文件。\n<机器> 可以写 机器 id、显示名（团队1-06）、线路机名、IP。\n加 --json 输出一行 JSON：ls / entries / incidents / policy ls / silence 是与表格同列的精简对象（单台完整视图用 show、policy show），billing 是订阅、流量额度与最近续费记录合成的对象，router exits 是按出口算好的统计，provider / plan 的 add、set 是改完后的那一项（同 ls 的一项），其余是 API 返回的 data 原样；错误一律走 stderr 且退出码非 0。"
+    after_help = "连接配置：环境变量 FLEET_URL、FLEET_TOKEN，或 `fleetctl login` 写入的配置文件。\n<机器> 可以写 机器 id、显示名（团队1-06）、线路机名、IP。\n加 --json 输出一行 JSON：ls / entries / incidents / policy ls / silence 是与表格同列的精简对象（单台完整视图用 show、policy show），billing 是订阅、流量额度与最近续费记录合成的对象，router exits 是按出口算好的统计，router changes 是配置变更记录（新的在前），provider / plan 的 add、set 是改完后的那一项（同 ls 的一项），其余是 API 返回的 data 原样；错误一律走 stderr 且退出码非 0。"
 )]
 struct Cli {
     /// 输出 JSON（给脚本和 AI）
@@ -832,6 +832,14 @@ enum RouterCmd {
         #[arg(long, default_value = "24h")]
         range: String,
     },
+    /// 配置变更时间线：每次采集发现 OpenClash 配置变了就记一条——时间、来源（中控作业，或「路由上改的」：手改、旁路由上的看门服务重新生成）、
+    /// 出口的增删改（server:port 变了写出新旧值，凭据只写「变了」）。排查「路由配置被谁改了」先看它；只读，不提供回滚
+    Changes {
+        router: String,
+        /// 最多列几条，新的在前（默认全部：每台路由留最近 200 条）
+        #[arg(long)]
+        limit: Option<u32>,
+    },
     /// 一键部署（重新部署）：中控用账号密码（或自己的密钥）登录路由装好隧道
     Deploy {
         router: String,
@@ -1076,6 +1084,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Router { cmd } => match cmd {
             RouterCmd::Show { router } => routers::show(x, &router),
             RouterCmd::Exits { router, range } => routers::exits(x, &router, &range),
+            RouterCmd::Changes { router, limit } => routers::changes(x, &router, limit),
             RouterCmd::Add(o) => routers::add(x, o),
             RouterCmd::Bootstrap { router, yes } => routers::bootstrap(x, &router, yes),
             RouterCmd::Deploy { router, ssh, yes, follow } => routers::deploy(x, &router, ssh, yes, follow),

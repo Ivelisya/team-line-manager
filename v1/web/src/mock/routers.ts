@@ -183,6 +183,20 @@ export function installRoutersMock(R: Reg, env: Env) {
   });
   R('DELETE', '/routers/([^/]+)', ({ params }) => { const rt = find(params[0]); list.splice(list.indexOf(rt), 1); changed(); return {}; });
 
+  // 配置变更：在线的路由有几条固定的（一条作业改的、一条路由上改的、一条只改了出口以外的部分），别的没有
+  R('GET', '/routers/([^/]+)/changes', ({ params, query }) => {
+    const rt = find(params[0]);
+    const ex = rt.d?.exits ?? [];
+    const at = (ago: number) => iso(Date.now() - ago);
+    const all = rt.v.summary && ex.length > 1 ? [
+      { id: `${rt.v.id}-c3`, at: at(20 * MIN), old_sha: 'c1d2e3f4a5b6', new_sha: '9f8e7d6c5b4a', source: 'router', job_id: null, job_kind: null, diff: [], note: null },
+      { id: `${rt.v.id}-c2`, at: at(3 * HOUR), old_sha: '7a6b5c4d3e2f', new_sha: 'c1d2e3f4a5b6', source: 'job', job_id: 'mock-job', job_kind: 'router_sync', diff: [{ exit: ex[0].name, op: 'changed', creds: true }], note: null },
+      { id: `${rt.v.id}-c1`, at: at(2 * DAY), old_sha: '0a1b2c3d4e5f', new_sha: '7a6b5c4d3e2f', source: 'router', job_id: null, job_kind: null,
+        diff: [{ exit: ex[1].name, op: 'changed', from: `${ex[1].server}:${ex[1].port}`, to: `${ex[1].server}:${(ex[1].port ?? 20000) + 1}`, creds: true }, { exit: '新出口', op: 'added', to: '198.51.100.7:20031' }, { exit: '旧出口', op: 'removed', from: '198.51.100.8:20012' }], note: null },
+    ] : [];
+    return all.slice(0, Number(query.get('limit') ?? 200));
+  });
+
   // 曲线：按种子的平滑起伏（白天高、夜里低），离线的停在最后在线的时刻，没接入的没有点
   R('GET', '/routers/([^/]+)/metrics', ({ params, query }) => {
     const rt = find(params[0]);

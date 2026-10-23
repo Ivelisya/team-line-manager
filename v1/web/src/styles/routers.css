@@ -53,6 +53,10 @@
 .rt-tl-at { font: var(--fs-micro) / 16px var(--font-num); color: var(--fg-2); }
 .rt-tl-err { flex-basis: 100%; font: var(--fs-label) / var(--lh-label) var(--font-mono); color: var(--fg-2); overflow-wrap: anywhere; }
 .rt-tl-acts { flex-basis: 100%; gap: var(--sp-4); margin-top: var(--sp-4); }
+/* 变更页签：一条变更下面逐个出口一行 */
+.rt-chg { flex-basis: 100%; display: grid; gap: var(--sp-2); margin: var(--sp-4) 0 0; font-size: var(--fs-label); color: var(--fg-2); }
+.rt-chg b { color: var(--fg); font-weight: var(--fw-medium); }
+.rt-chg > div { overflow-wrap: anywhere; }
 .ncard .rt-tl-err { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; } /* 卡片上最多三行，全文在悬停里 */
 
 /* ---- 抽屉 ---- */

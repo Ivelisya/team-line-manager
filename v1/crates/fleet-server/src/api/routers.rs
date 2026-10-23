@@ -6,7 +6,7 @@ use crate::auth::{Actor, ClientIp};
 use crate::db::{audit, new_id};
 use crate::error::{ApiError, ApiJson, ApiPath, ApiQuery, ApiResult};
 use crate::lock;
-use crate::routers::{self, deploy, scripts::Bootstrap, switch, tunnel};
+use crate::routers::{self, changes, deploy, scripts::Bootstrap, switch, tunnel};
 use crate::silence::Silences;
 use crate::state::{AppState, Event};
 use axum::extract::State;
@@ -395,6 +395,20 @@ async fn fetch(st: &AppState, ip: Option<IpAddr>, token: &str) -> anyhow::Result
         central_pubkey: &central.login_pub,
     };
     Ok(Some(b.full()))
+}
+
+// ── 配置变更时间线 ───────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct ChangesQ {
+    limit: Option<i64>,
+}
+
+/// `GET /routers/{id}/changes?limit=N`：OpenClash 配置的变更，新的在前（默认和上限都是留存的 200 条）。
+/// 每条：at、old_sha、new_sha、source（`job` 中控作业 / `router` 路由上改的）、job_id、job_kind、diff（出口的增删改，凭据只记 creds = true）、note（比不出差异的原因）
+pub async fn changes(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<ChangesQ>) -> ApiResult<Json<Value>> {
+    exists(&st, id).await?;
+    Ok(ok(changes::list(&st.db, id, q.limit.unwrap_or(changes::KEEP).clamp(1, changes::KEEP)).await?))
 }
 
 // ── 指标曲线 ──────────────────────────────────────────────────────────────

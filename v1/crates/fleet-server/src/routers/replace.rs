@@ -21,7 +21,7 @@
 //!   那 6 行换回备份里的原值（原样照抄）；已经被别人改走的不动，说明写到 stderr。不整份换回：同一台路由上别的作业（或人）之后改的出口不会被抹掉。备份不在了时，没有出口指向这次改成的地址
 //!   就是没什么可改回（rollback=none），有的话报错。
 //!
-//! 输出（`key=value` 行）：backup=<备份路径>、changed=<改了几行>、delay_<i>=<毫秒>、replace=ok；回滚：rollback=ok | none。
+//! 输出（`key=value` 行）：backup=<备份路径>、changed=<改了几行>、delay_<i>=<毫秒>、sha=<改完 / 改回后配置的 sha256>、replace=ok；回滚：sha=…、rollback=ok | none。
 //! 退出码：2 = 没有动配置（认不出、找不到、指向别处、备份失败）；3 = 写了但重启 / API 不行；4 = 测不通。2 以外的都已经尝试改回。
 
 use crate::jobs::scripts::vars;
@@ -157,6 +157,8 @@ BK="$BKDIR/$BASE.$STAMP"
 # 配置旁的临时文件（每次独立）：建好并复制现有配置的内容与权限
 mktmp() { TMP=$(mktemp "$CFG.fleet-tmp.XXXXXX") && cp -p "$CFG" "$TMP"; }
 oc_restart() { /etc/init.d/openclash restart >/dev/null 2>&1; }
+# 现在配置的 sha256（同采集的 config_sha256）：中控据此认出之后采集到的配置变化是这次作业改的
+emit_sha() { _h=$(sha256sum "$CFG" 2>/dev/null | awk '{print $1}'); [ -z "$_h" ] || echo "sha=$_h"; }
 i=1
 while [ "$i" -le "$N" ]; do
   export "NAME_$i" "OSRV_$i" "OPORT_$i" "SRV_$i" "PORT_$i" "UUID_$i" "SNI_$i" "PBK_$i" "SID_$i"
@@ -366,10 +368,12 @@ revert() {
 }
 undo() {
   if revert "$BK"; then echo rolled_back=1; else say "改回原配置也失败了：备份在 $BK，需要人工处理"; fi
+  emit_sha
 }
 if [ "$MODE" = rollback ]; then
-  if [ -f "$BK" ]; then revert "$BK" || exit $?; echo rollback=ok; exit 0; fi
+  if [ -f "$BK" ]; then revert "$BK" || exit $?; emit_sha; echo rollback=ok; exit 0; fi
   revert "" || exit $?
+  emit_sha
   echo rollback=none
   exit 0
 fi
@@ -415,6 +419,7 @@ while [ "$i" -le "$N" ]; do
   echo "delay_$i=$ms"
   i=$((i + 1))
 done
+emit_sha
 echo replace=ok
 }
 # 路由自身流量走 OpenClash（router_self_proxy）时，重启 OpenClash 会掐断隧道和这条 ssh：main 在后台跑、不理 HUP / PIPE，
@@ -610,6 +615,8 @@ rules:\n- MATCH,节点01组\n";
                 .replacen("  port: 20004\n  uuid: 11111111-1111-4111-8111-111111111111\n  servername: www.cloudflare.com\n  reality-opts:\n    public-key: OLD_PBK\n    short-id: 'ef'",
                     &format!("  port: 20021\n  uuid: {UUID_NEW}\n  servername: www.apple.com\n  reality-opts:\n    public-key: NEW_PBK-abc_123\n    short-id: '01234567'"), 1);
             assert_eq!(f.read("etc/openclash/config/c.yaml"), want, "busybox={bb}");
+            // 报改完后配置的 sha256（中控据此认出之后采集到的变化是这次作业改的）
+            assert_eq!(o.kv("sha").map(String::from), Some(hex::encode(<sha2::Sha256 as sha2::Digest>::digest(want.as_bytes()))), "busybox={bb}");
             // 名字、分组、规则、别的出口都没动；权限保留；重启了一次；凭据没进输出
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(std::fs::metadata(f.path("etc/openclash/config/c.yaml")).unwrap().permissions().mode() & 0o777, 0o640);
@@ -626,6 +633,7 @@ rules:\n- MATCH,节点01组\n";
             let o = f.run(&rollback_script("20261023-073012Z", &back), &[]);
             assert_eq!((o.code, o.kv("rollback")), (0, Some("ok")), "{o:?}");
             assert_eq!(f.read("etc/openclash/config/c.yaml"), CONFIG);
+            assert_eq!(o.kv("sha").map(String::from), Some(hex::encode(<sha2::Sha256 as sha2::Digest>::digest(CONFIG.as_bytes()))), "改回后的 sha");
             assert_eq!(f.read("restart.log").lines().count(), 3);
             // 已经是原样：不写、不重启；备份不在了、也没有出口指向这次改成的：没什么可改回
             assert_eq!(f.run(&rollback_script("20261023-073012Z", &back), &[]).kv("rollback"), Some("ok"));

@@ -466,6 +466,69 @@ async fn collect_error_is_not_offline() {
     assert_eq!(rules, [json!("router_exit_drift")]);
 }
 
+/// 配置变更时间线：同一台路由两次 sha 变化，一次是中控作业改的（作业动手前后在 claims 里留了记录，sha 对得上），一次是路由上改的；
+/// 出口差异按出口名比 server:port 与凭据，凭据只记「变了」
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn config_changes_timeline() {
+    let t = setup().await;
+    seed_entry(&t).await;
+    let (id, _) = create(&t, "团队1-路由C").await;
+    issue_key(&t, &id).await;
+    let port = 23951;
+    sqlx::query("update router set tunnel_port = $2 where id = $1::uuid").bind(&id).bind(port as i32).execute(&t.st.db).await.unwrap();
+    let r = root(port);
+    std::fs::create_dir_all(&r).unwrap();
+    let now = OffsetDateTime::now_utc().unix_timestamp();
+    let with_sha = |n: i64, sha: &str| { let mut c = collect_json(now + n, 1_000_000 + n as u64); c["oc"]["config_sha256"] = json!(sha); c.to_string() };
+    std::fs::write(r.join("collect.json"), with_sha(0, "sha-1")).unwrap();
+    std::fs::write(r.join("config.yaml"), CONFIG).unwrap();
+    let mut mem = Default::default();
+    collect::round(&t.st, &mut mem).await.unwrap();
+    let url = format!("/api/v1/routers/{id}/changes");
+    assert_eq!(t.get(&url).await, json!([]), "第一次采集没有可比的，不记");
+    // 作业改的：节点01 换了端口与凭据、节点02 没了、多了节点03
+    let (rid, job) = (id.parse::<Uuid>().unwrap(), Uuid::now_v7());
+    t.st.routers_refresh.claims.editing(rid, job, "router_sync");
+    t.st.routers_refresh.claims.edited(rid, job, Some("sha-2"));
+    std::fs::write(r.join("collect.json"), with_sha(30, "sha-2")).unwrap();
+    std::fs::write(
+        r.join("config.yaml"),
+        "proxies:
+  - {name: 节点01, type: vless, server: relay.test, port: 20010, uuid: 11111111-1111-1111-1111-111111111111, flow: xtls-rprx-vision}
+  - {name: 别人的, type: ss, server: 203.0.113.99, port: 8388}
+  - {name: 节点03, type: vless, server: 198.51.100.2, port: 20005}
+",
+    )
+    .unwrap();
+    collect::round(&t.st, &mut mem).await.unwrap();
+    // 路由上有人手改：别人的 换了地址（这个 sha 没有作业认领）；中控重启一次不重复记
+    std::fs::write(r.join("collect.json"), with_sha(60, "sha-3")).unwrap();
+    std::fs::write(r.join("config.yaml"), "proxies:
+  - {name: 节点01, type: vless, server: relay.test, port: 20010, uuid: 11111111-1111-1111-1111-111111111111, flow: xtls-rprx-vision}
+  - {name: 别人的, type: ss, server: 203.0.113.100, port: 8388}
+  - {name: 节点03, type: vless, server: 198.51.100.2, port: 20005}
+").unwrap();
+    collect::round(&t.st, &mut mem).await.unwrap();
+    let mut fresh = Default::default();
+    collect::round(&t.st, &mut fresh).await.unwrap();
+    let v = t.get(&url).await;
+    let c = v.as_array().unwrap();
+    assert_eq!(c.len(), 2, "{v}");
+    assert_eq!((c[0]["source"].as_str(), c[0]["job_id"].is_null(), c[0]["old_sha"].as_str(), c[0]["new_sha"].as_str()), (Some("router"), true, Some("sha-2"), Some("sha-3")));
+    assert_eq!(c[0]["diff"], json!([{"exit": "别人的", "op": "changed", "from": "203.0.113.99:8388", "to": "203.0.113.100:8388"}]));
+    assert_eq!((c[1]["source"].as_str(), c[1]["job_id"].as_str(), c[1]["job_kind"].as_str()), (Some("job"), Some(job.to_string().as_str()), Some("router_sync")));
+    assert_eq!(
+        c[1]["diff"],
+        json!([
+            {"exit": "节点01", "op": "changed", "from": "relay.test:20003", "to": "relay.test:20010", "creds": true},
+            {"exit": "节点03", "op": "added", "to": "198.51.100.2:20005"},
+            {"exit": "节点02", "op": "removed", "from": "198.51.100.2:20003"},
+        ])
+    );
+    assert!(!v.to_string().contains(UUID_OK) && !v.to_string().contains("11111111-1111"), "凭据不输出");
+    assert_eq!(t.get(&format!("{url}?limit=1")).await.as_array().unwrap().len(), 1);
+}
+
 // ── 告警 ──────────────────────────────────────────────────────────────────
 
 async fn incidents(t: &T, state: &str) -> Vec<Value> {
