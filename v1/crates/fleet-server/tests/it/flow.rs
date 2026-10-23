@@ -28,18 +28,12 @@ async fn relay_round(t: &T, tok: &str, _after: u64, seq: &mut u64) -> DesiredSta
         boot_id: "b1".into(),
         agent_version: "test".into(),
         sent_at_ms: now_ms(),
-        info: None,
-        host: vec![],
-        entries: vec![],
         probes: ds
             .entries
             .iter()
             .map(|e| ProbeSample { entry_id: e.id, ts_ms: now_ms(), kind: ProbeKind::Egress, ok: true, latency_ms: Some(12.0), detail: Some(e.expect_egress_ip.to_string()), retrans: None })
             .collect(),
-        access: vec![],
-        xray: None,
-        agent_health: None,
-        ping: vec![],
+        ..Default::default()
     };
     let (s, v) = t.req("POST", "/agent/v1/report", Some(serde_json::to_value(&r).unwrap()), Some(tok)).await;
     assert_eq!(s, StatusCode::OK, "report: {v}");

@@ -367,7 +367,7 @@ async fn rollback_uses_params_written_not_current_ones() {
     assert_eq!(read(root(23231).join("rollback-uuid")), format!("{NEW_UUID}\n"), "带的是写入时的 uuid，不是现在库里的");
 }
 
-/// 没有路由用旧节点 / 选了不改路由：只交换编号。指定团队与编号；auto_compact 压缩新节点原来的团队
+/// 没有路由用旧节点 / 选了不改路由：只交换编号。指定团队与编号；新节点原来的团队压缩编号
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn renumber_only_and_compaction() {
     let w = world().await;

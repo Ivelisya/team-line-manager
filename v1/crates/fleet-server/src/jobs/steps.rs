@@ -1001,7 +1001,7 @@ async fn finalize(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     // 编号连续：同团队剩下的节点压缩成 01..N
     let mut renamed = vec![];
     let mut relays = vec![];
-    if let Some(t) = team.filter(|_| c.st.cfg.numbering.auto_compact) {
+    if let Some(t) = team {
         let (ch, rs) = crate::db::compact_team(&mut tx, t, &c.job.created_by, "节点退役后自动压缩").await?;
         renamed = ch;
         relays = rs;
@@ -1169,14 +1169,12 @@ pub async fn compensate(st: &AppState, job: &JobRow, owner: &str) {
     if m.host_id.is_none() {
         note(st, job.id, "忘记主机公钥", ssh::forget_host(&st.cfg.known_hosts, &m.ip, m.ssh_port as u16).await).await;
     }
-    if st.cfg.numbering.auto_compact {
-        if let Some((Some(t),)) = team {
-            if let Some(mut tx) = note(st, job.id, "开启事务", st.db.begin().await).await {
-                if let Some((_, relays)) = note(st, job.id, "压缩编号", crate::db::compact_team(&mut tx, t, &job.created_by, "上架取消后自动压缩").await).await {
-                    if note(st, job.id, "提交编号压缩", tx.commit().await).await.is_some() {
-                        for r in relays {
-                            st.relay_bumped(r);
-                        }
+    if let Some((Some(t),)) = team {
+        if let Some(mut tx) = note(st, job.id, "开启事务", st.db.begin().await).await {
+            if let Some((_, relays)) = note(st, job.id, "压缩编号", crate::db::compact_team(&mut tx, t, &job.created_by, "上架取消后自动压缩").await).await {
+                if note(st, job.id, "提交编号压缩", tx.commit().await).await.is_some() {
+                    for r in relays {
+                        st.relay_bumped(r);
                     }
                 }
             }

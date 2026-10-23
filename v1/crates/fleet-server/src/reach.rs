@@ -265,7 +265,7 @@ async fn connect(host: String, port: u16) -> Result<(), String> {
 }
 
 async fn connect_addr(a: &str) -> Result<(), String> {
-    match a.rsplit_once(':').and_then(|(h, p)| Some((h.to_string(), p.parse().ok()?))) {
+    match fleet_proto::host_port(a) {
         Some((h, p)) => connect(h, p).await,
         None => Err("地址无效".into()),
     }
@@ -313,5 +313,7 @@ mod tests {
         let (_held, p) = refused_port();
         assert_eq!(connect("127.0.0.1".into(), p).await, Err("连接被拒绝".into()));
         assert_eq!(connect_addr("nonsense").await, Err("地址无效".into()));
+        // IPv6 字面量带方括号：能拆出主机和端口（连得上与否看本机有没有 IPv6，这里只要不是「地址无效」）
+        assert_ne!(connect_addr("[::1]:9").await, Err("地址无效".into()));
     }
 }

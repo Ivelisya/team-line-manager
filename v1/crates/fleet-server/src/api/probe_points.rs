@@ -131,7 +131,7 @@ pub struct NewProbe {
 }
 
 fn bootstrap_out(cmd: &str, exp: OffsetDateTime) -> Value {
-    json!({"cmd": cmd, "expires_at": exp.format(&time::format_description::well_known::Rfc3339).unwrap_or_default()})
+    json!({"cmd": cmd, "expires_at": crate::meta::fmt_ts(exp)})
 }
 
 pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<NewProbe>) -> ApiResult<Json<Value>> {

@@ -13,6 +13,9 @@
 #[path = "it/common/mod.rs"]
 mod common;
 
+/// 「不该再发生」的反向断言（没有再发通知）只能等一会儿再看：等到这么久还没有，就当没有
+const NOTHING_MORE: Duration = Duration::from_millis(300);
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use common::{seed_team, T};
@@ -557,7 +560,7 @@ async fn alerts_open_notify_and_recover() {
     let all = incidents(&t, "all").await;
     assert!(all.iter().all(|i| i["state"] == "resolved"));
     assert_eq!(all.iter().find(|i| i["rule"] == "router_offline" && i["subject"]["name"] == "（已删除）").map(|i| (i["subject"]["kind"].clone(), i["engine"].clone())), Some((json!("router"), json!("router"))));
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(NOTHING_MORE).await;
     assert_eq!(mock.count("/hook/a"), sent, "删掉的路由不发恢复");
 }
 
@@ -582,7 +585,7 @@ async fn rebootstrap_closes_offline_quietly_then_warns() {
     assert_eq!(all[0]["state"], "resolved");
     let closed_by: Option<String> = sqlx::query_scalar("select detail->>'closed_by' from incident where subject_id = $1::uuid").bind(&id).fetch_one(&t.st.db).await.unwrap();
     assert_eq!(closed_by.as_deref(), Some("router_rebootstrap"));
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(NOTHING_MORE).await;
     assert_eq!(mock.count("/hook/r"), 1, "不发恢复");
     // 命令过期没人执行：30 分钟后开离线警告
     sqlx::query("update router set bootstrap_expires_at = now() - interval '1 minute' where id = $1::uuid").bind(&id).execute(&t.st.db).await.unwrap();
@@ -779,14 +782,11 @@ fn fake_router(password: &str) -> (std::net::TcpListener, i64, PathBuf) {
 }
 
 async fn wait_deploy(t: &T, id: &str) -> Value {
-    for _ in 0..200 {
+    common::eventually("部署结束", Duration::from_secs(30), || async {
         let d = t.get(&format!("/api/v1/routers/{id}")).await;
-        if d["deploy"]["state"] != "running" {
-            return d;
-        }
-        tokio::time::sleep(Duration::from_millis(150)).await;
-    }
-    panic!("部署 30 秒没有结束");
+        (d["deploy"]["state"] != "running").then_some(d)
+    })
+    .await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -878,13 +878,7 @@ async fn redeploy_restore_skips_taken_port() {
     std::fs::remove_dir_all(r.join("etc/dropbear")).unwrap();
     std::fs::write(r.join("slow-keys"), "").unwrap();
     t.post(&format!("/api/v1/routers/{id}/deploy"), json!({"host": "127.0.0.1", "port": sport, "password": "pw"})).await;
-    for _ in 0..100 {
-        if i64::from(router_row(&t, &id).await.0) != old {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert_ne!(i64::from(router_row(&t, &id).await.0), old, "上传密钥之前换了端口");
+    common::eventually("上传密钥之前换了端口", Duration::from_secs(2), || async { (i64::from(router_row(&t, &id).await.0) != old).then_some(()) }).await;
     sqlx::query("update router set tunnel_port = $2 where id = $1::uuid").bind(&other).bind(old as i32).execute(&t.st.db).await.unwrap();
     let d = wait_deploy(&t, &id).await;
     let err = d["deploy"]["error"].as_str().unwrap();

@@ -83,8 +83,6 @@ raw_days = 3
 # 访问记录的保留期在网页设置里改（OPS.md §13）；这里只是没改过时原始记录留几天
 access_days = 7
 
-[numbering]
-auto_compact = true
 TOML
   chown fleet:fleet /etc/fleet/fleet.toml
   chmod 640 /etc/fleet/fleet.toml

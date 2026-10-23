@@ -1560,7 +1560,7 @@ pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Valu
     }
     json!({
         "nodes": nodes, "relays": relays, "provisioning": provisioning, "retiring": retiring, "failed": failed, "due_soon": due_soon, "overdue": overdue, "online": online, "offline": offline,
-        "monthly_usd": usd, "traffic_month": {"up": up, "down": down, "counted_from": counted_from.map(|t| t.format(&time::format_description::well_known::Rfc3339).unwrap_or_default())}, "net_rx_bps": rx, "net_tx_bps": tx,
+        "monthly_usd": usd, "traffic_month": {"up": up, "down": down, "counted_from": counted_from.map(crate::meta::fmt_ts)}, "net_rx_bps": rx, "net_tx_bps": tx,
     })
 }
 

@@ -158,14 +158,7 @@ pub fn blank_report(seq: u64) -> Report {
         boot_id: "b1".into(),
         agent_version: "test".into(),
         sent_at_ms: now_ms(),
-        info: None,
-        host: vec![],
-        entries: vec![],
-        probes: vec![],
-        access: vec![],
-        xray: None,
-        agent_health: None,
-        ping: vec![],
+        ..Default::default()
     }
 }
 

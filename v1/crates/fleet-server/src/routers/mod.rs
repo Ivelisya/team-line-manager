@@ -259,7 +259,7 @@ pub const SELECT: &str = "select r.id, r.name, r.team_id, t.name team_name, r.no
     from router r left join team t on t.id = r.team_id left join router_status s on s.router_id = r.id";
 
 fn rfc(t: Option<OffsetDateTime>) -> Value {
-    t.and_then(|t| t.format(&time::format_description::well_known::Rfc3339).ok()).map(Value::String).unwrap_or(Value::Null)
+    t.map(crate::meta::fmt_ts).map(Value::String).unwrap_or(Value::Null)
 }
 
 impl Row {

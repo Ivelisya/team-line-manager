@@ -4,6 +4,7 @@ use super::ok;
 use crate::auth::Actor;
 use crate::db::{audit, new_id};
 use crate::error::{ApiError, ApiJson, ApiPath, ApiQuery, ApiResult};
+use crate::meta;
 use crate::notify;
 use crate::state::{AppState, Event};
 use axum::extract::State;
@@ -237,7 +238,7 @@ pub async fn log(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<Lo
     .fetch_all(&st.db)
     .await?;
     for l in &mut v {
-        l.rule_name = l.rule.as_deref().map(|r| notify::rule_name(r).to_string());
+        l.rule_name = l.rule.as_deref().map(|r| meta::rule_label(r).to_string());
         l.subject = match (l.subject_kind.as_deref(), l.subject_id) {
             (Some("router"), Some(id)) => Some(crate::routers::alerts::subject(id, l.subject_name.as_deref())),
             (Some("machine"), Some(id)) => Some(json!({"id": id, "name": l.subject_name})),
