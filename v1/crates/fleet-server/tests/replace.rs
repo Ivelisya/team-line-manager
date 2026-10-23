@@ -601,6 +601,48 @@ async fn evacuate_jobs_take_turns_on_a_router() {
     assert_eq!(t.job(second).await["steps"][4]["state"], "done");
 }
 
+/// 中控升级前建的作业（步骤是旧定义的）：按步骤 key 对齐现在的定义。第 45 轮之前的换线路机只有 7 步（没有改软路由出口），
+/// 还没摘旧入口的接着做时照做新插入的这一步；对不上的（失败停着的那一步已经没有了）作业失败、写清原因，不停在运行中
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn old_jobs_align_by_step_key() {
+    let w = world().await;
+    let oe = old_entry(&w).await;
+    router(&w, "路由A", 23191, &[("节点01", "198.51.100.2", 20003, Some(oe))]).await;
+    let t = &w.t;
+    let (rb, tb) = seed_relay_b(t).await;
+    let d = t.post(&format!("/api/v1/machines/{}/move", w.old), json!({"to_relay_id": rb})).await;
+    let job = d["job_id"].as_str().unwrap().to_string();
+    let id = Uuid::parse_str(&job).unwrap();
+    // 改回旧定义：去掉 routers（idx 4），后面的往前挪；参数也同旧作业（没有 routers / plan）
+    let db = &t.st.db;
+    sqlx::query("delete from job_step where job_id = $1 and key = 'routers'").bind(id).execute(db).await.unwrap();
+    // 主键 (job_id, idx)：先挪到负数再挪回来
+    sqlx::query("update job_step set idx = -idx where job_id = $1 and idx > 4").bind(id).execute(db).await.unwrap();
+    sqlx::query("update job_step set idx = -idx - 1 where job_id = $1 and idx < 0").bind(id).execute(db).await.unwrap();
+    sqlx::query("update job set params = params - 'routers' - 'plan' where id = $1").bind(id).execute(db).await.unwrap();
+    let j = run(t, &mut [Sim::new(RELAY_TOKEN.into()), Sim::new(tb)], &job).await;
+    assert_eq!(j["state"], "succeeded", "{j} {}", logs(t, &job).await);
+    let keys: Vec<&str> = j["steps"].as_array().unwrap().iter().map(|s| s["key"].as_str().unwrap()).collect();
+    assert_eq!(keys, jobs::defs("move_entry").iter().map(|d| d.key).collect::<Vec<_>>());
+    assert_eq!(j["steps"][4]["state"], "done");
+    assert!(logs(t, &job).await.contains("按步骤名对齐：新增的「改软路由出口」照做"));
+    assert_eq!(applies(23191).len(), 1, "按路由现在的配置改了出口");
+    assert_eq!(entry_state(t, oe).await, "removed");
+
+    // 失败停着的那一步在现在的定义里已经没有了：重试后作业失败、写清原因
+    let d = t.post(&format!("/api/v1/machines/{}/replace", w.old), json!({"new_machine_id": w.new, "routers": false})).await;
+    let job = d["job_id"].as_str().unwrap().to_string();
+    let id = Uuid::parse_str(&job).unwrap();
+    sqlx::query("update job_step set idx = -idx - 1 where job_id = $1").bind(id).execute(db).await.unwrap();
+    sqlx::query("update job_step set idx = -idx where job_id = $1").bind(id).execute(db).await.unwrap();
+    sqlx::query("insert into job_step (job_id, idx, key, state) values ($1, 0, 'gone', 'failed')").bind(id).execute(db).await.unwrap();
+    drive(t).await;
+    let j = t.job(&job).await;
+    assert_eq!(j["state"], "failed", "{j}");
+    assert!(j["error"].as_str().unwrap().contains("作业定义已变：发起时的步骤「gone」已经没有了，而它失败停着：这个作业没法接着做，请重新发起"), "{j}");
+    assert_eq!(name_of(t, w.old).await, "团队2-01", "一步都没做");
+}
+
 /// 重新编号预览：指向要改名的节点的软路由出口列出来（出口名是路由上自己起的，不跟着改）
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn renumber_preview_lists_router_exits() {

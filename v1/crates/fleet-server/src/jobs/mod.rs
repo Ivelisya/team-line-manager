@@ -3,6 +3,8 @@
 //! 步骤返回 Done / Skipped / Wait(秒) / Queue(秒)：Wait 把作业置为 waiting 并在到点后重新领取（等线路机生效、等首次上报…），
 //! 等待超过该步的 `timeout_s` 即失败；Queue 同 Wait，但等的是别的作业放手（同一台软路由同时只有一个作业在改），不算这一步的超时。
 //!
+//! 作业建立时按当时的定义插入步骤行（job_step 的 idx / key）。中控升级后定义可能变了：推进前按步骤 key 对齐现在的定义（`align`）。
+//!
 //! 唤醒：建作业、重试、取消后调 `AppState::wake_jobs`；线路机回报应用结果、agent 首次上报时 `wake_for` 把等这些事的作业
 //! 提前到现在再唤醒；推进中发现作业已被取消、放开租约等补偿时也唤醒；每次推进告一段落也唤醒（等它的作业可能能领了）。
 //! 引擎空闲时等唤醒，或睡到最早一个作业到点（等待中的作业到点、过期租约被接管），最多 30 秒。
@@ -479,10 +481,131 @@ async fn lost(st: &AppState, job: &JobRow) -> anyhow::Result<()> {
 /// 对 job_step 的写入要求持有租约：把「job 行的 lease_owner = 我」写进同一条语句
 const OWN: &str = "exists (select 1 from job where id = $1 and lease_owner = $3)";
 
+/// 现在定义里的一步，在作业建立时的步骤行里是什么样（见 `align_plan`）
+#[derive(Debug, Clone, PartialEq)]
+enum Slot {
+    /// 原来就有：沿用那一行（状态、输出都不动）
+    Kept,
+    /// 新插入的，排在还没做的步骤之间：照做
+    New,
+    /// 新插入的，但排在已经做完的步骤之前：先后没法照旧，跳过
+    Skip,
+}
+
+const SKIP_REASON: &str = "作业发起时还没有这一步（中控升级后作业定义变了），后面的步骤已经做过";
+
+/// 作业建立时的步骤行（按 idx 的 (key, 状态)）对齐现在的定义 `keys`：一样返回 None；否则返回每一步怎么处理与对齐后的当前步
+/// （第一个没做完的）。已删除的步骤：没开始、已做完的丢掉。对不上返回原因：正在做 / 失败停着的那一步被删了，或留下的步骤先后变了
+fn align_plan(rows: &[(String, String)], keys: &[&str]) -> Result<Option<(Vec<Slot>, i32)>, String> {
+    if rows.iter().map(|r| r.0.as_str()).eq(keys.iter().copied()) {
+        return Ok(None);
+    }
+    let finished = |s: &str| matches!(s, "done" | "skipped");
+    let at = |k: &str| keys.iter().position(|x| *x == k);
+    if let Some(r) = rows.iter().find(|r| at(&r.0).is_none() && !finished(&r.1) && r.1 != "pending") {
+        return Err(format!("作业定义已变：发起时的步骤「{}」已经没有了，而它{}", r.0, if r.1 == "failed" { "失败停着" } else { "做到一半" }));
+    }
+    let pos: Vec<usize> = rows.iter().filter_map(|r| at(&r.0)).collect();
+    if pos.windows(2).any(|w| w[0] >= w[1]) {
+        return Err("作业定义已变：步骤的先后和发起时不一样了".into());
+    }
+    let last_done = rows.iter().filter(|r| finished(&r.1)).filter_map(|r| at(&r.0)).max();
+    let state = |k: &str| rows.iter().find(|r| r.0 == k).map(|r| r.1.as_str());
+    let slots: Vec<Slot> = keys
+        .iter()
+        .enumerate()
+        .map(|(i, k)| match state(k) {
+            Some(_) => Slot::Kept,
+            None if last_done.is_some_and(|d| i < d) => Slot::Skip,
+            None => Slot::New,
+        })
+        .collect();
+    let step = keys.iter().zip(&slots).position(|(k, s)| match s {
+        Slot::Kept => !state(k).is_some_and(finished),
+        Slot::New => true,
+        Slot::Skip => false,
+    });
+    Ok(Some((slots, step.unwrap_or(keys.len()) as i32)))
+}
+
+enum Aligned {
+    Same,
+    /// 改了步骤行，当前步变成这个
+    Moved(i32),
+    Lost,
+    Broken(String),
+}
+
+/// 推进前按步骤 key 对齐现在的定义（中控升级后，部署时还没跑完、或失败后重试的旧作业），而不是按序号：
+/// 序号错位会把一步的结果写到另一步的行上，最后没有对应的行、作业停在运行中。见 `align_plan`
+async fn align(st: &AppState, job: &JobRow, owner: &str) -> anyhow::Result<Aligned> {
+    let rows: Vec<(String, String)> = sqlx::query_as("select key, state from job_step where job_id = $1 order by idx").bind(job.id).fetch_all(&st.db).await?;
+    let keys: Vec<&str> = defs(&job.kind).iter().map(|d| d.key).collect();
+    let (slots, step) = match align_plan(&rows, &keys) {
+        Ok(None) => return Ok(Aligned::Same),
+        Ok(Some(p)) => p,
+        Err(why) => return Ok(Aligned::Broken(why)),
+    };
+    let mut tx = st.db.begin().await?;
+    // 先改作业行（带租约条件，顺带锁住它）：租约已不在自己手里时一行都不改
+    let n = sqlx::query("update job set step = $2 where id = $1 and lease_owner = $3").bind(job.id).bind(step).bind(owner).execute(&mut *tx).await?.rows_affected();
+    if n == 0 {
+        return Ok(Aligned::Lost);
+    }
+    sqlx::query("delete from job_step where job_id = $1 and key <> all($2)").bind(job.id).bind(&keys).execute(&mut *tx).await?;
+    // 主键是 (job_id, idx)：先挪到负数再按现在的顺序编号
+    sqlx::query("update job_step set idx = -1 - idx where job_id = $1").bind(job.id).execute(&mut *tx).await?;
+    sqlx::query("update job_step s set idx = u.i - 1 from unnest($2::text[]) with ordinality u(k, i) where s.job_id = $1 and s.key = u.k")
+        .bind(job.id)
+        .bind(&keys)
+        .execute(&mut *tx)
+        .await?;
+    let pick = |want: Slot| keys.iter().zip(&slots).filter(|(_, s)| **s == want).map(|(k, _)| *k).collect::<Vec<_>>();
+    let (new, skip) = (pick(Slot::New), pick(Slot::Skip));
+    sqlx::query(
+        "insert into job_step (job_id, idx, key, state, output)
+         select $1, u.i - 1, u.k, case when u.k = any($3) then 'skipped' else 'pending' end, case when u.k = any($3) then jsonb_build_object('reason', $4::text) end
+         from unnest($2::text[]) with ordinality u(k, i) where u.k = any($3) or u.k = any($5)",
+    )
+    .bind(job.id)
+    .bind(&keys)
+    .bind(&skip)
+    .bind(SKIP_REASON)
+    .bind(&new)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    let titles = |ks: &[&str]| ks.iter().map(|k| format!("「{}」", title_of(&job.kind, k))).collect::<Vec<_>>().join("");
+    let gone: Vec<&str> = rows.iter().map(|r| r.0.as_str()).filter(|k| !keys.contains(k)).collect();
+    let mut parts = vec![];
+    if !new.is_empty() {
+        parts.push(format!("新增的{}照做", titles(&new)));
+    }
+    if !skip.is_empty() {
+        parts.push(format!("新增的{}排在已做完的步骤之前，跳过", titles(&skip)));
+    }
+    if !gone.is_empty() {
+        parts.push(format!("去掉了 {}", gone.join("、")));
+    }
+    log(st, job.id, "warn", format!("中控升级后这类作业的步骤变了，按步骤名对齐：{}", parts.join("；"))).await;
+    Ok(Aligned::Moved(step))
+}
+
+/// 对不上现在的作业定义（见 `align`）：作业失败，写清原因，不停在运行中
+async fn fail_unaligned(st: &AppState, job: &JobRow, owner: &str, why: &str) -> anyhow::Result<()> {
+    fail_job(st, job, owner, &format!("{why}：这个作业没法接着做，请重新发起")).await
+}
+
 /// 推进一个已领取的作业，直到它等待、失败、完成、被取消或丢失租约。`owner` 必须是领取时用的执行者名。
 pub async fn advance(st: &AppState, mut job: JobRow, owner: &str) -> anyhow::Result<()> {
     if job.state == "cancelling" {
         return finish_cancel(st, &job, owner).await;
+    }
+    match align(st, &job, owner).await? {
+        Aligned::Same => {}
+        Aligned::Moved(step) => job.step = step,
+        Aligned::Lost => return lost(st, &job).await,
+        Aligned::Broken(why) => return fail_unaligned(st, &job, owner, &why).await,
     }
     // 编排：开始前看该不该开始。同一次尝试里中控重启后接着做的不再看：它已经开始了
     if job.step == 0 {
@@ -771,7 +894,7 @@ async fn fail(st: &AppState, job: &JobRow, owner: &str, d: &StepDef, kind: ErrKi
     fail_job(st, job, owner, &format!("{}：{msg}", d.title)).await
 }
 
-/// 作业失败（`fail` 记好失败的那一步之后调）
+/// 作业失败（`fail` 记好失败的那一步之后；`align` 对不上时没有对应的步骤，直接调）
 async fn fail_job(st: &AppState, job: &JobRow, owner: &str, err: &str) -> anyhow::Result<()> {
     // 作业置失败与机器置「上架失败」同一事务：看到作业失败时机器状态已经变了
     let mut tx = st.db.begin().await?;
@@ -927,5 +1050,36 @@ mod tests {
         let stuck = json!({"routers_stuck": ["路由A"]});
         assert!(!with("move_entry", 4, "failed", stuck.clone()) && !with("replace", 0, "failed", stuck));
         assert!(with("move_entry", 4, "failed", json!({"routers_stuck": []})));
+    }
+
+    /// 作业定义变了：按步骤 key 对齐。MOVE_ENTRY 在第 4 步插入了 routers（原来 7 步）
+    #[test]
+    fn align_by_key() {
+        let old = ["attach_new", "firewall_widen", "wait_applied_new", "verify_new", "detach_old", "wait_detached_old", "firewall_narrow"];
+        let keys: Vec<&str> = defs("move_entry").iter().map(|d| d.key).collect();
+        let rows = |states: &[&str]| old.iter().zip(states).map(|(k, s)| (k.to_string(), s.to_string())).collect::<Vec<_>>();
+        let same: Vec<(String, String)> = keys.iter().map(|k| (k.to_string(), "pending".to_string())).collect();
+        assert_eq!(align_plan(&same, &keys), Ok(None));
+        use Slot::*;
+        // 还没摘旧入口（旧的第 4 步 detach_old 在跑）：新插入的 routers 照做，当前步是它，detach_old 之后重做
+        let (slots, step) = align_plan(&rows(&["done", "done", "done", "skipped", "running", "pending", "pending"]), &keys).unwrap().unwrap();
+        assert_eq!((slots, step), (vec![Kept, Kept, Kept, Kept, New, Kept, Kept, Kept], 4));
+        // 已经摘了旧入口（在等摘除）：routers 排在已做完的 detach_old 之前，跳过；接着等摘除
+        let (slots, step) = align_plan(&rows(&["done", "done", "done", "done", "done", "failed", "pending"]), &keys).unwrap().unwrap();
+        assert_eq!((slots[4..6].to_vec(), step), (vec![Skip, Kept], 6));
+        // 还在排队：从头做
+        assert_eq!(align_plan(&rows(&["pending"; 7]), &keys).unwrap().unwrap().1, 0);
+        // 全做完了（只看边界）：新插入的跳过，当前步在末尾
+        assert_eq!(align_plan(&rows(&["done"; 7]), &keys).unwrap().unwrap(), (vec![Kept, Kept, Kept, Kept, Skip, Kept, Kept, Kept], 8));
+        // 删掉的步骤：没开始、做完的丢掉；正在做 / 失败停着的对不上
+        let mut extra = same.clone();
+        extra.insert(2, ("gone".into(), "done".into()));
+        assert_eq!(align_plan(&extra, &keys).unwrap().unwrap().1, 0);
+        extra[2].1 = "failed".into();
+        assert!(align_plan(&extra, &keys).unwrap_err().contains("「gone」已经没有了，而它失败停着"));
+        // 先后变了
+        let mut swapped = same;
+        swapped.swap(0, 1);
+        assert!(align_plan(&swapped, &keys).unwrap_err().contains("先后"));
     }
 }

@@ -100,6 +100,9 @@ job ─< job_step ─< job_log      audit_log      user / session / api_key
 
 - REST `/api/v1/*` + WebSocket `/api/v1/stream`（资源变更通知 + 实时指标增量，前端不轮询）。
 - 作业执行器、告警引擎、续费与流量额度提醒都在同一进程内，以 PG 为唯一状态（`SELECT … FOR UPDATE SKIP LOCKED` 领取任务）。
+  作业的步骤行按建作业时的定义插入；中控升级后定义变了的旧作业（部署时还没跑完、失败后重试），推进前按步骤 key 对齐现在的定义：
+  新插入的步骤排在没做的步骤之间的照做、排在已做完的步骤之前的跳过（写明原因），已删除的步骤没开始或已做完的丢掉；
+  正在做 / 失败停着的那一步被删了、或留下的步骤先后变了，作业失败并写「作业定义已变……请重新发起」，不停在运行中。
 - 鉴权：账号密码（argon2），会话 Cookie；API 密钥带作用域；所有写操作入审计。
 
 ## 7. 前端（React 19 + TypeScript + Vite；shadcn/ui 主题 + 实时 WebSocket）
