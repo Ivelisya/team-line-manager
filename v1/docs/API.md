@@ -38,7 +38,7 @@
 |---|---|
 | `read` | 所有 GET，**不含**下面三类 |
 | `write` | 所有非 GET 的业务写操作（不含 `/machines/{id}/exec`） |
-| `secrets` | `GET /entries/{id}/share` 这类凭据 |
+| `secrets` | `GET /entries/{id}/share` 这类凭据；客户端订阅的管理 `/client-subs`（读写都要） |
 | `exec` | `POST /machines/{id}/exec`、`GET /machines/{id}/logs`、`GET /server/logs`（都是通过 SSH 或本机读取）；`POST /audit/ssh`（`fleetctl ssh` 登录前报的审计） |
 
 scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` 的管理与网页终端（`/terminal/...`）只允许会话用户，用密钥调用一律 403。
@@ -220,6 +220,24 @@ ProvisionItem = {
 | GET | `/entries/{id}/routers` | 指向这个入口的软路由出口（各路由最近一次采集的快照里 `exits[].entry.id` 是它的）：`[{id, name, state, exits:[出口名]}]`，路由按列表顺序；入口不存在 404。轮换、停用的确认里列出 |
 | GET | `/entries/{id}/share` | `{data:{url}}`（vless:// 分享链接；记审计） |
 | POST | `/machines/{node_id}/entries` | 给节点再挂一条入口：`{relay_id}` → 作业（`attach_entry`，审计 `entry.add`）。`relay_id` 指向的线路机不存在 400；线路机不在用、节点在它上面已有入口 409（不建作业）。**线路机直出入口**：路径和 `relay_id` 都是这台线路机（`POST /machines/{线路机}/entries {relay_id: 线路机}`），出站是 freedom、从线路机自己的公网 IP 出去，出口验收期望的就是线路机的 IP；每台线路机至多一条（409「这台线路机已经有直出入口」），`relay_id` 填别的线路机 409。端口、REALITY 参数、代数、等应用、出口验收、审计与普通入口相同；作业的「更新节点防火墙」一步跳过。分享链接 # 后是「线路机名-直出」，线路机改名后随期望状态同步 |
+
+## 客户端订阅
+自己的客户端（Clash Verge、OpenClash 的 proxy-provider、v2rayN / Shadowrocket）按一个链接拉入口列表。订阅 = 名称 + 令牌（32 字节随机，库里只存 sha256，新建、轮换时返回一次完整链接 `url`）+ 选择规则 + 启用状态 + 最近拉取。管理接口都要 `secrets`；新建、修改、轮换、删除写审计（`client_sub.create` / `update` / `rotate` / `delete`，记名称与规则摘要，不记链接）。
+
+规则 `rule`（整份存、整份替换；存 id，不存入口参数）：`{team_mode: "all"|"only"|"except", team_ids: [uuid], direct: bool, include_ids: [uuid], exclude_ids: [uuid]}`，默认 `{all, [], true, [], []}`。按入口的节点判断（直出入口的节点就是线路机自己）：`exclude_ids` 优先，一律不带；`include_ids` 一律带上（不看团队与 `direct`）；直出入口看 `direct`；其余 `all` = 不在备用团队的、`only` = 团队在 `team_ids` 里的（列了备用团队就带上备用）、`except` = 不在备用团队也不在 `team_ids` 里的。`team_mode` 不对、`only` 没给团队、引用的团队或机器不存在 400。
+
+候选入口：入口 `active`，节点与线路机都 `active`（退役中、已退役、已回收的不算；健康与否不看）。条目名 `国家 · 供应商 家宽 · 节点名 · 出口 IP · VLESS Reality`，直出 `国家 · 供应商 线路机名 直出 · 线路机 IP · VLESS Reality`（国家按机器的国家，没手动指定的按 IP 查离线库；没有国家、供应商的省掉那段；同一节点在几台线路机上都有入口时节点名后括注线路机）。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/client-subs` | `[ClientSub]`：`{id, name, enabled, rule, rule_text（一句话摘要）, items（按现在的入口算的条目数）, created_at, token_at, last_fetch_at, last_fetch_ip}` |
+| POST | `/client-subs` | `{name（1–40 字，不能重名 409）, rule?}` → `ClientSub` + `url`（只这一次） |
+| GET | `/client-subs/{id}` | `ClientSub` + `entries: [{name, entry_id, node_id, relay, port, server, direct}]`（不含凭据） |
+| PATCH | `/client-subs/{id}` | `{name?, rule?, enabled?}`（没给的不变；停用后拉取 404，令牌不变）→ `ClientSub` |
+| POST | `/client-subs/{id}/rotate` | 换令牌：旧链接立即 404，最近拉取清空 → `ClientSub` + `url`（只这一次） |
+| DELETE | `/client-subs/{id}` | `{ok}` |
+
+**拉取**：`GET /sub/{令牌}?format=clash|base64`（挂在根上，不在 `/api/v1` 下，不要登录）。`clash`（默认）是 mihomo 可直接用的 proxy-provider 文件（只有 `proxies:`，字符串都带双引号）；`base64` 是 vless:// 链接（同分享链接的写法，`#` 后是上面的条目名）一行一条、整体 base64。按请求时的入口现算。响应 `text/plain`、`Cache-Control: no-store`，另带 `Content-Disposition`（订阅名）与 `profile-update-interval: 6`（Clash Verge 每 6 小时更新）。令牌不对或订阅停用 404，并和登录共用按来源的失败限速（`auth::begin_attempt`：同一来源 15 分钟 20 次，含登录失败；限速键按令牌哈希分开）；超了 429（带 `Retry-After`），对的令牌也一样。成功不写审计，`last_fetch_at` / `last_fetch_ip` 10 分钟内只写一次。`format` 不对 400。
 
 ## 作业
 `Job = {id,kind,target:{id,name}|null,state,step,step_count,step_title,error,manual,created_by,created_at,started_at,finished_at,steps:[{idx,key,title,state,started_at,finished_at,output,error}]}`（`step_count` = 该种作业的步骤数，`step_title` = 第 `step` 步的标题，做完为 null）
