@@ -74,7 +74,7 @@ impl Serialize for Reason {
         use serde::ser::SerializeStruct;
         let mut x = s.serialize_struct("Reason", 4)?;
         x.serialize_field("key", self.key)?;
-        x.serialize_field("rule_name", crate::notify::rule_name(self.key))?;
+        x.serialize_field("rule_name", crate::meta::rule_label(self.key))?;
         x.serialize_field("severity", self.severity)?;
         x.serialize_field("text", &self.text)?;
         x.end()
@@ -110,7 +110,7 @@ fn quota_reason(m: &MachineView) -> Option<Reason> {
     let amount = format!("{} / {}", fmt_gb(m.quota.used as f64), fmt_gb(limit));
     let reset = m.quota.reset_in_days.map(|d| format!("，{d} 天后重置")).unwrap_or_default();
     // 数据不完整（周期中途上架）：已用只是那之后的，实际更多
-    let partial = m.quota.counted_from.map(|t| format!("（{} 起统计，之前的量不到）", crate::meta::org_md(t))).unwrap_or_default();
+    let partial = m.quota.counted_from.map(|t| format!("（从 {} 开始统计，之前的没算）", crate::meta::org_md(t))).unwrap_or_default();
     let period = if m.quota.mode == "rolling30" { "近 30 天" } else { "本周期" };
     // 向下取整：还没超限时不会写成 100%
     let p = pct.floor();
@@ -263,7 +263,7 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
                     rs.push(Reason {
                         key: "relay_apply_lag",
                         severity: "warning",
-                        text: format!("配置未应用（配置代数 {} · 已应用 {}）", r.generation, r.applied_generation),
+                        text: format!("配置未应用（配置版本 {}，已生效 {}）", r.generation, r.applied_generation),
                     });
                 }
                 if let Some(e) = &r.apply_error {
@@ -661,10 +661,10 @@ pub(crate) mod tests {
         let mut r = base("relay");
         r.relay = Some(relay_info(1, 1, None, Some(now)));
         assert!(keys(&evaluate(&r, now)).is_empty());
-        r.relay.as_mut().unwrap().unreachable = Some("中控连续 3 次连不上客户入口（端口 20001：超时 10 秒；端口 20002：连接被拒绝）".into());
+        r.relay.as_mut().unwrap().unreachable = Some("中控连续 3 次以上连不上客户入口（端口 20001：超时 10 秒；端口 20002：连接被拒绝）".into());
         let h = evaluate(&r, now);
         assert_eq!((keys(&h), h.status), (vec!["relay_unreachable"], Status::Down));
-        assert_eq!(h.reasons[0].text, "中控连续 3 次连不上客户入口（端口 20001：超时 10 秒；端口 20002：连接被拒绝）");
+        assert_eq!(h.reasons[0].text, "中控连续 3 次以上连不上客户入口（端口 20001：超时 10 秒；端口 20002：连接被拒绝）");
         assert!(!h.undecided("relay_unreachable"));
         // 中控刚重启、新记录不到 3 轮：判不出
         r.relay = Some(RelayInfo { reach_unknown: true, ..relay_info(1, 1, None, Some(now)) });

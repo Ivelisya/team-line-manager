@@ -2,7 +2,7 @@
 // 点一行展开快照的关键字段，没有任何操作按钮。搜索（?q=）与来源（?source=fleet / legacy）记在 URL，服务端筛选、分页。
 // 表头排序只在整个回收站一页放得下时给（排序只作用于已取回的这一页，分页时会误导）；只有一种来源时不显示来源列。
 import * as React from 'react';
-import { ChevronDown, ChevronRight, SearchX, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, SearchX, Trash2, X } from 'lucide-react';
 import { useRecycleBin, useRecycleDetail } from '@/lib/queries';
 import * as F from '@/lib/format';
 import { cycleLabel, kindLabel, meta } from '@/lib/derive';
@@ -23,7 +23,7 @@ const SOURCE_LABEL: Record<string, string> = { fleet: '本面板', legacy: '旧�
 const SOURCE_OPTS = Object.entries(SOURCE_LABEL).map(([value, label]) => ({ value, label }));
 type ColDef = { id: string; header: string; width: number; r?: boolean; first?: 'asc' | 'desc' };
 const COLS: ColDef[] = [
-  { id: 'name', header: '名称', width: 160, first: 'asc' }, { id: 'ip', header: 'IP', width: 136 }, { id: 'plan', header: '供应商 · 套餐', width: 140 }, { id: 'price', header: '价格 / 周期', width: 116 },
+  { id: 'name', header: '名称', width: 160, first: 'asc' }, { id: 'ip', header: 'IP', width: 136 }, { id: 'plan', header: '套餐 · 供应商', width: 140 }, { id: 'price', header: '价格 / 周期', width: 116 },
   { id: 'recycled', header: '上架 → 退役 → 回收', width: 232, first: 'desc' }, { id: 'reason', header: '原因', width: 150 }, { id: 'traffic', header: '业务流量', width: 96, r: true, first: 'desc' },
   { id: 'source', header: '来源', width: 84 }, { id: 'chev', header: '', width: 36 },
 ];
@@ -77,11 +77,11 @@ function Detail({ r }: { r: RecycleItem }) {
       {(r.traffic_down != null || r.traffic_up != null) && <LabelValue label="业务流量 下载 / 上传">{`${bytes(r.traffic_down)} / ${bytes(r.traffic_up)}`}</LabelValue>}
       {(r.nic_rx != null || r.nic_tx != null) && <LabelValue label="网卡流量 下行 / 上行">{`${bytes(r.nic_rx)} / ${bytes(r.nic_tx)}`}</LabelValue>}
       {out && <LabelValue label="出口" plain>{out}</LabelValue>}
-      {entries != null && <LabelValue label="入口历史" wrap>{entries.length ? entries.map((e) => `${e.relay}:${e.port}${e.removed_at ? '（已摘除）' : ''}`).join('、') : '无'}</LabelValue>}
+      {entries != null && <LabelValue label="入口历史" wrap>{entries.length ? entries.map((e) => `${e.relay}:${e.port}${e.removed_at ? '（已移除）' : ''}`).join('、') : '无'}</LabelValue>}
       {renewals != null && <LabelValue label="续费记录">{`${renewals.length} 次`}</LabelValue>}
       {note && <LabelValue label="备注" wrap>{note}</LabelValue>}
       <LabelValue label="来源编号"><span className="row" style={{ gap: 4, flexWrap: 'nowrap', minWidth: 0 }}><Trunc className="mono">{r.source_id}</Trunc><CopyButton text={r.source_id} label="来源编号" size={13} /></span></LabelValue>
-      {d.isError && <ErrorNote error={d.error} onRetry={() => void d.refetch()}>快照加载失败：</ErrorNote>}
+      {d.isError && <ErrorNote error={d.error} onRetry={() => void d.refetch()}>详情加载失败：</ErrorNote>}
     </LabelValueGrid>
   );
 }
@@ -162,7 +162,7 @@ export function RecycleBin({ sp, upd, tools }: { sp: URLSearchParams; upd: (patc
         </TableWrap>
         {q.isLoading && <SkeletonRows rows={6} />}
         {!q.isLoading && !q.isError && rows.length === 0 && (
-          <Empty icon={<SearchX size={22} />} text={filtered ? '没有符合条件的记录' : '回收站是空的'}>
+          <Empty icon={filtered ? <SearchX size={22} /> : <Trash2 size={22} />} text={filtered ? '没有符合条件的记录' : '回收站是空的'}>
             {filtered && <Button size="sm" onClick={clear}>清除筛选</Button>}
           </Empty>
         )}

@@ -112,6 +112,8 @@ export const AccessTab = React.memo(function AccessTab({ id, relay }: { id: stri
   // 来源按连接数，同次数按 IP 数值
   const sources = [...d.top_sources].sort((a, b) => b.conns - a.conns || byIp(a.src_ip, b.src_ip));
   const none = d.top_domains.length === 0 && d.recent.length === 0;
+  // IP 库没装时整列查不到：不留两列「—」
+  const intel = sources.some((s) => s.intel);
   // 换时间范围、新数据未到时沿用的旧数据调淡（components.css [data-stale]）；段标题和时间范围控件不调淡
   const stale = q.isPlaceholderData;
   return (
@@ -123,7 +125,7 @@ export const AccessTab = React.memo(function AccessTab({ id, relay }: { id: stri
           {none ? (
             <Empty icon={<Radar size={22} />} text={`最近 ${long}没有访问记录`} />
           ) : d.top_domains.length === 0 ? (
-            <div className="hint">这段时间没有汇总数据 <InfoTip text="汇总每 5 分钟更新一次，下方「最近记录」是实时的。" /></div>
+            <div className="hint">这段时间没有汇总数据 <InfoTip text="汇总会稍有延迟，下方的「最近记录」是实时的" /></div>
           ) : (
             <>
               <HostBars items={d.top_domains} limit={all ? undefined : 10} />
@@ -148,14 +150,14 @@ export const AccessTab = React.memo(function AccessTab({ id, relay }: { id: stri
             <div data-stale={stale}>
               {d.top_sources.length ? (
                 <div className="table-wrap is-boxed">
-                  <table className="dt is-one" style={{ minWidth: 520 }}>
-                    <colgroup><col style={{ width: 160 }} /><col /><col style={{ width: 120 }} /><col style={{ width: 70 }} /><col style={{ width: 110 }} /></colgroup>
-                    <thead><tr><th>来源 IP</th><th>运营商 · 城市</th><th>接入方式</th><th className="r">连接数</th><th>最近</th></tr></thead>
+                  <table className="dt is-one" style={{ minWidth: intel ? 520 : 0 }}>
+                    <colgroup>{intel ? <><col style={{ width: 160 }} /><col /><col style={{ width: 120 }} /></> : <col />}<col style={{ width: 70 }} /><col style={{ width: 110 }} /></colgroup>
+                    <thead><tr><th>来源 IP</th>{intel && <><th>运营商 · 城市</th><th>接入方式</th></>}<th className="r">连接数</th><th>最近</th></tr></thead>
                     <tbody>
                       {sources.map((s) => (
                         <tr key={`${s.node_id}-${s.src_ip}`}>
                           <td data-tip={relay ? `${s.src_ip} · ${s.name}` : undefined}>{s.src_ip}{relay && <span className="t-sub"> · {s.name}</span>}</td>
-                          <td><IspPlace intel={s.intel} /></td><td><ConnCell intel={s.intel} /></td>
+                          {intel && <><td><IspPlace intel={s.intel} /></td><td><ConnCell intel={s.intel} /></td></>}
                           <td className="r">{fmtN(s.conns)}</td><td>{F.dt(s.last_ts)}</td>
                         </tr>
                       ))}

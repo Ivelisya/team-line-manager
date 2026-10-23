@@ -3,6 +3,8 @@
 //!
 //! 去抖（开、关对称）：
 //! - 开：同一 (规则, 机器) 连续出现满去抖时长才开告警（出口不通 150 s、TCP 不通 90 s、其余 60 s）；续费类与流量额度立即开。被静默的不开。
+//!   折成探测次数：出口探测每 60 s 一次，约连续 3 次失败才开；TCP 每 30 s 一次，约 4 次。relay_unreachable 的原因本身要连续 3 次连不上（reach.rs），
+//!   再叠 60 s：整台不通约连续 5 轮（2.5 分钟）才开，摘要写「连续 3 次以上」。
 //! - 关：原因连续消失满同样的时长才恢复；续费类与流量额度立即恢复（按日期、小时汇总判定，不会抖）。
 //! - 复发：恢复后 30 分钟内同一 (规则, 机器) 又满足开的条件，重开原告警（`reopen_count` +1，清掉确认），不新建。
 //!
@@ -14,6 +16,7 @@
 //! 所以反复抖动的告警每 5 分钟最多一对触发/恢复，真故障最多晚 5 分钟报。被静默（含维护）的不发任何通知。
 //! 「发过」= 写进了库里的发送队列（notify_outbox，`notified_at` 同一事务刷新）：之后由发送循环重试到送达或放弃，中控重启也不丢。
 
+use crate::incident::Engine;
 use crate::notify::{self, Kind, Notice};
 use crate::selfmon;
 use crate::silence::Silences;
@@ -34,8 +37,8 @@ fn debounce_s(rule: &str) -> i64 {
         _ => 60,
     }
 }
-/// 恢复后这么久内复发算同一条告警
-const REOPEN_WINDOW_S: i64 = 30 * 60;
+/// 恢复后这么久内复发算同一条告警（incident.rs 的通用对齐同此）
+pub(crate) const REOPEN_WINDOW_S: i64 = 30 * 60;
 /// 报过恢复后这么久内复发不再报触发（抖动限流）
 const REOPEN_QUIET_S: i64 = 5 * 60;
 /// 严重告警持续触发的提醒间隔
@@ -118,20 +121,22 @@ struct Open {
     told_resolved_at: Option<OffsetDateTime>,
 }
 
+/// 最近一条送达的通知是「恢复」时它的发送时间（`incident` 表上的标量子查询；机器与 incident.rs 的告警共用）
+pub(crate) const TOLD_RESOLVED_SQL: &str = "(select case when l.kind = 'resolved' then l.ts end from notify_log l
+     where l.incident_id = incident.id and l.ok and l.kind in ('firing', 'repeat', 'resolved') order by l.ts desc, l.id desc limit 1)";
+
 /// `Open` 的列（查询和重开的 returning 共用）
-const OPEN_COLS: &str = "id, rule, subject_id, severity::text severity, summary, opened_at, notified_at,
-    (select case when l.kind = 'resolved' then l.ts end from notify_log l where l.incident_id = incident.id and l.ok and l.kind in ('firing', 'repeat', 'resolved')
-     order by l.ts desc, l.id desc limit 1) told_resolved_at";
+fn open_cols() -> String { format!("id, rule, subject_id, severity::text severity, summary, opened_at, notified_at, {TOLD_RESOLVED_SQL} told_resolved_at") }
 
 /// 仍在触发的告警这一轮该发的通知：报过恢复的，距那条恢复通知满 REOPEN_QUIET_S 发「触发」；还没入队过（开告警时入队失败）的补发「触发」；
 /// 否则按持续提醒间隔发「提醒」。notify_log 在送达后才写（渠道失败重试时更晚），`notified_at` 在入队时就更新：
-/// 比那条恢复通知新，说明「触发」已经在发了，按提醒间隔算
-fn due(inc: &Open, severity: &str, now: OffsetDateTime) -> Option<Kind> {
-    match (inc.told_resolved_at.filter(|t| inc.notified_at.is_none_or(|n| n < *t)), inc.notified_at) {
+/// 比那条恢复通知新，说明「触发」已经在发了，按提醒间隔算。机器与 incident.rs 的告警共用
+pub(crate) fn due(rule: &str, severity: &str, notified_at: Option<OffsetDateTime>, told_resolved_at: Option<OffsetDateTime>, now: OffsetDateTime) -> Option<Kind> {
+    match (told_resolved_at.filter(|t| notified_at.is_none_or(|n| n < *t)), notified_at) {
         (Some(t), _) => ((now - t).whole_seconds() >= REOPEN_QUIET_S).then_some(Kind::Firing),
         (None, None) => Some(Kind::Firing),
         (None, Some(n)) => {
-            let every = repeat_interval_s(&inc.rule, severity)?;
+            let every = repeat_interval_s(rule, severity)?;
             ((now - n).whole_seconds() >= every).then_some(Kind::Repeat)
         }
     }
@@ -139,9 +144,9 @@ fn due(inc: &Open, severity: &str, now: OffsetDateTime) -> Option<Kind> {
 
 /// 恢复时要不要报「恢复」：上次恢复通知之后发过（入队过）触发/提醒才报。
 /// 看入队时就刷新的 `notified_at`，不看 notify_log（送达后才写，触发还在队列里时查不到，恢复通知就被吞了）；
-/// 同一渠道的队列先进先出，恢复排在触发之后，没收到触发的渠道发送时跳过
-fn told_firing(inc: &Open) -> bool {
-    inc.notified_at.is_some_and(|n| inc.told_resolved_at.is_none_or(|t| n > t))
+/// 同一渠道的队列先进先出，恢复排在触发之后，没收到触发的渠道发送时跳过。机器与 incident.rs 的告警共用
+pub(crate) fn told_firing(notified_at: Option<OffsetDateTime>, told_resolved_at: Option<OffsetDateTime>) -> bool {
+    notified_at.is_some_and(|n| told_resolved_at.is_none_or(|t| n > t))
 }
 
 /// 摘要里的数字（分钟数、代数）每次都在变，不算「摘要变了」
@@ -166,12 +171,12 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
     // 与列表、实时指标共用在用机器视图（最多旧 3 s）
     let ms = views::live(st).await?;
     let silences = Silences::load(&st.db).await?;
-    // ipintel_ 开头的规则由 ipintel.rs 自己开和关（一次性异常，24 小时后恢复），central_ 开头的（中控自身）由 selfmon.rs 开和关，
-    // router_ 开头的（软路由）由 routers/alerts.rs 开和关，probe_ 开头的（探测点）由 probe_points/ 开和关，这里都不碰，否则会被当成「原因消失」恢复掉
+    // 只读写机器引擎（incident::Engine::Machine）的告警：来源画像、中控自身、软路由、探测点由各自的引擎开和关，这里不碰，否则会被当成「原因消失」恢复掉
+    let cols = open_cols();
     let mut open: HashMap<(String, Uuid), Open> = sqlx::query_as::<_, Open>(&format!(
-        "select {OPEN_COLS} from incident where state = 'firing' and rule not like 'ipintel!_%' escape '!' and rule not like 'central!_%' escape '!'
-           and rule not like 'router!_%' escape '!' and rule not like 'probe!_%' escape '!'"
+        "select {cols} from incident where state = 'firing' and engine = $1"
     ))
+    .bind(Engine::Machine.as_str())
     .fetch_all(&st.db)
     .await?
     .into_iter()
@@ -238,7 +243,7 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
                     touch.push((inc.id, summary));
                 }
                 // 持续提醒；复发后已报过恢复的，满限流时长再发一次「触发」；升成严重（流量额度从吃紧到超限）不等提醒间隔，马上再发一次「触发」
-                let kind = if escalated { Some(Kind::Firing) } else { due(&inc, sev, now) };
+                let kind = if escalated { Some(Kind::Firing) } else { due(r.key, sev, inc.notified_at, inc.told_resolved_at, now) };
                 if let Some(kind) = kind.filter(|_| !silences.matches(r.key, m.id)) {
                     notify::enqueue(st, Notice { severity: sev.to_string(), ..notice(kind, inc.id, inc.opened_at) }).await;
                 }
@@ -255,30 +260,31 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
             let reopened = sqlx::query_as::<_, Open>(&format!(
                 "update incident set state = 'firing', resolved_at = null, ack_at = null, ack_by = null, reopen_count = reopen_count + 1, last_seen_at = now(),
                      severity = $3::severity, summary = $4
-                 where id = (select id from incident where rule = $1 and subject_id = $2 and state = 'resolved' and resolved_at > $5 and not detail ? 'closed_by'
+                 where id = (select id from incident where engine = $6 and rule = $1 and subject_id = $2 and state = 'resolved' and resolved_at > $5 and not detail ? 'closed_by'
                              order by resolved_at desc limit 1)
                    and exists (select 1 from machine where id = $2 and lifecycle = 'active' for share)
-                 returning {OPEN_COLS}"
+                 returning {cols}"
             ))
             .bind(r.key)
             .bind(m.id)
             .bind(r.severity)
             .bind(&summary)
             .bind(now - time::Duration::seconds(REOPEN_WINDOW_S))
+            .bind(Engine::Machine.as_str())
             .fetch_optional(&st.db)
             .await?;
             if let Some(inc) = reopened {
                 changed = true;
-                if let Some(kind) = due(&inc, r.severity, now) {
+                if let Some(kind) = due(r.key, r.severity, inc.notified_at, inc.told_resolved_at, now) {
                     notify::enqueue(st, notice(kind, inc.id, inc.opened_at)).await;
                 }
                 continue;
             }
             let id = crate::db::new_id();
             let res = sqlx::query(
-                "insert into incident (id, rule, subject_id, severity, summary, detail)
-                 select $1, $2, $3, $4::severity, $5, $6 where exists (select 1 from machine where id = $3 and lifecycle = 'active' for share)
-                 on conflict (rule, subject_id) where state = 'firing' do nothing",
+                "insert into incident (id, engine, rule, subject_id, severity, summary, detail)
+                 select $1, $7, $2, $3, $4::severity, $5, $6 where exists (select 1 from machine where id = $3 and lifecycle = 'active' for share)
+                 on conflict (engine, rule, subject_id) where state = 'firing' do nothing",
             )
             .bind(id)
             .bind(r.key)
@@ -286,6 +292,7 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
             .bind(r.severity)
             .bind(&summary)
             .bind(json!({"name": m.name}))
+            .bind(Engine::Machine.as_str())
             .execute(&st.db)
             .await?;
             if res.rows_affected() > 0 {
@@ -341,7 +348,7 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
         sqlx::query("update incident set state = 'resolved', resolved_at = now() where id = $1").bind(inc.id).execute(&st.db).await?;
         changed = true;
         // 恢复通知：上次恢复通知之后发过触发/提醒、且当前没被静默时才发
-        if !silences.matches(&inc.rule, inc.subject_id) && told_firing(&inc) {
+        if !silences.matches(&inc.rule, inc.subject_id) && told_firing(inc.notified_at, inc.told_resolved_at) {
             notify::enqueue(
                 st,
                 Notice {
@@ -374,7 +381,7 @@ mod tests {
     #[test]
     fn summary_digits_do_not_count_as_change() {
         assert!(same_summary("团队1-01：5 分钟没有上报", "团队1-01：6 分钟没有上报"));
-        assert!(same_summary("线路机2：配置未应用（配置代数 3 · 已应用 2）", "线路机2：配置未应用（配置代数 4 · 已应用 2）"));
+        assert!(same_summary("线路机2：配置未应用（配置版本 3，已生效 2）", "线路机2：配置未应用（配置版本 4，已生效 2）"));
         assert!(!same_summary("团队1-01：5 分钟没有上报", "团队1-01：从未上报"));
     }
 
@@ -392,6 +399,7 @@ mod tests {
             notified_at: notified,
             told_resolved_at: Some(resolved),
         };
+        let due = |i: &Open, sev: &str, now| due(&i.rule, sev, i.notified_at, i.told_resolved_at, now);
         // 恢复通知 10 分钟前，之后没再发过：发「触发」
         assert!(matches!(due(&inc(Some(ago(900)), ago(600)), "critical", now), Some(Kind::Firing)));
         // 「触发」30 s 前已开始发送、还没写进 notify_log（最近一条仍是恢复）：不重发
@@ -418,6 +426,7 @@ mod tests {
             notified_at: notified,
             told_resolved_at: resolved,
         };
+        let told_firing = |i: &Open| told_firing(i.notified_at, i.told_resolved_at);
         // 从没通知过（如开告警时被静默）：不报恢复
         assert!(!told_firing(&inc(None, None)));
         // 触发已入队（notify_log 里可能还没有）：报恢复

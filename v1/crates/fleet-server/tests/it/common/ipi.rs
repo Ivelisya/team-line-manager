@@ -50,7 +50,7 @@ impl T {
 
     /// 某条规则当前的告警：(state, summary)
     pub async fn incidents(&self, node: Uuid) -> Vec<(String, String, String)> {
-        sqlx::query_as("select rule, state::text, summary from incident where subject_id = $1 and rule like 'ipintel!_%' escape '!' order by rule, opened_at")
+        sqlx::query_as("select rule, state::text, summary from incident where subject_id = $1 and engine = 'ipintel' order by rule, opened_at")
             .bind(node)
             .fetch_all(&self.st.db)
             .await

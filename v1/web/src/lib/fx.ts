@@ -28,7 +28,7 @@ export const useRefreshFx = () => useFxWrite(() => post<FxRates>('/settings/fx-r
 export function usdPreview(rates: FxRates | undefined, cents: number | null, currency: string): string | null {
   if (cents == null || !isFinite(cents) || !rates || currency === 'USD') return null;
   const r = rates.rates.find((x) => x.currency === currency)?.usd_per_unit;
-  return r != null ? `≈ ${F.money(Math.round(cents * r), 'USD')}（${F.fxRate(currency, r)}）` : `没有 ${currency} 的汇率，费用不折算成 USD（设置 → 汇率）`;
+  return r != null ? `≈ ${F.money(Math.round(cents * r), 'USD')}（${F.fxRate(currency, r)}）` : `没有 ${currency} 的汇率，费用不会折成美元（设置 → 汇率）`;
 }
 /** 同 usdPreview，自己取汇率 */
 export function useUsdPreview(cents: number | null, currency: string) { return usdPreview(useFxRates().data, cents, currency); }

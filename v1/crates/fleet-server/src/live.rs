@@ -146,7 +146,7 @@ fn machine_fields(m: &MachineView) -> Fields {
         raw(&m.subscription.as_ref().map(|s| s.due_state)),
         raw(&m.removed_traffic),
         raw(&m.nic),
-        raw(&m.month_counted_from.map(|t| t.format(&time::format_description::well_known::Rfc3339).unwrap_or_default())),
+        raw(&m.month_counted_from.map(crate::meta::fmt_ts)),
         raw(&m.quota),
         raw(&m.active_job),
     ]

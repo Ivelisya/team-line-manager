@@ -19,5 +19,5 @@ mod testutil;
 
 pub use classify::ConnType;
 pub use lists::Lists;
-pub use lookup::{canonical, distance_km, is_global, Dbs, Intel};
+pub use lookup::{canonical, is_global, Dbs, Intel};
 pub use service::{IpIntel, EXPECTED_DBS};

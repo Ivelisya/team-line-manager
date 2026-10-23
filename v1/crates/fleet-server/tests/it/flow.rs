@@ -4,12 +4,10 @@
 use crate::common;
 
 use axum::http::StatusCode;
-use common::{seed_relay, setup, T};
+use common::{now_ms, seed_relay, setup, T};
 use fleet_proto::{ApplyReport, DesiredState, EntryApply, ProbeKind, ProbeSample, Report};
 use serde_json::{json, Value};
 use std::time::Duration;
-
-fn now_ms() -> i64 { (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64 }
 
 /// 模拟线路机 agent：拉期望状态、回报全部成功，并给每个入口报一个成功的出口探测
 async fn relay_round(t: &T, tok: &str, _after: u64, seq: &mut u64) -> DesiredState {
@@ -30,18 +28,12 @@ async fn relay_round(t: &T, tok: &str, _after: u64, seq: &mut u64) -> DesiredSta
         boot_id: "b1".into(),
         agent_version: "test".into(),
         sent_at_ms: now_ms(),
-        info: None,
-        host: vec![],
-        entries: vec![],
         probes: ds
             .entries
             .iter()
             .map(|e| ProbeSample { entry_id: e.id, ts_ms: now_ms(), kind: ProbeKind::Egress, ok: true, latency_ms: Some(12.0), detail: Some(e.expect_egress_ip.to_string()), retrans: None })
             .collect(),
-        access: vec![],
-        xray: None,
-        agent_health: None,
-        ping: vec![],
+        ..Default::default()
     };
     let (s, v) = t.req("POST", "/agent/v1/report", Some(serde_json::to_value(&r).unwrap()), Some(tok)).await;
     assert_eq!(s, StatusCode::OK, "report: {v}");

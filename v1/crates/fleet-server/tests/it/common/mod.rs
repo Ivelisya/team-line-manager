@@ -241,23 +241,25 @@ pub async fn boot_in(dir: tempfile::TempDir, background: bool, extra: &str) -> T
 
 pub const ADMIN_PW: &str = "correct horse battery";
 
-/// 直接在库里放一台在用的线路机（IP 198.51.100.2，名字「线路机2」），并给它签一个 agent 令牌
-pub async fn seed_relay(t: &T) -> (Uuid, String) {
+/// 直接在库里放一台在用的线路机，并给它签一个 agent 令牌。返回 (机器 id, 令牌)
+async fn seed_relay_row(t: &T, label: &str, ip: &str, public_host: &str, tok: &str) -> (Uuid, String) {
     let id = Uuid::now_v7();
     let (sk, pk) = fleet_server::crypto::reality_keypair();
-    sqlx::query("insert into machine (id, kind, label, primary_ip, lifecycle, activated_at) values ($1, 'relay', '线路机2', '198.51.100.2', 'active', now())")
+    sqlx::query("insert into machine (id, kind, label, primary_ip, lifecycle, activated_at) values ($1, 'relay', $2, $3::inet, 'active', now())")
         .bind(id)
+        .bind(label)
+        .bind(ip)
         .execute(&t.st.db)
         .await
         .unwrap();
-    sqlx::query("insert into relay (machine_id, public_host, reality_private_enc, reality_public_key, min_client_ver, generation, applied_generation) values ($1, 'relay.test', $2, $3, '1.8.2', 1, 1)")
+    sqlx::query("insert into relay (machine_id, public_host, reality_private_enc, reality_public_key, min_client_ver, generation, applied_generation) values ($1, $2, $3, $4, '1.8.2', 1, 1)")
         .bind(id)
+        .bind(public_host)
         .bind(t.st.secrets.seal_str(&sk))
         .bind(pk)
         .execute(&t.st.db)
         .await
         .unwrap();
-    let tok = "fa1_test_relay_token";
     sqlx::query("insert into agent_token (id, machine_id, token_hash) values ($1, $2, $3)")
         .bind(Uuid::now_v7())
         .bind(id)
@@ -268,6 +270,12 @@ pub async fn seed_relay(t: &T) -> (Uuid, String) {
     (id, tok.to_string())
 }
 
+/// 线路机「线路机2」（198.51.100.2）
+pub async fn seed_relay(t: &T) -> (Uuid, String) { seed_relay_row(t, "线路机2", "198.51.100.2", "relay.test", "fa1_test_relay_token").await }
+
+/// 第二台线路机「线路机3」（198.51.100.3）
+pub async fn seed_relay_b(t: &T) -> (Uuid, String) { seed_relay_row(t, "线路机3", "198.51.100.3", "relay3.test", "fa1_test_relay_token_b").await }
+
 /// 中控 dist 里放一个假的 agent 程序（shell 脚本，`--version` 打印版本）：「全部升级」要记下它的 sha256 与版本号
 pub fn dist_agent(t: &T, version: &str) {
     let p = t.dir.path().join("dist/fleet-agent");
@@ -277,6 +285,22 @@ pub fn dist_agent(t: &T, version: &str) {
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+/// 每 100 毫秒试一次 `f`，返回 `Some` 就结束并交回它的值；`timeout` 内一直是 `None` 就 panic，说明等的是什么
+pub async fn eventually<R, F, Fut>(what: &str, timeout: Duration, f: F) -> R
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Option<R>>,
+{
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if let Some(r) = f().await {
+            return r;
+        }
+        assert!(std::time::Instant::now() < deadline, "{} 秒内没等到：{what}", timeout.as_secs());
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
@@ -310,50 +334,17 @@ impl Sim {
             boot_id: "b1".into(),
             agent_version: "test".into(),
             sent_at_ms: now_ms(),
-            info: None,
-            host: vec![],
-            entries: vec![],
             probes: ds
                 .entries
                 .iter()
                 .map(|e| ProbeSample { entry_id: e.id, ts_ms: now_ms(), kind: ProbeKind::Egress, ok: true, latency_ms: Some(12.0), detail: Some(e.expect_egress_ip.to_string()), retrans: None })
                 .collect(),
-            access: vec![],
-            xray: None,
-            agent_health: None,
-            ping: vec![],
+            ..Default::default()
         };
         let (s, v) = t.req("POST", "/agent/v1/report", Some(serde_json::to_value(&r).unwrap()), Some(&self.tok)).await;
         assert_eq!(s, StatusCode::OK, "report: {v}");
         ds
     }
-}
-
-/// 第二台线路机「线路机3」（198.51.100.3）
-pub async fn seed_relay_b(t: &T) -> (Uuid, String) {
-    let id = Uuid::now_v7();
-    let (sk, pk) = fleet_server::crypto::reality_keypair();
-    sqlx::query("insert into machine (id, kind, label, primary_ip, lifecycle, activated_at) values ($1, 'relay', '线路机3', '198.51.100.3', 'active', now())")
-        .bind(id)
-        .execute(&t.st.db)
-        .await
-        .unwrap();
-    sqlx::query("insert into relay (machine_id, public_host, reality_private_enc, reality_public_key, min_client_ver, generation, applied_generation) values ($1, 'relay3.test', $2, $3, '1.8.2', 1, 1)")
-        .bind(id)
-        .bind(t.st.secrets.seal_str(&sk))
-        .bind(pk)
-        .execute(&t.st.db)
-        .await
-        .unwrap();
-    let tok = "fa1_test_relay_token_b";
-    sqlx::query("insert into agent_token (id, machine_id, token_hash) values ($1, $2, $3)")
-        .bind(Uuid::now_v7())
-        .bind(id)
-        .bind(fleet_server::crypto::sha256(tok.as_bytes()))
-        .execute(&t.st.db)
-        .await
-        .unwrap();
-    (id, tok.to_string())
 }
 
 pub async fn seed_team(t: &T, name: &str) -> Uuid {

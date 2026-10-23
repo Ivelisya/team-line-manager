@@ -25,7 +25,7 @@ pub fn build_version() -> &'static str {
 
 // ── 上报 ────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Report {
     pub seq: u64,
     pub boot_id: String,
@@ -190,11 +190,14 @@ pub struct XrayStatus {
     pub applied_generation: u64,
 }
 
+/// Agent 的上报间隔（秒）。固定值：新 agent 不再读 `ReportAck.interval_s`，中控回的也是它
+pub const REPORT_INTERVAL_S: u32 = 10;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReportAck {
     /// 服务端已持久化的最大 seq；agent 据此丢弃本地缓冲
     pub accepted_seq: u64,
-    /// 服务端希望的上报间隔（秒）
+    /// 上报间隔（秒），恒为 `REPORT_INTERVAL_S`。字段必须留着：旧 agent 解析确认时它是必填的
     pub interval_s: u32,
 }
 
@@ -232,6 +235,12 @@ pub struct PingTarget {
 /// TCP 方式不写端口时连的端口
 pub const PING_TCP_DEFAULT_PORT: u16 = 80;
 
+/// 线路机上 Xray API 的监听端口（127.0.0.1）。agent 渲染 xray.json、中控给内核保留本地端口（jobs/tune.rs）都用它：
+/// 一边改了另一边没改，内核会把 Xray 正在监听的端口当本地端口发出去，Xray 重启时绑不上
+pub const XRAY_API_PORT: u16 = 62789;
+/// 每个启用入口的回环探测入站端口 = 入口端口 + 此偏移（agent 的 `probe_ports`；中控 tune 同样要保留这段端口）
+pub const PROBE_PORT_OFFSET: u16 = 10000;
+
 /// 拆 `target`：(主机, 端口)。`[v6]:port`、`[v6]`、裸 IPv6、`host:port`、`host`；端口不对为 None
 pub fn split_target(t: &str) -> Option<(String, Option<u16>)> {
     let t = t.trim();
@@ -249,6 +258,15 @@ pub fn split_target(t: &str) -> Option<(String, Option<u16>)> {
     match t.split_once(':') {
         Some((h, p)) => Some((h.to_string(), Some(p.parse().ok().filter(|p: &u16| *p > 0)?))),
         None => Some((t.to_string(), None)),
+    }
+}
+
+/// 拆「必须带端口」的 `host:port`（探测的对照目标）：规则同 `split_target`，没写端口为 None。中控与探测点 agent 都用它，
+/// 不要各自 `rsplit_once(':')`：`[::1]:443` 会被拆成 `[::1]` 和 443，主机名带着方括号解析不出来
+pub fn host_port(t: &str) -> Option<(String, u16)> {
+    match split_target(t)? {
+        (h, Some(p)) => Some((h, p)),
+        _ => None,
     }
 }
 
@@ -384,9 +402,19 @@ pub struct ProbeReport {
     /// 正在跑的程序的 sha256（十六进制）：与 `ProbeTargets::upgrade` 的一致时中控清掉升级请求
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
-    /// 整轮作废的原因（对照目标都连不上、三台以上线路机全部连不上）：这时 `results` 为空，只算心跳
+    /// 整轮作废的原因（对照目标都连不上）：这时 `results` 为空，只算心跳。
+    /// 旧探测点在三台以上线路机全部连不上时也整轮作废（带「N 台线路机全部连不上」）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discarded: Option<String>,
+    /// 对照目标是通的、三台以上线路机却全部连不上（[`all_down`]）：照常带结果上报并置 true，中控照记、告警摘要写明
+    /// 「全部线路机同时连不上」（可能是供应商整段故障）。旧探测点没有这个字段（这种轮次整轮作废）；
+    /// 旧中控不认识它，按旧规则丢掉这一轮
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub all_down: bool,
+    /// 换上后没能上报、自己换回了旧版本的程序 sha256（探测点的 BAD 标记）：中控要它升级到的正是这个时，它不会再换，
+    /// 中控马上记成升级失败、不再下发。旧探测点没有这个字段；旧中控不认识它，忽略
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bad_sha256: Option<String>,
     pub results: Vec<ProbeResult>,
 }
 
@@ -403,9 +431,11 @@ pub struct ProbeResult {
     pub detail: Option<String>,
 }
 
-/// 这一轮记不记（中控 reach.rs 与探测点同一条规则）：对照目标都连不上，或三台以上线路机全部失败 → 是测的这一方自己的问题，不记。
-/// 两台同时不通照记：生产两台线路机在同一家供应商的同一个 /24，一起出问题并不罕见，正是要报的时候
-pub fn keep_round(oks: &[bool], control_ok: bool) -> bool { control_ok && (oks.len() < 3 || oks.iter().any(|&o| o)) }
+/// 三台以上线路机全部连不上（中控 reach.rs 与探测点同一条规则）。一轮记不记只看对照目标：一个都连不上是测的这一方自己的网络有问题，整轮作废。
+/// 三台以上全不通以前也当成测的这一方的问题整轮作废；但对照目标是通的时候，更可能是线路机这边一起出了问题
+/// （生产几台线路机在同一家供应商、同一个 /24，供应商整段故障时就是这样），这正是最该报的时候：照记，带上这个标记，
+/// relay_unreachable 的摘要写明「全部线路机同时连不上」。两台同时不通不算（线路机少时太容易凑上）
+pub fn all_down(oks: &[bool]) -> bool { oks.len() >= 3 && !oks.iter().any(|&o| o) }
 
 /// Xray 里用到的标签：只由 entry_id 派生，和名字、端口都无关。
 pub mod tags {
@@ -426,13 +456,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn host_port_needs_a_port_and_handles_ipv6() {
+        let hp = |t| host_port(t);
+        assert_eq!(hp("example.com:443"), Some(("example.com".into(), 443)));
+        assert_eq!(hp("1.1.1.1:53"), Some(("1.1.1.1".into(), 53)));
+        assert_eq!(hp("[::1]:443"), Some(("::1".into(), 443)));
+        assert_eq!(hp("[2606:4700::1111]:853"), Some(("2606:4700::1111".into(), 853)));
+        // 没写端口、端口不对、裸 IPv6（分不出端口）都不算
+        for bad in ["example.com", "[::1]", "::1", "example.com:0", "example.com:70000", "[::1]:x", ""] {
+            assert_eq!(hp(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
     fn probe_round_keep_rule() {
-        assert!(keep_round(&[true, false], true), "一台不通照记");
-        assert!(keep_round(&[false], true), "只有一台线路机：靠对照目标判断");
-        assert!(keep_round(&[false, false], true), "两台全不通照记：同一家供应商一起出问题");
-        assert!(!keep_round(&[false, false, false], true), "三台以上全不通：测的这一方自己的问题");
-        assert!(!keep_round(&[true, true], false), "对照目标都连不上：不记");
-        assert!(keep_round(&[], true));
+        assert!(!all_down(&[false, false]), "两台全不通：不算全部");
+        assert!(all_down(&[false, false, false]), "三台以上全不通：全部线路机同时连不上");
+        assert!(!all_down(&[false, true, false]) && !all_down(&[]));
+    }
+
+    #[test]
+    fn probe_report_all_down_is_optional() {
+        // 旧探测点不带 all_down：解析成 false；false 时不序列化出这个字段（旧中控看到的形状不变）
+        let r: ProbeReport = serde_json::from_value(serde_json::json!({"version": "v", "results": []})).unwrap();
+        assert!(!r.all_down);
+        assert!(serde_json::to_value(&r).unwrap().get("all_down").is_none());
+        let r = ProbeReport { all_down: true, ..r };
+        assert_eq!(serde_json::to_value(&r).unwrap()["all_down"], true);
+    }
+
+    #[test]
+    fn probe_report_bad_sha256_is_optional() {
+        // 旧探测点不带：None；None 时不序列化（旧中控看到的形状不变）
+        let r: ProbeReport = serde_json::from_value(serde_json::json!({"version": "v", "results": []})).unwrap();
+        assert!(r.bad_sha256.is_none());
+        assert!(serde_json::to_value(&r).unwrap().get("bad_sha256").is_none());
+        let r = ProbeReport { bad_sha256: Some("ab".into()), ..r };
+        assert_eq!(serde_json::to_value(&r).unwrap()["bad_sha256"], "ab");
     }
 
     #[test]

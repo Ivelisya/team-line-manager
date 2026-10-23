@@ -2,9 +2,9 @@
 //! 这里负责三件事：
 //! 1. 查询缓存：`ip_intel_cache`，按库版本失效；内部地址（线路机 / 节点 / 配置里的运维出口）打 internal 标。
 //! 2. 节点来源画像：每 5 分钟从 `access_source_hourly`（访问监控的汇总表）增量维护 `node_source_seen`。
-//! 3. 异常：学习期（节点第一条访问记录起 learn_days 天）之后出现新的运营商 / 新的城市 / 机房或 VPN 来源 IP，
+//! 3. 异常：学习期（节点第一条访问记录起 `LEARN_DAYS` 天）之后出现新的运营商 / 新的城市 / 机房或 VPN 来源 IP，
 //!    写进 incident 表（规则 ipintel_new_isp / ipintel_new_city / ipintel_datacenter_source，warning）并走 notify。
-//!    一次性异常最后一次出现 alert_ttl_hours 之后自动恢复，不发恢复通知；alerts.rs 的恢复逻辑不碰 ipintel_ 开头的规则。
+//!    一次性异常最后一次出现 `ALERT_TTL_HOURS` 小时之后自动恢复，不发恢复通知；alerts.rs 的恢复逻辑不碰 ipintel_ 开头的规则。
 //!    来源画像、画像缓存与恢复了的画像异常按访问记录保留期删（来源画像不短于学习期，见 `access::prune`、`settings`）：
 //!    「新运营商 / 新城市 / 首次出现的机房来源」= 这段时间内没见过。
 //!
@@ -15,8 +15,8 @@ use crate::access::{self, SourceRow, Window};
 use crate::db::floor_hour;
 use crate::config::IpintelConfig;
 use crate::error::{ApiError, ApiResult};
-use crate::incident::{self, Close, Want};
-use crate::notify;
+use crate::incident::{self, Close, Engine, Want};
+use crate::meta;
 use crate::state::AppState;
 use fleet_ipintel::{canonical, is_global, ConnType, IpIntel};
 use serde::Serialize;
@@ -32,6 +32,11 @@ use uuid::Uuid;
 pub const RULE_NEW_ISP: &str = "ipintel_new_isp";
 pub const RULE_NEW_CITY: &str = "ipintel_new_city";
 pub const RULE_DC_SOURCE: &str = "ipintel_datacenter_source";
+
+/// 学习期天数：从节点第一条访问记录算起，期间只学习不告警
+pub const LEARN_DAYS: u32 = 7;
+/// 一次性异常（新运营商 / 新城市 / 机房来源）最后一次出现后多少小时自动恢复
+const ALERT_TTL_HOURS: i64 = 24;
 
 /// 节点来源汇总的水位 key
 const WM_KEY: &str = "sources_wm";
@@ -194,8 +199,8 @@ impl Service {
         Service {
             intel: Arc::new(intel),
             enabled: cfg.enabled,
-            learn: Duration::days(cfg.learn_days as i64),
-            ttl: Duration::hours(cfg.alert_ttl_hours as i64),
+            learn: Duration::days(LEARN_DAYS as i64),
+            ttl: Duration::hours(ALERT_TTL_HOURS),
             extra_internal,
             internal: RwLock::new(HashMap::new()),
             refreshed: Mutex::new(None),
@@ -598,7 +603,7 @@ pub async fn reconcile_incidents(st: &AppState, now: OffsetDateTime, rep: &mut S
     .into_iter()
     .collect();
 
-    let open = incident::firing(db, "ipintel").await?;
+    let open = incident::firing(db, Engine::Ipintel).await?;
     let mut wants = vec![];
     for ((rule, node), vals) in &want {
         let Some(name) = names.get(node) else { continue };
@@ -624,7 +629,7 @@ pub async fn reconcile_incidents(st: &AppState, now: OffsetDateTime, rep: &mut S
         wants.push(Want { rule, subject: *node, name, severity: "warning", text, detail: Some(detail), ready: true });
     }
     // 没有 open 值了（或节点不再 active）→ 恢复；一次性异常结束不发恢复通知
-    let t = incident::reconcile(st, open, wants, "true", now, |_| Close::Quiet("ipintel_ttl")).await?;
+    let t = incident::reconcile(st, Engine::Ipintel, open, wants, "true", now, |_| Close::Quiet("ipintel_ttl")).await?;
     rep.opened += t.opened;
     rep.updated += t.updated;
     rep.resolved += t.resolved;
@@ -824,14 +829,14 @@ pub async fn sources_profile(st: &AppState, machine_id: Uuid, window: Window, li
 
     let anomalies: Vec<(Uuid, String, String, String, OffsetDateTime)> = sqlx::query_as(
         "select id, rule, severity::text, summary, opened_at from incident
-         where state = 'firing' and rule like 'ipintel!_%' escape '!' and subject_id = any($1) order by opened_at desc",
+         where state = 'firing' and engine = 'ipintel' and subject_id = any($1) order by opened_at desc",
     )
     .bind(&nodes)
     .fetch_all(db)
     .await?;
     let anomalies: Vec<Value> = anomalies
         .into_iter()
-        .map(|(id, rule, sev, summary, opened)| json!({"id": id, "rule": rule, "rule_name": notify::rule_name(&rule), "severity": sev, "summary": summary, "opened_at": access::fmt_ts(opened)}))
+        .map(|(id, rule, sev, summary, opened)| json!({"id": id, "rule": rule, "rule_name": meta::rule_label(&rule), "severity": sev, "summary": summary, "opened_at": access::fmt_ts(opened)}))
         .collect();
 
     Ok(json!({

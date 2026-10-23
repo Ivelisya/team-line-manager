@@ -1,14 +1,14 @@
 // 浏览器内 mock：拦截 /api/v1/* 的 fetch 和实时流 WebSocket。VITE_MOCK=1 时由 main.tsx 安装。
 // 有状态：改名、退役、上架、续费等操作都会改内存里的数据，并通过 mock 实时流通知前端刷新。
 
-import type { Availability, AvailabilityDay, EntryView, Incident, Job, JobLog, JobSummary, MachineView, ProbeBucket, ProvisionCheckItem, ProvisionItem, SeriesPoint } from '@/lib/types';
+import type { Availability, AvailabilityDay, EntryView, Incident, Job, JobLog, JobSummary, MachineView, ProbeBucket, ProvisionCheckItem, ProvisionItem, SeriesPoint, SilenceKind } from '@/lib/types';
 import { addDays, addMonths, displayName } from '@/lib/format';
-import { isQuiet, liveRate } from '@/lib/derive';
+import { inheritedValue, isQuiet, liveRate } from '@/lib/derive';
 import { makeDefaultCompare } from '@/lib/sort';
 import { cycleMonths, META, subCalc } from './meta';
 
 const LIFECYCLE_LABEL = META.lifecycles;
-import { buildDb, countryOf, hashStr, IP_STEPS, rng, trafficOf, type Db } from './fixtures';
+import { billingDay, buildDb, countryOf, hashStr, IP_STEPS, refreshFollowers, rng, SUB_FIELDS, syncSub, templateOf, trafficOf, type Db } from './fixtures';
 import { installAccessMock } from './access';
 import { installFxMock, toUsd, usdPerUnit, usdTotal } from './fx';
 import { installPolicyMock } from './policy';
@@ -107,6 +107,10 @@ function finishRetire(m: MachineView) {
   emit({ type: 'machines' });
 }
 /** 距到期天数与服务端算的几项（到期状态、月费、续一期的到期日、每期天数） */
+/** 套餐、供应商改了：没单独设置的订阅项跟着变，同时重算到期状态、月费折算与流量额度 */
+function refreshAllFollowers() {
+  for (const m of db.machines) { refreshFollowers(m, db.plans, db.providers); if (m.subscription) { recomputeDue(m); Object.assign(m, trafficOf(m, db.machines)); } }
+}
 function recomputeDue(m: MachineView) {
   if (m.subscription) { m.subscription.due_days = Math.ceil((new Date(m.subscription.due_date).getTime() - Date.now()) / DAY); subCalc(m.subscription); }
   m.recycle_on = m.spare && m.lifecycle === 'active' && m.subscription ? addDays(m.subscription.due_date, 2) : null; // 备用：到期 + 2 天 0 点起自动回收
@@ -120,6 +124,9 @@ function overview() {
   });
   let up = 0; let down = 0;
   for (const m of live.filter((x) => x.kind !== 'relay')) for (const e of m.entries) { up += e.traffic.month_up; down += e.traffic.month_down; }
+  // 本月数据的起点（同服务端）：在用线路机里有一台月初前就在用就完整，否则取其中最早的首次上架时刻
+  const rf = live.filter((m) => m.kind === 'relay').map((m) => m.month_counted_from);
+  const counted_from = rf.some((t) => !t) ? null : rf.sort()[0] ?? null;
   return {
     nodes: cnt(live.filter((m) => m.kind !== 'relay')), relays: cnt(live.filter((m) => m.kind === 'relay')),
     provisioning: db.machines.filter((m) => m.lifecycle === 'provisioning').length, retiring: db.machines.filter((m) => m.lifecycle === 'retiring').length,
@@ -129,8 +136,7 @@ function overview() {
     online: live.filter((m) => m.agent && !m.host_machine && !isQuiet(m)).length, offline: live.filter((m) => m.agent && !m.host_machine && isQuiet(m)).length,
     due_soon: live.filter((m) => !m.spare && m.subscription?.due_state === 'soon').length, overdue: live.filter((m) => !m.spare && m.subscription?.due_state === 'overdue').length,
     monthly_usd: usdTotal(live.flatMap((m) => (m.subscription ? [m.subscription] : []))),
-    monthly_cost: Object.entries(live.reduce<Record<string, number>>((acc, m) => { if (m.subscription) acc[m.subscription.currency] = (acc[m.subscription.currency] ?? 0) + m.subscription.monthly_cents; return acc; }, {})).map(([currency, cents]) => ({ currency, cents })),
-    traffic_month: { up, down },
+    traffic_month: { up, down, counted_from },
     // 实时速率只算数据没过期的（同 liveRate）；同机 IP 节点的读数就是宿主机的，不重复算
     net_rx_bps: live.reduce((s, m) => s + (m.host_machine ? 0 : liveRate(m)?.rx ?? 0), 0), net_tx_bps: live.reduce((s, m) => s + (m.host_machine ? 0 : liveRate(m)?.tx ?? 0), 0),
   };
@@ -300,13 +306,15 @@ function freeSsPort(hostId: string, extra: number[] = [], except?: string) {
   let p = 8389; while (taken.has(p)) p++;
   return p;
 }
-function checkProvision(items: ProvisionItem[]): ProvisionCheckItem[] {
+/** 检查结果；relay_port 是模拟里给新入口预留的端口（真实接口不返回，网页不看） */
+type MockCheck = ProvisionCheckItem & { relay_port?: number };
+function checkProvision(items: ProvisionItem[]): MockCheck[] {
   const usedNum = new Map<string, Set<number>>();
   for (const m of db.machines) if (m.team && m.number != null && m.lifecycle !== 'retired') { const s = usedNum.get(m.team.id) ?? new Set(); s.add(m.number); usedNum.set(m.team.id, s); }
   const ips = new Map(db.machines.filter((m) => m.lifecycle !== 'retired').map((m) => [m.ip, m.name]));
   const portUsed = new Map<string, number>();
   const ssBatch = new Map<string, number[]>(); // 宿主机 → 这一批分到的 SS 端口
-  const out: ProvisionCheckItem[] = [];
+  const out: MockCheck[] = [];
   const seenIp = new Set<string>();
   for (const it of items) {
     const errors: string[] = [];
@@ -378,7 +386,7 @@ function checkProvision(items: ProvisionItem[]): ProvisionCheckItem[] {
   return out;
 }
 
-function createMachine(it: ProvisionItem, c: ProvisionCheckItem): MachineView {
+function createMachine(it: ProvisionItem, c: MockCheck): MachineView {
   const id = `m-${db.seq++}`;
   // 同机 IP 节点：SSH 端口（只展示）与供应商取宿主机的，不带套餐，SS 端口用检查时暂定的；agent 与主机读数上架中就借用宿主机的（同服务端）
   const h = it.host_id ? machine(it.host_id) : null;
@@ -390,9 +398,9 @@ function createMachine(it: ProvisionItem, c: ProvisionCheckItem): MachineView {
     id, kind: it.kind, name: c.name, team: team ? { id: team.id, name: team.name } : null, spare: team?.spare ?? false, number: it.kind === 'relay' ? null : c.number, label: it.kind === 'relay' ? it.label ?? null : null,
     ip: it.ip, ssh_port: h?.ssh_port ?? it.ssh_port ?? 22, country: it.country ?? countryOf(it.ip), country_set: it.country ?? null, host_machine: h && { id: h.id, name: h.name }, bind_ip: null, ip_nodes: [], provider: pv ? { id: pv.id, name: pv.name } : null, provider_code: pv?.code ?? null,
     plan: plan ? { id: plan.id, name: plan.name, bandwidth_mbps: plan.bandwidth_mbps, traffic_gb: plan.traffic_gb } : null, service_ref: it.service_ref ?? null,
-    lifecycle: 'provisioning', lifecycle_reason: null, note: it.note ?? '', revision: 1, created_at: iso(), activated_at: null, retired_at: null, spare_from: null, spare_since: null, recycle_on: null,
+    sub_template: templateOf(plan ?? undefined, pv ?? undefined), lifecycle: 'provisioning', lifecycle_reason: null, note: it.note ?? '', revision: 1, created_at: iso(), activated_at: null, retired_at: null, spare_from: null, spare_since: null, recycle_on: null,
     subscription: it.subscription?.due_date ? subCalc({ price_cents: it.subscription.price_cents ?? plan?.price_cents ?? 0, currency: plan?.currency ?? META.defaults.currency, cycle: it.subscription.cycle ?? plan?.cycle ?? META.defaults.cycle, due_date: it.subscription.due_date, due_days: 0, billing_tz: it.subscription.billing_tz ?? pv?.timezone ?? META.org_timezone, auto_renew: false, remind_days: pv?.remind_days ?? META.defaults.remind_days, traffic_gb: plan?.traffic_gb || null, traffic_reset_day: 1 } as NonNullable<MachineView['subscription']>) : null,
-    agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, nic: null, month_counted_from: null, quota: { used: 0, period_start: '', period_end: null, mode: 'monthly', counted_from: null, rule: null, base: null }, health: { status: 'unknown', reasons: [{ key: 'provisioning', severity: 'info', text: '上架作业进行中' }] }, active_job: null, failed_job: null, open_incidents: 0, maintenance: false,
+    agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, nic: null, month_counted_from: null, quota: { used: 0, period_start: '', period_end: null, mode: 'monthly', counted_from: null, rule: null, base: null, limit_gb: null, limit_source: 'none' }, health: { status: 'unknown', reasons: [{ key: 'provisioning', severity: 'info', text: '上架作业进行中' }] }, active_job: null, failed_job: null, open_incidents: 0, maintenance: false,
     relay: it.kind === 'relay' ? { public_host: it.ip, generation: 1, applied_generation: 0, applied_at: null, apply_error: null, port_min: 20001, port_max: 20999 } : null,
     tune: it.kind === 'proxy' || h ? null : { profile: null, at: null, current: false, params: null },
   };
@@ -403,6 +411,7 @@ function createMachine(it: ProvisionItem, c: ProvisionCheckItem): MachineView {
     m.entries = [e]; relay.entries.push(e);
   }
   recomputeDue(m); Object.assign(m, trafficOf(m, db.machines));
+  syncSub(m, db.plans, db.providers);
   db.machines.push(m); refreshCounts();
   return m;
 }
@@ -422,7 +431,7 @@ R('GET', '/teams', () => clone(db.teams).map((t) => ({ ...t, monthly_usd: usdTot
 R('POST', '/teams', ({ body }) => {
   if (!body.name?.trim()) throw bad('团队名不能为空');
   if (db.teams.some((t) => t.name === body.name)) throw bad('团队名已存在', 409, 'conflict');
-  const t = { id: `t${db.seq++}`, name: body.name.trim(), sort_order: body.sort_order ?? db.teams.length + 1, spare: false, node_count: 0 };
+  const t = { id: `t${db.seq++}`, name: body.name.trim(), sort_order: body.sort_order ?? db.teams.length + 1, spare: false, node_count: 0, monthly_usd: usdTotal([]) };
   db.teams.push(t); emit({ type: 'catalog' }); return t;
 });
 R('PATCH', '/teams/([^/]+)', ({ params, body }) => {
@@ -454,7 +463,7 @@ R('POST', '/teams/([^/]+)/renumber', ({ params, body }) => {
 R('GET', '/providers', () => clone(db.providers));
 R('POST', '/providers', ({ body }) => {
   if (!body.name || !body.code) throw bad('名称与代码必填');
-  const p = { id: `p${db.seq++}`, name: body.name, code: String(body.code).toUpperCase(), panel_url: body.panel_url || null, timezone: body.timezone || null, traffic_rule: body.traffic_rule ?? META.defaults.traffic_rule };
+  const p = { id: `p${db.seq++}`, name: body.name, code: String(body.code).toUpperCase(), panel_url: body.panel_url || null, timezone: body.timezone || null, traffic_rule: body.traffic_rule ?? META.defaults.traffic_rule, traffic_reset: body.traffic_reset ?? META.defaults.traffic_reset, remind_days: body.remind_days ?? META.defaults.remind_days };
   db.providers.push(p); emit({ type: 'catalog' }); return p;
 });
 R('PATCH', '/providers/([^/]+)', ({ params, body }) => {
@@ -465,7 +474,10 @@ R('PATCH', '/providers/([^/]+)', ({ params, body }) => {
   if (body.panel_url !== undefined) p.panel_url = body.panel_url || null;
   if (body.timezone !== undefined) p.timezone = body.timezone || null; // 空 = 跟随组织时区
   if (body.traffic_rule !== undefined) p.traffic_rule = body.traffic_rule;
-  emit({ type: 'catalog' }); return { id: p.id };
+  if (body.traffic_reset !== undefined) p.traffic_reset = body.traffic_reset;
+  if (body.remind_days !== undefined) p.remind_days = body.remind_days;
+  refreshAllFollowers();
+  emit({ type: 'catalog' }); emit({ type: 'machines' }); return { id: p.id };
 });
 // 删目录项：同中控，还有机器、套餐用着时 409 写明还有什么
 const inUse = (parts: [number, string][]) => parts.filter(([n]) => n > 0).map(([n, w]) => `${n} ${w}`).join('、');
@@ -503,6 +515,7 @@ R('PATCH', '/plans/([^/]+)', ({ params, body }) => {
   const before = { ...p } as Record<string, unknown>;
   const { archived, ...rest } = body; Object.assign(p, rest);
   if (archived === true) p.archived_at = iso(); if (archived === false) p.archived_at = null;
+  refreshAllFollowers();
   // 同中控：审计记套餐名与改了的字段（before / after）；只改了归档的标题写归档 / 取消归档（摘要的改动明细这里从简）
   const after = p as unknown as Record<string, unknown>;
   const keys = Object.keys(after).filter((k) => JSON.stringify(after[k]) !== JSON.stringify(before[k]));
@@ -628,7 +641,12 @@ R('POST', '/machines/([^/]+)/retire', ({ params, body }) => {
 R('PUT', '/machines/([^/]+)/subscription', ({ params, body }) => {
   const m = machine(params[0]);
   if (body.traffic_used_gb !== undefined) throw bad('流量已用改为由 agent 按网卡统计，不再按面板校准', 400, 'bad_request');
-  m.subscription = { traffic_gb: null, traffic_reset_day: null, ...(m.subscription ?? {} as any), ...body, due_days: 0 };
+  // 单独设置的带值，null = 跟随：先按套餐 / 供应商的值填上，再由 syncSub 判定哪些算单独设置（和跟随值相同的按跟随，同服务端）
+  const s = { auto_renew: false, ...(m.subscription ?? {}), due_date: body.due_date, billing_day: billingDay(String(body.due_date), m.subscription?.billing_day), due_days: 0 } as any;
+  if (body.auto_renew !== undefined) s.auto_renew = body.auto_renew;
+  m.subscription = s;
+  for (const k of SUB_FIELDS) s[k] = body[k] ?? inheritedValue(m, k, s.due_date) ?? (k === 'price_cents' ? 0 : null);
+  syncSub(m, db.plans, db.providers);
   recomputeDue(m); Object.assign(m, trafficOf(m, db.machines)); emit({ type: 'machine', id: m.id }); emit({ type: 'machines' }); return clone(m.subscription);
 });
 R('GET', '/machines/([^/]+)/renewals', ({ params }) => clone(db.renewals[params[0]] ?? []));
@@ -636,10 +654,12 @@ R('POST', '/machines/([^/]+)/renewals', ({ params, body }) => {
   const m = machine(params[0]); if (!m.subscription) throw bad('这台机器还没有订阅信息，请先保存订阅');
   // new_due 与 cycles（续几个周期，从当前到期日一次加够）二选一，同服务端
   if ((body.new_due == null) === (body.cycles == null)) throw bad('new_due 与 cycles 要给且只给一个');
-  const newDue: string = body.new_due ?? addMonths(m.subscription.due_date, cycleMonths(m.subscription.cycle) * Number(body.cycles));
+  // 按周期推从账单日算（同服务端：账单日 31 号的 1-31 → 2-28 → 3-31）
+  const onBday = `${m.subscription.due_date.slice(0, 8)}${String(m.subscription.billing_day).padStart(2, '0')}`;
+  const newDue: string = body.new_due ?? addMonths(onBday, cycleMonths(m.subscription.cycle) * Number(body.cycles));
   if (!/^\d{4}-\d{2}-\d{2}$/.test(newDue)) throw bad('新到期日格式应为 YYYY-MM-DD');
   const r = { id: `rn${db.seq++}`, old_due: m.subscription.due_date, new_due: newDue, amount_cents: body.amount_cents ?? m.subscription.price_cents, currency: m.subscription.currency, note: body.note ?? null, actor: db.user, created_at: iso() };
-  (db.renewals[m.id] ??= []).unshift(r); m.subscription.due_date = newDue; recomputeDue(m);
+  (db.renewals[m.id] ??= []).unshift(r); m.subscription.billing_day = billingDay(newDue, m.subscription.billing_day); m.subscription.due_date = newDue; recomputeDue(m);
   emit({ type: 'machine', id: m.id }); emit({ type: 'machines' }); return { id: r.id, old_due: r.old_due, new_due: r.new_due };
 });
 R('POST', '/provision/check', ({ body }) => ({ items: checkProvision(body.items ?? []) }));
@@ -663,6 +683,11 @@ R('POST', '/entries/([^/]+)/actions', ({ params, body }) => {
   else throw bad('未知操作');
   const relay = machine(e.relay.id); if (relay.relay) relay.relay.generation++;
   emit({ type: 'machines' }); emit({ type: 'relay', id: e.relay.id }); return {};
+});
+// 指向入口的软路由出口：mock 的快照按团队造（同退役预览的 exitsUsing），直出入口没有
+R('GET', '/entries/([^/]+)/routers', ({ params }) => {
+  const e = findEntry(params[0]);
+  return e.direct ? [] : exitsUsing(machine(e.node.id)).map((r) => ({ id: r.id, name: r.name, state: 'online', exits: r.exits.map((x) => x.exit) }));
 });
 R('GET', '/entries/([^/]+)/share', ({ params }) => {
   const e = findEntry(params[0]); const relay = machine(e.relay.id);
@@ -748,13 +773,13 @@ R('GET', '/probe-beats', () => probeBeats());
 // 探测点（设置「探测点」）：演示数据只有一个在线的香港探测点、主来源是中控；改主来源、开关、新增只改内存
 const MOCK_PROBES: Record<string, unknown>[] = [{
   id: 'pp-hk', name: '香港', label: '香港探测点', enabled: true, note: '阿里云香港 · Alpine', state: 'online', installed: true, primary: false,
-  last_seen_at: iso(), last_ip: '47.242.0.10', version: '0.1.0+mock', created_at: iso(), bootstrap_expires_at: null, install: null, upgrade: null,
+  last_seen_at: iso(), last_kept_at: iso(), discard_reason: null, last_ip: '47.242.0.10', version: '0.1.0+mock', created_at: iso(), bootstrap_expires_at: null, install: null, upgrade: null, upgrade_failed: null,
   relays: [{ relay_id: 'r1', name: '线路机1', avg_ms: 158, median_ms: 156, total: 120, ok: 120 }],
 }];
 const reachSrc = { primary: 'central', central_enabled: true };
 const reachView = () => {
   const p = MOCK_PROBES.find((x) => x.id === reachSrc.primary);
-  const effective = p ? { state: 'probe', probe_point_id: p.id, label: p.label, primary_label: p.label } : { state: 'central', probe_point_id: null, label: '中控', primary_label: null };
+  const effective = p ? { state: 'probe', probe_point_id: p.id, label: p.label, primary_label: p.label, primary_issue: null } : { state: 'central', probe_point_id: null, label: '中控', primary_label: null, primary_issue: null };
   return { primary: reachSrc.primary, primary_name: p ? p.name : '中控', central_enabled: reachSrc.central_enabled, effective, offline_after_s: 180 };
 };
 R('GET', '/settings/reach-source', () => reachView());
@@ -765,11 +790,24 @@ R('PUT', '/settings/reach-source', ({ body }) => {
   MOCK_PROBES.forEach((p) => { p.primary = p.id === reachSrc.primary; });
   emit({ type: 'settings' }); return reachView();
 });
-R('GET', '/probe-points', () => clone(MOCK_PROBES));
+// 到各线路机的统计窗口（同服务端 ?window=）：每 30 秒一次，1 小时 120 次；长窗口偶尔断几次
+const WIN_HOURS: Record<string, number> = { '1h': 1, '24h': 24, '7d': 168, '30d': 720 };
+R('GET', '/probe-points', ({ query }) => {
+  const window = query.get('window') ?? '1h'; const h = WIN_HOURS[window] ?? 1;
+  return clone(MOCK_PROBES).map((p) => ({ ...p, window, maintenance: inMaint(p.id as string), relays: (p.relays as { total: number; ok: number }[]).map((r) => ({ ...r, total: r.total * h, ok: r.ok * h - Math.floor(h / 24) * 3 })) }));
+});
+// 线路机抽屉的客户入口连通性（同服务端 /reach-quality）：中控只判通不通，香港探测点带建连延迟
+R('GET', '/machines/([^/]+)/reach-quality', ({ params }) => {
+  const m = machine(params[0]);
+  if (m.kind !== 'relay') throw bad('只有线路机有客户入口连通性');
+  const win = (h: number, ms: number | null) => ({ total: 120 * h, ok: 120 * h - Math.floor(h / 24) * 2, avg_ms: ms, median_ms: ms == null ? null : ms - 2 });
+  const w = (ms: number | null) => ({ '24h': win(24, ms), '7d': win(168, ms), '30d': win(720, ms) });
+  return { sources: [{ source: 'central', label: '中控', primary: reachSrc.primary === 'central', windows: w(null) }, { source: 'pp-hk', label: '香港探测点', primary: reachSrc.primary === 'pp-hk', windows: w(158) }] };
+});
 R('POST', '/probe-points', ({ body }) => {
   const b = body as { name: string; note?: string };
   const id = `pp-${MOCK_PROBES.length + 1}`;
-  MOCK_PROBES.push({ id, name: b.name, label: `${b.name}探测点`, enabled: true, note: b.note ?? '', state: 'pending', installed: false, primary: false, last_seen_at: null, last_ip: null, version: null, created_at: iso(), bootstrap_expires_at: iso(), install: null, upgrade: null, relays: [] });
+  MOCK_PROBES.push({ id, name: b.name, label: `${b.name}探测点`, enabled: true, note: b.note ?? '', state: 'pending', installed: false, primary: false, last_seen_at: null, last_ip: null, version: null, created_at: iso(), bootstrap_expires_at: iso(), install: null, upgrade: null, upgrade_failed: null, relays: [] });
   emit({ type: 'settings' });
   return { id, bootstrap: { cmd: `{ curl -fsS https://fleet.example/api/v1/probe-bootstrap/MOCK 2>/dev/null || wget -qO- https://fleet.example/api/v1/probe-bootstrap/MOCK; } | sh`, expires_at: iso() } };
 });
@@ -778,11 +816,47 @@ const PING_GLOBAL = { mode: 'tcp', slots: [['武汉电信', 'hb-ct-v4.ip.zstatic
 const pingView = () => ({ ...clone(PING_GLOBAL), modes: ['tcp', 'icmp'], interval_s: 60, count: 5, tcp_default_port: 80, defaults: clone(PING_GLOBAL) });
 R('GET', '/settings/ping-targets', () => pingView());
 R('PUT', '/settings/ping-targets', ({ body }) => { Object.assign(PING_GLOBAL, body as object); emit({ type: 'settings' }); return pingView(); });
-R('GET', '/ping-beats', () => Object.fromEntries(db.machines.filter((m) => m.kind === 'relay' && m.lifecycle === 'active').map((m) => m.id).map((id, k) => [id, PING_GLOBAL.slots.map((s, slot) => ({ ...s, slot })).filter((s) => s.target).map((s) => {
-  const base = 150 + 15 * s.slot + 10 * k;
-  const cells = Array.from({ length: 20 }, (_, i) => [base + ((i * 7 + s.slot * 3) % 23), (i + s.slot) % 9 === 0 ? 20 : 0]);
-  return { slot: s.slot, name: s.name, target: s.target, mode: PING_GLOBAL.mode, cur_ms: cells[19][0], cur_loss: cells[19][1], cur_ts: iso(), cells };
-})])));
+type PingSlotV = { name: string; target: string };
+type PingOverrideV = { mode?: 'tcp' | 'icmp' | null; slots?: (PingSlotV | null)[] };
+const PING_OVERRIDE = new Map<string, PingOverrideV>();
+/** 这台线路机此刻合成的槽位（覆盖优先，同服务端） */
+const pingSlotsOf = (id: string) => {
+  const o = PING_OVERRIDE.get(id);
+  return PING_GLOBAL.slots.map((g, slot) => { const s = o?.slots?.[slot]; return s ? { ...s, slot, source: 'override' as const } : { ...g, slot, source: 'global' as const }; });
+};
+const pingModeOf = (id: string) => PING_OVERRIDE.get(id)?.mode ?? PING_GLOBAL.mode;
+const relayIds = () => db.machines.filter((m) => m.kind === 'relay' && m.lifecycle === 'active').map((m) => m.id);
+const pingRows = (id: string) => {
+  const k = Math.max(0, relayIds().indexOf(id));
+  return pingSlotsOf(id).filter((s) => s.target).map((s) => {
+    const base = 150 + 15 * s.slot + 10 * k;
+    const cells = Array.from({ length: 20 }, (_, i) => [base + ((i * 7 + s.slot * 3) % 23), (i + s.slot) % 9 === 0 ? 20 : 0]);
+    return { slot: s.slot, name: s.name, target: s.target, mode: pingModeOf(id), cur_ms: cells[19][0], cur_loss: cells[19][1], cur_ts: iso(), cells };
+  });
+};
+const relayOf = (id: string) => { const m = machine(id); if (m.kind !== 'relay') throw bad('不是线路机', 404, 'not_found'); return m; };
+const machinePingView = (id: string) => ({ mode: pingModeOf(id), slots: pingSlotsOf(id), override: clone(PING_OVERRIDE.get(id) ?? null), global: clone(PING_GLOBAL), current: pingRows(id) });
+R('GET', '/ping-beats', () => Object.fromEntries(relayIds().map((id) => [id, pingRows(id)]).filter(([, rows]) => (rows as unknown[]).length)));
+R('GET', '/machines/([^/]+)/ping', ({ params }) => { relayOf(params[0]); return machinePingView(params[0]); });
+R('PUT', '/machines/([^/]+)/ping', ({ params, body }) => {
+  relayOf(params[0]);
+  const o = (body as { override: PingOverrideV | null }).override;
+  if (!o || (o.mode == null && (o.slots ?? []).every((s) => s == null))) PING_OVERRIDE.delete(params[0]); else PING_OVERRIDE.set(params[0], clone(o));
+  emit({ type: 'machine', id: params[0] }); return machinePingView(params[0]);
+});
+R('GET', '/machines/([^/]+)/ping-series', ({ params, query }) => {
+  relayOf(params[0]);
+  const range = query.get('range') ?? '24h';
+  const span: Record<string, number> = { '1h': 3600, '6h': 6 * 3600, '24h': 86400, '7d': 7 * 86400, '30d': 30 * 86400 };
+  if (!span[range]) throw bad('range 不对');
+  const step = span[range] > 86400 ? 3600 : 60;
+  const n = Math.min(span[range] / step, 720); const now = Date.now();
+  return { range, step_s: step, series: pingRows(params[0]).map((r) => ({ slot: r.slot, name: r.name, target: r.target, points: Array.from({ length: n }, (_, i) => {
+    const ts = new Date(now - (n - 1 - i) * step * 1000).toISOString();
+    const c = r.cells[i % 20];
+    return { ts, rtt_ms: c[0], loss_pct: c[1] };
+  }) })) };
+});
 /** 告警的顺序同服务端：进行中在前 → 严重度高在前 → 开始时间新在前；subject_id（只要这台机器的）时不看严重度，只按时间 */
 const SEV_RANK: Record<string, number> = { critical: 0, warning: 1, info: 2 };
 const byState = (a: Incident, b: Incident) => (a.state === b.state ? 0 : a.state === 'firing' ? -1 : 1);
@@ -797,12 +871,13 @@ R('GET', '/incidents', ({ query }) => {
 R('POST', '/incidents/([^/]+)/ack', ({ params }) => { const i = db.incidents.find((x) => x.id === params[0]); if (!i) throw bad('告警不存在', 404, 'not_found'); i.ack_at = iso(); i.ack_by = db.user; emit({ type: 'incidents' }); return {}; });
 /** 静默同服务端：只列没结束的（含还没开始的预约），按开始时间排；新建的校验顺序与中文原因同服务端 */
 const RULE_NAMES = META.rules;
+/** 正在生效、标记为维护的静默的对象 id（null = 全部）。软路由、探测点按这份算 maintenance（同服务端 silence.rs，只按 id 匹配） */
+const maintIds = () => { const now = Date.now(); return new Set(db.silences.filter((s) => s.is_maintenance && Date.parse(s.starts_at) <= now && Date.parse(s.ends_at) > now).map((s) => s.subject_id)); };
+const inMaint = (id: string) => { const ids = maintIds(); return ids.has(null) || ids.has(id); };
 /** 维护中同服务端：正在生效、标记为维护的静默落在这台、它的宿主机或「全部机器」上；维护中的健康不给原因，结束后回到维护前的健康 */
 const preMaint = new Map<string, MachineView['health']>();
 function syncMaint() {
-  const now = Date.now();
-  const live = db.silences.filter((s) => s.is_maintenance && Date.parse(s.starts_at) <= now && Date.parse(s.ends_at) > now);
-  const ids = new Set(live.map((s) => s.subject_id));
+  const ids = maintIds();
   for (const m of db.machines) {
     if (m.lifecycle !== 'active') continue;
     const on = ids.has(null) || ids.has(m.id) || (!!m.host_machine && ids.has(m.host_machine.id));
@@ -822,16 +897,31 @@ R('POST', '/silences', ({ body }) => {
   if (s > now + 90 * DAY) throw bad('最多提前 90 天预约');
   if (body.rule && !RULE_NAMES[body.rule]) throw bad(`没有「${body.rule}」这条告警规则`);
   if (body.rule && body.is_maintenance) throw bad('维护窗口针对整台机器，不能只选一条规则；只想静默这条告警就不要标记为维护');
-  const m = body.subject_id ? db.machines.find((x) => x.id === body.subject_id) : null;
-  if (body.subject_id && !m) throw bad('subject_id 指向的机器不存在');
+  if (body.subject_kind && !body.subject_id) throw bad('给了 subject_kind 就要给 subject_id；全部对象两个都不给');
+  const kind: SilenceKind | null = body.subject_id ? body.subject_kind ?? 'machine' : null;
+  if (kind && !SILENCE_KINDS[kind]) throw bad('subject_kind 只能是 machine / router / probe_point');
+  if (kind && body.rule && ruleKind(body.rule) !== kind) throw bad(`「${RULE_NAMES[body.rule]}」不是${SILENCE_KINDS[kind]}的告警规则`);
+  const name = kind === 'router' ? routersMock.routers().find((x) => x.id === body.subject_id)?.name
+    : kind === 'probe_point' ? MOCK_PROBES.find((x) => x.id === body.subject_id)?.name as string | undefined
+    : kind ? db.machines.find((x) => x.id === body.subject_id)?.name : null;
+  if (kind && !name) throw bad(`subject_id 指向的${SILENCE_KINDS[kind]}不存在`);
   const id = `s${db.seq++}`;
-  db.silences.push({ id, subject_id: m?.id ?? null, subject_name: m?.name ?? null, rule: body.rule ?? null, rule_name: body.rule ? RULE_NAMES[body.rule] : null, starts_at: body.starts_at, ends_at: body.ends_at, is_maintenance: !!body.is_maintenance, comment: body.comment ?? '' });
-  syncMaint(); emit({ type: 'incidents' }); return { id };
+  db.silences.push({ id, subject_kind: kind, subject_id: kind ? body.subject_id : null, subject_name: name ?? null, rule: body.rule ?? null, rule_name: body.rule ? RULE_NAMES[body.rule] : null, starts_at: body.starts_at, ends_at: body.ends_at, is_maintenance: !!body.is_maintenance, comment: body.comment ?? '' });
+  silenceChanged(kind); return { id };
 });
 R('DELETE', '/silences/([^/]+)', ({ params }) => {
-  if (!db.silences.some((s) => s.id === params[0])) throw bad('没有这条静默', 404, 'not_found');
-  db.silences = db.silences.filter((s) => s.id !== params[0]); syncMaint(); emit({ type: 'incidents' }); return { ok: true };
+  const s = db.silences.find((x) => x.id === params[0]);
+  if (!s) throw bad('没有这条静默', 404, 'not_found');
+  db.silences = db.silences.filter((x) => x.id !== params[0]); silenceChanged(s.subject_kind); return { ok: true };
 });
+/** 同服务端 api/incidents.rs：对象类型的叫法、规则属于哪类对象（中控的只能用在全部上） */
+const SILENCE_KINDS: Record<SilenceKind, string> = { machine: '机器', router: '软路由', probe_point: '探测点' };
+const ruleKind = (r: string): SilenceKind | null => (r.startsWith('router_') ? 'router' : r.startsWith('probe_point_') ? 'probe_point' : r.startsWith('central_') ? null : 'machine');
+/** 静默变了：机器的维护中跟上；软路由的（或全部的）发 routers 事件，路由卡片跟上（探测点列表自己 30 秒重取） */
+function silenceChanged(kind: SilenceKind | null) {
+  syncMaint(); emit({ type: 'incidents' });
+  if (kind == null || kind === 'router') emit({ type: 'routers' });
+}
 /** 同中控 api/misc.rs audit_cat：操作记录的分类 */
 const AUDIT_EXEC = new Set(['exec', 'ssh.login', 'terminal.open', 'terminal.close', 'machine.logs', 'server.logs']);
 const auditCat = (action: string) => (action.startsWith('auth.') ? 'auth' : AUDIT_EXEC.has(action) ? 'exec' : /^(machine|entry|relay|subscription|agent|job|renewal)(\.|$)/.test(action) ? 'machine' : 'config');
@@ -848,7 +938,7 @@ installAccessMock(R, () => db.machines);
 installFxMock(R, () => [...new Set([...db.plans.filter((p) => !p.archived_at).map((p) => p.currency), ...db.machines.filter((m) => m.lifecycle !== 'retired' && m.subscription).map((m) => m.subscription!.currency)])],
   () => db.user, () => { db.machines.forEach(recomputeDue); emit({ type: 'settings' }); }, bad);
 installPolicyMock(R, { teams: () => db.teams, machines: () => db.machines, emit, user: () => db.user, bad });
-const routersMock = installRoutersMock(R, { teams: () => db.teams, machines: () => db.machines, incidents: () => db.incidents, emit, bad });
+const routersMock = installRoutersMock(R, { teams: () => db.teams, machines: () => db.machines, incidents: () => db.incidents, maintenance: inMaint, emit, bad });
 installTerminalMock(R, { machines: () => db.machines, routers: routersMock.routers, bad });
 // ---------- 升级 agent ----------
 const UPSTEPS: [string, string][] = [['push', '推送 agent'], ['restart', '重启 agent'], ['verify', '确认上报']];
@@ -995,7 +1085,7 @@ R('GET', '/relays/([^/]+)/evacuate', ({ params, query }) => {
     if (typeof plan === 'string') skipped.push({ machine_id: node.id, name: node.name, reason: plan });
     else jobs.push({ machine_id: node.id, name: node.name, routers: [] });
   }
-  return { from: src.name, to: dst.name, jobs, skipped, warnings: [], share_changed: jobs.length > 0, note: SHARE_NOTE };
+  return { from: src.name, to: dst.name, jobs, skipped, warnings: [], router_restarts: [], share_changed: jobs.length > 0, note: SHARE_NOTE };
 });
 R('POST', '/machines/([^/]+)/move', ({ params, body }) => {
   const m = machine(params[0]);

@@ -26,7 +26,6 @@ mod table;
 use clap::{Args, Parser, Subcommand};
 use client::{Client, Cred};
 use cmds::Ctx;
-use std::path::PathBuf;
 use std::process::ExitCode;
 
 #[derive(Parser)]
@@ -91,17 +90,7 @@ enum PolicyCmd {
         who: String,
     },
     /// 设置草稿（不生效，publish 才应用到线路机）。不写 --domains / --note 就沿用现有的
-    Set {
-        who: String,
-        /// observe | allowlist | denylist | blocked | inherit（仅节点）
-        #[arg(long)]
-        mode: String,
-        /// 域名，逗号或空白分隔；`=example.com` 为精确匹配，否则含子域
-        #[arg(long)]
-        domains: Option<String>,
-        #[arg(long)]
-        note: Option<String>,
-    },
+    Set(policy::SetOpts),
     /// 模拟：草稿生效后最近 24 小时每个节点会被阻止多少连接
     Preview,
     /// 发布全部草稿（先预览，再确认）
@@ -129,30 +118,8 @@ enum PolicyCmd {
 enum SilenceCmd {
     /// 进行中与已预约的静默（含维护窗口），进行中的在前
     Ls,
-    /// 新建静默：一台机器，或 --all（全部机器，要 --yes）。--start 预约开始时间
-    Add {
-        /// 机器（id / 显示名 / 线路机名 / IP）
-        machine: Option<String>,
-        /// 静默全部机器
-        #[arg(long)]
-        all: bool,
-        /// 只静默这条告警规则（规则 key，如 agent_offline；不填 = 全部规则）
-        #[arg(long)]
-        rule: Option<String>,
-        /// 开始时间，组织时区（中控的 org_timezone，默认北京时间；同表格）：2026-10-23 02:00（别的时区写带时区的 2026-10-23T02:00:00+09:00）；不填 = 现在，最多提前 90 天
-        #[arg(long)]
-        start: Option<String>,
-        /// 时长：30m / 4h / 2d，可组合（1h30m）；最长 30 天
-        #[arg(long = "for", value_name = "DURATION")]
-        dur: String,
-        /// 标成维护：卡片显示「维护」，期间暂停健康判定（针对整台机器，不能和 --rule 一起用）
-        #[arg(long)]
-        maintenance: bool,
-        #[arg(long)]
-        comment: Option<String>,
-        #[arg(long)]
-        yes: bool,
-    },
+    /// 新建静默：一台机器、--router 一台软路由、--probe 一个探测点，或 --all（全部，要 --yes）。--start 预约开始时间
+    Add(silence::AddOpts),
     /// 删除静默（id 前缀，见 silence ls 的 id 列）：进行中的提前结束、告警即刻恢复，已预约的取消
     Rm { id: String },
 }
@@ -172,62 +139,14 @@ enum SettingsCmd {
     },
     /// 汇率（计费统一折成 USD）：不带参数看各币种的汇率与来源；<币种> --usd / --per-usd 手动设置（自动更新不再改它），
     /// <币种> --auto 取消手动、改回自动更新的值；--refresh 立即从汇率源更新（默认每天自动一次）
-    Fx {
-        /// 币种代码，如 CNY
-        currency: Option<String>,
-        /// 1 单位该币种合多少 USD，如 0.1404
-        #[arg(long)]
-        usd: Option<f64>,
-        /// 1 USD 合多少该币种，如 7.12（和 --usd 二选一）
-        #[arg(long)]
-        per_usd: Option<f64>,
-        /// 取消手动汇率，改回自动更新的值
-        #[arg(long)]
-        auto: bool,
-        /// 立即从汇率源更新
-        #[arg(long)]
-        refresh: bool,
-        #[arg(long)]
-        yes: bool,
-    },
+    Fx(fx::FxOpts),
 }
 
 #[derive(Subcommand)]
 enum SubscriptionCmd {
     /// 改订阅：先读现有的，只改给了的字段再整份提交；还没有订阅时新建，要给 --due（没有套餐的机器还要 --price）。
     /// 价格、币种、周期、流量上限默认跟随套餐，账单时区、提前提醒、流量重置日跟随供应商；给了值 = 单独设置，给 none = 改回跟随
-    Set {
-        machine: String,
-        /// 价格，如 39.46（币种的主单位，最多两位小数）；none = 跟随套餐
-        #[arg(long)]
-        price: Option<String>,
-        /// 币种代码，如 USD / CNY；none = 跟随套餐
-        #[arg(long)]
-        currency: Option<String>,
-        /// 计费周期：monthly | quarterly | semiannual | yearly；none = 跟随套餐
-        #[arg(long)]
-        cycle: Option<String>,
-        /// 到期日 YYYY-MM-DD（账单时区的日期）。续费请用 renew，会留续费记录
-        #[arg(long)]
-        due: Option<String>,
-        /// 到期自动续费：true | false（到期后中控按周期自动顺延到期日、记一条续费记录，到期前不提醒；不会真的扣款）
-        #[arg(long)]
-        auto_renew: Option<bool>,
-        /// 到期前几天开始提醒（0–60）；none = 跟随供应商
-        #[arg(long)]
-        remind_days: Option<String>,
-        /// 账单时区（IANA 名）：到期与流量周期按它的日期算；none = 跟随供应商
-        #[arg(long)]
-        tz: Option<String>,
-        /// 流量上限 GB（供应商的十进制 GB；0 = 不限）；none = 跟随套餐（同机 IP 节点没有套餐 = 与宿主机共用）
-        #[arg(long)]
-        traffic_gb: Option<String>,
-        /// 流量每月几号重置（1–31，小月没有这一天按月末）；none = 跟随供应商（按账单日 = 到期日几号，或按自然月 = 1 号）
-        #[arg(long)]
-        reset_day: Option<String>,
-        #[arg(long)]
-        yes: bool,
-    },
+    Set(billing::SubSetOpts),
 }
 
 #[derive(Subcommand)]
@@ -395,22 +314,7 @@ enum Cmd {
     /// 费用：订阅（价格、到期、自动续费、提醒、账单时区、流量上限与本周期已用）与最近的续费记录
     Billing { machine: String },
     /// 登记续费：到期日顺延（默认按订阅周期推一个周期）、金额默认取订阅价格；只记账，不会向供应商付款
-    Renew {
-        machine: String,
-        /// 新到期日 YYYY-MM-DD（不写则按订阅周期推 --cycles 个周期，目标月没有那一天时落到月末）
-        #[arg(long, conflicts_with = "cycles")]
-        to: Option<String>,
-        /// 按订阅的计费周期推几个周期（一次付了几期）
-        #[arg(long, default_value_t = 1)]
-        cycles: u32,
-        /// 实付金额，如 39.46（币种同订阅；不写 = 订阅价格 × 周期数，给 --to 时是一个周期的价格）
-        #[arg(long)]
-        amount: Option<String>,
-        #[arg(long)]
-        note: Option<String>,
-        #[arg(long)]
-        yes: bool,
-    },
+    Renew(billing::RenewOpts),
     /// 订阅：费用、到期日、提醒、账单时区、流量上限（看用 billing）
     Subscription {
         #[command(subcommand)]
@@ -568,21 +472,7 @@ enum Cmd {
     },
     /// 在机器上执行命令（需要 exec 权限，全程审计）。多台：逗号分隔或 --team，并发 4。
     /// 单个参数原样当脚本（可含管道）；多个参数会逐个加引号。
-    Exec {
-        /// 机器，可逗号分隔多台
-        machine: Option<String>,
-        #[arg(long)]
-        team: Option<String>,
-        /// 超时秒数（1-600）
-        #[arg(long, default_value_t = 60)]
-        timeout: u64,
-        /// 从文件读脚本
-        #[arg(long)]
-        script: Option<PathBuf>,
-        /// `--` 之后是要执行的命令
-        #[arg(last = true)]
-        command: Vec<String>,
-    },
+    Exec(ops::ExecOpts),
     /// 在中控上直接登录机器（同机 IP 节点登录宿主机）或软路由：不带命令是交互式，`--` 后带命令则执行完退出、退出码同远端。
     /// 只在中控上能用（用中控的 SSH 密钥，要 root）；主机指纹只认中控记下的；每次登录记审计（不记命令内容，要留命令全文用 exec）
     Ssh {
@@ -613,47 +503,9 @@ enum Cmd {
         cmd: KeysCmd,
     },
     /// 审计日志
-    Audit {
-        /// 只看某台机器
-        #[arg(long)]
-        target: Option<String>,
-        #[arg(long, default_value_t = 50)]
-        limit: i64,
-        /// 翻页：只看编号小于它的记录（上一页末尾提示的编号）
-        #[arg(long)]
-        before: Option<i64>,
-        /// 分类：auth（登录与账户）| exec（远程执行）| machine（机器与入口）| config（设置与告警）
-        #[arg(long)]
-        cat: Option<String>,
-        /// 搜索标题、摘要、操作人
-        #[arg(short, long)]
-        q: Option<String>,
-    },
+    Audit(cmds::AuditOpts),
     /// 访问监控：哪个节点访问了哪些域名/IP
-    Access {
-        /// summary（按节点汇总）| targets（域名与 IP）| new（新出现的目标）| sources（来源地址）| events（原始记录）
-        #[arg(default_value = "targets")]
-        view: String,
-        /// 只看某台机器（id / 显示名 / IP）
-        #[arg(long)]
-        node: Option<String>,
-        #[arg(long)]
-        team: Option<String>,
-        /// 1h | 24h | 7d | 30d，不能比汇总的保留期长（见 settings retention）；events 固定取最近记录
-        #[arg(long, default_value = "24h")]
-        window: String,
-        /// 搜索域名（events / sources 也匹配来源 IP）
-        #[arg(long)]
-        search: Option<String>,
-        /// 只看被阻止的连接
-        #[arg(long)]
-        blocked: bool,
-        /// domain | ip
-        #[arg(long)]
-        kind: Option<String>,
-        #[arg(long, default_value_t = 50)]
-        limit: i64,
-    },
+    Access(access::AccessOpts),
     /// 查 IP 的画像（运营商、地点、接入方式）：一个 IP 给详细判定理由，多个给表格；只查中控本地离线库
     Ip {
         #[arg(required = true)]
@@ -725,26 +577,7 @@ enum Cmd {
     },
     /// 替换节点：新节点接替旧节点。软路由上指向旧节点的出口改成新节点的入口（备份、重启 OpenClash、测延迟，失败全部换回），
     /// 旧节点去备用团队（或 --to 指定的团队），新节点接旧编号。不加 --yes 只打印预览
-    Replace {
-        /// 旧节点（id / 显示名 / IP）
-        old: String,
-        /// 新节点
-        #[arg(long = "with")]
-        new: String,
-        /// 旧节点去哪个团队（默认：同团队的备用团队）
-        #[arg(long)]
-        to: Option<String>,
-        /// 旧节点在那个团队里的编号（默认第一个空号）
-        #[arg(long)]
-        number: Option<i32>,
-        /// 不改软路由，只交换编号
-        #[arg(long)]
-        no_routers: bool,
-        #[arg(long)]
-        yes: bool,
-        #[arg(long)]
-        follow: bool,
-    },
+    Replace(lifecycle::ReplaceOpts),
     /// 软路由列表：状态、出口通 / 总、客户端、CPU、内存、WAN 速率
     Routers {
         /// 只看这个团队的
@@ -813,23 +646,6 @@ enum PingCmd {
     },
 }
 
-/// 探测点的安装方式：给 --host 由中控 SSH 登录装（中控用自己的密钥登录 root）；不给就打印一次性安装命令
-#[derive(Args)]
-struct ProbeInstallArgs {
-    /// 探测点的 IP 或主机名（中控 SSH 连得到的）；不给就打印一次性安装命令（30 分钟内有效、只能用一次），在探测点上用 root 执行
-    #[arg(long)]
-    host: Option<String>,
-    /// 探测点的 SSH 端口（默认 22）
-    #[arg(long)]
-    ssh_port: Option<u16>,
-    /// 主机指纹和中控记下的不一样时（确认是重装过系统）重新记录
-    #[arg(long)]
-    reset_host_key: bool,
-    /// 不等安装结束（默认等到收到首次上报）
-    #[arg(long)]
-    no_wait: bool,
-}
-
 #[derive(Subcommand)]
 enum ProbeCmd {
     /// 列表：状态、最近上报、版本、近 1 小时到各线路机的平均延迟；主探测来源与此刻实际用的那一路
@@ -840,14 +656,14 @@ enum ProbeCmd {
         #[arg(long)]
         note: Option<String>,
         #[command(flatten)]
-        install: ProbeInstallArgs,
+        install: probe::InstallArgs,
     },
     /// 重装（换新令牌）：给 --host 由中控 SSH 重装；不给就打印新的一次性安装命令
     Install {
         /// 探测点（id / id 前缀 / 名称）
         probe: String,
         #[command(flatten)]
-        install: ProbeInstallArgs,
+        install: probe::InstallArgs,
     },
     /// 启用 / 停用（停用的拿到空目标、不测；主来源不能停用）、改名、改备注
     Set {
@@ -877,35 +693,13 @@ enum ProbeCmd {
         #[arg(value_parser = ["on", "off"])]
         state: String,
     },
-    /// 升级成中控 dist 里的 fleet-agent：探测点 30 秒内自己下载、核对、替换、重启；默认等它报上新版本
+    /// 升级成中控 dist 里的 fleet-agent：探测点 30 秒内自己下载、核对、替换、重启；默认等它报上新版本。
+    /// 这个版本在它上面换上后跑不起来过（自己换回了旧版本）时中控拒绝（409）：修好后发新版本再升级
     Upgrade {
         probe: String,
         #[arg(long)]
         no_wait: bool,
     },
-}
-
-/// 一键部署的目标（中控要能直接连到路由的 SSH）。密码只从标准输入读，不收参数
-#[derive(Args)]
-struct RouterSshArgs {
-    /// 路由的 IP 或主机名（中控连得到的）；给了就一键部署
-    #[arg(long)]
-    host: Option<String>,
-    /// 路由的 SSH 端口（默认 22）
-    #[arg(long)]
-    port: Option<u16>,
-    /// 登录用户（默认 root）
-    #[arg(long)]
-    user: Option<String>,
-    /// 从标准输入读一行密码（不给就用中控自己的密钥登录：路由上已经授权过中控公钥时）
-    #[arg(long)]
-    password_stdin: bool,
-}
-
-impl RouterSshArgs {
-    fn opts(&self) -> routers::SshOpts<'_> {
-        routers::SshOpts { host: self.host.as_deref(), port: self.port, user: self.user.as_deref(), password_stdin: self.password_stdin }
-    }
 }
 
 #[derive(Subcommand)]
@@ -916,21 +710,7 @@ enum RouterCmd {
         router: String,
     },
     /// 新建：不给 --host 打印接入命令（在路由上用 root 执行，30 分钟内有效）；给 --host 就一键部署（中控登录路由装好隧道）
-    Add {
-        name: String,
-        #[arg(long)]
-        team: Option<String>,
-        #[arg(long)]
-        note: Option<String>,
-        #[command(flatten)]
-        ssh: RouterSshArgs,
-        /// 一键部署要确认
-        #[arg(long)]
-        yes: bool,
-        /// 一键部署：等它结束（失败退出码 1）
-        #[arg(long)]
-        follow: bool,
-    },
+    Add(routers::AddOpts),
     /// 重新生成接入命令：现在的隧道密钥立刻作废、隧道换端口（危险，要 --yes）
     Bootstrap {
         router: String,
@@ -948,7 +728,7 @@ enum RouterCmd {
     Deploy {
         router: String,
         #[command(flatten)]
-        ssh: RouterSshArgs,
+        ssh: routers::SshOpts,
         #[arg(long)]
         yes: bool,
         #[arg(long)]
@@ -969,6 +749,9 @@ enum RouterCmd {
         router: String,
         #[arg(long)]
         yes: bool,
+        /// 有没做完的作业改过它的出口时也删（路由确实回不来了）：作业不再改回它、能收尾，它上面被改过的出口要自己处理
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -1055,35 +838,13 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Series { machine, range, metric } => cmds::series(x, &machine, &range, &metric),
         Cmd::Uptime { machine, days } => cmds::uptime(x, &machine, days),
         Cmd::Billing { machine } => billing::billing(x, &machine),
-        Cmd::Renew { machine, to, cycles, amount, note, yes } => {
-            billing::renew(x, billing::RenewOpts { machine: &machine, to: to.as_deref(), cycles, amount: amount.as_deref(), note: note.as_deref(), yes })
-        }
-        Cmd::Subscription { cmd } => match cmd {
-            SubscriptionCmd::Set { machine, price, currency, cycle, due, auto_renew, remind_days, tz, traffic_gb, reset_day, yes } => billing::subscription_set(
-                x,
-                billing::SubSetOpts {
-                    machine: &machine,
-                    price: price.as_deref(),
-                    currency: currency.as_deref(),
-                    cycle: cycle.as_deref(),
-                    due: due.as_deref(),
-                    auto_renew,
-                    remind_days: remind_days.as_deref(),
-                    tz: tz.as_deref(),
-                    traffic_gb: traffic_gb.as_deref(),
-                    reset_day: reset_day.as_deref(),
-                    yes,
-                },
-            ),
-        },
+        Cmd::Renew(o) => billing::renew(x, o),
+        Cmd::Subscription { cmd: SubscriptionCmd::Set(o) } => billing::subscription_set(x, o),
         Cmd::Incidents { all, machine } => cmds::incidents(x, all, machine.as_deref()),
         Cmd::Ack { id } => cmds::ack(x, &id),
         Cmd::Silence { cmd } => match cmd {
             SilenceCmd::Ls => silence::ls(x),
-            SilenceCmd::Add { machine, all, rule, start, dur, maintenance, comment, yes } => silence::add(
-                x,
-                silence::AddOpts { machine: machine.as_deref(), all, rule: rule.as_deref(), start: start.as_deref(), dur: &dur, maintenance, comment: comment.as_deref(), yes },
-            ),
+            SilenceCmd::Add(o) => silence::add(x, o),
             SilenceCmd::Rm { id } => silence::rm(x, &id),
         },
         Cmd::Jobs { active, kind, limit } => cmds::jobs(x, active, kind.as_deref(), limit),
@@ -1125,7 +886,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Entries { machine } => cmds::entries(x, machine.as_deref()),
         Cmd::Share { entry } => ops::share(x, &entry),
         Cmd::Entry { action, entry, yes, follow } => ops::entry_action(x, action, &entry, yes, follow),
-        Cmd::Exec { machine, team, timeout, script, command } => ops::exec(x, ops::ExecOpts { machine: machine.as_deref(), team: team.as_deref(), timeout, script: script.as_deref(), command: &command }),
+        Cmd::Exec(o) => ops::exec(x, o),
         Cmd::Logs { machine, unit, lines } => cmds::logs(x, &machine, &unit, lines),
         Cmd::ServerLogs { lines } => cmds::server_logs(x, lines),
         Cmd::Keys { cmd } => {
@@ -1136,22 +897,17 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
                 KeysCmd::Revoke { which, auth } => ops::keys_revoke(x, &ka(auth), &which),
             }
         }
-        Cmd::Audit { target, limit, before, cat, q } => cmds::audit(x, cmds::AuditOpts { target: target.as_deref(), limit, before, cat: cat.as_deref(), q: q.as_deref() }),
-        Cmd::Access { view, node, team, window, search, blocked, kind, limit } => access::access(
-            x,
-            access::AccessOpts { view: &view, node: node.as_deref(), team: team.as_deref(), window: &window, search: search.as_deref(), blocked, kind: kind.as_deref(), limit },
-        ),
+        Cmd::Audit(o) => cmds::audit(x, o),
+        Cmd::Access(o) => access::access(x, o),
         Cmd::Ip { ips } => ipintel::ip(x, &ips),
         Cmd::Sources { machine, window, limit } => ipintel::sources(x, &machine, &window, limit),
         Cmd::IpintelStatus => ipintel::status(x),
         Cmd::Settings { cmd: SettingsCmd::Retention { raw, hourly, yes } } => settings::retention(x, raw, hourly, yes),
-        Cmd::Settings { cmd: SettingsCmd::Fx { currency, usd, per_usd, auto, refresh, yes } } => {
-            fx::fx(x, fx::FxOpts { currency: currency.as_deref(), usd, per_usd, auto, refresh, yes })
-        }
+        Cmd::Settings { cmd: SettingsCmd::Fx(o) } => fx::fx(x, o),
         Cmd::Policy { cmd } => match cmd {
             PolicyCmd::Ls => policy::ls(x),
             PolicyCmd::Show { who } => policy::show(x, &who),
-            PolicyCmd::Set { who, mode, domains, note } => policy::set(x, policy::SetOpts { who: &who, mode: &mode, domains: domains.as_deref(), note: note.as_deref() }),
+            PolicyCmd::Set(o) => policy::set(x, o),
             PolicyCmd::Preview => policy::preview(x),
             PolicyCmd::Publish { yes } => policy::publish(x, yes),
             PolicyCmd::Discard { yes } => policy::discard(x, yes),
@@ -1161,32 +917,21 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Watch { count, metrics } => cmds::watch(x, count, metrics),
         Cmd::Move { node, to, from, no_routers, yes, follow } => lifecycle::mv(x, &node, &to, from.as_deref(), no_routers, yes, follow),
         Cmd::Evacuate { relay, to, no_routers, yes, follow } => lifecycle::evacuate(x, &relay, &to, no_routers, yes, follow),
-        Cmd::Replace { old, new, to, number, no_routers, yes, follow } => {
-            lifecycle::replace(x, lifecycle::ReplaceOpts { old: &old, new: &new, to: to.as_deref(), number, no_routers, yes, follow })
-        }
+        Cmd::Replace(o) => lifecycle::replace(x, o),
         Cmd::Routers { team } => routers::ls(x, team.as_deref()),
         Cmd::Router { cmd } => match cmd {
             RouterCmd::Show { router } => routers::show(x, &router),
             RouterCmd::Exits { router, range } => routers::exits(x, &router, &range),
-            RouterCmd::Add { name, team, note, ssh, yes, follow } => {
-                routers::add(x, routers::AddOpts { name: &name, team: team.as_deref(), note: note.as_deref(), ssh: ssh.opts(), yes, follow })
-            }
+            RouterCmd::Add(o) => routers::add(x, o),
             RouterCmd::Bootstrap { router, yes } => routers::bootstrap(x, &router, yes),
-            RouterCmd::Deploy { router, ssh, yes, follow } => routers::deploy(x, &router, ssh.opts(), yes, follow),
+            RouterCmd::Deploy { router, ssh, yes, follow } => routers::deploy(x, &router, ssh, yes, follow),
             RouterCmd::Edit { router, name, team, note } => routers::edit(x, &router, name.as_deref(), team.as_deref(), note.as_deref()),
-            RouterCmd::Rm { router, yes } => routers::rm(x, &router, yes),
+            RouterCmd::Rm { router, yes, force } => routers::rm(x, &router, yes, force),
         },
         Cmd::Probe { cmd } => match cmd {
             ProbeCmd::Ls => probe::ls(x),
-            ProbeCmd::Add { name, note, install: i } => probe::add(
-                x,
-                probe::AddOpts { name: &name, note: note.as_deref(), host: i.host.as_deref(), ssh_port: i.ssh_port, reset_host_key: i.reset_host_key, no_wait: i.no_wait },
-            ),
-            ProbeCmd::Install { probe: q, install: i } => probe::install(
-                x,
-                &q,
-                probe::AddOpts { name: "", note: None, host: i.host.as_deref(), ssh_port: i.ssh_port, reset_host_key: i.reset_host_key, no_wait: i.no_wait },
-            ),
+            ProbeCmd::Add { name, note, install } => probe::add(x, &name, note.as_deref(), &install),
+            ProbeCmd::Install { probe: q, install } => probe::install(x, &q, &install),
             ProbeCmd::Set { probe: q, enable, disable, name, note } => {
                 let en = if enable { Some(true) } else if disable { Some(false) } else { None };
                 probe::set(x, &q, en, name.as_deref(), note.as_deref())
@@ -1265,7 +1010,7 @@ mod tests {
             Err(e) => Err(e.kind()),
         };
         assert_eq!(parse(&["团队2 备用", "--name", "备用", "--yes"]), Ok(("团队2 备用".into(), "备用".into(), true)));
-        assert!(parse(&["备用"]).is_err() && parse(&["备用", "--spare", "true"]).is_err());
+        assert!(parse(&["备用"]).is_err());
     }
 
     /// 供应商 / 套餐：可改项 add 与 set 共用；--archive 与 --unarchive 互斥

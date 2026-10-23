@@ -15,8 +15,8 @@ function useOpenCount(open: boolean): number {
   return s.n;
 }
 
-/** 对话框每次打开都重新挂载（key = 打开次数），表单状态直接从 props 初始化，打开的第一帧就是新值——
- *  以前是打开后由 effect 重置，旧状态会先提交一帧，偶尔能看到上次的输入闪一下。关闭动画期间 key 不变，内容保持原样 */
+/** 对话框每次打开都重新挂载（key = 打开次数），表单状态直接从 props 初始化，打开的第一帧就是新值。
+ *  不要改成打开后用 effect 重置：旧状态会先提交一帧，偶尔能看到上次的输入闪一下。关闭动画期间 key 不变，内容保持原样 */
 export function resetOnOpen<P extends { open: boolean }>(Dialog: ComponentType<P>) {
   return function ResetOnOpen(p: P) {
     return createElement(Dialog, { ...p, key: useOpenCount(p.open) });

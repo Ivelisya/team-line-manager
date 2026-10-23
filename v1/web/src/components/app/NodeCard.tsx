@@ -37,7 +37,7 @@ type Paused = { readonly current: boolean };
 
 /** 标题：国旗 + 名称 + 右侧操作（状态只看底部的胶囊，名称旁不再重复标）。紧凑卡的 IP 在名称下面一行小字（同表格名称列） */
 const Head = memo(function Head({ name, from, country, manual, ip, view, onOpen }: { name: string; from: string | null; country: string | null | undefined; manual: boolean; ip: string; view: CardView; onOpen: Open }) {
-  const btn = <button type="button" className="nc-name" data-tip={from ? `打开 ${name}（原 ${from}）的详情` : `打开 ${name} 的详情`} onClick={() => onOpen()}>{name}</button>;
+  const btn = <button type="button" className="nc-name" data-tip={from ? `打开「${name}」（原 ${from}）的详情` : `打开「${name}」的详情`} onClick={() => onOpen()}>{name}</button>;
   return (
     <header className="nc-head">
       <Flag country={country} manual={manual} ip={ip} />
@@ -82,7 +82,7 @@ const SmallInfo = memo(function SmallInfo({ entry, plan, dueDays, dueState, recy
 function Hold({ m }: { m: MachineView }) {
   const now = useNow(true, 60_000);
   const off = m.agent && !m.agent.online;
-  const text = off ? (m.agent!.last_report_at ? `agent 离线 ${F.span(now - Date.parse(m.agent!.last_report_at))}` : 'agent 尚未上报') : m.lifecycle === 'provisioning' ? '上架完成后开始采集' : '暂无主机指标';
+  const text = off ? (m.agent!.last_report_at ? `agent 离线 ${F.span(now - Date.parse(m.agent!.last_report_at))}` : 'agent 还没上报') : m.lifecycle === 'provisioning' ? '上架完成后才有数据' : '暂无主机数据';
   return <div className="nc-res"><div className="nc-hold"><ServerOff />{text}</div></div>;
 }
 
@@ -101,7 +101,7 @@ function Meters({ m, compact, onOpen }: { m: MachineView; compact?: boolean; onO
   );
 }
 
-/** 网卡速率一列：方向 + 大号读数（按量级着色）、点阵迹线（点击看主机曲线）。实时 / 离线标两列各一个（保持两列等宽对称）；
+/** 网卡速率一列：方向 + 大号读数（按量级着色）、点阵迹线（点击看主机曲线）。「实时」标两列各一个（保持两列等宽对称）；
  *  不配小圆点，只在悬停卡片时轻轻呼吸（cards.css），平时一页几十张卡不跑无限动画 */
 function FlowCol({ dir, rate, values, dots, live, bw, onOpen }: { dir: 'up' | 'down'; rate: number | null; values: number[]; dots?: number; live: boolean; bw: number | null | undefined; onOpen: Open }) {
   const up = dir === 'up';
@@ -113,7 +113,8 @@ function FlowCol({ dir, rate, values, dots, live, bw, onOpen }: { dir: 'up' | 'd
       </div>
       <button type="button" className="flow-trend" data-tip="查看主机曲线" onClick={() => onOpen('host')} aria-label={`${up ? '上行' : '下行'}速率：查看主机曲线`}>
         <DotTrace values={values} n={dots} />
-        <span className="flow-live" data-live={live && rate != null ? '' : undefined}>{!live ? '离线' : rate == null ? '无读数' : '实时'}</span>
+        {/* 离线不再标：资源位的占位块已写明原因和时长，读数只留「—」 */}
+        <span className="flow-live" data-live={live && rate != null ? '' : undefined}>{!live ? '' : rate == null ? '无读数' : '实时'}</span>
       </button>
     </div>
   );
@@ -132,7 +133,7 @@ function Flow({ m, onOpen, totals, compact, paused }: { m: MachineView; onOpen: 
       {totals && (
         <button type="button" className="flow-foot flow-month" data-tip={monthFlowTip(m)} onClick={() => onOpen('traffic')}>
           {t.kind === 'nic' ? <span className="flow-foot-label"><ArrowDownUp />本月</span> : <span className="flow-foot-label"><Globe />本月业务</span>}
-          <span className="flow-vals">{t.kind === 'nic' ? <>↓ 下行 <Num f={F.bytes(t.down)} /> · ↑ 上行 <Num f={F.bytes(t.up)} /></> : <>下载 <Num f={F.bytes(t.down)} /> · 上传 <Num f={F.bytes(t.up)} /></>}<FromTag from={t.from} /></span><span className="sr-only">（查看流量页签）</span>
+          <span className="flow-vals">{t.kind === 'nic' ? <>↓ 下行 <Num f={F.bytes(t.down)} /> · ↑ 上行 <Num f={F.bytes(t.up)} /></> : <>下载 <Num f={F.bytes(t.down)} /> · 上传 <Num f={F.bytes(t.up)} /></>}<FromTag from={t.from} sep /></span><span className="sr-only">（查看流量页签）</span>
         </button>
       )}
     </div>
@@ -157,7 +158,7 @@ function Pair({ cols, tab, label, tip, onOpen }: { cols: { icon: React.ReactNode
 function BizPair({ m, onOpen, today }: { m: MachineView; onOpen: Open; today?: boolean }) {
   const t = monthTraffic(m);
   return <Pair tab="traffic" label="查看流量页签" onOpen={onOpen} tip={monthFlowTip(m)} cols={[
-    { icon: <ArrowDown />, label: '本月下载', value: <Num f={F.bytes(t.down)} />, sub: today && <>今日 <Num f={F.bytes(t.today_down)} /><FromTag from={m.month_counted_from} /></> },
+    { icon: <ArrowDown />, label: '本月下载', value: <Num f={F.bytes(t.down)} />, sub: today && <>今日 <Num f={F.bytes(t.today_down)} /><FromTag from={m.month_counted_from} sep /></> },
     { icon: <ArrowUp />, label: '本月上传', value: <Num f={F.bytes(t.up)} />, sub: today && <>今日 <Num f={F.bytes(t.today_up)} /></> },
   ]} />;
 }
@@ -194,7 +195,7 @@ function QuotaSlot({ m, onOpen, large }: { m: MachineView; onOpen: Open; large?:
             <b className={cn('num', q.rem === 0 && 'is-bad')}>{q.rem == null ? '与宿主机共用' : q.rem > 0 ? <Num f={quotaGb(q.rem)} /> : '已超限'}</b>
           </span>
         )}
-        {q.limit > 0 && <span className="nc-quse" data-tip={quotaTip(m)}>{quotaUsedLabel(q)} <Num f={quotaGb(q.used)} /> / <Num f={limitGb(q.limit)} /><FromTag from={q.from} start={q.start} sep /></span>}
+        {q.limit > 0 && <span className="nc-quse" data-tip={`${quotaUsedLabel(q)} ${F.str(quotaGb(q.used))} / ${F.str(limitGb(q.limit))}\n${quotaTip(m)}`}>{quotaUsedLabel(q)} <Num f={quotaGb(q.used)} /> / <Num f={limitGb(q.limit)} /><FromTag from={q.from} start={q.start} sep /></span>}
       </span>
       {q.rem != null && <Cells pct={q.pct} colors={QUOTA_COLORS} />}
       <span className="sr-only">（查看费用页签）</span>
@@ -210,15 +211,16 @@ function QuotaSlot({ m, onOpen, large }: { m: MachineView; onOpen: Open; large?:
 const BeatSlot = memo(function BeatSlot({ id, kind, lifecycle, reason, reasonKey, onOpen, tcp, tcpTip, egressOk, tcpFail, egressFail, all, off, usable, tcpBad, egressBad, reachBad }: { id: string; kind: MachineView['kind']; lifecycle: MachineView['lifecycle']; reason: string | undefined; reasonKey: string | undefined; onOpen: Open } & ReturnType<typeof probeSummary>) {
   const live = lifecycle === 'active';
   const src = useReachLabel();
-  const relayTip = `入口可用 = 线路机到节点的 TCP 与出口都通的在用入口数（TCP 不通 ${tcpBad} 条 · 出口不通 ${egressBad} 条${off ? ` · 停用 ${off} 条不计` : ''}）。下面的格子是${reachWho(src)}连线路机本身的结果`;
   const bq = useProbeBeats(useCallback((d: ProbeBeats) => d[id], [id]));
   const beats = bq.data;
   const rtt = kind === 'relay' && live ? relayRttMs(beats) : null;
-  const rttTag = rtt == null ? null : <> · <span data-tip={`${src?.label ?? '探测点'}到这台线路机的建连延迟，近 1 小时中位数`}>延迟 <b className="num">{Math.round(rtt)} ms</b></span></>;
+  // 有异常原因时，标题行只留原因和入口可用数（放不下会被截断）；延迟放进入口可用数的悬停
+  const relayTip = `能用的入口数：线路机到节点的 TCP 和出口都通才算\nTCP 不通 ${tcpBad} 条 · 出口不通 ${egressBad} 条${off ? ` · 停用 ${off} 条不计` : ''}\n下面的格子是${reachWho(src)}连线路机的结果${rtt != null && reason ? `\n${src?.label ?? '探测点'}连到这台线路机的延迟 ${Math.round(rtt)} ms（近 1 小时中位数）` : ''}`;
+  const rttTag = rtt == null ? null : <> · <span data-tip={`${src?.label ?? '探测点'}连到这台线路机的延迟，近 1 小时中位数`}>延迟 <b className="num">{Math.round(rtt)} ms</b></span></>;
   const rate = kind === 'proxy' && live ? beatRate(beats) : null;
   const empty = live && bq.isSuccess && !beats?.some((b) => b[0] > 0); // 整条都没有探测：标题写明、格子画虚线，不是 20 格灰块
-  const cap = !live ? <span className="t-muted">{lifecycle === 'retired' ? '已退役' : '尚未开始探测'}</span>
-    : kind === 'relay' && reason ? <><span className="nc-reason" data-tip={reason}>{reasonKey === 'relay_unreachable' ? (reachBad ? `${reachWho(src)}连不上 ${reachBad} 个入口` : `${reachWho(src)}连不上入口`) : reason}</span> · <span data-tip={relayTip}>入口可用 <b className="num">{usable}/{all}</b></span>{rttTag}</>
+  const cap = !live ? <span className="t-muted">{lifecycle === 'retired' ? '已退役' : '还没开始探测'}</span>
+    : kind === 'relay' && reason ? <><span className="nc-reason" data-tip={reason}>{reasonKey === 'relay_unreachable' ? (reachBad ? `${reachWho(src)}连不上 ${reachBad} 个入口` : `${reachWho(src)}连不上入口`) : reason}</span> · <span data-tip={relayTip}>入口可用 <b className="num">{usable}/{all}</b></span></>
     : reason ? <span className="nc-reason" data-tip={reason}>{reason}</span>
     : empty ? <span className="t-muted">暂无探测</span>
     : kind === 'relay' ? <><span data-tip={relayTip}>入口可用 <b className="num" style={usable < all ? { color: 'var(--warn-text)' } : undefined}>{usable}/{all}</b></span>{rttTag}</>
@@ -250,17 +252,23 @@ const RunRow = memo(function RunRow({ activated, sub, recycle }: { activated: st
 // 标签行收起几枚要排版后才数得出。一页几十张卡各在自己的 layout effect 里「读位置 → 写平移」，读写交替，每张卡都逼浏览器重排一次；
 // 改成登记进队列，同一轮提交（或同一轮 ResizeObserver 回调）里的全部卡片在微任务里先统一读、再统一写：整页只排一次版。
 // 微任务在这一轮提交之后、绘制之前跑，收起数用 flushSync 同步重渲染，「+N」不会晚一帧冒出来
-type TagsJob = { list: HTMLDivElement; more: () => HTMLSpanElement | null; cut: number; setCut: (n: number) => void };
+// 列表元素在冲刷时才取（list()）：排进队列到微任务之间卡片可能已卸载（换密度、换分组、翻页），ref 已是 null，跳过它；
+// 没有标签的卡（没设供应商的 VPS 节点）列表是空的：收起数记 0（原来有收起的，标签变成 0 枚时「+N」要去掉）。原来排队时就把元素存下、冲刷时不查，卸载的那张会抛 TypeError，
+// 同一批里排在它后面的卡片都没数，「+N」停在旧值
+type TagsJob = { list: () => HTMLDivElement | null; more: () => HTMLSpanElement | null; cut: number; setCut: (n: number) => void };
 const tagsQueue = new Set<TagsJob>();
 function flushTags() {
   const jobs = [...tagsQueue]; tagsQueue.clear();
   // 读：每张卡放不下的枚数，和「+N」该往左挪多少（最后一枚露出的标签右边到列表右边的空白）
-  const reads = jobs.map((j) => {
-    const el = j.list; const top = (el.firstElementChild as HTMLElement).offsetTop;
+  const reads = jobs.flatMap((j) => {
+    const el = j.list();
+    if (!el?.isConnected) return [];
+    if (!el.firstElementChild) return [{ j, n: 0, dx: 0 }];
+    const top = (el.firstElementChild as HTMLElement).offsetTop;
     let n = 0;
     for (const t of el.children) if ((t as HTMLElement).offsetTop > top) n++;
     const last = el.children[el.children.length - 1 - n];
-    return { j, n, dx: last.getBoundingClientRect().right - el.getBoundingClientRect().right };
+    return [{ j, n, dx: last.getBoundingClientRect().right - el.getBoundingClientRect().right }];
   });
   // 写：收起数变了的重渲染（之后的 layout effect 会再排一轮队、量出新的平移）；没变的直接写平移
   const changed = reads.filter((r) => r.n !== r.j.cut);
@@ -285,8 +293,8 @@ const Tags = memo(function Tags({ code, provider, kind, maintenance, price, pric
   const more = useRef<HTMLSpanElement>(null);
   const [cut, setCut] = useState(0);
   const job = useRef<TagsJob | null>(null);
-  job.current ??= { list: null!, more: () => more.current, cut: 0, setCut };
-  const count = useCallback(() => { const j = job.current!; j.list = list.current!; queueTags(j); }, []);
+  job.current ??= { list: () => list.current, more: () => more.current, cut: 0, setCut };
+  const count = useCallback(() => { if (list.current) queueTags(job.current!); }, []);
   useLayoutEffect(() => { job.current!.cut = cut; count(); }, [count, code, provider, kind, maintenance, price, host, nodes, cut]);
   useEffect(() => watchSize(list.current!.parentElement!, count), [count]); // 看整行：行宽只随卡片变，「+N」进出不会让它再触发
   return (
@@ -347,12 +355,14 @@ const CardBody = memo(function CardBody({ m, view, current, onOpen: open, layout
   const quiet = isQuiet(m);
   const info: Info = { id: m.id, ip: m.ip, sshPort: m.ssh_port, entry: entryText(m), plan: m.plan, host: m.host_machine, nodes: m.ip_nodes };
   const tags = <Tags code={m.provider_code} provider={m.provider} kind={m.kind} maintenance={m.maintenance} price={subLabel(m)} priceTip={priceHint(m.subscription)} id={m.id} host={m.host_machine} nodes={m.ip_nodes} />;
-  const reason = m.lifecycle === 'active' && m.health.status === 'down' && m.health.reasons[0] ? errText(m.health.reasons[0].text) : undefined;
+  // 探测行的标题只讲探测：agent 离线已由资源位的占位块和状态标说过，这里跳过它，取下一条原因（没有就照常写读数）
+  const r0 = m.health.reasons.find((r) => r.key !== 'agent_offline');
+  const reason = m.lifecycle === 'active' && m.health.status === 'down' && r0 ? errText(r0.text) : undefined;
   // 线路机：心跳格（主探测来源 → 客户入口，可用性）下面接三网 PING（线路机往外，线路质量）
-  const beat = <section className="slot-seg"><BeatSlot id={m.id} kind={m.kind} lifecycle={m.lifecycle} reason={reason} reasonKey={m.health.reasons[0]?.key} onOpen={onOpen} {...probeSummary(m)} />{m.kind === 'relay' && m.lifecycle === 'active' && <PingRows id={m.id} onOpen={onOpen} />}</section>;
+  const beat = <section className="slot-seg"><BeatSlot id={m.id} kind={m.kind} lifecycle={m.lifecycle} reason={reason} reasonKey={r0?.key} onOpen={onOpen} {...probeSummary(m)} />{m.kind === 'relay' && m.lifecycle === 'active' && <PingRows id={m.id} onOpen={onOpen} />}</section>;
   const sv = showOf(m, show, view);
   const res = proxy ? <BizPair m={m} onOpen={onOpen} today={view === 'large'} /> : <Meters m={m} compact={view !== 'large'} onOpen={onOpen} />;
-  // 还没有主机读数的（上架中、没上报过）照样是速率两列：读数「—」、标「离线」
+  // 还没有主机读数的（上架中、没上报过）照样是速率两列：读数「—」
   const flow = proxy ? <ProbePair m={m} onOpen={onOpen} /> : <Flow m={m} onOpen={onOpen} totals={view === 'large'} compact={view === 'compact'} paused={paused} />;
 
   return (

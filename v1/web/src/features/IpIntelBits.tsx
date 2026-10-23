@@ -34,7 +34,7 @@ export function IspPlace({ intel }: { intel: IpIntel | null | undefined }) {
 /** 来源行的接入方式：我方机器和非公网地址不判断接入方式 */
 export function ConnCell({ intel }: { intel: IpIntel | null | undefined }) {
   if (!intel) return <span className="t-muted">—</span>;
-  if (intel.internal) return <Chip variant="neutral" tip={`我方机器：${intel.internal}`}>我方 · {intel.internal}</Chip>;
+  if (intel.internal) return <Chip variant="neutral" tip={`自有机器：${intel.internal}`}>自有 · {intel.internal}</Chip>;
   if (intel.private) return <Chip variant="neutral">非公网</Chip>;
   return <ConnPill intel={intel} />;
 }
@@ -52,14 +52,14 @@ function dbDate(f: IpIntelFile): string {
   const secs = f.build && /^\d{9,}$/.test(f.build) ? Number(f.build) : f.mtime;
   return secs ? `${F.dt(new Date(secs * 1000).toISOString()).slice(0, 5)} 更新` : '';
 }
-const dbLine = (f: IpIntelFile) => `${DB_NAME[f.id] ?? '其它库'}：${f.loaded ? dbDate(f) || '已加载' : '未加载'}`;
+const dbLine = (f: IpIntelFile) => `${DB_NAME[f.id] ?? '其他库'}：${f.loaded ? dbDate(f) || '已加载' : '未加载'}`;
 
 /** IP 库状态：访问监控页右上角的小徽标；悬停看各库明细 */
 export function IpIntelStatusChip() {
   const q = useIpIntelStatus();
   const s = q.data;
   if (!s) return null;
-  if (!s.enabled) return <Pill tone="neutral" tip="IP 情报已在中控配置里关闭">IP 库已关闭</Pill>;
+  if (!s.enabled) return <Pill tone="neutral" tip="IP 库已在中控配置里关闭">IP 库已关闭</Pill>;
   if (!s.installed) return <Pill tone="warn" tip={INSTALL_CMD}>IP 库未安装</Pill>;
   const ready = s.loaded >= s.expected;
   return <Pill tone={ready ? 'ok' : 'warn'} tip={s.files.map(dbLine).join('\n')}>{ready ? 'IP 库已就绪' : `IP 库不全 ${s.loaded}/${s.expected}`}</Pill>;
@@ -69,8 +69,8 @@ export function IpIntelStatusChip() {
 export function IpIntelHint() {
   const s = useIpIntelStatus().data;
   if (!s || (s.enabled && s.loaded >= s.expected)) return null;
-  const [text, why] = !s.enabled ? ['IP 情报已关闭', '不显示运营商与城市；在中控配置里打开'] : !s.installed ? ['IP 库未安装', INSTALL_CMD]
-    : ['IP 库不全', `部分来源的画像查不到。${s.files.filter((f) => !f.loaded).map(dbLine).join('，')}；${INSTALL_CMD}`];
+  const [text, why] = !s.enabled ? ['IP 库已关闭', '不显示运营商与城市；在中控配置里打开'] : !s.installed ? ['IP 库未安装', INSTALL_CMD]
+    : ['IP 库不全', `部分来源查不到运营商和城市。缺少：${s.files.filter((f) => !f.loaded).map(dbLine).join('，')}\n${INSTALL_CMD}`];
   return <Note tone="warn" icon={<ShieldQuestion size={16} />}>{text} <InfoTip text={why} /></Note>;
 }
 
@@ -115,23 +115,25 @@ export function SourceProfile({ id, window, relay }: { id: string; window: Profi
   const outside = d.internal_conns + d.private_conns;
   // 学习期说明、已学基线、没计入的我方 / 内网连接都放进同一个 (i)
   const learnTip = [
-    `学习期 ${d.learning.learn_days} 天，从第一条来源记录开始算，期间只学习不告警；结束后出现的新运营商、新城市、机房来源会告警。`,
-    known > 0 ? `已学基线：${d.known.isp.length} 个运营商、${d.known.city.length} 个城市。` : '',
-    outside > 0 ? `另有 ${outside.toLocaleString('zh-CN')} 次连接来自我方机器或内网，未计入。` : '',
+    `前 ${d.learning.learn_days} 天是学习期，只记录不告警。之后出现新的运营商、城市或机房来源，会告警`,
+    known > 0 ? `已记住 ${d.known.isp.length} 个运营商、${d.known.city.length} 个城市。` : '',
+    outside > 0 ? `另有 ${outside.toLocaleString('zh-CN')} 次连接来自自有机器或内网，没有计入` : '',
   ].filter(Boolean).join('\n');
   const span = window === '24h' ? '24 小时' : window === '7d' ? '7 天' : '30 天';
+  const relayTip = relay && <InfoTip text="汇总这台线路机名下所有节点的外部来源" />;
   return (
     <Section>
-      <SectionHeader title="来源画像" meta={<>近 {span} · {d.total_sources} 个来源{relay && <InfoTip text="汇总这台线路机名下所有节点的外部来源" />}</>} />
+      {/* IP 库没装：查不出运营商、城市，计数和三格分布都是空的，只留一行说明（来源 IP 本身在下面的「来源地址」里） */}
+      <SectionHeader title="来源画像" meta={d.degraded ? <>近 {span}{relayTip}</> : <>近 {span} · {d.total_sources} 个来源{relayTip}</>} />
       {/* 换时间范围、新数据未到时沿用的旧画像调淡（components.css [data-stale]） */}
       <div data-stale={q.isPlaceholderData}>
-        {d.degraded && <Note tone="warn" icon={<ShieldQuestion size={16} />}>IP 库未安装 <InfoTip text={INSTALL_CMD} /></Note>}
-        {d.empty ? <div className="hint">这段时间没有来源记录</div> : d.total_conns === 0 && !d.degraded ? <div className="hint">只有我方机器或内网的连接</div> : (
+        {d.degraded ? <Note tone="warn" icon={<ShieldQuestion size={16} />}>IP 库未安装，暂无运营商、城市画像 <InfoTip text={INSTALL_CMD} /></Note>
+          : d.empty ? <div className="hint">这段时间没有来源记录</div> : d.total_conns === 0 ? <div className="hint">只有自有机器或内网的连接</div> : (
           <>
             <div className="dist-grid">
-              <Dist title="运营商" items={d.distribution.isp} empty={d.degraded ? '查不到' : undefined} />
-              <Dist title="城市" items={d.distribution.city} empty={d.degraded ? '查不到' : undefined} />
-              <Dist title="接入方式" items={d.distribution.conn_type} empty={d.degraded ? '查不到' : undefined} />
+              <Dist title="运营商" items={d.distribution.isp} />
+              <Dist title="城市" items={d.distribution.city} />
+              <Dist title="接入方式" items={d.distribution.conn_type} />
             </div>
             <div className="hint" style={{ marginTop: 8 }}>{learningText(d.learning)} <InfoTip text={learnTip} /></div>
             {d.known.isp.some((k) => k.anomaly) && (

@@ -91,8 +91,6 @@ fn cn_carriers() {
     assert_eq!(bj.isp, "中国移动");
     assert_eq!(bj.asn, Some(9808));
 
-    let km = fleet_ipintel::distance_km((zz.lat.unwrap(), zz.lon.unwrap()), (gz.lat.unwrap(), gz.lon.unwrap()));
-    assert!((1200.0..1400.0).contains(&km), "郑州—广州 {km} km");
 }
 
 #[test]

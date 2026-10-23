@@ -1,5 +1,7 @@
 // fleet 软路由采集：中控每 30 秒经隧道执行一次（随 fleet-server 编进去，经 stdin 交给 sh -s，路由上不装东西），只读。
 // 输出一行紧凑 JSON：系统、接口、OpenClash / mihomo 的汇总（每个出口、每个来源 IP 的连接数与这段时间的流量）、DHCP 租约、邻居表。
+// FLEET_MODE=delay 时只测出口延迟（每 5 分钟一次，中控另起一次执行、单独的时限），输出 {v, now, oc: {delay}}；
+// FLEET_MANAGED 是 fleet 出口（对上了 fleet 入口的）的名字（JSON 数组）：先测它们，没通的重测名额也先给它们。
 // mihomo 的 API 密钥（uci 的 dashboard_password）只在本机读来用，写在 0600 的 /tmp/fleet-collect/auth 里给 curl，不回传。
 // 上一次的 CPU 计数、各连接的字节数存在 /tmp/fleet-collect/（tmpfs），用来算 CPU 使用率与各出口这段时间的流量
 // （同一连接两次之差累加，新连接全算，关掉的连接最后一段会漏掉：估计值）。
@@ -8,8 +10,14 @@
 let fs = require('fs');
 
 const D = '/tmp/fleet-collect';
-const DELAY = getenv('FLEET_DELAY') == '1';
+const MODE = getenv('FLEET_MODE');
 const DELAY_URL = getenv('FLEET_DELAY_URL');
+let MANAGED = {};
+try {
+	for (let x in (json(getenv('FLEET_MANAGED') || '[]') || []))
+		MANAGED[x] = true;
+}
+catch (e) {}
 // mihomo /proxies 里不是出口的：内置的与各种组（PassRule 是较新 alpha 内核才有的内置 PASS-RULE）
 const SKIP = { Direct: true, Reject: true, RejectDrop: true, Pass: true, PassRule: true, Compatible: true, Dns: true,
 	Selector: true, URLTest: true, Fallback: true, LoadBalance: true, Relay: true, Smart: true };
@@ -308,27 +316,45 @@ function delay_batch(port, names, results) {
 }
 
 // 测一次全部出口：分批，每批最多 BATCH 个并发（不用 /group/GLOBAL/delay：它让全部出口同一时刻经家宽各建一条跨境连接、
-// 共用一个时限，挤在一起丢一两个握手包就超时）。整批测完没通的（不超过 RETEST_MAX 个时）当场单独再测一次，通了就算这一轮通；
-// 没通的太多多半是路由自己的网络断了，不重测。时间预算：开测 BUDGET 秒后不再开新的一批，重测也只在 RETEST_BUDGET 秒内开始；
-// 没轮到的、mihomo 没回话的记进 untested（中控沿用上一次的结果，不算不通），起点按分钟轮换，超预算时不总是同几个轮不上。
-// results 只有通的出口，同 mihomo 分组测试的格式
-const BATCH = 6, RETEST_MAX = 5, BUDGET = 15, RETEST_BUDGET = 20;
+// 共用一个时限，挤在一起丢一两个握手包就超时）。fleet 出口排在前面，各自起点按分钟轮换（超预算时不总是同几个轮不上）。
+// 整批测完没通的 fleet 出口不超过 RETEST_MAX 个时当场单独再测一次（名额有剩的给其余没通的出口），通了就算这一轮通；
+// 没通的 fleet 出口太多多半是路由自己的网络断了，不重测；客户自己的死节点不占名额、也不挡 fleet 出口的重测。
+// 时间预算：开测 BUDGET 秒后不再开新的一批，重测也只在 RETEST_BUDGET 秒内开始（中控给这次执行 45 秒）；
+// 没轮到的、mihomo 没回话的记进 untested（中控沿用上一次的结果，不算不通）。results 只有通的出口，同 mihomo 分组测试的格式
+const BATCH = 6, RETEST_MAX = 5, BUDGET = 22, RETEST_BUDGET = 28;
+
+function rotated(a) {
+	let n = length(a), k = (n > 0) ? int(time() / 60) % n : 0, r = [];
+	for (let i = 0; i < n; i++)
+		push(r, a[(i + k) % n]);
+	return r;
+}
 
 function delay(oc, port) {
-	let n = length(oc.proxies), k = (n > 0) ? int(time() / 60) % n : 0, names = [];
-	for (let i = 0; i < n; i++)
-		push(names, oc.proxies[(i + k) % n].name);
-	let results = {}, untested = [], t0 = time(), i = 0;
+	let all = map(oc.proxies, (p) => p.name);
+	let names = rotated(filter(all, (x) => MANAGED[x]));
+	for (let x in rotated(filter(all, (x) => !MANAGED[x])))
+		push(names, x);
+	let n = length(names), results = {}, untested = [], t0 = time(), i = 0;
 	for (; i < n && time() - t0 < BUDGET; i += BATCH)
 		for (let x in delay_batch(port, slice(names, i, i + BATCH), results)[1])
 			push(untested, x);
 	for (let x in slice(names, i))
 		push(untested, x);
 	let failed = filter(names, (x) => results[x] == null && index(untested, x) < 0);
+	let fm = filter(failed, (x) => MANAGED[x]), fo = filter(failed, (x) => !MANAGED[x]), retry = [];
+	if (length(fm) > 0 && length(fm) <= RETEST_MAX) {
+		retry = fm;
+		for (let x in fo)
+			if (length(retry) < RETEST_MAX)
+				push(retry, x);
+	}
+	else if (length(fm) == 0 && length(fo) <= RETEST_MAX)
+		retry = fo;
 	oc.delay = { ok: true, results: results, untested: untested };
-	if (length(failed) > 0 && length(failed) <= RETEST_MAX && time() - t0 < RETEST_BUDGET) {
-		let r = delay_batch(port, failed, results);
-		oc.delay.retest = { tried: failed, ok: r[0] };
+	if (length(retry) > 0 && time() - t0 < RETEST_BUDGET) {
+		let r = delay_batch(port, retry, results);
+		oc.delay.retest = { tried: retry, ok: r[0] };
 	}
 }
 
@@ -362,8 +388,27 @@ function openclash() {
 	oc.version = v.data.version;
 	connections(oc, port);
 	proxies(oc, port);
-	if (DELAY && DELAY_URL && oc.proxies != null)
+}
+
+// 只测延迟（FLEET_MODE=delay）：OpenClash 没在跑、API 调不通时 delay.ok = false 并写明原因（中控不算出口不通）
+function delay_only() {
+	let oc = { delay: { ok: false } };
+	out.oc = oc;
+	let port = uci('cn_port');
+	if (!words(run('pidof clash 2>/dev/null || pidof mihomo 2>/dev/null'))[0] || port == null || !match(port, /^[0-9]+$/)) {
+		oc.delay.error = 'OpenClash 没在运行';
+		return;
+	}
+	let secret = uci('dashboard_password');
+	fs.writefile(D + '/auth', (secret != null) ? 'Authorization: Bearer ' + secret + '\n' : '');
+	proxies(oc, port);
+	if (oc.proxies == null) {
+		oc.delay.error = 'mihomo 的 API 调不通';
+		return;
+	}
+	if (DELAY_URL)
 		delay(oc, port);
+	delete oc.proxies;
 }
 
 function clients() {
@@ -389,7 +434,7 @@ function clients() {
 	}
 }
 
-for (let step in [system, ifaces, openclash, clients]) {
+for (let step in ((MODE == 'delay') ? [delay_only] : [system, ifaces, openclash, clients])) {
 	try {
 		step();
 	}

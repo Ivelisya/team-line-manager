@@ -160,18 +160,33 @@ async fn summary_targets_sources_events() {
     }
     assert_eq!(src1(&t.get("/api/v1/access/summary?window=24h&kind=all&action=all").await), 5, "all 等于没筛");
 
-    // ── 7d / 30d 窗口；30d 里再塞一条 20 天前的小时汇总 ──
+    // ── 7d / 30d 窗口（整天的部分读天表，首尾读小时表）；30d 里再塞一条 20 天前的小时汇总，重算那个小时时那天的天汇总跟着重算 ──
     let d = t.get("/api/v1/access/summary?window=7d").await;
     assert_eq!(row(&d, "nodes", "name", "团队1-01")["conns"], 19);
+    let day20 = fleet_server::db::floor_hour(OffsetDateTime::now_utc() - Duration::days(20));
     sqlx::query("insert into access_hourly (node_id, relay_id, hour, dest_host, kind, conns) values ($1, $2, $3, 'seeded.example.com', 'domain', 7)")
         .bind(n1)
         .bind(fx.relay)
-        .bind(fleet_server::db::floor_hour(OffsetDateTime::now_utc() - Duration::days(20)))
+        .bind(day20)
         .execute(&t.st.db)
         .await
         .unwrap();
+    assert_eq!(row(&t.get("/api/v1/access/summary?window=30d").await, "nodes", "name", "团队1-01")["conns"], 19, "天表还没算到它");
+    access::rollup_hour(&t.st.db, day20).await.unwrap();
     assert_eq!(row(&t.get("/api/v1/access/summary?window=7d").await, "nodes", "name", "团队1-01")["conns"], 19);
     assert_eq!(row(&t.get("/api/v1/access/summary?window=30d").await, "nodes", "name", "团队1-01")["conns"], 26);
+    // 天表就是小时表按天的合计（两个方向都没有多出来的行）
+    let by_day = "select node_id, relay_id, date_trunc('day', hour, 'UTC'), dest_host, min(kind), sum(conns), sum(blocked), max(sources) from access_hourly group by 1, 2, 3, 4";
+    let daily = "select node_id, relay_id, day, dest_host, kind, conns, blocked, sources from access_daily";
+    for (a, b) in [(by_day, daily), (daily, by_day)] {
+        let n: i64 = sqlx::query_scalar(&format!("select count(*) from ({a} except {b}) x")).fetch_one(&t.st.db).await.unwrap();
+        assert_eq!(n, 0, "{a} except {b}");
+    }
+    // 整天部分里的目标照样能搜、按目标展开、按线路机筛（5 天前的 week.example.org 只在天表里）
+    assert_eq!(hosts(&t.get("/api/v1/access/targets?window=7d&search=week").await), ["week.example.org"]);
+    let d = t.get(&format!("/api/v1/access/targets?window=7d&target=week.example.org&team={}", fx.team1)).await;
+    assert_eq!(item(&d, "week.example.org", "团队1-01")["conns"], 1);
+    assert!(t.get(&format!("/api/v1/machines/{}/access?window=7d", fx.relay)).await["top_domains"].to_string().contains("week.example.org"));
 
     // ── 筛选 ──
     let d = t.get("/api/v1/access/summary?window=24h&action=blocked").await;
@@ -479,9 +494,14 @@ async fn new_targets_machine_and_idempotent_rollup() {
             .await
             .unwrap();
     }
+    access::rollup_hour(&t.st.db, fleet_server::db::floor_hour(OffsetDateTime::now_utc() - Duration::days(32))).await.unwrap();
+    let gone = "select count(*) from access_hourly where dest_host = 'gone.example.com'";
+    let gone_daily = "select count(*) from access_daily where dest_host = 'gone.example.com'";
+    assert_eq!(sqlx::query_scalar::<_, i64>(gone_daily).fetch_one(&t.st.db).await.unwrap(), 1);
     access::prune(&t.st.db, t.st.access_retention(), t.st.profile_days()).await.unwrap();
-    let n: i64 = sqlx::query_scalar("select count(*) from access_hourly where dest_host = 'gone.example.com'").fetch_one(&t.st.db).await.unwrap();
-    assert_eq!(n, 0);
+    for sql in [gone, gone_daily] {
+        assert_eq!(sqlx::query_scalar::<_, i64>(sql).fetch_one(&t.st.db).await.unwrap(), 0, "{sql}");
+    }
     let seen: Vec<String> = sqlx::query_scalar("select dest_host from access_target_seen where dest_host like 'seen%'").fetch_all(&t.st.db).await.unwrap();
     assert_eq!(seen, ["seen30.example.com"]);
 }

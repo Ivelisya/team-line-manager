@@ -2,7 +2,7 @@
 //! 都是先看预检/校验、确认后才提交作业；作业本身的进度用 `fleetctl job <id> --follow` 看。
 
 use crate::cmds::{self, outln, st, Ctx};
-use crate::ops::{confirm, lookup};
+use crate::ops::confirm;
 use crate::resolve::Want;
 use crate::table;
 use anyhow::bail;
@@ -18,27 +18,12 @@ fn find_relay(ctx: &Ctx, q: &str) -> anyhow::Result<Value> {
     Ok(m)
 }
 
-fn follow_jobs(ctx: &Ctx, d: &Value) -> anyhow::Result<u8> {
-    let mut code = 0;
-    let jobs: Vec<Value> = match d["jobs"].as_array() {
-        Some(a) => a.clone(),
-        None => vec![d.clone()],
-    };
-    for j in jobs {
-        code = code.max(cmds::follow_job(ctx, &st(&j, "/job_id"))?);
-    }
-    Ok(code)
-}
-
 /// 预览里要改的软路由出口（替换、换线路机、搬空同一个格式）：软路由、状态、出口、现在、改成
 fn exit_rows(routers: &[Value], node: Option<&str>) -> Vec<Vec<String>> {
     let mut t = vec![];
     for r in routers {
-        let state = match r["state"].as_str() {
-            Some("online") => "在线",
-            Some("offline") => "离线",
-            _ => "未接入",
-        };
+        let state = st(r, "/state");
+        let state = crate::routers::state_cn(&state);
         for e in r["exits"].as_array().cloned().unwrap_or_default() {
             let to = e["error"].as_str().map_or_else(|| st(&e, "/to"), |x| format!("对不上：{x}"));
             let mut row = vec![st(r, "/name"), state.to_string(), st(&e, "/exit"), st(&e, "/from"), to];
@@ -102,6 +87,16 @@ pub fn mv(ctx: &Ctx, node: &str, to: &str, from: Option<&str>, no_routers: bool,
     Ok(0)
 }
 
+/// 搬空预览的 router_restarts：同批一起改，每台路由只重启 1 次 OpenClash（断开这台路由上的全部连接）
+fn restart_lines(pv: &Value) -> Vec<String> {
+    pv["router_restarts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|r| format!("软路由 {} 的 {} 个节点的出口一起改，OpenClash 重启 1 次（断开它上面全部连接）", st(r, "/name"), st(r, "/nodes")))
+        .collect()
+}
+
 /// 线路机视图里将被搬走的入口：在用、待应用、停用的。直出入口不搬：退役线路机时随之摘除
 fn moving_entries(relay: &Value) -> Vec<Value> {
     let es = relay["entries"].as_array().map(Vec::as_slice).unwrap_or_default();
@@ -133,7 +128,10 @@ pub fn evacuate(ctx: &Ctx, relay: &str, to: &str, no_routers: bool, yes: bool, f
             if no_routers {
                 outln(format!("软路由：不改（--no-routers）{}", if ex.is_empty() { String::new() } else { format!("，{} 个出口指向这些入口，摘掉后就断了", ex.len()) }));
             } else if !ex.is_empty() {
-                outln(format!("{EXITS_HEAD}；同一台软路由一次只改一个节点，其余排队：\n{}", table::render(&["节点", "软路由", "状态", "出口", "现在", "改成"], &ex)));
+                outln(format!("{EXITS_HEAD}；各节点验收完新入口后一起改，每台软路由只改一次：\n{}", table::render(&["节点", "软路由", "状态", "出口", "现在", "改成"], &ex)));
+                for line in restart_lines(&pv) {
+                    outln(format!("注意：{line}"));
+                }
             }
             for k in pv["skipped"].as_array().cloned().unwrap_or_default() {
                 outln(format!("会跳过 {}：{}", st(&k, "/name"), st(&k, "/reason")));
@@ -171,33 +169,47 @@ pub fn evacuate(ctx: &Ctx, relay: &str, to: &str, no_routers: bool, yes: bool, f
         s
     });
     let skipped = d["skipped"].as_array().map(|a| a.len()).unwrap_or(0);
-    let mut code = if follow { follow_jobs(ctx, &d)? } else { 0 };
+    // 提交结果是 {jobs:[…]} 或单个作业
+    let mut code = if follow { cmds::follow_jobs(ctx, d["jobs"].as_array().map_or(std::slice::from_ref(&d), Vec::as_slice))? } else { 0 };
     if skipped > 0 {
         code = code.max(1);
     }
     Ok(code)
 }
 
-pub struct ReplaceOpts<'a> {
-    pub old: &'a str,
-    pub new: &'a str,
-    pub to: Option<&'a str>,
+// `fleetctl replace` 的参数（clap 直接解析成它）
+#[derive(clap::Args)]
+pub struct ReplaceOpts {
+    /// 旧节点（id / 显示名 / IP）
+    pub old: String,
+    /// 新节点
+    #[arg(long = "with")]
+    pub new: String,
+    /// 旧节点去哪个团队（默认：同团队的备用团队）
+    #[arg(long)]
+    pub to: Option<String>,
+    /// 旧节点在那个团队里的编号（默认第一个空号）
+    #[arg(long)]
     pub number: Option<i32>,
+    /// 不改软路由，只交换编号
+    #[arg(long)]
     pub no_routers: bool,
+    #[arg(long)]
     pub yes: bool,
+    #[arg(long)]
     pub follow: bool,
 }
 
 /// `fleetctl replace <旧节点> --with <新节点>`：先 GET 预览（改哪些路由的哪些出口、编号怎么变、旧节点去哪）；
 /// 不加 --yes 只打印预览，加了才提交作业
 pub fn replace(ctx: &Ctx, o: ReplaceOpts) -> anyhow::Result<u8> {
-    let old = ctx.find(o.old, Want::Live)?;
-    let new = ctx.find(o.new, Want::Live)?;
+    let old = ctx.find(&o.old, Want::Live)?;
+    let new = ctx.find(&o.new, Want::Live)?;
     let id = st(&old, "/id");
     let mut q: Vec<(&str, String)> = vec![("new_machine_id", st(&new, "/id"))];
     let mut old_to = json!({});
-    if let Some(t) = o.to {
-        let tid = lookup(&ctx.teams()?, t, &["name"], "团队")?;
+    if let Some(t) = o.to.as_deref() {
+        let tid = ctx.team_id(t)?;
         old_to["team_id"] = json!(tid);
         q.push(("team_id", tid));
     }
@@ -261,6 +273,13 @@ pub fn replace(ctx: &Ctx, o: ReplaceOpts) -> anyhow::Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn evacuate_preview_says_router_restarts() {
+        let pv = json!({"router_restarts": [{"id": "a", "name": "团队2-路由A", "times": 1, "nodes": 3}, {"id": "b", "name": "路由B", "times": 1, "nodes": 1}]});
+        assert_eq!(restart_lines(&pv), ["软路由 团队2-路由A 的 3 个节点的出口一起改，OpenClash 重启 1 次（断开它上面全部连接）", "软路由 路由B 的 1 个节点的出口一起改，OpenClash 重启 1 次（断开它上面全部连接）"]);
+        assert!(restart_lines(&json!({})).is_empty(), "旧中控没有这个字段");
+    }
 
     /// 搬空的入口来自线路机的完整视图（`GET /machines/{id}`）：精简列表没有 entries，曾因此永远「无需搬空」
     #[test]

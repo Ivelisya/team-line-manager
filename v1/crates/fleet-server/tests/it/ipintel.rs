@@ -178,7 +178,7 @@ async fn profile_anomalies_and_alert_lifecycle() {
     assert!(!by_rule("ipintel_datacenter_source").contains("8.8.8.8"), "学习期内的机房来源不报");
     assert!(!by_rule("ipintel_datacenter_source").contains("8.8.4.4"), "内部地址不报");
     assert!(t.incidents(n1).await.is_empty() && t.incidents(n2).await.is_empty());
-    let sev: Vec<String> = sqlx::query_scalar("select severity::text from incident where rule like 'ipintel!_%' escape '!'").fetch_all(&t.st.db).await.unwrap();
+    let sev: Vec<String> = sqlx::query_scalar("select severity::text from incident where engine = 'ipintel'").fetch_all(&t.st.db).await.unwrap();
     assert!(sev.len() == 3 && sev.iter().all(|s| s == "warning"));
 
     // 重复执行是幂等的：不重复开告警，连接数不重复累加
@@ -252,7 +252,7 @@ async fn profile_anomalies_and_alert_lifecycle() {
     assert_eq!(r.resolved, 3, "{r:?}");
     let inc = t.incidents(n0).await;
     assert_eq!((rules(&inc, "firing").len(), rules(&inc, "resolved").len()), (0, 3), "{inc:?}");
-    let closed: Vec<Value> = sqlx::query_scalar("select detail from incident where rule like 'ipintel!_%' escape '!'").fetch_all(&t.st.db).await.unwrap();
+    let closed: Vec<Value> = sqlx::query_scalar("select detail from incident where engine = 'ipintel'").fetch_all(&t.st.db).await.unwrap();
     assert!(closed.iter().all(|d| d["closed_by"] == "ipintel_ttl"));
     let r = ipintel::maintain_once(&t.st, now + h(26)).await.unwrap();
     assert_eq!((r.opened, r.resolved), (0, 0), "已结束的值再运行不再告警");

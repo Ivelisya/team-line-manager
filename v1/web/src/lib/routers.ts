@@ -10,9 +10,10 @@ import { collator } from './sort';
 import { createStore } from './store';
 import type { EntryLifecycle, SeriesPoint, Team } from './types';
 import type { BeatCell } from './derive';
+import { chartPoll, RANGE_MS } from './chart';
 import * as F from './format';
 
-/** pending = 建了记录、路由还没连上过；offline = 连上过、现在隧道不通或采集失败 */
+/** pending = 建了记录、路由还没连上过（或重新接入后还没连上）；offline = 连上过、现在隧道不通（连得上但采集出错算 online，带 error） */
 export type RouterState = 'pending' | 'online' | 'offline';
 /** 列表里的摘要：最近一次采集成功的快照，从没采集成功过为 null。速率是 bit/s，内存 / 存储是字节 */
 export interface RouterSummary {
@@ -28,14 +29,17 @@ export interface RouterSummary {
 export interface RouterDeploy { state: 'running' | 'failed' | 'done'; step: string | null; error: string | null; started_at: string; finished_at: string | null }
 export interface RouterView {
   id: string; name: string; team: { id: string; name: string } | null; note: string; tunnel_port: number; created_at: string;
+  /** offline / pending 时是连不上的原因；online 时有值 = 连得上但采集出错（summary / detail 是上一次成功采集的） */
   state: RouterState; last_seen_at: string | null; error: string | null; summary: RouterSummary | null; deploy: RouterDeploy | null;
+  /** 在维护窗口里（自己的或「全部」的）：开着的告警保持、不开新的、不发通知 */
+  maintenance: boolean;
 }
 export interface RouterIface { name: string; device: string; up: boolean; proto: string; ip: string | null; uptime_s: number | null; rx_bps: number; tx_bps: number; rx_bytes: number; tx_bytes: number }
 /** ok：参数与 fleet 入口一致；drift：server:port 对上了，但 uuid / reality 参数不一致；unmanaged：没对上任何 fleet 入口 */
 export type ExitSync = 'ok' | 'drift' | 'unmanaged';
 export interface RouterExit {
   name: string; type: string; server: string; port: number;
-  /** lifecycle：对上的面板入口现在的状态（已停用、已删除的对不上，sync 为 drift） */
+  /** lifecycle：对上的入口现在的状态（已停用、已删除的对不上，sync 为 drift） */
   entry: { id: string; name: string; node_id: string; relay_id: string; lifecycle: EntryLifecycle } | null; sync: ExitSync;
   /** alive / delay_ms 来自每 5 分钟一次的延迟测试（delay_at 是测试时刻）；还没测过为 null。fail_streak：连续几次测不通。conns 等是 mihomo 连接的汇总 */
   alive: boolean | null; delay_ms: number | null; delay_at: string | null; fail_streak: number; conns: number; up_bps: number; down_bps: number; clients: number;
@@ -46,7 +50,8 @@ export interface RouterClient { ip: string; mac: string | null; hostname: string
 export interface RouterDetail {
   system: { os: string; kernel: string; cpu_model: string; cores: number; load: [number, number, number]; procs: number; clock_skew_s: number | null; clash_rss: number | null };
   interfaces: RouterIface[];
-  openclash: { enabled: boolean; running: boolean; version: string | null; mode: string | null; config_path: string | null; config_mtime: string | null };
+  /** config_error：配置文件取不回、解析不了；config_stale：这时出口与入口的对应沿用上次读到的。delay_error：最近一次延迟测试没做成的原因 */
+  openclash: { enabled: boolean; running: boolean; version: string | null; mode: string | null; config_path: string | null; config_mtime: string | null; config_error?: string | null; config_stale?: boolean; delay_error?: string | null };
   exits: RouterExit[]; clients: RouterClient[]; collected_at: string;
 }
 /** 详情：没采集成功过（pending）时 detail 为 null */
@@ -70,13 +75,11 @@ export function useRouters() {
 }
 export const useRouter = (id: string | null) =>
   useQuery({ queryKey: ['routers', id], queryFn: ({ signal }) => get<RouterFull>(`/routers/${id}`, signal), enabled: !!id, staleTime: Infinity });
-/** 曲线的轮询间隔随范围放大（同机器抽屉）；换范围时先留着上一段（调用方按 isPlaceholderData 调淡），换了路由不沿用 */
-const POLL: Record<string, number> = { '1h': 30_000, '6h': 60_000, '24h': 120_000 };
-export const routerPoll = (range: string) => POLL[range] ?? 300_000;
+/** 曲线的轮询间隔随范围放大（`chartPoll`，同机器抽屉）；换范围时先留着上一段（调用方按 isPlaceholderData 调淡），换了路由不沿用 */
 export const useRouterMetrics = (id: string, range: string) =>
-  useQuery({ queryKey: ['router-metrics', id, range], queryFn: ({ signal }) => get<RouterMetrics>(`/routers/${id}/metrics?range=${range}`, signal), staleTime: routerPoll(range), refetchInterval: routerPoll(range), refetchOnWindowFocus: false, placeholderData: (prev, pq) => (pq?.queryKey[1] === id ? keepPreviousData(prev) : undefined) });
+  useQuery({ queryKey: ['router-metrics', id, range], queryFn: ({ signal }) => get<RouterMetrics>(`/routers/${id}/metrics?range=${range}`, signal), staleTime: chartPoll(range), refetchInterval: chartPoll(range), refetchOnWindowFocus: false, placeholderData: (prev, pq) => (pq?.queryKey[1] === id ? keepPreviousData(prev) : undefined) });
 export const useRouterExitMetrics = (id: string, range: string) =>
-  useQuery({ queryKey: ['router-exit-metrics', id, range], queryFn: ({ signal }) => get<RouterExitMetrics>(`/routers/${id}/exits/metrics?range=${range}`, signal), staleTime: routerPoll(range), refetchInterval: routerPoll(range), refetchOnWindowFocus: false, placeholderData: (prev, pq) => (pq?.queryKey[1] === id ? keepPreviousData(prev) : undefined) });
+  useQuery({ queryKey: ['router-exit-metrics', id, range], queryFn: ({ signal }) => get<RouterExitMetrics>(`/routers/${id}/exits/metrics?range=${range}`, signal), staleTime: chartPoll(range), refetchInterval: chartPoll(range), refetchOnWindowFocus: false, placeholderData: (prev, pq) => (pq?.queryKey[1] === id ? keepPreviousData(prev) : undefined) });
 
 // ---- 写操作（全部写审计） ----
 const K = [['routers'], ['audit']];
@@ -90,13 +93,26 @@ export const useDeployRouter = () => useWrite(({ id, ...b }: { id: string } & Ss
 export const useRegenBootstrap = () => useWrite((id: string) => post<Bootstrap>(`/routers/${id}/bootstrap`), K);
 /** team_id 传 null = 不分团队 */
 export const usePatchRouter = () => useWrite(({ id, ...b }: { id: string; name?: string; team_id?: string | null; note?: string }) => patch(`/routers/${id}`, b), K);
-export const useDeleteRouter = () => useWrite((id: string) => del(`/routers/${id}`), K);
+/** 有没做完的作业改过它的出口、没确认改回时 409（错误信息直接给用户看）；force：照删，这些作业不再改回它（返回摘掉了哪些作业） */
+export const useDeleteRouter = () => useWrite(({ id, force }: { id: string; force?: boolean }) => del<{ jobs?: string[] }>(`/routers/${id}${force ? '?force=true' : ''}`), K);
 
 // ---- 抽屉：?r=<路由id>&rtab=<页签>，与机器抽屉（?m=）各管各的 ----
-export type RouterTab = 'overview' | 'exits' | 'clients' | 'charts';
+export type RouterTab = 'overview' | 'exits' | 'clients' | 'charts' | 'manage';
+/** 同机器抽屉：操作（改名、接入命令、重新部署、终端、删除）收在最后的「管理」页签 */
 export const ROUTER_TABS: { value: RouterTab; label: string }[] = [
-  { value: 'overview', label: '概览' }, { value: 'exits', label: '出口' }, { value: 'clients', label: '客户端' }, { value: 'charts', label: '曲线' },
+  { value: 'overview', label: '概览' }, { value: 'exits', label: '出口' }, { value: 'clients', label: '客户端' }, { value: 'charts', label: '曲线' }, { value: 'manage', label: '管理' },
 ];
+
+// 上一台 / 下一台的顺序：软路由页把当前筛选后的顺序交过来（同 setDrawerOrder），离开页面时清掉；没有时按列表的默认顺序
+let order: readonly string[] | null = null;
+export const setRouterOrder = (ids: readonly string[] | null) => { order = ids; };
+/** 抽屉头部的上一台 / 下一台：到头为 null，不绕回；这台不在顺序里时返回 undefined（不显示按钮） */
+export function routerSiblings(list: readonly { id: string }[] | undefined, id: string | null): { prev: string | null; next: string | null } | undefined {
+  if (!id) return undefined;
+  const ids = order?.includes(id) ? order : list?.map((r) => r.id);
+  const i = ids ? ids.indexOf(id) : -1;
+  return !ids || i < 0 ? undefined : { prev: i > 0 ? ids[i - 1] : null, next: i < ids.length - 1 ? ids[i + 1] : null };
+}
 export function useRouterDrawer() {
   const [sp, setSp] = useSearchParams();
   const id = sp.get('r');
@@ -107,14 +123,16 @@ export function useRouterDrawer() {
   // 打开时收起机器抽屉（告警页上开着机器抽屉时点了路由的告警）：两个抽屉不叠在一起
   const open = useCallback((rid: string, t?: RouterTab) => setRef.current((p) => { const n = new URLSearchParams(p); n.delete('m'); n.delete('tab'); n.delete('range'); n.set('r', rid); if (t) n.set('rtab', t); else n.delete('rtab'); return n; }), []);
   const setTab = useCallback((t: RouterTab) => setRef.current((p) => { const n = new URLSearchParams(p); n.set('rtab', t); return n; }, { replace: true }), []);
+  /** 开着抽屉换一台（头部的上一台 / 下一台）：留在当前页签，替换当前历史，后退仍是一步关掉 */
+  const switchTo = useCallback((rid: string) => setRef.current((p) => { const n = new URLSearchParams(p); n.set('r', rid); return n; }, { replace: true }), []);
   const close = useCallback(() => setRef.current((p) => { const n = new URLSearchParams(p); n.delete('r'); n.delete('rtab'); n.delete('range'); return n; }), []);
   /** 出口对应的 fleet 入口：换成那台机器的抽屉（压一条历史，后退回到这台路由） */
   const openMachine = useCallback((mid: string) => setRef.current((p) => { const n = new URLSearchParams(p); n.delete('r'); n.delete('rtab'); n.delete('tab'); n.delete('range'); n.set('m', mid); return n; }), []);
-  return { id, tab, open, setTab, close, openMachine };
+  return { id, tab, open, setTab, switchTo, close, openMachine };
 }
 
-/** 告警对象是路由：规则以 router_ 开头（subject.kind = "router"），点对象要开路由抽屉 */
-export const isRouterIncident = (i: { rule: string }) => i.rule.startsWith('router_');
+/** 告警对象是路由：软路由引擎写的（engine = "router"，subject.kind 同为 "router"），点对象要开路由抽屉 */
+export const isRouterIncident = (i: { engine: string }) => i.engine === 'router';
 /** 点告警对象开路由抽屉的哪一页：出口不通的直接开出口页签，其余开概览 */
 export const routerIncidentTab = (i: { rule: string }): RouterTab | undefined => (i.rule === 'router_exits_down' ? 'exits' : undefined);
 
@@ -158,10 +176,10 @@ export function routerMeters(s: RouterSummary) {
   const memPct = ratio(s.mem_used, s.mem_total); const diskPct = ratio(s.disk_used, s.disk_total); const ctPct = ratio(s.conntrack, s.conntrack_max);
   const loadPct = s.cores ? (s.load1 / s.cores) * 100 : null;
   return {
-    cpu: { value: F.pct(s.cpu_pct), pct: s.cpu_pct, sub: `负载 ${F.str(F.pct(loadPct))} · ${s.cores} 核`, tip: `负载 = 1 分钟平均负载 ${s.load1.toFixed(2)} ÷ ${s.cores} 核；超过 100% 表示有进程在排队` },
+    cpu: { value: F.pct(s.cpu_pct), pct: s.cpu_pct, sub: `负载 ${F.str(F.pct(loadPct))} · ${s.cores} 核`, tip: `1 分钟平均负载 ${s.load1.toFixed(2)} 除以 ${s.cores} 核。超过 100% 说明有进程在排队` },
     mem: { value: F.pct(memPct), pct: memPct, sub: `${F.str(F.mem(s.mem_used))} / ${F.str(F.mem(s.mem_total))}` },
-    disk: { value: F.pct(diskPct), pct: diskPct, sub: `${F.str(F.mem(s.disk_used))} / ${F.str(F.mem(s.disk_total))}`, tip: '/overlay（装的软件与配置）的已用 / 总量' },
-    ct: { value: F.pct(ctPct), pct: ctPct, sub: `${s.conntrack.toLocaleString()} / ${s.conntrack_max.toLocaleString()}`, tip: '连接跟踪表（conntrack）当前条目 / 上限：满了新连接会被丢弃' },
+    disk: { value: F.pct(diskPct), pct: diskPct, sub: `${F.str(F.mem(s.disk_used))} / ${F.str(F.mem(s.disk_total))}`, tip: '存放软件和配置的存储空间（/overlay）' },
+    ct: { value: F.pct(ctPct), pct: ctPct, sub: `${s.conntrack.toLocaleString()} / ${s.conntrack_max.toLocaleString()}`, tip: '连接表的已用 / 上限。满了之后，新连接会被丢弃' },
   };
 }
 /** 运行时长（秒）→ 天 / 小时 / 分钟 */
@@ -170,7 +188,7 @@ export const tempTone = (t: number | null | undefined) => (t == null ? undefined
 /** 在线但有毛病（卡片描边变黄，状态叫「降级」）：OpenClash 启用却没在跑、WAN 断了、有出口测试不通。
  *  names：不通的出口名（取自详情；列表摘要里只有个数）。多于 3 个只列前 3 个 */
 export const routerIssues = (s: RouterSummary | null, names?: string[]): string[] => (!s ? [] : [
-  s.openclash.enabled && !s.openclash.running && 'OpenClash 已启用但核心没在运行',
+  s.openclash.enabled && !s.openclash.running && 'OpenClash 已启用但没在运行',
   !s.wan.up && 'WAN 口断开',
   s.exits.alive < s.exits.total && (names?.length ? `${names.slice(0, 3).join('、')}${names.length > 3 ? ` 等 ${names.length} 个出口` : ''} 连续两次延迟测试不通` : `${s.exits.total - s.exits.alive} 个出口连续两次延迟测试不通`),
 ].filter((x): x is string => !!x));
@@ -179,7 +197,6 @@ export const deadExitNames = (d: RouterDetail | null | undefined) => d?.exits.fi
 // ---- 各出口的延迟测试：按固定时间窗切格 ----
 /** 各范围切几格：每格要稳稳盖住至少一次测试（5 分钟一次，实际间隔 300–330 秒），格宽取 2 倍以上，所以 1 小时只切 6 格（10 分钟一格） */
 const BEAT_BINS: Record<string, number> = { '1h': 6, '6h': 24, '24h': 24, '7d': 28, '30d': 30 };
-const RANGE_MS: Record<string, number> = { '1h': 3600_000, '6h': 6 * 3600_000, '24h': 86400_000, '7d': 7 * 86400_000, '30d': 30 * 86400_000 };
 export const beatBins = (range: string) => BEAT_BINS[range] ?? 24;
 /** 一个出口在所选范围内的测试结果切成 bins 格（从 end 往前，每格一样宽，不按数据的首末）：
  *  颜色只看成功率——全成功绿、有失败黄、失败过半红；这格里没有测试为空（路由还没接入、离线）。延迟高低看延迟曲线，不进格子。
@@ -220,7 +237,7 @@ export function useAddrName() {
     return { text: n ? `${n}${i < 0 ? '' : addr.slice(i)}` : addr, tip: n ? addr : undefined };
   }, [names]);
 }
-/** 面板入口 id → 在用它的软路由出口（软路由 + 出口名）：各台软路由详情里的出口按对上的入口汇总，抽屉入口表、线路页的入口行用它标「软路由」 */
+/** 入口 id → 在用它的软路由出口（软路由 + 出口名）：各台软路由详情里的出口按对上的入口汇总，抽屉入口表、线路页的入口行用它标「软路由」 */
 export function useEntryRouters() {
   const list = useRouters().data;
   const live = (list ?? []).filter((r) => r.summary);

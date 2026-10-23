@@ -48,14 +48,15 @@ export function AuditPage() {
 
   return (
     <div className="stack">
-      <PageHead title="操作记录" tools={<Segmented label="分类" value={cat} onChange={setCat} items={CATS} />} />
+      {/* 计数写在页标题旁（同「机器 156 台」「告警 10 条」），下面的卡片不再另起标题 */}
+      <PageHead title="操作记录" note={q.data ? (q.hasNextPage ? `已加载 ${rows.length} 条` : `${rows.length} 条`) : undefined} tools={<Segmented label="分类" value={cat} onChange={setCat} items={CATS} />} />
       <div className="row" role="search">
         <SearchInput value={text} onChange={(e) => setText(e.target.value)} placeholder="搜索动作、对象、操作人…" aria-label="搜索" className="w-full sm:w-[300px]" />
       </div>
       {/* 第一页取不到：整页重取；往前翻的那一页取不到：只重试那一页 */}
       {q.isError && <ErrorNote error={q.error} onRetry={() => void (q.isFetchNextPageError ? q.fetchNextPage() : q.refetch())} />}
       {/* 换分类、搜索后新结果未到时，沿用的旧结果调淡（components.css [data-stale]） */}
-      <Panel title="记录" count={q.data ? (q.hasNextPage ? `已加载 ${rows.length} 条` : `${rows.length} 条`) : undefined}>
+      <Panel>
         <div data-stale={q.isPlaceholderData}>
           {q.isLoading ? <SkeletonRows rows={6} />
             : rows.length ? byDay(rows).map((g) => <React.Fragment key={g.key}><div className="audit-day">{g.label}</div><AuditList items={g.items} onOpen={open} byDay /></React.Fragment>)

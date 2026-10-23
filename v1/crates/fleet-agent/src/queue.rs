@@ -182,31 +182,21 @@ mod tests {
             agent_version: "x".into(),
             sent_at_ms: 0,
             info: Some(fleet_proto::SystemInfo { hostname: "h".repeat(pad), ..Default::default() }),
-            host: vec![],
-            entries: vec![],
-            probes: vec![],
-            access: vec![],
-            xray: None,
-            agent_health: None,
-            ping: vec![],
+            ..Default::default()
         }
     }
 
-    fn tmpdir(n: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("fa-q-{n}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        d
-    }
+    fn tmpdir(n: &str) -> crate::util::TmpDir { crate::util::TmpDir::new(&format!("q-{n}")) }
 
     #[test]
     fn push_ack_reopen() {
         let d = tmpdir("a");
-        let mut q = Queue::open(d.clone(), 1 << 20, i64::MAX / 2).unwrap();
+        let mut q = Queue::open(d.to_path_buf(), 1 << 20, i64::MAX / 2).unwrap();
         for s in 1..=3 {
             q.push(&rep(s, 10), false).unwrap();
         }
         assert_eq!(q.oldest(), Some(1));
-        let q2 = Queue::open(d.clone(), 1 << 20, i64::MAX / 2).unwrap();
+        let q2 = Queue::open(d.to_path_buf(), 1 << 20, i64::MAX / 2).unwrap();
         assert_eq!(q2.len(), 3);
         assert_eq!(q.ack_through(2), 2);
         assert_eq!(q.oldest(), Some(3));
@@ -215,13 +205,12 @@ mod tests {
         assert_eq!(q.dead, 1);
         assert!(q.is_empty());
         assert_eq!(q.bytes, 0);
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
     fn evicts_oldest_when_full() {
         let d = tmpdir("b");
-        let mut q = Queue::open(d.clone(), 2000, i64::MAX / 2).unwrap();
+        let mut q = Queue::open(d.to_path_buf(), 2000, i64::MAX / 2).unwrap();
         // 每份报告给同一个入口带 s 字节上行：被丢掉的那些报告的流量要全部交回来结转
         let id = uuid::Uuid::from_u128(1);
         let mut carried = Carry::new();
@@ -238,13 +227,12 @@ mod tests {
         assert_eq!(*q.items.keys().last().unwrap(), 10);
         let left: u64 = q.items.keys().sum();
         assert_eq!(carried, Carry::from([(id, ((1..=10).sum::<u64>() - left, q.dropped))]));
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
     fn dead_letter_hands_back_traffic_unless_already_carried() {
         let d = tmpdir("c");
-        let mut q = Queue::open(d.clone(), 1 << 20, i64::MAX / 2).unwrap();
+        let mut q = Queue::open(d.to_path_buf(), 1 << 20, i64::MAX / 2).unwrap();
         let id = uuid::Uuid::from_u128(1);
         let mut r = rep(1, 10);
         r.entries = vec![EntrySample { entry_id: id, ts_ms: 0, up_bytes: 5, down_bytes: 7, conns: 1 }];
@@ -260,8 +248,7 @@ mod tests {
         // 重启后不记得哪份带过结转：当没带，照常交回
         r.seq = 3;
         q.push(&r, true).unwrap();
-        let mut q = Queue::open(d.clone(), 1 << 20, i64::MAX / 2).unwrap();
+        let mut q = Queue::open(d.to_path_buf(), 1 << 20, i64::MAX / 2).unwrap();
         assert_eq!(q.dead_letter(3).len(), 1);
-        let _ = std::fs::remove_dir_all(&d);
     }
 }

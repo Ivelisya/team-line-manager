@@ -112,28 +112,28 @@ async fn response_headers(State(https): State<bool>, req: axum::extract::Request
 
 /// 后台任务：作业、告警、实时指标、访问汇总、来源画像、通知发送、分区维护、小时汇总、软路由采集（含它的告警）、中控到线路机的连通性、汇率更新、探测点（离线告警、主来源切换）、三网 PING（小时汇总与保留期）。
 /// 都在 `supervise` 下跑：panic 或意外返回时记 error、10 秒后原地重启（这些循环的状态在库里，内存里的去抖计数、缓存重启后重新累计）。
-/// 作业引擎例外：一退出就结束整个进程，交给 systemd 重启（单元里 Restart=always），重启时 main 清掉旧租约、作业从各自这一步重做。
-/// （清旧租约已挪到 main、本进程还在推进的作业不会被再领——jobs::Running——原地重启其实也不会两个执行者同时推进）
+/// 作业引擎也一样：清旧租约只在 main 启动时做一次，本进程还在推进的作业不会被再领（`jobs::Running`），原地重启不会让两个执行者推进同一个作业
 pub fn spawn_background(st: &AppState) {
-    supervise(st, "作业引擎", true, jobs::run_forever);
-    supervise(st, "告警", false, alerts::run_forever);
-    supervise(st, "实时指标", false, live::run_forever);
-    supervise(st, "访问汇总", false, access::run_forever);
+    supervise(st, "作业引擎", jobs::run_forever);
+    supervise(st, "告警", alerts::run_forever);
+    supervise(st, "实时指标", live::run_forever);
+    supervise(st, "访问汇总", access::run_forever);
     // 配置里关掉时它直接返回，不算意外退出，不起
     if st.ipintel.enabled {
-        supervise(st, "来源画像", false, ipintel::run_forever);
+        supervise(st, "来源画像", ipintel::run_forever);
     } else {
         tracing::info!("ipintel 已在配置里关闭");
     }
     notify::start(st);
-    supervise(st, "分区与保留期维护", false, housekeeping);
-    supervise(st, "小时汇总", false, rollup_loop);
-    supervise(st, "会话撤销通知", false, revoked_listener);
-    supervise(st, "软路由采集", false, routers::collect::run_forever);
-    supervise(st, "中控到线路机的连通性", false, reach::run_forever);
-    supervise(st, "汇率更新", false, fx::run_forever);
-    supervise(st, "探测点", false, probe_points::run_forever);
-    supervise(st, "三网 PING 汇总与清理", false, ping::run_forever);
+    supervise(st, "分区与保留期维护", housekeeping);
+    supervise(st, "小时汇总", rollup_loop);
+    supervise(st, "会话撤销通知", revoked_listener);
+    supervise(st, "软路由采集", routers::collect::run_forever);
+    supervise(st, "软路由隧道回连主机自检", routers::selfcheck::run_forever);
+    supervise(st, "中控到线路机的连通性", reach::run_forever);
+    supervise(st, "汇率更新", fx::run_forever);
+    supervise(st, "探测点", probe_points::run_forever);
+    supervise(st, "三网 PING 汇总与清理", ping::run_forever);
 }
 
 /// 命令行（user-set 重设密码）在别的进程里删会话：经 NOTIFY 转来，实时流的连接马上复核。
@@ -152,8 +152,8 @@ async fn revoked_listener(s: AppState) {
     }
 }
 
-/// 跑一个不该结束的后台循环：panic 或返回了记 error，10 秒后重启；`exit` 为真时改为结束整个进程，交给 systemd 重启
-pub(crate) fn supervise<F, Fut>(st: &AppState, name: &'static str, exit: bool, f: F)
+/// 跑一个不该结束的后台循环：panic 或返回了记 error，10 秒后重启
+pub(crate) fn supervise<F, Fut>(st: &AppState, name: &'static str, f: F)
 where
     F: Fn(AppState) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static,
@@ -167,10 +167,6 @@ where
                 // 运行时正在关（进程退出、测试结束）
                 Err(_) => return,
             };
-            if exit {
-                tracing::error!("后台任务「{name}」{why}，结束进程交给 systemd 重启");
-                std::process::exit(1);
-            }
             tracing::error!("后台任务「{name}」{why}，10 秒后重启");
             tokio::time::sleep(std::time::Duration::from_secs(10)).await;
         }
@@ -197,7 +193,7 @@ async fn housekeeping(s: AppState) {
             Ok(_) => {}
             Err(e) => tracing::error!("作业清理失败：{e:#}"),
         }
-        if let Err(e) = db::cleanup_retention(&s.db).await {
+        if let Err(e) = db::cleanup_retention(&s.db, &s.cfg.retention).await {
             tracing::error!("保留期清理失败：{e:#}");
         }
         if let Err(e) = routers::collect::cleanup(&s.db, s.cfg.retention.raw_days).await {

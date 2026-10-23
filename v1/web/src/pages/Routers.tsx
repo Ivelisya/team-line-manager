@@ -4,7 +4,7 @@ import * as React from 'react';
 import { Plus, Router as RouterIcon, Shuffle, Users, Waypoints } from 'lucide-react';
 import * as F from '@/lib/format';
 import { useTeams } from '@/lib/queries';
-import { useRouterDrawer, useRouters, type RouterView } from '@/lib/routers';
+import { setRouterOrder, useRouterDrawer, useRouters, type RouterView } from '@/lib/routers';
 import { Button } from '@/components/ui/button';
 import { Segmented } from '@/components/ui/overlays';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -43,6 +43,10 @@ export function RoutersPage() {
   // 当前分组没了（最后一台删掉、改了团队）就回到全部
   const cur = groups.some((g) => g.value === team) ? team : 'all';
   const shown = cur === 'all' ? all : all.filter((r) => (r.team?.id ?? NO_TEAM) === cur);
+  // 抽屉的上一台 / 下一台按这一页看到的顺序走；离开页面时清掉
+  const order = shown.map((r) => r.id).join();
+  React.useEffect(() => { setRouterOrder(order ? order.split(',') : null); }, [order]);
+  React.useEffect(() => () => setRouterOrder(null), []);
   const add = <Button variant="primary" onClick={() => setAdding(true)}><Plus />接入软路由</Button>;
   return (
     <div className="stack">
@@ -54,13 +58,14 @@ export function RoutersPage() {
           <Stat tone="blue" icon={<RouterIcon />} label="软路由在线" value={sum.online} unit={`/ ${all.length}`}
             caption={<><DotCount tone="bad" n={sum.offline} label="离线" />{sum.pending > 0 && <DotCount tone="neutral" n={sum.pending} label="等待接入" />}</>} />
           <Stat tone="teal" icon={<Waypoints />} label="出口可用" value={sum.alive} unit={`/ ${sum.total}`}
-            caption={<><DotCount tone="warn" n={sum.total - sum.alive} label="不通" />{sum.drift > 0 && <DotCount tone="warn" n={sum.drift} label="参数不一致" />}</>} />
+            caption={<><DotCount tone="warn" n={sum.total - sum.alive} label="不通" />{sum.drift > 0 && <DotCount tone="warn" n={sum.drift} label="与入口不一致" />}</>} />
           <Stat tone="violet" icon={<Users />} label="客户端在线" value={sum.clients} unit="台" caption="在线的软路由里" />
-          <Stat tone="sky" icon={<Shuffle />} label="代理速率" info="经 OpenClash 的流量，合计在线的软路由" value={F.inScale(sum.down_bps + sum.up_bps, F.rateScale(sum.down_bps + sum.up_bps))} unit={F.rateScale(sum.down_bps + sum.up_bps).u}
+          <Stat tone="sky" icon={<Shuffle />} label="代理速率" info="在线软路由经 OpenClash 的流量合计" value={F.inScale(sum.down_bps + sum.up_bps, F.rateScale(sum.down_bps + sum.up_bps))} unit={F.rateScale(sum.down_bps + sum.up_bps).u}
             caption={<><span>下载 <Num f={F.rate(sum.down_bps)} /></span><span>上传 <Num f={F.rate(sum.up_bps)} /></span></>} />
         </div>
       )}
-      {groups.length > 2 && <div className="hgroups" role="group" aria-label="筛选"><Segmented label="团队" value={cur} onChange={setTeam} items={groups} className="seg-fill" /></div>}
+      {/* 团队分段按内容宽、靠左（同机器页的分段），不拉满整行 */}
+      {groups.length > 2 && <div className="hgroups" role="group" aria-label="筛选"><Segmented label="团队" value={cur} onChange={setTeam} items={groups} /></div>}
       {q.isLoading && <div className="cards" data-view="large">{Array.from({ length: 3 }, (_, i) => <Skeleton key={i} h={520} style={{ borderRadius: 'var(--r-card)', marginBottom: 'var(--grid-gap)' }} />)}</div>}
       {q.data && all.length === 0 && (
         // 空状态放在卡片底板上（同作业页）

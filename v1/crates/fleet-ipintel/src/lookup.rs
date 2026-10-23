@@ -537,14 +537,6 @@ fn cn_city_coord(c: &str) -> Option<(f64, f64)> {
     })
 }
 
-/// 两点大圆距离（km）。
-pub fn distance_km(a: (f64, f64), b: (f64, f64)) -> f64 {
-    let r = 6371.0088f64;
-    let (la1, lo1, la2, lo2) = (a.0.to_radians(), a.1.to_radians(), b.0.to_radians(), b.1.to_radians());
-    let h = ((la2 - la1) / 2.0).sin().powi(2) + la1.cos() * la2.cos() * ((lo2 - lo1) / 2.0).sin().powi(2);
-    2.0 * r * h.sqrt().asin()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -645,7 +637,5 @@ mod tests {
         assert_eq!(canonical(ip("::ffff:1.2.3.4")), ip("1.2.3.4"));
         assert_eq!(short_org("Foo Bar, Inc."), "Foo Bar");
         assert_eq!(short_org("Acme Ltd"), "Acme");
-        let km = distance_km((34.7466, 113.6254), (23.1291, 113.2644));
-        assert!((1200.0..1400.0).contains(&km), "郑州—广州 {km} km");
     }
 }

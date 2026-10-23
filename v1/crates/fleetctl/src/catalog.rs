@@ -8,11 +8,10 @@ use crate::cmds::{cycle_cn, st, Ctx};
 use crate::meta;
 use crate::ops::confirm;
 use crate::resolve;
-use crate::table::{self, money};
+use crate::table::{self, money, money_at};
 use anyhow::{anyhow, bail};
 use serde_json::{json, Map, Value};
 
-fn list(ctx: &Ctx, path: &str) -> anyhow::Result<Vec<Value>> { Ok(ctx.c.get(path)?.as_array().cloned().unwrap_or_default()) }
 
 fn s(v: &Value, k: &str) -> String { v[k].as_str().unwrap_or("").to_string() }
 
@@ -104,7 +103,7 @@ pub fn provider_ls(ctx: &Ctx) -> anyhow::Result<u8> {
             return "还没有供应商（fleetctl provider add <名称> --code <缩写> 新建）".into();
         }
         // 每家的套餐数（在用 / 归档），取不到就不显示
-        let plans = list(ctx, "/plans").unwrap_or_default();
+        let plans = ctx.list("/plans").unwrap_or_default();
         let rows: Vec<Vec<String>> = all
             .iter()
             .map(|p| {
@@ -136,7 +135,7 @@ pub fn provider_add(ctx: &Ctx, name: &str, a: &ProviderArgs) -> anyhow::Result<u
     }
     let body = provider_body(Some(name), a);
     let id = st(&ctx.c.post("/providers", &Value::Object(body))?, "/id");
-    let p = list(ctx, "/providers")?.into_iter().find(|p| p["id"] == id.as_str()).unwrap_or(json!({"id": id}));
+    let p = ctx.list("/providers")?.into_iter().find(|p| p["id"] == id.as_str()).unwrap_or(json!({"id": id}));
     ctx.emit(&p, || format!("已新建供应商「{}」（缩写 {}，id {id}）；建它的套餐：fleetctl plan add <名称> --provider {} --price … --currency … --cycle …", s(&p, "name"), s(&p, "code"), s(&p, "code")));
     Ok(0)
 }
@@ -161,7 +160,7 @@ pub fn provider_set(ctx: &Ctx, q: &str, name: Option<&str>, a: &ProviderArgs, ye
     if body.is_empty() {
         bail!("没有要改的内容：给 --name / --code / --tz / --panel-url / --traffic-rule / --traffic-reset / --remind-days 之一");
     }
-    let all = list(ctx, "/providers")?;
+    let all = ctx.list("/providers")?;
     let old = find_provider(&all, q)?.clone();
     let id = st(&old, "/id");
     let ch = changes(&old, &body, &PROVIDER_CN, &|k, v, _| provider_field(k, v));
@@ -173,13 +172,13 @@ pub fn provider_set(ctx: &Ctx, q: &str, name: Option<&str>, a: &ProviderArgs, ye
     let note = if follow { "；名下机器没单独设置这几项的立即跟着变（到期提醒、流量周期与已用按新的算）" } else { "" };
     confirm(&format!("确认修改供应商「{}」：{}{note}？", s(&old, "name"), diff_text(&ch)), yes)?;
     ctx.c.patch(&format!("/providers/{id}"), &Value::Object(body))?;
-    let p = list(ctx, "/providers")?.into_iter().find(|p| p["id"] == id.as_str()).unwrap_or(Value::Null);
+    let p = ctx.list("/providers")?.into_iter().find(|p| p["id"] == id.as_str()).unwrap_or(Value::Null);
     ctx.emit(&p, || format!("已修改供应商「{}」：{}", s(&p, "name"), diff_text(&ch)));
     Ok(0)
 }
 
 pub fn provider_rm(ctx: &Ctx, q: &str, yes: bool) -> anyhow::Result<u8> {
-    let all = list(ctx, "/providers")?;
+    let all = ctx.list("/providers")?;
     let p = find_provider(&all, q)?;
     let name = s(p, "name");
     confirm(&format!("确认删除供应商「{name}」？还有套餐（含已归档的）或机器（含已退役的）时中控会拒绝"), yes)?;
@@ -283,7 +282,7 @@ fn spec_cn(p: &Value) -> String {
     v.join(" · ")
 }
 
-fn price_cn(p: &Value) -> String { format!("{} / {}", money(p["price_cents"].as_i64().unwrap_or(0), &s(p, "currency")), cycle_cn(&s(p, "cycle"))) }
+fn price_cn(p: &Value) -> String { format!("{} / {}", money_at(p, "/price_cents", &s(p, "currency")), cycle_cn(&s(p, "cycle"))) }
 
 /// 套餐一个字段给人看的写法（价格带币种：改币种时旧价格按旧币种写）
 fn plan_field(k: &str, v: &Value, cur: &str) -> String {
@@ -291,7 +290,7 @@ fn plan_field(k: &str, v: &Value, cur: &str) -> String {
         ("traffic_gb", Value::Null) => "不限".into(),
         ("traffic_gb", v) if v.as_i64() == Some(0) => "不限".into(),
         (_, Value::Null) => "-".into(),
-        ("price_cents", v) => money(v.as_i64().unwrap_or(0), cur),
+        ("price_cents", v) => v.as_i64().map_or("-".into(), |c| money(c, cur)),
         ("cycle", v) => cycle_cn(v.as_str().unwrap_or("")).to_string(),
         ("archived", Value::Bool(true)) => "归档".into(),
         ("archived", _) => "在用".into(),
@@ -314,8 +313,8 @@ pub(crate) fn find_plan<'a>(all: &'a [Value], providers: &[Value], q: &str) -> a
 }
 
 pub fn plan_ls(ctx: &Ctx, provider: Option<&str>, all: bool) -> anyhow::Result<u8> {
-    let providers = list(ctx, "/providers")?;
-    let mut plans = list(ctx, "/plans")?;
+    let providers = ctx.list("/providers")?;
+    let mut plans = ctx.list("/plans")?;
     if let Some(q) = provider {
         let pid = find_provider(&providers, q)?["id"].clone();
         plans.retain(|p| p["provider_id"] == pid);
@@ -358,11 +357,11 @@ pub fn plan_add(ctx: &Ctx, name: &str, a: &PlanArgs) -> anyhow::Result<u8> {
     let mut body = plan_body(Some(name), a)?;
     // 新建时 none 就是不填
     body.retain(|_, v| !v.is_null());
-    let providers = list(ctx, "/providers")?;
+    let providers = ctx.list("/providers")?;
     let pv = find_provider(&providers, a.provider.as_deref().unwrap_or_default())?;
     body.insert("provider_id".into(), pv["id"].clone());
     let id = st(&ctx.c.post("/plans", &Value::Object(body))?, "/id");
-    let p = list(ctx, "/plans")?.into_iter().find(|p| p["id"] == id.as_str()).unwrap_or(json!({"id": id}));
+    let p = ctx.list("/plans")?.into_iter().find(|p| p["id"] == id.as_str()).unwrap_or(json!({"id": id}));
     ctx.emit(&p, || format!("已新建套餐「{}」：{} · {}（id {id}）", plan_label(&p, &providers), price_cn(&p), spec_cn(&p)));
     Ok(0)
 }
@@ -391,8 +390,8 @@ pub fn plan_set(ctx: &Ctx, q: &str, name: Option<&str>, a: &PlanArgs, archive: O
     if body.is_empty() && a.provider.is_none() {
         bail!("没有要改的内容：给 --name / --provider / --cpu / --mem-mb / --disk-gb / --bandwidth-mbps / --traffic-gb / --price / --currency / --cycle / --notes / --archive / --unarchive 之一");
     }
-    let providers = list(ctx, "/providers")?;
-    let all = list(ctx, "/plans")?;
+    let providers = ctx.list("/providers")?;
+    let all = ctx.list("/plans")?;
     let mut old = find_plan(&all, &providers, q)?.clone();
     let id = st(&old, "/id");
     if let Some(pq) = &a.provider {
@@ -425,14 +424,14 @@ pub fn plan_set(ctx: &Ctx, q: &str, name: Option<&str>, a: &PlanArgs, archive: O
     };
     confirm(&format!("确认修改套餐「{}」：{}{note}？", plan_label(&old, &providers), diff_text(&ch)), yes)?;
     ctx.c.patch(&format!("/plans/{id}"), &Value::Object(body))?;
-    let p = list(ctx, "/plans")?.into_iter().find(|p| p["id"] == id.as_str()).unwrap_or(Value::Null);
+    let p = ctx.list("/plans")?.into_iter().find(|p| p["id"] == id.as_str()).unwrap_or(Value::Null);
     ctx.emit(&p, || format!("已修改套餐「{}」：{}", plan_label(&p, &providers), diff_text(&ch)));
     Ok(0)
 }
 
 pub fn plan_rm(ctx: &Ctx, q: &str, yes: bool) -> anyhow::Result<u8> {
-    let providers = list(ctx, "/providers")?;
-    let all = list(ctx, "/plans")?;
+    let providers = ctx.list("/providers")?;
+    let all = ctx.list("/plans")?;
     let p = find_plan(&all, &providers, q)?;
     let label = plan_label(p, &providers);
     confirm(&format!("确认删除套餐「{label}」？还有机器（含已退役的）用着时中控会拒绝，不再上架的用 fleetctl plan set {label} --archive"), yes)?;
@@ -462,7 +461,7 @@ mod tests {
         let old = json!({"name": "甲", "code": "A", "timezone": null, "panel_url": null, "traffic_rule": "max", "traffic_reset": "month", "remind_days": 7});
         let a = ProviderArgs { code: Some("A".into()), tz: Some("Asia/Tokyo".into()), traffic_rule: Some("min".into()), remind_days: Some(7), ..Default::default() };
         let ch = changes(&old, &provider_body(None, &a), &PROVIDER_CN, &|k, v, _| provider_field(k, v));
-        assert_eq!(diff_text(&ch), "账单时区 跟随组织（北京时间） → Asia/Tokyo、流量计量 下行、上行取较大 → 下行、上行取较小");
+        assert_eq!(diff_text(&ch), "账单时区 跟随组织（北京时间） → Asia/Tokyo、流量计量 取下行和上行中较大的 → 取下行和上行中较小的");
     }
 
     #[test]

@@ -31,8 +31,6 @@ pub struct Config {
     pub org_timezone: String,
     #[serde(default)]
     pub retention: Retention,
-    #[serde(default)]
-    pub numbering: Numbering,
     #[serde(default = "d_workers")]
     pub job_workers: usize,
     /// 访问监控 24h / 7d / 30d 聚合结果的缓存秒数（这些窗口读小时汇总表，每轮汇总后缓存整体作废，所以可以和汇总间隔一样长；
@@ -152,7 +150,7 @@ impl Default for SelfmonConfig {
     fn default() -> Self { Self { heartbeat_url: None, backup_dir: PathBuf::from("/var/backups/fleet") } }
 }
 
-/// `[ipintel]`：全部有默认值，老配置文件不用改
+/// `[ipintel]`：全部有默认值，老配置文件不用改（以前有的 `learn_days`、`alert_ttl_hours` 已经是 ipintel.rs 里的常量，文件里还写着也只是被忽略）
 #[derive(Debug, Clone, Deserialize)]
 pub struct IpintelConfig {
     #[serde(default = "d_true")]
@@ -166,12 +164,6 @@ pub struct IpintelConfig {
     /// 额外视为内部地址的 IP（运维出口等）。线路机和节点的 IP 自动算内部，不用写
     #[serde(default)]
     pub internal_ips: Vec<String>,
-    /// 学习期天数：从节点第一条访问记录算起，期间只学习不告警
-    #[serde(default = "d_learn_days")]
-    pub learn_days: u32,
-    /// 一次性异常（新运营商 / 新城市 / 机房来源）最后一次出现后多少小时自动恢复
-    #[serde(default = "d_alert_ttl_hours")]
-    pub alert_ttl_hours: u32,
 }
 impl Default for IpintelConfig {
     fn default() -> Self {
@@ -180,16 +172,12 @@ impl Default for IpintelConfig {
             db_dir: d_ipintel_dir(),
             overrides: d_ipintel_overrides(),
             internal_ips: vec![],
-            learn_days: d_learn_days(),
-            alert_ttl_hours: d_alert_ttl_hours(),
         }
     }
 }
 fn d_true() -> bool { true }
 fn d_ipintel_dir() -> PathBuf { PathBuf::from("/var/lib/fleet/ipintel") }
 fn d_ipintel_overrides() -> Option<PathBuf> { Some(PathBuf::from("/etc/fleet/ipintel-overrides.toml")) }
-fn d_learn_days() -> u32 { 7 }
-fn d_alert_ttl_hours() -> u32 { 24 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -199,19 +187,16 @@ pub struct Retention {
     pub raw_days: u32,
     /// 访问记录（原始）保留天数的默认值：访问记录的保留期在面板里设（settings.rs），没设过时用它
     pub access_days: u32,
+    /// 客户入口连通性原始记录（relay_reach，中控与探测点每 30 秒一轮）保留天数。读它的地方最多看 1 小时，
+    /// 更长的窗口读小时汇总 relay_reach_hourly（一直留着，同 probe_hourly）
+    pub reach_days: u32,
+    /// 三网 PING 原始记录（ping_result，每分钟一轮）保留天数：抽屉 24 小时以内的曲线读它
+    pub ping_days: u32,
+    /// 三网 PING 小时汇总（ping_hourly）保留天数：抽屉 7 天 / 30 天的曲线读它
+    pub ping_hourly_days: u32,
 }
 impl Default for Retention {
-    fn default() -> Self { Self { raw_days: 3, access_days: 7 } }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
-pub struct Numbering {
-    /// 节点退役后自动把该团队编号压缩成 01..N（编号连续，数量一眼可见）
-    pub auto_compact: bool,
-}
-impl Default for Numbering {
-    fn default() -> Self { Self { auto_compact: true } }
+    fn default() -> Self { Self { raw_days: 3, access_days: 7, reach_days: 2, ping_days: 7, ping_hourly_days: 90 } }
 }
 
 fn d_org_tz() -> String { crate::meta::DEFAULT_ORG_TZ.into() }
@@ -235,14 +220,27 @@ mod tests {
     #[test]
     fn partial_tables_keep_defaults() {
         let r: Retention = toml::from_str("raw_days = 30").unwrap();
-        assert_eq!((r.raw_days, r.access_days), (30, 7));
-        let n: Numbering = toml::from_str("").unwrap();
-        assert!(n.auto_compact);
+        assert_eq!((r.raw_days, r.access_days, r.reach_days, r.ping_days, r.ping_hourly_days), (30, 7, 2, 7, 90));
+        let r: Retention = toml::from_str("reach_days = 5\nping_hourly_days = 400").unwrap();
+        assert_eq!((r.raw_days, r.reach_days, r.ping_days, r.ping_hourly_days), (3, 5, 7, 400));
+        // 已经改成常量的老配置项：生产 fleet.toml 里还写着也得能读
+        let i: IpintelConfig = toml::from_str("learn_days = 3\nalert_ttl_hours = 1\nenabled = false").unwrap();
+        assert!(!i.enabled);
         let s: SelfmonConfig = toml::from_str("heartbeat_url = \"https://hc-ping.com/x\"").unwrap();
         assert_eq!((s.heartbeat_url.as_deref(), s.backup_dir), (Some("https://hc-ping.com/x"), PathBuf::from("/var/backups/fleet")));
         let r: RoutersConfig = toml::from_str("ssh_port = 2222").unwrap();
         assert_eq!((r.ssh_port, r.port_min, r.port_max), (2222, 23000, 23999));
         assert_eq!(r.tunnel_keys_file, PathBuf::from("/var/lib/fleet/tunnel-keys"));
+    }
+
+    #[test]
+    fn legacy_numbering_table_is_ignored() {
+        // 编号压缩早已无条件做；生产 fleet.toml 里留着的 [numbering] 不能让中控起不来
+        let c: Config = toml::from_str(
+            "database_url = \"postgres://x\"\nsecret_key_file = \"/k\"\npublic_url = \"https://x.test\"\nssh_key = \"/s\"\nknown_hosts = \"/h\"\ndist_dir = \"/d\"\n[numbering]\nauto_compact = true\n",
+        )
+        .unwrap();
+        assert_eq!(c.job_workers, 8);
     }
 
     #[test]

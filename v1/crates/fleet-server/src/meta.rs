@@ -39,6 +39,11 @@ pub fn tz_label(tz: &str) -> String {
 
 pub fn org_tz_label() -> String { tz_label(&org_tz()) }
 
+/// RFC 3339（UTC 偏移原样）：接口里的时间戳统一写法
+pub fn fmt_ts(t: OffsetDateTime) -> String {
+    t.format(&time::format_description::well_known::Rfc3339).unwrap_or_default()
+}
+
 /// 组织时区的 `2026-10-20 15:04:05`
 pub fn org_time(t: OffsetDateTime) -> String {
     let f = time::macros::format_description!("[year]-[month]-[day] [hour]:[minute]:[second]");
@@ -213,7 +218,7 @@ pub const JOB_KINDS: Labels = &[
     ("provision_proxy", "上架家宽代理"),
     ("provision_relay", "上架线路机"),
     ("provision_ip", "上架同机 IP 节点"),
-    ("attach_entry", "新增入口"),
+    ("attach_entry", "添加入口"),
     ("move_entry", "换线路机"),
     // 恢复已退役机器已删掉：留着名字，旧作业记录照样显示
     ("restore_vps", "恢复 VPS 节点"),
@@ -238,13 +243,13 @@ pub const JOB_STATES: Labels = &[
 ];
 
 /// 作业步骤的状态（compensated：作业取消或失败后，做过的步骤被逆序撤销）
-pub const STEP_STATES: Labels = &[("pending", "等待"), ("running", "进行中"), ("done", "已完成"), ("skipped", "已跳过"), ("failed", "失败"), ("compensated", "已补偿")];
+pub const STEP_STATES: Labels = &[("pending", "等待"), ("running", "进行中"), ("done", "已完成"), ("skipped", "已跳过"), ("failed", "失败"), ("compensated", "已回滚")];
 
 /// 入口状态：pending / removing 是等线路机应用
 pub const ENTRY_STATES: Labels = &[("pending", "应用中"), ("active", "运行中"), ("disabled", "已停用"), ("removing", "移除中"), ("removed", "已移除")];
 
 /// 供应商的网卡计量规则（流量额度怎么量）；没有网卡读数的（家宽代理、同机 IP 节点）按业务流量
-pub const TRAFFIC_RULES: Labels = &[("min", "下行、上行取较小"), ("max", "下行、上行取较大"), ("sum", "下行 + 上行"), ("out", "只算上行")];
+pub const TRAFFIC_RULES: Labels = &[("min", "取下行和上行中较小的"), ("max", "取下行和上行中较大的"), ("sum", "下行加上行"), ("out", "只算上行")];
 pub const DEFAULT_TRAFFIC_RULE: &str = "max";
 /// 供应商的流量重置方式：month = 账单时区的自然月（每月 1 号），billing = 每个账单日（到期日几号），
 /// rolling30 = 滚动 30 天（账单时区的今天往前 29 天起，没有重置日）
@@ -265,7 +270,7 @@ pub const RULES: Labels = &[
     ("clock_skew", "agent 时钟不准"),
     ("no_entry", "没有在用入口"),
     ("egress_fail", "出口不通"),
-    ("tcp_fail", "线路到节点不通"),
+    ("tcp_fail", "线路机到节点不通"),
     ("renewal_due", "即将到期"),
     // 已过期并进了 renewal_due（严重）：留着名字，旧告警记录照样显示
     ("renewal_overdue", "已过期"),
@@ -280,12 +285,15 @@ pub const RULES: Labels = &[
     ("ipintel_new_isp", "来源出现新运营商"),
     ("ipintel_new_city", "来源出现新城市"),
     ("ipintel_datacenter_source", "机房 / VPN 来源"),
-    ("policy_blocked", "访问策略暂停"),
+    ("policy_blocked", "访问规则暂停"),
     ("central_channel_failing", "通知渠道发送失败"),
     ("central_backup_stale", "备份过期"),
     ("central_disk_low", "中控磁盘空间不足"),
     ("central_ingress", "agent 同时失联"),
+    ("central_view_stuck", "机器视图算不出来"),
+    ("central_tunnel_host", "软路由回连地址不是中控"),
     ("router_offline", "软路由离线"),
+    ("router_collect_error", "软路由读取出错"),
     ("router_openclash_down", "OpenClash 没在运行"),
     ("router_exits_down", "软路由出口不通"),
     ("router_wan_down", "软路由 WAN 口断开"),
@@ -296,7 +304,6 @@ pub const RULES: Labels = &[
 /// 查中文名；没收录的原样返回
 pub fn label(table: Labels, key: &str) -> &str { table.iter().find(|(k, _)| *k == key).map_or(key, |(_, v)| v) }
 
-pub fn kind_label(k: &str) -> &str { label(KINDS, k) }
 pub fn lifecycle_label(l: &str) -> &str { label(LIFECYCLES, l) }
 pub fn job_kind_label(k: &str) -> &str { label(JOB_KINDS, k) }
 pub fn rule_label(k: &str) -> &str { label(RULES, k) }
@@ -393,7 +400,7 @@ mod tests {
 
     #[test]
     fn labels_and_meta_shape() {
-        assert_eq!((kind_label("vps"), job_kind_label("restore_vps"), rule_label("new_rule")), ("VPS 节点", "恢复 VPS 节点", "new_rule"));
+        assert_eq!((job_kind_label("restore_vps"), rule_label("new_rule")), ("恢复 VPS 节点", "new_rule"));
         assert_eq!((severity_label("critical"), severity_label("x")), ("严重", "提示"));
         let m = to_json();
         assert_eq!(m["org_timezone"], DEFAULT_ORG_TZ);

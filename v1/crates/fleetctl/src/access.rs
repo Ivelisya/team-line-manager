@@ -3,40 +3,53 @@
 use crate::cmds::{st, Ctx};
 use crate::resolve::Want;
 use crate::table;
-use serde_json::Value;
 
-pub struct AccessOpts<'a> {
-    pub view: &'a str,
-    pub node: Option<&'a str>,
-    pub team: Option<&'a str>,
-    pub window: &'a str,
-    pub search: Option<&'a str>,
+// `fleetctl access` 的参数（clap 直接解析成它）
+#[derive(clap::Args)]
+pub struct AccessOpts {
+    /// summary（按节点汇总）| targets（域名与 IP）| new（新出现的目标）| sources（来源地址）| events（原始记录）
+    #[arg(default_value = "targets")]
+    pub view: String,
+    /// 只看某台机器（id / 显示名 / IP）
+    #[arg(long)]
+    pub node: Option<String>,
+    #[arg(long)]
+    pub team: Option<String>,
+    /// 1h | 24h | 7d | 30d，不能比汇总的保留期长（见 settings retention）；events 固定取最近记录
+    #[arg(long, default_value = "24h")]
+    pub window: String,
+    /// 搜索域名（events / sources 也匹配来源 IP）
+    #[arg(long)]
+    pub search: Option<String>,
+    /// 只看被阻止的连接
+    #[arg(long)]
     pub blocked: bool,
-    pub kind: Option<&'a str>,
+    /// domain | ip
+    #[arg(long)]
+    pub kind: Option<String>,
+    #[arg(long, default_value_t = 50)]
     pub limit: i64,
 }
 
-fn num(v: &Value, ptr: &str) -> String { v.pointer(ptr).and_then(Value::as_i64).map(|n| n.to_string()).unwrap_or_default() }
-
 pub fn access(ctx: &Ctx, o: AccessOpts) -> anyhow::Result<u8> {
     let mut q: Vec<(&str, String)> = vec![];
-    if let Some(n) = o.node {
+    if let Some(n) = o.node.as_deref() {
         q.push(("node", ctx.find_id(n, Want::Any)?.0));
     }
-    if let Some(t) = o.team {
-        q.push(("team", crate::ops::lookup(&ctx.teams()?, t, &["name"], "团队")?));
+    if let Some(t) = o.team.as_deref() {
+        q.push(("team", ctx.team_id(t)?));
     }
-    if let Some(s) = o.search {
+    if let Some(s) = o.search.as_deref() {
         q.push(("search", s.to_string()));
     }
     if o.blocked {
         q.push(("action", "blocked".into()));
     }
-    if let Some(k) = o.kind {
+    if let Some(k) = o.kind.as_deref() {
         q.push(("kind", k.to_string()));
     }
     let lim = ("limit", o.limit.to_string());
-    match o.view {
+    match o.view.as_str() {
         "summary" => {
             q.push(("window", o.window.to_string()));
             let mut d = ctx.c.get_q("/access/summary", &q)?;
@@ -52,15 +65,15 @@ pub fn access(ctx: &Ctx, o: AccessOpts) -> anyhow::Result<u8> {
                 let rows: Vec<Vec<String>> = nodes
                     .iter()
                     // 来源数：24h 以上带搜索 / 类型 / 处理结果筛选时中控给 null（算不出），显示「-」
-                    .map(|n| vec![st(n, "/name"), st(n, "/team"), num(n, "/conns"), num(n, "/domains"), st(n, "/sources"), num(n, "/blocked"), table::ts(&st(n, "/last_ts"))])
+                    .map(|n| vec![st(n, "/name"), st(n, "/team"), st(n, "/conns"), st(n, "/domains"), st(n, "/sources"), st(n, "/blocked"), table::ts(&st(n, "/last_ts"))])
                     .collect();
                 format!(
                     "自 {} 起：有活动的节点 {} · 连接 {} · 访问目标 {} · 已阻止 {}\n{}",
                     table::ts(&st(&d, "/window_start")),
-                    num(k, "/active_nodes"),
-                    num(k, "/conns"),
-                    num(k, "/unique_targets"),
-                    num(k, "/blocked"),
+                    st(k, "/active_nodes"),
+                    st(k, "/conns"),
+                    st(k, "/unique_targets"),
+                    st(k, "/blocked"),
                     table::render(&["节点", "团队", "连接", "域名", "来源", "阻止", "最近"], &rows)
                 ) + &more
             });
@@ -79,8 +92,8 @@ pub fn access(ctx: &Ctx, o: AccessOpts) -> anyhow::Result<u8> {
                 let rows: Vec<Vec<String>> = list
                     .iter()
                     .map(|t| {
-                        let total = if new { num(t, "/total") } else { num(t, "/conns") };
-                        vec![st(t, "/dest_host"), st(t, "/kind"), st(t, "/name"), total, num(t, "/sources"), num(t, "/blocked"), table::ts(&st(t, "/first_seen")), table::ts(&st(t, "/last_seen"))]
+                        let total = if new { st(t, "/total") } else { st(t, "/conns") };
+                        vec![st(t, "/dest_host"), st(t, "/kind"), st(t, "/name"), total, st(t, "/sources"), st(t, "/blocked"), table::ts(&st(t, "/first_seen")), table::ts(&st(t, "/last_seen"))]
                     })
                     .collect();
                 format!("{}\n共 {} 条", table::render(&["目标", "类型", "节点", "连接", "来源", "阻止", "首次", "最近"], &rows), rows.len())
@@ -92,7 +105,7 @@ pub fn access(ctx: &Ctx, o: AccessOpts) -> anyhow::Result<u8> {
             let d = ctx.c.get_q("/access/sources", &q)?;
             ctx.emit(&d, || {
                 let list = d["items"].as_array().cloned().unwrap_or_default();
-                let rows: Vec<Vec<String>> = list.iter().map(|s| vec![st(s, "/src_ip"), st(s, "/name"), num(s, "/conns"), table::ts(&st(s, "/last_ts"))]).collect();
+                let rows: Vec<Vec<String>> = list.iter().map(|s| vec![st(s, "/src_ip"), st(s, "/name"), st(s, "/conns"), table::ts(&st(s, "/last_ts"))]).collect();
                 format!("{}\n共 {} 条", table::render(&["来源 IP", "节点", "连接", "最近"], &rows), rows.len())
             });
         }
@@ -104,7 +117,7 @@ pub fn access(ctx: &Ctx, o: AccessOpts) -> anyhow::Result<u8> {
                 let rows: Vec<Vec<String>> = list
                     .iter()
                     .map(|e| {
-                        let port = num(e, "/dest_port");
+                        let port = st(e, "/dest_port");
                         let res = if e["blocked"].as_bool() == Some(true) { "已阻止" } else { "已转发" };
                         vec![table::ts(&st(e, "/ts")), st(e, "/name"), st(e, "/src_ip"), format!("{}:{port}", st(e, "/dest_host")), st(e, "/network"), res.into()]
                     })

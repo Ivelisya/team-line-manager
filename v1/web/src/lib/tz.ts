@@ -28,9 +28,6 @@ export function utcOffset(tz: string, at = new Date()): string | null {
   }
 }
 
-/** 中文城市名；没收录的为 null */
-export const tzCity = (tz: string) => CITY[tz] ?? null;
-
 /** 显示用：「洛杉矶（UTC−7）」；没收录的城市写 IANA 原名「America/Boise（UTC−6）」；UTC 本身写「UTC」；认不出的原样返回 */
 export function tzLabel(tz: string): string {
   const off = utcOffset(tz);

@@ -126,12 +126,14 @@ export function RouterExitList({ routers, title }: { routers: { node?: string; p
 }
 
 /** 编号压缩（后面的节点前移补号）：正常的副作用，收成一行，要看逐台再展开成两列表格（替换、退役共用） */
-export function RenameNote({ renames, tip }: { renames: { machine_id: string; old_name: string; new_name: string }[]; tip: string }) {
+/** bare：不套提示条（放进别的提示条的列表里，和其它几条说明合成一块时用） */
+export function RenameNote({ renames, tip, bare }: { renames: { machine_id: string; old_name: string; new_name: string }[]; tip: string; bare?: boolean }) {
   const [open, setOpen] = React.useState(false);
   if (renames.length === 0) return null;
   const first = renames[0]; const last = renames[renames.length - 1];
+  const Wrap = bare ? 'div' : Note;
   return (
-    <Note>
+    <Wrap style={bare ? { flex: 1, minWidth: 0 } : undefined}>
       <div className="row row-between" style={{ gap: 8 }}>
         <span>补号：{renames.length} 台节点前移（{renames.length > 1 ? `${first.old_name} … ${last.old_name}` : `${first.old_name} → ${first.new_name}`}） <InfoTip text={tip} /></span>
         {renames.length > 1 && <button type="button" className="btn btn-link btn-sm" style={{ height: 'auto', padding: 0 }} aria-expanded={open} onClick={() => setOpen((v) => !v)}>{open ? '收起' : '展开'}</button>}
@@ -144,7 +146,7 @@ export function RenameNote({ renames, tip }: { renames: { machine_id: string; ol
           </table>
         </div>
       )}
-    </Note>
+    </Wrap>
   );
 }
 
@@ -174,12 +176,12 @@ export const ReplaceDialog = resetOnOpen(function ReplaceDialog({ m, open, onOpe
   };
 
   return (
-    <ConfirmDialog asForm scroll dirty={!!pick} open={open} onOpenChange={onOpenChange} size="md" title={`替换 ${m.name}`} confirmLabel="开始替换" confirmDisabled={!ready}
-      description={<>新节点接旧编号，旧节点去备用 <InfoTip text={'先把软路由上指向旧节点的出口改成新节点的入口（逐台备份、改完重启 OpenClash 并测延迟，失败自动换回原配置），再交换编号。\n旧节点放进备用团队，订阅过期满 1 天后自动删除。开始改路由后不能取消。'} /></>}
+    <ConfirmDialog asForm scroll dirty={!!pick} open={open} onOpenChange={onOpenChange} size="md" title={`替换 · ${m.name}`} confirmLabel="开始替换" confirmDisabled={!ready}
+      description={<>新节点接旧编号，旧节点去备用 <InfoTip text={'先把软路由上指向旧节点的出口改成新节点（每台先备份，改完重启 OpenClash 并测延迟，失败会自动换回），再交换编号\n旧节点放进备用团队，到期满 1 天后自动回收。开始改路由后不能取消'} /></>}
       onConfirm={submit}>
       <div className="form-grid">
         <Field label="接替的节点" className="span-2"><NodePicker m={m} value={pick} onChange={setPick} /></Field>
-        <Field label="旧节点去哪" info="留空：同团队的备用团队（名字以团队名开头的那个；只有一个备用团队时就是它）">
+        <Field label="旧节点去哪" info="留空则放进同团队的备用团队（名字以团队名开头；只有一个备用团队时就是它）">
           <Select value={team} onChange={setTeam} options={teamOpts} allowEmpty="自动（备用团队）" />
         </Field>
         <Field label="编号"><Input inputMode="numeric" value={num} onChange={(e) => setNum(e.target.value.replace(/\D/g, ''))} placeholder={pv?.old_to.number != null && !number ? `自动：${pv.old_to.number}` : '自动'} /></Field>

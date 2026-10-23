@@ -111,7 +111,6 @@ function niceMax(v: number) {
   return (NICE.find((n) => n * e >= v) ?? 10) * e;
 }
 
-const hm = (t: number) => { const d = new Date(t); return `${F.pad2(d.getHours())}:${F.pad2(d.getMinutes())}`; };
 /** 面积折线（集群状态里的网卡上行 / 下行）：全站每分钟一个点（SERIES_N 个 = 近 30 分钟，见 lib/live）、最新在右；左轴三档刻度（0 只写「0」），
  *  两端标首尾两个点的时刻（到分钟）。悬停：竖线 + 那一分钟的时刻与速率 */
 export function AreaSpark({ points, pick, tone }: { points: readonly LivePoint[]; pick: (p: LivePoint) => number; tone: 'up' | 'down' }) {
@@ -144,9 +143,9 @@ export function AreaSpark({ points, pick, tone }: { points: readonly LivePoint[]
           {h != null && <line className="spark-cursor" x1={xy[h][0]} x2={xy[h][0]} y1={0} y2={H} vectorEffect="non-scaling-stroke" />}
         </svg>
         {last && <i className="spark-dot" style={dot(h != null ? xy[h] : last)} />}
-        {h != null && <span className="spark-tip" style={{ left: `${hx}%`, translate: hx < 25 ? '0 0' : hx > 75 ? '-100% 0' : '-50% 0' }}>{hm(points[h].t)} · {F.str(F.rate(vals[h]))}</span>}
+        {h != null && <span className="spark-tip" style={{ left: `${hx}%`, translate: hx < 25 ? '0 0' : hx > 75 ? '-100% 0' : '-50% 0' }}>{F.hm(points[h].t)} · {F.str(F.rate(vals[h]))}</span>}
       </div>
-      <div className="spark-time" aria-hidden><span>{points.length > 1 ? hm(points[0].t) : ''}</span><span>{last ? hm(points[points.length - 1].t) : '等待数据…'}</span></div>
+      <div className="spark-time" aria-hidden><span>{points.length > 1 ? F.hm(points[0].t) : ''}</span><span>{last ? F.hm(points[points.length - 1].t) : '等待数据…'}</span></div>
     </div>
   );
 }

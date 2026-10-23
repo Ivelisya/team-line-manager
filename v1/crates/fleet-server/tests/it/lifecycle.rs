@@ -55,13 +55,7 @@ where
     F: Fn() -> Fut,
     Fut: std::future::Future<Output = bool>,
 {
-    for _ in 0..150 {
-        if f().await {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    panic!("等不到：{what}");
+    common::eventually(what, Duration::from_secs(15), || async { f().await.then_some(()) }).await;
 }
 
 async fn log_msgs(t: &T, job: &str) -> Vec<String> {
@@ -417,7 +411,34 @@ async fn quota_by_nic_rule_periods_and_opening_reading() {
     sqlx::query("insert into entry_traffic_hourly (entry_id, hour, up_bytes, down_bytes) values ($1, date_trunc('hour', now()), 11, 22)").bind(eid).execute(db).await.unwrap();
     t.st.live.rolled_up();
     let ov = t.get("/api/v1/overview").await;
-    assert_eq!(ov["traffic_month"], json!({"up": 11, "down": 22}), "{ov}");
+    assert_eq!((ov["traffic_month"]["up"].as_i64(), ov["traffic_month"]["down"].as_i64()), (Some(11), Some(22)), "{ov}");
+}
+
+/// 总览本月业务流量的 counted_from：在用线路机里有一台月初（组织时区）前就在用就是完整的（null），否则是其中最早的首次上架时刻；
+/// 退役的、不是线路机的不参与
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn overview_traffic_month_counted_from() {
+    let t = setup(false).await;
+    let db = &t.st.db;
+    let rfc = &time::format_description::well_known::Rfc3339;
+    let (a, _) = seed_relay(&t).await;
+    let (b, _) = seed_relay_b(&t).await;
+    // a 比 b 早：都是本月才上架（a 在本月 1 号 0 点之后 1 秒，b 是现在）
+    sqlx::query("update machine set activated_at = (date_trunc('month', now() at time zone org_tz()) at time zone org_tz()) + interval '1 second' where id = $1").bind(a).execute(db).await.unwrap();
+    let at = |id: Uuid| async move { sqlx::query_scalar::<_, time::OffsetDateTime>("select activated_at from machine where id = $1").bind(id).fetch_one(db).await.unwrap() };
+    let counted = || async {
+        t.st.live.rolled_up();
+        let ov = t.get("/api/v1/overview").await;
+        assert!(ov["traffic_month"]["up"].is_i64() && ov["traffic_month"]["down"].is_i64(), "{ov}");
+        ov["traffic_month"]["counted_from"].as_str().map(|s| time::OffsetDateTime::parse(s, rfc).unwrap())
+    };
+    assert_eq!(counted().await, Some(at(a).await));
+    // a 退役：只剩 b
+    sqlx::query("update machine set lifecycle = 'retiring' where id = $1").bind(a).execute(db).await.unwrap();
+    assert_eq!(counted().await, Some(at(b).await));
+    // a 恢复在用、且是月初前上架的：一台月初前就在用，完整
+    sqlx::query("update machine set lifecycle = 'active', activated_at = (date_trunc('month', now() at time zone org_tz()) at time zone org_tz()) - interval '1 day' where id = $1").bind(a).execute(db).await.unwrap();
+    assert_eq!(counted().await, None);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -848,4 +869,49 @@ async fn retire_relay_removes_direct_entry() {
     assert_eq!(t.req("GET", &format!("/api/v1/machines/{ra}"), None, None).await.0, StatusCode::NOT_FOUND);
     let bin = t.get("/api/v1/recycle-bin?source=fleet").await;
     assert_eq!((bin["total"].as_i64(), bin["items"][0]["kind"].as_str(), bin["items"][0]["machine_id"].as_str()), (Some(1), Some("relay"), Some(ra.to_string().as_str())), "{bin}");
+}
+
+/// 入口端口永不复用：新入口从 relay.port_next 分（分完 +1），端口最大的那条入口被物理删除后，下一条也不会拿到它的端口。
+/// 迁移 0050 的初值取 max(现有入口端口, 回收站快照里这台线路机的入口端口) + 1（可重复执行，只升不降）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn entry_ports_are_never_reused() {
+    let t = setup(false).await;
+    let (relay, _) = seed_relay(&t).await;
+    let team = seed_team(&t, "团队1").await;
+    let db = &t.st.db;
+    let t = &t;
+    let node = |n: i32| async move { seed_node(t, team, n, &format!("203.0.113.{n}"), "active").await };
+    let create = |n: Uuid| async move {
+        let mut tx = db.begin().await.unwrap();
+        fleet_server::entries::lock_policy_shared(&mut tx).await.unwrap();
+        let (id, port, _) = fleet_server::entries::create(&mut tx, relay, n).await.unwrap();
+        tx.commit().await.unwrap();
+        (id, port)
+    };
+    let (_, p1) = create(node(1).await).await;
+    let (last, p2) = create(node(2).await).await;
+    assert_eq!((p1, p2), (20000, 20001), "从 port_min 起");
+    // 端口最大的那条随机器物理删除（jobs::steps purge 直接 delete from entry）：下一条照样往上分
+    sqlx::query("delete from entry where id = $1").bind(last).execute(db).await.unwrap();
+    assert_eq!(create(node(3).await).await.1, 20002, "不复用已删除入口的端口");
+    // 迁移的初值：回收站快照里这台线路机（按标签对上）的入口端口更大时取它 + 1；重复执行不退回
+    sqlx::query("update relay set port_next = 0 where machine_id = $1").bind(relay).execute(db).await.unwrap();
+    sqlx::query(
+        "insert into recycle_bin (source, source_id, kind, name, actor, snapshot) values
+           ('fleet', 'x', 'proxy', '团队1-09', 'test', '{\"entries\": [{\"relay\": \"线路机2\", \"port\": 20009}, {\"relay\": \"别的线路机\", \"port\": 25000}]}')",
+    )
+    .execute(db)
+    .await
+    .unwrap();
+    let mig = include_str!("../../../../migrations/0050_relay_port_next.sql");
+    sqlx::raw_sql(mig).execute(db).await.unwrap();
+    let next = || async { sqlx::query_scalar::<_, i32>("select port_next from relay where machine_id = $1").bind(relay).fetch_one(db).await.unwrap() };
+    assert_eq!(next().await, 20010);
+    sqlx::query("delete from recycle_bin").execute(db).await.unwrap();
+    sqlx::raw_sql(mig).execute(db).await.unwrap();
+    assert_eq!(next().await, 20010, "只升不降");
+    assert_eq!(create(node(4).await).await.1, 20010);
+    // port_next 偏低（回退到旧版中控建过入口、迁移推算对不上）：不低于现有入口的最大端口 + 1，不撞唯一索引
+    sqlx::query("update relay set port_next = 20001 where machine_id = $1").bind(relay).execute(db).await.unwrap();
+    assert_eq!(create(node(5).await).await.1, 20011);
 }

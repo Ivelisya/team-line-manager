@@ -1,5 +1,6 @@
 //! 各作业步骤的实现。每步幂等：重跑不会重复产生副作用。
 
+mod batch;
 mod lifecycle;
 mod replace;
 
@@ -753,6 +754,7 @@ async fn wait_report(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
             .await?
             .rows_affected();
         if revoked > 0 {
+            c.st.agent_auth.forget(id);
             c.log(format!("新令牌已上报，撤销了 {revoked} 枚旧令牌")).await;
         }
     }
@@ -968,11 +970,13 @@ async fn cleanup(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
 }
 
 async fn revoke(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
+    let id = c.target_id()?;
     let n = sqlx::query("update agent_token set revoked_at = now() where machine_id = $1 and revoked_at is null")
-        .bind(c.target_id()?)
+        .bind(id)
         .execute(&c.st.db)
         .await?
         .rows_affected();
+    c.st.agent_auth.forget(id);
     Ok(Outcome::Done(json!({"revoked": n})))
 }
 
@@ -998,7 +1002,7 @@ async fn finalize(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     // 编号连续：同团队剩下的节点压缩成 01..N
     let mut renamed = vec![];
     let mut relays = vec![];
-    if let Some(t) = team.filter(|_| c.st.cfg.numbering.auto_compact) {
+    if let Some(t) = team {
         let (ch, rs) = crate::db::compact_team(&mut tx, t, &c.job.created_by, "节点退役后自动压缩").await?;
         renamed = ch;
         relays = rs;
@@ -1065,13 +1069,15 @@ async fn purge(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         n += sqlx::query(&format!("delete from {t} where entry_id = any($1)")).bind(&eids).execute(&mut *tx).await?.rows_affected();
     }
     n += sqlx::query("delete from host_metric_hourly where machine_id = $1").bind(id).execute(&mut *tx).await?.rows_affected();
-    // 访问汇总：access_hourly 按节点或线路机，其余三张按节点（线路机自己没有这三张的行）
-    n += sqlx::query("delete from access_hourly where node_id = $1 or relay_id = $1").bind(id).execute(&mut *tx).await?.rows_affected();
+    // 访问汇总：access_hourly、access_daily 按节点或线路机，其余三张按节点（线路机自己没有这三张的行）
+    for t in ["access_hourly", "access_daily"] {
+        n += sqlx::query(&format!("delete from {t} where node_id = $1 or relay_id = $1")).bind(id).execute(&mut *tx).await?.rows_affected();
+    }
     for t in ["access_source_hourly", "access_target_seen", "access_source_late"] {
         n += sqlx::query(&format!("delete from {t} where node_id = $1")).bind(id).execute(&mut *tx).await?.rows_affected();
     }
     sqlx::query("delete from incident where subject_id = $1 or subject_id = any($2)").bind(id).bind(&eids).execute(&mut *tx).await?;
-    sqlx::query("delete from silence where subject_id = $1").bind(id).execute(&mut *tx).await?;
+    sqlx::query("delete from silence where machine_id = $1").bind(id).execute(&mut *tx).await?;
     sqlx::query("delete from entry where id = any($1)").bind(&eids).execute(&mut *tx).await?;
     // 其余（令牌、agent 状态、账单、续费、出站、线路机参数）随 machine 级联删除
     sqlx::query("delete from machine where id = $1").bind(id).execute(&mut *tx).await?;
@@ -1139,6 +1145,7 @@ pub async fn compensate(st: &AppState, job: &JobRow, owner: &str) {
         sqlx::query("update agent_token set revoked_at = now() where machine_id = $1 and revoked_at is null").bind(id).execute(&st.db).await,
     )
     .await;
+    st.agent_auth.forget(id);
     // 压缩编号要用这台机器占着编号的团队
     let team = note(
         st,
@@ -1163,14 +1170,12 @@ pub async fn compensate(st: &AppState, job: &JobRow, owner: &str) {
     if m.host_id.is_none() {
         note(st, job.id, "忘记主机公钥", ssh::forget_host(&st.cfg.known_hosts, &m.ip, m.ssh_port as u16).await).await;
     }
-    if st.cfg.numbering.auto_compact {
-        if let Some((Some(t),)) = team {
-            if let Some(mut tx) = note(st, job.id, "开启事务", st.db.begin().await).await {
-                if let Some((_, relays)) = note(st, job.id, "压缩编号", crate::db::compact_team(&mut tx, t, &job.created_by, "上架取消后自动压缩").await).await {
-                    if note(st, job.id, "提交编号压缩", tx.commit().await).await.is_some() {
-                        for r in relays {
-                            st.relay_bumped(r);
-                        }
+    if let Some((Some(t),)) = team {
+        if let Some(mut tx) = note(st, job.id, "开启事务", st.db.begin().await).await {
+            if let Some((_, relays)) = note(st, job.id, "压缩编号", crate::db::compact_team(&mut tx, t, &job.created_by, "上架取消后自动压缩").await).await {
+                if note(st, job.id, "提交编号压缩", tx.commit().await).await.is_some() {
+                    for r in relays {
+                        st.relay_bumped(r);
                     }
                 }
             }

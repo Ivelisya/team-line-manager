@@ -3,7 +3,7 @@
 import { MoreHorizontal } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
 import * as F from '@/lib/format';
-import { isQuiet, liveRate, priceHint, quota, quotaGb, quotaTip, quotaUsedLabel, remainingValue, resourceMeters, statusRank, trafficTotal } from '@/lib/derive';
+import { feeView, isQuiet, liveRate, quota, quotaGb, quotaTip, quotaUsedLabel, remainingValue, resourceMeters, statusRank, trafficTotal } from '@/lib/derive';
 import { Due, Flag, HealthPill, HostTag, MonthFlowCell, Num, type SortState } from '@/components/app/primitives';
 import { MachineGrid, byNum, byStr, sortByCol, type Col } from '@/components/app/MachineGrid';
 import { Cells, MiniMeter, quotaColors } from '@/components/app/viz';
@@ -12,10 +12,9 @@ import { openDrawer } from '@/lib/drawer';
 
 const Q8 = quotaColors(8);
 // 数据过期（isQuiet）的机器读数显示 “—”；排序时没有值的（null）不论升降都排在最后（MachineGrid 的 nil）
-const cpuPct = (m: MachineView) => (!isQuiet(m) && m.host?.cpu_pct != null ? m.host.cpu_pct : null);
-const memPct = (m: MachineView) => (!isQuiet(m) && m.host?.mem_total ? (m.host.mem_used ?? 0) / m.host.mem_total : null);
-const diskPct = (m: MachineView) => (!isQuiet(m) && m.host?.disk_total ? (m.host.disk_used ?? 0) / m.host.disk_total : null);
-const PCT = { cpu: cpuPct, mem: memPct, disk: diskPct };
+// 排序与单元格同一口径（resourceMeters）：指标缺测的行排在最后，不当成 0%
+const resPct = (k: 'cpu' | 'mem' | 'disk') => (m: MachineView) => (isQuiet(m) ? null : resourceMeters(m)?.[k].pct ?? null);
+const PCT = { cpu: resPct('cpu'), mem: resPct('mem'), disk: resPct('disk') };
 
 // 列宽合计 1226：1426 宽窗口下内容区约 1079，先收起「月费」「剩余价值」（1078）；更窄时再收「磁盘」「内存」（1267 宽窗口内容区约 921 放得下 914）。
 // 名称两行（名称 + 小字 IP，同机器页），不再单列 IP；状态单独一列（名称后面不再标）。同机关系标跟在名称后面，只写「同机」/「+N IP」（宿主机名在悬停说明里），
@@ -43,12 +42,11 @@ const cols: Col[] = [
     } },
   { id: 'due', header: '到期', size: 96, r: true, ...byNum((m) => m.subscription?.due_days ?? null, 'asc'), cell: (m) => (m.subscription ? <Due days={m.subscription.due_days} state={m.subscription.due_state} /> : <span className="t-muted">—</span>) },
   { id: 'value', header: '剩余价值', size: 76, r: true, drop: 2, ...byNum((m) => remainingValue(m.subscription)?.cents ?? null), cell: (m) => { const v = remainingValue(m.subscription); return v ? <span className="num">{F.money(v.cents, v.currency)}</span> : <span className="t-muted">—</span>; } },
-  // 服务端折好的月费（不同币种直接按数值比）；季付、年付的悬停写原价
-  // 月费统一按 USD（服务端折好的 monthly_usd_cents），悬停写原价与汇率；没有汇率的写原币种、标未折算，排在最后
+  // 月费统一按 USD（feeView），悬停写原价与汇率；没有汇率的写原币种、标未折算，排在最后
   { id: 'fee', header: '月费', size: 72, r: true, drop: 1, ...byNum((m) => m.subscription?.monthly_usd_cents ?? null),
     cell: (m) => { const s = m.subscription; if (!s) return <span className="t-muted">—</span>;
-      return s.monthly_usd_cents != null ? <span className="num" data-tip={priceHint(s) ?? undefined}>{F.money(s.monthly_usd_cents, 'USD')}</span>
-        : <span className="num t-sub" data-tip={priceHint(s) ?? undefined}>{F.money(s.monthly_cents, s.currency)}*</span>; } },
+      const v = feeView(s);
+      return <><span className="num" data-tip={v.tip ?? undefined}>{v.main}</span>{!v.converted && <span className="sub" data-tip={v.tip ?? undefined}>{v.sub}</span>}</>; } },
   { id: 'menu', header: '', size: 48, cell: () => <IconButton label="更多操作" tip={false} data-node-menu="" aria-haspopup="menu"><MoreHorizontal size={16} /></IconButton> },
 ];
 export const sortTable = (rows: MachineView[], sort: SortState | null) => sortByCol(rows, cols, sort);

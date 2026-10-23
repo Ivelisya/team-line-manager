@@ -15,9 +15,11 @@
 .m-head { display: grid; gap: var(--sp-4); min-width: 0; }
 .m-head-row { display: flex; align-items: center; gap: var(--sp-8); flex-wrap: wrap; min-width: 0; }
 .drawer-nav { flex: none; align-self: flex-start; display: flex; gap: var(--sp-2); }
+.m-drawer-head > .nc-flag { align-self: flex-start; margin-top: calc((max(var(--lh-title), var(--h-xs)) - var(--flag-h)) / 2); }
 .reason-list { display: grid; gap: var(--sp-6); margin: 0; padding: 0; list-style: none; }
 .reason-list li { display: flex; align-items: flex-start; gap: var(--sp-8); font-size: var(--fs-body); }
 .reason-list .smark { margin-top: 4px; }
+.note-list .dot { margin-top: calc((1lh - var(--dot)) / 2); } /* 提示条里合并的几条说明：圆点对齐第一行文字 */
 /* 抽屉「最近操作」：第一行动作 + 对象，右边谁 · 多久前（悬停看具体时间）；第二行命令 / 详情，等宽浅色单行省略（悬停看全文） */
 /* 时间线：圆点之间一条细竖线连到下一条（操作记录页、抽屉的最近操作 / 最近告警）——事件按时间往下走，而不是一格一格的列表。
    每行左右各伸出 --sp-8（可点的行悬停底色有地方铺），竖线从圆点下沿画到下一行圆点上沿，各留 3px */
@@ -40,7 +42,7 @@
 .audit-list li.is-link { cursor: pointer; transition: background-color var(--dur-1) var(--ease-std); }
 /* 按天分段：每段一个小标题（今天 / 昨天 / 10月20日 周一），时间线在段内连续 */
 .audit-day { margin: var(--sp-12) 0 var(--sp-2); font: var(--fw-semibold) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2); }
-.audit-day:first-child { margin-top: 0; }
+.audit-day:first-child { margin-top: var(--sp-4); } /* 第一段标题离卡片上沿留一点，不贴着圆角边框 */
 @media (hover: hover) { .audit-list li.is-link:hover { background-color: var(--hover); } }
 .audit-more { display: flex; justify-content: center; padding-top: var(--sp-12); }
 .audit-meta[data-tone="warn"] { color: var(--warn-text); }
@@ -67,6 +69,21 @@
 .inc-fold { gap: var(--sp-4); }
 .inc-fold .lucide { width: var(--icon-xs); height: var(--icon-xs); flex: none; transition: transform var(--dur-2) var(--ease-out); }
 .dt tr[data-open] .inc-fold .lucide { transform: rotate(90deg); }
+/* 告警表：窄屏收起「规则」「说明」「开始」三列（第 3–5 列宽度归零、内容藏起；不用 display: none，免得后面的格子挪到别的列上），
+   内容并进对象格的第二、三行（.inc-narrow 只在窄屏出现）；表不再撑到 820 宽，不用横滑 */
+.inc-narrow { display: none !important; }
+@media (max-width: 600px) {
+  .inc-tbl { min-width: 0 !important; }
+  .inc-tbl col:nth-child(n+3):nth-child(-n+5) { width: 0 !important; }
+  .inc-tbl :is(th, td):nth-child(n+3):nth-child(-n+5) { padding: 0; font-size: 0; }
+  .inc-tbl :is(th, td):nth-child(n+3):nth-child(-n+5) > * { display: none; }
+  .inc-tbl col:first-child { width: 80px !important; }
+  .inc-tbl col:nth-child(2) { width: auto !important; }
+  .inc-tbl col:last-child { width: 104px !important; }
+  .inc-tbl :is(th, td):first-child { padding-right: var(--sp-4); }
+  .inc-tbl .inc-narrow { display: block !important; }
+  .inc-tbl td { height: auto; }
+}
 .chart-box { height: 180px; min-width: 0; }
 /* 曲线第一次有数据时从左往右展开一次：.chart-frame 在数据到了才挂载（之前是骨架），之后的轮询刷新、换时间范围（沿用旧曲线调淡）都不重新挂载，不会再播 */
 .chart-frame .chart-box { animation: chart-reveal var(--dur-data) var(--ease-out); }
@@ -123,9 +140,15 @@
 .mgroup > .note { border: 0; border-radius: 0; }
 .mgroup.is-danger { border-color: color-mix(in srgb, var(--bad) 30%, var(--line)); }
 .sec > * + .mgroup { margin-top: var(--sp-8); }
+.sec > :is(.mgroup, .stack-sm) + .mgroup { margin-top: calc(2 * var(--card-seg)); } /* 同一段里的两组（入口列表与入口操作）：组间距同段间距，不挤在一起 */
 /* 费用页签：标签与右边的「跟随 / 单独」切换一行（切换比标签高，行高固定免得有无切换的项高低不一） */
 .ov-follow { display: flex; align-items: center; min-height: var(--h-md); padding: 0 var(--sp-12); color: var(--fg-2); }
-.ov-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); min-height: 26px; min-width: 0; }
+.ov-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); min-height: calc(var(--seg-item-sm) + 2 * var(--seg-pad)); min-width: 0; }
+/* 订阅表单：没有「跟随 / 单独」切换的项（到期日）标签行也占切换的高度，同一行左右两个输入框上沿对齐 */
+.sub-form > .field > :is(.label, .field-label):first-child { display: flex; align-items: center; min-height: calc(var(--seg-item-sm) + 2 * var(--seg-pad)); }
+/* 三网 PING 的槽位表：格子里是标准尺寸的输入框（撑满列宽）；方式下拉限宽 */
+.ping-tbl td > .input { width: 100%; }
+.ping-mode { width: 240px; max-width: 100%; }
 .manage-row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-12); flex-wrap: wrap; }
 .manage-row > div:first-child { min-width: 0; flex: 1 1 220px; }
 .manage-row .t { font-weight: var(--fw-medium); }
@@ -168,7 +191,7 @@
 .prov-steps.is-form { width: 100%; max-width: 760px; margin-inline: auto; } /* 单台：步骤条与下面收窄居中的表单同宽，左缘对齐 */
 .prov-form { width: 100%; max-width: 760px; margin-inline: auto; } /* 两列表单铺满 1100px 太散：收到 760 并居中 */
 .prov-form .form-grid { row-gap: 0; }
-.prov-form .field { grid-template-rows: auto auto minmax(var(--lh-label), auto); }
+.prov-form .field { grid-template-rows: auto auto minmax(var(--lh-label), auto); padding-bottom: var(--sp-8); } /* 提示 / 错误行与下一行的标签隔开，不贴在一起 */
 .sticky-bar { position: sticky; bottom: 0; z-index: var(--z-sticky); }
 /* 上架页底部操作条：与顶栏同一种毛玻璃，阴影朝上（顶边的线由面板自己的边框给）——表单从它下面滚过时隐约透出、分得清层次 */
 .panel.sticky-bar {

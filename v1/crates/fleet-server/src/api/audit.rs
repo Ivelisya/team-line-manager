@@ -11,6 +11,9 @@ use serde_json::{json, Value};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+/// 订阅字段的写法：(字段名, 中文名, 把值写成文字的函数)
+type FieldFmt<'a> = (&'a str, &'a str, &'a dyn Fn(&Value) -> String);
+
 #[derive(Deserialize)]
 pub struct AuditQ {
     target_id: Option<Uuid>,
@@ -180,7 +183,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "entry.disable" => "停用入口",
         "entry.rotate" => "轮换凭据",
         "entry.share" => "查看分享链接",
-        "entry.add" => "新增入口",
+        "entry.add" => "添加入口",
         "entry.move" => "换线路机",
         "relay.evacuate" => "搬空线路机",
         "machine.restore" => "恢复机器",
@@ -366,7 +369,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         }
         "machine.logs" | "restore.probe" => s("name"),
         "ssh.login" => format!("{} · {}", s("name"), if d["command"] == true { "带命令（内容不记录）" } else { "交互式" }),
-        "incident.ack" => format!("{} · {}", crate::notify::rule_name(d["rule"].as_str().unwrap_or("")), s("summary")),
+        "incident.ack" => format!("{} · {}", crate::meta::rule_label(d["rule"].as_str().unwrap_or("")), s("summary")),
         "server.logs" => format!("{} 行", d["lines"]),
         "apikey.create" | "apikey.revoke" if d["via"] == "local-admin" => format!("{}（{}）· 中控命令行 local-admin", s("name"), s("prefix")),
         "terminal.open" | "terminal.close" => crate::terminal::audit_summary(action, d),
@@ -399,12 +402,13 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "silence.create" | "silence.delete" if d["starts_at"].is_string() => {
             let at = |k: &str| {
                 let t = d[k].as_str().and_then(|v| OffsetDateTime::parse(v, &time::format_description::well_known::Rfc3339).ok());
-                t.map(|t| crate::notify::beijing(t).chars().take(16).collect::<String>()).unwrap_or_default()
+                t.map(|t| crate::meta::org_time(t).chars().take(16).collect::<String>()).unwrap_or_default()
             };
             let what = if d["is_maintenance"] == true { "维护窗口" } else { "静默" };
             let rule = d["rule_name"].as_str().map(|r| format!(" · 只静默「{r}」")).unwrap_or_default();
             let note = d["comment"].as_str().filter(|c| !c.is_empty()).map(|c| format!("（{c}）")).unwrap_or_default();
-            format!("{} · {what}{rule} · {} → {}{note}", d["subject_name"].as_str().unwrap_or("全部机器"), at("starts_at"), at("ends_at"))
+            let object = super::incidents::subject_label(d["subject_kind"].as_str(), d["subject_name"].as_str());
+            format!("{object} · {what}{rule} · {} → {}{note}", at("starts_at"), at("ends_at"))
         }
         "policy.discard" => format!("{} 个草稿", d["drafts"]),
         "router.create" if d["method"] == "deploy" => format!("{} · 一键部署", s("name")),
@@ -474,7 +478,7 @@ fn sub_changes(d: &Value) -> String {
     let gb = |v: &Value| v.as_i64().filter(|g| *g > 0).map_or("不限".into(), |g| format!("{g} GB"));
     let cycle = |v: &Value| v.as_str().and_then(|k| crate::meta::CYCLES.iter().find(|c| c.key == k)).map_or_else(|| val(v), |c| c.label.to_string());
     let onoff = |v: &Value| if v == true { "开" } else { "关" }.to_string();
-    let fields: [(&str, &str, &dyn Fn(&Value) -> String); 9] = [
+    let fields: [FieldFmt; 9] = [
         ("due_date", "到期", &val),
         ("price_cents", "价格", &money),
         ("currency", "币种", &val),

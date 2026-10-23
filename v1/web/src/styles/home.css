@@ -19,7 +19,6 @@
   font: var(--fw-semibold) var(--fs-label) / 1 var(--font-sans); color: var(--fg); white-space: nowrap;
 }
 .hsec-badge .lucide { width: var(--icon-xs); height: var(--icon-xs); stroke-width: var(--icon-stroke-strong); }
-.hsec-actions { display: flex; align-items: center; gap: var(--control-gap); flex-wrap: wrap; min-width: 0; }
 .hsec-titles { display: grid; gap: var(--sp-4); min-width: 0; }
 .hsec-title { margin: 0; font: var(--fw-bold) var(--fs-section) / var(--lh-section) var(--font-sans); letter-spacing: -0.015em; color: var(--fg); }
 .hero-greet { margin: 0; font: var(--fw-bold) clamp(21px, 2vw, 26px) / 1.25 var(--font-sans); letter-spacing: -0.025em; color: var(--fg); }
@@ -248,6 +247,8 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 .tag[data-c="cyan"] { --tag-bg: var(--tag-cyan-bg); --tag-fg: var(--tag-cyan-fg); }
 .tag[data-c="amber"] { --tag-bg: var(--tag-amber-bg); --tag-fg: var(--tag-amber-fg); }
 .tag[data-c="green"] { --tag-bg: var(--tag-green-bg); --tag-fg: var(--tag-green-fg); }
+.tag[data-c="indigo"] { --tag-bg: var(--tag-indigo-bg); --tag-fg: var(--tag-indigo-fg); }
+.tag[data-c="slate"] { --tag-bg: var(--tag-slate-bg); --tag-fg: var(--tag-slate-fg); }
 /* 可点的标签（同机关系标，点开对应机器的抽屉）：按钮去掉外观，悬停底色加深；按下与焦点环见 components.css「交互状态」 */
 button.tag { border: 0; cursor: pointer; transition: background-color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out); }
 @media (hover: hover) { button.tag:hover { background: color-mix(in srgb, var(--tag-fg) 22%, transparent); } }
@@ -280,3 +281,14 @@ button.tag { border: 0; cursor: pointer; transition: background-color var(--dur-
 .cluster-routers b[data-warn] { color: var(--warn-text); }
 .cluster-routers-go { width: var(--icon-xs); height: var(--icon-xs); color: var(--fg-3); }
 @media (hover: hover) { .cluster-routers:hover .cluster-routers-go { color: var(--fg-2); } .cluster-routers:hover .cluster-routers-label { color: var(--accent); } }
+
+/* 团队分组放不下时：轨道撑满可用宽度（基准 0，宽度不随内容变，才量得出放得下几项），其余收进最右的「更多 ▾」。
+   量宽用的隐藏副本叠在原位、不占位、不可见；.seg-ovf 裁掉它超出的部分，否则窄屏下它的宽度会撑出整页横向滚动 */
+/* overflow: hidden 给不认 clip 的旧 Safari（< 16）兜底，认的浏览器被下一行覆盖。里面的选中胶囊阴影在 .seg 自己的内边距里（.seg 本身 overflow-x: auto 就裁在它的
+   内边距框上）、焦点环向里收 2px（components.css 的 .seg-item:focus-visible），都不会被这一层多裁；overflow-clip-margin 只在认它的浏览器里多留 4px */
+.seg-ovf { position: relative; flex: 1 1 0; min-width: 0; display: flex; overflow: hidden; overflow: clip; overflow-clip-margin: 4px; }
+.seg-ovf > .seg.seg-fill { flex: 1 1 0; max-width: none; }
+.seg-ovf > .seg-measure { position: absolute; left: 0; top: 0; visibility: hidden; pointer-events: none; max-width: none; width: max-content; overflow: visible; animation: none; mask-image: none; }
+.seg-more { flex: none !important; gap: var(--sp-2); }
+.seg-more > svg { color: var(--fg-3); }
+.seg-more[data-state="open"] { color: var(--fg); background: var(--hover); }

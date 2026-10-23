@@ -18,6 +18,7 @@ pub mod collect;
 pub mod deploy;
 pub mod replace;
 pub mod scripts;
+pub mod selfcheck;
 pub mod tunnel;
 
 use crate::config::Config;
@@ -243,19 +244,23 @@ pub struct Row {
     pub deploy_finished_at: Option<OffsetDateTime>,
     pub created_at: OffsetDateTime,
     pub reachable: Option<bool>,
+    /// 离线时是连不上的原因；在线时有值 = 连得上但采集出错（见 collect.rs）
     pub error: Option<String>,
     pub data: Option<Value>,
     pub last_ok_at: Option<OffsetDateTime>,
+    /// 等待接入从什么时候起：最近一次取走接入脚本 / 一键部署换密钥、生成接入命令（到期时间往前推有效期）、开始一键部署中最晚的（告警看它）
+    pub pending_since: Option<OffsetDateTime>,
 }
 
 pub const SELECT: &str = "select r.id, r.name, r.team_id, t.name team_name, r.note, r.tunnel_port, r.tunnel_key_at,
         case when r.bootstrap_expires_at > now() then r.bootstrap_expires_at end bootstrap_expires_at,
         r.deploy_state, r.deploy_step, r.deploy_error, r.deploy_host, r.deploy_port, r.deploy_user, r.deploy_started_at, r.deploy_finished_at,
-        r.created_at, s.reachable, s.error, s.data, s.last_ok_at
+        r.created_at, s.reachable, s.error, s.data, s.last_ok_at,
+        greatest(r.tunnel_key_at, r.bootstrap_expires_at - interval '30 minutes', r.deploy_started_at) pending_since
     from router r left join team t on t.id = r.team_id left join router_status s on s.router_id = r.id";
 
 fn rfc(t: Option<OffsetDateTime>) -> Value {
-    t.and_then(|t| t.format(&time::format_description::well_known::Rfc3339).ok()).map(Value::String).unwrap_or(Value::Null)
+    t.map(crate::meta::fmt_ts).map(Value::String).unwrap_or(Value::Null)
 }
 
 impl Row {
@@ -263,8 +268,8 @@ impl Row {
 
     pub fn snapshot(&self) -> Option<collect::Snapshot> { self.data.clone().and_then(|d| serde_json::from_value(d).ok()) }
 
-    /// 接口里的 Router；`detail` 为真时加上完整快照
-    pub fn view(&self, detail: bool) -> Value {
+    /// 接口里的 Router；`detail` 为真时加上完整快照。`maintenance`：在维护窗口里（自己的或全局的，见 silence.rs）
+    pub fn view(&self, detail: bool, maintenance: bool) -> Value {
         let snap = self.snapshot();
         let deploy = self.deploy_state.as_ref().map(|s| {
             json!({
@@ -282,10 +287,11 @@ impl Row {
             "created_at": rfc(Some(self.created_at)),
             "state": self.state(),
             "last_seen_at": rfc(self.last_ok_at),
-            "error": if self.reachable == Some(true) { None } else { self.error.clone() },
+            "error": self.error,
             "summary": snap.as_ref().map(collect::summary),
             "deploy": deploy,
             "bootstrap_expires_at": rfc(self.bootstrap_expires_at),
+            "maintenance": maintenance,
         });
         if detail {
             v["detail"] = snap.map(|s| serde_json::to_value(s).unwrap_or_default()).unwrap_or(Value::Null);
@@ -324,9 +330,37 @@ pub async fn exits_using(db: &sqlx::PgPool, nodes: &[Uuid]) -> sqlx::Result<Hash
     Ok(out)
 }
 
+/// 各路由最近一次采集的快照里对上这个入口的出口（轮换凭据、停用入口的确认里列出）：`[{id, name, state, exits: [出口名]}]`，路由按列表的顺序
+pub async fn exits_on_entry(db: &sqlx::PgPool, entry: Uuid) -> sqlx::Result<Vec<Value>> {
+    let mut out = vec![];
+    for r in load(db, None).await? {
+        let Some(snap) = r.snapshot() else { continue };
+        let exits: Vec<&str> = snap.exits.iter().filter(|x| x.entry.as_ref().is_some_and(|e| e.id == entry)).map(|x| x.name.as_str()).collect();
+        if !exits.is_empty() {
+            out.push(json!({"id": r.id, "name": r.name, "state": r.state(), "exits": exits}));
+        }
+    }
+    Ok(out)
+}
+
+/// 出口列表的一句话：「路由A 的 节点01、节点02；路由B 的 节点01」
+pub fn exits_text(rs: &[Value]) -> String {
+    rs.iter()
+        .map(|r| format!("{} 的 {}", r["name"].as_str().unwrap_or(""), r["exits"].as_array().into_iter().flatten().filter_map(Value::as_str).collect::<Vec<_>>().join("、")))
+        .collect::<Vec<_>>()
+        .join("；")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exits_sentence() {
+        let rs = vec![json!({"name": "路由A", "exits": ["节点01", "节点02"]}), json!({"name": "路由B", "exits": ["节点01"]})];
+        assert_eq!(exits_text(&rs), "路由A 的 节点01、节点02；路由B 的 节点01");
+        assert_eq!(exits_text(&[]), "");
+    }
 
     #[test]
     fn states() {

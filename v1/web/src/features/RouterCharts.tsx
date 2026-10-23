@@ -2,7 +2,8 @@
 // 单独成文件按需加载（recharts）；图表卡、加载框、时间范围与机器抽屉共用（DrawerCharts）。
 import * as React from 'react';
 import { Activity, Cable, Cpu, Network, Radar, Shuffle, Thermometer, Users } from 'lucide-react';
-import { beatBins, exitBeats, routerMeters, routerPoll, useRouterExitMetrics, useRouterMetrics, type RouterView } from '@/lib/routers';
+import { beatBins, exitBeats, routerMeters, useRouterExitMetrics, useRouterMetrics, type RouterView } from '@/lib/routers';
+import { RANGE_MS, vMs, vPct, vRate, yMs, yPct, yRate } from '@/lib/chart';
 import { useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
 import { InfoTip } from '@/components/ui/form';
@@ -10,7 +11,7 @@ import { Select } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Beat, Empty, ErrorNote, Num, Section, SectionHeader } from '@/components/app/primitives';
 import { TimeChart } from '@/components/app/TimeChart';
-import { ChartCard, ChartFrame, RangeBar } from './DrawerCharts';
+import { ChartCard, ChartFrame, RangeSticky } from './DrawerCharts';
 
 // 线条与格式化放模块常量：抽屉随推送重渲染时 TimeChart（memo）不重画。资源用首页的指标色，上下行 --chart-1 / --chart-2
 const L_CPU = [{ key: 'cpu_pct', label: 'CPU', color: 'var(--m-cpu)' }];
@@ -22,20 +23,13 @@ const L_CONNS = [{ key: 'conns', label: '代理连接', color: 'var(--chart-1)' 
 const L_PEOPLE = [{ key: 'clients', label: '在线客户端', color: 'var(--chart-1)' }, { key: 'exits_alive', label: '可用出口', color: 'var(--chart-2)' }];
 const L_DELAY = [{ key: 'delay_ms', label: '延迟', color: 'var(--chart-1)' }];
 const PCT: [number, number] = [0, 100];
-const yPct = (v: number) => `${Math.round(v)}%`;
-const vPct = (_: string, v: number) => `${v.toFixed(1)}%`;
-const yRate = (v: number) => (v ? F.str(F.rate(v)) : '0');
-const vRate = (_: string, v: number) => F.str(F.rate(v));
 const yInt = (v: number) => String(Math.round(v));
 const vInt = (_: string, v: number) => String(Math.round(v));
 const yTemp = (v: number) => `${Math.round(v)}°`;
 const vTemp = (_: string, v: number) => `${v.toFixed(1)} °C`;
-const yMs = (v: number) => (v ? `${v} ms` : '0');
-const vMs = (_: string, v: number) => `${Math.round(v)} ms`;
 
-const RANGE_MS: Record<string, number> = { '1h': 3600_000, '6h': 6 * 3600_000, '24h': 86400_000, '7d': 7 * 86400_000, '30d': 30 * 86400_000 };
 /** 点不到两个时的说明：所选范围内才接入的是数据还在积累，其余（离线）是这段时间没有数据 */
-const fewText = (r: RouterView, range: string) => (Date.now() - Date.parse(r.created_at) < (RANGE_MS[range] ?? 0) ? '刚接入，数据积累中' : '这段时间没有数据');
+const fewText = (r: RouterView, range: string) => (Date.now() - Date.parse(r.created_at) < (RANGE_MS[range] ?? 0) ? '刚接入，数据还在积累' : '这段时间没有数据');
 
 /** 还没接入的路由没有任何读数：一个空状态，不画一排空图 */
 export function RouterChartsTab({ r }: { r: RouterView }) {
@@ -55,9 +49,8 @@ function Charts({ r }: { r: RouterView }) {
   );
   return (
     <>
-      <Section>
-        <SectionHeader title={<>曲线<InfoTip text={`中控每 30 秒采集一次；抽屉开着时每 ${routerPoll(range) < 60_000 ? `${routerPoll(range) / 1000} 秒` : `${routerPoll(range) / 60_000} 分钟`}刷新曲线`} /></>} meta={q.data ? (q.data.step_s >= 3600 ? '每小时平均' : q.data.step_s >= 300 ? '每 5 分钟平均' : '每 30 秒一个点') : undefined}><RangeBar range={range} setRange={setRange} /></SectionHeader>
-      </Section>
+      {/* 同机器抽屉的曲线页签：顶部吸顶的「时间范围」条 */}
+      <RangeSticky range={range} setRange={setRange} />
       <Section className="chart-stack">
         <ChartCard c="var(--m-cpu)" icon={<Cpu />} title="CPU" value={s ? <Num f={F.pct(s.cpu_pct, 1)} /> : '—'} caption="使用率">{chart(L_CPU, yPct, vPct, { domain: PCT })}</ChartCard>
         <ChartCard c="var(--m-mem)" icon={<Activity />} title="内存 · 存储 · 连接表" value={mt ? <>内存 <Num f={mt.mem.value} /> <span className="t-sub">·</span> 存储 <Num f={mt.disk.value} /> <span className="t-sub">·</span> 连接表 <Num f={mt.ct.value} /></> : '—'} caption="占总量的百分比">{chart(L_RES, yPct, vPct, { domain: PCT, kind: 'line' })}</ChartCard>
@@ -86,7 +79,7 @@ function ExitDelays({ r, range, few }: { r: RouterView; range: string; few: stri
   const beats = React.useMemo(() => (exits ?? []).map((x) => ({ name: x.name, ...exitBeats(x.points, range, bins, Date.now(), late ? since : undefined) })), [exits, range, bins, late, since]);
   return (
     <Section>
-      <SectionHeader meta={late ? `数据从 ${F.dt(new Date(since).toISOString())} 起` : undefined} title={<>各出口延迟<InfoTip text={'每 5 分钟经出口访问一次 generate_204（每批 6 个出口，没通的当场单独再测一次，再不通才记失败）。\n每格是一段时间（从现在往前等分）：全部成功绿、有测试失败黄、失败过半红，斜纹是那段没有数据；右边是整段的成功率。\n延迟高低看下面的曲线，曲线的缺口是那次测试失败'} /></>} />
+      <SectionHeader meta={late ? `数据从 ${F.dt(new Date(since).toISOString())} 起` : undefined} title={<>各出口延迟<InfoTip text={'每格是一段时间：全部成功是绿，有失败是黄，失败过半是红，斜纹是没有数据\n右边是整段时间的成功率\n延迟高低看下面的曲线，曲线断开表示那次没测通'} /></>} />
       {q.isError && !q.data ? <ErrorNote error={q.error} onRetry={() => void q.refetch()}>出口曲线加载失败：</ErrorNote>
         : q.isLoading ? <Skeleton h={180} className="is-float" />
         : !exits?.length ? <div className="chart-empty" style={{ height: 120 }}>{few}</div> : (

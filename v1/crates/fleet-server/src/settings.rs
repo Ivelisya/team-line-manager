@@ -1,4 +1,4 @@
-//! 面板里可改的设置（app_setting 表，迁移 0028）。目前只有访问记录保留期 `access_retention`。
+//! 访问记录保留期 `access_retention`（app_setting 表，迁移 0028）。汇率、主探测来源、三网 PING 目标等其它设置各在自己的模块里，同样存在 app_setting。
 //!
 //! 用户要的是：访问监控照常记录，但访问记录只留一段可设置的时间，到期自动删除（监控不该没有期限）。两个天数，各 1–90：
 //! - `raw_days`：原始访问记录（access_event，按天分区）保留天数，过期的整天分区删掉（最多多留不到一天）；
@@ -58,7 +58,7 @@ impl AccessRetention {
         Ok(Self { raw_days: raw_days as u32, hourly_days: hourly_days as u32 })
     }
 
-    /// 来源画像（node_source_seen）与画像异常告警的保留天数：汇总的保留期，但不短于 ipintel 学习期（`learn_days`；ipintel 关着时传 0）。
+    /// 来源画像（node_source_seen）与画像异常告警的保留天数：汇总的保留期，但不短于 ipintel 学习期（`ipintel::LEARN_DAYS`；ipintel 关着时传 0）。
     /// 学习期比汇总的保留期长时以学习期为准：学习期里学到的基线（见过哪些运营商 / 城市）要留到学习期结束，否则学习期还没完、
     /// 前几天学到的值就删掉了，学完之后它们一出现就被当成「新的」告警，学习期等于白学。多留的只是这几类汇总值（运营商名、城市、
     /// 接入方式、机房 / VPN 来源 IP 与最近一次出现的时间），原始记录与小时汇总照样按 `raw_days` / `hourly_days` 删
@@ -71,7 +71,7 @@ impl AppState {
 
     /// 来源画像实际保留的天数（见 `AccessRetention::profile_days`；ipintel 在配置里关掉时没有学习期）
     pub fn profile_days(&self) -> u32 {
-        let learn = if self.ipintel.enabled { self.cfg.ipintel.learn_days } else { 0 };
+        let learn = if self.ipintel.enabled { crate::ipintel::LEARN_DAYS } else { 0 };
         self.access_retention().profile_days(learn)
     }
 
@@ -135,7 +135,7 @@ mod tests {
 
     #[test]
     fn defaults_follow_config_and_stay_in_range() {
-        let r = |access_days| AccessRetention::default_for(&Retention { raw_days: 3, access_days });
+        let r = |access_days| AccessRetention::default_for(&Retention { raw_days: 3, access_days, ..Retention::default() });
         assert_eq!(r(7), AccessRetention { raw_days: 7, hourly_days: 31 });
         // 配置文件里写得比 31 天还长：汇总跟着拉长；超出 1–90 的收进范围
         assert_eq!(r(40), AccessRetention { raw_days: 40, hourly_days: 40 });

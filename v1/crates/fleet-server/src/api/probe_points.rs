@@ -4,8 +4,9 @@
 use super::ok;
 use crate::auth::{Actor, ClientIp};
 use crate::db::{audit, new_id};
-use crate::error::{ApiError, ApiJson, ApiPath, ApiResult};
+use crate::error::{ApiError, ApiJson, ApiPath, ApiQuery, ApiResult};
 use crate::probe_points::{self, install, Setting};
+use crate::reach::{self, Window};
 use crate::state::AppState;
 use axum::extract::State;
 use axum::http::{header, StatusCode};
@@ -72,10 +73,50 @@ impl SshIn {
     }
 }
 
-pub async fn list(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> { Ok(ok(probe_points::list(&st).await?)) }
+#[derive(Deserialize)]
+pub struct ListQ {
+    /// 到各线路机的统计看多久：1h（默认）/ 24h / 7d / 30d
+    window: Option<String>,
+}
+
+fn window(s: Option<&str>) -> ApiResult<Window> { Window::parse(s).ok_or_else(|| ApiError::bad_request("window 只能是 1h、24h、7d、30d")) }
+
+pub async fn list(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<ListQ>) -> ApiResult<Json<Value>> {
+    Ok(ok(probe_points::list(&st, window(q.window.as_deref())?).await?))
+}
 
 async fn one(st: &AppState, id: Uuid) -> ApiResult<Value> {
-    probe_points::list(st).await?.into_iter().find(|p| p["id"] == json!(id)).ok_or_else(|| ApiError::not_found("没有这个探测点"))
+    probe_points::list(st, Window::H1).await?.into_iter().find(|p| p["id"] == json!(id)).ok_or_else(|| ApiError::not_found("没有这个探测点"))
+}
+
+/// 线路机抽屉「连接质量」：各路来源（中控、各探测点）近 24 小时 / 7 天 / 30 天连这台线路机客户入口的成功率与延迟（小时汇总，reach::quality）。
+/// `{sources: [{source: "central" | 探测点 id, label, primary, windows: {"24h": {total, ok, avg_ms, median_ms} | null, "7d": …, "30d": …}}]}`：
+/// 中控在前、探测点按名字；30 天里一次都没测过的来源不出现
+pub async fn relay_quality(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
+    let kind: Option<String> = sqlx::query_scalar("select kind::text from machine where id = $1").bind(id).fetch_optional(&st.db).await?;
+    match kind.as_deref() {
+        None => return Err(ApiError::not_found("没有这台机器")),
+        Some("relay") => {}
+        Some(_) => return Err(ApiError::bad_request("只有线路机有客户入口连通性")),
+    }
+    let set = probe_points::setting(&st.db).await?;
+    let names: Vec<(Uuid, String)> = sqlx::query_as("select id, name from probe_point order by name").fetch_all(&st.db).await?;
+    let wins = [Window::H24, Window::D7, Window::D30];
+    let mut stats: std::collections::HashMap<Option<Uuid>, serde_json::Map<String, Value>> = Default::default();
+    for w in wins {
+        for q in reach::quality(&st.db, w, Some(id)).await? {
+            stats.entry(q.probe_point_id).or_default().insert(w.as_str().into(), json!({"total": q.total, "ok": q.ok, "avg_ms": q.avg_ms, "median_ms": q.median_ms}));
+        }
+    }
+    let srcs = std::iter::once((None, "中控".to_string())).chain(names.into_iter().map(|(p, n)| (Some(p), probe_points::label_of(&n))));
+    let sources: Vec<Value> = srcs
+        .filter_map(|(p, label)| {
+            let mut ws = stats.remove(&p)?;
+            let windows: serde_json::Map<String, Value> = wins.iter().map(|w| (w.as_str().to_string(), ws.remove(w.as_str()).unwrap_or(Value::Null))).collect();
+            Some(json!({"source": p.map_or_else(|| json!("central"), |id| json!(id)), "label": label, "primary": set.primary == p, "windows": windows}))
+        })
+        .collect();
+    Ok(ok(json!({"sources": sources})))
 }
 
 pub async fn get_one(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> { Ok(ok(one(&st, id).await?)) }
@@ -90,7 +131,7 @@ pub struct NewProbe {
 }
 
 fn bootstrap_out(cmd: &str, exp: OffsetDateTime) -> Value {
-    json!({"cmd": cmd, "expires_at": exp.format(&time::format_description::well_known::Rfc3339).unwrap_or_default()})
+    json!({"cmd": cmd, "expires_at": crate::meta::fmt_ts(exp)})
 }
 
 pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<NewProbe>) -> ApiResult<Json<Value>> {
@@ -161,7 +202,14 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     if new == (old_name.clone(), old_note.clone(), old_enabled) {
         return Ok(ok(one(&st, id).await?));
     }
-    sqlx::query("update probe_point set name = $2, note = $3, enabled = $4, updated_at = now() where id = $1")
+    // 重新启用：最近被采纳从这一刻算起（停用期间照收心跳、不测，last_kept_at 停在停用前：不重置的话启用后、下一份上报之前
+    // 会被当成「在线但检查都作废了」，误开一条 probe_point_offline 又马上恢复）
+    sqlx::query(
+        "update probe_point set name = $2, note = $3, enabled = $4, updated_at = now(),
+                last_kept_at = case when $4 and not enabled then now() else last_kept_at end,
+                discard_reason = case when $4 and not enabled then null else discard_reason end
+         where id = $1",
+    )
         .bind(id)
         .bind(&new.0)
         .bind(&new.1)
@@ -204,16 +252,30 @@ pub async fn delete(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<U
     Ok(ok(json!({"ok": true, "cleanup": install::CLEANUP})))
 }
 
-/// 升级：记下 dist 里程序的 sha256，探测点下次取目标（30 秒内）时自己下载、核对、替换、重启。返回要升到的版本
+/// 升级：记下 dist 里程序的 sha256，探测点下次取目标（30 秒内）时自己下载、核对、替换、重启。返回要升到的版本。
+/// 上次升级失败（upgrade_failed，见 probe_points/agent.rs）的记录随之清掉：手动再触发就是再试一次。
+/// 探测点报过这个版本是坏的（换上后没能上报、自己换回来了，bad_sha256）时 409：它不会再换成这个版本，要修好后发新版本（或重装探测点）
 pub async fn upgrade(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
     let path = st.cfg.dist_dir.join("fleet-agent");
     let sha = crate::jobs::dist_agent_sha256(&st).await.map_err(|e| ApiError::conflict(format!("中控上没有可推送的 fleet-agent（{}：{e}）", path.display())))?;
     let version = probe_points::agent::dist_version(&st).await.ok_or_else(|| ApiError::conflict(format!("中控上的 fleet-agent（{}）读不出版本号", path.display())))?;
     let mut tx = st.db.begin().await?;
+    let bad: Option<(String, Option<String>)> = sqlx::query_as("select name, bad_sha256 from probe_point where id = $1 for update").bind(id).fetch_optional(&mut *tx).await?;
+    if let Some((name, Some(b))) = &bad {
+        if *b == sha {
+            return Err(ApiError::conflict(format!(
+                "这个版本（{version}）在「{name}」上跑不起来过：换上后没能上报，探测点自己换回了旧版本，不会再换成它。修好后发新版本（换掉中控 dist 里的 fleet-agent）再升级，或重装这个探测点"
+            )));
+        }
+    }
     let row: Option<(String, Option<String>, bool)> =
-        sqlx::query_as("update probe_point set upgrade_sha256 = $2, updated_at = now() where id = $1 returning name, version, token_hash is not null")
+        sqlx::query_as(
+            "update probe_point set upgrade_sha256 = $2, upgrade_version = $3, upgrade_fetched_at = null, upgrade_failed = null, updated_at = now() where id = $1
+             returning name, version, token_hash is not null",
+        )
             .bind(id)
             .bind(&sha)
+            .bind(&version)
             .fetch_optional(&mut *tx)
             .await?;
     let Some((name, from, installed)) = row else { return Err(ApiError::not_found("没有这个探测点")) };
@@ -228,10 +290,10 @@ pub async fn upgrade(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<
 
 // ── 主探测来源 ───────────────────────────────────────────────────────────
 
-/// `{primary: "central" | 探测点 id, primary_name, central_enabled, effective: {state, label, probe_point_id, primary_label}}`
+/// `{primary: "central" | 探测点 id, primary_name, central_enabled, effective: {state, label, probe_point_id, primary_label, primary_issue}}`
 async fn source_view(st: &AppState) -> ApiResult<Value> {
     let s = probe_points::setting(&st.db).await?;
-    let eff = probe_points::effective(&st.db).await?;
+    let eff = probe_points::effective(st, &st.db).await?;
     let name: Option<String> = match s.primary {
         Some(id) => sqlx::query_scalar("select name from probe_point where id = $1").bind(id).fetch_optional(&st.db).await?,
         None => None,

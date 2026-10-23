@@ -11,7 +11,7 @@ pub enum Want {
     Live,
 }
 
-fn s<'a>(v: &'a Value, k: &str) -> &'a str { v.get(k).and_then(|x| x.as_str()).unwrap_or("") }
+pub(crate) fn s<'a>(v: &'a Value, k: &str) -> &'a str { v.get(k).and_then(|x| x.as_str()).unwrap_or("") }
 
 fn is_retired(m: &Value) -> bool { s(m, "lifecycle") == "retired" }
 
@@ -149,6 +149,12 @@ pub fn named<'a>(all: &'a [Value], q: &str, what: &str, tiers: &[&dyn Fn(&Value)
         }
         n => Err(format!("「{q}」匹配到 {n} 个{what}，请用 id 或更精确的写法指定：\n{}", hits.iter().map(|v| line(v)).collect::<Vec<_>>().join("\n"))),
     }
+}
+
+/// 按 id（可前缀）或名称（不分大小写）找团队
+pub fn team<'a>(all: &'a [Value], q: &str) -> Result<&'a Value, String> {
+    let name = |t: &Value| s(t, "name").to_string();
+    named(all, q, "团队", &[&name], &name)
 }
 
 #[cfg(test)]

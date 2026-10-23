@@ -4,7 +4,8 @@
 import { memo, useCallback, useMemo, type CSSProperties, type ReactNode } from 'react';
 import { ArrowDown, ArrowUp, Cable, Clock, Cpu, Gauge, HardDrive, Loader2, MemoryStick, PanelRightOpen, RefreshCw, Router as RouterIcon, Shuffle, Terminal, Thermometer, Unplug, Users, Waypoints } from 'lucide-react';
 import * as F from '@/lib/format';
-import { tagColor } from '@/lib/derive';
+import { healthLabel, tagColor } from '@/lib/derive';
+import { HEALTH_TONE } from '@/lib/sort';
 import { useNow } from '@/lib/useNow';
 import { cn } from '@/lib/utils';
 import { deadExitNames, deploySteps, routerIssues, routerMeters, showBootstrap, showDeploy, tempTone, uptimeFmt, useRegenBootstrap, useRouter, useRouterMetrics, type RouterSummary, type RouterTab, type RouterView } from '@/lib/routers';
@@ -18,20 +19,27 @@ import '@/styles/routers.css';
 
 type Open = (tab?: RouterTab) => void;
 
-/** 状态 pill（只靠底色与文字，不带圆点；要醒目的配一个图标）：部署中（转圈）/ 等待接入 / 在线 /
+/** 维护中的说明（状态 pill、标签共用） */
+const MAINT_TIP = '在维护窗口内，不发告警；开着的告警保持到维护结束';
+/** 状态 pill（只靠底色与文字，不带圆点；要醒目的配一个图标）：部署中（转圈）/ 维护（同机器的维护中）/ 等待接入 / 在线 /
  *  降级（在线但有毛病，悬停点名是哪个出口；同机器的叫法，降级算正常）/ 离线（悬停看连不上的原因，才是故障） */
-export function RouterStatePill({ r }: { r: Pick<RouterView, 'id' | 'state' | 'error' | 'summary' | 'deploy'> }) {
+export function RouterStatePill({ r }: { r: Pick<RouterView, 'id' | 'state' | 'error' | 'summary' | 'deploy' | 'maintenance'> }) {
   // 不通的出口名只在详情里：降级的才取详情（和抽屉同一份缓存）
   const slow = r.state === 'online' && !!r.summary && r.summary.exits.alive < r.summary.exits.total;
   const names = deadExitNames(useRouter(slow ? r.id : null).data?.detail);
   if (r.deploy?.state === 'running') return <Pill tone="info" dot="pulse">部署中</Pill>;
-  if (r.state === 'pending') return <Pill tone="info" tip={r.deploy?.state === 'failed' ? `一键部署失败：${r.deploy.error ?? ''}` : '路由还没连上过中控'}>等待接入</Pill>;
+  if (r.maintenance) return <Pill tone={HEALTH_TONE.maintenance} tip={MAINT_TIP} tabIndex={0}>{healthLabel('maintenance')}</Pill>;
+  // 一键部署失败、路由还没连上：时间线里已经红了，状态标也说「部署失败」（故障色），不再是中性的「等待接入」
+  if (r.state === 'pending' && r.deploy?.state === 'failed') return <Pill tone="bad" tip={r.deploy.error ?? undefined} tabIndex={r.deploy.error ? 0 : undefined}>部署失败</Pill>;
+  if (r.state === 'pending') return <Pill tone="info" tip="路由还没连上过中控">等待接入</Pill>;
   if (r.state === 'offline') return <Pill tone="bad" tip={r.error ?? undefined} tabIndex={r.error ? 0 : undefined}>离线</Pill>;
+  // 在线却带原因：连得上但这次没读到状态，数据是上一次的
+  if (r.error) return <Pill tone="warn" tip={`${r.error}\n路由连得上，显示的是上次读到的数据`} tabIndex={0}>读取出错</Pill>;
   const issues = routerIssues(r.summary, names);
   return issues.length ? <Pill tone="warn" tip={issues.join('\n')} tabIndex={0}>降级</Pill> : <Pill tone="ok">在线</Pill>;
 }
-/** 卡片描边：离线红、在线但有毛病黄（同机器卡的故障 / 降级） */
-export const routerHealth = (r: RouterView) => (r.state === 'offline' ? 'down' : r.state === 'online' && routerIssues(r.summary).length ? 'degraded' : 'ok');
+/** 卡片描边：离线红、在线但有毛病黄（同机器卡的故障 / 降级）；维护中同机器卡的维护（不描红黄） */
+export const routerHealth = (r: RouterView) => (r.maintenance ? 'maintenance' : r.state === 'offline' || (r.state === 'pending' && r.deploy?.state === 'failed') ? 'down' : r.state === 'online' && (r.error || routerIssues(r.summary).length) ? 'degraded' : 'ok');
 
 /** 资源四项格条（CPU / 内存 / 存储 / 连接表）：卡片与抽屉「当前」共用 */
 export function RouterMeters({ s }: { s: RouterSummary }) {
@@ -68,9 +76,9 @@ export function DeployTimeline({ r, max }: { r: RouterView; max?: number }) {
   if (d.state === 'failed') {
     if (!steps.length) items.push({ key: 'fail', tone: 'bad', text: '部署' });
     items[items.length - 1].extra = <>
-      {d.error && <span className="rt-tl-err">{d.error}</span>}
+      {d.error && <span className="rt-tl-err" data-tip={d.error}>{d.error}</span>}
       <span className="row rt-tl-acts">
-        <Button size="sm" loading={boot.pending} onClick={() => void boot.run(r)} data-tip="中控连不上路由（路由在 NAT 后面）时用：生成一条命令，在路由的 SSH 里粘贴执行"><Terminal size={13} />改用在路由上执行命令</Button>
+        <Button size="sm" loading={boot.pending} onClick={() => void boot.run(r)} data-tip="中控连不上路由时用。生成一条命令，到路由的 SSH 里执行"><Terminal size={13} />改用在路由上执行命令</Button>
         <Button size="sm" variant="text" onClick={() => showDeploy({ id: r.id, name: r.name })}><RefreshCw size={13} />重新部署</Button>
       </span>
     </>;
@@ -101,8 +109,8 @@ function Hold({ r }: { r: RouterView }) {
   if (r.state === 'pending') {
     return (
       <div className="nc-res rt-span"><div className="nc-hold rt-hold">
-        <span className="rt-hold-main"><Clock />等路由执行接入命令<InfoTip text="在路由的 SSH 里执行接入命令后，约 30 秒内变为在线" /></span>
-        <Button size="sm" loading={boot.pending} onClick={() => void boot.run(r)} data-tip="原来的命令只显示一次：这里会重新生成一条，旧的作废"><Terminal size={13} />查看接入命令</Button>
+        <span className="rt-hold-main"><Clock />等路由执行接入命令<InfoTip text="在路由上执行接入命令，约半分钟后上线" /></span>
+        <Button size="sm" loading={boot.pending} onClick={() => void boot.run(r)} data-tip="命令只显示一次。这里会生成新的，旧的作废"><Terminal size={13} />查看接入命令</Button>
       </div></div>
     );
   }
@@ -146,17 +154,17 @@ function RouterCardImpl({ r, current, onOpen: open }: { r: RouterView; current?:
       <header className="nc-head">
         <span className="nc-kind" role="img" aria-label="软路由" data-tip="软路由（OpenWrt + OpenClash）"><RouterIcon /></span>
         {/* 名字后面不再挂状态标：状态在底部的 pill 与描边上，等待接入时卡片中间还有说明 */}
-        <span className="nc-named"><button type="button" className="nc-name" data-tip={`打开 ${r.name} 的详情`} onClick={() => onOpen()}>{r.name}</button></span>
+        <span className="nc-named"><button type="button" className="nc-name" data-tip={`打开「${r.name}」的详情`} onClick={() => onOpen()}>{r.name}</button></span>
       </header>
 
       {/* 地址行：WAN 口地址 + WAN / OpenClash 状态标；还没采集过的写隧道端口 */}
       <div className="nc-addr">
-        <span className="ellipsis" data-tip={s ? 'WAN 口地址（路由在客户现场内网里的地址）' : '中控上分给这台路由的反向隧道端口'}>{s ? `WAN ${s.wan.ip ?? '—'}` : `隧道端口 ${r.tunnel_port}`}</span>
+        <span className="ellipsis" data-tip={s ? '路由在客户现场的内网地址' : '中控分给这台路由的隧道端口'}>{s ? `WAN ${s.wan.ip ?? '—'}` : `隧道端口 ${r.tunnel_port}`}</span>
         {s && <span className="nc-marks">
-          {s.wan.up ? <Tag c="green" tip="WAN 口已连接">WAN 正常</Tag> : <Tag c="orange" tip="WAN 口断开：客户现场断网">WAN 断开</Tag>}
+          {s.wan.up ? <Tag c="green" tip="WAN 口已连接">WAN 正常</Tag> : <Tag c="orange" tip="WAN 口已断开，客户现场可能断网了">WAN 断开</Tag>}
           {!oc!.enabled ? <Tag c="gray" tip="OpenClash 没有启用">OpenClash 未启用</Tag>
             : oc!.running ? <Tag c="violet" tip={`OpenClash ${oc!.version ?? ''} · 模式 ${oc!.mode ?? '—'}`}>OpenClash</Tag>
-            : <Tag c="orange" tip="OpenClash 已启用，但核心进程没在运行：客户端此时上不了外网">OpenClash 未运行</Tag>}
+            : <Tag c="orange" tip="OpenClash 已启用但没在运行，客户端暂时上不了外网">OpenClash 未运行</Tag>}
         </span>}
       </div>
 
@@ -174,7 +182,7 @@ function RouterCardImpl({ r, current, onOpen: open }: { r: RouterView; current?:
         </div>
       </section>
 
-      {/* 出口：一格一个出口，亮的是最近一次延迟测试通过的；参数与面板入口不一致的单独提醒 */}
+      {/* 出口：一格一个出口，亮的是最近一次延迟测试通过的；参数与入口不一致的单独提醒 */}
       <section className="slot-seg">
         <button type="button" className="nc-quota" onClick={() => onOpen('exits')}>
           <span className="nc-qhead">
@@ -182,8 +190,8 @@ function RouterCardImpl({ r, current, onOpen: open }: { r: RouterView; current?:
               <b className={cn('num', ex!.alive < ex!.total && 'is-warn')}>{ex!.alive}/{ex!.total}</b>
             </span>
             {ex!.drift > 0
-              ? <span className="nc-quse rt-drift" data-tip="这些出口的 server:port 对上了面板入口，但 uuid / reality 参数和入口现在的不一致（入口轮换过凭据或换过线路机），可能已连不上">{ex!.drift} 个参数与入口不一致</span>
-              : <span className="nc-quse" data-tip="server:port 对上了面板入口的出口个数（其余是路由上自己加的，中控不管）">{ex!.managed} 个对应面板入口</span>}
+              ? <span className="nc-quse rt-drift" data-tip={"这些出口的地址和端口能对上入口，但凭据已经变了，可能连不上\n入口换过凭据或线路机时会这样"}>{ex!.drift} 个与入口不一致</span>
+              : <span className="nc-quse" data-tip="和入口对得上的出口数。其余是路由上自己加的，不归中控管">{ex!.managed} 个对应入口</span>}
           </span>
           <Cells pct={ex!.total ? (ex!.alive / ex!.total) * 100 : null} n={ex!.total || 18} color="var(--ok)" />
           <span className="sr-only">（查看出口页签）</span>
@@ -191,9 +199,9 @@ function RouterCardImpl({ r, current, onOpen: open }: { r: RouterView; current?:
       </section>
 
       <section className="slot-seg nc-run">
-        <div className="nc-run-item"><span className="nc-run-label"><Users />客户端</span><span className="nc-run-val" data-tip="在线的局域网设备（DHCP 租约、邻居表与经过 OpenClash 的来源 IP）"><Num f={{ v: String(s.clients), u: '台' }} /></span></div>
+        <div className="nc-run-item"><span className="nc-run-label"><Users />客户端</span><span className="nc-run-val" data-tip="当前在线的局域网设备"><Num f={{ v: String(s.clients), u: '台' }} /></span></div>
         <div className="nc-run-item"><span className="nc-run-label"><Cable />代理连接</span><span className="nc-run-val" data-tip="OpenClash 当前的连接数"><Num f={{ v: oc!.conns.toLocaleString(), u: '条' }} /></span></div>
-        <div className="nc-run-item"><span className="nc-run-label"><Thermometer />温度</span><span className="nc-run-val" data-tone={tt} data-tip="CPU / 主板传感器里最高的读数">{s.temp_c != null ? <Num f={{ v: s.temp_c.toFixed(0), u: '°C' }} /> : <span className="t-muted">—</span>}</span></div>
+        <div className="nc-run-item"><span className="nc-run-label"><Thermometer />温度</span><span className="nc-run-val" data-tone={tt} data-tip="CPU 和主板温度中较高的">{s.temp_c != null ? <Num f={{ v: s.temp_c.toFixed(0), u: '°C' }} /> : <span className="t-muted">—</span>}</span></div>
       </section>
 
       </>}
@@ -201,10 +209,12 @@ function RouterCardImpl({ r, current, onOpen: open }: { r: RouterView; current?:
       <div className="nc-tags">
         <div className="nc-tags-list">
           {r.team ? <Tag c={tagColor(r.team.name)} tip="团队">{r.team.name}</Tag> : <Tag c="gray">未分团队</Tag>}
-          {s && <Tag c="gray" tip="路由已连续运行（重启后从 0 算）">运行 {F.str(uptimeFmt(s.uptime_s))}</Tag>}
+          {r.maintenance && <Tag c="amber" tip={`${healthLabel('maintenance')}：${MAINT_TIP}`}>{healthLabel('maintenance')}</Tag>}
+          {s && <Tag c="gray" tip="自上次重启起的运行时长">运行 {F.str(uptimeFmt(s.uptime_s))}</Tag>}
         </div>
-        <span className={cn('nc-price rt-seen', r.state === 'offline' && 'is-bad')} data-tip={r.state === 'pending' ? undefined : '最近一次采集成功的时刻（每 30 秒一次）'}>
-          {r.state === 'pending' ? <>创建于 <Seen at={r.created_at} /></> : r.state === 'offline' ? <>最后在线 <Seen at={r.last_seen_at} /></> : <>更新于 <Seen at={r.last_seen_at} /></>}
+        {/* 离线多久已经写在中间的占位里：这里不再红字重复「最后在线」，同等待接入写创建时间 */}
+        <span className="nc-price rt-seen" data-tip={r.state === 'online' ? '上次成功读取的时间' : undefined}>
+          {r.state === 'online' ? <>更新于 <Seen at={r.last_seen_at} /></> : <>创建于 <Seen at={r.created_at} /></>}
         </span>
       </div>
 

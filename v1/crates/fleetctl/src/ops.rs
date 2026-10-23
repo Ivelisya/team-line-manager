@@ -28,10 +28,6 @@ pub fn confirm(prompt: &str, yes: bool) -> anyhow::Result<()> {
     if matches!(l.trim().to_lowercase().as_str(), "y" | "yes") { Ok(()) } else { bail!("已取消") }
 }
 
-fn follow_if(ctx: &Ctx, follow: bool, job_id: &str) -> anyhow::Result<u8> {
-    if follow { cmds::follow_job(ctx, job_id) } else { Ok(0) }
-}
-
 // ── 上架 ─────────────────────────────────────────────────────────────
 
 /// `fleetctl provision` 的参数（clap 直接解析成它，原样交给 provision）
@@ -89,9 +85,6 @@ pub struct ProvisionOpts {
     /// 价格，如 39.46（没有套餐的机器必填）
     #[arg(long)]
     pub price: Option<String>,
-    /// 价格（分）；同 --price，旧写法
-    #[arg(long, hide = true)]
-    pub price_cents: Option<i64>,
     /// 币种代码，如 USD / CNY
     #[arg(long)]
     pub currency: Option<String>,
@@ -144,27 +137,18 @@ pub fn parse_upstream(s: &str) -> anyhow::Result<Value> {
     Ok(Value::Object(o))
 }
 
-pub(crate) fn lookup(list: &Value, q: &str, keys: &[&str], what: &str) -> anyhow::Result<String> {
-    let arr = list.as_array().cloned().unwrap_or_default();
-    let hits: Vec<&Value> = arr.iter().filter(|x| st(x, "/id") == q || keys.iter().any(|k| st(x, &format!("/{k}")) == q)).collect();
-    match hits.len() {
-        1 => Ok(st(hits[0], "/id")),
-        0 => bail!("没有这个{what}「{q}」"),
-        _ => bail!("{what}「{q}」不唯一，请改用 id"),
-    }
-}
-
 /// 把条目里的人类写法（team/relay/provider/plan/host 名）换成 id；已经是 *_id 的不动
 fn normalize_item(ctx: &Ctx, item: &mut Value, cache: &mut Cache) -> anyhow::Result<()> {
     let Some(o) = item.as_object_mut() else { bail!("上架条目必须是对象") };
     if let Some(t) = o.remove("team").and_then(|v| v.as_str().map(String::from)) {
-        o.insert("team_id".into(), json!(lookup(&ctx.teams()?, &t, &["name"], "团队")?));
+        o.insert("team_id".into(), json!(ctx.team_id(&t)?));
     }
     if let Some(p) = o.remove("provider").and_then(|v| v.as_str().map(String::from)) {
-        o.insert("provider_id".into(), json!(lookup(cache.providers(ctx)?, &p, &["name", "code"], "供应商")?));
+        o.insert("provider_id".into(), json!(st(crate::catalog::find_provider(cache.providers(ctx)?, &p)?, "/id")));
     }
     if let Some(p) = o.remove("plan").and_then(|v| v.as_str().map(String::from)) {
-        o.insert("plan_id".into(), json!(lookup(cache.plans(ctx)?, &p, &["name"], "套餐")?));
+        let (providers, plans) = cache.both(ctx)?;
+        o.insert("plan_id".into(), json!(st(crate::catalog::find_plan(plans, providers, &p)?, "/id")));
     }
     if let Some(r) = o.remove("relay").and_then(|v| v.as_str().map(String::from)) {
         let m = ctx.find(&r, Want::Live)?;
@@ -186,25 +170,27 @@ fn normalize_item(ctx: &Ctx, item: &mut Value, cache: &mut Cache) -> anyhow::Res
 /// 批量上架时供应商 / 套餐只取一次（团队列表走 `Ctx::teams`）
 #[derive(Default)]
 pub struct Cache {
-    providers: Option<Value>,
-    plans: Option<Value>,
+    providers: Option<Vec<Value>>,
+    plans: Option<Vec<Value>>,
 }
 impl Cache {
-    fn providers(&mut self, ctx: &Ctx) -> anyhow::Result<&Value> {
+    fn providers(&mut self, ctx: &Ctx) -> anyhow::Result<&[Value]> {
         if self.providers.is_none() {
-            self.providers = Some(ctx.c.get("/providers")?);
+            self.providers = Some(ctx.list("/providers")?);
         }
-        Ok(self.providers.as_ref().unwrap())
+        Ok(self.providers.as_deref().unwrap_or_default())
     }
-    fn plans(&mut self, ctx: &Ctx) -> anyhow::Result<&Value> {
+    /// (供应商, 套餐)：套餐按「供应商/套餐」写法找时要用到供应商
+    fn both(&mut self, ctx: &Ctx) -> anyhow::Result<(&[Value], &[Value])> {
+        self.providers(ctx)?;
         if self.plans.is_none() {
-            self.plans = Some(ctx.c.get("/plans")?);
+            self.plans = Some(ctx.list("/plans")?);
         }
-        Ok(self.plans.as_ref().unwrap())
+        Ok((self.providers.as_deref().unwrap_or_default(), self.plans.as_deref().unwrap_or_default()))
     }
 }
 
-fn items_from_file(path: &Path) -> anyhow::Result<Vec<Value>> {
+pub(crate) fn items_from_file(path: &Path) -> anyhow::Result<Vec<Value>> {
     let text = std::fs::read_to_string(path).with_context(|| format!("读取 {}", path.display()))?;
     let v: Value = serde_json::from_str(&text).with_context(|| format!("{} 不是合法 JSON", path.display()))?;
     let items = match v {
@@ -253,19 +239,16 @@ fn single_item(o: &ProvisionOpts) -> anyhow::Result<Value> {
     }
     // 订阅：到期日 + 给了的单独设置（同 subscription set 的写法与校验），其余由中控跟随套餐 / 供应商
     let so = crate::billing::SubSetOpts {
-        price: o.price.as_deref(),
-        currency: o.currency.as_deref(),
-        cycle: o.cycle.as_deref(),
-        due: o.due.as_deref(),
-        tz: o.tz.as_deref(),
-        traffic_gb: o.traffic_gb.as_deref(),
-        reset_day: o.reset_day.as_deref(),
+        price: o.price.clone(),
+        currency: o.currency.clone(),
+        cycle: o.cycle.clone(),
+        due: o.due.clone(),
+        tz: o.tz.clone(),
+        traffic_gb: o.traffic_gb.clone(),
+        reset_day: o.reset_day.clone(),
         ..Default::default()
     };
-    let mut s = crate::billing::sub_patch(&so)?;
-    if let Some(p) = o.price_cents {
-        s.insert("price_cents".into(), json!(p));
-    }
+    let s = crate::billing::sub_patch(&so)?;
     match (o.due.is_some(), s.is_empty()) {
         (true, _) => put("subscription", Some(Value::Object(s))),
         (false, false) => bail!("--price / --currency / --cycle / --tz / --traffic-gb / --reset-day 是订阅的字段，要和 --due 一起给"),
@@ -339,13 +322,7 @@ pub fn provision(ctx: &Ctx, o: ProvisionOpts) -> anyhow::Result<u8> {
         let rows: Vec<Vec<String>> = d["jobs"].as_array().cloned().unwrap_or_default().iter().map(|j| vec![st(j, "/name"), st(j, "/machine_id"), st(j, "/job_id")]).collect();
         format!("已提交上架作业：\n{}\n看进度：fleetctl job <job_id> --follow", table::render(&["名称", "machine_id", "job_id"], &rows))
     });
-    let mut code = 0;
-    if o.follow {
-        for j in d["jobs"].as_array().cloned().unwrap_or_default() {
-            code = code.max(follow_if(ctx, true, &st(&j, "/job_id"))?);
-        }
-    }
-    Ok(code)
+    if o.follow { cmds::follow_jobs(ctx, d["jobs"].as_array().into_iter().flatten()) } else { Ok(0) }
 }
 
 // ── 退役 / 改名 / 编号 / 升级 ──────────────────────────────────
@@ -438,13 +415,7 @@ pub fn retire(ctx: &Ctx, machine: &str, now: bool, reason: Option<&str>, no_clea
         }
         s
     });
-    let mut code = follow_if(ctx, follow, &st(&d, "/job_id"))?;
-    if follow {
-        for j in &ip_jobs {
-            code = code.max(cmds::follow_job(ctx, &st(j, "/job_id"))?);
-        }
-    }
-    Ok(code)
+    if follow { cmds::follow_jobs(ctx, std::iter::once(&d).chain(&ip_jobs)) } else { Ok(0) }
 }
 
 pub fn rename(
@@ -463,7 +434,7 @@ pub fn rename(
     let cur = ctx.c.get(&format!("/machines/{id}"))?;
     let mut body = json!({"revision": cur["revision"]});
     if let Some(t) = team {
-        body["team_id"] = json!(lookup(&ctx.teams()?, t, &["name"], "团队")?);
+        body["team_id"] = json!(ctx.team_id(t)?);
     }
     if let Some(n) = number {
         body["number"] = json!(n);
@@ -485,7 +456,7 @@ pub fn rename(
 }
 
 pub fn renumber(ctx: &Ctx, team: &str, yes: bool) -> anyhow::Result<u8> {
-    let tid = lookup(&ctx.teams()?, team, &["name"], "团队")?;
+    let tid = ctx.team_id(team)?;
     let pre = ctx.c.get(&format!("/teams/{tid}/renumber"))?;
     let changes = pre["changes"].as_array().cloned().unwrap_or_default();
     if changes.is_empty() {
@@ -525,7 +496,7 @@ pub fn team_ls(ctx: &Ctx) -> anyhow::Result<u8> {
 /// `team set <团队> --name <新名>`：改团队名（备用团队也能改名；显示名跟着变，线路机备注刷新，节点不断线）。
 /// `--json` 输出改完后的这个团队（同 team ls 的一项）
 pub fn team_set(ctx: &Ctx, team: &str, name: &str, yes: bool) -> anyhow::Result<u8> {
-    let tid = lookup(&ctx.teams()?, team, &["name"], "团队")?;
+    let tid = ctx.team_id(team)?;
     confirm(&format!("确认把团队「{team}」改名为「{name}」？团队里的机器显示名跟着变（{name}-01…）"), yes)?;
     ctx.c.patch(&format!("/teams/{tid}"), &json!({"name": name}))?;
     let all = ctx.c.get("/teams")?;
@@ -553,13 +524,7 @@ pub fn upgrade_agent(ctx: &Ctx, machine: Option<&str>, all: bool, yes: bool, fol
         let rows: Vec<String> = jobs.iter().map(|j| format!("  {}  {}", st(j, "/job_id"), st(j, "/name"))).collect();
         format!("已提交 {} 个升级作业{skip}{order}\n{}", jobs.len(), rows.join("\n"))
     });
-    let mut code = 0;
-    if follow {
-        for j in d["jobs"].as_array().cloned().unwrap_or_default() {
-            code = code.max(cmds::follow_job(ctx, &st(&j, "/job_id"))?);
-        }
-    }
-    Ok(code)
+    if follow { cmds::follow_jobs(ctx, d["jobs"].as_array().into_iter().flatten()) } else { Ok(0) }
 }
 
 /// 一台的调优作业提交结果：Ok(Some(作业)) 已提交；`skip_conflict` 时 409（有进行中的作业、同机 IP 节点、家宽代理…）记进 `skipped` 返回 Ok(None)
@@ -651,13 +616,7 @@ pub fn tune(ctx: &Ctx, machine: Option<&str>, team: Option<&str>, all: bool, rol
         }
         s
     });
-    let mut code = 0;
-    if follow {
-        for j in &jobs[followed..] {
-            code = code.max(cmds::follow_job(ctx, &st(j, "/job_id"))?);
-        }
-    }
-    Ok(code)
+    if follow { cmds::follow_jobs(ctx, &jobs[followed..]) } else { Ok(0) }
 }
 
 // ── 入口 ─────────────────────────────────────────────────────────────
@@ -681,7 +640,7 @@ pub fn add_direct(ctx: &Ctx, relay: &str, yes: bool, follow: bool) -> anyhow::Re
     let d = ctx.c.post(&format!("/machines/{id}/entries"), &json!({"relay_id": id}))?;
     let job = st(&d, "/job_id");
     ctx.emit(&d, || format!("已提交新增直出入口作业 {job}\n看进度：fleetctl job {job} --follow；完成后 fleetctl share {name}-直出 取分享链接"));
-    follow_if(ctx, follow, &job)
+    if follow { cmds::follow_job(ctx, &job) } else { Ok(0) }
 }
 
 /// `fleetctl entry` 的动作
@@ -706,17 +665,48 @@ pub fn entry_action(ctx: &Ctx, action: EntryAction, entry: &str, yes: bool, foll
     let e = resolve::entry(&es, entry).map_err(|e| anyhow!(e))?;
     let label = format!("{}:{}", st(e, "/relay/name"), st(e, "/port"));
     let mut body = json!({"action": api});
+    // 轮换、停用之后指向这个入口的软路由出口就连不上了（不会自动改路由）：确认时列出来
+    let routers = match action {
+        EntryAction::Rotate | EntryAction::Disable => routers_or_skip(ctx.c.get(&format!("/entries/{}/routers", st(e, "/id"))))?,
+        _ => json!([]),
+    };
+    let note = router_note(&routers, done);
     match action {
         EntryAction::Rotate => {
-            confirm(&format!("确认轮换 {label}（→ {}）的凭据？旧分享链接会立即失效", st(e, "/node/name")), yes)?;
+            confirm(&format!("确认轮换 {label}（→ {}）的凭据？旧分享链接会立即失效{note}", st(e, "/node/name")), yes)?;
             body["confirm"] = json!(label);
         }
-        EntryAction::Disable => confirm(&format!("确认停用入口 {label}（→ {}）？", st(e, "/node/name")), yes)?,
+        EntryAction::Disable => confirm(&format!("确认停用入口 {label}（→ {}）？{note}", st(e, "/node/name")), yes)?,
         _ => {}
     }
     let d = ctx.c.post(&format!("/entries/{}/actions", st(e, "/id")), &body)?;
-    ctx.emit(&d, || format!("已{done} {label}（期望状态代数 {}）", st(&d, "/generation")));
+    ctx.emit(&d, || format!("已{done} {label}（期望状态代数 {}）{}", st(&d, "/generation"), router_note(&d["router_exits"], done)));
     Ok(0)
+}
+
+/// 列指向入口的软路由出口的结果：中控是还没有这个接口的旧版本（404）时当成没有，照常停用 / 轮换（只是少了提示）
+fn routers_or_skip(r: anyhow::Result<Value>) -> anyhow::Result<Value> {
+    match r {
+        Err(e) if e.downcast_ref::<ApiError>().is_some_and(|a| a.status == 404) => {
+            eprintln!("（中控版本较旧，列不出指向这个入口的软路由出口，照常执行）");
+            Ok(json!([]))
+        }
+        r => r,
+    }
+}
+
+/// 指向这个入口的软路由出口（`GET /entries/{id}/routers`）：「。这些软路由出口指向它，{停用}后会连不上：路由A 的 节点01；…」，没有为空
+fn router_note(rs: &Value, done: &str) -> String {
+    let list: Vec<String> = rs
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|r| format!("{} 的 {}", st(r, "/name"), r["exits"].as_array().into_iter().flatten().filter_map(Value::as_str).collect::<Vec<_>>().join("、")))
+        .collect();
+    if list.is_empty() {
+        return String::new();
+    }
+    format!("。这些软路由出口指向它，{done}后会连不上（不会自动改路由，要到路由上处理）：{}", list.join("；"))
 }
 
 // ── 远程执行 ─────────────────────────────────────────────────────────
@@ -734,12 +724,22 @@ pub fn join_command(args: &[String]) -> String {
     if args.len() == 1 { args[0].clone() } else { args.iter().map(|a| shell_quote(a)).collect::<Vec<_>>().join(" ") }
 }
 
-pub struct ExecOpts<'a> {
-    pub machine: Option<&'a str>,
-    pub team: Option<&'a str>,
+// `fleetctl exec` 的参数（clap 直接解析成它）
+#[derive(clap::Args)]
+pub struct ExecOpts {
+    /// 机器，可逗号分隔多台
+    pub machine: Option<String>,
+    #[arg(long)]
+    pub team: Option<String>,
+    /// 超时秒数（1-600）
+    #[arg(long, default_value_t = 60)]
     pub timeout: u64,
-    pub script: Option<&'a Path>,
-    pub command: &'a [String],
+    /// 从文件读脚本
+    #[arg(long)]
+    pub script: Option<std::path::PathBuf>,
+    /// `--` 之后是要执行的命令
+    #[arg(last = true)]
+    pub command: Vec<String>,
 }
 
 struct ExecTarget {
@@ -778,14 +778,35 @@ fn run_one(ctx: &Ctx, t: &ExecTarget, command: &str, timeout: u64) -> ExecResult
 }
 
 /// 单台执行的退出码沿用远端的；远端不是 0..=255（被信号杀死时 ssh 报 -1，或没有退出码）一律算 1，不能当成功
-fn exit_code_of(d: &Value) -> u8 {
+pub(crate) fn exit_code_of(d: &Value) -> u8 {
     d["exit_code"].as_i64().and_then(|c| u8::try_from(c).ok()).unwrap_or(1)
 }
 
-pub fn exec(ctx: &Ctx, o: ExecOpts<'_>) -> anyhow::Result<u8> {
-    let command = match (o.script, o.command.is_empty()) {
+/// exec / logs 这类接口返回 {exit_code, stdout, stderr, truncated, timed_out}：`--json` 原样输出，否则 stdout 原样、stderr 走 stderr；
+/// 返回退出码。`timeout` 是 exec 给的超时秒数（超时被终止时提示）
+pub(crate) fn print_result(ctx: &Ctx, d: &Value, timeout: Option<u64>) -> u8 {
+    if ctx.json {
+        outln(d.to_string());
+    } else {
+        out_raw(d["stdout"].as_str().unwrap_or(""));
+        let e = d["stderr"].as_str().unwrap_or("");
+        if !e.is_empty() {
+            eprint!("{e}");
+        }
+        if d["truncated"] == true {
+            eprintln!("\n[输出被截断，每个流最多保留 256 KiB]");
+        }
+        if let (true, Some(t)) = (d["timed_out"] == true, timeout) {
+            eprintln!("[命令超时（{t} 秒）被终止]");
+        }
+    }
+    exit_code_of(d)
+}
+
+pub fn exec(ctx: &Ctx, o: ExecOpts) -> anyhow::Result<u8> {
+    let command = match (o.script.as_deref(), o.command.is_empty()) {
         (Some(p), true) => std::fs::read_to_string(p).with_context(|| format!("读取 {}", p.display()))?,
-        (None, false) => join_command(o.command),
+        (None, false) => join_command(&o.command),
         (Some(_), false) => bail!("--script 和 `-- 命令` 只能给一个"),
         (None, true) => bail!("没有命令：fleetctl exec <机器> -- <命令...>"),
     };
@@ -794,13 +815,13 @@ pub fn exec(ctx: &Ctx, o: ExecOpts<'_>) -> anyhow::Result<u8> {
     }
     let all = ctx.machines()?;
     let mut targets: Vec<ExecTarget> = vec![];
-    if let Some(team) = o.team {
+    if let Some(team) = o.team.as_deref() {
         targets = team_targets(&all, team);
         if targets.is_empty() {
             bail!("团队「{team}」下没有可执行命令的在用机器");
         }
     }
-    if let Some(list) = o.machine {
+    if let Some(list) = o.machine.as_deref() {
         for q in list.split(',').map(str::trim).filter(|q| !q.is_empty()) {
             let m = resolve::machine(&all, q, Want::Live).map_err(|e| anyhow!(e))?;
             if !targets.iter().any(|t| t.id == st(m, "/id")) {
@@ -817,22 +838,7 @@ pub fn exec(ctx: &Ctx, o: ExecOpts<'_>) -> anyhow::Result<u8> {
         let r = run_one(ctx, &targets[0], &command, o.timeout);
         // 错误原样交给 main：--json 时带上 ApiError 的 code / status
         let d = r.data?;
-        if ctx.json {
-            outln(d.to_string());
-        } else {
-            out_raw(d["stdout"].as_str().unwrap_or(""));
-            let e = d["stderr"].as_str().unwrap_or("");
-            if !e.is_empty() {
-                eprint!("{e}");
-            }
-            if d["truncated"] == true {
-                eprintln!("\n[输出被截断，每个流最多保留 256 KiB]");
-            }
-            if d["timed_out"] == true {
-                eprintln!("[命令超时（{} 秒）被终止]", o.timeout);
-            }
-        }
-        return Ok(exit_code_of(&d));
+        return Ok(print_result(ctx, &d, Some(o.timeout)));
     }
 
     // 多台：并发 4，按给定顺序汇总
@@ -997,6 +1003,23 @@ pub fn keys_revoke(ctx: &Ctx, a: &KeyAuth, which: &str) -> anyhow::Result<u8> {
 mod tests {
     use super::*;
 
+    /// 列软路由出口：旧中控 404 当成没有（照常停用 / 轮换），别的错误照报
+    #[test]
+    fn entry_routers_404_skipped() {
+        let api = |status: u16| Err(anyhow::Error::new(ApiError { status, code: "x".into(), message: "m".into() }));
+        assert_eq!(routers_or_skip(api(404)).unwrap(), json!([]));
+        assert!(routers_or_skip(api(500)).is_err());
+        assert_eq!(routers_or_skip(Ok(json!([{"name": "A"}]))).unwrap(), json!([{"name": "A"}]));
+    }
+
+    #[test]
+    fn entry_router_note() {
+        let rs = json!([{"id": "a", "name": "路由A", "state": "online", "exits": ["节点01", "节点01备"]}, {"id": "b", "name": "路由B", "state": "offline", "exits": ["x"]}]);
+        assert_eq!(router_note(&rs, "轮换凭据"), "。这些软路由出口指向它，轮换凭据后会连不上（不会自动改路由，要到路由上处理）：路由A 的 节点01、节点01备；路由B 的 x");
+        assert_eq!(router_note(&json!([]), "停用"), "");
+        assert_eq!(router_note(&Value::Null, "停用"), "", "旧中控的结果里没有 router_exits");
+    }
+
     /// 检查结果的错误与提醒逐条一行列在表下，行首是表里的 #；都没有时为空
     #[test]
     fn provision_check_notes() {
@@ -1004,8 +1027,6 @@ mod tests {
             json!({"ok": true, "errors": [], "warnings": []}),
             json!({"ok": false, "errors": ["中控密钥登录不了 1.2.3.4:22（密钥被拒）…：ssh-ed25519 AAAA fleet"], "warnings": []}),
             json!({"ok": true, "errors": [], "warnings": ["系统是 Ubuntu 20.04，已过标准支持期"]}),
-            // 旧中控没有 warnings 字段
-            json!({"ok": true, "errors": []}),
         ];
         assert_eq!(
             check_notes(&res),

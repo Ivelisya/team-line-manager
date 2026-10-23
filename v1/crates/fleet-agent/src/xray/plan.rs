@@ -1,11 +1,15 @@
 //! 差异与顺序：当前（磁盘配置 + 运行态 tag）→ 候选。纯函数。
 //!
-//! 顺序（spec/edge.md §5.3 第 8 步）：
+//! 顺序（每项都经 Xray API 生效，不重启 Xray）：
 //!   1. 出站：新增 ado；变化 rmo+ado
 //!   2. 入站：先 rmi 运行态多余的；变化的彼此没有端口冲突时同一入站 rmi、adi 相邻，
 //!      有冲突（端口互换等）就先全部 rmi 再全部 adi；最后 adi 新增的
 //!   3. 规则：不一致时整表替换 adrules（原子，保证位置）
 //!   4. 出站删除 rmo（此时规则已不再引用）
+//!
+//! 每步带反向操作 `undo`：任一步失败时按相反顺序逐个撤回（出站新增 → rmo；出站变化 → rmo + 旧的 ado；入站删除 → 旧的 adi；
+//! 入站变化 → rmi + 旧的 adi；规则整表 → 旧的整表 adrules；出站删除 → 旧的 ado）。单项撤回失败继续撤其余的；
+//! 做了一半的也撤（rmi 成功、adi 失败仍要把旧入站加回去）。配置文件在全部步骤成功之后才写
 
 use super::cli::{Op, Runtime};
 use super::render::{is_static_outbound, rule_tag_of, tag_of, Rendered, API_TAG};
@@ -188,6 +192,18 @@ mod tests {
         }
     }
 
+    /// 计划里的撤销步骤，反向排成一份计划
+    fn undo_of(steps: &[Step]) -> Vec<Step> {
+        steps.iter().rev().filter_map(|s| s.undo.clone().map(|u| Step { op: u, undo: None, tag: s.tag.clone() })).collect()
+    }
+
+    /// 从 `from` 的运行态出发模拟执行 `steps`，结果要和 `to` 一致
+    fn assert_reaches(from: &Rendered, steps: &[Step], to: &Rendered) {
+        let mut rt = rt_of(from);
+        simulate(&mut rt, steps).unwrap();
+        assert!(verify(&rt, to).is_ok(), "{rt:?}");
+    }
+
     fn kinds(steps: &[Step]) -> Vec<String> {
         steps.iter().map(|s| s.op.describe()).collect()
     }
@@ -214,9 +230,7 @@ mod tests {
                 "adrules (4 条)".to_string()
             ]
         );
-        let mut rt = rt_of(&prev);
-        simulate(&mut rt, &steps).unwrap();
-        assert!(verify(&rt, &cand).is_ok());
+        assert_reaches(&prev, &steps, &cand);
     }
 
     #[test]
@@ -257,9 +271,7 @@ mod tests {
         let last_rmi = k.iter().rposition(|x| x.starts_with("rmi")).unwrap();
         let first_adi = k.iter().position(|x| x.starts_with("adi")).unwrap();
         assert!(last_rmi < first_adi, "{k:?}");
-        let mut rt = rt_of(&prev);
-        simulate(&mut rt, &steps).unwrap();
-        assert!(verify(&rt, &cand).is_ok());
+        assert_reaches(&prev, &steps, &cand);
         // 只改出站：不碰入站
         let mut e = entry(1, 20001, true);
         e.outbound = fleet_proto::Outbound::Shadowsocks { host: "1.1.1.1".into(), port: 1, method: "aes-256-gcm".into(), password: "x".into() };
@@ -280,9 +292,7 @@ mod tests {
         let steps = plan(&rt_of(&prev), &prev, &cand);
         let (a, b) = (tags::inbound(Uuid::from_u128(1)), tags::inbound(Uuid::from_u128(2)));
         assert_eq!(kinds(&steps), vec![format!("rmi {a}"), format!("adi {a}"), format!("rmi {b}"), format!("adi {b}")]);
-        let mut rt = rt_of(&prev);
-        simulate(&mut rt, &steps).unwrap();
-        assert!(verify(&rt, &cand).is_ok());
+        assert_reaches(&prev, &steps, &cand);
     }
 
     #[test]
@@ -309,10 +319,8 @@ mod tests {
         let cand = skeleton(&ctx());
         let steps = plan(&rt_of(&prev), &prev, &cand);
         // 反向执行全部 undo 应回到 prev
-        let undo: Vec<Step> = steps.iter().rev().filter_map(|s| s.undo.clone().map(|u| Step { op: u, undo: None, tag: s.tag.clone() })).collect();
-        let mut rt = rt_of(&cand);
-        simulate(&mut rt, &undo).unwrap();
-        assert!(verify(&rt, &prev).is_ok(), "{rt:?}");
+        let undo = undo_of(&steps);
+        assert_reaches(&cand, &undo, &prev);
     }
 
     fn with_policy(n: u128, port: u16, mode: fleet_proto::PolicyMode, domains: &[&str]) -> fleet_proto::DesiredEntry {
@@ -329,9 +337,7 @@ mod tests {
         let a = render(&desired(vec![with_policy(1, 20001, Allowlist, &["domain:a.com"])]), &ctx()).unwrap();
         let steps = plan(&rt_of(&prev), &prev, &a);
         assert_eq!(kinds(&steps), vec!["adrules (6 条)".to_string()]);
-        let mut rt = rt_of(&prev);
-        simulate(&mut rt, &steps).unwrap();
-        assert!(verify(&rt, &a).is_ok());
+        assert_reaches(&prev, &steps, &a);
         // 只改域名列表（规则的 ruleTag/出站对没变）也必须替换
         let b = render(&desired(vec![with_policy(1, 20001, Allowlist, &["domain:a.com", "full:b.com"])]), &ctx()).unwrap();
         assert_eq!(kinds(&plan(&rt_of(&a), &a, &b)), vec!["adrules (6 条)".to_string()]);
@@ -341,17 +347,13 @@ mod tests {
         // 恢复 observe：规则表回到原样
         let steps = plan(&rt_of(&c), &c, &prev);
         assert_eq!(kinds(&steps), vec!["adrules (4 条)".to_string()]);
-        let mut rt = rt_of(&c);
-        simulate(&mut rt, &steps).unwrap();
-        assert!(verify(&rt, &prev).is_ok());
+        assert_reaches(&c, &steps, &prev);
         // 没变化：空计划
         assert!(plan(&rt_of(&b), &b, &b).is_empty());
         // 回滚：undo 回到上一份规则表
         let steps = plan(&rt_of(&a), &a, &b);
-        let undo: Vec<Step> = steps.iter().rev().filter_map(|s| s.undo.clone().map(|u| Step { op: u, undo: None, tag: s.tag.clone() })).collect();
-        let mut rt = rt_of(&b);
-        simulate(&mut rt, &undo).unwrap();
-        assert!(verify(&rt, &a).is_ok());
+        let undo = undo_of(&steps);
+        assert_reaches(&b, &undo, &a);
     }
 
     #[test]
@@ -366,9 +368,7 @@ mod tests {
             kinds(&steps),
             vec![format!("ado {}", tags::outbound(id)), format!("adi {}", tags::inbound(id)), format!("adi probe-{}", id.simple()), "adrules (7 条)".to_string()]
         );
-        let mut rt = rt_of(&base);
-        simulate(&mut rt, &steps).unwrap();
-        assert!(verify(&rt, &with).is_ok());
+        assert_reaches(&base, &steps, &with);
         // 移除：规则先换、出站最后删，共享的 direct 不动
         let steps = plan(&rt_of(&with), &with, &base);
         let k = kinds(&steps);
@@ -379,10 +379,8 @@ mod tests {
         assert!(rt.outbounds.contains(&"direct".to_string()));
         // 回滚：撤回全部步骤回到加之前
         let steps = plan(&rt_of(&base), &base, &with);
-        let undo: Vec<Step> = steps.iter().rev().filter_map(|s| s.undo.clone().map(|u| Step { op: u, undo: None, tag: s.tag.clone() })).collect();
-        let mut rt = rt_of(&with);
-        simulate(&mut rt, &undo).unwrap();
-        assert!(verify(&rt, &base).is_ok());
+        let undo = undo_of(&steps);
+        assert_reaches(&with, &undo, &base);
         // 停用：入站、出站、规则都摘掉
         let mut d = direct(2, 20002);
         d.enabled = false;

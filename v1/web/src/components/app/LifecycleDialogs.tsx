@@ -18,13 +18,13 @@ import { Due, entryState, ErrorNote, Note } from './primitives';
 import { ConfirmDialog } from './dialogs';
 import { RetireDialog } from './RetireDialog';
 
-const SHARE_WARN = <Note tone="warn">换线后分享链接会变 <InfoTip text="需要把新的分享链接发给客户端；作业完成的通知里有「复制新分享链接」。" /></Note>;
+const SHARE_WARN = <Note tone="warn">换线后分享链接会变 <InfoTip text="要把新的分享链接发给客户端。作业完成时的通知里，可以直接复制新链接" /></Note>;
 
 /** 「同时改软路由」：新入口验收后、摘旧入口前改，失败全部换回、旧入口不摘 */
 function RoutersCheck({ checked, onChange, none, failed }: { checked: boolean; onChange: (v: boolean) => void; none?: boolean; failed?: boolean }) {
-  if (failed) return <div className="hint">预览失败，看不出有没有软路由出口指向这个入口（原因见下）</div>;
+  if (failed) return <div className="hint">预览失败，不确定有没有软路由在用这个入口（原因见下）</div>;
   if (none) return <div className="hint">没有软路由出口指向这个入口</div>;
-  return <CheckRow checked={checked} onChange={onChange}>同时改软路由 <InfoTip text={'软路由上指向旧入口的出口改成新入口（逐台备份、改完重启 OpenClash 并测延迟，失败全部换回、旧入口不摘）。\n不改的话，这些出口在旧入口摘掉后就断了。'} /></CheckRow>;
+  return <CheckRow checked={checked} onChange={onChange}>同时改软路由 <InfoTip text={'把软路由上指向旧入口的出口，改成新入口。每台先备份，改完重启 OpenClash 并测延迟，失败会全部换回，旧入口也不移除\n不改的话，旧入口移除后这些出口就断了'} /></CheckRow>;
 }
 
 /** 换线 / 搬空的目标线路机下拉：在用的线路机，每项写状态、入口数、到期；降级、故障、即将到期、已过期按级别着色。
@@ -66,8 +66,8 @@ export const MoveDialog = resetOnOpen(function MoveDialog({ m, open, onOpenChang
   const pv = q.isFetchedAfterMount ? q.data : undefined;
   const ready = !!to && cur.length > 0 && (!multi || !!from) && !!pv?.ok && !q.isFetching;
   return (
-    <ConfirmDialog asForm open={open} onOpenChange={onOpenChange} size="md" title={`把 ${m.name} 换到另一台线路机`} confirmLabel="开始换线" confirmDisabled={!ready}
-      description={<>换线期间不断网 <InfoTip text="先在新线路机建好入口并验收出口，再改软路由出口，最后才摘掉旧入口；换线期间节点始终有一个可用入口。" /></>}
+    <ConfirmDialog asForm open={open} onOpenChange={onOpenChange} size="md" title={`换线路机 · ${m.name}`} confirmLabel="开始换线" confirmDisabled={!ready}
+      description={<>换线期间不断网 <InfoTip text={"先在新线路机建好入口并验证出口，再改软路由，最后才移除旧入口\n过程中节点始终有一个入口可用"} /></>}
       onConfirm={async () => {
         const r = await move.mutateAsync({ id: m.id, to_relay_id: to, from_relay_id: multi ? from : undefined, routers });
         toast.ok(`已提交换线路机：${r.from} → ${r.to}`);
@@ -79,7 +79,7 @@ export const MoveDialog = resetOnOpen(function MoveDialog({ m, open, onOpenChang
         <div className="stack-sm">
           <div className="hint">当前入口：{cur.map((e) => `${e.relay.name}:${e.port}`).join('、')}</div>
           {multi && <Field label="换掉哪条线路机上的入口"><Select value={from} onChange={setFrom} options={cur.map((e) => ({ value: e.relay.id, label: `${e.relay.name}:${e.port}` }))} placeholder="选择要换掉的入口" /></Field>}
-          <Field label="目标线路机" info="目标必须是在用的线路机，且这台节点在上面还没有入口" hint={opts.length === 0 ? '没有可选的线路机' : undefined}>
+          <Field label="目标线路机" info="必须是在用的线路机，且这个节点在上面还没有入口" hint={opts.length === 0 ? '没有可选的线路机' : undefined}>
             <Select value={to} onChange={setTo} options={opts} placeholder="选择线路机" />
           </Field>
           <RoutersCheck checked={routers} onChange={setRouters} none={!!pv && pv.ok && pv.routers.length === 0 && pv.warnings.length === 0} failed={!!pv && !pv.ok && pv.routers.length === 0} />
@@ -90,7 +90,7 @@ export const MoveDialog = resetOnOpen(function MoveDialog({ m, open, onOpenChang
         <div className="stack-sm" style={{ opacity: q.isFetching ? 0.6 : 1 }}>
           {pv.routers_enabled
             ? <RouterExitList routers={pv.routers.map((plan) => ({ node: m.name, plan }))} />
-            : pv.routers.length > 0 && <Note tone="bad">不改软路由：{pv.routers.flatMap((r) => r.exits.map((e) => `${r.name} 的 ${e.exit}`)).join('、')} 在旧入口摘掉后就断了</Note>}
+            : pv.routers.length > 0 && <Note tone="bad">不改软路由的话，{pv.routers.flatMap((r) => r.exits.map((e) => `「${r.name}」的出口「${e.exit}」`)).join('、')}会在旧入口移除后断开</Note>}
           <PlanBlockers routers={pv.routers_enabled ? pv.routers : []} blockers={pv.blockers} />
           {pv.warnings.map((w) => <Note key={w} tone="warn">{w}</Note>)}
         </div>
@@ -117,8 +117,8 @@ export const EvacuateDialog = resetOnOpen(function EvacuateDialog({ relay, open,
   // 实际会建几个作业以预览为准（软路由不在线、有别的作业的节点会被跳过）；还没选目标时按在用入口数
   const n = pv?.jobs.length ?? movable.length;
   return (
-    <ConfirmDialog open={open} onOpenChange={onOpenChange} size="md" title={`搬空 ${relay.name}`} confirmLabel={`搬走 ${n} 个节点`} confirmDisabled={!to || n === 0 || !pv || q.isFetching}
-      description={<>每个节点各建一个换线作业 <InfoTip text="为这台线路机上每个在用入口的节点各建一个「换线路机」作业；搬完后就可以安全退役这台线路机。" /></>}
+    <ConfirmDialog open={open} onOpenChange={onOpenChange} size="md" title={`搬空 · ${relay.name}`} confirmLabel={`搬走 ${n} 个节点`} confirmDisabled={!to || n === 0 || !pv || q.isFetching}
+      description={<>每个节点各建一个换线作业 <InfoTip text="为这台线路机上每个在用入口的节点，各建一个「换线路机」作业。搬完后就可以放心退役这台线路机" /></>}
       onConfirm={async () => {
         const r = await evac.mutateAsync({ id: relay.id, to_relay_id: to, routers });
         toast.ok(`已为 ${r.jobs.length} 个节点提交换线路机作业${r.skipped.length ? `，${r.skipped.length} 个被跳过` : ''}`);
@@ -141,13 +141,14 @@ export const EvacuateDialog = resetOnOpen(function EvacuateDialog({ relay, open,
           </ul>
         )}
       </div>
-      {hasDirect && <div className="hint">直出入口不搬 <InfoTip text="退役时一起摘除；用它的客户需要换成别的线路机的直出链接。" /></div>}
+      {hasDirect && <div className="hint">直出入口不搬 <InfoTip text="退役时会一起移除。用它的客户，需要换成别的线路机的直出链接" /></div>}
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()}>预览失败：</ErrorNote>}
       {pv && (
         <div className="stack-sm" style={{ opacity: q.isFetching ? 0.6 : 1 }}>
           {routers
-            ? <RouterExitList routers={pv.jobs.flatMap((j) => j.routers.map((plan) => ({ node: j.name, plan })))} title={<>要改的软路由出口 <InfoTip text="各节点同时换，同一台软路由一次只改一个节点，其余的在这一步排队。" /></>} />
-            : pv.jobs.some((j) => j.routers.length > 0) && <Note tone="bad">不改软路由：指向这些入口的出口在旧入口摘掉后就断了</Note>}
+            ? <RouterExitList routers={pv.jobs.flatMap((j) => j.routers.map((plan) => ({ node: j.name, plan })))} title={<>要改的软路由出口 <InfoTip text="各节点同时建新入口，都验收完后一起改软路由。每台软路由只改一次" /></>} />
+            : pv.jobs.some((j) => j.routers.length > 0) && <Note tone="bad">不改软路由的话，指向这些入口的出口会在旧入口移除后断开</Note>}
+          {routers && (pv.router_restarts ?? []).map((r) => <Note key={r.id} tone="warn">软路由「{r.name}」上 {r.nodes} 个节点的出口一起改，OpenClash 重启 1 次，会断开路由上的所有连接</Note>)}
           {pv.skipped.map((k) => <Note key={k.machine_id} tone="warn">{k.name ?? '节点'} 会跳过：{k.reason}</Note>)}
           {pv.warnings.map((w) => <Note key={w} tone="warn">{w}</Note>)}
         </div>

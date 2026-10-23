@@ -25,6 +25,8 @@ pub struct ActionIn {
     confirm: Option<String>,
 }
 
+/// 启用 / 停用 / 轮换凭据。轮换要输入「线路机:端口」确认，没确认时的 400 里列出指向这个入口的软路由出口（detail.router_exits，同 GET /entries/{id}/routers）；
+/// 停用、轮换的结果也带上 router_exits：这些出口之后就连不上了（替换节点、换线路机会自动改路由，轮换、停用不会），要到路由上处理
 pub async fn entry_action(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<ActionIn>) -> ApiResult<Json<Value>> {
     let (relay_label, port): (String, i32) =
         sqlx::query_as("select m.label, e.port from entry e join machine m on m.id = e.relay_id where e.id = $1")
@@ -38,7 +40,9 @@ pub async fn entry_action(a: Actor, State(st): State<AppState>, ApiPath(id): Api
         "rotate" => {
             let want = format!("{relay_label}:{port}");
             if b.confirm.as_deref().map(str::trim) != Some(want.as_str()) {
-                return Err(ApiError::bad_request(format!("轮换凭据会让旧链接立即失效；请输入「{want}」确认")));
+                let rs = crate::routers::exits_on_entry(&st.db, id).await?;
+                let also = if rs.is_empty() { String::new() } else { format!("。这些软路由出口指向它，轮换后会连不上、要到路由上换成新凭据：{}", crate::routers::exits_text(&rs)) };
+                return Err(ApiError::bad_request(format!("轮换凭据会让旧链接立即失效；请输入「{want}」确认{also}")).with_detail(json!({"router_exits": rs})));
             }
             let cur: (String,) = sqlx::query_as("select lifecycle::text from entry where id = $1").bind(id).fetch_one(&st.db).await?;
             if cur.0 == "disabled" {
@@ -54,7 +58,16 @@ pub async fn entry_action(a: Actor, State(st): State<AppState>, ApiPath(id): Api
     tx.commit().await?;
     st.relay_bumped(relay_id);
     st.emit(Event::Machines);
-    Ok(ok(json!({"generation": gen})))
+    let rs = if to == "active" && !rotate { vec![] } else { crate::routers::exits_on_entry(&st.db, id).await? };
+    Ok(ok(json!({"generation": gen, "router_exits": rs})))
+}
+
+/// 指向这个入口的软路由出口（按各路由最近一次采集的快照，出口对上的入口就是它）：`[{id, name, state, exits: [出口名]}]`。
+/// 轮换凭据、停用入口的确认里列出来
+pub async fn entry_routers(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
+    let n: Option<i32> = sqlx::query_scalar("select 1 from entry where id = $1").bind(id).fetch_optional(&st.db).await?;
+    n.ok_or_else(|| ApiError::not_found("没有这个入口"))?;
+    Ok(ok(crate::routers::exits_on_entry(&st.db, id).await?))
 }
 
 pub async fn share(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {

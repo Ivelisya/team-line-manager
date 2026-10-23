@@ -10,7 +10,7 @@ import { isQuiet } from './derive';
 type N = number | null;
 /** [ts, cpu_pct, load1, mem_used, mem_total, disk_used, disk_total, net_rx_bps, net_tx_bps, tcp_conns] */
 type HostTuple = [number, N, N, N, N, N, N, N, N, N];
-/** [ok, latency_ms, ts, detail, median_ms]（median_ms：TCP 近 1 小时中位数，旧中控不带） */
+/** [ok, latency_ms, ts, detail, median_ms]（median_ms：TCP 近 1 小时中位数，出口探测为 null） */
 type ProbeTuple = [boolean, N, number, string | null, N?];
 interface MachinePatch {
   host?: HostTuple | null; seen?: N; agent?: { version: string | null; online: boolean; xray_running: boolean | null; cores: number | null } | null;
@@ -97,6 +97,7 @@ function watch(qc: QueryClient) {
 
 export function applyMetrics(qc: QueryClient, msg: MetricsMsg) {
   watch(qc);
+  sinks.forEach((s) => s.push(msg));
   for (const q of qc.getQueryCache().findAll({ fetchStatus: 'fetching', predicate: (q) => LIVE.has(q.queryKey[0] as string) })) {
     const r = missed.get(q.queryHash);
     if (r && r.p === q.promise) r.msgs.push(msg); else missed.set(q.queryHash, { p: q.promise, msgs: [msg] });
@@ -120,6 +121,45 @@ export function applyMetrics(qc: QueryClient, msg: MetricsMsg) {
     if (msg.overview) recordFleet({ t: Date.now(), rx: msg.overview.net_rx_bps, tx: msg.overview.net_tx_bps });
     if (dirty) { dirty = false; notifyManager.schedule(() => subs.forEach((f) => f())); }
   });
+}
+
+// ---- 单台机器的资源事件：只取这一台，拼回机器列表 ----
+// machine 事件（作业步骤、连通性结论、续费、改订阅、三网 PING 设置……）只关乎一台：取 /machines/{id}（同时就是抽屉那份 ['machine', id]），
+// 替换列表里的这一台，它的入口在对端（节点 ↔ 线路机）列表项里的那份一起换（同一条入口两边是同一份视图）。
+// 名称、团队、编号、类型、生命周期、入口增减变了的（会牵动别的机器：同机 IP 节点的宿主机名、编号重排、退役移出列表）、
+// 是宿主机（同机 IP 节点的 agent 版本、状态取自它，列表里那几台要一起换）、列表里没有这台、或整表正在重取（回来的快照会盖掉这次的）时不拼，
+// 回 false 由调用方让整表失效（宿主机的同机 IP 节点各自的详情这里就失效）
+/** 正在取单台时收到的增量：取回后按顺序补上（同 missed，增量是绝对值，已含的再写一遍不变） */
+const sinks = new Set<MetricsMsg[]>();
+const shapeOf = (m: MachineView) => `${m.kind}|${m.name}|${m.team?.id}|${m.team?.name}|${m.number}|${m.lifecycle}|${m.entries.map((e) => e.id).join()}`;
+
+export async function refreshMachine(qc: QueryClient, id: string): Promise<boolean> {
+  const got: MetricsMsg[] = [];
+  sinks.add(got);
+  let fresh: MachineView;
+  try {
+    fresh = await qc.fetchQuery({ queryKey: ['machine', id], queryFn: ({ signal }) => get<MachineView>(`/machines/${id}`, signal), staleTime: 0 });
+  } finally {
+    sinks.delete(got);
+  }
+  const m = got.reduce((x, msg) => patchMachine(x, msg), fresh);
+  if (m.ip_nodes.length) {
+    m.ip_nodes.forEach((n) => void qc.invalidateQueries({ queryKey: ['machine', n.id], exact: true }));
+    return false;
+  }
+  const lists = qc.getQueryCache().findAll({ queryKey: ['machines'] });
+  if (lists.some((q) => q.state.fetchStatus === 'fetching')) return false;
+  const merged: [readonly unknown[], MachineView[]][] = [];
+  for (const q of lists) {
+    const old = q.state.data as MachineView[] | undefined;
+    if (!old) continue;
+    const cur = old.find((x) => x.id === id);
+    if (!cur || shapeOf(cur) !== shapeOf(m)) return false;
+    const es = new Map(m.entries.map((e) => [e.id, e]));
+    merged.push([q.queryKey, old.map((x) => (x.id === id ? m : x.entries.some((e) => es.has(e.id)) ? { ...x, entries: x.entries.map((e) => es.get(e.id) ?? e) } : x))]);
+  }
+  notifyManager.batch(() => merged.forEach(([k, d]) => qc.setQueryData(k, d)));
+  return true;
 }
 
 // ---- 实时迹线：每台机器的网卡速率、全站总速率（FLEET），各留最近 SERIES_N 个点 ----

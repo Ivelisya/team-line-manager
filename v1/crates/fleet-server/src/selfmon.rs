@@ -10,13 +10,19 @@
 //!   - `central_disk_low`（严重）：中控本机 /、PostgreSQL 数据目录、/var/lib/fleet、备份目录所在的文件系统剩余低于 10%（同 df 的可用），
 //!     回到 11% 以上才恢复
 //!   - `central_ingress`（严重）：有自己 agent 的在用机器里同时离线的超过一半、且至少 3 台（alerts::agents_unreachable）——
-//!     中控在跑、库也好，是 agent 到不了中控（边缘机反代、Caddy、DNS）。这期间不新开单机的 agent 离线，这条恢复后还没回来的再按单机报
+//!     中控在跑、库也好，是 agent 到不了中控（边缘机反代、Caddy、DNS）。这期间不新开单机的 agent 离线，这条恢复后还没回来的再按单机报。
+//!     机器视图取不到时判断不了，开着的这条留着
+//!   - `central_view_stuck`（严重）：机器视图连续 2 分钟算不出来（查询被锁住、超时，见 views::cached）——机器告警跟着停了评估，
+//!     列表与总览停在旧数据。算成一次就恢复
+//!   - `central_tunnel_host`（警告）：软路由隧道回连的主机（[routers] ssh_host，没配时 public_url 的主机名）解析到的不是中控
+//!     （经 CDN / 边缘机、解析不了）：路由断线后回连不上。有软路由时启动和每 10 分钟查一次（routers::selfcheck），对了就恢复；
+//!     连不上 SSH 口（可能只是中控连不回自己的公网地址）只算判断不了，不开
 //!
 //!   不去抖（条件本身带了时长或余量），恢复后再出现新开一条；被静默的不开、不发通知；严重的每 4 小时提醒一次（同机器的告警）。
 //!   对象是「中控」：subject_id 是全零 uuid（渠道连续失败是渠道 id），接口里这类告警的 subject / subject_id 为 null、subject_name 是「中控」。
 
 use crate::alerts;
-use crate::incident::{self, Close, Want};
+use crate::incident::{self, Close, Engine, Want};
 use crate::notify;
 use crate::state::AppState;
 use std::collections::HashSet;
@@ -32,6 +38,8 @@ pub const CHANNEL_FAILING: &str = "central_channel_failing";
 pub const BACKUP_STALE: &str = "central_backup_stale";
 pub const DISK_LOW: &str = "central_disk_low";
 pub const INGRESS: &str = "central_ingress";
+pub const VIEW_STUCK: &str = "central_view_stuck";
+pub const TUNNEL_HOST: &str = "central_tunnel_host";
 /// 中控自身告警的对象 id（不是机器；渠道连续失败的告警用渠道 id）
 pub const CENTRAL: Uuid = Uuid::nil();
 /// 告警、通知里中控的名字
@@ -44,11 +52,10 @@ const BACKUP_MAX_AGE: Duration = Duration::from_secs(26 * 3600);
 /// 磁盘剩余低于这个百分比开告警，回到 DISK_OK_PCT 以上才恢复：留点余量，不在边上反复开关
 const DISK_LOW_PCT: u64 = 10;
 const DISK_OK_PCT: u64 = 11;
+/// 机器视图连续算不出来满这么久开告警（视图失败时先用上一份顶 1 分钟，告警评估之后才开始失败）
+const VIEW_STUCK_S: i64 = 2 * 60;
 /// 要看剩余空间的目录（系统盘、PostgreSQL 数据、中控自己的数据），另加备份目录；同一个文件系统只看一次，不存在的跳过
 const DISK_PATHS: [&str; 3] = ["/", "/var/lib/postgresql", "/var/lib/fleet"];
-
-/// 中控自身的告警（对象不是机器）
-pub fn is_central(rule: &str) -> bool { rule.starts_with("central_") }
 
 /// 死人开关：告警循环每轮评估成功后调 `beat`，最多每分钟真去 ping 一次
 #[derive(Default)]
@@ -85,7 +92,7 @@ fn client() -> &'static reqwest::Client {
 
 /// 检查一轮，把中控自身的告警对齐到 incident 表（incident.rs）。`now` 由调用方给（测试可以快进）
 pub async fn check_once(st: &AppState, now: OffsetDateTime) -> anyhow::Result<()> {
-    let open = incident::firing(&st.db, "central").await?;
+    let open = incident::firing(&st.db, Engine::Central).await?;
     let channels: Vec<(Uuid, String, Option<OffsetDateTime>, Option<String>)> =
         sqlx::query_as("select id, name, failing_since, last_error from notify_channel where enabled").fetch_all(&st.db).await?;
     let problem = |rule: &'static str, subject: Uuid, severity: &'static str, text: String| Want { rule, subject, name: NAME, severity, text, detail: None, ready: true };
@@ -108,14 +115,29 @@ pub async fn check_once(st: &AppState, now: OffsetDateTime) -> anyhow::Result<()
     if let Some(text) = disk_problem(&disk_usage(dir), pct) {
         want.push(problem(DISK_LOW, CENTRAL, "critical", text));
     }
-    if let Some((off, total)) = alerts::agents_unreachable(&crate::views::live(st).await?) {
-        want.push(problem(INGRESS, CENTRAL, "critical", format!("{off}/{total} 台 agent 同时失联：检查边缘机 / Caddy / DNS")));
+    let view = crate::views::live(st).await;
+    match &view {
+        Ok(ms) => {
+            if let Some((off, total)) = alerts::agents_unreachable(ms) {
+                want.push(problem(INGRESS, CENTRAL, "critical", format!("{off}/{total} 台 agent 同时失联：检查边缘机、Caddy、域名解析")));
+            }
+        }
+        Err(e) => tracing::warn!("中控自检取不到机器视图，这一轮不判断 agent 是否同时失联：{e}"),
+    }
+    if let Some((since, err)) = st.live.failing().filter(|(since, _)| (now - *since).whole_seconds() >= VIEW_STUCK_S) {
+        let mins = (now - since).whole_minutes();
+        want.push(problem(VIEW_STUCK, CENTRAL, "critical", format!("机器视图已经 {mins} 分钟算不出来（{err}）：机器告警暂停评估，列表与总览停在旧数据，查数据库的锁与慢查询")));
+    }
+    if let Some(text) = st.tunnel_host.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        want.push(problem(TUNNEL_HOST, CENTRAL, "warning", text));
     }
     let enabled: HashSet<Uuid> = channels.iter().map(|c| c.0).collect();
     // 问题没了的恢复；渠道停用或删了不是恢复：关掉、不发通知
-    incident::reconcile(st, open, want, "true", now, |inc| {
+    incident::reconcile(st, Engine::Central, open, want, "true", now, |inc| {
         if inc.rule == CHANNEL_FAILING && !enabled.contains(&inc.subject_id) {
             Close::Quiet("channel_removed")
+        } else if inc.rule == INGRESS && view.is_err() {
+            Close::Keep
         } else {
             Close::Resolve(NAME)
         }
@@ -141,7 +163,7 @@ fn backup_problem(dir: &Path, now: SystemTime) -> Option<String> {
         None => Some(format!("备份目录 {} 里没有备份（fleet-*.tar、fleet-*.tar.age）", dir.display())),
         Some((t, name)) if now.duration_since(t).unwrap_or_default() > BACKUP_MAX_AGE => Some(format!(
             "最新一份备份做于 {}（{}，{}），超过 26 小时没有新的：每日备份没做成，查 systemctl status fleet-backup",
-            notify::beijing(OffsetDateTime::from(t)),
+            crate::meta::org_time(OffsetDateTime::from(t)),
             crate::meta::org_tz_label(),
             name.to_string_lossy()
         )),
@@ -212,11 +234,5 @@ mod tests {
         let u = disk_usage(Path::new("/nonexistent-backups"));
         assert!(u.iter().any(|(p, _, total)| p == "/" && *total > 0), "{u:?}");
         assert!(u.iter().all(|(_, avail, total)| avail <= total));
-    }
-
-    #[test]
-    fn central_rules() {
-        assert!(is_central(CHANNEL_FAILING) && is_central(BACKUP_STALE) && is_central(DISK_LOW) && is_central(INGRESS));
-        assert!(!is_central("agent_offline") && !is_central("ipintel_new_isp"));
     }
 }

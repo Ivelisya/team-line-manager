@@ -45,7 +45,7 @@ pub async fn brief(st: &AppState, scope: Scope) -> sqlx::Result<Value> {
          where {}",
         scope.cond()
     ))
-    .fetch_one(&st.db)
+    .fetch_one(&st.view_db)
     .await
 }
 
@@ -507,6 +507,7 @@ pub const AGENT_OFFLINE_S: i64 = 120;
 /// 在用机器全量视图的短缓存：/machines、/relays、/overview、告警评估、实时指标共用，并发请求合并成一次查询（单飞）。
 /// 资源变更事件（`AppState::emit`）让它作废、下次完整加载；agent 上报的指标不发事件，TTL 过了就在上一份上补指标（`refresh`），
 /// 每 `FULL_EVERY`、跨天或小时汇总之后才再完整加载一次。
+/// 重算正在进行（锁被占）或失败、超时时先回上一份（`LiveCache::stale`），见 `cached`。
 struct Snap {
     /// 最近一次加载或补指标的时刻（TTL 从这里算）
     at: Instant,
@@ -519,6 +520,11 @@ struct Snap {
 }
 /// 指标（心跳、探测）最多旧这么久
 const LIVE_TTL: std::time::Duration = std::time::Duration::from_secs(3);
+/// 重算一次视图最多这么久，到点算失败（回上一份或报错）；排队等别人算完（等锁）另算一份同样长的时限。视图池每条语句 15 秒超时，
+/// 但一次完整加载有几轮先后依赖的查询，叠起来会更久；告警评估（30 秒一轮）不能被它拖住
+const VIEW_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+/// 上一份视图最多旧这么久还拿来顶：再旧就报错（告警评估这一轮失败、中控自检报 `central_view_stuck`），不拿很久以前的在线状态判告警
+const STALE_MAX: std::time::Duration = std::time::Duration::from_secs(60);
 /// 只补指标最多这么久，之后完整加载一次（与小时汇总同一节奏）：账单时区跨天的到期天数与流量周期、国旗画像在这时跟上。
 /// 改机器的地方都发事件（含作业步骤、线路机连通性的结论），不靠它兜底
 const FULL_EVERY: std::time::Duration = std::time::Duration::from_secs(300);
@@ -527,6 +533,8 @@ pub type TrafficMap = Arc<HashMap<Uuid, Traffic>>;
 /// 机器 id → 按网卡计的今天 / 本月流量（组织时区，来自小时汇总表）
 type NicMap = Arc<HashMap<Uuid, NicTraffic>>;
 type Flows = (TrafficMap, NicMap);
+/// 上一份算成的视图：(算成的时刻, gen, rolled, 视图)
+type LastView = (Instant, u64, u64, Arc<Vec<MachineView>>);
 
 #[derive(Default)]
 pub struct LiveCache {
@@ -535,6 +543,10 @@ pub struct LiveCache {
     /// 作业推进、告警或静默变化 +1（`touched`）：下次取视图时补指标并重查作业与告警数，不等 TTL、不整份重算
     touched: AtomicU64,
     slot: tokio::sync::Mutex<Option<Snap>>,
+    /// 最近一次算成的视图（同 `slot` 里的那份，另存一份不用拿锁就能读）：(算成的时刻, gen, rolled, 视图)
+    last: std::sync::Mutex<Option<LastView>>,
+    /// 视图从什么时候起一直算不出来（失败或超时）、最近一次的错误；算成一次就清掉。中控自检据此报 `central_view_stuck`
+    failing: std::sync::Mutex<Option<(OffsetDateTime, String)>>,
     /// `GET /machines` 的响应体，与它序列化自的那一份视图（同一份视图只序列化一次）
     json: std::sync::Mutex<Option<(Arc<Vec<MachineView>>, axum::body::Bytes)>>,
     /// 小时汇总每跑完一轮 +1
@@ -575,6 +587,25 @@ impl LiveCache {
     pub fn rolled_up(&self) {
         self.rolled.fetch_add(1, Ordering::SeqCst);
     }
+
+    /// 视图从什么时候起一直算不出来、最近一次的错误（`cached` 失败或超时时记下，算成一次就清掉）
+    pub fn failing(&self) -> Option<(OffsetDateTime, String)> {
+        self.failing.lock().unwrap().clone()
+    }
+
+    fn settled(&self, at: Instant, gen: u64, rolled: u64, v: &Arc<Vec<MachineView>>) {
+        *self.last.lock().unwrap() = Some((at, gen, rolled, v.clone()));
+        *self.failing.lock().unwrap() = None;
+    }
+
+    /// 上一份视图，旧不过 `STALE_MAX`、之后没有资源变更才给（变更之后还给变更前的，改完马上重取的会一直看到旧的）；
+    /// `rolled`：还要求之后没有新的小时汇总（只差随上报变的指标）
+    fn stale(&self, rolled: bool) -> Option<Arc<Vec<MachineView>>> {
+        let last = self.last.lock().unwrap();
+        let (at, gen, r, v) = last.as_ref()?;
+        let unchanged = *gen == self.gen.load(Ordering::SeqCst) && (!rolled || *r == self.rolled.load(Ordering::SeqCst));
+        (at.elapsed() < STALE_MAX && unchanged).then(|| v.clone())
+    }
 }
 
 /// 在用机器的完整视图，走 `LiveCache`
@@ -587,9 +618,44 @@ pub async fn live_fresh(st: &AppState) -> sqlx::Result<Arc<Vec<MachineView>>> {
     cached(st, std::time::Duration::ZERO).await
 }
 
+/// 取视图：锁空着就自己算（或用缓存）；锁被占（别的请求正在重算）时，之后没有资源变更的话直接回上一份、不排队等它，
+/// 有资源变更才等（改完马上重取的要看到改动）。等锁、重算各最多 `VIEW_WAIT`：前一个算得久，排在后面的拿到锁后照样有完整的时限
+/// （多半直接用前一个刚算成的那份）。失败或超时回上一份（旧不过 `STALE_MAX`、之后没有资源变更），
+/// 否则报错——超时报 `PoolTimedOut`、视图池的语句超时报 57014（接口都回 503，同等不到连接；前端查询会重试）
 async fn cached(st: &AppState, ttl: std::time::Duration) -> sqlx::Result<Arc<Vec<MachineView>>> {
     let c = &st.live;
-    let mut slot = c.slot.lock().await;
+    let got = match c.slot.try_lock() {
+        Ok(slot) => tokio::time::timeout(VIEW_WAIT, fill(st, slot, ttl)).await,
+        Err(_) => {
+            if let Some(v) = c.stale(true) {
+                return Ok(v);
+            }
+            match tokio::time::timeout(VIEW_WAIT, c.slot.lock()).await {
+                Ok(slot) => tokio::time::timeout(VIEW_WAIT, fill(st, slot, ttl)).await,
+                Err(e) => Err(e),
+            }
+        }
+    };
+    let e = match got {
+        Ok(Ok(v)) => return Ok(v),
+        Ok(Err(e)) => e,
+        Err(_) => sqlx::Error::PoolTimedOut,
+    };
+    let msg = if matches!(e, sqlx::Error::PoolTimedOut) { format!("{} 秒内没算出来", VIEW_WAIT.as_secs()) } else { e.to_string() };
+    c.failing.lock().unwrap().get_or_insert((OffsetDateTime::now_utc(), String::new())).1 = msg;
+    match c.stale(false) {
+        Some(v) => {
+            tracing::warn!("机器视图没算出来，先用上一份：{e}");
+            Ok(v)
+        }
+        // 上一份太旧或之后有过资源变更：报错让调用方重试，不拿变更前的顶
+        None => Err(e),
+    }
+}
+
+/// 拿着锁：缓存还新就直接用，否则补指标或完整加载；算成的记进 `last`、清掉失败标记
+async fn fill(st: &AppState, mut slot: tokio::sync::MutexGuard<'_, Option<Snap>>, ttl: std::time::Duration) -> sqlx::Result<Arc<Vec<MachineView>>> {
+    let c = &st.live;
     // 先记下再查：查询期间又有变更的，下次照样重查
     let (gen, rolled, touched) = (c.gen.load(Ordering::SeqCst), c.rolled.load(Ordering::SeqCst), c.touched.load(Ordering::SeqCst));
     if let Some(s) = slot.as_mut().filter(|s| s.gen == gen && s.rolled == rolled) {
@@ -599,6 +665,7 @@ async fn cached(st: &AppState, ttl: std::time::Duration) -> sqlx::Result<Arc<Vec
         if Instant::now() < s.full_until {
             s.v = Arc::new(refresh(st, &s.v, s.touched != touched).await?);
             (s.at, s.touched) = (Instant::now(), touched);
+            c.settled(s.at, gen, rolled, &s.v);
             return Ok(s.v.clone());
         }
     }
@@ -607,6 +674,7 @@ async fn cached(st: &AppState, ttl: std::time::Duration) -> sqlx::Result<Arc<Vec
     // 流量缓存（load 刚取过）到组织时区的下一个零点过期：跨天时今天的流量清零，完整加载一次
     let day_end = c.traffic.lock().await.as_ref().map(|((_, exp), _)| *exp);
     let full_until = day_end.map_or(at + FULL_EVERY, |e| e.min(at + FULL_EVERY));
+    c.settled(at, gen, rolled, &v);
     *slot = Some(Snap { at, full_until, gen, rolled, touched, v: v.clone() });
     Ok(v)
 }
@@ -632,7 +700,7 @@ pub async fn live_json(st: &AppState) -> sqlx::Result<axum::body::Bytes> {
 /// （探测由线路机上报，补它上面的入口）；维护中每次都查；`jobs`（作业、告警或静默变过）时再补进行中 / 失败的作业与未恢复的告警数。
 /// 最后按现在的时刻重判在线与健康。其余字段（名称、订阅、入口、流量、额度、策略、国旗）随完整加载更新
 async fn refresh(st: &AppState, prev: &[MachineView], jobs: bool) -> sqlx::Result<Vec<MachineView>> {
-    let db = &st.db;
+    let db = &st.view_db;
     let hid = |m: &MachineView| m.host_machine.as_ref().map_or(m.id, |h| h.id);
     let mut last: HashMap<Uuid, Option<OffsetDateTime>> = HashMap::new();
     for m in prev {
@@ -838,7 +906,9 @@ async fn probes_of(db: &sqlx::PgPool, eids: &[Uuid]) -> sqlx::Result<HashMap<(Uu
 }
 
 /// 在用入口各自端口上主探测来源（`src`，中控或探测点，见 probe_points::Effective）最近一次 TCP 检查，
-/// 沿 (relay_id, probe_point_id, port, ts desc) 索引逐个取最新一条，失败的再数连续失败了几次；检查早于入口创建的（端口复用）不算
+/// 沿 (relay_id, probe_point_id, port, ts desc) 索引逐个取最新一条，失败的再数连续失败了几次；检查早于入口创建的不算：
+/// 现在端口不再复用（entries::create 从 relay.port_next 分），但 0050 之前已经复用过的端口、0050 按标签对不上回收站快照而推算偏低的端口，
+/// 保留期（reach_days）里还留着旧入口的检查
 async fn reach_of(db: &sqlx::PgPool, es: &[(Uuid, Uuid, i32)], src: &crate::probe_points::Effective) -> sqlx::Result<HashMap<Uuid, Reach>> {
     let (cf, cg, cr) = (src.cond("f"), src.cond("g"), src.cond("rr"));
     let rs = sqlx::query_as::<_, (Uuid, bool, OffsetDateTime, Option<String>, i32)>(&format!(
@@ -942,7 +1012,7 @@ async fn flows(st: &AppState) -> sqlx::Result<Flows> {
         "select date_trunc('day', l) at time zone z, date_trunc('month', l) at time zone z, extract(epoch from date_trunc('day', l) + interval '1 day' - l)::float8
          from (select z, now() at time zone z l from (select org_tz() z) o) b",
     )
-    .fetch_one(&st.db)
+    .fetch_one(&st.view_db)
     .await?;
     let rows: Vec<(Uuid, i64, i64, i64, i64)> = sqlx::query_as(
         "select entry_id,
@@ -952,7 +1022,7 @@ async fn flows(st: &AppState) -> sqlx::Result<Flows> {
     )
     .bind(d0)
     .bind(m0)
-    .fetch_all(&st.db)
+    .fetch_all(&st.view_db)
     .await?;
     let v: TrafficMap =
         Arc::new(rows.into_iter().map(|(id, tu, td, mu, md)| (id, Traffic { today_up: tu, today_down: td, month_up: mu, month_down: md })).collect());
@@ -965,7 +1035,7 @@ async fn flows(st: &AppState) -> sqlx::Result<Flows> {
     )
     .bind(d0)
     .bind(m0)
-    .fetch_all(&st.db)
+    .fetch_all(&st.view_db)
     .await?;
     let n: NicMap =
         Arc::new(rows.into_iter().map(|(id, tr, tt, mr, mt)| (id, NicTraffic { today_rx: tr, today_tx: tt, month_rx: mr, month_tx: mt })).collect());
@@ -1021,22 +1091,26 @@ async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<
         .bind(miss.iter().map(|k| k.2.clone()).collect::<Vec<_>>())
         .bind(miss.iter().map(|k| k.3).collect::<Vec<_>>())
         .bind(miss.iter().map(|k| k.4).collect::<Vec<_>>())
-        .fetch_all(&st.db)
+        .fetch_all(&st.view_db)
         .await?;
         let got: HashMap<Uuid, QuotaUsed> = rows.into_iter().map(|(m, b, cal, s0)| (m, (b, cal, s0))).collect();
         for k in miss {
-            // 每个键都有一行（q 是 unnest 出来的，两支都按 q 聚合）；万一缺了记 0，不让一台打断整个视图与实时推送
-            slot.1.insert(k.clone(), got.get(&k.0).copied().unwrap_or((0, false, k.1.midnight().assume_utc())));
+            // 每个键都有一行（q 是 unnest 出来的，两支都按 q 聚合）；缺了是 SQL 的 bug：记下机器 id 并按 0 算，不让一台打断整个视图与实时推送
+            let used = got.get(&k.0).copied().unwrap_or_else(|| {
+                tracing::warn!(machine = %k.0, "流量额度查询没有返回这台机器的一行，按已用 0 算");
+                (0, false, k.1.midnight().assume_utc())
+            });
+            slot.1.insert(k.clone(), used);
         }
     }
     Ok(keys.into_iter().map(|k| (k.0, slot.1[&k])).collect())
 }
 
 pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Result<Vec<MachineView>> {
-    let db = &st.db;
+    let db = &st.view_db;
     let lc = scope.cond();
     // 线路机客户入口的连通性看哪一路检查（主探测来源；离线时退回中控或标灰，见 probe_points/）
-    let reach_src = crate::probe_points::effective(db).await?;
+    let reach_src = crate::probe_points::effective(st, db).await?;
     // 同机 IP 节点没有自己的 agent：agent 状态取宿主机的
     let sql = format!(
         "select m.id, m.kind::text kind, m.team_id, t.name team_name, t.spare team_spare, m.spare_from, m.spare_since, m.number, m.label, host(m.primary_ip) ip, coalesce(hm.ssh_port, m.ssh_port) ssh_port,
@@ -1408,21 +1482,37 @@ pub async fn overview(st: &AppState) -> sqlx::Result<Value> {
     Ok(overview_of(&ms, &*traffic(st).await?))
 }
 
-/// 总览 KPI，只统计 active 的机器；本月业务流量是全部入口（`traffic`）的合计
+/// 总览里节点、线路机各一份的健康计数
+#[derive(Default, Serialize)]
+struct Bucket {
+    total: i64,
+    ok: i64,
+    degraded: i64,
+    down: i64,
+    unknown: i64,
+    maintenance: i64,
+}
+
+/// 总览 KPI，只统计 active 的机器；本月业务流量是全部入口（`traffic`）的合计，数据不完整时带起点（`traffic_month.counted_from`）
 pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Value {
-    let mut nodes = json!({"total": 0, "ok": 0, "degraded": 0, "down": 0, "unknown": 0, "maintenance": 0});
-    let mut relays = nodes.clone();
+    let (mut nodes, mut relays) = (Bucket::default(), Bucket::default());
     let (mut provisioning, mut retiring, mut failed, mut rx, mut tx) = (0, 0, 0, 0f64, 0f64);
     // 本月业务流量：每条入口的字节只在它的线路机上统计一次，全部入口直接相加不重复，含已移除的入口和月中退役、替换掉的机器。
     // 网卡流量不做合计：同一个字节在线路机和节点的网卡上各算一次
     let (up, down) = traffic.values().fold((0i64, 0i64), |(u, d), t| (u.saturating_add(t.month_up), d.saturating_add(t.month_down)));
+    // 本月数据从哪一刻才有：在用线路机里有一台月初前就在用（month_counted_from 为 null）就是完整的，否则取其中最早的首次上架时刻
+    let counted_from = ms
+        .iter()
+        .filter(|m| m.kind == "relay" && m.lifecycle == "active")
+        .map(|m| m.month_counted_from)
+        .collect::<Option<Vec<_>>>()
+        .and_then(|v| v.into_iter().min());
     // 到期：按订阅的 due_state（同续费告警）分别计即将到期、已过期
     let (mut due_soon, mut overdue) = (0, 0);
     // 在线/离线按 agent 连通（同前端 isQuiet）：agent 没有近期上报为离线。只数有自己 agent 的机器：
     // 家宽代理没有 agent、同机 IP 节点借宿主机的 agent，都不计。和健康无关
     let (mut online, mut offline) = (0, 0);
-    // 月费按币种分别汇总（monthly_cost，旧字段，不折算），另按汇率折成 USD 合计（monthly_usd，见 fx.rs）
-    let mut cost: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
+    // 月费按汇率折成 USD 合计（monthly_usd，见 fx.rs）
     let mut usd = crate::fx::Total::default();
     for m in ms {
         match m.lifecycle.as_str() {
@@ -1436,15 +1526,14 @@ pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Valu
             continue;
         }
         let bucket = if m.kind == "relay" { &mut relays } else { &mut nodes };
-        let key = match m.health.status {
-            Status::Ok => "ok",
-            Status::Degraded => "degraded",
-            Status::Down => "down",
-            Status::Maintenance => "maintenance",
-            _ => "unknown",
-        };
-        bucket["total"] = json!(bucket["total"].as_i64().unwrap_or(0) + 1);
-        bucket[key] = json!(bucket[key].as_i64().unwrap_or(0) + 1);
+        bucket.total += 1;
+        *match m.health.status {
+            Status::Ok => &mut bucket.ok,
+            Status::Degraded => &mut bucket.degraded,
+            Status::Down => &mut bucket.down,
+            Status::Maintenance => &mut bucket.maintenance,
+            _ => &mut bucket.unknown,
+        } += 1;
         if let Some(s) = &m.subscription {
             // 备用团队的不续费（替换下来等到期丢弃的），不算要续的（同前端 nextDue 与机器页「即将到期」筛选）
             match s.due_state {
@@ -1452,8 +1541,6 @@ pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Valu
                 "overdue" if !m.spare => overdue += 1,
                 _ => {}
             }
-            // 月费：各台折好的 monthly_cents 按币种（大写）相加
-            *cost.entry(s.currency.trim().to_ascii_uppercase()).or_default() += s.monthly_cents;
             usd.add(&s.currency, s.monthly_cents, s.monthly_usd_cents.zip(s.usd_per_unit));
         }
         // 实时速率只算数据没过期的：agent 离线的机器，最后一份上报的速率不算（同前端 liveRate）。
@@ -1473,7 +1560,7 @@ pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Valu
     }
     json!({
         "nodes": nodes, "relays": relays, "provisioning": provisioning, "retiring": retiring, "failed": failed, "due_soon": due_soon, "overdue": overdue, "online": online, "offline": offline,
-        "monthly_cost": cost.into_iter().map(|(c, v)| json!({"currency": c, "cents": v})).collect::<Vec<_>>(), "monthly_usd": usd, "traffic_month": {"up": up, "down": down}, "net_rx_bps": rx, "net_tx_bps": tx,
+        "monthly_usd": usd, "traffic_month": {"up": up, "down": down, "counted_from": counted_from.map(crate::meta::fmt_ts)}, "net_rx_bps": rx, "net_tx_bps": tx,
     })
 }
 
@@ -1584,8 +1671,6 @@ mod tests {
         (spare_soon.spare, spare_over.spare) = (true, true);
         let ov2 = overview_of(&[spare_soon, spare_over], &HashMap::new());
         assert_eq!((ov2["due_soon"].as_i64(), ov2["overdue"].as_i64()), (Some(0), Some(0)), "备用团队的不算");
-        // 月费是各台 monthly_cents 之和
-        assert_eq!(ov["monthly_cost"], json!([{"currency": "USD", "cents": 433}]));
         assert_eq!(ov["monthly_usd"]["cents"], 433, "测试用的订阅是 USD，汇率 1");
         // 折算：逐台的 monthly_usd_cents 相加；没有汇率的单列，不算进合计
         let cny = |cents: i64, usd: Option<i64>| {

@@ -117,12 +117,12 @@ async fn main() -> anyhow::Result<()> {
             let l = tokio::net::TcpListener::bind(listen).await.with_context(|| format!("监听 {listen}（已经有一个 fleet-server 在跑？）"))?;
             let pool = db::connect(&cfg.database_url).await?;
             db::MIGRATOR.run(&pool).await.context("数据库迁移")?;
-            // 0034 之前的操作记录没有搜索文本：回填（只第一次启动时有活）
-            let n = db::backfill_audit_search(&pool).await.context("回填操作记录的搜索文本")?;
-            if n > 0 {
-                tracing::info!("回填了 {n} 条操作记录的搜索文本");
-            }
             fleet_server::meta::sync_org_tz(&pool, &cfg.org_timezone).await?;
+            // 期望状态的生成逻辑改过（DESIRED_FORMAT 升了）：线路机代数统一 +1，重连后重拉
+            let n = db::sync_desired_format(&pool).await.context("核对期望状态格式版本")?;
+            if n > 0 {
+                tracing::info!("期望状态格式版本变为 {}：{n} 台线路机代数 +1，重拉期望状态", db::DESIRED_FORMAT);
+            }
             let st = AppState::new(cfg, pool, secrets);
             // 面板里设的访问记录保留期：分区维护、访问汇总的启动补算、上报的接收窗口都按它
             fleet_server::settings::load(&st).await.context("读取访问记录保留期")?;

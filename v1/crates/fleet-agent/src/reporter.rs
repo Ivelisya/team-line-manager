@@ -1,4 +1,4 @@
-//! 上报循环：每 interval_s 把缓冲打成一个 Report → 先落盘进队列 → 按序发送，确认后删除。
+//! 上报循环：每 `REPORT_INTERVAL_S`（10 秒）把缓冲打成一个 Report → 先落盘进队列 → 按序发送，确认后删除。
 //! 写不进磁盘（磁盘满等）时这份留在内存里、排在队列之后直接发送（`Unsaved`）：中控照样收得到遥测，健康信息里带着写盘错误。
 //!
 //! 磁盘 IO（读访问日志、fsync 写队列、删文件）全部放在 `spawn_blocking` 里，不占 async 运行时的工作线程；
@@ -13,7 +13,8 @@ use crate::util::{backoff, load_json, now_ms, save_json};
 use crate::xray::access::{local_utc_offset_s, Cursor, Tailer};
 use crate::xray::stats::{add_carry, carry_samples, StatsFile, StatsState};
 use fleet_proto::{AgentHealth, Report};
-use std::sync::atomic::Ordering;
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use tokio::sync::watch;
@@ -106,7 +107,6 @@ pub struct Reporter {
     core: Arc<Mutex<Core>>,
     client: Arc<ServerClient>,
     boot_id: String,
-    interval_s: u32,
     fails: u32,
     /// 服务端连续拒收的报告数（被接收一次就清零）
     rejects: u32,
@@ -114,9 +114,9 @@ pub struct Reporter {
     unsaved: Option<Unsaved>,
 }
 
-/// 失败期间建报的间隔：正常 interval_s，连续失败时至少 OFFLINE_BUILD_INTERVAL
-fn build_interval(interval_s: u32, fails: u32) -> Duration {
-    let normal = Duration::from_secs(interval_s as u64);
+/// 失败期间建报的间隔：正常 `fleet_proto::REPORT_INTERVAL_S`（常量，不听服务端的 `ReportAck.interval_s`），连续失败时至少 OFFLINE_BUILD_INTERVAL
+fn build_interval(fails: u32) -> Duration {
+    let normal = Duration::from_secs(fleet_proto::REPORT_INTERVAL_S as u64);
     if fails > 0 {
         normal.max(OFFLINE_BUILD_INTERVAL)
     } else {
@@ -133,11 +133,11 @@ impl Reporter {
         let stats = load_json::<StatsFile>(&stats_path(&cfg)).unwrap_or_default();
         tracing::info!(pending = queue.len(), seq = seq.seq, carried_entries = stats.carry.len(), "上报器启动");
         let core = Arc::new(Mutex::new(Core { queue, seq, tailer, stats, disk: DiskLog::default() }));
-        Ok(Self { sh, core, client, boot_id: host::boot_id(), interval_s: 10, fails: 0, rejects: 0, next_send: Instant::now(), unsaved: None })
+        Ok(Self { sh, core, client, boot_id: host::boot_id(), fails: 0, rejects: 0, next_send: Instant::now(), unsaved: None })
     }
 
     pub async fn run(mut self, mut sd: watch::Receiver<bool>) {
-        let mut next_build = Instant::now() + build_interval(self.interval_s, self.fails);
+        let mut next_build = Instant::now() + build_interval(self.fails);
         let mut tick = tokio::time::interval(Duration::from_secs(1));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -151,7 +151,7 @@ impl Reporter {
             }
             let now = Instant::now();
             if now >= next_build {
-                next_build = now + build_interval(self.interval_s, self.fails);
+                next_build = now + build_interval(self.fails);
                 let mut more = self.build_and_push(true).await;
                 // 访问日志有积压：在时间预算内追加只含访问事件的报告，尽快追上。
                 // 上报连续失败时不追：离线期间日志文件本身就是缓冲，不必把它大量搬进队列
@@ -254,9 +254,6 @@ impl Reporter {
             };
             match out {
                 Outcome::Ok(ack) => {
-                    if ack.interval_s > 0 {
-                        self.interval_s = ack.interval_s.clamp(2, 300);
-                    }
                     let local_seq = lock(&self.core).seq.seq;
                     if ack.accepted_seq > local_seq {
                         // 服务端已确认的序号比本地发出过的最大序号还大（时钟回拨 / 本地状态丢失）：
@@ -323,12 +320,30 @@ impl Reporter {
     }
 }
 
+/// 本地状态文件连续写失败的次数（stats.json、access.json 各一个：一个一直写不进、另一个照常写时不互相清零）：
+/// 只在第 1 到 3 次和之后每 100 次打日志，成功就清零
+static STATS_SAVE_FAILS: AtomicU64 = AtomicU64::new(0);
+static ACCESS_SAVE_FAILS: AtomicU64 = AtomicU64::new(0);
+
+/// 写状态文件（`fails` 是这个文件自己的连续失败计数）。写不进去（磁盘满、权限不对）不能悄悄吞掉：重启后会按旧基线重复算流量、重复上报访问事件
+fn save_state<T: serde::Serialize>(path: &Path, v: &T, what: &str, fails: &AtomicU64) {
+    match save_json(path, v, false) {
+        Ok(()) => fails.store(0, Ordering::Relaxed),
+        Err(e) => {
+            let n = fails.fetch_add(1, Ordering::Relaxed) + 1;
+            if n <= 3 || n.is_multiple_of(100) {
+                tracing::warn!(fails = n, "{what} 写不进磁盘：{e:#}（重启后可能重复算流量或重复上报访问事件）");
+            }
+        }
+    }
+}
+
 /// 服务端永久拒绝的报告移入 dead/；`Queue::dead_letter` 交回的入口流量并进结转表（随 stats.json 落盘），由下一份报告补报
 fn reject(sh: &Shared, c: &mut Core, seq: u64) {
     let es = c.queue.dead_letter(seq);
     if !es.is_empty() {
         add_carry(&mut c.stats.carry, &es);
-        let _ = save_json(&stats_path(&sh.cfg), &c.stats, false);
+        save_state(&stats_path(&sh.cfg), &c.stats, "stats.json", &STATS_SAVE_FAILS);
     }
 }
 
@@ -339,7 +354,7 @@ fn commit(sh: &Shared, tailer: &mut Option<Tailer>, cursor: Option<Cursor>, stat
         t.commit(cursor);
         if changed {
             if let Some(c) = t.cursor {
-                let _ = save_json(&access_cursor_path(&sh.cfg), &c, false);
+                save_state(&access_cursor_path(&sh.cfg), &c, "access.json", &ACCESS_SAVE_FAILS);
             }
         }
     }
@@ -348,7 +363,7 @@ fn commit(sh: &Shared, tailer: &mut Option<Tailer>, cursor: Option<Cursor>, stat
         stats.base = b;
     }
     if dirty {
-        let _ = save_json(&stats_path(&sh.cfg), &*stats, false);
+        save_state(&stats_path(&sh.cfg), &*stats, "stats.json", &STATS_SAVE_FAILS);
     }
 }
 
@@ -465,17 +480,26 @@ mod tests {
 
     #[test]
     fn build_interval_stretches_only_when_failing() {
-        assert_eq!(build_interval(10, 0), Duration::from_secs(10));
-        assert_eq!(build_interval(10, 1), OFFLINE_BUILD_INTERVAL);
-        // 服务端要求更长的间隔时尊重它
-        assert_eq!(build_interval(120, 3), Duration::from_secs(120));
+        assert_eq!(build_interval(0), Duration::from_secs(10));
+        assert_eq!(build_interval(1), OFFLINE_BUILD_INTERVAL);
+        assert_eq!(build_interval(3), OFFLINE_BUILD_INTERVAL);
     }
 
-    fn tmp(n: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("fa-rep-{n}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    fn tmp(n: &str) -> crate::util::TmpDir { crate::util::TmpDir::new(&format!("rep-{n}")) }
+
+    /// 两个状态文件各记各的连续失败：一个一直写不进、另一个照常写时，前一个的计数不被清零（日志照样限流）
+    #[test]
+    fn state_save_fails_counted_per_file() {
+        let d = tmp("savefails");
+        let (a, b) = (AtomicU64::new(0), AtomicU64::new(0));
+        let bad = d.join("no-such-dir/stats.json");
+        for _ in 0..3 {
+            save_state(&bad, &1, "stats.json", &a);
+            save_state(&d.join("access.json"), &1, "access.json", &b);
+        }
+        assert_eq!((a.load(Ordering::Relaxed), b.load(Ordering::Relaxed)), (3, 0));
+        save_state(&d.join("stats.json"), &1, "stats.json", &a);
+        assert_eq!(a.load(Ordering::Relaxed), 0, "写成功清零");
     }
 
     fn shared(d: &std::path::Path) -> Arc<Shared> {
@@ -518,7 +542,6 @@ mod tests {
         assert_eq!(r.entries.iter().map(|e| (e.entry_id, e.up_bytes, e.down_bytes)).collect::<Vec<_>>(), [(id, 100, 200)]);
         assert!(c.stats.carry.is_empty());
         assert_eq!(carried(), Some(Carry::new()));
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
@@ -546,7 +569,6 @@ mod tests {
         reject(&sh, &mut lock(&core), second);
         assert!(lock(&core).stats.carry.is_empty());
         assert_eq!(lock(&core).queue.dead, 2);
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
@@ -568,7 +590,6 @@ mod tests {
         let c = lock(&core);
         let r: Report = serde_json::from_slice(&std::fs::read(c.queue.file_path(c.queue.oldest().unwrap())).unwrap()).unwrap();
         assert_eq!(r.access.len(), 1);
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
@@ -604,7 +625,6 @@ mod tests {
         let c = core(&d, d.join("state.json"), None);
         std::fs::remove_dir_all(d.join("queue")).unwrap();
         check(&c, "queue");
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// 写不进磁盘的那份排在队列之后从内存发出：中控先收到队列里更早的（序号小，否则会被当重复丢掉），再收到它；
@@ -614,7 +634,7 @@ mod tests {
         let d = tmp("unsaved");
         let sh = shared(&d);
         let (base, seen) = crate::server::tests::mock_server().await;
-        let (client, tok_dir) = crate::server::tests::client_for(&base, "unsaved");
+        let (client, _tok_dir) = crate::server::tests::client_for(&base, "unsaved");
         let mut r = Reporter::new(sh.clone(), Arc::new(client)).unwrap();
         sh.buf.lock().unwrap().info = Some(Default::default());
         r.build_and_push(true).await;
@@ -636,8 +656,6 @@ mod tests {
         assert_eq!(errs, [false, true]);
         assert!(r.unsaved.is_none() && lock(&r.core).queue.is_empty());
         assert!(lock(&r.core).stats.base.initialized, "入库后才提交流量基线");
-        let _ = std::fs::remove_dir_all(&d);
-        let _ = std::fs::remove_dir_all(&tok_dir);
     }
 
     /// 429（中控那边这台机器的上一份还在处理）不算失败：fails 不变、按 Retry-After 再发同一份
@@ -646,7 +664,7 @@ mod tests {
         let d = tmp("busy");
         let sh = shared(&d);
         let (base, seen) = crate::server::tests::mock_server_busy(1).await;
-        let (client, tok_dir) = crate::server::tests::client_for(&base, "busy");
+        let (client, _tok_dir) = crate::server::tests::client_for(&base, "busy");
         let mut r = Reporter::new(sh.clone(), Arc::new(client)).unwrap();
         sh.buf.lock().unwrap().info = Some(Default::default());
         r.build_and_push(true).await;
@@ -656,7 +674,5 @@ mod tests {
         assert!(r.next_send > Instant::now() + Duration::from_millis(500) && r.next_send <= Instant::now() + Duration::from_secs(1));
         r.flush(&mut sd).await;
         assert_eq!((r.fails, lock(&r.core).queue.len(), seen.lock().unwrap().len()), (0, 0, 2));
-        let _ = std::fs::remove_dir_all(&d);
-        let _ = std::fs::remove_dir_all(&tok_dir);
     }
 }

@@ -1,4 +1,5 @@
-//! 中控收不到上报的时段：判 agent 离线时不算它们（视图、告警、作业判线路机在线都用，`AppState::report_gaps`）
+//! 中控收不到上报的时段：判 agent 离线时不算它们（视图、告警、作业判线路机在线都用，`AppState::report_gaps`）；
+//! 探测点的离线、「检查都作废了」也按它扣（probe_points::Liveness）
 
 use crate::views::AGENT_OFFLINE_S;
 use serde_json::{json, Value};
@@ -82,8 +83,7 @@ impl ReportGaps {
 
     /// 把最近一小时的时段存进库里（启动时、库中断恢复后）
     pub async fn save(&self, db: &sqlx::PgPool) -> sqlx::Result<()> {
-        let fmt = |t: OffsetDateTime| t.format(&time::format_description::well_known::Rfc3339).unwrap_or_default();
-        let v: Vec<[String; 2]> = self.0.lock().unwrap().done.iter().map(|(f, t)| [fmt(*f), fmt(*t)]).collect();
+                let v: Vec<[String; 2]> = self.0.lock().unwrap().done.iter().map(|(f, t)| [crate::meta::fmt_ts(*f), crate::meta::fmt_ts(*t)]).collect();
         sqlx::query(
             "insert into app_setting (key, value, updated_by) values ($1, $2, 'fleet-server')
              on conflict (key) do update set value = excluded.value, updated_at = now(), updated_by = excluded.updated_by",
@@ -100,7 +100,7 @@ impl ReportGaps {
         if self.0.lock().unwrap().alive_saved.is_some_and(|t| (now - t).whole_seconds() < ALIVE_EVERY_S) {
             return Ok(());
         }
-        let at = now.format(&time::format_description::well_known::Rfc3339).unwrap_or_default();
+        let at = crate::meta::fmt_ts(now);
         sqlx::query(
             "insert into app_setting (key, value, updated_by) values ($1, $2, 'fleet-server')
              on conflict (key) do update set value = excluded.value, updated_at = now(), updated_by = excluded.updated_by",
@@ -132,12 +132,15 @@ impl ReportGaps {
     /// agent 的请求因库不可用没能处理
     pub fn failed(&self, now: OffsetDateTime) { self.0.lock().unwrap().last_fail = Some(now); }
 
-    /// 上次上报在 `last` 的 agent 到 `now` 算不算在线：沉默的时长扣掉其间中控收不到上报的时段（还没恢复的这一段算到最近一次失败）
-    pub fn online(&self, last: OffsetDateTime, now: OffsetDateTime) -> bool {
+    /// 上次上报在 `last` 的 agent 到 `now` 算不算在线：沉默的时长（`silent_s`）不到 `AGENT_OFFLINE_S`
+    pub fn online(&self, last: OffsetDateTime, now: OffsetDateTime) -> bool { self.silent_s(last, now) < AGENT_OFFLINE_S }
+
+    /// 从 `last` 到 `now` 沉默了多少秒：扣掉其间中控收不到上报的时段（还没恢复的这一段算到最近一次失败）
+    pub fn silent_s(&self, last: OffsetDateTime, now: OffsetDateTime) -> i64 {
         let g = self.0.lock().unwrap();
         let open = g.last_ok.zip(g.last_fail).filter(|(from, to)| (*to - *from).whole_seconds() >= GAP_MIN_S);
         let deaf: i64 = g.done.iter().copied().chain(open).filter(|(_, to)| *to > last).map(|(from, to)| (to - from.max(last)).whole_seconds()).sum();
-        (now - last).whole_seconds() - deaf < AGENT_OFFLINE_S
+        (now - last).whole_seconds() - deaf
     }
 }
 
@@ -158,6 +161,7 @@ mod tests {
             x.last_ok = Some(s(300));
         }
         assert!(g.online(s(-20), s(399)) && !g.online(s(-20), s(401)));
+        assert_eq!(g.silent_s(s(-20), s(479)), 199, "探测点按自己的阈值（180 秒）判：同样扣掉停机的 300 秒");
         assert!(!g.online(s(-3600), s(301)), "停机之前一小时就不报了：照样离线");
         assert!(!ReportGaps::default().online(s(-20), s(399)), "没有中断：按墙钟算");
         // 库连不上：400 秒入库之后一直失败，还没恢复的这一段算到最近一次失败

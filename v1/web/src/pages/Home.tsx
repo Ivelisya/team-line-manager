@@ -14,7 +14,7 @@ import { Empty, ErrorNote, FilterChip, type SortState } from '@/components/app/p
 import { NodeCard, SkeletonCard, type CardShow, type CardView } from '@/components/app/NodeCard';
 import { NodeMenus } from '@/components/app/NodeMenu';
 import { RingCard } from '@/components/app/RingCard';
-import { Segmented } from '@/components/ui/overlays';
+import { Segmented, SegmentedOverflow } from '@/components/ui/overlays';
 import { Select } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
 import { Pagination } from '@/components/app/Pagination';
@@ -172,7 +172,7 @@ export function HomePage() {
         <div className="hbar-sentinel" ref={sb.sentinel} aria-hidden />
         <div className="hbar" ref={sb.bar} data-stuck={sb.stuck ? '' : undefined}>
           <div className="hgroups" role="group" aria-label="筛选">
-            <Segmented label="分组" value={team} onChange={pickTeam} items={groups} className="seg-fill" />
+            <SegmentedOverflow label="分组" value={team} onChange={pickTeam} items={groups} />
             <FilterChip pressed={onlyIssues} onClick={toggleIssues} count={issueCount}><AlertTriangle size={13} />仅看异常</FilterChip>
           </div>
           <div className="hctrls">

@@ -1,27 +1,33 @@
-//! 静默与维护：告警引擎（alerts）、来源画像告警（ipintel）判断某条规则对某台机器是否被静默，机器视图判断是否在维护中，
-//! 三处共用这一份查询与匹配规则。`subject_id` 为空 = 全部机器，`rule` 为空 = 全部规则；维护（`is_maintenance`）还会暂停健康判定。
+//! 静默与维护：各告警引擎（机器 alerts.rs、incident.rs 上的软路由 / 探测点 / 来源画像 / 中控）判断某条规则对某个对象是否被静默，
+//! 机器视图、软路由、探测点列表判断是否在维护中，共用这一份查询与匹配规则。对象为空 = 全部，`rule` 为空 = 全部规则；
+//! 维护（`is_maintenance`）还会暂停机器的健康判定、冻结软路由与探测点开着的告警（incident.rs）。
+//!
+//! 对象是机器、软路由或探测点之一（silence 表各一列外键）。三张表的 id 都是 UUIDv7、互不重复，所以这里只按 id 匹配，不用分类型。
 
 use sqlx::PgPool;
 use uuid::Uuid;
 
-/// 此刻生效的全部静默（含维护）：(subject_id, rule, is_maintenance)。同时生效的只有寥寥几条，整份读出来在内存里匹配
+/// 此刻生效的全部静默（含维护）：(对象 id, rule, is_maintenance)。同时生效的只有寥寥几条，整份读出来在内存里匹配
 pub struct Silences(Vec<(Option<Uuid>, Option<String>, bool)>);
 
 impl Silences {
     pub async fn load(db: &PgPool) -> sqlx::Result<Self> {
         Ok(Self(
-            sqlx::query_as("select subject_id, rule, is_maintenance from silence where deleted_at is null and now() between starts_at and ends_at")
-                .fetch_all(db)
-                .await?,
+            sqlx::query_as(
+                "select coalesce(machine_id, router_id, probe_point_id), rule, is_maintenance from silence
+                 where deleted_at is null and now() between starts_at and ends_at",
+            )
+            .fetch_all(db)
+            .await?,
         ))
     }
 
-    /// 这条规则在这台机器上被静默：不开告警、不发通知
+    /// 这条规则在这个对象（机器 / 软路由 / 探测点）上被静默：不开告警、不发通知
     pub fn matches(&self, rule: &str, id: Uuid) -> bool {
         self.0.iter().any(|(s, r, _)| s.is_none_or(|s| s == id) && r.as_deref().is_none_or(|r| r == rule))
     }
 
-    /// 这台机器在维护中（全局维护对所有机器都算）
+    /// 这个对象在维护中（全局维护对所有对象都算）
     pub fn maintenance(&self, id: Uuid) -> bool {
         self.0.iter().any(|(s, _, m)| *m && s.is_none_or(|s| s == id))
     }

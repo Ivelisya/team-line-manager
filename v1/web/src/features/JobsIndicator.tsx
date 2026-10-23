@@ -12,7 +12,7 @@ import { copyNewShareLink } from '@/lib/moveShare';
 import type { JobSummary, Paged } from '@/lib/types';
 
 /** 「最近结束」列表（前 20 个）里新出现的作业直接按列表字段弹通知，不再逐个取详情；首次加载只记基线，不补发历史。
- *  以前对比“进行中”列表：超出那一页的作业结束了也看不到。基线之前就结束的作业（例如别的作业被删后挤进前 20）按结束时间排除。
+ *  不要对比“进行中”列表：超出那一页的作业结束了也看不到。基线之前就结束的作业（例如别的作业被删后挤进前 20）按结束时间排除。
  *  一轮超过 3 个合并成一条（批量上架、批量升级时不刷屏），个数按列表 total 的增量算（一轮结束的可能比列出的 20 个多）；
  *  换线路机成功的照常单独弹：要提醒复制新分享链接 */
 function useJobNotifier(page: Paged<JobSummary> | undefined) {
@@ -29,7 +29,7 @@ function useJobNotifier(page: Paged<JobSummary> | undefined) {
     const moved = fresh.filter((j) => j.state === 'succeeded' && j.kind === 'move_entry');
     const rest = fresh.filter((j) => !moved.includes(j));
     const label = (j: JobSummary) => `${jobKindLabel(j.kind)} · ${j.target?.name ?? '—'}`;
-    moved.forEach((j) => toast.show({ tone: 'ok', title: '换线路机完成', text: `${label(j)}：分享链接已变`, duration: 15000, action: { label: '复制新分享链接', onClick: () => void copyNewShareLink(j.id) } }));
+    moved.forEach((j) => toast.show({ tone: 'ok', title: '换线路机完成', text: `${label(j)}：分享链接已更新`, duration: 15000, action: { label: '复制新分享链接', onClick: () => void copyNewShareLink(j.id) } }));
     const ended = Math.max(rest.length, page.total - s.total - moved.length);
     s.total = page.total;
     if (rest.length > 3) {

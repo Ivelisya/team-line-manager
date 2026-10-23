@@ -4,8 +4,12 @@
 //!
 //! 改路由：要改哪些出口按执行时路由的配置重新确定（经隧道读源配置，同一套匹配：api::replace::replace_exit / api::lifecycle::move_exit），
 //! 发起时的计划只作展示。不在线的路由按最近一次采集看，有出口要改就一台都不改。出口对不上新入口（同预览的原因）也一台都不改。
+//! 在线的路由配置读不了（读失败、解析不了），哪怕快照里看不出它有出口要改，也一台都不改、作业失败：看不出就不能当成没有
+//! （旧节点进备用、到期回收后客户的出口就断了）；确认它没用的，重新发起时选不改软路由。路由上根本没有源配置（OpenClash 没配）的算没有出口。
 //! 同一台路由同时只有一个作业在改（替换、换线路机、重试都一样，见 `Locks`）：别的作业在改就排队（Outcome::Queue），作业的其余步骤照常并行。
 //! 排队时只等那台路由的锁（`routers_queued_id`），不读配置、不占连接。
+//! 搬空线路机同批的换线路机作业由一个带头的一起改（见 batch.rs）：要改的出口是几个作业合起来的，每台路由只改一次、重启一次，
+//! 任何一台失败全部换回、几个节点的旧入口都不摘。
 //! 再一台一台改（备份 → 改出口 → 重启 OpenClash → 测延迟）。哪台失败了，它自己已经改回（脚本做），之前改好的也按各自的备份改回去，
 //! 作业失败：路由保持一致，修好后重试从头改。改回只动本作业改过、现在还是本作业写的那几个出口（routers::replace），
 //! 同一台路由上别的作业之后改的出口不会被抹掉。
@@ -15,6 +19,7 @@
 //! 凭据（uuid、公钥、short-id）执行时才从库里取，只进 ssh 的 stdin，不进日志与审计。写进每个出口的那一整组（含凭据）随 `routers_applied` 记在作业参数里
 //! （参数不经 API 给出），改回时照它核对路由上现在的值：仍是本作业写的才改回，已被别人改过的跳过并在作业日志说明；不从库里现取，新入口在卡住期间被轮换也不会误判。
 
+use super::batch;
 use super::*;
 use crate::api::lifecycle::{move_exit, relay_addr};
 use crate::api::replace::{replace_entries, replace_exit, Ent, ExitPlan, RouterPlan};
@@ -25,6 +30,7 @@ use std::collections::HashSet;
 struct Applied {
     id: Uuid,
     name: String,
+    /// 第一次改时的隧道端口（只作记录：改回时按路由现在的端口连，期间重新接入换过端口也连得上）
     port: i32,
     /// 这台第一次改之前的备份（回滚用它）
     stamp: String,
@@ -67,14 +73,14 @@ struct NewEntry {
     reality_public_key: String,
 }
 
-/// 入口的参数：只取属于这个节点、在用的入口
-async fn new_entry(db: &sqlx::PgPool, id: Uuid, node: Uuid) -> sqlx::Result<Option<NewEntry>> {
+/// 入口的参数：只取属于这几个节点（各作业的新入口所在的节点）、在用的入口
+async fn new_entry(db: &sqlx::PgPool, id: Uuid, nodes: &[Uuid]) -> sqlx::Result<Option<NewEntry>> {
     sqlx::query_as(
         "select e.client_uuid, e.short_id, e.port, r.reality_sni, r.reality_public_key from entry e join relay r on r.machine_id = e.relay_id
-         where e.id = $1 and e.node_id = $2 and e.lifecycle = 'active'",
+         where e.id = $1 and e.node_id = any($2) and e.lifecycle = 'active'",
     )
     .bind(id)
-    .bind(node)
+    .bind(nodes)
     .fetch_optional(db)
     .await
 }
@@ -99,22 +105,23 @@ enum Pick {
 }
 
 impl Pick {
-    async fn load(c: &Ctx<'_>, moving: bool) -> anyhow::Result<Pick> {
+    /// `node`：作业的目标（替换是旧节点，换线路机是节点自己）
+    async fn load(db: &sqlx::PgPool, job: &JobRow, node: Uuid, moving: bool) -> anyhow::Result<Pick> {
         if !moving {
-            let mut conn = c.st.db.acquire().await?;
-            let (old, new) = replace_entries(&mut conn, c.target_id()?, c.param_uuid("new_id")?).await?;
+            let mut conn = db.acquire().await?;
+            let (old, new) = replace_entries(&mut conn, node, uuid_of(&job.params, "new_id")?).await?;
             return Ok(Pick::Replace { old, new });
         }
-        let eid = c.param_uuid("entry_id")?;
+        let eid = uuid_of(&job.params, "entry_id")?;
         let port: Option<i32> = sqlx::query_scalar("select port from entry where id = $1 and node_id = $2 and lifecycle = 'active'")
             .bind(eid)
-            .bind(c.target_id()?)
-            .fetch_optional(&c.st.db)
+            .bind(node)
+            .fetch_optional(db)
             .await?;
         let Some(port) = port else { bail!("新入口已经不在用了：重新发起换线路机") };
-        let (from_ip, _) = relay_addr(&c.st.db, c.param_uuid("from_relay_id")?).await?;
-        let to = relay_addr(&c.st.db, c.param_uuid("to_relay_id")?).await?;
-        Ok(Pick::Move { old_entry: c.param_uuid("old_entry_id")?, new: (eid, port as u16), from_ip, to })
+        let (from_ip, _) = relay_addr(db, uuid_of(&job.params, "from_relay_id")?).await?;
+        let to = relay_addr(db, uuid_of(&job.params, "to_relay_id")?).await?;
+        Ok(Pick::Move { old_entry: uuid_of(&job.params, "old_entry_id")?, new: (eid, port as u16), from_ip, to })
     }
 
     fn exit(&self, er: &clash::EntryRef, srv: &str, port: u16) -> Option<Result<ExitPlan, String>> {
@@ -122,6 +129,41 @@ impl Pick {
             Pick::Move { old_entry, new, from_ip, to } => move_exit(er, *old_entry, Some(*new), from_ip, to, srv, port).map(Ok),
             Pick::Replace { old, new } => replace_exit(old, new, er, srv, port),
         }
+    }
+
+    /// 指向这条旧入口的出口归这个作业改
+    fn owns(&self, old_entry: Uuid) -> bool {
+        match self {
+            Pick::Move { old_entry: o, .. } => *o == old_entry,
+            Pick::Replace { old, .. } => old.iter().any(|e| e.id == old_entry),
+        }
+    }
+}
+
+fn uuid_of(params: &Value, k: &str) -> anyhow::Result<Uuid> {
+    params[k].as_str().and_then(|s| Uuid::try_parse(s).ok()).ok_or_else(|| anyhow!("作业参数缺少 {k}"))
+}
+
+/// 一起改软路由的一个作业：本作业，或搬空时同批由本作业带头一起改的（batch.rs）
+struct Part {
+    job: Uuid,
+    /// 出口对上的入口属于哪个节点：替换是旧节点，换线路机是节点自己
+    node: Uuid,
+    /// 新入口属于哪个节点：替换是新节点，换线路机是节点自己
+    new: Uuid,
+    pick: Pick,
+    /// 发起时的计划（只作展示）
+    plan: Vec<RouterPlan>,
+}
+
+impl Part {
+    async fn load(db: &sqlx::PgPool, job: &JobRow) -> anyhow::Result<Part> {
+        let moving = job.kind == "move_entry";
+        let node = job.target_id.ok_or_else(|| anyhow!("作业没有目标机器"))?;
+        let new = if moving { node } else { uuid_of(&job.params, "new_id")? };
+        let pick = Pick::load(db, job, node, moving).await?;
+        let plan = serde_json::from_value(job.params["plan"]["routers"].clone()).unwrap_or_default();
+        Ok(Part { job: job.id, node, new, pick, plan })
     }
 }
 
@@ -220,11 +262,15 @@ async fn ssh_failed(c: &Ctx<'_>, name: &str, o: &Output) -> String {
     tunnel::explain(o, true)
 }
 
-/// 经隧道读路由现在的 OpenClash 源配置，解析出口
+/// 经隧道读路由现在的 OpenClash 源配置，解析出口。路由上没有源配置（rr::NO_CONFIG）的算没有出口
 async fn read_config(c: &Ctx<'_>, r: &routers::Row) -> Result<Vec<clash::Proxy>, String> {
     let o = ssh::exec(tunnel::via_tunnel(&c.st.cfg, r.id, r.tunnel_port), &rr::read_script(), rr::READ_TIMEOUT).await.map_err(|e| format!("{e:#}"))?;
     if o.code == 255 {
         return Err(ssh_failed(c, &r.name, &o).await);
+    }
+    if o.code == rr::NO_CONFIG {
+        c.log(format!("软路由「{}」：{}，没有出口要改", r.name, reason(&o))).await;
+        return Ok(vec![]);
     }
     if !o.ok() {
         return Err(reason(&o));
@@ -235,30 +281,34 @@ async fn read_config(c: &Ctx<'_>, r: &routers::Row) -> Result<Vec<clash::Proxy>,
     clash::parse(&o.stdout)
 }
 
-/// 配置里要改的出口：对上的入口属于 `node`、没删除，且 `pick` 说要改的。对不上新入口的返回（出口名, 原因），同预览
-fn exits_in(proxies: &[clash::Proxy], entries: &[clash::Entry], node: Uuid, pick: &Pick) -> Result<Vec<ExitPlan>, (String, String)> {
+/// 配置里要改的出口：对上的入口属于某个作业的 `node`、没删除，且它的 `pick` 说要改的。对不上新入口的返回（出口名, 原因），同预览
+fn exits_in(proxies: &[clash::Proxy], entries: &[clash::Entry], parts: &[Part]) -> Result<Vec<ExitPlan>, (String, String)> {
     let mut out = vec![];
     for p in proxies {
         let (Some(er), _) = clash::match_entry(p, entries) else { continue };
         let (Some(srv), Some(port)) = (p.server.as_deref(), p.port) else { continue };
-        if er.node_id != node || er.lifecycle == "removed" {
+        if er.lifecycle == "removed" {
             continue;
         }
-        match pick.exit(&er, srv, port) {
-            Some(Ok(e)) => out.push(ExitPlan { exit: p.name.clone(), ..e }),
-            Some(Err(why)) => return Err((p.name.clone(), why)),
-            None => {}
+        for part in parts.iter().filter(|x| x.node == er.node_id) {
+            match part.pick.exit(&er, srv, port) {
+                Some(Ok(e)) => out.push(ExitPlan { exit: p.name.clone(), ..e }),
+                Some(Err(why)) => return Err((p.name.clone(), why)),
+                None => {}
+            }
         }
     }
     Ok(out)
 }
 
 /// 最近一次采集里这台路由有没有要改的出口（不在线、配置读不了时只能看它）
-fn snap_uses(r: &routers::Row, node: Uuid, pick: &Pick) -> bool {
+fn snap_uses(r: &routers::Row, parts: &[Part]) -> bool {
     let Some(snap) = r.snapshot() else { return false };
-    // 先放进变量：迭代器借着 snap，不能是函数的尾表达式
-    let used = routers::exits_to(&snap, node).any(|(x, er)| matches!((x.server.as_deref(), x.port), (Some(s), Some(p)) if pick.exit(er, s, p).is_some()));
-    used
+    parts.iter().any(|part| {
+        // 先放进变量：迭代器借着 snap，不能是闭包的尾表达式
+        let used = routers::exits_to(&snap, part.node).any(|(x, er)| matches!((x.server.as_deref(), x.port), (Some(s), Some(p)) if part.pick.exit(er, s, p).is_some()));
+        used
+    })
 }
 
 pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
@@ -267,9 +317,6 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     }
     let moving = c.job.kind == "move_entry";
     let (what, redo, kept) = if moving { ("旧入口", "重新发起换线路机", "旧入口没摘") } else { ("旧节点", "重新发起替换", "编号没改") };
-    let node = c.target_id()?;
-    // 新入口属于谁：替换是新节点，换线路机是节点自己
-    let new = if moving { node } else { c.param_uuid("new_id")? };
     let mut locks = Locks::new(&c.st.db);
     // 排队中：只等那台路由的锁，别的都不做
     let queued_on = if c.first { None } else { c.job.params["routers_queued_id"].as_str().and_then(|s| Uuid::try_parse(s).ok()) };
@@ -278,25 +325,52 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
             return Ok(Outcome::Queue(10));
         }
     }
-    if c.first {
-        c.set_params(json!({"routers_queued": null, "routers_queued_id": null})).await?;
-    }
     // 上一次没确认改回的（中途被打断、改回失败）：接着做完
     let applied: Vec<Applied> = match &c.job.params["routers_applied"] {
         Value::Null => vec![],
         v => serde_json::from_value(v.clone()).context("作业参数 routers_applied 的格式不对")?,
     };
-    let pick = Pick::load(c, moving).await?;
+    let resumed = !applied.is_empty();
+    if c.first {
+        // 重新开始（重试）：上一次带头认领的作废，没确认改回的除外（那几个作业的出口也在 routers_applied 里，接着做完）
+        let reset = if resumed { json!({"routers_queued": null, "routers_queued_id": null}) } else { json!({"routers_queued": null, "routers_queued_id": null, "routers_batch": null}) };
+        c.set_params(reset).await?;
+    }
+    // 搬空同批：一起改（batch.rs）。带头认领过的接着带（排队等锁之后、接着做完）
+    let mut followers: Vec<JobRow> = vec![];
+    if let Some(b) = c.job.params["batch"].as_str().filter(|_| moving) {
+        let claimed: Vec<Uuid> = c.job.params["routers_batch"].as_array().into_iter().flatten().filter_map(|x| x.as_str()).filter_map(|s| Uuid::try_parse(s).ok()).collect();
+        if resumed || (!c.first && !claimed.is_empty()) {
+            followers = sqlx::query_as("select id, kind, target_id, params, state::text state, step, created_by from job where id = any($1) order by id")
+                .bind(&claimed)
+                .fetch_all(&c.st.db)
+                .await?;
+        } else {
+            match batch::join(c, b).await? {
+                Ok(f) => followers = f,
+                Err(o) => return Ok(o),
+            }
+        }
+    }
+    let mut parts = vec![Part::load(&c.st.db, c.job).await?];
+    for f in &followers {
+        let name = sqlx::query_scalar::<_, String>("select display_name(m.kind::text, m.label, t.name, m.number) from machine m left join team t on t.id = m.team_id where m.id = $1")
+            .bind(f.target_id)
+            .fetch_optional(&c.st.db)
+            .await?
+            .unwrap_or_default();
+        parts.push(Part::load(&c.st.db, f).await.with_context(|| format!("同批一起改的「{name}」"))?);
+    }
+    let owners: Vec<Uuid> = parts.iter().map(|p| p.new).collect();
     let entries: Vec<clash::Entry> = sqlx::query_as(clash::ENTRIES).fetch_all(&c.st.db).await?;
     let mut rows = routers::load(&c.st.db, None).await?;
     rows.sort_by_key(|r| r.id);
-    let plan: Vec<RouterPlan> = serde_json::from_value(c.job.params["plan"]["routers"].clone()).unwrap_or_default();
-    let resumed = !applied.is_empty();
+    let plan: Vec<&RouterPlan> = parts.iter().flat_map(|p| &p.plan).collect();
     let none_yet = if resumed { "" } else { "，一台都没有改" };
     // 1. 不在线的：最近一次采集里有要改的出口（或之前已经改过它），一台都不改
     let down: Vec<String> = rows
         .iter()
-        .filter(|r| r.state() != "online" && (applied.iter().any(|a| a.id == r.id) || snap_uses(r, node, &pick)))
+        .filter(|r| r.state() != "online" && (applied.iter().any(|a| a.id == r.id) || snap_uses(r, &parts)))
         .map(|r| format!("{}（{}）", r.name, r.error.as_deref().unwrap_or(if r.state() == "offline" { "离线" } else { "还没接入" })))
         .collect();
     if !down.is_empty() {
@@ -307,7 +381,7 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let mut blocked = vec![];
     for r in rows.iter().filter(|r| r.state() == "online") {
         let prev = applied.iter().find(|a| a.id == r.id);
-        let known = prev.is_some() || plan.iter().any(|p| p.id == r.id) || snap_uses(r, node, &pick);
+        let known = prev.is_some() || plan.iter().any(|p| p.id == r.id) || snap_uses(r, &parts);
         let got = locks.take(r.id).await?;
         let exits = if !got && known {
             None
@@ -315,7 +389,7 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
             Some(match prev {
                 Some(a) => a.exits.clone(),
                 None => match read_config(c, r).await {
-                    Ok(ps) => match exits_in(&ps, &entries, node, &pick) {
+                    Ok(ps) => match exits_in(&ps, &entries, &parts) {
                         Ok(x) => x,
                         Err((exit, why)) => {
                             blocked.push(format!("软路由「{}」的出口「{exit}」：{why}", r.name));
@@ -326,8 +400,12 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
                         blocked.push(format!("软路由「{}」的配置读不了：{e}", r.name));
                         vec![]
                     }
+                    // 快照里看不出它有出口要改，但配置读不了就不知道现在有没有：不能跳过
                     Err(e) => {
-                        c.warn(format!("软路由「{}」的配置读不了（{e}）：最近一次采集里它没有出口指向{what}，不改", r.name)).await;
+                        blocked.push(format!(
+                            "软路由「{}」的配置读不了：{e}。看不出它有没有出口指向{what}（确认没有的话，重新发起时选不改软路由，fleetctl 加 --no-routers）",
+                            r.name
+                        ));
                         vec![]
                     }
                 },
@@ -376,9 +454,11 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let mut done = vec![];
     for (r, exits) in &todo {
         let mut ed = vec![];
+        // 各出口归哪个作业（同批一起改时跟着完成的作业按它取自己的那几个，见 batch.rs）
+        let jobs: Vec<Uuid> = exits.iter().map(|x| parts.iter().find(|p| p.pick.owns(x.old_entry_id)).map_or(c.job.id, |p| p.job)).collect();
         for x in exits {
             let e = match x.new_entry_id {
-                Some(id) => new_entry(&c.st.db, id, new).await?,
+                Some(id) => new_entry(&c.st.db, id, &owners).await?,
                 None => None,
             };
             let Some(e) = e else { return give_up(c, &mut locks, &applied, None, format!("新入口（{}）已经不在用了：{redo}", x.to()), ErrKind::Remote, kept).await };
@@ -409,7 +489,7 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
             Ok(o) if o.ok() && o.kv("replace") == Some("ok") => {
                 let delays: Vec<String> = (1..=ed.len()).map(|i| format!("{} {} ms", ed[i - 1].exit, o.kv(&format!("delay_{i}")).unwrap_or("?"))).collect();
                 c.log(format!("软路由「{}」改好了：备份 {}，延迟 {}", r.name, o.kv("backup").unwrap_or("?"), delays.join("，"))).await;
-                done.push(json!({"id": r.id, "name": r.name, "exits": ed.iter().map(|e| json!({"exit": e.exit, "to": format!("{}:{}", e.server, e.port)})).collect::<Vec<_>>(),
+                done.push(json!({"id": r.id, "name": r.name, "exits": ed.iter().zip(&jobs).map(|(e, j)| json!({"exit": e.exit, "to": format!("{}:{}", e.server, e.port), "job": j})).collect::<Vec<_>>(),
                     "backup": o.kv("backup"), "delay_ms": (1..=ed.len()).map(|i| o.kv(&format!("delay_{i}")).and_then(|d| d.parse::<i64>().ok())).collect::<Vec<_>>()}));
                 continue;
             }
@@ -438,17 +518,23 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     // 马上采一次改过的路由：快照别等下一轮，紧接着的预览按新配置算
     c.st.routers_refresh.now(todo.iter().map(|(r, _)| r.id)).await;
     c.set_params(json!({"routers_applied": [], "routers_stuck": []})).await?;
-    Ok(Outcome::Done(json!({"routers": done})))
+    let mut out = json!({"routers": done});
+    if !followers.is_empty() {
+        out["batch"] = json!(followers.iter().map(|f| f.id).collect::<Vec<_>>());
+    }
+    Ok(Outcome::Done(out))
 }
 
-/// 一台路由上本作业写的出口改回（先等它的锁）。没改回返回原因
+/// 一台路由上本作业写的出口改回（先等它的锁）。没改回返回原因。隧道端口按路由现在的（卡住期间重新接入会换端口）
 async fn revert_one(c: &Ctx<'_>, locks: &mut Locks<'_>, a: &Applied) -> anyhow::Result<Result<(), String>> {
     locks.wait(a.id).await?;
     let back = match a.back() {
         Ok(b) => b,
         Err(why) => return Ok(Err(why)),
     };
-    let out = ssh::exec(tunnel::via_tunnel(&c.st.cfg, a.id, a.port), &rr::rollback_script(&a.stamp, &back), rr::ROLLBACK_TIMEOUT).await;
+    let port: Option<i32> = sqlx::query_scalar("select tunnel_port from router where id = $1").bind(a.id).fetch_optional(&c.st.db).await?;
+    let Some(port) = port else { return Ok(Err("这台软路由已经删掉了".into())) };
+    let out = ssh::exec(tunnel::via_tunnel(&c.st.cfg, a.id, port), &rr::rollback_script(&a.stamp, &back), rr::ROLLBACK_TIMEOUT).await;
     Ok(match out {
         Ok(o) if o.ok() && matches!(o.kv("rollback"), Some("ok" | "none")) => {
             // 之后被别的作业改走的出口没动：记一行
@@ -513,7 +599,7 @@ async fn give_up(
 }
 
 /// 交换编号：旧节点挪去目标团队（备用）/ 空号，新节点接旧编号，同一个事务里走 PATCH 的那套（machines::patch_tx）；
-/// auto_compact 时新节点原来的团队随后压缩。已经换好（中控在提交后重启、接着做）的直接算完成
+/// 新节点原来的团队随后压缩。已经换好（中控在提交后重启、接着做）的直接算完成
 pub(super) async fn renumber(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let old = c.target_id()?;
     let new = c.param_uuid("new_id")?;
@@ -585,7 +671,7 @@ pub(super) async fn renumber(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     .execute(&mut *tx)
     .await?;
     let mut renumbered = 0;
-    if let Some(t) = new_team0.filter(|_| c.st.cfg.numbering.auto_compact) {
+    if let Some(t) = new_team0 {
         let (ch, rs) = crate::db::compact_team(&mut tx, t, actor, "替换节点后自动压缩").await?;
         renumbered = ch.len();
         relays.extend(rs);

@@ -94,6 +94,9 @@
 /* ========== 下划线页签 ========== */
 .tabs-list { display: flex; align-items: stretch; gap: var(--sp-20); border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
 .tabs-list::-webkit-scrollbar { display: none; }
+.tabs-list[data-fade="r"] { mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); }
+.tabs-list[data-fade="l"] { mask-image: linear-gradient(to left, #000 calc(100% - 28px), transparent); }
+.tabs-list[data-fade="lr"] { mask-image: linear-gradient(to right, transparent, #000 28px, #000 calc(100% - 28px), transparent); }
 .tab {
   position: relative; flex: none; display: inline-flex; align-items: center; gap: var(--sp-6);
   height: 41px; padding: 0 0 1px; box-sizing: border-box; border: 0; background: transparent; cursor: pointer; white-space: nowrap; /* 41 = 40 + 列表 1px 底线，底部 1px 内边距让文字位置不变，下划线盖在底线上 */
@@ -111,7 +114,7 @@
 
 /* ========== pill / chip / mark / dot ========== */
 .pill {
-  --pill-bg: var(--neutral-bg); --pill-fg: var(--neutral-text); --pill-dot: var(--neutral);
+  --pill-bg: var(--neutral-bg); --pill-fg: var(--neutral-text);
   display: inline-flex; align-items: center; gap: var(--sp-6); flex: none;
   height: var(--h-chip); box-sizing: border-box; padding: 0 var(--sp-8);
   border-radius: var(--r-pill); background: var(--pill-bg); color: var(--pill-fg);
@@ -251,7 +254,8 @@
 .sec { padding-top: var(--card-seg); margin-top: var(--card-seg); border-top: 1px solid var(--line); }
 .sec:first-child { padding-top: 0; margin-top: 0; border-top: 0; }
 .sec:has(> .mgroup:only-child) { border-top: 0; padding-top: 0; } /* 只有一个分组容器的段：容器自己有边框，不再画段间的线 */
-.tab-sticky + .sec { border-top: 0; } /* 吸顶条自带下边线，紧跟的一段不再画一道 */
+.tab-sticky + .sec { border-top: 0; }
+.tab-sticky:not(:first-child) { margin-top: 0; border-top: 1px solid var(--line); } /* 前面还有固定时间段的内容（连接质量的可用率）：不抵正文上内边距，上下各一道线分开 */ /* 吸顶条自带下边线，紧跟的一段不再画一道 */
 
 /* 标签/值（LabelValue 唯一实现）：dt 12 灰、dd 13 */
 .lv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: var(--sp-12) var(--sp-16); margin: 0; }

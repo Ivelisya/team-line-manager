@@ -162,7 +162,7 @@ pub async fn stats_task(sh: Arc<Shared>, cli: XrayCli, mut sd: watch::Receiver<b
                 if let Some(deltas) = stats::compute_if_known(&mut st, core_id.as_deref(), &cur) {
                     last_core = core_id.clone();
                     let ports: Vec<u16> = entries.iter().map(|&(_, port)| port).collect();
-                    let cn = tokio::task::spawn_blocking(move || conns::count_now(&ports)).await.unwrap_or_default();
+                    let cn = tokio::task::spawn_blocking(move || conns::count_now(&ports)).await.expect("统计连接数的任务异常终止");
                     // 上一轮启用、这一轮停用的入口补出最后一段流量（端口已不归它，连接数记 0）
                     let with_conns: Vec<_> = entries
                         .iter()
@@ -219,8 +219,7 @@ fn stagger(id: uuid::Uuid, period: Duration) -> Duration {
 }
 
 /// 入口在周期里的固定时刻：`t0 + stagger(id) + k·period` 里第一个不早于 `after` 的。每次派完都按它排下一次，
-/// 各入口始终落在周期里各自的那一秒，不会因为一起被重探（新入口、出站变了）或调度漂移而挤到同一秒一齐发——
-/// 原来下一次 = 派发时刻 + 周期，线路机2 的 19 个入口挤成每 30 秒 4 + 7 + 8 个同一秒发出
+/// 各入口始终落在周期里各自的那一秒，不会因为一起被重探（新入口、出站变了）或调度漂移而挤到同一秒一齐发
 fn next_slot(t0: Instant, after: Instant, period: Duration, id: uuid::Uuid) -> Instant {
     let first = t0 + stagger(id, period);
     if after <= first {

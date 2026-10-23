@@ -19,11 +19,12 @@ pub async fn lock_policy_shared(tx: &mut Tx<'_>) -> ApiResult<()> {
     Ok(())
 }
 
-/// 新建入口：锁线路机 → 取最小空闲端口 → 代数 +1。返回 (entry_id, port, generation)。
+/// 新建入口：锁线路机 → 从 `relay.port_next` 分端口（不低于现有入口的最大端口 + 1；分完 +1）→ 代数 +1。返回 (entry_id, port, generation)。
 /// 调用方须已在事务开头调过 [`lock_policy_shared`]。
 pub async fn create(tx: &mut Tx<'_>, relay_id: Uuid, node_id: Uuid) -> ApiResult<(Uuid, i32, i64)> {
-    let (pmin, pmax): (i32, i32) = sqlx::query_as(
-        "select r.port_min, r.port_max from relay r join machine m on m.id = r.machine_id
+    let (pmin, pmax, next, top): (i32, i32, i32, Option<i32>) = sqlx::query_as(
+        "select r.port_min, r.port_max, r.port_next, (select max(e.port) from entry e where e.relay_id = r.machine_id)
+         from relay r join machine m on m.id = r.machine_id
          where r.machine_id = $1 and m.lifecycle = 'active' for update of r for share of m",
     )
     .bind(relay_id)
@@ -42,15 +43,15 @@ pub async fn create(tx: &mut Tx<'_>, relay_id: Uuid, node_id: Uuid) -> ApiResult
         Some((_, kind)) if kind == "relay" && node_id != relay_id => return Err(ApiError::conflict("线路机不能当别的线路机的节点：线路机上只能加它自己的直出入口")),
         Some(_) => {}
     }
-    // 端口永不复用（含已删除的入口）：旧分享链接不会误连到新节点
-    let (maxp,): (Option<i32>,) = sqlx::query_as("select max(port) from entry where relay_id = $1")
-        .bind(relay_id)
-        .fetch_one(&mut **tx)
-        .await?;
-    let port = maxp.map_or(pmin, |p| p.max(pmin - 1) + 1);
+    // 端口永不复用（含已删除、已随机器物理删除的入口）：分过的端口记在 relay.port_next（迁移 0050），不看现有入口的 max(port)。
+    // 旧分享链接不会误连到新节点，客户路由上残留的旧出口也不会被认成新入口（routers/clash.rs）。
+    // 兜底不低于现有入口的最大端口 + 1：port_next 推算偏低（迁移按标签对回收站快照，标签改过的对不上），或中控回退到旧版本
+    // （按 max(port) + 1 建入口、不推进 port_next）后再升回来时，不撞 entry_port_live 唯一索引
+    let port = next.max(pmin).max(top.map_or(0, |p| p + 1));
     if port > pmax {
         return Err(ApiError::conflict("线路机端口段已用完：请在线路机参数里扩大端口范围"));
     }
+    sqlx::query("update relay set port_next = $2 where machine_id = $1").bind(relay_id).bind(port + 1).execute(&mut **tx).await?;
     let gen = bump_relay(tx, relay_id).await?;
     let id = new_id();
     sqlx::query(
@@ -113,7 +114,7 @@ pub async fn transition(tx: &mut Tx<'_>, entry_id: Uuid, to: &str, rotate: bool)
     Ok((relay_id, gen))
 }
 
-/// 线路机的期望状态
+/// 线路机的期望状态。改了这里生成的内容（数据没变、结果会变的那种）要把 `db::DESIRED_FORMAT` +1，否则线路机拿不到新的
 pub async fn desired_state(db: &PgPool, secrets: &SecretBox, relay_id: Uuid, echo_url: &str) -> anyhow::Result<DesiredState> {
     let (gen, dest, sni, sk_enc, mcv): (i64, String, String, Vec<u8>, Option<String>) = sqlx::query_as(
         "select generation, reality_dest, reality_sni, reality_private_enc, min_client_ver from relay where machine_id = $1",

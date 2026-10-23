@@ -47,7 +47,8 @@ function RingCardImpl({ m, current, onOpen, show }: { m: MachineView; current?: 
         <button type="button" className="rc-rings rc-pair" onClick={() => onOpen(m.id, 'traffic')}>
           <span data-tip={monthFlowTip(m)}><ArrowDown />本月下载<b><Num f={F.bytes(t!.down)} /></b></span>
           <span data-tip={monthFlowTip(m)}><ArrowUp />本月上传<b><Num f={F.bytes(t!.up)} /></b></span>
-          <span><Radar />TCP · 出口<b>{ms(ps!.tcp, ps!.tcpFail)} · {ps!.egressFail ? <span style={{ color: 'var(--bad-text)' }}>失败</span> : ps!.egressOk ? '正常' : '—'}</b></span>
+          {/* 读数各跟自己的名字：「TCP 失败 · 出口失败」，不写成「TCP · 出口 失败 · 失败」 */}
+          <span><Radar />探测<b>TCP {ms(ps!.tcp, ps!.tcpFail)} · 出口{ps!.egressFail ? <span style={{ color: 'var(--bad-text)' }}>失败</span> : ps!.egressOk ? '正常' : ' —'}</b></span>
           <span className="sr-only">（查看流量页签）</span>
         </button>
       ) : (

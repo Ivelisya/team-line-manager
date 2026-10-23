@@ -664,14 +664,14 @@ async fn relay_reach_rounds_feed_relay_beats() {
     assert!(!t.health(up).await.1.contains(&"relay_unreachable".to_string()));
     let m = t.get(&format!("/api/v1/machines/{down}")).await;
     let text = m["health"]["reasons"].as_array().unwrap().iter().find(|r| r["key"] == "relay_unreachable").unwrap()["text"].clone();
-    assert_eq!(text, format!("中控连续 3 次连不上客户入口（端口 {closed}：连接被拒绝）"));
+    assert_eq!(text, format!("中控连续 3 次以上连不上客户入口（端口 {closed}：连接被拒绝）"));
     // 再轮换两遍：线路机1 坏的那个口凑齐 3 次失败（中间隔着好口），按端口报，摘要只写这个口
     for turn in 3..7 {
         assert_eq!(round(&t.st, &[&ctl_ok], turn).await.unwrap(), 2);
     }
     let m = t.get(&format!("/api/v1/machines/{up}")).await;
     let text = m["health"]["reasons"].as_array().unwrap().iter().find(|r| r["key"] == "relay_unreachable").map(|r| r["text"].clone());
-    assert_eq!(text, Some(json!(format!("中控连续 3 次连不上客户入口（端口 {closed2}：连接被拒绝）"))), "{m}");
+    assert_eq!(text, Some(json!(format!("中控连续 3 次以上连不上客户入口（端口 {closed2}：连接被拒绝）"))), "{m}");
     assert_eq!(t.count("select count(*) from relay_reach where port is null").await, 0, "每行记下端口");
     // 每条在用入口带上中控对它端口最近一次检查：通的 ok、detail 为 null；不通的带原因；线路机2 的入口一直不通
     let reach = |m: &Value, port: i32| m["entries"].as_array().unwrap().iter().find(|e| e["port"] == port).unwrap()["reach"].clone();
@@ -770,10 +770,16 @@ async fn agent_auth_records_token_use() {
     assert!(token_used_ago(&t, relay).await.is_some_and(|s| s >= 29.0), "一分钟内不重复写");
     used("2 minutes").await;
     assert_eq!(t.report("tok1", &blank_report(3)).await.0, StatusCode::OK);
+    assert!(token_used_ago(&t, relay).await.is_some_and(|s| s >= 119.0), "鉴权结果有缓存（30 秒）：没查库");
+    // 缓存过期（这里直接清掉）才再查库、刷新
+    t.st.agent_auth.forget(relay);
+    assert_eq!(t.report("tok1", &blank_report(4)).await.0, StatusCode::OK);
     assert!(token_used_ago(&t, relay).await.is_some_and(|s| s < 5.0));
     used("2 minutes").await;
+    // 撤销令牌的地方清掉它的缓存（agent_auth.forget），马上 401
     sqlx::query("update agent_token set revoked_at = now() where machine_id = $1").bind(relay).execute(&t.st.db).await.unwrap();
-    assert_eq!(t.report("tok1", &blank_report(4)).await.0, StatusCode::UNAUTHORIZED);
+    t.st.agent_auth.forget(relay);
+    assert_eq!(t.report("tok1", &blank_report(5)).await.0, StatusCode::UNAUTHORIZED);
     assert!(token_used_ago(&t, relay).await.is_some_and(|s| s >= 119.0), "撤销的令牌不刷新");
 }
 
@@ -1042,7 +1048,7 @@ async fn mass_agent_loss_opens_one_central_alert() {
         pass(&t, &mut state, base, secs).await;
         selfmon::check_once(&t.st, base + time::Duration::seconds(secs)).await.unwrap();
     }
-    assert_eq!(firing().await, [("central_ingress".to_string(), "中控：3/3 台 agent 同时失联：检查边缘机 / Caddy / DNS".to_string())]);
+    assert_eq!(firing().await, [("central_ingress".to_string(), "中控：3/3 台 agent 同时失联：检查边缘机、Caddy、域名解析".to_string())]);
     // a、b 回来了：中控侧的恢复；c 从这时起去抖，满 60 秒按单机报
     for m in [a, b] {
         sqlx::query("update agent_state set last_report_at = now() where machine_id = $1").bind(m).execute(&t.st.db).await.unwrap();
@@ -1315,7 +1321,7 @@ async fn traffic_quota_alert_lifecycle() {
     let team = seed_team(&t, "团队1").await;
     let (node, _) = seed_node(&t, relay, team, 1, "203.0.113.5", 20000).await;
     xray_report(&t, 1, true).await;
-    // 上个月就上架了：本周期数据完整，摘要不带「X 起统计」
+    // 上个月就上架了：本周期数据完整，摘要不带「从 X 开始统计」
     sqlx::query("update machine set activated_at = now() - interval '40 days' where id = $1").bind(relay).execute(&t.st.db).await.unwrap();
     // 线路机额度 1 GB、每月 1 号重置（账单时区北京）；节点没有订阅也没有套餐：不限
     sqlx::query("insert into subscription (machine_id, price_cents, due_date, traffic_gb, traffic_reset_day) values ($1, 500, current_date + 60, 1, 1)")
@@ -1954,6 +1960,29 @@ async fn stale_backup_opens_central_alert() {
     assert_eq!(backup("resolved").await.len(), 1);
 }
 
+/// 软路由隧道回连主机自检：没有软路由不查，回连的是本机地址算对；查出不是中控时开中控自检的警告 central_tunnel_host，对了就恢复
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tunnel_host_check_opens_central_alert() {
+    let t = common::boot_in(tempfile::tempdir().unwrap(), false, "routers.ssh_host = \"127.0.0.1\"").await;
+    let check = || fleet_server::routers::selfcheck::check(&t.st);
+    assert_eq!(check().await.unwrap(), None, "没有软路由：不查");
+    t.post("/api/v1/routers", json!({"name": "团队2-路由A"})).await;
+    assert_eq!(check().await.unwrap(), None, "回连的是中控本机的地址");
+    let firing = || async { incidents(&t, "firing").await.into_iter().filter(|i| i["rule"] == "central_tunnel_host").collect::<Vec<_>>() };
+    let text = "软路由隧道回连 fleet.example.com:22（没配 [routers] ssh_host，用的是 public_url 的主机名）解析到 203.0.113.7，不是中控：…";
+    *t.st.tunnel_host.lock().unwrap() = Some(text.into());
+    selfmon::check_once(&t.st, OffsetDateTime::now_utc()).await.unwrap();
+    let inc = firing().await;
+    assert_eq!(inc.len(), 1);
+    assert_eq!(
+        (inc[0]["severity"].as_str(), inc[0]["subject_name"].as_str(), inc[0]["rule_name"].as_str(), inc[0]["summary"].as_str()),
+        (Some("warning"), Some("中控"), Some("软路由回连地址不是中控"), Some(format!("中控：{text}").as_str()))
+    );
+    *t.st.tunnel_host.lock().unwrap() = None;
+    selfmon::check_once(&t.st, OffsetDateTime::now_utc()).await.unwrap();
+    assert!(firing().await.is_empty());
+}
+
 async fn xray_report(t: &T, seq: u64, up: bool) {
     let mut r = blank_report(seq);
     r.xray = Some(xray(up));
@@ -2286,7 +2315,7 @@ async fn retention_cleanup_removes_only_expired_rows() {
     let user: Uuid = sqlx::query_scalar("select id from app_user").fetch_one(db).await.unwrap();
     for (state, days) in [("resolved", 200), ("resolved", 10), ("firing", 400)] {
         sqlx::query(&format!(
-            "insert into incident (id, rule, subject_id, severity, state, summary, opened_at, resolved_at) values ($1, 'agent_offline', $2, 'critical', '{state}', 's',
+            "insert into incident (id, engine, rule, subject_id, severity, state, summary, opened_at, resolved_at) values ($1, 'machine', 'agent_offline', $2, 'critical', '{state}', 's',
              now() - interval '{days} days', case when '{state}' = 'resolved' then now() - interval '{days} days' end)"
         ))
         .bind(Uuid::now_v7())
@@ -2316,7 +2345,7 @@ async fn retention_cleanup_removes_only_expired_rows() {
     }
     // 访问记录（汇总、来源画像）按面板里设的保留期删，见 tests/it/retention.rs
     let sessions_before = t.count("select count(*) from session").await;
-    db::cleanup_retention(db).await.unwrap();
+    db::cleanup_retention(db, &t.st.cfg.retention).await.unwrap();
     assert_eq!(t.count("select count(*) from silence").await, 1, "结束超 90 天的静默删掉");
     assert_eq!(t.count("select count(*) from incident").await, 2, "只删已恢复超 180 天的");
     assert_eq!(t.count("select count(*) from incident where state = 'firing'").await, 1);
@@ -2335,7 +2364,7 @@ async fn incidents_list_pages_with_total() {
     // 7 条进行中（其中 4 条同一时刻开始，靠 id 兜底排序）+ 2 条已恢复
     for (state, sev, mins) in [("firing", "critical", 5), ("firing", "warning", 1), ("firing", "warning", 3), ("firing", "warning", 3), ("firing", "warning", 3), ("firing", "warning", 3), ("firing", "critical", 9), ("resolved", "critical", 2), ("resolved", "warning", 4)] {
         sqlx::query(&format!(
-            "insert into incident (id, rule, subject_id, severity, state, summary, opened_at, resolved_at) values ($1, 'agent_offline', $2, '{sev}', '{state}', 's',
+            "insert into incident (id, engine, rule, subject_id, severity, state, summary, opened_at, resolved_at) values ($1, 'machine', 'agent_offline', $2, '{sev}', '{state}', 's',
              now() - interval '{mins} minutes', case when '{state}' = 'resolved' then now() end)"
         ))
         .bind(Uuid::now_v7())
@@ -2370,7 +2399,7 @@ async fn incidents_filter_by_subject() {
     let (a, b) = (Uuid::now_v7(), Uuid::now_v7());
     for (subject, state, mins) in [(a, "resolved", 1), (a, "firing", 2), (a, "resolved", 3), (b, "firing", 4)] {
         sqlx::query(&format!(
-            "insert into incident (id, rule, subject_id, severity, state, summary, opened_at, resolved_at) values ($1, 'agent_offline', $2, 'warning', '{state}', 's',
+            "insert into incident (id, engine, rule, subject_id, severity, state, summary, opened_at, resolved_at) values ($1, 'machine', 'agent_offline', $2, 'warning', '{state}', 's',
              now() - interval '{mins} minutes', case when '{state}' = 'resolved' then now() end)"
         ))
         .bind(Uuid::now_v7())
@@ -2435,4 +2464,154 @@ async fn access_rollup_covers_late_records() {
     fleet_server::access::rollup_pending(&t.st.db).await.unwrap();
     assert_eq!(t.count(&hourly).await, 2);
     assert_eq!(t.count("select coalesce(sum(delta), 0)::bigint from access_source_late").await, 2);
+}
+
+/// 机器视图的失败隔离：别的请求正在重算（这里被表锁卡住）时先回上一份、不排队；之后有资源变更的才等；
+/// 重算失败时回上一份（之后有资源变更的报错）并记下失败，算成一次就清掉
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn live_view_serves_previous_while_busy_or_failing() {
+    use fleet_server::views;
+    use std::sync::Arc;
+    let t = setup().await;
+    seed_relay(&t, "线路机1", "203.0.113.10", "tok1").await;
+    assert_eq!(t.report("tok1", &blank_report(1)).await.0, StatusCode::OK);
+    let v1 = views::live_fresh(&t.st).await.unwrap();
+
+    // 补指标要读 agent_state：表锁住，重算卡在锁里（拿着视图的锁）
+    let mut lock = t.st.db.begin().await.unwrap();
+    sqlx::query("lock table agent_state in access exclusive mode").execute(&mut *lock).await.unwrap();
+    let st = t.st.clone();
+    let stuck = tokio::spawn(async move { views::live_fresh(&st).await.map(|v| v.len()) });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let v2 = tokio::time::timeout(Duration::from_secs(2), views::live_fresh(&t.st)).await.expect("锁被占时不排队").unwrap();
+    assert!(Arc::ptr_eq(&v1, &v2), "回上一份");
+    // 有了资源变更：要看到改动，排队等那次重算
+    t.st.live.invalidate();
+    assert!(tokio::time::timeout(Duration::from_millis(500), views::live_fresh(&t.st)).await.is_err(), "资源变了就等");
+    lock.rollback().await.unwrap();
+    assert_eq!(stuck.await.unwrap().unwrap(), 1);
+    let v3 = views::live_fresh(&t.st).await.unwrap();
+    assert!(t.st.live.failing().is_none());
+
+    // 重算失败（表没了）：之后没有资源变更的回上一份，记下失败；有过资源变更的报错（调用方重试），不回变更前的那份；
+    // 恢复后算成一次就清掉
+    sqlx::query("alter table agent_state rename to agent_state_x").execute(&t.st.db).await.unwrap();
+    let v4 = views::live_fresh(&t.st).await.unwrap();
+    assert!(Arc::ptr_eq(&v3, &v4));
+    let (_, err) = t.st.live.failing().expect("记下失败");
+    assert!(err.contains("agent_state"), "{err}");
+    t.st.live.invalidate();
+    assert!(views::live_fresh(&t.st).await.is_err(), "资源变了不回变更前的");
+    assert!(views::live(&t.st).await.is_err());
+    sqlx::query("alter table agent_state_x rename to agent_state").execute(&t.st.db).await.unwrap();
+    assert!(!Arc::ptr_eq(&v3, &views::live_fresh(&t.st).await.unwrap()));
+    assert!(t.st.live.failing().is_none());
+}
+
+/// 视图连续 2 分钟算不出来（没有能顶的上一份）：中控自检开「机器视图算不出来」，期间判断不了的「agent 同时失联」留着；
+/// 算成后前者恢复、后者按此时的情况判
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stuck_view_opens_central_alert() {
+    let t = setup().await;
+    seed_relay(&t, "线路机1", "203.0.113.10", "tok1").await;
+    sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary) values ($1, 'central', 'central_ingress', $2, 'critical', '中控：3/3 台 agent 同时失联')")
+        .bind(Uuid::now_v7())
+        .bind(selfmon::CENTRAL)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    sqlx::query("alter table agent_state rename to agent_state_x").execute(&t.st.db).await.unwrap();
+    assert!(fleet_server::views::live(&t.st).await.is_err(), "没有上一份可顶");
+    let rules = || async { incidents(&t, "firing").await.into_iter().map(|i| i["rule"].as_str().unwrap().to_string()).collect::<Vec<_>>() };
+    let base = OffsetDateTime::now_utc();
+    selfmon::check_once(&t.st, base).await.unwrap();
+    assert_eq!(rules().await, ["central_ingress"], "刚失败不报；判断不了的不当恢复");
+    selfmon::check_once(&t.st, base + time::Duration::minutes(3)).await.unwrap();
+    let f = incidents(&t, "firing").await;
+    let stuck = f.iter().find(|i| i["rule"] == "central_view_stuck").expect("满 2 分钟开告警");
+    assert!(stuck["summary"].as_str().unwrap().contains("分钟算不出来"), "{stuck}");
+    assert_eq!(stuck["engine"], "central", "接口带出写它的引擎");
+    assert!(has_rule(&f, "central_ingress"));
+
+    sqlx::query("alter table agent_state_x rename to agent_state").execute(&t.st.db).await.unwrap();
+    selfmon::check_once(&t.st, base + time::Duration::minutes(4)).await.unwrap();
+    assert!(rules().await.is_empty(), "视图算成：两条都恢复");
+}
+
+/// agent 接口先鉴权后读请求体；令牌查库没查到的按来源 IP 限速，超了 429、不查库；缓存里认得的令牌不受影响
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn agent_auth_before_body_and_failures_limited_per_ip() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+    let t = crate::common::boot(false, "trust_forwarded_for = true").await;
+    seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    seed_relay(&t, "线路机2", "198.51.100.2", "tok2").await;
+    let send = |tok: String, ip: &'static str, body: String| {
+        let app = t.app.clone();
+        async move {
+            let req = Request::builder()
+                .method("POST")
+                .uri("/agent/v1/report")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {tok}"))
+                .header("x-forwarded-for", ip)
+                .body(Body::from(body))
+                .unwrap();
+            let res = app.oneshot(req).await.unwrap();
+            (res.status(), res.headers().get("retry-after").and_then(|v| v.to_str().ok()?.parse::<u64>().ok()))
+        }
+    };
+    let report = |seq| serde_json::to_string(&blank_report(seq)).unwrap();
+    const IP: &str = "203.0.113.9";
+    // 坏令牌带坏请求体：401，请求体没读；好令牌带坏请求体照旧 400
+    assert_eq!(send("bad".into(), IP, "{oops".into()).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(send("tok1".into(), IP, "{oops".into()).await.0, StatusCode::BAD_REQUEST);
+    // 突发 30 次查库失败（含上面那次）之后 429，带 Retry-After
+    let mut fails = 1;
+    let limited = loop {
+        let (s, ra) = send(format!("bad{fails}"), IP, report(1)).await;
+        if s == StatusCode::TOO_MANY_REQUESTS {
+            break ra;
+        }
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+        fails += 1;
+        assert!(fails <= 33, "一直没限速");
+    };
+    assert!(fails >= 30, "{fails}");
+    assert!(limited.is_some_and(|w| w >= 1), "{limited:?}");
+    // 记着无效的令牌照样 401（不查库）；缓存里认得的有效令牌照常上报
+    assert_eq!(send("bad".into(), IP, report(1)).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(send("tok1".into(), IP, report(1)).await.0, StatusCode::OK);
+    // 没缓存的令牌要查库：这个 IP 先等着；别的 IP 不受影响
+    assert_eq!(send("tok2".into(), IP, report(1)).await.0, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(send("tok2".into(), "203.0.113.10", report(1)).await.0, StatusCode::OK);
+}
+
+/// 期望状态格式版本（db::DESIRED_FORMAT）和库里记的不同（含从没记过）：启动时所有未退役线路机代数 +1、记下新值，
+/// 长轮询里拿着旧代数的线路机马上拿到新的一份；同一版本再启动什么都不动
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desired_format_change_bumps_relays_once() {
+    let t = setup().await;
+    let a = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let b = seed_relay(&t, "线路机2", "198.51.100.2", "tok2").await;
+    sqlx::query("update machine set lifecycle = 'retired' where id = $1").bind(b).execute(&t.st.db).await.unwrap();
+    let gen = |id: Uuid| {
+        let db = t.st.db.clone();
+        async move { sqlx::query_scalar::<_, i64>("select generation from relay where machine_id = $1").bind(id).fetch_one(&db).await.unwrap() }
+    };
+    let (ga, gb) = (gen(a).await, gen(b).await);
+    assert_eq!(db::sync_desired_format(&t.st.db).await.unwrap(), 1, "从没记过：按变了算");
+    assert_eq!((gen(a).await, gen(b).await), (ga + 1, gb), "退役的不动");
+    let stored = || t.count("select (value #>> '{}')::bigint from app_setting where key = 'desired_format'");
+    assert_eq!(stored().await, db::DESIRED_FORMAT);
+    assert_eq!(db::sync_desired_format(&t.st.db).await.unwrap(), 0, "同一版本不再改");
+    assert_eq!(gen(a).await, ga + 1);
+
+    // 库里记的是旧版本（中控升级后第一次启动）：再 +1；拿着上一代长轮询的线路机马上拿到新的一份
+    sqlx::query("update app_setting set value = to_jsonb($1::bigint) where key = 'desired_format'").bind(db::DESIRED_FORMAT - 1).execute(&t.st.db).await.unwrap();
+    assert_eq!(db::sync_desired_format(&t.st.db).await.unwrap(), 1);
+    assert_eq!(gen(a).await, ga + 2);
+    let (s, v) = t.req("GET", &format!("/agent/v1/desired?after={}", ga + 1), None, Some("tok1")).await;
+    assert_eq!((s, v["generation"].as_i64()), (StatusCode::OK, Some(ga + 2)), "{v}");
 }

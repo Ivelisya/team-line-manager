@@ -95,6 +95,7 @@ const RETIRE: &[StepDef] = &[
     s("finalize", "完成退役", 30),
 ];
 // 换线路机：新入口先建好并验收，再把软路由上指向旧入口的出口改成新入口（同替换节点的「改软路由出口」，失败全部换回、旧入口不摘），
+// 搬空同批的由一个带头的一起改（每台路由只改一次、重启一次，见 steps/batch.rs）。
 // 最后摘旧入口，节点全程至少有一个可用入口。开始改路由之后不能取消（排队等路由、改路由失败且已换回原配置时除外），detach_old 之后不可回滚（见 cancel_blocker）。
 const MOVE_ENTRY: &[StepDef] = &[
     s("attach_new", "在新线路机建入口", 60),
@@ -151,7 +152,7 @@ fn at_routers(kind: &str, step: i32) -> bool { (kind == "replace" && step == 0) 
 /// `routers_queued` / `routers_applied` / `routers_stuck`，见 steps/replace.rs）。
 /// 换线路机一旦开始改软路由就只能重试到完成（取消会摘掉路由已经指向的新入口；摘旧入口之后回滚会让节点没有入口），
 /// 排队等别的作业改完同一台路由、或改路由失败（已确认改回原配置）停在这一步时还能取消；路由可能还改着一部分（中途被打断、
-/// 改回失败，`routers_applied` 不空）时不能取消，重试做完（重试之后、核对过路由之前也一样）。
+/// 改回失败，`routers_applied` 不空）时不能取消，重试做完（重试之后、核对过路由之前也一样）；搬空同批被带头的认领之后（`routers_batch_leader`）也不能取消。
 /// 升级 agent 只能在排队时取消（推送、重启到一半中断更危险）；替换节点同换线路机，只能在动路由之前取消
 pub fn cancel_blocker(kind: &str, step: i32, state: &str, params: &Value) -> Option<&'static str> {
     if !cancellable(kind) {
@@ -166,7 +167,11 @@ pub fn cancel_blocker(kind: &str, step: i32, state: &str, params: &Value) -> Opt
             "改软路由出口这一步中途被打断，路由可能改了一部分：点重试做完；现在取消，路由上的出口会指着对不上的入口"
         });
     }
-    // 排队等别的作业改完同一台路由：路由还没动
+    // 搬空同批被带头的认领了：它在把本节点的出口一起改成新入口（steps/batch.rs）
+    if at_routers && matches!(state, "queued" | "running" | "waiting" | "failed") && params["routers_batch_leader"].is_string() {
+        return Some("同批搬空的另一个作业正在带头一起改软路由出口（本节点的也在里面）：等它做完；现在取消，路由上的出口会指着被摘掉的新入口");
+    }
+    // 排队等别的作业改完同一台路由（或等同批的作业一起改）：路由还没动
     let queued = at_routers && state == "waiting" && params["routers_queued"].is_string();
     if kind == "move_entry" && step > MOVE_ROUTERS {
         return Some("旧入口已经开始摘除，不能再取消（取消会让节点没有入口）：失败了点重试到完成");
@@ -1092,6 +1097,9 @@ mod tests {
         assert!(cancel_blocker("move_entry", 4, "failed", &applied).unwrap().contains("中途被打断"));
         assert!(cancel_blocker("move_entry", 4, "failed", &json!({"routers_stuck": [{"id": Uuid::nil()}]})).unwrap().contains("需要人工处理"));
         assert!(!with("replace", 1, "failed", applied.clone()) && with("move_entry", 4, "failed", json!({"routers_applied": []})));
+        // 搬空同批：等着一起改时能取消，被带头的认领之后不能
+        assert!(with("move_entry", 4, "waiting", json!({"routers_queued": "等同批搬空的作业一起改软路由", "routers_batch_leader": null})));
+        assert!(cancel_blocker("move_entry", 4, "waiting", &json!({"routers_queued": "x", "routers_batch_leader": Uuid::nil().to_string()})).unwrap().contains("带头"));
     }
 
     #[test]

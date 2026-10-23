@@ -1,5 +1,5 @@
-// 设置 · 账户安全：两步验证（开启 / 停用 / 重新生成恢复码，恢复码只显示一次）、修改密码（可同时撤销全部 API 密钥）、登录会话（撤销、退出其它设备）。
-// 开启两步验证、退出其它设备都要再输当前密码：拿到会话 Cookie 的人不能借它绑自己的认证器、把本人踢下线。
+// 设置 · 账户安全：两步验证（开启 / 停用 / 重新生成恢复码，恢复码只显示一次）、修改密码（可同时撤销全部 API 密钥）、登录会话（撤销、退出其他设备）。
+// 开启两步验证、退出其他设备都要再输当前密码：拿到会话 Cookie 的人不能借它绑自己的认证器、把本人踢下线。
 // 输错当前密码 / 验证码时服务端回 401（code 不是 unauthorized，不会跳登录页），错误留在对话框或表单里显示。
 import * as React from 'react';
 import { Copy, LogOut, MonitorSmartphone, RefreshCw, ShieldAlert, ShieldCheck, ShieldOff } from 'lucide-react';
@@ -192,7 +192,7 @@ function PasswordPanel() {
     change.mutate({ current: cur, new: nw, ...(totp ? { totp: code.trim() } : {}), ...(keys ? { revoke_api_keys: true } : {}) }, {
       onSuccess: (r) => {
         setCur(''); setNw(''); setNw2(''); setCode(''); setKeys(false);
-        const done = [r.revoked_sessions ? `其它 ${r.revoked_sessions} 个设备已退出登录` : '', r.revoked_api_keys ? `${r.revoked_api_keys} 个 API 密钥已撤销` : ''].filter(Boolean);
+        const done = [r.revoked_sessions ? `其他 ${r.revoked_sessions} 个设备已退出登录` : '', r.revoked_api_keys ? `${r.revoked_api_keys} 个 API 密钥已撤销` : ''].filter(Boolean);
         toast.ok(done.length ? `密码已修改，${done.join('，')}` : '密码已修改');
       },
       onError: (x) => { setErr(msg(x)); setCode(''); },
@@ -212,7 +212,7 @@ function PasswordPanel() {
         </div>
         <div className="row" style={{ gap: 4 }}><label className="check-row"><Checkbox checked={keys} onCheckedChange={(v) => setKeys(v === true)} /><span>同时撤销所有 API 密钥</span></label><InfoTip text="怀疑密码或登录会话泄露时勾上：拿到会话的人可能已经建了密钥" /></div>
         {err && <Note tone="bad">{err}</Note>}
-        <div className="row"><Button type="submit" variant="primary" loading={change.isPending} disabled={!valid}>修改密码</Button></div>
+        <div className="row" style={{ justifyContent: 'flex-end' }}><Button type="submit" variant="primary" loading={change.isPending} disabled={!valid}>修改密码</Button></div>
       </form>
     </Panel>
   );
@@ -224,7 +224,7 @@ function uaLabel(ua: string | null): string {
   if (!ua) return '未知设备';
   const b = /Edg\//.test(ua) ? 'Edge' : /Firefox\//.test(ua) ? 'Firefox' : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : null;
   const os = /iPhone|iPad/.test(ua) ? 'iOS' : /Android/.test(ua) ? 'Android' : /Windows/.test(ua) ? 'Windows' : /Mac OS X|Macintosh/.test(ua) ? 'macOS' : /Linux/.test(ua) ? 'Linux' : null;
-  return [b ?? (/curl|python|Go-http|okhttp/i.test(ua) ? '脚本' : '其它浏览器'), os].filter(Boolean).join(' · ');
+  return [b ?? (/curl|python|Go-http|okhttp/i.test(ua) ? '脚本' : '其他浏览器'), os].filter(Boolean).join(' · ');
 }
 
 const SESSION_CAP = 8;
@@ -241,7 +241,7 @@ function SessionsPanel() {
   return (
     <>
       <Panel title="登录会话" count={list.length} flush
-        tools={<Button disabled={nOthers === 0} onClick={() => setOthers(true)}><LogOut />退出其它设备</Button>}>
+        tools={<Button disabled={nOthers === 0} onClick={() => setOthers(true)}><LogOut />退出其他设备</Button>}>
         {q.isError && <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div>}
         {q.isLoading ? <SkeletonRows rows={2} head /> : q.isError && !q.data ? null : list.length === 0 ? <Empty icon={<MonitorSmartphone size={22} />} text="没有登录会话" /> : (
           <div className="table-wrap">
@@ -255,7 +255,7 @@ function SessionsPanel() {
                       {/* 原始 User-Agent 只在悬停里 */}
                       <div className="row" style={{ flexWrap: 'nowrap', gap: 8 }}><span className="cell-main strong" data-tip={s.user_agent ?? '没有记录浏览器信息'}>{uaLabel(s.user_agent)}</span>{s.current && <Chip>本设备</Chip>}</div>
                     </td>
-                    <td>{s.ip ? <Trunc className="mono">{s.ip}</Trunc> : <span className="t-sub">未知</span>}</td>
+                    <td>{s.ip ? <Trunc>{s.ip}</Trunc> : <span className="t-sub">未知</span>}</td>
                     <td>{F.dt(s.created_at)}</td>
                     <td>{F.dt(s.last_seen_at)}<span className="sub">{F.ago(s.last_seen_at)}</span></td>
                     <td>{F.dt(s.expires_at)}</td>
@@ -269,7 +269,7 @@ function SessionsPanel() {
         )}
       </Panel>
       <ConfirmDialog open={!!ask} onOpenChange={(o) => !o && setAsk(null)} confirmLabel="撤销" danger
-        title={`撤销「${askHeld ? uaLabel(askHeld.user_agent) : ''}」的会话？`}
+        title={`撤销会话 · ${askHeld ? uaLabel(askHeld.user_agent) : ''}`}
         description={`${askHeld?.ip ? `来自 ${askHeld.ip}，` : ''}那台设备需要重新登录`}
         onConfirm={async () => { if (ask) { await revoke.mutateAsync(ask.id); toast.ok('会话已撤销'); } }} />
       <RevokeOthersDialog open={others} n={nOthers} onClose={() => setOthers(false)} />
@@ -277,7 +277,7 @@ function SessionsPanel() {
   );
 }
 
-/** 退出其它设备：要当前密码（开了两步验证还要验证码），拿到会话的人不能借它把本人踢下线 */
+/** 退出其他设备：要当前密码（开了两步验证还要验证码），拿到会话的人不能借它把本人踢下线 */
 const RevokeOthersDialog = resetOnOpen(function RevokeOthersDialog({ open, n, onClose }: { open: boolean; n: number; onClose: () => void }) {
   const others = useRevokeOtherSessions(); const me = useMe(); const totp = useTotpStatus().data?.enabled ?? false;
   const [pw, setPw] = React.useState(''); const [code, setCode] = React.useState('');
@@ -290,7 +290,7 @@ const RevokeOthersDialog = resetOnOpen(function RevokeOthersDialog({ open, n, on
     });
   };
   return (
-    <FormDialog size="sm" open={open} onOpenChange={(o) => !o && onClose()} title={`退出其它 ${n} 个设备？`} desc="那些设备需要重新登录"
+    <FormDialog size="sm" open={open} onOpenChange={(o) => !o && onClose()} title={`退出其他 ${n} 个设备？`} desc="那些设备需要重新登录"
       submitLabel="全部退出" onSubmit={submit} busy={others.isPending} valid={!!pw && (!totp || !!code.trim())} dirty={!!pw || !!code}>
       <input type="text" autoComplete="username" value={me.data?.username ?? ''} readOnly hidden />
       <Field label="当前密码"><Input type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="current-password" autoFocus /></Field>

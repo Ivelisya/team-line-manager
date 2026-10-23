@@ -425,10 +425,8 @@ async fn audit_filter_by_cat_and_search() {
         ("admin", "auth.login", json!({"ip": "203.0.113.7", "ua": "团队1 的浏览器"})),
         ("apikey:ci-bot", "agent.upgrade", json!({"count": 3})),
     ] {
-        sqlx::query("insert into audit_log (actor, action, detail) values ($1, $2, $3)").bind(actor).bind(action).bind(detail).execute(&t.st.db).await.unwrap();
+        fleet_server::db::audit_insert(&t.st.db, actor, action, "machine", None, detail).await.unwrap();
     }
-    // 直接插的（同 0034 之前的旧记录）没有搜索文本：回填
-    assert_eq!(fleet_server::db::backfill_audit_search(&t.st.db).await.unwrap(), 3);
     for i in 0..3 {
         t.ok("POST", "/api/v1/teams", Some(json!({"name": format!("团队{i}")}))).await;
     }
@@ -476,7 +474,7 @@ async fn ack_incident_and_silence_validation() {
         .await
         .unwrap();
     let inc = Uuid::now_v7();
-    sqlx::query("insert into incident (id, rule, subject_id, severity, summary) values ($1, 'agent_offline', $2, 'critical', 'agent 5 分钟没上报')")
+    sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary) values ($1, 'machine', 'agent_offline', $2, 'critical', 'agent 5 分钟没上报')")
         .bind(inc)
         .bind(mid)
         .execute(&t.st.db)
@@ -528,7 +526,7 @@ async fn ack_incident_and_silence_validation() {
     let pre = ids[1].as_str().unwrap();
     t.ok("DELETE", &format!("/api/v1/silences/{pre}"), None).await;
     let log = t.ok("GET", &format!("/api/v1/audit?target_id={pre}"), None).await;
-    let bj = |off| fleet_server::notify::beijing(now + off).chars().take(16).collect::<String>();
+    let bj = |off| fleet_server::meta::org_time(now + off).chars().take(16).collect::<String>();
     let want = format!("{} · 维护窗口 · {} → {}", list[1]["subject_name"].as_str().unwrap(), bj(d(1)), bj(d(1) + h(2)));
     let got: Vec<(&str, &str)> = log.as_array().unwrap().iter().map(|e| (e["action"].as_str().unwrap(), e["summary"].as_str().unwrap())).collect();
     assert_eq!(got, [("silence.delete", want.as_str()), ("silence.create", want.as_str())], "{log}");
@@ -690,7 +688,7 @@ async fn migration_0029_normalizes_existing_rows() {
     assert_eq!(ports, [(host, Some(2222)), (ipn, None)]);
     let cur: (String, String, String) = sqlx::query_as("select (select currency from plan), (select currency from subscription), (select currency from renewal)").fetch_one(db).await.unwrap();
     assert_eq!(cur, ("USD".into(), "CNY".into(), "CNY".into()));
-    let subj: Vec<Option<Uuid>> = sqlx::query_scalar("select subject_id from silence order by subject_id nulls last").fetch_all(db).await.unwrap();
+    let subj: Vec<Option<Uuid>> = sqlx::query_scalar("select machine_id from silence order by machine_id nulls last").fetch_all(db).await.unwrap();
     assert_eq!(subj, [Some(ipn), None], "对象已不存在的静默删掉");
     // 约束都验证过了（存量合规）
     let unvalidated: i64 = sqlx::query_scalar("select count(*) from pg_constraint where conname in ('plan_currency_iso', 'subscription_currency_iso', 'renewal_currency_iso', 'notify_channel_kind_check') and not convalidated and connamespace = (select oid from pg_namespace where nspname = current_schema())").fetch_one(db).await.unwrap();
@@ -698,7 +696,7 @@ async fn migration_0029_normalizes_existing_rows() {
 
     // 外键：删机器连带它的静默；同机 IP 节点不能再存 SSH 端口；email 渠道、非 3 字母币种写不进来
     q("delete from machine where host_id is not null").await;
-    let n: i64 = sqlx::query_scalar("select count(*) from silence where subject_id is not null").fetch_one(db).await.unwrap();
+    let n: i64 = sqlx::query_scalar("select count(*) from silence where machine_id is not null").fetch_one(db).await.unwrap();
     assert_eq!(n, 0);
     for bad in [
         "insert into machine (id, kind, team_id, number, primary_ip, host_id, lifecycle) select gen_random_uuid(), 'vps', team_id, 9, '203.0.113.9', id, 'active' from machine",

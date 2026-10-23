@@ -6,6 +6,7 @@ use crate::auth::{Actor, ClientIp};
 use crate::db::{audit, new_id};
 use crate::error::{ApiError, ApiJson, ApiPath, ApiQuery, ApiResult};
 use crate::routers::{self, deploy, scripts::Bootstrap, tunnel};
+use crate::silence::Silences;
 use crate::state::{AppState, Event};
 use axum::extract::State;
 use axum::http::{header, StatusCode};
@@ -28,13 +29,13 @@ pub const CLEANUP: &str = "/etc/init.d/fleet-tunnel disable; /etc/init.d/fleet-t
      再从 /etc/dropbear/authorized_keys 删掉中控的公钥（不再让中控登录时）";
 
 pub async fn list(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
-    let rows = routers::load(&st.db, None).await?;
-    Ok(ok(rows.iter().map(|r| r.view(false)).collect::<Vec<_>>()))
+    let (rows, sil) = tokio::try_join!(routers::load(&st.db, None), Silences::load(&st.db))?;
+    Ok(ok(rows.iter().map(|r| r.view(false, sil.maintenance(r.id))).collect::<Vec<_>>()))
 }
 
 pub async fn get_one(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
-    let rows = routers::load(&st.db, Some(id)).await?;
-    rows.first().map(|r| ok(r.view(true))).ok_or_else(|| ApiError::not_found("没有这台软路由"))
+    let (rows, sil) = tokio::try_join!(routers::load(&st.db, Some(id)), Silences::load(&st.db))?;
+    rows.first().map(|r| ok(r.view(true, sil.maintenance(r.id)))).ok_or_else(|| ApiError::not_found("没有这台软路由"))
 }
 
 fn check_name(n: &str) -> ApiResult<String> {
@@ -118,7 +119,7 @@ pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Ne
 }
 
 fn bootstrap_out(st: &AppState, token: &str, expires: OffsetDateTime) -> Value {
-    json!({"cmd": routers::bootstrap_cmd(&st.cfg.public_url, token), "expires_at": expires.format(&time::format_description::well_known::Rfc3339).unwrap_or_default()})
+    json!({"cmd": routers::bootstrap_cmd(&st.cfg.public_url, token), "expires_at": crate::meta::fmt_ts(expires)})
 }
 
 #[derive(Deserialize)]
@@ -165,25 +166,101 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     get_one(a, State(st), ApiPath(id)).await
 }
 
+/// `DELETE /routers/{id}?force=true`
+#[derive(Deserialize)]
+pub struct DeleteQ {
+    force: Option<bool>,
+}
+
 /// 删除：撤销隧道公钥（路由上的 fleet-tunnel 之后连不上；已经连着的那条要等它自己断），关掉它的告警（不发恢复），指标随记录删掉。
-/// 路由上中控加的东西不去动，返回要在路由上执行的清理命令
-pub async fn delete(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
+/// 路由上中控加的东西不去动，返回要在路由上执行的清理命令。
+/// 还有没做完的作业改过它的出口、没确认改回（参数 routers_applied 里有它：中途被打断、改回失败等人工处理）时 409，给出作业 id：
+/// 删了作业就改不回它。路由确实回不来了（扔了、刷机、长期断电）时作业也改不回，重试、取消都过不去，这时用 `force`：
+/// 把它从这些作业的 routers_applied / routers_stuck 里摘掉、作业日志记一条「改回放弃」，作业能重试收尾或取消。
+/// 作业正在执行（照它内存里的列表接着写参数）时不摘，409 等它停下
+pub async fn delete(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<DeleteQ>) -> ApiResult<Json<Value>> {
+    let force = q.force.unwrap_or(false);
     let mut tx = st.db.begin().await?;
+    let jobs: Vec<(Uuid, String)> = sqlx::query_as(
+        "select id, state::text from job where state not in ('succeeded', 'cancelled') and jsonb_typeof(params->'routers_applied') = 'array'
+           and params->'routers_applied' @> jsonb_build_array(jsonb_build_object('id', $1::text)) order by created_at for update",
+    )
+    .bind(id.to_string())
+    .fetch_all(&mut *tx)
+    .await?;
+    let ids: Vec<Uuid> = jobs.iter().map(|j| j.0).collect();
+    let list = || ids.iter().map(Uuid::to_string).collect::<Vec<_>>().join("、");
+    if !jobs.is_empty() && !force {
+        return Err(ApiError::conflict(format!(
+            "作业 {} 改过这台软路由的出口、还没确认改回：先把作业处理完（让路由恢复连接后重试做完，见作业详情的「需要人工处理」）再删。\
+             路由确实回不来了（扔了、刷机）可以强制删除：作业不再改回它，它上面被改过的出口要自己处理",
+            list()
+        ))
+        .with_detail(json!({"jobs": ids})));
+    }
+    if jobs.iter().any(|j| j.1 == "running") {
+        return Err(ApiError::conflict(format!("作业 {} 正在执行：等它这一轮停下（失败或进入等待）再强制删除", list())).with_detail(json!({"jobs": ids})));
+    }
     let (name, port): (String, i32) = sqlx::query_as("delete from router where id = $1 returning name, tunnel_port")
         .bind(id)
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| ApiError::not_found("没有这台软路由"))?;
+    if !ids.is_empty() {
+        sqlx::query(
+            "update job set params = params
+                || jsonb_build_object('routers_applied', coalesce((select jsonb_agg(a) from jsonb_array_elements(params->'routers_applied') a where a->>'id' <> $2), '[]'::jsonb))
+                || jsonb_build_object('routers_stuck', coalesce((select jsonb_agg(s) from jsonb_array_elements(case when jsonb_typeof(params->'routers_stuck') = 'array'
+                                                                  then params->'routers_stuck' else '[]'::jsonb end) s where s->>'id' <> $2), '[]'::jsonb))
+             where id = any($1)",
+        )
+        .bind(&ids)
+        .bind(id.to_string())
+        .execute(&mut *tx)
+        .await?;
+    }
+    // 同批跟随作业：抄过来的 routers_stuck 里也摘掉它（只动 routers_stuck；它们自己没改过路由，routers_applied 里不会有它）
+    let followers: Vec<Uuid> = if ids.is_empty() {
+        vec![]
+    } else {
+        sqlx::query_scalar(
+            "update job set params = params
+                || jsonb_build_object('routers_stuck', coalesce((select jsonb_agg(s) from jsonb_array_elements(params->'routers_stuck') s where s->>'id' <> $2), '[]'::jsonb))
+             where state not in ('succeeded', 'cancelled') and params->>'routers_batch_leader' = any($1)
+               and jsonb_typeof(params->'routers_stuck') = 'array' and params->'routers_stuck' @> jsonb_build_array(jsonb_build_object('id', $2::text))
+             returning id",
+        )
+        .bind(ids.iter().map(Uuid::to_string).collect::<Vec<_>>())
+        .bind(id.to_string())
+        .fetch_all(&mut *tx)
+        .await?
+    };
     let closed = routers::alerts::close_all(&mut tx, id).await?;
-    audit(&mut tx, &a.name, "router.delete", "router", Some(id), json!({"name": name, "tunnel_port": port})).await?;
+    let mut detail = json!({"name": name, "tunnel_port": port});
+    if !ids.is_empty() {
+        detail["force"] = json!(true);
+        detail["jobs"] = json!(ids);
+    }
+    if !followers.is_empty() {
+        detail["follower_jobs"] = json!(followers);
+    }
+    audit(&mut tx, &a.name, "router.delete", "router", Some(id), detail).await?;
     tx.commit().await?;
+    for j in &ids {
+        crate::jobs::log(&st, *j, "warn", format!("软路由「{name}」已被 {} 强制删除，改回放弃：它上面被本作业改过的出口没有改回，要在路由上自己处理", a.name)).await;
+        st.emit(Event::Job { id: *j, target: None });
+    }
+    for j in &followers {
+        crate::jobs::log(&st, *j, "warn", format!("软路由「{name}」已被 {} 强制删除，带头作业改回放弃：从带头作业抄来的「需要人工处理」里摘掉了它", a.name)).await;
+        st.emit(Event::Job { id: *j, target: None });
+    }
     tunnel::close_master(&st.cfg, id).await;
     st.emit(Event::Routers);
     if closed > 0 {
         st.emit(Event::Incidents);
     }
     routers::sync_files_or_500(&st).await?;
-    Ok(ok(json!({"ok": true, "cleanup": CLEANUP})))
+    Ok(ok(json!({"ok": true, "cleanup": CLEANUP, "jobs": ids})))
 }
 
 /// 重新生成接入命令：新的一次性令牌（30 分钟），旧隧道密钥立刻撤销、主机公钥清掉（新隧道连上后重记），隧道端口换一个。正在一键部署时 409
@@ -230,7 +307,9 @@ pub async fn deploy_one(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPa
 /// 同一来源（IPv4 地址 / IPv6 的 /64）10 分钟最多取这么多次（令牌 32 字节随机，猜不到；这里只防刷库）
 const FETCH_LIMIT: u32 = 20;
 const FETCH_WINDOW: Duration = Duration::from_secs(600);
-static FETCHES: Mutex<Option<HashMap<Option<IpAddr>, (Instant, u32)>>> = Mutex::new(None);
+/// 来源 → (窗口起点, 窗口内取过的次数)
+type FetchMap = HashMap<Option<IpAddr>, (Instant, u32)>;
+static FETCHES: Mutex<Option<FetchMap>> = Mutex::new(None);
 
 pub(crate) fn rate_ok(ip: Option<IpAddr>) -> bool {
     let mut g = FETCHES.lock().unwrap_or_else(|e| e.into_inner());

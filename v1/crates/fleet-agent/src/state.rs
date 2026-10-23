@@ -226,8 +226,7 @@ mod tests {
 
     #[test]
     fn seq_is_monotonic_across_reload() {
-        let d = std::env::temp_dir().join(format!("fa-seq-{}", std::process::id()));
-        std::fs::create_dir_all(&d).unwrap();
+        let d = crate::util::TmpDir::new("seq");
         let p = d.join("state.json");
         let mut s = SeqState::load(p.clone(), None);
         let a = s.next().unwrap();
@@ -240,13 +239,11 @@ mod tests {
         std::fs::remove_file(&p).unwrap();
         let s3 = SeqState::load(p, Some(u64::MAX / 2));
         assert_eq!(s3.seq, u64::MAX / 2);
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
     fn advance_to_only_moves_forward() {
-        let d = std::env::temp_dir().join(format!("fa-seq-adv-{}", std::process::id()));
-        std::fs::create_dir_all(&d).unwrap();
+        let d = crate::util::TmpDir::new("seq-adv");
         let p = d.join("state.json");
         let mut s = SeqState::load(p.clone(), Some(100));
         let before = s.seq; // 无状态文件：从当前时间戳起算
@@ -256,13 +253,11 @@ mod tests {
         assert_eq!(s.next().unwrap(), before + 5001);
         // 落盘了：重新加载后仍在它之后
         assert!(SeqState::load(p, None).seq >= before + 5001);
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
     fn seq_reserves_in_blocks_and_never_reuses() {
-        let d = std::env::temp_dir().join(format!("fa-seq-blk-{}", std::process::id()));
-        std::fs::create_dir_all(&d).unwrap();
+        let d = crate::util::TmpDir::new("seq-blk");
         let p = d.join("state.json");
         let mut s = SeqState::load(p.clone(), None);
         let first = s.next().unwrap();
@@ -288,6 +283,5 @@ mod tests {
         // 队列里有更大的序号时以队列为准
         let mut s3 = SeqState::load(p, Some(used + 50_000));
         assert_eq!(s3.next().unwrap(), used + 50_001);
-        let _ = std::fs::remove_dir_all(&d);
     }
 }

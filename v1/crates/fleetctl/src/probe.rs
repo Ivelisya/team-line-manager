@@ -6,13 +6,15 @@
 use crate::cmds::{num, st, Ctx};
 use crate::ops::confirm;
 use crate::table;
-use anyhow::bail;
+use crate::resolve;
+use anyhow::{anyhow, bail};
 use serde_json::{json, Value};
 use std::time::Duration;
 
 fn state_cn(s: &str) -> &str {
     match s {
         "online" => "在线",
+        "blind" => "在线（探测无效）",
         "offline" => "离线",
         "pending" => "等待安装",
         "disabled" => "已停用",
@@ -29,23 +31,11 @@ fn install_cn(s: &str) -> &str {
     }
 }
 
-fn list(ctx: &Ctx) -> anyhow::Result<Vec<Value>> { Ok(ctx.c.get("/probe-points")?.as_array().cloned().unwrap_or_default()) }
 
-/// 找一个探测点：id、id 前缀（至少 6 位）、名称（不分大小写）
-fn find(all: &[Value], q: &str) -> anyhow::Result<Value> {
-    let ql = q.trim().to_lowercase();
-    let mut hits: Vec<&Value> = all.iter().filter(|p| st(p, "/id") == ql).collect();
-    if hits.is_empty() && ql.len() >= 6 && ql.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
-        hits = all.iter().filter(|p| st(p, "/id").starts_with(&ql)).collect();
-    }
-    if hits.is_empty() {
-        hits = all.iter().filter(|p| st(p, "/name").to_lowercase() == ql).collect();
-    }
-    match hits.len() {
-        1 => Ok(hits[0].clone()),
-        0 => bail!("没有找到探测点「{}」（可用 id、id 前缀、名称；先 fleetctl probe ls 看列表）", q.trim()),
-        n => bail!("「{}」匹配到 {n} 个探测点，请用 id 指定", q.trim()),
-    }
+/// 找一个探测点：id、id 前缀（至少 6 位）、名称（不分大小写）；规则同 `resolve::named`
+pub(crate) fn find(all: &[Value], q: &str) -> anyhow::Result<Value> {
+    let name = |p: &Value| st(p, "/name");
+    resolve::named(all, q, "探测点", &[&name], &name).cloned().map_err(|e| anyhow!("{e}（先 fleetctl probe ls 看列表）"))
 }
 
 fn ms(v: &Value, p: &str) -> String { num(v, p).map_or_else(|| "-".into(), |x| format!("{x:.0} ms")) }
@@ -57,6 +47,12 @@ fn row(p: &Value) -> Vec<String> {
     }
     if p["upgrade"].is_object() {
         state.push_str("（升级中）");
+    }
+    if p["maintenance"] == true {
+        state.push_str("（维护中）");
+    }
+    if let Some(f) = upgrade_failed(p) {
+        state.push_str(&format!("（{f}）"));
     }
     let relays = p["relays"].as_array().map(|rs| rs.iter().map(|r| format!("{} {}", st(r, "/name"), ms(r, "/avg_ms"))).collect::<Vec<_>>().join("，")).unwrap_or_default();
     vec![
@@ -71,6 +67,13 @@ fn row(p: &Value) -> Vec<String> {
     ]
 }
 
+/// 上次升级失败（中控记的 upgrade_failed）：「升级到 X 失败，已回到 Y」
+fn upgrade_failed(p: &Value) -> Option<String> {
+    let f = p["upgrade_failed"].as_object()?;
+    let v = |k: &str| f.get(k).and_then(Value::as_str).unwrap_or("?").to_string();
+    Some(format!("升级到 {} 失败，已回到 {}", v("to"), v("from")))
+}
+
 const HEAD: [&str; 8] = ["名称", "主来源", "状态", "最近上报", "版本", "来源地址", "近 1 小时平均延迟", "id"];
 
 /// 主探测来源的说法：「香港探测点」「中控（代替离线的香港探测点）」……
@@ -81,7 +84,7 @@ fn source_line(src: &Value) -> String {
 }
 
 pub fn ls(ctx: &Ctx) -> anyhow::Result<u8> {
-    let all = list(ctx)?;
+    let all = ctx.list("/probe-points")?;
     let src = ctx.c.get("/settings/reach-source")?;
     let data = json!({"probe_points": all, "source": src});
     ctx.emit(&data, || {
@@ -147,56 +150,64 @@ fn print_bootstrap(ctx: &Ctx, d: &Value, name: &str) {
     });
 }
 
-pub struct AddOpts<'a> {
-    pub name: &'a str,
-    pub note: Option<&'a str>,
-    pub host: Option<&'a str>,
+/// 探测点的安装方式：给 --host 由中控 SSH 登录装（中控用自己的密钥登录 root）；不给就打印一次性安装命令
+#[derive(clap::Args)]
+pub struct InstallArgs {
+    /// 探测点的 IP 或主机名（中控 SSH 连得到的）；不给就打印一次性安装命令（30 分钟内有效、只能用一次），在探测点上用 root 执行
+    #[arg(long)]
+    pub host: Option<String>,
+    /// 探测点的 SSH 端口（默认 22）
+    #[arg(long)]
     pub ssh_port: Option<u16>,
+    /// 主机指纹和中控记下的不一样时（确认是重装过系统）重新记录
+    #[arg(long)]
     pub reset_host_key: bool,
+    /// 不等安装结束（默认等到收到首次上报）
+    #[arg(long)]
     pub no_wait: bool,
 }
 
-fn ssh_body(o: &AddOpts) -> anyhow::Result<Option<Value>> {
-    match o.host {
+fn ssh_body(o: &InstallArgs) -> anyhow::Result<Option<Value>> {
+    match o.host.as_deref() {
         Some(h) => Ok(Some(json!({"host": h, "port": o.ssh_port.unwrap_or(22), "reset_host_key": o.reset_host_key}))),
         None if o.ssh_port.is_some() || o.reset_host_key => bail!("--ssh-port / --reset-host-key 要和 --host 一起用"),
         None => Ok(None),
     }
 }
 
-pub fn add(ctx: &Ctx, o: AddOpts<'_>) -> anyhow::Result<u8> {
-    let mut body = json!({"name": o.name, "note": o.note.unwrap_or("")});
-    if let Some(s) = ssh_body(&o)? {
+pub fn add(ctx: &Ctx, name: &str, note: Option<&str>, o: &InstallArgs) -> anyhow::Result<u8> {
+    let mut body = json!({"name": name, "note": note.unwrap_or("")});
+    if let Some(s) = ssh_body(o)? {
         body["ssh"] = s;
     }
     let d = ctx.c.post("/probe-points", &body)?;
     let id = st(&d, "/id");
-    if o.host.is_none() {
-        print_bootstrap(ctx, &d, o.name);
+    let Some(host) = o.host.as_deref() else {
+        print_bootstrap(ctx, &d, name);
         return Ok(0);
-    }
+    };
     if o.no_wait {
-        ctx.emit(&d, || format!("已新建「{}」，中控正在登录 {} 安装：fleetctl probe ls 看进度", o.name, o.host.unwrap_or("")));
+        ctx.emit(&d, || format!("已新建「{name}」，中控正在登录 {host} 安装：fleetctl probe ls 看进度"));
         return Ok(0);
     }
     follow_install(ctx, &id)
 }
 
 /// 重装：给 --host 由中控经 SSH 重装（换新令牌），否则打印新的一次性安装命令
-pub fn install(ctx: &Ctx, q: &str, o: AddOpts<'_>) -> anyhow::Result<u8> {
-    let p = find(&list(ctx)?, q)?;
+pub fn install(ctx: &Ctx, q: &str, o: &InstallArgs) -> anyhow::Result<u8> {
+    let p = find(&ctx.list("/probe-points")?, q)?;
     let (id, name) = (st(&p, "/id"), st(&p, "/name"));
     let mut body = json!({});
-    if let Some(s) = ssh_body(&o)? {
+    if let Some(s) = ssh_body(o)? {
         body["ssh"] = s;
     }
     let d = ctx.c.post(&format!("/probe-points/{id}/install"), &body)?;
-    if o.host.is_none() {
+    let Some(host) = o.host.as_deref() else {
         print_bootstrap(ctx, &d, &name);
         return Ok(0);
-    }
+    };
     if o.no_wait {
-        ctx.emit(&d, || format!("中控正在登录 {} 重装「{name}」：fleetctl probe ls 看进度", o.host.unwrap_or("")));
+        ctx.emit(&d, || format!("中控正在登录 {host} 重装「{name}」：fleetctl probe ls 看进度"));
         return Ok(0);
     }
     follow_install(ctx, &id)
@@ -206,7 +217,7 @@ pub fn set(ctx: &Ctx, q: &str, enable: Option<bool>, name: Option<&str>, note: O
     if enable.is_none() && name.is_none() && note.is_none() {
         bail!("没有要改的：给 --enable / --disable / --name / --note 之一");
     }
-    let p = find(&list(ctx)?, q)?;
+    let p = find(&ctx.list("/probe-points")?, q)?;
     let mut body = json!({});
     if let Some(e) = enable {
         body["enabled"] = json!(e);
@@ -223,7 +234,7 @@ pub fn set(ctx: &Ctx, q: &str, enable: Option<bool>, name: Option<&str>, note: O
 }
 
 pub fn rm(ctx: &Ctx, q: &str, yes: bool) -> anyhow::Result<u8> {
-    let p = find(&list(ctx)?, q)?;
+    let p = find(&ctx.list("/probe-points")?, q)?;
     let name = st(&p, "/name");
     confirm(&format!("确认删除探测点「{name}」？它的令牌立刻作废，它测的检查记录一起删掉"), yes)?;
     let d = ctx.c.delete(&format!("/probe-points/{}", st(&p, "/id")))?;
@@ -236,7 +247,7 @@ pub fn primary(ctx: &Ctx, q: &str) -> anyhow::Result<u8> {
     let (body, what) = if q.eq_ignore_ascii_case("central") || q == "中控" {
         (json!({"primary": "central", "central_enabled": true}), "中控".to_string())
     } else {
-        let p = find(&list(ctx)?, q)?;
+        let p = find(&ctx.list("/probe-points")?, q)?;
         (json!({"primary": st(&p, "/id")}), st(&p, "/label"))
     };
     let d = ctx.c.put("/settings/reach-source", &body)?;
@@ -253,7 +264,7 @@ pub fn central(ctx: &Ctx, on: bool) -> anyhow::Result<u8> {
 
 /// 升级：中控记下 dist 里的程序，探测点 30 秒内自己下载替换、重启；等到它报上新版本（最多 3 分钟）
 pub fn upgrade(ctx: &Ctx, q: &str, no_wait: bool) -> anyhow::Result<u8> {
-    let p = find(&list(ctx)?, q)?;
+    let p = find(&ctx.list("/probe-points")?, q)?;
     let (id, name) = (st(&p, "/id"), st(&p, "/name"));
     let d = ctx.c.post(&format!("/probe-points/{id}/upgrade"), &json!({}))?;
     let to = st(&d, "/version");
@@ -267,12 +278,15 @@ pub fn upgrade(ctx: &Ctx, q: &str, no_wait: bool) -> anyhow::Result<u8> {
     for _ in 0..120 {
         std::thread::sleep(Duration::from_millis(1500));
         let p = ctx.c.get(&format!("/probe-points/{id}"))?;
+        if p["upgrade_failed"]["sha256"] == d["sha256"] {
+            bail!("「{name}」{}：新版本没能上报，探测点自己换回了旧版本。在它上面看日志（OpenRC：tail /var/log/fleet-probe.log；systemd：journalctl -u fleet-probe），修好后发新版本（换掉中控 dist 里的 fleet-agent）再 probe upgrade：同一个版本它不会再换，中控也会拒绝", upgrade_failed(&p).unwrap_or_default());
+        }
         if p["upgrade"].is_null() && p["state"] == "online" {
             ctx.emit(&p, || format!("「{name}」已升级到 {}", st(&p, "/version")));
             return Ok(0);
         }
     }
-    bail!("3 分钟内「{name}」没换上新版本：在它上面看日志（OpenRC：tail /var/log/fleet-probe.log；systemd：journalctl -u fleet-probe）。升级请求还留着，它下次取目标时会再试")
+    bail!("3 分钟内「{name}」没换上新版本：在它上面看日志（OpenRC：tail /var/log/fleet-probe.log；systemd：journalctl -u fleet-probe）。升级请求还留着；下载后 5 分钟还没报上新版本，或探测点报告这个版本之前换上后跑不起来过，中控记成升级失败、不再下发（probe ls 里看）")
 }
 
 #[cfg(test)]
@@ -290,9 +304,7 @@ mod tests {
     fn find_by_id_prefix_and_name() {
         let all = probes();
         assert_eq!(find(&all, "东京").unwrap()["state"], "offline");
-        assert_eq!(find(&all, "01a162a9-39").unwrap()["name"], "香港");
-        assert!(find(&all, "01a162a9").unwrap_err().to_string().contains("匹配到 2 个"));
-        assert!(find(&all, "新加坡").unwrap_err().to_string().contains("没有找到"));
+        assert!(find(&all, "01a162a9").unwrap_err().to_string().contains("匹配到 2 个探测点"));
     }
 
     #[test]
@@ -305,13 +317,17 @@ mod tests {
         assert_eq!(row(&p), ["香港", "是", "在线", "2026-10-22 16:10:54", "0.1.0+abc", "47.0.0.1", "线路机1 158 ms，线路机2 -", "01a162a9-39c4"]);
         let q = json!({"id": "x", "name": "东京", "state": "pending", "install": {"state": "failed"}, "upgrade": {"sha256": "a"}, "relays": []});
         assert_eq!(row(&q)[1..3], ["", "等待安装（安装失败）（升级中）"]);
+        let b = json!({"id": "y", "name": "新加坡", "state": "blind", "relays": []});
+        assert_eq!(row(&b)[2], "在线（探测无效）");
+        let f = json!({"id": "z", "name": "首尔", "state": "online", "upgrade": null, "upgrade_failed": {"sha256": "a", "to": "0.2.0+new", "from": "0.1.0+old", "at": "2026-10-22T08:10:54Z"}, "relays": []});
+        assert_eq!(row(&f)[2], "在线（升级到 0.2.0+new 失败，已回到 0.1.0+old）");
     }
 
     #[test]
     fn ssh_options_need_host() {
-        let o = AddOpts { name: "香港", note: None, host: None, ssh_port: Some(2222), reset_host_key: false, no_wait: false };
+        let o = InstallArgs { host: None, ssh_port: Some(2222), reset_host_key: false, no_wait: false };
         assert!(ssh_body(&o).is_err());
-        let o = AddOpts { host: Some("47.0.0.1"), ssh_port: None, ..o };
+        let o = InstallArgs { host: Some("47.0.0.1".into()), ssh_port: None, ..o };
         assert_eq!(ssh_body(&o).unwrap().unwrap(), json!({"host": "47.0.0.1", "port": 22, "reset_host_key": false}));
     }
 }

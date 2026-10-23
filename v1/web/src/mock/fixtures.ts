@@ -2,9 +2,9 @@
 // 团队1-03 上的 1 个同机 IP 节点），外加回收站里的几条记录。
 // IP 只用文档保留段 203.0.113.0/24 与 198.51.100.0/24。
 
-import type { ApiKey, Incident, Job, NotifyChannel, NotifyLogEntry, JobLog, MachineView, Plan, Provider, Renewal, Silence, AuditEntry, Team, EntryView, Lifecycle, HealthStatus, Subscription, RecycleDetail } from '@/lib/types';
+import type { ApiKey, Incident, Job, NotifyChannel, NotifyLogEntry, JobLog, MachineView, Plan, Provider, Renewal, Silence, AuditEntry, Team, EntryView, Lifecycle, HealthStatus, Subscription, SubTemplate, SubField, UsdTotal, RecycleDetail } from '@/lib/types';
 import { addDays, addMonths, displayName, str } from '@/lib/format';
-import { quota, quotaGb } from '@/lib/derive';
+import { inheritedValue, quota, quotaGb } from '@/lib/derive';
 import { META, subCalc } from './meta';
 
 /** mock 的国家：内网地址查不到（同中控的离线 IP 库），其余按地址末段分到几个国家 */
@@ -69,6 +69,38 @@ export function trafficOf(m: MachineView, all: MachineView[]): Pick<MachineView,
   return { nic: nicOf(m, all), month_counted_from: countedFrom(m, new Date(Date.UTC(d.getFullYear(), d.getMonth(), 0)).toISOString().slice(0, 10)), quota: quotaOf(m, all) };
 }
 
+const NO_USD: UsdTotal = { cents: 0, by_currency: [], unconverted: [] }; // 团队月费的占位：GET /teams 时按在用机器现算
+export const SUB_FIELDS: SubField[] = ['price_cents', 'currency', 'cycle', 'billing_tz', 'remind_days', 'traffic_gb', 'traffic_reset_day'];
+/** 订阅模板（同服务端 sub_template）：没单独设置的项取这里；没有套餐时 price_cents 为 null */
+export function templateOf(plan: Plan | undefined, pv: Provider | undefined): SubTemplate {
+  return {
+    price_cents: plan?.price_cents ?? null, currency: plan?.currency ?? META.defaults.currency, cycle: plan?.cycle ?? META.defaults.cycle,
+    billing_tz: pv?.timezone || META.org_timezone, remind_days: pv?.remind_days ?? META.defaults.remind_days,
+    traffic_gb: plan?.traffic_gb ?? null, traffic_reset: pv?.traffic_reset ?? META.defaults.traffic_reset,
+  };
+}
+const same = (a: unknown, b: unknown) => (a || null) === (b || null); // 流量上限 0 与 null 都是不限
+/** 直接设定到期日后的账单日（同服务端 meta::billing_day）：落在现有账单日上的（小月按月末算，如账单日 31 号的 2-28）沿用现有的，否则改成新到期日几号 */
+export function billingDay(due: string, cur: number | null | undefined): number {
+  const [y, mo, d] = due.split('-').map(Number);
+  const len = new Date(Date.UTC(y, mo, 0)).getUTCDate();
+  return cur != null && d === Math.min(Math.max(cur, 1), 31, len) ? cur : d;
+}
+/** 订阅模板、账单日、单独设置了哪几项：按订阅现有的值和跟随值比（和套餐 / 供应商相同的值按跟随存，同服务端写订阅时的 subscription_normalize） */
+export function syncSub(m: MachineView, plans: Plan[], providers: Provider[]) {
+  m.sub_template = templateOf(plans.find((p) => p.id === m.plan?.id), providers.find((p) => p.id === m.provider?.id));
+  const s = m.subscription; if (!s) return;
+  s.billing_day = billingDay(s.due_date, s.billing_day);
+  s.overrides = SUB_FIELDS.filter((k) => !same(s[k], inheritedValue(m, k, s.due_date)));
+}
+/** 套餐或供应商改了：没单独设置的项跟着变（服务端是视图里现算，这里把值写回订阅） */
+export function refreshFollowers(m: MachineView, plans: Plan[], providers: Provider[]) {
+  const s = m.subscription; if (!s) return;
+  const own = s.overrides;
+  m.sub_template = templateOf(plans.find((p) => p.id === m.plan?.id), providers.find((p) => p.id === m.provider?.id));
+  for (const k of SUB_FIELDS) if (!own.includes(k)) (s as unknown as Record<string, unknown>)[k] = inheritedValue(m, k, s.due_date);
+}
+
 export interface Db {
   user: string;
   teams: Team[]; providers: Provider[]; plans: Plan[];
@@ -86,14 +118,14 @@ export interface Db {
 export function buildDb(): Db {
   const r = rng(20261020);
   const teams: Team[] = [
-    { id: 't1', name: '团队1', sort_order: 1, spare: false, node_count: 0 },
-    { id: 't2', name: '团队2', sort_order: 2, spare: false, node_count: 0 },
-    { id: 'ts', name: '备用', sort_order: 999, spare: true, node_count: 0 },
+    { id: 't1', name: '团队1', sort_order: 1, spare: false, node_count: 0, monthly_usd: NO_USD },
+    { id: 't2', name: '团队2', sort_order: 2, spare: false, node_count: 0, monthly_usd: NO_USD },
+    { id: 'ts', name: '备用', sort_order: 999, spare: true, node_count: 0, monthly_usd: NO_USD },
   ];
   const providers: Provider[] = [
-    { id: 'p1', name: '搬瓦工', code: 'BWH', panel_url: 'https://panel.example.com/bwh', timezone: 'America/Los_Angeles', traffic_rule: 'min', traffic_reset: 'rolling30' },
-    { id: 'p2', name: '腾讯云', code: 'TCT', panel_url: 'https://panel.example.com/tct', timezone: 'Asia/Shanghai', traffic_rule: 'out', traffic_reset: 'billing' },
-    { id: 'p3', name: '家宽服务商', code: 'HOME', panel_url: null, timezone: null, traffic_rule: 'max' },
+    { id: 'p1', name: '搬瓦工', code: 'BWH', panel_url: 'https://panel.example.com/bwh', timezone: 'America/Los_Angeles', traffic_rule: 'min', traffic_reset: 'rolling30', remind_days: 7 },
+    { id: 'p2', name: '腾讯云', code: 'TCT', panel_url: 'https://panel.example.com/tct', timezone: 'Asia/Shanghai', traffic_rule: 'out', traffic_reset: 'billing', remind_days: 7 },
+    { id: 'p3', name: '家宽服务商', code: 'HOME', panel_url: null, timezone: null, traffic_rule: 'max', traffic_reset: 'month', remind_days: 7 },
   ];
   const plans: Plan[] = [
     { id: 'pl1', provider_id: 'p1', name: 'CN2 GIA 2C/4G', cpu_cores: 2, mem_mb: 4096, disk_gb: 80, bandwidth_mbps: 1000, traffic_gb: 1000, price_cents: 6900, currency: 'USD', cycle: 'quarterly', notes: '限速 1Gbps', archived_at: null, machine_count: 0 },
@@ -128,7 +160,7 @@ export function buildDb(): Db {
   const base = (o: Partial<MachineView> & Pick<MachineView, 'id' | 'kind' | 'name' | 'ip'>): MachineView => ({
     team: null, spare: false, number: null, label: null, ssh_port: 22, country: countryOf(o.ip), country_set: null, host_machine: null, bind_ip: null, ip_nodes: [], provider: null, provider_code: null, plan: null, service_ref: null,
     lifecycle: 'active', lifecycle_reason: null, note: '', revision: 1, created_at: iso(now() - 120 * DAY), activated_at: iso(now() - 100 * DAY), retired_at: null, spare_from: null, spare_since: null, recycle_on: null,
-    subscription: null, agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, nic: null, month_counted_from: null, quota: { used: 0, period_start: '', period_end: null, mode: 'monthly', counted_from: null, rule: null, base: null }, health: { status: 'ok', reasons: [] },
+    subscription: null, sub_template: templateOf(undefined, undefined), agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, nic: null, month_counted_from: null, quota: { used: 0, period_start: '', period_end: null, mode: 'monthly', counted_from: null, rule: null, base: null, limit_gb: null, limit_source: 'none' }, health: { status: 'ok', reasons: [] },
     active_job: null, failed_job: null, open_incidents: 0, maintenance: false, relay: null,
     tune: o.kind === 'proxy' || o.host_machine ? null : { profile: 'tune-v2', at: iso(now() - 3 * DAY), current: true, params: o.kind === 'relay'
       ? { bw: 1000, bw_plan: 2560, bw_source: 'plan', rtt: 172, rtt_source: 'sampled', rtt_samples: 41, mem_mb: 3911, buf_max: 45097152 }
@@ -277,7 +309,7 @@ export function buildDb(): Db {
   [2, 3, 4].forEach((i) => { m2Entries[i].reach = { ok: false, ts: iso(now() - 25_000), detail: `端口 ${m2Entries[i].port}：connect: 连接被拒绝 (os error 111)`, fails: 3 }; });
   // 另一个口刚才偶发连不上一次：只提示「刚才连不上 1 次」，不算连不上
   m2Entries[1].reach = { ok: false, ts: iso(now() - 40_000), detail: `端口 ${m2Entries[1].port}：connect: 连接超时`, fails: 1 };
-  machines[1].health = { status: 'down', reasons: [{ key: 'relay_unreachable', severity: 'critical', text: `中控连续 3 次连不上客户入口（端口 ${[2, 3, 4].map((i) => m2Entries[i].port).join('、')}）` }, { key: 'relay_apply_lag', severity: 'warning', text: '配置未应用（配置代数 8 · 已应用 7）' }] };
+  machines[1].health = { status: 'down', reasons: [{ key: 'relay_unreachable', severity: 'critical', text: `中控连续 3 次以上连不上客户入口（端口 ${[2, 3, 4].map((i) => m2Entries[i].port).join('、')}）` }, { key: 'relay_apply_lag', severity: 'warning', text: '配置未应用（配置版本 8，已生效 7）' }] };
   machines[1].host = hostOf('r2', 58);
   // 调优样本：线路机 2 是旧档，团队1 的 03 号还没调优过
   machines[1].tune = { profile: 'tune-v1', at: iso(now() - 40 * DAY), current: false, params: null };
@@ -333,7 +365,7 @@ export function buildDb(): Db {
   cj.steps.forEach((x, i) => { x.state = i < 3 ? 'compensated' : 'skipped'; if (i >= 3) { x.started_at = null; x.finished_at = null; } });
   const uj = mk('j-up', 'upgrade_agent', { id: 'r1', name: '线路机1' }, 'succeeded', [['push', '推送 agent'], ['restart', '重启 agent'], ['verify', '确认上报']], 3, 60 * 5);
   // 改软路由出口失败、换回也失败：需要人工处理（manual 非空）
-  const mj = mk('j-manual', 'replace', { id: 'm-t1-03', name: '团队1-03' }, 'failed', [['preflight', '检查'], ['router_edit', '改软路由出口'], ['swap', '交换编号']], 1, 20, '软路由「团队2-路由B」：经隧道连不上路由；换回失败，需要人工处理：团队2-路由B，备份 /etc/fleet-backup/openclash/config.20261023-005514Z。处理好后点重试');
+  const mj = mk('j-manual', 'replace', { id: 'm-t1-03', name: '团队1-03' }, 'failed', [['preflight', '检查'], ['router_edit', '改软路由出口'], ['swap', '交换编号']], 1, 20, '软路由「团队2-路由B」：经隧道连不上路由，换回也没成功');
   mj.steps[1].error_kind = 'network';
   mj.manual = { message: '软路由「团队2-路由B」的配置可能停在改了一半：经隧道连不上路由，换回没成功。备份在 /etc/fleet-backup/openclash/config.20261023-005514Z；登录路由检查 OpenClash 配置后，点重试。', routers: [{ id: 'rt-b', name: '团队2-路由B', exits: ['节点03', '节点07'] }, { id: 'rt-a', name: '团队2-路由A', exits: ['节点12'] }] };
   jobs.splice(3, 0, cj, uj, mj);
@@ -356,15 +388,15 @@ export function buildDb(): Db {
   logT('j-ip', [['info', '在宿主机 团队1-03 上核对 IP 198.51.100.66'], ['info', '宿主机本机 IPv4：198.51.100.13, 198.51.100.66'], ['info', '经 198.51.100.66 访问中控，回显来源 198.51.100.66'], ['info', '装好 fleet-ssserver@8389 与防火墙表 ss_guard_8389'], ['info', '上架完成']]);
 
   const incidents: Incident[] = [
-    { id: 'i1', subject: { id: 'm-t1-05', name: '团队1-05' }, subject_id: 'm-t1-05', subject_name: '团队1-05', rule: 'agent_offline', rule_name: 'agent 离线', severity: 'critical', state: 'firing', summary: 'agent 已离线 14 分钟', opened_at: iso(now() - 14 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 0 },
-    { id: 'i2', subject: { id: 'm-t1-05', name: '团队1-05' }, subject_id: 'm-t1-05', subject_name: '团队1-05', rule: 'tcp_fail', rule_name: '线路到节点不通', severity: 'critical', state: 'firing', summary: '线路机到节点 TCP 探测连续失败 5 次', opened_at: iso(now() - 12 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: iso(now() - 5 * 60_000), ack_by: 'admin', reopen_count: 0 },
-    { id: 'i3', subject: { id: 'm-t1-09', name: '团队1-09' }, subject_id: 'm-t1-09', subject_name: '团队1-09', rule: 'egress_fail', rule_name: '出口不通', severity: 'warning', state: 'firing', summary: '出口验证连续失败 3 次（经线路机1:20009 访问外网超时）', opened_at: iso(now() - 50 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 2 },
-    { id: 'i4', subject: { id: 'r2', name: '线路机2' }, subject_id: 'r2', subject_name: '线路机2', rule: 'relay_apply_lag', rule_name: '配置未应用', severity: 'warning', state: 'firing', summary: '线路机2：配置未应用（配置代数 8 · 已应用 7）', opened_at: iso(now() - 25 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 0 },
-    { id: 'i5', subject: { id: 'm-t2-03', name: '团队2-03' }, subject_id: 'm-t2-03', subject_name: '团队2-03', rule: 'renewal_due', rule_name: '即将到期', severity: 'info', state: 'resolved', summary: '7 天内到期，请安排续费', opened_at: iso(now() - 26 * 3600_000), resolved_at: iso(now() - 25 * 3600_000), last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 0 },
+    { id: 'i1', engine: 'machine', subject: { id: 'm-t1-05', name: '团队1-05' }, subject_id: 'm-t1-05', subject_name: '团队1-05', rule: 'agent_offline', rule_name: 'agent 离线', severity: 'critical', state: 'firing', summary: 'agent 已离线 14 分钟', opened_at: iso(now() - 14 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 0 },
+    { id: 'i2', engine: 'machine', subject: { id: 'm-t1-05', name: '团队1-05' }, subject_id: 'm-t1-05', subject_name: '团队1-05', rule: 'tcp_fail', rule_name: '线路机到节点不通', severity: 'critical', state: 'firing', summary: '线路机到节点 TCP 探测连续失败 5 次', opened_at: iso(now() - 12 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: iso(now() - 5 * 60_000), ack_by: 'admin', reopen_count: 0 },
+    { id: 'i3', engine: 'machine', subject: { id: 'm-t1-09', name: '团队1-09' }, subject_id: 'm-t1-09', subject_name: '团队1-09', rule: 'egress_fail', rule_name: '出口不通', severity: 'warning', state: 'firing', summary: '出口验证连续失败 3 次（经线路机1:20009 访问外网超时）', opened_at: iso(now() - 50 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 2 },
+    { id: 'i4', engine: 'machine', subject: { id: 'r2', name: '线路机2' }, subject_id: 'r2', subject_name: '线路机2', rule: 'relay_apply_lag', rule_name: '配置未应用', severity: 'warning', state: 'firing', summary: '线路机2：配置未应用（配置版本 8，已生效 7）', opened_at: iso(now() - 25 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 0 },
+    { id: 'i5', engine: 'machine', subject: { id: 'm-t2-03', name: '团队2-03' }, subject_id: 'm-t2-03', subject_name: '团队2-03', rule: 'renewal_due', rule_name: '即将到期', severity: 'info', state: 'resolved', summary: '7 天内到期，请安排续费', opened_at: iso(now() - 26 * 3600_000), resolved_at: iso(now() - 25 * 3600_000), last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 0 },
     // 已恢复的历史（抽屉「最近告警」）：团队1-05 昨天出口断过半小时、来回反复，三天前 CPU 偏高；团队1-09 六天前 TCP 断过
-    { id: 'i6', subject: { id: 'm-t1-05', name: '团队1-05' }, subject_id: 'm-t1-05', subject_name: '团队1-05', rule: 'egress_fail', rule_name: '出口不通', severity: 'critical', state: 'resolved', summary: '出口验证连续失败 3 次（经线路机1:20005 访问外网超时）', opened_at: iso(now() - 26 * 3600_000), resolved_at: iso(now() - 26 * 3600_000 + 28 * 60_000), last_seen_at: iso(now() - 26 * 3600_000 + 27 * 60_000), ack_at: null, ack_by: null, reopen_count: 2 },
-    { id: 'i7', subject: { id: 'm-t1-05', name: '团队1-05' }, subject_id: 'm-t1-05', subject_name: '团队1-05', rule: 'host_cpu_high', rule_name: 'CPU 持续偏高', severity: 'warning', state: 'resolved', summary: 'CPU 持续 10 分钟高于 90%（最高 97%）', opened_at: iso(now() - 3 * DAY), resolved_at: iso(now() - 3 * DAY + 95 * 60_000), last_seen_at: iso(now() - 3 * DAY + 94 * 60_000), ack_at: iso(now() - 3 * DAY + 20 * 60_000), ack_by: 'admin', reopen_count: 0 },
-    { id: 'i8', subject: { id: 'm-t1-09', name: '团队1-09' }, subject_id: 'm-t1-09', subject_name: '团队1-09', rule: 'tcp_fail', rule_name: '线路到节点不通', severity: 'critical', state: 'resolved', summary: '线路机到节点 TCP 探测连续失败 5 次', opened_at: iso(now() - 6 * DAY), resolved_at: iso(now() - 6 * DAY + 12 * 60_000), last_seen_at: iso(now() - 6 * DAY + 11 * 60_000), ack_at: null, ack_by: null, reopen_count: 0 },
+    { id: 'i6', engine: 'machine', subject: { id: 'm-t1-05', name: '团队1-05' }, subject_id: 'm-t1-05', subject_name: '团队1-05', rule: 'egress_fail', rule_name: '出口不通', severity: 'critical', state: 'resolved', summary: '出口验证连续失败 3 次（经线路机1:20005 访问外网超时）', opened_at: iso(now() - 26 * 3600_000), resolved_at: iso(now() - 26 * 3600_000 + 28 * 60_000), last_seen_at: iso(now() - 26 * 3600_000 + 27 * 60_000), ack_at: null, ack_by: null, reopen_count: 2 },
+    { id: 'i7', engine: 'machine', subject: { id: 'm-t1-05', name: '团队1-05' }, subject_id: 'm-t1-05', subject_name: '团队1-05', rule: 'host_cpu_high', rule_name: 'CPU 持续偏高', severity: 'warning', state: 'resolved', summary: 'CPU 持续 10 分钟高于 90%（最高 97%）', opened_at: iso(now() - 3 * DAY), resolved_at: iso(now() - 3 * DAY + 95 * 60_000), last_seen_at: iso(now() - 3 * DAY + 94 * 60_000), ack_at: iso(now() - 3 * DAY + 20 * 60_000), ack_by: 'admin', reopen_count: 0 },
+    { id: 'i8', engine: 'machine', subject: { id: 'm-t1-09', name: '团队1-09' }, subject_id: 'm-t1-09', subject_name: '团队1-09', rule: 'tcp_fail', rule_name: '线路机到节点不通', severity: 'critical', state: 'resolved', summary: '线路机到节点 TCP 探测连续失败 5 次', opened_at: iso(now() - 6 * DAY), resolved_at: iso(now() - 6 * DAY + 12 * 60_000), last_seen_at: iso(now() - 6 * DAY + 11 * 60_000), ack_at: null, ack_by: null, reopen_count: 0 },
   ];
   // 流量额度吃紧（traffic_quota_high，同服务端规则）：本周期已用 ≥ 90% 警告、≥ 100% 严重；开始时间错开几小时
   let tight = 0;
@@ -372,16 +404,17 @@ export function buildDb(): Db {
     const q = quota(m);
     if (m.lifecycle !== 'active' || q.pct == null || q.pct < 90) continue;
     const pct = Math.floor(q.pct);
-    incidents.push({ id: `iq-${m.id}`, subject: { id: m.id, name: m.name }, subject_id: m.id, subject_name: m.name, rule: 'traffic_quota_high', rule_name: '流量额度吃紧', severity: pct >= 100 ? 'critical' : 'warning', state: 'firing',
+    incidents.push({ id: `iq-${m.id}`, engine: 'machine', subject: { id: m.id, name: m.name }, subject_id: m.id, subject_name: m.name, rule: 'traffic_quota_high', rule_name: '流量额度吃紧', severity: pct >= 100 ? 'critical' : 'warning', state: 'firing',
       summary: `本周期已用 ${pct}%（${str(quotaGb(q.used))} / ${q.limit} GB，${q.start.slice(5)} 起）`, opened_at: iso(now() - (2 + 3 * tight++) * 3600_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 0 });
     m.open_incidents++;
   }
   // 进行中的维护、只静默一条规则的、明天凌晨 2 点预约的割接（本地时间）
   const tomorrow2 = new Date(now()); tomorrow2.setDate(tomorrow2.getDate() + 1); tomorrow2.setHours(2, 0, 0, 0);
   const silences: Silence[] = [
-    { id: 's1', subject_id: 'm-t2-04', subject_name: '团队2-04', rule: null, rule_name: null, starts_at: iso(now() - 3600_000), ends_at: iso(now() + 3 * 3600_000), is_maintenance: true, comment: '换内核，预计 4 小时' },
-    { id: 's2', subject_id: 'm-t1-03', subject_name: '团队1-03', rule: 'clock_skew', rule_name: 'agent 时钟不准', starts_at: iso(now() - 2 * 3600_000), ends_at: iso(now() + 22 * 3600_000), is_maintenance: false, comment: '等供应商校时' },
-    { id: 's3', subject_id: 'r2', subject_name: '线路机2', rule: null, rule_name: null, starts_at: iso(tomorrow2.getTime()), ends_at: iso(tomorrow2.getTime() + 4 * 3600_000), is_maintenance: true, comment: '机房割接（供应商通知）' },
+    { id: 's1', subject_kind: 'machine', subject_id: 'm-t2-04', subject_name: '团队2-04', rule: null, rule_name: null, starts_at: iso(now() - 3600_000), ends_at: iso(now() + 3 * 3600_000), is_maintenance: true, comment: '换内核，预计 4 小时' },
+    { id: 's2', subject_kind: 'machine', subject_id: 'm-t1-03', subject_name: '团队1-03', rule: 'clock_skew', rule_name: 'agent 时钟不准', starts_at: iso(now() - 2 * 3600_000), ends_at: iso(now() + 22 * 3600_000), is_maintenance: false, comment: '等供应商校时' },
+    { id: 's3', subject_kind: 'machine', subject_id: 'r2', subject_name: '线路机2', rule: null, rule_name: null, starts_at: iso(tomorrow2.getTime()), ends_at: iso(tomorrow2.getTime() + 4 * 3600_000), is_maintenance: true, comment: '机房割接（供应商通知）' },
+    { id: 's4', subject_kind: 'router', subject_id: 'rt-b', subject_name: '团队2-路由B', rule: null, rule_name: null, starts_at: iso(now() - 2 * 3600_000), ends_at: iso(now() + 2 * 3600_000), is_maintenance: true, comment: '客户现场换宽带' },
   ];
   const audit: AuditEntry[] = [
     // 下面几条照中控的写法：title / summary 是 audit_text 按 detail 拼的
@@ -419,6 +452,7 @@ export function buildDb(): Db {
   ];
   const s3 = machines.find((m) => m.id === 'm-t1-03')!.subscription!;
   const renewals: Record<string, Renewal[]> = { 'm-t1-03': [{ id: 'rn1', old_due: addMonths(s3.due_date, -3), new_due: s3.due_date, amount_cents: s3.price_cents, currency: s3.currency, note: '账单 #2041', actor: 'admin', created_at: iso(now() - 84 * DAY) }] };
+  for (const m of machines) syncSub(m, plans, providers);
   return { user: 'admin', teams, providers, plans, machines, jobs, logs, incidents, silences, audit, renewals, apiKeys, channels, notifyLog, ssPorts: { 'm-t1-14': 8389 }, recycle: recycled(), seq: 100 };
 }
 

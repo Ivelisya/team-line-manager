@@ -6,7 +6,7 @@ import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/dialog';
 import { Tabs, TabsList, TabsTrigger, Trunc } from '@/components/ui/overlays';
 import { InfoTip } from '@/components/ui/form';
-import { Button, IconButton } from '@/components/ui/button';
+import { IconButton } from '@/components/ui/button';
 import { ErrorBoundary } from '@/components/app/ErrorBoundary';
 import { Skeleton } from '@/components/ui/skeleton';
 import type { Incident, MachineView } from '@/lib/types';
@@ -64,7 +64,8 @@ export function NodeDrawer() {
           </>
         ) : (
           <>
-            <header className="drawer-head" style={{ paddingRight: 56 }}>
+            {/* m-drawer-head：国旗对齐标题那一行（窄屏标签折到第二行时，国旗不跟着落到两行中间） */}
+            <header className="drawer-head m-drawer-head" style={{ paddingRight: 56 }}>
               <Flag country={m.country} manual={!!m.country_set} ip={m.ip} />
               <div className="m-head" style={{ flex: 1 }}>
                 <div className="m-head-row"><SheetTitle className="drawer-title ellipsis">{m.name}</SheetTitle><HealthPill m={m} /><MachineTags m={m} /></div>
@@ -165,7 +166,7 @@ function probeCounts(m: MachineView) {
 
 function OverviewTab({ m }: { m: MachineView }) {
   const audit = useAudit(m.id);
-  const { open, setTab } = useDrawer();
+  const { open } = useDrawer();
   // 同机 IP 节点：SSH 端口、agent 都是宿主机的
   const h = m.host_machine;
   const ofHost = h ? '（宿主机的）' : '';
@@ -198,7 +199,7 @@ function OverviewTab({ m }: { m: MachineView }) {
           <LabelValue label="上架时间">{F.dtFull(m.activated_at)}</LabelValue>
           {m.lifecycle === 'retired' ? null : m.agent ? <>
             <LabelValue label="agent 版本">{`${m.agent.version ?? '未知'}${ofHost}`}</LabelValue>
-            <LabelValue label="最近上报">{m.agent.last_report_at ? F.ago(m.agent.last_report_at) : '尚未上报'}</LabelValue>
+            <LabelValue label="最近上报">{m.agent.last_report_at ? F.ago(m.agent.last_report_at) : '还没上报'}</LabelValue>
           </> : <LabelValue label="agent"><>无 <InfoTip text="家宽代理不装 agent：没有主机读数，连通性靠线路机的探测" /></></LabelValue>}
           {/* TCP 不通与出口不通分开数（同线路页）：TCP 只数经节点的入口（直出入口没有 TCP 探测），出口数全部在用的入口 */}
           <LabelValue label="入口探测">{probeCounts(m)}</LabelValue>
@@ -218,19 +219,18 @@ function OverviewTab({ m }: { m: MachineView }) {
             <LabelValue label="公网地址">{m.relay.public_host}</LabelValue>
             <LabelValue label="端口范围">{m.relay.port_min}–{m.relay.port_max}</LabelValue>
             {/* 中控上的配置版本与线路机已生效的版本：相等即已同步，不等时写出从哪一版到哪一版 */}
-            <LabelValue label="配置">{m.relay.generation === m.relay.applied_generation ? '已同步'
-              : <span style={{ color: 'var(--warn-text)' }}>待同步（{m.relay.applied_generation} → {m.relay.generation}）</span>}</LabelValue>
+            <LabelValue label="配置">{m.relay.generation === m.relay.applied_generation ? '已应用'
+              : <span style={{ color: 'var(--warn-text)' }}>配置未应用（配置版本 {m.relay.generation}，已生效 {m.relay.applied_generation}）</span>}</LabelValue>
             <LabelValue label="上次应用">{F.dtFull(m.relay.applied_at)}</LabelValue>
           </LabelValueGrid>
           {m.relay.apply_error && <div style={{ marginTop: 8 }}><Note tone="bad">{errText(m.relay.apply_error)}</Note></div>}
         </Section>
       )}
       <Section>
-        {/* 线路机的入口多（几十条）：概览只放异常的，全部在连接质量页签 */}
-        <SectionHeader title={m.kind === 'relay' ? '挂载的入口' : '入口'} meta={entriesMeta(m)}>
-          {m.kind === 'relay' && m.entries.length > 0 && <Button variant="quiet" size="sm" onClick={() => setTab('quality')}>查看全部</Button>}
-        </SectionHeader>
-        <EntriesTable m={m} onlyBad={m.kind === 'relay'} />
+        {/* 入口表只在这里放一份（状态、TCP、出口、本月业务流量）；连接质量、流量页签只留计数链回这里。
+            线路机的入口多（几十条）：异常的排前面，先露 10 条，表尾展开全部 */}
+        <SectionHeader title={m.kind === 'relay' ? '挂载的入口' : '入口'} meta={entriesMeta(m)} />
+        <EntriesTable m={m} traffic />
       </Section>
       <RecentIncidents m={m} />
       <Section>
@@ -263,12 +263,12 @@ function RecentIncidents({ m }: { m: MachineView }) {
                 <div className="audit-body">
                   <div className="audit-head">
                     <span className="audit-what" data-tip={errText(i.summary)}><b>{i.rule_name}</b></span>
-                    {settling ? <span className="audit-meta" data-tip="原因已消失，持续一段时间没有复发就自动恢复">恢复观察中</span>
+                    {settling ? <span className="audit-meta" data-tip="原因已消失，持续一段时间没有再出现就自动恢复">恢复观察中</span>
                       : <span className="audit-meta" data-tone={firing ? severityOf(i.severity).tone : undefined}>{firing ? '进行中' : '已恢复'}</span>}
                   </div>
                   <div className="audit-detail hint">
                     {incidentSpan(i)}
-                    {i.reopen_count > 0 && <> · <span data-tip={`恢复后 30 分钟内又复发 ${i.reopen_count} 次，合并为这一条`}>反复 {i.reopen_count + 1} 次</span></>}
+                    {i.reopen_count > 0 && <> · <span data-tip={`恢复后 30 分钟内又出现 ${i.reopen_count} 次，已合并成这一条`}>反复 {i.reopen_count + 1} 次</span></>}
                   </div>
                 </div>
               </li>

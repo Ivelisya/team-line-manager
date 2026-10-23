@@ -1,6 +1,7 @@
 //! 访问监控：把 access_event 汇总成小时表（每 5 分钟重算当前小时和被标脏的小时，幂等），以及各个查询。
 //!
-//! - 1h 窗口直接查 access_event（原始记录）；24h 及以上查小时汇总表。各留多久按面板里设的访问记录保留期（settings.rs），
+//! - 1h 窗口直接查 access_event（原始记录）；24h 及以上查小时汇总表，窗口里整天的部分查天汇总表（access_daily，7d / 30d 主要读它）。
+//!   各留多久按面板里设的访问记录保留期（settings.rs），
 //!   窗口不能比汇总的保留期长（`Window::retained`），过期的由 `prune` 与分区维护删掉。
 //! - 随机子域名合并在库里的 `access_collapse()`（见迁移 0006），汇总和 1h 查询共用同一份规则。
 //! - 目标按 (节点, 目标) 聚合，「域名与 IP」默认再按目标合并（`target_groups`）。「来源数」在小时表里是各小时去重数的最大值（跨小时无法精确去重，偏小的近似）。
@@ -80,14 +81,37 @@ on conflict (node_id, dest_host) do update
       total      = greatest(access_target_seen.total + excluded.total, 0)
   where excluded.total <> 0 or excluded.first_seen < access_target_seen.first_seen or excluded.last_seen > access_target_seen.last_seen";
 
-/// 重算一个整点小时（UTC 对齐）
-pub async fn rollup_hour(db: &PgPool, hour: OffsetDateTime) -> anyhow::Result<()> {
+/// 从小时表重算一天（$1 = 那天 UTC 零点）的天汇总：各小时相加，来源数取各小时的最大值。小时表的行只增不减（保留期整天删），
+/// 天表跟着只 upsert；值没变的行不写
+const ROLLUP_DAY: &str = "
+insert into access_daily (node_id, relay_id, day, dest_host, kind, conns, blocked, sources)
+select node_id, relay_id, $1, dest_host, min(kind), sum(conns), sum(blocked), max(sources)
+from access_hourly where hour >= $1 and hour < $1 + interval '1 day'
+group by node_id, relay_id, dest_host
+on conflict (node_id, day, relay_id, dest_host) do update
+  set kind = excluded.kind, conns = excluded.conns, blocked = excluded.blocked, sources = excluded.sources
+  where (access_daily.kind, access_daily.conns, access_daily.blocked, access_daily.sources)
+        is distinct from (excluded.kind, excluded.conns, excluded.blocked, excluded.sources)";
+
+/// UTC 零点（天汇总的「天」）
+pub fn floor_day(t: OffsetDateTime) -> OffsetDateTime {
+    OffsetDateTime::from_unix_timestamp(t.unix_timestamp().div_euclid(86_400) * 86_400).unwrap_or(t)
+}
+
+/// 重算一个整点小时（UTC 对齐），同一事务里重算它所在的那天：天表与小时表任何时候都对得上
+pub async fn rollup_hour(db: &PgPool, hour: OffsetDateTime) -> anyhow::Result<()> { rollup_day_hours(db, &[hour]).await }
+
+/// 重算同一天里的几个小时，再重算那一天（一个事务）
+async fn rollup_day_hours(db: &PgPool, hours: &[OffsetDateTime]) -> anyhow::Result<()> {
+    let Some(&first) = hours.first() else { return Ok(()) };
     let mut tx = db.begin().await?;
     sqlx::query("select pg_advisory_xact_lock($1)").bind(LOCK_KEY).execute(&mut *tx).await?;
-    let end = hour + Duration::hours(1);
     // 往后多算 10 分钟：接近整点时宁可多记一点差值（用不上的会被同步丢弃），也不能漏
     let closed = floor_hour(OffsetDateTime::now_utc() + Duration::minutes(10)) - Duration::hours(1);
-    sqlx::query(ROLLUP).bind(hour).bind(end).bind(closed).execute(&mut *tx).await?;
+    for &hour in hours {
+        sqlx::query(ROLLUP).bind(hour).bind(hour + Duration::hours(1)).bind(closed).execute(&mut *tx).await?;
+    }
+    sqlx::query(ROLLUP_DAY).bind(floor_day(first)).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(())
 }
@@ -95,13 +119,18 @@ pub async fn rollup_hour(db: &PgPool, hour: OffsetDateTime) -> anyhow::Result<()
 /// 后台循环每轮做的事：当前小时必算，被标脏的小时（agent 补传的迟到数据）补算（语义见 `db::rollup_dirty`）
 pub async fn rollup_pending(db: &PgPool) -> anyhow::Result<()> { crate::db::rollup_dirty(db, "access_dirty", |h| rollup_hour(db, h)).await }
 
-/// 补算 [from, 现在] 的所有小时（逐小时，内存有界）。
+/// 补算 [from, 现在] 的所有小时（逐小时，内存有界）；按天一个事务，一天的小时算完再算一次那天
 pub async fn rollup_since(db: &PgPool, from: OffsetDateTime) -> anyhow::Result<()> {
     let end = floor_hour(OffsetDateTime::now_utc());
     let mut h = floor_hour(from);
     while h <= end {
-        rollup_hour(db, h).await?;
-        h += Duration::hours(1);
+        let next_day = floor_day(h) + Duration::days(1);
+        let mut hours = vec![];
+        while h <= end && h < next_day {
+            hours.push(h);
+            h += Duration::hours(1);
+        }
+        rollup_day_hours(db, &hours).await?;
     }
     Ok(())
 }
@@ -116,7 +145,8 @@ pub async fn backfill(db: &PgPool, raw_days: u32) -> anyhow::Result<()> {
 
 /// 按访问记录保留期删过期的汇总与来源画像（后台每小时一次；面板改了保留期后马上一次，见 `settings::enforce`），返回删了多少行。
 /// 截止时间对齐整点：窗口起点也对齐整点，窗口和保留期一样长时第一个小时不会被删掉。
-/// - 小时汇总、来源小时汇总、迟到差值、脏标记：`hourly_days` 天前的小时；
+/// - 小时汇总、天汇总、来源小时汇总、迟到差值、脏标记：`hourly_days` 天前的小时（天汇总：那天的零点在这之前的。窗口不比保留期长，
+///   整天部分从窗口起点之后的第一个零点算起，用不到它）；
 /// - 目标首次 / 最近出现（access_target_seen）：最近一次出现在 `hourly_days` 天前的。之后再出现按第一次出现算，
 ///   即「新目标」= 保留期内没见过；
 /// - 画像缓存（ip_intel_cache：访问来源的 IP，另有机器自己的地址——国旗用）：`hourly_days` 天前写入的，再用到时重新查离线库；
@@ -132,13 +162,14 @@ pub async fn prune(db: &PgPool, ret: AccessRetention, profile_days: u32) -> anyh
     let mut n = 0;
     for (what, sql, cutoff) in [
         ("小时汇总", "delete from access_hourly where hour < $1", hourly),
+        ("天汇总", "delete from access_daily where day < $1", hourly),
         ("来源小时汇总", "delete from access_source_hourly where hour < $1", hourly),
         ("迟到差值", "delete from access_source_late where hour < $1", hourly),
         ("脏标记", "delete from access_dirty where hour < $1", hourly),
         ("目标首次出现", "delete from access_target_seen where last_seen < $1", hourly),
         ("来源 IP 画像缓存", "delete from ip_intel_cache where updated_at < $1", hourly),
         ("来源画像", "delete from node_source_seen where last_seen < $1 and flag is distinct from 'open'", profile),
-        ("画像异常告警", "delete from incident where rule like 'ipintel!_%' escape '!' and state = 'resolved' and resolved_at < $1", profile),
+        ("画像异常告警", "delete from incident where engine = 'ipintel' and state = 'resolved' and resolved_at < $1", profile),
     ] {
         n += sqlx::query(sql).bind(cutoff).execute(db).await.with_context(|| format!("清理过期的{what}"))?.rows_affected();
     }
@@ -357,7 +388,20 @@ fn event_kind_action(f: &Filter, a: &mut Args) -> String {
 
 /// 小时表（access_hourly / access_source_hourly，别名 `t`）的公共条件；`search` 是搜索要匹配的列
 fn hourly_where(f: &Filter, a: &mut Args, t: &str, search: &str) -> String {
-    let mut w = format!("{t}.hour >= {}", a.add(f.from));
+    let w = format!("{t}.hour >= {}", a.add(f.from));
+    w + &scope_where(f, a, t, search)
+}
+
+/// 窗口 [from, 现在] 里整天的部分 [d0, d1)（UTC 零点）：至少有一整天才给。首尾不满一天的读小时表
+fn whole_days(from: OffsetDateTime, now: OffsetDateTime) -> Option<(OffsetDateTime, OffsetDateTime)> {
+    let d0 = floor_day(from + Duration::days(1) - Duration::nanoseconds(1));
+    let d1 = floor_day(now);
+    (d1 > d0).then_some((d0, d1))
+}
+
+/// 汇总表（别名 `t`）除时间以外的条件，每个都以 and 开头：节点、团队、搜索、线路机
+fn scope_where(f: &Filter, a: &mut Args, t: &str, search: &str) -> String {
+    let mut w = String::new();
     if let Some(n) = &f.nodes {
         w += &format!(" and {t}.node_id = any({})", a.add(n));
     }
@@ -396,17 +440,38 @@ fn cte(f: &Filter, a: &mut Args) -> String {
             event_where(f, a, false)
         )
     } else {
-        let mut w = hourly_where(f, a, "h", "h.dest_host");
-        if let Some(h) = &f.host {
-            w += &format!(" and h.dest_host = {}", a.add(h));
-        }
+        let scope = |a: &mut Args, t: &str| {
+            let mut w = scope_where(f, a, t, &format!("{t}.dest_host"));
+            if let Some(h) = &f.host {
+                w += &format!(" and {t}.dest_host = {}", a.add(h));
+            }
+            w
+        };
+        // 整天的部分读天表，首尾不满一天的读小时表（`whole_days`）；天表每行是那天各小时的合计，合起来与只读小时表相同
+        let rows = match whole_days(f.from, OffsetDateTime::now_utc()) {
+            None => format!("select h.node_id, h.dest_host, h.kind, h.conns, h.blocked, h.sources from access_hourly h where h.hour >= {}{}", a.add(f.from), scope(a, "h")),
+            Some((d0, d1)) => format!(
+                "select h.node_id, h.dest_host, h.kind, h.conns, h.blocked, h.sources from access_hourly h where h.hour >= {} and h.hour < {}{}
+    union all
+    select d.node_id, d.dest_host, d.kind, d.conns, d.blocked, d.sources from access_daily d where d.day >= {} and d.day < {}{}
+    union all
+    select h.node_id, h.dest_host, h.kind, h.conns, h.blocked, h.sources from access_hourly h where h.hour >= {}{}",
+                a.add(f.from),
+                a.add(d0),
+                scope(a, "h"),
+                a.add(d0),
+                a.add(d1),
+                scope(a, "d"),
+                a.add(d1),
+                scope(a, "h")
+            ),
+        };
         format!(
             "agg as (
-    select h.node_id, h.dest_host, h.kind, sum(h.conns)::bigint conns, sum(h.blocked)::bigint blocked, max(h.sources)::bigint sources,
+    select u.node_id, u.dest_host, u.kind, sum(u.conns)::bigint conns, sum(u.blocked)::bigint blocked, max(u.sources)::bigint sources,
            null::timestamptz first_ts, null::timestamptz last_ts
-    from access_hourly h
-    where {w}
-    group by h.node_id, h.dest_host, h.kind)"
+    from ({rows}) u
+    group by u.node_id, u.dest_host, u.kind)"
         )
     };
     let (conns, blocked, keep) = match f.action {
@@ -857,9 +922,7 @@ pub async fn machine_access(db: &PgPool, machine_id: Uuid, window: Window, raw_d
     Ok(MachineAccess { window_start: fmt_ts(f.from), top_domains, top_sources, recent, hourly })
 }
 
-pub fn fmt_ts(t: OffsetDateTime) -> String {
-    t.format(&time::format_description::well_known::Rfc3339).unwrap_or_default()
-}
+pub use crate::meta::fmt_ts;
 
 #[cfg(test)]
 mod tests {
@@ -901,6 +964,19 @@ mod tests {
         // 窗口不能比汇总的保留期长；1h 读原始记录，总能看
         assert!(Window::H1.retained(1) && Window::H24.retained(1) && Window::D7.retained(7) && Window::D30.retained(30));
         assert!(!Window::D7.retained(6) && !Window::D30.retained(29));
+    }
+
+    #[test]
+    fn whole_days_of_window() {
+        let at = |s: &str| OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).unwrap();
+        let now = at("2026-10-23T11:20:00Z");
+        // 7 天：起点之后的第一个零点到今天零点
+        assert_eq!(whole_days(at("2026-10-16T11:00:00Z"), now), Some((at("2026-10-17T00:00:00Z"), at("2026-10-23T00:00:00Z"))));
+        // 起点正好是零点：那天整天算
+        assert_eq!(whole_days(at("2026-10-16T00:00:00Z"), now), Some((at("2026-10-16T00:00:00Z"), at("2026-10-23T00:00:00Z"))));
+        // 24 小时一般凑不出整天
+        assert_eq!(whole_days(at("2026-10-22T11:00:00Z"), now), None);
+        assert_eq!(floor_day(now), at("2026-10-23T00:00:00Z"));
     }
 
     #[test]

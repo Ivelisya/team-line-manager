@@ -4,6 +4,7 @@
 //! 软路由：指向要摘掉的旧入口的出口，在新入口验收之后、摘旧入口之前改成新入口（作业的「改软路由出口」一步，
 //! 和替换节点同一套：全部在线才动手，逐台备份 → 改 → 重启 OpenClash → 测延迟，一台失败已改的全部换回、旧入口不摘）。
 //! 预览按快照列出要改的出口；执行时按路由当时的配置重新确定（`move_exit`），同一台路由同时只有一个作业在改。
+//! 搬空时各节点的作业参数带同一个 `batch`：都验收完新入口后由一个带头的一起改（每台路由只改一次、重启一次，见 jobs/steps/batch.rs）。
 //! 出口写的是旧线路机的 IP 就改成新线路机的 IP，否则改成新线路机的 public_host；端口是新入口的。
 //! `routers = false` 只换入口，路由上的出口留着指向旧入口（摘掉后就断了）。
 
@@ -157,12 +158,16 @@ pub fn move_exit(er: &EntryRef, old_entry: Uuid, new: Option<(Uuid, u16)>, from_
     })
 }
 
-async fn enqueue_move(tx: &mut Tx<'_>, actor: &str, node: Uuid, p: &MovePlan, to: Uuid, via: &str) -> ApiResult<Uuid> {
+/// `batch`：搬空同批的标识（一起改软路由），单独换线路机为 None
+async fn enqueue_move(tx: &mut Tx<'_>, actor: &str, node: Uuid, p: &MovePlan, to: Uuid, via: &str, batch: Option<Uuid>) -> ApiResult<Uuid> {
     let routers = if p.routers_enabled { p.routers.as_slice() } else { &[] };
-    let params = json!({
+    let mut params = json!({
         "from_relay_id": p.from_relay, "to_relay_id": to, "old_entry_id": p.old_entry,
         "routers": p.routers_enabled, "plan": {"routers": serde_json::to_value(routers).unwrap_or_default()},
     });
+    if let Some(b) = batch {
+        params["batch"] = json!(b);
+    }
     let job = jobs::enqueue(tx, "move_entry", Some(node), params, actor).await?;
     let changed: Vec<Value> = routers.iter().map(|r| json!({"id": r.id, "name": r.name, "exits": r.exits.iter().map(|e| &e.exit).collect::<Vec<_>>()})).collect();
     audit(
@@ -206,7 +211,7 @@ pub async fn move_node(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPat
     if !plan.blockers.is_empty() {
         return Err(ApiError::conflict(plan.blockers.join("；")).with_detail(json!({"blockers": plan.blockers})));
     }
-    let job = enqueue_move(&mut tx, &a.name, id, &plan, b.to_relay_id, "move").await?;
+    let job = enqueue_move(&mut tx, &a.name, id, &plan, b.to_relay_id, "move", None).await?;
     tx.commit().await?;
     st.wake_jobs();
     st.emit(Event::Job { id: job, target: Some(id) });
@@ -248,7 +253,21 @@ impl Evac {
         warnings.sort();
         warnings.dedup();
         json!({"from": self.from_name, "to": self.to_name, "jobs": list, "skipped": self.skipped, "warnings": warnings,
-               "share_changed": !self.plans.is_empty(), "note": SHARE_NOTE})
+               "router_restarts": self.router_restarts(), "share_changed": !self.plans.is_empty(), "note": SHARE_NOTE})
+    }
+
+    /// 要改的软路由：同批一起改，每台只重启一次 OpenClash（断开这台路由上的全部连接）；`nodes` 是有出口要改的节点数
+    /// （按计划，不改软路由时为空）。`[{id, name, times: 1, nodes}]`，节点多的在前
+    fn router_restarts(&self) -> Vec<Value> {
+        let mut n: Vec<(uuid::Uuid, &str, usize)> = vec![];
+        for r in self.plans.iter().filter(|(_, p)| p.routers_enabled).flat_map(|(_, p)| &p.routers) {
+            match n.iter_mut().find(|x| x.0 == r.id) {
+                Some(x) => x.2 += 1,
+                None => n.push((r.id, &r.name, 1)),
+            }
+        }
+        n.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.1.cmp(b.1)));
+        n.into_iter().map(|(id, name, nodes)| json!({"id": id, "name": name, "times": 1, "nodes": nodes})).collect()
     }
 }
 
@@ -315,13 +334,15 @@ pub async fn evacuate_preview(_a: Actor, State(st): State<AppState>, ApiPath(rel
 
 /// 搬空线路机：为这台线路机上每个在用入口的节点各建一个换线路机作业（线路机退役前用）。
 /// 暂时不能搬的节点（停用、有别的作业、已在目标线路机上有入口、软路由不在线…）列在 skipped 里，不影响其它节点。
-/// 各作业并行；改同一台软路由的「改软路由出口」一步一台路由同时只有一个作业在改（按路由加锁，见 jobs/steps/replace.rs）
+/// 各作业并行建新入口、验收；「改软路由出口」一步同批一起做：都验收完后由一个带头的一次改完，每台路由只重启一次
+/// （任何一台失败全部换回、几个节点的旧入口都不摘，见 jobs/steps/batch.rs）
 pub async fn evacuate(a: Actor, State(st): State<AppState>, ApiPath(relay): ApiPath<Uuid>, ApiJson(b): ApiJson<EvacuateIn>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
     let e = plan_evacuate(&st, &mut tx, relay, b.to_relay_id, b.routers != Some(false)).await?;
+    let batch = crate::db::new_id();
     let mut created = vec![];
     for (node, plan) in &e.plans {
-        created.push(enqueue_move(&mut tx, &a.name, *node, plan, b.to_relay_id, "evacuate").await?);
+        created.push(enqueue_move(&mut tx, &a.name, *node, plan, b.to_relay_id, "evacuate", Some(batch)).await?);
     }
     let v = e.view(Some(&created));
     audit(

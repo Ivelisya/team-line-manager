@@ -13,9 +13,9 @@ const API_TIMEOUT: Duration = Duration::from_secs(15);
 const TEST_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// xray 子进程的 GOMAXPROCS：本机可用核数，最多 2。
-/// 子进程跑在 agent 的 cgroup 里（单元 TasksMax=128），Go 默认按核数开 P、线程跟着涨：实验室把 GOMAXPROCS
-/// 设成 64 / 128 时一次 `xray run -test` 占 22 / 38 个任务，再加并发的 `xray api` 和 agent 自己，大核数机器会顶到上限；
-/// 设成 2 只占 4 个。单核机不抬到 2：那样 -test 慢一倍（1000 个入口 4.7 s → 10.8 s）。内存不用限：1000 个入口也只用约 20 MiB
+/// 子进程跑在 agent 的 cgroup 里（单元 TasksMax=128），Go 默认按核数开 P、线程跟着涨：大核数机器上一次 `xray run -test`
+/// 就占几十个任务，再加并发的 `xray api` 和 agent 自己会顶到上限；设成 2 只占 4 个。单核机不抬到 2：那样 -test 慢一倍。
+/// 内存不用限：1000 个入口也只用约 20 MiB
 static CHILD_GOMAXPROCS: LazyLock<String> =
     LazyLock::new(|| std::thread::available_parallelism().map_or(1, |n| n.get().min(2)).to_string());
 

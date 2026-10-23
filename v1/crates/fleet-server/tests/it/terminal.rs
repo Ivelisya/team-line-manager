@@ -630,10 +630,16 @@ async fn lab_e2e() {
     assert!(seen.contains("30 100"), "初始大小：{seen}");
     let pid: String = seen.split("PID=").filter_map(|s| s.split('=').next()).filter(|p| p.chars().all(|c| c.is_ascii_digit()) && !p.is_empty()).last().unwrap().to_string();
     ws.send(Message::Text(json!({"type": "resize", "cols": 120, "rows": 40}).to_string().into())).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    seen.clear();
-    cmd(&mut ws, "stty size; echo d''one").await;
-    wait(&mut ws, &mut seen, "done\r\n").await;
+    // resize 是异步生效的：反复问大小直到变了，不靠固定等待
+    for _ in 0..50 {
+        seen.clear();
+        cmd(&mut ws, "stty size; echo d''one").await;
+        wait(&mut ws, &mut seen, "done\r\n").await;
+        if seen.contains("40 120") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     assert!(seen.contains("40 120"), "改大小之后：{seen}");
     // 远端的 TERM；ssh 的转义字符关掉了：行首的 ~. 原样交给远端 shell，连接不断
     seen.clear();

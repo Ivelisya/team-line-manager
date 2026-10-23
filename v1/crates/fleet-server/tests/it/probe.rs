@@ -29,14 +29,21 @@ async fn add_probe(t: &T, name: &str) -> (Uuid, String) {
     (id, tok)
 }
 
+/// 取安装脚本的限速（每个来源 10 分钟 20 次）是整个进程共用的：每次换一个来源地址，这一套里取的次数多了也不会被它挡住
 async fn raw_get(t: &T, path: &str) -> (StatusCode, String) {
     use axum::body::Body;
+    use axum::extract::ConnectInfo;
     use http_body_util::BodyExt;
+    use std::net::SocketAddr;
     use tower::ServiceExt;
-    let res = t.app.clone().oneshot(axum::http::Request::get(path).body(Body::empty()).unwrap()).await.unwrap();
+    let mut req = axum::http::Request::get(path).body(Body::empty()).unwrap();
+    req.extensions_mut().insert(ConnectInfo(SocketAddr::from(([198, 18, rand_byte(), rand_byte()], 40000))));
+    let res = t.app.clone().oneshot(req).await.unwrap();
     let st = res.status();
     (st, String::from_utf8_lossy(&res.into_body().collect().await.unwrap().to_bytes()).into_owned())
 }
+
+fn rand_byte() -> u8 { Uuid::new_v4().as_bytes()[0] }
 
 /// 探测点上报一轮。`ok`：每台线路机通不通（端口取目标里第一个）。同一个探测点两份至少隔 10 秒：上报前把最近上报往前挪
 async fn report(t: &T, id: Uuid, tok: &str, results: &[(Uuid, u16, bool, Option<f32>)]) -> (StatusCode, Value) {
@@ -123,7 +130,7 @@ async fn primary_probe_drives_beats_alerts_and_fallback() {
         report(&t, id, &tok, &[(relay, 20001, false, None)]).await;
     }
     let m = machine(&t, relay).await;
-    assert_eq!(reason_text(&m, "relay_unreachable").as_deref(), Some("香港探测点连续 3 次连不上客户入口（端口 20001：超时 10 秒）"), "{m}");
+    assert_eq!(reason_text(&m, "relay_unreachable").as_deref(), Some("香港探测点连续 3 次以上连不上客户入口（端口 20001：超时 10 秒）"), "{m}");
     assert_eq!((m["entries"][0]["reach"]["ok"].clone(), m["entries"][0]["reach"]["fails"].clone()), (json!(false), json!(3)), "{m}");
     // 通了：恢复，心跳格带延迟中位数（只算通的）
     for rtt in [150.0, 170.0, 160.0] {
@@ -160,13 +167,13 @@ async fn primary_probe_drives_beats_alerts_and_fallback() {
         .await
         .unwrap();
     let m = machine(&t, relay).await;
-    assert_eq!(reason_text(&m, "relay_unreachable").as_deref(), Some("中控（代替离线的香港探测点）连续 3 次连不上客户入口（端口 20001：连接被拒绝）"), "{m}");
+    assert_eq!(reason_text(&m, "relay_unreachable").as_deref(), Some("中控（代替离线的香港探测点）连续 3 次以上连不上客户入口（端口 20001：连接被拒绝）"), "{m}");
     // 探测点离线告警：警告，对象是探测点（不是机器），摘要写明主来源的处境
     probe_points::check_once(&t.st, OffsetDateTime::now_utc()).await.unwrap();
     let inc = t.get("/api/v1/incidents?state=firing").await;
     let p = inc["items"].as_array().unwrap().iter().find(|i| i["rule"] == "probe_point_offline").cloned().unwrap_or_else(|| panic!("{inc}"));
     assert_eq!((p["severity"].clone(), p["subject"].clone(), p["subject_name"].clone(), p["rule_name"].clone()), (json!("warning"), Value::Null, json!("香港"), json!("探测点离线")));
-    assert!(p["summary"].as_str().unwrap().starts_with("香港：10 分钟没有上报") && p["summary"].as_str().unwrap().contains("暂由中控代替"), "{p}");
+    assert!(p["summary"].as_str().unwrap().starts_with("香港：10 分钟没有上报") && p["summary"].as_str().unwrap().contains("暂由中控代测"), "{p}");
     // 中控的检查关掉：标灰（判不出，不报）
     let r = t.req("PUT", "/api/v1/settings/reach-source", Some(json!({"central_enabled": false})), None).await;
     assert_eq!(r.1["data"]["effective"]["state"], "none", "{}", r.1);
@@ -231,4 +238,352 @@ async fn upgrade_via_targets() {
     t.req("POST", "/agent/v1/probe/report", Some(json!({"version": "0.1.0+new", "sha256": sha, "results": []})), Some(&tok)).await;
     assert!(t.req("GET", "/agent/v1/probe/targets", None, Some(&tok)).await.1.get("upgrade").is_none());
     assert_eq!(t.get("/api/v1/probe-points").await[0]["version"], "0.1.0+new");
+}
+
+/// 升级失败不反复下发：下载过程序、过了试运行时长（5 分钟）还没报上目标 sha256（新版本没能上报、探测点换回了旧版本），
+/// 它下次取目标时清掉升级请求、记下 upgrade_failed，列表显示；手动再升级清掉记录重新下发；之后报上了目标 sha256 也清掉
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn failed_upgrade_is_not_retried() {
+    let t = setup().await;
+    let (id, tok) = add_probe(&t, "香港").await;
+    report(&t, id, &tok, &[]).await;
+    common::dist_agent(&t, "0.1.0+new");
+    let sha = t.post(&format!("/api/v1/probe-points/{id}/upgrade"), json!({})).await["sha256"].as_str().unwrap().to_string();
+    let targets = || async { t.req("GET", "/agent/v1/probe/targets", None, Some(&tok)).await.1 };
+    let download = || async {
+        use axum::body::Body;
+        use tower::ServiceExt;
+        let req = axum::http::Request::get("/agent/v1/probe/binary").header("authorization", format!("Bearer {tok}")).body(Body::empty()).unwrap();
+        assert_eq!(t.app.clone().oneshot(req).await.unwrap().status(), StatusCode::OK);
+    };
+    // 还没下载：过多久都照旧下发（探测点可能一直关着）
+    sqlx::query("update probe_point set updated_at = now() - interval '1 hour' where id = $1").bind(id).execute(&t.st.db).await.unwrap();
+    assert_eq!(targets().await["upgrade"]["sha256"], json!(sha));
+    download().await;
+    let fetched = || async { sqlx::query_scalar::<_, Option<OffsetDateTime>>("select upgrade_fetched_at from probe_point where id = $1").bind(id).fetch_one(&t.st.db).await.unwrap() };
+    let first = fetched().await.expect("记下第一次下载的时刻");
+    download().await;
+    assert_eq!(fetched().await, Some(first), "再下载不改");
+    // 下载后不到 5 分钟（试运行中）：照旧下发
+    assert_eq!(targets().await["upgrade"]["sha256"], json!(sha));
+    // 5 分钟过了、报上来的还是旧版本：算失败，不再下发
+    sqlx::query("update probe_point set upgrade_fetched_at = now() - interval '6 minutes' where id = $1").bind(id).execute(&t.st.db).await.unwrap();
+    assert!(targets().await.get("upgrade").is_none());
+    let p = &t.get("/api/v1/probe-points").await[0];
+    assert_eq!(p["upgrade"], Value::Null, "{p}");
+    assert_eq!((p["upgrade_failed"]["sha256"].clone(), p["upgrade_failed"]["to"].clone(), p["upgrade_failed"]["from"].clone()), (json!(sha), json!("0.1.0+new"), json!("0.1.0+test")), "{p}");
+    report(&t, id, &tok, &[]).await;
+    assert!(t.get("/api/v1/probe-points").await[0]["upgrade_failed"].is_object(), "旧版本照常上报，记录留着");
+    // 手动再升级：清掉记录，重新下发
+    t.post(&format!("/api/v1/probe-points/{id}/upgrade"), json!({})).await;
+    assert_eq!(t.get("/api/v1/probe-points").await[0]["upgrade_failed"], Value::Null);
+    assert_eq!(targets().await["upgrade"]["sha256"], json!(sha));
+    assert_eq!(fetched().await, None, "重新从下载算起");
+    // 又记成失败之后，其实换成了（报上了目标 sha256）：清掉记录
+    download().await;
+    sqlx::query("update probe_point set upgrade_fetched_at = now() - interval '6 minutes' where id = $1").bind(id).execute(&t.st.db).await.unwrap();
+    targets().await;
+    report_json(&t, id, &tok, json!({"version": "0.1.0+new", "sha256": sha, "results": []})).await;
+    let p = &t.get("/api/v1/probe-points").await[0];
+    assert_eq!((p["upgrade"].clone(), p["upgrade_failed"].clone(), p["version"].clone()), (Value::Null, Value::Null, json!("0.1.0+new")), "{p}");
+}
+
+/// 探测点报上它记着的坏版本（换上过、没能上报、自己换回来了；它不会再换、也不下载）：要它升级到的正是这个时当场记成升级失败、不再下发；
+/// 手动再升级到这个版本 409（说明修好后发新版本）；dist 换了新版本照常下发；之后的上报不再带它（重装过、或换回了旧探测点）记录就清掉
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reported_bad_version_fails_upgrade_at_once() {
+    let t = setup().await;
+    let (id, tok) = add_probe(&t, "香港").await;
+    report(&t, id, &tok, &[]).await;
+    common::dist_agent(&t, "0.1.0+bad");
+    let sha = t.post(&format!("/api/v1/probe-points/{id}/upgrade"), json!({})).await["sha256"].as_str().unwrap().to_string();
+    // 报的坏版本不是这个：照旧下发
+    report_json(&t, id, &tok, json!({"version": "0.1.0+test", "bad_sha256": "00", "results": []})).await;
+    assert_eq!(t.req("GET", "/agent/v1/probe/targets", None, Some(&tok)).await.1["upgrade"]["sha256"], json!(sha));
+    // 正是这个：不等下载，当场记失败、清掉升级请求
+    let (s, v) = report_json(&t, id, &tok, json!({"version": "0.1.0+test", "sha256": "11", "bad_sha256": sha, "results": []})).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(t.req("GET", "/agent/v1/probe/targets", None, Some(&tok)).await.1.get("upgrade").is_none());
+    let p = &t.get("/api/v1/probe-points").await[0];
+    assert_eq!((p["upgrade"].clone(), p["upgrade_failed"]["sha256"].clone(), p["upgrade_failed"]["to"].clone(), p["upgrade_failed"]["from"].clone()), (Value::Null, json!(sha), json!("0.1.0+bad"), json!("0.1.0+test")), "{p}");
+    // 手动再升级到同一个版本：409，什么都不改
+    let (s, v) = t.req("POST", &format!("/api/v1/probe-points/{id}/upgrade"), Some(json!({})), None).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().contains("跑不起来过"), "{v}");
+    assert!(t.get("/api/v1/probe-points").await[0]["upgrade_failed"].is_object());
+    // 发了新版本：照常下发
+    common::dist_agent(&t, "0.1.0+fixed");
+    let fixed = t.post(&format!("/api/v1/probe-points/{id}/upgrade"), json!({})).await["sha256"].as_str().unwrap().to_string();
+    assert_ne!(fixed, sha);
+    report_json(&t, id, &tok, json!({"version": "0.1.0+test", "sha256": "11", "bad_sha256": sha, "results": []})).await;
+    assert_eq!(t.req("GET", "/agent/v1/probe/targets", None, Some(&tok)).await.1["upgrade"]["sha256"], json!(fixed));
+    // 之后的上报不带坏版本（重装过、标记删了）：记录跟着清掉，又能升到原来那个
+    common::dist_agent(&t, "0.1.0+bad");
+    sqlx::query("update probe_point set bad_sha256 = $2 where id = $1").bind(id).bind(&sha).execute(&t.st.db).await.unwrap();
+    assert_eq!(t.req("POST", &format!("/api/v1/probe-points/{id}/upgrade"), Some(json!({})), None).await.0, StatusCode::CONFLICT);
+    report_json(&t, id, &tok, json!({"version": "0.1.0+test", "results": []})).await;
+    assert_eq!(t.req("POST", &format!("/api/v1/probe-points/{id}/upgrade"), Some(json!({})), None).await.0, StatusCode::OK, "旧探测点不带 bad_sha256：记录跟着清掉");
+}
+
+/// 停用过的探测点重新启用：最近被采纳从启用那一刻算起（停用期间照收心跳、不测，last_kept_at 停在停用前），
+/// 下一份上报到来之前不会被当成「在线但检查都作废了」误开 probe_point_offline
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reenabled_probe_is_not_blind() {
+    let t = setup().await;
+    let (id, tok) = add_probe(&t, "香港").await;
+    report(&t, id, &tok, &[]).await;
+    let path = format!("/api/v1/probe-points/{id}");
+    let patch = |on: bool| t.req("PATCH", &path, Some(json!({"enabled": on})), None);
+    patch(false).await;
+    // 停用了 10 分钟，期间照常发心跳
+    sqlx::query("update probe_point set last_kept_at = now() - interval '10 minutes', discard_reason = 'x' where id = $1").bind(id).execute(&t.st.db).await.unwrap();
+    report(&t, id, &tok, &[]).await;
+    patch(true).await;
+    let p = &t.get("/api/v1/probe-points").await[0];
+    assert_eq!((p["state"].clone(), p["discard_reason"].clone()), (json!("online"), Value::Null), "{p}");
+    probe_points::check_once(&t.st, OffsetDateTime::now_utc()).await.unwrap();
+    assert_eq!(t.count("select count(*) from incident where rule = 'probe_point_offline'").await, 0);
+}
+
+/// 探测点 10 分钟没上报（也没有被采纳的轮次）：离线
+async fn go_offline(t: &T, id: Uuid) {
+    sqlx::query("update probe_point set last_seen_at = now() - interval '10 minutes', last_kept_at = now() - interval '10 minutes' where id = $1").bind(id).execute(&t.st.db).await.unwrap();
+}
+
+/// 单个探测点的维护窗口与静默（同机器）：维护中离线不开告警；开着的保持（回来了也不恢复）、到期后再判；列表显示维护中；
+/// 只静默离线这条规则的不开；删探测点连带删它的静默
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn probe_point_maintenance_and_silence() {
+    let t = setup().await;
+    let (hk, hk_tok) = add_probe(&t, "香港").await;
+    let (tk, tk_tok) = add_probe(&t, "东京").await;
+    report(&t, hk, &hk_tok, &[]).await;
+    report(&t, tk, &tk_tok, &[]).await;
+    let now = OffsetDateTime::now_utc();
+    let at = |m: i64| (now + time::Duration::minutes(m)).format(&time::format_description::well_known::Rfc3339).unwrap();
+    const FIRING: &str = "select count(*) from incident where rule = 'probe_point_offline' and state = 'firing'";
+    let maint = |id: Uuid| json!({"subject_kind": "probe_point", "subject_id": id, "is_maintenance": true, "starts_at": at(-1), "ends_at": at(60), "comment": "换机房"});
+
+    // 维护中离线：不开新的；列表与静默列表写明
+    let w = t.post("/api/v1/silences", maint(hk)).await["id"].as_str().unwrap().to_string();
+    let ps = t.get("/api/v1/probe-points").await;
+    let m: Vec<(&str, bool)> = ps.as_array().unwrap().iter().map(|p| (p["name"].as_str().unwrap(), p["maintenance"].as_bool().unwrap())).collect();
+    assert_eq!(m, [("香港", true), ("东京", false)]);
+    let list = t.get("/api/v1/silences").await;
+    assert_eq!((list[0]["subject_kind"].as_str(), list[0]["subject_name"].as_str()), (Some("probe_point"), Some("香港")), "{list}");
+    go_offline(&t, hk).await;
+    probe_points::check_once(&t.st, OffsetDateTime::now_utc()).await.unwrap();
+    assert_eq!(t.count(FIRING).await, 0, "维护中不开");
+    // 结束维护：照报
+    t.req("DELETE", &format!("/api/v1/silences/{w}"), None, None).await;
+    probe_points::check_once(&t.st, OffsetDateTime::now_utc()).await.unwrap();
+    assert_eq!(t.count(FIRING).await, 1);
+    // 再开维护、探测点回来：开着的保持，到期后恢复
+    let w = t.post("/api/v1/silences", maint(hk)).await["id"].as_str().unwrap().to_string();
+    report(&t, hk, &hk_tok, &[]).await;
+    probe_points::check_once(&t.st, OffsetDateTime::now_utc()).await.unwrap();
+    assert_eq!(t.count(FIRING).await, 1, "维护中开着的保持");
+    sqlx::query("update silence set ends_at = now() - interval '1 second' where id = $1::uuid").bind(&w).execute(&t.st.db).await.unwrap();
+    probe_points::check_once(&t.st, OffsetDateTime::now_utc()).await.unwrap();
+    assert_eq!(t.count(FIRING).await, 0, "到期后按那时的状态恢复");
+
+    // 只静默东京的离线：不开；规则要是探测点的
+    let (s, v) = t.req("POST", "/api/v1/silences", Some(json!({"subject_kind": "probe_point", "subject_id": tk, "rule": "router_offline", "starts_at": at(-1), "ends_at": at(60)})), None).await;
+    assert_eq!((s, v["error"]["message"].as_str()), (StatusCode::BAD_REQUEST, Some("「软路由离线」不是探测点的告警规则")));
+    t.post("/api/v1/silences", json!({"subject_kind": "probe_point", "subject_id": tk, "rule": "probe_point_offline", "starts_at": at(-1), "ends_at": at(60)})).await;
+    go_offline(&t, tk).await;
+    probe_points::check_once(&t.st, OffsetDateTime::now_utc()).await.unwrap();
+    assert_eq!(t.count(FIRING).await, 0);
+
+    // 删探测点：它的静默一起删
+    assert_eq!(t.req("DELETE", &format!("/api/v1/probe-points/{tk}"), None, None).await.0, StatusCode::OK);
+    assert_eq!(t.count(&format!("select count(*) from silence where probe_point_id = '{tk}'")).await, 0);
+}
+
+/// 入口表的最近一次检查不算早于入口创建的：端口以前被别的入口用过（0050 之前复用过，或推算偏低），保留期里还留着它的检查
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn entry_reach_ignores_checks_before_entry() {
+    let t = setup().await;
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let team = seed_team(&t, "团队1").await;
+    seed_node(&t, relay, team, 1, "203.0.113.5", 20001).await;
+    sqlx::query("insert into relay_reach (relay_id, ts, ok, detail, port) select $1, now() - interval '1 hour' + make_interval(secs => g), false, '端口 20001：超时', 20001 from generate_series(1, 5) g")
+        .bind(relay)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    assert_eq!(machine(&t, relay).await["entries"][0]["reach"], Value::Null, "旧入口的检查不算");
+    sqlx::query("insert into relay_reach (relay_id, ts, ok, detail, port) values ($1, now(), false, '端口 20001：超时', 20001)").bind(relay).execute(&t.st.db).await.unwrap();
+    let r = machine(&t, relay).await["entries"][0]["reach"].clone();
+    assert_eq!((r["ok"].clone(), r["fails"].clone()), (json!(false), json!(1)), "{r}");
+}
+
+/// 探测点上报任意一份（JSON 原样）：同 `report`，先把最近上报往前挪 20 秒
+async fn report_json(t: &T, id: Uuid, tok: &str, body: Value) -> (StatusCode, Value) {
+    sqlx::query("update probe_point set last_seen_at = last_seen_at - interval '20 seconds' where id = $1").bind(id).execute(&t.st.db).await.unwrap();
+    t.req("POST", "/agent/v1/probe/report", Some(body), Some(tok)).await
+}
+
+const CONTROLS_DOWN: &str = "对照目标（1.1.1.1:443、8.8.8.8:443）都连不上";
+
+/// 主来源在线、但每轮都因对照目标连不上而作废：超过 3 分钟没有被采纳的轮次就按离线处理（退回中控），开 probe_point_offline 写明原因；
+/// 有一轮被采纳就回来、告警恢复。离线后刚回来的那一轮作废不算（从回来那一刻算起）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn blind_primary_probe_falls_back_and_alerts() {
+    let t = setup().await;
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let team = seed_team(&t, "团队1").await;
+    seed_node(&t, relay, team, 1, "203.0.113.5", 20001).await;
+    let (id, tok) = add_probe(&t, "香港").await;
+    report(&t, id, &tok, &[(relay, 20001, true, Some(150.0))]).await;
+    t.req("PUT", "/api/v1/settings/reach-source", Some(json!({"primary": id})), None).await;
+    let discard = json!({"version": "0.1.0+test", "discarded": CONTROLS_DOWN, "results": []});
+    let eff = || async { t.get("/api/v1/settings/reach-source").await["effective"].clone() };
+    // 刚作废一轮：还在 3 分钟内，照旧用它
+    assert_eq!(report_json(&t, id, &tok, discard.clone()).await.1["accepted"], 0);
+    assert_eq!(eff().await["state"], "probe");
+    // 最近一次被采纳是 4 分钟前：按离线处理，退回中控
+    sqlx::query("update probe_point set last_kept_at = now() - interval '4 minutes' where id = $1").bind(id).execute(&t.st.db).await.unwrap();
+    report_json(&t, id, &tok, discard.clone()).await;
+    let e = eff().await;
+    assert_eq!((e["state"].clone(), e["label"].clone()), (json!("fallback"), json!("中控（代替探测无效的香港探测点）")), "{e}");
+    let p = &t.get("/api/v1/probe-points").await[0];
+    assert_eq!((p["state"].clone(), p["discard_reason"].clone()), (json!("blind"), json!(CONTROLS_DOWN)), "{p}");
+    probe_points::check_once(&t.st, OffsetDateTime::now_utc()).await.unwrap();
+    let s: String = sqlx::query_scalar("select summary from incident where rule = 'probe_point_offline' and state = 'firing'").fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(s, format!("香港：在线，但最近 4 分钟的探测都无效：{CONTROLS_DOWN}；它是主探测来源，暂由中控代测（连不上照常告警，连得上不算恢复）"));
+    // 有一轮被采纳：回来，告警恢复
+    report(&t, id, &tok, &[(relay, 20001, true, Some(150.0))]).await;
+    assert_eq!(eff().await["state"], "probe");
+    assert_eq!(t.get("/api/v1/probe-points").await[0]["discard_reason"], Value::Null);
+    probe_points::check_once(&t.st, OffsetDateTime::now_utc()).await.unwrap();
+    assert_eq!(t.count("select count(*) from incident where rule = 'probe_point_offline' and state = 'firing'").await, 0);
+    // 离线 10 分钟后回来、第一轮就作废：从回来那一刻算起，不马上算作废
+    sqlx::query("update probe_point set last_seen_at = now() - interval '10 minutes', last_kept_at = now() - interval '10 minutes' where id = $1").bind(id).execute(&t.st.db).await.unwrap();
+    report_json(&t, id, &tok, discard).await;
+    assert_eq!(eff().await["state"], "probe");
+}
+
+/// 对照目标通、三台以上线路机全部连不上（探测点带 all_down 照常上报）：照记，relay_unreachable 摘要写明「全部线路机同时连不上」。
+/// 中控自己的一轮同样照记（以前整轮作废）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn all_relays_down_is_recorded_with_note() {
+    let t = setup().await;
+    let team = seed_team(&t, "团队1").await;
+    let mut relays = vec![];
+    for i in 1..=3 {
+        let r = seed_relay(&t, &format!("线路机{i}"), &format!("198.51.100.{i}"), &format!("tok{i}")).await;
+        seed_node(&t, r, team, i, &format!("203.0.113.{i}"), 20001).await;
+        relays.push(r);
+    }
+    let (id, tok) = add_probe(&t, "香港").await;
+    t.req("PUT", "/api/v1/settings/reach-source", Some(json!({"primary": id})), None).await;
+    let rs: Vec<Value> = relays.iter().map(|r| json!({"relay_id": r, "port": 20001, "ok": false, "detail": "超时 10 秒"})).collect();
+    for _ in 0..3 {
+        let (st, v) = report_json(&t, id, &tok, json!({"version": "0.1.0+test", "all_down": true, "results": rs})).await;
+        assert_eq!((st, v["accepted"].clone()), (StatusCode::OK, json!(3)), "{v}");
+    }
+    assert_eq!(t.count("select count(*) from relay_reach where all_down").await, 9);
+    let m = machine(&t, relays[0]).await;
+    assert_eq!(
+        reason_text(&m, "relay_unreachable").as_deref(),
+        Some("香港探测点连续 3 次以上连不上客户入口（端口 20001：超时 10 秒）；所有线路机同时连不上，可能是供应商整体故障"),
+        "{m}"
+    );
+    // 中控的一轮：对照目标通、三台都连不上，照记（标 all_down）
+    let ctl = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let (_held, closed) = {
+        let s = tokio::net::TcpSocket::new_v4().unwrap();
+        s.bind(([127, 0, 0, 1], 0).into()).unwrap();
+        let p = s.local_addr().unwrap().port();
+        (s, p)
+    };
+    sqlx::query("update relay set public_host = '127.0.0.1'").execute(&t.st.db).await.unwrap();
+    sqlx::query("update entry set port = $1").bind(closed as i32).execute(&t.st.db).await.unwrap();
+    let ctl = ctl.local_addr().unwrap().to_string();
+    assert_eq!(fleet_server::reach::round(&t.st, &[&ctl], 0).await.unwrap(), 3, "三台全不通也照记");
+    assert_eq!(t.count("select count(*) from relay_reach where all_down and probe_point_id is null").await, 3);
+}
+
+/// 中控停机的时段不算探测点的沉默（同 agent）：停机前 10 秒刚报过的，恢复后不判离线、不开告警、主来源不退回中控
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn central_downtime_does_not_count_as_probe_silence() {
+    let t = setup().await;
+    let (id, tok) = add_probe(&t, "香港").await;
+    report(&t, id, &tok, &[]).await;
+    t.req("PUT", "/api/v1/settings/reach-source", Some(json!({"primary": id})), None).await;
+    let now = OffsetDateTime::now_utc();
+    sqlx::query("update probe_point set last_seen_at = now() - interval '610 seconds', last_kept_at = now() - interval '610 seconds' where id = $1").bind(id).execute(&t.st.db).await.unwrap();
+    // 没有停机记录：按墙钟算，离线
+    probe_points::check_once(&t.st, now).await.unwrap();
+    assert_eq!(t.count("select count(*) from incident where rule = 'probe_point_offline' and state = 'firing'").await, 1);
+    assert_eq!(t.get("/api/v1/settings/reach-source").await["effective"]["state"], "fallback");
+    sqlx::query("delete from incident").execute(&t.st.db).await.unwrap();
+    // 中控 600 秒收不到上报（库连不上）：扣掉这一段，只沉默了 10 秒
+    let g = &t.st.report_gaps;
+    g.ok(now - time::Duration::seconds(600));
+    g.failed(now - time::Duration::seconds(300));
+    g.ok(now);
+    probe_points::check_once(&t.st, now).await.unwrap();
+    assert_eq!(t.count("select count(*) from incident where rule = 'probe_point_offline'").await, 0);
+    assert_eq!(t.get("/api/v1/settings/reach-source").await["effective"]["state"], "probe");
+    assert_eq!(t.get("/api/v1/probe-points").await[0]["state"], "online");
+}
+
+/// 客户入口连通性的小时汇总：随遥测小时汇总重算（通的次数、通的那些的往返时间平均与中位数；中控那一路不记往返时间），
+/// 原始记录过了保留期删掉、汇总留着；探测点页按 24h / 7d / 30d 看、线路机抽屉看各路来源的三个窗口；删探测点时它的汇总一起删
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reach_hourly_rollup_and_windows() {
+    let t = setup().await;
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let team = seed_team(&t, "团队1").await;
+    seed_node(&t, relay, team, 1, "203.0.113.5", 20001).await;
+    let (id, tok) = add_probe(&t, "香港").await;
+    let db = &t.st.db;
+    // 这一小时：探测点 3 次（2 通，150 / 170 ms），中控 2 次（都通）；3 小时前探测点 1 次不通（标脏补算）
+    for (ok, rtt) in [(true, Some(150.0)), (true, Some(170.0)), (false, None)] {
+        report(&t, id, &tok, &[(relay, 20001, ok, rtt)]).await;
+    }
+    sqlx::query("insert into relay_reach (relay_id, ts, ok, port) select $1, greatest(date_trunc('hour', now()), now() - interval '1 minute'), true, 20001 from generate_series(1, 2)")
+        .bind(relay)
+        .execute(db)
+        .await
+        .unwrap();
+    sqlx::query("insert into relay_reach (relay_id, ts, ok, port, probe_point_id) values ($1, date_trunc('hour', now()) - interval '3 hours' + interval '5 minutes', false, 20001, $2)")
+        .bind(relay)
+        .bind(id)
+        .execute(db)
+        .await
+        .unwrap();
+    sqlx::query("insert into rollup_dirty (hour, touched_at) values (date_trunc('hour', now()) - interval '3 hours', now())").execute(db).await.unwrap();
+    fleet_server::db::rollup_hours(db).await.unwrap();
+    // 小时汇总行：(探测点，总数，成功数，平均 rtt，p50 rtt)；探测点为 None 的是不经探测点的那一行
+    type HourlyRow = (Option<Uuid>, i32, i32, Option<f32>, Option<f32>);
+    let rows: Vec<HourlyRow> =
+        sqlx::query_as("select probe_point_id, total, ok, rtt_avg, rtt_p50 from relay_reach_hourly where hour = date_trunc('hour', now()) order by probe_point_id nulls first").fetch_all(db).await.unwrap();
+    assert_eq!(rows, [(None, 2, 2, None, None), (Some(id), 3, 2, Some(160.0), Some(160.0))]);
+    assert_eq!(t.count("select count(*) from relay_reach_hourly").await, 3);
+    // 探测点页：近 1 小时读原始记录，24 小时读汇总（含 3 小时前那一次）
+    let p = t.get("/api/v1/probe-points").await;
+    assert_eq!((p[0]["window"].clone(), p[0]["relays"][0]["total"].clone(), p[0]["relays"][0]["ok"].clone()), (json!("1h"), json!(3), json!(2)), "{p}");
+    let p = t.get("/api/v1/probe-points?window=24h").await;
+    let r = &p[0]["relays"][0];
+    assert_eq!((r["name"].clone(), r["total"].clone(), r["ok"].clone(), r["avg_ms"].as_f64()), (json!("线路机1"), json!(4), json!(2), Some(160.0)), "{p}");
+    assert_eq!(t.req("GET", "/api/v1/probe-points?window=2d", None, None).await.0, StatusCode::BAD_REQUEST);
+    // 线路机抽屉：各路来源 × 24h / 7d / 30d
+    let q = t.get(&format!("/api/v1/machines/{relay}/reach-quality")).await;
+    let s = q["sources"].as_array().unwrap();
+    assert_eq!(s.len(), 2, "{q}");
+    assert_eq!((s[0]["source"].clone(), s[0]["label"].clone(), s[0]["primary"].clone()), (json!("central"), json!("中控"), json!(true)));
+    assert_eq!((s[0]["windows"]["24h"]["total"].clone(), s[0]["windows"]["24h"]["avg_ms"].clone()), (json!(2), Value::Null));
+    assert_eq!((s[1]["label"].clone(), s[1]["windows"]["30d"]["total"].clone(), s[1]["windows"]["7d"]["ok"].clone()), (json!("香港探测点"), json!(4), json!(2)), "{q}");
+    let node: Uuid = sqlx::query_scalar("select node_id from entry limit 1").fetch_one(db).await.unwrap();
+    assert_eq!(t.req("GET", &format!("/api/v1/machines/{node}/reach-quality"), None, None).await.0, StatusCode::BAD_REQUEST);
+    // 原始记录过了保留期（默认 2 天）删掉，汇总留着
+    sqlx::query("update relay_reach set ts = ts - interval '3 days'").execute(db).await.unwrap();
+    fleet_server::db::cleanup_retention(db, &t.st.cfg.retention).await.unwrap();
+    assert_eq!((t.count("select count(*) from relay_reach").await, t.count("select count(*) from relay_reach_hourly").await), (0, 3));
+    // 删探测点：它的汇总一起删，中控的留着
+    t.req("DELETE", &format!("/api/v1/probe-points/{id}"), None, None).await;
+    assert_eq!(t.count("select count(*) from relay_reach_hourly").await, 1);
 }

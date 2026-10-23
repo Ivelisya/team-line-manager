@@ -3,7 +3,7 @@
 use crate::client::{ApiError, Client, NetError};
 use crate::meta;
 use crate::resolve::{self, Want};
-use crate::table::{self, bps, money, traffic};
+use crate::table::{self, bps, money_at, pct, traffic};
 use anyhow::{anyhow, bail};
 use serde_json::{json, Value};
 use std::io::Write;
@@ -54,13 +54,6 @@ pub fn st(v: &Value, ptr: &str) -> String {
 
 pub fn num(v: &Value, ptr: &str) -> Option<f64> { v.pointer(ptr).and_then(|x| x.as_f64()) }
 
-fn pct(a: Option<f64>, b: Option<f64>) -> String {
-    match (a, b) {
-        (Some(a), Some(b)) if b > 0.0 => format!("{:.0}%", a * 100.0 / b),
-        _ => "-".into(),
-    }
-}
-
 /// 计费周期：月 / 季 / 半年 / 年（中控 /meta）
 pub(crate) fn cycle_cn(c: &str) -> &str { meta::cycle(c) }
 
@@ -72,6 +65,9 @@ pub(crate) fn due_cn(days: i64) -> String {
         d => format!("{d} 天后到期"),
     }
 }
+
+/// 取 `ptr` 处的到期天数写成 `due_cn`；中控没返回这个字段时写「-」，不当成今天到期
+pub(crate) fn due_at(v: &Value, ptr: &str) -> String { v.pointer(ptr).and_then(Value::as_i64).map_or("-".into(), due_cn) }
 
 // ── 枚举的中文：取中控 /meta（网页同一份）；ls 的列保留原值，方便当筛选参数用 ──
 
@@ -123,6 +119,20 @@ impl Ctx {
         Ok(f(cache.as_deref().unwrap_or_default()))
     }
 
+    /// GET 一个列表接口：中控返回的不是数组就报错，不当成「还没有」
+    pub fn list(&self, path: &str) -> anyhow::Result<Vec<Value>> {
+        match self.c.get(path)? {
+            Value::Array(a) => Ok(a),
+            x => bail!("中控 GET {path} 返回的不是数组：{}", table::clip(&x.to_string(), 60)),
+        }
+    }
+
+    /// 团队名（或 id、id 前缀）→ 团队 id
+    pub fn team_id(&self, q: &str) -> anyhow::Result<String> {
+        let teams = self.teams()?;
+        resolve::team(teams.as_array().map_or(&[][..], Vec::as_slice), q).map(|t| st(t, "/id")).map_err(|e| anyhow!(e))
+    }
+
     /// 团队列表。同一命令内只请求一次
     pub fn teams(&self) -> anyhow::Result<Value> {
         let mut cache = self.teams_cache.lock().unwrap_or_else(|e| e.into_inner());
@@ -167,6 +177,8 @@ pub fn status(ctx: &Ctx) -> anyhow::Result<u8> {
         };
         // 月费统一折成 USD（中控按汇率算好），括注原币种；没有汇率的单列
         let cost = crate::fx::cost_cn(&ov);
+        // 本月中途才开始有数据（在用线路机本月才接入）的标「（10-22 起）」
+        let from = ov.pointer("/traffic_month/counted_from").and_then(Value::as_str).map(|t| format!("（{} 起）", crate::billing::md_of(t))).unwrap_or_default();
         let mut s = table::kv(&[
             ("节点", bucket("nodes")),
             ("线路机", bucket("relays")),
@@ -176,7 +188,7 @@ pub fn status(ctx: &Ctx) -> anyhow::Result<u8> {
             (meta::label("due_states", "soon"), st(&ov, "/due_soon")),
             (meta::label("due_states", "overdue"), st(&ov, "/overdue")),
             ("每月费用", cost),
-            ("本月业务流量", format!("下载 {} / 上传 {}", traffic(num(&ov, "/traffic_month/down").unwrap_or(0.0)), traffic(num(&ov, "/traffic_month/up").unwrap_or(0.0)))),
+            ("本月业务流量", format!("下载 {} / 上传 {}{from}", traffic(num(&ov, "/traffic_month/down").unwrap_or(0.0)), traffic(num(&ov, "/traffic_month/up").unwrap_or(0.0)))),
             ("网卡速率", format!("下行 {} / 上行 {}", bps(num(&ov, "/net_rx_bps").unwrap_or(0.0)), bps(num(&ov, "/net_tx_bps").unwrap_or(0.0)))),
         ]);
         let list = inc.as_array().cloned().unwrap_or_default();
@@ -246,7 +258,7 @@ fn due_within(m: &Value, n: i64) -> bool {
 /// `ls --due` 的到期列：`2026-10-25（3 天后到期）`；自动续费的到期前不提醒、过期才告警，标出来
 fn due_cell(i: &Value) -> String {
     let auto = if i["auto_renew"] == true { "，自动续费" } else { "" };
-    format!("{}（{}{auto}）", st(i, "/due_date"), due_cn(i["due_days"].as_i64().unwrap_or(0)))
+    format!("{}（{}{auto}）", st(i, "/due_date"), due_at(i, "/due_days"))
 }
 
 /// 机器列表（未退役的；退役完的在回收站，看 fleetctl recycle ls）
@@ -360,23 +372,23 @@ fn tune_cn(t: &Value) -> String {
     }
 }
 
-/// 调优的推导参数（`tune.params`，tune-v2 起；步骤结果里同名字段）：「缓冲上限 43.1 MiB ← 带宽 1000 Mbps（套餐 2560，按 1000 算）、
-/// RTT 172 ms（入口连接 25 条的 P90）、内存 3911 MB」。没有（没调优过、旧档、已撤销）为 None
+/// 调优的推导参数（`tune.params`，tune-v2 起；步骤结果里同名字段）：「缓冲上限 43.1 MiB，由带宽 1000 Mbps（套餐 2560，按 1000 算）
+/// 和延迟 172 ms（来自 25 条入口连接的实测）算出，内存 3911 MB」。没有（没调优过、旧档、已撤销）为 None
 fn tune_params_cn(p: &Value) -> Option<String> {
     let buf = p["buf_max"].as_f64()?;
     let n = |k: &str| p[k].as_i64().map_or("?".to_string(), |v| v.to_string());
     let bw = match (p["bw_source"].as_str(), p["bw_plan"].as_i64()) {
         (Some("plan"), Some(plan)) if Some(plan) != p["bw"].as_i64() => format!("套餐 {plan}，按 {} 算", n("bw")),
         (Some("plan"), _) => "套餐".to_string(),
-        _ => "套餐没写带宽，按默认".to_string(),
+        _ => "套餐没填带宽，用默认值".to_string(),
     };
     let rtt = match p["rtt_source"].as_str() {
-        Some("sampled") => format!("入口连接 {} 条的 P90", n("rtt_samples")),
-        _ if p["rtt_samples"].as_i64().unwrap_or(0) > 0 => format!("样本 {} 条不够，按默认", n("rtt_samples")),
+        Some("sampled") => format!("来自 {} 条入口连接的实测", n("rtt_samples")),
+        _ if p["rtt_samples"].as_i64().unwrap_or(0) > 0 => format!("连接样本只有 {} 条，不够，用默认值", n("rtt_samples")),
         _ => "默认".to_string(),
     };
     Some(format!(
-        "缓冲上限 {:.1} MiB ← 带宽 {} Mbps（{bw}）、RTT {} ms（{rtt}）、内存 {} MB",
+        "缓冲上限 {:.1} MiB，由带宽 {} Mbps（{bw}）和延迟 {} ms（{rtt}）算出，内存 {} MB",
         buf / 1048576.0,
         n("bw"),
         n("rtt"),
@@ -422,10 +434,11 @@ fn agent_health_cn(h: &Value) -> String {
 pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
     let (id, _) = ctx.find_id(machine, Want::Any)?;
     let mut m = ctx.c.get(&format!("/machines/{id}"))?;
-    // 在用线路机带上三网 PING 的目标与当前读数（`--json` 在 ping 字段；旧中控没有这个接口时不带）
+    // 在用线路机带上三网 PING 的目标与当前读数（`--json` 在 ping 字段）。取不到不让 show 整体失败，原因写到 stderr
     if m["kind"] == "relay" && m["lifecycle"] == "active" {
-        if let Ok(p) = ctx.c.get(&format!("/machines/{id}/ping")) {
-            m["ping"] = p;
+        match ctx.c.get(&format!("/machines/{id}/ping")) {
+            Ok(p) => m["ping"] = p,
+            Err(e) => eprintln!("没取到三网 PING：{e}"),
         }
     }
     ctx.emit(&m, || {
@@ -488,10 +501,10 @@ pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
                 "订阅",
                 format!(
                     "{}（每{}）到期 {}（{}）{}",
-                    money(m["subscription"]["price_cents"].as_i64().unwrap_or(0), &st(&m, "/subscription/currency")),
+                    money_at(&m, "/subscription/price_cents", &st(&m, "/subscription/currency")),
                     cycle_cn(&st(&m, "/subscription/cycle")),
                     st(&m, "/subscription/due_date"),
-                    due_cn(m["subscription"]["due_days"].as_i64().unwrap_or(0)),
+                    due_at(&m, "/subscription/due_days"),
                     crate::fx::sub_usd_cn(&m["subscription"])
                 ),
             ));
@@ -506,7 +519,7 @@ pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
         }
         rows.push(("本月流量", format!("{}{}", crate::billing::month_cn(&m), crate::billing::nic_cn(&m))));
         if !m["relay"].is_null() {
-            rows.push(("线路机", format!("{}  配置代数 {} · 已应用 {}  {}", st(&m, "/relay/public_host"), st(&m, "/relay/generation"), st(&m, "/relay/applied_generation"), m["relay"]["apply_error"].as_str().unwrap_or(""))));
+            rows.push(("线路机", format!("{}  配置版本 {} · 已生效 {}  {}", st(&m, "/relay/public_host"), st(&m, "/relay/generation"), st(&m, "/relay/applied_generation"), m["relay"]["apply_error"].as_str().unwrap_or(""))));
         }
         if !m["active_job"].is_null() {
             rows.push(("进行中作业", format!("{} · {}  {}", job_kind_cn(&st(&m, "/active_job/kind")), job_state_cn(&st(&m, "/active_job/state")), st(&m, "/active_job/id"))));
@@ -577,8 +590,7 @@ fn take_entries(mut m: Value) -> Vec<Value> {
 
 /// 全部入口（完整的入口视图，取线路机上挂的，避免节点和线路机两边重复）
 pub fn all_entries(ctx: &Ctx) -> anyhow::Result<Vec<Value>> {
-    let Value::Array(relays) = ctx.c.get("/relays")? else { return Ok(vec![]) };
-    Ok(relays.into_iter().flat_map(take_entries).collect())
+    Ok(ctx.list("/relays")?.into_iter().flat_map(take_entries).collect())
 }
 
 pub fn entries(ctx: &Ctx, machine: Option<&str>) -> anyhow::Result<u8> {
@@ -879,6 +891,15 @@ fn follow_error_is_transient(e: &anyhow::Error) -> bool {
     }
 }
 
+/// 逐个跟作业（每项取 `job_id`），返回最大的退出码
+pub fn follow_jobs<'a>(ctx: &Ctx, jobs: impl IntoIterator<Item = &'a Value>) -> anyhow::Result<u8> {
+    let mut code = 0;
+    for j in jobs {
+        code = code.max(follow_job(ctx, &st(j, "/job_id"))?);
+    }
+    Ok(code)
+}
+
 /// 轮询作业日志直到结束；成功退出码 0，失败/取消为 1
 pub fn follow_job(ctx: &Ctx, id: &str) -> anyhow::Result<u8> {
     let mut after = 0i64;
@@ -954,12 +975,23 @@ pub fn job_retry(ctx: &Ctx, id: &str, reset_host_key: bool, password_env: Option
     Ok(0)
 }
 
-pub struct AuditOpts<'a> {
-    pub target: Option<&'a str>,
+// `fleetctl audit` 的参数（clap 直接解析成它）
+#[derive(clap::Args)]
+pub struct AuditOpts {
+    /// 只看某台机器
+    #[arg(long)]
+    pub target: Option<String>,
+    #[arg(long, default_value_t = 50)]
     pub limit: i64,
+    /// 翻页：只看编号小于它的记录（上一页末尾提示的编号）
+    #[arg(long)]
     pub before: Option<i64>,
-    pub cat: Option<&'a str>,
-    pub q: Option<&'a str>,
+    /// 分类：auth（登录与账户）| exec（远程执行）| machine（机器与入口）| config（设置与告警）
+    #[arg(long)]
+    pub cat: Option<String>,
+    /// 搜索标题、摘要、操作人
+    #[arg(short, long)]
+    pub q: Option<String>,
 }
 
 pub fn audit(ctx: &Ctx, o: AuditOpts) -> anyhow::Result<u8> {
@@ -969,12 +1001,12 @@ pub fn audit(ctx: &Ctx, o: AuditOpts) -> anyhow::Result<u8> {
         q.push(("before_id", b.to_string()));
     }
     // 分类、搜索由中控筛（与 --before 翻页一起用）
-    for (k, v) in [("cat", o.cat), ("q", o.q)] {
+    for (k, v) in [("cat", &o.cat), ("q", &o.q)] {
         if let Some(v) = v {
             q.push((k, v.to_string()));
         }
     }
-    if let Some(t) = o.target {
+    if let Some(t) = o.target.as_deref() {
         let (id, _) = ctx.find_id(t, Want::Any)?;
         q.push(("target_id", id));
     }
@@ -992,32 +1024,15 @@ pub fn audit(ctx: &Ctx, o: AuditOpts) -> anyhow::Result<u8> {
     Ok(0)
 }
 
-/// 日志类接口返回 {exit_code, stdout, stderr}：stdout 原样输出，stderr 走 stderr
-fn print_text_result(ctx: &Ctx, d: &Value) -> u8 {
-    if ctx.json {
-        outln(d.to_string());
-    } else {
-        out_raw(d["stdout"].as_str().unwrap_or(""));
-        let e = d["stderr"].as_str().unwrap_or("");
-        if !e.is_empty() {
-            eprint!("{e}");
-        }
-        if d["truncated"] == true {
-            eprintln!("\n[输出被截断，只显示了前 256 KiB]");
-        }
-    }
-    if d["exit_code"].as_i64().unwrap_or(0) == 0 { 0 } else { 1 }
-}
-
 pub fn logs(ctx: &Ctx, machine: &str, unit: &str, lines: u32) -> anyhow::Result<u8> {
     let (id, _) = ctx.find_id(machine, Want::Live)?;
     let d = ctx.c.get_q(&format!("/machines/{id}/logs"), &[("unit", unit.to_string()), ("lines", lines.to_string())])?;
-    Ok(print_text_result(ctx, &d))
+    Ok(crate::ops::print_result(ctx, &d, None))
 }
 
 pub fn server_logs(ctx: &Ctx, lines: u32) -> anyhow::Result<u8> {
     let d = ctx.c.get_q("/server/logs", &[("lines", lines.to_string())])?;
-    Ok(print_text_result(ctx, &d))
+    Ok(crate::ops::print_result(ctx, &d, None))
 }
 
 /// 组织时区（默认北京时间）当前的时分秒（同 `table::ts`）
@@ -1118,10 +1133,10 @@ mod tests {
         let tune = json!({"profile": "tune-v2", "applied": ["a"], "ok": [], "kept": [], "skipped": [], "params": params});
         assert_eq!(
             step_brief(&tune).unwrap(),
-            "调优 tune-v2：已应用 1 项、本来就是 0 项、保持 0 项；缓冲上限 43.0 MiB ← 带宽 1000 Mbps（套餐 2560，按 1000 算）、RTT 172 ms（入口连接 25 条的 P90）、内存 3911 MB"
+            "调优 tune-v2：已应用 1 项、本来就是 0 项、保持 0 项；缓冲上限 43.0 MiB，由带宽 1000 Mbps（套餐 2560，按 1000 算）和延迟 172 ms（来自 25 条入口连接的实测）算出，内存 3911 MB"
         );
         let node = json!({"bw": 1000, "bw_plan": null, "bw_source": "default", "rtt": 100, "rtt_source": "default", "rtt_samples": 0, "mem_mb": 976, "buf_max": 27097152});
-        assert_eq!(tune_params_cn(&node).unwrap(), "缓冲上限 25.8 MiB ← 带宽 1000 Mbps（套餐没写带宽，按默认）、RTT 100 ms（默认）、内存 976 MB");
+        assert_eq!(tune_params_cn(&node).unwrap(), "缓冲上限 25.8 MiB，由带宽 1000 Mbps（套餐没填带宽，用默认值）和延迟 100 ms（默认）算出，内存 976 MB");
         assert!(tune_params_cn(&Value::Null).is_none());
         let rb = json!({"rollback": true, "applied": ["a", "b"], "ok": ["c"], "kept": [], "skipped": [], "before": {}});
         assert_eq!(step_brief(&rb).unwrap(), "撤销调优：写回原值 2 项、本来就是原值 1 项");
@@ -1146,6 +1161,10 @@ mod tests {
     fn due_and_cycle_wording() {
         assert_eq!((due_cn(3), due_cn(0), due_cn(-2)), ("3 天后到期".to_string(), "今天到期".to_string(), "已过期 2 天".to_string()));
         assert_eq!((cycle_cn("monthly"), cycle_cn("semiannual"), cycle_cn("yearly")), ("月", "半年", "年"));
+        // 中控没返回的字段写「-」，不当成「今天到期」或 0.00
+        let sub = json!({"due_days": 0, "price_cents": 0, "currency": "USD"});
+        assert_eq!((due_at(&sub, "/due_days"), due_at(&sub, "/nope")), ("今天到期".to_string(), "-".to_string()));
+        assert_eq!((money_at(&sub, "/price_cents", "USD"), money_at(&sub, "/nope", "USD")), ("0.00 USD".to_string(), "-".to_string()));
     }
 
     #[test]
@@ -1196,11 +1215,5 @@ mod tests {
         assert_eq!(lines[0], "团队1-06 近 2 天：TCP 99.93% · 出口 -");
         assert_eq!(lines[2].split_whitespace().collect::<Vec<_>>(), ["2026-10-21", "-", "-", "-", "-"]);
         assert_eq!(lines[3].split_whitespace().collect::<Vec<_>>(), ["2026-10-22（今天）", "99.93%", "1439/1440", "-", "-"]);
-    }
-
-    #[test]
-    fn ctx_caches_are_empty_until_used() {
-        let ctx = Ctx::new(Client::new("http://127.0.0.1:1", crate::client::Cred::None).unwrap(), "http://127.0.0.1:1".into(), false);
-        assert!(ctx.machines_cache.lock().unwrap().is_none() && ctx.teams_cache.lock().unwrap().is_none());
     }
 }

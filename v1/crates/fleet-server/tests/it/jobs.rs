@@ -13,6 +13,9 @@ use serde_json::{json, Value};
 use std::time::Duration;
 use uuid::Uuid;
 
+/// 「没有被再领」这类反向断言只能等一段时间再看：集中在这里，调快调慢只改一处
+const NOT_RECLAIMED_WAIT: Duration = Duration::from_millis(1500);
+
 /// 上架一台连不上的 VPS，返回 (machine_id, job_id)
 async fn provision_unreachable_vps(t: &common::T, team: Uuid, relay: Uuid) -> (Uuid, String) {
     let created = t
@@ -205,6 +208,7 @@ async fn purge_runs_twice_without_error() {
     // 该节点的访问汇总和分区表里的主机指标，彻底删除时要一并清掉
     for sql in [
         "insert into access_hourly (node_id, relay_id, hour, dest_host, kind, conns) values ($1, gen_random_uuid(), now(), 'a.com', 'domain', 1)",
+        "insert into access_daily (node_id, relay_id, day, dest_host, kind, conns) values ($1, gen_random_uuid(), now(), 'a.com', 'domain', 1)",
         "insert into access_source_hourly (node_id, relay_id, hour, src_ip, conns) values ($1, gen_random_uuid(), now(), '1.1.1.1', 1)",
         "insert into access_target_seen (node_id, dest_host, first_seen, last_seen, total) values ($1, 'a.com', now(), now(), 1)",
         "insert into access_source_late (node_id, hour, src_ip, delta) values ($1, now(), '1.1.1.1', 1)",
@@ -236,7 +240,7 @@ async fn purge_runs_twice_without_error() {
     };
     let j = t.wait_job(&first, "succeeded").await;
     assert_eq!(j["steps"][0]["state"], "done");
-    for tbl in ["access_hourly", "access_source_hourly", "access_target_seen", "access_source_late"] {
+    for tbl in ["access_hourly", "access_daily", "access_source_hourly", "access_target_seen", "access_source_late"] {
         let n: i64 = sqlx::query_scalar(&format!("select count(*) from {tbl} where node_id = $1")).bind(node).fetch_one(&t.st.db).await.unwrap();
         assert_eq!(n, 0, "{tbl} 没清干净");
     }
@@ -597,7 +601,7 @@ async fn retire_closes_open_incidents_up_front() {
     let t = setup(false).await;
     let (relay, _) = seed_relay(&t).await;
     let inc = Uuid::now_v7();
-    sqlx::query("insert into incident (id, rule, subject_id, severity, summary) values ($1, 'relay_xray_down', $2, 'critical', 's')")
+    sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary) values ($1, 'machine', 'relay_xray_down', $2, 'critical', 's')")
         .bind(inc)
         .bind(relay)
         .execute(&t.st.db)
@@ -884,7 +888,7 @@ async fn engine_does_not_reclaim_a_job_it_is_still_running() {
 
     sqlx::query("update job set lease_until = now() - interval '1 second' where id = $1::uuid").bind(&job).execute(&t.st.db).await.unwrap();
     t.st.wake_jobs();
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    tokio::time::sleep(NOT_RECLAIMED_WAIT).await;
     let after: Option<String> = sqlx::query_scalar(owner).bind(&job).fetch_one(&t.st.db).await.unwrap();
     assert_eq!(after, before, "没有被再领一次");
     assert_eq!(lock_waiters(&t, FINALIZE).await, 1, "「完成退役」只有一个任务在跑");
@@ -963,7 +967,7 @@ async fn drain_lets_the_running_step_finish_then_lets_go() {
     assert!(logs.as_array().unwrap().iter().any(|l| l["msg"] == "中控正在重启：「完成退役」等重启后接着做"), "{logs}");
     // 租约放开、到点了，也没人再领
     t.st.wake_jobs();
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    tokio::time::sleep(NOT_RECLAIMED_WAIT).await;
     let (owner, step4): (Option<String>, String) =
         sqlx::query_as("select j.lease_owner, s.state from job j join job_step s on s.job_id = j.id and s.idx = 4 where j.id = $1::uuid")
             .bind(&job)

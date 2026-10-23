@@ -1,4 +1,5 @@
-//! 静默与维护窗口：ls / add / rm。窗口可以预约（`--start` 给开始时间）；维护前先开维护窗口，免得告警刷屏。
+//! 静默与维护窗口：ls / add / rm。对象是一台机器、一台软路由（--router）、一个探测点（--probe）或全部（--all）。
+//! 窗口可以预约（`--start` 给开始时间）；维护前先开维护窗口，免得告警刷屏。
 //! 中控只列还没结束的（进行中 + 已预约），按开始时间排，进行中的自然在前。
 
 use crate::cmds::{st, Ctx};
@@ -12,7 +13,17 @@ use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
 use time::{Duration, OffsetDateTime, PrimitiveDateTime};
 
-const HEAD: [&str; 7] = ["对象", "规则", "时间", "状态", "维护", "备注", "id"];
+const HEAD: [&str; 8] = ["对象", "类型", "规则", "时间", "状态", "维护", "备注", "id"];
+
+/// 对象类型（API 的 subject_kind）的叫法；全部为 null
+fn kind_cn(k: &Value) -> &'static str {
+    match k.as_str() {
+        Some("router") => "软路由",
+        Some("probe_point") => "探测点",
+        Some(_) => "机器",
+        None => "全部",
+    }
+}
 
 fn rfc(v: &Value) -> Option<OffsetDateTime> { v.as_str().and_then(|s| OffsetDateTime::parse(s, &Rfc3339).ok()) }
 
@@ -20,7 +31,7 @@ fn rfc(v: &Value) -> Option<OffsetDateTime> { v.as_str().and_then(|s| OffsetDate
 fn item(s: &Value, now: OffsetDateTime) -> Value {
     let started = rfc(&s["starts_at"]).is_some_and(|t| t <= now);
     json!({
-        "id": s["id"], "subject_id": s["subject_id"], "subject_name": s["subject_name"], "rule": s["rule"], "rule_name": s["rule_name"],
+        "id": s["id"], "subject_kind": s["subject_kind"], "subject_id": s["subject_id"], "subject_name": s["subject_name"], "rule": s["rule"], "rule_name": s["rule_name"],
         "starts_at": s["starts_at"], "ends_at": s["ends_at"], "state": if started { "active" } else { "scheduled" },
         "is_maintenance": s["is_maintenance"], "comment": s["comment"],
     })
@@ -60,6 +71,7 @@ fn row(i: &Value, now: OffsetDateTime) -> Vec<String> {
     };
     vec![
         i["subject_name"].as_str().unwrap_or("全部机器").into(),
+        kind_cn(&i["subject_kind"]).into(),
         i["rule_name"].as_str().or(i["rule"].as_str()).unwrap_or("全部规则").into(),
         when,
         state,
@@ -69,11 +81,10 @@ fn row(i: &Value, now: OffsetDateTime) -> Vec<String> {
     ]
 }
 
-fn list(ctx: &Ctx) -> anyhow::Result<Vec<Value>> { Ok(ctx.c.get("/silences")?.as_array().cloned().unwrap_or_default()) }
 
 pub fn ls(ctx: &Ctx) -> anyhow::Result<u8> {
     let now = OffsetDateTime::now_utc();
-    let items = Value::Array(list(ctx)?.iter().map(|s| item(s, now)).collect());
+    let items = Value::Array(ctx.list("/silences")?.iter().map(|s| item(s, now)).collect());
     ctx.emit(&items, || {
         let rows: Vec<Vec<String>> = items.as_array().map(Vec::as_slice).unwrap_or_default().iter().map(|i| row(i, now)).collect();
         if rows.is_empty() { "没有进行中或已预约的静默".into() } else { format!("{}\n共 {} 条", table::render(&HEAD, &rows), rows.len()) }
@@ -81,7 +92,7 @@ pub fn ls(ctx: &Ctx) -> anyhow::Result<u8> {
     Ok(0)
 }
 
-/// `--for`：`30m` / `4h` / `2d`，可组合（`1h30m`），最长 30 天（同中控）
+/// `--for`：`30m` / `4h` / `2d`，可组合（`1h30m`）；时长上限由中控判
 fn parse_for(s: &str) -> anyhow::Result<Duration> {
     let bad = || anyhow!("--for 写成 30m / 4h / 2d（分钟 / 小时 / 天，可组合，如 1h30m）");
     let (mut total, mut n) = (Duration::ZERO, String::new());
@@ -102,9 +113,6 @@ fn parse_for(s: &str) -> anyhow::Result<Duration> {
     }
     if !n.is_empty() || total.is_zero() {
         return Err(bad());
-    }
-    if total > Duration::days(30) {
-        bail!("--for 最长 30 天；更久的请直接把机器退役");
     }
     Ok(total)
 }
@@ -129,28 +137,42 @@ fn parse_start(s: &str) -> anyhow::Result<OffsetDateTime> {
     Ok(t.assume_offset(meta::offset()))
 }
 
-pub struct AddOpts<'a> {
-    pub machine: Option<&'a str>,
+// `fleetctl silence add` 的参数（clap 直接解析成它）
+#[derive(clap::Args)]
+pub struct AddOpts {
+    /// 机器（id / 显示名 / 线路机名 / IP）
+    pub machine: Option<String>,
+    /// 软路由（id / 名称，见 fleetctl routers）
+    #[arg(long, value_name = "软路由")]
+    pub router: Option<String>,
+    /// 探测点（id / 名称，见 fleetctl probe ls）
+    #[arg(long, value_name = "探测点")]
+    pub probe: Option<String>,
+    /// 静默全部机器（软路由、探测点也一起）
+    #[arg(long)]
     pub all: bool,
-    pub rule: Option<&'a str>,
-    pub start: Option<&'a str>,
-    pub dur: &'a str,
+    /// 只静默这条告警规则（规则 key，如 agent_offline、router_exits_down；要是这类对象的规则；不填 = 全部规则）
+    #[arg(long)]
+    pub rule: Option<String>,
+    /// 开始时间，组织时区（中控的 org_timezone，默认北京时间；同表格）：2026-10-23 02:00（别的时区写带时区的 2026-10-23T02:00:00+09:00）；不填 = 现在，最多提前 90 天
+    #[arg(long)]
+    pub start: Option<String>,
+    /// 时长：30m / 4h / 2d，可组合（1h30m）；最长 30 天
+    #[arg(long = "for", value_name = "DURATION")]
+    pub dur: String,
+    /// 标成维护：卡片显示「维护」，机器暂停健康判定，软路由、探测点开着的告警保持、不开新的（针对整个对象，不能和 --rule 一起用）
+    #[arg(long)]
     pub maintenance: bool,
-    pub comment: Option<&'a str>,
+    #[arg(long)]
+    pub comment: Option<String>,
+    #[arg(long)]
     pub yes: bool,
 }
 
-pub fn add(ctx: &Ctx, o: AddOpts<'_>) -> anyhow::Result<u8> {
-    let dur = parse_for(o.dur)?;
-    // 同中控：API 密钥（fleetctl 用的就是）建的全部机器静默 / 维护最长 24 小时
-    if o.all && dur > Duration::hours(24) {
-        bail!("--all（全部机器）最长 24 小时：API 密钥不能把整个监控关得更久；更长的请登录网页用账号建");
-    }
-    if o.maintenance && o.rule.is_some() {
-        bail!("维护窗口针对整台机器，不能只选一条规则：只想静默这条告警就去掉 --maintenance");
-    }
+pub fn add(ctx: &Ctx, o: AddOpts) -> anyhow::Result<u8> {
+    let dur = parse_for(&o.dur)?;
     let now = OffsetDateTime::now_utc();
-    let start = match o.start {
+    let start = match o.start.as_deref() {
         Some(s) => parse_start(s)?,
         None => now,
     };
@@ -158,32 +180,35 @@ pub fn add(ctx: &Ctx, o: AddOpts<'_>) -> anyhow::Result<u8> {
     if start + Duration::minutes(1) <= now {
         bail!("--start 的时间（{} {}）已经过去了；要马上开始就不写 --start", meta::tz_label(), bj(start));
     }
-    let end = start + dur;
-    let subject = match (o.machine, o.all) {
-        (Some(_), true) => bail!("<机器> 和 --all 只能给一个"),
-        (None, false) => bail!("给机器（id / 显示名 / 线路机名 / IP），或用 --all 静默全部机器"),
-        (Some(q), false) => Some(ctx.find(q, Want::Live)?),
-        (None, true) => None,
+    let end = start.checked_add(dur).ok_or_else(|| anyhow!("--start 加上 --for 超出了能表示的日期"))?;
+    // (subject_kind, 对象)
+    let subject = match (o.machine.as_deref(), o.router.as_deref(), o.probe.as_deref(), o.all) {
+        (Some(q), None, None, false) => Some(("machine", ctx.find(q, Want::Live)?)),
+        (None, Some(q), None, false) => Some(("router", crate::routers::find(&ctx.list("/routers")?, q)?)),
+        (None, None, Some(q), false) => Some(("probe_point", crate::probe::find(&ctx.list("/probe-points")?, q)?)),
+        (None, None, None, true) => None,
+        (None, None, None, false) => bail!("给机器（id / 显示名 / 线路机名 / IP）、--router <软路由>、--probe <探测点>，或用 --all 静默全部"),
+        _ => bail!("<机器>、--router、--probe、--all 只能给一个"),
     };
     if o.all {
         let act = if o.maintenance { "给全部机器开维护窗口" } else { "静默全部机器" };
-        let alerts = o.rule.map(|r| format!("「{r}」这条告警")).unwrap_or_else(|| "告警".into());
-        confirm(&format!("确认{act}（{}）？这段时间里所有机器的{alerts}都不会发出", window(start, end)), o.yes)?;
+        let alerts = o.rule.as_deref().map(|r| format!("「{r}」这条告警")).unwrap_or_else(|| "告警".into());
+        confirm(&format!("确认{act}（{}）？这段时间里所有机器（含软路由、探测点）的{alerts}都不会发出", window(start, end)), o.yes)?;
     }
     let body = json!({
-        "subject_id": subject.as_ref().map(|m| m["id"].clone()), "rule": o.rule,
+        "subject_kind": subject.as_ref().map(|s| s.0), "subject_id": subject.as_ref().map(|s| s.1["id"].clone()), "rule": o.rule,
         "starts_at": start.format(&Rfc3339)?, "ends_at": end.format(&Rfc3339)?,
-        "is_maintenance": o.maintenance, "comment": o.comment.unwrap_or(""),
+        "is_maintenance": o.maintenance, "comment": o.comment.as_deref().unwrap_or(""),
     });
     let id = st(&ctx.c.post("/silences", &body)?, "/id");
     // 回读：对象名、规则中文名以中控为准，输出与 ls 同形
-    let s = list(ctx)?.into_iter().find(|s| s["id"] == id.as_str()).ok_or_else(|| anyhow!("刚建的静默 {id} 不在列表里"))?;
+    let s = ctx.list("/silences")?.into_iter().find(|s| s["id"] == id.as_str()).ok_or_else(|| anyhow!("刚建的静默 {id} 不在列表里"))?;
     let now = OffsetDateTime::now_utc();
     let it = item(&s, now);
     ctx.emit(&it, || {
         let r = row(&it, now);
         let undo = if it["state"] == "scheduled" { "取消预约" } else { "提前结束" };
-        format!("已新建{}：\n{}\n{undo}：fleetctl silence rm {}", what(&it), table::render(&HEAD, std::slice::from_ref(&r)), r[6])
+        format!("已新建{}：\n{}\n{undo}：fleetctl silence rm {}", what(&it), table::render(&HEAD, std::slice::from_ref(&r)), r[7])
     });
     Ok(0)
 }
@@ -196,14 +221,14 @@ pub fn rm(ctx: &Ctx, q: &str) -> anyhow::Result<u8> {
     if q.is_empty() {
         bail!("给要删的静默的 id 前缀（fleetctl silence ls 的 id 列）");
     }
-    let all = list(ctx)?;
+    let all = ctx.list("/silences")?;
     let hits: Vec<&Value> = all.iter().filter(|s| st(s, "/id").starts_with(&q)).collect();
     let now = OffsetDateTime::now_utc();
     let s = match hits.len() {
         1 => hits[0],
         0 => bail!("没有 id 以「{q}」开头的静默（只认进行中和已预约的，先 fleetctl silence ls 看）"),
         n => {
-            let lines: Vec<String> = hits.iter().map(|s| format!("  {}  {}", st(s, "/id"), row(s, now)[..3].join("  "))).collect();
+            let lines: Vec<String> = hits.iter().map(|s| format!("  {}  {}", st(s, "/id"), row(s, now)[..4].join("  "))).collect();
             bail!("「{q}」匹配到 {n} 条静默，请给更长的 id：\n{}", lines.join("\n"))
         }
     };
@@ -230,7 +255,8 @@ mod tests {
         assert_eq!(parse_for("1h30m").unwrap(), Duration::minutes(90));
         assert_eq!(parse_for("1d12h").unwrap(), Duration::hours(36));
         assert_eq!(parse_for("30d").unwrap(), Duration::days(30));
-        for bad in ["", "4", "h", "4x", "0h", "-1h", "4 h", "1.5h", "4H", "99999999999d", "30d1m", "3000000d"] {
+        assert_eq!(parse_for("31d").unwrap(), Duration::days(31)); // 上限由中控判
+        for bad in ["", "4", "h", "4x", "0h", "-1h", "4 h", "1.5h", "4H", "99999999999d"] {
             assert!(parse_for(bad).is_err(), "{bad}");
         }
     }
@@ -262,9 +288,12 @@ mod tests {
             "starts_at": a.format(&Rfc3339).unwrap(), "ends_at": b.format(&Rfc3339).unwrap(), "is_maintenance": true, "comment": "换内核"});
         let cur = s(now - Duration::hours(1), now + Duration::minutes(200));
         assert_eq!(item(&cur, now)["state"], "active");
-        assert_eq!(row(&cur, now), ["全部机器", "agent 离线", "2026-10-22 13:00 → 17:20", "进行中，还剩 3 小时 20 分钟", "是", "换内核", "0192e3a1-7f2c"]);
+        assert_eq!(row(&cur, now), ["全部机器", "全部", "agent 离线", "2026-10-22 13:00 → 17:20", "进行中，还剩 3 小时 20 分钟", "是", "换内核", "0192e3a1-7f2c"]);
         let pre = s(now + Duration::hours(12), now + Duration::hours(16));
         assert_eq!(item(&pre, now)["state"], "scheduled");
-        assert_eq!(row(&pre, now)[2..4], ["2026-10-23 02:00 → 06:00", "已预约，12 小时后开始"]);
+        assert_eq!(row(&pre, now)[3..5], ["2026-10-23 02:00 → 06:00", "已预约，12 小时后开始"]);
+        let r = json!({"id": "x", "subject_kind": "router", "subject_name": "客户A", "rule": null, "starts_at": cur["starts_at"], "ends_at": cur["ends_at"], "is_maintenance": true, "comment": ""});
+        assert_eq!(row(&item(&r, now), now)[..3], ["客户A", "软路由", "全部规则"]);
+        assert_eq!(kind_cn(&json!("probe_point")), "探测点");
     }
 }

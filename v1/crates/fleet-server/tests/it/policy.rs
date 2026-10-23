@@ -137,7 +137,7 @@ async fn draft_preview_publish_apply_rollback() {
     let keys: Vec<&str> = m["health"]["reasons"].as_array().unwrap().iter().map(|r| r["key"].as_str().unwrap()).collect();
     assert!(keys.contains(&"policy_blocked"), "{keys:?}");
     let r = m["health"]["reasons"].as_array().unwrap().iter().find(|r| r["key"] == "policy_blocked").unwrap();
-    assert_eq!((r["severity"].as_str(), r["rule_name"].as_str()), (Some("info"), Some("访问策略暂停")));
+    assert_eq!((r["severity"].as_str(), r["rule_name"].as_str()), (Some("info"), Some("访问规则暂停")));
     assert!(r["text"].as_str().unwrap().contains("已暂停新连接"));
 
     // 线路机还没回报：版本进行中；回报失败 → failed；再回报成功 → applied

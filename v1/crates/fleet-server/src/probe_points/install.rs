@@ -51,6 +51,8 @@ if [ "${FETCH:-0}" = 1 ]; then
   mv -f "$T" /opt/fleet/fleet-agent
 fi
 [ -x /opt/fleet/fleet-agent ] || { echo "fleet：没有 /opt/fleet/fleet-agent" >&2; exit 2; }
+# 重装：上次升级留下的试运行 / 坏版本标记作废（留着的话，新装的程序一启动就被当成试运行到时、换回 fleet-agent.prev）
+rm -f /opt/fleet/.fleet-agent.trial /opt/fleet/.fleet-agent.bad-sha256
 if ! id fleet-probe >/dev/null 2>&1; then
   if command -v useradd >/dev/null 2>&1; then useradd -r -M -d /nonexistent -s /sbin/nologin fleet-probe
   else adduser -S -D -H -h /nonexistent -s /sbin/nologin fleet-probe; fi
@@ -246,7 +248,7 @@ async fn run_ssh(st: &AppState, id: Uuid, host: &str, port: u16, reset: bool, na
     t.push(&st.cfg.dist_dir.join("fleet-agent"), "/opt/fleet/fleet-agent", "755", Duration::from_secs(300)).await.map_err(|e| format!("{e:#}"))?;
     step(st, id, "安装服务").await;
     let token = crate::crypto::random_token(32);
-    sqlx::query("update probe_point set token_hash = $2, upgrade_sha256 = null, updated_at = now() where id = $1")
+    sqlx::query("update probe_point set token_hash = $2, upgrade_sha256 = null, upgrade_fetched_at = null, upgrade_failed = null, bad_sha256 = null, updated_at = now() where id = $1")
         .bind(id)
         .bind(crate::crypto::sha256(token.as_bytes()))
         .execute(&st.db)
@@ -345,7 +347,8 @@ pub async fn fetch(st: &AppState, ip: Option<std::net::IpAddr>, token: &str) -> 
     let report_token = crate::crypto::random_token(32);
     let mut tx = st.db.begin().await?;
     let row: Option<(Uuid, String)> = sqlx::query_as(
-        "update probe_point set bootstrap_token_hash = null, bootstrap_expires_at = null, token_hash = $2, upgrade_sha256 = null, updated_at = now()
+        "update probe_point set bootstrap_token_hash = null, bootstrap_expires_at = null, token_hash = $2, upgrade_sha256 = null,
+               upgrade_fetched_at = null, upgrade_failed = null, bad_sha256 = null, updated_at = now()
          where bootstrap_token_hash = $1 and bootstrap_expires_at > now() returning id, name",
     )
     .bind(crate::crypto::sha256(token.as_bytes()))
@@ -407,6 +410,10 @@ mod tests {
             std::fs::create_dir_all(dir.join("opt/fleet")).unwrap();
             std::fs::write(dir.join("opt/fleet/fleet-agent"), "#!/bin/sh\n").unwrap();
             std::fs::set_permissions(dir.join("opt/fleet/fleet-agent"), std::fs::Permissions::from_mode(0o755)).unwrap();
+            // 上次升级留下的标记：重装时删掉
+            for m in [".fleet-agent.trial", ".fleet-agent.bad-sha256"] {
+                std::fs::write(dir.join("opt/fleet").join(m), "x").unwrap();
+            }
             let s = script("https://fleet.test", "TOKEN123", "香港", false);
             let s = ["/etc/", "/opt/", "/run/", "/sbin/"].iter().fold(s, |s, p| s.replace(p, &format!("{root}{p}")));
             let out = std::process::Command::new("sh")
@@ -420,6 +427,7 @@ mod tests {
             let read = |p: &str| std::fs::read_to_string(dir.join(p)).unwrap();
             assert_eq!(read("etc/fleet/probe.toml"), "server_url = \"https://fleet.test\"\ntoken = \"TOKEN123\"\nname = \"香港\"\n");
             assert_eq!(std::fs::metadata(dir.join("etc/fleet/probe.toml")).unwrap().permissions().mode() & 0o777, 0o600);
+            assert!(!dir.join("opt/fleet/.fleet-agent.trial").exists() && !dir.join("opt/fleet/.fleet-agent.bad-sha256").exists(), "{init}：升级标记没删");
             let calls = read("calls");
             if init == "openrc" {
                 let svc = read("etc/init.d/fleet-probe");

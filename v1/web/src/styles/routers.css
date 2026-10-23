@@ -1,5 +1,5 @@
-/* 软路由：页头总览、卡片（外壳同节点卡 .ncard，见 cards.css）的几处专用样式、抽屉的分组列表 / 出口关系图 / 部署时间线 / 行内迷你折线、接入对话框。
-   容器按信息的性质选（用户：不要每块都是格子）：总览数字不带框，设置类信息是分组列表，关系是连线图，进度是时间线。只用现有的令牌 */
+/* 软路由：页头总览、卡片（外壳同节点卡 .ncard，见 cards.css）的几处专用样式、抽屉头部 / 出口关系图 / 部署时间线 / 行内迷你折线、接入对话框。
+   容器按信息的性质选（用户：不要每块都是格子）：总览数字不带框，基本信息同机器抽屉的网格，关系是连线图，进度是时间线。只用现有的令牌 */
 
 .rt-warn { color: var(--warn-text); }
 .rt-bad { color: var(--bad-text); }
@@ -25,15 +25,14 @@
 .rt-hold.is-bad .rt-hold-main { color: var(--bad-text); }
 .rt-hold-err { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--fs-micro) / 16px var(--font-mono); color: var(--fg-2); }
 .nc-res.rt-hold-tl { display: block; min-height: 112px; }
-/* 没有读数的卡：占位占掉资源、流量、出口、运行四个槽位，内容竖直居中 */
-.ncard > .rt-span { grid-row: span 4; align-content: center; }
+/* 没有读数的卡：占位占掉资源、流量、出口、运行四个槽位，内容贴着上面的地址行排（居中时部署时间线会沉到卡片底部） */
+.ncard > .rt-span { grid-row: span 4; align-content: start; }
 /* 出口槽位：可用数不足黄、参数不一致的提醒黄 */
 .rt-exits b.is-warn { color: var(--warn-text); }
 .nc-quse.rt-drift { color: var(--warn-text); font-weight: var(--fw-medium); }
 .nc-run-val[data-tone="warn"], .rt-temp[data-tone="warn"] { color: var(--warn-text); }
 .nc-run-val[data-tone="bad"], .rt-temp[data-tone="bad"] { color: var(--bad-text); }
 .nc-price.rt-seen { font-weight: var(--fw-regular); color: var(--fg-2); }
-.nc-price.rt-seen.is-bad { color: var(--bad-text); }
 
 /* ---- 部署时间线：竖排圆点 + 连线（结构，不是状态标），当前步骤转圈，失败的红 ---- */
 .rt-tl { display: grid; margin: 0; padding: 0; list-style: none; }
@@ -54,24 +53,17 @@
 .rt-tl-at { font: var(--fs-micro) / 16px var(--font-num); color: var(--fg-2); }
 .rt-tl-err { flex-basis: 100%; font: var(--fs-label) / var(--lh-label) var(--font-mono); color: var(--fg-2); overflow-wrap: anywhere; }
 .rt-tl-acts { flex-basis: 100%; gap: var(--sp-4); margin-top: var(--sp-4); }
-.ncard .rt-tl-err { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ncard .rt-tl-err { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; } /* 卡片上最多三行，全文在悬停里 */
 
-/* ---- 分组列表（同 iOS 设置）：一组一个底，行间细线（左侧缩进），标签在左、值在右 ---- */
-.rt-groups { display: grid; gap: var(--sp-20); min-width: 0; }
-.rt-gsec { min-width: 0; }
-.rt-group-title { margin: 0 0 var(--sp-6) var(--sp-12); font: var(--fw-medium) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2); }
-.rt-group { margin: 0; padding: 0; list-style: none; border-radius: var(--r-float); background: var(--sunken); }
-.rt-row { position: relative; display: flex; align-items: center; justify-content: space-between; gap: var(--sp-16); min-height: 40px; padding: var(--sp-8) var(--sp-12); font-size: var(--fs-body); line-height: var(--lh-body); }
-.rt-row + .rt-row::before { content: ""; position: absolute; top: 0; left: var(--sp-12); right: 0; border-top: 1px solid var(--line); }
-.rt-row-label { display: inline-flex; align-items: center; gap: var(--sp-6); flex: none; color: var(--fg-2); }
-.rt-row-label b { font-weight: var(--fw-medium); color: var(--fg); }
-.rt-row-value { min-width: 0; text-align: right; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rt-row-wrap { white-space: normal; overflow-wrap: anywhere; }
-.rt-row-tl { display: block; padding-block: var(--sp-12); }
-.rt-iface { align-items: flex-start; }
-.rt-iface .rt-row-value { display: grid; gap: var(--sp-2); }
-.rt-iface-sub { font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; }
-.rt-group-foot { margin: var(--sp-6) var(--sp-12) 0; }
+/* ---- 抽屉 ---- */
+/* 头部的类型图标：同机器抽屉的国旗，对齐标题那一行（窄屏状态、团队折到第二行时不落到两行中间） */
+.m-drawer-head > .nc-kind { flex: none; align-self: flex-start; display: grid; place-items: center; height: max(var(--lh-title), var(--h-xs)); color: var(--fg-2); }
+.m-drawer-head > .nc-kind > .lucide { width: var(--icon-md); height: var(--icon-md); }
+/* 概览：总览数字下面接资源四项 */
+.rt-hero-meters { margin-top: var(--sp-12); }
+/* 离线软路由的读数是掉线前最后一次读到的：弱化，并在最上面标明时间 */
+.rt-stale { opacity: 0.6; }
+.rt-stale-tag { margin: 0; font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); }
 
 /* ---- 表格里的读数 ---- */
 /* 入口行里的「软路由 N」小标 */
@@ -95,7 +87,7 @@
 
 /* ---- 出口 → 节点：按线路机分组，组标题是线路机（或「不受管」），每行「出口 ── 节点」一一对应 ---- */
 .rt-topo { display: grid; gap: var(--sp-14); min-width: 360px; }
-.rt-topo-group { display: grid; grid-template-columns: max-content 28px minmax(0, 1fr); grid-auto-rows: 28px; align-items: center; }
+.rt-topo-group { display: grid; grid-template-columns: minmax(0, 180px) 28px minmax(0, 1fr); /* 左列定宽：各组的出口胶囊一样宽，连线与右侧节点名才对得齐 */ grid-auto-rows: 28px; align-items: center; }
 .rt-topo-title { grid-column: 1 / -1; display: flex; align-items: baseline; gap: var(--sp-8); height: auto; padding-bottom: var(--sp-4); font: var(--fw-medium) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2); }
 .rt-topo-title .btn-link { font: inherit; font-weight: var(--fw-medium); color: var(--fg); }
 .rt-topo-title small { font-size: var(--fs-micro); font-weight: var(--fw-regular); color: var(--fg-2); }
@@ -136,4 +128,3 @@ button.rt-topo-pill { cursor: pointer; transition: background-color var(--dur-1)
 .rx-tbl .rx-to b { font-weight: var(--fw-medium); color: var(--fg); }
 .rx-tbl .rx-addr { white-space: nowrap; }
 .opt-relay.is-down { color: var(--fg-3); }
-.rx-pairs { display: grid; grid-template-columns: max-content max-content; gap: var(--sp-2) var(--sp-16); font-size: var(--fs-label); line-height: var(--lh-label); }

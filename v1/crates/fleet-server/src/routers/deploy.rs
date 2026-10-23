@@ -8,6 +8,9 @@
 //!   之后经隧道登录也按它核对，不再首次信任。
 //! - 审计记谁、哪台、目标地址、用没用密码、结果，不记密码（同远程执行：先写一条「已开始」，结束时补上结果）。
 //! - 中控重启时还没跑完的，标为失败（[`mark_interrupted`]）。
+//! - 重新部署（已经发过隧道密钥的）在上传密钥、启动隧道这两步失败、路由上还没换成新密钥时，把原来的隧道公钥与端口写回去：
+//!   路由上跑着的还是旧隧道，在线的路由不因一次失败的重新部署掉线。新密钥先写成 id_ed25519.new，启动隧道那一步才和新的 init 脚本一起换上
+//!   （换上之后输出 fleet_switched=1；这之后失败的不写回：路由上已经是新密钥，写回旧的反而连不上）。
 
 use super::scripts::Bootstrap;
 use super::tunnel::{self, Login};
@@ -17,7 +20,7 @@ use crate::state::{AppState, Event};
 use futures::FutureExt;
 use serde_json::json;
 use std::panic::AssertUnwindSafe;
-use std::path::PathBuf;
+use std::path::Path;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -149,16 +152,45 @@ fn remote_reason(o: &crate::ssh::Output) -> String {
     format!("退出码 {}：{}", o.code, tail.into_iter().rev().collect::<Vec<_>>().join(" / "))
 }
 
-/// 在路由上跑一段脚本，要求输出里有 `marker`
-async fn remote(st: &AppState, id: Uuid, l: &Login, kh: &PathBuf, script: &str, marker: &str, what: &str) -> Result<(), String> {
-    let o = crate::ssh::exec(tunnel::direct(&st.cfg, id, l, kh), script, Duration::from_secs(60)).await.map_err(|e| format!("{what}失败：{e:#}"))?;
+/// 在路由上跑一段脚本，要求输出里有 `marker`。失败时给 (原因, 脚本已经输出的)；输出为 None = 不知道脚本跑到了哪（ssh 超时：
+/// 已经收到的输出随之丢掉，见 ssh::exec），不能当成「什么都没输出」
+async fn remote(st: &AppState, id: Uuid, l: &Login, kh: &Path, script: &str, marker: &str, what: &str) -> Result<(), (String, Option<String>)> {
+    let o = crate::ssh::exec(tunnel::direct(&st.cfg, id, l, kh), script, Duration::from_secs(60)).await.map_err(|e| (format!("{what}失败：{e:#}"), None))?;
     let o = tunnel::normalize(o, l.password.is_some());
     if o.code == 255 {
-        return Err(format!("{what}失败：{}", tunnel::explain(&o, false)));
+        return Err((format!("{what}失败：{}", tunnel::explain(&o, false)), Some(o.stdout)));
     }
     if !o.stdout.contains(marker) {
-        return Err(format!("{what}失败：{}", remote_reason(&o)));
+        return Err((format!("{what}失败：{}", remote_reason(&o)), Some(o.stdout)));
     }
+    Ok(())
+}
+
+/// 换密钥之前这台路由的隧道公钥、发密钥的时间、端口、主机公钥
+type Before = (Option<String>, Option<time::OffsetDateTime>, i32, Option<String>);
+
+/// 重新部署没成、路由上还是旧隧道：把换密钥之前的写回去（库里还是这次换上的那把才写，别的操作之后又换过就不动）。
+/// 原来的隧道端口换走之后空出来了，可能已经分给了别的路由（同时在部署 / 重新接入）：那样写不回，返回原因
+async fn restore(st: &AppState, id: Uuid, old: &Before, new_pub: &str) -> Result<(), String> {
+    let taken: Option<String> = sqlx::query_scalar(
+        "with u as (update router set tunnel_pubkey = $2, tunnel_key_at = $3, tunnel_port = $4, host_key = $5, updated_at = now()
+                    where id = $1 and tunnel_pubkey = $6 and not exists (select 1 from router o where o.tunnel_port = $4 and o.id <> $1) returning 1)
+         select name from router where tunnel_port = $4 and id <> $1 and not exists (select 1 from u)",
+    )
+    .bind(id)
+    .bind(&old.0)
+    .bind(old.1)
+    .bind(old.2)
+    .bind(&old.3)
+    .bind(new_pub)
+    .fetch_optional(&st.db)
+    .await
+    .map_err(|e| format!("写库失败：{e}"))?;
+    if let Some(other) = taken {
+        return Err(format!("原来的隧道端口 {} 已经分给了软路由「{other}」", old.2));
+    }
+    super::sync_files(st).await.map_err(|e| format!("写隧道公钥清单失败：{e:#}"))?;
+    tunnel::close_master(&st.cfg, id).await;
     Ok(())
 }
 
@@ -193,8 +225,8 @@ async fn run(st: &AppState, id: Uuid, l: &Login) -> Result<(), String> {
     res
 }
 
-async fn run_steps(st: &AppState, id: Uuid, l: &Login, kh: &PathBuf, key: &str) -> Result<(), String> {
-    remote(st, id, l, kh, "echo fleet_login=ok\n", "fleet_login=ok", "登录路由").await?;
+async fn run_steps(st: &AppState, id: Uuid, l: &Login, kh: &Path, key: &str) -> Result<(), String> {
+    remote(st, id, l, kh, "echo fleet_login=ok\n", "fleet_login=ok", "登录路由").await.map_err(|e| e.0)?;
     // 上传密钥：先把新的隧道公钥、路由的主机公钥记进库（旧隧道密钥随之撤销，发过密钥的换个隧道端口），再把私钥送过去
     step(st, id, "上传密钥").await?;
     let central = super::central_keys(&st.cfg).await.map_err(|e| format!("{e:#}"))?;
@@ -202,6 +234,11 @@ async fn run_steps(st: &AppState, id: Uuid, l: &Login, kh: &PathBuf, key: &str) 
     let tk = super::tunnel_keypair(&format!("fleet-tunnel router-{id}"));
     let db = |e: sqlx::Error| format!("记录隧道公钥失败：{e}");
     let mut tx = st.db.begin().await.map_err(db)?;
+    let before: Before = sqlx::query_as("select tunnel_pubkey, tunnel_key_at, tunnel_port, host_key from router where id = $1 for update")
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db)?;
     let port = super::rotate_port(&mut tx, &st.cfg, id).await.map_err(|e| e.message)?;
     sqlx::query(
         "update router set tunnel_pubkey = $2, tunnel_key_at = now(), host_key = $3, bootstrap_token_hash = null, bootstrap_expires_at = null,
@@ -228,9 +265,26 @@ async fn run_steps(st: &AppState, id: Uuid, l: &Login, kh: &PathBuf, key: &str) 
         central_hostkey: &central.host_key,
         central_pubkey: &central.login_pub,
     };
-    remote(st, id, l, kh, &b.keys(), "fleet_keys=ok", "上传密钥").await?;
-    step(st, id, "启动隧道").await?;
-    remote(st, id, l, kh, &b.service(), "fleet_service=ok", "启动隧道").await?;
+    // 失败时第三项：启动隧道那一步不知道跑到了哪（超时）。上传密钥只把新私钥写成 .new，没跑完也不影响路由上的现用密钥
+    let up = async {
+        remote(st, id, l, kh, &b.keys(), "fleet_keys=ok", "上传密钥").await.map_err(|(w, o)| (w, o.unwrap_or_default(), false))?;
+        step(st, id, "启动隧道").await.map_err(|e| (e, String::new(), false))?;
+        remote(st, id, l, kh, &b.service(), "fleet_service=ok", "启动隧道").await.map_err(|(w, o)| (w, o.clone().unwrap_or_default(), o.is_none()))
+    };
+    if let Err((why, out, unsure)) = up.await {
+        // 之前没发过密钥（第一次部署），或路由上已经换成新密钥：不写回
+        if before.0.is_none() || out.contains("fleet_switched=1") {
+            return Err(why);
+        }
+        // 可能已经换上了新密钥、新端口（换上的标记随丢掉的输出没了）：写回旧的反而会让换好了的路由连不上。库里留着新的，没换上的话路由会离线
+        if unsure {
+            return Err(format!("{why}。不知道路由上换没换成新的隧道密钥，中控这边留着新的：路由连不上中控的话，再重新部署一次"));
+        }
+        return Err(match restore(st, id, &before, &tk.public).await {
+            Ok(()) => format!("{why}。路由上还是原来的隧道，已改回原来的隧道密钥与端口，在线的照常在线"),
+            Err(e) => format!("{why}。改回原来的隧道密钥也失败了（{e}）：路由的隧道断开后会连不上，修好后重新部署或重新生成接入命令"),
+        });
+    }
     step(st, id, "等待隧道连上").await?;
     let t0 = tokio::time::Instant::now();
     let mut last = String::new();

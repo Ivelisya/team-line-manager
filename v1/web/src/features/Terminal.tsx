@@ -44,7 +44,7 @@ function readTheme(): ITheme {
 }
 
 /** 服务端没先发 exit 就关掉时，按关闭码说原因（服务端一般会先发 exit） */
-const CLOSE_REASON: Record<number, string> = { 1009: '一次发送的内容太大', 1011: '中控内部错误', 4401: '登录已失效，请重新登录' };
+const CLOSE_REASON: Record<number, string> = { 1009: '一次发送的内容太大', 1011: '中控出错了', 4401: '登录已失效，请重新登录' };
 
 const PILL: Record<Exclude<Phase['s'], 'closed'>, [Tone, string]> = { auth: ['info', '正在验证'], cred: ['warn', '待验证'], connecting: ['info', '正在连接'], open: ['ok', '已连接'] };
 
@@ -126,7 +126,7 @@ export function Terminal({ kind, id, name }: TermTarget) {
     ws.onclose = (e) => {
       if (sock.current !== ws) return; // 自己关的（重连、关窗、卸载）
       sock.current = null;
-      const reason = exit ?? (e.reason || CLOSE_REASON[e.code] || (opened ? '连接中断' : '没能连上中控（网络问题，或票据已过期）'));
+      const reason = exit ?? (e.reason || CLOSE_REASON[e.code] || (opened ? '连接中断' : '没能连上中控，可能是网络问题，或验证已过期'));
       note(opened ? `已断开：${reason}` : `连接失败：${reason}`);
       setPhase({ s: 'closed', reason, failed: !opened });
     };
@@ -154,7 +154,7 @@ export function Terminal({ kind, id, name }: TermTarget) {
       <header className="term-head">
         <SquareTerminal size={16} className="term-ic" aria-hidden />
         <h2 id={titleId} className="term-title ellipsis">终端 · {name}</h2>
-        <InfoTip text="终端里输入的命令不进审计，只记谁、哪台、多久、多少字节" />
+        <InfoTip text="审计只记录谁连了哪台、连了多久、传了多少数据，不记录输入的命令" />
         <Pill tone={tone} dot={phase.s === 'auth' || phase.s === 'connecting' ? 'pulse' : undefined}
           tip={phase.s === 'closed' ? label : undefined} role="status"><span className="ellipsis">{label}</span></Pill>
         <div className="term-tools">
@@ -162,7 +162,7 @@ export function Terminal({ kind, id, name }: TermTarget) {
           <IconButton label="关闭" onClick={closeTerminal}><X size={16} /></IconButton>
         </div>
       </header>
-      {host && <div className="term-sub hint">连的是宿主机「{host.name}」<InfoTip text="同机 IP 节点没有自己的 SSH，连接的是它的宿主机" /></div>}
+      {host && <div className="term-sub hint">连的是宿主机「{host.name}」<InfoTip text="同机 IP 节点没有自己的 SSH，连的是宿主机" /></div>}
       <div className="term-screen">
         <div ref={box} className="term-xterm" />
         {need && <CredForm key={need} need={need} err={phase.s === 'cred' ? phase.err : undefined} busy={phase.s === 'auth'} onSubmit={(c) => void connect(c)} />}
@@ -171,7 +171,7 @@ export function Terminal({ kind, id, name }: TermTarget) {
   );
 }
 
-const limitInfo = () => `验证后 ${Math.round(meta().terminal.verify_ttl_s / 60)} 分钟内再开终端不用重输。输错会计入登录的失败次数，错太多次会被暂时限制登录。`;
+const limitInfo = () => `验证通过后 ${Math.round(meta().terminal.verify_ttl_s / 60)} 分钟内再开终端，不用重新输入\n输错会计入登录失败次数，太多次会被暂时限制登录`;
 
 /** 开终端前再验证一次身份：开了两步验证要验证码（或恢复码），没开的要当前登录密码。输入只用于这一次请求，提交即清空 */
 function CredForm({ need, err, busy, onSubmit }: { need: Need; err?: string; busy: boolean; onSubmit: (c: { code: string } | { password: string }) => void }) {
@@ -182,7 +182,7 @@ function CredForm({ need, err, busy, onSubmit }: { need: Need; err?: string; bus
       <form className="term-card" onSubmit={(e) => { e.preventDefault(); if (!v.trim() || busy) return; onSubmit(totp ? { code: v.trim() } : { password: v }); setV(''); }}>
         <div className="term-card-title">{totp ? '输入两步验证码' : '输入当前登录密码'}</div>
         <Field label={totp ? '验证码或恢复码' : '登录密码'} error={err}
-          info={`${totp ? '打开终端前要再验证一次：验证器里的 6 位验证码，或一个恢复码（用过即作废）。' : '打开终端前要再输入一次当前登录密码，确认是本人在操作。'}\n${limitInfo()}`}>
+          info={`${totp ? '打开终端前要再验证一次：输入认证器里的 6 位验证码，或一个恢复码（用过即作废）' : '打开终端前，请再输入一次登录密码，确认是你本人'}\n${limitInfo()}`}>
           {/* 恢复码带字母，不能限成纯数字键盘 */}
           {totp
             ? <Input value={v} onChange={(e) => setV(e.target.value)} autoFocus autoComplete="one-time-code" autoCapitalize="off" spellCheck={false} placeholder="6 位验证码，或一个恢复码" />
@@ -208,8 +208,8 @@ export function TerminalHost() {
     <>
       {t && <Terminal key={`${t.kind}:${t.id}`} {...t} />}
       <ConfirmDialog open={!!ask} onOpenChange={(o) => { if (!o) cancelTerminalAsk(); }} danger
-        title={a === 'close' || !a ? `断开 ${cur?.name ?? ''} 的终端？` : `断开 ${cur?.name ?? ''}，打开 ${a.name} 的终端？`}
-        description={<>还在跑的命令会随之结束<InfoTip text="会话会立即断开；放在 tmux、screen 或 nohup 里的命令除外" /></>}
+        title={a === 'close' || !a ? `断开终端 · ${cur?.name ?? ''}` : `切换终端 · ${cur?.name ?? ''} → ${a.name}`}
+        description={<>还在跑的命令会随之结束<InfoTip text="连接会立即断开。在 tmux、screen 或 nohup 里跑的命令不受影响" /></>}
         confirmLabel={a === 'close' || !a ? '断开并关闭' : '断开并切换'} onConfirm={() => { if (ask) confirmTerminalAsk(ask); }} />
     </>
   );

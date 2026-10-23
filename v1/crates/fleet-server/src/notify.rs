@@ -81,16 +81,8 @@ pub struct Notice {
 
 // ── 格式化 ──────────────────────────────────────────────────────────────────
 
-/// 告警规则的中文名（表在 meta::RULES，网页、fleetctl 经 /meta 用同一套）
-pub fn rule_name(key: &str) -> &str { crate::meta::rule_label(key) }
-
-pub fn severity_name(s: &str) -> &'static str { crate::meta::severity_label(s) }
-
-/// 组织时区（默认北京时间）的 `2026-10-20 15:04:05`
-pub fn beijing(t: OffsetDateTime) -> String { crate::meta::org_time(t) }
-
 /// 通知里的时间：`2026-10-20 15:04:05（北京时间）`，括注是组织时区的叫法
-fn when(t: OffsetDateTime) -> String { format!("{}（{}）", beijing(t), crate::meta::org_tz_label()) }
+fn when(t: OffsetDateTime) -> String { format!("{}（{}）", crate::meta::org_time(t), crate::meta::org_tz_label()) }
 
 /// `5 分钟` / `2 小时 10 分钟` / `1 天 3 小时`
 pub fn fmt_duration(secs: i64) -> String {
@@ -105,7 +97,7 @@ pub fn fmt_duration(secs: i64) -> String {
     }
 }
 
-/// 字节数，二进制单位，写法同网页 format.ts 的 bytes：`1.84 TiB`、`950 MiB`、`2 TiB`
+/// 字节数，二进制单位，写法同网页 format.ts 的 mem（网页的流量用十进制，那是 bytes）：`1.84 TiB`、`950 MiB`、`2 TiB`
 pub fn fmt_bytes(n: f64) -> String {
     const UNITS: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
     let (mut x, mut i) = (n.max(0.0), 0);
@@ -153,10 +145,10 @@ pub fn format_text(n: &Notice) -> String {
     }
     format!(
         "【{}】{}\n机器：{}\n规则：{}\n摘要：{}\n时间：{}",
-        severity_name(&n.severity),
+        crate::meta::severity_label(&n.severity),
         title(n),
         n.machine,
-        rule_name(&n.rule),
+        crate::meta::rule_label(&n.rule),
         n.summary,
         when(n.at)
     )
@@ -205,10 +197,10 @@ pub fn format_wecom(n: &Notice) -> String {
     };
     format!(
         "### <font color=\"{color}\">【{}】{}</font>\n> 机器：**{}**\n> 规则：{}\n> 摘要：{}\n> 时间：{}",
-        severity_name(&n.severity),
+        crate::meta::severity_label(&n.severity),
         title(n),
         md(&n.machine, 64),
-        md(rule_name(&n.rule), 64),
+        md(crate::meta::rule_label(&n.rule), 64),
         md(&n.summary, 500),
         when(n.at)
     )
@@ -220,12 +212,12 @@ pub fn webhook_body(n: &Notice) -> Value {
         "event": n.kind.as_str(),
         "incident_id": n.incident_id,
         "rule": n.rule,
-        "rule_name": rule_name(&n.rule),
+        "rule_name": crate::meta::rule_label(&n.rule),
         "severity": n.severity,
         "machine": n.machine,
         "summary": n.summary,
-        "time": n.at.format(&time::format_description::well_known::Rfc3339).unwrap_or_default(),
-        "time_beijing": beijing(n.at),
+        "time": crate::meta::fmt_ts(n.at),
+        "time_beijing": crate::meta::org_time(n.at),
         "text": format_text(n),
     })
 }
@@ -627,7 +619,7 @@ pub async fn run_forever(st: AppState) {
 /// 起发送循环（每个进程一次）：spawn_background 里起；第一次入队时也起（测试不起后台循环）
 pub fn start(st: &AppState) {
     if !st.notify_started.swap(true, Ordering::Relaxed) {
-        crate::supervise(st, "通知发送", false, run_forever);
+        crate::supervise(st, "通知发送", run_forever);
     }
 }
 
@@ -815,8 +807,8 @@ mod tests {
         assert_eq!(fmt_bytes(512.0), "512 B");
         assert_eq!(strip_machine("团队1-02：5 分钟没有上报", "团队1-02"), "5 分钟没有上报");
         assert_eq!(strip_machine("别的：x", "团队1-02"), "别的：x");
-        assert_eq!(rule_name("relay_xray_down"), "Xray 未运行");
-        assert_eq!(rule_name("something_new"), "something_new");
+        assert_eq!(crate::meta::rule_label("relay_xray_down"), "Xray 未运行");
+        assert_eq!(crate::meta::rule_label("something_new"), "something_new");
     }
 
     #[test]

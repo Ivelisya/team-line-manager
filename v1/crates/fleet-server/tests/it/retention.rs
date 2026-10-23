@@ -23,13 +23,7 @@ async fn put(t: &T, raw: i64, hourly: i64) -> (StatusCode, Value) { t.req("PUT",
 
 /// 等后台清理删到 `sql` 数出来是 `want`（接口改完保留期在后台清，测试没法直接等它）；20 秒还不到就失败
 async fn wait_count(t: &T, sql: &str, want: i64) {
-    for _ in 0..200 {
-        if count(t, sql).await == want {
-            return;
-        }
-        tokio::time::sleep(StdDuration::from_millis(100)).await;
-    }
-    panic!("20 秒内没等到 {sql} = {want}（现在是 {}）", count(t, sql).await);
+    common::eventually(&format!("{sql} = {want}"), StdDuration::from_secs(20), || async { (count(t, sql).await == want).then_some(()) }).await;
 }
 
 /// 某天的 access_event 分区还在不在
@@ -173,19 +167,20 @@ async fn shortening_deletes_expired_rows_everywhere_lengthening_keeps_them() {
                 .unwrap();
         }
         // 画像异常告警：已恢复的按保留期删；别的规则的已恢复告警不归它管
-        for rule in ["ipintel_new_city", "agent_offline"] {
-            sqlx::query("insert into incident (id, rule, subject_id, severity, state, summary, opened_at, resolved_at) values ($1, $2, $3, 'warning', 'resolved', 's', $4, $4)")
+        for (engine, rule) in [("ipintel", "ipintel_new_city"), ("machine", "agent_offline")] {
+            sqlx::query("insert into incident (id, engine, rule, subject_id, severity, state, summary, opened_at, resolved_at) values ($1, $5, $2, $3, 'warning', 'resolved', 's', $4, $4)")
                 .bind(Uuid::now_v7())
                 .bind(rule)
                 .bind(n1)
                 .bind(ago(d))
+                .bind(engine)
                 .execute(db)
                 .await
                 .unwrap();
         }
     }
     sqlx::query("insert into node_source_seen (node_id, dim, value, first_seen, last_seen, flag) values ($1, 'ip', '192.0.2.200', $2, $2, 'open')").bind(n1).bind(ago(40)).execute(db).await.unwrap();
-    sqlx::query("insert into incident (id, rule, subject_id, severity, summary, opened_at) values ($1, 'ipintel_new_isp', $2, 'warning', 's', $3)")
+    sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary, opened_at) values ($1, 'ipintel', 'ipintel_new_isp', $2, 'warning', 's', $3)")
         .bind(Uuid::now_v7())
         .bind(n1)
         .bind(ago(40))
@@ -206,7 +201,7 @@ async fn shortening_deletes_expired_rows_everywhere_lengthening_keeps_them() {
             "select count(*) from ip_intel_cache".to_string(),
             "select count(*) from node_source_seen where flag is null".to_string(),
             "select count(*) from node_source_seen where flag = 'open'".to_string(),
-            "select count(*) from incident where rule like 'ipintel!_%' escape '!' and state = 'resolved'".to_string(),
+            "select count(*) from incident where engine = 'ipintel' and state = 'resolved'".to_string(),
             "select count(*) from incident where state = 'firing'".to_string(),
             "select count(*) from incident where rule = 'agent_offline'".to_string(),
         ] {
@@ -227,7 +222,7 @@ async fn shortening_deletes_expired_rows_everywhere_lengthening_keeps_them() {
     // 改短（3 天、14 天）：接口在后台马上清，不等每小时的维护。等最后一步（画像异常告警）删完
     let (s, _) = put(&t, 3, 14).await;
     assert_eq!(s, StatusCode::OK);
-    wait_count(&t, "select count(*) from incident where rule like 'ipintel!_%' escape '!' and state = 'resolved'", 2).await;
+    wait_count(&t, "select count(*) from incident where engine = 'ipintel' and state = 'resolved'", 2).await;
     // 原始记录：5 天前的整天分区删了；汇总：只剩 14 天以内的；来源画像各维度同（学习期 7 天，比汇总短）；在告警中的、别的告警不动
     assert_eq!(counts().await, vec![2, 3, 3, 2, 2, 2, 2, 8, 1, 2, 1, 4]);
     assert!(partition(&t, 2).await && !partition(&t, 5).await, "5 天前的分区删掉，2 天前的留着");
@@ -239,7 +234,7 @@ async fn shortening_deletes_expired_rows_everywhere_lengthening_keeps_them() {
     // 再短到学习期以内（1 天、3 天）：汇总只剩 3 天内的，来源画像与画像异常告警按学习期留 7 天
     let (s, v) = put(&t, 1, 3).await;
     assert_eq!((s, v["data"]["profile_days"].as_i64()), (StatusCode::OK, Some(7)));
-    wait_count(&t, "select count(*) from incident where rule like 'ipintel!_%' escape '!' and state = 'resolved'", 1).await;
+    wait_count(&t, "select count(*) from incident where engine = 'ipintel' and state = 'resolved'", 1).await;
     assert_eq!(counts().await, vec![1, 1, 1, 0, 0, 0, 0, 4, 1, 1, 1, 4]);
     assert!(!partition(&t, 2).await);
     let left: Vec<String> = sqlx::query_scalar("select value from node_source_seen where flag is null order by 1").fetch_all(db).await.unwrap();

@@ -3,7 +3,7 @@
 //!
 //! 路由是假的：PATH 最前面放假 ssh、sshpass、ssh-keyscan。远端按 `-p <端口>` 分「路由根目录」`<临时目录>/<端口>/`，脚本经 stdin 来，
 //! 把 /etc/ 换到根目录里再用本机 sh 跑（/usr/bin/ssh 用本机的 OpenSSH）；采集脚本（含 FLEET_UC）回根目录里的 collect.json，
-//! 取配置文件（含 head -c）回 config.yaml。根目录里有 refuse-key 时中控密钥登录被拒、有 down 时连不上、有 hostkey 时 keyscan 回它。
+//! 延迟测试脚本（MODE='delay'）回 delay.json（没有时回「没测成」），取配置文件（含 head -c）回 config.yaml。根目录里有 refuse-key 时中控密钥登录被拒、有 down 时连不上、有 hostkey 时 keyscan 回它。
 //! sshpass 核对 SSHPASS（环境变量）是不是根目录里的 password，并记下有没有拿到、参数里有什么。PATH 是整个进程共用的，所以单独一个测试文件。
 
 #![cfg(unix)]
@@ -13,11 +13,15 @@
 #[path = "it/common/mod.rs"]
 mod common;
 
+/// 「不该再发生」的反向断言（没有再发通知）只能等一会儿再看：等到这么久还没有，就当没有
+const NOTHING_MORE: Duration = Duration::from_millis(300);
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use common::{seed_team, T};
 use common::tele::Mock;
 use fleet_server::routers::{self, alerts, collect};
+use fleet_server::state::Event;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use std::os::unix::fs::PermissionsExt;
@@ -41,7 +45,9 @@ mkdir -p "$R"
 case " $* " in *PubkeyAuthentication=no*) ;; *) [ -e "$R/refuse-key" ] && { echo "root@127.0.0.1: Permission denied (publickey)." >&2; exit 255; } ;; esac
 [ "$last" = "sh -s" ] || exit 2
 script=$(cat)
+case $script in *"echo fleet_keys=ok"*) [ -e "$R/slow-keys" ] && sleep 2 ;; esac
 case $script in
+  "MODE='delay'"*) cat "$R/delay.json" 2>/dev/null || echo '{"v":1,"now":0,"oc":{"delay":{"ok":false,"error":"没有 delay.json"}}}'; exit 0 ;;
   *FLEET_UC*) cat "$R/collect.json"; exit 0 ;;
   *"head -c"*) cat "$R/config.yaml"; exit 0 ;;
 esac
@@ -236,7 +242,7 @@ async fn patch_and_delete() {
     // 取过脚本（清单里有它）、开着一条告警、有指标：删掉后都没了，告警关掉不发恢复
     assert_eq!(fetch(&t, &format!("/api/v1/router-bootstrap/{}", token_of(&cmd))).await.0, StatusCode::OK);
     assert!(!read(&t.dir.path().join("tunnel-keys")).is_empty());
-    sqlx::query("insert into incident (id, rule, subject_id, severity, summary) values ($1, 'router_offline', $2::uuid, 'critical', '新名字：连不上')")
+    sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary) values ($1, 'router', 'router_offline', $2::uuid, 'critical', '新名字：连不上')")
         .bind(Uuid::now_v7())
         .bind(&id)
         .execute(&t.st.db)
@@ -345,6 +351,7 @@ async fn one_collection_round() {
     let now = OffsetDateTime::now_utc().unix_timestamp();
     std::fs::write(r.join("collect.json"), collect_json(now, 1_000_000).to_string()).unwrap();
     std::fs::write(r.join("config.yaml"), CONFIG).unwrap();
+    std::fs::write(r.join("delay.json"), json!({"v": 1, "now": now, "oc": {"delay": {"ok": true, "results": {"节点01": 80, "节点02": 95}}}}).to_string()).unwrap();
     let mut mem = Default::default();
     collect::round(&t.st, &mut mem).await.unwrap();
     let d = t.get(&format!("/api/v1/routers/{id}")).await;
@@ -387,6 +394,70 @@ async fn one_collection_round() {
     std::fs::remove_file(r.join("down")).unwrap();
 }
 
+/// 连得上但采集脚本出错：不算离线（在线、带原因、快照留着），告警是「软路由采集出错」（警告、满 60 秒）而不是离线；
+/// 延迟测试没测成只影响出口数据；配置解析不了时出口沿用上次对上的入口
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn collect_error_is_not_offline() {
+    let t = setup().await;
+    let entry = seed_entry(&t).await;
+    let (id, _) = create(&t, "团队1-路由E").await;
+    issue_key(&t, &id).await;
+    // 各测试的库是分开的、分到的隧道端口都从段首起，假路由的根目录按端口分：换一个别的测试不用的
+    let port = 23950;
+    sqlx::query("update router set tunnel_port = $2 where id = $1::uuid").bind(&id).bind(port as i32).execute(&t.st.db).await.unwrap();
+    let r = root(port);
+    std::fs::create_dir_all(&r).unwrap();
+    let now = OffsetDateTime::now_utc().unix_timestamp();
+    std::fs::write(r.join("collect.json"), collect_json(now, 1_000_000).to_string()).unwrap();
+    std::fs::write(r.join("config.yaml"), CONFIG).unwrap();
+    // 延迟测试没测成（没有 delay.json）：出口沿用 mihomo 自己记的，原因记下
+    let mut mem = Default::default();
+    collect::round(&t.st, &mut mem).await.unwrap();
+    let d = t.get(&format!("/api/v1/routers/{id}")).await;
+    assert_eq!(d["state"], "online", "{d}");
+    assert_eq!(d["detail"]["openclash"]["delay_error"], "没有 delay.json");
+    assert_eq!(d["detail"]["exits"][0]["fail_streak"], 0);
+    // 配置改坏了（解析不了）：出口照样对上原来的入口，标出沿用
+    std::fs::write(r.join("collect.json"), { let mut c = collect_json(now + 30, 2_000_000); c["oc"]["config_sha256"] = json!("sha-2"); c }.to_string()).unwrap();
+    std::fs::write(r.join("config.yaml"), "proxies: [ {name: 坏的").unwrap();
+    collect::round(&t.st, &mut mem).await.unwrap();
+    let d = t.get(&format!("/api/v1/routers/{id}")).await;
+    let oc = &d["detail"]["openclash"];
+    assert!(oc["config_error"].as_str().unwrap().starts_with("配置文件解析不了") && oc["config_stale"] == true, "{oc}");
+    assert_eq!((d["detail"]["exits"][0]["sync"].as_str(), d["detail"]["exits"][0]["entry"]["id"].clone()), (Some("ok"), json!(entry)));
+    // 中控重启过（内存里没有上次解析成功的）：沿用上一份快照
+    let mut fresh = Default::default();
+    std::fs::write(r.join("collect.json"), { let mut c = collect_json(now + 60, 3_000_000); c["oc"]["config_sha256"] = json!("sha-2"); c }.to_string()).unwrap();
+    collect::round(&t.st, &mut fresh).await.unwrap();
+    let d = t.get(&format!("/api/v1/routers/{id}")).await;
+    let x = d["detail"]["exits"].as_array().unwrap().iter().find(|x| x["name"] == "节点01").unwrap();
+    assert_eq!((d["detail"]["openclash"]["config_stale"].as_bool(), x["entry"]["id"].clone()), (Some(true), json!(entry)), "{d}");
+    // 采集脚本出错：在线、带原因，快照还是上一份
+    let collected = d["detail"]["collected_at"].clone();
+    std::fs::write(r.join("collect.json"), "Syntax error: unexpected token").unwrap();
+    collect::round(&t.st, &mut fresh).await.unwrap();
+    let d = t.get(&format!("/api/v1/routers/{id}")).await;
+    assert_eq!(d["state"], "online", "{d}");
+    assert_eq!(d["error"], "采集脚本出错（退出码 0）：Syntax error: unexpected token");
+    assert_eq!(d["detail"]["collected_at"], collected);
+    let mut st = alerts::AlertState::default();
+    let t0 = OffsetDateTime::now_utc();
+    alerts::evaluate(&t.st, &mut st, t0).await.unwrap();
+    assert!(incidents(&t, "firing").await.is_empty(), "满 60 秒才开");
+    alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(61)).await.unwrap();
+    let inc = incidents(&t, "firing").await;
+    assert_eq!(inc.len(), 1, "{inc:?}");
+    assert_eq!((inc[0]["rule"].as_str(), inc[0]["severity"].as_str(), inc[0]["rule_name"].as_str()), (Some("router_collect_error"), Some("warning"), Some("软路由读取出错")));
+    assert_eq!(inc[0]["summary"], "团队1-路由E：连得上，但没读到状态：采集脚本出错（退出码 0）：Syntax error: unexpected token");
+    // 好了：满 60 秒恢复
+    std::fs::write(r.join("collect.json"), collect_json(now + 90, 4_000_000).to_string()).unwrap();
+    collect::round(&t.st, &mut fresh).await.unwrap();
+    assert!(t.get(&format!("/api/v1/routers/{id}")).await["error"].is_null());
+    alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(100)).await.unwrap();
+    alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(161)).await.unwrap();
+    assert!(incidents(&t, "firing").await.is_empty());
+}
+
 // ── 告警 ──────────────────────────────────────────────────────────────────
 
 async fn incidents(t: &T, state: &str) -> Vec<Value> {
@@ -414,7 +485,8 @@ fn snap(running: bool, streaks: [u32; 2], wan_up: bool) -> Value {
         "system": {"cpu_pct": 10.0, "mem_used": 1, "mem_total": 4},
         "interfaces": [{"name": "wan", "device": "eth0", "up": wan_up}],
         "openclash": {"enabled": true, "running": running},
-        "exits": [{"name": "节点01", "fail_streak": streaks[0], "sync": "unmanaged"}, {"name": "节点02", "fail_streak": streaks[1], "sync": "unmanaged"}],
+        "exits": [{"name": "节点01", "fail_streak": streaks[0], "sync": "ok"}, {"name": "节点02", "fail_streak": streaks[1], "sync": "ok"},
+                  {"name": "别人的", "fail_streak": 9, "sync": "unmanaged"}],
     })
 }
 
@@ -488,9 +560,297 @@ async fn alerts_open_notify_and_recover() {
     alerts::evaluate(&t.st, &mut st, t1 + time::Duration::seconds(600)).await.unwrap();
     let all = incidents(&t, "all").await;
     assert!(all.iter().all(|i| i["state"] == "resolved"));
-    assert_eq!(all.iter().find(|i| i["rule"] == "router_offline" && i["subject"]["name"] == "（已删除）").map(|i| i["subject"]["kind"].clone()), Some(json!("router")));
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(all.iter().find(|i| i["rule"] == "router_offline" && i["subject"]["name"] == "（已删除）").map(|i| (i["subject"]["kind"].clone(), i["engine"].clone())), Some((json!("router"), json!("router"))));
+    tokio::time::sleep(NOTHING_MORE).await;
     assert_eq!(mock.count("/hook/a"), sent, "删掉的路由不发恢复");
+}
+
+/// 在告警的 (对象名, 规则)
+async fn firing_set(t: &T) -> std::collections::BTreeSet<(String, String)> {
+    incidents(t, "firing").await.iter().map(|i| (i["subject"]["name"].as_str().unwrap().to_string(), i["rule"].as_str().unwrap().to_string())).collect()
+}
+
+fn pairs(v: &[(&str, &str)]) -> std::collections::BTreeSet<(String, String)> { v.iter().map(|(n, r)| (n.to_string(), r.to_string())).collect() }
+
+/// 单台路由的维护窗口与静默（同机器）：维护中开着的告警保持（不恢复、不发通知）、不开新的，别的路由照常；到期后按那时的状态再判；
+/// 只静默一条规则的只挡这一条；全局维护对路由也算维护中；建静默时校验对象与规则；删路由连带删它的静默
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn router_maintenance_and_silence() {
+    let t = setup().await;
+    let mock = Mock::start().await;
+    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "webhook", "config": {"url": mock.url("/hook/m")}, "min_severity": "info", "enabled": true})).await;
+    let (a, _) = create(&t, "团队2-路由M").await;
+    let (b, _) = create(&t, "团队2-路由N").await;
+    issue_key(&t, &a).await;
+    issue_key(&t, &b).await;
+    let mut st = alerts::AlertState::default();
+    let t0 = OffsetDateTime::now_utc();
+    // A 离线：开着严重告警
+    status(&t, &a, false, 300, snap(true, [0, 0], true)).await;
+    status(&t, &b, true, 0, snap(true, [0, 0], true)).await;
+    alerts::evaluate(&t.st, &mut st, t0).await.unwrap();
+    assert_eq!(firing_set(&t).await, pairs(&[("团队2-路由M", "router_offline")]));
+    mock.wait("/hook/m", 1).await;
+
+    // 校验：对象要存在、规则要是这类对象的、类型要认识
+    let now = OffsetDateTime::now_utc();
+    let at = |m: i64| (now + time::Duration::minutes(m)).format(&time::format_description::well_known::Rfc3339).unwrap();
+    for (extra, want) in [
+        (json!({"subject_kind": "router", "subject_id": Uuid::now_v7()}), "subject_id 指向的软路由不存在"),
+        (json!({"subject_kind": "router", "subject_id": b, "rule": "agent_offline"}), "「agent 离线」不是软路由的告警规则"),
+        (json!({"subject_id": b}), "subject_id 指向的机器不存在"),
+        (json!({"subject_kind": "switch", "subject_id": b}), "subject_kind 只能是 machine / router / probe_point"),
+        (json!({"subject_kind": "router"}), "给了 subject_kind 就要给 subject_id；全部对象两个都不给"),
+    ] {
+        let mut body = json!({"starts_at": at(-1), "ends_at": at(60)});
+        body.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        let (s, v) = t.req("POST", "/api/v1/silences", Some(body), None).await;
+        assert_eq!((s, v["error"]["message"].as_str()), (StatusCode::BAD_REQUEST, Some(want)), "{extra}");
+    }
+
+    // A 开维护窗口：列表带对象类型与名字，通知、审计写明是软路由，路由视图显示维护中（B 不算）
+    let win = t.post("/api/v1/silences", json!({"subject_kind": "router", "subject_id": a, "is_maintenance": true, "starts_at": at(-1), "ends_at": at(60), "comment": "客户现场断电"})).await;
+    let win = win["id"].as_str().unwrap().to_string();
+    let list = t.get("/api/v1/silences").await;
+    assert_eq!((list[0]["subject_kind"].as_str(), list[0]["subject_id"].as_str(), list[0]["subject_name"].as_str()), (Some("router"), Some(a.as_str()), Some("团队2-路由M")), "{list}");
+    mock.wait("/hook/m", 2).await;
+    let text = mock.bodies("/hook/m")[1]["text"].as_str().unwrap().to_string();
+    assert!(text.contains("新建了维护窗口\n对象：软路由「团队2-路由M」\n") && text.contains("期间不开新告警、开着的保持原状、不发通知"), "{text}");
+    let log = t.get(&format!("/api/v1/audit?target_id={win}")).await;
+    assert!(log[0]["summary"].as_str().unwrap().starts_with("软路由「团队2-路由M」 · 维护窗口 · "), "{log}");
+    assert_eq!(t.get(&format!("/api/v1/routers/{a}")).await["maintenance"], true);
+    let rs = t.get("/api/v1/routers").await;
+    let maint: Vec<(&str, bool)> = rs.as_array().unwrap().iter().map(|r| (r["name"].as_str().unwrap(), r["maintenance"].as_bool().unwrap())).collect();
+    assert_eq!(maint, [("团队2-路由M", true), ("团队2-路由N", false)]);
+
+    // 维护中：A 连上了但 WAN 断着——离线告警保持（不恢复、不发恢复），WAN 告警不开；B 照常开
+    status(&t, &a, true, 0, snap(true, [0, 0], false)).await;
+    status(&t, &b, false, 300, snap(true, [0, 0], true)).await;
+    // 这一轮评估发现 A 在维护中的集合变了：发一次 Routers（卡片上的「维护」要跟上），之后没变不再发
+    let mut ev = t.st.events.subscribe();
+    let mut routers_events = || std::iter::from_fn(|| ev.try_recv().ok()).filter(|e| matches!(e, Event::Routers)).count();
+    for s in [100, 200, 300] {
+        alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(s)).await.unwrap();
+    }
+    assert_eq!(routers_events(), 1, "维护窗口生效的那一轮发一次 routers 事件");
+    assert_eq!(firing_set(&t).await, pairs(&[("团队2-路由M", "router_offline"), ("团队2-路由N", "router_offline")]));
+    mock.wait("/hook/m", 3).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let events: Vec<(String, String)> = mock.bodies("/hook/m").iter().skip(2).map(|b| (b["event"].as_str().unwrap().into(), b["machine"].as_str().unwrap().into())).collect();
+    assert_eq!(events, [("firing".to_string(), "团队2-路由N".to_string())], "维护中的 A 不发任何通知");
+
+    // 到期：离线满 60 秒恢复（发恢复），WAN 断开开出来
+    sqlx::query("update silence set ends_at = now() - interval '1 second' where id = $1::uuid").bind(&win).execute(&t.st.db).await.unwrap();
+    assert_eq!(t.get(&format!("/api/v1/routers/{a}")).await["maintenance"], false);
+    for s in [400, 461] {
+        alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(s)).await.unwrap();
+    }
+    assert_eq!(routers_events(), 1, "窗口自己到期的那一轮也发一次 routers 事件，没人点「结束维护」也一样");
+    assert_eq!(firing_set(&t).await, pairs(&[("团队2-路由M", "router_wan_down"), ("团队2-路由N", "router_offline")]));
+    mock.wait("/hook/m", 5).await;
+    let events: Vec<(String, String)> = mock.bodies("/hook/m").iter().map(|b| (b["event"].as_str().unwrap().into(), b["rule"].as_str().unwrap().into())).collect();
+    assert!(events.contains(&("resolved".into(), "router_offline".into())) && events.contains(&("firing".into(), "router_wan_down".into())), "{events:?}");
+
+    // 只静默 B 的出口告警：出口不通不开，OpenClash 没在跑照开
+    t.post("/api/v1/silences", json!({"subject_kind": "router", "subject_id": b, "rule": "router_exits_down", "starts_at": at(-1), "ends_at": at(60)})).await;
+    status(&t, &b, true, 0, snap(false, [2, 3], true)).await;
+    for s in [500, 561, 622] {
+        alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(s)).await.unwrap();
+    }
+    assert_eq!(firing_set(&t).await, pairs(&[("团队2-路由M", "router_wan_down"), ("团队2-路由N", "router_openclash_down")]));
+
+    // 全局维护：路由也算维护中
+    let all = t.post("/api/v1/silences", json!({"is_maintenance": true, "starts_at": at(-1), "ends_at": at(60)})).await;
+    assert!(t.get("/api/v1/routers").await.as_array().unwrap().iter().all(|r| r["maintenance"] == true));
+    t.req("DELETE", &format!("/api/v1/silences/{}", all["id"].as_str().unwrap()), None, None).await;
+
+    // 删路由：它的静默一起删
+    assert_eq!(t.req("DELETE", &format!("/api/v1/routers/{b}"), None, None).await.0, StatusCode::OK);
+    let left: i64 = sqlx::query_scalar("select count(*) from silence where router_id = $1::uuid").bind(&b).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(left, 0);
+}
+
+/// 重新接入：开着的离线告警悄悄关掉（不发「已恢复」）；接入过的 30 分钟还没连上开离线警告
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rebootstrap_closes_offline_quietly_then_warns() {
+    let t = setup().await;
+    let mock = Mock::start().await;
+    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "webhook", "config": {"url": mock.url("/hook/r")}, "min_severity": "info", "enabled": true})).await;
+    let (id, _) = create(&t, "团队2-路由R").await;
+    issue_key(&t, &id).await;
+    let mut st = alerts::AlertState::default();
+    let t0 = OffsetDateTime::now_utc();
+    status(&t, &id, false, 600, snap(true, [0, 0], true)).await;
+    alerts::evaluate(&t.st, &mut st, t0).await.unwrap();
+    assert_eq!(incidents(&t, "firing").await.len(), 1);
+    mock.wait("/hook/r", 1).await;
+    t.post(&format!("/api/v1/routers/{id}/bootstrap"), json!({})).await;
+    alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(30)).await.unwrap();
+    assert!(incidents(&t, "firing").await.is_empty());
+    let all = incidents(&t, "all").await;
+    assert_eq!(all[0]["state"], "resolved");
+    let closed_by: Option<String> = sqlx::query_scalar("select detail->>'closed_by' from incident where subject_id = $1::uuid").bind(&id).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(closed_by.as_deref(), Some("router_rebootstrap"));
+    tokio::time::sleep(NOTHING_MORE).await;
+    assert_eq!(mock.count("/hook/r"), 1, "不发恢复");
+    // 命令过期没人执行：30 分钟后开离线警告
+    sqlx::query("update router set bootstrap_expires_at = now() - interval '1 minute' where id = $1::uuid").bind(&id).execute(&t.st.db).await.unwrap();
+    alerts::evaluate(&t.st, &mut st, OffsetDateTime::now_utc()).await.unwrap();
+    let inc = incidents(&t, "firing").await;
+    assert_eq!(inc.len(), 1, "{inc:?}");
+    assert_eq!((inc[0]["rule"].as_str(), inc[0]["severity"].as_str()), (Some("router_offline"), Some("warning")));
+    assert!(inc[0]["summary"].as_str().unwrap().starts_with("团队2-路由R：重新接入后还没连上（已 31 分钟"), "{}", inc[0]["summary"]);
+}
+
+/// 出口指向的节点在维护：不通的出口都指向它时不开（开着的保持，不发恢复）；指向的节点有机器告警时摘要附上
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn exits_down_notes_maintenance_and_alerts() {
+    let t = setup().await;
+    let team = seed_team(&t, "团队2").await;
+    let (relay, _) = common::seed_relay(&t).await;
+    let n3 = common::seed_node(&t, team, 3, "203.0.113.13", "active").await;
+    let (id, _) = create(&t, "团队2-路由M").await;
+    issue_key(&t, &id).await;
+    let er = json!({"id": Uuid::now_v7(), "name": "团队2-03 · 线路机2:20003", "node_id": n3, "relay_id": relay, "node_name": "团队2-03", "relay_name": "线路机2", "port": 20003, "lifecycle": "active"});
+    let data = json!({
+        "system": {"cpu_pct": 10.0, "mem_used": 1, "mem_total": 4},
+        "interfaces": [{"name": "wan", "device": "eth0", "up": true}],
+        "openclash": {"enabled": true, "running": true},
+        "exits": [{"name": "节点03", "fail_streak": 2, "sync": "ok", "entry": er}, {"name": "节点04", "fail_streak": 0, "sync": "ok"}],
+    });
+    status(&t, &id, true, 0, data).await;
+    let maint = Uuid::now_v7();
+    sqlx::query("insert into silence (id, machine_id, is_maintenance, starts_at, ends_at, created_by) values ($1, $2, true, now() - interval '1 minute', now() + interval '1 hour', 'a')")
+        .bind(maint)
+        .bind(n3)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let mut st = alerts::AlertState::default();
+    let t0 = OffsetDateTime::now_utc();
+    alerts::evaluate(&t.st, &mut st, t0).await.unwrap();
+    assert!(incidents(&t, "firing").await.is_empty(), "不通的出口都指向维护中的节点：不开");
+    // 维护结束：开；节点有机器告警：摘要附上
+    sqlx::query("update silence set deleted_at = now() where id = $1").bind(maint).execute(&t.st.db).await.unwrap();
+    sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary) values ($1, 'machine', 'egress_fail', $2, 'critical', 'x')")
+        .bind(Uuid::now_v7())
+        .bind(n3)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(30)).await.unwrap();
+    let inc = incidents(&t, "firing").await;
+    let ex = inc.iter().find(|i| i["rule"] == "router_exits_down").unwrap();
+    assert_eq!(ex["summary"], "团队2-路由M：1 个出口连续两次延迟测试不通：节点03（其中 1 个指向的团队2-03 正在告警）");
+    // 又进了维护：开着的保持（不当成恢复），摘要照旧
+    sqlx::query("update silence set deleted_at = null where id = $1").bind(maint).execute(&t.st.db).await.unwrap();
+    for s in [60, 200] {
+        alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(s)).await.unwrap();
+    }
+    let inc = incidents(&t, "firing").await;
+    assert!(inc.iter().any(|i| i["rule"] == "router_exits_down" && i["summary"] == ex["summary"]), "{inc:?}");
+}
+
+/// 中控停机的时段不算路由连不上：停之前刚连上过的，恢复后第一轮还没连上不报离线（同 agent）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn central_downtime_is_not_router_silence() {
+    let t = setup().await;
+    let (id, _) = create(&t, "团队2-路由G").await;
+    issue_key(&t, &id).await;
+    // 中控 5 分钟前停的、刚刚起来
+    sqlx::query("insert into app_setting (key, value, updated_by) values ('central_alive_at', to_jsonb((now() - interval '300 seconds')::text), 't') on conflict (key) do update set value = excluded.value")
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    t.st.report_gaps.started(&t.st.db).await.unwrap();
+    status(&t, &id, false, 320, snap(true, [0, 0], true)).await;
+    let mut st = alerts::AlertState::default();
+    alerts::evaluate(&t.st, &mut st, OffsetDateTime::now_utc()).await.unwrap();
+    assert!(incidents(&t, "firing").await.is_empty(), "扣掉停机的 5 分钟，只沉默了 20 秒");
+    status(&t, &id, false, 600, snap(true, [0, 0], true)).await;
+    alerts::evaluate(&t.st, &mut st, OffsetDateTime::now_utc()).await.unwrap();
+    assert_eq!(incidents(&t, "firing").await.len(), 1, "停机之前就连不上的照样离线");
+}
+
+/// 删路由：还有没做完的作业改过它的出口、没确认改回时 409，给出作业 id
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn delete_blocked_by_unfinished_router_job() {
+    let t = setup().await;
+    let (id, _) = create(&t, "团队2-路由D").await;
+    let job = Uuid::now_v7();
+    sqlx::query("insert into job (id, kind, params, state, created_by) values ($1, 'replace', $2, 'failed', 't')")
+        .bind(job)
+        .bind(json!({"routers_applied": [{"id": id, "name": "团队2-路由D", "port": 23000, "stamp": "S"}]}))
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let (s, v) = t.req("DELETE", &format!("/api/v1/routers/{id}"), None, None).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().contains(&job.to_string()), "{v}");
+    assert_eq!(v["error"]["detail"]["jobs"], json!([job]));
+    sqlx::query("update job set state = 'succeeded' where id = $1").bind(job).execute(&t.st.db).await.unwrap();
+    assert_eq!(t.req("DELETE", &format!("/api/v1/routers/{id}"), None, None).await.0, StatusCode::OK);
+}
+
+/// 强制删路由（路由回不来了）：把它从没做完的作业的 routers_applied / routers_stuck 里摘掉、作业日志记一条，作业不再被它卡住
+/// （没有别的路由要改回时能取消，「需要人工处理」消失）；作业正在执行时不摘，409
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn force_delete_releases_unfinished_router_job() {
+    let t = setup().await;
+    let (id, _) = create(&t, "团队2-路由D").await;
+    let id: Uuid = id.parse().unwrap();
+    let other = Uuid::now_v7();
+    let job = Uuid::now_v7();
+    let applied = |r: Uuid, n: &str| json!({"id": r, "name": n, "port": 23000, "stamp": "S"});
+    let stuck = |r: Uuid, n: &str| json!({"id": r, "name": n, "exits": ["节点01"], "was": ["1.2.3.4:20001"]});
+    sqlx::query("insert into job (id, kind, params, state, step, created_by) values ($1, 'replace', $2, 'running', 0, 't')")
+        .bind(job)
+        .bind(json!({"routers_applied": [applied(id, "团队2-路由D"), applied(other, "路由E")], "routers_stuck": [stuck(id, "团队2-路由D")]}))
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let (plain, forced) = (format!("/api/v1/routers/{id}"), format!("/api/v1/routers/{id}?force=true"));
+    let del = |force: bool| t.req("DELETE", if force { &forced } else { &plain }, None, None);
+    let (s, v) = del(false).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().contains("强制删除"), "{v}");
+    let (s, v) = del(true).await;
+    assert_eq!(s, StatusCode::CONFLICT, "作业正在执行：{v}");
+    assert!(v["error"]["message"].as_str().unwrap().contains("正在执行"), "{v}");
+    sqlx::query("update job set state = 'failed' where id = $1").bind(job).execute(&t.st.db).await.unwrap();
+    let (s, v) = del(true).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["data"]["jobs"], json!([job]));
+    let p: Value = sqlx::query_scalar("select params from job where id = $1").bind(job).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!((p["routers_applied"].clone(), p["routers_stuck"].clone()), (json!([applied(other, "路由E")]), json!([])), "{p}");
+    let log: String = sqlx::query_scalar("select msg from job_log where job_id = $1").bind(job).fetch_one(&t.st.db).await.unwrap();
+    assert!(log.contains("团队2-路由D") && log.contains("改回放弃"), "{log}");
+    let a: Value = sqlx::query_scalar("select detail from audit_log where action = 'router.delete'").fetch_one(&t.st.db).await.unwrap();
+    assert_eq!((a["force"].clone(), a["jobs"].clone()), (json!(true), json!([job])), "{a}");
+    let j = t.get(&format!("/api/v1/jobs/{job}")).await;
+    assert_eq!((j["manual"].clone(), j["cancellable"].clone()), (Value::Null, json!(false)), "路由E 还没改回，照旧不能取消：{j}");
+    // 路由E 也摘掉（同样强制删了）之后能取消
+    sqlx::query("update job set params = params || '{\"routers_applied\": []}' where id = $1").bind(job).execute(&t.st.db).await.unwrap();
+    assert_eq!(t.get(&format!("/api/v1/jobs/{job}")).await["cancellable"], json!(true));
+}
+
+/// 轮换凭据 / 停用入口：列出指向它的软路由出口（确认处与结果里）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn entry_actions_list_router_exits() {
+    let t = setup().await;
+    let entry = seed_entry(&t).await;
+    let (id, _) = create(&t, "团队1-路由X").await;
+    let ex = |e: Option<Uuid>| json!({"name": "节点01", "sync": "ok", "entry": e.map(|e| json!({"id": e, "name": "x", "node_id": e, "relay_id": e, "node_name": "", "relay_name": "", "port": 20003, "lifecycle": "active"}))});
+    status(&t, &id, true, 0, json!({"exits": [ex(Some(entry)), {"name": "别人的", "sync": "unmanaged"}]})).await;
+    let rs = t.get(&format!("/api/v1/entries/{entry}/routers")).await;
+    assert_eq!(rs, json!([{"id": id, "name": "团队1-路由X", "state": "online", "exits": ["节点01"]}]));
+    let (s, v) = t.req("POST", &format!("/api/v1/entries/{entry}/actions"), Some(json!({"action": "rotate"})), None).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    assert!(v["error"]["message"].as_str().unwrap().ends_with("轮换后会连不上、要到路由上换成新凭据：团队1-路由X 的 节点01"), "{v}");
+    assert_eq!(v["error"]["detail"]["router_exits"], rs);
+    let d = t.post(&format!("/api/v1/entries/{entry}/actions"), json!({"action": "disable"})).await;
+    assert_eq!(d["router_exits"], rs);
+    assert_eq!(t.req("GET", &format!("/api/v1/entries/{}/routers", Uuid::now_v7()), None, None).await.0, StatusCode::NOT_FOUND);
 }
 
 // ── 指标曲线与保留期 ──────────────────────────────────────────────────────
@@ -577,14 +937,11 @@ fn fake_router(password: &str) -> (std::net::TcpListener, i64, PathBuf) {
 }
 
 async fn wait_deploy(t: &T, id: &str) -> Value {
-    for _ in 0..200 {
+    common::eventually("部署结束", Duration::from_secs(30), || async {
         let d = t.get(&format!("/api/v1/routers/{id}")).await;
-        if d["deploy"]["state"] != "running" {
-            return d;
-        }
-        tokio::time::sleep(Duration::from_millis(150)).await;
-    }
-    panic!("部署 30 秒没有结束");
+        (d["deploy"]["state"] != "running").then_some(d)
+    })
+    .await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -625,6 +982,16 @@ async fn one_click_deploy() {
     let err = d["deploy"]["error"].as_str().unwrap();
     assert!(err.starts_with("登录路由失败：登录被拒") && err.contains("用户名或密码不对"), "{err}");
     assert_eq!(router_row(&t, &id).await.0, port);
+    // 重新部署、上传密钥失败（路由上没有 /etc/dropbear）：路由上还是旧隧道，库里的隧道公钥与端口写回原来的
+    std::fs::rename(r.join("etc/dropbear"), r.join("etc/dropbear.x")).unwrap();
+    let before = router_row(&t, &id).await;
+    t.post(&format!("/api/v1/routers/{id}/deploy"), json!({"host": "127.0.0.1", "port": sport, "password": "pw-test-123"})).await;
+    let d = wait_deploy(&t, &id).await;
+    let err = d["deploy"]["error"].as_str().unwrap();
+    assert!(err.starts_with("上传密钥失败：没有 ") && err.contains("etc/dropbear") && err.contains("已改回原来的隧道密钥与端口"), "{err}");
+    assert_eq!(router_row(&t, &id).await, before);
+    assert_eq!(read(&t.dir.path().join("tunnel-keys")), format!("{port} {}\n", before.1.clone().unwrap()));
+    std::fs::rename(r.join("etc/dropbear.x"), r.join("etc/dropbear")).unwrap();
     // 主机公钥变了：不登录（不把密码交出去）
     std::fs::write(r.join("hostkey"), "AAAAC3NzaC1lZDI1NTE5AAAAIOtherHostKeyOtherHostKeyOtherHostKeyOtherHo").unwrap();
     t.post(&format!("/api/v1/routers/{id}/deploy"), json!({"host": "127.0.0.1", "port": sport, "password": "pw-test-123"})).await;
@@ -652,4 +1019,24 @@ async fn one_click_deploy() {
     routers::deploy::mark_interrupted(&t.st).await.unwrap();
     let d = t.get(&format!("/api/v1/routers/{id}")).await;
     assert_eq!((d["deploy"]["state"].as_str(), d["deploy"]["error"].as_str()), (Some("failed"), Some("中控重启，部署中断：请重新部署")));
+}
+
+/// 重新部署失败要写回旧隧道端口时，那个端口已经分给了别的路由（换走之后空出来，同时有别的部署 / 重新接入）：不写回、明说
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn redeploy_restore_skips_taken_port() {
+    let t = setup().await;
+    let (_l, sport, r) = fake_router("pw");
+    let (id, _) = create(&t, "部署A").await;
+    let (other, _) = create(&t, "路由B").await;
+    let old = issue_key(&t, &id).await;
+    // 上传密钥失败（没有 /etc/dropbear），而且慢一点：失败之前把 A 原来的端口分给 B
+    std::fs::remove_dir_all(r.join("etc/dropbear")).unwrap();
+    std::fs::write(r.join("slow-keys"), "").unwrap();
+    t.post(&format!("/api/v1/routers/{id}/deploy"), json!({"host": "127.0.0.1", "port": sport, "password": "pw"})).await;
+    common::eventually("上传密钥之前换了端口", Duration::from_secs(2), || async { (i64::from(router_row(&t, &id).await.0) != old).then_some(()) }).await;
+    sqlx::query("update router set tunnel_port = $2 where id = $1::uuid").bind(&other).bind(old as i32).execute(&t.st.db).await.unwrap();
+    let d = wait_deploy(&t, &id).await;
+    let err = d["deploy"]["error"].as_str().unwrap();
+    assert!(err.contains(&format!("改回原来的隧道密钥也失败了（原来的隧道端口 {old} 已经分给了软路由「路由B」）")), "{err}");
+    assert_ne!(i64::from(router_row(&t, &id).await.0), old);
 }

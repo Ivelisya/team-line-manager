@@ -2,7 +2,8 @@
 // memo：抽屉随实时推送重渲染时，曲线点没变（lines / 格式化函数由调用方放在模块常量里）就不重画
 import { memo, useCallback, useId, useMemo, useState } from 'react';
 import type { SeriesPoint } from '@/lib/types';
-import { pad2 as p2 } from '@/lib/format';
+import { RANGE_MS } from '@/lib/chart';
+import { dt, hm } from '@/lib/format';
 import { ChartContainer, ChartLegend, chartTooltip, Recharts, axisProps, type ChartConfig } from '@/components/ui/chart';
 
 const { AreaChart, Area, LineChart, Line, XAxis, YAxis, CartesianGrid, ReferenceArea, ReferenceDot } = Recharts;
@@ -11,12 +12,10 @@ export const RANGES = [{ value: '1h', label: '1 小时' }, { value: '6h', label:
 /** 按天的标日期；按小时的标时刻，落在零点的标日期（一两天的曲线跨日，不会出现两个一样的 06:00 分不清哪天） */
 const xFmt = (range: string) => (t: string | number) => {
   const d = new Date(t);
-  const date = `${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
-  return range === '7d' || range === '30d' || (d.getHours() === 0 && d.getMinutes() === 0) ? date : `${p2(d.getHours())}:${p2(d.getMinutes())}`;
+  return range === '7d' || range === '30d' || (d.getHours() === 0 && d.getMinutes() === 0) ? dt(t).slice(0, 5) : hm(t);
 };
 
 const MIN = 60_000; const HOUR = 60 * MIN; const DAY = 24 * HOUR;
-const RANGE_MS: Record<string, number> = { '1h': HOUR, '6h': 6 * HOUR, '24h': DAY, '7d': 7 * DAY, '30d': 30 * DAY };
 const TICK_STEP: Record<string, number> = { '1h': 10 * MIN, '6h': HOUR, '24h': 3 * HOUR, '7d': DAY, '30d': 5 * DAY };
 /** 刻度步长与格式按数据实际跨度取，不按所选范围：刚上架或早已离线的机器看「7 天」，数据只有一天多，按 7 天只标日期会标出一排相同的 10-20 */
 const spanRange = (span: number) => (span <= HOUR ? '1h' : span <= 6 * HOUR ? '6h' : span <= 2 * DAY ? '24h' : span <= 7 * DAY ? '7d' : '30d');
@@ -80,6 +79,9 @@ const MAX_OUT = 40;
 /** 整数刻度（延迟 ms）：从 0 起 4 段，每段取整档的整数（不出现 0.85 / 1.7 / 2.55 ms） */
 const intTicks = (max: number) => { const step = Math.max(1, niceCeil(max / 4)); return [0, 1, 2, 3, 4].map((i) => i * step); };
 
+/** 百分比刻度（没有固定上限的百分比，如负载）：从 0 起 4 段，每段取 5 / 10 / 20 / 25 / 50 / 100 … 这样的整档，不出现 7% / 14% / 21% */
+const pctTicks = (max: number) => { const step = [5, 10, 20, 25, 50, 100, 200, 500, 1000, 2000, 5000].find((s) => s * 4 >= max) ?? Math.ceil(max / 4); return [0, 1, 2, 3, 4].map((i) => i * step); };
+
 export interface Line { key: string; label: string; color: string }
 /** 悬停点：描边取卡片底色（recharts 默认白描边，暗色下是一圈白边） */
 const ACTIVE_DOT = { r: 3.5, strokeWidth: 2, stroke: 'var(--surface)' };
@@ -89,9 +91,9 @@ const ACTIVE_DOT = { r: 3.5, strokeWidth: 2, stroke: 'var(--surface)' };
  *  范围里更早的那一段压成左边一条窄窄的斜纹（暂无数据），不把两天的数据挤在 30 天的右边一小条。
  *  数据中间或末尾的空档（离线、停止上报）同样画斜纹，holeLabel 写那是什么（默认「暂无数据」，主机页签是「agent 离线」）。
  *  clip：纵轴按 p99（至少让最大的一个点可截）截断——少数尖峰不再把整张图压扁；超出的点画在顶边并标小三角（悬停仍是真实值） */
-export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 'area', yFmt, valueFmt, domain, yBase, height = 180, empty, full, clip, holeLabel = '暂无数据' }: {
+export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 'area', yFmt, valueFmt, domain, yBase, pct, height = 180, empty, full, clip, holeLabel = '暂无数据' }: {
   points: SeriesPoint[] | undefined; lines: Line[]; range: string; kind?: 'area' | 'line'; yFmt: (v: number) => string; valueFmt?: (k: string, v: number) => string;
-  domain?: [number | 'auto', number | 'auto']; yBase?: 1000 | 1024; height?: number; empty?: string; full?: boolean; clip?: boolean; holeLabel?: string;
+  domain?: [number | 'auto', number | 'auto']; yBase?: 1000 | 1024; pct?: boolean; height?: number; empty?: string; full?: boolean; clip?: boolean; holeLabel?: string;
 }) {
   const config = useMemo<ChartConfig>(() => Object.fromEntries(lines.map((l) => [l.key, { label: l.label, color: l.color }])), [lines]);
   const hatch = useId().replace(/:/g, '');
@@ -136,12 +138,12 @@ export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 
     const p99 = vals.length > 1 ? quantile([...vals].sort((a, b) => a - b).slice(0, -1), 0.99) : vals[0] ?? 0;
     const cut = !!clip && p99 > 0 && max > p99 * 1.3;
     const top = cut ? p99 : max;
-    const ticks = yBase ? valueTicks(top, yBase) : clip && top > 0 ? intTicks(top) : undefined;
+    const ticks = yBase ? valueTicks(top, yBase) : pct && top > 0 ? pctTicks(top) : clip && top > 0 ? intTicks(top) : undefined;
     const ceil = ticks ? ticks[ticks.length - 1] : cut ? niceCeil(top) : undefined;
     const out: { t: number; v: number; key: string }[] = [];
     if (cut && ceil != null) for (const d of data) for (const l of lines) { if (hidden.has(l.key)) continue; const v = (d as Record<string, unknown>)[l.key]; if (typeof v === 'number' && v > ceil) out.push({ t: (d as { t: number }).t, v, key: l.key }); }
     return { ticks, ceil, out: out.slice(0, MAX_OUT) };
-  }, [data, lines, yBase, hidden, clip]);
+  }, [data, lines, yBase, pct, hidden, clip]);
   const none = useMemo(() => !!empty && data.every((d) => lines.every((l) => !(d as Record<string, unknown>)[l.key])), [data, lines, empty]);
   if (none) return <div className="chart-empty" style={{ height }}>{empty}</div>;
   const common = {
@@ -157,7 +159,7 @@ export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 
       {holes.map((h) => <ReferenceArea key={h.a} x1={h.a} x2={h.b} fill={`url(#${hatch})`} fillOpacity={1} stroke="none" ifOverflow="hidden" label={wide(h.a, h.b) ? { value: h.label, position: 'center', fill: 'var(--chart-axis)', fontSize: 11 } : undefined} />)}
       <XAxis dataKey="t" type="number" scale="time" domain={span ?? ['dataMin', 'dataMax']} allowDataOverflow ticks={xTicks} tickFormatter={xFmt(xRange)} {...axisProps} minTickGap={32} />
       <YAxis width={60} tickFormatter={yFmt} {...axisProps} interval={0} ticks={y.ticks} allowDataOverflow={y.out.length > 0} domain={y.ceil != null ? [0, y.ceil] : domain ?? [0, 'auto']} />
-      {chartTooltip(config, (l) => { const d = new Date(Number(l)); return `${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`; }, valueFmt)}
+      {chartTooltip(config, (l) => dt(Number(l)), valueFmt)}
       {y.out.map((o) => <ReferenceDot key={`${o.key}${o.t}`} x={o.t} y={y.ceil!} r={0} shape={OUT_TRI(`var(--color-${o.key})`)} ifOverflow="visible" />)}
     </>
   );

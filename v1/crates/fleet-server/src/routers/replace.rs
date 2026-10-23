@@ -120,12 +120,16 @@ pub fn rollback_script(stamp: &str, exits: &[Edit]) -> String {
 /// 读配置（几百 KB 经隧道）的时长上限
 pub const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// 读源配置：作业动手前按它重新确定要改哪些出口。顶层 `secret:` 行在路由上先删掉、最多多取 1 字节（同采集的 fetch_config）
+/// 读源配置时路由上根本没有源配置（OpenClash 没配）的退出码：没有出口，不算读不了
+pub const NO_CONFIG: i32 = 3;
+
+/// 读源配置：作业动手前按它重新确定要改哪些出口。顶层 `secret:` 行在路由上先删掉、最多多取 1 字节（同采集的 fetch_config）。
+/// 没有源配置时以 [`NO_CONFIG`] 退出
 pub fn read_script() -> String {
     vars(&[("MODE", "read")])
         + &format!(
             "CFG=$(uci -q get openclash.config.config_path 2>/dev/null || true)\n\
-             if [ -z \"$CFG\" ] || [ ! -f \"$CFG\" ]; then echo \"fleet：OpenClash 的源配置（uci openclash.config.config_path）不存在：${{CFG:-没有设置}}\" >&2; exit 2; fi\n\
+             if [ -z \"$CFG\" ] || [ ! -f \"$CFG\" ]; then echo \"fleet：OpenClash 的源配置（uci openclash.config.config_path）不存在：${{CFG:-没有设置}}\" >&2; exit {NO_CONFIG}; fi\n\
              sed '/^secret[[:space:]]*:/d' \"$CFG\" | head -c {}\n",
             super::clash::MAX_CONFIG + 1
         )
@@ -543,6 +547,10 @@ rules:\n- MATCH,节点01组\n";
             let f = Fake::new(&format!("secret: s3cret\n{CONFIG}"), bb);
             let o = f.run(&read_script(), &[]);
             assert_eq!((o.code, o.stdout.as_str()), (0, CONFIG), "busybox={bb} {o:?}");
+            // 没有源配置：单独的退出码（作业算没有出口，不算读不了）
+            std::fs::remove_file(f.path("etc/openclash/config/c.yaml")).unwrap();
+            let o = f.run(&read_script(), &[]);
+            assert!(o.code == NO_CONFIG && o.stderr.contains("fleet：OpenClash 的源配置"), "busybox={bb} {o:?}");
             let f = Fake::new(CONFIG, bb);
             let o = f.run(&apply_script(&[edit("节点01"), edit2()], at("20261023-073012Z"), &[]), &[("节点01", 88), ("节点02", 95)]);
             assert_eq!(o.code, 0, "busybox={bb} {o:?}");

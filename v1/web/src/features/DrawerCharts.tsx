@@ -1,9 +1,10 @@
 // 抽屉里带图表的三个页签：连接质量 / 流量 / 主机。单独成文件按需加载，recharts 只在打开这些页签时才下载。
 // 图表卡、加载框与时间范围也给软路由抽屉的「曲线」页签用（RouterCharts）。
 import * as React from 'react';
-import { Cpu, Gauge, Globe, HardDrive, MemoryStick, Network, Radar, ServerOff } from 'lucide-react';
+import { ChevronRight, Cpu, Gauge, Globe, HardDrive, MemoryStick, Network, Radar, ServerOff } from 'lucide-react';
 import type { MachineView, SeriesPoint } from '@/lib/types';
 import { usePingSeries } from '@/lib/ping';
+import { useReachQuality, type ReachWindowStat } from '@/lib/probePoints';
 import type { UseQueryResult } from '@tanstack/react-query';
 import { useAvailability, useSeries } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
@@ -12,14 +13,12 @@ import { AVAIL_LEGEND, availCells, availTitles, fromLabel, hasHost, monthFlowTip
 import { Segmented } from '@/components/ui/overlays';
 import { Skeleton } from '@/components/ui/skeleton';
 import { InfoTip } from '@/components/ui/form';
-import { Beat, Empty, ErrorNote, LabelValue, LabelValueGrid, Note, Num, Section, SectionHeader } from '@/components/app/primitives';
+import { Beat, Empty, ErrorNote, LabelValue, LabelValueGrid, Note, Num, Section, SectionHeader, TableWrap } from '@/components/app/primitives';
 import { RANGES, TimeChart } from '@/components/app/TimeChart';
-import { EntriesTable, entriesMeta } from './EntriesTable';
+import { chartPoll, RANGE_MS, vMs, vPct, vRate, yMs, yPct, yRate } from '@/lib/chart';
+import { entriesMeta } from './EntriesTable';
+import { Button } from '@/components/ui/button';
 
-/** 抽屉开着时曲线的重取间隔（实时流只推当前读数，不推曲线），随范围放大：范围越长点越粗、取一次越贵
- *  （线路机 24 小时流量曲线一次 130–350 ms 数据库时间，每分钟才多一个点） */
-const POLL: Record<string, number> = { '1h': 30_000, '6h': 60_000, '24h': 120_000 };
-const poll = (range: string) => POLL[range] ?? 300_000;
 
 // 曲线的线条与格式化放模块常量：抽屉随实时推送重渲染时 TimeChart（memo）的 props 不变，不重画。
 // CPU / 内存用首页节点卡的指标色（CPU 蓝、内存紫），上下行与对照序列沿用 --chart-1 / --chart-2
@@ -35,14 +34,8 @@ const L_DISK = [{ key: 'disk_pct', label: '磁盘', color: 'var(--m-disk)' }];
 const L_LOAD = [{ key: 'load_pct', label: '负载', color: 'var(--m-load)' }];
 const L_NET = [{ key: 'net_rx_bps', label: '↓ 下行', color: 'var(--chart-1)' }, { key: 'net_tx_bps', label: '↑ 上行', color: 'var(--chart-2)' }];
 const PCT_DOMAIN: [number, number] = [0, 100];
-const yMs = (v: number) => (v ? `${v} ms` : '0');
-const yPct = (v: number) => `${Math.round(v)}%`;
 const yBytes = (v: number) => (v ? F.str(F.bytes(v)) : '0');
-const yRate = (v: number) => (v ? F.str(F.rate(v)) : '0');
-const vMs = (_: string, v: number) => `${Math.round(v)} ms`;
-const vPct = (_: string, v: number) => `${v.toFixed(1)}%`;
 const vBytes = (_: string, v: number) => { const b = F.bytes(v); return `${b.v} ${b.u}`; };
-const vRate = (_: string, v: number) => { const r = F.rate(v); return `${r.v} ${r.u}`; };
 
 export function RangeBar({ range, setRange }: { range: string; setRange: (r: string) => void }) {
   return <Segmented sm label="时间范围" value={range} onChange={setRange} items={RANGES} />;
@@ -52,7 +45,6 @@ export const RangeSticky = ({ range, setRange }: { range: string; setRange: (r: 
   <div className="tab-sticky"><span>时间范围</span><RangeBar range={range} setRange={setRange} /></div>
 );
 
-const RANGE_MS: Record<string, number> = { '1h': 3600_000, '6h': 6 * 3600_000, '24h': 24 * 3600_000, '7d': 7 * 86400_000, '30d': 30 * 86400_000 };
 /** 点不到两个、画不成线时的说明：还在上架、或在所选时间范围内才上架的，是数据还在积累；其余（离线、已退役）是这段时间没有数据 */
 const fewText = (m: MachineView, range: string) =>
   m.lifecycle === 'provisioning' || (m.activated_at != null && Date.now() - Date.parse(m.activated_at) < (RANGE_MS[range] ?? 0)) ? '刚上架，数据积累中' : '这段时间没有数据';
@@ -106,11 +98,45 @@ const AvailabilitySection = React.memo(function AvailabilitySection({ id, relay 
   );
 });
 
+const REACH_WINDOWS = [['24h', '近 24 小时'], ['7d', '近 7 天'], ['30d', '近 30 天']] as const;
+const reachCell = (w: ReachWindowStat | null) => (!w || !w.total ? '—'
+  : <span data-tip={`${w.ok}/${w.total} 次连上${w.median_ms == null ? '' : ` · 延迟中位 ${Math.round(w.median_ms)} ms`}`}>
+    <b className="num">{successPct((100 * w.ok) / w.total)}</b>{w.avg_ms != null && <span className="t-sub"> · {Math.round(w.avg_ms)} ms</span>}</span>);
+/** 线路机的客户入口连通性：各路来源（中控、各探测点）连它客户入口的成功率与平均建连延迟（中控只判通不通），来自小时汇总。
+ *  卡片心跳格只看主来源近 1 小时；这里给长期的、各路并排的（对比香港与中控、事后核对投诉） */
+const ReachQualitySection = React.memo(function ReachQualitySection({ id }: { id: string }) {
+  const q = useReachQuality(id);
+  const s = q.data?.sources ?? [];
+  return (
+    <Section>
+      <SectionHeader title={<>入口连通性<InfoTip text={'中控和各探测点连这台线路机入口的成功率和平均延迟\n探测点自己网络不通的那段不算；中控只看通不通，没有延迟'} /></>} />
+      {q.isError && !q.data ? <ErrorNote error={q.error} onRetry={() => void q.refetch()}>连通性加载失败：</ErrorNote>
+        : q.isLoading ? <Skeleton h={72} />
+        : !s.length ? <div className="hint">还没有探测记录</div>
+        : (
+          <TableWrap>
+            <table className="dt is-one" style={{ minWidth: 440 }}>
+              <thead><tr><th>来源</th>{REACH_WINDOWS.map(([k, l]) => <th key={k}>{l}</th>)}</tr></thead>
+              <tbody>
+                {s.map((x) => (
+                  <tr key={x.source}>
+                    <td><span className="cell-main">{x.label}</span>{x.primary && <span className="sub">主来源</span>}</td>
+                    {REACH_WINDOWS.map(([k]) => <td key={k}>{reachCell(x.windows[k])}</td>)}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </TableWrap>
+        )}
+    </Section>
+  );
+});
+
 const PING_COLORS = ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)', 'var(--m-cpu)', 'var(--m-mem)', 'var(--m-disk)', 'var(--m-load)', 'var(--fg-3)'];
 /** 线路机的三网 PING 曲线：延迟（各目标一条线，1h–24h 每分钟的中位数，7d / 30d 每小时平均）与丢包率。
  *  同一轮各目标的时刻相同，按时刻合成一组点（s<槽位> 延迟、l<槽位> 丢包） */
 const PingSection = React.memo(function PingSection({ id, range }: { id: string; range: string }) {
-  const q = usePingSeries(id, range, poll(range));
+  const q = usePingSeries(id, range, chartPoll(range));
   const { points, ms, loss } = React.useMemo(() => {
     const by = new Map<string, SeriesPoint>();
     for (const s of q.data?.series ?? []) for (const p of s.points) {
@@ -141,11 +167,13 @@ const PingSection = React.memo(function PingSection({ id, range }: { id: string;
 
 export function QualityTab({ m }: { m: MachineView }) {
   const { range, setRange } = useDrawer();
-  const s = useSeries(m.id, 'probe', range, true, poll(range));
+  const s = useSeries(m.id, 'probe', range, true, chartPoll(range));
   return (
     <>
-      <RangeSticky range={range} setRange={setRange} />
+      {/* 可用率（近 30 天）与入口连通性（24 小时 / 7 天 / 30 天）是固定时间段，不跟时间范围走：放在时间范围条上面，下面的曲线才归它管 */}
       <AvailabilitySection id={m.id} relay={m.kind === 'relay'} />
+      {m.kind === 'relay' && <ReachQualitySection id={m.id} />}
+      <RangeSticky range={range} setRange={setRange} />
       {m.kind === 'relay' && <PingSection id={m.id} range={range} />}
       <Section>
         {/* 多条入口时曲线是各入口的平均（序列接口不分入口），写明几条、是哪几台线路机 */}
@@ -156,17 +184,25 @@ export function QualityTab({ m }: { m: MachineView }) {
           </ChartFrame>
         </ChartCard>
       </Section>
-      <Section>
-        <SectionHeader title="各入口当前探测" meta={entriesMeta(m)} />
-        <EntriesTable m={m} />
-      </Section>
+      <EntriesLink m={m} />
     </>
+  );
+}
+
+/** 连接质量、流量页签不再各放一张入口表（列和概览的几乎一样）：只留一行计数，点「查看」回概览的入口表（含每条的 TCP、出口与本月业务流量） */
+function EntriesLink({ m }: { m: MachineView }) {
+  const { setTab } = useDrawer();
+  if (!m.entries.length) return null;
+  return (
+    <Section>
+      <SectionHeader title="入口" meta={entriesMeta(m)}><Button variant="quiet" size="sm" onClick={() => setTab('overview')}>查看<ChevronRight size={14} /></Button></SectionHeader>
+    </Section>
   );
 }
 
 export function TrafficTab({ m }: { m: MachineView }) {
   const { range, setRange } = useDrawer();
-  const s = useSeries(m.id, 'traffic', range, true, poll(range));
+  const s = useSeries(m.id, 'traffic', range, true, chartPoll(range));
   const t = monthTraffic(m); const nic = m.nic; const from = m.month_counted_from;
   return (
     <>
@@ -201,10 +237,7 @@ export function TrafficTab({ m }: { m: MachineView }) {
           </ChartFrame>
         </ChartCard>
       </Section>
-      <Section>
-        <SectionHeader title="按入口" meta={entriesMeta(m)} />
-        <EntriesTable m={m} traffic />
-      </Section>
+      <EntriesLink m={m} />
     </>
   );
 }
@@ -213,7 +246,7 @@ export function HostTab({ m }: { m: MachineView }) {
   const { range, setRange } = useDrawer();
   // 家宽代理没有主机；其它机器即使现在没有读数（agent 离线、还没上报），历史曲线照样能看——排查掉线前发生了什么正要看它
   const agentful = m.kind !== 'proxy';
-  const s = useSeries(m.id, 'host', range, agentful, poll(range));
+  const s = useSeries(m.id, 'host', range, agentful, chartPoll(range));
   const cores = m.agent?.cores ?? null;
   // 负载曲线：load1 按核数折成百分比（同卡片）；核数不知道时没有这条
   const loadPoints = React.useMemo(() => (cores && s.data?.points.some((p) => typeof p.load1 === 'number') ? s.data.points.map((p) => ({ ...p, load_pct: typeof p.load1 === 'number' ? (p.load1 / cores) * 100 : null })) : null), [s.data, cores]);
@@ -229,11 +262,7 @@ export function HostTab({ m }: { m: MachineView }) {
         <SectionHeader title="当前" meta={h ? `更新于 ${F.ago(h.ts)}` : m.agent?.last_report_at ? `最后上报于 ${F.ago(m.agent.last_report_at)}` : '还没上报过'} />
         {h && r ? (
           <LabelValueGrid>
-            <LabelValue label="内存"><Num f={F.mem(h.mem_used)} /> <span className="t-sub">/ <Num f={F.mem(h.mem_total)} /></span></LabelValue>
-            <LabelValue label="磁盘"><Num f={F.mem(h.disk_used)} /> <span className="t-sub">/ <Num f={F.mem(h.disk_total)} /></span></LabelValue>
-            {/* 同卡片的负载格条：百分比一行，「1 分钟 0.13 · 1 核」放第二行 */}
-            <LabelValue label="负载" wrap>{h.load1 == null ? <span className="t-sub">{r.load.sub}</span>
-              : <><Num f={r.load.value} /><div className="t-sub">{r.load.sub}</div></>}</LabelValue>
+            {/* 内存、磁盘、负载的当前读数在下面各图表头里（百分比 + 绝对值），这里只留图里没有的 TCP 连接数 */}
             <LabelValue label="TCP 连接数"><span className="num">{h.tcp_conns ?? '—'}</span></LabelValue>
           </LabelValueGrid>
         ) : <div className="hint">agent 离线，没有当前读数</div>}
@@ -242,12 +271,12 @@ export function HostTab({ m }: { m: MachineView }) {
       {/* 图表卡同属一段，之间不再画分隔线 */}
       <Section className="chart-stack">
         <ChartCard c="var(--m-cpu)" icon={<Cpu />} title="CPU" meta={hourly ? '每小时平均与峰值' : undefined} value={h ? <Num f={F.pct(h.cpu_pct, 1)} /> : '—'} caption="使用率"><ChartFrame q={s} few={few} height={140}><TimeChart full holeLabel="agent 离线" points={s.data?.points} range={s.data?.range ?? range} lines={hourly ? L_CPU_HOURLY : L_CPU} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} height={140} /></ChartFrame></ChartCard>
-        <ChartCard c="var(--m-mem)" icon={<MemoryStick />} title="内存" value={r ? <Num f={F.pct(r.mem.pct, 1)} /> : '—'} caption="使用率"><ChartFrame q={s} few={few} height={140}><TimeChart full holeLabel="agent 离线" points={s.data?.points} range={s.data?.range ?? range} lines={L_MEM} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} height={140} /></ChartFrame></ChartCard>
-        <ChartCard c="var(--m-disk)" icon={<HardDrive />} title="磁盘" value={r ? <Num f={F.pct(r.disk.pct, 1)} /> : '—'} caption="使用率"><ChartFrame q={s} few={few} height={140}><TimeChart full holeLabel="agent 离线" points={s.data?.points} range={s.data?.range ?? range} lines={L_DISK} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} height={140} /></ChartFrame></ChartCard>
+        <ChartCard c="var(--m-mem)" icon={<MemoryStick />} title="内存" value={r ? <Num f={F.pct(r.mem.pct, 1)} /> : '—'} caption={r ? `使用率 · ${r.mem.sub}` : '使用率'}><ChartFrame q={s} few={few} height={140}><TimeChart full holeLabel="agent 离线" points={s.data?.points} range={s.data?.range ?? range} lines={L_MEM} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} height={140} /></ChartFrame></ChartCard>
+        <ChartCard c="var(--m-disk)" icon={<HardDrive />} title="磁盘" value={r ? <Num f={F.pct(r.disk.pct, 1)} /> : '—'} caption={r ? `使用率 · ${r.disk.sub}` : '使用率'}><ChartFrame q={s} few={few} height={140}><TimeChart full holeLabel="agent 离线" points={s.data?.points} range={s.data?.range ?? range} lines={L_DISK} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} height={140} /></ChartFrame></ChartCard>
         {/* 容器里拿不到负载（或小时汇总不含）：图卡缩成一行，不占一整张图的高度 */}
         {cores != null && (s.data && !loadPoints
-          ? <ChartCard slim c="var(--m-load)" icon={<Gauge />} title="负载" meta={<InfoTip text={`1 分钟平均负载 ÷ ${cores} 核；超过 100% 表示有任务在排队`} />} value="—" caption={hourly ? '小时汇总不含负载' : '容器内不可用'} />
-          : <ChartCard c="var(--m-load)" icon={<Gauge />} title="负载" meta={<InfoTip text={`1 分钟平均负载 ÷ ${cores} 核；超过 100% 表示有任务在排队`} />} value={r ? <Num f={r.load.value} /> : '—'} caption="1 分钟平均"><ChartFrame q={s} few={few} height={140}>{loadPoints && <TimeChart full holeLabel="agent 离线" points={loadPoints} range={s.data?.range ?? range} lines={L_LOAD} yFmt={yPct} valueFmt={vPct} height={140} />}</ChartFrame></ChartCard>)}
+          ? <ChartCard slim c="var(--m-load)" icon={<Gauge />} title="负载" meta={<InfoTip text={`1 分钟平均负载除以 ${cores} 核。超过 100% 说明有进程在排队`} />} value="—" caption={hourly ? '小时汇总不含负载' : '容器里读不到负载'} />
+          : <ChartCard c="var(--m-load)" icon={<Gauge />} title="负载" meta={<InfoTip text={`1 分钟平均负载除以 ${cores} 核。超过 100% 说明有进程在排队`} />} value={r ? <Num f={r.load.value} /> : '—'} caption={h && h.load1 != null && r ? `1 分钟 ${h.load1.toFixed(2)} · ${cores} 核` : '1 分钟平均'}><ChartFrame q={s} few={few} height={140}>{loadPoints && <TimeChart full holeLabel="agent 离线" points={loadPoints} range={s.data?.range ?? range} lines={L_LOAD} yFmt={yPct} valueFmt={vPct} pct height={140} />}</ChartFrame></ChartCard>)}
         <ChartCard c="var(--chart-1)" icon={<Network />} title="网卡速率" value={h ? <>↓ <Num f={F.rate(h.net_rx_bps)} /> <span className="t-sub">·</span> ↑ <Num f={F.rate(h.net_tx_bps)} /></> : '—'} caption="当前速率"><ChartFrame q={s} few={few} height={160}><TimeChart full holeLabel="agent 离线" points={s.data?.points} range={s.data?.range ?? range} lines={L_NET} yFmt={yRate} valueFmt={vRate} yBase={1000} height={160} clip /></ChartFrame></ChartCard>
       </Section>
     </>

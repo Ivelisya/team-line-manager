@@ -6,7 +6,7 @@
 //!   作业执行时按路由当时的配置重新确定（同一套匹配，`replace_exit`）。
 //!   新入口按线路机一一对应（旧入口在哪台线路机，就换成新节点在同一台上的入口）；对不上时新节点只有一个在用入口就用它，否则报错说明。
 //! - 改编号与 PATCH /machines/{id} 同一套代码（machines::patch_tx）：同样的校验、审计（machine.rename）、刷新线路机。
-//!   编号先挪开旧节点、再给新节点，`numbering.auto_compact` 打开时新节点原来所在的团队随后压缩（同退役）。旧节点不退役：
+//!   编号先挪开旧节点、再给新节点，新节点原来所在的团队随后压缩（同退役）。旧节点不退役：
 //!   放进备用团队后由备用到期自动回收（spare.rs）接手。
 
 use super::ok;
@@ -144,7 +144,7 @@ pub fn new_server(old_server: &str, old_relay_ip: &str, new_relay_ip: &str, new_
 }
 
 /// 各路由最近一次采集的快照里指向 `node` 的出口，`pick` 决定每个出口怎么改（None = 不改，Err = 改不了的原因：照样列出、带上原因，
-/// `blocking` 时进 blockers）。计划里有出口的路由不在线、又要改路由（`enabled`）时阻断；`team` 里的路由没有快照或配置读不了时提醒。
+/// `blocking` 时进 blockers）。计划里有出口的路由不在线、又要改路由（`enabled`）时阻断；`team` 里的路由没有快照时提醒，要改路由时任何路由配置读不了都提醒。
 /// `(verb, what)`：「替换」/「旧节点」、「换线路机」/「旧入口」，拼进提示
 #[allow(clippy::too_many_arguments)]
 pub fn scan_routers(
@@ -166,8 +166,13 @@ pub fn scan_routers(
             }
             continue;
         };
-        if let Some(e) = snap.openclash.config_error.as_deref().filter(|_| team.is_some() && r.team_id == team) {
-            warnings.push(format!("软路由「{}」的配置读不了（{e}），看不出它有没有用{what}", r.name));
+        // 配置读不了的不限团队都提醒：执行时还读不了，作业就失败、一台都不改（jobs/steps/replace.rs）
+        if let Some(e) = snap.openclash.config_error.as_deref().filter(|_| enabled) {
+            warnings.push(if snap.openclash.config_stale {
+                format!("软路由「{}」的配置读不了（{e}），出口按上次读到的配置列出；执行时还读不了，作业会失败、一台都不改", r.name)
+            } else {
+                format!("软路由「{}」的配置读不了（{e}），看不出它有没有用{what}；执行时还读不了，作业会失败、一台都不改", r.name)
+            });
         }
         let mut exits = vec![];
         for (x, er) in crate::routers::exits_to(&snap, node) {
@@ -382,9 +387,9 @@ async fn plan(st: &AppState, conn: &mut PgConnection, old_id: Uuid, b: &ReplaceI
         }
     }
 
-    // 编号压缩：新节点原来的团队少了一台（auto_compact 时，同退役）
+    // 编号压缩：新节点原来的团队少了一台（同退役）
     let mut renames = vec![];
-    if let (true, Some(nt), Some(nn)) = (st.cfg.numbering.auto_compact, new.team_id, new.team_name.as_deref()) {
+    if let (Some(nt), Some(nn)) = (new.team_id, new.team_name.as_deref()) {
         let rows: Vec<(Uuid, i32)> = sqlx::query_as("select id, number from machine where team_id = $1 and number is not null and kind <> 'relay' and lifecycle <> 'retired' and id <> all($2)")
             .bind(nt)
             .bind(vec![old.id, new.id])
