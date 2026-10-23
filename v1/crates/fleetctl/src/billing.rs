@@ -507,7 +507,6 @@ mod tests {
 
     #[test]
     fn subscription_set_merges_given_fields() {
-        crate::meta::test_init();
         let m = machine();
         let cur = &m["subscription"];
         // 跟随的提交 null（不把套餐的值抄进订阅），单独设置的照旧；due_days 是中控算的，不提交
@@ -557,7 +556,6 @@ mod tests {
 
     #[test]
     fn billing_fields_show_source() {
-        crate::meta::test_init();
         let m = machine();
         let f = sub_fields(&m["subscription"], &m);
         assert_eq!(f[0].1, "42.00 USD / 月（单独设置）");
@@ -566,7 +564,6 @@ mod tests {
 
     #[test]
     fn limit_and_billing_wording() {
-        crate::meta::test_init();
         let q = |limit: Value, source: &str| json!({"plan": {"name": "Mini"}, "host_machine": {"id": "h", "name": "团队1-03"}, "quota": {"limit_gb": limit, "limit_source": source}});
         let m = q(json!(2000), "plan");
         assert_eq!((traffic_limit(&m), limit_cn(&m, traffic_limit(&m))), (Some(2000), "2000 GB（跟随套餐「Mini」）".into()));

@@ -157,7 +157,6 @@ mod tests {
 
     #[test]
     fn clip_and_format() {
-        crate::meta::test_init();
         assert_eq!(clip("a\nb", 10), "a b");
         assert_eq!(clip("abcdefghij", 5), "abcd…");
         assert_eq!(bytes(1536.0), "1.5 KiB");

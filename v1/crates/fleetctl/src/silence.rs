@@ -237,7 +237,6 @@ mod tests {
 
     #[test]
     fn start_is_beijing_time_unless_it_carries_an_offset() {
-        crate::meta::test_init();
         for s in ["2026-10-23 02:00", "2026-10-23T02:00", " 2026-10-23 02:00:00 "] {
             assert_eq!(parse_start(s).unwrap(), datetime!(2026-10-22 18:00 UTC), "{s}");
         }
@@ -252,7 +251,6 @@ mod tests {
 
     #[test]
     fn window_state_and_span_wording() {
-        crate::meta::test_init();
         let now = datetime!(2026-10-22 06:00 UTC); // 北京时间 14:00
         assert_eq!(window(now, now + Duration::hours(4)), "2026-10-22 14:00 → 18:00");
         assert_eq!(window(now, now + Duration::hours(12)), "2026-10-22 14:00 → 2026-10-23 02:00");
