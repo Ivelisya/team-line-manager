@@ -2358,6 +2358,7 @@ async fn live_view_serves_previous_while_busy_or_failing() {
     tokio::time::sleep(Duration::from_millis(500)).await;
     let v2 = tokio::time::timeout(Duration::from_secs(2), views::live_fresh(&t.st)).await.expect("锁被占时不排队").unwrap();
     assert!(Arc::ptr_eq(&v1, &v2), "回上一份");
+    assert!(tokio::time::timeout(Duration::from_millis(500), views::live_synced(&t.st)).await.is_err(), "告警评估要的视图不回上一份，等锁");
     // 有了资源变更：要看到改动，排队等那次重算
     t.st.live.invalidate();
     assert!(tokio::time::timeout(Duration::from_millis(500), views::live_fresh(&t.st)).await.is_err(), "资源变了就等");

@@ -210,7 +210,8 @@ struct Sched {
     egress_flipped: Arc<AtomicBool>,
     /// 下一次是确认探测：结果出来马上叫上报器发（`Shared::report_now`）
     tcp_confirm: bool,
-    egress_confirm: bool,
+    /// 出口探测的确认标记要能让探测任务放回去（回显服务不通、没出样本时），所以是共享的
+    egress_confirm: Arc<AtomicBool>,
 }
 
 /// 探测结果翻转后这么久补探一次确认（中控的出口 / TCP 告警连续 2 次成功就恢复）
@@ -336,14 +337,15 @@ pub async fn probe_task(sh: Arc<Shared>, direct: reqwest::Client, mut sd: watch:
                     tcp_flipped: flag(false),
                     egress_flipped: flag(false),
                     tcp_confirm: false,
-                    egress_confirm: false,
+                    egress_confirm: flag(false),
                 }
             });
             if s.tcp_flipped.swap(false, Ordering::AcqRel) {
                 (s.next_tcp, s.tcp_confirm) = (now + RECHECK, true);
             }
             if s.egress_flipped.swap(false, Ordering::AcqRel) {
-                (s.next_egress, s.egress_confirm) = (now + RECHECK, true);
+                s.next_egress = now + RECHECK;
+                s.egress_confirm.store(true, Ordering::Release);
             }
             // 直出入口没有节点（addr 为 None）：不做 TCP 探测，只靠出口探测
             if let Some((host, port)) = e.outbound.addr().filter(|_| now >= s.next_tcp && !s.tcp_busy.swap(true, Ordering::AcqRel)) {
@@ -374,12 +376,19 @@ pub async fn probe_task(sh: Arc<Shared>, direct: reqwest::Client, mut sd: watch:
                     }
                     let busy = BusyGuard(s.egress_busy.clone());
                     let (sh2, sem2, id, url, ip, client, direct) = (sh.clone(), sem.clone(), e.id, d.relay.echo_url.clone(), e.expect_egress_ip, client.clone(), direct.clone());
-                    let (last_ok, flipped, confirm) = (s.egress_ok.clone(), s.egress_flipped.clone(), std::mem::take(&mut s.egress_confirm));
+                    let (last_ok, flipped, confirm) = (s.egress_ok.clone(), s.egress_flipped.clone(), s.egress_confirm.swap(false, Ordering::AcqRel));
+                    let confirm_flag = s.egress_confirm.clone();
                     tokio::spawn(async move {
                         let _busy = busy;
                         let Ok(_permit) = sem2.acquire().await else { return };
-                        // 回显服务本身不通（中控重启、部署）时不出样本：既不算这个入口出口失败，也不动成功/失败的切换日志
-                        let Some(r) = probe::egress_probe_checked(id, &client, &direct, &url, probe::EGRESS_ALT_URL, ip, Duration::from_secs(12), now_ms()).await else { return };
+                        // 回显服务本身不通（中控重启、部署）时不出样本：既不算这个入口出口失败，也不动成功/失败的切换日志；
+                        // 确认标记放回去，下一次探测（回显恢复后）仍按确认探测，结果出来马上叫上报器发
+                        let Some(r) = probe::egress_probe_checked(id, &client, &direct, &url, probe::EGRESS_ALT_URL, ip, Duration::from_secs(12), now_ms()).await else {
+                            if confirm {
+                                confirm_flag.store(true, Ordering::Release);
+                            }
+                            return;
+                        };
                         let (ok, detail) = (r.ok, r.detail.clone().unwrap_or_default());
                         sh2.buf.lock().unwrap().push_probe(r);
                         // 只在成功/失败切换时 warn / info，持续失败降为 debug

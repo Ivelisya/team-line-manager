@@ -124,6 +124,12 @@ fn quota_reason(m: &MachineView, now: OffsetDateTime) -> Option<Reason> {
     })
 }
 
+/// 已经在告警的流量额度，预计用满时刻还在「7 天 + 12 小时」内：先不恢复。预测按每小时的日均算，临界点附近会在 7 天上下摆动，
+/// 而这条规则开、关都不去抖（alerts.rs slow），不加回差会每小时开一次、关一次
+pub fn quota_forecast_lingers(m: &MachineView, now: OffsetDateTime) -> bool {
+    m.quota.limit_gb.is_some() && m.quota.forecast_full_at.is_some_and(|t| t - now <= time::Duration::days(crate::quota::WINDOW_DAYS) + time::Duration::hours(12))
+}
+
 /// 续费提醒（renewal_due）：线路机和节点都有账单。到期状态由视图按生效的提前提醒天数算（meta::due_state），总览、网页、fleetctl 同一口径。
 /// 即将到期与已过期是同一条规则：到期后严重度从警告升到严重（告警引擎「只升不降、升级马上再发一次触发」），不先发一条「已恢复」。
 /// 备用团队的机器是替换下来、等到期丢弃的，不续费，也就不提醒（过期满 1 天自动回收，spare.rs）；
@@ -749,6 +755,10 @@ pub(crate) mod tests {
         assert!(t.starts_with("本周期流量已用 22%（901.6 GB / 4096 GB），按近 7 天的速度预计 ") && t.ends_with(" 用满，20 天后重置"), "{t}");
         m.quota.forecast_full_at = Some(now + time::Duration::days(8));
         assert!(evaluate(&m, now).reasons.is_empty());
+        // 已在告警的恢复有 12 小时回差：7 天 + 12 小时内不算原因消失
+        assert!(!quota_forecast_lingers(&m, now));
+        m.quota.forecast_full_at = Some(now + time::Duration::days(7) + time::Duration::hours(6));
+        assert!(quota_forecast_lingers(&m, now), "7 天又 6 小时：还在回差内");
         m.quota.forecast_full_at = None;
         m.quota.limit_gb = None;
         assert!(evaluate(&m, now).reasons.is_empty());
