@@ -489,7 +489,7 @@ async fn node_ss_restarts_an_instance_older_than_its_config() {
     let run = move |s: String| async move { target(ip).run(&s, Duration::from_secs(60)).await.unwrap() };
     let count = |what: &str| read(&root.join("systemctl.log")).lines().filter(|l| *l == what).count();
     let restarts = || count("restart fleet-ssserver");
-    let (conf, unit) = (root.join("etc/shadowsocks-rust/config.json"), root.join("etc/systemd/system/fleet-ssserver.service"));
+    let (conf, unit, acl) = (root.join("etc/shadowsocks-rust/config.json"), root.join("etc/systemd/system/fleet-ssserver.service"), root.join("etc/shadowsocks-rust/fleet.acl"));
     let now = OffsetDateTime::now_utc();
 
     // 第一次：写配置、单元，重启
@@ -499,7 +499,7 @@ async fn node_ss_restarts_an_instance_older_than_its_config() {
     assert_eq!(restarts(), 1);
     assert!(ss.try_wait().unwrap().is_none(), "假 ssserver 已退出，下面「不重启」的断言没有意义");
     // 都没变、实例在配置和单元之后启动：不重启
-    for f in [&conf, &unit] {
+    for f in [&conf, &unit, &acl] {
         set_mtime(f, now - time::Duration::hours(2));
     }
     started(&root, "fleet-ssserver", now - time::Duration::hours(1));

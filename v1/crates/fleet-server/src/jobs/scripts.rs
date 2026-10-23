@@ -110,6 +110,7 @@ pub fn node_ss(i: &SsInst) -> String {
         Some(ip) => (format!("{}.json", i.port), "fleet-ssserver@.service", "%i.json", ip.clone(), format!(r#","outbound_bind_addr":"{ip}""#)),
     };
     NODE_SS
+        .replace("__OUTBOUND_ACL__", OUTBOUND_ACL)
         .replace("__LINKLOCAL_DNS__", LINKLOCAL_DNS)
         .replace("__PUBLIC_DNS__", PUBLIC_DNS)
         .replace("__UNIT_CONF__", unit_conf)
@@ -130,6 +131,23 @@ const LINKLOCAL_DNS: &str = r#"grep -qiE '^[[:space:]]*nameserver[[:space:]]+(16
 /// 链路本地 DNS 时 ssserver 用的公共解析器（shadowsocks-rust 配置的 "dns"：逗号分隔，UDP / TCP 53；1.25 核对过）
 const PUBLIC_DNS: &str = "1.1.1.1,8.8.8.8";
 
+/// ssserver 的出站目标黑名单（shadowsocks-rust 1.25 的 acl 文件，配置里 "acl" 指向它）：目标是回环、私网、链路本地、CGNAT 的连接一律拒绝。
+/// 域名目标按解析出的 IP 判（任一解析结果命中就拒绝），所以客户把域名解析到 127.0.0.1 / 10.x 也到不了节点本机服务和供应商内网。
+/// 挡的是目标地址，不是源地址：同机 IP 节点的 outbound_bind_addr（含 NAT 的 10.116.x）照常出站。ssserver 查 DNS 走自己的解析器，不受它影响。
+/// 解析后到真正连接之间 ssserver 会再解析一次，拦不住秒级 TTL 轮换的 DNS 重绑定
+const OUTBOUND_ACL: &str = "[outbound_block_list]
+0.0.0.0/8
+127.0.0.0/8
+10.0.0.0/8
+172.16.0.0/12
+192.168.0.0/16
+169.254.0.0/16
+100.64.0.0/10
+::/128
+::1/128
+fc00::/7
+fe80::/10";
+
 const NODE_SS: &str = r#"
 set -eu
 exec 9>/run/fleet-ss.lock; flock 9
@@ -138,9 +156,16 @@ install -d -m 750 -g fleet-ss /etc/shadowsocks-rust
 C=/etc/shadowsocks-rust/__CONF__
 # DNS 是链路本地地址（见 LINKLOCAL_DNS）：ssserver 改用公共解析器，元数据拦截照旧；不是时配置和原来逐字相同
 DNS=; if __LINKLOCAL_DNS__; then DNS=',"dns":"__PUBLIC_DNS__"'; echo linklocal_dns=1; fi
-printf '{"server":"__LISTEN__","server_port":%s,"password":"%s","method":"%s","mode":"tcp_and_udp","timeout":300__BIND__%s}\n' "$SS_PORT" "$SS_PASSWORD" "$SS_METHOD" "$DNS" > $C.tmp
+# 出站目标黑名单（见 OUTBOUND_ACL）：同机的所有实例共用这一份
+A=/etc/shadowsocks-rust/fleet.acl
+cat > $A.tmp <<'ACL'
+__OUTBOUND_ACL__
+ACL
+chgrp fleet-ss $A.tmp; chmod 640 $A.tmp
+printf '{"server":"__LISTEN__","server_port":%s,"password":"%s","method":"%s","mode":"tcp_and_udp","timeout":300,"acl":"/etc/shadowsocks-rust/fleet.acl"__BIND__%s}\n' "$SS_PORT" "$SS_PASSWORD" "$SS_METHOD" "$DNS" > $C.tmp
 chgrp fleet-ss $C.tmp; chmod 640 $C.tmp
 RESTART=0
+cmp -s $A.tmp $A && rm -f $A.tmp || { mv $A.tmp $A; RESTART=1; }
 cmp -s $C.tmp $C && rm -f $C.tmp || { mv $C.tmp $C; RESTART=1; }
 U=/etc/systemd/system/__UNIT__
 cat > $U.tmp <<'UNIT'
@@ -160,7 +185,7 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-# ssserver 自己解析域名：客户经域名（169.254.169.254.nip.io）也到不了云厂商的元数据服务。不拦回环：Ubuntu 上解析要经 127.0.0.53
+# ssserver 自己解析域名：客户经域名（169.254.169.254.nip.io）也到不了云厂商的元数据服务（回环、私网由配置里的 ACL 拦；这里不拦回环：Ubuntu 上解析要经 127.0.0.53）
 IPAddressDeny=link-local 100.100.100.200/32
 [Install]
 WantedBy=multi-user.target
@@ -173,7 +198,7 @@ cmp -s $U.tmp $U && rm -f $U.tmp || { mv $U.tmp $U; systemctl daemon-reload; RES
 # 运行中的实例比它的配置或单元旧（上次换上之后没来得及重启就被打断，ssserver 还在用旧密码；同机别的实例收敛时换了模板单元）：也重启。
 # 按秒比，同一秒里分不清先后的不算旧（不为它多断一次客户的连接）
 since=$(TZ=UTC0 systemctl show -p ExecMainStartTimestamp --value __SVC__)
-[ -z "$since" ] || [ "$(date -d "$since" +%s)" -ge "$(stat -c %Y $C $U | sort -n | tail -n1)" ] || RESTART=1
+[ -z "$since" ] || [ "$(date -d "$since" +%s)" -ge "$(stat -c %Y $C $U $A | sort -n | tail -n1)" ] || RESTART=1
 systemctl enable -q __SVC__
 if [ $RESTART = 1 ] || ! systemctl -q is-active __SVC__; then systemctl restart __SVC__; fi
 # 防火墙：SS 端口只放行线路机
@@ -517,13 +542,26 @@ mod tests {
         let s = node_ss(&SsInst::host());
         for want in [
             "C=/etc/shadowsocks-rust/config.json\n",
-            "\"timeout\":300%s}\\n' \"$SS_PORT\" \"$SS_PASSWORD\" \"$SS_METHOD\" \"$DNS\"",
+            "\"timeout\":300,\"acl\":\"/etc/shadowsocks-rust/fleet.acl\"%s}\\n' \"$SS_PORT\" \"$SS_PASSWORD\" \"$SS_METHOD\" \"$DNS\"",
             "table inet ss_guard {",
             "include \"/etc/fleet/nft/ss_guard.nft\"",
         ] {
             assert!(s.contains(want), "{want}\n{s}");
         }
         assert_eq!((SsInst::host().svc(), SsInst::host().table()), ("fleet-ssserver".to_string(), "ss_guard".to_string()));
+    }
+
+    /// 节点上的 ssserver 带出站黑名单：配置指向 acl 文件，文件里回环、私网、链路本地、CGNAT 都在；同机 IP 节点同样（源地址 outbound_bind_addr 不受影响）
+    #[test]
+    fn ss_config_blocks_private_outbound_targets() {
+        for s in [node_ss(&SsInst::host()), node_ss(&SsInst { port: 8389, ip: Some("10.116.0.67".into()) })] {
+            assert!(s.contains("\"acl\":\"/etc/shadowsocks-rust/fleet.acl\""));
+            let acl = s.split("<<'ACL'\n").nth(1).unwrap().split("\nACL\n").next().unwrap();
+            assert!(acl.starts_with("[outbound_block_list]\n"), "{acl}");
+            for net in ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "100.64.0.0/10", "::1/128", "fc00::/7", "fe80::/10"] {
+                assert!(acl.lines().any(|l| l == net), "{net}");
+            }
+        }
     }
 
     /// /etc/resolv.conf 的 nameserver 是链路本地地址时：ssserver 配置加公共解析器、报 linklocal_dns=1，单元里的元数据拦截一律不动；
@@ -548,7 +586,7 @@ mod tests {
             assert!(out.status.success(), "{conf}");
             let cfg = std::fs::read_to_string(dir.path().join("c.tmp")).unwrap();
             let want = format!(
-                "{{\"server\":\"0.0.0.0\",\"server_port\":8388,\"password\":\"pw\",\"method\":\"aes-256-gcm\",\"mode\":\"tcp_and_udp\",\"timeout\":300{}}}\n",
+                "{{\"server\":\"0.0.0.0\",\"server_port\":8388,\"password\":\"pw\",\"method\":\"aes-256-gcm\",\"mode\":\"tcp_and_udp\",\"timeout\":300,\"acl\":\"/etc/shadowsocks-rust/fleet.acl\"{}}}\n",
                 if linklocal { ",\"dns\":\"1.1.1.1,8.8.8.8\"" } else { "" }
             );
             assert_eq!((String::from_utf8_lossy(&out.stdout).contains("linklocal_dns=1"), cfg), (linklocal, want), "{conf}");
@@ -601,7 +639,7 @@ mod tests {
         let s = node_ss(&i);
         assert!(!s.contains("__"), "占位符都已替换");
         assert!(s.contains(
-            r#"printf '{"server":"203.0.113.7","server_port":%s,"password":"%s","method":"%s","mode":"tcp_and_udp","timeout":300,"outbound_bind_addr":"203.0.113.7"%s}\n'"#
+            r#"printf '{"server":"203.0.113.7","server_port":%s,"password":"%s","method":"%s","mode":"tcp_and_udp","timeout":300,"acl":"/etc/shadowsocks-rust/fleet.acl","outbound_bind_addr":"203.0.113.7"%s}\n'"#
         ));
         assert!(s.contains("C=/etc/shadowsocks-rust/8389.json\n"));
         assert!(s.contains("U=/etc/systemd/system/fleet-ssserver@.service\n") && s.contains("ExecStart=/usr/local/bin/ssserver -c /etc/shadowsocks-rust/%i.json\n"));
@@ -621,7 +659,7 @@ mod tests {
         let i = SsInst::ip_node(8390, "209.240.166.50", Some("10.116.0.67"));
         let s = node_ss(&i);
         assert!(s.contains(
-            r#"printf '{"server":"10.116.0.67","server_port":%s,"password":"%s","method":"%s","mode":"tcp_and_udp","timeout":300,"outbound_bind_addr":"10.116.0.67"%s}\n'"#
+            r#"printf '{"server":"10.116.0.67","server_port":%s,"password":"%s","method":"%s","mode":"tcp_and_udp","timeout":300,"acl":"/etc/shadowsocks-rust/fleet.acl","outbound_bind_addr":"10.116.0.67"%s}\n'"#
         ), "{s}");
         assert!(!s.contains("209.240.166.50") && !s.contains("__"), "{s}");
         // 端口、单元、nft 表都按端口，和 bind 地址无关
