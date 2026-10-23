@@ -1,7 +1,7 @@
 // TanStack Query 封装：查询 hook + 写操作 hook。写操作成功后按范围失效（实时流也会再推一次，重复无害）。
 // 内容只会因实时流事件而变的查询（eventKeys 覆盖到的）staleTime 设成 Infinity：切回窗口、重新挂载都不再重取，靠事件失效；
 // 断线重连时 stream.ts 会让全部查询失效一次，没连着时错过的变化照样补上。
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { del, get, patch, post, put } from './api';
 import { collator, makeDefaultCompare } from './sort';
@@ -20,14 +20,30 @@ export const usePlans = () => useQuery({ queryKey: ['plans'], queryFn: () => get
 export const useOverview = () => useQuery({ queryKey: ['overview'], queryFn: ({ signal }) => get<Overview>('/overview', signal) });
 
 const machinesQuery = { queryKey: ['machines', 'live'], queryFn: ({ signal }: { signal: AbortSignal }) => get<MachineView[]>('/machines?scope=live', signal) };
-/** 按默认顺序排好的副本（线路机 → 团队 → 编号，故障/离线不下沉）：机器列表的几个 select 与 readMachines 共用 */
-const sortDefault = (d: MachineView[], teams: Team[] | undefined) => [...d].sort(makeDefaultCompare(teams ?? []));
-/** 机器列表，已按默认顺序排好 */
+/** 默认顺序只看这几个字段（makeDefaultCompare：类型、团队、编号、名称）；id 在前，同样的签名说明是同一批机器、同样的先后 */
+const sortSig = (m: MachineView) => `${m.id}\u0001${m.kind}\u0001${m.team?.id ?? ''}\u0001${m.team?.name ?? ''}\u0001${m.number ?? ''}\u0001${m.name}`;
+let sorted: { raw: MachineView[]; teams: Team[] | undefined; sig: string; ids: string[]; list: MachineView[] } | null = null;
+/** 按默认顺序排好的副本（线路机 → 团队 → 编号，故障/离线不下沉）：机器列表的几个 select 与 readMachines 共用。
+ *  实时推送每条都换一份列表，但只改读数：排序相关的字段没变时沿用上次排好的 id 顺序，不再整表比较排序；
+ *  同一份列表（几个 select 各要一次）直接给上次的结果 */
+function sortDefault(d: MachineView[], teams: Team[] | undefined): MachineView[] {
+  if (sorted?.raw === d && sorted.teams === teams) return sorted.list;
+  const sig = d.map(sortSig).join('\n');
+  let list: MachineView[];
+  if (sorted && sorted.teams === teams && sorted.sig === sig) {
+    const byId = new Map(d.map((m) => [m.id, m]));
+    list = sorted.ids.map((id) => byId.get(id)!);
+  } else list = [...d].sort(makeDefaultCompare(teams ?? []));
+  sorted = { raw: d, teams, sig, ids: list.map((m) => m.id), list };
+  return list;
+}
+/** 机器列表，已按默认顺序排好。不用 select：select 的结果还要再做一遍结构共享，推送里变了的那几台整台深比较一遍是白费
+ *  （列表缓存写入时已经共享过，没变的机器引用不变）；只透出调用方用到的几项，按属性追踪照旧 */
 export function useMachines() {
   const teams = useTeams().data;
-  // select 排序：只在列表或团队变化时重算；返回的是查询结果本身，调用方按属性追踪
-  const select = useCallback((d: MachineView[]) => sortDefault(d, teams), [teams]);
-  return useQuery({ ...machinesQuery, select });
+  const q = useQuery(machinesQuery);
+  const data = useMemo(() => q.data && sortDefault(q.data, teams), [q.data, teams]);
+  return { data, isLoading: q.isLoading, isError: q.isError, error: q.error, refetch: q.refetch };
 }
 /** 只用名称等少量字段的页面（访问监控的节点下拉、告警页的对象与续费）：读数不进来 */
 export type MachineBrief = Pick<MachineView, 'id' | 'name' | 'kind' | 'team' | 'subscription' | 'spare_from'>;
@@ -64,18 +80,10 @@ export const useQuotaTight = () => useQuery({ ...machinesQuery, select: quotaTig
 export const useOfflineNames = () => useQuery({ ...machinesQuery, select: offlineNames });
 /** 首页 KPI「即将到期」：最近到期的一台（同一份缓存，结构共享） */
 export const useNextDue = () => useQuery({ ...machinesQuery, select: nextDue });
-/** readMachines 的排序结果按原数组引用缓存：抽屉每次渲染都要算上一台 / 下一台，列表没换（推送间隙）就不再复制、排序整表 */
-const sortedCache = new WeakMap<MachineView[], { teams: Team[] | undefined; list: MachineView[] }>();
-/** 按键等“用时才读”的场景：直接读缓存里的机器列表（同样的默认顺序），不订阅、不触发请求 */
+/** 按键等“用时才读”的场景：直接读缓存里的机器列表（同样的默认顺序，推送间隙里反复读不再排序，见 sortDefault），不订阅、不触发请求 */
 export function readMachines(qc: QueryClient): MachineView[] | undefined {
   const raw = qc.getQueryData<MachineView[]>(['machines', 'live']);
-  if (!raw) return undefined;
-  const teams = qc.getQueryData<Team[]>(['teams']);
-  const hit = sortedCache.get(raw);
-  if (hit && hit.teams === teams) return hit.list;
-  const list = sortDefault(raw, teams);
-  sortedCache.set(raw, { teams, list });
-  return list;
+  return raw && sortDefault(raw, qc.getQueryData<Team[]>(['teams']));
 }
 /** 机器列表缓存里的这台，和那份列表取回的时刻 */
 function fromLists(qc: QueryClient, id: string | null) {
@@ -156,11 +164,12 @@ export interface StreamEvent { type: string; id?: string }
  *  incidents：机器的健康与总览不看告警表，不重取整表；静默带来的「维护中」由服务端随后的 metrics 推送送达
  *  audit：抽屉里机器的操作记录，随改名、续费、退役等机器变更增加；['policies', 'list'] / ['policies', 'versions']：策略页的范围树列着各团队的节点、发布记录列着线路机名（名字、有没有入口），
  *  机器增减、改名换团队、团队改名都会改它（只有挂着的查询会重取，策略页没开时只是标成过期；不带发布确认框里的预览，免得框开着时内容在眼前变）；
- *  incidents / jobs 列表里带机器名，machine（改名、生命周期）很少发，顺带重取让名字立刻跟上；
+ *  machine：这台的详情与机器列表里的这一台由 stream.ts 单独取回拼上（live.ts refreshMachine），这里不带；拼不上（改名、换团队、生命周期变了等）
+ *  或页面在后台时才按 MACHINE_LIST_KEYS 整表失效——incidents / jobs 列表里带机器名，跟着重取让名字立刻跟上；
  *  availability：近 N 天可用率按账单时区分天，改订阅（machine 事件）可能换了时区 */
 export function eventKeys(ev: StreamEvent): unknown[][] {
   switch (ev.type) {
-    case 'machine': return [['machine', ev.id], ['machine-ping', ev.id], ['machines'], ['recycle-bin'], ['overview'], ['audit'], ['policies', 'list'], ['policies', 'versions'], ['incidents'], ['jobs'], ['availability', ev.id]];
+    case 'machine': return [['machine-ping', ev.id], ['recycle-bin'], ['overview'], ['audit'], ['policies', 'list'], ['policies', 'versions'], ['availability', ev.id]];
     case 'machines': return [['machine'], ['machines'], ['recycle-bin'], ['relays'], ['overview'], ['audit'], ['policies', 'list'], ['policies', 'versions']];
     case 'relay': return [['relays'], ['machines']];
     case 'job': return [['jobs'], ['job', ev.id]];
@@ -175,6 +184,9 @@ export function eventKeys(ev: StreamEvent): unknown[][] {
     default: return [];
   }
 }
+
+/** machine 事件拼不回列表（或页面在后台）时整表失效的键 */
+export const MACHINE_LIST_KEYS: unknown[][] = [['machines'], ['incidents'], ['jobs']];
 
 /** 通用写操作：成功后失效 keys */
 export function useWrite<A, R>(fn: (a: A) => Promise<R>, keys: unknown[][]) {

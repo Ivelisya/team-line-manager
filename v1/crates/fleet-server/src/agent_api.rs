@@ -1,12 +1,13 @@
 //! `/agent/v1/*`：边缘上报、期望状态长轮询、应用回报；`/echo` 回显来源 IP。
 
+use crate::auth::ClientIp;
 use crate::crypto::sha256;
 use crate::db::floor_hour;
 use crate::entries;
 use crate::error::ApiJson;
 use crate::error::{ApiError, ApiResult};
 use crate::state::{AppState, Event};
-use axum::extract::{ConnectInfo, Query, State};
+use axum::extract::{ConnectInfo, FromRequest, Query, Request, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -14,7 +15,7 @@ use axum::{Json, Router};
 use fleet_proto::{ApplyReport, Report, ReportAck};
 use serde::Deserialize;
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{LazyLock, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 use time::{Date, OffsetDateTime};
@@ -25,6 +26,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         // 上报体可以是 gzip（agent 发送时压缩）：解压层在 handler 之前，默认 2 MiB 的请求体上限（DefaultBodyLimit）
         // 由 Json 提取器施加，量的是解压后的字节，压缩炸弹也被它截住。不带 Content-Encoding 的旧 agent 原样放行。
+        // 请求体在鉴权之后才读（解压是读的时候做的）：没鉴权的请求不解压、不解析
         .route("/report", post(report).layer(RequestDecompressionLayer::new()))
         .route("/desired", get(desired))
         .route("/applied", post(applied))
@@ -32,18 +34,111 @@ pub fn router() -> Router<AppState> {
         .merge(crate::probe_points::agent::router())
 }
 
+#[derive(Clone)]
 struct AgentId {
     machine_id: Uuid,
     kind: String,
 }
 
-async fn authenticate(st: &AppState, h: &HeaderMap) -> ApiResult<AgentId> {
+/// 鉴权结果最多缓存这么久（有效的）：agent 每 10 秒上报一次、还挂着长轮询，不必每个请求都查一次库。
+/// 撤销令牌的地方调 `AgentAuth::forget`，不用等它过期；退役、彻底删除之前都先撤销令牌
+const TOKEN_OK_TTL: Duration = Duration::from_secs(30);
+/// 无效或已撤销的令牌记这么久：配错令牌、换了机器还在跑的旧 agent 不每次都查库
+const TOKEN_BAD_TTL: Duration = Duration::from_secs(10);
+/// 鉴权失败（令牌查库没查到）按来源 IP 限速：突发 30 次，之后每 2 秒一次。超过的回 429、不查库。
+/// 只有查库失败才扣：缓存里认得的令牌（有效的、记着无效的）不扣也不受限；验证通过过的令牌（`good`）缓存过期后也照常查库，
+/// 生产的 agent 经边缘机转发、来源 IP 是同一个，别人把这个 IP 的余额打光也挡不住合法 agent
+const AUTH_FAIL_BURST: f64 = 30.0;
+const AUTH_FAIL_REFILL_PER_S: f64 = 0.5;
+/// 两张表超过这么多项时清掉过期的、补满的（换着令牌、换着 IP 乱发的请求撑不大它们）
+const AUTH_MAP_MAX: usize = 4096;
+
+/// agent 令牌的鉴权缓存与失败限速（`AppState::agent_auth`）
+#[derive(Default)]
+pub struct AgentAuth {
+    /// 令牌哈希 → (机器，None = 无效或已撤销; 查库的时刻)
+    tokens: Mutex<HashMap<Vec<u8>, (Option<AgentId>, Instant)>>,
+    /// 来源 IP → (鉴权失败的余额, 上次补充的时刻)；取不到来源 IP 的共用 None
+    fails: Mutex<HashMap<Option<IpAddr>, (f64, Instant)>>,
+    /// 验证通过过的令牌哈希 → 机器：撤销时 `forget` 去掉，最多每台机器一项，不随乱发的请求变大
+    good: Mutex<HashMap<Vec<u8>, Uuid>>,
+}
+
+impl AgentAuth {
+    /// 缓存里的结果：Some(Some) 有效、Some(None) 记着无效，None 没记或过期
+    fn cached(&self, hash: &[u8], now: Instant) -> Option<Option<AgentId>> {
+        let m = lock(&self.tokens);
+        let (a, at) = m.get(hash)?;
+        let ttl = if a.is_some() { TOKEN_OK_TTL } else { TOKEN_BAD_TTL };
+        (now.saturating_duration_since(*at) < ttl).then(|| a.clone())
+    }
+
+    /// 要查库前：这个来源 IP 的失败余额补上，还有就放行（只看不扣，查库失败才 `remember` 里扣）；没了返回还要等几秒
+    fn may_try(&self, ip: Option<IpAddr>, now: Instant) -> Result<(), u64> {
+        let mut m = lock(&self.fails);
+        let Some((tokens, at)) = m.get_mut(&ip) else { return Ok(()) };
+        *tokens = (*tokens + now.saturating_duration_since(*at).as_secs_f64() * AUTH_FAIL_REFILL_PER_S).min(AUTH_FAIL_BURST);
+        *at = now;
+        if *tokens < 1.0 {
+            return Err(((1.0 - *tokens) / AUTH_FAIL_REFILL_PER_S).ceil().max(1.0) as u64);
+        }
+        Ok(())
+    }
+
+    /// 验证通过过、没撤销的令牌：不受失败限速
+    fn known(&self, hash: &[u8]) -> bool { lock(&self.good).contains_key(hash) }
+
+    /// 记下查库的结果；没查到的扣这个来源 IP 一次失败
+    fn remember(&self, hash: Vec<u8>, a: Option<AgentId>, ip: Option<IpAddr>, now: Instant) {
+        match &a {
+            Some(a) => {
+                lock(&self.good).insert(hash.clone(), a.machine_id);
+            }
+            None => {
+                lock(&self.good).remove(&hash);
+            }
+        }
+        if a.is_none() {
+            let mut m = lock(&self.fails);
+            if m.len() >= AUTH_MAP_MAX {
+                m.retain(|_, (t, at)| *t + now.saturating_duration_since(*at).as_secs_f64() * AUTH_FAIL_REFILL_PER_S < AUTH_FAIL_BURST);
+            }
+            m.entry(ip).or_insert((AUTH_FAIL_BURST, now)).0 -= 1.0;
+        }
+        let mut m = lock(&self.tokens);
+        if m.len() >= AUTH_MAP_MAX {
+            m.retain(|_, (a, at)| now.saturating_duration_since(*at) < if a.is_some() { TOKEN_OK_TTL } else { TOKEN_BAD_TTL });
+        }
+        m.insert(hash, (a, now));
+    }
+
+    /// 撤销了这台机器的令牌（事务提交之后调）：它缓存着的鉴权结果作废，下一个请求重新查库
+    pub fn forget(&self, machine_id: Uuid) {
+        lock(&self.tokens).retain(|_, (a, _)| a.as_ref().is_none_or(|a| a.machine_id != machine_id));
+        lock(&self.good).retain(|_, id| *id != machine_id);
+    }
+}
+
+/// 认 agent 令牌：先看缓存，没记着的查库（来源 IP 鉴权失败太多时不查、回 429）。
+/// 失败直接给出响应（401 / 429 带 Retry-After / 库不可用 503）
+async fn authenticate(st: &AppState, h: &HeaderMap, ip: Option<IpAddr>) -> Result<AgentId, Response> {
     let tok = h
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
-        .ok_or_else(ApiError::unauthorized)?;
-    // 查令牌与刷新最近使用时间一次往返；最近使用时间一分钟内不重复写（agent 每 10 秒上报一次，没必要每次都改这一行）
+        .ok_or_else(|| ApiError::unauthorized().into_response())?;
+    let revoked = || ApiError::new(StatusCode::UNAUTHORIZED, "token_revoked", "令牌无效或已撤销").into_response();
+    let hash = sha256(tok.trim().as_bytes());
+    let now = Instant::now();
+    match st.agent_auth.cached(&hash, now) {
+        Some(Some(a)) => return Ok(a),
+        Some(None) => return Err(revoked()),
+        None => {}
+    }
+    if !st.agent_auth.known(&hash) {
+        st.agent_auth.may_try(ip, now).map_err(|wait| too_many(wait, "鉴权失败"))?;
+    }
+    // 查令牌与刷新最近使用时间一次往返；最近使用时间一分钟内不重复写（缓存过期才来查，没必要每次都改这一行）
     let row: Option<(Uuid, String)> = sqlx::query_as(
         "with a as (select m.id, m.kind::text kind from agent_token t join machine m on m.id = t.machine_id
                     where t.token_hash = $1 and t.revoked_at is null and m.lifecycle <> 'retired'),
@@ -52,7 +147,7 @@ async fn authenticate(st: &AppState, h: &HeaderMap) -> ApiResult<AgentId> {
                        and exists (select 1 from a))
          select id, kind from a",
     )
-    .bind(sha256(tok.trim().as_bytes()))
+    .bind(&hash)
     .fetch_optional(&st.db)
     .await
     .map_err(|e| {
@@ -60,10 +155,11 @@ async fn authenticate(st: &AppState, h: &HeaderMap) -> ApiResult<AgentId> {
         if crate::db::connection_lost(&e) {
             st.report_gaps.failed(OffsetDateTime::now_utc());
         }
-        ingest_error(e)
+        ingest_error(e).into_response()
     })?;
-    let (machine_id, kind) = row.ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "token_revoked", "令牌无效或已撤销"))?;
-    Ok(AgentId { machine_id, kind })
+    let a = row.map(|(machine_id, kind)| AgentId { machine_id, kind });
+    st.agent_auth.remember(hash, a.clone(), ip, now);
+    a.ok_or_else(revoked)
 }
 
 const DAY_MS: i64 = 86_400_000;
@@ -297,8 +393,14 @@ fn sanitize(r: &mut Report) {
     }
 }
 
-async fn report(State(st): State<AppState>, h: HeaderMap, ApiJson(r): ApiJson<Report>) -> Result<Response, ApiError> {
-    let res = ingest(&st, &h, r).await;
+async fn report(State(st): State<AppState>, ClientIp(ip): ClientIp, req: Request) -> Result<Response, ApiError> {
+    // 先鉴权再读请求体（见 router）
+    let a = match authenticate(&st, req.headers(), ip).await {
+        Ok(a) => a,
+        Err(resp) => return Ok(resp),
+    };
+    let ApiJson(r) = ApiJson::<Report>::from_request(req, &st).await?;
+    let res = ingest(&st, a, r).await;
     // 中控收不到上报的时段（report_gaps::ReportGaps）：入库了、库不可用没入成
     match &res {
         Ok(_) => {
@@ -323,8 +425,7 @@ async fn report(State(st): State<AppState>, h: HeaderMap, ApiJson(r): ApiJson<Re
     }
 }
 
-async fn ingest(st: &AppState, h: &HeaderMap, mut r: Report) -> Result<Json<ReportAck>, IngestErr> {
-    let a = authenticate(st, h).await?;
+async fn ingest(st: &AppState, a: AgentId, mut r: Report) -> Result<Json<ReportAck>, IngestErr> {
     // 到 charge 为止都占着：同一台机器的下一份等这一份扣完令牌再看余额
     let _busy = InFlight::begin(a.machine_id).ok_or(IngestErr::Limited(1))?;
     sanitize(&mut r);
@@ -562,8 +663,11 @@ struct DesiredQ {
     after: Option<u64>,
 }
 
-async fn desired(State(st): State<AppState>, h: HeaderMap, Query(q): Query<DesiredQ>) -> ApiResult<Response> {
-    let a = authenticate(&st, &h).await?;
+async fn desired(State(st): State<AppState>, ClientIp(ip): ClientIp, h: HeaderMap, Query(q): Query<DesiredQ>) -> ApiResult<Response> {
+    let a = match authenticate(&st, &h, ip).await {
+        Ok(a) => a,
+        Err(resp) => return Ok(resp),
+    };
     if a.kind != "relay" {
         return Err(ApiError::forbidden("只有线路机有期望状态"));
     }
@@ -599,8 +703,13 @@ fn sanitize_applied(r: &mut ApplyReport) {
     }
 }
 
-async fn applied(State(st): State<AppState>, h: HeaderMap, ApiJson(mut r): ApiJson<ApplyReport>) -> ApiResult<Response> {
-    let a = authenticate(&st, &h).await?;
+async fn applied(State(st): State<AppState>, ClientIp(ip): ClientIp, req: Request) -> ApiResult<Response> {
+    // 同上报：先鉴权再读请求体
+    let a = match authenticate(&st, req.headers(), ip).await {
+        Ok(a) => a,
+        Err(resp) => return Ok(resp),
+    };
+    let ApiJson(mut r) = ApiJson::<ApplyReport>::from_request(req, &st).await?;
     if a.kind != "relay" {
         return Err(ApiError::forbidden("只有线路机回报应用结果"));
     }
@@ -640,6 +749,35 @@ mod tests {
             charge(m, machine, seq, n);
         }
         Ok(n)
+    }
+
+    #[test]
+    fn auth_cache_expires_forgets_and_limits_failures() {
+        let (auth, t0, ip) = (AgentAuth::default(), Instant::now(), Some(IpAddr::from([203, 0, 113, 9])));
+        let a = AgentId { machine_id: Uuid::now_v7(), kind: "relay".into() };
+        auth.remember(b"ok".to_vec(), Some(a.clone()), ip, t0);
+        auth.remember(b"bad".to_vec(), None, ip, t0);
+        assert!(auth.cached(b"ok", t0 + Duration::from_secs(29)).is_some_and(|x| x.is_some_and(|x| x.machine_id == a.machine_id)));
+        assert!(auth.cached(b"ok", t0 + TOKEN_OK_TTL).is_none(), "有效的 30 秒后重查");
+        assert!(matches!(auth.cached(b"bad", t0 + Duration::from_secs(9)), Some(None)));
+        assert!(auth.cached(b"bad", t0 + TOKEN_BAD_TTL).is_none(), "无效的 10 秒后重查");
+        auth.forget(a.machine_id);
+        assert!(auth.cached(b"ok", t0).is_none(), "撤销后马上作废");
+        assert!(matches!(auth.cached(b"bad", t0), Some(None)), "别的不动");
+        // 失败余额：只扣查库失败的；扣完要等，2 秒补一次；别的 IP 不受影响
+        for i in 1..AUTH_FAIL_BURST as u32 {
+            assert_eq!(auth.may_try(ip, t0), Ok(()));
+            auth.remember(format!("x{i}").into_bytes(), None, ip, t0);
+        }
+        assert_eq!(auth.may_try(ip, t0), Err(2));
+        assert_eq!(auth.may_try(ip, t0 + Duration::from_secs(2)), Ok(()));
+        assert_eq!(auth.may_try(None, t0), Ok(()));
+        // 验证通过过的令牌：缓存过期、来源 IP 余额打光也照常查库；撤销后不再算
+        let b = AgentId { machine_id: Uuid::now_v7(), kind: "vps".into() };
+        auth.remember(b"good".to_vec(), Some(b.clone()), ip, t0);
+        assert!(auth.cached(b"good", t0 + TOKEN_OK_TTL).is_none() && auth.known(b"good"));
+        auth.forget(b.machine_id);
+        assert!(!auth.known(b"good"));
     }
 
     #[test]
