@@ -1,9 +1,10 @@
 // 作业：列表 + 详情（总进度 + 横向步骤条 + 步骤时间线 + 实时日志，进行中每 1.5s 轮询 /jobs/{id}/logs?after=）。
 import * as React from 'react';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, ArrowDownToLine, Check, CircleDashed, Copy, ListChecks, Loader2, Minus, Pause, Play, RotateCw, Square, Undo2, X } from 'lucide-react';
+import { ArrowLeft, ArrowDownToLine, Check, CircleDashed, Copy, ListChecks, Loader2, Minus, Pause, Play, RotateCw, Square, TriangleAlert, Undo2, X } from 'lucide-react';
 import { fetchAllLogs, fetchTailLogs, useCancelJob, useJob, useJobs, useMachine, useRetryJob } from '@/lib/queries';
-import type { Job, JobLog } from '@/lib/types';
+import type { Job, JobLog, JobManual } from '@/lib/types';
+import { useRouterDrawer } from '@/lib/routers';
 import { errorKindLabel, jobKindLabel, jobLive, jobProgress, jobText, outputLines, stepKind, type StepKind } from '@/lib/jobs';
 import { jobStateLabel } from '@/lib/derive';
 import { CheckRow, Field, InfoTip, Input } from '@/components/ui/form';
@@ -43,7 +44,12 @@ const STATE_OF: Record<View, 'all' | 'active' | 'done'> = { all: 'all', running:
 const KIND_VALUES = ['provision', 'attach_entry', 'move_entry', 'replace', 'upgrade_agent', 'tune', 'retire', 'purge'];
 const KIND_GROUP: Record<string, string> = { provision: '上架' };
 
-const JobPill = ({ state }: { state: string }) => { const s = STATE[state] ?? { tone: 'neutral' as Tone }; return <Pill tone={s.tone} dot={s.dot}>{jobStateLabel(state)}</Pill>; };
+/** 需要人工处理的失败（改软路由出口改了一半、换回失败）：胶囊换成醒目的「需人工处理」，不和普通失败混在一起 */
+const JobPill = ({ state, manual }: { state: string; manual?: JobManual | null }) => {
+  if (manual) return <Pill tone="bad" className="pill-manual" tip="软路由上的配置可能停在改了一半，先人工处理再重试"><TriangleAlert size={12} />需人工处理</Pill>;
+  const s = STATE[state] ?? { tone: 'neutral' as Tone };
+  return <Pill tone={s.tone} dot={s.dot}>{jobStateLabel(state)}</Pill>;
+};
 
 export function JobsPage() {
   const { id } = useParams();
@@ -101,7 +107,7 @@ export function JobsPage() {
               onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(j.id); } }}>
               <span className="l1">
                 <b className="ellipsis">{jobKindLabel(j.kind)} · {j.target ? <NodeHover id={j.target.id} noFocus><span>{j.target.name}</span></NodeHover> : '—'}{/* 退役进备用后机器改了名：带上原名（服务端给的 target.origin） */}{j.target?.origin && j.target.origin !== j.target.name && <span className="t-sub">（原 {j.target.origin}）</span>}</b>
-                <span style={{ marginLeft: 'auto' }}><JobPill state={j.state} /></span>
+                <span style={{ marginLeft: 'auto' }}><JobPill state={j.state} manual={j.manual} /></span>
               </span>
               {jobLive(j.state) && <span className="l-prog"><Progress value={jobProgress(j).pct} live label="总进度" /><span className="num">{jobProgress(j).done}/{jobProgress(j).total}</span></span>}
               <span className="l2"><span>{F.dt(j.created_at)}</span><span>{F.actor(j.created_by)}</span>{j.error && <span className="ellipsis" style={{ color: j.state === 'cancelled' ? 'var(--fg-2)' : 'var(--bad-text)' }} data-tip={jobText(j.error)}>{jobText(j.error)}</span>}</span>
@@ -147,10 +153,12 @@ function JobDetail({ id }: { id: string }) {
   return (
     <div className="stack">
       <Panel title={<span className="row" style={{ gap: 8 }}><Link to={{ pathname: '/jobs', search }} className="icon-btn icon-btn-sm job-back" aria-label="返回列表"><ArrowLeft size={16} /></Link><span>{jobKindLabel(j.kind)} · {j.target ? <NodeHover id={j.target.id}><span>{j.target.name}</span></NodeHover> : '—'}</span></span>} tools={<>
-        <JobPill state={j.state} />
+        <JobPill state={j.state} manual={j.manual} />
+        {j.manual && <span className="t-sub">先人工处理再重试</span>}
         {j.state === 'failed' && <RetryButton j={j} />}
         {j.cancellable && <Button size="sm" onClick={() => setCancelAsk(true)}><Square />取消</Button>}
       </>}>
+        {j.manual && <ManualNote m={j.manual} />}
         <div className="stack">
           {/* 用时写在进度条右上（进行中「已用时」、结束后「用时」），信息格不再重复 */}
           <LiveProgress job={j} live={live} />
@@ -206,6 +214,27 @@ function JobDetail({ id }: { id: string }) {
       <LogPanel key={j.id} jobId={j.id} state={j.state} />
       <ConfirmDialog open={cancelAsk} onOpenChange={setCancelAsk} title="取消这个作业？" confirmLabel="取消作业" cancelLabel="返回" danger description={cancelDesc(j)}
         onConfirm={async () => { await cancel.mutateAsync(j.id); toast.info('正在取消…'); }} /> {/* 要等回滚做完才结束，结束时状态胶囊变成「已取消」 */}
+    </div>
+  );
+}
+
+/** 需要人工处理：列出要处理的软路由（点开抽屉）与出口，说明里有备份文件和怎么处理 */
+function ManualNote({ m }: { m: JobManual }) {
+  const { open } = useRouterDrawer();
+  return (
+    <div className="job-manual" style={{ marginBottom: 12 }}>
+      <Note tone="bad" icon={<TriangleAlert size={14} />}>
+        <div className="note-title">需要人工处理</div>
+        <p className="job-manual-msg">{jobText(m.message)}</p>
+        <ul className="job-manual-list">
+          {m.routers.map((r) => (
+            <li key={r.id}>
+              <button type="button" className="btn btn-link" style={{ height: 'auto', padding: 0 }} data-tip="打开软路由详情" onClick={() => open(r.id, 'exits')}>{r.name}</button>
+              {r.exits.length > 0 && <span className="t-sub mono">{r.exits.join('、')}</span>}
+            </li>
+          ))}
+        </ul>
+      </Note>
     </div>
   );
 }
