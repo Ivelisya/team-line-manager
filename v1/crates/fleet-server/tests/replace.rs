@@ -667,8 +667,8 @@ async fn evacuate_changes_each_router_once() {
     assert_eq!(waiting["cancellable"], false, "被带头的认领了：不能取消");
     let (s, v) = t.req("POST", &format!("/api/v1/jobs/{follow}/cancel"), None, None).await;
     assert!(s == StatusCode::CONFLICT && v.to_string().contains("带头一起改软路由出口"), "{v}");
-    assert!(logs(t, &follow).await.contains("同批搬空的「团队2-01」带头一起改软路由出口（本节点的也在里面），等它改完"));
-    assert!(logs(t, &lead).await.contains("同批搬空的 2 个节点（团队2-02）一起改软路由出口：每台路由只改一次、重启一次"), "{}", logs(t, &lead).await);
+    assert!(logs(t, &follow).await.contains("同批换线路机的「团队2-01」带头一起改软路由出口（本节点的也在里面），等它改完"));
+    assert!(logs(t, &lead).await.contains("同批换线路机的 2 个节点（团队2-02）一起改软路由出口：每台路由只改一次、重启一次"), "{}", logs(t, &lead).await);
     std::fs::remove_file(root(23171).join("hold")).unwrap();
     held.pop().unwrap().1.await.unwrap();
     for id in [&lead, &follow] {
@@ -749,7 +749,7 @@ async fn evacuate_leader_cancelled_while_queued_repicks_leader() {
     assert!(ap.len() == 1 && ap[0].contains("N='2'\n"), "路由A 只改一次、两个出口一起：{}", ap.iter().map(|a| a.lines().filter(|l| l.starts_with("N=") || l.starts_with("NAME_")).collect::<Vec<_>>().join(" ")).collect::<Vec<_>>().join(" / "));
 }
 
-/// 搬空同批一起改时一台失败：已改的路由全部换回，几个节点的旧入口都不摘，跟着的一起失败（能取消）；
+/// 同批换线路机一起改时一台失败：已改的路由全部换回，几个节点的旧入口都不摘，跟着的一起失败（能取消）；
 /// 都重试后照样一起改：每台路由一次
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn evacuate_batch_failure_rolls_back_all() {
@@ -769,7 +769,7 @@ async fn evacuate_batch_failure_rolls_back_all() {
     let err = lj["error"].as_str().unwrap();
     assert!(err.contains("软路由「路由B」：出口「节点01」换成新入口后测了 3 次都不通；已改回原配置：路由A。软路由都是原样，旧入口没摘"), "{err}");
     let ferr = fj["error"].as_str().unwrap();
-    assert!(ferr.contains("同批搬空的「团队2-01」带头一起改软路由出口（本节点的也在里面）没成，已一起换回：软路由「路由B」"), "{ferr}");
+    assert!(ferr.contains("同批换线路机的「团队2-01」带头一起改软路由出口（本节点的也在里面）没成，已一起换回：软路由「路由B」"), "{ferr}");
     assert_eq!((lj["cancellable"].as_bool(), fj["cancellable"].as_bool()), (Some(true), Some(true)), "都已换回：能取消");
     assert!(read(root(23176).join("rollback.log")).contains("节点01 198.51.100.3"), "路由A 改回了");
     let bp = applies(23177);
@@ -788,7 +788,71 @@ async fn evacuate_batch_failure_rolls_back_all() {
     assert_eq!((entry_state(t, oe).await, entry_state(t, ne).await), ("removed".to_string(), "removed".to_string()));
 }
 
-/// 搬空同批一起改、改回也失败：带头的停在「需要人工处理」，跟着的同样不能取消、给出 manual，单独重试照样跟着它；
+/// 批量换线路机（POST /moves）：同一台路由上 3 个节点的出口，预览说只重启 1 次；3 个作业同批，路由只改一次（3 个出口一起）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn batch_move_changes_router_once() {
+    let w = world().await;
+    let oe = old_entry(&w).await;
+    let ne: Uuid = sqlx::query_scalar("select id from entry where node_id = $1").bind(w.new).fetch_one(&w.t.st.db).await.unwrap();
+    let n3 = node(&w.t, w.team, 3, "203.0.113.13").await;
+    let e3 = entry(&w.t, w.relay, n3, 20021, "33333333-3333-4333-8333-333333333333", "active").await;
+    let a = router(&w, "路由A", 23251, &[("节点01", "198.51.100.2", 20003, Some(oe)), ("节点02", "198.51.100.2", 20020, Some(ne)), ("节点03", "198.51.100.2", 20021, Some(e3))]).await;
+    let t = &w.t;
+    let (rb, tb) = seed_relay_b(t).await;
+    let nodes = [w.old, w.new, n3];
+    let csv = nodes.iter().map(Uuid::to_string).collect::<Vec<_>>().join(",");
+    let p = t.get(&format!("/api/v1/moves?machine_ids={csv}&to_relay_id={rb}")).await;
+    assert_eq!(p["ok"], true, "{p}");
+    assert_eq!(p["router_restarts"], json!([{"id": a, "name": "路由A", "times": 1, "nodes": 3}]), "{p}");
+    assert_eq!(p["jobs"][0]["old_entry"], json!({"id": oe, "relay": "线路机2", "port": 20003}), "{p}");
+    let d = t.post("/api/v1/moves", json!({"machine_ids": nodes, "to_relay_id": rb})).await;
+    let ids: Vec<String> = d["jobs"].as_array().unwrap().iter().map(|j| j["job_id"].as_str().unwrap().to_string()).collect();
+    assert_eq!(ids.len(), 3, "{d}");
+    let mut sims = [Sim::new(RELAY_TOKEN.into()), Sim::new(tb)];
+    for id in &ids {
+        assert_eq!(run(t, &mut sims, id).await["state"], "succeeded", "{}", logs(t, id).await);
+    }
+    let ap = applies(23251);
+    assert!(ap.len() == 1 && ap[0].contains("N='3'\n"), "路由A 只改一次、3 个出口一起：{}", ap.len());
+    assert!(logs(t, &ids[1]).await.contains("同批换线路机的「团队2-01」带头一起改了软路由出口"), "{}", logs(t, &ids[1]).await);
+    for e in [oe, ne, e3] {
+        assert_eq!(entry_state(t, e).await, "removed");
+    }
+}
+
+/// 批量换线路机一起改时一台路由失败：同搬空，已改的全部换回、旧入口都不摘，跟着的一起失败；都能取消，取消摘掉新入口、只剩旧入口
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn batch_move_failure_rolls_back_all() {
+    let w = world().await;
+    let oe = old_entry(&w).await;
+    let ne: Uuid = sqlx::query_scalar("select id from entry where node_id = $1").bind(w.new).fetch_one(&w.t.st.db).await.unwrap();
+    router(&w, "路由A", 23252, &[("节点01", "198.51.100.2", 20003, Some(oe))]).await;
+    router(&w, "路由B", 23253, &[("节点02", "198.51.100.2", 20020, Some(ne))]).await;
+    let t = &w.t;
+    let (rb, tb) = seed_relay_b(t).await;
+    std::fs::write(root(23253).join("mode"), "fail").unwrap();
+    let d = t.post("/api/v1/moves", json!({"machine_ids": [w.old, w.new], "to_relay_id": rb})).await;
+    let ids: Vec<String> = d["jobs"].as_array().unwrap().iter().map(|j| j["job_id"].as_str().unwrap().to_string()).collect();
+    let mut sims = [Sim::new(RELAY_TOKEN.into()), Sim::new(tb)];
+    let (lj, fj) = (run(t, &mut sims, &ids[0]).await, run(t, &mut sims, &ids[1]).await);
+    assert_eq!((lj["state"].as_str(), fj["state"].as_str()), (Some("failed"), Some("failed")), "{lj} {fj}");
+    assert!(lj["error"].as_str().unwrap().contains("已改回原配置：路由A。软路由都是原样，旧入口没摘"), "{lj}");
+    let ferr = fj["error"].as_str().unwrap();
+    assert!(ferr.contains("同批换线路机的「团队2-01」带头一起改软路由出口（本节点的也在里面）没成，已一起换回：软路由「路由B」"), "{ferr}");
+    assert_eq!((applies(23252).len(), applies(23253).len()), (1, 1));
+    assert_eq!((entry_state(t, oe).await, entry_state(t, ne).await), ("active".to_string(), "active".to_string()), "旧入口都没摘");
+    for id in &ids {
+        assert_eq!(t.job(id).await["cancellable"], true);
+        t.post(&format!("/api/v1/jobs/{id}/cancel"), json!({})).await;
+        assert_eq!(run(t, &mut sims, id).await["state"], "cancelled");
+    }
+    let live: Vec<Uuid> = sqlx::query_scalar("select id from entry where node_id = any($1) and lifecycle = 'active' order by id").bind(vec![w.old, w.new]).fetch_all(&t.st.db).await.unwrap();
+    let mut want = vec![oe, ne];
+    want.sort();
+    assert_eq!(live, want, "只剩旧入口在用");
+}
+
+/// 同批换线路机一起改、改回也失败：带头的停在「需要人工处理」，跟着的同样不能取消、给出 manual，单独重试照样跟着它；
 /// 带头的重试改完之后，跟着的重试就跟着完成（不再动路由）
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn evacuate_batch_stuck_holds_followers() {
@@ -828,7 +892,7 @@ async fn evacuate_batch_stuck_holds_followers() {
     assert_eq!((entry_state(t, oe).await, entry_state(t, ne).await), ("removed".to_string(), "removed".to_string()));
 }
 
-/// 搬空同批改回失败（带头的和跟着的都抄着 routers_stuck）后强制删掉那台路由：带头的、跟着的都摘掉它，跟着的也记一条日志，「需要人工处理」消失
+/// 同批换线路机改回失败（带头的和跟着的都抄着 routers_stuck）后强制删掉那台路由：带头的、跟着的都摘掉它，跟着的也记一条日志，「需要人工处理」消失
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn force_delete_router_clears_followers_stuck() {
     let w = world().await;

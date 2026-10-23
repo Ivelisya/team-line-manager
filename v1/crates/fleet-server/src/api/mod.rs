@@ -91,8 +91,9 @@ pub fn router() -> Router<AppState> {
         .route("/machines/{id}/subscription/preview", post(machines::preview_subscription))
         .route("/machines/{id}/renewals", get(machines::list_renewals).post(machines::add_renewal))
         .route("/machines/{id}/entries", post(relays::add_entry))
-        // 换线路机、搬空线路机：GET 预览（含要改的软路由出口），POST 建作业
+        // 换线路机（单个 / 批量）、搬空线路机：GET 预览（含要改的软路由出口），POST 建作业
         .route("/machines/{id}/move", get(lifecycle::move_preview).post(lifecycle::move_node))
+        .route("/moves", get(lifecycle::moves_preview).post(lifecycle::moves))
         .route("/relays/{id}/evacuate", get(lifecycle::evacuate_preview).post(lifecycle::evacuate))
         // 搬迁建议（只读）：按近 7 天的速度重置前会用满的线路机，挑出搬走后能撑到重置日的最少入口
         .route("/relays/{id}/rebalance", get(lifecycle::rebalance))

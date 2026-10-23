@@ -143,7 +143,7 @@ pub async fn get_one(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath
     if j.kind == "move_entry" {
         v["result"] = json!({
             "new_entry_id": p["entry_id"], "old_entry_id": p["old_entry_id"], "from_relay_id": p["from_relay_id"], "to_relay_id": p["to_relay_id"],
-            "share_changed": true, "note": "客户端需要换成新的分享链接",
+            "share_changed": true, "note": super::lifecycle::SHARE_NOTE,
         });
     }
     v["cancellable"] = json!(cancel_blocker(&j.kind, j.step, &j.state, &p).is_none());
