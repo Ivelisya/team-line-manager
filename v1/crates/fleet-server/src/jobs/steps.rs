@@ -234,11 +234,18 @@ async fn preflight(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
             return Err(remote(format!("这台机器上的 agent 登记的是另一台机器（{other}）：先确认是不是在用的节点")));
         }
     }
+    // 节点上 ufw / firewalld 在运行：收敛时会给线路机 IP 加放行规则（供应商镜像自带的 ufw 常只放行旧线路机，挡住新线路机）
+    c.log(match out.kv("host_fw") {
+        Some(w @ ("ufw" | "firewalld")) if m.kind == "vps" => format!("主机防火墙：{w} 在运行，收敛时会对线路机 IP 放行 SS 端口（不会关掉它）"),
+        Some(w @ ("ufw" | "firewalld")) => format!("主机防火墙：{w} 在运行"),
+        _ => "主机防火墙：没有 ufw / firewalld 在运行".into(),
+    })
+    .await;
     if m.kind == "vps" && out.kv("port8388") == Some("busy") {
         c.warn(format!("{} 端口已经有程序在监听；收敛时会被 fleet-ssserver 接管", crate::meta::SS_PORT)).await;
     }
     Ok(Outcome::Done(json!({
-        "host_key": ssh::fingerprint(&fp), "arch": arch, "os": out.kv("os"), "kernel": out.kv("kernel"), "mem_mb": out.kv("mem_mb"),
+        "host_key": ssh::fingerprint(&fp), "host_fw": out.kv("host_fw"), "arch": arch, "os": out.kv("os"), "kernel": out.kv("kernel"), "mem_mb": out.kv("mem_mb"),
     })))
 }
 
@@ -390,6 +397,7 @@ async fn run_ss(c: &Ctx<'_>, t: &Target, inst: &SsInst, allow: &str, script: &st
         return Err(remote(format!("ssserver 没有起来：{}", out.stdout.trim())));
     }
     warn_linklocal_dns(c, &out, "ssserver").await;
+    report_host_fw(c, &out, inst.port).await;
     Ok(out)
 }
 
@@ -546,6 +554,19 @@ async fn warn_linklocal_dns(c: &Ctx<'_>, out: &Output, what: &str) {
             "这台机器的 DNS（/etc/resolv.conf）是链路本地地址（多半和云厂商的元数据服务是同一个）：{what} 改用公共解析器（1.1.1.1、8.8.8.8）解析域名，元数据服务照旧拦着；这台机器出不了 53 端口的话域名会解析失败"
         ))
         .await;
+    }
+}
+
+/// 节点脚本报的 `host_fw`（见 scripts::HOST_FW）：ufw / firewalld 的放行规则改失败、iptables 默认丢弃时记 warn，改好了记一条 info
+async fn report_host_fw(c: &Ctx<'_>, out: &Output, port: u16) {
+    match out.kv("host_fw") {
+        Some(w @ ("ufw" | "firewalld")) => c.log(format!("节点上 {w} 在运行：已对线路机 IP 放行 SS 端口 {port}（tcp、udp）")).await,
+        Some(w @ ("ufw-error" | "firewalld-error")) => {
+            let w = w.trim_end_matches("-error");
+            c.warn(format!("节点上 {w} 在运行，但给线路机 IP 放行 SS 端口 {port} 的规则没有改成：线路机可能连不上这个端口，到节点上用 {w} 手动放行线路机 IP（tcp、udp）")).await
+        }
+        Some("iptables-drop") => c.warn(format!("节点的 iptables INPUT 默认丢弃（没有 ufw / firewalld 在管）：线路机可能连不上 SS 端口 {port}，这里不自动改；连不上时到节点上放行线路机 IP（tcp、udp）")).await,
+        _ => {}
     }
 }
 
@@ -845,19 +866,21 @@ async fn firewall(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         _ => return Ok(Outcome::Skipped("家宽代理没有防火墙要改".into())),
     }
     let allow = relay_ips_for(c, m.id, None).await?;
-    let table = c.ss_inst(&m).await?.table();
-    let out = c.ssh(&m, None).run(&nft_only(&table, &allow), Duration::from_secs(60)).await?;
+    let inst = c.ss_inst(&m).await?;
+    let table = inst.table();
+    let out = c.ssh(&m, None).run(&nft_only(&inst, &allow), Duration::from_secs(60)).await?;
     if !out.ok() {
         // 脚本在 nft=missing / nft=error 时以非 0 退出
         check_nft(&out, &allow, &table)?;
         return Err(out.fail("更新防火墙失败"));
     }
     check_nft(&out, &allow, &table)?;
-    Ok(Outcome::Done(json!({"nft_relays": out.kv("nft_relays")})))
+    report_host_fw(c, &out, inst.port).await;
+    Ok(Outcome::Done(json!({"nft_relays": out.kv("nft_relays"), "host_fw": out.kv("host_fw")})))
 }
 
 /// 只改节点防火墙放行名单的脚本
-fn nft_only(table: &str, allow: &str) -> String { vars(&[("NFT_TABLE", table), ("ALLOW", allow)]) + scripts::NODE_NFT_ONLY }
+fn nft_only(inst: &SsInst, allow: &str) -> String { vars(&[("NFT_TABLE", &inst.table()), ("SS_PORT", &inst.port.to_string()), ("ALLOW", allow)]) + scripts::NODE_NFT_ONLY }
 
 /// 重试时让线路机重新应用一次：代数 +1，清掉上次留下的应用错误（否则一进来又立刻判失败）。
 async fn rebump(c: &Ctx<'_>, relay_id: Uuid, entry: Option<Uuid>) -> anyhow::Result<()> {
