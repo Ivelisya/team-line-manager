@@ -4,7 +4,7 @@ import type { MachineView } from '@/lib/types';
 
 type Ctx = { params: string[]; query: URLSearchParams; body: any };
 type Reg = (method: string, path: string, h: (c: Ctx) => unknown) => void;
-interface Env { machines: () => MachineView[]; bad: (msg: string, status?: number, code?: string) => Error }
+interface Env { machines: () => MachineView[]; routers: () => { id: string; name: string }[]; bad: (msg: string, status?: number, code?: string) => Error }
 
 const GRACE = 5 * 60_000;
 let verifiedAt = 0;
@@ -52,9 +52,10 @@ class MockTerm {
 
 export function installTerminalMock(R: Reg, env: Env) {
   R('POST', '/terminal/tickets', ({ body }) => {
+    const router = body.kind === 'router' ? env.routers().find((x) => x.id === body.id) : undefined;
     const m = env.machines().find((x) => x.id === body.id);
-    if (body.kind !== 'machine' || !m) throw env.bad('机器不存在', 404, 'not_found');
-    if (m.kind === 'proxy' || m.lifecycle !== 'active') throw env.bad('这台机器不能打开终端', 409, 'conflict');
+    if (!router && (body.kind !== 'machine' || !m)) throw env.bad(body.kind === 'router' ? '软路由不存在' : '机器不存在', 404, 'not_found');
+    if (m && (m.kind === 'proxy' || m.lifecycle !== 'active')) throw env.bad('这台机器不能打开终端', 409, 'conflict');
     if (Date.now() - verifiedAt > GRACE) {
       if (!body.password) throw env.bad('打开终端前请再输入一次登录密码', 401, 'password_required');
       if (body.password === 'wrong') throw env.bad('密码不对', 401, 'password_invalid');
@@ -62,7 +63,7 @@ export function installTerminalMock(R: Reg, env: Env) {
     }
     if (open.size >= 3) throw env.bad('同时最多开 3 个终端，先关掉一个', 429, 'terminal_limit');
     const ticket = Math.random().toString(36).slice(2);
-    tickets.set(ticket, { name: m.host_machine?.name ?? m.name, exp: Date.now() + 60_000 });
+    tickets.set(ticket, { name: router?.name ?? m!.host_machine?.name ?? m!.name, exp: Date.now() + 60_000 });
     return { ticket, expires_at: new Date(Date.now() + 60_000).toISOString() };
   });
   // 只顶替终端的 WebSocket；installMock 之后再包实时流那一层，其余照常走真的

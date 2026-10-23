@@ -74,19 +74,31 @@
 .rt-group-foot { margin: var(--sp-6) var(--sp-12) 0; }
 
 /* ---- 表格里的读数 ---- */
+/* 入口行里的「软路由 N」小标 */
+.rt-mark { margin-left: var(--sp-6); padding: 0 var(--sp-6); border: 0; border-radius: var(--r-pill); background: var(--sunken); font: var(--fw-medium) var(--fs-micro) / 16px var(--font-sans); color: var(--fg-2); cursor: pointer; }
+@media (hover: hover) { .rt-mark:hover { background: var(--hover); color: var(--accent); } }
 .rt-alive { display: inline-flex; align-items: center; gap: var(--sp-4); }
 .rt-alive .lucide { width: var(--icon-sm); height: var(--icon-sm); }
 .rt-alive[data-tone="bad"] { color: var(--bad-text); }
-/* 行内迷你折线（出口延迟）：只有线，颜色随强调色 */
-.rt-spark { display: block; width: 80px; height: 20px; overflow: visible; }
-.rt-spark path { fill: none; stroke: var(--chart-1); stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
-.rt-spark.is-empty { border-bottom: 1px dashed var(--line-strong); height: 10px; }
+/* 行内迷你格子（出口近 6 小时的延迟测试）：一格一段时间，绿 / 黄 / 红，没有数据的淡格 */
+.rt-minibeat { display: flex; gap: 2px; width: 60px; height: 14px; }
+.rt-minibeat > i { display: block; flex: 1 1 0; min-width: 2px; border-radius: 1px; background: var(--line); }
+.rt-minibeat > i[data-t="ok"] { background: var(--latency-ok); }
+.rt-minibeat > i[data-t="warn"] { background: var(--warn); }
+.rt-minibeat > i[data-t="bad"] { background: var(--bad); }
 .rt-exit-beats { display: grid; gap: var(--sp-10); }
+/* 没有数据的格（路由还没接入、离线的那段）画成斜纹，和「有数据且全成功」的绿格一眼分开 */
+.rt-exit-beats .beat-cells > i:not([data-t]), .rt-minibeat > i:not([data-t]) { background: repeating-linear-gradient(135deg, var(--line) 0 2px, transparent 2px 4px); }
+/* 出口明细表：首列（出口名）吸在左边，窄抽屉里横滑到右边的列也知道是哪个出口 */
+.rt-exit-tbl :is(th, td):first-child { position: sticky; left: 0; z-index: 1; background: var(--surface); box-shadow: 1px 0 0 var(--line); }
+.rt-exit-tbl thead th:first-child { background: var(--sunken); }
 
-/* ---- 出口 → 线路机 → 节点：三列，按线路机分组，中间一列是这组共用的线路机（竖线把这组的行连到它） ---- */
-.rt-topo { display: grid; gap: var(--sp-14); min-width: 520px; }
-.rt-topo-group { display: grid; grid-template-columns: minmax(0, 1fr) 28px minmax(96px, auto) 28px minmax(0, 1fr); grid-auto-rows: 28px; align-items: center; }
-.rt-topo-group[data-none] { grid-auto-rows: 28px; }
+/* ---- 出口 → 节点：按线路机分组，组标题是线路机（或「不受管」），每行「出口 ── 节点」一一对应 ---- */
+.rt-topo { display: grid; gap: var(--sp-14); min-width: 360px; }
+.rt-topo-group { display: grid; grid-template-columns: max-content 28px minmax(0, 1fr); grid-auto-rows: 28px; align-items: center; }
+.rt-topo-title { grid-column: 1 / -1; display: flex; align-items: baseline; gap: var(--sp-8); height: auto; padding-bottom: var(--sp-4); font: var(--fw-medium) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2); }
+.rt-topo-title .btn-link { font: inherit; font-weight: var(--fw-medium); color: var(--fg); }
+.rt-topo-title small { font-size: var(--fs-micro); font-weight: var(--fw-regular); color: var(--fg-2); }
 .rt-topo-pill {
   display: inline-flex; align-items: center; gap: var(--sp-6); min-width: 0; max-width: 100%; height: var(--h-chip-lg); box-sizing: border-box; padding: 0 var(--sp-10);
   border: 0; border-radius: var(--r-pill); background: var(--sunken); font: var(--fw-medium) var(--fs-label) / 24px var(--font-sans); color: var(--fg); white-space: nowrap;
@@ -95,24 +107,16 @@
 .rt-topo-pill .lucide { flex: none; width: var(--icon-xs); height: var(--icon-xs); }
 button.rt-topo-pill { cursor: pointer; transition: background-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out); }
 @media (hover: hover) { button.rt-topo-pill:hover { background: var(--hover); color: var(--accent); } }
-.rt-topo-exit { justify-self: end; }
 .rt-topo-exit[data-tone="bad"] { background: var(--bad-bg); color: var(--bad-text); }
 .rt-topo-exit[data-tone="warn"] { background: var(--warn-bg); color: var(--warn-text); }
 .rt-topo-exit[data-tone="neutral"] { color: var(--fg-2); }
 .rt-topo-node { justify-self: start; }
-/* 连线：行中间一条细线；失败红、参数不一致黄、不受管灰，都是虚线 */
+/* 连线：行中间一条细线；不通红、只不通 1 次或参数不一致黄、不受管灰，都是虚线 */
 .rt-topo-link { height: 0; border-top: 1px solid var(--line-strong); }
 .rt-topo-link[data-tone="bad"] { border-top: 1px dashed var(--bad); }
 .rt-topo-link[data-tone="warn"] { border-top: 1px dashed var(--warn); }
 .rt-topo-link[data-tone="neutral"] { border-top-style: dashed; }
-/* 线路机一格竖跨这组的所有行：左右两条竖线从第一行中间到最后一行中间，中间一条横线接到线路机 */
-.rt-topo-relay { position: relative; align-self: stretch; display: grid; place-items: center; background: linear-gradient(var(--line-strong), var(--line-strong)) center / 100% 1px no-repeat; }
-.rt-topo-relay::before, .rt-topo-relay::after { content: ""; position: absolute; top: 14px; bottom: 14px; width: 0; border-left: 1px solid var(--line-strong); }
-.rt-topo-relay::before { left: 0; }
-.rt-topo-relay::after { right: 0; }
-.rt-topo-relay > .rt-topo-pill { position: relative; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-strong); }
-.rt-topo-raw { justify-self: start; padding-left: var(--sp-8); color: var(--fg-2); }
-.rt-topo-note { padding-top: var(--sp-2); }
+.rt-topo-raw { justify-self: start; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: var(--sp-8); color: var(--fg-2); }
 
 /* ---- 接入对话框 ---- */
 /* 账号密码那块：换到「执行命令」时高度平滑收到 0（grid 行 1fr ↔ 0fr），连同表单的行间距（16px）一起收，对话框不跳 */
@@ -120,3 +124,14 @@ button.rt-topo-pill { cursor: pointer; transition: background-color var(--dur-1)
 .rt-collapse[data-open] { grid-template-rows: 1fr; margin-top: 0; opacity: 1; }
 .rt-collapse > div { min-height: 0; overflow: hidden; padding: 2px; margin: -2px; } /* 留 2px 给焦点环，不被裁 */
 .token-box.rt-cmd code { white-space: pre-wrap; }
+
+/* ---- 对话框里的软路由出口预览（换线路机、搬空、替换共用）：节点 | 软路由 · 出口 | 旧 → 新 ---- */
+.rx-tbl { border-collapse: collapse; width: 100%; font-size: var(--fs-label); line-height: var(--lh-label); }
+.rx-tbl th { padding: 2px var(--sp-12) 2px 0; text-align: left; font-weight: var(--fw-medium); color: var(--fg-2); white-space: nowrap; }
+.rx-tbl td { padding: 4px var(--sp-12) 4px 0; border-top: 1px solid var(--line); vertical-align: top; }
+.rx-tbl td:last-child, .rx-tbl th:last-child { padding-right: 0; }
+.rx-tbl .rx-to { color: var(--fg-2); }
+.rx-tbl .rx-to b { font-weight: var(--fw-medium); color: var(--fg); }
+.rx-tbl .rx-addr { white-space: nowrap; }
+.opt-relay.is-down { color: var(--fg-3); }
+.rx-pairs { display: grid; grid-template-columns: max-content max-content; gap: var(--sp-2) var(--sp-16); font-size: var(--fs-label); line-height: var(--lh-label); }

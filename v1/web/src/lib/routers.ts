@@ -1,14 +1,15 @@
 // 软路由（客户现场的 OpenWrt + OpenClash）：类型、查询与写操作、抽屉开关、接入命令对话框的状态。
 // 中控经反向隧道每 30 秒在路由上跑一次只读采集，结果随 {"type":"routers"} 事件推来（eventKeys 让 ['routers'] 下的列表与详情一起重取），
 // 所以列表与详情 staleTime 都是 Infinity；曲线不推，抽屉开着时按范围轮询（同机器抽屉的曲线）。形状见 r21 设计稿「API」。
-import { useCallback, useRef } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useQueries, useQuery } from '@tanstack/react-query';
 import { del, get, patch, post } from './api';
-import { useTeams, useWrite } from './queries';
+import { useRelays, useTeams, useWrite } from './queries';
 import { collator } from './sort';
 import { createStore } from './store';
 import type { EntryLifecycle, SeriesPoint, Team } from './types';
+import type { BeatCell } from './derive';
 import * as F from './format';
 
 /** pending = 建了记录、路由还没连上过；offline = 连上过、现在隧道不通或采集失败 */
@@ -104,16 +105,18 @@ export function useRouterDrawer() {
   // 同 useDrawer：setSearchParams 每次地址变化都换身份，用 ref 兜住，回调才稳定（卡片 memo 依赖它）
   const setRef = useRef(setSp); setRef.current = setSp;
   // 打开时收起机器抽屉（告警页上开着机器抽屉时点了路由的告警）：两个抽屉不叠在一起
-  const open = useCallback((rid: string, t?: RouterTab) => setRef.current((p) => { const n = new URLSearchParams(p); n.delete('m'); n.delete('tab'); n.set('r', rid); if (t) n.set('rtab', t); else n.delete('rtab'); return n; }), []);
+  const open = useCallback((rid: string, t?: RouterTab) => setRef.current((p) => { const n = new URLSearchParams(p); n.delete('m'); n.delete('tab'); n.delete('range'); n.set('r', rid); if (t) n.set('rtab', t); else n.delete('rtab'); return n; }), []);
   const setTab = useCallback((t: RouterTab) => setRef.current((p) => { const n = new URLSearchParams(p); n.set('rtab', t); return n; }, { replace: true }), []);
-  const close = useCallback(() => setRef.current((p) => { const n = new URLSearchParams(p); n.delete('r'); n.delete('rtab'); return n; }), []);
+  const close = useCallback(() => setRef.current((p) => { const n = new URLSearchParams(p); n.delete('r'); n.delete('rtab'); n.delete('range'); return n; }), []);
   /** 出口对应的 fleet 入口：换成那台机器的抽屉（压一条历史，后退回到这台路由） */
-  const openMachine = useCallback((mid: string) => setRef.current((p) => { const n = new URLSearchParams(p); n.delete('r'); n.delete('rtab'); n.delete('tab'); n.set('m', mid); return n; }), []);
+  const openMachine = useCallback((mid: string) => setRef.current((p) => { const n = new URLSearchParams(p); n.delete('r'); n.delete('rtab'); n.delete('tab'); n.delete('range'); n.set('m', mid); return n; }), []);
   return { id, tab, open, setTab, close, openMachine };
 }
 
 /** 告警对象是路由：规则以 router_ 开头（subject.kind = "router"），点对象要开路由抽屉 */
 export const isRouterIncident = (i: { rule: string }) => i.rule.startsWith('router_');
+/** 点告警对象开路由抽屉的哪一页：出口不通的直接开出口页签，其余开概览 */
+export const routerIncidentTab = (i: { rule: string }): RouterTab | undefined => (i.rule === 'router_exits_down' ? 'exits' : undefined);
 
 // ---- 接入命令 / 删除后的说明：页面、卡片、抽屉都能弹，由外壳里那一份 RouterDialogs 渲染 ----
 /** issued_at：拿到命令的时刻，路由在这之后连上才算「已接入」（重新生成时旧隧道之前也是在线的）；
@@ -164,9 +167,66 @@ export function routerMeters(s: RouterSummary) {
 /** 运行时长（秒）→ 天 / 小时 / 分钟 */
 export const uptimeFmt = (s: number | null | undefined): F.Fmt => (s == null ? F.NA : s < 3600 ? { v: String(Math.max(1, Math.floor(s / 60))), u: '分钟' } : s < 86400 ? { v: String(Math.floor(s / 3600)), u: '小时' } : { v: String(Math.floor(s / 86400)), u: '天' });
 export const tempTone = (t: number | null | undefined) => (t == null ? undefined : t >= 85 ? 'bad' : t >= 70 ? 'warn' : undefined);
-/** 在线但有毛病（卡片描边变黄）：OpenClash 启用却没在跑、WAN 断了、有出口测试失败 */
-export const routerIssues = (s: RouterSummary | null): string[] => (!s ? [] : [
+/** 在线但有毛病（卡片描边变黄，状态叫「降级」）：OpenClash 启用却没在跑、WAN 断了、有出口测试不通。
+ *  names：不通的出口名（取自详情；列表摘要里只有个数）。多于 3 个只列前 3 个 */
+export const routerIssues = (s: RouterSummary | null, names?: string[]): string[] => (!s ? [] : [
   s.openclash.enabled && !s.openclash.running && 'OpenClash 已启用但核心没在运行',
   !s.wan.up && 'WAN 口断开',
-  s.exits.alive < s.exits.total && `${s.exits.total - s.exits.alive} 个出口连续两次延迟测试不通`,
+  s.exits.alive < s.exits.total && (names?.length ? `${names.slice(0, 3).join('、')}${names.length > 3 ? ` 等 ${names.length} 个出口` : ''} 连续两次延迟测试不通` : `${s.exits.total - s.exits.alive} 个出口连续两次延迟测试不通`),
 ].filter((x): x is string => !!x));
+export const deadExitNames = (d: RouterDetail | null | undefined) => d?.exits.filter((e) => !exitUsable(e)).map((e) => e.name);
+
+// ---- 各出口的延迟测试：按固定时间窗切格 ----
+/** 各范围切几格：每格至少盖住一次测试（5 分钟一次），所以 1 小时只切 12 格 */
+const BEAT_BINS: Record<string, number> = { '1h': 12, '6h': 24, '24h': 24, '7d': 28, '30d': 30 };
+const RANGE_MS: Record<string, number> = { '1h': 3600_000, '6h': 6 * 3600_000, '24h': 86400_000, '7d': 7 * 86400_000, '30d': 30 * 86400_000 };
+export const beatBins = (range: string) => BEAT_BINS[range] ?? 24;
+/** 一个出口在所选范围内的测试结果切成 bins 格（从 end 往前，每格一样宽，不按数据的首末）：
+ *  颜色只看成功率——全成功绿、有失败黄、失败过半红；这格里没有测试为空（路由还没接入、离线）。延迟高低看延迟曲线，不进格子。
+ *  7 天 / 30 天的点是一小时的汇总，带 alive_pct（这一小时测通的比例） */
+export function exitBeats(points: SeriesPoint[], range: string, bins: number, end: number): { cells: BeatCell[]; titles: string[] } {
+  const width = (RANGE_MS[range] ?? RANGE_MS['6h']) / bins; const start = end - width * bins;
+  const acc = Array.from({ length: bins }, () => ({ n: 0, ok: 0, sum: 0, sumN: 0 }));
+  for (const p of points) {
+    const i = Math.min(bins - 1, Math.floor((Date.parse(p.ts) - start) / width));
+    if (i < 0) continue;
+    const b = acc[i]; const ok = typeof p.alive_pct === 'number' ? p.alive_pct / 100 : typeof p.delay_ms === 'number' ? 1 : 0;
+    b.n++; b.ok += ok;
+    if (typeof p.delay_ms === 'number') { b.sum += p.delay_ms; b.sumN++; }
+  }
+  const cells: BeatCell[] = []; const titles: string[] = [];
+  acc.forEach((b, i) => {
+    const t0 = new Date(start + i * width).toISOString(); const t1 = new Date(start + (i + 1) * width).toISOString();
+    const span = `${F.dt(t0)} – ${F.dt(t1).slice(6)}`;
+    if (!b.n) { cells.push(null); titles.push(`${span}\n没有数据`); return; }
+    const rate = b.ok / b.n;
+    cells.push(rate === 1 ? 'ok' : rate < 0.5 ? 'bad' : 'warn');
+    titles.push(`${span}\n${Number.isInteger(b.ok) ? `成功 ${b.ok}/${b.n}` : `测通 ${Math.round(rate * 100)}%`}${b.sumN ? ` · 平均 ${Math.round(b.sum / b.sumN)} ms` : ''}`);
+  });
+  return { cells, titles };
+}
+
+// ---- 地址 → 线路机名 / 入口被哪些软路由出口在用 ----
+/** 预览与作业结果里的「server:port」：server 是某台线路机的 IP 或公网地址的，换成线路机名（原地址放悬停），认不得的原样 */
+export function useAddrName() {
+  const relays = useRelays().data;
+  const names = useMemo(() => new Map((relays ?? []).flatMap((r) => [[r.ip, r.name] as const, ...(r.relay ? [[r.relay.public_host, r.name] as const] : [])])), [relays]);
+  return useCallback((addr: string) => {
+    const i = addr.lastIndexOf(':'); const host = i < 0 ? addr : addr.slice(0, i);
+    const n = names.get(host);
+    return { text: n ? `${n}${i < 0 ? '' : addr.slice(i)}` : addr, tip: n ? addr : undefined };
+  }, [names]);
+}
+/** 面板入口 id → 在用它的软路由出口（软路由 + 出口名）：各台软路由详情里的出口按对上的入口汇总，抽屉入口表、线路页的入口行用它标「软路由」 */
+export function useEntryRouters() {
+  const list = useRouters().data;
+  const live = (list ?? []).filter((r) => r.summary);
+  const res = useQueries({ queries: live.map((r) => ({ queryKey: ['routers', r.id], queryFn: ({ signal }: { signal: AbortSignal }) => get<RouterFull>(`/routers/${r.id}`, signal), staleTime: Infinity })) });
+  const sig = res.map((q) => q.dataUpdatedAt).join(',');
+  return useMemo(() => {
+    const m = new Map<string, { id: string; name: string; exit: string }[]>();
+    for (const r of res.map((q) => q.data)) for (const e of r?.detail?.exits ?? []) if (e.entry) m.set(e.entry.id, [...(m.get(e.entry.id) ?? []), { id: r!.id, name: r!.name, exit: e.name }]);
+    return m;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sig]);
+}

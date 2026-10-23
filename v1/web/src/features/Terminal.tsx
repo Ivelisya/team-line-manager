@@ -1,4 +1,4 @@
-// 网页终端：经中控 SSH 到受管机器（同机 IP 节点由中控连到它的宿主机）。整个文件连同 xterm 按需加载（Shell 里第一次打开时才下载）。
+// 网页终端：经中控 SSH 到受管机器（同机 IP 节点由中控连到它的宿主机）或软路由（经反向隧道）。整个文件连同 xterm 按需加载（Shell 里第一次打开时才下载）。
 // 流程：换票据（可能先要两步验证码或登录密码）→ 连 WebSocket，第一条消息送票据和行列 → 二进制帧双向传终端字节，文本帧是 JSON 控制消息
 // （客户端发 resize，服务端断开前发 exit 和原因）。上限都取 /meta 的 terminal。窗口是右侧不带遮罩的面板：开着终端也能照常翻页面、看卡片。
 import * as React from 'react';
@@ -48,7 +48,7 @@ const CLOSE_REASON: Record<number, string> = { 1009: '一次发送的内容太�
 
 const PILL: Record<Exclude<Phase['s'], 'closed'>, [Tone, string]> = { auth: ['info', '正在验证'], cred: ['warn', '待验证'], connecting: ['info', '正在连接'], open: ['ok', '已连接'] };
 
-/** 一个终端窗口。kind 现在只有 machine，router 以后同样走它 */
+/** 一个终端窗口。kind：machine 机器 / router 软路由 */
 export function Terminal({ kind, id, name }: TermTarget) {
   const host = useMachine(kind === 'machine' ? id : null).data?.host_machine;
   const box = React.useRef<HTMLDivElement>(null);

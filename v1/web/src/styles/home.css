@@ -271,3 +271,12 @@ button.tag { border: 0; cursor: pointer; transition: background-color var(--dur-
 .cal-day[aria-selected="true"] { background: var(--accent-solid); color: var(--on-accent); }
 .cal-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); margin-top: var(--sp-8); padding-top: var(--sp-8); border-top: 1px solid var(--line); }
 .cal-cur { font-size: var(--fs-label); color: var(--fg-2); }
+/* 集群状态底部的软路由一行 */
+.cluster-routers { display: flex; align-items: center; gap: var(--sp-8); margin-top: calc(-1 * var(--sp-4)); padding: var(--sp-6) var(--sp-4) 0; font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); text-decoration: none; }
+.cluster-routers-label { display: inline-flex; align-items: center; gap: var(--sp-6); margin-right: auto; font-weight: var(--fw-medium); color: var(--fg); }
+.cluster-routers-label .lucide { width: var(--icon-sm); height: var(--icon-sm); }
+.cluster-routers b { font-weight: var(--fw-semibold); color: var(--fg); }
+.cluster-routers b[data-bad] { color: var(--bad-text); }
+.cluster-routers b[data-warn] { color: var(--warn-text); }
+.cluster-routers-go { width: var(--icon-xs); height: var(--icon-xs); color: var(--fg-3); }
+@media (hover: hover) { .cluster-routers:hover .cluster-routers-go { color: var(--fg-2); } .cluster-routers:hover .cluster-routers-label { color: var(--accent); } }

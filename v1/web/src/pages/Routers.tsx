@@ -1,24 +1,26 @@
 // 软路由：客户现场的 OpenWrt + OpenClash，一台一张卡（外壳同首页节点卡）：资源、WAN 与代理速率、出口可用、客户端。
 // 中控经反向隧道每 30 秒采集一次，变化随 routers 事件推来；接入有两种方式（一键部署 / 在路由上执行命令），见 RouterDialogs。
 import * as React from 'react';
-import { Plus, Router as RouterIcon } from 'lucide-react';
+import { Plus, Router as RouterIcon, Shuffle, Users, Waypoints } from 'lucide-react';
+import * as F from '@/lib/format';
 import { useTeams } from '@/lib/queries';
 import { useRouterDrawer, useRouters, type RouterView } from '@/lib/routers';
 import { Button } from '@/components/ui/button';
 import { Segmented } from '@/components/ui/overlays';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Empty, ErrorNote, PageHead, Panel } from '@/components/app/primitives';
+import { DotCount, Empty, ErrorNote, Num, PageHead, Panel, Stat } from '@/components/app/primitives';
 import { RouterCard } from '@/components/app/RouterCard';
 import { AddRouterDialog } from '@/features/RouterDialogs';
 
 const NO_TEAM = '__none__';
-/** 页头那句话：各状态的台数，在线的那些出口与客户端的合计（离线的读数是旧的，不算） */
+/** 页头的 KPI：各状态的台数，在线的那些出口、客户端与代理速率的合计（离线的读数是旧的，不算） */
 function summarize(list: RouterView[]) {
-  const o = { online: 0, offline: 0, pending: 0, alive: 0, total: 0, drift: 0, clients: 0 };
+  const o = { online: 0, offline: 0, pending: 0, alive: 0, total: 0, drift: 0, clients: 0, down_bps: 0, up_bps: 0 };
   for (const r of list) {
     o[r.state]++;
     if (r.state !== 'online' || !r.summary) continue;
     o.alive += r.summary.exits.alive; o.total += r.summary.exits.total; o.drift += r.summary.exits.drift; o.clients += r.summary.clients;
+    o.down_bps += r.summary.openclash.down_bps; o.up_bps += r.summary.openclash.up_bps;
   }
   return o;
 }
@@ -46,15 +48,16 @@ export function RoutersPage() {
     <div className="stack">
       <PageHead title="软路由" tools={all.length > 0 && add} />
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
-      {/* 总览：大号台数 + 一句话，不带框 */}
+      {/* 总览：同首页的 KPI 卡（在线 / 出口可用 / 客户端 / 代理速率） */}
       {all.length > 0 && (
-        <div className="rt-hero">
-          <div className="rt-hero-main"><b className="rt-hero-num num">{all.length}</b><span className="rt-hero-unit">台软路由</span></div>
-          <p className="rt-hero-sum">
-            {sum.online} 台在线{sum.offline > 0 && <> · <span className="rt-bad">{sum.offline} 台离线</span></>}{sum.pending > 0 && <> · {sum.pending} 台等待接入</>}
-            {sum.total > 0 && <> · 出口 <b className={sum.alive < sum.total ? 'rt-warn' : undefined}>{sum.alive}/{sum.total}</b> 可用 · 客户端 {sum.clients} 台</>}
-            {sum.drift > 0 && <> · <span className="rt-warn">{sum.drift} 个出口参数与面板入口不一致</span></>}
-          </p>
+        <div className="stat-grid">
+          <Stat tone="blue" icon={<RouterIcon />} label="软路由在线" value={sum.online} unit={`/ ${all.length}`}
+            caption={<><DotCount tone="bad" n={sum.offline} label="离线" />{sum.pending > 0 && <DotCount tone="neutral" n={sum.pending} label="等待接入" />}</>} />
+          <Stat tone="teal" icon={<Waypoints />} label="出口可用" value={sum.alive} unit={`/ ${sum.total}`}
+            caption={<><DotCount tone="warn" n={sum.total - sum.alive} label="不通" />{sum.drift > 0 && <DotCount tone="warn" n={sum.drift} label="参数不一致" />}</>} />
+          <Stat tone="violet" icon={<Users />} label="客户端在线" value={sum.clients} unit="台" caption="在线的软路由里" />
+          <Stat tone="sky" icon={<Shuffle />} label="代理速率" info="经 OpenClash 的流量，合计在线的软路由" value={F.inScale(sum.down_bps + sum.up_bps, F.rateScale(sum.down_bps + sum.up_bps))} unit={F.rateScale(sum.down_bps + sum.up_bps).u}
+            caption={<><span>下载 <Num f={F.rate(sum.down_bps)} /></span><span>上传 <Num f={F.rate(sum.up_bps)} /></span></>} />
         </div>
       )}
       {groups.length > 2 && <div className="hgroups" role="group" aria-label="筛选"><Segmented label="团队" value={cur} onChange={setTeam} items={groups} className="seg-fill" /></div>}

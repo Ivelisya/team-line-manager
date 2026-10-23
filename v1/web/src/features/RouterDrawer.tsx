@@ -1,7 +1,7 @@
 // 软路由详情抽屉：概览 / 出口 / 客户端 / 曲线。开关由 URL 的 ?r=（页签 rtab）控制，与机器抽屉（?m=）分开；出口对应的入口点开时换成机器抽屉，后退回来。
 // 容器按信息的性质选（用户：不要每块都是格子）：总览数字不带框、设置类信息用分组列表（行间细线）、出口关系画成「出口 → 线路机 → 节点」、部署进度是时间线。
 import * as React from 'react';
-import { CircleX, MoreHorizontal, PencilLine, RefreshCw, Router as RouterIcon, Terminal, Trash2, TriangleAlert, XCircle } from 'lucide-react';
+import { CircleX, MoreHorizontal, PencilLine, RefreshCw, Router as RouterIcon, SquareTerminal, Terminal, Trash2, TriangleAlert, XCircle } from 'lucide-react';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, Tabs, TabsList, TabsTrigger, Trunc } from '@/components/ui/overlays';
 import { IconButton } from '@/components/ui/button';
@@ -11,13 +11,14 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
 import { ErrorBoundary } from '@/components/app/ErrorBoundary';
 import { ConfirmDialog, FormDialog, TypedConfirmDialog } from '@/components/app/dialogs';
-import { ErrorNote, Note, Num, Pill, ReasonList, Section, SectionHeader } from '@/components/app/primitives';
+import { ErrorNote, Note, Num, Pill, Section, SectionHeader, SeverityMark } from '@/components/app/primitives';
 import { Tag } from '@/components/app/viz';
-import { DeployTimeline, MiniSpark, RouterMeters, RouterStatePill, Seen, useShowBootstrap } from '@/components/app/RouterCard';
+import { DeployTimeline, MiniBeat, RouterMeters, RouterStatePill, Seen, useShowBootstrap } from '@/components/app/RouterCard';
 import { useMachineBriefs, useTeams } from '@/lib/queries';
-import { exitUsable, ROUTER_TABS, routerIssues, showDeploy, showRemoved, tempTone, uptimeFmt, useDeleteRouter, usePatchRouter, useRouter, useRouterDrawer, useRouterExitMetrics, useRouters, type RouterClient, type RouterDetail, type RouterExit, type RouterTab, type RouterView } from '@/lib/routers';
+import { deadExitNames, exitBeats, exitUsable, ROUTER_TABS, routerIssues, showDeploy, showRemoved, tempTone, uptimeFmt, useDeleteRouter, usePatchRouter, useRouter, useRouterDrawer, useRouterExitMetrics, useRouters, type RouterClient, type RouterDetail, type RouterExit, type RouterTab, type RouterView } from '@/lib/routers';
 import { tagColor } from '@/lib/derive';
 import { resetOnOpen, useHeld } from '@/lib/useHeld';
+import { openTerminal } from '@/lib/terminal';
 import { useTitleName } from '@/lib/title';
 import * as F from '@/lib/format';
 
@@ -95,13 +96,13 @@ function Head({ r, detail, onClosed }: { r: RouterView; detail: RouterDetail | n
       </div>
       <div className="drawer-nav">
         <DropdownMenu>
-          <DropdownMenuTrigger asChild><IconButton label="管理" tip={false} data-tip="管理：改名、重新接入、删除"><MoreHorizontal size={16} /></IconButton></DropdownMenuTrigger>
+          <DropdownMenuTrigger asChild><IconButton label="管理" tip={false} data-tip="管理：改名、终端、重新接入、删除"><MoreHorizontal size={16} /></IconButton></DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem onSelect={() => setEdit(true)}><PencilLine />改名 / 团队 / 备注…</DropdownMenuItem>
             <DropdownMenuItem onSelect={() => showDeploy({ id: r.id, name: r.name })}><RefreshCw />重新部署（填账号密码）…</DropdownMenuItem>
             {/* 还没连上过的没有隧道可断，直接生成；连上过的先确认（旧隧道立刻失效） */}
             <DropdownMenuItem onSelect={() => (r.last_seen_at ? setAskRegen(true) : void boot.run(r))}><Terminal />{r.state === 'pending' ? '查看接入命令' : '重新生成接入命令…'}</DropdownMenuItem>
-            {/* 「打开终端」挂在这里：网页终端（/terminal/router/{id}）做好后在这一处加一项 */}
+            {r.state !== 'pending' && <DropdownMenuItem onSelect={() => openTerminal({ kind: 'router', id: r.id, name: r.name })}><SquareTerminal />打开终端</DropdownMenuItem>}
             <DropdownMenuSeparator />
             <DropdownMenuItem danger onSelect={() => setAskDel(true)}><Trash2 />删除…</DropdownMenuItem>
           </DropdownMenuContent>
@@ -150,7 +151,8 @@ const Row = ({ label, children, tip }: { label: React.ReactNode; children: React
 
 function OverviewTab({ r, detail }: { r: RouterView; detail: RouterDetail | null | undefined }) {
   const s = r.summary;
-  const issues = r.state === 'online' ? routerIssues(s) : [];
+  const { setTab } = useRouterDrawer();
+  const issues = r.state === 'online' ? routerIssues(s, deadExitNames(detail)) : [];
   const d = r.deploy;
   // 部署时间线：在跑、失败了，或刚做完（10 分钟内）才放
   const showDeployTl = d && (d.state !== 'done' || (d.finished_at != null && Date.now() - Date.parse(d.finished_at) < 600_000));
@@ -168,7 +170,15 @@ function OverviewTab({ r, detail }: { r: RouterView; detail: RouterDetail | null
             {s.clients} 台客户端在线 · OpenClash {s.openclash.conns.toLocaleString()} 条连接 · WAN ↓ {F.str(F.rate(s.wan.rx_bps))} ↑ {F.str(F.rate(s.wan.tx_bps))} · 已运行 {F.str(uptimeFmt(s.uptime_s))}
             {s.exits.drift > 0 && <> · <span className="rt-warn">{s.exits.drift} 个出口参数与面板入口不一致</span></>}
           </p>
-          {issues.length > 0 && <ReasonList reasons={issues.map((text, i) => ({ key: String(i), severity: 'warning', text }))} className="reason-list" />}
+          {issues.length > 0 && (
+            <ul className="reason-list">
+              {issues.map((text) => (
+                <li key={text}><SeverityMark severity="warning" />{text}
+                  {text.includes('延迟测试不通') && <> <button type="button" className="btn btn-link btn-sm" style={{ height: 'auto', padding: 0 }} onClick={() => setTab('exits')}>查看出口</button></>}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
       {s && <RouterMeters s={s} />}
@@ -234,10 +244,13 @@ const syncTip = (e: RouterExit) => (e.sync === 'drift' && e.entry?.lifecycle ===
 /** 只测不通 1 次的不算不可用（同告警，连续两次才算）：标黄 */
 const exitTone = (e: RouterExit) => (!exitUsable(e) ? 'bad' : e.alive === false || e.sync === 'drift' ? 'warn' : e.sync === 'unmanaged' ? 'neutral' : 'ok');
 const exitTip = (e: RouterExit) => [`${e.name}（${e.type}）→ ${e.server}:${e.port}`, e.alive === false ? `连续 ${e.fail_streak} 次延迟测试不通` : e.delay_ms != null ? `延迟 ${e.delay_ms} ms` : '还没测过延迟', e.sync !== 'ok' && syncTip(e)].filter(Boolean).join('\n');
+/** 面板入口名「团队1-02 · 实验线路机:20000」拆成节点与线路机:端口两行 */
+const splitEntry = (name: string) => { const i = name.indexOf(' · '); return i < 0 ? [name, ''] : [name.slice(0, i), name.slice(i + 3)]; };
+const BEAT_RANGE = '6h';
 
 function ExitsTab({ id, d }: { id: string; d: RouterDetail }) {
   const { openMachine } = useRouterDrawer();
-  const m = useExitMetricsMap(id);
+  const m = useExitBeats(id);
   const alive = d.exits.filter(exitUsable).length;
   const managed = d.exits.filter((e) => e.entry).length;
   const drift = d.exits.filter((e) => e.sync === 'drift').length;
@@ -245,16 +258,16 @@ function ExitsTab({ id, d }: { id: string; d: RouterDetail }) {
     <>
       <p className="rt-lead">{d.exits.length} 个出口 · <b>{alive}</b> 个可用 · {managed} 个对应面板入口{drift > 0 && <> · <span className="rt-warn">{drift} 个参数不一致</span></>}<InfoTip text="延迟每 5 分钟测一次（经出口访问 generate_204）；连续两次测不通才算不可用" /></p>
       <Section>
-        <SectionHeader title="出口 → 线路机 → 节点" />
+        <SectionHeader title="出口 → 节点" />
         <Topology exits={d.exits} onOpen={openMachine} />
       </Section>
       <Section>
         <SectionHeader title="明细" meta={`${d.exits.length} 个`} />
         <div className="table-wrap">
-          <table className="dt" style={{ minWidth: 960 }}>
-            <colgroup><col style={{ width: 120 }} /><col style={{ width: 150 }} /><col style={{ width: 170 }} /><col style={{ width: 80 }} /><col style={{ width: 90 }} /><col style={{ width: 96 }} /><col style={{ width: 60 }} /><col style={{ width: 130 }} /><col style={{ width: 64 }} /></colgroup>
-            <thead><tr><th>出口</th><th>服务器</th><th>对应面板入口</th><th>参数<InfoTip text={(['drift', 'unmanaged'] as const).map((k) => `${SYNC[k].label}：${SYNC[k].tip}`).join('\n')} /></th><th className="r">延迟</th><th>近 6 小时</th><th className="r">连接</th><th className="r">↓ / ↑ 速率</th><th className="r">客户端</th></tr></thead>
-            <tbody>{d.exits.map((e) => <ExitRow key={e.name} e={e} delays={m.get(e.name)} onOpen={openMachine} />)}</tbody>
+          <table className="dt rt-exit-tbl" style={{ minWidth: 700 }}>
+            <colgroup><col style={{ width: 104 }} /><col style={{ width: 126 }} /><col style={{ width: 74 }} /><col style={{ width: 84 }} /><col style={{ width: 84 }} /><col style={{ width: 52 }} /><col style={{ width: 104 }} /><col style={{ width: 70 }} /></colgroup>
+            <thead><tr><th>出口</th><th>对应面板入口</th><th>参数<InfoTip text={(['drift', 'unmanaged'] as const).map((k) => `${SYNC[k].label}：${SYNC[k].tip}`).join('\n')} /></th><th className="r">延迟</th><th>近 6 小时</th><th className="r">连接</th><th className="r">↓ / ↑ 速率</th><th className="r">客户端</th></tr></thead>
+            <tbody>{d.exits.map((e) => <ExitRow key={e.name} e={e} beats={m.get(e.name)} onOpen={openMachine} />)}</tbody>
           </table>
         </div>
       </Section>
@@ -262,29 +275,29 @@ function ExitsTab({ id, d }: { id: string; d: RouterDetail }) {
   );
 }
 
-/** 各出口近 6 小时的延迟（行内迷你折线）：name → 延迟序列（失败为 null） */
-function useExitMetricsMap(id: string) {
-  const q = useRouterExitMetrics(id, '6h');
-  return React.useMemo(() => new Map((q.data?.exits ?? []).map((x) => [x.name, x.points.map((p) => (typeof p.delay_ms === 'number' ? p.delay_ms : null))])), [q.data]);
+/** 各出口近 6 小时的延迟测试（行内迷你格子）：name → 12 格 */
+function useExitBeats(id: string) {
+  const q = useRouterExitMetrics(id, BEAT_RANGE);
+  return React.useMemo(() => new Map((q.data?.exits ?? []).map((x) => [x.name, exitBeats(x.points, BEAT_RANGE, 12, Date.now())])), [q.data]);
 }
 
-/** 一行。memo：routers 事件重取详情后，没变的出口结构共享、引用不变（延迟序列另由曲线轮询换） */
-const ExitRow = React.memo(function ExitRow({ e, delays, onOpen }: { e: RouterExit; delays: (number | null)[] | undefined; onOpen: (id: string) => void }) {
+/** 一行。memo：routers 事件重取详情后，没变的出口结构共享、引用不变（延迟格子另由曲线轮询换） */
+const ExitRow = React.memo(function ExitRow({ e, beats, onOpen }: { e: RouterExit; beats: ReturnType<typeof exitBeats> | undefined; onOpen: (id: string) => void }) {
   const s = SYNC[e.sync];
+  const [node, via] = e.entry ? splitEntry(e.entry.name) : ['', ''];
   return (
     <tr>
-      <td><span className="cell-main strong">{e.name}</span><span className="sub">{e.type}</span></td>
-      <td><Trunc className="mono">{`${e.server}:${e.port}`}</Trunc></td>
-      <td>{e.entry ? <button type="button" className="btn btn-link" style={{ height: 'auto', padding: 0, maxWidth: '100%' }} data-tip="打开这个节点的详情" onClick={() => onOpen(e.entry!.node_id)}><span className="ellipsis">{e.entry.name}</span></button> : <span className="t-muted">—</span>}</td>
+      <td><span className="cell-main strong" data-tip={`${e.name}（${e.type}）→ ${e.server}:${e.port}`}>{e.name}</span><span className="sub">{e.type}</span></td>
+      <td>{e.entry ? <><button type="button" className="btn btn-link" style={{ height: 'auto', padding: 0, maxWidth: '100%' }} data-tip="打开这个节点的详情" onClick={() => onOpen(e.entry!.node_id)}><span className="ellipsis">{node}</span></button>{via && <span className="sub ellipsis">{via}</span>}</> : <span className="t-muted">—</span>}</td>
       {/* 一致的不标（一列「一致」只是噪音），只标不一致 / 不受管 */}
       <td>{e.sync !== 'ok' && <Pill tone={s.tone} tip={syncTip(e)}>{s.label}</Pill>}</td>
       <td className="r">
-        {e.alive === false && exitUsable(e) ? <span className="rt-alive rt-warn" data-tip="只测不通 1 次，还算可用；连续两次不通才告警">刚才测不通 1 次</span>
-          : e.alive === false ? <span className="rt-alive" data-tone="bad"><XCircle />失败</span>
+        {e.alive === false && exitUsable(e) ? <span className="rt-alive rt-warn" data-tip="只不通 1 次，还算可用；连续两次不通才告警">不通 1 次</span>
+          : e.alive === false ? <span className="rt-alive" data-tone="bad"><XCircle />不通</span>
           : e.alive ? <Num f={F.ms(e.delay_ms)} /> : <span className="t-muted" data-tip="还没测过">—</span>}
         {e.delay_at && <span className="sub">{F.ago(e.delay_at)}</span>}
       </td>
-      <td>{delays ? <MiniSpark values={delays} tip="近 6 小时的延迟（缺口是测试失败）" /> : <span className="t-muted">—</span>}</td>
+      <td>{beats ? <MiniBeat cells={beats.cells} titles={beats.titles} /> : <span className="t-muted">—</span>}</td>
       <td className="r num">{e.conns}</td>
       <td className="r"><span className="num">↓ {F.str(F.rate(e.down_bps))}</span><span className="sub">↑ {F.str(F.rate(e.up_bps))}</span></td>
       <td className="r num">{e.clients}</td>
@@ -292,8 +305,8 @@ const ExitRow = React.memo(function ExitRow({ e, delays, onOpen }: { e: RouterEx
   );
 });
 
-/** 出口 → 线路机 → 节点：按线路机分组，一个出口一行，中间是这组共用的线路机；没对上面板入口的单列一组。
- *  测试失败的出口红、参数不一致的黄，连线跟着变成虚线。线路机、节点名取机器列表缓存（没取过时用入口名） */
+/** 出口 → 节点：按线路机分组，线路机是组标题，一个出口一行「出口 ── 节点」，一一对应；没对上面板入口的单列一组「不受管」。
+ *  不通的出口红、只不通 1 次或参数不一致的黄，连线跟着变成虚线。线路机、节点名取机器列表缓存（没取过时用入口名） */
 function Topology({ exits, onOpen }: { exits: RouterExit[]; onOpen: (id: string) => void }) {
   const machines = useMachineBriefs().data;
   const name = React.useMemo(() => new Map((machines ?? []).map((m) => [m.id, m.name])), [machines]);
@@ -306,27 +319,25 @@ function Topology({ exits, onOpen }: { exits: RouterExit[]; onOpen: (id: string)
     <div className="table-wrap">
       <div className="rt-topo">
         {groups.map(([relay, list]) => (
-          <div key={relay || 'none'} className="rt-topo-group" data-none={relay ? undefined : ''}>
-            {list.map((e, i) => (
+          <div key={relay || 'none'} className="rt-topo-group">
+            <div className="rt-topo-title">
+              {relay ? <><button type="button" className="btn btn-link" style={{ height: 'auto', padding: 0 }} data-tip="打开这台线路机的详情" onClick={() => onOpen(relay)}>{name.get(relay) ?? '线路机'}</button><small>{list.length} 个出口</small></>
+                : <>不受管（路由自配）<small>{list.length} 个出口</small></>}
+            </div>
+            {list.map((e) => (
               <React.Fragment key={e.name}>
-                <span className="rt-topo-pill rt-topo-exit" data-tone={exitTone(e)} data-tip={exitTip(e)} style={{ gridRow: i + 1 }}>
+                <span className="rt-topo-pill rt-topo-exit" data-tone={exitTone(e)} data-tip={exitTip(e)}>
                   {exitTone(e) === 'bad' ? <XCircle /> : exitTone(e) === 'warn' ? <TriangleAlert /> : null}<span className="ellipsis">{e.name}</span>
-                  <small className="num">{e.alive === false ? '不通' : e.delay_ms != null ? `${e.delay_ms} ms` : ''}</small>
+                  <small className="num">{!exitUsable(e) ? '不通' : e.alive === false ? '刚才不通 1 次' : e.delay_ms != null ? `${e.delay_ms} ms` : ''}</small>
                 </span>
-                <i className="rt-topo-link" data-tone={exitTone(e)} style={{ gridRow: i + 1, gridColumn: 2 }} />
-                {relay ? <>
-                  <i className="rt-topo-link" data-tone={exitTone(e)} style={{ gridRow: i + 1, gridColumn: 4 }} />
-                  <button type="button" className="rt-topo-pill rt-topo-node" style={{ gridRow: i + 1, gridColumn: 5 }} data-tip={e.entry!.name} onClick={() => onOpen(e.entry!.node_id)}>
+                <i className="rt-topo-link" data-tone={exitTone(e)} />
+                {relay ? (
+                  <button type="button" className="rt-topo-pill rt-topo-node" data-tip={e.entry!.name} onClick={() => onOpen(e.entry!.node_id)}>
                     <span className="ellipsis">{name.get(e.entry!.node_id) ?? e.entry!.name}</span>
                   </button>
-                </> : <span className="rt-topo-raw mono" style={{ gridRow: i + 1, gridColumn: '3 / 6' }}>{e.server}:{e.port}</span>}
+                ) : <span className="rt-topo-raw mono">{e.server}:{e.port}</span>}
               </React.Fragment>
             ))}
-            {relay ? (
-              <span className="rt-topo-relay" style={{ gridRow: `1 / span ${list.length}`, gridColumn: 3 }}>
-                <button type="button" className="rt-topo-pill" data-tip="打开这台线路机的详情" onClick={() => onOpen(relay)}>{name.get(relay) ?? '线路机'}<small className="num">{list.length}</small></button>
-              </span>
-            ) : <span className="rt-topo-note hint" style={{ gridColumn: '1 / -1' }}>以上不受管（路由自配）</span>}
           </div>
         ))}
       </div>
@@ -339,25 +350,27 @@ const byClient = (a: RouterClient, b: RouterClient) => Number(b.online) - Number
 function ClientsTab({ d }: { d: RouterDetail }) {
   const list = React.useMemo(() => [...d.clients].sort(byClient), [d.clients]);
   const online = list.filter((c) => c.online).length;
+  const offline = online < list.length;
   return (
     <>
       <p className="rt-lead"><b>{online}</b> 台在线 · 共 {list.length} 台<InfoTip text="来自 DHCP 租约、邻居表与经过 OpenClash 的来源 IP（旁路由没有租约，只认得 IP）" /></p>
       <div className="table-wrap">
-        <table className="dt" style={{ minWidth: 640 }}>
-          <colgroup><col style={{ width: 200 }} /><col style={{ width: 70 }} /><col style={{ width: 70 }} /><col /></colgroup>
-          <thead><tr><th>设备</th><th>状态</th><th className="r">连接</th><th>经过的出口（连接数）</th></tr></thead>
-          <tbody>{list.map((c) => <ClientRow key={c.ip} c={c} />)}</tbody>
+        <table className="dt" style={{ minWidth: offline ? 690 : 620 }}>
+          <colgroup><col style={{ width: 250 }} />{offline && <col style={{ width: 70 }} />}<col style={{ width: 70 }} /><col /></colgroup>
+          <thead><tr><th>设备</th>{offline && <th>状态</th>}<th className="r">连接</th><th>经过的出口（连接数）</th></tr></thead>
+          <tbody>{list.map((c) => <ClientRow key={c.ip} c={c} offline={offline} />)}</tbody>
         </table>
       </div>
     </>
   );
 }
-const ClientRow = React.memo(function ClientRow({ c }: { c: RouterClient }) {
-  const via = [...c.exits].sort((a, b) => b.conns - a.conns).map((x) => `${x.name} ${x.conns}`).join(' · ');
+const ClientRow = React.memo(function ClientRow({ c, offline }: { c: RouterClient; offline: boolean }) {
+  const via = [...c.exits].sort((a, b) => b.conns - a.conns).map((x) => `${x.name} ${x.conns} 条`).join(' · ');
+  // 认不出主机名的设备拿 IP 当名字（旁路由没有租约），正文色，不灰
   return (
     <tr className={c.online ? undefined : 'is-quiet'}>
-      <td><span className="cell-main strong">{c.hostname ?? <span className="t-muted">未知设备</span>}</span><span className="sub mono">{c.ip}{c.mac && ` · ${c.mac}`}</span></td>
-      <td>{!c.online && <Pill>离线</Pill>}</td>
+      <td><span className="cell-main strong">{c.hostname ?? c.ip}</span>{(c.hostname || c.mac) && <span className="sub mono">{c.hostname && c.ip}{c.mac && `${c.hostname ? ' · ' : ''}${c.mac}`}</span>}</td>
+      {offline && <td>{!c.online && <Pill>离线</Pill>}</td>}
       <td className="r num">{c.conns}</td>
       <td>{via ? <Trunc className="cell-main">{via}</Trunc> : <span className="t-muted">没有经过 OpenClash 的连接</span>}</td>
     </tr>

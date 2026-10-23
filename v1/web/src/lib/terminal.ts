@@ -3,7 +3,7 @@
 import { createStore } from './store';
 import { post } from './api';
 
-/** kind：machine 现在有，router 以后接（同一个窗口组件） */
+/** kind：machine 机器、router 软路由（同一个窗口组件） */
 export interface TermTarget { kind: 'machine' | 'router'; id: string; name: string }
 
 const target = createStore<TermTarget | null>(null);

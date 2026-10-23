@@ -4,7 +4,7 @@ import * as React from 'react';
 import { Link, NavLink } from 'react-router-dom';
 import { useIncidents } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
-import { isRouterIncident, useRouterDrawer } from '@/lib/routers';
+import { isRouterIncident, routerIncidentTab, useRouterDrawer } from '@/lib/routers';
 import * as F from '@/lib/format';
 import { errText } from '@/lib/derive';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card';
@@ -41,7 +41,7 @@ export function AlertsIndicator() {
             const sum = errText(i.summary.startsWith(`${name}：`) ? i.summary.slice(name.length + 1) : i.summary);
             return (
               <li key={i.id}>
-                <button type="button" className="pop-item" onClick={() => { setOpen(false); if (sid) (isRouterIncident(i) ? openRouter : openDrawer)(sid); }}>
+                <button type="button" className="pop-item" onClick={() => { setOpen(false); if (sid) { if (isRouterIncident(i)) openRouter(sid, routerIncidentTab(i)); else openDrawer(sid); } }}>
                   <span className="alerts-pop-row">
                     <SeverityMark severity={i.severity} />
                     <b className="ellipsis" data-tip={name}>{name}</b>
