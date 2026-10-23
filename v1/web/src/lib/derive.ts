@@ -2,7 +2,7 @@
 import type { AvailabilityDay, Cycle, DueState, EntryView, MachineView, Meta, Plan, ProbeBucket, ProbeResult, Provider, SubField, Subscription, TrafficReset, UsageMetric, UsdTotal } from './types';
 import * as F from './format';
 import { tzLabel } from './tz';
-import { primaryIssue, type ReachEffective } from './probePoints';
+import { primaryIssue, substituteOf, type ReachEffective } from './probePoints';
 
 // ── /meta：中文名、枚举、阈值、默认值只认服务端这一份 ──
 // 外壳等 /meta 取回（useMeta 的 queryFn 里 setMeta）之后才渲染页面，所以下面这些同步读取在页面里总有值；登录页不用它们
@@ -311,16 +311,19 @@ export const BEAT_LEGEND_RELAY = `中控定时连线路机的各个入口，只�
 export function beatLegendRelay(src: ReachEffective | undefined): string {
   switch (src?.state) {
     case 'probe': return `${src.label}定时连线路机的入口，看通不通；悬停可以看延迟\n${RELAY_COLORS}`;
-    case 'fallback': return `${primaryIssue(src)}，暂由中控代测，只看通不通\n连不上照常告警，连得上不算恢复\n${RELAY_COLORS}`;
-    case 'none': return `${primaryIssue(src)}，中控探测也关着，暂时没有入口的数据\n${RELAY_COLORS}`;
+    case 'fallback': {
+      const sub = substituteOf(src);
+      return `${primaryIssue(src)}，暂由${sub}代测${src.probe_point_id ? '；悬停可以看延迟' : '，只看通不通'}\n连不上照常告警，连得上不算恢复\n${RELAY_COLORS}`;
+    }
+    case 'none': return `${primaryIssue(src)}，没有能代测的来源（中控探测关着），暂时没有入口的数据\n${RELAY_COLORS}`;
     default: return BEAT_LEGEND_RELAY;
   }
 }
-/** 心跳格标题里的来源：「中控探测」「香港探测点」「中控代测」 */
+/** 心跳格标题里的来源：「中控探测」「香港探测点」「中控代测」「香港探测点代测」 */
 export const reachWin = (src: ReachEffective | undefined) =>
-  `${src?.state === 'probe' ? src.label : src?.state === 'fallback' ? '中控代测' : src?.state === 'none' ? '暂无来源' : '中控探测'} · 近 1 小时`;
-/** 「谁连不上」的主语：中控 / 香港探测点（入口表、卡片的原因） */
-export const reachWho = (src: ReachEffective | undefined) => (src?.state === 'probe' ? src.label : '中控');
+  `${src?.state === 'probe' ? src.label : src?.state === 'fallback' ? `${substituteOf(src)}代测` : src?.state === 'none' ? '暂无来源' : '中控探测'} · 近 1 小时`;
+/** 「谁连不上」的主语：中控 / 香港探测点 / 代测的那一路（入口表、卡片的原因） */
+export const reachWho = (src: ReachEffective | undefined) => (src?.state === 'probe' ? src.label : src?.state === 'fallback' ? substituteOf(src) : '中控');
 /** 线路机近 1 小时建连延迟（探测点才有）：各格中位数的中位数；没有为 null */
 export function relayRttMs(buckets: ProbeBucket[] | undefined): number | null {
   const v = (buckets ?? []).map((b) => b[2]).filter((x): x is number => x != null).sort((a, b) => a - b);

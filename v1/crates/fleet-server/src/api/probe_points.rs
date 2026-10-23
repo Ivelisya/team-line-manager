@@ -20,7 +20,7 @@ use uuid::Uuid;
 const MAX_NAME: usize = 40;
 const MAX_NOTE: usize = 2000;
 
-/// 名称：1–40 个字，不含引号、反斜杠、控制字符（写进探测点的 probe.toml、告警摘要的 SQL 字面量），不能叫 central / 中控（fleetctl probe primary 用它指中控）
+/// 名称：1–40 个字，不含引号、反斜杠、控制字符（写进探测点的 probe.toml、告警摘要的 SQL 字面量），不能叫 central / 中控（fleetctl probe order 用它指中控）
 fn check_name(n: &str) -> ApiResult<String> {
     let n = n.trim();
     if n.is_empty() || n.chars().count() > MAX_NAME {
@@ -113,7 +113,7 @@ pub async fn relay_quality(_a: Actor, State(st): State<AppState>, ApiPath(id): A
         .filter_map(|(p, label)| {
             let mut ws = stats.remove(&p)?;
             let windows: serde_json::Map<String, Value> = wins.iter().map(|w| (w.as_str().to_string(), ws.remove(w.as_str()).unwrap_or(Value::Null))).collect();
-            Some(json!({"source": p.map_or_else(|| json!("central"), |id| json!(id)), "label": label, "primary": set.primary == p, "windows": windows}))
+            Some(json!({"source": p.map_or_else(|| json!("central"), |id| json!(id)), "label": label, "primary": set.primary() == p, "windows": windows}))
         })
         .collect();
     Ok(ok(json!({"sources": sources})))
@@ -195,8 +195,10 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     let cur: Option<(String, String, bool)> =
         sqlx::query_as("select name, note, enabled from probe_point where id = $1 for update").bind(id).fetch_optional(&mut *tx).await?;
     let Some((old_name, old_note, old_enabled)) = cur else { return Err(ApiError::not_found("没有这个探测点")) };
-    if b.enabled == Some(false) && old_enabled && probe_points::setting(&st.db).await?.primary == Some(id) {
-        return Err(ApiError::conflict(format!("「{old_name}」是主探测来源：先把主来源改成中控或别的探测点再停用")));
+    if b.enabled == Some(false) && old_enabled {
+        if let Some(n) = probe_points::setting(&st.db).await?.rank(id) {
+            return Err(ApiError::conflict(format!("「{old_name}」在探测顺序里排第 {n}：先把它从探测顺序里去掉再停用")));
+        }
     }
     let new = (name.clone().unwrap_or(old_name.clone()), b.note.as_deref().map(str::trim).unwrap_or(&old_note).to_string(), b.enabled.unwrap_or(old_enabled));
     if new == (old_name.clone(), old_note.clone(), old_enabled) {
@@ -235,8 +237,8 @@ pub async fn delete(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<U
     let cur: Option<(String, Option<String>, Option<i32>)> =
         sqlx::query_as("select name, install_host, install_port from probe_point where id = $1 for update").bind(id).fetch_optional(&mut *tx).await?;
     let Some((name, host, port)) = cur else { return Err(ApiError::not_found("没有这个探测点")) };
-    if probe_points::setting(&st.db).await?.primary == Some(id) {
-        return Err(ApiError::conflict(format!("「{name}」是主探测来源：先把主来源改成中控或别的探测点再删除")));
+    if let Some(n) = probe_points::setting(&st.db).await?.rank(id) {
+        return Err(ApiError::conflict(format!("「{name}」在探测顺序里排第 {n}：先把它从探测顺序里去掉再删除")));
     }
     // 它的检查记录一起删（relay_reach on delete cascade）；令牌随行删除作废
     sqlx::query("delete from probe_point where id = $1").bind(id).execute(&mut *tx).await?;
@@ -288,19 +290,24 @@ pub async fn upgrade(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<
     Ok(ok(json!({"id": id, "name": name, "from": from, "version": version, "sha256": sha})))
 }
 
-// ── 主探测来源 ───────────────────────────────────────────────────────────
+// ── 探测顺序 ─────────────────────────────────────────────────────────────
 
-/// `{primary: "central" | 探测点 id, primary_name, central_enabled, effective: {state, label, probe_point_id, primary_label, primary_issue}}`
+/// `{order: [{id, name, label}], primary_name, central_enabled, effective: {state, label, probe_point_id, primary_label, primary_issue, substitute}, offline_after_s}`：
+/// `order` 是探测顺序（第一个是主探测来源，空 = 主来源是中控），`primary_name` 是主来源的名字（「中控」或探测点名）
 async fn source_view(st: &AppState) -> ApiResult<Value> {
     let s = probe_points::setting(&st.db).await?;
     let eff = probe_points::effective(st, &st.db).await?;
-    let name: Option<String> = match s.primary {
-        Some(id) => sqlx::query_scalar("select name from probe_point where id = $1").bind(id).fetch_optional(&st.db).await?,
-        None => None,
-    };
+    let rows: Vec<(Uuid, String)> = sqlx::query_as("select id, name from probe_point where id = any($1)").bind(&s.order).fetch_all(&st.db).await?;
+    let order: Vec<Value> = s
+        .order
+        .iter()
+        .filter_map(|id| rows.iter().find(|r| r.0 == *id))
+        .map(|(id, n)| json!({"id": id, "name": n, "label": probe_points::label_of(n)}))
+        .collect();
+    let primary_name = order.first().and_then(|o| o["name"].as_str()).unwrap_or("中控").to_string();
     Ok(json!({
-        "primary": s.primary.map_or_else(|| json!("central"), |id| json!(id)),
-        "primary_name": name.unwrap_or_else(|| "中控".into()),
+        "order": order,
+        "primary_name": primary_name,
         "central_enabled": s.central,
         "effective": eff,
         "offline_after_s": probe_points::OFFLINE_S,
@@ -309,21 +316,20 @@ async fn source_view(st: &AppState) -> ApiResult<Value> {
 
 pub async fn get_source(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> { Ok(ok(source_view(&st).await?)) }
 
-/// 两项都可选，没给的保持原样；primary 写 "central" 指中控
+/// 两项都可选，没给的保持原样；`order` 是探测点 id 的列表（按顺序，第一个是主探测来源；`[]` = 主来源是中控）
 #[derive(Deserialize)]
 pub struct SourceIn {
-    primary: Option<String>,
+    order: Option<Vec<String>>,
     central_enabled: Option<bool>,
 }
 
 pub async fn put_source(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<SourceIn>) -> ApiResult<Json<Value>> {
     let cur = probe_points::setting(&st.db).await?;
-    let primary = match b.primary.as_deref().map(str::trim) {
-        None => cur.primary,
-        Some("central") => None,
-        Some(s) => Some(Uuid::try_parse(s).map_err(|_| ApiError::bad_request("primary 要写 central 或探测点 id"))?),
+    let order = match b.order {
+        None => cur.order,
+        Some(o) => o.iter().map(|s| Uuid::try_parse(s.trim()).map_err(|_| ApiError::bad_request("order 里要写探测点 id"))).collect::<ApiResult<_>>()?,
     };
-    probe_points::save_setting(&st, &a.name, Setting { primary, central: b.central_enabled.unwrap_or(cur.central) }).await?;
+    probe_points::save_setting(&st, &a.name, Setting { order, central: b.central_enabled.unwrap_or(cur.central) }).await?;
     Ok(ok(source_view(&st).await?))
 }
 

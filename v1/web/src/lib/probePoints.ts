@@ -1,20 +1,25 @@
-// 探测点与主探测来源（对应 docs/API.md「探测点」）。线路机卡片的心跳格、入口表的「连不上」、relay_unreachable 告警看主探测来源那一路：
-// 中控，或放在靠近客户的地方（如香港）的探测点。改动由实时流的 settings 事件失效（eventKeys）。
+// 探测点与探测顺序（对应 docs/API.md「探测点」）。线路机卡片的心跳格、入口表的「连不上」、relay_unreachable 告警看探测顺序里第一个能用的那一路：
+// 放在靠近客户的地方（如家里的 PVE、香港）的探测点，都用不了时中控代测。改动由实时流的 settings 事件失效（eventKeys）。
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { del, get, patch, post, put } from './api';
 
-/** 此刻实际用哪一路：central 中控；probe 探测点；fallback 主来源的探测点离线、暂由中控代替（连不上照报、连得上不算恢复）；none 标灰 */
-/** primary_issue：主来源的探测点为什么用不了（fallback / none 时）：「香港探测点离线」「香港探测点探测无效」「香港探测点已停用」…，旧中控没有这个字段 */
-export interface ReachEffective { state: 'central' | 'probe' | 'fallback' | 'none'; probe_point_id: string | null; label: string; primary_label: string | null; primary_issue?: string | null }
-/** 主来源为什么用不了，一句话；旧中控没给原因时按离线说 */
-export const primaryIssue = (e: ReachEffective) => e.primary_issue ?? `${e.primary_label ?? '主探测点'}离线`;
-export interface ReachSource { primary: 'central' | string; primary_name: string; central_enabled: boolean; effective: ReachEffective; offline_after_s: number }
+/** 此刻实际用哪一路：central 中控（主来源就是中控）；probe 主来源的探测点；fallback 主来源用不了、暂由顺序里后面的探测点或中控代替
+ *  （连不上照报、连得上不算恢复，substitute 是谁、probe_point_id 是它的 id，中控为 null）；none 标灰 */
+/** primary_issue：主来源的探测点为什么用不了（fallback / none 时）：「香港探测点离线」「香港探测点探测无效」「香港探测点已停用」… */
+export interface ReachEffective { state: 'central' | 'probe' | 'fallback' | 'none'; probe_point_id: string | null; label: string; primary_label: string | null; primary_issue: string | null; substitute: string | null }
+export const primaryIssue = (e: ReachEffective) => e.primary_issue ?? `${e.primary_label ?? '主探测点'}用不了`;
+/** 代测的是谁：「香港探测点」「中控」 */
+export const substituteOf = (e: ReachEffective) => e.substitute ?? '中控';
+/** order：探测顺序（第一个是主探测来源；空 = 主来源是中控）；primary_name：主来源的名字 */
+export interface ReachSource { order: { id: string; name: string; label: string }[]; primary_name: string; central_enabled: boolean; effective: ReachEffective; offline_after_s: number }
 export interface ProbeRelayStat { relay_id: string; name: string; avg_ms: number | null; median_ms: number | null; total: number; ok: number }
 /** 到各线路机的统计窗口：1h 读原始记录，其余读小时汇总 */
 export type ProbeWindow = '1h' | '24h' | '7d' | '30d';
 /** blind：在线、但最近 3 分钟的探测都无效（对照目标连不上，discard_reason），同离线处理；界面叫「探测无效」 */
 export interface ProbePoint {
-  id: string; name: string; label: string; enabled: boolean; note: string; state: 'online' | 'blind' | 'offline' | 'pending' | 'disabled'; installed: boolean; primary: boolean;
+  id: string; name: string; label: string; enabled: boolean; note: string; state: 'online' | 'blind' | 'offline' | 'pending' | 'disabled'; installed: boolean;
+  /** primary：探测顺序里的第一个；rank：在探测顺序里排第几（从 1 起），不在顺序里为 null（在顺序里的不能停用、删除） */
+  primary: boolean; rank: number | null;
   /** 在维护窗口里（自己的或「全部」的）：离线告警开着的保持、不开新的、不发通知 */
   maintenance: boolean;
   last_seen_at: string | null; last_kept_at: string | null; discard_reason: string | null; window: ProbeWindow;
@@ -48,7 +53,7 @@ function useInvalidate() {
 
 export function useSaveReachSource() {
   const qc = useQueryClient(); const inv = useInvalidate();
-  return useMutation({ mutationFn: (b: { primary?: string; central_enabled?: boolean }) => put<ReachSource>('/settings/reach-source', b), onSuccess: (d) => { qc.setQueryData(['reach-source'], d); inv(); } });
+  return useMutation({ mutationFn: (b: { order?: string[]; central_enabled?: boolean }) => put<ReachSource>('/settings/reach-source', b), onSuccess: (d) => { qc.setQueryData(['reach-source'], d); inv(); } });
 }
 export function useAddProbePoint() {
   const inv = useInvalidate();

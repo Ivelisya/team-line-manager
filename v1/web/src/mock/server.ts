@@ -772,22 +772,23 @@ R('GET', '/overview/series', ({ query }) => overviewSeries(Math.min(60, +(query.
 R('GET', '/probe-beats', () => probeBeats());
 // 探测点（设置「探测点」）：演示数据只有一个在线的香港探测点、主来源是中控；改主来源、开关、新增只改内存
 const MOCK_PROBES: Record<string, unknown>[] = [{
-  id: 'pp-hk', name: '香港', label: '香港探测点', enabled: true, note: '阿里云香港 · Alpine', state: 'online', installed: true, primary: false,
+  id: 'pp-hk', name: '香港', label: '香港探测点', enabled: true, note: '阿里云香港 · Alpine', state: 'online', installed: true, primary: false, rank: null,
   last_seen_at: iso(), last_kept_at: iso(), discard_reason: null, last_ip: '47.242.0.10', version: '0.1.0+mock', created_at: iso(), bootstrap_expires_at: null, install: null, upgrade: null, upgrade_failed: null,
   relays: [{ relay_id: 'r1', name: '线路机1', avg_ms: 158, median_ms: 156, total: 120, ok: 120 }],
 }];
-const reachSrc = { primary: 'central', central_enabled: true };
+const reachSrc: { order: string[]; central_enabled: boolean } = { order: [], central_enabled: true };
 const reachView = () => {
-  const p = MOCK_PROBES.find((x) => x.id === reachSrc.primary);
-  const effective = p ? { state: 'probe', probe_point_id: p.id, label: p.label, primary_label: p.label, primary_issue: null } : { state: 'central', probe_point_id: null, label: '中控', primary_label: null, primary_issue: null };
-  return { primary: reachSrc.primary, primary_name: p ? p.name : '中控', central_enabled: reachSrc.central_enabled, effective, offline_after_s: 180 };
+  const order = reachSrc.order.map((id) => MOCK_PROBES.find((x) => x.id === id)).filter((p): p is Record<string, unknown> => !!p).map((p) => ({ id: p.id as string, name: p.name as string, label: p.label as string }));
+  const p = order[0];
+  const effective = p ? { state: 'probe', probe_point_id: p.id, label: p.label, primary_label: p.label, primary_issue: null, substitute: null } : { state: 'central', probe_point_id: null, label: '中控', primary_label: null, primary_issue: null, substitute: null };
+  return { order, primary_name: p ? p.name : '中控', central_enabled: reachSrc.central_enabled, effective, offline_after_s: 180 };
 };
 R('GET', '/settings/reach-source', () => reachView());
 R('PUT', '/settings/reach-source', ({ body }) => {
-  const b = body as { primary?: string; central_enabled?: boolean };
-  if (b.primary) reachSrc.primary = b.primary;
+  const b = body as { order?: string[]; central_enabled?: boolean };
+  if (b.order) reachSrc.order = b.order;
   if (b.central_enabled != null) reachSrc.central_enabled = b.central_enabled;
-  MOCK_PROBES.forEach((p) => { p.primary = p.id === reachSrc.primary; });
+  MOCK_PROBES.forEach((p) => { const i = reachSrc.order.indexOf(p.id as string); p.primary = i === 0; p.rank = i < 0 ? null : i + 1; });
   emit({ type: 'settings' }); return reachView();
 });
 // 到各线路机的统计窗口（同服务端 ?window=）：每 30 秒一次，1 小时 120 次；长窗口偶尔断几次
@@ -802,12 +803,12 @@ R('GET', '/machines/([^/]+)/reach-quality', ({ params }) => {
   if (m.kind !== 'relay') throw bad('只有线路机有客户入口连通性');
   const win = (h: number, ms: number | null) => ({ total: 120 * h, ok: 120 * h - Math.floor(h / 24) * 2, avg_ms: ms, median_ms: ms == null ? null : ms - 2 });
   const w = (ms: number | null) => ({ '24h': win(24, ms), '7d': win(168, ms), '30d': win(720, ms) });
-  return { sources: [{ source: 'central', label: '中控', primary: reachSrc.primary === 'central', windows: w(null) }, { source: 'pp-hk', label: '香港探测点', primary: reachSrc.primary === 'pp-hk', windows: w(158) }] };
+  return { sources: [{ source: 'central', label: '中控', primary: !reachSrc.order.length, windows: w(null) }, { source: 'pp-hk', label: '香港探测点', primary: reachSrc.order[0] === 'pp-hk', windows: w(158) }] };
 });
 R('POST', '/probe-points', ({ body }) => {
   const b = body as { name: string; note?: string };
   const id = `pp-${MOCK_PROBES.length + 1}`;
-  MOCK_PROBES.push({ id, name: b.name, label: `${b.name}探测点`, enabled: true, note: b.note ?? '', state: 'pending', installed: false, primary: false, last_seen_at: null, last_ip: null, version: null, created_at: iso(), bootstrap_expires_at: iso(), install: null, upgrade: null, upgrade_failed: null, relays: [] });
+  MOCK_PROBES.push({ id, name: b.name, label: `${b.name}探测点`, enabled: true, note: b.note ?? '', state: 'pending', installed: false, primary: false, rank: null, last_seen_at: null, last_ip: null, version: null, created_at: iso(), bootstrap_expires_at: iso(), install: null, upgrade: null, upgrade_failed: null, relays: [] });
   emit({ type: 'settings' });
   return { id, bootstrap: { cmd: `{ curl -fsS https://fleet.example/api/v1/probe-bootstrap/MOCK 2>/dev/null || wget -qO- https://fleet.example/api/v1/probe-bootstrap/MOCK; } | sh`, expires_at: iso() } };
 });
