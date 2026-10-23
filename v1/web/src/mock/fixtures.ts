@@ -454,6 +454,6 @@ function recycled(): RecycleDetail[] {
     row(2, { source: 'legacy', kind: 'vps', name: '团队1-33', team: '团队1', ip: '198.51.100.120', provider: '搬瓦工', plan: 'KVM 2C4G', service_ref: '60131', price_cents: 1999, currency: 'USD', cycle: 'monthly',
       activated_at: ago(300), retired_at: ago(60), due_date: dateOnly(now() - 59 * DAY), recycled_at: ago(5), reason: '旧面板已退役（迁移时未接管）', actor: 'admin', traffic_up: 80 * GiB, traffic_down: 410 * GiB }),
     row(1, { source: 'legacy', kind: 'relay', name: '线路机0', ip: '203.0.113.5', provider: '腾讯云', plan: '2C4G 5M', price_cents: 9800, currency: 'CNY', cycle: 'monthly',
-      activated_at: ago(420), retired_at: ago(120), recycled_at: ago(5), reason: '旧面板已退役', actor: 'admin' }),
+      activated_at: ago(420), retired_at: ago(120), recycled_at: ago(5), reason: '旧面板 2026-09-30 标注「弃用·仅备份，勿续费」，最后流量 10-08', actor: 'admin' }),
   ];
 }

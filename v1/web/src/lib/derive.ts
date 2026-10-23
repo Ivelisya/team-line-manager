@@ -93,6 +93,7 @@ export function monthFlowTip(m: MachineView) {
  *  和认不出的原样留着。片段只吃 ASCII 字符，不会把前缀一起吞掉。
  *  旧 agent 报的是单词（「出口不通：timeout；refused」），新 agent 自己写中文（fleet-agent probe.rs 的 reason_cn），两种都认 */
 const ERR_ZH: [RegExp, string | ((m: string, ...g: string[]) => string)][] = [
+  [/\b(?:connection )?(?:timed out|timeout) during (?:ssh )?banner exchange\b|\bbanner exchange\b/gi, 'SSH 握手超时'], // 先于下面的「超时」，不留半句中文半句英文
   [/\b(?:timed out|timeout)(?: after)? (\d+(?:\.\d+)?) ?s\b/gi, (_, n) => `超时 ${n} 秒`],
   [/\b(?:i\/o )?(?:timed out|timeout)\b/gi, '超时'],
   [/\b(?:connection )?refused\b/gi, '连接被拒绝'],
@@ -101,8 +102,8 @@ const ERR_ZH: [RegExp, string | ((m: string, ...g: string[]) => string)][] = [
   [/\b(?:unexpected eof|end of file|eof)\b/gi, '对端提前断开'],
   [/\b(?:no route to host|(?:network|host) (?:is )?unreachable|unreachable)\b/gi, '网络不可达'],
   [/\bdns\b[\w .:'/-]*|[\w '/-]*\bname resolution\b[\w .:'/-]*|\bno such host\b/gi, '域名解析失败'],
-  [/\b(?:tls|ssl)\b[\w .:'/-]*|\bcertificate\b[\w .:'/-]*/gi, 'TLS 握手失败'],
-  [/\bsocks5?\b[\w .:'/-]*/gi, '代理握手失败'],
+  [/(?:\b(?:tls|ssl)\b[\w .:'/-]*|\bcertificate\b[\w .:'/-]*)(?:握手失败)?/gi, 'TLS 握手失败'],
+  [/\bsocks5?\b[\w .:'/-]*(?:握手失败)?/gi, '代理握手失败'], // 后面已经带「握手失败」的一并吃掉，不叠词
 ];
 export const errText = (s: string) => ERR_ZH.reduce<string>((t, [re, to]) => t.replace(re, to as string), s).replace(/\s+$/, '');
 /** 入口探测失败的悬停：常见的连接错误先写成一句人话（端口拒绝连接 / 连接超时 / 网络不可达），原文放第二行；其它原样（英文换成中文） */

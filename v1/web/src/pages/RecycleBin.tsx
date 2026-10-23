@@ -36,8 +36,10 @@ const ISO_TIME = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{
 const orgTime = (iso: string) => new Intl.DateTimeFormat('sv-SE', { timeZone: meta().org_timezone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(iso));
 const reasonFull = (s: string) => s.replace(ISO_TIME, orgTime);
 /** 列表里的原因只留关键句：旧面板导入的原因全带「旧面板 2026-09-30 标注：」这样的前缀，去掉后各行才看得出差别；全文在展开区。
- *  去掉前缀后按句号 / 分号切句（括号里的不切），有「推断…」的那句就留它，没有就留整段开头——不从括号中间切 */
-const LEGACY_PREFIX = /^旧面板\s*\d{4}-\d{2}-\d{2}[^：:（(]*标注[：:]\s*/;
+ *  去掉前缀后：标注写在「」里的，主行是标注、次行是后面的补充（最后流量…）；否则按句号 / 分号切句（括号里的不切），
+ *  有「推断…」的那句就留它，没有就留整段开头——不从括号中间切 */
+const LEGACY_PREFIX = /^旧面板\s*\d{4}-\d{2}-\d{2}[^：:（(「]*标注[：:]?\s*/;
+const QUOTED = /^「([^」]*)」[\s，,；;。]*/;
 const SENTENCE_END = new Set(['。', '；', ';']);
 function sentences(s: string): string[] {
   const out: string[] = []; let depth = 0; let cur = '';
@@ -49,7 +51,12 @@ function sentences(s: string): string[] {
   out.push(cur);
   return out.map((x) => x.trim()).filter(Boolean);
 }
-const reasonKey = (s: string) => { const t = reasonFull(s).replace(LEGACY_PREFIX, ''); return sentences(t).find((x) => x.includes('推断')) ?? t; };
+function reasonParts(s: string): { main: string; sub?: string } {
+  const t = reasonFull(s).replace(LEGACY_PREFIX, '');
+  const q = QUOTED.exec(t);
+  if (q) return { main: q[1], sub: t.slice(q[0].length) || undefined };
+  return { main: sentences(t).find((x) => x.includes('推断')) ?? t };
+}
 
 /** 展开的一行：这条记录的关键字段 + 快照里挑出来的几项（快照形状不固定，没有就不显示）；名字、团队行里已有，不重复 */
 function Detail({ r }: { r: RecycleItem }) {
@@ -79,6 +86,11 @@ function Detail({ r }: { r: RecycleItem }) {
   );
 }
 
+function ReasonCell({ reason }: { reason: string }) {
+  const { main, sub } = reasonParts(reason);
+  return <><Trunc className="cell-main" text={reasonFull(reason)}>{main}</Trunc>{sub && <span className="sub">{sub}</span>}</>;
+}
+
 function Row({ r, open, source, span, onToggle }: { r: RecycleItem; open: boolean; source: boolean; span: number; onToggle: (id: number | null) => void }) {
   const t = traffic(r);
   const toggle = () => onToggle(open ? null : r.id);
@@ -91,7 +103,7 @@ function Row({ r, open, source, span, onToggle }: { r: RecycleItem; open: boolea
         <td>{r.plan ? <Trunc className="cell-main">{r.plan}</Trunc> : <span className="cell-main t-muted">—</span>}<span className="sub">{r.provider ?? '—'}</span></td>
         <td>{price(r) ?? <span className="t-muted">—</span>}</td>
         <td><span className="cell-main">{day(r.activated_at)} → {day(r.retired_at)}</span><span className="sub">回收 {day(r.recycled_at)}</span></td>
-        <td>{r.reason ? <Trunc className="cell-main" text={reasonFull(r.reason)}>{reasonKey(r.reason)}</Trunc> : <span className="t-muted">—</span>}</td>
+        <td>{r.reason ? <ReasonCell reason={r.reason} /> : <span className="t-muted">—</span>}</td>
         <td className="r">{t == null || t === 0 ? <span className="t-muted">—</span> : <Num f={F.bytes(t)} />}</td>
         {source && <td><Chip variant="neutral">{SOURCE_LABEL[r.source] ?? r.source}</Chip></td>}
         <td className="chev">{open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</td>

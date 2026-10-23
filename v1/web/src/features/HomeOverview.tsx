@@ -106,7 +106,7 @@ function RoutersLink() {
   return (
     <Link to="/routers" className="cluster-routers" aria-label="软路由">
       <span className="cluster-routers-label"><RouterIcon />软路由</span>
-      <span>在线 <b className="num" data-bad={bad ? '' : undefined}>{on.length}/{list.length}</b> · 出口 <b className="num" data-warn={ex.alive < ex.total ? '' : undefined}>{ex.alive}/{ex.total}</b> · 客户端 <b className="num">{on.reduce((n, r) => n + (r.summary?.clients ?? 0), 0)}</b></span>
+      <span>在线 <b className="num" data-bad={bad ? '' : undefined}>{on.length}/{list.length}</b> · 出口 <b className="num" data-warn={ex.alive < ex.total ? '' : undefined}>{ex.alive}/{ex.total}</b> · 客户端 <b className="num">{on.reduce((n, r) => n + (r.summary?.clients ?? 0), 0)}</b> 台</span>
       <ChevronRight className="cluster-routers-go" aria-hidden />
     </Link>
   );
