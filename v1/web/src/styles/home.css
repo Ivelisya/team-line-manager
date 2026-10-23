@@ -96,7 +96,7 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 .cluster-kv small { font-size: var(--fs-micro); line-height: 1.2; color: var(--fg-2); }
 .cluster-kv b { font: var(--fw-bold) var(--fs-label) / 1.2 var(--font-sans); color: var(--fg); }
 .cluster-kv b[data-bad] { color: var(--bad-text); }
-.cluster-foot { display: flex; justify-content: space-between; gap: var(--sp-8); font-size: var(--fs-micro); line-height: var(--lh-micro); color: var(--fg-2); }
+.cluster-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--sp-2) var(--sp-8); font-size: var(--fs-micro); line-height: var(--lh-micro); color: var(--fg-2); }
 .cluster-foot b { font-weight: var(--fw-semibold); color: var(--fg); }
 .cluster-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-8); min-width: 0; }
 @container (max-width: 340px) { .cluster-charts { grid-template-columns: minmax(0, 1fr); } }

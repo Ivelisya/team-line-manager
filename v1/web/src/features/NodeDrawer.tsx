@@ -211,7 +211,7 @@ function OverviewTab({ m }: { m: MachineView }) {
             <LabelValue label="最近上报">{m.agent.last_report_at ? F.ago(m.agent.last_report_at) : '还没上报'}</LabelValue>
           </> : <LabelValue label="agent"><>无 <InfoTip text="家宽代理不装 agent：没有主机读数，连通性靠线路机的探测" /></></LabelValue>}
           {/* 三段分开数（同卡片、线路页）：节点通只数经节点的入口（直出入口没有 TCP 探测），入口可达、出口通数全部在用的入口 */}
-          <LabelValue label="连通" className="span-2"><LinkRow m={m} /></LabelValue>
+          <LabelValue label="连通" className="span-2" wrap><LinkRow m={m} /></LabelValue>
           {m.ip_nodes.length > 0 && (
             <LabelValue label="同机 IP 节点" className="span-2" wrap>
               <div className="stack-sm" style={{ marginTop: 2 }}>{m.ip_nodes.map((x) => <IpNodeLine key={x.id} id={x.id} name={x.name} onOpen={open} />)}</div>

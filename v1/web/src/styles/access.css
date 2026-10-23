@@ -3,6 +3,8 @@
 /* 访问监控筛选行最右的时间范围（页头只留视图切换）；窄屏换行后靠左 */
 .access-range { margin-left: auto; display: flex; min-width: 0; max-width: 100%; }
 @media (max-width: 760px) { .access-range { margin-left: 0; } }
+/* 手机上筛选行是两列网格（base.css）：时间范围五段放不进半格，单占一行 */
+@media (max-width: 600px) { .row[role="search"] > .access-range { grid-column: 1 / -1; } }
 
 /* 「常访问的目标」条尾的次数 */
 .bar-count { fill: var(--fg-2); font-size: var(--fs-micro); font-weight: var(--fw-semibold); font-variant-numeric: tabular-nums; }
