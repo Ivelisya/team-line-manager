@@ -183,7 +183,7 @@ pub(super) async fn compensate_move(c: &Ctx<'_>) {
                 let inst = note(st, job.id, "读取 SS 端口", c.ss_inst(&m).await).await;
                 if let (Some(allow), Some(inst)) = (allow, inst) {
                     let table = inst.table();
-                    match c.ssh(&m, None).run(&nft_only(&table, &allow), Duration::from_secs(60)).await {
+                    match c.ssh(&m, None).run(&nft_only(&inst, &allow), Duration::from_secs(60)).await {
                         Ok(out) => match check_nft(&out, &allow, &table) {
                             Ok(()) => log(st, job.id, "info", format!("节点防火墙已恢复为 [{allow}]")).await,
                             Err(e) => log(st, job.id, "warn", super::clip(&format!("补偿「恢复防火墙」失败（已忽略）：{e:#}"))).await,

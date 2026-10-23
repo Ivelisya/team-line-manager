@@ -16,6 +16,10 @@ echo "kernel=$(uname -r)"
 echo "mem_mb=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)"
 echo "boot_id=$(cat /proc/sys/kernel/random/boot_id)"
 command -v nft >/dev/null && echo nft=1 || echo nft=0
+# 主机防火墙：ufw / firewalld 在运行时 SS 端口要对线路机放行（收敛时处理，见 HOST_FW）
+if command -v ufw >/dev/null 2>&1 && LC_ALL=C ufw status 2>/dev/null </dev/null | grep -qx 'Status: active'; then echo host_fw=ufw
+elif command -v firewall-cmd >/dev/null 2>&1 && [ "$(firewall-cmd --state 2>/dev/null </dev/null)" = running ]; then echo host_fw=firewalld
+else echo host_fw=none; fi
 if ss -Hltn 2>/dev/null | grep -q ':8388 '; then echo port8388=busy; else echo port8388=free; fi
 [ -f /etc/fleet-agent/agent.toml ] && echo "agent_machine=$(sed -n 's/^machine_id *= *"\(.*\)"/\1/p' /etc/fleet-agent/agent.toml)" || echo agent_machine=
 "#;
@@ -120,6 +124,7 @@ pub fn node_ss(i: &SsInst, public_url: &str) -> String {
         .replace("__BIND__", &bind)
         .replace("__SVC__", &i.svc())
         .replace("__T__", &i.table())
+        .replace("__HOST_FW__", HOST_FW.trim())
 }
 
 /// 条件：/etc/resolv.conf 的 nameserver 是链路本地地址（169.254.0.0/16、fe80::/10：GCE、Oracle 等不经 systemd-resolved 的镜像；
@@ -159,6 +164,59 @@ fn outbound_acl(public_url: &str) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
+
+/// 主机防火墙（NODE_SS、NODE_NFT_ONLY 共用）。供应商镜像自带的 ufw / firewalld 常常只放行旧线路机，SS 端口对新线路机就不通（nft 表放行了也没用：
+/// ufw 的链在后面照样丢弃）。ufw / firewalld 在运行时，对 ALLOW 里的每个线路机放行 SS 端口（tcp、udp），名单里已经没有的线路机的规则删掉：
+/// ufw 的规则带注释 fleet-ss，只动这个端口上带它的；firewalld 的 rich rule 没有注释，只删这个端口上写法与下面一模一样的。
+/// 只增删放行规则，不启停防火墙、不碰 ssserver；规则已有时 ufw / firewalld 不会重复添加。ufw / firewalld 没在运行就不动；
+/// 都没有、iptables 的 INPUT 默认（或最后一条）就丢弃时只输出 `host_fw=iptables-drop`，让步骤记警告（不自动改）。整段的 stdin 接 /dev/null：脚本经 `bash -s` 从 stdin 读，命令读了 stdin 会吃掉后面的脚本。
+/// 输出 `host_fw=none|ufw|firewalld|iptables-drop`，改规则失败时为 `ufw-error` / `firewalld-error`。变量 SS_PORT ALLOW
+macro_rules! host_fw {
+    () => {
+        r##"
+{
+HOST_FW=none; FWERR=
+FW_IPS=$(echo "$ALLOW" | tr ',' ' ')
+if command -v ufw >/dev/null 2>&1 && LC_ALL=C ufw status 2>/dev/null | grep -qx 'Status: active'; then
+  HOST_FW=ufw
+  STALE=$(LC_ALL=C ufw status 2>/dev/null | awk -v port="$SS_PORT" '$2 == "ALLOW" && $NF == "fleet-ss" && ($1 == (port "/tcp") || $1 == (port "/udp")) {split($1, a, "/"); print $3, a[2]}')
+  for ip in $FW_IPS; do for p in tcp udp; do
+    ufw allow from $ip to any port $SS_PORT proto $p comment fleet-ss >/dev/null 2>&1 || FWERR=1
+  done; done
+  while read -r ip p; do
+    [ -n "$ip" ] || continue
+    case " $FW_IPS " in *" $ip "*) continue;; esac
+    ufw --force delete allow from $ip to any port $SS_PORT proto $p >/dev/null 2>&1 || FWERR=1
+  done <<FWSTALE
+$STALE
+FWSTALE
+elif command -v firewall-cmd >/dev/null 2>&1 && [ "$(firewall-cmd --state 2>/dev/null)" = running ]; then
+  HOST_FW=firewalld
+  Z=$(firewall-cmd --get-zone-of-interface="$(ip -4 route show default 2>/dev/null | awk '{print $5; exit}')" 2>/dev/null) || Z=
+  { [ -z "$Z" ] || [ "$Z" = "no zone" ]; } && { Z=$(firewall-cmd --get-default-zone 2>/dev/null) || FWERR=1; }
+  for perm in "" --permanent; do
+    STALE=$(firewall-cmd $perm --zone="$Z" --list-rich-rules 2>/dev/null | sed -n 's/^rule family="ipv4" source address="\([0-9.]*\)" port port="'$SS_PORT'" protocol="\(tcp\|udp\)" accept$/\1 \2/p')
+    for ip in $FW_IPS; do for p in tcp udp; do
+      R="rule family=\"ipv4\" source address=\"$ip\" port port=\"$SS_PORT\" protocol=\"$p\" accept"
+      firewall-cmd -q $perm --zone="$Z" --query-rich-rule="$R" || firewall-cmd -q $perm --zone="$Z" --add-rich-rule="$R" >/dev/null 2>&1 || FWERR=1
+    done; done
+    while read -r ip p; do
+      [ -n "$ip" ] || continue
+      case " $FW_IPS " in *" $ip "*) continue;; esac
+      firewall-cmd -q $perm --zone="$Z" --remove-rich-rule="rule family=\"ipv4\" source address=\"$ip\" port port=\"$SS_PORT\" protocol=\"$p\" accept" >/dev/null 2>&1 || FWERR=1
+    done <<FWSTALE
+$STALE
+FWSTALE
+  done
+elif command -v iptables >/dev/null 2>&1 && { IPT=$(iptables -S INPUT 2>/dev/null); echo "$IPT" | grep -qE '^-P INPUT (DROP|REJECT)$' || echo "$IPT" | tail -n1 | grep -qE '^-A INPUT -j (DROP|REJECT)'; }; then
+  HOST_FW=iptables-drop
+fi
+echo "host_fw=$HOST_FW${FWERR:+-error}"
+} </dev/null
+"##
+    };
+}
+const HOST_FW: &str = host_fw!();
 
 const NODE_SS: &str = r#"
 set -eu
@@ -239,13 +297,16 @@ nft -f $N || { echo nft=error; exit 21; }
 [ -f /etc/nftables.conf ] || printf '#!/usr/sbin/nft -f\n' > /etc/nftables.conf
 grep -qF 'include "/etc/fleet/nft/__T__.nft"' /etc/nftables.conf || echo 'include "/etc/fleet/nft/__T__.nft"' >> /etc/nftables.conf
 systemctl enable -q nftables 2>/dev/null || true
+# 主机防火墙（见 HOST_FW）
+__HOST_FW__
 for i in $(seq 1 30); do ss -Hltn "sport = :$SS_PORT" | grep -q . && break; sleep 0.2; done
 ss -Hltn "sport = :$SS_PORT" | grep -q . && echo ss=listening || echo ss=down
 echo "nft_relays=$(nft list set inet __T__ relays | tr -d '\n' | sed 's/.*elements = { \(.*\) }.*/\1/' | tr -d ' \t')"
 "#;
 
-/// 只更新节点防火墙放行名单（换线路机、加入口时）。变量 NFT_TABLE（`SsInst::table`）ALLOW。
-pub const NODE_NFT_ONLY: &str = r#"
+/// 只更新节点防火墙放行名单（换线路机、加入口时），连同主机防火墙（`HOST_FW`）。变量 NFT_TABLE（`SsInst::table`）SS_PORT ALLOW。
+pub const NODE_NFT_ONLY: &str = concat!(
+    r#"
 set -eu
 N=/etc/fleet/nft/$NFT_TABLE.nft
 [ -f $N ] || { echo nft=missing; exit 22; }
@@ -254,8 +315,11 @@ sed "s/elements = { [^}]* }/elements = { $ALLOW }/" $N > $N.tmp || { echo nft=er
 nft -c -f $N.tmp || { rm -f $N.tmp; echo nft=error; exit 21; }
 mv -f $N.tmp $N || { echo nft=error; exit 21; }
 nft -f $N || { echo nft=error; exit 21; }
-echo "nft_relays=$(nft list set inet $NFT_TABLE relays | tr -d '\n' | sed 's/.*elements = { \(.*\) }.*/\1/' | tr -d ' \t')"
-"#;
+"#,
+    host_fw!(),
+    r#"echo "nft_relays=$(nft list set inet $NFT_TABLE relays | tr -d '\n' | sed 's/.*elements = { \(.*\) }.*/\1/' | tr -d ' \t')"
+"#
+);
 
 /// 本机的 IPv4（不含回环），逗号分隔：输出 `local_ips=…` 一行。变量 WANT（逗号分隔的公网 IP）里有不在网卡上的时
 /// （1:1 NAT 映射：公网 IP 映射到网卡上的某个内网地址），再让每个本机 IPv4 各自经它访问中控 /echo（变量 ECHO），
@@ -763,6 +827,79 @@ ACL
         assert!(c.contains("/etc/shadowsocks-rust/[0-9]*.json") && c.contains(r#"systemctl disable --now "fleet-ssserver@$p""#));
         assert!(c.contains("/etc/systemd/system/fleet-ssserver@.service") && c.contains("/etc/fleet/nft/ss_guard_*.nft"));
         assert!(c.contains(r#"sed -i '\#include "/etc/fleet/nft/ss_guard#d'"#));
+    }
+
+    /// 主机防火墙段（HOST_FW）整段在 bash 里真跑（ufw、firewall-cmd、iptables 换成记录调用的函数）：ufw 在运行时对 ALLOW 里每个线路机 IP 放行 SS 端口的 tcp、udp，
+    /// 删掉这个端口上带 fleet-ss 注释、IP 已不在名单里的旧规则，别人的规则和别的端口的规则不碰；ufw 没在运行时一条都不改；
+    /// firewalld 同理（已有的规则不重复加）；只有 iptables 且 INPUT 默认丢弃时只报告
+    #[cfg(unix)]
+    #[test]
+    fn host_fw_syncs_ufw_and_firewalld_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().display().to_string();
+        let run = |fakes: &str| -> (String, Vec<String>) {
+            let _ = std::fs::remove_file(dir.path().join("log"));
+            let sh = format!("{fakes}\nSS_PORT=8388 ALLOW='192.0.2.1, 192.0.2.2'\nset -eu\n{}", super::HOST_FW);
+            let out = std::process::Command::new("bash").arg("-c").arg(&sh).output().unwrap();
+            assert!(out.status.success(), "{out:?}");
+            let log = std::fs::read_to_string(dir.path().join("log")).unwrap_or_default();
+            let o = crate::ssh::Output { code: 0, stdout: String::from_utf8_lossy(&out.stdout).into_owned(), stderr: String::new() };
+            (o.kv("host_fw").unwrap_or("").to_string(), log.lines().filter(|l| !l.ends_with(" status")).map(String::from).collect())
+        };
+        let ufw = |status: &str| {
+            std::fs::write(dir.path().join("status"), status).unwrap();
+            format!("ufw() {{ echo \"ufw $*\" >> {d}/log; [ \"$1\" != status ] || cat {d}/status; return 0; }}")
+        };
+        let active = "Status: active\n\nTo                         Action      From\n--                         ------      ----\n\
+            22/tcp                     ALLOW       Anywhere\n\
+            8388/tcp                   ALLOW       192.0.2.1                  # fleet-ss\n\
+            8388/tcp                   ALLOW       198.51.100.9               # fleet-ss\n\
+            8388/udp                   ALLOW       198.51.100.9               # fleet-ss\n\
+            8388/tcp                   ALLOW       203.0.113.99\n\
+            8389/tcp                   ALLOW       198.51.100.8               # fleet-ss\n";
+        let (fw, calls) = run(&ufw(active));
+        let allow = |ip: &str, p: &str| format!("ufw allow from {ip} to any port 8388 proto {p} comment fleet-ss");
+        let del = |ip: &str, p: &str| format!("ufw --force delete allow from {ip} to any port 8388 proto {p}");
+        assert_eq!(fw, "ufw");
+        assert_eq!(
+            calls,
+            [allow("192.0.2.1", "tcp"), allow("192.0.2.1", "udp"), allow("192.0.2.2", "tcp"), allow("192.0.2.2", "udp"), del("198.51.100.9", "tcp"), del("198.51.100.9", "udp")],
+            "只加名单里的、只删这个端口上带 fleet-ss 且已不在名单里的"
+        );
+        // ufw 没启用：一条规则都不改
+        assert_eq!(run(&ufw("Status: inactive\n")), ("none".to_string(), vec![]));
+
+        // firewalld：已有的规则不重复加，旧线路机的规则删掉，别的端口的不碰；运行时和永久各做一遍
+        std::fs::write(
+            dir.path().join("rules"),
+            "rule family=\"ipv4\" source address=\"192.0.2.1\" port port=\"8388\" protocol=\"tcp\" accept\n\
+             rule family=\"ipv4\" source address=\"198.51.100.9\" port port=\"8388\" protocol=\"udp\" accept\n\
+             rule family=\"ipv4\" source address=\"198.51.100.8\" port port=\"8389\" protocol=\"tcp\" accept\n",
+        )
+        .unwrap();
+        let fwd = format!(
+            "ip() {{ echo 'default via 10.0.0.1 dev eth0 proto dhcp'; }}\n\
+             firewall-cmd() {{ echo \"firewall-cmd $*\" >> {d}/log; case \"$*\" in *--state*) echo running;; *--get-zone-of-interface=eth0*) echo public;; \
+             *--list-rich-rules*) cat {d}/rules;; *--query-rich-rule=*192.0.2.1*tcp*) return 0;; *--query-rich-rule=*) return 1;; esac; return 0; }}"
+        );
+        let (fw, calls) = run(&fwd);
+        let rule = |ip: &str, p: &str| format!("rule family=\"ipv4\" source address=\"{ip}\" port port=\"8388\" protocol=\"{p}\" accept");
+        let add = |perm: &str, ip: &str, p: &str| format!("firewall-cmd -q {perm}--zone=public --add-rich-rule={}", rule(ip, p));
+        let rm = |perm: &str| format!("firewall-cmd -q {perm}--zone=public --remove-rich-rule={}", rule("198.51.100.9", "udp"));
+        assert_eq!(fw, "firewalld");
+        for perm in ["", "--permanent "] {
+            assert!(calls.contains(&add(perm, "192.0.2.2", "tcp")) && calls.contains(&add(perm, "192.0.2.1", "udp")) && calls.contains(&rm(perm)), "{perm}{calls:#?}");
+            assert!(!calls.contains(&add(perm, "192.0.2.1", "tcp")), "已有的规则不重复加");
+        }
+        assert_eq!(calls.iter().filter(|c| c.contains("--remove-rich-rule")).count(), 2, "只删旧线路机在这个端口上的规则：{calls:#?}");
+
+        // 没有 ufw / firewalld、iptables 的 INPUT 默认丢弃：只报告
+        for (ipt, want) in [("-P INPUT DROP", "iptables-drop"), ("-P INPUT ACCEPT\n-A INPUT -p tcp --dport 22 -j ACCEPT\n-A INPUT -j REJECT --reject-with icmp-host-prohibited", "iptables-drop"), ("-P INPUT ACCEPT", "none")] {
+            std::fs::write(dir.path().join("ipt"), format!("{ipt}
+")).unwrap();
+            let (fw, calls) = run(&format!("iptables() {{ cat {d}/ipt; }}"));
+            assert_eq!((fw.as_str(), calls.is_empty()), (want, true), "{ipt}");
+        }
     }
 
     /// set -e 下 `a && b && c` 中间失败不会退出：防火墙脚本里不许再出现这种写法
