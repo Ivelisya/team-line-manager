@@ -6,6 +6,7 @@ import { ArrowRight, Check, ChevronDown } from 'lucide-react';
 import type { MachineView, RouterExitPlan } from '@/lib/types';
 import { useMachines, useReplace, useReplacePreview, useTeams } from '@/lib/queries';
 import { useAddrName } from '@/lib/routers';
+import { errText } from '@/lib/derive';
 import '@/styles/routers.css';
 import { prefixScore } from '@/lib/match';
 import { CheckRow, Field, InfoTip, Input } from '@/components/ui/form';
@@ -77,6 +78,22 @@ function useSettled<T>(v: T, ms: number): T {
 
 const ROUTER_STATE: Record<string, string> = { offline: '离线', pending: '未接入' };
 
+/** 出口的映射失败原因去掉「软路由 X 的出口 Y：」的前缀（软路由与出口就在这一行的前一格） */
+const exitReason = (error: string) => error.replace(/^[^：]*：/, '');
+
+/** 阻断原因条（替换、换线路机共用）：映射失败的出口原因已经逐行写在上面的小表里，服务端又把同样的话放进阻断原因——合并成一条；
+ *  其余的阻断（软路由离线…）逐条列出，英文错误换成中文 */
+export function PlanBlockers({ routers, blockers }: { routers: RouterExitPlan[]; blockers: string[] }) {
+  const bad = routers.flatMap((r) => r.exits.filter((e) => e.error).map((e) => ({ r, e })));
+  const rest = blockers.filter((b) => !bad.some(({ r, e }) => b === e.error || (b.includes(r.name) && b.includes(e.exit))));
+  return (
+    <>
+      {bad.length > 0 && <Note tone="bad">{bad.length} 个出口对不上新入口：按上表的原因先处理，或不勾「同时改软路由」</Note>}
+      {rest.map((b) => <Note key={b} tone="bad">{errText(b)}</Note>)}
+    </>
+  );
+}
+
 /** 预览里要改的软路由出口（替换、换线路机、搬空共用）：一张小表「节点 | 软路由 · 出口 | 旧 → 新」，地址写线路机名（IP 放悬停）。
  *  出口里可能有带原因（error）的：映射不到新入口，和阻断原因一致，在这里标红 */
 export function RouterExitList({ routers, title }: { routers: { node?: string; plan: RouterExitPlan }[]; title?: React.ReactNode }) {
@@ -91,7 +108,7 @@ export function RouterExitList({ routers, title }: { routers: { node?: string; p
     <div>
       <div className="label" style={{ marginBottom: 6 }}>
         {title ?? (ok.length ? <>改 {new Set(ok.map((r) => r.plan.id)).size} 台软路由的 {ok.length} 个出口</> : '软路由出口')}
-        {bad > 0 && <>{ok.length > 0 && ' · '}<span className="rt-bad">{bad} 个对不上新入口</span></>}
+        {bad > 0 && <>{' · '}<span className="rt-bad">{bad} 个对不上新入口</span></>}
       </div>
       <div style={{ maxHeight: 200, overflow: 'auto' }}>
         <table className="rx-tbl">
@@ -101,7 +118,7 @@ export function RouterExitList({ routers, title }: { routers: { node?: string; p
               <tr key={`${node ?? ''}-${r.id}-${e.exit}`}>
                 {withNode && <td className="num">{node}</td>}
                 <td><span className="num">{r.name}</span> · <span className="num">{e.exit}</span>{r.state !== 'online' && <> <Pill tone="bad">{ROUTER_STATE[r.state] ?? r.state}</Pill></>}</td>
-                <td className="rx-to">{e.error ? <Pill tone="bad" tip={e.error}>对不上新入口</Pill> : <>{shown(e.from)} → <b>{e.to ? shown(e.to) : '?'}</b></>}</td>
+                <td className="rx-to">{e.error ? <><Pill tone="bad" tip={e.error}>对不上新入口</Pill><div className="rt-bad">{exitReason(e.error)}</div></> : <>{shown(e.from)} → <b>{e.to ? shown(e.to) : '?'}</b></>}</td>
               </tr>
             ))}
           </tbody>
@@ -187,7 +204,7 @@ export const ReplaceDialog = resetOnOpen(function ReplaceDialog({ m, open, onOpe
           </div>
           {pv.routers_enabled && <RouterExitList routers={pv.routers.map((plan) => ({ node: pv.old.name, plan }))} />}
           <RenameNote renames={pv.renames} tip="新节点原来的团队空出一个编号，后面的节点前移补号，编号保持连续。" />
-          {pv.blockers.map((b) => <Note key={b} tone="bad">{b}</Note>)}
+          <PlanBlockers routers={pv.routers_enabled ? pv.routers : []} blockers={pv.blockers} />
           {pv.warnings.map((w) => <Note key={w} tone="warn">{w}</Note>)}
         </div>
       )}
