@@ -2444,7 +2444,7 @@ async fn access_rollup_covers_late_records() {
 }
 
 /// 机器视图的失败隔离：别的请求正在重算（这里被表锁卡住）时先回上一份、不排队；之后有资源变更的才等；
-/// 重算失败时回上一份并记下失败，算成一次就清掉
+/// 重算失败时回上一份（之后有资源变更的报错）并记下失败，算成一次就清掉
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn live_view_serves_previous_while_busy_or_failing() {
     use fleet_server::views;
@@ -2470,13 +2470,16 @@ async fn live_view_serves_previous_while_busy_or_failing() {
     let v3 = views::live_fresh(&t.st).await.unwrap();
     assert!(t.st.live.failing().is_none());
 
-    // 重算失败（表没了）：回上一份，记下失败；恢复后算成一次就清掉
+    // 重算失败（表没了）：之后没有资源变更的回上一份，记下失败；有过资源变更的报错（调用方重试），不回变更前的那份；
+    // 恢复后算成一次就清掉
     sqlx::query("alter table agent_state rename to agent_state_x").execute(&t.st.db).await.unwrap();
-    t.st.live.invalidate();
     let v4 = views::live_fresh(&t.st).await.unwrap();
     assert!(Arc::ptr_eq(&v3, &v4));
     let (_, err) = t.st.live.failing().expect("记下失败");
     assert!(err.contains("agent_state"), "{err}");
+    t.st.live.invalidate();
+    assert!(views::live_fresh(&t.st).await.is_err(), "资源变了不回变更前的");
+    assert!(views::live(&t.st).await.is_err());
     sqlx::query("alter table agent_state_x rename to agent_state").execute(&t.st.db).await.unwrap();
     assert!(!Arc::ptr_eq(&v3, &views::live_fresh(&t.st).await.unwrap()));
     assert!(t.st.live.failing().is_none());
@@ -2504,6 +2507,7 @@ async fn stuck_view_opens_central_alert() {
     let f = incidents(&t, "firing").await;
     let stuck = f.iter().find(|i| i["rule"] == "central_view_stuck").expect("满 2 分钟开告警");
     assert!(stuck["summary"].as_str().unwrap().contains("分钟算不出来"), "{stuck}");
+    assert_eq!(stuck["engine"], "central", "接口带出写它的引擎");
     assert!(has_rule(&f, "central_ingress"));
 
     sqlx::query("alter table agent_state_x rename to agent_state").execute(&t.st.db).await.unwrap();

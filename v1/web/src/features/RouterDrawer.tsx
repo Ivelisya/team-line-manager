@@ -203,7 +203,7 @@ function AccessSection({ r, onClosed }: { r: RouterView; onClosed: () => void })
 function DeleteSection({ r, onClosed }: { r: RouterView; onClosed: () => void }) {
   const del = useDeleteRouter();
   const [ask, setAsk] = React.useState(false);
-  // 删除被 409 拦下（有作业改过它的出口、没确认改回）：对话框里留着原因，确认按钮换成强制删除（仍要输入名称）
+  // 删除被 409 拦下（有作业改过它的出口、没确认改回）：对话框里留着原因，确认按钮换成强制删除，已输入的名称清空、要重新输入
   const [force, setForce] = React.useState(false);
   return (
     <Section>
@@ -214,10 +214,13 @@ function DeleteSection({ r, onClosed }: { r: RouterView; onClosed: () => void })
         </div>
       </div>
       <TypedConfirmDialog open={ask} onOpenChange={(o) => { setAsk(o); if (!o) setForce(false); }} title={`删除软路由「${r.name}」？`} confirmLabel={force ? '强制删除' : '删除'} danger expected={r.name} prompt="请输入名称"
-        description="只删面板里的记录，路由本身不受影响"
+        description="只删面板里的记录，路由本身不受影响" retype={force}
         onConfirm={async () => {
-          try { await del.mutateAsync({ id: r.id, force }); } catch (e) { if (e instanceof ApiError && e.status === 409) setForce(true); throw e; }
+          let jobs: string[] = [];
+          try { jobs = (await del.mutateAsync({ id: r.id, force })).jobs ?? []; } catch (e) { if (e instanceof ApiError && e.status === 409) setForce(true); throw e; }
           onClosed();
+          // 强制删除摘掉了哪些作业：它们改过的这台路由的出口不会再有人改回
+          if (jobs.length) toast.show({ tone: 'info', title: `已从 ${jobs.length} 个作业里摘掉「${r.name}」`, text: `作业 ${jobs.join('、')} 改过的出口不会再改回，需要自己处理`, duration: 15_000 });
           // 从没连上过、也没一键部署过的：路由上没装 fleet-tunnel，不用给清理命令
           if (r.last_seen_at || r.deploy) showRemoved(r.name); else toast.ok(`已删除「${r.name}」`);
         }} />

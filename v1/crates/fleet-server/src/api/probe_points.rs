@@ -253,12 +253,21 @@ pub async fn delete(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<U
 }
 
 /// 升级：记下 dist 里程序的 sha256，探测点下次取目标（30 秒内）时自己下载、核对、替换、重启。返回要升到的版本。
-/// 上次升级失败（upgrade_failed，见 probe_points/agent.rs）的记录随之清掉：手动再触发就是再试一次
+/// 上次升级失败（upgrade_failed，见 probe_points/agent.rs）的记录随之清掉：手动再触发就是再试一次。
+/// 探测点报过这个版本是坏的（换上后没能上报、自己换回来了，bad_sha256）时 409：它不会再换成这个版本，要修好后发新版本（或重装探测点）
 pub async fn upgrade(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
     let path = st.cfg.dist_dir.join("fleet-agent");
     let sha = crate::jobs::dist_agent_sha256(&st).await.map_err(|e| ApiError::conflict(format!("中控上没有可推送的 fleet-agent（{}：{e}）", path.display())))?;
     let version = probe_points::agent::dist_version(&st).await.ok_or_else(|| ApiError::conflict(format!("中控上的 fleet-agent（{}）读不出版本号", path.display())))?;
     let mut tx = st.db.begin().await?;
+    let bad: Option<(String, Option<String>)> = sqlx::query_as("select name, bad_sha256 from probe_point where id = $1 for update").bind(id).fetch_optional(&mut *tx).await?;
+    if let Some((name, Some(b))) = &bad {
+        if *b == sha {
+            return Err(ApiError::conflict(format!(
+                "这个版本（{version}）在「{name}」上跑不起来过：换上后没能上报，探测点自己换回了旧版本，不会再换成它。修好后发新版本（换掉中控 dist 里的 fleet-agent）再升级，或重装这个探测点"
+            )));
+        }
+    }
     let row: Option<(String, Option<String>, bool)> =
         sqlx::query_as(
             "update probe_point set upgrade_sha256 = $2, upgrade_version = $3, upgrade_fetched_at = null, upgrade_failed = null, updated_at = now() where id = $1
@@ -284,7 +293,7 @@ pub async fn upgrade(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<
 /// `{primary: "central" | 探测点 id, primary_name, central_enabled, effective: {state, label, probe_point_id, primary_label, primary_issue}}`
 async fn source_view(st: &AppState) -> ApiResult<Value> {
     let s = probe_points::setting(&st.db).await?;
-    let eff = probe_points::effective(st).await?;
+    let eff = probe_points::effective(st, &st.db).await?;
     let name: Option<String> = match s.primary {
         Some(id) => sqlx::query_scalar("select name from probe_point where id = $1").bind(id).fetch_optional(&st.db).await?,
         None => None,

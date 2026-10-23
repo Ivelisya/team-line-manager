@@ -556,7 +556,7 @@ async fn alerts_open_notify_and_recover() {
     alerts::evaluate(&t.st, &mut st, t1 + time::Duration::seconds(600)).await.unwrap();
     let all = incidents(&t, "all").await;
     assert!(all.iter().all(|i| i["state"] == "resolved"));
-    assert_eq!(all.iter().find(|i| i["rule"] == "router_offline" && i["subject"]["name"] == "（已删除）").map(|i| i["subject"]["kind"].clone()), Some(json!("router")));
+    assert_eq!(all.iter().find(|i| i["rule"] == "router_offline" && i["subject"]["name"] == "（已删除）").map(|i| (i["subject"]["kind"].clone(), i["engine"].clone())), Some((json!("router"), json!("router"))));
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(mock.count("/hook/a"), sent, "删掉的路由不发恢复");
 }

@@ -15,8 +15,7 @@ use uuid::Uuid;
 #[derive(Serialize, sqlx::FromRow)]
 struct IncidentOut {
     id: Uuid,
-    /// 写这条告警的引擎（incident::Engine），不输出
-    #[serde(skip)]
+    /// 写这条告警的引擎（incident::Engine：machine / ipintel / central / router / probe）：前端按它决定点对象时开什么
     engine: String,
     rule: String,
     subject_id: Uuid,

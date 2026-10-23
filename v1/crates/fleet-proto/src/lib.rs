@@ -393,6 +393,10 @@ pub struct ProbeReport {
     /// 旧中控不认识它，按旧规则丢掉这一轮
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub all_down: bool,
+    /// 换上后没能上报、自己换回了旧版本的程序 sha256（探测点的 BAD 标记）：中控要它升级到的正是这个时，它不会再换，
+    /// 中控马上记成升级失败、不再下发。旧探测点没有这个字段；旧中控不认识它，忽略
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bad_sha256: Option<String>,
     pub results: Vec<ProbeResult>,
 }
 
@@ -448,6 +452,16 @@ mod tests {
         assert!(serde_json::to_value(&r).unwrap().get("all_down").is_none());
         let r = ProbeReport { all_down: true, ..r };
         assert_eq!(serde_json::to_value(&r).unwrap()["all_down"], true);
+    }
+
+    #[test]
+    fn probe_report_bad_sha256_is_optional() {
+        // 旧探测点不带：None；None 时不序列化（旧中控看到的形状不变）
+        let r: ProbeReport = serde_json::from_value(serde_json::json!({"version": "v", "results": []})).unwrap();
+        assert!(r.bad_sha256.is_none());
+        assert!(serde_json::to_value(&r).unwrap().get("bad_sha256").is_none());
+        let r = ProbeReport { bad_sha256: Some("ab".into()), ..r };
+        assert_eq!(serde_json::to_value(&r).unwrap()["bad_sha256"], "ab");
     }
 
     #[test]

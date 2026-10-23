@@ -130,8 +130,8 @@ export function useRouterDrawer() {
   return { id, tab, open, setTab, switchTo, close, openMachine };
 }
 
-/** 告警对象是路由：规则以 router_ 开头（subject.kind = "router"），点对象要开路由抽屉 */
-export const isRouterIncident = (i: { rule: string }) => i.rule.startsWith('router_');
+/** 告警对象是路由：软路由引擎写的（engine = "router"，subject.kind 同为 "router"），点对象要开路由抽屉 */
+export const isRouterIncident = (i: { engine: string }) => i.engine === 'router';
 /** 点告警对象开路由抽屉的哪一页：出口不通的直接开出口页签，其余开概览 */
 export const routerIncidentTab = (i: { rule: string }): RouterTab | undefined => (i.rule === 'router_exits_down' ? 'exits' : undefined);
 

@@ -165,7 +165,7 @@ export interface StreamEvent { type: string; id?: string }
  *  audit：抽屉里机器的操作记录，随改名、续费、退役等机器变更增加；['policies', 'list'] / ['policies', 'versions']：策略页的范围树列着各团队的节点、发布记录列着线路机名（名字、有没有入口），
  *  机器增减、改名换团队、团队改名都会改它（只有挂着的查询会重取，策略页没开时只是标成过期；不带发布确认框里的预览，免得框开着时内容在眼前变）；
  *  machine：这台的详情与机器列表里的这一台由 stream.ts 单独取回拼上（live.ts refreshMachine），这里不带；拼不上（改名、换团队、生命周期变了等）
- *  或页面在后台时才按 MACHINE_LIST_KEYS 整表失效——incidents / jobs 列表里带机器名，跟着重取让名字立刻跟上；
+ *  或页面在后台、机器列表和这台的详情都没人看时才按 MACHINE_LIST_KEYS 整表失效——incidents / jobs 列表里带机器名，跟着重取让名字立刻跟上；
  *  availability：近 N 天可用率按账单时区分天，改订阅（machine 事件）可能换了时区 */
 export function eventKeys(ev: StreamEvent): unknown[][] {
   switch (ev.type) {

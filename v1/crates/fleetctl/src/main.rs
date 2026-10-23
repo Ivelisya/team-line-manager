@@ -877,7 +877,8 @@ enum ProbeCmd {
         #[arg(value_parser = ["on", "off"])]
         state: String,
     },
-    /// 升级成中控 dist 里的 fleet-agent：探测点 30 秒内自己下载、核对、替换、重启；默认等它报上新版本
+    /// 升级成中控 dist 里的 fleet-agent：探测点 30 秒内自己下载、核对、替换、重启；默认等它报上新版本。
+    /// 这个版本在它上面换上后跑不起来过（自己换回了旧版本）时中控拒绝（409）：修好后发新版本再升级
     Upgrade {
         probe: String,
         #[arg(long)]

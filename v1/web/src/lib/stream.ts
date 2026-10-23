@@ -1,7 +1,8 @@
 // 实时流：WebSocket /api/v1/stream（JSON 文本帧）。
 // - metrics：实时指标增量，直接写进查询缓存（live.ts），不重取。
 // - 其余是资源变更通知：300ms 合并后按事件类型让对应查询失效（同一类型/同一 id 只算一次）；resync（服务端广播滞后）则全部失效。
-//   单台机器的 machine 事件只取这一台（/machines/{id}）拼回机器列表（live.ts refreshMachine），拼不上或页面在后台才整表失效。
+//   单台机器的 machine 事件只取这一台（/machines/{id}）拼回机器列表（live.ts refreshMachine），拼不上或页面在后台才整表失效；
+//   机器列表和这台的详情都没人看（设置页之类）时不取，只标过期（回到那些页面时再取）。同一台正在取时又来了事件，取完再取一次，不并发取同一台。
 //   整表（机器、线路机、总览、作业列表）的失效再合并成最多每 2 s 一次，且不打断在途的重取：批量上架时不至于每秒整表重取、请求被反复取消；
 //   事件到达之后才开始、并已成功取回的整表不再重取（它已经包含这次变更）——自己保存时写操作当场重取了一次，事件随后又会引起一次，这样只取一次。
 // - 断开后指数退避重连（1s → 30s 封顶，±20% 抖动，中控重启后各页面不同时涌进来），期间不轮询（顶栏显示已断开）；
@@ -57,6 +58,21 @@ export function useStream(enabled: boolean) {
       if (e.type === 'updated' && e.action.type === 'fetch' && LISTS.has(e.query.queryKey[0] as string)) fetchedAt.set(e.query.queryHash, Date.now());
     });
     const fresh = (q: Query, at: number) => { const t = fetchedAt.get(q.queryHash); return t != null && t > at && q.state.dataUpdatedAt >= t; };
+    // 单台取的时候有没有人看：机器列表（任何一种）或这台的详情挂着
+    const watched = (id: string) => qc.getQueryCache().findAll({ queryKey: ['machines'] }).some((q) => q.isActive()) || !!qc.getQueryCache().find({ queryKey: ['machine', id], exact: true })?.isActive();
+    // 正在取的单台 → 取的期间又来了事件（取完再取一次：在途的那份可能是这次变更之前的）
+    const refreshing = new Map<string, boolean>();
+    const refreshOne = (id: string) => {
+      if (refreshing.has(id)) { refreshing.set(id, true); return; }
+      refreshing.set(id, false);
+      const at = eventAt;
+      const full = () => MACHINE_LIST_KEYS.forEach((k) => queueList(k, JSON.stringify(k), at));
+      refreshMachine(qc, id).then((ok) => ok || full(), full).finally(() => {
+        const again = refreshing.get(id);
+        refreshing.delete(id);
+        if (again && !stopped) refreshOne(id);
+      });
+    };
     // 往前翻过页的分页列表（操作记录）：失效会把已加载的每一页依次重取，这里只标过期，回到页面 / 切回窗口时再取
     const deep = (q: Query) => ((q.state.data as { pages?: unknown[] } | undefined)?.pages?.length ?? 0) > 1;
 
@@ -72,19 +88,15 @@ export function useStream(enabled: boolean) {
         pending.forEach((ev) => {
           eventKeys(ev).forEach(add);
           if (ev.type !== 'machine' || !ev.id) return;
-          if (document.hidden) [['machine', ev.id], ...MACHINE_LIST_KEYS].forEach(add);
+          if (document.hidden || !watched(ev.id)) [['machine', ev.id], ...MACHINE_LIST_KEYS].forEach(add);
           else ones.push(ev.id);
         });
         keys.forEach((k, s) => {
           if (k.length > 1 && keys.has(JSON.stringify([k[0]]))) return;
           if (LISTS.has(k[0] as string)) queueList(k, s, eventAt); else inv(k);
         });
-        // 同一批里已经整表失效的（machines 事件）不用再取单台
-        if (!keys.has('["machines"]') && !keys.has('["machine"]')) {
-          const at = eventAt;
-          const full = () => MACHINE_LIST_KEYS.forEach((k) => queueList(k, JSON.stringify(k), at));
-          for (const id of ones) refreshMachine(qc, id).then((ok) => ok || full(), full);
-        }
+        // 同一批里所有单台都已失效的（machines 等事件）不用再取；整表要重取的，单台只让详情失效（随后的整表会带上它）
+        if (!keys.has('["machine"]')) for (const id of ones) if (keys.has('["machines"]')) inv(['machine', id]); else refreshOne(id);
       }
       pending.clear(); all = false;
     };

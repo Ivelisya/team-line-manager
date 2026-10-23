@@ -127,7 +127,8 @@ export function applyMetrics(qc: QueryClient, msg: MetricsMsg) {
 // machine 事件（作业步骤、连通性结论、续费、改订阅、三网 PING 设置……）只关乎一台：取 /machines/{id}（同时就是抽屉那份 ['machine', id]），
 // 替换列表里的这一台，它的入口在对端（节点 ↔ 线路机）列表项里的那份一起换（同一条入口两边是同一份视图）。
 // 名称、团队、编号、类型、生命周期、入口增减变了的（会牵动别的机器：同机 IP 节点的宿主机名、编号重排、退役移出列表）、
-// 列表里没有这台、或整表正在重取（回来的快照会盖掉这次的）时不拼，回 false 由调用方让整表失效
+// 是宿主机（同机 IP 节点的 agent 版本、状态取自它，列表里那几台要一起换）、列表里没有这台、或整表正在重取（回来的快照会盖掉这次的）时不拼，
+// 回 false 由调用方让整表失效（宿主机的同机 IP 节点各自的详情这里就失效）
 /** 正在取单台时收到的增量：取回后按顺序补上（同 missed，增量是绝对值，已含的再写一遍不变） */
 const sinks = new Set<MetricsMsg[]>();
 const shapeOf = (m: MachineView) => `${m.kind}|${m.name}|${m.team?.id}|${m.team?.name}|${m.number}|${m.lifecycle}|${m.entries.map((e) => e.id).join()}`;
@@ -142,6 +143,10 @@ export async function refreshMachine(qc: QueryClient, id: string): Promise<boole
     sinks.delete(got);
   }
   const m = got.reduce((x, msg) => patchMachine(x, msg), fresh);
+  if (m.ip_nodes.length) {
+    m.ip_nodes.forEach((n) => void qc.invalidateQueries({ queryKey: ['machine', n.id], exact: true }));
+    return false;
+  }
   const lists = qc.getQueryCache().findAll({ queryKey: ['machines'] });
   if (lists.some((q) => q.state.fetchStatus === 'fetching')) return false;
   const merged: [readonly unknown[], MachineView[]][] = [];

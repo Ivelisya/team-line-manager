@@ -16,6 +16,7 @@ use fleet_proto::{ApplyReport, Report, ReportAck};
 use serde::Deserialize;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 use time::{Date, OffsetDateTime};
@@ -45,24 +46,50 @@ struct AgentId {
 const TOKEN_OK_TTL: Duration = Duration::from_secs(30);
 /// 无效或已撤销的令牌记这么久：配错令牌、换了机器还在跑的旧 agent 不每次都查库
 const TOKEN_BAD_TTL: Duration = Duration::from_secs(10);
-/// 鉴权失败（令牌查库没查到）按来源 IP 限速：突发 30 次，之后每 2 秒一次。超过的回 429、不查库。
-/// 只有查库失败才扣：缓存里认得的令牌（有效的、记着无效的）不扣也不受限；验证通过过的令牌（`good`）缓存过期后也照常查库，
-/// 生产的 agent 经边缘机转发、来源 IP 是同一个，别人把这个 IP 的余额打光也挡不住合法 agent
+/// 鉴权失败（令牌查库没查到）按来源限速（`auth::ip_group`：IPv4 按地址，IPv6 按 /64，同登录限速）：突发 30 次，之后每 2 秒一次。
+/// 超过的回 429、不查库。只有查库失败才扣：缓存里认得的令牌（有效的、记着无效的）不扣也不受限；验证通过过的令牌（`good`）
+/// 缓存过期后也照常查库，生产的 agent 经边缘机转发、来源 IP 是同一个，别人把这个 IP 的余额打光也挡不住合法 agent
 const AUTH_FAIL_BURST: f64 = 30.0;
 const AUTH_FAIL_REFILL_PER_S: f64 = 0.5;
-/// 两张表超过这么多项时清掉过期的、补满的（换着令牌、换着 IP 乱发的请求撑不大它们）
+/// 两张表超过这么多项、又要插入新键时清掉过期的、补满的（换着令牌、换着来源乱发的请求撑不大它们）
 const AUTH_MAP_MAX: usize = 4096;
+/// 上面的清理最多这么久一次：清完还是满的（项都没过期）时，不让之后每个新键都在锁里把整张表扫一遍
+const AUTH_SWEEP_EVERY: Duration = Duration::from_secs(1);
 
 /// 令牌缓存的一项：(机器，None = 无效或已撤销; 查库的时刻)
 type TokenEntry = (Option<AgentId>, Instant);
+
+/// 有上限的表：满了、要插入新键时清一次（最多每 `AUTH_SWEEP_EVERY` 一次）
+struct Bounded<K, V> {
+    m: HashMap<K, V>,
+    swept: Option<Instant>,
+}
+
+impl<K, V> Default for Bounded<K, V> {
+    fn default() -> Self { Self { m: HashMap::new(), swept: None } }
+}
+
+impl<K: std::hash::Hash + Eq, V> Bounded<K, V> {
+    /// 要插入 `k` 之前：表满了、`k` 是新键、离上次清理够久，才按 `keep` 清一遍
+    fn make_room(&mut self, k: &K, now: Instant, keep: impl FnMut(&K, &mut V) -> bool) {
+        if self.m.len() < AUTH_MAP_MAX || self.m.contains_key(k) || self.swept.is_some_and(|t| now.saturating_duration_since(t) < AUTH_SWEEP_EVERY) {
+            return;
+        }
+        self.swept = Some(now);
+        self.m.retain(keep);
+    }
+}
 
 /// agent 令牌的鉴权缓存与失败限速（`AppState::agent_auth`）
 #[derive(Default)]
 pub struct AgentAuth {
     /// 令牌哈希 → 缓存项
-    tokens: Mutex<HashMap<Vec<u8>, TokenEntry>>,
-    /// 来源 IP → (鉴权失败的余额, 上次补充的时刻)；取不到来源 IP 的共用 None
-    fails: Mutex<HashMap<Option<IpAddr>, (f64, Instant)>>,
+    tokens: Mutex<Bounded<Vec<u8>, TokenEntry>>,
+    /// 撤销代数：每次 `forget` +1（拿着 `tokens` 的锁改）。查库前记下，查完代数变了（查的期间有令牌被撤销）就不缓存这次的有效结果：
+    /// 撤销提交之前查到「有效」、`forget` 之后才写回的，会把刚撤销的令牌又记成有效
+    revoked: AtomicU64,
+    /// 来源（`auth::ip_group`）→ (鉴权失败的余额, 上次补充的时刻)；取不到来源 IP 的共用 None
+    fails: Mutex<Bounded<Option<IpAddr>, (f64, Instant)>>,
     /// 验证通过过的令牌哈希 → 机器：撤销时 `forget` 去掉，最多每台机器一项，不随乱发的请求变大
     good: Mutex<HashMap<Vec<u8>, Uuid>>,
 }
@@ -71,15 +98,18 @@ impl AgentAuth {
     /// 缓存里的结果：Some(Some) 有效、Some(None) 记着无效，None 没记或过期
     fn cached(&self, hash: &[u8], now: Instant) -> Option<Option<AgentId>> {
         let m = lock(&self.tokens);
-        let (a, at) = m.get(hash)?;
+        let (a, at) = m.m.get(hash)?;
         let ttl = if a.is_some() { TOKEN_OK_TTL } else { TOKEN_BAD_TTL };
         (now.saturating_duration_since(*at) < ttl).then(|| a.clone())
     }
 
-    /// 要查库前：这个来源 IP 的失败余额补上，还有就放行（只看不扣，查库失败才 `remember` 里扣）；没了返回还要等几秒
+    /// 查库前记下撤销代数，查完交给 `remember`
+    fn generation(&self) -> u64 { self.revoked.load(Ordering::SeqCst) }
+
+    /// 要查库前：这个来源的失败余额补上，还有就放行（只看不扣，查库失败才 `remember` 里扣）；没了返回还要等几秒
     fn may_try(&self, ip: Option<IpAddr>, now: Instant) -> Result<(), u64> {
         let mut m = lock(&self.fails);
-        let Some((tokens, at)) = m.get_mut(&ip) else { return Ok(()) };
+        let Some((tokens, at)) = m.m.get_mut(&ip.map(crate::auth::ip_group)) else { return Ok(()) };
         *tokens = (*tokens + now.saturating_duration_since(*at).as_secs_f64() * AUTH_FAIL_REFILL_PER_S).min(AUTH_FAIL_BURST);
         *at = now;
         if *tokens < 1.0 {
@@ -91,33 +121,31 @@ impl AgentAuth {
     /// 验证通过过、没撤销的令牌：不受失败限速
     fn known(&self, hash: &[u8]) -> bool { lock(&self.good).contains_key(hash) }
 
-    /// 记下查库的结果；没查到的扣这个来源 IP 一次失败
-    fn remember(&self, hash: Vec<u8>, a: Option<AgentId>, ip: Option<IpAddr>, now: Instant) {
-        match &a {
-            Some(a) => {
-                lock(&self.good).insert(hash.clone(), a.machine_id);
-            }
-            None => {
-                lock(&self.good).remove(&hash);
-            }
-        }
+    /// 记下查库的结果（`gen`：查库前的撤销代数，查的期间有撤销的不记有效结果）；没查到的扣这个来源一次失败
+    fn remember(&self, hash: Vec<u8>, a: Option<AgentId>, gen: u64, ip: Option<IpAddr>, now: Instant) {
         if a.is_none() {
+            let ip = ip.map(crate::auth::ip_group);
             let mut m = lock(&self.fails);
-            if m.len() >= AUTH_MAP_MAX {
-                m.retain(|_, (t, at)| *t + now.saturating_duration_since(*at).as_secs_f64() * AUTH_FAIL_REFILL_PER_S < AUTH_FAIL_BURST);
-            }
-            m.entry(ip).or_insert((AUTH_FAIL_BURST, now)).0 -= 1.0;
+            m.make_room(&ip, now, |_, (t, at)| *t + now.saturating_duration_since(*at).as_secs_f64() * AUTH_FAIL_REFILL_PER_S < AUTH_FAIL_BURST);
+            m.m.entry(ip).or_insert((AUTH_FAIL_BURST, now)).0 -= 1.0;
         }
         let mut m = lock(&self.tokens);
-        if m.len() >= AUTH_MAP_MAX {
-            m.retain(|_, (a, at)| now.saturating_duration_since(*at) < if a.is_some() { TOKEN_OK_TTL } else { TOKEN_BAD_TTL });
+        if a.is_some() && self.revoked.load(Ordering::SeqCst) != gen {
+            return;
         }
-        m.insert(hash, (a, now));
+        match &a {
+            Some(a) => lock(&self.good).insert(hash.clone(), a.machine_id),
+            None => lock(&self.good).remove(&hash),
+        };
+        m.make_room(&hash, now, |_, (a, at)| now.saturating_duration_since(*at) < if a.is_some() { TOKEN_OK_TTL } else { TOKEN_BAD_TTL });
+        m.m.insert(hash, (a, now));
     }
 
-    /// 撤销了这台机器的令牌（事务提交之后调）：它缓存着的鉴权结果作废，下一个请求重新查库
+    /// 撤销了这台机器的令牌（事务提交之后调）：它缓存着的鉴权结果作废，下一个请求重新查库；正在查库的结果也不再缓存（撤销代数 +1）
     pub fn forget(&self, machine_id: Uuid) {
-        lock(&self.tokens).retain(|_, (a, _)| a.as_ref().is_none_or(|a| a.machine_id != machine_id));
+        let mut m = lock(&self.tokens);
+        self.revoked.fetch_add(1, Ordering::SeqCst);
+        m.m.retain(|_, (a, _)| a.as_ref().is_none_or(|a| a.machine_id != machine_id));
         lock(&self.good).retain(|_, id| *id != machine_id);
     }
 }
@@ -143,6 +171,7 @@ async fn authenticate(st: &AppState, h: &HeaderMap, ip: Option<IpAddr>) -> Resul
     if !st.agent_auth.known(&hash) {
         st.agent_auth.may_try(ip, now).map_err(|wait| too_many(wait, "鉴权失败"))?;
     }
+    let gen = st.agent_auth.generation();
     // 查令牌与刷新最近使用时间一次往返；最近使用时间一分钟内不重复写（缓存过期才来查，没必要每次都改这一行）
     let row: Option<(Uuid, String)> = sqlx::query_as(
         "with a as (select m.id, m.kind::text kind from agent_token t join machine m on m.id = t.machine_id
@@ -163,7 +192,7 @@ async fn authenticate(st: &AppState, h: &HeaderMap, ip: Option<IpAddr>) -> Resul
         ingest_error(e).into_response()
     })?;
     let a = row.map(|(machine_id, kind)| AgentId { machine_id, kind });
-    st.agent_auth.remember(hash, a.clone(), ip, now);
+    st.agent_auth.remember(hash, a.clone(), gen, ip, now);
     a.ok_or_else(revoked)
 }
 
@@ -760,8 +789,8 @@ mod tests {
     fn auth_cache_expires_forgets_and_limits_failures() {
         let (auth, t0, ip) = (AgentAuth::default(), Instant::now(), Some(IpAddr::from([203, 0, 113, 9])));
         let a = AgentId { machine_id: Uuid::now_v7(), kind: "relay".into() };
-        auth.remember(b"ok".to_vec(), Some(a.clone()), ip, t0);
-        auth.remember(b"bad".to_vec(), None, ip, t0);
+        auth.remember(b"ok".to_vec(), Some(a.clone()), 0, ip, t0);
+        auth.remember(b"bad".to_vec(), None, 0, ip, t0);
         assert!(auth.cached(b"ok", t0 + Duration::from_secs(29)).is_some_and(|x| x.is_some_and(|x| x.machine_id == a.machine_id)));
         assert!(auth.cached(b"ok", t0 + TOKEN_OK_TTL).is_none(), "有效的 30 秒后重查");
         assert!(matches!(auth.cached(b"bad", t0 + Duration::from_secs(9)), Some(None)));
@@ -772,17 +801,72 @@ mod tests {
         // 失败余额：只扣查库失败的；扣完要等，2 秒补一次；别的 IP 不受影响
         for i in 1..AUTH_FAIL_BURST as u32 {
             assert_eq!(auth.may_try(ip, t0), Ok(()));
-            auth.remember(format!("x{i}").into_bytes(), None, ip, t0);
+            auth.remember(format!("x{i}").into_bytes(), None, 0, ip, t0);
         }
         assert_eq!(auth.may_try(ip, t0), Err(2));
         assert_eq!(auth.may_try(ip, t0 + Duration::from_secs(2)), Ok(()));
         assert_eq!(auth.may_try(None, t0), Ok(()));
         // 验证通过过的令牌：缓存过期、来源 IP 余额打光也照常查库；撤销后不再算
         let b = AgentId { machine_id: Uuid::now_v7(), kind: "vps".into() };
-        auth.remember(b"good".to_vec(), Some(b.clone()), ip, t0);
+        let g = auth.generation();
+        auth.remember(b"good".to_vec(), Some(b.clone()), g, ip, t0);
         assert!(auth.cached(b"good", t0 + TOKEN_OK_TTL).is_none() && auth.known(b"good"));
         auth.forget(b.machine_id);
         assert!(!auth.known(b"good"));
+    }
+
+    /// 撤销与查库撞上：查库前记下的代数在撤销（`forget`）之后变了，查到的「有效」不写回缓存；之后查的照常缓存
+    #[test]
+    fn auth_result_from_before_revoke_is_not_cached() {
+        let (auth, t0) = (AgentAuth::default(), Instant::now());
+        let a = AgentId { machine_id: Uuid::now_v7(), kind: "vps".into() };
+        let g = auth.generation();
+        auth.forget(a.machine_id);
+        auth.remember(b"tok".to_vec(), Some(a.clone()), g, None, t0);
+        assert!(auth.cached(b"tok", t0).is_none() && !auth.known(b"tok"), "撤销前查到的有效结果不缓存");
+        auth.remember(b"tok".to_vec(), Some(a), auth.generation(), None, t0);
+        assert!(auth.cached(b"tok", t0).is_some_and(|x| x.is_some()) && auth.known(b"tok"));
+    }
+
+    /// 失败限速按来源分组：IPv6 同一个 /64 里换地址共用一份余额
+    #[test]
+    fn auth_failures_limited_per_v6_64() {
+        let (auth, t0) = (AgentAuth::default(), Instant::now());
+        let ip = |s: &str| Some(s.parse::<IpAddr>().unwrap());
+        for i in 0..AUTH_FAIL_BURST as u32 {
+            let src = ip(&format!("2001:db8:1:2::{:x}", i + 1));
+            assert_eq!(auth.may_try(src, t0), Ok(()));
+            auth.remember(format!("x{i}").into_bytes(), None, 0, src, t0);
+        }
+        assert!(auth.may_try(ip("2001:db8:1:2:ffff::9"), t0).is_err(), "同一个 /64 的新地址也没余额了");
+        assert_eq!(auth.may_try(ip("2001:db8:1:3::1"), t0), Ok(()), "别的 /64 不受影响");
+    }
+
+    /// 表满了：插入新键时才清，而且最多每秒一次；清不掉（都没过期）时之后的新键照样插入、不再每次扫
+    #[test]
+    fn full_table_swept_at_most_once_per_interval() {
+        let t0 = Instant::now();
+        let mut b: Bounded<u32, Instant> = Bounded::default();
+        let mut scans = 0;
+        let mut add = |k: u32, now: Instant| {
+            b.make_room(&k, now, |_, at| {
+                scans += 1;
+                now.saturating_duration_since(*at) < Duration::from_secs(10)
+            });
+            b.m.insert(k, now);
+        };
+        for k in 0..AUTH_MAP_MAX as u32 {
+            add(k, t0);
+        }
+        add(0, t0);
+        add(1_000_000, t0);
+        add(1_000_001, t0);
+        add(1_000_002, t0 + Duration::from_millis(500));
+        assert_eq!(scans, AUTH_MAP_MAX, "已有的键不清；满了只清一次，一秒内的新键不再扫");
+        assert_eq!(b.m.len(), AUTH_MAP_MAX + 3);
+        // 过了间隔、项都过期了：再插新键时清掉
+        b.make_room(&2_000_000, t0 + Duration::from_secs(11), |_, at| t0 + Duration::from_secs(11) - *at < Duration::from_secs(10));
+        assert!(b.m.is_empty());
     }
 
     #[test]

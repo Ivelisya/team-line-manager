@@ -29,14 +29,21 @@ async fn add_probe(t: &T, name: &str) -> (Uuid, String) {
     (id, tok)
 }
 
+/// 取安装脚本的限速（每个来源 10 分钟 20 次）是整个进程共用的：每次换一个来源地址，这一套里取的次数多了也不会被它挡住
 async fn raw_get(t: &T, path: &str) -> (StatusCode, String) {
     use axum::body::Body;
+    use axum::extract::ConnectInfo;
     use http_body_util::BodyExt;
+    use std::net::SocketAddr;
     use tower::ServiceExt;
-    let res = t.app.clone().oneshot(axum::http::Request::get(path).body(Body::empty()).unwrap()).await.unwrap();
+    let mut req = axum::http::Request::get(path).body(Body::empty()).unwrap();
+    req.extensions_mut().insert(ConnectInfo(SocketAddr::from(([198, 18, rand_byte(), rand_byte()], 40000))));
+    let res = t.app.clone().oneshot(req).await.unwrap();
     let st = res.status();
     (st, String::from_utf8_lossy(&res.into_body().collect().await.unwrap().to_bytes()).into_owned())
 }
+
+fn rand_byte() -> u8 { Uuid::new_v4().as_bytes()[0] }
 
 /// 探测点上报一轮。`ok`：每台线路机通不通（端口取目标里第一个）。同一个探测点两份至少隔 10 秒：上报前把最近上报往前挪
 async fn report(t: &T, id: Uuid, tok: &str, results: &[(Uuid, u16, bool, Option<f32>)]) -> (StatusCode, Value) {
@@ -279,6 +286,43 @@ async fn failed_upgrade_is_not_retried() {
     report_json(&t, id, &tok, json!({"version": "0.1.0+new", "sha256": sha, "results": []})).await;
     let p = &t.get("/api/v1/probe-points").await[0];
     assert_eq!((p["upgrade"].clone(), p["upgrade_failed"].clone(), p["version"].clone()), (Value::Null, Value::Null, json!("0.1.0+new")), "{p}");
+}
+
+/// 探测点报上它记着的坏版本（换上过、没能上报、自己换回来了；它不会再换、也不下载）：要它升级到的正是这个时当场记成升级失败、不再下发；
+/// 手动再升级到这个版本 409（说明修好后发新版本）；dist 换了新版本照常下发；之后的上报不再带它（重装过、或换回了旧探测点）记录就清掉
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reported_bad_version_fails_upgrade_at_once() {
+    let t = setup().await;
+    let (id, tok) = add_probe(&t, "香港").await;
+    report(&t, id, &tok, &[]).await;
+    common::dist_agent(&t, "0.1.0+bad");
+    let sha = t.post(&format!("/api/v1/probe-points/{id}/upgrade"), json!({})).await["sha256"].as_str().unwrap().to_string();
+    // 报的坏版本不是这个：照旧下发
+    report_json(&t, id, &tok, json!({"version": "0.1.0+test", "bad_sha256": "00", "results": []})).await;
+    assert_eq!(t.req("GET", "/agent/v1/probe/targets", None, Some(&tok)).await.1["upgrade"]["sha256"], json!(sha));
+    // 正是这个：不等下载，当场记失败、清掉升级请求
+    let (s, v) = report_json(&t, id, &tok, json!({"version": "0.1.0+test", "sha256": "11", "bad_sha256": sha, "results": []})).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(t.req("GET", "/agent/v1/probe/targets", None, Some(&tok)).await.1.get("upgrade").is_none());
+    let p = &t.get("/api/v1/probe-points").await[0];
+    assert_eq!((p["upgrade"].clone(), p["upgrade_failed"]["sha256"].clone(), p["upgrade_failed"]["to"].clone(), p["upgrade_failed"]["from"].clone()), (Value::Null, json!(sha), json!("0.1.0+bad"), json!("0.1.0+test")), "{p}");
+    // 手动再升级到同一个版本：409，什么都不改
+    let (s, v) = t.req("POST", &format!("/api/v1/probe-points/{id}/upgrade"), Some(json!({})), None).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().contains("跑不起来过"), "{v}");
+    assert!(t.get("/api/v1/probe-points").await[0]["upgrade_failed"].is_object());
+    // 发了新版本：照常下发
+    common::dist_agent(&t, "0.1.0+fixed");
+    let fixed = t.post(&format!("/api/v1/probe-points/{id}/upgrade"), json!({})).await["sha256"].as_str().unwrap().to_string();
+    assert_ne!(fixed, sha);
+    report_json(&t, id, &tok, json!({"version": "0.1.0+test", "sha256": "11", "bad_sha256": sha, "results": []})).await;
+    assert_eq!(t.req("GET", "/agent/v1/probe/targets", None, Some(&tok)).await.1["upgrade"]["sha256"], json!(fixed));
+    // 之后的上报不带坏版本（重装过、标记删了）：记录跟着清掉，又能升到原来那个
+    common::dist_agent(&t, "0.1.0+bad");
+    sqlx::query("update probe_point set bad_sha256 = $2 where id = $1").bind(id).bind(&sha).execute(&t.st.db).await.unwrap();
+    assert_eq!(t.req("POST", &format!("/api/v1/probe-points/{id}/upgrade"), Some(json!({})), None).await.0, StatusCode::CONFLICT);
+    report_json(&t, id, &tok, json!({"version": "0.1.0+test", "results": []})).await;
+    assert_eq!(t.req("POST", &format!("/api/v1/probe-points/{id}/upgrade"), Some(json!({})), None).await.0, StatusCode::OK, "旧探测点不带 bad_sha256：记录跟着清掉");
 }
 
 /// 停用过的探测点重新启用：最近被采纳从启用那一刻算起（停用期间照收心跳、不测，last_kept_at 停在停用前），

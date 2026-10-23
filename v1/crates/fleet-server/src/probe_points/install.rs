@@ -248,7 +248,7 @@ async fn run_ssh(st: &AppState, id: Uuid, host: &str, port: u16, reset: bool, na
     t.push(&st.cfg.dist_dir.join("fleet-agent"), "/opt/fleet/fleet-agent", "755", Duration::from_secs(300)).await.map_err(|e| format!("{e:#}"))?;
     step(st, id, "安装服务").await;
     let token = crate::crypto::random_token(32);
-    sqlx::query("update probe_point set token_hash = $2, upgrade_sha256 = null, upgrade_fetched_at = null, upgrade_failed = null, updated_at = now() where id = $1")
+    sqlx::query("update probe_point set token_hash = $2, upgrade_sha256 = null, upgrade_fetched_at = null, upgrade_failed = null, bad_sha256 = null, updated_at = now() where id = $1")
         .bind(id)
         .bind(crate::crypto::sha256(token.as_bytes()))
         .execute(&st.db)
@@ -348,7 +348,7 @@ pub async fn fetch(st: &AppState, ip: Option<std::net::IpAddr>, token: &str) -> 
     let mut tx = st.db.begin().await?;
     let row: Option<(Uuid, String)> = sqlx::query_as(
         "update probe_point set bootstrap_token_hash = null, bootstrap_expires_at = null, token_hash = $2, upgrade_sha256 = null,
-               upgrade_fetched_at = null, upgrade_failed = null, updated_at = now()
+               upgrade_fetched_at = null, upgrade_failed = null, bad_sha256 = null, updated_at = now()
          where bootstrap_token_hash = $1 and bootstrap_expires_at > now() returning id, name",
     )
     .bind(crate::crypto::sha256(token.as_bytes()))
