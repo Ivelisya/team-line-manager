@@ -215,6 +215,7 @@ pub async fn boot_in(dir: tempfile::TempDir, background: bool, extra: &str) -> T
            routers.control_dir = "{d}/ssh-ctl"
            routers.sshd_host_key = "{d}/ssh_host_ed25519_key.pub"
            fx.auto = false
+           notify.group_wait_s = 0
            {extra}"#
     ))
     .unwrap();

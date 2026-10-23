@@ -7,6 +7,7 @@
 //!
 //! 触发时机在 `alerts.rs`（中控自身的告警在 `selfmon.rs`）；这里管「给定一条通知，排进所有符合条件的渠道、发出去，并记 `notify_log`」。
 //! 待发的写在库里（`notify_outbox`）：中控重启、部署后接着发；失败的按退避重试，入队满 30 分钟还没发出才放弃。
+//! 机器、软路由同一规则的几台同时触发（或恢复）合成一条消息发（`drain_queue`），发送记录仍每条告警各记一条。
 
 use crate::state::AppState;
 use futures::FutureExt;
@@ -206,19 +207,97 @@ pub fn format_wecom(n: &Notice) -> String {
     )
 }
 
-/// 通用 webhook 的 JSON 体
-pub fn webhook_body(n: &Notice) -> Value {
+// ── 合并的一批（同一规则的几台同时触发 / 恢复，见 `drain_queue`）──────────────────
+
+/// 合并的消息里最多列出这么多台，其余写「另 N 台」
+const LIST_MAX: usize = 10;
+
+/// 一批里最高的级别
+fn top_severity(ns: &[Notice]) -> &str { ns.iter().map(|n| n.severity.as_str()).max_by_key(|s| crate::alerts::rank(s)).unwrap_or("info") }
+
+/// `告警触发：3 台 出口不通`
+fn group_title(ns: &[Notice]) -> String {
+    let what = if ns[0].kind == Kind::Resolved { "告警已恢复" } else { "告警触发" };
+    format!("{what}：{} 台 {}", ns.len(), crate::meta::rule_label_of(&ns[0].rule, top_severity(ns)))
+}
+
+/// 列出的那几台：(对象名, 摘要；恢复的带持续时长)，加上没列出的台数
+fn group_items(ns: &[Notice]) -> (Vec<(&str, String)>, usize) {
+    let items = ns
+        .iter()
+        .take(LIST_MAX)
+        .map(|n| {
+            let last = match (n.kind, n.opened_at) {
+                (Kind::Resolved, Some(o)) => format!("（持续 {}）", fmt_duration((n.at - o).whole_seconds())),
+                _ => String::new(),
+            };
+            (n.machine.as_str(), format!("{}{last}", n.summary.chars().take(200).collect::<String>()))
+        })
+        .collect();
+    (items, ns.len().saturating_sub(LIST_MAX))
+}
+
+/// 纯文本，一条或合并的一批
+pub fn text_of(ns: &[Notice]) -> String {
+    if let [n] = ns {
+        return format_text(n);
+    }
+    let (items, more) = group_items(ns);
+    let mut lines = vec![format!("【{}】{}", crate::meta::severity_label(top_severity(ns)), group_title(ns))];
+    lines.extend(items.into_iter().map(|(m, s)| format!("· {m}：{s}")));
+    if more > 0 {
+        lines.push(format!("另 {more} 台"));
+    }
+    lines.push(format!("时间：{}", when(ns[0].at)));
+    lines.join("\n")
+}
+
+/// 企业微信 markdown，一条或合并的一批（群机器人一条最多 4096 字节：每台的摘要截得比单条短）
+pub fn wecom_of(ns: &[Notice]) -> String {
+    if let [n] = ns {
+        return format_wecom(n);
+    }
+    let color = if ns[0].kind == Kind::Resolved { "info" } else { "warning" };
+    let (items, more) = group_items(ns);
+    let mut lines = vec![format!("### <font color=\"{color}\">【{}】{}</font>", crate::meta::severity_label(top_severity(ns)), md(&group_title(ns), 80))];
+    lines.extend(items.into_iter().map(|(m, s)| format!("> **{}**：{}", md(m, 32), md(&s, 70))));
+    if more > 0 {
+        lines.push(format!("> 另 {more} 台"));
+    }
+    lines.push(format!("> 时间：{}", when(ns[0].at)));
+    lines.join("\n")
+}
+
+/// 通用 webhook 的 JSON 体：顶层字段是第一条的（只有一条时就是它），`severity` 取最高；`items` 列出每一条（只有一条时也有），`count` 是条数
+pub fn webhook_body(ns: &[Notice]) -> Value {
+    let n = &ns[0];
+    let sev = top_severity(ns);
+    let items: Vec<Value> = ns
+        .iter()
+        .map(|n| {
+            json!({
+                "incident_id": n.incident_id,
+                "severity": n.severity,
+                "machine": n.machine,
+                "summary": n.summary,
+                "time": crate::meta::fmt_ts(n.at),
+                "time_beijing": crate::meta::org_time(n.at),
+            })
+        })
+        .collect();
     json!({
         "event": n.kind.as_str(),
         "incident_id": n.incident_id,
         "rule": n.rule,
-        "rule_name": crate::meta::rule_label_of(&n.rule, &n.severity),
-        "severity": n.severity,
+        "rule_name": crate::meta::rule_label_of(&n.rule, sev),
+        "severity": sev,
         "machine": n.machine,
         "summary": n.summary,
         "time": crate::meta::fmt_ts(n.at),
         "time_beijing": crate::meta::org_time(n.at),
-        "text": format_text(n),
+        "text": text_of(ns),
+        "count": ns.len(),
+        "items": items,
     })
 }
 
@@ -409,9 +488,9 @@ fn retry_after(header: Option<&str>, body: &Value) -> Option<Duration> {
     Some(Duration::from_secs(secs).min(MAX_RETRY_AFTER))
 }
 
-/// 发一条通知到一个渠道（只发一次）。错误文本里不带令牌（reqwest 错误会带 URL，这里去掉）。
+/// 发一条通知（或合并的一批，见 `drain_queue`）到一个渠道（只发一次）。错误文本里不带令牌（reqwest 错误会带 URL，这里去掉）。
 /// 渠道的回复只取 HTTP 状态和它 JSON 里的错误说明（截短），不记原始响应体：发送记录 read 密钥也能看
-async fn send_once(kind: &str, config: &Value, n: &Notice, allow_private: bool) -> Result<(), SendErr> {
+async fn send_once(kind: &str, config: &Value, ns: &[Notice], allow_private: bool) -> Result<(), SendErr> {
     let cfg = normalize_config(kind, config).map_err(SendErr::fatal)?;
     check_destination(&cfg, allow_private).map_err(SendErr::fatal)?;
     let c = client(allow_private);
@@ -419,13 +498,13 @@ async fn send_once(kind: &str, config: &Value, n: &Notice, allow_private: bool) 
         "telegram" => {
             let base = cfg["api_base"].as_str().unwrap_or(TELEGRAM_BASE);
             let url = format!("{base}/bot{}/sendMessage", cfg["bot_token"].as_str().unwrap_or_default());
-            (c.post(url).json(&json!({"chat_id": cfg["chat_id"], "text": format_text(n), "disable_web_page_preview": true})), "telegram")
+            (c.post(url).json(&json!({"chat_id": cfg["chat_id"], "text": text_of(ns), "disable_web_page_preview": true})), "telegram")
         }
         "wecom" => {
             let url = cfg["url"].as_str().unwrap_or_default();
-            (c.post(url).json(&json!({"msgtype": "markdown", "markdown": {"content": format_wecom(n)}})), "wecom")
+            (c.post(url).json(&json!({"msgtype": "markdown", "markdown": {"content": wecom_of(ns)}})), "wecom")
         }
-        _ => (c.post(cfg["url"].as_str().unwrap_or_default()).json(&webhook_body(n)), "webhook"),
+        _ => (c.post(cfg["url"].as_str().unwrap_or_default()).json(&webhook_body(ns)), "webhook"),
     };
     let res = req.send().await.map_err(|e| {
         // 最里层的原因（连接被拒、只解析到内网地址…），reqwest 自己的文字只有「error sending request」
@@ -461,9 +540,9 @@ struct Channel {
 
 /// 发一次，并记下渠道的连续失败状态（`notify_channel.failing_since / fail_count / last_error`：发成功清零，失败累加；
 /// 连续失败满 5 分钟开告警，见 selfmon.rs）。渠道测试也算：测试发成功了，渠道就算恢复了
-async fn attempt(st: &AppState, ch: &Channel, n: &Notice) -> Result<(), SendErr> {
+async fn attempt(st: &AppState, ch: &Channel, ns: &[Notice]) -> Result<(), SendErr> {
     let res = match st.secrets.open_str(&ch.config_enc).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok()) {
-        Some(cfg) => send_once(&ch.kind, &cfg, n, st.cfg.notify.allow_private).await,
+        Some(cfg) => send_once(&ch.kind, &cfg, ns, st.cfg.notify.allow_private).await,
         None => Err(SendErr::fatal("渠道配置无法解密（密钥变了？）")),
     };
     let q = match &res {
@@ -514,7 +593,7 @@ async fn got_firing(st: &AppState, ch: Uuid, incident: Option<Uuid>) -> sqlx::Re
     Ok(last.is_some_and(|k| k != "resolved"))
 }
 
-/// 一个渠道排在最前面的一条待发，连同渠道此刻的配置（排队期间渠道可能被改、停用：发送时以库里的当前配置为准）
+/// 一个渠道排在最前面的一条待发，连同渠道此刻的配置（排队期间渠道可能被改、停用：发送时以库里的当前配置为准）和告警的引擎
 #[derive(sqlx::FromRow)]
 struct Pending {
     id: i64,
@@ -525,7 +604,22 @@ struct Pending {
     enabled: bool,
     fail_count: i32,
     last_error: Option<String>,
+    engine: Option<String>,
 }
+
+/// 合并的一批最多等到首条入队后这么久
+const GROUP_MAX_WAIT: time::Duration = time::Duration::seconds(60);
+
+/// 能合并的：机器、软路由告警的触发与恢复（中控自身、探测点的，提醒、静默变更这些照旧一条一条发）
+fn groupable(p: &Pending) -> bool {
+    matches!(p.notice.0.kind, Kind::Firing | Kind::Resolved) && matches!(p.engine.as_deref(), Some("machine" | "router"))
+}
+
+/// 同一渠道里和排头（`$2` 引擎、`$3` 种类、`$4` 规则）合成一批的：入队不晚于排头 60 秒（`$5`）；同一条告警前面还排着别的种类（触发后面跟着恢复）的不并进来，免得顺序颠倒
+const GROUP_SQL: &str = "select o.id, o.notice, o.created_at from notify_outbox o join incident i on i.id = o.incident_id
+     where o.channel_id = $1 and i.engine = $2 and o.notice->>'kind' = $3 and o.notice->>'rule' = $4 and o.created_at <= $5
+       and not exists (select 1 from notify_outbox e where e.channel_id = o.channel_id and e.incident_id = o.incident_id and e.id < o.id and e.notice->>'kind' <> $3)
+     order by o.id limit 200";
 
 /// 一个渠道的发送任务：按入队顺序逐条发，发完（没有待发的了）就退出。读写库出错时歇 5 秒再退出，交回发送循环重新起（不空转）
 async fn drain(st: &AppState, ch: Uuid) {
@@ -536,12 +630,17 @@ async fn drain(st: &AppState, ch: Uuid) {
 }
 
 /// 可重试的失败（网络错误、5xx、429）退避后重发同一条，后面的接着排（保证顺序）；渠道拒绝、配置有误之类重试也没用的记失败、发下一条；
-/// 入队满 MAX_AGE 还没发出的放弃。恢复通知只发给收到过这条告警触发的渠道。渠道停用了就丢掉它排着的（再启用后只发新的），删了的随外键一起没了
+/// 入队满 MAX_AGE 还没发出的放弃。恢复通知只发给收到过这条告警触发的渠道。渠道停用了就丢掉它排着的（再启用后只发新的），删了的随外键一起没了。
+///
+/// 合并：排头是机器 / 软路由告警的触发或恢复时，同一引擎、同一种类、同一规则、入队不晚于排头 60 秒的合成一条消息发（`GROUP_SQL`）。
+/// 为此先等：最近一条同类入队后 `[notify] group_wait_s`（默认 20 秒）没有新的，或排头入队满 60 秒，就发——严重的也最多因此晚 60 秒，
+/// 排在后面的跟着等。发送记录仍每条告警各记一条（恢复只发给收到过触发的渠道看它）
 async fn drain_queue(st: &AppState, ch: Uuid) -> sqlx::Result<()> {
+    let quiet = time::Duration::seconds(st.cfg.notify.group_wait_s as i64);
     loop {
         let p: Option<Pending> = sqlx::query_as(
-            "select o.id, o.notice, o.created_at, c.kind, c.config_enc, c.enabled, c.fail_count, c.last_error
-             from notify_outbox o join notify_channel c on c.id = o.channel_id
+            "select o.id, o.notice, o.created_at, c.kind, c.config_enc, c.enabled, c.fail_count, c.last_error, i.engine
+             from notify_outbox o join notify_channel c on c.id = o.channel_id left join incident i on i.id = o.incident_id
              where o.channel_id = $1 order by o.id limit 1",
         )
         .bind(ch)
@@ -552,17 +651,47 @@ async fn drain_queue(st: &AppState, ch: Uuid) -> sqlx::Result<()> {
             sqlx::query("delete from notify_outbox where channel_id = $1").bind(ch).execute(&st.db).await?;
             return Ok(());
         }
-        let n = &p.notice.0;
+        let head = &p.notice.0;
+        let mut batch: Vec<(i64, Notice)> = if groupable(&p) {
+            let rows: Vec<(i64, sqlx::types::Json<Notice>, OffsetDateTime)> = sqlx::query_as(GROUP_SQL)
+                .bind(ch)
+                .bind(&p.engine)
+                .bind(head.kind.as_str())
+                .bind(&head.rule)
+                .bind(p.created_at + GROUP_MAX_WAIT)
+                .fetch_all(&st.db)
+                .await?;
+            let newest = rows.iter().map(|r| r.2).max().unwrap_or(p.created_at);
+            let wait = (p.created_at + GROUP_MAX_WAIT).min(newest + quiet) - OffsetDateTime::now_utc();
+            if wait.is_positive() {
+                tokio::time::sleep(wait.try_into().unwrap_or_default()).await;
+                continue;
+            }
+            rows.into_iter().map(|(id, n, _)| (id, n.0)).collect()
+        } else {
+            vec![(p.id, head.clone())]
+        };
         // 这个渠道没收到过这条告警的触发（触发没发出去，或渠道是后来才加的、后来才收这个级别的）：不发恢复，删掉就是
-        if n.kind == Kind::Resolved && !got_firing(st, ch, n.incident_id).await? {
-            sqlx::query("delete from notify_outbox where id = $1").bind(p.id).execute(&st.db).await?;
+        if head.kind == Kind::Resolved {
+            let mut kept = Vec::with_capacity(batch.len());
+            for (id, n) in batch {
+                if got_firing(st, ch, n.incident_id).await? {
+                    kept.push((id, n));
+                } else {
+                    sqlx::query("delete from notify_outbox where id = $1").bind(id).execute(&st.db).await?;
+                }
+            }
+            batch = kept;
+        }
+        if batch.is_empty() {
             continue;
         }
         let err = if OffsetDateTime::now_utc() - p.created_at > MAX_AGE {
             Some(short(&format!("入队 {} 分钟还没发出，放弃（最近一次失败：{}）", MAX_AGE.as_secs() / 60, p.last_error.as_deref().unwrap_or("-"))))
         } else {
             let c = Channel { id: ch, kind: p.kind, config_enc: p.config_enc };
-            match attempt(st, &c, n).await {
+            let ns: Vec<Notice> = batch.iter().map(|b| b.1.clone()).collect();
+            match attempt(st, &c, &ns).await {
                 Ok(()) => None,
                 Err(e) if e.retry => {
                     let backoff = RETRY_BACKOFF[(p.fail_count.max(0) as usize).min(RETRY_BACKOFF.len() - 1)];
@@ -572,10 +701,12 @@ async fn drain_queue(st: &AppState, ch: Uuid) -> sqlx::Result<()> {
                 Err(e) => Some(e.msg),
             }
         };
-        // 发出去了（或放弃了）就要记下、删掉这条。库写不进去（磁盘满之类）时隔 10 秒再写，不退出：退出会被重新领走、把已经发出的再发一遍
-        while let Err(e) = record(st, Some(p.id), ch, n, err.as_deref()).await {
-            tracing::warn!(channel = %ch, "写通知记录失败，10 秒后再写：{e}");
-            tokio::time::sleep(Duration::from_secs(10)).await;
+        // 发出去了（或放弃了）就要记下、删掉这批（每条告警各记一条）。库写不进去（磁盘满之类）时隔 10 秒再写，不退出：退出会被重新领走、把已经发出的再发一遍
+        for (id, n) in &batch {
+            while let Err(e) = record(st, Some(*id), ch, n, err.as_deref()).await {
+                tracing::warn!(channel = %ch, "写通知记录失败，10 秒后再写：{e}");
+                tokio::time::sleep(Duration::from_secs(10)).await;
+            }
         }
     }
 }
@@ -672,7 +803,7 @@ pub async fn send_test(st: &AppState, channel_id: Uuid) -> Result<(), String> {
         at: OffsetDateTime::now_utc(),
         opened_at: None,
     };
-    let res = attempt(st, &ch, &n).await.map_err(|e| e.msg);
+    let res = attempt(st, &ch, std::slice::from_ref(&n)).await.map_err(|e| e.msg);
     if let Err(e) = record(st, None, ch.id, &n, res.as_ref().err().map(String::as_str)).await {
         tracing::warn!("写通知记录失败：{e}");
     }
@@ -716,7 +847,7 @@ mod tests {
         assert!(w.starts_with("### <font color=\"warning\">【严重】告警触发</font>"), "{w}");
         assert!(w.contains("> 机器：**团队1-02**") && w.contains("> 规则：出口不通"));
         assert!(format_wecom(&notice(Kind::Resolved)).contains("color=\"info\""));
-        let b = webhook_body(&notice(Kind::Firing));
+        let b = webhook_body(&[notice(Kind::Firing)]);
         assert_eq!(b["event"], "firing");
         assert_eq!(b["rule"], "egress_fail");
         assert_eq!(b["rule_name"], "出口不通");
@@ -724,6 +855,7 @@ mod tests {
         assert_eq!(b["time_beijing"], "2026-10-20 15:04:05");
         assert_eq!(b["time"], "2026-10-20T07:04:05Z");
         assert!(b["text"].as_str().unwrap().contains("团队1-02"));
+        assert_eq!((b["count"].as_u64(), b["items"][0]["machine"].as_str()), (Some(1), Some("团队1-02")));
     }
 
     #[test]
@@ -752,7 +884,7 @@ mod tests {
         assert!(t.ends_with("\n时间：2026-10-20 15:04:05（北京时间）"), "{t}");
         let w = format_wecom(&n);
         assert!(w.contains("\n> 对象：全部机器（全部规则）\n> 备注：换 ＊＊内核＊＊ ［点我］（http://x）\n> 时间："), "{w}");
-        assert_eq!((webhook_body(&n)["event"].as_str(), webhook_body(&n)["machine"].as_str()), (Some("silence"), Some("全部机器")));
+        assert_eq!((webhook_body(std::slice::from_ref(&n))["event"].as_str(), webhook_body(std::slice::from_ref(&n))["machine"].as_str()), (Some("silence"), Some("全部机器")));
     }
 
     #[test]
@@ -770,7 +902,7 @@ mod tests {
         assert!(t.starts_with("【自动回收】备用-03\n备用节点已过期满 1 天（到期日 2026-10-20）：已自动发起退役\n时间："), "{t}");
         let w = format_wecom(&n);
         assert!(w.starts_with("### <font color=\"warning\">【自动回收】备用-03</font>\n> 备用节点已过期满 1 天（到期日 2026-10-20）：已自动发起退役\n> 时间："), "{w}");
-        assert_eq!(webhook_body(&n)["event"], "auto");
+        assert_eq!(webhook_body(std::slice::from_ref(&n))["event"], "auto");
         assert!(Kind::Auto.to_all() && Kind::Silence.to_all() && !Kind::Firing.to_all());
     }
 
