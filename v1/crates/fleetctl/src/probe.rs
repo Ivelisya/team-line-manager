@@ -297,7 +297,6 @@ mod tests {
 
     #[test]
     fn list_row_wording() {
-        crate::meta::test_init();
         let p = json!({
             "id": "01a162a9-39c4-752c-b647-e61f34ef48bd", "name": "香港", "primary": true, "state": "online", "last_seen_at": "2026-10-22T08:10:54Z",
             "version": "0.1.0+abc", "last_ip": "47.0.0.1", "install": {"state": "done"}, "upgrade": null,

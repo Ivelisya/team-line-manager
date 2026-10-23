@@ -157,7 +157,6 @@ mod tests {
 
     #[test]
     fn current_table_wording() {
-        crate::meta::test_init();
         let p = json!({"mode": "tcp", "slots": [{"slot": 0, "source": "global"}, {"slot": 1, "source": "override"}], "current": [
             {"slot": 0, "name": "武汉电信", "target": "hb-ct-v4.ip.zstaticcdn.com", "mode": "tcp", "cur_ms": 158.4, "cur_loss": 0.0},
             {"slot": 1, "name": "联通 9929", "target": "203.0.113.9", "mode": "tcp", "cur_ms": null, "cur_loss": 100.0}
