@@ -240,10 +240,9 @@ async fn upgrade_keeps_prev_and_waits_for_the_new_version() {
     assert!(read(&bin).contains("0.1.0+new") && read(&prev).contains("0.1.0+old"), ".prev 留着，下次升级覆盖");
 }
 
-/// 新版本 2 分钟没有上报：换回 .prev 并重启，作业失败、写明回滚到哪个版本；重试从推送重来；
-/// 机器上没有 .prev（换不回去）时写明要人工处理
+/// 新版本起不来就换回旧版本。没上报：等满 2 分钟后换回 .prev 并重启，作业失败、写明回滚到哪个版本，重试从推送重来，机器上没有 .prev（换不回去）时写明要人工处理；起来就退出（主进程号一直在变）：推送那一步当场换回去，回滚脚本重跑结果相同
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn silent_new_version_is_rolled_back() {
+async fn new_version_that_fails_is_rolled_back() {
     let t = setup(false).await;
     let (m, root) = machine(&t, "192.0.2.12", "0.1.0+old", "0.1.0+new").await;
     let (bin, prev) = (root.join("usr/local/bin/fleet-agent"), root.join("usr/local/bin/fleet-agent.prev"));
@@ -275,26 +274,24 @@ async fn silent_new_version_is_rolled_back() {
         "{err}"
     );
     assert_eq!((j["state"].as_str(), restarts(&root)), (Some("failed"), 3));
-}
+    // 起来就退出
+    {
+        let t = setup(false).await;
+        let (m, root) = machine(&t, "192.0.2.13", "0.1.0+old", "0.1.0+crash").await;
+        let job = upgrade(&t, m).await;
+        let j = run_round(&t, &job).await;
+        assert_eq!(j["state"], "failed", "{j}");
+        assert_eq!(j["error"], "推送并重启 agent：新版本 0.1.0+crash 起不来（主进程起来就退出），已回滚到 0.1.0+old");
+        assert_eq!(j["steps"][0]["error_kind"], "remote");
+        assert!(read(&root.join("usr/local/bin/fleet-agent")).contains("0.1.0+old"));
+        assert_eq!(restarts(&root), 2);
 
-/// 新版本起来就退出（主进程号一直在变）：推送那一步当场换回去
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn crashing_new_version_is_rolled_back_at_once() {
-    let t = setup(false).await;
-    let (m, root) = machine(&t, "192.0.2.13", "0.1.0+old", "0.1.0+crash").await;
-    let job = upgrade(&t, m).await;
-    let j = run_round(&t, &job).await;
-    assert_eq!(j["state"], "failed", "{j}");
-    assert_eq!(j["error"], "推送并重启 agent：新版本 0.1.0+crash 起不来（主进程起来就退出），已回滚到 0.1.0+old");
-    assert_eq!(j["steps"][0]["error_kind"], "remote");
-    assert!(read(&root.join("usr/local/bin/fleet-agent")).contains("0.1.0+old"));
-    assert_eq!(restarts(&root), 2);
-
-    // 回滚脚本再跑一遍（换完之后连接断了、ssh 重试）：结果相同
-    let ssh = fleet_server::ssh::Target { ip: "192.0.2.13".into(), port: 22, key: "/nonexistent".into(), known_hosts: t.dir.path().join("known_hosts"), password: None };
-    let o = ssh.run(&jobs::scripts::agent_rollback(), std::time::Duration::from_secs(30)).await.unwrap();
-    assert_eq!((o.code, o.kv("agent"), o.kv("version")), (0, Some("active"), Some("0.1.0+old")), "{o:?}");
-    assert!(read(&root.join("usr/local/bin/fleet-agent")).contains("0.1.0+old") && read(&root.join("usr/local/bin/fleet-agent.prev")).contains("0.1.0+old"));
+        // 回滚脚本再跑一遍（换完之后连接断了、ssh 重试）：结果相同
+        let ssh = fleet_server::ssh::Target { ip: "192.0.2.13".into(), port: 22, key: "/nonexistent".into(), known_hosts: t.dir.path().join("known_hosts"), password: None };
+        let o = ssh.run(&jobs::scripts::agent_rollback(), std::time::Duration::from_secs(30)).await.unwrap();
+        assert_eq!((o.code, o.kv("agent"), o.kv("version")), (0, Some("active"), Some("0.1.0+old")), "{o:?}");
+        assert!(read(&root.join("usr/local/bin/fleet-agent")).contains("0.1.0+old") && read(&root.join("usr/local/bin/fleet-agent.prev")).contains("0.1.0+old"));
+    }
 }
 
 /// `by` 版本的 agent 报的正常的 Xray 状态（在跑、已应用到代数 3）
@@ -379,9 +376,9 @@ async fn upgrade_all(t: &T) -> Vec<String> {
     up["jobs"].as_array().unwrap().iter().map(|j| j["job_id"].as_str().unwrap().to_string()).collect()
 }
 
-/// 「全部升级」：新版本在金丝雀上没上报、换回了旧版本，其余作业一步都不做，直接取消，原因写明是哪台（沿着编排一路传下去）；机器随即空出来
+/// 「全部升级」金丝雀失败：新版本没上报、换回了旧版本，其余作业一步都不做，直接取消，原因写明是哪台（沿着编排一路传下去），机器随即空出来；推送之前就失败（登录被拒，机器上的程序没换过）与新版本无关，只算它自己，后面的照常升级
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn bulk_upgrade_stops_when_the_new_version_fails() {
+async fn bulk_upgrade_canary_failures() {
     let t = setup(false).await;
     let (_, root) = relay(&t, "线路机2", "192.0.2.31", "0.1.0+old", "0.1.0+new", xray_ok("0.1.0+old"), None).await;
     relay(&t, "线路机3", "192.0.2.32", "0.1.0+old", "0.1.0+new", xray_ok("0.1.0+old"), None).await;
@@ -401,22 +398,20 @@ async fn bulk_upgrade_stops_when_the_new_version_fails() {
         assert_eq!(logs[0]["msg"], "没有开始：金丝雀「线路机2」升级失败，其余机器不再升级", "{logs}");
     }
     assert!(t.get(&format!("/api/v1/machines/{vps}")).await["active_job"].is_null());
-}
-
-/// 「全部升级」：金丝雀推送之前就失败（登录被拒，机器上的程序没换过）与新版本无关，只算它自己，后面的照常升级
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn bulk_upgrade_goes_on_after_a_failure_before_push() {
-    let t = setup(false).await;
-    let (_, r2) = relay(&t, "线路机2", "192.0.2.34", "0.1.0+old", "0.1.0+new", xray_ok("0.1.0+old"), None).await;
-    std::fs::write(r2.join("refuse"), "").unwrap();
-    let (_, r3) = relay(&t, "线路机3", "192.0.2.35", "0.1.0+old", "0.1.0+new", xray_ok("0.1.0+old"), None).await;
-    let ids = upgrade_all(&t).await;
-    let j = run_round(&t, &ids[0]).await;
-    assert_eq!((j["state"].as_str(), j["steps"][0]["error_kind"].as_str()), (Some("failed"), Some("auth")), "{j}");
-    assert!(read(&r2.join("usr/local/bin/fleet-agent")).contains("0.1.0+old"));
-    assert_eq!(run_round(&t, &ids[1]).await["state"], "waiting", "线路机3 照常开始");
-    agent_report(&t, &r3, 1, "0.1.0+new", json!({"running": true, "applied_generation": 3}), None).await;
-    assert_eq!(run_round(&t, &ids[1]).await["state"], "succeeded");
+    // 推送之前就失败
+    {
+        let t = setup(false).await;
+        let (_, r2) = relay(&t, "线路机2", "192.0.2.34", "0.1.0+old", "0.1.0+new", xray_ok("0.1.0+old"), None).await;
+        std::fs::write(r2.join("refuse"), "").unwrap();
+        let (_, r3) = relay(&t, "线路机3", "192.0.2.35", "0.1.0+old", "0.1.0+new", xray_ok("0.1.0+old"), None).await;
+        let ids = upgrade_all(&t).await;
+        let j = run_round(&t, &ids[0]).await;
+        assert_eq!((j["state"].as_str(), j["steps"][0]["error_kind"].as_str()), (Some("failed"), Some("auth")), "{j}");
+        assert!(read(&r2.join("usr/local/bin/fleet-agent")).contains("0.1.0+old"));
+        assert_eq!(run_round(&t, &ids[1]).await["state"], "waiting", "线路机3 照常开始");
+        agent_report(&t, &r3, 1, "0.1.0+new", json!({"running": true, "applied_generation": 3}), None).await;
+        assert_eq!(run_round(&t, &ids[1]).await["state"], "succeeded");
+    }
 }
 
 // ── 脚本重跑：以运行中的 sshd / ssserver 实例为准（脚本直接经假 ssh 跑，不建作业）─────────────────

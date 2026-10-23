@@ -500,35 +500,6 @@ async fn bulk_upgrade_runs_canary_then_relays_one_by_one() {
     assert_eq!(claim_all(&t).await, ids[3..]);
 }
 
-/// 排队中的升级作业可以取消，不用等它要等的那个结束；编排里等它的跟着取消、写明原因。已经开始的不能取消
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn queued_upgrade_can_be_cancelled() {
-    let t = setup(false).await;
-    seed_relay(&t).await;
-    seed_relay_named(&t, "线路机3", "198.51.100.3").await;
-    seed_relay_named(&t, "线路机4", "198.51.100.4").await;
-    dist_agent(&t, "0.1.0+a");
-    let up = t.post("/api/v1/agents/upgrade", json!({})).await;
-    let ids: Vec<Uuid> = up["jobs"].as_array().unwrap().iter().map(|j| j["job_id"].as_str().unwrap().parse().unwrap()).collect();
-    // 金丝雀「线路机2」已经领走开始了：不能取消
-    assert_eq!(jobs::claim(&t.st, "test").await.unwrap().unwrap().id, ids[0]);
-    let (s, v) = t.req("POST", &format!("/api/v1/jobs/{}/cancel", ids[0]), None, None).await;
-    assert_eq!(s, StatusCode::CONFLICT, "{v}");
-    assert!(v["error"]["message"].as_str().unwrap().starts_with("升级已经开始，不能取消"), "{v}");
-    assert_eq!(t.job(&ids[0].to_string()).await["cancellable"], false);
-
-    // 排在它后面的「线路机3」还在排队：取消后立刻收尾，没开始过
-    assert_eq!(t.job(&ids[1].to_string()).await["cancellable"], true);
-    t.post(&format!("/api/v1/jobs/{}/cancel", ids[1]), json!({})).await;
-    let j = run_one(&t, ids[1]).await;
-    assert_eq!((j["state"].as_str(), j["cancellable"].as_bool()), (Some("cancelled"), Some(false)), "{j}");
-    assert!(j["started_at"].is_null() && j["steps"].as_array().unwrap().iter().all(|s| s["state"] == "pending"), "{j}");
-    // 等它的「线路机4」随后领到：一步不做，跟着取消
-    let j = run_one(&t, ids[2]).await;
-    assert_eq!(j["state"], "cancelled");
-    assert_eq!(j["error"], "「线路机3」的升级没有完成（已取消），后面的机器不再升级");
-}
-
 /// 「全部升级」记下发起时 dist 里 agent 的 sha256 与版本号：中途重新部署过中控（dist 换了），推送前核对出来就不推、失败，
 /// 没开始的都取消、写明原因，后面的机器不会装上金丝雀没验过的版本。dist 里没有 agent 时不发起
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

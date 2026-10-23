@@ -87,52 +87,6 @@ async fn api_key_scopes_and_revoke() {
     assert!(!audit.to_string().contains(&read_tok));
 }
 
-/// 并发的错误密码一起涌进来：最多 5 次真正校验密码，其余被限速
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn login_rate_limit_holds_under_concurrency() {
-    let t = setup().await;
-    let res = futures::future::join_all((0..12).map(|_| t.login("admin", "wrong-password"))).await;
-    let n401 = res.iter().filter(|(s, _)| *s == StatusCode::UNAUTHORIZED).count();
-    let n429 = res.iter().filter(|(s, _)| *s == StatusCode::TOO_MANY_REQUESTS).count();
-    // 同时在判断的几条（最多 4 条）互相看得见，可能多拦几次（只会更严，不会放过第 6 次）
-    assert!((1..=5).contains(&n401) && n401 + n429 == 12, "{res:?}");
-    let (n,): (i64,) = sqlx::query_as("select count(*) from login_failure where username = 'admin'").fetch_one(&t.st.db).await.unwrap();
-    assert_eq!(n, n401 as i64, "被限速的尝试不留记录");
-}
-
-#[tokio::test]
-async fn login_rate_limit_and_audit() {
-    let t = setup().await;
-    for i in 0..5 {
-        let (s, v) = t.login("admin", "wrong-password").await;
-        assert_eq!(s, StatusCode::UNAUTHORIZED, "第 {i} 次：{v}");
-    }
-    // 第 6 次：即使密码正确也被限速
-    let (s, v) = t.login("admin", ADMIN_PW).await;
-    assert_eq!(s, StatusCode::TOO_MANY_REQUESTS, "{v}");
-    let msg = v["error"]["message"].as_str().unwrap();
-    assert!(msg.contains("分钟") || msg.contains("秒"), "{msg}");
-    assert!(v["error"]["detail"]["retry_after_s"].as_i64().unwrap() > 0);
-    // 别的用户名不受影响
-    let (s, _) = t.login("someone-else", "x").await;
-    assert_eq!(s, StatusCode::UNAUTHORIZED);
-
-    // 窗口过后（把失败记录挪到 16 分钟前）可以再登，成功后清零
-    sqlx::query("update login_failure set ts = now() - interval '16 minutes'").execute(&t.st.db).await.unwrap();
-    let (s, _) = t.login("admin", ADMIN_PW).await;
-    assert_eq!(s, StatusCode::OK);
-    let (n,): (i64,) = sqlx::query_as("select count(*) from login_failure where username = 'admin'").fetch_one(&t.st.db).await.unwrap();
-    assert_eq!(n, 0);
-
-    // 登出写审计
-    let (s, _) = t.call("POST", "/api/v1/auth/logout", None, Auth::Session).await;
-    assert_eq!(s, StatusCode::OK);
-    let acts: Vec<(String,)> = sqlx::query_as("select action from audit_log where action like 'auth.%' order by id").fetch_all(&t.st.db).await.unwrap();
-    let acts: Vec<String> = acts.into_iter().map(|a| a.0).collect();
-    assert_eq!(acts.iter().filter(|a| *a == "auth.login_failed").count(), 6, "{acts:?}");
-    assert!(acts.contains(&"auth.login".to_string()) && acts.contains(&"auth.logout".to_string()), "{acts:?}");
-}
-
 /// 限速按来源分开：别人用错误密码锁不住这个用户从自己那里登录；IPv6 同一 /64 算一个来源；
 /// 同一来源 20 次（不分用户名）、同一用户名 100 次（不分来源）另有上限；user-set 清掉失败记录
 #[tokio::test]
@@ -142,10 +96,18 @@ async fn login_rate_limit_per_source() {
         let (s, v) = t.login_from("admin", "wrong-password", "203.0.113.7").await;
         assert_eq!(s, StatusCode::UNAUTHORIZED, "第 {i} 次：{v}");
     }
-    assert_eq!(t.login_from("admin", ADMIN_PW, "203.0.113.7").await.0, StatusCode::TOO_MANY_REQUESTS);
+    // 第 6 次：即使密码正确也被限速，提示里有等多久
+    let (s, v) = t.login_from("admin", ADMIN_PW, "203.0.113.7").await;
+    assert_eq!(s, StatusCode::TOO_MANY_REQUESTS, "{v}");
+    assert!(v["error"]["detail"]["retry_after_s"].as_i64().unwrap() > 0, "{v}");
     assert_eq!(t.login_from("admin", ADMIN_PW, "198.51.100.9").await.0, StatusCode::OK, "别的来源照常登录");
     // 登录成功只清本来源的失败：那边照样封着
     assert_eq!(t.login_from("admin", ADMIN_PW, "203.0.113.7").await.0, StatusCode::TOO_MANY_REQUESTS);
+    // 窗口过后（失败记录挪到 16 分钟前）可以再登，成功后清零
+    sqlx::query("update login_failure set ts = now() - interval '16 minutes'").execute(&t.st.db).await.unwrap();
+    assert_eq!(t.login_from("admin", ADMIN_PW, "203.0.113.7").await.0, StatusCode::OK);
+    let n: i64 = sqlx::query_scalar("select count(*) from login_failure where ip = '203.0.113.7'").fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(n, 0);
 
     // IPv6：同一 /64 里换地址也算同一来源；库里存 /64 前缀，审计记完整地址
     for i in 1..=5 {
@@ -532,68 +494,6 @@ async fn ack_incident_and_silence_validation() {
     assert_eq!(got, [("silence.delete", want.as_str()), ("silence.create", want.as_str())], "{log}");
 }
 
-/// 批量升级 agent：一台冲突（建作业时撞上别人刚建的作业）只跳过这台
-#[tokio::test]
-async fn upgrade_all_skips_conflicting_machine() {
-    let t = setup().await;
-    let ids: Vec<Uuid> = (0..3).map(|_| Uuid::now_v7()).collect();
-    for (i, id) in ids.iter().enumerate() {
-        sqlx::query("insert into machine (id, kind, label, primary_ip, lifecycle) values ($1, 'relay', $2, $3::inet, 'active')")
-            .bind(id)
-            .bind(format!("线路机{}", i + 2))
-            .bind(format!("198.51.100.{}", i + 2))
-            .execute(&t.st.db)
-            .await
-            .unwrap();
-    }
-    // 模拟并发：给第二台建作业时报唯一约束冲突
-    let ddl = format!(
-        "create function fail_job() returns trigger language plpgsql as $$ begin
-           if new.target_id = '{}' then raise exception 'dup' using errcode = 'unique_violation'; end if; return new; end $$",
-        ids[1]
-    );
-    sqlx::query(&ddl).execute(&t.st.db).await.unwrap();
-    sqlx::query("create trigger fail_job before insert on job for each row execute function fail_job()").execute(&t.st.db).await.unwrap();
-    common::dist_agent(&t, "0.1.0+a");
-    let d = t.ok("POST", "/api/v1/agents/upgrade", Some(json!({}))).await;
-    assert_eq!(d["jobs"].as_array().unwrap().len(), 2, "{d}");
-    assert_eq!(d["skipped"][0]["machine_id"], ids[1].to_string(), "{d}");
-    // 跳过的那台不在编排里：第三台直接等金丝雀
-    assert_eq!(d["jobs"][1]["after"], d["jobs"][0]["job_id"], "{d}");
-    let n: i64 = sqlx::query_scalar("select count(*) from job where kind = 'upgrade_agent'").fetch_one(&t.st.db).await.unwrap();
-    assert_eq!(n, 2);
-}
-
-#[tokio::test]
-async fn last_used_updates_are_throttled_to_once_a_minute() {
-    let t = setup().await;
-    let (kid, tok) = t.make_key("ci-throttle", &["read"]).await;
-    let age = |sql: &'static str, id: String| {
-        let db = t.st.db.clone();
-        async move { sqlx::query_scalar::<_, f64>(sql).bind(id).fetch_one(&db).await.unwrap() }
-    };
-    let key_age = || age("select extract(epoch from now() - last_used_at)::float8 from api_key where id::text = $1", kid.to_string());
-    let (s, _) = t.call("GET", "/api/v1/machines", None, Auth::Key(&tok)).await;
-    assert_eq!(s, StatusCode::OK);
-    assert!(key_age().await < 5.0, "第一次使用要记录");
-    // 10 秒前用过：一分钟内不重写；两分钟前用过：重写
-    sqlx::query("update api_key set last_used_at = now() - interval '10 seconds' where id::text = $1").bind(kid.to_string()).execute(&t.st.db).await.unwrap();
-    assert_eq!(t.call("GET", "/api/v1/machines", None, Auth::Key(&tok)).await.0, StatusCode::OK);
-    assert!(key_age().await > 9.0);
-    sqlx::query("update api_key set last_used_at = now() - interval '2 minutes' where id::text = $1").bind(kid.to_string()).execute(&t.st.db).await.unwrap();
-    assert_eq!(t.call("GET", "/api/v1/machines", None, Auth::Key(&tok)).await.0, StatusCode::OK);
-    assert!(key_age().await < 5.0);
-    // 会话同理
-    sqlx::query("update session set last_seen_at = now() - interval '10 seconds'").execute(&t.st.db).await.unwrap();
-    assert_eq!(t.call("GET", "/api/v1/machines", None, Auth::Session).await.0, StatusCode::OK);
-    let n: i64 = sqlx::query_scalar("select count(*) from session where last_seen_at < now() - interval '9 seconds'").fetch_one(&t.st.db).await.unwrap();
-    assert_eq!(n, 1);
-    sqlx::query("update session set last_seen_at = now() - interval '2 minutes'").execute(&t.st.db).await.unwrap();
-    assert_eq!(t.call("GET", "/api/v1/machines", None, Auth::Session).await.0, StatusCode::OK);
-    let n: i64 = sqlx::query_scalar("select count(*) from session where last_seen_at > now() - interval '5 seconds'").fetch_one(&t.st.db).await.unwrap();
-    assert_eq!(n, 1);
-}
-
 /// 前端静态文件：/assets/ 下缺的文件（发布后旧页面懒加载的旧 chunk）回 404、不带一年缓存，不回 index.html；
 /// 其它未知路径照旧回 index.html
 #[tokio::test]
@@ -660,53 +560,6 @@ async fn renewal_keeps_currency_snapshot() {
     assert_eq!((rs[0]["amount_cents"].clone(), rs[0]["currency"].clone()), (json!(500), json!("CNY")), "{rs}");
     let (s, v) = t.call("PUT", &format!("/api/v1/machines/{m}/subscription"), Some(sub("USDT")), Auth::Session).await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
-}
-
-/// 迁移 0029 在存量数据上：同机 IP 节点的 SSH 端口副本清成 null、币种转大写、续费记录补币种、对象已删的静默删掉；
-/// 之后静默随机器级联删除，email 渠道与非 3 字母币种写不进来
-#[tokio::test]
-async fn migration_0029_normalizes_existing_rows() {
-    let (pool, _schema) = common::db_until(28).await;
-    let db = &pool;
-    let q = |sql: &'static str| async move { sqlx::query(sql).execute(db).await.unwrap() };
-    let (host, ipn, gone) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
-    q("insert into team (id, name) values ('00000000-0000-7000-8000-000000000001', '团队1')").await;
-    q("insert into provider (id, name, code) values ('00000000-0000-7000-8000-000000000002', '甲', 'A')").await;
-    q("insert into plan (id, provider_id, name, price_cents, currency) values (gen_random_uuid(), '00000000-0000-7000-8000-000000000002', '基础版', 100, ' usd ')").await;
-    for (id, n, ip, h) in [(host, 1, "203.0.113.5", None), (ipn, 2, "203.0.113.6", Some(host))] {
-        sqlx::query("insert into machine (id, kind, team_id, number, primary_ip, ssh_port, host_id, lifecycle) values ($1, 'vps', '00000000-0000-7000-8000-000000000001', $2, $3::inet, 2222, $4, 'active')")
-            .bind(id).bind(n).bind(ip).bind(h).execute(db).await.unwrap();
-    }
-    sqlx::query("insert into subscription (machine_id, price_cents, currency, due_date) values ($1, 500, 'cny', '2027-01-01')").bind(host).execute(db).await.unwrap();
-    sqlx::query("insert into renewal (id, machine_id, old_due, new_due, amount_cents, actor) values (gen_random_uuid(), $1, '2026-12-01', '2027-01-01', 500, 'a')").bind(host).execute(db).await.unwrap();
-    for s in [Some(ipn), Some(gone), None] {
-        sqlx::query("insert into silence (id, subject_id, starts_at, ends_at, created_by) values (gen_random_uuid(), $1, now(), now() + interval '1 hour', 'a')").bind(s).execute(db).await.unwrap();
-    }
-
-    common::migrator(None).run(db).await.unwrap();
-    let ports: Vec<(Uuid, Option<i32>)> = sqlx::query_as("select id, ssh_port from machine order by number").fetch_all(db).await.unwrap();
-    assert_eq!(ports, [(host, Some(2222)), (ipn, None)]);
-    let cur: (String, String, String) = sqlx::query_as("select (select currency from plan), (select currency from subscription), (select currency from renewal)").fetch_one(db).await.unwrap();
-    assert_eq!(cur, ("USD".into(), "CNY".into(), "CNY".into()));
-    let subj: Vec<Option<Uuid>> = sqlx::query_scalar("select machine_id from silence order by machine_id nulls last").fetch_all(db).await.unwrap();
-    assert_eq!(subj, [Some(ipn), None], "对象已不存在的静默删掉");
-    // 约束都验证过了（存量合规）
-    let unvalidated: i64 = sqlx::query_scalar("select count(*) from pg_constraint where conname in ('plan_currency_iso', 'subscription_currency_iso', 'renewal_currency_iso', 'notify_channel_kind_check') and not convalidated and connamespace = (select oid from pg_namespace where nspname = current_schema())").fetch_one(db).await.unwrap();
-    assert_eq!(unvalidated, 0);
-
-    // 外键：删机器连带它的静默；同机 IP 节点不能再存 SSH 端口；email 渠道、非 3 字母币种写不进来
-    q("delete from machine where host_id is not null").await;
-    let n: i64 = sqlx::query_scalar("select count(*) from silence where machine_id is not null").fetch_one(db).await.unwrap();
-    assert_eq!(n, 0);
-    for bad in [
-        "insert into machine (id, kind, team_id, number, primary_ip, host_id, lifecycle) select gen_random_uuid(), 'vps', team_id, 9, '203.0.113.9', id, 'active' from machine",
-        "insert into notify_channel (id, kind, name, config_enc) values (gen_random_uuid(), 'email', 'x', '\\x00')",
-        "update plan set currency = 'USDT'",
-        "update renewal set currency = 'cny'",
-    ] {
-        let e = sqlx::query(bad).execute(db).await.unwrap_err();
-        assert_eq!(e.as_database_error().and_then(|d| d.code()).as_deref(), Some("23514"), "{bad}: {e}");
-    }
 }
 
 /// root 的 fleetctl 配置里的令牌

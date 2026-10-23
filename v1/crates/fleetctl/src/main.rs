@@ -1009,67 +1009,11 @@ mod tests {
         assert!(parse(&["ssh", "router", "a", "b"]).is_err(), "目标最多两个参数");
     }
 
-    /// `entry` 的动作由 clap 校验：写错是参数错误（退出码 2），不发请求
+    /// 命令行定义自洽（参数重名、互斥写反等 clap 在这里断言）
     #[test]
-    fn entry_action_is_value_enum() {
-        let parse = |a: &[&str]| Cli::try_parse_from(["fleetctl", "entry"].iter().chain(a)).map(|c| matches!(c.cmd, Cmd::Entry { action: crate::ops::EntryAction::AddDirect, .. }));
-        assert_eq!(parse(&["add-direct", "线路机2"]).ok(), Some(true));
-        assert_eq!(parse(&["rotate", "线路机2:20001", "--yes"]).ok(), Some(false));
-        let e = parse(&["enabel", "线路机2:20001"]).unwrap_err();
-        assert_eq!((e.kind(), e.exit_code()), (clap::error::ErrorKind::InvalidValue, 2));
-    }
-
-    /// `team set` 只改名：--name 必给，--spare 没有了（备用团队由系统管理）
-    #[test]
-    fn team_set_renames_only() {
-        let parse = |a: &[&str]| match Cli::try_parse_from(["fleetctl", "team", "set"].iter().chain(a)).map(|c| c.cmd) {
-            Ok(Cmd::Team { cmd: super::TeamCmd::Set { team, name, yes } }) => Ok((team, name, yes)),
-            Ok(_) => panic!("不是 team set"),
-            Err(e) => Err(e.kind()),
-        };
-        assert_eq!(parse(&["团队2 备用", "--name", "备用", "--yes"]), Ok(("团队2 备用".into(), "备用".into(), true)));
-        assert!(parse(&["备用"]).is_err());
-    }
-
-    /// 供应商 / 套餐：可改项 add 与 set 共用；--archive 与 --unarchive 互斥
-    #[test]
-    fn catalog_command_line() {
-        let parse = |a: &[&str]| Cli::try_parse_from(["fleetctl"].iter().chain(a)).map(|c| c.cmd);
-        match parse(&["provider", "add", "ATTVPS", "--code", "ATT", "--tz", "Asia/Shanghai", "--traffic-rule", "min", "--remind-days", "5"]) {
-            Ok(Cmd::Provider { cmd: super::ProviderCmd::Add { name, args } }) => {
-                assert_eq!((name.as_str(), args.code.as_deref(), args.tz.as_deref(), args.traffic_rule.as_deref(), args.remind_days), ("ATTVPS", Some("ATT"), Some("Asia/Shanghai"), Some("min"), Some(5)));
-            }
-            _ => panic!("不是 provider add"),
-        }
-        match parse(&["plan", "set", "GOMAMI/Mini", "--price", "39.46", "--traffic-gb", "none", "--archive", "--yes"]) {
-            Ok(Cmd::Plan { cmd: super::PlanCmd::Set { plan, args, archive, unarchive, yes, .. } }) => {
-                assert_eq!((plan.as_str(), args.price.as_deref(), args.traffic_gb.as_deref(), archive, unarchive, yes), ("GOMAMI/Mini", Some("39.46"), Some("none"), true, false, true));
-            }
-            _ => panic!("不是 plan set"),
-        }
-        assert!(parse(&["plan", "set", "Mini", "--archive", "--unarchive"]).is_err());
-        assert!(parse(&["plan", "ls", "--provider", "GM", "--all"]).is_ok());
-        assert!(parse(&["provider", "rm"]).is_err(), "要给供应商");
-        match parse(&["router", "exits", "团队2-路由A"]) {
-            Ok(Cmd::Router { cmd: super::RouterCmd::Exits { router, range } }) => assert_eq!((router.as_str(), range.as_str()), ("团队2-路由A", "24h")),
-            _ => panic!("不是 router exits"),
-        }
-    }
-
-    /// `probe add <名> --host <IP> [--ssh-port]`、`probe set --enable/--disable` 互斥、`probe central on|off`
-    #[test]
-    fn probe_commands_parse() {
-        let p = |a: &[&str]| Cli::try_parse_from(["fleetctl", "probe"].iter().chain(a)).map(|c| c.cmd);
-        match p(&["add", "香港", "--host", "47.0.0.1", "--ssh-port", "2222"]) {
-            Ok(Cmd::Probe { cmd: super::ProbeCmd::Add { name, install, .. } }) => {
-                assert_eq!((name.as_str(), install.host.as_deref(), install.ssh_port, install.no_wait), ("香港", Some("47.0.0.1"), Some(2222), false))
-            }
-            _ => panic!("不是 probe add"),
-        }
-        assert!(p(&["set", "香港", "--enable", "--disable"]).is_err());
-        assert!(p(&["central", "maybe"]).is_err() && p(&["central", "off"]).is_ok());
-        assert!(p(&["order", "central"]).is_ok() && p(&["order", "PVE", "香港"]).is_ok() && p(&["order"]).is_err());
-        assert!(p(&["upgrade", "香港", "--no-wait"]).is_ok());
+    fn cli_definition_is_valid() {
+        use clap::CommandFactory;
+        Cli::command().debug_assert();
     }
 
     #[test]

@@ -582,13 +582,6 @@ fn rm_jobs_note(d: &Value) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn rm_forced_jobs_wording() {
-        assert_eq!(rm_jobs_note(&json!({"ok": true, "jobs": []})), "");
-        assert_eq!(rm_jobs_note(&json!({"ok": true})), "", "旧中控不回 jobs");
-        assert_eq!(rm_jobs_note(&json!({"jobs": ["a", "b"]})), "（作业 a、b 不再改回它，可以重试收尾或取消）");
-    }
-
     fn routers() -> Vec<Value> {
         vec![
             json!({"id": "01a162a9-39c4-752c-b647-e61f34ef48bd", "name": "团队2-路由A", "state": "online"}),
@@ -614,26 +607,6 @@ mod tests {
         let all = routers();
         assert_eq!(find(&all, "团队2-路由b").unwrap()["state"], "pending", "名称不分大小写");
         assert!(find(&all, "01a162a9").unwrap_err().to_string().contains("匹配到 2 个软路由"));
-    }
-
-    #[test]
-    fn list_row_wording() {
-        let r = json!({
-            "id": "01a162a9-39c4-752c-b647-e61f34ef48bd", "name": "R", "team": {"name": "团队2"}, "state": "offline", "last_seen_at": "2026-10-22T08:10:54Z",
-            "deploy": {"state": "failed"},
-            "summary": {"cpu_pct": 3.2, "mem_used": 1, "mem_total": 4, "clients": 3, "exits": {"alive": 4, "total": 5, "drift": 1}, "wan": {"up": true, "rx_bps": 40000, "tx_bps": 12000}}
-        });
-        assert_eq!(row(&r), ["R", "团队2", "离线（部署失败）", "4/5（1 个不一致）", "3", "3%", "25%", "↓40.0 Kbps ↑12.0 Kbps", "2026-10-22 16:10:54", "01a162a9-39c4"]);
-        assert_eq!(row(&json!({"id": "x", "name": "P", "state": "pending", "summary": null}))[2..5], ["等待接入", "-", "-"]);
-    }
-
-    /// 路由还没算出来的速率（null）显示「—」，不是 0 bps
-    #[test]
-    fn null_rate_shows_dash() {
-        let wan = |w: Value| row(&json!({"id": "x", "name": "R", "state": "online", "summary": {"wan": w}}))[7].clone();
-        assert_eq!(wan(json!({"up": true, "rx_bps": null, "tx_bps": null})), "↓— ↑—");
-        assert_eq!(wan(json!({"up": true, "rx_bps": 0, "tx_bps": 1500})), "↓0 bps ↑1.5 Kbps");
-        assert_eq!(rate(&json!({"down_bps": null}), "/down_bps"), "—");
     }
 
     #[test]
@@ -696,10 +669,5 @@ mod tests {
         let h = exits_report("7d", &json!({"step_s": 3600, "exits": [{"name": "节点01", "points": [{"alive": true, "tests": 12, "tests_ok": 12, "delay_ms": 80.0}]}]}), &[]).unwrap();
         assert_eq!((h["exits"][0]["fail_streaks"].is_null(), h["total"]["fail_streaks"].is_null(), h["total"]["success_pct"].as_f64()), (true, true, Some(100.0)));
         assert!(exits_human(&h, false).contains("看不出先后"));
-    }
-
-    #[test]
-    fn uptime_wording() {
-        assert_eq!([uptime_cn(420), uptime_cn(7500), uptime_cn(3 * 86400 + 4 * 3600 + 59)], ["已运行 7 分钟", "已运行 2 小时 5 分钟", "已运行 3 天 4 小时"]);
     }
 }

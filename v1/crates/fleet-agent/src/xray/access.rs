@@ -376,10 +376,6 @@ mod tests {
         assert_eq!(parse_ts("2026/10/20", "08:00:00.5", 8 * 3600), Some(1_792_454_400_500));
         assert_eq!(parse_ts("1970/01/01", "00:00:01.123456", 0), Some(1123));
         assert_eq!(parse_ts("2026/13/20", "00:00:00", 0), None);
-    }
-
-    #[test]
-    fn timestamp_fraction_non_ascii_does_not_panic() {
         // 多字节字符落在第 3 个字节上：按字节切会 panic
         assert_eq!(parse_ts("2026/10/20", "00:00:00.12é", 0), None);
         assert_eq!(parse_ts("2026/10/20", "00:00:00.é", 0), None);
