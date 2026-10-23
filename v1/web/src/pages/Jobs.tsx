@@ -46,7 +46,7 @@ const KIND_GROUP: Record<string, string> = { provision: '上架' };
 
 /** 需要人工处理的失败（改软路由出口改了一半、换回失败）：胶囊换成醒目的「需人工处理」，不和普通失败混在一起 */
 const JobPill = ({ state, manual }: { state: string; manual?: JobManual | null }) => {
-  if (manual) return <Pill tone="bad" className="pill-manual" tip="软路由上的配置可能停在改了一半，先人工处理再重试"><TriangleAlert size={12} />需人工处理</Pill>;
+  if (manual) return <Pill tone="bad" className="pill-manual" tip="软路由上的配置可能停在改了一半，先人工处理再重试">需人工处理</Pill>;
   const s = STATE[state] ?? { tone: 'neutral' as Tone };
   return <Pill tone={s.tone} dot={s.dot}>{jobStateLabel(state)}</Pill>;
 };
