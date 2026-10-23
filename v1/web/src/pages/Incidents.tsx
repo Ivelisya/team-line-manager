@@ -111,7 +111,7 @@ export function IncidentsPage() {
           <td>{sid && isRouterIncident(i) ? <button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => openRouter(sid, routerIncidentTab(i))}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button>
             : sid ? <NodeHover id={sid}><button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => open(sid)}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button></NodeHover> : (i.subject_name ?? '—')}
             <span className="sub inc-narrow">{i.rule_name} · {F.ago(i.opened_at)}</span><span className="sub inc-narrow" data-tip={sum}>{sum}</span></td>
-          <td>{i.rule_name}{i.reopen_count > 0 && <span className="sub" data-tip={`恢复后 30 分钟内又出现 ${i.reopen_count} 次，已合并成这一条`}>反复 {i.reopen_count + 1} 次</span>}</td>
+          <td>{i.rule_name}{i.reopen_count > 0 && <span className="sub" data-tip={`恢复后 30 分钟内又出现 ${i.reopen_count} 次，已合并成这一条`}>反复 {i.reopen_count + 1} 次</span>}{(i.recent_count ?? 0) >= 3 && <span className="sub" data-tip="同一对象同一规则近 7 天反复出现，考虑换线或替换">近 7 天第 {i.recent_count} 次</span>}</td>
           <td><span className="cell-main" data-tip={sum}>{sum}</span><IncidentOps i={i} />{(i.resolved_at || i.ack_at) && <span className="sub">{i.resolved_at
             ? <span data-tip={`恢复于 ${F.dtFull(i.resolved_at)}`}>已恢复 · 持续 {F.span(Date.parse(i.resolved_at) - Date.parse(i.opened_at))}</span>
             : `${i.ack_by ? F.actor(i.ack_by) : ''} 已确认 · ${F.ago(i.ack_at!)}`}</span>}</td>

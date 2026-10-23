@@ -112,6 +112,21 @@ pub struct Tally {
     pub resolved: usize,
 }
 
+/// 触发通知的摘要：近 24 小时同对象同规则开过不止一次（隔得比复发合并窗口远的老毛病）时末尾加「（近 24 小时第 N 次）」；提醒和恢复不加
+async fn chronic(st: &AppState, engine: Engine, rule: &str, subject: Uuid, kind: Kind, text: &str) -> String {
+    if kind != Kind::Firing {
+        return text.to_string();
+    }
+    let n: i64 = sqlx::query_scalar("select count(*) from incident where engine = $1 and rule = $2 and subject_id = $3 and opened_at > now() - interval '24 hours'")
+        .bind(engine.as_str())
+        .bind(rule)
+        .bind(subject)
+        .fetch_one(&st.db)
+        .await
+        .unwrap_or(0);
+    if n > 1 { format!("{text}（近 24 小时第 {n} 次）") } else { text.to_string() }
+}
+
 /// 对齐一轮。`open`：`firing` 按同一个 `engine` 读出来的；`exists`：新开时对象还在的 SQL 条件（`$3` 是对象 id，不用查就是 `true`）；
 /// `close`：`want` 里没有的那些怎么办。有变化时发 `Event::Incidents`
 pub async fn reconcile<'n>(
@@ -171,7 +186,8 @@ pub async fn reconcile<'n>(
             // 升级马上再发一次「触发」；否则按 `due`：重开后报过恢复的满 5 分钟发「触发」、没入队过的补发、到间隔的提醒
             let kind = if escalated { Some(Kind::Firing) } else { due(w.rule, sev, inc.notified_at, inc.told_resolved_at, now) };
             if let Some(kind) = kind.filter(|_| !silenced) {
-                notify::enqueue(st, notice(kind, inc.id, w.rule, sev, w.name, &w.text, inc.opened_at)).await;
+                let text = chronic(st, engine, w.rule, w.subject, kind, &w.text).await;
+                notify::enqueue(st, notice(kind, inc.id, w.rule, sev, w.name, &text, inc.opened_at)).await;
             }
             continue;
         }
@@ -199,7 +215,8 @@ pub async fn reconcile<'n>(
         if let Some((id, opened_at, notified_at, told_resolved_at)) = reopened {
             t.opened += 1;
             if let Some(kind) = due(w.rule, w.severity, notified_at, told_resolved_at, now) {
-                notify::enqueue(st, notice(kind, id, w.rule, w.severity, w.name, &w.text, opened_at)).await;
+                let text = chronic(st, engine, w.rule, w.subject, kind, &w.text).await;
+                notify::enqueue(st, notice(kind, id, w.rule, w.severity, w.name, &text, opened_at)).await;
             }
             continue;
         }
@@ -220,7 +237,8 @@ pub async fn reconcile<'n>(
         .await?;
         if res.rows_affected() > 0 {
             t.opened += 1;
-            notify::enqueue(st, notice(Kind::Firing, id, w.rule, w.severity, w.name, &w.text, now)).await;
+            let text = chronic(st, engine, w.rule, w.subject, Kind::Firing, &w.text).await;
+            notify::enqueue(st, notice(Kind::Firing, id, w.rule, w.severity, w.name, &text, now)).await;
         }
     }
     if !touch.is_empty() {

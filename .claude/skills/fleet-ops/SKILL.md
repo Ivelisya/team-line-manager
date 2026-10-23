@@ -77,6 +77,8 @@ fleetctl ssh router <名称> [-- 'logread | tail -50']        # 软路由（Open
 访问监控只有线路机开了访问日志、且有真实客户端流量时才有数据；`new` 是窗口内第一次出现的目标（旧系统的「新域名」），不是告警。
 访问记录只留用户设的天数（`settings retention`：原始记录默认 7 天、汇总默认 31 天），到期中控自动删除：`access` / `sources` 的 `--window` 不能比汇总的保留期长（超了报错 400，换短一点的窗口，不要去改保留期）；`events` 只有原始记录保留期内的；「新目标」「新运营商 / 新城市」指保留期内没见过的。
 
+告警带「近 7 天第 N 次」（`recent_count` ≥ 3）、或 `status` 末尾「近 7 天反复」列了某对象时，说明是同一处的老毛病：先考虑换线（`fleetctl placement`）或替换，而不是只确认。
+
 排查顺序：`status` 找到告警 → `show <机器>` 读 `health.reasons` → `logs <机器>` 读服务日志 → 仍不明再 `exec`。
 
 作业「出口验收」一直报「超时 12 秒」（或「线路机 X 连不上节点 SS 端口」）：先查节点的主机防火墙——供应商镜像自带的 ufw / firewalld 常只放行旧线路机。收敛（上架、`ss_refresh`、换线路机）会在 ufw / firewalld 运行时自动给线路机 IP 放行 SS 端口（ufw 规则注释 `fleet-ss`），作业日志有「主机防火墙」一行；有 warn 说没改成或 iptables 默认丢弃时，`fleetctl exec <节点> -- 'ufw status; iptables -S INPUT'` 看，手动放行线路机 IP 后 `retry`；不要 `ufw disable`。云厂商安全组中控管不到，告诉用户去供应商面板放行。
