@@ -14,6 +14,8 @@
 //!     机器视图取不到时判断不了，开着的这条留着
 //!   - `central_view_stuck`（严重）：机器视图连续 2 分钟算不出来（查询被锁住、超时，见 views::cached）——机器告警跟着停了评估，
 //!     列表与总览停在旧数据。算成一次就恢复
+//!   - `central_tunnel_host`（警告）：软路由隧道回连的主机（[routers] ssh_host，没配时 public_url 的主机名）解析到的不是中控
+//!     （经 CDN / 边缘机、解析不了）：路由断线后回连不上。有软路由时启动和每 10 分钟查一次（routers::selfcheck），对了就恢复
 //!
 //!   不去抖（条件本身带了时长或余量），恢复后再出现新开一条；被静默的不开、不发通知；严重的每 4 小时提醒一次（同机器的告警）。
 //!   对象是「中控」：subject_id 是全零 uuid（渠道连续失败是渠道 id），接口里这类告警的 subject / subject_id 为 null、subject_name 是「中控」。
@@ -36,6 +38,7 @@ pub const BACKUP_STALE: &str = "central_backup_stale";
 pub const DISK_LOW: &str = "central_disk_low";
 pub const INGRESS: &str = "central_ingress";
 pub const VIEW_STUCK: &str = "central_view_stuck";
+pub const TUNNEL_HOST: &str = "central_tunnel_host";
 /// 中控自身告警的对象 id（不是机器；渠道连续失败的告警用渠道 id）
 pub const CENTRAL: Uuid = Uuid::nil();
 /// 告警、通知里中控的名字
@@ -123,6 +126,9 @@ pub async fn check_once(st: &AppState, now: OffsetDateTime) -> anyhow::Result<()
     if let Some((since, err)) = st.live.failing().filter(|(since, _)| (now - *since).whole_seconds() >= VIEW_STUCK_S) {
         let mins = (now - since).whole_minutes();
         want.push(problem(VIEW_STUCK, CENTRAL, "critical", format!("机器视图已经 {mins} 分钟算不出来（{err}）：机器告警暂停评估，列表与总览停在旧数据，查数据库的锁与慢查询")));
+    }
+    if let Some(text) = st.tunnel_host.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        want.push(problem(TUNNEL_HOST, CENTRAL, "warning", text));
     }
     let enabled: HashSet<Uuid> = channels.iter().map(|c| c.0).collect();
     // 问题没了的恢复；渠道停用或删了不是恢复：关掉、不发通知

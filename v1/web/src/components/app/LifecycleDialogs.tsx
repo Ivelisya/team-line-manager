@@ -146,9 +146,9 @@ export const EvacuateDialog = resetOnOpen(function EvacuateDialog({ relay, open,
       {pv && (
         <div className="stack-sm" style={{ opacity: q.isFetching ? 0.6 : 1 }}>
           {routers
-            ? <RouterExitList routers={pv.jobs.flatMap((j) => j.routers.map((plan) => ({ node: j.name, plan })))} title={<>要改的软路由出口 <InfoTip text="各节点同时换。同一台软路由一次只改一个节点，其余的排队等候" /></>} />
+            ? <RouterExitList routers={pv.jobs.flatMap((j) => j.routers.map((plan) => ({ node: j.name, plan })))} title={<>要改的软路由出口 <InfoTip text="各节点同时建新入口，都验收完后一起改软路由。每台软路由只改一次" /></>} />
             : pv.jobs.some((j) => j.routers.length > 0) && <Note tone="bad">不改软路由的话，指向这些入口的出口会在旧入口移除后断开</Note>}
-          {routers && (pv.router_restarts ?? []).map((r) => <Note key={r.id} tone="warn">软路由「{r.name}」的 OpenClash 会重启 {r.times} 次，每次都会断开路由上的所有连接</Note>)}
+          {routers && (pv.router_restarts ?? []).map((r) => <Note key={r.id} tone="warn">软路由「{r.name}」上 {r.nodes} 个节点的出口一起改，OpenClash 重启 1 次，会断开路由上的所有连接</Note>)}
           {pv.skipped.map((k) => <Note key={k.machine_id} tone="warn">{k.name ?? '节点'} 会跳过：{k.reason}</Note>)}
           {pv.warnings.map((w) => <Note key={w} tone="warn">{w}</Note>)}
         </div>

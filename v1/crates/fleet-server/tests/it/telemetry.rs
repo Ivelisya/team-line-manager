@@ -664,14 +664,14 @@ async fn relay_reach_rounds_feed_relay_beats() {
     assert!(!t.health(up).await.1.contains(&"relay_unreachable".to_string()));
     let m = t.get(&format!("/api/v1/machines/{down}")).await;
     let text = m["health"]["reasons"].as_array().unwrap().iter().find(|r| r["key"] == "relay_unreachable").unwrap()["text"].clone();
-    assert_eq!(text, format!("中控连续 3 次连不上客户入口（端口 {closed}：连接被拒绝）"));
+    assert_eq!(text, format!("中控连续 3 次以上连不上客户入口（端口 {closed}：连接被拒绝）"));
     // 再轮换两遍：线路机1 坏的那个口凑齐 3 次失败（中间隔着好口），按端口报，摘要只写这个口
     for turn in 3..7 {
         assert_eq!(round(&t.st, &[&ctl_ok], turn).await.unwrap(), 2);
     }
     let m = t.get(&format!("/api/v1/machines/{up}")).await;
     let text = m["health"]["reasons"].as_array().unwrap().iter().find(|r| r["key"] == "relay_unreachable").map(|r| r["text"].clone());
-    assert_eq!(text, Some(json!(format!("中控连续 3 次连不上客户入口（端口 {closed2}：连接被拒绝）"))), "{m}");
+    assert_eq!(text, Some(json!(format!("中控连续 3 次以上连不上客户入口（端口 {closed2}：连接被拒绝）"))), "{m}");
     assert_eq!(t.count("select count(*) from relay_reach where port is null").await, 0, "每行记下端口");
     // 每条在用入口带上中控对它端口最近一次检查：通的 ok、detail 为 null；不通的带原因；线路机2 的入口一直不通
     let reach = |m: &Value, port: i32| m["entries"].as_array().unwrap().iter().find(|e| e["port"] == port).unwrap()["reach"].clone();
@@ -1958,6 +1958,29 @@ async fn stale_backup_opens_central_alert() {
     check().await.unwrap();
     assert!(backup("firing").await.is_empty());
     assert_eq!(backup("resolved").await.len(), 1);
+}
+
+/// 软路由隧道回连主机自检：没有软路由不查，回连的是本机地址算对；查出不是中控时开中控自检的警告 central_tunnel_host，对了就恢复
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tunnel_host_check_opens_central_alert() {
+    let t = common::boot_in(tempfile::tempdir().unwrap(), false, "routers.ssh_host = \"127.0.0.1\"").await;
+    let check = || fleet_server::routers::selfcheck::check(&t.st);
+    assert_eq!(check().await.unwrap(), None, "没有软路由：不查");
+    t.post("/api/v1/routers", json!({"name": "团队2-路由A"})).await;
+    assert_eq!(check().await.unwrap(), None, "回连的是中控本机的地址");
+    let firing = || async { incidents(&t, "firing").await.into_iter().filter(|i| i["rule"] == "central_tunnel_host").collect::<Vec<_>>() };
+    let text = "软路由隧道回连 fleet.example.com:22（没配 [routers] ssh_host，用的是 public_url 的主机名）解析到 203.0.113.7，不是中控：…";
+    *t.st.tunnel_host.lock().unwrap() = Some(text.into());
+    selfmon::check_once(&t.st, OffsetDateTime::now_utc()).await.unwrap();
+    let inc = firing().await;
+    assert_eq!(inc.len(), 1);
+    assert_eq!(
+        (inc[0]["severity"].as_str(), inc[0]["subject_name"].as_str(), inc[0]["rule_name"].as_str(), inc[0]["summary"].as_str()),
+        (Some("warning"), Some("中控"), Some("软路由回连地址不是中控"), Some(format!("中控：{text}").as_str()))
+    );
+    *t.st.tunnel_host.lock().unwrap() = None;
+    selfmon::check_once(&t.st, OffsetDateTime::now_utc()).await.unwrap();
+    assert!(firing().await.is_empty());
 }
 
 async fn xray_report(t: &T, seq: u64, up: bool) {

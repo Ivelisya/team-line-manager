@@ -158,7 +158,7 @@ EntryView = { id, relay:{id,name}, node:{id,name}, direct, port, lifecycle, appl
 // reach：主探测来源（中控或探测点，见「探测点」；GET /settings/reach-source 说此刻是哪一路）→ 线路机上这个入口端口的最近一次 TCP 建连
 //   （只建连，不握手），`detail` 是失败原因（带「端口 N：」前缀），通为 null；只有在用入口有，没检查过（新入口、停用入口、线路机没在探、
 //   主来源离线且中控的检查关着）为 null。轮流连各端口，每个口隔「入口数 × 30 秒」才更新一次；
-//   随完整加载更新（至多 5 分钟，连通结论变了立即），不在 metrics 推送里。连续 3 次连不上同时开 relay_unreachable 健康原因；
+//   随完整加载更新（至多 5 分钟，连通结论变了立即），不在 metrics 推送里。连续 3 次连不上同时开 relay_unreachable 健康原因（告警再去抖 60 秒）；
 //   `fails` 是这个端口到最近一次为止连续连不上的次数（通的为 0），网页 ≥ 3 才写「中控连不上」，1–2 次写「刚才连不上 N 次」
 ```
 | 方法 | 路径 | 说明 |
@@ -283,6 +283,7 @@ ProvisionItem = {
 | `central_backup_stale`（备份过期） | warning | 备份目录（`[selfmon] backup_dir`，默认 `/var/backups/fleet`）里最新一份 `fleet-*.tar` / `fleet-*.tar.age` 超过 26 小时，或一份都没有、读不了；目录不存在（没装备份）不检查 | 有了 26 小时内的一份 |
 | `central_disk_low`（中控磁盘空间不足） | critical | 中控本机 `/`、`/var/lib/postgresql`、`/var/lib/fleet`、备份目录所在的文件系统可用空间低于 10%（同 df） | 回到 11% 以上 |
 | `central_ingress`（agent 同时失联） | critical | 有自己 agent 的在用机器（不含维护中的、同机 IP 节点）里同时离线的超过一半且至少 3 台：摘要「x/y 台 agent 同时失联：检查边缘机、Caddy、域名解析」。期间不新开单机的 `agent_offline`（已开着的照旧） | 离线的不再过半或不到 3 台；还没回来的从这时起按单机去抖、报 `agent_offline` |
+| `central_tunnel_host`（软路由回连地址不是中控） | warning | 有软路由时，启动与每 10 分钟查一次隧道回连主机（`[routers] ssh_host`，没配时 `public_url` 的主机名，routers/selfcheck.rs）：解析不了，或解析到的地址不是中控本机网卡上的、它的 `ssh_port` 上 SSH 主机公钥也不是中控 sshd 的（多半是 CDN / 只转发 80/443 的边缘机）。摘要写解析到哪、建议把 `ssh_host` 配成源站 IP 或单独的灰云域名；现有隧道断线后才受影响 | 查出来是中控了；软路由都删了（下一次检查） |
 | `central_view_stuck`（机器视图算不出来） | critical | 机器视图（列表、总览、实时推送、告警评估共用）连续 2 分钟算不出来（查询被锁住或超时）：摘要「机器视图已经 n 分钟算不出来（原因）：…」。期间 `central_ingress` 判断不了，开着的留着 | 算成一次 |
 
 **探测点的告警**（`probe_points/`，规则 `probe_` 开头）：`probe_point_offline`（探测点离线，warning）——启用的、上报过的探测点超过 180 秒没上报；摘要「香港：5 分钟没有上报（最近一次 …）」，它是主探测来源时后面写明线路机的连通性暂由中控代替 / 暂时判不出。上报恢复即恢复；停用、删除时直接关、不发恢复（`detail.closed_by = probe_point_disabled / probe_point_removed`）。对象是探测点：`subject` / `subject_id` 为 null、`subject_name` 是它的名字（通知记录同）。每 30 秒检查一次，不去抖（条件自带 180 秒）。
@@ -469,11 +470,12 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 | GET | `/machines/{id}/move?to_relay_id=&from_relay_id=&routers=` | 换线路机预览（只读库）：`{name, from, to, routers_enabled, routers:[同替换，exits[].new_entry_id 为 null、to 为「server:新端口」], ok, blockers[], warnings[], share_changed, note}`；不能换时 `ok:false`、原因在 blockers |
 | POST | `/machines/{id}/move` | `{to_relay_id, from_relay_id?, routers?（默认 true）}` → 预览同样的内容加 `job_id`。节点（vps / proxy）必须 active 且恰有一个 active 入口（有多个时用 `from_relay_id` 指定换掉哪条）；目标线路机必须 active、不同于当前、节点在它上面没有未移除入口；节点有进行中的作业、要改的软路由不在线（blockers）时 409。写审计 `entry.move`（含 routers） |
 | GET | `/relays/{id}/evacuate?to_relay_id=&routers=` | 搬空预览（只读库）：同 POST 的响应，`jobs[]` 没有 `job_id` |
-| POST | `/relays/{id}/evacuate` | `{to_relay_id, routers?（默认 true）}` → `{from, to, jobs:[{machine_id,name,job_id,routers}], skipped:[{machine_id,name,reason}], warnings, router_restarts:[{id,name,times}], share_changed, note}`（`router_restarts`：每台要改的软路由 OpenClash 要重启几次——每个节点一个作业、各自重启一次、每次断开它上面全部连接，次数多的在前；`routers=false` 时为空）。为该线路机上每个在用入口的节点各建一个 move_entry 作业；暂时不能搬的（入口停用/还在应用中、节点有别的作业、目标上已有入口、要改的软路由不在线…）列入 `skipped`，不影响其它节点。线路机自己的直出入口不搬、也不列入 `skipped`（退役线路机时随之摘除；退役守卫只数节点入口）。写审计 `relay.evacuate` 与每个节点一条 `entry.move` |
+| POST | `/relays/{id}/evacuate` | `{to_relay_id, routers?（默认 true）}` → `{from, to, jobs:[{machine_id,name,job_id,routers}], skipped:[{machine_id,name,reason}], warnings, router_restarts:[{id,name,times,nodes}], share_changed, note}`（`router_restarts`：要改的软路由，同批一起改，每台 OpenClash 只重启一次（`times` 恒为 1，断开它上面全部连接），`nodes` 是有出口要改的节点数，多的在前；`routers=false` 时为空）。为该线路机上每个在用入口的节点各建一个 move_entry 作业，参数带同一个 `batch`（一起改软路由，见下）；暂时不能搬的（入口停用/还在应用中、节点有别的作业、目标上已有入口、要改的软路由不在线…）列入 `skipped`，不影响其它节点。线路机自己的直出入口不搬、也不列入 `skipped`（退役线路机时随之摘除；退役守卫只数节点入口）。写审计 `relay.evacuate` 与每个节点一条 `entry.move` |
 
 **换线路机作业 `move_entry`**（目标 = 节点，要求节点 active）步骤：`attach_new`（目标线路机建新入口：新端口、新 client_uuid / short_id，pending）→ `firewall_widen`（vps：节点 nft 放行名单加入新线路机 IP；proxy 跳过）→ `wait_applied_new` → `verify_new`（经新入口的出口探测通过）→ `routers`（软路由上指向旧入口的出口改成新入口，同替换节点的「改软路由出口」：全部在线才动手，逐台备份 → 改 → 重启 OpenClash → 测延迟，一台失败已改的全部换回、作业失败、旧入口不摘；出口写的是旧线路机 IP 就换成新线路机 IP，否则换成新线路机的 public_host，端口用新入口的；要改哪些出口执行时按路由当时的配置重新确定，见替换作业，`routers=false` 跳过）→ `detach_old`（旧入口 removing）→ `wait_detached_old` → `firewall_narrow`（节点在旧线路机上不再有入口时，把旧线路机 IP 从放行名单拿掉）。新入口验收通过之前旧入口不动，节点始终至少有一个可用入口。
-- **取消**：`routers` 之前都能取消（`cancellable` 为 true）；补偿 = 摘除新入口、恢复防火墙，旧入口保持不动。`routers` 排队等别的作业改同一台路由时、失败且确认路由都已改回原配置停在这一步时也能取消；路由可能还改着一部分时（参数 `routers_applied` 非空：这一步中途被打断——外层超时、中控重启——或改回失败，`routers_stuck` 非空，作业给出 `manual`）不能取消（会摘掉路由还指着的新入口），重试之后、核对过路由之前也不能，重试照 `routers_applied` 接着改完；开始改路由之后、摘旧入口之后不能取消（会摘掉路由已经指向的新入口 / 让节点没有入口），失败了只能重试到完成；取消赶在摘除之后到达时保留新入口。
-- **同一台软路由一个一个改**：替换、换线路机（含搬空建的、重试的）的 `routers` 这一步按路由加锁（PG advisory lock，键由路由 id 算出，读配置 → 改 → 重启 → 测 / 改回期间持有，一个作业改几台时按 id 顺序加，往前改只试一次、拿不到就全部放开）。别的作业正在改同一台路由、而计划 / 快照 / 之前改过的说这台要改时，这一步不读它的配置、直接排队：作业是 waiting、这一步的 `started_at` 为 null（排队不算这一步的超时），参数 `routers_queued` / `routers_queued_id` 记着在等哪台，日志写一次「软路由「X」正在被别的作业改，排队等它改完」，每 10 秒再试——排队时只试那一台的锁（用连接池里的连接，不读配置、不新建连接）。作业的其余步骤并行，搬空时几十个节点只在改路由这一步轮流。
+- **取消**：`routers` 之前都能取消（`cancellable` 为 true）；补偿 = 摘除新入口、恢复防火墙，旧入口保持不动。`routers` 排队等别的作业改同一台路由时、失败且确认路由都已改回原配置停在这一步时也能取消；路由可能还改着一部分时（参数 `routers_applied` 非空：这一步中途被打断——外层超时、中控重启——或改回失败，`routers_stuck` 非空，作业给出 `manual`）不能取消（会摘掉路由还指着的新入口），重试之后、核对过路由之前也不能，重试照 `routers_applied` 接着改完；搬空同批被带头的认领之后（`routers_batch_leader`）也不能取消；开始改路由之后、摘旧入口之后不能取消（会摘掉路由已经指向的新入口 / 让节点没有入口），失败了只能重试到完成；取消赶在摘除之后到达时保留新入口。
+- **同一台软路由一个一个改**：替换、换线路机（含搬空建的、重试的）的 `routers` 这一步按路由加锁（PG advisory lock，键由路由 id 算出，读配置 → 改 → 重启 → 测 / 改回期间持有，一个作业改几台时按 id 顺序加，往前改只试一次、拿不到就全部放开）。别的作业正在改同一台路由、而计划 / 快照 / 之前改过的说这台要改时，这一步不读它的配置、直接排队：作业是 waiting、这一步的 `started_at` 为 null（排队不算这一步的超时），参数 `routers_queued` / `routers_queued_id` 记着在等哪台，日志写一次「软路由「X」正在被别的作业改，排队等它改完」，每 10 秒再试——排队时只试那一台的锁（用连接池里的连接，不读配置、不新建连接）。作业的其余步骤并行。
+- **搬空同批一起改**（jobs/steps/batch.rs）：搬空建的作业走到 `routers` 时，同批还有作业没走到这一步（建新入口、验收中）就排队等（`routers_queued` 写原因，能取消）；都到了由 id 最小的带头，把同批停在这一步的认领下来（它们的参数 `routers_batch_leader` = 带头的，带头的 `routers_batch` = 认领的作业），按各自的新入口一起改：每台路由一次备份、一次改完、一次重启，加锁、改回、改不了的判断同上。被认领的作业不能取消（`cancellable` 为 false），等带头的结果：它这一步做完就跟着完成（步骤输出是其中自己的那几个出口，`batch_leader` 是带头的；带头的输出每个出口带 `job`，另有 `batch`），它失败（全部换回、旧入口都不摘）就跟着失败；改回失败要人工处理时跟着的同样记 `routers_stuck`、给出 `manual`，重试也一直跟着，等带头的重试改完再完成。失败停着、取消了的不算同批在等的；之后单独重试的，同批别的已经改过时就自己改。
 - **分享链接会变**：新入口有新的端口和凭据。`GET /jobs/{id}` 对 move_entry 多返回 `result:{new_entry_id, old_entry_id, from_relay_id, to_relay_id, share_changed:true, note}`；用 `GET /entries/{new_entry_id}/share` 取新链接（需要 secrets 权限）。作业日志里也有「客户端需要换成新的分享链接」。
 - 旧线路机不在线时 `wait_detached_old` 会失败，线路机恢复后重试。
 - `routers` 改完（或换回）路由后马上请采集循环采一次这几台（`routers::collect::Refresh`，等它采完，最多 30 秒）：紧接着发起的预览按新配置算出口，不用等下一轮 30 秒。改配置时 ssh 根本没连上（连接 / 握手 / 登录阶段失败，脚本没跑）的那台算没改过：不去换回它，错误写「（没连上，这台什么都没改）」，可以直接重试或取消。
@@ -492,7 +494,7 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 ## 探测点（主探测来源）
 线路机客户入口通不通（卡片心跳格、入口的 `reach`、`relay_unreachable`）原来只有中控测；中控在德国，客户在中国大陆，所以可以加「探测点」：放在靠近客户的地方（如香港）的小机器，跑 `fleet-agent probe`，每 30 秒按同样的轮换与作废规则测一轮报回来（为什么见 DESIGN.md「探测点」，代码 `probe_points/`）。
 
-**主探测来源**存在 `app_setting` 的 `reach_source`（`{"primary": null | "<探测点 id>", "central": true}`）：判定、心跳格、入口表只看那一路。主来源的探测点离线（超过 180 秒没上报，或停用 / 删掉）时：中控的检查开着就退回中控（`effective.state = fallback`：连不上照报，摘要写「中控（代替离线的香港探测点）连续 3 次…」；连得上不算恢复——香港看到的问题中控未必看得到），中控的检查关着就标灰（`none`：不开也不关告警）。并开告警 `probe_point_offline`（警告；对象是探测点，告警列表里 `subject` / `subject_id` 为 null、`subject_name` 是探测点的名字）：启用的、上报过的探测点超过 180 秒没上报；上报恢复后恢复，停用、删除时关掉不发恢复。`relay_unreachable` 的摘要写明是哪一路测的：「中控连续 3 次连不上客户入口（…）」「香港探测点连续 3 次…」。
+**主探测来源**存在 `app_setting` 的 `reach_source`（`{"primary": null | "<探测点 id>", "central": true}`）：判定、心跳格、入口表只看那一路。主来源的探测点离线（超过 180 秒没上报，或停用 / 删掉）时：中控的检查开着就退回中控（`effective.state = fallback`：连不上照报，摘要写「中控（代替离线的香港探测点）连续 3 次以上…」；连得上不算恢复——香港看到的问题中控未必看得到），中控的检查关着就标灰（`none`：不开也不关告警）。并开告警 `probe_point_offline`（警告；对象是探测点，告警列表里 `subject` / `subject_id` 为 null、`subject_name` 是探测点的名字）：启用的、上报过的探测点超过 180 秒没上报；上报恢复后恢复，停用、删除时关掉不发恢复。`relay_unreachable` 的摘要写明是哪一路测的：「中控连续 3 次以上连不上客户入口（…）」「香港探测点连续 3 次以上…」（连续 3 次健康状态就变故障，告警再持续 60 秒才开，开的时候一般已经更多次）。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|

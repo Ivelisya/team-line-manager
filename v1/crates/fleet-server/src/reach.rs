@@ -11,7 +11,9 @@
 //!
 //! 判定只看「主探测来源」那一路（probe_points::Effective，设置里选；主来源的探测点离线时退回中控或标灰，见 probe_points/ 的头注释）：
 //! 同一台线路机最近 3 轮都连不上（整台不通），或同一个端口最近 3 次都连不上（单个口坏了），健康判定报 relay_unreachable
-//! （views 的 `RelayInfo::unreachable`；结论变了就发 `Event::Machine`），摘要写明是哪一路测的（「香港探测点连续 3 次连不上客户入口（…）」）。
+//! （views 的 `RelayInfo::unreachable`；结论变了就发 `Event::Machine`），摘要写明是哪一路测的（「香港探测点连续 3 次以上连不上客户入口（…）」）。
+//! 健康原因在第 3 次失败时出现，告警层再去抖 60 秒（alerts.rs）：整台不通时告警开的时候一般已经连续 5 轮（从第一次失败算起约 2.5 分钟），
+//! 单个端口坏了是它连续 3 次之后再 60 秒（轮到它的间隔是 N 轮），所以摘要写「3 次以上」。恢复：连上一次原因就消失，再满 60 秒恢复。
 //! 不连 SSH 口：每 30 秒一次未认证就断开的连接会刷 sshd 日志，线路机上若有 fail2ban 还可能把中控封掉。
 //! Xray 的 REALITY 入站对只建连、不发数据的连接不记访问日志。
 //!
@@ -59,7 +61,7 @@ pub async fn run_forever(st: AppState) {
     }
 }
 
-/// 线路机 `relay`（SQL 表达式）按 `src` 那一路（主探测来源）连不上时的告警摘要「香港探测点连续 3 次连不上客户入口（端口 443：超时 10 秒）」，否则 null。
+/// 线路机 `relay`（SQL 表达式）按 `src` 那一路（主探测来源）连不上时的告警摘要「香港探测点连续 3 次以上连不上客户入口（端口 443：超时 10 秒）」，否则 null。
 /// 括号里是失败原因（去重，带端口）：
 /// - 整台不通：最近 3 轮（5 分钟内）都连不上，取这 3 次的原因；
 /// - 单个口坏了：某个在用入口端口最近 3 次都连不上（轮流连，N 个口每 N 轮才轮到一次：看 30 分钟与 3 遍轮换里取长的），取它最近一次的原因。
@@ -79,7 +81,7 @@ pub(crate) fn unreachable_sql(relay: &str, src: &Effective) -> String {
                whole as (select count(*) = 3 and not bool_or(ok) down from x where n <= 3 and fresh),
                bad as (select port from x where np <= 3 and port in (select e.port from entry e where e.relay_id = {relay} and e.lifecycle = 'active')
                        group by port having count(*) = 3 and not bool_or(ok))
-          select {label} || '连续 3 次连不上客户入口（' || string_agg(distinct detail, '；' order by detail) || '）'
+          select {label} || '连续 3 次以上连不上客户入口（' || string_agg(distinct detail, '；' order by detail) || '）'
                  || case when bool_or(all_down) then '；{ALL_DOWN}' else '' end from x
           where (n <= 3 and fresh and (select down from whole)) or (np = 1 and port in (select port from bad)))",
         cond = src.cond("rr"),
