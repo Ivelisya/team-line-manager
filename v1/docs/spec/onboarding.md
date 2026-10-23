@@ -536,7 +536,7 @@ active 终态；cancel 对 active 行拒绝（「走下线流程」——该流�
 ### 9.1 建议的最小流水线
 
 节点（逐行）：
-1. **N1 预检与身份**：TCP + 中控 keyscan（≤2 次）+ 线路机视角 keyscan → 钉公钥 → 采集 facts（arch、os、systemd、nft、MAC、DMI uuid）→ 校验 x86_64、MAC。冲突检查合并进 attach。
+1. **N1 预检与身份**：TCP + 中控 keyscan（≤2 次）+ 线路机视角 keyscan → 钉公钥 → 采集 facts（arch、os、systemd、nft、MAC、DMI uuid）→ 校验 x86_64、MAC。冲突检查合并进 attach。（v1 实现补充：os 已过标准支持期的只记 warn 不拦；密钥登录不了又没有密码时报错里带中控公钥全文。提交前的「检查」就用中控密钥试登录一次，不等作业失败。）
 2. **N2 引导密钥**（条件：密钥登录失败）：与旧 P2 相同；密码被拒 → 等待输入。
 3. **N3 重装闸门**（条件：`dd=manual`）：合并 P4–P6；验收用「公钥变了 + DMI uuid/MAC 一致」。
 4. **N4 节点收敛**：一个幂等脚本，包含 P7（sshd 仅密钥 + BBR）、P8（ss_guard nft + 持久化）、P9（ssserver + systemd 单元）；一次输出，逐项断言；仅对金丝雀/抽样跑 nft 反测和密码登录反测。

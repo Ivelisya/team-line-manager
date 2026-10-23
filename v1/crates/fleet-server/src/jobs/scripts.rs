@@ -20,6 +20,27 @@ if ss -Hltn 2>/dev/null | grep -q ':8388 '; then echo port8388=busy; else echo p
 [ -f /etc/fleet-agent/agent.toml ] && echo "agent_machine=$(sed -n 's/^machine_id *= *"\(.*\)"/\1/p' /etc/fleet-agent/agent.toml)" || echo agent_machine=
 "#;
 
+/// 只读发行版（上架检查用中控密钥试登录时跑）：`os=` 同 FACTS
+pub const OS_RELEASE: &str = r#"
+. /etc/os-release 2>/dev/null; echo "os=${ID:-?}-${VERSION_ID:-?}"
+"#;
+
+/// 已过标准支持期的发行版：(os-release 的 ID, 显示名, 仍在标准支持期内的最低版本)，低于它的上架时给警告（不拦）。
+/// 版本按点分的数字逐段比较。哪个版本过期了就改这里：Ubuntu 22.04 标准支持到 2027-04（之后只有付费的 ESM）；
+/// Debian 12 常规安全支持到 2026-06、之后转 LTS（免费、照常有安全更新）到 2028-06。Ubuntu 的非 LTS 版本（24.10、25.04…）只支持 9 个月，表里不管
+pub const OS_EOL: &[(&str, &str, &str)] = &[("ubuntu", "Ubuntu", "22.04"), ("debian", "Debian", "12")];
+
+/// `os=` 的值（`ubuntu-20.04`）对照 `OS_EOL`：已过标准支持期时返回警告文字；表里没有的发行版、读不出版本的不管
+pub fn os_eol_warning(os: &str) -> Option<String> {
+    let (id, ver) = os.rsplit_once('-')?;
+    let (_, name, min) = OS_EOL.iter().find(|(i, ..)| *i == id)?;
+    let nums = |s: &str| s.split('.').map(|p| p.parse::<u32>().ok()).collect::<Option<Vec<u32>>>();
+    if nums(ver)? >= nums(min)? {
+        return None;
+    }
+    Some(format!("系统是 {name} {ver}，已过标准支持期、不再有常规安全更新（{name} {min} 起仍在支持）：可以照常上架，建议找机会重装成新版本"))
+}
+
 /// 引导：把中控公钥加进 root 的 authorized_keys（用密码登录时执行）。需要变量 PUBKEY。
 pub const BOOTSTRAP_KEY: &str = r#"
 set -eu
@@ -471,6 +492,22 @@ mod tests {
     #[test]
     fn vars_escapes_quotes() {
         assert_eq!(super::vars(&[("A", "it's")]), "A='it'\\''s'\n");
+    }
+
+    /// 发行版过期表：低于表里版本的警告（逐段按数字比，20.10 < 22.04 < 22.10），表里没有的、读不出版本的不管
+    #[test]
+    fn os_eol() {
+        use super::os_eol_warning as w;
+        let warn = w("ubuntu-20.04").unwrap();
+        assert!(warn.starts_with("系统是 Ubuntu 20.04，已过标准支持期") && warn.contains("Ubuntu 22.04 起仍在支持"), "{warn}");
+        assert!(w("ubuntu-18.04").is_some() && w("ubuntu-20.10").is_some());
+        assert_eq!((w("ubuntu-22.04"), w("ubuntu-22.10"), w("ubuntu-24.04")), (None, None, None));
+        assert!(w("debian-11").unwrap().contains("Debian 11"));
+        assert!(w("debian-10").is_some() && w("debian-12").is_none() && w("debian-13").is_none());
+        // 表里没有的发行版、没有 VERSION_ID（Debian testing）、读不到 os-release
+        for os in ["centos-7", "almalinux-9.4", "debian-?", "?-?", "", "ubuntu"] {
+            assert_eq!(w(os), None, "{os}");
+        }
     }
 
     /// 第 17 轮（同机多 IP 节点）之前的 NODE_SS 原文

@@ -9,7 +9,7 @@
 //! 离线 IP 库指向测试自己的临时目录（默认是空的，走降级），不读机器上装好的真实库。
 //!
 //! 集成测试都在 tests/it 这一个测试目标里（只链接一次）。只跑某个套件：`cargo test -p fleet-server --test it telemetry::`；
-//! 只跑其中某个测试再加名字。改了进程 PATH（放假 ssh）的 replace、routers、upgrade 各自单独一个目标（`--test replace`），也用这里的搭建。
+//! 只跑其中某个测试再加名字。改了进程 PATH（放假 ssh）的 replace、routers、upgrade、provision 各自单独一个目标（`--test replace`），也用这里的搭建。
 
 #![allow(dead_code)]
 

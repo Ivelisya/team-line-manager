@@ -155,6 +155,8 @@ export interface Meta {
   defaults: { currency: string; cycle: string; remind_days: number; traffic_rule: TrafficRule; traffic_reset: TrafficReset; ss_method: string; ss_port: number };
   /** 网页终端的上限（服务端 terminal.rs）：每人 / 全中控同时几个、空闲与最长秒数、一条消息最多几字节、行列上限、票据与免验证的有效秒数 */
   terminal: { per_user: number; global: number; idle_s: number; max_age_s: number; max_message: number; max_dim: number; ticket_ttl_s: number; verify_ttl_s: number };
+  /** 中控公钥全文（上架页「复制中控公钥」：供应商面板录入它之后可以不填 root 密码）；中控读不到时为 null */
+  ssh_public_key: string | null;
 }
 export type UsageMetric = 'cpu' | 'mem' | 'disk' | 'load';
 
@@ -195,7 +197,8 @@ export interface ProvisionItem {
   host_id?: string;
 }
 /** ss_port：同机 IP 节点暂定的 SS 端口（作业在宿主机上核对时被占用会换），其它为 null */
-export interface ProvisionCheckItem { ok: boolean; errors: string[]; name: string; number: number | null; relay_port?: number; ss_port: number | null }
+/** warnings：不影响通过的提醒（发行版已过标准支持期、用中控密钥试登录没有结果）；旧中控没有这个字段 */
+export interface ProvisionCheckItem { ok: boolean; errors: string[]; warnings?: string[]; name: string; number: number | null; relay_port?: number; ss_port: number | null }
 
 // ---- 以 API.md「返回形状补充」为准 ----
 /** series：{metric, range, resolution, points}，点里时间字段叫 ts。

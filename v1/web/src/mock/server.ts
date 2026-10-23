@@ -364,7 +364,14 @@ function checkProvision(items: ProvisionItem[]): ProvisionCheckItem[] {
     }
     // 同服务端 provision::check：库里的校验都过了再看 SSH 通不通；模拟里 192.0.2.x（文档用地址段）当作连不上
     if (!errors.length && it.kind !== 'proxy' && !it.host_id && it.ip.startsWith('192.0.2.')) errors.push(`SSH ${it.ip}:${it.ssh_port ?? 22} 连不上（3 秒没有响应）`);
-    out.push({ ok: errors.length === 0, errors, name, number, relay_port: relayPort, ss_port: ssPort });
+    // SSH 通了再用中控密钥试登录（同服务端 provision::ssh_check）：模拟里末段是 66 的当作密钥被拒（没填密码时不通过），末段是 20 的当作 Ubuntu 20.04
+    const warnings: string[] = [];
+    if (!errors.length && it.kind !== 'proxy' && !it.host_id) {
+      const port = `${it.ip}:${it.ssh_port ?? 22}`;
+      if (it.ip.endsWith('.66') && !it.login?.password) errors.push(`中控密钥登录不了 ${port}（密钥被拒），也没填 root 密码。二选一：提供 root 密码（网页填「root 密码」，fleetctl 用 --ssh-password-env 变量名）；或在供应商面板（或机器上 root 的 ~/.ssh/authorized_keys）录入中控公钥：${META.ssh_public_key}`);
+      else if (it.ip.endsWith('.20')) warnings.push('系统是 Ubuntu 20.04，已过标准支持期、不再有常规安全更新（Ubuntu 22.04 起仍在支持）：可以照常上架，建议找机会重装成新版本');
+    }
+    out.push({ ok: errors.length === 0, errors, warnings, name, number, relay_port: relayPort, ss_port: ssPort });
   }
   return out;
 }

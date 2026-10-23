@@ -2,7 +2,7 @@
 // VPS 节点可以「在已有机器上添加 IP」：同机 IP 节点（host_id），SSH、agent、供应商沿用宿主机的；抽屉里宿主机的「添加 IP 节点」跳来时带 ?host=<id> 预填。
 import * as React from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Check, CheckCircle2, ChevronDown, ClipboardPaste, ListChecks, Plus, Trash2, TriangleAlert } from 'lucide-react';
+import { Check, CheckCircle2, ChevronDown, ClipboardPaste, Info, KeyRound, ListChecks, Plus, Trash2, TriangleAlert } from 'lucide-react';
 import { useHostChoices, usePlans, useProviders, useProvision, useProvisionCheck, useRelayChoices, useTeams, type HostChoice } from '@/lib/queries';
 import type { Kind, ProvisionCheckItem } from '@/lib/types';
 import { KIND_ORDER } from '@/lib/sort';
@@ -33,6 +33,14 @@ const CHECK_TOAST = 'provision-check';
 const checkToast = (tone: ToastTone, text: string) => toast.show({ tone, text, key: CHECK_TOAST });
 const NONE_RELAYS: { id: string; name: string }[] = [];
 const NONE_HOSTS: HostChoice[] = [];
+/** 「复制中控公钥」：供应商面板（或机器 root 的 authorized_keys）录入它之后，上架不用填 root 密码。中控读不到公钥时不显示入口 */
+const PUBKEY_TIP = '供应商面板录入这把公钥后可以不填密码';
+const copyPubkey = () => { const k = meta().ssh_public_key; if (k) void copyText(k, '中控公钥'); };
+function PubkeyButton() {
+  return <Button variant="link" onClick={copyPubkey}><KeyRound size={13} />复制中控公钥</Button>;
+}
+/** 检查结果里的提醒条数（不影响通过） */
+const warnCount = (rs: ProvisionCheckItem[]) => rs.reduce((n, r) => n + (r.warnings?.length ?? 0), 0);
 
 /** 离开上架页再回来不丢：表格（含登录密码，只在这个标签页的内存里，刷新、退出登录即无）、模式与检查结果留在模块里；上架成功后清掉 */
 interface Draft { mode: 'single' | 'batch'; rows: Row[]; results: ProvisionCheckItem[] | null; localErrs: string[][] | null; checked: string[]; sig: string }
@@ -118,7 +126,8 @@ export function ProvisionPage() {
       const r = await check.mutateAsync(items);
       setResults(r.items); setSig(curSig);
       const failed = r.items.filter((x) => !x.ok).length;
-      if (!failed) checkToast('ok', `检查通过：${r.items.length} 台`);
+      const warns = warnCount(r.items);
+      if (!failed) checkToast('ok', `检查通过：${r.items.length} 台${warns ? `，${warns} 条提醒见「检查结果」` : ''}`);
       else { setJump((n) => n + 1); checkToast('bad', mode === 'single' ? '检查未通过，见标红的字段' : `${failed} 行未通过，见「检查结果」列`); }
     } catch (e) { checkToast('bad', errMessage(e)); }
   };
@@ -160,7 +169,8 @@ export function ProvisionPage() {
   // 单台不说「行」：「信息不完整」「未通过」
   const summary = results == null ? (localErrs?.some((e) => e.length) ? <Pill tone="bad">{single ? '信息不完整' : '有行信息不完整'}</Pill> : null)
     : stale ? <Pill tone="warn">内容已修改，需要重新检查</Pill>
-    : passed ? <Pill tone="ok">检查通过，可以开始</Pill> : <Pill tone="bad">{single ? '未通过' : `${results.filter((r) => !r.ok).length} 行未通过`}</Pill>;
+    : passed ? <><Pill tone="ok">检查通过，可以开始</Pill>{warnCount(results) > 0 && <Pill tone="warn">{warnCount(results)} 条提醒</Pill>}</>
+    : <Pill tone="bad">{single ? '未通过' : `${results.filter((r) => !r.ok).length} 行未通过`}</Pill>;
   // 确认说明：同机 IP 节点不收登录信息、不装 agent，只在宿主机上装它自己的 SS 实例
   const ipRows = active.filter(isIpNode).length;
   const confirmTip = [
@@ -301,6 +311,9 @@ function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; o
   // 同机 IP 节点不适用的格子：禁用、显示取自哪里的值，说明进 (i)
   const Fixed = (label: string, info: string, value: string, ph = '') => <Field label={label} info={info}><Input disabled value={value} placeholder={ph} aria-label={label} /></Field>;
   const plan = ip ? undefined : ctx.plans.find((p) => p.id === row.plan_id);
+  const pubkeyBtn = meta().ssh_public_key ? <PubkeyButton /> : null;
+  // 「中控密钥登录不了」的原话带着整行公钥，标在字段旁会把表单撑宽：这里只说结论，原话（含公钥）在下面的检查结果里
+  const loginErr = fe.login_pw && '中控密钥登录不了，也没填 root 密码：填写 root 密码，或在供应商面板录入中控公钥';
   return (
     <div className="stack prov-form">
       <Panel title="机器">
@@ -331,7 +344,13 @@ function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; o
               </>
             )}
             {/* 同机 IP 节点：中控用自己的密钥登录宿主机，没有要填的 */}
-            {k !== 'proxy' && !ip && <Field label="root 密码" info="首次登录用，只在上架作业中用一次，成功后丢弃，不保存"><Input type="password" autoComplete="new-password" placeholder="留空用中控密钥" value={row.login_pw} onChange={(e) => onChange({ login_pw: e.target.value })} /></Field>}
+            {k !== 'proxy' && !ip && (
+              // 「中控密钥登录不了」标在这里时复制入口也留着（错误替换提示的位置）
+              <Field label="root 密码" info="首次登录用，只在上架作业中用一次，成功后丢弃，不保存。不填时检查会用中控密钥试登录" error={loginErr && <>{loginErr} {pubkeyBtn}</>}
+                hint={pubkeyBtn && <>{pubkeyBtn} {PUBKEY_TIP}</>}>
+                <Input type="password" autoComplete="new-password" placeholder="留空用中控密钥" value={row.login_pw} aria-invalid={fe.login_pw ? true : undefined} onChange={(e) => onChange({ login_pw: e.target.value })} />
+              </Field>
+            )}
           </div>
         </div>
       </Panel>
@@ -373,11 +392,14 @@ function CheckOutput({ rows, resOf, errOf, stale }: { rows: Row[]; resOf: (id: s
     if (le.length) lines.push(<li key={i}><TriangleAlert size={14} style={{ color: 'var(--bad)', marginTop: 3 }} /><span>{rows.length > 1 ? `第 ${i + 1} 行：` : ''}{le.join('；')}</span></li>);
     else if (res && !res.ok) lines.push(<li key={i}><TriangleAlert size={14} style={{ color: 'var(--bad)', marginTop: 3 }} /><span>{rows.length > 1 ? `第 ${i + 1} 行：` : ''}{res.errors.join('；')}</span></li>);
     else if (res) lines.push(<li key={i}><CheckCircle2 size={14} style={{ color: 'var(--ok)', marginTop: 3 }} /><span>{rows.length > 1 ? `第 ${i + 1} 行：` : ''}将创建 <b>{res.name}</b>{res.relay_port ? `，入口端口 ${res.relay_port}` : ''}{res.ss_port ? `，SS 端口暂定 ${res.ss_port}` : ''}</span></li>);
+    // 提醒（发行版已过标准支持期等）不影响通过，跟在这一行的结果后面
+    if (!le.length) res?.warnings?.forEach((w, j) => lines.push(<li key={`${i}-w${j}`}><Info size={14} style={{ color: 'var(--warn)', marginTop: 3 }} /><span>{rows.length > 1 ? `第 ${i + 1} 行提醒：` : '提醒：'}{w}</span></li>));
   });
   if (!lines.length) return null;
   return (
     <Panel title="检查结果" sub={stale ? '内容已修改，结果已过期' : undefined}>
-      <ul className="reason-list" style={{ opacity: stale ? 0.5 : 1 }}>{lines}</ul>
+      {/* 中控公钥是一长串不断行的字符：窄屏上任意处折行，不撑出横向滚动 */}
+      <ul className="reason-list" style={{ opacity: stale ? 0.5 : 1, overflowWrap: 'anywhere' }}>{lines}</ul>
     </Panel>
   );
 }
@@ -417,7 +439,7 @@ function BatchGrid({ rows, setRows, ctx, resOf, errOf, checkedAny, stale }: { ro
   return (
     <div className="stack">
       <Panel title="批量上架" sub={<InfoTip text={BATCH_TIP} />} flush
-        tools={<><Button size="sm" onClick={copyHeader}><ClipboardPaste />复制表头</Button><Button size="sm" onClick={() => addRows(1)}><Plus />加一行</Button><Button size="sm" onClick={() => addRows(5)}>加 5 行</Button><Button size="sm" variant="quiet" onClick={() => (rows.length > 1 ? setAskClear(true) : setRows([newRow()]))}>清空</Button></>}>
+        tools={<>{meta().ssh_public_key && <Button size="sm" variant="quiet" title={PUBKEY_TIP} onClick={copyPubkey}><KeyRound />复制中控公钥</Button>}<Button size="sm" onClick={copyHeader}><ClipboardPaste />复制表头</Button><Button size="sm" onClick={() => addRows(1)}><Plus />加一行</Button><Button size="sm" onClick={() => addRows(5)}>加 5 行</Button><Button size="sm" variant="quiet" onClick={() => (rows.length > 1 ? setAskClear(true) : setRows([newRow()]))}>清空</Button></>}>
         <div className="table-wrap">
           <table className="dt dt-grid" style={{ minWidth: total }}>
             <colgroup><col style={{ width: 40 }} />{COLS.map((c) => <col key={c.key} style={{ width: c.w }} />)}<col style={{ width: 220 }} /><col style={{ width: 56 }} /></colgroup>
@@ -426,6 +448,7 @@ function BatchGrid({ rows, setRows, ctx, resOf, errOf, checkedAny, stale }: { ro
               {rows.map((r, ri) => {
                 const le = errOf(r.id) ?? []; const res = resOf(r.id);
                 const bad = le.length > 0 || (res && !res.ok);
+                const warns = !le.length && res?.warnings?.length ? res.warnings : null;
                 return (
                   <tr key={r.id} className={bad ? 'is-row-bad' : undefined}>
                     <td className="idx">{ri + 1}</td>
@@ -434,10 +457,11 @@ function BatchGrid({ rows, setRows, ctx, resOf, errOf, checkedAny, stale }: { ro
                         <GridCell col={c} ci={ci} row={r} opts={c.type === 'team' ? opts.team : c.type === 'relay' ? opts.relay : c.type === 'host' ? opts.host : c.type === 'provider' ? opts.provider : c.type === 'plan' ? opts.planFor(r.provider_id) : undefined} onChange={change} onPaste={onPaste} />
                       </td>
                     ))}
-                    <td className="gc-res" data-tip={le.length || (res && !res.ok) ? le.concat(res?.errors ?? []).join('\n') : undefined}>
+                    <td className="gc-res" data-tip={le.length || (res && !res.ok) || warns ? [...le, ...(res?.errors ?? []), ...(warns ?? [])].join('\n') : undefined}>
                       {le.length ? <span style={{ color: 'var(--bad-text)' }}>{le.join('；')}</span>
                         : res ? (res.ok ? <span style={{ color: stale ? 'var(--fg-3)' : 'var(--ok-text)' }}>✓ {res.name}{res.relay_port ? ` · :${res.relay_port}` : ''}{res.ss_port ? ` · SS ${res.ss_port}` : ''}</span> : <span style={{ color: 'var(--bad-text)' }}>{res.errors.join('；')}</span>)
                         : <span className="t-muted">—</span>}
+                      {warns && <span style={{ color: stale ? 'var(--fg-3)' : 'var(--warn-text)' }}> · {warns.join('；')}</span>}
                     </td>
                     <td className="c gc-del"><IconButton label={`删除第 ${ri + 1} 行`} size="sm" disabled={rows.length === 1} onClick={() => setRows((rs) => rs.filter((x) => x.id !== r.id))}><Trash2 size={14} /></IconButton></td>
                   </tr>
