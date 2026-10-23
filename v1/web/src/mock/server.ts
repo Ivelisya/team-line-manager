@@ -10,6 +10,7 @@ import { cycleMonths, META, subCalc } from './meta';
 const LIFECYCLE_LABEL = META.lifecycles;
 import { buildDb, countryOf, hashStr, IP_STEPS, rng, trafficOf, type Db } from './fixtures';
 import { installAccessMock } from './access';
+import { installFxMock, toUsd, usdPerUnit, usdTotal } from './fx';
 import { installPolicyMock } from './policy';
 import { installRoutersMock } from './routers';
 import { installTerminalMock } from './terminal';
@@ -127,6 +128,7 @@ function overview() {
     // 在线/离线按 agent 连通（同 isQuiet），只数有自己 agent 的（家宽代理、同机 IP 节点不计）
     online: live.filter((m) => m.agent && !m.host_machine && !isQuiet(m)).length, offline: live.filter((m) => m.agent && !m.host_machine && isQuiet(m)).length,
     due_soon: live.filter((m) => !m.spare && m.subscription?.due_state === 'soon').length, overdue: live.filter((m) => !m.spare && m.subscription?.due_state === 'overdue').length,
+    monthly_usd: usdTotal(live.flatMap((m) => (m.subscription ? [m.subscription] : []))),
     monthly_cost: Object.entries(live.reduce<Record<string, number>>((acc, m) => { if (m.subscription) acc[m.subscription.currency] = (acc[m.subscription.currency] ?? 0) + m.subscription.monthly_cents; return acc; }, {})).map(([currency, cents]) => ({ currency, cents })),
     traffic_month: { up, down },
     // 实时速率只算数据没过期的（同 liveRate）；同机 IP 节点的读数就是宿主机的，不重复算
@@ -260,7 +262,7 @@ function startProvisionJob(m: MachineView) {
   m.active_job = { id: job.id, kind: job.kind, state: 'running' };
   drive(job, 2800, () => {
     m.lifecycle = 'active'; m.activated_at = iso(); m.active_job = null; m.health = { status: 'ok', reasons: [] };
-    if (!h && m.kind !== 'proxy') { m.tune = { profile: 'tune-v1', at: iso(), current: true }; m.agent = { version: '1.0.3', last_report_at: iso(), online: true, xray_running: null, cores: 2, health: null }; m.host = { ts: iso(), cpu_pct: 6, load1: 0.1, mem_used: 400 * 1024 ** 2, mem_total: 4 * GiB, disk_used: 4 * GiB, disk_total: 60 * GiB, net_rx_bps: 2e5, net_tx_bps: 1e5, tcp_conns: 12 }; }
+    if (!h && m.kind !== 'proxy') { m.tune = { profile: 'tune-v2', at: iso(), current: true, params: { bw: 1000, bw_plan: null, bw_source: 'default' as const, rtt: 100, rtt_source: 'default' as const, rtt_samples: 0, mem_mb: 3911, buf_max: 27097152 } }; m.agent = { version: '1.0.3', last_report_at: iso(), online: true, xray_running: null, cores: 2, health: null }; m.host = { ts: iso(), cpu_pct: 6, load1: 0.1, mem_used: 400 * 1024 ** 2, mem_total: 4 * GiB, disk_used: 4 * GiB, disk_total: 60 * GiB, net_rx_bps: 2e5, net_tx_bps: 1e5, tcp_conns: 12 }; }
     for (const e of m.entries) { e.lifecycle = 'active'; e.applied = true; e.tcp = { ok: true, latency_ms: 52, detail: null, ts: iso() }; e.egress = { ok: true, latency_ms: 190, detail: null, ts: iso() }; }
     refreshCounts();
   }, h ? ipOutputs(m, h) : []);
@@ -364,7 +366,14 @@ function checkProvision(items: ProvisionItem[]): ProvisionCheckItem[] {
     }
     // 同服务端 provision::check：库里的校验都过了再看 SSH 通不通；模拟里 192.0.2.x（文档用地址段）当作连不上
     if (!errors.length && it.kind !== 'proxy' && !it.host_id && it.ip.startsWith('192.0.2.')) errors.push(`SSH ${it.ip}:${it.ssh_port ?? 22} 连不上（3 秒没有响应）`);
-    out.push({ ok: errors.length === 0, errors, name, number, relay_port: relayPort, ss_port: ssPort });
+    // SSH 通了再用中控密钥试登录（同服务端 provision::ssh_check）：模拟里末段是 66 的当作密钥被拒（没填密码时不通过），末段是 20 的当作 Ubuntu 20.04
+    const warnings: string[] = [];
+    if (!errors.length && it.kind !== 'proxy' && !it.host_id) {
+      const port = `${it.ip}:${it.ssh_port ?? 22}`;
+      if (it.ip.endsWith('.66') && !it.login?.password) errors.push(`中控密钥登录不了 ${port}（密钥被拒），也没填 root 密码。二选一：提供 root 密码（网页填「root 密码」，fleetctl 用 --ssh-password-env 变量名）；或在供应商面板（或机器上 root 的 ~/.ssh/authorized_keys）录入中控公钥：${META.ssh_public_key}`);
+      else if (it.ip.endsWith('.20')) warnings.push('系统是 Ubuntu 20.04，已过标准支持期、不再有常规安全更新（Ubuntu 22.04 起仍在支持）：可以照常上架，建议找机会重装成新版本');
+    }
+    out.push({ ok: errors.length === 0, errors, warnings, name, number, relay_port: relayPort, ss_port: ssPort });
   }
   return out;
 }
@@ -385,7 +394,7 @@ function createMachine(it: ProvisionItem, c: ProvisionCheckItem): MachineView {
     subscription: it.subscription?.due_date ? subCalc({ price_cents: it.subscription.price_cents ?? plan?.price_cents ?? 0, currency: plan?.currency ?? META.defaults.currency, cycle: it.subscription.cycle ?? plan?.cycle ?? META.defaults.cycle, due_date: it.subscription.due_date, due_days: 0, billing_tz: it.subscription.billing_tz ?? pv?.timezone ?? META.org_timezone, auto_renew: false, remind_days: pv?.remind_days ?? META.defaults.remind_days, traffic_gb: plan?.traffic_gb || null, traffic_reset_day: 1 } as NonNullable<MachineView['subscription']>) : null,
     agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, nic: null, month_counted_from: null, quota: { used: 0, period_start: '', period_end: null, mode: 'monthly', counted_from: null, rule: null, base: null }, health: { status: 'unknown', reasons: [{ key: 'provisioning', severity: 'info', text: '上架作业进行中' }] }, active_job: null, failed_job: null, open_incidents: 0, maintenance: false,
     relay: it.kind === 'relay' ? { public_host: it.ip, generation: 1, applied_generation: 0, applied_at: null, apply_error: null, port_min: 20001, port_max: 20999 } : null,
-    tune: it.kind === 'proxy' || h ? null : { profile: null, at: null, current: false },
+    tune: it.kind === 'proxy' || h ? null : { profile: null, at: null, current: false, params: null },
   };
   if (h) borrowHost(m, h);
   if (m.kind !== 'relay') {
@@ -408,7 +417,8 @@ R('POST', '/auth/login', ({ body }) => { if (!body?.username) throw bad('请输�
 R('POST', '/auth/logout', () => { sessionStorage.setItem('mock:auth', '0'); return {}; });
 R('GET', '/auth/me', () => { if (sessionStorage.getItem('mock:auth') === '0') throw bad('未登录', 401, 'unauthorized'); return { username: db.user }; });
 
-R('GET', '/teams', () => clone(db.teams));
+// 团队带在用机器的月费合计（USD，同服务端）
+R('GET', '/teams', () => clone(db.teams).map((t) => ({ ...t, monthly_usd: usdTotal(db.machines.filter((m) => m.lifecycle === 'active' && m.team?.id === t.id && m.subscription).map((m) => m.subscription!)) })));
 R('POST', '/teams', ({ body }) => {
   if (!body.name?.trim()) throw bad('团队名不能为空');
   if (db.teams.some((t) => t.name === body.name)) throw bad('团队名已存在', 409, 'conflict');
@@ -482,7 +492,7 @@ R('DELETE', '/plans/([^/]+)', ({ params }) => {
   db.plans = db.plans.filter((x) => x.id !== p.id); delAudit('plan.delete', '删除套餐', 'plan', p.id, p.name);
   emit({ type: 'catalog' }); return { id: p.id };
 });
-R('GET', '/plans', () => clone(db.plans));
+R('GET', '/plans', () => clone(db.plans).map((p) => ({ ...p, usd_per_unit: usdPerUnit(p.currency), price_usd_cents: toUsd(p.price_cents, p.currency), monthly_usd_cents: toUsd(Math.round(p.price_cents / cycleMonths(p.cycle)), p.currency) })));
 R('POST', '/plans', ({ body }) => {
   if (!body.name || !body.provider_id) throw bad('套餐名与供应商必填');
   const p = { id: `pl${db.seq++}`, archived_at: null, machine_count: 0, notes: null, cpu_cores: 0, mem_mb: 0, disk_gb: 0, bandwidth_mbps: 0, traffic_gb: 0, price_cents: 0, currency: 'CNY', cycle: 'monthly', ...body };
@@ -735,6 +745,44 @@ R('GET', '/meta', () => clone(META));
 R('GET', '/overview', () => overview());
 R('GET', '/overview/series', ({ query }) => overviewSeries(Math.min(60, +(query.get('minutes') ?? 30))));
 R('GET', '/probe-beats', () => probeBeats());
+// 探测点（设置「探测点」）：演示数据只有一个在线的香港探测点、主来源是中控；改主来源、开关、新增只改内存
+const MOCK_PROBES: Record<string, unknown>[] = [{
+  id: 'pp-hk', name: '香港', label: '香港探测点', enabled: true, note: '阿里云香港 · Alpine', state: 'online', installed: true, primary: false,
+  last_seen_at: iso(), last_ip: '47.242.0.10', version: '0.1.0+mock', created_at: iso(), bootstrap_expires_at: null, install: null, upgrade: null,
+  relays: [{ relay_id: 'r1', name: '线路机1', avg_ms: 158, median_ms: 156, total: 120, ok: 120 }],
+}];
+const reachSrc = { primary: 'central', central_enabled: true };
+const reachView = () => {
+  const p = MOCK_PROBES.find((x) => x.id === reachSrc.primary);
+  const effective = p ? { state: 'probe', probe_point_id: p.id, label: p.label, primary_label: p.label } : { state: 'central', probe_point_id: null, label: '中控', primary_label: null };
+  return { primary: reachSrc.primary, primary_name: p ? p.name : '中控', central_enabled: reachSrc.central_enabled, effective, offline_after_s: 180 };
+};
+R('GET', '/settings/reach-source', () => reachView());
+R('PUT', '/settings/reach-source', ({ body }) => {
+  const b = body as { primary?: string; central_enabled?: boolean };
+  if (b.primary) reachSrc.primary = b.primary;
+  if (b.central_enabled != null) reachSrc.central_enabled = b.central_enabled;
+  MOCK_PROBES.forEach((p) => { p.primary = p.id === reachSrc.primary; });
+  emit({ type: 'settings' }); return reachView();
+});
+R('GET', '/probe-points', () => clone(MOCK_PROBES));
+R('POST', '/probe-points', ({ body }) => {
+  const b = body as { name: string; note?: string };
+  const id = `pp-${MOCK_PROBES.length + 1}`;
+  MOCK_PROBES.push({ id, name: b.name, label: `${b.name}探测点`, enabled: true, note: b.note ?? '', state: 'pending', installed: false, primary: false, last_seen_at: null, last_ip: null, version: null, created_at: iso(), bootstrap_expires_at: iso(), install: null, upgrade: null, relays: [] });
+  emit({ type: 'settings' });
+  return { id, bootstrap: { cmd: `{ curl -fsS https://fleet.example/api/v1/probe-bootstrap/MOCK 2>/dev/null || wget -qO- https://fleet.example/api/v1/probe-bootstrap/MOCK; } | sh`, expires_at: iso() } };
+});
+// 三网 PING：全局 8 槽位；演示的每台线路机三个目标，延迟在 150–200 ms 上下，偶尔丢一个
+const PING_GLOBAL = { mode: 'tcp', slots: [['武汉电信', 'hb-ct-v4.ip.zstaticcdn.com'], ['武汉联通', 'hb-cu-v4.ip.zstaticcdn.com'], ['武汉移动', 'hb-cm-v4.ip.zstaticcdn.com'], ['BGP', ''], ['Node 1', ''], ['Node 2', ''], ['Node 3', ''], ['Node 4', '']].map(([name, target]) => ({ name, target })) };
+const pingView = () => ({ ...clone(PING_GLOBAL), modes: ['tcp', 'icmp'], interval_s: 60, count: 5, tcp_default_port: 80, defaults: clone(PING_GLOBAL) });
+R('GET', '/settings/ping-targets', () => pingView());
+R('PUT', '/settings/ping-targets', ({ body }) => { Object.assign(PING_GLOBAL, body as object); emit({ type: 'settings' }); return pingView(); });
+R('GET', '/ping-beats', () => Object.fromEntries(db.machines.filter((m) => m.kind === 'relay' && m.lifecycle === 'active').map((m) => m.id).map((id, k) => [id, PING_GLOBAL.slots.map((s, slot) => ({ ...s, slot })).filter((s) => s.target).map((s) => {
+  const base = 150 + 15 * s.slot + 10 * k;
+  const cells = Array.from({ length: 20 }, (_, i) => [base + ((i * 7 + s.slot * 3) % 23), (i + s.slot) % 9 === 0 ? 20 : 0]);
+  return { slot: s.slot, name: s.name, target: s.target, mode: PING_GLOBAL.mode, cur_ms: cells[19][0], cur_loss: cells[19][1], cur_ts: iso(), cells };
+})])));
 /** 告警的顺序同服务端：进行中在前 → 严重度高在前 → 开始时间新在前；subject_id（只要这台机器的）时不看严重度，只按时间 */
 const SEV_RANK: Record<string, number> = { critical: 0, warning: 1, info: 2 };
 const byState = (a: Incident, b: Incident) => (a.state === b.state ? 0 : a.state === 'firing' ? -1 : 1);
@@ -796,6 +844,9 @@ R('GET', '/audit', ({ query }) => {
 });
 
 installAccessMock(R, () => db.machines);
+// 汇率变了：各台订阅的 USD 折算重算，发 settings（同中控）
+installFxMock(R, () => [...new Set([...db.plans.filter((p) => !p.archived_at).map((p) => p.currency), ...db.machines.filter((m) => m.lifecycle !== 'retired' && m.subscription).map((m) => m.subscription!.currency)])],
+  () => db.user, () => { db.machines.forEach(recomputeDue); emit({ type: 'settings' }); }, bad);
 installPolicyMock(R, { teams: () => db.teams, machines: () => db.machines, emit, user: () => db.user, bad });
 const routersMock = installRoutersMock(R, { teams: () => db.teams, machines: () => db.machines, incidents: () => db.incidents, emit, bad });
 installTerminalMock(R, { machines: () => db.machines, routers: routersMock.routers, bad });
@@ -855,9 +906,15 @@ R('POST', '/machines/([^/]+)/tune', ({ params }) => {
   const job = newJob('tune', { id: m.id, name: m.name }, [['tune', '系统调优']]);
   job.cancellable = false;
   m.active_job = { id: job.id, kind: 'tune', state: 'running' };
-  drive(job, 2500, () => { m.active_job = null; m.tune = { profile: 'tune-v1', at: iso(), current: true }; }, [{
-    profile: 'tune-v1', applied: ['net.core.rmem_max', 'net.core.wmem_max', 'net.ipv4.tcp_rmem', 'net.ipv4.tcp_wmem'], ok: ['net.ipv4.tcp_congestion_control'], kept: ['net.core.somaxconn'],
-    skipped: [{ key: 'net.netfilter.nf_conntrack_max', why: 'missing', got: null }], journald: 'changed', ntp: 'synced', nofile: '65536', container: false, mem_mb: 3911, swap_mb: 0, bbr: true,
+  const tp = m.kind === 'relay'
+    ? { bw: 1000, bw_plan: 2560, bw_source: 'plan' as const, rtt: 172, rtt_source: 'sampled' as const, rtt_samples: 41, mem_mb: 3911, buf_max: 45097152 }
+    : { bw: 1000, bw_plan: null, bw_source: 'default' as const, rtt: 100, rtt_source: 'default' as const, rtt_samples: 0, mem_mb: 3911, buf_max: 27097152 };
+  drive(job, 2500, () => { m.active_job = null; m.tune = { profile: 'tune-v2', at: iso(), current: true, params: tp }; }, [{
+    profile: 'tune-v2', applied: ['net.core.rmem_max', 'net.core.wmem_max', 'net.ipv4.tcp_rmem', 'net.ipv4.tcp_wmem'], ok: ['net.ipv4.tcp_congestion_control'], kept: ['net.core.somaxconn', 'fs.file-max'],
+    before: { 'net.core.rmem_max': '212992', 'net.core.wmem_max': '212992', 'net.ipv4.tcp_rmem': '4096 131072 6291456', 'net.ipv4.tcp_wmem': '4096 16384 4194304' },
+    skipped: [{ key: 'net.netfilter.nf_conntrack_max', why: 'missing', got: null }], params: tp, snapshot: 'created', warnings: [],
+    route: m.kind === 'relay' ? { initcwnd: 10000, initrwnd: 10000 } : null,
+    journald: 'changed', ntp: 'synced', nofile: '65536', container: false, mem_mb: 3911, swap_mb: 0, bbr: true,
   }]);
   emit({ type: 'machines' });
   return { machine_id: m.id, name: m.name, job_id: job.id };

@@ -303,6 +303,53 @@ async fn catalog_validation_and_audit_details() {
     assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
 }
 
+/// fleetctl provider / plan 用 read + write 的 API 密钥发的请求体（见 fleetctl catalog.rs）：
+/// 新建带全部可选项、改时 none = null（时区改回跟随组织、清空控制台地址、清空规格）、归档 / 取消归档、删除；不存在的 404，还有套餐的供应商删不掉
+#[tokio::test]
+async fn catalog_as_fleetctl_sends_it() {
+    let t = setup().await;
+    let (_, tok) = t.make_key("cli", &["read", "write"]).await;
+    let call = |m: &'static str, p: String, b: Option<Value>| {
+        let t = &t;
+        let tok = tok.clone();
+        async move { t.call(m, &p, b, Auth::Key(&tok)).await }
+    };
+    let (s, v) = call("POST", "/api/v1/providers".into(), Some(json!({"name": "ATTVPS", "code": "ATT", "timezone": "Asia/Shanghai", "panel_url": "https://p.example.com",
+        "traffic_rule": "min", "traffic_reset": "billing", "remind_days": 5}))).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let pid = v["data"]["id"].as_str().unwrap().to_string();
+    let provider = |all: &Value| all["data"].as_array().unwrap().iter().find(|p| p["id"] == pid.as_str()).cloned().unwrap();
+    let p = provider(&call("GET", "/api/v1/providers".into(), None).await.1);
+    assert_eq!((&p["timezone"], &p["traffic_rule"], &p["traffic_reset"], &p["remind_days"], &p["panel_url"]), (&json!("Asia/Shanghai"), &json!("min"), &json!("billing"), &json!(5), &json!("https://p.example.com")));
+    let (s, v) = call("PATCH", format!("/api/v1/providers/{pid}"), Some(json!({"timezone": null, "panel_url": null, "remind_days": 9}))).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let p = provider(&call("GET", "/api/v1/providers".into(), None).await.1);
+    assert_eq!((p["timezone"].is_null(), p["panel_url"].is_null(), &p["remind_days"], &p["code"]), (true, true, &json!(9), &json!("ATT")), "没给的不改");
+
+    let (s, v) = call("POST", "/api/v1/plans".into(), Some(json!({"name": "基础版", "provider_id": pid, "cpu_cores": 2, "mem_mb": 2048, "traffic_gb": 0,
+        "price_cents": 29999, "currency": "CNY", "cycle": "monthly"}))).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let plan = v["data"]["id"].as_str().unwrap().to_string();
+    let path = format!("/api/v1/plans/{plan}");
+    let plan_of = |all: &Value| all["data"].as_array().unwrap().iter().find(|p| p["id"] == plan.as_str()).cloned().unwrap();
+    let (s, v) = call("PATCH", path.clone(), Some(json!({"mem_mb": null, "price_cents": 30999, "archived": true}))).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let p = plan_of(&call("GET", "/api/v1/plans".into(), None).await.1);
+    assert_eq!((p["mem_mb"].is_null(), &p["cpu_cores"], &p["price_cents"], p["archived_at"].is_string()), (true, &json!(2), &json!(30999), true));
+    call("PATCH", path.clone(), Some(json!({"archived": false}))).await;
+    assert!(plan_of(&call("GET", "/api/v1/plans".into(), None).await.1)["archived_at"].is_null());
+
+    for (m, p) in [("PATCH", format!("/api/v1/plans/{}", Uuid::now_v7())), ("DELETE", format!("/api/v1/plans/{}", Uuid::now_v7())), ("PATCH", format!("/api/v1/providers/{}", Uuid::now_v7()))] {
+        let (s, v) = call(m, p.clone(), Some(json!({"name": "x"}))).await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{m} {p}：{v}");
+    }
+    let (s, v) = call("DELETE", format!("/api/v1/providers/{pid}"), None).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().contains("1 个套餐"), "{v}");
+    assert_eq!(call("DELETE", path, None).await.0, StatusCode::OK);
+    assert_eq!(call("DELETE", format!("/api/v1/providers/{pid}"), None).await.0, StatusCode::OK);
+}
+
 /// 远程执行与查日志不重试：ssh 返回 255（这里是连接被拒）原样返回，不会隔 2 秒再跑一遍。
 /// 255 也可能是命令自己 exit 255 或执行中断开（reboot），重试会把用户命令执行多次。
 /// 执行前先落一条审计，执行完在同一条上补结果

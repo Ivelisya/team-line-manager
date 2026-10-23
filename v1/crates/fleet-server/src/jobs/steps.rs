@@ -167,7 +167,18 @@ pub async fn run(c: &Ctx<'_>, key: &str) -> anyhow::Result<Outcome> {
 }
 
 /// 缺 root 密码时告诉用户怎么补：密码用过即丢，失败作业的密码 3 天后也会清掉
-const NO_PASSWORD_HINT: &str = "（提供过的密码用过即丢，失败作业留存的密码 3 天后清除）。在网页作业的「重试」里填写 root 密码，或 fleetctl retry <作业> --password-env 变量名";
+const NO_PASSWORD_HINT: &str = "在网页作业的「重试」里填写 root 密码，或 fleetctl retry <作业> --password-env 变量名（提供过的密码用过即丢，失败作业留存的密码 3 天后清除）";
+
+impl Ctx<'_> {
+    /// 中控密钥登录不了、又没有 root 密码：两条出路都写上，录入中控公钥那条带公钥全文（放在最后，方便复制）。
+    /// `detail` 是 ssh 的报错（可以为空）
+    async fn no_login(&self, detail: &str) -> anyhow::Error {
+        let detail = detail.trim();
+        let detail = if detail.is_empty() { String::new() } else { format!("（{detail}）") };
+        let key = ssh::add_key_hint(&self.st.cfg.ssh_key).await;
+        StepError::err(ErrKind::Auth, format!("中控密钥登录不了，也没有可用的 root 密码{detail}。二选一后重试：{NO_PASSWORD_HINT}；或{key}"))
+    }
+}
 
 // ── 上架 ──────────────────────────────────────────────────────────────────
 
@@ -195,13 +206,15 @@ async fn preflight(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         if out.ssh_kind() != Some(ErrKind::Auth) {
             return Err(out.fail("登录失败"));
         }
-        let pw = c
-            .password()?
-            .ok_or_else(|| StepError::err(ErrKind::Auth, format!("中控密钥登录不了，也没有可用的 root 密码{NO_PASSWORD_HINT}：{}", out.stderr.trim())))?;
+        let Some(pw) = c.password()? else { return Err(c.no_login(&out.stderr).await) };
         out = c.ssh(&m, Some(pw)).run(scripts::FACTS, Duration::from_secs(30)).await?;
         if !out.ok() {
             return Err(out.fail("用密码也登录不了"));
         }
+    }
+    // 已过标准支持期的发行版只提醒，不拦
+    if let Some(w) = scripts::os_eol_warning(out.kv("os").unwrap_or("")) {
+        c.warn(w).await;
     }
     let arch = out.kv("arch").unwrap_or("");
     if arch != "x86_64" {
@@ -285,9 +298,9 @@ async fn bootstrap(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         c.set_params(json!({"login": null})).await?;
         return Ok(Outcome::Skipped("中控密钥已经能登录".into()));
     }
-    let pw = c.password()?.ok_or_else(|| StepError::err(ErrKind::Auth, format!("中控密钥登录不了，也没有可用的 root 密码{NO_PASSWORD_HINT}")))?;
-    let pubkey = tokio::fs::read_to_string(c.st.cfg.ssh_key.with_extension("pub")).await.context("读取中控公钥")?;
-    let script = vars(&[("PUBKEY", pubkey.trim())]) + scripts::BOOTSTRAP_KEY;
+    let Some(pw) = c.password()? else { return Err(c.no_login("").await) };
+    let pubkey = ssh::public_key(&c.st.cfg.ssh_key).await.ok_or_else(|| anyhow!("读不到中控公钥 {}.pub", c.st.cfg.ssh_key.display()))?;
+    let script = vars(&[("PUBKEY", &pubkey)]) + scripts::BOOTSTRAP_KEY;
     let out = c.ssh(&m, Some(pw)).run(&script, Duration::from_secs(40)).await?;
     if !out.stdout.contains("bootstrap=ok") {
         return Err(out.fail("推送公钥失败"));
@@ -409,8 +422,9 @@ async fn converge_relay(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     Ok(Outcome::Done(json!({"xray": out.kv("xray_version"), "bbr": tuned["bbr"], "tune": tuned})))
 }
 
-/// 系统调优（tune-v1，见 tune.rs）：上架收敛和作业 `tune` 共用。脚本自己出错（写文件失败）才失败；写不进的键、没同步的时钟记警告，
-/// 逐键结果就是返回值（存进步骤结果）。成功后记 machine.tune_profile / tuned_at（不动 revision：不是用户编辑）。同机 IP 节点不调用
+/// 系统调优（当前档见 tune.rs）：上架收敛和作业 `tune` 共用。脚本自己出错（写文件、原值快照失败）才失败；写不进的键、没同步的时钟、
+/// 第三方调优残留记警告，默认路由上的初始窗口记日志；逐键结果就是返回值（存进步骤结果）。带宽取套餐（渲染时代入），远端回显的要对得上。
+/// 成功后记 machine.tune_profile / tuned_at / tune_params（不动 revision：不是用户编辑）。同机 IP 节点不调用
 async fn apply_tune(c: &Ctx<'_>, m: &M, t: &Target) -> anyhow::Result<Value> {
     let role = if m.kind == "relay" {
         let (port_min, port_max): (i32, i32) = sqlx::query_as("select port_min, port_max from relay where machine_id = $1").bind(m.id).fetch_one(&c.st.db).await?;
@@ -418,25 +432,59 @@ async fn apply_tune(c: &Ctx<'_>, m: &M, t: &Target) -> anyhow::Result<Value> {
     } else {
         tune::Role::Node
     };
-    let out = t.run(&tune::script(role), Duration::from_secs(480)).await?;
+    let plan_bw: Option<i32> = sqlx::query_scalar("select pl.bandwidth_mbps from machine m left join plan pl on pl.id = m.plan_id where m.id = $1")
+        .bind(m.id)
+        .fetch_one(&c.st.db)
+        .await?;
+    let out = t.run(&tune::script(role, plan_bw), Duration::from_secs(480)).await?;
     if !out.ok() {
         return Err(out.fail("系统调优失败"));
     }
     if out.kv("tune_profile") != Some(tune::PROFILE) {
         return Err(remote(format!("调优脚本没有跑到最后：{}", out.stdout.trim())));
     }
+    let bw = tune::bandwidth(plan_bw).0.to_string();
+    if out.kv("bw") != Some(bw.as_str()) {
+        return Err(remote(format!("调优脚本回显的带宽 {} 和代入的 {bw} 不一致", out.kv("bw").unwrap_or("?"))));
+    }
     let r = tune::parse(&out.stdout);
     for w in &r.warns {
         c.warn(w).await;
     }
-    sqlx::query("update machine set tune_profile = $2, tuned_at = now() where id = $1").bind(m.id).bind(tune::PROFILE).execute(&c.st.db).await?;
+    for i in &r.infos {
+        c.log(i).await;
+    }
+    sqlx::query("update machine set tune_profile = $2, tuned_at = now(), tune_params = $3 where id = $1")
+        .bind(m.id)
+        .bind(tune::PROFILE)
+        .bind(r.result.get("params").filter(|p| !p.is_null()))
+        .execute(&c.st.db)
+        .await?;
     c.st.emit(Event::Machine { id: m.id });
     Ok(r.result)
 }
 
+/// 作业 `tune`：重做调优；参数 `rollback: true` 时按机器上的原值快照撤销（写回原值、删调优写的 sysctl 与开机载入文件），
+/// 成功后清掉 machine.tune_profile / tuned_at / tune_params（视图显示「未调优」）。没有快照就失败，什么都不改
 async fn tune_step(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let m = c.machine().await?;
-    Ok(Outcome::Done(apply_tune(c, &m, &c.ssh(&m, None)).await?))
+    let t = c.ssh(&m, None);
+    if c.job.params["rollback"] != true {
+        return Ok(Outcome::Done(apply_tune(c, &m, &t).await?));
+    }
+    let out = t.run(&tune::rollback_script(), Duration::from_secs(120)).await?;
+    if !out.ok() {
+        return Err(out.fail("撤销系统调优失败"));
+    }
+    let Some(r) = tune::parse_rollback(&out.stdout) else {
+        return Err(remote(format!("这台机器上没有调优前的原值快照（{}）：tune-v2 起第一次调优时才记，之前的档没有记原值，没法自动撤销", tune::ORIG)));
+    };
+    for w in &r.warns {
+        c.warn(w).await;
+    }
+    sqlx::query("update machine set tune_profile = null, tuned_at = null, tune_params = null where id = $1").bind(m.id).execute(&c.st.db).await?;
+    c.st.emit(Event::Machine { id: m.id });
+    Ok(Outcome::Done(r.result))
 }
 
 /// 装单元的脚本报了 `linklocal_dns=1`（见 scripts::LINKLOCAL_DNS）：记一条 warn。`what` 是哪个程序

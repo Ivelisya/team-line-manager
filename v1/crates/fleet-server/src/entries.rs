@@ -194,6 +194,8 @@ pub async fn desired_state(db: &PgPool, secrets: &SecretBox, relay_id: Uuid, ech
             probe_interval_s: 30,
         },
         entries,
+        // 三网 PING 的目标：全局 + 这台的覆盖（ping.rs）
+        ping: crate::ping::config_for(db, relay_id).await?,
     })
 }
 

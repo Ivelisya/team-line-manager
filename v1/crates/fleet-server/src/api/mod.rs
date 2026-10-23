@@ -3,6 +3,7 @@ pub mod account;
 pub mod audit;
 pub mod catalog;
 pub mod exec;
+pub mod fx;
 pub mod incidents;
 pub mod ipintel;
 pub mod jobs;
@@ -11,7 +12,9 @@ pub mod lifecycle;
 pub mod machines;
 pub mod misc;
 pub mod notify;
+pub mod ping;
 pub mod policy;
+pub mod probe_points;
 pub mod provision;
 pub mod recycle;
 pub mod relays;
@@ -119,6 +122,10 @@ pub fn router() -> Router<AppState> {
         .route("/machines/{id}/access", get(access::machine))
         // 访问记录保留期
         .route("/settings/access-retention", get(settings::get_access_retention).put(settings::put_access_retention))
+        // 汇率（计费折成 USD）
+        .route("/settings/fx-rates", get(fx::get_rates))
+        .route("/settings/fx-rates/refresh", post(fx::refresh))
+        .route("/settings/fx-rates/{currency}", axum::routing::put(fx::put_manual).delete(fx::delete_manual))
         // 来源 IP 画像
         .route("/ipintel", get(ipintel::batch))
         .route("/ipintel/status", get(ipintel::status))
@@ -156,4 +163,16 @@ pub fn router() -> Router<AppState> {
         .route("/routers/{id}/bootstrap", post(routers::bootstrap))
         .route("/routers/{id}/deploy", post(routers::deploy_one))
         .route("/router-bootstrap/{token}", get(routers::bootstrap_script))
+        // 探测点（probe-bootstrap 是给探测点取安装脚本的，不要登录，靠一次性令牌）
+        .route("/probe-points", get(probe_points::list).post(probe_points::create))
+        .route("/probe-points/{id}", get(probe_points::get_one).patch(probe_points::patch).delete(probe_points::delete))
+        .route("/probe-points/{id}/install", post(probe_points::reinstall))
+        .route("/probe-points/{id}/upgrade", post(probe_points::upgrade))
+        .route("/settings/reach-source", get(probe_points::get_source).put(probe_points::put_source))
+        .route("/probe-bootstrap/{token}", get(probe_points::bootstrap_script))
+        // 三网 PING（线路机往外测线路质量）
+        .route("/settings/ping-targets", get(ping::get_targets).put(ping::put_targets))
+        .route("/machines/{id}/ping", get(ping::get_machine).put(ping::put_machine))
+        .route("/machines/{id}/ping-series", get(ping::series))
+        .route("/ping-beats", get(ping::beats))
 }

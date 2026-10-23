@@ -1,7 +1,8 @@
 // 从 MachineView 推导卡片/表格要显示的数据（纯函数，便于复用）
-import type { AvailabilityDay, DueState, EntryView, MachineView, Meta, Plan, ProbeBucket, ProbeResult, Provider, SubField, Subscription, TrafficReset, UsageMetric } from './types';
+import type { AvailabilityDay, DueState, EntryView, MachineView, Meta, Plan, ProbeBucket, ProbeResult, Provider, SubField, Subscription, TrafficReset, UsageMetric, UsdTotal } from './types';
 import * as F from './format';
 import { tzLabel } from './tz';
+import type { ReachEffective } from './probePoints';
 
 // ── /meta：中文名、枚举、阈值、默认值只认服务端这一份 ──
 // 外壳等 /meta 取回（useMeta 的 queryFn 里 setMeta）之后才渲染页面，所以下面这些同步读取在页面里总有值；登录页不用它们
@@ -307,8 +308,30 @@ const probeTone = (ok: number, total: number): BeatCell => (!total ? null : ok *
 // 一格 3 分钟、每 30 秒一次约 6 次：断 1 次（83%）黄，断 2 次（67%）红
 export const BEAT_LEGEND = '线路机每 30 秒连一次节点\n绿：成功 ≥ 99% · 黄：成功 80%–99% · 红：成功不到 80% · 灰：没有探测';
 export const AVAIL_LEGEND = '绿：成功 ≥ 99% · 黄：成功 80%–99% · 红：成功不到 80%\n灰：没有探测；TCP 与出口取较差的一种';
-/** 线路机的格子是中控 → 线路机的连通性（中控每 30 秒连一次，轮流连它的各个入口端口），不是它名下入口的合计：入口通不通是各节点的事 */
-export const BEAT_LEGEND_RELAY = '中控每 30 秒连一次线路机（轮流连它的各个入口端口），只看通不通\n绿：都连上 · 黄：断过 1 次 · 红：断 2 次以上 · 灰：没有数据';
+const RELAY_COLORS = '绿：都连上 · 黄：断过 1 次 · 红：断 2 次以上 · 灰：没有数据';
+/** 线路机的格子是主探测来源 → 线路机的连通性（每 30 秒连一次，轮流连它的各个入口端口），不是它名下入口的合计：入口通不通是各节点的事。
+ *  主探测来源是中控或放在靠近客户的地方的探测点（设置「探测点」，GET /settings/reach-source），说明随来源变；还没取到时按中控 */
+export const BEAT_LEGEND_RELAY = `中控每 30 秒连一次线路机（轮流连它的各个入口端口），只看通不通\n${RELAY_COLORS}`;
+export function beatLegendRelay(src: ReachEffective | undefined): string {
+  switch (src?.state) {
+    case 'probe': return `${src.label}每 30 秒连一次线路机的客户入口（轮流连它的各个入口端口），看通不通，悬停里是建连延迟的中位数\n${RELAY_COLORS}`;
+    case 'fallback': return `${src.primary_label ?? '主探测点'}离线，暂由中控代替：中控每 30 秒连一次线路机（轮流连各个入口端口），只看通不通；连不上照报，连得上不算恢复\n${RELAY_COLORS}`;
+    case 'none': return `${src.primary_label ?? '主探测点'}离线、中控的检查关着：线路机的客户入口通不通暂时没有数据\n${RELAY_COLORS}`;
+    default: return BEAT_LEGEND_RELAY;
+  }
+}
+/** 心跳格标题里的来源：「中控探测」「香港探测点」「中控代测」 */
+export const reachWin = (src: ReachEffective | undefined) =>
+  `${src?.state === 'probe' ? src.label : src?.state === 'fallback' ? '中控代测' : src?.state === 'none' ? '暂无来源' : '中控探测'} · 近 1 小时`;
+/** 「谁连不上」的主语：中控 / 香港探测点（入口表、卡片的原因） */
+export const reachWho = (src: ReachEffective | undefined) => (src?.state === 'probe' ? src.label : '中控');
+/** 线路机近 1 小时建连延迟（探测点才有）：各格中位数的中位数；没有为 null */
+export function relayRttMs(buckets: ProbeBucket[] | undefined): number | null {
+  const v = (buckets ?? []).map((b) => b[2]).filter((x): x is number => x != null).sort((a, b) => a - b);
+  if (!v.length) return null;
+  const m = v.length >> 1;
+  return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
+}
 /** 探测桶 → 心跳格（20 格 = 近 1 小时，旧→新）。节点按桶内成功比例定色；线路机按断了几次（同 BEAT_LEGEND_RELAY）：
  *  当前这一格还没满 6 次时，按比例会把断 1 次标成红 */
 export const beatCells = (buckets: ProbeBucket[] | undefined, relay = false): BeatCell[] =>
@@ -382,7 +405,9 @@ export function remainingValue(s: Subscription | null) {
   if (!s) return null;
   const days = s.period_days;
   const frac = days > 0 ? Math.max(0, s.due_days / days) : 0;
-  return { cents: Math.round(s.price_cents * frac), currency: s.currency, frac, days };
+  // 计费统一按 USD：每期价格用服务端折好的 price_usd_cents；没有汇率时按原币种
+  const usd = s.price_usd_cents != null;
+  return { cents: Math.round((usd ? s.price_usd_cents! : s.price_cents) * frac), currency: usd ? 'USD' : s.currency, frac, days };
 }
 
 /** 标签配色：固定语义的用固定色（类型：线路机青、家宽橙；同机关系紫；维护中琥珀），
@@ -395,10 +420,28 @@ export function tagColor(text: string): TagColor {
   return TAG_COLORS[h % TAG_COLORS.length];
 }
 
+/** 计费统一按 USD：服务端按汇率折好的月费（monthly_usd_cents，分）。没有汇率（或旧接口）时为 null，调用方写原币种并标「未折算」 */
+export const usdMonthly = (s: Subscription | null | undefined) => (s?.monthly_usd_cents != null ? s.monthly_usd_cents : null);
+/** 月费的文字：「$37.50/月」；没有汇率时「¥299.99/月」（原币种，悬停见 priceHint 说明未折算） */
 export const subLabel = (m: MachineView) => {
   const s = m.subscription; if (!s) return null;
-  return `${F.money(s.price_cents, s.currency)}/${cycleLabel(s.cycle)}`;
+  const u = usdMonthly(s);
+  return u != null ? `${F.money(u, 'USD')}/月` : `${F.money(s.monthly_cents, s.currency)}/月`;
 };
-/** 不是按月付的费用旁边给的月均（服务端折好的 monthly_cents）：「≈ $26.60/月」；按月付的为 null */
-export const monthlyHint = (s: Subscription | null | undefined) =>
-  (s && meta().cycles.find((c) => c.key === s.cycle)?.months !== 1 ? `≈ ${F.money(s.monthly_cents, s.currency)}/月` : null);
+/** 原价说明（月费旁的小字或悬停）：原币种不是 USD 或不是按月付时写原价「原价 ¥299.99/月 · 1 CNY = 0.1404 USD」；
+ *  没有汇率写「未折算」；USD 按月付的为 null */
+export function priceHint(s: Subscription | null | undefined): string | null {
+  if (!s) return null;
+  const orig = `原价 ${F.money(s.price_cents, s.currency)}/${cycleLabel(s.cycle)}`;
+  if (s.monthly_usd_cents == null) return `${orig} · 未折算：没有 ${s.currency} 的汇率（设置 → 汇率）`;
+  const monthly = meta().cycles.find((c) => c.key === s.cycle)?.months === 1;
+  if (s.currency === 'USD') return monthly ? null : orig;
+  return `${orig} · ${F.fxRate(s.currency, s.usd_per_unit ?? 0)}`;
+}
+/** 月费合计（USD）的悬停说明：各原币种金额与所用汇率，没有汇率的单列 */
+export function usdTotalTip(t: UsdTotal | undefined): string {
+  if (!t) return '';
+  const parts = t.by_currency.map((p) => (p.currency === 'USD' ? `USD ${F.money(p.cents, 'USD')}` : `${F.money(p.cents, p.currency)} ≈ ${F.money(p.usd_cents, 'USD')}（${F.fxRate(p.currency, p.usd_per_unit)}）`));
+  const un = t.unconverted.map((p) => F.money(p.cents, p.currency));
+  return [...parts, ...(un.length ? [`未折算（没有汇率，不在合计里）：${un.join(' + ')}`] : [])].join('；');
+}

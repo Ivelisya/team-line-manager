@@ -23,7 +23,7 @@
 | N1 | `/root/.ssh/authorized_keys` 追加上架公钥一行（0600，`~/.ssh` 0700 umask 077） | P2（仅密钥登录被拒时） |
 | N2 | `/etc/ssh/sshd_config` 首行可能被插入 `Include /etc/ssh/sshd_config.d/*.conf`；新建 `/etc/ssh/sshd_config.d/00-fleet-keyonly.conf`；sshd reload | P7 |
 | N3 | 若无 `nft` 则 `apt-get install -y -q nftables` | P7 |
-| N4 | `/etc/sysctl.d/90-fleet-bbr.conf`；`modprobe tcp_bbr`；`sysctl -p` 使 fq+bbr 立即生效。**v1**：基线不再管 BBR，并入调优档 tune-v1（收敛里基线后紧跟执行，写 `/etc/sysctl.d/99-zz-fleet-tune.conf`、journald 体积上限，补时间同步；脚本顺手删掉旧的 90-fleet-bbr.conf），见 DESIGN.md §3 | P7 |
+| N4 | `/etc/sysctl.d/90-fleet-bbr.conf`；`modprobe tcp_bbr`；`sysctl -p` 使 fq+bbr 立即生效。**v1**：基线不再管 BBR，并入调优档（tune-v1 起，现为 tune-v2，见 DESIGN.md §3「系统调优」；收敛里基线后紧跟执行，写 `/etc/sysctl.d/99-zz-fleet-tune.conf`、journald 体积上限，补时间同步；脚本顺手删掉旧的 90-fleet-bbr.conf），见 DESIGN.md §3 | P7 |
 | N5 | `/etc/fleet/nft/ss_guard.nft`；内核里的 `table inet ss_guard`；`/etc/nftables.conf` 末尾追加 include 行（文件不存在则建，首行 shebang）；`systemctl enable nftables` | P8 |
 | N6 | `/usr/local/bin/ssserver`（0755，shadowsocks-rust 1.25.0 musl）；`/etc/shadowsocks-rust/config.json`；系统用户 `fleet-ss`；`/etc/systemd/system/fleet-ssserver.service`；enable + start | P9 |
 | N7 | nodeagent 全套：用户/组 `fleet-edge`，`/opt/fleet-edge/**`，`/etc/fleet-edge/{agent.toml,token}`，`fleet-nodeagent.service` + drop-in，`/var/lib/fleet-nodeagent`（StateDirectory） | P11 |
@@ -207,7 +207,7 @@ sshd -T | grep -E '^(passwordauthentication|kbdinteractiveauthentication|challen
 modprobe tcp_bbr || true ; sysctl -q -p /etc/sysctl.d/90-fleet-bbr.conf || echo ==SYSCTLFAIL
 cat /proc/sys/net/ipv4/tcp_congestion_control ; cat /proc/sys/net/core/default_qdisc
 ```
-> **v1**：上面最后三行（BBR）已从基线脚本移走，归调优档 tune-v1（`jobs/tune.rs`，步骤结果 `tune`）；非 bbr 只记警告，不失败。
+> **v1**：上面最后三行（BBR）已从基线脚本移走，归调优档（tune-v1 起，现为 tune-v2；`jobs/tune.rs`，步骤结果 `tune`）；非 bbr 只记警告，不失败。
 
 通过条件：`sshd -T` 显示 `passwordauthentication no`；`permitrootlogin` ∈ {`without-password`, `prohibit-password`}（否则 bug）；`tcp_congestion_control == bbr`（否则 provider；仅容器演练 `require_bbr=false` 豁免）；若 CSV 给过密码文件，再用密码登录一次「反测」，必须被拒（`Permission denied`→input→记 `password_login_denied=true`），若 `LOGGED_IN` 出现 → bug。
 注意：没有 `apt-get update`（陈旧索引会装不上）；不检查 `kbdinteractiveauthentication`；`default_qdisc` 只记录不判断；不改 root 密码、不改 SSH 端口、不装 fail2ban/unattended-upgrades、不设主机名/时区。无补偿（保留）。
@@ -536,7 +536,7 @@ active 终态；cancel 对 active 行拒绝（「走下线流程」——该流�
 ### 9.1 建议的最小流水线
 
 节点（逐行）：
-1. **N1 预检与身份**：TCP + 中控 keyscan（≤2 次）+ 线路机视角 keyscan → 钉公钥 → 采集 facts（arch、os、systemd、nft、MAC、DMI uuid）→ 校验 x86_64、MAC。冲突检查合并进 attach。
+1. **N1 预检与身份**：TCP + 中控 keyscan（≤2 次）+ 线路机视角 keyscan → 钉公钥 → 采集 facts（arch、os、systemd、nft、MAC、DMI uuid）→ 校验 x86_64、MAC。冲突检查合并进 attach。（v1 实现补充：os 已过标准支持期的只记 warn 不拦；密钥登录不了又没有密码时报错里带中控公钥全文。提交前的「检查」就用中控密钥试登录一次，不等作业失败。）
 2. **N2 引导密钥**（条件：密钥登录失败）：与旧 P2 相同；密码被拒 → 等待输入。
 3. **N3 重装闸门**（条件：`dd=manual`）：合并 P4–P6；验收用「公钥变了 + DMI uuid/MAC 一致」。
 4. **N4 节点收敛**：一个幂等脚本，包含 P7（sshd 仅密钥 + BBR）、P8（ss_guard nft + 持久化）、P9（ssserver + systemd 单元）；一次输出，逐项断言；仅对金丝雀/抽样跑 nft 反测和密码登录反测。

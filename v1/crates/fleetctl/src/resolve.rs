@@ -117,6 +117,40 @@ pub fn entry<'a>(entries: &'a [Value], q: &str) -> Result<&'a Value, String> {
     }
 }
 
+/// 目录项（供应商、套餐）的引用：id、id 前缀（至少 6 位十六进制），再按 `tiers` 逐级精确匹配（不分大小写，某一级有结果就停）。
+/// 歧义时报错并用 `label` 列出候选；没有精确匹配时给出子串候选作提示，不自动选（同 `machine`）。`what` 是「供应商」「套餐」
+pub fn named<'a>(all: &'a [Value], q: &str, what: &str, tiers: &[&dyn Fn(&Value) -> String], label: &dyn Fn(&Value) -> String) -> Result<&'a Value, String> {
+    let q = q.trim();
+    if q.is_empty() {
+        return Err(format!("{what}参数为空"));
+    }
+    let ql = q.to_lowercase();
+    let id = |v: &Value| s(v, "id").to_lowercase();
+    let mut hits: Vec<&Value> = all.iter().filter(|v| id(v) == ql).collect();
+    if hits.is_empty() && q.len() >= 6 && q.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+        hits = all.iter().filter(|v| id(v).starts_with(&ql)).collect();
+    }
+    for t in tiers {
+        if !hits.is_empty() {
+            break;
+        }
+        hits = all.iter().filter(|v| t(v).to_lowercase() == ql).collect();
+    }
+    let line = |v: &Value| format!("  {}  (id {})", label(v), s(v, "id"));
+    match hits.len() {
+        1 => Ok(hits[0]),
+        0 => {
+            let near: Vec<String> = all.iter().filter(|v| tiers.iter().any(|t| t(v).to_lowercase().contains(&ql))).take(8).map(line).collect();
+            if near.is_empty() {
+                Err(format!("没有找到{what}「{q}」"))
+            } else {
+                Err(format!("没有精确匹配的{what}「{q}」，你是不是想找：\n{}", near.join("\n")))
+            }
+        }
+        n => Err(format!("「{q}」匹配到 {n} 个{what}，请用 id 或更精确的写法指定：\n{}", hits.iter().map(|v| line(v)).collect::<Vec<_>>().join("\n"))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,6 +201,43 @@ mod tests {
         assert!(e.contains("你是不是想找") && e.contains("团队1-07"), "{e}");
         let e = machine(&f, "不存在", Want::Any).unwrap_err();
         assert!(e.contains("没有找到"), "{e}");
+    }
+
+    /// 供应商：名称那一级优先于缩写；套餐重名时用「供应商/套餐」或 id
+    #[test]
+    fn catalog_names() {
+        let pv = vec![
+            json!({"id": "01a10000-0000-7000-8000-000000000001", "name": "ATTVPS", "code": "ATT"}),
+            json!({"id": "01a10000-0000-7000-8000-000000000002", "name": "ATT", "code": "AT2"}),
+            json!({"id": "01b20000-0000-7000-8000-000000000003", "name": "GOMAMI", "code": "GM"}),
+        ];
+        let by_name = |v: &Value| s(v, "name").to_string();
+        let by_code = |v: &Value| s(v, "code").to_string();
+        let label = |v: &Value| format!("{}（{}）", s(v, "name"), s(v, "code"));
+        let find = |q: &str| named(&pv, q, "供应商", &[&by_name, &by_code], &label).map(|v| s(v, "name").to_string());
+        assert_eq!(find("gomami").unwrap(), "GOMAMI", "不分大小写");
+        assert_eq!(find("gm").unwrap(), "GOMAMI", "缩写");
+        assert_eq!(find("ATT").unwrap(), "ATT", "名称那一级先匹配上就不再看缩写");
+        assert_eq!(find("01b20000").unwrap(), "GOMAMI", "id 前缀");
+        let e = find("01a10000").unwrap_err();
+        assert!(e.contains("匹配到 2 个供应商") && e.contains("ATTVPS（ATT）") && e.contains("000000000002"), "{e}");
+        let e = find("VPS").unwrap_err();
+        assert!(e.contains("你是不是想找") && e.contains("ATTVPS"), "{e}");
+        assert!(find("不存在").unwrap_err().contains("没有找到供应商「不存在」"));
+        assert!(find(" ").is_err());
+
+        let plans = vec![
+            json!({"id": "02000000-0000-7000-8000-000000000001", "name": "基础版", "pv": "ATTVPS"}),
+            json!({"id": "02000000-0000-7000-8000-000000000002", "name": "基础版", "pv": "GOMAMI"}),
+            json!({"id": "02000000-0000-7000-8000-000000000003", "name": "Mini", "pv": "GOMAMI"}),
+        ];
+        let name = |v: &Value| s(v, "name").to_string();
+        let full = |v: &Value| format!("{}/{}", s(v, "pv"), s(v, "name"));
+        let find = |q: &str| named(&plans, q, "套餐", &[&name, &full], &full).map(|v| s(v, "id")[34..].to_string());
+        let e = find("基础版").unwrap_err();
+        assert!(e.contains("匹配到 2 个套餐") && e.contains("ATTVPS/基础版") && e.contains("GOMAMI/基础版"), "{e}");
+        assert_eq!(find("gomami/基础版").unwrap(), "02");
+        assert_eq!(find("mini").unwrap(), "03");
     }
 
     #[test]

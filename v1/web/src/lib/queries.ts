@@ -160,14 +160,15 @@ export interface StreamEvent { type: string; id?: string }
  *  availability：近 N 天可用率按账单时区分天，改订阅（machine 事件）可能换了时区 */
 export function eventKeys(ev: StreamEvent): unknown[][] {
   switch (ev.type) {
-    case 'machine': return [['machine', ev.id], ['machines'], ['recycle-bin'], ['overview'], ['audit'], ['policies', 'list'], ['policies', 'versions'], ['incidents'], ['jobs'], ['availability', ev.id]];
+    case 'machine': return [['machine', ev.id], ['machine-ping', ev.id], ['machines'], ['recycle-bin'], ['overview'], ['audit'], ['policies', 'list'], ['policies', 'versions'], ['incidents'], ['jobs'], ['availability', ev.id]];
     case 'machines': return [['machine'], ['machines'], ['recycle-bin'], ['relays'], ['overview'], ['audit'], ['policies', 'list'], ['policies', 'versions']];
     case 'relay': return [['relays'], ['machines']];
     case 'job': return [['jobs'], ['job', ev.id]];
     case 'incidents': return [['incidents'], ['silences']];
     case 'catalog': return [['teams'], ['providers'], ['plans'], ['machines'], ['machine'], ['notify-channels'], ['policies', 'list'], ['policies', 'versions']];
     case 'api_keys': return [['api-keys']];
-    case 'settings': return [['access-retention'], ['access'], ['audit']];
+    // 设置：访问记录保留期、汇率（汇率变了机器视图、总览、团队与套餐里的 USD 折算值跟着变）、主探测来源与探测点（主来源变了线路机的心跳格换一路）、三网 PING 的全局目标
+    case 'settings': return [['access-retention'], ['access'], ['audit'], ['fx-rates'], ['machines'], ['machine'], ['overview'], ['teams'], ['plans'], ['probe-points'], ['reach-source'], ['probe-beats'], ['ping-targets'], ['ping-beats'], ['machine-ping']];
     case 'policies': return [['policies'], ['machines'], ['relays']];
     // 软路由：增删改与每轮采集（最多一次）都发这一个，列表与各台详情一起重取（曲线另按时间轮询，见 lib/routers）
     case 'routers': return [['routers']];

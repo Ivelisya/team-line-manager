@@ -60,10 +60,12 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQu
     let sql = format!(
         "select i.id, i.rule, i.subject_id,
             case when i.rule like 'central!_%' escape '!' then '中控' when i.rule like 'router!_%' escape '!' then r.name
+                 when i.rule like 'probe!_%' escape '!' then coalesce(pp.name, '探测点（已删除）')
                  else display_name(m.kind::text, m.label, t.name, m.number) end subject_name,
             i.severity::text severity, i.state::text state, i.summary, i.opened_at, i.last_seen_at, i.resolved_at, i.ack_at, i.ack_by, i.reopen_count
          from incident i left join machine m on m.id = i.subject_id left join team t on t.id = m.team_id
               left join router r on r.id = i.subject_id and i.rule like 'router!_%' escape '!'
+              left join probe_point pp on pp.id = i.subject_id and i.rule like 'probe!_%' escape '!'
          where {} order by {order} limit {} offset {}",
         cond(&mut a),
         a.add(limit),
@@ -78,8 +80,8 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQu
         .iter()
         .map(|i| {
             let mut j = serde_json::to_value(i).unwrap_or_default();
-            if crate::selfmon::is_central(&i.rule) {
-                // 中控自身的告警：对象不是机器，没有可点开的机器
+            if crate::selfmon::is_central(&i.rule) || crate::probe_points::is_probe(&i.rule) {
+                // 中控自身、探测点的告警：对象不是机器，没有可点开的机器（探测点的名字在 subject_name）
                 j["subject"] = Value::Null;
                 j["subject_id"] = Value::Null;
             } else if crate::routers::alerts::is_router(&i.rule) {

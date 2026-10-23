@@ -12,7 +12,7 @@
    - 密钥设有效天数，不用了就撤销。token 只显示一次。
 2. 取得 `fleetctl`：
    - Windows：`cargo build -p fleetctl --release`，得到 `target\release\fleetctl.exe`。
-   - Linux x86_64：在 fleet-dev 上跑 `lab/install-fleetctl.sh`，从 `/opt/fleet/dist/fleetctl` 取。
+   - Linux x86_64：跑 `lab/install-fleetctl.sh`（在编译主机上编，见 §9 编译主机），从 fleet-dev 的 `/opt/fleet/dist/fleetctl` 取。
 3. 写配置并自检：
    ```
    fleetctl login --url http://192.168.31.60:8080 < 密钥文件     # PowerShell：Get-Content 密钥文件 | fleetctl login --url …；或直接运行、按提示粘贴（会回显）；--token 也能用，但会留在 shell 历史与进程列表里
@@ -34,12 +34,15 @@
 | 入口的流量与探测 | `fleetctl series 团队1-06 --metric traffic` / `--metric probe` |
 | 告警列表、确认 | `fleetctl incidents`、`fleetctl ack <id>`；一台机器的告警历史 `fleetctl incidents --all --machine 团队1-06` |
 | 维护前开维护窗口（免得告警刷屏），或预约 | `fleetctl silence add 团队1-06 --for 2h --maintenance --comment 换内核`；预约加 `--start "2026-10-23 02:00"`（组织时区，默认北京时间）；只静默一条规则 `--rule agent_offline`；`fleetctl silence ls`，做完 `fleetctl silence rm <id 前缀>`；全部机器 `--all --yes`（API 密钥最长 24 小时，更长的在网页用账号建；建、删都会通知所有渠道） |
-| 到期与续费：快到期的机器、看订阅、登记续费、改订阅 | `fleetctl ls --due 7`（7 天内到期、含已过期的在用机器；`fleetctl status` 的「即将到期 / 已过期」按各台的提前提醒天数算，同续费告警）、`fleetctl billing 团队1-06`（订阅与续费记录）；确认已付款后 `fleetctl renew 团队1-06 --yes`（默认同网页：按订阅周期推一个周期（新到期日由中控算，小月按月末）、金额取订阅价格；一次付几期 `--cycles 3`，按面板 `--to 2027-01-15 --amount 39.46 --note …`）；改订阅 `fleetctl subscription set 团队1-06 --price 45 --yes`（只改给了的字段；`--price none` 改回跟随套餐）。订阅跟随模板：价格、币种、周期、流量上限跟随**套餐**，账单时区、提前提醒、流量重置（自然月 / 账单日）跟随**供应商**，订阅只存到期日、自动续费和单独设置的项——同一套餐一起调价、改额度在网页「团队与套餐」改套餐，立即对没单独设置的机器生效；上架选了套餐只要填到期日 |
+| 到期与续费：快到期的机器、看订阅、登记续费、改订阅 | `fleetctl ls --due 7`（7 天内到期、含已过期的在用机器；`fleetctl status` 的「即将到期 / 已过期」按各台的提前提醒天数算，同续费告警）、`fleetctl billing 团队1-06`（订阅与续费记录）；确认已付款后 `fleetctl renew 团队1-06 --yes`（默认同网页：按订阅周期推一个周期（新到期日由中控算，小月按月末）、金额取订阅价格；一次付几期 `--cycles 3`，按面板 `--to 2027-01-15 --amount 39.46 --note …`）；改订阅 `fleetctl subscription set 团队1-06 --price 45 --yes`（只改给了的字段；`--price none` 改回跟随套餐）。订阅跟随模板：价格、币种、周期、流量上限跟随**套餐**，账单时区、提前提醒、流量重置（自然月 / 账单日）跟随**供应商**，订阅只存到期日、自动续费和单独设置的项——同一套餐一起调价、改额度改套餐（`fleetctl plan set <套餐> --price 45 --yes`，或网页「团队与套餐」），立即对没单独设置的机器生效；上架选了套餐只要填到期日 |
+| 费用统一按美元：看汇率、汇率不对或缺币种时手动设置 | `fleetctl settings fx`（各币种的汇率、来源、上次更新时间；在用但没有汇率的会列出来）；手动设置 `fleetctl settings fx CNY --per-usd 7.12 --yes`（或 `--usd 0.1404`），改回自动 `fleetctl settings fx CNY --auto --yes`，立即更新 `fleetctl settings fx --refresh`。月费、合计都按它折成 USD（见 §16） |
 | 服务日志 | `fleetctl logs 团队1-06 --unit fleet-agent --lines 300`（unit：fleet-agent / fleet-xray / ssserver） |
 | 中控自己的日志 | `fleetctl server-logs --lines 300` |
 | 在一台机器上执行命令 | `fleetctl exec 团队1-06 -- systemctl status fleet-agent` |
 | 对一个团队的全部节点执行 | `fleetctl exec --team 团队1 -- uptime`（并发 4，汇总退出码） |
+| 软路由出口时好时坏：每个出口的测试次数、失败次数、成功率、连续两轮失败几次、延迟中位 / 最大、当前连接 | `fleetctl router exits 团队2-路由A --range 24h`（1h 按每轮测试数；6h / 24h 按 5 分钟一点；7d / 30d 是小时汇总，次数准、看不出连续失败；延迟只算通了的）；当前状态 `fleetctl router show 团队2-路由A` |
 | 登录机器或软路由（在中控上，见 §14） | `fleetctl ssh 团队1-06`（交互式）、`fleetctl ssh 团队1-06 -- 'df -h'`（退出码同远端）、`fleetctl ssh router <名称>` |
+| 供应商与套餐（上架前先确认存在，没有就建） | `fleetctl provider ls`、`fleetctl plan ls [--provider ATTVPS] [--all]`；新建 `fleetctl provider add ATTVPS --code ATT [--tz America/Los_Angeles] [--traffic-rule min] [--traffic-reset billing] [--remind-days 7]`、`fleetctl plan add 基础版 --provider ATTVPS --price 299.99 --currency CNY --cycle monthly [--cpu 2 --mem-mb 2048 --disk-gb 40 --bandwidth-mbps 1000 --traffic-gb 2000]`；改 `fleetctl provider set <供应商> … --yes`、`fleetctl plan set <套餐> --price 309.99 --yes`（只改给了的项，`--tz none` / 规格 `none` 清空；改价、改额度、改时区立即对没单独设置的机器生效）；不再上架 `fleetctl plan set <套餐> --archive --yes`；删 `provider rm` / `plan rm --yes`（还有套餐 / 机器用着时中控拒绝）。套餐重名写 `供应商/套餐` |
 | 上架 | `fleetctl provision --file batch.json --dry-run`，确认后 `fleetctl provision --file batch.json --yes --follow` |
 | 已有 VPS 节点上多了一个 IP，加成一台节点（同机 IP 节点，见 §6） | `fleetctl provision --kind vps --host 团队1-03 --ip 203.0.113.7 --team 团队1 --relay 线路机2 --yes --follow` |
 | 看作业进度、失败原因 | `fleetctl jobs --active`（`--kind upgrade_agent` 等只看一类）、`fleetctl job <id> --follow`；失败后 `fleetctl retry <id>` |
@@ -53,7 +56,7 @@
 | 改名 / 换团队 / 改编号 | `fleetctl rename 团队1-06 --team 团队2 --number 3` |
 | 编号压缩成连续 | `fleetctl renumber 团队1`（预览），`--yes` 执行 |
 | 升级 agent | `fleetctl upgrade-agent 团队1-06`、`fleetctl upgrade-agent --all --yes`（先升一台金丝雀，线路机逐台、VPS 节点并发；新版本起不来或没上报自动换回旧版本，见 §7） |
-| 系统调优（内核网络参数、日志体积、时间同步；上架时已自动做） | `fleetctl tune 团队1-06,线路机2`、`fleetctl tune --team 团队1`、`fleetctl tune --all --yes`（先做一台并跟到结束，成功后其余逐台提交；有进行中作业的跳过并列出）；`fleetctl ls` 的「调优」列（tune-v1 / 旧档 / 未调优）；逐键结果在作业详情。不重启 ssserver / Xray、不断连接。新调优档发布：改 `jobs/tune.rs` 的值并升档号 → 实验室验证 → 部署中控 → `fleetctl tune --all --yes`；回滚 = 发新档再重做 |
+| 系统调优（内核网络参数、日志体积、时间同步；上架时已自动做） | `fleetctl tune 团队1-06,线路机2`、`fleetctl tune --team 团队1`、`fleetctl tune --all --yes`（先做一台并跟到结束，成功后其余逐台提交；有进行中作业的跳过并列出）；`fleetctl ls` 的「调优」列（tune-v2 / 旧档 tune-v1 / 未调优）；`fleetctl show <机器>` 的「调优推导」行写这台的缓冲上限从哪来（带宽：套餐或默认 1000；RTT：线路机采样客户入口连接的 P90，样本不够或节点用默认；内存）；逐键结果、改前的值、第三方调优残留（tcpfit 的 sysctl 文件 / 整形服务、网卡根上的 HTB，只报告不删）、默认路由上的 initcwnd 在作业详情。不重启 ssserver / Xray、不断连接。tune-v2 发布后 `fleetctl tune --all --yes` 把旧档、未调优的机器升上来。撤销一台：`fleetctl tune <机器> --rollback --yes`（按机器上第一次跑 tune-v2 时记下的原值 `/var/lib/fleet/tune-orig.conf` 写回，删掉调优写的 sysctl 配置；没有快照的机器作业失败、什么都不改；journald 体积上限与时间同步不撤）。新调优档发布：改 `jobs/tune.rs` 并升档号 → 实验室验证 → 部署中控 → `fleetctl tune --all --yes` |
 | 入口启停、轮换凭据 | `fleetctl entries`、`fleetctl entry disable 线路机2:20001 --yes`、`fleetctl entry rotate … --yes` |
 | 线路机直出入口（从线路机自己的 IP 出去，旧系统的「节点00-默认」） | `fleetctl entry add-direct 线路机2 --yes --follow`（每台线路机至多一条；线路机 agent 要先升到新版本）；链接 `fleetctl share 线路机2-直出` |
 | 分享链接 | `fleetctl share 线路机2:20001`（需要 secrets，记审计） |
@@ -62,7 +65,7 @@
 | 访问记录留几天、改保留期（见 §13） | `fleetctl settings retention`；`fleetctl settings retention --raw 3 --hourly 14 --yes`（调短会删数据） |
 | 密钥管理 | 网页，或 `FLEET_PASSWORD=… fleetctl keys ls --user admin`（密钥管理只认登录会话） |
 
-批量上架文件 `batch.json` 是条目数组，条目里的 `team`、`relay`、`provider`、`plan` 直接写名字：
+批量上架文件 `batch.json` 是条目数组，条目里的 `team`、`relay`、`provider`、`plan` 直接写名字（供应商、套餐要先存在：`fleetctl provider ls` / `fleetctl plan ls` 看，没有就 `provider add` / `plan add` 建，见上表）：
 
 ```json
 [{"kind":"vps","ip":"203.0.113.10","team":"团队1","relay":"线路机2","provider":"ATTVPS","plan":"基础版"}]
@@ -74,6 +77,11 @@
 
 root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；首次登录必须用密码时，单台上架用 `--ssh-password-env VAR`。
 
+`--dry-run`（网页的「检查」）在 SSH 端口通了之后会用中控密钥试登录一次（只读 `/etc/os-release`，不记主机指纹）：
+- 报「中控密钥登录不了 ip:22（密钥被拒），也没填 root 密码」：机器上还没有中控公钥。二选一——把报错末尾的公钥（就是中控的 `/etc/fleet/ssh/id_ed25519.pub`，网页上架页「root 密码」下有「复制中控公钥」）录进供应商面板的 SSH 密钥（多数面板要重装系统才生效）或机器 root 的 `~/.ssh/authorized_keys`；或者给 root 密码（`--ssh-password-env VAR`），作业会用它装上公钥、之后丢弃。供应商面板里「已经录过密钥」却仍报这条，多半录的不是中控这把。
+- 「提醒：系统是 Ubuntu 20.04，已过标准支持期…」：不拦上架（作业日志里也会记一条 warn），建议找机会重装成新版本。过期表在 `jobs/scripts.rs` 的 `OS_EOL`（现在是 Ubuntu < 22.04、Debian < 12），版本过期了改那里。
+- 端口不通（「SSH ip:22 连不上（3 秒没有响应）」）时不会试登录：机器还没装好系统或防火墙没放行。
+
 ## 3. 故障排查流程
 
 按这个顺序，前一步解释不了再进下一步：
@@ -84,7 +92,8 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
    - `egress_fail` / `tcp_fail`：入口到出口不通，到 3。
    - `relay_apply_lag` / `relay_apply_error`：线路机没应用最新配置，到 4。
    - `relay_xray_down`：线路机上的 xray 停了，到 4。
-   - `relay_unreachable`：中控连续 3 轮（每 30 秒一轮，轮流连线路机的各个入口端口）连不上线路机的客户入口（public_host + 端口），摘要里有失败的端口与原因。只是 TCP 建连，不做 REALITY 握手。线路机 agent 也离线多半是机器挂了；agent 在线则查线路机防火墙、供应商是否封了端口（`fleetctl exec <线路机> -- 'ss -ltnp'` 看端口在不在听）。
+   - `relay_unreachable`：主探测来源（中控，或设成主来源的探测点，见 §17）连续 3 轮（每 30 秒一轮，轮流连线路机的各个入口端口）连不上线路机的客户入口（public_host + 端口），摘要开头写是谁测的（「香港探测点连续 3 次…」「中控（代替离线的香港探测点）连续 3 次…」），括号里是失败的端口与原因。只是 TCP 建连，不做 REALITY 握手。线路机 agent 也离线多半是机器挂了；agent 在线则查线路机防火墙、供应商是否封了端口（`fleetctl exec <线路机> -- 'ss -ltnp'` 看端口在不在听）。只有探测点连不上、中控连得上（`fleetctl probe ls` 看到各路的延迟与成功次数）多半是大陆方向的线路或封锁问题，中控看不到也不代表客户没事。
+   - `probe_point_offline`：探测点超过 3 分钟没上报（警告），见 §17。
    - `clock_skew`：agent 所在机器的时钟偏了超过 1 分钟（读数会缺失或停在旧值）；`fleetctl exec <机器> -- 'timedatectl'` 看 NTP 是否同步，没开就 `timedatectl set-ntp true`（修改状态，先确认）。
    - `renewal_due`：续费提醒，不是故障（不改健康状态）。到期前是警告，过期后同一条告警升为严重（旧的 `renewal_overdue` 并进来了）。开了自动续费的到期后由中控按周期顺延、自动记续费（只记账，供应商那边要自己设好扣费）。网页告警页这一行可直接「登记续费」（或 `fleetctl billing <机器>` 看订阅、确认已付款后 `fleetctl renew <机器> --yes`），下一轮评估（≤30 秒）自动恢复。
    - `traffic_quota_high`：流量额度吃紧（本周期已用 ≥ 90% 警告，≥ 100% 严重：供应商可能限速或另收费），不是故障、不改健康状态。`fleetctl billing <机器>` 看本周期已用与上限（注明跟随套餐还是单独设置）；找供应商加流量、调高上限（整个套餐都加了改套餐，只这台加了 `subscription set --traffic-gb`）或把流量分走。新周期开始、上限调高后下一轮评估自动恢复。
@@ -96,7 +105,7 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
    - 去抖：原因连续出现满 60 秒才开告警、连续消失满 60 秒才恢复；探测类更长（`egress_fail` 150 秒、`tcp_fail` 90 秒），偶发一次探测失败不报。续费类、流量额度不去抖。
    - `central_channel_failing` / `central_backup_stale` / `central_disk_low` / `central_ingress`：告警对象是「中控」自己（通知渠道发不出去、备份停了、磁盘快满、大批 agent 同时连不上中控），见 §12。
    - 维护中的机器：进行中的告警保持原状，不算恢复；维护结束后按那时的状态再判。线路机维护时，经它探测的节点出口 / TCP 结果同样判不出（不开、开着的不恢复）。
-   - 判不出的不算恢复，告警保持原状：线路机 agent 离线或维护中时节点的出口 / TCP；agent 离线时 CPU / 内存 / 磁盘持续偏高与时钟偏差（负载类回来后还要攒够 5 分钟样本）；中控停机超过 5 分钟重启后、新的检查不足 3 轮时的「客户入口连不上」。
+   - 判不出的不算恢复，告警保持原状：线路机 agent 离线或维护中时节点的出口 / TCP；agent 离线时 CPU / 内存 / 磁盘持续偏高与时钟偏差（负载类回来后还要攒够 5 分钟样本）；中控停机超过 5 分钟重启后、新的检查不足 3 轮时的「客户入口连不上」；主来源的探测点离线、暂由中控代替（或标灰）期间的「客户入口连不上」（中控连得上不算恢复，等探测点回来再判）。
    - 通知先写进库里的发送队列（`notify_outbox`）再发：中控重启、部署后接着发，不丢。每个渠道一个发送任务，同一渠道内按入队顺序逐条发（一批告警同时触发时不会并发打到同一渠道），渠道之间互不等待（一个渠道一直超时不拖慢别的）。发送失败（网络错误、5xx）隔 0.5 秒、2 秒、10 秒、30 秒、1 分钟、之后每 2 分钟重发同一条（后面的排着），回 429 时按渠道给的等待时长（Telegram 的 `parameters.retry_after`、通用的 `Retry-After` 头，最多 60 秒）；渠道拒绝（令牌不对、errcode 非 0）不重试，记一条失败。入队满 30 分钟还没发出的放弃，发送记录里记一条失败；渠道连续失败满 5 分钟另开告警 `central_channel_failing`。某个渠道没收到一条告警的「触发」（放弃了，或渠道是后来加的），这条告警恢复时也不给它发「恢复」。
    - 新建、删除静默 / 维护窗口会给所有启用的渠道发一条「静默 / 维护变更」（谁、新建还是删除、对象、维护还是静默、起止、备注；不看渠道的最低级别，也不受任何静默影响）：全部机器的一律发（含预约的），单台的只在此刻生效时发。
 2. **agent 离线**：`fleetctl show <机器>` 看最近上报时间；`fleetctl exec <机器> -- 'systemctl is-active fleet-agent; uptime'`。exec 返回 255 且 stderr 是连接失败 → 机器本身不通（去供应商面板看机器状态/重启）。agent 没运行则 `fleetctl logs <机器> --unit fleet-agent` 找原因，再 `fleetctl exec <机器> -- systemctl restart fleet-agent`（修改状态，先确认）。
@@ -104,7 +113,7 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 3. **入口不通**：`fleetctl show <节点>` 看入口的 TCP/出口探测；`fleetctl logs <节点> --unit ssserver`；`fleetctl exec <节点> -- 'ss -ltnp | grep -E "8388|ssserver"'`；再看线路机 `fleetctl logs <线路机> --unit fleet-xray`。告警对象是线路机时，是它的直出入口（没有节点、没有 TCP 探测）出口不通：看线路机自己的出网（`fleetctl exec <线路机> -- 'curl -sS -m 10 https://1.1.1.1 -o /dev/null -w %{http_code}'`）和 fleet-xray 日志。
    同机 IP 节点（`show` 里有「宿主机」）：`logs <节点> --unit ssserver` 看的是宿主机上它自己的实例 `fleet-ssserver@<SS 端口>`，`exec <节点>` 在宿主机上执行；它的 agent 离线、高负载告警都在宿主机名下。出口不对时 `fleetctl exec <节点> -- 'ip -4 addr; curl -4 -sS --interface <它的 IP> <中控地址>/echo'` 看 IP 还在不在网卡上、回显的是不是它自己。
 4. **线路机配置未应用**：`fleetctl show <线路机>`（代数与 apply_error）；`fleetctl logs <线路机> --unit fleet-agent`；`fleetctl logs <线路机> --unit fleet-xray`。xray 配置错误会写在这里。
-5. **作业失败**：`fleetctl job <id>` 看失败步骤和日志；修好原因后 `fleetctl retry <id>`；放弃用 `fleetctl cancel <id>`（已完成的步骤会补偿回退）。报「主机指纹变化」且确认机器重装过：`fleetctl retry <id> --reset-host-key`；报「没有可用的 root 密码」：`ROOT_PW=… fleetctl retry <id> --password-env ROOT_PW`（网页作业的「重试」里同样能勾选 / 填写）。
+5. **作业失败**：`fleetctl job <id>` 看失败步骤和日志；修好原因后 `fleetctl retry <id>`；放弃用 `fleetctl cancel <id>`（已完成的步骤会补偿回退）。报「主机指纹变化」且确认机器重装过：`fleetctl retry <id> --reset-host-key`；报「没有可用的 root 密码」：`ROOT_PW=… fleetctl retry <id> --password-env ROOT_PW`（网页作业的「重试」里同样能勾选 / 填写），或把报错末尾的中控公钥录进供应商面板 / 机器 root 的 `authorized_keys` 后直接 `fleetctl retry <id>`。
    作业日志里的「引擎错误：…（10 秒后从这一步重做）」多半是库暂时连不上（PG 重启）：作业不失败，库恢复后自己从这一步接着做，不用重试；「中控正在重启：「…」等重启后接着做」是部署时停在了两步之间，重启后自动接着做。
 6. **中控本身异常**：告警对象是「中控」的按 §12 处理；`fleetctl server-logs` 看日志，读不到时按错误提示授权 journal（`usermod -aG systemd-journal fleet` 后重启 fleet-server）。中控整个挂了时 fleetctl 也用不了，靠死人开关（§12）知道，ssh 进中控按 §4 处理。
 
@@ -214,12 +223,56 @@ WAL 三项由 `deploy/central/install.sh` 写进 `/etc/postgresql/<版本>/main/
 
 ## 9. 生产中控：部署与回滚
 
-部署 / 升级：本机在 `v1/` 下运行 `deploy/central/deploy.sh debian13 fleet.kismet613.com`（幂等，首次安装也用它）。
+部署 / 升级：本机在 `v1/` 下运行 `deploy/central/deploy.sh <中控 ssh 主机> fleet.kismet613.com`（幂等，首次安装也用它）。中控 ssh 主机写本机能直接 `ssh` 的名字：`~/.ssh/config` 里配了别名（如 `debian13`）就用别名，没有就写地址 `185.13.159.131`。
+
+### 编译主机：fleet-dev 或 docker
+
+deploy.sh 与 `lab/sync-server.sh`、`lab/deploy-server.sh`、`lab/install-fleetctl.sh` 都经 `lab/build-lib.sh` 选编译主机，两种方式：
+
+| | lab（默认） | docker |
+|---|---|---|
+| 在哪编 | 家里实验室的 fleet-dev（`ssh -F ~/.ssh/fleetlab_config fleet-dev`），rustup 工具链，源码 `/root/src` | 任意一台能 ssh、有 docker 的 Linux（可以 rootless、无 sudo、不装 Rust），如办公网的 dev 机；源码在 `FLEET_BUILD_DIR`（默认 `~/fleet-v1-dev/src`） |
+| fleet-server | glibc 版，`target/release` | `rust:1.98.1-slim-trixie` 里编 glibc 版（中控是 Debian 13），缓存卷 `fleet-v1-cargo-gnu`，`target-gnu/release` |
+| fleet-agent、fleetctl | musl 静态，`target/x86_64-unknown-linux-musl/release` | `rust:1.98.1-alpine` 里编 musl 静态，缓存卷 `fleet-v1-cargo`，`target/release` |
+| xray、ssserver、geoip.dat 来源 | fleet-dev `/opt/fleet/dist`（必须有） | 编译主机上的 `FLEET_BUILD_DIST`（默认 `~/fleet-v1-dev/dist`）；三个不全就不带 dist，打一行「dist 不随包」，中控上现有的保持原样 |
+
+fleet-server 不编 musl 版：项目没有自定义全局分配器，musl 自带的 malloc 在多线程服务上慢。两个镜像各用自己的缓存卷与 target 目录，互不覆盖产物。版本号的提交哈希两种方式都经环境变量 `FLEET_GIT_HASH` 交给 cargo。
+
+选 docker：设环境变量，或写本机文件 `v1/lab/build.env`（已在 .gitignore 里，不进仓库；每行 `KEY=value`，只认 `FLEET_BUILD*`，不执行其中的代码；两处都有时环境变量优先）。什么都没配就是 lab，行为与以前一样。
+
+```
+# v1/lab/build.env（或同名环境变量）
+FLEET_BUILD=docker
+FLEET_BUILD_HOST=10.172.17.213        # ssh 目标，可写 user@host 或别名
+# 以下可选，括号里是默认
+# FLEET_BUILD_DIR=fleet-v1-dev/src     远端源码目录（相对远端家目录）
+# FLEET_BUILD_DIST=fleet-v1-dev/dist   远端 dist 来源
+# FLEET_BUILD_MUSL_IMAGE=rust:1.98.1-alpine   FLEET_BUILD_GNU_IMAGE=rust:1.98.1-slim-trixie
+# FLEET_BUILD_MUSL_CACHE=fleet-v1-cargo       FLEET_BUILD_GNU_CACHE=fleet-v1-cargo-gnu
+# FLEET_BUILD_DOCKER_ARGS=--network fleet-v1-dev -e FLEET_TEST_DB=postgres://fleet:fleet@fleet-v1-pg/fleet_test
+#                                      docker run 的附加参数：lab/sync-server.sh 在 musl 容器里跑集成测试要连库时
+```
+
+用法：
+
+```
+FLEET_BUILD=docker FLEET_BUILD_HOST=10.172.17.213 deploy/central/deploy.sh --dry-run 185.13.159.131 fleet.kismet613.com   # 先演练
+FLEET_BUILD=docker FLEET_BUILD_HOST=10.172.17.213 deploy/central/deploy.sh 185.13.159.131 fleet.kismet613.com
+FLEET_BUILD=docker FLEET_BUILD_HOST=10.172.17.213 lab/sync-server.sh 'cargo test -p fleet-server --lib'                 # 编译主机上跑测试
+```
+
+- `--dry-run`（或 `FLEET_DEPLOY_DRY_RUN=1`）：照常同步、编译、拉回二进制、构建前端、打包，但不连中控（dist 按全部带上算），包存到本机临时目录、列出内容就退出。改了部署脚本、换了编译主机先用它看一遍包里有什么。
+- `lab/deploy-server.sh` 在 docker 方式下也是在编译主机上编，编好的三个二进制连同 `deploy/` 经本机传到 fleet-dev 的 `/root/fleet-prebuilt` 再装，部署目标仍是实验室中控 fleet-dev；`lab/deploy-web.sh` 的前端总在本机构建，不经编译主机。
+- 本机是 macOS 时，自带的 tar 会把扩展属性写成 `._*` 文件打进包里（进了 `migrations/` 会让 `sqlx::migrate!` 编译失败）。各脚本统一经 `fb_tar` 打包：`COPYFILE_DISABLE=1`，bsdtar 再加 `--no-xattrs`（GNU tar 不加）；远端解包后再删一遍 `._*` 兜底。手工打包也照这样做。
+- 核对装上的版本：`/opt/fleet/fleet-server version`、`/opt/fleet/dist/fleet-agent version`，都是 `0.1.0+<提交哈希>`；install.sh 最后一行同样打出 fleet-server 与 agent 的版本。
+
+### 部署要点
+
 
 - `Cargo.toml`、`Cargo.lock`、`crates`、`migrations`、`deploy`、`web`、fleet-ops 技能（仓库 `.claude/skills/fleet-ops`）有未提交的改动时拒绝部署。
 - 每次还装中控本机的 `/usr/local/bin/fleetctl`，健康检查通过后跑 `fleet-server local-admin`（建或修复全权密钥 central-local，仍有效不换），写 `/root/AGENTS.md`、`/root/CLAUDE.md` 与 `/root/.claude/skills/fleet-ops/SKILL.md`（§14）。部署最后一行写「本机 fleetctl apikey:central-local」说明能用。
-- 版本号 `0.1.0+<哈希>` 里的哈希是最后一次改动 `Cargo.toml`、`Cargo.lock`、`crates`、`migrations`、`deploy` 的提交：只改前端或文档的提交不换哈希，fleet-dev 上不重编 server 和 agent。
-- xray、ssserver、geoip.dat 先和中控 `/opt/fleet/dist` 比 sha256，相同的不上传，中控上的保持原样。
+- 版本号 `0.1.0+<哈希>` 里的哈希是最后一次改动 `Cargo.toml`、`Cargo.lock`、`crates`、`migrations`、`deploy` 的提交：只改前端或文档的提交不换哈希，编译主机上不重编 server 和 agent。
+- xray、ssserver、geoip.dat 先和中控 `/opt/fleet/dist` 比 sha256，相同的不上传，中控上的保持原样（docker 编译主机上没有 dist 来源时整个不带，见上）。
 - 编译失败、或 install.sh 重启后等 60 秒未登录访问 `/api/v1/auth/me` 仍不是 401，部署以非 0 退出，后者会打出 fleet-server 最近 60 行日志。中控上的安装包无论成败都删掉。
 - 换下来的旧 fleet-server 留在中控 `/opt/fleet/fleet-server.prev`（同一个二进制重复部署时不覆盖它）。
 - 迁移 0029 先把币种去空白转大写，再给套餐 / 订阅 / 续费记录的币种（3 个大写字母）和通知渠道种类（telegram / wecom / webhook）加约束；存量里还有不合规的不让迁移失败，日志里有「0029：… 暂不验证」的警告。看到时查出那几行（如 `select id, currency from plan where currency !~ '^[A-Z]{3}$'`）改成正确的币种，再 `alter table plan validate constraint plan_currency_iso`（订阅 / 续费记录 / 渠道同理：`subscription_currency_iso`、`renewal_currency_iso`、`notify_channel_kind_check`）。
@@ -229,7 +282,7 @@ WAL 三项由 `deploy/central/install.sh` 写进 `/etc/postgresql/<版本>/main/
 
 回滚（新版起不来，或上线后有严重问题）：
 
-1. 先确认这次部署**没有新迁移**：`git diff --name-only <旧哈希> <新哈希> -- migrations` 为空（新旧哈希见中控 `journalctl -u fleet-server | grep 监听 | tail -2`）。fleet-server 启动时自动跑迁移；新迁移一旦执行过，旧版本发现库里有它不认识的迁移会拒绝启动，这时不能直接换回，只能修好再发新版本（或按 §10 从备份恢复，丢失备份之后的数据）。
+1. 先确认这次部署**没有新迁移**：`git diff --name-only <旧哈希> <新哈希> -- migrations` 为空（新旧哈希见中控 `journalctl -u fleet-server | grep 监听 | tail -2`；当前与换下来的二进制也可直接 `/opt/fleet/fleet-server version`、`/opt/fleet/fleet-server.prev version` 看，早于这个子命令的旧版本会打用法）。fleet-server 启动时自动跑迁移；新迁移一旦执行过，旧版本发现库里有它不认识的迁移会拒绝启动，这时不能直接换回，只能修好再发新版本（或按 §10 从备份恢复，丢失备份之后的数据）。
 2. 没有新迁移时，在中控上换回旧版（先复制再改名：正在运行的可执行文件不能直接覆盖）：
    ```
    cp -p /opt/fleet/fleet-server.prev /opt/fleet/fleet-server.new && mv -f /opt/fleet/fleet-server.new /opt/fleet/fleet-server && systemctl restart fleet-server
@@ -368,7 +421,7 @@ heartbeat_url = "https://hc-ping.com/<检查的 uuid>"
 
 ### 怎么开始
 
-1. `ssh root@<中控>`（生产：本机别名 `debian13`）。
+1. `ssh root@<中控>`（生产：本机别名 `debian13`，没配这个别名的机器上写地址 `185.13.159.131`）。
 2. agent 两种跑法，令牌都不出中控：在中控的 `/root` 下起 agent（如 `claude`，Claude Code 要自己在中控上装好、登录）；或者 agent 留在手边的设备上，每条命令经 ssh 在中控上执行（`ssh debian13 'fleetctl --json status'`），这时先让它 `ssh debian13 cat /root/AGENTS.md` 读一遍中控上的说明。部署已经放好：
    - `/root/AGENTS.md` 与 `/root/CLAUDE.md`（同一份，模板 `deploy/central/central-agents.md`，每次部署覆盖）：这台机器是什么、规矩（改动前想清楚影响；删除、退役、全局维护、全部升级等先向用户确认）、常用命令、日志与备份在哪、出问题先看什么。
    - `/root/.claude/skills/fleet-ops/SKILL.md`：fleet-ops 技能（Claude Code 自动加载，别的 agent 按 AGENTS.md 的指引去读）。
@@ -415,3 +468,48 @@ heartbeat_url = "https://hc-ping.com/<检查的 uuid>"
 断开时中控结束本地的 ssh，远端的 shell 随连接断开收到 SIGHUP 退出；`nohup`、`setsid`、`systemd-run` 起的后台进程照常留着。
 
 **日志级别**：生产不要把 `tungstenite` / `axum::extract::ws` 的日志级别调到 trace（`RUST_LOG`）：trace 会把帧内容写进日志，包括票据和键入的内容。
+
+## 16. 汇率（计费统一按美元）
+
+价格照供应商收的币种录入（套餐、订阅、续费记录，CloudSilk 这类收人民币的就记 CNY），网页与 fleetctl 展示的月费、合计一律折成美元：首页「每月费用」、机器卡片与表格的「$xx/月」（原价与汇率在悬停或副行）、费用页、团队与套餐页、`fleetctl status` / `billing` / `ls --due`。折算由中控按汇率算好（四舍五入到分，合计是逐台折好的相加），口径见 API.md「汇率」。
+
+- **自动更新**：中控每天从 ECB 参考汇率（frankfurter，免费、不要密钥，中控要能出网到 `api.frankfurter.dev:443`）拉一次。失败保留上次的值，`journalctl -u fleet-server | grep 汇率` 看原因，一小时后自动再试；网页「设置 → 汇率」与 `fleetctl settings fx` 会显示最近一次失败。换汇率源或关掉自动更新在 `/etc/fleet/fleet.toml` 写（改完 `systemctl restart fleet-server`）：
+
+```toml
+[fx]
+auto = true                                              # false = 只用手动设置的汇率
+url = "https://api.frankfurter.dev/v1/latest?base=USD"   # 回包 {base:"USD", date, rates:{CNY:…}}（1 USD 合多少该币种）
+```
+
+- **手动设置**：网页「设置 → 汇率」或 `fleetctl settings fx <币种> --per-usd 7.12`。手动的优先，之后自动更新不改它（自动的值照样更新、表里看得到），要跟回市场价就「改回自动」（`--auto`）。改动写审计「修改汇率」。
+- **没有汇率的币种**（源里没有、也没手动设）：费用不折算、不当 1:1，各处标「未折算」，首页合计单列、不算进总数。看到「在用但没有汇率」就手动设一个。
+- 汇率存在 `app_setting` 的 `fx_rates`（JSON），随每日备份；不要直接改库（改坏了会当作没有汇率），用网页或 fleetctl。
+- 续费记录（实付金额）、回收站里的价格是历史账目，照原币种显示，不折算。
+
+## 17. 探测点（从靠近客户的地方测线路机入口）
+
+中控在德国，客户在中国大陆：中控连得上线路机不代表客户连得上，偶尔连不上也不代表客户受影响。探测点是放在靠近客户的地方（如阿里云香港）的一台小机器，跑 `fleet-agent probe`，每 30 秒连一遍各线路机的客户入口（同中控的轮换、对照目标与作废规则），另记建连延迟。设置里的「主探测来源」决定线路机卡片的心跳格、入口表的「连不上」、`relay_unreachable` 看哪一路（DESIGN.md「探测点」）。
+
+要求：x86_64 Linux（dist 里的 fleet-agent 是 musl 静态的，Alpine 直接跑），systemd 或 OpenRC，能出网访问中控（https）与 1.1.1.1 / 8.8.8.8 的 443；不需要公网入站，几 MB 内存。
+
+**加一台**（二选一）：
+- 中控能 SSH 到它（有公网 IP，NAT 后面但 22 映射出来了）：`fleetctl probe add 香港 --host <IP> [--ssh-port 22]`。中控用自己的密钥登录 root（主机指纹首次记录、之后严格校验），推 fleet-agent 到 `/opt/fleet/`、写 `/etc/fleet/probe.toml`（0600）、装服务，等到首次上报才算完。登不进时报错里有中控公钥全文：在探测点上把它加进 `/root/.ssh/authorized_keys` 再执行一次 `fleetctl probe install 香港 --host <IP>`。
+- 不让中控 SSH：`fleetctl probe add 香港`（或网页 设置 → 探测点 → 新增）打印一条一次性安装命令（30 分钟内有效、只能用一次），在探测点上用 root 执行；它下载 fleet-agent、装服务，半分钟内 `fleetctl probe ls` 显示在线。过期了 `fleetctl probe install 香港` 重新生成。
+- 装好之后 `fleetctl probe primary 香港` 设为主来源（网页 设置 → 探测点 → 主探测来源）。中控自己的检查默认开着，探测点离线时由它代替；不想要德国的结论可以 `fleetctl probe central off`（这时探测点离线就标灰，线路机整台挂了仍有 agent 离线告警）。
+
+**服务**：OpenRC（Alpine）是 `/etc/init.d/fleet-probe`（`supervise-daemon` 守护、挂了 5 秒后拉起、开机启动），日志 `/var/log/fleet-probe.log`（只在出问题时写、同一个问题 10 分钟一条，不轮转也涨得很慢）；systemd 是 `fleet-probe.service`（`journalctl -u fleet-probe`）。以系统用户 `fleet-probe` 跑。
+
+**排障**：
+- `probe_point_offline` / `fleetctl probe ls` 显示离线：在探测点上 `rc-service fleet-probe status`（或 `systemctl status fleet-probe`）、看日志。「连不上中控」查它的出网与 DNS；「中控说令牌无效」是探测点被删除或重装过（重装：`fleetctl probe install <名>`）；「这一轮作废：对照目标都连不上」是探测点自己的出网坏了（只算心跳，不判线路机）。
+- 卡片上写「中控（代替离线的香港探测点）」：主来源离线，暂由中控代替——连不上照报，连得上不算恢复，等它回来再判。
+- 升级：`fleetctl probe upgrade 香港`，探测点 30 秒内自己从中控下载 dist 里的 fleet-agent、核对 sha256、换上（旧的留成 `/opt/fleet/fleet-agent.prev`）、重启，命令等到它报上新版本。新版本起不来时在探测点上 `mv /opt/fleet/fleet-agent.prev /opt/fleet/fleet-agent` 再重启服务。
+- 删除：`fleetctl probe rm 香港 --yes`（主来源要先改走）；令牌立刻作废，探测点上的东西按打印出来的清理命令自己清。
+
+## 18. 三网 PING（线路机往外测线路质量）
+
+线路机每分钟往外连一轮目标（默认武汉电信 / 联通 / 移动的测速地址，TCP 80 口，每个 5 次），卡片上每个目标一行：当前延迟、左边延迟格、右边丢包格与当前丢包；抽屉「连接质量」里有延迟与丢包曲线。只展示，不开告警。它看的是线路好不好，客户连不连得上入口看探测点（§17）。
+
+- 改全局目标：网页 设置 → 三网 PING，或 `fleetctl ping-targets set <槽位 1–8> --name 武汉电信 --target hb-ct-v4.ip.zstaticcdn.com`（`--target ""` 清空 = 不测）、`fleetctl ping-targets mode tcp|icmp`。保存后全部线路机代数 +1，一分钟内按新目标测。
+- 单台覆盖：抽屉「管理」→ 三网 PING，或 `fleetctl ping <线路机> set <槽位> --name … --target …`、`fleetctl ping <线路机> mode icmp|tcp|global`、`fleetctl ping <线路机> reset [<槽位>]`。看读数：`fleetctl ping <线路机>` 或 `fleetctl show <线路机>`。
+- 要新版 agent：旧 agent 照常应用期望状态、只是不测（卡片上没有三网一块）。中控部署后升级线路机 agent（§7）。
+- 某个目标一直 100% 丢包：先看是不是目标不开那个口（TCP 不写端口连 80）——换成 `host:443` 或改 ICMP 试；ICMP 时卡片悬停写的实际方式是 TCP，说明线路机上的系统 ping 用不了（没装 iputils-ping，或 `sysctl net.ipv4.ping_group_range` 不含 0），agent 日志里 10 分钟一条「ICMP 用不了」。

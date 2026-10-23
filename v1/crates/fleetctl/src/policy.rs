@@ -355,7 +355,6 @@ mod tests {
 
     #[test]
     fn brief_texts() {
-        crate::meta::test_init();
         assert_eq!(brief("denylist", 3), "黑名单 · 3 个域名");
         assert_eq!(brief("blocked", 0), "暂停新连接");
         assert_eq!(draft_brief(&Value::Null), "-");

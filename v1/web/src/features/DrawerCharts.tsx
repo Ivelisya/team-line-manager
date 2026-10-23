@@ -2,7 +2,8 @@
 // 图表卡、加载框与时间范围也给软路由抽屉的「曲线」页签用（RouterCharts）。
 import * as React from 'react';
 import { Cpu, Gauge, Globe, HardDrive, MemoryStick, Network, Radar, ServerOff } from 'lucide-react';
-import type { MachineView } from '@/lib/types';
+import type { MachineView, SeriesPoint } from '@/lib/types';
+import { usePingSeries } from '@/lib/ping';
 import type { UseQueryResult } from '@tanstack/react-query';
 import { useAvailability, useSeries } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
@@ -105,6 +106,39 @@ const AvailabilitySection = React.memo(function AvailabilitySection({ id, relay 
   );
 });
 
+const PING_COLORS = ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)', 'var(--m-cpu)', 'var(--m-mem)', 'var(--m-disk)', 'var(--m-load)', 'var(--fg-3)'];
+/** 线路机的三网 PING 曲线：延迟（各目标一条线，1h–24h 每分钟的中位数，7d / 30d 每小时平均）与丢包率。
+ *  同一轮各目标的时刻相同，按时刻合成一组点（s<槽位> 延迟、l<槽位> 丢包） */
+const PingSection = React.memo(function PingSection({ id, range }: { id: string; range: string }) {
+  const q = usePingSeries(id, range, poll(range));
+  const { points, ms, loss } = React.useMemo(() => {
+    const by = new Map<string, SeriesPoint>();
+    for (const s of q.data?.series ?? []) for (const p of s.points) {
+      const o = by.get(p.ts) ?? { ts: p.ts };
+      o[`s${s.slot}`] = p.rtt_ms; o[`l${s.slot}`] = p.loss_pct;
+      by.set(p.ts, o);
+    }
+    const ser = q.data?.series ?? [];
+    return {
+      points: [...by.values()].sort((a, b) => a.ts.localeCompare(b.ts)),
+      ms: ser.map((s) => ({ key: `s${s.slot}`, label: s.name, color: PING_COLORS[s.slot % PING_COLORS.length] })),
+      loss: ser.map((s) => ({ key: `l${s.slot}`, label: s.name, color: PING_COLORS[s.slot % PING_COLORS.length] })),
+    };
+  }, [q.data]);
+  if (q.data && !q.data.series.length) return null;
+  const pq = { ...q, data: q.data && { points } } as UseQueryResult<{ points: SeriesPoint[] }>;
+  return (
+    <Section>
+      <ChartCard c="var(--chart-1)" icon={<Radar />} title="三网 PING 延迟" meta="线路机 → 各目标 · 每分钟 5 次的中位数">
+        <ChartFrame q={pq} few="这段时间没有数据"><TimeChart full points={points} range={range} kind="line" lines={ms} yFmt={yMs} valueFmt={vMs} clip /></ChartFrame>
+      </ChartCard>
+      <ChartCard c="var(--chart-2)" icon={<Radar />} title="三网 PING 丢包" meta="每分钟 5 次里没通的比例">
+        <ChartFrame q={pq} few="这段时间没有数据"><TimeChart full points={points} range={range} kind="line" lines={loss} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} clip /></ChartFrame>
+      </ChartCard>
+    </Section>
+  );
+});
+
 export function QualityTab({ m }: { m: MachineView }) {
   const { range, setRange } = useDrawer();
   const s = useSeries(m.id, 'probe', range, true, poll(range));
@@ -112,6 +146,7 @@ export function QualityTab({ m }: { m: MachineView }) {
     <>
       <RangeSticky range={range} setRange={setRange} />
       <AvailabilitySection id={m.id} relay={m.kind === 'relay'} />
+      {m.kind === 'relay' && <PingSection id={m.id} range={range} />}
       <Section>
         {/* 多条入口时曲线是各入口的平均（序列接口不分入口），写明几条、是哪几台线路机 */}
         <ChartCard c="var(--chart-1)" icon={<Radar />} title="TCP 延迟" meta={m.kind !== 'relay' && m.entries.length > 1

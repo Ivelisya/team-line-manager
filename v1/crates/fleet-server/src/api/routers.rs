@@ -232,7 +232,7 @@ const FETCH_LIMIT: u32 = 20;
 const FETCH_WINDOW: Duration = Duration::from_secs(600);
 static FETCHES: Mutex<Option<HashMap<Option<IpAddr>, (Instant, u32)>>> = Mutex::new(None);
 
-fn rate_ok(ip: Option<IpAddr>) -> bool {
+pub(crate) fn rate_ok(ip: Option<IpAddr>) -> bool {
     let mut g = FETCHES.lock().unwrap_or_else(|e| e.into_inner());
     let m = g.get_or_insert_with(HashMap::new);
     if m.len() > 10_000 {
@@ -373,23 +373,30 @@ pub async fn metrics(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath
     Ok(ok(json!({"step_s": step, "points": points})))
 }
 
+/// 各出口的指标点。每个点都带 `tests`（这一点里测了几次延迟）与 `tests_ok`（其中通的次数），三种粒度同一口径：
+/// 原始点（30 秒）测了的那一点 tests = 1（tests_ok 通为 1、不通为 0），没测的都是 0（alive 为 null）；5 分钟点是这 5 分钟里的次数（一般 1 次，alive = 全通）；
+/// 小时点是这一小时的次数（alive = 全通，另带 alive_pct）。fleetctl router exits 按它们数测试次数与失败次数
 pub async fn exit_metrics(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<RangeQ>) -> ApiResult<Json<Value>> {
     let (back, step) = range_of(&q)?;
     exists(&st, id).await?;
     let inner = match step {
-        30 => "select exit, ts, delay_ms, alive, conns, up_bps, down_bps, null::float8 alive_pct from router_exit_metric where router_id = $1 and ts >= $2",
+        30 => "select exit, ts, delay_ms, alive, conns, up_bps, down_bps, null::float8 alive_pct,
+                  (alive is not null)::int tests, coalesce(alive, false)::int tests_ok
+                from router_exit_metric where router_id = $1 and ts >= $2",
         300 => "select exit, date_bin('5 minutes', ts, timestamptz 'epoch') ts, avg(delay_ms) filter (where alive) delay_ms, bool_and(alive) alive,
-                  avg(conns) conns, avg(up_bps)::bigint up_bps, avg(down_bps)::bigint down_bps, null::float8 alive_pct
+                  avg(conns) conns, avg(up_bps)::bigint up_bps, avg(down_bps)::bigint down_bps, null::float8 alive_pct,
+                  count(alive)::int tests, (count(*) filter (where alive))::int tests_ok
                 from router_exit_metric where router_id = $1 and ts >= $2 group by 1, 2",
         _ => "select exit, hour ts, delay_ms, case when tests > 0 then tests_ok = tests end alive, conns, up_bps, down_bps,
-                case when tests > 0 then 100.0 * tests_ok / tests end alive_pct
+                case when tests > 0 then 100.0 * tests_ok / tests end alive_pct, tests, tests_ok
               from router_exit_metric_hourly where router_id = $1 and hour >= $2",
     };
     // 小时汇总的点另带 alive_pct（这一小时测通的比例）
     let extra = if step == 3600 { ", 'alive_pct', alive_pct" } else { "" };
     let sql = format!(
         "select coalesce(json_agg(json_build_object('name', exit, 'points', pts) order by exit), '[]') from (
-           select exit, json_agg(json_build_object('ts', ts, 'delay_ms', delay_ms, 'alive', alive, 'conns', conns, 'up_bps', up_bps, 'down_bps', down_bps{extra})
+           select exit, json_agg(json_build_object('ts', ts, 'delay_ms', delay_ms, 'alive', alive, 'conns', conns, 'up_bps', up_bps, 'down_bps', down_bps,
+                                                   'tests', tests, 'tests_ok', tests_ok{extra})
                                  order by ts) pts
            from ({inner}) p group by exit) x"
     );

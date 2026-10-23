@@ -18,6 +18,9 @@ export interface Subscription {
   /** 服务端算好的：due_state 到期状态（同续费告警）、monthly_cents 折成每月的价格（分）、next_due 续一个周期后的到期日（续费的默认值）、
    *  period_days 当前这期的天数（到期日往前推一个周期 → 到期日） */
   due_state: DueState; monthly_cents: number; next_due: string; period_days: number;
+  /** 计费统一按 USD 展示：服务端按汇率折好的月费、每期价格（分），usd_per_unit 是所用汇率（1 单位合多少 USD）。
+   *  没有该币种的汇率时三个都是 null（未折算，不当 1:1）；旧接口没有这几个字段 */
+  monthly_usd_cents?: number | null; price_usd_cents?: number | null; usd_per_unit?: number | null;
 }
 /** overdue 已过期；soon 到期前 remind_days 天内且不是自动续费；其余 ok */
 export type DueState = 'ok' | 'soon' | 'overdue';
@@ -103,12 +106,36 @@ export interface MachineView {
   failed_job: { id: string; kind: string; state: string } | null;
   open_incidents: number; maintenance: boolean;
   relay: { public_host: string; generation: number; applied_generation: number; applied_at: string | null; apply_error: string | null; port_min: number; port_max: number } | null;
-  /** 系统调优记录：profile 为 null = 未调优（迁移前上线的机器）；current = 就是中控当前的档，false 为旧档或未调优。家宽代理、同机 IP 节点为 null */
-  tune: { profile: string | null; at: string | null; current: boolean } | null;
+  /** 系统调优记录：profile 为 null = 未调优（迁移前上线的机器、已撤销）；current = 就是中控当前的档，false 为旧档或未调优；
+   *  params = 最近一次调优的推导参数（tune-v2 起，旧档与未调优为 null）。家宽代理、同机 IP 节点为 null */
+  tune: { profile: string | null; at: string | null; current: boolean; params: TuneParams | null } | null;
+}
+
+/** 调优档 tune-v2 的推导参数：缓冲区上限 buf_max（字节）= clamp(2×bw×rtt/8 + 2 MiB, 16 MiB, min(内存/32, 64 MiB))。
+ *  bw（Mbps）取套餐（封顶 1000；没写用 1000，bw_source=default）；rtt（ms）线路机采样入口连接的 P90（rtt_source=sampled，样本 rtt_samples 条），否则默认值 */
+export interface TuneParams {
+  bw: number; bw_plan: number | null; bw_source: 'plan' | 'default';
+  rtt: number; rtt_source: 'sampled' | 'default'; rtt_samples: number | null;
+  mem_mb: number | null; buf_max: number;
 }
 
 /** spare：唯一的备用团队（系统管理，不能删、不能取消；里面在用的机器订阅过期满 1 天后自动回收） */
-export interface Team { id: string; name: string; sort_order: number; spare: boolean; node_count: number }
+export interface Team { id: string; name: string; sort_order: number; spare: boolean; node_count: number;
+  /** 在用机器的月费合计（USD，同总览）；旧接口没有 */
+  monthly_usd?: UsdTotal }
+/** 月费合计（USD）：cents 是能折算部分的合计；by_currency 各原币种的金额、折成的 USD 与所用汇率；unconverted 没有汇率、没算进合计的 */
+export interface UsdTotal {
+  cents: number;
+  by_currency: { currency: string; cents: number; usd_cents: number; usd_per_unit: number }[];
+  unconverted: { currency: string; cents: number }[];
+}
+/** GET /settings/fx-rates：汇率设置（折算凭据）。rates 在用的币种排前面；source：base（USD）/ manual 手动 / auto 自动 / null 没有汇率 */
+export interface FxRates {
+  base: 'USD'; auto: boolean; url: string; fetched_at: string | null; rates_date: string | null; source: string | null;
+  last_attempt_at: string | null; last_error: string | null; missing: string[];
+  rates: { currency: string; usd_per_unit: number | null; per_usd: number | null; source: 'base' | 'manual' | 'auto' | null; auto_per_usd: number | null;
+    manual: { usd_per_unit: number; by: string; at: string } | null; in_use: boolean }[];
+}
 /** 供应商怎么计量流量额度：网卡本周期下行、上行总量取小 / 取大 / 相加 / 只算上行 */
 export type TrafficRule = 'min' | 'max' | 'sum' | 'out';
 /** 供应商也是名下机器订阅的模板：账单时区（null = 跟随组织时区）、流量重置（自然月 / 账单日）、提前提醒天数 */
@@ -117,6 +144,8 @@ export interface Plan {
   id: string; provider_id: string; name: string; cpu_cores: number | null; mem_mb: number | null; disk_gb: number | null;
   bandwidth_mbps: number | null; traffic_gb: number | null; price_cents: number; currency: string; cycle: Cycle; notes: string | null;
   archived_at: string | null; machine_count: number;
+  /** 服务端折好的 USD（分）：每期价格、按周期折成的月费；没有汇率为 null */
+  price_usd_cents?: number | null; monthly_usd_cents?: number | null; usd_per_unit?: number | null;
 }
 
 export interface Overview {
@@ -128,8 +157,10 @@ export interface Overview {
   provisioning: number; retiring: number; failed: number;
   /** 在用机器里即将到期（due_state = soon）与已过期（overdue）的台数 */
   due_soon: number; overdue: number;
-  /** 各币种的月费合计（每台的 monthly_cents 相加） */
+  /** 各币种的月费合计（每台的 monthly_cents 相加，不折算；旧字段） */
   monthly_cost: { currency: string; cents: number }[];
+  /** 月费合计折成 USD（每台的 monthly_usd_cents 相加；没有汇率的单列）；旧接口没有 */
+  monthly_usd?: UsdTotal;
   traffic_month: { up: number; down: number }; net_rx_bps: number; net_tx_bps: number;
 }
 
@@ -155,6 +186,8 @@ export interface Meta {
   defaults: { currency: string; cycle: string; remind_days: number; traffic_rule: TrafficRule; traffic_reset: TrafficReset; ss_method: string; ss_port: number };
   /** 网页终端的上限（服务端 terminal.rs）：每人 / 全中控同时几个、空闲与最长秒数、一条消息最多几字节、行列上限、票据与免验证的有效秒数 */
   terminal: { per_user: number; global: number; idle_s: number; max_age_s: number; max_message: number; max_dim: number; ticket_ttl_s: number; verify_ttl_s: number };
+  /** 中控公钥全文（上架页「复制中控公钥」：供应商面板录入它之后可以不填 root 密码）；中控读不到时为 null */
+  ssh_public_key: string | null;
 }
 export type UsageMetric = 'cpu' | 'mem' | 'disk' | 'load';
 
@@ -195,7 +228,8 @@ export interface ProvisionItem {
   host_id?: string;
 }
 /** ss_port：同机 IP 节点暂定的 SS 端口（作业在宿主机上核对时被占用会换），其它为 null */
-export interface ProvisionCheckItem { ok: boolean; errors: string[]; name: string; number: number | null; relay_port?: number; ss_port: number | null }
+/** warnings：不影响通过的提醒（发行版已过标准支持期、用中控密钥试登录没有结果）；旧中控没有这个字段 */
+export interface ProvisionCheckItem { ok: boolean; errors: string[]; warnings?: string[]; name: string; number: number | null; relay_port?: number; ss_port: number | null }
 
 // ---- 以 API.md「返回形状补充」为准 ----
 /** series：{metric, range, resolution, points}，点里时间字段叫 ts。
@@ -203,7 +237,7 @@ export interface ProvisionCheckItem { ok: boolean; errors: string[]; name: strin
  *  probe: tcp_ok tcp_ms egress_ok egress_ms（失败时 *_ms 为 null） */
 export interface SeriesPoint { ts: string; [k: string]: number | boolean | string | null }
 /** 心跳格：每台机器近 60 分钟、20 个 3 分钟桶（旧→新），每桶 [次数, 成功次数, 成功的延迟中位数 ms, SYN 重发过的次数]；[0,0,null,0] = 这段没有数据。
- *  节点是线路机 → 节点的 TCP 探测；线路机是中控 → 线路机的连通性（只判通不通，延迟为 null） */
+ *  节点是线路机 → 节点的 TCP 探测；线路机是主探测来源（中控或探测点）→ 线路机的连通性（中控只判通不通、延迟为 null；探测点带建连延迟） */
 export type ProbeBucket = [number, number, number | null, number?];
 export type ProbeBeats = Record<string, ProbeBucket[]>;
 /** 全站网卡速率的历史：每分钟一个点（旧→新），首页集群状态折线开场用 */

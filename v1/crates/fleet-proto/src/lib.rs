@@ -4,6 +4,7 @@
 //! - 上报：`POST /agent/v1/report`，`Report.seq` 单调递增；服务端按 (machine_id, seq) 去重，回 `ReportAck`。
 //! - 下发（仅线路机）：`GET /agent/v1/desired?after=<generation>` 长轮询，返回比 `after` 新的 `DesiredState`，
 //!   无变化时 30 s 后回 204；对齐后 `POST /agent/v1/applied` 回报 `ApplyReport`。
+//! - 探测点（`fleet-agent probe`）：`/agent/v1/probe/*`，令牌是探测点自己的，见下面「探测点」一节。
 //!
 //! 时间戳统一为 Unix 毫秒。
 
@@ -45,6 +46,24 @@ pub struct Report {
     /// Agent 自身健康（累计值，自进程启动起算）；旧 Agent 不带
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_health: Option<AgentHealth>,
+    /// 三网 PING（线路机往外测，`DesiredState::ping` 给的目标）；旧 Agent 不带、旧中控忽略
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ping: Vec<PingSample>,
+}
+
+/// 一个目标一轮（发 `sent` 次，丢 `lost` 次，`rtt_ms` 是通了的那几次的中位数，全丢为 None）
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PingSample {
+    pub slot: u8,
+    pub ts_ms: i64,
+    /// 实际测的目标（同 `PingTarget::target`）
+    pub target: String,
+    /// 实际用的方式：tcp / icmp（要 ICMP 但系统 ping 用不了时退回 tcp）
+    pub mode: String,
+    pub sent: u16,
+    pub lost: u16,
+    #[serde(default)]
+    pub rtt_ms: Option<f32>,
 }
 
 /// Agent 自身的健康数据：离线队列、访问日志尾读、最近一次应用失败、写盘失败。服务端存进 agent_state.info。
@@ -186,6 +205,51 @@ pub struct DesiredState {
     pub generation: u64,
     pub relay: RelayParams,
     pub entries: Vec<DesiredEntry>,
+    /// 三网 PING 的目标（中控按全局 + 这台的覆盖合成）；没有目标为 None。旧 agent 不认识这个字段，忽略
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ping: Option<PingConfig>,
+}
+
+/// 三网 PING：每 `interval_s` 秒一轮，每个目标发 `count` 次。`mode` 是字符串而不是枚举：以后加新方式时旧 agent 不至于整份期望状态解析失败
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PingConfig {
+    pub interval_s: u32,
+    pub count: u32,
+    /// tcp（建连，默认）/ icmp（系统 ping；用不了时退回 tcp）
+    pub mode: String,
+    pub targets: Vec<PingTarget>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PingTarget {
+    /// 槽位 0–7
+    pub slot: u8,
+    pub name: String,
+    /// `host`、`host:port`、`[IPv6]:port` 或裸 IPv6；TCP 不写端口时连 80
+    pub target: String,
+}
+
+/// TCP 方式不写端口时连的端口
+pub const PING_TCP_DEFAULT_PORT: u16 = 80;
+
+/// 拆 `target`：(主机, 端口)。`[v6]:port`、`[v6]`、裸 IPv6、`host:port`、`host`；端口不对为 None
+pub fn split_target(t: &str) -> Option<(String, Option<u16>)> {
+    let t = t.trim();
+    if let Some(rest) = t.strip_prefix('[') {
+        let (h, tail) = rest.split_once(']')?;
+        return match tail.strip_prefix(':') {
+            Some(p) => Some((h.to_string(), Some(p.parse().ok().filter(|p: &u16| *p > 0)?))),
+            None if tail.is_empty() => Some((h.to_string(), None)),
+            None => None,
+        };
+    }
+    if t.matches(':').count() > 1 {
+        return Some((t.to_string(), None));
+    }
+    match t.split_once(':') {
+        Some((h, p)) => Some((h.to_string(), Some(p.parse().ok().filter(|p: &u16| *p > 0)?))),
+        None => Some((t.to_string(), None)),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -279,6 +343,70 @@ pub struct EntryApply {
     pub error: Option<String>,
 }
 
+// ── 探测点（`fleet-agent probe`）─────────────────────────────────────────────
+//
+// 探测点是放在靠近客户的地方（如香港）的一台小机器，替中控测线路机的客户入口通不通（见 fleet-server 的 probe_points/）。
+// 令牌是探测点自己的（probe_point.token_hash），与机器的 agent 令牌是两套：
+// - `GET /agent/v1/probe/targets` → `ProbeTargets`：这一轮要连的线路机（客户连的地址 + 在用入口端口）与对照目标；
+// - `POST /agent/v1/probe/report` ← `ProbeReport`：这一轮的结果；
+// - `GET /agent/v1/probe/binary`：dist 里的 fleet-agent（安装命令下载、`ProbeTargets::upgrade` 时自己换）。
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProbeTargets {
+    /// 每轮间隔（秒）
+    pub interval_s: u32,
+    /// 对照目标（`host:port`）：一个都连不上 = 探测点自己的网络有问题，这一轮作废
+    pub controls: Vec<String>,
+    pub relays: Vec<ProbeTarget>,
+    /// 中控要它换成 dist 里的程序（`fleetctl probe upgrade`）：下载 `/agent/v1/probe/binary`，sha256 对上才换
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upgrade: Option<ProbeUpgrade>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProbeTarget {
+    pub relay_id: Uuid,
+    /// 客户连的地址（relay.public_host）
+    pub host: String,
+    /// 在用入口端口（升序）：每轮连第 `turn % len` 个，N 个口 N 轮连一遍
+    pub ports: Vec<u16>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProbeUpgrade {
+    pub sha256: String,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProbeReport {
+    pub version: String,
+    /// 正在跑的程序的 sha256（十六进制）：与 `ProbeTargets::upgrade` 的一致时中控清掉升级请求
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    /// 整轮作废的原因（对照目标都连不上、三台以上线路机全部连不上）：这时 `results` 为空，只算心跳
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discarded: Option<String>,
+    pub results: Vec<ProbeResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProbeResult {
+    pub relay_id: Uuid,
+    pub port: u16,
+    pub ok: bool,
+    /// 建连的往返时间（内核 TCP_INFO 量的，不含 SYN 重发等待；量不到为 None）
+    #[serde(default)]
+    pub rtt_ms: Option<f32>,
+    /// 失败原因（中文）
+    #[serde(default)]
+    pub detail: Option<String>,
+}
+
+/// 这一轮记不记（中控 reach.rs 与探测点同一条规则）：对照目标都连不上，或三台以上线路机全部失败 → 是测的这一方自己的问题，不记。
+/// 两台同时不通照记：生产两台线路机在同一家供应商的同一个 /24，一起出问题并不罕见，正是要报的时候
+pub fn keep_round(oks: &[bool], control_ok: bool) -> bool { control_ok && (oks.len() < 3 || oks.iter().any(|&o| o)) }
+
 /// Xray 里用到的标签：只由 entry_id 派生，和名字、端口都无关。
 pub mod tags {
     use uuid::Uuid;
@@ -296,6 +424,24 @@ pub mod tags {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn probe_round_keep_rule() {
+        assert!(keep_round(&[true, false], true), "一台不通照记");
+        assert!(keep_round(&[false], true), "只有一台线路机：靠对照目标判断");
+        assert!(keep_round(&[false, false], true), "两台全不通照记：同一家供应商一起出问题");
+        assert!(!keep_round(&[false, false, false], true), "三台以上全不通：测的这一方自己的问题");
+        assert!(!keep_round(&[true, true], false), "对照目标都连不上：不记");
+        assert!(keep_round(&[], true));
+    }
+
+    #[test]
+    fn probe_targets_upgrade_is_optional() {
+        let t = ProbeTargets { interval_s: 30, controls: vec!["1.1.1.1:443".into()], relays: vec![], upgrade: None };
+        let v = serde_json::to_value(&t).unwrap();
+        assert!(v.get("upgrade").is_none());
+        assert_eq!(serde_json::from_value::<ProbeTargets>(v).unwrap(), t);
+    }
 
     #[test]
     fn tags_roundtrip() {

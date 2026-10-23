@@ -1,6 +1,7 @@
 // mock 的 GET /meta：值抄自服务端 crates/fleet-server/src/meta.rs（那边改了这里跟着改），外加订阅里服务端算的几项
 import type { Meta, Subscription } from '@/lib/types';
 import { addMonths } from '@/lib/format';
+import { toUsd, usdPerUnit } from './fx';
 
 export const META: Meta = {
   org_timezone: 'Asia/Shanghai', org_timezone_label: '北京时间', org_utc_offset_s: 28800,
@@ -37,15 +38,18 @@ export const META: Meta = {
   },
   defaults: { currency: 'USD', cycle: 'monthly', remind_days: 7, traffic_rule: 'max', traffic_reset: 'month', ss_method: 'aes-256-gcm', ss_port: 8388 },
   terminal: { per_user: 3, global: 8, idle_s: 900, max_age_s: 7200, max_message: 65536, max_dim: 500, ticket_ttl_s: 60, verify_ttl_s: 300 },
+  ssh_public_key: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockControlPublicKeyForTheFleetDemo0000 fleet@control',
 };
 
 const DAY = 86400_000;
 export const cycleMonths = (c: string) => META.cycles.find((x) => x.key === c)?.months ?? 1;
-/** 订阅里服务端算的几项（同 meta.rs 的 due_state / monthly_cents 与视图的 next_due / period_days），due_days 先算好 */
+/** 订阅里服务端算的几项（同 meta.rs 的 due_state / monthly_cents 与视图的 next_due / period_days、USD 折算），due_days 先算好 */
 export function subCalc(s: Subscription): Subscription {
   const n = cycleMonths(s.cycle);
   s.due_state = s.due_days < 0 && !(s.auto_renew && s.due_days === -1) ? 'overdue' : s.due_days <= s.remind_days && !s.auto_renew ? 'soon' : 'ok';
   s.monthly_cents = Math.round((s.price_cents ?? 0) / n);
+  // 折成 USD（同服务端 fx.rs）：没有汇率时都是 null
+  s.usd_per_unit = usdPerUnit(s.currency); s.monthly_usd_cents = toUsd(s.monthly_cents, s.currency); s.price_usd_cents = toUsd(s.price_cents ?? 0, s.currency);
   s.next_due = addMonths(s.due_date, n);
   s.period_days = Math.round((Date.parse(s.due_date) - Date.parse(addMonths(s.due_date, -n))) / DAY);
   return s;

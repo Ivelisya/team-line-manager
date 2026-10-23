@@ -512,7 +512,7 @@ async fn metrics_rollup_and_retention() {
         .await
         .unwrap();
     }
-    for (ago, alive, delay) in [(600, Some(true), Some(80)), (300, None, None)] {
+    for (ago, alive, delay) in [(900, Some(false), None), (600, Some(true), Some(80)), (300, None, None)] {
         sqlx::query("insert into router_exit_metric (router_id, ts, exit, alive, delay_ms, conns) values ($1::uuid, now() - make_interval(secs => $2), '节点01', $3, $4, 2)")
             .bind(&id)
             .bind(ago as f64)
@@ -534,7 +534,13 @@ async fn metrics_rollup_and_retention() {
     let e = t.get(&format!("/api/v1/routers/{id}/exits/metrics?range=1h")).await;
     assert_eq!((e["step_s"].as_i64(), e["exits"][0]["name"].as_str()), (Some(30), Some("节点01")));
     let pts = e["exits"][0]["points"].as_array().unwrap();
-    assert_eq!((pts[0]["delay_ms"].as_i64(), pts[0]["alive"].as_bool(), pts[1]["alive"].is_null()), (Some(80), Some(true), true));
+    assert_eq!((pts[1]["delay_ms"].as_i64(), pts[1]["alive"].as_bool(), pts[2]["alive"].is_null()), (Some(80), Some(true), true));
+    // 每个点带测了几次、通了几次：原始点没测的是 0 / 0
+    let tests = |pts: &Value| -> Vec<(i64, i64)> { pts.as_array().unwrap().iter().map(|p| (p["tests"].as_i64().unwrap(), p["tests_ok"].as_i64().unwrap())).collect() };
+    let sum = |v: Vec<(i64, i64)>| v.iter().fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+    assert_eq!(tests(&e["exits"][0]["points"]), [(1, 0), (1, 1), (0, 0)]);
+    let e5 = t.get(&format!("/api/v1/routers/{id}/exits/metrics?range=24h")).await;
+    assert_eq!((e5["step_s"].as_i64(), sum(tests(&e5["exits"][0]["points"]))), (Some(300), (2, 1)), "{e5}");
     // 小时汇总
     collect::rollup(db).await.unwrap();
     let h = t.get(&format!("/api/v1/routers/{id}/metrics?range=7d")).await;
@@ -542,7 +548,13 @@ async fn metrics_rollup_and_retention() {
     assert!(!h["points"].as_array().unwrap().is_empty() && h["points"][0].get("cpu_max").is_some(), "{h}");
     let eh = t.get(&format!("/api/v1/routers/{id}/exits/metrics?range=30d")).await;
     let hp = &eh["exits"][0]["points"];
-    assert!(hp.as_array().unwrap().iter().any(|p| p["alive_pct"].as_f64() == Some(100.0)), "{eh}");
+    assert_eq!(sum(tests(hp)), (2, 1), "{eh}");
+    // 两次测试可能落在同一小时（50%）或两个小时（0% 与 100%）：alive_pct 就是这一小时的 tests_ok / tests
+    for p in hp.as_array().unwrap() {
+        let (n, k) = (p["tests"].as_f64().unwrap(), p["tests_ok"].as_f64().unwrap());
+        assert_eq!(p["alive_pct"].as_f64(), (n > 0.0).then(|| 100.0 * k / n), "{p}");
+        assert_eq!(p["alive"].as_bool(), (n > 0.0).then_some(k == n), "{p}");
+    }
     assert_eq!(t.req("GET", &format!("/api/v1/routers/{id}/metrics?range=2h"), None, None).await.0, StatusCode::BAD_REQUEST);
     assert_eq!(t.req("GET", &format!("/api/v1/routers/{}/metrics", Uuid::now_v7()), None, None).await.0, StatusCode::NOT_FOUND);
     // 保留期：原始点超过 raw_days 的删掉

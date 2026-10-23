@@ -5,7 +5,8 @@ import * as React from 'react';
 import { CheckCircle2, ChevronRight, CircleAlert, Loader2, PackageOpen } from 'lucide-react';
 import { useRelays } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
-import { entryBad, healthLabel, reachFail } from '@/lib/derive';
+import { entryBad, healthLabel, reachFail, reachWho } from '@/lib/derive';
+import { useReachLabel } from '@/lib/probePoints';
 import * as F from '@/lib/format';
 import type { EntryView, MachineView } from '@/lib/types';
 import { Button } from '@/components/ui/button';
@@ -28,6 +29,7 @@ type Users = { id: string; name: string; exit: string }[];
 
 /** 入口一行。memo：实时推送对没变的入口原样返回（live.ts 的 patchEntry），open 是稳定引用，只有变了的那几行重渲染 */
 const EntryRow = React.memo(function EntryRow({ e, open, routers }: { e: EntryView; open: Open; routers?: Users }) {
+  const who = reachWho(useReachLabel());
   return (
     // 行里的「⋯」由外面的 EntryMenus 接住，不当成点行
     <tr className="is-link" tabIndex={0} onClick={(ev) => { if (!(ev.target as Element).closest('button')) open(e.node.id); }}
@@ -39,7 +41,7 @@ const EntryRow = React.memo(function EntryRow({ e, open, routers }: { e: EntryVi
           : <NodeHover id={e.node.id} noFocus><span className="ellipsis">{e.node.name}</span></NodeHover>}
         {routers && <RouterMark users={routers} />}
       </div></td>
-      <td>{entryStatus(e)}</td>
+      <td>{entryStatus(e, who)}</td>
       {/* 停用的入口不再探测：留着的是停用前的旧读数，不显示 */}
       {e.lifecycle === 'disabled' ? <><td className="r t-muted">—</td><td className="r t-muted">—</td></> : <><td className="r">{tcpCell(e)}</td><td className="r">{probeCell(e.egress)}</td></>}
       <td className="r"><Num f={F.bytes(e.traffic.month_up + e.traffic.month_down)} /></td>
@@ -75,6 +77,7 @@ function RelayCard({ m, open, routers }: { m: MachineView; open: Open; routers: 
   const sorted = React.useMemo(() => [...m.entries.filter(entryBad), ...m.entries.filter((e) => !entryBad(e))], [m.entries]);
   const cap = Math.max(ENTRY_CAP, m.entries.filter(entryBad).length);
   const unreach = m.entries.filter(reachFail).length;
+  const who = reachWho(useReachLabel());
   const entries = all ? sorted : sorted.slice(0, cap);
   return (
     <section ref={card} id={`relay-${m.id}`} className="panel relay-card">
@@ -82,7 +85,7 @@ function RelayCard({ m, open, routers }: { m: MachineView; open: Open; routers: 
         <Flag country={m.country} manual={!!m.country_set} ip={m.ip} />
         <button type="button" className="ttl relay-name" onClick={() => open(m.id)}>{m.name}<ChevronRight size={16} aria-hidden /></button>
         <HealthPill m={m} />
-        {unreach > 0 && <span className="relay-unreach" data-tip="中控连不上这些入口的端口，见下表标红的行">中控连不上 {unreach} 个入口</span>}
+        {unreach > 0 && <span className="relay-unreach" data-tip={`${who}连不上这些入口的端口，见下表标红的行`}>{who}连不上 {unreach} 个入口</span>}
         <span className="t-sub">{r?.public_host && r.public_host !== m.ip ? `${r.public_host} · ${m.ip}` : m.ip}</span>
         {m.subscription && <Chip variant={dueWarn ? 'warn' : undefined}><Due days={m.subscription.due_days} state={m.subscription.due_state} tail /></Chip>}
         {m.lifecycle === 'active' && movableEntries(m).length > 0 && <Button size="sm" style={{ marginLeft: 'auto' }} onClick={() => openEvacuate(m.id)}><PackageOpen size={14} />搬空到…</Button>}

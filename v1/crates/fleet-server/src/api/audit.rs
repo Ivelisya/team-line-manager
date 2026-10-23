@@ -144,7 +144,7 @@ const AUDIT_ACTIONS: &[&str] = &[
     "silence.delete", "incident.ack", "restore.probe", "agent.upgrade", "notify.create", "notify.update", "notify.delete", "exec", "machine.logs", "server.logs", "apikey.create",
     "apikey.revoke", "auth.login", "auth.login_failed", "auth.logout", "auth.totp_enabled", "auth.totp_disabled", "auth.totp_recovery_used",
     "auth.totp_recovery_regenerated", "auth.user_removed", "auth.user_disabled", "auth.password_changed", "auth.session_revoked", "auth.verify_failed", "policy.draft", "policy.discard", "policy.publish", "policy.rollback",
-    "settings.access_retention", "terminal.open", "terminal.close", "ssh.login",
+    "settings.access_retention", "settings.fx_rate", "terminal.open", "terminal.close", "ssh.login",
     "router.create", "router.update", "router.delete", "router.bootstrap", "router.bootstrap_used", "router.deploy",
 ];
 
@@ -224,6 +224,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "policy.publish" => "发布访问规则",
         "policy.rollback" => "回滚访问规则",
         "settings.access_retention" => "修改访问记录保留期",
+        "settings.fx_rate" => "修改汇率",
         "router.create" => "新建软路由",
         "router.update" => "修改软路由",
         "router.delete" => "删除软路由",
@@ -255,6 +256,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "recycle.import" => format!("导入 {} 台，跳过 {} 台", d["inserted"].as_u64().unwrap_or(0), d["skipped"].as_u64().unwrap_or(0)),
         "machine.purge" if d["auto"] == crate::spare::AUTO => format!("{}（回收站自动清除）", s("name")),
         "machine.purge" => s("name"),
+        "machine.tune" if d["rollback"] == true => format!("{} · 撤销调优", s("name")),
         "machine.tune" => format!("{} · {}", s("name"), s("profile")),
         "renewal" => {
             let auto = if d["auto"] == true { "（自动续费）" } else { "" };
@@ -443,6 +445,19 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
             })
             .collect::<Vec<_>>()
             .join("，"),
+        // 「CNY：手动 0.1404 USD（原为自动 0.1498）」「CNY：取消手动，改回自动 0.1498」
+        "settings.fx_rate" => {
+            let side = |v: &Value| match (v["usd_per_unit"].as_f64(), v["source"].as_str()) {
+                (Some(r), Some(src)) => format!("{}{r} USD", if src == "manual" { "手动 " } else { "自动 " }),
+                _ => "没有汇率（未折算）".into(),
+            };
+            let c = s("currency");
+            if d["to"]["source"] == "manual" {
+                format!("{c}：1 {c} = {}（原为{}）", side(&d["to"]).trim_start_matches("手动 "), side(&d["from"]))
+            } else {
+                format!("{c}：取消手动汇率，改回{}", side(&d["to"]))
+            }
+        }
         _ => String::new(),
     };
     (title, summary)
@@ -583,6 +598,16 @@ mod tests {
     }
 
     #[test]
+    fn fx_rate_summary() {
+        let s = |d: Value| audit_text("settings.fx_rate", &d).1;
+        let m = json!({"usd_per_unit": 0.14, "source": "manual"});
+        let a = json!({"usd_per_unit": 0.1498, "source": "auto"});
+        assert_eq!(s(json!({"currency": "CNY", "from": a, "to": m})), "CNY：1 CNY = 0.14 USD（原为自动 0.1498 USD）");
+        assert_eq!(s(json!({"currency": "CNY", "from": m, "to": a})), "CNY：取消手动汇率，改回自动 0.1498 USD");
+        assert_eq!(s(json!({"currency": "XYZ", "from": m, "to": null})), "XYZ：取消手动汇率，改回没有汇率（未折算）");
+    }
+
+    #[test]
     fn catalog_and_machine_summaries_name_the_object() {
         let t = |a: &str, d: Value| audit_text(a, &d);
         assert_eq!(t("team.update", json!({"before": {"name": "甲", "sort_order": 200}, "after": {"name": "甲改", "sort_order": 50}})).1, "甲 → 甲改，排序 200 → 50");
@@ -632,6 +657,7 @@ mod tests {
         assert_eq!(t("job.cancel", json!({"kind": "move_entry", "name": "模拟团队C-21"})), ("取消作业".to_string(), "换线路机 · 模拟团队C-21".to_string()));
         assert_eq!(t("job.retry", json!({"kind": "upgrade_agent", "name": null, "step": 0})).1, "升级 agent");
         assert_eq!(t("machine.tune", json!({"name": "团队1-03", "profile": "tune-v1"})), ("系统调优".to_string(), "团队1-03 · tune-v1".to_string()));
+        assert_eq!(t("machine.tune", json!({"name": "团队1-03", "rollback": true})).1, "团队1-03 · 撤销调优");
         assert_eq!(t("job.cancel", json!({})).1, "");
     }
 

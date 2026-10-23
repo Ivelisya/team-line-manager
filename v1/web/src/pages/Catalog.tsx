@@ -5,7 +5,8 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { Archive, ArchiveRestore, ArrowRight, ExternalLink, ListOrdered, Pencil, Plus, Trash2 } from 'lucide-react';
 import { fetchRenumber, useAddPlan, useAddProvider, useAddTeam, useDelPlan, useDelProvider, useDelTeam, usePatchPlan, usePatchProvider, usePatchTeam, usePlans, useProviders, useRenumber, useTeams, useTeamsCompact } from '@/lib/queries';
 import type { Plan, Provider, Team, TrafficReset, TrafficRule } from '@/lib/types';
-import { currencyOptions, cycleLabel, cycleOptions, limitGb, meta, trafficResetText, trafficRuleLabel } from '@/lib/derive';
+import { currencyOptions, cycleLabel, cycleOptions, limitGb, meta, trafficResetText, trafficRuleLabel, usdTotalTip } from '@/lib/derive';
+import { useUsdPreview } from '@/lib/fx';
 import { collator } from '@/lib/sort';
 import { tzLabel } from '@/lib/tz';
 import { useUrlSort, useUrlState } from '@/lib/urlState';
@@ -69,9 +70,15 @@ const CountLink = ({ n, to }: { n: number; to: string }) => (n > 0 ? <Link class
 /* ---------------------------------------------------------------- 团队 */
 const TEAM_COLS = [
   { id: 'name', header: '名称', first: 'asc' as const }, { id: 'order', header: '排序', r: true, first: 'asc' as const },
-  { id: 'nodes', header: '在用节点', r: true, first: 'desc' as const }, { id: 'act', header: '' },
+  { id: 'nodes', header: '在用节点', r: true, first: 'desc' as const }, { id: 'cost', header: '月费', r: true, first: 'desc' as const }, { id: 'act', header: '' },
 ];
-const TEAM_KEY: Record<string, (t: Team) => number | string> = { name: (t) => t.name, order: (t) => t.sort_order, nodes: (t) => t.node_count };
+const TEAM_KEY: Record<string, (t: Team) => number | string> = { name: (t) => t.name, order: (t) => t.sort_order, nodes: (t) => t.node_count, cost: (t) => t.monthly_usd?.cents ?? 0 };
+/** 团队的月费（USD，服务端折好的在用机器合计）：悬停列出原币种与汇率；有没折算的币种时加「*」 */
+function TeamCost({ t }: { t: Team }) {
+  const u = t.monthly_usd;
+  if (!u || (!u.by_currency.length && !u.unconverted.length)) return <span className="t-muted">—</span>;
+  return <span className="num" data-tip={usdTotalTip(u)}>{F.money(u.cents, 'USD')}{u.unconverted.length ? '*' : ''}</span>;
+}
 function TeamsTab() {
   const q = useTeams();
   const compact = useTeamsCompact().data;
@@ -84,20 +91,23 @@ function TeamsTab() {
   const held = useHeld(edit === 'new' ? 'new' : edit?.id, edit);
   const renumHeld = useHeld(renum?.id, renum);
   const list = sortRows([...(q.data ?? [])].sort((a, b) => a.sort_order - b.sort_order), sort, TEAM_KEY);
+  // 各团队在用机器的月费合计（USD）；有团队带没折算的币种时注明
+  const total = list.reduce((s, t) => s + (t.monthly_usd?.cents ?? 0), 0);
+  const partial = list.some((t) => t.monthly_usd?.unconverted.length);
   return (
     <>
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
-      <Panel title="团队" count={list.length} sub={<InfoTip text="首页与表格按「排序」从小到大排列" />} tools={<Button variant="primary" size="md" onClick={() => setEdit('new')}><Plus />新建团队</Button>} flush>
+      <Panel title="团队" count={list.length} sub={<><InfoTip text="首页与表格按「排序」从小到大排列；月费是在用机器按月折成美元的合计（汇率见设置 → 汇率）" />{list.some((t) => t.monthly_usd) && <span className="t-sub" style={{ marginLeft: 'var(--sp-8)' }} data-tip={partial ? '带 * 的团队有没有汇率的币种，没算进合计' : undefined}>月费合计 <span className="num">{F.money(total, 'USD')}</span>{partial ? '*' : ''}</span>}</>} tools={<Button variant="primary" size="md" onClick={() => setEdit('new')}><Plus />新建团队</Button>} flush>
         <TableWrap>
-          <table className="dt is-one" style={{ minWidth: 520 }}>
-            <colgroup><col /><col style={{ width: 90 }} /><col style={{ width: 100 }} /><col style={{ width: 256 }} /></colgroup>
+          <table className="dt is-one" style={{ minWidth: 630 }}>
+            <colgroup><col /><col style={{ width: 90 }} /><col style={{ width: 100 }} /><col style={{ width: 110 }} /><col style={{ width: 256 }} /></colgroup>
             <SortHead cols={TEAM_COLS} sort={sort} onSort={setSort} />
             <tbody>
               {list.map((t) => {
                 // 编号已经连续（或团队里还没有节点）就没有可调的；机器列表还没到时先不禁用
                 const done = compact ? compact[t.id] ?? true : false;
                 return (
-                  <tr key={t.id}><td className="strong">{t.name}{t.spare && <> <InfoTip text={SPARE_TIP} /></>}</td><td className="r num">{t.sort_order}</td><td className="r num"><CountLink n={t.node_count} to={`/nodes?team=${t.id}`} /></td>
+                  <tr key={t.id}><td className="strong">{t.name}{t.spare && <> <InfoTip text={SPARE_TIP} /></>}</td><td className="r num">{t.sort_order}</td><td className="r num"><CountLink n={t.node_count} to={`/nodes?team=${t.id}`} /></td><td className="r"><TeamCost t={t} /></td>
                     <td className="r"><span className="row row-acts" style={{ justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
                       <Button size="sm" variant="quiet" onClick={() => setEdit(t)}><Pencil size={13} />改名 / 排序</Button>
                       {/* aria-disabled 而不是 disabled：禁用的按钮收不到悬停，看不到为什么不能点 */}
@@ -303,7 +313,7 @@ function PlansTab() {
   const pname = (id: string) => providers.find((p) => p.id === id)?.name ?? '—';
   // 流量不限（0 / 空）排在最大
   const list = sortRows((q.data ?? []).filter((p) => showArchived || !p.archived_at), sort, {
-    name: (p) => p.name, provider: (p) => pname(p.provider_id), bw: (p) => p.bandwidth_mbps ?? -1, traffic: (p) => p.traffic_gb || Infinity, price: (p) => p.price_cents, machines: (p) => p.machine_count,
+    name: (p) => p.name, provider: (p) => pname(p.provider_id), bw: (p) => p.bandwidth_mbps ?? -1, traffic: (p) => p.traffic_gb || Infinity, price: (p) => p.monthly_usd_cents ?? -1, machines: (p) => p.machine_count,
   });
   // 归档 / 取消归档：通知里带「撤销」，点了改回去
   const setArchived = (p: Plan, archived: boolean) => patch.mutateAsync({ id: p.id, archived }).then(() => toast.show({
@@ -325,7 +335,10 @@ function PlansTab() {
                   <td>{pname(p.provider_id)}</td>
                   <td>{planSpec(p)}<span className="sub">{p.disk_gb ? `磁盘 ${p.disk_gb} GiB` : ''}</span></td>
                   <td className="r"><Num f={F.mbps(p.bandwidth_mbps)} /></td><td className="r"><Num f={limitGb(p.traffic_gb)} /></td>
-                  <td className="r"><span className="num">{F.money(p.price_cents, p.currency)}</span> <span className="t-sub">/ {cycleLabel(p.cycle)}</span></td>
+                  {/* 计费统一按 USD：主数字是服务端折好的月费，副行是原价（供应商收的币种与周期）；没有汇率的写原价、标未折算 */}
+                  <td className="r">{p.monthly_usd_cents != null
+                    ? <><span className="num">{F.money(p.monthly_usd_cents, 'USD')}</span> <span className="t-sub">/ 月</span>{(p.currency !== 'USD' || p.cycle !== 'monthly') && <span className="sub" data-tip={p.usd_per_unit != null && p.currency !== 'USD' ? F.fxRate(p.currency, p.usd_per_unit) : undefined}>{F.money(p.price_cents, p.currency)} / {cycleLabel(p.cycle)}</span>}</>
+                    : <><span className="num">{F.money(p.price_cents, p.currency)}</span> <span className="t-sub">/ {cycleLabel(p.cycle)}</span><span className="sub" data-tip={`没有 ${p.currency} 的汇率（设置 → 汇率）`}>未折算</span></>}</td>
                   <td className="r num"><CountLink n={p.machine_count} to={`/nodes?plan=${p.id}`} /></td>
                   <td className="r"><span className="row row-acts" style={{ justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
                     <Button size="sm" variant="quiet" onClick={() => setEdit(p)}><Pencil size={13} />编辑</Button>
@@ -372,7 +385,9 @@ const PlanDialog = resetOnOpen(function PlanDialog({ plan, open, onClose }: { pl
     else patch.mutate({ id: plan.id, ...body() }, { onSuccess: ok, onError: toast.err });
   };
   // 单位写在输入框后缀（同其它对话框）
-  const num = (k: keyof PlanForm, label: string, unit: string, ph?: string, info?: string) => <Field label={label} info={info}><UnitInput unit={unit} width="full" inputMode="decimal" placeholder={ph} value={f[k]} onChange={(e) => setF({ ...f, [k]: e.target.value.replace(/[^\d.]/g, '') })} /></Field>;
+  // 价格按供应商收的币种录入，下面提示折合多少美元（按设置里的汇率）
+  const usdHint = useUsdPreview(f.price.trim() === '' || !isFinite(Number(f.price)) ? null : Math.round(Number(f.price) * 100), f.currency);
+  const num = (k: keyof PlanForm, label: string, unit: string, ph?: string, info?: string, hint?: string | null) => <Field label={label} info={info} hint={hint ?? undefined}><UnitInput unit={unit} width="full" inputMode="decimal" placeholder={ph} value={f[k]} onChange={(e) => setF({ ...f, [k]: e.target.value.replace(/[^\d.]/g, '') })} /></Field>;
   return (
     <FormDialog size="md" dirty={dirty} open={open} onOpenChange={(o) => !o && onClose()} title={plan === 'new' ? '新建套餐' : '编辑套餐'} submitLabel="保存" busy={add.isPending || patch.isPending} valid={f.name.trim() !== '' && f.provider_id !== ''} onSubmit={save}
       desc={plan !== 'new' && <>{plan.machine_count ? `${plan.machine_count} 台在用，` : ''}改了立即生效 <InfoTip text="套餐是模板：同一套餐的机器共用这里的配额、价格、周期；在「费用」页单独设置过的除外。" /></>}>
@@ -382,7 +397,7 @@ const PlanDialog = resetOnOpen(function PlanDialog({ plan, open, onClose }: { pl
         <Field label="供应商" hint={plan !== 'new' && plan.machine_count ? '有机器在用，不能换' : undefined} info={plan !== 'new' && plan.machine_count ? '要换供应商就给别的供应商另建套餐' : undefined}>
           <Select value={f.provider_id} onChange={(v) => setF({ ...f, provider_id: v })} disabled={plan !== 'new' && plan.machine_count > 0} options={providers.map((p) => ({ value: p.id, label: p.name }))} /></Field>
         {num('cpu_cores', 'CPU', '核')}{num('mem_gb', '内存', 'GiB')}{num('disk_gb', '磁盘', 'GiB')}{num('bandwidth_mbps', '带宽', 'Mbps')}
-        {num('traffic_gb', '流量', 'GB', '留空或 0 = 不限', '每个流量周期的额度；流量周期按供应商的「流量重置」')}{num('price', '价格', f.currency, undefined, '每个计费周期')}
+        {num('traffic_gb', '流量', 'GB', '留空或 0 = 不限', '每个流量周期的额度；流量周期按供应商的「流量重置」')}{num('price', '价格', f.currency, undefined, '每个计费周期', usdHint)}
         <Field label="币种"><Select value={f.currency} onChange={(v) => setF({ ...f, currency: v })} options={F.withCurrent(currencyOptions(), f.currency)} /></Field>
         <Field label="计费周期"><Select value={f.cycle} onChange={(v) => setF({ ...f, cycle: v })} options={cycleOptions()} /></Field>
         <Field label="备注" className="span-2"><Input value={f.notes} onChange={(e) => setF({ ...f, notes: e.target.value })} /></Field>

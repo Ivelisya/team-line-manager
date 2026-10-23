@@ -86,6 +86,10 @@ pub struct Subscription {
     pub overrides: Vec<String>,
     /// 折成每月的费用（分，四舍五入，meta::monthly_cents）：总览的月费合计、网页的月费列
     pub monthly_cents: i64,
+    /// 折成 USD（分，按 fx.rs 的汇率四舍五入）：月费、每期价格，`usd_per_unit` 是所用汇率（1 单位合多少 USD）；没有汇率时三个都是 null（未折算）
+    pub monthly_usd_cents: Option<i64>,
+    pub price_usd_cents: Option<i64>,
+    pub usd_per_unit: Option<f64>,
     /// 到期日再推一个周期（落在账单日，小月按月末）：登记续费的默认新到期日
     pub next_due: Date,
     /// 当前这一期的天数（到期日往前推一个周期到到期日）：网页算剩余价值
@@ -161,7 +165,7 @@ pub struct Probe {
     pub median_ms: Option<f32>,
 }
 
-/// 中控 → 线路机上这个入口端口的最近一次 TCP 建连（`reach::round`，轮流连各端口，所以每个口隔 N 轮才更新一次）
+/// 主探测来源（中控或探测点，见 probe_points/）→ 线路机上这个入口端口的最近一次 TCP 建连（reach.rs，轮流连各端口，所以每个口隔 N 轮才更新一次）
 #[derive(Debug, Clone, Serialize)]
 pub struct Reach {
     pub ok: bool,
@@ -364,6 +368,9 @@ pub struct TuneInfo {
     pub at: Option<OffsetDateTime>,
     /// 机器上的档就是中控当前的档（`jobs::tune::PROFILE`）；false = 旧档或没调优过
     pub current: bool,
+    /// 最近一次调优的推导参数（tune-v2 起）：`{bw, bw_plan, bw_source, rtt, rtt_source, rtt_samples, mem_mb, buf_max}`；
+    /// null = 没调优过、旧档 tune-v1（固定值）或已撤销
+    pub params: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -379,12 +386,13 @@ pub struct RelayInfo {
     pub apply_error: Option<String>,
     pub port_min: i32,
     pub port_max: i32,
-    /// 中控 → 线路机（reach.rs）最近 3 轮（5 分钟内）都连不上，或某个在用入口端口最近 3 次（30 分钟、至少 3 遍轮换内）都连不上：
-    /// 失败原因（去重，带端口；单个端口的取它最近一次）；否则为 None（`reach::unreachable_sql`）。
+    /// 主探测来源（中控或探测点，reach.rs）最近 3 轮（5 分钟内）都连不上，或某个在用入口端口最近 3 次（30 分钟、至少 3 遍轮换内）都连不上：
+    /// 告警摘要（写明哪一路测的，括号里是失败原因：去重，带端口；单个端口的取它最近一次）；否则为 None（`reach::unreachable_sql`）。
     /// 健康判定据此报 relay_unreachable；它变了 reach.rs 发 `Event::Machine`（视图完整重算），不对外输出
     #[serde(skip)]
     pub unreachable: Option<String>,
-    /// 有在用入口、5 分钟内中控的检查不到 3 轮（中控刚重启、整轮作废）：整台通不通判不出，relay_unreachable 的原因消失不算恢复
+    /// 有在用入口、5 分钟内主探测来源的检查不到 3 轮（刚重启、整轮作废），或主来源离线（暂由中控代替 / 标灰）：整台通不通判不出，
+    /// relay_unreachable 的原因消失不算恢复
     #[serde(skip)]
     pub reach_unknown: bool,
 }
@@ -458,6 +466,7 @@ struct MRow {
     r_pmax: Option<i32>,
     tune_profile: Option<String>,
     tuned_at: Option<OffsetDateTime>,
+    tune_params: Option<serde_json::Value>,
     r_unreach: Option<String>,
     r_reach_unknown: bool,
 }
@@ -828,18 +837,19 @@ async fn probes_of(db: &sqlx::PgPool, eids: &[Uuid]) -> sqlx::Result<HashMap<(Uu
         .collect())
 }
 
-/// 在用入口各自端口上中控最近一次 TCP 检查，沿 (relay_id, port, ts desc) 索引逐个取最新一条，失败的再数连续失败了几次；
-/// 检查早于入口创建的（端口复用）不算
-async fn reach_of(db: &sqlx::PgPool, es: &[(Uuid, Uuid, i32)]) -> sqlx::Result<HashMap<Uuid, Reach>> {
-    let rs = sqlx::query_as::<_, (Uuid, bool, OffsetDateTime, Option<String>, i32)>(
+/// 在用入口各自端口上主探测来源（`src`，中控或探测点，见 probe_points::Effective）最近一次 TCP 检查，
+/// 沿 (relay_id, probe_point_id, port, ts desc) 索引逐个取最新一条，失败的再数连续失败了几次；检查早于入口创建的（端口复用）不算
+async fn reach_of(db: &sqlx::PgPool, es: &[(Uuid, Uuid, i32)], src: &crate::probe_points::Effective) -> sqlx::Result<HashMap<Uuid, Reach>> {
+    let (cf, cg, cr) = (src.cond("f"), src.cond("g"), src.cond("rr"));
+    let rs = sqlx::query_as::<_, (Uuid, bool, OffsetDateTime, Option<String>, i32)>(&format!(
         "select e.id, x.ok, x.ts, x.detail, x.fails from unnest($1::uuid[], $2::uuid[], $3::int[]) e(id, relay, port)
          join entry en on en.id = e.id cross join lateral (
             select ok, ts, detail, case when ok then 0 else (
-                     select count(*)::int from relay_reach f where f.relay_id = e.relay and f.port = e.port and f.ts >= en.created_at and not f.ok
-                       and f.ts > coalesce((select max(g.ts) from relay_reach g where g.relay_id = e.relay and g.port = e.port and g.ok), '-infinity')) end fails
-            from relay_reach where relay_id = e.relay and port = e.port and ts >= en.created_at
-            order by ts desc limit 1) x",
-    )
+                     select count(*)::int from relay_reach f where f.relay_id = e.relay and {cf} and f.port = e.port and f.ts >= en.created_at and not f.ok
+                       and f.ts > coalesce((select max(g.ts) from relay_reach g where g.relay_id = e.relay and {cg} and g.port = e.port and g.ok), '-infinity')) end fails
+            from relay_reach rr where rr.relay_id = e.relay and {cr} and rr.port = e.port and rr.ts >= en.created_at
+            order by rr.ts desc limit 1) x",
+    ))
     .bind(es.iter().map(|e| e.0).collect::<Vec<_>>())
     .bind(es.iter().map(|e| e.1).collect::<Vec<_>>())
     .bind(es.iter().map(|e| e.2).collect::<Vec<_>>())
@@ -850,12 +860,12 @@ async fn reach_of(db: &sqlx::PgPool, es: &[(Uuid, Uuid, i32)]) -> sqlx::Result<H
     let mut relays: Vec<Uuid> = es.iter().map(|e| e.1).collect();
     relays.sort();
     relays.dedup();
-    let down: Vec<(Uuid, OffsetDateTime, Option<String>)> = sqlx::query_as(
+    let down: Vec<(Uuid, OffsetDateTime, Option<String>)> = sqlx::query_as(&format!(
         "select u.id, x.ts, x.detail from unnest($1::uuid[]) u(id) cross join lateral (
             select max(ts) ts, (array_agg(detail order by ts desc))[1] detail, count(*) n, bool_or(ok) any_ok from (
-                select ts, ok, detail from relay_reach rr where rr.relay_id = u.id and rr.ts > now() - interval '5 minutes' order by ts desc limit 3) l) x
+                select ts, ok, detail from relay_reach rr where rr.relay_id = u.id and {cr} and rr.ts > now() - interval '5 minutes' order by ts desc limit 3) l) x
          where x.n = 3 and not x.any_ok",
-    )
+    ))
     .bind(&relays)
     .fetch_all(db)
     .await?;
@@ -1025,6 +1035,8 @@ async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<
 pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Result<Vec<MachineView>> {
     let db = &st.db;
     let lc = scope.cond();
+    // 线路机客户入口的连通性看哪一路检查（主探测来源；离线时退回中控或标灰，见 probe_points/）
+    let reach_src = crate::probe_points::effective(db).await?;
     // 同机 IP 节点没有自己的 agent：agent 状态取宿主机的
     let sql = format!(
         "select m.id, m.kind::text kind, m.team_id, t.name team_name, t.spare team_spare, m.spare_from, m.spare_since, m.number, m.label, host(m.primary_ip) ip, coalesce(hm.ssh_port, m.ssh_port) ssh_port,
@@ -1037,7 +1049,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 s.traffic_used_base s_base, s.traffic_used_base_at s_base_at, s.overrides s_overrides, sb.billing_day::int s_bday, p.traffic_rule p_rule,
                 tp.price_cents t_price, tp.currency t_currency, tp.cycle::text t_cycle, tp.billing_tz t_tz, tp.traffic_gb t_traffic, tp.traffic_reset t_reset, tp.remind_days t_remind, local_date(tp.billing_tz) t_today,
                 {A_COLS}, r.public_host r_host, r.generation r_gen, r.applied_generation r_applied, r.applied_at r_applied_at, r.generation_at r_gen_at,
-                r.apply_error r_err, r.port_min r_pmin, r.port_max r_pmax, m.tune_profile, m.tuned_at, case when m.kind = 'relay' then {unreach} end r_unreach,
+                r.apply_error r_err, r.port_min r_pmin, r.port_max r_pmax, m.tune_profile, m.tuned_at, m.tune_params, case when m.kind = 'relay' then {unreach} end r_unreach,
                 m.kind = 'relay' and {reach_unknown} r_reach_unknown
          from machine m
          left join team t on t.id = m.team_id
@@ -1052,8 +1064,8 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
          left join relay r on r.machine_id = m.id
          where {lc} and ($1::uuid is null or m.id = $1)
          order by m.kind = 'relay' desc, t.sort_order nulls first, t.name, m.number, m.label, m.id",
-        unreach = crate::reach::unreachable_sql("m.id"),
-        reach_unknown = crate::reach::unknown_sql("m.id")
+        unreach = crate::reach::unreachable_sql("m.id", &reach_src),
+        reach_unknown = crate::reach::unknown_sql("m.id", &reach_src)
     );
     let rows: Vec<MRow> = sqlx::query_as(&sql).bind(only).fetch_all(db).await?;
     if rows.is_empty() {
@@ -1123,7 +1135,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
         .await?;
         let eids: Vec<Uuid> = es.iter().map(|e| e.id).collect();
         let live: Vec<(Uuid, Uuid, i32)> = es.iter().filter(|e| e.lifecycle == "active").map(|e| (e.id, e.relay_id, e.port)).collect();
-        let (ps, rc) = tokio::try_join!(probes_of(db, &eids), reach_of(db, &live))?;
+        let (ps, rc) = tokio::try_join!(probes_of(db, &eids), reach_of(db, &live, &reach_src))?;
         Ok::<_, sqlx::Error>((es, ps, rc))
     };
     // 已移除入口本月的流量（换线路机后旧入口 removed，但本月它跑过的流量仍属于这个节点 / 线路机）：
@@ -1167,6 +1179,8 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
         ipn_q,
         exits_q
     )?;
+    // 汇率：订阅的价格、月费折成 USD（fx.rs）
+    let fx = crate::fx::current(db).await?;
 
     // 每条已移除入口的流量同时记到它的节点和线路机上；直出入口两端是同一台，只记一次
     let mut removed_by: HashMap<Uuid, Traffic> = HashMap::new();
@@ -1237,10 +1251,16 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 let months = i64::from(meta::cycle_months(&cycle).unwrap_or(1));
                 let (auto_renew, remind_days) = (r.s_auto.unwrap_or(false), r.s_remind.unwrap_or(r.t_remind));
                 let bday = r.s_bday.map_or(due.day(), |d| d.clamp(1, 31) as u8);
+                let currency = r.s_currency.clone().unwrap_or_default();
+                let monthly_cents = meta::monthly_cents(price, &cycle);
+                let usd_per_unit = fx.usd_per_unit(&currency);
                 Subscription {
                     price_cents: price,
-                    currency: r.s_currency.clone().unwrap_or_default(),
-                    monthly_cents: meta::monthly_cents(price, &cycle),
+                    monthly_usd_cents: usd_per_unit.map(|u| crate::fx::to_usd_cents(monthly_cents, u)),
+                    price_usd_cents: usd_per_unit.map(|u| crate::fx::to_usd_cents(i64::from(price), u)),
+                    usd_per_unit,
+                    currency,
+                    monthly_cents,
                     next_due: meta::add_months_on(due, months, bday).unwrap_or(due),
                     period_days: meta::add_months_on(due, -months, bday).map_or(1, |p| (due - p).whole_days().max(1)),
                     cycle,
@@ -1281,6 +1301,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 current: r.tune_profile.as_deref() == Some(crate::jobs::tune::PROFILE),
                 profile: r.tune_profile.clone(),
                 at: r.tuned_at,
+                params: r.tune_params.clone(),
             });
             let entries = entries_by.remove(&r.id).unwrap_or_default();
             let removed_traffic = removed_by.remove(&r.id).unwrap_or_default();
@@ -1400,8 +1421,9 @@ pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Valu
     // 在线/离线按 agent 连通（同前端 isQuiet）：agent 没有近期上报为离线。只数有自己 agent 的机器：
     // 家宽代理没有 agent、同机 IP 节点借宿主机的 agent，都不计。和健康无关
     let (mut online, mut offline) = (0, 0);
-    // 月费按币种分别汇总（不做汇率折算）
+    // 月费按币种分别汇总（monthly_cost，旧字段，不折算），另按汇率折成 USD 合计（monthly_usd，见 fx.rs）
     let mut cost: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
+    let mut usd = crate::fx::Total::default();
     for m in ms {
         match m.lifecycle.as_str() {
             "provisioning" | "draft" => provisioning += 1,
@@ -1432,6 +1454,7 @@ pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Valu
             }
             // 月费：各台折好的 monthly_cents 按币种（大写）相加
             *cost.entry(s.currency.trim().to_ascii_uppercase()).or_default() += s.monthly_cents;
+            usd.add(&s.currency, s.monthly_cents, s.monthly_usd_cents.zip(s.usd_per_unit));
         }
         // 实时速率只算数据没过期的：agent 离线的机器，最后一份上报的速率不算（同前端 liveRate）。
         // 告警（哪怕严重）不影响：机器照常每 10 秒上报。同机 IP 节点的读数就是宿主机的：在线离线照常按节点计，速率不再算一遍
@@ -1450,7 +1473,7 @@ pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Valu
     }
     json!({
         "nodes": nodes, "relays": relays, "provisioning": provisioning, "retiring": retiring, "failed": failed, "due_soon": due_soon, "overdue": overdue, "online": online, "offline": offline,
-        "monthly_cost": cost.into_iter().map(|(c, v)| json!({"currency": c, "cents": v})).collect::<Vec<_>>(), "traffic_month": {"up": up, "down": down}, "net_rx_bps": rx, "net_tx_bps": tx,
+        "monthly_cost": cost.into_iter().map(|(c, v)| json!({"currency": c, "cents": v})).collect::<Vec<_>>(), "monthly_usd": usd, "traffic_month": {"up": up, "down": down}, "net_rx_bps": rx, "net_tx_bps": tx,
     })
 }
 
@@ -1551,7 +1574,8 @@ mod tests {
         };
         // 即将到期按提前提醒天数（7）算、自动续费的不算；已过期另计
         let mut far = with(10, false);
-        far.subscription.as_mut().unwrap().monthly_cents = 33;
+        let fs = far.subscription.as_mut().unwrap();
+        (fs.monthly_cents, fs.monthly_usd_cents) = (33, Some(33));
         let ov = overview_of(&[with(3, false), with(3, true), with(-2, true), with(7, false), far], &HashMap::new());
         assert_eq!((ov["due_soon"].as_i64(), ov["overdue"].as_i64()), (Some(2), Some(1)));
         let ov1 = overview_of(&[with(-1, true)], &HashMap::new());
@@ -1562,5 +1586,19 @@ mod tests {
         assert_eq!((ov2["due_soon"].as_i64(), ov2["overdue"].as_i64()), (Some(0), Some(0)), "备用团队的不算");
         // 月费是各台 monthly_cents 之和
         assert_eq!(ov["monthly_cost"], json!([{"currency": "USD", "cents": 433}]));
+        assert_eq!(ov["monthly_usd"]["cents"], 433, "测试用的订阅是 USD，汇率 1");
+        // 折算：逐台的 monthly_usd_cents 相加；没有汇率的单列，不算进合计
+        let cny = |cents: i64, usd: Option<i64>| {
+            let mut m = with(30, false);
+            let s = m.subscription.as_mut().unwrap();
+            (s.currency, s.monthly_cents, s.monthly_usd_cents, s.usd_per_unit) = ("CNY".into(), cents, usd, usd.map(|_| 0.14));
+            m
+        };
+        let mut xyz = cny(500, None);
+        xyz.subscription.as_mut().unwrap().currency = "XYZ".into();
+        let ov3 = overview_of(&[with(30, false), cny(29999, Some(4200)), cny(100, Some(14)), xyz], &HashMap::new());
+        assert_eq!(ov3["monthly_usd"], json!({"cents": 100 + 4200 + 14,
+            "by_currency": [{"currency": "CNY", "cents": 30099, "usd_cents": 4214, "usd_per_unit": 0.14}, {"currency": "USD", "cents": 100, "usd_cents": 100, "usd_per_unit": 1.0}],
+            "unconverted": [{"currency": "XYZ", "cents": 500}]}));
     }
 }

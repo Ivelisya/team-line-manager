@@ -61,7 +61,7 @@ fn effective(body: &Value, tpl: &Value, cur: &Value) -> Value {
 }
 
 /// 金额：`39.46` / `39` / `0.5`（最多两位小数，不带正负号）→ 分。接口收整数分，币种是订阅的
-fn parse_money(s: &str) -> anyhow::Result<i32> {
+pub(crate) fn parse_money(s: &str) -> anyhow::Result<i32> {
     let s = s.trim();
     let (int, frac) = s.split_once('.').unwrap_or((s, "0"));
     let digits = |x: &str| !x.is_empty() && x.bytes().all(|b| b.is_ascii_digit());
@@ -210,7 +210,9 @@ fn billing_text(name: &str, m: &Value, limit: Option<i64>, pct: Option<i64>, ren
     let s = &m["subscription"];
     let mut rows = vec![("机器", name.to_string())];
     if !s.is_null() {
-        let [fee, (due, d), (auto, a), remind, tz, _, reset] = sub_fields(s, m);
+        let [(fee, f), (due, d), (auto, a), remind, tz, _, reset] = sub_fields(s, m);
+        // 费用后面补折成的 USD 月费（中控按汇率算好；原币种照录入的写）
+        let fee = (fee, format!("{f}{}", crate::fx::sub_usd_cn(s)));
         let a = if s["auto_renew"] == true { "是（到期后中控按周期自动顺延到期日、记一条续费记录；到期前不提醒）".into() } else { a };
         rows.extend([fee, (due, format!("{d}（{}）", due_cn(s["due_days"].as_i64().unwrap_or(0)))), (auto, a), remind, tz, ("流量上限", limit_cn(m, limit)), reset]);
         // 紧跟在到期那一行后面
@@ -341,7 +343,7 @@ pub struct SubSetOpts<'a> {
 }
 
 /// `none`（不分大小写）= null：单独设置的字段改回跟随
-fn is_none(s: &str) -> bool { s.trim().eq_ignore_ascii_case("none") }
+pub(crate) fn is_none(s: &str) -> bool { s.trim().eq_ignore_ascii_case("none") }
 
 /// `N` 或 `none`（= null）；N 不在 `range` 里报 `bad`
 fn int_or_none(s: &str, range: RangeInclusive<i32>, bad: &str) -> anyhow::Result<Value> {
@@ -507,7 +509,6 @@ mod tests {
 
     #[test]
     fn subscription_set_merges_given_fields() {
-        crate::meta::test_init();
         let m = machine();
         let cur = &m["subscription"];
         // 跟随的提交 null（不把套餐的值抄进订阅），单独设置的照旧；due_days 是中控算的，不提交
@@ -557,7 +558,6 @@ mod tests {
 
     #[test]
     fn billing_fields_show_source() {
-        crate::meta::test_init();
         let m = machine();
         let f = sub_fields(&m["subscription"], &m);
         assert_eq!(f[0].1, "42.00 USD / 月（单独设置）");
@@ -566,7 +566,6 @@ mod tests {
 
     #[test]
     fn limit_and_billing_wording() {
-        crate::meta::test_init();
         let q = |limit: Value, source: &str| json!({"plan": {"name": "Mini"}, "host_machine": {"id": "h", "name": "团队1-03"}, "quota": {"limit_gb": limit, "limit_source": source}});
         let m = q(json!(2000), "plan");
         assert_eq!((traffic_limit(&m), limit_cn(&m, traffic_limit(&m))), (Some(2000), "2000 GB（跟随套餐「Mini」）".into()));

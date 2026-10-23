@@ -28,6 +28,8 @@ pub fn router() -> Router<AppState> {
         .route("/report", post(report).layer(RequestDecompressionLayer::new()))
         .route("/desired", get(desired))
         .route("/applied", post(applied))
+        // 探测点（令牌是探测点自己的，见 probe_points/agent.rs）
+        .merge(crate::probe_points::agent::router())
 }
 
 struct AgentId {
@@ -510,6 +512,10 @@ async fn ingest(st: &AppState, h: &HeaderMap, mut r: Report) -> Result<Json<Repo
         .bind(ac.iter().map(|(x, _)| x.blocked).collect::<Vec<_>>())
         .execute(&mut *tx)
         .await?;
+    }
+    // 三网 PING（线路机往外测，ping.rs）：只收 7 天（它的保留期）以内的
+    if a.kind == "relay" && !r.ping.is_empty() {
+        crate::ping::ingest(&mut tx, a.machine_id, &r.ping, now_ms - 7 * DAY_MS, hi).await?;
     }
     if !dirty.is_empty() {
         sqlx::query(

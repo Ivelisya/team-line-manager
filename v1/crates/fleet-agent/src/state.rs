@@ -3,7 +3,7 @@
 use crate::config::Config;
 use crate::util::{load_json, save_json};
 use crate::xray::stats::StatsState;
-use fleet_proto::{DesiredState, EntrySample, HostSample, ProbeSample, SystemInfo, XrayStatus};
+use fleet_proto::{DesiredState, EntrySample, HostSample, PingSample, ProbeSample, SystemInfo, XrayStatus};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -12,6 +12,8 @@ use std::sync::{Arc, Mutex, RwLock};
 const HOST_CAP: usize = 4320; // 12 h @10 s
 const ENTRY_CAP: usize = 200_000;
 const PROBE_CAP: usize = 50_000;
+/// 三网 PING：8 个目标 × 每分钟 1 条，12 h 约 5800 条
+const PING_CAP: usize = 10_000;
 
 /// 采集任务写、上报任务取的缓冲
 #[derive(Default)]
@@ -19,6 +21,7 @@ pub struct Buffers {
     pub host: Vec<HostSample>,
     pub entries: Vec<EntrySample>,
     pub probes: Vec<ProbeSample>,
+    pub ping: Vec<PingSample>,
     pub info: Option<SystemInfo>,
     pub xray: Option<XrayStatus>,
     /// 流量基线：报告落盘成功后才持久化，崩溃时不会"基线前移但增量丢失"
@@ -51,11 +54,16 @@ impl Buffers {
         static HITS: AtomicU64 = AtomicU64::new(0);
         push_capped(&mut self.probes, [s], PROBE_CAP, "probes", &HITS);
     }
+    pub fn push_ping(&mut self, s: Vec<PingSample>) {
+        static HITS: AtomicU64 = AtomicU64::new(0);
+        push_capped(&mut self.ping, s, PING_CAP, "ping", &HITS);
+    }
     /// 建报失败时把取走的东西放回去（样本放在最前面保持时间顺序；info / 流量基线只在缓冲里还没有更新的值时放回）
-    pub fn restore(&mut self, host: Vec<HostSample>, entries: Vec<EntrySample>, probes: Vec<ProbeSample>, info: Option<SystemInfo>, stats_commit: Option<StatsState>) {
+    pub fn restore(&mut self, host: Vec<HostSample>, entries: Vec<EntrySample>, probes: Vec<ProbeSample>, ping: Vec<PingSample>, info: Option<SystemInfo>, stats_commit: Option<StatsState>) {
         self.host.splice(0..0, host);
         self.entries.splice(0..0, entries);
         self.probes.splice(0..0, probes);
+        self.ping.splice(0..0, ping);
         if self.info.is_none() {
             self.info = info;
         }

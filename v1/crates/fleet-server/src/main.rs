@@ -15,7 +15,8 @@ const USAGE: &str = "用法：
                                          root 在中控上执行：建或修复中控本机 fleetctl 的全权密钥 central-local，
                                          写进 root 的 fleetctl 配置（默认 /root/.config/fleetctl/config.toml）；
                                          仍有效就不换，--rotate 才换（旧的立即失效）
-  fleet-server gen-key  <路径>            生成 32 字节密钥文件（0600）";
+  fleet-server gen-key  <路径>            生成 32 字节密钥文件（0600）
+  fleet-server version                  打印版本（0.1.0+<提交哈希>，同 fleet-agent version）";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -35,6 +36,8 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     match cmd.as_str() {
+        // 不读配置：部署脚本装完二进制就用它打出版本，与 fleet-agent version 同格式
+        "version" | "-V" | "--version" => println!("fleet-server {}", fleet_proto::build_version()),
         "gen-key" => {
             let p = rest.first().context(USAGE)?;
             if std::path::Path::new(p).exists() {

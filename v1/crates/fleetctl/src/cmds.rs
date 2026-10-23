@@ -165,7 +165,8 @@ pub fn status(ctx: &Ctx) -> anyhow::Result<u8> {
             let parts: Vec<String> = ["ok", "degraded", "down", "unknown", "maintenance"].iter().map(|h| format!("{} {}", health_cn(h), n(h))).collect();
             format!("共 {} · {}", n("total"), parts.join(" · "))
         };
-        let cost = ov["monthly_cost"].as_array().map(|a| a.iter().map(|c| money(c["cents"].as_i64().unwrap_or(0), c["currency"].as_str().unwrap_or(""))).collect::<Vec<_>>().join(" + ")).unwrap_or_default();
+        // 月费统一折成 USD（中控按汇率算好），括注原币种；没有汇率的单列
+        let cost = crate::fx::cost_cn(&ov);
         let mut s = table::kv(&[
             ("节点", bucket("nodes")),
             ("线路机", bucket("relays")),
@@ -174,7 +175,7 @@ pub fn status(ctx: &Ctx) -> anyhow::Result<u8> {
             // 即将到期 / 已过期：中控按每台的提前提醒天数算（同续费告警）
             (meta::label("due_states", "soon"), st(&ov, "/due_soon")),
             (meta::label("due_states", "overdue"), st(&ov, "/overdue")),
-            ("每月费用", if cost.is_empty() { "-".into() } else { cost }),
+            ("每月费用", cost),
             ("本月业务流量", format!("下载 {} / 上传 {}", traffic(num(&ov, "/traffic_month/down").unwrap_or(0.0)), traffic(num(&ov, "/traffic_month/up").unwrap_or(0.0)))),
             ("网卡速率", format!("下行 {} / 上行 {}", bps(num(&ov, "/net_rx_bps").unwrap_or(0.0)), bps(num(&ov, "/net_tx_bps").unwrap_or(0.0)))),
         ]);
@@ -301,6 +302,7 @@ pub fn ls(ctx: &Ctx, team: Option<&str>, kind: Option<&str>, status: Option<&str
                 ];
                 if due.is_some() {
                     r.insert(1, due_cell(i));
+                    r.insert(2, crate::fx::monthly_cell(&i["fee"]));
                 }
                 r
             })
@@ -308,6 +310,7 @@ pub fn ls(ctx: &Ctx, team: Option<&str>, kind: Option<&str>, status: Option<&str
         let mut head = vec!["名称", "种类", "生命周期", "健康", "IP", "agent", "调优", "CPU", "内存", "磁盘", "入口", "告警", "作业"];
         if due.is_some() {
             head.insert(1, "到期");
+            head.insert(2, "月费");
         }
         format!("{}\n共 {} 台", table::render(&head, &rows), list.len())
     });
@@ -315,7 +318,8 @@ pub fn ls(ctx: &Ctx, team: Option<&str>, kind: Option<&str>, status: Option<&str
 }
 
 /// `ls` 的一行：与表格同列（另带 id），百分比取整；`--json` 输出这些而不是完整视图（完整视图用 show 取单台）。
-/// `with_due`（`--due`）：表格多一列到期，这里同样多 `due_date` / `due_days` / `auto_renew`；平时不带（上百台时整个列表要多出两成）
+/// `with_due`（`--due`）：表格多到期、月费两列，这里同样多 `due_date` / `due_days` / `auto_renew` 与
+/// `fee{monthly_cents, currency, monthly_usd_cents, usd_per_unit}`（月费的原币种与折成的 USD，没有汇率时 USD 两项为 null）；平时不带（上百台时整个列表要多出两成）
 fn ls_item(m: &Value, with_due: bool) -> Value {
     let pct = |used: &str, total: &str| match (num(m, used), num(m, total)) {
         (Some(u), Some(t)) if t > 0.0 => Some((u * 100.0 / t).round() as i64),
@@ -336,6 +340,12 @@ fn ls_item(m: &Value, with_due: bool) -> Value {
         for k in ["due_date", "due_days", "auto_renew"] {
             i[k] = m["subscription"][k].clone();
         }
+        let s = &m["subscription"];
+        i["fee"] = if s.is_null() {
+            Value::Null
+        } else {
+            json!({"monthly_cents": s["monthly_cents"], "currency": s["currency"], "monthly_usd_cents": s["monthly_usd_cents"], "usd_per_unit": s["usd_per_unit"]})
+        };
     }
     i
 }
@@ -348,6 +358,30 @@ fn tune_cn(t: &Value) -> String {
         (Some(p), false) => format!("旧档 {p}"),
         (None, _) => "未调优".into(),
     }
+}
+
+/// 调优的推导参数（`tune.params`，tune-v2 起；步骤结果里同名字段）：「缓冲上限 43.1 MiB ← 带宽 1000 Mbps（套餐 2560，按 1000 算）、
+/// RTT 172 ms（入口连接 25 条的 P90）、内存 3911 MB」。没有（没调优过、旧档、已撤销）为 None
+fn tune_params_cn(p: &Value) -> Option<String> {
+    let buf = p["buf_max"].as_f64()?;
+    let n = |k: &str| p[k].as_i64().map_or("?".to_string(), |v| v.to_string());
+    let bw = match (p["bw_source"].as_str(), p["bw_plan"].as_i64()) {
+        (Some("plan"), Some(plan)) if Some(plan) != p["bw"].as_i64() => format!("套餐 {plan}，按 {} 算", n("bw")),
+        (Some("plan"), _) => "套餐".to_string(),
+        _ => "套餐没写带宽，按默认".to_string(),
+    };
+    let rtt = match p["rtt_source"].as_str() {
+        Some("sampled") => format!("入口连接 {} 条的 P90", n("rtt_samples")),
+        _ if p["rtt_samples"].as_i64().unwrap_or(0) > 0 => format!("样本 {} 条不够，按默认", n("rtt_samples")),
+        _ => "默认".to_string(),
+    };
+    Some(format!(
+        "缓冲上限 {:.1} MiB ← 带宽 {} Mbps（{bw}）、RTT {} ms（{rtt}）、内存 {} MB",
+        buf / 1048576.0,
+        n("bw"),
+        n("rtt"),
+        n("mem_mb")
+    ))
 }
 
 /// 负载同网页：1 分钟平均负载 ÷ agent 报的核数，折成百分比；容器里不报负载（null）
@@ -387,7 +421,13 @@ fn agent_health_cn(h: &Value) -> String {
 
 pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
     let (id, _) = ctx.find_id(machine, Want::Any)?;
-    let m = ctx.c.get(&format!("/machines/{id}"))?;
+    let mut m = ctx.c.get(&format!("/machines/{id}"))?;
+    // 在用线路机带上三网 PING 的目标与当前读数（`--json` 在 ping 字段；旧中控没有这个接口时不带）
+    if m["kind"] == "relay" && m["lifecycle"] == "active" {
+        if let Ok(p) = ctx.c.get(&format!("/machines/{id}/ping")) {
+            m["ping"] = p;
+        }
+    }
     ctx.emit(&m, || {
         let mut rows = vec![
             ("名称", st(&m, "/name")),
@@ -424,6 +464,9 @@ pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
         if !m["tune"].is_null() {
             let at = m["tune"]["at"].as_str().map(|a| format!("（{}）", table::ts(a))).unwrap_or_default();
             rows.push(("调优", format!("{}{at}", tune_cn(&m["tune"]))));
+            if let Some(p) = tune_params_cn(&m["tune"]["params"]) {
+                rows.push(("调优推导", p));
+            }
         }
         if !m["host"].is_null() {
             rows.push((
@@ -444,11 +487,12 @@ pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
             rows.push((
                 "订阅",
                 format!(
-                    "{}（每{}）到期 {}（{}）",
+                    "{}（每{}）到期 {}（{}）{}",
                     money(m["subscription"]["price_cents"].as_i64().unwrap_or(0), &st(&m, "/subscription/currency")),
                     cycle_cn(&st(&m, "/subscription/cycle")),
                     st(&m, "/subscription/due_date"),
-                    due_cn(m["subscription"]["due_days"].as_i64().unwrap_or(0))
+                    due_cn(m["subscription"]["due_days"].as_i64().unwrap_or(0)),
+                    crate::fx::sub_usd_cn(&m["subscription"])
                 ),
             ));
         }
@@ -480,6 +524,9 @@ pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
         if let Some(es) = m["entries"].as_array().filter(|e| !e.is_empty()) {
             s.push_str("\n\n入口\n");
             s.push_str(&entry_table(&es.iter().map(entry_item).collect::<Vec<_>>()));
+        }
+        if m["ping"].is_object() {
+            s.push_str(&format!("\n\n三网 PING（最近一分钟）\n{}", crate::ping::current_table(&m["ping"])));
         }
         s
     });
@@ -778,7 +825,14 @@ fn step_brief(out: &Value) -> Option<String> {
     let mut parts: Vec<String> = if whole { vec![] } else { o.iter().filter_map(scalar).collect() };
     if let Some(t) = tune {
         let n = |k: &str| t[k].as_array().map_or(0, Vec::len);
-        let mut s = format!("调优 {}：已应用 {} 项、本来就是 {} 项、保持 {} 项", st(t, "/profile"), n("applied"), n("ok"), n("kept"));
+        let mut s = if t["rollback"] == true {
+            format!("撤销调优：写回原值 {} 项、本来就是原值 {} 项", n("applied"), n("ok"))
+        } else {
+            format!("调优 {}：已应用 {} 项、本来就是 {} 项、保持 {} 项", st(t, "/profile"), n("applied"), n("ok"), n("kept"))
+        };
+        if let Some(p) = tune_params_cn(&t["params"]) {
+            s.push_str(&format!("；{p}"));
+        }
         let skipped: Vec<String> = t["skipped"]
             .as_array()
             .into_iter()
@@ -1059,6 +1113,18 @@ mod tests {
         assert_eq!(step_brief(&tune).unwrap(), "调优 tune-v1：已应用 2 项、本来就是 1 项、保持 0 项；跳过 net.x（没有这个参数）、net.y（写不进，现为 1）");
         let conv = json!({"bbr": true, "tune": {"profile": "tune-v1", "applied": [], "ok": ["c"], "kept": ["d"], "skipped": []}, "nft_relays": "1.2.3.4", "ssserver_updated": false});
         assert_eq!(step_brief(&conv).unwrap(), "调优 tune-v1：已应用 0 项、本来就是 1 项、保持 1 项，bbr=true，nft_relays=1.2.3.4，ssserver_updated=false");
+        // tune-v2 带推导参数；撤销调优
+        let params = json!({"bw": 1000, "bw_plan": 2560, "bw_source": "plan", "rtt": 172, "rtt_source": "sampled", "rtt_samples": 25, "mem_mb": 3911, "buf_max": 45097152});
+        let tune = json!({"profile": "tune-v2", "applied": ["a"], "ok": [], "kept": [], "skipped": [], "params": params});
+        assert_eq!(
+            step_brief(&tune).unwrap(),
+            "调优 tune-v2：已应用 1 项、本来就是 0 项、保持 0 项；缓冲上限 43.0 MiB ← 带宽 1000 Mbps（套餐 2560，按 1000 算）、RTT 172 ms（入口连接 25 条的 P90）、内存 3911 MB"
+        );
+        let node = json!({"bw": 1000, "bw_plan": null, "bw_source": "default", "rtt": 100, "rtt_source": "default", "rtt_samples": 0, "mem_mb": 976, "buf_max": 27097152});
+        assert_eq!(tune_params_cn(&node).unwrap(), "缓冲上限 25.8 MiB ← 带宽 1000 Mbps（套餐没写带宽，按默认）、RTT 100 ms（默认）、内存 976 MB");
+        assert!(tune_params_cn(&Value::Null).is_none());
+        let rb = json!({"rollback": true, "applied": ["a", "b"], "ok": ["c"], "kept": [], "skipped": [], "before": {}});
+        assert_eq!(step_brief(&rb).unwrap(), "撤销调优：写回原值 2 项、本来就是原值 1 项");
         assert_eq!(step_brief(&json!({"reason": "没有要改的路由"})).unwrap(), "跳过：没有要改的路由");
         assert_eq!(step_brief(&json!({"routers": [1, 2], "port": 20001})).unwrap(), "port=20001，routers=2 项");
         assert!(step_brief(&json!({})).is_none() && step_brief(&Value::Null).is_none());
@@ -1078,7 +1144,6 @@ mod tests {
 
     #[test]
     fn due_and_cycle_wording() {
-        crate::meta::test_init();
         assert_eq!((due_cn(3), due_cn(0), due_cn(-2)), ("3 天后到期".to_string(), "今天到期".to_string(), "已过期 2 天".to_string()));
         assert_eq!((cycle_cn("monthly"), cycle_cn("semiannual"), cycle_cn("yearly")), ("月", "半年", "年"));
     }
@@ -1093,7 +1158,13 @@ mod tests {
         let auto = ls_item(&json!({"subscription": {"due_date": "2026-10-25", "due_days": 3, "auto_renew": true}}), true);
         assert_eq!(due_cell(&auto), "2026-10-25（3 天后到期，自动续费）");
         // 到期三项只在 --due 时带，平时的精简对象不变
-        assert!(ls_item(&m("active", 3), false).get("due_days").is_none());
+        assert!(ls_item(&m("active", 3), false).get("due_days").is_none() && ls_item(&m("active", 3), false).get("fee").is_none());
+        // --due 带月费：原币种与折成的 USD
+        let cny = json!({"lifecycle": "active", "subscription": {"due_date": "2026-10-25", "due_days": 3, "auto_renew": false,
+            "monthly_cents": 29999, "currency": "CNY", "monthly_usd_cents": 3750, "usd_per_unit": 0.125, "price_cents": 29999}});
+        let i = ls_item(&cny, true);
+        assert_eq!(i["fee"], json!({"monthly_cents": 29999, "currency": "CNY", "monthly_usd_cents": 3750, "usd_per_unit": 0.125}));
+        assert_eq!(crate::fx::monthly_cell(&i["fee"]), "37.50 USD（299.99 CNY）");
     }
 
     #[test]

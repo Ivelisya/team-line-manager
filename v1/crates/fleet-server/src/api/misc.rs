@@ -15,8 +15,13 @@ pub async fn overview(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<V
     Ok(ok(views::overview(&st).await?))
 }
 
-/// 共用的枚举中文名、常量、阈值、默认值与组织时区（见 meta.rs）：网页启动时取一次，fleetctl 每次命令需要时取一次
-pub async fn meta(_a: Actor) -> ApiResult<Json<Value>> { Ok(ok(crate::meta::to_json())) }
+/// 共用的枚举中文名、常量、阈值、默认值与组织时区（见 meta.rs）：网页启动时取一次，fleetctl 每次命令需要时取一次。
+/// 另带中控公钥全文 `ssh_public_key`（读不到为 null）：上架页「复制中控公钥」，供应商面板录入它之后上架可以不填 root 密码
+pub async fn meta(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
+    let mut v = crate::meta::to_json();
+    v["ssh_public_key"] = json!(crate::ssh::public_key(&st.cfg.ssh_key).await);
+    Ok(ok(v))
+}
 
 #[derive(Deserialize)]
 pub struct SeriesQ {
@@ -66,15 +71,17 @@ type Bucket = (i64, i64, Option<f64>, i64);
 /// 探测心跳条：每台在用机器按墙钟 3 分钟整格（date_bin 对齐 epoch）共 20 格，旧→新，最后一格是当前这格（还没走完）；
 /// 每格 [次数, 成功次数, 成功的延迟中位数 ms 或 null, 建连时 SYN 重发过的次数]；这 20 格里没有数据的机器不出现。
 /// - 节点：线路机 → 节点的 TCP 探测（线路机的 agent 做），汇总它的入口；
-/// - 线路机：中控 → 线路机的连通性（reach.rs，只判通不通，延迟与重发为 null / 0）。不再汇总它上面的入口：
-///   入口通不通是各节点的事，19 条入口合成一格时 114 次里断 2 次就黄，线路机自己好好的也一片黄。
+/// - 线路机：主探测来源（中控或探测点，见 probe_points/；GET /settings/reach-source 说是哪一路）→ 线路机的连通性（reach.rs）。
+///   中控只判通不通（延迟为 null）；探测点另记建连的往返时间，延迟是它的中位数。重发恒为 0。主来源离线时是代替它的中控的，标灰时没有线路机。
+///   不再汇总它上面的入口：入口通不通是各节点的事，19 条入口合成一格时 114 次里断 2 次就黄，线路机自己好好的也一片黄。
 ///
 /// 只看未移除或在窗口内才移除的入口：更早移除的在窗口里不会有探测，不必逐个去探测表里找。
 /// 节点在不在用按入口连（几百行），不按探测行连：当天分区的统计还没跟上「最近一小时」时，探测行数会被估成个位数，
 /// 按探测行连机器表的计划会在 30 ms 与 400+ ms 之间跳
 pub async fn probe_beats(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
     const BUCKETS: usize = 20;
-    let rows: Vec<(Uuid, i32, i64, i64, Option<f64>, i64)> = sqlx::query_as(
+    let src = crate::probe_points::effective(&st.db).await?;
+    let rows: Vec<(Uuid, i32, i64, i64, Option<f64>, i64)> = sqlx::query_as(&format!(
         "with w as (select s, s + interval '60 minutes' e from (select date_bin('3 minutes', now(), timestamptz 'epoch') - interval '57 minutes' s) z),
          p as (
            select e.node_id m, floor(extract(epoch from x.ts - w.s) / 180)::int i, x.ok, x.latency_ms, x.retrans
@@ -84,13 +91,14 @@ pub async fn probe_beats(_a: Actor, State(st): State<AppState>) -> ApiResult<Jso
              where entry_id = e.id and kind = 'tcp' and ts >= w.s and ts < w.e) x
            where mn.lifecycle <> 'retired' and (e.lifecycle <> 'removed' or e.removed_at >= w.s)
            union all
-           select r.relay_id, floor(extract(epoch from r.ts - w.s) / 180)::int, r.ok, null::real, null::smallint
+           select r.relay_id, floor(extract(epoch from r.ts - w.s) / 180)::int, r.ok, r.rtt_ms, null::smallint
            from w cross join relay_reach r join machine mr on mr.id = r.relay_id
-           where r.ts >= w.s and r.ts < w.e and mr.lifecycle <> 'retired')
+           where r.ts >= w.s and r.ts < w.e and {src} and mr.lifecycle <> 'retired')
          select m, i, count(*), count(*) filter (where ok),
                 (percentile_cont(0.5) within group (order by latency_ms) filter (where ok))::float8, count(*) filter (where retrans > 0)
          from p group by m, i",
-    )
+        src = src.cond("r")
+    ))
     .fetch_all(&st.db)
     .await?;
     let mut out: std::collections::HashMap<Uuid, Vec<Bucket>> = std::collections::HashMap::new();

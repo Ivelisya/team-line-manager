@@ -7,13 +7,14 @@
 # 用法：lab/mkrouter.sh
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
+. "$HERE/build-lib.sh"   # fb_tar：macOS 上打 tar 不带 ._* 与扩展属性（这份源码还要原样拷进路由）
 F="-F $HOME/.ssh/fleetlab_config"
 ID=170
 PVE() { ssh -o BatchMode=yes pve "$@"; }
 DEV() { ssh $F fleet-dev "$@"; }
 
 echo "== 1. PVE：官方 rootfs、容器 $ID"
-tar -C "$HERE/router" -czf - . | PVE 'rm -rf /root/lab-router/src && mkdir -p /root/lab-router/src && tar --no-same-owner -xzf - -C /root/lab-router/src'
+fb_tar -C "$HERE/router" -czf - . | PVE "rm -rf /root/lab-router/src && mkdir -p /root/lab-router/src && cd /root/lab-router/src && tar --no-same-owner -xzf - && $FB_RM_APPLEDOUBLE"
 PVE "ID=$ID bash -s" <<'PVE'
 set -euo pipefail
 V=24.10.8

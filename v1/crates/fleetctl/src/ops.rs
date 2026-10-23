@@ -80,7 +80,7 @@ pub struct ProvisionOpts {
     /// 家宽代理（proxy）的上游：socks5://用户:密码@主机:端口
     #[arg(long)]
     pub upstream: Option<String>,
-    /// 首次登录用的 root 密码放在哪个环境变量里（不填则用中控的密钥）
+    /// 首次登录用的 root 密码放在哪个环境变量里（不填则用中控的密钥：校验时会试登录，登不进时报错并给出要在供应商面板录入的中控公钥）
     #[arg(long)]
     pub ssh_password_env: Option<String>,
     /// 到期日 YYYY-MM-DD（给了 = 建订阅；选了 --plan 时必填）。订阅其余各项默认跟随套餐 / 供应商，下面几项给了 = 单独设置
@@ -274,6 +274,24 @@ fn single_item(o: &ProvisionOpts) -> anyhow::Result<Value> {
     Ok(Value::Object(m))
 }
 
+/// JSON 字符串数组里的各项（不是数组为空）
+fn strs(v: &Value) -> Vec<&str> { v.as_array().map(|a| a.iter().filter_map(|e| e.as_str()).collect()).unwrap_or_default() }
+
+/// 检查结果表下面逐条列出的错误与提醒（每条一行，行首是表里的 #；末尾带换行，没有时为空）。
+/// 不放进表格：「中控密钥登录不了」带着整行公钥，挤在表里没法看、没法复制
+fn check_notes(res: &[Value]) -> String {
+    let mut s = String::new();
+    for (i, r) in res.iter().enumerate() {
+        for e in strs(&r["errors"]) {
+            s += &format!("#{} 不通过：{e}\n", i + 1);
+        }
+        for w in strs(&r["warnings"]) {
+            s += &format!("#{} 提醒：{w}\n", i + 1);
+        }
+    }
+    s
+}
+
 pub fn provision(ctx: &Ctx, o: ProvisionOpts) -> anyhow::Result<u8> {
     let mut items = match &o.file {
         Some(p) => items_from_file(p)?,
@@ -294,17 +312,26 @@ pub fn provision(ctx: &Ctx, o: ProvisionOpts) -> anyhow::Result<u8> {
                 .iter()
                 .enumerate()
                 .map(|(i, r)| {
-                    let errs = r["errors"].as_array().map(|a| a.iter().filter_map(|e| e.as_str()).collect::<Vec<_>>().join("；")).unwrap_or_default();
-                    vec![(i + 1).to_string(), st(&items[i], "/ip"), st(r, "/name"), st(r, "/number"), if r["ok"] == true { "通过".into() } else { format!("不通过：{errs}") }]
+                    let verdict = match (r["ok"] == true, strs(&r["warnings"]).is_empty()) {
+                        (false, _) => "不通过（见下）",
+                        (true, false) => "通过（有提醒，见下）",
+                        (true, true) => "通过",
+                    };
+                    vec![(i + 1).to_string(), st(&items[i], "/ip"), st(r, "/name"), st(r, "/number"), verdict.into()]
                 })
                 .collect();
-            format!("{}\n{}", table::render(&["#", "IP", "名称", "编号", "校验"], &rows), if all_ok { "校验全部通过（--dry-run，未提交）" } else { "校验未通过，未提交" })
+            format!(
+                "{}\n{}{}",
+                table::render(&["#", "IP", "名称", "编号", "校验"], &rows),
+                check_notes(&res),
+                if all_ok { "校验全部通过（--dry-run，未提交）" } else { "校验未通过，未提交" }
+            )
         });
         return Ok(if all_ok { 0 } else { 1 });
     }
     if !ctx.json {
         let names: Vec<String> = res.iter().zip(&items).map(|(r, it)| format!("{}（{}）", st(r, "/name"), st(it, "/ip"))).collect();
-        outln(format!("校验通过，将上架 {} 台：{}", res.len(), names.join("、")));
+        outln(format!("{}校验通过，将上架 {} 台：{}", check_notes(&res), res.len(), names.join("、")));
     }
     confirm(&format!("确认上架这 {} 台机器？会登录机器安装软件", res.len()), o.yes)?;
     let d = ctx.c.post("/provision", &body)?;
@@ -536,8 +563,8 @@ pub fn upgrade_agent(ctx: &Ctx, machine: Option<&str>, all: bool, yes: bool, fol
 }
 
 /// 一台的调优作业提交结果：Ok(Some(作业)) 已提交；`skip_conflict` 时 409（有进行中的作业、同机 IP 节点、家宽代理…）记进 `skipped` 返回 Ok(None)
-fn tune_submit(ctx: &Ctx, (id, name): &(String, String), skip_conflict: bool, skipped: &mut Vec<Value>) -> anyhow::Result<Option<Value>> {
-    match ctx.c.post(&format!("/machines/{id}/tune"), &json!({})) {
+fn tune_submit(ctx: &Ctx, (id, name): &(String, String), body: &Value, skip_conflict: bool, skipped: &mut Vec<Value>) -> anyhow::Result<Option<Value>> {
+    match ctx.c.post(&format!("/machines/{id}/tune"), body) {
         Ok(d) => Ok(Some(json!({"machine_id": id, "name": name, "job_id": d["job_id"]}))),
         Err(e) => match e.downcast_ref::<ApiError>() {
             Some(a) if skip_conflict && a.status == 409 => {
@@ -551,8 +578,10 @@ fn tune_submit(ctx: &Ctx, (id, name): &(String, String), skip_conflict: bool, sk
 
 /// `fleetctl tune <机器>[,<机器>…] | --team <团队> | --all`：重做系统调优（作业 tune，不重启 ssserver / Xray）。
 /// --team / --all 只取在用的线路机和 VPS 节点（同机 IP 节点随宿主机，家宽代理没有机器），线路机在前：先做一台并跟到结束，
-/// 它失败就停（其余不提交），成功后其余逐台提交；409 的机器（有进行中的作业）跳过并列出。--all 要确认（--yes）
-pub fn tune(ctx: &Ctx, machine: Option<&str>, team: Option<&str>, all: bool, yes: bool, follow: bool) -> anyhow::Result<u8> {
+/// 它失败就停（其余不提交），成功后其余逐台提交；409 的机器（有进行中的作业）跳过并列出。--all 要确认（--yes）。
+/// `rollback`：撤销列出的机器的调优（同一个作业类型，参数 rollback），要确认（--yes）
+pub fn tune(ctx: &Ctx, machine: Option<&str>, team: Option<&str>, all: bool, rollback: bool, yes: bool, follow: bool) -> anyhow::Result<u8> {
+    let body = json!({"rollback": rollback});
     let mut targets: Vec<(String, String)> = vec![];
     if all || team.is_some() {
         if all {
@@ -575,6 +604,13 @@ pub fn tune(ctx: &Ctx, machine: Option<&str>, team: Option<&str>, all: bool, yes
                 targets.push((id, name));
             }
         }
+        if rollback {
+            let names: Vec<&str> = targets.iter().map(|t| t.1.as_str()).collect();
+            confirm(
+                &format!("确认撤销 {} 的系统调优？按机器上第一次调优前记下的原值写回内核参数、删掉调优写的 sysctl 配置；不重启 ssserver / Xray", names.join("、")),
+                yes,
+            )?;
+        }
     }
     let (mut jobs, mut skipped): (Vec<Value>, Vec<Value>) = (vec![], vec![]);
     let many = targets.len() > 1;
@@ -582,7 +618,7 @@ pub fn tune(ctx: &Ctx, machine: Option<&str>, team: Option<&str>, all: bool, yes
     let (mut next, mut followed) = (0, 0);
     if (all || team.is_some()) && many {
         while next < targets.len() && jobs.is_empty() {
-            jobs.extend(tune_submit(ctx, &targets[next], true, &mut skipped)?);
+            jobs.extend(tune_submit(ctx, &targets[next], &body, true, &mut skipped)?);
             next += 1;
         }
         if let Some(j) = jobs.first() {
@@ -599,11 +635,11 @@ pub fn tune(ctx: &Ctx, machine: Option<&str>, team: Option<&str>, all: bool, yes
         }
     }
     for t in &targets[next..] {
-        jobs.extend(tune_submit(ctx, t, many, &mut skipped)?);
+        jobs.extend(tune_submit(ctx, t, &body, many, &mut skipped)?);
     }
     let d = json!({"jobs": jobs, "skipped": skipped});
     ctx.emit(&d, || {
-        let mut s = format!("已提交 {} 个调优作业", jobs.len());
+        let mut s = format!("已提交 {} 个{}作业", jobs.len(), if rollback { "撤销调优" } else { "调优" });
         for j in &jobs {
             s.push_str(&format!("\n  {}  {}", st(j, "/job_id"), st(j, "/name")));
         }
@@ -960,6 +996,23 @@ pub fn keys_revoke(ctx: &Ctx, a: &KeyAuth, which: &str) -> anyhow::Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 检查结果的错误与提醒逐条一行列在表下，行首是表里的 #；都没有时为空
+    #[test]
+    fn provision_check_notes() {
+        let res = vec![
+            json!({"ok": true, "errors": [], "warnings": []}),
+            json!({"ok": false, "errors": ["中控密钥登录不了 1.2.3.4:22（密钥被拒）…：ssh-ed25519 AAAA fleet"], "warnings": []}),
+            json!({"ok": true, "errors": [], "warnings": ["系统是 Ubuntu 20.04，已过标准支持期"]}),
+            // 旧中控没有 warnings 字段
+            json!({"ok": true, "errors": []}),
+        ];
+        assert_eq!(
+            check_notes(&res),
+            "#2 不通过：中控密钥登录不了 1.2.3.4:22（密钥被拒）…：ssh-ed25519 AAAA fleet\n#3 提醒：系统是 Ubuntu 20.04，已过标准支持期\n"
+        );
+        assert_eq!(check_notes(&res[..1]), "");
+    }
 
     #[test]
     fn join_single_arg_is_raw_script() {
