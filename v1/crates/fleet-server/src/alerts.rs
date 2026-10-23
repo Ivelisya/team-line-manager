@@ -280,7 +280,8 @@ pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime
                 Some(was) if probe => was.iter().any(|r| m.health.probe_undecided.contains(r)),
                 _ => m.health.undecided(&inc.rule),
             };
-        if undecided {
+        // 流量额度的「预计 7 天内用满」在临界点附近会摆动（开、关又不去抖）：预测要超过 7 天 + 12 小时才算原因消失
+        if undecided || (inc.rule == "traffic_quota_high" && crate::health::quota_forecast_lingers(m, now)) {
             clean_since.remove(&inc.id);
             return Close::Keep;
         }
