@@ -32,7 +32,10 @@ mkdir -p "$R"
 [ -e "$R/down" ] && { echo "ssh: connect to host 127.0.0.1 port $port: Connection refused" >&2; exit 255; }
 script=$(cat)
 case $script in
-  "MODE='read'"*) echo >> "$R/reads"; cat "$R/config.yaml"; exit 0 ;;
+  "MODE='read'"*)
+    [ -e "$R/read-fail" ] && { echo "fleet：读配置失败了" >&2; exit 1; }
+    [ -e "$R/no-config" ] && { echo "fleet：OpenClash 的源配置（uci openclash.config.config_path）不存在：没有设置" >&2; exit 3; }
+    echo >> "$R/reads"; cat "$R/config.yaml"; exit 0 ;;
   *"MODE='apply'"*) [ -e "$R/down-apply" ] && { echo "Connection timed out during banner exchange" >&2; exit 255; } ;;
   *"MODE='rollback'"*)
     [ -e "$R/rollback-fail" ] && { echo "fleet：写回备份失败" >&2; exit 3; }
@@ -579,9 +582,15 @@ async fn move_router_failure_keeps_old_entry() {
     let (s, v) = t.req("POST", &format!("/api/v1/jobs/{job}/cancel"), None, None).await;
     assert!(s == StatusCode::CONFLICT && v.to_string().contains("没能改回原配置"), "{v}");
     std::fs::remove_file(root(23161).join("rollback-fail")).unwrap();
+    // 卡住期间路由A 重新接入、换了隧道端口：改回按它现在的端口连
+    sqlx::query("update router set tunnel_port = 23163 where id = $1").bind(ra).execute(&t.st.db).await.unwrap();
+    let _ = std::fs::remove_dir_all(root(23163));
+    std::fs::rename(root(23161), root(23163)).unwrap();
+    let rolled = read(root(23163).join("rollback.log")).lines().count();
     t.post(&format!("/api/v1/jobs/{job}/retry"), json!({})).await;
     let j = run(t, &mut sims, &job).await;
     assert_eq!((j["state"].as_str(), j["cancellable"].as_bool(), j["manual"].is_null()), (Some("failed"), Some(true), true), "{j}");
+    assert!(!root(23161).exists() && read(root(23163).join("rollback.log")).lines().count() > rolled, "按现在的端口改回");
     t.post(&format!("/api/v1/jobs/{job}/cancel"), json!({})).await;
     assert_eq!(run(t, &mut sims, &job).await["state"], "cancelled");
     let es: Vec<(Uuid, String)> = sqlx::query_as("select id, lifecycle::text from entry where node_id = $1").bind(w.old).fetch_all(&t.st.db).await.unwrap();
@@ -595,12 +604,15 @@ async fn evacuate_jobs_take_turns_on_a_router() {
     let w = world().await;
     let oe = old_entry(&w).await;
     let ne: Uuid = sqlx::query_scalar("select id from entry where node_id = $1").bind(w.new).fetch_one(&w.t.st.db).await.unwrap();
-    router(&w, "路由A", 23171, &[("节点01", "198.51.100.2", 20003, Some(oe)), ("节点02", "198.51.100.2", 20020, Some(ne))]).await;
+    let a = router(&w, "路由A", 23171, &[("节点01", "198.51.100.2", 20003, Some(oe)), ("节点02", "198.51.100.2", 20020, Some(ne))]).await;
     let t = &w.t;
     let (rb, tb) = seed_relay_b(t).await;
     let p = t.get(&format!("/api/v1/relays/{}/evacuate?to_relay_id={rb}", w.relay)).await;
     let exits: Vec<&str> = p["jobs"].as_array().unwrap().iter().map(|j| j["routers"][0]["exits"][0]["exit"].as_str().unwrap()).collect();
     assert_eq!(exits, ["节点01", "节点02"], "{p}");
+    // 每个节点一个作业、各自重启一次 OpenClash：预览写明这台路由要重启几次；不改软路由时没有
+    assert_eq!(p["router_restarts"], json!([{"id": a, "name": "路由A", "times": 2}]), "{p}");
+    assert_eq!(t.get(&format!("/api/v1/relays/{}/evacuate?to_relay_id={rb}&routers=false", w.relay)).await["router_restarts"], json!([]));
     let d = t.post(&format!("/api/v1/relays/{}/evacuate", w.relay), json!({"to_relay_id": rb})).await;
     let ids: Vec<String> = d["jobs"].as_array().unwrap().iter().map(|j| j["job_id"].as_str().unwrap().to_string()).collect();
     // 先改路由A 的那个卡在改配置上（假 ssh 等 hold 删掉）：推进都放到后台任务里，卡住的留着
@@ -811,4 +823,43 @@ async fn exit_mismatch_fails_before_any_change() {
     assert!(applies(23211).is_empty() && applies(23212).is_empty());
     assert_eq!((j["state"].as_str(), j["cancellable"].as_bool(), j["manual"].is_null()), (Some("failed"), Some(true), true), "{j}");
     assert_eq!(name_of(t, w.old).await, "团队2-01");
+}
+
+/// 配置读不了的路由：预览不分团队都提醒；执行时哪怕快照里看不出它有出口要改，也一台都不改、作业失败（提示可以不改软路由）。
+/// 路由上根本没有源配置的算没有出口，照常做完
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unreadable_router_config_blocks_change() {
+    let w = world().await;
+    let oe = old_entry(&w).await;
+    router(&w, "路由A", 23221, &[("节点01", "198.51.100.2", 20003, Some(oe))]).await;
+    let b = router(&w, "别队路由", 23222, &[]).await;
+    let t = &w.t;
+    let other = seed_team(t, "团队9").await;
+    sqlx::query("update router set team_id = $2 where id = $1").bind(b).bind(other).execute(&t.st.db).await.unwrap();
+    sqlx::query("update router_status set data = $2 where router_id = $1")
+        .bind(b)
+        .bind(json!({"exits": [], "openclash": {"config_error": "配置文件解析不了：x"}}))
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let p = t.get(&format!("/api/v1/machines/{}/replace?new_machine_id={}", w.old, w.new)).await;
+    assert!(p["warnings"].to_string().contains("软路由「别队路由」的配置读不了（配置文件解析不了：x），看不出它有没有用旧节点；执行时还读不了，作业会失败、一台都不改"), "{p}");
+    assert!(!t.get(&format!("/api/v1/machines/{}/replace?new_machine_id={}&routers=false", w.old, w.new)).await["warnings"].to_string().contains("别队路由"));
+    std::fs::write(root(23222).join("read-fail"), "").unwrap();
+    let d = t.post(&format!("/api/v1/machines/{}/replace", w.old), json!({"new_machine_id": w.new})).await;
+    let job = d["job_id"].as_str().unwrap().to_string();
+    drive(t).await;
+    let j = t.job(&job).await;
+    let err = j["error"].as_str().unwrap();
+    assert!(err.contains("软路由「别队路由」的配置读不了：读配置失败了。看不出它有没有出口指向旧节点") && err.contains("--no-routers") && err.contains("一台都没有改"), "{err}");
+    assert!(applies(23221).is_empty(), "一台都不改");
+    // 路由上没有源配置：没有出口，照常改完
+    std::fs::remove_file(root(23222).join("read-fail")).unwrap();
+    std::fs::write(root(23222).join("no-config"), "").unwrap();
+    t.post(&format!("/api/v1/jobs/{job}/retry"), json!({})).await;
+    drive(t).await;
+    let j = t.job(&job).await;
+    assert_eq!(j["state"], "succeeded", "{j} {}", logs(t, &job).await);
+    assert_eq!(applies(23221).len(), 1);
+    assert!(logs(t, &job).await.contains("软路由「别队路由」：OpenClash 的源配置（uci openclash.config.config_path）不存在：没有设置，没有出口要改"));
 }

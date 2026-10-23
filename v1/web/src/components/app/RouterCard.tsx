@@ -27,11 +27,13 @@ export function RouterStatePill({ r }: { r: Pick<RouterView, 'id' | 'state' | 'e
   if (r.deploy?.state === 'running') return <Pill tone="info" dot="pulse">部署中</Pill>;
   if (r.state === 'pending') return <Pill tone="info" tip={r.deploy?.state === 'failed' ? `一键部署失败：${r.deploy.error ?? ''}` : '路由还没连上过中控'}>等待接入</Pill>;
   if (r.state === 'offline') return <Pill tone="bad" tip={r.error ?? undefined} tabIndex={r.error ? 0 : undefined}>离线</Pill>;
+  // 在线却带原因：连得上但采集出错，数据是上一次的
+  if (r.error) return <Pill tone="warn" tip={`采集出错：${r.error}`} tabIndex={0}>采集出错</Pill>;
   const issues = routerIssues(r.summary, names);
   return issues.length ? <Pill tone="warn" tip={issues.join('\n')} tabIndex={0}>降级</Pill> : <Pill tone="ok">在线</Pill>;
 }
 /** 卡片描边：离线红、在线但有毛病黄（同机器卡的故障 / 降级） */
-export const routerHealth = (r: RouterView) => (r.state === 'offline' ? 'down' : r.state === 'online' && routerIssues(r.summary).length ? 'degraded' : 'ok');
+export const routerHealth = (r: RouterView) => (r.state === 'offline' ? 'down' : r.state === 'online' && (r.error || routerIssues(r.summary).length) ? 'degraded' : 'ok');
 
 /** 资源四项格条（CPU / 内存 / 存储 / 连接表）：卡片与抽屉「当前」共用 */
 export function RouterMeters({ s }: { s: RouterSummary }) {

@@ -267,7 +267,9 @@ export interface RouterExitPlan { id: string; name: string; state: 'online' | 'o
 /** 换线路机 / 搬空线路机（API.md「生命周期操作」）：GET 是预览（没有 job_id），POST 的响应同样的内容加 job_id */
 export interface MovePreview { name?: string; from?: string; to?: string; routers_enabled: boolean; routers: RouterExitPlan[]; ok: boolean; blockers: string[]; warnings: string[]; share_changed: boolean; note: string }
 export interface MoveResult extends MovePreview { job_id: string; name: string; from: string; to: string }
-export interface EvacuateResult { from: string; to: string; /** job_id 只在真正搬空（POST）的结果里有，预览没有 */ jobs: { machine_id: string; name: string; job_id?: string; routers: RouterExitPlan[] }[]; skipped: { machine_id: string; name: string | null; reason: string }[]; warnings: string[]; share_changed: boolean; note: string }
+export interface EvacuateResult { from: string; to: string; /** job_id 只在真正搬空（POST）的结果里有，预览没有 */ jobs: { machine_id: string; name: string; job_id?: string; routers: RouterExitPlan[] }[]; skipped: { machine_id: string; name: string | null; reason: string }[]; warnings: string[];
+  /** 每台要改的软路由 OpenClash 要重启几次（每个节点一个作业、各自重启一次） */
+  router_restarts?: { id: string; name: string; times: number }[]; share_changed: boolean; note: string }
 /** 替换节点预览（GET /machines/{old}/replace）：新节点接旧编号（new_name），旧节点去 old_to（默认同团队的备用团队）；
  *  routers：出口指向旧节点、会改成新节点入口的软路由（state 不是 online 时 blockers 里有原因）；renames：新节点原来的团队压缩编号 */
 export interface ReplaceSide { id: string; name: string; kind: Kind; team: { id: string; name: string } | null }

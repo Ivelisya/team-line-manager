@@ -248,7 +248,21 @@ impl Evac {
         warnings.sort();
         warnings.dedup();
         json!({"from": self.from_name, "to": self.to_name, "jobs": list, "skipped": self.skipped, "warnings": warnings,
-               "share_changed": !self.plans.is_empty(), "note": SHARE_NOTE})
+               "router_restarts": self.router_restarts(), "share_changed": !self.plans.is_empty(), "note": SHARE_NOTE})
+    }
+
+    /// 每台要改的软路由 OpenClash 要重启几次：每个节点一个作业，各自改、各自重启（每次断开这台路由上的全部连接），
+    /// 按计划里有它的作业数算（不改软路由时为空）。`[{id, name, times}]`，次数多的在前
+    fn router_restarts(&self) -> Vec<Value> {
+        let mut n: Vec<(uuid::Uuid, &str, usize)> = vec![];
+        for r in self.plans.iter().filter(|(_, p)| p.routers_enabled).flat_map(|(_, p)| &p.routers) {
+            match n.iter_mut().find(|x| x.0 == r.id) {
+                Some(x) => x.2 += 1,
+                None => n.push((r.id, &r.name, 1)),
+            }
+        }
+        n.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.1.cmp(b.1)));
+        n.into_iter().map(|(id, name, times)| json!({"id": id, "name": name, "times": times})).collect()
     }
 }
 

@@ -12,7 +12,7 @@ import type { EntryLifecycle, SeriesPoint, Team } from './types';
 import type { BeatCell } from './derive';
 import * as F from './format';
 
-/** pending = 建了记录、路由还没连上过；offline = 连上过、现在隧道不通或采集失败 */
+/** pending = 建了记录、路由还没连上过（或重新接入后还没连上）；offline = 连上过、现在隧道不通（连得上但采集出错算 online，带 error） */
 export type RouterState = 'pending' | 'online' | 'offline';
 /** 列表里的摘要：最近一次采集成功的快照，从没采集成功过为 null。速率是 bit/s，内存 / 存储是字节 */
 export interface RouterSummary {
@@ -28,6 +28,7 @@ export interface RouterSummary {
 export interface RouterDeploy { state: 'running' | 'failed' | 'done'; step: string | null; error: string | null; started_at: string; finished_at: string | null }
 export interface RouterView {
   id: string; name: string; team: { id: string; name: string } | null; note: string; tunnel_port: number; created_at: string;
+  /** offline / pending 时是连不上的原因；online 时有值 = 连得上但采集出错（summary / detail 是上一次成功采集的） */
   state: RouterState; last_seen_at: string | null; error: string | null; summary: RouterSummary | null; deploy: RouterDeploy | null;
 }
 export interface RouterIface { name: string; device: string; up: boolean; proto: string; ip: string | null; uptime_s: number | null; rx_bps: number; tx_bps: number; rx_bytes: number; tx_bytes: number }
@@ -46,7 +47,8 @@ export interface RouterClient { ip: string; mac: string | null; hostname: string
 export interface RouterDetail {
   system: { os: string; kernel: string; cpu_model: string; cores: number; load: [number, number, number]; procs: number; clock_skew_s: number | null; clash_rss: number | null };
   interfaces: RouterIface[];
-  openclash: { enabled: boolean; running: boolean; version: string | null; mode: string | null; config_path: string | null; config_mtime: string | null };
+  /** config_error：配置文件取不回、解析不了；config_stale：这时出口与入口的对应沿用上次读到的。delay_error：最近一次延迟测试没做成的原因 */
+  openclash: { enabled: boolean; running: boolean; version: string | null; mode: string | null; config_path: string | null; config_mtime: string | null; config_error?: string | null; config_stale?: boolean; delay_error?: string | null };
   exits: RouterExit[]; clients: RouterClient[]; collected_at: string;
 }
 /** 详情：没采集成功过（pending）时 detail 为 null */

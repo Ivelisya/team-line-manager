@@ -18,14 +18,15 @@ fi
 command -v ucode >/dev/null 2>&1 || echo "fleet：注意，路由上没有 ucode，中控采集不了状态（OpenWrt 23.05 以后都有）" >&2
 "#;
 
-/// 写隧道私钥、中控 sshd 的主机公钥，把中控登录公钥加进 dropbear 的 authorized_keys。需要 TUNNEL_KEY、CENTRAL_HOSTKEY、CENTRAL_PUBKEY
+/// 写隧道私钥（先写成 id_ed25519.new，启动隧道时才换上：这一步之后失败的话，跑着的旧隧道断线重连也还用旧密钥）、中控 sshd 的主机公钥，
+/// 把中控登录公钥加进 dropbear 的 authorized_keys。需要 TUNNEL_KEY、CENTRAL_HOSTKEY、CENTRAL_PUBKEY
 pub const KEYS: &str = r#"
 set -eu
 umask 077
 mkdir -p /etc/fleet-tunnel
 chmod 700 /etc/fleet-tunnel
 printf '%s\n' "$TUNNEL_KEY" > /etc/fleet-tunnel/id_ed25519.tmp
-mv -f /etc/fleet-tunnel/id_ed25519.tmp /etc/fleet-tunnel/id_ed25519
+mv -f /etc/fleet-tunnel/id_ed25519.tmp /etc/fleet-tunnel/id_ed25519.new
 printf 'fleet-central %s\n' "$CENTRAL_HOSTKEY" > /etc/fleet-tunnel/known_hosts.tmp
 mv -f /etc/fleet-tunnel/known_hosts.tmp /etc/fleet-tunnel/known_hosts
 AK=/etc/dropbear/authorized_keys
@@ -38,7 +39,8 @@ fi
 echo fleet_keys=ok
 "#;
 
-/// 写 /etc/init.d/fleet-tunnel（procd，断了 10 秒后重连，一直重试）并启动。需要 SSH_HOST、SSH_PORT、TUNNEL_PORT
+/// 写 /etc/init.d/fleet-tunnel（procd，断了 10 秒后重连，一直重试），和新的隧道私钥一起换上（换上后输出 fleet_switched=1），再启动。
+/// 需要 SSH_HOST、SSH_PORT、TUNNEL_PORT
 pub const SERVICE: &str = r#"
 set -eu
 umask 022
@@ -61,7 +63,9 @@ start_service() {
 }
 EOF
 chmod 755 /etc/init.d/fleet-tunnel.tmp
+mv -f /etc/fleet-tunnel/id_ed25519.new /etc/fleet-tunnel/id_ed25519
 mv -f /etc/init.d/fleet-tunnel.tmp /etc/init.d/fleet-tunnel
+echo fleet_switched=1
 /etc/init.d/fleet-tunnel enable
 /etc/init.d/fleet-tunnel restart
 echo fleet_service=ok
@@ -132,6 +136,9 @@ mod tests {
         let svc = s.service();
         assert!(svc.starts_with("SSH_HOST='fleet.test'\nSSH_PORT='2222'\nTUNNEL_PORT='23001'\n"), "{svc}");
         assert!(svc.contains("-p $SSH_PORT -R 127.0.0.1:$TUNNEL_PORT:127.0.0.1:22 fleet-tunnel@$SSH_HOST") && svc.contains("echo fleet_service=ok"));
+        // 新私钥与 init 脚本一起换上，之后才重启
+        let (sw, rs) = (svc.find("echo fleet_switched=1").unwrap(), svc.find("/etc/init.d/fleet-tunnel restart").unwrap());
+        assert!(svc.find("mv -f /etc/fleet-tunnel/id_ed25519.new /etc/fleet-tunnel/id_ed25519").unwrap() < sw && sw < rs);
         let full = s.full();
         assert!(full.starts_with("#!/bin/sh\n") && full.contains(&keys) && full.contains(&svc) && full.trim_end().ends_with("（约半分钟）\""));
         // 不改路由现有的配置：没有改密码、改 dropbear / uci / 防火墙的命令
@@ -141,6 +148,23 @@ mod tests {
     }
 
     /// 在本机用 sh 跑一遍（路径换到临时目录）：写出的文件、init 脚本里的启动命令都对，authorized_keys 只加一次、不动原有的行
+    /// 只跑了写密钥这一步（启动隧道失败）：现在的私钥、init 脚本不动，跑着的旧隧道断线重连也还是旧的
+    #[cfg(unix)]
+    #[test]
+    fn keys_step_alone_keeps_current_tunnel() {
+        let dir = std::env::temp_dir().join(format!("fleet-bs-{}", Uuid::new_v4().simple()));
+        let root = dir.display().to_string();
+        std::fs::create_dir_all(dir.join("etc/dropbear")).unwrap();
+        std::fs::create_dir_all(dir.join("etc/fleet-tunnel")).unwrap();
+        std::fs::write(dir.join("etc/fleet-tunnel/id_ed25519"), "OLD KEY\n").unwrap();
+        let out = std::process::Command::new("sh").arg("-c").arg(b().keys().replace("/etc/", &format!("{root}/etc/"))).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let read = |p: &str| std::fs::read_to_string(dir.join(p)).unwrap();
+        assert_eq!(read("etc/fleet-tunnel/id_ed25519"), "OLD KEY\n");
+        assert!(read("etc/fleet-tunnel/id_ed25519.new").contains("AAA'B"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[cfg(unix)]
     #[test]
     fn script_runs_and_is_idempotent() {
@@ -159,6 +183,7 @@ mod tests {
         }
         let read = |p: &str| std::fs::read_to_string(dir.join(p)).unwrap();
         assert_eq!(read("etc/fleet-tunnel/id_ed25519"), "-----BEGIN OPENSSH PRIVATE KEY-----\nAAA'B\n-----END OPENSSH PRIVATE KEY-----\n");
+        assert!(!dir.join("etc/fleet-tunnel/id_ed25519.new").exists(), "启动隧道时换上了");
         assert_eq!(read("etc/fleet-tunnel/known_hosts"), "fleet-central ssh-ed25519 HOSTKEY\n");
         assert_eq!(read("etc/dropbear/authorized_keys"), "ssh-rsa EXISTING user@pc\nssh-ed25519 LOGINKEY fleet-central@test\n");
         let init = read("etc/init.d/fleet-tunnel");

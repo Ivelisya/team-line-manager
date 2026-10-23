@@ -291,6 +291,7 @@ pub const RULES: Labels = &[
     ("central_disk_low", "中控磁盘空间不足"),
     ("central_ingress", "agent 同时失联"),
     ("router_offline", "软路由离线"),
+    ("router_collect_error", "软路由采集出错"),
     ("router_openclash_down", "OpenClash 没在运行"),
     ("router_exits_down", "软路由出口不通"),
     ("router_wan_down", "软路由 WAN 口断开"),

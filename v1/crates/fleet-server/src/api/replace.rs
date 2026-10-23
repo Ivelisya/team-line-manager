@@ -144,7 +144,7 @@ pub fn new_server(old_server: &str, old_relay_ip: &str, new_relay_ip: &str, new_
 }
 
 /// 各路由最近一次采集的快照里指向 `node` 的出口，`pick` 决定每个出口怎么改（None = 不改，Err = 改不了的原因：照样列出、带上原因，
-/// `blocking` 时进 blockers）。计划里有出口的路由不在线、又要改路由（`enabled`）时阻断；`team` 里的路由没有快照或配置读不了时提醒。
+/// `blocking` 时进 blockers）。计划里有出口的路由不在线、又要改路由（`enabled`）时阻断；`team` 里的路由没有快照时提醒，要改路由时任何路由配置读不了都提醒。
 /// `(verb, what)`：「替换」/「旧节点」、「换线路机」/「旧入口」，拼进提示
 #[allow(clippy::too_many_arguments)]
 pub fn scan_routers(
@@ -166,8 +166,13 @@ pub fn scan_routers(
             }
             continue;
         };
-        if let Some(e) = snap.openclash.config_error.as_deref().filter(|_| team.is_some() && r.team_id == team) {
-            warnings.push(format!("软路由「{}」的配置读不了（{e}），看不出它有没有用{what}", r.name));
+        // 配置读不了的不限团队都提醒：执行时还读不了，作业就失败、一台都不改（jobs/steps/replace.rs）
+        if let Some(e) = snap.openclash.config_error.as_deref().filter(|_| enabled) {
+            warnings.push(if snap.openclash.config_stale {
+                format!("软路由「{}」的配置读不了（{e}），出口按上次读到的配置列出；执行时还读不了，作业会失败、一台都不改", r.name)
+            } else {
+                format!("软路由「{}」的配置读不了（{e}），看不出它有没有用{what}；执行时还读不了，作业会失败、一台都不改", r.name)
+            });
         }
         let mut exits = vec![];
         for (x, er) in crate::routers::exits_to(&snap, node) {

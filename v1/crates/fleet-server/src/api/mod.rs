@@ -96,6 +96,7 @@ pub fn router() -> Router<AppState> {
         // 线路机与入口
         .route("/relays", get(relays::list))
         .route("/entries/{id}/actions", post(relays::entry_action))
+        .route("/entries/{id}/routers", get(relays::entry_routers))
         .route("/entries/{id}/share", get(relays::share))
         // 作业
         .route("/jobs", get(jobs::list))

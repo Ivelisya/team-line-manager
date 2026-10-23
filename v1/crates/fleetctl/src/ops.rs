@@ -665,17 +665,37 @@ pub fn entry_action(ctx: &Ctx, action: EntryAction, entry: &str, yes: bool, foll
     let e = resolve::entry(&es, entry).map_err(|e| anyhow!(e))?;
     let label = format!("{}:{}", st(e, "/relay/name"), st(e, "/port"));
     let mut body = json!({"action": api});
+    // 轮换、停用之后指向这个入口的软路由出口就连不上了（不会自动改路由）：确认时列出来
+    let routers = match action {
+        EntryAction::Rotate | EntryAction::Disable => ctx.c.get(&format!("/entries/{}/routers", st(e, "/id")))?,
+        _ => json!([]),
+    };
+    let note = router_note(&routers, done);
     match action {
         EntryAction::Rotate => {
-            confirm(&format!("确认轮换 {label}（→ {}）的凭据？旧分享链接会立即失效", st(e, "/node/name")), yes)?;
+            confirm(&format!("确认轮换 {label}（→ {}）的凭据？旧分享链接会立即失效{note}", st(e, "/node/name")), yes)?;
             body["confirm"] = json!(label);
         }
-        EntryAction::Disable => confirm(&format!("确认停用入口 {label}（→ {}）？", st(e, "/node/name")), yes)?,
+        EntryAction::Disable => confirm(&format!("确认停用入口 {label}（→ {}）？{note}", st(e, "/node/name")), yes)?,
         _ => {}
     }
     let d = ctx.c.post(&format!("/entries/{}/actions", st(e, "/id")), &body)?;
-    ctx.emit(&d, || format!("已{done} {label}（期望状态代数 {}）", st(&d, "/generation")));
+    ctx.emit(&d, || format!("已{done} {label}（期望状态代数 {}）{}", st(&d, "/generation"), router_note(&d["router_exits"], done)));
     Ok(0)
+}
+
+/// 指向这个入口的软路由出口（`GET /entries/{id}/routers`）：「。这些软路由出口指向它，{停用}后会连不上：路由A 的 节点01；…」，没有为空
+fn router_note(rs: &Value, done: &str) -> String {
+    let list: Vec<String> = rs
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|r| format!("{} 的 {}", st(r, "/name"), r["exits"].as_array().into_iter().flatten().filter_map(Value::as_str).collect::<Vec<_>>().join("、")))
+        .collect();
+    if list.is_empty() {
+        return String::new();
+    }
+    format!("。这些软路由出口指向它，{done}后会连不上（不会自动改路由，要到路由上处理）：{}", list.join("；"))
 }
 
 // ── 远程执行 ─────────────────────────────────────────────────────────
@@ -961,6 +981,14 @@ pub fn keys_revoke(ctx: &Ctx, a: &KeyAuth, which: &str) -> anyhow::Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn entry_router_note() {
+        let rs = json!([{"id": "a", "name": "路由A", "state": "online", "exits": ["节点01", "节点01备"]}, {"id": "b", "name": "路由B", "state": "offline", "exits": ["x"]}]);
+        assert_eq!(router_note(&rs, "轮换凭据"), "。这些软路由出口指向它，轮换凭据后会连不上（不会自动改路由，要到路由上处理）：路由A 的 节点01、节点01备；路由B 的 x");
+        assert_eq!(router_note(&json!([]), "停用"), "");
+        assert_eq!(router_note(&Value::Null, "停用"), "", "旧中控的结果里没有 router_exits");
+    }
 
     /// 检查结果的错误与提醒逐条一行列在表下，行首是表里的 #；都没有时为空
     #[test]
