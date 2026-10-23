@@ -857,6 +857,18 @@ async fn probe_alerts_debounce_longer() {
     woken().await;
     assert_eq!(t.report("tok1", &ok(5, now_ms())).await.0, StatusCode::OK);
     assert!(!woken().await, "探测结果照旧：不用马上评估");
+    // 翻转成失败要唤醒；之后连续失败（视图里才连续 1 次）不再唤醒，确认交给 30 秒一轮
+    let bad = |seq: u64| {
+        let mut r = blank_report(seq);
+        r.xray = Some(xray(true));
+        r.probes = vec![probe(entry, now_ms(), ProbeKind::Egress, false), probe(entry, now_ms(), ProbeKind::Tcp, false)];
+        r
+    };
+    assert_eq!(t.report("tok1", &bad(6)).await.0, StatusCode::OK);
+    assert!(woken().await, "翻转成失败：马上评估");
+    pass(&t, &mut state, base, 203).await;
+    assert_eq!(t.report("tok1", &bad(7)).await.0, StatusCode::OK);
+    assert!(!woken().await, "连续失败：不唤醒");
 }
 
 /// 探测结果过期（线路机 agent 离线、探测停了）：节点按未知处理、不给出口 / TCP 原因，但这两条告警不当成恢复；
