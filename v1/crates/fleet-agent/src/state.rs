@@ -89,11 +89,20 @@ pub struct Shared {
     /// 用 Arc 共享：探测任务每秒读一次，不必每次深拷贝整个期望状态
     pub applied: RwLock<Option<Arc<DesiredState>>>,
     pub applied_gen: AtomicU64,
+    /// 请上报器马上发一份（探测结果翻转、翻转后的确认探测：中控的告警据此马上评估），不等 10 秒一份；两份之间仍至少隔 2 秒
+    pub report_now: tokio::sync::Notify,
 }
 
 impl Shared {
     pub fn new(cfg: Arc<Config>) -> Arc<Self> {
-        Arc::new(Self { cfg, health: Health::default(), buf: Mutex::new(Buffers::default()), applied: RwLock::new(None), applied_gen: AtomicU64::new(0) })
+        Arc::new(Self {
+            cfg,
+            health: Health::default(),
+            buf: Mutex::new(Buffers::default()),
+            applied: RwLock::new(None),
+            applied_gen: AtomicU64::new(0),
+            report_now: tokio::sync::Notify::new(),
+        })
     }
 }
 

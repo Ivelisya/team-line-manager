@@ -201,8 +201,31 @@ struct Sched {
     tcp_busy: Arc<AtomicBool>,
     /// 该入口的出口探测是否还在途（排队等信号量也算）：同一入口最多一个，免得任务堆积
     egress_busy: Arc<AtomicBool>,
-    /// 上一次出口探测是否成功：只在成功/失败切换时打日志（初始当作成功）
+    /// 上一次出口探测是否成功（初始当作成功）：只在成功/失败切换时打日志；失败期间出口探测按 TCP 的间隔（默认 30 s）
     egress_ok: Arc<AtomicBool>,
+    /// 上一次 TCP 探测是否成功（初始当作成功）
+    tcp_ok: Arc<AtomicBool>,
+    /// 结果刚翻转（探测任务置上）：约 `RECHECK` 后补探一次确认
+    tcp_flipped: Arc<AtomicBool>,
+    egress_flipped: Arc<AtomicBool>,
+    /// 下一次是确认探测：结果出来马上叫上报器发（`Shared::report_now`）
+    tcp_confirm: bool,
+    egress_confirm: bool,
+}
+
+/// 探测结果翻转后这么久补探一次确认（中控的出口 / TCP 告警连续 2 次成功就恢复）
+const RECHECK: Duration = Duration::from_secs(10);
+
+/// 翻转或确认探测的结果：记下要补探、叫上报器马上发
+fn settle(sh: &Shared, last_ok: &AtomicBool, flipped: &AtomicBool, ok: bool, confirm: bool) -> bool {
+    let flip = last_ok.swap(ok, Ordering::Relaxed) != ok;
+    if flip {
+        flipped.store(true, Ordering::Release);
+    }
+    if flip || confirm {
+        sh.report_now.notify_one();
+    }
+    flip
 }
 
 /// 探测任务结束（含 panic）时清掉在途标记
@@ -242,7 +265,8 @@ fn entry_sig(e: &DesiredEntry) -> String {
 /// 入口 → (探测端口, 经该端口出去的客户端)
 type ProbeClients = HashMap<uuid::Uuid, (u16, reqwest::Client)>;
 
-/// 探测调度：TCP 每 probe_interval_s（默认 30 s），出口每 2 倍间隔（默认 60 s）；各入口落在周期里各自的时刻（next_slot）。
+/// 探测调度：TCP 每 probe_interval_s（默认 30 s），出口每 2 倍间隔（默认 60 s，出口探测失败期间同 TCP）；各入口落在周期里各自的时刻（next_slot）。
+/// 某入口的结果翻转（失败↔成功）时约 10 秒后补探一次确认，翻转与确认的结果都叫上报器马上发。
 /// `direct`：不走代理的客户端，出口探测失败时直连回显服务核对（`probe::egress_probe_checked`）
 pub async fn probe_task(sh: Arc<Shared>, direct: reqwest::Client, mut sd: watch::Receiver<bool>) {
     let mut sched: HashMap<uuid::Uuid, Sched> = HashMap::new();
@@ -300,24 +324,46 @@ pub async fn probe_task(sh: Arc<Shared>, direct: reqwest::Client, mut sd: watch:
                 } else {
                     (soon(now, 1, e.id), soon(now, 4, e.id))
                 };
-                Sched { sig: entry_sig(e), next_tcp: a, next_egress: b, tcp_busy: Arc::new(AtomicBool::new(false)), egress_busy: Arc::new(AtomicBool::new(false)), egress_ok: Arc::new(AtomicBool::new(true)) }
+                let flag = |v| Arc::new(AtomicBool::new(v));
+                Sched {
+                    sig: entry_sig(e),
+                    next_tcp: a,
+                    next_egress: b,
+                    tcp_busy: flag(false),
+                    egress_busy: flag(false),
+                    egress_ok: flag(true),
+                    tcp_ok: flag(true),
+                    tcp_flipped: flag(false),
+                    egress_flipped: flag(false),
+                    tcp_confirm: false,
+                    egress_confirm: false,
+                }
             });
+            if s.tcp_flipped.swap(false, Ordering::AcqRel) {
+                (s.next_tcp, s.tcp_confirm) = (now + RECHECK, true);
+            }
+            if s.egress_flipped.swap(false, Ordering::AcqRel) {
+                (s.next_egress, s.egress_confirm) = (now + RECHECK, true);
+            }
             // 直出入口没有节点（addr 为 None）：不做 TCP 探测，只靠出口探测
             if let Some((host, port)) = e.outbound.addr().filter(|_| now >= s.next_tcp && !s.tcp_busy.swap(true, Ordering::AcqRel)) {
                 // 下一次回到这个入口自己的时刻；至少隔半个周期（刚重探过的不会紧接着又探）
                 s.next_tcp = next_slot(t0, now + tcp_every / 2, tcp_every, e.id);
                 let busy = BusyGuard(s.tcp_busy.clone());
                 let (sh2, id, host) = (sh.clone(), e.id, host.to_string());
-                let tcp_sem2 = tcp_sem.clone();
+                let (tcp_sem2, last_ok, flipped, confirm) = (tcp_sem.clone(), s.tcp_ok.clone(), s.tcp_flipped.clone(), std::mem::take(&mut s.tcp_confirm));
                 tokio::spawn(async move {
                     let _busy = busy;
                     let Ok(_permit) = tcp_sem2.acquire().await else { return };
                     let r = probe::tcp_probe(id, &host, port, probe::TCP_TIMEOUT, now_ms()).await;
+                    let ok = r.ok;
                     sh2.buf.lock().unwrap().push_probe(r);
+                    settle(&sh2, &last_ok, &flipped, ok, confirm);
                 });
             }
             if now >= s.next_egress {
-                s.next_egress = next_slot(t0, now + egress_every / 2, egress_every, e.id);
+                let every = if s.egress_ok.load(Ordering::Relaxed) { egress_every } else { tcp_every };
+                s.next_egress = next_slot(t0, now + every / 2, every, e.id);
                 if let Some((_, client)) = probes.get(&e.id) {
                     if s.egress_busy.swap(true, Ordering::AcqRel) {
                         skipped += 1;
@@ -328,24 +374,24 @@ pub async fn probe_task(sh: Arc<Shared>, direct: reqwest::Client, mut sd: watch:
                     }
                     let busy = BusyGuard(s.egress_busy.clone());
                     let (sh2, sem2, id, url, ip, client, direct) = (sh.clone(), sem.clone(), e.id, d.relay.echo_url.clone(), e.expect_egress_ip, client.clone(), direct.clone());
-                    let last_ok = s.egress_ok.clone();
+                    let (last_ok, flipped, confirm) = (s.egress_ok.clone(), s.egress_flipped.clone(), std::mem::take(&mut s.egress_confirm));
                     tokio::spawn(async move {
                         let _busy = busy;
                         let Ok(_permit) = sem2.acquire().await else { return };
                         // 回显服务本身不通（中控重启、部署）时不出样本：既不算这个入口出口失败，也不动成功/失败的切换日志
                         let Some(r) = probe::egress_probe_checked(id, &client, &direct, &url, probe::EGRESS_ALT_URL, ip, Duration::from_secs(12), now_ms()).await else { return };
-                        let detail = r.detail.as_deref().unwrap_or("");
+                        let (ok, detail) = (r.ok, r.detail.clone().unwrap_or_default());
+                        sh2.buf.lock().unwrap().push_probe(r);
                         // 只在成功/失败切换时 warn / info，持续失败降为 debug
-                        if last_ok.swap(r.ok, Ordering::Relaxed) == r.ok {
-                            if !r.ok {
+                        if !settle(&sh2, &last_ok, &flipped, ok, confirm) {
+                            if !ok {
                                 tracing::debug!(entry = %tags::inbound(id), "出口探测仍失败：{detail}");
                             }
-                        } else if r.ok {
+                        } else if ok {
                             tracing::info!(entry = %tags::inbound(id), "出口探测恢复");
                         } else {
                             tracing::warn!(entry = %tags::inbound(id), "出口探测失败：{detail}");
                         }
-                        sh2.buf.lock().unwrap().push_probe(r);
                     });
                 }
             }

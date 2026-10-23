@@ -152,10 +152,16 @@ pub(crate) async fn record(st: &AppState, src: Option<Uuid>, ts: OffsetDateTime,
     .await?;
     if judge {
         let after: Vec<(Option<String>, bool)> = sqlx::query_as(&unreach).bind(&ids).fetch_all(db).await?;
+        let mut changed = false;
         for ((id, b), a) in ids.iter().zip(&before).zip(&after) {
             if b != a {
                 st.emit(Event::Machine { id: *id });
+                changed = true;
             }
+        }
+        // 结论变了：relay_unreachable 马上开 / 关，不等告警的 30 秒一轮
+        if changed {
+            st.wake_alerts();
         }
     }
     Ok(())

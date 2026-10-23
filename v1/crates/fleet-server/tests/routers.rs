@@ -499,10 +499,11 @@ async fn alerts_open_notify_and_recover() {
     issue_key(&t, &id).await;
     let mut st = alerts::AlertState::default();
     let t0 = OffsetDateTime::now_utc();
-    // 连不上 90 秒：还不报；5 分钟：报离线（严重），对象是路由
-    status(&t, &id, false, 90, snap(true, [0, 0], true)).await;
-    alerts::evaluate(&t.st, &mut st, t0).await.unwrap();
+    // 连不上 40 秒：还不报，到满 1 分钟时再评估一次；5 分钟：报离线（严重），对象是路由
+    status(&t, &id, false, 40, snap(true, [0, 0], true)).await;
+    let again = alerts::evaluate(&t.st, &mut st, t0).await.unwrap().map(|d| d.as_secs());
     assert!(incidents(&t, "firing").await.is_empty());
+    assert!(again.is_some_and(|s| (14..=16).contains(&s)), "{again:?}");
     status(&t, &id, false, 300, snap(true, [0, 0], true)).await;
     alerts::evaluate(&t.st, &mut st, t0).await.unwrap();
     let inc = incidents(&t, "firing").await;
@@ -519,13 +520,13 @@ async fn alerts_open_notify_and_recover() {
     status(&t, &id, false, 400, snap(false, [3, 3], false)).await;
     alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(100)).await.unwrap();
     assert_eq!(incidents(&t, "firing").await.len(), 1);
-    // 连上了：离线满 60 秒恢复（发恢复）；出口两个都连续两次不通 → 出口告警立刻开、严重；OpenClash、WAN 要满 60 秒
+    // 连上了：离线当场恢复（发恢复）；出口两个都连续两次不通 → 出口告警立刻开、严重；OpenClash、WAN 要满 60 秒
     status(&t, &id, true, 0, snap(false, [2, 3], false)).await;
     let t1 = t0 + time::Duration::seconds(200);
     alerts::evaluate(&t.st, &mut st, t1).await.unwrap();
     let rules = |v: &[Value]| v.iter().map(|i| i["rule"].as_str().unwrap().to_string()).collect::<std::collections::BTreeSet<_>>();
     let firing = incidents(&t, "firing").await;
-    assert_eq!(rules(&firing), ["router_exits_down", "router_offline"].map(String::from).into());
+    assert_eq!(rules(&firing), ["router_exits_down"].map(String::from).into());
     let ex = firing.iter().find(|i| i["rule"] == "router_exits_down").unwrap();
     assert_eq!(ex["severity"], "critical");
     alerts::evaluate(&t.st, &mut st, t1 + time::Duration::seconds(61)).await.unwrap();
@@ -538,9 +539,15 @@ async fn alerts_open_notify_and_recover() {
     let log = t.get("/api/v1/notify-log?limit=20").await;
     let l = log.as_array().unwrap().iter().find(|l| l["kind"] == "firing").unwrap();
     assert_eq!((l["subject"]["kind"].as_str(), l["subject_name"].as_str(), l["rule_name"].as_str().is_some()), (Some("router"), Some("团队2-路由A"), true));
-    // 好了：满 60 秒全部恢复
+    // 好了：出口刚测通一次（还在确认）先不关；再测通一次就关，其余满 60 秒恢复
+    let mut s = snap(true, [0, 0], true);
+    s["exits"][0]["recovering"] = json!(true);
+    status(&t, &id, true, 0, s).await;
+    alerts::evaluate(&t.st, &mut st, t1 + time::Duration::seconds(100)).await.unwrap();
+    assert!(rules(&incidents(&t, "firing").await).contains("router_exits_down"));
     status(&t, &id, true, 0, snap(true, [0, 0], true)).await;
     alerts::evaluate(&t.st, &mut st, t1 + time::Duration::seconds(120)).await.unwrap();
+    assert!(!rules(&incidents(&t, "firing").await).contains("router_exits_down"), "连续两次测通即恢复");
     alerts::evaluate(&t.st, &mut st, t1 + time::Duration::seconds(181)).await.unwrap();
     assert!(incidents(&t, "firing").await.is_empty());
     // 全局静默（只静默这一条规则）：不开

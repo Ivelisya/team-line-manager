@@ -142,6 +142,7 @@ pub fn spawn_background(st: &AppState) {
     supervise(st, "小时汇总", rollup_loop);
     supervise(st, "会话撤销通知", revoked_listener);
     supervise(st, "软路由采集", routers::collect::run_forever);
+    supervise(st, "软路由隧道监听", routers::collect::watch_tunnels);
     supervise(st, "软路由隧道回连主机自检", routers::selfcheck::run_forever);
     supervise(st, "中控到线路机的连通性", reach::run_forever);
     supervise(st, "汇率更新", fx::run_forever);

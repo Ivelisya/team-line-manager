@@ -1,9 +1,9 @@
-//! 告警对齐（中控自身 selfmon.rs、软路由 routers/alerts.rs、探测点 probe_points/、来源画像 ipintel.rs 共用）：把此刻成立的问题对齐到 incident 表——
+//! 告警对齐（机器 alerts.rs、中控自身 selfmon.rs、软路由 routers/alerts.rs、探测点 probe_points/、来源画像 ipintel.rs 共用）：把此刻成立的问题对齐到 incident 表——
 //! 开（被静默的不开）、摘要实质变了才改、严重度只升不降（升了马上再发一次「触发」、清掉之前的确认）、开的时候没能入队的补发「触发」、
 //! 按 `alerts::repeat_interval_s` 发提醒、不再成立的由调用方决定留着 / 恢复 / 悄悄关掉。
-//! 摘要没变的「最近仍在」最多 5 分钟刷新一次。
+//! 摘要没变（或只有数字在变）的「最近仍在」最多 5 分钟刷新一次，摘要里的数字随之更新。
 //!
-//! 复发与限流同机器的告警（alerts.rs，判断函数共用）：
+//! 复发与限流（判断函数在 alerts.rs）：
 //! - 恢复后 30 分钟内同一 (规则, 对象) 又成立（`ready`）：重开原告警（`reopen_count` +1、清掉确认），不新建；悄悄关掉的（带 closed_by：对象删了、停用了、来源画像过期）不重开；
 //! - 重开时已报过恢复的，距那条恢复通知满 5 分钟才发「触发」（不满则等满 5 分钟仍在触发再发），恢复只在上次恢复通知之后发过触发 / 提醒时才报：
 //!   反复抖动的告警每 5 分钟最多一对触发 / 恢复，真故障最多晚 5 分钟报。被静默的不发任何通知。
@@ -136,7 +136,8 @@ pub async fn reconcile<'n>(
         opened_at: Some(opened_at),
     };
     let mut t = Tally::default();
-    let mut touch: Vec<Uuid> = vec![];
+    // 摘要只有数字（分钟数、代数）在变的：随「最近仍在」最多 5 分钟写一次
+    let mut touch: Vec<(Uuid, String)> = vec![];
     let maintenance = |id: Uuid| engine.has_maintenance() && silences.maintenance(id);
     for w in want {
         // 维护中：开着的保持原状（从 open 里拿走，下面也不当成恢复），不开新的
@@ -165,7 +166,7 @@ pub async fn reconcile<'n>(
                 .await?;
                 t.updated += 1;
             } else {
-                touch.push(inc.id);
+                touch.push((inc.id, summary));
             }
             // 升级马上再发一次「触发」；否则按 `due`：重开后报过恢复的满 5 分钟发「触发」、没入队过的补发、到间隔的提醒
             let kind = if escalated { Some(Kind::Firing) } else { due(w.rule, sev, inc.notified_at, inc.told_resolved_at, now) };
@@ -223,7 +224,15 @@ pub async fn reconcile<'n>(
         }
     }
     if !touch.is_empty() {
-        sqlx::query("update incident set last_seen_at = now() where id = any($1) and last_seen_at < now() - interval '5 minutes'").bind(&touch).execute(&st.db).await?;
+        let (ids, sums): (Vec<Uuid>, Vec<String>) = touch.into_iter().unzip();
+        sqlx::query(
+            "update incident set last_seen_at = now(), summary = u.s from unnest($1::uuid[], $2::text[]) u(id, s)
+             where incident.id = u.id and incident.last_seen_at < now() - interval '5 minutes'",
+        )
+        .bind(&ids)
+        .bind(&sums)
+        .execute(&st.db)
+        .await?;
     }
     for inc in open.into_values() {
         let (closed_by, name) = match close(&inc) {

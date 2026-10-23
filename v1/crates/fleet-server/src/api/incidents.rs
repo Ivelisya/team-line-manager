@@ -290,6 +290,8 @@ pub async fn delete_silence(a: Actor, State(st): State<AppState>, ApiPath(id): A
 /// 软路由的（单台或全部的）再发 Routers，路由卡片跟上（窗口自己到期、预约的到点没有这一步，由软路由告警评估每 30 秒比对发，见 routers/alerts.rs）；探测点列表每 30 秒自己重取
 fn changed(st: &AppState, s: &Silence) {
     st.emit(Event::Incidents);
+    // 机器告警按新的静默 / 维护马上评估一次（软路由的随它自己的评估）
+    st.wake_alerts();
     if s.subject_kind.as_deref().is_none_or(|k| k == "router") {
         st.emit(Event::Routers);
     }

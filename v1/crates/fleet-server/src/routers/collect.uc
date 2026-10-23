@@ -2,6 +2,7 @@
 // 输出一行紧凑 JSON：系统、接口、OpenClash / mihomo 的汇总（每个出口、每个来源 IP 的连接数与这段时间的流量）、DHCP 租约、邻居表。
 // FLEET_MODE=delay 时只测出口延迟（每 5 分钟一次，中控另起一次执行、单独的时限），输出 {v, now, oc: {delay}}；
 // FLEET_MANAGED 是 fleet 出口（对上了 fleet 入口的）的名字（JSON 数组）：先测它们，没通的重测名额也先给它们。
+// FLEET_ONLY（JSON 数组，可空）：只测这几个出口（中控每轮单独重测不通、刚测通还在确认的 fleet 出口），其余记进 untested、不当场重测。
 // mihomo 的 API 密钥（uci 的 dashboard_password）只在本机读来用，写在 0600 的 /tmp/fleet-collect/auth 里给 curl，不回传。
 // 上一次的 CPU 计数、各连接的字节数存在 /tmp/fleet-collect/（tmpfs），用来算 CPU 使用率与各出口这段时间的流量
 // （同一连接两次之差累加，新连接全算，关掉的连接最后一段会漏掉：估计值）。
@@ -12,10 +13,15 @@ let fs = require('fs');
 const D = '/tmp/fleet-collect';
 const MODE = getenv('FLEET_MODE');
 const DELAY_URL = getenv('FLEET_DELAY_URL');
-let MANAGED = {};
+let MANAGED = {}, ONLY = null;
 try {
 	for (let x in (json(getenv('FLEET_MANAGED') || '[]') || []))
 		MANAGED[x] = true;
+	for (let x in (json(getenv('FLEET_ONLY') || '[]') || [])) {
+		if (ONLY == null)
+			ONLY = {};
+		ONLY[x] = true;
+	}
 }
 catch (e) {}
 // mihomo /proxies 里不是出口的：内置的与各种组（PassRule 是较新 alpha 内核才有的内置 PASS-RULE）
@@ -331,11 +337,16 @@ function rotated(a) {
 }
 
 function delay(oc, port) {
-	let all = map(oc.proxies, (p) => p.name);
+	let all = map(oc.proxies, (p) => p.name), untested = [];
+	if (ONLY) {
+		for (let x in filter(all, (x) => !ONLY[x]))
+			push(untested, x);
+		all = filter(all, (x) => ONLY[x]);
+	}
 	let names = rotated(filter(all, (x) => MANAGED[x]));
 	for (let x in rotated(filter(all, (x) => !MANAGED[x])))
 		push(names, x);
-	let n = length(names), results = {}, untested = [], t0 = time(), i = 0;
+	let n = length(names), results = {}, t0 = time(), i = 0;
 	for (; i < n && time() - t0 < BUDGET; i += BATCH)
 		for (let x in delay_batch(port, slice(names, i, i + BATCH), results)[1])
 			push(untested, x);
@@ -343,13 +354,13 @@ function delay(oc, port) {
 		push(untested, x);
 	let failed = filter(names, (x) => results[x] == null && index(untested, x) < 0);
 	let fm = filter(failed, (x) => MANAGED[x]), fo = filter(failed, (x) => !MANAGED[x]), retry = [];
-	if (length(fm) > 0 && length(fm) <= RETEST_MAX) {
+	if (ONLY == null && length(fm) > 0 && length(fm) <= RETEST_MAX) {
 		retry = fm;
 		for (let x in fo)
 			if (length(retry) < RETEST_MAX)
 				push(retry, x);
 	}
-	else if (length(fm) == 0 && length(fo) <= RETEST_MAX)
+	else if (ONLY == null && length(fm) == 0 && length(fo) <= RETEST_MAX)
 		retry = fo;
 	oc.delay = { ok: true, results: results, untested: untested };
 	if (length(retry) > 0 && time() - t0 < RETEST_BUDGET) {

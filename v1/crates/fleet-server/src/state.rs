@@ -84,6 +84,9 @@ pub struct Inner {
     pub notify_wake: Notify,
     /// 发送循环起了没有（每个进程一个，`notify::start`）
     pub notify_started: AtomicBool,
+    /// 机器告警该马上评估了（`wake_alerts`）：上报里探测结果翻转、agent 从离线回来、Xray 状态变了，连通性结论、静默或维护变了。
+    /// 告警循环（alerts.rs）不等 30 秒一轮，两次评估至少隔 2 秒
+    pub alerts_wake: Notify,
     /// 唤醒作业引擎去领取（`wake_jobs`）；引擎空闲时等它，或睡到最早一个作业到点（最多 30 秒）
     pub jobs_wake: Notify,
     /// 作业引擎在本进程里正在推进的作业（领取时排除）
@@ -141,6 +144,7 @@ impl AppState {
             metrics_dirty: AtomicBool::new(false),
             notify_wake: Notify::new(),
             notify_started: AtomicBool::new(false),
+            alerts_wake: Notify::new(),
             jobs_wake: Notify::new(),
             jobs_running: Default::default(),
             report_gaps: Default::default(),
@@ -178,6 +182,11 @@ impl AppState {
     /// 有作业可领了（建作业、重试、取消，调用方在事务提交之后调）：唤醒空闲的作业引擎，不等它兜底重查
     pub fn wake_jobs(&self) {
         self.jobs_wake.notify_one();
+    }
+
+    /// 机器告警马上评估一次（事务提交之后调）：见 `alerts_wake`
+    pub fn wake_alerts(&self) {
+        self.alerts_wake.notify_one();
     }
 
     pub fn relay_bumped(&self, relay_id: Uuid) {

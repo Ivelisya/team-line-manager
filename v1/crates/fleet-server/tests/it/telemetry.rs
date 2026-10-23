@@ -834,18 +834,29 @@ async fn probe_alerts_debounce_longer() {
     pass(&t, &mut state, base, 151).await;
     assert_eq!(rules(incidents(&t, "firing").await), ["egress_fail", "tcp_fail"]);
 
-    // 关：探测恢复后同样按各自时长去抖
-    let mut r = blank_report(2);
-    r.xray = Some(xray(true));
-    r.probes = vec![probe(entry, now_ms(), ProbeKind::Egress, true), probe(entry, now_ms(), ProbeKind::Tcp, true)];
-    assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
+    // 关：连续 2 次探测成功就恢复，不等去抖时长；结果翻转、翻转后的确认探测，上报一入库就唤醒告警评估
+    let woken = || async { tokio::time::timeout(Duration::ZERO, t.st.alerts_wake.notified()).await.is_ok() };
+    woken().await;
+    let ok = |seq: u64, at: i64| {
+        let mut r = blank_report(seq);
+        r.xray = Some(xray(true));
+        r.probes = vec![probe(entry, at, ProbeKind::Egress, true), probe(entry, at, ProbeKind::Tcp, true)];
+        r
+    };
+    assert_eq!(t.report("tok1", &ok(2, now_ms() - 1_000)).await.0, StatusCode::OK);
+    assert!(woken().await, "探测结果翻转：马上评估");
     pass(&t, &mut state, base, 200).await;
-    pass(&t, &mut state, base, 261).await;
-    assert_eq!(rules(incidents(&t, "firing").await), ["egress_fail", "tcp_fail"], "消失 60 s 还不恢复");
-    pass(&t, &mut state, base, 291).await;
-    assert_eq!(rules(incidents(&t, "firing").await), ["egress_fail"]);
-    pass(&t, &mut state, base, 351).await;
-    assert!(incidents(&t, "firing").await.is_empty());
+    assert_eq!(rules(incidents(&t, "firing").await), ["egress_fail", "tcp_fail"], "只成功 1 次还不恢复");
+    assert_eq!(t.report("tok1", &ok(3, now_ms())).await.0, StatusCode::OK);
+    assert!(woken().await, "确认探测：马上评估");
+    pass(&t, &mut state, base, 201).await;
+    assert!(incidents(&t, "firing").await.is_empty(), "连续 2 次成功即恢复，不等 150 秒");
+    // 结果没变、视图里已连续 3 次：不唤醒
+    assert_eq!(t.report("tok1", &ok(4, now_ms())).await.0, StatusCode::OK);
+    pass(&t, &mut state, base, 202).await;
+    woken().await;
+    assert_eq!(t.report("tok1", &ok(5, now_ms())).await.0, StatusCode::OK);
+    assert!(!woken().await, "探测结果照旧：不用马上评估");
 }
 
 /// 探测结果过期（线路机 agent 离线、探测停了）：节点按未知处理、不给出口 / TCP 原因，但这两条告警不当成恢复；

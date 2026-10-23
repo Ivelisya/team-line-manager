@@ -1,11 +1,17 @@
-//! 告警：每 30 s 用 health::evaluate 的结果对齐 incident 表，并在触发/恢复时发通知。
+//! 告警：用 health::evaluate 的结果对齐 incident 表（同中控、软路由、探测点、来源画像，走 incident.rs 的 `reconcile`），并在触发/恢复时发通知。
 //! 只看 active 的机器（其它生命周期 evaluate 不给原因），所以退役/上架中的机器天然不告警。
 //!
-//! 去抖（开、关对称）：
-//! - 开：同一 (规则, 机器) 连续出现满去抖时长才开告警（出口不通 150 s、TCP 不通 90 s、其余 60 s）；续费类与流量额度立即开。被静默的不开。
+//! 什么时候评估：每 30 秒一轮；另外这些时候马上评估一次（`AppState::alerts_wake`，读刚补过指标的视图，两次至少隔 2 秒）：
+//! 上报里某入口的探测结果翻转（或翻转后还在确认）、agent 从离线回来、Xray 起停（agent_api.rs，`report_matters`），
+//! 线路机连通性的结论变了（reach.rs），静默 / 维护变了（api/incidents.rs）。
+//!
+//! 去抖：
+//! - 开：同一 (规则, 机器) 连续出现满去抖时长才开告警（出口不通 150 s、TCP 不通 90 s、其余 60 s；量到的时长留 5 秒余量，见 `held`）；续费类与流量额度立即开。被静默的不开。
 //!   折成探测次数：出口探测每 60 s 一次，约连续 3 次失败才开；TCP 每 30 s 一次，约 4 次。relay_unreachable 的原因本身要连续 3 次连不上（reach.rs），
 //!   再叠 60 s：整台不通约连续 5 轮（2.5 分钟）才开，摘要写「连续 3 次以上」。
-//! - 关：原因连续消失满同样的时长才恢复；续费类与流量额度立即恢复（按日期、小时汇总判定，不会抖）。
+//! - 关：出口 / TCP 不通的，当初失败的入口最近都连续 2 次探测成功就恢复（agent 在结果翻转后约 10 秒补探一次、马上上报，失败期间出口探测改 30 秒一次：
+//!   出口恢复后约半分钟告警就恢复）；否则（入口删了、线路机的 Xray 停了这类）同其余规则，原因连续消失满去抖时长才恢复。
+//!   续费类与流量额度立即恢复（按日期、小时汇总判定，不会抖）。
 //! - 复发：恢复后 30 分钟内同一 (规则, 机器) 又满足开的条件，重开原告警（`reopen_count` +1，清掉确认），不新建。
 //!
 //! 通知（见 notify.rs）：新告警发「触发」；严重度升到严重（流量额度从吃紧到超限）马上再发一次「触发」；
@@ -16,12 +22,12 @@
 //! 所以反复抖动的告警每 5 分钟最多一对触发/恢复，真故障最多晚 5 分钟报。被静默（含维护）的不发任何通知。
 //! 「发过」= 写进了库里的发送队列（notify_outbox，`notified_at` 同一事务刷新）：之后由发送循环重试到送达或放弃，中控重启也不丢。
 
-use crate::incident::Engine;
-use crate::notify::{self, Kind, Notice};
+use crate::incident::{self, Close, Engine, Want};
+use crate::notify::Kind;
 use crate::selfmon;
-use crate::silence::Silences;
-use crate::state::{AppState, Event};
-use crate::views;
+use crate::state::AppState;
+use crate::views::{self, MachineView};
+use futures::FutureExt;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -37,6 +43,16 @@ fn debounce_s(rule: &str) -> i64 {
         _ => 60,
     }
 }
+/// 时长判定的余量（同 routers/alerts.rs）：两次取时间有毫秒抖动，「满 150 秒」量到的常是 149.x 秒，差这一点不该再多等一轮
+const SLACK_S: i64 = 5;
+
+/// 从 `since` 到 `now` 已经满 `secs` 秒（含余量）
+fn held(since: OffsetDateTime, now: OffsetDateTime, secs: i64) -> bool { (now - since).whole_seconds() + SLACK_S >= secs }
+
+/// 出口 / TCP 告警：当初失败的入口都连续这么多次探测成功就恢复（视图里最多数到 3，见 views::Probe::streak）
+const PROBE_OK_TO_RESOLVE: u8 = 2;
+/// 被唤醒的评估之间至少隔这么久：一阵上报接连唤醒时并成一次
+const WAKE_GAP: Duration = Duration::from_secs(2);
 /// 恢复后这么久内复发算同一条告警（incident.rs 的通用对齐同此）
 pub(crate) const REOPEN_WINDOW_S: i64 = 30 * 60;
 /// 报过恢复后这么久内复发不再报触发（抖动限流）
@@ -81,23 +97,42 @@ pub struct AlertState {
     first_seen: HashMap<(String, Uuid), OffsetDateTime>,
     /// incident id → 原因从什么时候起一直没有
     clean_since: HashMap<Uuid, OffsetDateTime>,
-    /// 出口 / TCP 告警最近一次有原因时是哪几条入口失败的（线路机）：原因消失时只看它们判不判得出（health::Health::probe_undecided）
+    /// 出口 / TCP 告警最近一次有原因时是哪几条入口失败的（所在线路机）：原因消失时只看它们判不判得出（health::Health::probe_undecided）、
+    /// 是不是都连续探测成功了（`probes_recovered`）
     probe_failing: HashMap<(String, Uuid), Vec<Uuid>>,
 }
 
-/// 每 30 秒：记下中控还在跑（report_gaps::ReportGaps::alive），评估机器的告警，成功了 ping 死人开关；再检查中控自身（selfmon.rs）
+/// 每 30 秒：记下中控还在跑（report_gaps::ReportGaps::alive），评估机器的告警，成功了 ping 死人开关；再检查中控自身（selfmon.rs）。
+/// 被唤醒时（`AppState::alerts_wake`）只评估机器的告警
 pub async fn run_forever(st: AppState) {
     let mut state = AlertState::default();
     let mut heartbeat = selfmon::Heartbeat::default();
     let mut tick = tokio::time::interval(Duration::from_secs(30));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut last: Option<tokio::time::Instant> = None;
     loop {
-        tick.tick().await;
+        let woken = tokio::select! {
+            _ = tick.tick() => false,
+            _ = st.alerts_wake.notified() => true,
+        };
+        if woken {
+            if let Some(t) = last {
+                tokio::time::sleep_until(t + WAKE_GAP).await;
+            }
+            // 等的这段时间里又来的唤醒并进这一次（评估期间来的留着，评估完再来一次）
+            let _ = st.alerts_wake.notified().now_or_never();
+            last = Some(tokio::time::Instant::now());
+            if let Err(e) = evaluate(&st, &mut state, OffsetDateTime::now_utc(), true).await {
+                tracing::error!("告警评估失败：{e:#}");
+            }
+            continue;
+        }
         let now = OffsetDateTime::now_utc();
         if let Err(e) = st.report_gaps.alive(&st.db, now).await {
             tracing::warn!("记录中控存活时刻失败：{e}");
         }
-        match evaluate_once(&st, &mut state, now).await {
+        last = Some(tokio::time::Instant::now());
+        match evaluate(&st, &mut state, now, false).await {
             Ok(()) => heartbeat.beat(&st),
             Err(e) => tracing::error!("告警评估失败：{e:#}"),
         }
@@ -107,26 +142,42 @@ pub async fn run_forever(st: AppState) {
     }
 }
 
-#[derive(sqlx::FromRow)]
-struct Open {
-    id: Uuid,
-    rule: String,
-    subject_id: Uuid,
-    severity: String,
-    summary: String,
-    opened_at: OffsetDateTime,
-    /// 最近一次把触发 / 提醒写进发送队列的时间（notify.rs `enqueue`）；null = 还没写进去过（开告警时入队失败）
-    notified_at: Option<OffsetDateTime>,
-    /// 最近一条送达的通知是「恢复」时它的发送时间（复发重开后还没再通知过）。只看送达的：恢复没发出去，渠道那边这条告警还没结束
-    told_resolved_at: Option<OffsetDateTime>,
+/// 这份上报会不会改变机器告警的判断（入库提交之后调，是就唤醒评估）：agent 之前离线（`was_offline`），Xray 运行状态和视图里的不同，
+/// 或某入口的探测结果和视图里最新一条不同、视图里那条还没连续 3 次（翻转后的确认探测：恢复要连续 2 次成功）、视图里还没有。
+/// `probes`：(入口, tcp / egress, 成功)
+pub fn report_matters(st: &AppState, machine: Uuid, was_offline: bool, xray: Option<bool>, probes: &[(Uuid, &str, bool)]) -> bool {
+    if was_offline {
+        return true;
+    }
+    if xray.is_none() && probes.is_empty() {
+        return false;
+    }
+    let ms = st.live.latest();
+    let Some(m) = ms.as_ref().and_then(|ms| ms.iter().find(|m| m.id == machine)) else { return true };
+    if xray.is_some() && m.agent.as_ref().and_then(|a| a.xray_running) != xray {
+        return true;
+    }
+    probes.iter().any(|(id, kind, ok)| {
+        let cur = m.entries.iter().find(|e| e.id == *id).and_then(|e| if *kind == "tcp" { e.tcp.as_ref() } else { e.egress.as_ref() });
+        cur.is_none_or(|p| p.ok != *ok || p.streak < 3)
+    })
+}
+
+/// 出口 / TCP 告警当初失败的入口（`was`：所在线路机；中控重启后不知道是哪几条，按整台的入口算）最近都连续 `PROBE_OK_TO_RESOLVE` 次探测成功了。
+/// 直出入口没有 TCP 探测，不算；一条也没有（入口删了、停了）为 false，交给时长去抖
+fn probes_recovered(m: &MachineView, rule: &str, was: Option<&Vec<Uuid>>) -> bool {
+    let tcp = rule == "tcp_fail";
+    let mut es = m
+        .entries
+        .iter()
+        .filter(|e| e.lifecycle == "active" && (m.kind != "relay" || e.direct) && !(tcp && e.direct) && was.is_none_or(|w| w.contains(&e.relay.id)))
+        .peekable();
+    es.peek().is_some() && es.all(|e| (if tcp { &e.tcp } else { &e.egress }).as_ref().is_some_and(|p| p.ok && p.streak >= PROBE_OK_TO_RESOLVE))
 }
 
 /// 最近一条送达的通知是「恢复」时它的发送时间（`incident` 表上的标量子查询；机器与 incident.rs 的告警共用）
 pub(crate) const TOLD_RESOLVED_SQL: &str = "(select case when l.kind = 'resolved' then l.ts end from notify_log l
      where l.incident_id = incident.id and l.ok and l.kind in ('firing', 'repeat', 'resolved') order by l.ts desc, l.id desc limit 1)";
-
-/// `Open` 的列（查询和重开的 returning 共用）
-fn open_cols() -> String { format!("id, rule, subject_id, severity::text severity, summary, opened_at, notified_at, {TOLD_RESOLVED_SQL} told_resolved_at") }
 
 /// 仍在触发的告警这一轮该发的通知：报过恢复的，距那条恢复通知满 REOPEN_QUIET_S 发「触发」；还没入队过（开告警时入队失败）的补发「触发」；
 /// 否则按持续提醒间隔发「提醒」。notify_log 在送达后才写（渠道失败重试时更晚），`notified_at` 在入队时就更新：
@@ -166,28 +217,18 @@ pub(crate) fn repeat_interval_s(rule: &str, severity: &str) -> Option<i64> {
     }
 }
 
-/// 评估一轮。`now` 由调用方给（测试可以快进去抖时间）。
-pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDateTime) -> anyhow::Result<()> {
-    // 与列表、实时指标共用在用机器视图（最多旧 3 s）
-    let ms = views::live(st).await?;
-    let silences = Silences::load(&st.db).await?;
-    // 只读写机器引擎（incident::Engine::Machine）的告警：来源画像、中控自身、软路由、探测点由各自的引擎开和关，这里不碰，否则会被当成「原因消失」恢复掉
-    let cols = open_cols();
-    let mut open: HashMap<(String, Uuid), Open> = sqlx::query_as::<_, Open>(&format!(
-        "select {cols} from incident where state = 'firing' and engine = $1"
-    ))
-    .bind(Engine::Machine.as_str())
-    .fetch_all(&st.db)
-    .await?
-    .into_iter()
-    .map(|o| ((o.rule.clone(), o.subject_id), o))
-    .collect();
+/// 评估一轮（读最多旧 3 s 的视图）。`now` 由调用方给（测试可以快进去抖时间）
+pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDateTime) -> anyhow::Result<()> { evaluate(st, state, now, false).await }
 
-    let open_ids: HashSet<Uuid> = open.values().map(|o| o.id).collect();
-    let open_keys: HashSet<(String, Uuid)> = open.keys().cloned().collect();
+/// 评估一轮。`fresh`：被唤醒的，读刚补过指标的视图；否则与列表、实时指标共用在用机器视图（最多旧 3 s）
+pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime, fresh: bool) -> anyhow::Result<()> {
+    let ms = if fresh { views::live_fresh(st).await? } else { views::live(st).await? };
+    // 只读写机器引擎（incident::Engine::Machine）的告警：来源画像、中控自身、软路由、探测点由各自的引擎开和关，这里不碰，否则会被当成「原因消失」恢复掉
+    let open = incident::firing(&st.db, Engine::Machine).await?;
+    let open_ids: HashSet<Uuid> = open.iter().map(|o| o.id).collect();
+    let open_keys: HashSet<(String, Uuid)> = open.iter().map(|o| (o.rule.clone(), o.subject_id)).collect();
     let mut current: HashSet<(String, Uuid)> = HashSet::new();
-    let mut changed = false;
-    let mut touch: Vec<(Uuid, String)> = vec![];
+    let mut want = vec![];
     let mass_offline = agents_unreachable(&ms).is_some();
     for m in ms.iter() {
         for r in &m.health.reasons {
@@ -198,185 +239,82 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
             let k = (r.key.to_string(), m.id);
             // 全网同时失联由中控侧的一条告警报（selfmon.rs）：不新开单机的 agent 离线（已开着的照旧）；
             // 那条恢复后还没回来的，去抖从那时算起，再按单机报
-            if mass_offline && r.key == "agent_offline" && !open.contains_key(&k) {
+            if mass_offline && r.key == "agent_offline" && !open_keys.contains(&k) {
                 continue;
             }
-            current.insert(k.clone());
             if matches!(r.key, "egress_fail" | "tcp_fail") {
                 state.probe_failing.insert(k.clone(), m.health.probe_failing.iter().filter(|f| f.0 == r.key).map(|f| f.1).collect());
             }
             let since = *state.first_seen.entry(k.clone()).or_insert(now);
-            let summary = format!("{}：{}", m.name, r.text);
-            let notice = |kind, id, opened_at| Notice {
-                kind,
-                incident_id: Some(id),
-                rule: r.key.to_string(),
-                severity: r.severity.to_string(),
-                machine: m.name.clone(),
-                summary: r.text.clone(),
-                at: now,
-                opened_at: Some(opened_at),
-            };
-
-            if let Some(inc) = open.remove(&k) {
-                // 已在告警：同步摘要；严重度只升不降（流量额度超限后上限被调高、回到吃紧，仍按严重算到恢复：
-                // 收到过「严重」触发的渠道也要收到恢复）。严重度变了或摘要实质变了马上写、通知前端刷新；
-                // 摘要只有数字（分钟数、代数）在变的随 5 分钟一次的「最近仍在」刷新一起写，不每轮重写一遍
-                state.clean_since.remove(&inc.id);
-                let escalated = rank(r.severity) > rank(&inc.severity);
-                let sev = if escalated { r.severity } else { inc.severity.as_str() };
-                if escalated || !same_summary(&inc.summary, &summary) {
-                    // 升级时清掉之前的确认（同复发重开）：确认的是吃紧，超限是新情况
-                    sqlx::query(
-                        "update incident set last_seen_at = now(), summary = $2, severity = $3::severity,
-                             ack_at = case when $4 then null else ack_at end, ack_by = case when $4 then null else ack_by end
-                         where id = $1",
-                    )
-                    .bind(inc.id)
-                    .bind(&summary)
-                    .bind(sev)
-                    .bind(escalated)
-                    .execute(&st.db)
-                    .await?;
-                    changed = true;
-                } else {
-                    touch.push((inc.id, summary));
-                }
-                // 持续提醒；复发后已报过恢复的，满限流时长再发一次「触发」；升成严重（流量额度从吃紧到超限）不等提醒间隔，马上再发一次「触发」
-                let kind = if escalated { Some(Kind::Firing) } else { due(r.key, sev, inc.notified_at, inc.told_resolved_at, now) };
-                if let Some(kind) = kind.filter(|_| !silences.matches(r.key, m.id)) {
-                    notify::enqueue(st, Notice { severity: sev.to_string(), ..notice(kind, inc.id, inc.opened_at) }).await;
-                }
-                continue;
-            }
-
-            let immediate = slow(r.key);
-            if (!immediate && (now - since).whole_seconds() < debounce_s(r.key)) || silences.matches(r.key, m.id) {
-                continue;
-            }
-            // 窗口内刚恢复过：重开原告警（清掉确认），按 `due` 决定是否马上通知（退役等流程关掉的、带 closed_by 的不重开）。
-            // 重开与新建都要求机器此刻仍在用：视图是稍早取的，退役事务若在那之后提交（发起退役时已关掉它的告警），
-            // 不能再给退役中的机器开一条永远不会恢复的告警。for share：退役事务还没提交时等它提交，再按新的 lifecycle 判断
-            let reopened = sqlx::query_as::<_, Open>(&format!(
-                "update incident set state = 'firing', resolved_at = null, ack_at = null, ack_by = null, reopen_count = reopen_count + 1, last_seen_at = now(),
-                     severity = $3::severity, summary = $4
-                 where id = (select id from incident where engine = $6 and rule = $1 and subject_id = $2 and state = 'resolved' and resolved_at > $5 and not detail ? 'closed_by'
-                             order by resolved_at desc limit 1)
-                   and exists (select 1 from machine where id = $2 and lifecycle = 'active' for share)
-                 returning {cols}"
-            ))
-            .bind(r.key)
-            .bind(m.id)
-            .bind(r.severity)
-            .bind(&summary)
-            .bind(now - time::Duration::seconds(REOPEN_WINDOW_S))
-            .bind(Engine::Machine.as_str())
-            .fetch_optional(&st.db)
-            .await?;
-            if let Some(inc) = reopened {
-                changed = true;
-                if let Some(kind) = due(r.key, r.severity, inc.notified_at, inc.told_resolved_at, now) {
-                    notify::enqueue(st, notice(kind, inc.id, inc.opened_at)).await;
-                }
-                continue;
-            }
-            let id = crate::db::new_id();
-            let res = sqlx::query(
-                "insert into incident (id, engine, rule, subject_id, severity, summary, detail)
-                 select $1, $7, $2, $3, $4::severity, $5, $6 where exists (select 1 from machine where id = $3 and lifecycle = 'active' for share)
-                 on conflict (engine, rule, subject_id) where state = 'firing' do nothing",
-            )
-            .bind(id)
-            .bind(r.key)
-            .bind(m.id)
-            .bind(r.severity)
-            .bind(&summary)
-            .bind(json!({"name": m.name}))
-            .bind(Engine::Machine.as_str())
-            .execute(&st.db)
-            .await?;
-            if res.rows_affected() > 0 {
-                changed = true;
-                notify::enqueue(st, notice(Kind::Firing, id, now)).await;
-            }
+            let ready = slow(r.key) || held(since, now, debounce_s(r.key));
+            current.insert(k);
+            want.push(Want { rule: r.key, subject: m.id, name: &m.name, severity: r.severity, text: r.text.clone(), detail: Some(json!({"name": m.name})), ready });
         }
     }
     state.first_seen.retain(|k, _| current.contains(k));
-    // 原因没变的在告警只在 last_seen_at 旧了 5 分钟以上才刷新（摘要里的数字随之更新）：每 30 秒把所有在告警的行都重写一遍
-    // 只会产生死元组，界面上的「最近仍在」、摘要里的分钟数差几分钟无所谓
-    if !touch.is_empty() {
-        let (ids, sums): (Vec<Uuid>, Vec<String>) = touch.into_iter().unzip();
-        sqlx::query(
-            "update incident set last_seen_at = now(), summary = u.s from unnest($1::uuid[], $2::text[]) u(id, s)
-             where incident.id = u.id and incident.last_seen_at < now() - interval '5 minutes'",
-        )
-        .bind(&ids)
-        .bind(&sums)
-        .execute(&st.db)
-        .await?;
+    // 原因还在的：恢复的去抖从头算
+    for o in &open {
+        if current.contains(&(o.rule.clone(), o.subject_id)) {
+            state.clean_since.remove(&o.id);
+        }
     }
 
     // 原因消失的告警恢复：只处理 active 的机器。其它生命周期 evaluate 不给原因，不能当成「恢复」——
     // 退役中的在发起退役时已经关掉（closed_by = retire，见 api/machines.rs retire）。
-    // `open` 里剩下的就是这一轮没有对应原因的告警。
-    let active: HashMap<Uuid, &views::MachineView> = ms.iter().filter(|m| m.lifecycle == "active").map(|m| (m.id, m)).collect();
-    for (_, inc) in open {
-        let Some(m) = active.get(&inc.subject_id) else { continue };
-        let (name, maintenance) = (m.name.as_str(), m.maintenance);
-        // 维护中 evaluate 不给原因：不是恢复，保持原状，维护结束后按那时的状态再判（同探测过期）
-        if maintenance {
-            state.clean_since.remove(&inc.id);
-            continue;
-        }
+    // 重开与新建都要求机器此刻仍在用：视图是稍早取的，退役事务若在那之后提交（发起退役时已关掉它的告警），
+    // 不能再给退役中的机器开一条永远不会恢复的告警。for share：退役事务还没提交时等它提交，再按新的 lifecycle 判断
+    let active: HashMap<Uuid, &MachineView> = ms.iter().filter(|m| m.lifecycle == "active").map(|m| (m.id, m)).collect();
+    let (clean_since, probe_failing) = (&mut state.clean_since, &state.probe_failing);
+    let exists = "exists (select 1 from machine where id = $3 and lifecycle = 'active' for share)";
+    incident::reconcile(st, Engine::Machine, open, want, exists, now, |inc| {
+        let Some(m) = active.get(&inc.subject_id) else { return Close::Keep };
+        let probe = matches!(inc.rule.as_str(), "egress_fail" | "tcp_fail");
+        let was = probe_failing.get(&(inc.rule.clone(), inc.subject_id));
+        // 维护中 evaluate 不给原因：不是恢复，保持原状，维护结束后按那时的状态再判（同探测过期）。
         // 这一轮判不出（health::Health::undecided）：原因消失不等于恢复，保持原状，等判得出再判（去抖从那时重新算）。
         // 出口 / TCP：探测结果过期（线路机 agent 离线或维护中、探测停了）；持续高负载、时钟偏差：agent 离线（负载还要回来后攒够 5 分钟样本）；
         // 客户入口连不上：中控重启后新的检查不到 3 轮。否则一离线、一重启这些告警就成批假恢复、之后又重开。
         // 出口 / TCP 只看当初失败的那几条入口：另一条入口的线路机在维护、离线不挡这条的恢复（中控重启后不知道是哪几条，按整台算）
-        let undecided = match state.probe_failing.get(&(inc.rule.clone(), inc.subject_id)) {
-            Some(was) if matches!(inc.rule.as_str(), "egress_fail" | "tcp_fail") => was.iter().any(|r| m.health.probe_undecided.contains(r)),
-            _ => m.health.undecided(&inc.rule),
-        };
+        let undecided = m.maintenance
+            || match was {
+                Some(was) if probe => was.iter().any(|r| m.health.probe_undecided.contains(r)),
+                _ => m.health.undecided(&inc.rule),
+            };
         if undecided {
-            state.clean_since.remove(&inc.id);
-            continue;
+            clean_since.remove(&inc.id);
+            return Close::Keep;
         }
-        let since = *state.clean_since.entry(inc.id).or_insert(now);
-        if !slow(&inc.rule) && (now - since).whole_seconds() < debounce_s(&inc.rule) {
-            continue;
+        let since = *clean_since.entry(inc.id).or_insert(now);
+        if slow(&inc.rule) || (probe && probes_recovered(m, &inc.rule, was)) || held(since, now, debounce_s(&inc.rule)) {
+            clean_since.remove(&inc.id);
+            Close::Resolve(m.name.as_str())
+        } else {
+            Close::Keep
         }
-        state.clean_since.remove(&inc.id);
-        sqlx::query("update incident set state = 'resolved', resolved_at = now() where id = $1").bind(inc.id).execute(&st.db).await?;
-        changed = true;
-        // 恢复通知：上次恢复通知之后发过触发/提醒、且当前没被静默时才发
-        if !silences.matches(&inc.rule, inc.subject_id) && told_firing(inc.notified_at, inc.told_resolved_at) {
-            notify::enqueue(
-                st,
-                Notice {
-                    kind: Kind::Resolved,
-                    incident_id: Some(inc.id),
-                    rule: inc.rule.clone(),
-                    severity: inc.severity.clone(),
-                    machine: name.to_string(),
-                    summary: notify::strip_machine(&inc.summary, name).to_string(),
-                    at: now,
-                    opened_at: Some(inc.opened_at),
-                },
-            )
-            .await;
-        }
-    }
+    })
+    .await?;
     // 已经不在告警的计数清掉
     state.clean_since.retain(|id, _| open_ids.contains(id));
     state.probe_failing.retain(|k, _| current.contains(k) || open_keys.contains(k));
-    if changed {
-        st.emit(Event::Incidents);
-    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 一条在告警的（只为下面几个判断函数凑参数）
+    #[allow(dead_code)]
+    struct Open {
+        id: Uuid,
+        rule: String,
+        subject_id: Uuid,
+        severity: String,
+        summary: String,
+        opened_at: OffsetDateTime,
+        notified_at: Option<OffsetDateTime>,
+        told_resolved_at: Option<OffsetDateTime>,
+    }
 
     #[test]
     fn summary_digits_do_not_count_as_change() {

@@ -163,6 +163,9 @@ pub struct Probe {
     pub ts: OffsetDateTime,
     /// TCP 探测：近 1 小时成功样本延迟的中位数（卡片读数；单次的 SYN 重发尖刺不左右它）。出口探测为 None
     pub median_ms: Option<f32>,
+    /// 最近几次（最多 3 次，15 分钟内）里结果与这一次相同的连续次数：出口 / TCP 告警按它判恢复（连续 2 次成功，alerts.rs）。只给告警用，不对外输出
+    #[serde(skip)]
+    pub streak: u8,
 }
 
 /// 主探测来源（中控或探测点，见 probe_points/）→ 线路机上这个入口端口的最近一次 TCP 建连（reach.rs，轮流连各端口，所以每个口隔 N 轮才更新一次）
@@ -603,6 +606,11 @@ impl LiveCache {
         self.failing.lock().unwrap().clone()
     }
 
+    /// 最近一次算成的视图，不管多旧、之后变过没有（上报入库时比对探测结果、在线与 Xray 状态变没变，决定要不要唤醒告警评估）
+    pub fn latest(&self) -> Option<Arc<Vec<MachineView>>> {
+        self.last.lock().unwrap().as_ref().map(|l| l.3.clone())
+    }
+
     fn settled(&self, at: Instant, gen: u64, rolled: u64, v: &Arc<Vec<MachineView>>) {
         *self.last.lock().unwrap() = Some((at, gen, rolled, v.clone()));
         *self.failing.lock().unwrap() = None;
@@ -883,8 +891,8 @@ async fn sustained_of(db: &sqlx::PgPool, hids: &[Uuid]) -> sqlx::Result<HashMap<
     Ok(su.into_iter().map(|r| (r.machine_id, Sustained { span_s: r.span_s.unwrap_or(0), cpu_min: r.cpu_min, mem_min: r.mem_min, disk_min: r.disk_min })).collect())
 }
 
-/// 每个入口 × (tcp, egress) 沿 (entry_id, kind, ts desc) 索引各取最新一条（不把 15 分钟内的探测全读出来排序）；
-/// 上界同主机样本，剪掉预建的未来分区。TCP 另带近 1 小时成功样本的延迟中位数（每入口约 120 行，同一索引）
+/// 每个入口 × (tcp, egress) 沿 (entry_id, kind, ts desc) 索引各取最新 3 条（不把 15 分钟内的探测全读出来排序）：最新一条是读数，
+/// 另两条只数连续次数（`Probe::streak`）；上界同主机样本，剪掉预建的未来分区。TCP 另带近 1 小时成功样本的延迟中位数（每入口约 120 行，同一索引，只为最新一条算）
 async fn probes_of(db: &sqlx::PgPool, eids: &[Uuid]) -> sqlx::Result<HashMap<(Uuid, String), Probe>> {
     #[derive(sqlx::FromRow)]
     struct P {
@@ -894,25 +902,39 @@ async fn probes_of(db: &sqlx::PgPool, eids: &[Uuid]) -> sqlx::Result<HashMap<(Uu
         latency_ms: Option<f32>,
         detail: Option<String>,
         ts: OffsetDateTime,
+        rn: i64,
         median_ms: Option<f64>,
     }
-    let ps = sqlx::query_as::<_, P>(
+    let mut ps = sqlx::query_as::<_, P>(
         "select x.*, m.median_ms from unnest($1::uuid[]) e(id) cross join (values ('tcp'), ('egress')) k(kind) cross join lateral (
-            select entry_id, kind, ok, latency_ms, detail, ts from probe_result
+            select entry_id, kind, ok, latency_ms, detail, ts, row_number() over (order by ts desc) rn from probe_result
             where entry_id = e.id and kind = k.kind and ts > now() - interval '15 minutes' and ts <= now() + interval '1 day'
-            order by ts desc limit 1) x
+            order by ts desc limit 3) x
          left join lateral (
             select percentile_cont(0.5) within group (order by latency_ms) median_ms from probe_result
-            where entry_id = e.id and kind = 'tcp' and ok and latency_ms is not null
-              and ts > now() - interval '1 hour' and ts <= now() + interval '1 day') m on k.kind = 'tcp'",
+            where x.rn = 1 and k.kind = 'tcp' and entry_id = e.id and kind = 'tcp' and ok and latency_ms is not null
+              and ts > now() - interval '1 hour' and ts <= now() + interval '1 day') m on true",
     )
     .bind(eids)
     .fetch_all(db)
     .await?;
-    Ok(ps
-        .into_iter()
-        .map(|p| ((p.entry_id, p.kind), Probe { ok: p.ok, latency_ms: p.latency_ms, detail: p.detail, ts: p.ts, median_ms: p.median_ms.map(|m| m as f32) }))
-        .collect())
+    ps.sort_by_key(|p| p.rn);
+    let mut out: HashMap<(Uuid, String), Probe> = HashMap::new();
+    for p in ps {
+        match out.get_mut(&(p.entry_id, p.kind.clone())) {
+            // 更早的一条：和最新一条一样、且中间没断过才接着数
+            Some(cur) => {
+                if cur.ok == p.ok && i64::from(cur.streak) + 1 == p.rn {
+                    cur.streak += 1;
+                }
+            }
+            None => {
+                let probe = Probe { ok: p.ok, latency_ms: p.latency_ms, detail: p.detail, ts: p.ts, median_ms: p.median_ms.map(|m| m as f32), streak: 1 };
+                out.insert((p.entry_id, p.kind), probe);
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// 在用入口各自端口上主探测来源（`src`，中控或探测点，见 probe_points::Effective）最近一次 TCP 检查，

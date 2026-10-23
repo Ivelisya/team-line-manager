@@ -448,8 +448,8 @@ pub(crate) mod tests {
             relay_xray_down,
             relay_offline: false,
             relay_maint: false,
-            tcp: Some(Probe { ok: egress_ok, latency_ms: None, detail: None, ts, median_ms: None }),
-            egress: Some(Probe { ok: egress_ok, latency_ms: None, detail: Some("timeout".into()), ts, median_ms: None }),
+            tcp: Some(Probe { ok: egress_ok, latency_ms: None, detail: None, ts, median_ms: None, streak: 1 }),
+            egress: Some(Probe { ok: egress_ok, latency_ms: None, detail: Some("timeout".into()), ts, median_ms: None, streak: 1 }),
             reach: None,
             traffic: Traffic::default(),
         }
