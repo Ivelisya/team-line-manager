@@ -16,7 +16,7 @@
 //!   对象是「中控」：subject_id 是全零 uuid（渠道连续失败是渠道 id），接口里这类告警的 subject / subject_id 为 null、subject_name 是「中控」。
 
 use crate::alerts;
-use crate::incident::{self, Close, Want};
+use crate::incident::{self, Close, Engine, Want};
 use crate::notify;
 use crate::state::AppState;
 use std::collections::HashSet;
@@ -46,9 +46,6 @@ const DISK_LOW_PCT: u64 = 10;
 const DISK_OK_PCT: u64 = 11;
 /// 要看剩余空间的目录（系统盘、PostgreSQL 数据、中控自己的数据），另加备份目录；同一个文件系统只看一次，不存在的跳过
 const DISK_PATHS: [&str; 3] = ["/", "/var/lib/postgresql", "/var/lib/fleet"];
-
-/// 中控自身的告警（对象不是机器）
-pub fn is_central(rule: &str) -> bool { rule.starts_with("central_") }
 
 /// 死人开关：告警循环每轮评估成功后调 `beat`，最多每分钟真去 ping 一次
 #[derive(Default)]
@@ -85,7 +82,7 @@ fn client() -> &'static reqwest::Client {
 
 /// 检查一轮，把中控自身的告警对齐到 incident 表（incident.rs）。`now` 由调用方给（测试可以快进）
 pub async fn check_once(st: &AppState, now: OffsetDateTime) -> anyhow::Result<()> {
-    let open = incident::firing(&st.db, "central").await?;
+    let open = incident::firing(&st.db, Engine::Central).await?;
     let channels: Vec<(Uuid, String, Option<OffsetDateTime>, Option<String>)> =
         sqlx::query_as("select id, name, failing_since, last_error from notify_channel where enabled").fetch_all(&st.db).await?;
     let problem = |rule: &'static str, subject: Uuid, severity: &'static str, text: String| Want { rule, subject, name: NAME, severity, text, detail: None, ready: true };
@@ -113,7 +110,7 @@ pub async fn check_once(st: &AppState, now: OffsetDateTime) -> anyhow::Result<()
     }
     let enabled: HashSet<Uuid> = channels.iter().map(|c| c.0).collect();
     // 问题没了的恢复；渠道停用或删了不是恢复：关掉、不发通知
-    incident::reconcile(st, open, want, "true", now, |inc| {
+    incident::reconcile(st, Engine::Central, open, want, "true", now, |inc| {
         if inc.rule == CHANNEL_FAILING && !enabled.contains(&inc.subject_id) {
             Close::Quiet("channel_removed")
         } else {
@@ -212,11 +209,5 @@ mod tests {
         let u = disk_usage(Path::new("/nonexistent-backups"));
         assert!(u.iter().any(|(p, _, total)| p == "/" && *total > 0), "{u:?}");
         assert!(u.iter().all(|(_, avail, total)| avail <= total));
-    }
-
-    #[test]
-    fn central_rules() {
-        assert!(is_central(CHANNEL_FAILING) && is_central(BACKUP_STALE) && is_central(DISK_LOW) && is_central(INGRESS));
-        assert!(!is_central("agent_offline") && !is_central("ipintel_new_isp"));
     }
 }

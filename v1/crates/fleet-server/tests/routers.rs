@@ -237,7 +237,7 @@ async fn patch_and_delete() {
     // 取过脚本（清单里有它）、开着一条告警、有指标：删掉后都没了，告警关掉不发恢复
     assert_eq!(fetch(&t, &format!("/api/v1/router-bootstrap/{}", token_of(&cmd))).await.0, StatusCode::OK);
     assert!(!read(&t.dir.path().join("tunnel-keys")).is_empty());
-    sqlx::query("insert into incident (id, rule, subject_id, severity, summary) values ($1, 'router_offline', $2::uuid, 'critical', '新名字：连不上')")
+    sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary) values ($1, 'router', 'router_offline', $2::uuid, 'critical', '新名字：连不上')")
         .bind(Uuid::now_v7())
         .bind(&id)
         .execute(&t.st.db)

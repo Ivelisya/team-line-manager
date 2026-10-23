@@ -2286,7 +2286,7 @@ async fn retention_cleanup_removes_only_expired_rows() {
     let user: Uuid = sqlx::query_scalar("select id from app_user").fetch_one(db).await.unwrap();
     for (state, days) in [("resolved", 200), ("resolved", 10), ("firing", 400)] {
         sqlx::query(&format!(
-            "insert into incident (id, rule, subject_id, severity, state, summary, opened_at, resolved_at) values ($1, 'agent_offline', $2, 'critical', '{state}', 's',
+            "insert into incident (id, engine, rule, subject_id, severity, state, summary, opened_at, resolved_at) values ($1, 'machine', 'agent_offline', $2, 'critical', '{state}', 's',
              now() - interval '{days} days', case when '{state}' = 'resolved' then now() - interval '{days} days' end)"
         ))
         .bind(Uuid::now_v7())
@@ -2335,7 +2335,7 @@ async fn incidents_list_pages_with_total() {
     // 7 条进行中（其中 4 条同一时刻开始，靠 id 兜底排序）+ 2 条已恢复
     for (state, sev, mins) in [("firing", "critical", 5), ("firing", "warning", 1), ("firing", "warning", 3), ("firing", "warning", 3), ("firing", "warning", 3), ("firing", "warning", 3), ("firing", "critical", 9), ("resolved", "critical", 2), ("resolved", "warning", 4)] {
         sqlx::query(&format!(
-            "insert into incident (id, rule, subject_id, severity, state, summary, opened_at, resolved_at) values ($1, 'agent_offline', $2, '{sev}', '{state}', 's',
+            "insert into incident (id, engine, rule, subject_id, severity, state, summary, opened_at, resolved_at) values ($1, 'machine', 'agent_offline', $2, '{sev}', '{state}', 's',
              now() - interval '{mins} minutes', case when '{state}' = 'resolved' then now() end)"
         ))
         .bind(Uuid::now_v7())
@@ -2370,7 +2370,7 @@ async fn incidents_filter_by_subject() {
     let (a, b) = (Uuid::now_v7(), Uuid::now_v7());
     for (subject, state, mins) in [(a, "resolved", 1), (a, "firing", 2), (a, "resolved", 3), (b, "firing", 4)] {
         sqlx::query(&format!(
-            "insert into incident (id, rule, subject_id, severity, state, summary, opened_at, resolved_at) values ($1, 'agent_offline', $2, 'warning', '{state}', 's',
+            "insert into incident (id, engine, rule, subject_id, severity, state, summary, opened_at, resolved_at) values ($1, 'machine', 'agent_offline', $2, 'warning', '{state}', 's',
              now() - interval '{mins} minutes', case when '{state}' = 'resolved' then now() end)"
         ))
         .bind(Uuid::now_v7())

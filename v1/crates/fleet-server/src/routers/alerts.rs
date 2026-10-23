@@ -17,7 +17,7 @@
 //! 严重度只升不降（升到严重马上再发一次「触发」），同 alerts.rs。
 
 use super::collect::Snapshot;
-use crate::incident::{self, Close, Want};
+use crate::incident::{self, Close, Engine, Want};
 use crate::notify;
 use crate::state::AppState;
 use serde_json::{json, Value};
@@ -43,8 +43,6 @@ const SLACK_S: i64 = 5;
 
 /// 从 `since` 到 `now` 已经满 `secs` 秒（含余量）
 fn held(since: OffsetDateTime, now: OffsetDateTime, secs: i64) -> bool { (now - since).whole_seconds() + SLACK_S >= secs }
-
-pub fn is_router(rule: &str) -> bool { rule.starts_with("router_") }
 
 /// 评估之间要记住的：各问题第一次出现的时间、各告警原因消失的时间、CPU 从什么时候起一直偏高
 #[derive(Default)]
@@ -175,7 +173,7 @@ pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime
             snap: r.snapshot(),
         })
         .collect();
-    let open = incident::firing(&st.db, "router").await?;
+    let open = incident::firing(&st.db, Engine::Router).await?;
     let open_ids: HashSet<Uuid> = open.iter().map(|o| o.id).collect();
     let mut seen: HashSet<(&'static str, Uuid)> = HashSet::new();
     let mut known: HashSet<Uuid> = HashSet::new();
@@ -213,7 +211,7 @@ pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime
     }
     let names: HashMap<Uuid, (&str, &str)> = views.iter().map(|v| (v.id, (v.name.as_str(), v.state))).collect();
     let clean_since = &mut state.clean_since;
-    incident::reconcile(st, open, want, "exists (select 1 from router where id = $3)", now, |inc| {
+    incident::reconcile(st, Engine::Router, open, want, "exists (select 1 from router where id = $3)", now, |inc| {
         // 路由已经删了（删除接口会关掉，这里兜底）：关掉、不发恢复
         let Some(&(name, state)) = names.get(&inc.subject_id) else { return Close::Quiet("router_deleted") };
         // 重新接入、还没连上：离线告警关掉、不发恢复（30 分钟还没连上另开警告）
@@ -244,7 +242,7 @@ pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime
 pub async fn close_all(tx: &mut crate::db::Tx<'_>, router: Uuid) -> sqlx::Result<u64> {
     Ok(sqlx::query(
         "update incident set state = 'resolved', resolved_at = now(), detail = detail || '{\"closed_by\": \"router_deleted\"}'
-         where subject_id = $1 and state = 'firing' and rule like 'router!_%' escape '!'",
+         where subject_id = $1 and state = 'firing' and engine = 'router'",
     )
     .bind(router)
     .execute(&mut **tx)
@@ -366,10 +364,8 @@ mod tests {
     #[test]
     fn rules_have_names() {
         for r in [OFFLINE, COLLECT_ERROR, OPENCLASH_DOWN, EXITS_DOWN, WAN_DOWN, RESOURCE_HIGH] {
-            assert!(is_router(r));
             assert_ne!(notify::rule_name(r), r, "{r} 没有中文名");
         }
-        assert!(!is_router("agent_offline"));
         assert_eq!(subject(Uuid::nil(), None)["name"], "（已删除）");
     }
 }

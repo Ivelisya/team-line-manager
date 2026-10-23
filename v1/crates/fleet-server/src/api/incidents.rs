@@ -2,6 +2,7 @@
 use super::{ok, paged};
 use crate::auth::Actor;
 use crate::db::{audit as audit_log, new_id, Args};
+use crate::incident::Engine;
 use crate::error::{ApiError, ApiJson, ApiPath, ApiQuery, ApiResult};
 use crate::state::{AppState, Event};
 use axum::extract::State;
@@ -14,6 +15,9 @@ use uuid::Uuid;
 #[derive(Serialize, sqlx::FromRow)]
 struct IncidentOut {
     id: Uuid,
+    /// 写这条告警的引擎（incident::Engine），不输出
+    #[serde(skip)]
+    engine: String,
     rule: String,
     subject_id: Uuid,
     subject_name: Option<String>,
@@ -58,14 +62,14 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQu
     let order = if q.subject_id.is_some() { "i.state, i.opened_at desc, i.id desc" } else { "i.state, i.severity desc, i.opened_at desc, i.id desc" };
     let mut a = Args::default();
     let sql = format!(
-        "select i.id, i.rule, i.subject_id,
-            case when i.rule like 'central!_%' escape '!' then '中控' when i.rule like 'router!_%' escape '!' then r.name
-                 when i.rule like 'probe!_%' escape '!' then coalesce(pp.name, '探测点（已删除）')
+        "select i.id, i.engine, i.rule, i.subject_id,
+            case when i.engine = 'central' then '中控' when i.engine = 'router' then r.name
+                 when i.engine = 'probe' then coalesce(pp.name, '探测点（已删除）')
                  else display_name(m.kind::text, m.label, t.name, m.number) end subject_name,
             i.severity::text severity, i.state::text state, i.summary, i.opened_at, i.last_seen_at, i.resolved_at, i.ack_at, i.ack_by, i.reopen_count
          from incident i left join machine m on m.id = i.subject_id left join team t on t.id = m.team_id
-              left join router r on r.id = i.subject_id and i.rule like 'router!_%' escape '!'
-              left join probe_point pp on pp.id = i.subject_id and i.rule like 'probe!_%' escape '!'
+              left join router r on r.id = i.subject_id and i.engine = 'router'
+              left join probe_point pp on pp.id = i.subject_id and i.engine = 'probe'
          where {} order by {order} limit {} offset {}",
         cond(&mut a),
         a.add(limit),
@@ -80,11 +84,11 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQu
         .iter()
         .map(|i| {
             let mut j = serde_json::to_value(i).unwrap_or_default();
-            if crate::selfmon::is_central(&i.rule) || crate::probe_points::is_probe(&i.rule) {
+            if i.engine == Engine::Central.as_str() || i.engine == Engine::Probe.as_str() {
                 // 中控自身、探测点的告警：对象不是机器，没有可点开的机器（探测点的名字在 subject_name）
                 j["subject"] = Value::Null;
                 j["subject_id"] = Value::Null;
-            } else if crate::routers::alerts::is_router(&i.rule) {
+            } else if i.engine == Engine::Router.as_str() {
                 // 软路由的告警：对象是路由，前端按 kind 打开路由而不是机器
                 j["subject"] = crate::routers::alerts::subject(i.subject_id, i.subject_name.as_deref());
             } else {

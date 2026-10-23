@@ -27,7 +27,7 @@ pub mod install;
 
 use crate::db::audit;
 use crate::error::{ApiError, ApiResult};
-use crate::incident::{self, Close, Want};
+use crate::incident::{self, Close, Engine, Want};
 use crate::state::{AppState, Event};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -43,9 +43,6 @@ pub const OFFLINE_S: i64 = 180;
 pub const OFFLINE_RULE: &str = "probe_point_offline";
 /// 主探测来源的设置键（app_setting）
 const KEY: &str = "reach_source";
-
-/// 探测点的告警（对象不是机器）
-pub fn is_probe(rule: &str) -> bool { rule.starts_with("probe_") }
 
 /// 卡片、告警里探测点的叫法：名字已经以「探测点」结尾的原样，否则加上（「香港」→「香港探测点」）
 pub fn label_of(name: &str) -> String { if name.ends_with("探测点") { name.to_string() } else { format!("{name}探测点") } }
@@ -237,7 +234,7 @@ pub async fn run_forever(st: AppState) {
 /// 对齐一轮 probe_point_offline（incident.rs）：离线（超过 [`OFFLINE_S`] 没上报），或在线但超过 [`OFFLINE_S`] 没有一轮检查被采纳。
 /// 都扣掉中控收不到上报的时段。`now` 由调用方给（测试可以快进）
 pub async fn check_once(st: &AppState, now: OffsetDateTime) -> anyhow::Result<()> {
-    let open = incident::firing(&st.db, "probe").await?;
+    let open = incident::firing(&st.db, Engine::Probe).await?;
     let rows: Vec<(Uuid, String, bool, Option<OffsetDateTime>, Option<OffsetDateTime>, Option<String>)> =
         sqlx::query_as("select id, name, enabled, last_seen_at, last_kept_at, discard_reason from probe_point").fetch_all(&st.db).await?;
     let set = setting(&st.db).await?;
@@ -263,7 +260,7 @@ pub async fn check_once(st: &AppState, now: OffsetDateTime) -> anyhow::Result<()
             Some(Want { rule: OFFLINE_RULE, subject: *id, name, severity: "warning", text, detail: None, ready: true })
         })
         .collect();
-    incident::reconcile(st, open, want, "exists (select 1 from probe_point where id = $3)", now, |inc| match names.get(&inc.subject_id) {
+    incident::reconcile(st, Engine::Probe, open, want, "exists (select 1 from probe_point where id = $3)", now, |inc| match names.get(&inc.subject_id) {
         None => Close::Quiet("probe_point_removed"),
         Some((_, false)) => Close::Quiet("probe_point_disabled"),
         Some((n, true)) => Close::Resolve(n),
@@ -387,6 +384,5 @@ mod tests {
         let s = Setting { primary: Some(Uuid::now_v7()), central: false };
         assert_eq!(Setting::from_json(&s.to_json()), s);
         assert_eq!(Setting::from_json(&json!({})), Setting::default());
-        assert!(is_probe(OFFLINE_RULE) && !is_probe("router_offline"));
     }
 }

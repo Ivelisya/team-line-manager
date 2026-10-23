@@ -15,7 +15,7 @@ use crate::access::{self, SourceRow, Window};
 use crate::db::floor_hour;
 use crate::config::IpintelConfig;
 use crate::error::{ApiError, ApiResult};
-use crate::incident::{self, Close, Want};
+use crate::incident::{self, Close, Engine, Want};
 use crate::notify;
 use crate::state::AppState;
 use fleet_ipintel::{canonical, is_global, ConnType, IpIntel};
@@ -598,7 +598,7 @@ pub async fn reconcile_incidents(st: &AppState, now: OffsetDateTime, rep: &mut S
     .into_iter()
     .collect();
 
-    let open = incident::firing(db, "ipintel").await?;
+    let open = incident::firing(db, Engine::Ipintel).await?;
     let mut wants = vec![];
     for ((rule, node), vals) in &want {
         let Some(name) = names.get(node) else { continue };
@@ -624,7 +624,7 @@ pub async fn reconcile_incidents(st: &AppState, now: OffsetDateTime, rep: &mut S
         wants.push(Want { rule, subject: *node, name, severity: "warning", text, detail: Some(detail), ready: true });
     }
     // 没有 open 值了（或节点不再 active）→ 恢复；一次性异常结束不发恢复通知
-    let t = incident::reconcile(st, open, wants, "true", now, |_| Close::Quiet("ipintel_ttl")).await?;
+    let t = incident::reconcile(st, Engine::Ipintel, open, wants, "true", now, |_| Close::Quiet("ipintel_ttl")).await?;
     rep.opened += t.opened;
     rep.updated += t.updated;
     rep.resolved += t.resolved;
@@ -824,7 +824,7 @@ pub async fn sources_profile(st: &AppState, machine_id: Uuid, window: Window, li
 
     let anomalies: Vec<(Uuid, String, String, String, OffsetDateTime)> = sqlx::query_as(
         "select id, rule, severity::text, summary, opened_at from incident
-         where state = 'firing' and rule like 'ipintel!_%' escape '!' and subject_id = any($1) order by opened_at desc",
+         where state = 'firing' and engine = 'ipintel' and subject_id = any($1) order by opened_at desc",
     )
     .bind(&nodes)
     .fetch_all(db)
