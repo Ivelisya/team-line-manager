@@ -679,8 +679,10 @@ async fn relay_reach_rounds_feed_relay_beats() {
     assert_eq!((good["ok"].clone(), good["detail"].clone()), (json!(true), Value::Null), "{m}");
     assert!(good["ts"].is_string(), "{m}");
     assert_eq!((bad["ok"].clone(), bad["detail"].clone()), (json!(false), json!(format!("端口 {closed2}：连接被拒绝"))), "{m}");
+    // fails：这个端口到最近一次为止连续连不上几次（告警按连续 3 次）
+    assert_eq!((good["fails"].clone(), bad["fails"].clone()), (json!(0), json!(3)), "{m}");
     let m = t.get(&format!("/api/v1/machines/{down}")).await;
-    assert_eq!(reach(&m, closed as i32)["ok"], json!(false), "{m}");
+    assert_eq!((reach(&m, closed as i32)["ok"].clone(), reach(&m, closed as i32)["fails"].clone()), (json!(false), json!(7)), "{m}");
     // 线路机上的入口表和节点那一侧是同一份；没检查过（线路机3 没有入口，新建的入口还没轮到）为 null
     let node = t.get(&format!("/api/v1/machines/{}", m["entries"][0]["node"]["id"].as_str().unwrap())).await;
     assert_eq!(node["entries"][0]["reach"]["ok"], json!(false), "{node}");

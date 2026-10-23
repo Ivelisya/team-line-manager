@@ -108,7 +108,7 @@ export function buildDb(): Db {
   const machines: MachineView[] = [];
   const entriesByRelay: Record<string, EntryView[]> = { r1: [], r2: [] };
   let eSeq = 1;
-  const REACH_OK = (): EntryView['reach'] => ({ ok: true, ts: iso(now() - 30_000), detail: null });
+  const REACH_OK = (): EntryView['reach'] => ({ ok: true, ts: iso(now() - 30_000), detail: null, fails: 0 });
   const GiB = 1024 ** 3;
 
   const sub = (planId: string, dueDays: number, trafficGb: number | null): Subscription => {
@@ -272,7 +272,9 @@ export function buildDb(): Db {
   }
   // 线路机 2 的最后一个入口还没应用 → 降级提示
   // 线路机 2：中控连不上其中三个客户入口端口（中控 → 线路机最近一次 TCP 检查失败）
-  [2, 3, 4].forEach((i) => { m2Entries[i].reach = { ok: false, ts: iso(now() - 25_000), detail: 'connect: 连接被拒绝 (os error 111)' }; });
+  [2, 3, 4].forEach((i) => { m2Entries[i].reach = { ok: false, ts: iso(now() - 25_000), detail: `端口 ${m2Entries[i].port}：connect: 连接被拒绝 (os error 111)`, fails: 3 }; });
+  // 另一个口刚才偶发连不上一次：只提示「刚才连不上 1 次」，不算连不上
+  m2Entries[1].reach = { ok: false, ts: iso(now() - 40_000), detail: `端口 ${m2Entries[1].port}：connect: 连接超时`, fails: 1 };
   machines[1].health = { status: 'down', reasons: [{ key: 'relay_unreachable', severity: 'critical', text: `中控连续 3 次连不上客户入口（端口 ${[2, 3, 4].map((i) => m2Entries[i].port).join('、')}）` }, { key: 'relay_apply_lag', severity: 'warning', text: '配置未应用（配置代数 8 · 已应用 7）' }] };
   machines[1].host = hostOf('r2', 58);
   // 调优样本：线路机 2 是旧档，团队1 的 03 号还没调优过
