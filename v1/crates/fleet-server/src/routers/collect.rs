@@ -1,9 +1,10 @@
-//! 采集：每 30 秒经隧道登录每台路由（并发最多 8 台，一台最多 25 秒），跑一段只读的采集脚本（collect.uc，经 stdin 交给 `sh -s`），
+//! 采集：每 30 秒经隧道登录每台路由（并发最多 8 台，一台最多 35 秒），跑一段只读的采集脚本（collect.uc，经 stdin 交给 `sh -s`），
 //! 把它回的 JSON 拼成快照（接口的 detail）存进 router_status，指标进 router_metric / router_exit_metric（30 秒一点）。
 //!
 //! - 速率：WAN 等接口按 /proc/net/dev 两次读数之差、代理总流量按 mihomo 的 uploadTotal / downloadTotal 两次之差，在中控算
 //!   （前一次读数只在内存里，中控重启后第一轮没有速率）；各出口的流量由路由上按连接累加（见 collect.uc），中控除以间隔。
-//! - 延迟：每 5 分钟让 mihomo 经每个出口请求一次 generate_204（/group/GLOBAL/delay），这是客户现场经出口的真实可用性；
+//! - 延迟：每 5 分钟让 mihomo 经每个出口请求一次 generate_204（/proxies/<名字>/delay，每批 6 个并发），这是客户现场经出口的真实可用性；
+//!   没通的出口（不超过 5 个时）当场单独重测一次，通了就算这一轮通；超了时间预算没轮到的、mihomo 没回话的沿用上一次（delay.untested）；
 //!   结果进快照与那一点的 router_exit_metric，连续失败次数（fail_streak）随快照存着，告警 router_exits_down 看它。
 //! - 出口与 fleet 入口：配置文件的 sha256 变了才取回来解析（见 clash.rs），解析结果只在内存里。
 //! - 主机公钥：还没记录时（刚接入）先经隧道 keyscan 记下（只有拿到隧道私钥的才能占住这个端口），之后严格核对。
@@ -22,8 +23,8 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 const PARALLEL: usize = 8;
-/// 一台路由一轮最多等这么久（测延迟的那一轮 mihomo 要等最慢的出口 5 秒）
-const TIMEOUT: Duration = Duration::from_secs(25);
+/// 一台路由一轮最多等这么久（测延迟的那一轮：分批测最多约 22 秒、没通的重测最多 7 秒，见 collect.uc 的 delay）
+const TIMEOUT: Duration = Duration::from_secs(35);
 /// 多久测一次全部出口的延迟
 const DELAY_EVERY_S: i64 = 300;
 pub const DELAY_URL: &str = "https://www.gstatic.com/generate_204";
@@ -368,9 +369,11 @@ pub fn build(raw: &Value, prev: &Prev, last: Option<&Snapshot>, config: Option<&
         exits_alive: exits.iter().filter(|e| usable(e)).count() as i64,
     };
     let tested = oc.pointer("/delay/ok").and_then(Value::as_bool) == Some(true);
+    let untested = untested_exits(&oc);
     let exit_rows = exits
         .iter()
-        .map(|e| ExitRow {
+        .map(|e| (e, tested && !untested.contains(e.name.as_str())))
+        .map(|(e, tested)| ExitRow {
             exit: e.name.clone(),
             alive: if tested { e.alive } else { None },
             delay_ms: if tested { e.delay_ms } else { None },
@@ -382,6 +385,11 @@ pub fn build(raw: &Value, prev: &Prev, last: Option<&Snapshot>, config: Option<&
         .collect();
     let snap = Snapshot { system, interfaces, openclash, exits, clients, collected_at: Some(now) };
     Built { snap, prev: Prev { at: Some(now), dev, totals }, metric, exits: exit_rows }
+}
+
+/// 这一轮延迟测试没测到的出口（采集脚本的 delay.untested：超了时间预算没轮到、mihomo 没回话）
+fn untested_exits(oc: &Value) -> HashSet<&str> {
+    oc.pointer("/delay/untested").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default()
 }
 
 /// 出口：配置里的（按配置的顺序）加上 mihomo /proxies 里另有的叶子出口（按名字）。
@@ -399,6 +407,8 @@ fn exits(oc: &Value, last: Option<&Snapshot>, config: Option<&[Proxy]>, entries:
     let last_by: HashMap<&str, &Exit> = last.map(|l| l.exits.iter().map(|e| (e.name.as_str(), e)).collect()).unwrap_or_default();
     let delay = oc.get("delay").filter(|d| d.get("ok").and_then(Value::as_bool) == Some(true));
     let results = delay.and_then(|d| d.get("results"));
+    // 这一轮没测到的（超了时间预算没轮到、mihomo 没回话）：沿用上一次的结果，不算不通
+    let untested: HashSet<&str> = untested_exits(oc);
     let dt = f(oc, "conn_dt").filter(|x| *x > 0.0);
     names
         .into_iter()
@@ -410,7 +420,7 @@ fn exits(oc: &Value, last: Option<&Snapshot>, config: Option<&[Proxy]>, entries:
                 Some(p) => clash::match_entry(p, entries),
                 None => (None, "unmanaged"),
             };
-            let (alive, delay_ms, delay_at, fail_streak) = match results {
+            let (alive, delay_ms, delay_at, fail_streak) = match results.filter(|_| !untested.contains(name.as_str())) {
                 Some(r) => match r.get(&name).and_then(Value::as_i64).filter(|d| *d > 0) {
                     Some(d) => (Some(true), Some(d), Some(now), 0),
                     None => (Some(false), None, Some(now), prev.map_or(0, |p| p.fail_streak) + 1),
@@ -1032,6 +1042,12 @@ mod tests {
         // 测试请求本身失败（API 出错）：不算出口不通
         let b3 = build(&raw(0, 0, 0, Some(json!({"ok": false, "error": "x"}))), &b2.prev, Some(&b2.snap), Some(&proxies()), &[], t0 + time::Duration::seconds(330));
         assert_eq!(b3.snap.exits.iter().map(|e| e.fail_streak).collect::<Vec<_>>(), [1, 2]);
+        // 这一轮没测到的（超了时间预算、mihomo 没回话）：沿用上一份，不算不通，那一点的指标也不记测试结果
+        let b4 = build(&raw(0, 0, 0, Some(json!({"ok": true, "results": {"节点01": 90}, "untested": ["节点02"]}))), &b3.prev, Some(&b3.snap), Some(&proxies()), &[], t0 + time::Duration::seconds(600));
+        let e = &b4.snap.exits;
+        assert_eq!((e[0].alive, e[0].delay_ms, e[0].fail_streak), (Some(true), Some(90), 0));
+        assert_eq!((e[1].alive, e[1].fail_streak, e[1].delay_at), (Some(false), 2, b3.snap.exits[1].delay_at));
+        assert_eq!((b4.exits[0].alive, b4.exits[1].alive), (Some(true), None));
     }
 
     #[test]

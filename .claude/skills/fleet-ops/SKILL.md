@@ -89,7 +89,7 @@ fleetctl exec --team 团队1 --timeout 30 -- uptime           # 多台并发 4�
 
 ## 软路由
 
-客户现场的 OpenWrt / iStoreOS 路由（OpenClash，mihomo 内核）经一条反向 SSH 隧道连中控（路由上的 `fleet-tunnel` 服务，与原有的 router-tunnel 并存），中控每 30 秒经隧道只读采集一次、每 5 分钟测一次全部出口的延迟。接入只新增（隧道密钥、中控登录公钥、`/etc/init.d/fleet-tunnel`），不改路由的 root 密码、dropbear / LuCI 监听、OpenClash 配置与密钥、防火墙；用户明确要求过这些都不要动，AI 也不要去改。
+客户现场的 OpenWrt / iStoreOS 路由（OpenClash，mihomo 内核）经一条反向 SSH 隧道连中控（路由上的 `fleet-tunnel` 服务，与原有的 router-tunnel 并存），中控每 30 秒经隧道只读采集一次、每 5 分钟测一次全部出口的延迟（每批 6 个出口并发，没通的当场单独重测一次，重测通了不算不通；连续两轮不通才算不可用、开 `router_exits_down`）。接入只新增（隧道密钥、中控登录公钥、`/etc/init.d/fleet-tunnel`），不改路由的 root 密码、dropbear / LuCI 监听、OpenClash 配置与密钥、防火墙；用户明确要求过这些都不要动，AI 也不要去改。
 
 - 状态 `state`：`pending`（还没接入，或刚重新生成接入命令、等在路由上执行）/ `online` / `offline`（接入过、此刻连不上，`error` 是原因）。`deploy` 是最近一次一键部署：`state` running / failed / done，`step` 正在做的那一步，`error` 失败原因。
 - 出口的 `sync`：`ok` 参数和对应的 fleet 入口一致；`drift` 对上了入口但参数不一样（入口轮换过凭据、换了线路机后路由的配置没同步，或入口已删除）；`unmanaged` 不是 fleet 的入口。`drift` 要告诉用户，AI 不要去改路由的配置。
