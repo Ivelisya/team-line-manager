@@ -70,8 +70,8 @@ pub async fn entry_routers(_a: Actor, State(st): State<AppState>, ApiPath(id): A
     Ok(ok(crate::routers::exits_on_entry(&st.db, id).await?))
 }
 
-pub async fn share(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
-    a.require_scope("secrets")?;
+/// 一条入口的分享链接：(链接, 入口名「节点名」或「线路机名-直出」, 线路机名, 端口)
+async fn share_link(db: &sqlx::PgPool, id: Uuid) -> ApiResult<(String, String, Option<String>, i32)> {
     #[derive(sqlx::FromRow)]
     struct Row {
         client_uuid: Uuid,
@@ -94,16 +94,46 @@ pub async fn share(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
          left join team t on t.id = n.team_id where e.id = $1 and e.lifecycle <> 'removed'",
     )
     .bind(id)
-    .fetch_optional(&st.db)
+    .fetch_optional(db)
     .await?
     .ok_or_else(|| ApiError::not_found("没有这个入口"))?;
     let remark = crate::names::entry_name(r.direct, &r.kind, r.label.as_deref(), r.team.as_deref(), r.number);
     let url = entries::share_url(r.client_uuid, &r.public_host, r.port, &r.reality_sni, &r.reality_public_key, &r.short_id, &remark);
+    Ok((url, remark, r.relay_label, r.port))
+}
+
+pub async fn share(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
+    a.require_scope("secrets")?;
+    let (url, remark, relay, port) = share_link(&st.db, id).await?;
     let mut tx = st.db.begin().await?;
     // 记是哪条入口（同启用 / 停用的写法加入口名），不记链接本身
-    audit(&mut tx, &a.name, "entry.share", "entry", Some(id), json!({"relay": r.relay_label, "port": r.port, "entry": remark})).await?;
+    audit(&mut tx, &a.name, "entry.share", "entry", Some(id), json!({"relay": relay, "port": port, "entry": remark})).await?;
     tx.commit().await?;
     Ok(ok(json!({"url": url})))
+}
+
+#[derive(Deserialize)]
+pub struct ShareBatchIn {
+    ids: Vec<Uuid>,
+}
+
+/// 批量取分享链接（`POST /entries/share`，要 secrets 权限）：一次请求、一条审计（列出入口名，不记链接）。
+/// 返回 `{items: [{id, name, url}]}`，按请求的顺序；有一条不存在就整批失败
+pub async fn share_batch(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<ShareBatchIn>) -> ApiResult<Json<Value>> {
+    a.require_scope("secrets")?;
+    if b.ids.is_empty() || b.ids.len() > 500 {
+        return Err(ApiError::bad_request("一次取 1–500 条入口的链接"));
+    }
+    let mut items = vec![];
+    for id in &b.ids {
+        let (url, name, _, _) = share_link(&st.db, *id).await?;
+        items.push(json!({"id": id, "name": name, "url": url}));
+    }
+    let names: Vec<&Value> = items.iter().map(|i| &i["name"]).collect();
+    let mut tx = st.db.begin().await?;
+    audit(&mut tx, &a.name, "entry.share", "entry", None, json!({"entries": names})).await?;
+    tx.commit().await?;
+    Ok(ok(json!({"items": items})))
 }
 
 #[derive(Deserialize)]

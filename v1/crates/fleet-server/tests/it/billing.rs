@@ -333,3 +333,94 @@ async fn catalog_delete_refuses_while_in_use() {
     let titles: Vec<&str> = audit.as_array().unwrap().iter().filter_map(|a| a["title"].as_str()).collect();
     assert!(titles.starts_with(&["删除团队", "删除供应商", "删除套餐"]), "{titles:?}");
 }
+
+/// 在库里放一台带订阅的在用节点：到期日 = 今天 + `days`，价格 `price`（分）+ `cur`；`team` 是备用团队时就是备用机器
+async fn due_node(t: &T, team: Uuid, number: i32, provider: Option<&str>, days: i32, price: i32, cur: &str, auto: bool) -> Uuid {
+    let id = common::seed_node(t, team, number, &format!("203.0.113.{}", 100 + number), "active").await;
+    sqlx::query("update machine set provider_id = $2::uuid where id = $1").bind(id).bind(provider).execute(&t.st.db).await.unwrap();
+    sqlx::query("insert into subscription (machine_id, price_cents, currency, due_date, auto_renew) values ($1, $2, $3, current_date + $4::int, $5)")
+        .bind(id)
+        .bind(price)
+        .bind(cur)
+        .bind(days)
+        .bind(auto)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    id
+}
+
+/// 待付清单：按 供应商 × 到期日 分组，每组原币种小计与 USD 合计（用设置里的汇率）；窗口外、备用团队、自动续费的不进待付（备用要 include_spare，自动续费单列）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn due_groups_by_provider_and_date_with_usd_total() {
+    let t = setup(false).await;
+    let pa = t.post("/api/v1/providers", json!({"name": "甲", "code": "A", "panel_url": "https://a.example/panel"})).await["id"].as_str().unwrap().to_string();
+    let pb = t.post("/api/v1/providers", json!({"name": "乙", "code": "B"})).await["id"].as_str().unwrap().to_string();
+    let (st, v) = t.req("PUT", "/api/v1/settings/fx-rates/CNY", Some(json!({"usd_per_unit": 0.125})), None).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let team = seed_team(&t, "团队1").await;
+    let spare: Uuid = sqlx::query_scalar("select id from team where spare").fetch_one(&t.st.db).await.unwrap();
+    let a1 = due_node(&t, team, 1, Some(&pa), 5, 1000, "USD", false).await;
+    let a2 = due_node(&t, team, 2, Some(&pa), 5, 8000, "CNY", false).await;
+    let b1 = due_node(&t, team, 3, Some(&pb), 9, 500, "USD", false).await;
+    due_node(&t, team, 4, Some(&pa), 40, 1000, "USD", false).await; // 窗口外
+    let auto = due_node(&t, team, 5, Some(&pa), 5, 1000, "USD", true).await; // 自动续费
+    let sp = due_node(&t, spare, 6, Some(&pa), 5, 1000, "USD", false).await; // 备用团队
+    let d5: String = sqlx::query_scalar("select (current_date + 5)::text").fetch_one(&t.st.db).await.unwrap();
+
+    let v = t.get("/api/v1/billing/due?days=30").await;
+    let groups = v["groups"].as_array().unwrap();
+    assert_eq!(groups.len(), 2, "{v}");
+    let g = &groups[0];
+    let ids = |g: &Value| g["machines"].as_array().unwrap().iter().map(|m| m["id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    assert_eq!((g["provider"]["name"].as_str(), g["provider"]["panel_url"].as_str(), g["due_date"].as_str()), (Some("甲"), Some("https://a.example/panel"), Some(d5.as_str())), "{g}");
+    assert_eq!(ids(g), [a1.to_string(), a2.to_string()]);
+    // 原币种小计 + USD 合计：10.00 USD + 80.00 CNY × 0.125 = 20.00 USD
+    assert_eq!(g["total"]["cents"], 2000, "{g}");
+    assert_eq!(g["total"]["by_currency"].as_array().unwrap().iter().map(|p| (p["currency"].as_str().unwrap(), p["cents"].as_i64().unwrap(), p["usd_cents"].as_i64().unwrap())).collect::<Vec<_>>(), [("CNY", 8000, 1000), ("USD", 1000, 1000)]);
+    assert_eq!((groups[1]["provider"]["name"].as_str(), ids(&groups[1])), (Some("乙"), vec![b1.to_string()]));
+    assert_eq!(v["total"]["cents"], 2500);
+    assert_eq!(v["auto"].as_array().unwrap().iter().map(|a| a["machine"]["id"].as_str().unwrap()).collect::<Vec<_>>(), [auto.to_string()]);
+    // 带上备用团队 / 按日期截止
+    let v = t.get("/api/v1/billing/due?days=30&include_spare=true").await;
+    assert!(v["groups"][0]["machines"].as_array().unwrap().iter().any(|m| m["id"] == sp.to_string()), "{v}");
+    let until: String = sqlx::query_scalar("select (current_date + 6)::text").fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(t.get(&format!("/api/v1/billing/due?until={until}")).await["groups"].as_array().unwrap().len(), 1, "只有 5 天后到期的甲");
+}
+
+async fn due_of(t: &T, id: Uuid) -> String { sqlx::query_scalar("select due_date::text from subscription where machine_id = $1").bind(id).fetch_one(&t.st.db).await.unwrap() }
+
+/// 批量续费：一个事务里按订阅周期顺延每台、金额默认订阅价，审计一条（列出机器）；dry_run 只预览什么都不写；有一台不行整批都不登记
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn renew_batch_is_atomic_with_one_audit() {
+    let t = setup(false).await;
+    let pa = t.post("/api/v1/providers", json!({"name": "甲", "code": "A"})).await["id"].as_str().unwrap().to_string();
+    let team = seed_team(&t, "团队1").await;
+    let a1 = due_node(&t, team, 1, Some(&pa), 5, 1000, "USD", false).await;
+    let a2 = due_node(&t, team, 2, Some(&pa), 5, 2500, "USD", false).await;
+    let bare = common::seed_node(&t, team, 3, "203.0.113.150", "active").await; // 没有订阅
+    let (d1, d2) = (due_of(&t, a1).await, due_of(&t, a2).await);
+    let body = |dry: bool, ids: &[Uuid]| json!({"items": ids.iter().map(|i| json!({"machine_id": i})).collect::<Vec<_>>(), "ref": "#2041", "dry_run": dry});
+
+    let (st, v) = t.req("POST", "/api/v1/renewals/batch", Some(body(true, &[a1, a2])), None).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!((v["data"]["dry_run"].clone(), v["data"]["total"]["cents"].clone()), (json!(true), json!(3500)), "{v}");
+    assert_eq!((due_of(&t, a1).await, due_of(&t, a2).await), (d1.clone(), d2.clone()), "预览不写库");
+    assert_eq!(t.count("select count(*) from renewal").await + t.count("select count(*) from audit_log where action like 'renewal%'").await, 0);
+
+    // 带一台没有订阅的：整批 409，谁都没登记
+    let (st, v) = t.req("POST", "/api/v1/renewals/batch", Some(body(false, &[a1, a2, bare])), None).await;
+    assert_eq!(st, StatusCode::CONFLICT, "{v}");
+    assert!(v.to_string().contains("团队1-03"), "报错带机器名：{v}");
+    assert_eq!((due_of(&t, a1).await, t.count("select count(*) from renewal").await), (d1.clone(), 0));
+
+    let (st, v) = t.req("POST", "/api/v1/renewals/batch", Some(body(false, &[a1, a2])), None).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let (n1, n2) = (due_of(&t, a1).await, due_of(&t, a2).await);
+    assert!(n1 > d1 && n2 > d2, "到期日顺延了一个周期：{d1} → {n1}");
+    let rs: Vec<(i32, String)> = sqlx::query_as("select amount_cents, note from renewal order by amount_cents").fetch_all(&t.st.db).await.unwrap();
+    assert_eq!(rs, [(1000, "账单 #2041".to_string()), (2500, "账单 #2041".to_string())], "金额默认订阅价，账单号进备注");
+    assert_eq!((t.count("select count(*) from audit_log where action = 'renewal.batch'").await, t.count("select count(*) from audit_log where action = 'renewal'").await), (1, 0), "只记一条审计");
+    let audit = t.get("/api/v1/audit").await;
+    assert_eq!(audit[0]["summary"].as_str(), Some("2 台：团队1-01、团队1-02（账单 #2041）"), "{audit}");
+}
