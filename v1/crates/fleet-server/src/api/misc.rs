@@ -15,8 +15,13 @@ pub async fn overview(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<V
     Ok(ok(views::overview(&st).await?))
 }
 
-/// 共用的枚举中文名、常量、阈值、默认值与组织时区（见 meta.rs）：网页启动时取一次，fleetctl 每次命令需要时取一次
-pub async fn meta(_a: Actor) -> ApiResult<Json<Value>> { Ok(ok(crate::meta::to_json())) }
+/// 共用的枚举中文名、常量、阈值、默认值与组织时区（见 meta.rs）：网页启动时取一次，fleetctl 每次命令需要时取一次。
+/// 另带中控公钥全文 `ssh_public_key`（读不到为 null）：上架页「复制中控公钥」，供应商面板录入它之后上架可以不填 root 密码
+pub async fn meta(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
+    let mut v = crate::meta::to_json();
+    v["ssh_public_key"] = json!(crate::ssh::public_key(&st.cfg.ssh_key).await);
+    Ok(ok(v))
+}
 
 #[derive(Deserialize)]
 pub struct SeriesQ {

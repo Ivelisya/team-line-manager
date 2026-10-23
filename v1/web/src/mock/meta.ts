@@ -37,6 +37,7 @@ export const META: Meta = {
   },
   defaults: { currency: 'USD', cycle: 'monthly', remind_days: 7, traffic_rule: 'max', traffic_reset: 'month', ss_method: 'aes-256-gcm', ss_port: 8388 },
   terminal: { per_user: 3, global: 8, idle_s: 900, max_age_s: 7200, max_message: 65536, max_dim: 500, ticket_ttl_s: 60, verify_ttl_s: 300 },
+  ssh_public_key: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockControlPublicKeyForTheFleetDemo0000 fleet@control',
 };
 
 const DAY = 86400_000;

@@ -74,6 +74,11 @@
 
 root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；首次登录必须用密码时，单台上架用 `--ssh-password-env VAR`。
 
+`--dry-run`（网页的「检查」）在 SSH 端口通了之后会用中控密钥试登录一次（只读 `/etc/os-release`，不记主机指纹）：
+- 报「中控密钥登录不了 ip:22（密钥被拒），也没填 root 密码」：机器上还没有中控公钥。二选一——把报错末尾的公钥（就是中控的 `/etc/fleet/ssh/id_ed25519.pub`，网页上架页「root 密码」下有「复制中控公钥」）录进供应商面板的 SSH 密钥（多数面板要重装系统才生效）或机器 root 的 `~/.ssh/authorized_keys`；或者给 root 密码（`--ssh-password-env VAR`），作业会用它装上公钥、之后丢弃。供应商面板里「已经录过密钥」却仍报这条，多半录的不是中控这把。
+- 「提醒：系统是 Ubuntu 20.04，已过标准支持期…」：不拦上架（作业日志里也会记一条 warn），建议找机会重装成新版本。过期表在 `jobs/scripts.rs` 的 `OS_EOL`（现在是 Ubuntu < 22.04、Debian < 12），版本过期了改那里。
+- 端口不通（「SSH ip:22 连不上（3 秒没有响应）」）时不会试登录：机器还没装好系统或防火墙没放行。
+
 ## 3. 故障排查流程
 
 按这个顺序，前一步解释不了再进下一步：
@@ -104,7 +109,7 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 3. **入口不通**：`fleetctl show <节点>` 看入口的 TCP/出口探测；`fleetctl logs <节点> --unit ssserver`；`fleetctl exec <节点> -- 'ss -ltnp | grep -E "8388|ssserver"'`；再看线路机 `fleetctl logs <线路机> --unit fleet-xray`。告警对象是线路机时，是它的直出入口（没有节点、没有 TCP 探测）出口不通：看线路机自己的出网（`fleetctl exec <线路机> -- 'curl -sS -m 10 https://1.1.1.1 -o /dev/null -w %{http_code}'`）和 fleet-xray 日志。
    同机 IP 节点（`show` 里有「宿主机」）：`logs <节点> --unit ssserver` 看的是宿主机上它自己的实例 `fleet-ssserver@<SS 端口>`，`exec <节点>` 在宿主机上执行；它的 agent 离线、高负载告警都在宿主机名下。出口不对时 `fleetctl exec <节点> -- 'ip -4 addr; curl -4 -sS --interface <它的 IP> <中控地址>/echo'` 看 IP 还在不在网卡上、回显的是不是它自己。
 4. **线路机配置未应用**：`fleetctl show <线路机>`（代数与 apply_error）；`fleetctl logs <线路机> --unit fleet-agent`；`fleetctl logs <线路机> --unit fleet-xray`。xray 配置错误会写在这里。
-5. **作业失败**：`fleetctl job <id>` 看失败步骤和日志；修好原因后 `fleetctl retry <id>`；放弃用 `fleetctl cancel <id>`（已完成的步骤会补偿回退）。报「主机指纹变化」且确认机器重装过：`fleetctl retry <id> --reset-host-key`；报「没有可用的 root 密码」：`ROOT_PW=… fleetctl retry <id> --password-env ROOT_PW`（网页作业的「重试」里同样能勾选 / 填写）。
+5. **作业失败**：`fleetctl job <id>` 看失败步骤和日志；修好原因后 `fleetctl retry <id>`；放弃用 `fleetctl cancel <id>`（已完成的步骤会补偿回退）。报「主机指纹变化」且确认机器重装过：`fleetctl retry <id> --reset-host-key`；报「没有可用的 root 密码」：`ROOT_PW=… fleetctl retry <id> --password-env ROOT_PW`（网页作业的「重试」里同样能勾选 / 填写），或把报错末尾的中控公钥录进供应商面板 / 机器 root 的 `authorized_keys` 后直接 `fleetctl retry <id>`。
    作业日志里的「引擎错误：…（10 秒后从这一步重做）」多半是库暂时连不上（PG 重启）：作业不失败，库恢复后自己从这一步接着做，不用重试；「中控正在重启：「…」等重启后接着做」是部署时停在了两步之间，重启后自动接着做。
 6. **中控本身异常**：告警对象是「中控」的按 §12 处理；`fleetctl server-logs` 看日志，读不到时按错误提示授权 journal（`usermod -aG systemd-journal fleet` 后重启 fleet-server）。中控整个挂了时 fleetctl 也用不了，靠死人开关（§12）知道，ssh 进中控按 §4 处理。
 

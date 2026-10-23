@@ -101,6 +101,13 @@ struct Checked {
     /// 规范化后的国家（None = 按 IP 自动）
     country: Option<String>,
     errors: Vec<String>,
+    /// 不影响通过的提醒（发行版已过标准支持期、试登录没有结果）：只有「检查」会填
+    warnings: Vec<String>,
+}
+
+impl Item {
+    /// 填了 root 密码（同 create 写进作业参数的条件）
+    fn has_password(&self) -> bool { self.login.as_ref().and_then(|l| l.password.as_deref()).is_some_and(|p| !p.is_empty()) }
 }
 
 /// SS 密码：32 位，去掉易混字符
@@ -289,7 +296,7 @@ async fn validate(tx: &mut Tx<'_>, items: &[Item]) -> ApiResult<Vec<Checked>> {
             }
         }
         let plan_provider = plan.and_then(|p| plans.get(&p).copied());
-        out.push(Checked { item: it.clone(), ip, number: it.number, name: String::new(), host, ss_port, plan_provider, country, errors });
+        out.push(Checked { item: it.clone(), ip, number: it.number, name: String::new(), host, ss_port, plan_provider, country, errors, warnings: vec![] });
     }
     for c in out.iter_mut() {
         if c.item.kind == "relay" {
@@ -317,7 +324,7 @@ async fn validate(tx: &mut Tx<'_>, items: &[Item]) -> ApiResult<Vec<Checked>> {
 }
 
 fn report(v: &[Checked]) -> Value {
-    json!({"items": v.iter().map(|c| json!({"ok": c.errors.is_empty(), "errors": c.errors, "name": c.name, "number": c.number, "ss_port": c.ss_port})).collect::<Vec<_>>()})
+    json!({"items": v.iter().map(|c| json!({"ok": c.errors.is_empty(), "errors": c.errors, "warnings": c.warnings, "name": c.name, "number": c.number, "ss_port": c.ss_port})).collect::<Vec<_>>()})
 }
 
 /// 「检查」里探测 SSH 端口的限速，按操作人：一批最多 100 台，连着查三批没问题，之后每秒补 1 次。
@@ -360,6 +367,8 @@ pub async fn check(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Bat
     let mut v = validate(&mut tx, &b.items).await?;
     tx.rollback().await?;
     // 只查库的校验之外再看一眼 SSH 端口通不通（要读到 SSH 版本行，只连上 TCP 不算）：地址填错、防火墙没放行在这里就能看出来，不用等上架作业失败。
+    // 通了再用中控密钥试登录一次（`ssh_check`）：没填 root 密码又登不进的，作业第一步一定失败，在这里就报，并给出中控公钥；
+    // 登得进的读发行版，已过标准支持期的给警告（不影响通过）。
     // 家宽代理不 SSH；同机 IP 节点登录的是宿主机（在用的，不用再看）；不是一台机器的地址直接报错，不去连
     let mut probe = vec![];
     for (i, c) in v.iter_mut().enumerate() {
@@ -396,10 +405,11 @@ pub async fn check(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Bat
     let deadline = tokio::time::Instant::now() + CHECK_TIMEOUT;
     let timed_out = || format!("检查超时（{} 秒内没查完），稍后再检查", CHECK_TIMEOUT.as_secs());
     let targets: Vec<(String, u16)> = probe.iter().map(|&i| (v[i].ip.to_string(), v[i].item.ssh_port.unwrap_or(22))).collect();
-    // 每个探测拿自己的一份地址（借用 targets 的闭包过不了 axum 处理函数的生命周期检查）
+    // 每个探测拿自己的一份地址与密钥路径（借用 targets 的闭包过不了 axum 处理函数的生命周期检查）
     let ports = futures::stream::iter(targets.clone())
-        .map(|(ip, port)| async move {
-            tokio::time::timeout_at(deadline, crate::ssh::ssh_probe(&ip, port, Duration::from_secs(3))).await.unwrap_or_else(|_| Err(timed_out()))
+        .map(|(ip, port)| {
+            let key = st.cfg.ssh_key.clone();
+            async move { tokio::time::timeout_at(deadline, ssh_check(&ip, port, &key)).await.unwrap_or_else(|_| Err(timed_out())) }
         })
         .buffered(PROBE_CONCURRENCY)
         .collect::<Vec<_>>();
@@ -420,9 +430,26 @@ pub async fn check(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Bat
         .buffered(PROBE_CONCURRENCY)
         .collect::<HashMap<_, _>>();
     let (ports, logins) = futures::join!(ports, logins);
+    // 「录入中控公钥」的说明（带公钥全文）只在有条目登不进时读一次
+    let mut key_hint: Option<String> = None;
     for ((&i, (ip, port)), r) in probe.iter().zip(&targets).zip(ports) {
-        if let Err(why) = r {
-            v[i].errors.push(format!("SSH {ip}:{port} {why}"));
+        let c = &mut v[i];
+        let pw = c.item.has_password();
+        match r {
+            Err(why) => c.errors.push(format!("SSH {ip}:{port} {why}")),
+            Ok(KeyLogin::Os(os)) => c.warnings.extend(jobs::scripts::os_eol_warning(&os)),
+            // 填了 root 密码的照旧：作业会用密码登录并装上中控公钥
+            Ok(_) if pw => {}
+            Ok(KeyLogin::Denied) => {
+                if key_hint.is_none() {
+                    key_hint = Some(crate::ssh::add_key_hint(&st.cfg.ssh_key).await);
+                }
+                let hint = key_hint.as_deref().unwrap_or_default();
+                c.errors.push(format!(
+                    "中控密钥登录不了 {ip}:{port}（密钥被拒），也没填 root 密码。二选一：提供 root 密码（网页填「root 密码」，fleetctl 用 --ssh-password-env 变量名）；或{hint}"
+                ));
+            }
+            Ok(KeyLogin::Unsure(why)) => c.warnings.push(format!("用中控密钥试登录 {ip}:{port} 没有结果（{why}），上架作业第一步会再登录一次")),
         }
     }
     for &i in &on_host {
@@ -442,8 +469,38 @@ pub async fn check(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Bat
     Ok(ok(report(&v)))
 }
 
-/// 「检查」整体的时限（端口探测与登录宿主机一起算）
+/// 「检查」整体的时限（端口探测、试登录与登录宿主机一起算）
 const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
+/// 用中控密钥试登录一台的时限（整个 ssh 进程；连接超时另设 5 秒）
+const KEY_LOGIN_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// 用中控密钥试登录的结果
+enum KeyLogin {
+    /// 登进去了：os-release 的 `ID-VERSION_ID`（同 FACTS 的 `os=`）
+    Os(String),
+    /// 密钥被拒：机器上还没录入中控公钥（或不许 root 用密钥登录）
+    Denied,
+    /// 别的问题（ssh 超时、连上后被断开、脚本没输出…）：说不准，只提醒
+    Unsure(String),
+}
+
+/// 一台机器的 SSH 检查：端口要说 SSH（`ssh_probe`，连不上时不用等 ssh 自己超时），再用中控密钥试登录一次读发行版。
+/// 端口不通为 Err（给人看的原因，接在「SSH ip:port」后面）。填没填 root 密码都试：登得进时才能提醒过期的发行版
+async fn ssh_check(ip: &str, port: u16, key: &std::path::Path) -> Result<KeyLogin, String> {
+    crate::ssh::ssh_probe(ip, port, Duration::from_secs(3)).await?;
+    let out = match crate::ssh::key_login_probe(ip, port, key, jobs::scripts::OS_RELEASE, KEY_LOGIN_TIMEOUT).await {
+        Ok(o) => o,
+        Err(e) => return Ok(KeyLogin::Unsure(format!("{e:#}"))),
+    };
+    Ok(match (out.ok(), out.ssh_kind(), out.kv("os")) {
+        (true, _, Some(os)) => KeyLogin::Os(os.to_string()),
+        (_, Some(crate::ssh::ErrKind::Auth), _) => KeyLogin::Denied,
+        _ => {
+            let detail = if out.stderr.trim().is_empty() { out.stdout.trim() } else { out.stderr.trim() };
+            KeyLogin::Unsure(if detail.is_empty() { format!("退出码 {}", out.code) } else { crate::jobs::clip(detail).into_owned() })
+        }
+    })
+}
 
 /// 登录宿主机 `host` 跑 `script`（`HOST_IPS`），取它网卡上的 IPv4 与（要核对的 IP 有不在网卡上的时）各本机地址经 NAT 出去的 IP：
 /// `(local_ips, nat)`。先看 SSH 端口（连不上时不用等 ssh 自己超时），再登录。

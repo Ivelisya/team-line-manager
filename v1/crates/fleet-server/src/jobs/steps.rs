@@ -167,7 +167,18 @@ pub async fn run(c: &Ctx<'_>, key: &str) -> anyhow::Result<Outcome> {
 }
 
 /// 缺 root 密码时告诉用户怎么补：密码用过即丢，失败作业的密码 3 天后也会清掉
-const NO_PASSWORD_HINT: &str = "（提供过的密码用过即丢，失败作业留存的密码 3 天后清除）。在网页作业的「重试」里填写 root 密码，或 fleetctl retry <作业> --password-env 变量名";
+const NO_PASSWORD_HINT: &str = "在网页作业的「重试」里填写 root 密码，或 fleetctl retry <作业> --password-env 变量名（提供过的密码用过即丢，失败作业留存的密码 3 天后清除）";
+
+impl Ctx<'_> {
+    /// 中控密钥登录不了、又没有 root 密码：两条出路都写上，录入中控公钥那条带公钥全文（放在最后，方便复制）。
+    /// `detail` 是 ssh 的报错（可以为空）
+    async fn no_login(&self, detail: &str) -> anyhow::Error {
+        let detail = detail.trim();
+        let detail = if detail.is_empty() { String::new() } else { format!("（{detail}）") };
+        let key = ssh::add_key_hint(&self.st.cfg.ssh_key).await;
+        StepError::err(ErrKind::Auth, format!("中控密钥登录不了，也没有可用的 root 密码{detail}。二选一后重试：{NO_PASSWORD_HINT}；或{key}"))
+    }
+}
 
 // ── 上架 ──────────────────────────────────────────────────────────────────
 
@@ -195,13 +206,15 @@ async fn preflight(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         if out.ssh_kind() != Some(ErrKind::Auth) {
             return Err(out.fail("登录失败"));
         }
-        let pw = c
-            .password()?
-            .ok_or_else(|| StepError::err(ErrKind::Auth, format!("中控密钥登录不了，也没有可用的 root 密码{NO_PASSWORD_HINT}：{}", out.stderr.trim())))?;
+        let Some(pw) = c.password()? else { return Err(c.no_login(&out.stderr).await) };
         out = c.ssh(&m, Some(pw)).run(scripts::FACTS, Duration::from_secs(30)).await?;
         if !out.ok() {
             return Err(out.fail("用密码也登录不了"));
         }
+    }
+    // 已过标准支持期的发行版只提醒，不拦
+    if let Some(w) = scripts::os_eol_warning(out.kv("os").unwrap_or("")) {
+        c.warn(w).await;
     }
     let arch = out.kv("arch").unwrap_or("");
     if arch != "x86_64" {
@@ -285,9 +298,9 @@ async fn bootstrap(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         c.set_params(json!({"login": null})).await?;
         return Ok(Outcome::Skipped("中控密钥已经能登录".into()));
     }
-    let pw = c.password()?.ok_or_else(|| StepError::err(ErrKind::Auth, format!("中控密钥登录不了，也没有可用的 root 密码{NO_PASSWORD_HINT}")))?;
-    let pubkey = tokio::fs::read_to_string(c.st.cfg.ssh_key.with_extension("pub")).await.context("读取中控公钥")?;
-    let script = vars(&[("PUBKEY", pubkey.trim())]) + scripts::BOOTSTRAP_KEY;
+    let Some(pw) = c.password()? else { return Err(c.no_login("").await) };
+    let pubkey = ssh::public_key(&c.st.cfg.ssh_key).await.ok_or_else(|| anyhow!("读不到中控公钥 {}.pub", c.st.cfg.ssh_key.display()))?;
+    let script = vars(&[("PUBKEY", &pubkey)]) + scripts::BOOTSTRAP_KEY;
     let out = c.ssh(&m, Some(pw)).run(&script, Duration::from_secs(40)).await?;
     if !out.stdout.contains("bootstrap=ok") {
         return Err(out.fail("推送公钥失败"));

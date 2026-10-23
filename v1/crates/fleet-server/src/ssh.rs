@@ -314,6 +314,41 @@ impl Target {
     }
 }
 
+/// 中控公钥全文（`ssh-ed25519 AAAA… 注释`）：配置 `ssh_key` 旁边的 `<ssh_key>.pub`（ssh-keygen 的命名）。读不到或是空的为 None
+pub async fn public_key(key: &Path) -> Option<String> {
+    let mut p = key.as_os_str().to_owned();
+    p.push(".pub");
+    tokio::fs::read_to_string(PathBuf::from(p)).await.ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+/// 「录入中控公钥」这条出路的说明（上架检查、作业预检报中控密钥登录不了时带上）：公钥全文放在最后，整段选中末尾复制即可；
+/// 读不到公钥时说它在中控的哪个文件
+pub async fn add_key_hint(key: &Path) -> String {
+    const WHERE: &str = "在供应商面板（或机器上 root 的 ~/.ssh/authorized_keys）录入中控公钥";
+    match public_key(key).await {
+        Some(k) => format!("{WHERE}：{k}"),
+        None => format!("{WHERE}（中控上的 {}.pub，现在读不到）", key.display()),
+    }
+}
+
+/// 上架检查用中控密钥试登录一次、跑只读脚本 `script`（读 /etc/os-release），不重试；`timeout` 是整个 ssh 进程的时限。
+/// 只用密钥（BatchMode，不会停下来问密码），不读 ssh 配置文件，同 `Target`。
+///
+/// 主机公钥不核对、不记录（StrictHostKeyChecking=no + UserKnownHostsFile=/dev/null），而不是写进中控的 known_hosts 或先 keyscan 进临时文件：
+/// - 记录指纹是上架作业第一步的事（两次 keyscan 比对、指纹变了要明确允许重置才覆盖）；检查不落库、可以随便点，
+///   在这里写进正式的 known_hosts，等于没经过那些核对就信任了这把公钥；
+/// - 临时 known_hosts 里只放这一次 keyscan 拿到的公钥，和不核对是一回事（同样是首次信任），只是多一次连接；
+/// - 被冒充时的代价小：只做公钥认证（签名绑定本次会话，冒充者拿去登录不了真机器），不发密码、不转发 agent，
+///   脚本只读 /etc/os-release，结果只决定检查报不报「登录不了」与发行版警告。真正上架时作业照常按 known_hosts 严格核对
+pub async fn key_login_probe(ip: &str, port: u16, key: &Path, script: &str, timeout: Duration) -> anyhow::Result<Output> {
+    let mut c = Command::new("ssh");
+    c.args(["-F", "/dev/null", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "PreferredAuthentications=publickey", "-i"]).arg(key);
+    c.args(["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "GlobalKnownHostsFile=/dev/null", "-o", "UpdateHostKeys=no"]);
+    c.args(["-o", "ConnectTimeout=5", "-o", "LogLevel=ERROR", "-o", "ClearAllForwardings=yes", "-p"]).arg(port.to_string());
+    c.arg(format!("root@{ip}")).arg("bash -s");
+    exec(c, script, timeout).await
+}
+
 /// 公钥（`ssh-ed25519 AAAA…`）的 SHA256 指纹，仅用于展示
 pub fn fingerprint(key: &str) -> String {
     let b64 = key.split_whitespace().nth(1).unwrap_or(key);
