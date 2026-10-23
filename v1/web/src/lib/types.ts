@@ -164,7 +164,7 @@ export type JobKind = 'provision_vps' | 'provision_proxy' | 'provision_relay' | 
 export interface JobStep { idx: number; key: string; title: string; state: string; started_at: string | null; finished_at: string | null; output: Record<string, unknown> | null; error: string | null; error_kind?: string | null }
 /** 作业列表（GET /jobs）的一项：不带 steps。step = 当前（或失败的）步骤下标，step_title 为它的标题，做完为 null */
 export interface JobSummary {
-  id: string; kind: JobKind | string; target: { id: string; name: string } | null; state: JobState | string;
+  id: string; kind: JobKind | string; target: { id: string; name: string; /** 退役（进备用、回收）前的名字，没退役过为 null */ origin?: string | null } | null; state: JobState | string;
   step: number; step_count: number; step_title: string | null; error: string | null; created_by: string; created_at: string; started_at: string | null; finished_at: string | null;
 }
 /** 作业详情（GET /jobs/{id}） */
@@ -231,7 +231,7 @@ export interface RouterExitPlan { id: string; name: string; state: 'online' | 'o
 /** 换线路机 / 搬空线路机（API.md「生命周期操作」）：GET 是预览（没有 job_id），POST 的响应同样的内容加 job_id */
 export interface MovePreview { name?: string; from?: string; to?: string; routers_enabled: boolean; routers: RouterExitPlan[]; ok: boolean; blockers: string[]; warnings: string[]; share_changed: boolean; note: string }
 export interface MoveResult extends MovePreview { job_id: string; name: string; from: string; to: string }
-export interface EvacuateResult { from: string; to: string; jobs: { machine_id: string; name: string; job_id: string; routers: RouterExitPlan[] }[]; skipped: { machine_id: string; name: string | null; reason: string }[]; warnings: string[]; share_changed: boolean; note: string }
+export interface EvacuateResult { from: string; to: string; /** job_id 只在真正搬空（POST）的结果里有，预览没有 */ jobs: { machine_id: string; name: string; job_id?: string; routers: RouterExitPlan[] }[]; skipped: { machine_id: string; name: string | null; reason: string }[]; warnings: string[]; share_changed: boolean; note: string }
 /** 替换节点预览（GET /machines/{old}/replace）：新节点接旧编号（new_name），旧节点去 old_to（默认同团队的备用团队）；
  *  routers：出口指向旧节点、会改成新节点入口的软路由（state 不是 online 时 blockers 里有原因）；renames：新节点原来的团队压缩编号 */
 export interface ReplaceSide { id: string; name: string; kind: Kind; team: { id: string; name: string } | null }

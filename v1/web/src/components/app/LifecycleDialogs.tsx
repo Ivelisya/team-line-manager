@@ -109,8 +109,10 @@ export const EvacuateDialog = resetOnOpen(function EvacuateDialog({ relay, open,
   const list = relay.entries.filter((e) => e.lifecycle !== 'removing' && e.lifecycle !== 'removed' && !e.direct);
   const movable = list.filter((e) => e.lifecycle === 'active');
   const hasDirect = relay.entries.some((e) => e.direct);
+  // 实际会建几个作业以预览为准（软路由不在线、有别的作业的节点会被跳过）；还没选目标时按在用入口数
+  const n = pv?.jobs.length ?? movable.length;
   return (
-    <ConfirmDialog open={open} onOpenChange={onOpenChange} size="md" title={`搬空 ${relay.name}`} confirmLabel={`搬走 ${movable.length} 个节点`} confirmDisabled={!to || movable.length === 0 || !pv || q.isFetching}
+    <ConfirmDialog open={open} onOpenChange={onOpenChange} size="md" title={`搬空 ${relay.name}`} confirmLabel={`搬走 ${n} 个节点`} confirmDisabled={!to || n === 0 || !pv || q.isFetching}
       description={<>每个节点各建一个换线作业 <InfoTip text="为这台线路机上每个在用入口的节点各建一个「换线路机」作业；搬完后就可以安全退役这台线路机。" /></>}
       onConfirm={async () => {
         const r = await evac.mutateAsync({ id: relay.id, to_relay_id: to, routers });
@@ -122,7 +124,7 @@ export const EvacuateDialog = resetOnOpen(function EvacuateDialog({ relay, open,
       <Field label="搬到哪台线路机"><Select value={to} onChange={setTo} options={opts} placeholder="选择目标线路机" /></Field>
       <RoutersCheck checked={routers} onChange={setRouters} />
       <div>
-        <div className="label" style={{ marginBottom: 6 }}>将被搬走的节点（{movable.length}）</div>
+        <div className="label" style={{ marginBottom: 6 }}>将被搬走的节点（{n}）</div>
         {list.length === 0 ? <div className="hint">没有节点入口</div> : (
           <ul className="reason-list" style={{ maxHeight: 220, overflow: 'auto' }}>
             {list.map((e) => (

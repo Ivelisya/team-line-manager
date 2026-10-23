@@ -20,6 +20,9 @@ pub struct JobOut {
     target_id: Option<Uuid>,
     #[serde(skip)]
     target_name: Option<String>,
+    /// 目标机器退役（进备用、回收）前的名字：还在备用的取 spare_from，回收了的取回收站里那条的
+    #[serde(skip)]
+    target_origin: Option<String>,
     state: String,
     step: i32,
     error: Option<String>,
@@ -34,6 +37,7 @@ pub struct JobOut {
 
 const SELECT: &str = "select j.id, j.kind, j.target_id,
     display_name(m.kind::text, m.label, t.name, m.number) target_name,
+    coalesce(m.spare_from, (select rb.name from recycle_bin rb where rb.source = 'fleet' and rb.source_id = j.target_id::text)) target_origin,
     j.state::text state, j.step, j.error, j.created_by, j.created_at, j.started_at, j.finished_at
   from job j left join machine m on m.id = j.target_id left join team t on t.id = m.team_id";
 
@@ -47,7 +51,7 @@ pub struct ListQ {
     kind: Option<String>,
 }
 
-/// 作业 JSON：目标机器以 `target{id,name}` 给出；`step_title` = 当前（或失败的）步骤标题，做完为 null。列表不带 steps
+/// 作业 JSON：目标机器以 `target{id,name,origin}` 给出（origin：退役前的名字，没退役过为 null）；`step_title` = 当前（或失败的）步骤标题，做完为 null。列表不带 steps
 fn job_json(j: &JobOut) -> Value {
     let mut v = serde_json::to_value(j).unwrap_or_default();
     // 步骤数 = 静态步骤定义的个数（作业建立时按定义建步骤行），不逐行子查询
@@ -55,7 +59,7 @@ fn job_json(j: &JobOut) -> Value {
     v["step_count"] = json!(defs.len());
     v["step_title"] = json!(defs.get(j.step as usize).map(|d| d.title));
     v["target"] = match j.target_id {
-        Some(id) => json!({"id": id, "name": j.target_name.clone().unwrap_or_else(|| "（已删除）".into())}),
+        Some(id) => json!({"id": id, "name": j.target_name.clone().unwrap_or_else(|| "（已删除）".into()), "origin": j.target_origin}),
         None => Value::Null,
     };
     v
