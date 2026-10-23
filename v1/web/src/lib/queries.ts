@@ -257,6 +257,8 @@ export interface RetryBody { reset_host_key?: boolean; ssh_password?: string }
 export const useRetryJob = () => useWrite(({ id, ...b }: { id: string } & RetryBody) => post(`/jobs/${id}/retry`, b), [...M, ['jobs'], ['job']]);
 export const useCancelJob = () => useWrite((id: string) => post(`/jobs/${id}/cancel`), [...M, ['jobs'], ['job']]);
 export const useAck = () => useWrite((id: string) => post(`/incidents/${id}/ack`), [['incidents']]);
+/** 批量确认（告警页合并行）：逐条确认，全部成功才算成功 */
+export const useAckMany = () => useWrite((ids: string[]) => Promise.all(ids.map((id) => post(`/incidents/${id}/ack`))), [['incidents']]);
 /** 静默变了，软路由、探测点的「维护中」也跟着变（机器的随实时指标推来） */
 const SILENCE_KEYS = [['silences'], ['incidents'], ['routers'], ['probe-points']];
 export const useAddSilence = () => useWrite((b: Partial<Silence>) => post('/silences', b), SILENCE_KEYS);

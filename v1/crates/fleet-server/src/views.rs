@@ -1509,9 +1509,9 @@ pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Valu
         .and_then(|v| v.into_iter().min());
     // 到期：按订阅的 due_state（同续费告警）分别计即将到期、已过期
     let (mut due_soon, mut overdue) = (0, 0);
-    // 在线/离线按 agent 连通（同前端 isQuiet）：agent 没有近期上报为离线。只数有自己 agent 的机器：
-    // 家宽代理没有 agent、同机 IP 节点借宿主机的 agent，都不计。和健康无关
-    let (mut online, mut offline) = (0, 0);
+    // 在线/离线按台机器、按 agent 连通（同前端 isQuiet）：agent 没有近期上报为离线，和健康无关。
+    // 同机 IP 节点跟随宿主机的 agent（视图里的 agent 就是宿主机的）照常计入；家宽代理不需要 agent，不计，另数 no_agent
+    let (mut online, mut offline, mut no_agent, mut ip_nodes) = (0, 0, 0, 0);
     // 月费按汇率折成 USD 合计（monthly_usd，见 fx.rs）
     let mut usd = crate::fx::Total::default();
     for m in ms {
@@ -1546,12 +1546,13 @@ pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Valu
         // 实时速率只算数据没过期的：agent 离线的机器，最后一份上报的速率不算（同前端 liveRate）。
         // 告警（哪怕严重）不影响：机器照常每 10 秒上报。同机 IP 节点的读数就是宿主机的：在线离线照常按节点计，速率不再算一遍
         let stale = m.agent.as_ref().is_some_and(|a| !a.online);
-        if m.agent.is_some() && m.host_machine.is_none() {
-            if stale {
-                offline += 1;
-            } else {
-                online += 1;
-            }
+        match &m.agent {
+            None => no_agent += 1,
+            Some(_) if stale => offline += 1,
+            Some(_) => online += 1,
+        }
+        if m.host_machine.is_some() {
+            ip_nodes += 1;
         }
         if let Some(h) = m.host.as_ref().filter(|_| !stale && m.host_machine.is_none()) {
             rx += h.net_rx_bps.unwrap_or(0.0);
@@ -1560,7 +1561,7 @@ pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Valu
     }
     json!({
         "nodes": nodes, "relays": relays, "provisioning": provisioning, "retiring": retiring, "failed": failed, "due_soon": due_soon, "overdue": overdue, "online": online, "offline": offline,
-        "monthly_usd": usd, "traffic_month": {"up": up, "down": down, "counted_from": counted_from.map(crate::meta::fmt_ts)}, "net_rx_bps": rx, "net_tx_bps": tx,
+        "no_agent": no_agent, "ip_nodes": ip_nodes, "monthly_usd": usd, "traffic_month": {"up": up, "down": down, "counted_from": counted_from.map(crate::meta::fmt_ts)}, "net_rx_bps": rx, "net_tx_bps": tx,
     })
 }
 
@@ -1622,14 +1623,14 @@ mod tests {
         assert_eq!(ov["net_tx_bps"], 500.0);
         assert_eq!(ov["nodes"]["down"], 1, "只有 agent 离线的那台算故障");
 
-        // 同机 IP 节点的主机读数就是宿主机的：速率只算一次，节点数照常各算一台；在线数只算宿主机（agent 是它的）
+        // 同机 IP 节点的主机读数就是宿主机的：速率只算一次；节点数、agent 在线数都照常各算一台（IP 节点随宿主机）
         let mut h = base("vps");
         h.host = Some(host(800.0));
         let mut x = base("vps");
         x.host = h.host.clone();
         x.host_machine = Some(Ref { id: h.id, name: "团队1-03".into() });
         let ov = overview_of(&[h, x], &HashMap::new());
-        assert_eq!((ov["net_rx_bps"].as_f64(), ov["nodes"]["total"].as_i64(), ov["online"].as_i64()), (Some(800.0), Some(2), Some(1)));
+        assert_eq!((ov["net_rx_bps"].as_f64(), ov["nodes"]["total"].as_i64(), ov["online"].as_i64(), ov["ip_nodes"].as_i64()), (Some(800.0), Some(2), Some(2), Some(1)));
     }
 
     #[test]
@@ -1649,7 +1650,7 @@ mod tests {
         retired.lifecycle = "retired".into();
         retired.agent.as_mut().unwrap().online = false;
         let ov = overview_of(&[crit, off, proxy, retired], &HashMap::new());
-        assert_eq!((ov["online"].as_i64(), ov["offline"].as_i64()), (Some(1), Some(1)));
+        assert_eq!((ov["online"].as_i64(), ov["offline"].as_i64(), ov["no_agent"].as_i64()), (Some(1), Some(1), Some(1)));
     }
 
     #[test]

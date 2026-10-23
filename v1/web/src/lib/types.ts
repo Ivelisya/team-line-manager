@@ -151,8 +151,9 @@ export interface Plan {
 export interface Overview {
   nodes: Record<'total' | 'ok' | 'degraded' | 'down' | 'unknown' | 'maintenance', number>;
   relays: Record<'total' | 'ok' | 'degraded' | 'down' | 'unknown' | 'maintenance', number>;
-  /** 在线/离线按 agent 连通（同 isQuiet），与健康无关 */
-  online: number; offline: number;
+  /** 在线/离线按台机器、按 agent 连通（同 isQuiet），与健康无关；同机 IP 节点随宿主机计入（ip_nodes 是其中的台数），
+   *  家宽代理不需要 agent，不计入，另数 no_agent */
+  online: number; offline: number; no_agent: number; ip_nodes: number;
   /** failed：上架失败（lifecycle = failed）的台数 */
   provisioning: number; retiring: number; failed: number;
   /** 在用机器里即将到期（due_state = soon）与已过期（overdue）的台数 */

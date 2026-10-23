@@ -5,13 +5,13 @@ import * as React from 'react';
 import { CheckCircle2, ChevronRight, CircleAlert, Loader2, PackageOpen } from 'lucide-react';
 import { useRelays } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
-import { entryBad, healthLabel, reachFail, reachWho } from '@/lib/derive';
+import { entryBad, healthLabel, linkCounts, probeSummary, reachWho } from '@/lib/derive';
 import { useReachLabel } from '@/lib/probePoints';
 import * as F from '@/lib/format';
 import type { EntryView, MachineView } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { Tip } from '@/components/ui/overlays';
-import { Chip, Due, Empty, ErrorNote, Flag, HealthPill, Num, PageHead, Pill, TableWrap } from '@/components/app/primitives';
+import { Chip, Due, Empty, ErrorNote, Flag, HealthPill, LinkCounts, Num, PageHead, Pill, TableWrap } from '@/components/app/primitives';
 import { NodeHover } from '@/components/app/NodeHover';
 import { Waypoints } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -76,7 +76,7 @@ function RelayCard({ m, open, routers }: { m: MachineView; open: Open; routers: 
   // 有问题的排前面（稳定：同组内保持原顺序），折叠时也全部露出
   const sorted = React.useMemo(() => [...m.entries.filter(entryBad), ...m.entries.filter((e) => !entryBad(e))], [m.entries]);
   const cap = Math.max(ENTRY_CAP, m.entries.filter(entryBad).length);
-  const unreach = m.entries.filter(reachFail).length;
+  const links = linkCounts(probeSummary(m));
   const who = reachWho(useReachLabel());
   const entries = all ? sorted : sorted.slice(0, cap);
   return (
@@ -85,7 +85,8 @@ function RelayCard({ m, open, routers }: { m: MachineView; open: Open; routers: 
         <Flag country={m.country} manual={!!m.country_set} ip={m.ip} />
         <button type="button" className="ttl relay-name" onClick={() => open(m.id)}>{m.name}<ChevronRight size={16} aria-hidden /></button>
         <HealthPill m={m} />
-        {unreach > 0 && <span className="relay-unreach" data-tip={`${who}连不上这些入口的端口，见下表标红的行`}>{who}连不上 {unreach} 个入口</span>}
+        {/* 三段连通数同卡片与抽屉（linkCounts） */}
+        {links.reach.total > 0 && <span className="t-sub"><LinkCounts c={links} who={who} /></span>}
         <span className="t-sub">{r?.public_host && r.public_host !== m.ip ? `${r.public_host} · ${m.ip}` : m.ip}</span>
         {m.subscription && <Chip variant={dueWarn ? 'warn' : undefined}><Due days={m.subscription.due_days} state={m.subscription.due_state} tail /></Chip>}
         {m.lifecycle === 'active' && movableEntries(m).length > 0 && <Button size="sm" style={{ marginLeft: 'auto' }} onClick={() => openEvacuate(m.id)}><PackageOpen size={14} />搬空到…</Button>}

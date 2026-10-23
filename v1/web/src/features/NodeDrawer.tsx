@@ -17,8 +17,9 @@ import { useHeld } from '@/lib/useHeld';
 import { useTitleName } from '@/lib/title';
 import * as F from '@/lib/format';
 import { jobKindLabel } from '@/lib/jobs';
-import { errText, kindLabel, meta, probeSummary, severityOf } from '@/lib/derive';
-import { CopyButton, ErrorNote, ReasonList, HealthPill, Flag, LabelValue, LabelValueGrid, LifecyclePill, Note, Section, SectionHeader } from '@/components/app/primitives';
+import { errText, kindLabel, linkCounts, meta, probeSummary, reachWho, severityOf } from '@/lib/derive';
+import { useReachLabel } from '@/lib/probePoints';
+import { CopyButton, ErrorNote, ReasonList, HealthPill, Flag, LabelValue, LabelValueGrid, LifecyclePill, LinkCounts, Note, Pill, Section, SectionHeader } from '@/components/app/primitives';
 import { MachineTags } from '@/components/app/MachineTags';
 import { ManageTab } from './ManageTab';
 import { BillingTab } from './BillingTab';
@@ -68,7 +69,7 @@ export function NodeDrawer() {
             <header className="drawer-head m-drawer-head" style={{ paddingRight: 56 }}>
               <Flag country={m.country} manual={!!m.country_set} ip={m.ip} />
               <div className="m-head" style={{ flex: 1 }}>
-                <div className="m-head-row"><SheetTitle className="drawer-title ellipsis">{m.name}</SheetTitle><HealthPill m={m} /><MachineTags m={m} /></div>
+                <div className="m-head-row"><SheetTitle className="drawer-title ellipsis">{m.name}</SheetTitle><HealthPill m={m} /><UnreachPill m={m} /><MachineTags m={m} /></div>
                 <SheetDescription className="drawer-sub ellipsis">{m.ip} · {m.host_machine ? `同机 · ${m.host_machine.name}` : m.plan?.name ?? '未设套餐'}{!m.provider && ' · 未设供应商'}{m.spare_from && ` · 原 ${m.spare_from}`}</SheetDescription>
               </div>
               {sib && (
@@ -156,12 +157,20 @@ function IpNodeLine({ id, name, onOpen }: { id: string; name: string; onOpen: (i
   );
 }
 
-/** 入口探测的连通数：「TCP 1/1 · 出口 0/1」，有不通的数字标红（同入口表里的「失败」）；没有在用的入口为「—」 */
-function probeCounts(m: MachineView) {
+/** 入口三段连通数（同卡片与线路页，linkCounts）：「入口可达 1/1 · 节点通 1/1 · 出口通 1/1」；没有在用的入口为「—」 */
+function LinkRow({ m }: { m: MachineView }) {
+  const who = reachWho(useReachLabel());
   const ps = probeSummary(m);
-  if (!ps.all) return '—';
-  const n = (ok: number, total: number) => <b className="num" style={ok < total ? { color: 'var(--bad-text)' } : undefined}>{ok}/{total}</b>;
-  return <span data-tip={`TCP：线路机到节点的握手，${ps.tcpBad} 条不通\n出口：经入口访问外网的验证，${ps.egressBad} 条不通`}>{ps.total > 0 && <>TCP {n(ps.tcpOk, ps.total)} · </>}出口 {n(ps.all - ps.egressBad, ps.all)}</span>;
+  return ps.all ? <span><LinkCounts c={linkCounts(ps)} who={who} /></span> : <>—</>;
+}
+
+/** 节点的入口端口连不上（线路机那一段的问题，告警记在线路机上，节点自己的健康不算它）：抬头在状态旁补一枚「入口可达 x/y」，
+ *  不然「正常」与入口表里标红的行各说各的。线路机自己的已经是故障原因，不补 */
+function UnreachPill({ m }: { m: MachineView }) {
+  const who = reachWho(useReachLabel());
+  const ps = probeSummary(m);
+  if (m.kind === 'relay' || m.lifecycle !== 'active' || !ps.reachBad) return null;
+  return <Pill tone="warn" tip={`${who}连不上 ${ps.reachBad} 条入口在线路机上的端口，客户经这几条入口连不上\n告警记在线路机上`}>入口可达 {ps.all - ps.reachBad}/{ps.all}</Pill>;
 }
 
 function OverviewTab({ m }: { m: MachineView }) {
@@ -201,8 +210,8 @@ function OverviewTab({ m }: { m: MachineView }) {
             <LabelValue label="agent 版本">{`${m.agent.version ?? '未知'}${ofHost}`}</LabelValue>
             <LabelValue label="最近上报">{m.agent.last_report_at ? F.ago(m.agent.last_report_at) : '还没上报'}</LabelValue>
           </> : <LabelValue label="agent"><>无 <InfoTip text="家宽代理不装 agent：没有主机读数，连通性靠线路机的探测" /></></LabelValue>}
-          {/* TCP 不通与出口不通分开数（同线路页）：TCP 只数经节点的入口（直出入口没有 TCP 探测），出口数全部在用的入口 */}
-          <LabelValue label="入口探测">{probeCounts(m)}</LabelValue>
+          {/* 三段分开数（同卡片、线路页）：节点通只数经节点的入口（直出入口没有 TCP 探测），入口可达、出口通数全部在用的入口 */}
+          <LabelValue label="连通" className="span-2"><LinkRow m={m} /></LabelValue>
           {m.ip_nodes.length > 0 && (
             <LabelValue label="同机 IP 节点" className="span-2" wrap>
               <div className="stack-sm" style={{ marginTop: 2 }}>{m.ip_nodes.map((x) => <IpNodeLine key={x.id} id={x.id} name={x.name} onOpen={open} />)}</div>

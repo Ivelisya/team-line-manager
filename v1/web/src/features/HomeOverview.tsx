@@ -14,6 +14,7 @@ import { cn } from '@/lib/utils';
 import { meta, usdTotalTip } from '@/lib/derive';
 import { CountUp, DotCount, FromTag, Num, Stat } from '@/components/app/primitives';
 import { AreaSpark, Cells } from '@/components/app/viz';
+import { InfoTip } from '@/components/ui/form';
 
 /** 分区：浅灰大圆角容器，左上小胶囊标签（图标 + 文字）、标题、一行说明 */
 export function HomeSection({ icon, label, title, sub, children, className, headRef }: {
@@ -121,11 +122,12 @@ function RoutersLink() {
 function ClusterPanel({ o }: { o: Overview | undefined }) {
   const trace = useFleetSeries();
   const offNames = useOfflineNames().data;
-  // 在线/离线按 agent 连通（服务端算，同 isQuiet）：有告警但照常上报的机器算在线；降级 / 故障只决定状态胶囊。
-  // 只数有自己 agent 的机器：家宽代理没有 agent，同机 IP 节点借宿主机的 agent
+  // 在线/离线按台机器、按 agent 连通（服务端算，同 isQuiet）：有告警但照常上报的机器算在线；降级 / 故障只决定状态胶囊。
+  // 分母 = 应该有 agent 的机器：同机 IP 节点随宿主机的 agent 计入，家宽代理不需要 agent（no_agent），不计
   const online = o?.online ?? 0; const offline = o?.offline ?? 0; const total = online + offline;
   const down = o ? o.nodes.down + o.relays.down : 0; const degraded = o ? o.nodes.degraded + o.relays.degraded : 0;
   const rate = total ? (online / total) * 100 : 0;
+  const scope = o ? `家宽代理 ${o.no_agent} 台不需要 agent；同机 IP 节点随宿主机${o.ip_nodes ? `（${o.ip_nodes} 台）` : ''}` : '';
   // 格条按比例分段着色：在线绿、离线红（末尾几格）；有离线至少 1 格红，不会因为离线占比不到一格就全绿；没有机器全灰
   const colors = React.useMemo(() => {
     const bad = offline ? Math.max(1, Math.round((offline / total) * ONLINE_N)) : 0;
@@ -146,11 +148,11 @@ function ClusterPanel({ o }: { o: Overview | undefined }) {
       </header>
       <div className="cluster-box">
         <div className="cluster-row">
-          <span className="cluster-big"><span className="num">{o ? <><CountUp value={rate} format={(n) => n.toFixed(rate % 1 ? 1 : 0)} />%</> : '—'}</span><small data-tip="只统计装了 agent 的机器，家宽代理不算；同机 IP 节点并入宿主机">在线率</small></span>
+          <span className="cluster-big"><span className="num">{o ? <><CountUp value={rate} format={(n) => n.toFixed(rate % 1 ? 1 : 0)} />%</> : '—'}</span><small data-tip={scope || undefined}>agent 在线率</small></span>
           {offline ? <Link className="cluster-kv" to={DOWN_LINK} data-tip={OFFLINE_TIP}>{kv}</Link> : <span className="cluster-kv" data-tip={OFFLINE_TIP}>{kv}</span>}
         </div>
         {offline ? <Link to={DOWN_LINK} className="block" data-tip={barTip} data-tip-side="bottom" aria-label={`agent 离线 ${offline} 台`}>{bar}</Link> : <div data-tip={barTip} data-tip-side="bottom">{bar}</div>}
-        <div className="cluster-foot"><span>在线 <b className="num">{o ? online : '—'}</b>{o && ' 台'}{degraded > 0 && <> · 降级 <b className="num">{degraded}</b></>}</span><span data-tip="只统计装了 agent 的机器，家宽代理不算">总计 <b className="num">{o ? total : '—'}</b>{o && ' 台'}</span></div>
+        <div className="cluster-foot"><span>agent 在线 <b className="num">{o ? `${online} / ${total}` : '—'}</b>{o && ' 台'}{scope && <InfoTip text={scope} />}</span>{degraded > 0 && <span>降级 <b className="num">{degraded}</b> 台</span>}</div>
       </div>
       <div className="cluster-box">
         <div className="cluster-row">

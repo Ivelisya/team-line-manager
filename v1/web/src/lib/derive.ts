@@ -359,12 +359,12 @@ const WORST_FIRST = ['bad', 'warn', 'ok'] as const;
 /** 近 30 天可用率的每日格（旧→新）：取 TCP 与出口两种探测里较差的一档（阈值同心跳格），当天没有探测为空格 */
 export const availCells = (days: AvailabilityDay[]): BeatCell[] =>
   days.map((d) => { const a = probeTone(d.tcp_ok, d.tcp_total); const b = probeTone(d.egress_ok, d.egress_total); return WORST_FIRST.find((t) => t === a || t === b) ?? null; });
-/** 每日格的悬停（与 availCells 一一对应）：「10-21 · TCP 99.93%（1438/1440） · 出口 100%（288/288）」，没有探测写「没有探测」；
+/** 每日格的悬停（与 availCells 一一对应）：「10-21 · 节点通 99.93%（1438/1440） · 出口通 100%（288/288）」，没有探测写「没有探测」；
  *  最后一格是今天（还没过完） */
 export function availTitles(days: AvailabilityDay[]): string[] {
   const part = (label: string, ok: number, total: number) => (total ? `${label} ${successPct((ok / total) * 100)}（${ok}/${total}）` : '');
   return days.map((d, i) => {
-    const what = [part('TCP', d.tcp_ok, d.tcp_total), part('出口', d.egress_ok, d.egress_total)].filter(Boolean).join(' · ') || '没有探测';
+    const what = [part('节点通', d.tcp_ok, d.tcp_total), part('出口通', d.egress_ok, d.egress_total)].filter(Boolean).join(' · ') || '没有探测';
     return `${d.date.slice(5)}${i === days.length - 1 ? '（今天）' : ''} · ${what}`;
   });
 }
@@ -393,6 +393,20 @@ export function probeSummary(m: MachineView) {
     off: m.entries.filter((e) => e.lifecycle === 'disabled').length, all: es.length, usable: es.filter((e) => (e.direct || e.tcp?.ok) && e.egress?.ok).length, tcpBad: viaNode.length - tcpOk, egressBad: es.length - egOk, reachBad: es.filter(reachFail).length,
   };
 }
+/** 入口三段连通数（全站同一组名词与数字，卡片、抽屉、线路页都从 probeSummary 来）：
+ *  入口可达 = 主探测来源（中控或探测点）连线路机上客户用的入口端口，同一端口连续 3 次连不上算不可达（同 relay_unreachable）；
+ *  节点通 = 线路机 → 节点的 TCP（直出入口不经节点，不算）；出口通 = 经入口访问外网的出口验证。都只算在用的入口 */
+export const linkCounts = (ps: Pick<ReturnType<typeof probeSummary>, 'all' | 'reachBad' | 'tcpOk' | 'total' | 'egressBad'>) => ({
+  reach: { ok: ps.all - ps.reachBad, total: ps.all }, node: { ok: ps.tcpOk, total: ps.total }, egress: { ok: ps.all - ps.egressBad, total: ps.all },
+});
+export type LinkKey = keyof ReturnType<typeof linkCounts>;
+export const LINK_LABEL: Record<LinkKey, string> = { reach: '入口可达', node: '节点通', egress: '出口通' };
+/** 各段的悬停说明（who：主探测来源的叫法，reachWho） */
+export const linkTip = (k: LinkKey, who: string) => ({
+  reach: `${who}连线路机上客户用的入口端口，同一端口连续 3 次连不上算不可达`,
+  node: '线路机到节点的 TCP 建连（直出入口不经节点，不算）',
+  egress: '经入口访问外网的出口验证',
+})[k];
 /** 备用团队里在用、有订阅的机器：从哪天起自动回收（MM-DD，到期旁标出来）；不在备用里、没有订阅为 null */
 export const recycleOn = (m: Pick<MachineView, 'lifecycle' | 'recycle_on'>) => (m.lifecycle === 'active' ? m.recycle_on?.slice(5) ?? null : null);
 /**

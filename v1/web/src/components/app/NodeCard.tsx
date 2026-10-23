@@ -10,7 +10,7 @@ import { SPRING } from '@/lib/motion';
 import { ArrowDown, ArrowDownUp, ArrowUp, Calendar, CircleDollarSign, Cpu, Database, Gauge, Globe, HardDrive, MemoryStick, MoreHorizontal, Radar, RefreshCw, Settings2, PanelRightOpen, ServerOff, Wallet } from 'lucide-react';
 import type { DueState, MachineView, ProbeBeats, Subscription } from '@/lib/types';
 import * as F from '@/lib/format';
-import { BEAT_LEGEND, beatCells, beatRate, beatTitles, dueTone, entryText, errText, hasHost, hostRel, isQuiet, limitGb, liveRate, monthFlow, monthFlowTip, monthTraffic, priceHint, probeSummary, quota, quotaGb, quotaTip, quotaUsedLabel, recycleOn, remainingValue, resourceMeters, subLabel, trafficTotal, beatLegendRelay, reachWho, reachWin, relayRttMs } from '@/lib/derive';
+import { BEAT_LEGEND, beatCells, beatRate, beatTitles, dueTone, entryText, errText, hasHost, hostRel, isQuiet, limitGb, liveRate, monthFlow, monthFlowTip, monthTraffic, priceHint, probeSummary, quota, quotaGb, quotaTip, quotaUsedLabel, recycleOn, remainingValue, resourceMeters, subLabel, trafficTotal, beatLegendRelay, linkCounts, reachWho, reachWin, relayRttMs } from '@/lib/derive';
 import { useProbeBeats } from '@/lib/queries';
 import { useReachLabel } from '@/lib/probePoints';
 import { useLiveSeries } from '@/lib/live';
@@ -18,7 +18,7 @@ import { useNow } from '@/lib/useNow';
 import { sharedObserver, watchSize } from '@/lib/sharedObserver';
 import { type DrawerTab } from '@/lib/drawer';
 import { cn } from '@/lib/utils';
-import { Beat, Due, Flag, FromTag, HealthPill, LabelValue, Mark, Num, SPARE_TIP } from './primitives';
+import { Beat, Due, Flag, FromTag, HealthPill, LabelValue, LinkCounts, Mark, Num, SPARE_TIP } from './primitives';
 import { MachineTag, machineTagItems } from './MachineTags';
 import { PingRows } from './PingRows';
 import { CellMeter, Cells, DotTrace, QUOTA_COLORS, Tag } from './viz';
@@ -207,25 +207,29 @@ const NO_ENTRY_TIP = '探测连的是线路机上客户用的入口端口\n这�
 /** 心跳条：近 1 小时的探测（全部卡片共用一个 /probe-beats 查询，各取自己的那份）；整条可点，打开连接质量页签。
  *  格子：节点是线路机 → 节点的 TCP 建连（线路机的 agent 探）；线路机是主探测来源 → 线路机的连通性（中控，或靠近客户的探测点；
  *  说明文字随来源变，探测点另有建连延迟：标题后面写近 1 小时的中位延迟）。
- *  标题：故障的写第一条健康原因（同状态胶囊的悬停），线路机写名下入口可用数（TCP 与出口各自最新一次都通，直出入口只看出口），
+ *  标题：故障的写第一条健康原因（同状态胶囊的悬停），线路机写「入口可达 x/y」（同抽屉，linkCounts；节点通、出口通不全通时跟在后面），
  *  家宽代理写成功率（延迟已在上面），其余写 TCP 延迟 · 出口通不通。节点自己的 agent 离线不影响它的心跳格：探测不是它自己做的，照常上色 */
-const BeatSlot = memo(function BeatSlot({ id, kind, lifecycle, reason, reasonKey, onOpen, tcp, tcpTip, egressOk, tcpFail, egressFail, all, off, usable, tcpBad, egressBad, reachBad }: { id: string; kind: MachineView['kind']; lifecycle: MachineView['lifecycle']; reason: string | undefined; reasonKey: string | undefined; onOpen: Open } & ReturnType<typeof probeSummary>) {
+const BeatSlot = memo(function BeatSlot({ id, kind, lifecycle, reason, reasonKey, onOpen, tcp, tcpTip, egressOk, tcpFail, egressFail, all, off, total, tcpOk, egressBad, reachBad }: { id: string; kind: MachineView['kind']; lifecycle: MachineView['lifecycle']; reason: string | undefined; reasonKey: string | undefined; onOpen: Open } & ReturnType<typeof probeSummary>) {
   const live = lifecycle === 'active';
   const src = useReachLabel();
   const bq = useProbeBeats(useCallback((d: ProbeBeats) => d[id], [id]));
   const beats = bq.data;
   const rtt = kind === 'relay' && live ? relayRttMs(beats) : null;
-  // 有异常原因时，标题行只留原因和入口可用数（放不下会被截断）；延迟放进入口可用数的悬停
-  const relayTip = `能用的入口数：线路机到节点的 TCP 和出口都通才算\nTCP 不通 ${tcpBad} 条 · 出口不通 ${egressBad} 条${off ? ` · 停用 ${off} 条不计` : ''}\n下面的格子是${reachWho(src)}连线路机的结果${rtt != null && reason ? `\n${src?.label ?? '探测点'}连到这台线路机的延迟 ${Math.round(rtt)} ms（近 1 小时中位数）` : ''}`;
+  const who = reachWho(src);
+  const links = linkCounts({ all, reachBad, tcpOk, total, egressBad });
+  // 入口连不上（relay_unreachable）时原因就是「入口可达」那个数，不再另写一遍；整台连不上、但还没有哪个端口满 3 次时（轮流检查）照写原因。
+  // 别的原因写在前面；延迟放进悬停
+  const reachReason = reasonKey === 'relay_unreachable' && reachBad > 0;
+  const relayCounts = <span data-tip={`${reachReason ? `${reason}\n` : ''}下面的格子是${who}连线路机入口的结果${off ? `\n停用的 ${off} 条入口不计` : ''}${rtt != null && reason ? `\n${src?.label ?? '探测点'}连到这台线路机的延迟 ${Math.round(rtt)} ms（近 1 小时中位数）` : ''}`}><LinkCounts c={links} who={who} only={['reach']} /></span>;
   const rttTag = rtt == null ? null : <> · <span data-tip={`${src?.label ?? '探测点'}连到这台线路机的延迟，近 1 小时中位数`}>延迟 <b className="num">{Math.round(rtt)} ms</b></span></>;
   const rate = kind === 'proxy' && live ? beatRate(beats) : null;
   const empty = live && bq.isSuccess && !beats?.some((b) => b[0] > 0); // 整条都没有探测：标题写明、格子画虚线，不是 20 格灰块
   const cap = !live ? <span className="t-muted">{lifecycle === 'retired' ? '已退役' : '还没开始探测'}</span>
-    : kind === 'relay' && reason ? <><span className="nc-reason" data-tip={reason}>{reasonKey === 'relay_unreachable' ? (reachBad ? `${reachWho(src)}连不上 ${reachBad} 个入口` : `${reachWho(src)}连不上入口`) : reason}</span> · <span data-tip={relayTip}>入口可用 <b className="num">{usable}/{all}</b></span></>
+    : kind === 'relay' && reason ? (reachReason ? relayCounts : <><span className="nc-reason" data-tip={reason}>{reasonKey === 'relay_unreachable' ? `${who}连不上入口` : reason}</span>{all > 0 && <> · {relayCounts}</>}</>)
     : reason ? <span className="nc-reason" data-tip={reason}>{reason}</span>
     : kind === 'relay' && all === 0 ? <span className="t-muted" data-tip={NO_ENTRY_TIP}>还没有入口，不用探测</span>
     : empty ? <span className="t-muted">暂无探测</span>
-    : kind === 'relay' ? <><span data-tip={relayTip}>入口可用 <b className="num" style={usable < all ? { color: 'var(--warn-text)' } : undefined}>{usable}/{all}</b></span>{rttTag}</>
+    : kind === 'relay' ? <>{relayCounts}{rttTag}</>
     : kind === 'proxy' ? <>探测成功 <b className="num">{rate == null ? '—' : `${Math.round(rate)}%`}</b></>
     : <><span data-tip={tcpTip}>TCP <b>{probeMs(tcp, tcpFail)}</b></span> · 出口 <b>{egressText(egressOk, egressFail)}</b></>;
   // 时段按这份数据取回的时刻对齐（轮询间隔 2 分钟，用当前时刻在跨格时会错一格）

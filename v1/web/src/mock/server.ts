@@ -132,8 +132,9 @@ function overview() {
     provisioning: db.machines.filter((m) => m.lifecycle === 'provisioning').length, retiring: db.machines.filter((m) => m.lifecycle === 'retiring').length,
     failed: db.machines.filter((m) => m.lifecycle === 'failed').length,
     // 需要续费的按订阅的 due_state（同服务端）：自动续费的只在已过期时算
-    // 在线/离线按 agent 连通（同 isQuiet），只数有自己 agent 的（家宽代理、同机 IP 节点不计）
-    online: live.filter((m) => m.agent && !m.host_machine && !isQuiet(m)).length, offline: live.filter((m) => m.agent && !m.host_machine && isQuiet(m)).length,
+    // 在线/离线按台机器、按 agent 连通（同 isQuiet）：同机 IP 节点随宿主机计入，家宽代理不需要 agent（no_agent）
+    online: live.filter((m) => m.agent && !isQuiet(m)).length, offline: live.filter((m) => m.agent && isQuiet(m)).length,
+    no_agent: live.filter((m) => !m.agent).length, ip_nodes: live.filter((m) => m.host_machine).length,
     due_soon: live.filter((m) => !m.spare && m.subscription?.due_state === 'soon').length, overdue: live.filter((m) => !m.spare && m.subscription?.due_state === 'overdue').length,
     monthly_usd: usdTotal(live.flatMap((m) => (m.subscription ? [m.subscription] : []))),
     traffic_month: { up, down, counted_from },

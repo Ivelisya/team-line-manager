@@ -171,7 +171,6 @@
 /* 有吸顶的跳转条时，各卡的表头吸在它下面（表头默认吸在顶栏下，会盖住它） */
 .relay-jump ~ .relay-card .table-wrap[data-fit] thead th { top: calc(var(--topbar-h) + var(--h-md) + 2 * var(--sp-8)); }
 .relay-jump-bad { color: var(--bad-text); }
-.relay-unreach { color: var(--bad-text); font-size: var(--fs-label); }
 .relay-head { display: flex; align-items: center; gap: var(--sp-12); flex-wrap: wrap; padding: var(--sp-12) var(--card-pad); }
 .relay-head .ttl { font: var(--fw-semibold) var(--fs-title) / var(--lh-title) var(--font-sans); letter-spacing: var(--tracking-title); }
 /* 线路机名可点（打开它的抽屉）：去掉按钮外观，后面一个淡箭头，悬停变主色、箭头右移一点，按下微缩 */
