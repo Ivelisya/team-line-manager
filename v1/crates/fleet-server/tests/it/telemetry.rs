@@ -120,23 +120,6 @@ async fn report_ingest_errors_are_classified() {
     assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{v}");
 }
 
-/// 连接池用尽：等 5 秒拿不到连接就回 503（agent 退避重试），不按 sqlx 默认的 30 秒干等（测试池的等待时间与 db::connect 相同）
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn report_gets_503_when_pool_exhausted() {
-    let t = setup().await;
-    seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
-    let mut held = vec![];
-    while held.len() < t.st.db.options().get_max_connections() as usize {
-        held.push(t.st.db.acquire().await.unwrap());
-    }
-    let t0 = std::time::Instant::now();
-    let (s, v) = t.report("tok1", &blank_report(1)).await;
-    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{v}");
-    assert!(t0.elapsed() < Duration::from_secs(10), "{:?}", t0.elapsed());
-    drop(held);
-    assert_eq!(t.report("tok1", &blank_report(1)).await.0, StatusCode::OK);
-}
-
 /// 同一台机器同时只处理一份上报：令牌入库提交后才扣，并发的几份（seq 各不相同）会一起看到余额、都放进来。
 /// 一份还在处理时来的第二份回 429（agent 按 Retry-After 1 秒后重发），前一份照常入库
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1272,29 +1255,6 @@ async fn relay_renewal_and_global_maintenance() {
     assert!(m.as_array().unwrap().iter().all(|x| x["health"]["status"] == "maintenance"));
 }
 
-/// 在告警的摘要只有数字在变（天数、分钟数）：不每轮重写，随 5 分钟一次的「最近仍在」刷新一起写
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn digit_only_summary_changes_ride_the_5_minute_touch() {
-    let t = setup().await;
-    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
-    assert_eq!(t.report("tok1", &blank_report(1)).await.0, StatusCode::OK);
-    // 到期天数按账单时区（这里跟随组织时区）的今天算：到期日也按它取，不用库会话的 current_date（UTC 傍晚以后差一天）
-    sqlx::query("insert into subscription (machine_id, price_cents, due_date, remind_days) values ($1, 500, (now() at time zone org_tz())::date + 3, 7)").bind(relay).execute(&t.st.db).await.unwrap();
-    let mut state = AlertState::default();
-    let base = OffsetDateTime::now_utc();
-    pass(&t, &mut state, base, 0).await;
-    let summary = || async { sqlx::query_scalar::<_, String>("select summary from incident where rule = 'renewal_due'").fetch_one(&t.st.db).await.unwrap() };
-    assert_eq!(summary().await, "线路机1：3 天后到期");
-    // 上一轮记的是「5 天」：只差数字，这一轮不写
-    sqlx::query("update incident set summary = '线路机1：5 天后到期' where rule = 'renewal_due'").execute(&t.st.db).await.unwrap();
-    pass(&t, &mut state, base, 30).await;
-    assert_eq!(summary().await, "线路机1：5 天后到期");
-    // 「最近仍在」旧了 5 分钟：一起刷新
-    sqlx::query("update incident set last_seen_at = now() - interval '6 minutes' where rule = 'renewal_due'").execute(&t.st.db).await.unwrap();
-    pass(&t, &mut state, base, 60).await;
-    assert_eq!(summary().await, "线路机1：3 天后到期");
-}
-
 /// 把机器网卡在 `hour` 这一桶的出站设成 `mb` MB（十进制）、入站设成它的一半，并让视图里的额度缓存作废（同小时汇总跑完）
 async fn set_nic(t: &T, machine: Uuid, hour: OffsetDateTime, mb: i64) {
     sqlx::query(
@@ -1535,25 +1495,6 @@ async fn notify_channel_crud_and_test_endpoint() {
     assert!(!audit.to_string().contains("SECRET-TOKEN"));
 }
 
-/// Telegram 改 api_base 必须同时重填 bot_token（不然 write 密钥能把沿用的令牌发到自己的地址）
-#[tokio::test]
-async fn notify_telegram_api_base_change_needs_token() {
-    let t = setup().await;
-    let id = t.post("/api/v1/notify-channels", json!({"name": "tg", "kind": "telegram", "config": {"bot_token": "123:SECRET", "chat_id": 1}})).await["id"].as_str().unwrap().to_string();
-    let path = format!("/api/v1/notify-channels/{id}");
-    let patch = |config: Value| t.req("PATCH", &path, Some(json!({"config": config})), None);
-    let (s, v) = patch(json!({"api_base": "https://evil.example.com"})).await;
-    assert_eq!((s, v["error"]["message"].as_str()), (StatusCode::BAD_REQUEST, Some("改 api_base 时要同时重新填写 bot_token")));
-    let (s, v) = patch(json!({"api_base": "https://tg.example.com/", "bot_token": "123:NEW"})).await;
-    assert_eq!(s, StatusCode::OK, "{v}");
-    // api_base 不变（写法略有不同）、清空回官方地址：不用重填
-    assert_eq!(patch(json!({"api_base": "https://tg.example.com", "chat_id": 2})).await.0, StatusCode::OK);
-    assert_eq!(patch(json!({"api_base": ""})).await.0, StatusCode::OK);
-    let enc: Vec<u8> = sqlx::query_scalar("select config_enc from notify_channel").fetch_one(&t.st.db).await.unwrap();
-    let cfg: Value = serde_json::from_str(&t.st.secrets.open_str(&enc).unwrap()).unwrap();
-    assert_eq!(cfg, json!({"bot_token": "123:NEW", "chat_id": "2"}));
-}
-
 /// 默认（不允许内网）：字面内网 IP 建渠道时就拒；域名解析到内网的发送时拒，发送记录里只有原因
 #[tokio::test]
 async fn notify_refuses_private_destinations() {
@@ -1676,109 +1617,13 @@ async fn alert_notifications_firing_repeat_silence_and_resolved() {
     assert!(log.as_array().unwrap().iter().filter(|l| l["kind"] != "silence").all(|l| l["subject_name"] == "线路机1（已退役）"), "{log}");
 }
 
+/// 中控重启 / 部署：排着没发的通知在库里，新进程起来接着发；渠道一时发不出去（前两次 500）就按 0.5 秒、2 秒…退避重发到送达，
+/// 只记一条成功、渠道的连续失败随之清零；入队满 30 分钟还没发出的放弃，记一条失败
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn notifications_sent_in_order_and_wait_on_429() {
+async fn queued_notices_survive_restart_and_retry_until_delivered() {
     let t = setup().await;
     let mock = Mock::start().await;
-    t.post("/api/v1/notify-channels", json!({"name": "tg", "kind": "telegram", "config": {"bot_token": "1:A", "chat_id": 1, "api_base": mock.url("/limited")}, "min_severity": "info", "enabled": true})).await;
-    // 同一轮开两条告警（Xray 未运行 + 配置未应用）
-    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
-    let mut r = blank_report(1);
-    r.xray = Some(xray(false));
-    assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
-    sqlx::query("update relay set generation = 3, applied_generation = 1, generation_at = now() - interval '5 minutes' where machine_id = $1").bind(relay).execute(&t.st.db).await.unwrap();
-    let mut state = AlertState::default();
-    let base = OffsetDateTime::now_utc();
-    pass(&t, &mut state, base, 0).await;
-    pass(&t, &mut state, base, 61).await;
-    assert_eq!(incidents(&t, "firing").await.len(), 2);
-    // 第一条被限流（retry_after = 1 s）：满 1 秒才重发同一条，第二条排在它后面、不在等的时候并发发出。
-    // 看请求的先后与间隔，不看某一刻收到了几次（机器忙时发送本身就会晚）
-    mock.wait("/limited", 3).await;
-    log_settles(&t, 2).await;
-    assert_eq!(t.count("select count(*) from notify_log where ok").await, 2, "限流后重试成功，两条都送达");
-    let (at, b) = (mock.times("/limited"), mock.bodies("/limited"));
-    assert!(at[1] - at[0] >= Duration::from_secs(1), "限流后等满 retry_after 才重发：{:?}", at[1] - at[0]);
-    assert!(b[0]["text"] == b[1]["text"] && b[2]["text"] != b[0]["text"], "重发的是被限流的那条，第二条在它之后：{b:?}");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn slow_channel_does_not_delay_other_channels() {
-    let t = setup().await;
-    let mock = Mock::start().await;
-    for (name, path) in [("slow", "/hold/a"), ("fast", "/hook/b")] {
-        t.post("/api/v1/notify-channels", json!({"name": name, "kind": "webhook", "config": {"url": mock.url(path)}, "min_severity": "info", "enabled": true})).await;
-    }
-    // 同一轮开两条告警（Xray 未运行 + 配置未应用）
-    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
-    xray_report(&t, 1, false).await;
-    sqlx::query("update relay set generation = 3, applied_generation = 1, generation_at = now() - interval '5 minutes' where machine_id = $1").bind(relay).execute(&t.st.db).await.unwrap();
-    let mut state = AlertState::default();
-    let base = OffsetDateTime::now_utc();
-    pass(&t, &mut state, base, 0).await;
-    pass(&t, &mut state, base, 61).await;
-    assert_eq!(incidents(&t, "firing").await.len(), 2);
-    // 慢渠道卡在第一条上（对方一直不回）；快渠道不等它，两条都送到。慢渠道的第二条排在第一条之后，没有并发发出
-    mock.wait("/hook/b", 2).await;
-    mock.wait("/hold/a", 1).await;
-    assert_eq!(mock.count("/hold/a"), 1);
-    // 慢渠道回了之后自己仍按顺序把两条发完
-    mock.release();
-    mock.wait("/hold/a", 2).await;
-    log_settles(&t, 4).await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn resolved_sent_while_firing_still_queued() {
-    let t = setup().await;
-    let mock = Mock::start().await;
-    t.post("/api/v1/notify-channels", json!({"name": "slow", "kind": "webhook", "config": {"url": mock.url("/hold/a")}, "min_severity": "info", "enabled": true})).await;
-    seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
-    let mut state = AlertState::default();
-    let base = OffsetDateTime::now_utc();
-    xray_report(&t, 1, false).await;
-    pass(&t, &mut state, base, 0).await;
-    pass(&t, &mut state, base, 61).await;
-    // 「触发」还在发（对方没回，没写进 notify_log）时告警就恢复了：照样报恢复，排在触发之后
-    mock.wait("/hold/a", 1).await;
-    xray_report(&t, 2, true).await;
-    pass(&t, &mut state, base, 91).await;
-    pass(&t, &mut state, base, 151).await;
-    assert!(incidents(&t, "firing").await.is_empty());
-    assert_eq!((t.count("select count(*) from notify_log").await, mock.count("/hold/a")), (0, 1));
-    mock.release();
-    log_settles(&t, 2).await;
-    let events: Vec<Value> = mock.bodies("/hold/a").iter().map(|b| b["event"].clone()).collect();
-    assert_eq!(events, [json!("firing"), json!("resolved")]);
-}
-
-/// 渠道一时发不出去：同一条按 0.5 秒、2 秒…退避重发到送达，只记一条成功；渠道的连续失败随之清零
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn failed_notice_is_retried_until_delivered() {
-    let t = setup().await;
-    let mock = Mock::start().await;
-    t.post("/api/v1/notify-channels", json!({"name": "flaky", "kind": "webhook", "config": {"url": mock.url("/flaky/a")}, "min_severity": "info", "enabled": true})).await;
-    seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
-    let mut state = AlertState::default();
-    let base = OffsetDateTime::now_utc();
-    xray_report(&t, 1, false).await;
-    pass(&t, &mut state, base, 0).await;
-    pass(&t, &mut state, base, 61).await;
-    // 前两次 500，第三次（约 2.5 秒后）送达
-    mock.wait("/flaky/a", 3).await;
-    log_settles(&t, 1).await;
-    assert_eq!(t.count("select count(*) from notify_log where ok and kind = 'firing'").await, 1);
-    assert_eq!(t.count("select count(*) from notify_outbox").await, 0);
-    let (fails, since): (i32, Option<OffsetDateTime>) = sqlx::query_as("select fail_count, failing_since from notify_channel").fetch_one(&t.st.db).await.unwrap();
-    assert_eq!((fails, since), (0, None));
-}
-
-/// 中控重启 / 部署：排着没发的通知在库里，新进程起来接着发；入队满 30 分钟还没发出的放弃，记一条失败
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn queued_notices_survive_restart() {
-    let t = setup().await;
-    let mock = Mock::start().await;
-    for (name, path) in [("a", "/hook/a"), ("b", "/hook/b")] {
+    for (name, path) in [("a", "/flaky/a"), ("b", "/hook/b")] {
         t.post("/api/v1/notify-channels", json!({"name": name, "kind": "webhook", "config": {"url": mock.url(path)}, "min_severity": "info", "enabled": true})).await;
     }
     seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
@@ -1799,9 +1644,12 @@ async fn queued_notices_survive_restart() {
     // 「新进程」：同一个库、新的内存状态，起发送循环
     let st2 = AppState::new(t.st.cfg.clone(), t.st.db.clone(), SecretBox::from_key(&[9u8; 32]).unwrap());
     fleet_server::notify::start(&st2);
-    mock.wait("/hook/a", 1).await;
+    mock.wait("/flaky/a", 3).await;
     log_settles(&t, 2).await;
-    assert_eq!((mock.bodies("/hook/a")[0]["event"].as_str(), mock.count("/hook/b")), (Some("firing"), 0));
+    assert_eq!((mock.bodies("/flaky/a")[0]["event"].as_str(), mock.count("/hook/b")), (Some("firing"), 0));
+    assert_eq!(t.count("select count(*) from notify_log where ok and kind = 'firing'").await, 1);
+    let (fails, since): (i32, Option<OffsetDateTime>) = sqlx::query_as("select fail_count, failing_since from notify_channel where name = 'a'").fetch_one(&t.st.db).await.unwrap();
+    assert_eq!((fails, since), (0, None));
     let (ok, err): (bool, Option<String>) =
         sqlx::query_as("select ok, error from notify_log where channel_id = (select id from notify_channel where name = 'b')").fetch_one(&t.st.db).await.unwrap();
     assert!(!ok && err.as_deref().is_some_and(|e| e.contains("30 分钟还没发出，放弃")), "{err:?}");

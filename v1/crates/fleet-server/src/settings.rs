@@ -18,6 +18,7 @@ use crate::config::Retention;
 use crate::db::audit;
 use crate::error::ApiResult;
 use crate::state::AppState;
+use crate::{rlock, wlock};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -67,7 +68,7 @@ impl AccessRetention {
 
 impl AppState {
     /// 当前的访问记录保留期（内存里的，不打库）
-    pub fn access_retention(&self) -> AccessRetention { *self.access_ret.read().unwrap_or_else(|e| e.into_inner()) }
+    pub fn access_retention(&self) -> AccessRetention { *rlock(&self.access_ret) }
 
     /// 来源画像实际保留的天数（见 `AccessRetention::profile_days`；ipintel 在配置里关掉时没有学习期）
     pub fn profile_days(&self) -> u32 {
@@ -75,7 +76,7 @@ impl AppState {
         self.access_retention().profile_days(learn)
     }
 
-    fn set_access_retention(&self, r: AccessRetention) { *self.access_ret.write().unwrap_or_else(|e| e.into_inner()) = r; }
+    fn set_access_retention(&self, r: AccessRetention) { *wlock(&self.access_ret) = r; }
 }
 
 /// 启动时从库里读访问记录保留期放进内存。没设过用配置文件的默认值；库里的值不对（手工改坏了）明确报错，不悄悄换成默认的

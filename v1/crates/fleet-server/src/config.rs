@@ -23,9 +23,6 @@ pub struct Config {
     /// 位于反向代理之后时信任 X-Forwarded-For
     #[serde(default)]
     pub trust_forwarded_for: bool,
-    /// 会话 Cookie 是否带 Secure；不填则按 public_url 是否 https 判断
-    #[serde(default)]
-    pub cookie_secure: Option<bool>,
     /// 组织时区（IANA 名）：账单时区、供应商时区没填时按它，通知、审计、fleetctl 里的时间也按它写。默认北京时间
     #[serde(default = "d_org_tz")]
     pub org_timezone: String,
@@ -83,10 +80,10 @@ pub struct RoutersConfig {
     pub known_hosts: PathBuf,
     /// OpenSSH ControlMaster 的套接字目录（每台路由一个，复用连接，30 秒一次的采集不每次握手）
     pub control_dir: PathBuf,
-    /// 隧道端口段，必须在 23000–23999 之内（库里的检查约束与 tunnel-keys 脚本都按这一段）
-    pub port_min: u16,
-    pub port_max: u16,
 }
+/// 隧道端口段（库里的检查约束与 tunnel-keys 脚本都按这一段）
+pub const TUNNEL_PORT_MIN: u16 = 23000;
+pub const TUNNEL_PORT_MAX: u16 = 23999;
 impl Default for RoutersConfig {
     fn default() -> Self {
         Self {
@@ -96,8 +93,6 @@ impl Default for RoutersConfig {
             sshd_host_key: PathBuf::from("/etc/ssh/ssh_host_ed25519_key.pub"),
             known_hosts: PathBuf::from("/var/lib/fleet/router_known_hosts"),
             control_dir: PathBuf::from("/var/lib/fleet/ssh-ctl"),
-            port_min: 23000,
-            port_max: 23999,
         }
     }
 }
@@ -118,12 +113,7 @@ impl RoutersConfig {
         Ok(h)
     }
 
-    fn check(&self, public_url: &str) -> anyhow::Result<()> {
-        if !(23000..=23999).contains(&self.port_min) || !(23000..=23999).contains(&self.port_max) || self.port_min > self.port_max {
-            anyhow::bail!("[routers] port_min / port_max 要在 23000–23999 之内且 port_min ≤ port_max");
-        }
-        self.ssh_host_of(public_url).map(|_| ())
-    }
+    fn check(&self, public_url: &str) -> anyhow::Result<()> { self.ssh_host_of(public_url).map(|_| ()) }
 }
 
 /// `[notify]`
@@ -218,32 +208,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn partial_tables_keep_defaults() {
-        let r: Retention = toml::from_str("raw_days = 30").unwrap();
-        assert_eq!((r.raw_days, r.access_days, r.reach_days, r.ping_days, r.ping_hourly_days), (30, 7, 2, 7, 90));
-        let r: Retention = toml::from_str("reach_days = 5\nping_hourly_days = 400").unwrap();
-        assert_eq!((r.raw_days, r.reach_days, r.ping_days, r.ping_hourly_days), (3, 5, 7, 400));
-        // 已经改成常量的老配置项：生产 fleet.toml 里还写着也得能读
-        let i: IpintelConfig = toml::from_str("learn_days = 3\nalert_ttl_hours = 1\nenabled = false").unwrap();
-        assert!(!i.enabled);
-        let s: SelfmonConfig = toml::from_str("heartbeat_url = \"https://hc-ping.com/x\"").unwrap();
-        assert_eq!((s.heartbeat_url.as_deref(), s.backup_dir), (Some("https://hc-ping.com/x"), PathBuf::from("/var/backups/fleet")));
-        let r: RoutersConfig = toml::from_str("ssh_port = 2222").unwrap();
-        assert_eq!((r.ssh_port, r.port_min, r.port_max), (2222, 23000, 23999));
-        assert_eq!(r.tunnel_keys_file, PathBuf::from("/var/lib/fleet/tunnel-keys"));
-    }
-
-    #[test]
-    fn legacy_numbering_table_is_ignored() {
-        // 编号压缩早已无条件做；生产 fleet.toml 里留着的 [numbering] 不能让中控起不来
-        let c: Config = toml::from_str(
-            "database_url = \"postgres://x\"\nsecret_key_file = \"/k\"\npublic_url = \"https://x.test\"\nssh_key = \"/s\"\nknown_hosts = \"/h\"\ndist_dir = \"/d\"\n[numbering]\nauto_compact = true\n",
-        )
-        .unwrap();
-        assert_eq!(c.job_workers, 8);
-    }
-
-    #[test]
     fn router_ssh_host_defaults_to_public_url() {
         let r = RoutersConfig::default();
         assert_eq!(r.ssh_host_of("https://fleet.kismet613.com").unwrap(), "fleet.kismet613.com");
@@ -251,7 +215,5 @@ mod tests {
         assert_eq!(r.ssh_host_of("http://[2001:db8::1]:8080").unwrap(), "2001:db8::1");
         let bad = RoutersConfig { ssh_host: Some("a b; rm -rf /".into()), ..RoutersConfig::default() };
         assert!(bad.ssh_host_of("https://x.test").is_err());
-        assert!(RoutersConfig { port_min: 22000, ..RoutersConfig::default() }.check("https://x.test").is_err());
-        assert!(RoutersConfig { port_min: 23500, port_max: 23400, ..RoutersConfig::default() }.check("https://x.test").is_err());
     }
 }

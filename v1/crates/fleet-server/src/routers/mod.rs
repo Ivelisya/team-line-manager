@@ -149,20 +149,20 @@ async fn listening(port: u16) -> bool { crate::ssh::tcp_ok("127.0.0.1", port, Du
 
 /// 分一个隧道端口：段内最小的、库里没人用、此刻也没人在监听的。删掉的路由的旧隧道可能还连着、占着它原来的端口
 /// （sshd 不会因为公钥撤了就断开已有连接），分出去的话新路由的隧道建不起来，中控却会经它连到那台旧路由
-pub async fn alloc_port(tx: &mut Tx<'_>, cfg: &Config) -> ApiResult<i32> {
+pub async fn alloc_port(tx: &mut Tx<'_>) -> ApiResult<i32> {
     sqlx::query("select pg_advisory_xact_lock($1)").bind(PORT_LOCK).execute(&mut **tx).await?;
     let taken: HashSet<i32> = sqlx::query_scalar("select tunnel_port from router").fetch_all(&mut **tx).await?.into_iter().collect();
-    for p in cfg.routers.port_min..=cfg.routers.port_max {
+    for p in crate::config::TUNNEL_PORT_MIN..=crate::config::TUNNEL_PORT_MAX {
         if !taken.contains(&(p as i32)) && !listening(p).await {
             return Ok(p as i32);
         }
     }
-    Err(ApiError::conflict(format!("隧道端口 {}–{} 都分完了（或被别的程序占着）", cfg.routers.port_min, cfg.routers.port_max)))
+    Err(ApiError::conflict(format!("隧道端口 {}–{} 都分完了（或被别的程序占着）", crate::config::TUNNEL_PORT_MIN, crate::config::TUNNEL_PORT_MAX)))
 }
 
 /// 换掉一台已经发过隧道密钥的路由的密钥时（重新生成接入命令、一键部署），隧道端口也换一个：旧隧道就算还连着（sshd 不因公钥撤了就断开），
 /// 中控也不再经它连（旧隧道立刻失效）；旧端口要等那条连接断了才会再分出去（见 [`alloc_port`]）。还没发过密钥的保留原端口
-pub async fn rotate_port(tx: &mut Tx<'_>, cfg: &Config, id: Uuid) -> ApiResult<i32> {
+pub async fn rotate_port(tx: &mut Tx<'_>, id: Uuid) -> ApiResult<i32> {
     let (port, issued): (i32, bool) = sqlx::query_as("select tunnel_port, tunnel_pubkey is not null or tunnel_key_at is not null from router where id = $1 for update")
         .bind(id)
         .fetch_one(&mut **tx)
@@ -170,7 +170,7 @@ pub async fn rotate_port(tx: &mut Tx<'_>, cfg: &Config, id: Uuid) -> ApiResult<i
     if !issued {
         return Ok(port);
     }
-    let p = alloc_port(tx, cfg).await?;
+    let p = alloc_port(tx).await?;
     sqlx::query("update router set tunnel_port = $2 where id = $1").bind(id).bind(p).execute(&mut **tx).await?;
     Ok(p)
 }

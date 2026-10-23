@@ -16,6 +16,7 @@
 
 use crate::crypto::{random_token, sha256};
 use crate::error::{ApiError, ApiResult};
+use crate::lock;
 use crate::pty::{self, Pty};
 use crate::ssh;
 use crate::state::{AppState, Event};
@@ -29,7 +30,7 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::process::ExitStatus;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast::{self, error::RecvError};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -165,8 +166,6 @@ struct HubInner {
 pub struct Hub {
     inner: Arc<Mutex<HubInner>>,
 }
-
-fn lock(m: &Mutex<HubInner>) -> MutexGuard<'_, HubInner> { m.lock().unwrap_or_else(|e| e.into_inner()) }
 
 /// 中控在退出时开票、连上的说法
 const CLOSING: &str = "中控正在重启，稍后再开终端";

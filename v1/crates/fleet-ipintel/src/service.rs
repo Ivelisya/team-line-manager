@@ -7,8 +7,13 @@ use crate::lookup::{Dbs, Intel};
 use serde_json::{json, Value};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant};
+
+/// 取锁：别处 panic 留下的中毒标记不影响数据（这里的锁只做替换和读取），照常用
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> { m.lock().unwrap_or_else(|e| e.into_inner()) }
+fn rlock<T>(l: &RwLock<T>) -> RwLockReadGuard<'_, T> { l.read().unwrap_or_else(|e| e.into_inner()) }
+fn wlock<T>(l: &RwLock<T>) -> RwLockWriteGuard<'_, T> { l.write().unwrap_or_else(|e| e.into_inner()) }
 
 /// 完整加载时的库数量：ip2region v4/v6、DB-IP city/asn、iptoasn
 pub const EXPECTED_DBS: usize = 5;
@@ -79,7 +84,7 @@ impl IpIntel {
     }
 
     pub fn current(&self) -> Arc<Dbs> {
-        self.cur.read().unwrap_or_else(|e| e.into_inner()).clone()
+        rlock(&self.cur).clone()
     }
 
     /// 缓存键用的版本串（各库版本拼接；一个库都没有时是 "none"）
@@ -98,12 +103,12 @@ impl IpIntel {
     /// 库文件或覆盖清单变了就重载，返回是否换了一代。会阻塞（读盘、建索引），在异步代码里用 spawn_blocking。
     pub fn reload_if_changed(&self) -> bool {
         let now = signature(&self.dir, self.overrides.as_deref());
-        if *self.sig.lock().unwrap_or_else(|e| e.into_inner()) == now {
+        if *lock(&self.sig) == now {
             return false;
         }
         // 可用库变少多半是库文件正在被替换 / 写到一半 / 暂时损坏：同一个签名下先不换代，等它稳定一段时间再试
         {
-            let p = self.pending_downgrade.lock().unwrap_or_else(|e| e.into_inner());
+            let p = lock(&self.pending_downgrade);
             if p.as_ref().is_some_and(|(s, at)| *s == now && at.elapsed() < self.settle) {
                 return false;
             }
@@ -111,7 +116,7 @@ impl IpIntel {
         let (dbs, ov, sig) = Self::build(&self.dir, self.overrides.as_deref());
         let old = self.current();
         {
-            let mut p = self.pending_downgrade.lock().unwrap_or_else(|e| e.into_inner());
+            let mut p = lock(&self.pending_downgrade);
             if dbs.loaded() < old.loaded() {
                 if p.as_ref().is_none_or(|(s, _)| *s != now) {
                     tracing::warn!(
@@ -130,16 +135,16 @@ impl IpIntel {
             *p = None;
         }
         tracing::info!("ipintel 库已重载：加载 {}/{}，版本 {}", dbs.loaded(), EXPECTED_DBS, dbs.version);
-        *self.cur.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(dbs);
-        *self.ov.lock().unwrap_or_else(|e| e.into_inner()) = ov;
-        *self.sig.lock().unwrap_or_else(|e| e.into_inner()) = sig;
+        *wlock(&self.cur) = Arc::new(dbs);
+        *lock(&self.ov) = ov;
+        *lock(&self.sig) = sig;
         true
     }
 
     /// 给接口用的状态：各库是否加载、版本 / 日期、条目数、缺什么
     pub fn status(&self) -> Value {
         let d = self.current();
-        let ov = self.ov.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let ov = lock(&self.ov).clone();
         let loaded = d.loaded();
         let mut files: Vec<Value> = d
             .files

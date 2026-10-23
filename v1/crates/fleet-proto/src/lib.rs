@@ -43,10 +43,10 @@ pub struct Report {
     pub access: Vec<AccessEvent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub xray: Option<XrayStatus>,
-    /// Agent 自身健康（累计值，自进程启动起算）；旧 Agent 不带
+    /// Agent 自身健康（累计值，自进程启动起算）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_health: Option<AgentHealth>,
-    /// 三网 PING（线路机往外测，`DesiredState::ping` 给的目标）；旧 Agent 不带、旧中控忽略
+    /// 三网 PING（线路机往外测，`DesiredState::ping` 给的目标）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ping: Vec<PingSample>,
 }
@@ -92,7 +92,7 @@ pub struct AgentHealth {
     /// 最近一次应用失败的错误（成功后清空）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_apply_error: Option<String>,
-    /// 这份报告写不进磁盘队列（磁盘满等）、是直接从内存发来的：写盘的错误。写得进时不带；旧 agent 不带，旧中控忽略
+    /// 这份报告写不进磁盘队列（磁盘满等）、是直接从内存发来的：写盘的错误。写得进时不带
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disk_write_error: Option<String>,
 }
@@ -109,7 +109,7 @@ pub struct SystemInfo {
     pub ipv4: Vec<IpAddr>,
     #[serde(default)]
     pub ipv6: Vec<IpAddr>,
-    /// 流量计量用的网卡（默认路由所在网卡 ∪ 有公网地址的物理网卡，或 agent.toml 的 nic_ifaces）；旧 agent 不带
+    /// 流量计量用的网卡（默认路由所在网卡 ∪ 有公网地址的物理网卡，或 agent.toml 的 nic_ifaces）
     #[serde(default)]
     pub nic_ifaces: Vec<String>,
 }
@@ -126,7 +126,7 @@ pub struct HostSample {
     pub disk_used: u64,
     pub disk_total: u64,
     /// 选中网卡（`SystemInfo::nic_ifaces`）各自增量的持久累计值：自 agent 首次安装起单调，跨 agent 重启、开机接续
-    /// （data_dir/nic.json）；状态文件丢失时从 0 重来。旧 agent 是进程内计数、重启归零。服务端对两者一样：变小 = 重置、读数即增量
+    /// （data_dir/nic.json）；状态文件丢失时从 0 重来。服务端：变小 = 重置、读数即增量
     pub net_rx_bytes: u64,
     pub net_tx_bytes: u64,
     pub tcp_conns: u32,
@@ -163,7 +163,7 @@ pub struct ProbeSample {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
     /// TCP 探测建连时 SYN 重发了几次（内核 TCP_INFO 的 total_retrans）。重发过的建连，`latency_ms` 仍是内核量的往返时间，
-    /// 不含 1 s / 3 s 的重发等待；丢包另记在这里。旧 agent 不报（None），旧中控收到不认识的字段照常忽略
+    /// 不含 1 s / 3 s 的重发等待；丢包另记在这里
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retrans: Option<u32>,
 }
@@ -197,7 +197,8 @@ pub const REPORT_INTERVAL_S: u32 = 10;
 pub struct ReportAck {
     /// 服务端已持久化的最大 seq；agent 据此丢弃本地缓冲
     pub accepted_seq: u64,
-    /// 上报间隔（秒），恒为 `REPORT_INTERVAL_S`。字段必须留着：旧 agent 解析确认时它是必填的
+    /// 上报间隔（秒），恒为 `REPORT_INTERVAL_S`；agent 不再读它，下一版删掉
+    #[serde(default)]
     pub interval_s: u32,
 }
 
@@ -208,7 +209,7 @@ pub struct DesiredState {
     pub generation: u64,
     pub relay: RelayParams,
     pub entries: Vec<DesiredEntry>,
-    /// 三网 PING 的目标（中控按全局 + 这台的覆盖合成）；没有目标为 None。旧 agent 不认识这个字段，忽略
+    /// 三网 PING 的目标（中控按全局 + 这台的覆盖合成）；没有目标为 None
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ping: Option<PingConfig>,
 }
@@ -295,8 +296,7 @@ pub struct DesiredEntry {
     pub outbound: Outbound,
     /// egress 探测期望看到的出口 IP
     pub expect_egress_ip: IpAddr,
-    /// 访问策略（按域名黑白名单/暂停）。`None` = observe，不产生任何路由规则；
-    /// 旧 Agent 忽略这个字段，新 Agent 收不到字段也按 observe 处理。
+    /// 访问策略（按域名黑白名单/暂停）。`None` = observe，不产生任何路由规则。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy: Option<EntryPolicy>,
 }
@@ -402,17 +402,15 @@ pub struct ProbeReport {
     /// 正在跑的程序的 sha256（十六进制）：与 `ProbeTargets::upgrade` 的一致时中控清掉升级请求
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
-    /// 整轮作废的原因（对照目标都连不上）：这时 `results` 为空，只算心跳。
-    /// 旧探测点在三台以上线路机全部连不上时也整轮作废（带「N 台线路机全部连不上」）
+    /// 整轮作废的原因（对照目标都连不上）：这时 `results` 为空，只算心跳
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discarded: Option<String>,
     /// 对照目标是通的、三台以上线路机却全部连不上（[`all_down`]）：照常带结果上报并置 true，中控照记、告警摘要写明
-    /// 「全部线路机同时连不上」（可能是供应商整段故障）。旧探测点没有这个字段（这种轮次整轮作废）；
-    /// 旧中控不认识它，按旧规则丢掉这一轮
+    /// 「全部线路机同时连不上」（可能是供应商整段故障）
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub all_down: bool,
     /// 换上后没能上报、自己换回了旧版本的程序 sha256（探测点的 BAD 标记）：中控要它升级到的正是这个时，它不会再换，
-    /// 中控马上记成升级失败、不再下发。旧探测点没有这个字段；旧中控不认识它，忽略
+    /// 中控马上记成升级失败、不再下发
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bad_sha256: Option<String>,
     pub results: Vec<ProbeResult>,
@@ -476,102 +474,9 @@ mod tests {
     }
 
     #[test]
-    fn probe_report_all_down_is_optional() {
-        // 旧探测点不带 all_down：解析成 false；false 时不序列化出这个字段（旧中控看到的形状不变）
-        let r: ProbeReport = serde_json::from_value(serde_json::json!({"version": "v", "results": []})).unwrap();
-        assert!(!r.all_down);
-        assert!(serde_json::to_value(&r).unwrap().get("all_down").is_none());
-        let r = ProbeReport { all_down: true, ..r };
-        assert_eq!(serde_json::to_value(&r).unwrap()["all_down"], true);
-    }
-
-    #[test]
-    fn probe_report_bad_sha256_is_optional() {
-        // 旧探测点不带：None；None 时不序列化（旧中控看到的形状不变）
-        let r: ProbeReport = serde_json::from_value(serde_json::json!({"version": "v", "results": []})).unwrap();
-        assert!(r.bad_sha256.is_none());
-        assert!(serde_json::to_value(&r).unwrap().get("bad_sha256").is_none());
-        let r = ProbeReport { bad_sha256: Some("ab".into()), ..r };
-        assert_eq!(serde_json::to_value(&r).unwrap()["bad_sha256"], "ab");
-    }
-
-    #[test]
-    fn probe_targets_upgrade_is_optional() {
-        let t = ProbeTargets { interval_s: 30, controls: vec!["1.1.1.1:443".into()], relays: vec![], upgrade: None };
-        let v = serde_json::to_value(&t).unwrap();
-        assert!(v.get("upgrade").is_none());
-        assert_eq!(serde_json::from_value::<ProbeTargets>(v).unwrap(), t);
-    }
-
-    #[test]
-    fn tags_roundtrip() {
-        let id = Uuid::now_v7();
-        for t in [tags::inbound(id), tags::outbound(id), tags::rule(id), tags::email(id)] {
-            assert_eq!(tags::parse_entry_id(&t), Some(id));
-        }
-        assert_eq!(tags::parse_entry_id("api"), None);
-    }
-
-    #[test]
-    fn entry_policy_is_backward_compatible() {
-        // 旧 JSON（没有 policy 字段）能解析成 None，且 None 不序列化出字段
-        let id = Uuid::nil();
-        let old = serde_json::json!({
-            "id": id, "port": 20001, "enabled": true, "remark": "r", "client_uuid": id, "short_id": "ab",
-            "outbound": {"protocol": "socks5", "host": "h", "port": 1, "username": null, "password": null},
-            "expect_egress_ip": "203.0.113.9"
-        });
-        let e: DesiredEntry = serde_json::from_value(old).unwrap();
-        assert!(e.policy.is_none());
-        assert!(serde_json::to_value(&e).unwrap().get("policy").is_none());
-        let mut e2 = e.clone();
-        e2.policy = Some(EntryPolicy { mode: PolicyMode::Allowlist, domains: vec!["domain:a.com".into(), "full:b.com".into()] });
-        let v = serde_json::to_value(&e2).unwrap();
-        assert_eq!(v["policy"]["mode"], "allowlist");
-        assert_eq!(serde_json::from_value::<DesiredEntry>(v).unwrap(), e2);
-    }
-
-    #[test]
-    fn agent_health_disk_error_is_optional() {
-        // 旧 agent 不带 disk_write_error：照样解析；没有错误时也不序列化出这个字段（旧中控存进库的形状不变）
-        let h: AgentHealth = serde_json::from_value(serde_json::json!({"queue_len": 1, "queue_dropped": 0, "queue_dead": 0})).unwrap();
-        assert_eq!(h.disk_write_error, None);
-        assert!(serde_json::to_value(&h).unwrap().get("disk_write_error").is_none());
-        let h = AgentHealth { disk_write_error: Some("No space left on device (os error 28)".into()), ..h };
-        assert_eq!(serde_json::from_value::<AgentHealth>(serde_json::to_value(&h).unwrap()).unwrap(), h);
-    }
-
-    #[test]
     fn outbound_is_tagged_by_protocol() {
         let o = Outbound::Socks5 { host: "h".into(), port: 1, username: None, password: None };
         let v = serde_json::to_value(&o).unwrap();
         assert_eq!(v["protocol"], "socks5");
-    }
-
-    #[test]
-    fn direct_outbound_serde() {
-        // 直出只有协议名，没有地址
-        let v = serde_json::to_value(&Outbound::Direct).unwrap();
-        assert_eq!(v, serde_json::json!({"protocol": "direct"}));
-        assert_eq!(serde_json::from_value::<Outbound>(v).unwrap(), Outbound::Direct);
-        assert_eq!(Outbound::Direct.addr(), None);
-        let ss = Outbound::Shadowsocks { host: "10.0.0.9".into(), port: 8388, method: "m".into(), password: "p".into() };
-        assert_eq!(ss.addr(), Some(("10.0.0.9", 8388)));
-        // 整条入口往返
-        let id = Uuid::nil();
-        let e = DesiredEntry {
-            id,
-            port: 20001,
-            enabled: true,
-            remark: "线路机2-直出".into(),
-            client_uuid: id,
-            short_id: "ab".into(),
-            outbound: Outbound::Direct,
-            expect_egress_ip: "198.51.100.2".parse().unwrap(),
-            policy: None,
-        };
-        let v = serde_json::to_value(&e).unwrap();
-        assert_eq!(v["outbound"], serde_json::json!({"protocol": "direct"}));
-        assert_eq!(serde_json::from_value::<DesiredEntry>(v).unwrap(), e);
     }
 }

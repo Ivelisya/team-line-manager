@@ -10,6 +10,9 @@ use std::io::Write;
 use std::sync::Mutex;
 use std::time::Duration;
 
+/// 取缓存的锁：别处 panic 留下的中毒标记不影响缓存内容，照常用
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> { m.lock().unwrap_or_else(|e| e.into_inner()) }
+
 pub struct Ctx {
     pub c: Client,
     pub base: String,
@@ -111,7 +114,7 @@ impl Ctx {
 
     /// 解析名字只要几个字段：取 `view=brief`，中控一条查询，不为找一台机器组装全部机器的完整视图
     fn with_machines<R>(&self, f: impl FnOnce(&[Value]) -> R) -> anyhow::Result<R> {
-        let mut cache = self.machines_cache.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cache = lock(&self.machines_cache);
         if cache.is_none() {
             let q = [("scope", "all".to_string()), ("view", "brief".to_string())];
             *cache = Some(self.c.get_q("/machines", &q)?.as_array().cloned().unwrap_or_default());
@@ -135,7 +138,7 @@ impl Ctx {
 
     /// 团队列表。同一命令内只请求一次
     pub fn teams(&self) -> anyhow::Result<Value> {
-        let mut cache = self.teams_cache.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cache = lock(&self.teams_cache);
         if cache.is_none() {
             *cache = Some(self.c.get("/teams")?);
         }

@@ -11,6 +11,7 @@
 //!
 //! 结论（不对时的告警摘要）放在 `AppState::tunnel_host`，告警循环里 selfmon::check_once 照它开、关告警。解析与比较经 `Net`，测试注入。
 
+use crate::lock;
 use crate::state::AppState;
 use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::time::Duration;
@@ -46,7 +47,7 @@ pub async fn run_forever(st: AppState) {
     loop {
         t.tick().await;
         match check(&st).await {
-            Ok(found) => *st.tunnel_host.lock().unwrap_or_else(|e| e.into_inner()) = found,
+            Ok(found) => *lock(&st.tunnel_host) = found,
             Err(e) => tracing::warn!("检查软路由隧道回连主机失败：{e:#}"),
         }
     }

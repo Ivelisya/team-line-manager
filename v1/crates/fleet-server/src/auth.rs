@@ -411,7 +411,7 @@ pub async fn login(
         audit(&mut tx, &r.username, "auth.totp_recovery_used", "user", Some(uid), json!({"ip": ip_s, "left": left})).await?;
     }
     tx.commit().await?;
-    let secure = st.cfg.cookie_secure.unwrap_or_else(|| st.cfg.public_url.starts_with("https://"));
+    let secure = st.cfg.public_url.starts_with("https://");
     let c = Cookie::build((COOKIE, tok))
         .http_only(true)
         .same_site(SameSite::Strict)

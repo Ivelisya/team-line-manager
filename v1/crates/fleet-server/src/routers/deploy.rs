@@ -239,7 +239,7 @@ async fn run_steps(st: &AppState, id: Uuid, l: &Login, kh: &Path, key: &str) -> 
         .fetch_one(&mut *tx)
         .await
         .map_err(db)?;
-    let port = super::rotate_port(&mut tx, &st.cfg, id).await.map_err(|e| e.message)?;
+    let port = super::rotate_port(&mut tx, id).await.map_err(|e| e.message)?;
     sqlx::query(
         "update router set tunnel_pubkey = $2, tunnel_key_at = now(), host_key = $3, bootstrap_token_hash = null, bootstrap_expires_at = null,
             updated_at = now()
