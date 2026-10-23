@@ -165,11 +165,11 @@ export function quotaCycleText(m: MachineView) {
   const from = isOverridden(m.subscription, 'traffic_reset_day') ? '单独设置' : m.sub_template ? `${inheritSource(m, 'traffic_reset_day')}：${trafficResetText(m.sub_template.traffic_reset)}` : '';
   return `每月 ${m.subscription?.traffic_reset_day ?? Number(q.start.slice(8))} 号重置${from && `（${from}）`} · ${mmdd(q.start)} 起，${mmdd(q.end!)} 重置`;
 }
-/** 已用的补充说明（各一句）：含接入前读数、数据不完整（之前的用量不在内） */
+/** 已用的补充说明（各一句）：接入后实测 + 接入前读数（已用 = 两者之和）、数据不完整（之前的用量不在内） */
 export function quotaNotes(m: MachineView) {
   const q = quota(m);
   return [
-    q.base != null && `含接入前 ${F.str(quotaGb(q.base))}（供应商面板读数，${mmdd(q.end!)} 起不再使用）`,
+    q.base != null && `其中接入后实测 ${F.str(quotaGb(q.used - q.base))}，接入前读数 ${F.str(quotaGb(q.base))}（供应商面板读数，${mmdd(q.end!)} 起不再计入）`,
     q.from && `${fromLabel(q.from, q.start)} 起才有数据，之前的用量不在内，实际剩余可能更少`,
   ].filter((x): x is string => !!x);
 }

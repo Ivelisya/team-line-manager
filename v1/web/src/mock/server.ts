@@ -120,6 +120,9 @@ function overview() {
   });
   let up = 0; let down = 0;
   for (const m of live.filter((x) => x.kind !== 'relay')) for (const e of m.entries) { up += e.traffic.month_up; down += e.traffic.month_down; }
+  // 本月数据的起点（同服务端）：在用线路机里有一台月初前就在用就完整，否则取其中最早的首次上架时刻
+  const rf = live.filter((m) => m.kind === 'relay').map((m) => m.month_counted_from);
+  const counted_from = rf.some((t) => !t) ? null : rf.sort()[0] ?? null;
   return {
     nodes: cnt(live.filter((m) => m.kind !== 'relay')), relays: cnt(live.filter((m) => m.kind === 'relay')),
     provisioning: db.machines.filter((m) => m.lifecycle === 'provisioning').length, retiring: db.machines.filter((m) => m.lifecycle === 'retiring').length,
@@ -130,7 +133,7 @@ function overview() {
     due_soon: live.filter((m) => !m.spare && m.subscription?.due_state === 'soon').length, overdue: live.filter((m) => !m.spare && m.subscription?.due_state === 'overdue').length,
     monthly_usd: usdTotal(live.flatMap((m) => (m.subscription ? [m.subscription] : []))),
     monthly_cost: Object.entries(live.reduce<Record<string, number>>((acc, m) => { if (m.subscription) acc[m.subscription.currency] = (acc[m.subscription.currency] ?? 0) + m.subscription.monthly_cents; return acc; }, {})).map(([currency, cents]) => ({ currency, cents })),
-    traffic_month: { up, down },
+    traffic_month: { up, down, counted_from },
     // 实时速率只算数据没过期的（同 liveRate）；同机 IP 节点的读数就是宿主机的，不重复算
     net_rx_bps: live.reduce((s, m) => s + (m.host_machine ? 0 : liveRate(m)?.rx ?? 0), 0), net_tx_bps: live.reduce((s, m) => s + (m.host_machine ? 0 : liveRate(m)?.tx ?? 0), 0),
   };

@@ -12,7 +12,7 @@ import { useRouters } from '@/lib/routers';
 import { useFleetSeries } from '@/lib/live';
 import { cn } from '@/lib/utils';
 import { meta, usdTotalTip } from '@/lib/derive';
-import { CountUp, DotCount, Num, Stat } from '@/components/app/primitives';
+import { CountUp, DotCount, FromTag, Num, Stat } from '@/components/app/primitives';
 import { AreaSpark, Cells } from '@/components/app/viz';
 
 /** 分区：浅灰大圆角容器，左上小胶囊标签（图标 + 文字）、标题、一行说明，右上放操作 */
@@ -93,8 +93,8 @@ export const OverviewSection = React.memo(function OverviewSection({ o, loading 
               caption={o && (costMore.length ? `另有 ${costMore.map((c) => F.money(c.cents, c.currency)).join(' + ')}` : <span>在用 <b className="num">{o.nodes.total + o.relays.total}</b> 台 · 按月折算</span>)} />
           )}
           {/* 每条推送都在涨，不滚数（滚到的位数也显示不出来，白白逐帧重画）：同网卡速率，直接到位 */}
-          <Stat loading={loading} tone="sky" icon={<TrendingUp />} label="本月业务流量" info="按入口统计；网卡流量在线路机和节点上各算一次，不做合计" to={TRAFFIC_LINK} value={tr ? F.inScale(trTotal, trScale) : '—'} unit={tr ? trScale.u : undefined}
-            caption={tr && <><span>下载 <Num f={F.bytes(tr.down)} /></span><span>上传 <Num f={F.bytes(tr.up)} /></span></>} />
+          <Stat loading={loading} tone="sky" icon={<TrendingUp />} label="本月业务流量" info="所有入口的客户下载 + 上传，不含协议开销。和单台机器的「本周期已用」不是一回事：那是供应商按网卡、从账单日起算的，可能含接入前读数；线路机网卡因协议开销会略多。" to={TRAFFIC_LINK} value={tr ? F.inScale(trTotal, trScale) : '—'} unit={tr ? trScale.u : undefined}
+            caption={tr && <><span>下载 <Num f={F.bytes(tr.down)} /></span><span>上传 <Num f={F.bytes(tr.up)} /></span><FromTag from={tr.counted_from} /></>} />
           {/* 有吃紧的：点卡片打开最紧那台的流量页签 */}
           <Stat loading={loading} tone="violet" icon={<Database />} label="流量额度吃紧" value={<CountUp value={qt?.n} />} unit={qt ? '台' : undefined} onClick={top ? () => openDrawer(top.id, 'traffic') : undefined}
             caption={qt && (top ? <span className="stat-who">最紧<span className="ellipsis" data-tip={top.name}>{top.name}</span>已用<b className="num">{top.pct}%</b></span> : `都在 ${meta().thresholds.traffic_quota_warn_pct}% 以下`)} />

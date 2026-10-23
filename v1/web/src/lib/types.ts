@@ -161,7 +161,8 @@ export interface Overview {
   monthly_cost: { currency: string; cents: number }[];
   /** 月费合计折成 USD（每台的 monthly_usd_cents 相加；没有汇率的单列）；旧接口没有 */
   monthly_usd?: UsdTotal;
-  traffic_month: { up: number; down: number }; net_rx_bps: number; net_tx_bps: number;
+  /** counted_from：本月数据不完整时的起点（RFC 3339，agent 接入晚于月初），完整则 null */
+  traffic_month: { up: number; down: number; counted_from: string | null }; net_rx_bps: number; net_tx_bps: number;
 }
 
 /** GET /meta：中文名、枚举、阈值、默认值的唯一来源（服务端 meta.rs），一次会话内不变 */

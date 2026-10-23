@@ -1408,7 +1408,7 @@ pub async fn overview(st: &AppState) -> sqlx::Result<Value> {
     Ok(overview_of(&ms, &*traffic(st).await?))
 }
 
-/// 总览 KPI，只统计 active 的机器；本月业务流量是全部入口（`traffic`）的合计
+/// 总览 KPI，只统计 active 的机器；本月业务流量是全部入口（`traffic`）的合计，数据不完整时带起点（`traffic_month.counted_from`）
 pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Value {
     let mut nodes = json!({"total": 0, "ok": 0, "degraded": 0, "down": 0, "unknown": 0, "maintenance": 0});
     let mut relays = nodes.clone();
@@ -1416,6 +1416,13 @@ pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Valu
     // 本月业务流量：每条入口的字节只在它的线路机上统计一次，全部入口直接相加不重复，含已移除的入口和月中退役、替换掉的机器。
     // 网卡流量不做合计：同一个字节在线路机和节点的网卡上各算一次
     let (up, down) = traffic.values().fold((0i64, 0i64), |(u, d), t| (u.saturating_add(t.month_up), d.saturating_add(t.month_down)));
+    // 本月数据从哪一刻才有：在用线路机里有一台月初前就在用（month_counted_from 为 null）就是完整的，否则取其中最早的首次上架时刻
+    let counted_from = ms
+        .iter()
+        .filter(|m| m.kind == "relay" && m.lifecycle == "active")
+        .map(|m| m.month_counted_from)
+        .collect::<Option<Vec<_>>>()
+        .and_then(|v| v.into_iter().min());
     // 到期：按订阅的 due_state（同续费告警）分别计即将到期、已过期
     let (mut due_soon, mut overdue) = (0, 0);
     // 在线/离线按 agent 连通（同前端 isQuiet）：agent 没有近期上报为离线。只数有自己 agent 的机器：
@@ -1473,7 +1480,7 @@ pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Valu
     }
     json!({
         "nodes": nodes, "relays": relays, "provisioning": provisioning, "retiring": retiring, "failed": failed, "due_soon": due_soon, "overdue": overdue, "online": online, "offline": offline,
-        "monthly_cost": cost.into_iter().map(|(c, v)| json!({"currency": c, "cents": v})).collect::<Vec<_>>(), "monthly_usd": usd, "traffic_month": {"up": up, "down": down}, "net_rx_bps": rx, "net_tx_bps": tx,
+        "monthly_cost": cost.into_iter().map(|(c, v)| json!({"currency": c, "cents": v})).collect::<Vec<_>>(), "monthly_usd": usd, "traffic_month": {"up": up, "down": down, "counted_from": counted_from.map(|t| t.format(&time::format_description::well_known::Rfc3339).unwrap_or_default())}, "net_rx_bps": rx, "net_tx_bps": tx,
     })
 }
 

@@ -150,13 +150,16 @@ fn limit_cn(m: &Value, limit: Option<i64>) -> String {
 /// 时间戳的日期部分（组织时区）：「2026-10-22 起统计」
 fn day_of(t: &str) -> String { table::ts(t).chars().take(10).collect() }
 
+/// 时间戳的月-日（组织时区）：「10-22 起」（总览的本月业务流量，同网页）
+pub(crate) fn md_of(t: &str) -> String { day_of(t).chars().skip(5).collect() }
+
 /// 按哪几块网卡计（agent 报的；旧 agent 没报为空）：`，按 ens3 计`。按业务流量算的不写（billing、show 共用）
 pub(crate) fn nic_cn(m: &Value) -> String {
     let names: Vec<&str> = m.pointer("/agent/nic_ifaces").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
     if m["quota"]["rule"].is_null() || names.is_empty() { String::new() } else { format!("，按 {} 计", names.join(" + ")) }
 }
 
-/// 有额度时的已用：`967.4 GB / 2000 GB（48%），2026-10-13 → 2026-11-13，下行、上行取较小，按 ens3 计；含接入前读数 964.1 GB（供应商面板读数，2026-11-13 起不再计入）`。
+/// 有额度时的已用：`1035.3 GB / 2000 GB（51%），2026-10-13 → 2026-11-13，下行、上行取较小，按 ens3 计；其中接入后实测 71.2 GB，接入前读数 964.1 GB（供应商面板读数，2026-11-13 起不再计入）`。
 /// 周期中途上架、没有接入前读数的写「2026-10-22 起统计，之前的用量不在内」；滚动 30 天写起点
 fn used_cn(m: &Value, limit: Option<i64>, pct: Option<i64>, incl: &str) -> String {
     let q = &m["quota"];
@@ -167,7 +170,13 @@ fn used_cn(m: &Value, limit: Option<i64>, pct: Option<i64>, incl: &str) -> Strin
         None => format!("{} 起", st(q, "/period_start")),
     };
     let note = match (num(q, "/base"), q["counted_from"].as_str()) {
-        (Some(b), _) => format!("；含接入前读数 {}（供应商面板读数{}）", gb(b), q["period_end"].as_str().map(|e| format!("，{e} 起不再计入")).unwrap_or_default()),
+        // used = 接入前读数 + 接入后网卡实测：拆开写，免得和只统计接入后的本月流量对不上
+        (Some(b), _) => format!(
+            "；其中接入后实测 {}，接入前读数 {}（供应商面板读数{}）",
+            gb(num(q, "/used").unwrap_or(0.0) - b),
+            gb(b),
+            q["period_end"].as_str().map(|e| format!("，{e} 起不再计入")).unwrap_or_default()
+        ),
         (None, Some(t)) => format!("；{} 起统计，之前的用量不在内", day_of(t)),
         _ => String::new(),
     };
@@ -580,7 +589,7 @@ mod tests {
             "base": 869_700_000_000i64, "base_at": "2026-10-22T07:30:00Z", "counted_from": null}});
         assert_eq!(
             used_cn(&q, Some(2000), Some(45), ""),
-            "901.6 GB / 2000 GB（45%），2026-10-13 → 2026-11-13，下行、上行取较小，按 ens3 计；含接入前读数 869.7 GB（供应商面板读数，2026-11-13 起不再计入）"
+            "901.6 GB / 2000 GB（45%），2026-10-13 → 2026-11-13，下行、上行取较小，按 ens3 计；其中接入后实测 31.9 GB，接入前读数 869.7 GB（供应商面板读数，2026-11-13 起不再计入）"
         );
         // 滚动 30 天、周期中途上架（日期按组织时区）；业务流量不写网卡
         let q = json!({"agent": {"nic_ifaces": ["eth0"]}, "quota": {"used": 31_900_000, "period_start": "2026-09-24", "period_end": null, "rule": null, "base": null, "counted_from": "2026-10-21T17:10:00Z"}});
@@ -590,5 +599,7 @@ mod tests {
         assert_eq!(month_cn(&m), "网卡 ↓ 1.0 TB / ↑ 108.0 GB（2026-10-22 起）");
         let m = json!({"nic": null, "entries": [{"traffic": {"month_down": 3_000_000_000i64, "month_up": 1_000_000_000i64}}], "removed_traffic": {"month_down": 500_000_000, "month_up": 0}});
         assert_eq!(month_cn(&m), "业务 下载 3.5 GB / 上传 1.0 GB");
+        // 总览的本月业务流量只标月-日（组织时区）
+        assert_eq!(md_of("2026-10-21T17:10:00Z"), "10-22");
     }
 }

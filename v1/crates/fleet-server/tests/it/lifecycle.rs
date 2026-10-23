@@ -417,7 +417,34 @@ async fn quota_by_nic_rule_periods_and_opening_reading() {
     sqlx::query("insert into entry_traffic_hourly (entry_id, hour, up_bytes, down_bytes) values ($1, date_trunc('hour', now()), 11, 22)").bind(eid).execute(db).await.unwrap();
     t.st.live.rolled_up();
     let ov = t.get("/api/v1/overview").await;
-    assert_eq!(ov["traffic_month"], json!({"up": 11, "down": 22}), "{ov}");
+    assert_eq!((ov["traffic_month"]["up"].as_i64(), ov["traffic_month"]["down"].as_i64()), (Some(11), Some(22)), "{ov}");
+}
+
+/// 总览本月业务流量的 counted_from：在用线路机里有一台月初（组织时区）前就在用就是完整的（null），否则是其中最早的首次上架时刻；
+/// 退役的、不是线路机的不参与
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn overview_traffic_month_counted_from() {
+    let t = setup(false).await;
+    let db = &t.st.db;
+    let rfc = &time::format_description::well_known::Rfc3339;
+    let (a, _) = seed_relay(&t).await;
+    let (b, _) = seed_relay_b(&t).await;
+    // a 比 b 早：都是本月才上架（a 在本月 1 号 0 点之后 1 秒，b 是现在）
+    sqlx::query("update machine set activated_at = (date_trunc('month', now() at time zone org_tz()) at time zone org_tz()) + interval '1 second' where id = $1").bind(a).execute(db).await.unwrap();
+    let at = |id: Uuid| async move { sqlx::query_scalar::<_, time::OffsetDateTime>("select activated_at from machine where id = $1").bind(id).fetch_one(db).await.unwrap() };
+    let counted = || async {
+        t.st.live.rolled_up();
+        let ov = t.get("/api/v1/overview").await;
+        assert!(ov["traffic_month"]["up"].is_i64() && ov["traffic_month"]["down"].is_i64(), "{ov}");
+        ov["traffic_month"]["counted_from"].as_str().map(|s| time::OffsetDateTime::parse(s, rfc).unwrap())
+    };
+    assert_eq!(counted().await, Some(at(a).await));
+    // a 退役：只剩 b
+    sqlx::query("update machine set lifecycle = 'retiring' where id = $1").bind(a).execute(db).await.unwrap();
+    assert_eq!(counted().await, Some(at(b).await));
+    // a 恢复在用、且是月初前上架的：一台月初前就在用，完整
+    sqlx::query("update machine set lifecycle = 'active', activated_at = (date_trunc('month', now() at time zone org_tz()) at time zone org_tz()) - interval '1 day' where id = $1").bind(a).execute(db).await.unwrap();
+    assert_eq!(counted().await, None);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

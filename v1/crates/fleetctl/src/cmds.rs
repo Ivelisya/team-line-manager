@@ -167,6 +167,8 @@ pub fn status(ctx: &Ctx) -> anyhow::Result<u8> {
         };
         // 月费统一折成 USD（中控按汇率算好），括注原币种；没有汇率的单列
         let cost = crate::fx::cost_cn(&ov);
+        // 本月中途才开始有数据（在用线路机本月才接入）的标「（10-22 起）」
+        let from = ov.pointer("/traffic_month/counted_from").and_then(Value::as_str).map(|t| format!("（{} 起）", crate::billing::md_of(t))).unwrap_or_default();
         let mut s = table::kv(&[
             ("节点", bucket("nodes")),
             ("线路机", bucket("relays")),
@@ -176,7 +178,7 @@ pub fn status(ctx: &Ctx) -> anyhow::Result<u8> {
             (meta::label("due_states", "soon"), st(&ov, "/due_soon")),
             (meta::label("due_states", "overdue"), st(&ov, "/overdue")),
             ("每月费用", cost),
-            ("本月业务流量", format!("下载 {} / 上传 {}", traffic(num(&ov, "/traffic_month/down").unwrap_or(0.0)), traffic(num(&ov, "/traffic_month/up").unwrap_or(0.0)))),
+            ("本月业务流量", format!("下载 {} / 上传 {}{from}", traffic(num(&ov, "/traffic_month/down").unwrap_or(0.0)), traffic(num(&ov, "/traffic_month/up").unwrap_or(0.0)))),
             ("网卡速率", format!("下行 {} / 上行 {}", bps(num(&ov, "/net_rx_bps").unwrap_or(0.0)), bps(num(&ov, "/net_tx_bps").unwrap_or(0.0)))),
         ]);
         let list = inc.as_array().cloned().unwrap_or_default();
