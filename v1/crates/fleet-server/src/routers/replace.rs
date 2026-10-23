@@ -29,8 +29,9 @@ pub const APPLY_TIMEOUT: Duration = Duration::from_secs(420);
 /// 一台路由换回备份并重启
 pub const ROLLBACK_TIMEOUT: Duration = Duration::from_secs(240);
 
-/// 一个出口要改成的样子。`old_*` 是它现在应当指向的旧入口（核对用，不改）
-#[derive(Clone)]
+/// 一个出口要改成的样子。`old_*` 是它现在应当指向的旧入口（核对用，不改）。
+/// 写进路由的那组也记在作业参数里（jobs/steps/replace.rs 的 `Applied`），改回时照它核对
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Edit {
     pub exit: String,
     pub old_server: String,

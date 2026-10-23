@@ -324,6 +324,41 @@ async fn purge_refused_while_peer_still_counts_traffic() {
     }
 }
 
+/// 没做完的改软路由出口作业（参数 routers_applied 记着它写的新入口）还要照那条入口改回：入口所在的节点和线路机都不能物理删除，
+/// 作业结束（成功 / 取消）后放行；没有引用的机器不受影响
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn purge_waits_for_unfinished_router_job() {
+    let t = setup(false).await;
+    let team = seed_team(&t, "团队1").await;
+    let node = seed_node(&t, team, 1, "203.0.113.10", "retiring").await;
+    let other = seed_node(&t, team, 2, "203.0.113.11", "retiring").await;
+    let (relay, _) = seed_relay(&t).await;
+    let eid = Uuid::now_v7();
+    sqlx::query("insert into entry (id, relay_id, node_id, port, client_uuid, short_id, lifecycle) values ($1, $2, $3, 20001, $4, 'ab', 'active')")
+        .bind(eid)
+        .bind(relay)
+        .bind(node)
+        .bind(Uuid::now_v7())
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let mut tx = t.st.db.begin().await.unwrap();
+    let job = jobs::enqueue(&mut tx, "replace", None, json!({}), "test").await.unwrap();
+    tx.commit().await.unwrap();
+    let applied = json!({"routers_applied": [{"id": Uuid::nil(), "name": "路由A", "port": 1, "stamp": "S", "exits": [{"exit": "节点01", "new_entry_id": eid}]}]});
+    sqlx::query("update job set state = 'failed', params = params || $2::jsonb where id = $1").bind(job).bind(&applied).execute(&t.st.db).await.unwrap();
+    for m in [node, relay] {
+        let why = fleet_server::db::purge_blocker(&t.st.db, m).await.unwrap();
+        assert!(why.is_some_and(|w| w.contains("改软路由出口作业")), "{m}");
+    }
+    assert_eq!(fleet_server::db::purge_blocker(&t.st.db, other).await.unwrap(), None);
+    // 作业改回完清空 routers_applied（或取消）后放行
+    sqlx::query("update job set params = params || '{\"routers_applied\": []}' where id = $1").bind(job).execute(&t.st.db).await.unwrap();
+    assert_eq!(fleet_server::db::purge_blocker(&t.st.db, node).await.unwrap(), None);
+    sqlx::query("update job set params = params || $2::jsonb, state = 'cancelled' where id = $1").bind(job).bind(&applied).execute(&t.st.db).await.unwrap();
+    assert_eq!(fleet_server::db::purge_blocker(&t.st.db, relay).await.unwrap(), None);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stale_lease_holder_cannot_write() {
     let t = setup(false).await; // 不起后台引擎，手动领取、推进
