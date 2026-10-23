@@ -50,6 +50,22 @@ pub struct Config {
     /// 软路由的反向隧道（见 routers/mod.rs）；整段不写也能跑
     #[serde(default)]
     pub routers: RoutersConfig,
+    /// 汇率（计费折成 USD，见 fx.rs）；整段不写也能跑
+    #[serde(default)]
+    pub fx: FxConfig,
+}
+
+/// `[fx]`：汇率源。默认每天从 frankfurter（ECB 参考汇率，免费、不要密钥）拉一次
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct FxConfig {
+    /// 每天自动更新；关掉时只用手动设置的汇率（面板里也能点「立即更新」）
+    pub auto: bool,
+    /// 汇率源地址：回包 `{base: "USD", date, rates: {CNY: 6.67, …}}`（1 USD 合多少该币种）
+    pub url: String,
+}
+impl Default for FxConfig {
+    fn default() -> Self { Self { auto: true, url: crate::fx::DEFAULT_URL.into() } }
 }
 
 /// `[routers]`：路由经反向 SSH 隧道连中控 sshd（账号 fleet-tunnel），中控经隧道登录路由采集

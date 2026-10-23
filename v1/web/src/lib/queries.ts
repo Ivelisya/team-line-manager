@@ -167,7 +167,8 @@ export function eventKeys(ev: StreamEvent): unknown[][] {
     case 'incidents': return [['incidents'], ['silences']];
     case 'catalog': return [['teams'], ['providers'], ['plans'], ['machines'], ['machine'], ['notify-channels'], ['policies', 'list'], ['policies', 'versions']];
     case 'api_keys': return [['api-keys']];
-    case 'settings': return [['access-retention'], ['access'], ['audit']];
+    // 设置：访问记录保留期、汇率（汇率变了机器视图、总览、团队与套餐里的 USD 折算值跟着变）
+    case 'settings': return [['access-retention'], ['access'], ['audit'], ['fx-rates'], ['machines'], ['machine'], ['overview'], ['teams'], ['plans']];
     case 'policies': return [['policies'], ['machines'], ['relays']];
     // 软路由：增删改与每轮采集（最多一次）都发这一个，列表与各台详情一起重取（曲线另按时间轮询，见 lib/routers）
     case 'routers': return [['routers']];

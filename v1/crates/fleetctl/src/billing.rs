@@ -210,7 +210,9 @@ fn billing_text(name: &str, m: &Value, limit: Option<i64>, pct: Option<i64>, ren
     let s = &m["subscription"];
     let mut rows = vec![("机器", name.to_string())];
     if !s.is_null() {
-        let [fee, (due, d), (auto, a), remind, tz, _, reset] = sub_fields(s, m);
+        let [(fee, f), (due, d), (auto, a), remind, tz, _, reset] = sub_fields(s, m);
+        // 费用后面补折成的 USD 月费（中控按汇率算好；原币种照录入的写）
+        let fee = (fee, format!("{f}{}", crate::fx::sub_usd_cn(s)));
         let a = if s["auto_renew"] == true { "是（到期后中控按周期自动顺延到期日、记一条续费记录；到期前不提醒）".into() } else { a };
         rows.extend([fee, (due, format!("{d}（{}）", due_cn(s["due_days"].as_i64().unwrap_or(0)))), (auto, a), remind, tz, ("流量上限", limit_cn(m, limit)), reset]);
         // 紧跟在到期那一行后面

@@ -7,6 +7,7 @@ mod access;
 mod account;
 mod billing;
 mod flow;
+mod fx;
 mod ip_nodes;
 mod ipintel;
 mod jobs;

@@ -65,6 +65,8 @@ export function money(cents: number | null | undefined, currency: string): strin
   // 同一列里 $59 与 $28.88 并排时对不齐：一律两位小数（日元没有辅币单位）
   return `${currencySym(currency)}${currency === 'JPY' ? Math.round(v) : v.toFixed(2)}`;
 }
+/** 汇率：「1 CNY = 0.1404 USD」（4 位有效数字） */
+export const fxRate = (currency: string, usdPerUnit: number) => `1 ${currency} = ${Number(usdPerUnit.toPrecision(4))} USD`;
 /** 币种下拉的一项：「USD $」 */
 export const currencyLabel = (c: string) => `${c} ${currencySym(c).trim()}`.trim();
 /** 当前值不在常用选项里（供应商时区 Asia/Hong_Kong、套餐币种 SGD 等）时补进去，否则下拉显示为空 */

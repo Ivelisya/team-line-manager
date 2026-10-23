@@ -144,7 +144,7 @@ const AUDIT_ACTIONS: &[&str] = &[
     "silence.delete", "incident.ack", "restore.probe", "agent.upgrade", "notify.create", "notify.update", "notify.delete", "exec", "machine.logs", "server.logs", "apikey.create",
     "apikey.revoke", "auth.login", "auth.login_failed", "auth.logout", "auth.totp_enabled", "auth.totp_disabled", "auth.totp_recovery_used",
     "auth.totp_recovery_regenerated", "auth.user_removed", "auth.user_disabled", "auth.password_changed", "auth.session_revoked", "auth.verify_failed", "policy.draft", "policy.discard", "policy.publish", "policy.rollback",
-    "settings.access_retention", "terminal.open", "terminal.close", "ssh.login",
+    "settings.access_retention", "settings.fx_rate", "terminal.open", "terminal.close", "ssh.login",
     "router.create", "router.update", "router.delete", "router.bootstrap", "router.bootstrap_used", "router.deploy",
 ];
 
@@ -224,6 +224,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "policy.publish" => "发布访问规则",
         "policy.rollback" => "回滚访问规则",
         "settings.access_retention" => "修改访问记录保留期",
+        "settings.fx_rate" => "修改汇率",
         "router.create" => "新建软路由",
         "router.update" => "修改软路由",
         "router.delete" => "删除软路由",
@@ -444,6 +445,19 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
             })
             .collect::<Vec<_>>()
             .join("，"),
+        // 「CNY：手动 0.1404 USD（原为自动 0.1498）」「CNY：取消手动，改回自动 0.1498」
+        "settings.fx_rate" => {
+            let side = |v: &Value| match (v["usd_per_unit"].as_f64(), v["source"].as_str()) {
+                (Some(r), Some(src)) => format!("{}{r} USD", if src == "manual" { "手动 " } else { "自动 " }),
+                _ => "没有汇率（未折算）".into(),
+            };
+            let c = s("currency");
+            if d["to"]["source"] == "manual" {
+                format!("{c}：1 {c} = {}（原为{}）", side(&d["to"]).trim_start_matches("手动 "), side(&d["from"]))
+            } else {
+                format!("{c}：取消手动汇率，改回{}", side(&d["to"]))
+            }
+        }
         _ => String::new(),
     };
     (title, summary)
@@ -581,6 +595,16 @@ mod tests {
         assert_eq!(s(json!({"raw_days": 7, "hourly_days": 31}), json!({"raw_days": 3, "hourly_days": 31})), "原始记录 7 → 3 天，汇总 31 天");
         assert_eq!(s(json!({"raw_days": 7, "hourly_days": 31}), json!({"raw_days": 7, "hourly_days": 60})), "原始记录 7 天，汇总 31 → 60 天");
         assert_eq!(s(json!({"raw_days": 7, "hourly_days": 31}), json!({"raw_days": 1, "hourly_days": 14})), "原始记录 7 → 1 天，汇总 31 → 14 天");
+    }
+
+    #[test]
+    fn fx_rate_summary() {
+        let s = |d: Value| audit_text("settings.fx_rate", &d).1;
+        let m = json!({"usd_per_unit": 0.14, "source": "manual"});
+        let a = json!({"usd_per_unit": 0.1498, "source": "auto"});
+        assert_eq!(s(json!({"currency": "CNY", "from": a, "to": m})), "CNY：1 CNY = 0.14 USD（原为自动 0.1498 USD）");
+        assert_eq!(s(json!({"currency": "CNY", "from": m, "to": a})), "CNY：取消手动汇率，改回自动 0.1498 USD");
+        assert_eq!(s(json!({"currency": "XYZ", "from": m, "to": null})), "XYZ：取消手动汇率，改回没有汇率（未折算）");
     }
 
     #[test]

@@ -35,6 +35,7 @@
 | 告警列表、确认 | `fleetctl incidents`、`fleetctl ack <id>`；一台机器的告警历史 `fleetctl incidents --all --machine 团队1-06` |
 | 维护前开维护窗口（免得告警刷屏），或预约 | `fleetctl silence add 团队1-06 --for 2h --maintenance --comment 换内核`；预约加 `--start "2026-10-23 02:00"`（组织时区，默认北京时间）；只静默一条规则 `--rule agent_offline`；`fleetctl silence ls`，做完 `fleetctl silence rm <id 前缀>`；全部机器 `--all --yes`（API 密钥最长 24 小时，更长的在网页用账号建；建、删都会通知所有渠道） |
 | 到期与续费：快到期的机器、看订阅、登记续费、改订阅 | `fleetctl ls --due 7`（7 天内到期、含已过期的在用机器；`fleetctl status` 的「即将到期 / 已过期」按各台的提前提醒天数算，同续费告警）、`fleetctl billing 团队1-06`（订阅与续费记录）；确认已付款后 `fleetctl renew 团队1-06 --yes`（默认同网页：按订阅周期推一个周期（新到期日由中控算，小月按月末）、金额取订阅价格；一次付几期 `--cycles 3`，按面板 `--to 2027-01-15 --amount 39.46 --note …`）；改订阅 `fleetctl subscription set 团队1-06 --price 45 --yes`（只改给了的字段；`--price none` 改回跟随套餐）。订阅跟随模板：价格、币种、周期、流量上限跟随**套餐**，账单时区、提前提醒、流量重置（自然月 / 账单日）跟随**供应商**，订阅只存到期日、自动续费和单独设置的项——同一套餐一起调价、改额度改套餐（`fleetctl plan set <套餐> --price 45 --yes`，或网页「团队与套餐」），立即对没单独设置的机器生效；上架选了套餐只要填到期日 |
+| 费用统一按美元：看汇率、汇率不对或缺币种时手动设置 | `fleetctl settings fx`（各币种的汇率、来源、上次更新时间；在用但没有汇率的会列出来）；手动设置 `fleetctl settings fx CNY --per-usd 7.12 --yes`（或 `--usd 0.1404`），改回自动 `fleetctl settings fx CNY --auto --yes`，立即更新 `fleetctl settings fx --refresh`。月费、合计都按它折成 USD（见 §16） |
 | 服务日志 | `fleetctl logs 团队1-06 --unit fleet-agent --lines 300`（unit：fleet-agent / fleet-xray / ssserver） |
 | 中控自己的日志 | `fleetctl server-logs --lines 300` |
 | 在一台机器上执行命令 | `fleetctl exec 团队1-06 -- systemctl status fleet-agent` |
@@ -466,3 +467,20 @@ heartbeat_url = "https://hc-ping.com/<检查的 uuid>"
 断开时中控结束本地的 ssh，远端的 shell 随连接断开收到 SIGHUP 退出；`nohup`、`setsid`、`systemd-run` 起的后台进程照常留着。
 
 **日志级别**：生产不要把 `tungstenite` / `axum::extract::ws` 的日志级别调到 trace（`RUST_LOG`）：trace 会把帧内容写进日志，包括票据和键入的内容。
+
+## 16. 汇率（计费统一按美元）
+
+价格照供应商收的币种录入（套餐、订阅、续费记录，CloudSilk 这类收人民币的就记 CNY），网页与 fleetctl 展示的月费、合计一律折成美元：首页「每月费用」、机器卡片与表格的「$xx/月」（原价与汇率在悬停或副行）、费用页、团队与套餐页、`fleetctl status` / `billing` / `ls --due`。折算由中控按汇率算好（四舍五入到分，合计是逐台折好的相加），口径见 API.md「汇率」。
+
+- **自动更新**：中控每天从 ECB 参考汇率（frankfurter，免费、不要密钥，中控要能出网到 `api.frankfurter.dev:443`）拉一次。失败保留上次的值，`journalctl -u fleet-server | grep 汇率` 看原因，一小时后自动再试；网页「设置 → 汇率」与 `fleetctl settings fx` 会显示最近一次失败。换汇率源或关掉自动更新在 `/etc/fleet/fleet.toml` 写（改完 `systemctl restart fleet-server`）：
+
+```toml
+[fx]
+auto = true                                              # false = 只用手动设置的汇率
+url = "https://api.frankfurter.dev/v1/latest?base=USD"   # 回包 {base:"USD", date, rates:{CNY:…}}（1 USD 合多少该币种）
+```
+
+- **手动设置**：网页「设置 → 汇率」或 `fleetctl settings fx <币种> --per-usd 7.12`。手动的优先，之后自动更新不改它（自动的值照样更新、表里看得到），要跟回市场价就「改回自动」（`--auto`）。改动写审计「修改汇率」。
+- **没有汇率的币种**（源里没有、也没手动设）：费用不折算、不当 1:1，各处标「未折算」，首页合计单列、不算进总数。看到「在用但没有汇率」就手动设一个。
+- 汇率存在 `app_setting` 的 `fx_rates`（JSON），随每日备份；不要直接改库（改坏了会当作没有汇率），用网页或 fleetctl。
+- 续费记录（实付金额）、回收站里的价格是历史账目，照原币种显示，不折算。

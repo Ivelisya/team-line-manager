@@ -7,6 +7,7 @@ mod catalog;
 mod client;
 mod cmds;
 mod config;
+mod fx;
 mod ipintel;
 mod lifecycle;
 mod meta;
@@ -164,6 +165,26 @@ enum SettingsCmd {
         /// 汇总（小时汇总、新目标、来源画像）保留天数，1–90、不短于 --raw；访问页最长能看这么久
         #[arg(long)]
         hourly: Option<i64>,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// 汇率（计费统一折成 USD）：不带参数看各币种的汇率与来源；<币种> --usd / --per-usd 手动设置（自动更新不再改它），
+    /// <币种> --auto 取消手动、改回自动更新的值；--refresh 立即从汇率源更新（默认每天自动一次）
+    Fx {
+        /// 币种代码，如 CNY
+        currency: Option<String>,
+        /// 1 单位该币种合多少 USD，如 0.1404
+        #[arg(long)]
+        usd: Option<f64>,
+        /// 1 USD 合多少该币种，如 7.12（和 --usd 二选一）
+        #[arg(long)]
+        per_usd: Option<f64>,
+        /// 取消手动汇率，改回自动更新的值
+        #[arg(long)]
+        auto: bool,
+        /// 立即从汇率源更新
+        #[arg(long)]
+        refresh: bool,
         #[arg(long)]
         yes: bool,
     },
@@ -647,7 +668,7 @@ enum Cmd {
     },
     /// IP 情报离线库状态（加载了几个、版本、缺什么）
     IpintelStatus,
-    /// 面板设置：访问记录保留期（settings retention）
+    /// 面板设置：访问记录保留期（settings retention）、汇率（settings fx）
     Settings {
         #[command(subcommand)]
         cmd: SettingsCmd,
@@ -995,6 +1016,9 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Sources { machine, window, limit } => ipintel::sources(x, &machine, &window, limit),
         Cmd::IpintelStatus => ipintel::status(x),
         Cmd::Settings { cmd: SettingsCmd::Retention { raw, hourly, yes } } => settings::retention(x, raw, hourly, yes),
+        Cmd::Settings { cmd: SettingsCmd::Fx { currency, usd, per_usd, auto, refresh, yes } } => {
+            fx::fx(x, fx::FxOpts { currency: currency.as_deref(), usd, per_usd, auto, refresh, yes })
+        }
         Cmd::Policy { cmd } => match cmd {
             PolicyCmd::Ls => policy::ls(x),
             PolicyCmd::Show { who } => policy::show(x, &who),

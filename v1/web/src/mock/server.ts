@@ -10,6 +10,7 @@ import { cycleMonths, META, subCalc } from './meta';
 const LIFECYCLE_LABEL = META.lifecycles;
 import { buildDb, countryOf, hashStr, IP_STEPS, rng, trafficOf, type Db } from './fixtures';
 import { installAccessMock } from './access';
+import { installFxMock, toUsd, usdPerUnit, usdTotal } from './fx';
 import { installPolicyMock } from './policy';
 import { installRoutersMock } from './routers';
 import { installTerminalMock } from './terminal';
@@ -127,6 +128,7 @@ function overview() {
     // 在线/离线按 agent 连通（同 isQuiet），只数有自己 agent 的（家宽代理、同机 IP 节点不计）
     online: live.filter((m) => m.agent && !m.host_machine && !isQuiet(m)).length, offline: live.filter((m) => m.agent && !m.host_machine && isQuiet(m)).length,
     due_soon: live.filter((m) => !m.spare && m.subscription?.due_state === 'soon').length, overdue: live.filter((m) => !m.spare && m.subscription?.due_state === 'overdue').length,
+    monthly_usd: usdTotal(live.flatMap((m) => (m.subscription ? [m.subscription] : []))),
     monthly_cost: Object.entries(live.reduce<Record<string, number>>((acc, m) => { if (m.subscription) acc[m.subscription.currency] = (acc[m.subscription.currency] ?? 0) + m.subscription.monthly_cents; return acc; }, {})).map(([currency, cents]) => ({ currency, cents })),
     traffic_month: { up, down },
     // 实时速率只算数据没过期的（同 liveRate）；同机 IP 节点的读数就是宿主机的，不重复算
@@ -415,7 +417,8 @@ R('POST', '/auth/login', ({ body }) => { if (!body?.username) throw bad('请输�
 R('POST', '/auth/logout', () => { sessionStorage.setItem('mock:auth', '0'); return {}; });
 R('GET', '/auth/me', () => { if (sessionStorage.getItem('mock:auth') === '0') throw bad('未登录', 401, 'unauthorized'); return { username: db.user }; });
 
-R('GET', '/teams', () => clone(db.teams));
+// 团队带在用机器的月费合计（USD，同服务端）
+R('GET', '/teams', () => clone(db.teams).map((t) => ({ ...t, monthly_usd: usdTotal(db.machines.filter((m) => m.lifecycle === 'active' && m.team?.id === t.id && m.subscription).map((m) => m.subscription!)) })));
 R('POST', '/teams', ({ body }) => {
   if (!body.name?.trim()) throw bad('团队名不能为空');
   if (db.teams.some((t) => t.name === body.name)) throw bad('团队名已存在', 409, 'conflict');
@@ -489,7 +492,7 @@ R('DELETE', '/plans/([^/]+)', ({ params }) => {
   db.plans = db.plans.filter((x) => x.id !== p.id); delAudit('plan.delete', '删除套餐', 'plan', p.id, p.name);
   emit({ type: 'catalog' }); return { id: p.id };
 });
-R('GET', '/plans', () => clone(db.plans));
+R('GET', '/plans', () => clone(db.plans).map((p) => ({ ...p, usd_per_unit: usdPerUnit(p.currency), price_usd_cents: toUsd(p.price_cents, p.currency), monthly_usd_cents: toUsd(Math.round(p.price_cents / cycleMonths(p.cycle)), p.currency) })));
 R('POST', '/plans', ({ body }) => {
   if (!body.name || !body.provider_id) throw bad('套餐名与供应商必填');
   const p = { id: `pl${db.seq++}`, archived_at: null, machine_count: 0, notes: null, cpu_cores: 0, mem_mb: 0, disk_gb: 0, bandwidth_mbps: 0, traffic_gb: 0, price_cents: 0, currency: 'CNY', cycle: 'monthly', ...body };
@@ -803,6 +806,9 @@ R('GET', '/audit', ({ query }) => {
 });
 
 installAccessMock(R, () => db.machines);
+// 汇率变了：各台订阅的 USD 折算重算，发 settings（同中控）
+installFxMock(R, () => [...new Set([...db.plans.filter((p) => !p.archived_at).map((p) => p.currency), ...db.machines.filter((m) => m.lifecycle !== 'retired' && m.subscription).map((m) => m.subscription!.currency)])],
+  () => db.user, () => { db.machines.forEach(recomputeDue); emit({ type: 'settings' }); }, bad);
 installPolicyMock(R, { teams: () => db.teams, machines: () => db.machines, emit, user: () => db.user, bad });
 const routersMock = installRoutersMock(R, { teams: () => db.teams, machines: () => db.machines, incidents: () => db.incidents, emit, bad });
 installTerminalMock(R, { machines: () => db.machines, routers: routersMock.routers, bad });

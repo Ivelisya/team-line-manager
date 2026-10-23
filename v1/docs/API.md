@@ -57,7 +57,7 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
 ## 目录
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/teams` | `[{id,name,sort_order,spare,node_count}]`（`spare`：唯一的备用团队，系统管理（迁移 0041 建好，唯一索引 `team_one_spare`）：退役的机器放这里，在用、有订阅的订阅过期满 1 天后中控清理并移进回收站，见「退役与回收站」；机器视图的 `spare` 同它） |
+| GET | `/teams` | `[{id,name,sort_order,spare,node_count,monthly_usd}]`（`monthly_usd`：团队里在用（active）机器的月费合计折成 USD，形状同总览的 `monthly_usd`，见「汇率」；`spare`：唯一的备用团队，系统管理（迁移 0041 建好，唯一索引 `team_one_spare`）：退役的机器放这里，在用、有订阅的订阅过期满 1 天后中控清理并移进回收站，见「退役与回收站」；机器视图的 `spare` 同它） |
 | POST | `/teams` | `{name,sort_order?}`（建不了备用团队，`spare` 不收） |
 | PATCH | `/teams/{id}` | `{name?,sort_order?}`（改团队名 = 该团队所有节点显示名一起变；备用团队也能改名，如「团队2 备用」→「备用」；不能取消备用） |
 | DELETE | `/teams/{id}` | 备用团队 409（不能删）。还有机器（含已退役的、回收站里等待清除的）或软路由时 409（写明各有几台）；没有才删，团队自己的访问规则一起删。审计 `team.delete` |
@@ -65,7 +65,7 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
 | POST | `/providers` | `{name,code,panel_url?,timezone?,traffic_rule?,traffic_reset?,remind_days?}`；`traffic_rule` 不传 = `max`（不知道的供应商按取大，不会少算），`traffic_reset` 不传 = `month`，`remind_days` 不传 = 7，别的值 400；`panel_url` 须是 http(s) 地址（400）；`timezone` 不传 / null / 空串 = 存 null、跟随组织时区（`/meta` 的 org_timezone），否则须是 `at time zone` 认的时区（400）；名称或缩写重复 409 |
 | PATCH | `/providers/{id}` | `{name?,code?,panel_url?,timezone?,traffic_rule?,traffic_reset?,remind_days?}`：没传的不改（`traffic_rule` 改了立即影响这家机器的 `quota.used`；`timezone` / `traffic_reset` / `remind_days` 改了立即影响没单独设置这几项的订阅）；`panel_url` null / 空串 = 清空；`timezone` null / 空串 = 改回跟随组织时区（null）。校验同 POST（`panel_url` 和库里现有的一样时不校验：加 http(s) 校验之前存下的旧值不挡改别的字段）。写审计 `provider.update` |
 | DELETE | `/providers/{id}` | 还有套餐（含已归档的）或机器（含已退役的）时 409；没有才删。审计 `provider.delete` |
-| GET | `/plans` | `[{id,provider_id,name,cpu_cores,mem_mb,disk_gb,bandwidth_mbps,traffic_gb,price_cents,currency,cycle,notes,archived_at,machine_count}]`。套餐是机器订阅的**模板**：`price_cents` / `currency` / `cycle`（每个计费周期的价格）与 `traffic_gb`（每个流量周期的额度，十进制 GB，null 或 0 = 不限）——用这个套餐的机器没单独设置的跟随它，改了立即生效。`machine_count`：在用（未退役）的机器数 |
+| GET | `/plans` | `[{id,provider_id,name,cpu_cores,mem_mb,disk_gb,bandwidth_mbps,traffic_gb,price_cents,currency,cycle,notes,archived_at,machine_count}]`。套餐是机器订阅的**模板**：`price_cents` / `currency` / `cycle`（每个计费周期的价格）与 `traffic_gb`（每个流量周期的额度，十进制 GB，null 或 0 = 不限）——用这个套餐的机器没单独设置的跟随它，改了立即生效。`machine_count`：在用（未退役）的机器数。`price_usd_cents` / `monthly_usd_cents`（每期价格、按周期折成的月费，折成 USD 的分）与 `usd_per_unit`（所用汇率）由中控按汇率算，没有该币种的汇率时都是 null（见「汇率」） |
 | POST | `/plans` | 同上字段（不含 id/统计）。校验（PATCH 同，只看传了的）：`name` 1–32 字，`price_cents` ≥ 0，`currency` 3 个字母（存成大写，套餐、订阅、上架同一个校验），`cycle` 只能是 `/meta` 的 cycles，`notes` ≤ 2000 字，否则 400 |
 | PATCH | `/plans/{id}` | 任意字段（没传的不改；规格类字段传 null = 清空）；`archived:true` 归档。机器的供应商就是套餐的：有机器（含已退役的）用着时改 `provider_id` 409（给新供应商另建套餐）。审计 `plan.update` 记套餐名、币种与改了的字段 `{name, currency, before:{…}, after:{…}}` |
 | DELETE | `/plans/{id}` | 还有机器（含已退役的）用着时 409（不再上架的可以归档）；没有才删。审计 `plan.delete` |
@@ -91,10 +91,12 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
                                 // provider：有套餐时是套餐的供应商（机器上存的那份在上架、改套餐时按套餐写），没有套餐取机器的
   lifecycle: "draft"|"provisioning"|"active"|"retiring"|"retired"|"failed", lifecycle_reason|null, note, revision,
   created_at, activated_at|null, retired_at|null,
-  subscription: {price_cents,currency,cycle,due_date,billing_day,due_days,due_state,billing_tz,auto_renew,remind_days,traffic_gb,traffic_reset_day,overrides,monthly_cents,next_due,period_days}|null,
+  subscription: {price_cents,currency,cycle,due_date,billing_day,due_days,due_state,billing_tz,auto_renew,remind_days,traffic_gb,traffic_reset_day,overrides,monthly_cents,monthly_usd_cents,price_usd_cents,usd_per_unit,next_due,period_days}|null,
                                 // due_state：ok / soon（到期前 remind_days 天内、不是自动续费）/ overdue（已过期），续费告警、总览、网页、fleetctl 都按它；
                                 // monthly_cents：折成每月的费用（分，四舍五入）；next_due：到期日再推一个周期（登记续费的默认新到期日，落在账单日，小月按月末）；billing_day：账单日（每月几号，见续费）；
                                 // period_days：当前这一期的天数（到期日往前推一个周期到到期日），网页算剩余价值
+                                // monthly_usd_cents / price_usd_cents：月费、每期价格折成 USD（分，round(原币种分 × usd_per_unit)，四舍五入到分）；usd_per_unit：所用汇率（1 单位合多少 USD，USD 为 1）；
+                                // 没有该币种的汇率时三个都是 null（未折算，不当 1:1），见「汇率」。网页的月费、剩余价值都按 USD 显示
                                 // 全是生效值（字段名同以前，旧调用方照用）：订阅只存到期日、自动续费和「单独设置」的项，其余跟随 sub_template——
                                 // price_cents / currency / cycle / traffic_gb 跟随套餐，billing_tz / remind_days / traffic_reset_day 跟随供应商。
                                 // overrides：单独设置了的字段名（如 ["price_cents"]），不在里面的就是跟随的。traffic_gb：0 / null = 不限。
@@ -262,7 +264,7 @@ ProvisionItem = {
 ## 总览与告警
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/overview` | `{nodes:{total,ok,degraded,down,unknown,maintenance}, relays:{…}, provisioning, retiring, failed（上架失败的机器数，网页「有问题」里也算它们）, due_soon（`subscription.due_state = soon` 的台数：到期前提前提醒天数内、不是自动续费，网页「即将到期」）, overdue（已过期的台数）, online, offline（按 agent 连通：agent 没有近期上报为离线，家宽代理没有 agent 算在线；与健康无关，有严重告警但照常上报的算在线）, monthly_cost:[{currency,cents}]（各台 `subscription.monthly_cents` 按币种分别相加，不做汇率折算）, traffic_month:{up,down}, net_rx_bps, net_tx_bps}`（traffic_month 是本月（组织时区）全部入口的业务流量合计：每条入口的字节只在它的线路机上统计一次，含已移除的入口和月中退役、替换掉的机器；网卡流量不做合计。其余只统计 active；速率不含 agent 离线的机器——告警不影响，照常上报的机器照算；同机 IP 节点的读数就是宿主机的，速率不重复算，节点数与在线 / 离线照常按节点计） |
+| GET | `/overview` | `{nodes:{total,ok,degraded,down,unknown,maintenance}, relays:{…}, provisioning, retiring, failed（上架失败的机器数，网页「有问题」里也算它们）, due_soon（`subscription.due_state = soon` 的台数：到期前提前提醒天数内、不是自动续费，网页「即将到期」）, overdue（已过期的台数）, online, offline（按 agent 连通：agent 没有近期上报为离线，家宽代理没有 agent 算在线；与健康无关，有严重告警但照常上报的算在线）, monthly_cost:[{currency,cents}]（各台 `subscription.monthly_cents` 按币种分别相加，不做汇率折算；旧字段）, monthly_usd:{cents, by_currency:[{currency,cents,usd_cents,usd_per_unit}], unconverted:[{currency,cents}]}（月费折成 USD：`cents` 是各台 `monthly_usd_cents` 之和；`by_currency` 列出各原币种（含 USD）的原币种合计、折成的 USD 与所用汇率；没有汇率的币种不算进 `cents`，原币种金额单列在 `unconverted`。见「汇率」）, traffic_month:{up,down}, net_rx_bps, net_tx_bps}`（traffic_month 是本月（组织时区）全部入口的业务流量合计：每条入口的字节只在它的线路机上统计一次，含已移除的入口和月中退役、替换掉的机器；网卡流量不做合计。其余只统计 active；速率不含 agent 离线的机器——告警不影响，照常上报的机器照算；同机 IP 节点的读数就是宿主机的，速率不重复算，节点数与在线 / 离线照常按节点计） |
 | GET | `/overview/series?minutes=30` | 总览网速曲线：`{points:[{ts, net_rx_bps, net_tx_bps}]}`，`minutes` 1–60（默认 30，越界 400）；最近 N 个**结束满 20 s** 的分钟（agent 每 10 s 上报，刚结束的那一分钟还缺最后的上报，不给）每分钟一个点、旧→新，`ts` 为该分钟起点（RFC3339）。每个点 = 该分钟有主机指标的 active 机器速率之和，单台算法同 `/machines/{id}/series?metric=host`（每分钟计数器最大值与上一个有数据的分钟相减 ×8 / 秒数；计数器回绕的那一段不计）；没有数据的分钟为 0 |
 | GET | `/probe-beats` | 探测心跳条：`{<机器id>: [[n, ok, ms], …20 格]}`。每格 3 分钟、按墙钟对齐（`date_bin('3 minutes', ts, 'epoch')`，即每小时的 :00 / :03 / … ），旧→新，最后一格是当前这格（还没走完）；第 i 格 = `[cb-57m+3i 分, cb-57m+3(i+1) 分)`，cb = 当前这格的起点；每格 `[n, ok, ms, retrans]`：`n` = 次数，`ok` = 成功次数，`ms` = 成功的延迟中位数（没有成功的为 null），`retrans` = 建连时 SYN 重发过的次数（丢包，不算进 ms；旧 agent 不报，为 0）；没有数据的格为 `[0,0,null,0]`。节点：线路机 → 节点的 TCP 探测，汇总它的入口；线路机：中控 → 线路机的连通性（`relay_reach`，中控每 30 秒连一次它的客户入口——public_host + 在用入口端口，每轮换下一个——只判通不通，ms 为 null；对照目标都连不上、或三台以上线路机全部连不上时那一轮不记），不再汇总它上面的入口；只含这 20 格里有数据的在用机器 |
 | GET | `/incidents?state=firing\|resolved\|all&subject_id=&limit=100&offset=0` | 分页：`{items:[{id,rule,rule_name,subject:{id,name},subject_id,subject_name,severity,state,summary,opened_at,last_seen_at,resolved_at,ack_at,ack_by,reopen_count}], total, acked, next_offset}`；`acked` = 同一筛选下已确认的条数（确认不关闭告警，`total` 含它们）；`state` 默认 firing；`subject_id`（可选，机器 id）只看这台机器的告警，与 `state`、分页组合，`total` 同样只数它的（如抽屉的最近告警：`?subject_id=<id>&state=all&limit=5`；不是 uuid 时 400）；`reopen_count`：恢复后 30 分钟内同一（规则, 对象）复发会重开原告警而不是新建，每次 +1；顺序：进行中在前 → 严重度高在前 → 开始时间新在前（同时刻按 id，翻页不重不漏）；带 `subject_id` 时不看严重度：进行中在前 → 开始时间新在前（一台机器的「最近告警」按时间读）。中控自身的告警（规则 `central_` 开头，见下表）对象不是机器：`subject`、`subject_id` 为 null，`subject_name` 为「中控」 |
@@ -314,7 +316,7 @@ ProvisionItem = {
 - **滞后**：服务端广播缓冲 1024 条，某个连接读得太慢丢了消息时补发 `{type:"resync"}`，客户端应让全部缓存失效重取。
 - **重连**：客户端断线后自己退避重连；连上后应重取一次机器类数据（断开期间错过的 `metrics` 增量不会补发）。
 
-**资源变更通知**（收到后让对应查询失效重取）：`{type:"machine",id}`、`{type:"machines"}`、`{type:"relay",id}`、`{type:"job",id}`（作业推进；目标机器的 `active_job` 走 `metrics`，它变了时客户端可重取这台机器的详情；改生命周期时另发 `machines`）、`{type:"incidents"}`、`{type:"catalog"}`、`{type:"api_keys"}`（密钥增删撤销）、`{type:"policies"}`、`{type:"settings"}`（面板设置变了：访问记录保留期）、`{type:"resync"}`。
+**资源变更通知**（收到后让对应查询失效重取）：`{type:"machine",id}`、`{type:"machines"}`、`{type:"relay",id}`、`{type:"job",id}`（作业推进；目标机器的 `active_job` 走 `metrics`，它变了时客户端可重取这台机器的详情；改生命周期时另发 `machines`）、`{type:"incidents"}`、`{type:"catalog"}`、`{type:"api_keys"}`（密钥增删撤销）、`{type:"policies"}`、`{type:"settings"}`（面板设置变了：访问记录保留期、汇率——汇率变了机器视图里的 USD 折算值跟着变）、`{type:"resync"}`。
 
 **实时指标** `{type:"metrics", machines:{<机器id>:{…}}, entries:{<入口id>:{…}}, overview?}`：在用机器视图（`GET /machines` 的 `MachineView`）里随上报与时间变化的字段，和上一条相比**只带变了的字段**（没变的键不出现），客户端把它们写进本地缓存，不必重取。有新上报或作业推进时最多每 3 s 一条，没有也每 30 s 比对一次（离线、到期天数、维护窗口随时间变）；没有变化不发。
 - `machines[id]` 的键：
@@ -377,6 +379,27 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 - 「新目标」「新运营商 / 新城市 / 首次出现的机房来源」都是「保留期内没见过」：超过期限没再出现的记录删了，之后再出现就算新的。
 - 汇总类视图（`/access/summary`、`/access/targets`、`/access/sources`、`/access/new-targets`、`/machines/{id}/access`、`/machines/{id}/sources`）的 `window` 不能比 `hourly_days` 长（`1h` 读原始记录，总能看）：超了 400「访问记录的汇总只保留 N 天，看不了最近 7 天；要看更久，先在设置里把保留期调长」。`/access/events` 不拦，窗口比原始记录的保留期长时更早的已经没有了。
 - 调长不会找回已经删掉的数据。每日备份里的汇总与来源画像随备份轮换才消失（OPS.md §13）。
+
+## 汇率（计费折成 USD）
+
+计费统一按美元（USD）展示：价格照供应商收的币种录入、存库（套餐、订阅、续费记录的 `price_cents` / `amount_cents` + `currency` 不变），展示用的折算值由中控按汇率算好放在视图里（`fx.rs`），网页、fleetctl 不自己折算。
+汇率存在 `app_setting` 的 `fx_rates` 一行（不需要迁移）：
+
+- **自动**：默认每天从公开汇率源拉一次（`fleet.toml` 的 `[fx] url`，默认 `https://api.frankfurter.dev/v1/latest?base=USD`——ECB 参考汇率，免费、不要密钥；回包 `{base:"USD", date, rates:{CNY:6.67,…}}`，也认 `{base_code, time_last_update_utc, rates}`）。后台每小时看一次：上次成功满 24 小时就拉，失败保留上次的值、记 `last_error` 与日志，一小时后再试。`[fx] auto = false` 关掉自动更新（只用手动的值，仍可点「立即更新」）。
+- **手动**：每个币种可以手动覆盖，覆盖后自动更新不改它（自动的值照样更新、在 `auto_per_usd` 里看得到），取消覆盖后回到自动的值。手动优先于自动；USD 恒为 1，不能覆盖。
+- **没有汇率**的币种不折算、不当 1:1：视图里它的 USD 字段为 null，合计里单列在 `unconverted`，网页标「未折算」。
+
+**折算口径**：`usd_cents = round(原币种分 × usd_per_unit)`，四舍五入到分（.5 远离零），`usd_per_unit` = 1 单位该币种合多少 USD（自动的 = 1 / 源里的「1 USD 合多少该币种」）。
+月费先按周期折成每月（`monthly_cents` = round(price_cents / 周期月数)，见机器视图），再折 USD（`monthly_usd_cents`）；每期价格直接折（`price_usd_cents`）。合计（总览、团队）是**逐台折好的 USD 相加**，和卡片上逐台的数字对得上，不是先按币种合计再折。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/settings/fx-rates` | 折算凭据：`{base:"USD", auto（配置里开着自动更新）, url（配置的汇率源）, fetched_at（最近一次拉取成功）|null, rates_date（源里的数据日期，如 2026-10-22）|null, source（最近一次成功用的地址）|null, last_attempt_at|null, last_error（最近一次失败的原因，成功后清掉）|null, rates:[{currency, usd_per_unit|null, per_usd|null（反向：1 USD 合多少）, source:"base"|"manual"|"auto"|null, auto_per_usd（自动拉到的原值，1 USD 合多少）|null, manual:{usd_per_unit,by,at}|null, in_use}], missing:[在用但没有汇率的币种]}`。`rates` 列出在用的币种（没归档的套餐、没退役机器的订阅）、源里有的、手动设过的和 USD，在用的排前面 |
+| PUT | `/settings/fx-rates/{currency}` | 手动覆盖一个币种：`{usd_per_unit}`（1 单位合多少 USD）或 `{per_usd}`（1 USD 合多少该币种）给一个，要 `write`。币种 3 个字母（大小写都行）、不能是 USD，值要是 1e-6–1e6 的正数（`per_usd` 同样范围），否则 400。写审计 `settings.fx_rate`（`detail:{currency, from:{usd_per_unit,source}|null, to:{usd_per_unit,source}|null}`，摘要如「CNY：1 CNY = 0.14 USD（原为自动 0.1498 USD）」）、发实时事件 `{type:"settings"}`（机器视图缓存作废，网页重取机器、总览、团队、套餐）。返回同 GET；值没变时什么都不写 |
+| DELETE | `/settings/fx-rates/{currency}` | 取消手动覆盖，回到自动的值（源里也没有就是未折算），要 `write`；审计、事件同上 |
+| POST | `/settings/fx-rates/refresh` | 立即从汇率源拉一次（不等每天的自动更新），要 `write`。成功返回同 GET；失败 502 `fx_fetch_failed`（中文原因），保留上次的值、记 `last_error`。成功、失败都发 `{type:"settings"}` |
+
+带 USD 折算值的地方（原字段都保留，旧调用方照用）：机器视图 `subscription.{monthly_usd_cents, price_usd_cents, usd_per_unit}`、`/overview` 的 `monthly_usd`、`/teams` 的 `monthly_usd`、`/plans` 的 `{price_usd_cents, monthly_usd_cents, usd_per_unit}`。续费记录（`amount_cents`）、回收站里的价格是历史账目，照原币种，不折算。
 
 ## 来源 IP 画像（IP 情报）
 离线库在 fleet-server 进程内查询（ip2region v4/v6、DB-IP City/ASN Lite、iptoasn，mmap），**只查本地，绝不把 IP 发往在线服务**。库由 `deploy/ipintel/fetch-dbs.sh`（systemd timer `fleet-ipintel-fetch` 每月一次）下载到 `[ipintel] db_dir`（默认 `/var/lib/fleet/ipintel`），文件 mtime 变化后 5 分钟内自动热重载。库缺失或不全时降级：能查多少查多少，查不到的字段为 null，接口不报错。ASN 分类清单内置在 `crates/fleet-ipintel/data/asn-lists.toml`，可用 `/etc/fleet/ipintel-overrides.toml`（同样的 `[[vpn]] asn=[…] name="…"` 写法，`name=""` 表示删除）覆盖或追加。线路机和节点的 `primary_ip` 自动算「内部地址」（`[ipintel] internal_ips` 可追加运维出口）。全部为只读 GET，读权限即可。

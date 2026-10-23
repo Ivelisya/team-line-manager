@@ -23,16 +23,34 @@ pub struct Team {
     /// 备用团队（只有一个，系统管理：不能新建、取消、删除）：退役的机器放这里，订阅过期满 1 天后由中控回收（见 spare.rs）
     spare: bool,
     node_count: i64,
+    /// 在用（active）机器的月费合计，折成 USD（同总览的 monthly_usd：逐台折算后相加，没有汇率的单列，见 fx.rs）
+    #[sqlx(skip)]
+    monthly_usd: crate::fx::Total,
 }
 
 pub async fn list_teams(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
-    let v: Vec<Team> = sqlx::query_as(
+    let mut v: Vec<Team> = sqlx::query_as(
         "select t.id, t.name, t.sort_order, t.spare,
                 (select count(*) from machine m where m.team_id = t.id and m.lifecycle <> 'retired') node_count
          from team t order by t.sort_order, t.name",
     )
     .fetch_all(&st.db)
     .await?;
+    // 各台的生效价格（同机器视图的 subscription：有订阅才算），按周期折成每月再折 USD
+    let subs: Vec<(Uuid, i32, String, String)> = sqlx::query_as(
+        "select m.team_id, e.price_cents, e.currency, e.cycle::text from machine m join subscription_eff e on e.machine_id = m.id
+         where m.lifecycle = 'active' and m.team_id is not null",
+    )
+    .fetch_all(&st.db)
+    .await?;
+    let fx = crate::fx::current(&st.db).await?;
+    for (team, price, currency, cycle) in subs {
+        let monthly = meta::monthly_cents(price, &cycle);
+        if let Some(t) = v.iter_mut().find(|t| t.id == team) {
+            let (usd, rate) = crate::fx::convert(&fx, monthly, &currency);
+            t.monthly_usd.add(&currency, monthly, usd.zip(rate));
+        }
+    }
     Ok(ok(v))
 }
 
@@ -353,6 +371,13 @@ pub struct Plan {
     #[serde(with = "time::serde::rfc3339::option")]
     archived_at: Option<OffsetDateTime>,
     machine_count: i64,
+    /// 折成 USD（分）：每期价格、按周期折成的月费；`usd_per_unit` 是所用汇率。没有汇率时都是 null（未折算，见 fx.rs）
+    #[sqlx(skip)]
+    price_usd_cents: Option<i64>,
+    #[sqlx(skip)]
+    monthly_usd_cents: Option<i64>,
+    #[sqlx(skip)]
+    usd_per_unit: Option<f64>,
 }
 
 pub async fn list_plans(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
@@ -364,6 +389,16 @@ pub async fn list_plans(_a: Actor, State(st): State<AppState>) -> ApiResult<Json
     )
     .fetch_all(&st.db)
     .await?;
+    let fx = crate::fx::current(&st.db).await?;
+    let v: Vec<Plan> = v
+        .into_iter()
+        .map(|mut p| {
+            p.usd_per_unit = fx.usd_per_unit(&p.currency);
+            p.price_usd_cents = p.usd_per_unit.map(|u| crate::fx::to_usd_cents(i64::from(p.price_cents), u));
+            p.monthly_usd_cents = p.usd_per_unit.map(|u| crate::fx::to_usd_cents(meta::monthly_cents(p.price_cents, &p.cycle), u));
+            p
+        })
+        .collect();
     Ok(ok(v))
 }
 
