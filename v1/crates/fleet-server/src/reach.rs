@@ -26,6 +26,8 @@ const EVERY: Duration = Duration::from_secs(30);
 const TIMEOUT: Duration = Duration::from_secs(10);
 /// 中控出口的对照目标：任一连上就算中控自己的网络是好的
 const CONTROLS: &[&str] = &["1.1.1.1:443", "8.8.8.8:443"];
+/// 连续这么多次连不上算「中控连不上」（告警的 `unreachable_sql`、视图入口的 reach.fails 与网页同一口径）
+pub const FAILS: i32 = 3;
 
 pub async fn run_forever(st: AppState) {
     // 刚启动（含 systemd 刚拉起）先等一会儿：网络可能还没就绪，第一轮的失败不算数

@@ -686,6 +686,13 @@ async fn relay_reach_rounds_feed_relay_beats() {
     // 线路机上的入口表和节点那一侧是同一份；没检查过（线路机3 没有入口，新建的入口还没轮到）为 null
     let node = t.get(&format!("/api/v1/machines/{}", m["entries"][0]["node"]["id"].as_str().unwrap())).await;
     assert_eq!(node["entries"][0]["reach"]["ok"], json!(false), "{node}");
+    // 整台连不上（最近 3 轮都失败，同告警）：这台上还没轮到的新入口也按「中控连不上」（次数至少 3），不等自己的端口凑够 3 次
+    seed_node(&t, down, team, 4, "203.0.113.8", 29999).await;
+    t.st.live.invalidate();
+    let m = t.get(&format!("/api/v1/machines/{down}")).await;
+    let fresh = reach(&m, 29999);
+    assert_eq!((fresh["ok"].clone(), fresh["fails"].clone(), fresh["detail"].clone()), (json!(false), json!(3), json!(format!("端口 {closed}：连接被拒绝"))), "{m}");
+    assert_eq!(reach(&m, closed as i32)["fails"], json!(7), "自己已经更多次的照旧");
     sqlx::query("delete from relay_reach where relay_id = $1").bind(down).execute(&t.st.db).await.unwrap();
     t.st.live.invalidate();
     let m = t.get(&format!("/api/v1/machines/{down}")).await;
