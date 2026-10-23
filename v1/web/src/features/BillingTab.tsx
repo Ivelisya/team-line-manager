@@ -1,6 +1,6 @@
 // 抽屉“费用”页：订阅信息编辑 + 登记续费 + 续费记录。
 import * as React from 'react';
-import { CalendarPlus, Pencil } from 'lucide-react';
+import { CalendarPlus, Pencil, Scale } from 'lucide-react';
 import type { MachineView, SubField, Subscription } from '@/lib/types';
 import { useRenew, useRenewals, useSaveSubscription, type SubscriptionBody } from '@/lib/queries';
 import * as F from '@/lib/format';
@@ -9,18 +9,20 @@ import { Field, InfoTip, Input, Label, Switch, UnitInput } from '@/components/ui
 import { Segmented } from '@/components/ui/overlays';
 import { DateField } from '@/components/ui/date-field';
 import { useUsdPreview } from '@/lib/fx';
-import { inheritedValue, inheritSource, inheritText, inheritValueText, isOverridden, limitGb, monthFlow, monthFlowTip, quota, quotaCycleText, quotaGb, quotaNotes, quotaRuleText, quotaUsedLabel, recycleOn, remainingValue, cycleLabel, feeView, priceHint, currencyOptions, cycleOptions, meta } from '@/lib/derive';
+import { inheritedValue, inheritSource, inheritText, inheritValueText, isOverridden, limitGb, monthFlow, monthFlowTip, quota, quotaCycleText, quotaForecast, quotaGb, quotaNotes, quotaRuleText, quotaUsedLabel, recycleOn, remainingValue, cycleLabel, feeView, priceHint, currencyOptions, cycleOptions, meta } from '@/lib/derive';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
 import { resetOnOpen } from '@/lib/useHeld';
 import { Due, ErrorNote, FromTag, LabelValue, LabelValueGrid, Note, Num, Section, SectionHeader, SpareDue } from '@/components/app/primitives';
 import { FormDialog } from '@/components/app/dialogs';
+import { RebalanceDialog } from '@/components/app/RebalanceDialog';
 import { TzInput } from '@/components/app/TzInput';
 
 export function BillingTab({ m }: { m: MachineView }) {
   const s = m.subscription;
   const renewals = useRenewals(m.id);
   const [renew, setRenew] = React.useState(false);
+  const [rebalance, setRebalance] = React.useState(false);
   // 已有订阅时修改表单默认收起：表单里的值和上面「当前订阅」一样，一屏里不重复列两遍；点「修改订阅」才展开
   const [editing, setEditing] = React.useState(false);
   const formRef = React.useRef<HTMLElement>(null);
@@ -55,6 +57,7 @@ export function BillingTab({ m }: { m: MachineView }) {
                 <span className="nowrap"><span className="num">{F.str(quotaGb(q.used))}</span> <span className="unit">/ {F.str(limitGb(q.limit))}</span><FromTag from={q.from} start={q.start} /></span> <InfoTip text={[quotaRuleText(m), ...quotaNotes(m)].join('\n')} />
               </LabelValue>
               <LabelValue label="流量周期" wrap className="span-2"><span className="nowrap">{quotaCycleText(m)}</span></LabelValue>
+              {quotaForecast(m) && <LabelValue label="用满预测" wrap className="span-2"><span className="nowrap due" data-tone="warn">{quotaForecast(m)}</span> <InfoTip text="按近 7 天的日均用量估算，早于重置日才显示" /></LabelValue>}
             </> : q.shared ? <LabelValue label="流量额度">与宿主机共用</LabelValue> : (
               <LabelValue label="本月流量" wrap className="span-2">
                 <span className="nowrap">{fl.kind === 'nic' ? <>↓ 下行 <Num f={F.bytes(fl.down)} /> · ↑ 上行 <Num f={F.bytes(fl.up)} /></> : <>下载 <Num f={F.bytes(fl.down)} /> · 上传 <Num f={F.bytes(fl.up)} /></>}<FromTag from={fl.from} /></span>
@@ -65,7 +68,9 @@ export function BillingTab({ m }: { m: MachineView }) {
           <div className="row" style={{ marginTop: 12, gap: 8 }}>
             <Button onClick={() => setRenew(true)}><CalendarPlus />登记续费</Button>
             {!editing && <Button onClick={() => setEditing(true)}><Pencil />修改订阅</Button>}
+            {m.kind === 'relay' && q.limit > 0 && !q.rolling && <Button onClick={() => setRebalance(true)}><Scale />搬迁建议</Button>}
           </div>
+          {m.kind === 'relay' && <RebalanceDialog relay={m} open={rebalance} onOpenChange={setRebalance} />}
         </Section>
       )}
       {(!s || editing) && (

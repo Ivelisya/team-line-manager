@@ -100,16 +100,19 @@ fn fmt_gb(n: f64) -> String {
 
 /// 流量额度（traffic_quota_high）：上限取视图算好的 quota.limit_gb（订阅单独设置的或跟随套餐的）；没有上限不评估（同前端 quota()）。
 /// 同机 IP 节点自己没设上限时额度算在宿主机上（宿主机的已用含它的流量），这里也就不评估
-fn quota_reason(m: &MachineView) -> Option<Reason> {
+fn quota_reason(m: &MachineView, now: OffsetDateTime) -> Option<Reason> {
     let gb = m.quota.limit_gb?;
     let limit = gb as f64 * GB;
     let pct = m.quota.used as f64 * 100.0 / limit;
-    if pct < QUOTA_WARN_PCT {
+    // 预计重置前用满，且就在一周内：提前警告（还没到 90% 也报），摘要写预计日期
+    let soon = m.quota.forecast_full_at.filter(|t| *t - now <= time::Duration::days(crate::quota::WINDOW_DAYS));
+    if pct < QUOTA_WARN_PCT && soon.is_none() {
         return None;
     }
     let amount = format!("{} / {}", fmt_gb(m.quota.used as f64), fmt_gb(limit));
     let reset = m.quota.reset_in_days.map(|d| format!("，{d} 天后重置")).unwrap_or_default();
     // 数据不完整（周期中途上架）：已用只是那之后的，实际更多
+    let forecast = soon.map(|t| format!("，按近 {} 天的速度预计 {} 用满", crate::quota::WINDOW_DAYS, crate::meta::org_md(t))).unwrap_or_default();
     let partial = m.quota.counted_from.map(|t| format!("（从 {} 开始统计，之前的没算）", crate::meta::org_md(t))).unwrap_or_default();
     let period = if m.quota.mode == "rolling30" { "近 30 天" } else { "本周期" };
     // 向下取整：还没超限时不会写成 100%
@@ -117,7 +120,7 @@ fn quota_reason(m: &MachineView) -> Option<Reason> {
     Some(if pct >= QUOTA_OVER_PCT {
         Reason { key: "traffic_quota_high", severity: "critical", text: format!("{period}流量已超出额度（已用 {p:.0}%，{amount}）{reset}{partial}") }
     } else {
-        Reason { key: "traffic_quota_high", severity: "warning", text: format!("{period}流量已用 {p:.0}%（{amount}）{reset}{partial}") }
+        Reason { key: "traffic_quota_high", severity: "warning", text: format!("{period}流量已用 {p:.0}%（{amount}）{forecast}{reset}{partial}") }
     })
 }
 
@@ -301,7 +304,7 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
     };
     // 续费与流量额度在状态定下之后才加：只开告警，不让机器变「降级」/「故障」（账单快到期、额度快用完都不是机器出了问题）
     rs.extend(renewal_reason(m));
-    rs.extend(quota_reason(m));
+    rs.extend(quota_reason(m, now));
     let reach_unknown = m.relay.as_ref().is_some_and(|r| r.reach_unknown);
     Health { status, reasons: rs, probe_unknown: !probe_undecided.is_empty(), probe_undecided, probe_failing, load_unknown, clock_unknown, reach_unknown }
 }
@@ -381,6 +384,10 @@ pub(crate) mod tests {
                 rule: Some("max"),
                 base: None,
                 base_at: None,
+                daily_avg: None,
+                forecast_full_at: None,
+                period_start_at: now,
+                window_start: now,
                 reset_in_days: None,
             },
             health: Health::default(),
@@ -735,6 +742,14 @@ pub(crate) mod tests {
         // 更大的上限没到 90%；没有上限不评估
         m.quota.limit_gb = Some(4096);
         assert!(evaluate(&m, now).reasons.is_empty());
+        // 预计 7 天内用满（重置前）：还没到 90% 也报警告，摘要写预计日期；8 天后才用满的不报
+        m.quota.reset_in_days = Some(20);
+        m.quota.forecast_full_at = Some(now + time::Duration::days(6));
+        let t = evaluate(&m, now).reasons[0].text.clone();
+        assert!(t.starts_with("本周期流量已用 22%（901.6 GB / 4096 GB），按近 7 天的速度预计 ") && t.ends_with(" 用满，20 天后重置"), "{t}");
+        m.quota.forecast_full_at = Some(now + time::Duration::days(8));
+        assert!(evaluate(&m, now).reasons.is_empty());
+        m.quota.forecast_full_at = None;
         m.quota.limit_gb = None;
         assert!(evaluate(&m, now).reasons.is_empty());
         // 同机 IP 节点自己没设上限（不带套餐）：额度算在宿主机上，不评估

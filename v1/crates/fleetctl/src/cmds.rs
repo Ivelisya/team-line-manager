@@ -516,6 +516,9 @@ pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
         if !m["quota"]["limit_gb"].is_null() {
             let period = if m["quota"]["mode"] == "rolling30" { "近 30 天已用" } else { "本周期已用" };
             rows.push(("流量额度", format!("{period} {}（{} 起）", table::gb(num(&m, "/quota/used").unwrap_or(0.0)), st(&m, "/quota/period_start"))));
+            if let Some(f) = crate::billing::forecast_cn(&m) {
+                rows.push(("预计用满", f));
+            }
         }
         rows.push(("本月流量", format!("{}{}", crate::billing::month_cn(&m), crate::billing::nic_cn(&m))));
         if !m["relay"].is_null() {

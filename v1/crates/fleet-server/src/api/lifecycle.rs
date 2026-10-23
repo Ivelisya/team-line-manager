@@ -17,7 +17,12 @@ use crate::jobs;
 use crate::meta;
 use crate::names::display_name;
 use crate::routers::clash::EntryRef;
+use crate::health::Status;
+use crate::quota::{best_target, pick_moves, Q};
 use crate::state::{AppState, Event};
+use crate::views::{self, EntryView, MachineView};
+use std::collections::{HashMap, HashSet};
+use time::OffsetDateTime;
 use axum::extract::State;
 use axum::Json;
 use serde::Deserialize;
@@ -363,4 +368,118 @@ pub async fn evacuate(a: Actor, State(st): State<AppState>, ApiPath(relay): ApiP
     }
     st.emit(Event::Machines);
     Ok(ok(v))
+}
+
+// ── 搬迁建议 ──────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct RebalanceIn {
+    /// 搬到哪台线路机；不填取「有额度余量最多且在用、非故障」的
+    target_relay_id: Option<Uuid>,
+    /// 不动的节点 id（逗号分隔），如分享给别人的入口所在节点
+    exclude: Option<String>,
+}
+
+fn quota_q(m: &MachineView, now: OffsetDateTime) -> Q {
+    let q = &m.quota;
+    let days_left = q.period_end.map_or(0.0, |e| ((q.period_start_at + time::Duration::days((e - q.period_start).whole_days())) - now).as_seconds_f64().max(0.0) / 86400.0);
+    Q { limit: q.limit_gb.map(|g| g as f64 * 1e9), used: q.used as f64, daily: q.daily_avg.unwrap_or(0) as f64, days_left }
+}
+
+/// 搬迁建议（只读，不动任何东西）：这台线路机按近 7 天的速度重置前会用满的话，挑出搬走后能撑到重置日的最少入口，
+/// 并给出搬去哪台线路机。每个入口每天的流量按近 7 天（窗口同日均）的业务流量算，再按「线路机网卡日均 ÷ 各入口合计」折算
+/// （网卡口径与入口上下行合计不完全相等）。真正执行是对每个节点 `POST /machines/{id}/move`（fleetctl move）
+pub async fn rebalance(_a: Actor, State(st): State<AppState>, ApiPath(relay): ApiPath<Uuid>, ApiQuery(b): ApiQuery<RebalanceIn>) -> ApiResult<Json<Value>> {
+    let all = views::live(&st).await?;
+    let src = all.iter().find(|m| m.id == relay && m.kind == "relay").ok_or_else(|| ApiError::not_found("没有这台在用的线路机"))?;
+    let now = OffsetDateTime::now_utc();
+    let sq = quota_q(src, now);
+    let Some(limit) = sq.limit else { return Err(ApiError::bad_request("这台线路机没有设流量上限，没法判断会不会用满")) };
+    if src.quota.period_end.is_none() {
+        return Err(ApiError::bad_request("这台线路机按近 30 天滚动计流量，没有重置日，不做搬迁建议"));
+    }
+    let exclude: HashSet<Uuid> = b.exclude.as_deref().unwrap_or("").split(',').filter(|s| !s.trim().is_empty()).map(|s| s.trim().parse().map_err(|_| ApiError::bad_request("exclude 要填节点 id（逗号分隔）"))).collect::<Result<_, _>>()?;
+    let pct = |x: f64, l: f64| (x * 1000.0 / l).round() / 10.0;
+    let mut out = json!({
+        "relay": {"id": src.id, "name": src.name},
+        "limit_gb": src.quota.limit_gb, "used": src.quota.used, "period_end": src.quota.period_end,
+        "daily_avg": src.quota.daily_avg, "forecast_full_at": src.quota.forecast_full_at.map(meta::fmt_ts),
+        "projected_pct": (sq.daily > 0.0).then(|| pct(sq.projected(), limit)),
+        "target": null, "moves": [], "needed": false, "ok": false, "reason": null,
+        "safe_pct": crate::quota::TARGET_SAFE_PCT,
+    });
+    let early = if src.quota.daily_avg.is_none() {
+        Some(("本周期的数据不足 1 天，还估不出速度", false))
+    } else if sq.used >= limit {
+        Some(("本周期已经超出额度，搬走入口只能减缓继续增长，不在建议范围内", true))
+    } else if sq.projected() <= limit {
+        Some(("按近 7 天的速度，重置前用不满，不用搬", false))
+    } else {
+        None
+    };
+    if let Some((reason, needed)) = early {
+        out["reason"] = json!(reason);
+        out["needed"] = json!(needed);
+        return Ok(ok(out));
+    }
+    out["needed"] = json!(true);
+
+    // 目标：指定的，或在用、非故障、非备用的线路机里额度余量最多的
+    let usable = |m: &&MachineView| m.kind == "relay" && m.id != relay && m.lifecycle == "active" && !m.spare && m.health.status != Status::Down;
+    let tgt = match b.target_relay_id {
+        Some(t) => all.iter().find(|m| m.id == t && m.kind == "relay").filter(|m| m.id != relay).ok_or_else(|| ApiError::bad_request("目标要是另一台线路机"))?,
+        None => {
+            let c: Vec<(Uuid, Q)> = all.iter().filter(usable).map(|m| (m.id, quota_q(m, now))).collect();
+            let id = best_target(&c).ok_or_else(|| ApiError::conflict("没有可作为目标的线路机（要在用、非故障）"))?;
+            all.iter().find(|m| m.id == id).expect("来自同一份列表")
+        }
+    };
+    let tq = quota_q(tgt, now);
+    out["target"] = json!({"id": tgt.id, "name": tgt.name, "limit_gb": tgt.quota.limit_gb, "used": tgt.quota.used, "daily_avg": tgt.quota.daily_avg,
+                           "projected_pct": tq.limit.map(|l| pct(tq.projected(), l))});
+
+    // 各入口近 7 天的流量
+    let live: Vec<&EntryView> = src.entries.iter().filter(|e| e.lifecycle == "active").collect();
+    let eids: Vec<Uuid> = live.iter().map(|e| e.id).collect();
+    let rows: Vec<(Uuid, i64, i64)> = sqlx::query_as(
+        "select h.entry_id, least(coalesce(sum(h.up_bytes::numeric + h.down_bytes), 0), 9e18)::bigint,
+                least(coalesce(sum(h.up_bytes::numeric + h.down_bytes) filter (where h.hour >= $3), 0), 9e18)::bigint
+         from entry_traffic_hourly h where h.entry_id = any($1) and h.hour >= $2 group by h.entry_id",
+    )
+    .bind(&eids)
+    .bind(src.quota.period_start_at)
+    .bind(src.quota.window_start)
+    .fetch_all(&st.db)
+    .await?;
+    let traffic: HashMap<Uuid, (i64, i64)> = rows.into_iter().map(|(id, p, r)| (id, (p, r))).collect();
+    let now_h = OffsetDateTime::from_unix_timestamp(now.unix_timestamp() / 3600 * 3600).unwrap_or(now);
+    let wdays = ((now_h - src.quota.window_start).as_seconds_f64() / 86400.0).max(1.0);
+    let rate = |e: &EntryView| traffic.get(&e.id).map_or(0.0, |t| t.1 as f64 / wdays);
+    let total: f64 = live.iter().map(|e| rate(e)).sum();
+    let k = if total > 0.0 { sq.daily / total } else { 1.0 };
+
+    // 能搬的：在用的非直出入口，节点没被排除、在目标上还没有入口
+    let on_target: HashSet<Uuid> = tgt.entries.iter().map(|e| e.node.id).collect();
+    let cands: Vec<&EntryView> = live.iter().copied().filter(|e| !e.direct && !exclude.contains(&e.node.id) && !on_target.contains(&e.node.id)).collect();
+    let rates: Vec<f64> = cands.iter().map(|e| rate(e) * k).collect();
+    let allowed = (limit - sq.used) / sq.days_left.max(0.04);
+    let (picked, cut, reached) = pick_moves(sq.daily, allowed, &rates);
+    let mut moves = vec![];
+    for &i in &picked {
+        let e = cands[i];
+        let active_entries = all.iter().filter(|m| m.kind == "relay").flat_map(|m| m.entries.iter()).filter(|x| x.node.id == e.node.id && x.lifecycle == "active").count();
+        moves.push(json!({"node": e.node, "entry_id": e.id, "port": e.port, "period_bytes": traffic.get(&e.id).map_or(0, |t| t.0),
+                          "daily_bytes": rates[i].round() as i64, "needs_from": active_entries > 1}));
+    }
+    out["moves"] = json!(moves);
+    out["ok"] = json!(reached && !picked.is_empty());
+    out["after"] = json!({"daily_avg": (sq.daily - cut).max(0.0).round() as i64, "projected_pct": pct(sq.used + (sq.daily - cut).max(0.0) * sq.days_left, limit)});
+    out["target_after"] = json!({"fits": tq.fits(cut), "projected_pct": tq.limit.map(|l| pct(tq.projected() + cut * tq.days_left, l))});
+    out["excluded"] = json!(live.iter().filter(|e| exclude.contains(&e.node.id)).map(|e| &e.node).collect::<Vec<_>>());
+    if !reached {
+        out["reason"] = json!("能搬的入口都搬走也撑不到重置日（被排除的、已在目标上有入口的、直出的不算）");
+    } else if !tq.fits(cut) {
+        out["reason"] = json!(format!("目标线路机放不下：接收后到重置日预计超过它上限的 {}%", crate::quota::TARGET_SAFE_PCT));
+    }
+    Ok(ok(out))
 }

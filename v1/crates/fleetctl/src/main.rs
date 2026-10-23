@@ -575,6 +575,18 @@ enum Cmd {
         #[arg(long)]
         follow: bool,
     },
+    /// 搬迁建议：线路机按近 7 天的速度重置前会用满时，挑出搬走后能撑到重置日的最少入口和目标线路机（默认额度余量最多的），
+    /// 打印建议与可直接执行的 move 命令；只读，不执行
+    Rebalance {
+        /// 流量吃紧的线路机
+        relay: String,
+        /// 搬到哪台线路机（默认：在用、非故障、额度余量最多的）
+        #[arg(long)]
+        target: Option<String>,
+        /// 不动的节点（可重复），如分享给别人的入口所在的节点
+        #[arg(long)]
+        exclude: Vec<String>,
+    },
     /// 替换节点：新节点接替旧节点。软路由上指向旧节点的出口改成新节点的入口（备份、重启 OpenClash、测延迟，失败全部换回），
     /// 旧节点去备用团队（或 --to 指定的团队），新节点接旧编号。不加 --yes 只打印预览
     Replace(lifecycle::ReplaceOpts),
@@ -932,6 +944,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             PolicyCmd::Rollback { version, yes } => policy::rollback(x, &version, yes),
         },
         Cmd::Watch { count, metrics } => cmds::watch(x, count, metrics),
+        Cmd::Rebalance { relay, target, exclude } => lifecycle::rebalance(x, &relay, target.as_deref(), &exclude),
         Cmd::Move { node, to, from, no_routers, yes, follow } => lifecycle::mv(x, &node, &to, from.as_deref(), no_routers, yes, follow),
         Cmd::Evacuate { relay, to, no_routers, yes, follow } => lifecycle::evacuate(x, &relay, &to, no_routers, yes, follow),
         Cmd::Replace(o) => lifecycle::replace(x, o),

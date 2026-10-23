@@ -222,6 +222,16 @@ pub struct Quota {
     pub base: Option<i64>,
     #[serde(with = "time::serde::rfc3339::option")]
     pub base_at: Option<OffsetDateTime>,
+    /// 近 7 天日均用量（字节 / 天；周期不足 7 天按已有天数，不足 1 天为 None），口径同 `used`（不含接入前读数）
+    pub daily_avg: Option<i64>,
+    /// 按 `daily_avg` 预计用满的时刻（早于下次重置日才有；已用满、没有上限、没有重置日（滚动 30 天）为 None）。精确到小时
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub forecast_full_at: Option<OffsetDateTime>,
+    /// 周期起点时刻与日均所取窗口的起点（搬迁建议按它们汇总各入口的流量，不对外输出）
+    #[serde(skip)]
+    pub period_start_at: OffsetDateTime,
+    #[serde(skip)]
+    pub window_start: OffsetDateTime,
     /// 有订阅时距下次重置还有几天（账单时区的日历天，≥ 1）；没有订阅、滚动 30 天为 None。流量额度告警的摘要用，不对外输出
     #[serde(skip)]
     pub reset_in_days: Option<i64>,
@@ -557,8 +567,8 @@ pub struct LiveCache {
     quota: tokio::sync::Mutex<(u64, HashMap<QuotaKey, QuotaUsed>)>,
 }
 
-/// (周期内已用, 接入前读数在周期内, 周期起点时刻)
-type QuotaUsed = (i64, bool, OffsetDateTime);
+/// (周期内已用, 接入前读数在周期内, 周期起点时刻, 近 7 天窗口内已用, 窗口起点时刻)
+type QuotaUsed = (i64, bool, OffsetDateTime, i64, OffsetDateTime);
 
 /// (机器, 周期起点, 周期时区, 网卡计量规则（None = 业务流量）, 接入前读数的录入时间)
 type QuotaKey = (Uuid, Date, String, Option<&'static str>, Option<OffsetDateTime>);
@@ -1065,27 +1075,35 @@ async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<
         // 分成 node_id / relay_id 两支各走自己的索引再 union，否则是 机器 × 入口 的嵌套循环）。
         // 按 numeric 求和、夹到 9e18 再转 bigint：一台机器的离谱读数不让 bigint 溢出、拖垮所有人的机器列表。
         // 周期起点时刻 s0 一并带回：首次上架晚于它的，视图标「X 起统计」（counted_from）
-        let rows: Vec<(Uuid, i64, bool, OffsetDateTime)> = sqlx::query_as(
-            "with q as (select q.mid, q.rule, q.base_at >= s.s0 cal, s.s0,
-                               case when q.base_at >= s.s0 then date_trunc('hour', q.base_at) else s.s0 - interval '1 hour' end since
+        // 近 7 天窗口：起点 w = 周期查询起点与「当前整点往前 7 天」中较晚的；窗口内用量与 w + 1 小时（第一个计入的整点）一并带回，
+        // 日均 / 预计用满由 quota::forecast 算
+        let pick = |rx: &str, tx: &str| format!("least(case q.rule when 'min' then least({rx}, {tx}) when 'max' then greatest({rx}, {tx}) when 'sum' then {rx} + {tx} else {tx} end, 9e18)::bigint");
+        let sql = format!(
+            "with q as (select q.mid, q.rule, q.base_at >= s.s0 cal, s.s0, n.since, greatest(n.since, date_trunc('hour', now()) - interval '7 days') w
                         from unnest($1::uuid[], $2::date[], $3::text[], $4::text[], $5::timestamptz[]) q(mid, start, tz, rule, base_at)
-                        cross join lateral (select q.start::timestamp at time zone q.tz s0) s),
-             qe as (select q.mid, q.since, e.id eid from q join entry e on e.node_id = q.mid where q.rule is null
+                        cross join lateral (select q.start::timestamp at time zone q.tz s0) s
+                        cross join lateral (select case when q.base_at >= s.s0 then date_trunc('hour', q.base_at) else s.s0 - interval '1 hour' end since) n),
+             qe as (select q.mid, q.since, q.w, e.id eid from q join entry e on e.node_id = q.mid where q.rule is null
                     union
-                    select q.mid, q.since, e.id from q join entry e on e.relay_id = q.mid where q.rule is null)
-             select q.mid, least(case q.rule when 'min' then least(t.rx, t.tx) when 'max' then greatest(t.rx, t.tx) when 'sum' then t.rx + t.tx else t.tx end, 9e18)::bigint,
-                    coalesce(q.cal, false), q.s0
+                    select q.mid, q.since, q.w, e.id from q join entry e on e.relay_id = q.mid where q.rule is null)
+             select q.mid, {used}, coalesce(q.cal, false), q.s0, {recent}, q.w + interval '1 hour'
              from q cross join lateral (
-               select coalesce(sum(h.net_rx), 0) rx, coalesce(sum(h.net_tx), 0) tx from host_metric_hourly h
+               select coalesce(sum(h.net_rx), 0) rx, coalesce(sum(h.net_tx), 0) tx,
+                      coalesce(sum(h.net_rx) filter (where h.hour > q.w), 0) rx7, coalesce(sum(h.net_tx) filter (where h.hour > q.w), 0) tx7
+               from host_metric_hourly h
                where h.machine_id = q.mid and h.hour > q.since) t
              where q.rule is not null
              union all
-             select q.mid, least(coalesce(sum(t.b), 0), 9e18)::bigint, coalesce(q.cal, false), q.s0
+             select q.mid, least(coalesce(sum(t.b), 0), 9e18)::bigint, coalesce(q.cal, false), q.s0, least(coalesce(sum(t.b7), 0), 9e18)::bigint, q.w + interval '1 hour'
              from q left join qe on qe.mid = q.mid left join lateral (
-               select sum(h.up_bytes::numeric + h.down_bytes) b from entry_traffic_hourly h where h.entry_id = qe.eid and h.hour > qe.since) t on true
+               select sum(h.up_bytes::numeric + h.down_bytes) b, sum(h.up_bytes::numeric + h.down_bytes) filter (where h.hour > qe.w) b7
+               from entry_traffic_hourly h where h.entry_id = qe.eid and h.hour > qe.since) t on true
              where q.rule is null
-             group by q.mid, q.cal, q.s0",
-        )
+             group by q.mid, q.cal, q.s0, q.w",
+            used = pick("t.rx", "t.tx"),
+            recent = pick("t.rx7", "t.tx7")
+        );
+        let rows: Vec<(Uuid, i64, bool, OffsetDateTime, i64, OffsetDateTime)> = sqlx::query_as(&sql)
         .bind(miss.iter().map(|k| k.0).collect::<Vec<_>>())
         .bind(miss.iter().map(|k| k.1).collect::<Vec<_>>())
         .bind(miss.iter().map(|k| k.2.clone()).collect::<Vec<_>>())
@@ -1093,12 +1111,12 @@ async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<
         .bind(miss.iter().map(|k| k.4).collect::<Vec<_>>())
         .fetch_all(&st.view_db)
         .await?;
-        let got: HashMap<Uuid, QuotaUsed> = rows.into_iter().map(|(m, b, cal, s0)| (m, (b, cal, s0))).collect();
+        let got: HashMap<Uuid, QuotaUsed> = rows.into_iter().map(|(m, b, cal, s0, r, w)| (m, (b, cal, s0, r, w))).collect();
         for k in miss {
             // 每个键都有一行（q 是 unnest 出来的，两支都按 q 聚合）；缺了是 SQL 的 bug：记下机器 id 并按 0 算，不让一台打断整个视图与实时推送
             let used = got.get(&k.0).copied().unwrap_or_else(|| {
                 tracing::warn!(machine = %k.0, "流量额度查询没有返回这台机器的一行，按已用 0 算");
-                (0, false, k.1.midnight().assume_utc())
+                (0, false, k.1.midnight().assume_utc(), 0, k.1.midnight().assume_utc())
             });
             slot.1.insert(k.clone(), used);
         }
@@ -1381,7 +1399,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
             let removed_traffic = removed_by.remove(&r.id).unwrap_or_default();
             let (start, rule) = period_of[&r.id];
             let mode = modes[&r.id];
-            let (after, cal, s0) = period_used[&r.id];
+            let (after, cal, s0, recent, w0) = period_used[&r.id];
             let base = r.s_base.filter(|_| cal);
             // 生效的流量上限与来源：订阅的（单独设置的或跟随套餐的），没有订阅按套餐的；都没有时同机 IP 节点是与宿主机共用
             let (limit_gb, limit_source) = match &subscription {
@@ -1394,19 +1412,35 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 None if r.host_id.is_some() => "host",
                 None => "none",
             };
+            let period_end = (mode == "monthly").then(|| next_reset(start, r.s_reset.map_or(1, |d| d as u8)));
+            // 日均与预计用满按整点算（取值随小时汇总才变，不在两次汇总之间每次刷新都抖）；窗口不早于首次上架
+            let now_h = OffsetDateTime::from_unix_timestamp(now.unix_timestamp() / 3600 * 3600).unwrap_or(now);
+            let window_start = r.activated_at.map_or(w0, |a| a.max(w0));
+            let (daily_avg, forecast_full_at) = crate::quota::forecast(
+                base.unwrap_or(0).saturating_add(after),
+                limit_gb.map(|g| g as i64 * 1_000_000_000),
+                recent,
+                window_start,
+                now_h,
+                period_end.map(|e| s0 + time::Duration::days((e - start).whole_days())),
+            );
             let quota = Quota {
                 limit_gb,
                 limit_source,
                 used: base.unwrap_or(0).saturating_add(after),
                 period_start: start,
                 // 每月：订阅的生效重置日，没有订阅按 1 号
-                period_end: (mode == "monthly").then(|| next_reset(start, r.s_reset.map_or(1, |d| d as u8))),
+                period_end,
                 mode,
                 // 有接入前读数的，周期开头那段已由读数补上
                 counted_from: r.activated_at.filter(|a| *a > s0 && base.is_none()),
                 rule,
                 base,
                 base_at: r.s_base_at.filter(|_| cal),
+                daily_avg,
+                forecast_full_at,
+                period_start_at: s0,
+                window_start,
                 reset_in_days: r.s_today.zip(r.s_reset).map(|(t, d)| (next_reset(start, d as u8) - t).whole_days()),
             };
             // 宿主机维护时它上面的同机 IP 节点一起维护（是同一台机器）

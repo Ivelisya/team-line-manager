@@ -157,6 +157,7 @@
 .nc-qlabel .lucide { width: var(--icon-xs); height: var(--icon-xs); align-self: center; color: var(--ok); }
 .nc-qlabel b { font-weight: var(--fw-semibold); color: var(--fg); }
 .nc-qlabel b.is-bad { color: var(--bad-text); }
+.nc-qfc { font-size: var(--fs-label); line-height: var(--lh-label); color: var(--warn-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } /* 预计用满：有预测才有这一行 */
 .nc-quse { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--fg-2); } /* 本周期已用 / 上限：要读的信息，不用 --fg-3；窄卡放不下时先省略它 */
 
 /* 备用机器：到期旁直接写哪天自动回收（短句，说明在悬停里） */

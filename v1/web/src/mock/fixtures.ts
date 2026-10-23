@@ -40,6 +40,15 @@ const countedFrom = (m: MachineView, since: string) => (m.activated_at && dateOn
 /** 流量额度周期（同服务端 views::period_start）：有重置日取今天或之前最近一次（月份没有这一天按月末），否则本月 1 号；搬瓦工的机器（没单独设置重置日的）是滚动 30 天，
  *  起点 = 今天往前 29 天、没有下次重置日。已用：有网卡读数的机器按供应商规则从网卡算，家宽代理与同机 IP 节点是业务流量（宿主机连同它的同机 IP 节点含已退役的一起算）；
  *  加上接入前读数（OPENING） */
+/** 近 7 天日均与预计用满（服务端算法的简化：用周期内已过的天数求日均，不足 1 天不预测） */
+function forecastOf(used: number, limit: number | null | undefined, start: string, end: Date | null): Pick<MachineView['quota'], 'daily_avg' | 'forecast_full_at'> {
+  const days = (Date.now() - Date.parse(start)) / 864e5;
+  if (days < 1) return { daily_avg: null, forecast_full_at: null };
+  const daily = used / days;
+  const left = limit && limit > 0 && daily > 0 ? ((limit * 1e9 - used) / daily) * 864e5 : null;
+  const full = left != null && left > 0 && end && Date.now() + left < end.getTime() ? new Date(Math.floor((Date.now() + left) / 36e5) * 36e5).toISOString() : null;
+  return { daily_avg: Math.round(daily), forecast_full_at: full };
+}
 export function quotaOf(m: MachineView, all: MachineView[]): MachineView['quota'] {
   const rule = m.kind === 'proxy' || m.host_machine ? null : ({ p1: 'min', p2: 'out' } as Record<string, MachineView['quota']['rule']>)[m.provider?.id ?? ''] ?? 'max';
   const d = new Date(); const day = m.subscription?.traffic_reset_day ?? 1;
@@ -61,6 +70,7 @@ export function quotaOf(m: MachineView, all: MachineView[]): MachineView['quota'
     used: used + (base ?? 0), period_start: start, period_end: rolling ? null : at(d.getFullYear(), d.getMonth() + (s.getUTCMonth() === d.getMonth() ? 1 : 0)).toISOString().slice(0, 10),
     mode: rolling ? 'rolling30' : 'monthly', counted_from: base == null ? countedFrom(m, start) : null, rule, base,
     limit_gb: limit && limit > 0 ? limit : null, limit_source: m.host_machine ? 'host' : limit && limit > 0 ? (m.subscription?.traffic_gb != null ? 'subscription' : 'plan') : 'none',
+    ...forecastOf(used, limit, start, rolling ? null : at(d.getFullYear(), d.getMonth() + (s.getUTCMonth() === d.getMonth() ? 1 : 0))),
   };
 }
 /** 机器的流量字段（服务端算好的）：网卡今日 / 本月、本月从哪天起有数、额度周期 */
@@ -160,7 +170,7 @@ export function buildDb(): Db {
   const base = (o: Partial<MachineView> & Pick<MachineView, 'id' | 'kind' | 'name' | 'ip'>): MachineView => ({
     team: null, spare: false, number: null, label: null, ssh_port: 22, country: countryOf(o.ip), country_set: null, host_machine: null, bind_ip: null, ip_nodes: [], provider: null, provider_code: null, plan: null, service_ref: null,
     lifecycle: 'active', lifecycle_reason: null, note: '', revision: 1, created_at: iso(now() - 120 * DAY), activated_at: iso(now() - 100 * DAY), retired_at: null, spare_from: null, spare_since: null, recycle_on: null,
-    subscription: null, sub_template: templateOf(undefined, undefined), agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, nic: null, month_counted_from: null, quota: { used: 0, period_start: '', period_end: null, mode: 'monthly', counted_from: null, rule: null, base: null, limit_gb: null, limit_source: 'none' }, health: { status: 'ok', reasons: [] },
+    subscription: null, sub_template: templateOf(undefined, undefined), agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, nic: null, month_counted_from: null, quota: { used: 0, period_start: '', period_end: null, mode: 'monthly', counted_from: null, rule: null, base: null, limit_gb: null, limit_source: 'none', daily_avg: null, forecast_full_at: null }, health: { status: 'ok', reasons: [] },
     active_job: null, failed_job: null, open_incidents: 0, maintenance: false, relay: null,
     tune: o.kind === 'proxy' || o.host_machine ? null : { profile: 'tune-v2', at: iso(now() - 3 * DAY), current: true, params: o.kind === 'relay'
       ? { bw: 1000, bw_plan: 2560, bw_source: 'plan', rtt: 172, rtt_source: 'sampled', rtt_samples: 41, mem_mb: 3911, buf_max: 45097152 }

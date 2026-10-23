@@ -99,7 +99,9 @@ export interface MachineView {
    *  period_end：下次重置日（滚动 30 天为 null）；mode：monthly 按重置日、rolling30 滚动 30 天；counted_from：数据不完整时从哪天起才有；
    *  base：接入前的面板读数（字节，割接遗留、只读，下个周期起不再使用），没有为 null；
    *  limit_gb / limit_source：生效的流量上限（GB，没有为 null）与来源——subscription 单独设置、plan 跟随套餐、host 同机 IP 节点与宿主机共用、none 不限 */
-  quota: { used: number; period_start: string; period_end: string | null; mode: 'monthly' | 'rolling30'; counted_from: string | null; rule: TrafficRule | null; base: number | null; limit_gb: number | null; limit_source: 'subscription' | 'plan' | 'host' | 'none' };
+  quota: { used: number; period_start: string; period_end: string | null; mode: 'monthly' | 'rolling30'; counted_from: string | null; rule: TrafficRule | null; base: number | null; limit_gb: number | null; limit_source: 'subscription' | 'plan' | 'host' | 'none';
+    /** 近 7 天日均用量（字节 / 天；周期不足 1 天为 null）与按它预计用满的时刻（早于下次重置日才有，否则 null） */
+    daily_avg: number | null; forecast_full_at: string | null };
   health: { status: HealthStatus; reasons: HealthReason[] };
   active_job: { id: string; kind: string; state: string } | null;
   /** 上架失败（lifecycle = failed）：失败的上架/恢复作业；退役中（retiring）且最近的退役作业失败：那个退役作业 */
@@ -269,6 +271,14 @@ export interface RenumberPreview { changes: { machine_id: string; old_name: stri
 export interface RouterExitPlan { id: string; name: string; state: 'online' | 'offline' | 'pending' | string; exits: { exit: string; old_entry_id: string; new_entry_id: string | null; from: string; to: string | null; error?: string | null }[] }
 /** 换线路机 / 搬空线路机（API.md「生命周期操作」）：GET 是预览（没有 job_id），POST 的响应同样的内容加 job_id */
 export interface MovePreview { name?: string; from?: string; to?: string; routers_enabled: boolean; routers: RouterExitPlan[]; ok: boolean; blockers: string[]; warnings: string[]; share_changed: boolean; note: string }
+/** 搬迁建议（GET /relays/{id}/rebalance，只读）：重置前会用满时，搬走哪些入口、搬去哪台；daily_bytes 是搬走后这台每天少的流量 */
+export interface RebalancePlan {
+  relay: { id: string; name: string }; limit_gb: number; used: number; period_end: string; daily_avg: number | null; forecast_full_at: string | null; projected_pct: number | null;
+  needed: boolean; ok: boolean; reason: string | null; safe_pct: number;
+  target: { id: string; name: string; limit_gb: number | null; used: number; daily_avg: number | null; projected_pct: number | null } | null;
+  moves: { node: { id: string; name: string }; entry_id: string; port: number; period_bytes: number; daily_bytes: number; needs_from: boolean }[];
+  after?: { daily_avg: number; projected_pct: number }; target_after?: { fits: boolean; projected_pct: number | null }; excluded?: { id: string; name: string }[];
+}
 export interface MoveResult extends MovePreview { job_id: string; name: string; from: string; to: string }
 export interface EvacuateResult { from: string; to: string; /** job_id 只在真正搬空（POST）的结果里有，预览没有 */ jobs: { machine_id: string; name: string; job_id?: string; routers: RouterExitPlan[] }[]; skipped: { machine_id: string; name: string | null; reason: string }[]; warnings: string[];
   /** 要改的软路由：同批一起改，每台只重启 1 次 OpenClash（times 恒为 1）；nodes 是有出口要改的节点数 */

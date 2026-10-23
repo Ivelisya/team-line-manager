@@ -6,6 +6,7 @@ use reqwest::Method;
 use serde_json::{json, Value};
 use std::fmt;
 use std::net::{TcpStream, ToSocketAddrs};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tungstenite::client::IntoClientRequest;
 use tungstenite::http::HeaderValue;
@@ -68,6 +69,27 @@ fn send_error(base: &str, timeout: Duration, e: &reqwest::Error) -> anyhow::Erro
     }
 }
 
+/// fleetctl 自己的版本，写法同中控（fleet_proto::build_version）：编译时带了 FLEET_GIT_HASH 就是 `0.1.0+<哈希>`
+fn own_version() -> String {
+    match option_env!("FLEET_GIT_HASH") {
+        Some(h) => format!("{}+{h}", env!("CARGO_PKG_VERSION")),
+        None => env!("CARGO_PKG_VERSION").into(),
+    }
+}
+
+/// 中控每个接口响应都带 `x-fleet-version`；和自己不一致就在 stderr 提醒一次（不影响 stdout 与 --json）
+fn check_version(res: &Response) {
+    static DONE: AtomicBool = AtomicBool::new(false);
+    let Some(server) = res.headers().get("x-fleet-version").and_then(|v| v.to_str().ok()) else { return };
+    if DONE.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    let mine = own_version();
+    if mine != server {
+        eprintln!("fleetctl 版本 {mine} 与中控 {server} 不一致，用中控上的 fleetctl 或重新编译");
+    }
+}
+
 pub enum Cred {
     Bearer(String),
     /// 会话 Cookie 的 `name=value`（密钥管理只认会话）
@@ -98,6 +120,7 @@ impl Client {
     }
 
     fn check(res: Response) -> anyhow::Result<Response> {
+        check_version(&res);
         let status = res.status();
         if status.is_success() {
             return Ok(res);

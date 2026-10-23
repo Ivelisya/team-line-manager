@@ -1323,23 +1323,37 @@ async fn traffic_quota_alert_lifecycle() {
     xray_report(&t, 1, true).await;
     // 上个月就上架了：本周期数据完整，摘要不带「从 X 开始统计」
     sqlx::query("update machine set activated_at = now() - interval '40 days' where id = $1").bind(relay).execute(&t.st.db).await.unwrap();
-    // 线路机额度 1 GB、每月 1 号重置（账单时区北京）；节点没有订阅也没有套餐：不限
-    sqlx::query("insert into subscription (machine_id, price_cents, due_date, traffic_gb, traffic_reset_day) values ($1, 500, current_date + 60, 1, 1)")
+    // 线路机额度 1 GB、重置日定在 15 天后的那个日号（账单时区北京，周期起点在 13 天以前）；节点没有订阅也没有套餐：不限
+    sqlx::query(
+        "insert into subscription (machine_id, price_cents, due_date, traffic_gb, traffic_reset_day)
+         values ($1, 500, current_date + 60, 1, extract(day from (now() at time zone 'Asia/Shanghai')::date + 15))",
+    )
         .bind(relay)
         .execute(&t.st.db)
         .await
         .unwrap();
-    let (hour, days): (OffsetDateTime, i32) = sqlx::query_as(
-        "select date_trunc('hour', now()), (date_trunc('month', now() at time zone 'Asia/Shanghai') + interval '1 month')::date - (now() at time zone 'Asia/Shanghai')::date",
-    )
-    .fetch_one(&t.st.db)
-    .await
-    .unwrap();
+    // 周期里 10 天前的一小时用掉这些流量：在近 7 天窗口之外，日均为 0，不触发「预计用满」，下面只看 90% 的原逻辑
+    let (hour, recent, days): (OffsetDateTime, OffsetDateTime, i32) =
+        sqlx::query_as("select date_trunc('hour', now() - interval '10 days'), date_trunc('hour', now() - interval '2 days'), 15").fetch_one(&t.st.db).await.unwrap();
     let mut state = AlertState::default();
     let base = OffsetDateTime::now_utc();
 
     set_nic(&t, relay, hour, 899).await;
     assert_eq!(t.health(relay).await, ("ok".to_string(), vec![]), "89% 不报");
+    // 预计用满：早先 500 MB，近 7 天窗口里（2 天前）又用 280 MB → 日均约 40 MB，剩 220 MB 约 5.5 天用满，早于重置日（15 天后）：
+    // 还没到 90%（78%）也开警告，摘要写预计日期；quota 带日均与预计用满时刻
+    set_nic(&t, relay, hour, 500).await;
+    set_nic(&t, relay, recent, 280).await;
+    let m = t.get(&format!("/api/v1/machines/{relay}")).await;
+    let (daily, full) = (m["quota"]["daily_avg"].as_i64().unwrap(), OffsetDateTime::parse(m["quota"]["forecast_full_at"].as_str().unwrap(), &time::format_description::well_known::Rfc3339).unwrap());
+    assert!((39_000_000..42_000_000).contains(&daily), "{}", m["quota"]);
+    let left = (full - OffsetDateTime::now_utc()).as_seconds_f64() / 86400.0;
+    assert!((4.5..6.5).contains(&left), "{left} {}", m["quota"]);
+    let text = m["health"]["reasons"][0]["text"].as_str().unwrap_or_default();
+    assert!(text.starts_with("本周期流量已用 78%（0.78 GB / 1 GB），按近 7 天的速度预计 ") && text.ends_with(&format!(" 用满，{days} 天后重置")), "{text}");
+    sqlx::query("delete from host_metric_hourly where hour = $1").bind(recent).execute(&t.st.db).await.unwrap();
+    t.st.live.rolled_up();
+    set_nic(&t, relay, hour, 899).await;
     // 92%：不去抖，评估一轮就开警告；健康状态仍是正常；节点同样有这些流量，但不限额度，不评估
     set_nic(&t, relay, hour, 920).await;
     set_nic(&t, node, hour, 920).await;

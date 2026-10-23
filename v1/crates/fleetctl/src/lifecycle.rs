@@ -1,7 +1,7 @@
 //! 生命周期命令：换线路机（move）、搬空线路机（evacuate）、替换节点（replace）。
 //! 都是先看预检/校验、确认后才提交作业；作业本身的进度用 `fleetctl job <id> --follow` 看。
 
-use crate::cmds::{self, outln, st, Ctx};
+use crate::cmds::{self, num, outln, st, Ctx};
 use crate::ops::confirm;
 use crate::resolve::Want;
 use crate::table;
@@ -176,6 +176,80 @@ pub fn evacuate(ctx: &Ctx, relay: &str, to: &str, no_routers: bool, yes: bool, f
     }
     Ok(code)
 }
+
+/// 命令行里的参数：只含字母数字（含中文）和 `-_.` 的原样写，别的加单引号
+fn sh(s: &str) -> String {
+    if !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || "-_.".contains(c)) { s.to_string() } else { format!("'{}'", s.replace('\'', "'\''")) }
+}
+
+/// 搬迁建议里每个入口一条可直接执行的 `fleetctl move`
+fn rebalance_commands(d: &Value) -> Vec<String> {
+    let (from, to) = (st(d, "/relay/name"), st(d, "/target/name"));
+    d["moves"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|m| format!("fleetctl move {} --to {}{}", sh(&st(m, "/node/name")), sh(&to), if m["needs_from"] == true { format!(" --from {}", sh(&from)) } else { String::new() }))
+        .collect()
+}
+
+/// `fleetctl rebalance <线路机> [--target <线路机>] [--exclude <节点>…]`：这台线路机按近 7 天的速度重置前会用满的话，
+/// 挑出搬走后能撑到重置日的最少入口和目标线路机，只打印建议与可直接执行的 move 命令，不执行
+pub fn rebalance(ctx: &Ctx, relay: &str, target: Option<&str>, exclude: &[String]) -> anyhow::Result<u8> {
+    let src = find_relay(ctx, relay)?;
+    let mut q: Vec<(&str, String)> = vec![];
+    if let Some(t) = target {
+        q.push(("target_relay_id", st(&find_relay(ctx, t)?, "/id")));
+    }
+    if !exclude.is_empty() {
+        let ids = exclude.iter().map(|x| ctx.find_id(x, Want::Live).map(|(id, _)| id)).collect::<anyhow::Result<Vec<_>>>()?;
+        q.push(("exclude", ids.join(",")));
+    }
+    let mut d = ctx.c.get_q(&format!("/relays/{}/rebalance", st(&src, "/id")), &q)?;
+    let cmds = rebalance_commands(&d);
+    d["commands"] = json!(cmds);
+    ctx.emit(&d, || {
+        let g = |p: &str| table::gb(num_of(&d, p));
+        let name = st(&d, "/relay/name");
+        let pct = |p: &str| d.pointer(p).and_then(Value::as_f64).map_or(String::new(), |x| format!("{x}%"));
+        let mut s = format!("{name} 本周期已用 {} / {} GB，近 7 天日均 {}", g("/used"), st(&d, "/limit_gb"), d["daily_avg"].as_f64().map_or("暂无".into(), table::gb));
+        match d["forecast_full_at"].as_str() {
+            Some(t) => s += &format!("，预计 {} 用满（重置 {}）", crate::billing::md_of(t), st(&d, "/period_end").chars().skip(5).collect::<String>()),
+            None if !d["projected_pct"].is_null() => s += &format!("，到重置日预计用到 {}", pct("/projected_pct")),
+            None => {}
+        }
+        s.push('\n');
+        if let Some(r) = d["reason"].as_str().filter(|_| d["moves"].as_array().is_none_or(|m| m.is_empty())) {
+            return s + r;
+        }
+        let rows: Vec<Vec<String>> = d["moves"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|m| vec![st(m, "/node/name"), st(m, "/port"), table::gb(num_of(m, "/period_bytes")), table::gb(num_of(m, "/daily_bytes"))])
+            .collect();
+        s += &format!("搬走下面 {} 个入口，日均降到 {}，到重置日预计用到 {}（现在 {}）：\n", rows.len(), table::gb(num_of(&d, "/after/daily_avg")), pct("/after/projected_pct"), pct("/projected_pct"));
+        s += &table::render(&["节点", "端口", "本周期流量", "近 7 天日均"], &rows);
+        s += &format!(
+            "\n目标 {}：本周期已用 {} / {} GB，到重置日预计 {} → 接收后 {}",
+            st(&d, "/target/name"),
+            g("/target/used"),
+            st(&d, "/target/limit_gb"),
+            pct("/target/projected_pct"),
+            pct("/target_after/projected_pct")
+        );
+        if let Some(r) = d["reason"].as_str() {
+            s += &format!("\n注意：{r}");
+        }
+        s += "\n\n只是建议，没有执行。要搬就逐个执行（每个会先预览再确认，加 --yes 跳过确认）：\n";
+        s += &cmds.join("\n");
+        s += &format!("\n{SHARE_HINT}");
+        s
+    });
+    Ok(0)
+}
+
+fn num_of(v: &Value, p: &str) -> f64 { num(v, p).unwrap_or(0.0) }
 
 // `fleetctl replace` 的参数（clap 直接解析成它）
 #[derive(clap::Args)]

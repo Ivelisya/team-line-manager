@@ -51,13 +51,13 @@ export const movableEntries = (m: MachineView) => m.entries.filter((e) => e.life
 // ── 换线路机 ────────────────────────────────────────────────────────────
 
 // 三个对话框都每次打开重新挂载（resetOnOpen）：表单状态直接从 props 初始化，关闭动画期间不变
-export const MoveDialog = resetOnOpen(function MoveDialog({ m, open, onOpenChange, onDone }: { m: MachineView; open: boolean; onOpenChange: (o: boolean) => void; onDone?: () => void }) {
+export const MoveDialog = resetOnOpen(function MoveDialog({ m, open, onOpenChange, onDone, initialTo, initialFrom }: { m: MachineView; open: boolean; onOpenChange: (o: boolean) => void; onDone?: () => void; initialTo?: string; initialFrom?: string }) {
   const nav = useNavigate();
   const move = useMoveEntry();
   const relays = useRelays().data ?? [];
   const cur = movableEntries(m);
-  const [to, setTo] = React.useState('');
-  const [from, setFrom] = React.useState(() => (cur.length === 1 ? cur[0].relay.id : ''));
+  const [to, setTo] = React.useState(initialTo ?? '');
+  const [from, setFrom] = React.useState(() => (cur.length === 1 ? cur[0].relay.id : initialFrom ?? ''));
   const used = new Set(m.entries.map((e) => e.relay.id));
   const opts = targetOptions(relays, (r) => !used.has(r.id));
   const multi = cur.length > 1;
