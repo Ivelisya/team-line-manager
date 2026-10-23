@@ -1,6 +1,6 @@
 ---
 name: fleet-ops
-description: 团队线路管理（fleet）的运维入口。查节点或线路机状态、排查告警、处理到期与续费提醒（看订阅、登记续费、改订阅）、维护前开维护窗口或静默告警（可预约）、看服务日志、在节点上执行命令、登录机器或软路由、上架新机器、管理供应商与套餐（新建、改价、归档、删除）、替换节点（新机器接替旧节点、软路由跟着换、旧的放备用）、退役（进备用、立即回收）与回收站（含旧面板导入）、改名与编号、升级 agent、取入口分享链接、查看与接入软路由（OpenWrt + OpenClash：状态、出口、出口历史成功率与延迟、客户端、接入命令、一键部署）时使用，在中控上运维也用它；一律先用 fleetctl（登录用 fleetctl ssh），不要直接 ssh、psql 或手拼 curl。
+description: 团队线路管理（fleet）的运维入口。查节点或线路机状态、排查告警、处理到期与续费提醒（看订阅、登记续费、改订阅）、维护前开维护窗口或静默告警（可预约）、看服务日志、在节点上执行命令、登录机器或软路由、上架新机器、管理供应商与套餐（新建、改价、归档、删除）、替换节点（新机器接替旧节点、软路由跟着换、旧的放备用）、退役（进备用、立即回收）与回收站（含旧面板导入）、改名与编号、升级 agent、取入口分享链接、查看与接入软路由（OpenWrt + OpenClash：状态、出口、出口历史成功率与延迟、客户端、接入命令、一键部署）、管理探测点（从靠近客户的地方如香港测线路机入口：安装、主探测来源、升级）、查看或设置三网 PING（线路机到电信 / 联通 / 移动的延迟丢包）时使用，在中控上运维也用它；一律先用 fleetctl（登录用 fleetctl ssh），不要直接 ssh、psql 或手拼 curl。
 ---
 
 # fleet-ops
@@ -68,6 +68,8 @@ fleetctl ssh router <名称> [-- 'logread | tail -50']        # 软路由（Open
 | 软路由出口历史：每个出口测了几次、失败几次、成功率、连续两轮失败几次、延迟中位 / 最大、当前连接 | `fleetctl --json router exits <路由> [--range 1h\|6h\|24h\|7d]`（默认 24h；口径见文末速查。客户说「某个出口时好时坏」先看它，不要去路由上翻日志） |
 | 供应商（缩写、账单时区、流量计量与重置、提前提醒、套餐数） | `fleetctl --json provider ls` |
 | 套餐（供应商、规格、价格 / 周期、在用机器数） | `fleetctl --json plan ls [--provider <供应商>] [--all 含已归档]` |
+| 三网 PING：线路机往外到各目标（默认武汉电信 / 联通 / 移动）的延迟与丢包 | `fleetctl --json ping <线路机>`（`current[]`：`name target mode cur_ms cur_loss`，`cur_loss` 是 %；`show <线路机>` 的 `ping` 字段相同）；全局目标 `fleetctl --json ping-targets` |
+| 探测点与主探测来源：谁在测线路机的客户入口、此刻用的是哪一路、各探测点到各线路机的近 1 小时平均延迟 | `fleetctl --json probe ls`（`{probe_points:[…], source:{primary, central_enabled, effective:{state,label}}}`；`state`：online / offline / pending / disabled） |
 
 访问规则的健康提示：节点被设为 `blocked` 时健康原因里有 `policy_blocked`（info，不降级、不开告警）。
 
@@ -102,6 +104,24 @@ fleetctl exec --team 团队1 --timeout 30 -- uptime           # 多台并发 4�
   - 中控连不到路由（路由在 NAT 后面，三台现场路由都是）：`fleetctl router add <名称> [--team 团队2]` 打印接入命令（30 分钟、只能用一次），让用户在路由上用 root 执行；过期了 `fleetctl router bootstrap <路由> --yes` 重新生成（现在的隧道密钥立刻作废）。
   - 中控能直接连到路由的 SSH（公网映射、同一网段）：一键部署 `fleetctl router add <名称> --host <IP> [--port 22] [--user root] --password-stdin --yes --follow`（密码从标准输入读一行，不要写在参数里）；路由上已经授权过中控公钥时不用密码。已有的路由重新部署用 `router deploy`。失败原因原样转告用户；中控连不到它就改用接入命令。
 - 删路由（`router rm --yes`）只撤销中控这边（隧道公钥、状态与指标）；输出里的 `cleanup` 是要在路由上执行的清理命令，转给用户。
+
+## 探测点
+
+中控在德国，客户在中国大陆：中控连不连得上线路机不代表客户。探测点是放在靠近客户的地方（如香港）的小机器，跑 `fleet-agent probe`，每 30 秒连一遍各线路机的客户入口（同中控的轮换与作废规则），另记建连延迟。「主探测来源」（中控或某个探测点）决定线路机卡片的心跳格、入口的「连不上」与 `relay_unreachable`；主来源离线（3 分钟没上报）时中控的检查开着就由中控代替（连不上照报、连得上不算恢复，摘要写「中控（代替离线的香港探测点）…」），关着就标灰。
+
+- 查看：`fleetctl --json probe ls`。
+- 加一台（会登录 / 改那台机器，先向用户确认）：中控能 SSH 到它就 `fleetctl probe add <名称> --host <IP> [--ssh-port 22]`（中控用自己的密钥登录 root，等到首次上报；登不进时报错里有中控公钥全文，转给用户加进探测点的 `/root/.ssh/authorized_keys`，再 `fleetctl probe install <名称> --host <IP>`）；否则 `fleetctl probe add <名称>` 打印一次性安装命令（30 分钟、只能用一次），让用户在探测点上用 root 执行，过期了 `fleetctl probe install <名称>`。
+- 设主来源：`fleetctl probe primary <名称|central>`；中控自己的检查：`fleetctl probe central on|off`（主来源是中控时不能关）。改主来源会改变告警的判断依据，先向用户确认。
+- 启停、改名：`fleetctl probe set <名称> --enable|--disable [--name …] [--note …]`（主来源不能停用、删除）；升级成中控 dist 里的 fleet-agent：`fleetctl probe upgrade <名称>`（探测点自己下载替换，等到报上新版本）；删除：`fleetctl probe rm <名称> --yes`，输出里的 `cleanup` 是要在探测点上执行的清理命令，转给用户。
+- 告警 `probe_point_offline`（warning，对象是探测点：`subject_id` 为 null、`subject_name` 是探测点名）：探测点超过 3 分钟没上报。转告用户在探测点上看 `rc-service fleet-probe status`、`/var/log/fleet-probe.log`（systemd：`journalctl -u fleet-probe`），见 OPS.md §17。
+
+## 三网 PING
+
+线路机每分钟往外连一轮目标（全局 8 个槽位，默认武汉电信 / 联通 / 移动的测速地址；每个 5 次，TCP 默认、不写端口连 80，或 ICMP），记延迟中位数与丢包。只展示、没有告警；它看线路质量，客户连不连得上入口看探测点。跨境 150–200 ms 是常态，不要当成问题报给用户；持续丢包才值得提。
+
+- 查看：`fleetctl --json ping <线路机>`、`fleetctl --json ping-targets`。
+- 改（会让线路机代数 +1、重新下发，先向用户确认）：全局 `fleetctl ping-targets set <槽位 1–8> [--name …] [--target host[:port]]`（`--target ""` = 不测）、`fleetctl ping-targets mode tcp|icmp`；单台 `fleetctl ping <线路机> set <槽位> …`、`fleetctl ping <线路机> mode tcp|icmp|global`、`fleetctl ping <线路机> reset [<槽位>]`。
+- 某个目标一直 100% 丢包：多半是目标不开那个口（换 `host:443` 或 ICMP 试）；实际方式（`mode`）是 tcp 而设置是 icmp，说明线路机上的系统 ping 用不了（OPS.md §18）。旧 agent 不测（升级 agent 后才有）。
 
 ## 维护窗口与静默
 
@@ -201,7 +221,7 @@ fleetctl plan rm <套餐> --yes                               # 还有机器（�
 - `show`（MachineView）：上面这些的完整版（`health.status`、`agent.online`、`host.{cpu_pct,mem_used,mem_total,disk_used,disk_total,load1}`、`entries[]` 完整入口视图），另有 `ssh_port revision`、`health.reasons[{key,rule_name,severity,text}]`（`rule_name` 是规则中文名，同通知）、`agent.health`（agent 自报：离线队列、访问日志解析不了 / 丢弃的行数等）、`failed_job`。
   同机关系：`host_machine{id,name}` 非 null 的是同机 IP 节点（它的 `agent`、`host` 都是宿主机的，agent 离线 / 高负载告警在宿主机名下；`logs --unit ssserver` 看它自己的实例 `fleet-ssserver@<端口>`，`exec` 在宿主机上执行；不能单独 `upgrade-agent`）；`ip_nodes[{id,name}]` 是宿主机上未退役的同机 IP 节点。
 - `entries`（每个入口一个精简对象）：`id relay port node lifecycle(active|pending|disabled|removing|removed) applied apply_error tcp_ok egress_ok today_down today_up`（今日业务流量，字节）；`tcp_ok` / `egress_ok` 为 null 表示还没探测过。`node` 是「线路机名-直出」的是线路机直出入口：没有节点，`tcp_ok` 恒为 null；它出口不通时告警对象是线路机（`egress_fail`）；搬空不搬它，退役线路机时自动摘除。
-- `incidents`（每条一个精简对象，`status` 里的 `incidents` 相同）：`id severity(warning|critical) rule rule_name subject_id subject_name summary reopen_count state(firing|resolved) opened_at resolved_at ack_by`（`ack_by` 非 null 即已确认；恢复后 30 分钟内复发会重开同一条并 +1，表格里显示「反复 N 次」；大于 0 说明在抖，查探测/网络而不是只看当前状态）。规则 key：agent_offline、clock_skew、no_entry、egress_fail、tcp_fail、renewal_due（过期后升为 critical；备用团队的机器只在还有软路由出口指向它时才报；旧记录里还有 renewal_overdue）、traffic_quota_high（流量额度：本周期已用 ≥ 90% warning、≥ 100% critical，不改健康状态，新周期或调高上限后自动恢复）、relay_apply_lag、relay_apply_error、relay_xray_down、relay_unreachable（中控连续 3 轮连不上线路机的客户入口，或同一个入口端口最近 3 次都连不上，critical，摘要里有端口与原因）、host_cpu_high、host_mem_high、host_disk_high、ipintel_new_isp（来源出现新运营商）、ipintel_new_city（来源出现新城市）、ipintel_datacenter_source（机房 / VPN 来源 IP），这三个是 warning、学习期 7 天后才有、最后一次出现 24 小时后自动恢复，不用手动处理。中控自身的告警（对象是「中控」：`subject_id` 为 null、`subject_name` 为「中控」，不能 `show`）：central_channel_failing（通知渠道连续发送失败满 5 分钟，critical，摘要里有渠道名与原因；请用户在网页「设置 → 通知渠道」改配置并点「测试」，测试成功即恢复）、central_backup_stale（中控每日备份超过 26 小时没有新的，warning；`fleetctl server-logs` 帮不上，需要用户在中控上 `systemctl status fleet-backup`）、central_disk_low（中控本机磁盘可用低于 10%，critical，写满了中控会停；告诉用户尽快清理）、central_ingress（有 agent 的机器过半且至少 3 台同时失联，critical：边缘机 / Caddy / DNS 出问题，agent 到不了中控；期间不按台开 agent_offline）。这几条都要转告用户，AI 处理不了。软路由的告警是 `router_` 开头的五条（见「软路由」一节），`subject_id` 是路由 id、`subject_name` 是路由名，用 `router show` 看，不要 `show`。
+- `incidents`（每条一个精简对象，`status` 里的 `incidents` 相同）：`id severity(warning|critical) rule rule_name subject_id subject_name summary reopen_count state(firing|resolved) opened_at resolved_at ack_by`（`ack_by` 非 null 即已确认；恢复后 30 分钟内复发会重开同一条并 +1，表格里显示「反复 N 次」；大于 0 说明在抖，查探测/网络而不是只看当前状态）。规则 key：agent_offline、clock_skew、no_entry、egress_fail、tcp_fail、renewal_due（过期后升为 critical；备用团队的机器只在还有软路由出口指向它时才报；旧记录里还有 renewal_overdue）、traffic_quota_high（流量额度：本周期已用 ≥ 90% warning、≥ 100% critical，不改健康状态，新周期或调高上限后自动恢复）、relay_apply_lag、relay_apply_error、relay_xray_down、relay_unreachable（主探测来源——中控或探测点——连续 3 轮连不上线路机的客户入口，或同一个入口端口最近 3 次都连不上，critical，摘要开头写是谁测的、括号里有端口与原因）、host_cpu_high、host_mem_high、host_disk_high、ipintel_new_isp（来源出现新运营商）、ipintel_new_city（来源出现新城市）、ipintel_datacenter_source（机房 / VPN 来源 IP），这三个是 warning、学习期 7 天后才有、最后一次出现 24 小时后自动恢复，不用手动处理。中控自身的告警（对象是「中控」：`subject_id` 为 null、`subject_name` 为「中控」，不能 `show`）：central_channel_failing（通知渠道连续发送失败满 5 分钟，critical，摘要里有渠道名与原因；请用户在网页「设置 → 通知渠道」改配置并点「测试」，测试成功即恢复）、central_backup_stale（中控每日备份超过 26 小时没有新的，warning；`fleetctl server-logs` 帮不上，需要用户在中控上 `systemctl status fleet-backup`）、central_disk_low（中控本机磁盘可用低于 10%，critical，写满了中控会停；告诉用户尽快清理）、central_ingress（有 agent 的机器过半且至少 3 台同时失联，critical：边缘机 / Caddy / DNS 出问题，agent 到不了中控；期间不按台开 agent_offline）。这几条都要转告用户，AI 处理不了。探测点离线是 `probe_point_offline`（见「探测点」一节，`subject_name` 是探测点名，不能 `show`）。软路由的告警是 `router_` 开头的五条（见「软路由」一节），`subject_id` 是路由 id、`subject_name` 是路由名，用 `router show` 看，不要 `show`。
 - `silence ls`（每条一个精简对象；`silence add` / `silence rm` 输出新建 / 删掉的那一条，同形）：`id subject_id subject_name rule rule_name starts_at ends_at state(active|scheduled) is_maintenance comment`；`subject_id` 为 null = 全部机器，`rule` 为 null = 全部规则；`state` 是 `active`（进行中）或 `scheduled`（已预约，还没开始）。只列没结束的。
 - `billing`：`id name host_machine spare subscription sub_template traffic_limit_gb quota{limit_gb,limit_source,used,period_start,period_end,mode,counted_from,rule,base,base_at} quota_pct renewals renewal_count`。`subscription` 为 null 是没有订阅，否则 `{price_cents currency cycle(monthly|quarterly|semiannual|yearly) due_date due_days due_state(ok|soon|overdue) billing_tz auto_renew remind_days traffic_gb traffic_reset_day overrides monthly_cents next_due period_days}`，全是生效值（`due_state` 同续费告警：soon = 提前提醒天数内且不是自动续费；`next_due` = 推一个周期后的到期日，`renew` 不带 `--to` 时由中控算），`overrides` 是单独设置了的字段名（其余跟随 `sub_template`：`{price_cents currency cycle billing_tz remind_days traffic_gb traffic_reset(month|billing|rolling30)}`；`rolling30` 时跟随的 `traffic_reset_day` 为 null）；金额都是分（`price_cents` 3946 = 39.46，币种看 `currency`）。`traffic_gb` 0 / null = 不限，`traffic_limit_gb`（= `quota.limit_gb`）是生效的上限（null = 不限），`quota.limit_source` 是它的来源（`subscription` 单独设置 / `plan` 跟随套餐 / `host` 同机 IP 节点与宿主机共用 / `none`），`quota_pct` 是本周期已用（`quota.used`，字节）占它（GB × 10⁹）的百分比（向下取整，没有上限为 null）；`quota.rule` 是网卡计量规则（`min|max|sum|out`，null = 业务流量）；`quota.mode` 是 `monthly`（`period_end` = 下次重置日）或 `rolling30`（近 30 天，`period_end` 为 null）；`quota.counted_from` 非 null = 周期中途上架、这之前的用量不在 `used` 里；`quota.base_at` 非 null 是割接时录的接入前读数（`base`，字节，只读，下个周期自动失效）。本月网卡流量在 `show --json` 的 `nic{today_rx,today_tx,month_rx,month_tx}`（rx 下行、tx 上行；家宽代理、同机 IP 节点为 null），`month_counted_from` 非 null = 本月中途上架，`agent.nic_ifaces` 是计量的网卡。`renewals` 是最近 10 条续费记录（新→旧）`{id old_due new_due amount_cents note actor created_at}`，`renewal_count` 是总条数。
   计费统一按 USD：`subscription` 里另有 `monthly_usd_cents`（月费折成 USD 的分）、`price_usd_cents`（每期价格折成 USD）、`usd_per_unit`（所用汇率，1 单位合多少 USD；USD 为 1），由中控按汇率算好（`round(原币种分 × usd_per_unit)`，四舍五入到分）；三个都是 null = 没有这个币种的汇率、未折算（不是 0 元，也不是 1:1）。原字段 `price_cents` / `currency` / `monthly_cents` 照旧是供应商收的原币种。文字输出的「费用」行后面写「；折合 37.50 USD/月（1 CNY = 0.125 USD）」或「未折算」。

@@ -165,6 +165,7 @@ pub fn blank_report(seq: u64) -> Report {
         access: vec![],
         xray: None,
         agent_health: None,
+        ping: vec![],
     }
 }
 

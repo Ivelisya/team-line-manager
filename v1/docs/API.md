@@ -155,8 +155,9 @@ EntryView = { id, relay:{id,name}, node:{id,name}, direct, port, lifecycle, appl
 // tcp：线路机 → 节点出站地址的 TCP 建连，latency_ms 是最近一次（新 agent 报内核量的往返时间，不含 SYN 重发等待），
 //   median_ms 是近 1 小时成功样本的中位数（卡片读数）；egress：经入口访问 /echo 核对出口 IP，只判通不通、IP 对不对，
 //   latency_ms 是这次出口验证的耗时（经节点去中控），不是线路延迟，median_ms 恒为 null
-// reach：中控 → 线路机上这个入口端口的最近一次 TCP 建连（只建连，不握手），`detail` 是失败原因（带「端口 N：」前缀），通为 null；
-//   只有在用入口有，没检查过（新入口、停用入口、线路机没在探）为 null。中控轮流连各端口，每个口隔「入口数 × 30 秒」才更新一次；
+// reach：主探测来源（中控或探测点，见「探测点」；GET /settings/reach-source 说此刻是哪一路）→ 线路机上这个入口端口的最近一次 TCP 建连
+//   （只建连，不握手），`detail` 是失败原因（带「端口 N：」前缀），通为 null；只有在用入口有，没检查过（新入口、停用入口、线路机没在探、
+//   主来源离线且中控的检查关着）为 null。轮流连各端口，每个口隔「入口数 × 30 秒」才更新一次；
 //   随完整加载更新（至多 5 分钟，连通结论变了立即），不在 metrics 推送里。连续 3 次连不上同时开 relay_unreachable 健康原因；
 //   `fails` 是这个端口到最近一次为止连续连不上的次数（通的为 0），网页 ≥ 3 才写「中控连不上」，1–2 次写「刚才连不上 N 次」
 ```
@@ -266,7 +267,7 @@ ProvisionItem = {
 |---|---|---|
 | GET | `/overview` | `{nodes:{total,ok,degraded,down,unknown,maintenance}, relays:{…}, provisioning, retiring, failed（上架失败的机器数，网页「有问题」里也算它们）, due_soon（`subscription.due_state = soon` 的台数：到期前提前提醒天数内、不是自动续费，网页「即将到期」）, overdue（已过期的台数）, online, offline（按 agent 连通：agent 没有近期上报为离线，家宽代理没有 agent 算在线；与健康无关，有严重告警但照常上报的算在线）, monthly_cost:[{currency,cents}]（各台 `subscription.monthly_cents` 按币种分别相加，不做汇率折算；旧字段）, monthly_usd:{cents, by_currency:[{currency,cents,usd_cents,usd_per_unit}], unconverted:[{currency,cents}]}（月费折成 USD：`cents` 是各台 `monthly_usd_cents` 之和；`by_currency` 列出各原币种（含 USD）的原币种合计、折成的 USD 与所用汇率；没有汇率的币种不算进 `cents`，原币种金额单列在 `unconverted`。见「汇率」）, traffic_month:{up,down}, net_rx_bps, net_tx_bps}`（traffic_month 是本月（组织时区）全部入口的业务流量合计：每条入口的字节只在它的线路机上统计一次，含已移除的入口和月中退役、替换掉的机器；网卡流量不做合计。其余只统计 active；速率不含 agent 离线的机器——告警不影响，照常上报的机器照算；同机 IP 节点的读数就是宿主机的，速率不重复算，节点数与在线 / 离线照常按节点计） |
 | GET | `/overview/series?minutes=30` | 总览网速曲线：`{points:[{ts, net_rx_bps, net_tx_bps}]}`，`minutes` 1–60（默认 30，越界 400）；最近 N 个**结束满 20 s** 的分钟（agent 每 10 s 上报，刚结束的那一分钟还缺最后的上报，不给）每分钟一个点、旧→新，`ts` 为该分钟起点（RFC3339）。每个点 = 该分钟有主机指标的 active 机器速率之和，单台算法同 `/machines/{id}/series?metric=host`（每分钟计数器最大值与上一个有数据的分钟相减 ×8 / 秒数；计数器回绕的那一段不计）；没有数据的分钟为 0 |
-| GET | `/probe-beats` | 探测心跳条：`{<机器id>: [[n, ok, ms], …20 格]}`。每格 3 分钟、按墙钟对齐（`date_bin('3 minutes', ts, 'epoch')`，即每小时的 :00 / :03 / … ），旧→新，最后一格是当前这格（还没走完）；第 i 格 = `[cb-57m+3i 分, cb-57m+3(i+1) 分)`，cb = 当前这格的起点；每格 `[n, ok, ms, retrans]`：`n` = 次数，`ok` = 成功次数，`ms` = 成功的延迟中位数（没有成功的为 null），`retrans` = 建连时 SYN 重发过的次数（丢包，不算进 ms；旧 agent 不报，为 0）；没有数据的格为 `[0,0,null,0]`。节点：线路机 → 节点的 TCP 探测，汇总它的入口；线路机：中控 → 线路机的连通性（`relay_reach`，中控每 30 秒连一次它的客户入口——public_host + 在用入口端口，每轮换下一个——只判通不通，ms 为 null；对照目标都连不上、或三台以上线路机全部连不上时那一轮不记），不再汇总它上面的入口；只含这 20 格里有数据的在用机器 |
+| GET | `/probe-beats` | 探测心跳条：`{<机器id>: [[n, ok, ms], …20 格]}`。每格 3 分钟、按墙钟对齐（`date_bin('3 minutes', ts, 'epoch')`，即每小时的 :00 / :03 / … ），旧→新，最后一格是当前这格（还没走完）；第 i 格 = `[cb-57m+3i 分, cb-57m+3(i+1) 分)`，cb = 当前这格的起点；每格 `[n, ok, ms, retrans]`：`n` = 次数，`ok` = 成功次数，`ms` = 成功的延迟中位数（没有成功的为 null），`retrans` = 建连时 SYN 重发过的次数（丢包，不算进 ms；旧 agent 不报，为 0）；没有数据的格为 `[0,0,null,0]`。节点：线路机 → 节点的 TCP 探测，汇总它的入口；线路机：主探测来源 → 线路机的连通性（`relay_reach` 里那一路的行：中控或探测点每 30 秒连一次它的客户入口——public_host + 在用入口端口，每轮换下一个；中控只判通不通、ms 为 null，探测点的 ms 是建连往返时间的中位数；对照目标都连不上、或三台以上线路机全部连不上时那一轮不记；主来源离线时是代替它的中控的，中控的检查也关着时线路机没有格子），不再汇总它上面的入口；只含这 20 格里有数据的在用机器 |
 | GET | `/incidents?state=firing\|resolved\|all&subject_id=&limit=100&offset=0` | 分页：`{items:[{id,rule,rule_name,subject:{id,name},subject_id,subject_name,severity,state,summary,opened_at,last_seen_at,resolved_at,ack_at,ack_by,reopen_count}], total, acked, next_offset}`；`acked` = 同一筛选下已确认的条数（确认不关闭告警，`total` 含它们）；`state` 默认 firing；`subject_id`（可选，机器 id）只看这台机器的告警，与 `state`、分页组合，`total` 同样只数它的（如抽屉的最近告警：`?subject_id=<id>&state=all&limit=5`；不是 uuid 时 400）；`reopen_count`：恢复后 30 分钟内同一（规则, 对象）复发会重开原告警而不是新建，每次 +1；顺序：进行中在前 → 严重度高在前 → 开始时间新在前（同时刻按 id，翻页不重不漏）；带 `subject_id` 时不看严重度：进行中在前 → 开始时间新在前（一台机器的「最近告警」按时间读）。中控自身的告警（规则 `central_` 开头，见下表）对象不是机器：`subject`、`subject_id` 为 null，`subject_name` 为「中控」 |
 | POST | `/incidents/{id}/ack` | 确认告警：不存在 404，已确认过 409；写审计 `incident.ack` |
 | GET/POST | `/silences`、DELETE `/silences/{id}` | GET：还没结束的（`ends_at` 晚于现在，含还没开始的预约）`[Silence]`，按 `starts_at` 排——进行中的在前，已预约的随后；只有此刻在窗口内的才起作用（不开告警、不发通知，维护还暂停健康判定）。POST `{subject_id?,rule?,starts_at,ends_at,is_maintenance,comment（最多 2000 字）}` → `{id}`（`subject_id` 空 = 全部机器，`rule` 空 = 全部规则）：`ends_at` 要晚于 `starts_at`、时长最多 30 天、`ends_at` 不能已经过去（`starts_at` 可以，「从现在开始」由客户端按自己的时钟填）、`starts_at` 最多在 90 天后，`rule` 必须是已知规则 key（且不能与 `is_maintenance` 同时给：维护针对整台机器）、`subject_id` 必须是存在的机器，否则 400（中文原因）；全部机器（`subject_id` 空）的用 API 密钥建时最长 24 小时（超了 400：全部机器的静默等于关掉监控），账号登录的会话仍是 30 天。DELETE 不存在或已删 404。新建、删除都写审计（详情是这条静默本身：对象名、规则、起止、维护、备注），并给所有启用的通知渠道发一条 `silence` 通知（谁、新建还是删除、对象、维护还是静默、起止、备注；不看渠道的 `min_severity`，也不受任何静默影响）：全部机器的一律发（含预约的），单台的只在此刻生效（`starts_at` ≤ 现在 < `ends_at`）时发 |
@@ -281,6 +282,8 @@ ProvisionItem = {
 | `central_backup_stale`（备份过期） | warning | 备份目录（`[selfmon] backup_dir`，默认 `/var/backups/fleet`）里最新一份 `fleet-*.tar` / `fleet-*.tar.age` 超过 26 小时，或一份都没有、读不了；目录不存在（没装备份）不检查 | 有了 26 小时内的一份 |
 | `central_disk_low`（中控磁盘空间不足） | critical | 中控本机 `/`、`/var/lib/postgresql`、`/var/lib/fleet`、备份目录所在的文件系统可用空间低于 10%（同 df） | 回到 11% 以上 |
 | `central_ingress`（agent 同时失联） | critical | 有自己 agent 的在用机器（不含维护中的、同机 IP 节点）里同时离线的超过一半且至少 3 台：摘要「x/y 台 agent 同时失联：检查边缘机 / Caddy / DNS」。期间不新开单机的 `agent_offline`（已开着的照旧） | 离线的不再过半或不到 3 台；还没回来的从这时起按单机去抖、报 `agent_offline` |
+
+**探测点的告警**（`probe_points/`，规则 `probe_` 开头）：`probe_point_offline`（探测点离线，warning）——启用的、上报过的探测点超过 180 秒没上报；摘要「香港：5 分钟没有上报（最近一次 …）」，它是主探测来源时后面写明线路机的连通性暂由中控代替 / 暂时判不出。上报恢复即恢复；停用、删除时直接关、不发恢复（`detail.closed_by = probe_point_disabled / probe_point_removed`）。对象是探测点：`subject` / `subject_id` 为 null、`subject_name` 是它的名字（通知记录同）。每 30 秒检查一次，不去抖（条件自带 180 秒）。
 
 另有死人开关：配置 `[selfmon] heartbeat_url` 后，告警评估每轮成功后最多每分钟 GET 它一次（OPS.md §12）。
 
@@ -481,6 +484,52 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 - `routers`：要改的出口执行时重新确定：逐台经隧道读在线路由的 OpenClash 源配置（顶层 `secret:` 行不出路由），出口对上的入口属于旧节点（换线路机：就是旧入口）、未删除的都改，和预览同一套匹配——发起之后路由上新加的指向旧入口的出口照改，已经不指向旧入口的不改；和计划不一样时日志写一行「按软路由现在的配置要改：…（发起时的预览是：…）」。不在线的路由按最近一次采集看，有要改的出口就一台都不改，失败（`error_kind=network`）；计划里的、或快照里有要改的出口的路由配置读不了也一台都不改；配置读到了、但有出口对不上新入口（替换：新节点在旧入口的线路机上没有入口、又有不止一个入口，原因同预览）的，不论在不在计划里，一台都不改，作业失败（错误写「软路由「名」的出口「名」：原因」，同预览的 blocker）。要改的路由加锁（见上）后逐台经隧道执行 `routers/replace.rs` 的脚本：备份源配置（`uci get openclash.config.config_path`）到 `/etc/fleet-backup/openclash/<文件名>.<UTC 时间戳>`、只改出口代理块里的 server / port / uuid / servername（或 sni）/ reality-opts 的 public-key / short-id 6 行（核对它现在指向旧入口或已经是新入口，认不出、行数不对一行不写）、重启 OpenClash、等 mihomo API、逐个测出口延迟（generate_204，各 3 次）。一台失败：它自己改回，之前改好的按各自第一次改之前的备份改回，作业失败。**改回只动本作业改过的出口**：改回按本作业写进路由的整组出口参数（server、port、uuid、servername、public-key、short-id）核对，6 项都对上、现在仍是本作业写的才把那 6 行换回备份里的原值；之后被别的作业（或人）改走的（哪怕 server:port 相同、凭据不同）不动，作业日志写一行说明。写入的那一组在改路由时就记下，改回照记下的比对、不从库里现取，所以作业卡住期间新入口被轮换也不会误判成「已改回」。路由备份按文件名里的时间保留 7 天、最多 30 份，失败或需要人工处理（还没做完）的作业引用的备份一份不删；备份不在了而出口还指向本作业改成的地址时报错。`routers_applied` 参数记着改过的路由、第一次改之前的备份时间戳、要改的出口与写进各出口的整组参数（含凭据，参数不经 API 返回），确认都改回了、或这一步做完（成功时与 `routers_stuck` 一起清空）才清掉；中途被打断、改回失败时它留着，重试照它接着做（不重新确定出口、备份戳沿用第一次的）。改回失败的另记进 `routers_stuck`（`[{id,name,exits,was}]`，`was` 是各出口原来指向的 server:port），作业给出 `manual`，这时不能取消。ssh 自己失败时错误写中文原因（握手超时、连接被拒、连接中途断了……），ssh 的英文原始输出另记一行作业日志。凭据执行时从库里取（同分享链接），只进 ssh 的 stdin，不进日志与审计。没做完的作业（`routers_applied` 不空）引用的新入口所在的节点和线路机，回收站不会物理删除（自动的和手动的都一样），作业结束或取消后放行。步骤输出 `{routers:[{id,name,exits:[{exit,to}],backup,delay_ms[]}]}`。没有路由要改、或 `routers=false` 时跳过。
 - `renumber`：一个事务里先锁团队再锁两台机器，旧节点改到 `old_to`、新节点改成旧团队 + 旧编号，与 `PATCH /machines/{id}` 同一段代码（审计各一条 `machine.rename`、刷新入口所在线路机）；`numbering.auto_compact` 时新节点原来的团队压缩编号（审计 `team.renumber`）。已经换好（重跑）的跳过；旧节点的团队编号在发起后被改过则失败（不猜）。
 - **取消**：只在开始改路由之前——排队中、`routers` 排队等路由，或 `routers` 失败（路由都已换回）停在第一步；之后只能重试到完成。重试从失败那一步重来。
+
+## 探测点（主探测来源）
+线路机客户入口通不通（卡片心跳格、入口的 `reach`、`relay_unreachable`）原来只有中控测；中控在德国，客户在中国大陆，所以可以加「探测点」：放在靠近客户的地方（如香港）的小机器，跑 `fleet-agent probe`，每 30 秒按同样的轮换与作废规则测一轮报回来（为什么见 DESIGN.md「探测点」，代码 `probe_points/`）。
+
+**主探测来源**存在 `app_setting` 的 `reach_source`（`{"primary": null | "<探测点 id>", "central": true}`）：判定、心跳格、入口表只看那一路。主来源的探测点离线（超过 180 秒没上报，或停用 / 删掉）时：中控的检查开着就退回中控（`effective.state = fallback`：连不上照报，摘要写「中控（代替离线的香港探测点）连续 3 次…」；连得上不算恢复——香港看到的问题中控未必看得到），中控的检查关着就标灰（`none`：不开也不关告警）。并开告警 `probe_point_offline`（警告；对象是探测点，告警列表里 `subject` / `subject_id` 为 null、`subject_name` 是探测点的名字）：启用的、上报过的探测点超过 180 秒没上报；上报恢复后恢复，停用、删除时关掉不发恢复。`relay_unreachable` 的摘要写明是哪一路测的：「中控连续 3 次连不上客户入口（…）」「香港探测点连续 3 次…」。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/settings/reach-source` | `{primary: "central" \| 探测点 id, primary_name, central_enabled, effective: {state: central\|probe\|fallback\|none, probe_point_id, label, primary_label}, offline_after_s: 180}`。`effective.label` 是卡片、告警里的说法（「中控」「香港探测点」「中控（代替离线的香港探测点）」） |
+| PUT | `/settings/reach-source` | `{primary?: "central" \| 探测点 id, central_enabled?: bool}`，没给的保持原样，要 `write`。探测点要存在（400）、启用（409）；主来源是中控时不能关中控的检查（409）。审计 `settings.reach_source`（`detail:{from, to, primary_name}`），发 `{type:"settings"}` 与 `{type:"machines"}`。返回同 GET |
+| GET | `/probe-points` | 列表：`[{id, name, label, enabled, note, state: online\|offline\|pending\|disabled, installed, primary, last_seen_at, last_ip, version, created_at, bootstrap_expires_at, install: {state: running\|done\|failed, step, error, host, port, started_at, finished_at} \| null, upgrade: {sha256} \| null, relays: [{relay_id, name, avg_ms, median_ms, total, ok}]}]`。`relays` 是近 1 小时到各线路机：平均 / 中位建连延迟（只算通的）、连了几次、通了几次。`GET /probe-points/{id}` 是其中一个 |
+| POST | `/probe-points` | `{name, note?, ssh?: {host, port?, reset_host_key?}}`。名称 1–40 字、不含引号 / 反斜杠 / `$` / 反引号 / 控制字符，不能叫 central / 中控，不重名（409）。给 `ssh` 由中控经 SSH 安装（立即返回 `{id}`，进度看 `install`，见下）；不给返回 `{id, bootstrap: {cmd, expires_at}}`：一次性安装命令（30 分钟、只能用一次）。审计 `probe_point.create` |
+| POST | `/probe-points/{id}/install` | 重装（换新令牌）：`{ssh?}` 同上；不给 `ssh` 发一条新的一次性安装命令（之前没用的那条作废；现在的令牌要等新命令执行了才作废）。正在经 SSH 安装时 409。审计 `probe_point.install`（`method: ssh\|command`；SSH 的先写「已开始」，结束时补 `result`） |
+| PATCH | `/probe-points/{id}` | `{name?, note?, enabled?}`。主来源不能停用（409）。停用的探测点取目标拿到空列表、不测，上报照收（算心跳），不开离线告警。审计 `probe_point.update` |
+| DELETE | `/probe-points/{id}` | 令牌作废、它的检查记录一起删（`relay_reach` 级联）、经 SSH 装过的从中控 known_hosts 删掉；主来源不能删（409）。返回 `{ok, cleanup}`：在探测点上执行的清理命令（中控不去动它）。审计 `probe_point.delete` |
+| POST | `/probe-points/{id}/upgrade` | 记下 dist 里 fleet-agent 的 sha256（`upgrade`），探测点下次取目标（30 秒内）时自己下载、核对 sha256、试跑 `--version`、把旧的留成 `fleet-agent.prev` 换上、退出让服务管理器拉起；报上来的程序 sha256 对上就清掉。dist 里没有程序、读不出版本 409，还没装好 409。返回 `{id, name, from, version, sha256}`。审计 `probe_point.upgrade` |
+| GET | `/probe-bootstrap/{令牌}` | 公开（不要登录，同 `/router-bootstrap`）：令牌对、没过期才给安装脚本，给了就作废；同时发上报令牌（只在这份脚本里）。同一来源 10 分钟最多 20 次。审计 `probe_point.bootstrap_used`（操作者 `probe-bootstrap`，带来源 IP） |
+
+经 SSH 安装（`ssh`）：中控用自己的密钥（`ssh_key`）登录 `root@host:port`，主机指纹首次记录到 `known_hosts`、之后严格校验（指纹变了失败，确认重装过系统再带 `reset_host_key: true`）；登不进时 `install.error` 里有中控公钥全文与加进 `/root/.ssh/authorized_keys` 的命令。步骤：连接探测点 → 登录探测点（要 root、x86_64）→ 上传 fleet-agent（`/opt/fleet/fleet-agent`）→ 安装服务（换新令牌）→ 等待首次上报（90 秒）。中控重启时还在跑的标为失败。安装脚本（两种方式共用，POSIX sh）：系统用户 `fleet-probe`、`/opt/fleet/`（归它，升级时它自己换程序）、`/etc/fleet/probe.toml`（0600：`server_url`、`token`、`name`）；systemd 写 `/etc/systemd/system/fleet-probe.service`，OpenRC 写 `/etc/init.d/fleet-probe`（`supervise-daemon` 守护、`rc-update add … default` 开机启动、日志 `/var/log/fleet-probe.log`）。
+
+探测点用的 `/agent/v1/probe/*`（`Authorization: Bearer <探测点令牌>`，与机器的 agent 令牌是两套，互相用不了；无效 401）：
+- `GET /agent/v1/probe/targets` → `{interval_s: 30, controls: ["1.1.1.1:443", "8.8.8.8:443"], relays: [{relay_id, host, ports: [升序]}], upgrade?: {sha256, version}}`：在用的、有在用入口的线路机（host 是 `public_host`）；停用的探测点 `relays` 为空。
+- `POST /agent/v1/probe/report` ← `{version, sha256?, discarded?, results: [{relay_id, port, ok, rtt_ms?, detail?}]}`：每台线路机连第 `turn % 端口数` 个端口，`rtt_ms` 是内核量的建连往返时间；对照目标都连不上或三台以上全不通时 `discarded` 写原因、`results` 为空（只算心跳）。中控只收在用线路机的在用入口端口（别的丢掉，每台一条），再按同一条规则核一遍，`detail` 前加「端口 N：」，时间取中控收到的时刻；刷新 `last_seen_at`、`version`、`last_ip`。同一个探测点 10 秒内第二份回 429。返回 `{accepted, interval_s}`。
+- `GET /agent/v1/probe/binary`：dist 里的 fleet-agent（安装命令下载、升级时用）。
+
+表：`probe_point`（迁移 0046），`relay_reach` 加 `probe_point_id`（null = 中控）、`rtt_ms`（中控为 null），索引改成带来源的 `(relay_id, probe_point_id, ts desc)`、`(relay_id, probe_point_id, port, ts desc)`；保留期仍 2 天。
+
+## 三网 PING（线路机往外测线路质量）
+线路机上的 agent 每 60 秒一轮往外连一组目标，每个目标 5 次，记通了的那几次的延迟中位数与丢了几次（`ping.rs`、agent 的 `ping.rs`）。只展示、不开告警。与探测点分工：探测点管客户连不连得上入口（可用性、`relay_unreachable`），这里看线路的延迟与丢包。节点不测（客户不直连节点）。
+
+- 目标：全局 8 个槽位（`app_setting` 的 `ping_targets`：`{mode, slots: [{name, target}] × 8}`），默认 武汉电信 `hb-ct-v4.ip.zstaticcdn.com`、武汉联通 `hb-cu-v4.ip.zstaticcdn.com`、武汉移动 `hb-cm-v4.ip.zstaticcdn.com`、BGP（留空，网页占位提示 `ip.zstaticcdn.com`）、Node 1–4（留空）；目标留空的不测。目标写 `host`、`host:port`、`[IPv6]:port` 或裸 IPv6。每台线路机可以单独覆盖（`relay.ping_override`：`{mode: null | tcp | icmp, slots: [null | {name, target}] × 8}`，null = 跟随全局；覆盖成空目标 = 这台不测这个槽位）。
+- 方式：`tcp`（默认）建连量内核往返时间，目标不写端口时连 **80**（测速地址一般都开 80，443 不一定），每次超时 3 秒、间隔 0.2 秒；`icmp` 跑线路机上的系统 `ping -n -c 5 -i 0.5 -W 2`。agent 的 systemd 单元不给 `CAP_NET_RAW`、带 `NoNewPrivileges`，iputils 的 ping 拿不到原始套接字时改用 ICMP 数据报套接字（要 `net.ipv4.ping_group_range` 含 root 组，systemd 默认是全部组）；系统没有 ping、或报没权限 / 建不了套接字时这一轮退回 tcp，样本的 `mode` 写 tcp。
+- 下发：随期望状态（`DesiredState.ping = {interval_s: 60, count: 5, mode, targets: [{slot, name, target}]}`，只含有目标的槽位，一个都没有为 null）。改全局时全部在用线路机代数 +1，改覆盖时那一台 +1。旧 agent 不认识这个字段，照常应用、不测。
+- 上报：`Report.ping = [{slot, ts_ms, target, mode, sent, lost, rtt_ms}]`（旧 agent 不带、旧中控忽略）。只收线路机的、槽位 0–7、7 天以内的；同一 (线路机, 槽位, 时刻) 重报的不重复写。
+- 存：`ping_result`（每台每目标每分钟一行，保留 7 天）、`ping_hourly`（小时汇总：发了几次、丢了几次、延迟的平均与最大，保留 90 天；后台每 5 分钟重算最近 7 小时），迁移 0048。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/settings/ping-targets` | `{mode, slots: [{name, target}] × 8, modes: ["tcp","icmp"], interval_s: 60, count: 5, tcp_default_port: 80, defaults}` |
+| PUT | `/settings/ping-targets` | `{mode, slots}`（正好 8 个），要 `write`。名称最长 20 字（空的按「Node n」），目标格式不对、方式不对、槽位数不对 400。审计 `settings.ping_targets`（`detail:{from,to}`），全部在用线路机代数 +1，发 `{type:"settings"}`。返回同 GET |
+| GET | `/machines/{id}/ping` | 线路机：`{mode, slots: [{slot, name, target, source: global\|override}], override, global, current: [同 /ping-beats 的一行]}`；不是线路机 404 |
+| PUT | `/machines/{id}/ping` | `{override: null \| {mode?, slots?}}`：null 或全空 = 全部跟随全局。审计 `relay.ping_override`，这台代数 +1，发 `{type:"machine"}`。返回同 GET |
+| GET | `/ping-beats` | 卡片：`{<线路机 id>: [{slot, name, target, mode, cur_ms, cur_loss, cur_ts, cells}]}`，每个在测的目标一行（按此刻合成的槽位；目标改过的只算新目标的数据）。`cells` 是近 1 小时 20 格（同 `/probe-beats` 按墙钟 3 分钟对齐，旧→新），每格 `[延迟中位数 ms, 丢包 %]`，没有数据为 `[null, null]`；`cur_*` 是 15 分钟内最近一次（`cur_loss` 是 %）。没有目标的线路机不出现 |
+| GET | `/machines/{id}/ping-series?range=1h\|6h\|24h\|7d\|30d` | 抽屉曲线：`{range, step_s, series: [{slot, name, target, points: [{ts, rtt_ms, loss_pct}]}]}`；1h–24h 每分钟的原始点（`step_s` 60），7d / 30d 小时汇总（3600，`rtt_ms` 是这一小时各分钟中位数的平均）。别的 range 400 |
+
+网页的分档（`lib/ping.ts`）：延迟 ≤ 220 ms 绿、≤ 320 ms 黄、更高红（跨境 150–200 ms 是常态，不按国内标准标红）；丢包 0 绿、≤ 10% 黄、更高红。
 
 ## 软路由（节选）
 `GET /routers/{id}/metrics?range=` 与 `GET /routers/{id}/exits/metrics?range=`：`range` 为 `1h`（30 秒一点，原始点）/ `6h` / `24h`（5 分钟一点，原始点取平均；不传为 24h）/ `7d` / `30d`（1 小时一点，小时汇总），别的值 400，路由不存在 404。出口的返回 `{step_s, exits:[{name, points:[{ts, delay_ms, alive, conns, up_bps, down_bps, tests, tests_ok}]}]}`（按出口名、点按时间排）：延迟每 5 分钟测一轮，`tests` / `tests_ok` 是这一点里测了几次、通了几次——原始点测了的那一点 1 / (1 或 0)，没测的 0 / 0（`alive`、`delay_ms` 为 null）；5 分钟点是这 5 分钟的次数（一般 1 次），`alive` = 全通（没测为 null），`delay_ms` = 通了的平均；小时点是这一小时的次数，`alive` = 全通，另带 `alive_pct`（测通的百分比），`delay_ms` = 通了的平均。`conns` / 速率在聚合点里是平均。`fleetctl router exits` 按这些点算每个出口的统计。

@@ -269,9 +269,10 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
                 if let Some(e) = &r.apply_error {
                     rs.push(Reason { key: "relay_apply_error", severity: "critical", text: format!("应用失败：{e}") });
                 }
-                // 中控连客户入口（public_host + 入口端口，轮流）最近 3 轮都连不上（对照目标通的轮次才记，见 reach.rs）
+                // 主探测来源（中控或探测点）连客户入口（public_host + 入口端口，轮流）最近 3 轮都连不上（对照目标通的轮次才记，见 reach.rs）。
+                // 摘要由 reach::unreachable_sql 拼好，写明是哪一路测的
                 if let Some(d) = &r.unreachable {
-                    rs.push(Reason { key: "relay_unreachable", severity: "critical", text: format!("中控连续 3 次连不上客户入口（{d}）") });
+                    rs.push(Reason { key: "relay_unreachable", severity: "critical", text: d.clone() });
                 }
             }
         }
@@ -660,7 +661,7 @@ pub(crate) mod tests {
         let mut r = base("relay");
         r.relay = Some(relay_info(1, 1, None, Some(now)));
         assert!(keys(&evaluate(&r, now)).is_empty());
-        r.relay.as_mut().unwrap().unreachable = Some("端口 20001：超时 10 秒；端口 20002：连接被拒绝".into());
+        r.relay.as_mut().unwrap().unreachable = Some("中控连续 3 次连不上客户入口（端口 20001：超时 10 秒；端口 20002：连接被拒绝）".into());
         let h = evaluate(&r, now);
         assert_eq!((keys(&h), h.status), (vec!["relay_unreachable"], Status::Down));
         assert_eq!(h.reasons[0].text, "中控连续 3 次连不上客户入口（端口 20001：超时 10 秒；端口 20002：连接被拒绝）");

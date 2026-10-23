@@ -421,7 +421,13 @@ fn agent_health_cn(h: &Value) -> String {
 
 pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
     let (id, _) = ctx.find_id(machine, Want::Any)?;
-    let m = ctx.c.get(&format!("/machines/{id}"))?;
+    let mut m = ctx.c.get(&format!("/machines/{id}"))?;
+    // 在用线路机带上三网 PING 的目标与当前读数（`--json` 在 ping 字段；旧中控没有这个接口时不带）
+    if m["kind"] == "relay" && m["lifecycle"] == "active" {
+        if let Ok(p) = ctx.c.get(&format!("/machines/{id}/ping")) {
+            m["ping"] = p;
+        }
+    }
     ctx.emit(&m, || {
         let mut rows = vec![
             ("名称", st(&m, "/name")),
@@ -518,6 +524,9 @@ pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
         if let Some(es) = m["entries"].as_array().filter(|e| !e.is_empty()) {
             s.push_str("\n\n入口\n");
             s.push_str(&entry_table(&es.iter().map(entry_item).collect::<Vec<_>>()));
+        }
+        if m["ping"].is_object() {
+            s.push_str(&format!("\n\n三网 PING（最近一分钟）\n{}", crate::ping::current_table(&m["ping"])));
         }
         s
     });

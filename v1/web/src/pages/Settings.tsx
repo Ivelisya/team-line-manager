@@ -1,10 +1,12 @@
 // 设置：API 密钥（创建时 token 只显示一次）、告警通知渠道（Telegram / 企业微信 / Webhook，可发测试、看最近发送记录）、
-// 账户安全（两步验证、修改密码、登录会话，见 features/AccountTab）、数据保留、汇率（计费折成美元，见 features/FxTab）。
+// 账户安全（两步验证、修改密码、登录会话，见 features/AccountTab）、数据保留（features/RetentionTab）、汇率（计费折成美元，见 features/FxTab）、探测点与主探测来源（features/ProbeTab）、三网 PING 的全局目标（features/PingTab）。
 import * as React from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Archive, Ban, Bell, CircleDollarSign, Eye, EyeOff, FlaskConical, KeyRound, MessagesSquare, Pencil, Plus, Send, ShieldAlert, ShieldCheck, Trash2, Webhook } from 'lucide-react';
+import { Activity, Archive, Ban, Radar, Bell, CircleDollarSign, Eye, EyeOff, FlaskConical, KeyRound, MessagesSquare, Pencil, Plus, Send, ShieldAlert, ShieldCheck, Trash2, Webhook } from 'lucide-react';
 import { RetentionTab } from '@/features/RetentionTab';
 import { FxTab } from '@/features/FxTab';
+import { ProbeTab } from '@/features/ProbeTab';
+import { PingTab } from '@/features/PingTab';
 import { AccountTab } from '@/features/AccountTab';
 import { useAddChannel, useApiKeys, useCreateApiKey, useDelChannel, useMe, useNotifyChannels, useNotifyLog, usePatchChannel, useRevokeApiKey, useTestChannel, useTotpStatus } from '@/lib/queries';
 import type { ApiKey, NotifyChannel, NotifyLogEntry } from '@/lib/types';
@@ -26,7 +28,7 @@ import '@/styles/settings.css';
 export function SettingsPage() {
   const [sp, setSp] = useSearchParams();
   const sec = sp.get('section');
-  const tab = sec === 'notify' || sec === 'account' || sec === 'retention' || sec === 'fx' ? sec : 'keys';
+  const tab = sec === 'notify' || sec === 'account' || sec === 'retention' || sec === 'fx' || sec === 'probes' || sec === 'ping' ? sec : 'keys';
   return (
     <div className="stack">
       <PageHead title="设置" />
@@ -37,9 +39,11 @@ export function SettingsPage() {
           <TabsTrigger value="account" noPanel><ShieldCheck size={14} />账户安全</TabsTrigger>
           <TabsTrigger value="retention" noPanel><Archive size={14} />数据保留</TabsTrigger>
           <TabsTrigger value="fx" noPanel><CircleDollarSign size={14} />汇率</TabsTrigger>
+          <TabsTrigger value="probes" noPanel><Radar size={14} />探测点</TabsTrigger>
+          <TabsTrigger value="ping" noPanel><Activity size={14} />三网 PING</TabsTrigger>
         </TabsList>
       </Tabs>
-      {tab === 'keys' ? <ApiKeysSection /> : tab === 'notify' ? <NotifySection /> : tab === 'account' ? <AccountTab /> : tab === 'fx' ? <FxTab /> : <RetentionTab />}
+      {tab === 'keys' ? <ApiKeysSection /> : tab === 'notify' ? <NotifySection /> : tab === 'account' ? <AccountTab /> : tab === 'fx' ? <FxTab /> : tab === 'probes' ? <ProbeTab /> : tab === 'ping' ? <PingTab /> : <RetentionTab />}
     </div>
   );
 }

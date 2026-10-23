@@ -290,6 +290,7 @@ pub const RULES: Labels = &[
     ("router_exits_down", "软路由出口不通"),
     ("router_wan_down", "软路由 WAN 口断开"),
     ("router_resource_high", "软路由资源吃紧"),
+    ("probe_point_offline", "探测点离线"),
 ];
 
 /// 查中文名；没收录的原样返回

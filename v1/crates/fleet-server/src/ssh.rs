@@ -234,6 +234,13 @@ impl Target {
         Ok(self.normalize(exec(c, script, timeout).await?))
     }
 
+    /// 同 `run_once`，但用 sh 跑（POSIX sh 脚本，给没有 bash 的机器：Alpine 上的探测点，见 probe_points/install.rs）
+    pub async fn run_sh(&self, script: &str, timeout: Duration) -> anyhow::Result<Output> {
+        let mut c = self.base();
+        c.arg("sh -s");
+        Ok(self.normalize(exec(c, script, timeout).await?))
+    }
+
     /// 执行 bash 脚本（经 stdin）。连接类的瞬时错误自动重试（2s、5s、10s 退避）；脚本自己失败、登录被拒不重试。
     /// 只用于重跑无害的脚本（作业步骤、预检）；用户命令用 `run_once`。
     pub async fn run(&self, script: &str, timeout: Duration) -> anyhow::Result<Output> {

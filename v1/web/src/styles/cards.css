@@ -49,6 +49,18 @@
 }
 @media (hover: hover) { .flow-trend:hover, .flow-foot:hover, .nc-quota:hover, .nc-click:hover { background: var(--hover); box-shadow: 0 0 0 4px var(--hover); } }
 .nc-beat { display: block; }
+/* 线路机的三网 PING（PingRows）：一行一个目标——名称、当前延迟、延迟格、丢包格、当前丢包；格子同心跳格的配色、矮一点 */
+.nc-ping { display: grid; gap: var(--sp-4); width: 100%; margin-top: var(--sp-8); }
+.nc-ping-head { display: flex; justify-content: space-between; gap: var(--sp-8); font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); }
+.nc-ping-row { display: grid; grid-template-columns: minmax(3em, 5.5em) 4.2em 1fr 1fr 2.6em; align-items: center; gap: var(--sp-6); font-size: var(--fs-micro); line-height: var(--lh-micro); color: var(--fg-2); min-width: 0; }
+.nc-ping-ms, .nc-ping-loss { text-align: right; color: var(--fg); font-weight: var(--fw-semibold); }
+.nc-ping-ms[data-t="warn"], .nc-ping-loss[data-t="warn"] { color: var(--warn-text); }
+.nc-ping-ms[data-t="bad"], .nc-ping-loss[data-t="bad"] { color: var(--bad-text); }
+.nc-ping-cells { display: flex; gap: 1px; height: 8px; min-width: 0; overflow: hidden; }
+.nc-ping-cells > i { display: block; flex: 1 1 0; min-width: 1px; border-radius: 1px; background: var(--line); }
+.nc-ping-cells > i[data-t="ok"] { background: var(--latency-ok); }
+.nc-ping-cells > i[data-t="warn"] { background: var(--warn); }
+.nc-ping-cells > i[data-t="bad"] { background: var(--bad); }
 
 /* 1 标题：圆点 + 类型标 + 名称 + 右侧操作 */
 .nc-head { display: flex; align-items: center; gap: var(--inline-gap); min-height: 32px; min-width: 0; margin-top: var(--card-pad); }
