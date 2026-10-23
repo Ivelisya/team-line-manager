@@ -33,12 +33,15 @@ pub struct JobOut {
     started_at: Option<OffsetDateTime>,
     #[serde(with = "time::serde::rfc3339::option")]
     finished_at: Option<OffsetDateTime>,
+    /// 参数里的 routers_stuck（改软路由出口改回失败的路由）：算 `manual`
+    #[serde(skip)]
+    routers_stuck: Option<Value>,
 }
 
 const SELECT: &str = "select j.id, j.kind, j.target_id,
     display_name(m.kind::text, m.label, t.name, m.number) target_name,
     coalesce(m.spare_from, (select rb.name from recycle_bin rb where rb.source = 'fleet' and rb.source_id = j.target_id::text)) target_origin,
-    j.state::text state, j.step, j.error, j.created_by, j.created_at, j.started_at, j.finished_at
+    j.state::text state, j.step, j.error, j.created_by, j.created_at, j.started_at, j.finished_at, j.params->'routers_stuck' routers_stuck
   from job j left join machine m on m.id = j.target_id left join team t on t.id = m.team_id";
 
 #[derive(Deserialize)]
@@ -51,7 +54,8 @@ pub struct ListQ {
     kind: Option<String>,
 }
 
-/// 作业 JSON：目标机器以 `target{id,name,origin}` 给出（origin：退役前的名字，没退役过为 null）；`step_title` = 当前（或失败的）步骤标题，做完为 null。列表不带 steps
+/// 作业 JSON：目标机器以 `target{id,name,origin}` 给出（origin：退役前的名字，没退役过为 null）；`step_title` = 当前（或失败的）步骤标题，做完为 null；
+/// `manual` = 要人工处理时的说明（jobs::manual），否则 null。列表不带 steps
 fn job_json(j: &JobOut) -> Value {
     let mut v = serde_json::to_value(j).unwrap_or_default();
     // 步骤数 = 静态步骤定义的个数（作业建立时按定义建步骤行），不逐行子查询
@@ -62,6 +66,7 @@ fn job_json(j: &JobOut) -> Value {
         Some(id) => json!({"id": id, "name": j.target_name.clone().unwrap_or_else(|| "（已删除）".into()), "origin": j.target_origin}),
         None => Value::Null,
     };
+    v["manual"] = jobs::manual(&j.kind, j.step, &j.state, j.routers_stuck.as_ref().unwrap_or(&Value::Null));
     v
 }
 

@@ -2,9 +2,9 @@
 //! 路由离线时一台都不改、一台失败时别的换回原配置、重试、取消、不改路由只换编号、编号压缩。需要 PostgreSQL（见 common）。
 //!
 //! 路由是假的：PATH 最前面放假 ssh（路由上的脚本本身在 routers::replace 的单元测试里用 sh 真跑过）。按 `-p <端口>` 分路由根目录，
-//! 收到读配置的脚本回 config.yaml（`router` 按快照里的出口写好，测试可以改：执行时按它定要改的出口），
-//! 收到改配置的脚本存成 apply-<n>.sh（根目录里有 hold 就等它删掉再回答），按根目录里的 mode 回答（ok / fail = 测不通、自己换回 / refuse = 认不出、一行没写），
-//! 收到回滚脚本记进 rollback.log（有 rollback-fail 就回答换回失败）。PATH 是整个进程共用的，所以单独一个测试文件。作业引擎不在后台跑（采集循环会改路由状态），测试里手动推进。
+//! 收到读配置的脚本回 config.yaml（`router` 按快照里的出口写好，测试可以改：执行时按它定要改的出口；每读一次往 reads 里记一行），
+//! 收到改配置的脚本存成 apply-<n>.sh（根目录里有 hold 就等它删掉再回答），按根目录里的 mode 回答（ok / fail = 测不通、自己改回 / refuse = 认不出、一行没写 /
+//! drop = 备份之后连接断了、没有输出），收到回滚脚本把「时间戳 出口 地址 端口」记进 rollback.log（有 rollback-fail 就回答改回失败）。PATH 是整个进程共用的，所以单独一个测试文件。作业引擎不在后台跑（采集循环会改路由状态），测试里手动推进。
 //! 换线路机 / 搬空改软路由出口用的是同一步，也在这里测（线路机用 common::Sim 模拟）。
 
 #![cfg(unix)]
@@ -32,11 +32,12 @@ mkdir -p "$R"
 [ -e "$R/down" ] && { echo "ssh: connect to host 127.0.0.1 port $port: Connection refused" >&2; exit 255; }
 script=$(cat)
 case $script in
-  "MODE='read'"*) cat "$R/config.yaml"; exit 0 ;;
+  "MODE='read'"*) echo >> "$R/reads"; cat "$R/config.yaml"; exit 0 ;;
   *"MODE='apply'"*) [ -e "$R/down-apply" ] && { echo "Connection timed out during banner exchange" >&2; exit 255; } ;;
   *"MODE='rollback'"*)
     [ -e "$R/rollback-fail" ] && { echo "fleet：写回备份失败" >&2; exit 3; }
-    printf '%s\n' "$script" | sed -n "s/^STAMP='\(.*\)'$/\1/p" >> "$R/rollback.log"; echo rollback=ok; exit 0 ;;
+    printf '%s\n' "$script" | sed -n "s/^STAMP='\(.*\)'$/\1/p;s/^NAME_1='\(.*\)'$/\1/p;s/^SRV_1='\(.*\)'$/\1/p;s/^PORT_1='\(.*\)'$/\1/p" | paste -sd' ' >> "$R/rollback.log"
+    echo rollback=ok; exit 0 ;;
 esac
 n=$(ls "$R" | grep -c '^apply-' || true)
 printf '%s\n' "$script" > "$R/apply-$((n + 1)).sh"
@@ -45,6 +46,7 @@ case $(cat "$R/mode" 2>/dev/null || echo ok) in
   ok) echo "backup=/etc/fleet-backup/openclash/c.yaml.x"; echo changed=6; echo delay_1=88; echo replace=ok ;;
   fail) echo "backup=/x"; echo changed=6; echo "fleet：出口「节点01」换成新入口后测了 3 次都不通" >&2; echo rolled_back=1; exit 4 ;;
   refuse) echo "fleet：配置的 proxies 里没有出口「节点01」" >&2; echo "fleet：配置没有改动" >&2; exit 2 ;;
+  drop) echo "backup=/etc/fleet-backup/openclash/c.yaml.x"; exit 255 ;;
 esac
 "#;
 
@@ -295,10 +297,10 @@ async fn failure_rolls_back_and_retry_redoes() {
     let j = t.job(&job).await;
     assert_eq!(j["state"], "failed");
     let err = j["error"].as_str().unwrap();
-    assert!(err.contains("软路由「路由B」：出口「节点01」换成新入口后测了 3 次都不通；已换回原配置：路由A。软路由都是原样"), "{err}");
-    // 路由A 按它的备份时间戳回滚；路由B 自己换回了，不再回滚
+    assert!(err.contains("软路由「路由B」：出口「节点01」换成新入口后测了 3 次都不通；已改回原配置：路由A。软路由都是原样"), "{err}");
+    // 路由A 按它的备份时间戳改回这次改过的出口（改成的地址对得上的才改回）；路由B 自己改回了，不再回滚
     let stamp_a = read(root(23121).join("apply-1.sh")).lines().find_map(|l| l.strip_prefix("STAMP='").map(|s| s.trim_end_matches('\'').to_string())).unwrap();
-    assert_eq!(read(root(23121).join("rollback.log")), format!("{stamp_a}\n"));
+    assert_eq!(read(root(23121).join("rollback.log")), format!("{stamp_a} 节点01 198.51.100.2 20020\n"));
     assert_eq!(read(root(23122).join("rollback.log")), "");
     assert_eq!(name_of(t, w.old).await, "团队2-01", "编号没动");
     // 认不出（一行没写）：同样回滚已改好的
@@ -306,7 +308,7 @@ async fn failure_rolls_back_and_retry_redoes() {
     t.post(&format!("/api/v1/jobs/{job}/retry"), json!({})).await;
     drive(t).await;
     let err = t.job(&job).await["error"].as_str().unwrap().to_string();
-    assert!(err.contains("配置的 proxies 里没有出口「节点01」；配置没有改动；已换回原配置：路由A"), "{err}");
+    assert!(err.contains("配置的 proxies 里没有出口「节点01」；配置没有改动；已改回原配置：路由A"), "{err}");
     // 读完配置之后路由B 连不上了（改配置时 ssh 没连上，脚本一行没跑）：它什么都没改，不去换回它、不算换回失败；可以直接重试 / 取消
     std::fs::write(root(23122).join("down-apply"), "").unwrap();
     std::fs::write(root(23122).join("rollback-fail"), "").unwrap();
@@ -314,7 +316,8 @@ async fn failure_rolls_back_and_retry_redoes() {
     drive(t).await;
     let j = t.job(&job).await;
     let err = j["error"].as_str().unwrap();
-    assert!(err.contains("Connection timed out during banner exchange（没连上，这台什么都没改）；已换回原配置：路由A。软路由都是原样，编号没改"), "{err}");
+    assert!(err.contains("软路由「路由B」：经隧道连不上路由：SSH 握手超时（路由忙，或隧道断了），这台没连上、什么都没改；已改回原配置：路由A。软路由都是原样，编号没改"), "{err}");
+    assert!(logs(t, &job).await.contains("软路由「路由B」ssh 的原始输出：Connection timed out during banner exchange"), "英文原文只进日志");
     assert!(!err.contains("人工处理") && j["cancellable"] == true, "{j}");
     assert_eq!(read(root(23122).join("rollback.log")), "", "没连上的不去换回");
     std::fs::remove_file(root(23122).join("down-apply")).unwrap();
@@ -524,24 +527,27 @@ async fn move_router_failure_keeps_old_entry() {
     let j = run(t, &mut sims, &job).await;
     assert_eq!((j["state"].as_str(), j["steps"][4]["state"].as_str()), (Some("failed"), Some("failed")), "{j}");
     let err = j["error"].as_str().unwrap();
-    assert!(err.contains("软路由「路由B」：出口「节点01」换成新入口后测了 3 次都不通；已换回原配置：路由A。软路由都是原样，旧入口没摘"), "{err}");
+    assert!(err.contains("软路由「路由B」：出口「节点01」换成新入口后测了 3 次都不通；已改回原配置：路由A。软路由都是原样，旧入口没摘"), "{err}");
     let stamp_a = read(root(23161).join("apply-1.sh")).lines().find_map(|l| l.strip_prefix("STAMP='").map(|s| s.trim_end_matches('\'').to_string())).unwrap();
-    assert_eq!(read(root(23161).join("rollback.log")), format!("{stamp_a}\n"));
+    assert!(read(root(23161).join("rollback.log")).starts_with(&format!("{stamp_a} 节点01 198.51.100.3 ")), "{}", read(root(23161).join("rollback.log")));
     assert_eq!(entry_state(t, oe).await, "active", "旧入口没摘");
     assert_eq!(j["cancellable"], true, "改路由失败、已换回：能取消");
-    // 换回也失败：错误写明要人工处理哪台，作业不能取消（取消会摘掉路由A 还指着的新入口）；处理好后重试
+    // 改回也失败：错误写明要人工处理哪台，作业不能取消（取消会摘掉路由A 还指着的新入口），作业给出 manual；处理好后重试接着做
     std::fs::write(root(23161).join("rollback-fail"), "").unwrap();
     t.post(&format!("/api/v1/jobs/{job}/retry"), json!({})).await;
     let j = run(t, &mut sims, &job).await;
     let err = j["error"].as_str().unwrap();
-    assert!(err.contains("换回失败、需要人工处理：路由A（写回备份失败，备份 /etc/fleet-backup/openclash/*.") && err.contains("这时不能取消"), "{err}");
+    assert!(err.contains("没能改回、需要人工处理：路由A（写回备份失败）。处理好后点重试接着改完（这时不能取消）"), "{err}");
     assert_eq!(j["cancellable"], false);
+    let ra: Uuid = sqlx::query_scalar("select id from router where name = '路由A'").fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(j["manual"]["routers"], json!([{"id": ra, "name": "路由A", "exits": ["节点01"]}]), "{j}");
+    assert!(j["manual"]["message"].as_str().unwrap().starts_with("软路由「路由A」的出口 节点01（原来指向 198.51.100.2:20003）可能停在改了一半"), "{j}");
     let (s, v) = t.req("POST", &format!("/api/v1/jobs/{job}/cancel"), None, None).await;
-    assert!(s == StatusCode::CONFLICT && v.to_string().contains("没能换回原配置"), "{v}");
+    assert!(s == StatusCode::CONFLICT && v.to_string().contains("没能改回原配置"), "{v}");
     std::fs::remove_file(root(23161).join("rollback-fail")).unwrap();
     t.post(&format!("/api/v1/jobs/{job}/retry"), json!({})).await;
     let j = run(t, &mut sims, &job).await;
-    assert_eq!((j["state"].as_str(), j["cancellable"].as_bool()), (Some("failed"), Some(true)), "{j}");
+    assert_eq!((j["state"].as_str(), j["cancellable"].as_bool(), j["manual"].is_null()), (Some("failed"), Some(true), true), "{j}");
     t.post(&format!("/api/v1/jobs/{job}/cancel"), json!({})).await;
     assert_eq!(run(t, &mut sims, &job).await["state"], "cancelled");
     let es: Vec<(Uuid, String)> = sqlx::query_as("select id, lifecycle::text from entry where node_id = $1").bind(w.old).fetch_all(&t.st.db).await.unwrap();
@@ -603,7 +609,8 @@ async fn evacuate_jobs_take_turns_on_a_router() {
     assert!(held.len() == 1 && j["steps"][4]["state"] == "running", "{j} {}", logs(t, second).await);
     assert!(j["steps"][4]["started_at"].is_null() && j["cancellable"] == true, "排队不算这一步的时间、还能取消：{j}");
     assert_eq!(applies(23171).len(), 1, "后到的没碰路由");
-    // 再领几次照样排队；日志只写一次
+    let reads = read(root(23171).join("reads")).lines().count();
+    // 再领几次照样排队，不读路由的配置；日志只写一次
     for _ in 0..2 {
         t.nudge_jobs().await;
         while let Some(j) = jobs::claim(&t.st, "test").await.unwrap() {
@@ -612,6 +619,7 @@ async fn evacuate_jobs_take_turns_on_a_router() {
     }
     assert_eq!(logs(t, second).await.matches("软路由「路由A」正在被别的作业改，排队等它改完").count(), 1);
     assert_eq!(applies(23171).len(), 1);
+    assert_eq!(read(root(23171).join("reads")).lines().count(), reads, "排队时只等锁");
     std::fs::remove_file(root(23171).join("hold")).unwrap();
     let (first, h) = held.pop().unwrap();
     h.await.unwrap();
@@ -677,4 +685,94 @@ async fn renumber_preview_lists_router_exits() {
     let p = t.get(&format!("/api/v1/teams/{}/renumber", w.team)).await;
     assert_eq!(p["changes"][0]["new_name"], "团队2-02", "{p}");
     assert_eq!(p["notes"], json!(["软路由「路由A」的出口「节点03」指向 团队2-03，改名为 团队2-02 后出口名不跟着改"]));
+}
+
+/// 改到一半连接断了、改回也失败：作业不能取消、给出 manual（详情与列表）。路由还连不上时重试：没核对过路由，照样不能取消，
+/// 也不说「软路由都是原样」。路由恢复后重试：照第一次记下的出口接着改完（不重读配置，备份戳沿用第一次的）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn half_done_router_stays_protected_until_verified() {
+    let w = world().await;
+    let oe = old_entry(&w).await;
+    let a = router(&w, "路由A", 23201, &[("节点01", "198.51.100.2", 20003, Some(oe))]).await;
+    let t = &w.t;
+    std::fs::write(root(23201).join("mode"), "drop").unwrap();
+    std::fs::write(root(23201).join("rollback-fail"), "").unwrap();
+    let d = t.post(&format!("/api/v1/machines/{}/replace", w.old), json!({"new_machine_id": w.new})).await;
+    let job = d["job_id"].as_str().unwrap().to_string();
+    drive(t).await;
+    let j = t.job(&job).await;
+    let err = j["error"].as_str().unwrap();
+    assert!(
+        err.contains("软路由「路由A」：经隧道的连接中途断了（ssh 退出码 255，没有输出），已经备份 /etc/fleet-backup/openclash/c.yaml.x，可能改了一半；没能改回、需要人工处理：路由A（写回备份失败）"),
+        "{err}"
+    );
+    assert!(!err.contains("：；") && !err.contains("都是原样"), "{err}");
+    assert_eq!((j["state"].as_str(), j["cancellable"].as_bool()), (Some("failed"), Some(false)), "{j}");
+    let manual = json!([{"id": a, "name": "路由A", "exits": ["节点01"]}]);
+    assert_eq!(j["manual"]["routers"], manual, "{j}");
+    let list = t.get("/api/v1/jobs").await;
+    assert_eq!(list["items"][0]["manual"], j["manual"], "列表里同样带上：{list}");
+    let stamp1 = read(root(23201).join("apply-1.sh")).lines().find_map(|l| l.strip_prefix("STAMP='").map(|s| s.trim_end_matches('\'').to_string())).unwrap();
+
+    // 路由还连不上时重试：照样不能取消，也不说「软路由都是原样」
+    sqlx::query("update router_status set reachable = false, error = '经隧道连不上路由：连接被拒绝（隧道没连上）' where router_id = $1").bind(a).execute(&t.st.db).await.unwrap();
+    t.post(&format!("/api/v1/jobs/{job}/retry"), json!({})).await;
+    assert_eq!(t.job(&job).await["cancellable"], false, "重试之后、核对路由之前也不能取消");
+    drive(t).await;
+    let j = t.job(&job).await;
+    let err = j["error"].as_str().unwrap();
+    assert!(err.contains("软路由 路由A（经隧道连不上路由：连接被拒绝（隧道没连上）） 不在线；没能改回、需要人工处理"), "{err}");
+    assert!(!err.contains("都是原样") && !err.contains("一台都没有改"), "{err}");
+    assert_eq!((j["state"].as_str(), j["cancellable"].as_bool(), j["manual"]["routers"].clone()), (Some("failed"), Some(false), manual), "{j}");
+    assert_eq!(applies(23201).len(), 1, "不在线的不去改");
+
+    // 路由恢复后重试：接着改完
+    sqlx::query("update router_status set reachable = true, error = null where router_id = $1").bind(a).execute(&t.st.db).await.unwrap();
+    std::fs::remove_file(root(23201).join("rollback-fail")).unwrap();
+    std::fs::write(root(23201).join("mode"), "ok").unwrap();
+    t.post(&format!("/api/v1/jobs/{job}/retry"), json!({})).await;
+    drive(t).await;
+    let j = t.job(&job).await;
+    assert_eq!((j["state"].as_str(), j["manual"].is_null()), (Some("succeeded"), true), "{j} {}", logs(t, &job).await);
+    let ap = applies(23201);
+    assert!(ap.len() == 2 && ap[1].contains("NAME_1='节点01'\nOSRV_1='198.51.100.2'\nOPORT_1='20003'\nSRV_1='198.51.100.2'\nPORT_1='20020'"), "{ap:?}");
+    assert_eq!(read(root(23201).join("reads")).lines().count(), 1, "接着做的不重读配置");
+    let p: Value = sqlx::query_scalar("select params from job where id = $1").bind(Uuid::parse_str(&job).unwrap()).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(p["routers_applied"][0]["stamp"], json!(stamp1), "备份戳沿用第一次的：{p}");
+    assert_eq!(name_of(t, w.new).await, "团队2-01");
+}
+
+/// 执行时出口对不上新入口（发起之后新节点的入口变了；路由C 发起时的快照里没有出口指向旧节点）：动手之前作业失败，
+/// 原因与预览一致（预览里 blocker = 「软路由「名」的出口「名」：」+ 那条出口的 error），一台都没改、能取消
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn exit_mismatch_fails_before_any_change() {
+    let w = world().await;
+    let oe = old_entry(&w).await;
+    router(&w, "路由A", 23211, &[("节点01", "198.51.100.2", 20003, Some(oe))]).await;
+    router(&w, "路由C", 23212, &[]).await;
+    config(23212, &[("x", "198.51.100.2", 20003)]);
+    let t = &w.t;
+    let d = t.post(&format!("/api/v1/machines/{}/replace", w.old), json!({"new_machine_id": w.new})).await;
+    let job = d["job_id"].as_str().unwrap().to_string();
+    // 发起之后：新节点的入口挪到线路机3，另在线路机4 上加一个——旧入口所在的线路机上没有，不知道换成哪个
+    let db = &t.st.db;
+    let (r3, r4) = (Uuid::now_v7(), Uuid::now_v7());
+    for (id, label, ip, host) in [(r3, "线路机3", "198.51.100.3", "r3.test"), (r4, "线路机4", "198.51.100.4", "r4.test")] {
+        sqlx::query("insert into machine (id, kind, label, primary_ip, lifecycle) values ($1, 'relay', $2, $3::inet, 'active')").bind(id).bind(label).bind(ip).execute(db).await.unwrap();
+        sqlx::query("insert into relay (machine_id, public_host, reality_private_enc, reality_public_key) values ($1, $2, '\\x00', 'PBK')").bind(id).bind(host).execute(db).await.unwrap();
+    }
+    sqlx::query("update entry set relay_id = $2, port = 20040 where node_id = $1").bind(w.new).bind(r3).execute(db).await.unwrap();
+    entry(t, r4, w.new, 20050, "44444444-4444-4444-8444-444444444444", "active").await;
+    let p = t.get(&format!("/api/v1/machines/{}/replace?new_machine_id={}", w.old, w.new)).await;
+    let x = &p["routers"][0]["exits"][0];
+    let blocker = format!("软路由「路由A」的出口「节点01」：{}", x["error"].as_str().unwrap());
+    assert!(p["blockers"].as_array().unwrap().iter().any(|b| b == &json!(blocker)), "{p}");
+    drive(t).await;
+    let j = t.job(&job).await;
+    let err = j["error"].as_str().unwrap();
+    assert!(err.contains(&blocker) && err.contains("；软路由「路由C」的出口「x」：") && err.contains("不知道换成哪个"), "{err}");
+    assert!(err.contains("，一台都没有改。软路由都是原样，编号没改") && !err.contains("配置读不了"), "{err}");
+    assert!(applies(23211).is_empty() && applies(23212).is_empty());
+    assert_eq!((j["state"].as_str(), j["cancellable"].as_bool(), j["manual"].is_null()), (Some("failed"), Some(true), true), "{j}");
+    assert_eq!(name_of(t, w.old).await, "团队2-01");
 }

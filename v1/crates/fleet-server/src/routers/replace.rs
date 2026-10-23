@@ -8,12 +8,15 @@
 //! - 只改「- name: 出口名」（名字带不带引号都认；name 不在第一行也认）这个列表项里、字段那一层的 server / port / uuid / servername（或 sni），
 //!   和 reality-opts 下的 public-key / short-id，一共 6 行；每个出口恰好找到一处、6 个字段各一行，且它现在指向旧入口（或已经是新入口：重跑），
 //!   改动行数对得上才写，否则一行不写。流式写法（`- {name: …}`）认不出，按「写法认不出」拒绝。
-//! - 写之前备份到 /etc/fleet-backup/openclash/<文件名>.<时间>（时间由中控给，回滚按它找；只留最近 10 份）；写完重启 OpenClash，
-//!   等 API 起来后经 mihomo 逐个测改过的出口（同采集的 generate_204，各试 3 次）。重启失败、API 不起来、测不通：脚本自己换回备份再重启，
-//!   输出 rolled_back=1 并以非 0 退出。中控对之前已改好的路由按时间戳跑回滚（MODE=rollback）。
+//! - 写之前备份到 /etc/fleet-backup/openclash/<文件名>.<时间>（时间由中控给，回滚按它找；保留 KEEP_DAYS 天，按文件名里的时间删）；
+//!   写完重启 OpenClash，等 API 起来后经 mihomo 逐个测改过的出口（同采集的 generate_204，各试 3 次）。重启失败、API 不起来、测不通：
+//!   脚本自己改回再重启，输出 rolled_back=1 并以非 0 退出。中控对之前已改好的路由按时间戳跑回滚（MODE=rollback）。
+//! - 改回只动这次改过的出口：现在还是这次改成的 server:port 的，那 6 行换回备份里的原值（原样照抄）；已经被别人改走的不动，
+//!   说明写到 stderr。不整份换回：同一台路由上别的作业（或人）之后改的出口不会被抹掉。备份不在了时，没有出口指向这次改成的地址
+//!   就是没什么可改回（rollback=none），有的话报错。
 //!
 //! 输出（`key=value` 行）：backup=<备份路径>、changed=<改了几行>、delay_<i>=<毫秒>、replace=ok；回滚：rollback=ok | none。
-//! 退出码：2 = 没有动配置（认不出、找不到、指向别处、备份失败）；3 = 写了但重启 / API 不行；4 = 测不通。2 以外的都已经尝试换回原配置。
+//! 退出码：2 = 没有动配置（认不出、找不到、指向别处、备份失败）；3 = 写了但重启 / API 不行；4 = 测不通。2 以外的都已经尝试改回。
 
 use crate::jobs::scripts::vars;
 use std::time::Duration;
@@ -50,11 +53,15 @@ pub fn stamp(t: time::OffsetDateTime) -> String {
     format!("{:04}{:02}{:02}-{:02}{:02}{:02}Z", t.year(), u8::from(t.month()), t.day(), t.hour(), t.minute(), t.second())
 }
 
-/// 改配置的脚本。`stamp` 见 [`stamp`]
-pub fn apply_script(edits: &[Edit], stamp: &str) -> String {
+/// 备份留几天：换回失败、等人工处理的作业要用它，搬空时一台路由一天改几十次也不能把它挤掉
+pub const KEEP_DAYS: i64 = 7;
+
+/// 改配置的脚本。`now` 是这次的时间：备份按它命名（[`stamp`]，回滚按它找），早于它 KEEP_DAYS 天的备份删掉
+pub fn apply_script(edits: &[Edit], now: time::OffsetDateTime) -> String {
     let mut kv: Vec<(String, String)> = vec![
         ("MODE".into(), "apply".into()),
-        ("STAMP".into(), stamp.into()),
+        ("STAMP".into(), stamp(now)),
+        ("KEEP".into(), stamp(now - time::Duration::days(KEEP_DAYS))),
         ("N".into(), edits.len().to_string()),
         ("DELAY_URL".into(), super::collect::delay_url_param()),
         ("WAIT_API".into(), "120".into()),
@@ -80,8 +87,16 @@ pub fn apply_script(edits: &[Edit], stamp: &str) -> String {
     vars(&kv) + SCRIPT
 }
 
-/// 换回 `stamp` 那次改之前的备份并重启 OpenClash（没有这份备份：什么都不做，输出 rollback=none）
-pub fn rollback_script(stamp: &str) -> String { vars(&[("MODE", "rollback"), ("STAMP", stamp), ("N", "0")]) + SCRIPT }
+/// 把这次改过的出口（出口名、改成的 server、port）改回 `stamp` 那份备份里的值并重启 OpenClash；不带凭据
+pub fn rollback_script(stamp: &str, exits: &[(&str, &str, u16)]) -> String {
+    let mut kv: Vec<(String, String)> = vec![("MODE".into(), "rollback".into()), ("STAMP".into(), stamp.into()), ("N".into(), exits.len().to_string())];
+    for (i, (name, srv, port)) in exits.iter().enumerate() {
+        let i = i + 1;
+        kv.extend([(format!("NAME_{i}"), name.to_string()), (format!("SRV_{i}"), srv.to_string()), (format!("PORT_{i}"), port.to_string())]);
+    }
+    let kv: Vec<(&str, &str)> = kv.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    vars(&kv) + SCRIPT
+}
 
 /// 读配置（几百 KB 经隧道）的时长上限
 pub const READ_TIMEOUT: Duration = Duration::from_secs(30);
@@ -112,17 +127,6 @@ BASE=$(basename "$CFG")
 BK="$BKDIR/$BASE.$STAMP"
 TMP="$CFG.fleet-tmp"
 oc_restart() { /etc/init.d/openclash restart >/dev/null 2>&1; }
-# 备份写回去（cp -p 保留原来的权限）再重启
-undo() {
-  if cp -p "$BK" "$TMP" && mv -f "$TMP" "$CFG" && oc_restart; then echo rolled_back=1; else say "换回原配置也失败了：备份在 $BK，需要人工处理"; fi
-}
-if [ "$MODE" = rollback ]; then
-  if [ ! -f "$BK" ]; then echo rollback=none; exit 0; fi
-  cp -p "$BK" "$TMP" && mv -f "$TMP" "$CFG" || { say "写回备份 $BK 失败"; exit 3; }
-  oc_restart || { say "已写回备份 $BK，但重启 OpenClash 失败"; exit 3; }
-  echo rollback=ok
-  exit 0
-fi
 i=1
 while [ "$i" -le "$N" ]; do
   export "NAME_$i" "OSRV_$i" "OPORT_$i" "SRV_$i" "PORT_$i" "UUID_$i" "SNI_$i" "PBK_$i" "SID_$i"
@@ -159,6 +163,68 @@ function field(k,   L, j, rest) {
   return 1
 }
 function bad(m) { errs = errs "fleet：" m "\n" }
+function note(m) { notes = notes "fleet：" m "\n" }
+# 改回时出口的 6 个字段按这些名字记（servername 与 sni 记成 sni）
+function fkey(k) { return (k == "servername") ? "sni" : k }
+function isf(k) { return k == "server" || k == "port" || k == "uuid" || k == "sni" }
+function isro(k) { return k == "public-key" || k == "short-id" }
+# 备份里出口 i 的 6 个字段：值原样记下（含引号、注释），改回时照抄
+function grab(i,   k, L, d, ro, rest, j, key, v) {
+  ro = 0
+  for (k = 1; k <= cnt; k++) {
+    L = buf[k]; sub(/\r$/, "", L)
+    if (field(k)) {
+      ro = (FK == "reality-opts" && unq(FV) == "")
+      v = FV; sub(/\r$/, "", v); key = fkey(FK)
+      if (isf(key)) { ov[i, key] = v; og[i, key]++ }
+      continue
+    }
+    d = ind(L)
+    if (ro && d > F && L !~ /^[ ]*#/) {
+      rest = substr(L, d + 1); j = index(rest, ":"); key = j ? substr(rest, 1, j - 1) : ""
+      if (isro(key)) { ov[i, key] = substr(rest, j + 1); og[i, key]++ }
+    }
+  }
+}
+# 配置里出口 i 现在还是这次改成的（SRV_i:PORT_i）：6 行换回备份里的值。已经是原值的不动；被别人改走的不动，记一条说明
+function restore(i,   k, L, d, ro, rest, j, key, cr, cs, cp, nl, mine, n, K, keep, ch) {
+  cs = ""; cp = ""
+  for (k = 1; k <= cnt; k++) if (field(k)) { if (FK == "server") cs = unq(FV); else if (FK == "port") cp = unq(FV) }
+  mine = (low(cs) == low(ENVIRON["SRV_" i]) && cp == ENVIRON["PORT_" i])
+  if (NOBK) {
+    if (mine) bad("改之前的备份不在了，出口「" nm[i] "」现在指向这次改成的 " cs ":" cp "，换不回")
+    return
+  }
+  if (bhits[i] != 1) { bad("改之前的备份里" (bhits[i] ? "有 " bhits[i] " 个" : "没有") "名为「" nm[i] "」的出口，换不回"); return }
+  if (low(cs) == low(unq(ov[i, "server"])) && cp == unq(ov[i, "port"])) return
+  if (!mine) { note("出口「" nm[i] "」现在指向 " cs ":" cp "，不是这次改成的 " ENVIRON["SRV_" i] ":" ENVIRON["PORT_" i] "（之后又被改过），没有改回"); return }
+  split("server port uuid sni public-key short-id", K, " ")
+  for (n = 1; n <= 6; n++) if (og[i, K[n]] != 1) { bad("改之前的备份里出口「" nm[i] "」的写法认不出（" K[n] " 有 " (og[i, K[n]] + 0) " 行），换不回"); return }
+  ro = 0; ch = 0; split("", seen)
+  for (k = 1; k <= cnt; k++) keep[k] = buf[k]
+  for (k = 1; k <= cnt; k++) {
+    L = buf[k]; cr = (L ~ /\r$/) ? "\r" : ""; nl = ""
+    if (field(k)) {
+      ro = (FK == "reality-opts" && unq(FV) == ""); key = fkey(FK)
+      if (isf(key)) nl = FP FK ":" ov[i, key] cr
+    } else {
+      d = ind(L)
+      if (ro && d > F && L !~ /^[ ]*#/) {
+        rest = substr(L, d + 1); j = index(rest, ":"); key = j ? substr(rest, 1, j - 1) : ""
+        if (isro(key)) nl = substr(L, 1, d) key ":" ov[i, key] cr
+      }
+    }
+    if (nl == "") continue
+    seen[key]++
+    if (nl != buf[k]) { buf[k] = nl; ch++ }
+  }
+  for (n = 1; n <= 6; n++) if (seen[K[n]] != 1) {
+    for (k = 1; k <= cnt; k++) buf[k] = keep[k]
+    bad("出口「" nm[i] "」现在的写法认不出（" K[n] " 有 " (seen[K[n]] + 0) " 行），没有改回")
+    return
+  }
+  diff += ch
+}
 function edit(i,   k, L, d, ro, rest, j, key, cr, cs, cp) {
   ro = 0; cs = ""; cp = ""; split("", seen)
   for (k = 1; k <= cnt; k++) {
@@ -197,34 +263,65 @@ function item(   k, d, d2, j, v, i, who) {
   if (F < 0) for (k = 2; k <= cnt; k++) { d2 = ind(buf[k]); if (d2 > d && buf[k] !~ /^[ ]*#/) { F = d2; break } }
   who = 0
   for (k = 1; k <= cnt; k++) if (field(k) && FK == "name") { v = unq(FV); for (i = 1; i <= n; i++) if (v == nm[i]) who = i }
-  if (who) { hits[who]++; if (hits[who] == 1) edit(who) }
-  for (k = 1; k <= cnt; k++) print buf[k]
+  if (who && pass == 1) { bhits[who]++; if (bhits[who] == 1) grab(who) }
+  else if (who) { hits[who]++; if (hits[who] == 1) { if (REV) restore(who); else edit(who) } }
+  if (pass == 2) for (k = 1; k <= cnt; k++) print buf[k]
   cnt = 0
 }
-BEGIN { n = ENVIRON["N"] + 0; for (i = 1; i <= n; i++) { nm[i] = ENVIRON["NAME_" i]; hits[i] = 0 }; sec = 0; I = -1; cnt = 0; changed = 0; errs = "" }
+# REV=1（改回）：先读备份（第一个文件，只记出口的原值、不输出），再读配置（最后一个文件）输出改回后的样子
+BEGIN {
+  n = ENVIRON["N"] + 0; for (i = 1; i <= n; i++) { nm[i] = ENVIRON["NAME_" i]; hits[i] = 0; bhits[i] = 0 }
+  REV = (ENVIRON["REV"] == "1"); NOBK = REV && ARGV[1] == "/dev/null"; pass = REV ? 1 : 2
+  sec = 0; I = -1; cnt = 0; changed = 0; diff = 0; errs = ""; notes = ""
+}
 {
+  np = (!REV || FILENAME == ARGV[ARGC - 1]) ? 2 : 1
+  if (np != pass) { if (sec) item(); sec = 0; I = -1; cnt = 0; pass = np }
   L = $0; bare = L; sub(/\r$/, "", bare); d = ind(bare)
   if (!sec) {
-    print L
+    if (pass == 2) print L
     if (bare ~ /^proxies:[ \t]*(#.*)?$/) { sec = 1; I = -1 }
     next
   }
   if (d < 0 || bare ~ /^[ ]*#/) { buf[++cnt] = L; next }
   if (I < 0 && isdash(bare, d)) I = d
-  if (I < 0 || d < I || (d == I && !isdash(bare, d))) { item(); sec = 0; print L; next }
+  if (I < 0 || d < I || (d == I && !isdash(bare, d))) { item(); sec = 0; if (pass == 2) print L; next }
   if (d == I) item()
   buf[++cnt] = L
 }
 END {
   if (sec) item()
   for (i = 1; i <= n; i++) {
-    if (hits[i] == 0) bad("配置的 proxies 里没有出口「" nm[i] "」（或它是流式写法 {name: …}，认不出）")
-    else if (hits[i] > 1) bad("配置里有 " hits[i] " 个名为「" nm[i] "」的出口，不知道改哪个")
+    if (REV && hits[i] == 0) note("配置里已经没有出口「" nm[i] "」，不用改回")
+    else if (hits[i] == 0) bad("配置的 proxies 里没有出口「" nm[i] "」（或它是流式写法 {name: …}，认不出）")
+    else if (hits[i] > 1) bad("配置里有 " hits[i] " 个名为「" nm[i] "」的出口，不知道" (REV ? "改回" : "改") "哪个")
   }
-  printf("%d", changed) > ENVIRON["STATF"]
+  printf("%d", REV ? diff : changed) > ENVIRON["STATF"]
+  if (REV) printf("%s", notes) > ENVIRON["NOTEF"]
   if (errs != "") { printf("%s", errs) > ENVIRON["ERRF"]; exit 2 }
 }
 FLEET_AWK
+# 改回这次改过的出口（见 restore）：$1 是改之前的备份，空 = 备份不在了。没有要改的行就不写、不重启
+revert() {
+  rm -f "$W/err" "$W/stat" "$W/note"
+  cp -p "$CFG" "$TMP" || { say "在 $(dirname "$CFG") 里建临时文件失败，没有改回"; return 3; }
+  if ! REV=1 ERRF="$W/err" STATF="$W/stat" NOTEF="$W/note" awk -f "$W/edit.awk" "${1:-/dev/null}" "$CFG" > "$TMP"; then
+    rm -f "$TMP"; cat "$W/err" >&2 2>/dev/null; say "没有改回"; return 2
+  fi
+  cat "$W/note" >&2 2>/dev/null
+  if [ "$(cat "$W/stat" 2>/dev/null)" = 0 ]; then rm -f "$TMP"; return 0; fi
+  mv -f "$TMP" "$CFG" || { rm -f "$TMP"; say "写入 $CFG 失败，没有改回"; return 3; }
+  oc_restart || { say "已改回 $CFG，但重启 OpenClash 失败"; return 3; }
+}
+undo() {
+  if revert "$BK"; then echo rolled_back=1; else say "改回原配置也失败了：备份在 $BK，需要人工处理"; fi
+}
+if [ "$MODE" = rollback ]; then
+  if [ -f "$BK" ]; then revert "$BK" || exit $?; echo rollback=ok; exit 0; fi
+  revert "" || exit $?
+  echo rollback=none
+  exit 0
+fi
 rm -f "$W/err" "$W/stat"
 cp -p "$CFG" "$TMP" || { say "在 $(dirname "$CFG") 里建临时文件失败，没有改动"; exit 2; }
 if ! ERRF="$W/err" STATF="$W/stat" awk -f "$W/edit.awk" "$CFG" > "$TMP"; then
@@ -234,7 +331,8 @@ changed=$(cat "$W/stat" 2>/dev/null || true)
 if [ "$changed" != "$((N * 6))" ]; then rm -f "$TMP"; say "改动的行数不对（应为 $((N * 6))，实际 ${changed:-0}），配置没有改动"; exit 2; fi
 if ! { mkdir -p "$BKDIR" && cp -p "$CFG" "$BK"; }; then rm -f "$TMP"; say "备份 $CFG 失败，配置没有改动"; exit 2; fi
 echo "backup=$BK"
-ls -1t "$BKDIR/$BASE".* 2>/dev/null | tail -n +11 | while read -r f; do rm -f "$f"; done
+# 按文件名里的时间删早于 KEEP 的（cp -p 保留了配置的修改时间，文件时间不能用）
+ls "$BKDIR" 2>/dev/null | awk -v b="$BASE." -v k="$KEEP" 'index($0, b) == 1 && substr($0, length(b) + 1) < k' | while read -r f; do rm -f "$BKDIR/$f"; done
 mv -f "$TMP" "$CFG" || { rm -f "$TMP"; say "写入 $CFG 失败，配置没有改动"; exit 2; }
 echo "changed=$changed"
 if ! oc_restart; then say "改好配置后重启 OpenClash 失败"; undo; exit 3; fi
@@ -288,10 +386,19 @@ mod tests {
         }
     }
 
+    /// 时间戳（[`stamp`] 的格式）对应的时间
+    fn at(s: &str) -> time::OffsetDateTime {
+        let n = |a: usize, b: usize| s[a..b].parse::<u8>().unwrap();
+        let y: i32 = s[..4].parse().unwrap();
+        time::Date::from_calendar_date(y, time::Month::try_from(n(4, 6)).unwrap(), n(6, 8)).unwrap().with_hms(n(9, 11), n(11, 13), n(13, 15)).unwrap().assume_utc()
+    }
+
+    const S: &str = "20261023-010000Z";
+
     #[test]
     fn script_carries_parameters_but_debug_hides_creds() {
-        let s = apply_script(&[edit("节点01"), Edit { exit: "it's".into(), ..edit("x") }], "20261023-073012Z");
-        assert!(s.starts_with("MODE='apply'\nSTAMP='20261023-073012Z'\nN='2'\nDELAY_URL='https%3A%2F%2Fwww.gstatic.com%2Fgenerate_204'\n"), "{}", &s[..200]);
+        let s = apply_script(&[edit("节点01"), Edit { exit: "it's".into(), ..edit("x") }], at("20261023-073012Z"));
+        assert!(s.starts_with("MODE='apply'\nSTAMP='20261023-073012Z'\nKEEP='20261016-073012Z'\nN='2'\nDELAY_URL='https%3A%2F%2Fwww.gstatic.com%2Fgenerate_204'\n"), "{}", &s[..200]);
         assert!(s.contains("NAME_1='节点01'\n") && s.contains(&format!("UUID_1='{UUID_NEW}'\n")) && s.contains("NAME_2='it'\\''s'\n"));
         assert!(s.trim_end().ends_with("main </dev/null"));
         // 结束标记不能被参数里的内容提前结束；脚本本身不回显凭据
@@ -302,7 +409,8 @@ mod tests {
         let dbg = format!("{:?}", edit("节点01"));
         assert!(!dbg.contains(UUID_NEW) && !dbg.contains("NEW_PBK") && !dbg.contains("01234567") && dbg.contains("198.51.100.2:20020"), "{dbg}");
         assert_eq!(stamp(time::macros::datetime!(2026-10-23 15:30:12 +8)), "20261023-073012Z");
-        assert!(rollback_script("S").starts_with("MODE='rollback'\nSTAMP='S'\nN='0'\n"));
+        let r = rollback_script("S", &[("节点01", "198.51.100.2", 20020)]);
+        assert!(r.starts_with("MODE='rollback'\nSTAMP='S'\nN='1'\nNAME_1='节点01'\nSRV_1='198.51.100.2'\nPORT_1='20020'\n"), "{}", &r[..120]);
         assert!(read_script().starts_with("MODE='read'\nCFG=$(uci -q get openclash.config.config_path") && read_script().ends_with("| head -c 1048577\n"));
     }
 
@@ -379,7 +487,7 @@ rules:\n- MATCH,节点01组\n";
             assert_eq!((o.code, o.stdout.as_str()), (0, CONFIG), "busybox={bb} {o:?}");
             let f = Fake::new(CONFIG, bb);
             let e2 =Edit { exit: "节点02".into(), old_server: "relay.test".into(), old_port: 20004, server: "relay.test".into(), port: 20021, ..edit("节点02") };
-            let o = f.run(&apply_script(&[edit("节点01"), e2], "20261023-073012Z"), &[("节点01", 88), ("节点02", 95)]);
+            let o = f.run(&apply_script(&[edit("节点01"), e2], at("20261023-073012Z")), &[("节点01", 88), ("节点02", 95)]);
             assert_eq!(o.code, 0, "busybox={bb} {o:?}");
             assert_eq!((o.kv("changed"), o.kv("delay_1"), o.kv("delay_2"), o.kv("replace")), (Some("12"), Some("88"), Some("95"), Some("ok")), "{o:?}");
             let bk = format!("{}/etc/fleet-backup/openclash/c.yaml.20261023-073012Z", f.dir.path().display());
@@ -399,14 +507,19 @@ rules:\n- MATCH,节点01组\n";
             let curl = f.read("curl.log");
             assert!(curl.contains("http://127.0.0.1:9090/proxies/%E8%8A%82%E7%82%B9%30%31/delay?url=https%3A%2F%2Fwww.gstatic.com%2Fgenerate_204&timeout=5000"), "{curl}");
             // 重跑（已经是新入口）：照样通过，又备份一份
-            let o = f.run(&apply_script(&[edit("节点01")], "20261023-080000Z"), &[("节点01", 70)]);
+            let o = f.run(&apply_script(&[edit("节点01")], at("20261023-080000Z")), &[("节点01", 70)]);
             assert_eq!((o.code, o.kv("changed")), (0, Some("6")), "{o:?}");
             assert_eq!(f.read("etc/openclash/config/c.yaml"), want);
-            // 回滚到第一次改之前
-            let o = f.run(&rollback_script("20261023-073012Z"), &[]);
+            // 改回第一次改之前：这次改过的两个出口换回备份里的原值
+            let back = [("节点01", "198.51.100.2", 20020), ("节点02", "relay.test", 20021)];
+            let o = f.run(&rollback_script("20261023-073012Z", &back), &[]);
             assert_eq!((o.code, o.kv("rollback")), (0, Some("ok")), "{o:?}");
             assert_eq!(f.read("etc/openclash/config/c.yaml"), CONFIG);
-            assert_eq!(f.run(&rollback_script("19990101-000000Z"), &[]).kv("rollback"), Some("none"));
+            assert_eq!(f.read("restart.log").lines().count(), 3);
+            // 已经是原样：不写、不重启；备份不在了、也没有出口指向这次改成的：没什么可改回
+            assert_eq!(f.run(&rollback_script("20261023-073012Z", &back), &[]).kv("rollback"), Some("ok"));
+            assert_eq!(f.read("restart.log").lines().count(), 3);
+            assert_eq!(f.run(&rollback_script("19990101-000000Z", &back), &[]).kv("rollback"), Some("none"));
         }
     }
 
@@ -416,12 +529,52 @@ rules:\n- MATCH,节点01组\n";
         for bb in shells() {
             let cfg = "proxies:\r\n  - name: '节点01'   # 主力\r\n    type: vless\r\n    server: 198.51.100.2\r\n    port: 20003\r\n    uuid: x\r\n    sni: a.com\r\n    reality-opts:\r\n      public-key: P\r\n      short-id: s\r\n  - name: 节点03\r\n    server: 1.1.1.1\r\n    port: 1\r\nrules: []\r\n";
             let f = Fake::new(cfg, bb);
-            let o = f.run(&apply_script(&[edit("节点01")], "S1"), &[("节点01", 50)]);
+            let o = f.run(&apply_script(&[edit("节点01")], at(S)), &[("节点01", 50)]);
             assert_eq!(o.code, 0, "busybox={bb} {o:?}");
             let want = cfg
                 .replace("    port: 20003\r\n    uuid: x\r\n    sni: a.com\r\n", &format!("    port: 20020\r\n    uuid: {UUID_NEW}\r\n    sni: www.apple.com\r\n"))
                 .replace("      public-key: P\r\n      short-id: s\r\n", "      public-key: NEW_PBK-abc_123\r\n      short-id: '01234567'\r\n");
             assert_eq!(f.read("etc/openclash/config/c.yaml"), want);
+            let o = f.run(&rollback_script(S, &[("节点01", "198.51.100.2", 20020)]), &[]);
+            assert_eq!((o.code, f.read("etc/openclash/config/c.yaml")), (0, cfg.to_string()), "busybox={bb} {o:?}");
+        }
+    }
+
+    /// 改回只动这次改过、现在还是这次改成的出口：之后别人改走的不动（写明原因）；备份按文件名里的时间留 7 天；
+    /// 备份不在了而出口还指向这次改成的：报错、一行不写
+    #[cfg(unix)]
+    #[test]
+    fn revert_keeps_later_edits_by_others() {
+        for bb in shells() {
+            let f = Fake::new(CONFIG, bb);
+            let bk = |s: &str| f.path(&format!("etc/fleet-backup/openclash/{s}"));
+            std::fs::create_dir_all(bk("")).unwrap();
+            for old in ["c.yaml.20261001-000000Z", "c.yaml.20261020-000000Z", "other.yaml.20261001-000000Z"] {
+                std::fs::write(bk(old), "x").unwrap();
+            }
+            let e2 = Edit { exit: "节点02".into(), old_server: "relay.test".into(), old_port: 20004, server: "relay.test".into(), port: 20021, ..edit("节点02") };
+            assert_eq!(f.run(&apply_script(&[edit("节点01"), e2], at(S)), &[("节点01", 1), ("节点02", 1)]).code, 0);
+            assert!(!bk("c.yaml.20261001-000000Z").exists() && bk("c.yaml.20261020-000000Z").exists() && bk("other.yaml.20261001-000000Z").exists());
+            // 之后别的作业把 节点02 改去了别处
+            let b = Edit { old_server: "relay.test".into(), old_port: 20021, server: "198.51.100.9".into(), port: 20030, uuid: "33333333-3333-4333-8333-333333333333".into(), ..edit("节点02") };
+            assert_eq!(f.run(&apply_script(&[b], at("20261023-020000Z")), &[("节点02", 1)]).code, 0);
+            let after_b = f.read("etc/openclash/config/c.yaml");
+            let o = f.run(&rollback_script(S, &[("节点01", "198.51.100.2", 20020), ("节点02", "relay.test", 20021)]), &[]);
+            assert_eq!((o.code, o.kv("rollback")), (0, Some("ok")), "busybox={bb} {o:?}");
+            assert!(o.stderr.contains("出口「节点02」现在指向 198.51.100.9:20030，不是这次改成的 relay.test:20021"), "{}", o.stderr);
+            let want = after_b
+                .replacen(&format!("  port: 20020\n  uuid: {UUID_NEW}"), "  port: 20003\n  uuid: 11111111-1111-4111-8111-111111111111", 1)
+                .replacen("  servername: www.apple.com\n  reality-opts:\n    public-key: NEW_PBK-abc_123\n    short-id: '01234567'", "  servername: www.cloudflare.com\n  reality-opts:\n    public-key: OLD_PBK\n    short-id: abcd", 1);
+            assert_eq!(f.read("etc/openclash/config/c.yaml"), want, "busybox={bb}");
+            assert!(want.contains("port: 20030"));
+            // 备份不在了，出口还指向这次改成的
+            assert_eq!(f.run(&apply_script(&[edit("节点01")], at("20261023-030000Z")), &[("节点01", 1)]).code, 0);
+            std::fs::remove_file(bk("c.yaml.20261023-030000Z")).unwrap();
+            let before = f.read("etc/openclash/config/c.yaml");
+            let o = f.run(&rollback_script("20261023-030000Z", &[("节点01", "198.51.100.2", 20020)]), &[]);
+            assert_eq!(o.code, 2, "{o:?}");
+            assert!(o.stderr.contains("改之前的备份不在了，出口「节点01」现在指向这次改成的 198.51.100.2:20020"), "{}", o.stderr);
+            assert_eq!(f.read("etc/openclash/config/c.yaml"), before);
         }
     }
 
@@ -443,7 +596,7 @@ rules:\n- MATCH,节点01组\n";
             for bb in shells() {
                 let f = Fake::new(cfg, bb);
                 let name = if want.contains("节点09") { "节点09" } else { "节点01" };
-                let o = f.run(&apply_script(&[edit(name)], "S"), &[("节点01", 1)]);
+                let o = f.run(&apply_script(&[edit(name)], at(S)), &[("节点01", 1)]);
                 assert_eq!(o.code, 2, "{want} busybox={bb} {o:?}");
                 assert!(o.stderr.contains(want) && o.stderr.contains("配置没有改动"), "{want}: {}", o.stderr);
                 assert_eq!(f.read("etc/openclash/config/c.yaml"), cfg);
@@ -459,7 +612,7 @@ rules:\n- MATCH,节点01组\n";
     fn rolls_back_itself_when_exit_is_dead() {
         for bb in shells() {
             let f = Fake::new(CONFIG, bb);
-            let o = f.run(&apply_script(&[edit("节点01")], "S"), &[]);
+            let o = f.run(&apply_script(&[edit("节点01")], at(S)), &[]);
             assert_eq!((o.code, o.kv("rolled_back")), (4, Some("1")), "{o:?}");
             assert!(o.stderr.contains("出口「节点01」换成新入口后测了 3 次都不通"), "{}", o.stderr);
             assert_eq!(f.read("etc/openclash/config/c.yaml"), CONFIG);
@@ -467,7 +620,7 @@ rules:\n- MATCH,节点01组\n";
             assert_eq!(restarts.lines().count(), 2, "{restarts}");
             assert_eq!(f.read("curl.log").matches("/delay").count(), 3);
             let f = Fake::new(CONFIG, bb);
-            let o = f.run(&apply_script(&[edit("节点01")], "S").replace("WAIT_API='120'", "WAIT_API='0'"), &[("节点01", 5)]);
+            let o = f.run(&apply_script(&[edit("节点01")], at(S)).replace("WAIT_API='120'", "WAIT_API='0'"), &[("节点01", 5)]);
             assert_eq!((o.code, o.kv("rolled_back")), (3, Some("1")), "{o:?}");
             assert_eq!(f.read("etc/openclash/config/c.yaml"), CONFIG);
         }

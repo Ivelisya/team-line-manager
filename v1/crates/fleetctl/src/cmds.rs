@@ -664,7 +664,7 @@ fn job_row(j: &Value) -> Vec<String> {
         st(j, "/id"),
         job_kind_cn(&st(j, "/kind")).to_string(),
         st(j, "/target/name"),
-        job_state_cn(&st(j, "/state")).to_string(),
+        format!("{}{}", job_state_cn(&st(j, "/state")), if j["manual"].is_object() { "（需要人工处理）" } else { "" }),
         format!("{}/{}", st(j, "/step"), st(j, "/step_count")),
         st(j, "/created_by"),
         table::ts(&st(j, "/created_at")),
@@ -722,6 +722,10 @@ pub fn job(ctx: &Ctx, id: &str, follow: bool) -> anyhow::Result<u8> {
             ("创建", format!("{}  {}", table::ts(&st(&j, "/created_at")), st(&j, "/created_by"))),
             ("错误", st(&j, "/error")),
         ]);
+        if let Some(m) = manual_text(&j["manual"]) {
+            s.push_str("\n\n");
+            s.push_str(&m);
+        }
         if let Some(steps) = j["steps"].as_array() {
             let rows: Vec<Vec<String>> = steps.iter().map(|x| vec![st(x, "/idx"), st(x, "/title"), step_state_cn(&st(x, "/state")).to_string(), x["error"].as_str().unwrap_or("").to_string()]).collect();
             s.push_str("\n\n");
@@ -741,6 +745,17 @@ pub fn job(ctx: &Ctx, id: &str, follow: bool) -> anyhow::Result<u8> {
         s
     });
     Ok(job_end(ctx, &j))
+}
+
+/// 作业的 `manual`（要人工处理：改软路由出口失败、改回也失败）醒目地写出来：说明 + 每台路由的出口；没有为 None
+fn manual_text(m: &Value) -> Option<String> {
+    let msg = m["message"].as_str()?;
+    let mut s = format!("!!! 需要人工处理 !!!\n{msg}");
+    for r in m["routers"].as_array().into_iter().flatten() {
+        let exits: Vec<&str> = r["exits"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+        s.push_str(&format!("\n  软路由 {}（{}）：出口 {}", st(r, "/name"), st(r, "/id"), exits.join("、")));
+    }
+    Some(s)
 }
 
 /// 步骤结果（job_step.output）的一行摘要：调优（tune 步骤本身，或收敛结果里的 `tune`）写应用、保持了几项和跳过的键；
@@ -1047,6 +1062,9 @@ mod tests {
         assert_eq!(step_brief(&json!({"reason": "没有要改的路由"})).unwrap(), "跳过：没有要改的路由");
         assert_eq!(step_brief(&json!({"routers": [1, 2], "port": 20001})).unwrap(), "port=20001，routers=2 项");
         assert!(step_brief(&json!({})).is_none() && step_brief(&Value::Null).is_none());
+        let m = json!({"message": "软路由「路由A」的出口 节点01（原来指向 1.2.3.4:20003）可能停在改了一半", "routers": [{"id": "r1", "name": "路由A", "exits": ["节点01", "节点02"]}]});
+        assert_eq!(manual_text(&m).unwrap(), "!!! 需要人工处理 !!!\n软路由「路由A」的出口 节点01（原来指向 1.2.3.4:20003）可能停在改了一半\n  软路由 路由A（r1）：出口 节点01、节点02");
+        assert!(manual_text(&Value::Null).is_none());
     }
 
     #[test]
