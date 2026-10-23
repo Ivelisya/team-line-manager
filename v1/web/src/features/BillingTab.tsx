@@ -91,8 +91,8 @@ const OV_FIELDS: SubField[] = ['price_cents', 'currency', 'cycle', 'billing_tz',
 const OV_ITEMS = [{ value: 'follow', label: '跟随' }, { value: 'own', label: '单独' }];
 /** 可跟随的一项：标签右边一个紧凑的「跟随 / 单独」切换。跟随时显示套餐 / 供应商给的值（灰色文字，不是输入框），切到「单独」才能改；
  *  跟随的来源与值在切换的悬停里（提交的字段不变：单独的带值，跟随的为 null） */
-function OvField({ m, k, label, info, on, setOn, due, error, locked, children }: {
-  m: MachineView; k: SubField; label: string; info?: string; on: boolean; setOn: (on: boolean) => void; due: string; error?: string; locked?: boolean; children: React.ReactElement;
+function OvField({ m, k, label, info, on, setOn, due, error, locked, onTouch, children }: {
+  m: MachineView; k: SubField; label: string; info?: string; on: boolean; setOn: (on: boolean) => void; due: string; error?: string; locked?: boolean; onTouch: () => void; children: React.ReactElement;
 }) {
   const id = React.useId();
   // 同机 IP 节点没有套餐：流量上限跟随的是宿主机的额度
@@ -102,7 +102,7 @@ function OvField({ m, k, label, info, on, setOn, due, error, locked, children }:
     <span data-tip={`跟随${inheritSource(m, k)}：${follow}`}><Segmented sm label={`${label}：跟随或单独设置`} value={on ? 'own' : 'follow'} onChange={(v) => setOn(v === 'own')} items={OV_ITEMS} /></span>
   );
   return (
-    <div className="field">
+    <div className="field" onBlur={onTouch}>
       <div className="ov-head">
         <span className="field-label"><Label htmlFor={id}>{label}</Label>{info && <InfoTip text={info} />}</span>
         {toggle}
@@ -123,6 +123,9 @@ function SubForm({ m }: { m: MachineView }) {
     Object.fromEntries(OV_FIELDS.map((k) => [k, legacy || isOverridden(s, k) || (k === 'price_cents' && priceLocked)])) as Record<SubField, boolean>);
   const setOn = (k: SubField) => (on: boolean) => setOv((o) => ({ ...o, [k]: on }));
   const [dueDate, setDueDate] = React.useState(s?.due_date ?? '');
+  // 必填 / 填错的提示等用户离开那一项再出现（一打开就满屏红字像是已经出错了）；到期日在离开表单里别的项时才算离开
+  const [touched, setTouched] = React.useState<Record<string, boolean>>({});
+  const touch = (k: string) => () => setTouched((t) => (t[k] ? t : { ...t, [k]: true }));
   // 各项的输入：单独设置过的取当前值，否则取跟随的值（点「单独设置」时从它改起）
   const init = (k: SubField) => {
     const v = s && (legacy || isOverridden(s, k)) ? s[k] : inheritedValue(m, k, s?.due_date);
@@ -161,11 +164,11 @@ function SubForm({ m }: { m: MachineView }) {
   // 费用框里的单位：生效的币种 / 周期（单独设置的取输入，跟随的取套餐 / 供应商的）
   const priceUnit = `${ov.currency ? currency : m.sub_template?.currency ?? currency} / ${cycleLabel(ov.cycle ? cycle : m.sub_template?.cycle ?? cycle)}`;
   const o = (k: SubField, label: string, children: React.ReactElement, error?: string, info?: string) => (
-    <OvField m={m} k={k} label={label} info={info} on={ov[k]} setOn={setOn(k)} due={dueDate} error={error} locked={legacy || (k === 'price_cents' && priceLocked)}>{children}</OvField>
+    <OvField m={m} k={k} label={label} info={info} on={ov[k]} setOn={setOn(k)} due={dueDate} error={touched[k] ? error : undefined} onTouch={touch(k)} locked={legacy || (k === 'price_cents' && priceLocked)}>{children}</OvField>
   );
   return (
-    <div className="form-grid">
-      <Field label="到期日" hint={dueDate === '' ? '必填' : undefined} error={dueBad ? '格式应为 YYYY-MM-DD' : undefined}><DateField value={dueDate} onChange={setDueDate} /></Field>
+    <div className="form-grid" onBlur={(e) => { if (!(e.target as HTMLElement).closest('[data-due]')) touch('due')(); }}>
+      <Field label="到期日" hint={touched.due && dueDate === '' ? '必填' : undefined} error={dueBad ? '格式应为 YYYY-MM-DD' : undefined}><div data-due><DateField value={dueDate} onChange={setDueDate} /></div></Field>
       {o('price_cents', '费用', <UnitInput width="full" unit={priceUnit} style={{ paddingRight: `calc(var(--sp-10) + ${priceUnit.length * 0.62 + 0.4}em)` }} inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="68" aria-invalid={priceBad || undefined} />, priceBad ? (price.trim() === '' ? '必填，免费填 0' : '应为 0 或正数') : undefined)}
       {o('currency', '币种', <Select value={currency} onChange={setCurrency} options={F.withCurrent(currencyOptions(), currency)} />)}
       {o('cycle', '计费周期', <Select value={cycle} onChange={setCycle} options={cycleOptions()} />)}
