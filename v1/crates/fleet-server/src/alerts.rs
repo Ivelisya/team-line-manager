@@ -2,7 +2,7 @@
 //! 只看 active 的机器（其它生命周期 evaluate 不给原因），所以退役/上架中的机器天然不告警。
 //!
 //! 什么时候评估：每 30 秒一轮；另外这些时候马上评估一次（`AppState::alerts_wake`，读刚补过指标的视图，两次至少隔 2 秒）：
-//! 上报里某入口的探测结果翻转（或翻转后还在确认）、agent 从离线回来、Xray 起停（agent_api.rs，`report_matters`），
+//! 上报里某入口的探测结果翻转（失败转成功后还在确认恢复的也算）、agent 从离线回来、Xray 起停（agent_api.rs，`report_matters`），
 //! 线路机连通性的结论变了（reach.rs），静默 / 维护变了（api/incidents.rs）。
 //!
 //! 去抖：
@@ -143,7 +143,8 @@ pub async fn run_forever(st: AppState) {
 }
 
 /// 这份上报会不会改变机器告警的判断（入库提交之后调，是就唤醒评估）：agent 之前离线（`was_offline`），Xray 运行状态和视图里的不同，
-/// 或某入口的探测结果和视图里最新一条不同、视图里那条还没连续 3 次（翻转后的确认探测：恢复要连续 2 次成功）、视图里还没有。
+/// 或某入口的探测结果和视图里最新一条不同、视图里还没有，或这次成功、视图里那条才连续成功不到 2 次（恢复确认中）。
+/// 连续失败不唤醒：开告警要满去抖时长，由 30 秒一轮的评估接住（失败的入口多了，几乎每次上报都带着「不满 3 次」的，会一直唤醒）。
 /// `probes`：(入口, tcp / egress, 成功)
 pub fn report_matters(st: &AppState, machine: Uuid, was_offline: bool, xray: Option<bool>, probes: &[(Uuid, &str, bool)]) -> bool {
     if was_offline {
@@ -159,7 +160,7 @@ pub fn report_matters(st: &AppState, machine: Uuid, was_offline: bool, xray: Opt
     }
     probes.iter().any(|(id, kind, ok)| {
         let cur = m.entries.iter().find(|e| e.id == *id).and_then(|e| if *kind == "tcp" { e.tcp.as_ref() } else { e.egress.as_ref() });
-        cur.is_none_or(|p| p.ok != *ok || p.streak < 3)
+        cur.is_none_or(|p| p.ok != *ok || (*ok && p.streak < PROBE_OK_TO_RESOLVE))
     })
 }
 

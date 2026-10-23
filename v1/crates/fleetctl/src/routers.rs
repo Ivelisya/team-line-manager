@@ -671,10 +671,14 @@ pub fn rm(ctx: &Ctx, q: &str, yes: bool, force: bool) -> anyhow::Result<u8> {
 
 /// `router sync <路由> [--exit <出口>]…`：参数和对应入口不一致的出口改成入口现在的参数（作业 router_sync：备份、改、重启 OpenClash、测延迟，失败自动改回）。
 /// 先 GET 预览；不加 --yes 只打印预览
-pub fn sync(ctx: &Ctx, q: &str, exits: &[String], yes: bool, follow: bool) -> anyhow::Result<u8> {
+pub fn sync(ctx: &Ctx, q: &str, exits: &[String], force: bool, yes: bool, follow: bool) -> anyhow::Result<u8> {
     let r = find(&ctx.list("/routers")?, q)?;
     let id = st(&r, "/id");
-    let pv = ctx.c.get_q(&format!("/routers/{id}/sync"), &[("exits", exits.join(","))])?;
+    let mut query = vec![("exits", exits.join(","))];
+    if force {
+        query.push(("force", "true".into()));
+    }
+    let pv = ctx.c.get_q(&format!("/routers/{id}/sync"), &query)?;
     if !ctx.json || !yes {
         if ctx.json {
             ctx.emit(&pv, String::new);
@@ -685,6 +689,12 @@ pub fn sync(ctx: &Ctx, q: &str, exits: &[String], yes: bool, follow: bool) -> an
             }
             for s in pv["skipped"].as_array().into_iter().flatten().filter_map(Value::as_str) {
                 outln(format!("同步不了（改指向别的入口：fleetctl repoint）：{s}"));
+            }
+            for u in pv["untrusted"].as_array().into_iter().flatten() {
+                outln(format!("未自动同步（从没对上过这个入口，可能是路由上有人加的；确认是自己的就 --exit 点名）：{}（{}）", st(u, "/exit"), st(u, "/entry")));
+            }
+            for u in pv["need_force"].as_array().into_iter().flatten() {
+                outln(format!("{}（{}）从没对上过，入口是{}：{}", st(u, "/exit"), st(u, "/entry"), st(u, "/why"), if force { "已加 --force，照同步" } else { "要同步加 --force" }));
             }
             for w in pv["warnings"].as_array().into_iter().flatten().filter_map(Value::as_str) {
                 outln(format!("注意：{w}"));
@@ -700,7 +710,7 @@ pub fn sync(ctx: &Ctx, q: &str, exits: &[String], yes: bool, follow: bool) -> an
         }
         return Ok(0);
     }
-    let d = ctx.c.post(&format!("/routers/{id}/sync"), &json!({"exits": exits}))?;
+    let d = ctx.c.post(&format!("/routers/{id}/sync"), &json!({"exits": exits, "force": force}))?;
     ctx.emit(&d, || format!("已提交同步作业 {}（{}）\n看进度：fleetctl job {} --follow", st(&d, "/job_id"), st(&r, "/name"), st(&d, "/job_id")));
     if follow {
         return crate::cmds::follow_job(ctx, &st(&d, "/job_id"));

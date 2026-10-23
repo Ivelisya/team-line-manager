@@ -1215,16 +1215,26 @@ async fn repoint_direct_exit_to_other_relay() {
 }
 
 /// 出口参数和入口不一致（凭据轮换后没同步）：持续两轮采集（满 30 秒）才开警告，告警带建议操作 fleetctl router sync；
-/// 同步作业（目标是路由）把它改成入口现在的参数、server:port 不变，客户自己的出口不动；同步好之后满 60 秒恢复
+/// 同步作业（目标是路由）把它改成入口现在的参数、server:port 不变，客户自己的出口不动；同步好之后满 60 秒恢复。
+/// 路由上有人加的、指向别的团队入口的出口（从没对上过）：不进默认同步，点名同步被拒，要 force
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn drift_alert_and_sync() {
     use fleet_server::routers::alerts;
     let w = world().await;
     let t = &w.t;
     let oe = old_entry(&w).await;
-    let ra = router(&w, "团队2-路由S", 23501, &[("节点01", "relay.test", 20003, Some(oe)), ("直连", "203.0.113.99", 8388, None)]).await;
-    let mark = |sync: &'static str| sqlx::query("update router_status set data = jsonb_set(data, '{exits,0,sync}', to_jsonb($2::text)) where router_id = $1").bind(ra).bind(sync);
+    // 团队3 的入口：路由上有人加了一个出口指向它（线路机:端口连号好猜），凭据乱填
+    let t3 = seed_team(t, "团队3").await;
+    let n3 = node(t, t3, 1, "203.0.113.31").await;
+    let e3 = entry(t, w.relay, n3, 20031, "33333333-3333-4333-8333-333333333333", "active").await;
+    let ra = router(&w, "团队2-路由S", 23501, &[("节点01", "relay.test", 20003, Some(oe)), ("直连", "203.0.113.99", 8388, None), ("伪造", "relay.test", 20031, Some(e3))]).await;
+    // 节点01 是中控作业写过的对应（线路机另一个出口 伪造 没有）
+    sqlx::query("insert into router_exit_link (router_id, exit, entry_id, source) values ($1, '节点01', $2, 'replace')").bind(ra).bind(oe).execute(&t.st.db).await.unwrap();
+    let mark = |sync: &'static str| {
+        sqlx::query("update router_status set data = jsonb_set(jsonb_set(data, '{exits,0,sync}', to_jsonb($2::text)), '{exits,2,sync}', to_jsonb($2::text)) where router_id = $1").bind(ra).bind(sync)
+    };
     mark("drift").execute(&t.st.db).await.unwrap();
+    sqlx::query("update router_status set data = jsonb_set(data, '{exits,0,linked}', 'true') where router_id = $1").bind(ra).execute(&t.st.db).await.unwrap();
     let firing = || async { t.get("/api/v1/incidents?state=firing").await["items"].as_array().cloned().unwrap_or_default() };
     let mut st = alerts::AlertState::default();
     let t0 = time::OffsetDateTime::now_utc();
@@ -1233,11 +1243,20 @@ async fn drift_alert_and_sync() {
     alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(31)).await.unwrap();
     let inc = firing().await;
     assert_eq!((inc.len(), inc[0]["rule"].as_str(), inc[0]["severity"].as_str()), (1, Some("router_exit_drift"), Some("warning")), "{inc:?}");
-    assert_eq!(inc[0]["summary"], "团队2-路由S：1 个出口的参数和对应的面板入口不一致：节点01（x，凭据和入口现在的不一样）");
+    assert_eq!(inc[0]["summary"], "团队2-路由S：2 个出口的参数和对应的面板入口不一致：节点01（x，凭据和入口现在的不一样）、伪造（x，凭据和入口现在的不一样；从未对上过，未自动同步）");
     assert_eq!(inc[0]["suggested"], json!(["fleetctl router sync 团队2-路由S"]));
     // 预览：server:port 不变；发起后作业目标是路由
     let p = t.get(&format!("/api/v1/routers/{ra}/sync")).await;
     assert_eq!((p["ok"].as_bool(), &p["routers"][0]["exits"][0]["from"], &p["routers"][0]["exits"][0]["to"]), (Some(true), &json!("relay.test:20003"), &json!("relay.test:20003")), "{p}");
+    assert_eq!((p["routers"][0]["exits"].as_array().map(Vec::len), &p["untrusted"]), (Some(1), &json!([{"exit": "伪造", "entry": "x"}])), "伪造出口不进默认同步：{p}");
+    // 点名同步别的团队的入口：拒绝，说明原因；force 才放行
+    let n = t.get(&format!("/api/v1/routers/{ra}/sync?exits=伪造")).await;
+    assert_eq!(n["ok"], false, "{n}");
+    assert!(n["blockers"][0].as_str().unwrap().contains("别的团队的入口") && n["blockers"][0].as_str().unwrap().contains("--force"), "{n}");
+    assert_eq!(n["need_force"][0]["why"], "别的团队的入口");
+    let (c, _) = t.req("POST", &format!("/api/v1/routers/{ra}/sync"), Some(json!({"exits": ["伪造"]})), None).await;
+    assert_eq!(c.as_u16(), 409);
+    assert_eq!(t.get(&format!("/api/v1/routers/{ra}/sync?exits=伪造&force=true")).await["ok"], true);
     let d = t.post(&format!("/api/v1/routers/{ra}/sync"), json!({})).await;
     let job = d["job_id"].as_str().unwrap().to_string();
     drive(t).await;
@@ -1248,6 +1267,8 @@ async fn drift_alert_and_sync() {
     assert!(a[0].contains("N='1'\n") && a[0].contains("OSRV_1='relay.test'\nOPORT_1='20003'\nSRV_1='relay.test'\nPORT_1='20003'\nUUID_1='11111111-1111-4111-8111-111111111111'"), "{}", &a[0][..400]);
     let au = t.get(&format!("/api/v1/audit?target_id={ra}")).await;
     assert_eq!((au[0]["title"].as_str(), au[0]["summary"].as_str()), (Some("同步软路由出口"), Some("团队2-路由S 的 节点01")));
+    let bogus: i64 = sqlx::query_scalar("select count(*) from router_exit_link where router_id = $1 and exit = '伪造'").bind(ra).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(bogus, 0, "没改过它，也不记对应");
     // 一致了：满 60 秒恢复
     mark("ok").execute(&t.st.db).await.unwrap();
     alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(40)).await.unwrap();

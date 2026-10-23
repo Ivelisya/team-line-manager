@@ -28,7 +28,7 @@ use super::*;
 use crate::api::lifecycle::{move_exit, relay_addr};
 use crate::api::replace::{replace_entries, replace_exit, Ent, ExitPlan, RouterPlan};
 use crate::routers::{self, clash, replace as rr, tunnel};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Applied {
@@ -106,8 +106,9 @@ enum Pick {
     Move { old_entry: Uuid, new: (Uuid, u16), from_ip: String, to: (String, String) },
     /// 替换：旧节点没删除的入口 → 新节点在用的入口
     Replace { old: Vec<Ent>, new: Vec<Ent> },
-    /// 同步：参数不一致的出口 → 它对上的入口现在的参数（`exits` 空 = 这台路由上全部不一致的）
-    Sync { exits: Vec<String> },
+    /// 同步：参数不一致的出口 → 它对上的入口现在的参数（`exits` 空 = 这台路由上全部不一致的）。
+    /// `pins`：发起时核对过的（出口名 → 入口）：执行时出口对上了别的入口就不动它（发起到执行之间路由上又被改过）
+    Sync { exits: Vec<String>, pins: HashMap<String, Uuid> },
 }
 
 impl Pick {
@@ -115,7 +116,8 @@ impl Pick {
     async fn load(db: &sqlx::PgPool, job: &JobRow, node: Uuid) -> anyhow::Result<Pick> {
         if job.kind == "router_sync" {
             let exits = job.params["exits"].as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from).collect();
-            return Ok(Pick::Sync { exits });
+            let pins = job.params["pins"].as_object().into_iter().flatten().filter_map(|(k, v)| Some((k.clone(), Uuid::try_parse(v.as_str()?).ok()?))).collect();
+            return Ok(Pick::Sync { exits, pins });
         }
         if job.kind == "replace" {
             let mut conn = db.acquire().await?;
@@ -143,7 +145,10 @@ impl Pick {
         match self {
             Pick::Move { old_entry, new, from_ip, to } => move_exit(er, *old_entry, Some(*new), from_ip, to, srv, port).map(Ok),
             Pick::Replace { old, new } => replace_exit(old, new, er, srv, port),
-            Pick::Sync { exits } => sync_exit(exits, name, sync, er, srv, port),
+            Pick::Sync { pins, .. } if pins.get(name).is_some_and(|id| *id != er.id) => {
+                Some(Err(format!("出口「{name}」现在对上的入口「{}」不是发起同步时核对的那个（路由上又改过），重新发起同步", er.name)))
+            }
+            Pick::Sync { exits, .. } => sync_exit(exits, name, sync, er, srv, port),
         }
     }
 
@@ -566,6 +571,20 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         // 这一台自己改回了（或没连上、什么都没改），而且这次的备份就是第一次改之前的：不用再改回它
         let undone = self_undone.then_some((r.id, stamp.as_str()));
         return give_up(c, &mut locks, &applied, undone, format!("软路由「{}」：{why}", r.name), kind, kept).await;
+    }
+    // 记下改成了指向哪个入口：之后凭据轮换，同步默认还认这个对应（router_exit_link）
+    for (r, exits) in &todo {
+        for x in exits {
+            if let Some(entry) = x.new_entry_id {
+                sqlx::query("insert into router_exit_link (router_id, exit, entry_id, source) values ($1, $2, $3, $4) on conflict do nothing")
+                    .bind(r.id)
+                    .bind(&x.exit)
+                    .bind(entry)
+                    .bind(&c.job.kind)
+                    .execute(&c.st.db)
+                    .await?;
+            }
+        }
     }
     // 马上采一次改过的路由：快照别等下一轮，紧接着的预览按新配置算
     c.st.routers_refresh.now(todo.iter().map(|(r, _)| r.id)).await;
