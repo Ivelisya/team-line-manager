@@ -4,7 +4,7 @@
 use crate::cmds::{cycle_cn, due_at, due_cn, num, st, Ctx};
 use crate::meta;
 use crate::ops::confirm;
-use crate::resolve::Want;
+use crate::resolve::{self, Want};
 use crate::table::{self, gb, money, money_at, traffic};
 use anyhow::{anyhow, bail};
 use serde_json::{json, Map, Value};
@@ -268,7 +268,21 @@ pub fn billing(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
 // `fleetctl renew` 的参数（clap 直接解析成它）
 #[derive(clap::Args)]
 pub struct RenewOpts {
-    pub machine: String,
+    /// 机器；写多台（逗号分隔）= 批量：先预览，加 --yes 才在一个事务里全部登记（一条审计，按订阅周期顺延、金额各取订阅价格）
+    #[arg(conflicts_with = "provider", required_unless_present = "provider")]
+    pub machine: Option<String>,
+    /// 批量：该供应商的在用机器里到期日不晚于 --due 的（不含备用团队和开了自动续费的）
+    #[arg(long, requires = "due")]
+    pub provider: Option<String>,
+    /// 配合 --provider：30d / 30（未来多少天内到期，含已过期）或 2026-11-20（不晚于这天）
+    #[arg(long, value_name = "Nd|日期", requires = "provider")]
+    pub due: Option<String>,
+    /// 配合 --provider：带上备用团队的机器（默认不带，它们等到期丢弃）
+    #[arg(long, requires = "provider")]
+    pub include_spare: bool,
+    /// 账单号：写进每条续费记录的备注（「账单 xxx」）
+    #[arg(long = "ref", value_name = "账单号")]
+    pub bill_ref: Option<String>,
     /// 新到期日 YYYY-MM-DD（不写则按订阅周期推 --cycles 个周期，目标月没有那一天时落到月末）
     #[arg(long, conflicts_with = "cycles")]
     pub to: Option<String>,
@@ -291,8 +305,18 @@ fn default_amount(s: &Value, name: &str, has_to: bool, cycles: u32) -> anyhow::R
 }
 
 /// `renew <机器>`：登记一次续费（到期日顺延、续费类告警下一轮评估恢复）。`--json` 输出这条续费记录（同 billing 的 renewals[]）
-pub fn renew(ctx: &Ctx, o: RenewOpts) -> anyhow::Result<u8> {
-    let (id, name) = ctx.find_id(&o.machine, Want::Live)?;
+pub fn renew(ctx: &Ctx, mut o: RenewOpts) -> anyhow::Result<u8> {
+    if o.provider.is_some() || o.machine.as_deref().is_some_and(|m| m.contains([',', '，'])) {
+        return renew_batch(ctx, o);
+    }
+    let machine = o.machine.clone().ok_or_else(|| anyhow!("给机器名，或 --provider <供应商> --due <日期|Nd> 选一批"))?;
+    if let Some(r) = o.bill_ref.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+        o.note = Some(match o.note.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+            Some(n) => format!("账单 {r}，{n}"),
+            None => format!("账单 {r}"),
+        });
+    }
+    let (id, name) = ctx.find_id(&machine, Want::Live)?;
     let m = ctx.c.get(&format!("/machines/{id}"))?;
     let s = &m["subscription"];
     if s.is_null() {
@@ -326,6 +350,151 @@ pub fn renew(ctx: &Ctx, o: RenewOpts) -> anyhow::Result<u8> {
     ctx.emit(r, || {
         let paid = r["amount_cents"].as_i64().map_or("-".into(), |c| money(c, &cur));
         format!("已登记续费：{name} 到期 {} → {}（{}），实付 {paid}{note_cn}", st(r, "/old_due"), st(r, "/new_due"), days.map_or("-".into(), due_cn))
+    });
+    Ok(0)
+}
+
+/// `--due` 的写法：`30d` / `30`（天数）→ days，`2026-11-20` → until
+fn due_arg(s: &str) -> anyhow::Result<(&'static str, String)> {
+    let t = s.trim();
+    if let Some(d) = date(t) {
+        return Ok(("until", d.to_string()));
+    }
+    t.strip_suffix(['d', 'D']).unwrap_or(t).parse::<u32>().map(|n| ("days", n.to_string())).map_err(|_| anyhow!("--due 写成 30d（未来多少天内到期）或 2026-11-20（不晚于这天）：「{s}」"))
+}
+
+/// 待付清单（GET /billing/due）
+fn fetch_due(ctx: &Ctx, due: &str, include_spare: bool) -> anyhow::Result<Value> {
+    let (k, v) = due_arg(due)?;
+    let mut q = vec![(k, v)];
+    if include_spare {
+        q.push(("include_spare", "true".into()));
+    }
+    ctx.c.get_q("/billing/due", &q)
+}
+
+/// 一组的原币种小计：`80.00 CNY + 10.00 USD`（没有汇率的币种照写）
+fn subtotal_cn(t: &Value) -> String {
+    let part = |p: &Value| money_at(p, "/cents", &st(p, "/currency"));
+    let by = t["by_currency"].as_array().into_iter().flatten().map(part);
+    let un = t["unconverted"].as_array().into_iter().flatten().map(part);
+    by.chain(un).collect::<Vec<_>>().join(" + ")
+}
+
+/// USD 合计；有币种没汇率时加 *
+fn usd_cn(t: &Value) -> String {
+    let star = if t["unconverted"].as_array().is_some_and(|u| !u.is_empty()) { "*" } else { "" };
+    format!("{}{star}", money(t["cents"].as_i64().unwrap_or(0), "USD"))
+}
+
+fn provider_cn(p: &Value) -> String { p["name"].as_str().map_or("（无供应商）".into(), String::from) }
+
+/// 待付清单的文字：默认每台一行；`by_provider` 按 供应商 × 到期日 分组。自动续费的单列、不算待付
+fn due_text(d: &Value, by_provider: bool) -> String {
+    let groups = d["groups"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let window = match d["days"].as_i64() {
+        Some(n) => format!("未来 {n} 天内到期（含已过期）"),
+        None => format!("{} 前到期（含已过期）", st(d, "/until")),
+    };
+    let mut out = if groups.is_empty() {
+        format!("{window}：没有待付的机器")
+    } else if by_provider {
+        let rows: Vec<Vec<String>> = groups
+            .iter()
+            .map(|g| {
+                let ms = g["machines"].as_array().map(Vec::as_slice).unwrap_or_default();
+                let names: Vec<String> = ms.iter().map(|m| st(m, "/name")).collect();
+                vec![
+                    provider_cn(&g["provider"]),
+                    format!("{}（{}）", st(g, "/due_date"), due_at(&ms[0], "/due_days")),
+                    format!("{} 台：{}", ms.len(), names.join("、")),
+                    subtotal_cn(&g["total"]),
+                    usd_cn(&g["total"]),
+                    g["provider"]["panel_url"].as_str().unwrap_or("-").into(),
+                ]
+            })
+            .collect();
+        format!("{window}\n{}", table::render(&["供应商", "到期日", "机器", "小计", "折合 USD", "控制台"], &rows))
+    } else {
+        let mut rows: Vec<Vec<String>> = vec![];
+        for g in groups {
+            for m in g["machines"].as_array().into_iter().flatten() {
+                let price = format!("{} / {}", money_at(m, "/price_cents", &st(m, "/currency")), cycle_cn(&st(m, "/cycle")));
+                let usd = m["price_usd_cents"].as_i64().map_or("未折算".into(), |u| money(u, "USD"));
+                rows.push(vec![format!("{}（{}）", st(m, "/due_date"), due_at(m, "/due_days")), provider_cn(&g["provider"]), st(m, "/name"), price, usd]);
+            }
+        }
+        format!("{window}\n{}", table::render(&["到期日", "供应商", "机器", "每期价格", "折合 USD"], &rows))
+    };
+    if !groups.is_empty() {
+        let n: usize = groups.iter().map(|g| g["machines"].as_array().map_or(0, Vec::len)).sum();
+        out.push_str(&format!("\n待付合计 {n} 台：{}", crate::fx::total_cn(&d["total"])));
+    }
+    let auto = d["auto"].as_array().map(Vec::as_slice).unwrap_or_default();
+    if !auto.is_empty() {
+        let names: Vec<String> = auto.iter().map(|a| format!("{}（{}）", st(a, "/machine/name"), st(a, "/machine/due_date"))).collect();
+        out.push_str(&format!("\n自动续费（到期后中控自动顺延，不算待付）{} 台：{}", auto.len(), names.join("、")));
+    }
+    out
+}
+
+/// `billing --due <Nd|日期> [--by-provider] [--include-spare]`：待付清单（所有在用机器，不含备用团队）。`--json` 是 /billing/due 的 data 原样
+pub fn billing_due(ctx: &Ctx, due: &str, by_provider: bool, include_spare: bool) -> anyhow::Result<u8> {
+    let d = fetch_due(ctx, due, include_spare)?;
+    ctx.emit(&d, || due_text(&d, by_provider));
+    Ok(0)
+}
+
+/// 批量续费：`renew a,b,c` 或 `renew --provider P --due Nd|日期 [--include-spare]`。先让中控预览（dry_run：每台原到期 → 新到期、金额），
+/// 没有 `--yes` 只显示预览；`--yes` 在一个事务里全部登记（一条审计）。按订阅周期顺延（`--cycles`），金额各取订阅价格 × 周期数
+fn renew_batch(ctx: &Ctx, o: RenewOpts) -> anyhow::Result<u8> {
+    if o.to.is_some() || o.amount.is_some() {
+        bail!("批量续费按订阅周期顺延、金额各取订阅价格：--to / --amount 只能用在单台上（逐台登记）");
+    }
+    let mut ids: Vec<(String, String)> = vec![];
+    let mut note = String::new();
+    if let Some(p) = &o.provider {
+        let all = ctx.list("/providers")?;
+        let (name, code) = (|v: &Value| st(v, "/name"), |v: &Value| st(v, "/code"));
+        let pv = resolve::named(&all, p, "供应商", &[&name, &code], &name).map_err(|e| anyhow!(e))?;
+        let pid = st(pv, "/id");
+        let d = fetch_due(ctx, o.due.as_deref().unwrap_or("0d"), o.include_spare)?;
+        for g in d["groups"].as_array().into_iter().flatten().filter(|g| st(g, "/provider/id") == pid) {
+            ids.extend(g["machines"].as_array().into_iter().flatten().map(|m| (st(m, "/id"), st(m, "/name"))));
+        }
+        let auto: Vec<String> = d["auto"].as_array().into_iter().flatten().filter(|a| st(a, "/provider/id") == pid).map(|a| st(a, "/machine/name")).collect();
+        if !auto.is_empty() {
+            note = format!("\n已排除开了自动续费的 {} 台：{}", auto.len(), auto.join("、"));
+        }
+        if ids.is_empty() {
+            ctx.emit(&json!({"dry_run": !o.yes, "items": []}), || format!("{} 在这个时间内没有待续费的机器{note}", name(pv)));
+            return Ok(0);
+        }
+    }
+    for q in o.machine.iter().flat_map(|m| m.split([',', '，'])).map(str::trim).filter(|q| !q.is_empty()) {
+        let m = ctx.find_id(q, Want::Live)?;
+        if !ids.contains(&m) {
+            ids.push(m);
+        }
+    }
+    let items: Vec<Value> = ids.iter().map(|i| json!({"machine_id": i.0})).collect();
+    let d = ctx.c.post("/renewals/batch", &json!({"items": items, "cycles": o.cycles, "ref": o.bill_ref, "note": o.note, "dry_run": !o.yes}))?;
+    ctx.emit(&d, || {
+        let items = d["items"].as_array().map(Vec::as_slice).unwrap_or_default();
+        let rows: Vec<Vec<String>> = items
+            .iter()
+            .map(|i| {
+                let usd = i["usd_cents"].as_i64().map_or("未折算".into(), |u| money(u, "USD"));
+                vec![st(i, "/name"), format!("{} → {}", st(i, "/old_due"), st(i, "/new_due")), money_at(i, "/amount_cents", &st(i, "/currency")), usd]
+            })
+            .collect();
+        let t = table::render(&["机器", "到期日", "金额", "折合 USD"], &rows);
+        let tail = format!("共 {} 台，合计 {}", items.len(), crate::fx::total_cn(&d["total"]));
+        if d["dry_run"] == true {
+            format!("{t}\n{tail}{note}\n预览，未生效；只记账、顺延到期日，不会向供应商付款。加 --yes 执行")
+        } else {
+            format!("已登记续费：\n{t}\n{tail}{note}")
+        }
     });
     Ok(0)
 }
