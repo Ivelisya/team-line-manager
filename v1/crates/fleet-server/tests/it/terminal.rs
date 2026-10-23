@@ -223,7 +223,7 @@ async fn ticket_needs_session_and_reverification() {
 
     // 目标不对、名额不够在再验证之前就回（不必先输密码）
     for (b, want) in [
-        (json!({"kind": "router", "id": m}), StatusCode::BAD_REQUEST),
+        (json!({"kind": "router", "id": m}), StatusCode::NOT_FOUND),
         (json!({"kind": "vm", "id": m}), StatusCode::BAD_REQUEST),
         (json!({"kind": "machine", "id": Uuid::now_v7()}), StatusCode::NOT_FOUND),
     ] {
@@ -231,7 +231,7 @@ async fn ticket_needs_session_and_reverification() {
         assert_eq!(s, want, "{v}");
     }
     let (_, v) = ticket(&t, &t.cookie, json!({"kind": "router", "id": m})).await;
-    assert_eq!(v["error"]["message"], "软路由终端稍后开放");
+    assert_eq!(v["error"]["message"], "没有这台软路由");
     for (i, (kind, lc)) in [("vps", "retired"), ("vps", "provisioning"), ("vps", "failed"), ("vps", "draft"), ("proxy", "active")].into_iter().enumerate() {
         let id = seed_machine(&t, team, 10 + i as i32, kind, lc, (&format!("192.0.2.{}", 10 + i), 22), None).await;
         let (s, v) = ticket(&t, &t.cookie, json!({"kind": "machine", "id": id})).await;
@@ -402,6 +402,56 @@ async fn websocket_checks_origin_ticket_and_session() {
     assert_eq!(titles, ["关闭网页终端", "打开网页终端"]);
     let summary = log[0]["summary"].as_str().unwrap();
     assert!(summary.starts_with("团队1-02（登录宿主机 团队1-01） · ") && summary.contains("上行 0 字节"), "{summary}");
+    assert_eq!(t.st.terminals.live(), 0);
+}
+
+/// 库里放一台软路由：`state` = pending（还没接入）/ offline / online，隧道端口 `port`
+async fn seed_router(t: &T, name: &str, port: i32, state: &str) -> Uuid {
+    let id = Uuid::now_v7();
+    sqlx::query("insert into router (id, name, tunnel_port, tunnel_pubkey, tunnel_key_at) values ($1, $2, $3, 'ssh-ed25519 AAAA', now() - interval '1 hour')")
+        .bind(id)
+        .bind(name)
+        .bind(port)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    if state != "pending" {
+        sqlx::query("insert into router_status (router_id, ts, reachable, error, data, last_ok_at) values ($1, now(), $2, $3, '{}', now())")
+            .bind(id)
+            .bind(state == "online")
+            .bind((state == "offline").then_some("经隧道连不上路由：连接被拒绝（隧道没连上）"))
+            .execute(&t.st.db)
+            .await
+            .unwrap();
+    }
+    id
+}
+
+/// 软路由终端：经它的反向隧道（127.0.0.1:<隧道端口>）登录，票据、再验证、审计同机器；还没接入、离线的开不了票
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn router_terminal_goes_through_tunnel() {
+    let t = common::ops::setup().await;
+    // 隧道端口只能在 23000–23999：取一个本机没人听的，ssh 立刻报连接被拒
+    let port: i32 = (23900..23999).find(|p| std::net::TcpListener::bind(("127.0.0.1", *p as u16)).is_ok()).unwrap();
+    let pending = seed_router(&t, "路由P", port - 1, "pending").await;
+    let offline = seed_router(&t, "路由O", port - 2, "offline").await;
+    let r = seed_router(&t, "团队2-路由A", port, "online").await;
+    for (id, want) in [(pending, "还没接入过"), (offline, "现在离线（经隧道连不上路由：连接被拒绝（隧道没连上））")] {
+        let (s, v) = ticket(&t, &t.cookie, json!({"kind": "router", "id": id, "password": ADMIN_PW})).await;
+        assert!(s == StatusCode::CONFLICT && v["error"]["message"].as_str().unwrap().contains(want), "{s} {v}");
+    }
+    let addr = serve(&t).await;
+    let (s, v) = ticket(&t, &t.cookie, json!({"kind": "router", "id": r, "password": ADMIN_PW})).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let mut ws = connect(addr, Some(&t.cookie), Some(ORIGIN), None).await.unwrap();
+    send_ticket(&mut ws, v["data"]["ticket"].as_str().unwrap()).await;
+    let (out, reason, _) = until_exit(&mut ws, 15).await;
+    assert!(out.contains("Connection refused") && out.contains(&format!("port {port}")), "{out}");
+    assert!(reason.contains("255"), "{reason}");
+    let open = audits(&t, "terminal.open").await;
+    assert_eq!((open[0]["kind"].as_str(), open[0]["name"].as_str(), open[0]["ip"].as_str(), open[0]["port"].as_i64()), (Some("router"), Some("团队2-路由A"), Some("127.0.0.1"), Some(port as i64)));
+    let target: (String, Uuid) = sqlx::query_as("select target_kind, target_id from audit_log where action = 'terminal.close'").fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(target, ("router".to_string(), r));
     assert_eq!(t.st.terminals.live(), 0);
 }
 

@@ -113,6 +113,17 @@ pub async fn keyscan(host: &str, port: u16) -> anyhow::Result<Option<String>> {
     Ok(seen)
 }
 
+/// 经隧道交互式登录路由（网页终端）：同 `via_tunnel` 的密钥与主机公钥核对，不复用 ControlMaster（每个终端自己一条连接），
+/// 同 ssh::Target::interactive：不转发、关掉转义字符、要远端分配终端
+pub fn interactive(cfg: &Config, id: Uuid, port: i32) -> Command {
+    let mut c = Command::new("ssh");
+    c.args(["-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-i"]).arg(&cfg.ssh_key);
+    common(&mut c, &cfg.routers.known_hosts, id);
+    c.args(["-o", "ClearAllForwardings=yes", "-e", "none", "-tt"]);
+    c.arg("-p").arg(port.to_string()).arg("root@127.0.0.1");
+    c
+}
+
 /// ssh 常见报错的中文说法（按先后匹配，认不出的原样给出）
 const ZH: &[(&str, &str)] = &[
     ("banner exchange", "SSH 握手超时（路由忙，或隧道断了）"),
