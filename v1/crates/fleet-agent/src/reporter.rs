@@ -1,4 +1,4 @@
-//! 上报循环：每 interval_s 把缓冲打成一个 Report → 先落盘进队列 → 按序发送，确认后删除。
+//! 上报循环：每 `REPORT_INTERVAL_S`（10 秒）把缓冲打成一个 Report → 先落盘进队列 → 按序发送，确认后删除。
 //! 写不进磁盘（磁盘满等）时这份留在内存里、排在队列之后直接发送（`Unsaved`）：中控照样收得到遥测，健康信息里带着写盘错误。
 //!
 //! 磁盘 IO（读访问日志、fsync 写队列、删文件）全部放在 `spawn_blocking` 里，不占 async 运行时的工作线程；
@@ -107,7 +107,6 @@ pub struct Reporter {
     core: Arc<Mutex<Core>>,
     client: Arc<ServerClient>,
     boot_id: String,
-    interval_s: u32,
     fails: u32,
     /// 服务端连续拒收的报告数（被接收一次就清零）
     rejects: u32,
@@ -115,9 +114,9 @@ pub struct Reporter {
     unsaved: Option<Unsaved>,
 }
 
-/// 失败期间建报的间隔：正常 interval_s，连续失败时至少 OFFLINE_BUILD_INTERVAL
-fn build_interval(interval_s: u32, fails: u32) -> Duration {
-    let normal = Duration::from_secs(interval_s as u64);
+/// 失败期间建报的间隔：正常 `fleet_proto::REPORT_INTERVAL_S`（常量，不听服务端的 `ReportAck.interval_s`），连续失败时至少 OFFLINE_BUILD_INTERVAL
+fn build_interval(fails: u32) -> Duration {
+    let normal = Duration::from_secs(fleet_proto::REPORT_INTERVAL_S as u64);
     if fails > 0 {
         normal.max(OFFLINE_BUILD_INTERVAL)
     } else {
@@ -134,11 +133,11 @@ impl Reporter {
         let stats = load_json::<StatsFile>(&stats_path(&cfg)).unwrap_or_default();
         tracing::info!(pending = queue.len(), seq = seq.seq, carried_entries = stats.carry.len(), "上报器启动");
         let core = Arc::new(Mutex::new(Core { queue, seq, tailer, stats, disk: DiskLog::default() }));
-        Ok(Self { sh, core, client, boot_id: host::boot_id(), interval_s: 10, fails: 0, rejects: 0, next_send: Instant::now(), unsaved: None })
+        Ok(Self { sh, core, client, boot_id: host::boot_id(), fails: 0, rejects: 0, next_send: Instant::now(), unsaved: None })
     }
 
     pub async fn run(mut self, mut sd: watch::Receiver<bool>) {
-        let mut next_build = Instant::now() + build_interval(self.interval_s, self.fails);
+        let mut next_build = Instant::now() + build_interval(self.fails);
         let mut tick = tokio::time::interval(Duration::from_secs(1));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -152,7 +151,7 @@ impl Reporter {
             }
             let now = Instant::now();
             if now >= next_build {
-                next_build = now + build_interval(self.interval_s, self.fails);
+                next_build = now + build_interval(self.fails);
                 let mut more = self.build_and_push(true).await;
                 // 访问日志有积压：在时间预算内追加只含访问事件的报告，尽快追上。
                 // 上报连续失败时不追：离线期间日志文件本身就是缓冲，不必把它大量搬进队列
@@ -255,9 +254,6 @@ impl Reporter {
             };
             match out {
                 Outcome::Ok(ack) => {
-                    if ack.interval_s > 0 {
-                        self.interval_s = ack.interval_s.clamp(2, 300);
-                    }
                     let local_seq = lock(&self.core).seq.seq;
                     if ack.accepted_seq > local_seq {
                         // 服务端已确认的序号比本地发出过的最大序号还大（时钟回拨 / 本地状态丢失）：
@@ -484,10 +480,9 @@ mod tests {
 
     #[test]
     fn build_interval_stretches_only_when_failing() {
-        assert_eq!(build_interval(10, 0), Duration::from_secs(10));
-        assert_eq!(build_interval(10, 1), OFFLINE_BUILD_INTERVAL);
-        // 服务端要求更长的间隔时尊重它
-        assert_eq!(build_interval(120, 3), Duration::from_secs(120));
+        assert_eq!(build_interval(0), Duration::from_secs(10));
+        assert_eq!(build_interval(1), OFFLINE_BUILD_INTERVAL);
+        assert_eq!(build_interval(3), OFFLINE_BUILD_INTERVAL);
     }
 
     fn tmp(n: &str) -> crate::util::TmpDir { crate::util::TmpDir::new(&format!("rep-{n}")) }

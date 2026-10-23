@@ -193,12 +193,8 @@ async fn once(cfg: Config) -> Result<()> {
         sent_at_ms: util::now_ms(),
         info: Some(host::collect_info(hc.ifaces())),
         host: hs,
-        entries: vec![],
-        probes: vec![],
-        access: vec![],
         xray: xs,
-        agent_health: None,
-        ping: vec![],
+        ..Default::default()
     };
     println!("{}", serde_json::to_string_pretty(&r)?);
     let tok = std::fs::read_to_string(&cfg.token_file).map(|t| t.trim().len()).unwrap_or(0);
