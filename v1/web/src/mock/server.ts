@@ -400,7 +400,7 @@ function createMachine(it: ProvisionItem, c: MockCheck): MachineView {
     plan: plan ? { id: plan.id, name: plan.name, bandwidth_mbps: plan.bandwidth_mbps, traffic_gb: plan.traffic_gb } : null, service_ref: it.service_ref ?? null,
     sub_template: templateOf(plan ?? undefined, pv ?? undefined), lifecycle: 'provisioning', lifecycle_reason: null, note: it.note ?? '', revision: 1, created_at: iso(), activated_at: null, retired_at: null, spare_from: null, spare_since: null, recycle_on: null,
     subscription: it.subscription?.due_date ? subCalc({ price_cents: it.subscription.price_cents ?? plan?.price_cents ?? 0, currency: plan?.currency ?? META.defaults.currency, cycle: it.subscription.cycle ?? plan?.cycle ?? META.defaults.cycle, due_date: it.subscription.due_date, due_days: 0, billing_tz: it.subscription.billing_tz ?? pv?.timezone ?? META.org_timezone, auto_renew: false, remind_days: pv?.remind_days ?? META.defaults.remind_days, traffic_gb: plan?.traffic_gb || null, traffic_reset_day: 1 } as NonNullable<MachineView['subscription']>) : null,
-    agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, nic: null, month_counted_from: null, quota: { used: 0, period_start: '', period_end: null, mode: 'monthly', counted_from: null, rule: null, base: null, limit_gb: null, limit_source: 'none' }, health: { status: 'unknown', reasons: [{ key: 'provisioning', severity: 'info', text: '上架作业进行中' }] }, active_job: null, failed_job: null, open_incidents: 0, maintenance: false,
+    agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, nic: null, month_counted_from: null, quota: { used: 0, period_start: '', period_end: null, mode: 'monthly', counted_from: null, rule: null, base: null, limit_gb: null, limit_source: 'none', daily_avg: null, forecast_full_at: null }, health: { status: 'unknown', reasons: [{ key: 'provisioning', severity: 'info', text: '上架作业进行中' }] }, active_job: null, failed_job: null, open_incidents: 0, maintenance: false,
     relay: it.kind === 'relay' ? { public_host: it.ip, generation: 1, applied_generation: 0, applied_at: null, apply_error: null, port_min: 20001, port_max: 20999 } : null,
     tune: it.kind === 'proxy' || h ? null : { profile: null, at: null, current: false, params: null },
   };
@@ -1088,6 +1088,33 @@ R('GET', '/relays/([^/]+)/evacuate', ({ params, query }) => {
   }
   return { from: src.name, to: dst.name, jobs, skipped, warnings: [], router_restarts: [], share_changed: jobs.length > 0, note: SHARE_NOTE };
 });
+// 搬迁建议（mock 的简化算法：按本月流量从大到小，凑够需要少走的日均）
+R('GET', '/relays/([^/]+)/rebalance', ({ params, query }) => {
+  const src = machine(params[0]); const q = src.quota; const limit = (q.limit_gb ?? 0) * 1e9;
+  const skip = new Set((query.get('exclude') ?? '').split(',').filter(Boolean));
+  const room = (x: MachineView) => (x.quota.limit_gb ?? 0) * 1e9 - x.quota.used;
+  const target = db.machines.filter((x) => x.kind === 'relay' && x.lifecycle === 'active' && x.id !== src.id && x.health.status !== 'down').sort((a, b) => room(b) - room(a))[0] ?? null;
+  const days = Math.max(1, (Date.parse(q.period_end ?? '') - Date.now()) / 864e5);
+  const daily = q.daily_avg ?? 0; const allowed = (limit - q.used) / days;
+  const needed = daily > 0 && q.used + daily * days > limit;
+  const es = src.entries.filter((e) => e.lifecycle === 'active' && !e.direct && !skip.has(e.node.id) && !target?.entries.some((t) => t.node.id === e.node.id))
+    .map((e) => ({ e, month: e.traffic.month_up + e.traffic.month_down })).sort((a, b) => b.month - a.month);
+  const total = es.reduce((s, x) => s + x.month, 0) || 1;
+  const moves: { node: { id: string; name: string }; entry_id: string; port: number; period_bytes: number; daily_bytes: number; needs_from: boolean }[] = []; let cut = 0;
+  for (const x of es) {
+    if (!needed || daily - cut <= allowed) break;
+    const d = Math.round((daily * x.month) / total); cut += d;
+    moves.push({ node: x.e.node, entry_id: x.e.id, port: x.e.port, period_bytes: x.month, daily_bytes: d, needs_from: false });
+  }
+  const pct = (v: number) => Math.round((v * 1000) / limit) / 10;
+  return {
+    relay: { id: src.id, name: src.name }, limit_gb: q.limit_gb, used: q.used, period_end: q.period_end, daily_avg: q.daily_avg, forecast_full_at: q.forecast_full_at, projected_pct: daily > 0 ? pct(q.used + daily * days) : null,
+    needed, ok: needed && moves.length > 0 && daily - cut <= allowed, reason: needed ? null : '按近 7 天的速度，重置前用不满，不用搬', safe_pct: 80,
+    target: target && { id: target.id, name: target.name, limit_gb: target.quota.limit_gb, used: target.quota.used, daily_avg: target.quota.daily_avg, projected_pct: target.quota.limit_gb ? pct2(target, 0) : null },
+    moves, after: { daily_avg: daily - cut, projected_pct: pct(q.used + (daily - cut) * days) }, target_after: { fits: true, projected_pct: target?.quota.limit_gb ? pct2(target, cut) : null },
+  };
+});
+const pct2 = (x: MachineView, extra: number) => { const days = Math.max(1, (Date.parse(x.quota.period_end ?? '') - Date.now()) / 864e5); return Math.round(((x.quota.used + ((x.quota.daily_avg ?? 0) + extra) * days) * 1000) / ((x.quota.limit_gb ?? 1) * 1e9)) / 10; };
 R('POST', '/machines/([^/]+)/move', ({ params, body }) => {
   const m = machine(params[0]);
   const plan = planMove(m, body.to_relay_id, body.from_relay_id);

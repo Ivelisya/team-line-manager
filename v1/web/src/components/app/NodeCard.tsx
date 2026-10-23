@@ -10,7 +10,7 @@ import { SPRING } from '@/lib/motion';
 import { ArrowDown, ArrowDownUp, ArrowUp, Calendar, CircleDollarSign, Cpu, Database, Gauge, Globe, HardDrive, MemoryStick, MoreHorizontal, Radar, RefreshCw, Settings2, PanelRightOpen, ServerOff, Wallet } from 'lucide-react';
 import type { DueState, MachineView, ProbeBeats, Subscription } from '@/lib/types';
 import * as F from '@/lib/format';
-import { BEAT_LEGEND, beatCells, beatRate, beatTitles, dueTone, entryText, errText, hasHost, hostRel, isQuiet, limitGb, liveRate, monthFlow, monthFlowTip, monthTraffic, priceHint, probeSummary, quota, quotaGb, quotaTip, quotaUsedLabel, recycleOn, remainingValue, resourceMeters, subLabel, trafficTotal, beatLegendRelay, reachWho, reachWin, relayRttMs } from '@/lib/derive';
+import { BEAT_LEGEND, beatCells, beatRate, beatTitles, dueTone, entryText, errText, hasHost, hostRel, isQuiet, limitGb, liveRate, monthFlow, monthFlowTip, monthTraffic, priceHint, probeSummary, quota, quotaForecast, quotaGb, quotaTip, quotaUsedLabel, recycleOn, remainingValue, resourceMeters, subLabel, trafficTotal, beatLegendRelay, reachWho, reachWin, relayRttMs } from '@/lib/derive';
 import { useProbeBeats } from '@/lib/queries';
 import { useReachLabel } from '@/lib/probePoints';
 import { useLiveSeries } from '@/lib/live';
@@ -181,6 +181,7 @@ function ProbePair({ m, onOpen }: { m: MachineView; onOpen: Open }) {
  *  同机 IP 节点自己没设上限：额度与宿主机共用（算在宿主机的已用里） */
 function QuotaSlot({ m, onOpen, large }: { m: MachineView; onOpen: Open; large?: boolean }) {
   const q = quota(m);
+  const fc = quotaForecast(m);
   // 没设套餐 ≠ 不限：不画额度，只写一句「未设置」
   if (q.unset) return <div className="nc-quota is-unl"><span className="nc-qhead"><span className="nc-qlabel t-muted"><Database />流量额度未设置</span></span></div>;
   return (
@@ -198,6 +199,7 @@ function QuotaSlot({ m, onOpen, large }: { m: MachineView; onOpen: Open; large?:
         {q.limit > 0 && <span className="nc-quse" data-tip={`${quotaUsedLabel(q)} ${F.str(quotaGb(q.used))} / ${F.str(limitGb(q.limit))}\n${quotaTip(m)}`}>{quotaUsedLabel(q)} <Num f={quotaGb(q.used)} /> / <Num f={limitGb(q.limit)} /><FromTag from={q.from} start={q.start} sep /></span>}
       </span>
       {q.rem != null && <Cells pct={q.pct} colors={QUOTA_COLORS} />}
+      {fc && <span className="nc-qfc">{fc}</span>}
       <span className="sr-only">（查看费用页签）</span>
     </button>
   );

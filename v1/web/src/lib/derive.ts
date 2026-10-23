@@ -147,6 +147,11 @@ export function quota(m: MachineView) {
   const unset = !(limit > 0) && !shared && m.quota.limit_source === 'none' && !m.plan && !isOverridden(m.subscription, 'traffic_gb');
   return { limit, used, start, end, from, base, rolling: m.quota.mode === 'rolling30', rule, pct: limit > 0 ? (used / (limit * GB)) * 100 : null, rem: limit > 0 ? Math.max(0, limit * GB - used) : null, shared, unset, unlimited: !(limit > 0) && !shared && !unset, source: m.quota.limit_source };
 }
+/** 预计用满的一句话（服务端按近 7 天日均算好，早于重置日才有）：「预计 11-02 用满（重置 11-13）」；没有为 null */
+export function quotaForecast(m: MachineView): string | null {
+  const { forecast_full_at: at, period_end: end } = m.quota;
+  return at ? `预计 ${mmdd(at)} 用满${end ? `（重置 ${mmdd(end)}）` : ''}` : null;
+}
 /** 额度格里已用的叫法：滚动 30 天的是「近 30 天已用」 */
 export const quotaUsedLabel = (q: ReturnType<typeof quota>) => (q.rolling ? '近 30 天已用' : '本周期已用');
 /** 额度怎么计的一句话：规则 · 按哪块网卡（家宽代理、同机 IP 节点没有自己的网卡，按业务流量下载加上传，不跟供应商的计量规则） */
@@ -247,18 +252,22 @@ export function hostRel(host: MachineView['host_machine'], nodes: MachineView['i
   if (nodes.length) return { text: `+${nodes.length} IP`, tip: `还有 ${nodes.length} 个同机 IP 节点：${nodes.map((x) => x.name).join('、')}` };
   return null;
 }
-/** 流量额度吃紧（首页 KPI）：本周期已用 ≥ meta 的 traffic_quota_warn_pct（同额度告警）的台数（没设额度的不计），
- *  和用得最多的那台（已用百分比向下取整；点它打开那台的流量页签）；没有吃紧的 top 为 null */
+/** 流量额度吃紧（首页 KPI，同额度告警）：本周期已用 ≥ meta 的 traffic_quota_warn_pct，或预计 7 天内用满（forecast_full_at）的台数（没设额度的不计），
+ *  和最紧的那台（预计用满最早的；都没有预测的取已用百分比最高的，向下取整；点它打开那台的流量页签）；没有吃紧的 top 为 null。
+ *  top.forecast：那台预计用满的一句话，没有预测为 null */
 export function quotaTight(list: MachineView[]) {
   const warn = meta().thresholds.traffic_quota_warn_pct;
-  let n = 0; let top: { id: string; name: string; pct: number } | null = null;
+  const soon = Date.now() + 7 * 864e5;
+  let n = 0; let top: { id: string; name: string; pct: number; at: number; forecast: string | null } | null = null;
   for (const m of list) {
     const { pct } = quota(m);
-    if (pct == null || pct < warn) continue;
+    const at = m.quota.forecast_full_at ? Date.parse(m.quota.forecast_full_at) : Infinity;
+    if (!(pct != null && pct >= warn) && at > soon) continue;
     n++;
-    if (!top || pct > top.pct) top = { id: m.id, name: m.name, pct };
+    const p = pct ?? 0;
+    if (!top || at < top.at || (at === top.at && p > top.pct)) top = { id: m.id, name: m.name, pct: p, at, forecast: quotaForecast(m) };
   }
-  return { n, top: top && { ...top, pct: Math.floor(top.pct) } };
+  return { n, top: top && { id: top.id, name: top.name, pct: Math.floor(top.pct), forecast: top.forecast } };
 }
 /** 集群状态在线率格条的悬停：离线（agent 不再上报）的机器名，同 overview.offline 的口径（同机 IP 节点借宿主机的 agent，不计） */
 export const offlineNames = (list: MachineView[]) => list.filter((m) => m.agent && !m.agent.online && !m.host_machine).map((m) => m.name);
