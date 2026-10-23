@@ -38,7 +38,7 @@
 |---|---|
 | `read` | 所有 GET，**不含**下面三类 |
 | `write` | 所有非 GET 的业务写操作（不含 `/machines/{id}/exec`） |
-| `secrets` | `GET /entries/{id}/share` 这类凭据；客户端订阅的管理 `/client-subs`（读写都要） |
+| `secrets` | `GET /entries/{id}/share`、`POST /entries/share` 这类凭据；客户端订阅的管理 `/client-subs`（读写都要） |
 | `exec` | `POST /machines/{id}/exec`、`GET /machines/{id}/logs`、`GET /server/logs`（都是通过 SSH 或本机读取）；`POST /audit/ssh`（`fleetctl ssh` 登录前报的审计） |
 
 scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` 的管理与网页终端（`/terminal/...`）只允许会话用户，用密钥调用一律 403。
@@ -181,6 +181,8 @@ EntryView = { id, relay:{id,name}, node:{id,name}, direct, port, lifecycle, appl
 | POST | `/machines/{id}/subscription/preview` | 请求体同上一条，只预览：同样校验、写入、规整，读出生效值后整个回滚（不写审计、不广播），返回 `{dry_run:true, effective:{due_date,price_cents,currency,cycle,billing_tz,remind_days,traffic_gb,traffic_reset_day,auto_renew,overrides[]}}`（fleetctl 用它在确认前显示「改前 → 改后」）。单独的路由而不是 PUT 的 query 参数：旧中控没有它（404），不会把预览当成真改；fleetctl 收到 404 报「中控版本较旧，先升级中控再用 subscription set」，不提交 |
 | POST | `/machines/{id}/renewals` | `{new_due?, cycles?, amount_cents?, note?}`，`new_due` 与 `cycles` 给一个（都给、都不给、`cycles` 不在 1–120 时 400）：`cycles` = 中控按订阅生效的 `cycle` 从当前到期日推几个周期，落在账单日（`billing_day`，目标月没有这一天时落到月末；账单日不变，所以 31 号的 1-31 → 2-28 → 3-31，不会漂成 3-28；fleetctl `renew --cycles`）；`new_due` 直接给新到期日（网页对话框默认填 `subscription.next_due`），账单日同改订阅：落在现有账单日上的不动，否则改成它是几号。新到期日要晚于当前的。只顺延到期日，单独设置照旧 → `{id, old_due, new_due}`。**自动续费**（`auto_renew`）：中控每小时的维护在账单时区的今天晚于到期日时按周期顺延到不早于今天（账单日不变），每期记一条续费记录（`amount_cents` 取生效价格，`note`「自动续费」，`actor`「系统」）与审计 `renewal`（`detail.auto = true`，摘要「到期 … → …（自动续费）」）；先于备用到期判断，开了自动续费的备用机器不会被回收。只记账，不向供应商付款 |
 | GET | `/machines/{id}/renewals` | |
+| POST | `/renewals/batch` | 批量登记续费：`{items:[{machine_id, amount_cents?}], cycles?(默认 1), ref?(账单号，进备注「账单 xxx」), note?, dry_run?}`。一个事务里逐台按订阅周期顺延（逻辑同单台 `cycles`），金额没给取订阅生效价 × 周期数；有一台不行（没有订阅等，报错带机器名）整批不登记；审计只一条 `renewal.batch`（`detail.machines` 列出每台的新旧到期日与金额）。`dry_run` 照常校验、写，读出结果后整个回滚，不记审计、不广播。→ `{dry_run, items:[{machine_id, name, old_due, new_due, amount_cents, currency, usd_cents}], total}`（`total` 同月费合计的形状：USD 合计 + 各币种 + 未折算）。一次 1–200 台 |
+| GET | `/billing/due` | 待付清单：`?days=30`（未来多少天内到期，含已过期，按各订阅账单时区的今天算；默认 30）或 `?until=YYYY-MM-DD`，`include_spare=true` 带备用团队（默认不带）。只列在用机器；开了自动续费的单列 `auto`、不进待付。→ `{days, until, total, groups:[{provider:{id,name,panel_url}, due_date, machines:[{id,name,kind,due_date,due_days,cycle,price_cents,currency,price_usd_cents,spare}], total}], auto:[{provider, machine}]}`，`groups` 按到期日、供应商排；`total` 是 USD 合计（同月费合计的形状，`by_currency` 是原币种小计）；价格是订阅每期的生效价 |
 | GET | `/teams/{id}/renumber` | 预览：`{data:{changes:[{machine_id,old_name,new_name}],notes:[string],token}}`。notes：各路由快照里指向要改名的节点的出口（出口名是路由上自己起的，不跟着改） |
 | POST | `/teams/{id}/renumber` | `{token}`（预览返回的，防止预览后数据变了）→ 一次生效 |
 
@@ -223,6 +225,7 @@ ProvisionItem = {
 | POST | `/entries/{id}/actions` | `{action:"enable"\|"disable"\|"rotate", confirm?}`；rotate 需 `confirm="<线路机名>:<端口>"`，没给或不对 400，消息后面列出指向它的软路由出口、`detail.router_exits` 同下。→ `{generation, router_exits}`（停用、轮换时是指向它的软路由出口，启用为 `[]`）：轮换、停用不会改路由，这些出口之后连不上 |
 | GET | `/entries/{id}/routers` | 指向这个入口的软路由出口（各路由最近一次采集的快照里 `exits[].entry.id` 是它的）：`[{id, name, state, exits:[出口名]}]`，路由按列表顺序；入口不存在 404。轮换、停用的确认里列出 |
 | GET | `/entries/{id}/share` | `{data:{url}}`（vless:// 分享链接；记审计） |
+| POST | `/entries/share` | `{ids:[入口 id]}`（1–500 条）→ `{items:[{id, name, url}]}`，按请求顺序；要 `secrets`；一次请求只记一条审计 `entry.share`（`detail.entries` 列出入口名，不记链接）；有一条不存在整批 404 |
 | POST | `/machines/{node_id}/entries` | 给节点再挂一条入口：`{relay_id}` → 作业（`attach_entry`，审计 `entry.add`）。`relay_id` 指向的线路机不存在 400；线路机不在用、节点在它上面已有入口 409（不建作业）。**线路机直出入口**：路径和 `relay_id` 都是这台线路机（`POST /machines/{线路机}/entries {relay_id: 线路机}`），出站是 freedom、从线路机自己的公网 IP 出去，出口验收期望的就是线路机的 IP；每台线路机至多一条（409「这台线路机已经有直出入口」），`relay_id` 填别的线路机 409。端口、REALITY 参数、代数、等应用、出口验收、审计与普通入口相同；作业的「更新节点防火墙」一步跳过。分享链接 # 后是「线路机名-直出」，线路机改名后随期望状态同步 |
 
 ## 客户端订阅

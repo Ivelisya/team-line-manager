@@ -1,6 +1,6 @@
 ---
 name: fleet-ops
-description: 团队线路管理（fleet）的运维入口。查节点或线路机状态、排查告警、处理到期与续费提醒（看订阅、登记续费、改订阅）、维护前开维护窗口或静默告警（可预约）、看服务日志、在节点上执行命令、登录机器或软路由、上架新机器、管理供应商与套餐（新建、改价、归档、删除）、替换节点（新机器接替旧节点、软路由跟着换、旧的放备用）、退役（进备用、立即回收）与回收站（含旧面板导入）、改名与编号、升级 agent、取入口分享链接、管理客户端订阅（自己的 Clash Verge / OpenClash / v2rayN 按一个链接拉全部入口）、查看与接入软路由（OpenWrt + OpenClash：状态、出口、出口历史成功率与延迟、客户端、接入命令、一键部署）、管理探测点（从靠近客户的地方如香港测线路机入口：安装、主探测来源、升级）、查看或设置三网 PING（线路机到电信 / 联通 / 移动的延迟丢包）时使用，在中控上运维也用它；一律先用 fleetctl（登录用 fleetctl ssh），不要直接 ssh、psql 或手拼 curl。
+description: 团队线路管理（fleet）的运维入口。查节点或线路机状态、排查告警、处理到期与续费提醒（看订阅、未来待付清单、登记续费含批量、改订阅）、维护前开维护窗口或静默告警（可预约）、看服务日志、在节点上执行命令、登录机器或软路由、上架新机器、管理供应商与套餐（新建、改价、归档、删除）、替换节点（新机器接替旧节点、软路由跟着换、旧的放备用）、退役（进备用、立即回收）与回收站（含旧面板导入）、改名与编号、升级 agent、取入口分享链接、管理客户端订阅（自己的 Clash Verge / OpenClash / v2rayN 按一个链接拉全部入口）、查看与接入软路由（OpenWrt + OpenClash：状态、出口、出口历史成功率与延迟、客户端、接入命令、一键部署）、管理探测点（从靠近客户的地方如香港测线路机入口：安装、主探测来源、升级）、查看或设置三网 PING（线路机到电信 / 联通 / 移动的延迟丢包）时使用，在中控上运维也用它；一律先用 fleetctl（登录用 fleetctl ssh），不要直接 ssh、psql 或手拼 curl。
 ---
 
 # fleet-ops
@@ -50,7 +50,7 @@ fleetctl ssh router <名称> [-- 'logread | tail -50']        # 软路由（Open
 | 指标曲线 | `fleetctl --json series <机器> --range 1h\|6h\|24h\|7d [--metric host\|traffic\|probe]` |
 | 近 N 天可用率：每天 TCP / 出口探测的成功率，看哪天断过 | `fleetctl --json uptime <机器> [--days 30]`（1–90 天，按机器的账单时区分天）：`{days, items:[{date,tcp_total,tcp_ok,egress_total,egress_ok}], tcp_pct, egress_pct}`，`items` 旧→新、最后一项是今天（还没过完），没有探测的天全为 0；`*_pct` 是整段成功率（0–100），没有探测为 null。线路机是挂在它上面所有入口的合计 |
 | 告警 / 确认告警 | `fleetctl --json incidents [--all] [--machine <机器>]`、`fleetctl ack <id>` |
-| 快到期的机器、一台机器的费用与续费记录 | `fleetctl --json ls --due 7`（7 天内到期、含已过期的在用机器，按到期排；`status` 的 `overview.due_soon` / `overdue` 是按各台提前提醒天数算的即将到期 / 已过期台数）、`fleetctl --json billing <机器>`（登记续费、改订阅见下文「到期与续费」） |
+| 快到期的机器、一台机器的费用与续费记录 | `fleetctl --json ls --due 7`（7 天内到期、含已过期的在用机器，按到期排；`status` 的 `overview.due_soon` / `overdue` 是按各台提前提醒天数算的即将到期 / 已过期台数）、`fleetctl --json billing <机器>`、未来待付清单 `fleetctl --json billing --due 30d --by-provider`（登记续费、改订阅见下文「到期与续费」） |
 | 静默与维护窗口（进行中 / 已预约） | `fleetctl --json silence ls`（开、删见下文「维护窗口与静默」） |
 | 入口列表 | `fleetctl --json entries [<机器>]` |
 | 作业 | `fleetctl --json jobs [--active]`、`fleetctl job <id>`、`fleetctl job <id> --follow` |
@@ -160,6 +160,13 @@ fleetctl silence rm <id 前缀>                                                 
    fleetctl renew <机器> --cycles 3 --yes                                           # 一次付了 3 期：推 3 个周期，金额默认 3 期的钱
    fleetctl renew <机器> --to 2027-01-15 --amount 39.46 --note "账单 #2041" --yes    # 按供应商面板上的新到期日与实付金额
    ```
+   一次付了同一家的好几台（到期日扎堆时）：**批量登记**，不要逐台 `renew`。先 `fleetctl billing --due 30d --by-provider` 看按 供应商 × 到期日 分组的待付清单（机器、原币种小计、折合 USD、供应商控制台链接；备用团队的不在里面，开了自动续费的单列、不算待付），向用户确认哪些已付，再：
+   ```
+   fleetctl renew 团队2-07,团队2-08,团队2-09 --ref "#2041"               # 先预览：每台 原到期 → 新到期、金额、币种、折合 USD；没加 --yes 不执行
+   fleetctl renew --provider GOMAMI --due 2026-11-20 --ref "#2041"        # 按供应商选：该供应商到期日不晚于 11-20（或 --due 30d）的在用机器，不含备用团队和自动续费的（--include-spare 才带备用）
+   fleetctl renew --provider GOMAMI --due 2026-11-20 --ref "#2041" --yes  # 预览无误后执行：一个事务里全部登记，审计只一条（列出机器）
+   ```
+   批量按订阅周期顺延（`--cycles N` 推 N 期）、金额各取订阅价格 × 期数；`--to` / `--amount` 只能用在单台。有一台不行（没有订阅等）整批都不登记。`--ref` 是账单号，写进每条续费记录的备注。
    推周期时目标月没有那一天按月末（1-31 推一个月是 2-28，闰年 2-29）。`--amount` 是订阅币种的金额，写 `39.46`（最多两位小数），实付和订阅价格不同就按实付填。登记后续费类告警下一轮评估（≤30 秒）自动恢复。
 4. 不续了：不登记；机器不再用就按用户的意思退役（`retire`）。不要拿静默盖住到期提醒。
 5. 订阅跟随模板：价格、币种、周期、流量上限跟随**套餐**，账单时区、提前提醒天数、流量重置（自然月 / 账单日 / 滚动 30 天）跟随**供应商**；订阅自己只存到期日、自动续费和「单独设置」的项。同一套餐的机器要一起调价 / 改额度，改套餐：`fleetctl plan set <套餐> --price 45 --yes`（`--traffic-gb`、`--currency`、`--cycle` 同理；立即对用它、没单独设置的机器生效，确认语写了几台在用机器跟着变，先向用户确认），不要逐台 `subscription set`；账单时区、提醒天数、流量重置整家一起改用 `fleetctl provider set <供应商> … --yes`。`billing` 的每项后面写着「（跟随套餐）」「（跟随供应商）」「（单独设置）」，`--json` 里 `subscription.overrides` 列出单独设置了的字段、`sub_template` 是跟随的值。
@@ -200,6 +207,8 @@ fleetctl repoint <旧入口> --to <新入口> [--router <路由>]… --yes [--fo
 fleetctl provision ...                                     # 先 check，再确认，再提交
 fleetctl retry <作业> [--reset-host-key] [--password-env VAR]   # 重试失败作业；只有作业因主机指纹不符失败、且确认机器重装过才加 --reset-host-key（同机 IP 节点不行：对宿主机升级 agent 后重试那个作业）；在用机器指纹变了也走这条：先 upgrade-agent 让它失败再重试；报「没有可用的 root 密码」时用 --password-env 补密码
 fleetctl renew <机器> [--cycles N | --to YYYY-MM-DD] [--amount 39.46] [--note …] --yes   # 登记续费：用户确认付过款之后（见「到期与续费」）
+fleetctl renew <机器,机器,…> | --provider <供应商> --due <Nd|日期> [--include-spare] [--ref 账单号] [--yes]   # 批量登记续费：不加 --yes 只预览；--yes 一个事务、一条审计
+fleetctl billing --due <Nd|日期> [--by-provider] [--include-spare]   # 未来待付清单：按 供应商 × 到期日 分组，原币种小计与 USD 合计
 fleetctl subscription set <机器> --price 45 … --yes          # 改订阅：只改给了的字段；值 = 单独设置，none = 改回跟随套餐 / 供应商
 fleetctl settings retention [--raw 7] [--hourly 31] --yes   # 访问记录保留期（各 1–90 天，汇总不短于原始记录；只给一个时另一个不变）：调短后超出的访问记录几分钟内删掉、找不回来，只在用户明确要求时改
 fleetctl settings fx CNY --per-usd 7.12 --yes   # 手动设置汇率（或 --usd 0.1404 = 1 CNY 合多少 USD）：之后每天的自动更新不再改它；--auto 改回自动的值；只在用户给了汇率或明确要求时改
@@ -228,7 +237,7 @@ fleetctl plan rm <套餐> --yes                               # 还有机器（�
 - 改出口指向（用户说「把软路由的直连 / 默认出口换成线路机3」）：`fleetctl repoint 线路机1-直出 --to 线路机3-直出 [--router 团队2-老办公室]`。入口写入口 id、`线路机名:端口` 或节点显示名（直出入口是「线路机名-直出」）；目标线路机还没有直出入口就先 `fleetctl entry add-direct <线路机> --yes --follow`。旧入口照常在用（别的客户端、个人订阅还能用它），不要的话另行停用。不要手改路由的 OpenClash 配置、不要用 router-swap 一类脚本。
 - 改名：`fleetctl rename <机器> --team 团队2 --number 3`。
 - 国家（名字旁的国旗）：默认按 IP 查离线库自动定；查错了或想固定就 `fleetctl rename <机器> --country JP`（ISO 3166-1 两位代码，英国是 GB），`--country auto` 改回自动；上架时也可以 `fleetctl provision … --country US`。
-- 分享链接 `fleetctl share <入口>` 需要 `secrets` scope，会记审计；链接是凭据，只给用户本人，不写进文件或日志。
+- 分享链接 `fleetctl share <入口>` 需要 `secrets` scope，会记审计；链接是凭据，只给用户本人，不写进文件或日志。一批用 `fleetctl share --team <团队>` 或 `--machines a,b,c`（一次请求、一条审计，每行「名称 链接」，`--json` 给数组），不要逐个 `share`。给用户自己的客户端优先用订阅链接（`fleetctl sub`，换线路后自动更新），给别人才用 `share`。
 - 客户端订阅（用户自己的 Clash Verge、OpenClash、v2rayN 一次拿全部入口）：`fleetctl sub ls|show <订阅>`；新建 `fleetctl sub add <名称> [--only-teams …|--except-teams …] [--no-direct] [--include <机器,…>] [--exclude <机器,…>]`（默认全部团队、不含备用团队、含线路机直出），改规则 `sub edit`，`sub rotate --yes` 旧链接立即失效，`sub rm --yes`。要 `secrets`；链接只在 add / rotate 输出一次，是凭据，只给用户本人。换节点（replace）、换线路机（move）、轮换凭据后用订阅的客户端会自动更新，不用再手改客户端配置。不要替用户把他现有的客户端改成订阅，那由用户决定。
 - 密钥管理（`fleetctl keys ...`）只认登录会话，AI 不做；需要新密钥时请用户在网页「设置 → API 密钥」创建。
 
