@@ -182,6 +182,18 @@ impl SeqState {
 pub struct AppliedFile {
     pub generation: u64,
     pub desired: DesiredState,
+    /// 写这份文件的 agent 版本（fleet_proto::build_version）；旧版本写的没有这个字段。
+    /// 启动时和自己的版本不一样 = 刚升级过：旧版本存下的期望状态里没有新版本才认识的字段（如三网 PING 的目标），
+    /// 中控的代数又没变，长轮询拿不到新的一份——desired_task 第一次拉取从代数 0 起，强制要一份完整的
+    #[serde(default)]
+    pub agent_version: Option<String>,
+}
+
+impl AppliedFile {
+    /// 这份文件是不是别的 agent 版本写的（升级后第一次启动）
+    pub fn written_by_other_version(&self) -> bool {
+        self.agent_version.as_deref() != Some(fleet_proto::build_version())
+    }
 }
 
 pub fn load_applied(cfg: &Config) -> Option<AppliedFile> {
@@ -190,7 +202,7 @@ pub fn load_applied(cfg: &Config) -> Option<AppliedFile> {
 
 /// 含 REALITY 私钥和出站密码，0600
 pub fn save_applied(cfg: &Config, d: &DesiredState) {
-    if let Err(e) = save_json(&applied_path(cfg), &AppliedFile { generation: d.generation, desired: d.clone() }, true) {
+    if let Err(e) = save_json(&applied_path(cfg), &AppliedFile { generation: d.generation, desired: d.clone(), agent_version: Some(fleet_proto::build_version().to_string()) }, true) {
         tracing::error!("保存 applied.json 失败：{e:#}");
     }
 }
@@ -198,6 +210,19 @@ pub fn save_applied(cfg: &Config, d: &DesiredState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 旧版本写的 applied.json 没有 agent_version：读得进来，并且算「别的版本写的」（升级后第一次拉取要从代数 0 起）
+    #[test]
+    fn applied_file_from_older_agent_counts_as_other_version() {
+        let d = crate::xray::render::tests::desired(vec![]);
+        let old: AppliedFile = serde_json::from_value(serde_json::json!({"generation": 26, "desired": serde_json::to_value(&d).unwrap()})).unwrap();
+        assert_eq!((old.generation, old.agent_version.as_deref()), (26, None));
+        assert!(old.written_by_other_version());
+        let mine = AppliedFile { agent_version: Some(fleet_proto::build_version().to_string()), ..old };
+        assert!(!mine.written_by_other_version());
+        let other = AppliedFile { agent_version: Some("0.1.0+0000000".into()), ..mine };
+        assert!(other.written_by_other_version());
+    }
 
     #[test]
     fn seq_is_monotonic_across_reload() {

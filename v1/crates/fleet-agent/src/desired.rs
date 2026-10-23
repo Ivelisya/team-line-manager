@@ -163,6 +163,12 @@ pub async fn desired_task(sh: Arc<Shared>, applier: Arc<Applier>, client: Arc<Se
     // 本版本解析不了的最新代数：已回报"版本过旧"，之后带着它去长轮询，直到中控出了更新的一代。
     // 应用成功就清零：中控代数回退（比它小）后不能再带着它去轮询，否则每次都立刻拿回同一代、无间隔空转
     let mut unreadable = 0u64;
+    // 刚升级过（applied.json 是别的 agent 版本写的）：第一次拉取从代数 0 起，向中控要一份完整的期望状态，
+    // 拿到新版本才认识的字段；中控的代数没变时只按代数比，会一直沿用旧版本存下的那份（见 AppliedFile::agent_version）
+    let mut refetch = load_applied(&sh.cfg).is_some_and(|a| a.written_by_other_version());
+    if refetch {
+        tracing::info!("期望状态是别的 agent 版本存下的（刚升级过），向中控重新要一份完整的");
+    }
     startup_align(&sh, &applier).await;
     let mut last_align = Instant::now();
     loop {
@@ -180,7 +186,7 @@ pub async fn desired_task(sh: Arc<Shared>, applier: Arc<Applier>, client: Arc<Se
         }
         // 重启路径的闸门关着时：带着失败的那一代去长轮询，服务端代数一变（有新配置）就返回；
         // 不变就 30 s 一次的 204，不会重复拿到同一代去重试。解析不了的那一代同理
-        let after = (if gate.remaining().is_some() { gate.gen } else { sh.applied_gen.load(Ordering::Relaxed) }).max(unreadable);
+        let after = if refetch { 0 } else { (if gate.remaining().is_some() { gate.gen } else { sh.applied_gen.load(Ordering::Relaxed) }).max(unreadable) };
         let t0 = Instant::now();
         let res = tokio::select! {
             r = client.get_desired(after) => r,
@@ -188,6 +194,7 @@ pub async fn desired_task(sh: Arc<Shared>, applier: Arc<Applier>, client: Arc<Se
         };
         let pause = match res {
             Outcome::Ok(Desired::Unchanged) => {
+                refetch = false;
                 fails = 0;
                 // 防止服务端异常地立刻返回 204 导致空转
                 (t0.elapsed() < Duration::from_secs(1)).then_some(Duration::from_secs(2))
@@ -199,6 +206,7 @@ pub async fn desired_task(sh: Arc<Shared>, applier: Arc<Applier>, client: Arc<Se
                 note_apply(&sh, &rep, None);
                 report_applied(&sh, &client, &rep, &mut sd).await;
                 unreadable = generation;
+                refetch = false;
                 fails = 0;
                 None
             }
@@ -213,6 +221,7 @@ pub async fn desired_task(sh: Arc<Shared>, applier: Arc<Applier>, client: Arc<Se
                 let rep = res.report;
                 let mut pause = None;
                 if rep.ok {
+                    refetch = false;
                     note_apply(&sh, &rep, None);
                     gate.clear();
                     let generation = d.generation;
