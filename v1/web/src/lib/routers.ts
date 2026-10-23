@@ -85,6 +85,13 @@ export const useRouter = (id: string | null) =>
 /** 曲线的轮询间隔随范围放大（`chartPoll`，同机器抽屉）；换范围时先留着上一段（调用方按 isPlaceholderData 调淡），换了路由不沿用 */
 export const useRouterMetrics = (id: string, range: string) =>
   useQuery({ queryKey: ['router-metrics', id, range], queryFn: ({ signal }) => get<RouterMetrics>(`/routers/${id}/metrics?range=${range}`, signal), staleTime: chartPoll(range), refetchInterval: chartPoll(range), refetchOnWindowFocus: false, placeholderData: (prev, pq) => (pq?.queryKey[1] === id ? keepPreviousData(prev) : undefined) });
+/** 配置变更（GET /routers/{id}/changes，新的在前，最多 200 条）：source = job 是中控作业改的（job_id / job_kind），router 是路由上改的；
+ *  diff 是出口的增删改（changed 在 server:port 变了时带 from / to，凭据变了 creds = true，凭据本身不出）；note 是比不出差异的原因 */
+export interface RouterChangeItem { exit: string; op: 'added' | 'removed' | 'changed'; from?: string; to?: string; creds?: boolean }
+export interface RouterChange { id: string; at: string; old_sha: string; new_sha: string; source: 'job' | 'router'; job_id: string | null; job_kind: string | null; diff: RouterChangeItem[]; note: string | null }
+/** 变更随 ['routers'] 的实时事件重取（配置变了采集会推一次） */
+export const useRouterChanges = (id: string) =>
+  useQuery({ queryKey: ['routers', id, 'changes'], queryFn: ({ signal }) => get<RouterChange[]>(`/routers/${id}/changes`, signal), staleTime: Infinity });
 export const useRouterExitMetrics = (id: string, range: string) =>
   useQuery({ queryKey: ['router-exit-metrics', id, range], queryFn: ({ signal }) => get<RouterExitMetrics>(`/routers/${id}/exits/metrics?range=${range}`, signal), staleTime: chartPoll(range), refetchInterval: chartPoll(range), refetchOnWindowFocus: false, placeholderData: (prev, pq) => (pq?.queryKey[1] === id ? keepPreviousData(prev) : undefined) });
 
@@ -113,10 +120,10 @@ export const useSwitchGroup = () => useWrite(({ id, ...b }: { id: string; group:
 export const useSwitchBack = () => useWrite(({ id, group }: { id: string; group: string }) => post<{ from: string; to: string }>(`/routers/${id}/switch/back`, { group }), K);
 
 // ---- 抽屉：?r=<路由id>&rtab=<页签>，与机器抽屉（?m=）各管各的 ----
-export type RouterTab = 'overview' | 'exits' | 'clients' | 'charts' | 'manage';
+export type RouterTab = 'overview' | 'exits' | 'clients' | 'charts' | 'changes' | 'manage';
 /** 同机器抽屉：操作（改名、接入命令、重新部署、终端、删除）收在最后的「管理」页签 */
 export const ROUTER_TABS: { value: RouterTab; label: string }[] = [
-  { value: 'overview', label: '概览' }, { value: 'exits', label: '出口' }, { value: 'clients', label: '客户端' }, { value: 'charts', label: '曲线' }, { value: 'manage', label: '管理' },
+  { value: 'overview', label: '概览' }, { value: 'exits', label: '出口' }, { value: 'clients', label: '客户端' }, { value: 'charts', label: '曲线' }, { value: 'changes', label: '变更' }, { value: 'manage', label: '管理' },
 ];
 
 // 上一台 / 下一台的顺序：软路由页把当前筛选后的顺序交过来（同 setDrawerOrder），离开页面时清掉；没有时按列表的默认顺序

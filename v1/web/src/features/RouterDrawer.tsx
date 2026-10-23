@@ -1,7 +1,8 @@
-// 软路由详情抽屉：概览 / 出口 / 客户端 / 曲线 / 管理。开关由 URL 的 ?r=（页签 rtab）控制，与机器抽屉（?m=）分开；出口对应的入口点开时换成机器抽屉，后退回来。
+// 软路由详情抽屉：概览 / 出口 / 客户端 / 曲线 / 变更 / 管理。开关由 URL 的 ?r=（页签 rtab）控制，与机器抽屉（?m=）分开；出口对应的入口点开时换成机器抽屉，后退回来。
 // 骨架同机器抽屉：头部是名称 + 状态 + 上一台 / 下一台，基本信息是「标签在上、值在下」的网格，操作都在最后的「管理」页签（改名是页签里的表单）。
 // 总览数字不带框，出口关系画成「出口 → 线路机 → 节点」，部署进度是时间线。
 import * as React from 'react';
+import { Link } from 'react-router-dom';
 import { ChevronLeft, ChevronRight, CircleX, Router as RouterIcon, TriangleAlert, XCircle } from 'lucide-react';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/dialog';
 import { Tabs, TabsList, TabsTrigger, Trunc } from '@/components/ui/overlays';
@@ -18,8 +19,8 @@ import { DeployTimeline, MiniBeat, RouterMeters, RouterStatePill, Seen, useShowB
 import { useEndSubjectMaint, useMachineBriefs, useTeams } from '@/lib/queries';
 import { MaintenanceDialog } from '@/components/app/MaintenanceDialog';
 import { GroupsSection } from './RouterOps';
-import { deadExitNames, exitBeats, showSync, exitUsable, ROUTER_TABS, routerIssues, routerSiblings, showDeploy, showRemoved, tempTone, uptimeFmt, useDeleteRouter, usePatchRouter, useRouter, useRouterDrawer, useRouterExitMetrics, useRouters, type RouterClient, type RouterDetail, type RouterExit, type RouterTab, type RouterView } from '@/lib/routers';
-import { tagColor } from '@/lib/derive';
+import { deadExitNames, exitBeats, showSync, exitUsable, ROUTER_TABS, routerIssues, routerSiblings, showDeploy, showRemoved, tempTone, uptimeFmt, useDeleteRouter, usePatchRouter, useRouter, useRouterDrawer, useRouterChanges, useRouterExitMetrics, useRouters, type RouterClient, type RouterDetail, type RouterExit, type RouterTab, type RouterView } from '@/lib/routers';
+import { jobKindLabel, tagColor } from '@/lib/derive';
 import { useHeld } from '@/lib/useHeld';
 import { openTerminal } from '@/lib/terminal';
 import { useTitleName } from '@/lib/title';
@@ -70,6 +71,7 @@ export function RouterDrawer() {
                     {tab === 'exits' && <Needs r={r} detail={detail}>{(d) => <ExitsTab r={r} d={d} />}</Needs>}
                     {tab === 'clients' && <Needs r={r} detail={detail}>{(d) => <ClientsTab d={d} />}</Needs>}
                     {tab === 'charts' && <ChartsTab r={r} />}
+                    {tab === 'changes' && <ChangesTab r={r} onClosed={close} />}
                     {tab === 'manage' && <ManageTab r={r} onClosed={close} />}
                   </React.Suspense>
                 </div>
@@ -123,6 +125,43 @@ function Head({ r, detail }: { r: RouterView; detail: RouterDetail | null | unde
         </div>
       )}
     </header>
+  );
+}
+
+/** 变更页签：OpenClash 配置每变一次一条（采集发现配置文件变了才记），时间线形式——时间、来源（中控作业可点开 / 路由上改的）、改了哪些出口。只看，不回滚 */
+function ChangesTab({ r, onClosed }: { r: RouterView; onClosed: () => void }) {
+  const q = useRouterChanges(r.id);
+  if (q.isPending) return <Skeleton h={120} className="is-float" />;
+  if (q.isError) return <ErrorNote error={q.error} onRetry={() => void q.refetch()} />;
+  if (!q.data.length) return <div className="hint">还没有记录到配置变更</div>;
+  return (
+    <Section>
+      <SectionHeader title={<>配置变更<InfoTip text={'OpenClash 配置文件每变一次记一条，保留最近 200 条\n「路由上改的」是在路由上手改，或旁路由上的看门服务重新生成'} /></>} />
+      <ol className="rt-tl" aria-label="配置变更">
+        {q.data.map((c) => (
+          <li key={c.id} data-tone="done">
+            <i className="rt-tl-dot" aria-hidden />
+            <div className="rt-tl-body">
+              <span className="rt-tl-text">
+                {c.source === 'job' && c.job_id ? <Link to={`/jobs/${c.job_id}`} className="btn btn-link" onClick={onClosed}>{jobKindLabel(c.job_kind ?? '')}</Link> : '路由上改的'}
+              </span>
+              <span className="rt-tl-at">{F.dt(c.at)}</span>
+              <div className="rt-chg">
+                {c.diff.map((x) => (
+                  <div key={x.exit}>
+                    <b>{x.exit}</b>{' '}
+                    {x.op === 'added' ? <>新增 <span className="mono">{x.to}</span></> : x.op === 'removed' ? <>删除 <span className="mono">{x.from}</span></> : (
+                      <>{x.from && <><span className="mono">{x.from}</span> → <span className="mono">{x.to}</span></>}{x.from && x.creds && '，'}{x.creds && '凭据变了'}</>
+                    )}
+                  </div>
+                ))}
+                {c.note ? <div className="t-muted">{c.note}</div> : !c.diff.length && <div className="t-muted">出口没有变化</div>}
+              </div>
+            </div>
+          </li>
+        ))}
+      </ol>
+    </Section>
   );
 }
 
