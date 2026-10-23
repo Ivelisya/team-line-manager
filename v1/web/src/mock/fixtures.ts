@@ -309,7 +309,7 @@ export function buildDb(): Db {
   [2, 3, 4].forEach((i) => { m2Entries[i].reach = { ok: false, ts: iso(now() - 25_000), detail: `端口 ${m2Entries[i].port}：connect: 连接被拒绝 (os error 111)`, fails: 3 }; });
   // 另一个口刚才偶发连不上一次：只提示「刚才连不上 1 次」，不算连不上
   m2Entries[1].reach = { ok: false, ts: iso(now() - 40_000), detail: `端口 ${m2Entries[1].port}：connect: 连接超时`, fails: 1 };
-  machines[1].health = { status: 'down', reasons: [{ key: 'relay_unreachable', severity: 'critical', text: `中控连续 3 次连不上客户入口（端口 ${[2, 3, 4].map((i) => m2Entries[i].port).join('、')}）` }, { key: 'relay_apply_lag', severity: 'warning', text: '配置未应用（配置版本 8，已生效 7）' }] };
+  machines[1].health = { status: 'down', reasons: [{ key: 'relay_unreachable', severity: 'critical', text: `中控连续 3 次以上连不上客户入口（端口 ${[2, 3, 4].map((i) => m2Entries[i].port).join('、')}）` }, { key: 'relay_apply_lag', severity: 'warning', text: '配置未应用（配置版本 8，已生效 7）' }] };
   machines[1].host = hostOf('r2', 58);
   // 调优样本：线路机 2 是旧档，团队1 的 03 号还没调优过
   machines[1].tune = { profile: 'tune-v1', at: iso(now() - 40 * DAY), current: false, params: null };

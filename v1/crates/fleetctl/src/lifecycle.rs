@@ -87,9 +87,14 @@ pub fn mv(ctx: &Ctx, node: &str, to: &str, from: Option<&str>, no_routers: bool,
     Ok(0)
 }
 
-/// 搬空预览的 router_restarts：每个节点一个作业、各自重启一次 OpenClash，每次断开这台路由上的全部连接
+/// 搬空预览的 router_restarts：同批一起改，每台路由只重启 1 次 OpenClash（断开这台路由上的全部连接）
 fn restart_lines(pv: &Value) -> Vec<String> {
-    pv["router_restarts"].as_array().into_iter().flatten().map(|r| format!("软路由 {} 会重启 {} 次（每次断开它上面全部连接）", st(r, "/name"), st(r, "/times"))).collect()
+    pv["router_restarts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|r| format!("软路由 {} 的 {} 个节点的出口一起改，OpenClash 重启 1 次（断开它上面全部连接）", st(r, "/name"), st(r, "/nodes")))
+        .collect()
 }
 
 /// 线路机视图里将被搬走的入口：在用、待应用、停用的。直出入口不搬：退役线路机时随之摘除
@@ -123,7 +128,7 @@ pub fn evacuate(ctx: &Ctx, relay: &str, to: &str, no_routers: bool, yes: bool, f
             if no_routers {
                 outln(format!("软路由：不改（--no-routers）{}", if ex.is_empty() { String::new() } else { format!("，{} 个出口指向这些入口，摘掉后就断了", ex.len()) }));
             } else if !ex.is_empty() {
-                outln(format!("{EXITS_HEAD}；同一台软路由一次只改一个节点，其余排队：\n{}", table::render(&["节点", "软路由", "状态", "出口", "现在", "改成"], &ex)));
+                outln(format!("{EXITS_HEAD}；各节点验收完新入口后一起改，每台软路由只改一次：\n{}", table::render(&["节点", "软路由", "状态", "出口", "现在", "改成"], &ex)));
                 for line in restart_lines(&pv) {
                     outln(format!("注意：{line}"));
                 }
@@ -258,8 +263,8 @@ mod tests {
 
     #[test]
     fn evacuate_preview_says_router_restarts() {
-        let pv = json!({"router_restarts": [{"id": "a", "name": "团队2-路由A", "times": 3}, {"id": "b", "name": "路由B", "times": 1}]});
-        assert_eq!(restart_lines(&pv), ["软路由 团队2-路由A 会重启 3 次（每次断开它上面全部连接）", "软路由 路由B 会重启 1 次（每次断开它上面全部连接）"]);
+        let pv = json!({"router_restarts": [{"id": "a", "name": "团队2-路由A", "times": 1, "nodes": 3}, {"id": "b", "name": "路由B", "times": 1, "nodes": 1}]});
+        assert_eq!(restart_lines(&pv), ["软路由 团队2-路由A 的 3 个节点的出口一起改，OpenClash 重启 1 次（断开它上面全部连接）", "软路由 路由B 的 1 个节点的出口一起改，OpenClash 重启 1 次（断开它上面全部连接）"]);
         assert!(restart_lines(&json!({})).is_empty(), "旧中控没有这个字段");
     }
 

@@ -36,7 +36,7 @@ export const entryStatus = (e: EntryView, who = '中控') => {
   const reach = reachFail(e); const fail = probeFail(e); const flaky = reachFlaky(e);
   if (reach) return <Pill tone="bad" tip={`${who}连续 ${reach.fails} 次连不上线路机的 ${e.port} 端口（上次检查 ${F.dt(reach.ts)}）${reachErr(reach.detail)}`}>{who}连不上</Pill>;
   if (fail) return <Pill tone="bad" tip={probeErr(fail.detail)}>{probeFailLabel(e)}</Pill>;
-  if (flaky) return <Pill tone="warn" tip={`${who}最近 ${flaky.fails} 次没连上线路机的 ${e.port} 端口（上次检查 ${F.dt(flaky.ts)}）\n连续 3 次才算连不上并告警${reachErr(flaky.detail)}`}>刚才连不上 {flaky.fails} 次</Pill>;
+  if (flaky) return <Pill tone="warn" tip={`${who}最近 ${flaky.fails} 次没连上线路机的 ${e.port} 端口（上次检查 ${F.dt(flaky.ts)}）\n连续 3 次算连不上，再持续 1 分钟才告警${reachErr(flaky.detail)}`}>刚才连不上 {flaky.fails} 次</Pill>;
   return entryState(e, true);
 };
 

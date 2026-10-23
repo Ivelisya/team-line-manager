@@ -18,6 +18,7 @@ pub mod collect;
 pub mod deploy;
 pub mod replace;
 pub mod scripts;
+pub mod selfcheck;
 pub mod tunnel;
 
 use crate::config::Config;

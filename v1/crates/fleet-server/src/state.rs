@@ -96,6 +96,8 @@ pub struct Inner {
     pub terminals: crate::terminal::Hub,
     /// 请软路由采集循环马上采某几台（作业刚改完它们的配置，见 routers::collect::Refresh）
     pub routers_refresh: crate::routers::collect::Refresh,
+    /// 软路由隧道回连主机不是中控时的告警摘要（routers::selfcheck 定期查，selfmon 照它开 central_tunnel_host）
+    pub tunnel_host: std::sync::Mutex<Option<String>>,
 }
 
 impl std::ops::Deref for AppState {
@@ -145,6 +147,7 @@ impl AppState {
             access_ret,
             terminals: Default::default(),
             routers_refresh: Default::default(),
+            tunnel_host: Default::default(),
         }))
     }
 

@@ -130,7 +130,7 @@ async fn primary_probe_drives_beats_alerts_and_fallback() {
         report(&t, id, &tok, &[(relay, 20001, false, None)]).await;
     }
     let m = machine(&t, relay).await;
-    assert_eq!(reason_text(&m, "relay_unreachable").as_deref(), Some("香港探测点连续 3 次连不上客户入口（端口 20001：超时 10 秒）"), "{m}");
+    assert_eq!(reason_text(&m, "relay_unreachable").as_deref(), Some("香港探测点连续 3 次以上连不上客户入口（端口 20001：超时 10 秒）"), "{m}");
     assert_eq!((m["entries"][0]["reach"]["ok"].clone(), m["entries"][0]["reach"]["fails"].clone()), (json!(false), json!(3)), "{m}");
     // 通了：恢复，心跳格带延迟中位数（只算通的）
     for rtt in [150.0, 170.0, 160.0] {
@@ -167,7 +167,7 @@ async fn primary_probe_drives_beats_alerts_and_fallback() {
         .await
         .unwrap();
     let m = machine(&t, relay).await;
-    assert_eq!(reason_text(&m, "relay_unreachable").as_deref(), Some("中控（代替离线的香港探测点）连续 3 次连不上客户入口（端口 20001：连接被拒绝）"), "{m}");
+    assert_eq!(reason_text(&m, "relay_unreachable").as_deref(), Some("中控（代替离线的香港探测点）连续 3 次以上连不上客户入口（端口 20001：连接被拒绝）"), "{m}");
     // 探测点离线告警：警告，对象是探测点（不是机器），摘要写明主来源的处境
     probe_points::check_once(&t.st, OffsetDateTime::now_utc()).await.unwrap();
     let inc = t.get("/api/v1/incidents?state=firing").await;
@@ -432,7 +432,7 @@ async fn all_relays_down_is_recorded_with_note() {
     let m = machine(&t, relays[0]).await;
     assert_eq!(
         reason_text(&m, "relay_unreachable").as_deref(),
-        Some("香港探测点连续 3 次连不上客户入口（端口 20001：超时 10 秒）；所有线路机同时连不上，可能是供应商整体故障"),
+        Some("香港探测点连续 3 次以上连不上客户入口（端口 20001：超时 10 秒）；所有线路机同时连不上，可能是供应商整体故障"),
         "{m}"
     );
     // 中控的一轮：对照目标通、三台都连不上，照记（标 all_down）

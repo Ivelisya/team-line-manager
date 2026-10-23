@@ -1,5 +1,6 @@
 //! 各作业步骤的实现。每步幂等：重跑不会重复产生副作用。
 
+mod batch;
 mod lifecycle;
 mod replace;
 

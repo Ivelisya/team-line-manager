@@ -593,6 +593,55 @@ async fn rebootstrap_closes_offline_quietly_then_warns() {
     assert!(inc[0]["summary"].as_str().unwrap().starts_with("团队2-路由R：重新接入后还没连上（已 31 分钟"), "{}", inc[0]["summary"]);
 }
 
+/// 出口指向的节点在维护：不通的出口都指向它时不开（开着的保持，不发恢复）；指向的节点有机器告警时摘要附上
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn exits_down_notes_maintenance_and_alerts() {
+    let t = setup().await;
+    let team = seed_team(&t, "团队2").await;
+    let (relay, _) = common::seed_relay(&t).await;
+    let n3 = common::seed_node(&t, team, 3, "203.0.113.13", "active").await;
+    let (id, _) = create(&t, "团队2-路由M").await;
+    issue_key(&t, &id).await;
+    let er = json!({"id": Uuid::now_v7(), "name": "团队2-03 · 线路机2:20003", "node_id": n3, "relay_id": relay, "node_name": "团队2-03", "relay_name": "线路机2", "port": 20003, "lifecycle": "active"});
+    let data = json!({
+        "system": {"cpu_pct": 10.0, "mem_used": 1, "mem_total": 4},
+        "interfaces": [{"name": "wan", "device": "eth0", "up": true}],
+        "openclash": {"enabled": true, "running": true},
+        "exits": [{"name": "节点03", "fail_streak": 2, "sync": "ok", "entry": er}, {"name": "节点04", "fail_streak": 0, "sync": "ok"}],
+    });
+    status(&t, &id, true, 0, data).await;
+    let maint = Uuid::now_v7();
+    sqlx::query("insert into silence (id, subject_id, is_maintenance, starts_at, ends_at, created_by) values ($1, $2, true, now() - interval '1 minute', now() + interval '1 hour', 'a')")
+        .bind(maint)
+        .bind(n3)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let mut st = alerts::AlertState::default();
+    let t0 = OffsetDateTime::now_utc();
+    alerts::evaluate(&t.st, &mut st, t0).await.unwrap();
+    assert!(incidents(&t, "firing").await.is_empty(), "不通的出口都指向维护中的节点：不开");
+    // 维护结束：开；节点有机器告警：摘要附上
+    sqlx::query("update silence set deleted_at = now() where id = $1").bind(maint).execute(&t.st.db).await.unwrap();
+    sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary) values ($1, 'machine', 'egress_fail', $2, 'critical', 'x')")
+        .bind(Uuid::now_v7())
+        .bind(n3)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(30)).await.unwrap();
+    let inc = incidents(&t, "firing").await;
+    let ex = inc.iter().find(|i| i["rule"] == "router_exits_down").unwrap();
+    assert_eq!(ex["summary"], "团队2-路由M：1 个出口连续两次延迟测试不通：节点03（其中 1 个指向的团队2-03 正在告警）");
+    // 又进了维护：开着的保持（不当成恢复），摘要照旧
+    sqlx::query("update silence set deleted_at = null where id = $1").bind(maint).execute(&t.st.db).await.unwrap();
+    for s in [60, 200] {
+        alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(s)).await.unwrap();
+    }
+    let inc = incidents(&t, "firing").await;
+    assert!(inc.iter().any(|i| i["rule"] == "router_exits_down" && i["summary"] == ex["summary"]), "{inc:?}");
+}
+
 /// 中控停机的时段不算路由连不上：停之前刚连上过的，恢复后第一轮还没连上不报离线（同 agent）
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn central_downtime_is_not_router_silence() {

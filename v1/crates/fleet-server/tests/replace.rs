@@ -597,49 +597,193 @@ async fn move_router_failure_keeps_old_entry() {
     assert!(es.iter().all(|e| (e.0 == oe) == (e.1 == "active")), "只剩旧入口在用：{es:?}");
 }
 
-/// 搬空：预览列出各节点要改的出口；作业并行，改同一台路由时一个一个来：第二个走到改路由这一步时第一个正在改，
-/// 它排队（不动路由、不算这一步的超时、能取消），第一个改完才轮到它
+/// 推进作业引擎：各作业放到后台任务里推进，正在改 `port` 这台路由、卡在假 ssh 的 hold 上的留着（放进 `held`），其余推进完
+async fn drive_holding(t: &T, sims: &mut [Sim], port: i32, held: &mut Vec<(String, tokio::task::JoinHandle<()>)>) {
+    for s in sims.iter_mut() {
+        s.round(t).await;
+    }
+    sqlx::query("insert into probe_result (entry_id, ts, kind, ok, latency_ms, detail) select id, now(), 'egress', true, 12, '' from entry where lifecycle = 'active'")
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    while let Some(j) = jobs::claim(&t.st, "test").await.unwrap() {
+        let (id, n, st) = (j.id.to_string(), applies(port).len(), t.st.clone());
+        let h = tokio::spawn(async move { jobs::advance(&st, j, "test").await.unwrap() });
+        while !h.is_finished() && applies(port).len() == n {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        if h.is_finished() {
+            h.await.unwrap();
+        } else {
+            held.push((id, h));
+        }
+    }
+    t.nudge_jobs().await;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+}
+
+/// 搬空：预览列出各节点要改的出口、每台路由只重启 1 次；作业并行建新入口，都验收完后 id 最小的带头一起改：
+/// 每台路由一次改完同批全部出口、重启一次。跟着的等它（不动路由、不能取消），带头的改完跟着完成，步骤输出是自己的那几个出口
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn evacuate_jobs_take_turns_on_a_router() {
+async fn evacuate_changes_each_router_once() {
     let w = world().await;
     let oe = old_entry(&w).await;
     let ne: Uuid = sqlx::query_scalar("select id from entry where node_id = $1").bind(w.new).fetch_one(&w.t.st.db).await.unwrap();
     let a = router(&w, "路由A", 23171, &[("节点01", "198.51.100.2", 20003, Some(oe)), ("节点02", "198.51.100.2", 20020, Some(ne))]).await;
+    let b = router(&w, "路由B", 23172, &[("节点02", "relay.test", 20020, Some(ne))]).await;
     let t = &w.t;
     let (rb, tb) = seed_relay_b(t).await;
     let p = t.get(&format!("/api/v1/relays/{}/evacuate?to_relay_id={rb}", w.relay)).await;
     let exits: Vec<&str> = p["jobs"].as_array().unwrap().iter().map(|j| j["routers"][0]["exits"][0]["exit"].as_str().unwrap()).collect();
     assert_eq!(exits, ["节点01", "节点02"], "{p}");
-    // 每个节点一个作业、各自重启一次 OpenClash：预览写明这台路由要重启几次；不改软路由时没有
-    assert_eq!(p["router_restarts"], json!([{"id": a, "name": "路由A", "times": 2}]), "{p}");
+    assert_eq!(p["router_restarts"], json!([{"id": a, "name": "路由A", "times": 1, "nodes": 2}, {"id": b, "name": "路由B", "times": 1, "nodes": 1}]), "{p}");
     assert_eq!(t.get(&format!("/api/v1/relays/{}/evacuate?to_relay_id={rb}&routers=false", w.relay)).await["router_restarts"], json!([]));
     let d = t.post(&format!("/api/v1/relays/{}/evacuate", w.relay), json!({"to_relay_id": rb})).await;
     let ids: Vec<String> = d["jobs"].as_array().unwrap().iter().map(|j| j["job_id"].as_str().unwrap().to_string()).collect();
-    // 先改路由A 的那个卡在改配置上（假 ssh 等 hold 删掉）：推进都放到后台任务里，卡住的留着
+    let (lead, follow) = (ids[0].clone(), ids[1].clone());
+    // 带头的卡在改路由A 上（假 ssh 等 hold 删掉）
     std::fs::write(root(23171).join("hold"), "").unwrap();
     let mut sims = [Sim::new(RELAY_TOKEN.into()), Sim::new(tb)];
-    let mut held: Vec<(String, tokio::task::JoinHandle<()>)> = vec![];
+    let mut held = vec![];
+    let mut waiting = Value::Null;
+    for _ in 0..100 {
+        drive_holding(t, &mut sims, 23171, &mut held).await;
+        let j = t.job(&follow).await;
+        if held.len() == 1 && j["step"] == 4 && j["state"] == "waiting" && logs(t, &follow).await.contains("带头") {
+            waiting = j;
+            break;
+        }
+    }
+    assert_eq!(held.first().map(|h| h.0.as_str()), Some(lead.as_str()), "{waiting} {}", logs(t, &follow).await);
+    assert_eq!(waiting["cancellable"], false, "被带头的认领了：不能取消");
+    let (s, v) = t.req("POST", &format!("/api/v1/jobs/{follow}/cancel"), None, None).await;
+    assert!(s == StatusCode::CONFLICT && v.to_string().contains("带头一起改软路由出口"), "{v}");
+    assert!(logs(t, &follow).await.contains("同批搬空的「团队2-01」带头一起改软路由出口（本节点的也在里面），等它改完"));
+    assert!(logs(t, &lead).await.contains("同批搬空的 2 个节点（团队2-02）一起改软路由出口：每台路由只改一次、重启一次"), "{}", logs(t, &lead).await);
+    std::fs::remove_file(root(23171).join("hold")).unwrap();
+    held.pop().unwrap().1.await.unwrap();
+    for id in [&lead, &follow] {
+        assert_eq!(run(t, &mut sims, id).await["state"], "succeeded", "{}", logs(t, id).await);
+    }
+    let port_on_b = |n: Uuid| sqlx::query_scalar::<_, i32>("select port from entry where node_id = $1 and relay_id = $2").bind(n).bind(rb).fetch_one(&t.st.db);
+    let (pa, pb) = (port_on_b(w.old).await.unwrap(), port_on_b(w.new).await.unwrap());
+    let ap = applies(23171);
+    assert_eq!(ap.len(), 1, "路由A 只改一次：{ap:?}");
+    assert!(ap[0].contains("N='2'\n") && ap[0].contains(&format!("NAME_1='节点01'\nOSRV_1='198.51.100.2'\nOPORT_1='20003'\nSRV_1='198.51.100.3'\nPORT_1='{pa}'")), "{}", &ap[0][..600]);
+    assert!(ap[0].contains(&format!("NAME_2='节点02'\nOSRV_2='198.51.100.2'\nOPORT_2='20020'\nSRV_2='198.51.100.3'\nPORT_2='{pb}'")), "{}", &ap[0][..600]);
+    let bp = applies(23172);
+    assert!(bp.len() == 1 && bp[0].contains(&format!("NAME_1='节点02'\nOSRV_1='relay.test'\nOPORT_1='20020'\nSRV_1='relay3.test'\nPORT_1='{pb}'")), "{bp:?}");
+    // 步骤输出：带头的列出全部（标明各出口归哪个作业）和认领的作业，跟着的只有自己的出口
+    let (lj, fj) = (t.job(&lead).await, t.job(&follow).await);
+    assert_eq!(lj["steps"][4]["output"]["batch"], json!([follow]), "{lj}");
+    let fo = &fj["steps"][4]["output"];
+    assert_eq!(fo["batch_leader"], json!(lead));
+    let mine: Vec<(&str, &str)> = fo["routers"].as_array().unwrap().iter().flat_map(|r| r["exits"].as_array().unwrap().iter().map(move |x| (r["name"].as_str().unwrap(), x["exit"].as_str().unwrap()))).collect();
+    assert_eq!(mine, [("路由A", "节点02"), ("路由B", "节点02")], "{fo}");
+    assert_eq!(fo["routers"][0]["delay_ms"], json!([null]), "延迟跟着出口取（假 ssh 只回第一个出口的）：{fo}");
+    assert_eq!((entry_state(t, oe).await, entry_state(t, ne).await), ("removed".to_string(), "removed".to_string()));
+}
+
+/// 搬空同批一起改时一台失败：已改的路由全部换回，几个节点的旧入口都不摘，跟着的一起失败（能取消）；
+/// 都重试后照样一起改：每台路由一次
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn evacuate_batch_failure_rolls_back_all() {
+    let w = world().await;
+    let oe = old_entry(&w).await;
+    let ne: Uuid = sqlx::query_scalar("select id from entry where node_id = $1").bind(w.new).fetch_one(&w.t.st.db).await.unwrap();
+    router(&w, "路由A", 23176, &[("节点01", "198.51.100.2", 20003, Some(oe))]).await;
+    router(&w, "路由B", 23177, &[("节点01", "198.51.100.2", 20003, Some(oe)), ("节点02", "198.51.100.2", 20020, Some(ne))]).await;
+    let t = &w.t;
+    let (rb, tb) = seed_relay_b(t).await;
+    std::fs::write(root(23177).join("mode"), "fail").unwrap();
+    let d = t.post(&format!("/api/v1/relays/{}/evacuate", w.relay), json!({"to_relay_id": rb})).await;
+    let ids: Vec<String> = d["jobs"].as_array().unwrap().iter().map(|j| j["job_id"].as_str().unwrap().to_string()).collect();
+    let mut sims = [Sim::new(RELAY_TOKEN.into()), Sim::new(tb)];
+    let (lj, fj) = (run(t, &mut sims, &ids[0]).await, run(t, &mut sims, &ids[1]).await);
+    assert_eq!((lj["state"].as_str(), fj["state"].as_str()), (Some("failed"), Some("failed")), "{lj} {fj}");
+    let err = lj["error"].as_str().unwrap();
+    assert!(err.contains("软路由「路由B」：出口「节点01」换成新入口后测了 3 次都不通；已改回原配置：路由A。软路由都是原样，旧入口没摘"), "{err}");
+    let ferr = fj["error"].as_str().unwrap();
+    assert!(ferr.contains("同批搬空的「团队2-01」带头一起改软路由出口（本节点的也在里面）没成，已一起换回：软路由「路由B」"), "{ferr}");
+    assert_eq!((lj["cancellable"].as_bool(), fj["cancellable"].as_bool()), (Some(true), Some(true)), "都已换回：能取消");
+    assert!(read(root(23176).join("rollback.log")).contains("节点01 198.51.100.3"), "路由A 改回了");
+    let bp = applies(23177);
+    assert!(bp.len() == 1 && bp[0].contains("N='2'\n"), "路由B 上两个节点的出口一起改：{bp:?}");
+    assert_eq!((entry_state(t, oe).await, entry_state(t, ne).await), ("active".to_string(), "active".to_string()), "旧入口都没摘");
+    // 修好后都重试：照样一起改
+    std::fs::write(root(23177).join("mode"), "ok").unwrap();
+    for id in &ids {
+        t.post(&format!("/api/v1/jobs/{id}/retry"), json!({})).await;
+    }
+    for id in &ids {
+        assert_eq!(run(t, &mut sims, id).await["state"], "succeeded", "{}", logs(t, id).await);
+    }
+    assert_eq!((applies(23176).len(), applies(23177).len()), (2, 2), "重试后每台路由各改一次");
+    assert!(applies(23177)[1].contains("N='2'\n"));
+    assert_eq!((entry_state(t, oe).await, entry_state(t, ne).await), ("removed".to_string(), "removed".to_string()));
+}
+
+/// 搬空同批一起改、改回也失败：带头的停在「需要人工处理」，跟着的同样不能取消、给出 manual，单独重试照样跟着它；
+/// 带头的重试改完之后，跟着的重试就跟着完成（不再动路由）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn evacuate_batch_stuck_holds_followers() {
+    let w = world().await;
+    let oe = old_entry(&w).await;
+    let ne: Uuid = sqlx::query_scalar("select id from entry where node_id = $1").bind(w.new).fetch_one(&w.t.st.db).await.unwrap();
+    let a = router(&w, "路由A", 23173, &[("节点01", "198.51.100.2", 20003, Some(oe)), ("节点02", "198.51.100.2", 20020, Some(ne))]).await;
+    router(&w, "路由B", 23174, &[("节点01", "198.51.100.2", 20003, Some(oe))]).await;
+    let t = &w.t;
+    let (rb, tb) = seed_relay_b(t).await;
+    std::fs::write(root(23174).join("mode"), "fail").unwrap();
+    std::fs::write(root(23173).join("rollback-fail"), "").unwrap();
+    let d = t.post(&format!("/api/v1/relays/{}/evacuate", w.relay), json!({"to_relay_id": rb})).await;
+    let ids: Vec<String> = d["jobs"].as_array().unwrap().iter().map(|j| j["job_id"].as_str().unwrap().to_string()).collect();
+    let mut sims = [Sim::new(RELAY_TOKEN.into()), Sim::new(tb)];
+    let (lj, fj) = (run(t, &mut sims, &ids[0]).await, run(t, &mut sims, &ids[1]).await);
+    assert_eq!((lj["state"].as_str(), lj["cancellable"].as_bool()), (Some("failed"), Some(false)), "{lj}");
+    assert_eq!((fj["state"].as_str(), fj["cancellable"].as_bool()), (Some("failed"), Some(false)), "{fj}");
+    let manual = json!([{"id": a, "name": "路由A", "exits": ["节点01", "节点02"]}]);
+    assert_eq!((lj["manual"]["routers"].clone(), fj["manual"]["routers"].clone()), (manual.clone(), manual), "{fj}");
+    assert!(fj["error"].as_str().unwrap().contains("改回失败、需要人工处理") && fj["error"].as_str().unwrap().contains("先处理好并重试它那个作业"), "{fj}");
+    // 跟着的单独重试：带头的还卡着，照样跟着失败，不自己动路由
+    t.post(&format!("/api/v1/jobs/{}/retry", ids[1]), json!({})).await;
+    let fj = run(t, &mut sims, &ids[1]).await;
+    assert_eq!((fj["state"].as_str(), fj["cancellable"].as_bool()), (Some("failed"), Some(false)), "{fj}");
+    assert_eq!(applies(23173).len(), 1);
+    // 处理好后重试带头的：接着改完，跟着的重试就完成
+    std::fs::remove_file(root(23173).join("rollback-fail")).unwrap();
+    std::fs::write(root(23174).join("mode"), "ok").unwrap();
+    t.post(&format!("/api/v1/jobs/{}/retry", ids[0]), json!({})).await;
+    assert_eq!(run(t, &mut sims, &ids[0]).await["state"], "succeeded", "{}", logs(t, &ids[0]).await);
+    t.post(&format!("/api/v1/jobs/{}/retry", ids[1]), json!({})).await;
+    let fj = run(t, &mut sims, &ids[1]).await;
+    assert_eq!(fj["state"], "succeeded", "{}", logs(t, &ids[1]).await);
+    assert_eq!(fj["steps"][4]["output"]["routers"][0]["exits"][0]["exit"], "节点02", "{fj}");
+    assert_eq!(applies(23173).len(), 2, "带头的接着改完那一次，跟着的不再动路由");
+    assert_eq!((entry_state(t, oe).await, entry_state(t, ne).await), ("removed".to_string(), "removed".to_string()));
+}
+
+/// 不同的作业（各自单独换线路机）改同一台路由时一个一个来：第二个走到改路由这一步时第一个正在改，
+/// 它排队（不动路由、不算这一步的超时、能取消），第一个改完才轮到它
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn separate_jobs_take_turns_on_a_router() {
+    let w = world().await;
+    let oe = old_entry(&w).await;
+    let ne: Uuid = sqlx::query_scalar("select id from entry where node_id = $1").bind(w.new).fetch_one(&w.t.st.db).await.unwrap();
+    router(&w, "路由A", 23178, &[("节点01", "198.51.100.2", 20003, Some(oe)), ("节点02", "198.51.100.2", 20020, Some(ne))]).await;
+    let t = &w.t;
+    let (rb, tb) = seed_relay_b(t).await;
+    let mut ids = vec![];
+    for n in [w.old, w.new] {
+        ids.push(t.post(&format!("/api/v1/machines/{n}/move"), json!({"to_relay_id": rb})).await["job_id"].as_str().unwrap().to_string());
+    }
+    // 先改路由A 的那个卡在改配置上（假 ssh 等 hold 删掉）
+    std::fs::write(root(23178).join("hold"), "").unwrap();
+    let mut sims = [Sim::new(RELAY_TOKEN.into()), Sim::new(tb)];
+    let mut held = vec![];
     let mut queued = (String::new(), Value::Null);
     for _ in 0..100 {
-        for s in sims.iter_mut() {
-            s.round(t).await;
-        }
-        sqlx::query("insert into probe_result (entry_id, ts, kind, ok, latency_ms, detail) select id, now(), 'egress', true, 12, '' from entry where lifecycle = 'active'")
-            .execute(&t.st.db)
-            .await
-            .unwrap();
-        while let Some(j) = jobs::claim(&t.st, "test").await.unwrap() {
-            let (id, n, st) = (j.id.to_string(), applies(23171).len(), t.st.clone());
-            let h = tokio::spawn(async move { jobs::advance(&st, j, "test").await.unwrap() });
-            while !h.is_finished() && applies(23171).len() == n {
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-            if h.is_finished() {
-                h.await.unwrap();
-            } else {
-                held.push((id, h));
-            }
-        }
+        drive_holding(t, &mut sims, 23178, &mut held).await;
         if let [(first, _)] = held.as_slice() {
             let other = ids.iter().find(|i| *i != first).unwrap().clone();
             let j = t.job(&other).await;
@@ -648,14 +792,12 @@ async fn evacuate_jobs_take_turns_on_a_router() {
                 break;
             }
         }
-        t.nudge_jobs().await;
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     let (second, j) = &queued;
     assert!(held.len() == 1 && j["steps"][4]["state"] == "running", "{j} {}", logs(t, second).await);
     assert!(j["steps"][4]["started_at"].is_null() && j["cancellable"] == true, "排队不算这一步的时间、还能取消：{j}");
-    assert_eq!(applies(23171).len(), 1, "后到的没碰路由");
-    let reads = read(root(23171).join("reads")).lines().count();
+    assert_eq!(applies(23178).len(), 1, "后到的没碰路由");
+    let reads = read(root(23178).join("reads")).lines().count();
     // 再领几次照样排队，不读路由的配置；日志只写一次
     for _ in 0..2 {
         t.nudge_jobs().await;
@@ -664,16 +806,16 @@ async fn evacuate_jobs_take_turns_on_a_router() {
         }
     }
     assert_eq!(logs(t, second).await.matches("软路由「路由A」正在被别的作业改，排队等它改完").count(), 1);
-    assert_eq!(applies(23171).len(), 1);
-    assert_eq!(read(root(23171).join("reads")).lines().count(), reads, "排队时只等锁");
-    std::fs::remove_file(root(23171).join("hold")).unwrap();
+    assert_eq!(applies(23178).len(), 1);
+    assert_eq!(read(root(23178).join("reads")).lines().count(), reads, "排队时只等锁");
+    std::fs::remove_file(root(23178).join("hold")).unwrap();
     let (first, h) = held.pop().unwrap();
     h.await.unwrap();
     for id in [&first, second] {
         assert_eq!(run(t, &mut sims, id).await["state"], "succeeded", "{}", logs(t, id).await);
     }
     let name = |id: &str| if id == ids[0] { "节点01" } else { "节点02" };
-    let a = applies(23171);
+    let a = applies(23178);
     assert!(a.len() == 2 && a[0].contains(&format!("NAME_1='{}'\n", name(&first))) && a[1].contains(&format!("NAME_1='{}'\n", name(second))), "{a:?}");
     assert_eq!(t.job(second).await["steps"][4]["state"], "done");
 }
