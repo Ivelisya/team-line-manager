@@ -12,7 +12,7 @@
    - 密钥设有效天数，不用了就撤销。token 只显示一次。
 2. 取得 `fleetctl`：
    - Windows：`cargo build -p fleetctl --release`，得到 `target\release\fleetctl.exe`。
-   - Linux x86_64：在 fleet-dev 上跑 `lab/install-fleetctl.sh`，从 `/opt/fleet/dist/fleetctl` 取。
+   - Linux x86_64：跑 `lab/install-fleetctl.sh`（在编译主机上编，见 §9 编译主机），从 fleet-dev 的 `/opt/fleet/dist/fleetctl` 取。
 3. 写配置并自检：
    ```
    fleetctl login --url http://192.168.31.60:8080 < 密钥文件     # PowerShell：Get-Content 密钥文件 | fleetctl login --url …；或直接运行、按提示粘贴（会回显）；--token 也能用，但会留在 shell 历史与进程列表里
@@ -214,12 +214,56 @@ WAL 三项由 `deploy/central/install.sh` 写进 `/etc/postgresql/<版本>/main/
 
 ## 9. 生产中控：部署与回滚
 
-部署 / 升级：本机在 `v1/` 下运行 `deploy/central/deploy.sh debian13 fleet.kismet613.com`（幂等，首次安装也用它）。
+部署 / 升级：本机在 `v1/` 下运行 `deploy/central/deploy.sh <中控 ssh 主机> fleet.kismet613.com`（幂等，首次安装也用它）。中控 ssh 主机写本机能直接 `ssh` 的名字：`~/.ssh/config` 里配了别名（如 `debian13`）就用别名，没有就写地址 `185.13.159.131`。
+
+### 编译主机：fleet-dev 或 docker
+
+deploy.sh 与 `lab/sync-server.sh`、`lab/deploy-server.sh`、`lab/install-fleetctl.sh` 都经 `lab/build-lib.sh` 选编译主机，两种方式：
+
+| | lab（默认） | docker |
+|---|---|---|
+| 在哪编 | 家里实验室的 fleet-dev（`ssh -F ~/.ssh/fleetlab_config fleet-dev`），rustup 工具链，源码 `/root/src` | 任意一台能 ssh、有 docker 的 Linux（可以 rootless、无 sudo、不装 Rust），如办公网的 dev 机；源码在 `FLEET_BUILD_DIR`（默认 `~/fleet-v1-dev/src`） |
+| fleet-server | glibc 版，`target/release` | `rust:1.98.1-slim-trixie` 里编 glibc 版（中控是 Debian 13），缓存卷 `fleet-v1-cargo-gnu`，`target-gnu/release` |
+| fleet-agent、fleetctl | musl 静态，`target/x86_64-unknown-linux-musl/release` | `rust:1.98.1-alpine` 里编 musl 静态，缓存卷 `fleet-v1-cargo`，`target/release` |
+| xray、ssserver、geoip.dat 来源 | fleet-dev `/opt/fleet/dist`（必须有） | 编译主机上的 `FLEET_BUILD_DIST`（默认 `~/fleet-v1-dev/dist`）；三个不全就不带 dist，打一行「dist 不随包」，中控上现有的保持原样 |
+
+fleet-server 不编 musl 版：项目没有自定义全局分配器，musl 自带的 malloc 在多线程服务上慢。两个镜像各用自己的缓存卷与 target 目录，互不覆盖产物。版本号的提交哈希两种方式都经环境变量 `FLEET_GIT_HASH` 交给 cargo。
+
+选 docker：设环境变量，或写本机文件 `v1/lab/build.env`（已在 .gitignore 里，不进仓库；每行 `KEY=value`，只认 `FLEET_BUILD*`，不执行其中的代码；两处都有时环境变量优先）。什么都没配就是 lab，行为与以前一样。
+
+```
+# v1/lab/build.env（或同名环境变量）
+FLEET_BUILD=docker
+FLEET_BUILD_HOST=10.172.17.213        # ssh 目标，可写 user@host 或别名
+# 以下可选，括号里是默认
+# FLEET_BUILD_DIR=fleet-v1-dev/src     远端源码目录（相对远端家目录）
+# FLEET_BUILD_DIST=fleet-v1-dev/dist   远端 dist 来源
+# FLEET_BUILD_MUSL_IMAGE=rust:1.98.1-alpine   FLEET_BUILD_GNU_IMAGE=rust:1.98.1-slim-trixie
+# FLEET_BUILD_MUSL_CACHE=fleet-v1-cargo       FLEET_BUILD_GNU_CACHE=fleet-v1-cargo-gnu
+# FLEET_BUILD_DOCKER_ARGS=--network fleet-v1-dev -e FLEET_TEST_DB=postgres://fleet:fleet@fleet-v1-pg/fleet_test
+#                                      docker run 的附加参数：lab/sync-server.sh 在 musl 容器里跑集成测试要连库时
+```
+
+用法：
+
+```
+FLEET_BUILD=docker FLEET_BUILD_HOST=10.172.17.213 deploy/central/deploy.sh --dry-run 185.13.159.131 fleet.kismet613.com   # 先演练
+FLEET_BUILD=docker FLEET_BUILD_HOST=10.172.17.213 deploy/central/deploy.sh 185.13.159.131 fleet.kismet613.com
+FLEET_BUILD=docker FLEET_BUILD_HOST=10.172.17.213 lab/sync-server.sh 'cargo test -p fleet-server --lib'                 # 编译主机上跑测试
+```
+
+- `--dry-run`（或 `FLEET_DEPLOY_DRY_RUN=1`）：照常同步、编译、拉回二进制、构建前端、打包，但不连中控（dist 按全部带上算），包存到本机临时目录、列出内容就退出。改了部署脚本、换了编译主机先用它看一遍包里有什么。
+- `lab/deploy-server.sh` 在 docker 方式下也是在编译主机上编，编好的三个二进制连同 `deploy/` 经本机传到 fleet-dev 的 `/root/fleet-prebuilt` 再装，部署目标仍是实验室中控 fleet-dev；`lab/deploy-web.sh` 的前端总在本机构建，不经编译主机。
+- 本机是 macOS 时，自带的 tar 会把扩展属性写成 `._*` 文件打进包里（进了 `migrations/` 会让 `sqlx::migrate!` 编译失败）。各脚本统一经 `fb_tar` 打包：`COPYFILE_DISABLE=1`，bsdtar 再加 `--no-xattrs`（GNU tar 不加）；远端解包后再删一遍 `._*` 兜底。手工打包也照这样做。
+- 核对装上的版本：`/opt/fleet/fleet-server version`、`/opt/fleet/dist/fleet-agent version`，都是 `0.1.0+<提交哈希>`；install.sh 最后一行同样打出 fleet-server 与 agent 的版本。
+
+### 部署要点
+
 
 - `Cargo.toml`、`Cargo.lock`、`crates`、`migrations`、`deploy`、`web`、fleet-ops 技能（仓库 `.claude/skills/fleet-ops`）有未提交的改动时拒绝部署。
 - 每次还装中控本机的 `/usr/local/bin/fleetctl`，健康检查通过后跑 `fleet-server local-admin`（建或修复全权密钥 central-local，仍有效不换），写 `/root/AGENTS.md`、`/root/CLAUDE.md` 与 `/root/.claude/skills/fleet-ops/SKILL.md`（§14）。部署最后一行写「本机 fleetctl apikey:central-local」说明能用。
-- 版本号 `0.1.0+<哈希>` 里的哈希是最后一次改动 `Cargo.toml`、`Cargo.lock`、`crates`、`migrations`、`deploy` 的提交：只改前端或文档的提交不换哈希，fleet-dev 上不重编 server 和 agent。
-- xray、ssserver、geoip.dat 先和中控 `/opt/fleet/dist` 比 sha256，相同的不上传，中控上的保持原样。
+- 版本号 `0.1.0+<哈希>` 里的哈希是最后一次改动 `Cargo.toml`、`Cargo.lock`、`crates`、`migrations`、`deploy` 的提交：只改前端或文档的提交不换哈希，编译主机上不重编 server 和 agent。
+- xray、ssserver、geoip.dat 先和中控 `/opt/fleet/dist` 比 sha256，相同的不上传，中控上的保持原样（docker 编译主机上没有 dist 来源时整个不带，见上）。
 - 编译失败、或 install.sh 重启后等 60 秒未登录访问 `/api/v1/auth/me` 仍不是 401，部署以非 0 退出，后者会打出 fleet-server 最近 60 行日志。中控上的安装包无论成败都删掉。
 - 换下来的旧 fleet-server 留在中控 `/opt/fleet/fleet-server.prev`（同一个二进制重复部署时不覆盖它）。
 - 迁移 0029 先把币种去空白转大写，再给套餐 / 订阅 / 续费记录的币种（3 个大写字母）和通知渠道种类（telegram / wecom / webhook）加约束；存量里还有不合规的不让迁移失败，日志里有「0029：… 暂不验证」的警告。看到时查出那几行（如 `select id, currency from plan where currency !~ '^[A-Z]{3}$'`）改成正确的币种，再 `alter table plan validate constraint plan_currency_iso`（订阅 / 续费记录 / 渠道同理：`subscription_currency_iso`、`renewal_currency_iso`、`notify_channel_kind_check`）。
@@ -229,7 +273,7 @@ WAL 三项由 `deploy/central/install.sh` 写进 `/etc/postgresql/<版本>/main/
 
 回滚（新版起不来，或上线后有严重问题）：
 
-1. 先确认这次部署**没有新迁移**：`git diff --name-only <旧哈希> <新哈希> -- migrations` 为空（新旧哈希见中控 `journalctl -u fleet-server | grep 监听 | tail -2`）。fleet-server 启动时自动跑迁移；新迁移一旦执行过，旧版本发现库里有它不认识的迁移会拒绝启动，这时不能直接换回，只能修好再发新版本（或按 §10 从备份恢复，丢失备份之后的数据）。
+1. 先确认这次部署**没有新迁移**：`git diff --name-only <旧哈希> <新哈希> -- migrations` 为空（新旧哈希见中控 `journalctl -u fleet-server | grep 监听 | tail -2`；当前与换下来的二进制也可直接 `/opt/fleet/fleet-server version`、`/opt/fleet/fleet-server.prev version` 看，早于这个子命令的旧版本会打用法）。fleet-server 启动时自动跑迁移；新迁移一旦执行过，旧版本发现库里有它不认识的迁移会拒绝启动，这时不能直接换回，只能修好再发新版本（或按 §10 从备份恢复，丢失备份之后的数据）。
 2. 没有新迁移时，在中控上换回旧版（先复制再改名：正在运行的可执行文件不能直接覆盖）：
    ```
    cp -p /opt/fleet/fleet-server.prev /opt/fleet/fleet-server.new && mv -f /opt/fleet/fleet-server.new /opt/fleet/fleet-server && systemctl restart fleet-server
@@ -368,7 +412,7 @@ heartbeat_url = "https://hc-ping.com/<检查的 uuid>"
 
 ### 怎么开始
 
-1. `ssh root@<中控>`（生产：本机别名 `debian13`）。
+1. `ssh root@<中控>`（生产：本机别名 `debian13`，没配这个别名的机器上写地址 `185.13.159.131`）。
 2. agent 两种跑法，令牌都不出中控：在中控的 `/root` 下起 agent（如 `claude`，Claude Code 要自己在中控上装好、登录）；或者 agent 留在手边的设备上，每条命令经 ssh 在中控上执行（`ssh debian13 'fleetctl --json status'`），这时先让它 `ssh debian13 cat /root/AGENTS.md` 读一遍中控上的说明。部署已经放好：
    - `/root/AGENTS.md` 与 `/root/CLAUDE.md`（同一份，模板 `deploy/central/central-agents.md`，每次部署覆盖）：这台机器是什么、规矩（改动前想清楚影响；删除、退役、全局维护、全部升级等先向用户确认）、常用命令、日志与备份在哪、出问题先看什么。
    - `/root/.claude/skills/fleet-ops/SKILL.md`：fleet-ops 技能（Claude Code 自动加载，别的 agent 按 AGENTS.md 的指引去读）。

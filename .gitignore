@@ -19,3 +19,6 @@ id_rsa*
 
 # Claude Code 子 agent 的临时 worktree
 .claude/worktrees/
+
+# 本机的编译主机配置（lab/build-lib.sh），各人不同
+/v1/lab/build.env
