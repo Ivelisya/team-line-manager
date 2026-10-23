@@ -2,7 +2,7 @@
 // 账户安全（两步验证、修改密码、登录会话，见 features/AccountTab）、数据保留（features/RetentionTab）、汇率（计费折成美元，见 features/FxTab）、探测点与主探测来源（features/ProbeTab）、三网 PING 的全局目标（features/PingTab）。
 import * as React from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Activity, Archive, Ban, Radar, Bell, CircleDollarSign, Eye, EyeOff, FlaskConical, KeyRound, MessagesSquare, Pencil, Plus, Send, ShieldAlert, ShieldCheck, Trash2, Webhook } from 'lucide-react';
+import { Ban, Bell, BellOff, Eye, EyeOff, FlaskConical, KeyRound, MessagesSquare, Pencil, Plus, Send, ShieldAlert, Trash2, Webhook } from 'lucide-react';
 import { RetentionTab } from '@/features/RetentionTab';
 import { FxTab } from '@/features/FxTab';
 import { ProbeTab } from '@/features/ProbeTab';
@@ -34,13 +34,13 @@ export function SettingsPage() {
       <PageHead title="设置" />
       <Tabs value={tab} onValueChange={(v) => setSp((p) => { const n = new URLSearchParams(p); n.set('section', v); return n; }, { replace: true })}>
         <TabsList className="set-tabs">
-          <TabsTrigger value="keys" noPanel><KeyRound size={14} />API 密钥</TabsTrigger>
-          <TabsTrigger value="notify" noPanel><Bell size={14} />告警通知</TabsTrigger>
-          <TabsTrigger value="account" noPanel><ShieldCheck size={14} />账户安全</TabsTrigger>
-          <TabsTrigger value="retention" noPanel><Archive size={14} />数据保留</TabsTrigger>
-          <TabsTrigger value="fx" noPanel><CircleDollarSign size={14} />汇率</TabsTrigger>
-          <TabsTrigger value="probes" noPanel><Radar size={14} />探测点</TabsTrigger>
-          <TabsTrigger value="ping" noPanel><Activity size={14} />三网 PING</TabsTrigger>
+          <TabsTrigger value="keys" noPanel>API 密钥</TabsTrigger>
+          <TabsTrigger value="notify" noPanel>告警通知</TabsTrigger>
+          <TabsTrigger value="account" noPanel>账户安全</TabsTrigger>
+          <TabsTrigger value="retention" noPanel>数据保留</TabsTrigger>
+          <TabsTrigger value="fx" noPanel>汇率</TabsTrigger>
+          <TabsTrigger value="probes" noPanel>探测点</TabsTrigger>
+          <TabsTrigger value="ping" noPanel>三网 PING</TabsTrigger>
         </TabsList>
       </Tabs>
       {tab === 'keys' ? <ApiKeysSection /> : tab === 'notify' ? <NotifySection /> : tab === 'account' ? <AccountTab /> : tab === 'fx' ? <FxTab /> : tab === 'probes' ? <ProbeTab /> : tab === 'ping' ? <PingTab /> : <RetentionTab />}
@@ -207,7 +207,8 @@ function NotifySection() {
         tools={<Button variant="primary" onClick={() => setEdit('new')}><Plus />新建渠道</Button>}>
         {q.isError && <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div>}
         {q.isLoading ? <SkeletonRows rows={3} head /> : list.length === 0 && !q.isError ? (
-          <Empty icon={<Bell size={22} />} text="还没有通知渠道" />
+          // 没有渠道 = 所有告警都不会推给任何人：用警示色说清后果，不是和「还没有 API 密钥」一样分量的普通空状态（新建在标题栏右边，不重复放按钮）
+          <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><Note tone="warn" icon={<BellOff size={14} />}>还没有通知渠道，告警不会推送给任何人 <InfoTip text="告警照常记在「告警」页，只是不会发出去。用右上角「新建渠道」添加 Telegram、企业微信或 Webhook" /></Note></div>
         ) : (
           <TableWrap>
             <table className="dt" style={{ minWidth: 860 }}>

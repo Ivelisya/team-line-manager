@@ -212,7 +212,7 @@ function PasswordPanel() {
         </div>
         <div className="row" style={{ gap: 4 }}><label className="check-row"><Checkbox checked={keys} onCheckedChange={(v) => setKeys(v === true)} /><span>同时撤销所有 API 密钥</span></label><InfoTip text="怀疑密码或登录会话泄露时勾上：拿到会话的人可能已经建了密钥" /></div>
         {err && <Note tone="bad">{err}</Note>}
-        <div className="row"><Button type="submit" variant="primary" loading={change.isPending} disabled={!valid}>修改密码</Button></div>
+        <div className="row" style={{ justifyContent: 'flex-end' }}><Button type="submit" variant="primary" loading={change.isPending} disabled={!valid}>修改密码</Button></div>
       </form>
     </Panel>
   );

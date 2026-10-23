@@ -247,6 +247,8 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 .tag[data-c="cyan"] { --tag-bg: var(--tag-cyan-bg); --tag-fg: var(--tag-cyan-fg); }
 .tag[data-c="amber"] { --tag-bg: var(--tag-amber-bg); --tag-fg: var(--tag-amber-fg); }
 .tag[data-c="green"] { --tag-bg: var(--tag-green-bg); --tag-fg: var(--tag-green-fg); }
+.tag[data-c="indigo"] { --tag-bg: var(--tag-indigo-bg); --tag-fg: var(--tag-indigo-fg); }
+.tag[data-c="slate"] { --tag-bg: var(--tag-slate-bg); --tag-fg: var(--tag-slate-fg); }
 /* 可点的标签（同机关系标，点开对应机器的抽屉）：按钮去掉外观，悬停底色加深；按下与焦点环见 components.css「交互状态」 */
 button.tag { border: 0; cursor: pointer; transition: background-color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out); }
 @media (hover: hover) { button.tag:hover { background: color-mix(in srgb, var(--tag-fg) 22%, transparent); } }
@@ -279,3 +281,12 @@ button.tag { border: 0; cursor: pointer; transition: background-color var(--dur-
 .cluster-routers b[data-warn] { color: var(--warn-text); }
 .cluster-routers-go { width: var(--icon-xs); height: var(--icon-xs); color: var(--fg-3); }
 @media (hover: hover) { .cluster-routers:hover .cluster-routers-go { color: var(--fg-2); } .cluster-routers:hover .cluster-routers-label { color: var(--accent); } }
+
+/* 团队分组放不下时：轨道撑满可用宽度（基准 0，宽度不随内容变，才量得出放得下几项），其余收进最右的「更多 ▾」。
+   量宽用的隐藏副本叠在原位、不占位、不可见 */
+.seg-ovf { position: relative; flex: 1 1 0; min-width: 0; display: flex; }
+.seg-ovf > .seg.seg-fill { flex: 1 1 0; max-width: none; }
+.seg-ovf > .seg-measure { position: absolute; left: 0; top: 0; visibility: hidden; pointer-events: none; max-width: none; width: max-content; overflow: visible; animation: none; mask-image: none; }
+.seg-more { flex: none !important; gap: var(--sp-2); }
+.seg-more > svg { color: var(--fg-3); }
+.seg-more[data-state="open"] { color: var(--fg); background: var(--hover); }

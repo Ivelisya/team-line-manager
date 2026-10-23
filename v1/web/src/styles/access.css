@@ -1,5 +1,9 @@
 /* 访问监控（pages/Access.tsx）与节点抽屉「访问记录」页签：常访问的目标、来源画像分布条、按目标合并的展开行。只用 tokens.css 里的令牌 */
 
+/* 访问监控筛选行最右的时间范围（页头只留视图切换）；窄屏换行后靠左 */
+.access-range { margin-left: auto; display: flex; min-width: 0; max-width: 100%; }
+@media (max-width: 760px) { .access-range { margin-left: 0; } }
+
 /* 「常访问的目标」条尾的次数 */
 .bar-count { fill: var(--fg-2); font-size: var(--fs-micro); font-weight: var(--fw-semibold); font-variant-numeric: tabular-nums; }
 

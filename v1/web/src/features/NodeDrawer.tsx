@@ -6,7 +6,7 @@ import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/dialog';
 import { Tabs, TabsList, TabsTrigger, Trunc } from '@/components/ui/overlays';
 import { InfoTip } from '@/components/ui/form';
-import { Button, IconButton } from '@/components/ui/button';
+import { IconButton } from '@/components/ui/button';
 import { ErrorBoundary } from '@/components/app/ErrorBoundary';
 import { Skeleton } from '@/components/ui/skeleton';
 import type { Incident, MachineView } from '@/lib/types';
@@ -64,7 +64,8 @@ export function NodeDrawer() {
           </>
         ) : (
           <>
-            <header className="drawer-head" style={{ paddingRight: 56 }}>
+            {/* m-drawer-head：国旗对齐标题那一行（窄屏标签折到第二行时，国旗不跟着落到两行中间） */}
+            <header className="drawer-head m-drawer-head" style={{ paddingRight: 56 }}>
               <Flag country={m.country} manual={!!m.country_set} ip={m.ip} />
               <div className="m-head" style={{ flex: 1 }}>
                 <div className="m-head-row"><SheetTitle className="drawer-title ellipsis">{m.name}</SheetTitle><HealthPill m={m} /><MachineTags m={m} /></div>
@@ -165,7 +166,7 @@ function probeCounts(m: MachineView) {
 
 function OverviewTab({ m }: { m: MachineView }) {
   const audit = useAudit(m.id);
-  const { open, setTab } = useDrawer();
+  const { open } = useDrawer();
   // 同机 IP 节点：SSH 端口、agent 都是宿主机的
   const h = m.host_machine;
   const ofHost = h ? '（宿主机的）' : '';
@@ -226,11 +227,10 @@ function OverviewTab({ m }: { m: MachineView }) {
         </Section>
       )}
       <Section>
-        {/* 线路机的入口多（几十条）：概览只放异常的，全部在连接质量页签 */}
-        <SectionHeader title={m.kind === 'relay' ? '挂载的入口' : '入口'} meta={entriesMeta(m)}>
-          {m.kind === 'relay' && m.entries.length > 0 && <Button variant="quiet" size="sm" onClick={() => setTab('quality')}>查看全部</Button>}
-        </SectionHeader>
-        <EntriesTable m={m} onlyBad={m.kind === 'relay'} />
+        {/* 入口表只在这里放一份（状态、TCP、出口、本月业务流量）；连接质量、流量页签只留计数链回这里。
+            线路机的入口多（几十条）：异常的排前面，先露 10 条，表尾展开全部 */}
+        <SectionHeader title={m.kind === 'relay' ? '挂载的入口' : '入口'} meta={entriesMeta(m)} />
+        <EntriesTable m={m} traffic />
       </Section>
       <RecentIncidents m={m} />
       <Section>

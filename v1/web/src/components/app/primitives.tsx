@@ -24,14 +24,14 @@ export function Num({ f }: { f: Fmt }) {
 export function FromTag({ from, start, tip, sep }: { from: string | null | undefined; start?: string | null; tip?: string; sep?: boolean }) {
   return from ? <>{sep ? ' · ' : ' '}<span className="unit" data-tip={tip}>{fromLabel(from, start)} 起</span></> : null;
 }
-/** 表格「本月流量」格（首页表格、机器页共用）：主值 = 下行 + 上行（家宽代理、同机 IP 节点是下载 + 上传），不完整时主值旁灰字「10-22 起」；副行「↓ X ↑ Y」（口径见悬停）。 */
-/** 表格「本月流量」格：主值 = 下行 + 上行（家宽代理、同机 IP 节点是下载 + 上传），副行「↓ X ↑ Y」（口径见悬停），不完整时副行末尾灰字「10-22 起」。 */
+/** 表格「本月流量」格（首页表格、机器页共用）：主值 = 下行 + 上行（家宽代理、同机 IP 节点是下载 + 上传），副行「↓ X ↑ Y」（口径见悬停），
+ *  不完整时副行末尾灰字「10-22 起」：日期不拼在主值后面，右对齐的一列数字才对得齐 */
 export function MonthFlowCell({ m }: { m: MachineView }) {
   const f = monthFlow(m);
   return (
     <div data-tip={monthFlowTip(m)}>
-      <Num f={bytes(f.total)} /><FromTag from={f.from} />
-      <span className="sub">{`↓ ${str(bytes(f.down))} ↑ ${str(bytes(f.up))}`}</span>
+      <Num f={bytes(f.total)} />
+      <span className="sub">{`↓ ${str(bytes(f.down))} ↑ ${str(bytes(f.up))}`}<FromTag from={f.from} sep /></span>
     </div>
   );
 }

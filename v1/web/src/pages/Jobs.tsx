@@ -1,4 +1,5 @@
-// 作业：列表 + 详情（总进度 + 横向步骤条 + 步骤时间线 + 实时日志，进行中每 1.5s 轮询 /jobs/{id}/logs?after=）。
+// 作业：列表 + 详情（总进度 + 步骤时间线 + 实时日志，进行中每 1.5s 轮询 /jobs/{id}/logs?after=）。
+// 步骤状态只在步骤时间线里讲一遍（带错误详情）：详情顶部不再放横向步骤条和「失败于」横幅，左侧列表项留一句失败原因。
 import * as React from 'react';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, ArrowDownToLine, Check, CircleDashed, Copy, ListChecks, Loader2, Minus, Pause, Play, RotateCw, Square, TriangleAlert, Undo2, X } from 'lucide-react';
@@ -17,7 +18,7 @@ import { Select } from '@/components/ui/select';
 import { Progress } from '@/components/ui/progress';
 import { SkeletonRows } from '@/components/ui/skeleton';
 import { ConfirmDialog } from '@/components/app/dialogs';
-import { JobProgressBar, StepBar } from '@/components/app/JobProgress';
+import { JobProgressBar } from '@/components/app/JobProgress';
 import { TuneResult, isTuneOutput } from '@/components/app/TuneResult';
 import { RouterEditResult, isRouterEditOutput } from '@/components/app/RouterEditResult';
 import { NodeHover } from '@/components/app/NodeHover';
@@ -133,10 +134,10 @@ function Dur({ a, b, live }: { a: string | null; b: string | null; live: boolean
   const now = useNow(live);
   return <>{F.duration(a, b, now)}</>;
 }
-/** 总进度与横向步骤条：进行中（含取消中）每秒走表，步骤条上「进行中 · N 秒」与下面的步骤时间线一起走 */
+/** 总进度：进行中（含取消中）每秒走表，「已用时」与下面的步骤时间线一起走 */
 function LiveProgress({ job, live }: { job: Job; live: boolean }) {
   const now = useNow(live);
-  return <><JobProgressBar job={job} now={now} /><StepBar job={job} now={now} /></>;
+  return <JobProgressBar job={job} now={now} />;
 }
 
 function JobDetail({ id }: { id: string }) {
@@ -146,7 +147,7 @@ function JobDetail({ id }: { id: string }) {
   const [cancelAsk, setCancelAsk] = React.useState(false);
   const j = q.data;
   const live = !!j && jobLive(j.state);
-  // 失败原因下面的步骤里已经写了：顶部只指一下是哪一步
+  // 失败原因下面的步骤里已经写了（标红、带错误详情）：顶部不再重复；只有对不到哪一步的原因（取消、作业级错误）才写在顶部
   const failedStep = j?.state === 'failed' ? j.steps.find((s) => stepKind(s) === 'failed' && s.error) : undefined;
   if (q.isError && !j) return <Panel><div style={{ padding: 'var(--sp-12)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div></Panel>;
   if (!j) return <Panel><div className="skel" style={{ height: 160, margin: 16 }} /></Panel>;
@@ -169,11 +170,7 @@ function JobDetail({ id }: { id: string }) {
           </LabelValueGrid>
         </div>
         {/* 取消（含「全部升级」里前一台失败后跟着取消的）不是出错：原因用中性色 */}
-        {j.error && <div style={{ marginTop: 12 }}><Note tone={j.state === 'cancelled' ? undefined : 'bad'}>
-          {failedStep
-            ? <>失败于：<Button variant="link" onClick={() => document.getElementById(`step-${failedStep.idx}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' })}>{failedStep.title}</Button></>
-            : jobText(j.error)}
-        </Note></div>}
+        {j.error && !failedStep && <div style={{ marginTop: 12 }}><Note tone={j.state === 'cancelled' ? undefined : 'bad'}>{jobText(j.error)}</Note></div>}
         {/* 只有换成功了链接才变：失败、取消的回滚到旧入口，旧链接照常可用 */}
         {j.kind === 'move_entry' && j.state === 'succeeded' && (
           <div style={{ marginTop: 12 }}>
@@ -187,7 +184,7 @@ function JobDetail({ id }: { id: string }) {
         )}
       </Panel>
 
-      <Panel title="步骤" sub={`${jobProgress(j).done} / ${jobProgress(j).total}`}>
+      <Panel title="步骤">{/* 完成几步在上面的总进度里写了 */}
         <ol className="steps">
           {j.steps.map((s) => {
             const k = stepKind(s);

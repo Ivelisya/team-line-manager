@@ -406,9 +406,10 @@ export function remainingValue(s: Subscription | null) {
 }
 
 /** 标签配色：固定语义的用固定色（类型：线路机青、家宽橙；同机关系紫；维护中琥珀），
- *  供应商按代号散列到剩下的几种颜色，同一家永远同色、也不会和类型标签撞色 */
-const TAG_COLORS = ['blue', 'pink', 'cyan', 'green'] as const;
-export type TagColor = (typeof TAG_COLORS)[number] | 'gray' | 'teal' | 'violet' | 'orange' | 'amber';
+ *  供应商、团队按名字散列到剩下的几种中性色相（蓝、靛、天青、蓝灰），同一家永远同色；
+ *  不取绿、黄、红、粉：标签常挨着状态标（「正常」绿、「故障」红），撞色读起来像状态 */
+const TAG_COLORS = ['blue', 'indigo', 'cyan', 'slate'] as const;
+export type TagColor = (typeof TAG_COLORS)[number] | 'gray' | 'teal' | 'violet' | 'orange' | 'amber' | 'green' | 'pink';
 export function tagColor(text: string): TagColor {
   let h = 0;
   for (const ch of text) h = (h * 31 + ch.charCodeAt(0)) >>> 0;

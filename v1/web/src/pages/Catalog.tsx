@@ -2,7 +2,7 @@
 import * as React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Archive, ArchiveRestore, ArrowRight, ExternalLink, ListOrdered, Pencil, Plus, Trash2 } from 'lucide-react';
+import { ArrowRight, ExternalLink, MoreHorizontal, Plus } from 'lucide-react';
 import { fetchRenumber, useAddPlan, useAddProvider, useAddTeam, useDelPlan, useDelProvider, useDelTeam, usePatchPlan, usePatchProvider, usePatchTeam, usePlans, useProviders, useRenumber, useTeams, useTeamsCompact } from '@/lib/queries';
 import type { Plan, Provider, Team, TrafficReset, TrafficRule } from '@/lib/types';
 import { currencyOptions, cycleLabel, cycleOptions, limitGb, meta, trafficResetText, trafficRuleLabel, usdTotalTip } from '@/lib/derive';
@@ -14,7 +14,7 @@ import * as F from '@/lib/format';
 import { Button, IconButton } from '@/components/ui/button';
 import { CheckRow, Field, InfoTip, Input, UnitInput } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/overlays';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/overlays';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, DialogHeader } from '@/components/ui/dialog';
 import { SkeletonRows } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
@@ -24,6 +24,22 @@ import { ConfirmDialog, FormDialog } from '@/components/app/dialogs';
 import { TzInput } from '@/components/app/TzInput';
 
 const SECTIONS = ['teams', 'providers', 'plans'];
+
+/** 三张表的行：点行打开编辑（同机器列表点行开抽屉），行尾常驻一个「⋯」收其余操作（重新编号、归档、删除），不靠悬停才出现。
+ *  点到行里的链接（台数）、按钮时不算点行 */
+const rowProps = (onOpen: () => void) => ({
+  className: 'is-link', tabIndex: 0,
+  onClick: (e: React.MouseEvent) => { if (!(e.target as Element).closest('a, button, .info-tip, [role="menu"]')) onOpen(); },
+  onKeyDown: (e: React.KeyboardEvent) => { if (e.key === 'Enter' && e.target === e.currentTarget) onOpen(); },
+});
+function RowMenu({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild><IconButton size="sm" label={label} tip={false}><MoreHorizontal size={16} /></IconButton></DropdownMenuTrigger>
+      <DropdownMenuContent align="end">{children}</DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
 
 export function CatalogPage() {
   // 子页写进 URL 的 section（同设置页），刷新 / 分享链接停在原处；换子页时排序（?sort=）、套餐的「显示已归档」不带过去
@@ -99,22 +115,21 @@ function TeamsTab() {
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       <Panel title="团队" count={list.length} sub={<><InfoTip text={"首页和表格按「排序」从小到大排列\n月费是在用机器折成美元的合计，汇率在「设置 → 汇率」"} />{list.length > 0 && <span className="t-sub" style={{ marginLeft: 'var(--sp-8)' }} data-tip={partial ? '带 * 的团队有币种缺汇率，没计入合计' : undefined}>月费合计 <span className="num">{F.money(total, 'USD')}</span>{partial ? '*' : ''}</span>}</>} tools={<Button variant="primary" size="md" onClick={() => setEdit('new')}><Plus />新建团队</Button>} flush>
         <TableWrap>
-          <table className="dt is-one" style={{ minWidth: 630 }}>
-            <colgroup><col /><col style={{ width: 90 }} /><col style={{ width: 100 }} /><col style={{ width: 110 }} /><col style={{ width: 256 }} /></colgroup>
+          <table className="dt is-one" style={{ minWidth: 430 }}>
+            <colgroup><col /><col style={{ width: 90 }} /><col style={{ width: 100 }} /><col style={{ width: 110 }} /><col style={{ width: 52 }} /></colgroup>
             <SortHead cols={TEAM_COLS} sort={sort} onSort={setSort} />
             <tbody>
               {list.map((t) => {
                 // 编号已经连续（或团队里还没有节点）就没有可调的；机器列表还没到时先不禁用
                 const done = compact ? compact[t.id] ?? true : false;
                 return (
-                  <tr key={t.id}><td className="strong">{t.name}{t.spare && <> <InfoTip text={SPARE_TIP} /></>}</td><td className="r num">{t.sort_order}</td><td className="r num"><CountLink n={t.node_count} to={`/nodes?team=${t.id}`} /></td><td className="r"><TeamCost t={t} /></td>
-                    <td className="r"><span className="row row-acts" style={{ justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
-                      <Button size="sm" variant="quiet" onClick={() => setEdit(t)}><Pencil size={13} />改名 / 排序</Button>
-                      {/* aria-disabled 而不是 disabled：禁用的按钮收不到悬停，看不到为什么不能点 */}
-                      <Button size="sm" variant="quiet" aria-disabled={done || undefined} data-tip={done ? '编号已连续' : undefined} onClick={() => { if (!done) setRenum(t); }}><ListOrdered size={13} />重新编号</Button>
-                      {t.spare
-                        ? <span data-tip="备用团队不能删除"><IconButton size="sm" label="删除团队" tip={false} disabled style={{ pointerEvents: 'none' }}><Trash2 size={14} /></IconButton></span>
-                        : <IconButton size="sm" label="删除团队" onClick={() => setAskDel(t)}><Trash2 size={14} /></IconButton>}</span></td></tr>
+                  <tr key={t.id} {...rowProps(() => setEdit(t))}><td className="strong">{t.name}{t.spare && <> <InfoTip text={SPARE_TIP} /></>}</td><td className="r num">{t.sort_order}</td><td className="r num"><CountLink n={t.node_count} to={`/nodes?team=${t.id}`} /></td><td className="r"><TeamCost t={t} /></td>
+                    <td className="c"><RowMenu label={`团队 ${t.name} 的操作`}>
+                      <DropdownMenuItem onSelect={() => setEdit(t)}>改名 / 排序…</DropdownMenuItem>
+                      <DropdownMenuItem disabled={done} onSelect={() => setRenum(t)}>{done ? '重新编号（编号已连续）' : '重新编号…'}</DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem danger disabled={t.spare} onSelect={() => setAskDel(t)}>{t.spare ? '删除（备用团队不能删除）' : '删除…'}</DropdownMenuItem>
+                    </RowMenu></td></tr>
                 );
               })}
             </tbody>
@@ -226,20 +241,22 @@ function ProvidersTab() {
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       <Panel title="供应商" count={list.length} sub={<InfoTip text="名下机器的账单时区、流量重置、到期提醒跟随这里" />} tools={<Button variant="primary" onClick={() => setEdit('new')}><Plus />新建供应商</Button>} flush>
         <TableWrap>
-          <table className="dt is-one" style={{ minWidth: panel ? 1190 : 1050 }}>
-            <colgroup><col style={{ width: 170 }} /><col style={{ width: 84 }} /><col style={{ width: 190 }} /><col style={{ width: 170 }} /><col style={{ width: 110 }} /><col style={{ width: 96 }} /><col style={{ width: 90 }} />{panel && <col />}<col style={{ width: 128 }} /></colgroup>
+          <table className="dt is-one" style={{ minWidth: panel ? 1114 : 974 }}>
+            <colgroup><col style={{ width: 170 }} /><col style={{ width: 84 }} /><col style={{ width: 190 }} /><col style={{ width: 170 }} /><col style={{ width: 110 }} /><col style={{ width: 96 }} /><col style={{ width: 90 }} />{panel && <col />}<col style={{ width: 52 }} /></colgroup>
             <SortHead cols={cols} sort={sort} onSort={setSort} />
             <tbody>{list.map((p) => (
-              <tr key={p.id}><td className="strong">{p.name}</td><td><Chip>{p.code}</Chip></td>
+              <tr key={p.id} {...rowProps(() => setEdit(p))}><td className="strong">{p.name}</td><td><Chip>{p.code}</Chip></td>
                 <td data-tip={p.timezone ?? meta().org_timezone}>{p.timezone ? tzLabel(p.timezone) : <span className="t-muted">{orgTz()}</span>}</td>
                 <td>{trafficRuleLabel(p.traffic_rule)}</td>
                 <td data-tip={resetOptions().find((o) => o.value === p.traffic_reset)?.label}>{trafficResetText(p.traffic_reset)}</td>
                 <td>提前 <span className="num">{p.remind_days}</span> 天</td>
                 <td className="r num">{planCount.get(p.id) ?? <span className="t-muted">0</span>}</td>
                 {panel && <td>{p.panel_url && /^https?:\/\//i.test(p.panel_url) ? <a href={p.panel_url} target="_blank" rel="noreferrer noopener" className="btn-link btn" style={{ gap: 4, maxWidth: '100%' }}><span className="ellipsis">{p.panel_url.replace(/^https?:\/\//, '')}</span><ExternalLink size={12} /></a> : (p.panel_url || <span className="t-muted">—</span>)}</td>}
-                <td className="r"><span className="row row-acts" style={{ justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
-                  <Button size="sm" variant="quiet" onClick={() => setEdit(p)}><Pencil size={13} />编辑</Button>
-                  <IconButton size="sm" label="删除供应商" onClick={() => setAskDel(p)}><Trash2 size={14} /></IconButton></span></td></tr>
+                <td className="c"><RowMenu label={`供应商 ${p.name} 的操作`}>
+                  <DropdownMenuItem onSelect={() => setEdit(p)}>编辑…</DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem danger onSelect={() => setAskDel(p)}>删除…</DropdownMenuItem>
+                </RowMenu></td></tr>
             ))}</tbody>
           </table>
           {q.isLoading && <SkeletonRows rows={3} one />}
@@ -325,12 +342,12 @@ function PlansTab() {
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       <Panel title="套餐" count={list.length} sub={<InfoTip text="同一套餐的机器，共用这里的流量额度、价格和周期" />} tools={<><CheckRow className="is-label" checked={showArchived} onChange={setShowArchived}>显示已归档</CheckRow><Button variant="primary" onClick={() => setEdit('new')}><Plus />新建套餐</Button></>} flush>
         <TableWrap>
-          <table className="dt" style={{ minWidth: 1000 }}>
-            <colgroup><col /><col style={{ width: 130 }} /><col style={{ width: 120 }} /><col style={{ width: 96 }} /><col style={{ width: 96 }} /><col style={{ width: 110 }} /><col style={{ width: 76 }} /><col style={{ width: 196 }} /></colgroup>
+          <table className="dt" style={{ minWidth: 860 }}>
+            <colgroup><col /><col style={{ width: 130 }} /><col style={{ width: 120 }} /><col style={{ width: 96 }} /><col style={{ width: 96 }} /><col style={{ width: 110 }} /><col style={{ width: 76 }} /><col style={{ width: 52 }} /></colgroup>
             <SortHead cols={PLAN_COLS} sort={sort} onSort={setSort} />
             <tbody>
               {list.map((p) => (
-                <tr key={p.id} className={p.archived_at ? 'is-retired' : undefined}>
+                <tr key={p.id} {...rowProps(() => setEdit(p))} className={p.archived_at ? 'is-link is-retired' : 'is-link'}>
                   <td><span className="cell-main strong">{p.name}</span><span className="sub" data-tip={p.archived_at ? undefined : p.notes ?? undefined}>{p.archived_at ? '已归档' : p.notes ?? ''}</span></td>
                   <td>{pname(p.provider_id)}</td>
                   <td>{planSpec(p)}<span className="sub">{p.disk_gb ? `磁盘 ${p.disk_gb} GiB` : ''}</span></td>
@@ -340,13 +357,14 @@ function PlansTab() {
                     ? <><span className="num">{F.money(p.monthly_usd_cents, 'USD')}</span> <span className="t-sub">/ 月</span>{(p.currency !== 'USD' || p.cycle !== 'monthly') && <span className="sub" data-tip={p.usd_per_unit != null && p.currency !== 'USD' ? F.fxRate(p.currency, p.usd_per_unit) : undefined}>{F.money(p.price_cents, p.currency)} / {cycleLabel(p.cycle)}</span>}</>
                     : <><span className="num">{F.money(p.price_cents, p.currency)}</span> <span className="t-sub">/ {cycleLabel(p.cycle)}</span><span className="sub" data-tip={`没有 ${p.currency} 的汇率（设置 → 汇率）`}>未折算</span></>}</td>
                   <td className="r num"><CountLink n={p.machine_count} to={`/nodes?plan=${p.id}`} /></td>
-                  <td className="r"><span className="row row-acts" style={{ justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
-                    <Button size="sm" variant="quiet" onClick={() => setEdit(p)}><Pencil size={13} />编辑</Button>
+                  <td className="c"><RowMenu label={`套餐 ${p.name} 的操作`}>
+                    <DropdownMenuItem onSelect={() => setEdit(p)}>编辑…</DropdownMenuItem>
                     {p.archived_at
-                      ? <Button size="sm" variant="quiet" disabled={patch.isPending} onClick={() => void setArchived(p, false).catch(toast.err)}><ArchiveRestore size={13} />取消归档</Button>
-                      : <IconButton size="sm" label="归档" disabled={patch.isPending} onClick={() => (p.machine_count > 0 ? setAskArchive(p) : void setArchived(p, true).catch(toast.err))}><Archive size={14} /></IconButton>}
-                    <IconButton size="sm" label="删除套餐" onClick={() => setAskDel(p)}><Trash2 size={14} /></IconButton>
-                  </span></td>
+                      ? <DropdownMenuItem disabled={patch.isPending} onSelect={() => void setArchived(p, false).catch(toast.err)}>取消归档</DropdownMenuItem>
+                      : <DropdownMenuItem disabled={patch.isPending} onSelect={() => (p.machine_count > 0 ? setAskArchive(p) : void setArchived(p, true).catch(toast.err))}>{p.machine_count > 0 ? '归档…' : '归档'}</DropdownMenuItem>}
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem danger onSelect={() => setAskDel(p)}>删除…</DropdownMenuItem>
+                  </RowMenu></td>
                 </tr>
               ))}
             </tbody>

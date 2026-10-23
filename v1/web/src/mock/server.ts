@@ -796,11 +796,47 @@ const PING_GLOBAL = { mode: 'tcp', slots: [['武汉电信', 'hb-ct-v4.ip.zstatic
 const pingView = () => ({ ...clone(PING_GLOBAL), modes: ['tcp', 'icmp'], interval_s: 60, count: 5, tcp_default_port: 80, defaults: clone(PING_GLOBAL) });
 R('GET', '/settings/ping-targets', () => pingView());
 R('PUT', '/settings/ping-targets', ({ body }) => { Object.assign(PING_GLOBAL, body as object); emit({ type: 'settings' }); return pingView(); });
-R('GET', '/ping-beats', () => Object.fromEntries(db.machines.filter((m) => m.kind === 'relay' && m.lifecycle === 'active').map((m) => m.id).map((id, k) => [id, PING_GLOBAL.slots.map((s, slot) => ({ ...s, slot })).filter((s) => s.target).map((s) => {
-  const base = 150 + 15 * s.slot + 10 * k;
-  const cells = Array.from({ length: 20 }, (_, i) => [base + ((i * 7 + s.slot * 3) % 23), (i + s.slot) % 9 === 0 ? 20 : 0]);
-  return { slot: s.slot, name: s.name, target: s.target, mode: PING_GLOBAL.mode, cur_ms: cells[19][0], cur_loss: cells[19][1], cur_ts: iso(), cells };
-})])));
+type PingSlotV = { name: string; target: string };
+type PingOverrideV = { mode?: 'tcp' | 'icmp' | null; slots?: (PingSlotV | null)[] };
+const PING_OVERRIDE = new Map<string, PingOverrideV>();
+/** 这台线路机此刻合成的槽位（覆盖优先，同服务端） */
+const pingSlotsOf = (id: string) => {
+  const o = PING_OVERRIDE.get(id);
+  return PING_GLOBAL.slots.map((g, slot) => { const s = o?.slots?.[slot]; return s ? { ...s, slot, source: 'override' as const } : { ...g, slot, source: 'global' as const }; });
+};
+const pingModeOf = (id: string) => PING_OVERRIDE.get(id)?.mode ?? PING_GLOBAL.mode;
+const relayIds = () => db.machines.filter((m) => m.kind === 'relay' && m.lifecycle === 'active').map((m) => m.id);
+const pingRows = (id: string) => {
+  const k = Math.max(0, relayIds().indexOf(id));
+  return pingSlotsOf(id).filter((s) => s.target).map((s) => {
+    const base = 150 + 15 * s.slot + 10 * k;
+    const cells = Array.from({ length: 20 }, (_, i) => [base + ((i * 7 + s.slot * 3) % 23), (i + s.slot) % 9 === 0 ? 20 : 0]);
+    return { slot: s.slot, name: s.name, target: s.target, mode: pingModeOf(id), cur_ms: cells[19][0], cur_loss: cells[19][1], cur_ts: iso(), cells };
+  });
+};
+const relayOf = (id: string) => { const m = machine(id); if (m.kind !== 'relay') throw bad('不是线路机', 404, 'not_found'); return m; };
+const machinePingView = (id: string) => ({ mode: pingModeOf(id), slots: pingSlotsOf(id), override: clone(PING_OVERRIDE.get(id) ?? null), global: clone(PING_GLOBAL), current: pingRows(id) });
+R('GET', '/ping-beats', () => Object.fromEntries(relayIds().map((id) => [id, pingRows(id)]).filter(([, rows]) => (rows as unknown[]).length)));
+R('GET', '/machines/([^/]+)/ping', ({ params }) => { relayOf(params[0]); return machinePingView(params[0]); });
+R('PUT', '/machines/([^/]+)/ping', ({ params, body }) => {
+  relayOf(params[0]);
+  const o = (body as { override: PingOverrideV | null }).override;
+  if (!o || (o.mode == null && (o.slots ?? []).every((s) => s == null))) PING_OVERRIDE.delete(params[0]); else PING_OVERRIDE.set(params[0], clone(o));
+  emit({ type: 'machine', id: params[0] }); return machinePingView(params[0]);
+});
+R('GET', '/machines/([^/]+)/ping-series', ({ params, query }) => {
+  relayOf(params[0]);
+  const range = query.get('range') ?? '24h';
+  const span: Record<string, number> = { '1h': 3600, '6h': 6 * 3600, '24h': 86400, '7d': 7 * 86400, '30d': 30 * 86400 };
+  if (!span[range]) throw bad('range 不对');
+  const step = span[range] > 86400 ? 3600 : 60;
+  const n = Math.min(span[range] / step, 720); const now = Date.now();
+  return { range, step_s: step, series: pingRows(params[0]).map((r) => ({ slot: r.slot, name: r.name, target: r.target, points: Array.from({ length: n }, (_, i) => {
+    const ts = new Date(now - (n - 1 - i) * step * 1000).toISOString();
+    const c = r.cells[i % 20];
+    return { ts, rtt_ms: c[0], loss_pct: c[1] };
+  }) })) };
+});
 /** 告警的顺序同服务端：进行中在前 → 严重度高在前 → 开始时间新在前；subject_id（只要这台机器的）时不看严重度，只按时间 */
 const SEV_RANK: Record<string, number> = { critical: 0, warning: 1, info: 2 };
 const byState = (a: Incident, b: Incident) => (a.state === b.state ? 0 : a.state === 'firing' ? -1 : 1);

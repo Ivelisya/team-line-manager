@@ -1,6 +1,6 @@
 // 抽屉“费用”页：订阅信息编辑 + 登记续费 + 续费记录。
 import * as React from 'react';
-import { CalendarPlus } from 'lucide-react';
+import { CalendarPlus, Pencil } from 'lucide-react';
 import type { MachineView, SubField, Subscription } from '@/lib/types';
 import { useRenew, useRenewals, useSaveSubscription, type SubscriptionBody } from '@/lib/queries';
 import * as F from '@/lib/format';
@@ -21,6 +21,10 @@ export function BillingTab({ m }: { m: MachineView }) {
   const s = m.subscription;
   const renewals = useRenewals(m.id);
   const [renew, setRenew] = React.useState(false);
+  // 已有订阅时修改表单默认收起：表单里的值和上面「当前订阅」一样，一屏里不重复列两遍；点「修改订阅」才展开
+  const [editing, setEditing] = React.useState(false);
+  const formRef = React.useRef<HTMLElement>(null);
+  React.useEffect(() => { if (editing) formRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }, [editing]);
   const rv = remainingValue(m.subscription); const q = quota(m); const fl = monthFlow(m);
   const h = m.host_machine;
   return (
@@ -60,14 +64,21 @@ export function BillingTab({ m }: { m: MachineView }) {
               </LabelValue>
             )}
           </LabelValueGrid>
-          <div style={{ marginTop: 12 }}><Button onClick={() => setRenew(true)}><CalendarPlus />登记续费</Button></div>
+          <div className="row" style={{ marginTop: 12, gap: 8 }}>
+            <Button onClick={() => setRenew(true)}><CalendarPlus />登记续费</Button>
+            {!editing && <Button onClick={() => setEditing(true)}><Pencil />修改订阅</Button>}
+          </div>
         </Section>
       )}
-      <Section>
-        <SectionHeader title={<>{s ? '修改订阅' : '设置订阅'} <InfoTip text={`选「跟随」的项跟随${m.plan ? `套餐「${m.plan.name}」` : '默认值'}${m.provider ? `与供应商「${m.provider.name}」` : ''}：在「团队与套餐」里改了，这里立即跟着变。`} /></>} />
-        {!s && !h && <div style={{ marginBottom: 12 }}><Note>还没有订阅信息 <InfoTip text={`填写后会参与到期提醒与费用统计。${m.plan ? '有套餐时只需填到期日。' : ''}`} /></Note></div>}
-        <SubForm key={m.id + (s?.due_date ?? '')} m={m} />
-      </Section>
+      {(!s || editing) && (
+        <section className="sec" ref={formRef}>
+          <SectionHeader title={<>{s ? '修改订阅' : '设置订阅'} <InfoTip text={`选「跟随」的项跟随${m.plan ? `套餐「${m.plan.name}」` : '默认值'}${m.provider ? `与供应商「${m.provider.name}」` : ''}：在「团队与套餐」里改了，这里立即跟着变。`} /></>}>
+            {s && <Button variant="quiet" size="sm" onClick={() => setEditing(false)}>收起</Button>}
+          </SectionHeader>
+          {!s && !h && <div style={{ marginBottom: 12 }}><Note>还没有订阅信息 <InfoTip text={`填写后会参与到期提醒与费用统计。${m.plan ? '有套餐时只需填到期日。' : ''}`} /></Note></div>}
+          <SubForm key={m.id + (s?.due_date ?? '')} m={m} />
+        </section>
+      )}
       {s && (
         <Section>
           <SectionHeader title="续费记录" />
@@ -174,7 +185,7 @@ function SubForm({ m }: { m: MachineView }) {
     <OvField m={m} k={k} label={label} info={info} on={ov[k]} setOn={setOn(k)} due={dueDate} error={touched[k] ? error : undefined} hint={k === 'price_cents' ? usdHint : undefined} onTouch={touch(k)} locked={k === 'price_cents' && priceLocked}>{children}</OvField>
   );
   return (
-    <div className="form-grid" onBlur={(e) => { if (!(e.target as HTMLElement).closest('[data-due]')) touch('due')(); }}>
+    <div className="form-grid sub-form" onBlur={(e) => { if (!(e.target as HTMLElement).closest('[data-due]')) touch('due')(); }}>
       <Field label="到期日" hint={touched.due && dueDate === '' ? '必填' : undefined} error={dueBad ? '格式应为 YYYY-MM-DD' : undefined}><div data-due><DateField value={dueDate} onChange={setDueDate} /></div></Field>
       {o('price_cents', '费用', <UnitInput width="full" unit={priceUnit} style={{ paddingRight: `calc(var(--sp-10) + ${priceUnit.length * 0.62 + 0.4}em)` }} inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="68" aria-invalid={(touched.price_cents && priceBad) || undefined} />, priceBad ? (price.trim() === '' ? '必填，免费填 0' : '应为 0 或正数') : undefined)}
       {o('currency', '币种', <Select value={currency} onChange={setCurrency} options={F.withCurrent(currencyOptions(), currency)} />)}

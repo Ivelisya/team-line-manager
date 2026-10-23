@@ -126,12 +126,14 @@ export function RouterExitList({ routers, title }: { routers: { node?: string; p
 }
 
 /** 编号压缩（后面的节点前移补号）：正常的副作用，收成一行，要看逐台再展开成两列表格（替换、退役共用） */
-export function RenameNote({ renames, tip }: { renames: { machine_id: string; old_name: string; new_name: string }[]; tip: string }) {
+/** bare：不套提示条（放进别的提示条的列表里，和其它几条说明合成一块时用） */
+export function RenameNote({ renames, tip, bare }: { renames: { machine_id: string; old_name: string; new_name: string }[]; tip: string; bare?: boolean }) {
   const [open, setOpen] = React.useState(false);
   if (renames.length === 0) return null;
   const first = renames[0]; const last = renames[renames.length - 1];
+  const Wrap = bare ? 'div' : Note;
   return (
-    <Note>
+    <Wrap style={bare ? { flex: 1, minWidth: 0 } : undefined}>
       <div className="row row-between" style={{ gap: 8 }}>
         <span>补号：{renames.length} 台节点前移（{renames.length > 1 ? `${first.old_name} … ${last.old_name}` : `${first.old_name} → ${first.new_name}`}） <InfoTip text={tip} /></span>
         {renames.length > 1 && <button type="button" className="btn btn-link btn-sm" style={{ height: 'auto', padding: 0 }} aria-expanded={open} onClick={() => setOpen((v) => !v)}>{open ? '收起' : '展开'}</button>}
@@ -144,7 +146,7 @@ export function RenameNote({ renames, tip }: { renames: { machine_id: string; ol
           </table>
         </div>
       )}
-    </Note>
+    </Wrap>
   );
 }
 

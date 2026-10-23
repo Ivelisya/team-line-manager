@@ -4,7 +4,7 @@ import * as DropdownPrimitive from '@radix-ui/react-dropdown-menu';
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import * as PopoverPrimitive from '@radix-ui/react-popover';
 import * as ToggleGroup from '@radix-ui/react-toggle-group';
-import { Check, ChevronRight } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight } from 'lucide-react';
 import { m } from 'motion/react';
 import { cn } from '@/lib/utils';
 import { SPRING } from '@/lib/motion';
@@ -200,3 +200,70 @@ export const Segmented = React.memo(function Segmented<T extends string>({ value
     </ToggleGroup.Root>
   );
 }) as <T extends string>(p: SegProps<T>) => React.ReactElement;
+
+/** 放不下就收进「更多」的分段控件（首页的团队分组）：轨道撑满可用宽度，从左往右能放几项放几项，其余进最右的「更多 ▾」下拉。
+ *  选中项一定留在轨道上：它本该在「更多」里时，顶替轨道上最后一个可见项（被顶下来的进下拉）。
+ *  每项的自然宽度在一份隐藏的同款副本里量（轨道里的项会被拉伸，量不准），轨道宽度变了、选项文字 / 计数变了才重量 */
+export const SegmentedOverflow = React.memo(function SegmentedOverflow<T extends string>({ value, onChange, items, label, className }: Omit<SegProps<T>, 'sm' | 'disabled'>) {
+  const gid = React.useId();
+  const root = React.useRef<HTMLDivElement>(null);
+  const meas = React.useRef<HTMLDivElement>(null);
+  const [dim, setDim] = React.useState<{ avail: number; widths: number[]; more: number; gap: number } | null>(null);
+  const sig = items.map((it) => `${it.value}:${it.count ?? ''}`).join('|');
+  React.useLayoutEffect(() => {
+    const r = root.current; const ms = meas.current;
+    if (!r || !ms) return;
+    const measure = () => {
+      const cs = getComputedStyle(r);
+      const avail = r.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+      const els = [...ms.children] as HTMLElement[];
+      const widths = els.slice(0, -1).map((e) => e.getBoundingClientRect().width);
+      const more = els[els.length - 1].getBoundingClientRect().width;
+      const gap = parseFloat(getComputedStyle(ms).columnGap) || 0;
+      setDim((o) => (o && o.avail === avail && o.more === more && o.widths.join() === widths.join() ? o : { avail, widths, more, gap }));
+    };
+    measure();
+    return watchSize(r, measure);
+  }, [sig]);
+  // 算出轨道上放哪些项（按原顺序），其余进「更多」
+  const sel = items.findIndex((it) => it.value === value);
+  let shown = items.map((_, i) => i);
+  if (dim && dim.widths.length === items.length) {
+    const sum = (ix: number[]) => ix.reduce((a, i) => a + dim.widths[i], 0) + dim.gap * Math.max(0, ix.length - 1);
+    if (sum(shown) > dim.avail + 0.5) {
+      let k = items.length - 1;
+      const pick = (k: number) => { const ix = shown.slice(0, k); return sel >= k && sel >= 0 ? [...ix.slice(0, Math.max(0, k - 1)), sel] : ix; };
+      while (k > 1 && sum(pick(k)) + dim.gap + dim.more > dim.avail) k--;
+      shown = pick(k);
+    }
+  }
+  const hidden = items.filter((_, i) => !shown.includes(i));
+  return (
+    <div className={cn('seg-ovf', className)}>
+      <ToggleGroup.Root ref={root} type="single" value={value} onValueChange={(v) => v && onChange(v as T)} aria-label={label} className="seg seg-fill">
+        {shown.map((i) => { const it = items[i]; return (
+          <ToggleGroup.Item key={it.value} value={it.value} className="seg-item">
+            {value === it.value && <m.span aria-hidden className="seg-ind" layoutId={`seg-ind-${gid}`} layoutDependency={value} style={{ borderRadius: 999 }} transition={SPRING} />}
+            {it.label}{it.count != null && <span className="seg-count">{it.count}</span>}
+          </ToggleGroup.Item>
+        ); })}
+        {hidden.length > 0 && (
+          <DropdownMenu>
+            <DropdownMenuTrigger className="seg-item seg-more" aria-label={`更多${label}`}>更多<ChevronDown size={14} /></DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              {hidden.map((it) => (
+                <DropdownMenuItem key={it.value} onSelect={() => onChange(it.value)}>
+                  <span className="grow">{it.label}</span>{it.count != null && <span className="seg-count">{it.count}</span>}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
+      </ToggleGroup.Root>
+      <div ref={meas} className="seg seg-measure" aria-hidden>
+        {items.map((it) => <span key={it.value} className="seg-item">{it.label}{it.count != null && <span className="seg-count">{it.count}</span>}</span>)}
+        <span className="seg-item seg-more">更多<ChevronDown size={14} /></span>
+      </div>
+    </div>
+  );
+}) as <T extends string>(p: Omit<SegProps<T>, 'sm' | 'disabled'>) => React.ReactElement;

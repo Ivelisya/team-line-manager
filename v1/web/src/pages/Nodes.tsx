@@ -128,7 +128,7 @@ function LiveNodes({ sp, upd, tools }: { sp: URLSearchParams; upd: (patch: Recor
       { id: 'kind', header: '类型', size: 84, drop: 1, ...byStr((m) => kindLabel(m.kind)), cell: (m) => kindLabel(m.kind) },
       { id: 'status', header: '状态', size: 96, ...byNum(statusRank, 'asc'), cell: (m) => <HealthPill m={m} /> },
       { id: 'entry', header: '入口', size: 188, cell: (m) => <EntryCell m={m} /> },
-      { id: 'plan', header: '供应商 · 套餐', size: 176, drop: 3,
+      { id: 'plan', header: '套餐 · 供应商', size: 176, drop: 3,
         cell: (m) => <>{m.plan ? <Trunc className="cell-main">{m.plan.name}</Trunc> : <span className="cell-main t-muted">{m.host_machine ? '不带套餐' : '未设置'}</span>}<span className="sub">{m.provider?.name ?? '—'}</span></> },
       { id: 'traffic', header: '本月流量', size: 144, r: true, ...byNum(trafficTotal),
         cell: (m) => <MonthFlowCell m={m} /> },
