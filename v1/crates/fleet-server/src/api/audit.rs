@@ -11,6 +11,9 @@ use serde_json::{json, Value};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+/// 订阅字段的写法：(字段名, 中文名, 把值写成文字的函数)
+type FieldFmt<'a> = (&'a str, &'a str, &'a dyn Fn(&Value) -> String);
+
 #[derive(Deserialize)]
 pub struct AuditQ {
     target_id: Option<Uuid>,
@@ -474,7 +477,7 @@ fn sub_changes(d: &Value) -> String {
     let gb = |v: &Value| v.as_i64().filter(|g| *g > 0).map_or("不限".into(), |g| format!("{g} GB"));
     let cycle = |v: &Value| v.as_str().and_then(|k| crate::meta::CYCLES.iter().find(|c| c.key == k)).map_or_else(|| val(v), |c| c.label.to_string());
     let onoff = |v: &Value| if v == true { "开" } else { "关" }.to_string();
-    let fields: [(&str, &str, &dyn Fn(&Value) -> String); 9] = [
+    let fields: [FieldFmt; 9] = [
         ("due_date", "到期", &val),
         ("price_cents", "价格", &money),
         ("currency", "币种", &val),

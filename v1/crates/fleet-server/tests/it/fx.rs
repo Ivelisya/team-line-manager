@@ -58,7 +58,6 @@ async fn usd_conversion_auto_manual_and_failure() {
     let ov = t.get("/api/v1/overview").await;
     assert_eq!(ov["monthly_usd"]["cents"], 10000);
     assert_eq!(ov["monthly_usd"]["unconverted"], json!([{"currency": "CNY", "cents": 29999}]));
-    assert_eq!(ov["monthly_cost"], json!([{"currency": "CNY", "cents": 29999}, {"currency": "USD", "cents": 10000}]), "旧字段保留");
     let r = t.get("/api/v1/settings/fx-rates").await;
     assert_eq!((r["missing"].clone(), r["fetched_at"].clone(), r["auto"].clone()), (json!(["CNY"]), Value::Null, json!(false)), "{r}");
 

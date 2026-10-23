@@ -857,9 +857,7 @@ pub async fn machine_access(db: &PgPool, machine_id: Uuid, window: Window, raw_d
     Ok(MachineAccess { window_start: fmt_ts(f.from), top_domains, top_sources, recent, hourly })
 }
 
-pub fn fmt_ts(t: OffsetDateTime) -> String {
-    t.format(&time::format_description::well_known::Rfc3339).unwrap_or_default()
-}
+pub use crate::meta::fmt_ts;
 
 #[cfg(test)]
 mod tests {

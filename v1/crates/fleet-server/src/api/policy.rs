@@ -17,12 +17,13 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+/// 节点的基本信息：(类型, 生命周期, 线路机名, 团队名, 编号)
+type NodeRow = (String, String, Option<String>, Option<String>, Option<i32>);
+
 /// 预览看最近多少小时的访问汇总
 const PREVIEW_HOURS: i64 = 24;
 const PREVIEW_DOMAINS: usize = 20;
 const VERSIONS_SHOWN: i64 = 30;
-
-fn rfc3339(t: OffsetDateTime) -> String { t.format(&time::format_description::well_known::Rfc3339).unwrap_or_default() }
 
 fn data_json(d: &Data) -> Value { json!({"mode": d.mode.as_str(), "domains": d.domains, "note": d.note}) }
 
@@ -33,7 +34,7 @@ fn policy_json(scope: Scope, id: Uuid, row: Option<&Row>) -> Value {
             "scope": scope.as_str(), "id": id,
             "mode": r.cur.mode.as_str(), "domains": r.cur.domains, "note": r.cur.note,
             "draft": r.draft.as_ref().map(data_json),
-            "revision": r.revision, "updated_by": r.updated_by, "updated_at": rfc3339(r.updated_at),
+            "revision": r.revision, "updated_by": r.updated_by, "updated_at": crate::meta::fmt_ts(r.updated_at),
         }),
         None => {
             let d = scope.default_data();
@@ -140,7 +141,7 @@ pub async fn put_one(a: Actor, State(st): State<AppState>, ApiPath((scope, id)):
             .await?
             .ok_or_else(|| ApiError::not_found("没有这个团队"))?,
         Scope::Node => {
-            let m: Option<(String, String, Option<String>, Option<String>, Option<i32>)> =
+            let m: Option<NodeRow> =
                 sqlx::query_as("select m.kind::text, m.lifecycle::text, m.label, t.name, m.number from machine m left join team t on t.id = m.team_id where m.id = $1")
                     .bind(id)
                     .fetch_optional(&st.db)
@@ -549,7 +550,7 @@ async fn load_versions(st: &AppState, only: Option<Uuid>) -> ApiResult<Vec<Value
             let is_current = v.snapshot.as_ref().map_or(same_as_cur, |s| rollback_target(s, &exists) == current);
             json!({
                 "id": v.id, "seq": v.seq, "kind": v.kind, "rollback_of_seq": v.rollback_of_seq, "actor": v.actor,
-                "created_at": rfc3339(v.created_at), "status": status, "changes": v.changes, "relays": rel,
+                "created_at": crate::meta::fmt_ts(v.created_at), "status": status, "changes": v.changes, "relays": rel,
                 "is_latest": v.seq == latest, "is_current": is_current, "rollbackable": !is_current,
             })
         })

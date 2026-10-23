@@ -24,6 +24,15 @@ use std::time::Duration;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+/// 近 1 小时每 3 分钟一格：(线路机, 目标槽位, 目标, 第几格, 中位延迟, 发包, 丢包)
+type BucketRow = (Uuid, i16, String, i32, Option<f64>, i64, i64);
+/// 每个 (线路机, 槽位) 最近一次：(线路机, 槽位, 目标, 模式, 延迟, 发包, 丢包, 时间)
+type LastRow = (Uuid, i16, String, String, Option<f32>, i16, i16, OffsetDateTime);
+/// 当前读数：(模式, 延迟, 发包, 丢包, 时间)
+type CurRow = (String, Option<f32>, i16, i16, OffsetDateTime);
+/// 历史曲线上的一点：(槽位, 目标, 时间, 平均延迟, 丢包率)
+type SeriesRow = (i16, String, OffsetDateTime, Option<f64>, Option<f64>);
+
 pub const SLOTS: usize = 8;
 /// 每轮间隔、每个目标发几次
 pub const INTERVAL_S: u32 = 60;
@@ -326,7 +335,7 @@ pub async fn beats(db: &sqlx::PgPool) -> sqlx::Result<Value> {
     )
     .fetch_all(db)
     .await?;
-    let rows: Vec<(Uuid, i16, String, i32, Option<f64>, i64, i64)> = sqlx::query_as(
+    let rows: Vec<BucketRow> = sqlx::query_as(
         "with w as (select date_bin('3 minutes', now(), timestamptz 'epoch') - interval '57 minutes' s)
          select p.relay_id, p.slot, p.target, floor(extract(epoch from p.ts - w.s) / 180)::int,
                 (percentile_cont(0.5) within group (order by p.rtt_ms))::float8, sum(p.sent)::bigint, sum(p.lost)::bigint
@@ -335,7 +344,7 @@ pub async fn beats(db: &sqlx::PgPool) -> sqlx::Result<Value> {
     )
     .fetch_all(db)
     .await?;
-    let last: Vec<(Uuid, i16, String, String, Option<f32>, i16, i16, OffsetDateTime)> = sqlx::query_as(
+    let last: Vec<LastRow> = sqlx::query_as(
         "select distinct on (relay_id, slot) relay_id, slot, target, mode, rtt_ms, sent, lost, ts from ping_result
          where ts > now() - interval '15 minutes' order by relay_id, slot, ts desc",
     )
@@ -347,7 +356,7 @@ pub async fn beats(db: &sqlx::PgPool) -> sqlx::Result<Value> {
             *c = json!([ms.map(|m| (m * 10.0).round() / 10.0), (sent > 0).then(|| (lost as f64 * 1000.0 / sent as f64).round() / 10.0)]);
         }
     }
-    let cur: HashMap<(Uuid, i16, String), (String, Option<f32>, i16, i16, OffsetDateTime)> =
+    let cur: HashMap<(Uuid, i16, String), CurRow> =
         last.into_iter().map(|(r, s, t, m, ms, sent, lost, ts)| ((r, s, t), (m, ms, sent, lost, ts))).collect();
     let mut out = serde_json::Map::new();
     for (id, ov) in relays {
@@ -362,7 +371,7 @@ pub async fn beats(db: &sqlx::PgPool) -> sqlx::Result<Value> {
                 json!({
                     "slot": s.slot, "name": s.name, "target": s.target, "mode": c.map(|c| c.0.clone()).unwrap_or_else(|| mode.clone()),
                     "cur_ms": c.and_then(|c| c.1), "cur_loss": c.filter(|c| c.2 > 0).map(|c| (c.3 as f64 * 1000.0 / c.2 as f64).round() / 10.0),
-                    "cur_ts": c.and_then(|c| c.4.format(&time::format_description::well_known::Rfc3339).ok()),
+                    "cur_ts": c.map(|c| crate::meta::fmt_ts(c.4)),
                     "cells": cells.remove(&k).unwrap_or_else(|| vec![json!([null, null]); BUCKETS]),
                 })
             })
@@ -404,7 +413,7 @@ pub async fn series(db: &sqlx::PgPool, relay: Uuid, range: &str) -> ApiResult<Va
     } else {
         "select slot, target, hour, rtt_avg::float8, (100.0 * lost / nullif(sent, 0))::float8 from ping_hourly where relay_id = $1 and hour >= $2 order by hour"
     };
-    let rows: Vec<(i16, String, OffsetDateTime, Option<f64>, Option<f64>)> = sqlx::query_as(sql).bind(relay).bind(since).fetch_all(db).await?;
+    let rows: Vec<SeriesRow> = sqlx::query_as(sql).bind(relay).bind(since).fetch_all(db).await?;
     let slots: Vec<Merged> = serde_json::from_value::<Vec<Value>>(view["slots"].clone())
         .unwrap_or_default()
         .into_iter()
@@ -419,7 +428,7 @@ pub async fn series(db: &sqlx::PgPool, relay: Uuid, range: &str) -> ApiResult<Va
             let pts: Vec<Value> = rows
                 .iter()
                 .filter(|r| r.0 as u8 == s.slot && r.1 == s.target)
-                .map(|r| json!({"ts": r.2.format(&time::format_description::well_known::Rfc3339).unwrap_or_default(), "rtt_ms": r.3, "loss_pct": r.4}))
+                .map(|r| json!({"ts": crate::meta::fmt_ts(r.2), "rtt_ms": r.3, "loss_pct": r.4}))
                 .collect();
             json!({"slot": s.slot, "name": s.name, "target": s.target, "points": pts})
         })
