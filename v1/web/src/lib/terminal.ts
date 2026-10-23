@@ -40,7 +40,13 @@ export function closeTerminal() {
 }
 /** 确认框里点了「断开」：照问的那样关窗或换台 */
 export function confirmTerminalAsk(a: TermTarget | 'close') { show(a === 'close' ? null : a); }
-export const cancelTerminalAsk = () => asking.set(null);
+/** 确认框里点了「不换」/ 取消：回到打开前的样子（换台被拒时，打开终端的地方想回到原处，如软路由抽屉；关窗确认没有等着的回调） */
+export function cancelTerminalAsk() {
+  asking.set(null);
+  const b = pendingBack;
+  pendingBack = undefined;
+  b?.();
+}
 /** 窗口出错被边界收起时直接清掉，不再确认 */
 export const resetTerminal = () => show(null);
 

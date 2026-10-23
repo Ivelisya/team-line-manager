@@ -37,6 +37,7 @@ case $script in
   *"MODE='rollback'"*)
     [ -e "$R/rollback-fail" ] && { echo "fleet：写回备份失败" >&2; exit 3; }
     printf '%s\n' "$script" | sed -n "s/^STAMP='\(.*\)'$/\1/p;s/^NAME_1='\(.*\)'$/\1/p;s/^SRV_1='\(.*\)'$/\1/p;s/^PORT_1='\(.*\)'$/\1/p" | paste -sd' ' >> "$R/rollback.log"
+    printf '%s\n' "$script" | sed -n "s/^UUID_1='\(.*\)'$/\1/p" >> "$R/rollback-uuid"
     echo rollback=ok; exit 0 ;;
 esac
 n=$(ls "$R" | grep -c '^apply-' || true)
@@ -330,6 +331,37 @@ async fn failure_rolls_back_and_retry_redoes() {
     assert_eq!(t.job(&job).await["state"], "succeeded", "{}", logs(t, &job).await);
     assert_eq!((applies(23121).len(), applies(23122).len()), (4, 3));
     assert_eq!(name_of(t, w.new).await, "团队2-01");
+}
+
+/// 改回用本作业写进出口的那组参数核对，不从库里现取：第二台还在改的时候新入口被轮换了，第一台改回带的仍是写入时的 uuid
+/// （按现取的会对不上，路由上明明是本作业写的却当成别人改过）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rollback_uses_params_written_not_current_ones() {
+    let w = world().await;
+    let oe = old_entry(&w).await;
+    router(&w, "路由A", 23231, &[("节点01", "198.51.100.2", 20003, Some(oe))]).await;
+    router(&w, "路由B", 23232, &[("节点01", "198.51.100.2", 20003, Some(oe))]).await;
+    let t = &w.t;
+    std::fs::write(root(23232).join("mode"), "fail").unwrap();
+    std::fs::write(root(23232).join("hold"), "").unwrap();
+    let d = t.post(&format!("/api/v1/machines/{}/replace", w.old), json!({"new_machine_id": w.new})).await;
+    let job = d["job_id"].as_str().unwrap().to_string();
+    let st = t.st.clone();
+    let h = tokio::spawn(async move {
+        while let Some(j) = jobs::claim(&st, "test").await.unwrap() {
+            jobs::advance(&st, j, "test").await.unwrap();
+        }
+    });
+    while applies(23232).is_empty() {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let rotated = "33333333-3333-4333-8333-333333333333";
+    sqlx::query("update entry set client_uuid = $2::uuid where node_id = $1").bind(w.new).bind(rotated).execute(&t.st.db).await.unwrap();
+    std::fs::remove_file(root(23232).join("hold")).unwrap();
+    h.await.unwrap();
+    let j = t.job(&job).await;
+    assert!(j["error"].as_str().unwrap().contains("已改回原配置：路由A"), "{j}");
+    assert_eq!(read(root(23231).join("rollback-uuid")), format!("{NEW_UUID}\n"), "带的是写入时的 uuid，不是现在库里的");
 }
 
 /// 没有路由用旧节点 / 选了不改路由：只交换编号。指定团队与编号；auto_compact 压缩新节点原来的团队

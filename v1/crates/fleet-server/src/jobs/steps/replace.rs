@@ -12,7 +12,8 @@
 //! 改过的路由、第一次改之前的备份时间戳与要改的出口记在参数 `routers_applied`，确认都改回了、或这一步做完（成功时与 `routers_stuck` 一起清）才清掉：
 //! 中途被打断（外层超时、中控重启）或改回失败时它还在，这时作业不能取消（jobs::cancel_blocker），重试照它接着做完（不重新确定出口，
 //! 备份戳沿用第一次的）。改回失败的另记在 `routers_stuck`（哪台、哪些出口、改之前指向哪），作业详情据此给出「需要人工处理」。
-//! 凭据（uuid、公钥、short-id）执行时才从库里取，只进 ssh 的 stdin，不进参数、日志与审计。
+//! 凭据（uuid、公钥、short-id）执行时才从库里取，只进 ssh 的 stdin，不进日志与审计。写进每个出口的那一整组（含凭据）随 `routers_applied` 记在作业参数里
+//! （参数不经 API 给出），改回时照它核对路由上现在的值：仍是本作业写的才改回，已被别人改过的跳过并在作业日志说明；不从库里现取，新入口在卡住期间被轮换也不会误判。
 
 use super::*;
 use crate::api::lifecycle::{move_exit, relay_addr};
@@ -30,33 +31,19 @@ struct Applied {
     /// 这台要改的出口：中控在这一步中途重启、接着做时照它重做（路由的配置可能已经改好，不再按配置重新确定）
     #[serde(default)]
     exits: Vec<ExitPlan>,
+    /// 最近一次写进这台各出口的整组参数（含凭据）：改回时照它核对路由上现在的值，不从库里现取（卡住期间入口被轮换也认得出是不是本作业写的）
+    #[serde(default)]
+    written: Vec<rr::Edit>,
 }
 
 impl Applied {
-    /// 改回用：这台上本作业写入的出口的样子（出口名、改成的 server:port 和从库里取回的凭据：路由上整组参数都对上才算「仍是本作业写的」）。
-    /// 记录里没有端口、或入口已经查不到：没法核对，返回原因（不能当成改回了）
-    async fn back(&self, db: &sqlx::PgPool) -> Result<Vec<rr::Edit>, String> {
-        let mut out = vec![];
-        for x in &self.exits {
-            let port = x.port.ok_or_else(|| format!("作业记录里出口「{}」没有改成的端口，没法核对是不是本作业写的", x.exit))?;
-            let e = match x.new_entry_id {
-                Some(id) => new_entry(db, id, None).await.map_err(|e| format!("{e:#}"))?,
-                None => None,
-            };
-            let e = e.ok_or_else(|| format!("出口「{}」改成的入口已经查不到了，没法核对是不是本作业写的", x.exit))?;
-            out.push(rr::Edit {
-                exit: x.exit.clone(),
-                old_server: x.old_server.clone(),
-                old_port: x.old_port,
-                server: x.server.clone(),
-                port,
-                uuid: e.client_uuid.to_string(),
-                sni: e.reality_sni,
-                pbk: e.reality_public_key,
-                sid: e.short_id,
-            });
+    /// 改回用：这台上本作业写入的出口的样子（出口名、server:port 和整组凭据：路由上整组参数都对上才算「仍是本作业写的」）。
+    /// 记录里没有（旧版本留下的）：没法核对，返回原因（不能当成改回了）
+    fn back(&self) -> Result<Vec<rr::Edit>, String> {
+        if self.written.is_empty() {
+            return Err("作业记录里没有写入出口的参数，没法核对是不是本作业写的".into());
         }
-        Ok(out)
+        Ok(self.written.clone())
     }
 }
 
@@ -80,14 +67,14 @@ struct NewEntry {
     reality_public_key: String,
 }
 
-/// 入口的参数。`active_of` 有值时只取属于这个节点、在用的入口（改之前）；没有就不限（改回时，入口可能已经摘了）
-async fn new_entry(db: &sqlx::PgPool, id: Uuid, active_of: Option<Uuid>) -> sqlx::Result<Option<NewEntry>> {
+/// 入口的参数：只取属于这个节点、在用的入口
+async fn new_entry(db: &sqlx::PgPool, id: Uuid, node: Uuid) -> sqlx::Result<Option<NewEntry>> {
     sqlx::query_as(
         "select e.client_uuid, e.short_id, e.port, r.reality_sni, r.reality_public_key from entry e join relay r on r.machine_id = e.relay_id
-         where e.id = $1 and ($2::uuid is null or (e.node_id = $2 and e.lifecycle = 'active'))",
+         where e.id = $1 and e.node_id = $2 and e.lifecycle = 'active'",
     )
     .bind(id)
-    .bind(active_of)
+    .bind(node)
     .fetch_optional(db)
     .await
 }
@@ -391,7 +378,7 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         let mut ed = vec![];
         for x in exits {
             let e = match x.new_entry_id {
-                Some(id) => new_entry(&c.st.db, id, Some(new)).await?,
+                Some(id) => new_entry(&c.st.db, id, new).await?,
                 None => None,
             };
             let Some(e) = e else { return give_up(c, &mut locks, &applied, None, format!("新入口（{}）已经不在用了：{redo}", x.to()), ErrKind::Remote, kept).await };
@@ -409,8 +396,10 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         }
         let t = OffsetDateTime::now_utc();
         let stamp = rr::stamp(t);
-        if !applied.iter().any(|a| a.id == r.id) {
-            applied.push(Applied { id: r.id, name: r.name.clone(), port: r.tunnel_port, stamp: stamp.clone(), exits: exits.clone() });
+        // 这次要写的整组参数先记下（接着做时入口可能已经轮换过，以这次写的为准），改回时照它核对
+        match applied.iter_mut().find(|a| a.id == r.id) {
+            Some(a) => a.written = ed.clone(),
+            None => applied.push(Applied { id: r.id, name: r.name.clone(), port: r.tunnel_port, stamp: stamp.clone(), exits: exits.clone(), written: ed.clone() }),
         }
         c.set_params(json!({"routers_applied": applied})).await?;
         let what: Vec<String> = ed.iter().map(|e| format!("{} {}:{} → {}:{}", e.exit, e.old_server, e.old_port, e.server, e.port)).collect();
@@ -455,7 +444,7 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
 /// 一台路由上本作业写的出口改回（先等它的锁）。没改回返回原因
 async fn revert_one(c: &Ctx<'_>, locks: &mut Locks<'_>, a: &Applied) -> anyhow::Result<Result<(), String>> {
     locks.wait(a.id).await?;
-    let back = match a.back(&c.st.db).await {
+    let back = match a.back() {
         Ok(b) => b,
         Err(why) => return Ok(Err(why)),
     };
@@ -624,13 +613,18 @@ pub(super) async fn renumber(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
 mod tests {
     use super::*;
 
-    /// 记录里没有改成的端口：不填 0 放行，按出错处理（还没碰库就返回）
-    #[tokio::test]
-    async fn back_refuses_missing_port() {
+    /// 改回照作业记着的写入参数核对，不碰库；没有记录（旧版本留下的）按出错处理
+    #[test]
+    fn back_uses_recorded_params() {
         let x = ExitPlan { exit: "节点01".into(), old_entry_id: Uuid::nil(), new_entry_id: Some(Uuid::nil()), old_server: "a".into(), old_port: 1, server: "b".into(), port: None, error: None };
-        let a = Applied { id: Uuid::nil(), name: "路由A".into(), port: 1, stamp: "S".into(), exits: vec![x] };
-        let db = sqlx::PgPool::connect_lazy("postgres://localhost/none").unwrap();
-        let why = a.back(&db).await.unwrap_err();
-        assert!(why.contains("节点01") && why.contains("没有改成的端口"), "{why}");
+        let mut a = Applied { id: Uuid::nil(), name: "路由A".into(), port: 1, stamp: "S".into(), exits: vec![x], written: vec![] };
+        assert!(a.back().unwrap_err().contains("没法核对"));
+        let e = rr::Edit { exit: "节点01".into(), old_server: "a".into(), old_port: 1, server: "b".into(), port: 2, uuid: "U".into(), sni: "s".into(), pbk: "p".into(), sid: "i".into() };
+        a.written = vec![e];
+        let back = a.back().unwrap();
+        assert_eq!((back[0].uuid.as_str(), back[0].port), ("U", 2));
+        // 记进作业参数再读回来：整组都在
+        let b: Applied = serde_json::from_value(serde_json::to_value(&a).unwrap()).unwrap();
+        assert_eq!(b.written[0].pbk, "p");
     }
 }

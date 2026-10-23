@@ -417,6 +417,7 @@ pub async fn cleanup_retention(db: &PgPool) -> anyhow::Result<()> {
 /// 彻底删除会连带删掉这台机器入口的流量，而入口另一端未退役的机器拿这些流量算今日/本月/周期已用：
 /// 近 35 天里还有这类流量时不能删（只看有流量的小时行：0 字节的行删了也不改任何统计）。另一端已退役（统计不再用、也在等删）的不拦，否则两台互为对端的退役机器谁都删不掉。
 /// 宿主机上还有同机 IP 节点（含已退役的，它们的 host_id 指着它）时也不能删，先删它们。
+/// 没做完的改软路由出口作业（`routers_applied` 不空）引用的新入口在这台机器上（它是入口的节点或线路机）时也不能删：作业改回要用那条入口。
 /// 返回给用户看的原因；None = 可以删。
 pub async fn purge_blocker(db: &PgPool, machine: Uuid) -> sqlx::Result<Option<String>> {
     let ip_nodes: Option<String> = sqlx::query_scalar(
@@ -428,6 +429,20 @@ pub async fn purge_blocker(db: &PgPool, machine: Uuid) -> sqlx::Result<Option<St
     .await?;
     if let Some(names) = ip_nodes {
         return Ok(Some(format!("这台机器上还有同机 IP 节点没有彻底删除（含已退役的）：{names}；先删它们")));
+    }
+    // 没做完的（失败 / 需人工处理的、在重试的）改软路由出口作业还要照记着的新入口改回：新入口所在的节点和线路机先留着
+    let pending: Option<Uuid> = sqlx::query_scalar(
+        "select j.id from job j,
+             jsonb_array_elements(case when jsonb_typeof(j.params->'routers_applied') = 'array' then j.params->'routers_applied' else '[]'::jsonb end) a,
+             jsonb_array_elements(case when jsonb_typeof(a->'exits') = 'array' then a->'exits' else '[]'::jsonb end) x,
+             entry e
+         where j.state not in ('succeeded', 'cancelled') and e.id::text = x->>'new_entry_id' and (e.node_id = $1 or e.relay_id = $1) limit 1",
+    )
+    .bind(machine)
+    .fetch_optional(db)
+    .await?;
+    if pending.is_some() {
+        return Ok(Some("还有没做完的改软路由出口作业（失败或需要人工处理）要照这台机器上的入口改回，处理完那个作业再删".into()));
     }
     let until: Option<Date> = sqlx::query_scalar(
         "select ((max(h.hour) + interval '35 days 1 hour') at time zone org_tz())::date + 1

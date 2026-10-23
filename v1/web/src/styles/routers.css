@@ -130,6 +130,8 @@ button.rt-topo-pill { cursor: pointer; transition: background-color var(--dur-1)
 .rx-tbl th { padding: 2px var(--sp-12) 2px 0; text-align: left; font-weight: var(--fw-medium); color: var(--fg-2); white-space: nowrap; }
 .rx-tbl td { padding: 4px var(--sp-12) 4px 0; border-top: 1px solid var(--line); vertical-align: top; }
 .rx-tbl td:last-child, .rx-tbl th:last-child { padding-right: 0; }
+/* 节点、软路由 · 出口两列不折行（名字折成两行不好认）；「改成」列放原因整句，照常换行；太窄时外层滚动 */
+.rx-tbl td:not(.rx-to) { white-space: nowrap; }
 .rx-tbl .rx-to { color: var(--fg-2); }
 .rx-tbl .rx-to b { font-weight: var(--fw-medium); color: var(--fg); }
 .rx-tbl .rx-addr { white-space: nowrap; }
