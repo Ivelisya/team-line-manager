@@ -198,7 +198,9 @@ async fn retiring_machine_shows_failed_retire_job() {
 async fn purge_runs_twice_without_error() {
     let t = setup(true).await;
     let team = seed_team(&t, "团队1").await;
-    let node = seed_node(&t, team, 1, "203.0.113.10", "retired").await;
+    // 先以退役中建出来、数据备齐再改成已退役：后台维护起来时先跑的那一轮会收走并删除已退役的机器，
+    // 数据还没备齐就被选中的话，删除作业会和下面的插入赛跑（外键约束）
+    let node = seed_node(&t, team, 1, "203.0.113.10", "retiring").await;
     let name = t.get(&format!("/api/v1/machines/{node}")).await["name"].as_str().unwrap().to_string();
     // 该节点的访问汇总和分区表里的主机指标，彻底删除时要一并清掉
     for sql in [
@@ -226,6 +228,7 @@ async fn purge_runs_twice_without_error() {
         .execute(&t.st.db)
         .await
         .unwrap();
+    sqlx::query("update machine set lifecycle = 'retired' where id = $1").bind(node).execute(&t.st.db).await.unwrap();
     // 后台起来时维护任务先跑一轮：可能已经把它收进回收站、建好了物理删除作业
     let first = match fleet_server::api::machines::start_purge(&t.st, "test", node, &name, None).await {
         Ok(j) => j.to_string(),
@@ -264,7 +267,9 @@ async fn run_one(t: &common::T, job: Uuid) -> Value {
 async fn purge_refused_while_peer_still_counts_traffic() {
     let t = setup(false).await; // 手动推进作业
     let team = seed_team(&t, "团队1").await;
-    let node = seed_node(&t, team, 1, "203.0.113.10", "retired").await;
+    // 先以退役中建出来、数据备齐再改成已退役：后台维护起来时先跑的那一轮会收走并删除已退役的机器，
+    // 数据还没备齐就被选中的话，删除作业会和下面的插入赛跑（外键约束）
+    let node = seed_node(&t, team, 1, "203.0.113.10", "retiring").await;
     let name = t.get(&format!("/api/v1/machines/{node}")).await["name"].as_str().unwrap().to_string();
     let (relay, _) = seed_relay(&t).await;
     let eid = Uuid::now_v7();
