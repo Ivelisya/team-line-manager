@@ -1665,19 +1665,21 @@ async fn notifications_sent_in_order_and_wait_on_429() {
     pass(&t, &mut state, base, 0).await;
     pass(&t, &mut state, base, 61).await;
     assert_eq!(incidents(&t, "firing").await.len(), 2);
-    // 第一条被限流（retry_after = 1 s）：等满 1 秒前不重发，第二条也排在后面不并发发出
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    assert_eq!(mock.count("/limited"), 1);
+    // 第一条被限流（retry_after = 1 s）：满 1 秒才重发同一条，第二条排在它后面、不在等的时候并发发出。
+    // 看请求的先后与间隔，不看某一刻收到了几次（机器忙时发送本身就会晚）
     mock.wait("/limited", 3).await;
     log_settles(&t, 2).await;
     assert_eq!(t.count("select count(*) from notify_log where ok").await, 2, "限流后重试成功，两条都送达");
+    let (at, b) = (mock.times("/limited"), mock.bodies("/limited"));
+    assert!(at[1] - at[0] >= Duration::from_secs(1), "限流后等满 retry_after 才重发：{:?}", at[1] - at[0]);
+    assert!(b[0]["text"] == b[1]["text"] && b[2]["text"] != b[0]["text"], "重发的是被限流的那条，第二条在它之后：{b:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn slow_channel_does_not_delay_other_channels() {
     let t = setup().await;
     let mock = Mock::start().await;
-    for (name, path) in [("slow", "/slow/a"), ("fast", "/hook/b")] {
+    for (name, path) in [("slow", "/hold/a"), ("fast", "/hook/b")] {
         t.post("/api/v1/notify-channels", json!({"name": name, "kind": "webhook", "config": {"url": mock.url(path)}, "min_severity": "info", "enabled": true})).await;
     }
     // 同一轮开两条告警（Xray 未运行 + 配置未应用）
@@ -1689,11 +1691,13 @@ async fn slow_channel_does_not_delay_other_channels() {
     pass(&t, &mut state, base, 0).await;
     pass(&t, &mut state, base, 61).await;
     assert_eq!(incidents(&t, "firing").await.len(), 2);
-    // 慢渠道每条 1.5 秒、还在发第一条；快渠道不等它，两条都已送到
-    tokio::time::sleep(Duration::from_millis(800)).await;
-    assert_eq!((mock.count("/slow/a"), mock.count("/hook/b")), (1, 2));
-    // 慢渠道自己仍按顺序把两条发完
-    mock.wait("/slow/a", 2).await;
+    // 慢渠道卡在第一条上（对方一直不回）；快渠道不等它，两条都送到。慢渠道的第二条排在第一条之后，没有并发发出
+    mock.wait("/hook/b", 2).await;
+    mock.wait("/hold/a", 1).await;
+    assert_eq!(mock.count("/hold/a"), 1);
+    // 慢渠道回了之后自己仍按顺序把两条发完
+    mock.release();
+    mock.wait("/hold/a", 2).await;
     log_settles(&t, 4).await;
 }
 
@@ -1701,21 +1705,23 @@ async fn slow_channel_does_not_delay_other_channels() {
 async fn resolved_sent_while_firing_still_queued() {
     let t = setup().await;
     let mock = Mock::start().await;
-    t.post("/api/v1/notify-channels", json!({"name": "slow", "kind": "webhook", "config": {"url": mock.url("/slow/a")}, "min_severity": "info", "enabled": true})).await;
+    t.post("/api/v1/notify-channels", json!({"name": "slow", "kind": "webhook", "config": {"url": mock.url("/hold/a")}, "min_severity": "info", "enabled": true})).await;
     seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
     let mut state = AlertState::default();
     let base = OffsetDateTime::now_utc();
     xray_report(&t, 1, false).await;
     pass(&t, &mut state, base, 0).await;
     pass(&t, &mut state, base, 61).await;
-    // 「触发」还在发（没写进 notify_log）时告警就恢复了：照样报恢复，排在触发之后
+    // 「触发」还在发（对方没回，没写进 notify_log）时告警就恢复了：照样报恢复，排在触发之后
+    mock.wait("/hold/a", 1).await;
     xray_report(&t, 2, true).await;
     pass(&t, &mut state, base, 91).await;
     pass(&t, &mut state, base, 151).await;
     assert!(incidents(&t, "firing").await.is_empty());
-    assert_eq!(t.count("select count(*) from notify_log").await, 0);
+    assert_eq!((t.count("select count(*) from notify_log").await, mock.count("/hold/a")), (0, 1));
+    mock.release();
     log_settles(&t, 2).await;
-    let events: Vec<Value> = mock.bodies("/slow/a").iter().map(|b| b["event"].clone()).collect();
+    let events: Vec<Value> = mock.bodies("/hold/a").iter().map(|b| b["event"].clone()).collect();
     assert_eq!(events, [json!("firing"), json!("resolved")]);
 }
 
