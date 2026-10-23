@@ -104,13 +104,13 @@ impl SsInst {
 /// 宿主机渲染出的脚本除了开头的锁，和引入同机 IP 节点之前逐字相同：已上架的节点重新收敛时配置、单元、nft、include 行都不变，
 /// 不会重启 ssserver。同机 IP 节点的 bind 地址直接写进配置（校验过的或 `ip -4 addr` 列出的 IPv4，不含引号和 %）。
 /// 重跑时以运行中的实例为准：配置、单元比它新（换上之后没来得及重启就被打断）也重启。输出 `linklocal_dns=1` 见 `LINKLOCAL_DNS`；`ss_restarted=1|0` = 这次重启了 ssserver（配置、ACL、单元有变化，或实例没在跑）
-pub fn node_ss(i: &SsInst) -> String {
+pub fn node_ss(i: &SsInst, public_url: &str) -> String {
     let (conf, unit, unit_conf, listen, bind) = match &i.ip {
         None => ("config.json".to_string(), "fleet-ssserver.service", "config.json", "0.0.0.0".to_string(), String::new()),
         Some(ip) => (format!("{}.json", i.port), "fleet-ssserver@.service", "%i.json", ip.clone(), format!(r#","outbound_bind_addr":"{ip}""#)),
     };
     NODE_SS
-        .replace("__OUTBOUND_ACL__", OUTBOUND_ACL)
+        .replace("__OUTBOUND_ACL__", &outbound_acl(public_url))
         .replace("__LINKLOCAL_DNS__", LINKLOCAL_DNS)
         .replace("__PUBLIC_DNS__", PUBLIC_DNS)
         .replace("__UNIT_CONF__", unit_conf)
@@ -147,6 +147,17 @@ const OUTBOUND_ACL: &str = "[outbound_block_list]
 ::1/128
 fc00::/7
 fe80::/10";
+
+/// 写到节点上的黑名单：中控地址（public_url 是 IP 字面量）落在哪一段，就不带那一段——出口探测要经节点连中控的 /echo，
+/// 实验室中控在 192.168.x 上，拦了就验收不过；ACL 里拦截优先于放行，没法只给中控开个口子。生产的 public_url 是域名，名单完整
+fn outbound_acl(public_url: &str) -> String {
+    let central = reqwest::Url::parse(public_url).ok().and_then(|u| u.host_str().and_then(|h| h.trim_start_matches('[').trim_end_matches(']').parse::<std::net::IpAddr>().ok()));
+    OUTBOUND_ACL
+        .lines()
+        .filter(|l| !central.is_some_and(|c| l.parse::<ipnetwork::IpNetwork>().is_ok_and(|n| n.contains(c))))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
 const NODE_SS: &str = r#"
 set -eu
@@ -516,6 +527,9 @@ echo cleanup=done
 mod tests {
     use super::{node_ss, SsInst};
 
+    /// 生产形态的中控地址（域名：黑名单完整）
+    const URL: &str = "https://fleet.example.com";
+
     #[test]
     fn vars_escapes_quotes() {
         assert_eq!(super::vars(&[("A", "it's")]), "A='it'\\''s'\n");
@@ -541,7 +555,7 @@ mod tests {
     /// 「配置没变就不重启」本身由下面在 bash 里真跑的用例和 tests/upgrade.rs 覆盖
     #[test]
     fn host_render_keeps_names() {
-        let s = node_ss(&SsInst::host());
+        let s = node_ss(&SsInst::host(), URL);
         for want in [
             "C=/etc/shadowsocks-rust/config.json\n",
             "\"timeout\":300,\"acl\":\"/etc/shadowsocks-rust/fleet.acl\"%s}\\n' \"$SS_PORT\" \"$SS_PASSWORD\" \"$SS_METHOD\" \"$DNS\"",
@@ -556,7 +570,7 @@ mod tests {
     /// 节点上的 ssserver 带出站黑名单：配置指向 acl 文件，文件里回环、私网、链路本地、CGNAT 都在；同机 IP 节点同样（源地址 outbound_bind_addr 不受影响）
     #[test]
     fn ss_config_blocks_private_outbound_targets() {
-        for s in [node_ss(&SsInst::host()), node_ss(&SsInst { port: 8389, ip: Some("10.116.0.67".into()) })] {
+        for s in [node_ss(&SsInst::host(), URL), node_ss(&SsInst { port: 8389, ip: Some("10.116.0.67".into()) }, URL)] {
             assert!(s.contains("\"acl\":\"/etc/shadowsocks-rust/fleet.acl\""));
             let acl = s.split("<<'ACL'\n").nth(1).unwrap().split("\nACL\n").next().unwrap();
             assert!(acl.starts_with("[outbound_block_list]\n"), "{acl}");
@@ -564,6 +578,13 @@ mod tests {
                 assert!(acl.lines().any(|l| l == net), "{net}");
             }
         }
+        // 中控在私网（实验室）：去掉它所在的那一段，出口探测才连得上中控的 /echo；别的段照拦
+        let s = node_ss(&SsInst::host(), "http://192.168.31.60:8080");
+        let acl = s.split("<<'ACL'
+").nth(1).unwrap().split("
+ACL
+").next().unwrap();
+        assert!(!acl.lines().any(|l| l == "192.168.0.0/16") && acl.lines().any(|l| l == "10.0.0.0/8"), "{acl}");
     }
 
     /// /etc/resolv.conf 的 nameserver 是链路本地地址时：ssserver 配置加公共解析器、报 linklocal_dns=1，单元里的元数据拦截一律不动；
@@ -573,7 +594,7 @@ mod tests {
     fn linklocal_dns_keeps_ip_address_deny() {
         let dir = tempfile::tempdir().unwrap();
         let resolv = dir.path().join("resolv.conf");
-        let s = node_ss(&SsInst::host());
+        let s = node_ss(&SsInst::host(), URL);
         let lines: String = s.lines().filter(|l| l.starts_with("DNS=;") || l.starts_with("printf '{\"server\"")).map(|l| format!("{l}\n")).collect();
         let sh = format!("SS_PORT=8388 SS_PASSWORD=pw SS_METHOD=aes-256-gcm C=$1\n{}", lines.replace("/etc/resolv.conf", &resolv.display().to_string()));
         let conf_out = dir.path().join("c");
@@ -593,7 +614,7 @@ mod tests {
             );
             assert_eq!((String::from_utf8_lossy(&out.stdout).contains("linklocal_dns=1"), cfg), (linklocal, want), "{conf}");
         }
-        for s in [node_ss(&SsInst::host()), super::xray_unit_sh()] {
+        for s in [node_ss(&SsInst::host(), URL), super::xray_unit_sh()] {
             assert!(s.contains("IPAddressDeny=link-local 100.100.100.200/32\n") && !s.contains("/^IPAddressDeny=/d"), "{s}");
         }
     }
@@ -638,7 +659,7 @@ mod tests {
     #[test]
     fn ip_node_render_uses_own_instance() {
         let i = SsInst { port: 8389, ip: Some("203.0.113.7".into()) };
-        let s = node_ss(&i);
+        let s = node_ss(&i, URL);
         assert!(!s.contains("__"), "占位符都已替换");
         assert!(s.contains(
             r#"printf '{"server":"203.0.113.7","server_port":%s,"password":"%s","method":"%s","mode":"tcp_and_udp","timeout":300,"acl":"/etc/shadowsocks-rust/fleet.acl","outbound_bind_addr":"203.0.113.7"%s}\n'"#
@@ -659,7 +680,7 @@ mod tests {
     #[test]
     fn nat_ip_node_render_uses_bind_addr() {
         let i = SsInst::ip_node(8390, "209.240.166.50", Some("10.116.0.67"));
-        let s = node_ss(&i);
+        let s = node_ss(&i, URL);
         assert!(s.contains(
             r#"printf '{"server":"10.116.0.67","server_port":%s,"password":"%s","method":"%s","mode":"tcp_and_udp","timeout":300,"acl":"/etc/shadowsocks-rust/fleet.acl","outbound_bind_addr":"10.116.0.67"%s}\n'"#
         ), "{s}");

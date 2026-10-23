@@ -373,7 +373,7 @@ async fn render_ss(c: &Ctx<'_>, m: &M, extra: Option<Uuid>) -> anyhow::Result<(S
         ("SS_METHOD", method.as_deref().unwrap_or(crate::meta::SS_METHOD)),
         ("SS_PASSWORD", &password),
         ("ALLOW", &allow),
-    ]) + &scripts::node_ss(&inst);
+    ]) + &scripts::node_ss(&inst, &c.st.cfg.public_url);
     Ok((inst, allow, script))
 }
 

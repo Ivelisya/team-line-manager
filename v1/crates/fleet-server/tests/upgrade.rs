@@ -479,7 +479,7 @@ async fn node_ss_restarts_an_instance_older_than_its_config() {
     std::fs::write(root.join("pid.fleet-ssserver"), ss.id().unwrap().to_string()).unwrap();
     let script = |pw: &str| {
         jobs::scripts::vars(&[("SS_PORT", "8388"), ("SS_METHOD", "aes-256-gcm"), ("SS_PASSWORD", pw), ("ALLOW", "198.51.100.2")])
-            + &jobs::scripts::node_ss(&jobs::scripts::SsInst::host())
+            + &jobs::scripts::node_ss(&jobs::scripts::SsInst::host(), "http://fleet.test")
     };
     let run = move |s: String| async move { target(ip).run(&s, Duration::from_secs(60)).await.unwrap() };
     let count = |what: &str| read(&root.join("systemctl.log")).lines().filter(|l| *l == what).count();
