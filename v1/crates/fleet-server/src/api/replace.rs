@@ -40,6 +40,9 @@ pub struct ExitPlan {
     /// 要改成的 server:port：出口原来写的是线路机 IP 就写新线路机的 IP，否则写它的 public_host
     pub server: String,
     pub port: Option<u16>,
+    /// 改不了的原因（替换时新节点上对不上入口）：预览照样列出这个出口，同时是 blocker
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 impl ExitPlan {
@@ -113,6 +116,7 @@ pub fn replace_exit(old_es: &[Ent], new_es: &[Ent], er: &EntryRef, srv: &str, po
         old_port: port,
         server: new_server(srv, &oe.relay_ip, &ne.relay_ip, &ne.public_host),
         port: Some(ne.port as u16),
+        error: None,
     }))
 }
 
@@ -139,8 +143,8 @@ pub fn new_server(old_server: &str, old_relay_ip: &str, new_relay_ip: &str, new_
     if host_eq(old_server, old_relay_ip) { new_relay_ip.to_string() } else { new_host.to_string() }
 }
 
-/// 各路由最近一次采集的快照里指向 `node` 的出口，`pick` 决定每个出口怎么改（None = 不改，Err = 改不了的原因，进 blockers）。
-/// 计划里有出口的路由不在线、又要改路由（`enabled`）时阻断；`team` 里的路由没有快照或配置读不了时提醒。
+/// 各路由最近一次采集的快照里指向 `node` 的出口，`pick` 决定每个出口怎么改（None = 不改，Err = 改不了的原因：照样列出、带上原因，
+/// `blocking` 时进 blockers）。计划里有出口的路由不在线、又要改路由（`enabled`）时阻断；`team` 里的路由没有快照或配置读不了时提醒。
 /// `(verb, what)`：「替换」/「旧节点」、「换线路机」/「旧入口」，拼进提示
 #[allow(clippy::too_many_arguments)]
 pub fn scan_routers(
@@ -148,6 +152,7 @@ pub fn scan_routers(
     node: Uuid,
     team: Option<Uuid>,
     enabled: bool,
+    blocking: bool,
     (verb, what): (&str, &str),
     blockers: &mut Vec<String>,
     warnings: &mut Vec<String>,
@@ -169,7 +174,21 @@ pub fn scan_routers(
             let (Some(srv), Some(port)) = (x.server.as_deref(), x.port) else { continue };
             match pick(er, srv, port) {
                 Some(Ok(e)) => exits.push(ExitPlan { exit: x.name.clone(), ..e }),
-                Some(Err(why)) => blockers.push(format!("软路由「{}」的出口「{}」：{why}", r.name, x.name)),
+                Some(Err(why)) => {
+                    if blocking {
+                        blockers.push(format!("软路由「{}」的出口「{}」：{why}", r.name, x.name));
+                    }
+                    exits.push(ExitPlan {
+                        exit: x.name.clone(),
+                        old_entry_id: er.id,
+                        new_entry_id: None,
+                        old_server: srv.to_string(),
+                        old_port: port,
+                        server: String::new(),
+                        port: None,
+                        error: Some(why),
+                    });
+                }
                 None => {}
             }
         }
@@ -199,7 +218,7 @@ pub fn routers_view(rs: &[RouterPlan]) -> Value {
             "id": r.id, "name": r.name, "state": r.state,
             "exits": r.exits.iter().map(|e| json!({
                 "exit": e.exit, "old_entry_id": e.old_entry_id, "new_entry_id": e.new_entry_id,
-                "from": format!("{}:{}", e.old_server, e.old_port), "to": e.to(),
+                "from": format!("{}:{}", e.old_server, e.old_port), "to": if e.error.is_some() { Value::Null } else { json!(e.to()) }, "error": e.error,
             })).collect::<Vec<_>>(),
         }))
         .collect::<Vec<_>>())
@@ -414,11 +433,9 @@ async fn router_plan(
     }
     let rows = crate::routers::load(&st.db, None).await?;
     let has_new = !new_es.is_empty();
-    let out = scan_routers(&rows, old.id, Some(old_team), enabled, ("替换", "旧节点"), blockers, warnings, |er, srv, port| {
-        match replace_exit(&old_es, &new_es, er, srv, port) {
-            Some(Err(_)) if !(has_new && enabled) => None,
-            x => x,
-        }
+    // 新节点没有在用的入口时出口也照样列出（原因是这个），只是不再逐个出口重复阻断
+    let out = scan_routers(&rows, old.id, Some(old_team), enabled, enabled && has_new, ("替换", "旧节点"), blockers, warnings, |er, srv, port| {
+        replace_exit(&old_es, &new_es, er, srv, port)
     });
     if enabled && out.is_empty() {
         warnings.push("没有软路由的出口指向旧节点：只交换编号".into());

@@ -180,7 +180,7 @@ async fn preview_and_full_run() {
     let rs = p["routers"].as_array().unwrap();
     assert_eq!(rs.len(), 2, "{p}");
     // 出口写的是线路机 IP 就换成 IP，写的是域名就换成 public_host
-    assert_eq!(rs[0]["exits"], json!([{"exit": "节点01", "old_entry_id": oe, "new_entry_id": rs[0]["exits"][0]["new_entry_id"], "from": "198.51.100.2:20003", "to": "198.51.100.2:20020"}]));
+    assert_eq!(rs[0]["exits"], json!([{"exit": "节点01", "old_entry_id": oe, "new_entry_id": rs[0]["exits"][0]["new_entry_id"], "from": "198.51.100.2:20003", "to": "198.51.100.2:20020", "error": null}]));
     assert_eq!(rs[1]["exits"][0]["to"], "relay.test:20020");
     // 新节点原来的 02 空出来，团队里没有 03 以后的：不用压缩
     assert_eq!(p["renames"], json!([]));
@@ -415,8 +415,18 @@ async fn validation() {
     sqlx::query("insert into relay (machine_id, public_host, reality_private_enc, reality_public_key) values ($1, 'r4.test', '\\x00', 'PBK4')").bind(third).execute(&t.st.db).await.unwrap();
     sqlx::query("update entry set relay_id = $2, port = 20040 where node_id = $1").bind(w.new).bind(other_relay).execute(&t.st.db).await.unwrap();
     entry(t, third, w.new, 20050, "44444444-4444-4444-8444-444444444444", "active").await;
-    let b = t.get(&format!("{}&team_id={}", url(w.new), w.spare)).await["blockers"].to_string();
+    let p = t.get(&format!("{}&team_id={}", url(w.new), w.spare)).await;
+    let b = p["blockers"].to_string();
     assert!(b.contains("软路由「路由A」的出口「节点01」") && b.contains("不知道换成哪个"), "{b}");
+    // 对不上的出口照样算「指向旧节点的出口」列出来、带原因，不再同时提示「没有软路由的出口指向旧节点」
+    let x = &p["routers"][0]["exits"][0];
+    assert!(x["exit"] == "节点01" && x["to"].is_null() && x["error"].as_str().unwrap().contains("不知道换成哪个"), "{p}");
+    assert!(!p["warnings"].to_string().contains("没有软路由的出口指向旧节点"), "{p}");
+    // 新节点没有在用的入口：出口照样列出（原因就是这个），阻断只有总的那一条
+    sqlx::query("update entry set lifecycle = 'pending' where node_id = $1").bind(w.new).execute(&t.st.db).await.unwrap();
+    let p = t.get(&format!("{}&team_id={}", url(w.new), w.spare)).await;
+    assert_eq!(p["blockers"].as_array().map(Vec::len), Some(1), "{p}");
+    assert_eq!(p["routers"][0]["exits"][0]["error"], "新节点没有在用的入口", "{p}");
 }
 
 // ── 换线路机 / 搬空：摘旧入口之前改软路由出口 ─────────────────────────────

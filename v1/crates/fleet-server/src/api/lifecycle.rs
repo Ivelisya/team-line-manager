@@ -131,7 +131,7 @@ async fn plan_move(
     let (from_ip, _) = relay_addr(&mut **tx, from_relay).await?;
     let to_addr = relay_addr(&mut **tx, to).await?;
     let (mut blockers, mut warnings) = (vec![], vec![]);
-    let rs = scan_routers(routers, node_id, team_id, routers_on, ("换线路机", "这个入口"), &mut blockers, &mut warnings, |er, srv, port| {
+    let rs = scan_routers(routers, node_id, team_id, routers_on, routers_on, ("换线路机", "这个入口"), &mut blockers, &mut warnings, |er, srv, port| {
         move_exit(er, old_entry, None, &from_ip, &to_addr, srv, port).map(Ok)
     });
     Ok(Ok(MovePlan { node_name: name, from_relay, from_name, to_name, old_entry, routers_enabled: routers_on, routers: rs, blockers, warnings }))
@@ -153,6 +153,7 @@ pub fn move_exit(er: &EntryRef, old_entry: Uuid, new: Option<(Uuid, u16)>, from_
         old_port: port,
         server: new_server(srv, from_ip, &to.0, &to.1),
         port: new.map(|n| n.1),
+        error: None,
     })
 }
 

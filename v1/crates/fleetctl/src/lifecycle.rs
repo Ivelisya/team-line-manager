@@ -40,7 +40,8 @@ fn exit_rows(routers: &[Value], node: Option<&str>) -> Vec<Vec<String>> {
             _ => "未接入",
         };
         for e in r["exits"].as_array().cloned().unwrap_or_default() {
-            let mut row = vec![st(r, "/name"), state.to_string(), st(&e, "/exit"), st(&e, "/from"), st(&e, "/to")];
+            let to = e["error"].as_str().map_or_else(|| st(&e, "/to"), |x| format!("对不上：{x}"));
+            let mut row = vec![st(r, "/name"), state.to_string(), st(&e, "/exit"), st(&e, "/from"), to];
             if let Some(n) = node {
                 row.insert(0, n.to_string());
             }
