@@ -3,7 +3,7 @@
 - 前缀 `/api/v1`。成功 `{"data": …}`；失败 `{"error":{"code","message"}}`（message 是给人看的中文）。
 - 鉴权：会话 Cookie `fleet_session`（`POST /auth/login` 设置）；或 `Authorization: Bearer <api key>`（见下「API 密钥与 scope」）。
 - 会话的写请求（POST/PUT/PATCH/DELETE）必须带头 `X-Fleet-Request: 1`（防 CSRF）；API 密钥不是浏览器，不要求这个头。
-- 响应头：所有响应带 `X-Content-Type-Options: nosniff`、`Referrer-Policy: same-origin`、`X-Frame-Options: DENY`；网页（`/api`、`/agent`、`/echo` 以外）另带 CSP（`script-src 'self'`，不许内联脚本与外部资源）；`public_url` 是 https 时带 HSTS。接口没自己设 `Cache-Control` 的一律 `no-store`。
+- 响应头：`/api` 的响应带 `X-Fleet-Version`（中控版本，`0.1.0+<提交哈希>`）；fleetctl 与它不一致时在 stderr 提示一次（不影响 stdout 与 `--json`）。所有响应带 `X-Content-Type-Options: nosniff`、`Referrer-Policy: same-origin`、`X-Frame-Options: DENY`；网页（`/api`、`/agent`、`/echo` 以外）另带 CSP（`script-src 'self'`，不许内联脚本与外部资源）；`public_url` 是 https 时带 HSTS。接口没自己设 `Cache-Control` 的一律 `no-store`。
 - 时间：RFC 3339 字符串；日期 `YYYY-MM-DD`。金额：整数分（`price_cents`）。流量：字节。速率：bit/s。
 - 乐观锁：改机器要带 `revision`，不一致 → 409。
 - 状态码：输入不对 400（请求体、路径参数如坏 uuid、查询参数解析失败也是 JSON 400；枚举值不认识；引用的对象不存在，如 `provider_id` 指向不存在的供应商）；对象不存在 404；状态冲突 409（重复、被其他数据引用不能删、状态不允许）。
@@ -124,7 +124,7 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
                                 // 不做全站合计：同一个字节在线路机和节点的网卡上各算一次
   month_counted_from: "RFC 3339"|null,  // 本月（组织时区）的数据从这一刻才有：首次上架完成（activated_at）晚于本月 1 号 0 点时为它，否则 null。
                                 // 网卡与业务的本月数都适用；之前的用量不在内（供应商控制台的数会更大），下个月自动为 null
-  quota: {limit_gb, limit_source, used, period_start, period_end, mode, counted_from, rule, base, base_at},  // 流量额度：生效的上限、周期已用（字节）与周期起止（日期）。
+  quota: {limit_gb, limit_source, used, period_start, period_end, mode, counted_from, rule, base, base_at, daily_avg, forecast_full_at},  // 流量额度：生效的上限、周期已用（字节）与周期起止（日期）。
                                 // limit_gb：生效的上限（十进制 GB），没有上限为 null；告警、网页、fleetctl 都按它，不各自再算。
                                 // limit_source：subscription（订阅单独设置）/ plan（跟随套餐，没有订阅时也是套餐的）/
                                 // host（同机 IP 节点没有自己的上限，与宿主机共用：宿主机的已用含它的流量）/ none（不限）。
@@ -141,6 +141,9 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
                                 // period_end：下次重置日（这一天账单时区零点起是新周期）；rolling30 为 null。
                                 // counted_from：本周期的数据从这一刻才有——首次上架完成（activated_at）晚于周期起点、且没有接入前读数时为它，否则 null；
                                 // 之前的用量不在 used 里，实际剩余可能更少（rolling30 的新机器头 30 天都带）。来自小时汇总表，每次汇总后更新。
+                                // daily_avg：近 7 天日均用量（字节 / 天，口径同 used 但不含接入前读数；周期或上架不足 7 天按已有天数，不足 1 天为 null）。
+                                // forecast_full_at：按 daily_avg 预计用满的时刻（精确到小时），只在早于 period_end 时给出——已用满、没有上限、日均为 0、
+                                // 滚动 30 天（没有重置日）、daily_avg 为 null 时为 null。界面写「预计 11-02 用满（重置 11-13）」，fleetctl billing / show 同一句
                                 // 不限流量（limit_gb 为 null）的机器 used 照算，界面只显示本月（nic 或业务流量），不显示本周期
   health: {status: "ok"|"degraded"|"down"|"unknown"|"maintenance"|"inactive", reasons:[{key,severity,text}]},
   active_job: {id,kind,state}|null,                    // 进行中的作业（queued/running/waiting/cancelling）
@@ -295,7 +298,7 @@ ProvisionItem = {
 
 - `health.reasons[]`：`{key, rule_name, severity, text}`；`rule_name` 是规则中文名（同通知）；`severity`：`"info"` | `"warning"` | `"critical"`（info 只有 `policy_blocked`，不影响健康）。
   `renewal_due`（「即将到期」）：到期前提醒天数内（不是自动续费）为 warning，文案「3 天后到期」「今天到期」；过期后同一条规则升为 critical，文案「已过期 2 天」——告警不先恢复再新开，按「严重度只升不降」马上再发一次触发（旧的 `renewal_overdue` 并进来了，迁移 0041 把开着的改名接上）。备用团队的机器只在还有软路由出口指向它时才报（见「备用团队」）。和流量额度一样**不影响** `health.status`（账单到期不是机器出了问题：不算降级、故障），只开告警；不去抖，持续提醒每天一次。备用团队的机器文案后面接哪天自动回收（「，备用节点明天自动回收」）与还指向它的软路由出口（「；软路由出口 路由名 · 出口名 还指向它」）。
-  `traffic_quota_high`（「流量额度吃紧」）：本周期已用（`quota.used`）到上限（订阅的 `traffic_gb`，没填按套餐的；0 / 空 = 不限，不评估）的 90% 为 warning，到 100% 为 critical；上限按十进制 GB（1 GB = 10⁹ 字节，同供应商），文案也写 GB、不换算成 TB，如「本周期流量已用 92%（1840 GB / 2000 GB），9 天后重置」「本周期流量已超出额度（已用 102%，2050 GB / 2000 GB）」（有流量重置日才写几天后重置）；滚动 30 天（`quota.mode = rolling30`）写「近 30 天流量已用 …」、不写几天后重置；周期中途上架（`quota.counted_from` 非 null）末尾加「（10-22 起统计，之前的量不到）」（日期按组织时区）。
+  `traffic_quota_high`（「流量额度吃紧」）：本周期已用（`quota.used`）到上限（订阅的 `traffic_gb`，没填按套餐的；0 / 空 = 不限，不评估）的 90% 为 warning，到 100% 为 critical；上限按十进制 GB（1 GB = 10⁹ 字节，同供应商），文案也写 GB、不换算成 TB，如「本周期流量已用 92%（1840 GB / 2000 GB），9 天后重置」「本周期流量已超出额度（已用 102%，2050 GB / 2000 GB）」（有流量重置日才写几天后重置）；滚动 30 天（`quota.mode = rolling30`）写「近 30 天流量已用 …」、不写几天后重置；周期中途上架（`quota.counted_from` 非 null）末尾加「（10-22 起统计，之前的量不到）」（日期按组织时区）。  **提前警告**：按近 7 天日均预计重置前用满（`quota.forecast_full_at` 非空）且距今不超过 7 天时，没到 90% 也开 warning，摘要写预计日期，如「本周期流量已用 52%（1051 GB / 2000 GB），按近 7 天的速度预计 11-03 用满，20 天后重置」（已用 ≥ 90% 时同样追加这一句）；已超出额度的 critical 不变。
   它和 info 一样**不影响** `health.status`，只开告警：不去抖，回落到 90% 以下（如新周期开始）下一轮评估即恢复；升为 critical 时马上再通知一次，持续提醒每天最多一次（同续费类）。同机 IP 节点自己没设上限时不评估（额度算在宿主机上）。
   `clock_skew`（warning，「agent 时钟不准」）：agent 在线且 `|agent.clock_skew_ms|` > 60 秒，文案如「agent 时钟慢 17 分钟：读数可能缺失或冻结，请校时」——样本按 agent 的时间入库，当前读数只看最近 15 分钟、持续负载只看最近 5 分钟；比中控超前 10 分钟以上的样本（含入口流量、探测）直接丢弃。和其它 warning 原因一样满 60 秒去抖后开告警。
   同机 IP 节点不报 `agent_offline`、`clock_skew`、`host_cpu_high` / `host_mem_high` / `host_disk_high`（agent 与主机是宿主机的，由宿主机报）；`egress_fail`、`tcp_fail`、`no_entry`、续费照常自己报（宿主机整台宕机时宿主机和它的每个同机节点各报各的探测告警，不抑制）。
@@ -474,6 +477,7 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 | POST | `/machines/{id}/move` | `{to_relay_id, from_relay_id?, routers?（默认 true）}` → 预览同样的内容加 `job_id`。节点（vps / proxy）必须 active 且恰有一个 active 入口（有多个时用 `from_relay_id` 指定换掉哪条）；目标线路机必须 active、不同于当前、节点在它上面没有未移除入口；节点有进行中的作业、要改的软路由不在线（blockers）时 409。写审计 `entry.move`（含 routers） |
 | GET | `/relays/{id}/evacuate?to_relay_id=&routers=` | 搬空预览（只读库）：同 POST 的响应，`jobs[]` 没有 `job_id` |
 | POST | `/relays/{id}/evacuate` | `{to_relay_id, routers?（默认 true）}` → `{from, to, jobs:[{machine_id,name,job_id,routers}], skipped:[{machine_id,name,reason}], warnings, router_restarts:[{id,name,times,nodes}], share_changed, note}`（`router_restarts`：要改的软路由，同批一起改，每台 OpenClash 只重启一次（`times` 恒为 1，断开它上面全部连接），`nodes` 是有出口要改的节点数，多的在前；`routers=false` 时为空）。为该线路机上每个在用入口的节点各建一个 move_entry 作业，参数带同一个 `batch`（一起改软路由，见下）；暂时不能搬的（入口停用/还在应用中、节点有别的作业、目标上已有入口、要改的软路由不在线…）列入 `skipped`，不影响其它节点。线路机自己的直出入口不搬、也不列入 `skipped`（退役线路机时随之摘除；退役守卫只数节点入口）。写审计 `relay.evacuate` 与每个节点一条 `entry.move` |
+| GET | `/relays/{id}/rebalance?target_relay_id=&exclude=` | 搬迁建议（只读，什么都不改）：这台线路机（要有流量上限和重置日）按近 7 天日均到重置日会用满时，挑出搬走后能撑到重置日的最少入口，目标线路机默认取「在用、非备用、非故障、额度余量最多」的（不限流量的最多）；`target_relay_id` 指定目标，`exclude` 是不动的节点 id（逗号分隔，如分享给别人的入口所在节点）。入口的流量按近 7 天业务流量算，再按这台网卡日均 ÷ 各入口合计折算；只挑在用的非直出入口、节点在目标上还没有入口的；先拿最大的，剩下的缺口某一个入口就够时换成够用的最小的。`{relay:{id,name}, limit_gb, used, period_end, daily_avg, forecast_full_at, projected_pct（按现在速度到重置日的用量占上限 %）, needed（会用满）, ok（挑出的入口够用）, reason（不用搬 / 搬不够 / 目标放不下的原因）, safe_pct（目标接收后到重置日预计不超过它上限的 %，80）, target:{id,name,limit_gb,used,daily_avg,projected_pct}\|null, moves:[{node:{id,name}, entry_id, port, period_bytes（本周期）, daily_bytes（搬走后这台每天少的），needs_from（节点在别处还有在用入口，move 要带 from_relay_id）}], after:{daily_avg, projected_pct}, target_after:{fits, projected_pct}, excluded:[{id,name}]}`。执行是对每个节点 `POST /machines/{id}/move` |
 
 **换线路机作业 `move_entry`**（目标 = 节点，要求节点 active）步骤：`attach_new`（目标线路机建新入口：新端口、新 client_uuid / short_id，pending）→ `firewall_widen`（vps：节点 nft 放行名单加入新线路机 IP；proxy 跳过）→ `wait_applied_new` → `verify_new`（经新入口的出口探测通过）→ `routers`（软路由上指向旧入口的出口改成新入口，同替换节点的「改软路由出口」：全部在线才动手，逐台备份 → 改 → 重启 OpenClash → 测延迟，一台失败已改的全部换回、作业失败、旧入口不摘；出口写的是旧线路机 IP 就换成新线路机 IP，否则换成新线路机的 public_host，端口用新入口的；要改哪些出口执行时按路由当时的配置重新确定，见替换作业，`routers=false` 跳过）→ `detach_old`（旧入口 removing）→ `wait_detached_old` → `firewall_narrow`（节点在旧线路机上不再有入口时，把旧线路机 IP 从放行名单拿掉）。新入口验收通过之前旧入口不动，节点始终至少有一个可用入口。
 - **取消**：`routers` 之前都能取消（`cancellable` 为 true）；补偿 = 摘除新入口、恢复防火墙，旧入口保持不动。`routers` 排队等别的作业改同一台路由时、失败且确认路由都已改回原配置停在这一步时也能取消；路由可能还改着一部分时（参数 `routers_applied` 非空：这一步中途被打断——外层超时、中控重启——或改回失败，`routers_stuck` 非空，作业给出 `manual`）不能取消（会摘掉路由还指着的新入口），重试之后、核对过路由之前也不能，重试照 `routers_applied` 接着改完；搬空同批被带头的认领之后（`routers_batch_leader`）也不能取消；开始改路由之后、摘旧入口之后不能取消（会摘掉路由已经指向的新入口 / 让节点没有入口），失败了只能重试到完成；取消赶在摘除之后到达时保留新入口。

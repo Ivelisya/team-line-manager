@@ -25,6 +25,7 @@ pub mod probe_points;
 pub mod reach;
 pub mod report_gaps;
 pub mod pty;
+pub mod quota;
 pub mod recycle;
 pub mod renew;
 pub mod routers;
@@ -101,6 +102,12 @@ async fn response_headers(State(https): State<bool>, req: axum::extract::Request
     h.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
     h.insert(REFERRER_POLICY, HeaderValue::from_static("same-origin"));
     h.insert(X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    // 接口响应带中控版本：fleetctl 据此提示自己和中控不是同一次提交编出来的
+    if api {
+        if let Ok(v) = HeaderValue::from_str(fleet_proto::build_version()) {
+            h.insert("x-fleet-version", v);
+        }
+    }
     if page {
         h.insert(CONTENT_SECURITY_POLICY, HeaderValue::from_static(CSP));
     }
