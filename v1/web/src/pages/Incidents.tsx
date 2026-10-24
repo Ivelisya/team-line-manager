@@ -38,7 +38,7 @@ const summaryText = (i: Incident) => {
 };
 /** 同一状态（进行中 / 已恢复）里，同一分钟开始的同一条规则（如一批 agent 同时离线、一批线路机入口连不上）连着出现 3 条起折成一行；只合并相邻的，顺序仍是服务端的 */
 const BATCH_MIN = 3;
-/** 告警的快捷操作（说明下面一行小链接）：出口参数不一致 → 同步；出口不通、节点被路由的 select 组用着 → 临时切到组里别的出口（中控给的 quick_switch，取第一条） */
+/** 告警的快捷操作（说明下面一行小链接）：出口参数不一致 → 同步；出口不通、业务流量突增，节点被路由的 select 组用着 → 临时切到组里别的出口（中控给的 quick_switch，取第一条） */
 function IncidentOps({ i }: { i: Incident }) {
   if (i.state !== 'firing') return null;
   const sid = i.subject?.id ?? i.subject_id;

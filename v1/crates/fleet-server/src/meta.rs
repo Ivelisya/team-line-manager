@@ -286,6 +286,8 @@ pub const RULES: Labels = &[
     ("host_mem_high", "内存持续偏高"),
     ("host_disk_high", "磁盘空间不足"),
     ("traffic_quota_high", "流量额度吃紧"),
+    ("nonbusiness_traffic_high", "非业务流量偏高"),
+    ("business_traffic_spike", "业务流量突增"),
     ("ipintel_new_isp", "来源出现新运营商"),
     ("ipintel_new_city", "来源出现新城市"),
     ("ipintel_datacenter_source", "机房 / VPN 来源"),

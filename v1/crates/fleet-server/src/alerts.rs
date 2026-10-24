@@ -12,6 +12,7 @@
 //! - 关：出口 / TCP 不通的，当初失败的入口最近都连续 2 次探测成功就恢复（agent 在结果翻转后约 10 秒补探一次、马上上报，失败期间出口探测改 30 秒一次：
 //!   出口恢复后约半分钟告警就恢复）；否则（入口删了、线路机的 Xray 停了这类）同其余规则，原因连续消失满去抖时长才恢复。
 //!   续费类与流量额度立即恢复（按日期、小时汇总判定，不会抖）。
+//! - 流量异常（非业务流量偏高、业务流量突增）：按小时汇总判定，开、关要几个连续小时由 anomaly.rs 算好，这里不再去抖。
 //! - 复发：恢复后 30 分钟内同一 (规则, 机器) 又满足开的条件，重开原告警（`reopen_count` +1，清掉确认），不新建。
 //!
 //! 通知（见 notify.rs）：新告警发「触发」；严重度升到严重（流量额度从吃紧到超限）马上再发一次「触发」；
@@ -247,7 +248,7 @@ pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime
                 state.probe_failing.insert(k.clone(), m.health.probe_failing.iter().filter(|f| f.0 == r.key).map(|f| f.1).collect());
             }
             let since = *state.first_seen.entry(k.clone()).or_insert(now);
-            let ready = slow(r.key) || held(since, now, debounce_s(r.key));
+            let ready = slow(r.key) || crate::anomaly::hourly(r.key) || held(since, now, debounce_s(r.key));
             current.insert(k);
             want.push(Want { rule: r.key, subject: m.id, name: &m.name, severity: r.severity, text: r.text.clone(), detail: Some(json!({"name": m.name})), ready });
         }
@@ -285,6 +286,11 @@ pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime
         if undecided || (inc.rule == "traffic_quota_high" && crate::health::quota_forecast_lingers(m, now)) {
             clean_since.remove(&inc.id);
             return Close::Keep;
+        }
+        // 流量异常：连续 2 个完整小时都正常才恢复（anomaly.rs 已算好），原因消失（只是不再连续 2 小时异常）不算
+        if let Some(clear) = crate::anomaly::cleared(m.anomaly.as_ref(), &inc.rule) {
+            clean_since.remove(&inc.id);
+            return if clear { Close::Resolve(m.name.as_str()) } else { Close::Keep };
         }
         let since = *clean_since.entry(inc.id).or_insert(now);
         if slow(&inc.rule) || (probe && probes_recovered(m, &inc.rule, was)) || held(since, now, debounce_s(&inc.rule)) {
