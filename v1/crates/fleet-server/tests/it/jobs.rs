@@ -963,6 +963,19 @@ async fn retire_refused_while_it_is_the_new_node_of_a_job() {
         assert_eq!(st0, "queued");
         sqlx::query("update job set state = 'cancelled', finished_at = now() where id = $1").bind(job).execute(&t.st.db).await.unwrap();
     }
+    // 失败停着的不拦，路由已改（routers_applied 不空、替换停在交换编号）的在预览里提示（带作业 id）；路由都换回了的不提示
+    let mut failed = vec![];
+    for (kind, applied, step) in [("repoint", json!([{"id": Uuid::now_v7()}]), 0), ("replace", json!([]), 1), ("replace", json!([]), 0)] {
+        let mut tx = t.st.db.begin().await.unwrap();
+        let job = jobs::enqueue(&mut tx, kind, Some(old), json!({"new_id": new, "routers_applied": applied}), "test").await.unwrap();
+        tx.commit().await.unwrap();
+        sqlx::query("update job set state = 'failed', step = $2, finished_at = now() where id = $1").bind(job).bind(step).execute(&t.st.db).await.unwrap();
+        failed.push(job.to_string());
+    }
+    let pv = t.get(&format!("/api/v1/machines/{new}/retire")).await;
+    assert_eq!(pv["blockers"], json!([]), "{pv}");
+    let notes = pv["spare"]["notes"].to_string();
+    assert!(notes.contains("退役后这些出口会断") && notes.contains(&failed[0]) && notes.contains(&failed[1]) && !notes.contains(&failed[2]), "{pv}");
     t.post(&format!("/api/v1/machines/{new}/retire"), json!({"now": true, "confirm": name})).await;
     assert_eq!(t.machine_lifecycle(new).await, "retiring");
 }
