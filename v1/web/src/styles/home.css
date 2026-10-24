@@ -65,7 +65,7 @@
 }
 .stat-value small { font: var(--fw-medium) var(--fs-label) / var(--lh-label) var(--font-num); letter-spacing: 0; color: var(--fg-2); }
 /* 读数紧跟标题、说明行贴底（margin-top: auto）：同一排卡片说明行有一行有两行时，大数字仍在同一高度（space-between 会让读数随说明行高低上下错开） */
-.stat-cap { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-8); min-width: 0; min-height: 16px; margin-top: auto;font-size: var(--fs-micro); line-height: var(--lh-micro); color: var(--fg-2); }
+.stat-cap { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-8); min-width: 0; min-height: 16px; margin-top: auto; font-size: var(--fs-micro); line-height: var(--lh-micro); color: var(--fg-2); }
 .stat-cap > * { white-space: nowrap; }
 /* 说明行里的数字（下载 1.2 TB、降级 3）：数字 --fg 加粗，单位跟着数字、不再比数字大一号（.unit 默认 12px 灰，比 11px 的数字还显眼） */
 .stat-cap .num { color: var(--fg); font-weight: var(--fw-semibold); }
