@@ -1,4 +1,4 @@
-//! 每日流量：按组织时区的自然日，全部节点每天的业务流量（下载 / 上传）、节点排行、线路机网卡计费量。
+//! 每日流量：按组织时区的自然日，全部节点每天的业务流量（下载 / 上传）、节点排行、线路机与 VPS 节点的网卡计费量。
 
 use crate::cmds::{st, Ctx};
 use crate::resolve::Want;
@@ -55,9 +55,10 @@ pub fn traffic(ctx: &Ctx, o: TrafficOpts) -> anyhow::Result<u8> {
         );
         if let Some(m) = &node {
             let mut s = format!("{} 每日业务流量\n{head}\n{}", st(m, "/name"), days_table(&total));
-            // 线路机：另列每天的网卡收发与计费量
-            if let Some(r) = relays.iter().find(|r| r["id"] == m["id"]) {
-                let rows: Vec<Vec<String>> = r["daily"]
+            // 线路机、VPS 节点：另列每天的网卡收发与计费量（线路机在 relays 的 daily，节点在节点行的 nic_daily）
+            let nic = relays.iter().find(|r| r["id"] == m["id"]).map(|r| (r, &r["daily"])).or_else(|| nodes.iter().find(|x| x["id"] == m["id"] && !x["rule"].is_null()).map(|x| (x, &x["nic_daily"])));
+            if let Some((r, daily)) = nic {
+                let rows: Vec<Vec<String>> = daily
                     .as_array()
                     .into_iter()
                     .flatten()
@@ -73,7 +74,8 @@ pub fn traffic(ctx: &Ctx, o: TrafficOpts) -> anyhow::Result<u8> {
             .map(|x| {
                 let sum = n(x, "down") + n(x, "up");
                 let lc = if x["lifecycle"] == "retired" { "（已退役）" } else { "" };
-                vec![format!("{}{lc}", st(x, "/name")), st(x, "/team/name"), t(x, "down"), t(x, "up"), table::traffic(sum), table::traffic(sum / days)]
+                let nic = if x["billed"].is_null() { "-".to_string() } else { t(x, "billed") };
+                vec![format!("{}{lc}", st(x, "/name")), st(x, "/team/name"), t(x, "down"), t(x, "up"), table::traffic(sum), table::traffic(sum / days), nic]
             })
             .collect();
         let more = if nodes.len() > 20 { format!("（共 {} 个，前 20）", nodes.len()) } else { String::new() };
@@ -82,9 +84,9 @@ pub fn traffic(ctx: &Ctx, o: TrafficOpts) -> anyhow::Result<u8> {
             .map(|r| vec![st(r, "/name"), t(r, "billed"), crate::meta::label("traffic_rules", r["rule"].as_str().unwrap_or("max")).to_string(), t(r, "rx"), t(r, "tx"), table::traffic(n(r, "down") + n(r, "up"))])
             .collect();
         format!(
-            "{head}\n{}\n\n节点按区间合计{more}\n{}\n\n线路机（计费量 = 先加总区间内的下行、上行，再按供应商规则算；每天的见 --node）\n{}",
+            "{head}\n{}\n\n节点按区间合计{more}（网卡计费量只有 VPS 节点有，口径同线路机）\n{}\n\n线路机（计费量 = 先加总区间内的下行、上行，再按生效的计费规则算；每天的见 --node）\n{}",
             days_table(&total),
-            table::render(&["节点", "团队", "下载", "上传", "合计", "日均"], &top),
+            table::render(&["节点", "团队", "下载", "上传", "合计", "日均", "网卡计费量"], &top),
             table::render(&["线路机", "计费量", "规则", "下行", "上行", "经过的业务流量"], &rl)
         )
     });

@@ -129,3 +129,40 @@ async fn subscription_traffic_rule_override() {
     assert_eq!(view(ra).await, (Some(1000), Some("sum".into()), Some("sum".into()), false));
     assert_eq!(put(ra, json!("avg")).await.0, StatusCode::BAD_REQUEST);
 }
+
+/// VPS 节点有自己的 agent，额度按网卡 + 生效的计费方式算：每日流量的节点行也带网卡读数与计费量（区间合计先求和再套规则，同线路机行）；
+/// 家宽代理（没有自己的网卡）这些字段是 null
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn daily_vps_node_nic_billed() {
+    let t = setup(false).await;
+    let db = &t.st.db;
+    let pv = t.post("/api/v1/providers", json!({"name": "甲", "code": "A", "traffic_rule": "min"})).await["id"].as_str().unwrap().parse::<Uuid>().unwrap();
+    let team = seed_team(&t, "团队1").await;
+    let n1 = seed_node(&t, team, 1, "203.0.113.10", "active").await;
+    // 家宽代理没有自己的网卡：库里即使有读数也不算
+    let n2 = seed_node(&t, team, 2, "203.0.113.11", "active").await;
+    sqlx::query("update machine set kind = 'vps', provider_id = $2 where id = $1").bind(n1).bind(pv).execute(db).await.unwrap();
+    let t0: time::OffsetDateTime =
+        sqlx::query_scalar("select (now() at time zone 'Asia/Shanghai')::date::timestamp at time zone 'Asia/Shanghai'").fetch_one(db).await.unwrap();
+    let h = time::Duration::hours(1);
+    for (at, rx, tx) in [(t0 - h, 500i64, 700i64), (t0, 900, 400)] {
+        for n in [n1, n2] {
+            sqlx::query("insert into host_metric_hourly (machine_id, hour, net_rx, net_tx) values ($1, $2, $3, $4)").bind(n).bind(at).bind(rx).bind(tx).execute(db).await.unwrap();
+        }
+    }
+    t.st.live.rolled_up();
+
+    let v = t.get("/api/v1/traffic/daily?days=7").await;
+    let nodes = v["nodes"].as_array().unwrap();
+    let node = |name: &str| nodes.iter().find(|n| n["name"] == name).unwrap_or_else(|| panic!("{v}"));
+    let a = node("团队1-01");
+    let billed: Vec<i64> = a["nic_daily"].as_array().unwrap()[5..].iter().map(|d| d["billed"].as_i64().unwrap()).collect();
+    assert_eq!(a["nic_daily"].as_array().unwrap().len(), 7, "与 dates 等长");
+    assert_eq!(
+        (a["rule"].as_str(), billed, a["rx"].as_i64(), a["tx"].as_i64(), a["billed"].as_i64()),
+        (Some("min"), vec![500, 400], Some(1400), Some(1100), Some(1100)),
+        "每天取小再相加是 900；区间合计先求和再取小是 1100\n{a}"
+    );
+    let b = node("团队1-02");
+    assert!([&b["rule"], &b["rx"], &b["tx"], &b["billed"], &b["nic_daily"]].iter().all(|x| x.is_null()), "家宽代理没有网卡，字段是 null：{b}");
+}

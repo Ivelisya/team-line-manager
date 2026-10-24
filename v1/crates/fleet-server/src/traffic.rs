@@ -5,10 +5,12 @@
 //!   （换线前在旧线路机上跑的那段仍算这个节点）；线路机的「经过它的业务流量」= 挂在它上面的入口（换线前的量留在旧线路机上）。
 //!   直出入口的节点就是线路机自己，单列一行「线路机-直出」（id 是线路机的）。家宽代理、同机 IP 节点有自己的入口，各算各的；
 //!   全部合计 = 各行之和，每个字节只算一次。窗口内有流量的已退役机器照列，lifecycle 照实给。
-//! - 线路机网卡（下行 / 上行）来自主机小时表 `host_metric_hourly`，计费量按生效的规则（订阅单独设置的，或供应商的）取小 / 取大 / 相加 / 只算出站 / 只算入站（没有供应商取大）：每天一格按当天的下行、上行算，区间合计先求下行之和、上行之和再套规则（同额度已用）。
+//! - 网卡（下行 / 上行）来自主机小时表 `host_metric_hourly`，有自己 agent 的机器都有（线路机、VPS 节点；家宽代理、同机 IP 节点没有，同额度 views.rs `load`）。
+//!   计费量按生效的规则（订阅单独设置的，或供应商的）取小 / 取大 / 相加 / 只算出站 / 只算入站（没有供应商取大）：每天一格按当天的下行、上行算，区间合计先求下行之和、上行之和再套规则（同额度已用）。
+//!   线路机在 `relays`；VPS 节点的网卡跟在节点行上（`rule` / `rx` / `tx` / `billed` / `nic_daily`），窗口内没有读数的为 null。
 //! - 小时表按 UTC 整点分桶，一桶按它的起点落在组织时区的哪天归哪天（半小时时区至多差 30 分钟，同 `flows`）。
 //!
-//! 两条按 (节点, 线路机, 天) / (线路机, 天) 分组的聚合各扫一遍窗口内的小时行（走 hour 索引，0015 / 0043；先按入口 × 天聚合再连入口表，
+//! 两条按 (节点, 线路机, 天) / (机器, 天) 分组的聚合各扫一遍窗口内的小时行（走 hour 索引，0015 / 0043；先按入口 × 天聚合再连入口表，
 //! bigint 直接 sum（库里按 int128 累加，先转 numeric 慢一倍）），结果按汇总轮次缓存
 //! （`LiveCache.daily`，小时汇总每 5 分钟一轮，跑完即作废，所以今天的数据和机器视图一样新）；团队、机器过滤在内存里做。
 
@@ -58,6 +60,14 @@ pub struct NodeRow {
     pub down: i64,
     pub up: i64,
     pub daily: Vec<Biz>,
+    /// 节点自己的网卡（VPS 节点按额度同口径计费；家宽代理、同机 IP 节点、直出行、窗口内没有读数的为 null）：生效的规则
+    pub rule: Option<&'static str>,
+    /// 区间合计的下行 / 上行 / 计费量（先加总再套规则，同线路机行）
+    pub rx: Option<i64>,
+    pub tx: Option<i64>,
+    pub billed: Option<i64>,
+    /// 每天的网卡下行 / 上行 / 计费量，与 `dates` 等长
+    pub nic_daily: Option<Vec<Nic>>,
 }
 
 #[derive(Serialize)]
@@ -120,7 +130,7 @@ async fn raw(st: &AppState, days: i64) -> sqlx::Result<Raw> {
         "select h.machine_id, (h.hour at time zone $2)::date d,
                 least(sum(h.net_rx), 9e18)::bigint, least(sum(h.net_tx), 9e18)::bigint
          from host_metric_hourly h join machine m on m.id = h.machine_id
-         where h.hour >= $1 and m.kind = 'relay' group by 1, 2",
+         where h.hour >= $1 and m.kind <> 'proxy' and m.host_id is null group by 1, 2",
     )
     .bind(start)
     .bind(&tz)
@@ -218,12 +228,28 @@ pub async fn daily(st: &AppState, days: Option<i64>, team: Option<&str>, machine
             node_days.entry((m.id, false)).or_insert_with(empty_biz);
         }
     }
+    // 网卡按天聚合（线路机、VPS 节点共用；每天一格，下面各行再按各自的规则算计费量）
+    let mut nic_days: BTreeMap<Uuid, Vec<Nic>> = BTreeMap::new();
+    for &(id, d, rx, tx) in nic {
+        let Some(&i) = pos.get(&d) else { continue };
+        let v = &mut nic_days.entry(id).or_insert_with(empty_nic)[i];
+        v.rx = v.rx.saturating_add(rx);
+        v.tx = v.tx.saturating_add(tx);
+    }
     let sum = |v: &[Biz]| v.iter().fold((0i64, 0i64), |a, b| (a.0.saturating_add(b.down), a.1.saturating_add(b.up)));
     let mut nodes: Vec<NodeRow> = node_days
         .into_iter()
         .filter_map(|((id, direct), daily)| {
             let m = by_id.get(&id)?;
             let (down, up) = sum(&daily);
+            // 直出行是线路机自己（网卡在 relays 里）；节点有网卡读数的才带
+            let nic = nic_days.get(&id).filter(|_| !direct).map(|days| {
+                let rule = views::nic_rule(m.rule.as_deref());
+                let days: Vec<Nic> = days.iter().map(|v| Nic { billed: crate::meta::billed(rule, v.rx, v.tx), ..*v }).collect();
+                let f = |g: fn(&Nic) -> i64| days.iter().map(g).fold(0i64, i64::saturating_add);
+                let (rx, tx) = (f(|v| v.rx), f(|v| v.tx));
+                (rule, rx, tx, crate::meta::billed(rule, rx, tx), days)
+            });
             Some(NodeRow {
                 id,
                 name: if direct { direct_name(&m.name) } else { m.name.clone() },
@@ -235,6 +261,11 @@ pub async fn daily(st: &AppState, days: Option<i64>, team: Option<&str>, machine
                 down,
                 up,
                 daily,
+                rule: nic.as_ref().map(|n| n.0),
+                rx: nic.as_ref().map(|n| n.1),
+                tx: nic.as_ref().map(|n| n.2),
+                billed: nic.as_ref().map(|n| n.3),
+                nic_daily: nic.map(|n| n.4),
             })
         })
         .collect();
@@ -242,13 +273,6 @@ pub async fn daily(st: &AppState, days: Option<i64>, team: Option<&str>, machine
     nodes.sort_by(|a, b| (b.down.saturating_add(b.up)).cmp(&a.down.saturating_add(a.up)).then(order[&a.id].cmp(&order[&b.id])).then(a.direct.cmp(&b.direct)));
 
     // 线路机：不过滤时列全部未退役的与窗口内有数据的；过滤时只列经过它的业务流量不为 0 的（过滤的机器就是这台线路机时总列出）
-    let mut nic_days: BTreeMap<Uuid, Vec<Nic>> = BTreeMap::new();
-    for &(id, d, rx, tx) in nic {
-        let Some(&i) = pos.get(&d) else { continue };
-        let v = &mut nic_days.entry(id).or_insert_with(empty_nic)[i];
-        v.rx = v.rx.saturating_add(rx);
-        v.tx = v.tx.saturating_add(tx);
-    }
     let filtered = team_id.is_some() || machine_id.is_some();
     let shown: Vec<&M> = ms
         .iter()
