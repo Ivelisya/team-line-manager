@@ -66,6 +66,7 @@ impl Buffers {
         push_capped(&mut self.rtt, s, RTT_CAP, "rtt", &HITS);
     }
     /// 建报失败时把取走的东西放回去（样本放在最前面保持时间顺序；info / 流量基线只在缓冲里还没有更新的值时放回）
+    #[allow(clippy::too_many_arguments)]
     pub fn restore(&mut self, host: Vec<HostSample>, entries: Vec<EntrySample>, probes: Vec<ProbeSample>, ping: Vec<PingSample>, rtt: Vec<RttSample>, info: Option<SystemInfo>, stats_commit: Option<StatsState>) {
         self.host.splice(0..0, host);
         self.entries.splice(0..0, entries);

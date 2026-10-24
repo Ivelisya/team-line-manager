@@ -75,7 +75,9 @@ pub async fn due(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<Du
     .await?;
     let rate = fx::current(&st.db).await?;
     let mut total = fx::Total::default();
-    let mut groups: Vec<(Option<Uuid>, Date, String, Value, fx::Total, Vec<Value>)> = vec![];
+    // 按 (供应商, 到期日, 账单时区) 分组：供应商 JSON、组内合计、组内机器
+    type Group = (Option<Uuid>, Date, String, Value, fx::Total, Vec<Value>);
+    let mut groups: Vec<Group> = vec![];
     let mut auto = vec![];
     for r in rows {
         let provider = json!({"id": r.provider_id, "name": r.provider, "panel_url": r.panel_url});

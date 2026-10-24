@@ -338,6 +338,7 @@ async fn catalog_delete_refuses_while_in_use() {
 }
 
 /// 在库里放一台带订阅的在用节点：到期日 = 今天 + `days`，价格 `price`（分）+ `cur`；`team` 是备用团队时就是备用机器
+#[allow(clippy::too_many_arguments)]
 async fn due_node(t: &T, team: Uuid, number: i32, provider: Option<&str>, days: i32, price: i32, cur: &str, auto: bool) -> Uuid {
     let id = common::seed_node(t, team, number, &format!("203.0.113.{}", 100 + number), "active").await;
     sqlx::query("update machine set provider_id = $2::uuid where id = $1").bind(id).bind(provider).execute(&t.st.db).await.unwrap();
