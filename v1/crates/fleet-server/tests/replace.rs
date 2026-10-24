@@ -1275,4 +1275,14 @@ async fn drift_alert_and_sync() {
     assert_eq!(firing().await.len(), 1);
     alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(101)).await.unwrap();
     assert!(firing().await.is_empty());
+
+    // 发起到执行之间入口不在用了：跳过这个出口、不让作业失败；要同步的全被跳过则成功但没改动，原因记在日志里
+    mark("drift").execute(&t.st.db).await.unwrap();
+    let job = t.post(&format!("/api/v1/routers/{ra}/sync"), json!({"exits": ["节点01"]})).await["job_id"].as_str().unwrap().to_string();
+    sqlx::query("update entry set lifecycle = 'disabled' where id = $1").bind(oe).execute(&t.st.db).await.unwrap();
+    drive(t).await;
+    let j = t.job(&job).await;
+    assert_eq!(j["state"].as_str(), Some("succeeded"), "{j} {}", logs(t, &job).await);
+    assert!(logs(t, &job).await.contains("跳过"), "{}", logs(t, &job).await);
+    assert_eq!(applies(23501).len(), 1, "没有再改路由");
 }

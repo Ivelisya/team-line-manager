@@ -37,7 +37,7 @@ export const RebalanceDialog = resetOnOpen(function RebalanceDialog({ relay, ope
             <DialogDescription>
               {p ? <>本周期已用 {gb(p.used)} / {p.limit_gb} GB{p.daily_avg != null && <>，近 7 天日均 {gb(p.daily_avg)}</>}
                 {p.forecast_full_at && <>，预计 {mmdd(p.forecast_full_at)} 用满（重置 {mmdd(p.period_end)}）</>}</> : '按近 7 天的速度估算'}
-              {' '}<InfoTip text={'挑出搬走后能让这台撑到重置日的最少入口，搬去额度余量最多的在用线路机。\n每个入口的流量按近 7 天算，再按这台网卡的日均折算；这里只是建议，点「搬过去」才会走换线路机的预览与确认'} />
+              {' '}<InfoTip text={'挑出搬走后能让这台撑到重置日的最少入口，搬去额度放得下、往返最快的在用线路机（没有往返数据时取额度余量最多的）。\n每个入口的流量按近 7 天算，再按这台网卡的日均折算；这里只是建议，点「搬过去」才会走换线路机的预览与确认'} />
             </DialogDescription>
           </DialogHeader>
           {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()}>取建议失败：</ErrorNote>}

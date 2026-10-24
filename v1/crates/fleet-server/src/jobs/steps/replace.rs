@@ -319,9 +319,12 @@ async fn read_config(c: &Ctx<'_>, r: &routers::Row) -> Result<Vec<clash::Proxy>,
     clash::parse(&o.stdout)
 }
 
+/// 对不上新入口的出口：（出口名, 原因）
+type Skip = (String, String);
+
 /// 配置里要改的出口：对上的入口属于某个作业的 `node`、没删除，且它的 `pick` 说要改的。
 /// 对不上新入口的：换线路机、替换返回（出口名, 原因）整个作业不做（同预览）；同步只跳过这个出口，连同原因放在第二项里
-fn exits_in(proxies: &[clash::Proxy], entries: &[clash::Entry], parts: &[Part]) -> Result<(Vec<ExitPlan>, Vec<(String, String)>), (String, String)> {
+fn exits_in(proxies: &[clash::Proxy], entries: &[clash::Entry], parts: &[Part]) -> Result<(Vec<ExitPlan>, Vec<Skip>), Skip> {
     let (mut out, mut skipped) = (vec![], vec![]);
     for p in proxies {
         let (Some(er), sync) = clash::match_entry(p, entries) else { continue };

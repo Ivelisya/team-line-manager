@@ -59,8 +59,9 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQu
         Some("all") => "true".to_string(),
         // 组 = 引擎 + 规则 + 对象，近 7 天开过 CHRONIC_MIN 次以上的，每组只取最近一条
         Some("chronic") => format!(
-            "i.id in (select id from (select id, row_number() over w rn, count(*) over w c from incident where opened_at > now() - interval '7 days'
-                                      window w as (partition by engine, rule, subject_id order by opened_at desc, id desc)) x
+            "i.id in (select id from (select id, row_number() over (partition by engine, rule, subject_id order by opened_at desc, id desc) rn,
+                                                     count(*) over (partition by engine, rule, subject_id) c
+                                      from incident where opened_at > now() - interval '7 days') x
                       where rn = 1 and c >= {CHRONIC_MIN})"
         ),
         _ => "i.state = 'firing'".to_string(),

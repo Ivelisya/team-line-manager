@@ -137,7 +137,7 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
                     merged[k] = v.clone();
                 } else if k == "api_base" || (k == "secret" && v.is_null()) {
                     if let Some(m) = merged.as_object_mut() {
-                        m.remove("api_base");
+                        m.remove(k.as_str());
                     }
                 }
             }

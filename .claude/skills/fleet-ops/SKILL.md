@@ -56,7 +56,7 @@ fleetctl ssh router <名称> [-- 'logread | tail -50']        # 软路由（Open
 | 作业 | `fleetctl --json jobs [--active]`、`fleetctl job <id>`、`fleetctl job <id> --follow` |
 | 审计 | `fleetctl --json audit [--target <机器>] [--limit 50] [--before <上一页最后一条的 id>]` |
 | 实时事件 | `fleetctl watch --count 20` |
-| 节点放在哪台线路机最好：各节点到每台线路机近 24 小时的往返中位数与成功率、当前与最优线路机、建议换线（节点连线路机老断、要换线、客户说某节点慢时先看它） | `fleetctl --json placement [--team 团队2]`（`nodes[].cells` 与 `relays` 同序；`suggest` 为 true 的是建议换的，`reason` 写慢多少 ms 或当前成功率；`suggestions[].command` 是按目标线路机合成的批量 `fleetctl move A,B --to X`，照抄执行、不要拆开）。**换线前先看 placement，不要去线路机上手写 ping / mtr 脚本逐个测** |
+| 节点放在哪台线路机最好：各节点到每台线路机近 24 小时的往返中位数与成功率、当前与最优线路机、建议换线（节点连线路机老断、要换线、客户说某节点慢时先看它） | `fleetctl --json placement [--team 团队2] [--node 团队2-04]`（`nodes[].cells` 与 `relays` 同序；`entry_relay_ids` 是节点在用入口所在的线路机；`suggest` 为 true 的是建议换的，`reason` 写慢多少 ms 或当前成功率；`suggestions[].command` 是按目标线路机合成的批量 `fleetctl move A,B --to X`，照抄执行、不要拆开；有多个入口的节点另在 `single_suggestions[].command` 里给带 `--from` 的单条，照抄执行）。**换线前先看 placement，不要去线路机上手写 ping / mtr 脚本逐个测** |
 | 访问监控：节点访问了哪些域名/IP | `fleetctl --json access [targets\|summary\|new\|sources\|events] [--node <机器>] [--team 团队1] [--window 1h\|24h\|7d\|30d] [--search 域名] [--blocked] [--kind domain\|ip]` |
 | 来源 IP 画像：某 IP 的运营商/城市/接入方式 | `fleetctl --json ip <ip> [<ip>...]`（只查中控本地离线库，不外发） |
 | 节点来源画像分布（运营商/城市/接入方式、top 来源、学习期） | `fleetctl --json sources <机器> [--window 24h\|7d\|30d] [--limit 20]` |
@@ -78,7 +78,7 @@ fleetctl ssh router <名称> [-- 'logread | tail -50']        # 软路由（Open
 访问监控只有线路机开了访问日志、且有真实客户端流量时才有数据；`new` 是窗口内第一次出现的目标（旧系统的「新域名」），不是告警。
 访问记录只留用户设的天数（`settings retention`：原始记录默认 7 天、汇总默认 31 天），到期中控自动删除：`access` / `sources` 的 `--window` 不能比汇总的保留期长（超了报错 400，换短一点的窗口，不要去改保留期）；`events` 只有原始记录保留期内的；「新目标」「新运营商 / 新城市」指保留期内没见过的。
 
-告警带「近 7 天第 N 次」（`recent_count` ≥ 3）、或 `status` 末尾「近 7 天反复」列了某对象时，说明是同一处的老毛病：先考虑换线（`fleetctl placement`）或替换，而不是只确认。
+告警带「近 7 天第 N 次」（`chronic` 为 true，即 `recent_count` ≥ 3）、或 `status` 末尾「近 7 天反复」列了某对象时，说明是同一处的老毛病：先考虑换线（`fleetctl placement --node <节点>`，告警的 `suggested` 里就有）或替换，而不是只确认。
 
 排查顺序：`status` 找到告警 → `show <机器>` 读 `health.reasons` → `logs <机器>` 读服务日志 → 仍不明再 `exec`。
 
@@ -206,8 +206,8 @@ fleetctl renumber <团队> --yes                             # 不加 --yes 只�
 fleetctl move <节点> --to <线路机> --yes [--from <线路机>] [--no-routers] [--follow]   # 换线路机：新入口验收后改软路由出口（同替换，失败全部换回、旧入口不摘）、再摘旧入口，不断网；入口线路机和端口都会变：用订阅链接的客户端自动更新，用分享链接的要换（完成后 fleetctl share <节点> 取新链接）。不加 --yes 先看预览
 fleetctl move <节点A>,<节点B>,<节点C> --to <线路机> --yes [--from <线路机>] [--follow]   # 多个节点换线一律用这一条批量命令（逗号分隔），不要逐个 move：同搬空一起改软路由，每台路由只改一次、OpenClash 只重启一次（逐个 move 每个都重启一次、客户断线一次）。有一个不能换就一个都不提交；失败 / 重试 / 取消同搬空
 fleetctl evacuate <线路机> --to <线路机> --yes [--no-routers] [--follow]          # 搬空线路机（退役前）：每个在用节点一个换线路机作业，软路由出口跟着改；作业并行建新入口，都验收完后由一个「带头」的一起改，每台路由只改一次、重启一次（任何一台失败全部换回、旧入口都不摘，同批一起失败，修好后都重试）。预览写「软路由 X 的 N 个节点的出口一起改，OpenClash 重启 1 次（断开它上面全部连接）」，确认前告诉用户
-fleetctl placement [--team <团队>]   # 放置矩阵（只读）：线路机 agent 每 5 分钟测一次到全部在用 VPS 节点 IP 的往返（ICMP），最优 = 成功率 ≥ 99%、非故障、额度放得下（接下这个节点近 7 天的流量后到重置日仍在上限的 80% 内）的线路机里最快的；当前比最优慢 ≥ 10 ms 或当前成功率 < 99% 才建议，末尾给每台目标线路机一条批量 move 命令（先不带 --yes 看预览、告诉用户，同意后 --yes --follow）。某格成功率低不一定是链路坏：节点或云厂商挡 ICMP 时所有线路机都不通，这时 placement 不给建议，看 show 的 TCP 探测
-fleetctl rebalance <线路机> [--target <线路机>] [--exclude <节点>]…   # 搬迁建议（只读）：按近 7 天的速度重置前会用满的线路机，挑出搬走后能撑到重置日的最少入口和目标线路机（默认额度余量最多、在用、非故障），打印一条可直接执行的批量 fleetctl move A,B,C --to X 命令（照抄执行，不要拆成逐个 move）；--exclude 的节点不动（分享给别人的入口所在节点）。billing / show 的「预计用满」一行同源
+fleetctl placement [--team <团队>] [--node <节点>]   # 放置矩阵（只读）：线路机 agent 每 5 分钟测一次到全部在用 VPS 节点 IP 的往返（ICMP），最优 = 成功率 ≥ 99%、非故障、额度放得下（接下这个节点近 7 天的流量后到重置日仍在上限的 80% 内）的线路机里最快的；当前比最优慢 ≥ 10 ms 或当前成功率 < 99% 才建议，末尾给每台目标线路机一条批量 move 命令（先不带 --yes 看预览、告诉用户，同意后 --yes --follow）。某格成功率低不一定是链路坏：节点或云厂商挡 ICMP 时所有线路机都不通，这时 placement 不给建议，看 show 的 TCP 探测
+fleetctl rebalance <线路机> [--target <线路机>] [--exclude <节点>[,<节点>…]]   # 搬迁建议（只读）：按近 7 天的速度重置前会用满的线路机，挑出搬走后能撑到重置日的最少入口和目标线路机（默认：在用、非故障、额度放得下的里面，被搬节点到它往返最小的；没有往返数据按额度余量最多的），打印一条可直接执行的批量 fleetctl move A,B,C --to X 命令（照抄执行，不要拆成逐个 move）；--exclude 的节点不动（分享给别人的入口所在节点）。billing / show 的「预计用满」一行同源
 fleetctl replace <旧节点> --with <新节点> [--to <团队>] [--number N] [--no-routers] --yes [--follow]   # 替换节点：不加 --yes 只预览（见下）
 fleetctl router switch <路由> <组> <出口> [--for 4h]   # 临时切换出口：select 组经 mihomo API 切到组里已有的另一个出口，不改配置、不重启 OpenClash、不断已有连接；--for 到时自动切回（30m / 4h / 1d，最长 7 天）
 fleetctl router switch <路由> <组> --back               # 切回第一次切之前的出口

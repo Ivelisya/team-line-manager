@@ -7,7 +7,7 @@
 //! - 测：agent 每 5 分钟一轮，最多 4 个节点同时测，只用 ICMP（系统 ping 3 次），用不了就不测。不连 SS 端口（节点防火墙只放行
 //!   它所挂的线路机），也不连 SSH 端口（fail2ban 可能把线路机 IP 封掉、连带断业务流量），见 fleet-agent 的 rtt.rs。
 //! - 存：`relay_node_rtt_hourly` 小时汇总（迁移 0083），上报入库时直接累加（[`ingest`]），保留 30 天。
-//! - 看：`GET /placement?team=`（[`view`]）：每个节点到各线路机近 24 小时的 p50 与成功率、近 7 天 tcp_fail 告警次数、当前与最优线路机，
+//! - 看：`GET /placement?team=&node=`（[`view`]）：每个节点到各线路机近 24 小时的 p50 与成功率、近 7 天 tcp_fail 告警次数、当前与最优线路机，
 //!   以及「当前比最优慢 ≥ 10 ms 或当前成功率 < 99%」的换线建议（按目标线路机合成批量 `fleetctl move A,B --to X`）。
 
 use crate::db::Tx;
@@ -421,5 +421,18 @@ mod tests {
         assert_eq!(p[1], Pick { best: Some(a), suggest: false, no_room: vec![c] });
         assert_eq!(p[2], Pick { best: Some(a), suggest: true, no_room: vec![] });
         assert_eq!(p[3], Pick { best: Some(c), suggest: false, no_room: vec![] });
+    }
+
+    /// 搬迁目标的往返成绩：被搬节点的 p50 取平均；有节点成功率不足 99% 为 Bad；有节点没测过为 NoData
+    #[test]
+    fn score_averages_and_flags_weak_or_missing() {
+        let (n1, n2, r) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(9));
+        let cell = |ok: i64, p50: f64| Cell { samples: 100, ok, p50: Some(p50) };
+        let grid = |a: Option<Cell>, b: Option<Cell>| -> HashMap<Uuid, HashMap<Uuid, Cell>> {
+            [(n1, a), (n2, b)].into_iter().filter_map(|(n, c)| c.map(|c| (n, HashMap::from([(r, c)])))).collect()
+        };
+        assert_eq!(score(&[n1, n2], &grid(Some(cell(100, 100.0)), Some(cell(100, 140.0))), r), Score::Rtt(120.0));
+        assert_eq!(score(&[n1, n2], &grid(Some(cell(100, 100.0)), Some(cell(97, 90.0))), r), Score::Bad);
+        assert_eq!(score(&[n1, n2], &grid(Some(cell(100, 100.0)), None), r), Score::NoData);
     }
 }

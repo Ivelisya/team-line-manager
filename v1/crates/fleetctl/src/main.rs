@@ -654,16 +654,16 @@ enum Cmd {
         #[arg(long)]
         follow: bool,
     },
-    /// 搬迁建议：线路机按近 7 天的速度重置前会用满时，挑出搬走后能撑到重置日的最少入口和目标线路机（默认额度余量最多的），
+    /// 搬迁建议：线路机按近 7 天的速度重置前会用满时，挑出搬走后能撑到重置日的最少入口和目标线路机（默认：额度放得下的里面，被搬节点到它的往返最小的；没有往返数据按额度余量最多的），
     /// 打印建议与一条可直接执行的批量 move 命令（fleetctl move A,B,C --to X）；只读，不执行
     Rebalance {
         /// 流量吃紧的线路机
         relay: String,
-        /// 搬到哪台线路机（默认：在用、非故障、额度余量最多的）
+        /// 搬到哪台线路机（默认：在用、非故障、额度放得下、被搬节点到它往返最小的；没有往返数据按额度余量最多的）
         #[arg(long)]
         target: Option<String>,
-        /// 不动的节点（可重复），如分享给别人的入口所在的节点
-        #[arg(long)]
+        /// 不动的节点（逗号分隔，或重复 --exclude），如分享给别人的入口所在的节点
+        #[arg(long, value_delimiter = ',')]
         exclude: Vec<String>,
     },
     /// 放置矩阵：各节点到每台线路机近 24 小时的往返（中位数、成功率）、当前与最优线路机，末尾给建议换线的批量 move 命令；只读，不执行。
@@ -672,6 +672,9 @@ enum Cmd {
         /// 只看这个团队的节点（团队名或 id）
         #[arg(long)]
         team: Option<String>,
+        /// 只看这个节点（id / 显示名 / IP）
+        #[arg(long)]
+        node: Option<String>,
     },
     /// 替换节点：新节点接替旧节点。软路由上指向旧节点的出口改成新节点的入口（备份、重启 OpenClash、测延迟，失败全部换回），
     /// 旧节点去备用团队（或 --to 指定的团队），新节点接旧编号。不加 --yes 只打印预览
@@ -1087,7 +1090,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         },
         Cmd::Watch { count, metrics } => cmds::watch(x, count, metrics),
         Cmd::Rebalance { relay, target, exclude } => lifecycle::rebalance(x, &relay, target.as_deref(), &exclude),
-        Cmd::Placement { team } => lifecycle::placement(x, team.as_deref()),
+        Cmd::Placement { team, node } => lifecycle::placement(x, team.as_deref(), node.as_deref()),
         Cmd::Move { node, to, from, no_routers, yes, follow } => lifecycle::mv(x, &node, &to, from.as_deref(), no_routers, yes, follow),
         Cmd::Evacuate { relay, to, no_routers, yes, follow } => lifecycle::evacuate(x, &relay, &to, no_routers, yes, follow),
         Cmd::Replace(o) => lifecycle::replace(x, o),
