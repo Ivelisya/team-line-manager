@@ -1,12 +1,14 @@
 #!/bin/bash
 # 轮末清理 fleet-dev：调试构建产物、worktree 的源码副本、测试遗留的临时文件与测试库。幂等，可反复跑。
 # 有 cargo 在跑（还有人在编译或测试）就什么都不动，退出码 1。
-# 不动：/root/src 的源码与 release 产物（部署要用）、fleet 库（实验室在用）、fleet_test 库（默认测试库）、/opt/fleet、fleet-sim。
+# 不动：/root/src 的源码与 release 产物（在 fleet-dev 上编时部署要用）、fleet 库（实验室在用）、fleet_test 库（默认测试库）、/opt/fleet、fleet-sim。
+# 编译改在 docker 编译主机上（lab/build.env 的 FLEET_BUILD=docker，见 lab/build-lib.sh）时，fleet-dev 上的 /root/src/target 整个用不上了，一起删。
 # worktree 副本 /root/src-wt-<名字>、它的编译目录 /root/src/target-<名字> 与测试库 fleet_test_<名字>：给了名字只删这几个；不给名字只删 6 小时没同步过的
 # （同步会刷新目录的修改时间），并列出留下的——并行会话正在用的不会被误删。
 # 用法：lab/cleanup.sh [名字...]
 set -euo pipefail
-ssh -F "$HOME/.ssh/fleetlab_config" fleet-dev "bash -s -- $*" <<'REMOTE'
+. "$(cd "$(dirname "$0")" && pwd)/build-lib.sh"   # FB_MODE：lab = 在 fleet-dev 上编，docker = 在编译主机上编
+ssh -F "$HOME/.ssh/fleetlab_config" fleet-dev "FB_MODE=$FB_MODE bash -s -- $*" <<'REMOTE'
 set -euo pipefail
 if pgrep -x cargo >/dev/null; then
   echo "有 cargo 在跑，这次不清理："
@@ -16,6 +18,7 @@ fi
 df -h / | awk 'NR == 2 {print "清理前：已用 " $3 "，可用 " $4}'
 # 调试 / 测试构建产物（下次测试重新编）、install-ipintel 传上来的文件
 rm -rf /root/src/target/debug /root/ipintel-install
+[ "$FB_MODE" = docker ] && rm -rf /root/src/target && echo "已删 /root/src/target（编译在 docker 编译主机上，fleet-dev 不再编）"
 # worktree 副本与它的测试库
 if [ $# -gt 0 ]; then names="$*"
 else names=$(find /root -maxdepth 1 -name 'src-wt-*' -type d -mmin +360 -printf '%f\n' | sed 's/^src-wt-//')
