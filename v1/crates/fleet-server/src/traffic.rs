@@ -132,17 +132,6 @@ async fn raw(st: &AppState, days: i64) -> sqlx::Result<Raw> {
     Ok(r)
 }
 
-/// 按规则算一天的计费量
-fn billed(rule: &str, rx: i64, tx: i64) -> i64 {
-    match rule {
-        "min" => rx.min(tx),
-        "sum" => rx.saturating_add(tx),
-        "out" => tx,
-        "in" => rx,
-        _ => rx.max(tx),
-    }
-}
-
 #[derive(sqlx::FromRow)]
 struct M {
     id: Uuid,
@@ -279,7 +268,7 @@ pub async fn daily(st: &AppState, days: Option<i64>, team: Option<&str>, machine
             let rule = views::nic_rule(m.rule.as_deref());
             let mut daily = nic_days.remove(&m.id).unwrap_or_else(empty_nic);
             for v in &mut daily {
-                v.billed = billed(rule, v.rx, v.tx);
+                v.billed = crate::meta::billed(rule, v.rx, v.tx);
             }
             let business = relay_biz.remove(&m.id).unwrap_or_else(empty_biz);
             let (down, up) = sum(&business);
@@ -294,7 +283,7 @@ pub async fn daily(st: &AppState, days: Option<i64>, team: Option<&str>, machine
                 rule,
                 rx,
                 tx,
-                billed: billed(rule, rx, tx),
+                billed: crate::meta::billed(rule, rx, tx),
                 down,
                 up,
                 daily,

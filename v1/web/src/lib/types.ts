@@ -189,7 +189,9 @@ export interface Meta {
   kinds: Record<string, string>; ip_node_label: string;
   lifecycles: Record<string, string>; healths: Record<string, string>;
   job_kinds: Record<string, string>; job_states: Record<string, string>; step_states: Record<string, string>; entry_states: Record<string, string>;
-  traffic_rules: Record<string, string>; traffic_resets: Record<string, string>; due_states: Record<string, string>;
+  traffic_rules: Record<string, string>;
+  /** 计费方式短名（小标签用，key 同 traffic_rules）：「双向 · 入 + 出」「单向 · 取较大」… */
+  traffic_rule_short: Record<string, string>; traffic_resets: Record<string, string>; due_states: Record<string, string>;
   /** 访问策略的模式 → 中文名 */
   policy_modes: Record<string, string>;
   /** 策略版本在线路机上的同步状态：applied / applying / failed / gone */

@@ -583,21 +583,18 @@ pub struct LiveCache {
     anomaly: std::sync::Mutex<Option<crate::anomaly::Map>>,
 }
 
-/// (周期内已用, 接入前读数在周期内, 周期起点时刻, 近 7 天窗口内已用, 窗口起点时刻)
-type QuotaUsed = (i64, bool, OffsetDateTime, i64, OffsetDateTime);
+/// (周期内下行之和, 上行之和, 接入前读数在周期内, 周期起点时刻, 近 7 天窗口内下行之和, 上行之和, 窗口起点时刻)；
+/// 业务流量（没有网卡的机器）下载 + 上传合在下行里、上行为 0。计费量在 `quota_used` 出口按规则套（meta::billed），缓存里只存和
+type QuotaUsed = (i64, i64, bool, OffsetDateTime, i64, i64, OffsetDateTime);
+/// `quota_used` 查询的一行：机器 id + `QuotaUsed`
+type QuotaRow = (Uuid, i64, i64, bool, OffsetDateTime, i64, i64, OffsetDateTime);
 
 /// (机器, 周期起点, 周期时区, 网卡计量规则（None = 业务流量）, 接入前读数的录入时间)
 type QuotaKey = (Uuid, Date, String, Option<&'static str>, Option<OffsetDateTime>);
 
 /// 生效的网卡计量规则（订阅单独设置的，或供应商的）；不认识的按 max
 pub(crate) fn nic_rule(r: Option<&str>) -> &'static str {
-    match r {
-        Some("min") => "min",
-        Some("sum") => "sum",
-        Some("out") => "out",
-        Some("in") => "in",
-        _ => "max",
-    }
+    r.and_then(|r| crate::meta::TRAFFIC_RULES.iter().find(|(k, _)| *k == r)).map_or(crate::meta::DEFAULT_TRAFFIC_RULE, |(k, _)| *k)
 }
 
 impl LiveCache {
@@ -1106,8 +1103,9 @@ async fn flows(st: &AppState) -> sqlx::Result<Flows> {
     Ok((v, n))
 }
 
-/// 这些机器各自周期里（有接入前读数的从录入时刻起）的用量、接入前读数是否在周期内、周期起点时刻，走 `LiveCache.quota`，缺的才查
-async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<Uuid, QuotaUsed>> {
+/// 这些机器各自周期里（有接入前读数的从录入时刻起）的计费量、接入前读数是否在周期内、周期起点时刻、近 7 天窗口内的计费量与窗口起点时刻，
+/// 走 `LiveCache.quota`（缓存里是下行、上行之和），缺的才查
+async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<Uuid, (i64, bool, OffsetDateTime, i64, OffsetDateTime)>> {
     if keys.is_empty() {
         return Ok(HashMap::new());
     }
@@ -1130,10 +1128,8 @@ async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<
         // 周期起点时刻 s0 一并带回：首次上架晚于它的，视图标「X 起统计」（counted_from）
         // 近 7 天窗口：起点 w = 周期查询起点与「当前整点往前 7 天」中较晚的；窗口内用量与 w + 1 小时（第一个计入的整点）一并带回，
         // 日均 / 预计用满由 quota::forecast 算
-        let pick = |rx: &str, tx: &str| {
-            format!("least(case q.rule when 'min' then least({rx}, {tx}) when 'max' then greatest({rx}, {tx}) when 'sum' then {rx} + {tx} when 'out' then {tx} when 'in' then {rx} else greatest({rx}, {tx}) end, 9e18)::bigint")
-        };
-        let sql = format!(
+        // SQL 只返回下行（rx）、上行（tx）的和（业务流量合在下行里），计费量在下面按规则套（meta::billed，和每日流量同一处）
+        let sql =
             "with q as (select q.mid, q.rule, q.base_at >= s.s0 cal, s.s0, n.since, greatest(n.since, date_trunc('hour', now()) - interval '7 days') w
                         from unnest($1::uuid[], $2::date[], $3::text[], $4::text[], $5::timestamptz[]) q(mid, start, tz, rule, base_at)
                         cross join lateral (select q.start::timestamp at time zone q.tz s0) s
@@ -1141,7 +1137,8 @@ async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<
              qe as (select q.mid, q.since, q.w, e.id eid from q join entry e on e.node_id = q.mid where q.rule is null
                     union
                     select q.mid, q.since, q.w, e.id from q join entry e on e.relay_id = q.mid where q.rule is null)
-             select q.mid, {used}, coalesce(q.cal, false), q.s0, {recent}, q.w + interval '1 hour'
+             select q.mid, least(t.rx, 9e18)::bigint, least(t.tx, 9e18)::bigint, coalesce(q.cal, false), q.s0,
+                    least(t.rx7, 9e18)::bigint, least(t.tx7, 9e18)::bigint, q.w + interval '1 hour'
              from q cross join lateral (
                select coalesce(sum(h.net_rx), 0) rx, coalesce(sum(h.net_tx), 0) tx,
                       coalesce(sum(h.net_rx) filter (where h.hour > q.w), 0) rx7, coalesce(sum(h.net_tx) filter (where h.hour > q.w), 0) tx7
@@ -1149,16 +1146,14 @@ async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<
                where h.machine_id = q.mid and h.hour > q.since) t
              where q.rule is not null
              union all
-             select q.mid, least(coalesce(sum(t.b), 0), 9e18)::bigint, coalesce(q.cal, false), q.s0, least(coalesce(sum(t.b7), 0), 9e18)::bigint, q.w + interval '1 hour'
+             select q.mid, least(coalesce(sum(t.b), 0), 9e18)::bigint, 0::bigint, coalesce(q.cal, false), q.s0,
+                    least(coalesce(sum(t.b7), 0), 9e18)::bigint, 0::bigint, q.w + interval '1 hour'
              from q left join qe on qe.mid = q.mid left join lateral (
                select sum(h.up_bytes::numeric + h.down_bytes) b, sum(h.up_bytes::numeric + h.down_bytes) filter (where h.hour > qe.w) b7
                from entry_traffic_hourly h where h.entry_id = qe.eid and h.hour > qe.since) t on true
              where q.rule is null
-             group by q.mid, q.cal, q.s0, q.w",
-            used = pick("t.rx", "t.tx"),
-            recent = pick("t.rx7", "t.tx7")
-        );
-        let rows: Vec<(Uuid, i64, bool, OffsetDateTime, i64, OffsetDateTime)> = sqlx::query_as(&sql)
+             group by q.mid, q.cal, q.s0, q.w";
+        let rows: Vec<QuotaRow> = sqlx::query_as(sql)
         .bind(miss.iter().map(|k| k.0).collect::<Vec<_>>())
         .bind(miss.iter().map(|k| k.1).collect::<Vec<_>>())
         .bind(miss.iter().map(|k| k.2.clone()).collect::<Vec<_>>())
@@ -1166,17 +1161,25 @@ async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<
         .bind(miss.iter().map(|k| k.4).collect::<Vec<_>>())
         .fetch_all(&st.view_db)
         .await?;
-        let got: HashMap<Uuid, QuotaUsed> = rows.into_iter().map(|(m, b, cal, s0, r, w)| (m, (b, cal, s0, r, w))).collect();
+        let got: HashMap<Uuid, QuotaUsed> = rows.into_iter().map(|(m, rx, tx, cal, s0, rx7, tx7, w)| (m, (rx, tx, cal, s0, rx7, tx7, w))).collect();
         for k in miss {
             // 每个键都有一行（q 是 unnest 出来的，两支都按 q 聚合）；缺了是 SQL 的 bug：记下机器 id 并按 0 算，不让一台打断整个视图与实时推送
             let used = got.get(&k.0).copied().unwrap_or_else(|| {
                 tracing::warn!(machine = %k.0, "流量额度查询没有返回这台机器的一行，按已用 0 算");
-                (0, false, k.1.midnight().assume_utc(), 0, k.1.midnight().assume_utc())
+                (0, 0, false, k.1.midnight().assume_utc(), 0, 0, k.1.midnight().assume_utc())
             });
             slot.1.insert(k.clone(), used);
         }
     }
-    Ok(keys.into_iter().map(|k| (k.0, slot.1[&k])).collect())
+    // 套规则算计费量：有规则的按网卡的下行、上行，没有的（业务流量）就是下行里合在一起的那个数
+    let bill = |rule: Option<&str>, rx: i64, tx: i64| rule.map_or(rx, |r| crate::meta::billed(r, rx, tx));
+    Ok(keys
+        .into_iter()
+        .map(|k| {
+            let (rx, tx, cal, s0, rx7, tx7, w) = slot.1[&k];
+            (k.0, (bill(k.3, rx, tx), cal, s0, bill(k.3, rx7, tx7), w))
+        })
+        .collect())
 }
 
 pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Result<Vec<MachineView>> {

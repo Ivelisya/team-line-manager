@@ -261,6 +261,19 @@ pub const TRAFFIC_RULES: Labels = &[
     ("in", "单向：只算下行（入站）"),
 ];
 pub const DEFAULT_TRAFFIC_RULE: &str = "max";
+/// 网卡计量规则的短名（费用页签、流量页的小标签、fleetctl 表格用，key 与 `TRAFFIC_RULES` 一一对应）
+pub const TRAFFIC_RULE_SHORT: Labels = &[("sum", "双向 · 入 + 出"), ("max", "单向 · 取较大"), ("min", "单向 · 取较小"), ("out", "单向 · 只算上行"), ("in", "单向 · 只算下行")];
+
+/// 按规则从区间内的下行（rx）、上行（tx）之和算计费量：额度已用、每日流量共用这一处；不认识的规则按 max
+pub fn billed(rule: &str, rx: i64, tx: i64) -> i64 {
+    match rule {
+        "min" => rx.min(tx),
+        "sum" => rx.saturating_add(tx),
+        "out" => tx,
+        "in" => rx,
+        _ => rx.max(tx),
+    }
+}
 /// 供应商的流量重置方式：month = 账单时区的自然月（每月 1 号），billing = 每个账单日（到期日几号），
 /// rolling30 = 滚动 30 天（账单时区的今天往前 29 天起，没有重置日）
 pub const TRAFFIC_RESETS: Labels = &[("month", "自然月"), ("billing", "账单日"), ("rolling30", "滚动 30 天")];
@@ -354,6 +367,7 @@ pub fn to_json() -> Value {
         "step_states": map(STEP_STATES),
         "entry_states": map(ENTRY_STATES),
         "traffic_rules": map(TRAFFIC_RULES),
+        "traffic_rule_short": map(TRAFFIC_RULE_SHORT),
         "traffic_resets": map(TRAFFIC_RESETS),
         "due_states": map(DUE_STATES),
         "policy_modes": map(POLICY_MODES),
