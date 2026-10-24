@@ -122,7 +122,7 @@ pub struct NodeIn {
     /// 当前线路机：节点恰有一条在用入口时是它的线路机；没有或有多条为 None（只看、不建议）
     pub current: Option<Uuid>,
     pub cells: HashMap<Uuid, Cell>,
-    /// 换过去后目标线路机每天多出来的流量（字节，按近 7 天）
+    /// 节点每天的业务流量（字节，按近 7 天，不乘折算系数）；换到某台线路机后多出的计费量 = 它 × 那台的 `RelayIn::k`
     pub daily: f64,
 }
 
@@ -131,6 +131,8 @@ pub struct RelayIn {
     /// 在用、非故障（降级算正常）
     pub usable: bool,
     pub q: Q,
+    /// 折算系数（网卡计费日均 ÷ 业务日均，api::lifecycle::relay_ks）：同样的业务量在这台上多出的计费量 = 业务量 × k
+    pub k: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -165,8 +167,9 @@ pub fn pick(nodes: &[NodeIn], relays: &[RelayIn]) -> Vec<Pick> {
         let n = &nodes[i];
         let p = &mut out[i];
         for (id, p50) in cands(n) {
-            let q = relays.iter().find(|r| r.id == id).map(|r| r.q);
-            if Some(id) != n.current && !q.is_some_and(|q| q.fits(load.get(&id).copied().unwrap_or(0.0) + n.daily)) {
+            let r = relays.iter().find(|r| r.id == id);
+            let add = n.daily * r.map_or(1.0, |r| r.k);
+            if Some(id) != n.current && !r.is_some_and(|r| r.q.fits(load.get(&id).copied().unwrap_or(0.0) + add)) {
                 p.no_room.push(id);
                 continue;
             }
@@ -175,7 +178,7 @@ pub fn pick(nodes: &[NodeIn], relays: &[RelayIn]) -> Vec<Pick> {
             // 当前线路机一个样本都没有（它的 agent 还没升级、系统 ping 用不了）：是它没在测，不是链路差，只展示不建议
             p.suggest = n.current.is_some_and(|c| c != id) && cur.samples > 0 && (!cur.good() || cur.p50.is_some_and(|c| c - p50 >= MIN_GAIN_MS));
             if p.suggest {
-                *load.entry(id).or_default() += n.daily;
+                *load.entry(id).or_default() += add;
             }
             break;
         }
@@ -272,7 +275,7 @@ pub async fn view(st: &AppState, team: Option<&str>, node: Option<&str>) -> ApiR
     .await?
     .into_iter()
     .collect();
-    // 各在用入口近 7 天的业务流量：节点每天多少（搬过去的是它）；线路机的折算系数同搬迁建议（api::lifecycle::relay_ks）
+    // 各在用入口近 7 天的业务流量：节点每天多少（搬过去的是它，业务量）；线路机的折算系数 k 同搬迁建议（api::lifecycle::relay_ks），按目标线路机的 k 折算
     let traffic: Vec<(Uuid, Uuid, i64)> = sqlx::query_as(
         "select e.relay_id, e.node_id, least(coalesce(sum(h.up_bytes::numeric + h.down_bytes), 0), 9e18)::bigint
          from entry_traffic_hourly h join entry e on e.id = h.entry_id
@@ -290,7 +293,6 @@ pub async fn view(st: &AppState, team: Option<&str>, node: Option<&str>) -> ApiR
     }
     let qs: HashMap<Uuid, Q> = relays.iter().map(|r| (r.id, crate::api::lifecycle::quota_q(r, now))).collect();
     let ks = crate::api::lifecycle::relay_ks(&st.db, &all, now).await?;
-    let k_of = |r: Uuid| ks.get(&r).copied().unwrap_or(1.0);
 
     // 入口状态口径同换线规划（api/lifecycle.rs 的 plan_move）：待应用、在用、停用都算节点的入口
     let live = |m: &MachineView| -> Vec<(Uuid, i32, bool)> {
@@ -305,7 +307,7 @@ pub async fn view(st: &AppState, team: Option<&str>, node: Option<&str>) -> ApiR
         .iter()
         .map(|m| {
             let cur = current(m).map(|c| c.0);
-            NodeIn { current: cur, cells: grid.remove(&m.id).unwrap_or_default(), daily: node_daily.get(&m.id).copied().unwrap_or(0.0) * cur.map_or(1.0, k_of) }
+            NodeIn { current: cur, cells: grid.remove(&m.id).unwrap_or_default(), daily: node_daily.get(&m.id).copied().unwrap_or(0.0) }
         })
         .collect();
     // 有多个在用入口的节点：每个在用入口各算一份（当前 = 这条入口所在的线路机；节点已有入口的线路机不当候选，换过去会被拒），
@@ -319,12 +321,12 @@ pub async fn view(st: &AppState, team: Option<&str>, node: Option<&str>) -> ApiR
         for &(relay, port, _) in l.iter().filter(|e| e.2) {
             let mut cs = ins[i].cells.clone();
             cs.retain(|r, _| *r == relay || !l.iter().any(|e| e.0 == *r));
-            let daily = pair_daily.get(&(relay, m.id)).copied().unwrap_or(0.0) * k_of(relay);
+            let daily = pair_daily.get(&(relay, m.id)).copied().unwrap_or(0.0);
             ins.push(NodeIn { current: Some(relay), cells: cs, daily });
             multi.push((i, relay, port));
         }
     }
-    let rin: Vec<RelayIn> = relays.iter().map(|r| RelayIn { id: r.id, usable: r.health.status != Status::Down, q: qs[&r.id] }).collect();
+    let rin: Vec<RelayIn> = relays.iter().map(|r| RelayIn { id: r.id, usable: r.health.status != Status::Down, q: qs[&r.id], k: ks.get(&r.id).copied().unwrap_or_else(|| crate::quota::rule_factor(r.quota.rule)) }).collect();
     let picks = pick(&ins, &rin);
 
     let pct = |c: &Cell| c.success().map(|s| (s * 1000.0).round() / 10.0);
@@ -403,7 +405,7 @@ mod tests {
         let free = Q { limit: None, used: 0.0, daily: 0.0, days_left: 20.0 };
         // c：2000 GB 上限、已用 1000，日均 20 → 到重置日 1400，安全线 1600：每天还能多接 10 GB
         let tight = Q { limit: Some(2000e9), used: 1000e9, daily: 20e9, days_left: 20.0 };
-        let relays = vec![RelayIn { id: a, usable: true, q: free }, RelayIn { id: b, usable: false, q: free }, RelayIn { id: c, usable: true, q: tight }];
+        let relays = vec![RelayIn { id: a, usable: true, q: free, k: 1.0 }, RelayIn { id: b, usable: false, q: free, k: 1.0 }, RelayIn { id: c, usable: true, q: tight, k: 1.0 }];
         let cell = |ok: i64, p50: f64| Cell { samples: 100, ok, p50: Some(p50) };
         let node = |cur: Uuid, cells: Vec<(Uuid, Cell)>, daily: f64| NodeIn { current: Some(cur), cells: cells.into_iter().collect(), daily };
         let nodes = vec![
@@ -424,6 +426,24 @@ mod tests {
         // 当前线路机一个样本都没有（agent 没升级 / ping 用不了）：不建议搬走
         let p = pick(&[node(c, vec![(a, cell(100, 150.0))], 1e9)], &relays);
         assert!(!p[0].suggest, "{:?}", p[0]);
+    }
+
+    /// 放得下按目标线路机的 k 折算：业务量 6 GB/天，目标 c 每天只能再接 10 GB 计费量；c 是单向计费（k=1）放得下，
+    /// 是双向计费（k=2，折成 12 GB）放不下（原来按当前线路机 a 的 k=1 折算，会误判放得下）；同一轮累计的也按目标的 k
+    #[test]
+    fn room_is_measured_with_the_target_k() {
+        let (a, c) = (Uuid::from_u128(1), Uuid::from_u128(3));
+        let free = Q { limit: None, used: 0.0, daily: 0.0, days_left: 20.0 };
+        let tight = Q { limit: Some(2000e9), used: 1000e9, daily: 20e9, days_left: 20.0 };
+        let cell = |p50: f64| Cell { samples: 100, ok: 100, p50: Some(p50) };
+        let node = NodeIn { current: Some(a), cells: [(a, cell(180.0)), (c, cell(150.0))].into_iter().collect(), daily: 6e9 };
+        let relays = |kc: f64| vec![RelayIn { id: a, usable: true, q: free, k: 1.0 }, RelayIn { id: c, usable: true, q: tight, k: kc }];
+        assert_eq!(pick(std::slice::from_ref(&node), &relays(1.0))[0], Pick { best: Some(c), suggest: true, no_room: vec![] });
+        assert_eq!(pick(std::slice::from_ref(&node), &relays(2.0))[0], Pick { best: Some(a), suggest: false, no_room: vec![c] });
+        // 反过来：当前 a 是双向（k=2）、目标 c 是单向（k=1），业务量 9 GB/天按 c 的 k 算是 9 GB，放得下（原来按 a 的 k 算成 18 GB 误判放不下）
+        let big = NodeIn { daily: 9e9, ..node };
+        let rs = vec![RelayIn { id: a, usable: true, q: free, k: 2.0 }, RelayIn { id: c, usable: true, q: tight, k: 1.0 }];
+        assert_eq!(pick(&[big], &rs)[0], Pick { best: Some(c), suggest: true, no_room: vec![] });
     }
 
     /// 搬迁目标的往返成绩：被搬节点的 p50 取平均；有节点成功率不足 99% 为 Bad；有节点没测过为 NoData

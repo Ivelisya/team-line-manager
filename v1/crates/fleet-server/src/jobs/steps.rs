@@ -1202,6 +1202,15 @@ async fn purge(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     sqlx::query("delete from entry where id = any($1)").bind(&eids).execute(&mut *tx).await?;
     // 其余（令牌、agent 状态、账单、续费、出站、线路机参数）随 machine 级联删除
     sqlx::query("delete from machine where id = $1").bind(id).execute(&mut *tx).await?;
+    // 客户端订阅的 include_ids / exclude_ids 没有外键：不摘掉，订阅的规则校验（引用不存在的机器 400）会让它再也改不了规则。
+    // purge_blocker 保证没有同机 IP 节点还挂在这台上，被删的只有这一台
+    sqlx::query(
+        "update client_sub set include_ids = array_remove(include_ids, $1), exclude_ids = array_remove(exclude_ids, $1), updated_at = now()
+         where $1 = any(include_ids) or $1 = any(exclude_ids)",
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     // 小时流量删了（只剩 35 天前的、或对端已退役）：流量缓存跟着作废
     c.st.live.rolled_up();
