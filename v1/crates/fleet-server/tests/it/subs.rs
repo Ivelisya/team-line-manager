@@ -75,3 +75,29 @@ async fn fetch_rotate_and_failure_limit() {
     let (s, _, _) = pull(&t, &new).await;
     assert_eq!(s, StatusCode::TOO_MANY_REQUESTS);
 }
+
+/// 删团队把它从订阅的 team_ids 里摘掉：订阅照常能存（规则校验不再因已删的团队 400），审计记下受影响的订阅；
+/// 「只要这些团队」的订阅只选了它时成了空列表（只剩直出与另加的机器），原样再存回 400，要重新选团队
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn team_delete_detaches_from_subs() {
+    let t = common::boot(false, "").await;
+    let (a, b) = (tele::seed_team(&t, "团队1").await, tele::seed_team(&t, "团队2").await);
+    let except = t.post("/api/v1/client-subs", json!({"name": "排除", "rule": {"team_mode": "except", "team_ids": [a, b]}})).await;
+    let only = t.post("/api/v1/client-subs", json!({"name": "只要2", "rule": {"team_mode": "only", "team_ids": [b]}})).await;
+    let (s, v) = t.req("DELETE", &format!("/api/v1/teams/{b}"), None, None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let ids: Vec<(String, Vec<Uuid>)> = sqlx::query_as("select name, team_ids from client_sub order by name").fetch_all(&t.st.db).await.unwrap();
+    assert_eq!(ids, [("只要2".to_string(), vec![]), ("排除".to_string(), vec![a])]);
+    let d: serde_json::Value = sqlx::query_scalar("select detail from audit_log where action = 'team.delete'").fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(d["client_subs"], json!(["只要2", "排除"]), "{d}");
+    // 前端整份带 rule 保存：用读回来的规则
+    let sub = t.get(&format!("/api/v1/client-subs/{}", except["id"].as_str().unwrap())).await;
+    assert_eq!(sub["rule"]["team_ids"], json!([a]));
+    let (s, v) = t.req("PATCH", &format!("/api/v1/client-subs/{}", except["id"].as_str().unwrap()), Some(json!({"name": "排除2", "rule": sub["rule"]})), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let sub = t.get(&format!("/api/v1/client-subs/{}", only["id"].as_str().unwrap())).await;
+    assert_eq!(sub["rule"]["team_ids"], json!([]));
+    t.fail("PATCH", &format!("/api/v1/client-subs/{}", only["id"].as_str().unwrap()), Some(json!({"rule": sub["rule"]})), StatusCode::BAD_REQUEST).await;
+    let (s, v) = t.req("PATCH", &format!("/api/v1/client-subs/{}", only["id"].as_str().unwrap()), Some(json!({"rule": {"team_mode": "only", "team_ids": [a]}})), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+}

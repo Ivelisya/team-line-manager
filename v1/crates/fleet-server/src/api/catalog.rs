@@ -129,7 +129,8 @@ fn in_use(parts: &[(i64, &str)]) -> Option<String> {
 
 /// 删团队：备用团队不能删（退役的机器都放在这里）；还有机器（含已退役、回收站里等待清除的，外键也拦着）或软路由时拒绝。它的访问规则不是默认（仅观察、没有域名和备注）或有草稿时也拒绝：
 /// 生效的规则在发布版本的快照里，悄悄删掉就绕开了版本（回滚、核对都对不上）；规则是默认、没有草稿的那一行等于没有，一起删。
-/// 先拿访问规则的锁（同改草稿、发布、回滚），看过规则之后不会有并发的保存草稿插进来
+/// 先拿访问规则的锁（同改草稿、发布、回滚），看过规则之后不会有并发的保存草稿插进来。
+/// 客户端订阅里选了它的（team_ids）一并摘掉，审计里记下受影响的订阅名；「只要这些团队」的订阅因此可能成了空列表（只剩直出与另加的机器，保存时要重新选团队）
 pub async fn delete_team(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
     super::policy::lock(&mut tx).await?;
@@ -162,7 +163,14 @@ pub async fn delete_team(a: Actor, State(st): State<AppState>, ApiPath(id): ApiP
     }
     sqlx::query("delete from policy where scope = 'team' and scope_id = $1").bind(id).execute(&mut *tx).await?;
     sqlx::query("delete from team where id = $1").bind(id).execute(&mut *tx).await?;
-    audit(&mut tx, &a.name, "team.delete", "team", Some(id), json!({"name": name})).await?;
+    // 客户端订阅的 team_ids 没有外键：不摘掉，订阅的规则校验（引用不存在的团队 400）会让它再也存不了
+    let mut subs: Vec<String> =
+        sqlx::query_scalar("update client_sub set team_ids = array_remove(team_ids, $1), updated_at = now() where $1 = any(team_ids) returning name")
+            .bind(id)
+            .fetch_all(&mut *tx)
+            .await?;
+    subs.sort();
+    audit(&mut tx, &a.name, "team.delete", "team", Some(id), json!({"name": name, "client_subs": subs})).await?;
     tx.commit().await?;
     st.emit(Event::Catalog);
     st.emit(Event::Policies);
