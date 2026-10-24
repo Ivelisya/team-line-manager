@@ -14,15 +14,32 @@ const DEAD_KEEP: usize = 50;
 
 pub struct Queue {
     dir: PathBuf,
-    /// seq → (字节数, 入队时间 ms, 是否带着结转补报的入口流量)。最后一项只在本进程内记得：重启前入队的一律当没带，
+    /// seq → (字节数, 入队时刻, 是否带着结转补报的入口流量)。最后一项只在本进程内记得：重启前入队的一律当没带，
     /// 被拒时最多多结转一次
-    items: BTreeMap<u64, (u64, i64, bool)>,
+    items: BTreeMap<u64, (u64, Enq, bool)>,
     bytes: u64,
     max_bytes: u64,
     max_age_ms: i64,
     pub dropped: u64,
     /// 本进程内移入 dead/ 的报告数
     pub dead: u64,
+}
+
+/// 入队时刻：本进程入队的记单调时钟（墙钟跳变——开机时钟错、NTP 一步校准几小时——不会让它们突然「过期」被整队丢掉），
+/// 重启前留下的只能用文件修改时间（墙钟 ms）
+#[derive(Clone, Copy)]
+enum Enq {
+    Mono(std::time::Instant),
+    Wall(i64),
+}
+
+impl Enq {
+    fn age_ms(self, now_ms: i64) -> i64 {
+        match self {
+            Enq::Mono(t) => t.elapsed().as_millis() as i64,
+            Enq::Wall(ms) => now_ms - ms,
+        }
+    }
 }
 
 fn path_of(dir: &Path, seq: u64) -> PathBuf {
@@ -59,7 +76,7 @@ impl Queue {
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or_else(now_ms);
             q.bytes += md.len();
-            q.items.insert(seq, (md.len(), mt, false));
+            q.items.insert(seq, (md.len(), Enq::Wall(mt), false));
         }
         Ok(q)
     }
@@ -85,7 +102,7 @@ impl Queue {
     pub fn push(&mut self, r: &Report, carried: bool) -> Result<Carry> {
         let body = serde_json::to_vec(r)?;
         write_atomic(&path_of(&self.dir, r.seq), &body, true)?;
-        if let Some((old, _, _)) = self.items.insert(r.seq, (body.len() as u64, now_ms(), carried)) {
+        if let Some((old, _, _)) = self.items.insert(r.seq, (body.len() as u64, Enq::Mono(std::time::Instant::now()), carried)) {
             self.bytes -= old;
         }
         self.bytes += body.len() as u64;
@@ -98,7 +115,7 @@ impl Queue {
         let now = now_ms();
         let mut carry = Carry::new();
         while let Some((&seq, &(size, ts, _))) = self.items.iter().next() {
-            if self.items.len() > 1 && (self.bytes > self.max_bytes || now - ts > self.max_age_ms) {
+            if self.items.len() > 1 && (self.bytes > self.max_bytes || ts.age_ms(now) > self.max_age_ms) {
                 let path = path_of(&self.dir, seq);
                 match read_entries(&path) {
                     Ok(es) => add_carry(&mut carry, &es),
@@ -227,6 +244,18 @@ mod tests {
         assert_eq!(*q.items.keys().last().unwrap(), 10);
         let left: u64 = q.items.keys().sum();
         assert_eq!(carried, Carry::from([(id, ((1..=10).sum::<u64>() - left, q.dropped))]));
+    }
+
+    #[test]
+    fn evicts_by_age_on_monotonic_clock() {
+        // 本进程入队的按单调时钟算年龄：超过时长上限的照丢（最新的一份总留着）
+        let d = tmpdir("m");
+        let mut q = Queue::open(d.to_path_buf(), 1 << 20, 50).unwrap();
+        q.push(&rep(1, 10), false).unwrap();
+        q.push(&rep(2, 10), false).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        q.push(&rep(3, 10), false).unwrap();
+        assert_eq!((q.dropped, q.oldest()), (2, Some(3)));
     }
 
     #[test]
