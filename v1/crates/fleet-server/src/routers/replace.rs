@@ -21,10 +21,11 @@
 //!   写完重启 OpenClash，等 API 起来后经 mihomo 逐个测改过的出口（同采集的 generate_204，各试 3 次）。重启失败、API 不起来、测不通：
 //!   脚本自己改回再重启，输出 rolled_back=1 并以非 0 退出。中控对之前已改好的路由按时间戳跑回滚（MODE=rollback）。
 //! - 改回只动这次改过的出口：现在还是这次写入的那组参数（server、port、uuid、servername、public-key、short-id 全部对上）的，
-//!   那 6 行换回备份里的原值（原样照抄）；已经被别人改走的不动，说明写到 stderr。不整份换回：同一台路由上别的作业（或人）之后改的出口不会被抹掉。备份不在了时，没有出口指向这次改成的地址
+//!   那 6 行换回备份里的原值（原样照抄）；既不是这次写的、也不是原值的（被别人改走的）不动，说明写到 stderr、并输出 skipped_<i>=1（<i> 是第几个出口，中控据此判定这台没改回、要人工处理；
+//!   已经是原值的不输出）。不整份换回：同一台路由上别的作业（或人）之后改的出口不会被抹掉。备份不在了时，没有出口指向这次改成的地址
 //!   就是没什么可改回（rollback=none），有的话报错。
 //!
-//! 输出（`key=value` 行）：backup=<备份路径>、changed=<改了几行>、delay_<i>=<毫秒>、sha=<改完 / 改回后配置的 sha256>、replace=ok；回滚：sha=…、rollback=ok | none。
+//! 输出（`key=value` 行）：backup=<备份路径>、changed=<改了几行>、delay_<i>=<毫秒>、sha=<改完 / 改回后配置的 sha256>、replace=ok；回滚：sha=…、skipped_<i>=1（没改回的出口）、rollback=ok | none。
 //! 退出码：2 = 没有动配置（认不出、找不到、指向别处、备份失败）；3 = 写了但重启 / API 不行；4 = 测不通；[`BUSY`] = 等不到锁，没有动配置。
 //! 3、4 都已经尝试改回。
 
@@ -262,6 +263,7 @@ function restore(i,   k, L, d, ro, rest, j, key, cr, cs, cp, cu, cn, cb, ci, nl,
   if (bhits[i] != 1) { bad("改之前的备份里" (bhits[i] ? "有 " bhits[i] " 个" : "没有") "名为「" nm[i] "」的出口，换不回"); return }
   if (low(cs) == low(unq(ov[i, "server"])) && cp == unq(ov[i, "port"])) return
   if (!mine) {
+    sk[i] = 1
     if (low(cs) == low(ENVIRON["SRV_" i]) && cp == ENVIRON["PORT_" i]) note("出口「" nm[i] "」还指向这次改成的 " cs ":" cp "，但 uuid、servername、public-key 或 short-id 已经不是这次写的（之后又被改过），没有改回")
     else note("出口「" nm[i] "」现在指向 " cs ":" cp "，不是这次改成的 " ENVIRON["SRV_" i] ":" ENVIRON["PORT_" i] "（之后又被改过），没有改回")
     return
@@ -366,17 +368,19 @@ END {
   }
   printf("%d", REV ? diff : changed) > ENVIRON["STATF"]
   if (REV) printf("%s", notes) > ENVIRON["NOTEF"]
+  if (REV) for (i = 1; i <= n; i++) if (sk[i]) printf("skipped_%d=1\n", i) > ENVIRON["SKIPF"]
   if (errs != "") { printf("%s", errs) > ENVIRON["ERRF"]; exit 2 }
 }
 FLEET_AWK
 # 改回这次改过的出口（见 restore）：$1 是改之前的备份，空 = 备份不在了。没有要改的行就不写、不重启
 revert() {
-  rm -f "$W/err" "$W/stat" "$W/note"
+  rm -f "$W/err" "$W/stat" "$W/note" "$W/skip"
   mktmp || { say "在 $(dirname "$CFG") 里建临时文件失败，没有改回"; return 3; }
-  if ! REV=1 ERRF="$W/err" STATF="$W/stat" NOTEF="$W/note" awk -f "$W/edit.awk" "${1:-/dev/null}" "$CFG" > "$TMP"; then
+  if ! REV=1 ERRF="$W/err" STATF="$W/stat" NOTEF="$W/note" SKIPF="$W/skip" awk -f "$W/edit.awk" "${1:-/dev/null}" "$CFG" > "$TMP"; then
     rm -f "$TMP"; cat "$W/err" >&2 2>/dev/null; say "没有改回"; return 2
   fi
   cat "$W/note" >&2 2>/dev/null
+  cat "$W/skip" 2>/dev/null
   if [ "$(cat "$W/stat" 2>/dev/null)" = 0 ]; then rm -f "$TMP"; return 0; fi
   mv -f "$TMP" "$CFG" || { rm -f "$TMP"; say "写入 $CFG 失败，没有改回"; return 3; }
   oc_restart || { say "已改回 $CFG，但重启 OpenClash 失败"; return 3; }
@@ -683,7 +687,8 @@ rules:\n- MATCH,节点01组\n";
             assert_eq!(o.kv("sha").map(String::from), Some(hex::encode(<sha2::Sha256 as sha2::Digest>::digest(CONFIG.as_bytes()))), "改回后的 sha");
             assert_eq!(f.read("restart.log").lines().count(), 3);
             // 已经是原样：不写、不重启；备份不在了、也没有出口指向这次改成的：没什么可改回
-            assert_eq!(f.run(&rollback_script("20261023-073012Z", &back), &[]).kv("rollback"), Some("ok"));
+            let o = f.run(&rollback_script("20261023-073012Z", &back), &[]);
+            assert_eq!((o.kv("rollback"), o.kv("skipped_1"), o.kv("skipped_2")), (Some("ok"), None, None), "已经是原值的不算没改回：{o:?}");
             assert_eq!(f.read("restart.log").lines().count(), 3);
             assert_eq!(f.run(&rollback_script("19990101-000000Z", &back), &[]).kv("rollback"), Some("none"));
         }
@@ -727,6 +732,8 @@ rules:\n- MATCH,节点01组\n";
             let o = f.run(&rollback_script(S, &[edit("节点01"), edit2()]), &[]);
             assert_eq!((o.code, o.kv("rollback")), (0, Some("ok")), "busybox={bb} {o:?}");
             assert!(o.stderr.contains("出口「节点02」现在指向 198.51.100.9:20030，不是这次改成的 relay.test:20021"), "{}", o.stderr);
+            // 没改回的只报被别人改走的那个（第 2 个），改回了的第 1 个不报
+            assert_eq!((o.kv("skipped_1"), o.kv("skipped_2")), (None, Some("1")), "busybox={bb} {o:?}");
             let want = after_b
                 .replacen(&format!("  port: 20020\n  uuid: {UUID_NEW}"), "  port: 20003\n  uuid: 11111111-1111-4111-8111-111111111111", 1)
                 .replacen("  servername: www.apple.com\n  reality-opts:\n    public-key: NEW_PBK-abc_123\n    short-id: '01234567'", "  servername: www.cloudflare.com\n  reality-opts:\n    public-key: OLD_PBK\n    short-id: abcd", 1);
@@ -779,6 +786,7 @@ rules:\n- MATCH,节点01组\n";
             let o = f.run(&rollback_script(S, &[edit("节点01")]), &[]);
             assert_eq!((o.code, o.kv("rollback")), (0, Some("ok")), "busybox={bb} {o:?}");
             assert!(o.stderr.contains("出口「节点01」还指向这次改成的 198.51.100.2:20020，但 uuid、servername、public-key 或 short-id 已经不是这次写的"), "{}", o.stderr);
+            assert_eq!(o.kv("skipped_1"), Some("1"), "busybox={bb} {o:?}");
             assert_eq!((f.read("etc/openclash/config/c.yaml"), f.read("restart.log").lines().count()), (before, restarts), "busybox={bb}");
         }
     }

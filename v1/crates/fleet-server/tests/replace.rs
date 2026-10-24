@@ -45,6 +45,8 @@ case $script in
     [ -e "$R/rollback-fail" ] && { echo "fleet：写回备份失败" >&2; exit 3; }
     printf '%s\n' "$script" | sed -n "s/^STAMP='\(.*\)'$/\1/p;s/^NAME_1='\(.*\)'$/\1/p;s/^SRV_1='\(.*\)'$/\1/p;s/^PORT_1='\(.*\)'$/\1/p" | paste -sd' ' >> "$R/rollback.log"
     printf '%s\n' "$script" | sed -n "s/^UUID_1='\(.*\)'$/\1/p" >> "$R/rollback-uuid"
+    # 路由上这个出口被别人改成了第三组参数：脚本不动它，说明写 stderr、报 skipped_1，整体仍是 rollback=ok
+    [ -e "$R/rollback-skip" ] && { echo "fleet：出口「节点01」现在指向 203.0.113.99:443，不是这次改成的 198.51.100.2:20020（之后又被改过），没有改回" >&2; echo skipped_1=1; }
     echo rollback=ok; exit 0 ;;
 esac
 n=$(ls "$R" | grep -c '^apply-' || true)
@@ -370,6 +372,42 @@ async fn rollback_uses_params_written_not_current_ones() {
     let j = t.job(&job).await;
     assert!(j["error"].as_str().unwrap().contains("已改回原配置：路由A"), "{j}");
     assert_eq!(read(root(23231).join("rollback-uuid")), format!("{NEW_UUID}\n"), "带的是写入时的 uuid，不是现在库里的");
+}
+
+/// 改回时路由上某个出口被别人改成了第三组参数（脚本不动它、报 skipped_1，整体仍是 rollback=ok）：这台不算改回，作业写明要人工处理的路由与出口，
+/// 记进 routers_stuck、不写「已改回原配置」「软路由都是原样」；作业不能取消。处理好后重试照常改回。
+/// 「出口本来就是原值」脚本不报 skipped，仍算改回了：failure_rolls_back_and_retry_redoes 里路由A 的改回（没有 skipped_N）、
+/// 以及 routers::replace 的 apply_edits_only_the_named_exits 单元测试（已是原样时 rollback=ok 且无 skipped_N）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rollback_skipped_exit_is_stuck_not_reverted() {
+    let w = world().await;
+    let oe = old_entry(&w).await;
+    let a = router(&w, "路由A", 23271, &[("节点01", "198.51.100.2", 20003, Some(oe))]).await;
+    router(&w, "路由B", 23272, &[("节点01", "198.51.100.2", 20003, Some(oe))]).await;
+    let t = &w.t;
+    std::fs::write(root(23272).join("mode"), "fail").unwrap();
+    std::fs::write(root(23271).join("rollback-skip"), "").unwrap();
+    let d = t.post(&format!("/api/v1/machines/{}/replace", w.old), json!({"new_machine_id": w.new})).await;
+    let job = d["job_id"].as_str().unwrap().to_string();
+    drive(t).await;
+    let j = t.job(&job).await;
+    assert_eq!(j["state"], "failed");
+    let err = j["error"].as_str().unwrap();
+    assert!(err.contains("软路由「路由B」：出口「节点01」换成新入口后测了 3 次都不通；没能改回、需要人工处理：路由A（出口「节点01」没有改回：路由上现在既不是本作业写的、也不是改之前的值"), "{err}");
+    assert!(err.contains("现在指向 203.0.113.99:443") && err.contains("处理好后点重试接着改完（这时不能取消）"), "{err}");
+    assert!(!err.contains("已改回原配置") && !err.contains("软路由都是原样"), "{err}");
+    assert_eq!(j["cancellable"], false);
+    assert_eq!(j["manual"]["routers"], json!([{"id": a, "name": "路由A", "exits": ["节点01"]}]), "{j}");
+    let stuck: Value = sqlx::query_scalar("select params->'routers_stuck' from job where id = $1").bind(Uuid::parse_str(&job).unwrap()).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(stuck.as_array().map(Vec::len), Some(1), "{stuck}");
+    // 处理好了（出口不再被别人占着）：重试照常改回，这回都改回了
+    std::fs::remove_file(root(23271).join("rollback-skip")).unwrap();
+    t.post(&format!("/api/v1/jobs/{job}/retry"), json!({})).await;
+    drive(t).await;
+    let j = t.job(&job).await;
+    let err = j["error"].as_str().unwrap();
+    assert!(err.contains("已改回原配置：路由A。软路由都是原样"), "{err}");
+    assert_eq!((j["cancellable"].as_bool(), j["manual"].is_null()), (Some(true), true), "{j}");
 }
 
 /// 没有路由用旧节点 / 选了不改路由：只交换编号。指定团队与编号；新节点原来的团队压缩编号

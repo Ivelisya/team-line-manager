@@ -24,7 +24,7 @@
 //! 备份戳沿用第一次的）。收到脚本 replace=ok 的那台随即标上确认改好（`done`），再进这一步（等路由上的锁、中控重启后接着做、重试）时不再碰它；
 //! 没确认的（脚本跑了但中控没收到结果）照记录重做。改回失败的另记在 `routers_stuck`（哪台、哪些出口、改之前指向哪），作业详情据此给出「需要人工处理」。
 //! 凭据（uuid、公钥、short-id）执行时才从库里取，只进 ssh 的 stdin，不进日志与审计。写进每个出口的那一整组（含凭据）随 `routers_applied` 记在作业参数里
-//! （参数不经 API 给出），改回时照它核对路由上现在的值：仍是本作业写的才改回，已被别人改过的跳过并在作业日志说明；不从库里现取，新入口在卡住期间被轮换也不会误判。
+//! （参数不经 API 给出），改回时照它核对路由上现在的值：仍是本作业写的才改回；已经是原值的算改回了，既不是本作业写的也不是原值的（被别人改过）脚本不动它，这台算没改回、记进 `routers_stuck` 要人工处理（写明出口）；不从库里现取，新入口在卡住期间被轮换也不会误判。
 
 use super::batch;
 use super::*;
@@ -711,8 +711,15 @@ async fn revert_one(c: &Ctx<'_>, locks: &mut Locks<'_>, a: &Applied) -> anyhow::
     c.st.routers_refresh.claims.edited(a.id, c.job.id, out.as_ref().ok().and_then(|o| o.kv("sha")));
     Ok(match out {
         Ok(o) if o.ok() && matches!(o.kv("rollback"), Some("ok" | "none")) => {
-            // 之后被别的作业改走的出口没动：记一行
             let notes = own_lines(&o);
+            // 脚本说没改回的出口（skipped_<i>：路由上现在既不是本作业写的、也不是改之前的值，之后被别人改过，脚本没动它）：
+            // 不能算改回了（路由可能停在新入口，入口轮换过凭据则出口不通），记进需人工处理。已经是原值的脚本不报，算改回了
+            let skipped: Vec<&str> = back.iter().enumerate().filter(|(i, _)| o.kv(&format!("skipped_{}", i + 1)) == Some("1")).map(|(_, e)| e.exit.as_str()).collect();
+            if !skipped.is_empty() {
+                let names = skipped.iter().map(|n| format!("「{n}」")).collect::<Vec<_>>().join("");
+                return Ok(Err(format!("出口{names}没有改回：路由上现在既不是本作业写的、也不是改之前的值（之后被改过），要人工确认它该指向哪（{}）", notes.join("；"))));
+            }
+            // 之后被别的作业改走的出口没动：记一行
             if !notes.is_empty() {
                 c.warn(format!("软路由「{}」改回时：{}", a.name, notes.join("；"))).await;
             }
