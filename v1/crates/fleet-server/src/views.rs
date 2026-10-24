@@ -555,8 +555,8 @@ pub type TrafficMap = Arc<HashMap<Uuid, Traffic>>;
 /// 机器 id → 按网卡计的今天 / 本月流量（组织时区，来自小时汇总表）
 type NicMap = Arc<HashMap<Uuid, NicTraffic>>;
 type Flows = (TrafficMap, NicMap);
-/// 上一份算成的视图：(算成的时刻, gen, rolled, 视图)
-type LastView = (Instant, u64, u64, Arc<Vec<MachineView>>);
+/// 上一份算成的视图：(算成的时刻, gen, rolled, touched, 视图)
+type LastView = (Instant, u64, u64, u64, Arc<Vec<MachineView>>);
 
 #[derive(Default)]
 pub struct LiveCache {
@@ -565,7 +565,7 @@ pub struct LiveCache {
     /// 作业推进、告警或静默变化 +1（`touched`）：下次取视图时补指标并重查作业与告警数，不等 TTL、不整份重算
     touched: AtomicU64,
     slot: tokio::sync::Mutex<Option<Snap>>,
-    /// 最近一次算成的视图（同 `slot` 里的那份，另存一份不用拿锁就能读）：(算成的时刻, gen, rolled, 视图)
+    /// 最近一次算成的视图（同 `slot` 里的那份，另存一份不用拿锁就能读）：(算成的时刻, gen, rolled, touched, 视图)
     last: std::sync::Mutex<Option<LastView>>,
     /// 视图从什么时候起一直算不出来（失败或超时）、最近一次的错误；算成一次就清掉。中控自检据此报 `central_view_stuck`
     failing: std::sync::Mutex<Option<(OffsetDateTime, String)>>,
@@ -629,20 +629,23 @@ impl LiveCache {
 
     /// 最近一次算成的视图，不管多旧、之后变过没有（上报入库时比对探测结果、在线与 Xray 状态变没变，决定要不要唤醒告警评估）
     pub fn latest(&self) -> Option<Arc<Vec<MachineView>>> {
-        self.last.lock().unwrap().as_ref().map(|l| l.3.clone())
+        self.last.lock().unwrap().as_ref().map(|l| l.4.clone())
     }
 
-    fn settled(&self, at: Instant, gen: u64, rolled: u64, v: &Arc<Vec<MachineView>>) {
-        *self.last.lock().unwrap() = Some((at, gen, rolled, v.clone()));
+    fn settled(&self, at: Instant, gen: u64, rolled: u64, touched: u64, v: &Arc<Vec<MachineView>>) {
+        *self.last.lock().unwrap() = Some((at, gen, rolled, touched, v.clone()));
         *self.failing.lock().unwrap() = None;
     }
 
     /// 上一份视图，旧不过 `STALE_MAX`、之后没有资源变更才给（变更之后还给变更前的，改完马上重取的会一直看到旧的）；
-    /// `rolled`：还要求之后没有新的小时汇总（只差随上报变的指标）
-    pub(crate) fn stale(&self, rolled: bool) -> Option<Arc<Vec<MachineView>>> {
+    /// `rolled`：还要求之后没有新的小时汇总（只差随上报变的指标）；
+    /// `touched`：还要求之后没有作业推进、告警或静默的变化（开维护、静默之后马上重取的要看到它们；`cached` 回上一份顶的不要求，那里本就不等补指标）
+    pub(crate) fn stale(&self, rolled: bool, touched: bool) -> Option<Arc<Vec<MachineView>>> {
         let last = self.last.lock().unwrap();
-        let (at, gen, r, v) = last.as_ref()?;
-        let unchanged = *gen == self.gen.load(Ordering::SeqCst) && (!rolled || *r == self.rolled.load(Ordering::SeqCst));
+        let (at, gen, r, t, v) = last.as_ref()?;
+        let unchanged = *gen == self.gen.load(Ordering::SeqCst)
+            && (!rolled || *r == self.rolled.load(Ordering::SeqCst))
+            && (!touched || *t == self.touched.load(Ordering::SeqCst));
         (at.elapsed() < STALE_MAX && unchanged).then(|| v.clone())
     }
 }
@@ -673,7 +676,7 @@ async fn cached(st: &AppState, ttl: std::time::Duration, synced: bool) -> sqlx::
     let got = match c.slot.try_lock() {
         Ok(slot) => tokio::time::timeout(VIEW_WAIT, fill(st, slot, ttl)).await,
         Err(_) => {
-            if let Some(v) = c.stale(true).filter(|_| !synced) {
+            if let Some(v) = c.stale(true, false).filter(|_| !synced) {
                 return Ok(v);
             }
             match tokio::time::timeout(VIEW_WAIT, c.slot.lock()).await {
@@ -689,7 +692,7 @@ async fn cached(st: &AppState, ttl: std::time::Duration, synced: bool) -> sqlx::
     };
     let msg = if matches!(e, sqlx::Error::PoolTimedOut) { format!("{} 秒内没算出来", VIEW_WAIT.as_secs()) } else { e.to_string() };
     c.failing.lock().unwrap().get_or_insert((OffsetDateTime::now_utc(), String::new())).1 = msg;
-    match c.stale(false).filter(|_| !synced) {
+    match c.stale(false, false).filter(|_| !synced) {
         Some(v) => {
             tracing::warn!("机器视图没算出来，先用上一份：{e}");
             Ok(v)
@@ -711,7 +714,7 @@ async fn fill(st: &AppState, mut slot: tokio::sync::MutexGuard<'_, Option<Snap>>
         if Instant::now() < s.full_until {
             s.v = Arc::new(refresh(st, &s.v, s.touched != touched).await?);
             (s.at, s.touched) = (Instant::now(), touched);
-            c.settled(s.at, gen, rolled, &s.v);
+            c.settled(s.at, gen, rolled, touched, &s.v);
             return Ok(s.v.clone());
         }
     }
@@ -720,7 +723,7 @@ async fn fill(st: &AppState, mut slot: tokio::sync::MutexGuard<'_, Option<Snap>>
     // 流量缓存（load 刚取过）到组织时区的下一个零点过期：跨天时今天的流量清零，完整加载一次
     let day_end = c.traffic.lock().await.as_ref().map(|((_, exp), _)| *exp);
     let full_until = day_end.map_or(at + FULL_EVERY, |e| e.min(at + FULL_EVERY));
-    c.settled(at, gen, rolled, &v);
+    c.settled(at, gen, rolled, touched, &v);
     *slot = Some(Snap { at, full_until, gen, rolled, touched, v: v.clone() });
     Ok(v)
 }
