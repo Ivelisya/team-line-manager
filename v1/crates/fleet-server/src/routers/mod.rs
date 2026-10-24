@@ -291,6 +291,7 @@ impl Row {
             "last_seen_at": rfc(self.last_ok_at),
             "error": self.error,
             "summary": snap.as_ref().map(collect::summary),
+            "exit_entries": snap.as_ref().map(collect::exit_entries).unwrap_or_else(|| json!([])),
             "deploy": deploy,
             "bootstrap_expires_at": rfc(self.bootstrap_expires_at),
             "maintenance": maintenance,

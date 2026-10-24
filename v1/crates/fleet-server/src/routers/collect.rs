@@ -250,11 +250,17 @@ pub fn summary(s: &Snapshot) -> Value {
         "exits": {
             "total": s.exits.len(),
             "alive": s.exits.iter().filter(|e| usable(e)).count(),
+            "dead": s.exits.iter().filter(|e| !usable(e)).map(|e| e.name.as_str()).collect::<Vec<_>>(),
             "managed": s.exits.iter().filter(|e| e.sync != "unmanaged").count(),
             "drift": s.exits.iter().filter(|e| e.sync == "drift").count(),
         },
         "clients": s.clients.iter().filter(|c| c.online).count(),
     })
+}
+
+/// 列表里每个出口对上的入口（没对上的不列）：前端「出口 → 入口」的对应不必为此逐台取详情
+pub fn exit_entries(s: &Snapshot) -> Value {
+    s.exits.iter().filter_map(|e| e.entry.as_ref().map(|er| serde_json::json!({"exit": e.name, "entry_id": er.id}))).collect()
 }
 
 // ── 由采集脚本的输出拼快照 ──────────────────────────────────────────────
@@ -1366,7 +1372,7 @@ mod tests {
         // 全部不通（mihomo 回 504，结果为空）：都 +1
         let b2 = build(&raw(0, 0, 0, tested(json!({}))), &b1.prev, Some(&b1.snap), Some(&proxies()), &[], t0 + time::Duration::seconds(300));
         assert_eq!(b2.snap.exits.iter().map(|e| e.fail_streak).collect::<Vec<_>>(), [1, 2]);
-        assert_eq!(summary(&b2.snap)["exits"], json!({"total": 2, "alive": 1, "managed": 0, "drift": 0}), "只测不通 1 次的还算可用");
+        assert_eq!(summary(&b2.snap)["exits"], json!({"total": 2, "alive": 1, "dead": ["节点02"], "managed": 0, "drift": 0}), "只测不通 1 次的还算可用");
         // 测试请求本身失败（API 出错）：不算出口不通
         let b3 = build(&raw(0, 0, 0, Some(json!({"ok": false, "error": "x"}))), &b2.prev, Some(&b2.snap), Some(&proxies()), &[], t0 + time::Duration::seconds(330));
         assert_eq!(b3.snap.exits.iter().map(|e| e.fail_streak).collect::<Vec<_>>(), [1, 2]);

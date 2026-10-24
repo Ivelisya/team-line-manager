@@ -80,6 +80,7 @@ export function installRoutersMock(R: Reg, env: Env) {
       exits, clients, collected_at: iso(now), groups,
     };
   }
+  const exitEntries = (d: RouterDetail) => d.exits.filter((e) => e.entry).map((e) => ({ exit: e.name, entry_id: e.entry!.id }));
   /** 摘要由详情算（每轮采集的读数先在详情上抖动） */
   function summarize(d: RouterDetail, seed: number, uptime: number): RouterSummary {
     const r = rng(seed ^ Math.floor(Date.now() / 15_000));
@@ -90,17 +91,17 @@ export function installRoutersMock(R: Reg, env: Env) {
       disk_used: 0.41 * 1.9 * GiB, disk_total: 1.9 * GiB, conntrack: 1500 + Math.floor(r() * 900), conntrack_max: 65535, temp_c: 38 + Math.round(r() * 8),
       wan: { up: wan.up, ip: wan.ip, rx_bps: wan.rx_bps, tx_bps: wan.tx_bps },
       openclash: { enabled: d.openclash.enabled, running: d.openclash.running, version: d.openclash.version, mode: d.openclash.mode, conns: d.exits.reduce((s, e) => s + e.conns, 0), up_bps: d.exits.reduce((s, e) => s + e.up_bps, 0), down_bps: d.exits.reduce((s, e) => s + e.down_bps, 0) },
-      exits: { total: d.exits.length, alive: d.exits.filter(exitUsable).length, managed: d.exits.filter((e) => e.entry).length, drift: d.exits.filter((e) => e.sync === 'drift').length },
+      exits: { total: d.exits.length, alive: d.exits.filter(exitUsable).length, dead: d.exits.filter((e) => !exitUsable(e)).map((e) => e.name), managed: d.exits.filter((e) => e.entry).length, drift: d.exits.filter((e) => e.sync === 'drift').length },
       clients: d.clients.filter((c) => c.online).length,
     };
   }
   const base = (id: string, name: string, teamId: string | null, port: number, createdAgo: number): RouterView => ({
-    id, name, team: team(teamId), note: '', tunnel_port: port, created_at: iso(Date.now() - createdAgo), state: 'pending', last_seen_at: null, error: null, summary: null, deploy: null, maintenance: false,
+    id, name, team: team(teamId), note: '', tunnel_port: port, created_at: iso(Date.now() - createdAgo), state: 'pending', last_seen_at: null, error: null, summary: null, deploy: null, maintenance: false, exit_entries: [],
   });
   /** 变在线：第一次采集（新接入的 9 个出口、旁路由，像客户现场的 team2） */
   function goOnline(rt: Rt) {
     rt.d ??= buildDetail(rt.seed, 9, { clients: 6, lanBypass: true });
-    rt.v.state = 'online'; rt.v.error = null; rt.v.last_seen_at = iso(); rt.v.summary = summarize(rt.d, rt.seed, 120);
+    rt.v.state = 'online'; rt.v.error = null; rt.v.last_seen_at = iso(); rt.v.summary = summarize(rt.d, rt.seed, 120); rt.v.exit_entries = exitEntries(rt.d);
   }
   let seeded = false;
   function seed() {
@@ -109,14 +110,14 @@ export function installRoutersMock(R: Reg, env: Env) {
     const a: Rt = { v: base('rt-a', '团队2-路由A', 't2', 23001, 20 * DAY), d: null, seed: hashStr('rt-a') };
     a.v.note = '客户机房 2 楼弱电箱，主路由（发 DHCP）';
     a.d = buildDetail(a.seed, 20, { drift: 7, dead: 12, flaky: 15, clients: 22 });
-    a.v.state = 'online'; a.v.last_seen_at = iso(now - 8000); a.v.summary = summarize(a.d, a.seed, 16862);
+    a.v.state = 'online'; a.v.last_seen_at = iso(now - 8000); a.v.summary = summarize(a.d, a.seed, 16862); a.v.exit_entries = exitEntries(a.d);
     a.v.deploy = { state: 'done', step: null, error: null, started_at: iso(now - 20 * DAY), finished_at: iso(now - 20 * DAY + 40_000) };
     // 进行中的临时切换：「节点选择」从 节点01 临时切到 节点03，3 小时后自动切回
     const sel = a.d.groups![0]; const orig = sel.now!; sel.now = a.d.exits[2].name;
     a.v.switches = [{ group: sel.name, from: orig, to: sel.now, back_at: iso(now + 3 * HOUR), by: 'admin', switched_at: iso(now - 25 * MIN) }];
     const b: Rt = { v: base('rt-b', '团队2-路由B', 't2', 23002, 18 * DAY), d: null, seed: hashStr('rt-b') };
     b.d = buildDetail(b.seed, 20, { clients: 19 });
-    b.v.state = 'offline'; b.v.last_seen_at = iso(now - 3 * HOUR - 12 * MIN); b.v.summary = summarize(b.d, b.seed, 912_000);
+    b.v.state = 'offline'; b.v.last_seen_at = iso(now - 3 * HOUR - 12 * MIN); b.v.summary = summarize(b.d, b.seed, 912_000); b.v.exit_entries = exitEntries(b.d);
     b.v.error = 'ssh: connect to host 127.0.0.1 port 23002: Connection refused（隧道没连上：路由断电、断网，或 fleet-tunnel 没在运行）';
     const c: Rt = { v: base('rt-c', '团队1-路由A', 't1', 23003, 6 * MIN), d: null, seed: hashStr('rt-c') };
     c.v.note = '旁路由';
@@ -283,7 +284,7 @@ export function installRoutersMock(R: Reg, env: Env) {
       rt.d.exits = rt.d.exits.map((e) => (e.alive && r() < 0.4 ? { ...e, conns: Math.max(0, e.conns + Math.round(r() * 10 - 5)), down_bps: e.down_bps * (0.7 + r() * 0.6), up_bps: e.up_bps * (0.7 + r() * 0.6) } : e));
       rt.d.collected_at = iso();
       const up = rt.v.summary!.uptime_s + 15;
-      rt.v.summary = summarize(rt.d, rt.seed, up); rt.v.last_seen_at = iso();
+      rt.v.summary = summarize(rt.d, rt.seed, up); rt.v.exit_entries = exitEntries(rt.d); rt.v.last_seen_at = iso();
       any = true;
     }
     if (any) changed();
