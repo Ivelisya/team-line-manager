@@ -39,7 +39,7 @@ pub async fn put_machine(a: Actor, State(st): State<AppState>, ApiPath(id): ApiP
     Ok(ok(ping::machine_view(&st.db, id).await?))
 }
 
-pub async fn beats(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> { Ok(ok(ping::beats(&st.db).await?)) }
+pub async fn beats(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> { Ok(ok(ping::beats(&st.db, None).await?)) }
 
 #[derive(Deserialize)]
 pub struct RangeQ {

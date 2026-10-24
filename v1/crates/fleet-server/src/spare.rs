@@ -9,7 +9,7 @@
 //!    操作人记「系统」，作业参数与审计带 auto = spare_expiry；经通知渠道发一条「自动回收」。
 //!
 //! 机器（含它上面的同机 IP 节点）有进行中的作业时跳过，下一轮再看；物理删除失败过的不再自动重建（等人重试那个作业）。
-//! 续费顺延了到期日自然不回收。到期前的提醒复用续费告警（health.rs 在提醒文字后接 `due_note` 和还指向它的软路由出口）：
+//! 续费顺延了到期日自然不回收；开着自动续费的不回收（自动续费那一轮出错没顺延成，也不会被当成过期清掉；进备用时会把自动续费关掉，见 api::machines::move_to_spare）。到期前的提醒复用续费告警（health.rs 在提醒文字后接 `due_note` 和还指向它的软路由出口）：
 //! 过期第 1 天的「已过期」告警就是「明天自动回收」的通知。软路由不自动改：出口还指向它的照样回收（到期时供应商通常已经停机）。
 
 use crate::api::machines::{start_purge, start_retire};
@@ -103,7 +103,7 @@ pub async fn run_once(st: &AppState, now: OffsetDateTime) -> anyhow::Result<Ran>
                 exists (select 1 from machine x left join team tx on tx.id = x.team_id
                         where x.host_id = m.id and x.lifecycle <> 'retired' and not coalesce(tx.spare, false)) keeps_live
          from machine m join team t on t.id = m.team_id join subscription_eff s on s.machine_id = m.id
-         where t.spare and m.lifecycle = 'active'
+         where t.spare and m.lifecycle = 'active' and not s.auto_renew
          order by t.sort_order, t.name, m.number, m.id",
     )
     .bind(now)

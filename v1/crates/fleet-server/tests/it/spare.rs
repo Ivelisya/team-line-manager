@@ -256,6 +256,22 @@ async fn expiry_boundaries_by_billing_timezone() {
     assert!(last_job(&t, retiring, "retire").await.is_none());
 }
 
+/// 开着自动续费的备用机器过期满 1 天也不回收（自动续费那一轮出错没顺延成时，不能当成过期清掉）；关掉自动续费的照回收
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn auto_renew_spare_is_not_recycled() {
+    let t = setup(false).await;
+    let sp = spare_team(&t).await;
+    let on = seed_node(&t, sp, 1, "203.0.113.11", "active").await;
+    sub(&t, on, "2026-10-20", "Asia/Shanghai").await;
+    sqlx::query("update subscription set auto_renew = true where machine_id = $1").bind(on).execute(&t.st.db).await.unwrap();
+    let off = seed_node(&t, sp, 2, "203.0.113.12", "active").await;
+    sub(&t, off, "2026-10-20", "Asia/Shanghai").await;
+    let r = spare::run_once(&t.st, datetime!(2026-10-21 16:00 UTC)).await.unwrap();
+    assert_eq!(r.retired, [off], "{r:?}");
+    assert_eq!(t.machine_lifecycle(on).await, "active");
+    assert!(last_job(&t, on, "retire").await.is_none());
+}
+
 /// 到期满 1 天：退役作业收尾时同一个事务进回收站（行内容、recycled_at、视图里看不到）；之后 purge_blocker 放行就自动物理删除，
 /// 入口流量还计入线路机统计的等满 35 天；回收站这一行一直留着
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -550,4 +566,31 @@ async fn auto_renew_extends_due_date_before_spare_expiry() {
 
     let r = spare::run_once(&t.st, now).await.unwrap();
     assert_eq!(r.retired, [off], "没开自动续费的照常回收：{r:?}");
+}
+
+/// 自动续费每台单独处理：一台写库出错（这里用触发器造）只记日志，排在后面的照常续
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn auto_renew_one_failure_does_not_stop_the_rest() {
+    let t = setup(false).await;
+    let sp = spare_team(&t).await;
+    let bad = seed_node(&t, sp, 1, "203.0.113.51", "active").await;
+    let good = seed_node(&t, sp, 2, "203.0.113.52", "active").await;
+    for m in [bad, good] {
+        sub(&t, m, "2030-01-31", "UTC").await;
+    }
+    sqlx::query("update subscription set auto_renew = true, cycle = 'monthly' where machine_id = any($1)").bind(vec![bad, good]).execute(&t.st.db).await.unwrap();
+    sqlx::query(&format!("create function renewal_fail() returns trigger language plpgsql as $$ begin if new.machine_id = '{bad}' then raise exception 'boom'; end if; return new; end $$"))
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    sqlx::query("create trigger renewal_fail before insert on renewal for each row execute function renewal_fail()").execute(&t.st.db).await.unwrap();
+
+    assert!(bad < good, "uuid v7 递增，出错的这台排在前面（按 machine_id 排序）");
+    let done = fleet_server::renew::run_once(&t.st, datetime!(2030-03-15 00:00 UTC)).await.unwrap();
+    assert_eq!(done, [good]);
+    let due = |m: Uuid| {
+        let db = t.st.db.clone();
+        async move { sqlx::query_scalar::<_, String>("select due_date::text from subscription where machine_id = $1").bind(m).fetch_one(&db).await.unwrap() }
+    };
+    assert_eq!((due(bad).await.as_str(), due(good).await.as_str()), ("2030-01-31", "2030-03-31"));
 }

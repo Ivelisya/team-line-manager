@@ -262,9 +262,6 @@ pub fn changed(st: &AppState) {
 pub async fn run_forever(st: AppState) {
     let mut t = tokio::time::interval(Duration::from_secs(30));
     t.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    if let Err(e) = install::mark_interrupted(&st).await {
-        tracing::warn!("把中断的探测点安装标为失败：{e:#}");
-    }
     let mut last: Option<Effective> = None;
     loop {
         t.tick().await;

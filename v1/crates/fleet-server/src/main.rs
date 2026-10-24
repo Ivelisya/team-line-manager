@@ -131,6 +131,10 @@ async fn main() -> anyhow::Result<()> {
             // 停机这段收不到上报：恢复后头两分钟里 agent 的重发还没到，不算它们离线（report_gaps::ReportGaps）
             st.report_gaps.started(&st.db).await.context("读最近的上报时间")?;
             jobs::release_stale_leases(&st).await;
+            // 探测点安装的任务在进程内存里：上次进程没跑完的现在已经没人在跑，标为失败；只在启动时做一次
+            if let Err(e) = fleet_server::probe_points::install::mark_interrupted(&st).await {
+                tracing::warn!("把中断的探测点安装标为失败：{e:#}");
+            }
             fleet_server::spawn_background(&st);
             let app = fleet_server::app(st.clone());
             tracing::info!("fleet-server {} 监听 {listen}", fleet_proto::build_version());
