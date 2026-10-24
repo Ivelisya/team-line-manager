@@ -81,7 +81,8 @@ impl Rule {
         if self.team_mode == "only" && self.team_ids.is_empty() {
             return Err(ApiError::bad_request("「只要这些团队」至少选一个团队"));
         }
-        let teams: Vec<Uuid> = sqlx::query_scalar("select id from team where id = any($1) for share").bind(&self.team_ids).fetch_all(&mut *db).await?;
+        // 按 id 排序加锁：和别处成批锁团队（machines.rs、provision.rs 的 order by id for update）同序，多团队并发不成环
+        let teams: Vec<Uuid> = sqlx::query_scalar("select id from team where id = any($1) order by id for share").bind(&self.team_ids).fetch_all(&mut *db).await?;
         if teams.len() != self.team_ids.len() {
             return Err(ApiError::bad_request("team_ids 里有不存在的团队"));
         }
