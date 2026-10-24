@@ -91,6 +91,17 @@ pub fn rule_factor(rule: Option<&str>) -> f64 {
     if rule == Some("sum") { 2.0 } else { 1.0 }
 }
 
+/// 实测折算系数（网卡计费日均 ÷ 业务日均）允许偏离 `rule_factor` 的范围：转发的物理关系决定了系数该贴着 `rule_factor`，
+/// 偏出一半以上多半是分母不全（背景流量、窗口里搬走的入口、刚搬空的线路机）或数据缺口，实测值不可信
+pub const K_MIN_RATIO: f64 = 0.5;
+pub const K_MAX_RATIO: f64 = 1.5;
+
+/// 实测系数 `k` 在 `rule_factor` 的 `K_MIN_RATIO`–`K_MAX_RATIO` 倍之内就用它，超出（或不是有限正数）回退 `rule_factor`
+pub fn sane_k(k: f64, rule: Option<&str>) -> f64 {
+    let f = rule_factor(rule);
+    if k.is_finite() && (f * K_MIN_RATIO..=f * K_MAX_RATIO).contains(&k) { k } else { f }
+}
+
 /// 目标线路机默认选余量最多的（不限流量的最多）；余量相同取先出现的
 pub fn best_target(cands: &[(Uuid, Q)]) -> Option<Uuid> {
     cands
@@ -110,6 +121,17 @@ mod tests {
     use time::macros::datetime;
 
     const GB: i64 = 1_000_000_000;
+
+    #[test]
+    fn sane_k_falls_back_outside_half_to_one_and_a_half_of_rule_factor() {
+        // 单向计费系数该贴着 1：0.5–1.5 内用实测，之外回退 1；双向（sum）该贴着 2：1–3
+        assert_eq!(sane_k(1.2, Some("max")), 1.2);
+        assert_eq!(sane_k(10.0, Some("max")), 1.0);
+        assert_eq!(sane_k(0.3, None), 1.0);
+        assert_eq!(sane_k(2.6, Some("sum")), 2.6);
+        assert_eq!(sane_k(0.9, Some("sum")), 2.0);
+        assert_eq!(sane_k(f64::NAN, Some("sum")), 2.0);
+    }
 
     #[test]
     fn forecast_full_before_reset() {

@@ -494,6 +494,33 @@ async fn ack_incident_and_silence_validation() {
     assert_eq!(got, [("silence.delete", want.as_str()), ("silence.create", want.as_str())], "{log}");
 }
 
+/// 单台机器详情走缓存视图时要比对 touched：缓存里已有一份视图（列表请求算出来的），开维护之后马上取详情，看到的是维护中，不是缓存里没有维护的旧状态
+#[tokio::test]
+async fn machine_detail_sees_maintenance_right_after_silence() {
+    let t = setup().await;
+    let mid = Uuid::now_v7();
+    sqlx::query("insert into machine (id, kind, label, primary_ip, lifecycle) values ($1, 'relay', '线路机2', '198.51.100.2', 'active')")
+        .bind(mid)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    // 列表请求把视图缓存起来
+    let list = t.get("/api/v1/machines").await;
+    assert_eq!(list[0]["maintenance"], json!(false), "{list}");
+    // 直接写库再发 touched（同 `Event::Incidents` 对视图缓存的作用）：走接口会同时唤醒后台告警评估，它读视图时顺手补了缓存，测不出详情自己的比对
+    sqlx::query("insert into silence (id, machine_id, starts_at, ends_at, is_maintenance, created_by) values ($1, $2, now() - interval '1 minute', now() + interval '1 hour', true, 'u')")
+        .bind(Uuid::now_v7())
+        .bind(mid)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    t.st.live.touched();
+    // 不走 `t.get`：它读单台机器前会先作废视图缓存，那样就测不到详情自己的比对了
+    let (s, one) = t.req("GET", &format!("/api/v1/machines/{mid}"), None, None).await;
+    let one = &one["data"];
+    assert_eq!((s, one["maintenance"].clone(), one["health"]["status"].clone()), (StatusCode::OK, json!(true), json!("maintenance")), "{one}");
+}
+
 /// 前端静态文件：/assets/ 下缺的文件（发布后旧页面懒加载的旧 chunk）回 404、不带一年缓存，不回 index.html；
 /// 其它未知路径照旧回 index.html
 #[tokio::test]
