@@ -2,7 +2,7 @@
 // 中控经反向隧道每 30 秒在路由上跑一次只读采集，结果随 {"type":"routers"} 事件推来（eventKeys 让 ['routers'] 下的列表与详情一起重取），
 // 所以列表与详情 staleTime 都是 Infinity；曲线不推，抽屉开着时按范围轮询（同机器抽屉的曲线）。形状见 r21 设计稿「API」。
 import { useCallback, useMemo, useRef } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, type SetURLSearchParams } from 'react-router-dom';
 import { keepPreviousData, useQueries, useQuery } from '@tanstack/react-query';
 import { del, get, patch, post } from './api';
 import { useRelays, useTeams, useWrite } from './queries';
@@ -142,15 +142,20 @@ export function routerSiblings(list: readonly { id: string }[] | undefined, id: 
   const i = ids ? ids.indexOf(id) : -1;
   return !ids || i < 0 ? undefined : { prev: i > 0 ? ids[i - 1] : null, next: i < ids.length - 1 ? ids[i + 1] : null };
 }
+// 同 lib/drawer.ts：useRouterDrawer 渲染时记下地址参数的写函数，模块级的 openRouterDrawer 用它（入口行的「软路由」小标等成批的小按钮不必各自订阅地址）
+let setLatest: { current: SetURLSearchParams } | null = null;
+// 打开时收起机器抽屉（告警页上开着机器抽屉时点了路由的告警）：两个抽屉不叠在一起
+const openWith = (set: SetURLSearchParams, rid: string, t?: RouterTab) => set((p) => { const n = new URLSearchParams(p); n.delete('m'); n.delete('tab'); n.delete('range'); n.set('r', rid); if (t) n.set('rtab', t); else n.delete('rtab'); return n; });
+/** 打开软路由抽屉（不订阅地址）：外壳里一直挂着 useRouterDrawer，调用时总有写函数 */
+export const openRouterDrawer = (rid: string, t?: RouterTab) => { if (setLatest) openWith(setLatest.current, rid, t); };
 export function useRouterDrawer() {
   const [sp, setSp] = useSearchParams();
   const id = sp.get('r');
   const raw = sp.get('rtab');
   const tab: RouterTab = ROUTER_TABS.some((t) => t.value === raw) ? (raw as RouterTab) : 'overview';
   // 同 useDrawer：setSearchParams 每次地址变化都换身份，用 ref 兜住，回调才稳定（卡片 memo 依赖它）
-  const setRef = useRef(setSp); setRef.current = setSp;
-  // 打开时收起机器抽屉（告警页上开着机器抽屉时点了路由的告警）：两个抽屉不叠在一起
-  const open = useCallback((rid: string, t?: RouterTab) => setRef.current((p) => { const n = new URLSearchParams(p); n.delete('m'); n.delete('tab'); n.delete('range'); n.set('r', rid); if (t) n.set('rtab', t); else n.delete('rtab'); return n; }), []);
+  const setRef = useRef(setSp); setRef.current = setSp; setLatest = setRef;
+  const open = useCallback((rid: string, t?: RouterTab) => openWith(setRef.current, rid, t), []);
   const setTab = useCallback((t: RouterTab) => setRef.current((p) => { const n = new URLSearchParams(p); n.set('rtab', t); return n; }, { replace: true }), []);
   /** 开着抽屉换一台（头部的上一台 / 下一台）：留在当前页签，替换当前历史，后退仍是一步关掉 */
   const switchTo = useCallback((rid: string) => setRef.current((p) => { const n = new URLSearchParams(p); n.set('r', rid); return n; }, { replace: true }), []);
@@ -281,12 +286,14 @@ export function useAddrName() {
 export function useEntryRouters() {
   const list = useRouters().data;
   const live = (list ?? []).filter((r) => r.summary);
-  const res = useQueries({ queries: live.map((r) => ({ queryKey: ['routers', r.id], queryFn: ({ signal }: { signal: AbortSignal }) => get<RouterFull>(`/routers/${r.id}`, signal), staleTime: Infinity })) });
-  const sig = res.map((q) => q.dataUpdatedAt).join(',');
+  // 详情每 30 秒随采集重取，里面的指标几乎每次都变；这里只用「出口 → 入口」，select 只抽这一项，结果结构相等时引用不变（combine 的结果也一样），
+  // 没人改出口 / 入口时 Map 不重建，入口行（EntryRow 的 memo）不被击穿
+  const uses = useQueries({ queries: live.map((r) => ({ queryKey: ['routers', r.id], queryFn: ({ signal }: { signal: AbortSignal }) => get<RouterFull>(`/routers/${r.id}`, signal), staleTime: Infinity, select: exitEntries })), combine: collectData });
   return useMemo(() => {
     const m = new Map<string, { id: string; name: string; exit: string }[]>();
-    for (const r of res.map((q) => q.data)) for (const e of r?.detail?.exits ?? []) if (e.entry) m.set(e.entry.id, [...(m.get(e.entry.id) ?? []), { id: r!.id, name: r!.name, exit: e.name }]);
+    for (const r of uses) for (const e of r?.exits ?? []) m.set(e.entry, [...(m.get(e.entry) ?? []), { id: r!.id, name: r!.name, exit: e.name }]);
     return m;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sig]);
+  }, [uses]);
 }
+const exitEntries = (r: RouterFull) => ({ id: r.id, name: r.name, exits: (r.detail?.exits ?? []).flatMap((e) => (e.entry ? [{ name: e.name, entry: e.entry.id }] : [])) });
+const collectData = <T>(rs: { data?: T }[]) => rs.map((q) => q.data);
