@@ -1098,6 +1098,41 @@ async fn half_done_router_stays_protected_until_verified() {
     assert_eq!(name_of(t, w.new).await, "团队2-01");
 }
 
+/// 接着做的那台（上一次改到一半、没改回）重做时新入口已轮换过凭据，这次脚本确定没写进去（等不到路由上的锁、核对没过一行没写）：
+/// 记录换回上一次写的那组，改回照它核对（按这次的核对对不上路由上的，会当成别人改过而跳过、作业却报「软路由都是原样」）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn redo_not_written_keeps_previous_params() {
+    let w = world().await;
+    let oe = old_entry(&w).await;
+    router(&w, "路由A", 23261, &[("节点01", "198.51.100.2", 20003, Some(oe))]).await;
+    let t = &w.t;
+    std::fs::write(root(23261).join("mode"), "drop").unwrap();
+    std::fs::write(root(23261).join("rollback-fail"), "").unwrap();
+    let d = t.post(&format!("/api/v1/machines/{}/replace", w.old), json!({"new_machine_id": w.new})).await;
+    let job = d["job_id"].as_str().unwrap().to_string();
+    let jid = Uuid::parse_str(&job).unwrap();
+    drive(t).await;
+    assert!(t.job(&job).await["error"].as_str().unwrap().contains("需要人工处理"));
+    let rotated = "33333333-3333-4333-8333-333333333333";
+    sqlx::query("update entry set client_uuid = $2::uuid where node_id = $1").bind(w.new).bind(rotated).execute(&t.st.db).await.unwrap();
+    std::fs::remove_file(root(23261).join("rollback-fail")).unwrap();
+    let written = || async { sqlx::query_scalar::<_, Option<String>>("select params->'routers_applied'->0->'written'->0->>'uuid' from job where id = $1").bind(jid).fetch_one(&t.st.db).await.unwrap() };
+    // 等不到路由上的锁：这次的（轮换后的）没写进去，记录还是上一次的
+    std::fs::write(root(23261).join("mode"), "busy").unwrap();
+    t.post(&format!("/api/v1/jobs/{job}/retry"), json!({})).await;
+    drive(t).await;
+    assert_eq!(t.job(&job).await["state"], "waiting");
+    assert!(applies(23261)[1].contains(&format!("UUID_1='{rotated}'")));
+    assert_eq!(written().await.as_deref(), Some(NEW_UUID));
+    // 核对没过、一行没写：改回带的是上一次写的 uuid
+    std::fs::write(root(23261).join("mode"), "refuse").unwrap();
+    rerun(t, jid).await;
+    let j = t.job(&job).await;
+    assert!(j["error"].as_str().unwrap().contains("已改回原配置：路由A。软路由都是原样"), "{j}");
+    assert_eq!(applies(23261).len(), 3);
+    assert_eq!(read(root(23261).join("rollback-uuid")), format!("{NEW_UUID}\n"), "按上一次写的核对");
+}
+
 /// 执行时出口对不上新入口（发起之后新节点的入口变了；路由C 发起时的快照里没有出口指向旧节点）：动手之前作业失败，
 /// 原因与预览一致（预览里 blocker = 「软路由「名」的出口「名」：」+ 那条出口的 error），一台都没改、能取消
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

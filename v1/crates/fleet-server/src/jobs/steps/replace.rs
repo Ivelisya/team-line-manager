@@ -557,11 +557,15 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         let t = OffsetDateTime::now_utc();
         let stamp = rr::stamp(t);
         let fresh = !applied.iter().any(|a| a.id == r.id);
-        // 这次要写的整组参数先记下（接着做时入口可能已经轮换过，以这次写的为准），改回时照它核对
-        match applied.iter_mut().find(|a| a.id == r.id) {
-            Some(a) => a.written = ed.clone(),
-            None => applied.push(Applied { id: r.id, name: r.name.clone(), port: r.tunnel_port, stamp: stamp.clone(), exits: exits.clone(), written: ed.clone(), done: None }),
-        }
+        // 这次要写的整组参数先记下（接着做时入口可能已经轮换过，以这次写的为准），改回时照它核对。
+        // 接着做的那台留着上一次写的（`prev`）：这次确定没写进路由时换回它（路由上还是上一次写的，期间凭据轮换过的话这次的对不上）
+        let prev = match applied.iter_mut().find(|a| a.id == r.id) {
+            Some(a) => Some(std::mem::replace(&mut a.written, ed.clone())),
+            None => {
+                applied.push(Applied { id: r.id, name: r.name.clone(), port: r.tunnel_port, stamp: stamp.clone(), exits: exits.clone(), written: ed.clone(), done: None });
+                None
+            }
+        };
         c.set_params(json!({"routers_applied": applied})).await?;
         let what: Vec<String> = ed.iter().map(|e| format!("{} {}:{} → {}:{}", e.exit, e.old_server, e.old_port, e.server, e.port)).collect();
         c.log(format!("软路由「{}」：改出口 {}（先备份，改完重启 OpenClash 并测延迟）", r.name, what.join("，"))).await;
@@ -570,12 +574,15 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         let res = run_script(c, r.id, &r.name, r.tunnel_port, &rr::apply_script(&ed, t, &pins), "apply", &stamp, rr::APPLY_TIMEOUT).await;
         c.st.routers_refresh.claims.edited(r.id, c.job.id, res.as_ref().ok().and_then(|o| o.kv("sha")));
         // 路由上上一份还在跑、等不到它的锁（多是中控重启前起的那份）：这一台一行没动。不改回、不算失败，隔一分钟从这一步再来；
-        // 确认改好的那几台之后不再碰，没确认的照 routers_applied 接着做。这一台是这次才记进去的去掉（没写过，这次的备份戳也没有备份）
+        // 确认改好的那几台之后不再碰，没确认的照 routers_applied 接着做。这一台是这次才记进去的去掉（没写过，这次的备份戳也没有备份），
+        // 接着做的换回上一次写的那组
         if let Some(o) = res.as_ref().ok().filter(|o| o.code == rr::BUSY) {
             if fresh {
                 applied.retain(|a| a.id != r.id);
-                c.set_params(json!({"routers_applied": applied})).await?;
+            } else if let (Some(a), Some(w)) = (applied.iter_mut().find(|a| a.id == r.id), prev) {
+                a.written = w;
             }
+            c.set_params(json!({"routers_applied": applied})).await?;
             // 再等一轮就超过这一步的超时：不等到超时失败（那样改好的停在新入口、作业也取消不了），现在就把改好的改回
             let limit = crate::jobs::defs(&c.job.kind).iter().find(|d| d.key == "routers").map_or(1800, |d| d.timeout_s);
             let waited = (OffsetDateTime::now_utc() - c.started).whole_seconds();
@@ -617,6 +624,14 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
             Ok(o) => (ErrKind::Remote, reason(&o), o.code == 2 || o.kv("rolled_back") == Some("1")),
             Err(e) => (kind_of(&e), format!("{e:#}"), false),
         };
+        // 接着做的那台这次确定没写进去（没连上、核对没过一行没写、自己按这次的备份改回了）：路由上还是上一次写的，
+        // 记录换回上一次的那组再改回（连上之后断了、改回也失败的可能已经是这次的，留着这次的）
+        if self_undone {
+            if let (Some(a), Some(w)) = (applied.iter_mut().find(|a| a.id == r.id), prev) {
+                a.written = w;
+                c.set_params(json!({"routers_applied": applied})).await?;
+            }
+        }
         // 这一台自己改回了（或没连上、什么都没改），而且这次的备份就是第一次改之前的：不用再改回它
         let undone = self_undone.then_some((r.id, stamp.as_str()));
         return give_up(c, &mut locks, &applied, undone, format!("软路由「{}」：{why}", r.name), kind, kept).await;
