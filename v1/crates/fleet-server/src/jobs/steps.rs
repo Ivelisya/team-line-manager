@@ -1247,7 +1247,24 @@ pub async fn compensate(st: &AppState, job: &JobRow, owner: &str) {
     if !matches!(m.lifecycle.as_str(), "provisioning" | "failed") {
         return;
     }
-    if m.kind != "proxy" && ssh::ssh_probe(&m.ip, m.ssh_port as u16, Duration::from_secs(5)).await.is_ok() {
+    // 只有本作业的预检（同机 IP 节点是核对 IP）通过了，才能认定这台机器是本次要装的：没通过的（例如 agent 登记的是另一台机器）
+    // 机器上跑的可能是别的在用节点，清理会把它停掉删掉。读不到结果按没通过算
+    let checked = m.kind != "proxy"
+        && note(
+            st,
+            job.id,
+            "读取预检结果",
+            sqlx::query_scalar::<_, bool>("select exists (select 1 from job_step where job_id = $1 and key in ('preflight', 'ip_check') and state = 'done')")
+                .bind(job.id)
+                .fetch_one(&st.db)
+                .await,
+        )
+        .await
+        .unwrap_or(false);
+    if m.kind != "proxy" && !checked {
+        log(st, job.id, "warn", "没有清理机器上的服务：本作业的预检还没通过，机器上跑的不一定是这次装的（可能是另一台在用的节点），不去动它").await;
+    }
+    if checked && ssh::ssh_probe(&m.ip, m.ssh_port as u16, Duration::from_secs(5)).await.is_ok() {
         if let Some(script) = note(st, job.id, "读取清理参数", c.cleanup_script(&m).await).await {
             note(st, job.id, "清理机器上的服务", c.ssh(&m, None).run(&script, Duration::from_secs(120)).await).await;
         }

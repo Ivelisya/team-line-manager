@@ -119,6 +119,35 @@ async fn cancel_while_running_ends_cancelled_and_compensates() {
     assert!(lease.is_none(), "结束后不留租约");
 }
 
+/// 预检没通过（这里是主机公钥拿不到）就取消：机器上跑的不一定是这次要装的（可能是换了 IP 的在用节点），补偿不能登录去清理，只写一行日志说明
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancel_before_preflight_passes_does_not_clean_machine() {
+    use tokio::io::AsyncWriteExt;
+    let t = setup(true).await;
+    let (relay, _) = seed_relay(&t).await;
+    let team = seed_team(&t, "团队1").await;
+    // 只回一行 SSH 版本行的假 SSH 端口：SSH 探测通过，但拿不到主机公钥，预检失败
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = l.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let mut held = vec![];
+        while let Ok((mut s, _)) = l.accept().await {
+            let _ = s.write_all(b"SSH-2.0-fake\r\n").await;
+            held.push(s);
+        }
+    });
+    let created = t.post("/api/v1/provision", json!({"items": [{"kind": "vps", "ip": "127.0.0.1", "ssh_port": port, "team_id": team, "relay_id": relay}]})).await;
+    let (machine, job) = (created["jobs"][0]["machine_id"].as_str().unwrap().parse::<Uuid>().unwrap(), created["jobs"][0]["job_id"].as_str().unwrap().to_string());
+    t.wait_job(&job, "failed").await;
+    t.post(&format!("/api/v1/jobs/{job}/cancel"), json!({})).await;
+    t.wait_job(&job, "cancelled").await;
+    assert_eq!(t.machine_lifecycle(machine).await, "retired");
+    let logs = t.get(&format!("/api/v1/jobs/{job}/logs")).await;
+    let msgs: Vec<&str> = logs.as_array().unwrap().iter().map(|l| l["msg"].as_str().unwrap()).collect();
+    assert!(msgs.iter().any(|m| m.contains("没有清理机器上的服务")), "{msgs:?}");
+    assert!(!msgs.iter().any(|m| m.contains("清理机器上的服务」失败")), "没有去登录清理：{msgs:?}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn retired_machine_old_provision_job_cannot_be_retried() {
     let t = setup(true).await;
