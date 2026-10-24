@@ -4,7 +4,7 @@
 //! 路由是假的：PATH 最前面放假 ssh（路由上的脚本本身在 routers::replace 的单元测试里用 sh 真跑过）。按 `-p <端口>` 分路由根目录，
 //! 收到读配置的脚本回 config.yaml（`router` 按快照里的出口写好，测试可以改：执行时按它定要改的出口；每读一次往 reads 里记一行），
 //! 收到改配置的脚本存成 apply-<n>.sh（根目录里有 hold 就等它删掉再回答），按根目录里的 mode 回答（ok / fail = 测不通、自己改回 / refuse = 认不出、一行没写 /
-//! drop = 备份之后连接断了、没有输出；之后的取结果有 result 文件就回它，否则「没有结果」），收到回滚脚本把「时间戳 出口 地址 端口」记进 rollback.log（有 rollback-fail 就回答改回失败）。PATH 是整个进程共用的，所以单独一个测试文件。作业引擎不在后台跑（采集循环会改路由状态），测试里手动推进。
+//! drop = 备份之后连接断了、没有输出 / busy = 等不到路由上的锁、一行没写；之后的取结果有 result 文件就回它，否则「没有结果」），收到回滚脚本把「时间戳 出口 地址 端口」记进 rollback.log（有 rollback-fail 就回答改回失败）。PATH 是整个进程共用的，所以单独一个测试文件。作业引擎不在后台跑（采集循环会改路由状态），测试里手动推进。
 //! 换线路机 / 搬空改软路由出口用的是同一步，也在这里测（线路机用 common::Sim 模拟）。
 
 #![cfg(unix)]
@@ -55,6 +55,7 @@ case $(cat "$R/mode" 2>/dev/null || echo ok) in
   fail) echo "backup=/x"; echo changed=6; echo "fleet：出口「节点01」换成新入口后测了 3 次都不通" >&2; echo rolled_back=1; exit 4 ;;
   refuse) echo "fleet：配置的 proxies 里没有出口「节点01」" >&2; echo "fleet：配置没有改动" >&2; exit 2 ;;
   drop) echo "backup=/etc/fleet-backup/openclash/c.yaml.x"; exit 255 ;;
+  busy) echo "fleet：路由上上一次改出口的脚本（pid 1）60 秒内还没跑完，这次没有动配置" >&2; exit 7 ;;
 esac
 "#;
 
@@ -1249,6 +1250,41 @@ async fn repoint_waits_for_concurrent_move() {
     assert!(body.to_string().contains("进行中的作业"), "{body}");
     let n: i64 = sqlx::query_scalar("select count(*) from job where kind = 'repoint'").fetch_one(&t.st.db).await.unwrap();
     assert_eq!(n, 0);
+}
+
+/// 路由上等不到上一份脚本的锁（BUSY）：不改回已改好的、不失败，作业等着隔一分钟再来；改好的那台留在 routers_applied，
+/// 等锁的那台（这次才记进去、一行没写）不留。锁放开后接着做完
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn router_busy_waits_and_retries() {
+    let w = world().await;
+    let t = &w.t;
+    let (relay_b, _) = seed_relay_b(t).await;
+    let d1 = entry(t, w.relay, w.relay, 20010, "33333333-3333-4333-8333-333333333333", "active").await;
+    let d2 = entry(t, relay_b, relay_b, 20030, NEW_UUID, "active").await;
+    let ra = router(&w, "团队2-路由A", 23421, &[("节点00-默认", "198.51.100.2", 20010, Some(d1))]).await;
+    let rb = router(&w, "团队2-路由B", 23422, &[("节点00-默认", "198.51.100.2", 20010, Some(d1))]).await;
+    assert!(ra < rb, "按 id 顺序改：A 在前");
+    std::fs::write(root(23422).join("mode"), "busy").unwrap();
+    let d = t.post(&format!("/api/v1/entries/{d1}/repoint"), json!({"to_entry_id": d2})).await;
+    let job = d["job_id"].as_str().unwrap().to_string();
+    drive(t).await;
+    let j = t.job(&job).await;
+    let l = logs(t, &job).await;
+    assert_eq!(j["state"], "waiting", "{j} {l}");
+    assert!(l.contains("60 秒内还没跑完") && l.contains("60 秒后再试"), "{l}");
+    assert!(!read(root(23421).join("rollback.log")).contains("节点00-默认"), "改好的 A 不改回");
+    let jid = Uuid::parse_str(&job).unwrap();
+    let ids: Vec<String> = sqlx::query_scalar("select a->>'id' from job j, jsonb_array_elements(j.params->'routers_applied') a where j.id = $1").bind(jid).fetch_all(&t.st.db).await.unwrap();
+    assert_eq!(ids, vec![ra.to_string()]);
+    // 锁放开了：接着做完（A 照记录重做一次，B 这次改好）
+    std::fs::remove_file(root(23422).join("mode")).unwrap();
+    sqlx::query("update job set run_after = now() where id = $1").bind(jid).execute(&t.st.db).await.unwrap();
+    drive(t).await;
+    let j = t.job(&job).await;
+    assert_eq!(j["state"], "succeeded", "{j} {}", logs(t, &job).await);
+    assert_eq!((applies(23421).len(), applies(23422).len()), (2, 2));
+    let left: Value = sqlx::query_scalar("select params->'routers_applied' from job where id = $1").bind(jid).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(left, json!([]));
 }
 
 /// 出口参数和入口不一致（凭据轮换后没同步）：持续两轮采集（满 30 秒）才开警告，告警带建议操作 fleetctl router sync；

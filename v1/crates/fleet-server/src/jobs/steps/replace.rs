@@ -12,6 +12,8 @@
 //! （旧节点进备用、到期回收后客户的出口就断了）；确认它没用的，重新发起时选不改软路由。路由上根本没有源配置（OpenClash 没配）的算没有出口。
 //! 同一台路由同时只有一个作业在改（替换、换线路机、重试都一样，见 `Locks`）：别的作业在改就排队（Outcome::Queue），作业的其余步骤照常并行。
 //! 排队时只等那台路由的锁（`routers_queued_id`），不读配置、不占连接。
+//! 路由上另有一把锁（中控重启后上一个进程起的脚本可能还在跑）：等不到（rr::BUSY）时这一台一行没动，作业等一分钟从这一步再来（Outcome::Wait，
+//! 受这一步的超时约束），不改回、不失败。
 //! 同批的换线路机作业（搬空、批量换线路机）由一个带头的一起改（见 batch.rs）：要改的出口是几个作业合起来的，每台路由只改一次、重启一次，
 //! 任何一台失败全部换回、几个节点的旧入口都不摘。
 //! 再一台一台改（备份 → 改出口 → 重启 OpenClash → 测延迟）。哪台失败了，它自己已经改回（脚本做），之前改好的也按各自的备份改回去，
@@ -548,6 +550,7 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         }
         let t = OffsetDateTime::now_utc();
         let stamp = rr::stamp(t);
+        let fresh = !applied.iter().any(|a| a.id == r.id);
         // 这次要写的整组参数先记下（接着做时入口可能已经轮换过，以这次写的为准），改回时照它核对
         match applied.iter_mut().find(|a| a.id == r.id) {
             Some(a) => a.written = ed.clone(),
@@ -560,6 +563,16 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         c.st.routers_refresh.claims.editing(r.id, c.job.id, &c.job.kind);
         let res = run_script(c, r.id, &r.name, r.tunnel_port, &rr::apply_script(&ed, t, &pins), "apply", &stamp, rr::APPLY_TIMEOUT).await;
         c.st.routers_refresh.claims.edited(r.id, c.job.id, res.as_ref().ok().and_then(|o| o.kv("sha")));
+        // 路由上上一份还在跑、等不到它的锁（多是中控重启前起的那份）：这一台一行没动。不改回、不算失败，隔一分钟从这一步再来
+        // （等满这一步的超时才失败）；之前改过的照 routers_applied 接着做。这一台是这次才记进去的去掉（没写过，这次的备份戳也没有备份）
+        if let Some(o) = res.as_ref().ok().filter(|o| o.code == rr::BUSY) {
+            if fresh {
+                applied.retain(|a| a.id != r.id);
+                c.set_params(json!({"routers_applied": applied})).await?;
+            }
+            c.warn(format!("软路由「{}」：{}，{BUSY_RETRY} 秒后再试", r.name, reason(o))).await;
+            return Ok(Outcome::Wait(BUSY_RETRY));
+        }
         let (kind, why, self_undone) = match res {
             Ok(o) if o.ok() && o.kv("replace") == Some("ok") => {
                 let delays: Vec<String> = (1..=ed.len()).map(|i| format!("{} {} ms", ed[i - 1].exit, o.kv(&format!("delay_{i}")).unwrap_or("?"))).collect();
@@ -582,8 +595,8 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
                 };
                 (o.ssh_kind().unwrap_or(ErrKind::Network), why, untouched)
             }
-            // 2、BUSY（路由上上一份还在跑、等不到锁）：一行没写；其它：脚本已经改回（rolled_back=1），或改回也失败了
-            Ok(o) => (ErrKind::Remote, reason(&o), o.code == 2 || o.code == rr::BUSY || o.kv("rolled_back") == Some("1")),
+            // 2：一行没写；其它：脚本已经改回（rolled_back=1），或改回也失败了
+            Ok(o) => (ErrKind::Remote, reason(&o), o.code == 2 || o.kv("rolled_back") == Some("1")),
             Err(e) => (kind_of(&e), format!("{e:#}"), false),
         };
         // 这一台自己改回了（或没连上、什么都没改），而且这次的备份就是第一次改之前的：不用再改回它
@@ -616,6 +629,9 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
 
 /// 隧道断了之后等它回连、取结果的时长上限（路由上 fleet-tunnel 断线后约 10 秒重连，中控这边旧的转发端口释放还要一会儿）
 const RECONNECT: Duration = Duration::from_secs(180);
+
+/// 路由上等不到上一份脚本的锁（rr::BUSY）后隔多久从这一步再来（路由上每次还会再等 rr::LOCK_WAIT）
+const BUSY_RETRY: u64 = 60;
 
 /// 在路由上跑改配置 / 改回的脚本（`mode`、`stamp` 同脚本的 MODE、STAMP）。连上之后断了（路由自身流量走 OpenClash 时，
 /// 脚本里重启 OpenClash 会掐断隧道和这条 ssh）：脚本在路由上照样跑完、结果留在文件里（routers::replace 的 SCRIPT），
