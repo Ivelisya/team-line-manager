@@ -68,8 +68,9 @@ impl Rule {
         }
     }
 
-    /// 校验并去重：团队、机器要存在（引用不存在的 400）
-    async fn check(mut self, db: &sqlx::PgPool) -> ApiResult<Self> {
+    /// 校验并去重：团队、机器要存在（引用不存在的 400）。在写订阅的同一个事务里调：团队行加共享锁直到提交，
+    /// 并发的删团队（delete_team 删团队行后摘 team_ids）要么等这边提交后再摘，要么先删完让这边 400，不会把已删团队写回
+    async fn check(mut self, db: &mut sqlx::PgConnection) -> ApiResult<Self> {
         if !matches!(self.team_mode.as_str(), "all" | "only" | "except") {
             return Err(ApiError::bad_request("team_mode 只能是 all、only、except"));
         }
@@ -80,12 +81,12 @@ impl Rule {
         if self.team_mode == "only" && self.team_ids.is_empty() {
             return Err(ApiError::bad_request("「只要这些团队」至少选一个团队"));
         }
-        let teams: i64 = sqlx::query_scalar("select count(*) from team where id = any($1)").bind(&self.team_ids).fetch_one(db).await?;
-        if teams as usize != self.team_ids.len() {
+        let teams: Vec<Uuid> = sqlx::query_scalar("select id from team where id = any($1) for share").bind(&self.team_ids).fetch_all(&mut *db).await?;
+        if teams.len() != self.team_ids.len() {
             return Err(ApiError::bad_request("team_ids 里有不存在的团队"));
         }
         let ids: Vec<Uuid> = self.include_ids.iter().chain(&self.exclude_ids).copied().collect();
-        let ms: i64 = sqlx::query_scalar("select count(distinct id) from machine where id = any($1)").bind(&ids).fetch_one(db).await?;
+        let ms: i64 = sqlx::query_scalar("select count(distinct id) from machine where id = any($1)").bind(&ids).fetch_one(&mut *db).await?;
         if ms as usize != ids.iter().collect::<std::collections::HashSet<_>>().len() {
             return Err(ApiError::bad_request("include_ids / exclude_ids 里有不存在的机器"));
         }
@@ -363,9 +364,9 @@ pub struct CreateIn {
 pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<CreateIn>) -> ApiResult<Json<Value>> {
     a.require_scope("secrets")?;
     let name = check_name(&b.name)?;
-    let rule = b.rule.check(&st.db).await?;
     let (id, token) = (new_id(), random_token(32));
     let mut tx = st.db.begin().await?;
+    let rule = b.rule.check(&mut tx).await?;
     sqlx::query(
         "insert into client_sub (id, name, token_hash, team_mode, team_ids, direct, include_ids, exclude_ids) values ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
@@ -395,34 +396,33 @@ pub struct PatchIn {
     enabled: Option<bool>,
 }
 
-/// 改名称、规则（整份替换）、启用 / 停用（停用后拉取回 404，令牌不变）
+/// 改名称、规则（整份替换）、启用 / 停用（停用后拉取回 404，令牌不变）。只写实际改的列：只改名 / 启停不碰规则列，不会把并发的删团队摘掉的 team_ids 写回
 pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<PatchIn>) -> ApiResult<Json<Value>> {
     a.require_scope("secrets")?;
     let cur = load(&st, id).await?;
-    let name = b.name.as_deref().map(check_name).transpose()?.unwrap_or(cur.name.clone());
-    let rule = match b.rule {
-        Some(r) => r.check(&st.db).await?,
-        None => cur.rule.clone(),
-    };
-    let enabled = b.enabled.unwrap_or(cur.enabled);
+    let name = b.name.as_deref().map(check_name).transpose()?;
     let mut tx = st.db.begin().await?;
-    sqlx::query(
-        "update client_sub set name = $2, team_mode = $3, team_ids = $4, direct = $5, include_ids = $6, exclude_ids = $7, enabled = $8, updated_at = now()
-         where id = $1",
-    )
-    .bind(id)
-    .bind(&name)
-    .bind(&rule.team_mode)
-    .bind(&rule.team_ids)
-    .bind(rule.direct)
-    .bind(&rule.include_ids)
-    .bind(&rule.exclude_ids)
-    .bind(enabled)
-    .execute(&mut *tx)
-    .await?;
+    sqlx::query("update client_sub set name = coalesce($2, name), enabled = coalesce($3, enabled), updated_at = now() where id = $1")
+        .bind(id)
+        .bind(&name)
+        .bind(b.enabled)
+        .execute(&mut *tx)
+        .await?;
+    if let Some(rule) = b.rule {
+        let rule = rule.check(&mut tx).await?;
+        sqlx::query("update client_sub set team_mode = $2, team_ids = $3, direct = $4, include_ids = $5, exclude_ids = $6 where id = $1")
+            .bind(id)
+            .bind(&rule.team_mode)
+            .bind(&rule.team_ids)
+            .bind(rule.direct)
+            .bind(&rule.include_ids)
+            .bind(&rule.exclude_ids)
+            .execute(&mut *tx)
+            .await?;
+    }
     let r: Row = sqlx::query_as(&format!("select {COLS} from client_sub where id = $1")).bind(id).fetch_one(&mut *tx).await?;
     let v = view_one(&st, &r).await?;
-    audit(&mut tx, &a.name, "client_sub.update", "client_sub", Some(id), json!({"name": name, "old_name": cur.name, "enabled": enabled, "rule": v["rule_text"]})).await?;
+    audit(&mut tx, &a.name, "client_sub.update", "client_sub", Some(id), json!({"name": r.name, "old_name": cur.name, "enabled": r.enabled, "rule": v["rule_text"]})).await?;
     tx.commit().await?;
     Ok(ok(v))
 }
