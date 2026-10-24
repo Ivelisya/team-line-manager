@@ -199,7 +199,7 @@ function RenameSection({ r }: { r: RouterView }) {
       <SectionHeader title={<>改名 / 团队 / 备注 <InfoTip text="只改面板里的显示，不影响路由和客户端上网" /></>} />
       <form className="form-grid" onSubmit={(e) => { e.preventDefault(); if (valid && !patch.isPending) save(); }}>
         <Field label="名称" error={!name.trim() ? '名称不能为空' : undefined}><Input value={name} onChange={(e) => setName(e.target.value)} autoComplete="off" aria-invalid={!name.trim()} /></Field>
-        <Field label="团队"><Select value={team} onChange={setTeam} options={opts} allowEmpty="不分团队" placeholder="不分团队" /></Field>
+        <Field label="团队"><Select value={team} onChange={setTeam} options={opts} allowEmpty="未分团队" placeholder="未分团队" /></Field>
         <Field label="备注" className="span-2"><Textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} /></Field>
         <div className="span-2 row" style={{ justifyContent: 'flex-end' }}>
           <Button type="submit" variant="primary" disabled={!valid || patch.isPending} loading={patch.isPending}>保存</Button>
@@ -337,7 +337,7 @@ function OverviewTab({ r, detail }: { r: RouterView; detail: RouterDetail | null
       <Section>
         <SectionHeader title="基本信息" />
         <LabelValueGrid>
-          <LabelValue label="团队">{r.team?.name ?? <span className="t-muted">不分团队</span>}</LabelValue>
+          <LabelValue label="团队">{r.team?.name ?? <span className="t-muted">未分团队</span>}</LabelValue>
           {s?.wan.ip && <LabelValue label="WAN 地址"><span className="row" style={{ gap: 4, flexWrap: 'nowrap', minWidth: 0 }}><Trunc className="num">{s.wan.ip}</Trunc><CopyButton text={s.wan.ip} label="WAN 地址" size={13} show /></span></LabelValue>}
           <LabelValue label="隧道端口"><><span className="num">{r.tunnel_port}</span> <InfoTip text="中控分给这台路由的隧道端口，中控通过它连到路由" /></></LabelValue>
           <LabelValue label="创建时间">{F.dtFull(r.created_at)}</LabelValue>

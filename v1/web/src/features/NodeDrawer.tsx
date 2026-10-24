@@ -302,8 +302,8 @@ function RecentIncidents({ m }: { m: MachineView }) {
 /** 「触发 10-22 05:12 → 恢复 05:40 · 持续 28 分钟」（恢复在同一天只写时刻）；进行中「触发 10-22 05:12 · 已持续 28 分钟」 */
 function incidentSpan(i: Incident): string {
   const from = F.dt(i.opened_at);
-  if (!i.resolved_at) return `触发 ${from} · 已持续 ${F.str(F.since(i.opened_at))}`;
+  if (!i.resolved_at) return `触发 ${from} · 已持续 ${F.span(Date.now() - Date.parse(i.opened_at))}`;
   const to = F.dt(i.resolved_at);
-  return `触发 ${from} → 恢复 ${to.slice(0, 5) === from.slice(0, 5) ? to.slice(6) : to} · 持续 ${F.str(F.since(i.opened_at, Date.parse(i.resolved_at)))}`;
+  return `触发 ${from} → 恢复 ${to.slice(0, 5) === from.slice(0, 5) ? to.slice(6) : to} · 持续 ${F.span(Date.parse(i.resolved_at) - Date.parse(i.opened_at))}`;
 }
 

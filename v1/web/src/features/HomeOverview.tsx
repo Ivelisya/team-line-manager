@@ -96,7 +96,7 @@ export const OverviewSection = React.memo(function OverviewSection({ o, loading 
             caption={tr && <><span>下载 <Num f={F.bytes(tr.down)} /></span><span>上传 <Num f={F.bytes(tr.up)} /></span><FromTag from={tr.counted_from} /></>} />
           {/* 有吃紧的：点卡片打开最紧那台的流量页签 */}
           <Stat loading={loading} tone="violet" icon={<Database />} label="流量额度吃紧" value={<CountUp value={qt?.n} />} unit={qt ? '台' : undefined} onClick={top ? () => openDrawer(top.id, 'traffic') : undefined}
-            caption={qt && (top ? <span className="stat-who" data-tip={`${top.name}${top.forecast ? `：${top.forecast}` : `：已用 ${top.pct}%`}`}>最紧<span className="ellipsis">{top.name}</span>{top.full ? <><b className="num">{top.full}</b>满</> : <b className="num">{top.pct}%</b>}</span> : `都在 ${meta().thresholds.traffic_quota_warn_pct}% 以下`)} />
+            caption={qt && (top ? <span className="stat-who" data-tip={`${top.name}${top.forecast ? `：${top.forecast}` : `：已用 ${top.pct}%`}`}>最紧<span className="ellipsis">{top.name}</span>{top.full ? <><b className="num">{top.full}</b>满</> : <>{top.over && '已超限 '}<b className="num">{top.pct}%</b></>}</span> : `都在 ${meta().thresholds.traffic_quota_warn_pct}% 以下`)} />
           <Stat loading={loading} tone="blue" icon={<CloudUpload />} label="上架中 · 退役中" value={o ? <CountUp value={o.provisioning + o.retiring} /> : '—'} unit="台" to="/jobs?view=running" caption={o && <span>上架 <b className="num">{o.provisioning}</b> · 退役 <b className="num">{o.retiring}</b></span>} />
         </div>
         <ClusterPanel o={o} />

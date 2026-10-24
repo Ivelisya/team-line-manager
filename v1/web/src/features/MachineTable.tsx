@@ -30,7 +30,7 @@ const cols: Col[] = [
     cell: (m) => { const r = resourceMeters(m); return r ? <MiniMeter pct={r[k].pct} metric={k} empty={isQuiet(m)} /> : <span className="t-muted">—</span>; } })),
   ...(['down', 'up'] as const).map((k): Col => ({ id: k, header: k === 'up' ? '上行' : '下行', size: 92, r: true, ...byNum((m) => (k === 'up' ? liveRate(m)?.tx : liveRate(m)?.rx) ?? null),
     cell: (m) => { const r = liveRate(m); const v = r && (k === 'up' ? r.tx : r.rx); return <span className="trate" data-speed={r && v != null ? F.speedOf(v, m.plan?.bandwidth_mbps) : undefined}><Num f={F.rate(v)} /></span>; } })),
-  { id: 'traffic', header: '本月流量', size: 144, r: true, ...byNum(trafficTotal), cell: (m) => <MonthFlowCell m={m} /> },
+  { id: 'traffic', header: '本月流量', size: 176, r: true, ...byNum(trafficTotal), cell: (m) => <MonthFlowCell m={m} /> },
   // 不限额度、与宿主机共用的没有「剩余」可比，排在最后
   { id: 'quota', header: '剩余流量', size: 106, ...byNum((m) => quota(m).rem),
     cell: (m) => {

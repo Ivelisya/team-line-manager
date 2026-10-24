@@ -80,7 +80,7 @@ export const AddRouterDialog = resetOnOpen(function AddRouterDialog({ open, onOp
       dirty={!!name.trim() || !!note.trim() || !!ssh.host.trim() || !!ssh.password}>
       <div className="form-grid">
         <Field label="名称" error={dup ? '已有同名的软路由' : undefined}><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如 团队2-路由A" autoFocus autoComplete="off" data-1p-ignore data-lpignore="true" aria-invalid={dup} /></Field>
-        <Field label="团队"><Select value={team} onChange={setTeam} options={teamOpts} allowEmpty="不分团队" placeholder="不分团队" /></Field>
+        <Field label="团队"><Select value={team} onChange={setTeam} options={teamOpts} allowEmpty="未分团队" placeholder="未分团队" /></Field>
         <Field label="备注" className="span-2"><Textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="例如：客户机房 2 楼弱电箱，旁路由" /></Field>
       </div>
       <div className="field">

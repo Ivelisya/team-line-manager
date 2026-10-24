@@ -275,14 +275,15 @@ export function quotaTight(list: MachineView[]) {
   let n = 0; let top: { id: string; name: string; pct: number; at: number; forecast: string | null } | null = null;
   for (const m of list) {
     const { pct } = quota(m);
-    const at = m.quota.forecast_full_at ? Date.parse(m.quota.forecast_full_at) : Infinity;
+    // 已超限的没有预测日期：当成「已经用满」（-Infinity）排最前
+    const at = pct != null && pct >= 100 ? -Infinity : m.quota.forecast_full_at ? Date.parse(m.quota.forecast_full_at) : Infinity;
     if (!(pct != null && pct >= warn) && at > soon) continue;
     n++;
     const p = pct ?? 0;
     if (!top || at < top.at || (at === top.at && p > top.pct)) top = { id: m.id, name: m.name, pct: p, at, forecast: quotaForecast(m) };
   }
   // full：预计用满的日期（MM-DD），首页卡上只写它，整句放悬停
-  return { n, top: top && { id: top.id, name: top.name, pct: Math.floor(top.pct), forecast: top.forecast, full: Number.isFinite(top.at) ? mmdd(new Date(top.at).toISOString()) : null } };
+  return { n, top: top && { id: top.id, name: top.name, pct: Math.floor(top.pct), forecast: top.forecast, full: Number.isFinite(top.at) ? mmdd(new Date(top.at).toISOString()) : null, over: top.at === -Infinity } };
 }
 /** 集群状态在线率格条的悬停：离线（agent 不再上报）的机器名，同 overview.offline 的口径（同机 IP 节点随宿主机的 agent，宿主机离线它们也各计一台） */
 export const offlineNames = (list: MachineView[]) => list.filter((m) => m.agent && !m.agent.online).map((m) => m.name);
