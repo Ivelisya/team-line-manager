@@ -1,6 +1,8 @@
 #!/bin/bash
 # 中控每天的备份（fleet-backup.timer 触发，root 执行；也可手动 systemctl start fleet-backup）。装在 /opt/fleet/backup/。
 # 一份备份是一个 tar：fleet.dump（pg_dump -Fc）+ etc/fleet（secret.key、fleet.toml、中控 SSH 密钥等）+ var/lib/fleet/known_hosts，
+# 再加中控 sshd 的 ed25519 主机密钥（软路由隧道按它的公钥做 StrictHostKeyChecking，新机器上换了就全连不上）与 Caddy 的带外配置
+# etc/caddy/global.d、sites.d（如 PROXY 协议的 edge-proxy.caddy，丢了经边缘机的连接全断；这几样不存在就不打，不让备份失败），
 # 放在 /var/backups/fleet，保留最近 14 份。没有 secret.key，库里的 SS 密码、REALITY 私钥、通知渠道配置都解不开；
 # 没有中控 SSH 密钥就登不上机器：所以和库打在同一个包里。
 # 四张原始时序表（按天分区、只保留几天、量最大）只备结构不备数据；小时汇总等其余表全量。
@@ -19,11 +21,16 @@ trap 'rm -rf "$W"' EXIT
 runuser -u postgres -- pg_dump -Fc -d fleet \
   --exclude-table-data-and-children=host_metric --exclude-table-data-and-children=entry_traffic \
   --exclude-table-data-and-children=probe_result --exclude-table-data-and-children=access_event > "$W/fleet.dump"
+# 可选路径：存在才打进包（tar 遇到不存在的路径会失败）
+OPT=()
+for p in etc/ssh/ssh_host_ed25519_key etc/ssh/ssh_host_ed25519_key.pub etc/caddy/global.d etc/caddy/sites.d; do
+  if [ -e "/$p" ]; then OPT+=("$p"); fi
+done
 if [ -s "$REC" ]; then
   NAME=$NAME.age
-  tar -cf - -C "$W" fleet.dump -C / etc/fleet var/lib/fleet/known_hosts | age -R "$REC" > "$W/$NAME"
+  tar -cf - -C "$W" fleet.dump -C / etc/fleet var/lib/fleet/known_hosts "${OPT[@]}" | age -R "$REC" > "$W/$NAME"
 else
-  tar -cf "$W/$NAME" -C "$W" fleet.dump -C / etc/fleet var/lib/fleet/known_hosts
+  tar -cf "$W/$NAME" -C "$W" fleet.dump -C / etc/fleet var/lib/fleet/known_hosts "${OPT[@]}"
 fi
 (cd "$W" && sha256sum "$NAME" > "$NAME.sha256")
 chgrp fleet-backup "$W/$NAME" "$W/$NAME.sha256"
