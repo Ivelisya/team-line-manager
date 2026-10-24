@@ -648,3 +648,17 @@ async fn reach_hourly_rollup_and_windows() {
     t.req("DELETE", &format!("/api/v1/probe-points/{id}"), None, None).await;
     assert_eq!(t.count("select count(*) from relay_reach_hourly").await, 1);
 }
+
+/// 探测点的操作记录有中文标题与摘要，按探测点名搜得到（新建、取走安装脚本）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn probe_point_audit_has_title_and_is_searchable() {
+    let t = setup().await;
+    add_probe(&t, "香港主").await;
+    let v = t.get(&format!("/api/v1/audit?q={}", "%E9%A6%99%E6%B8%AF%E4%B8%BB")).await;
+    let rows: Vec<(&str, &str, &str)> = v.as_array().unwrap().iter().map(|r| (r["action"].as_str().unwrap(), r["title"].as_str().unwrap(), r["summary"].as_str().unwrap())).collect();
+    assert!(rows.contains(&("probe_point.create", "新建探测点", "香港主 · 一次性安装命令")), "{rows:?}");
+    assert!(rows.iter().any(|r| r.0 == "probe_point.bootstrap_used" && r.1 == "探测点取走安装脚本" && r.2.starts_with("香港主")), "{rows:?}");
+    // 按标题搜也在
+    let v = t.get(&format!("/api/v1/audit?q={}", "%E6%96%B0%E5%BB%BA%E6%8E%A2%E6%B5%8B%E7%82%B9")).await;
+    assert_eq!(v.as_array().unwrap().len(), 1, "{v}");
+}

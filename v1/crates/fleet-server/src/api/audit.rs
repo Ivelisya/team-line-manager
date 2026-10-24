@@ -151,6 +151,8 @@ const AUDIT_ACTIONS: &[&str] = &[
     "router.create", "router.update", "router.delete", "router.bootstrap", "router.bootstrap_used", "router.deploy", "router.sync", "router.switch", "router.switch_back",
     "router.switch_reverted",
     "client_sub.create", "client_sub.update", "client_sub.rotate", "client_sub.delete",
+    "probe_point.create", "probe_point.update", "probe_point.delete", "probe_point.upgrade", "probe_point.install", "probe_point.bootstrap_used",
+    "settings.ping_targets", "relay.ping_override", "settings.reach_source",
 ];
 
 /// 审计记录的中文标题与一句话摘要（界面直接显示）
@@ -247,6 +249,15 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "client_sub.update" => "修改客户端订阅",
         "client_sub.rotate" => "轮换订阅链接",
         "client_sub.delete" => "删除客户端订阅",
+        "probe_point.create" => "新建探测点",
+        "probe_point.update" => "修改探测点",
+        "probe_point.delete" => "删除探测点",
+        "probe_point.upgrade" => "升级探测点",
+        "probe_point.install" => "安装探测点",
+        "probe_point.bootstrap_used" => "探测点取走安装脚本",
+        "settings.ping_targets" => "修改三网 PING 目标",
+        "relay.ping_override" => "修改线路机三网 PING 覆盖",
+        "settings.reach_source" => "修改主探测来源",
         other => other,
     }
     .to_string();
@@ -337,6 +348,11 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "entry.add" if d["direct"] == true => "线路机直出入口".into(),
         "provider.update" => d["after"]["name"].as_str().unwrap_or("").to_string(),
         "team.create" if d["spare"] == true => format!("{}（备用）", s("name")),
+        // 「团队9 · 已从客户端订阅摘掉：家里、备用」（这一版之前的记录没有 client_subs）
+        "team.delete" if d["client_subs"].as_array().is_some_and(|a| !a.is_empty()) => {
+            let subs: Vec<&str> = d["client_subs"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+            format!("{} · 已从客户端订阅摘掉：{}", s("name"), subs.join("、"))
+        }
         "team.create" | "team.delete" | "provider.create" | "provider.delete" | "plan.create" | "plan.delete" | "notify.create" | "notify.update" | "notify.delete" => s("name"),
         // 「测试团队 → 测试团队改，排序 200 → 50，设为备用」：改了名写从什么改成什么，没改名只写名字。这一版之前的记录没有 spare
         "team.update" => {
@@ -467,6 +483,50 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
             format!("{name} · {}{}", s("rule"), if d["enabled"] == false { "（已停用）" } else { "" })
         }
         "client_sub.rotate" | "client_sub.delete" => s("name"),
+        // 「香港 · 经 SSH 安装」「香港 · 一次性安装命令」
+        "probe_point.create" => format!("{} · {}", s("name"), if d["method"] == "ssh" { "经 SSH 安装" } else { "一次性安装命令" }),
+        // 「香港 → 香港2 · 备注 「旧」 → （空） · 停用」
+        "probe_point.update" => {
+            let (b, a) = (&d["before"], &d["after"]);
+            let mut out = if b["name"] == a["name"] { s("name") } else { format!("{} → {}", val(&b["name"]), val(&a["name"])) };
+            let note = |v: &Value| v["note"].as_str().filter(|x| !x.is_empty()).map_or("（空）".to_string(), |x| format!("「{x}」"));
+            if b["note"] != a["note"] {
+                out += &format!(" · 备注 {} → {}", note(b), note(a));
+            }
+            if b["enabled"] != a["enabled"] {
+                out += if a["enabled"] == true { " · 启用" } else { " · 停用" };
+            }
+            out
+        }
+        "probe_point.delete" => match d["host"].as_str() {
+            Some(h) => format!("{} · {h}", s("name")),
+            None => s("name"),
+        },
+        // 「香港 · 1.4.2 → 1.5.0」
+        "probe_point.upgrade" => format!("{} · {} → {}", s("name"), d["from"].as_str().unwrap_or("—"), s("to")),
+        // 经 SSH 的另写主机与结果（同 router.deploy）
+        "probe_point.install" if d["method"] == "ssh" => {
+            let res = match d["result"].as_str() {
+                _ if d["started"] == true => "进行中或中断（未记录结果）".to_string(),
+                Some("ok") => "成功".to_string(),
+                _ => format!("失败：{}", s("error")),
+            };
+            format!("{} · SSH {}:{} · {res}", s("name"), s("host"), d["port"])
+        }
+        "probe_point.install" => format!("{} · 一次性安装命令", s("name")),
+        "probe_point.bootstrap_used" => match d["ip"].as_str() {
+            Some(ip) => format!("{} · 来自 {ip}", s("name")),
+            None => s("name"),
+        },
+        "settings.ping_targets" => ping_targets_changes(d),
+        "relay.ping_override" => format!("{} · {} → {}", s("name"), ping_override_text(&d["from"]), ping_override_text(&d["to"])),
+        // 「探测顺序 1 个 → 香港、澳门；中控的检查开」
+        "settings.reach_source" => {
+            let names: Vec<&str> = d["order_names"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+            let order = if names.is_empty() { "空（用中控）".to_string() } else { names.join("、") };
+            let n = d["from"]["order"].as_array().map_or(0, |a| a.len());
+            format!("探测顺序 {n} 个 → {order}；中控的检查{}", if d["to"]["central"] == false { "关" } else { "开" })
+        }
         "router.bootstrap_used" => format!("{} · 来自 {}", s("name"), s("ip")),
         "router.deploy" => {
             let res = match d["result"].as_str() {
@@ -592,6 +652,42 @@ fn policy_change(c: &Value) -> String {
     format!("{}：{what}", c["name"].as_str().unwrap_or(""))
 }
 
+/// settings.ping_targets 改了的：「方式 tcp → icmp，武汉电信 a.com → b.com，Node 1 （空） → c.com」；槽位名也改了的写「旧名 → 新名」，最多 3 处
+fn ping_targets_changes(d: &Value) -> String {
+    let (b, a) = (&d["from"], &d["to"]);
+    let mut parts = vec![];
+    if b["mode"] != a["mode"] {
+        parts.push(format!("方式 {} → {}", val(&b["mode"]), val(&a["mode"])));
+    }
+    let target = |v: &Value| v["target"].as_str().filter(|t| !t.is_empty()).unwrap_or("（空）").to_string();
+    for (x, y) in b["slots"].as_array().into_iter().flatten().zip(a["slots"].as_array().into_iter().flatten()) {
+        if x == y {
+            continue;
+        }
+        let name = if x["name"] == y["name"] { val(&y["name"]) } else { format!("{} → {}", val(&x["name"]), val(&y["name"])) };
+        parts.push(format!("{name} {} → {}", target(x), target(y)));
+    }
+    let n = parts.len();
+    parts.truncate(3);
+    if n > 3 {
+        parts.push(format!("等 {n} 处"));
+    }
+    parts.join("，")
+}
+
+/// relay.ping_override 一侧的写法：没有覆盖写「跟随全局」，否则「icmp、覆盖 2 个槽位」
+fn ping_override_text(o: &Value) -> String {
+    let mut parts = vec![];
+    if let Some(m) = o["mode"].as_str() {
+        parts.push(m.to_string());
+    }
+    let n = o["slots"].as_array().map_or(0, |a| a.iter().filter(|s| !s.is_null()).count());
+    if n > 0 {
+        parts.push(format!("覆盖 {n} 个槽位"));
+    }
+    if parts.is_empty() { "跟随全局".into() } else { parts.join("、") }
+}
+
 /// JSON 值的显示：字符串原样，null 写「—」，其余（数字）照写
 fn val(v: &Value) -> String {
     match v {
@@ -647,6 +743,30 @@ mod tests {
         for &a in AUDIT_ACTIONS {
             assert_ne!(audit_text(a, &json!({})).0, a, "{a} 没有中文标题");
         }
+    }
+
+    #[test]
+    fn probe_and_ping_summaries() {
+        let t = |a: &str, d: Value| audit_text(a, &d);
+        assert_eq!(t("probe_point.create", json!({"name": "香港", "method": "ssh"})), ("新建探测点".to_string(), "香港 · 经 SSH 安装".to_string()));
+        let upd = t("probe_point.update", json!({"name": "香港2", "before": {"name": "香港", "note": "旧", "enabled": true}, "after": {"name": "香港2", "note": "", "enabled": false}}));
+        assert_eq!(upd.1, "香港 → 香港2 · 备注 「旧」 → （空） · 停用");
+        assert_eq!(t("probe_point.upgrade", json!({"name": "香港", "from": null, "to": "1.5.0"})).1, "香港 · — → 1.5.0");
+        assert_eq!(t("probe_point.install", json!({"name": "香港", "method": "ssh", "host": "h", "port": 22, "started": true})).1, "香港 · SSH h:22 · 进行中或中断（未记录结果）");
+        assert_eq!(t("probe_point.install", json!({"name": "香港", "method": "ssh", "host": "h", "port": 22, "result": "failed", "error": "超时"})).1, "香港 · SSH h:22 · 失败：超时");
+        assert_eq!(t("probe_point.bootstrap_used", json!({"name": "香港", "ip": "192.0.2.1"})).1, "香港 · 来自 192.0.2.1");
+        let g = |mode: &str, t1: &str| json!({"mode": mode, "slots": [{"name": "武汉电信", "target": t1}, {"name": "Node 1", "target": ""}]});
+        let mut to = g("icmp", "b.com");
+        to["slots"][1] = json!({"name": "深圳", "target": "c.com"});
+        assert_eq!(t("settings.ping_targets", json!({"from": g("tcp", "a.com"), "to": to})).1, "方式 tcp → icmp，武汉电信 a.com → b.com，Node 1 → 深圳 （空） → c.com");
+        assert_eq!(
+            t("relay.ping_override", json!({"name": "线路机1", "from": null, "to": {"mode": "icmp", "slots": [null, {"name": "x", "target": "y"}]}})).1,
+            "线路机1 · 跟随全局 → icmp、覆盖 1 个槽位"
+        );
+        let rs = t("settings.reach_source", json!({"from": {"order": ["a"], "central": true}, "to": {"order": ["a", "b"], "central": false}, "order_names": ["香港", "澳门"]}));
+        assert_eq!(rs, ("修改主探测来源".to_string(), "探测顺序 1 个 → 香港、澳门；中控的检查关".to_string()));
+        assert_eq!(t("team.delete", json!({"name": "团队9", "client_subs": ["家里", "备用"]})).1, "团队9 · 已从客户端订阅摘掉：家里、备用");
+        assert_eq!(t("team.delete", json!({"name": "团队9", "client_subs": []})).1, "团队9");
     }
 
     #[test]
