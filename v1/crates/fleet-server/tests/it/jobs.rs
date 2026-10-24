@@ -296,6 +296,28 @@ async fn run_one(t: &common::T, job: Uuid) -> Value {
     t.job(&job.to_string()).await
 }
 
+/// 领取顺序：耗时短的作业（退役、换线路机…）排在上架前面，上架排在升级 / 调优 / 下发 SS 前面，同类按创建先后
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn claim_puts_short_jobs_before_provision_before_upgrade() {
+    let t = setup(false).await;
+    let team = seed_team(&t, "团队1").await;
+    let mut want = vec![];
+    // 先建的是升级和上架，后建的退役、摘入口
+    for (i, (kind, rank)) in [("upgrade_agent", 2), ("provision_proxy", 1), ("provision_vps", 1), ("retire", 0), ("attach_entry", 0)].into_iter().enumerate() {
+        let node = seed_node(&t, team, i as i32 + 1, &format!("203.0.113.{}", i + 10), "active").await;
+        let mut tx = t.st.db.begin().await.unwrap();
+        let id = jobs::enqueue(&mut tx, kind, Some(node), json!({}), "test").await.unwrap();
+        tx.commit().await.unwrap();
+        want.push((rank, i, id));
+    }
+    want.sort();
+    let mut got = vec![];
+    while let Some(j) = jobs::claim(&t.st, "test").await.unwrap() {
+        got.push(j.id);
+    }
+    assert_eq!(got, want.into_iter().map(|w| w.2).collect::<Vec<_>>());
+}
+
 /// 「上线」已经把机器改成了在用、但记账失败：重跑不被「机器状态不对」判死，这一步记为跳过；别的步骤遇到同样的状态仍然失败
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn activate_rerun_after_machine_already_active_is_skipped() {

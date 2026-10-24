@@ -488,7 +488,8 @@ async fn retry_later(st: &AppState, id: Uuid, owner: &str, e: &anyhow::Error) {
 }
 
 /// 领取一个可执行的作业，租约先给 3 分钟；每步开始前会按该步的超时续租。本进程正在推进的不领（见 `Running`）。
-/// 升级 agent、系统调优排在其它作业之后：「全部升级」一次建一百多个，不能让之后的上架、换线路机、退役排在它们后面。
+/// 升级 agent、系统调优、下发 SS 排在其它作业之后：「全部升级」一次建一百多个，不能让之后的上架、换线路机、退役排在它们后面。
+/// 上架其次靠后：一次上架几十台会占满所有 worker 几十分钟，之后的替换、换线路机、退役、repoint 这些只改库 / 改路由、耗时短的，不能排在整批上架后面。
 /// 同一事务建的作业 created_at 相同，再按 id（UUIDv7，按生成先后递增）：全部升级里先建的线路机先领。
 /// 参数里有 `after`（「全部升级」的编排：要等的作业）的，那个作业结束之前领不到；它在推送之后失败或被取消，这个作业领到后不开始、直接取消（见 `halted`）。
 /// 排队时被取消的不用等：领到就收尾（没开始过，`started_at` 留空）
@@ -501,7 +502,8 @@ pub async fn claim(st: &AppState, owner: &str) -> anyhow::Result<Option<JobRow>>
                      and (lease_until is null or lease_until < now()) and id <> all($2)
                      and (state = 'cancelling'
                           or not exists (select 1 from job p where p.id = (j.params->>'after')::uuid and p.state in ('queued', 'running', 'waiting', 'cancelling')))
-                     order by kind in ('upgrade_agent', 'tune', 'ss_refresh'), created_at, id for update skip locked limit 1)
+                     order by case when kind in ('upgrade_agent', 'tune', 'ss_refresh') then 2 when starts_with(kind, 'provision_') then 1 else 0 end, created_at, id
+                     for update skip locked limit 1)
          returning id, kind, target_id, params, state::text state, step, created_by",
     )
     .bind(owner)
