@@ -31,7 +31,7 @@ function timeTicks(min: number, max: number, range: string): number[] | undefine
 
 /** 纵轴刻度：从 0 起 4 段。速率（1000 进位）每段取 1/2/2.5/5×10^k，字节（1024 进位）每段取 2 的幂，
  *  读出来是 250 Mbps、256 MiB 这样的整数，不会出现按十进制取整再换算成 MiB 的 143M、286M */
-function valueTicks(max: number, base: 1000 | 1024): number[] | undefined {
+export function valueTicks(max: number, base: 1000 | 1024): number[] | undefined {
   if (!(max > 0)) return undefined;
   const unit = base ** Math.max(0, Math.floor(Math.log(max) / Math.log(base)));
   const raw = max / unit / 4;

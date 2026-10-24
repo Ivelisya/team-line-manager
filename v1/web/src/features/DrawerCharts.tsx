@@ -1,12 +1,12 @@
 // 抽屉里带图表的三个页签：连接质量 / 流量 / 主机。单独成文件按需加载，recharts 只在打开这些页签时才下载。
 // 图表卡、加载框与时间范围也给软路由抽屉的「曲线」页签用（RouterCharts）。
 import * as React from 'react';
-import { ChevronRight, Cpu, Gauge, Globe, HardDrive, MemoryStick, Network, Radar, ServerOff } from 'lucide-react';
+import { CalendarDays, ChevronRight, Cpu, Gauge, Globe, HardDrive, MemoryStick, Network, Radar, ServerOff } from 'lucide-react';
 import type { MachineView, SeriesPoint } from '@/lib/types';
 import { usePingSeries } from '@/lib/ping';
 import { useReachQuality, type ReachWindowStat } from '@/lib/probePoints';
 import type { UseQueryResult } from '@tanstack/react-query';
-import { useAvailability, useSeries } from '@/lib/queries';
+import { useAvailability, useSeries, useTrafficDaily } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
 import { AVAIL_LEGEND, availCells, availTitles, fromLabel, hasHost, monthFlowTip, monthTraffic, resourceMeters, successPct } from '@/lib/derive';
@@ -15,6 +15,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { InfoTip } from '@/components/ui/form';
 import { Beat, Empty, ErrorNote, LabelValue, LabelValueGrid, Note, Num, Section, SectionHeader, TableWrap } from '@/components/app/primitives';
 import { RANGES, TimeChart } from '@/components/app/TimeChart';
+import { DailyBars } from '@/components/app/DailyBars';
 import { chartPoll, RANGE_MS, vMs, vPct, vRate, yMs, yPct, yRate } from '@/lib/chart';
 import { entriesMeta } from './EntriesTable';
 import { Button } from '@/components/ui/button';
@@ -238,11 +239,30 @@ export function TrafficTab({ m }: { m: MachineView }) {
             <TimeChart full points={s.data?.points} range={s.data?.range ?? range} lines={L_TRAFFIC} yFmt={yBytes} valueFmt={vBytes} yBase={1000} empty="这段时间没有业务流量" clip />
           </ChartFrame>
         </ChartCard>
+        <DailyCard m={m} />
       </Section>
       <EntriesLink m={m} />
     </>
   );
 }
+
+const DAILY_DAYS = 30;
+/** 近 30 天每日业务流量（组织时区的自然日，不跟时间范围走）：节点是它自己的入口（含换线前的），线路机是经过它的全部入口 */
+const DailyCard = React.memo(function DailyCard({ m }: { m: MachineView }) {
+  const q = useTrafficDaily(DAILY_DAYS, '', m.id);
+  const days = q.data?.total;
+  const sum = days?.reduce((a, d) => a + d.down + d.up, 0);
+  const tip = m.kind === 'relay' ? '经过这台线路机的全部入口（含直出），按组织时区的自然日切分；今天算到目前为止' : '这个节点全部入口的下载加上传（含换线前的旧入口），按组织时区的自然日切分；今天算到目前为止';
+  return (
+    <ChartCard c="var(--chart-1)" icon={<CalendarDays />} title="每日流量" meta={<>近 {DAILY_DAYS} 天 <InfoTip text={tip} /></>}
+      value={sum ? <Num f={F.bytes(sum)} /> : undefined} caption={sum ? `日均 ${F.str(F.bytes(sum / DAILY_DAYS))}` : undefined}>
+      {q.isError && !q.data ? <ErrorNote error={q.error} onRetry={() => void q.refetch()}>每日流量加载失败：</ErrorNote>
+        : !days ? <Skeleton h={180} className="is-float" />
+        : !sum ? <div className="chart-empty" style={{ height: 180 }}>近 {DAILY_DAYS} 天没有业务流量</div>
+        : <DailyBars days={days} height={180} />}
+    </ChartCard>
+  );
+});
 
 export function HostTab({ m }: { m: MachineView }) {
   const { range, setRange } = useDrawer();

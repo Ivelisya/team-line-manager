@@ -6,7 +6,7 @@ import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClie
 import { del, get, patch, post, put } from './api';
 import { collator, makeDefaultCompare } from './sort';
 import { nextDue, offlineNames, quotaTight, setMeta } from './derive';
-import type { ApiKey, Availability, Incident, Job, JobSummary, Paged, JobLog, MachineView, Meta, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RetireResult, DueList, RenewBatchResult, RecycleItem, RecycleDetail, ReplaceBody, ReplacePreview, MovePreview, MoveResult, EvacuateResult, RebalancePlan, PlacementView, ProbeBeats, SeriesResp, Silence, SilenceKind, SubField, Team, AuditEntry, NotifyChannel, NotifyLogEntry, AccountSession, TotpSetup, TotpStatus, MovesResult } from './types';
+import type { ApiKey, Availability, Incident, Job, JobSummary, Paged, JobLog, MachineView, Meta, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RetireResult, DueList, RenewBatchResult, RecycleItem, RecycleDetail, ReplaceBody, ReplacePreview, MovePreview, MoveResult, EvacuateResult, RebalancePlan, PlacementView, ProbeBeats, SeriesResp, Silence, TrafficDaily, SilenceKind, SubField, Team, AuditEntry, NotifyChannel, NotifyLogEntry, AccountSession, TotpSetup, TotpStatus, MovesResult } from './types';
 
 export const useMe = () => useQuery({ queryKey: ['me'], queryFn: () => get<{ username: string }>('/auth/me'), retry: false, staleTime: 5 * 60_000 });
 /** 中文名、枚举、阈值、默认值（服务端 meta.rs），一次会话内不变：取回时同时交给 derive 的同步读取（kindLabel 等）。外壳等它到了才渲染页面 */
@@ -245,6 +245,12 @@ export const useMovePreview = (id: string | null, open: boolean, o: { to_relay_i
 export const useMovesPreview = (open: boolean, o: { machine_ids: string[]; to_relay_id: string; from_relay_id?: string; routers: boolean }) =>
   lifecyclePreview<MovesResult>('moves-preview', open && o.machine_ids.length ? '/moves' : null, { machine_ids: o.machine_ids.join(','), to_relay_id: o.to_relay_id, from_relay_id: o.from_relay_id }, o.routers);
 /** 放置矩阵（只读）：agent 每 5 分钟测一轮，跟着 5 分钟取一次 */
+/** 每日流量（GET /traffic/daily）：team / machine 过滤（machine = 节点只看它自己的入口，线路机看经过它的）。小时汇总 5 分钟一轮，跟着 5 分钟重取 */
+export const useTrafficDaily = (days: number, team = '', machine = '') =>
+  useQuery({
+    queryKey: ['traffic-daily', days, team, machine], placeholderData: keepPreviousData, staleTime: 300_000, refetchInterval: 300_000,
+    queryFn: ({ signal }) => get<TrafficDaily>(`/traffic/daily?${new URLSearchParams({ days: String(days), ...(team && { team }), ...(machine && { machine }) })}`, signal),
+  });
 export const usePlacement = () => useQuery({ queryKey: ['placement'], queryFn: ({ signal }) => get<PlacementView>('/placement', signal), staleTime: 300_000, refetchInterval: 300_000 });
 /** 搬迁建议（只读）：exclude = 不动的节点 id */
 export const useRebalance = (id: string | null, open: boolean, exclude: string[]) =>
