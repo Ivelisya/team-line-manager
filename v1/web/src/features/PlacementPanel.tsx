@@ -4,7 +4,7 @@
 import * as React from 'react';
 import type { PlacementCell, PlacementNode, PlacementView } from '@/lib/types';
 import { usePlacement } from '@/lib/queries';
-import { useDrawer } from '@/lib/drawer';
+import { openDrawer } from '@/lib/drawer';
 import { cn } from '@/lib/utils';
 import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
@@ -43,9 +43,9 @@ function Cell({ c, n, relay }: { c: PlacementCell; n: PlacementNode; relay: stri
   );
 }
 
-export function PlacementPanel() {
+/** 无 props，memo 住：父页面（线路页）订阅线路列表，约 3 秒一推，不必连带重画这张矩阵 */
+export const PlacementPanel = React.memo(function PlacementPanel() {
   const q = usePlacement();
-  const { open } = useDrawer();
   const [team, setTeam] = React.useState<string | null>(null);
   const [all, setAll] = React.useState(false);
   const [moving, setMoving] = React.useState<Group | null>(null);
@@ -102,7 +102,7 @@ export function PlacementPanel() {
           </tr></thead>
           <tbody>
             {rows.map((n) => (
-              <tr key={n.id} className="is-link" tabIndex={0} onClick={() => open(n.id)} onKeyDown={(ev) => { if (ev.key === 'Enter') open(n.id); }}>
+              <tr key={n.id} className="is-link" tabIndex={0} onClick={() => openDrawer(n.id)} onKeyDown={(ev) => { if (ev.key === 'Enter') openDrawer(n.id); }}>
                 <td className="strong"><span data-tip={n.current_relay_id ? undefined : n.entries > 1 ? '有多条在用入口，只给单条建议（上面带「换掉…上的入口」的）' : n.entries === 1 ? '还有待应用 / 停用的入口，不给建议' : '没有在用入口'}>{n.name}</span></td>
                 {n.cells.map((c) => <Cell key={c.relay_id} c={c} n={n} relay={relayName(c.relay_id)} />)}
                 <td className="r">{n.tcp_fail_7d > 0 ? <><span className="num">{n.tcp_fail_7d}</span><span className="unit"> 次</span></> : <span className="t-muted">—</span>}</td>
@@ -116,4 +116,4 @@ export function PlacementPanel() {
         onOpenChange={(o) => { if (!o) setMoving(null); }} onDone={() => setMoving(null)} />}
     </Panel>
   );
-}
+});
