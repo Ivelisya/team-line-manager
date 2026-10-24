@@ -42,6 +42,7 @@ const COST_LINK = '/nodes?sort=-cost';
 const TRAFFIC_LINK = '/nodes?sort=-traffic';
 /** 算正常的：只有故障算异常，降级（照常服务、只是有提醒）与维护都算正常；未知（还判断不了）两头都不算 */
 const normal = (c: Counts) => c.total - c.down - c.unknown;
+const NORMAL_INFO = '正常 = 总数 − 故障 − 未知。降级与维护的机器照常服务，都算正常';
 
 /** 问候语下的一行状态：只说有几类事要处理、是哪几类（具体台数在下面的 KPI 卡里，这里不再重复一遍数字）；没有就是「全部正常」 */
 function statusLine(o: Overview | undefined, down: number): string {
@@ -76,9 +77,9 @@ export const OverviewSection = React.memo(function OverviewSection({ o, loading 
       <div className="hero-grid">
         <div className="stat-grid">
           {/* 说明行用全站同一套状态名（降级 / 维护 / 故障 / 未知）；「正常」包括降级与维护（照常服务）这一点放在大数字的悬停说明里 */}
-          <Stat loading={loading} tone="ok" icon={<Server />} label="节点正常" to={NODES_LINK} value={<span data-tip="降级和维护的机器照常服务，也算正常"><CountUp value={nodes && normal(nodes)} /></span>} unit={nodes ? `/ ${nodes.total}` : undefined}
+          <Stat loading={loading} tone="ok" icon={<Server />} label="节点正常" info={NORMAL_INFO} to={NODES_LINK} value={<span data-tip="降级和维护的机器照常服务，也算正常"><CountUp value={nodes && normal(nodes)} /></span>} unit={nodes ? `/ ${nodes.total}` : undefined}
             caption={nodes && <><DotCount tone="warn" n={nodes.degraded} label="降级" />{nodes.maintenance > 0 && <DotCount tone="neutral" n={nodes.maintenance} label="维护" />}<DotCount tone="bad" n={nodes.down} label="故障" to={DOWN_LINK} />{nodes.unknown > 0 && <DotCount tone="neutral" n={nodes.unknown} label="未知" />}</>} />
-          <Stat loading={loading} tone="teal" icon={<Waypoints />} label="线路机正常" to={RELAYS_LINK} value={<span data-tip="降级和维护的机器照常服务，也算正常"><CountUp value={relays && normal(relays)} /></span>} unit={relays ? `/ ${relays.total}` : undefined}
+          <Stat loading={loading} tone="teal" icon={<Waypoints />} label="线路机正常" info={NORMAL_INFO} to={RELAYS_LINK} value={<span data-tip="降级和维护的机器照常服务，也算正常"><CountUp value={relays && normal(relays)} /></span>} unit={relays ? `/ ${relays.total}` : undefined}
             caption={relays && <><DotCount tone="warn" n={relays.degraded} label="降级" />{relays.maintenance > 0 && <DotCount tone="neutral" n={relays.maintenance} label="维护" />}<DotCount tone="bad" n={relays.down} label="故障" to={`${DOWN_LINK}&kind=relay`} />{relays.unknown > 0 && <DotCount tone="neutral" n={relays.unknown} label="未知" />}</>} />
           <Stat loading={loading} tone="bad" icon={<AlertTriangle />} label="故障" value={<CountUp value={o ? down : undefined} />} unit="台" to={DOWN_LINK} caption={o && <><DotCount tone="bad" n={o.nodes.down} label="节点" /><DotCount tone="bad" n={o.relays.down} label="线路机" />{o.failed > 0 && <DotCount tone="bad" n={o.failed} label="上架失败" />}</>} />
           <Stat loading={loading} tone="amber" icon={<CalendarClock />} label="即将到期" value={<CountUp value={o?.due_soon} />} unit="台" to="/nodes?due=soon&sort=due" caption={o && nd !== undefined && <>{nd ? <span className="stat-who">最近<span className="ellipsis" data-tip={nd.name}>{nd.name}</span>{nd.days <= 1 ? <b>{nd.days === 0 ? '今天' : '明天'}</b> : <><b className="num">{nd.days}</b>天后</>}</span> : <span>近期没有到期</span>}{o.overdue > 0 && <DotCount tone="bad" n={o.overdue} label="已过期" />}</>} />
@@ -127,7 +128,10 @@ function ClusterPanel({ o }: { o: Overview | undefined }) {
   const online = o?.online ?? 0; const offline = o?.offline ?? 0; const total = online + offline;
   const down = o ? o.nodes.down + o.relays.down : 0; const degraded = o ? o.nodes.degraded + o.relays.degraded : 0;
   const rate = total ? (online / total) * 100 : 0;
-  const scope = o ? `家宽代理 ${o.no_agent} 台不需要 agent；同机 IP 节点随宿主机${o.ip_nodes ? `（${o.ip_nodes} 台）` : ''}` : '';
+  // 三处总数对得上：KPI 的节点 + 线路机 = 在用；agent 在线的分母 = 在用 − 家宽代理；机器矩阵的「全部」= 在用 + 上架中 / 退役中 / 上架失败（备用团队的机器照常算在用）
+  const active = o ? o.nodes.total + o.relays.total : 0;
+  const scope = o ? `分母 = 在用 ${active} 台（节点 ${o.nodes.total} + 线路机 ${o.relays.total}）− 家宽代理 ${o.no_agent} 台（不需要 agent）；同机 IP 节点${o.ip_nodes ? `（${o.ip_nodes} 台）` : ''}随宿主机计入
+机器矩阵的「全部」${active + o.provisioning + o.retiring + o.failed} 台 = 在用 ${active} + 上架中 ${o.provisioning} + 退役中 ${o.retiring} + 上架失败 ${o.failed}` : '';
   // 格条按比例分段着色：在线绿、离线红（末尾几格）；有离线至少 1 格红，不会因为离线占比不到一格就全绿；没有机器全灰
   const colors = React.useMemo(() => {
     const bad = offline ? Math.max(1, Math.round((offline / total) * ONLINE_N)) : 0;

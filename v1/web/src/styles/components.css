@@ -94,9 +94,9 @@
 /* ========== 下划线页签 ========== */
 .tabs-list { display: flex; align-items: stretch; gap: var(--sp-20); border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
 .tabs-list::-webkit-scrollbar { display: none; }
-.tabs-list[data-fade="r"] { mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); }
-.tabs-list[data-fade="l"] { mask-image: linear-gradient(to left, #000 calc(100% - 28px), transparent); }
-.tabs-list[data-fade="lr"] { mask-image: linear-gradient(to right, transparent, #000 28px, #000 calc(100% - 28px), transparent); }
+.tabs-list[data-fade="r"] { mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent); }
+.tabs-list[data-fade="l"] { mask-image: linear-gradient(to left, #000 calc(100% - 40px), transparent); }
+.tabs-list[data-fade="lr"] { mask-image: linear-gradient(to right, transparent, #000 40px, #000 calc(100% - 40px), transparent); }
 .tab {
   position: relative; flex: none; display: inline-flex; align-items: center; gap: var(--sp-6);
   height: 41px; padding: 0 0 1px; box-sizing: border-box; border: 0; background: transparent; cursor: pointer; white-space: nowrap; /* 41 = 40 + 列表 1px 底线，底部 1px 内边距让文字位置不变，下划线盖在底线上 */

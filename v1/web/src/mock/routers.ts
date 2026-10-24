@@ -2,7 +2,7 @@
 // 团队2-路由B 离线 3 小时、团队1-路由A 一键部署失败停在等待接入。两种接入都走一遍：一键部署几秒内走完几步变在线（SSH 地址 10.0.0.99 连接超时失败），
 // 接入命令生成后 15 秒「路由执行了命令」变在线。每 15 秒「采集」一次，读数抖动、发 routers 事件。曲线按种子生成，刷新页面保持稳定。
 import type { Incident, MachineView, SeriesPoint, Team } from '@/lib/types';
-import { exitUsable, type RouterClient, type RouterDeploy, type RouterDetail, type RouterExit, type RouterSummary, type RouterView } from '@/lib/routers';
+import { exitUsable, type RouterClient, type RouterDeploy, type RouterDetail, type RouterExit, type RouterGroup, type RouterSummary, type RouterView } from '@/lib/routers';
 import { hashStr, rng } from './fixtures';
 
 type Ctx = { params: string[]; query: URLSearchParams; body: any }; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -60,6 +60,13 @@ export function installRoutersMock(R: Reg, env: Env) {
         hostname: opts.lanBypass ? null : HOSTS[i % HOSTS.length], online, conns: ex.reduce((s, x) => s + x.conns, 0), down_bps: online ? Math.round(r() * 1.2e7) : 0, up_bps: online ? Math.round(r() * 9e5) : 0, exits: ex,
       };
     });
+    // 策略组：两个 select 组（可临时切换）和一个 url-test 组（自动选择，不能手动切）
+    const names = exits.map((e) => e.name);
+    const groups: RouterGroup[] = [
+      { name: '节点选择', type: 'Selector', now: names[0], all: names },
+      { name: '漏网之鱼', type: 'Selector', now: names[names.length - 1], all: names.slice(-4) },
+      { name: '自动选择', type: 'URLTest', now: names[1] ?? names[0], all: names },
+    ];
     return {
       system: { os: 'iStoreOS 24.10.2', kernel: '6.6.73', cpu_model: r() > 0.5 ? 'Intel(R) Celeron(R) CPU J1900 @ 1.99GHz' : 'Intel(R) Core(TM) i3-5005U CPU @ 2.00GHz', cores: 4, load: [0.49, 0.62, 0.58], procs: 168 + Math.floor(r() * 40), clock_skew_s: +(r() * 2 - 1).toFixed(1), clash_rss: (90 + r() * 80) * 1024 * 1024 },
       interfaces: opts.lanBypass
@@ -70,7 +77,7 @@ export function installRoutersMock(R: Reg, env: Env) {
           { name: 'lan', device: 'br-lan', up: true, proto: 'static', ip: '192.168.124.1', uptime_s: 16901, rx_bps: 3.9e6, tx_bps: 2.9e7, rx_bytes: 88 * GiB, tx_bytes: 790 * GiB },
         ],
       openclash: { enabled: true, running: true, version: 'alpha-g99e68e9', mode: 'fake-ip-mix', config_path: opts.lanBypass ? '/etc/openclash/config/customer-2nodes.yaml' : '/etc/openclash/config/clash-team2-20nodes.yaml', config_mtime: iso(now - 3 * DAY) },
-      exits, clients, collected_at: iso(now),
+      exits, clients, collected_at: iso(now), groups,
     };
   }
   /** 摘要由详情算（每轮采集的读数先在详情上抖动） */
@@ -104,6 +111,9 @@ export function installRoutersMock(R: Reg, env: Env) {
     a.d = buildDetail(a.seed, 20, { drift: 7, dead: 12, flaky: 15, clients: 22 });
     a.v.state = 'online'; a.v.last_seen_at = iso(now - 8000); a.v.summary = summarize(a.d, a.seed, 16862);
     a.v.deploy = { state: 'done', step: null, error: null, started_at: iso(now - 20 * DAY), finished_at: iso(now - 20 * DAY + 40_000) };
+    // 进行中的临时切换：「节点选择」从 节点01 临时切到 节点03，3 小时后自动切回
+    const sel = a.d.groups![0]; const orig = sel.now!; sel.now = a.d.exits[2].name;
+    a.v.switches = [{ group: sel.name, from: orig, to: sel.now, back_at: iso(now + 3 * HOUR), by: 'admin', switched_at: iso(now - 25 * MIN) }];
     const b: Rt = { v: base('rt-b', '团队2-路由B', 't2', 23002, 18 * DAY), d: null, seed: hashStr('rt-b') };
     b.d = buildDetail(b.seed, 20, { clients: 19 });
     b.v.state = 'offline'; b.v.last_seen_at = iso(now - 3 * HOUR - 12 * MIN); b.v.summary = summarize(b.d, b.seed, 912_000);
@@ -182,6 +192,31 @@ export function installRoutersMock(R: Reg, env: Env) {
     changed(); return clone(rt.v);
   });
   R('DELETE', '/routers/([^/]+)', ({ params }) => { const rt = find(params[0]); list.splice(list.indexOf(rt), 1); changed(); return {}; });
+
+  // 临时切换（select 组）：改组当前选择，记原来是谁；切回到原来的
+  const selGroup = (rt: Rt, name: string) => {
+    const g = rt.d?.groups?.find((x) => x.name === name && x.type === 'Selector');
+    if (!rt.d || rt.v.state !== 'online') throw env.bad('路由不在线，切不了', 409, 'conflict');
+    if (!g) throw env.bad('没有这个可切换的策略组', 404, 'not_found');
+    return g;
+  };
+  R('POST', '/routers/([^/]+)/switch', ({ params, body }) => {
+    const rt = find(params[0]); const g = selGroup(rt, String(body.group));
+    if (!g.all.includes(body.to) || body.to === g.now) throw env.bad('要切到的出口不在组里，或就是现在的');
+    const prev = rt.v.switches?.find((s) => s.group === g.name); const from = g.now!; const original = prev?.from ?? from;
+    rt.v.switches = (rt.v.switches ?? []).filter((s) => s.group !== g.name);
+    g.now = body.to;
+    const ended = g.now === original; const back_at = body.back_after_s && !ended ? iso(Date.now() + body.back_after_s * 1000) : null;
+    if (!ended) rt.v.switches.push({ group: g.name, from: original, to: g.now!, back_at, by: 'admin', switched_at: iso() });
+    changed(); return { from, to: g.now, original, back_at, ended };
+  });
+  R('POST', '/routers/([^/]+)/switch/back', ({ params, body }) => {
+    const rt = find(params[0]); const g = selGroup(rt, String(body.group));
+    const s = rt.v.switches?.find((x) => x.group === g.name);
+    if (!s) throw env.bad('这个组没有进行中的临时切换', 404, 'not_found');
+    const from = g.now!; g.now = s.from; rt.v.switches = rt.v.switches!.filter((x) => x !== s);
+    changed(); return { from, to: g.now };
+  });
 
   // 配置变更：在线的路由有几条固定的（一条作业改的、一条路由上改的、一条只改了出口以外的部分），别的没有
   R('GET', '/routers/([^/]+)/changes', ({ params, query }) => {

@@ -1189,7 +1189,7 @@ R('GET', '/placement', () => {
     const cc = cells.find((c) => c.relay_id === cur?.relay.id);
     const curGood = !!cc && (cc.success_pct ?? 0) >= 99;
     const suggest = !!cur && !!best && best !== cur.relay.id && (!curGood || cc!.p50_ms - good[0].p50_ms >= 10);
-    const reason = suggest ? (curGood ? `慢 ${cc!.p50_ms - good[0].p50_ms} ms` : `当前成功率 ${cc?.success_pct}%`) : null;
+    const reason = suggest ? (curGood ? `可快 ${cc!.p50_ms - good[0].p50_ms} ms` : `当前成功率 ${cc?.success_pct}%`) : null;
     if (suggest && cur && best) groups.set(best, [...(groups.get(best) ?? []), { id: n.id, name: n.name, from: { id: cur.relay.id, name: cur.relay.name }, port: cur.port, reason: reason! }]);
     return { id: n.id, name: n.name, team: n.team, ip: n.ip, current_relay_id: cur?.relay.id ?? null, entry_relay_ids: live.map((e) => e.relay.id), entries: live.length, cells, tcp_fail_7d: h(n.id) % 7 === 0 ? 3 : 0, daily_bytes: 5e9, best_relay_id: best, suggest, reason, no_room: [] };
   });

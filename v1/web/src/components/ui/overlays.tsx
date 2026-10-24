@@ -185,7 +185,9 @@ export function Trunc({ children, text, className }: { children: React.ReactNode
   return (
     <TooltipPrimitive.Root open={open && cut && !!full} onOpenChange={(o) => { if (o) measure(); setOpen(o); }}>
       <TooltipPrimitive.Trigger asChild>
-        <span ref={ref} className={cn('ellipsis block', className)} tabIndex={focusable && full ? 0 : undefined} onPointerEnter={measure} onFocus={measure}>{children}</span>
+        <span ref={ref} className={cn('ellipsis block', className)} tabIndex={focusable && full ? 0 : undefined} onPointerEnter={measure} onFocus={measure}
+          // 触屏没有悬停：轻触被截断的文字显示全文（Radix 的触发器在 click 里会收起，等它收完再开）
+          onClick={() => { if (cut && full && !matchMedia('(hover: hover)').matches) setTimeout(() => setOpen(true)); }}>{children}</span>
       </TooltipPrimitive.Trigger>
       <TooltipPrimitive.Portal><TooltipPrimitive.Content sideOffset={6} collisionPadding={8} className="tooltip">{full}</TooltipPrimitive.Content></TooltipPrimitive.Portal>
     </TooltipPrimitive.Root>

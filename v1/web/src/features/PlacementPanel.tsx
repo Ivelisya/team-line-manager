@@ -91,7 +91,9 @@ export function PlacementPanel() {
         </div>
       )}
       <TableWrap>
-        <table className="dt is-one pm-table" style={{ minWidth: 220 + p.relays.length * 130 }}>
+        <table className="dt is-one pm-table" style={{ minWidth: 250 + p.relays.length * 170 }}>
+          {/* 列宽写死：格子里最长的「建议 158 ms · 97.2%」放得下，窄屏横滑而不是被省略 */}
+          <colgroup><col style={{ width: 130 }} />{p.relays.map((r) => <col key={r.id} style={{ width: 170 }} />)}<col style={{ width: 120 }} /></colgroup>
           <thead><tr>
             <th>节点</th>
             {p.relays.map((r) => <th key={r.id} className="r">{r.name}{r.status === 'down' && <span className="pm-bad"> 故障</span>}</th>)}
