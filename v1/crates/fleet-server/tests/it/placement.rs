@@ -60,4 +60,12 @@ async fn rtt_reports_roll_up_and_feed_placement() {
     let sg = &p["suggestions"][0];
     assert_eq!(sg["command"], json!(format!("fleetctl move {} --to 线路机2", n["name"].as_str().unwrap())), "{p}");
     assert_eq!(t.req("GET", "/api/v1/placement?team=没有", None, None).await.0, StatusCode::NOT_FOUND);
+
+    // 同机 IP 节点没有自己的 ssh_port：期望状态照发（实验室曾因它解码失败、/desired 全部 500），TCP 退回用宿主机的端口
+    let (ipn, _) = seed_node(&t, r2, team, 3, "203.0.113.7", 20003).await;
+    sqlx::query("update machine set kind = 'vps', ssh_port = null, host_id = $2 where id = $1").bind(ipn).bind(node).execute(&t.st.db).await.unwrap();
+    let (s, v) = t.req("GET", "/agent/v1/desired?after=0", None, Some("tok2")).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let d: DesiredState = serde_json::from_value(v).unwrap();
+    assert!(d.rtt.unwrap().targets.iter().any(|x| x.node_id == ipn && x.port == 2222));
 }
