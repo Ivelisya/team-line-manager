@@ -21,8 +21,8 @@ export interface RouterSummary {
   conntrack: number; conntrack_max: number; temp_c: number | null;
   wan: { up: boolean; ip: string | null; rx_bps: number; tx_bps: number };
   openclash: { enabled: boolean; running: boolean; version: string | null; mode: string | null; conns: number; up_bps: number; down_bps: number };
-  /** managed：server:port 对上了 fleet 入口的出口；drift：其中参数与入口当前参数不一致的 */
-  exits: { total: number; alive: number; managed: number; drift: number };
+  /** managed：server:port 对上了 fleet 入口的出口；drift：其中参数与入口当前参数不一致的；dead：不通（连续两次以上测不通，同 exitUsable）的出口名 */
+  exits: { total: number; alive: number; dead: string[]; managed: number; drift: number };
   clients: number;
 }
 /** 一键部署（中控 SSH 到路由上替你执行接入）的进度：最近一次的，从没部署过为 null。step 是当前步骤（中文） */
@@ -35,6 +35,8 @@ export interface RouterView {
   maintenance: boolean;
   /** 进行中的临时切换（select 组经 mihomo API 切到组里另一个出口；from 是第一次切之前选中的，切回到它）。旧中控没有这个字段 */
   switches?: RouterSwitch[];
+  /** 出口对上的入口（没对上的不列；没采集成功过为空）：「出口 → 入口」的对应读它，不必逐台取详情 */
+  exit_entries: { exit: string; entry_id: string }[];
 }
 export interface RouterSwitch { group: string; from: string; to: string; back_at: string | null; by: string; switched_at: string }
 /** 策略组：type 是 mihomo 的类型，只有 Selector（select）能手动切换；now 是当前选中的 */

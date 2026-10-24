@@ -308,7 +308,7 @@ ProvisionItem = {
 
 | 规则 | 级别 | 开 | 恢复 |
 |---|---|---|---|
-| `central_channel_failing`（通知渠道发送失败） | critical | 某个启用的通知渠道连续发送失败满 5 分钟（`notify_channel.failing_since`）。每个渠道一条（库里 `subject_id` 是渠道 id）；这条不发给它自己 | 它发成功一次（含渠道测试）；渠道停用、删除时直接关，不发恢复（`detail.closed_by = "channel_removed"`） |
+| `central_channel_failing`（通知渠道发送失败） | critical | 某个启用的通知渠道连续发送失败满 5 分钟（`notify_channel.failing_since`；只有可重试的失败——网络错误、5xx、429——才开始计，内容被渠道拒绝这类重试也没用的只记原因，不算）。每个渠道一条（库里 `subject_id` 是渠道 id）；这条不发给它自己 | 它发成功一次（含渠道测试）；渠道停用、删除时直接关，不发恢复（`detail.closed_by = "channel_removed"`） |
 | `central_backup_stale`（备份过期） | warning | 备份目录（`[selfmon] backup_dir`，默认 `/var/backups/fleet`）里最新一份 `fleet-*.tar` / `fleet-*.tar.age` 超过 26 小时，或一份都没有、读不了；目录不存在（没装备份）不检查 | 有了 26 小时内的一份 |
 | `central_disk_low`（中控磁盘空间不足） | critical | 中控本机 `/`、`/var/lib/postgresql`、`/var/lib/fleet`、备份目录所在的文件系统可用空间低于 10%（同 df） | 回到 11% 以上 |
 | `central_ingress`（agent 同时失联） | critical | 有自己 agent 的在用机器（不含维护中的、同机 IP 节点）里同时离线的超过一半且至少 3 台：摘要「x/y 台 agent 同时失联：检查边缘机、Caddy、域名解析」。期间不新开单机的 `agent_offline`（已开着的照旧） | 离线的不再过半或不到 3 台；还没回来的从这时起按单机去抖、报 `agent_offline` |
@@ -603,9 +603,9 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 - 实现：两条按天分组的聚合（入口 × 天 → 节点 × 线路机 × 天；线路机 × 天），走 `hour` 索引；结果按小时汇总轮次缓存（汇总跑完即作废），团队 / 机器过滤在内存里做。
 
 ## 软路由（节选）
-`GET /routers`、`GET /routers/{id}`：`state` 为 `pending`（还没接入，或重新接入后还没连上）/ `online` / `offline`（接入过、隧道连不上；采集每 30 秒一轮，隧道连上、断开时中控马上采这台一次，`state` 随即变、发 `routers` 事件）；`error` 在 offline / pending 时是连不上的原因，在 online 时不为空 = 连得上但采集出错（脚本出错、输出读不了、超时而隧道还通），`summary` / `detail` 是上一次成功采集的。`detail.openclash` 另有 `config_error`（配置取不回、解析不了的原因）、`config_stale`（这时出口与入口的对应沿用上次读到的）、`delay_error`（最近一次延迟测试没做成的原因，测成了为 null；出口沿用上一次）；`detail.system.clock_skew_s` = 中控时间 − 路由时间，正数是路由慢。`maintenance`：在维护窗口里（它自己的或全部的，见 `/silences`），卡片显示「维护」。实时事件 `{type:"routers"}` 只在状态、错误或快照里看得见的部分（接口通断、OpenClash 状态与配置、出口的对应与延迟测试结果、在线客户端）变了时发，CPU / 速率等每轮都变的数值不触发。
+`GET /routers`、`GET /routers/{id}`：`state` 为 `pending`（还没接入，或重新接入后还没连上）/ `online` / `offline`（接入过、隧道连不上；采集每 30 秒一轮，隧道连上、断开时中控马上采这台一次，`state` 随即变、发 `routers` 事件）；`error` 在 offline / pending 时是连不上的原因，在 online 时不为空 = 连得上但采集出错（脚本出错、输出读不了、超时而隧道还通），`summary` / `detail` 是上一次成功采集的。`detail.openclash` 另有 `config_error`（配置取不回、解析不了的原因）、`config_stale`（这时出口与入口的对应沿用上次读到的）、`delay_error`（最近一次延迟测试没做成的原因，测成了为 null；出口沿用上一次）；`detail.system.clock_skew_s` = 中控时间 − 路由时间，正数是路由慢。`maintenance`：在维护窗口里（它自己的或全部的，见 `/silences`），卡片显示「维护」。实时事件 `{type:"routers"}` 只在状态、错误或快照里看得见的部分（接口通断、OpenClash 状态与配置、出口的对应与通不通、在线客户端）变了时发，CPU / 速率、出口的延迟毫秒数与连续不通次数等每轮或每次测试都变的数值不触发（改随约 2 分钟一次的数值推送）。
 `DELETE /routers/{id}`：还有没做完的作业改过它的出口、没确认改回（参数 `routers_applied` 里有它）时 409，消息与 `detail.jobs` 给出作业 id。`?force=true`（路由回不来了）照删：把它从这些作业的 `routers_applied` / `routers_stuck` 里摘掉、作业日志记一条「改回放弃」，作业能重试收尾或取消；这些作业里有正在执行的仍 409。返回多带 `jobs`（摘掉了哪些作业），审计详情带 `force`、`jobs`。
-`GET /routers` 与 `GET /routers/{id}` 另带 `switches`：进行中的临时切换 `[{group, from, to, back_at, by, switched_at}]`（`from` 是第一次切之前选中的、切回到它，`back_at` 为 null = 不自动切回）。`detail.groups`：策略组 `[{name, type, now, all}]`（mihomo /proxies 里有成员列表的：`type` 是 mihomo 的类型，`Selector` = select 组；`now` 当前选中的；mihomo 的 API 调不通时为空）。
+`GET /routers` 与 `GET /routers/{id}` 另带 `switches`：进行中的临时切换 `[{group, from, to, back_at, by, switched_at}]`（`from` 是第一次切之前选中的、切回到它，`back_at` 为 null = 不自动切回）。两者的每项另带 `exit_entries`：出口对上的入口 `[{exit, entry_id}]`（`exit` 是出口名；没对上入口的出口不列；没采集成功过为 `[]`），网页的「出口 → 入口」对应读它，不必为此逐台取详情；`summary.exits.dead`：不通的出口名 `[string]`（连续两次以上测不通，同 `alive` 与告警的口径；`alive` 是其余的条数）。`detail.groups`：策略组 `[{name, type, now, all}]`（mihomo /proxies 里有成员列表的：`type` 是 mihomo 的类型，`Selector` = select 组；`now` 当前选中的；mihomo 的 API 调不通时为空）。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|

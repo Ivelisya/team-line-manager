@@ -483,7 +483,8 @@ struct Channel {
 }
 
 /// 发一次，并记下渠道的连续失败状态（`notify_channel.failing_since / fail_count / last_error`：发成功清零，失败累加；
-/// 连续失败满 5 分钟开告警，见 selfmon.rs）。渠道测试也算：测试发成功了，渠道就算恢复了
+/// 连续失败满 5 分钟开告警，见 selfmon.rs）。`failing_since` 只由可重试的失败（网络错误、5xx、429）开始计：内容被拒这类重试也没用的，
+/// 之后没有新消息要发、不会再有成功来清，计下去 5 分钟后必然误报。渠道测试也算：测试发成功了，渠道就算恢复了
 async fn attempt(st: &AppState, ch: &Channel, ns: &[Notice]) -> Result<(), SendErr> {
     let res = match st.secrets.open_str(&ch.config_enc).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok()) {
         Some(cfg) => send_once(&ch.kind, &cfg, ns, st.cfg.notify.allow_private).await,
@@ -491,9 +492,12 @@ async fn attempt(st: &AppState, ch: &Channel, ns: &[Notice]) -> Result<(), SendE
     };
     let q = match &res {
         Ok(()) => sqlx::query("update notify_channel set failing_since = null, fail_count = 0, last_error = null where id = $1 and fail_count > 0").bind(ch.id),
-        Err(e) => sqlx::query("update notify_channel set failing_since = coalesce(failing_since, now()), fail_count = fail_count + 1, last_error = $2 where id = $1")
-            .bind(ch.id)
-            .bind(&e.msg),
+        Err(e) => sqlx::query(
+            "update notify_channel set failing_since = case when $3 then coalesce(failing_since, now()) else failing_since end, fail_count = fail_count + 1, last_error = $2 where id = $1",
+        )
+        .bind(ch.id)
+        .bind(&e.msg)
+        .bind(e.retry),
     };
     if let Err(e) = q.execute(&st.db).await {
         tracing::warn!("记录渠道发送结果失败：{e}");
@@ -551,6 +555,9 @@ struct Pending {
     engine: Option<String>,
 }
 
+/// 同一渠道两次发送之间至少隔这么久：飞书自定义机器人每秒最多 5 条，超了回 HTTP 200 + code≠0，那是按拒绝处理、不重试的
+const SEND_GAP: Duration = Duration::from_millis(250);
+
 /// 合并的一批最多等到首条入队后这么久
 const GROUP_MAX_WAIT: time::Duration = time::Duration::seconds(60);
 
@@ -580,6 +587,7 @@ async fn drain(st: &AppState, ch: Uuid) {
 /// 两类各自按入队顺序；机器、软路由告警的触发与恢复都在可合并的一类里，同一条告警的触发总先于恢复。发送记录仍每条告警各记一条（恢复只发给收到过触发的渠道看它）
 async fn drain_queue(st: &AppState, ch: Uuid) -> sqlx::Result<()> {
     let quiet = time::Duration::seconds(st.cfg.notify.group_wait_s as i64);
+    let mut last_sent: Option<tokio::time::Instant> = None;
     loop {
         // 先登记好要听的唤醒再查库：查完到开始等之间排进来的也能叫醒
         let queued = st.notify_queued.notified();
@@ -648,7 +656,12 @@ async fn drain_queue(st: &AppState, ch: Uuid) -> sqlx::Result<()> {
         } else {
             let c = Channel { id: ch, kind: p.kind, config_enc: p.config_enc };
             let ns: Vec<Notice> = batch.iter().map(|b| b.1.clone()).collect();
-            match attempt(st, &c, &ns).await {
+            if let Some(t) = last_sent {
+                tokio::time::sleep_until(t + SEND_GAP).await;
+            }
+            let res = attempt(st, &c, &ns).await;
+            last_sent = Some(tokio::time::Instant::now());
+            match res {
                 Ok(()) => None,
                 Err(e) if e.retry => {
                     let backoff = RETRY_BACKOFF[(p.fail_count.max(0) as usize).min(RETRY_BACKOFF.len() - 1)];

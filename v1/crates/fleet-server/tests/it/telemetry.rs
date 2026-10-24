@@ -1918,6 +1918,10 @@ async fn resolved_only_to_channels_that_got_firing() {
     // 飞书拒绝（code≠0，重试也没用）：记一条失败；另一个渠道收到触发
     log_settles(&t, 2).await;
     assert_eq!(t.count("select count(*) from notify_log where not ok").await, 1);
+    // 被拒是不可重试的失败：记原因与次数，但不开始计「连续失败」（之后没有新消息，不会有成功来清，5 分钟后会误报 central_channel_failing）
+    let (fails, since, err): (i32, Option<OffsetDateTime>, Option<String>) =
+        sqlx::query_as("select fail_count, failing_since, last_error from notify_channel where name = '飞书'").fetch_one(&t.st.db).await.unwrap();
+    assert!(fails == 1 && since.is_none() && err.is_some(), "{fails} {since:?} {err:?}");
     // 改好了地址，之后告警恢复
     let (s, v) = t.req("PATCH", &format!("/api/v1/notify-channels/{wc}"), Some(json!({"config": {"url": mock.url("/feishu/ok")}})), None).await;
     assert_eq!(s, StatusCode::OK, "{v}");
