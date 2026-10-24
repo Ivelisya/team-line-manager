@@ -324,11 +324,8 @@ async fn ticket_with_totp_needs_code() {
 async fn websocket_checks_origin_ticket_and_session() {
     let t = common::ops::setup().await;
     let team = seed_team(&t).await;
-    // 没人听的端口：ssh 立刻报连接被拒、退出 255
-    let closed = {
-        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        l.local_addr().unwrap().port()
-    };
+    // 没人听的端口：ssh 立刻报连接被拒、退出 255。用保留端口 1：临时端口绑了再放，全量并发跑时可能被别的测试拿去监听
+    let closed: u16 = 1;
     let host = seed_machine(&t, team, 1, "vps", "active", ("127.0.0.1", closed), None).await;
     let ipnode = seed_machine(&t, team, 2, "vps", "active", ("192.0.2.7", 22), Some(host)).await;
     let addr = serve(&t).await;
