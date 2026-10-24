@@ -117,6 +117,10 @@ async fn subscription_traffic_rule_override() {
         assert_eq!(put(ra, json!(rule)).await.0, StatusCode::OK);
         assert_eq!(view(ra).await, (Some(used), Some(rule.into()), Some(rule.into()), true));
     }
+    // 不传 traffic_rule（旧 fleetctl / 旧网页改别的项）= 保留单独设置；显式 null 才改回跟随
+    let (s, _) = t.req("PUT", &format!("/api/v1/machines/{ra}/subscription"), Some(json!({"due_date": "2030-01-01", "price_cents": 200})), None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(view(ra).await, (Some(300), Some("out".into()), Some("out".into()), true), "没传保留");
     // 写回与供应商相同的值 = 跟随
     assert_eq!(put(ra, json!("max")).await.0, StatusCode::OK);
     assert_eq!(view(ra).await, (Some(700), Some("max".into()), Some("max".into()), false), "与供应商相同按跟随存");

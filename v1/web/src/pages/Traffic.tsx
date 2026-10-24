@@ -173,7 +173,7 @@ const RelaysTable = React.memo(function RelaysTable({ relays, days, stale, teamN
   const wrap = useScrollEnd(`${days}:${dates.length}`);
   const last = dates[dates.length - 1];
   return (
-    <Panel title="线路机每日网卡计费量" sub={<>{teamName && <span className="t-muted">整台线路机，不分团队</span>}<InfoTip text={'网卡口径：下行 = 流进线路机，上行 = 流出；每天按供应商的计费规则算一次\n悬停格子看下行、上行和经过它的业务流量'} /></>} flush>
+    <Panel title="线路机每日网卡计费量" sub={<>{teamName && <span className="t-muted">整台线路机，不分团队</span>}<InfoTip text={'网卡口径：下行 = 流进线路机，上行 = 流出；每天按生效的计费方式算一次，合计先加总下行、上行再算\n悬停格子看下行、上行和经过它的业务流量'} /></>} flush>
       <div ref={wrap}>
         <TableWrap data-stale={stale}>
           <table className="dt is-one dt-heat">

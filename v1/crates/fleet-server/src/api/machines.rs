@@ -45,8 +45,11 @@ pub async fn list(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<L
 
 pub async fn get_one(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
     // 在用机器先找缓存视图（同 GET /machines：资源变更后 live 会重算，不会拿到变更前的）；不在里面的（已退役）再单独加载
-    if let Some(m) = views::live(&st).await?.iter().find(|m| m.id == id) {
-        return Ok(ok(m));
+    // 视图算不出来（自检 central_view_stuck）时不跟着失败：照旧单独加载这一台，排障时还能看
+    if let Ok(v) = views::live(&st).await {
+        if let Some(m) = v.iter().find(|m| m.id == id) {
+            return Ok(ok(m));
+        }
     }
     let mut v = views::load(&st, Scope::All, Some(id)).await?;
     v.pop().map(ok).ok_or_else(|| ApiError::not_found("没有这台机器"))
@@ -1003,8 +1006,10 @@ pub struct SubOverrides {
     /// 0 = 不限
     traffic_gb: Option<i32>,
     traffic_reset_day: Option<i32>,
-    /// 流量计费方式：sum 双向 / max、min、out、in 单向（meta::TRAFFIC_RULES）；null = 跟随供应商
-    traffic_rule: Option<String>,
+    /// 流量计费方式：sum 双向 / max、min、out、in 单向（meta::TRAFFIC_RULES）；null = 跟随供应商。
+    /// 后加的字段：没传 = 保留现值（不认识它的旧 fleetctl、没刷新的旧网页改别的项时不把单独设置清掉）
+    #[serde(default, deserialize_with = "super::some", skip_serializing_if = "Option::is_none")]
+    traffic_rule: Option<Option<String>>,
 }
 
 impl SubOverrides {
@@ -1024,7 +1029,7 @@ impl SubOverrides {
         if self.traffic_reset_day.is_some_and(|d| !(1..=31).contains(&d)) {
             return Err(ApiError::bad_request("流量重置日要在 1–31 之间"));
         }
-        super::catalog::traffic_rule(&self.traffic_rule)?;
+        super::catalog::traffic_rule(&self.traffic_rule.clone().flatten())?;
         if let Some(c) = &mut self.currency {
             // 同套餐的币种规则（比较「和套餐相同」时口径一致）
             *c = meta::currency(c).map_err(ApiError::bad_request)?;
@@ -1035,7 +1040,7 @@ impl SubOverrides {
         Ok(())
     }
 
-    /// 写订阅：到期日 + 这些单独设置（整份替换；自动续费、接入前读数不动），再把和模板相同的改回跟随。
+    /// 写订阅：到期日 + 这些单独设置（整份替换，流量计费方式没传的保留现值；自动续费、接入前读数不动），再把和模板相同的改回跟随。
     /// 账单日（billing_day）按 meta::billing_day：到期日落在现有账单日上（含原样带回的到期日、31 号账单日的 2-28）不动，否则改成新到期日几号
     pub async fn write(&self, db: &mut sqlx::PgConnection, id: Uuid, due: Date) -> ApiResult<()> {
         let cur: Option<i16> = sqlx::query_scalar("select billing_day from subscription where machine_id = $1").bind(id).fetch_optional(&mut *db).await?.flatten();
@@ -1045,7 +1050,8 @@ impl SubOverrides {
              values ($1, $2, $3, $4, $5::billing_cycle, $6, $7, $8, $9, $10, $11)
              on conflict (machine_id) do update set due_date = excluded.due_date, price_cents = excluded.price_cents, currency = excluded.currency,
                cycle = excluded.cycle, billing_tz = excluded.billing_tz, remind_days = excluded.remind_days, traffic_gb = excluded.traffic_gb,
-               traffic_reset_day = excluded.traffic_reset_day, traffic_rule = excluded.traffic_rule, billing_day = excluded.billing_day, updated_at = now()",
+               traffic_reset_day = excluded.traffic_reset_day,
+               traffic_rule = case when $12 then subscription.traffic_rule else excluded.traffic_rule end, billing_day = excluded.billing_day, updated_at = now()",
         )
         .bind(id)
         .bind(due)
@@ -1056,8 +1062,9 @@ impl SubOverrides {
         .bind(self.remind_days)
         .bind(self.traffic_gb)
         .bind(self.traffic_reset_day)
-        .bind(&self.traffic_rule)
+        .bind(self.traffic_rule.clone().flatten())
         .bind(i16::from(bday))
+        .bind(self.traffic_rule.is_none())
         .execute(&mut *db)
         .await?;
         sqlx::query("select subscription_normalize($1)").bind(id).execute(&mut *db).await?;

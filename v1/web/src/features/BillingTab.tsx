@@ -158,7 +158,7 @@ function SubForm({ m }: { m: MachineView }) {
   const [remind, setRemind] = React.useState(() => init('remind_days'));
   const [traffic, setTraffic] = React.useState(() => init('traffic_gb'));
   const [resetDay, setResetDay] = React.useState(() => init('traffic_reset_day'));
-  const [rule, setRule] = React.useState(() => init('traffic_rule') || meta().defaults.traffic_rule);
+  const [rule, setRule] = React.useState(() => init('traffic_rule'));
   const [auto, setAuto] = React.useState(s?.auto_renew ?? false);
   const priceNum = Number(price);
   // 保存按钮不可用时要能看出原因：空着提示必填，填错了标红（只看单独设置的项）
