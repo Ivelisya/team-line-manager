@@ -283,7 +283,7 @@ pub async fn retry(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
         lc = Some("provisioning".into());
     }
     // 机器状态已经变了（比如上架一半的机器后来退役了）：旧作业不能复活
-    // （失败的就是改状态的那一步、而机器已经是目标状态的除外：状态改完后记账失败，重试时那一步记为跳过）
+    // （失败的就是改状态的那一步、而机器已经是目标状态的除外：状态改完后记账失败，重试时那一步幂等地再跑一遍）
     let key = jobs::defs(&kind).get(step as usize).map_or("", |d| d.key);
     if !jobs::target_reached(&kind, key, lc.as_deref()) {
         jobs::check_target(&kind, lc.as_deref()).map_err(ApiError::conflict)?;

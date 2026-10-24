@@ -8,7 +8,7 @@
 //! - 路由自身流量走 OpenClash（router_self_proxy）时，重启 OpenClash 会掐断隧道和中控这条 ssh：改配置 / 改回的主体在后台跑（不理 HUP / PIPE），
 //!   输出与退出码写进 /tmp/fleet-replace.res.<MODE>.<STAMP>.*，前台等它跑完原样转出；连接断了，中控等隧道回连后用 [`fetch_script`] 取回（jobs/steps/replace.rs 的 run_script）。
 //!   结果文件由 fetch_script 取走时删，没人取的下一次开跑前删（连接断了前台 shell 不一定被杀，不能由它删）。
-//! - 路由上同一时刻只跑一份改配置 / 改回：SCRIPT 外层的锁 /tmp/fleet-replace.lock（目录 + 持锁进程的 pid），上一份还在跑就等它（最多 [`LOCK_WAIT`] 秒），
+//! - 路由上同一时刻只跑一份改配置 / 改回：SCRIPT 外层的锁 /tmp/fleet-replace.lock（目录 + 持锁进程的「pid 建锁时刻」），上一份还在跑就等它（最多 [`LOCK_WAIT`] 秒），
 //!   等不到以 [`BUSY`] 退出、一行不动。中控这边的锁（jobs/steps/replace.rs 的 Locks）是 PG 会话级的，中控重启（或 PG 重启）后就没了，
 //!   上一个进程起的那份可能还在后台跑：两份同时改，先跑完的那份测不通改回时会把后一份写好的换掉。
 //! - 改的是源配置（`uci get openclash.config.config_path`，OpenClash 重启时由它生成运行配置）。
@@ -40,9 +40,12 @@ pub const ROLLBACK_TIMEOUT: Duration = Duration::from_secs(240);
 pub const LOCK_WAIT: u32 = 60;
 /// 等不到锁的退出码：这次一行没动
 pub const BUSY: i32 = 7;
+/// 锁龄超过这么久就当陈旧，即使里面的 pid 还活着：持锁的脚本被 kill -9 后 pid 可能被别的进程复用（OpenWrt 的 pid 回绕很快），
+/// 光靠 kill -0 会一直等满 LOCK_WAIT 再 BUSY，直到那个进程退出或路由重启。一份脚本最长 APPLY_TIMEOUT（含自己的改回），留足余量
+pub const LOCK_STALE: u32 = 900;
 
 /// 改配置、改回脚本外层的锁用的参数（变量名里不能有 `WAIT='`：tests/replace.rs 的假 ssh 按它认出取结果的脚本）
-fn lock_vars() -> String { vars(&[("LOCK_SECS", &LOCK_WAIT.to_string()), ("BUSY", &BUSY.to_string())]) }
+fn lock_vars() -> String { vars(&[("LOCK_SECS", &LOCK_WAIT.to_string()), ("LOCK_AGE", &LOCK_STALE.to_string()), ("BUSY", &BUSY.to_string())]) }
 
 /// 一个出口要改成的样子。`old_*` 是它现在应当指向的旧入口（核对用，不改）。
 /// 写进路由的那组也记在作业参数里（jobs/steps/replace.rs 的 `Applied`），改回时照它核对
@@ -440,7 +443,8 @@ echo replace=ok
 # 由 fetch_script 取走时删，没人取的下一次开跑前删。
 # 同一台路由上同一时刻只跑一份（改配置、改回都算）：锁是目录 $LOCK（mkdir 是原子的；busybox 不一定有 flock），里面的 pid 是持锁的进程，
 # 后台那份跑完才放开。中控重启后接着做时，上一个进程起的那份可能还在后台跑（中控这边的锁随进程没了）：先等它跑完，最多 LOCK_SECS 秒，
-# 等不到以 BUSY 退出、一行不动。持锁的进程已经不在（被杀，或建锁那一下就没了、连着两次读不到 pid）的是陈旧的锁，接管
+# 等不到以 BUSY 退出、一行不动。持锁的进程已经不在（被杀，或建锁那一下就没了、连着两次读不到 pid）的是陈旧的锁，接管；
+# pid 文件里是「pid 建锁时刻」，锁龄超过 LOCK_AGE 秒的也接管（pid 可能被别的进程复用了，kill -0 会成功）。没有时刻的（旧脚本留下的）只看 pid
 umask 077
 RES="/tmp/fleet-replace.res.$MODE.$STAMP"
 LOCK=/tmp/fleet-replace.lock
@@ -448,10 +452,15 @@ LOCK=/tmp/fleet-replace.lock
 : > "$RES.out"; : > "$RES.err"
 t=0; e=0
 while ! mkdir "$LOCK" 2>/dev/null; do
-  p=$(cat "$LOCK/pid" 2>/dev/null || true)
+  c=$(cat "$LOCK/pid" 2>/dev/null || true)
+  p=${c%% *}; s=
+  case "$c" in *" "*) s=${c#* } ;; esac
+  case "$s" in *[!0-9]*) s= ;; esac
   if [ -n "$p" ]; then e=0; else e=$((e + 1)); fi
-  if { [ -n "$p" ] && ! kill -0 "$p" 2>/dev/null; } || [ "$e" -ge 2 ]; then
-    if [ "$(cat "$LOCK/pid" 2>/dev/null || true)" = "$p" ]; then rm -rf "$LOCK"; fi
+  old=0
+  if [ -n "$s" ] && [ "$(( $(date +%s) - s ))" -gt "$LOCK_AGE" ]; then old=1; fi
+  if { [ -n "$p" ] && { [ "$old" = 1 ] || ! kill -0 "$p" 2>/dev/null; }; } || [ "$e" -ge 2 ]; then
+    if [ "$(cat "$LOCK/pid" 2>/dev/null || true)" = "$c" ]; then rm -rf "$LOCK"; fi
     continue
   fi
   if [ "$t" -ge "$LOCK_SECS" ]; then
@@ -462,12 +471,12 @@ while ! mkdir "$LOCK" 2>/dev/null; do
   fi
   sleep 2; t=$((t + 2))
 done
-echo "$$" > "$LOCK/pid"
+echo "$$ $(date +%s)" > "$LOCK/pid"
 # 没人取的结果持锁之后再删（之前删会删掉还在跑的那份的）：只留这次刚建的 out / err（同一个时间戳再改回一次时，上一次留下的 rc 也删）
 for f in /tmp/fleet-replace.res.*; do case "$f" in "$RES.out" | "$RES.err") ;; *) rm -f "$f" ;; esac; done
 ( trap '' HUP PIPE; ( main ) >"$RES.out" 2>"$RES.err"; echo "$?" > "$RES.rc.tmp" && mv -f "$RES.rc.tmp" "$RES.rc"; rm -rf "$LOCK" ) </dev/null >/dev/null 2>&1 &
 # 锁交给后台那份（这边的 shell 可能先没了）
-echo "$!" > "$LOCK/pid.tmp" && mv -f "$LOCK/pid.tmp" "$LOCK/pid"
+echo "$! $(date +%s)" > "$LOCK/pid.tmp" && mv -f "$LOCK/pid.tmp" "$LOCK/pid"
 wait $!
 cat "$RES.out"; cat "$RES.err" >&2
 exit "$(cat "$RES.rc" 2>/dev/null || echo 1)"
@@ -854,16 +863,18 @@ rules:\n- MATCH,节点01组\n";
     }
 
     /// 路由上同一时刻只跑一份：上一份（持锁的 pid 还在）没跑完就等，等不到以 BUSY 退出、一行不动、上一份的结果不删，中控来取也是 BUSY；
-    /// 持锁的进程已经不在、或锁里一直没有 pid 的接管；跑完放开锁
+    /// 持锁的进程已经不在、锁里一直没有 pid、锁龄超过 LOCK_STALE（pid 被别的进程复用了）的接管；跑完放开锁
     #[cfg(unix)]
     #[test]
     fn router_side_lock() {
         assert!(LOCK_WAIT as u64 + FETCH_WAIT as u64 <= APPLY_TIMEOUT.as_secs() && (LOCK_WAIT as u64) < ROLLBACK_TIMEOUT.as_secs());
+        assert!(LOCK_STALE as u64 > APPLY_TIMEOUT.as_secs() + ROLLBACK_TIMEOUT.as_secs());
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
         for bb in shells() {
             let f = Fake::new(CONFIG, bb);
             let lock = f.path("w.lock");
             std::fs::create_dir(&lock).unwrap();
-            std::fs::write(lock.join("pid"), format!("{}\n", std::process::id())).unwrap();
+            std::fs::write(lock.join("pid"), format!("{} {now}\n", std::process::id())).unwrap();
             let prev = f.path("w.res.apply.20261023-000000Z.rc");
             std::fs::write(&prev, "0\n").unwrap();
             let o = f.run(&apply_script(&[edit("节点01")], at(S), &[]), &[("节点01", 9)]);
@@ -873,11 +884,25 @@ rules:\n- MATCH,节点01组\n";
             assert!(f.read("restart.log").is_empty() && !f.path("etc/fleet-backup").exists() && lock.join("pid").exists() && prev.exists());
             assert_eq!(f.run(&fetch_script("apply", S), &[]).code, BUSY, "等锁时连接断了：取回的也是 BUSY");
             assert_eq!(f.run(&rollback_script(S, &[edit("节点01")]), &[]).code, BUSY, "改回也等同一把锁");
+            // 旧脚本留下的只有 pid、没有时刻：只看 pid 活不活，照旧等
+            std::fs::write(lock.join("pid"), format!("{}\n", std::process::id())).unwrap();
+            assert_eq!(f.run(&apply_script(&[edit("节点01")], at(S), &[]), &[("节点01", 9)]).code, BUSY, "busybox={bb}");
+            // pid 还活着（可能是被复用的）：锁龄不到 LOCK_STALE 照旧等；超过的接管
+            let aged = |secs: u64| format!("{} {}\n", std::process::id(), now - secs);
+            std::fs::write(lock.join("pid"), aged(LOCK_STALE as u64 - 60)).unwrap();
+            assert_eq!(f.run(&apply_script(&[edit("节点01")], at(S), &[]), &[("节点01", 9)]).code, BUSY, "busybox={bb}");
+            assert!(f.read("restart.log").is_empty() && lock.join("pid").exists());
+            std::fs::write(lock.join("pid"), aged(LOCK_STALE as u64 + 60)).unwrap();
+            let o = f.run(&apply_script(&[edit("节点01")], at(S), &[]), &[("节点01", 9)]);
+            assert_eq!((o.code, o.kv("replace")), (0, Some("ok")), "busybox={bb} {o:?}");
+            assert!(!lock.exists());
+            assert_eq!(f.run(&rollback_script(S, &[edit("节点01")]), &[]).kv("rollback"), Some("ok"));
+            std::fs::create_dir(&lock).unwrap();
             // 持锁的进程已经不在：接管；持锁之后才删别的结果；跑完放开锁
             let mut gone = std::process::Command::new("true").spawn().unwrap();
             let dead = gone.id();
             gone.wait().unwrap();
-            std::fs::write(lock.join("pid"), format!("{dead}\n")).unwrap();
+            std::fs::write(lock.join("pid"), format!("{dead} {now}\n")).unwrap();
             let o = f.run(&apply_script(&[edit("节点01")], at(S), &[]), &[("节点01", 9)]);
             assert_eq!((o.code, o.kv("replace")), (0, Some("ok")), "busybox={bb} {o:?}");
             assert!(!lock.exists());

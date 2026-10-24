@@ -148,6 +148,34 @@ async fn cancel_before_preflight_passes_does_not_clean_machine() {
     assert!(!msgs.iter().any(|m| m.contains("清理机器上的服务」失败")), "没有去登录清理：{msgs:?}");
 }
 
+/// 「上线」已经把机器改成了在用，作业才被取消（取消赶在上线之后，或上线后记账失败再取消）：补偿什么都不动，
+/// 入口保持在用（摘掉会让客户断线）、机器保持在用
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancel_after_machine_active_keeps_entry_and_machine() {
+    let t = setup(false).await;
+    let team = seed_team(&t, "团队1").await;
+    let (relay, _) = seed_relay(&t).await;
+    let node = seed_node(&t, team, 1, "203.0.113.10", "active").await;
+    let eid = Uuid::now_v7();
+    sqlx::query("insert into entry (id, relay_id, node_id, port, client_uuid, short_id, lifecycle) values ($1, $2, $3, 20001, $4, 'ab', 'active')")
+        .bind(eid)
+        .bind(relay)
+        .bind(node)
+        .bind(Uuid::now_v7())
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let mut tx = t.st.db.begin().await.unwrap();
+    let job = jobs::enqueue(&mut tx, "provision_proxy", Some(node), json!({"entry_id": eid}), "test").await.unwrap();
+    tx.commit().await.unwrap();
+    sqlx::query("update job set state = 'cancelling' where id = $1").bind(job).execute(&t.st.db).await.unwrap();
+    let j = run_one(&t, job).await;
+    assert_eq!(j["state"], "cancelled", "{j}");
+    assert_eq!(t.machine_lifecycle(node).await, "active", "机器没有被退役");
+    let lc: String = sqlx::query_scalar("select lifecycle::text from entry where id = $1").bind(eid).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(lc, "active", "入口没有被摘掉");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn retired_machine_old_provision_job_cannot_be_retried() {
     let t = setup(true).await;
@@ -318,9 +346,9 @@ async fn claim_puts_short_jobs_before_provision_before_upgrade() {
     assert_eq!(got, want.into_iter().map(|w| w.2).collect::<Vec<_>>());
 }
 
-/// 「上线」已经把机器改成了在用、但记账失败：重跑不被「机器状态不对」判死，这一步记为跳过；别的步骤遇到同样的状态仍然失败
+/// 「上线」已经把机器改成了在用、但记账失败：重跑不被「机器状态不对」判死，这一步照常跑完（改状态那条语句是幂等的）；别的步骤遇到同样的状态仍然失败
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn activate_rerun_after_machine_already_active_is_skipped() {
+async fn activate_rerun_after_machine_already_active_completes() {
     let t = setup(false).await;
     let team = seed_team(&t, "团队1").await;
     let node = seed_node(&t, team, 1, "203.0.113.10", "active").await;
@@ -331,7 +359,8 @@ async fn activate_rerun_after_machine_already_active_is_skipped() {
     sqlx::query("update job set step = 3 where id = $1").bind(at_activate).execute(&t.st.db).await.unwrap();
     let j = run_one(&t, at_activate).await;
     assert_eq!(j["state"], "succeeded", "{j}");
-    assert_eq!(j["steps"][3]["state"], "skipped", "{j}");
+    assert_eq!(j["steps"][3]["state"], "done", "{j}");
+    assert_eq!(t.machine_lifecycle(node).await, "active");
 
     // 同样的机器状态，停在上线之前的步骤：照旧判定作业不能继续
     let mut tx = t.st.db.begin().await.unwrap();
@@ -341,6 +370,30 @@ async fn activate_rerun_after_machine_already_active_is_skipped() {
     let j = run_one(&t, at_verify).await;
     assert_eq!(j["state"], "failed", "{j}");
     assert!(j["error"].as_str().unwrap().contains("不能再继续"), "{j}");
+}
+
+/// 「完成退役」已经把机器改成了已退役、但提交后的收尾（忘记主机公钥）没做完：重跑不被「机器状态不对」判死，
+/// 也不整步跳过，状态不再改、收尾照做
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn finalize_rerun_after_machine_already_retired_still_forgets_host() {
+    let t = setup(false).await;
+    let team = seed_team(&t, "团队1").await;
+    let node = seed_node(&t, team, 1, "203.0.113.10", "retired").await;
+    let kh = t.dir.path().join("known_hosts");
+    std::fs::write(&kh, "203.0.113.10 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGWzfakefakefakefakefakefakefakefakefakefakefake
+").unwrap();
+    let mut tx = t.st.db.begin().await.unwrap();
+    let job = jobs::enqueue(&mut tx, "retire", Some(node), json!({}), "test").await.unwrap();
+    tx.commit().await.unwrap();
+    let idx = jobs::defs("retire").iter().position(|d| d.key == "finalize").unwrap() as i32;
+    sqlx::query("update job_step set state = 'done' where job_id = $1 and idx < $2").bind(job).bind(idx).execute(&t.st.db).await.unwrap();
+    sqlx::query("update job set step = $2 where id = $1").bind(job).bind(idx).execute(&t.st.db).await.unwrap();
+    let j = run_one(&t, job).await;
+    assert_eq!(j["state"], "succeeded", "{j}");
+    assert_eq!(j["steps"][idx as usize]["state"], "done", "{j}");
+    assert!(!std::fs::read_to_string(&kh).unwrap().contains("203.0.113.10"), "主机公钥被忘掉了");
+    let bins: i64 = sqlx::query_scalar("select count(*) from recycle_bin where machine_id = $1").bind(node).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(bins, 0, "状态已经是已退役：不再往回收站记");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
