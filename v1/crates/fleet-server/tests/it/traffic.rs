@@ -166,3 +166,49 @@ async fn daily_vps_node_nic_billed() {
     let b = node("团队1-02");
     assert!([&b["rule"], &b["rx"], &b["tx"], &b["billed"], &b["nic_daily"]].iter().all(|x| x.is_null()), "家宽代理没有网卡，字段是 null：{b}");
 }
+
+/// 成本：节点月费（订阅价折 USD）、USD/GB（月费 ÷ 按区间日均折成的 30 天流量）、闲置（上架满 7 天且近 7 天日均 < 0.5 GB；不满 7 天不判）；
+/// 团队合计；待付清单同口径（近 30 天）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cost_per_gb_and_idle() {
+    let t = setup(false).await;
+    let db = &t.st.db;
+    let (relay, _) = seed_relay(&t).await;
+    let team = seed_team(&t, "团队1").await;
+    let mut ids = vec![];
+    for (n, price, old, today_down) in [(1, Some(3000), true, 1_000_000_000i64), (2, Some(3000), true, 4_000_000_000), (3, None, false, 0)] {
+        let id = seed_node(&t, team, n, &format!("203.0.113.{}", 10 + n), "active").await;
+        if old {
+            sqlx::query("update machine set activated_at = now() - interval '10 days' where id = $1").bind(id).execute(db).await.unwrap();
+        }
+        if let Some(p) = price {
+            sqlx::query("insert into subscription (machine_id, price_cents, currency, due_date) values ($1, $2, 'USD', current_date + 5)").bind(id).bind(p).execute(db).await.unwrap();
+        }
+        if today_down > 0 {
+            let e = Uuid::now_v7();
+            sqlx::query("insert into entry (id, relay_id, node_id, port, client_uuid, short_id, lifecycle) values ($1, $2, $3, $4, $5, 'ab', 'active')").bind(e).bind(relay).bind(id).bind(20000 + n).bind(Uuid::now_v7()).execute(db).await.unwrap();
+            sqlx::query("insert into entry_traffic_hourly (entry_id, hour, up_bytes, down_bytes) values ($1, (now() at time zone 'Asia/Shanghai')::date::timestamp at time zone 'Asia/Shanghai', 0, $2)").bind(e).bind(today_down).execute(db).await.unwrap();
+        }
+        ids.push(id);
+    }
+    t.st.live.rolled_up();
+
+    let v = t.get("/api/v1/traffic/daily?days=7").await;
+    assert_eq!((v["idle"]["days"].as_i64(), v["idle"]["gb_per_day"].as_f64()), (Some(7), Some(0.5)));
+    let node = |id: Uuid| v["nodes"].as_array().unwrap().iter().find(|n| n["id"] == id.to_string()).cloned().unwrap();
+    let near = |x: &Value, want: f64| (x.as_f64().unwrap() - want).abs() < 1e-6;
+    // 1 GB / 7 天 → 30 天 4.2857 GB，月费 30 USD → 7 USD/GB；4 GB 日均 0.57 GB 不闲置
+    let (a, b, c) = (node(ids[0]), node(ids[1]), node(ids[2]));
+    assert_eq!((a["monthly_usd_cents"].as_i64(), a["idle"].as_bool()), (Some(3000), Some(true)), "{a}");
+    assert!(near(&a["usd_per_gb"], 7.0) && near(&b["usd_per_gb"], 1.75), "{a} {b}");
+    assert_eq!(b["idle"], false, "{b}");
+    assert_eq!((c["monthly_usd_cents"].is_null(), c["usd_per_gb"].is_null(), c["idle"].as_bool()), (true, true, Some(false)), "没价格显示 —；上架不满 7 天不判闲置：{c}");
+    // 团队：月费 60 USD，近 30 天 5 GB → 12 USD/GB；有 1 台闲置、1 台没价格
+    let tm = &v["teams"][0];
+    assert_eq!((tm["name"].as_str(), tm["nodes"].as_i64(), tm["idle"].as_i64(), tm["monthly_usd_cents"].as_i64(), tm["unpriced"].as_i64(), tm["bytes_30d"].as_i64()), (Some("团队1"), Some(3), Some(1), Some(6000), Some(1), Some(5_000_000_000)), "{tm}");
+    assert!(near(&tm["usd_per_gb"], 12.0), "{tm}");
+    // 待付清单同口径，近 30 天：1 GB → 30 USD/GB
+    let d = t.get("/api/v1/billing/due?days=30").await;
+    let m = d["groups"][0]["machines"].as_array().unwrap().iter().find(|m| m["id"] == ids[0].to_string()).cloned().unwrap();
+    assert!(near(&m["usd_per_gb"], 30.0) && m["idle"] == true && m["avail_pct"].is_null(), "{m}");
+}

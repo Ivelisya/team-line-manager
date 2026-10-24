@@ -7,7 +7,7 @@ mod replace;
 pub use replace::sync_exit;
 
 use super::scripts::{self, vars, SsInst};
-use super::{clip, log, tune, JobRow, Outcome};
+use super::{clip, log, speedtest, tune, JobRow, Outcome};
 use crate::crypto::{random_token, sha256};
 use crate::entries;
 use crate::ssh::{self, kind_of, ErrKind, Output, StepError, Target};
@@ -143,6 +143,7 @@ pub async fn run(c: &Ctx<'_>, key: &str) -> anyhow::Result<Outcome> {
         "converge" => converge_node(c).await,
         "converge_relay" => converge_relay(c).await,
         "tune" => tune_step(c).await,
+        "speedtest" => speedtest_step(c).await,
         "ss" => ss_refresh(c).await,
         "agent" => agent(c).await,
         "wait_report" => wait_report(c).await,
@@ -545,6 +546,32 @@ async fn tune_step(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     sqlx::query("update machine set tune_profile = null, tuned_at = null, tune_params = null where id = $1").bind(m.id).execute(&c.st.db).await?;
     c.st.emit(Event::Machine { id: m.id });
     Ok(Outcome::Done(r.result))
+}
+
+/// 作业 `speedtest`：在机器上下载测速文件（speedtest.rs），结果写进步骤输出和作业日志。不改机器上的任何东西；
+/// 重试会重新下载一遍（再用一次流量）
+async fn speedtest_step(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
+    let m = c.machine().await?;
+    let size_mb = c.job.params["size_mb"].as_u64().map_or(speedtest::DEFAULT_MB, |n| n as u32);
+    let t = speedtest::target(c.job.params["target"].as_str()).ok_or_else(|| anyhow!("作业参数里的测速目标不在列表里"))?;
+    let (url, last) = speedtest::plan(t, size_mb);
+    c.log(format!("从{}（{url}）下载 {size_mb} MB，走这台机器自己的出站路径，会用掉约 {size_mb} MB 流量", t.name)).await;
+    let script = vars(&[("URL", &url), ("LAST", &last.to_string()), ("MAX_TIME", &speedtest::MAX_TIME_S.to_string())]) + speedtest::SCRIPT;
+    let out = c.ssh(&m, None).run(&script, Duration::from_secs(speedtest::MAX_TIME_S + 45)).await?;
+    if !out.ok() {
+        return Err(out.fail("测速失败"));
+    }
+    let raw = speedtest::parse(&out.stdout);
+    let v = speedtest::summarize(&raw, t, size_mb, &url).map_err(remote)?;
+    if v["complete"] == false {
+        c.warn(format!("{} 秒内只下载了 {:.1} MB，没下完：速率按已下载的算", speedtest::MAX_TIME_S, raw.bytes as f64 / 1e6)).await;
+    }
+    c.log(format!(
+        "平均速率 {} Mbit/s（{} MB/s），耗时 {} 秒，首字节 {} 毫秒，下载 {:.1} MB，对端 {}",
+        v["avg_mbps"], v["avg_mb_s"], v["total_s"], (raw.ttfb_s * 1000.0).round(), raw.bytes as f64 / 1e6, raw.ip
+    ))
+    .await;
+    Ok(Outcome::Done(v))
 }
 
 /// 装单元的脚本报了 `linklocal_dns=1`（见 scripts::LINKLOCAL_DNS）：记一条 warn。`what` 是哪个程序

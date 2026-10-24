@@ -232,6 +232,7 @@ pub const JOB_KINDS: Labels = &[
     ("replace", "替换节点"),
     ("tune", "系统调优"),
     ("ss_refresh", "重新下发 SS 配置"),
+    ("speedtest", "测速"),
     ("repoint", "改出口指向"),
     ("router_sync", "同步软路由出口"),
 ];
@@ -383,6 +384,7 @@ pub fn to_json() -> Value {
             "traffic_rule": DEFAULT_TRAFFIC_RULE, "traffic_reset": DEFAULT_TRAFFIC_RESET, "ss_method": SS_METHOD, "ss_port": SS_PORT,
         },
         "terminal": crate::terminal::meta(),
+        "speedtest": crate::jobs::speedtest::meta(),
     })
 }
 

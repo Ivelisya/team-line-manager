@@ -233,3 +233,9 @@
 .due-item-top, .due-item-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); flex-wrap: wrap; }
 .due-item-machines { color: var(--fg-2); overflow-wrap: anywhere; }
 @media (max-width: 600px) { .due-table { display: none; } .due-list { display: block; } }
+/* 告警页「月度可用率」：成功率数字（未满 99.9% 标色）、最差节点链接、窗口说明 */
+.up-pct[data-tone="warn"] { color: var(--warn-text); }
+.up-pct[data-tone="bad"] { color: var(--bad-text); }
+.up-tbl td.r .up-worst { display: block; max-width: 100%; height: auto; padding: 0; margin-left: auto; font-size: var(--fs-label); line-height: var(--lh-label); font-weight: var(--fw-regular); }
+.up-range { display: inline-flex; align-items: center; gap: var(--sp-4); white-space: nowrap; }
+@media (max-width: 600px) { .up-range { display: none; } }

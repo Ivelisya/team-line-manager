@@ -9,7 +9,7 @@ import { ProbeTab } from '@/features/ProbeTab';
 import { PingTab } from '@/features/PingTab';
 import { SubsTab } from '@/features/SubsTab';
 import { AccountTab } from '@/features/AccountTab';
-import { useAddChannel, useApiKeys, useCreateApiKey, useDelChannel, useMe, useNotifyChannels, useNotifyLog, usePatchChannel, useRevokeApiKey, useTestChannel, useTotpStatus } from '@/lib/queries';
+import { useAddChannel, useApiKeys, useCreateApiKey, useDelChannel, useMe, useMonthlyPreview, useNotifyChannels, useNotifyLog, usePatchChannel, useRevokeApiKey, useSendMonthly, useTestChannel, useTotpStatus } from '@/lib/queries';
 import type { ApiKey, NotifyChannel, NotifyLogEntry } from '@/lib/types';
 import * as F from '@/lib/format';
 import { Button, IconButton } from '@/components/ui/button';
@@ -19,7 +19,7 @@ import { Tabs, TabsList, TabsTrigger, Trunc } from '@/components/ui/overlays';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, DialogHeader } from '@/components/ui/dialog';
 import { SkeletonRows } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
-import { ConfirmDialog, FormDialog } from '@/components/app/dialogs';
+import { ConfirmDialog, FormDialog, TypedConfirmDialog } from '@/components/app/dialogs';
 import { Chip, CopyButton, Empty, ErrorNote, Note, PageHead, Panel, Pill, TableWrap } from '@/components/app/primitives';
 import { ShowAll } from '@/components/app/Pagination';
 import { copyText } from '@/lib/clipboard';
@@ -177,8 +177,8 @@ const KINDS: Record<string, { label: string; icon: React.ReactNode; fields: { ke
 };
 const SEVERITIES = [{ value: 'info', label: '提示及以上（全部）' }, { value: 'warning', label: '警告及以上' }, { value: 'critical', label: '只发严重' }];
 /** 发送记录的种类（服务端 notify::Kind） */
-// 静默变更、自动回收的对象名（subject_name）就是「静默 / 维护变更」「自动回收」，不再加前缀
-const NOTIFY_KIND: Record<NotifyLogEntry['kind'], string> = { firing: '触发', repeat: '提醒', resolved: '恢复', test: '测试', silence: '', auto: '' };
+// 静默变更、自动回收、月报的对象名（subject_name）就是「静默 / 维护变更」「自动回收」「月报」，不再加前缀
+const NOTIFY_KIND: Record<NotifyLogEntry['kind'], string> = { firing: '触发', repeat: '提醒', resolved: '恢复', test: '测试', silence: '', auto: '', report: '' };
 const sevPill = (s: string) => (s === 'critical' ? <Pill tone="bad" dot="none">严重</Pill> : s === 'warning' ? <Pill tone="warn" dot="none">警告及以上</Pill> : <Pill tone="info" dot="none">全部</Pill>);
 
 interface TestResult { ok: boolean; error: string | null }
@@ -190,6 +190,7 @@ function NotifySection() {
   const [edit, setEdit] = React.useState<NotifyChannel | 'new' | null>(null);
   // 关闭动画期间沿用最近的对象，标题和字段不闪变
   const editHeld = useHeld(edit === 'new' ? 'new' : edit?.id, edit);
+  const [report, setReport] = React.useState(false);
   const [ask, setAsk] = React.useState<NotifyChannel | null>(null);
   const askHeld = useHeld(ask?.id, ask);
   const [results, setResults] = React.useState<Record<string, TestResult>>({});
@@ -205,16 +206,19 @@ function NotifySection() {
   return (
     <>
       <Panel title="告警通知渠道" count={list.length} sub={<InfoTip text="告警达到「最低级别」时，会推送到这些渠道" />} flush
-        tools={<Button variant="primary" onClick={() => setEdit('new')}><Plus />新建渠道</Button>}>
+        tools={<>
+          <Button onClick={() => setReport(true)} data-tip="先看要发的内容，确认后立即发一次（只发给开了「月报」的渠道）"><Send size={14} />发送一次月报…</Button>
+          <Button variant="primary" onClick={() => setEdit('new')}><Plus />新建渠道</Button>
+        </>}>
         {q.isError && <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div>}
         {q.isLoading ? <SkeletonRows rows={3} head /> : list.length === 0 && !q.isError ? (
           // 没有渠道 = 所有告警都不会推给任何人：用警示色说清后果，不是和「还没有 API 密钥」一样分量的普通空状态（新建在标题栏右边，不重复放按钮）
           <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><Note tone="warn" icon={<BellOff size={14} />}>还没有通知渠道，告警不会推送给任何人 <InfoTip text="告警照常记在「告警」页，只是不会发出去。用右上角「新建渠道」添加 Telegram、企业微信或 Webhook" /></Note></div>
         ) : (
           <TableWrap>
-            <table className="dt" style={{ minWidth: 860 }}>
-              <colgroup><col style={{ width: 250 }} /><col style={{ width: 150 }} /><col style={{ width: 70 }} /><col style={{ width: 200 }} /><col style={{ width: 130 }} /></colgroup>
-              <thead><tr><th>渠道</th><th>最低级别</th><th>启用</th><th>测试</th><th /></tr></thead>
+            <table className="dt" style={{ minWidth: 930 }}>
+              <colgroup><col style={{ width: 250 }} /><col style={{ width: 150 }} /><col style={{ width: 70 }} /><col style={{ width: 70 }} /><col style={{ width: 200 }} /><col style={{ width: 130 }} /></colgroup>
+              <thead><tr><th>渠道</th><th>最低级别</th><th data-tip={'开了的渠道，每月 1 号收到上月摘要（总流量、月费、可用率最差的几台等）\n不看最低级别'}>月报</th><th>启用</th><th>测试</th><th /></tr></thead>
               <tbody>
                 {list.map((c) => {
                   const k = KINDS[c.kind]; const r = results[c.id];
@@ -222,6 +226,7 @@ function NotifySection() {
                     <tr key={c.id}>
                       <td><div className="row" style={{ flexWrap: 'nowrap', gap: 10 }}><span className="kind-ic" aria-hidden>{k?.icon ?? <Bell />}</span><div style={{ minWidth: 0 }}><Trunc className="cell-main strong">{c.name}</Trunc><span className="sub">{k?.label ?? c.kind} · {c.config_hint}</span></div></div></td>
                       <td>{sevPill(c.min_severity)}</td>
+                      <td>{c.monthly_report ? <Pill tone="info" dot="none" tip="每月 1 号收到上月摘要">月报</Pill> : <span className="t-muted">—</span>}</td>
                       <td><Switch checked={c.enabled} disabled={patch.isPending && patch.variables?.id === c.id} aria-label={`${c.enabled ? '停用' : '启用'}「${c.name}」`}
                         onCheckedChange={(v) => patch.mutate({ id: c.id, enabled: v }, { onSuccess: () => toast.ok(v ? '渠道已启用' : '渠道已停用'), onError: toast.err })} /></td>
                       <td>
@@ -269,6 +274,7 @@ function NotifySection() {
         )}
       </Panel>
 
+      <MonthlyReportDialog open={report} onOpenChange={setReport} channels={list} />
       {editHeld && <ChannelDialog target={editHeld} open={edit != null} onClose={() => setEdit(null)} />}
       <ConfirmDialog open={!!ask} onOpenChange={(o) => !o && setAsk(null)} title={`删除渠道 · ${askHeld?.name ?? ''}`} confirmLabel="删除" danger
         description="发送记录会保留"
@@ -283,7 +289,7 @@ const ChannelDialog = resetOnOpen(function ChannelDialog({ target, open, onClose
   const ch = target === 'new' ? null : target;
   const isNew = !ch;
   const [name, setName] = React.useState(ch?.name ?? ''); const [kind, setKind] = React.useState(ch?.kind ?? 'telegram');
-  const [cfg, setCfg] = React.useState<Record<string, string>>({}); const [sev, setSev] = React.useState(ch?.min_severity ?? 'warning'); const [enabled, setEnabled] = React.useState(ch?.enabled ?? true);
+  const [cfg, setCfg] = React.useState<Record<string, string>>({}); const [sev, setSev] = React.useState(ch?.min_severity ?? 'warning'); const [enabled, setEnabled] = React.useState(ch?.enabled ?? true); const [monthly, setMonthly] = React.useState(ch?.monthly_report ?? false);
   const [touched, setTouched] = React.useState(false); // 动过配置字段后才提示“填写完整”，不一打开就标红
   const [reveal, setReveal] = React.useState(false);
   const [clearSecret, setClearSecret] = React.useState(false); // 编辑飞书渠道时勾上：清除签名密钥（`secret: null`）
@@ -299,10 +305,10 @@ const ChannelDialog = resetOnOpen(function ChannelDialog({ target, open, onClose
   // 编辑时只带填了的字段（缺省 = 沿用）；清除签名密钥另带 secret: null
   const patchConfig = { ...(canClear && clearSecret ? { secret: null } : {}), ...Object.fromEntries(Object.entries(config).filter(([, v]) => v)) };
   const busy = add.isPending || patch.isPending;
-  const dirty = filled > 0 || clearSecret || (ch ? name !== ch.name || sev !== ch.min_severity || enabled !== ch.enabled : name.trim() !== '');
+  const dirty = filled > 0 || clearSecret || (ch ? name !== ch.name || sev !== ch.min_severity || enabled !== ch.enabled || monthly !== ch.monthly_report : name.trim() !== '');
   const submit = () => {
-    if (ch) patch.mutate({ id: ch.id, name: name.trim(), min_severity: sev, enabled, ...(filled || clearSecret ? { config: patchConfig } : {}) }, { onSuccess: () => { toast.ok('渠道已保存'); onClose(); }, onError: toast.err });
-    else add.mutate({ name: name.trim(), kind, config, min_severity: sev, enabled }, { onSuccess: () => { toast.ok('渠道已创建'); onClose(); }, onError: toast.err });
+    if (ch) patch.mutate({ id: ch.id, name: name.trim(), min_severity: sev, enabled, monthly_report: monthly, ...(filled || clearSecret ? { config: patchConfig } : {}) }, { onSuccess: () => { toast.ok('渠道已保存'); onClose(); }, onError: toast.err });
+    else add.mutate({ name: name.trim(), kind, config, min_severity: sev, enabled, monthly_report: monthly }, { onSuccess: () => { toast.ok('渠道已创建'); onClose(); }, onError: toast.err });
   };
   return (
     <FormDialog size="md" dirty={dirty} open={open} onOpenChange={(o) => !o && onClose()} title={ch ? `编辑渠道 · ${ch.name}` : '新建通知渠道'} desc={<>配置会加密保存 <InfoTip text="保存后，页面上不再显示原文" /></>}
@@ -327,7 +333,27 @@ const ChannelDialog = resetOnOpen(function ChannelDialog({ target, open, onClose
       <div className="form-grid">
         <Field label="最低级别"><Select value={sev} onChange={setSev} options={SEVERITIES} /></Field>
         <Field label="状态"><label className="check-row" style={{ gap: 10, height: 'var(--h-lg)' }}><Switch checked={enabled} onCheckedChange={setEnabled} /><span>{enabled ? '启用' : '已停用'}</span></label></Field>
+        <Field label="月报" className="span-2" hint="每月 1 号发上月摘要（总流量、月费、可用率最差的几台等），不看最低级别；渠道要处于启用状态才会收到">
+          <label className="check-row" style={{ gap: 10, height: 'var(--h-lg)' }}><Switch checked={monthly} onCheckedChange={setMonthly} aria-label="接收月报" /><span>{monthly ? '接收月报' : '不接收'}</span></label>
+        </Field>
       </div>
     </FormDialog>
   );
 });
+
+/** 发送一次月报：先把要发的文字（GET /reports/monthly，默认上个月）给人看，确认后立即发；只发给「开了月报且已启用」的渠道。
+ *  没有这样的渠道时服务端回 409，提示（去哪里勾选）留在对话框里显示（TypedConfirmDialog 的失败原因不只是一闪而过的通知） */
+function MonthlyReportDialog({ open, onOpenChange, channels }: { open: boolean; onOpenChange: (o: boolean) => void; channels: NotifyChannel[] }) {
+  const q = useMonthlyPreview(open);
+  const send = useSendMonthly();
+  const to = channels.filter((c) => c.enabled && c.monthly_report);
+  const d = q.data;
+  return (
+    <TypedConfirmDialog open={open} onOpenChange={onOpenChange} typed={false} expected="" size="md" title={`发送月报${d ? ` · ${d.month.slice(0, 4)} 年 ${Number(d.month.slice(5))} 月` : ''}`} confirmLabel="立即发送" confirmDisabled={!d}
+      description={to.length ? <>将发给 {to.length} 个渠道：{to.map((c) => c.name).join('、')}</> : '现在没有渠道会收到：先在渠道的编辑里打开「月报」，并保持启用，否则发送会被拒绝'}
+      onConfirm={async () => { const r = await send.mutateAsync(d?.month); toast.ok(`月报已排进发送队列（${r.channels} 个渠道），结果见下面的发送记录`); }}>
+      {q.isError ? <ErrorNote error={q.error} onRetry={() => void q.refetch()} />
+        : d ? <pre className="report-text">{d.text}</pre> : <div className="skel" style={{ height: 180 }} />}
+    </TypedConfirmDialog>
+  );
+}

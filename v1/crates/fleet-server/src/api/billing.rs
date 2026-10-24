@@ -4,7 +4,10 @@ use super::ok;
 use crate::auth::Actor;
 use crate::db::audit;
 use crate::error::{ApiError, ApiJson, ApiQuery, ApiResult};
+use super::machines;
 use crate::fx;
+use crate::meta;
+use crate::traffic;
 use crate::state::{AppState, Event};
 use axum::extract::State;
 use axum::Json;
@@ -45,11 +48,15 @@ struct DueRow {
     currency: String,
     cycle: String,
     spare: bool,
+    /// 上架已满 `traffic::IDLE_DAYS` 天（不满不判闲置）
+    aged: bool,
 }
 
 /// 待付清单：在用机器里到期日落在窗口内的，按 供应商 × 到期日 × 账单时区 分组（剩余天数 `due_days` 按各自账单时区的今天算，
 /// 同一天到期、时区不同的差一天，分开成组、组上带 `billing_tz`），每组列机器、原币种小计与 USD 合计（`total`，同总览月费合计的形状）。
-/// 开了自动续费的不算待付，单列在 `auto`（到期后由中控按周期顺延，只记账）。`groups[].machines[].price_cents` 是订阅的每期价格（登记已付的默认金额）
+/// 开了自动续费的不算待付，单列在 `auto`（到期后由中控按周期顺延，只记账）。`groups[].machines[].price_cents` 是订阅的每期价格（登记已付的默认金额）。
+/// 每台另带续不续费的依据（近 30 天）：`monthly_usd_cents` 月费、`bytes_30d` 业务流量、`usd_per_gb`（月费 ÷ 近 30 天业务流量，没有月费或没流量为 null）、
+/// `avail_pct`（TCP 成功率，没有探测为 null）、`idle`（闲置，判定见 traffic.rs）与 `avg7`（近 7 天日均业务流量，字节）
 pub async fn due(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<DueQuery>) -> ApiResult<Json<Value>> {
     if q.days.is_some() && q.until.is_some() {
         return Err(ApiError::bad_request("days 与 until 给一个"));
@@ -61,7 +68,8 @@ pub async fn due(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<Du
     let rows: Vec<DueRow> = sqlx::query_as(
         "select m.id, display_name(m.kind::text, m.label, t.name, m.number) name, m.kind::text kind, pv.id provider_id, pv.name provider, pv.panel_url,
                 s.due_date, (s.due_date - (now() at time zone e.billing_tz)::date) due_days, e.billing_tz, e.auto_renew, e.price_cents, e.currency, e.cycle::text cycle,
-                coalesce(t.spare, false) spare
+                coalesce(t.spare, false) spare,
+                coalesce(m.activated_at <= now() - make_interval(days => $4), false) aged
          from subscription s join subscription_eff e on e.machine_id = s.machine_id join machine m on m.id = s.machine_id
          left join team t on t.id = m.team_id left join plan pl on pl.id = m.plan_id left join provider pv on pv.id = coalesce(pl.provider_id, m.provider_id)
          where m.lifecycle = 'active' and ($3 or not coalesce(t.spare, false))
@@ -71,20 +79,28 @@ pub async fn due(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<Du
     .bind(q.until)
     .bind(days as i32)
     .bind(q.include_spare)
+    .bind(traffic::IDLE_DAYS as i32)
     .fetch_all(&st.db)
     .await?;
     let rate = fx::current(&st.db).await?;
+    // 续不续费的依据：近 30 天的业务流量（USD/GB、闲置，口径同流量页）与可用率（TCP 成功率，同 availability / fleetctl uptime，按这台的账单时区分天）
+    let uses = traffic::usage(&st).await?;
+    let avail = futures::future::try_join_all(rows.iter().map(|r| machines::availability_of(&st.db, r.id, &r.billing_tz, traffic::COST_DAYS as i32))).await?;
     let mut total = fx::Total::default();
     // 按 (供应商, 到期日, 账单时区) 分组：供应商 JSON、组内合计、组内机器
     type Group = (Option<Uuid>, Date, String, Value, fx::Total, Vec<Value>);
     let mut groups: Vec<Group> = vec![];
     let mut auto = vec![];
-    for r in rows {
+    for (r, (_, tcp_pct, _)) in rows.into_iter().zip(avail) {
         let provider = json!({"id": r.provider_id, "name": r.provider, "panel_url": r.panel_url});
         let (usd, r_) = fx::convert(&rate, i64::from(r.price_cents), &r.currency);
+        let u = uses.get(&r.id).copied().unwrap_or_default();
+        let monthly_usd = fx::convert(&rate, meta::monthly_cents(r.price_cents, &r.cycle), &r.currency).0;
         let m = json!({
             "id": r.id, "name": r.name, "kind": r.kind, "due_date": r.due_date, "due_days": r.due_days, "billing_tz": r.billing_tz, "spare": r.spare, "cycle": r.cycle,
             "price_cents": r.price_cents, "currency": r.currency, "price_usd_cents": usd,
+            "monthly_usd_cents": monthly_usd, "bytes_30d": u.bytes30, "usd_per_gb": traffic::usd_per_gb(monthly_usd, u.bytes30, traffic::COST_DAYS),
+            "idle": traffic::is_idle(u.sum7, r.aged), "avg7": u.sum7 / traffic::IDLE_DAYS, "avail_pct": tcp_pct,
         });
         if r.auto_renew {
             auto.push(json!({"provider": provider, "machine": m}));

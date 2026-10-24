@@ -18,6 +18,7 @@ mod ping;
 mod placement;
 mod policy;
 mod probe;
+mod reports;
 mod retention;
 mod spare;
 mod subs;

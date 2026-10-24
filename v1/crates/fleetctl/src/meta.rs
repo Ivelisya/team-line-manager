@@ -60,3 +60,6 @@ pub fn offset() -> UtcOffset {
 
 /// 组织时区的叫法（北京时间 / IANA 名）；没取到 meta 时是 UTC（时间也按 UTC 写）
 pub fn tz_label() -> &'static str { get().and_then(|m| m["org_timezone_label"].as_str()).unwrap_or("UTC") }
+
+/// 按需测速的可选项（`speedtest: {sizes_mb, default_mb, targets: [{key, name}]}`）；没取到 meta 或中控太旧时没有，由中控校验
+pub fn speedtest() -> Option<&'static Value> { get().and_then(|m| m.get("speedtest")).filter(|v| v.is_object()) }

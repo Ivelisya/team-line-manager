@@ -10,6 +10,11 @@
 //!   线路机在 `relays`；VPS 节点的网卡跟在节点行上（`rule` / `rx` / `tx` / `billed` / `nic_daily`），窗口内没有读数的为 null。
 //! - 小时表按 UTC 整点分桶，一桶按它的起点落在组织时区的哪天归哪天（半小时时区至多差 30 分钟，同 `flows`）。
 //!
+//! 成本：节点的 `monthly_usd_cents` = 在用（active）时订阅生效价按周期折成每月再折 USD（同总览 / 团队的 `monthly_usd`，同机 IP 节点各按自己的订阅，没有订阅或没汇率为 null，直出没有月费）；
+//! `usd_per_gb` = 月费 ÷ 按区间日均折成的 30 天业务流量（GB 取十进制，同流量额度）。团队的 `teams` 不受团队 / 机器过滤影响，固定看近 30 天。
+//! 闲置：在用、上架满 `IDLE_DAYS` 天、近 `IDLE_DAYS` 天（含今天）日均业务流量低于 `IDLE_GB_PER_DAY` GB；阈值只在这里定义，接口里带 `idle` 标记，
+//! 待付清单（api/billing.rs）用同一个判定。窗口至少取 `COST_DAYS` 天（成本、闲置要用），展示的是最后 `days` 天。
+//!
 //! 两条按 (节点, 线路机, 天) / (机器, 天) 分组的聚合各扫一遍窗口内的小时行（走 hour 索引，0015 / 0043；先按入口 × 天聚合再连入口表，
 //! bigint 直接 sum（库里按 int128 累加，先转 numeric 慢一倍）），结果按汇总轮次缓存
 //! （`LiveCache.daily`，小时汇总每 5 分钟一轮，跑完即作废，所以今天的数据和机器视图一样新）；团队、机器过滤在内存里做。
@@ -26,6 +31,54 @@ use uuid::Uuid;
 
 /// 最多看多少天
 pub const MAX_DAYS: i64 = 92;
+/// 闲置判定：看近几天（含今天）的日均业务流量，也是上架至少要满的天数（不满不判）
+pub const IDLE_DAYS: i64 = 7;
+/// 闲置判定：近 `IDLE_DAYS` 天日均业务流量低于它（GB，十进制）
+pub const IDLE_GB_PER_DAY: f64 = 0.5;
+/// 成本口径的天数：团队和待付清单看近 30 天，`usd_per_gb` 折成 30 天
+pub const COST_DAYS: i64 = 30;
+const GB: f64 = 1e9;
+
+/// 每 GB 业务流量花多少 USD：月费 ÷ 按 `days` 天的量折成的 30 天流量；没有月费或没有流量为 None
+pub(crate) fn usd_per_gb(monthly_usd_cents: Option<i64>, bytes: i64, days: i64) -> Option<f64> {
+    let gb30 = bytes as f64 / days as f64 * COST_DAYS as f64 / GB;
+    if gb30 > 0.0 { monthly_usd_cents.map(|c| c as f64 / 100.0 / gb30) } else { None }
+}
+
+/// 闲置：`sum7` = 近 `IDLE_DAYS` 天业务流量合计，`aged` = 上架已满 `IDLE_DAYS` 天；调用方先排除不在用的
+pub(crate) fn is_idle(sum7: i64, aged: bool) -> bool { aged && ((sum7 as f64) / IDLE_DAYS as f64) < IDLE_GB_PER_DAY * GB }
+
+/// 一台机器的业务流量：近 `COST_DAYS` 天、近 `IDLE_DAYS` 天的合计（下载加上传）
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Usage {
+    pub bytes30: i64,
+    pub sum7: i64,
+}
+
+/// 每台机器的 `Usage`：节点 = 以它为节点的入口；线路机 = 挂在它上面的入口（含直出）。窗口至少 30 天
+pub(crate) fn usage_of(raw: &Raw) -> HashMap<Uuid, Usage> {
+    let (dates, biz, _) = &**raw;
+    let at = |n: i64| dates[dates.len().saturating_sub(n as usize)];
+    let (d30, d7) = (at(COST_DAYS), at(IDLE_DAYS));
+    let mut out: HashMap<Uuid, Usage> = HashMap::new();
+    for &(node, relay, d, down, up) in biz {
+        if d < d30 {
+            continue;
+        }
+        let b = down.saturating_add(up);
+        for id in if node == relay { vec![relay] } else { vec![node, relay] } {
+            let u = out.entry(id).or_default();
+            u.bytes30 = u.bytes30.saturating_add(b);
+            if d >= d7 {
+                u.sum7 = u.sum7.saturating_add(b);
+            }
+        }
+    }
+    out
+}
+
+/// 近 30 天每台机器的业务流量（待付清单用）
+pub(crate) async fn usage(st: &AppState) -> sqlx::Result<HashMap<Uuid, Usage>> { Ok(usage_of(&raw(st, COST_DAYS).await?)) }
 
 /// 窗口内的按天聚合：(各天, 入口按 (节点, 线路机, 天) 的下载 / 上传, 线路机网卡按 (线路机, 天) 的下行 / 上行)
 pub(crate) type Raw = Arc<(Vec<Date>, Vec<(Uuid, Uuid, Date, i64, i64)>, Vec<(Uuid, Date, i64, i64)>)>;
@@ -59,6 +112,14 @@ pub struct NodeRow {
     pub direct: bool,
     pub down: i64,
     pub up: i64,
+    /// 月费（USD 分）：在用且有订阅、有汇率的；直出、没价格的为 null
+    pub monthly_usd_cents: Option<i64>,
+    /// 每 GB 业务流量的 USD（月费 ÷ 按本次区间日均折成的 30 天流量）；没有月费或区间内没流量为 null
+    pub usd_per_gb: Option<f64>,
+    /// 近 `idle.days` 天（含今天）日均业务流量（字节）；直出为 null
+    pub avg7: Option<i64>,
+    /// 闲置：在用、上架满 `idle.days` 天、`avg7` 低于 `idle.gb_per_day` GB
+    pub idle: bool,
     pub daily: Vec<Biz>,
     /// 节点自己的网卡（VPS 节点按额度同口径计费；家宽代理、同机 IP 节点、直出行、窗口内没有读数的为 null）：生效的规则
     pub rule: Option<&'static str>,
@@ -68,6 +129,31 @@ pub struct NodeRow {
     pub billed: Option<i64>,
     /// 每天的网卡下行 / 上行 / 计费量，与 `dates` 等长
     pub nic_daily: Option<Vec<Nic>>,
+}
+
+/// 团队成本（近 30 天，不受团队 / 机器过滤影响）
+#[derive(Serialize)]
+pub struct TeamRow {
+    pub id: Uuid,
+    pub name: String,
+    pub spare: bool,
+    /// 在用的节点数
+    pub nodes: i64,
+    /// 其中闲置的
+    pub idle: i64,
+    /// 在用节点的月费合计（USD 分）；全都没价格为 null
+    pub monthly_usd_cents: Option<i64>,
+    /// 在用节点里没价格（没订阅或没汇率）、没算进月费的台数
+    pub unpriced: i64,
+    /// 近 30 天业务流量（字节）
+    pub bytes_30d: i64,
+    pub usd_per_gb: Option<f64>,
+}
+
+#[derive(Serialize)]
+pub struct Idle {
+    pub days: i64,
+    pub gb_per_day: f64,
 }
 
 #[derive(Serialize)]
@@ -93,6 +179,8 @@ pub struct Daily {
     pub tz: String,
     pub dates: Vec<Date>,
     pub total: Vec<Biz>,
+    pub idle: Idle,
+    pub teams: Vec<TeamRow>,
     pub nodes: Vec<NodeRow>,
     pub relays: Vec<RelayRow>,
 }
@@ -149,9 +237,15 @@ struct M {
     name: String,
     team_id: Option<Uuid>,
     team_name: Option<String>,
+    team_spare: bool,
     lifecycle: String,
     country: Option<String>,
     rule: Option<String>,
+    price: Option<i32>,
+    currency: Option<String>,
+    cycle: Option<String>,
+    /// 上架已满 `IDLE_DAYS` 天
+    aged: bool,
 }
 
 pub async fn daily(st: &AppState, days: Option<i64>, team: Option<&str>, machine: Option<&str>) -> ApiResult<Daily> {
@@ -183,20 +277,33 @@ pub async fn daily(st: &AppState, days: Option<i64>, team: Option<&str>, machine
             .ok_or_else(|| ApiError::not_found(format!("没有机器「{q}」")))?,
         ),
     };
-    let raw = raw(st, days).await?;
-    let (dates, biz, nic) = &*raw;
+    // 窗口至少 30 天（团队成本、闲置要用），展示的是最后 days 天
+    let raw = raw(st, days.max(COST_DAYS)).await?;
+    let (all_dates, biz, nic) = &*raw;
+    let dates = &all_dates[all_dates.len() - days as usize..];
+    let uses = usage_of(&raw);
+    let fx = crate::fx::current(&st.db).await?;
     let ids: Vec<Uuid> = biz.iter().flat_map(|b| [b.0, b.1]).chain(nic.iter().map(|n| n.0)).collect::<HashSet<_>>().into_iter().collect();
     let ms: Vec<M> = sqlx::query_as(
-        "select m.id, m.kind::text kind, display_name(m.kind::text, m.label, t.name, m.number) name, t.id team_id, t.name team_name,
-                m.lifecycle::text lifecycle, m.country, coalesce(s.traffic_rule, tp.traffic_rule) rule
+        "select m.id, m.kind::text kind, display_name(m.kind::text, m.label, t.name, m.number) name, t.id team_id, t.name team_name, coalesce(t.spare, false) team_spare,
+                m.lifecycle::text lifecycle, m.country, coalesce(s.traffic_rule, tp.traffic_rule) rule, s.price_cents price, s.currency, s.cycle::text cycle,
+                coalesce(m.activated_at <= now() - make_interval(days => $2), false) aged
          from machine m left join team t on t.id = m.team_id
          left join subscription_eff s on s.machine_id = m.id left join sub_template tp on tp.machine_id = m.id
          where m.id = any($1) or (m.lifecycle <> 'retired' and m.recycled_at is null)
          order by m.kind = 'relay' desc, t.sort_order nulls first, t.name, m.number, m.label, m.id",
     )
     .bind(&ids)
+    .bind(IDLE_DAYS as i32)
     .fetch_all(&st.db)
     .await?;
+    // 月费（USD 分）：只算在用的，订阅生效价按周期折成每月再按汇率折（同总览的 monthly_usd）
+    let monthly_usd = |m: &M| -> Option<i64> {
+        if m.lifecycle != "active" {
+            return None;
+        }
+        crate::fx::convert(&fx, crate::meta::monthly_cents(m.price?, m.cycle.as_deref()?), m.currency.as_deref()?).0
+    };
     // 国旗：没手动指定国家的取机器视图里按 IP 画像得出的；用已经算好的最新一份、不等视图重算（视图卡住时本接口照常出，没有就是 null）
     let auto: HashMap<Uuid, Option<String>> = st.live.latest().map(|v| v.iter().map(|m| (m.id, m.country.clone())).collect()).unwrap_or_default();
     let country = |m: &M| m.country.clone().or_else(|| auto.get(&m.id).cloned().flatten());
@@ -250,6 +357,8 @@ pub async fn daily(st: &AppState, days: Option<i64>, team: Option<&str>, machine
                 let (rx, tx) = (f(|v| v.rx), f(|v| v.tx));
                 (rule, rx, tx, crate::meta::billed(rule, rx, tx), days)
             });
+            let monthly_usd_cents = if direct { None } else { monthly_usd(m) };
+            let sum7 = (!direct).then(|| uses.get(&id).map_or(0, |u| u.sum7));
             Some(NodeRow {
                 id,
                 name: if direct { direct_name(&m.name) } else { m.name.clone() },
@@ -260,6 +369,10 @@ pub async fn daily(st: &AppState, days: Option<i64>, team: Option<&str>, machine
                 direct,
                 down,
                 up,
+                monthly_usd_cents,
+                usd_per_gb: usd_per_gb(monthly_usd_cents, down.saturating_add(up), days),
+                avg7: sum7.map(|s| s / IDLE_DAYS),
+                idle: sum7.is_some_and(|s| m.lifecycle == "active" && is_idle(s, m.aged)),
                 daily,
                 rule: nic.as_ref().map(|n| n.0),
                 rx: nic.as_ref().map(|n| n.1),
@@ -315,5 +428,28 @@ pub async fn daily(st: &AppState, days: Option<i64>, team: Option<&str>, machine
             }
         })
         .collect();
-    Ok(Daily { tz: crate::meta::org_tz(), dates: dates.clone(), total, nodes, relays })
+    // 团队成本：ms 已按团队排序，先到先列；没有在用节点也没有流量的团队不列
+    let mut teams: Vec<TeamRow> = vec![];
+    for m in ms.iter().filter(|m| m.kind != "relay") {
+        let Some(tid) = m.team_id else { continue };
+        let i = teams.iter().position(|t| t.id == tid).unwrap_or_else(|| {
+            teams.push(TeamRow { id: tid, name: m.team_name.clone().unwrap_or_default(), spare: m.team_spare, nodes: 0, idle: 0, monthly_usd_cents: None, unpriced: 0, bytes_30d: 0, usd_per_gb: None });
+            teams.len() - 1
+        });
+        let (t, u) = (&mut teams[i], uses.get(&m.id).copied().unwrap_or_default());
+        t.bytes_30d = t.bytes_30d.saturating_add(u.bytes30);
+        if m.lifecycle == "active" {
+            t.nodes += 1;
+            t.idle += i64::from(is_idle(u.sum7, m.aged));
+            match monthly_usd(m) {
+                Some(c) => t.monthly_usd_cents = Some(t.monthly_usd_cents.unwrap_or(0) + c),
+                None => t.unpriced += 1,
+            }
+        }
+    }
+    teams.retain(|t| t.nodes > 0 || t.bytes_30d > 0);
+    for t in &mut teams {
+        t.usd_per_gb = usd_per_gb(t.monthly_usd_cents, t.bytes_30d, COST_DAYS);
+    }
+    Ok(Daily { tz: crate::meta::org_tz(), dates: dates.to_vec(), total, idle: Idle { days: IDLE_DAYS, gb_per_day: IDLE_GB_PER_DAY }, teams, nodes, relays })
 }

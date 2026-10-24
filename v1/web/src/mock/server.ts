@@ -10,7 +10,8 @@ import { cycleMonths, META, subCalc } from './meta';
 const LIFECYCLE_LABEL = META.lifecycles;
 import { billingDay, buildDb, countryOf, hashStr, IP_STEPS, refreshFollowers, rng, SUB_FIELDS, syncSub, templateOf, trafficOf, type Db } from './fixtures';
 import { installAccessMock } from './access';
-import { installTrafficMock } from './traffic';
+import { installReportsMock } from './reports';
+import { installTrafficMock, mockIdle, mockMonthly, mockPerGb, mockUsage } from './traffic';
 import { installFxMock, toUsd, usdPerUnit, usdTotal } from './fx';
 import { installPolicyMock } from './policy';
 import { installRoutersMock } from './routers';
@@ -670,7 +671,11 @@ R('GET', '/billing/due', ({ query }) => {
   const days = Number(query.get('days') ?? 30);
   const rows = db.machines.filter((m) => m.lifecycle === 'active' && !m.spare && m.subscription && m.subscription.due_days <= days)
     .sort((a, b) => a.subscription!.due_date.localeCompare(b.subscription!.due_date) || (a.provider?.name ?? '￿').localeCompare(b.provider?.name ?? '￿'));
-  const view = (m: MachineView) => { const s = m.subscription!; return { id: m.id, name: m.name, kind: m.kind, due_date: s.due_date, due_days: s.due_days, billing_tz: s.billing_tz, cycle: s.cycle, price_cents: s.price_cents, currency: s.currency, price_usd_cents: toUsd(s.price_cents, s.currency) }; };
+  const view = (m: MachineView) => {
+    const s = m.subscription!; const u = mockUsage(m); const monthly = mockMonthly(m);
+    return { id: m.id, name: m.name, kind: m.kind, due_date: s.due_date, due_days: s.due_days, billing_tz: s.billing_tz, cycle: s.cycle, price_cents: s.price_cents, currency: s.currency, price_usd_cents: toUsd(s.price_cents, s.currency),
+      monthly_usd_cents: monthly, bytes_30d: u.bytes30, usd_per_gb: mockPerGb(monthly, u.bytes30, 30), idle: mockIdle(m, u.sum7), avg7: Math.round(u.sum7 / 7), avail_pct: availability(m, 30).tcp_pct };
+  };
   const prov = (m: MachineView) => ({ id: m.provider?.id ?? null, name: m.provider?.name ?? null, panel_url: db.providers.find((p) => p.id === m.provider?.id)?.panel_url ?? null });
   const total = (ms: MachineView[]) => usdTotal(ms.map((m) => ({ currency: m.subscription!.currency, monthly_cents: m.subscription!.price_cents })));
   const pay = rows.filter((m) => !m.subscription!.auto_renew);
@@ -766,7 +771,8 @@ R('GET', '/jobs', ({ query }) => {
   // 同中控：provision 是大类，其余按作业类型原值
   const k = query.get('kind') ?? '';
   const kindOk = (kind: string) => !k || (k === 'provision' ? kind.startsWith(`${k}_`) : kind === k);
-  return paged(db.jobs.filter((j) => kindOk(j.kind) && (s === 'all' || (s === 'active' ? j.state === 'running' || j.state === 'queued' : j.state !== 'running' && j.state !== 'queued'))).map(jobSummary), query);
+  const tid = query.get('target_id');
+  return paged(db.jobs.filter((j) => kindOk(j.kind) && (!tid || j.target?.id === tid) && (s === 'all' || (s === 'active' ? j.state === 'running' || j.state === 'queued' : j.state !== 'running' && j.state !== 'queued'))).map(jobSummary), query);
 });
 const jobOf = (id: string) => { const j = db.jobs.find((x) => x.id === id); if (!j) throw bad('作业不存在', 404, 'not_found'); return j; };
 R('GET', '/jobs/([^/]+)', ({ params }) => { const j = clone(jobOf(params[0])); const s = jobSummary(j); return { ...j, step: s.step, step_title: s.step_title }; });
@@ -991,6 +997,7 @@ R('GET', '/audit', ({ query }) => {
 
 installAccessMock(R, () => db.machines);
 installTrafficMock(R, () => db.machines, () => db.teams, bad);
+installReportsMock(R, () => db.machines, () => db.incidents, () => db.channels, () => db.notifyLog, () => `n${db.seq++}`, bad);
 // 汇率变了：各台订阅的 USD 折算重算，发 settings（同中控）
 installFxMock(R, () => [...new Set([...db.plans.filter((p) => !p.archived_at).map((p) => p.currency), ...db.machines.filter((m) => m.lifecycle !== 'retired' && m.subscription).map((m) => m.subscription!.currency)])],
   () => db.user, () => { db.machines.forEach(recomputeDue); emit({ type: 'settings' }); }, bad);
@@ -1080,6 +1087,39 @@ R('POST', '/machines/([^/]+)/ss-refresh', ({ params }) => {
   drive(job, 2500, () => { m.active_job = null; }, [{ instances: [{ port: 8388, ip: null, restarted: true, nft_relays: '203.0.113.7' }] }, { entries: [{ latency_ms: 142, egress_ip: '198.51.100.20' }] }]);
   emit({ type: 'machines' });
   return { machine_id: m.id, name: m.name, job_id: job.id };
+});
+// ---------- 按需测速（同服务端 jobs/speedtest.rs）----------
+R('POST', '/machines/([^/]+)/speedtest', ({ params, body }) => {
+  const m = machine(params[0]);
+  const sp = META.speedtest;
+  const size = body?.size_mb ?? sp.default_mb;
+  if (!sp.sizes_mb.includes(size)) throw bad(`size_mb 只能是 ${sp.sizes_mb.join(' / ')}`);
+  const target = sp.targets.find((t) => t.key === (body?.target ?? sp.targets[0].key));
+  if (!target) throw bad(`target 只能是 ${sp.targets.map((t) => t.key).join(' / ')}`);
+  if (m.host_machine) throw bad(`同机 IP 节点和宿主机共用网络：对宿主机「${m.host_machine.name}」测速`, 409, 'conflict');
+  if (m.kind === 'proxy') throw bad('家宽代理没有我们的机器', 409, 'conflict');
+  if (m.lifecycle !== 'active') throw bad('只有在用的机器能测速', 409, 'conflict');
+  if (m.active_job) throw bad('这台机器有进行中的作业，请等它结束', 409, 'conflict');
+  const job = newJob('speedtest', { id: m.id, name: m.name }, [['speedtest', '测速']]);
+  job.cancellable = false;
+  m.active_job = { id: job.id, kind: 'speedtest', state: 'running' };
+  // 速率按 (机器, 目标) 定：线路机快一些；编号尾数为 4 的那台慢线路，500 MB 在 300 秒内下不完（演示「没下完」）
+  const r = rng(hashStr(`${m.id}:${target.key}`));
+  const slow = m.number != null && m.number % 10 === 4;
+  const mbps = Math.round((slow ? 5 + r() * 5 : m.kind === 'relay' ? 600 + r() * 300 : 120 + r() * 380) * 10) / 10;
+  const ttfb = Math.round((0.18 + r() * 0.35) * 1000) / 1000;
+  const full = size * 8 / mbps; // 下完要多少秒
+  const complete = full + ttfb <= 300;
+  const total = complete ? Math.round((full + ttfb) * 100) / 100 : 300;
+  const bytes = complete ? size * 1_000_000 : Math.round((300 - ttfb) * mbps / 8 * 1_000_000);
+  const out = { target: target.key, target_name: target.name, url: `https://${target.key}-us-ping.vultr.com/vultr.com.${size <= 100 ? '100MB' : '1000MB'}.bin`, size_mb: size, bytes, complete,
+    avg_mbps: mbps, avg_mb_s: Math.round(mbps / 8 * 100) / 100, total_s: total, ttfb_s: ttfb, remote_ip: `203.0.113.${10 + Math.floor(r() * 200)}` };
+  log(job.id, 'info', `从${target.name}（${out.url}）下载 ${size} MB，走这台机器自己的出站路径，会用掉约 ${size} MB 流量`);
+  if (!complete) log(job.id, 'warn', `300 秒内只下载了 ${(bytes / 1e6).toFixed(1)} MB，没下完：速率按已下载的算`);
+  log(job.id, 'info', `平均速率 ${mbps} Mbit/s（${out.avg_mb_s} MB/s），耗时 ${total} 秒，首字节 ${Math.round(ttfb * 1000)} 毫秒，下载 ${(bytes / 1e6).toFixed(1)} MB，对端 ${out.remote_ip}`);
+  drive(job, 4000, () => { m.active_job = null; }, [out]);
+  emit({ type: 'machines' });
+  return { machine_id: m.id, name: m.name, job_id: job.id, size_mb: size, target: target.key, target_name: target.name, traffic_mb: size };
 });
 R('POST', '/agents/upgrade', () => {
   // 同中控：线路机在前，第一台做金丝雀；线路机一台等前一台，VPS 节点与家宽代理都等最后一台线路机（没有线路机时等金丝雀），之后并发
@@ -1340,7 +1380,7 @@ R('GET', '/notify-channels', () => db.channels.map(pub));
 R('POST', '/notify-channels', ({ body }) => {
   if (!String(body.name ?? '').trim()) throw bad('请填写渠道名称');
   checkCfg(body.kind, body.config);
-  const c = { id: `c${db.seq++}`, name: String(body.name).trim(), kind: body.kind, min_severity: body.min_severity ?? 'warning', enabled: body.enabled !== false, created_at: iso(), config_hint: hintOf(body.kind, body.config), config: body.config };
+  const c = { id: `c${db.seq++}`, name: String(body.name).trim(), kind: body.kind, min_severity: body.min_severity ?? 'warning', enabled: body.enabled !== false, monthly_report: body.monthly_report === true, created_at: iso(), config_hint: hintOf(body.kind, body.config), config: body.config };
   db.channels.push(c); emit({ type: 'catalog' }); return { id: c.id };
 });
 R('PATCH', '/notify-channels/([^/]+)', ({ params, body }) => {
@@ -1349,6 +1389,7 @@ R('PATCH', '/notify-channels/([^/]+)', ({ params, body }) => {
   if (body.config !== undefined) { checkCfg(c.kind, body.config); c.config = body.config; c.config_hint = hintOf(c.kind, body.config); }
   if (body.min_severity !== undefined) c.min_severity = body.min_severity;
   if (body.enabled !== undefined) c.enabled = !!body.enabled;
+  if (body.monthly_report !== undefined) c.monthly_report = !!body.monthly_report;
   emit({ type: 'catalog' }); return pub(c);
 });
 R('DELETE', '/notify-channels/([^/]+)', ({ params }) => { channel(params[0]); db.channels = db.channels.filter((c) => c.id !== params[0]); emit({ type: 'catalog' }); return {}; });

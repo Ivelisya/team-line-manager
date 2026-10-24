@@ -20,6 +20,7 @@ import { SkeletonRows } from '@/components/ui/skeleton';
 import { ConfirmDialog } from '@/components/app/dialogs';
 import { JobProgressBar } from '@/components/app/JobProgress';
 import { TuneResult, isTuneOutput } from '@/components/app/TuneResult';
+import { SpeedtestResult, isSpeedtestOutput } from '@/components/app/SpeedtestResult';
 import { RouterEditResult, isRouterEditOutput } from '@/components/app/RouterEditResult';
 import { NodeHover } from '@/components/app/NodeHover';
 import { toast } from '@/components/ui/toast';
@@ -42,7 +43,7 @@ type View = 'all' | 'running' | 'done';
 const VIEWS: { value: View; label: string }[] = [{ value: 'all', label: '全部' }, { value: 'running', label: '进行中' }, { value: 'done', label: '已结束' }];
 const STATE_OF: Record<View, 'all' | 'active' | 'done'> = { all: 'all', running: 'active', done: 'done' };
 /** 类型筛选（?kind=，与页签组合）：上架含四类机器，按大类筛（同列表接口的 kind）；其余是作业类型原值，名字取 /meta */
-const KIND_VALUES = ['provision', 'attach_entry', 'move_entry', 'replace', 'upgrade_agent', 'tune', 'ss_refresh', 'retire', 'purge'];
+const KIND_VALUES = ['provision', 'attach_entry', 'move_entry', 'replace', 'upgrade_agent', 'tune', 'ss_refresh', 'speedtest', 'retire', 'purge'];
 const KIND_GROUP: Record<string, string> = { provision: '上架' };
 
 /** 需要人工处理的失败（改软路由出口改了一半、换回失败）：胶囊换成醒目的「需人工处理」，不和普通失败混在一起 */
@@ -193,7 +194,7 @@ function JobDetail({ id }: { id: string }) {
                 <span className="step-ic">{STEP_ICON[k]}</span>
                 <div style={{ minWidth: 0 }}>
                   <div className="step-title"><b>{s.title}</b><span className="step-time">{s.started_at ? <>{F.clock(s.started_at)} · <Dur a={s.started_at} b={s.finished_at ?? (k === 'failed' ? j.finished_at : null)} live={live && !s.finished_at && k !== 'failed'} /></> : k === 'skipped' || k === 'compensated' || !live ? '未执行' : '等待'}</span>{k === 'compensated' && <Pill tone="warn" dot="none">已补偿</Pill>}</div>
-                  {isTuneOutput(s.output) ? <TuneResult out={s.output} /> : isRouterEditOutput(s.output) ? <RouterEditResult out={s.output} /> : outputLines(s.output).length > 0 && <pre className="step-out">{outputLines(s.output).join('\n')}</pre>}
+                  {isTuneOutput(s.output) ? <TuneResult out={s.output} /> : isSpeedtestOutput(s.output) ? <SpeedtestResult out={s.output} /> : isRouterEditOutput(s.output) ? <RouterEditResult out={s.output} /> : outputLines(s.output).length > 0 && <pre className="step-out">{outputLines(s.output).join('\n')}</pre>}
                   {(s.error || s.error_kind) && (
                     <div className="step-err-box">
                       {s.error_kind && <span className="pill pill-sm" data-tone="bad" data-dot="none">{errorKindLabel(s.error_kind, s.error)}</span>}
@@ -242,6 +243,7 @@ function cancelDesc(j: Job): React.ReactNode {
   if (j.kind === 'upgrade_agent') return <>不再升级，排在后面的也一起取消 <InfoTip text="这台还没开始升级。「全部升级」里排在它后面的机器，也会一起取消" /></>;
   if (j.kind === 'tune') return '不再调优';
   if (j.kind === 'ss_refresh') return '不再下发';
+  if (j.kind === 'speedtest') return '不再测速';
   return '已完成的步骤会回滚';
 }
 

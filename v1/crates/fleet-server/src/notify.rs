@@ -43,6 +43,8 @@ pub enum Kind {
     Silence,
     /// 中控自动做了会回收机器的操作（备用团队的机器到期自动回收，见 spare.rs）：同静默变更，发给所有启用的渠道，不看级别、不受静默影响
     Auto,
+    /// 月报（reports.rs）：只发给开了「月报」的已启用渠道，不看级别、不受静默影响
+    Report,
 }
 
 impl Kind {
@@ -54,6 +56,7 @@ impl Kind {
             Kind::Test => "test",
             Kind::Silence => "silence",
             Kind::Auto => "auto",
+            Kind::Report => "report",
         }
     }
 
@@ -127,6 +130,7 @@ fn title(n: &Notice) -> String {
         (Kind::Test, _) => "测试通知".into(),
         (Kind::Silence, _) => "静默 / 维护变更".into(),
         (Kind::Auto, _) => "自动回收".into(),
+        (Kind::Report, _) => "月报".into(),
     }
 }
 
@@ -137,6 +141,10 @@ pub fn format_text(n: &Notice) -> String {
     }
     // 静默 / 维护变更：摘要是写好的几行（谁、新建还是删除、对象、起止、备注）
     if n.kind == Kind::Silence {
+        return format!("【{}】{}\n时间：{}", title(n), n.summary, when(n.at));
+    }
+    // 月报：摘要是写好的几行（第一行是月份）
+    if n.kind == Kind::Report {
         return format!("【{}】{}\n时间：{}", title(n), n.summary, when(n.at));
     }
     // 自动回收：标题后面接机器名，摘要写为什么回收、做到哪一步
@@ -741,12 +749,14 @@ async fn enqueue_tx(st: &AppState, n: &Notice) -> sqlx::Result<()> {
     sqlx::query(
         "insert into notify_outbox (channel_id, incident_id, notice)
          select id, $1, $2 from notify_channel
-         where enabled and ($4 or min_severity <= $3::severity) and id is distinct from (select subject_id from incident where id = $1)",
+         where enabled and case when $5 then monthly_report else ($4 or min_severity <= $3::severity) end
+           and id is distinct from (select subject_id from incident where id = $1)",
     )
     .bind(n.incident_id)
     .bind(sqlx::types::Json(n))
     .bind(&n.severity)
     .bind(n.kind.to_all())
+    .bind(n.kind == Kind::Report)
     .execute(&mut *tx)
     .await?;
     if let (Kind::Firing | Kind::Repeat, Some(id)) = (n.kind, n.incident_id) {
