@@ -9,13 +9,14 @@ import type { UseQueryResult } from '@tanstack/react-query';
 import { useAvailability, useSeries, useTrafficDaily } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
-import { AVAIL_LEGEND, availCells, availTitles, fromLabel, hasHost, meta, monthFlowTip, monthTraffic, resourceMeters, successPct } from '@/lib/derive';
+import { AVAIL_LEGEND, availCells, availTitles, fromLabel, hasHost, meta, monthFlowTip, monthTraffic, resourceMeters, successPct, trafficRuleTag } from '@/lib/derive';
 import { Segmented } from '@/components/ui/overlays';
 import { Skeleton } from '@/components/ui/skeleton';
 import { InfoTip } from '@/components/ui/form';
 import { Beat, Empty, ErrorNote, LabelValue, LabelValueGrid, Note, Num, Section, SectionHeader } from '@/components/app/primitives';
 import { RANGES, TimeChart } from '@/components/app/TimeChart';
 import { DailyBars } from '@/components/app/DailyBars';
+import { Tag } from '@/components/app/viz';
 import { chartPoll, RANGE_MS, vMs, vPct, vRate, yMs, yPct, yRate } from '@/lib/chart';
 import { entriesMeta } from './EntriesTable';
 import { Button } from '@/components/ui/button';
@@ -205,17 +206,17 @@ function EntriesLink({ m }: { m: MachineView }) {
 export function TrafficTab({ m }: { m: MachineView }) {
   const { range, setRange } = useDrawer();
   const s = useSeries(m.id, 'traffic', range, true, chartPoll(range));
-  const t = monthTraffic(m); const nic = m.nic; const from = m.month_counted_from;
+  const t = monthTraffic(m); const nic = m.nic; const from = m.month_counted_from; const rt = trafficRuleTag(m);
   return (
     <>
       <RangeSticky range={range} setRange={setRange} />
       {/* 数据不完整时「X 起」只在这里写一次（短句 + (i) 全句），下面各数字后面不再重复 */}
       {from && <div className="hint">流量数据从 {fromLabel(from)} 起 <InfoTip text={monthFlowTip(m)} /></div>}
-      {/* 有 agent 的机器分两组：网卡（供应商计费口径，下行 / 上行）与业务（Xray 入口，下载 / 上传）；家宽代理、同机 IP 节点只有业务一组 */}
+      {/* 有 agent 的机器分两组：网卡（计费口径，下行 / 上行，标题旁标出生效的计费方式）与业务（Xray 入口，下载 / 上传）；家宽代理、同机 IP 节点只有业务一组 */}
       {nic && (
         <Section>
           {/* 两组方向的叫法不同、对不上数：换算说明放 (i) */}
-          <SectionHeader title={<>网卡（供应商计费口径） <InfoTip text={'网卡按这台机器算：下行 = 流进来，上行 = 流出去\n业务按客户算：下载 = 客户收到的，上传 = 客户发出的\n客户下载的数据经过这台机器时一进一出，网卡下行、上行各算一次，所以两组数对不上'} /></>} />
+          <SectionHeader title={<>网卡（计费口径）{rt && <> <Tag c="gray" tip={rt.tip}>{rt.text}</Tag></>} <InfoTip text={'网卡按这台机器算：下行 = 流进来，上行 = 流出去\n业务按客户算：下载 = 客户收到的，上传 = 客户发出的\n客户下载的数据经过这台机器时一进一出，网卡下行、上行各算一次，所以两组数对不上'} /></>} />
           <LabelValueGrid cols2>
             <LabelValue label="今日 ↓ 下行"><Num f={F.bytes(nic.today_rx)} /></LabelValue>
             <LabelValue label="今日 ↑ 上行"><Num f={F.bytes(nic.today_tx)} /></LabelValue>

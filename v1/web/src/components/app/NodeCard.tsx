@@ -131,7 +131,7 @@ function Flow({ m, onOpen, totals, compact, paused }: { m: MachineView; onOpen: 
     <div className="flow">
       <FlowCol dir="down" rate={r?.rx ?? null} values={rx} dots={compact ? 20 : undefined} live={r != null} bw={bw} onOpen={onOpen} />
       <FlowCol dir="up" rate={r?.tx ?? null} values={tx} dots={compact ? 20 : undefined} live={r != null} bw={bw} onOpen={onOpen} />
-      {/* 本月流量单独一行：有 agent 的是网卡口径（下行 / 上行，供应商计费口径）；同机 IP 节点没有自己的网卡，是业务流量（用户视角的下载 / 上传）。两种不混在一行 */}
+      {/* 本月流量单独一行：有 agent 的是网卡口径（下行 / 上行，计费口径）；同机 IP 节点没有自己的网卡，是业务流量（用户视角的下载 / 上传）。两种不混在一行 */}
       {totals && (
         <button type="button" className="flow-foot flow-month" data-tip={monthFlowTip(m)} onClick={() => onOpen('traffic')}>
           {t.kind === 'nic' ? <span className="flow-foot-label"><ArrowDownUp />本月</span> : <span className="flow-foot-label"><Globe />本月业务</span>}
