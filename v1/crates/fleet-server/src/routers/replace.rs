@@ -263,8 +263,9 @@ function restore(i,   k, L, d, ro, rest, j, key, cr, cs, cp, cu, cn, cb, ci, nl,
   if (bhits[i] != 1) { bad("改之前的备份里" (bhits[i] ? "有 " bhits[i] " 个" : "没有") "名为「" nm[i] "」的出口，换不回"); return }
   if (low(cs) == low(unq(ov[i, "server"])) && cp == unq(ov[i, "port"])) return
   if (!mine) {
-    sk[i] = 1
-    if (low(cs) == low(ENVIRON["SRV_" i]) && cp == ENVIRON["PORT_" i]) note("出口「" nm[i] "」还指向这次改成的 " cs ":" cp "，但 uuid、servername、public-key 或 short-id 已经不是这次写的（之后又被改过），没有改回")
+    # 还指向这次的新入口、只是凭据变了：路由停在本作业的入口上（轮换过就不通），算没改回（skipped_<i>）；
+    # 已经指向别处（别的作业 / 人有意改走的）：那是别人的决定，记一句、算改回，不让本作业卡在需人工处理
+    if (low(cs) == low(ENVIRON["SRV_" i]) && cp == ENVIRON["PORT_" i]) { sk[i] = 1; note("出口「" nm[i] "」还指向这次改成的 " cs ":" cp "，但 uuid、servername、public-key 或 short-id 已经不是这次写的（之后又被改过），没有改回") }
     else note("出口「" nm[i] "」现在指向 " cs ":" cp "，不是这次改成的 " ENVIRON["SRV_" i] ":" ENVIRON["PORT_" i] "（之后又被改过），没有改回")
     return
   }
@@ -732,8 +733,8 @@ rules:\n- MATCH,节点01组\n";
             let o = f.run(&rollback_script(S, &[edit("节点01"), edit2()]), &[]);
             assert_eq!((o.code, o.kv("rollback")), (0, Some("ok")), "busybox={bb} {o:?}");
             assert!(o.stderr.contains("出口「节点02」现在指向 198.51.100.9:20030，不是这次改成的 relay.test:20021"), "{}", o.stderr);
-            // 没改回的只报被别人改走的那个（第 2 个），改回了的第 1 个不报
-            assert_eq!((o.kv("skipped_1"), o.kv("skipped_2")), (None, Some("1")), "busybox={bb} {o:?}");
+            // 第 2 个已被别人有意改到别的地址：那是别人的决定，只记一句、算改回，不报 skipped（不让本作业卡在需人工处理）
+            assert_eq!((o.kv("skipped_1"), o.kv("skipped_2")), (None, None), "busybox={bb} {o:?}");
             let want = after_b
                 .replacen(&format!("  port: 20020\n  uuid: {UUID_NEW}"), "  port: 20003\n  uuid: 11111111-1111-4111-8111-111111111111", 1)
                 .replacen("  servername: www.apple.com\n  reality-opts:\n    public-key: NEW_PBK-abc_123\n    short-id: '01234567'", "  servername: www.cloudflare.com\n  reality-opts:\n    public-key: OLD_PBK\n    short-id: abcd", 1);
