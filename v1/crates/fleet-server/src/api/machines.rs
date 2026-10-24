@@ -336,7 +336,7 @@ pub struct AvailabilityQ {
 }
 
 #[derive(Serialize, sqlx::FromRow)]
-struct DayAvailability {
+pub(crate) struct DayAvailability {
     date: Date,
     tcp_total: i64,
     tcp_ok: i64,
@@ -357,12 +357,17 @@ pub async fn availability(_a: Actor, State(st): State<AppState>, ApiPath(id): Ap
         .fetch_optional(&st.db)
         .await?
         .ok_or_else(|| ApiError::not_found("没有这台机器"))?;
-    let items: Vec<DayAvailability> = sqlx::query_as(AVAILABILITY).bind(id).bind(&tz).bind(days).fetch_all(&st.db).await?;
+    let (items, tcp_pct, egress_pct) = availability_of(&st.db, id, &tz, days).await?;
+    Ok(ok(json!({"days": days, "items": items, "tcp_pct": tcp_pct, "egress_pct": egress_pct})))
+}
+
+/// 按账单时区 `tz` 分天的近 `days` 天探测成功率：(每天, TCP 成功率 %, 出口成功率 %)，没有探测为 None（`availability` 与待付清单共用）
+pub(crate) async fn availability_of(db: &sqlx::PgPool, id: Uuid, tz: &str, days: i32) -> sqlx::Result<(Vec<DayAvailability>, Option<f64>, Option<f64>)> {
+    let items: Vec<DayAvailability> = sqlx::query_as(AVAILABILITY).bind(id).bind(tz).bind(days).fetch_all(db).await?;
     let pct = |good: i64, total: i64| (total > 0).then(|| 100.0 * good as f64 / total as f64);
     let sum = |f: fn(&DayAvailability) -> i64| items.iter().map(f).sum::<i64>();
-    let tcp_pct = pct(sum(|d| d.tcp_ok), sum(|d| d.tcp_total));
-    let egress_pct = pct(sum(|d| d.egress_ok), sum(|d| d.egress_total));
-    Ok(ok(json!({"days": days, "items": items, "tcp_pct": tcp_pct, "egress_pct": egress_pct})))
+    let (tcp_pct, egress_pct) = (pct(sum(|d| d.tcp_ok), sum(|d| d.tcp_total)), pct(sum(|d| d.egress_ok), sum(|d| d.egress_total)));
+    Ok((items, tcp_pct, egress_pct))
 }
 
 /// 小时汇总按 UTC 整点分桶，一桶按起点归到账单时区（$2）的那一天：整点时区正好落在零点边界，半小时时区跨零点的那一桶归前一天
