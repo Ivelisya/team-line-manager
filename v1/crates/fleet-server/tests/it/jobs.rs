@@ -148,6 +148,34 @@ async fn cancel_before_preflight_passes_does_not_clean_machine() {
     assert!(!msgs.iter().any(|m| m.contains("清理机器上的服务」失败")), "没有去登录清理：{msgs:?}");
 }
 
+/// 「上线」已经把机器改成了在用，作业才被取消（取消赶在上线之后，或上线后记账失败再取消）：补偿什么都不动，
+/// 入口保持在用（摘掉会让客户断线）、机器保持在用
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancel_after_machine_active_keeps_entry_and_machine() {
+    let t = setup(false).await;
+    let team = seed_team(&t, "团队1").await;
+    let (relay, _) = seed_relay(&t).await;
+    let node = seed_node(&t, team, 1, "203.0.113.10", "active").await;
+    let eid = Uuid::now_v7();
+    sqlx::query("insert into entry (id, relay_id, node_id, port, client_uuid, short_id, lifecycle) values ($1, $2, $3, 20001, $4, 'ab', 'active')")
+        .bind(eid)
+        .bind(relay)
+        .bind(node)
+        .bind(Uuid::now_v7())
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let mut tx = t.st.db.begin().await.unwrap();
+    let job = jobs::enqueue(&mut tx, "provision_proxy", Some(node), json!({"entry_id": eid}), "test").await.unwrap();
+    tx.commit().await.unwrap();
+    sqlx::query("update job set state = 'cancelling' where id = $1").bind(job).execute(&t.st.db).await.unwrap();
+    let j = run_one(&t, job).await;
+    assert_eq!(j["state"], "cancelled", "{j}");
+    assert_eq!(t.machine_lifecycle(node).await, "active", "机器没有被退役");
+    let lc: String = sqlx::query_scalar("select lifecycle::text from entry where id = $1").bind(eid).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(lc, "active", "入口没有被摘掉");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn retired_machine_old_provision_job_cannot_be_retried() {
     let t = setup(true).await;

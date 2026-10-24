@@ -1236,17 +1236,22 @@ pub async fn compensate(st: &AppState, job: &JobRow, owner: &str) {
     if job.kind == "move_entry" {
         return lifecycle::compensate_move(&c).await;
     }
+    // 上架类先看机器状态：已经上线（取消赶在「上线」之后，或上线改完状态后记账失败再取消）的机器入口已经在用，
+    // 摘掉会让客户断线，机器也不能退役，什么都不动
+    let machine = if job.kind.starts_with("provision_") {
+        let Some(m) = note(st, job.id, "读取机器", c.machine().await).await else { return };
+        if !matches!(m.lifecycle.as_str(), "provisioning" | "failed") {
+            log(st, job.id, "warn", "没有补偿：机器已经不在上架中（已上线），入口与机器保持原样").await;
+            return;
+        }
+        Some(m)
+    } else {
+        None
+    };
     if let Ok(eid) = c.param_uuid("entry_id") {
         remove_created_entry(st, job.id, eid).await;
     }
-    if !job.kind.starts_with("provision_") {
-        return;
-    }
-    let Some(id) = job.target_id else { return };
-    let Some(m) = note(st, job.id, "读取机器", c.machine().await).await else { return };
-    if !matches!(m.lifecycle.as_str(), "provisioning" | "failed") {
-        return;
-    }
+    let (Some(id), Some(m)) = (job.target_id, machine) else { return };
     // 只有本作业的预检（同机 IP 节点是核对 IP）通过了，才能认定这台机器是本次要装的：没通过的（例如 agent 登记的是另一台机器）
     // 机器上跑的可能是别的在用节点，清理会把它停掉删掉。读不到结果按没通过算
     let checked = m.kind != "proxy"
