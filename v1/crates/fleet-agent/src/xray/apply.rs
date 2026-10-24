@@ -135,6 +135,13 @@ impl Applier {
         verify(&rt, &cand)
     }
 
+    /// 这份期望状态渲染出的骨架（`static_part`，变了就只能重启 Xray）；渲染失败为 None。
+    /// 重启路径的闸门按它判断「新代数是不是同一个重启问题」，不看代数
+    pub async fn static_part(&self, d: &DesiredState) -> Option<serde_json::Value> {
+        let (d, ctx) = (d.clone(), RenderCtx::of(&self.cfg));
+        tokio::task::spawn_blocking(move || render(&d, &ctx).ok().map(|r| r.static_part)).await.ok().flatten()
+    }
+
     /// 等正在进行的应用（持有锁）结束，最多等 `max`。关停时用，免得在 apply 中途 abort 任务。
     pub async fn wait_idle(&self, max: Duration) -> bool {
         tokio::time::timeout(max, self.lock.lock()).await.is_ok()
