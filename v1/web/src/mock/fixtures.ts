@@ -50,7 +50,8 @@ function forecastOf(used: number, limit: number | null | undefined, start: strin
   return { daily_avg: Math.round(daily), forecast_full_at: full };
 }
 export function quotaOf(m: MachineView, all: MachineView[]): MachineView['quota'] {
-  const rule = m.kind === 'proxy' || m.host_machine ? null : ({ p1: 'min', p2: 'out' } as Record<string, MachineView['quota']['rule']>)[m.provider?.id ?? ''] ?? 'max';
+  // 按网卡计量的机器：订阅里的生效规则（单独设置的，或供应商的）；没有订阅的取供应商的
+  const rule = m.kind === 'proxy' || m.host_machine ? null : m.subscription?.traffic_rule ?? ({ p1: 'min', p2: 'out' } as Record<string, MachineView['quota']['rule']>)[m.provider?.id ?? ''] ?? 'max';
   const d = new Date(); const day = m.subscription?.traffic_reset_day ?? 1;
   const at = (y: number, mo: number) => new Date(Date.UTC(y, mo, Math.min(day, new Date(Date.UTC(y, mo + 1, 0)).getUTCDate())));
   let s = at(d.getFullYear(), d.getMonth());
@@ -59,7 +60,7 @@ export function quotaOf(m: MachineView, all: MachineView[]): MachineView['quota'
   if (rolling) s = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate() - 29));
   const nic = nicOf(m, all);
   let used = 0;
-  if (nic && rule) used = rule === 'min' ? Math.min(nic.month_rx, nic.month_tx) : rule === 'max' ? Math.max(nic.month_rx, nic.month_tx) : rule === 'out' ? nic.month_tx : nic.month_rx + nic.month_tx;
+  if (nic && rule) used = rule === 'min' ? Math.min(nic.month_rx, nic.month_tx) : rule === 'max' ? Math.max(nic.month_rx, nic.month_tx) : rule === 'out' ? nic.month_tx : rule === 'in' ? nic.month_rx : nic.month_rx + nic.month_tx;
   else for (const x of [m, ...all.filter((x) => x.host_machine?.id === m.id)]) {
     used += x.removed_traffic.month_up + x.removed_traffic.month_down;
     for (const e of x.entries) used += e.traffic.month_up + e.traffic.month_down;
@@ -80,13 +81,13 @@ export function trafficOf(m: MachineView, all: MachineView[]): Pick<MachineView,
 }
 
 const NO_USD: UsdTotal = { cents: 0, by_currency: [], unconverted: [] }; // 团队月费的占位：GET /teams 时按在用机器现算
-export const SUB_FIELDS: SubField[] = ['price_cents', 'currency', 'cycle', 'billing_tz', 'remind_days', 'traffic_gb', 'traffic_reset_day'];
+export const SUB_FIELDS: SubField[] = ['price_cents', 'currency', 'cycle', 'billing_tz', 'remind_days', 'traffic_gb', 'traffic_reset_day', 'traffic_rule'];
 /** 订阅模板（同服务端 sub_template）：没单独设置的项取这里；没有套餐时 price_cents 为 null */
 export function templateOf(plan: Plan | undefined, pv: Provider | undefined): SubTemplate {
   return {
     price_cents: plan?.price_cents ?? null, currency: plan?.currency ?? META.defaults.currency, cycle: plan?.cycle ?? META.defaults.cycle,
     billing_tz: pv?.timezone || META.org_timezone, remind_days: pv?.remind_days ?? META.defaults.remind_days,
-    traffic_gb: plan?.traffic_gb ?? null, traffic_reset: pv?.traffic_reset ?? META.defaults.traffic_reset,
+    traffic_gb: plan?.traffic_gb ?? null, traffic_reset: pv?.traffic_reset ?? META.defaults.traffic_reset, traffic_rule: pv?.traffic_rule ?? META.defaults.traffic_rule,
   };
 }
 const same = (a: unknown, b: unknown) => (a || null) === (b || null); // 流量上限 0 与 null 都是不限
@@ -155,7 +156,7 @@ export function buildDb(): Db {
 
   const sub = (planId: string, dueDays: number, trafficGb: number | null): Subscription => {
     const p = plan(planId);
-    return subCalc({ price_cents: p.price_cents, currency: p.currency, cycle: p.cycle, due_date: dateOnly(now() + dueDays * DAY), due_days: dueDays, billing_tz: prov(p.provider_id).timezone ?? META.org_timezone, auto_renew: false, remind_days: META.defaults.remind_days, traffic_gb: trafficGb, traffic_reset_day: 1 } as Subscription);
+    return subCalc({ price_cents: p.price_cents, currency: p.currency, cycle: p.cycle, due_date: dateOnly(now() + dueDays * DAY), due_days: dueDays, billing_tz: prov(p.provider_id).timezone ?? META.org_timezone, auto_renew: false, remind_days: META.defaults.remind_days, traffic_gb: trafficGb, traffic_reset_day: 1, traffic_rule: prov(p.provider_id).traffic_rule } as Subscription);
   };
   const hostOf = (id: string, cpuBase: number): MachineView['host'] => {
     const rr = rng(hashStr(id));
@@ -328,6 +329,9 @@ export function buildDb(): Db {
   const untuned = machines.find((x) => x.team?.id === 't1' && x.number === 3 && x.kind === 'vps');
   if (untuned) untuned.tune = { profile: null, at: null, current: false, params: null };
 
+  // 团队1-03 单独设置按双向计费（供应商是单向），费用页签演示「单独设置」
+  const dual = machines.find((x) => x.id === 'm-t1-03');
+  if (dual?.subscription) dual.subscription.traffic_rule = 'sum';
   for (const m of machines) Object.assign(m, trafficOf(m, machines));
   // 线路机 2 本周期已超出额度（约 113%）：额度告警、搬迁建议（超额时的口径）、费用页标红用
   const r2 = machines[1];

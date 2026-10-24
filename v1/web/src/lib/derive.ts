@@ -25,6 +25,10 @@ export const stepLabel = (k: string) => lbl(meta().step_states, k);
 export const trafficRuleLabel = (k: string) => lbl(meta().traffic_rules, k);
 /** 网卡计量规则（费用页签「本周期已用」旁的 (i)、额度悬停）：「按网卡流量：下行、上行取较大值」（名字同供应商对话框，来自 /meta） */
 export const trafficRulePlain = (k: string) => `按网卡，${trafficRuleLabel(k)}`;
+/** 网卡计量规则的下拉选项（供应商对话框、订阅编辑器共用，来自 /meta）：/meta 的键按字母序，这里双向在前、单向随后 */
+const RULE_ORDER = ['sum', 'max', 'min', 'out', 'in'];
+const ruleRank = (k: string) => { const i = RULE_ORDER.indexOf(k); return i < 0 ? RULE_ORDER.length : i; };
+export const trafficRuleOptions = () => Object.entries(meta().traffic_rules).sort(([a], [b]) => ruleRank(a) - ruleRank(b)).map(([value, label]) => ({ value, label }));
 /** 流量重置方式：自然月 / 账单日 / 滚动 30 天 */
 export const trafficResetLabel = (k: string) => lbl(meta().traffic_resets, k);
 /** 流量重置方式的说法：按自然月、按账单日、滚动 30 天 */
@@ -82,8 +86,8 @@ export function fromLabel(from: string, start?: string | null): string {
 function nicTip(m: MachineView) {
   const rule = m.quota.rule;
   const head = rule && rule !== 'sum'
-    ? `网卡下行 + 上行的合计；供应商按「${meta().traffic_rules[rule] ?? rule}」计费，本周期计费量 ${F.str(F.bytes(m.quota.used))}`
-    : '网卡下行 + 上行的合计，和供应商计费口径一致';
+    ? `网卡下行 + 上行的合计；按「${meta().traffic_rules[rule] ?? rule}」计费，本周期计费量 ${F.str(F.bytes(m.quota.used))}`
+    : '网卡下行 + 上行的合计，和计费口径一致';
   return `${head}\n下行是收到的，上行是发出的`;
 }
 /** 本月流量的悬停说明（卡片底行、表格、流量页签）：口径，数据不完整时再加全句（数字后面只留灰字「10-22 起」） */
@@ -181,6 +185,16 @@ export function quotaRuleText(m: MachineView) {
   const { rule } = m.quota; const nics = m.agent?.nic_ifaces;
   return rule ? (nics?.length ? `按 ${nics.join('、')} 网卡，${trafficRuleLabel(rule)}` : trafficRulePlain(rule)) : '按业务流量，下载加上传';
 }
+/** 计费方式的短名（费用页签的小标签）；没有的取 /meta 的全名 */
+const RULE_SHORT: Record<string, string> = { sum: '双向：入 + 出', max: '单向：取较大', min: '单向：取较小', out: '单向：只算上行', in: '单向：只算下行' };
+/** 费用页签的计费方式小标签：「按 单向：取较大 计费」，悬停写全名和来源（这台单独设置的，或跟随供应商）；按业务流量的机器（家宽代理、同机 IP 节点）为 null */
+export function trafficRuleTag(m: MachineView) {
+  const rule = m.quota.rule;
+  if (!rule) return null;
+  const from = isOverridden(m.subscription, 'traffic_rule') ? '这台单独设置' : m.provider ? `跟随供应商「${m.provider.name}」` : '默认';
+  return { text: `按 ${RULE_SHORT[rule] ?? trafficRuleLabel(rule)} 计费`, tip: `${trafficRuleLabel(rule)}
+${from}` };
+}
 /** 流量周期（费用页签）：「每月 13 号重置（跟随供应商：按账单日）· 10-13 → 11-13」，滚动 30 天「滚动 30 天（跟随供应商）」 */
 export function quotaCycleText(m: MachineView) {
   const q = quota(m);
@@ -206,9 +220,9 @@ export function quotaTip(m: MachineView) {
   ].join('\n');
 }
 
-/** 订阅各项跟随谁：价格、币种、周期、流量上限跟随套餐，账单时区、提前提醒、流量重置日跟随供应商（同服务端 sub_template） */
+/** 订阅各项跟随谁：价格、币种、周期、流量上限跟随套餐，账单时区、提前提醒、流量重置日、流量计费跟随供应商（同服务端 sub_template） */
 export const SUB_FROM: Record<SubField, 'plan' | 'provider'> = {
-  price_cents: 'plan', currency: 'plan', cycle: 'plan', traffic_gb: 'plan', billing_tz: 'provider', remind_days: 'provider', traffic_reset_day: 'provider',
+  price_cents: 'plan', currency: 'plan', cycle: 'plan', traffic_gb: 'plan', billing_tz: 'provider', remind_days: 'provider', traffic_reset_day: 'provider', traffic_rule: 'provider',
 };
 /** 这一项单独设置了 */
 export const isOverridden = (s: Subscription | null | undefined, k: SubField) => !!s?.overrides.includes(k);
@@ -235,6 +249,7 @@ export function subValueText(k: SubField, v: string | number | null, currency?: 
     case 'remind_days': return `提前 ${v} 天`;
     case 'billing_tz': return tzLabel(String(v));
     case 'traffic_gb': return Number(v) > 0 ? `${v} GB` : '不限';
+    case 'traffic_rule': return trafficRuleLabel(String(v));
     case 'traffic_reset_day': return reset === 'billing' ? `每月 ${v} 号（账单日）` : reset === 'month' ? `每月 ${v} 号（自然月）` : `每月 ${v} 号`;
     default: return String(v);
   }

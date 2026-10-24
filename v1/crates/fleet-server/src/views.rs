@@ -82,7 +82,9 @@ pub struct Subscription {
     pub traffic_gb: Option<i32>,
     /// 生效的重置日（有订阅时总有值）：单独设置的，或供应商按账单日 = 到期日几号、按自然月 = 1
     pub traffic_reset_day: Option<i32>,
-    /// 单独设置了的字段（price_cents / currency / cycle / billing_tz / remind_days / traffic_gb / traffic_reset_day），其余跟随 `sub_template`
+    /// 生效的流量计费方式（sum 双向 / max、min、out、in 单向）：单独设置的，或供应商的；只对按网卡计量的机器有意义
+    pub traffic_rule: String,
+    /// 单独设置了的字段（price_cents / currency / cycle / billing_tz / remind_days / traffic_gb / traffic_reset_day / traffic_rule），其余跟随 `sub_template`
     pub overrides: Vec<String>,
     /// 折成每月的费用（分，四舍五入，meta::monthly_cents）：总览的月费合计、网页的月费列
     pub monthly_cents: i64,
@@ -107,6 +109,8 @@ pub struct SubTemplate {
     /// 供应商的流量重置方式：month = 自然月（1 号），billing = 账单日（到期日几号）
     pub traffic_reset: String,
     pub remind_days: i32,
+    /// 供应商的流量计费方式（没有供应商为 max）
+    pub traffic_rule: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -206,7 +210,7 @@ pub struct Quota {
     pub limit_gb: Option<i32>,
     /// 上限从哪来：subscription = 订阅单独设置，plan = 跟随套餐，host = 同机 IP 节点与宿主机共用（没有自己的上限），none = 不限
     pub limit_source: &'static str,
-    /// 周期内已用（字节）：有 agent 的机器按网卡流量、照供应商的计量规则算（宿主机含同机 IP 节点）；
+    /// 周期内已用（字节）：有 agent 的机器按网卡流量、照生效的计量规则（订阅单独设置的，或供应商的）算（宿主机含同机 IP 节点）；
     /// 家宽代理与同机 IP 节点没有自己的网卡读数，是业务流量（下载 + 上传，含已移除的入口）
     pub used: i64,
     pub period_start: Date,
@@ -218,7 +222,7 @@ pub struct Quota {
     /// 否则为 None
     #[serde(with = "time::serde::rfc3339::option")]
     pub counted_from: Option<OffsetDateTime>,
-    /// 网卡计量规则（min / max / sum / out，没有供应商按 max）；按业务流量算的为 None
+    /// 网卡计量规则（min / max / sum / out / in，没有供应商按 max）；按业务流量算的为 None
     pub rule: Option<&'static str>,
     /// 接入前读数（割接时按供应商面板录的，只读保留：接口已不收新值）：录入时面板上的已用（字节）与录入时间，used 已含它。
     /// 不在当前周期内的不算，为 None——进入下一个周期自动失效
@@ -460,6 +464,7 @@ struct MRow {
     s_base_at: Option<OffsetDateTime>,
     s_overrides: Option<Vec<String>>,
     s_bday: Option<i32>,
+    s_rule: Option<String>,
     t_price: Option<i32>,
     t_currency: String,
     t_cycle: String,
@@ -469,7 +474,8 @@ struct MRow {
     t_remind: i32,
     /// 模板时区里的「今天」（没有订阅时的流量周期）
     t_today: Date,
-    p_rule: Option<String>,
+    /// 供应商的流量计费方式（模板里的）
+    t_rule: String,
     #[sqlx(flatten)]
     a: ACols,
     r_host: Option<String>,
@@ -583,12 +589,13 @@ type QuotaUsed = (i64, bool, OffsetDateTime, i64, OffsetDateTime);
 /// (机器, 周期起点, 周期时区, 网卡计量规则（None = 业务流量）, 接入前读数的录入时间)
 type QuotaKey = (Uuid, Date, String, Option<&'static str>, Option<OffsetDateTime>);
 
-/// 供应商的网卡计量规则；没有供应商按 max
+/// 生效的网卡计量规则（订阅单独设置的，或供应商的）；不认识的按 max
 pub(crate) fn nic_rule(r: Option<&str>) -> &'static str {
     match r {
         Some("min") => "min",
         Some("sum") => "sum",
         Some("out") => "out",
+        Some("in") => "in",
         _ => "max",
     }
 }
@@ -1123,7 +1130,9 @@ async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<
         // 周期起点时刻 s0 一并带回：首次上架晚于它的，视图标「X 起统计」（counted_from）
         // 近 7 天窗口：起点 w = 周期查询起点与「当前整点往前 7 天」中较晚的；窗口内用量与 w + 1 小时（第一个计入的整点）一并带回，
         // 日均 / 预计用满由 quota::forecast 算
-        let pick = |rx: &str, tx: &str| format!("least(case q.rule when 'min' then least({rx}, {tx}) when 'max' then greatest({rx}, {tx}) when 'sum' then {rx} + {tx} else {tx} end, 9e18)::bigint");
+        let pick = |rx: &str, tx: &str| {
+            format!("least(case q.rule when 'min' then least({rx}, {tx}) when 'max' then greatest({rx}, {tx}) when 'sum' then {rx} + {tx} when 'out' then {tx} when 'in' then {rx} else greatest({rx}, {tx}) end, 9e18)::bigint")
+        };
         let sql = format!(
             "with q as (select q.mid, q.rule, q.base_at >= s.s0 cal, s.s0, n.since, greatest(n.since, date_trunc('hour', now()) - interval '7 days') w
                         from unnest($1::uuid[], $2::date[], $3::text[], $4::text[], $5::timestamptz[]) q(mid, start, tz, rule, base_at)
@@ -1184,7 +1193,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 m.lifecycle_reason, m.note, m.revision, m.created_at, m.activated_at, m.retired_at,
                 s.price_cents s_price, s.currency s_currency, s.cycle::text s_cycle, s.due_date s_due, s.billing_tz s_tz,
                 local_date(s.billing_tz) s_today, s.auto_renew s_auto, s.remind_days s_remind, s.traffic_gb s_traffic, s.traffic_reset_day s_reset,
-                s.traffic_used_base s_base, s.traffic_used_base_at s_base_at, s.overrides s_overrides, sb.billing_day::int s_bday, p.traffic_rule p_rule,
+                s.traffic_used_base s_base, s.traffic_used_base_at s_base_at, s.overrides s_overrides, sb.billing_day::int s_bday, s.traffic_rule s_rule, tp.traffic_rule t_rule,
                 tp.price_cents t_price, tp.currency t_currency, tp.cycle::text t_cycle, tp.billing_tz t_tz, tp.traffic_gb t_traffic, tp.traffic_reset t_reset, tp.remind_days t_remind, local_date(tp.billing_tz) t_today,
                 {A_COLS}, r.public_host r_host, r.generation r_gen, r.applied_generation r_applied, r.applied_at r_applied_at, r.generation_at r_gen_at,
                 r.apply_error r_err, r.port_min r_pmin, r.port_max r_pmax, m.tune_profile, m.tuned_at, m.tune_params, case when m.kind = 'relay' then {unreach} end r_unreach,
@@ -1219,7 +1228,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
     // 流量额度周期：有订阅的按账单时区里的今天和生效的重置日（单独设置的，或供应商按账单日 / 自然月）算周期起点，
     // 没有订阅的是模板时区（供应商的，供应商没填为组织时区）的本月；供应商按滚动 30 天、订阅没单独设置重置日的（生效重置日为 null）
     // 是账单时区的今天往前 29 天。键里含起点日期，滚动 30 天每天自动换一份缓存。
-    // 有自己 agent 的机器按网卡计量（规则取供应商的），家宽代理、同机 IP 节点按业务流量
+    // 有自己 agent 的机器按网卡计量（规则取订阅单独设置的，否则供应商的），家宽代理、同机 IP 节点按业务流量
     let mut modes: HashMap<Uuid, &'static str> = HashMap::new();
     let periods: Vec<QuotaKey> = rows
         .iter()
@@ -1232,7 +1241,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 _ => (period_start(r.t_today, 1), r.t_tz.clone(), "monthly"),
             };
             modes.insert(r.id, mode);
-            let rule = (r.kind != "proxy" && r.host_id.is_none()).then(|| nic_rule(r.p_rule.as_deref()));
+            let rule = (r.kind != "proxy" && r.host_id.is_none()).then(|| nic_rule(Some(r.s_rule.as_deref().unwrap_or(&r.t_rule))));
             (r.id, start, tz, rule, r.s_base_at)
         })
         .collect();
@@ -1412,6 +1421,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                     remind_days,
                     traffic_gb: r.s_traffic,
                     traffic_reset_day: r.s_reset,
+                    traffic_rule: r.s_rule.clone().unwrap_or_else(|| r.t_rule.clone()),
                     overrides: r.s_overrides.clone().unwrap_or_default(),
                 }
             });
@@ -1423,6 +1433,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 traffic_gb: r.t_traffic,
                 traffic_reset: r.t_reset.clone(),
                 remind_days: r.t_remind,
+                traffic_rule: r.t_rule.clone(),
             };
             let relay = r.r_host.clone().map(|h| RelayInfo {
                 public_host: h,

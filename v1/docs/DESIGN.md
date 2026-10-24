@@ -39,7 +39,7 @@ job ─< job_step ─< job_log      audit_log      user / session / api_key
   直出入口：`node_id = relay_id`（节点就是线路机自己），freedom 出站，从线路机自己的 IP 出去；每台线路机至多一条（同一个 (node_id, relay_id) 唯一索引），备注「线路机名-直出」，随线路机退役摘除。
 - **备用团队**（`team.spare`，唯一索引 `team_one_spare`，迁移 0041 建好「备用」）：系统管理，不能新建、取消、删除，可以改名。退役的、替换下来的机器放这里，`spare_since` / `spare_from` 记进备用的时刻与原名（`patch_tx` 统一维护：退役、替换、手动改团队进出都一样；移出 = 撤销退役，一并清空）。
 - **recycle_bin**（回收站，迁移 0041）：退役的终点，一台一行的审计表——退役前的名字与团队、回收时的名字、IP、供应商与套餐、价格周期（生效值）、上架 / 退役 / 回收时间、原因、流量合计、回收时的快照（不含秘密）；旧面板导入的 `source = legacy`。幂等键 `(source, source_id)`，不受保留期清理影响。机器行写进来后 `recycled_at` 非空、从所有视图消失，入口与小时流量留给线路机统计，`purge_blocker` 放行后由中控自动物理删除。
-- **subscription**：机器的账单。`due_date, auto_renew`，以及可「单独设置」的 `price_cents, currency, cycle, billing_tz, remind_days, traffic_gb, traffic_reset_day`（null = 跟随模板：价格、币种、周期、流量上限跟随机器的套餐 `machine.plan_id`，账单时区、提前提醒、流量重置跟随供应商，供应商没填时区时是组织时区 `org_timezone`）；生效值只在库里的视图 `subscription_eff` 算。到期状态（ok / soon / overdue）、月费、下一个到期日由视图层 `meta` 的同一组函数算；续费记录单独一张表。批量续费（`api/billing.rs`）一个事务里逐台调单台续费的同一段逻辑（`machines::renew_in_tx`），审计只记一条 `renewal.batch`；待付清单（`GET /billing/due`）按 供应商 × 到期日 分组，不含备用团队和自动续费的。价格按供应商收的币种存，展示统一折成 USD：汇率存在 `app_setting` 的 `fx_rates`（每天从 ECB 参考汇率自动更新，可按币种手动覆盖，见 `fx.rs` 与 API.md「汇率」），视图层算好 `monthly_usd_cents` 等，前端不折算。
+- **subscription**：机器的账单。`due_date, auto_renew`，以及可「单独设置」的 `price_cents, currency, cycle, billing_tz, remind_days, traffic_gb, traffic_reset_day, traffic_rule`（null = 跟随模板：价格、币种、周期、流量上限跟随机器的套餐 `machine.plan_id`，账单时区、提前提醒、流量重置、流量计费方式（`traffic_rule`：`sum` 双向，`max` / `min` / `out` / `in` 单向，迁移 0084）跟随供应商，供应商没填时区时是组织时区 `org_timezone`）；生效值只在库里的视图 `subscription_eff` 算。到期状态（ok / soon / overdue）、月费、下一个到期日由视图层 `meta` 的同一组函数算；续费记录单独一张表。批量续费（`api/billing.rs`）一个事务里逐台调单台续费的同一段逻辑（`machines::renew_in_tx`），审计只记一条 `renewal.batch`；待付清单（`GET /billing/due`）按 供应商 × 到期日 分组，不含备用团队和自动续费的。价格按供应商收的币种存，展示统一折成 USD：汇率存在 `app_setting` 的 `fx_rates`（每天从 ECB 参考汇率自动更新，可按币种手动覆盖，见 `fx.rs` 与 API.md「汇率」），视图层算好 `monthly_usd_cents` 等，前端不折算。
 - **job**：`kind (provision_vps | provision_proxy | provision_relay | provision_ip | attach_entry | move_entry | replace | retire | purge | upgrade_agent | tune), target, params, state, steps[]`。每一步记录开始、结束、输出、错误类别；失败可从该步重试（升级 agent 从推送重来），取消会执行已完成步骤的补偿。`params.after` 指向要等的作业：它结束前不领取，它在推送之后失败（看它的 `params.pushed`）或被取消就直接取消，推送之前就失败的不算（「全部升级 agent」的金丝雀与线路机逐台）；`params.rollout` 记发起时 dist 里 agent 的 sha256 与版本号，开始前与推送时核对，换了就停。
 
 ## 3. 关键流程
@@ -147,7 +147,7 @@ tune-v2 借鉴了开源脚本 tcpfit 的缓冲区推导（只搬这一处推导�
     队列淘汰的缺口整笔记进恢复后那一小时；读数变小按「读数即增量」（旧 agent 重启、状态丢失）；晚到样本把所在小时和下一小时标脏重算。
   - 业务（Xray 入口，下载 / 上传）：入口流量基线落盘、报告入队后才提交，离线队列淘汰时结转到下一份，不丢不重。家宽代理、同机 IP 节点只有这一路。
   - 视图：今天 / 本月按组织时区（入口的 `traffic`、机器的 `nic`），本周期按账单时区与生效重置日（每月重置或供应商的滚动 30 天），
-    规则（取小 / 取大 / 相加 / 只算出站）跟供应商；首次上架晚于本月 / 本周期起点的标 `month_counted_from` / `quota.counted_from`，
+    规则（双向：相加；单向：取大 / 取小 / 只算出站 / 只算入站）订阅单独设置的优先，否则跟供应商；首次上架晚于本月 / 本周期起点的标 `month_counted_from` / `quota.counted_from`，
     不补「接入前」的量。总览本月业务流量是全部入口合计（每个字节只在线路机上算一次），在用线路机本月才接入时带 `traffic_month.counted_from`（最早的首次上架时刻）；网卡流量不做全站合计。
     预测：`quota.daily_avg` 取近 7 天（周期或上架不足 7 天按已有天数，不足 1 天不预测）的日均，`quota.forecast_full_at` 是按它预计用满的时刻（整点，早于重置日才有）；流量额度告警据此提前开警告，`GET /relays/{id}/rebalance` 与 `fleetctl rebalance` 据此给搬迁建议（只读，执行仍走 move）。
     不再按面板手填校准；割接时录的两条接入前读数只读保留到各自下次重置，之后删列。

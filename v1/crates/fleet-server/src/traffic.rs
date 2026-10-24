@@ -5,7 +5,7 @@
 //!   （换线前在旧线路机上跑的那段仍算这个节点）；线路机的「经过它的业务流量」= 挂在它上面的入口（换线前的量留在旧线路机上）。
 //!   直出入口的节点就是线路机自己，单列一行「线路机-直出」（id 是线路机的）。家宽代理、同机 IP 节点有自己的入口，各算各的；
 //!   全部合计 = 各行之和，每个字节只算一次。窗口内有流量的已退役机器照列，lifecycle 照实给。
-//! - 线路机网卡（下行 / 上行）来自主机小时表 `host_metric_hourly`，计费量按供应商的规则每天取小 / 取大 / 相加 / 只算出站（没有供应商取大）。
+//! - 线路机网卡（下行 / 上行）来自主机小时表 `host_metric_hourly`，计费量按生效的规则（订阅单独设置的，或供应商的）每天取小 / 取大 / 相加 / 只算出站 / 只算入站（没有供应商取大）。
 //! - 小时表按 UTC 整点分桶，一桶按它的起点落在组织时区的哪天归哪天（半小时时区至多差 30 分钟，同 `flows`）。
 //!
 //! 两条按 (节点, 线路机, 天) / (线路机, 天) 分组的聚合各扫一遍窗口内的小时行（走 hour 索引，0015 / 0043；先按入口 × 天聚合再连入口表，
@@ -66,7 +66,7 @@ pub struct RelayRow {
     pub name: String,
     pub lifecycle: String,
     pub country: Option<String>,
-    /// 供应商的网卡计量规则：min / max / sum / out
+    /// 生效的网卡计量规则（订阅单独设置的，或供应商的）：min / max / sum / out / in
     pub rule: &'static str,
     pub rx: i64,
     pub tx: i64,
@@ -137,6 +137,7 @@ fn billed(rule: &str, rx: i64, tx: i64) -> i64 {
         "min" => rx.min(tx),
         "sum" => rx.saturating_add(tx),
         "out" => tx,
+        "in" => rx,
         _ => rx.max(tx),
     }
 }
@@ -187,9 +188,9 @@ pub async fn daily(st: &AppState, days: Option<i64>, team: Option<&str>, machine
     let ids: Vec<Uuid> = biz.iter().flat_map(|b| [b.0, b.1]).chain(nic.iter().map(|n| n.0)).collect::<HashSet<_>>().into_iter().collect();
     let ms: Vec<M> = sqlx::query_as(
         "select m.id, m.kind::text kind, display_name(m.kind::text, m.label, t.name, m.number) name, t.id team_id, t.name team_name,
-                m.lifecycle::text lifecycle, m.country, p.traffic_rule rule
-         from machine m left join team t on t.id = m.team_id left join plan pl on pl.id = m.plan_id
-         left join provider p on p.id = coalesce(pl.provider_id, m.provider_id)
+                m.lifecycle::text lifecycle, m.country, coalesce(s.traffic_rule, tp.traffic_rule) rule
+         from machine m left join team t on t.id = m.team_id
+         left join subscription_eff s on s.machine_id = m.id left join sub_template tp on tp.machine_id = m.id
          where m.id = any($1) or (m.lifecycle <> 'retired' and m.recycled_at is null)
          order by m.kind = 'relay' desc, t.sort_order nulls first, t.name, m.number, m.label, m.id",
     )
