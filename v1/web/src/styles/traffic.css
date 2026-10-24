@@ -22,14 +22,14 @@
 .tr-name { display: flex; align-items: center; gap: var(--sp-6); }
 .tr-name > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .tr-name .pill { flex: none; }
-/* 节点表右侧四列（合计、日均、月费、USD/GB）都吸在右边；只有最左的一列带分隔线 */
+/* 节点表右侧四列（合计、日均、月费、USD/GB）都吸在右边：从右数第 n 列偏移 n-1 个辅助列宽；只有最左的合计列带分隔线 */
 .dt-heat .col-aux { width: 88px; }
-.dt-cost { --aux-w: 88px; --sum-w: 112px; }
+.dt-cost { --aux-w: 88px; }
 .dt-cost :is(th, td):nth-last-child(-n+4) { position: sticky; z-index: 1; background: var(--surface); box-shadow: none; }
 .dt-cost :is(th, td):nth-last-child(1) { right: 0; }
 .dt-cost :is(th, td):nth-last-child(2) { right: var(--aux-w); }
 .dt-cost :is(th, td):nth-last-child(3) { right: calc(var(--aux-w) * 2); }
-.dt-cost :is(th, td):nth-last-child(4) { right: calc(var(--aux-w) * 2 + var(--sum-w)); box-shadow: -1px 0 0 var(--line); }
+.dt-cost :is(th, td):nth-last-child(4) { right: calc(var(--aux-w) * 3); box-shadow: -1px 0 0 var(--line); }
 .dt-cost thead th:nth-last-child(-n+4), .dt-cost tfoot td:nth-last-child(-n+4) { background: var(--sunken); }
 @media (hover: hover) { .dt-cost tr.is-link:hover > td:nth-last-child(-n+4) { background: linear-gradient(var(--hover), var(--hover)), var(--surface); } }
 .tr-node { display: flex; align-items: center; gap: var(--sp-8); min-width: 0; }
