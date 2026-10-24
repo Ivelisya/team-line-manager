@@ -291,7 +291,7 @@ FLEET_BUILD=docker FLEET_BUILD_HOST=10.172.17.213 lab/sync-server.sh 'cargo test
 - 每次还装中控本机的 `/usr/local/bin/fleetctl`，健康检查通过后跑 `fleet-server local-admin`（建或修复全权密钥 central-local，仍有效不换），写 `/root/AGENTS.md`、`/root/CLAUDE.md` 与 `/root/.claude/skills/fleet-ops/SKILL.md`（§14）。部署最后一行写「本机 fleetctl apikey:central-local」说明能用。
 - 版本号 `0.1.0+<哈希>` 里的哈希是最后一次改动 `Cargo.toml`、`Cargo.lock`、`crates`、`migrations`、`deploy` 的提交：只改前端或文档的提交不换哈希，编译主机上不重编 server 和 agent。
 - xray、ssserver、geoip.dat 先和中控 `/opt/fleet/dist` 比 sha256，相同的不上传，中控上的保持原样（docker 编译主机上没有 dist 来源时整个不带，见上）。
-- 编译失败、或 install.sh 重启后等 60 秒未登录访问 `/api/v1/auth/me` 仍不是 401，部署以非 0 退出，后者会打出 fleet-server 最近 60 行日志。中控上的安装包无论成败都删掉。
+- 编译失败、或 install.sh 重启后等 60 秒未登录访问 `/api/v1/auth/me` 仍不是 401、或首页 `/` 不是 200 text/html（前端没挂上，多半是 `/opt/fleet/web` 对 fleet 用户不可读），部署以非 0 退出，前者会打出 fleet-server 最近 60 行日志。中控上的安装包无论成败都删掉。
 - 安装顺序：会失败的预检（软路由隧道的 23000–23999 端口与 `sshd -t`）最先做，要换的 fleet-server、fleetctl、dist、前端先放成 `.new`，紧挨着重启 fleet-server 之前才一起换上：预检或中间任何一步失败，线上的二进制、前端、dist 原样不动（不会出现旧进程配新前端，也不会让磁盘上的新二进制在之后一次崩溃重启时无人值守地升级、跑迁移）。重启之后的步骤（Caddy、健康检查）失败时新版已经在跑，回滚见 §9。
 - install.sh 在中控的临时 systemd 单元 `fleet-install` 里跑（`systemd-run --wait --pipe --collect`）：本机 ssh 断了或 Ctrl-C，安装继续跑完；输出同时写 `/root/fleet-install.log`（断线后 `tail -f` 看进度，成功时最后一行是「fleet-server … api=401 …」，否则是失败原因）。上一次的安装还没结束时再部署会直接报错退出，不会另起一个。
 - 换下来的旧 fleet-server 留在中控 `/opt/fleet/fleet-server.prev`（同一个二进制重复部署时不覆盖它）。

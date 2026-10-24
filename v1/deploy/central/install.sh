@@ -6,7 +6,7 @@
 # 每次还装 /usr/local/bin/fleetctl，健康检查过后建或修复它的全权密钥 central-local（仍有效不换），写给 agent 的 /root/AGENTS.md、
 # /root/CLAUDE.md 与 fleet-ops 技能（docs/OPS.md §14：用 agent 从中控全量运维）。
 # 换下来的旧 fleet-server 留在 /opt/fleet/fleet-server.prev（回滚见 docs/OPS.md §9）；重启后未登录访问 /api/v1/auth/me 不是 401
-# 就打出最近日志、退出码 1。
+# 就打出最近日志、退出码 1；首页 / 不是 200 text/html（前端没挂上）同样退出码 1。
 # /etc/fleet/secret.key 丢了，库里所有 SS 密码、REALITY 私钥、通知渠道配置都解不开：每天的备份连它一起打包（/var/backups/fleet），
 # 家里 PVE 每天取走一份，见 docs/OPS.md §10。
 set -euo pipefail
@@ -21,6 +21,7 @@ if [ ! -f /etc/apt/sources.list.d/caddy-stable.list ]; then
   apt-get install -y -qq curl gpg debian-keyring debian-archive-keyring apt-transport-https >/dev/null
   curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/gpg.key | gpg --batch --yes --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
   curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt > /etc/apt/sources.list.d/caddy-stable.list
+  chmod 644 /usr/share/keyrings/caddy-stable-archive-keyring.gpg /etc/apt/sources.list.d/caddy-stable.list   # apt 的下载进程是 _apt，要读得到密钥环；不依赖调用方的 umask
   apt-get update -qq
   apt-get install -y -qq -o Dpkg::Options::=--force-confold caddy >/dev/null
 fi
@@ -38,8 +39,10 @@ PGCONF="# 由 fleet 的 deploy/central/install.sh 写入，见 docs/OPS.md §8
 wal_compression = lz4
 checkpoint_timeout = 15min
 max_wal_size = 2GB"
+# postgres 用户要读得到 fleet.conf：内容对但不是 0644（旧版在 umask 077 下写成了 0600）也重写并 reload，不依赖调用方的 umask
 for d in /etc/postgresql/*/main/conf.d; do
-  [ "$(cat "$d/fleet.conf" 2>/dev/null)" = "$PGCONF" ] || { printf '%s\n' "$PGCONF" > "$d/fleet.conf"; systemctl reload postgresql; }
+  { [ "$(cat "$d/fleet.conf" 2>/dev/null)" = "$PGCONF" ] && [ "$(stat -c %a "$d/fleet.conf")" = 644 ]; } \
+    || { printf '%s\n' "$PGCONF" > "$d/fleet.conf"; chmod 644 "$d/fleet.conf"; systemctl reload postgresql; }
 done
 
 id fleet >/dev/null 2>&1 || useradd --system --home-dir /var/lib/fleet --shell /usr/sbin/nologin fleet
@@ -111,6 +114,8 @@ install -m 755 "$PKG/bin/fleet-server" /opt/fleet/fleet-server.new
 install -m 755 "$PKG/bin/fleetctl" /usr/local/bin/fleetctl.new
 rm -rf /opt/fleet/web.new /opt/fleet/web.old
 cp -r "$PKG/web" /opt/fleet/web.new
+# fleet-server（User=fleet）从这里读前端，index.html 读不到整站就没有前端：不依赖调用方的 umask（077 下 cp 出来是 700/600 root）
+chmod -R a+rX /opt/fleet/web.new
 
 cat > /etc/systemd/system/fleet-server.service <<'UNIT'
 [Unit]
@@ -153,6 +158,7 @@ UMask=0077
 [Install]
 WantedBy=multi-user.target
 UNIT
+chmod 644 /etc/systemd/system/fleet-server.service   # 不依赖调用方的 umask（077 下 systemd 会警告配置文件 world-inaccessible）
 
 # IP 情报离线库：每月更新；首次下载约 190 MB，后台进行，fleet-server 5 分钟内自动加载
 install -m 644 "$PKG/fetch-dbs.sh" /opt/fleet/ipintel/fetch-dbs.sh
@@ -221,14 +227,18 @@ caddy_restart=0
 if [ "$(cat /etc/systemd/system/caddy.service.d/fleet.conf 2>/dev/null)" != "$CADDY_DROPIN" ]; then
   install -d -m 755 /etc/systemd/system/caddy.service.d
   printf '%s\n' "$CADDY_DROPIN" > /etc/systemd/system/caddy.service.d/fleet.conf
+  chmod 644 /etc/systemd/system/caddy.service.d/fleet.conf
   systemctl daemon-reload
   caddy_restart=1   # /run/caddy 要在启动时建
 fi
 install -d -m 755 /etc/caddy/global.d /etc/caddy/sites.d
+# caddy 用户要读得到 Caddyfile：不依赖调用方的 umask；内容没变、旧版在 umask 077 下写成 0600 的也在这里修回
+[ ! -f /etc/caddy/Caddyfile ] || chmod 644 /etc/caddy/Caddyfile
 if [ "$(cat /etc/caddy/Caddyfile 2>/dev/null)" != "$CADDY" ]; then
   [ -f /etc/caddy/Caddyfile.dist ] || cp /etc/caddy/Caddyfile /etc/caddy/Caddyfile.dist
   [ ! -f /etc/caddy/Caddyfile ] || cp -p /etc/caddy/Caddyfile "/etc/caddy/Caddyfile.bak-$(date +%Y%m%d-%H%M%S)"
   printf '%s\n' "$CADDY" > /etc/caddy/Caddyfile.new
+  chmod 644 /etc/caddy/Caddyfile.new   # 换上后 reload 由 caddy 用户读它
   if caddy validate --config /etc/caddy/Caddyfile.new --adapter caddyfile >/dev/null 2>&1; then
     # caddy reload 按新 Caddyfile 里的管理地址去连：正在跑的 Caddy 还在旧地址上（第一次从 2019 换过来）就连不上，只能重启
     grep -qF "admin $CADDY_ADMIN" /etc/caddy/Caddyfile 2>/dev/null || caddy_restart=1
@@ -251,6 +261,13 @@ if [ "$code" != 401 ]; then
   echo "fleet-server 没有正常启动（$(systemctl is-active fleet-server)）：未登录访问 /api/v1/auth/me 应回 401，实际 $code。最近日志："
   journalctl -u fleet-server -n 60 --no-pager || true
   echo "旧版本在 /opt/fleet/fleet-server.prev，回滚见 docs/OPS.md §9"
+  exit 1
+fi
+# 前端也要在：/api/v1/auth/me 回 401 只说明后端起来了；/opt/fleet/web 对 fleet 用户不可读时 fleet-server 不挂前端，首页回 404
+home=$(curl -s -o /dev/null -w '%{http_code} %{content_type}' http://$LISTEN/ || true)
+if [[ $home != "200 text/html"* ]]; then
+  echo "fleet-server 起来了，但首页没有前端：访问 / 应回 200 text/html，实际 ${home:-无响应}。多半是 /opt/fleet/web 对 fleet 用户不可读（权限、属主）或包里没有 index.html："
+  ls -ld /opt/fleet/web /opt/fleet/web/index.html || true
   exit 1
 fi
 ls /var/backups/fleet/fleet-*.tar* >/dev/null 2>&1 || systemctl start --no-block fleet-backup.service   # 第一次装上备份：先做一份
