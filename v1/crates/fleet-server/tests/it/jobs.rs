@@ -289,6 +289,15 @@ async fn purge_runs_twice_without_error() {
         .execute(&t.st.db)
         .await
         .unwrap();
+    // 客户端订阅的 include_ids / exclude_ids 引用它（无外键）：彻底删除要一并摘掉，别的 id 留着
+    let other = Uuid::now_v7();
+    sqlx::query("insert into client_sub (id, name, token_hash, include_ids, exclude_ids) values ($1, '订阅', decode('01', 'hex'), $2, $3)")
+        .bind(Uuid::now_v7())
+        .bind(vec![node, other])
+        .bind(vec![node])
+        .execute(&t.st.db)
+        .await
+        .unwrap();
     sqlx::query("update machine set lifecycle = 'retired' where id = $1").bind(node).execute(&t.st.db).await.unwrap();
     // 后台起来时维护任务先跑一轮：可能已经把它收进回收站、建好了物理删除作业
     let first = match fleet_server::api::machines::start_purge(&t.st, "test", node, &name, None).await {
@@ -307,6 +316,8 @@ async fn purge_runs_twice_without_error() {
     assert_eq!(s, StatusCode::NOT_FOUND);
     let n: i64 = sqlx::query_scalar("select count(*) from entry_traffic_hourly where entry_id = $1").bind(eid).fetch_one(&t.st.db).await.unwrap();
     assert_eq!(n, 0);
+    let (inc, exc): (Vec<Uuid>, Vec<Uuid>) = sqlx::query_as("select include_ids, exclude_ids from client_sub where name = '订阅'").fetch_one(&t.st.db).await.unwrap();
+    assert_eq!((inc, exc), (vec![other], vec![]), "订阅里对已删机器的引用没摘掉");
 
     // 机器已经不在了，再来一个 purge 作业（比如上一次跑到一半进程挂了、重新领取）也应该直接成功
     let mut tx = t.st.db.begin().await.unwrap();
