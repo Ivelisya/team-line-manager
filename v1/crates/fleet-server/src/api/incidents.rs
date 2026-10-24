@@ -35,7 +35,7 @@ struct IncidentOut {
     ack_by: Option<String>,
     /// 恢复后又在重开窗口内复发的次数
     reopen_count: i32,
-    /// 机器告警的对象是哪类机器（relay / vps / proxy / ip），建议操作用
+    /// 机器告警的对象是哪类机器（relay / vps / proxy / ip），建议操作用；机器已不在用或进了备用团队为 None（不给针对它的建议）
     #[serde(skip)]
     subject_kind: Option<String>,
 }
@@ -81,7 +81,7 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQu
                  when i.engine = 'probe' then coalesce(pp.name, '探测点（已删除）')
                  else display_name(m.kind::text, m.label, t.name, m.number) end subject_name,
             i.severity::text severity, i.state::text state, i.summary, i.opened_at, i.last_seen_at, i.resolved_at, i.ack_at, i.ack_by, i.reopen_count,
-            case when i.engine = 'machine' then m.kind::text end subject_kind
+            case when i.engine = 'machine' and m.lifecycle = 'active' and not coalesce(t.spare, false) then m.kind::text end subject_kind
          from incident i left join machine m on m.id = i.subject_id left join team t on t.id = m.team_id
               left join router r on r.id = i.subject_id and i.engine = 'router'
               left join probe_point pp on pp.id = i.subject_id and i.engine = 'probe'

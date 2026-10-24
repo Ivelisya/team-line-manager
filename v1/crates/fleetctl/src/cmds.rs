@@ -171,11 +171,13 @@ fn items(mut v: Value) -> anyhow::Result<Value> { v.get_mut("items").map(Value::
 pub fn status(ctx: &Ctx) -> anyhow::Result<u8> {
     let ov = ctx.c.get("/overview")?;
     let inc = incident_items(ctx, "firing", None)?;
-    // 近 7 天反复：中控按（规则, 对象）分组算好（进行中或已恢复的都算），不在这里自己数
+    // 近 7 天反复：中控按（规则, 对象）分组算好（进行中或已恢复的都算），不在这里自己数。
+    // 再按 chronic 过滤一次：不认识 state=chronic 的旧中控会回进行中的告警（也不带 chronic 字段），那时这一节为空
     let chronic: Vec<Value> = incident_items(ctx, "chronic", None)?
         .as_array()
         .into_iter()
         .flatten()
+        .filter(|i| i["chronic"] == true)
         .map(|i| json!({"rule": i["rule"], "rule_name": i["rule_name"], "subject_id": i["subject_id"], "subject_name": i["subject_name"], "recent_count": i["recent_count"], "suggested": i["suggested"]}))
         .collect();
     let both = json!({"overview": ov, "incidents": inc, "chronic": chronic});

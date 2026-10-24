@@ -172,7 +172,8 @@ pub fn pick(nodes: &[NodeIn], relays: &[RelayIn]) -> Vec<Pick> {
             }
             p.best = Some(id);
             let cur = cur_cell(n);
-            p.suggest = n.current.is_some_and(|c| c != id) && (!cur.good() || cur.p50.is_some_and(|c| c - p50 >= MIN_GAIN_MS));
+            // 当前线路机一个样本都没有（它的 agent 还没升级、系统 ping 用不了）：是它没在测，不是链路差，只展示不建议
+            p.suggest = n.current.is_some_and(|c| c != id) && cur.samples > 0 && (!cur.good() || cur.p50.is_some_and(|c| c - p50 >= MIN_GAIN_MS));
             if p.suggest {
                 *load.entry(id).or_default() += n.daily;
             }
@@ -421,6 +422,9 @@ mod tests {
         assert_eq!(p[1], Pick { best: Some(a), suggest: false, no_room: vec![c] });
         assert_eq!(p[2], Pick { best: Some(a), suggest: true, no_room: vec![] });
         assert_eq!(p[3], Pick { best: Some(c), suggest: false, no_room: vec![] });
+        // 当前线路机一个样本都没有（agent 没升级 / ping 用不了）：不建议搬走
+        let p = pick(&[node(c, vec![(a, cell(100, 150.0))], 1e9)], &relays);
+        assert!(!p[0].suggest, "{:?}", p[0]);
     }
 
     /// 搬迁目标的往返成绩：被搬节点的 p50 取平均；有节点成功率不足 99% 为 Bad；有节点没测过为 NoData

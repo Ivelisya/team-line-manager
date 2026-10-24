@@ -500,7 +500,7 @@ pub async fn placement(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQu
 
 #[derive(Deserialize)]
 pub struct RebalanceIn {
-    /// 搬到哪台线路机；不填取「有额度余量最多且在用、非故障」的
+    /// 搬到哪台线路机；不填取在用、非故障、额度放得下的线路机里往返最好的（没有往返数据时取额度余量最多的）
     target_relay_id: Option<Uuid>,
     /// 不动的节点 id（逗号分隔），如分享给别人的入口所在节点
     exclude: Option<String>,
