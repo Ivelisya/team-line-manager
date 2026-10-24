@@ -642,7 +642,7 @@ impl LiveCache {
 
     /// 上一份视图，旧不过 `STALE_MAX`、之后没有资源变更才给（变更之后还给变更前的，改完马上重取的会一直看到旧的）；
     /// `rolled`：还要求之后没有新的小时汇总（只差随上报变的指标）
-    fn stale(&self, rolled: bool) -> Option<Arc<Vec<MachineView>>> {
+    pub(crate) fn stale(&self, rolled: bool) -> Option<Arc<Vec<MachineView>>> {
         let last = self.last.lock().unwrap();
         let (at, gen, r, v) = last.as_ref()?;
         let unchanged = *gen == self.gen.load(Ordering::SeqCst) && (!rolled || *r == self.rolled.load(Ordering::SeqCst));

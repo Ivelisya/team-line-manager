@@ -44,9 +44,9 @@ pub async fn list(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<L
 }
 
 pub async fn get_one(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
-    // 在用机器先找缓存视图（同 GET /machines：资源变更后 live 会重算，不会拿到变更前的）；不在里面的（已退役）再单独加载
-    // 视图算不出来（自检 central_view_stuck）时不跟着失败：照旧单独加载这一台，排障时还能看
-    if let Ok(v) = views::live(&st).await {
+    // 在用机器先找已经算好的那份缓存视图（不等它重算：视图卡住时 live 要等满 VIEW_WAIT）；只用之后没有资源变更、没有新一轮小时汇总的（旧不过 STALE_MAX），
+    // 改完马上重取的看到的是改动之后的。不在里面的（已退役）、视图旧了或变过的，单独加载这一台
+    if let Some(v) = st.live.stale(true) {
         if let Some(m) = v.iter().find(|m| m.id == id) {
             return Ok(ok(m));
         }

@@ -198,9 +198,8 @@ pub async fn daily(st: &AppState, days: Option<i64>, team: Option<&str>, machine
     .bind(&ids)
     .fetch_all(&st.db)
     .await?;
-    // 国旗：没手动指定国家的取机器视图里按 IP 画像得出的
-    let live = views::live(st).await?;
-    let auto: HashMap<Uuid, Option<String>> = live.iter().map(|m| (m.id, m.country.clone())).collect();
+    // 国旗：没手动指定国家的取机器视图里按 IP 画像得出的；用已经算好的最新一份、不等视图重算（视图卡住时本接口照常出，没有就是 null）
+    let auto: HashMap<Uuid, Option<String>> = st.live.latest().map(|v| v.iter().map(|m| (m.id, m.country.clone())).collect()).unwrap_or_default();
     let country = |m: &M| m.country.clone().or_else(|| auto.get(&m.id).cloned().flatten());
     let by_id: HashMap<Uuid, &M> = ms.iter().map(|m| (m.id, m)).collect();
     let pos: HashMap<Date, usize> = dates.iter().enumerate().map(|(i, d)| (*d, i)).collect();
