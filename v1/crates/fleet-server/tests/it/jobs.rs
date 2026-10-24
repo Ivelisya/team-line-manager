@@ -119,6 +119,35 @@ async fn cancel_while_running_ends_cancelled_and_compensates() {
     assert!(lease.is_none(), "结束后不留租约");
 }
 
+/// 预检没通过（这里是主机公钥拿不到）就取消：机器上跑的不一定是这次要装的（可能是换了 IP 的在用节点），补偿不能登录去清理，只写一行日志说明
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancel_before_preflight_passes_does_not_clean_machine() {
+    use tokio::io::AsyncWriteExt;
+    let t = setup(true).await;
+    let (relay, _) = seed_relay(&t).await;
+    let team = seed_team(&t, "团队1").await;
+    // 只回一行 SSH 版本行的假 SSH 端口：SSH 探测通过，但拿不到主机公钥，预检失败
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = l.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let mut held = vec![];
+        while let Ok((mut s, _)) = l.accept().await {
+            let _ = s.write_all(b"SSH-2.0-fake\r\n").await;
+            held.push(s);
+        }
+    });
+    let created = t.post("/api/v1/provision", json!({"items": [{"kind": "vps", "ip": "127.0.0.1", "ssh_port": port, "team_id": team, "relay_id": relay}]})).await;
+    let (machine, job) = (created["jobs"][0]["machine_id"].as_str().unwrap().parse::<Uuid>().unwrap(), created["jobs"][0]["job_id"].as_str().unwrap().to_string());
+    t.wait_job(&job, "failed").await;
+    t.post(&format!("/api/v1/jobs/{job}/cancel"), json!({})).await;
+    t.wait_job(&job, "cancelled").await;
+    assert_eq!(t.machine_lifecycle(machine).await, "retired");
+    let logs = t.get(&format!("/api/v1/jobs/{job}/logs")).await;
+    let msgs: Vec<&str> = logs.as_array().unwrap().iter().map(|l| l["msg"].as_str().unwrap()).collect();
+    assert!(msgs.iter().any(|m| m.contains("没有清理机器上的服务")), "{msgs:?}");
+    assert!(!msgs.iter().any(|m| m.contains("清理机器上的服务」失败")), "没有去登录清理：{msgs:?}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn retired_machine_old_provision_job_cannot_be_retried() {
     let t = setup(true).await;
@@ -265,6 +294,53 @@ async fn run_one(t: &common::T, job: Uuid) -> Value {
     assert_eq!(j.id, job);
     jobs::advance(&t.st, j, "test").await.unwrap();
     t.job(&job.to_string()).await
+}
+
+/// 领取顺序：耗时短的作业（退役、换线路机…）排在上架前面，上架排在升级 / 调优 / 下发 SS 前面，同类按创建先后
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn claim_puts_short_jobs_before_provision_before_upgrade() {
+    let t = setup(false).await;
+    let team = seed_team(&t, "团队1").await;
+    let mut want = vec![];
+    // 先建的是升级和上架，后建的退役、摘入口
+    for (i, (kind, rank)) in [("upgrade_agent", 2), ("provision_proxy", 1), ("provision_vps", 1), ("retire", 0), ("attach_entry", 0)].into_iter().enumerate() {
+        let node = seed_node(&t, team, i as i32 + 1, &format!("203.0.113.{}", i + 10), "active").await;
+        let mut tx = t.st.db.begin().await.unwrap();
+        let id = jobs::enqueue(&mut tx, kind, Some(node), json!({}), "test").await.unwrap();
+        tx.commit().await.unwrap();
+        want.push((rank, i, id));
+    }
+    want.sort();
+    let mut got = vec![];
+    while let Some(j) = jobs::claim(&t.st, "test").await.unwrap() {
+        got.push(j.id);
+    }
+    assert_eq!(got, want.into_iter().map(|w| w.2).collect::<Vec<_>>());
+}
+
+/// 「上线」已经把机器改成了在用、但记账失败：重跑不被「机器状态不对」判死，这一步记为跳过；别的步骤遇到同样的状态仍然失败
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn activate_rerun_after_machine_already_active_is_skipped() {
+    let t = setup(false).await;
+    let team = seed_team(&t, "团队1").await;
+    let node = seed_node(&t, team, 1, "203.0.113.10", "active").await;
+    let mut tx = t.st.db.begin().await.unwrap();
+    let at_activate = jobs::enqueue(&mut tx, "provision_proxy", Some(node), json!({}), "test").await.unwrap();
+    tx.commit().await.unwrap();
+    sqlx::query("update job_step set state = 'done' where job_id = $1 and idx < 3").bind(at_activate).execute(&t.st.db).await.unwrap();
+    sqlx::query("update job set step = 3 where id = $1").bind(at_activate).execute(&t.st.db).await.unwrap();
+    let j = run_one(&t, at_activate).await;
+    assert_eq!(j["state"], "succeeded", "{j}");
+    assert_eq!(j["steps"][3]["state"], "skipped", "{j}");
+
+    // 同样的机器状态，停在上线之前的步骤：照旧判定作业不能继续
+    let mut tx = t.st.db.begin().await.unwrap();
+    let at_verify = jobs::enqueue(&mut tx, "provision_proxy", Some(node), json!({}), "test").await.unwrap();
+    tx.commit().await.unwrap();
+    sqlx::query("update job set step = 2 where id = $1").bind(at_verify).execute(&t.st.db).await.unwrap();
+    let j = run_one(&t, at_verify).await;
+    assert_eq!(j["state"], "failed", "{j}");
+    assert!(j["error"].as_str().unwrap().contains("不能再继续"), "{j}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

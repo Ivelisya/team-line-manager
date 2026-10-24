@@ -283,7 +283,11 @@ pub async fn retry(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
         lc = Some("provisioning".into());
     }
     // 机器状态已经变了（比如上架一半的机器后来退役了）：旧作业不能复活
-    jobs::check_target(&kind, lc.as_deref()).map_err(ApiError::conflict)?;
+    // （失败的就是改状态的那一步、而机器已经是目标状态的除外：状态改完后记账失败，重试时那一步记为跳过）
+    let key = jobs::defs(&kind).get(step as usize).map_or("", |d| d.key);
+    if !jobs::target_reached(&kind, key, lc.as_deref()) {
+        jobs::check_target(&kind, lc.as_deref()).map_err(ApiError::conflict)?;
+    }
     // 重置主机指纹：只给正是因为指纹不符失败的作业；同机 IP 节点登录的是宿主机，不能借它重置宿主机的指纹
     let pin = if reset { Some(reset_target(&mut tx, id, step, target).await?) } else { None };
     // 从失败那一步重来；升级 agent 从推送重来：失败时多半已经换回了旧程序，只重跑「等待新版本上报」永远等不到
