@@ -18,6 +18,7 @@ use crate::meta;
 use crate::names::display_name;
 use crate::routers::clash::EntryRef;
 use crate::health::Status;
+use crate::placement::Score;
 use crate::quota::{best_target, pick_moves, Q};
 use crate::state::{AppState, Event};
 use crate::views::{self, EntryView, MachineView};
@@ -484,12 +485,15 @@ pub async fn moves(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Mov
 pub struct PlacementQ {
     /// 团队 id 或名称；不填 = 全部
     team: Option<String>,
+    /// 只看这个节点（id 或显示名）
+    node: Option<String>,
 }
 
 /// 放置矩阵（只读，逻辑见 `crate::placement`）：每个在用 VPS 节点到各线路机近 24 小时的 p50 与成功率、当前与最优线路机，
-/// 建议换线的按目标线路机合成一条批量 `fleetctl move A,B --to X`
+/// 建议换线的按目标线路机合成一条批量 `fleetctl move A,B --to X`；
+/// 有多个在用入口的节点只给带 `--from` 的单条建议（`single_suggestions`）
 pub async fn placement(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<PlacementQ>) -> ApiResult<Json<Value>> {
-    Ok(ok(crate::placement::view(&st, q.team.as_deref()).await?))
+    Ok(ok(crate::placement::view(&st, q.team.as_deref(), q.node.as_deref()).await?))
 }
 
 // ── 搬迁建议 ──────────────────────────────────────────────────────────────
@@ -545,20 +549,6 @@ pub async fn rebalance(_a: Actor, State(st): State<AppState>, ApiPath(relay): Ap
     }
     out["needed"] = json!(true);
 
-    // 目标：指定的，或在用、非故障、非备用的线路机里额度余量最多的
-    let usable = |m: &&MachineView| m.kind == "relay" && m.id != relay && m.lifecycle == "active" && !m.spare && m.health.status != Status::Down;
-    let tgt = match b.target_relay_id {
-        Some(t) => all.iter().find(|m| m.id == t && m.kind == "relay").filter(|m| m.id != relay).ok_or_else(|| ApiError::bad_request("目标要是另一台线路机"))?,
-        None => {
-            let c: Vec<(Uuid, Q)> = all.iter().filter(usable).map(|m| (m.id, quota_q(m, now))).collect();
-            let id = best_target(&c).ok_or_else(|| ApiError::conflict("没有可作为目标的线路机（要在用、非故障）"))?;
-            all.iter().find(|m| m.id == id).expect("来自同一份列表")
-        }
-    };
-    let tq = quota_q(tgt, now);
-    out["target"] = json!({"id": tgt.id, "name": tgt.name, "limit_gb": tgt.quota.limit_gb, "used": tgt.quota.used, "daily_avg": tgt.quota.daily_avg,
-                           "projected_pct": tq.limit.map(|l| pct(tq.projected(), l))});
-
     // 各入口近 7 天的流量
     let live: Vec<&EntryView> = src.entries.iter().filter(|e| e.lifecycle == "active").collect();
     let eids: Vec<Uuid> = live.iter().map(|e| e.id).collect();
@@ -578,13 +568,57 @@ pub async fn rebalance(_a: Actor, State(st): State<AppState>, ApiPath(relay): Ap
     let rate = |e: &EntryView| traffic.get(&e.id).map_or(0.0, |t| t.1 as f64 / wdays);
     let total: f64 = live.iter().map(|e| rate(e)).sum();
     let k = if total > 0.0 { sq.daily / total } else { 1.0 };
-
-    // 能搬的：在用的非直出入口，节点没被排除、在目标上还没有入口
-    let on_target: HashSet<Uuid> = tgt.entries.iter().map(|e| e.node.id).collect();
-    let cands: Vec<&EntryView> = live.iter().copied().filter(|e| !e.direct && !exclude.contains(&e.node.id) && !on_target.contains(&e.node.id)).collect();
-    let rates: Vec<f64> = cands.iter().map(|e| rate(e) * k).collect();
     let allowed = (limit - sq.used) / sq.days_left.max(0.04);
-    let (picked, cut, reached) = pick_moves(sq.daily, allowed, &rates);
+
+    // 搬去 `t` 的方案：能搬的 = 在用的非直出入口，节点没被排除、在 t 上还没有入口。(能搬的入口, 各自每天的流量, 选中的下标, 搬走后每天少的流量, 撑不撑得到重置日)
+    let plan_for = |t: &MachineView| {
+        let on_target: HashSet<Uuid> = t.entries.iter().map(|e| e.node.id).collect();
+        let cands: Vec<&EntryView> = live.iter().copied().filter(|e| !e.direct && !exclude.contains(&e.node.id) && !on_target.contains(&e.node.id)).collect();
+        let rates: Vec<f64> = cands.iter().map(|e| rate(e) * k).collect();
+        let (picked, cut, reached) = pick_moves(sq.daily, allowed, &rates);
+        (cands, rates, picked, cut, reached)
+    };
+
+    // 目标：指定的；没指定就在用、非故障、非备用的线路机里挑——额度放得下的优先（都放不下仍按余量挑一台，下面照旧写明放不下），
+    // 再看放置矩阵：被搬节点到它近 24 小时 p50 的平均最小的（有节点成功率不足 99% 的不要）；没有往返数据就按额度余量最多的
+    let usable = |m: &&MachineView| m.kind == "relay" && m.id != relay && m.lifecycle == "active" && !m.spare && m.health.status != Status::Down;
+    let mut avg_rtt: Option<f64> = None;
+    let tgt = match b.target_relay_id {
+        Some(t) => all.iter().find(|m| m.id == t && m.kind == "relay").filter(|m| m.id != relay).ok_or_else(|| ApiError::bad_request("目标要是另一台线路机"))?,
+        None => {
+            let pool: Vec<&MachineView> = all.iter().filter(usable).collect();
+            if pool.is_empty() {
+                return Err(ApiError::conflict("没有可作为目标的线路机（要在用、非故障）"));
+            }
+            let plans: Vec<_> = pool.iter().map(|t| plan_for(t)).collect();
+            let fits: Vec<usize> = (0..pool.len()).filter(|&i| plans[i].4 && !plans[i].2.is_empty() && quota_q(pool[i], now).fits(plans[i].3)).collect();
+            let idx: Vec<usize> = if fits.is_empty() { (0..pool.len()).collect() } else { fits };
+            let moved = |i: usize| -> Vec<Uuid> { plans[i].2.iter().map(|&j| plans[i].0[j].node.id).collect() };
+            let all_moved: Vec<Uuid> = idx.iter().flat_map(|&i| moved(i)).collect();
+            let grid = crate::placement::cells(&st.db, &all_moved).await?;
+            let scores: Vec<Score> = idx.iter().map(|&i| crate::placement::score(&moved(i), &grid, pool[i].id)).collect();
+            let fastest = idx.iter().zip(&scores).filter_map(|(&i, s)| if let Score::Rtt(v) = s { Some((i, *v)) } else { None }).min_by(|a, b| a.1.total_cmp(&b.1));
+            let chosen = match fastest {
+                Some((i, v)) => {
+                    avg_rtt = Some(v);
+                    i
+                }
+                None => {
+                    let ok: Vec<usize> = idx.iter().zip(&scores).filter(|(_, s)| **s != Score::Bad).map(|(&i, _)| i).collect();
+                    let from = if ok.is_empty() { &idx } else { &ok };
+                    let c: Vec<(Uuid, Q)> = from.iter().map(|&i| (pool[i].id, quota_q(pool[i], now))).collect();
+                    let id = best_target(&c).expect("池子非空");
+                    pool.iter().position(|m| m.id == id).expect("来自同一份列表")
+                }
+            };
+            pool[chosen]
+        }
+    };
+    let tq = quota_q(tgt, now);
+    out["target"] = json!({"id": tgt.id, "name": tgt.name, "limit_gb": tgt.quota.limit_gb, "used": tgt.quota.used, "daily_avg": tgt.quota.daily_avg,
+                           "projected_pct": tq.limit.map(|l| pct(tq.projected(), l)), "avg_rtt_ms": avg_rtt.map(|v| (v * 10.0).round() / 10.0)});
+
+    let (cands, rates, picked, cut, reached) = plan_for(tgt);
     let mut moves = vec![];
     for &i in &picked {
         let e = cands[i];

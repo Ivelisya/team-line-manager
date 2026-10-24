@@ -132,6 +132,10 @@ async fn reconcile_reopens_throttles_and_clears_ack_like_machine_alerts() {
     let items = t.get("/api/v1/incidents?state=all").await["items"].as_array().unwrap().clone();
     let counts: Vec<_> = items.iter().filter(|i| i["rule"] == RULE).map(|i| i["recent_count"].as_i64().unwrap()).collect();
     assert_eq!(counts, [3, 3, 3], "{items:?}");
+    // 反复的门槛在中控：每条带 chronic；state=chronic 每个（规则, 对象）只取最近一条
+    assert!(items.iter().filter(|i| i["rule"] == RULE).all(|i| i["chronic"] == true), "{items:?}");
+    let chronic = t.get("/api/v1/incidents?state=chronic").await["items"].as_array().unwrap().clone();
+    assert_eq!(chronic.iter().filter(|i| i["rule"] == RULE).count(), 1, "{chronic:?}");
     assert!(mock.texts("/hook/a").iter().any(|x| x.contains("（近 24 小时第 3 次）\n时间：")));
 }
 

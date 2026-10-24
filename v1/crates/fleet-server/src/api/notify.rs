@@ -127,7 +127,7 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     let enabled = b.enabled.unwrap_or(cur.enabled);
     let enc = match &b.config {
         Some(newc) => {
-            // 令牌/地址/密钥不会回显给前端，所以编辑时没填的字段沿用旧值，填了的覆盖
+            // 令牌/地址/密钥不会回显给前端，所以编辑时缺省或留空的字段沿用旧值，填了的覆盖；`secret: null` 清除飞书的签名密钥
             let old = open_config(&st, &cur.config_enc).unwrap_or_else(|| json!({}));
             let mut merged = old.clone();
             let given = |k: &str| newc[k].as_str().is_some_and(|s| !s.trim().is_empty());
@@ -135,9 +135,9 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
                 let blank = v.is_null() || v.as_str().is_some_and(|s| s.trim().is_empty());
                 if !blank {
                     merged[k] = v.clone();
-                } else if k == "api_base" {
+                } else if k == "api_base" || (k == "secret" && v.is_null()) {
                     if let Some(m) = merged.as_object_mut() {
-                        m.remove("api_base");
+                        m.remove(k.as_str());
                     }
                 }
             }

@@ -1481,6 +1481,19 @@ async fn notify_channel_crud_and_test_endpoint() {
     let r = t.post(&format!("/api/v1/notify-channels/{good}/test"), json!({})).await;
     assert_eq!((r["ok"].as_bool(), r["error"].is_null()), (Some(true), true), "停用的渠道也能测试：{r}");
     assert_eq!(mock.events("/hook/ok"), ["test"]);
+    // 飞书签名密钥：缺省 / 留空沿用，`secret: null` 才清除
+    let hint = || async { t.get("/api/v1/notify-channels").await.as_array().unwrap().iter().find(|c| c["name"] == "好 hook").unwrap()["config_hint"].as_str().unwrap().to_string() };
+    let tr = &t;
+    let patch = |cfg: serde_json::Value| {
+        let path = format!("/api/v1/notify-channels/{good}");
+        async move { tr.req("PATCH", &path, Some(json!({ "config": cfg })), None).await.0 }
+    };
+    assert_eq!(patch(json!({"secret": "abc"})).await, StatusCode::OK);
+    assert!(hint().await.ends_with("已加签"));
+    assert_eq!(patch(json!({"secret": ""})).await, StatusCode::OK);
+    assert!(hint().await.ends_with("已加签"), "留空沿用");
+    assert_eq!(patch(json!({"secret": null})).await, StatusCode::OK);
+    assert!(!hint().await.contains("已加签"), "null 清除");
     let wc = t.post("/api/v1/notify-channels", json!({"name": "飞书拒绝", "kind": "feishu", "config": {"url": mock.url("/feishu/bad")}, "min_severity": "info", "enabled": true})).await["id"].as_str().unwrap().to_string();
     let r = t.post(&format!("/api/v1/notify-channels/{wc}/test"), json!({})).await;
     assert_eq!(r["ok"], false);

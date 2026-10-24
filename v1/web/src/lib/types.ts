@@ -269,6 +269,8 @@ export interface Incident {
   reopen_count: number;
   /** 近 7 天同对象同规则开过几次（含这次） */
   recent_count?: number;
+  /** 近 7 天反复（recent_count 达到中控定的门槛）：网页标「近 7 天第 N 次」、status 列入「近 7 天反复」 */
+  chronic?: boolean;
   /** 建议操作：可以直接执行的 fleetctl 命令（只有进行中的、只有几条规则有）；quick_switch：其中临时切换的结构化一份（网页「临时切到…」用）。旧中控没有这两个字段 */
   suggested?: string[];
   quick_switch?: { router_id: string; router: string; group: string; from: string; to: string }[];
@@ -298,17 +300,19 @@ export interface RebalancePlan {
   after?: { daily_avg: number; projected_pct: number }; target_after?: { fits: boolean; projected_pct: number | null };
 }
 /** 放置矩阵（GET /placement）：各在用 VPS 节点到每台线路机近 window_h 小时的往返。cells 与 relays 同序；
- *  current_relay_id：节点恰有一条在用入口时它所在的线路机；best_relay_id：成功率 ≥ 99%、非故障、额度放得下的里面 p50 最小的；
+ *  current_relay_id：节点恰有一条入口（待应用 / 在用 / 停用都算）且在用时它所在的线路机，否则 null、不给批量建议；entry_relay_ids：在用入口所在的线路机（多入口节点有多个）；best_relay_id：成功率 ≥ 99%、非故障、额度放得下的里面 p50 最小的；
  *  suggest：当前比最优慢 ≥ min_gain_ms 或当前成功率 < 99%；no_room：更快但额度放不下而跳过的线路机 */
 export interface PlacementCell { relay_id: string; samples: number; ok: number; success_pct: number | null; p50_ms: number | null }
 export interface PlacementNode {
-  id: string; name: string; team: { id: string; name: string } | null; ip: string; current_relay_id: string | null; entries: number;
+  id: string; name: string; team: { id: string; name: string } | null; ip: string; current_relay_id: string | null; entry_relay_ids: string[]; entries: number;
   cells: PlacementCell[]; tcp_fail_7d: number; daily_bytes: number; best_relay_id: string | null; suggest: boolean; reason: string | null; no_room: string[];
 }
 export interface PlacementView {
   relays: { id: string; name: string; status: HealthStatus }[];
   nodes: PlacementNode[];
   suggestions: { to: { id: string; name: string }; nodes: { id: string; name: string; from: { id: string; name: string }; port: number; reason: string | null }[]; command: string }[];
+  /** 多入口节点：换掉某台线路机上的入口（带 --from 的单条命令，不进批量） */
+  single_suggestions: { node: { id: string; name: string }; from: { id: string; name: string }; to: { id: string; name: string }; port: number; reason: string; command: string }[];
   window_h: number; interval_s: number; min_success_pct: number; min_gain_ms: number;
 }
 export interface MoveResult extends MovePreview { job_id: string; name: string; from: string; to: string }

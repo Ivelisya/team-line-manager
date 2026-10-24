@@ -282,7 +282,7 @@ fn rebalance_command(d: &Value) -> Option<String> {
     Some(format!("fleetctl move {} --to {}{from}", nodes.join(","), shell_quote(&st(d, "/target/name"))))
 }
 
-/// `fleetctl rebalance <线路机> [--target <线路机>] [--exclude <节点>…]`：这台线路机按近 7 天的速度重置前会用满的话，
+/// `fleetctl rebalance <线路机> [--target <线路机>] [--exclude <节点>[,<节点>…]]`：这台线路机按近 7 天的速度重置前会用满的话，
 /// 挑出搬走后能撑到重置日的最少入口和目标线路机，只打印建议与可直接执行的 move 命令，不执行
 pub fn rebalance(ctx: &Ctx, relay: &str, target: Option<&str>, exclude: &[String]) -> anyhow::Result<u8> {
     let src = find_relay(ctx, relay)?;
@@ -319,8 +319,10 @@ pub fn rebalance(ctx: &Ctx, relay: &str, target: Option<&str>, exclude: &[String
             .collect();
         s += &format!("搬走下面 {} 个入口，日均降到 {}，到重置日预计用到 {}（现在 {}）：\n", rows.len(), table::gb(num_of(&d, "/after/daily_avg")), pct("/after/projected_pct"), pct("/projected_pct"));
         s += &table::render(&["节点", "端口", "本周期流量", "近 7 天日均"], &rows);
+        // 没指定目标时按放置矩阵选的：写出被搬节点到它的往返平均
+        let rtt = d.pointer("/target/avg_rtt_ms").and_then(Value::as_f64).map_or(String::new(), |v| format!("（被搬节点到它的往返平均 {v:.0} ms）"));
         s += &format!(
-            "\n目标 {}：本周期已用 {} / {} GB，到重置日预计 {} → 接收后 {}",
+            "\n目标 {}{rtt}：本周期已用 {} / {} GB，到重置日预计 {} → 接收后 {}",
             st(&d, "/target/name"),
             g("/target/used"),
             st(&d, "/target/limit_gb"),
@@ -353,14 +355,18 @@ fn rtt_cell(c: &Value) -> String {
     }
 }
 
-/// `fleetctl placement [--team]`：各节点到每台线路机近 24 小时的往返（中位数、成功率），`*` 当前线路机、`→` 建议换到；
-/// 末尾是建议换线的批量命令（每台目标线路机一条）。只读，不执行。换线前先看它，不要手写 ping 脚本
-pub fn placement(ctx: &Ctx, team: Option<&str>) -> anyhow::Result<u8> {
-    let q: Vec<(&str, String)> = team.map(|t| ("team", t.to_string())).into_iter().collect();
+/// `fleetctl placement [--team] [--node]`：各节点到每台线路机近 24 小时的往返（中位数、成功率），`*` 节点所在的线路机（多入口的有几个）、
+/// `→` 建议换到；末尾是建议换线的批量命令（每台目标线路机一条）与多入口节点带 --from 的单条命令。只读，不执行。换线前先看它，不要手写 ping 脚本
+pub fn placement(ctx: &Ctx, team: Option<&str>, node: Option<&str>) -> anyhow::Result<u8> {
+    let mut q: Vec<(&str, String)> = team.map(|t| ("team", t.to_string())).into_iter().collect();
+    if let Some(n) = node {
+        q.push(("node", ctx.find_id(n, Want::Live)?.0));
+    }
     let d = ctx.c.get_q("/placement", &q)?;
     ctx.emit(&d, || {
         let relays: Vec<Value> = d["relays"].as_array().cloned().unwrap_or_default();
         let mut nodes: Vec<Value> = d["nodes"].as_array().cloned().unwrap_or_default();
+        let singles: Vec<Value> = d["single_suggestions"].as_array().cloned().unwrap_or_default();
         if nodes.is_empty() {
             return "没有在用的 VPS 节点".into();
         }
@@ -373,14 +379,17 @@ pub fn placement(ctx: &Ctx, team: Option<&str>) -> anyhow::Result<u8> {
             .map(|n| {
                 let mut row = vec![st(n, "/name")];
                 for (r, c) in relays.iter().zip(n["cells"].as_array().into_iter().flatten()) {
-                    let mark = if n["current_relay_id"] == r["id"] { "*" } else if n["suggest"] == true && n["best_relay_id"] == r["id"] { "→" } else { "" };
+                    let mark = if n["entry_relay_ids"].as_array().is_some_and(|a| a.contains(&r["id"])) { "*" } else if n["suggest"] == true && n["best_relay_id"] == r["id"] { "→" } else { "" };
                     row.push(format!("{mark}{}", rtt_cell(c)));
                 }
                 row.push(format!("{} 次", n["tcp_fail_7d"].as_i64().unwrap_or(0)));
                 let to = relays.iter().find(|r| r["id"] == n["best_relay_id"]).map(|r| st(r, "/name")).unwrap_or_default();
                 row.push(match (n["suggest"] == true, n["current_relay_id"].is_null()) {
                     (true, _) => format!("{} → {to}", st(n, "/reason")),
-                    (false, true) if n["entries"].as_i64().unwrap_or(0) > 1 => "有多个入口，不建议".into(),
+                    (false, true) if n["entries"].as_i64().unwrap_or(0) > 1 => {
+                        if singles.iter().any(|s| s["node"]["id"] == n["id"]) { "有多个入口，见下面的单条建议".into() } else { "有多个入口，不建议".into() }
+                    }
+                    (false, true) if n["entries"].as_i64().unwrap_or(0) == 1 => "还有待应用 / 停用的入口，不建议".into(),
                     (false, true) => "没有在用入口".into(),
                     _ => String::new(),
                 });
@@ -394,7 +403,9 @@ pub fn placement(ctx: &Ctx, team: Option<&str>) -> anyhow::Result<u8> {
             d["interval_s"].as_i64().unwrap_or(300) / 60,
             table::render(&heads, &rows)
         );
-        let cmds: Vec<String> = d["suggestions"].as_array().into_iter().flatten().map(|g| st(g, "/command")).collect();
+        let mut cmds: Vec<String> = d["suggestions"].as_array().into_iter().flatten().map(|g| st(g, "/command")).collect();
+        // 多入口节点的单条建议（带 --from），不并进批量命令
+        cmds.extend(singles.iter().map(|g| format!("{}  # 换掉 {} 上的入口，{}", st(g, "/command"), st(g, "/from/name"), st(g, "/reason"))));
         if cmds.is_empty() {
             s += &format!("\n没有要换的节点：当前线路机比最优慢不到 {} ms、成功率不低于 {}%，或更快的那台额度放不下", num_of(&d, "/min_gain_ms"), num_of(&d, "/min_success_pct"));
         } else {

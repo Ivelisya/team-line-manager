@@ -21,7 +21,7 @@ type Group = PlacementView['suggestions'][number];
 const sh = (s: string) => (/^[\p{L}\p{N}\-_.:/@+=,]+$/u.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
 
 function Cell({ c, n, relay }: { c: PlacementCell; n: PlacementNode; relay: string }) {
-  const cur = n.current_relay_id === c.relay_id;
+  const cur = n.entry_relay_ids.includes(c.relay_id);
   const best = n.suggest && n.best_relay_id === c.relay_id;
   const weak = c.success_pct != null && c.success_pct < 99;
   const tip = c.samples === 0 ? `${relay} 还没测到这个节点` : [
@@ -56,7 +56,8 @@ export function PlacementPanel() {
   const shown = new Set(nodes.map((n) => n.id));
   const sorted = [...nodes.filter((n) => n.suggest), ...nodes.filter((n) => !n.suggest)];
   const groups = p.suggestions.map((g) => ({ ...g, nodes: g.nodes.filter((n) => shown.has(n.id)) })).filter((g) => g.nodes.length > 0);
-  const nSuggest = groups.reduce((s, g) => s + g.nodes.length, 0);
+  const singles = p.single_suggestions.filter((s) => shown.has(s.node.id));
+  const nSuggest = groups.reduce((s, g) => s + g.nodes.length, 0) + singles.length;
   const cap = Math.max(CAP, nSuggest);
   const rows = all ? sorted : sorted.slice(0, cap);
   const relayName = (id: string) => p.relays.find((r) => r.id === id)?.name ?? '';
@@ -67,8 +68,14 @@ export function PlacementPanel() {
         <FilterChip pressed={!team} onClick={() => setTeam(null)}>全部</FilterChip>
         {teams.map((t) => <FilterChip key={t.id} pressed={team === t.id} onClick={() => setTeam(t.id)}>{t.name}</FilterChip>)}
       </>}>
-      {groups.length > 0 && (
+      {(groups.length > 0 || singles.length > 0) && (
         <div className="pm-sugs">
+          {singles.map((s) => (
+            <div key={`${s.node.id}-${s.from.id}`} className="pm-sug">
+              <span className="pm-sug-text">换掉 <b>{s.from.name}</b> 上的入口 → <b>{s.to.name}</b>：<span className="pm-sug-node">{s.node.name}<span className="t-sub">（{s.reason}）</span></span></span>
+              <CopyButton text={s.command} label="命令" />
+            </div>
+          ))}
           {groups.map((g) => {
             const cmd = `fleetctl move ${g.nodes.map((n) => sh(n.name)).join(',')} --to ${sh(g.to.name)}`;
             return (
@@ -93,7 +100,7 @@ export function PlacementPanel() {
           <tbody>
             {rows.map((n) => (
               <tr key={n.id} className="is-link" tabIndex={0} onClick={() => open(n.id)} onKeyDown={(ev) => { if (ev.key === 'Enter') open(n.id); }}>
-                <td className="strong"><span data-tip={n.current_relay_id ? undefined : n.entries > 1 ? '有多条在用入口，不给建议' : '没有在用入口'}>{n.name}</span></td>
+                <td className="strong"><span data-tip={n.current_relay_id ? undefined : n.entries > 1 ? '有多条在用入口，只给单条建议（上面带「换掉…上的入口」的）' : n.entries === 1 ? '还有待应用 / 停用的入口，不给建议' : '没有在用入口'}>{n.name}</span></td>
                 {n.cells.map((c) => <Cell key={c.relay_id} c={c} n={n} relay={relayName(c.relay_id)} />)}
                 <td className="r">{n.tcp_fail_7d > 0 ? <><span className="num">{n.tcp_fail_7d}</span><span className="unit"> 次</span></> : <span className="t-muted">—</span>}</td>
               </tr>

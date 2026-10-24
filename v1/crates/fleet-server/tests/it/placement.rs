@@ -59,6 +59,33 @@ async fn rtt_reports_roll_up_and_feed_placement() {
     assert_eq!(sg["command"], json!(format!("fleetctl move {} --to 线路机2", n["name"].as_str().unwrap())), "{p}");
     assert_eq!(t.req("GET", "/api/v1/placement?team=没有", None, None).await.0, StatusCode::NOT_FOUND);
 
+    // node 过滤（显示名或 id）；不是在用的 VPS 节点 404
+    let nm = n["name"].as_str().unwrap().to_string();
+    assert_eq!(n["entry_relay_ids"], json!([r1]));
+    assert_eq!(t.get(&format!("/api/v1/placement?node={nm}")).await["nodes"].as_array().unwrap().len(), 1);
+    assert_eq!(t.get(&format!("/api/v1/placement?node={node}")).await["nodes"].as_array().unwrap().len(), 1);
+    assert_eq!(t.req("GET", "/api/v1/placement?node=没有", None, None).await.0, StatusCode::NOT_FOUND);
+
+    // 当前线路机的口径同换线规划：还有一条待应用的入口 → 没有「当前」、不给批量建议
+    let e2 = Uuid::now_v7();
+    sqlx::query("insert into entry (id, relay_id, node_id, port, client_uuid, short_id, lifecycle) values ($1, $2, $3, 20009, $4, 'abcd', 'pending')")
+        .bind(e2).bind(r2).bind(node).bind(Uuid::now_v7()).execute(&t.st.db).await.unwrap();
+    t.st.live.invalidate();
+    let p = t.get("/api/v1/placement?team=团队1").await;
+    assert_eq!((p["nodes"][0]["current_relay_id"].clone(), p["suggestions"].as_array().unwrap().len()), (json!(null), 0), "{p}");
+    // 两条都在用：多入口节点只给带 --from 的单条建议（目标是节点还没有入口、更快的线路机3），不进批量命令
+    sqlx::query("update entry set lifecycle = 'active' where id = $1").bind(e2).execute(&t.st.db).await.unwrap();
+    seed_relay(&t, "线路机3", "198.51.100.3", "tok3").await;
+    let mut r = blank_report(1);
+    r.xray = Some(xray(true));
+    r.rtt = vec![s(node, 0, true, Some(40.0)), s(node, 1, true, Some(42.0))];
+    assert_eq!(t.report("tok3", &r).await.0, StatusCode::OK);
+    t.st.live.invalidate();
+    let p = t.get("/api/v1/placement?team=团队1").await;
+    assert_eq!((p["nodes"][0]["entry_relay_ids"].as_array().unwrap().len(), p["suggestions"].as_array().unwrap().len()), (2, 0), "{p}");
+    assert!(p["single_suggestions"].as_array().unwrap().iter().any(|g| g["command"] == json!(format!("fleetctl move {nm} --from 线路机1 --to 线路机3"))), "{p}");
+    sqlx::query("delete from entry where id = $1").bind(e2).execute(&t.st.db).await.unwrap();
+
     // 同机 IP 节点没有自己的 ssh_port：期望状态照发（实验室曾因它解码失败、/desired 全部 500），节点清单里有它
     let (ipn, _) = seed_node(&t, r2, team, 3, "203.0.113.7", 20003).await;
     sqlx::query("update machine set kind = 'vps', ssh_port = null, host_id = $2 where id = $1").bind(ipn).bind(node).execute(&t.st.db).await.unwrap();

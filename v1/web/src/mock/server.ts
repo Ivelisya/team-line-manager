@@ -1191,12 +1191,12 @@ R('GET', '/placement', () => {
     const suggest = !!cur && !!best && best !== cur.relay.id && (!curGood || cc!.p50_ms - good[0].p50_ms >= 10);
     const reason = suggest ? (curGood ? `慢 ${cc!.p50_ms - good[0].p50_ms} ms` : `当前成功率 ${cc?.success_pct}%`) : null;
     if (suggest && cur && best) groups.set(best, [...(groups.get(best) ?? []), { id: n.id, name: n.name, from: { id: cur.relay.id, name: cur.relay.name }, port: cur.port, reason: reason! }]);
-    return { id: n.id, name: n.name, team: n.team, ip: n.ip, current_relay_id: cur?.relay.id ?? null, entries: live.length, cells, tcp_fail_7d: h(n.id) % 7 === 0 ? 3 : 0, daily_bytes: 5e9, best_relay_id: best, suggest, reason, no_room: [] };
+    return { id: n.id, name: n.name, team: n.team, ip: n.ip, current_relay_id: cur?.relay.id ?? null, entry_relay_ids: live.map((e) => e.relay.id), entries: live.length, cells, tcp_fail_7d: h(n.id) % 7 === 0 ? 3 : 0, daily_bytes: 5e9, best_relay_id: best, suggest, reason, no_room: [] };
   });
   return {
     relays: relays.map((r) => ({ id: r.id, name: r.name, status: r.health.status })), nodes: out,
     suggestions: [...groups].map(([id, ns]) => ({ to: { id, name: name(id) }, nodes: ns, command: `fleetctl move ${ns.map((x) => x.name).join(',')} --to ${name(id)}` })),
-    window_h: 24, interval_s: 300, min_success_pct: 99, min_gain_ms: 10,
+    single_suggestions: [], window_h: 24, interval_s: 300, min_success_pct: 99, min_gain_ms: 10,
   };
 });
 const pct2 = (x: MachineView, extra: number) => { const days = Math.max(1, (Date.parse(x.quota.period_end ?? '') - Date.now()) / 864e5); return Math.round(((x.quota.used + ((x.quota.daily_avg ?? 0) + extra) * days) * 1000) / ((x.quota.limit_gb ?? 1) * 1e9)) / 10; };
