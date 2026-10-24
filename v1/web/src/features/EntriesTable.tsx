@@ -10,12 +10,18 @@ import { ShowAll } from '@/components/app/Pagination';
 import { useEntryRouters, useRouterDrawer } from '@/lib/routers';
 import { Checkbox } from '@/components/ui/form';
 import { Button } from '@/components/ui/button';
+import { Trunc } from '@/components/ui/overlays';
 import { MovesDialog, movableEntries } from '@/components/app/LifecycleDialogs';
 
 /** 入口表先露的条数（抽屉入口表、线路机页共用） */
 export const ENTRY_CAP = 10;
-/** 入口表的表头说明：「29 条 · 2 条异常」（异常 = 入口不可达、探测不通或应用失败，见 entryBad） */
-export const entriesMeta = (m: MachineView) => { const bad = m.entries.filter(entryBad).length; return `${m.entries.length} 条${bad ? ` · ${bad} 条异常` : ''}`; };
+/** 在用的入口数：入口可达、出口通等连通数的分母（停用、待应用的不计，见 probeSummary） */
+export const activeEntries = (es: EntryView[]) => es.filter((e) => e.lifecycle === 'active').length;
+/** 入口表的表头说明：「16 条 · 15 条在用 · 2 条异常」（在用 = 连通数的分母，其余是停用、待应用；异常 = 入口不可达、探测不通或应用失败，见 entryBad） */
+export const entriesMeta = (m: MachineView) => {
+  const bad = m.entries.filter(entryBad).length; const on = activeEntries(m.entries);
+  return `${m.entries.length} 条${on !== m.entries.length ? ` · ${on} 条在用` : ''}${bad ? ` · ${bad} 条异常` : ''}`;
+};
 
 const failCell = (p: NonNullable<EntryView['tcp']>) => <span style={{ color: 'var(--bad-text)' }} data-tip={probeErr(p.detail)}>失败</span>;
 /** 出口单元格（线路机页共用）：只写通不通，悬停给出口 IP 与这次出口验证的耗时（经节点去中控，不是线路延迟）；
@@ -77,7 +83,7 @@ export function EntriesTable({ m, traffic, onlyBad, pick }: { m: MachineView; tr
     )}
     <div className="table-wrap is-boxed">
       <table className="dt is-one" style={{ minWidth: 520 }}>
-        <colgroup>{picking && <col style={{ width: 36 }} />}<col style={{ width: 172 }} /><col style={{ width: 96 }} /><col style={{ width: 72 }} /><col style={{ width: 72 }} />{traffic && <col style={{ width: 112 }} />}</colgroup>
+        <colgroup>{picking && <col style={{ width: 36 }} />}<col style={{ width: 210 }} /><col style={{ width: 96 }} /><col style={{ width: 72 }} /><col style={{ width: 72 }} />{traffic && <col style={{ width: 112 }} />}</colgroup>
         <thead><tr>{picking && <th>{movable.length > 0 && <Checkbox aria-label="全选可换线的入口" checked={allOn} onCheckedChange={(v) => setSel(v === true ? movable.map((e) => e.id) : [])} />}</th>}<th>{m.kind === 'relay' ? '端口 · 节点' : '线路机:端口'}</th><th>状态</th><th className="r">TCP</th><th className="r">出口</th>{traffic && <th className="r">本月业务流量</th>}</tr></thead>
         <tbody>
           {entries.map((e) => <EntryRow key={e.id} e={e} relay={m.kind === 'relay'} traffic={!!traffic} routers={routers.get(e.id)}
@@ -107,7 +113,8 @@ const EntryRow = React.memo(function EntryRow({ e, relay, traffic, routers, pick
   return (
     <tr>
       {picked !== undefined && <td>{picked !== null && <Checkbox aria-label={`选择 ${e.node.name}`} checked={picked} onCheckedChange={(v) => onPick(e.id, v === true)} />}</td>}
-      <td className="strong">{relay ? `${e.port} · ${e.node.name}` : `${e.relay.name}:${e.port}`}{routers && <RouterMark users={routers} />}</td>
+      {/* 窄屏名字会被省略：Trunc 悬停、轻触（得到焦点）时显示全名 */}
+      <td className="strong"><div className="row" style={{ gap: 0, flexWrap: 'nowrap' }}><Trunc>{relay ? `${e.port} · ${e.node.name}` : `${e.relay.name}:${e.port}`}</Trunc>{routers && <RouterMark users={routers} />}</div></td>
       <td>{entryStatus(e, who)}</td>{e.lifecycle === 'disabled' ? <><td className="r t-muted">—</td><td className="r t-muted">—</td></> : <><td className="r">{tcpCell(e)}</td><td className="r">{probeCell(e.egress)}</td></>}
       {traffic && <td className="r"><Num f={F.bytes(e.traffic.month_up + e.traffic.month_down)} /></td>}
     </tr>

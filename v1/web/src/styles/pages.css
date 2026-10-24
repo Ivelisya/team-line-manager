@@ -162,7 +162,7 @@
 }
 .btn.btn-slot { transition: background-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std), border-color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out), opacity var(--dur-2) var(--ease-std), visibility 0s linear var(--dur-2); }
 .btn-slot[data-off] { opacity: 0; visibility: hidden; }
-.relay-card { display: grid; gap: 0; scroll-margin-top: calc(var(--h-md) + var(--sp-16)); } /* 跳转时让出上面吸顶的那一行 */
+.relay-card { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; scroll-margin-top: calc(var(--h-md) + var(--sp-16)); } /* 跳转时让出上面吸顶的那一行 */
 .relay-jump {
   position: sticky; top: var(--topbar-h); z-index: var(--z-sticky); display: flex; gap: var(--sp-8); padding-block: var(--sp-8);
   box-sizing: content-box; height: var(--h-md); overflow-x: auto; scrollbar-width: none; background: var(--glass-bar); -webkit-backdrop-filter: var(--glass-bar-blur); backdrop-filter: var(--glass-bar-blur);
@@ -213,3 +213,11 @@
 }
 .lv.span-2 { grid-column: 1 / -1; }
 .check-row.span-2 { grid-column: 1 / -1; }
+
+/* 待付：窄屏一组一张小卡，宽屏用表 */
+.due-list { display: none; margin: 0; padding: 0; list-style: none; }
+.due-item { display: grid; gap: var(--sp-4); padding: var(--sp-12) var(--card-pad); border-top: 1px solid var(--line); }
+.due-item:first-child { border-top: 0; }
+.due-item-top, .due-item-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); flex-wrap: wrap; }
+.due-item-machines { color: var(--fg-2); overflow-wrap: anywhere; }
+@media (max-width: 600px) { .due-table { display: none; } .due-list { display: block; } }

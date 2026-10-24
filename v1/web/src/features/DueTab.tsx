@@ -49,8 +49,8 @@ export function DueTab() {
         sub={<><InfoTip text={"按供应商和到期日分组，金额是订阅的每期价格；折成美元按「设置 → 汇率」\n已过期还没续费的也在这里\n备用团队的机器等到期丢弃，不在这里\n登记已付只记账、顺延到期日，不会向供应商付款"} />{d && n > 0 && <span className="t-sub" style={{ marginLeft: 'var(--sp-8)' }} data-tip={usdTotalTip(d.total)}>合计 <span className="num">{usdText(d.total)}</span></span>}</>} flush>
         <TableWrap>
           {d && d.groups.length > 0 && (
-            <table className="dt is-one" style={{ minWidth: 820 }}>
-              <colgroup><col style={{ width: 170 }} /><col style={{ width: 170 }} /><col /><col style={{ width: 150 }} /><col style={{ width: 110 }} /><col style={{ width: 120 }} /></colgroup>
+            <table className="dt is-one due-table" style={{ minWidth: 820 }}>
+              <colgroup><col style={{ width: 170 }} /><col style={{ width: 210 }} /><col /><col style={{ width: 150 }} /><col style={{ width: 110 }} /><col style={{ width: 120 }} /></colgroup>
               <thead><tr><th>供应商</th><th>到期日</th><th>机器</th><th className="r">小计</th><th className="r">折合 USD</th><th /></tr></thead>
               <tbody>
                 {d.groups.map((g) => {
@@ -58,7 +58,7 @@ export function DueTab() {
                   return (
                     <tr key={`${g.provider.id}|${g.due_date}`}>
                       <td><ProviderCell p={g.provider} /></td>
-                      <td><span className="num">{g.due_date}</span> <Due days={g.machines[0].due_days} state={dueState(g.machines[0].due_days)} tail /></td>
+                      <td><span className="num">{g.due_date}</span> <Due days={g.machines[0].due_days} state={dueState(g.machines[0].due_days)} /></td>
                       <td data-tip={names.length > 4 ? names.join('、') : undefined}>{names.slice(0, 4).join('、')}{names.length > 4 && <span className="t-muted"> 等 {names.length} 台</span>}</td>
                       <td className="r num" data-tip={usdTotalTip(g.total)}>{subtotal(g)}</td>
                       <td className="r num">{usdText(g.total)}</td>
@@ -68,6 +68,21 @@ export function DueTab() {
                 })}
               </tbody>
             </table>
+          )}
+          {/* 窄屏不用表（横滑才看得全机器、小计、USD）：一组一张小卡，按钮在卡尾 */}
+          {d && d.groups.length > 0 && (
+            <ul className="due-list">
+              {d.groups.map((g) => {
+                const names = g.machines.map((m) => m.name);
+                return (
+                  <li key={`${g.provider.id}|${g.due_date}`} className="due-item">
+                    <div className="due-item-top"><ProviderCell p={g.provider} /><span><span className="num">{g.due_date.slice(5)}</span> <Due days={g.machines[0].due_days} state={dueState(g.machines[0].due_days)} /></span></div>
+                    <div className="due-item-machines">{names.slice(0, 4).join('、')}{names.length > 4 && <span className="t-muted"> 等 {names.length} 台</span>}</div>
+                    <div className="due-item-foot"><span className="num" data-tip={usdTotalTip(g.total)}>{subtotal(g)}<span className="t-muted"> ≈ {usdText(g.total)}</span></span><Button size="sm" onClick={() => setPay(g)}>登记已付…</Button></div>
+                  </li>
+                );
+              })}
+            </ul>
           )}
           {q.isLoading && <SkeletonRows rows={3} one />}
           {d && d.groups.length === 0 && <Empty text={`未来 ${DAYS} 天没有要付的`} />}

@@ -333,7 +333,7 @@ pub async fn view(st: &AppState, team: Option<&str>, node: Option<&str>) -> ApiR
     let name_of = |id: Uuid| relays.iter().find(|r| r.id == id).map_or_else(String::new, |r| r.name.clone());
     let sh = crate::api::incidents::sh;
     let why = |cur: Cell, best: Cell| match (cur.good(), cur.p50, best.p50) {
-        (true, Some(c), Some(b)) => format!("慢 {:.0} ms", c - b),
+        (true, Some(c), Some(b)) => format!("可快 {:.0} ms", c - b),
         _ => match pct(&cur) {
             Some(s) => format!("当前成功率 {s}%"),
             None => "当前线路机测不到".into(),

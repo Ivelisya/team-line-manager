@@ -20,7 +20,7 @@ import { openEvacuate } from '@/lib/nodeActions';
 import { movableEntries } from '@/components/app/LifecycleDialogs';
 import { ShowAll } from '@/components/app/Pagination';
 import { scrollBackTo } from '@/lib/usePage';
-import { ENTRY_CAP, RouterMark, entryStatus, probeCell, tcpCell } from '@/features/EntriesTable';
+import { ENTRY_CAP, RouterMark, activeEntries, entryStatus, probeCell, tcpCell } from '@/features/EntriesTable';
 import { useEntryRouters } from '@/lib/routers';
 import { HEALTH_TONE } from '@/lib/sort';
 import { PlacementPanel } from '@/features/PlacementPanel';
@@ -141,7 +141,7 @@ export function RelaysPage() {
   const [cur, jump] = useCurrentRelay(list.length > 2 ? list.map((m) => m.id).join() : '');
   return (
     <div className="stack">
-      <PageHead title="线路" note={q.data ? `${list.length} 台线路机 · ${list.reduce((s, m) => s + m.entries.length, 0)} 条入口` : undefined} />
+      <PageHead title="线路" note={q.data ? <span data-tip={'入口可达、出口通只数在用的入口，停用和待应用的不计；节点通再去掉直出入口（不经节点）'}>{`${list.length} 台线路机 · ${list.reduce((s, m) => s + m.entries.length, 0)} 条入口 · ${list.reduce((s, m) => s + activeEntries(m.entries), 0)} 条在用`}</span> : undefined} />
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       {q.isLoading && <Skeleton h={220} />}
       {/* 节点放在哪台线路机最好：换线前先看这里 */}

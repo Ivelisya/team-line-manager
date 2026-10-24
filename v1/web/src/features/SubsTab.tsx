@@ -30,11 +30,12 @@ export function SubsTab() {
   const [view, setView] = React.useState<ClientSub | null>(null);
   const list = q.data ?? [];
   const newBtn = <Button variant="primary" onClick={() => setEdit('new')}><Plus />新建订阅</Button>;
+  const isEmpty = !q.isLoading && !q.isError && list.length === 0; // 空态里已有一个「新建订阅」，标题旁不再放第二个
   return (
     <>
-      <Panel title="客户端订阅" count={list.length} sub={<InfoTip text={INTRO} />} flush tools={newBtn}>
+      <Panel title="客户端订阅" count={list.length} sub={<InfoTip text={INTRO} />} flush tools={isEmpty ? undefined : newBtn}>
         {q.isError && <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div>}
-        {q.isLoading ? <SkeletonRows rows={2} head /> : list.length === 0 && !q.isError ? (
+        {q.isLoading ? <SkeletonRows rows={2} head /> : isEmpty ? (
           <Empty icon={<Rss size={22} />} text="还没有客户端订阅">{newBtn}</Empty>
         ) : (
           <TableWrap>
