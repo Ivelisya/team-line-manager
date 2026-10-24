@@ -9,7 +9,7 @@ import type { UseQueryResult } from '@tanstack/react-query';
 import { useAvailability, useSeries, useTrafficDaily } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
-import { AVAIL_LEGEND, availCells, availTitles, fromLabel, hasHost, monthFlowTip, monthTraffic, resourceMeters, successPct } from '@/lib/derive';
+import { AVAIL_LEGEND, availCells, availTitles, fromLabel, hasHost, meta, monthFlowTip, monthTraffic, resourceMeters, successPct } from '@/lib/derive';
 import { Segmented } from '@/components/ui/overlays';
 import { Skeleton } from '@/components/ui/skeleton';
 import { InfoTip } from '@/components/ui/form';
@@ -252,9 +252,9 @@ const DailyCard = React.memo(function DailyCard({ m }: { m: MachineView }) {
   const q = useTrafficDaily(DAILY_DAYS, '', m.id);
   const days = q.data?.total;
   const sum = days?.reduce((a, d) => a + d.down + d.up, 0);
-  const tip = m.kind === 'relay' ? '经过这台线路机的全部入口（含直出），按组织时区的自然日切分；今天算到目前为止' : '这个节点全部入口的下载加上传（含换线前的旧入口），按组织时区的自然日切分；今天算到目前为止';
+  const tip = m.kind === 'relay' ? `经过这台线路机的全部入口（含直出）的业务流量，按${meta().org_timezone_label}的自然日；今天算到目前为止（网卡计费量见「流量」页）` : `这个节点全部入口的下载加上传（含换线前的旧入口），按${meta().org_timezone_label}的自然日；今天算到目前为止`;
   return (
-    <ChartCard c="var(--chart-1)" icon={<CalendarDays />} title="每日流量" meta={<>近 {DAILY_DAYS} 天 <InfoTip text={tip} /></>}
+    <ChartCard c="var(--chart-1)" icon={<CalendarDays />} title="每日业务流量" meta={<>近 {DAILY_DAYS} 天 <InfoTip text={tip} /></>}
       value={sum ? <Num f={F.bytes(sum)} /> : undefined} caption={sum ? `日均 ${F.str(F.bytes(sum / DAILY_DAYS))}` : undefined}>
       {q.isError && !q.data ? <ErrorNote error={q.error} onRetry={() => void q.refetch()}>每日流量加载失败：</ErrorNote>
         : !days ? <Skeleton h={180} className="is-float" />

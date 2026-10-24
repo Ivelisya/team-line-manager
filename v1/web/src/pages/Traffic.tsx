@@ -74,7 +74,7 @@ export function TrafficPage() {
       </Panel>
 
       <NodesTable nodes={d?.nodes} days={days} loading={q.isLoading} stale={q.isPlaceholderData} sortRaw={sp.get('sort')} onSort={(s) => upd({ sort: s })} filtered={!!team} />
-      {d && d.relays.length > 0 && <RelaysTable relays={d.relays} days={days} stale={q.isPlaceholderData} />}
+      {d && d.relays.length > 0 && <RelaysTable relays={d.relays} days={days} stale={q.isPlaceholderData} teamName={team ? teamOpts.find((t) => t.value === team)?.label ?? '所选团队' : null} />}
     </div>
   );
 }
@@ -166,7 +166,7 @@ function SortTh({ id, label, r, sort, onSort }: { id: 'name' | 'sum'; label: str
   );
 }
 
-const RelaysTable = React.memo(function RelaysTable({ relays, days, stale }: { relays: TrafficDailyRelay[]; days: number; stale: boolean }) {
+const RelaysTable = React.memo(function RelaysTable({ relays, days, stale, teamName }: { relays: TrafficDailyRelay[]; days: number; stale: boolean; teamName: string | null }) {
   const { open } = useDrawer();
   const rows = React.useMemo(() => relays.map((r) => { const daily = r.daily.slice(-days); return { r, daily, business: r.business.slice(-days), sum: daily.reduce((a, x) => a + x.billed, 0) }; }), [relays, days]);
   const dates = rows[0]?.daily.map((x) => x.date) ?? [];
@@ -174,7 +174,7 @@ const RelaysTable = React.memo(function RelaysTable({ relays, days, stale }: { r
   const wrap = useScrollEnd(`${days}:${dates.length}`);
   const last = dates[dates.length - 1];
   return (
-    <Panel title="线路机每日网卡计费量" sub={<InfoTip text={'网卡口径：下行 = 流进线路机，上行 = 流出；每天按供应商的计费规则算一次\n悬停格子看下行、上行和经过它的业务流量'} />} flush>
+    <Panel title="线路机每日网卡计费量" sub={<>{teamName && <span className="t-muted">整台线路机，不分团队</span>}<InfoTip text={'网卡口径：下行 = 流进线路机，上行 = 流出；每天按供应商的计费规则算一次\n悬停格子看下行、上行和经过它的业务流量'} /></>} flush>
       <div ref={wrap}>
         <TableWrap data-stale={stale}>
           <table className="dt is-one dt-heat" style={{ minWidth: 0 }}>
@@ -188,7 +188,7 @@ const RelaysTable = React.memo(function RelaysTable({ relays, days, stale }: { r
                       <div><span className="cell-main">{r.name}</span><span className="sub" data-tip={trafficRuleLabel(r.rule)}>{trafficRuleLabel(r.rule)}{r.lifecycle === 'retired' ? ' · 已退役' : ''}</span></div>
                     </div>
                   </td>
-                  {daily.map((x, i) => <td key={x.date} className="r" style={heat(x.billed, max)} data-tip={`${md(x.date)} · ↓ 下行 ${F.str(F.bytes(x.rx))} · ↑ 上行 ${F.str(F.bytes(x.tx))}\n计费 ${F.str(F.bytes(x.billed))} · 经过的业务流量 ${F.str(F.bytes(total(business[i])))}`}>{cell(x.billed)}</td>)}
+                  {daily.map((x, i) => <td key={x.date} className="r" style={heat(x.billed, max)} data-tip={`${md(x.date)} · ↓ 下行 ${F.str(F.bytes(x.rx))} · ↑ 上行 ${F.str(F.bytes(x.tx))}\n计费 ${F.str(F.bytes(x.billed))} · ${teamName ? `其中${teamName}经过` : '经过'}的业务流量 ${F.str(F.bytes(total(business[i])))}`}>{cell(x.billed)}</td>)}
                   <td className="r strong">{cell(sum)}<span className="sub">日均 {cell(sum / days)}</span></td>
                 </tr>
               ))}

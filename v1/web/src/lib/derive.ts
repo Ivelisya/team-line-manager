@@ -78,11 +78,19 @@ export function fromLabel(from: string, start?: string | null): string {
   if (/^\d{4}-\d{2}-\d{2}$/.test(from) || !(start ? mmdd(start) === d : d.endsWith('-01'))) return d;
   return `${d} ${new Intl.DateTimeFormat('sv-SE', { timeZone: meta().org_timezone, hour: '2-digit', minute: '2-digit' }).format(new Date(from))}`;
 }
+/** 网卡口径的本月流量：显示的是下行 + 上行的合计；供应商按别的规则计费时写出规则和本周期的计费量（流量额度、流量页用的就是它） */
+function nicTip(m: MachineView) {
+  const rule = m.quota.rule;
+  const head = rule && rule !== 'sum'
+    ? `网卡下行 + 上行的合计；供应商按「${meta().traffic_rules[rule] ?? rule}」计费，本周期计费量 ${F.str(F.bytes(m.quota.used))}`
+    : '网卡下行 + 上行的合计，和供应商计费口径一致';
+  return `${head}\n下行是收到的，上行是发出的`;
+}
 /** 本月流量的悬停说明（卡片底行、表格、流量页签）：口径，数据不完整时再加全句（数字后面只留灰字「10-22 起」） */
 export function monthFlowTip(m: MachineView) {
   const f = monthFlow(m);
   return [
-    f.kind === 'nic' ? '按网卡统计，和供应商账单口径一致\n下行是收到的，上行是发出的' : m.host_machine ? '这是经这个节点的客户流量，网卡与宿主机共用' : '客户经入口的下载和上传',
+    f.kind === 'nic' ? nicTip(m) : m.host_machine ? '这是经这个节点的客户流量，网卡与宿主机共用' : '客户经入口的下载和上传',
     f.from && `从 ${fromLabel(f.from)} 开始统计，之前的没算进来，所以比供应商面板上的少`,
   ].filter(Boolean).join('\n');
 }
