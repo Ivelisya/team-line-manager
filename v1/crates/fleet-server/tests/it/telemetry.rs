@@ -682,6 +682,40 @@ async fn relay_reach_rounds_feed_relay_beats() {
     assert!(reach(&m, closed as i32).is_null(), "{m}");
 }
 
+/// 整台连不上之后，中控每轮换端口探测，摘要里「端口 N：…」取最近 3 轮：入口 4 个以上时每轮换一批端口号。只在第一次判出时发机器事件，之后不再每轮发
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn relay_unreachable_summary_change_in_port_does_not_emit() {
+    use fleet_server::state::Event;
+    let t = setup().await;
+    let ctl = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let team = seed_team(&t, "团队1").await;
+    for n in 1..=4 {
+        let c = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = c.local_addr().unwrap().port() as i32;
+        drop(c);
+        seed_node(&t, relay, team, n, &format!("203.0.113.{n}"), port).await;
+    }
+    sqlx::query("update relay set public_host = '127.0.0.1'").execute(&t.st.db).await.unwrap();
+    let ctl = ctl.local_addr().unwrap().to_string();
+    let mut ev = t.st.events.subscribe();
+    let mut machine_events = || {
+        let mut n = 0;
+        while let Ok(e) = ev.try_recv() {
+            n += matches!(e, Event::Machine { id } if id == relay) as usize;
+        }
+        n
+    };
+    for turn in 0..3 {
+        assert_eq!(fleet_server::reach::round(&t.st, &[&ctl], turn).await.unwrap(), 1);
+    }
+    assert!(machine_events() >= 1, "连续 3 轮连不上，判出整台不通时发事件");
+    for turn in 3..9 {
+        assert_eq!(fleet_server::reach::round(&t.st, &[&ctl], turn).await.unwrap(), 1);
+    }
+    assert_eq!(machine_events(), 0, "只是摘要里的端口号换了，不再发事件");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn sql_display_name_matches_rust() {
     let t = setup().await;
@@ -2365,6 +2399,10 @@ async fn retention_cleanup_removes_only_expired_rows() {
             .await
             .unwrap();
     }
+    // 探测小时汇总超 180 天删（relay_reach_hourly、router_metric_hourly、router_exit_metric_hourly 同一处理）
+    for days in [200, 10] {
+        sqlx::query(&format!("insert into probe_hourly (entry_id, hour, kind, total, ok) values ($1, now() - interval '{days} days', 'tcp', 1, 1)")).bind(Uuid::now_v7()).execute(db).await.unwrap();
+    }
     // 访问记录（汇总、来源画像）按面板里设的保留期删，见 tests/it/retention.rs
     let sessions_before = t.count("select count(*) from session").await;
     db::cleanup_retention(db, &t.st.cfg.retention).await.unwrap();
@@ -2375,6 +2413,7 @@ async fn retention_cleanup_removes_only_expired_rows() {
     assert_eq!(t.count("select count(*) from login_failure").await, 1);
     assert_eq!(t.count("select count(*) from notify_log").await, 1);
     assert_eq!(t.count("select count(*) from audit_log where actor = 'a'").await, 1);
+    assert_eq!(t.count("select count(*) from probe_hourly").await, 1, "超 180 天的探测小时汇总删掉");
 }
 
 // ── 告警列表分页：limit / offset + total，顺序稳定（同一时刻开始的也不重不漏） ──────

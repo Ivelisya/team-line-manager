@@ -22,7 +22,7 @@
 //! 但生产几台线路机在同一家供应商的同一个 /24，供应商整段故障时就是这样，正是要报的时候；relay_unreachable 的摘要写明
 //! 「全部线路机同时连不上（可能是供应商整段故障）」，看的人一眼知道该先查供应商还是测的这一方。
 //!
-//! 结果进 relay_reach，保留 [retention] reach_days（默认 2 天，db::cleanup_retention）；每小时汇总进 relay_reach_hourly（db::rollup_hour，一直留着），
+//! 结果进 relay_reach，保留 [retention] reach_days（默认 2 天，db::cleanup_retention）；每小时汇总进 relay_reach_hourly（db::rollup_hour，留 180 天），
 //! 探测点页与线路机抽屉的 24 小时 / 7 天 / 30 天成功率读它（[`quality`]）。查询都按来源过滤，索引带着来源（迁移 0046）。
 
 use crate::probe_points::Effective;
@@ -154,7 +154,13 @@ pub(crate) async fn record(st: &AppState, src: Option<Uuid>, ts: OffsetDateTime,
         let after: Vec<(Option<String>, bool)> = sqlx::query_as(&unreach).bind(&ids).fetch_all(db).await?;
         let mut changed = false;
         for ((id, b), a) in ids.iter().zip(&before).zip(&after) {
-            if b != a {
+            // 中控每轮换端口探测，摘要里「端口 N：…」每轮不同：只在判不出变了、连不上与否变了、去掉数字后的摘要变了才发
+            let same = b.1 == a.1
+                && match (&b.0, &a.0) {
+                    (Some(x), Some(y)) => crate::alerts::same_summary(x, y),
+                    (x, y) => x.is_none() == y.is_none(),
+                };
+            if !same {
                 st.emit(Event::Machine { id: *id });
                 changed = true;
             }

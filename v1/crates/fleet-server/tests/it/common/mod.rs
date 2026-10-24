@@ -58,6 +58,10 @@ impl T {
     }
 
     pub async fn get(&self, p: &str) -> Value {
+        // 测试常直接改库、不发事件：读单台机器详情前先作废视图缓存（详情走缓存视图），读到的才是库里此刻的状态
+        if p.starts_with("/api/v1/machines/") {
+            self.st.live.invalidate();
+        }
         let (s, v) = self.req("GET", p, None, None).await;
         assert_eq!(s, StatusCode::OK, "GET {p}: {v}");
         v["data"].clone()

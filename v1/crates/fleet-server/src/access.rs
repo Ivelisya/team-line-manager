@@ -118,7 +118,16 @@ async fn rollup_day_hours(db: &PgPool, hours: &[OffsetDateTime]) -> anyhow::Resu
 }
 
 /// 后台循环每轮做的事：当前小时必算，被标脏的小时（agent 补传的迟到数据）补算（语义见 `db::rollup_dirty`）
-pub async fn rollup_pending(db: &PgPool) -> anyhow::Result<()> { crate::db::rollup_dirty(db, "access_dirty", |h| rollup_hour(db, h)).await }
+/// 小时按天分组，同一天一个事务、只重算一次那天（同 `rollup_since`）
+pub async fn rollup_pending(db: &PgPool) -> anyhow::Result<()> {
+    crate::db::rollup_dirty(db, "access_dirty", |hours| async move {
+        for day in hours.chunk_by(|a, b| floor_day(*a) == floor_day(*b)) {
+            rollup_day_hours(db, day).await?;
+        }
+        Ok(())
+    })
+    .await
+}
 
 /// 补算 [from, 现在] 的所有小时（逐小时，内存有界）；按天一个事务，一天的小时算完再算一次那天
 pub async fn rollup_since(db: &PgPool, from: OffsetDateTime) -> anyhow::Result<()> {

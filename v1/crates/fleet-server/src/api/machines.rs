@@ -44,6 +44,10 @@ pub async fn list(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<L
 }
 
 pub async fn get_one(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
+    // 在用机器先找缓存视图（同 GET /machines：资源变更后 live 会重算，不会拿到变更前的）；不在里面的（已退役）再单独加载
+    if let Some(m) = views::live(&st).await?.iter().find(|m| m.id == id) {
+        return Ok(ok(m));
+    }
     let mut v = views::load(&st, Scope::All, Some(id)).await?;
     v.pop().map(ok).ok_or_else(|| ApiError::not_found("没有这台机器"))
 }
