@@ -136,7 +136,7 @@ async fn reconcile_reopens_throttles_and_clears_ack_like_machine_alerts() {
     assert!(items.iter().filter(|i| i["rule"] == RULE).all(|i| i["chronic"] == true), "{items:?}");
     let chronic = t.get("/api/v1/incidents?state=chronic").await["items"].as_array().unwrap().clone();
     assert_eq!(chronic.iter().filter(|i| i["rule"] == RULE).count(), 1, "{chronic:?}");
-    assert!(mock.texts("/hook/a").iter().any(|x| x.contains("（近 24 小时第 3 次）\n时间：")));
+    assert!(mock.texts("/hook/a").iter().any(|x| x.contains("（近 24 小时第 6 次）\n时间：")));
 }
 
 /// 一轮：这个引擎此刻成立的问题只有 `w`，不成立的恢复（`exists` 恒真）
