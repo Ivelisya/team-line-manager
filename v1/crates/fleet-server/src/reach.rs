@@ -154,7 +154,13 @@ pub(crate) async fn record(st: &AppState, src: Option<Uuid>, ts: OffsetDateTime,
         let after: Vec<(Option<String>, bool)> = sqlx::query_as(&unreach).bind(&ids).fetch_all(db).await?;
         let mut changed = false;
         for ((id, b), a) in ids.iter().zip(&before).zip(&after) {
-            if b != a {
+            // 中控每轮换端口探测，摘要里「端口 N：…」每轮不同：只在判不出变了、连不上与否变了、去掉数字后的摘要变了才发
+            let same = b.1 == a.1
+                && match (&b.0, &a.0) {
+                    (Some(x), Some(y)) => crate::alerts::same_summary(x, y),
+                    (x, y) => x.is_none() == y.is_none(),
+                };
+            if !same {
                 st.emit(Event::Machine { id: *id });
                 changed = true;
             }

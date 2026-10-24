@@ -682,6 +682,40 @@ async fn relay_reach_rounds_feed_relay_beats() {
     assert!(reach(&m, closed as i32).is_null(), "{m}");
 }
 
+/// 整台连不上之后，中控每轮换端口探测，摘要里「端口 N：…」取最近 3 轮：入口 4 个以上时每轮换一批端口号。只在第一次判出时发机器事件，之后不再每轮发
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn relay_unreachable_summary_change_in_port_does_not_emit() {
+    use fleet_server::state::Event;
+    let t = setup().await;
+    let ctl = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let team = seed_team(&t, "团队1").await;
+    for n in 1..=4 {
+        let c = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = c.local_addr().unwrap().port() as i32;
+        drop(c);
+        seed_node(&t, relay, team, n, &format!("203.0.113.{n}"), port).await;
+    }
+    sqlx::query("update relay set public_host = '127.0.0.1'").execute(&t.st.db).await.unwrap();
+    let ctl = ctl.local_addr().unwrap().to_string();
+    let mut ev = t.st.events.subscribe();
+    let mut machine_events = || {
+        let mut n = 0;
+        while let Ok(e) = ev.try_recv() {
+            n += matches!(e, Event::Machine { id } if id == relay) as usize;
+        }
+        n
+    };
+    for turn in 0..3 {
+        assert_eq!(fleet_server::reach::round(&t.st, &[&ctl], turn).await.unwrap(), 1);
+    }
+    assert!(machine_events() >= 1, "连续 3 轮连不上，判出整台不通时发事件");
+    for turn in 3..9 {
+        assert_eq!(fleet_server::reach::round(&t.st, &[&ctl], turn).await.unwrap(), 1);
+    }
+    assert_eq!(machine_events(), 0, "只是摘要里的端口号换了，不再发事件");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn sql_display_name_matches_rust() {
     let t = setup().await;
