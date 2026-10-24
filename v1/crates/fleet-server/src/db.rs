@@ -311,7 +311,7 @@ pub fn floor_hour(t: OffsetDateTime) -> OffsetDateTime {
 /// 这几毫秒的竞态会漏掉它；升级那一刻上一小时也没有脏标记。多算几次是幂等的。
 pub async fn rollup_dirty<F, Fut>(db: &PgPool, table: &str, roll: F) -> anyhow::Result<()>
 where
-    F: Fn(OffsetDateTime) -> Fut,
+    F: Fn(Vec<OffsetDateTime>) -> Fut,
     Fut: std::future::Future<Output = anyhow::Result<()>>,
 {
     let now = OffsetDateTime::now_utc();
@@ -326,9 +326,8 @@ where
     if now - cur < Duration::minutes(10) {
         hours.insert(cur - Duration::hours(1));
     }
-    for h in &hours {
-        roll(*h).await?;
-    }
+    // 一次交给 roll（升序）：访问汇总按天分组，同一天只重算一次天汇总
+    roll(hours.into_iter().collect()).await?;
     if !dirty.is_empty() {
         let (hs, ts): (Vec<OffsetDateTime>, Vec<OffsetDateTime>) = dirty.into_iter().unzip();
         sqlx::query(&format!("delete from {table} d using unnest($1::timestamptz[], $2::timestamptz[]) u(h, t) where d.hour = u.h and d.touched_at = u.t"))
@@ -347,7 +346,15 @@ where
 }
 
 /// 遥测小时汇总的一轮（脏小时语义见 `rollup_dirty`）。同一小时从原始数据重算并覆盖，幂等。
-pub async fn rollup_hours(db: &PgPool) -> anyhow::Result<()> { rollup_dirty(db, "rollup_dirty", |h| rollup_hour(db, h)).await }
+pub async fn rollup_hours(db: &PgPool) -> anyhow::Result<()> {
+    rollup_dirty(db, "rollup_dirty", |hours| async move {
+        for h in hours {
+            rollup_hour(db, h).await?;
+        }
+        Ok(())
+    })
+    .await
+}
 
 /// 重算一个整点小时。主机网络流量取相邻样本的正增量之和（lag）。读数明显回到小值（不到前值的一半：旧 agent 重启清零、
 /// nic.json 丢失、新计数器）时当前读数就是重置后的增量；只往回跳了一点（持久累计值在异常重启后退回上次存盘的值、文件比上报旧）
