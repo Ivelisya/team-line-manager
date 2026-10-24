@@ -308,7 +308,7 @@ ProvisionItem = {
 
 | 规则 | 级别 | 开 | 恢复 |
 |---|---|---|---|
-| `central_channel_failing`（通知渠道发送失败） | critical | 某个启用的通知渠道连续发送失败满 5 分钟（`notify_channel.failing_since`）。每个渠道一条（库里 `subject_id` 是渠道 id）；这条不发给它自己 | 它发成功一次（含渠道测试）；渠道停用、删除时直接关，不发恢复（`detail.closed_by = "channel_removed"`） |
+| `central_channel_failing`（通知渠道发送失败） | critical | 某个启用的通知渠道连续发送失败满 5 分钟（`notify_channel.failing_since`；只有可重试的失败——网络错误、5xx、429——才开始计，内容被渠道拒绝这类重试也没用的只记原因，不算）。每个渠道一条（库里 `subject_id` 是渠道 id）；这条不发给它自己 | 它发成功一次（含渠道测试）；渠道停用、删除时直接关，不发恢复（`detail.closed_by = "channel_removed"`） |
 | `central_backup_stale`（备份过期） | warning | 备份目录（`[selfmon] backup_dir`，默认 `/var/backups/fleet`）里最新一份 `fleet-*.tar` / `fleet-*.tar.age` 超过 26 小时，或一份都没有、读不了；目录不存在（没装备份）不检查 | 有了 26 小时内的一份 |
 | `central_disk_low`（中控磁盘空间不足） | critical | 中控本机 `/`、`/var/lib/postgresql`、`/var/lib/fleet`、备份目录所在的文件系统可用空间低于 10%（同 df） | 回到 11% 以上 |
 | `central_ingress`（agent 同时失联） | critical | 有自己 agent 的在用机器（不含维护中的、同机 IP 节点）里同时离线的超过一半且至少 3 台：摘要「x/y 台 agent 同时失联：检查边缘机、Caddy、域名解析」。期间不新开单机的 `agent_offline`（已开着的照旧） | 离线的不再过半或不到 3 台；还没回来的从这时起按单机去抖、报 `agent_offline` |
