@@ -722,6 +722,12 @@ async fn give_up(
     kind: ErrKind,
     kept: &str,
 ) -> anyhow::Result<Outcome> {
+    // 先把「确认改好」都清掉再改回：改回途中被打断（中控重启、外层超时、库错误）时，已改回旧入口的那台若还标着 done，
+    // 重来会被跳过、作业报成功，路由却停在旧入口；清掉后重来照记录重做
+    if applied.iter().any(|a| a.done.is_some()) {
+        let cleared: Vec<Applied> = applied.iter().map(|a| Applied { done: None, ..a.clone() }).collect();
+        c.set_params(json!({"routers_applied": cleared})).await?;
+    }
     let mut back = vec![];
     let mut left = vec![];
     let mut stuck = vec![];
@@ -733,7 +739,7 @@ async fn give_up(
         if let Err(why) = revert_one(c, locks, a).await? {
             whys.push(format!("{}（{}）", a.name, why));
             stuck.push(Stuck { id: a.id, name: a.name.clone(), exits: a.exits.iter().map(|x| x.exit.clone()).collect(), was: a.exits.iter().map(|x| format!("{}:{}", x.old_server, x.old_port)).collect() });
-            // 改回到一半：不再算确认改好，重试照记录重做
+            // 改回到一半：重试照记录重做（done 已在开头清掉）
             left.push(Applied { done: None, ..a.clone() });
         } else {
             back.push(a.name.clone());
