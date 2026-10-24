@@ -292,6 +292,8 @@ FLEET_BUILD=docker FLEET_BUILD_HOST=10.172.17.213 lab/sync-server.sh 'cargo test
 - 版本号 `0.1.0+<哈希>` 里的哈希是最后一次改动 `Cargo.toml`、`Cargo.lock`、`crates`、`migrations`、`deploy` 的提交：只改前端或文档的提交不换哈希，编译主机上不重编 server 和 agent。
 - xray、ssserver、geoip.dat 先和中控 `/opt/fleet/dist` 比 sha256，相同的不上传，中控上的保持原样（docker 编译主机上没有 dist 来源时整个不带，见上）。
 - 编译失败、或 install.sh 重启后等 60 秒未登录访问 `/api/v1/auth/me` 仍不是 401，部署以非 0 退出，后者会打出 fleet-server 最近 60 行日志。中控上的安装包无论成败都删掉。
+- 安装顺序：会失败的预检（软路由隧道的 23000–23999 端口与 `sshd -t`）最先做，要换的 fleet-server、fleetctl、dist、前端先放成 `.new`，紧挨着重启 fleet-server 之前才一起换上：预检或中间任何一步失败，线上的二进制、前端、dist 原样不动（不会出现旧进程配新前端，也不会让磁盘上的新二进制在之后一次崩溃重启时无人值守地升级、跑迁移）。重启之后的步骤（Caddy、健康检查）失败时新版已经在跑，回滚见 §9。
+- install.sh 在中控的临时 systemd 单元 `fleet-install` 里跑（`systemd-run --wait --pipe --collect`）：本机 ssh 断了或 Ctrl-C，安装继续跑完；输出同时写 `/root/fleet-install.log`（断线后 `tail -f` 看进度，成功时最后一行是「fleet-server … api=401 …」，否则是失败原因）。上一次的安装还没结束时再部署会直接报错退出，不会另起一个。
 - 换下来的旧 fleet-server 留在中控 `/opt/fleet/fleet-server.prev`（同一个二进制重复部署时不覆盖它）。
 - 迁移 0029 先把币种去空白转大写，再给套餐 / 订阅 / 续费记录的币种（3 个大写字母）和通知渠道种类（当时是 telegram / wecom / webhook）加约束；存量里还有不合规的不让迁移失败，日志里有「0029：… 暂不验证」的警告。看到时查出那几行（如 `select id, currency from plan where currency !~ '^[A-Z]{3}$'`）改成正确的币种，再 `alter table plan validate constraint plan_currency_iso`（订阅 / 续费记录 / 渠道同理：`subscription_currency_iso`、`renewal_currency_iso`、`notify_channel_kind_check`）。
 - 迁移 0081 把通知渠道种类约束改成只允许 telegram / feishu，并删掉库里已有的企业微信、webhook 渠道（它们排着的待发通知一并删，发送记录里的渠道名置空）；之后在设置页新建飞书渠道。
