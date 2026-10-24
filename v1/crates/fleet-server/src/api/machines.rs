@@ -959,6 +959,43 @@ pub async fn ss_refresh(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPa
     Ok(ok(json!({"machine_id": id, "name": name, "job_id": job})))
 }
 
+#[derive(Deserialize, Default)]
+pub struct SpeedtestIn {
+    /// 下载量（MB）：25 / 100 / 500，默认 100
+    size_mb: Option<u32>,
+    /// 测速目标（jobs/speedtest.rs 的列表），默认第一个
+    target: Option<String>,
+}
+
+/// 按需测速（作业 `speedtest`，目标与做法见 jobs/speedtest.rs）：机器本机下载一个北美的测速文件，报告平均速率、耗时、首字节时间。
+/// 下载计入这台机器的流量额度（返回的 `traffic_mb`）。同机 IP 节点对宿主机测，家宽代理没有我们的机器；
+/// 机器上已有进行中的作业（含另一个测速）时由唯一索引挡住（409），同一台机器不会同时跑两个测速
+pub async fn speedtest(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<SpeedtestIn>) -> ApiResult<Json<Value>> {
+    use jobs::speedtest as sp;
+    let size_mb = b.size_mb.unwrap_or(sp::DEFAULT_MB);
+    if !sp::SIZES_MB.contains(&size_mb) {
+        return Err(ApiError::bad_request(format!("size_mb 只能是 {}", sp::SIZES_MB.map(|n| n.to_string()).join(" / "))));
+    }
+    let target = sp::target(b.target.as_deref()).ok_or_else(|| ApiError::bad_request(format!("target 只能是 {}", sp::TARGETS.iter().map(|t| t.key).collect::<Vec<_>>().join(" / "))))?;
+    let (kind, lc, name, host) = brief_of(&st, id).await?;
+    if let Some(h) = host {
+        return Err(ApiError::conflict(format!("同机 IP 节点和宿主机共用网络：对宿主机「{h}」测速")));
+    }
+    if kind == "proxy" {
+        return Err(ApiError::conflict("家宽代理没有我们的机器"));
+    }
+    if lc != "active" {
+        return Err(ApiError::conflict("只有在用的机器能测速"));
+    }
+    let mut tx = st.db.begin().await?;
+    let job = jobs::enqueue(&mut tx, "speedtest", Some(id), json!({"size_mb": size_mb, "target": target.key}), &a.name).await?;
+    audit(&mut tx, &a.name, "machine.speedtest", "machine", Some(id), json!({"name": name, "size_mb": size_mb, "target": target.key, "target_name": target.name, "job_id": job})).await?;
+    tx.commit().await?;
+    st.wake_jobs();
+    st.emit(Event::Job { id: job, target: Some(id) });
+    Ok(ok(json!({"machine_id": id, "name": name, "job_id": job, "size_mb": size_mb, "target": target.key, "target_name": target.name, "traffic_mb": size_mb})))
+}
+
 /// 「全部升级」要推的 agent：dist 里程序的 sha256 与版本号。记进每个作业的参数 `rollout`，作业开始前核对（jobs::halted）：
 /// 中途重新部署过中控时，后面的机器不能装上金丝雀没验过的版本
 async fn dist_agent(st: &AppState) -> ApiResult<Value> {

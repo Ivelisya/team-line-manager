@@ -141,7 +141,7 @@ pub async fn audit(a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<A
 /// 所有写审计的动作（git grep 'audit(' 核对过）；新增动作时补这里和 audit_text。按标题搜索时在这里面找。
 /// machine.restore、restore.probe 是已删掉的「恢复已退役机器」留下的旧记录，标题照样显示
 const AUDIT_ACTIONS: &[&str] = &[
-    "machine.provision", "machine.retire", "machine.recycle", "recycle.import", "machine.purge", "machine.rename", "machine.update", "machine.restore", "machine.replace", "machine.tune", "machine.ss_refresh", "subscription.set", "renewal", "renewal.batch",
+    "machine.provision", "machine.retire", "machine.recycle", "recycle.import", "machine.purge", "machine.rename", "machine.update", "machine.restore", "machine.replace", "machine.tune", "machine.ss_refresh", "machine.speedtest", "report.send", "subscription.set", "renewal", "renewal.batch",
     "team.create", "team.update", "team.delete", "team.renumber", "provider.create", "provider.update", "provider.delete", "plan.create", "plan.update", "plan.delete", "entry.enable",
     "entry.disable", "entry.rotate", "entry.share", "entry.add", "entry.move", "entry.repoint", "relay.evacuate", "job.retry", "job.cancel", "silence.create",
     "silence.delete", "incident.ack", "restore.probe", "agent.upgrade", "notify.create", "notify.update", "notify.delete", "exec", "machine.logs", "server.logs", "apikey.create",
@@ -196,6 +196,8 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "machine.replace" => "替换节点",
         "machine.tune" => "系统调优",
         "machine.ss_refresh" => "重新下发 SS 配置",
+        "machine.speedtest" => "测速",
+        "report.send" => "发送月报",
         "job.retry" => "重试作业",
         "job.cancel" => "取消作业",
         // 标记为维护的叫维护窗口，否则叫静默（同界面）
@@ -286,6 +288,8 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "machine.tune" if d["rollback"] == true => format!("{} · 撤销调优", s("name")),
         "machine.tune" => format!("{} · {}", s("name"), s("profile")),
         "machine.ss_refresh" => s("name"),
+        "machine.speedtest" => format!("{} · {} MB · {}", s("name"), d["size_mb"].as_i64().unwrap_or(0), s("target_name")),
+        "report.send" => format!("{} · {} 个渠道{}", s("month"), d["channels"].as_i64().unwrap_or(0), if d["auto"] == true { "（每月自动）" } else { "" }),
         // 「3 台：团队2-07、团队2-08、团队2-09（账单 #2041）」
         "renewal.batch" => {
             let names: Vec<&str> = d["machines"].as_array().into_iter().flatten().filter_map(|m| m["name"].as_str()).collect();

@@ -20,6 +20,7 @@ pub mod probe_points;
 pub mod provision;
 pub mod recycle;
 pub mod relays;
+pub mod reports;
 pub mod replace;
 pub mod repoint;
 pub mod router_ops;
@@ -87,6 +88,7 @@ pub fn router() -> Router<AppState> {
         .route("/machines/{id}/upgrade-agent", post(machines::upgrade_agent))
         .route("/machines/{id}/tune", post(machines::tune))
         .route("/machines/{id}/ss-refresh", post(machines::ss_refresh))
+        .route("/machines/{id}/speedtest", post(machines::speedtest))
         .route("/agents/upgrade", post(machines::upgrade_all_agents))
         .route("/machines/{id}/subscription", axum::routing::put(machines::put_subscription))
         .route("/machines/{id}/subscription/preview", post(machines::preview_subscription))
@@ -159,6 +161,10 @@ pub fn router() -> Router<AppState> {
         .route("/overview/series", get(misc::overview_series))
         // 每日流量（只读）：按组织时区的自然日，全部、各节点、各线路机
         .route("/traffic/daily", get(misc::traffic_daily))
+        // 报表：月度可用率汇总（只读）、月报（预览与立即发一次）
+        .route("/reports/uptime", get(reports::uptime))
+        .route("/reports/monthly", get(reports::monthly))
+        .route("/reports/monthly/send", post(reports::send))
         .route("/probe-beats", get(misc::probe_beats))
         .route("/incidents", get(incidents::incidents))
         .route("/incidents/{id}/ack", post(incidents::ack_incident))

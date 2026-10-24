@@ -23,6 +23,7 @@ struct Row {
     kind: String,
     min_severity: String,
     enabled: bool,
+    monthly_report: bool,
     created_at: OffsetDateTime,
     config_enc: Vec<u8>,
 }
@@ -34,12 +35,14 @@ struct ChannelOut {
     kind: String,
     min_severity: String,
     enabled: bool,
+    /// 收每月 1 号发的上月摘要（reports.rs）
+    monthly_report: bool,
     #[serde(with = "time::serde::rfc3339")]
     created_at: OffsetDateTime,
     config_hint: String,
 }
 
-const COLS: &str = "id, name, kind, min_severity::text min_severity, enabled, created_at, config_enc";
+const COLS: &str = "id, name, kind, min_severity::text min_severity, enabled, monthly_report, created_at, config_enc";
 
 fn open_config(st: &AppState, enc: &[u8]) -> Option<Value> {
     st.secrets.open_str(enc).ok().and_then(|s| serde_json::from_str(&s).ok())
@@ -47,7 +50,7 @@ fn open_config(st: &AppState, enc: &[u8]) -> Option<Value> {
 
 fn out(st: &AppState, r: Row) -> ChannelOut {
     let hint = open_config(st, &r.config_enc).map(|c| notify::config_hint(&r.kind, &c)).unwrap_or_else(|| "（无法解密）".into());
-    ChannelOut { id: r.id, name: r.name, kind: r.kind, min_severity: r.min_severity, enabled: r.enabled, created_at: r.created_at, config_hint: hint }
+    ChannelOut { id: r.id, name: r.name, kind: r.kind, min_severity: r.min_severity, enabled: r.enabled, monthly_report: r.monthly_report, created_at: r.created_at, config_hint: hint }
 }
 
 fn check_name(n: &str) -> ApiResult<String> {
@@ -80,6 +83,8 @@ pub struct NewChannel {
     min_severity: String,
     #[serde(default = "d_true")]
     enabled: bool,
+    #[serde(default)]
+    monthly_report: bool,
 }
 fn d_severity() -> String { "warning".into() }
 fn d_true() -> bool { true }
@@ -91,17 +96,18 @@ pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Ne
     notify::check_destination(&b.kind, &cfg, st.cfg.notify.allow_private).map_err(ApiError::bad_request)?;
     let id = new_id();
     let mut tx = st.db.begin().await?;
-    sqlx::query("insert into notify_channel (id, kind, name, config_enc, min_severity, enabled) values ($1, $2, $3, $4, $5::severity, $6)")
+    sqlx::query("insert into notify_channel (id, kind, name, config_enc, min_severity, enabled, monthly_report) values ($1, $2, $3, $4, $5::severity, $6, $7)")
         .bind(id)
         .bind(&b.kind)
         .bind(&name)
         .bind(st.secrets.seal_str(&cfg.to_string()))
         .bind(&b.min_severity)
         .bind(b.enabled)
+        .bind(b.monthly_report)
         .execute(&mut *tx)
         .await?;
     // 审计里只记名字和类型，不记配置
-    audit(&mut tx, &a.name, "notify.create", "notify_channel", Some(id), json!({"name": name, "kind": b.kind})).await?;
+    audit(&mut tx, &a.name, "notify.create", "notify_channel", Some(id), json!({"name": name, "kind": b.kind, "monthly_report": b.monthly_report})).await?;
     tx.commit().await?;
     st.emit(Event::Catalog);
     Ok(ok(json!({"id": id})))
@@ -113,6 +119,7 @@ pub struct PatchChannel {
     config: Option<Value>,
     min_severity: Option<String>,
     enabled: Option<bool>,
+    monthly_report: Option<bool>,
 }
 
 pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<PatchChannel>) -> ApiResult<Json<Value>> {
@@ -125,6 +132,7 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     let sev = b.min_severity.clone().unwrap_or_else(|| cur.min_severity.clone());
     check_severity(&sev)?;
     let enabled = b.enabled.unwrap_or(cur.enabled);
+    let monthly = b.monthly_report.unwrap_or(cur.monthly_report);
     let enc = match &b.config {
         Some(newc) => {
             // 令牌/地址/密钥不会回显给前端，所以编辑时缺省或留空的字段沿用旧值，填了的覆盖；`secret: null` 清除飞书的签名密钥
@@ -152,15 +160,16 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
         }
         None => cur.config_enc.clone(),
     };
-    sqlx::query("update notify_channel set name = $2, config_enc = $3, min_severity = $4::severity, enabled = $5 where id = $1")
+    sqlx::query("update notify_channel set name = $2, config_enc = $3, min_severity = $4::severity, enabled = $5, monthly_report = $6 where id = $1")
         .bind(id)
         .bind(&name)
         .bind(enc)
         .bind(&sev)
         .bind(enabled)
+        .bind(monthly)
         .execute(&mut *tx)
         .await?;
-    audit(&mut tx, &a.name, "notify.update", "notify_channel", Some(id), json!({"name": name, "config_changed": b.config.is_some(), "enabled": enabled, "min_severity": sev})).await?;
+    audit(&mut tx, &a.name, "notify.update", "notify_channel", Some(id), json!({"name": name, "config_changed": b.config.is_some(), "enabled": enabled, "min_severity": sev, "monthly_report": monthly})).await?;
     tx.commit().await?;
     st.emit(Event::Catalog);
     Ok(ok(json!({"ok": true})))
@@ -202,9 +211,9 @@ struct LogOut {
     ts: OffsetDateTime,
     ok: bool,
     error: Option<String>,
-    /// firing / repeat / resolved / test / silence（有人新建、删除了静默或维护窗口）/ auto（备用团队的机器到期自动回收）
+    /// firing / repeat / resolved / test / silence（有人新建、删除了静默或维护窗口）/ auto（备用团队的机器到期自动回收）/ report（月报）
     kind: String,
-    /// 告警对象的显示名（中控自身的告警是「中控」，软路由的是路由名）；静默 / 维护变更是「静默 / 维护变更」，自动回收是「自动回收」；
+    /// 告警对象的显示名（中控自身的告警是「中控」，软路由的是路由名）；静默 / 维护变更是「静默 / 维护变更」，自动回收是「自动回收」，月报是「月报」；
     /// 测试消息、机器或路由已删除时为 null
     subject_name: Option<String>,
     /// 告警对象：机器 `{id, name}`，软路由 `{id, name, kind: "router"}`；中控自身、静默 / 维护变更、测试消息、对象已删除时为 null
@@ -224,7 +233,7 @@ struct LogOut {
 pub async fn log(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<LogQ>) -> ApiResult<Json<Value>> {
     let mut v: Vec<LogOut> = sqlx::query_as(
         "select l.id, l.channel_id, c.name channel_name, l.incident_id, l.ts, l.ok, l.error, l.kind,
-                case when l.kind = 'silence' then '静默 / 维护变更' when l.kind = 'auto' then '自动回收' when i.engine = 'central' then '中控'
+                case when l.kind = 'silence' then '静默 / 维护变更' when l.kind = 'auto' then '自动回收' when l.kind = 'report' then '月报' when i.engine = 'central' then '中控'
                      when i.engine = 'router' then r.name when i.engine = 'probe' then coalesce(pp.name, '探测点（已删除）')
                      else display_name(m.kind::text, m.label, t.name, m.number) || case when m.lifecycle = 'retired' then '（已退役）' else '' end end subject_name,
                 i.subject_id, case when r.id is not null then 'router' when m.id is not null then 'machine' end subject_kind, i.rule

@@ -18,6 +18,7 @@
 //! 10 秒后从这一步重做（`retry_later`），库恢复后接着往下走。
 
 pub mod scripts;
+pub mod speedtest;
 mod steps;
 pub mod tune;
 
@@ -126,6 +127,8 @@ const UPGRADE_AGENT: &[StepDef] = &[s("agent", "推送并重启 agent", 600), s(
 const TUNE: &[StepDef] = &[s("tune", "系统调优", 600)];
 // 重新下发节点 SS 配置：跑上架同一份 node_ss 脚本（配置或出站黑名单有变化才重启 ssserver，同机的实例一起刷），再经入口做出口验收。不自动回滚
 const SS_REFRESH: &[StepDef] = &[s("ss", "下发 SS 配置", 300), s("verify", "出口验收", 300)];
+// 按需测速（见 speedtest.rs）：机器本机下载一个北美的测速文件，curl 自己最多 300 秒（speedtest::MAX_TIME_S），再留 SSH 建连与解析的余量
+const SPEEDTEST: &[StepDef] = &[s("speedtest", "测速", 360)];
 
 pub fn defs(kind: &str) -> &'static [StepDef] {
     match kind {
@@ -143,6 +146,7 @@ pub fn defs(kind: &str) -> &'static [StepDef] {
         "router_sync" => ROUTER_SYNC,
         "tune" => TUNE,
         "ss_refresh" => SS_REFRESH,
+        "speedtest" => SPEEDTEST,
         _ => &[],
     }
 }
@@ -154,7 +158,7 @@ pub fn title_of(kind: &str, key: &str) -> &'static str {
 /// 上架类作业：目标机器处于上架中，失败时机器标为上架失败
 pub fn provisions(kind: &str) -> bool { kind.starts_with("provision_") }
 
-pub fn cancellable(kind: &str) -> bool { provisions(kind) || matches!(kind, "attach_entry" | "move_entry" | "upgrade_agent" | "replace" | "repoint" | "router_sync" | "tune" | "ss_refresh") }
+pub fn cancellable(kind: &str) -> bool { provisions(kind) || matches!(kind, "attach_entry" | "move_entry" | "upgrade_agent" | "replace" | "repoint" | "router_sync" | "tune" | "ss_refresh" | "speedtest") }
 
 /// 停在「改软路由出口」这一步
 fn at_routers(kind: &str, step: i32) -> bool { (matches!(kind, "replace" | "repoint" | "router_sync") && step == 0) || (kind == "move_entry" && step == MOVE_ROUTERS) }
@@ -196,7 +200,7 @@ pub fn cancel_blocker(kind: &str, step: i32, state: &str, params: &Value) -> Opt
     if matches!(kind, "replace" | "repoint" | "router_sync") && !queued && (step > 0 || !matches!(state, "queued" | "failed")) {
         return Some("软路由已经开始改（或已经改好），不能再取消：失败了点重试到完成");
     }
-    if !matches!(kind, "upgrade_agent" | "tune" | "ss_refresh") || state == "queued" {
+    if !matches!(kind, "upgrade_agent" | "tune" | "ss_refresh" | "speedtest") || state == "queued" {
         return None;
     }
     if kind == "tune" {
@@ -204,6 +208,9 @@ pub fn cancel_blocker(kind: &str, step: i32, state: &str, params: &Value) -> Opt
     }
     if kind == "ss_refresh" {
         return Some(if state == "failed" { "失败的作业不用取消：它不占着机器，可以重试或重新发起" } else { "已经开始，不能取消：脚本几十秒就跑完，等它结束" });
+    }
+    if kind == "speedtest" {
+        return Some(if state == "failed" { "失败的测速不用取消：它不占着机器，可以重试或重新发起" } else { "测速已经开始，不能取消：最多 5 分钟就结束，等它结束" });
     }
     Some(if state == "failed" {
         "失败的升级作业不用取消：它不占着机器，可以重试或重新发起升级"
@@ -242,7 +249,7 @@ fn outer_timeout(d: &StepDef) -> Duration { Duration::from_secs(d.timeout_s as u
 fn required_lifecycle(kind: &str) -> Option<&'static str> {
     match kind {
         k if k.starts_with("provision_") => Some("provisioning"),
-        "attach_entry" | "move_entry" | "upgrade_agent" | "replace" | "tune" | "ss_refresh" => Some("active"),
+        "attach_entry" | "move_entry" | "upgrade_agent" | "replace" | "tune" | "ss_refresh" | "speedtest" => Some("active"),
         "retire" => Some("retiring"),
         "purge" => Some("retired"),
         _ => None,
@@ -503,7 +510,7 @@ pub async fn claim(st: &AppState, owner: &str) -> anyhow::Result<Option<JobRow>>
                      and (lease_until is null or lease_until < now()) and id <> all($2)
                      and (state = 'cancelling'
                           or not exists (select 1 from job p where p.id = (j.params->>'after')::uuid and p.state in ('queued', 'running', 'waiting', 'cancelling')))
-                     order by case when kind in ('upgrade_agent', 'tune', 'ss_refresh') then 2 when starts_with(kind, 'provision_') then 1 else 0 end, created_at, id
+                     order by case when kind in ('upgrade_agent', 'tune', 'ss_refresh', 'speedtest') then 2 when starts_with(kind, 'provision_') then 1 else 0 end, created_at, id
                      for update skip locked limit 1)
          returning id, kind, target_id, params, state::text state, step, created_by",
     )
@@ -1066,7 +1073,7 @@ mod tests {
     #[test]
     fn outer_timeout_covers_step_timeout() {
         for k in [
-            "provision_vps", "provision_proxy", "provision_relay", "provision_ip", "attach_entry", "retire", "purge", "upgrade_agent", "move_entry", "replace", "repoint", "router_sync", "tune", "ss_refresh",
+            "provision_vps", "provision_proxy", "provision_relay", "provision_ip", "attach_entry", "retire", "purge", "upgrade_agent", "move_entry", "replace", "repoint", "router_sync", "tune", "ss_refresh", "speedtest",
         ] {
             for d in defs(k) {
                 assert!(outer_timeout(d).as_secs() as i64 >= d.timeout_s + 120);

@@ -30,6 +30,7 @@ pub mod pty;
 pub mod quota;
 pub mod recycle;
 pub mod renew;
+pub mod reports;
 pub mod routers;
 pub mod selfmon;
 pub mod settings;
@@ -193,7 +194,7 @@ where
     });
 }
 
-/// 每小时：组织时区偏移、分区维护（原始访问记录按面板里设的保留期，见 settings.rs）、作业清理、保留期清理、自动续费（renew.rs）、回收站与备用团队到期自动回收（spare.rs）。
+/// 每小时：组织时区偏移、分区维护（原始访问记录按面板里设的保留期，见 settings.rs）、作业清理、保留期清理、自动续费（renew.rs）、回收站与备用团队到期自动回收（spare.rs）、每月 1 号发月报（reports.rs）。
 /// 访问汇总与来源画像的保留期清理在访问汇总的循环里（`access::prune`）
 async fn housekeeping(s: AppState) {
     let mut t = tokio::time::interval(std::time::Duration::from_secs(3600));
@@ -226,6 +227,9 @@ async fn housekeeping(s: AppState) {
         }
         if let Err(e) = spare::run_once(&s, now).await {
             tracing::error!("回收站与备用团队到期自动回收失败：{e:#}");
+        }
+        if let Err(e) = reports::run_once(&s).await {
+            tracing::error!("月报失败：{e:#}");
         }
     }
 }
