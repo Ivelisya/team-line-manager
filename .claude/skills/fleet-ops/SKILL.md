@@ -57,6 +57,7 @@ fleetctl ssh router <名称> [-- 'logread | tail -50']        # 软路由（Open
 | 审计 | `fleetctl --json audit [--target <机器>] [--limit 50] [--before <上一页最后一条的 id>]` |
 | 实时事件 | `fleetctl watch --count 20` |
 | 节点放在哪台线路机最好：各节点到每台线路机近 24 小时的往返中位数与成功率、当前与最优线路机、建议换线（节点连线路机老断、要换线、客户说某节点慢时先看它） | `fleetctl --json placement [--team 团队2] [--node 团队2-04]`（`nodes[].cells` 与 `relays` 同序；`entry_relay_ids` 是节点在用入口所在的线路机；`suggest` 为 true 的是建议换的，`reason` 写慢多少 ms 或当前成功率；`suggestions[].command` 是按目标线路机合成的批量 `fleetctl move A,B --to X`，照抄执行、不要拆开；有多个入口的节点另在 `single_suggestions[].command` 里给带 `--from` 的单条，照抄执行）。**换线前先看 placement，不要去线路机上手写 ping / mtr 脚本逐个测** |
+| 每日流量（每天全部、各节点、线路机计费量） | `fleetctl --json traffic [--days 30] [--team 团队1] [--node <机器>]`（看每日流量用它，不要拿小时表自己加；口径：按组织时区的自然日，换线前的量算节点、留在旧线路机，直出单列） |
 | 访问监控：节点访问了哪些域名/IP | `fleetctl --json access [targets\|summary\|new\|sources\|events] [--node <机器>] [--team 团队1] [--window 1h\|24h\|7d\|30d] [--search 域名] [--blocked] [--kind domain\|ip]` |
 | 来源 IP 画像：某 IP 的运营商/城市/接入方式 | `fleetctl --json ip <ip> [<ip>...]`（只查中控本地离线库，不外发） |
 | 节点来源画像分布（运营商/城市/接入方式、top 来源、学习期） | `fleetctl --json sources <机器> [--window 24h\|7d\|30d] [--limit 20]` |

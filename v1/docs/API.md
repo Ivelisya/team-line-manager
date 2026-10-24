@@ -587,6 +587,19 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 |---|---|---|
 | GET | `/placement?team=&node=` | `team`：团队 id 或名称（不填 = 全部；没有这个团队 404）；`node`：只看这个节点（id 或显示名，不是在用的 VPS 节点 404）。`{relays: [{id, name, status, quota:{limit_gb, used, forecast_full_at}}]（在用、非备用，按名称）, nodes: [{id, name, team, ip, current_relay_id（入口状态口径同换线规划：待应用、在用、停用都算入口，恰有一条、而且是在用，才是它的线路机，否则 null，不给批量建议）, entry_relay_ids（在用入口所在的线路机，多入口节点有多个）, entries（在用入口数）, cells: [{relay_id, samples, ok, success_pct, p50_ms}]（与 relays 同序；近 24 小时，没测过 samples 为 0、全不通 p50_ms 为 null）, tcp_fail_7d（近 7 天 tcp_fail 告警次数，含恢复后又触发的）, daily_bytes（换过去后目标每天多出的流量，按近 7 天折算）, best_relay_id, suggest, reason（「慢 23 ms」「当前成功率 97.2%」）, no_room（更快但额度放不下而跳过的线路机 id）}], suggestions: [{to:{id,name}, nodes:[{id, name, from:{id,name}, port, reason}], command（「fleetctl move A,B --to X」）}]（每台目标线路机一条）, single_suggestions: [{node:{id,name}, from:{id,name}, to:{id,name}, port, reason, command（「fleetctl move X --from A --to B」）}]（有多个在用入口的节点：每条入口各算一份，候选不含节点已有入口的线路机；不进批量命令）, window_h: 24, interval_s: 300, min_success_pct: 99, min_gain_ms: 10}`。最优：成功率 ≥ 99%、非故障、额度放得下（`Q::fits`，同一轮建议的流量累计）的线路机里 p50 最小的；`suggest` = 最优不是当前，且当前比最优慢 ≥ 10 ms 或当前成功率 < 99%。批量建议的执行是 `POST /moves`（不带 `from_relay_id`：建议里的节点都只有一条入口）；单条建议带 `from_relay_id` |
 
+## 每日流量
+按组织时区（`meta.org_timezone`，默认北京时间）切成自然日，今天算到目前为止（同机器视图的今天 / 本月，来自小时汇总表，5 分钟一轮）。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/traffic/daily?days=30&team=&machine=` | 读权限。`days` 1–92（默认 30，越界 400；网页「流量」页取 30 或 90 天，7 / 14 天在前端截取）；`team`：团队 id 或名称；`machine`：机器 id、显示名或 label（不存在 404）——节点只看以它为节点的入口，线路机看挂在它上面的全部入口。`{tz, dates（升序，最后一天是今天）, total: [{date, down, up}], nodes: [{id, name, team:{id,name}\|null, kind, lifecycle, country, direct, down, up, daily: [{date, down, up}]}]（按区间合计降序）, relays: [{id, name, lifecycle, country, rule, rx, tx, billed, down, up, daily: [{date, rx, tx, billed}], business: [{date, down, up}]}]}`，各 `daily` / `business` 与 `dates` 等长、没有量的天为 0 |
+
+口径：
+- 下载 / 上传是业务口径（入口小时表 `entry_traffic_hourly`），每个字节只算一次，`total` = 各行之和。节点 = 以它为节点的全部入口，含已移除的：换线路机后，换线前在旧线路机上的那段仍算这个节点，同时留在旧线路机的 `business` 上（新线路机只算换过去之后的）。直出入口（节点就是线路机自己）单列一行：`direct: true`、`id` 是线路机的、`name` 是「线路机-直出」。家宽代理、同机 IP 节点有自己的入口，各算各的（同机 IP 节点不并进宿主机）。窗口内有流量的已退役机器照列，`lifecycle` 照实给；没流量的在用节点也列出（全 0），直出只在有流量时列。
+- 下行 / 上行是网卡口径（主机小时表 `host_metric_hourly`），只给线路机：`rx` 下行（流进）、`tx` 上行（流出），`billed` 按供应商的计费规则 `rule`（`min` / `max` / `sum` / `out`，没有供应商为 `max`）逐天算，区间的 `billed` 是逐天之和（不是整段再取小 / 取大）。不过滤时列全部未退役的线路机与窗口内有数据的；按团队或机器过滤时只列经过它的业务流量不为 0 的（过滤的机器就是这台线路机时总列出），网卡读数照旧是整台的。
+- 小时表按 UTC 整点分桶，一桶按起点落在组织时区的哪天归哪天（半小时时区至多差 30 分钟，同今天 / 本月）。
+- 实现：两条按天分组的聚合（入口 × 天 → 节点 × 线路机 × 天；线路机 × 天），走 `hour` 索引；结果按小时汇总轮次缓存（汇总跑完即作废），团队 / 机器过滤在内存里做。
+
 ## 软路由（节选）
 `GET /routers`、`GET /routers/{id}`：`state` 为 `pending`（还没接入，或重新接入后还没连上）/ `online` / `offline`（接入过、隧道连不上；采集每 30 秒一轮，隧道连上、断开时中控马上采这台一次，`state` 随即变、发 `routers` 事件）；`error` 在 offline / pending 时是连不上的原因，在 online 时不为空 = 连得上但采集出错（脚本出错、输出读不了、超时而隧道还通），`summary` / `detail` 是上一次成功采集的。`detail.openclash` 另有 `config_error`（配置取不回、解析不了的原因）、`config_stale`（这时出口与入口的对应沿用上次读到的）、`delay_error`（最近一次延迟测试没做成的原因，测成了为 null；出口沿用上一次）；`detail.system.clock_skew_s` = 中控时间 − 路由时间，正数是路由慢。`maintenance`：在维护窗口里（它自己的或全部的，见 `/silences`），卡片显示「维护」。实时事件 `{type:"routers"}` 只在状态、错误或快照里看得见的部分（接口通断、OpenClash 状态与配置、出口的对应与延迟测试结果、在线客户端）变了时发，CPU / 速率等每轮都变的数值不触发。
 `DELETE /routers/{id}`：还有没做完的作业改过它的出口、没确认改回（参数 `routers_applied` 里有它）时 409，消息与 `detail.jobs` 给出作业 id。`?force=true`（路由回不来了）照删：把它从这些作业的 `routers_applied` / `routers_stuck` 里摘掉、作业日志记一条「改回放弃」，作业能重试收尾或取消；这些作业里有正在执行的仍 409。返回多带 `jobs`（摘掉了哪些作业），审计详情带 `force`、`jobs`。
