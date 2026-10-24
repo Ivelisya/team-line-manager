@@ -562,7 +562,7 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 
 - 目标：全局 8 个槽位（`app_setting` 的 `ping_targets`：`{mode, slots: [{name, target}] × 8}`），默认 武汉电信 `hb-ct-v4.ip.zstaticcdn.com`、武汉联通 `hb-cu-v4.ip.zstaticcdn.com`、武汉移动 `hb-cm-v4.ip.zstaticcdn.com`、BGP（留空，网页占位提示 `ip.zstaticcdn.com`）、Node 1–4（留空）；目标留空的不测。目标写 `host`、`host:port`、`[IPv6]:port` 或裸 IPv6。每台线路机可以单独覆盖（`relay.ping_override`：`{mode: null | tcp | icmp, slots: [null | {name, target}] × 8}`，null = 跟随全局；覆盖成空目标 = 这台不测这个槽位）。
 - 方式：`tcp`（默认）建连量内核往返时间，目标不写端口时连 **80**（测速地址一般都开 80，443 不一定），每次超时 3 秒、间隔 0.2 秒；`icmp` 跑线路机上的系统 `ping -n -c 5 -i 0.5 -W 2`。agent 的 systemd 单元不给 `CAP_NET_RAW`、带 `NoNewPrivileges`，iputils 的 ping 拿不到原始套接字时改用 ICMP 数据报套接字（要 `net.ipv4.ping_group_range` 含 root 组，systemd 默认是全部组）；系统没有 ping、或报没权限 / 建不了套接字时这一轮退回 tcp，样本的 `mode` 写 tcp。
-- 下发：随期望状态（`DesiredState.ping = {interval_s: 60, count: 5, mode, targets: [{slot, name, target}]}`，只含有目标的槽位，一个都没有为 null）。改全局时全部在用线路机代数 +1，改覆盖时那一台 +1。旧 agent 不认识这个字段，照常应用、不测。
+- 下发：随期望状态（`DesiredState.ping = {interval_s: 60, count: 5, mode, targets: [{slot, name, target}]}`，只含有目标的槽位，一个都没有为 null）。改全局时全部在用线路机代数 +1，改覆盖时那一台 +1。旧 agent 不认识这个字段，照常应用、不测。代数 +1 不会让线路机多重启一次 Xray：agent 的「重启 Xray 失败、暂停重试」闸门按渲染出的 Xray 骨架（`static_part`）而不是代数判断，骨架没变的新代数（改了 PING、入口等）在闸门期内仍然拦着，等闸门期满再统一重试（需要新版 agent；旧 agent 只拦同一代数）。
 - 上报：`Report.ping = [{slot, ts_ms, target, mode, sent, lost, rtt_ms}]`（旧 agent 不带、旧中控忽略）。只收线路机的、槽位 0–7、7 天以内的；同一 (线路机, 槽位, 时刻) 重报的不重复写。
 - 存：`ping_result`（每台每目标每分钟一行，保留 `[retention] ping_days`，默认 7 天）、`ping_hourly`（小时汇总：发了几次、丢了几次、延迟的平均与最大，保留 `ping_hourly_days`，默认 90 天；后台每 5 分钟重算最近 7 小时），迁移 0048。
 

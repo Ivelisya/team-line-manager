@@ -16,24 +16,28 @@ const REALIGN_EVERY: Duration = Duration::from_secs(600);
 const RESTART_RETRY_BASE_S: u64 = 15 * 60;
 const RESTART_RETRY_CAP_S: u64 = 6 * 3600;
 
-/// 同一代数里"需要重启 Xray"的那条路径失败后的重试闸门。
+/// "需要重启 Xray"的那条路径失败后的重试闸门。
 /// 重启路径失败 = 先用新配置重启一次、再回滚用旧配置重启一次，每次都断开全部客户连接；
-/// 对同一代数按普通退避（15 s…300 s）无限重试会把客户连接反复打断，所以这里拉长到小时级。
-/// 期间收到新代数（配置有了变化）会立即应用，热增删路径的失败不受影响。
+/// 按普通退避（15 s…300 s）无限重试会把客户连接反复打断，所以这里拉长到小时级。
+/// 按渲染出的骨架（`Applier::static_part`，它才决定要不要重启）判断，不按代数：期间收到的新代数只要骨架没变
+/// （改了三网 PING、入口等与骨架无关的东西）就仍然拦着，不再绕过闸门重启一次；骨架变了（agent 换了版本等）才放行。热增删路径的失败不受影响。
 #[derive(Default)]
 struct RestartGate {
+    /// 最近一次见到的代数：长轮询带着它，服务端代数再变才返回
     gen: u64,
+    skel: Option<serde_json::Value>,
     fails: u32,
     until: Option<Instant>,
 }
 
 impl RestartGate {
     /// 记一次重启路径失败，返回下次允许重试前要等多久
-    fn record_failure(&mut self, gen: u64) -> Duration {
-        if self.gen != gen {
-            self.gen = gen;
+    fn record_failure(&mut self, gen: u64, skel: Option<serde_json::Value>) -> Duration {
+        if self.skel != skel {
+            self.skel = skel;
             self.fails = 0;
         }
+        self.gen = gen;
         self.fails += 1;
         let wait = backoff(self.fails - 1, RESTART_RETRY_BASE_S, RESTART_RETRY_CAP_S);
         self.until = Some(Instant::now() + wait);
@@ -49,8 +53,9 @@ impl RestartGate {
         self.until.and_then(|u| u.checked_duration_since(Instant::now())).filter(|d| !d.is_zero())
     }
 
-    fn blocks(&self, gen: u64) -> bool {
-        self.gen == gen && self.remaining().is_some()
+    /// 闸门关着，且这份期望状态的骨架与失败的那次相同（渲染失败的不拦：应用时会报渲染错误，不重启）
+    fn blocks(&self, skel: Option<&serde_json::Value>) -> bool {
+        skel.is_some() && self.skel.as_ref() == skel && self.remaining().is_some()
     }
 }
 
@@ -69,7 +74,7 @@ fn note_apply(sh: &Shared, rep: &ApplyReport, note: Option<String>) {
 }
 
 fn paused_note(gen: u64, fails: u32, wait: Duration) -> String {
-    format!("代数 {gen} 需要重启 Xray，已失败 {fails} 次，暂停重试约 {} 分钟（期间收到新代数会立即应用）", wait.as_secs().div_ceil(60))
+    format!("代数 {gen} 需要重启 Xray，已失败 {fails} 次，暂停重试约 {} 分钟（期间新代数的 Xray 骨架配置若相同也不重试）", wait.as_secs().div_ceil(60))
 }
 
 /// 启动对齐：applied.json 说"已应用"，但 xray.json 可能缺失（只写了空骨架）或 Xray 是新起的 ——
@@ -98,6 +103,7 @@ async fn periodic_align(sh: &Shared, applier: &Applier, gate: &mut RestartGate) 
         return;
     }
     tracing::warn!(generation = d.generation, "对齐检查发现不一致，重新应用：{why}");
+    let skel = applier.static_part(&d).await;
     let res = applier.apply_detailed(&d).await;
     let rep = res.report;
     if rep.ok {
@@ -106,7 +112,7 @@ async fn periodic_align(sh: &Shared, applier: &Applier, gate: &mut RestartGate) 
         tracing::info!(generation = d.generation, "已修复到与期望状态一致");
     } else {
         let note = res.disruptive_restart.then(|| {
-            let wait = gate.record_failure(d.generation);
+            let wait = gate.record_failure(d.generation, skel);
             paused_note(d.generation, gate.fails, wait)
         });
         note_apply(sh, &rep, note);
@@ -210,9 +216,12 @@ pub async fn desired_task(sh: Arc<Shared>, applier: Arc<Applier>, client: Arc<Se
                 fails = 0;
                 None
             }
-            Outcome::Ok(Desired::State(d)) if gate.blocks(d.generation) => {
-                // 平时带着闸门的这一代去轮询，拿不回它；但解析不了的那一代更大时带的是那一代（中控代数回退后），
-                // 中控按「不等于」立刻把闸门里的这一代发回来：别在闸门期内重试（重启路径会再断一次客户连接）
+            Outcome::Ok(Desired::State(d)) if gate.remaining().is_some() && gate.blocks(applier.static_part(&d).await.as_ref()) && !applier.is_down().await => {
+                // 骨架没变的新代数（改了三网 PING、入口等）：闸门期内不重试，重启路径会再断一次客户连接。
+                // 记下这一代，长轮询带着它等更新的；解析不了的那一代更大时带的是那一代（中控代数回退后），
+                // 中控按「不等于」立刻发回来，所以仍要睡一会。Xray 没在运行就没有客户可断，不拦
+                tracing::info!(generation = d.generation, "收到期望状态，但 Xray 骨架配置与重启失败的那次相同，闸门期内暂不应用");
+                gate.gen = d.generation;
                 Some(Duration::from_secs(30))
             }
             Outcome::Ok(Desired::State(d)) => {
@@ -236,7 +245,7 @@ pub async fn desired_task(sh: Arc<Shared>, applier: Arc<Applier>, client: Arc<Se
                     tracing::error!(generation = d.generation, "应用失败：{}", rep.error.as_deref().unwrap_or(""));
                     if res.disruptive_restart {
                         // 重启路径失败：拉长重试间隔，错误状态留在 agent_health.last_apply_error 里让中控可见
-                        let wait = gate.record_failure(d.generation);
+                        let wait = gate.record_failure(d.generation, applier.static_part(&d).await);
                         tracing::warn!(generation = d.generation, fails = gate.fails, wait_s = wait.as_secs(), "重启路径失败，暂停重试这一代");
                         note_apply(&sh, &rep, Some(paused_note(d.generation, gate.fails, wait)));
                     } else {
@@ -281,27 +290,37 @@ pub async fn desired_task(sh: Arc<Shared>, applier: Arc<Applier>, client: Arc<Se
 mod tests {
     use super::*;
 
-    #[test]
-    fn restart_gate_blocks_same_generation_for_long() {
+    #[tokio::test]
+    async fn restart_gate_blocks_new_generation_with_same_skeleton() {
+        use crate::xray::render::tests::{desired, entry};
+        let applier = Applier::new(Arc::new(crate::config::Config::relay_default()));
+        let d7 = desired(vec![entry(1, 20001, true)]);
+        // 新代数：加了入口、带了三网 PING，骨架不变
+        let mut d8 = desired(vec![entry(1, 20001, true), entry(2, 20002, true)]);
+        d8.generation = 8;
+        d8.ping = Some(fleet_proto::PingConfig { interval_s: 60, count: 5, mode: "tcp".into(), targets: vec![] });
+        let (s7, s8) = (applier.static_part(&d7).await, applier.static_part(&d8).await);
+        assert!(s7.is_some() && s7 == s8);
+
         let mut g = RestartGate::default();
-        assert!(!g.blocks(7));
-        let w1 = g.record_failure(7);
+        assert!(!g.blocks(s7.as_ref()));
+        let w1 = g.record_failure(7, s7.clone());
         // 首次 15 分钟 ×[0.5,1.5)，远大于普通的 15 s 起步
         assert!(w1 >= Duration::from_secs(7 * 60), "{w1:?}");
-        assert!(g.blocks(7));
-        // 新代数不受影响
-        assert!(!g.blocks(8));
-        // 连续失败：退避上升但有封顶
+        assert!(g.blocks(s8.as_ref()), "骨架相同的新代数要继续拦");
+        // 骨架变了（比如 agent 换了版本）放行；渲染失败的也不拦
+        assert!(!g.blocks(Some(&serde_json::json!({"log": "other"}))));
+        assert!(!g.blocks(None));
+        // 连续失败：退避上升但有封顶；骨架不变计数不重来
         for _ in 0..20 {
-            let w = g.record_failure(7);
+            let w = g.record_failure(8, s8.clone());
             assert!(w <= Duration::from_secs(RESTART_RETRY_CAP_S * 3 / 2));
         }
         assert!(g.fails >= 21);
-        // 换代数后计数重来
-        g.record_failure(8);
+        g.record_failure(9, Some(serde_json::json!({"log": "other"})));
         assert_eq!(g.fails, 1);
         g.clear();
-        assert!(!g.blocks(8) && g.remaining().is_none());
+        assert!(!g.blocks(s8.as_ref()) && g.remaining().is_none());
     }
 
     #[test]

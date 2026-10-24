@@ -542,7 +542,7 @@ url = "https://api.frankfurter.dev/v1/latest?base=USD"   # 回包 {base:"USD", d
 
 线路机每分钟往外连一轮目标（默认武汉电信 / 联通 / 移动的测速地址，TCP 80 口，每个 5 次），卡片上每个目标一行：当前延迟、左边延迟格、右边丢包格与当前丢包；抽屉「连接质量」里有延迟与丢包曲线。只展示，不开告警。它看的是线路好不好，客户连不连得上入口看探测点（§17）。
 
-- 改全局目标：网页 设置 → 三网 PING，或 `fleetctl ping-targets set <槽位 1–8> --name 武汉电信 --target hb-ct-v4.ip.zstaticcdn.com`（`--target ""` 清空 = 不测）、`fleetctl ping-targets mode tcp|icmp`。保存后全部线路机代数 +1，一分钟内按新目标测。
+- 改全局目标：网页 设置 → 三网 PING，或 `fleetctl ping-targets set <槽位 1–8> --name 武汉电信 --target hb-ct-v4.ip.zstaticcdn.com`（`--target ""` 清空 = 不测）、`fleetctl ping-targets mode tcp|icmp`。保存后全部线路机代数 +1，一分钟内按新目标测。某台线路机正处在「重启 Xray 失败、暂停重试」时，改 PING 目标不会触发再次重启（新版 agent），但这台的新目标要等闸门期满、重试应用成功后才生效。
 - 单台覆盖：抽屉「管理」→ 三网 PING，或 `fleetctl ping <线路机> set <槽位> --name … --target …`、`fleetctl ping <线路机> mode icmp|tcp|global`、`fleetctl ping <线路机> reset [<槽位>]`。看读数：`fleetctl ping <线路机>` 或 `fleetctl show <线路机>`。
 - 要新版 agent：旧 agent 照常应用期望状态、只是不测（卡片上没有三网一块）。中控部署后升级线路机 agent（§7）。
 - 某个目标一直 100% 丢包：先看是不是目标不开那个口（TCP 不写端口连 80）——换成 `host:443` 或改 ICMP 试；ICMP 时卡片悬停写的实际方式是 TCP，说明线路机上的系统 ping 用不了（没装 iputils-ping，或 `sysctl net.ipv4.ping_group_range` 不含 0），agent 日志里 10 分钟一条「ICMP 用不了」。
