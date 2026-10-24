@@ -12,8 +12,8 @@
 //! （旧节点进备用、到期回收后客户的出口就断了）；确认它没用的，重新发起时选不改软路由。路由上根本没有源配置（OpenClash 没配）的算没有出口。
 //! 同一台路由同时只有一个作业在改（替换、换线路机、重试都一样，见 `Locks`）：别的作业在改就排队（Outcome::Queue），作业的其余步骤照常并行。
 //! 排队时只等那台路由的锁（`routers_queued_id`），不读配置、不占连接。
-//! 路由上另有一把锁（中控重启后上一个进程起的脚本可能还在跑）：等不到（rr::BUSY）时这一台一行没动，作业等一分钟从这一步再来（Outcome::Wait，
-//! 受这一步的超时约束），不改回、不失败。
+//! 路由上另有一把锁（中控重启后上一个进程起的脚本可能还在跑）：等不到（rr::BUSY）时这一台一行没动，作业等一分钟从这一步再来（Outcome::Wait），
+//! 不改回、不失败；再等一轮就超过这一步的超时时不再等，把改好的改回、作业失败（同下面的改回）。
 //! 同批的换线路机作业（搬空、批量换线路机）由一个带头的一起改（见 batch.rs）：要改的出口是几个作业合起来的，每台路由只改一次、重启一次，
 //! 任何一台失败全部换回、几个节点的旧入口都不摘。
 //! 再一台一台改（备份 → 改出口 → 重启 OpenClash → 测延迟）。哪台失败了，它自己已经改回（脚本做），之前改好的也按各自的备份改回去，
@@ -21,7 +21,8 @@
 //! 同一台路由上别的作业之后改的出口不会被抹掉。
 //! 改过的路由、第一次改之前的备份时间戳与要改的出口记在参数 `routers_applied`，确认都改回了、或这一步做完（成功时与 `routers_stuck` 一起清）才清掉：
 //! 中途被打断（外层超时、中控重启）或改回失败时它还在，这时作业不能取消（jobs::cancel_blocker），重试照它接着做完（不重新确定出口，
-//! 备份戳沿用第一次的）。改回失败的另记在 `routers_stuck`（哪台、哪些出口、改之前指向哪），作业详情据此给出「需要人工处理」。
+//! 备份戳沿用第一次的）。收到脚本 replace=ok 的那台随即标上确认改好（`done`），再进这一步（等路由上的锁、中控重启后接着做、重试）时不再碰它；
+//! 没确认的（脚本跑了但中控没收到结果）照记录重做。改回失败的另记在 `routers_stuck`（哪台、哪些出口、改之前指向哪），作业详情据此给出「需要人工处理」。
 //! 凭据（uuid、公钥、short-id）执行时才从库里取，只进 ssh 的 stdin，不进日志与审计。写进每个出口的那一整组（含凭据）随 `routers_applied` 记在作业参数里
 //! （参数不经 API 给出），改回时照它核对路由上现在的值：仍是本作业写的才改回，已被别人改过的跳过并在作业日志说明；不从库里现取，新入口在卡住期间被轮换也不会误判。
 
@@ -46,6 +47,10 @@ struct Applied {
     /// 最近一次写进这台各出口的整组参数（含凭据）：改回时照它核对路由上现在的值，不从库里现取（卡住期间入口被轮换也认得出是不是本作业写的）
     #[serde(default)]
     written: Vec<rr::Edit>,
+    /// 确认改好了（收到脚本的 replace=ok）时这台在步骤输出里的那一项；没确认的（还没改、改了没收到结果、旧版本留下的）为 None。
+    /// 再进这一步时确认过的不再改（不再备份、重启 OpenClash），仍留在这里供改回；改回失败留下的清掉（改回到一半，重试要重做）
+    #[serde(default)]
+    done: Option<Value>,
 }
 
 impl Applied {
@@ -427,6 +432,8 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         rows.retain(|r| only.contains(&r.id));
     }
     rows.sort_by_key(|r| r.id);
+    // 已经确认改好的（Applied::done）不再碰：不看在不在线、不加锁、不再改
+    rows.retain(|r| !applied.iter().any(|a| a.id == r.id && a.done.is_some()));
     let plan: Vec<&RouterPlan> = parts.iter().flat_map(|p| &p.plan).collect();
     let none_yet = if resumed { "" } else { "，一台都没有改" };
     // 1. 不在线的：最近一次采集里有要改的出口（或之前已经改过它），一台都不改
@@ -525,7 +532,6 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     // 3. 一台一台改
     let mut applied = applied;
     let pins = pinned_stamps(&c.st.db).await?;
-    let mut done = vec![];
     for (r, exits) in &todo {
         let mut ed = vec![];
         // 各出口归哪个作业（同批一起改时跟着完成的作业按它取自己的那几个，见 batch.rs）
@@ -554,7 +560,7 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         // 这次要写的整组参数先记下（接着做时入口可能已经轮换过，以这次写的为准），改回时照它核对
         match applied.iter_mut().find(|a| a.id == r.id) {
             Some(a) => a.written = ed.clone(),
-            None => applied.push(Applied { id: r.id, name: r.name.clone(), port: r.tunnel_port, stamp: stamp.clone(), exits: exits.clone(), written: ed.clone() }),
+            None => applied.push(Applied { id: r.id, name: r.name.clone(), port: r.tunnel_port, stamp: stamp.clone(), exits: exits.clone(), written: ed.clone(), done: None }),
         }
         c.set_params(json!({"routers_applied": applied})).await?;
         let what: Vec<String> = ed.iter().map(|e| format!("{} {}:{} → {}:{}", e.exit, e.old_server, e.old_port, e.server, e.port)).collect();
@@ -563,12 +569,19 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         c.st.routers_refresh.claims.editing(r.id, c.job.id, &c.job.kind);
         let res = run_script(c, r.id, &r.name, r.tunnel_port, &rr::apply_script(&ed, t, &pins), "apply", &stamp, rr::APPLY_TIMEOUT).await;
         c.st.routers_refresh.claims.edited(r.id, c.job.id, res.as_ref().ok().and_then(|o| o.kv("sha")));
-        // 路由上上一份还在跑、等不到它的锁（多是中控重启前起的那份）：这一台一行没动。不改回、不算失败，隔一分钟从这一步再来
-        // （等满这一步的超时才失败）；之前改过的照 routers_applied 接着做。这一台是这次才记进去的去掉（没写过，这次的备份戳也没有备份）
+        // 路由上上一份还在跑、等不到它的锁（多是中控重启前起的那份）：这一台一行没动。不改回、不算失败，隔一分钟从这一步再来；
+        // 确认改好的那几台之后不再碰，没确认的照 routers_applied 接着做。这一台是这次才记进去的去掉（没写过，这次的备份戳也没有备份）
         if let Some(o) = res.as_ref().ok().filter(|o| o.code == rr::BUSY) {
             if fresh {
                 applied.retain(|a| a.id != r.id);
                 c.set_params(json!({"routers_applied": applied})).await?;
+            }
+            // 再等一轮就超过这一步的超时：不等到超时失败（那样改好的停在新入口、作业也取消不了），现在就把改好的改回
+            let limit = crate::jobs::defs(&c.job.kind).iter().find(|d| d.key == "routers").map_or(1800, |d| d.timeout_s);
+            let waited = (OffsetDateTime::now_utc() - c.started).whole_seconds();
+            if waited + BUSY_RETRY as i64 > limit {
+                let head = format!("软路由「{}」：{}；这一步等了 {waited} 秒还等不到路由上的锁（超时 {limit} 秒）", r.name, reason(o));
+                return give_up(c, &mut locks, &applied, None, head, ErrKind::Timeout, kept).await;
             }
             c.warn(format!("软路由「{}」：{}，{BUSY_RETRY} 秒后再试", r.name, reason(o))).await;
             return Ok(Outcome::Wait(BUSY_RETRY));
@@ -577,8 +590,13 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
             Ok(o) if o.ok() && o.kv("replace") == Some("ok") => {
                 let delays: Vec<String> = (1..=ed.len()).map(|i| format!("{} {} ms", ed[i - 1].exit, o.kv(&format!("delay_{i}")).unwrap_or("?"))).collect();
                 c.log(format!("软路由「{}」改好了：备份 {}，延迟 {}", r.name, o.kv("backup").unwrap_or("?"), delays.join("，"))).await;
-                done.push(json!({"id": r.id, "name": r.name, "exits": ed.iter().zip(&jobs).map(|(e, j)| json!({"exit": e.exit, "to": format!("{}:{}", e.server, e.port), "job": j})).collect::<Vec<_>>(),
-                    "backup": o.kv("backup"), "delay_ms": (1..=ed.len()).map(|i| o.kv(&format!("delay_{i}")).and_then(|d| d.parse::<i64>().ok())).collect::<Vec<_>>()}));
+                let out = json!({"id": r.id, "name": r.name, "exits": ed.iter().zip(&jobs).map(|(e, j)| json!({"exit": e.exit, "to": format!("{}:{}", e.server, e.port), "job": j})).collect::<Vec<_>>(),
+                    "backup": o.kv("backup"), "delay_ms": (1..=ed.len()).map(|i| o.kv(&format!("delay_{i}")).and_then(|d| d.parse::<i64>().ok())).collect::<Vec<_>>()});
+                // 确认改好了：马上记下，再进这一步（后面的路由等锁、中控重启）时不再改它
+                if let Some(a) = applied.iter_mut().find(|a| a.id == r.id) {
+                    a.done = Some(out);
+                }
+                c.set_params(json!({"routers_applied": applied})).await?;
                 continue;
             }
             Ok(o) if o.code == 255 => {
@@ -603,12 +621,14 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         let undone = self_undone.then_some((r.id, stamp.as_str()));
         return give_up(c, &mut locks, &applied, undone, format!("软路由「{}」：{why}", r.name), kind, kept).await;
     }
+    // 改好的：这次改的，加上之前几次进这一步时已经确认改好的（routers_applied 里 done 的）
+    let changed: Vec<&Applied> = applied.iter().filter(|a| a.done.is_some()).collect();
     // 记下改成了指向哪个入口：之后凭据轮换，同步默认还认这个对应（router_exit_link）
-    for (r, exits) in &todo {
-        for x in exits {
+    for a in &changed {
+        for x in &a.exits {
             if let Some(entry) = x.new_entry_id {
                 sqlx::query("insert into router_exit_link (router_id, exit, entry_id, source) values ($1, $2, $3, $4) on conflict do nothing")
-                    .bind(r.id)
+                    .bind(a.id)
                     .bind(&x.exit)
                     .bind(entry)
                     .bind(&c.job.kind)
@@ -618,9 +638,9 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         }
     }
     // 马上采一次改过的路由：快照别等下一轮，紧接着的预览按新配置算
-    c.st.routers_refresh.now(todo.iter().map(|(r, _)| r.id)).await;
+    c.st.routers_refresh.now(changed.iter().map(|a| a.id)).await;
     c.set_params(json!({"routers_applied": [], "routers_stuck": []})).await?;
-    let mut out = json!({"routers": done});
+    let mut out = json!({"routers": changed.iter().filter_map(|a| a.done.clone()).collect::<Vec<_>>()});
     if !followers.is_empty() {
         out["batch"] = json!(followers.iter().map(|f| f.id).collect::<Vec<_>>());
     }
@@ -713,7 +733,8 @@ async fn give_up(
         if let Err(why) = revert_one(c, locks, a).await? {
             whys.push(format!("{}（{}）", a.name, why));
             stuck.push(Stuck { id: a.id, name: a.name.clone(), exits: a.exits.iter().map(|x| x.exit.clone()).collect(), was: a.exits.iter().map(|x| format!("{}:{}", x.old_server, x.old_port)).collect() });
-            left.push(a);
+            // 改回到一半：不再算确认改好，重试照记录重做
+            left.push(Applied { done: None, ..a.clone() });
         } else {
             back.push(a.name.clone());
         }
@@ -842,7 +863,7 @@ mod tests {
     #[test]
     fn back_uses_recorded_params() {
         let x = ExitPlan { exit: "节点01".into(), old_entry_id: Uuid::nil(), new_entry_id: Some(Uuid::nil()), old_server: "a".into(), old_port: 1, server: "b".into(), port: None, error: None };
-        let mut a = Applied { id: Uuid::nil(), name: "路由A".into(), port: 1, stamp: "S".into(), exits: vec![x], written: vec![] };
+        let mut a = Applied { id: Uuid::nil(), name: "路由A".into(), port: 1, stamp: "S".into(), exits: vec![x], written: vec![], done: None };
         assert!(a.back().unwrap_err().contains("没法核对"));
         let e = rr::Edit { exit: "节点01".into(), old_server: "a".into(), old_port: 1, server: "b".into(), port: 2, uuid: "U".into(), sni: "s".into(), pbk: "p".into(), sid: "i".into() };
         a.written = vec![e];
