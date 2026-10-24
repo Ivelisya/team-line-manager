@@ -723,9 +723,11 @@ async fn give_up(
     kept: &str,
 ) -> anyhow::Result<Outcome> {
     // 先把「确认改好」都清掉再改回：改回途中被打断（中控重启、外层超时、库错误）时，已改回旧入口的那台若还标着 done，
-    // 重来会被跳过、作业报成功，路由却停在旧入口；清掉后重来照记录重做
-    if applied.iter().any(|a| a.done.is_some()) {
-        let cleared: Vec<Applied> = applied.iter().map(|a| Applied { done: None, ..a.clone() }).collect();
+    // 重来会被跳过、作业报成功，路由却停在旧入口；清掉后重来照记录重做。`undone` 那台（这次才记进去、自己没写成或已自己改回）
+    // 一并摘掉：留着的话被打断后按这次的备份戳重做，之后要改回时那份备份不存在
+    let is_undone = |a: &Applied| undone.is_some_and(|(id, stamp)| a.id == id && a.stamp == stamp);
+    if applied.iter().any(|a| a.done.is_some() || is_undone(a)) {
+        let cleared: Vec<Applied> = applied.iter().filter(|a| !is_undone(a)).map(|a| Applied { done: None, ..a.clone() }).collect();
         c.set_params(json!({"routers_applied": cleared})).await?;
     }
     let mut back = vec![];
@@ -733,7 +735,7 @@ async fn give_up(
     let mut stuck = vec![];
     let mut whys = vec![];
     for a in applied.iter().rev() {
-        if undone.is_some_and(|(id, stamp)| a.id == id && a.stamp == stamp) {
+        if is_undone(a) {
             continue;
         }
         if let Err(why) = revert_one(c, locks, a).await? {
