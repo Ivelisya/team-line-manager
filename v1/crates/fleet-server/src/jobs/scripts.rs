@@ -136,7 +136,9 @@ const LINKLOCAL_DNS: &str = r#"grep -qiE '^[[:space:]]*nameserver[[:space:]]+(16
 /// 链路本地 DNS 时 ssserver 用的公共解析器（shadowsocks-rust 配置的 "dns"：逗号分隔，UDP / TCP 53；1.25 核对过）
 const PUBLIC_DNS: &str = "1.1.1.1,8.8.8.8";
 
-/// ssserver 的出站目标黑名单（shadowsocks-rust 1.25 的 acl 文件，配置里 "acl" 指向它）：目标是回环、私网、链路本地、CGNAT、IPv4 映射地址（::ffff:0:0/96，免得 ::ffff:10.0.0.1 绕过上面的 IPv4 段）的连接一律拒绝。
+/// ssserver 的出站目标黑名单（shadowsocks-rust 1.25 的 acl 文件，配置里 "acl" 指向它）：目标是回环、私网、链路本地、CGNAT 的连接一律拒绝。
+/// 不能写 IPv4 映射段 ::ffff:0:0/96：shadowsocks-rust 判 IPv4 目标时还会拿它的映射地址（::ffff:a.b.c.d）去比 IPv6 规则，写了就拦下全部 IPv4 出站
+/// （2026-10-25 生产团队1-01 下发后客户流量全被拒）；反过来 ::ffff:10.0.0.1 这类映射地址也会转回 IPv4 比上面的段，不写也绕不过去。
 /// 域名目标按解析出的 IP 判（任一解析结果命中就拒绝），所以客户把域名解析到 127.0.0.1 / 10.x 也到不了节点本机服务和供应商内网。
 /// 挡的是目标地址，不是源地址：同机 IP 节点的 outbound_bind_addr（含 NAT 的 10.116.x）照常出站。ssserver 查 DNS 走自己的解析器，不受它影响。
 /// 解析后到真正连接之间 ssserver 会再解析一次，拦不住秒级 TTL 轮换的 DNS 重绑定
@@ -151,8 +153,7 @@ const OUTBOUND_ACL: &str = "[outbound_block_list]
 ::/128
 ::1/128
 fc00::/7
-fe80::/10
-::ffff:0:0/96";
+fe80::/10";
 
 /// 写到节点上的黑名单：中控地址（public_url 是 IP 字面量）落在哪一段，就不带那一段——出口探测要经节点连中控的 /echo，
 /// 实验室中控在 192.168.x 上，拦了就验收不过；ACL 里拦截优先于放行，没法只给中控开个口子。生产的 public_url 是域名，名单完整
@@ -642,9 +643,10 @@ mod tests {
             assert!(s.contains("\"acl\":\"/etc/shadowsocks-rust/fleet.acl\""));
             let acl = s.split("<<'ACL'\n").nth(1).unwrap().split("\nACL\n").next().unwrap();
             assert!(acl.starts_with("[outbound_block_list]\n"), "{acl}");
-            for net in ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "100.64.0.0/10", "::1/128", "fc00::/7", "fe80::/10", "::ffff:0:0/96"] {
+            for net in ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "100.64.0.0/10", "::1/128", "fc00::/7", "fe80::/10"] {
                 assert!(acl.lines().any(|l| l == net), "{net}");
             }
+            assert!(!acl.lines().any(|l| l.starts_with("::ffff:")), "IPv4 映射段会拦下全部 IPv4 出站：{acl}");
         }
         // 中控在私网（实验室）：去掉它所在的那一段，出口探测才连得上中控的 /echo；别的段照拦
         let s = node_ss(&SsInst::host(), "http://192.168.31.60:8080");
@@ -653,7 +655,6 @@ mod tests {
 ACL
 ").next().unwrap();
         assert!(!acl.lines().any(|l| l == "192.168.0.0/16") && acl.lines().any(|l| l == "10.0.0.0/8"), "{acl}");
-        assert!(acl.lines().any(|l| l == "::ffff:0:0/96"), "中控是 IPv4 字面量：IPv4 映射段照拦");
     }
 
     /// /etc/resolv.conf 的 nameserver 是链路本地地址时：ssserver 配置加公共解析器、报 linklocal_dns=1，单元里的元数据拦截一律不动；
