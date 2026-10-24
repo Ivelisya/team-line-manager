@@ -1422,6 +1422,53 @@ async fn traffic_quota_alert_lifecycle() {
     assert_eq!(sent, want);
 }
 
+/// 搬迁建议按目标线路机自己的计费方式折算：源是 max、目标是 sum 时，同样的业务量在目标上约多一倍，不能拿源的折算量直接判「放得下」
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rebalance_converts_by_target_billing_rule() {
+    let t = setup().await;
+    let team = seed_team(&t, "团队1").await;
+    let src = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let dst = seed_relay(&t, "线路机2", "198.51.100.2", "tok2").await;
+    let (node_a, ea) = seed_node(&t, src, team, 1, "203.0.113.5", 20000).await;
+    let (_, eb) = seed_node(&t, src, team, 2, "203.0.113.6", 20001).await;
+    let (_, ec) = seed_node(&t, dst, team, 3, "203.0.113.7", 20002).await;
+    sqlx::query("update machine set activated_at = now() - interval '40 days' where id = any($1)").bind([src, dst]).execute(&t.st.db).await.unwrap();
+    // 重置日定在 15 天后的那个日号；源 2 GB（没单独设置，供应商缺省按 max），目标 11 GB 且单独设置按 sum
+    for (m, gb, rule) in [(src, 2, None), (dst, 11, Some("sum"))] {
+        sqlx::query(
+            "insert into subscription (machine_id, price_cents, due_date, traffic_gb, traffic_reset_day, traffic_rule)
+             values ($1, 500, current_date + 60, $2, extract(day from (now() at time zone 'Asia/Shanghai')::date + 15), $3)",
+        )
+        .bind(m)
+        .bind(gb)
+        .bind(rule)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    }
+    let hour: OffsetDateTime = sqlx::query_scalar("select date_trunc('hour', now() - interval '2 days')").fetch_one(&t.st.db).await.unwrap();
+    // 近 7 天：源网卡出站 1400 MB（max 计 1400，日均 200 MB），业务 A 1200 MB + B 200 MB，折算系数 1；
+    // 目标网卡入站 = 出站 = 700 MB（sum 计 1400，日均 200 MB），业务只有 C 700 MB，折算系数 2
+    set_nic(&t, src, hour, 1400).await;
+    sqlx::query("insert into host_metric_hourly (machine_id, hour, net_rx, net_tx) values ($1, $2, 700000000, 700000000)").bind(dst).bind(hour).execute(&t.st.db).await.unwrap();
+    for (e, mb) in [(ea, 1200.0), (eb, 200.0), (ec, 700.0)] {
+        set_biz(&t, e, hour, mb * 1e6).await;
+    }
+    t.st.live.rolled_up();
+
+    // 搬走 A（约 171 MB/天）：源上少 171 MB/天，目标按 sum 多出约 343 MB/天，到重置日预计超过它上限的 80%：放不下（按源的口径算只多 171 MB/天，会误判放得下）
+    let rb = t.get(&format!("/api/v1/relays/{src}/rebalance?target_relay_id={dst}")).await;
+    assert_eq!((rb["ok"].as_bool(), rb["moves"].as_array().map(Vec::len), rb["moves"][0]["node"]["id"].as_str()), (Some(true), Some(1), Some(node_a.to_string().as_str())), "{rb}");
+    assert_eq!(rb["target_after"]["fits"], json!(false), "{rb}");
+    assert!(rb["reason"].as_str().unwrap_or_default().contains("目标线路机放不下"), "{rb}");
+
+    // 目标改按 max（日均 100 MB，系数 1）：搬来的量同源口径，放得下
+    sqlx::query("update subscription set traffic_rule = 'max' where machine_id = $1").bind(dst).execute(&t.st.db).await.unwrap();
+    t.st.live.invalidate();
+    let rb = t.get(&format!("/api/v1/relays/{src}/rebalance?target_relay_id={dst}")).await;
+    assert_eq!(rb["target_after"]["fits"], json!(true), "{rb}");
+}
+
 /// 流量异常一轮：按 `at` 评估最近两个完整小时（同小时汇总之后），再评估告警
 async fn anomaly_pass(t: &T, s: &mut AlertState, at: OffsetDateTime) {
     t.st.live.set_anomaly(fleet_server::anomaly::evaluate(&t.st.db, at).await.unwrap());

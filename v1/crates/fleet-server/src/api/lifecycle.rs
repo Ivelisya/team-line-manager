@@ -514,7 +514,7 @@ pub(crate) fn quota_q(m: &MachineView, now: OffsetDateTime) -> Q {
 
 /// 搬迁建议（只读，不动任何东西）：这台线路机按近 7 天的速度重置前会用满的话，挑出搬走后能撑到重置日的最少入口，
 /// 并给出搬去哪台线路机；已经超出额度的，挑出搬走后日均降到原来 `OVER_LIMIT_KEEP_PCT`% 以下的最少入口（到重置日前不再大量增长）。每个入口每天的流量按近 7 天（窗口同日均）的业务流量算，再按「线路机网卡日均 ÷ 各入口合计」折算
-/// （网卡口径与入口上下行合计不完全相等）。真正执行是一次批量换线路机 `POST /moves`（fleetctl move A,B,C --to X），每台软路由只重启一次
+/// （网卡口径与入口上下行合计不完全相等）；目标线路机接收后多出的量按目标自己的计费方式折算（见 `quota::rule_factor`）。真正执行是一次批量换线路机 `POST /moves`（fleetctl move A,B,C --to X），每台软路由只重启一次
 pub async fn rebalance(_a: Actor, State(st): State<AppState>, ApiPath(relay): ApiPath<Uuid>, ApiQuery(b): ApiQuery<RebalanceIn>) -> ApiResult<Json<Value>> {
     let all = views::live(&st).await?;
     let src = all.iter().find(|m| m.id == relay && m.kind == "relay").ok_or_else(|| ApiError::not_found("没有这台在用的线路机"))?;
@@ -568,6 +568,31 @@ pub async fn rebalance(_a: Actor, State(st): State<AppState>, ApiPath(relay): Ap
     let rate = |e: &EntryView| traffic.get(&e.id).map_or(0.0, |t| t.1 as f64 / wdays);
     let total: f64 = live.iter().map(|e| rate(e)).sum();
     let k = if total > 0.0 { sq.daily / total } else { 1.0 };
+    // 其他线路机在用入口近 7 天（各自的日均窗口）的业务流量：目标按自己的计费方式折算（源是 max、目标是 sum 时，同样的业务量在目标上约多一倍）
+    let others: Vec<&MachineView> = all.iter().filter(|m| m.kind == "relay" && m.id != relay).collect();
+    let (oe, os): (Vec<Uuid>, Vec<OffsetDateTime>) = others.iter().flat_map(|m| m.entries.iter().filter(|e| e.lifecycle == "active").map(|e| (e.id, m.quota.window_start))).unzip();
+    let orows: Vec<(Uuid, i64)> = sqlx::query_as(
+        "select h.entry_id, least(coalesce(sum(h.up_bytes::numeric + h.down_bytes), 0), 9e18)::bigint
+         from entry_traffic_hourly h join unnest($1::uuid[], $2::timestamptz[]) w(entry_id, since) on w.entry_id = h.entry_id
+         where h.hour >= w.since group by h.entry_id",
+    )
+    .bind(&oe)
+    .bind(&os)
+    .fetch_all(&st.db)
+    .await?;
+    let o_traffic: HashMap<Uuid, i64> = orows.into_iter().collect();
+    // 目标线路机的折算系数 k_t = 它的网卡计费日均 ÷ 它在用入口的业务日均；没有业务量（新线路机）或日均估不出来时无从实测，
+    // 按线路机转发的物理关系取：入站 ≈ 出站 ≈ 业务量，所以双向计费（sum）折 2，单向（max / min / in / out）折 1
+    let k_of = |t: &MachineView| {
+        let days = ((now_h - t.quota.window_start).as_seconds_f64() / 86400.0).max(1.0);
+        let biz: f64 = t.entries.iter().filter(|e| e.lifecycle == "active").map(|e| o_traffic.get(&e.id).map_or(0.0, |&b| b as f64 / days)).sum();
+        match t.quota.daily_avg {
+            Some(d) if d > 0 && biz > 0.0 => d as f64 / biz,
+            _ => crate::quota::rule_factor(t.quota.rule),
+        }
+    };
+    // 源线路机上折出的搬走量 `cut`（源的计费口径）→ 目标线路机每天多出的计费量
+    let onto = |t: &MachineView, cut: f64| cut / k * k_of(t);
     // 搬走后每天最多还能走多少：没超额度时 = 剩余额度 ÷ 剩余天数（撑到重置日）；
     // 已超额度时撑到重置日已无从谈起，目标改为「到重置日前不再大量增长」：剩余日均降到原来的 OVER_LIMIT_KEEP_PCT% 以下
     let over = sq.used >= limit;
@@ -594,7 +619,7 @@ pub async fn rebalance(_a: Actor, State(st): State<AppState>, ApiPath(relay): Ap
                 return Err(ApiError::conflict("没有可作为目标的线路机（要在用、非故障）"));
             }
             let plans: Vec<_> = pool.iter().map(|t| plan_for(t)).collect();
-            let fits: Vec<usize> = (0..pool.len()).filter(|&i| plans[i].4 && !plans[i].2.is_empty() && quota_q(pool[i], now).fits(plans[i].3)).collect();
+            let fits: Vec<usize> = (0..pool.len()).filter(|&i| plans[i].4 && !plans[i].2.is_empty() && quota_q(pool[i], now).fits(onto(pool[i], plans[i].3))).collect();
             let idx: Vec<usize> = if fits.is_empty() { (0..pool.len()).collect() } else { fits };
             let moved = |i: usize| -> Vec<Uuid> { plans[i].2.iter().map(|&j| plans[i].0[j].node.id).collect() };
             let all_moved: Vec<Uuid> = idx.iter().flat_map(|&i| moved(i)).collect();
@@ -632,12 +657,13 @@ pub async fn rebalance(_a: Actor, State(st): State<AppState>, ApiPath(relay): Ap
     out["moves"] = json!(moves);
     out["ok"] = json!(reached && !picked.is_empty());
     out["after"] = json!({"daily_avg": (sq.daily - cut).max(0.0).round() as i64, "projected_pct": pct(sq.used + (sq.daily - cut).max(0.0) * sq.days_left, limit)});
-    out["target_after"] = json!({"fits": tq.fits(cut), "projected_pct": tq.limit.map(|l| pct(tq.projected() + cut * tq.days_left, l))});
+    let extra = onto(tgt, cut);
+    out["target_after"] = json!({"fits": tq.fits(extra), "projected_pct": tq.limit.map(|l| pct(tq.projected() + extra * tq.days_left, l))});
     if !reached && over {
         out["reason"] = json!(format!("能搬的入口都搬走，日均也降不到原来的 {}% 以下（被排除的、已在目标上有入口的、直出的不算）", crate::quota::OVER_LIMIT_KEEP_PCT));
     } else if !reached {
         out["reason"] = json!("能搬的入口都搬走也撑不到重置日（被排除的、已在目标上有入口的、直出的不算）");
-    } else if !tq.fits(cut) {
+    } else if !tq.fits(extra) {
         out["reason"] = json!(format!("目标线路机放不下：接收后到重置日预计超过它上限的 {}%", crate::quota::TARGET_SAFE_PCT));
     }
     Ok(ok(out))
