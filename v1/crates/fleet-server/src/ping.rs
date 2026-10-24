@@ -328,28 +328,31 @@ pub async fn cleanup(db: &sqlx::PgPool, r: &crate::config::Retention) -> sqlx::R
 
 /// 卡片：每台在用线路机、每个在测的目标（按此刻合成的槽位，目标改了之后旧目标的数据不算）近 1 小时 20 格（3 分钟一格，墙钟对齐，同 /probe-beats），
 /// 每格 `[延迟中位数 ms | null, 丢包 %| null]`（没有数据为 null），另给最近一次的读数 `cur_ms`、`cur_loss`（%）与时间。
-/// `{<线路机 id>: [{slot, name, target, mode, cur_ms, cur_loss, cur_ts, cells}]}`；没有目标的线路机不出现
-pub async fn beats(db: &sqlx::PgPool) -> sqlx::Result<Value> {
+/// `{<线路机 id>: [{slot, name, target, mode, cur_ms, cur_loss, cur_ts, cells}]}`；没有目标的线路机不出现。`only` 给了就只算这一台（查询里就过滤，不扫全部线路机）
+pub async fn beats(db: &sqlx::PgPool, only: Option<Uuid>) -> sqlx::Result<Value> {
     const BUCKETS: usize = 20;
     let g = global(db).await?;
     let relays: Vec<(Uuid, Option<Value>)> = sqlx::query_as(
-        "select r.machine_id, r.ping_override from relay r join machine m on m.id = r.machine_id where m.lifecycle = 'active' and m.kind = 'relay'",
+        "select r.machine_id, r.ping_override from relay r join machine m on m.id = r.machine_id where m.lifecycle = 'active' and m.kind = 'relay' and ($1::uuid is null or r.machine_id = $1)",
     )
+    .bind(only)
     .fetch_all(db)
     .await?;
     let rows: Vec<BucketRow> = sqlx::query_as(
         "with w as (select date_bin('3 minutes', now(), timestamptz 'epoch') - interval '57 minutes' s)
          select p.relay_id, p.slot, p.target, floor(extract(epoch from p.ts - w.s) / 180)::int,
                 (percentile_cont(0.5) within group (order by p.rtt_ms))::float8, sum(p.sent)::bigint, sum(p.lost)::bigint
-         from ping_result p, w where p.ts >= w.s and p.ts < w.s + interval '60 minutes'
+         from ping_result p, w where p.ts >= w.s and p.ts < w.s + interval '60 minutes' and ($1::uuid is null or p.relay_id = $1)
          group by 1, 2, 3, 4",
     )
+    .bind(only)
     .fetch_all(db)
     .await?;
     let last: Vec<LastRow> = sqlx::query_as(
         "select distinct on (relay_id, slot) relay_id, slot, target, mode, rtt_ms, sent, lost, ts from ping_result
-         where ts > now() - interval '15 minutes' order by relay_id, slot, ts desc",
+         where ts > now() - interval '15 minutes' and ($1::uuid is null or relay_id = $1) order by relay_id, slot, ts desc",
     )
+    .bind(only)
     .fetch_all(db)
     .await?;
     let mut cells: HashMap<(Uuid, i16, String), Vec<Value>> = HashMap::new();
@@ -385,15 +388,21 @@ pub async fn beats(db: &sqlx::PgPool) -> sqlx::Result<Value> {
     Ok(Value::Object(out))
 }
 
-/// 一台线路机：全局、覆盖、合成后的槽位（含来源），与每个槽位的当前读数（近 15 分钟最近一次）
-pub async fn machine_view(db: &sqlx::PgPool, relay: Uuid) -> ApiResult<Value> {
+/// 一台线路机的全局、覆盖与合成后的方式、槽位；不是线路机 404
+async fn merged_of(db: &sqlx::PgPool, relay: Uuid) -> ApiResult<(Global, Option<Override>, String, Vec<Merged>)> {
     let kind: Option<String> = sqlx::query_scalar("select kind::text from machine where id = $1").bind(relay).fetch_optional(db).await?;
     if kind.as_deref() != Some("relay") {
         return Err(ApiError::not_found("没有这台线路机（三网 PING 只在线路机上测）"));
     }
     let (g, o) = (global(db).await?, override_of(db, relay).await?);
     let (mode, slots) = merge(&g, o.as_ref());
-    let beats = beats(db).await?;
+    Ok((g, o, mode, slots))
+}
+
+/// 一台线路机：全局、覆盖、合成后的槽位（含来源），与每个槽位的当前读数（近 15 分钟最近一次）
+pub async fn machine_view(db: &sqlx::PgPool, relay: Uuid) -> ApiResult<Value> {
+    let (g, o, mode, slots) = merged_of(db, relay).await?;
+    let beats = beats(db, Some(relay)).await?;
     Ok(json!({"mode": mode, "slots": slots, "override": o, "global": g, "current": beats.get(relay.to_string()).cloned().unwrap_or(json!([]))}))
 }
 
@@ -408,7 +417,7 @@ pub async fn series(db: &sqlx::PgPool, relay: Uuid, range: &str) -> ApiResult<Va
         "30d" => (time::Duration::days(30), 3600),
         _ => return Err(ApiError::bad_request("range 只能是 1h/6h/24h/7d/30d")),
     };
-    let view = machine_view(db, relay).await?;
+    let (_, _, _, slots) = merged_of(db, relay).await?;
     let since = OffsetDateTime::now_utc() - back;
     let sql = if step == 60 {
         "select slot, target, ts, rtt_ms::float8, (100.0 * lost / nullif(sent, 0))::float8 from ping_result where relay_id = $1 and ts >= $2 order by ts"
@@ -416,14 +425,7 @@ pub async fn series(db: &sqlx::PgPool, relay: Uuid, range: &str) -> ApiResult<Va
         "select slot, target, hour, rtt_avg::float8, (100.0 * lost / nullif(sent, 0))::float8 from ping_hourly where relay_id = $1 and hour >= $2 order by hour"
     };
     let rows: Vec<SeriesRow> = sqlx::query_as(sql).bind(relay).bind(since).fetch_all(db).await?;
-    let slots: Vec<Merged> = serde_json::from_value::<Vec<Value>>(view["slots"].clone())
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|v| {
-            Some(Merged { slot: v["slot"].as_u64()? as u8, name: v["name"].as_str()?.into(), target: v["target"].as_str()?.into(), source: "global" })
-        })
-        .filter(|s| !s.target.is_empty())
-        .collect();
+    let slots: Vec<&Merged> = slots.iter().filter(|s| !s.target.is_empty()).collect();
     let series: Vec<Value> = slots
         .iter()
         .map(|s| {

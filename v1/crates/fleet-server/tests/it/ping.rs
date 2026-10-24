@@ -144,3 +144,30 @@ async fn hourly_rollup_covers_late_backfill() {
     fleet_server::ping::rollup(&t.st.db, 72).await.unwrap();
     assert_eq!(t.count("select count(*) from ping_hourly").await, 1, "每小时一轮的 3 天窗口补得上");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn machine_view_reads_only_its_own_relay() {
+    let t = setup().await;
+    let r1 = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let r2 = seed_relay(&t, "线路机2", "198.51.100.2", "tok2").await;
+    for (tok, rtt) in [("tok1", 150.0), ("tok2", 80.0)] {
+        let mut r = blank_report(1);
+        r.ping = vec![PingSample {
+            slot: 0,
+            ts_ms: common::now_ms(),
+            target: "hb-ct-v4.ip.zstaticcdn.com".into(),
+            mode: "tcp".into(),
+            sent: 5,
+            lost: 0,
+            rtt_ms: Some(rtt),
+        }];
+        assert_eq!(t.report(tok, &r).await.0, StatusCode::OK);
+    }
+    for (relay, rtt) in [(r1, 150.0), (r2, 80.0)] {
+        let m = t.get(&format!("/api/v1/machines/{relay}/ping")).await;
+        assert_eq!(m["current"].as_array().unwrap().len(), 3, "{m}");
+        assert_eq!(m["current"][0]["cur_ms"], json!(rtt), "{m}");
+    }
+    let b = t.get("/api/v1/ping-beats").await;
+    assert_eq!((b[r1.to_string()][0]["cur_ms"].clone(), b[r2.to_string()][0]["cur_ms"].clone()), (json!(150.0), json!(80.0)), "{b}");
+}
