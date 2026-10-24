@@ -1359,6 +1359,11 @@ async fn traffic_quota_alert_lifecycle() {
     assert!(inc[0]["ack_at"].is_null(), "{inc:?}");
     assert_eq!(inc[0]["summary"], format!("线路机1：本周期流量已超出额度（已用 107%，1.07 GB / 1 GB），{days} 天后重置"));
     assert_eq!(t.health(relay).await.0, "ok");
+    // 超额度时告警照样建议 rebalance，rebalance 也按超额度的口径回答（这里近 7 天没有新流量：不用搬）
+    assert_eq!(inc[0]["suggested"], json!(["fleetctl rebalance 线路机1"]));
+    let rb = t.get(&format!("/api/v1/relays/{relay}/rebalance")).await;
+    assert_eq!((rb["over_limit"].as_bool(), rb["needed"].as_bool()), (Some(true), Some(false)), "{rb}");
+    assert!(rb["reason"].as_str().unwrap_or_default().contains("近 7 天没有新增流量"), "{rb}");
     log_settles(&t, 2).await;
     pass(&t, &mut state, base, 60).await;
     log_settles(&t, 2).await;

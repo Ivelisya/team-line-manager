@@ -1542,7 +1542,14 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
 /// 总览 KPI（`GET /overview`、实时指标推送）
 pub async fn overview(st: &AppState) -> sqlx::Result<Value> {
     let ms = live(st).await?;
-    Ok(overview_of(&ms, &*traffic(st).await?))
+    let mut v = overview_of(&ms, &*traffic(st).await?);
+    settling(st, &mut v);
+    Ok(v)
+}
+
+/// 总览的 `settling`：中控刚启动或刚恢复收上报，健康计数还在变（见 `ReportGaps::settling`）
+pub fn settling(st: &AppState, v: &mut Value) {
+    v["settling"] = json!(st.report_gaps.settling(OffsetDateTime::now_utc()));
 }
 
 /// 总览里节点、线路机各一份的健康计数

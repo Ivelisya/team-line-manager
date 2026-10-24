@@ -513,7 +513,7 @@ pub(crate) fn quota_q(m: &MachineView, now: OffsetDateTime) -> Q {
 }
 
 /// 搬迁建议（只读，不动任何东西）：这台线路机按近 7 天的速度重置前会用满的话，挑出搬走后能撑到重置日的最少入口，
-/// 并给出搬去哪台线路机。每个入口每天的流量按近 7 天（窗口同日均）的业务流量算，再按「线路机网卡日均 ÷ 各入口合计」折算
+/// 并给出搬去哪台线路机；已经超出额度的，挑出搬走后日均降到原来 `OVER_LIMIT_KEEP_PCT`% 以下的最少入口（到重置日前不再大量增长）。每个入口每天的流量按近 7 天（窗口同日均）的业务流量算，再按「线路机网卡日均 ÷ 各入口合计」折算
 /// （网卡口径与入口上下行合计不完全相等）。真正执行是一次批量换线路机 `POST /moves`（fleetctl move A,B,C --to X），每台软路由只重启一次
 pub async fn rebalance(_a: Actor, State(st): State<AppState>, ApiPath(relay): ApiPath<Uuid>, ApiQuery(b): ApiQuery<RebalanceIn>) -> ApiResult<Json<Value>> {
     let all = views::live(&st).await?;
@@ -531,13 +531,13 @@ pub async fn rebalance(_a: Actor, State(st): State<AppState>, ApiPath(relay): Ap
         "limit_gb": src.quota.limit_gb, "used": src.quota.used, "period_end": src.quota.period_end,
         "daily_avg": src.quota.daily_avg, "forecast_full_at": src.quota.forecast_full_at.map(meta::fmt_ts),
         "projected_pct": (sq.daily > 0.0).then(|| pct(sq.projected(), limit)),
-        "target": null, "moves": [], "needed": false, "ok": false, "reason": null,
+        "target": null, "moves": [], "needed": false, "ok": false, "reason": null, "over_limit": sq.used >= limit,
     });
     let early = if src.quota.daily_avg.is_none() {
         Some(("本周期的数据不足 1 天，还估不出速度", false))
-    } else if sq.used >= limit {
-        Some(("本周期已经超出额度，搬走入口只能减缓继续增长，不在建议范围内", true))
-    } else if sq.projected() <= limit {
+    } else if sq.used >= limit && sq.daily <= 0.0 {
+        Some(("本周期已经超出额度，但近 7 天没有新增流量，不用搬", false))
+    } else if sq.used < limit && sq.projected() <= limit {
         Some(("按近 7 天的速度，重置前用不满，不用搬", false))
     } else {
         None
@@ -568,7 +568,10 @@ pub async fn rebalance(_a: Actor, State(st): State<AppState>, ApiPath(relay): Ap
     let rate = |e: &EntryView| traffic.get(&e.id).map_or(0.0, |t| t.1 as f64 / wdays);
     let total: f64 = live.iter().map(|e| rate(e)).sum();
     let k = if total > 0.0 { sq.daily / total } else { 1.0 };
-    let allowed = (limit - sq.used) / sq.days_left.max(0.04);
+    // 搬走后每天最多还能走多少：没超额度时 = 剩余额度 ÷ 剩余天数（撑到重置日）；
+    // 已超额度时撑到重置日已无从谈起，目标改为「到重置日前不再大量增长」：剩余日均降到原来的 OVER_LIMIT_KEEP_PCT% 以下
+    let over = sq.used >= limit;
+    let allowed = if over { sq.daily * crate::quota::OVER_LIMIT_KEEP_PCT / 100.0 } else { (limit - sq.used) / sq.days_left.max(0.04) };
 
     // 搬去 `t` 的方案：能搬的 = 在用的非直出入口，节点没被排除、在 t 上还没有入口。(能搬的入口, 各自每天的流量, 选中的下标, 搬走后每天少的流量, 撑不撑得到重置日)
     let plan_for = |t: &MachineView| {
@@ -630,7 +633,9 @@ pub async fn rebalance(_a: Actor, State(st): State<AppState>, ApiPath(relay): Ap
     out["ok"] = json!(reached && !picked.is_empty());
     out["after"] = json!({"daily_avg": (sq.daily - cut).max(0.0).round() as i64, "projected_pct": pct(sq.used + (sq.daily - cut).max(0.0) * sq.days_left, limit)});
     out["target_after"] = json!({"fits": tq.fits(cut), "projected_pct": tq.limit.map(|l| pct(tq.projected() + cut * tq.days_left, l))});
-    if !reached {
+    if !reached && over {
+        out["reason"] = json!(format!("能搬的入口都搬走，日均也降不到原来的 {}% 以下（被排除的、已在目标上有入口的、直出的不算）", crate::quota::OVER_LIMIT_KEEP_PCT));
+    } else if !reached {
         out["reason"] = json!("能搬的入口都搬走也撑不到重置日（被排除的、已在目标上有入口的、直出的不算）");
     } else if !tq.fits(cut) {
         out["reason"] = json!(format!("目标线路机放不下：接收后到重置日预计超过它上限的 {}%", crate::quota::TARGET_SAFE_PCT));

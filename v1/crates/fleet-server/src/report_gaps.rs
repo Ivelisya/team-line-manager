@@ -132,6 +132,10 @@ impl ReportGaps {
     /// agent 的请求因库不可用没能处理
     pub fn failed(&self, now: OffsetDateTime) { self.0.lock().unwrap().last_fail = Some(now); }
 
+    /// 中控刚启动、或刚从收不到上报里恢复（最近一段中断结束不到 `AGENT_OFFLINE_S`）：各 agent 退避中的重发、线路机连通性的头 3 轮还在陆续到，
+    /// 一部分机器的健康暂时判不出（未知）或还是中断前的。总览带上 `settling`，网页的健康计数先显示加载态，不先出一个不准的数
+    pub fn settling(&self, now: OffsetDateTime) -> bool { self.0.lock().unwrap().done.iter().any(|(_, to)| (now - *to).whole_seconds() < AGENT_OFFLINE_S) }
+
     /// 上次上报在 `last` 的 agent 到 `now` 算不算在线：沉默的时长（`silent_s`）不到 `AGENT_OFFLINE_S`
     pub fn online(&self, last: OffsetDateTime, now: OffsetDateTime) -> bool { self.silent_s(last, now) < AGENT_OFFLINE_S }
 

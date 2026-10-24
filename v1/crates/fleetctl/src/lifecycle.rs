@@ -317,10 +317,14 @@ pub fn rebalance(ctx: &Ctx, relay: &str, target: Option<&str>, exclude: &[String
             .flatten()
             .map(|m| vec![st(m, "/node/name"), st(m, "/port"), table::gb(num_of(m, "/period_bytes")), table::gb(num_of(m, "/daily_bytes"))])
             .collect();
-        s += &format!("搬走下面 {} 个入口，日均降到 {}，到重置日预计用到 {}（现在 {}）：\n", rows.len(), table::gb(num_of(&d, "/after/daily_avg")), pct("/after/projected_pct"), pct("/projected_pct"));
+        if d["over_limit"] == true {
+            s += &format!("已超出额度，搬走下面 {} 个入口，日均降到 {}（原来的 20% 以下，到重置日前不再大量增长）：\n", rows.len(), table::gb(num_of(&d, "/after/daily_avg")));
+        } else {
+            s += &format!("搬走下面 {} 个入口，日均降到 {}，到重置日预计用到 {}（现在 {}）：\n", rows.len(), table::gb(num_of(&d, "/after/daily_avg")), pct("/after/projected_pct"), pct("/projected_pct"));
+        }
         s += &table::render(&["节点", "端口", "本周期流量", "近 7 天日均"], &rows);
         // 没指定目标时按放置矩阵选的：写出被搬节点到它的往返平均
-        let rtt = d.pointer("/target/avg_rtt_ms").and_then(Value::as_f64).map_or(String::new(), |v| format!("（被搬节点到它的往返平均 {v:.0} ms）"));
+        let rtt = d.pointer("/target/avg_rtt_ms").and_then(Value::as_f64).map_or(String::new(), |v| format!("（被搬节点到它的往返平均 {}）", ms_text(v)));
         s += &format!(
             "\n目标 {}{rtt}：本周期已用 {} / {} GB，到重置日预计 {} → 接收后 {}",
             st(&d, "/target/name"),
@@ -342,12 +346,17 @@ pub fn rebalance(ctx: &Ctx, relay: &str, target: Option<&str>, exclude: &[String
 
 fn num_of(v: &Value, p: &str) -> f64 { num(v, p).unwrap_or(0.0) }
 
+/// 往返：同机房、本机不到 0.5 ms 的写「<1 ms」（同网页），不写成像没测到的「0 ms」
+fn ms_text(v: f64) -> String {
+    if v.round() < 1.0 { "<1 ms".into() } else { format!("{v:.0} ms") }
+}
+
 /// 放置矩阵的一格：往返中位数，成功率不到 100% 时带上；测过但全不通写「不通」，没数据「—」
 fn rtt_cell(c: &Value) -> String {
     if c["samples"].as_i64().unwrap_or(0) == 0 {
         return "—".into();
     }
-    let ms = c["p50_ms"].as_f64().map(|v| format!("{v:.0} ms"));
+    let ms = c["p50_ms"].as_f64().map(ms_text);
     match (ms, c["success_pct"].as_f64()) {
         (None, _) => "不通".into(),
         (Some(m), Some(s)) if s < 100.0 => format!("{m} · {s}%"),

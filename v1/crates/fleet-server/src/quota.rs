@@ -8,6 +8,8 @@ use uuid::Uuid;
 pub const WINDOW_DAYS: i64 = 7;
 /// 目标线路机接收入口后，到重置日预计的用量不超过上限的这个比例
 pub const TARGET_SAFE_PCT: f64 = 80.0;
+/// 已超出额度的线路机：搬迁目标是搬走后日均不超过原来的这个比例（到重置日前不再大量增长；超额部分可能限速或另收费）
+pub const OVER_LIMIT_KEEP_PCT: f64 = 20.0;
 /// 预测至少要有这么久的数据（周期刚重置、刚上架的不预测）
 const MIN_WINDOW_S: i64 = 24 * 3600;
 
