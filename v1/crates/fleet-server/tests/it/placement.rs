@@ -1,10 +1,10 @@
-//! 放置矩阵（placement.rs）：在用 VPS 节点进期望状态，上报的往返累加进小时汇总，/placement 选出最优线路机并给出批量换线命令。
+//! 放置矩阵（placement.rs）：在用 VPS 节点从 /agent/v1/rtt 下发，上报的往返累加进小时汇总，/placement 选出最优线路机并给出批量换线命令。
 
 use crate::common;
 
 use axum::http::StatusCode;
 use common::tele::*;
-use fleet_proto::{DesiredState, RttSample};
+use fleet_proto::{DesiredState, RttConfig, RttSample};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -15,19 +15,17 @@ async fn rtt_reports_roll_up_and_feed_placement() {
     let r2 = seed_relay(&t, "线路机2", "198.51.100.2", "tok2").await;
     let team = seed_team(&t, "团队1").await;
     let (node, _) = seed_node(&t, r1, team, 1, "203.0.113.5", 20001).await;
-    sqlx::query("update machine set kind = 'vps', ssh_port = 2222 where id = $1").bind(node).execute(&t.st.db).await.unwrap();
+    sqlx::query("update machine set kind = 'vps' where id = $1").bind(node).execute(&t.st.db).await.unwrap();
     // 家宽代理不测
     seed_node(&t, r2, team, 2, "203.0.113.6", 20002).await;
 
-    // 期望状态：全部在用 VPS 节点（不只是挂在这台上的）
-    let (s, v) = t.req("GET", "/agent/v1/desired?after=0", None, Some("tok2")).await;
+    // 节点清单单独取（不进期望状态、不动线路机代数）：全部在用 VPS 节点，不只是挂在这台上的
+    let (s, v) = t.req("GET", "/agent/v1/rtt", None, Some("tok2")).await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    let d: DesiredState = serde_json::from_value(v).unwrap();
-    let rtt = d.rtt.unwrap();
-    assert_eq!((rtt.interval_s, rtt.targets.len(), rtt.targets[0].node_id, rtt.targets[0].host.as_str(), rtt.targets[0].port), (300, 1, node, "203.0.113.5", 2222));
-    // 节点清单第一次记下：全部在用线路机代数 +1；没变不再动
-    assert_eq!(fleet_server::placement::sync_targets(&t.st).await.unwrap(), 2);
-    assert_eq!(fleet_server::placement::sync_targets(&t.st).await.unwrap(), 0);
+    let rtt: RttConfig = serde_json::from_value(v).unwrap();
+    assert_eq!((rtt.interval_s, rtt.targets.len(), rtt.targets[0].node_id, rtt.targets[0].host.as_str()), (300, 1, node, "203.0.113.5"));
+    let (_, v) = t.req("GET", "/agent/v1/desired?after=0", None, Some("tok2")).await;
+    assert!(v.get("rtt").is_none(), "{v}");
 
     // 同一小时里 r1：通 3 轮 + 不通 1 轮，再补一轮；不存在的节点、7 天前的不收
     let now = common::now_ms() / 3_600_000 * 3_600_000 + 60_000;
@@ -61,11 +59,13 @@ async fn rtt_reports_roll_up_and_feed_placement() {
     assert_eq!(sg["command"], json!(format!("fleetctl move {} --to 线路机2", n["name"].as_str().unwrap())), "{p}");
     assert_eq!(t.req("GET", "/api/v1/placement?team=没有", None, None).await.0, StatusCode::NOT_FOUND);
 
-    // 同机 IP 节点没有自己的 ssh_port：期望状态照发（实验室曾因它解码失败、/desired 全部 500），TCP 退回用宿主机的端口
+    // 同机 IP 节点没有自己的 ssh_port：期望状态照发（实验室曾因它解码失败、/desired 全部 500），节点清单里有它
     let (ipn, _) = seed_node(&t, r2, team, 3, "203.0.113.7", 20003).await;
     sqlx::query("update machine set kind = 'vps', ssh_port = null, host_id = $2 where id = $1").bind(ipn).bind(node).execute(&t.st.db).await.unwrap();
     let (s, v) = t.req("GET", "/agent/v1/desired?after=0", None, Some("tok2")).await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    let d: DesiredState = serde_json::from_value(v).unwrap();
-    assert!(d.rtt.unwrap().targets.iter().any(|x| x.node_id == ipn && x.port == 2222));
+    serde_json::from_value::<DesiredState>(v).unwrap();
+    let (s, v) = t.req("GET", "/agent/v1/rtt", None, Some("tok2")).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(serde_json::from_value::<RttConfig>(v).unwrap().targets.iter().any(|x| x.node_id == ipn));
 }

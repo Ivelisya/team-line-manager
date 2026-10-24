@@ -398,7 +398,6 @@ pub fn skeleton(ctx: &RenderCtx) -> Rendered {
         },
         entries: vec![],
         ping: None,
-        rtt: None,
     };
     render(&d, ctx).expect("空骨架必然合法")
 }
@@ -439,7 +438,6 @@ pub mod tests {
             },
             entries,
             ping: None,
-            rtt: None,
         }
     }
 

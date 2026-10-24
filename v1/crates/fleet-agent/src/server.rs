@@ -2,7 +2,7 @@
 
 use crate::util::error_chain;
 use anyhow::{Context, Result};
-use fleet_proto::{ApplyReport, DesiredState, ReportAck};
+use fleet_proto::{ApplyReport, DesiredState, ReportAck, RttConfig};
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -216,6 +216,15 @@ impl ServerClient {
     pub async fn post_applied(&self, rep: &ApplyReport) -> Outcome<()> {
         let req = self.http.post(format!("{}/agent/v1/applied", self.base)).timeout(Duration::from_secs(15)).json(rep);
         self.call(req).await.and_then(|_| Outcome::Ok(()))
+    }
+
+    /// 放置矩阵要测的节点
+    pub async fn get_rtt(&self) -> Outcome<RttConfig> {
+        let req = self.http.get(format!("{}/agent/v1/rtt", self.base)).timeout(Duration::from_secs(15));
+        self.call(req).await.and_then(|(_, text)| match serde_json::from_str(&text) {
+            Ok(c) => Outcome::Ok(c),
+            Err(e) => Outcome::Retry { wait: None, why: format!("RttConfig 解析失败：{e}") },
+        })
     }
 }
 

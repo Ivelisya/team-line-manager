@@ -1,11 +1,11 @@
 //! 放置矩阵：每台线路机到每个在用 VPS 节点的网络往返，回答「节点放在哪台线路机最好」，换线前看它，不再现场拼 ping 脚本。
 //! 线路机上的入口探测（collect.rs 的 TCP / 出口探测）只测挂在自己身上的入口，测不到节点连另外几台线路机的情况；这里补上。
 //!
-//! - 下发：随线路机的期望状态（`DesiredState::rtt`，entries.rs 调 [`config`]）：全部在用 VPS 节点（不含家宽代理、备用团队）的 IP 与 SSH 端口。
-//!   节点集合变了（上架、退役、换 IP）要让每台线路机重拉：后台循环每 5 分钟算一次目标清单的摘要，和库里记的（app_setting 的 `rtt_targets_sig`）
-//!   不同就给所有在用线路机代数 +1（[`sync_targets`]；agent 按幂等应用处理，不动 Xray）。旧 agent 不认识这个字段、照常应用，只是不测。
-//! - 测：agent 每 5 分钟一轮，最多 4 个节点同时测，每个 3 秒：ICMP（系统 ping 3 次），用不了时 TCP 建连 SSH 端口（被拒也算通）。
-//!   不连 SS 端口：节点防火墙只放行它所挂的线路机，别的线路机连不上说明的是防火墙，不是链路（见 fleet-agent 的 rtt.rs）。
+//! - 下发：`GET /agent/v1/rtt`（agent_api.rs 调 [`config`]），agent 每轮测之前取一次：全部在用 VPS 节点（不含家宽代理、备用团队）的 IP。
+//!   不进期望状态：节点集合一变（上架、退役、换 IP）就要给所有线路机代数 +1，「重启 Xray 失败、暂停重试」中的线路机会被新代数
+//!   带着再重启一次、断一次全部客户连接（fleet-agent 的 desired.rs 只拦同一代数）；单独取也就不用记清单摘要、不在一个事务里锁全部线路机。
+//! - 测：agent 每 5 分钟一轮，最多 4 个节点同时测，只用 ICMP（系统 ping 3 次），用不了就不测。不连 SS 端口（节点防火墙只放行
+//!   它所挂的线路机），也不连 SSH 端口（fail2ban 可能把线路机 IP 封掉、连带断业务流量），见 fleet-agent 的 rtt.rs。
 //! - 存：`relay_node_rtt_hourly` 小时汇总（迁移 0083），上报入库时直接累加（[`ingest`]），保留 30 天。
 //! - 看：`GET /placement?team=`（[`view`]）：每个节点到各线路机近 24 小时的 p50 与成功率、近 7 天 tcp_fail 告警次数、当前与最优线路机，
 //!   以及「当前比最优慢 ≥ 10 ms 或当前成功率 < 99%」的换线建议（按目标线路机合成批量 `fleetctl move A,B --to X`）。
@@ -31,52 +31,21 @@ pub const MIN_GAIN_MS: f64 = 10.0;
 /// 矩阵看近多少小时；小时汇总保留多少天
 pub const WINDOW_H: i64 = 24;
 pub const KEEP_DAYS: i32 = 30;
-const SIG_KEY: &str = "rtt_targets_sig";
 
 /// 要测的节点：在用的 VPS 节点（含同机 IP 节点），不含家宽代理、备用团队里的
 pub async fn targets(db: &sqlx::PgPool) -> sqlx::Result<Vec<RttTarget>> {
-    let rows: Vec<(Uuid, String, i32)> = sqlx::query_as(
-        // 同机 IP 节点没有自己的 ssh_port（SSH 走宿主机）：TCP 退回路径用宿主机的端口，都没有按 22
-        "select m.id, host(m.primary_ip), coalesce(m.ssh_port, h.ssh_port, 22) from machine m left join team t on t.id = m.team_id
-         left join machine h on h.id = m.host_id
+    let rows: Vec<(Uuid, String)> = sqlx::query_as(
+        "select m.id, host(m.primary_ip) from machine m left join team t on t.id = m.team_id
          where m.kind = 'vps' and m.lifecycle = 'active' and m.primary_ip is not null and not coalesce(t.spare, false) order by m.id",
     )
     .fetch_all(db)
     .await?;
-    Ok(rows.into_iter().map(|(node_id, host, port)| RttTarget { node_id, host, port: port as u16 }).collect())
+    Ok(rows.into_iter().map(|(node_id, host)| RttTarget { node_id, host }).collect())
 }
 
-/// 期望状态里的 `rtt`：没有节点为 None
-pub async fn config(db: &sqlx::PgPool) -> sqlx::Result<Option<RttConfig>> {
-    let t = targets(db).await?;
-    Ok((!t.is_empty()).then_some(RttConfig { interval_s: INTERVAL_S, targets: t }))
-}
-
-/// 目标清单变了就给所有在用线路机代数 +1（让它们重拉期望状态），记下新的摘要。返回改了几台
-pub async fn sync_targets(st: &AppState) -> sqlx::Result<usize> {
-    let t = targets(&st.db).await?;
-    let text: String = t.iter().map(|x| format!("{} {} {}\n", x.node_id, x.host, x.port)).collect();
-    let sig: String = crate::crypto::sha256(text.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
-    let mut tx = st.db.begin().await?;
-    sqlx::query("select pg_advisory_xact_lock(hashtext('app_setting.rtt_targets_sig'))").execute(&mut *tx).await?;
-    let old: Option<String> = sqlx::query_scalar("select value #>> '{}' from app_setting where key = $1").bind(SIG_KEY).fetch_optional(&mut *tx).await?;
-    if old.as_deref() == Some(sig.as_str()) {
-        return Ok(0);
-    }
-    sqlx::query(
-        "insert into app_setting (key, value, updated_by) values ($1, to_jsonb($2::text), 'fleet-server')
-         on conflict (key) do update set value = excluded.value, updated_at = now(), updated_by = excluded.updated_by",
-    )
-    .bind(SIG_KEY)
-    .bind(&sig)
-    .execute(&mut *tx)
-    .await?;
-    let relays = crate::ping::bump_relays(&mut tx, None).await?;
-    tx.commit().await?;
-    for r in &relays {
-        st.relay_bumped(*r);
-    }
-    Ok(relays.len())
+/// `GET /agent/v1/rtt` 的内容：没有节点时 targets 为空
+pub async fn config(db: &sqlx::PgPool) -> sqlx::Result<RttConfig> {
+    Ok(RttConfig { interval_s: INTERVAL_S, targets: targets(db).await? })
 }
 
 /// 上报里的样本按 (节点, 小时) 累加进小时汇总（agent_api 的事务里调）：时间戳在 [lo, hi]（Unix 毫秒）之外的丢掉，
@@ -121,24 +90,15 @@ pub(crate) async fn ingest(tx: &mut Tx<'_>, relay: Uuid, samples: &[RttSample], 
     Ok(())
 }
 
-/// 后台：每 5 分钟核对目标清单（变了让线路机重拉），每小时清一次 30 天前的汇总
+/// 后台：每小时清一次 30 天前的汇总
 pub async fn run_forever(st: AppState) {
-    let mut t = tokio::time::interval(Duration::from_secs(300));
+    let mut t = tokio::time::interval(Duration::from_secs(3600));
     t.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let mut n = 0u64;
     loop {
         t.tick().await;
-        match sync_targets(&st).await {
-            Ok(0) => {}
-            Ok(k) => tracing::info!("放置矩阵的节点清单变了：{k} 台线路机代数 +1，重拉期望状态"),
-            Err(e) => tracing::error!("放置矩阵核对节点清单失败：{e:#}"),
+        if let Err(e) = sqlx::query("delete from relay_node_rtt_hourly where hour < now() - make_interval(days => $1)").bind(KEEP_DAYS).execute(&st.db).await {
+            tracing::error!("放置矩阵保留期清理失败：{e:#}");
         }
-        if n.is_multiple_of(12) {
-            if let Err(e) = sqlx::query("delete from relay_node_rtt_hourly where hour < now() - make_interval(days => $1)").bind(KEEP_DAYS).execute(&st.db).await {
-                tracing::error!("放置矩阵保留期清理失败：{e:#}");
-            }
-        }
-        n += 1;
     }
 }
 
