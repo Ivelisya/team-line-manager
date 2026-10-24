@@ -568,6 +568,8 @@ pub struct LiveCache {
     traffic: tokio::sync::Mutex<Option<((u64, Instant), Flows)>>,
     /// 机器的周期已用（不含接入前读数）、接入前读数是否在周期内、周期起点时刻，同样只在汇总后作废
     quota: tokio::sync::Mutex<(u64, HashMap<QuotaKey, QuotaUsed>)>,
+    /// 每日流量（traffic.rs）的按天聚合，键 (组织时区的今天, 天数)，同样只在汇总后作废
+    pub(crate) daily: tokio::sync::Mutex<crate::traffic::Cache>,
 }
 
 /// (周期内已用, 接入前读数在周期内, 周期起点时刻, 近 7 天窗口内已用, 窗口起点时刻)
@@ -577,7 +579,7 @@ type QuotaUsed = (i64, bool, OffsetDateTime, i64, OffsetDateTime);
 type QuotaKey = (Uuid, Date, String, Option<&'static str>, Option<OffsetDateTime>);
 
 /// 供应商的网卡计量规则；没有供应商按 max
-fn nic_rule(r: Option<&str>) -> &'static str {
+pub(crate) fn nic_rule(r: Option<&str>) -> &'static str {
     match r {
         Some("min") => "min",
         Some("sum") => "sum",
@@ -599,6 +601,11 @@ impl LiveCache {
     /// 小时流量变了（汇总跑完、彻底删除机器）：流量缓存作废
     pub fn rolled_up(&self) {
         self.rolled.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// 小时汇总跑完的轮数
+    pub(crate) fn rolled(&self) -> u64 {
+        self.rolled.load(Ordering::SeqCst)
     }
 
     /// 视图从什么时候起一直算不出来、最近一次的错误（`cached` 失败或超时时记下，算成一次就清掉）
