@@ -44,7 +44,8 @@ export function BillingTab({ m }: { m: MachineView }) {
           <LabelValueGrid>
             {/* 计费统一按 USD（feeView）：主数字是服务端折好的月费；原价（供应商收的币种与周期）与汇率在下面一行，没有汇率的主数字写原币种月费、下面一行写未折算 */}
             <LabelValue label="费用"><span className="num">{feeView(s).main}</span> <span className="unit">{feeView(s).unit}</span>
-              <div className="hint">{[priceHint(s), (['price_cents', 'currency', 'cycle'] as const).some((k) => isOverridden(s, k)) ? '单独设置' : inheritSource(m, 'price_cents')].filter(Boolean).join(' · ')}</div></LabelValue>
+              {/* 这一格只有四分之一宽：小字只写原价与跟随谁，汇率（或未折算的原因）放悬停，免得「1 CNY = 0.1404 USD」被拆成两行 */}
+              <div className="hint" data-tip={priceHint(s) ?? undefined}>{[priceHint(s)?.split(' · ')[0], s.monthly_usd_cents == null && '未折算', (['price_cents', 'currency', 'cycle'] as const).some((k) => isOverridden(s, k)) ? '单独设置' : inheritSource(m, 'price_cents')].filter(Boolean).join(' · ')}</div></LabelValue>
             <LabelValue label="到期日" wrap><DueDate sub={s} /><span style={{ whiteSpace: 'nowrap' }}>（<Due days={s.due_days} state={s.due_state} />）</span>{recycleOn(m) && <div className="hint"><SpareDue on={recycleOn(m)!} /></div>}</LabelValue>
             {/* 剩余比例只写一个百分数，天数在悬停里；预付了多期只写金额，期数在 (i) 里 */}
             <LabelValue label="剩余价值">{rv ? <><span className="num">{F.money(rv.cents, rv.currency)}</span> {rv.frac > 1

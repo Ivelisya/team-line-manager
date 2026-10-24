@@ -6,6 +6,7 @@ import * as React from 'react';
 import { Link } from 'react-router-dom';
 import { AlertTriangle, CircleGauge, CloudUpload, Inbox, LayoutGrid, Server, Table2 } from 'lucide-react';
 import { useMachines, useOverview, useProbeBeatsPoll, useTeams } from '@/lib/queries';
+import { usePingBeatsPoll } from '@/lib/ping';
 import { setDrawerOrder, useDrawer } from '@/lib/drawer';
 import { prefOf, prefs } from '@/lib/prefs';
 import { parseSort, sortParam, useUrlState } from '@/lib/urlState';
@@ -110,6 +111,7 @@ export function HomePage() {
     upd(Object.fromEntries(missing.split(' ').map((k) => [k, cur[k as keyof typeof cur]])));
   }, [missing, layout, view, rawSort, upd]);
   useProbeBeatsPoll(layout === 'cards'); // 卡片心跳条每 2 分钟刷新：全页一个轮询
+  usePingBeatsPoll(layout === 'cards'); // 线路机卡片的三网 PING 每分钟刷新：同上
 
   // 实时推送每条都换一份机器列表：按可打断的优先级重渲染（用户的点击、输入先处理，推送晚一点跟上）
   const all = React.useDeferredValue(machines.data ?? EMPTY_MACHINES); // 列表不含已回收的

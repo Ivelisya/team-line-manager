@@ -30,16 +30,17 @@ const qc = new QueryClient({
   },
 });
 
-// 根滚动条槽宽（覆盖式滚动条为 0），弹层锁滚动时按它补回右边距（base.css）；缩放会改变槽宽，resize 时重量
+// 根滚动条槽宽（覆盖式滚动条为 0），弹层锁滚动时按它补回右边距（base.css）。槽宽只随缩放（devicePixelRatio）变、不随窗口尺寸变：
+// 只在缩放比变化时重量（拖窗口时不再每帧插节点强制布局）
 const measureScrollbar = () => {
   const d = document.createElement('div');
   d.style.cssText = 'position:absolute;top:-200px;width:100px;height:100px;overflow:scroll;scrollbar-width:auto;visibility:hidden';
   document.body.append(d);
   document.documentElement.style.setProperty('--sbw', `${d.offsetWidth - d.clientWidth}px`);
   d.remove();
+  matchMedia(`(resolution: ${devicePixelRatio}dppx)`).addEventListener('change', measureScrollbar, { once: true });
 };
 measureScrollbar();
-window.addEventListener('resize', measureScrollbar);
 
 // 发版后旧页面去拉已删掉的懒加载块会失败：直接刷新拿新版本（地址栏已是目标页）。10 秒内刷过一次就不再刷，交给 ErrorBoundary 提示
 window.addEventListener('vite:preloadError', () => {

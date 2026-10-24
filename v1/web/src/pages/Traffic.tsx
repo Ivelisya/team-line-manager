@@ -50,7 +50,7 @@ export function TrafficPage() {
   }, [d]);
   const shown = React.useMemo(() => d?.total.slice(-days) ?? [], [d, days]);
   const tz = meta().org_timezone_label;
-  const cap = (x: { down: number; up: number } | undefined) => (x ? <>↓ 下载 {F.str(F.bytes(x.down))} · ↑ 上传 {F.str(F.bytes(x.up))}</> : undefined);
+  const cap = (x: { down: number; up: number } | undefined) => (x ? <><span>↓ 下载 {F.str(F.bytes(x.down))}</span><span>↑ 上传 {F.str(F.bytes(x.up))}</span></> : undefined); // 两段各自不断行（.stat-cap > *），放不下时整段换到下一行
   const stat = (x: { down: number; up: number } | undefined) => (x ? F.bytes(total(x)) : F.NA);
 
   return (

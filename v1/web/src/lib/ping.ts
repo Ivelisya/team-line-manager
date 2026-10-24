@@ -24,9 +24,11 @@ export const pingMsTone = (ms: number | null): BeatCell => (ms == null ? null : 
 export const pingLossTone = (loss: number | null): BeatCell => (loss == null ? null : loss <= 0 ? 'ok' : loss <= PING_LOSS_WARN ? 'warn' : 'bad');
 export const PING_LEGEND = `线路机定时测各目标。左边是延迟，右边是丢包，每格 3 分钟，共近 1 小时\n延迟：≤ ${PING_MS_OK} ms 绿 · ≤ ${PING_MS_WARN} ms 黄 · 更高红（跨境 150–200 ms 属正常）\n丢包：0 绿 · ≤ ${PING_LOSS_WARN}% 黄 · 更高红 · 灰：没有数据`;
 
-const pingBeatsQuery = { queryKey: ['ping-beats'], queryFn: ({ signal }: { signal: AbortSignal }) => get<PingBeats>('/ping-beats', signal), staleTime: 60_000, refetchInterval: 60_000 };
-/** 卡片共用一个查询，各取自己那份 */
+const pingBeatsQuery = { queryKey: ['ping-beats'], queryFn: ({ signal }: { signal: AbortSignal }) => get<PingBeats>('/ping-beats', signal), staleTime: 60_000 };
+/** 卡片共用一个查询，各取自己那份；每分钟的轮询只由首页挂一个（usePingBeatsPoll，同 useProbeBeatsPoll），不必每张线路机卡片各带一个定时器 */
 export const usePingRows = (id: string) => useQuery({ ...pingBeatsQuery, select: (d: PingBeats) => d[id] });
+const noBeats = () => null;
+export const usePingBeatsPoll = (enabled: boolean) => { useQuery({ ...pingBeatsQuery, select: noBeats, refetchInterval: 60_000, enabled }); };
 
 export const usePingTargets = () => useQuery({ queryKey: ['ping-targets'], queryFn: ({ signal }) => get<PingGlobal>('/settings/ping-targets', signal), staleTime: Infinity });
 export function useSavePingTargets() {

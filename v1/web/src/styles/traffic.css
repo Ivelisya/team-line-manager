@@ -6,6 +6,8 @@
 .dt-heat :is(th, td):first-child { position: sticky; left: 0; z-index: 1; background: var(--surface); box-shadow: 1px 0 0 var(--line); }
 .dt-heat :is(th, td):last-child { position: sticky; right: 0; z-index: 1; background: var(--surface); box-shadow: -1px 0 0 var(--line); }
 .dt-heat thead th:is(:first-child, :last-child) { background: var(--sunken); }
+/* 两侧已吸住，不用边缘渐隐（base.css）：否则横滑后吸住的节点列、合计列被一起淡掉，上千格的表还要随滚动逐帧重算遮罩（同手机上的处理） */
+.table-wrap:has(.dt-heat) { mask-image: none; animation: none; }
 @media (hover: hover) { .dt-heat tr.is-link:hover > td:is(:first-child, :last-child) { background: linear-gradient(var(--hover), var(--hover)), var(--surface); } }
 .dt-heat td { font-variant-numeric: var(--num-variant); }
 .dt-heat td.r .sub { font-weight: var(--fw-regular); }

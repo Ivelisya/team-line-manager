@@ -169,15 +169,15 @@ export interface StreamEvent { type: string; id?: string }
  *  机器增减、改名换团队、团队改名都会改它（只有挂着的查询会重取，策略页没开时只是标成过期；不带发布确认框里的预览，免得框开着时内容在眼前变）；
  *  machine：这台的详情与机器列表里的这一台由 stream.ts 单独取回拼上（live.ts refreshMachine），这里不带；拼不上（改名、换团队、生命周期变了等）
  *  或页面在后台、机器列表和这台的详情都没人看时才按 MACHINE_LIST_KEYS 整表失效——incidents / jobs 列表里带机器名，跟着重取让名字立刻跟上；
- *  availability：近 N 天可用率按账单时区分天，改订阅（machine 事件）可能换了时区 */
+ *  availability：近 N 天可用率按账单时区分天，改订阅（machine 事件）可能换了时区；traffic-daily：流量页的计费量按生效的计费方式算，改订阅（machine）、改供应商（catalog）都会变 */
 export function eventKeys(ev: StreamEvent): unknown[][] {
   switch (ev.type) {
-    case 'machine': return [['billing-due'], ['machine-ping', ev.id], ['recycle-bin'], ['overview'], ['audit'], ['policies', 'list'], ['policies', 'versions'], ['availability', ev.id]];
+    case 'machine': return [['billing-due'], ['traffic-daily'], ['machine-ping', ev.id], ['recycle-bin'], ['overview'], ['audit'], ['policies', 'list'], ['policies', 'versions'], ['availability', ev.id]];
     case 'machines': return [['billing-due'], ['machine'], ['machines'], ['recycle-bin'], ['relays'], ['overview'], ['audit'], ['policies', 'list'], ['policies', 'versions']];
     case 'relay': return [['relays'], ['machines']];
     case 'job': return [['jobs'], ['job', ev.id]];
     case 'incidents': return [['incidents'], ['silences']];
-    case 'catalog': return [['billing-due'], ['teams'], ['providers'], ['plans'], ['machines'], ['machine'], ['notify-channels'], ['policies', 'list'], ['policies', 'versions']];
+    case 'catalog': return [['billing-due'], ['traffic-daily'], ['teams'], ['providers'], ['plans'], ['machines'], ['machine'], ['notify-channels'], ['policies', 'list'], ['policies', 'versions']];
     case 'api_keys': return [['api-keys']];
     // 设置：访问记录保留期、汇率（汇率变了机器视图、总览、团队与套餐里的 USD 折算值跟着变）、主探测来源与探测点（主来源变了线路机的心跳格换一路）、三网 PING 的全局目标
     case 'settings': return [['billing-due'], ['access-retention'], ['access'], ['audit'], ['fx-rates'], ['machines'], ['machine'], ['overview'], ['teams'], ['plans'], ['probe-points'], ['reach-source'], ['probe-beats'], ['ping-targets'], ['ping-beats'], ['machine-ping']];
