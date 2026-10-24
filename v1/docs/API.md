@@ -260,6 +260,7 @@ ProvisionItem = {
 | GET | `/jobs/{id}/logs?tail=<N>[&after=<log id>]` | （after 之后的）最后 N 行（1-5000）：`{logs:[{id,ts,level,msg}], skipped, after}`，`skipped` 是前面没给的行数，`after` 是续拉用的游标（最后一行的 id，没有日志时原样返回） |
 | POST | `/jobs/{id}/retry` | 失败的作业从失败那一步重来（`upgrade_agent` 从推送重来：失败时多半已经换回了旧程序）。可选请求体 `{reset_host_key?: bool, ssh_password?: string}`（不带请求体 = 都不要）：`reset_host_key` 清掉 known_hosts 里这台机器的记录、按现在的主机公钥重新记录：只允许失败那一步的类别是 `host_key`（中控确实看到了指纹不符）、目标不是同机 IP 节点（它登录的是宿主机：对宿主机的作业重试）的作业，否则 409；在其它检查都通过之后才做（拿不到公钥 409，整个重试作废）。确认机器重装过才用；`ssh_password` 是 root 密码，和上架时一样加密存进作业参数，供重试的作业在中控密钥登录不了时用（用过即丢；失败作业留存的密码 3 天后清除，之后重试要重新给）。只有 failed 的作业能重试（否则 409）；上架/恢复失败的机器重试时回到 provisioning。审计 `job.retry` 记 `reset_host_key` 与是否给了密码（不记密码） |
 | POST | `/jobs/{id}/cancel` | 进行中的作业：补偿已完成的步骤后停下。`upgrade_agent` 只能在排队（queued）时取消：领到就收尾（没开始过，`started_at` 为 null、步骤原样），「全部升级」里等它的随后跟着取消；进行中、失败的 409（推送、重启到一半中断更危险）。`replace`、`repoint` 只能在排队时、或第一步（改软路由）失败后取消。详情的 `cancellable` 与这里同一套规则 |
+| POST | `/jobs/prune` | 写权限。手动清理作业记录：已成功、已取消、且结束早于 `before`（RFC 3339，默认此刻）的作业连同步骤与日志一起删（每小时的自动清理只删 90 天前的）；失败的（可能还要重试或人工处理）与进行中的不动。别处（退役闸门、改软路由出口的改回、备份时间戳）只看进行中 / 失败的作业，不受影响。`{before?, dry_run?}`：`dry_run: true` 只数不删 → `{data:{jobs, before, dry_run}}`；真删写审计 `job.prune`（「清理作业记录 · 187 个（结束早于 …）」），发 `resync` 事件 → `{data:{jobs, before}}`。网页：作业页「清理记录…」；`fleetctl jobs-prune [--before YYYY-MM-DD] [--yes]` |
 
 ## 运维：远程执行与日志
 需要 `exec` scope（会话用户直接可用）。中控用自己的 SSH 密钥和 known_hosts 登录；机器必须不是已退役、不是家宽代理（proxy 没有 SSH）。命令原样当 bash 脚本执行（stdin 接 /dev/null），超时由远端 `timeout` 杀掉。每次执行写审计（actor、机器、命令全文、退出码、耗时），**不要在命令里写密码**。

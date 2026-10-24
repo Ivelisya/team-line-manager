@@ -124,6 +124,7 @@ pub fn router() -> Router<AppState> {
         .route("/client-subs/{id}/rotate", post(client_subs::rotate))
         // 作业
         .route("/jobs", get(jobs::list))
+        .route("/jobs/prune", post(jobs::prune))
         .route("/jobs/{id}", get(jobs::get_one))
         .route("/jobs/{id}/logs", get(jobs::logs))
         .route("/jobs/{id}/retry", post(jobs::retry))

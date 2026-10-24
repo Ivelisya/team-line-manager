@@ -1,7 +1,7 @@
 use super::{ok, paged};
 use crate::auth::Actor;
 use crate::db::{audit, Args};
-use crate::error::{ApiError, ApiPath, ApiQuery, ApiResult};
+use crate::error::{ApiError, ApiJson, ApiPath, ApiQuery, ApiResult};
 use crate::jobs::{self, cancel_blocker, title_of};
 use crate::state::{AppState, Event};
 use axum::extract::State;
@@ -353,4 +353,33 @@ pub async fn cancel(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<U
     st.wake_jobs();
     st.emit(Event::Job { id, target });
     Ok(ok(json!({"ok": true})))
+}
+
+#[derive(Deserialize, Default)]
+pub struct PruneIn {
+    /// 只清结束早于它的（RFC 3339），默认此刻
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    before: Option<OffsetDateTime>,
+    /// 只数、不删（预览）
+    #[serde(default)]
+    dry_run: bool,
+}
+
+/// 手动清理作业记录：成功、已取消的作业连同步骤与日志一起删（上架、测试期间攒下的记录不必等维护循环的 90 天，见 jobs::prune）。
+/// 失败的不清（可能还要重试或人工处理，删它的唯一途径仍是自动清理的 180 天），进行中的更不动；
+/// 别处只看进行中 / 失败的作业（退役闸门、改回、备份时间戳），删已结束的不影响它们。`dry_run` 只回数量，真删写审计
+pub async fn prune(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<PruneIn>) -> ApiResult<Json<Value>> {
+    const COND: &str = "state in ('succeeded', 'cancelled') and finished_at < $1";
+    let before = b.before.unwrap_or_else(OffsetDateTime::now_utc);
+    if b.dry_run {
+        let n: i64 = sqlx::query_scalar(&format!("select count(*) from job where {COND}")).bind(before).fetch_one(&st.db).await?;
+        return Ok(ok(json!({"jobs": n, "before": crate::meta::fmt_ts(before), "dry_run": true})));
+    }
+    let mut tx = st.db.begin().await?;
+    let n = sqlx::query(&format!("delete from job where {COND}")).bind(before).execute(&mut *tx).await?.rows_affected();
+    audit(&mut tx, &a.name, "job.prune", "job", None, json!({"jobs": n, "before": crate::meta::fmt_ts(before)})).await?;
+    tx.commit().await?;
+    // 作业列表、机器上的「最近测速」等都要重取
+    st.emit(Event::Resync);
+    Ok(ok(json!({"jobs": n, "before": crate::meta::fmt_ts(before)})))
 }

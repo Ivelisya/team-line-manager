@@ -775,6 +775,15 @@ async fn prune_clears_old_passwords_and_deletes_old_jobs() {
         let is_null: bool = sqlx::query_scalar("select (params->'login') is null from job where id = $1").bind(id).fetch_one(&t.st.db).await.unwrap();
         assert_eq!(is_null, cleared, "{id}");
     }
+
+    // 手动清理（POST /jobs/prune）：不等 90 天，清掉剩下的成功 / 已取消的；失败的不动。dry_run 只数，before 之后结束的不清
+    let pv = t.post("/api/v1/jobs/prune", json!({"dry_run": true})).await;
+    assert_eq!((pv["jobs"].as_i64(), exists(recent_ok).await), (Some(1), true), "{pv}");
+    assert_eq!(t.post("/api/v1/jobs/prune", json!({"before": "2000-01-01T00:00:00Z"})).await["jobs"], 0);
+    assert_eq!(t.post("/api/v1/jobs/prune", json!({})).await["jobs"], 1);
+    assert!(!exists(recent_ok).await && exists(old_failed).await && exists(fresh_failed).await);
+    let au = t.get("/api/v1/audit?cat=machine").await;
+    assert_eq!((&au[0]["title"], au[0]["summary"].as_str().unwrap().starts_with("1 个（结束早于 ")), (&json!("清理作业记录"), true), "{au}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

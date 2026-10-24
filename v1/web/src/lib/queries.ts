@@ -288,6 +288,9 @@ export const useUpgradeAllAgents = () => useWrite(() => post<{ jobs: { machine_i
 export interface RetryBody { reset_host_key?: boolean; ssh_password?: string }
 export const useRetryJob = () => useWrite(({ id, ...b }: { id: string } & RetryBody) => post(`/jobs/${id}/retry`, b), [...M, ['jobs'], ['job']]);
 export const useCancelJob = () => useWrite((id: string) => post(`/jobs/${id}/cancel`), [...M, ['jobs'], ['job']]);
+/** 清理作业记录（已成功、已取消的，连同步骤与日志）：dry_run 只数 */
+export const pruneJobsPreview = () => post<{ jobs: number }>('/jobs/prune', { dry_run: true });
+export const usePruneJobs = () => useWrite(() => post<{ jobs: number }>('/jobs/prune', {}), [['jobs'], ['job']]);
 export const useAck = () => useWrite((id: string) => post(`/incidents/${id}/ack`), [['incidents']]);
 /** 批量确认（告警页合并行）：逐条确认，全部成功才算成功 */
 export const useAckMany = () => useWrite((ids: string[]) => Promise.all(ids.map((id) => post(`/incidents/${id}/ack`))), [['incidents']]);

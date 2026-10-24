@@ -49,6 +49,7 @@
 | 上架 | `fleetctl provision --file batch.json --dry-run`，确认后 `fleetctl provision --file batch.json --yes --follow` |
 | 已有 VPS 节点上多了一个 IP，加成一台节点（同机 IP 节点，见 §6） | `fleetctl provision --kind vps --host 团队1-03 --ip 203.0.113.7 --team 团队1 --relay 线路机2 --yes --follow` |
 | 看作业进度、失败原因 | `fleetctl jobs --active`（`--kind upgrade_agent` 等只看一类）、`fleetctl job <id> --follow`；失败后 `fleetctl retry <id>` |
+| 清理作业记录（上架、测试攒下的已结束作业） | `fleetctl jobs-prune [--before 2026-10-25] --yes`：删已成功、已取消的（连同步骤与日志），失败的、进行中的不动，先报数量；网页作业页「清理记录…」。不清也会每小时自动删 90 天前的 |
 | 退役（默认进备用，到期满 1 天自动回收） | `fleetctl retire 团队1-06 --reason 换新机 --yes`：先打印预览——去向（→ 备用-03，哪天起自动回收）、一起进备用的同机 IP 节点、还指向它的软路由出口（不会自动改，要换掉先 `replace`）、原团队的改名。机器照常运行（入口、端口、软路由出口都还在），不建作业。撤销 = 移出备用：`fleetctl rename 备用-03 --team 团队1`。进不了备用的（线路机、没有订阅、已过期满 1 天、上架中 / 上架失败、本来就在备用里）报原因，只能立即回收 |
 | 立即回收（不等到期） | `fleetctl retire 团队1-06 --now --reason 到期不续 --yes --follow`：退役作业摘入口、停服务（`--no-cleanup` 不登录清理）、撤令牌，完成时移进回收站；宿主机上的同机 IP 节点一并回收（命令先列出来）。之后机器从面板消失，数据约 35 天内由中控自动清除（入口流量还计入线路机统计的等满 35 天），不需要也没有手动「彻底删除」 |
 | 回收站（只读） | `fleetctl recycle ls`（`-q 关键词`、`--source legacy`）、`fleetctl recycle show <id\|名字\|IP>`（`--json` 带回收时的快照）。旧面板的退役机器：`fleetctl recycle import --file legacy.json` 先预演（列出会导入、会跳过的：导入过的、IP 或供应商编号对上面板里还没回收的机器），用户确认名单后加 `--yes` |

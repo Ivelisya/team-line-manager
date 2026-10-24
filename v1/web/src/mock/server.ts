@@ -784,6 +784,17 @@ R('GET', '/jobs/([^/]+)/logs', ({ params, query }) => {
   const logs = rest.slice(-Math.min(Math.max(+tail, 1), 5000));
   return clone({ logs, skipped: rest.length - logs.length, after: logs.length ? logs[logs.length - 1].id : after });
 });
+/** 清理作业记录：已成功、已取消的（dry_run 只数） */
+R('POST', '/jobs/prune', ({ body }) => {
+  const b = (body ?? {}) as { dry_run?: boolean };
+  const gone = db.jobs.filter((j) => j.state === 'succeeded' || j.state === 'cancelled');
+  if (b.dry_run) return { jobs: gone.length, dry_run: true };
+  db.jobs = db.jobs.filter((j) => !gone.includes(j));
+  for (const j of gone) delete db.logs[j.id];
+  db.audit.unshift({ id: `a${db.seq++}`, ts: iso(), actor: db.user, action: 'job.prune', title: '清理作业记录', summary: `${gone.length} 个`, target_kind: 'job', target_id: null, detail: { jobs: gone.length } });
+  emit({ type: 'resync' });
+  return { jobs: gone.length };
+});
 /** 重试：body { reset_host_key?, ssh_password? }（C1）。指纹不符不重置、认证失败不给密码时 mock 照样失败 */
 R('POST', '/jobs/([^/]+)/retry', ({ params, body }) => {
   const j = jobOf(params[0]); if (j.state !== 'failed') throw bad('只有失败的作业才能重试', 409, 'conflict');

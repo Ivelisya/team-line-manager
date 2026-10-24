@@ -3,7 +3,8 @@
 import * as React from 'react';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, ArrowDownToLine, Check, CircleDashed, Copy, ListChecks, Loader2, Minus, Pause, Play, RotateCw, Square, TriangleAlert, Undo2, X } from 'lucide-react';
-import { fetchAllLogs, fetchTailLogs, useCancelJob, useJob, useJobs, useMachine, useRetryJob } from '@/lib/queries';
+import { useQuery } from '@tanstack/react-query';
+import { fetchAllLogs, fetchTailLogs, pruneJobsPreview, useCancelJob, useJob, useJobs, useMachine, usePruneJobs, useRetryJob } from '@/lib/queries';
 import type { Job, JobLog, JobManual } from '@/lib/types';
 import { useRouterDrawer } from '@/lib/routers';
 import { errorKindLabel, jobKindLabel, jobLive, jobProgress, jobText, outputLines, stepKind, type StepKind } from '@/lib/jobs';
@@ -53,6 +54,21 @@ const JobPill = ({ state, manual }: { state: string; manual?: JobManual | null }
   return <Pill tone={s.tone} dot={s.dot}>{jobStateLabel(state)}</Pill>;
 };
 
+/** 清理作业记录：打开时先数一遍（同条件 dry_run），确认后删已成功、已取消的；失败的、进行中的不动 */
+function PruneDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
+  const pv = useQuery({ queryKey: ['jobs-prune-preview'], queryFn: pruneJobsPreview, enabled: open, staleTime: 0, gcTime: 0 });
+  const run = usePruneJobs();
+  const n = pv.data?.jobs;
+  return (
+    <ConfirmDialog open={open} onOpenChange={onOpenChange} title="清理作业记录" danger confirmLabel={n ? `删除 ${n} 个` : '删除'} confirmDisabled={!n}
+      description="删除已成功、已取消的作业，连同步骤与日志；失败的（可能还要重试）和进行中的不动。操作记录里会留一条"
+      onConfirm={async () => { const r = await run.mutateAsync(undefined); toast.ok(`已删除 ${r.jobs} 个作业记录`); }}>
+      {pv.isError ? <ErrorNote error={pv.error} onRetry={() => void pv.refetch()} />
+        : <Note>{n == null ? '正在统计…' : n ? `有 ${n} 个已结束的作业记录可以清理` : '没有可清理的作业记录'}</Note>}
+    </ConfirmDialog>
+  );
+}
+
 export function JobsPage() {
   const { id } = useParams();
   const nav = useNavigate();
@@ -86,6 +102,7 @@ export function JobsPage() {
   const go = (jid: string) => nav({ pathname: `/jobs/${jid}`, search });
   // 选中的作业（地址里的、或默认选中的）：在列表里滚到看得见（每个作业只滚一次；点列表里的本来就看得见）
   const scrolled = React.useRef<string | null>(null);
+  const [prune, setPrune] = React.useState(false);
   React.useEffect(() => {
     if (!shown || scrolled.current === shown) return;
     const el = document.querySelector(`.job-item[data-id="${CSS.escape(shown)}"]`);
@@ -99,7 +116,9 @@ export function JobsPage() {
         tools={<>
           <div className="w-[140px]"><Select value={kind} onChange={(v) => setParam('kind', v)} allowEmpty="全部类型" placeholder="作业类型" options={kindOpts} aria-label="作业类型" /></div>
           <Segmented label="筛选" value={view} onChange={setView} items={VIEWS} />
+          <Button onClick={() => setPrune(true)}>清理记录…</Button>
         </>} />
+      <PruneDialog open={prune} onOpenChange={setPrune} />
       <div className="jobs-layout" data-detail={selected ? '1' : '0'} data-empty={none ? '' : undefined}>
         <Panel ref={pg.anchor} className="jobs-list" flush>
           {jobs.isLoading && <SkeletonRows rows={5} list />}

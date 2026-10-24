@@ -143,7 +143,7 @@ pub async fn audit(a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<A
 const AUDIT_ACTIONS: &[&str] = &[
     "machine.provision", "machine.retire", "machine.recycle", "recycle.import", "machine.purge", "machine.rename", "machine.update", "machine.restore", "machine.replace", "machine.tune", "machine.ss_refresh", "machine.speedtest", "report.send", "subscription.set", "renewal", "renewal.batch",
     "team.create", "team.update", "team.delete", "team.renumber", "provider.create", "provider.update", "provider.delete", "plan.create", "plan.update", "plan.delete", "entry.enable",
-    "entry.disable", "entry.rotate", "entry.share", "entry.add", "entry.move", "entry.repoint", "relay.evacuate", "job.retry", "job.cancel", "silence.create",
+    "entry.disable", "entry.rotate", "entry.share", "entry.add", "entry.move", "entry.repoint", "relay.evacuate", "job.retry", "job.cancel", "job.prune", "silence.create",
     "silence.delete", "incident.ack", "restore.probe", "agent.upgrade", "notify.create", "notify.update", "notify.delete", "exec", "machine.logs", "server.logs", "apikey.create",
     "apikey.revoke", "auth.login", "auth.login_failed", "auth.logout", "auth.totp_enabled", "auth.totp_disabled", "auth.totp_recovery_used",
     "auth.totp_recovery_regenerated", "auth.user_removed", "auth.user_disabled", "auth.password_changed", "auth.session_revoked", "auth.verify_failed", "policy.draft", "policy.discard", "policy.publish", "policy.rollback",
@@ -200,6 +200,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "report.send" => "发送月报",
         "job.retry" => "重试作业",
         "job.cancel" => "取消作业",
+        "job.prune" => "清理作业记录",
         // 标记为维护的叫维护窗口，否则叫静默（同界面）
         "silence.create" if d["is_maintenance"] == true => "新建维护窗口",
         "silence.delete" if d["is_maintenance"] == true => "删除维护窗口",
@@ -411,6 +412,15 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
             s
         }
         // 「换线路机 · 团队1-03」：这一版之前的记录没有作业类型，不写摘要
+        // 「187 个（结束早于 2026-10-25 02:10:00）」
+        "job.prune" => {
+            let before = d["before"].as_str().and_then(|b| OffsetDateTime::parse(b, &time::format_description::well_known::Rfc3339).ok());
+            let n = d["jobs"].as_u64().unwrap_or(0);
+            match before {
+                Some(b) => format!("{n} 个（结束早于 {}）", crate::meta::org_time(b)),
+                None => format!("{n} 个"),
+            }
+        }
         "job.cancel" | "job.retry" if d["kind"].is_string() => {
             let k = crate::meta::job_kind_label(d["kind"].as_str().unwrap_or(""));
             match d["name"].as_str() {

@@ -54,6 +54,7 @@ fleetctl ssh router <名称> [-- 'logread | tail -50']        # 软路由（Open
 | 静默与维护窗口（进行中 / 已预约） | `fleetctl --json silence ls`（开、删见下文「维护窗口与静默」） |
 | 入口列表 | `fleetctl --json entries [<机器>]` |
 | 作业 | `fleetctl --json jobs [--active]`、`fleetctl job <id>`、`fleetctl job <id> --follow` |
+| 清理作业记录（用户说清掉旧作业 / 测试留下的作业） | `fleetctl jobs-prune [--before YYYY-MM-DD]` 先报数量，用户同意后加 `--yes`：只删已成功、已取消的（连同步骤与日志），失败的、进行中的不动；不要直接改库 |
 | 审计 | `fleetctl --json audit [--target <机器>] [--limit 50] [--before <上一页最后一条的 id>]` |
 | 实时事件 | `fleetctl watch --count 20` |
 | 节点放在哪台线路机最好：各节点到每台线路机近 24 小时的往返中位数与成功率、当前与最优线路机、建议换线（节点连线路机老断、要换线、客户说某节点慢时先看它） | `fleetctl --json placement [--team 团队2] [--node 团队2-04]`（`nodes[].cells` 与 `relays` 同序；`entry_relay_ids` 是节点在用入口所在的线路机；`suggest` 为 true 的是建议换的，`reason` 写慢多少 ms 或当前成功率；`suggestions[].command` 是按目标线路机合成的批量 `fleetctl move A,B --to X`，照抄执行、不要拆开；有多个入口的节点另在 `single_suggestions[].command` 里给带 `--from` 的单条，照抄执行）。**换线前先看 placement，不要去线路机上手写 ping / mtr 脚本逐个测** |

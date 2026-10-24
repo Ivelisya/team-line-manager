@@ -407,6 +407,14 @@ enum Cmd {
         #[arg(long)]
         follow: bool,
     },
+    /// 清理作业记录：删掉已成功、已取消的作业（连同步骤与日志；失败的、进行中的不动），不等每小时自动清理的 90 天。先报数量再确认（--yes）
+    JobsPrune {
+        /// 只清在这一天（组织时区，YYYY-MM-DD）之前结束的，默认清到此刻
+        #[arg(long)]
+        before: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
     /// 重试失败的作业
     Retry {
         id: String,
@@ -1036,6 +1044,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         },
         Cmd::Jobs { active, kind, limit } => cmds::jobs(x, active, kind.as_deref(), limit),
         Cmd::Job { id, follow } => cmds::job(x, &id, follow),
+        Cmd::JobsPrune { before, yes } => ops::jobs_prune(x, before.as_deref(), yes),
         Cmd::Retry { id, reset_host_key, password_env } => cmds::job_retry(x, &id, reset_host_key, password_env.as_deref()),
         Cmd::Cancel { id } => cmds::job_cancel(x, &id),
         Cmd::Provision(a) => ops::provision(x, *a),

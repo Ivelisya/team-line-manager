@@ -700,6 +700,30 @@ fn speedtest_line(name: &str, o: &Value) -> String {
     format!("{name} 测速（{}）：平均 {:.1} Mbit/s（{:.2} MB/s），耗时 {} 秒，首字节 {} 毫秒，{done}", st(o, "/target_name"), f("avg_mbps"), f("avg_mb_s"), f("total_s"), (f("ttfb_s") * 1000.0).round())
 }
 
+/// `fleetctl jobs-prune [--before YYYY-MM-DD]`：清理已成功、已取消的作业记录（POST /jobs/prune）。先按同样条件预览数量，确认后删；
+/// `--before` 是组织时区那天的零点
+pub fn jobs_prune(ctx: &Ctx, before: Option<&str>, yes: bool) -> anyhow::Result<u8> {
+    let mut body = json!({});
+    if let Some(b) = before {
+        let fmt = time::macros::format_description!("[year]-[month]-[day]");
+        let day = time::Date::parse(b, &fmt).map_err(|_| anyhow!("--before 写成 YYYY-MM-DD，例如 2026-10-25"))?;
+        let at = day.midnight().assume_offset(crate::meta::offset());
+        body["before"] = json!(at.format(&time::format_description::well_known::Rfc3339)?);
+    }
+    let mut preview = body.clone();
+    preview["dry_run"] = json!(true);
+    let n = ctx.c.post("/jobs/prune", &preview)?["jobs"].as_i64().unwrap_or(0);
+    if n == 0 {
+        ctx.emit(&json!({"jobs": 0}), || "没有可清理的作业记录（只清已成功、已取消的）".into());
+        return Ok(0);
+    }
+    let when = before.map_or("到此刻为止".to_string(), |b| format!("{b} 之前"));
+    confirm(&format!("确认删除 {n} 个{when}结束的已成功 / 已取消作业的记录（连同步骤与日志；失败的、进行中的不动）？"), yes)?;
+    let d = ctx.c.post("/jobs/prune", &body)?;
+    ctx.emit(&d, || format!("已删除 {} 个作业记录", d["jobs"]));
+    Ok(0)
+}
+
 // ── 入口 ─────────────────────────────────────────────────────────────
 
 pub fn share(ctx: &Ctx, entry: &str) -> anyhow::Result<u8> {
