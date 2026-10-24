@@ -1,0 +1,124 @@
+// 告警页的「月度可用率」页签：按供应商汇总（平均 / 最差的 TCP 与出口成功率、断线次数、近 30 天告警）+ 每个在用节点一行，都从差到好（服务端的顺序，前端不重排）。
+// 数据来自 GET /reports/uptime：小时汇总里成功次数 ÷ 探测次数，窗口是组织时区的自然日（本月算到今天）。节点行点开机器抽屉的「连接质量」。
+import * as React from 'react';
+import { CalendarDays } from 'lucide-react';
+import { useUptime } from '@/lib/queries';
+import { openDrawer } from '@/lib/drawer';
+import { meta } from '@/lib/derive';
+import type { UptimeItem, UptimeProvider } from '@/lib/types';
+import { InfoTip } from '@/components/ui/form';
+import { Select } from '@/components/ui/select';
+import { SkeletonRows } from '@/components/ui/skeleton';
+import { ShowAll } from '@/components/app/Pagination';
+import { Empty, ErrorNote, Panel, TableWrap } from '@/components/app/primitives';
+
+/** 近几个月可选（本月 + 前 5 个月） */
+const MONTHS_BACK = 6;
+const NODE_CAP = 30;
+
+/** 组织时区的本月 YYYY-MM（同服务端 org_today） */
+export const orgMonth = () => new Date(Date.now() + meta().org_utc_offset_s * 1000).toISOString().slice(0, 7);
+const monthOptions = (cur: string) => Array.from({ length: MONTHS_BACK }, (_, i) => {
+  const [y, m] = cur.split('-').map(Number);
+  const d = new Date(Date.UTC(y, m - 1 - i, 1));
+  return { value: d.toISOString().slice(0, 7), label: `${d.getUTCFullYear()} 年 ${d.getUTCMonth() + 1} 月${i === 0 ? '（本月）' : ''}` };
+});
+
+/** 成功率：没有探测写「—」；100 才写 100%，不到 100 的最多写 99.99%（不让 99.996 四舍五入成「100.00%」冒充全程无失败），未满 99.9 起标色 */
+function pctText(p: number | null): string {
+  if (p == null) return '—';
+  if (p >= 100) return '100%';
+  return `${Math.min(p, 99.99).toFixed(2)}%`;
+}
+const toneOf = (p: number | null) => (p == null || p >= 99.9 ? undefined : p >= 99 ? 'warn' : 'bad');
+function Pct({ p, tip }: { p: number | null; tip?: string }) {
+  return <span className="up-pct num" data-tone={toneOf(p)} data-tip={p == null ? '窗口内没有探测' : tip}>{pctText(p)}</span>;
+}
+const countTip = (ok: number, total: number) => `成功 ${ok.toLocaleString('zh-CN')} / 探测 ${total.toLocaleString('zh-CN')} 次`;
+
+const TCP_TIP = '线路机到这台节点的 TCP 连接探测：成功次数 ÷ 探测次数\n这台节点的全部入口（含已移除的）合计；窗口内没有探测显示 —';
+const EGRESS_TIP = '经入口走一遍节点出口的探测：成功次数 ÷ 探测次数\n没有探测显示 —';
+const OUTAGE_TIP = '有 TCP 探测失败的整点小时算断线的一小时，连着的合成一次\n原始探测只留几天，月度窗口只能按小时算';
+const INC_TIP = '此刻往前 30 天内这台机器开出的告警条数（不论是否已恢复），不随上面选的月份变';
+
+export function UptimeTab({ month, onMonth }: { month: string; onMonth: (m: string) => void }) {
+  const cur = React.useMemo(orgMonth, []);
+  const opts = React.useMemo(() => monthOptions(cur), [cur]);
+  const shown = opts.some((o) => o.value === month) ? month : cur;
+  const q = useUptime(shown, shown === cur);
+  const d = q.data;
+  const [allNodes, setAllNodes] = React.useState(false);
+  const picker = (
+    <div className="w-[210px]"><Select value={shown} onChange={onMonth} options={opts} aria-label="月份" /></div>
+  );
+  const range = d && (
+    <span className="t-sub up-range"><CalendarDays size={13} />{d.from.slice(5)} 至 {d.to.slice(5)} · {d.days} 天 · {meta().org_timezone_label}{shown === cur && '（本月算到今天）'}</span>
+  );
+  return (
+    <>
+      {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
+      <Panel title="按供应商" count={d ? `${d.providers.length} 家` : undefined} tools={<>{range}{picker}</>}
+        sub={<InfoTip text={'成功率 = 小时汇总里成功次数 ÷ 探测次数；平均、最差只看窗口内有探测的节点\n从差到好排；只列在用的节点（不含线路机和备用团队）\n最差节点点开看它的连接质量'} />} flush>
+        {q.isLoading ? <SkeletonRows rows={4} head /> : d && d.providers.length === 0 ? <Empty text="这个月没有在用的节点" /> : d && (
+          <TableWrap>
+            <table className="dt up-tbl" style={{ minWidth: 860 }}>
+              <thead><tr>
+                <th>供应商</th><th className="r">节点</th>
+                <th className="r" data-tip={TCP_TIP}>平均 TCP</th><th className="r" data-tip={'这家供应商的节点里，TCP 成功率最低的那台'}>最差 TCP</th>
+                <th className="r" data-tip={EGRESS_TIP}>平均出口</th><th className="r" data-tip={'这家供应商的节点里，出口成功率最低的那台的数值'}>最差出口</th>
+                <th className="r" data-tip={OUTAGE_TIP}>断线次数</th><th className="r" data-tip={INC_TIP}>近 30 天告警</th>
+              </tr></thead>
+              <tbody>{d.providers.map((p) => <ProviderRow key={p.id ?? 'none'} p={p} />)}</tbody>
+            </table>
+          </TableWrap>
+        )}
+      </Panel>
+
+      <Panel title="按节点" count={d ? `${d.items.length} 台` : undefined} sub={<InfoTip text={`每台在用节点一行，TCP 成功率从差到好；没有探测的排在最后\n点一行打开这台的连接质量`} />} flush>
+        {q.isLoading ? <SkeletonRows rows={6} head /> : d && d.items.length === 0 ? <Empty text="这个月没有在用的节点" /> : d && (
+          <TableWrap>
+            <table className="dt up-tbl" style={{ minWidth: 720 }}>
+              <thead><tr>
+                <th>节点</th><th className="r" data-tip={TCP_TIP}>TCP 成功率</th><th className="r" data-tip={EGRESS_TIP}>出口成功率</th>
+                <th className="r" data-tip={OUTAGE_TIP}>断线</th><th className="r" data-tip={INC_TIP}>近 30 天告警</th>
+              </tr></thead>
+              <tbody>{(allNodes ? d.items : d.items.slice(0, NODE_CAP)).map((i) => <NodeRow key={i.id} i={i} />)}</tbody>
+            </table>
+            <ShowAll total={d.items.length} cap={NODE_CAP} open={allNodes} onToggle={() => setAllNodes((v) => !v)} unit="台" />
+          </TableWrap>
+        )}
+      </Panel>
+    </>
+  );
+}
+
+const open = (id: string) => openDrawer(id, 'quality');
+
+function ProviderRow({ p }: { p: UptimeProvider }) {
+  return (
+    <tr>
+      <td><span className="cell-main strong">{p.name}</span></td>
+      <td className="r">{p.nodes} 台{p.with_data < p.nodes && <span className="sub" data-tip="窗口内有探测的节点才计入平均和最差">{p.with_data} 台有探测</span>}</td>
+      <td className="r"><Pct p={p.avg_tcp_pct} tip={`${p.with_data} 台有探测的节点的平均`} /></td>
+      <td className="r"><Pct p={p.worst_tcp_pct} />{p.worst && <button type="button" className="btn btn-link up-worst" onClick={() => open(p.worst!.id)} data-tip="打开这台的连接质量">{p.worst.name}</button>}</td>
+      <td className="r"><Pct p={p.avg_egress_pct} tip="有出口探测的节点的平均" /></td>
+      <td className="r"><Pct p={p.worst_egress_pct} /></td>
+      <td className="r">{p.outages > 0 ? <span className="num">{p.outages} 次</span> : <span className="t-muted">0</span>}</td>
+      <td className="r">{p.incidents_30d > 0 ? <span className="num">{p.incidents_30d} 条</span> : <span className="t-muted">0</span>}</td>
+    </tr>
+  );
+}
+
+function NodeRow({ i }: { i: UptimeItem }) {
+  return (
+    <tr className="is-link" tabIndex={0} onClick={() => open(i.id)} onKeyDown={(e) => { if (e.key === 'Enter') open(i.id); }}>
+      <td><span className="cell-main strong">{i.name}</span><span className="sub">{[i.team?.name, i.provider?.name ?? '未填供应商'].filter(Boolean).join(' · ')}</span></td>
+      <td className="r"><Pct p={i.tcp_pct} tip={countTip(i.tcp_ok, i.tcp_total)} /></td>
+      <td className="r"><Pct p={i.egress_pct} tip={countTip(i.egress_ok, i.egress_total)} /></td>
+      <td className="r">{i.outages > 0
+        ? <><span className="num">{i.outages} 次</span><span className="sub" data-tip={'最长一次连着的断线小时数'}>最长 {i.longest_outage_h} 小时</span></>
+        : <span className="t-muted">{i.tcp_total > 0 ? '无' : '—'}</span>}</td>
+      <td className="r">{i.incidents_30d > 0 ? <span className="num">{i.incidents_30d} 条</span> : <span className="t-muted">0</span>}</td>
+    </tr>
+  );
+}

@@ -3,6 +3,7 @@ import * as React from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { BellOff, CalendarPlus, Check, CheckCircle2, ChevronDown, ChevronRight, Trash2, Wrench } from 'lucide-react';
 import { RenewDialog } from '@/features/BillingTab';
+import { UptimeTab, orgMonth } from '@/features/UptimeTab';
 import { INCIDENT_PAGE, useAck, useAckMany, useAddSilence, useDelSilence, useIncidents, useMachineBriefs, useSilences } from '@/lib/queries';
 import { usePage } from '@/lib/usePage';
 import { Pagination } from '@/components/app/Pagination';
@@ -61,16 +62,20 @@ function foldBatches(list: Incident[]): (Incident | Incident[])[] {
   return out;
 }
 type State = 'firing' | 'resolved' | 'all';
-/** 页签：三种告警 + 静默与维护窗口（单独一页，不压在几百条告警下面） */
-type Tab = State | 'silences';
-const TABS: Tab[] = ['firing', 'resolved', 'all', 'silences'];
-const TAB_LABEL: Record<Tab, string> = { firing: '进行中', resolved: '已恢复', all: '全部', silences: '静默与维护' };
+/** 页签：三种告警 + 静默与维护窗口（单独一页，不压在几百条告警下面）+ 月度可用率（按月看各供应商、各节点的 TCP / 出口成功率与断线，?month= 选月份） */
+type Tab = State | 'silences' | 'uptime';
+const TABS: Tab[] = ['firing', 'resolved', 'all', 'silences', 'uptime'];
+const TAB_LABEL: Record<Tab, string> = { firing: '进行中', resolved: '已恢复', all: '全部', silences: '静默与维护', uptime: '月度可用率' };
+/** 告警列表只在这三个页签里显示 */
+const listed = (t: Tab): t is State => t !== 'silences' && t !== 'uptime';
 
 export function IncidentsPage() {
   // 页签写进 URL 的 ?state=（进行中是默认，不写）；页码在 usePage 里（?p=）
   const [sp, setSp] = useSearchParams();
   const tab: Tab = TABS.find((s) => s === sp.get('state')) ?? 'firing';
-  const state: State = tab === 'silences' ? 'firing' : tab;
+  const state: State = listed(tab) ? tab : 'firing';
+  const month = sp.get('month') ?? orgMonth();
+  const setMonth = (v: string) => setSp((p) => { const n = new URLSearchParams(p); if (v === orgMonth()) n.delete('month'); else n.set('month', v); return n; }, { replace: true });
   const setState = (v: Tab) => setSp((p) => { const n = new URLSearchParams(p); if (v === 'firing') n.delete('state'); else n.set('state', v); return n; }, { replace: true });
   // 页码先于查询算出（偏移量进查询）；总数取上一次的结果。渲染中直接跟上（不等 effect 提交一遍再重渲染）
   const [total, setTotal] = React.useState<number>();
@@ -123,14 +128,14 @@ export function IncidentsPage() {
   };
   return (
     <div className="stack" ref={pg.anchor}>
-      <PageHead title="告警" note={tab === 'silences' ? undefined : q.data ? `${(q.data.total - acked).toLocaleString('zh-CN')} 条${acked ? ` · 另有 ${acked} 条已确认` : ''}` : undefined}
+      <PageHead title="告警" note={!listed(tab) ? undefined : q.data ? `${(q.data.total - acked).toLocaleString('zh-CN')} 条${acked ? ` · 另有 ${acked} 条已确认` : ''}` : undefined}
         tools={<>
           <Segmented label="状态" value={tab} onChange={setState} items={tabs} />
           {/* 新建入口放在页头（走 ?silence=new，同命令面板），哪个页签都能建 */}
           <Button onClick={() => setSp((p) => { const n = new URLSearchParams(p); n.set('silence', 'new'); return n; }, { replace: true })}><BellOff />新建静默</Button>
         </>} />
-      {tab !== 'silences' && q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
-      {tab !== 'silences' && <Panel flush>
+      {listed(tab) && q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
+      {listed(tab) && <Panel flush>
         <TableWrap>
           {/* 窄屏（inc-tbl，pages.css）：规则、说明、开始三列收起，并进对象格的第二、三行（规则 · 多久前 / 说明），不用横滑也看得到 */}
           <table className="dt inc-tbl" style={{ minWidth: 820 }}>
@@ -167,6 +172,7 @@ export function IncidentsPage() {
       </Panel>}
       {renewM?.subscription && <RenewDialog m={renewM} s={renewM.subscription} open={!!renewId} onOpenChange={(o) => !o && setRenewId(null)} />}
       <Silences show={tab === 'silences'} />
+      {tab === 'uptime' && <UptimeTab month={month} onMonth={setMonth} />}
     </div>
   );
 }

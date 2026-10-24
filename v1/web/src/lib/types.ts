@@ -209,11 +209,14 @@ export interface Meta {
   terminal: { per_user: number; global: number; idle_s: number; max_age_s: number; max_message: number; max_dim: number; ticket_ttl_s: number; verify_ttl_s: number };
   /** 中控公钥全文（上架页「复制中控公钥」：供应商面板录入它之后可以不填 root 密码）；中控读不到时为 null */
   ssh_public_key: string | null;
+  /** 按需测速（服务端 jobs/speedtest.rs）：可选的下载量（MB）、默认值、目标（第一个是默认） */
+  speedtest: SpeedtestMeta;
 }
+export interface SpeedtestMeta { sizes_mb: number[]; default_mb: number; targets: { key: string; name: string }[] }
 export type UsageMetric = 'cpu' | 'mem' | 'disk' | 'load';
 
 export type JobState = 'queued' | 'running' | 'waiting' | 'cancelling' | 'succeeded' | 'failed' | 'cancelled';
-export type JobKind = 'provision_vps' | 'provision_proxy' | 'provision_relay' | 'provision_ip' | 'attach_entry' | 'move_entry' | 'retire' | 'purge' | 'upgrade_agent' | 'replace' | 'tune' | 'ss_refresh' | 'router_sync';
+export type JobKind = 'provision_vps' | 'provision_proxy' | 'provision_relay' | 'provision_ip' | 'attach_entry' | 'move_entry' | 'retire' | 'purge' | 'upgrade_agent' | 'replace' | 'tune' | 'ss_refresh' | 'speedtest' | 'router_sync';
 /** 步骤 state 文档未列全，前端按 pending/running/waiting/succeeded(done)/failed/skipped(cancelled) 宽松处理 */
 export interface JobStep { idx: number; key: string; title: string; state: string; started_at: string | null; finished_at: string | null; output: Record<string, unknown> | null; error: string | null; error_kind?: string | null }
 /** 作业列表（GET /jobs）的一项：不带 steps。step = 当前（或失败的）步骤下标，step_title 为它的标题，做完为 null */
@@ -386,11 +389,11 @@ export type ApiScope = 'read' | 'write' | 'secrets' | 'exec';
 export interface ApiKey { id: string; name: string; prefix: string; scopes: ApiScope[] | string[]; created_at: string; expires_at: string | null; last_used_at: string | null; revoked_at: string | null }
 export type NotifyKind = 'telegram' | 'feishu';
 export type NotifySeverity = 'info' | 'warning' | 'critical';
-export interface NotifyChannel { id: string; name: string; kind: NotifyKind | string; min_severity: NotifySeverity | string; enabled: boolean; created_at: string; config_hint: string }
+export interface NotifyChannel { id: string; name: string; kind: NotifyKind | string; min_severity: NotifySeverity | string; enabled: boolean; /** 收每月 1 号发的上月摘要 */ monthly_report: boolean; created_at: string; config_hint: string }
 /** channel_name：渠道删了之后为 null（发送记录还留着） */
 export interface NotifyLogEntry { id: string; channel_id: string; channel_name: string | null; incident_id: string | null; ts: string; ok: boolean; error: string | null;
-  /** firing / repeat / resolved / test；silence 静默 / 维护变更；auto 备用团队的机器到期自动回收 */
-  kind: 'firing' | 'repeat' | 'resolved' | 'test' | 'silence' | 'auto'; subject_name: string | null; rule_name: string | null }
+  /** firing / repeat / resolved / test；silence 静默 / 维护变更；auto 备用团队的机器到期自动回收；report 月报（subject_name 是「月报」） */
+  kind: 'firing' | 'repeat' | 'resolved' | 'test' | 'silence' | 'auto' | 'report'; subject_name: string | null; rule_name: string | null }
 
 /** 服务端分页列表（/jobs、/incidents）：next_offset 只在后面还有数据时给出 */
 export interface Paged<T> { items: T[]; total: number; next_offset: number | null }
@@ -424,3 +427,37 @@ export interface TrafficDailyTeam { id: string; name: string; spare: boolean; no
 /** 线路机：每天的网卡与计费量（daily），经过它的业务流量（business） */
 export interface TrafficDailyRelay { id: string; name: string; lifecycle: Lifecycle; country: string | null; rule: TrafficRule; rx: number; tx: number; billed: number; down: number; up: number; daily: DailyNic[]; business: DailyBiz[] }
 export interface TrafficDaily { tz: string; dates: string[]; total: DailyBiz[]; idle: { days: number; gb_per_day: number }; teams: TrafficDailyTeam[]; nodes: TrafficDailyNode[]; relays: TrafficDailyRelay[] }
+
+// ---- 报表：月度可用率（GET /reports/uptime）、月报（GET /reports/monthly、POST /reports/monthly/send）与按需测速 ----
+/** 一个在用节点（不含线路机、备用团队）在窗口内的可用率：成功率 = 小时汇总里成功次数 ÷ 探测次数（同抽屉「连接质量」），窗口内没有探测为 null；
+ *  断线次数：有 TCP 探测失败的整点小时，连着的合成一次；incidents_30d 是此刻往前 30 天开出的告警条数（不论恢复） */
+export interface UptimeItem {
+  id: string; name: string; team: { id: string; name: string } | null; provider: { id: string; name: string } | null;
+  tcp_total: number; tcp_ok: number; tcp_pct: number | null; egress_total: number; egress_ok: number; egress_pct: number | null;
+  outages: number; longest_outage_h: number; incidents_30d: number;
+}
+/** 按供应商汇总（id 为 null = 未填供应商）：with_data = 窗口内有 TCP 探测的节点数，平均 / 最差的 TCP 只看它们；worst = TCP 最差的那台 */
+export interface UptimeProvider {
+  id: string | null; name: string; nodes: number; with_data: number; avg_tcp_pct: number | null; worst_tcp_pct: number | null; worst: { id: string; name: string } | null;
+  avg_egress_pct: number | null; worst_egress_pct: number | null; outages: number; incidents_30d: number;
+}
+/** month 按月查时是 YYYY-MM（本月算到今天），按 days 查时为 null；from / to 是组织时区的自然日（含） */
+export interface UptimeReport { month: string | null; days: number; from: string; to: string; tz: string; items: UptimeItem[]; providers: UptimeProvider[] }
+export interface MonthlyReport {
+  month: string; from: string; to: string; tz: string;
+  traffic: { down: number; up: number; total: number };
+  /** 月费合计（USD 分，没汇率的币种在 unconverted 里） */
+  monthly_usd: { cents: number; unconverted?: { currency: string; cents: number }[] };
+  machines: number;
+  costly: { id: string; name: string; monthly_usd_cents: number; gb: number; usd_per_gb: number }[];
+  worst_uptime: { id: string; name: string; tcp_pct: number; egress_pct: number | null; outages: number; longest_outage_h: number }[];
+  top_rules: { rule: string; name: string; count: number }[];
+  due_soon: number; overdue: number;
+  /** 通知里发出的整段文字 */
+  text: string;
+}
+export interface MonthlySendResult { month: string; channels: number; text: string }
+/** POST /machines/{id}/speedtest：traffic_mb = 这次约会用掉的流量 */
+export interface SpeedtestStarted { machine_id: string; name: string; job_id: string; size_mb: number; target: string; target_name: string; traffic_mb: number }
+/** 测速作业步骤的输出（jobs/speedtest.rs summarize）：avg_mbps 只算收到第一个字节之后的；complete = false 时 300 秒内没下完，速率按已下载的算 */
+export interface SpeedtestOutput { target: string; target_name: string; url: string; size_mb: number; bytes: number; complete: boolean; avg_mbps: number; avg_mb_s: number; total_s: number; ttfb_s: number; remote_ip: string }

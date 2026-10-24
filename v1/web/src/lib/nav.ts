@@ -14,7 +14,7 @@ export const NAV: NavItem[] = [
   { to: '/traffic', label: '流量', icon: ChartColumnStacked, kw: 'traffic 流量 每日 统计 下载 上传 计费 daily' },
   { to: '/access', label: '访问监控', icon: Radar, kw: 'access 访问 监控' },
   { to: '/catalog', label: '团队与套餐', icon: Briefcase, kw: 'catalog teams plans providers 目录 团队 套餐 供应商 待付 续费 到期 付款 due' },
-  { to: '/incidents', label: '告警', icon: BellRing, badge: true, kw: 'incidents alerts 静默' },
+  { to: '/incidents', label: '告警', icon: BellRing, badge: true, kw: 'incidents alerts 静默 可用率 uptime 断线' },
   { to: '/audit', label: '操作记录', icon: History, kw: 'audit log 审计 日志 登录 执行' },
-  { to: '/settings', label: '设置', icon: Settings, kw: 'settings api 密钥 通知 key notify 账户 安全 两步验证 2fa totp 密码 password 会话 session' },
+  { to: '/settings', label: '设置', icon: Settings, kw: 'settings api 密钥 通知 月报 key notify 账户 安全 两步验证 2fa totp 密码 password 会话 session' },
 ];
