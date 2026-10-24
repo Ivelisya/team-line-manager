@@ -645,6 +645,61 @@ pub fn ss_refresh(ctx: &Ctx, machine: Option<&str>, team: Option<&str>, all: boo
     bulk_jobs(ctx, "ss-refresh", "重新下发 SS 配置", &targets, &json!({}), all || team.is_some(), follow)
 }
 
+/// `fleetctl speedtest <机器> [--size 25|100|500] [--target sjo|lax|il|nj]`：按需测速（作业 speedtest）——机器自己下载北美的测速文件，
+/// 走它自己的出站路径，会用掉约 size MB 流量（计入供应商额度），所以要确认（--yes）。大小与目标先按中控 /meta 校验（取不到就交给中控校验）。
+/// `follow`：跟到作业结束，最后打印一行结果（`--json` 时作业结束的那一行里已有步骤输出，不再另打）
+pub fn speedtest(ctx: &Ctx, machine: &str, size: Option<u32>, target: Option<&str>, yes: bool, follow: bool) -> anyhow::Result<u8> {
+    let (id, name) = ctx.find_id(machine, Want::Live)?;
+    let opts = crate::meta::speedtest();
+    let default_mb = opts.and_then(|o| o["default_mb"].as_u64()).unwrap_or(100) as u32;
+    let size_mb = size.unwrap_or(default_mb);
+    let mut target_name = target.map(str::to_string);
+    if let Some(o) = opts {
+        let sizes: Vec<u64> = o["sizes_mb"].as_array().into_iter().flatten().filter_map(Value::as_u64).collect();
+        if !sizes.is_empty() && !sizes.contains(&(size_mb as u64)) {
+            bail!("--size 只能是 {}（MB）", sizes.iter().map(u64::to_string).collect::<Vec<_>>().join(" / "));
+        }
+        let targets = o["targets"].as_array().cloned().unwrap_or_default();
+        if let Some(t) = target {
+            let Some(hit) = targets.iter().find(|x| x["key"] == t) else {
+                bail!("--target 只能是 {}", targets.iter().map(|x| st(x, "/key")).collect::<Vec<_>>().join(" / "));
+            };
+            target_name = Some(st(hit, "/name"));
+        } else {
+            // 默认目标是列表里的第一个
+            target_name = targets.first().map(|x| st(x, "/name"));
+        }
+    }
+    let shown = target_name.unwrap_or_else(|| "默认目标".into());
+    confirm(&format!("确认让 {name} 从{shown}下载约 {size_mb} MB 测速？会用掉约 {size_mb} MB 流量（计入供应商的流量额度）"), yes)?;
+    let mut body = json!({"size_mb": size_mb});
+    if let Some(t) = target {
+        body["target"] = json!(t);
+    }
+    let d = ctx.c.post(&format!("/machines/{id}/speedtest"), &body)?;
+    let job = st(&d, "/job_id");
+    ctx.emit(&d, || format!("已提交测速作业 {job}（{name} · {} · {size_mb} MB，会用掉约 {size_mb} MB 流量）\n看进度：fleetctl job {job} --follow", st(&d, "/target_name")));
+    if !follow {
+        return Ok(0);
+    }
+    let code = cmds::follow_job(ctx, &job)?;
+    if code == 0 && !ctx.json {
+        let j = ctx.c.get(&format!("/jobs/{job}"))?;
+        let out = j["steps"].as_array().into_iter().flatten().find_map(|s| s["output"].is_object().then(|| s["output"].clone()));
+        if let Some(out) = out {
+            outln(speedtest_line(&name, &out));
+        }
+    }
+    Ok(code)
+}
+
+/// 测速作业步骤输出（avg_mbps、avg_mb_s、total_s、ttfb_s、complete、bytes、target_name）→ 一行结果
+fn speedtest_line(name: &str, o: &Value) -> String {
+    let f = |k: &str| o[k].as_f64().unwrap_or(0.0);
+    let done = if o["complete"] == false { format!("没下完（只下了 {:.1} MB，速率按已下载的算）", f("bytes") / 1e6) } else { "已下完".into() };
+    format!("{name} 测速（{}）：平均 {:.1} Mbit/s（{:.2} MB/s），耗时 {} 秒，首字节 {} 毫秒，{done}", st(o, "/target_name"), f("avg_mbps"), f("avg_mb_s"), f("total_s"), (f("ttfb_s") * 1000.0).round())
+}
+
 // ── 入口 ─────────────────────────────────────────────────────────────
 
 pub fn share(ctx: &Ctx, entry: &str) -> anyhow::Result<u8> {
@@ -1075,6 +1130,15 @@ pub fn keys_revoke(ctx: &Ctx, a: &KeyAuth, which: &str) -> anyhow::Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 测速结果一行：速率、耗时、首字节（毫秒）；没下完时写明只下了多少
+    #[test]
+    fn speedtest_result_line() {
+        let o = json!({"target_name": "圣何塞", "avg_mbps": 80.0, "avg_mb_s": 10.0, "total_s": 10.5, "ttfb_s": 0.5, "complete": true, "bytes": 100_000_000});
+        assert_eq!(speedtest_line("团队1-03", &o), "团队1-03 测速（圣何塞）：平均 80.0 Mbit/s（10.00 MB/s），耗时 10.5 秒，首字节 500 毫秒，已下完");
+        let part = json!({"target_name": "洛杉矶", "avg_mbps": 3.2, "avg_mb_s": 0.4, "total_s": 300.0, "ttfb_s": 1.0, "complete": false, "bytes": 50_000_000});
+        assert!(speedtest_line("x", &part).ends_with("没下完（只下了 50.0 MB，速率按已下载的算）"));
+    }
 
     #[test]
     fn entry_router_note() {

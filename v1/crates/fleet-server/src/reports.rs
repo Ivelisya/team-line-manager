@@ -426,7 +426,7 @@ fn text_of(r: &Value) -> String {
 fn money_precise(usd: f64) -> String { format!("${usd:.3}") }
 
 /// 把月报排进通知发送队列，只发给开了「月报」的已启用渠道，并写审计。没有这样的渠道回 409。
-/// 手动发（`fleetctl report --send`，用来测试）和每月自动发是同一条路径
+/// 手动发（`fleetctl report monthly --send`，用来测试）和每月自动发是同一条路径
 pub async fn send(st: &AppState, actor: &str, month: Option<&str>) -> ApiResult<Value> {
     let channels: i64 = sqlx::query_scalar("select count(*) from notify_channel where enabled and monthly_report").fetch_one(&st.db).await?;
     if channels == 0 {
