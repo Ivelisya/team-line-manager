@@ -25,8 +25,10 @@ export const stepLabel = (k: string) => lbl(meta().step_states, k);
 export const trafficRuleLabel = (k: string) => lbl(meta().traffic_rules, k);
 /** 网卡计量规则（费用页签「本周期已用」旁的 (i)、额度悬停）：「按网卡流量：下行、上行取较大值」（名字同供应商对话框，来自 /meta） */
 export const trafficRulePlain = (k: string) => `按网卡，${trafficRuleLabel(k)}`;
-/** 网卡计量规则的下拉选项（供应商对话框、订阅编辑器共用，来自 /meta） */
-export const trafficRuleOptions = () => Object.entries(meta().traffic_rules).map(([value, label]) => ({ value, label }));
+/** 网卡计量规则的下拉选项（供应商对话框、订阅编辑器共用，来自 /meta）：/meta 的键按字母序，这里双向在前、单向随后 */
+const RULE_ORDER = ['sum', 'max', 'min', 'out', 'in'];
+const ruleRank = (k: string) => { const i = RULE_ORDER.indexOf(k); return i < 0 ? RULE_ORDER.length : i; };
+export const trafficRuleOptions = () => Object.entries(meta().traffic_rules).sort(([a], [b]) => ruleRank(a) - ruleRank(b)).map(([value, label]) => ({ value, label }));
 /** 流量重置方式：自然月 / 账单日 / 滚动 30 天 */
 export const trafficResetLabel = (k: string) => lbl(meta().traffic_resets, k);
 /** 流量重置方式的说法：按自然月、按账单日、滚动 30 天 */
