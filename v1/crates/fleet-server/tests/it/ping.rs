@@ -106,7 +106,7 @@ async fn reports_feed_beats_series_and_hourly() {
     let v = t.get(&format!("/api/v1/machines/{relay}/ping-series?range=1h")).await;
     assert_eq!((v["step_s"].clone(), v["series"][0]["points"].as_array().unwrap().len()), (json!(60), 3), "{v}");
     assert_eq!(v["series"][0]["points"][1]["loss_pct"], json!(20.0));
-    assert!(fleet_server::ping::rollup(&t.st.db).await.unwrap() >= 2);
+    assert!(fleet_server::ping::rollup(&t.st.db, 7).await.unwrap() >= 2);
     let v = t.get(&format!("/api/v1/machines/{relay}/ping-series?range=7d")).await;
     let pts = v["series"][0]["points"].as_array().unwrap();
     assert!(!pts.is_empty() && pts.iter().all(|p| p["rtt_ms"].as_f64().is_some()), "{v}");
@@ -120,4 +120,27 @@ async fn reports_feed_beats_series_and_hourly() {
     assert!(b[relay.to_string()][0]["cur_ms"].is_null(), "{b}");
     let m = t.get(&format!("/api/v1/machines/{relay}/ping")).await;
     assert_eq!(m["current"].as_array().unwrap().len(), 3);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hourly_rollup_covers_late_backfill() {
+    let t = setup().await;
+    seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    // 断线 10 小时后补传：上报收 7 天以内的，每 5 分钟一轮只重算最近 7 小时，每小时一轮重算最近 3 天
+    let mut r = blank_report(1);
+    r.ping = vec![PingSample {
+        slot: 0,
+        ts_ms: common::now_ms() - 10 * 3_600_000,
+        target: "hb-ct-v4.ip.zstaticcdn.com".into(),
+        mode: "tcp".into(),
+        sent: 5,
+        lost: 0,
+        rtt_ms: Some(150.0),
+    }];
+    assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
+    assert_eq!(t.count("select count(*) from ping_result").await, 1);
+    fleet_server::ping::rollup(&t.st.db, 7).await.unwrap();
+    assert_eq!(t.count("select count(*) from ping_hourly").await, 0, "7 小时的窗口够不到");
+    fleet_server::ping::rollup(&t.st.db, 72).await.unwrap();
+    assert_eq!(t.count("select count(*) from ping_hourly").await, 1, "每小时一轮的 3 天窗口补得上");
 }

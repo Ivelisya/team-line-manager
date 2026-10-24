@@ -8,8 +8,8 @@
 //!   旧 agent 不认识这个字段、照常应用，只是不测。
 //! - 测：线路机上的 fleet-agent 每 60 秒一轮，每个目标发 5 次（TCP 建连 / 系统 ping），记通了的那几次的延迟中位数与丢了几次，随上报带回
 //!   （`Report::ping`，agent_api 调 [`ingest`]）。节点不测：客户不直连节点。
-//! - 存：`ping_result` 每台每目标每分钟一行，保留 [retention] ping_days（默认 7 天）；`ping_hourly` 小时汇总，保留 ping_hourly_days（默认 90 天）。本模块的后台循环每 5 分钟重算最近 7 小时的汇总、
-//!   每小时清一次过期的。
+//! - 存：`ping_result` 每台每目标每分钟一行，保留 [retention] ping_days（默认 7 天）；`ping_hourly` 小时汇总，保留 ping_hourly_days（默认 90 天）。本模块的后台循环每 5 分钟重算最近 7 小时的汇总，
+//!   每小时重算最近 3 天的（agent 断线超过 7 小时后补传的旧样本）并清一次过期的。
 //! - 看：`/ping-beats`（卡片：每个目标一行，近 1 小时 20 格的延迟与丢包）、`/machines/{id}/ping`（这台的目标、覆盖、当前读数）、
 //!   `/machines/{id}/ping-series`（抽屉里的曲线）。
 
@@ -283,17 +283,19 @@ pub(crate) async fn ingest(tx: &mut Tx<'_>, relay: Uuid, samples: &[PingSample],
     Ok(())
 }
 
-/// 后台：每 5 分钟重算最近 7 小时的小时汇总（覆盖 agent 离线补传），每小时清一次过期的
+/// 后台：每 5 分钟重算最近 7 小时的小时汇总（覆盖 agent 短时间离线补传），每小时改为重算最近 3 天（上报收 7 天以内的，agent 本地最多缓存约 55 小时，
+/// 断线超过 7 小时才恢复补传的样本靠这一轮进汇总；一小时一次，3 天的原始行不大）并清一次过期的
 pub async fn run_forever(st: AppState) {
     let mut t = tokio::time::interval(Duration::from_secs(300));
     t.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut n = 0u64;
     loop {
         t.tick().await;
-        if let Err(e) = rollup(&st.db).await {
+        let hourly = n.is_multiple_of(12);
+        if let Err(e) = rollup(&st.db, if hourly { 72 } else { 7 }).await {
             tracing::error!("三网 PING 小时汇总失败：{e:#}");
         }
-        if n.is_multiple_of(12) {
+        if hourly {
             if let Err(e) = cleanup(&st.db, &st.cfg.retention).await {
                 tracing::error!("三网 PING 保留期清理失败：{e:#}");
             }
@@ -302,15 +304,17 @@ pub async fn run_forever(st: AppState) {
     }
 }
 
-pub async fn rollup(db: &sqlx::PgPool) -> sqlx::Result<u64> {
+/// 重算最近 `back_hours` 个整点小时（含当前）的小时汇总，同一小时从原始行重算并覆盖，幂等
+pub async fn rollup(db: &sqlx::PgPool, back_hours: i32) -> sqlx::Result<u64> {
     Ok(sqlx::query(
         "insert into ping_hourly (relay_id, slot, hour, target, sent, lost, rtt_avg, rtt_max)
          select relay_id, slot, date_trunc('hour', ts), (array_agg(target order by ts desc))[1], sum(sent), sum(lost), avg(rtt_ms), max(rtt_ms)
-         from ping_result where ts >= date_trunc('hour', now()) - interval '7 hours'
+         from ping_result where ts >= date_trunc('hour', now()) - make_interval(hours => $1)
          group by relay_id, slot, date_trunc('hour', ts)
          on conflict (relay_id, slot, hour) do update set target = excluded.target, sent = excluded.sent, lost = excluded.lost,
            rtt_avg = excluded.rtt_avg, rtt_max = excluded.rtt_max",
     )
+    .bind(back_hours)
     .execute(db)
     .await?
     .rows_affected())
