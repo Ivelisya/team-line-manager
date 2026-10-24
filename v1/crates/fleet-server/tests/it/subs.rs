@@ -101,3 +101,22 @@ async fn team_delete_detaches_from_subs() {
     let (s, v) = t.req("PATCH", &format!("/api/v1/client-subs/{}", only["id"].as_str().unwrap()), Some(json!({"rule": {"team_mode": "only", "team_ids": [a]}})), None).await;
     assert_eq!(s, StatusCode::OK, "{v}");
 }
+
+/// 批量取分享链接：一次查回、按请求顺序（重复的各出一条），有一条不存在整批 404，只写一条审计
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn share_batch_keeps_request_order() {
+    let t = common::boot(false, "").await;
+    seed(&t).await;
+    let ids: Vec<Uuid> = sqlx::query_scalar("select id from entry order by port").fetch_all(&t.st.db).await.unwrap();
+    assert_eq!(ids.len(), 3);
+    let want = [ids[2], ids[0], ids[2]];
+    let v = t.post("/api/v1/entries/share", json!({"ids": want})).await;
+    let got: Vec<&str> = v["items"].as_array().unwrap().iter().map(|i| i["id"].as_str().unwrap()).collect();
+    assert_eq!(got, want.map(|i| i.to_string()), "{v}");
+    assert!(v["items"][0]["url"].as_str().unwrap().starts_with("vless://"), "{v}");
+    assert_eq!(v["items"][0], v["items"][2], "{v}");
+    assert_ne!(v["items"][0]["name"], v["items"][1]["name"], "{v}");
+    t.fail("POST", "/api/v1/entries/share", Some(json!({"ids": [ids[0], Uuid::now_v7()]})), StatusCode::NOT_FOUND).await;
+    let n: i64 = sqlx::query_scalar("select count(*) from audit_log where action = 'entry.share'").fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(n, 1);
+}
