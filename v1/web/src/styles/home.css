@@ -235,7 +235,7 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 /* 块级、行高撑满：inline-flex 的文字落在匿名项里，text-overflow 不生效，放不下时字被切成半个 */
 .tag {
   --tag-bg: var(--tag-gray-bg); --tag-fg: var(--tag-gray-fg);
-  display: inline-block; flex: 0 1 auto; min-width: 0; max-width: 10rem; height: var(--h-tag); box-sizing: border-box; padding: 0 var(--sp-8);
+  display: inline-block; vertical-align: middle; flex: 0 1 auto; min-width: 0; max-width: 10rem; height: var(--h-tag); box-sizing: border-box; padding: 0 var(--sp-8);
   border-radius: var(--r-tag); background: var(--tag-bg); color: var(--tag-fg);
   font: var(--fw-semibold) var(--fs-micro) / var(--h-tag) var(--font-sans); letter-spacing: 0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
