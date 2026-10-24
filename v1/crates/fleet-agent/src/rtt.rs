@@ -1,4 +1,4 @@
-//! 放置矩阵（仅线路机）：按期望状态里的 `rtt`（中控给的全部在用 VPS 节点，见 fleet-server 的 placement.rs）测这台到每个节点的网络往返，
+//! 放置矩阵（仅线路机）：按 `GET /agent/v1/rtt`（中控给的全部在用 VPS 节点，见 fleet-server 的 placement.rs）测这台到每个节点的网络往返，
 //! 中控据此算「节点放在哪台线路机最好」。挂在这台上的入口另有 TCP / 出口探测（collect.rs），这里只看路由到节点 IP 的往返。
 //!
 //! 每 `interval_s`（300）秒一轮，最多 4 个节点同时测，每个 3 秒内有回应算通：
@@ -12,6 +12,7 @@
 
 use crate::ping::{icmp, median};
 use crate::probe::{connect_latency, tcp_info};
+use crate::server::{Outcome, ServerClient};
 use crate::state::Shared;
 use crate::util::now_ms;
 use fleet_proto::{RttConfig, RttSample, RttTarget};
@@ -28,20 +29,27 @@ const TIMEOUT: Duration = Duration::from_secs(3);
 /// ICMP 每轮每个节点发几次
 const COUNT: u32 = 3;
 
-pub async fn rtt_task(sh: Arc<Shared>, mut sd: watch::Receiver<bool>) {
-    // 第一轮等 40 秒：网络、期望状态就绪，也和三网 PING 的第一轮错开
+pub async fn rtt_task(sh: Arc<Shared>, client: Arc<ServerClient>, mut sd: watch::Receiver<bool>) {
+    // 第一轮等 40 秒：网络就绪，也和三网 PING 的第一轮错开
     let mut next = tokio::time::Instant::now() + Duration::from_secs(40);
     loop {
         tokio::select! {
             _ = tokio::time::sleep_until(next) => {}
             _ = sd.changed() => return,
         }
-        let cfg = sh.applied.read().unwrap().as_ref().and_then(|d| d.rtt.clone());
-        let Some(cfg) = cfg.filter(|c| !c.targets.is_empty()) else {
-            next = tokio::time::Instant::now() + Duration::from_secs(60);
-            continue;
+        // 每轮测之前向中控取一次节点清单（不随期望状态下发，见 fleet-proto 的 RttConfig）；取不到（含旧中控没有这个接口）这一轮不测
+        let cfg = match client.get_rtt().await {
+            Outcome::Ok(c) => c,
+            o => {
+                tracing::debug!("放置矩阵：取节点清单失败，1 分钟后再取：{o:?}");
+                next = tokio::time::Instant::now() + Duration::from_secs(60);
+                continue;
+            }
         };
         next = tokio::time::Instant::now() + Duration::from_secs(u64::from(cfg.interval_s.clamp(60, 3600)));
+        if cfg.targets.is_empty() {
+            continue;
+        }
         let samples = round(&cfg).await;
         sh.buf.lock().unwrap().push_rtt(samples);
     }

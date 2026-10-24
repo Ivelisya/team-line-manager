@@ -4,6 +4,7 @@
 //! - 上报：`POST /agent/v1/report`，`Report.seq` 单调递增；服务端按 (machine_id, seq) 去重，回 `ReportAck`。
 //! - 下发（仅线路机）：`GET /agent/v1/desired?after=<generation>` 长轮询，返回比 `after` 新的 `DesiredState`，
 //!   无变化时 30 s 后回 204；对齐后 `POST /agent/v1/applied` 回报 `ApplyReport`。
+//! - 放置矩阵（仅线路机）：`GET /agent/v1/rtt` 回 `RttConfig`，agent 每轮测之前取一次。
 //! - 探测点（`fleet-agent probe`）：`/agent/v1/probe/*`，令牌是探测点自己的，见下面「探测点」一节。
 //!
 //! 时间戳统一为 Unix 毫秒。
@@ -49,7 +50,7 @@ pub struct Report {
     /// 三网 PING（线路机往外测，`DesiredState::ping` 给的目标）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ping: Vec<PingSample>,
-    /// 线路机 → 各 VPS 节点的网络往返（`DesiredState::rtt` 给的节点；放置矩阵，见 fleet-server 的 placement.rs）
+    /// 线路机 → 各 VPS 节点的网络往返（`GET /agent/v1/rtt` 给的节点；放置矩阵，见 fleet-server 的 placement.rs）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rtt: Vec<RttSample>,
 }
@@ -226,13 +227,10 @@ pub struct DesiredState {
     /// 三网 PING 的目标（中控按全局 + 这台的覆盖合成）；没有目标为 None
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ping: Option<PingConfig>,
-    /// 放置矩阵：这台要测往返的全部在用 VPS 节点（不只是挂在它上面的）；没有为 None。
-    /// 旧 agent 不认识这个字段、照常应用，只是不测；新 agent 没收到（旧中控）就不测
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rtt: Option<RttConfig>,
 }
 
-/// 放置矩阵：每 `interval_s` 秒一轮，各节点测一次网络往返（ICMP；系统 ping 用不了时 TCP 建连 `port`，即节点的 SSH 端口）
+/// 放置矩阵（`GET /agent/v1/rtt`）：这台要测往返的全部在用 VPS 节点（不只是挂在它上面的），每 `interval_s` 秒一轮。
+/// 不进期望状态：节点清单一变就要给线路机代数 +1，会让「重启 Xray 失败、暂停重试」中的线路机带着新代数再重启一次
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RttConfig {
     pub interval_s: u32,

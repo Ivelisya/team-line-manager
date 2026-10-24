@@ -1,4 +1,4 @@
-//! `/agent/v1/*`：边缘上报、期望状态长轮询、应用回报；`/echo` 回显来源 IP。
+//! `/agent/v1/*`：边缘上报、期望状态长轮询、应用回报、放置矩阵的节点清单；`/echo` 回显来源 IP。
 
 use crate::auth::ClientIp;
 use crate::crypto::sha256;
@@ -32,6 +32,7 @@ pub fn router() -> Router<AppState> {
         .route("/report", post(report).layer(RequestDecompressionLayer::new()))
         .route("/desired", get(desired))
         .route("/applied", post(applied))
+        .route("/rtt", get(rtt))
         // 探测点（令牌是探测点自己的，见 probe_points/agent.rs）
         .merge(crate::probe_points::agent::router())
 }
@@ -736,6 +737,18 @@ async fn desired(State(st): State<AppState>, ClientIp(ip): ClientIp, h: HeaderMa
             }
         }
     }
+}
+
+/// 放置矩阵要测的节点（placement.rs）：线路机每轮测之前取一次，不进期望状态、不动代数
+async fn rtt(State(st): State<AppState>, ClientIp(ip): ClientIp, h: HeaderMap) -> ApiResult<Response> {
+    let a = match authenticate(&st, &h, ip).await {
+        Ok(a) => a,
+        Err(resp) => return Ok(resp),
+    };
+    if a.kind != "relay" {
+        return Err(ApiError::forbidden("只有线路机测放置矩阵"));
+    }
+    Ok(Json(crate::placement::config(&st.db).await?).into_response())
 }
 
 /// 应用回报入库前截断：错误文本进告警摘要、通知和每个浏览器的健康推送；入口条数同上报的上限（不认识的 id 入库时本来就忽略）
