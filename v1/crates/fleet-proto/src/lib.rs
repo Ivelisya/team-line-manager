@@ -124,7 +124,7 @@ pub struct SystemInfo {
     pub ipv4: Vec<IpAddr>,
     #[serde(default)]
     pub ipv6: Vec<IpAddr>,
-    /// 流量计量用的网卡（默认路由所在网卡 ∪ 有公网地址的物理网卡，或 agent.toml 的 nic_ifaces）
+    /// 流量计量用的网卡（默认路由所在网卡 ∪ 有公网地址或同机 IP 节点出站地址的物理网卡，或 agent.toml 的 nic_ifaces）
     #[serde(default)]
     pub nic_ifaces: Vec<String>,
 }

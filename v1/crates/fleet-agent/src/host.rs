@@ -137,8 +137,23 @@ pub fn parse_default_route(route: &str, ipv6_route: &str) -> Vec<String> {
     v
 }
 
+/// 同机 IP 节点的 ssserver 配置所在目录（中控 jobs/scripts.rs 写的 /etc/shadowsocks-rust/<端口>.json）
+const SS_CONF_DIR: &str = "/etc/shadowsocks-rust";
+
+/// 同机 IP 节点的出站地址（<端口>.json 里的 outbound_bind_addr）。1:1 NAT 的供应商（Blossom）把附加公网 IP 映射到第二块网卡的内网地址上：
+/// 那块网卡只有内网地址，按「有公网地址」挑不到，可 IP 节点的流量全走它、供应商照样计进这台的额度。配着这些地址的网卡也算「公网」
+fn ss_bind_addrs(dir: &Path) -> Vec<IpAddr> {
+    let Ok(rd) = std::fs::read_dir(dir) else { return vec![] };
+    rd.flatten()
+        .filter(|e| e.file_name().to_str().is_some_and(|n| n.ends_with(".json") && n.starts_with(|c: char| c.is_ascii_digit())))
+        .filter_map(|e| serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(e.path()).ok()?).ok())
+        .filter_map(|v| v["outbound_bind_addr"].as_str()?.parse().ok())
+        .collect()
+}
+
 /// 选取计量的网卡（供应商按它计费的那几块）：
-/// 1. 默认路由所在的网卡 ∪ 有物理设备（/sys/class/net/<n>/device）且配有公网地址的网卡（附加公网 IP 配在第二块网卡上时）；
+/// 1. 默认路由所在的网卡 ∪ 有物理设备（/sys/class/net/<n>/device）且配有公网地址的网卡（附加公网 IP 配在第二块网卡上时；
+///    1:1 NAT 的附加 IP 只有内网地址，配着同机 IP 节点出站地址的也算，见 `ss_bind_addrs`）；
 ///    只有内网地址的 VPC 网卡不算，默认路由指向虚拟网卡（全局 WireGuard 的 wg0 等）时跳过它；
 /// 2. 以上为空：有物理设备的网卡，再没有（容器、OpenVZ）则取所有非虚拟网卡。
 ///
@@ -448,11 +463,12 @@ impl HostCollector {
             let names: Vec<String> = parse_net_dev(&read("/proc/net/dev")).into_iter().map(|x| x.0).collect();
             let routes = parse_default_route(&read("/proc/net/route"), &read("/proc/net/ipv6_route"));
             let addrs = if_addrs();
+            let bound = ss_bind_addrs(Path::new(SS_CONF_DIR));
             pick_ifaces(
                 &names,
                 &routes,
                 |n| Path::new(&format!("/sys/class/net/{n}/device")).exists(),
-                |n| addrs.iter().any(|(i, ip)| i == n && !crate::server::is_private_ip(*ip)),
+                |n| addrs.iter().any(|(i, ip)| i == n && (!crate::server::is_private_ip(*ip) || bound.contains(ip))),
             )
         } else {
             self.fixed_ifaces.clone()
@@ -568,6 +584,19 @@ mod tests {
     /// lo 上的 ::/0 是 unreachable 路由
     const ROUTE6: &str = "00000000000000000000000000000000 00 00000000000000000000000000000000 00 00000000000000000000000000000000 ffffffff 00000001 00000000 00200200       lo\n\
         fe800000000000000000000000000000 40 00000000000000000000000000000000 00 00000000000000000000000000000000 00000100 00000001 00000000 00000001     ens3\n";
+
+    /// 同机 IP 节点的出站地址：只读 <端口>.json 的 outbound_bind_addr（宿主机自己的 config.json、acl、坏文件不算）
+    #[test]
+    fn ss_bind_addrs_from_instance_configs() {
+        let d = crate::util::TmpDir::new("ssbind");
+        let w = |n: &str, s: &str| std::fs::write(d.join(n), s).unwrap();
+        w("config.json", r#"{"server":"0.0.0.0","server_port":8388}"#);
+        w("8389.json", r#"{"server":"10.116.0.109","server_port":8389,"outbound_bind_addr":"10.116.0.109"}"#);
+        w("8390.json", "{坏的");
+        w("fleet.acl", "[outbound_block_list]");
+        assert_eq!(ss_bind_addrs(&d), vec!["10.116.0.109".parse::<IpAddr>().unwrap()]);
+        assert!(ss_bind_addrs(&d.join("nope")).is_empty());
+    }
 
     #[test]
     fn net_dev_and_ifaces() {
