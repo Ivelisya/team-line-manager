@@ -5,7 +5,7 @@ import * as React from 'react';
 import { ChevronDown, ChevronRight, SearchX, Trash2, X } from 'lucide-react';
 import { useRecycleBin, useRecycleDetail } from '@/lib/queries';
 import * as F from '@/lib/format';
-import { cycleLabel, kindLabel, meta } from '@/lib/derive';
+import { cycleLabel, kindLabel, orgFmt } from '@/lib/derive';
 import type { RecycleDetail, RecycleItem } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { SearchInput } from '@/components/ui/form';
@@ -27,13 +27,14 @@ const COLS: ColDef[] = [
   { id: 'recycled', header: '上架 → 退役 → 回收', width: 232, first: 'desc' }, { id: 'reason', header: '原因', width: 150 }, { id: 'traffic', header: '业务流量', width: 96, r: true, first: 'desc' },
   { id: 'source', header: '来源', width: 84 }, { id: 'chev', header: '', width: 36 },
 ];
-const day = (iso: string | null | undefined) => (iso ? F.dtFull(iso).slice(0, 10) : '—');
+/** 组织时区的那一天（同一行的原因里的时刻、服务端给的回收日都按组织时区，不用浏览器本机时区） */
+const day = (iso: string | null | undefined) => (iso ? orgFmt().format(new Date(iso)) : '—');
 const traffic = (r: Pick<RecycleItem, 'traffic_up' | 'traffic_down'>) => (r.traffic_up == null && r.traffic_down == null ? null : (r.traffic_up ?? 0) + (r.traffic_down ?? 0));
 const price = (r: Pick<RecycleItem, 'price_cents' | 'currency' | 'cycle'>) => (r.price_cents != null && r.currency ? `${F.money(r.price_cents, r.currency)}${r.cycle ? ` / ${cycleLabel(r.cycle)}` : ''}` : null);
 
 /** 原因里夹的 ISO 时间（2026-10-08T15:00:00Z）按组织时区写成「2026-10-08 23:00」 */
 const ISO_TIME = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})/g;
-const orgTime = (iso: string) => new Intl.DateTimeFormat('sv-SE', { timeZone: meta().org_timezone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(iso));
+const orgTime = (iso: string) => orgFmt({ year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(iso));
 const reasonFull = (s: string) => s.replace(ISO_TIME, orgTime);
 /** 列表里的原因只留关键句：旧面板导入的原因全带「旧面板 2026-09-30 标注：」这样的前缀，去掉后各行才看得出差别；全文在展开区。
  *  去掉前缀后：标注写在「」里的，主行是标注、次行是后面的补充（最后流量…）；否则按句号 / 分号切句（括号里的不切），

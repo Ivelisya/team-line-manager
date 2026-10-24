@@ -69,14 +69,22 @@ export function monthFlow(m: MachineView) {
 }
 /** 本月流量合计（主值）：卡片、表格、机器页按「本月流量」排序共用 */
 export const trafficTotal = (m: MachineView) => monthFlow(m).total;
+/** 组织时区的格式化器（sv-SE：「2026-10-08」「23:00」）：按时区 + 选项缓存复用，推送热路径上不每次新建 Intl.DateTimeFormat */
+const orgFmts = new Map<string, Intl.DateTimeFormat>();
+export function orgFmt(o: Intl.DateTimeFormatOptions = {}): Intl.DateTimeFormat {
+  const tz = meta().org_timezone; const k = `${tz}|${JSON.stringify(o)}`;
+  let f = orgFmts.get(k);
+  if (!f) orgFmts.set(k, (f = new Intl.DateTimeFormat('sv-SE', { timeZone: tz, ...o })));
+  return f;
+}
 /** 日期写成「10-22」：服务端给日期（YYYY-MM-DD）或时刻，时刻取组织时区的那一天 */
-export const mmdd = (s: string) => (/^\d{4}-\d{2}-\d{2}$/.test(s) ? s : new Intl.DateTimeFormat('sv-SE', { timeZone: meta().org_timezone }).format(new Date(s))).slice(5);
+export const mmdd = (s: string) => (/^\d{4}-\d{2}-\d{2}$/.test(s) ? s : orgFmt().format(new Date(s))).slice(5);
 /** 「X 起」的写法（数据不完整时标出从哪天起才有）：一般只写日期「10-09」；正好落在周期 / 月的起点那天（没传 start 时按每月 1 号）时，
  *  差几个小时才是缺的那部分，写到时刻「10-01 14:00」，不然读成「整月都有」。from 只有日期没有时刻时照写日期 */
 export function fromLabel(from: string, start?: string | null): string {
   const d = mmdd(from);
   if (/^\d{4}-\d{2}-\d{2}$/.test(from) || !(start ? mmdd(start) === d : d.endsWith('-01'))) return d;
-  return `${d} ${new Intl.DateTimeFormat('sv-SE', { timeZone: meta().org_timezone, hour: '2-digit', minute: '2-digit' }).format(new Date(from))}`;
+  return `${d} ${orgFmt({ hour: '2-digit', minute: '2-digit' }).format(new Date(from))}`;
 }
 /** 网卡口径的本月流量：显示的是下行 + 上行的合计；供应商按别的规则计费时写出规则和本周期的计费量（流量额度、流量页用的就是它） */
 function nicTip(m: MachineView) {

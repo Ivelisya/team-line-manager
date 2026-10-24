@@ -7,7 +7,7 @@ import type { MachineView } from '@/lib/types';
 import { maintOwner, useAddEntry, useEndMaintenance, usePatchMachine, useRelayChoices, useSilences, useSsRefresh, useTeams, useTune } from '@/lib/queries';
 import { openMaint, openUpgrade } from '@/lib/nodeActions';
 import { useDrawer } from '@/lib/drawer';
-import { entryBad, errText, reachWho, recycleOn } from '@/lib/derive';
+import { entryBad, errText, mmdd, reachWho, recycleOn } from '@/lib/derive';
 import { useReachLabel } from '@/lib/probePoints';
 import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
@@ -326,7 +326,7 @@ function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }
             <div>
               <div className="t">立即回收</div>
               <div className="hint">
-                {m.spare_since ? `已于 ${F.md(m.spare_since)} 退役` : '在备用团队'}{m.spare_from && `（原 ${m.spare_from}）`}，{on ? `${on} 起自动回收` : '没有订阅，不会自动回收'}
+                {m.spare_since ? `已于 ${mmdd(m.spare_since)} 退役` : '在备用团队'}{m.spare_from && `（原 ${m.spare_from}）`}，{on ? `${on} 起自动回收` : '没有订阅，不会自动回收'}
                 {' '}<InfoTip text={'清理节点并移入回收站，不等到期\n想留下它，请到上面的「改名」把团队改回去'} />
               </div>
             </div>
