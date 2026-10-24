@@ -9,7 +9,6 @@
 -- 3. notify_log：告警评估每轮对每条进行中告警取「最近一条送达的通知」（alerts.rs TOLD_RESOLVED_SQL：
 --    where incident_id = ? and ok and kind in (…) order by ts desc, id desc limit 1），原来的单列 (incident_id) 索引取出这条告警全部通知再排序。
 --    新索引 (incident_id, ts desc, id desc) 直接按序取；它的 incident_id 前缀也足够外键（删告警）用，旧的单列索引删掉。
--- 4. incident：「常复发」列表按 opened_at 取近 7 天，没有以 opened_at 开头的索引，只能全表扫。
 
 create index if not exists probe_hourly_hour_brin on probe_hourly using brin (hour);
 create index if not exists router_exit_metric_hourly_hour_brin on router_exit_metric_hourly using brin (hour);
@@ -28,5 +27,3 @@ end $$;
 
 create index if not exists notify_log_incident_ts on notify_log (incident_id, ts desc, id desc);
 drop index if exists notify_log_incident;
-
-create index if not exists incident_opened_at on incident (opened_at desc);
