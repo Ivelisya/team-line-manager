@@ -8,6 +8,8 @@ use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use axum_extra::extract::cookie::CookieJar;
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 use tokio::sync::broadcast::{self, error::RecvError};
 
@@ -15,6 +17,46 @@ use tokio::sync::broadcast::{self, error::RecvError};
 enum Cred {
     Session(Vec<u8>),
     Key(Vec<u8>),
+}
+
+impl Cred {
+    fn hash(&self) -> &[u8] {
+        match self {
+            Cred::Session(h) | Cred::Key(h) => h,
+        }
+    }
+}
+
+/// 同一个凭据（会话 / 密钥）最多同时开这么多条实时流：多个标签页、网页终端旁的那条、断线重连时还没被服务端发现的旧连接加起来也到不了
+const MAX_PER_CRED: usize = 32;
+/// 各凭据（哈希）现在开着几条
+static OPEN: LazyLock<Mutex<HashMap<Vec<u8>, usize>>> = LazyLock::new(Default::default);
+
+/// 一条实时流占的名额；连接结束（正常关闭、断线、任务 panic）时 Drop 还回去
+struct Slot(Vec<u8>);
+
+impl Slot {
+    /// 满了返回 None
+    fn take(c: &Cred) -> Option<Self> {
+        let mut m = crate::lock(&OPEN);
+        let n = m.entry(c.hash().to_vec()).or_default();
+        (*n < MAX_PER_CRED).then(|| {
+            *n += 1;
+            Self(c.hash().to_vec())
+        })
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        let mut m = crate::lock(&OPEN);
+        if let Some(n) = m.get_mut(&self.0) {
+            *n -= 1;
+            if *n == 0 {
+                m.remove(&self.0);
+            }
+        }
+    }
 }
 
 async fn still_valid(db: &sqlx::PgPool, c: &Cred) -> sqlx::Result<bool> {
@@ -44,10 +86,12 @@ const PING_EVERY: Duration = Duration::from_secs(15);
 const RECHECK_EVERY: Duration = Duration::from_secs(60);
 /// 会话/密钥失效时的关闭码（4000–4999 归应用自用）
 pub const CLOSE_REVOKED: u16 = 4401;
+/// 同一凭据的连接数到上限时的关闭码（1008 = 违反策略）。握手前拒绝的 HTTP 错误浏览器脚本读不到原因，升级后用关闭帧带上
+pub const CLOSE_TOO_MANY: u16 = 1008;
 
 /// 实时流（WebSocket，JSON 文本帧）：资源变更通知 + 实时指标（`live.rs`）。
 /// 广播落后丢了消息时发 `resync`（前端让全部查询失效）；每 60 s 复核一次会话/密钥，被撤销就以 4401 关闭；
-/// 撤销会话 / 密钥的地方另发 `Event::Revoked`，各连接马上复核。
+/// 撤销会话 / 密钥的地方另发 `Event::Revoked`，各连接马上复核。每个凭据最多同时 [`MAX_PER_CRED`] 条，超出的升级后立刻以 1008 关闭。
 pub async fn stream(a: Actor, State(st): State<AppState>, jar: CookieJar, headers: HeaderMap, ws: WebSocketUpgrade) -> Response {
     // 会话（Cookie）连接要求 Origin 是中控自己（public_url 的协议 + 主机 + 端口）：WebSocket 握手不受同源策略约束，
     // 别的页面能借浏览器自动带上的 Cookie 连上来读实时数据。API 密钥不是浏览器带的，不查
@@ -70,6 +114,14 @@ pub async fn stream(a: Actor, State(st): State<AppState>, jar: CookieJar, header
 }
 
 async fn serve_ws(mut ws: WebSocket, mut rx: broadcast::Receiver<Event>, db: sqlx::PgPool, cred: Option<Cred>) {
+    let _slot = match cred.as_ref().map(Slot::take) {
+        Some(None) => {
+            let close = CloseFrame { code: CLOSE_TOO_MANY, reason: "同一登录的实时连接过多，请关掉多余的标签页".into() };
+            send(&mut ws, Message::Close(Some(close))).await;
+            return;
+        }
+        slot => slot.flatten(),
+    };
     let start = tokio::time::Instant::now();
     let mut ping = tokio::time::interval_at(start + PING_EVERY, PING_EVERY);
     let mut check = tokio::time::interval_at(start + RECHECK_EVERY, RECHECK_EVERY);

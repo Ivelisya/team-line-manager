@@ -2257,6 +2257,45 @@ async fn ws_requires_auth_and_resyncs_when_subscriber_lags() {
     ws_next(&mut ws, "resync").await;
 }
 
+/// 同一个会话最多同时开 32 条实时流：多的升级后立刻以 1008 关闭并说明原因；连接断开后名额还回来
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ws_caps_connections_per_credential() {
+    use futures::StreamExt;
+    use tokio_tungstenite::tungstenite::Message;
+    /// 500 毫秒内收到关闭帧就返回 (码, 原因)，没有就是连接还开着
+    async fn closed(ws: &mut Ws) -> Option<(u16, String)> {
+        tokio::time::timeout(Duration::from_millis(500), async {
+            while let Some(m) = ws.next().await {
+                if let Ok(Message::Close(Some(f))) = m {
+                    return Some((u16::from(f.code), f.reason.to_string()));
+                }
+            }
+            None
+        })
+        .await
+        .unwrap_or(None)
+    }
+    let t = setup().await;
+    let mut open = vec![];
+    for _ in 0..32 {
+        open.push(t.ws(true).await.unwrap());
+    }
+    let mut extra = t.ws(true).await.unwrap();
+    assert_eq!(closed(&mut extra).await, Some((1008, "同一登录的实时连接过多，请关掉多余的标签页".to_string())));
+    assert!(closed(&mut open[0]).await.is_none(), "已开着的不受影响");
+    // 关掉一条，名额还回来（服务端发现对端断开是异步的）
+    drop(open.pop());
+    let mut ok = false;
+    for _ in 0..20 {
+        let mut ws = t.ws(true).await.unwrap();
+        if closed(&mut ws).await.is_none() {
+            ok = true;
+            break;
+        }
+    }
+    assert!(ok, "断开一条后应能再开");
+}
+
 /// 会话被撤销（这里是登出）：实时流的连接马上以 4401 关闭，不等 60 秒一轮的复核；别的会话被撤销时不受影响
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ws_closes_at_once_when_session_revoked() {
