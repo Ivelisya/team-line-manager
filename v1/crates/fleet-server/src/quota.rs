@@ -85,6 +85,12 @@ impl Q {
     }
 }
 
+/// 线路机上 1 字节业务流量按计费规则折成多少计费字节（实测不出来时用）：转发时入站 ≈ 出站 ≈ 业务量，
+/// 双向计费（sum）算两份，单向（max / min / in / out）和按业务流量算的（None）算一份
+pub fn rule_factor(rule: Option<&str>) -> f64 {
+    if rule == Some("sum") { 2.0 } else { 1.0 }
+}
+
 /// 目标线路机默认选余量最多的（不限流量的最多）；余量相同取先出现的
 pub fn best_target(cands: &[(Uuid, Q)]) -> Option<Uuid> {
     cands
