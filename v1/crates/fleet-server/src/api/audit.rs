@@ -531,14 +531,16 @@ fn sub_changes(d: &Value) -> String {
     let money = |v: &Value| v.as_i64().map_or("—".into(), |c| format!("{:.2}", c as f64 / 100.0));
     let gb = |v: &Value| v.as_i64().filter(|g| *g > 0).map_or("不限".into(), |g| format!("{g} GB"));
     let cycle = |v: &Value| v.as_str().and_then(|k| crate::meta::CYCLES.iter().find(|c| c.key == k)).map_or_else(|| val(v), |c| c.label.to_string());
+    let rule = |v: &Value| v.as_str().map_or_else(|| val(v), |k| crate::meta::label(crate::meta::TRAFFIC_RULES, k).to_string());
     let onoff = |v: &Value| if v == true { "开" } else { "关" }.to_string();
-    let fields: [FieldFmt; 9] = [
+    let fields: [FieldFmt; 10] = [
         ("due_date", "到期", &val),
         ("price_cents", "价格", &money),
         ("currency", "币种", &val),
         ("cycle", "周期", &cycle),
         ("traffic_gb", "流量", &gb),
         ("traffic_reset_day", "流量重置日", &|v| format!("{} 号", val(v))),
+        ("traffic_rule", "流量计费", &rule),
         ("remind_days", "提前提醒", &|v| format!("{} 天", val(v))),
         ("billing_tz", "账单时区", &val),
         ("auto_renew", "自动续费", &onoff),

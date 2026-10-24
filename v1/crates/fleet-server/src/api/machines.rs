@@ -988,7 +988,7 @@ fn upgrade_order(jobs: &[Value]) -> String {
 // ── 账单 ──────────────────────────────────────────────────────────────────
 
 /// 订阅里可以「单独设置」的字段：没传或 null = 跟随模板（价格、币种、周期、流量上限跟随套餐，账单时区、提前提醒、
-/// 流量重置日跟随供应商，见 views::SubTemplate）；和模板相同的值也按跟随存。上架与改订阅共用
+/// 流量重置日、流量计费方式跟随供应商，见 views::SubTemplate）；和模板相同的值也按跟随存。上架与改订阅共用
 #[derive(Deserialize, Serialize, Clone, Default)]
 pub struct SubOverrides {
     price_cents: Option<i32>,
@@ -999,12 +999,14 @@ pub struct SubOverrides {
     /// 0 = 不限
     traffic_gb: Option<i32>,
     traffic_reset_day: Option<i32>,
+    /// 流量计费方式：sum 双向 / max、min、out、in 单向（meta::TRAFFIC_RULES）；null = 跟随供应商
+    traffic_rule: Option<String>,
 }
 
 impl SubOverrides {
     pub fn has_price(&self) -> bool { self.price_cents.is_some() }
 
-    /// 校验并规整（币种转大写）：价格、流量上限不为负，周期四选一，提醒 0–60 天，重置日 1–31，时区 at time zone 认
+    /// 校验并规整（币种转大写）：价格、流量上限不为负，周期四选一，提醒 0–60 天，重置日 1–31，计费方式五选一，时区 at time zone 认
     pub async fn check(&mut self, db: &mut sqlx::PgConnection) -> ApiResult<()> {
         if self.price_cents.is_some_and(|p| p < 0) || self.traffic_gb.is_some_and(|g| g < 0) {
             return Err(ApiError::bad_request("金额、流量上限不能为负"));
@@ -1018,6 +1020,7 @@ impl SubOverrides {
         if self.traffic_reset_day.is_some_and(|d| !(1..=31).contains(&d)) {
             return Err(ApiError::bad_request("流量重置日要在 1–31 之间"));
         }
+        super::catalog::traffic_rule(&self.traffic_rule)?;
         if let Some(c) = &mut self.currency {
             // 同套餐的币种规则（比较「和套餐相同」时口径一致）
             *c = meta::currency(c).map_err(ApiError::bad_request)?;
@@ -1034,11 +1037,11 @@ impl SubOverrides {
         let cur: Option<i16> = sqlx::query_scalar("select billing_day from subscription where machine_id = $1").bind(id).fetch_optional(&mut *db).await?.flatten();
         let bday = meta::billing_day(due, cur.and_then(|d| u8::try_from(d).ok()));
         sqlx::query(
-            "insert into subscription (machine_id, due_date, price_cents, currency, cycle, billing_tz, remind_days, traffic_gb, traffic_reset_day, billing_day)
-             values ($1, $2, $3, $4, $5::billing_cycle, $6, $7, $8, $9, $10)
+            "insert into subscription (machine_id, due_date, price_cents, currency, cycle, billing_tz, remind_days, traffic_gb, traffic_reset_day, traffic_rule, billing_day)
+             values ($1, $2, $3, $4, $5::billing_cycle, $6, $7, $8, $9, $10, $11)
              on conflict (machine_id) do update set due_date = excluded.due_date, price_cents = excluded.price_cents, currency = excluded.currency,
                cycle = excluded.cycle, billing_tz = excluded.billing_tz, remind_days = excluded.remind_days, traffic_gb = excluded.traffic_gb,
-               traffic_reset_day = excluded.traffic_reset_day, billing_day = excluded.billing_day, updated_at = now()",
+               traffic_reset_day = excluded.traffic_reset_day, traffic_rule = excluded.traffic_rule, billing_day = excluded.billing_day, updated_at = now()",
         )
         .bind(id)
         .bind(due)
@@ -1049,6 +1052,7 @@ impl SubOverrides {
         .bind(self.remind_days)
         .bind(self.traffic_gb)
         .bind(self.traffic_reset_day)
+        .bind(&self.traffic_rule)
         .bind(i16::from(bday))
         .execute(&mut *db)
         .await?;
@@ -1085,12 +1089,12 @@ pub async fn check_tz(db: &mut sqlx::PgConnection, tz: &str) -> ApiResult<()> {
 
 /// 改订阅审计里记的生效值（改动前后各一份）
 const SUB_AUDIT: &str = "select jsonb_build_object('due_date', due_date, 'price_cents', price_cents, 'currency', currency, 'cycle', cycle, 'billing_tz', billing_tz,
-    'remind_days', remind_days, 'traffic_gb', traffic_gb, 'traffic_reset_day', traffic_reset_day, 'auto_renew', auto_renew)
+    'remind_days', remind_days, 'traffic_gb', traffic_gb, 'traffic_reset_day', traffic_reset_day, 'traffic_rule', traffic_rule, 'auto_renew', auto_renew)
     from subscription_eff where machine_id = $1";
 
 /// 订阅按 `subscription_eff` 算出的生效值，带 `overrides`（单独设置了哪几项）：改订阅预览的返回
 const SUB_EFFECTIVE: &str = "select jsonb_build_object('due_date', due_date, 'price_cents', price_cents, 'currency', currency, 'cycle', cycle, 'billing_tz', billing_tz,
-    'remind_days', remind_days, 'traffic_gb', traffic_gb, 'traffic_reset_day', traffic_reset_day, 'auto_renew', auto_renew, 'overrides', to_jsonb(overrides))
+    'remind_days', remind_days, 'traffic_gb', traffic_gb, 'traffic_reset_day', traffic_reset_day, 'traffic_rule', traffic_rule, 'auto_renew', auto_renew, 'overrides', to_jsonb(overrides))
     from subscription_eff where machine_id = $1";
 
 /// 校验、写入、规整订阅（`put_subscription` 与预览共用，都在调用方的事务里），返回改动前的生效值（审计用）

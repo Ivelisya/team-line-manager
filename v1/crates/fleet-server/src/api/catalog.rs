@@ -232,7 +232,7 @@ fn one_of<'a>(v: &'a Option<String>, table: &[(&str, &str)], what: &str) -> ApiR
 
 fn traffic_reset(v: &Option<String>) -> ApiResult<Option<&str>> { one_of(v, meta::TRAFFIC_RESETS, "流量重置方式") }
 
-fn traffic_rule(v: &Option<String>) -> ApiResult<Option<&str>> { one_of(v, meta::TRAFFIC_RULES, "流量计量规则") }
+pub(super) fn traffic_rule(v: &Option<String>) -> ApiResult<Option<&str>> { one_of(v, meta::TRAFFIC_RULES, "流量计量规则") }
 
 /// 空白当没填
 fn blank(v: &Option<String>) -> Option<&str> { v.as_deref().map(str::trim).filter(|s| !s.is_empty()) }

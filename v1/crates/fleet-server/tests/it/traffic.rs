@@ -78,3 +78,47 @@ async fn daily_split_by_org_midnight() {
     assert_eq!(t.req("GET", "/api/v1/traffic/daily?machine=nope", None, None).await.0, StatusCode::NOT_FOUND);
     assert_eq!(t.req("GET", "/api/v1/traffic/daily?days=93", None, None).await.0, StatusCode::BAD_REQUEST);
 }
+
+/// 订阅可单独设置流量计费方式：同一供应商（取大）下一台单独设双向（相加）、一台跟随；
+/// 把单独设置写回与供应商相同的值就改回跟随（overrides 不再含 traffic_rule）；坏值 400
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn subscription_traffic_rule_override() {
+    let t = setup(false).await;
+    let db = &t.st.db;
+    let (ra, _) = seed_relay(&t).await;
+    let (rb, _) = seed_relay_b(&t).await;
+    let pv = t.post("/api/v1/providers", json!({"name": "甲", "code": "A", "traffic_rule": "max"})).await["id"].as_str().unwrap().parse::<Uuid>().unwrap();
+    for r in [ra, rb] {
+        sqlx::query("update machine set provider_id = $2 where id = $1").bind(r).bind(pv).execute(db).await.unwrap();
+        sqlx::query("insert into host_metric_hourly (machine_id, hour, net_rx, net_tx) values ($1, date_trunc('hour', now()), 700, 300)").bind(r).execute(db).await.unwrap();
+    }
+    let put = |id: Uuid, rule: Value| {
+        let t = &t;
+        async move { t.req("PUT", &format!("/api/v1/machines/{id}/subscription"), Some(json!({"due_date": "2030-01-01", "price_cents": 100, "traffic_rule": rule})), None).await }
+    };
+    let view = |id: Uuid| {
+        let t = &t;
+        async move {
+            t.st.live.rolled_up();
+            let m = t.get(&format!("/api/v1/machines/{id}")).await;
+            let has = m["subscription"]["overrides"].as_array().unwrap().iter().any(|o| o == "traffic_rule");
+            (m["quota"]["used"].as_i64(), m["quota"]["rule"].as_str().map(String::from), m["subscription"]["traffic_rule"].as_str().map(String::from), has)
+        }
+    };
+    assert_eq!(put(ra, json!("sum")).await.0, StatusCode::OK);
+    assert_eq!(put(rb, Value::Null).await.0, StatusCode::OK);
+    assert_eq!(view(ra).await, (Some(1000), Some("sum".into()), Some("sum".into()), true), "单独设双向：入 + 出");
+    assert_eq!(view(rb).await, (Some(700), Some("max".into()), Some("max".into()), false), "跟随供应商：取大");
+    // 单向只算下行 / 上行
+    for (rule, used) in [("in", 700), ("out", 300)] {
+        assert_eq!(put(ra, json!(rule)).await.0, StatusCode::OK);
+        assert_eq!(view(ra).await, (Some(used), Some(rule.into()), Some(rule.into()), true));
+    }
+    // 写回与供应商相同的值 = 跟随
+    assert_eq!(put(ra, json!("max")).await.0, StatusCode::OK);
+    assert_eq!(view(ra).await, (Some(700), Some("max".into()), Some("max".into()), false), "与供应商相同按跟随存");
+    // 改供应商规则，跟随的立即变；坏值 400
+    t.req("PATCH", &format!("/api/v1/providers/{pv}"), Some(json!({"traffic_rule": "sum"})), None).await;
+    assert_eq!(view(ra).await, (Some(1000), Some("sum".into()), Some("sum".into()), false));
+    assert_eq!(put(ra, json!("avg")).await.0, StatusCode::BAD_REQUEST);
+}

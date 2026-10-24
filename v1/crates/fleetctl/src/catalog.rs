@@ -29,7 +29,7 @@ pub struct ProviderArgs {
     /// 控制台地址（http(s)）；set 时 none = 清空
     #[arg(long)]
     pub panel_url: Option<String>,
-    /// 流量额度的网卡计量：min（入出取小）| max（取大，新建默认）| sum（相加）| out（只算出站）
+    /// 流量额度的网卡计量：sum（双向，入 + 出）| max（单向，取入出较大的，新建默认）| min（单向，取较小的）| out（单向，只算出站）| in（单向，只算入站）；订阅可用 subscription set --traffic-rule 单独设置
     #[arg(long)]
     pub traffic_rule: Option<String>,
     /// 流量周期：month（自然月，新建默认）| billing（账单日 = 到期日几号）| rolling30（滚动 30 天）
@@ -461,7 +461,7 @@ mod tests {
         let old = json!({"name": "甲", "code": "A", "timezone": null, "panel_url": null, "traffic_rule": "max", "traffic_reset": "month", "remind_days": 7});
         let a = ProviderArgs { code: Some("A".into()), tz: Some("Asia/Tokyo".into()), traffic_rule: Some("min".into()), remind_days: Some(7), ..Default::default() };
         let ch = changes(&old, &provider_body(None, &a), &PROVIDER_CN, &|k, v, _| provider_field(k, v));
-        assert_eq!(diff_text(&ch), "账单时区 跟随组织（北京时间） → Asia/Tokyo、流量计量 取下行和上行中较大的 → 取下行和上行中较小的");
+        assert_eq!(diff_text(&ch), "账单时区 跟随组织（北京时间） → Asia/Tokyo、流量计量 单向：取下行和上行中较大的 → 单向：取下行和上行中较小的");
     }
 
     #[test]

@@ -368,6 +368,7 @@ pub(crate) mod tests {
                 traffic_gb: None,
                 traffic_reset: "month".into(),
                 remind_days: 7,
+                traffic_rule: "max".into(),
             },
             agent: Some(Agent {
                 version: None,
@@ -432,6 +433,7 @@ pub(crate) mod tests {
             remind_days: 7,
             traffic_gb: None,
             traffic_reset_day: Some(1),
+            traffic_rule: "max".into(),
             overrides: vec![],
             monthly_cents: 100,
             monthly_usd_cents: Some(100),

@@ -243,9 +243,12 @@ async fn migration_normalizes_hard_coded_subscriptions() {
             .unwrap();
         ids.push(id);
     }
+    // 0084 给两个视图末尾加了列，旧迁移的 create or replace view 不能删列：先删掉视图（只有它们互相依赖），旧迁移重放后再跑 0084 补回
+    sqlx::raw_sql("drop view subscription_eff; drop view sub_template").execute(db).await.unwrap();
     sqlx::raw_sql(include_str!("../../../../migrations/0026_subscription_inherit.sql")).execute(db).await.unwrap();
     // 0026 换回了按到期日的重置日：再跑 0032（同样可重复执行）回到按账单日
     sqlx::raw_sql(include_str!("../../../../migrations/0032_billing_day.sql")).execute(db).await.unwrap();
+    sqlx::raw_sql(include_str!("../../../../migrations/0084_traffic_rule_override.sql")).execute(db).await.unwrap();
 
     let reset: Vec<(String, String)> = sqlx::query_as("select code, traffic_reset from provider order by code").fetch_all(db).await.unwrap();
     assert_eq!(reset, [("ATT".into(), "month".into()), ("GM".into(), "billing".into())], "GM 的重置日都是到期日；ATT 只有 1 号的不算证据");
