@@ -1096,6 +1096,17 @@ async fn revoke(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
 
 async fn finalize(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let m = c.machine().await?;
+    // 机器已经是已退役（上一次改完状态后，提交后的收尾出错、或记账失败，重跑到这里）：不再改状态、记回收站、压缩编号，只做提交后的收尾
+    let (renumbered, bin) = if m.lifecycle == "retired" { (0, None) } else { retire_in_tx(c, &m).await? };
+    // 同机 IP 节点登录的是宿主机：记着的主机公钥是宿主机的，不能忘
+    if m.host_id.is_none() {
+        ssh::forget_host(&c.st.cfg.known_hosts, &m.ip, m.ssh_port as u16).await?;
+    }
+    Ok(Outcome::Done(json!({"renumbered": renumbered, "recycle_bin_id": bin})))
+}
+
+/// 完成退役改库的事务：改状态、移进回收站、压缩编号；提交后通知线路机、记日志。返回（改了编号的台数，回收站编号）
+async fn retire_in_tx(c: &Ctx<'_>, m: &M) -> anyhow::Result<(usize, Option<i64>)> {
     let mut tx = c.st.db.begin().await?;
     // 先锁团队行再改机器行：宿主机连同它的同机 IP 节点退役时，同团队的几个退役作业会同时收尾，
     // 压缩编号要改同团队别的节点，都按「团队 → 机器」的顺序加锁才不会互相等
@@ -1128,11 +1139,7 @@ async fn finalize(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     if !renamed.is_empty() {
         c.log(format!("编号已压缩：{} 台节点改了编号（见审计）", renamed.len())).await;
     }
-    // 同机 IP 节点登录的是宿主机：记着的主机公钥是宿主机的，不能忘
-    if m.host_id.is_none() {
-        ssh::forget_host(&c.st.cfg.known_hosts, &m.ip, m.ssh_port as u16).await?;
-    }
-    Ok(Outcome::Done(json!({"renumbered": renamed.len(), "recycle_bin_id": bin})))
+    Ok((renamed.len(), bin))
 }
 
 /// 按天分批删分区大表里这台机器（和它名下入口）的原始数据：每天一条语句，走 (entry_id/machine_id, ts) 索引，

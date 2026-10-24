@@ -261,7 +261,8 @@ pub fn check_target(kind: &str, lifecycle: Option<&str>) -> Result<(), String> {
 }
 
 /// 当前这一步就是负责改状态的那一步（上线 → active，完成退役 → retired），而机器已经是目标状态：
-/// 上一次改完状态后记账失败了（步骤没记成完成、或后面的清理出了错），重跑不该被「机器状态不对」判死，这一步记为跳过
+/// 上一次改完状态后记账失败了（步骤没记成完成、或后面的清理出了错），重跑不该被「机器状态不对」判死；
+/// 这两步自己幂等（状态已改就不再改，提交后的收尾照做）
 pub fn target_reached(kind: &str, key: &str, lifecycle: Option<&str>) -> bool {
     (provisions(kind) && key == "activate" && lifecycle == Some("active")) || (kind == "retire" && key == "finalize" && lifecycle == Some("retired"))
 }
@@ -688,10 +689,10 @@ pub async fn advance(st: &AppState, mut job: JobRow, owner: &str) -> anyhow::Res
             log(st, job.id, "info", format!("中控正在重启：「{}」等重启后接着做", d.title)).await;
             return Ok(());
         }
-        // 旧作业不能在机器已经换了状态之后继续跑（例如退役后重试上架）；改状态的那一步已经改完的除外（见 `target_reached`）
+        // 旧作业不能在机器已经换了状态之后继续跑（例如退役后重试上架）；改状态的那一步已经改完的除外（见 `target_reached`），
+        // 这一步自己幂等：状态已改的就不再改，提交后的收尾照做
         let lc = target_lifecycle(&st.db, job.target_id).await?;
-        let reached = target_reached(&job.kind, d.key, lc.as_deref());
-        if let Err(why) = if reached { Ok(()) } else { check_target(&job.kind, lc.as_deref()) } {
+        if let Err(why) = if target_reached(&job.kind, d.key, lc.as_deref()) { Ok(()) } else { check_target(&job.kind, lc.as_deref()) } {
             return fail(st, &job, owner, d, ErrKind::Internal, &why).await;
         }
         let outer = outer_timeout(d);
@@ -716,13 +717,9 @@ pub async fn advance(st: &AppState, mut job: JobRow, owner: &str) -> anyhow::Res
             notify(st, &job);
         }
         let ctx = steps::Ctx { st, job: &job, owner, started, first };
-        let res = if reached {
-            Ok(Outcome::Skipped("机器已经是目标状态（上一次这一步改完状态后记账失败），不再重做".into()))
-        } else {
-            match tokio::time::timeout(outer, steps::run(&ctx, d.key)).await {
-                Ok(r) => r,
-                Err(_) => Err(StepError::err(ErrKind::Timeout, format!("超过 {} 秒没有完成", outer.as_secs()))),
-            }
+        let res = match tokio::time::timeout(outer, steps::run(&ctx, d.key)).await {
+            Ok(r) => r,
+            Err(_) => Err(StepError::err(ErrKind::Timeout, format!("超过 {} 秒没有完成", outer.as_secs()))),
         };
         match res {
             Ok(o @ (Outcome::Wait(_) | Outcome::Queue(_))) => {
