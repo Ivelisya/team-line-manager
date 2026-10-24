@@ -98,10 +98,10 @@ async fn plan_move(
     if to_lc != "active" {
         return Ok(Err(format!("目标线路机「{to_name}」现在是「{}」，只能换到在用的线路机", meta::lifecycle_label(&to_lc))));
     }
-    // 替换作业的目标是旧节点：这台是它的新节点时也算忙（它在改路由、交换编号，路由刚改成指向这台的入口）
+    // 替换、改出口指向作业的目标是旧节点：这台是它的新节点时也算忙（它在改路由、交换编号，路由刚改成指向这台的入口）
     let busy: Option<(String,)> = sqlx::query_as(
         "select kind from job where state in ('queued', 'running', 'waiting', 'cancelling')
-           and (target_id = $1 or (kind = 'replace' and params->>'new_id' = $1::text)) limit 1",
+           and (target_id = $1 or (kind in ('replace', 'repoint') and params->>'new_id' = $1::text)) limit 1",
     )
     .bind(node_id)
         .fetch_optional(&mut **tx)
