@@ -10,7 +10,8 @@ import { countryName, flagUrl } from '@/lib/flags';
 import { Tip, Trunc } from '@/components/ui/overlays';
 import { InfoTip } from '@/components/ui/form';
 import { useCountUp } from '@/lib/useCountUp';
-import { compactPorts, dueTone, entryLabel, errText, reasonText, healthLabel, fromLabel, hostRel, LINK_LABEL, linkTip, lifecycleLabel, monthFlow, monthFlowTip, severityOf, type BeatCell, type linkCounts, type LinkKey } from '@/lib/derive';
+import { tzCity, tzLabel } from '@/lib/tz';
+import { compactPorts, dueTone, meta, entryLabel, errText, reasonText, healthLabel, fromLabel, hostRel, LINK_LABEL, linkTip, lifecycleLabel, monthFlow, monthFlowTip, severityOf, type BeatCell, type linkCounts, type LinkKey } from '@/lib/derive';
 import { openDrawer } from '@/lib/drawer';
 import { copyText } from '@/lib/clipboard';
 import { watchSize } from '@/lib/sharedObserver';
@@ -97,6 +98,12 @@ export function Due({ days, state, tail }: { days: number | null | undefined; st
   const d = dueFmt(days, dueTone(state));
   const post = d.post + (tail && days != null && !d.past ? '到期' : '');
   return <span className="due" data-tone={d.tone || undefined}>{d.pre && <span className="due-t">{d.pre}</span>}{d.f && <Num f={d.f} />}{post && <span className="due-t">{post}</span>}</span>;
+}
+/** 到期日（YYYY-MM-DD）：账单时区不是组织时区的，日期后标城市名，悬停写明按哪个时区的今天算（同待付页） */
+export function DueDate({ sub }: { sub: { due_date: string; billing_tz?: string } }) {
+  const tz = sub.billing_tz;
+  const other = tz && tz !== meta().org_timezone;
+  return <span data-tip={other ? `到期日、剩余天数按${tzLabel(tz)}时间算` : undefined}>{sub.due_date}{other && ` · ${tzCity(tz)}`}</span>;
 }
 /** 备用团队的说明（团队编辑、团队列表、机器卡片与抽屉的到期旁共用） */
 export const SPARE_TIP = '备用团队的机器，到期满 1 天后自动清理并移入回收站。\n续费后到期日顺延，就不会回收。';

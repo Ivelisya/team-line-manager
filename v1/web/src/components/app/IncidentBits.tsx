@@ -18,12 +18,12 @@ export function SuggestedCmds({ i, className }: { i: Incident; className?: strin
   );
 }
 
-/** 次数标签「近 7 天第 N 次」：只在中控判定反复（chronic，次数含 30 分钟内复发合并进来的）时标；合并过的次数写在悬停里 */
+/** 次数标签：进行中的（同组最多一条，就是最新那次）写「近 7 天第 N 次」，已恢复的写「近 7 天共 N 次」（recent_count 是整组的总数）。只在中控判定反复（chronic，次数含 30 分钟内复发合并进来的）时标；合并过的次数写在悬停里 */
 export function RecentCount({ i, className }: { i: Incident; className?: string }) {
   if (!i.chronic) return null;
   const tip = [
     i.chronic && '同一对象同一规则近 7 天反复出现，考虑换线或替换',
     i.reopen_count > 0 && `这一条恢复后 30 分钟内又出现过 ${i.reopen_count} 次，已合并成这一条`,
   ].filter(Boolean).join('\n');
-  return <span className={className} data-tip={tip}>近 7 天第 {i.recent_count ?? 1} 次</span>;
+  return <span className={className} data-tip={tip}>{i.state === 'firing' ? `近 7 天第 ${i.recent_count ?? 1} 次` : `近 7 天共 ${i.recent_count ?? 1} 次`}</span>;
 }

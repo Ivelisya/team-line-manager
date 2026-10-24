@@ -16,7 +16,7 @@ import { SearchInput } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { Segmented, Trunc } from '@/components/ui/overlays';
 import { SkeletonRows } from '@/components/ui/skeleton';
-import { Due, Empty, ErrorNote, Flag, HealthPill, HostTag, MonthFlowCell, Num, PageHead, Panel } from '@/components/app/primitives';
+import { Due, DueDate, Empty, ErrorNote, Flag, HealthPill, HostTag, MonthFlowCell, Num, PageHead, Panel } from '@/components/app/primitives';
 import { NodeHover } from '@/components/app/NodeHover';
 import { MachineGrid, byNum, byStr, sortByCol, type Col } from '@/components/app/MachineGrid';
 import { Pagination } from '@/components/app/Pagination';
@@ -132,7 +132,7 @@ function LiveNodes({ sp, upd, tools }: { sp: URLSearchParams; upd: (patch: Recor
         cell: (m) => <MonthFlowCell m={m} /> },
       // 没有订阅的（无值）不论升降序都排在最后
       { id: 'due', header: '到期', size: 112, r: true, ...byNum((m) => m.subscription?.due_days ?? null, 'asc'),
-        cell: (m) => (m.subscription ? <><Due days={m.subscription.due_days} state={m.subscription.due_state} /><span className="sub">{m.subscription.due_date}</span></> : <span className="t-muted">—</span>) },
+        cell: (m) => (m.subscription ? <><Due days={m.subscription.due_days} state={m.subscription.due_state} /><span className="sub"><DueDate sub={m.subscription} /></span></> : <span className="t-muted">—</span>) },
       // 计费统一按 USD（feeView）：排序按服务端折好的月费；原币种不是 USD 或不是按月付的，副行写原价（悬停有汇率）。
       // 没有汇率的写原币种月费、副行标未折算，排在最后
       { id: 'cost', header: '费用', size: 104, r: true, drop: 2, ...byNum((m) => m.subscription?.monthly_usd_cents ?? null),
