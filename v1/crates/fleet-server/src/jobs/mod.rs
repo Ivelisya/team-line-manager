@@ -260,6 +260,12 @@ pub fn check_target(kind: &str, lifecycle: Option<&str>) -> Result<(), String> {
     }
 }
 
+/// 当前这一步就是负责改状态的那一步（上线 → active，完成退役 → retired），而机器已经是目标状态：
+/// 上一次改完状态后记账失败了（步骤没记成完成、或后面的清理出了错），重跑不该被「机器状态不对」判死，这一步记为跳过
+pub fn target_reached(kind: &str, key: &str, lifecycle: Option<&str>) -> bool {
+    (provisions(kind) && key == "activate" && lifecycle == Some("active")) || (kind == "retire" && key == "finalize" && lifecycle == Some("retired"))
+}
+
 /// 读目标机器的状态；机器不存在返回 None
 pub async fn target_lifecycle(db: &PgPool, target: Option<Uuid>) -> sqlx::Result<Option<String>> {
     let Some(t) = target else { return Ok(None) };
@@ -680,9 +686,10 @@ pub async fn advance(st: &AppState, mut job: JobRow, owner: &str) -> anyhow::Res
             log(st, job.id, "info", format!("中控正在重启：「{}」等重启后接着做", d.title)).await;
             return Ok(());
         }
-        // 旧作业不能在机器已经换了状态之后继续跑（例如退役后重试上架）
+        // 旧作业不能在机器已经换了状态之后继续跑（例如退役后重试上架）；改状态的那一步已经改完的除外（见 `target_reached`）
         let lc = target_lifecycle(&st.db, job.target_id).await?;
-        if let Err(why) = check_target(&job.kind, lc.as_deref()) {
+        let reached = target_reached(&job.kind, d.key, lc.as_deref());
+        if let Err(why) = if reached { Ok(()) } else { check_target(&job.kind, lc.as_deref()) } {
             return fail(st, &job, owner, d, ErrKind::Internal, &why).await;
         }
         let outer = outer_timeout(d);
@@ -707,9 +714,13 @@ pub async fn advance(st: &AppState, mut job: JobRow, owner: &str) -> anyhow::Res
             notify(st, &job);
         }
         let ctx = steps::Ctx { st, job: &job, owner, started, first };
-        let res = match tokio::time::timeout(outer, steps::run(&ctx, d.key)).await {
-            Ok(r) => r,
-            Err(_) => Err(StepError::err(ErrKind::Timeout, format!("超过 {} 秒没有完成", outer.as_secs()))),
+        let res = if reached {
+            Ok(Outcome::Skipped("机器已经是目标状态（上一次这一步改完状态后记账失败），不再重做".into()))
+        } else {
+            match tokio::time::timeout(outer, steps::run(&ctx, d.key)).await {
+                Ok(r) => r,
+                Err(_) => Err(StepError::err(ErrKind::Timeout, format!("超过 {} 秒没有完成", outer.as_secs()))),
+            }
         };
         match res {
             Ok(o @ (Outcome::Wait(_) | Outcome::Queue(_))) => {
@@ -1039,6 +1050,11 @@ mod tests {
         assert!(check_target("purge", Some("retired")).is_ok());
         assert!(check_target("purge", None).is_ok(), "机器已删：purge 的目标已达成");
         assert!(check_target("provision_vps", None).is_err());
+        // 改状态的那一步已经改完（记账失败后重跑）：上线 → active、完成退役 → retired 算目标已达成，别的步骤、别的状态不算
+        assert!(target_reached("provision_vps", "activate", Some("active")) && target_reached("provision_ip", "activate", Some("active")));
+        assert!(target_reached("retire", "finalize", Some("retired")));
+        assert!(!target_reached("provision_vps", "verify", Some("active")) && !target_reached("provision_vps", "activate", Some("retired")));
+        assert!(!target_reached("retire", "revoke", Some("retired")) && !target_reached("retire", "finalize", None) && !target_reached("attach_entry", "activate", Some("active")));
         // 同机 IP 节点的上架：和别的上架类作业一样要求上架中，失败标上架失败、可以取消
         assert!(check_target("provision_ip", Some("provisioning")).is_ok() && check_target("provision_ip", Some("active")).is_err());
         assert!(provisions("provision_ip") && cancellable("provision_ip"));

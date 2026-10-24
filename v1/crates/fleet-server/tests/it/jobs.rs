@@ -296,6 +296,31 @@ async fn run_one(t: &common::T, job: Uuid) -> Value {
     t.job(&job.to_string()).await
 }
 
+/// 「上线」已经把机器改成了在用、但记账失败：重跑不被「机器状态不对」判死，这一步记为跳过；别的步骤遇到同样的状态仍然失败
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn activate_rerun_after_machine_already_active_is_skipped() {
+    let t = setup(false).await;
+    let team = seed_team(&t, "团队1").await;
+    let node = seed_node(&t, team, 1, "203.0.113.10", "active").await;
+    let mut tx = t.st.db.begin().await.unwrap();
+    let at_activate = jobs::enqueue(&mut tx, "provision_proxy", Some(node), json!({}), "test").await.unwrap();
+    tx.commit().await.unwrap();
+    sqlx::query("update job_step set state = 'done' where job_id = $1 and idx < 3").bind(at_activate).execute(&t.st.db).await.unwrap();
+    sqlx::query("update job set step = 3 where id = $1").bind(at_activate).execute(&t.st.db).await.unwrap();
+    let j = run_one(&t, at_activate).await;
+    assert_eq!(j["state"], "succeeded", "{j}");
+    assert_eq!(j["steps"][3]["state"], "skipped", "{j}");
+
+    // 同样的机器状态，停在上线之前的步骤：照旧判定作业不能继续
+    let mut tx = t.st.db.begin().await.unwrap();
+    let at_verify = jobs::enqueue(&mut tx, "provision_proxy", Some(node), json!({}), "test").await.unwrap();
+    tx.commit().await.unwrap();
+    sqlx::query("update job set step = 2 where id = $1").bind(at_verify).execute(&t.st.db).await.unwrap();
+    let j = run_one(&t, at_verify).await;
+    assert_eq!(j["state"], "failed", "{j}");
+    assert!(j["error"].as_str().unwrap().contains("不能再继续"), "{j}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn purge_refused_while_peer_still_counts_traffic() {
     let t = setup(false).await; // 手动推进作业
