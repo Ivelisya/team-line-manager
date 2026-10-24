@@ -127,11 +127,11 @@ async fn reconcile_reopens_throttles_and_clears_ack_like_machine_alerts() {
     let s = state(&t).await;
     assert_eq!((s.len(), s[2].1.as_str(), s[2].2), (3, "firing", 0), "{s:?}");
 
-    // 隔得远的老毛病：近 7 天开了 3 次，告警列表带 recent_count；触发通知摘要带「近 24 小时第 N 次」
+    // 隔得远的老毛病：近 7 天开了 3 条（第一条另合并过 3 次复发），recent_count = 3 + 3；触发通知摘要带「近 24 小时第 N 次」
     tokio::time::sleep(Duration::from_millis(500)).await;
     let items = t.get("/api/v1/incidents?state=all").await["items"].as_array().unwrap().clone();
     let counts: Vec<_> = items.iter().filter(|i| i["rule"] == RULE).map(|i| i["recent_count"].as_i64().unwrap()).collect();
-    assert_eq!(counts, [3, 3, 3], "{items:?}");
+    assert_eq!(counts, [6, 6, 6], "{items:?}");
     // 反复的门槛在中控：每条带 chronic；state=chronic 每个（规则, 对象）只取最近一条
     assert!(items.iter().filter(|i| i["rule"] == RULE).all(|i| i["chronic"] == true), "{items:?}");
     let chronic = t.get("/api/v1/incidents?state=chronic").await["items"].as_array().unwrap().clone();

@@ -18,9 +18,9 @@ export function SuggestedCmds({ i, className }: { i: Incident; className?: strin
   );
 }
 
-/** 次数标签：只用一种写法「近 7 天第 N 次」；恢复后 30 分钟内复发合并进这条的次数（reopen_count）写在悬停里。没反复、也没合并过的不标 */
+/** 次数标签「近 7 天第 N 次」：只在中控判定反复（chronic，次数含 30 分钟内复发合并进来的）时标；合并过的次数写在悬停里 */
 export function RecentCount({ i, className }: { i: Incident; className?: string }) {
-  if (!i.chronic && !(i.reopen_count > 0)) return null;
+  if (!i.chronic) return null;
   const tip = [
     i.chronic && '同一对象同一规则近 7 天反复出现，考虑换线或替换',
     i.reopen_count > 0 && `这一条恢复后 30 分钟内又出现过 ${i.reopen_count} 次，已合并成这一条`,
