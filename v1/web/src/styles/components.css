@@ -599,3 +599,6 @@ button.tag:active { scale: var(--press-md); transition-duration: var(--dur-press
 button.tag:focus-visible { outline-offset: -2px; } /* 标签行、表格单元格都会裁掉外圈 */
 .cal-day:focus-visible { outline-offset: 0; }
 .cal-day[aria-selected="true"]:focus-visible { outline-color: var(--fg); } /* 选中格是强调色实底，强调色的环贴在上面看不出来 */
+
+/* 流量已超出额度（本周期已用 ≥ 上限）：「1129 GB / 1000 GB」整段标红（费用页、卡片） */
+[data-over], [data-over] :is(.num, .unit) { color: var(--bad-text); }

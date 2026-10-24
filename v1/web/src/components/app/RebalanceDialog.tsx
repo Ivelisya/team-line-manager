@@ -37,7 +37,7 @@ export const RebalanceDialog = resetOnOpen(function RebalanceDialog({ relay, ope
             <DialogDescription>
               {p ? <>本周期已用 {gb(p.used)} / {p.limit_gb} GB{p.daily_avg != null && <>，近 7 天日均 {gb(p.daily_avg)}</>}
                 {p.forecast_full_at && <>，预计 {mmdd(p.forecast_full_at)} 用满（重置 {mmdd(p.period_end)}）</>}</> : '按近 7 天的速度估算'}
-              {' '}<InfoTip text={'挑出搬走后能让这台撑到重置日的最少入口，搬去额度放得下、往返最快的在用线路机（没有往返数据时取额度余量最多的）。\n每个入口的流量按近 7 天算，再按这台网卡的日均折算；这里只是建议，点「搬过去」才会走换线路机的预览与确认'} />
+              {' '}<InfoTip text={'挑出搬走后能让这台撑到重置日的最少入口（已超出额度的：搬走后日均降到原来的 20% 以下），搬去额度放得下、往返最快的在用线路机（没有往返数据时取额度余量最多的）。\n每个入口的流量按近 7 天算，再按这台网卡的日均折算；这里只是建议，点「搬过去」才会走换线路机的预览与确认'} />
             </DialogDescription>
           </DialogHeader>
           {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()}>取建议失败：</ErrorNote>}
@@ -46,7 +46,9 @@ export const RebalanceDialog = resetOnOpen(function RebalanceDialog({ relay, ope
             <div className="stack-sm" style={{ opacity: q.isFetching ? 0.6 : 1 }}>
               <div>
                 搬到 <b>{p.target.name}</b>
-                {p.after && <>，{relay.name} 日均降到 {gb(p.after.daily_avg)}，重置时约用到 <b className="num">{p.after.projected_pct}%</b>（现在按速度约 {p.projected_pct}%）</>}
+                {p.after && (p.over_limit
+                  ? <>，{relay.name} 日均从 {gb(p.daily_avg ?? 0)} 降到 <b className="num">{gb(p.after.daily_avg)}</b> <InfoTip text="已经超出额度，撑到重置日已来不及；目标是搬走后日均降到原来的 20% 以下，到重置日前不再大量增长" /></>
+                  : <>，{relay.name} 日均降到 {gb(p.after.daily_avg)}，重置时约用到 <b className="num">{p.after.projected_pct}%</b>（现在按速度约 {p.projected_pct}%）</>)}
                 {p.target_after?.projected_pct != null && <>；{p.target.name} 接收后约 <b className="num">{p.target_after.projected_pct}%</b></>}
               </div>
               {p.reason && <Note tone="warn">{p.reason}</Note>}

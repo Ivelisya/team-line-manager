@@ -94,6 +94,9 @@ const BACK = [
   { value: '3600', label: '1 小时后' }, { value: '14400', label: '4 小时后' }, { value: '43200', label: '12 小时后' }, { value: '86400', label: '1 天后' }, { value: 'never', label: '不自动切回' },
 ];
 
+/** mihomo 内置的策略（不是出口） */
+const BUILTIN = new Map([['DIRECT', '直连，不走代理'], ['REJECT', '拒绝连接'], ['REJECT-DROP', '丢弃连接'], ['PASS', '跳过这条规则'], ['COMPATIBLE', '兼容占位']]);
+
 /** 临时切换：选组（select 组）与要切到的出口（组里的、不是当前的），默认 4 小时后自动切回 */
 const SwitchDialog = resetOnOpen(function SwitchDialog({ open, t }: { open: boolean; t: SwitchTarget }) {
   const q = useRouter(t.id);
@@ -110,7 +113,9 @@ const SwitchDialog = resetOnOpen(function SwitchDialog({ open, t }: { open: bool
     const st = !e ? '' : e.alive === false && e.fail_streak >= 2 ? ' · 不通' : e.delay_ms != null ? ` · ${e.delay_ms} ms` : '';
     return `${n}${st}`;
   };
-  const opts = (g?.all ?? []).filter((x) => x !== g?.now).map((x) => ({ value: x, label: label(x) }));
+  // mihomo 内置的 REJECT（拒绝）、DIRECT（直连）等不是出口：排到最后、写明是什么，免得排在第一个被顺手选中
+  const opts = (g?.all ?? []).filter((x) => x !== g?.now).sort((a, b) => Number(BUILTIN.has(a)) - Number(BUILTIN.has(b)))
+    .map((x) => ({ value: x, label: BUILTIN.has(x) ? `${x}（${BUILTIN.get(x)}）` : label(x) }));
   const valid = !!g && !!to && to !== g.now && g.all.includes(to);
   const submit = () => run.mutate({ id: t.id, group: g!.name, to, back_after_s: back === 'never' ? undefined : Number(back) }, {
     onSuccess: (d) => { toast.ok(`${g!.name}：${d.from} → ${d.to}${d.back_at ? `，${F.dt(d.back_at)} 自动切回` : ''}`); showSwitch(null); },

@@ -6,9 +6,10 @@ import { useIncidents } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import { isRouterIncident, routerIncidentTab, useRouterDrawer } from '@/lib/routers';
 import * as F from '@/lib/format';
-import { errText } from '@/lib/derive';
+import { reasonText } from '@/lib/derive';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card';
 import { Pill, SeverityMark } from '@/components/app/primitives';
+import { SuggestedCmds } from '@/components/app/IncidentBits';
 
 const SHOW = 5;
 
@@ -41,7 +42,7 @@ export function AlertsIndicator() {
             const name = i.subject?.name ?? i.subject_name ?? '—';
             // 摘要以「对象名：」开头（告警通知要能单独看懂），这里名字已在上一行，去掉不重复
             // 英文原始错误换成中文（errText，同卡片与抽屉）
-            const sum = errText(i.summary.startsWith(`${name}：`) ? i.summary.slice(name.length + 1) : i.summary);
+            const sum = reasonText(i.summary.startsWith(`${name}：`) ? i.summary.slice(name.length + 1) : i.summary);
             return (
               <li key={i.id}>
                 <button type="button" className="pop-item" onClick={() => { setOpen(false); if (sid) { if (isRouterIncident(i)) openRouter(sid, routerIncidentTab(i)); else openDrawer(sid); } }}>
@@ -53,6 +54,8 @@ export function AlertsIndicator() {
                   </span>
                   <span className="alerts-pop-sum hint ellipsis" data-tip={sum}>{sum}</span>
                 </button>
+                {/* 命令带复制按钮，放在可点的整行外面（按钮里不能再套按钮） */}
+                <SuggestedCmds i={i} className="alerts-pop-cmds" />
               </li>
             );
           })}

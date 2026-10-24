@@ -10,7 +10,7 @@ import { countryName, flagUrl } from '@/lib/flags';
 import { Tip, Trunc } from '@/components/ui/overlays';
 import { InfoTip } from '@/components/ui/form';
 import { useCountUp } from '@/lib/useCountUp';
-import { dueTone, entryLabel, errText, healthLabel, fromLabel, hostRel, LINK_LABEL, linkTip, lifecycleLabel, monthFlow, monthFlowTip, severityOf, type BeatCell, type linkCounts, type LinkKey } from '@/lib/derive';
+import { compactPorts, dueTone, entryLabel, errText, reasonText, healthLabel, fromLabel, hostRel, LINK_LABEL, linkTip, lifecycleLabel, monthFlow, monthFlowTip, severityOf, type BeatCell, type linkCounts, type LinkKey } from '@/lib/derive';
 import { openDrawer } from '@/lib/drawer';
 import { copyText } from '@/lib/clipboard';
 import { watchSize } from '@/lib/sharedObserver';
@@ -65,14 +65,27 @@ export function HealthPill({ m }: { m: Pick<MachineView, 'health' | 'lifecycle' 
   if (lc === 'failed') return <Pill tone="bad">{lifecycleLabel(lc)}</Pill>;
   // 原因写成 data-tip（一条一行）交给全站一份 TipHost：卡片、表格里成批的胶囊不各挂一个 Radix Tooltip 根
   const s = m.health.status; const rs = m.health.reasons;
-  return <Pill tone={HEALTH_TONE[s]} tabIndex={rs.length ? 0 : undefined} tip={rs.map((r) => errText(r.text)).join('\n')}>{healthLabel(s)}</Pill>;
+  return <Pill tone={HEALTH_TONE[s]} tabIndex={rs.length ? 0 : undefined} tip={rs.map((r) => reasonText(r.text)).join('\n')}>{healthLabel(s)}</Pill>;
 }
 /** 健康原因列表（带严重度图标）：抽屉“状态原因”。英文原始错误换成中文（errText，同卡片与胶囊悬停） */
 export const ReasonList = ({ reasons, className }: { reasons: HealthReason[]; className: string }) => (
   <ul className={className}>
-    {reasons.map((r, i) => <li key={i}><SeverityMark severity={r.severity} />{errText(r.text)}</li>)}
+    {reasons.map((r, i) => <ReasonItem key={i} r={r} />)}
   </ul>
 );
+/** 一条原因：逐个端口列出的（几十个端口都「超时 10 秒」）合并成「28 个端口超时 10 秒」，点「明细」再逐个看 */
+function ReasonItem({ r }: { r: HealthReason }) {
+  const [open, setOpen] = React.useState(false);
+  const c = compactPorts(errText(r.text));
+  return (
+    <li><SeverityMark severity={r.severity} />
+      <span className="reason-body">{c.text}
+        {c.parts && <> <button type="button" className="btn btn-link btn-sm reason-more" aria-expanded={open} onClick={() => setOpen((v) => !v)}>{open ? '收起' : '明细'}</button></>}
+        {open && c.parts && <span className="reason-parts">{c.parts.join('\n')}</span>}
+      </span>
+    </li>
+  );
+}
 /** 告警级别图标（顶栏告警预览的列表）：严重同故障、警告同降级 */
 export const SeverityMark = ({ severity }: { severity: string }) => {
   const s = severityOf(severity);

@@ -3,8 +3,9 @@
 import { memo } from 'react';
 import { PING_LEGEND, pingLossTone, pingMsTone, usePingRows, type PingRow } from '@/lib/ping';
 import type { DrawerTab } from '@/lib/drawer';
+import * as F from '@/lib/format';
 
-const ms = (v: number | null) => (v == null ? '—' : `${Math.round(v)} ms`);
+const ms = (v: number | null) => (v == null ? '—' : F.str(F.ms(v)));
 const pct = (v: number | null) => (v == null ? '—' : `${Math.round(v)}%`);
 
 function Row({ r }: { r: PingRow }) {

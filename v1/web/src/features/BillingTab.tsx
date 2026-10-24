@@ -54,7 +54,7 @@ export function BillingTab({ m }: { m: MachineView }) {
             {q.limit > 0 ? <>
               {/* 流量相关的两项各占一行的两列：数字、单位与「X 起」不折行 */}
               <LabelValue label={m.ip_nodes.length ? `${quotaUsedLabel(q)}（含同机 IP 节点）` : quotaUsedLabel(q)} wrap className="span-2">
-                <span className="nowrap"><span className="num">{F.str(quotaGb(q.used))}</span> <span className="unit">/ {F.str(limitGb(q.limit))}</span><FromTag from={q.from} start={q.start} /></span> <InfoTip text={[quotaRuleText(m), ...quotaNotes(m)].join('\n')} />
+                <span className="nowrap" data-over={q.pct != null && q.pct >= 100 ? '' : undefined} data-tip={q.pct != null && q.pct >= 100 ? `已超出额度（${Math.floor(q.pct)}%）` : undefined}><span className="num">{F.str(quotaGb(q.used))}</span> <span className="unit">/ {F.str(limitGb(q.limit))}</span><FromTag from={q.from} start={q.start} /></span> <InfoTip text={[quotaRuleText(m), ...quotaNotes(m)].join('\n')} />
               </LabelValue>
               <LabelValue label="流量周期" wrap className="span-2"><span className="nowrap">{quotaCycleText(m)}</span></LabelValue>
               {quotaForecast(m) && <LabelValue label="用满预测" wrap className="span-2"><span className="nowrap due" data-tone="warn">{quotaForecast(m)}</span> <InfoTip text="按近 7 天的日均用量估算，早于重置日才显示" /></LabelValue>}

@@ -39,6 +39,7 @@ struct DueRow {
     panel_url: Option<String>,
     due_date: Date,
     due_days: i32,
+    billing_tz: String,
     auto_renew: bool,
     price_cents: i32,
     currency: String,
@@ -46,7 +47,8 @@ struct DueRow {
     spare: bool,
 }
 
-/// 待付清单：在用机器里到期日落在窗口内的，按 供应商 × 到期日 分组，每组列机器、原币种小计与 USD 合计（`total`，同总览月费合计的形状）。
+/// 待付清单：在用机器里到期日落在窗口内的，按 供应商 × 到期日 × 账单时区 分组（剩余天数 `due_days` 按各自账单时区的今天算，
+/// 同一天到期、时区不同的差一天，分开成组、组上带 `billing_tz`），每组列机器、原币种小计与 USD 合计（`total`，同总览月费合计的形状）。
 /// 开了自动续费的不算待付，单列在 `auto`（到期后由中控按周期顺延，只记账）。`groups[].machines[].price_cents` 是订阅的每期价格（登记已付的默认金额）
 pub async fn due(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<DueQuery>) -> ApiResult<Json<Value>> {
     if q.days.is_some() && q.until.is_some() {
@@ -58,7 +60,7 @@ pub async fn due(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<Du
     }
     let rows: Vec<DueRow> = sqlx::query_as(
         "select m.id, display_name(m.kind::text, m.label, t.name, m.number) name, m.kind::text kind, pv.id provider_id, pv.name provider, pv.panel_url,
-                s.due_date, (s.due_date - (now() at time zone e.billing_tz)::date) due_days, e.auto_renew, e.price_cents, e.currency, e.cycle::text cycle,
+                s.due_date, (s.due_date - (now() at time zone e.billing_tz)::date) due_days, e.billing_tz, e.auto_renew, e.price_cents, e.currency, e.cycle::text cycle,
                 coalesce(t.spare, false) spare
          from subscription s join subscription_eff e on e.machine_id = s.machine_id join machine m on m.id = s.machine_id
          left join team t on t.id = m.team_id left join plan pl on pl.id = m.plan_id left join provider pv on pv.id = coalesce(pl.provider_id, m.provider_id)
@@ -73,13 +75,13 @@ pub async fn due(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<Du
     .await?;
     let rate = fx::current(&st.db).await?;
     let mut total = fx::Total::default();
-    let mut groups: Vec<(Option<Uuid>, Date, Value, fx::Total, Vec<Value>)> = vec![];
+    let mut groups: Vec<(Option<Uuid>, Date, String, Value, fx::Total, Vec<Value>)> = vec![];
     let mut auto = vec![];
     for r in rows {
         let provider = json!({"id": r.provider_id, "name": r.provider, "panel_url": r.panel_url});
         let (usd, r_) = fx::convert(&rate, i64::from(r.price_cents), &r.currency);
         let m = json!({
-            "id": r.id, "name": r.name, "kind": r.kind, "due_date": r.due_date, "due_days": r.due_days, "spare": r.spare, "cycle": r.cycle,
+            "id": r.id, "name": r.name, "kind": r.kind, "due_date": r.due_date, "due_days": r.due_days, "billing_tz": r.billing_tz, "spare": r.spare, "cycle": r.cycle,
             "price_cents": r.price_cents, "currency": r.currency, "price_usd_cents": usd,
         });
         if r.auto_renew {
@@ -87,19 +89,19 @@ pub async fn due(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<Du
             continue;
         }
         total.add(&r.currency, i64::from(r.price_cents), usd.zip(r_));
-        let g = match groups.iter().position(|g| g.0 == r.provider_id && g.1 == r.due_date) {
+        let g = match groups.iter().position(|g| g.0 == r.provider_id && g.1 == r.due_date && g.2 == r.billing_tz) {
             Some(i) => i,
             None => {
-                groups.push((r.provider_id, r.due_date, provider, fx::Total::default(), vec![]));
+                groups.push((r.provider_id, r.due_date, r.billing_tz.clone(), provider, fx::Total::default(), vec![]));
                 groups.len() - 1
             }
         };
-        groups[g].3.add(&r.currency, i64::from(r.price_cents), usd.zip(r_));
-        groups[g].4.push(m);
+        groups[g].4.add(&r.currency, i64::from(r.price_cents), usd.zip(r_));
+        groups[g].5.push(m);
     }
     let groups: Vec<Value> = groups
         .into_iter()
-        .map(|(_, due_date, provider, t, machines)| json!({"provider": provider, "due_date": due_date, "machines": machines, "total": t}))
+        .map(|(_, due_date, tz, provider, t, machines)| json!({"provider": provider, "due_date": due_date, "billing_tz": tz, "machines": machines, "total": t}))
         .collect();
     Ok(ok(json!({"days": q.until.is_none().then_some(days), "until": q.until, "groups": groups, "auto": auto, "total": total})))
 }

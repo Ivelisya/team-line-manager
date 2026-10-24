@@ -106,6 +106,21 @@ const ERR_ZH: [RegExp, string | ((m: string, ...g: string[]) => string)][] = [
   [/\bsocks5?\b[\w .:'/-]*(?:握手失败)?/gi, '代理握手失败'], // 后面已经带「握手失败」的一并吃掉，不叠词
 ];
 export const errText = (s: string) => ERR_ZH.reduce<string>((t, [re, to]) => t.replace(re, to as string), s).replace(/\s+$/, '');
+/** 连不上的端口逐个列出的原因（relay_unreachable：「（端口 20001：超时 10 秒；端口 20002：超时 10 秒；…）」）：同一原因的端口合并成
+ *  「28 个端口超时 10 秒」，两个以内照旧写端口号；括号外的文字不动。parts：逐个端口的明细（展开看），没有可合并的为 null */
+const PORT_LIST = /（((?:端口 \d+：[^；（）]+)(?:；端口 \d+：[^；（）]+)+)）/;
+export function compactPorts(s: string): { text: string; parts: string[] | null } {
+  const m = PORT_LIST.exec(s);
+  if (!m) return { text: s, parts: null };
+  const parts = m[1].split('；');
+  const by = new Map<string, string[]>();
+  for (const p of parts) { const x = /^端口 (\d+)：(.+)$/.exec(p)!; by.set(x[2], [...(by.get(x[2]) ?? []), x[1]]); }
+  if ([...by.values()].every((ps) => ps.length <= 2)) return { text: s, parts: null };
+  const short = [...by].map(([why, ps]) => (ps.length > 2 ? `${ps.length} 个端口${why}` : `端口 ${ps.join('、')}：${why}`)).join('；');
+  return { text: s.replace(m[0], `（${short}）`), parts };
+}
+/** 原因的显示文字：英文换中文，逐个端口的合并（卡片胶囊悬停、告警说明用；抽屉里另可展开明细） */
+export const reasonText = (s: string) => compactPorts(errText(s)).text;
 /** 入口探测失败的悬停：常见的连接错误先写成一句人话（端口拒绝连接 / 连接超时 / 网络不可达），原文放第二行；其它原样（英文换成中文） */
 const PROBE_ERR: [RegExp, string][] = [[/拒绝|refused|os error 111/i, '端口拒绝连接'], [/超时|time[d ]?-?out|os error 110/i, '连接超时'], [/不可达|unreachable|os error 11[13]/i, '网络不可达']];
 export function probeErr(detail: string | null | undefined) {
@@ -266,7 +281,8 @@ export function quotaTight(list: MachineView[]) {
     const p = pct ?? 0;
     if (!top || at < top.at || (at === top.at && p > top.pct)) top = { id: m.id, name: m.name, pct: p, at, forecast: quotaForecast(m) };
   }
-  return { n, top: top && { id: top.id, name: top.name, pct: Math.floor(top.pct), forecast: top.forecast } };
+  // full：预计用满的日期（MM-DD），首页卡上只写它，整句放悬停
+  return { n, top: top && { id: top.id, name: top.name, pct: Math.floor(top.pct), forecast: top.forecast, full: Number.isFinite(top.at) ? mmdd(new Date(top.at).toISOString()) : null } };
 }
 /** 集群状态在线率格条的悬停：离线（agent 不再上报）的机器名，同 overview.offline 的口径（同机 IP 节点随宿主机的 agent，宿主机离线它们也各计一台） */
 export const offlineNames = (list: MachineView[]) => list.filter((m) => m.agent && !m.agent.online).map((m) => m.name);

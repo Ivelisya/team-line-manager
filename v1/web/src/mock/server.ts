@@ -669,16 +669,16 @@ R('GET', '/billing/due', ({ query }) => {
   const days = Number(query.get('days') ?? 30);
   const rows = db.machines.filter((m) => m.lifecycle === 'active' && !m.spare && m.subscription && m.subscription.due_days <= days)
     .sort((a, b) => a.subscription!.due_date.localeCompare(b.subscription!.due_date) || (a.provider?.name ?? '￿').localeCompare(b.provider?.name ?? '￿'));
-  const view = (m: MachineView) => { const s = m.subscription!; return { id: m.id, name: m.name, kind: m.kind, due_date: s.due_date, due_days: s.due_days, cycle: s.cycle, price_cents: s.price_cents, currency: s.currency, price_usd_cents: toUsd(s.price_cents, s.currency) }; };
+  const view = (m: MachineView) => { const s = m.subscription!; return { id: m.id, name: m.name, kind: m.kind, due_date: s.due_date, due_days: s.due_days, billing_tz: s.billing_tz, cycle: s.cycle, price_cents: s.price_cents, currency: s.currency, price_usd_cents: toUsd(s.price_cents, s.currency) }; };
   const prov = (m: MachineView) => ({ id: m.provider?.id ?? null, name: m.provider?.name ?? null, panel_url: db.providers.find((p) => p.id === m.provider?.id)?.panel_url ?? null });
   const total = (ms: MachineView[]) => usdTotal(ms.map((m) => ({ currency: m.subscription!.currency, monthly_cents: m.subscription!.price_cents })));
   const pay = rows.filter((m) => !m.subscription!.auto_renew);
-  const groups: { provider: ReturnType<typeof prov>; due_date: string; ms: MachineView[] }[] = [];
+  const groups: { provider: ReturnType<typeof prov>; due_date: string; tz: string; ms: MachineView[] }[] = [];
   for (const m of pay) {
-    const g = groups.find((x) => x.provider.id === (m.provider?.id ?? null) && x.due_date === m.subscription!.due_date);
-    if (g) g.ms.push(m); else groups.push({ provider: prov(m), due_date: m.subscription!.due_date, ms: [m] });
+    const g = groups.find((x) => x.provider.id === (m.provider?.id ?? null) && x.due_date === m.subscription!.due_date && x.tz === m.subscription!.billing_tz);
+    if (g) g.ms.push(m); else groups.push({ provider: prov(m), due_date: m.subscription!.due_date, tz: m.subscription!.billing_tz, ms: [m] });
   }
-  return { days, until: null, total: total(pay), groups: groups.map((g) => ({ provider: g.provider, due_date: g.due_date, machines: g.ms.map(view), total: total(g.ms) })),
+  return { days, until: null, total: total(pay), groups: groups.map((g) => ({ provider: g.provider, due_date: g.due_date, billing_tz: g.tz, machines: g.ms.map(view), total: total(g.ms) })),
     auto: rows.filter((m) => m.subscription!.auto_renew).map((m) => ({ provider: prov(m), machine: view(m) })) };
 });
 R('POST', '/renewals/batch', ({ body }) => {
@@ -903,10 +903,22 @@ const SEV_RANK: Record<string, number> = { critical: 0, warning: 1, info: 2 };
 const byState = (a: Incident, b: Incident) => (a.state === b.state ? 0 : a.state === 'firing' ? -1 : 1);
 const bySev = (a: Incident, b: Incident) => (SEV_RANK[a.severity] ?? 1) - (SEV_RANK[b.severity] ?? 1);
 const byOpened = (a: Incident, b: Incident) => b.opened_at.localeCompare(a.opened_at);
+/** 建议命令（同服务端 api/incidents.rs 的 suggest，只做这几条）：只有进行中的才有 */
+const shq = (s: string) => (/^[\p{L}\p{N}\-_.:/@+=,]+$/u.test(s) ? s : `'${s}'`);
+function suggest(i: Incident): string[] {
+  const name = i.subject?.name ?? i.subject_name;
+  if (i.state !== 'firing' || !name) return [];
+  const kind = db.machines.find((m) => m.id === i.subject_id)?.kind;
+  if (i.rule === 'traffic_quota_high' && kind === 'relay') return [`fleetctl rebalance ${shq(name)}`];
+  if (i.rule === 'agent_offline') return [`fleetctl logs ${shq(name)}`];
+  if (i.rule === 'router_exit_drift') return [`fleetctl router sync ${shq(name)}`];
+  if (i.chronic && kind === 'vps' && (i.rule === 'tcp_fail' || i.rule === 'egress_fail')) return [`fleetctl placement --node ${shq(name)}`];
+  return [];
+}
 R('GET', '/incidents', ({ query }) => {
   const s = query.get('state') ?? 'firing'; const sid = query.get('subject_id');
   const order = sid ? (a: Incident, b: Incident) => byState(a, b) || byOpened(a, b) : (a: Incident, b: Incident) => byState(a, b) || bySev(a, b) || byOpened(a, b);
-  const list = db.incidents.filter((i) => (s === 'all' || i.state === s) && (!sid || i.subject_id === sid)).sort(order);
+  const list = db.incidents.filter((i) => (s === 'all' || i.state === s) && (!sid || i.subject_id === sid)).sort(order).map((i) => ({ ...i, suggested: i.suggested ?? suggest(i) }));
   return { ...paged(list, query), acked: list.filter((i) => i.ack_at).length };
 });
 R('POST', '/incidents/([^/]+)/ack', ({ params }) => { const i = db.incidents.find((x) => x.id === params[0]); if (!i) throw bad('告警不存在', 404, 'not_found'); i.ack_at = iso(); i.ack_by = db.user; emit({ type: 'incidents' }); return {}; });
@@ -1150,7 +1162,9 @@ R('GET', '/relays/([^/]+)/rebalance', ({ params, query }) => {
   const room = (x: MachineView) => (x.quota.limit_gb ?? 0) * 1e9 - x.quota.used;
   const target = db.machines.filter((x) => x.kind === 'relay' && x.lifecycle === 'active' && x.id !== src.id && x.health.status !== 'down').sort((a, b) => room(b) - room(a))[0] ?? null;
   const days = Math.max(1, (Date.parse(q.period_end ?? '') - Date.now()) / 864e5);
-  const daily = q.daily_avg ?? 0; const allowed = (limit - q.used) / days;
+  // 已超额度：目标改为搬走后日均降到原来的 20% 以下（同服务端 OVER_LIMIT_KEEP_PCT）
+  const over = q.used >= limit;
+  const daily = q.daily_avg ?? 0; const allowed = over ? daily * 0.2 : (limit - q.used) / days;
   const needed = daily > 0 && q.used + daily * days > limit;
   const es = src.entries.filter((e) => e.lifecycle === 'active' && !e.direct && !skip.has(e.node.id) && !target?.entries.some((t) => t.node.id === e.node.id))
     .map((e) => ({ e, month: e.traffic.month_up + e.traffic.month_down })).sort((a, b) => b.month - a.month);
@@ -1164,7 +1178,7 @@ R('GET', '/relays/([^/]+)/rebalance', ({ params, query }) => {
   const pct = (v: number) => Math.round((v * 1000) / limit) / 10;
   return {
     relay: { id: src.id, name: src.name }, limit_gb: q.limit_gb, used: q.used, period_end: q.period_end, daily_avg: q.daily_avg, forecast_full_at: q.forecast_full_at, projected_pct: daily > 0 ? pct(q.used + daily * days) : null,
-    needed, ok: needed && moves.length > 0 && daily - cut <= allowed, reason: needed ? null : '按近 7 天的速度，重置前用不满，不用搬',
+    needed, over_limit: over, ok: needed && moves.length > 0 && daily - cut <= allowed, reason: needed ? null : '按近 7 天的速度，重置前用不满，不用搬',
     target: target && { id: target.id, name: target.name, limit_gb: target.quota.limit_gb, used: target.quota.used, daily_avg: target.quota.daily_avg, projected_pct: target.quota.limit_gb ? pct2(target, 0) : null },
     moves, after: { daily_avg: daily - cut, projected_pct: pct(q.used + (daily - cut) * days) }, target_after: { fits: true, projected_pct: target?.quota.limit_gb ? pct2(target, cut) : null },
   };

@@ -198,7 +198,7 @@ function QuotaSlot({ m, onOpen, large }: { m: MachineView; onOpen: Open; large?:
             <b className={cn('num', q.rem === 0 && 'is-bad')}>{q.rem == null ? '与宿主机共用' : q.rem > 0 ? <Num f={quotaGb(q.rem)} /> : '已超限'}</b>
           </span>
         )}
-        {q.limit > 0 && <span className="nc-quse" data-tip={`${quotaUsedLabel(q)} ${F.str(quotaGb(q.used))} / ${F.str(limitGb(q.limit))}\n${quotaTip(m)}`}>{quotaUsedLabel(q)} <Num f={quotaGb(q.used)} /> / <Num f={limitGb(q.limit)} /><FromTag from={q.from} start={q.start} sep /></span>}
+        {q.limit > 0 && <span className="nc-quse" data-over={q.pct != null && q.pct >= 100 ? '' : undefined} data-tip={`${quotaUsedLabel(q)} ${F.str(quotaGb(q.used))} / ${F.str(limitGb(q.limit))}\n${quotaTip(m)}`}>{quotaUsedLabel(q)} <Num f={quotaGb(q.used)} /> / <Num f={limitGb(q.limit)} /><FromTag from={q.from} start={q.start} sep /></span>}
       </span>
       {q.rem != null && <Cells pct={q.pct} colors={QUOTA_COLORS} />}
       {fc && <span className="nc-qfc">{fc}</span>}
