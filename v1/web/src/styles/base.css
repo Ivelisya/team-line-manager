@@ -5,6 +5,8 @@ html { background: var(--canvas); scroll-padding-top: var(--topbar-h); scrollbar
    悬停样式一律包在 @media (hover: hover) 里：触屏没有悬停，点过的卡片、名称、按钮会一直停在悬停态 */
 /* Radix 弹层锁滚动时让出槽位：遮罩才盖满全宽（否则右侧留一条不变暗的边）；库会给 body 补同宽的右外边距，内容不动 */
 html:has(> body[data-scroll-locked]) { scrollbar-gutter: auto; }
+/* 页面不够长时 Chrome 的 clientWidth 不扣常驻槽位，库算出的补偿是 0、内容右移半个槽宽：按 main.tsx 量出的真实槽宽（--sbw）补 */
+html body[data-scroll-locked] { margin-right: var(--sbw, 0px) !important; --removed-body-scroll-bar-size: var(--sbw, 0px); }
 /* 背景光晕：固定在视口的一层 body::before（z-index -1：在根背景 --canvas 之上、所有内容之下）。
    以前写成 body 的背景 + background-attachment: fixed：非根元素上的 fixed 背景会让浏览器放弃合成滚动，每滚一帧都重画整页背景 */
 body::before { content: ""; position: fixed; inset: 0; z-index: -1; background: var(--canvas-glow); pointer-events: none; }

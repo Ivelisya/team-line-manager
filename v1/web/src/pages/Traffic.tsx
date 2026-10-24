@@ -117,7 +117,7 @@ const NodesTable = React.memo(function NodesTable({ nodes, days, loading, stale,
     <Panel title="节点每日流量" count={nodes ? `${rows.length} 个` : undefined} sub={<InfoTip text={'下载加上传；格子底色越深流量越大\n已退役的机器这段时间有流量的也列出'} />} flush>
       <div ref={wrap}>
         <TableWrap data-stale={stale}>
-          <table className="dt is-one dt-heat" style={{ minWidth: 0 }}>
+          <table className="dt is-one dt-heat">
             <colgroup><col className="col-node" />{dates.map((x) => <col key={x} className="col-day" />)}<col className="col-sum" /></colgroup>
             <thead><tr>
               <SortTh id="name" label="节点" sort={sort} onSort={onSort} />
@@ -177,7 +177,7 @@ const RelaysTable = React.memo(function RelaysTable({ relays, days, stale, teamN
     <Panel title="线路机每日网卡计费量" sub={<>{teamName && <span className="t-muted">整台线路机，不分团队</span>}<InfoTip text={'网卡口径：下行 = 流进线路机，上行 = 流出；每天按供应商的计费规则算一次\n悬停格子看下行、上行和经过它的业务流量'} /></>} flush>
       <div ref={wrap}>
         <TableWrap data-stale={stale}>
-          <table className="dt is-one dt-heat" style={{ minWidth: 0 }}>
+          <table className="dt is-one dt-heat">
             <colgroup><col className="col-node" />{dates.map((x) => <col key={x} className="col-day" />)}<col className="col-sum" /></colgroup>
             <thead><tr><th>线路机</th>{dates.map((x) => <DateHead key={x} date={x} today={x === last} />)}<th className="r">{days} 天合计</th></tr></thead>
             <tbody>
