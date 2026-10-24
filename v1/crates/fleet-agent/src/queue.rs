@@ -60,6 +60,7 @@ impl Queue {
     pub fn open(dir: PathBuf, max_bytes: u64, max_age_ms: i64) -> Result<Self> {
         std::fs::create_dir_all(dir.join("dead"))?;
         let mut q = Self { dir, items: BTreeMap::new(), bytes: 0, max_bytes, max_age_ms, dropped: 0, dead: 0 };
+        let now = now_ms();
         for e in std::fs::read_dir(&q.dir)? {
             let e = e?;
             let name = e.file_name().to_string_lossy().to_string();
@@ -69,12 +70,13 @@ impl Queue {
             }
             let Some(seq) = name.strip_suffix(".json").and_then(|s| s.parse::<u64>().ok()) else { continue };
             let md = e.metadata()?;
+            // 修改时间夹到不晚于现在：重启前时钟偏快留下的文件 mtime 在未来，年龄为负永不过期，evict 从最旧的开始遇到它就停，后面的也不再按时长淘汰
             let mt = md
                 .modified()
                 .ok()
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or_else(now_ms);
+                .map(|d| (d.as_millis() as i64).min(now))
+                .unwrap_or(now);
             q.bytes += md.len();
             q.items.insert(seq, (md.len(), Enq::Wall(mt), false));
         }
@@ -253,6 +255,21 @@ mod tests {
         let mut q = Queue::open(d.to_path_buf(), 1 << 20, 50).unwrap();
         q.push(&rep(1, 10), false).unwrap();
         q.push(&rep(2, 10), false).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        q.push(&rep(3, 10), false).unwrap();
+        assert_eq!((q.dropped, q.oldest()), (2, Some(3)));
+    }
+
+    #[test]
+    fn reopen_clamps_future_mtime_so_it_still_expires() {
+        // 重启前时钟偏快留下的文件 mtime 在未来：当作刚入队，不然年龄为负永不过期，还挡着后面的报告按时长淘汰
+        let d = tmpdir("f");
+        let mut q = Queue::open(d.to_path_buf(), 1 << 20, 50).unwrap();
+        q.push(&rep(1, 10), false).unwrap();
+        q.push(&rep(2, 10), false).unwrap();
+        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(86400);
+        std::fs::File::options().write(true).open(q.file_path(1)).unwrap().set_modified(future).unwrap();
+        let mut q = Queue::open(d.to_path_buf(), 1 << 20, 50).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(120));
         q.push(&rep(3, 10), false).unwrap();
         assert_eq!((q.dropped, q.oldest()), (2, Some(3)));
