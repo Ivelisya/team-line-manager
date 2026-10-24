@@ -13,7 +13,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
 import { ErrorBoundary } from '@/components/app/ErrorBoundary';
 import { ConfirmDialog, TypedConfirmDialog } from '@/components/app/dialogs';
-import { CopyButton, ErrorNote, LabelValue, LabelValueGrid, Note, Num, Pill, Section, SectionHeader, SeverityMark, TableWrap } from '@/components/app/primitives';
+import { CopyButton, ErrorNote, LabelValue, LabelValueGrid, Note, Num, Pill, Section, SectionHeader, SeverityMark } from '@/components/app/primitives';
 import { Tag } from '@/components/app/viz';
 import { DeployTimeline, MiniBeat, RouterMeters, RouterStatePill, Seen, useShowBootstrap } from '@/components/app/RouterCard';
 import { useEndSubjectMaint, useMachineBriefs, useTeams } from '@/lib/queries';
@@ -365,14 +365,14 @@ function OverviewTab({ r, detail }: { r: RouterView; detail: RouterDetail | null
       {detail && detail.interfaces.length > 0 && (
         <Section className={staleCls}>
           <SectionHeader title={<>网络接口<InfoTip text="速率是最近一小段时间的平均，累计从开机起算" /></>} />
-          <TableWrap>
-            <table className="dt" style={{ minWidth: 520 }}>
-              <colgroup><col style={{ width: 170 }} /><col style={{ width: 130 }} /><col /><col /></colgroup>
+          <div className="table-wrap">
+            <table className="dt" style={{ minWidth: 560 }}>
+              <colgroup><col style={{ width: 230 }} /><col style={{ width: 130 }} /><col /><col /></colgroup>
               <thead><tr><th>接口</th><th>地址</th><th className="r">速率</th><th className="r">累计</th></tr></thead>
               <tbody>
                 {detail.interfaces.map((i) => (
                   <tr key={i.name}>
-                    <td><span className="cell-main strong">{i.name}{!i.up && <> <span className="rt-alive" data-tone="bad"><XCircle />断开</span></>}</span><span className="sub">{i.device} · {i.proto}{i.uptime_s != null && ` · 连上 ${F.str(uptimeFmt(i.uptime_s))}`}</span></td>
+                    <td><span className="cell-main strong">{i.name}{!i.up && <> <span className="rt-alive" data-tone="bad"><XCircle />断开</span></>}</span><span className="sub" data-tip={`${i.device} · ${i.proto}${i.uptime_s != null ? ` · 连上 ${F.str(uptimeFmt(i.uptime_s))}` : ''}`}>{i.device} · {i.proto}{i.uptime_s != null && ` · 连上 ${F.str(uptimeFmt(i.uptime_s))}`}</span></td>
                     <td className="num">{i.ip ?? <span className="t-muted">没有地址</span>}</td>
                     <td className="r"><span className="num">↓ <Num f={F.rate(i.rx_bps)} /></span><span className="sub">↑ <Num f={F.rate(i.tx_bps)} /></span></td>
                     <td className="r"><span className="num">↓ {F.str(F.bytes(i.rx_bytes))}</span><span className="sub">↑ {F.str(F.bytes(i.tx_bytes))}</span></td>
@@ -380,7 +380,7 @@ function OverviewTab({ r, detail }: { r: RouterView; detail: RouterDetail | null
                 ))}
               </tbody>
             </table>
-          </TableWrap>
+          </div>
         </Section>
       )}
       {oc && s && (

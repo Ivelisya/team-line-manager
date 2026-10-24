@@ -13,7 +13,7 @@ import { AVAIL_LEGEND, availCells, availTitles, fromLabel, hasHost, monthFlowTip
 import { Segmented } from '@/components/ui/overlays';
 import { Skeleton } from '@/components/ui/skeleton';
 import { InfoTip } from '@/components/ui/form';
-import { Beat, Empty, ErrorNote, LabelValue, LabelValueGrid, Note, Num, Section, SectionHeader, TableWrap } from '@/components/app/primitives';
+import { Beat, Empty, ErrorNote, LabelValue, LabelValueGrid, Note, Num, Section, SectionHeader } from '@/components/app/primitives';
 import { RANGES, TimeChart } from '@/components/app/TimeChart';
 import { chartPoll, RANGE_MS, vMs, vPct, vRate, yMs, yPct, yRate } from '@/lib/chart';
 import { entriesMeta } from './EntriesTable';
@@ -115,7 +115,7 @@ const ReachQualitySection = React.memo(function ReachQualitySection({ id }: { id
         : q.isLoading ? <Skeleton h={72} />
         : !s.length ? <div className="hint">还没有探测记录</div>
         : (
-          <TableWrap>
+          <div className="table-wrap">
             <table className="dt is-one" style={{ minWidth: 440 }}>
               <thead><tr><th>来源</th>{REACH_WINDOWS.map(([k, l]) => <th key={k}>{l}</th>)}</tr></thead>
               <tbody>
@@ -127,7 +127,7 @@ const ReachQualitySection = React.memo(function ReachQualitySection({ id }: { id
                 ))}
               </tbody>
             </table>
-          </TableWrap>
+          </div>
         )}
     </Section>
   );
