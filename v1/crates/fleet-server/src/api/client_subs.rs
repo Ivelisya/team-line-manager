@@ -402,14 +402,18 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     let cur = load(&st, id).await?;
     let name = b.name.as_deref().map(check_name).transpose()?;
     let mut tx = st.db.begin().await?;
+    // 先校验规则（团队行 for share）再写订阅行：和删团队（先锁团队、再改订阅）同序，两者并发不会死锁
+    let rule = match b.rule {
+        Some(r) => Some(r.check(&mut tx).await?),
+        None => None,
+    };
     sqlx::query("update client_sub set name = coalesce($2, name), enabled = coalesce($3, enabled), updated_at = now() where id = $1")
         .bind(id)
         .bind(&name)
         .bind(b.enabled)
         .execute(&mut *tx)
         .await?;
-    if let Some(rule) = b.rule {
-        let rule = rule.check(&mut tx).await?;
+    if let Some(rule) = rule {
         sqlx::query("update client_sub set team_mode = $2, team_ids = $3, direct = $4, include_ids = $5, exclude_ids = $6 where id = $1")
             .bind(id)
             .bind(&rule.team_mode)
