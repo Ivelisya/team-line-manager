@@ -1019,14 +1019,14 @@ fn ok_changed(before: Option<&(bool, Option<String>)>, last: Option<&Snapshot>, 
     before.is_none_or(|b| !b.0 || b.1.is_some()) || last.map(signature) != Some(signature(new))
 }
 
-/// 快照里不随每轮波动的部分：系统版本、接口通断与地址、OpenClash 状态与配置、各出口的对应与延迟测试结果、在线客户端
+/// 快照里不随每轮波动的部分：系统版本、接口通断与地址、OpenClash 状态与配置、各出口的对应与通不通（延迟毫秒数、测试时刻、连续不通次数是数值，每 5 分钟测一次就变，只随 [`NUMBERS_EVERY`] 推；不通是否到了「不可用」的门槛 [`usable`] 算状态）、在线客户端
 fn signature(s: &Snapshot) -> Value {
     let o = &s.openclash;
     serde_json::json!({
         "os": s.system.os, "kernel": s.system.kernel,
         "ifaces": s.interfaces.iter().map(|i| (&i.name, &i.device, i.up, &i.ip)).collect::<Vec<_>>(),
         "oc": (o.enabled, o.running, &o.version, &o.mode, &o.config_path, o.config_mtime.map(|t| t.unix_timestamp()), &o.error, &o.config_error, o.config_stale, &o.delay_error),
-        "exits": s.exits.iter().map(|e| serde_json::json!([e.name, e.server, e.port, e.entry, e.sync, e.linked, e.alive, e.delay_ms, e.delay_at.map(|t| t.unix_timestamp()), e.fail_streak])).collect::<Vec<_>>(),
+        "exits": s.exits.iter().map(|e| serde_json::json!([e.name, e.server, e.port, e.entry, e.sync, e.linked, e.alive, usable(e)])).collect::<Vec<_>>(),
         "groups": s.groups.iter().map(|g| (&g.name, &g.now)).collect::<Vec<_>>(),
         "clients": s.clients.iter().filter(|c| c.online).map(|c| (&c.ip, &c.hostname)).collect::<Vec<_>>(),
     })
@@ -1425,7 +1425,7 @@ mod tests {
         assert!(!carry_mapping(&mut b.snap.exits, None));
     }
 
-    /// 采集成功时只有看得见的状态变了才发实时事件：速率、CPU 每轮都变不算；出口测试结果、OpenClash 状态、之前不在线 / 有错误算
+    /// 采集成功时只有看得见的状态变了才发实时事件：速率、CPU 每轮都变、出口的延迟毫秒数每次测试都变不算；出口通不通、OpenClash 状态、之前不在线 / 有错误算
     #[test]
     fn event_only_on_visible_change() {
         let t0 = OffsetDateTime::now_utc();
@@ -1441,7 +1441,19 @@ mod tests {
         assert!(ok_changed(Some(&(true, Some("采集脚本出错".into()))), Some(&b0.snap), &b1.snap), "采集出错之后好了");
         assert!(ok_changed(Some(&ok), None, &b1.snap));
         let b2 = build(&raw(60, 0, 0, Some(json!({"ok": true, "results": {"节点01": 90}}))), &b1.prev, Some(&b1.snap), Some(&proxies()), &[], t0 + time::Duration::seconds(60));
-        assert!(ok_changed(Some(&ok), Some(&b1.snap), &b2.snap), "测了延迟");
+        // 只是延迟毫秒数、测试时刻变了：不发；出口通不通变了、不通跨过「不可用」的门槛：发
+        assert_ne!(b2.snap.exits[0].delay_ms, b1.snap.exits[0].delay_ms);
+        assert!(!ok_changed(Some(&ok), Some(&b1.snap), &b2.snap), "只是延迟毫秒数变了");
+        let mut down = b2.snap.clone();
+        down.exits[0].alive = Some(false);
+        down.exits[0].fail_streak = 1;
+        let mut down2 = down.clone();
+        down2.exits[0].fail_streak = 2;
+        assert!(ok_changed(Some(&ok), Some(&b2.snap), &down), "测不通了");
+        assert!(ok_changed(Some(&ok), Some(&down), &down2), "连续两次不通：不可用了");
+        let mut down3 = down2.clone();
+        down3.exits[0].fail_streak = 3;
+        assert!(!ok_changed(Some(&ok), Some(&down2), &down3), "不通的次数往上数不发");
         let mut s = b1.snap.clone();
         s.openclash.running = false;
         assert!(ok_changed(Some(&ok), Some(&b1.snap), &s));
