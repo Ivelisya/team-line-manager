@@ -566,31 +566,32 @@ pub async fn rebalance(_a: Actor, State(st): State<AppState>, ApiPath(relay): Ap
     let now_h = OffsetDateTime::from_unix_timestamp(now.unix_timestamp() / 3600 * 3600).unwrap_or(now);
     let wdays = ((now_h - src.quota.window_start).as_seconds_f64() / 86400.0).max(1.0);
     let rate = |e: &EntryView| traffic.get(&e.id).map_or(0.0, |t| t.1 as f64 / wdays);
-    let total: f64 = live.iter().map(|e| rate(e)).sum();
-    let k = if total > 0.0 { sq.daily / total } else { 1.0 };
-    // 其他线路机在用入口近 7 天（各自的日均窗口）的业务流量：目标按自己的计费方式折算（源是 max、目标是 sum 时，同样的业务量在目标上约多一倍）
-    let others: Vec<&MachineView> = all.iter().filter(|m| m.kind == "relay" && m.id != relay).collect();
-    let (oe, os): (Vec<Uuid>, Vec<OffsetDateTime>) = others.iter().flat_map(|m| m.entries.iter().filter(|e| e.lifecycle == "active").map(|e| (e.id, m.quota.window_start))).unzip();
-    let orows: Vec<(Uuid, i64)> = sqlx::query_as(
-        "select h.entry_id, least(coalesce(sum(h.up_bytes::numeric + h.down_bytes), 0), 9e18)::bigint
-         from entry_traffic_hourly h join unnest($1::uuid[], $2::timestamptz[]) w(entry_id, since) on w.entry_id = h.entry_id
-         where h.hour >= w.since group by h.entry_id",
+    // 各线路机（含源）近 7 天（各自的日均窗口）转发的业务流量：按入口的 relay_id 归，不限入口生命周期（窗口里搬走 / 退役的入口也算），
+    // 和网卡的日均同窗口；目标按自己的计费方式折算（源是 max、目标是 sum 时，同样的业务量在目标上约多一倍）
+    let (rids, rsince): (Vec<Uuid>, Vec<OffsetDateTime>) = all.iter().filter(|m| m.kind == "relay").map(|m| (m.id, m.quota.window_start)).unzip();
+    let rrows: Vec<(Uuid, i64)> = sqlx::query_as(
+        "select w.relay_id, least(coalesce(sum(h.up_bytes::numeric + h.down_bytes), 0), 9e18)::bigint
+         from unnest($1::uuid[], $2::timestamptz[]) w(relay_id, since)
+         join entry e on e.relay_id = w.relay_id join entry_traffic_hourly h on h.entry_id = e.id and h.hour >= w.since
+         group by w.relay_id",
     )
-    .bind(&oe)
-    .bind(&os)
+    .bind(&rids)
+    .bind(&rsince)
     .fetch_all(&st.db)
     .await?;
-    let o_traffic: HashMap<Uuid, i64> = orows.into_iter().collect();
-    // 目标线路机的折算系数 k_t = 它的网卡计费日均 ÷ 它在用入口的业务日均；没有业务量（新线路机）或日均估不出来时无从实测，
-    // 按线路机转发的物理关系取：入站 ≈ 出站 ≈ 业务量，所以双向计费（sum）折 2，单向（max / min / in / out）折 1
+    let r_traffic: HashMap<Uuid, i64> = rrows.into_iter().collect();
+    // 折算系数 k = 线路机网卡计费日均 ÷ 它转发的业务日均（源按它折出搬走量，目标按它折接收量）；没有业务量（新线路机）或日均估不出来、
+    // 或实测值偏离 `rule_factor` 太多（见 `quota::sane_k`）时无从实测，按线路机转发的物理关系取：
+    // 入站 ≈ 出站 ≈ 业务量，所以双向计费（sum）折 2，单向（max / min / in / out）折 1
     let k_of = |t: &MachineView| {
         let days = ((now_h - t.quota.window_start).as_seconds_f64() / 86400.0).max(1.0);
-        let biz: f64 = t.entries.iter().filter(|e| e.lifecycle == "active").map(|e| o_traffic.get(&e.id).map_or(0.0, |&b| b as f64 / days)).sum();
+        let biz = r_traffic.get(&t.id).map_or(0.0, |&b| b as f64 / days);
         match t.quota.daily_avg {
-            Some(d) if d > 0 && biz > 0.0 => d as f64 / biz,
+            Some(d) if d > 0 && biz > 0.0 => crate::quota::sane_k(d as f64 / biz, t.quota.rule),
             _ => crate::quota::rule_factor(t.quota.rule),
         }
     };
+    let k = k_of(src);
     // 源线路机上折出的搬走量 `cut`（源的计费口径）→ 目标线路机每天多出的计费量
     let onto = |t: &MachineView, cut: f64| cut / k * k_of(t);
     // 搬走后每天最多还能走多少：没超额度时 = 剩余额度 ÷ 剩余天数（撑到重置日）；

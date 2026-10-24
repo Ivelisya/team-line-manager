@@ -1469,6 +1469,46 @@ async fn rebalance_converts_by_target_billing_rule() {
     assert_eq!(rb["target_after"]["fits"], json!(true), "{rb}");
 }
 
+/// 搬迁建议的折算系数 k 的分母要含目标线路机窗口里已移除入口的业务流量：目标网卡里有它们的流量，现在只挂一个小入口时，
+/// 只算在用入口会把 k 放大数倍（这里 10 倍），目标被误判放不下
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rebalance_k_counts_removed_entries_on_target() {
+    let t = setup().await;
+    let team = seed_team(&t, "团队1").await;
+    let src = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let dst = seed_relay(&t, "线路机2", "198.51.100.2", "tok2").await;
+    let (_, ea) = seed_node(&t, src, team, 1, "203.0.113.5", 20000).await;
+    let (_, eb) = seed_node(&t, src, team, 2, "203.0.113.6", 20001).await;
+    let (_, ec) = seed_node(&t, dst, team, 3, "203.0.113.7", 20002).await;
+    let (_, ed) = seed_node(&t, dst, team, 4, "203.0.113.8", 20003).await;
+    sqlx::query("update entry set lifecycle = 'removed', removed_at = now() where id = $1").bind(ed).execute(&t.st.db).await.unwrap();
+    sqlx::query("update machine set activated_at = now() - interval '40 days' where id = any($1)").bind([src, dst]).execute(&t.st.db).await.unwrap();
+    for (m, gb) in [(src, 2), (dst, 11)] {
+        sqlx::query(
+            "insert into subscription (machine_id, price_cents, due_date, traffic_gb, traffic_reset_day, traffic_rule)
+             values ($1, 500, current_date + 60, $2, extract(day from (now() at time zone 'Asia/Shanghai')::date + 15), 'max')",
+        )
+        .bind(m)
+        .bind(gb)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    }
+    let hour: OffsetDateTime = sqlx::query_scalar("select date_trunc('hour', now() - interval '2 days')").fetch_one(&t.st.db).await.unwrap();
+    // 源：网卡出站 1400 MB = 业务 A 1200 + B 200；目标：网卡 700 MB = 已移除的 D 630 + 在用的 C 70，实测系数都是 1
+    set_nic(&t, src, hour, 1400).await;
+    sqlx::query("insert into host_metric_hourly (machine_id, hour, net_rx, net_tx) values ($1, $2, 700000000, 700000000)").bind(dst).bind(hour).execute(&t.st.db).await.unwrap();
+    for (e, mb) in [(ea, 1200.0), (eb, 200.0), (ec, 70.0), (ed, 630.0)] {
+        set_biz(&t, e, hour, mb * 1e6).await;
+    }
+    t.st.live.rolled_up();
+
+    // 搬走 A（约 171 MB/天）：目标按系数 1 多 171 MB/天，到重置日远在安全线内；只算在用入口的话系数 10，多出 1.7 GB/天会被判放不下
+    let rb = t.get(&format!("/api/v1/relays/{src}/rebalance?target_relay_id={dst}")).await;
+    assert_eq!((rb["ok"].as_bool(), rb["moves"].as_array().map(Vec::len)), (Some(true), Some(1)), "{rb}");
+    assert_eq!(rb["target_after"]["fits"], json!(true), "{rb}");
+}
+
 /// 流量异常一轮：按 `at` 评估最近两个完整小时（同小时汇总之后），再评估告警
 async fn anomaly_pass(t: &T, s: &mut AlertState, at: OffsetDateTime) {
     t.st.live.set_anomaly(fleet_server::anomaly::evaluate(&t.st.db, at).await.unwrap());
