@@ -319,9 +319,10 @@ async fn read_config(c: &Ctx<'_>, r: &routers::Row) -> Result<Vec<clash::Proxy>,
     clash::parse(&o.stdout)
 }
 
-/// 配置里要改的出口：对上的入口属于某个作业的 `node`、没删除，且它的 `pick` 说要改的。对不上新入口的返回（出口名, 原因），同预览
-fn exits_in(proxies: &[clash::Proxy], entries: &[clash::Entry], parts: &[Part]) -> Result<Vec<ExitPlan>, (String, String)> {
-    let mut out = vec![];
+/// 配置里要改的出口：对上的入口属于某个作业的 `node`、没删除，且它的 `pick` 说要改的。
+/// 对不上新入口的：换线路机、替换返回（出口名, 原因）整个作业不做（同预览）；同步只跳过这个出口，连同原因放在第二项里
+fn exits_in(proxies: &[clash::Proxy], entries: &[clash::Entry], parts: &[Part]) -> Result<(Vec<ExitPlan>, Vec<(String, String)>), (String, String)> {
+    let (mut out, mut skipped) = (vec![], vec![]);
     for p in proxies {
         let (Some(er), sync) = clash::match_entry(p, entries) else { continue };
         let (Some(srv), Some(port)) = (p.server.as_deref(), p.port) else { continue };
@@ -331,12 +332,13 @@ fn exits_in(proxies: &[clash::Proxy], entries: &[clash::Entry], parts: &[Part]) 
         for part in parts.iter().filter(|x| x.covers(er.node_id)) {
             match part.pick.exit(&p.name, sync, &er, srv, port) {
                 Some(Ok(e)) => out.push(ExitPlan { exit: p.name.clone(), ..e }),
+                Some(Err(why)) if matches!(part.pick, Pick::Sync { .. }) => skipped.push((p.name.clone(), why)),
                 Some(Err(why)) => return Err((p.name.clone(), why)),
                 None => {}
             }
         }
     }
-    Ok(out)
+    Ok((out, skipped))
 }
 
 /// 最近一次采集里这台路由有没有要改的出口（不在线、配置读不了时只能看它）
@@ -433,6 +435,8 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     // 2. 在线的按 id 顺序：读现在的配置定要改的出口，要改的加锁。别的作业在改、而计划 / 快照 / 之前改过的说它要改：不读配置，直接排队
     let mut todo: Vec<(&routers::Row, Vec<ExitPlan>)> = vec![];
     let mut blocked = vec![];
+    // 同步：发起到执行之间出口改指向了别的入口、或入口不在用了，跳过这个出口，其余照常
+    let mut skipped: Vec<String> = vec![];
     for r in rows.iter().filter(|r| r.state() == "online") {
         let prev = applied.iter().find(|a| a.id == r.id);
         let known = prev.is_some() || plan.iter().any(|p| p.id == r.id) || snap_uses(r, &parts);
@@ -444,7 +448,13 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
                 Some(a) => a.exits.clone(),
                 None => match read_config(c, r).await {
                     Ok(ps) => match exits_in(&ps, &entries, &parts) {
-                        Ok(x) => x,
+                        Ok((x, skip)) => {
+                            for (exit, why) in skip {
+                                c.warn(format!("软路由「{}」的出口「{exit}」跳过：{why}", r.name)).await;
+                                skipped.push(format!("{}的「{exit}」", r.name));
+                            }
+                            x
+                        }
                         Err((exit, why)) => {
                             blocked.push(format!("软路由「{}」的出口「{exit}」：{why}", r.name));
                             vec![]
@@ -486,7 +496,11 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         return give_up(c, &mut locks, &applied, None, format!("{}{none_yet}", blocked.join("；")), ErrKind::Remote, kept).await;
     }
     if todo.is_empty() && applied.is_empty() {
-        return Ok(Outcome::Skipped(if syncing { "出口的参数已经和入口一致，没有要同步的".into() } else { format!("没有软路由的出口指向{what}") }));
+        return Ok(Outcome::Skipped(if !skipped.is_empty() {
+            format!("要同步的出口都被跳过了（{}；原因见日志），没有改动", skipped.join("、"))
+        } else if syncing {
+            "出口的参数已经和入口一致，没有要同步的".into()
+        } else { format!("没有软路由的出口指向{what}") }));
     }
     // 和发起时的计划不一样（之后路由的配置改过）：写一行，免得对着预览找不到
     let names = |rs: Vec<(Uuid, &str, Vec<&str>)>| rs.into_iter().map(|(_, n, xs)| format!("{n} 的 {}", xs.join("、"))).collect::<Vec<_>>();

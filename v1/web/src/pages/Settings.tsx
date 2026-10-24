@@ -286,6 +286,7 @@ const ChannelDialog = resetOnOpen(function ChannelDialog({ target, open, onClose
   const [cfg, setCfg] = React.useState<Record<string, string>>({}); const [sev, setSev] = React.useState(ch?.min_severity ?? 'warning'); const [enabled, setEnabled] = React.useState(ch?.enabled ?? true);
   const [touched, setTouched] = React.useState(false); // 动过配置字段后才提示“填写完整”，不一打开就标红
   const [reveal, setReveal] = React.useState(false);
+  const [clearSecret, setClearSecret] = React.useState(false); // 编辑飞书渠道时勾上：清除签名密钥（`secret: null`）
   const k = KINDS[kind];
   const filled = k.fields.filter((f) => (cfg[f.key] ?? '').trim() !== '').length;
   const required = k.fields.filter((f) => !f.optional);
@@ -294,10 +295,13 @@ const ChannelDialog = resetOnOpen(function ChannelDialog({ target, open, onClose
   const cfgOk = isNew ? requiredFilled === required.length : requiredFilled === 0 || requiredFilled === required.length;
   const valid = name.trim().length > 0 && cfgOk;
   const config = Object.fromEntries(k.fields.map((f) => [f.key, (cfg[f.key] ?? '').trim()]));
+  const canClear = !!ch && kind === 'feishu' && ch.config_hint.includes('已加签');
+  // 编辑时只带填了的字段（缺省 = 沿用）；清除签名密钥另带 secret: null
+  const patchConfig = { ...(canClear && clearSecret ? { secret: null } : {}), ...Object.fromEntries(Object.entries(config).filter(([, v]) => v)) };
   const busy = add.isPending || patch.isPending;
-  const dirty = filled > 0 || (ch ? name !== ch.name || sev !== ch.min_severity || enabled !== ch.enabled : name.trim() !== '');
+  const dirty = filled > 0 || clearSecret || (ch ? name !== ch.name || sev !== ch.min_severity || enabled !== ch.enabled : name.trim() !== '');
   const submit = () => {
-    if (ch) patch.mutate({ id: ch.id, name: name.trim(), min_severity: sev, enabled, ...(filled ? { config } : {}) }, { onSuccess: () => { toast.ok('渠道已保存'); onClose(); }, onError: toast.err });
+    if (ch) patch.mutate({ id: ch.id, name: name.trim(), min_severity: sev, enabled, ...(filled || clearSecret ? { config: patchConfig } : {}) }, { onSuccess: () => { toast.ok('渠道已保存'); onClose(); }, onError: toast.err });
     else add.mutate({ name: name.trim(), kind, config, min_severity: sev, enabled }, { onSuccess: () => { toast.ok('渠道已创建'); onClose(); }, onError: toast.err });
   };
   return (
@@ -318,6 +322,7 @@ const ChannelDialog = resetOnOpen(function ChannelDialog({ target, open, onClose
           </Field>
         ))}
       </div>
+      {canClear && <label className="check-row"><Checkbox checked={clearSecret} onCheckedChange={(v) => setClearSecret(v === true)} /><span>清除签名密钥（机器人关了签名校验时勾选）</span></label>}
       {!cfgOk && touched && <div className="hint is-error">{isNew ? '请把配置填写完整' : '要改配置，请把必填字段重新填上'}</div>}
       <div className="form-grid">
         <Field label="最低级别"><Select value={sev} onChange={setSev} options={SEVERITIES} /></Field>

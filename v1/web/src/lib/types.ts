@@ -269,6 +269,8 @@ export interface Incident {
   reopen_count: number;
   /** 近 7 天同对象同规则开过几次（含这次） */
   recent_count?: number;
+  /** 近 7 天反复（recent_count 达到中控定的门槛）：网页标「近 7 天第 N 次」、status 列入「近 7 天反复」 */
+  chronic?: boolean;
   /** 建议操作：可以直接执行的 fleetctl 命令（只有进行中的、只有几条规则有）；quick_switch：其中临时切换的结构化一份（网页「临时切到…」用）。旧中控没有这两个字段 */
   suggested?: string[];
   quick_switch?: { router_id: string; router: string; group: string; from: string; to: string }[];

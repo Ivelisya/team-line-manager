@@ -40,8 +40,12 @@ struct IncidentOut {
     subject_kind: Option<String>,
 }
 
+/// 近 7 天同对象同规则开过几次算「反复」（老毛病）：告警带 `chronic`，status 的「近 7 天反复」、换线建议都按它；只在这里定义
+pub const CHRONIC_MIN: i64 = 3;
+
 #[derive(Deserialize)]
 pub struct IncQ {
+    /// firing（默认）| resolved | all | chronic（近 7 天反复：每个（规则, 对象）取最近一条，含已恢复的）
     state: Option<String>,
     /// 只看这台机器的告警
     subject_id: Option<Uuid>,
@@ -51,9 +55,15 @@ pub struct IncQ {
 
 pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<IncQ>) -> ApiResult<Json<Value>> {
     let f = match q.state.as_deref() {
-        Some("resolved") => "i.state = 'resolved'",
-        Some("all") => "true",
-        _ => "i.state = 'firing'",
+        Some("resolved") => "i.state = 'resolved'".to_string(),
+        Some("all") => "true".to_string(),
+        // 组 = 引擎 + 规则 + 对象，近 7 天开过 CHRONIC_MIN 次以上的，每组只取最近一条
+        Some("chronic") => format!(
+            "i.id in (select id from (select id, row_number() over w rn, count(*) over w c from incident where opened_at > now() - interval '7 days'
+                                      window w as (partition by engine, rule, subject_id order by opened_at desc, id desc)) x
+                      where rn = 1 and c >= {CHRONIC_MIN})"
+        ),
+        _ => "i.state = 'firing'".to_string(),
     };
     let (limit, offset) = (q.limit.unwrap_or(100).clamp(1, 500), q.offset.unwrap_or(0).max(0));
     // 按机器筛选的条件只在给了 subject_id 时才拼上（列表与总数各拼一份），走 (subject_id, opened_at desc) 索引
@@ -106,7 +116,10 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQu
         .iter()
         .map(|i| {
             let mut j = serde_json::to_value(i).unwrap_or_default();
-            j["recent_count"] = json!(recent.get(&(i.engine.clone(), i.rule.clone(), i.subject_id)).copied().unwrap_or(1).max(1));
+            let recent_count = recent.get(&(i.engine.clone(), i.rule.clone(), i.subject_id)).copied().unwrap_or(1).max(1);
+            let chronic = recent_count >= CHRONIC_MIN;
+            j["recent_count"] = json!(recent_count);
+            j["chronic"] = json!(chronic);
             if i.engine == Engine::Central.as_str() || i.engine == Engine::Probe.as_str() {
                 // 中控自身、探测点的告警：对象不是机器，没有可点开的机器（探测点的名字在 subject_name）
                 j["subject"] = Value::Null;
@@ -118,7 +131,11 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQu
                 j["subject"] = json!({"id": i.subject_id, "name": i.subject_name.clone().unwrap_or_else(|| "（已删除）".into())});
             }
             j["rule_name"] = json!(crate::meta::rule_label_of(&i.rule, &i.severity));
-            let advice = if i.state == "firing" { suggest(i, &routers) } else { vec![] };
+            let mut advice = if i.state == "firing" { suggest(i, &routers) } else { vec![] };
+            // 节点反复连不上 / 出口不通：先看换到哪台线路机更合适（已恢复的也给，status 的「近 7 天反复」用）
+            if let (true, true, Some(name)) = (chronic, matches!(i.rule.as_str(), "tcp_fail" | "egress_fail") && i.subject_kind.as_deref() == Some("vps"), i.subject_name.as_deref()) {
+                advice.push(Advice { cmd: format!("fleetctl placement --node {}", sh(name)), switch: None });
+            }
             j["suggested"] = json!(advice.iter().map(|a| &a.cmd).collect::<Vec<_>>());
             j["quick_switch"] = json!(advice.iter().filter_map(|a| a.switch.as_ref()).collect::<Vec<_>>());
             j
