@@ -4,8 +4,8 @@
 //! - 下发：`GET /agent/v1/rtt`（agent_api.rs 调 [`config`]），agent 每轮测之前取一次：全部在用 VPS 节点（不含家宽代理、备用团队）的 IP。
 //!   不进期望状态：节点集合一变（上架、退役、换 IP）就要给所有线路机代数 +1，「重启 Xray 失败、暂停重试」中的线路机会被新代数
 //!   带着再重启一次、断一次全部客户连接（fleet-agent 的 desired.rs 只拦同一代数）；单独取也就不用记清单摘要、不在一个事务里锁全部线路机。
-//! - 测：agent 每 5 分钟一轮，最多 4 个节点同时测，每个 3 秒：ICMP（系统 ping 3 次），用不了时 TCP 建连 SSH 端口（被拒也算通）。
-//!   不连 SS 端口：节点防火墙只放行它所挂的线路机，别的线路机连不上说明的是防火墙，不是链路（见 fleet-agent 的 rtt.rs）。
+//! - 测：agent 每 5 分钟一轮，最多 4 个节点同时测，只用 ICMP（系统 ping 3 次），用不了就不测。不连 SS 端口（节点防火墙只放行
+//!   它所挂的线路机），也不连 SSH 端口（fail2ban 可能把线路机 IP 封掉、连带断业务流量），见 fleet-agent 的 rtt.rs。
 //! - 存：`relay_node_rtt_hourly` 小时汇总（迁移 0083），上报入库时直接累加（[`ingest`]），保留 30 天。
 //! - 看：`GET /placement?team=`（[`view`]）：每个节点到各线路机近 24 小时的 p50 与成功率、近 7 天 tcp_fail 告警次数、当前与最优线路机，
 //!   以及「当前比最优慢 ≥ 10 ms 或当前成功率 < 99%」的换线建议（按目标线路机合成批量 `fleetctl move A,B --to X`）。
@@ -34,15 +34,13 @@ pub const KEEP_DAYS: i32 = 30;
 
 /// 要测的节点：在用的 VPS 节点（含同机 IP 节点），不含家宽代理、备用团队里的
 pub async fn targets(db: &sqlx::PgPool) -> sqlx::Result<Vec<RttTarget>> {
-    let rows: Vec<(Uuid, String, i32)> = sqlx::query_as(
-        // 同机 IP 节点没有自己的 ssh_port（SSH 走宿主机）：TCP 退回路径用宿主机的端口，都没有按 22
-        "select m.id, host(m.primary_ip), coalesce(m.ssh_port, h.ssh_port, 22) from machine m left join team t on t.id = m.team_id
-         left join machine h on h.id = m.host_id
+    let rows: Vec<(Uuid, String)> = sqlx::query_as(
+        "select m.id, host(m.primary_ip) from machine m left join team t on t.id = m.team_id
          where m.kind = 'vps' and m.lifecycle = 'active' and m.primary_ip is not null and not coalesce(t.spare, false) order by m.id",
     )
     .fetch_all(db)
     .await?;
-    Ok(rows.into_iter().map(|(node_id, host, port)| RttTarget { node_id, host, port: port as u16 }).collect())
+    Ok(rows.into_iter().map(|(node_id, host)| RttTarget { node_id, host }).collect())
 }
 
 /// `GET /agent/v1/rtt` 的内容：没有节点时 targets 为空

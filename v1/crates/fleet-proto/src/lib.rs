@@ -55,8 +55,8 @@ pub struct Report {
     pub rtt: Vec<RttSample>,
 }
 
-/// 一个节点一轮：`ok` = 这一轮 3 秒内有回应（ICMP 回了，或退回 TCP 时连上 / 被拒——RST 回来也说明路由可达）；
-/// `rtt_ms` 是这一轮的往返时间（ICMP 几次回应的中位数），不通为 None
+/// 一个节点一轮：`ok` = 这一轮 ICMP 有回应；`rtt_ms` 是这一轮的往返时间（几次回应的中位数），不通为 None。
+/// 线路机上系统 ping 用不了时不出样本
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RttSample {
     pub node_id: Uuid,
@@ -240,9 +240,8 @@ pub struct RttConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RttTarget {
     pub node_id: Uuid,
-    /// 节点的公网 IP
+    /// 节点的公网 IP（只发 ICMP，不连端口）
     pub host: String,
-    pub port: u16,
 }
 
 /// 三网 PING：每 `interval_s` 秒一轮，每个目标发 `count` 次。`mode` 是字符串而不是枚举：以后加新方式时旧 agent 不至于整份期望状态解析失败
