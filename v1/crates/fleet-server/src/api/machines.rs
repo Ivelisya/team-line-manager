@@ -731,8 +731,7 @@ async fn ip_nodes_of(conn: &mut sqlx::PgConnection, host: Uuid, lock: bool) -> s
 }
 
 /// 退役预览。立即回收：会一并退役的同机 IP 节点（宿主机才有）、涉及的团队里会因压缩而改名的节点（进备用时原团队同样压缩）；
-/// `spare`：能不能移进备用（不能的原因）、进去后的名字、自动回收的日子（账单时区）、一起进备用的同机 IP 节点，
-/// `notes` 里另提示失败停着、让软路由出口指向这台的替换 / 改出口指向作业（不阻断）；
+/// `spare`：能不能移进备用（不能的原因）、进去后的名字、自动回收的日子（账单时区）、一起进备用的同机 IP 节点；
 /// `routers`：还指向这台（和它的同机 IP 节点）的软路由出口，只提示不阻断（要换掉就先「替换」）；
 /// `blockers`：立即回收提交时会被拒绝的原因（`retire_blockers`），空 = 能回收
 pub async fn retire_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
@@ -775,23 +774,10 @@ pub async fn retire_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
         .fetch_all(&mut *conn)
         .await?;
     let auto_renew: Vec<String> = going.iter().filter(|x| on.contains(&x.0)).map(|x| x.1.to_string()).collect();
-    let mut notes = spare_notes(&auto_renew, &name, (!renames.is_empty()).then_some(name.as_str()), false);
-    // 失败停着的替换 / 改出口指向，软路由已经（或可能已经）改成指向这台：routers_applied 不空（改了一部分、没能改回），
-    // 或替换停在交换编号（改路由那步已做完）。不拦（失败的作业会一直留着，拦了这台就永远退役不了），只提示
-    let failed: Vec<Uuid> = sqlx::query_scalar(
-        "select id from job where kind in ('replace', 'repoint') and state = 'failed' and params->>'new_id' = any($1::uuid[]::text[])
-           and ((jsonb_typeof(params->'routers_applied') = 'array' and params->'routers_applied' <> '[]') or step > 0) order by created_at",
-    )
-    .bind(&leaving)
-    .fetch_all(&mut *conn)
-    .await?;
-    if !failed.is_empty() {
-        let ids: Vec<String> = failed.iter().map(Uuid::to_string).collect();
-        notes.push(format!("有失败的替换 / 改出口指向作业（{}）让软路由出口指向这台：退役后这些出口会断，先处理那个作业或改出口指向", ids.join("、")));
-    }
     let spare = json!({
         "ok": eligible.is_ok(), "why": eligible.err(), "team": {"id": spare_id, "name": spare_name}, "to_name": to_name,
-        "recycle_on": due.map(crate::spare::recycle_on), "ip_nodes": spare_ip, "notes": notes,
+        "recycle_on": due.map(crate::spare::recycle_on), "ip_nodes": spare_ip,
+        "notes": spare_notes(&auto_renew, &name, (!renames.is_empty()).then_some(name.as_str()), false),
     });
     // 软路由出口：按路由归在一起，写明指向的是哪台
     let names: std::collections::HashMap<Uuid, &str> = std::iter::once((id, name.as_str())).chain(ip_nodes.iter().map(|x| (x.0, x.1.as_str()))).collect();
