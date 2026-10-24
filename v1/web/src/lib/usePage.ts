@@ -3,6 +3,7 @@
 // 每个页面只有一个分页器在用这两个参数（抽屉用 m / tab，设置页用 section，不冲突）。
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { scrollBehavior } from './utils';
 
 export interface PageState {
   page: number; size: number; sizes: readonly number[]; defaultSize: number;
@@ -58,7 +59,6 @@ export function scrollBackTo(el: HTMLElement | null) {
     if (!el) return;
     const pad = parseFloat(getComputedStyle(document.documentElement).scrollPaddingTop) || 0; // 固定顶栏的高度
     if (el.getBoundingClientRect().top >= pad) return; // 列表顶部还在视口里：不动
-    const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
-    el.scrollIntoView({ block: 'start', behavior: reduce ? 'auto' : 'smooth' });
+    el.scrollIntoView({ block: 'start', behavior: scrollBehavior() });
   });
 }

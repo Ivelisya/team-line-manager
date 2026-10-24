@@ -71,7 +71,7 @@
 .job-manual-list { margin: var(--sp-8) 0 0; padding: 0; list-style: none; display: grid; gap: var(--sp-4); }
 .job-manual-list li { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-4) var(--sp-8); min-width: 0; }
 .job-manual-list .mono { overflow-wrap: anywhere; }
-.pill.pill-manual { --pill-bg: var(--bad); --pill-fg: #fff; font-weight: var(--fw-semibold); } /* 实心红：和普通失败的浅红胶囊一眼分开 */
+.pill.pill-manual { --pill-bg: var(--bad-solid); --pill-fg: var(--on-solid); font-weight: var(--fw-semibold); } /* 实心红：和普通失败的浅红胶囊一眼分开 */
 .step-err { margin: var(--sp-4) 0 0; font-size: var(--fs-label); color: var(--bad-text); overflow-wrap: anywhere; }
 .step-err-box { display: flex; align-items: flex-start; gap: var(--sp-8); margin-top: var(--sp-4); }
 .step-err-box .step-err { margin: 0; min-width: 0; }
@@ -84,7 +84,7 @@
 .logline[data-level="warn"] .msg { color: var(--warn-text); }
 .logline .lv-debug { color: var(--fg-3); }
 .logline-note .msg { font-style: italic; }
-.logline .ts { color: var(--fg-3); }
+.logline .ts { color: var(--fg-2); }
 .logline .lv-info { color: var(--info-text); }
 .logline .lv-warn { color: var(--warn-text); }
 .logline .lv-error { color: var(--bad-text); }

@@ -22,7 +22,8 @@ html[data-overlay] :is(.app, .drawer) .progress-fill { transition: none; }
 @media (pointer: coarse) {
   :root { --h-md: 36px; --h-lg: 40px; --seg-item: 34px; --seg-item-sm: 28px; }
   .seg-sm { height: calc(var(--seg-item-sm) + 2 * var(--seg-pad)); }
-  :is(.top-alert, .checkbox, .info-tip, .btn-sm, .icon-btn-sm) { position: relative; }
+  :is(.top-alert, .checkbox, .info-tip, .btn-sm, .icon-btn-sm, .switch, .rt-mark, .toast-action) { position: relative; }
+  :is(.switch, .rt-mark, .toast-action)::after { content: ""; position: absolute; inset: -10px -6px; }
   :is(.btn-sm, .icon-btn-sm)::after { content: ""; position: absolute; inset: -6px; }
   :is(.top-alert, .checkbox, .info-tip)::after { content: ""; position: absolute; inset: -10px -4px; }
   .checkbox::after { inset: -12px; }
@@ -49,3 +50,14 @@ html[data-overlay] :is(.app, .drawer) .progress-fill { transition: none; }
 .cmd-item, .cmd-trigger, .cmd-input, .kbd, .toast-action, .label, .sec-head, .brand, .pop-head { font-variant-numeric: tabular-nums; }
 /* 首页读数（集群大数、离线台数、圆环中心、迹线坐标与时间）：同 .num / .stat-value 用 --num-variant（tabular + 斜线零） */
 .cluster-big > .num, .cluster-kv b, .gauge-center b, .spark-axis, .spark-time { font-variant-numeric: var(--num-variant); }
+
+/* iOS Safari 聚焦字号小于 16px 的输入框会把整页放大、失焦后常不缩回：只在 iOS 上把输入字号提到 16px（不用 maximum-scale，免得禁掉手动缩放） */
+@supports (-webkit-touch-callout: none) {
+  :is(input:not([type="checkbox"], [type="radio"]), textarea) { font-size: 16px; }
+}
+/* 手机上对话框是底部面板，确认 / 取消在最下面：通知改从顶栏下方落下，不盖住面板的按钮（宽屏仍在右下） */
+@media (max-width: 600px) {
+  .toasts { top: calc(var(--topbar-h) + env(safe-area-inset-top, 0px) + var(--sp-8)); bottom: auto; }
+  .toast { animation-name: toast-drop; }
+}
+@keyframes toast-drop { from { opacity: 0; transform: translateY(-8px) scale(.98); } }

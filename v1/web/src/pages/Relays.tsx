@@ -24,6 +24,7 @@ import { ENTRY_CAP, RouterMark, activeEntries, entryStatus, probeCell, tcpCell }
 import { useEntryRouters } from '@/lib/routers';
 import { HEALTH_TONE } from '@/lib/sort';
 import { PlacementPanel } from '@/features/PlacementPanel';
+import { scrollBehavior } from '@/lib/utils';
 
 type Open = ReturnType<typeof useDrawer>['open'];
 type Users = { id: string; name: string; exit: string }[];
@@ -129,7 +130,7 @@ function useCurrentRelay(idsKey: string) {
     window.addEventListener('wheel', unpin, { passive: true }); window.addEventListener('touchmove', unpin, { passive: true }); window.addEventListener('keydown', unpin);
     return () => { io.disconnect(); window.removeEventListener('wheel', unpin); window.removeEventListener('touchmove', unpin); window.removeEventListener('keydown', unpin); };
   }, [idsKey]);
-  const pick = (id: string) => { pinned.current = true; setCur(id); document.getElementById(`relay-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+  const pick = (id: string) => { pinned.current = true; setCur(id); document.getElementById(`relay-${id}`)?.scrollIntoView({ behavior: scrollBehavior(), block: 'start' }); };
   return [cur, pick] as const;
 }
 

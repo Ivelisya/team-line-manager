@@ -89,6 +89,7 @@
   .inc-tbl col:first-child { width: 80px !important; }
   .inc-tbl col:nth-child(2) { width: auto !important; }
   .inc-tbl col:last-child { width: 104px !important; }
+  .inc-tbl td:last-child .btn .lucide:not(.spin) { display: none; } /* 末列只有 104：「全部确认」「登记续费」带图标会顶出单元格，窄屏只留字（对象列让不出更多） */
   .inc-tbl :is(th, td):first-child { padding-right: var(--sp-4); }
   .inc-tbl .inc-narrow { display: block !important; }
   .inc-tbl .inc-cmds.inc-narrow { display: flex !important; }
@@ -174,7 +175,7 @@
 .btn-slot[data-off] { opacity: 0; visibility: hidden; }
 .relay-card { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; scroll-margin-top: calc(var(--h-md) + var(--sp-16)); } /* 跳转时让出上面吸顶的那一行 */
 .relay-jump {
-  position: sticky; top: var(--topbar-h); z-index: var(--z-sticky); display: flex; gap: var(--sp-8); padding-block: var(--sp-8);
+  position: sticky; top: var(--topbar-h); z-index: var(--z-sticky); display: flex; gap: var(--sp-8); padding: var(--sp-8) 4px;
   box-sizing: content-box; height: var(--h-md); overflow-x: auto; scrollbar-width: none; background: var(--glass-bar); -webkit-backdrop-filter: var(--glass-bar-blur); backdrop-filter: var(--glass-bar-blur);
 }
 .relay-jump::-webkit-scrollbar { display: none; }

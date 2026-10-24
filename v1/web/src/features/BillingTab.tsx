@@ -18,6 +18,7 @@ import { FormDialog } from '@/components/app/dialogs';
 import { RebalanceDialog } from '@/components/app/RebalanceDialog';
 import { TzInput } from '@/components/app/TzInput';
 import { Tag } from '@/components/app/viz';
+import { scrollBehavior } from '@/lib/utils';
 
 export function BillingTab({ m }: { m: MachineView }) {
   const s = m.subscription;
@@ -27,7 +28,7 @@ export function BillingTab({ m }: { m: MachineView }) {
   // 已有订阅时修改表单默认收起：表单里的值和上面「当前订阅」一样，一屏里不重复列两遍；点「修改订阅」才展开
   const [editing, setEditing] = React.useState(false);
   const formRef = React.useRef<HTMLElement>(null);
-  React.useEffect(() => { if (editing) formRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }, [editing]);
+  React.useEffect(() => { if (editing) formRef.current?.scrollIntoView({ block: 'nearest', behavior: scrollBehavior() }); }, [editing]);
   const rv = remainingValue(m.subscription); const q = quota(m); const fl = monthFlow(m); const rt = trafficRuleTag(m);
   const h = m.host_machine;
   return (

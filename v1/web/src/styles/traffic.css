@@ -14,7 +14,7 @@
 .dt-heat tbody td:last-child { height: var(--row-2); }
 .dt-heat .th-date { line-height: 1.15; }
 .dt-heat .th-date > * { display: block; }
-.dt-heat .th-date small { font-size: var(--fs-micro, 11px); color: var(--fg-3); font-weight: var(--fw-regular); }
+.dt-heat .th-date small { font-size: var(--fs-micro, 11px); color: var(--fg-2); font-weight: var(--fw-regular); }
 .dt-heat tfoot td { border-top: 1px solid var(--line-strong); border-bottom: 0; font-weight: var(--fw-semibold); background: var(--sunken); }
 .dt-heat tfoot td:is(:first-child, :last-child) { background: var(--sunken); }
 .tr-node { display: flex; align-items: center; gap: var(--sp-8); min-width: 0; }

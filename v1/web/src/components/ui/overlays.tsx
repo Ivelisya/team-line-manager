@@ -6,7 +6,7 @@ import * as PopoverPrimitive from '@radix-ui/react-popover';
 import * as ToggleGroup from '@radix-ui/react-toggle-group';
 import { Check, ChevronDown, ChevronRight } from 'lucide-react';
 import { m } from 'motion/react';
-import { cn } from '@/lib/utils';
+import { cn, scrollBehavior } from '@/lib/utils';
 import { SPRING } from '@/lib/motion';
 import { watchSize } from '@/lib/sharedObserver';
 
@@ -43,8 +43,8 @@ export const TabsList = React.forwardRef<React.ElementRef<typeof TabsPrimitive.L
     const n = el.current; const t = n?.querySelector<HTMLElement>('[data-state="active"]');
     if (!n || !t) return;
     const pad = 28; // 留出渐隐的宽度
-    if (t.offsetLeft < n.scrollLeft + pad) n.scrollTo({ left: Math.max(0, t.offsetLeft - pad), behavior: 'smooth' });
-    else if (t.offsetLeft + t.offsetWidth > n.scrollLeft + n.clientWidth - pad) n.scrollTo({ left: t.offsetLeft + t.offsetWidth - n.clientWidth + pad, behavior: 'smooth' });
+    if (t.offsetLeft < n.scrollLeft + pad) n.scrollTo({ left: Math.max(0, t.offsetLeft - pad), behavior: scrollBehavior() });
+    else if (t.offsetLeft + t.offsetWidth > n.scrollLeft + n.clientWidth - pad) n.scrollTo({ left: t.offsetLeft + t.offsetWidth - n.clientWidth + pad, behavior: scrollBehavior() });
   }, [cur]);
   return <TabsPrimitive.List ref={setRef} className={cn('tabs-list', className)} data-fade={fade || undefined} {...p} />;
 });
@@ -117,6 +117,7 @@ export function TipHost() {
   React.useEffect(() => {
     let cur: Element | null = null; let timer = 0; let shown = false; let closedAt = 0; let seq = 0;
     let tapClosed: Element | null = null; // 按下时收起的是哪个（再点同一个「(i)」= 收起，不再打开）
+    let touch = false; // 最近一次按下是手指
     // 对话框标题下面那行说明里的「(i)」往下弹：往上会盖住标题
     const sideOf = (el: HTMLElement): Side => (el.dataset.tipSide as Side | undefined) ?? (el.closest('.dialog-desc') ? 'bottom' : 'top');
     const show = (el: HTMLElement) => { shown = true; setTip({ id: ++seq, text: el.dataset.tip ?? '', r: el.getBoundingClientRect(), side: sideOf(el) }); setOpen(true); };
@@ -138,10 +139,13 @@ export function TipHost() {
     const focus = (e: FocusEvent) => { const el = (e.target as Element).closest<HTMLElement>(TIP_SEL); if (el?.matches(':focus-visible')) { close(); cur = el; show(el); } };
     const leave = (e: PointerEvent) => { if (!e.relatedTarget) close(); }; // 指针离开窗口
     // 轻触同一个「(i)」第二下 = 收起；鼠标点开着的「(i)」不收（悬停已经打开了，点它是想看）
-    const down = (e: PointerEvent) => { tapClosed = shown && e.pointerType === 'touch' ? cur : null; close(); };
-    // 「(i)」点一下 / 轻触也能打开：触屏没有悬停，鼠标点下去得到的焦点也不弹（只认键盘聚焦）
+    const down = (e: PointerEvent) => { touch = e.pointerType === 'touch'; tapClosed = shown && touch ? cur : null; close(); };
+    // 「(i)」点一下 / 轻触也能打开：触屏没有悬停，鼠标点下去得到的焦点也不弹（只认键盘聚焦）。
+    // 触屏上轻触别的带说明的字（省略了的名称、心跳格、小标签）也弹；本身可点的（按钮、链接、整行可点的表格行）点了是去做事，不弹
     const click = (e: MouseEvent) => {
-      const el = (e.target as Element).closest<HTMLElement>('.info-tip');
+      const t = e.target as Element;
+      const el = t.closest<HTMLElement>('.info-tip') ?? (touch ? t.closest<HTMLElement>(TIP_SEL) : null);
+      if (el && !el.classList.contains('info-tip') && el.closest('a, button, [role="button"], .is-link')) return;
       if (!el?.dataset.tip || tapClosed === el) { tapClosed = null; return; }
       cur = el; show(el);
     };

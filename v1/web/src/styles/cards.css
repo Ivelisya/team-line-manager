@@ -161,12 +161,12 @@
 .nc-quse { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--fg-2); } /* 本周期已用 / 上限：要读的信息，不用 --fg-3；窄卡放不下时先省略它 */
 
 /* 备用机器：到期旁直接写哪天自动回收（短句，说明在悬停里） */
-.nc-run-note { margin-left: var(--sp-4); font-weight: var(--fw-regular); color: var(--fg-3); }
-.nc-recycle { margin-right: var(--sp-6); font-weight: var(--fw-regular); color: var(--fg-3); }
+.nc-run-note { margin-left: var(--sp-4); min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: var(--fw-regular); color: var(--fg-2); }
+.nc-recycle { margin-right: var(--sp-6); font-weight: var(--fw-regular); color: var(--fg-2); }
 /* 8 已上架 · 到期 · 剩余价值：彩色读数 */
 .nc-run { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp-12); }
 .nc-run-item { display: grid; gap: var(--sp-2); min-width: 0; }
-.nc-run-label { display: inline-flex; align-items: center; gap: var(--sp-4); font: var(--fw-semibold) var(--fs-micro) / var(--lh-micro) var(--font-sans); color: var(--fg-2); white-space: nowrap; }
+.nc-run-label { display: inline-flex; align-items: center; gap: var(--sp-4); font: var(--fw-semibold) var(--fs-micro) / var(--lh-micro) var(--font-sans); color: var(--fg-2); white-space: nowrap; min-width: 0; max-width: 100%; }
 .nc-run-label .lucide { width: var(--icon-2xs); height: var(--icon-2xs); }
 .nc-run-val { display: inline-flex; align-items: baseline; gap: var(--sp-4); font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-num); font-variant-numeric: var(--num-variant); letter-spacing: -0.02em; color: var(--fg); white-space: nowrap; min-width: 0; overflow: hidden; }
 .nc-run-val .unit { font-size: var(--fs-micro); font-weight: var(--fw-medium); letter-spacing: 0; color: var(--fg-2); }

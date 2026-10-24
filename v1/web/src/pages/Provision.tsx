@@ -21,6 +21,7 @@ import { copyText } from '@/lib/clipboard';
 import { PageHead, Panel, Pill } from '@/components/app/primitives';
 import { COLS, PASTE_COLS, UNUSED_LABEL, applies, headerCols, ipIssue, isBlank, isIpNode, localErrors, localIssues, newRow, parseTsv, pasteLine, portIssue, serverField, toItem, type Col, type Ctx, type Row } from '@/features/provision-model';
 import { CountrySelect } from '@/components/app/CountrySelect';
+import { scrollBehavior } from '@/lib/utils';
 
 // 上架页懒加载、在外壳等到 /meta 之后才求值，类型名、默认端口可以在模块里取
 const KIND_OPTS = KIND_ORDER.map((value) => ({ value, label: kindLabel(value) }));
@@ -113,7 +114,7 @@ export function ProvisionPage() {
     if (!jump) return;
     const el = page.current?.querySelector<HTMLElement>('.field:has(.hint.is-error), tr.is-row-bad');
     if (!el) return;
-    el.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+    el.scrollIntoView({ block: 'center', behavior: scrollBehavior() });
     el.querySelector<HTMLElement>('td.is-bad .gcell, input:not(:disabled), button:not(:disabled), .gcell:not(:disabled)')?.focus({ preventScroll: true });
   }, [jump]);
   // 内容一改，上一次检查的通知就作废
