@@ -8,7 +8,7 @@ import { healthLabel, tagColor } from '@/lib/derive';
 import { HEALTH_TONE } from '@/lib/sort';
 import { useNow } from '@/lib/useNow';
 import { cn } from '@/lib/utils';
-import { deadExitNames, deploySteps, routerIssues, routerMeters, showBootstrap, showDeploy, tempTone, uptimeFmt, useRegenBootstrap, useRouter, useRouterMetrics, type RouterSummary, type RouterTab, type RouterView } from '@/lib/routers';
+import { deploySteps, routerIssues, routerMeters, showBootstrap, showDeploy, tempTone, uptimeFmt, useRegenBootstrap, useRouterMetrics, type RouterSummary, type RouterTab, type RouterView } from '@/lib/routers';
 import type { BeatCell } from '@/lib/derive';
 import { Button } from '@/components/ui/button';
 import { InfoTip } from '@/components/ui/form';
@@ -24,9 +24,6 @@ const MAINT_TIP = '在维护窗口内，不发告警；开着的告警保持到�
 /** 状态 pill（只靠底色与文字，不带圆点；要醒目的配一个图标）：部署中（转圈）/ 维护（同机器的维护中）/ 等待接入 / 在线 /
  *  降级（在线但有毛病，悬停点名是哪个出口；同机器的叫法，降级算正常）/ 离线（悬停看连不上的原因，才是故障） */
 export function RouterStatePill({ r }: { r: Pick<RouterView, 'id' | 'state' | 'error' | 'summary' | 'deploy' | 'maintenance'> }) {
-  // 不通的出口名只在详情里：降级的才取详情（和抽屉同一份缓存）
-  const slow = r.state === 'online' && !!r.summary && r.summary.exits.alive < r.summary.exits.total;
-  const names = deadExitNames(useRouter(slow ? r.id : null).data?.detail);
   if (r.deploy?.state === 'running') return <Pill tone="info" dot="pulse">部署中</Pill>;
   if (r.maintenance) return <Pill tone={HEALTH_TONE.maintenance} tip={MAINT_TIP} tabIndex={0}>{healthLabel('maintenance')}</Pill>;
   // 一键部署失败、路由还没连上：时间线里已经红了，状态标也说「部署失败」（故障色），不再是中性的「等待接入」
@@ -35,7 +32,7 @@ export function RouterStatePill({ r }: { r: Pick<RouterView, 'id' | 'state' | 'e
   if (r.state === 'offline') return <Pill tone="bad" tip={r.error ?? undefined} tabIndex={r.error ? 0 : undefined}>离线</Pill>;
   // 在线却带原因：连得上但这次没读到状态，数据是上一次的
   if (r.error) return <Pill tone="warn" tip={`${r.error}\n路由连得上，显示的是上次读到的数据`} tabIndex={0}>读取出错</Pill>;
-  const issues = routerIssues(r.summary, names);
+  const issues = routerIssues(r.summary, r.summary?.exits.dead);
   return issues.length ? <Pill tone="warn" tip={issues.join('\n')} tabIndex={0}>降级</Pill> : <Pill tone="ok">在线</Pill>;
 }
 /** 卡片描边：离线红、在线但有毛病黄（同机器卡的故障 / 降级）；维护中同机器卡的维护（不描红黄） */

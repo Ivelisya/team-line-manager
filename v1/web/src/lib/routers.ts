@@ -3,7 +3,7 @@
 // 所以列表与详情 staleTime 都是 Infinity；曲线不推，抽屉开着时按范围轮询（同机器抽屉的曲线）。形状见 r21 设计稿「API」。
 import { useCallback, useMemo, useRef } from 'react';
 import { useSearchParams, type SetURLSearchParams } from 'react-router-dom';
-import { keepPreviousData, useQueries, useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { del, get, patch, post } from './api';
 import { useRelays, useTeams, useWrite } from './queries';
 import { collator } from './sort';
@@ -239,7 +239,6 @@ export const routerIssues = (s: RouterSummary | null, names?: string[]): string[
   !s.wan.up && 'WAN 口断开',
   s.exits.alive < s.exits.total && (names?.length ? `${names.slice(0, 3).join('、')}${names.length > 3 ? ` 等 ${names.length} 个出口` : ''} 连续两次延迟测试不通` : `${s.exits.total - s.exits.alive} 个出口连续两次延迟测试不通`),
 ].filter((x): x is string => !!x));
-export const deadExitNames = (d: RouterDetail | null | undefined) => d?.exits.filter((e) => !exitUsable(e)).map((e) => e.name);
 
 // ---- 各出口的延迟测试：按固定时间窗切格 ----
 /** 各范围切几格：每格要稳稳盖住至少一次测试（5 分钟一次，实际间隔 300–330 秒），格宽取 2 倍以上，所以 1 小时只切 6 格（10 分钟一格） */
@@ -284,18 +283,14 @@ export function useAddrName() {
     return { text: n ? `${n}${i < 0 ? '' : addr.slice(i)}` : addr, tip: n ? addr : undefined };
   }, [names]);
 }
-/** 入口 id → 在用它的软路由出口（软路由 + 出口名）：各台软路由详情里的出口按对上的入口汇总，抽屉入口表、线路页的入口行用它标「软路由」 */
+/** 入口 id → 在用它的软路由出口（软路由 + 出口名）：列表里每台带出口 → 入口的对应（exit_entries），抽屉入口表、线路页的入口行用它标「软路由」。
+ *  不再为它逐台取完整详情；select 只抽这一项，结构相等时引用不变（react-query 的结构共享），列表每轮采集重取、没人改出口 / 入口时 Map 不重建，入口行（EntryRow 的 memo）不被击穿 */
 export function useEntryRouters() {
-  const list = useRouters().data;
-  const live = (list ?? []).filter((r) => r.summary);
-  // 详情每 30 秒随采集重取，里面的指标几乎每次都变；这里只用「出口 → 入口」，select 只抽这一项，结果结构相等时引用不变（combine 的结果也一样），
-  // 没人改出口 / 入口时 Map 不重建，入口行（EntryRow 的 memo）不被击穿
-  const uses = useQueries({ queries: live.map((r) => ({ queryKey: ['routers', r.id], queryFn: ({ signal }: { signal: AbortSignal }) => get<RouterFull>(`/routers/${r.id}`, signal), staleTime: Infinity, select: exitEntries })), combine: collectData });
+  const uses = useQuery({ queryKey: ['routers', 'list'], queryFn: ({ signal }) => get<RouterView[]>('/routers', signal), staleTime: Infinity, select: exitEntries }).data;
   return useMemo(() => {
     const m = new Map<string, { id: string; name: string; exit: string }[]>();
-    for (const r of uses) for (const e of r?.exits ?? []) m.set(e.entry, [...(m.get(e.entry) ?? []), { id: r!.id, name: r!.name, exit: e.name }]);
+    for (const r of uses ?? []) for (const e of r.exits) m.set(e.entry_id, [...(m.get(e.entry_id) ?? []), { id: r.id, name: r.name, exit: e.exit }]);
     return m;
   }, [uses]);
 }
-const exitEntries = (r: RouterFull) => ({ id: r.id, name: r.name, exits: (r.detail?.exits ?? []).flatMap((e) => (e.entry ? [{ name: e.name, entry: e.entry.id }] : [])) });
-const collectData = <T>(rs: { data?: T }[]) => rs.map((q) => q.data);
+const exitEntries = (d: RouterView[]) => d.filter((r) => r.exit_entries.length).map((r) => ({ id: r.id, name: r.name, exits: r.exit_entries }));

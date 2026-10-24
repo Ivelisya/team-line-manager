@@ -19,7 +19,7 @@ import { DeployTimeline, MiniBeat, RouterMeters, RouterStatePill, Seen, useShowB
 import { useEndSubjectMaint, useMachineBriefs, useTeams } from '@/lib/queries';
 import { MaintenanceDialog } from '@/components/app/MaintenanceDialog';
 import { GroupsSection } from './RouterOps';
-import { deadExitNames, exitBeats, showSync, exitUsable, ROUTER_TABS, routerIssues, routerSiblings, showDeploy, showRemoved, tempTone, uptimeFmt, useDeleteRouter, usePatchRouter, useRouter, useRouterDrawer, useRouterChanges, useRouterExitMetrics, useRouters, type RouterClient, type RouterDetail, type RouterExit, type RouterTab, type RouterView } from '@/lib/routers';
+import { exitBeats, showSync, exitUsable, ROUTER_TABS, routerIssues, routerSiblings, showDeploy, showRemoved, tempTone, uptimeFmt, useDeleteRouter, usePatchRouter, useRouter, useRouterDrawer, useRouterChanges, useRouterExitMetrics, useRouters, type RouterClient, type RouterDetail, type RouterExit, type RouterTab, type RouterView } from '@/lib/routers';
 import { jobKindLabel, tagColor } from '@/lib/derive';
 import { useHeld } from '@/lib/useHeld';
 import { openTerminal } from '@/lib/terminal';
@@ -295,7 +295,7 @@ const skewWord = (s: number) => (Math.round(s) === 0 ? '一致' : `${s > 0 ? '�
 function OverviewTab({ r, detail }: { r: RouterView; detail: RouterDetail | null | undefined }) {
   const s = r.summary;
   const { setTab } = useRouterDrawer();
-  const issues = r.state === 'online' ? routerIssues(s, deadExitNames(detail)) : [];
+  const issues = r.state === 'online' ? routerIssues(s, s?.exits.dead) : [];
   const d = r.deploy;
   // 部署时间线：在跑、失败了，或刚做完（10 分钟内）才放
   const showDeployTl = d && (d.state !== 'done' || (d.finished_at != null && Date.now() - Date.parse(d.finished_at) < 600_000));

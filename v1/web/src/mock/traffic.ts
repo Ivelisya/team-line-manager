@@ -1,6 +1,7 @@
 // 每日流量的 mock（同服务端 GET /traffic/daily）：每条入口每天的量按它本月的流量折成日均，再按 (入口, 日期) 的哈希上下浮动、周末多一点；
 // 今天按组织时区已过去的比例算。线路机网卡 ≈ 经过它的业务流量（进、出各一次）再加一点开销，每天的计费量按供应商规则算，区间合计先求下行、上行之和再套规则。
-// 已退役的机器：退役那天之前按固定日均有流量（服务端是小时表里的真实数据）
+// 已退役的机器：退役那天之前按固定日均有流量（服务端是小时表里的真实数据）。
+// 有自己网卡的节点（不是家宽代理、同机 IP 节点，不是直出行）同线路机带网卡与计费量：网卡下行、上行各 ≈ 它的业务流量
 import type { DailyBiz, DailyNic, MachineView, TrafficDaily, TrafficDailyNode, TrafficDailyRelay } from '@/lib/types';
 import { hashStr } from './fixtures';
 import { META } from './meta';
@@ -15,6 +16,13 @@ const localDate = (t: number) => fmt.format(t);
 const todayShare = () => { const d = new Date(Date.now() + META.org_utc_offset_s * 1000); return (d.getUTCHours() * 3600 + d.getUTCMinutes() * 60) / 86400; };
 
 function billed(rule: string, rx: number, tx: number) { return rule === 'min' ? Math.min(rx, tx) : rule === 'sum' ? rx + tx : rule === 'out' ? tx : rule === 'in' ? rx : Math.max(rx, tx); }
+const NO_NIC = { rule: null, rx: null, tx: null, billed: null, nic_daily: null } as const;
+/** 网卡 ≈ 经过的业务流量（进、出各一次）再加一点开销；每天按规则算计费量，区间合计先求下行、上行之和再套规则 */
+function nicOf(id: string, biz: DailyBiz[], rule: string) {
+  const daily: DailyNic[] = biz.map((d) => { const s = d.down + d.up; const rx = Math.round(s * (1.02 + 0.03 * (hashStr(id + d.date) % 10) / 10)); const tx = Math.round(s * 1.01); return { date: d.date, rx, tx, billed: billed(rule, rx, tx) }; });
+  const rx = daily.reduce((a, d) => a + d.rx, 0); const tx = daily.reduce((a, d) => a + d.tx, 0);
+  return { daily, rx, tx, billed: billed(rule, rx, tx) };
+}
 
 export function installTrafficMock(R: Reg, machines: () => MachineView[], teams: () => { id: string; name: string }[], bad: (msg: string, status?: number, code?: string) => Error) {
   R('GET', '/traffic/daily', ({ query }) => {
@@ -63,14 +71,21 @@ export function installTrafficMock(R: Reg, machines: () => MachineView[], teams:
     for (const f of kept) {
       add(total, f.daily);
       const key = `${f.node.id}${f.direct ? ':d' : ''}`;
-      const n = nodes.get(key) ?? { id: f.node.id, name: f.direct ? `${f.node.name}-直出` : f.node.name, team: f.node.team, kind: f.node.kind, lifecycle: f.node.lifecycle, country: f.node.country, direct: f.direct, down: 0, up: 0, daily: zero() };
+      const n = nodes.get(key) ?? { id: f.node.id, name: f.direct ? `${f.node.name}-直出` : f.node.name, team: f.node.team, kind: f.node.kind, lifecycle: f.node.lifecycle, country: f.node.country, direct: f.direct, down: 0, up: 0, daily: zero(), ...NO_NIC };
       add(n.daily, f.daily); nodes.set(key, n);
       if (f.relay) { const b = biz.get(f.relay.id) ?? zero(); add(b, f.daily); biz.set(f.relay.id, b); }
     }
     // 没流量的在用节点也列出
-    for (const m of all) if (m.kind !== 'relay' && m.lifecycle === 'active' && inTeam(m) && (!pick || pick.id === m.id) && !nodes.has(m.id)) nodes.set(m.id, { id: m.id, name: m.name, team: m.team, kind: m.kind, lifecycle: m.lifecycle, country: m.country, direct: false, down: 0, up: 0, daily: zero() });
+    for (const m of all) if (m.kind !== 'relay' && m.lifecycle === 'active' && inTeam(m) && (!pick || pick.id === m.id) && !nodes.has(m.id)) nodes.set(m.id, { id: m.id, name: m.name, team: m.team, kind: m.kind, lifecycle: m.lifecycle, country: m.country, direct: false, down: 0, up: 0, daily: zero(), ...NO_NIC });
     const list = [...nodes.values()];
-    for (const n of list) { n.down = n.daily.reduce((a, d) => a + d.down, 0); n.up = n.daily.reduce((a, d) => a + d.up, 0); }
+    for (const n of list) {
+      n.down = n.daily.reduce((a, d) => a + d.down, 0); n.up = n.daily.reduce((a, d) => a + d.up, 0);
+      const m = byId.get(n.id);
+      if (n.direct || !m || m.kind === 'proxy' || m.host_machine) continue;
+      const rule = m.quota.rule ?? 'max';
+      const nd = nicOf(n.id, n.daily, rule);
+      Object.assign(n, { rule, rx: nd.rx, tx: nd.tx, billed: nd.billed, nic_daily: nd.daily });
+    }
     list.sort((a, b) => b.down + b.up - (a.down + a.up));
     const filtered = !!team || !!pick;
     const relays: TrafficDailyRelay[] = all.filter((r) => r.kind === 'relay' && (filtered ? biz.has(r.id) || pick?.id === r.id : r.lifecycle !== 'retired')).map((r) => {
@@ -78,9 +93,8 @@ export function installTrafficMock(R: Reg, machines: () => MachineView[], teams:
       // 网卡按这台线路机全部的业务流量算（过滤只影响 business）
       const own = zero(); flows.filter((f) => f.relay?.id === r.id).forEach((f) => add(own, f.daily));
       const rule = r.quota.rule ?? 'max';
-      const daily: DailyNic[] = own.map((d) => { const s = d.down + d.up; const rx = Math.round(s * (1.02 + 0.03 * (hashStr(r.id + d.date) % 10) / 10)); const tx = Math.round(s * 1.01); return { date: d.date, rx, tx, billed: billed(rule, rx, tx) }; });
-      const sum = (k: 'rx' | 'tx') => daily.reduce((a, d) => a + d[k], 0);
-      return { id: r.id, name: r.name, lifecycle: r.lifecycle, country: r.country, rule, rx: sum('rx'), tx: sum('tx'), billed: billed(rule, sum('rx'), sum('tx')), down: business.reduce((a, d) => a + d.down, 0), up: business.reduce((a, d) => a + d.up, 0), daily, business };
+      const { daily, rx, tx, billed: b } = nicOf(r.id, own, rule);
+      return { id: r.id, name: r.name, lifecycle: r.lifecycle, country: r.country, rule, rx, tx, billed: b, down: business.reduce((a, d) => a + d.down, 0), up: business.reduce((a, d) => a + d.up, 0), daily, business };
     });
     return { tz: META.org_timezone, dates, total, nodes: list, relays } satisfies TrafficDaily;
   });

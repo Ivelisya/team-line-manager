@@ -402,7 +402,9 @@ export interface AccountSession { id: string; created_at: string; last_seen_at: 
 export interface DailyBiz { date: string; down: number; up: number }
 export interface DailyNic { date: string; rx: number; tx: number; billed: number }
 /** 节点：以它为节点的全部入口（含换线前的旧入口）；direct = 线路机的直出入口（id 是线路机的）；窗口内有流量的已退役机器照列 */
-export interface TrafficDailyNode { id: string; name: string; team: { id: string; name: string } | null; kind: Kind; lifecycle: Lifecycle; country: string | null; direct: boolean; down: number; up: number; daily: DailyBiz[] }
+export interface TrafficDailyNode { id: string; name: string; team: { id: string; name: string } | null; kind: Kind; lifecycle: Lifecycle; country: string | null; direct: boolean; down: number; up: number; daily: DailyBiz[];
+  /** 节点自己的网卡（VPS 节点，同流量额度的口径）：生效的计费方式、区间合计的下行 / 上行 / 计费量、每天一格；直出行、家宽代理、同机 IP 节点、没有读数的为 null */
+  rule: TrafficRule | null; rx: number | null; tx: number | null; billed: number | null; nic_daily: DailyNic[] | null }
 /** 线路机：每天的网卡与计费量（daily），经过它的业务流量（business） */
 export interface TrafficDailyRelay { id: string; name: string; lifecycle: Lifecycle; country: string | null; rule: TrafficRule; rx: number; tx: number; billed: number; down: number; up: number; daily: DailyNic[]; business: DailyBiz[] }
 export interface TrafficDaily { tz: string; dates: string[]; total: DailyBiz[]; nodes: TrafficDailyNode[]; relays: TrafficDailyRelay[] }

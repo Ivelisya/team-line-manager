@@ -3,10 +3,10 @@
 // 区间（?d=，默认 14 天）与团队（?team=）在地址里；KPI 要近 30 天，取数至少取 30 天，表和图在前端截到所选区间
 import * as React from 'react';
 import { ArrowDownUp, CalendarDays, CalendarRange, ChartColumnStacked, ChevronDown, ChevronUp, Clock } from 'lucide-react';
-import type { DailyBiz, TrafficDailyNode, TrafficDailyRelay } from '@/lib/types';
+import type { DailyBiz, DailyNic, TrafficDailyNode, TrafficDailyRelay } from '@/lib/types';
 import { useTeams, useTrafficDaily } from '@/lib/queries';
 import { openDrawer } from '@/lib/drawer';
-import { meta, nicBilled, trafficRuleLabel } from '@/lib/derive';
+import { meta, nicBilled, trafficRuleLabel, trafficRuleShort } from '@/lib/derive';
 import { collator } from '@/lib/sort';
 import { parseSort, useUrlState } from '@/lib/urlState';
 import * as F from '@/lib/format';
@@ -99,12 +99,18 @@ const DateHead = ({ date, today }: { date: string; today: boolean }) => (
   <th className="r th-date" data-tip={today ? '今天，到目前为止' : undefined}><span>{today ? '今天' : md(date)}</span><small>{weekday(date)}</small></th>
 );
 
+/** 区间内的网卡：先加总下行、上行再按规则算计费量（同服务端、额度已用）。按天切片后在前端算：换区间时先用上一份数据（placeholder）切出来，不等重取 */
+function nicRange(rule: string, daily: DailyNic[]) {
+  const rx = daily.reduce((a, x) => a + x.rx, 0); const tx = daily.reduce((a, x) => a + x.tx, 0);
+  return { rule, daily, rx, tx, billed: nicBilled(rule, rx, tx) };
+}
+
 const NodesTable = React.memo(function NodesTable({ nodes, days, loading, stale, sortRaw, onSort, filtered }: {
   nodes: TrafficDailyNode[] | undefined; days: number; loading: boolean; stale: boolean; sortRaw: string | null; onSort: (s: string) => void; filtered: boolean;
 }) {
   const sort = React.useMemo(() => { const s = parseSort(sortRaw); return s && (s.id === 'name' || s.id === 'sum') ? s : null; }, [sortRaw]);
   const rows = React.useMemo(() => {
-    const list = (nodes ?? []).map((n) => { const daily = n.daily.slice(-days); return { n, daily, sum: total(sumOf(daily)) }; });
+    const list = (nodes ?? []).map((n) => { const daily = n.daily.slice(-days); return { n, daily, sum: total(sumOf(daily)), nic: n.rule && n.nic_daily ? nicRange(n.rule, n.nic_daily.slice(-days)) : null }; });
     const s = sort ?? DEFAULT_SORT;
     return list.sort((a, b) => { const c = s.id === 'name' ? collator.compare(a.n.name, b.n.name) : a.sum - b.sum; return s.desc ? -c : c; });
   }, [nodes, days, sort]);
@@ -114,7 +120,7 @@ const NodesTable = React.memo(function NodesTable({ nodes, days, loading, stale,
   const wrap = useScrollEnd(`${days}:${dates.length}`);
   const last = dates[dates.length - 1];
   return (
-    <Panel title="节点每日流量" count={nodes ? `${rows.length} 个` : undefined} sub={<InfoTip text={'下载加上传；格子底色越深流量越大\n已退役的机器这段时间有流量的也列出'} />} flush>
+    <Panel title="节点每日流量" count={nodes ? `${rows.length} 个` : undefined} sub={<InfoTip text={'业务流量：下载加上传；格子底色越深流量越大\nVPS 节点的合计下面写网卡计费量（按这台生效的计费方式，同流量额度）\n已退役的机器这段时间有流量的也列出'} />} flush>
       <div ref={wrap}>
         <TableWrap data-stale={stale}>
           <table className="dt is-one dt-heat">
@@ -125,15 +131,21 @@ const NodesTable = React.memo(function NodesTable({ nodes, days, loading, stale,
               <SortTh id="sum" label={`${days} 天合计`} r sort={sort} onSort={onSort} />
             </tr></thead>
             <tbody>
-              {rows.map(({ n, daily, sum }) => (
+              {rows.map(({ n, daily, sum, nic }) => (
                 <tr key={`${n.id}${n.direct ? 'd' : ''}`} className="is-link" tabIndex={0} onClick={() => openDrawer(n.id, 'traffic')} onKeyDown={(e) => { if (e.key === 'Enter') openDrawer(n.id, 'traffic'); }}>
                   <td>
                     <div className="tr-node"><Flag country={n.country} />
                       <div><span className="cell-main">{n.name}</span><span className="sub">{[n.team?.name ?? (n.direct ? '直出' : '未分团队'), n.lifecycle === 'retired' && '已退役'].filter(Boolean).join(' · ')}</span></div>
                     </div>
                   </td>
-                  {daily.map((x) => <td key={x.date} className="r" style={heat(total(x), max)} data-tip={total(x) ? `${md(x.date)} · ↓ 下载 ${F.str(F.bytes(x.down))} · ↑ 上传 ${F.str(F.bytes(x.up))}` : undefined}>{cell(total(x))}</td>)}
-                  <td className="r strong">{cell(sum)}<span className="sub">日均 {cell(sum / days)}</span></td>
+                  {daily.map((x, i) => <td key={x.date} className="r" style={heat(total(x), max)} data-tip={total(x) || nic ? `${md(x.date)} · ↓ 下载 ${F.str(F.bytes(x.down))} · ↑ 上传 ${F.str(F.bytes(x.up))}${nic ? `
+网卡计费 ${F.str(F.bytes(nic.daily[i].billed))}（${trafficRuleShort(nic.rule)}）` : ''}` : undefined}>{cell(total(x))}</td>)}
+                  {/* 有自己网卡的节点（VPS）副行写网卡计费量（同流量额度的口径），没有的写日均 */}
+                  <td className="r strong">{cell(sum)}{nic
+                    ? <span className="sub" data-tip={`网卡计费 · ${trafficRuleLabel(nic.rule)}
+${days} 天 ↓ 下行 ${F.str(F.bytes(nic.rx))} · ↑ 上行 ${F.str(F.bytes(nic.tx))}，先加总再按规则算
+日均业务流量 ${F.str(F.bytes(sum / days))}`}>计费 {cell(nic.billed)}</span>
+                    : <span className="sub">日均 {cell(sum / days)}</span>}</td>
                 </tr>
               ))}
             </tbody>
@@ -167,7 +179,7 @@ function SortTh({ id, label, r, sort, onSort }: { id: 'name' | 'sum'; label: str
 }
 
 const RelaysTable = React.memo(function RelaysTable({ relays, days, stale, teamName }: { relays: TrafficDailyRelay[]; days: number; stale: boolean; teamName: string | null }) {
-  const rows = React.useMemo(() => relays.map((r) => { const daily = r.daily.slice(-days); const s = daily.reduce((a, x) => ({ rx: a.rx + x.rx, tx: a.tx + x.tx }), { rx: 0, tx: 0 }); return { r, daily, business: r.business.slice(-days), sum: nicBilled(r.rule, s.rx, s.tx) }; }), [relays, days]);
+  const rows = React.useMemo(() => relays.map((r) => { const daily = r.daily.slice(-days); return { r, daily, business: r.business.slice(-days), sum: nicRange(r.rule, daily).billed }; }), [relays, days]);
   const dates = rows[0]?.daily.map((x) => x.date) ?? [];
   const max = React.useMemo(() => Math.max(0, ...rows.flatMap((r) => r.daily.map((x) => x.billed))), [rows]);
   const wrap = useScrollEnd(`${days}:${dates.length}`);
@@ -185,7 +197,7 @@ const RelaysTable = React.memo(function RelaysTable({ relays, days, stale, teamN
                   <td>
                     <div className="tr-node"><Flag country={r.country} />
                       <div><span className="cell-main">{r.name}</span><span className="sub" data-tip={`${trafficRuleLabel(r.rule)}
-${days} 天合计 = 先加总下行、上行，再按规则算`}>{trafficRuleLabel(r.rule)}{r.lifecycle === 'retired' ? ' · 已退役' : ''}</span></div>
+${days} 天合计 = 先加总下行、上行，再按规则算`}>{trafficRuleShort(r.rule)}{r.lifecycle === 'retired' ? ' · 已退役' : ''}</span></div>
                     </div>
                   </td>
                   {daily.map((x, i) => <td key={x.date} className="r" style={heat(x.billed, max)} data-tip={`${md(x.date)} · ↓ 下行 ${F.str(F.bytes(x.rx))} · ↑ 上行 ${F.str(F.bytes(x.tx))}\n计费 ${F.str(F.bytes(x.billed))} · ${teamName ? `其中${teamName}经过` : '经过'}的业务流量 ${F.str(F.bytes(total(business[i])))}`}>{cell(x.billed)}</td>)}
