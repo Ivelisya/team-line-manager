@@ -396,7 +396,7 @@ export interface TotpSetup { secret: string; otpauth_url: string; qr_svg: string
 /** 登录会话：id 是会话哈希前 8 字节的十六进制（不是 Cookie），current = 本设备 */
 export interface AccountSession { id: string; created_at: string; last_seen_at: string; expires_at: string; ip: string | null; user_agent: string | null; current: boolean }
 /** 每日流量（GET /traffic/daily）：按组织时区的自然日，今天算到目前为止。业务流量（下载 / 上传）来自入口；网卡（下行 / 上行）只有线路机，
- *  billed 是当天按供应商规则（rule）算的计费量 */
+ *  daily[].billed 是当天按供应商规则（rule）算的计费量；线路机的 billed 是区间合计，先求区间内下行之和、上行之和再套规则（和额度已用同口径），不是每天相加 */
 export interface DailyBiz { date: string; down: number; up: number }
 export interface DailyNic { date: string; rx: number; tx: number; billed: number }
 /** 节点：以它为节点的全部入口（含换线前的旧入口）；direct = 线路机的直出入口（id 是线路机的）；窗口内有流量的已退役机器照列 */

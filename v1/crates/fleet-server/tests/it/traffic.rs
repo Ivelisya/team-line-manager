@@ -70,7 +70,8 @@ async fn daily_split_by_org_midnight() {
     let relay = |v: &Value, id: Uuid| v["relays"].as_array().unwrap().iter().find(|r| r["id"] == id.to_string()).cloned();
     let a = relay(&v, ra).unwrap();
     let billed: Vec<i64> = a["daily"].as_array().unwrap()[5..].iter().map(|d| d["billed"].as_i64().unwrap()).collect();
-    assert_eq!((a["rule"].as_str(), billed, a["billed"].as_i64()), (Some("min"), vec![500, 400], Some(900)), "{a}");
+    assert_eq!((a["rule"].as_str(), billed, a["billed"].as_i64()), (Some("min"), vec![500, 400], Some(1100)), "每天取小再相加是 900；区间合计先求和（下行 1400、上行 1100）再取小是 1100
+{a}");
     assert_eq!(last2(&a["business"]), [(1100, 11), (30, 3)], "换线前的量留在旧线路机");
     assert_eq!(last2(&relay(&v, rb).unwrap()["business"]), [(0, 0), (200, 20)]);
 

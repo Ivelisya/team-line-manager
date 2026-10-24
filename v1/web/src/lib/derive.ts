@@ -23,6 +23,8 @@ export const jobStateLabel = (k: string) => lbl(meta().job_states, k);
 export const stepLabel = (k: string) => lbl(meta().step_states, k);
 /** 网卡计量规则（供应商的「流量计量」） */
 export const trafficRuleLabel = (k: string) => lbl(meta().traffic_rules, k);
+/** 按生效的规则从下行、上行算计费量（取小 / 取大 / 相加 / 只算上行 / 只算下行，没有规则取大）：流量页线路机的区间合计先求下行之和、上行之和再套它，和额度已用同口径 */
+export const nicBilled = (rule: string, rx: number, tx: number) => (rule === 'min' ? Math.min(rx, tx) : rule === 'sum' ? rx + tx : rule === 'out' ? tx : rule === 'in' ? rx : Math.max(rx, tx));
 /** 网卡计量规则（费用页签「本周期已用」旁的 (i)、额度悬停）：「按网卡流量：下行、上行取较大值」（名字同供应商对话框，来自 /meta） */
 export const trafficRulePlain = (k: string) => `按网卡，${trafficRuleLabel(k)}`;
 /** 网卡计量规则的下拉选项（供应商对话框、订阅编辑器共用，来自 /meta）：/meta 的键按字母序，这里双向在前、单向随后 */
@@ -90,7 +92,7 @@ export function fromLabel(from: string, start?: string | null): string {
   if (/^\d{4}-\d{2}-\d{2}$/.test(from) || !(start ? mmdd(start) === d : d.endsWith('-01'))) return d;
   return `${d} ${orgFmt({ hour: '2-digit', minute: '2-digit' }).format(new Date(from))}`;
 }
-/** 网卡口径的本月流量：显示的是下行 + 上行的合计；供应商按别的规则计费时写出规则和本周期的计费量（流量额度、流量页用的就是它） */
+/** 网卡口径的本月流量：显示的是下行 + 上行的合计；供应商按别的规则计费时写出规则和本周期的计费量（流量额度用的就是它；流量页线路机的区间合计也先求和再套同一条规则） */
 function nicTip(m: MachineView) {
   const rule = m.quota.rule;
   const head = rule && rule !== 'sum'

@@ -1,5 +1,5 @@
 // 每日流量的 mock（同服务端 GET /traffic/daily）：每条入口每天的量按它本月的流量折成日均，再按 (入口, 日期) 的哈希上下浮动、周末多一点；
-// 今天按组织时区已过去的比例算。线路机网卡 ≈ 经过它的业务流量（进、出各一次）再加一点开销，计费量按供应商规则逐天算。
+// 今天按组织时区已过去的比例算。线路机网卡 ≈ 经过它的业务流量（进、出各一次）再加一点开销，每天的计费量按供应商规则算，区间合计先求下行、上行之和再套规则。
 // 已退役的机器：退役那天之前按固定日均有流量（服务端是小时表里的真实数据）
 import type { DailyBiz, DailyNic, MachineView, TrafficDaily, TrafficDailyNode, TrafficDailyRelay } from '@/lib/types';
 import { hashStr } from './fixtures';
@@ -68,7 +68,7 @@ export function installTrafficMock(R: Reg, machines: () => MachineView[], teams:
       if (f.relay) { const b = biz.get(f.relay.id) ?? zero(); add(b, f.daily); biz.set(f.relay.id, b); }
     }
     // 没流量的在用节点也列出
-    for (const m of all) if (m.kind !== 'relay' && m.lifecycle !== 'retired' && inTeam(m) && (!pick || pick.id === m.id) && !nodes.has(m.id)) nodes.set(m.id, { id: m.id, name: m.name, team: m.team, kind: m.kind, lifecycle: m.lifecycle, country: m.country, direct: false, down: 0, up: 0, daily: zero() });
+    for (const m of all) if (m.kind !== 'relay' && m.lifecycle === 'active' && inTeam(m) && (!pick || pick.id === m.id) && !nodes.has(m.id)) nodes.set(m.id, { id: m.id, name: m.name, team: m.team, kind: m.kind, lifecycle: m.lifecycle, country: m.country, direct: false, down: 0, up: 0, daily: zero() });
     const list = [...nodes.values()];
     for (const n of list) { n.down = n.daily.reduce((a, d) => a + d.down, 0); n.up = n.daily.reduce((a, d) => a + d.up, 0); }
     list.sort((a, b) => b.down + b.up - (a.down + a.up));
@@ -79,8 +79,8 @@ export function installTrafficMock(R: Reg, machines: () => MachineView[], teams:
       const own = zero(); flows.filter((f) => f.relay?.id === r.id).forEach((f) => add(own, f.daily));
       const rule = r.quota.rule ?? 'max';
       const daily: DailyNic[] = own.map((d) => { const s = d.down + d.up; const rx = Math.round(s * (1.02 + 0.03 * (hashStr(r.id + d.date) % 10) / 10)); const tx = Math.round(s * 1.01); return { date: d.date, rx, tx, billed: billed(rule, rx, tx) }; });
-      const sum = (k: 'rx' | 'tx' | 'billed') => daily.reduce((a, d) => a + d[k], 0);
-      return { id: r.id, name: r.name, lifecycle: r.lifecycle, country: r.country, rule, rx: sum('rx'), tx: sum('tx'), billed: sum('billed'), down: business.reduce((a, d) => a + d.down, 0), up: business.reduce((a, d) => a + d.up, 0), daily, business };
+      const sum = (k: 'rx' | 'tx') => daily.reduce((a, d) => a + d[k], 0);
+      return { id: r.id, name: r.name, lifecycle: r.lifecycle, country: r.country, rule, rx: sum('rx'), tx: sum('tx'), billed: billed(rule, sum('rx'), sum('tx')), down: business.reduce((a, d) => a + d.down, 0), up: business.reduce((a, d) => a + d.up, 0), daily, business };
     });
     return { tz: META.org_timezone, dates, total, nodes: list, relays } satisfies TrafficDaily;
   });

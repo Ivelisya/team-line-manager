@@ -82,7 +82,7 @@ pub fn traffic(ctx: &Ctx, o: TrafficOpts) -> anyhow::Result<u8> {
             .map(|r| vec![st(r, "/name"), t(r, "billed"), crate::meta::label("traffic_rules", r["rule"].as_str().unwrap_or("max")).to_string(), t(r, "rx"), t(r, "tx"), table::traffic(n(r, "down") + n(r, "up"))])
             .collect();
         format!(
-            "{head}\n{}\n\n节点按区间合计{more}\n{}\n\n线路机（网卡计费量按供应商规则逐天算后相加）\n{}",
+            "{head}\n{}\n\n节点按区间合计{more}\n{}\n\n线路机（计费量 = 先加总区间内的下行、上行，再按供应商规则算；每天的见 --node）\n{}",
             days_table(&total),
             table::render(&["节点", "团队", "下载", "上传", "合计", "日均"], &top),
             table::render(&["线路机", "计费量", "规则", "下行", "上行", "经过的业务流量"], &rl)

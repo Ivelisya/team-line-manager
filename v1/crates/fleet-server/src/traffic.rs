@@ -5,7 +5,7 @@
 //!   （换线前在旧线路机上跑的那段仍算这个节点）；线路机的「经过它的业务流量」= 挂在它上面的入口（换线前的量留在旧线路机上）。
 //!   直出入口的节点就是线路机自己，单列一行「线路机-直出」（id 是线路机的）。家宽代理、同机 IP 节点有自己的入口，各算各的；
 //!   全部合计 = 各行之和，每个字节只算一次。窗口内有流量的已退役机器照列，lifecycle 照实给。
-//! - 线路机网卡（下行 / 上行）来自主机小时表 `host_metric_hourly`，计费量按生效的规则（订阅单独设置的，或供应商的）每天取小 / 取大 / 相加 / 只算出站 / 只算入站（没有供应商取大）。
+//! - 线路机网卡（下行 / 上行）来自主机小时表 `host_metric_hourly`，计费量按生效的规则（订阅单独设置的，或供应商的）取小 / 取大 / 相加 / 只算出站 / 只算入站（没有供应商取大）：每天一格按当天的下行、上行算，区间合计先求下行之和、上行之和再套规则（同额度已用）。
 //! - 小时表按 UTC 整点分桶，一桶按它的起点落在组织时区的哪天归哪天（半小时时区至多差 30 分钟，同 `flows`）。
 //!
 //! 两条按 (节点, 线路机, 天) / (线路机, 天) 分组的聚合各扫一遍窗口内的小时行（走 hour 索引，0015 / 0043；先按入口 × 天聚合再连入口表，
@@ -70,6 +70,7 @@ pub struct RelayRow {
     pub rule: &'static str,
     pub rx: i64,
     pub tx: i64,
+    /// 区间合计的计费量 = 按规则套区间内的下行之和、上行之和（和额度已用同口径）；每天的在 daily[].billed
     pub billed: i64,
     pub down: i64,
     pub up: i64,
@@ -284,15 +285,17 @@ pub async fn daily(st: &AppState, days: Option<i64>, team: Option<&str>, machine
             let business = relay_biz.remove(&m.id).unwrap_or_else(empty_biz);
             let (down, up) = sum(&business);
             let f = |g: fn(&Nic) -> i64| daily.iter().map(g).fold(0i64, i64::saturating_add);
+            // 区间合计的计费量：先求区间内的下行、上行之和，再套规则（同额度已用 views.rs `quota_used`），不是逐天计费量相加
+            let (rx, tx) = (f(|v| v.rx), f(|v| v.tx));
             RelayRow {
                 id: m.id,
                 name: m.name.clone(),
                 lifecycle: m.lifecycle.clone(),
                 country: country(m),
                 rule,
-                rx: f(|v| v.rx),
-                tx: f(|v| v.tx),
-                billed: f(|v| v.billed),
+                rx,
+                tx,
+                billed: billed(rule, rx, tx),
                 down,
                 up,
                 daily,

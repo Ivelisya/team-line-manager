@@ -6,7 +6,7 @@ import { ArrowDownUp, CalendarDays, CalendarRange, ChartColumnStacked, ChevronDo
 import type { DailyBiz, TrafficDailyNode, TrafficDailyRelay } from '@/lib/types';
 import { useTeams, useTrafficDaily } from '@/lib/queries';
 import { openDrawer } from '@/lib/drawer';
-import { meta, trafficRuleLabel } from '@/lib/derive';
+import { meta, nicBilled, trafficRuleLabel } from '@/lib/derive';
 import { collator } from '@/lib/sort';
 import { parseSort, useUrlState } from '@/lib/urlState';
 import * as F from '@/lib/format';
@@ -167,7 +167,7 @@ function SortTh({ id, label, r, sort, onSort }: { id: 'name' | 'sum'; label: str
 }
 
 const RelaysTable = React.memo(function RelaysTable({ relays, days, stale, teamName }: { relays: TrafficDailyRelay[]; days: number; stale: boolean; teamName: string | null }) {
-  const rows = React.useMemo(() => relays.map((r) => { const daily = r.daily.slice(-days); return { r, daily, business: r.business.slice(-days), sum: daily.reduce((a, x) => a + x.billed, 0) }; }), [relays, days]);
+  const rows = React.useMemo(() => relays.map((r) => { const daily = r.daily.slice(-days); const s = daily.reduce((a, x) => ({ rx: a.rx + x.rx, tx: a.tx + x.tx }), { rx: 0, tx: 0 }); return { r, daily, business: r.business.slice(-days), sum: nicBilled(r.rule, s.rx, s.tx) }; }), [relays, days]);
   const dates = rows[0]?.daily.map((x) => x.date) ?? [];
   const max = React.useMemo(() => Math.max(0, ...rows.flatMap((r) => r.daily.map((x) => x.billed))), [rows]);
   const wrap = useScrollEnd(`${days}:${dates.length}`);
@@ -184,7 +184,8 @@ const RelaysTable = React.memo(function RelaysTable({ relays, days, stale, teamN
                 <tr key={r.id} className="is-link" tabIndex={0} onClick={() => openDrawer(r.id, 'traffic')} onKeyDown={(e) => { if (e.key === 'Enter') openDrawer(r.id, 'traffic'); }}>
                   <td>
                     <div className="tr-node"><Flag country={r.country} />
-                      <div><span className="cell-main">{r.name}</span><span className="sub" data-tip={trafficRuleLabel(r.rule)}>{trafficRuleLabel(r.rule)}{r.lifecycle === 'retired' ? ' · 已退役' : ''}</span></div>
+                      <div><span className="cell-main">{r.name}</span><span className="sub" data-tip={`${trafficRuleLabel(r.rule)}
+${days} 天合计 = 先加总下行、上行，再按规则算`}>{trafficRuleLabel(r.rule)}{r.lifecycle === 'retired' ? ' · 已退役' : ''}</span></div>
                     </div>
                   </td>
                   {daily.map((x, i) => <td key={x.date} className="r" style={heat(x.billed, max)} data-tip={`${md(x.date)} · ↓ 下行 ${F.str(F.bytes(x.rx))} · ↑ 上行 ${F.str(F.bytes(x.tx))}\n计费 ${F.str(F.bytes(x.billed))} · ${teamName ? `其中${teamName}经过` : '经过'}的业务流量 ${F.str(F.bytes(total(business[i])))}`}>{cell(x.billed)}</td>)}
