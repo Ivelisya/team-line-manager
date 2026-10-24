@@ -296,10 +296,15 @@ async fn plan(st: &AppState, conn: &mut PgConnection, old_id: Uuid, b: &ReplaceI
             blockers.push(format!("{who}「{}」现在是「{}」，只有在用的节点能替换", m.name(), meta::lifecycle_label(&m.lifecycle)));
         }
     }
-    let busy: Vec<(Uuid, String)> = sqlx::query_as("select target_id, kind from job where target_id = any($1) and state in ('queued', 'running', 'waiting', 'cancelling')")
-        .bind(vec![old.id, new.id])
-        .fetch_all(&mut *conn)
-        .await?;
+    // 两台机器作为目标的，和作为别的替换 / 改出口指向的新节点的（那个作业的目标是它的旧节点）
+    let busy: Vec<(Uuid, String)> = sqlx::query_as(
+        "select case when target_id = any($1) then target_id else (params->>'new_id')::uuid end, kind from job
+         where state in ('queued', 'running', 'waiting', 'cancelling')
+           and (target_id = any($1) or (kind in ('replace', 'repoint') and params->>'new_id' = any($1::uuid[]::text[])))",
+    )
+    .bind(vec![old.id, new.id])
+    .fetch_all(&mut *conn)
+    .await?;
     for (t, k) in busy {
         let n = if t == old.id { &old_name } else { &new_name };
         blockers.push(format!("「{n}」还有进行中的作业（{}）：等它结束再替换", meta::job_kind_label(&k)));

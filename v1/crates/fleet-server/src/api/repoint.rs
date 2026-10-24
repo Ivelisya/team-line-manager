@@ -64,7 +64,7 @@ struct Plan {
     warnings: Vec<String>,
 }
 
-async fn plan(st: &AppState, conn: &mut PgConnection, old_id: Uuid, b: &RepointIn) -> ApiResult<Plan> {
+async fn plan(st: &AppState, conn: &mut PgConnection, old_id: Uuid, b: &RepointIn, lock: bool) -> ApiResult<Plan> {
     let (mut blockers, mut invalid, mut warnings) = (vec![], vec![], vec![]);
     let old: Option<Ent> = sqlx::query_as(ENT).bind(old_id).fetch_optional(&mut *conn).await?;
     let old = old.ok_or_else(|| ApiError::not_found("没有这个入口"))?;
@@ -79,6 +79,22 @@ async fn plan(st: &AppState, conn: &mut PgConnection, old_id: Uuid, b: &RepointI
     }
     if new.lifecycle != "active" {
         blockers.push(format!("新入口「{}」现在不在用（{}）：等它生效再改", new.name(), new.lifecycle));
+    }
+    // 新入口那一侧有作业要摘它（换线路机的旧入口就是它、新节点在退役或被替换）：改过去之后随即被摘。
+    // 发起时先锁新节点那一行（for share）：和退役、替换（对同一行 for update）互斥，它们也会看到这个作业（新节点按 new_id 认）
+    if lock {
+        sqlx::query("select 1 from machine where id = $1 for share").bind(new.node_id).execute(&mut *conn).await?;
+    }
+    let busy: Option<(String,)> = sqlx::query_as(
+        "select kind from job where state in ('queued', 'running', 'waiting', 'cancelling')
+           and ((kind = 'move_entry' and params->>'old_entry_id' = $1::text) or (kind in ('retire', 'replace') and target_id = $2)) limit 1",
+    )
+    .bind(new.id)
+    .bind(new.node_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    if let Some((k,)) = busy {
+        blockers.push(format!("「{}」还有进行中的作业（{}）：新入口随后会被摘掉或换走，等它结束再改", new.node_name, crate::meta::job_kind_label(&k)));
     }
     let mut rows = crate::routers::load(&st.db, None).await?;
     if !b.router_ids.is_empty() {
@@ -132,14 +148,14 @@ fn parse_ids(s: Option<&str>) -> ApiResult<Vec<Uuid>> {
 pub async fn preview(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<PreviewQ>) -> ApiResult<Json<Value>> {
     let b = RepointIn { to_entry_id: q.to_entry_id, router_ids: parse_ids(q.routers.as_deref())? };
     let mut conn = st.db.acquire().await?;
-    let p = plan(&st, &mut conn, id, &b).await?;
+    let p = plan(&st, &mut conn, id, &b, false).await?;
     Ok(ok(p.view()))
 }
 
 /// 发起：建 repoint 作业（只有「改软路由出口」一步）
 pub async fn repoint(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<RepointIn>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
-    let p = plan(&st, &mut tx, id, &b).await?;
+    let p = plan(&st, &mut tx, id, &b, true).await?;
     if !p.invalid.is_empty() {
         return Err(ApiError::bad_request(p.invalid.join("；")).with_detail(json!({"blockers": p.blockers})));
     }

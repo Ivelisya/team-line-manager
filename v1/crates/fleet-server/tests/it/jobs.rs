@@ -813,6 +813,31 @@ async fn retire_refused_while_a_step_is_running() {
     assert_eq!(st0, "cancelled");
 }
 
+/// 退役：这台是进行中的替换 / 改出口指向的新节点（作业的目标是旧节点，路由要改成或已改成指向它）时拒绝，排队中的也算；作业结束后照常退役
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retire_refused_while_it_is_the_new_node_of_a_job() {
+    let t = setup(false).await;
+    let team = seed_team(&t, "团队1").await;
+    let old = seed_node(&t, team, 1, "203.0.113.10", "active").await;
+    let new = seed_node(&t, team, 2, "203.0.113.11", "active").await;
+    let name = t.get(&format!("/api/v1/machines/{new}")).await["name"].as_str().unwrap().to_string();
+    for kind in ["replace", "repoint"] {
+        let mut tx = t.st.db.begin().await.unwrap();
+        let job = jobs::enqueue(&mut tx, kind, Some(old), json!({"new_id": new}), "test").await.unwrap();
+        tx.commit().await.unwrap();
+        let (s, v) = t.req("POST", &format!("/api/v1/machines/{new}/retire"), Some(json!({"now": true, "confirm": name})), None).await;
+        assert_eq!(s, StatusCode::CONFLICT, "{kind} {v}");
+        assert!(v["error"]["message"].as_str().unwrap().contains("的新节点"), "{v}");
+        assert!(t.get(&format!("/api/v1/machines/{new}/retire")).await["blockers"].to_string().contains("的新节点"), "{kind} 预览也列出");
+        assert_eq!(t.machine_lifecycle(new).await, "active");
+        let st0: String = sqlx::query_scalar("select state::text from job where id = $1").bind(job).fetch_one(&t.st.db).await.unwrap();
+        assert_eq!(st0, "queued");
+        sqlx::query("update job set state = 'cancelled', finished_at = now() where id = $1").bind(job).execute(&t.st.db).await.unwrap();
+    }
+    t.post(&format!("/api/v1/machines/{new}/retire"), json!({"now": true, "confirm": name})).await;
+    assert_eq!(t.machine_lifecycle(new).await, "retiring");
+}
+
 /// 一台在用的家宽代理发起退役，返回作业 id。退役的步骤不登录机器；最后一步「完成退役」要 for update 锁团队行：
 /// 先拿着 `team` 行的 for share 锁（不挡插入机器时外键要的 key share）再调，作业就停在这一步（库里等锁）
 async fn retire_blocked_on_team(t: &common::T, team: Uuid) -> String {

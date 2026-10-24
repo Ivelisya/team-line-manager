@@ -702,6 +702,18 @@ async fn retire_blockers(conn: &mut sqlx::PgConnection, id: Uuid, kind: &str, li
     if let Some((k, _)) = open.iter().find(|j| j.1) {
         out.push(format!("有作业（{}）正在执行一步：先在作业页取消它，等它停下再退役（升级 agent 不能取消，等它做完）", meta::job_kind_label(k)));
     }
+    // 这台是进行中的替换 / 改出口指向的新节点（作业的目标是旧节点，上面作废不到它）：软路由正在（或已经）改成指向这台的入口，退役会把它们摘掉
+    let feeding: Option<(String,)> = sqlx::query_as(&format!(
+        "select kind from job where kind in ('replace', 'repoint') and params->>'new_id' = any($1::uuid[]::text[])
+           and state in ('queued', 'running', 'waiting', 'cancelling') limit 1{}",
+        if lock { " for update" } else { "" }
+    ))
+    .bind(all)
+    .fetch_optional(&mut *conn)
+    .await?;
+    if let Some((k,)) = feeding {
+        out.push(format!("这台是进行中的作业（{}）的新节点，软路由的出口要改成（或已经改成）指向它：等那个作业结束再退役", meta::job_kind_label(&k)));
+    }
     Ok(out)
 }
 
