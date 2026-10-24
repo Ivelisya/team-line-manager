@@ -102,6 +102,23 @@ async fn team_delete_detaches_from_subs() {
     assert_eq!(s, StatusCode::OK, "{v}");
 }
 
+/// 只改名 / 启停不碰规则列：load 之后别处改了 team_ids（并发的删团队摘团队）不会被 patch 用旧值写回
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn patch_name_keeps_rule_columns() {
+    let t = common::boot(false, "").await;
+    let (a, b) = (tele::seed_team(&t, "团队1").await, tele::seed_team(&t, "团队2").await);
+    let d = t.post("/api/v1/client-subs", json!({"name": "旧名", "rule": {"team_mode": "only", "team_ids": [a, b]}})).await;
+    let id = d["id"].as_str().unwrap();
+    sqlx::query("update client_sub set team_ids = $1").bind(vec![a]).execute(&t.st.db).await.unwrap();
+    let (s, v) = t.req("PATCH", &format!("/api/v1/client-subs/{id}"), Some(json!({"name": "新名", "enabled": false})), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!((v["data"]["name"].as_str(), v["data"]["enabled"].as_bool()), (Some("新名"), Some(false)), "{v}");
+    let ids: Vec<Uuid> = sqlx::query_scalar("select unnest(team_ids) from client_sub").fetch_all(&t.st.db).await.unwrap();
+    assert_eq!(ids, [a], "team_ids 不被覆盖");
+    // 带规则时校验团队存在
+    t.fail("PATCH", &format!("/api/v1/client-subs/{id}"), Some(json!({"rule": {"team_mode": "only", "team_ids": [Uuid::now_v7()]}})), StatusCode::BAD_REQUEST).await;
+}
+
 /// 批量取分享链接：一次查回、按请求顺序（重复的各出一条），有一条不存在整批 404，只写一条审计
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn share_batch_keeps_request_order() {

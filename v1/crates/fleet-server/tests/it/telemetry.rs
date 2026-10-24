@@ -690,13 +690,15 @@ async fn relay_unreachable_summary_change_in_port_does_not_emit() {
     let ctl = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
     let team = seed_team(&t, "团队1").await;
-    // 4 个端口先一起占住再一起放掉（连不上才是要测的）：逐个绑了就放，下一次可能拿到同一个端口，撞入口端口唯一约束
+    // 4 个端口只 bind 不 listen，持有到测试结束：对它们连接被立即拒绝（RST，等同连不上），端口又不会空出来让并发的测试 listen 上去使探测连通；
+    // 先一起占住（不设 SO_REUSEADDR，别人 bind 不上）再播种，逐个来下一次可能拿到同一个端口，撞入口端口唯一约束
     let mut held = vec![];
     for _ in 0..4 {
-        held.push(tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap());
+        let s = tokio::net::TcpSocket::new_v4().unwrap();
+        s.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        held.push(s);
     }
     let ports: Vec<i32> = held.iter().map(|c| c.local_addr().unwrap().port() as i32).collect();
-    drop(held);
     for (n, port) in (1..=4).zip(ports) {
         seed_node(&t, relay, team, n, &format!("203.0.113.{n}"), port).await;
     }
