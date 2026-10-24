@@ -198,6 +198,11 @@ systemctl restart fleet-server
 # Caddyfile 归本脚本，每次部署按下面重写：本机自己的配置不要改它，放进两个目录（docs/OPS.md §11）——
 # global.d/*.caddy 并进全局选项（如前置边缘机的 servers / proxy_protocol），sites.d/*.caddy 是别的站点块（如 http:// 跳转、本机别的域名）。
 # 目录空着只有一条 warn。重写前旧文件留成 Caddyfile.bak-<时间>。
+# 反代和下面的健康检查连 fleet-server 的地址：取 fleet.toml 顶层的 listen（首次安装生成 127.0.0.1:8080，之后保留带外改动）；
+# 取不到、格式不对就用 127.0.0.1:8080。0.0.0.0 / [::] 是「所有网卡」，本机连回环
+LISTEN=$(sed -n '/^\[/q; s/^[[:space:]]*listen[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' /etc/fleet/fleet.toml 2>/dev/null | head -n 1 || true)
+[[ $LISTEN =~ ^(\[[0-9A-Fa-f:]+\]|[0-9A-Za-z.-]+):[0-9]{1,5}$ ]] || LISTEN=127.0.0.1:8080
+case $LISTEN in 0.0.0.0:*) LISTEN=127.0.0.1:${LISTEN#*:} ;; "[::]:"*) LISTEN="[::1]:${LISTEN##*:}" ;; esac
 CADDY_ADMIN=unix//run/caddy/admin.sock
 CADDY="{
 	admin $CADDY_ADMIN
@@ -207,7 +212,7 @@ CADDY="{
 import /etc/caddy/sites.d/*.caddy
 
 $DOMAIN {
-	reverse_proxy 127.0.0.1:8080
+	reverse_proxy $LISTEN
 }"
 CADDY_DROPIN="[Service]
 RuntimeDirectory=caddy
@@ -238,7 +243,7 @@ fi
 # fleet-server 启动时先占端口、再跑数据库迁移（迁移期间连接先挂着，迁移完才应答）：最多等 60 秒，未登录访问应回 401
 code=000
 for _ in $(seq 60); do
-  code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/v1/auth/me || true)
+  code=$(curl -s -o /dev/null -w '%{http_code}' http://$LISTEN/api/v1/auth/me || true)
   [ "$code" = 401 ] && break
   sleep 1
 done
