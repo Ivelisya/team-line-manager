@@ -36,8 +36,10 @@ const SIG_KEY: &str = "rtt_targets_sig";
 /// 要测的节点：在用的 VPS 节点（含同机 IP 节点），不含家宽代理、备用团队里的
 pub async fn targets(db: &sqlx::PgPool) -> sqlx::Result<Vec<RttTarget>> {
     let rows: Vec<(Uuid, String, i32)> = sqlx::query_as(
-        "select m.id, host(m.primary_ip), m.ssh_port from machine m left join team t on t.id = m.team_id
-         where m.kind = 'vps' and m.lifecycle = 'active' and not coalesce(t.spare, false) order by m.id",
+        // 同机 IP 节点没有自己的 ssh_port（SSH 走宿主机）：TCP 退回路径用宿主机的端口，都没有按 22
+        "select m.id, host(m.primary_ip), coalesce(m.ssh_port, h.ssh_port, 22) from machine m left join team t on t.id = m.team_id
+         left join machine h on h.id = m.host_id
+         where m.kind = 'vps' and m.lifecycle = 'active' and m.primary_ip is not null and not coalesce(t.spare, false) order by m.id",
     )
     .fetch_all(db)
     .await?;

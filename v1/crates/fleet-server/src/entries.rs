@@ -197,8 +197,11 @@ pub async fn desired_state(db: &PgPool, secrets: &SecretBox, relay_id: Uuid, ech
         entries,
         // 三网 PING 的目标：全局 + 这台的覆盖（ping.rs）
         ping: crate::ping::config_for(db, relay_id).await?,
-        // 放置矩阵：全部在用 VPS 节点（placement.rs）
-        rtt: crate::placement::config(db).await?,
+        // 放置矩阵：全部在用 VPS 节点（placement.rs）。只是测量用的附加项：取不出来时不带，不能让线路机拿不到期望状态（入口、Xray 配置）
+        rtt: crate::placement::config(db).await.unwrap_or_else(|e| {
+            tracing::warn!("放置矩阵的节点清单取不出来，这次期望状态不带：{e}");
+            None
+        }),
     })
 }
 
