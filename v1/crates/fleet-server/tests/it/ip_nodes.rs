@@ -141,9 +141,9 @@ async fn ip_node_borrows_host_agent_and_metrics() {
     assert_eq!(xv["host"]["net_rx_bps"], 8000.0, "{xv}");
     let pts = t.get(&format!("/api/v1/machines/{x}/series?metric=host&range=1h")).await["points"].as_array().unwrap().len();
     assert!(pts > 0, "主机曲线是宿主机的");
-    // 总览：两台节点，在线数只算有自己 agent 的宿主机，网卡速率只算一次
+    // 总览：两台节点，在线数按台机器算（同机 IP 节点随宿主机计入，ip_nodes 单列），网卡速率只算一次
     let ov = t.get("/api/v1/overview").await;
-    assert_eq!((ov["nodes"]["total"].as_i64(), ov["online"].as_i64(), ov["net_rx_bps"].as_f64()), (Some(2), Some(1), Some(8000.0)), "{ov}");
+    assert_eq!((ov["nodes"]["total"].as_i64(), ov["online"].as_i64(), ov["ip_nodes"].as_i64(), ov["net_rx_bps"].as_f64()), (Some(2), Some(2), Some(1), Some(8000.0)), "{ov}");
 
     // 线路机的期望状态：出站是同机节点自己的 IP 和 SS 端口，出口验收期望它自己的 IP
     let (s, v) = t.req("GET", "/agent/v1/desired?after=0", None, Some(&tok)).await;
