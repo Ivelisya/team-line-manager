@@ -89,3 +89,7 @@
 .logline .lv-warn { color: var(--warn-text); }
 .logline .lv-error { color: var(--bad-text); }
 .logline .msg { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg); }
+/* 测速结果：大号平均速率，下面几行说明沿用调优结果的版式 */
+.speed-main { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--sp-4) var(--sp-6); color: var(--fg); }
+.speed-main b { font-size: var(--fs-metric); line-height: 1.2; font-weight: var(--fw-semibold); }
+.speed-main span:not(.t-sub) { font-size: var(--fs-body); color: var(--fg-2); }

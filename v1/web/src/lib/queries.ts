@@ -6,7 +6,7 @@ import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClie
 import { del, get, patch, post, put } from './api';
 import { collator, makeDefaultCompare } from './sort';
 import { nextDue, offlineNames, quotaTight, setMeta } from './derive';
-import type { ApiKey, Availability, Incident, Job, JobSummary, Paged, JobLog, MachineView, Meta, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RetireResult, DueList, RenewBatchResult, RecycleItem, RecycleDetail, ReplaceBody, ReplacePreview, MovePreview, MoveResult, EvacuateResult, RebalancePlan, PlacementView, ProbeBeats, SeriesResp, Silence, TrafficDaily, SilenceKind, SubField, Team, AuditEntry, NotifyChannel, NotifyLogEntry, AccountSession, TotpSetup, TotpStatus, MovesResult } from './types';
+import type { ApiKey, Availability, Incident, Job, JobSummary, Paged, JobLog, MachineView, Meta, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RetireResult, DueList, RenewBatchResult, RecycleItem, RecycleDetail, ReplaceBody, ReplacePreview, MovePreview, MoveResult, EvacuateResult, RebalancePlan, PlacementView, ProbeBeats, SeriesResp, Silence, TrafficDaily, SilenceKind, SubField, Team, AuditEntry, NotifyChannel, NotifyLogEntry, UptimeReport, MonthlyReport, MonthlySendResult, SpeedtestStarted, AccountSession, TotpSetup, TotpStatus, MovesResult } from './types';
 
 export const useMe = () => useQuery({ queryKey: ['me'], queryFn: () => get<{ username: string }>('/auth/me'), retry: false, staleTime: 5 * 60_000 });
 /** 中文名、枚举、阈值、默认值（服务端 meta.rs），一次会话内不变：取回时同时交给 derive 的同步读取（kindLabel 等）。外壳等它到了才渲染页面 */
@@ -279,6 +279,10 @@ export const useProvision = () => useWrite((items: ProvisionItem[]) => post<{ jo
 export const useUpgradeAgent = () => useWrite((id: string) => post<{ machine_id: string; job_id: string }>(`/machines/${id}/upgrade-agent`), [...M, ['jobs']]);
 export const useTune = () => useWrite((id: string) => post<{ machine_id: string; job_id: string }>(`/machines/${id}/tune`), [...M, ['jobs']]);
 export const useSsRefresh = () => useWrite((id: string) => post<{ machine_id: string; job_id: string }>(`/machines/${id}/ss-refresh`), [...M, ['jobs']]);
+/** 按需测速（作业 speedtest）：size_mb 下载量、target 目标（都按 /meta 的 speedtest）；机器本机下载，会用掉约 size_mb 的流量。同机 IP 节点 / 家宽代理 / 不在用的机器服务端回 409 */
+export const useSpeedtest = () => useWrite(({ id, ...b }: { id: string; size_mb: number; target: string }) => post<SpeedtestStarted>(`/machines/${id}/speedtest`, b), [...M, ['jobs']]);
+/** 这台机器最近一次测速作业（摘要）：键在 ['jobs'] 下，作业事件到了自动重取；要结果再用 useJob 取详情 */
+export const useLastSpeedtest = (id: string) => useQuery({ queryKey: ['jobs', 'speedtest', id], queryFn: ({ signal }) => get<Paged<JobSummary>>(`/jobs?kind=speedtest&target_id=${id}&limit=1`, signal), staleTime: Infinity, select: (p) => p.items[0] ?? null });
 export const useUpgradeAllAgents = () => useWrite(() => post<{ jobs: { machine_id: string; job_id: string }[]; order: string }>('/agents/upgrade'), [...M, ['jobs']]);
 /** 重试：主机指纹不符 / SSH 认证失败时可带 reset_host_key、ssh_password */
 export interface RetryBody { reset_host_key?: boolean; ssh_password?: string }
@@ -373,11 +377,20 @@ export const useApiKeys = () => useQuery({ queryKey: ['api-keys'], queryFn: () =
 export const useCreateApiKey = () => useWrite((b: { name: string; scopes: string[]; expires_days?: number; password: string; totp?: string }) => post<{ id: string; token: string }>('/api-keys', b), [['api-keys']]);
 export const useRevokeApiKey = () => useWrite((id: string) => del(`/api-keys/${id}`), [['api-keys']]);
 export const useNotifyChannels = () => useQuery({ queryKey: ['notify-channels'], queryFn: () => get<NotifyChannel[]>('/notify-channels'), staleTime: Infinity });
-export const useAddChannel = () => useWrite((b: { name: string; kind: string; config: Record<string, string>; min_severity: string; enabled: boolean }) => post<{ id: string }>('/notify-channels', b), [['notify-channels']]);
-export const usePatchChannel = () => useWrite(({ id, ...b }: { id: string; name?: string; config?: Record<string, string | null>; min_severity?: string; enabled?: boolean }) => patch(`/notify-channels/${id}`, b), [['notify-channels']]);
+export const useAddChannel = () => useWrite((b: { name: string; kind: string; config: Record<string, string>; min_severity: string; enabled: boolean; monthly_report: boolean }) => post<{ id: string }>('/notify-channels', b), [['notify-channels']]);
+export const usePatchChannel = () => useWrite(({ id, ...b }: { id: string; name?: string; config?: Record<string, string | null>; min_severity?: string; enabled?: boolean; monthly_report?: boolean }) => patch(`/notify-channels/${id}`, b), [['notify-channels']]);
 export const useDelChannel = () => useWrite((id: string) => del(`/notify-channels/${id}`), [['notify-channels'], ['notify-log']]);
+/** 月报预览（含要发的文字）：month 缺省为上个月（服务端定）。对话框打开时才取、每次重取 */
+export const useMonthlyPreview = (enabled: boolean) => useQuery({ queryKey: ['reports', 'monthly'], queryFn: ({ signal }) => get<MonthlyReport>('/reports/monthly', signal), enabled, staleTime: 0, gcTime: 0, refetchOnWindowFocus: false });
+/** 立即发一次月报：只发给开了「月报」的已启用渠道，没有这样的渠道服务端回 409（写明去哪里勾选） */
+export const useSendMonthly = () => useWrite((month?: string) => post<MonthlySendResult>('/reports/monthly/send', month ? { month } : {}), [['notify-log']]);
 export const useTestChannel = () => useWrite((id: string) => post<{ ok: boolean; error: string | null }>(`/notify-channels/${id}/test`), [['notify-log']]);
 export const useNotifyLog = () => useQuery({ queryKey: ['notify-log'], queryFn: () => get<NotifyLogEntry[]>('/notify-log?limit=100') });
+/** 月度可用率汇总：month = YYYY-MM（空 = 本月，算到今天）。数据来自小时汇总（5 分钟一汇），本月的 5 分钟重取一次；往月不再变，不重取 */
+export const useUptime = (month: string, current: boolean) => useQuery({
+  queryKey: ['reports', 'uptime', month], queryFn: ({ signal }) => get<UptimeReport>(`/reports/uptime${month ? `?month=${month}` : ''}`, signal),
+  staleTime: current ? 300_000 : Infinity, refetchInterval: current ? 300_000 : false, refetchOnWindowFocus: false,
+});
 /** 退役预览：进备用的可行性（spare）、同机 IP 节点、还指向它的软路由出口、原团队的改名 */
 export const useRetirePreview = (id: string | null, enabled: boolean) => useQuery({ queryKey: ['retire-preview', id], queryFn: ({ signal }) => get<RetirePreview>(`/machines/${id}/retire`, signal), enabled: !!id && enabled, staleTime: 0, gcTime: 0, refetchOnWindowFocus: false, refetchOnReconnect: false });
 

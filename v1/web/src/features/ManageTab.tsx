@@ -4,10 +4,11 @@ import * as React from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowRight } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
-import { maintOwner, useAddEntry, useEndMaintenance, usePatchMachine, useRelayChoices, useSilences, useSsRefresh, useTeams, useTune } from '@/lib/queries';
+import { maintOwner, useAddEntry, useEndMaintenance, usePatchMachine, useJob, useLastSpeedtest, useRelayChoices, useSilences, useSpeedtest, useSsRefresh, useTeams, useTune } from '@/lib/queries';
 import { openMaint, openUpgrade } from '@/lib/nodeActions';
 import { useDrawer } from '@/lib/drawer';
-import { entryBad, errText, mmdd, reachWho, recycleOn } from '@/lib/derive';
+import { entryBad, errText, meta, mmdd, reachWho, recycleOn } from '@/lib/derive';
+import { jobLive } from '@/lib/jobs';
 import { useReachLabel } from '@/lib/probePoints';
 import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
@@ -20,6 +21,7 @@ import { RouterMark, entryStatus } from './EntriesTable';
 import { useEntryRouters } from '@/lib/routers';
 import { ConfirmDialog } from '@/components/app/dialogs';
 import { tuneParamsText } from '@/components/app/TuneResult';
+import { isSpeedtestOutput, speedtestLine } from '@/components/app/SpeedtestResult';
 import { PingOverrideSection } from './PingTab';
 import { RetireDialog } from '@/components/app/RetireDialog';
 import { EntryMenuButton, EntryMenus, entryLabel } from '@/components/app/EntryActions';
@@ -50,6 +52,7 @@ export function ManageTab({ m, onClosed }: { m: MachineView; onClosed: () => voi
           {m.agent && active && <AgentRow m={m} />}
           {m.tune && active && <TuneRow m={m} />}
           {m.kind === 'vps' && !m.host_machine && active && m.entries.length > 0 && <SsRefreshRow m={m} />}
+          {m.kind !== 'proxy' && active && <SpeedtestRow m={m} />}
           {active && <MaintRow m={m} />}
         </div></Section>
       )}
@@ -287,6 +290,61 @@ function SsRefreshRow({ m }: { m: MachineView }) {
       <ConfirmDialog open={ask} onOpenChange={setAsk} title={`重新下发 SS 配置 · ${m.name}`} confirmLabel="开始下发" confirmDisabled={!!m.active_job}
         description="配置有变化时会重启 ssserver，该节点的连接会断开几秒"
         onConfirm={async () => { await refresh.mutateAsync(m.id); toast.ok(`已提交「${m.name}」的 SS 配置下发作业`); }} />
+    </>
+  );
+}
+
+/** 测速：机器自己从北美的测速主机下载一个文件，量它出站的平均速率（作业 speedtest）。会用掉约下载量那么多的流量，所以确认里写明。
+ *  副行是最近一次的结果（成功写速率与耗时，没下完、失败、进行中各自说明），详细的在作业详情里；同机 IP 节点和宿主机共用网络，提示去宿主机测；家宽代理没有我们的机器，不显示 */
+function SpeedtestRow({ m }: { m: MachineView }) {
+  const { open } = useDrawer();
+  const h = m.host_machine;
+  if (h) {
+    return (
+      <div className="manage-row">
+        <div><div className="t">测速</div><div className="hint">同机 IP 节点和宿主机共用网络，请对宿主机「{h.name}」测速</div></div>
+        <Button variant="secondary" onClick={() => open(h.id, 'manage')}>打开宿主机</Button>
+      </div>
+    );
+  }
+  return <SpeedtestOwnRow m={m} />;
+}
+
+function SpeedtestOwnRow({ m }: { m: MachineView }) {
+  const st = meta().speedtest;
+  const run = useSpeedtest();
+  const last = useLastSpeedtest(m.id).data;
+  const detail = useJob(last && last.state === 'succeeded' ? last.id : null).data;
+  const out = detail?.steps.find((x) => isSpeedtestOutput(x.output))?.output;
+  const [ask, setAsk] = React.useState(false);
+  const [size, setSize] = React.useState(String(st.default_mb));
+  const [target, setTarget] = React.useState(st.targets[0]?.key ?? '');
+  const sizeOpts = React.useMemo(() => st.sizes_mb.map((n) => ({ value: String(n), label: `${n} MB` })), [st]);
+  const targetOpts = React.useMemo(() => st.targets.map((t) => ({ value: t.key, label: t.name })), [st]);
+  const link = last && <Link to={`/jobs/${last.id}`} className="btn btn-link btn-sm" style={{ height: 'auto', padding: 0 }}>作业详情</Link>;
+  const hint = !last ? '还没测过'
+    : jobLive(last.state) ? <>测速进行中… {link}</>
+    : last.state === 'succeeded' ? (out && isSpeedtestOutput(out)
+      ? <><span style={out.complete ? undefined : { color: 'var(--warn-text)' }}>{speedtestLine(out)}</span> · {F.dt(last.finished_at).slice(0, 11)} {link}</> : <>上次测速已完成 {link}</>)
+    : last.state === 'failed' ? <><span style={{ color: 'var(--bad-text)' }}>上次测速失败{last.error ? `：${errText(last.error)}` : ''}</span> {link}</>
+    : <>上次测速已取消 {link}</>;
+  return (
+    <>
+      <div className="manage-row">
+        <div>
+          <div className="t">测速 <InfoTip text={`这台机器自己从北美的测速主机下载一个文件，量它出站的平均速率（线路机量的是它本机，不是经入口到节点的链路）\n下载的流量计入这台机器的流量额度\n300 秒内没下完的，速率按已下载的算并标明`} /></div>
+          <div className="hint">{hint}</div>
+        </div>
+        <Button variant="secondary" disabled={!!m.active_job} onClick={() => setAsk(true)}>测速…</Button>
+      </div>
+      <ConfirmDialog open={ask} onOpenChange={setAsk} title={`测速 · ${m.name}`} confirmLabel="开始测速" confirmDisabled={!!m.active_job || !target}
+        description={<>这台机器会自己下载一个测速文件，<b>会用掉约 {size} MB 流量</b>，计入它的流量额度</>}
+        onConfirm={async () => { const r = await run.mutateAsync({ id: m.id, size_mb: Number(size), target }); toast.ok(`已提交「${m.name}」的测速作业（${r.target_name} ${r.size_mb} MB）`); }}>
+        <div className="form-grid">
+          <Field label="下载量" hint="越大越能测出跑满的带宽；慢线路 300 秒内下不完的，按已下载的算"><Select value={size} onChange={setSize} options={sizeOpts} /></Field>
+          <Field label="测速目标" hint="北美的测速主机"><Select value={target} onChange={setTarget} options={targetOpts} /></Field>
+        </div>
+      </ConfirmDialog>
     </>
   );
 }

@@ -460,9 +460,9 @@ export function buildDb(): Db {
     { id: 'k3', name: '旧监控（已停用）', prefix: '19d8e0aa', scopes: ['read'], created_at: iso(now() - 120 * DAY), expires_at: iso(now() - 30 * DAY), last_used_at: iso(now() - 31 * DAY), revoked_at: iso(now() - 33 * DAY) },
   ];
   const channels: Db['channels'] = [
-    { id: 'c1', name: '运维群', kind: 'telegram', min_severity: 'warning', enabled: true, created_at: iso(now() - 20 * DAY), config_hint: 'chat -1001234567', config: { bot_token: '123:abc', chat_id: '-1001234567' } },
-    { id: 'c2', name: '值班飞书', kind: 'feishu', min_severity: 'critical', enabled: true, created_at: iso(now() - 12 * DAY), config_hint: 'open.feishu.cn · 已加签', config: { url: 'https://open.feishu.cn/open-apis/bot/v2/hook/x', secret: 'x' } },
-    { id: 'c3', name: '研发群飞书', kind: 'feishu', min_severity: 'info', enabled: false, created_at: iso(now() - 3 * DAY), config_hint: 'open.larksuite.com', config: { url: 'https://open.larksuite.com/open-apis/bot/v2/hook/y' } },
+    { id: 'c1', name: '运维群', kind: 'telegram', min_severity: 'warning', enabled: true, monthly_report: true, created_at: iso(now() - 20 * DAY), config_hint: 'chat -1001234567', config: { bot_token: '123:abc', chat_id: '-1001234567' } },
+    { id: 'c2', name: '值班飞书', kind: 'feishu', min_severity: 'critical', enabled: true, monthly_report: false, created_at: iso(now() - 12 * DAY), config_hint: 'open.feishu.cn · 已加签', config: { url: 'https://open.feishu.cn/open-apis/bot/v2/hook/x', secret: 'x' } },
+    { id: 'c3', name: '研发群飞书', kind: 'feishu', min_severity: 'info', enabled: false, monthly_report: true, created_at: iso(now() - 3 * DAY), config_hint: 'open.larksuite.com', config: { url: 'https://open.larksuite.com/open-apis/bot/v2/hook/y' } },
   ];
   const notifyLog: NotifyLogEntry[] = [
     { id: 'n1', channel_id: 'c1', channel_name: '运维群', incident_id: 'i1-0000-aaaa', ts: iso(now() - 14 * 60_000), ok: true, error: null, kind: 'firing', subject_name: '团队1-04', rule_name: '出口不通' },
@@ -472,6 +472,7 @@ export function buildDb(): Db {
     { id: 'n6', channel_id: 'c9', channel_name: null, incident_id: 'i9-0000-cccc', ts: iso(now() - 2 * DAY), ok: true, error: null, kind: 'firing', subject_name: '团队2-01', rule_name: 'agent 离线' },
     { id: 'n4', channel_id: 'c3', channel_name: '研发群飞书', incident_id: null, ts: iso(now() - 3 * DAY), ok: true, error: null, kind: 'test', subject_name: null, rule_name: null },
     { id: 'n5', channel_id: 'c1', channel_name: '运维群', incident_id: 'i9-0000-cccc', ts: iso(now() - 4 * DAY), ok: true, error: null, kind: 'repeat', subject_name: null, rule_name: 'agent 离线' },
+    { id: 'n7', channel_id: 'c1', channel_name: '运维群', incident_id: null, ts: iso(now() - 9 * DAY), ok: true, error: null, kind: 'report', subject_name: '月报', rule_name: null },
   ];
   const s3 = machines.find((m) => m.id === 'm-t1-03')!.subscription!;
   const renewals: Record<string, Renewal[]> = { 'm-t1-03': [{ id: 'rn1', old_due: addMonths(s3.due_date, -3), new_due: s3.due_date, amount_cents: s3.price_cents, currency: s3.currency, note: '账单 #2041', actor: 'admin', created_at: iso(now() - 84 * DAY) }] };
