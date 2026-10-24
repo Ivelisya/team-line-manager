@@ -97,7 +97,7 @@ export function PlacementPanel() {
           <colgroup><col style={{ width: 130 }} />{p.relays.map((r) => <col key={r.id} style={{ width: 170 }} />)}<col style={{ width: 120 }} /></colgroup>
           <thead><tr>
             <th>节点</th>
-            {p.relays.map((r) => <th key={r.id} className="r">{r.name}{r.status === 'down' && <span className="pm-bad"> 故障</span>}</th>)}
+            {p.relays.map((r) => <th key={r.id} className="r">{r.name}{r.status === 'down' && <span className="pm-down"> 故障</span>}</th>)}
             <th className="r"><span data-tip="近 7 天这个节点「线路机到节点不通」告警的次数（含恢复后又触发的）">TCP 不通告警</span></th>
           </tr></thead>
           <tbody>

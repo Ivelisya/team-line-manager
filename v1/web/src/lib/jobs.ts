@@ -48,14 +48,23 @@ const text: OutFmt = (v) => String(v);
 const unit = (u: string): OutFmt => (v) => `${v} ${u}`;
 const yesNo = (y: string, n: string): OutFmt => (v) => (v ? y : n);
 // 输出里没有端口号：普通 VPS 节点是 8388，同机 IP 节点是它自己的 SS 端口，统一不写具体端口
+const HOST_FW: Record<string, string> = {
+  none: '', ufw: 'ufw（已放行 SS 端口）', firewalld: 'firewalld（已放行 SS 端口）', 'iptables-drop': 'iptables 默认丢弃入站，需要手动放行 SS 端口',
+  'ufw-error': 'ufw 规则没改成', 'firewalld-error': 'firewalld 规则没改成',
+};
 const CLEANUP_SS: Record<string, string> = { gone: '已停止', still_listening: '仍在监听 SS 端口' };
 /** [中文标签, 取值格式]；null = 内部 id，不显示 */
 const OUTPUT: Record<string, [string, OutFmt] | null> = {
   // preflight
-  host_key: ['主机指纹', text], arch: ['架构', text], os: ['系统', text], kernel: ['内核', text], mem_mb: ['内存', (v) => str(mem(Number(v) * 1024 * 1024))],
+  host_key: ['主机指纹', text], host_fw: ['主机防火墙', (v) => HOST_FW[String(v)] ?? String(v)], arch: ['架构', text], os: ['系统', text], kernel: ['内核', text], mem_mb: ['内存', (v) => str(mem(Number(v) * 1024 * 1024))],
   // ip_check（同机 IP 节点，在宿主机上执行；egress_ip 同出口验收）：local_ips 是逗号加空格分隔的字符串；
   // bind_ip 只有 1:1 NAT 映射的才有（公网 IP 映射到的宿主机本地地址），在网卡上的为 null、不显示
   ss_port: ['SS 端口', text], local_ips: ['宿主机本机 IP', text], bind_ip: ['本地地址（NAT）', text],
+  // converge 的逐实例结果（同机 IP 节点每个实例一条）与系统调优
+  instances: ['SS 实例', text], ip: ['IP', text], restarted: ['重启了 ssserver', yesNo('是', '否')], xray_restarted: ['重启了 Xray', yesNo('是', '否')],
+  tune: ['系统调优', text], profile: ['调优方案', text], journald: ['journald', text], ntp: ['时间同步', text], nofile: ['文件句柄上限', text], container: ['容器内', yesNo('是', '否')], swap_mb: ['交换分区', (v) => `${v} MB`],
+  // 软路由改出口（替换节点、换线路机）
+  routers: ['软路由', text], name: ['名称', text], exits: ['出口', text], exit: ['出口', text], to: ['指向', text], backup: ['备份', text], delay_ms: ['延迟（ms）', text], id: null, job: null, batch_leader: null,
   // bootstrap
   method: ['登录方式', () => '用 root 密码装上了中控公钥'],
   // converge / converge_relay（同机 IP 节点不做系统基线，bbr 为 null、不显示）
@@ -83,7 +92,7 @@ function plain(v: unknown): string {
   if (typeof v === 'boolean') return v ? '是' : '否';
   if (v && typeof v === 'object') {
     return Object.entries(v).filter(([k, x]) => OUTPUT[k] !== null && x != null && x !== '')
-      .map(([k, x]) => `${OUTPUT[k]?.[0] ?? k} ${plain(x)}`).join('，');
+      .map(([k, x]) => [OUTPUT[k]?.[0] ?? k, OUTPUT[k]?.[1] && typeof x !== 'object' ? OUTPUT[k]![1](x) : plain(x)]).filter(([, t]) => t !== '').map(([l, t]) => `${l} ${t}`).join('，');
   }
   return String(v);
 }
@@ -96,6 +105,7 @@ export function outputLines(o: JobStep['output']): string[] {
     if (m === null || v == null || v === '') return [];
     // 未收录的 key（服务端新加了输出）照键名写，值写成可读的键值
     if (m === undefined) return [`${k}：${plain(v)}`];
-    return [`${m[0]}：${typeof v === 'object' ? plain(v) : m[1](v)}`];
+    const out = typeof v === 'object' ? plain(v) : m[1](v);
+    return out === '' ? [] : [`${m[0]}：${out}`];
   });
 }

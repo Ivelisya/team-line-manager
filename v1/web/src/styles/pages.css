@@ -195,6 +195,7 @@
 .pm-cell.is-best .pm-tag { color: inherit; }
 .pm-pct { color: var(--fg-2); font-weight: var(--fw-regular); }
 .pm-pct.is-weak, .pm-bad { color: var(--warn-text); }
+.pm-down { color: var(--bad-text); }
 .relay-head { display: flex; align-items: center; gap: var(--sp-12); flex-wrap: wrap; padding: var(--sp-12) var(--card-pad); }
 .relay-head .ttl { font: var(--fw-semibold) var(--fs-title) / var(--lh-title) var(--font-sans); letter-spacing: var(--tracking-title); }
 /* 线路机名可点（打开它的抽屉）：去掉按钮外观，后面一个淡箭头，悬停变主色、箭头右移一点，按下微缩 */
