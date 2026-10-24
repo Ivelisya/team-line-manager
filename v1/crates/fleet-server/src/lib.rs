@@ -1,6 +1,7 @@
 pub mod access;
 pub mod agent_api;
 pub mod alerts;
+pub mod anomaly;
 pub mod api;
 pub mod auth;
 pub mod config;
@@ -238,6 +239,11 @@ async fn rollup_loop(s: AppState) {
         t.tick().await;
         if let Err(e) = db::rollup_hours(&s.db).await {
             tracing::error!("小时汇总失败：{e:#}");
+        }
+        // 流量异常按刚汇总的小时算，放在作废视图之前：下一次完整加载就带上（anomaly.rs）
+        match anomaly::evaluate(&s.db, time::OffsetDateTime::now_utc()).await {
+            Ok(a) => s.live.set_anomaly(a),
+            Err(e) => tracing::error!("流量异常评估失败：{e:#}"),
         }
         // 失败也可能已写进一部分小时：照样作废流量缓存
         s.live.rolled_up();

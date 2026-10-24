@@ -371,6 +371,9 @@ pub struct MachineView {
     /// 节点的有效访问策略是「暂停新连接」（健康判定里提示，不算故障）
     #[serde(skip)]
     pub policy_blocked: bool,
+    /// 流量异常的判断（anomaly.rs，按小时汇总算）；中控启动后还没算过、或这台不在用为 None
+    #[serde(skip)]
+    pub anomaly: Option<crate::anomaly::Anomaly>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -570,6 +573,8 @@ pub struct LiveCache {
     quota: tokio::sync::Mutex<(u64, HashMap<QuotaKey, QuotaUsed>)>,
     /// 每日流量（traffic.rs）的按天聚合，键 (组织时区的今天, 天数)，同样只在汇总后作废
     pub(crate) daily: tokio::sync::Mutex<crate::traffic::Cache>,
+    /// 流量异常（anomaly.rs）：小时汇总每轮之后算好放这里，完整加载时带进视图；中控启动后还没算过为 None
+    anomaly: std::sync::Mutex<Option<crate::anomaly::Map>>,
 }
 
 /// (周期内已用, 接入前读数在周期内, 周期起点时刻, 近 7 天窗口内已用, 窗口起点时刻)
@@ -601,6 +606,11 @@ impl LiveCache {
     /// 小时流量变了（汇总跑完、彻底删除机器）：流量缓存作废
     pub fn rolled_up(&self) {
         self.rolled.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// 小时汇总之后算好的流量异常（随后的 `rolled_up` 让视图完整加载、带上它）
+    pub fn set_anomaly(&self, a: std::collections::HashMap<Uuid, crate::anomaly::Anomaly>) {
+        *crate::lock(&self.anomaly) = Some(Arc::new(a));
     }
 
     /// 小时汇总跑完的轮数
@@ -1365,6 +1375,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
     let today = now.to_offset(meta::org_offset()).date();
     // 组织时区本月 1 号 0 点（同 `flows` 的本月起点）：首次上架晚于它的，本月流量标「X 起」
     let month0 = today.replace_day(1).expect("1 号").midnight().assume_offset(meta::org_offset());
+    let anomaly = crate::lock(&st.live.anomaly).clone();
     Ok(rows
         .into_iter()
         .map(|r| {
@@ -1539,6 +1550,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 tune,
                 sustained: sustained.get(&hid).copied().unwrap_or_default(),
                 policy_blocked,
+                anomaly: anomaly.as_ref().and_then(|a| a.get(&r.id).cloned()),
             };
             v.health = health::evaluate(&v, now);
             v

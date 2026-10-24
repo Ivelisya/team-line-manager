@@ -308,9 +308,14 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
     } else {
         Status::Ok
     };
-    // 续费与流量额度在状态定下之后才加：只开告警，不让机器变「降级」/「故障」（账单快到期、额度快用完都不是机器出了问题）
+    // 续费、流量额度与流量异常在状态定下之后才加：只开告警，不让机器变「降级」/「故障」（账单快到期、额度快用完都不是机器出了问题）
     rs.extend(renewal_reason(m));
     rs.extend(quota_reason(m, now));
+    // 流量异常同样只开告警、不改健康状态（按小时汇总判定，连续小时数 anomaly.rs 已算好）
+    if let Some(a) = &m.anomaly {
+        rs.extend(a.nonbiz.clone().map(|text| Reason { key: crate::anomaly::NONBIZ_RULE, severity: "warning", text }));
+        rs.extend(a.spike.clone().map(|text| Reason { key: crate::anomaly::SPIKE_RULE, severity: "warning", text }));
+    }
     let reach_unknown = m.relay.as_ref().is_some_and(|r| r.reach_unknown);
     Health { status, reasons: rs, probe_unknown: !probe_undecided.is_empty(), probe_undecided, probe_failing, load_unknown, clock_unknown, reach_unknown }
 }
@@ -405,6 +410,7 @@ pub(crate) mod tests {
             tune: None,
             sustained: Sustained::default(),
             policy_blocked: false,
+            anomaly: None,
         }
     }
 

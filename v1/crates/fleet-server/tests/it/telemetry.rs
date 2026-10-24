@@ -1388,6 +1388,122 @@ async fn traffic_quota_alert_lifecycle() {
     assert_eq!(sent, want);
 }
 
+/// 流量异常一轮：按 `at` 评估最近两个完整小时（同小时汇总之后），再评估告警
+async fn anomaly_pass(t: &T, s: &mut AlertState, at: OffsetDateTime) {
+    t.st.live.set_anomaly(fleet_server::anomaly::evaluate(&t.st.db, at).await.unwrap());
+    t.st.live.rolled_up();
+    t.st.live.invalidate();
+    alerts::evaluate_once(&t.st, s, at).await.unwrap();
+}
+
+/// 在告警的这条规则（快进评估时钟后，线路机从未上报这类别的告警也会开，不看它们）
+async fn firing_rule(t: &T, rule: &str) -> Vec<Value> { incidents(t, "firing").await.into_iter().filter(|i| i["rule"] == rule).collect() }
+
+/// 入口在 `hour` 这一桶的业务流量（字节，上传、下载各一半）
+async fn set_biz(t: &T, entry: Uuid, hour: OffsetDateTime, bytes: f64) {
+    sqlx::query(
+        "insert into entry_traffic_hourly (entry_id, hour, up_bytes, down_bytes) values ($1, $2, ($3 / 2)::bigint, ($3 / 2)::bigint)
+         on conflict (entry_id, hour) do update set up_bytes = excluded.up_bytes, down_bytes = excluded.down_bytes",
+    )
+    .bind(entry)
+    .bind(hour)
+    .bind(bytes)
+    .execute(&t.st.db)
+    .await
+    .unwrap();
+}
+
+/// 非业务流量偏高：网卡 ÷ 业务 > 4 且多出 > 2 GB，连续 2 个完整小时才开、连续 2 个小时正常才关；建议看日志和连接 / 防火墙
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn nonbusiness_traffic_two_hours_to_open_and_close() {
+    let t = setup().await;
+    const RULE: &str = "nonbusiness_traffic_high";
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let team = seed_team(&t, "团队1").await;
+    let (node, entry) = seed_node(&t, relay, team, 1, "203.0.113.5", 20000).await;
+    sqlx::query("update machine set kind = 'vps' where id = $1").bind(node).execute(&t.st.db).await.unwrap();
+    let base = OffsetDateTime::now_utc();
+    let h0 = db::floor_hour(base - time::Duration::minutes(10)) - time::Duration::hours(1);
+    let hr = |k: i64| h0 + time::Duration::hours(k);
+    let at = |k: i64| base + time::Duration::hours(k);
+    // 异常：网卡 12.3 GB、业务 1.1 GB；正常：24 GB / 10 GB（2.4 倍）
+    let hour = |k: i64, bad: bool| {
+        let t = &t;
+        async move {
+            let (n, b) = if bad { (12.3e9, 1.1e9) } else { (24e9, 10e9) };
+            sqlx::query("insert into host_metric_hourly (machine_id, hour, net_rx, net_tx) values ($1, $2, $3, $3)")
+                .bind(node)
+                .bind(hr(k))
+                .bind((n / 2.0) as i64)
+                .execute(&t.st.db)
+                .await
+                .unwrap();
+            set_biz(t, entry, hr(k), b).await;
+        }
+    };
+    let mut state = AlertState::default();
+    hour(-1, true).await;
+    hour(0, false).await;
+    anomaly_pass(&t, &mut state, at(0)).await;
+    assert!(firing_rule(&t, RULE).await.is_empty());
+    hour(1, true).await;
+    anomaly_pass(&t, &mut state, at(1)).await;
+    assert!(firing_rule(&t, RULE).await.is_empty(), "只异常 1 个小时不开");
+    hour(2, true).await;
+    anomaly_pass(&t, &mut state, at(2)).await;
+    let inc = firing_rule(&t, RULE).await;
+    assert_eq!((inc.len(), inc[0]["rule_name"].as_str(), inc[0]["severity"].as_str()), (1, Some("非业务流量偏高"), Some("warning")), "{inc:?}");
+    assert_eq!(
+        inc[0]["summary"],
+        "团队1-01：最近 1 小时网卡 12.3 GB，业务只有 1.1 GB（正常约 2.4 倍），多出的约 9.7 GB 不经过入口，可能被扫描或滥用；这部分也算额度"
+    );
+    assert_eq!(inc[0]["suggested"], json!(["fleetctl logs 团队1-01", "fleetctl exec 团队1-01 -- 'ss -s; nft list ruleset | head -50'"]));
+    hour(3, false).await;
+    anomaly_pass(&t, &mut state, at(3)).await;
+    assert_eq!(firing_rule(&t, RULE).await.len(), 1, "只正常 1 个小时不关");
+    hour(4, false).await;
+    anomaly_pass(&t, &mut state, at(4)).await;
+    assert!(firing_rule(&t, RULE).await.is_empty());
+}
+
+/// 业务流量突增：超过近 7 天同一小时中位数 × 5 且 > 5 GB 立即开（数据不满 3 天不判），连续 2 个小时回到 2 倍以下（或不到 5 GB）才关；
+/// 没有软路由在用它时建议看近 7 天每日流量
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn business_spike_opens_at_once_and_needs_baseline() {
+    let t = setup().await;
+    const RULE: &str = "business_traffic_spike";
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let team = seed_team(&t, "团队1").await;
+    let (_node, entry) = seed_node(&t, relay, team, 2, "203.0.113.6", 20000).await;
+    let base = OffsetDateTime::now_utc();
+    let h0 = db::floor_hour(base - time::Duration::minutes(10)) - time::Duration::hours(1);
+    let hr = |k: i64| h0 + time::Duration::hours(k);
+    let at = |k: i64| base + time::Duration::hours(k);
+    // 平时每小时 1 GB：先只有近 2 天的
+    for k in -48..0 {
+        set_biz(&t, entry, hr(k), 1e9).await;
+    }
+    set_biz(&t, entry, hr(0), 20e9).await;
+    let mut state = AlertState::default();
+    anomaly_pass(&t, &mut state, at(0)).await;
+    assert!(firing_rule(&t, RULE).await.is_empty(), "数据不满 3 天不判");
+    for k in -8 * 24..-48 {
+        set_biz(&t, entry, hr(k), 1e9).await;
+    }
+    anomaly_pass(&t, &mut state, at(0)).await;
+    let inc = firing_rule(&t, RULE).await;
+    assert_eq!((inc.len(), inc[0]["rule_name"].as_str()), (1, Some("业务流量突增")), "{inc:?}");
+    assert_eq!(inc[0]["summary"], "团队1-02：最近 1 小时业务流量 20.0 GB，近 7 天同一时段的中位数只有 1.0 GB（约 20 倍）");
+    assert_eq!(inc[0]["suggested"], json!(["fleetctl traffic --node 团队1-02 --days 7"]));
+    // 回落到 3 GB（不到 5 GB）：上一小时还在突增，先不关；再一小时也回落才关
+    set_biz(&t, entry, hr(1), 3e9).await;
+    anomaly_pass(&t, &mut state, at(1)).await;
+    assert_eq!(firing_rule(&t, RULE).await.len(), 1);
+    set_biz(&t, entry, hr(2), 1e9).await;
+    anomaly_pass(&t, &mut state, at(2)).await;
+    assert!(firing_rule(&t, RULE).await.is_empty());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn apply_lag_counts_from_generation_at() {
     let t = setup().await;

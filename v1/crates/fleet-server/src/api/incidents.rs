@@ -96,7 +96,7 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQu
     let sql = format!("select count(*), count(*) filter (where i.ack_at is not null) from incident i where {}", cond(&mut a));
     let (total, acked): (i64, i64) = sqlx::query_as_with(&sql, a.0).fetch_one(&st.db).await?;
     // 建议操作要看软路由最近一次采集的（出口不通时切到哪个出口）：有这类告警才读
-    let routers = if v.iter().any(|i| i.state == "firing" && matches!(i.rule.as_str(), "egress_fail" | routers::alerts::EXITS_DOWN)) {
+    let routers = if v.iter().any(|i| i.state == "firing" && matches!(i.rule.as_str(), "egress_fail" | crate::anomaly::SPIKE_RULE | routers::alerts::EXITS_DOWN)) {
         routers::load(&st.db, None).await?
     } else {
         vec![]
@@ -157,7 +157,8 @@ struct Advice {
 
 fn cmd(c: String) -> Vec<Advice> { vec![Advice { cmd: c, switch: None }] }
 
-/// 告警规则 → 建议操作。只这几条：出口不通 → 把用着它的 select 组临时切到别的出口；参数不一致 → 同步；线路机额度吃紧 → 搬迁建议；agent 离线 → 看日志
+/// 告警规则 → 建议操作。只这几条：出口不通 → 把用着它的 select 组临时切到别的出口；参数不一致 → 同步；线路机额度吃紧 → 搬迁建议；agent 离线 → 看日志；
+/// 非业务流量偏高 → 看日志、看连接与防火墙；业务流量突增 → 同出口不通（切走用着它的 select 组），没有组在用它时看近 7 天每日流量
 fn suggest(i: &IncidentOut, routers: &[routers::Row]) -> Vec<Advice> {
     let Some(name) = i.subject_name.as_deref() else { return vec![] };
     match i.rule.as_str() {
@@ -166,6 +167,14 @@ fn suggest(i: &IncidentOut, routers: &[routers::Row]) -> Vec<Advice> {
         routers::alerts::EXIT_DRIFT => cmd(format!("fleetctl router sync {}", sh(name))),
         "traffic_quota_high" if i.subject_kind.as_deref() == Some("relay") => cmd(format!("fleetctl rebalance {}", sh(name))),
         "agent_offline" => cmd(format!("fleetctl logs {}", sh(name))),
+        crate::anomaly::NONBIZ_RULE => vec![
+            Advice { cmd: format!("fleetctl logs {}", sh(name)), switch: None },
+            Advice { cmd: format!("fleetctl exec {} -- 'ss -s; nft list ruleset | head -50'", sh(name)), switch: None },
+        ],
+        crate::anomaly::SPIKE_RULE => {
+            let s = switches(routers, None, |x| x.entry.as_ref().is_some_and(|e| e.node_id == i.subject_id));
+            if s.is_empty() { cmd(format!("fleetctl traffic --node {} --days 7", sh(name))) } else { s }
+        }
         _ => vec![],
     }
 }
