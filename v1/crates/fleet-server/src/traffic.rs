@@ -222,9 +222,9 @@ pub async fn daily(st: &AppState, days: Option<i64>, team: Option<&str>, machine
             v.up = v.up.saturating_add(up);
         }
     }
-    // 没流量的在用节点也列出（看得出谁一直没流量）；直出只在有流量时列
+    // 没流量的在用（active）节点也列出（看得出谁一直没流量；草稿、上架中、上架失败、退役中的没有流量就不列）；直出只在有流量时列
     for m in &ms {
-        let picked = machine_id.map_or(m.kind != "relay" && m.lifecycle != "retired" && in_team(m.id), |x| x == m.id && m.kind != "relay");
+        let picked = machine_id.map_or(m.kind != "relay" && m.lifecycle == "active" && in_team(m.id), |x| x == m.id && m.kind != "relay");
         if picked {
             node_days.entry((m.id, false)).or_insert_with(empty_biz);
         }

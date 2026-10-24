@@ -18,6 +18,8 @@ async fn daily_split_by_org_midnight() {
     let team = seed_team(&t, "团队1").await;
     let n1 = seed_node(&t, team, 1, "203.0.113.10", "active").await;
     let n2 = seed_node(&t, team, 2, "203.0.113.11", "retired").await;
+    // 草稿的节点没有流量，不列
+    seed_node(&t, team, 3, "203.0.113.12", "draft").await;
     // 节点 1 从线路机2 换到线路机3（旧入口已移除）；节点 2 已退役；线路机2 的直出
     let entry = |relay: Uuid, node: Uuid, port: i32, lc: &'static str| {
         let id = Uuid::now_v7();
