@@ -87,8 +87,9 @@ impl Rule {
             return Err(ApiError::bad_request("team_ids 里有不存在的团队"));
         }
         let ids: Vec<Uuid> = self.include_ids.iter().chain(&self.exclude_ids).copied().collect();
-        let ms: i64 = sqlx::query_scalar("select count(distinct id) from machine where id = any($1)").bind(&ids).fetch_one(&mut *db).await?;
-        if ms as usize != ids.iter().collect::<std::collections::HashSet<_>>().len() {
+        // 机器行也加共享锁（按 id 排序）：和彻底删除（purge 先锁机器、再从订阅里摘掉）互斥，不会把正在删的机器写回订阅
+        let ms: Vec<Uuid> = sqlx::query_scalar("select id from machine where id = any($1) order by id for share").bind(&ids).fetch_all(&mut *db).await?;
+        if ms.len() != ids.iter().collect::<std::collections::HashSet<_>>().len() {
             return Err(ApiError::bad_request("include_ids / exclude_ids 里有不存在的机器"));
         }
         Ok(self)

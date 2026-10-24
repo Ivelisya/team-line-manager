@@ -39,9 +39,9 @@ PGCONF="# 由 fleet 的 deploy/central/install.sh 写入，见 docs/OPS.md §8
 wal_compression = lz4
 checkpoint_timeout = 15min
 max_wal_size = 2GB"
-# postgres 用户要读得到 fleet.conf：内容对但不是 0644（旧版在 umask 077 下写成了 0600）也重写并 reload，不依赖调用方的 umask
+# postgres 用户要读得到 fleet.conf：写的时候显式 0644，不依赖调用方的 umask
 for d in /etc/postgresql/*/main/conf.d; do
-  { [ "$(cat "$d/fleet.conf" 2>/dev/null)" = "$PGCONF" ] && [ "$(stat -c %a "$d/fleet.conf")" = 644 ]; } \
+  [ "$(cat "$d/fleet.conf" 2>/dev/null)" = "$PGCONF" ] \
     || { printf '%s\n' "$PGCONF" > "$d/fleet.conf"; chmod 644 "$d/fleet.conf"; systemctl reload postgresql; }
 done
 
@@ -232,8 +232,7 @@ if [ "$(cat /etc/systemd/system/caddy.service.d/fleet.conf 2>/dev/null)" != "$CA
   caddy_restart=1   # /run/caddy 要在启动时建
 fi
 install -d -m 755 /etc/caddy/global.d /etc/caddy/sites.d
-# caddy 用户要读得到 Caddyfile：不依赖调用方的 umask；内容没变、旧版在 umask 077 下写成 0600 的也在这里修回
-[ ! -f /etc/caddy/Caddyfile ] || chmod 644 /etc/caddy/Caddyfile
+# caddy 用户要读得到 Caddyfile：换上前显式 0644，不依赖调用方的 umask
 if [ "$(cat /etc/caddy/Caddyfile 2>/dev/null)" != "$CADDY" ]; then
   [ -f /etc/caddy/Caddyfile.dist ] || cp /etc/caddy/Caddyfile /etc/caddy/Caddyfile.dist
   [ ! -f /etc/caddy/Caddyfile ] || cp -p /etc/caddy/Caddyfile "/etc/caddy/Caddyfile.bak-$(date +%Y%m%d-%H%M%S)"
