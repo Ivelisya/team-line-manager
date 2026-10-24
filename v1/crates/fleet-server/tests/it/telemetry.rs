@@ -2399,6 +2399,10 @@ async fn retention_cleanup_removes_only_expired_rows() {
             .await
             .unwrap();
     }
+    // 探测小时汇总超 180 天删（relay_reach_hourly、router_metric_hourly、router_exit_metric_hourly 同一处理）
+    for days in [200, 10] {
+        sqlx::query(&format!("insert into probe_hourly (entry_id, hour, kind, total, ok) values ($1, now() - interval '{days} days', 'tcp', 1, 1)")).bind(Uuid::now_v7()).execute(db).await.unwrap();
+    }
     // 访问记录（汇总、来源画像）按面板里设的保留期删，见 tests/it/retention.rs
     let sessions_before = t.count("select count(*) from session").await;
     db::cleanup_retention(db, &t.st.cfg.retention).await.unwrap();
@@ -2409,6 +2413,7 @@ async fn retention_cleanup_removes_only_expired_rows() {
     assert_eq!(t.count("select count(*) from login_failure").await, 1);
     assert_eq!(t.count("select count(*) from notify_log").await, 1);
     assert_eq!(t.count("select count(*) from audit_log where actor = 'a'").await, 1);
+    assert_eq!(t.count("select count(*) from probe_hourly").await, 1, "超 180 天的探测小时汇总删掉");
 }
 
 // ── 告警列表分页：limit / offset + total，顺序稳定（同一时刻开始的也不重不漏） ──────

@@ -186,7 +186,7 @@ pub struct Retention {
     /// 访问记录（原始）保留天数的默认值：访问记录的保留期在面板里设（settings.rs），没设过时用它
     pub access_days: u32,
     /// 客户入口连通性原始记录（relay_reach，中控与探测点每 30 秒一轮）保留天数。读它的地方最多看 1 小时，
-    /// 更长的窗口读小时汇总 relay_reach_hourly（一直留着，同 probe_hourly）
+    /// 更长的窗口读小时汇总 relay_reach_hourly（保留 180 天，db::cleanup_retention）
     pub reach_days: u32,
     /// 三网 PING 原始记录（ping_result，每分钟一轮）保留天数：抽屉 24 小时以内的曲线读它
     pub ping_days: u32,
