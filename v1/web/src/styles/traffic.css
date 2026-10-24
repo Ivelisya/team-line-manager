@@ -15,8 +15,23 @@
 .dt-heat .th-date { line-height: 1.15; }
 .dt-heat .th-date > * { display: block; }
 .dt-heat .th-date small { font-size: var(--fs-micro, 11px); color: var(--fg-2); font-weight: var(--fw-regular); }
-.dt-heat tfoot td { border-top: 1px solid var(--line-strong); border-bottom: 0; font-weight: var(--fw-semibold); background: var(--sunken); }
+.dt-heat tfoot td, .dt-sum tfoot td { border-top: 1px solid var(--line-strong); border-bottom: 0; font-weight: var(--fw-semibold); background: var(--sunken); }
 .dt-heat tfoot td:is(:first-child, :last-child) { background: var(--sunken); }
+.dt-sum tfoot td { font-variant-numeric: var(--num-variant); }
+.dt-sum td { font-variant-numeric: var(--num-variant); }
+.tr-name { display: flex; align-items: center; gap: var(--sp-6); }
+.tr-name > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tr-name .pill { flex: none; }
+/* 节点表右侧四列（合计、日均、月费、USD/GB）都吸在右边；只有最左的一列带分隔线 */
+.dt-heat .col-aux { width: 88px; }
+.dt-cost { --aux-w: 88px; --sum-w: 112px; }
+.dt-cost :is(th, td):nth-last-child(-n+4) { position: sticky; z-index: 1; background: var(--surface); box-shadow: none; }
+.dt-cost :is(th, td):nth-last-child(1) { right: 0; }
+.dt-cost :is(th, td):nth-last-child(2) { right: var(--aux-w); }
+.dt-cost :is(th, td):nth-last-child(3) { right: calc(var(--aux-w) * 2); }
+.dt-cost :is(th, td):nth-last-child(4) { right: calc(var(--aux-w) * 2 + var(--sum-w)); box-shadow: -1px 0 0 var(--line); }
+.dt-cost thead th:nth-last-child(-n+4), .dt-cost tfoot td:nth-last-child(-n+4) { background: var(--sunken); }
+@media (hover: hover) { .dt-cost tr.is-link:hover > td:nth-last-child(-n+4) { background: linear-gradient(var(--hover), var(--hover)), var(--surface); } }
 .tr-node { display: flex; align-items: center; gap: var(--sp-8); min-width: 0; }
 .tr-node > div { min-width: 0; }
 /* 手机：节点列、合计列收窄，中间至少露出两三天 */
@@ -24,5 +39,8 @@
   .dt-heat .col-node { width: 128px; }
   .dt-heat .col-sum { width: 96px; }
   .dt-heat .col-day { width: 76px; }
+  .dt-heat .col-aux { width: 76px; }
+  .dt-cost { --aux-w: 76px; }
+  .dt-cost :is(th, td):nth-last-child(-n+4) { position: static; box-shadow: none; }
   .tr-node .nc-flag { display: none; }
 }

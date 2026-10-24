@@ -132,7 +132,11 @@ export interface UsdTotal {
   unconverted: { currency: string; cents: number }[];
 }
 /** GET /billing/due：未来待付清单。groups 按 供应商 × 到期日 分组（不含备用团队、自动续费的）；auto 开了自动续费的（到期后自动顺延，不算待付） */
-export interface DueMachine { id: string; name: string; kind: Kind; due_date: string; due_days: number; billing_tz?: string; cycle: Cycle; price_cents: number; currency: string; price_usd_cents: number | null }
+export interface DueMachine {
+  id: string; name: string; kind: Kind; due_date: string; due_days: number; billing_tz?: string; cycle: Cycle; price_cents: number; currency: string; price_usd_cents: number | null;
+  /** 续不续费的依据（近 30 天）：月费（USD 分）、业务流量（字节）、月费 ÷ 流量、TCP 可用率 %（没有探测为 null）、闲置与近 7 天日均业务流量（字节） */
+  monthly_usd_cents: number | null; bytes_30d: number; usd_per_gb: number | null; avail_pct: number | null; idle: boolean; avg7: number;
+}
 export interface DueProvider { id: string | null; name: string | null; panel_url: string | null }
 /** 按 供应商 × 到期日 × 账单时区 分组：剩余天数按账单时区的今天算（同一天到期、时区不同的会差一天） */
 export interface DueGroup { provider: DueProvider; due_date: string; billing_tz?: string; machines: DueMachine[]; total: UsdTotal }
@@ -402,9 +406,21 @@ export interface AccountSession { id: string; created_at: string; last_seen_at: 
 export interface DailyBiz { date: string; down: number; up: number }
 export interface DailyNic { date: string; rx: number; tx: number; billed: number }
 /** 节点：以它为节点的全部入口（含换线前的旧入口）；direct = 线路机的直出入口（id 是线路机的）；窗口内有流量的已退役机器照列 */
-export interface TrafficDailyNode { id: string; name: string; team: { id: string; name: string } | null; kind: Kind; lifecycle: Lifecycle; country: string | null; direct: boolean; down: number; up: number; daily: DailyBiz[];
+export interface TrafficDailyNode {
+  id: string; name: string; team: { id: string; name: string } | null; kind: Kind; lifecycle: Lifecycle; country: string | null; direct: boolean; down: number; up: number; daily: DailyBiz[];
   /** 节点自己的网卡（VPS 节点，同流量额度的口径）：生效的计费方式、区间合计的下行 / 上行 / 计费量、每天一格；直出行、家宽代理、同机 IP 节点、没有读数的为 null */
-  rule: TrafficRule | null; rx: number | null; tx: number | null; billed: number | null; nic_daily: DailyNic[] | null }
+  rule: TrafficRule | null; rx: number | null; tx: number | null; billed: number | null; nic_daily: DailyNic[] | null;
+  /** 月费（USD 分）：在用且有价格的；直出、没价格为 null */
+  monthly_usd_cents: number | null;
+  /** 月费 ÷ 按取回的天数日均折成的 30 天业务流量；页面按所选区间自己重算 */
+  usd_per_gb: number | null;
+  /** 近 idle.days 天日均业务流量（字节）；直出为 null */
+  avg7: number | null;
+  /** 闲置：在用、上架满 idle.days 天、avg7 低于 idle.gb_per_day（阈值只在服务端定义） */
+  idle: boolean;
+}
+/** 团队成本（近 30 天，不受团队筛选影响）：unpriced = 在用节点里没价格、没算进月费的台数 */
+export interface TrafficDailyTeam { id: string; name: string; spare: boolean; nodes: number; idle: number; monthly_usd_cents: number | null; unpriced: number; bytes_30d: number; usd_per_gb: number | null }
 /** 线路机：每天的网卡与计费量（daily），经过它的业务流量（business） */
 export interface TrafficDailyRelay { id: string; name: string; lifecycle: Lifecycle; country: string | null; rule: TrafficRule; rx: number; tx: number; billed: number; down: number; up: number; daily: DailyNic[]; business: DailyBiz[] }
-export interface TrafficDaily { tz: string; dates: string[]; total: DailyBiz[]; nodes: TrafficDailyNode[]; relays: TrafficDailyRelay[] }
+export interface TrafficDaily { tz: string; dates: string[]; total: DailyBiz[]; idle: { days: number; gb_per_day: number }; teams: TrafficDailyTeam[]; nodes: TrafficDailyNode[]; relays: TrafficDailyRelay[] }

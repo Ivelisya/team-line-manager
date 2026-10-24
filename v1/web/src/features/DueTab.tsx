@@ -1,10 +1,11 @@
 // 团队与套餐 → 待付：未来 30 天内到期、要付的机器，按 供应商 × 到期日 分组（服务端折好 USD）。每组一个「登记已付…」：
 // 打开批量续费确认（金额默认订阅价），一个事务里登记整组、一条审计。不含备用团队（等到期丢弃）；开了自动续费的单列、不算待付。
+// 续不续费的依据：每台近 30 天的 USD/GB（月费 ÷ 业务流量）、可用率（入口 TCP 成功率），闲置的标灰胶囊（判定在服务端）。
 import * as React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ArrowRight, ExternalLink } from 'lucide-react';
 import { renewBatchPreview, useDue, useRenewBatch } from '@/lib/queries';
-import type { DueGroup, DueProvider } from '@/lib/types';
+import type { DueGroup, DueMachine, DueProvider } from '@/lib/types';
 import { meta, usdTotalTip } from '@/lib/derive';
 import { tzCity, tzLabel } from '@/lib/tz';
 import { useUsdPreview } from '@/lib/fx';
@@ -14,7 +15,7 @@ import { Field, InfoTip, Input, UnitInput } from '@/components/ui/form';
 import { SkeletonRows } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
 import { resetOnOpen, useHeld } from '@/lib/useHeld';
-import { Due, Empty, ErrorNote, Note, Panel, TableWrap } from '@/components/app/primitives';
+import { Due, Empty, ErrorNote, Note, Panel, Pill, TableWrap } from '@/components/app/primitives';
 import { FormDialog } from '@/components/app/dialogs';
 
 /** 看未来多少天 */
@@ -25,6 +26,24 @@ const dueState = (days: number) => (days < 0 ? 'overdue' : 'ok');
 /** 一组的原币种小计：「¥80.00 + $10.00」，没有汇率的币种照写 */
 const subtotal = (g: DueGroup) => [...g.total.by_currency, ...g.total.unconverted].map((p) => F.money(p.cents, p.currency)).join(' + ');
 const usdText = (t: DueGroup['total']) => `${F.money(t.cents, 'USD')}${t.unconverted.length ? '*' : ''}`;
+
+/** 一台的近 30 天依据：「$0.80/GB · 可用率 99.9%」，闲置的末尾加「· 闲置」 */
+const basis = (m: DueMachine) => `${F.usdPerGb(m.usd_per_gb)}/GB · 可用率 ${F.str(F.pct(m.avail_pct, 1))}${m.idle ? ' · 闲置' : ''}`;
+const IDLE_TIP = (m: DueMachine) => `近 7 天日均业务流量 ${F.str(F.bytes(m.avg7))}，很低`;
+/** 一组的近 30 天依据：USD/GB 是有月费的几台合起来算（月费合计 ÷ 它们的业务流量），可用率取组内最低；悬停逐台写 */
+function groupBasis(g: DueGroup) {
+  const priced = g.machines.filter((m) => m.monthly_usd_cents != null);
+  const cents = priced.reduce((a, m) => a + (m.monthly_usd_cents ?? 0), 0);
+  const bytes = priced.reduce((a, m) => a + m.bytes_30d, 0);
+  const avail = g.machines.map((m) => m.avail_pct).filter((x): x is number => x != null);
+  return {
+    perGb: cents > 0 && bytes > 0 ? cents / 100 / (bytes / 1e9) : null,
+    avail: avail.length ? Math.min(...avail) : null,
+    idle: g.machines.filter((m) => m.idle),
+    tip: g.machines.map((m) => `${m.name}　${basis(m)}`).join('\n'),
+  };
+}
+const IdlePill = ({ ms }: { ms: DueMachine[] }) => (ms.length ? <Pill className="pill-sm" tip={ms.map((m) => `${m.name}：${IDLE_TIP(m)}`).join('\n')}>闲置 {ms.length} 台</Pill> : null);
 
 /** 到期日 + 剩余天数：天数按这组的账单时区的今天算，悬停写明；账单时区不是组织时区的，日期后标城市名（同一天到期的两组差一天时一眼看得出） */
 function DueWhen({ g, short }: { g: DueGroup; short?: boolean }) {
@@ -62,19 +81,24 @@ export function DueTab() {
         sub={<><InfoTip text={"按供应商和到期日分组，金额是订阅的每期价格；折成美元按「设置 → 汇率」\n已过期还没续费的也在这里\n备用团队的机器等到期丢弃，不在这里\n登记已付只记账、顺延到期日，不会向供应商付款"} />{d && n > 0 && <span className="t-sub" style={{ marginLeft: 'var(--sp-8)' }} data-tip={usdTotalTip(d.total)}>合计 <span className="num">{usdText(d.total)}</span></span>}</>} flush>
         <TableWrap>
           {d && d.groups.length > 0 && (
-            <table className="dt is-one due-table" style={{ minWidth: 820 }}>
-              <colgroup><col style={{ width: 170 }} /><col style={{ width: 250 }} /><col /><col style={{ width: 150 }} /><col style={{ width: 110 }} /><col style={{ width: 120 }} /></colgroup>
-              <thead><tr><th>供应商</th><th>到期日</th><th>机器</th><th className="r">小计</th><th className="r">折合 USD</th><th /></tr></thead>
+            <table className="dt is-one due-table" style={{ minWidth: 1000 }}>
+              <colgroup><col style={{ width: 170 }} /><col style={{ width: 250 }} /><col /><col style={{ width: 150 }} /><col style={{ width: 110 }} /><col style={{ width: 90 }} /><col style={{ width: 90 }} /><col style={{ width: 120 }} /></colgroup>
+              <thead><tr><th>供应商</th><th>到期日</th><th>机器</th><th className="r">小计</th><th className="r">折合 USD</th>
+                <th className="r" data-tip={'近 30 天：月费 ÷ 业务流量（有月费的几台合起来算）\n悬停逐台看'}>USD/GB</th>
+                <th className="r" data-tip={'近 30 天入口 TCP 探测成功率，取组内最低\n悬停逐台看'}>可用率</th><th /></tr></thead>
               <tbody>
                 {d.groups.map((g) => {
                   const names = g.machines.map((m) => m.name);
+                  const b = groupBasis(g);
                   return (
                     <tr key={`${g.provider.id}|${g.due_date}|${g.billing_tz}`}>
                       <td><ProviderCell p={g.provider} /></td>
                       <td><DueWhen g={g} /></td>
-                      <td data-tip={names.length > 4 ? names.join('、') : undefined}>{names.slice(0, 4).join('、')}{names.length > 4 && <span className="t-muted"> 等 {names.length} 台</span>}</td>
+                      <td data-tip={names.length > 4 ? names.join('、') : undefined}>{names.slice(0, 4).join('、')}{names.length > 4 && <span className="t-muted"> 等 {names.length} 台</span>} <IdlePill ms={b.idle} /></td>
                       <td className="r num" data-tip={usdTotalTip(g.total)}>{subtotal(g)}</td>
                       <td className="r num">{usdText(g.total)}</td>
+                      <td className="r num" data-tip={b.tip}>{F.usdPerGb(b.perGb)}</td>
+                      <td className="r num" data-tip={b.tip}>{F.str(F.pct(b.avail, 1))}</td>
                       <td className="c"><Button size="sm" onClick={() => setPay(g)}>登记已付…</Button></td>
                     </tr>
                   );
@@ -87,10 +111,12 @@ export function DueTab() {
             <ul className="due-list">
               {d.groups.map((g) => {
                 const names = g.machines.map((m) => m.name);
+                const b = groupBasis(g);
                 return (
                   <li key={`${g.provider.id}|${g.due_date}|${g.billing_tz}`} className="due-item">
                     <div className="due-item-top"><ProviderCell p={g.provider} /><DueWhen g={g} short /></div>
                     <div className="due-item-machines">{names.slice(0, 4).join('、')}{names.length > 4 && <span className="t-muted"> 等 {names.length} 台</span>}</div>
+                    <div className="due-item-machines t-sub" data-tip={b.tip}>近 30 天 {F.usdPerGb(b.perGb)}/GB · 可用率 {F.str(F.pct(b.avail, 1))} <IdlePill ms={b.idle} /></div>
                     <div className="due-item-foot"><span className="num" data-tip={usdTotalTip(g.total)}>{subtotal(g)}<span className="t-muted"> ≈ {usdText(g.total)}</span></span><Button size="sm" onClick={() => setPay(g)}>登记已付…</Button></div>
                   </li>
                 );
@@ -138,14 +164,15 @@ const PayForm = resetOnOpen(function PayForm({ g, open, onClose }: { g: DueGroup
   return (
     <FormDialog open={open} onOpenChange={(o) => !o && onClose()} size="md" dirty={!!ref.trim() || g.machines.some((m) => amounts[m.id] !== String(m.price_cents / 100))}
       title={`登记已付 · ${g.provider.name ?? '无供应商'} · ${g.due_date.slice(5)} 到期`}
-      desc={<>{g.machines.length} 台，折合 {usdText(g.total)} <InfoTip text="只记录「已续费」，到期日按订阅周期顺延；不会向供应商付款。金额默认订阅价，实付不同可以改" /></>}
+      desc={<>{g.machines.length} 台，折合 {usdText(g.total)} <InfoTip text={"只记录「已续费」，到期日按订阅周期顺延；不会向供应商付款。金额默认订阅价，实付不同可以改\n每台下面是续不续费的依据（近 30 天）：USD/GB = 月费 ÷ 业务流量；可用率 = 入口 TCP 探测成功率；闲置 = 近 7 天日均业务流量很低"} /></>}
       submitLabel={`登记 ${g.machines.length} 台`} busy={run.isPending} valid={!bad && !pv.isError} onSubmit={submit}>
       {pv.isError && <Note tone="bad">{(pv.error as Error).message}</Note>}
       <div className="table-wrap is-boxed is-capped">
         <table className="dt is-one"><colgroup><col /><col style={{ width: 180 }} /><col style={{ width: 150 }} /></colgroup>
           <thead><tr><th>机器</th><th>到期日</th><th>实付</th></tr></thead>
           <tbody>{g.machines.map((m) => (
-            <tr key={m.id}><td className="strong num">{m.name}</td>
+            <tr key={m.id}><td className="strong num">{m.name} {m.idle && <Pill className="pill-sm" tip={IDLE_TIP(m)}>闲置</Pill>}
+                <span className="sub" style={{ fontWeight: 'var(--fw-regular)' }}>近 30 天 {F.usdPerGb(m.usd_per_gb)}/GB · 可用率 {F.str(F.pct(m.avail_pct, 1))}</span></td>
               <td className="num">{m.due_date} <ArrowRight size={12} style={{ color: 'var(--fg-3)' }} /> {newDue(m.id) ?? <span className="t-muted">…</span>}</td>
               <td><AmountCell currency={m.currency} value={amounts[m.id]} onChange={(v) => setAmounts((a) => ({ ...a, [m.id]: v }))} /></td></tr>
           ))}</tbody></table>

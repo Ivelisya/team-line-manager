@@ -72,6 +72,8 @@ export function money(cents: number | null | undefined, currency: string): strin
   const d = currency === 'JPY' ? 0 : 2;
   return `${currencySym(currency)}${v.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d })}`;
 }
+/** 每 GB 业务流量的美元：「$0.80」，不到 $0.1 写三位；没有月费或没流量为「—」 */
+export const usdPerGb = (n: number | null | undefined): string => (n == null || !isFinite(n) ? '—' : `$${n < 0.1 ? n.toFixed(3) : n.toFixed(2)}`);
 /** 汇率：「1 CNY = 0.1404 USD」（4 位有效数字） */
 export const fxRate = (currency: string, usdPerUnit: number) => `1 ${currency} = ${Number(usdPerUnit.toPrecision(4))} USD`;
 /** 币种下拉的一项：「USD $」 */

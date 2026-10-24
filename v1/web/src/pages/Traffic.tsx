@@ -1,9 +1,9 @@
 // 流量：按组织时区的自然日看每天的业务流量（下载 / 上传）。顶部今天 / 昨天 / 近 7 天 / 近 30 天，每日总量柱状图，
-// 「节点 × 日期」明细（热度底色按当前表里最大的一格），线路机每天的网卡计费量。数据来自 GET /traffic/daily，5 分钟重取（小时汇总的节奏）。
+// 团队成本（月费、近 30 天流量、USD/GB），「节点 × 日期」明细（热度底色按当前表里最大的一格；右侧合计、日均、月费、USD/GB，闲置的节点标灰胶囊），线路机每天的网卡计费量。数据来自 GET /traffic/daily，5 分钟重取（小时汇总的节奏）。
 // 区间（?d=，默认 14 天）与团队（?team=）在地址里；KPI 要近 30 天，取数至少取 30 天，表和图在前端截到所选区间
 import * as React from 'react';
 import { ArrowDownUp, CalendarDays, CalendarRange, ChartColumnStacked, ChevronDown, ChevronUp, Clock } from 'lucide-react';
-import type { DailyBiz, DailyNic, TrafficDailyNode, TrafficDailyRelay } from '@/lib/types';
+import type { DailyBiz, DailyNic, TrafficDaily, TrafficDailyNode, TrafficDailyRelay, TrafficDailyTeam } from '@/lib/types';
 import { useTeams, useTrafficDaily } from '@/lib/queries';
 import { openDrawer } from '@/lib/drawer';
 import { meta, nicBilled, trafficRuleLabel, trafficRuleShort } from '@/lib/derive';
@@ -14,7 +14,7 @@ import { InfoTip } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { Segmented } from '@/components/ui/overlays';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Empty, ErrorNote, Flag, PageHead, Panel, Stat, TableWrap, type SortState } from '@/components/app/primitives';
+import { Empty, ErrorNote, Flag, PageHead, Panel, Pill, Stat, TableWrap, type SortState } from '@/components/app/primitives';
 import { DailyBars, md, weekday } from '@/components/app/DailyBars';
 import '@/styles/traffic.css';
 
@@ -74,7 +74,8 @@ export function TrafficPage() {
           : <div data-stale={q.isPlaceholderData}><DailyBars days={shown} height={220} /></div>}
       </Panel>
 
-      <NodesTable nodes={d?.nodes} days={days} loading={q.isLoading} stale={q.isPlaceholderData} sortRaw={sp.get('sort')} onSort={onSort} filtered={!!team} />
+      {d && d.teams.length > 0 && <TeamsTable teams={d.teams} picked={team} stale={q.isPlaceholderData} onPick={onTeam} />}
+      <NodesTable nodes={d?.nodes} days={days} idle={d?.idle} loading={q.isLoading} stale={q.isPlaceholderData} sortRaw={sp.get('sort')} onSort={onSort} filtered={!!team} />
       {d && d.relays.length > 0 && <RelaysTable relays={d.relays} days={days} stale={q.isPlaceholderData} teamName={team ? teamOpts.find((t) => t.value === team)?.label ?? '所选团队' : null} />}
     </div>
   );
@@ -105,47 +106,70 @@ function nicRange(rule: string, daily: DailyNic[]) {
   return { rule, daily, rx, tx, billed: nicBilled(rule, rx, tx) };
 }
 
-const NodesTable = React.memo(function NodesTable({ nodes, days, loading, stale, sortRaw, onSort, filtered }: {
-  nodes: TrafficDailyNode[] | undefined; days: number; loading: boolean; stale: boolean; sortRaw: string | null; onSort: (s: string) => void; filtered: boolean;
+type NodeSort = 'name' | 'sum' | 'cost' | 'perGb';
+/** 每 GB 业务流量的美元：月费 ÷ 按区间日均折成的 30 天流量（同服务端 traffic::usd_per_gb，区间由页面选，所以在这里按所选天数算）；没月费、没流量为 null */
+const perGb = (monthlyCents: number | null, bytes: number, days: number) => (monthlyCents == null || bytes <= 0 ? null : monthlyCents / 100 / ((bytes / days) * 30 / 1e9));
+
+const NodesTable = React.memo(function NodesTable({ nodes, days, idle, loading, stale, sortRaw, onSort, filtered }: {
+  nodes: TrafficDailyNode[] | undefined; days: number; idle: TrafficDaily['idle'] | undefined; loading: boolean; stale: boolean; sortRaw: string | null; onSort: (s: string) => void; filtered: boolean;
 }) {
-  const sort = React.useMemo(() => { const s = parseSort(sortRaw); return s && (s.id === 'name' || s.id === 'sum') ? s : null; }, [sortRaw]);
+  const sort = React.useMemo(() => { const s = parseSort(sortRaw); return s && (['name', 'sum', 'cost', 'perGb'] as string[]).includes(s.id) ? s : null; }, [sortRaw]);
   const rows = React.useMemo(() => {
-    const list = (nodes ?? []).map((n) => { const daily = n.daily.slice(-days); return { n, daily, sum: total(sumOf(daily)), nic: n.rule && n.nic_daily ? nicRange(n.rule, n.nic_daily.slice(-days)) : null }; });
+    const list = (nodes ?? []).map((n) => {
+      const daily = n.daily.slice(-days); const sum = total(sumOf(daily));
+      return { n, daily, sum, perGb: perGb(n.monthly_usd_cents, sum, days), nic: n.rule && n.nic_daily ? nicRange(n.rule, n.nic_daily.slice(-days)) : null };
+    });
     const s = sort ?? DEFAULT_SORT;
-    return list.sort((a, b) => { const c = s.id === 'name' ? collator.compare(a.n.name, b.n.name) : a.sum - b.sum; return s.desc ? -c : c; });
+    const key = (r: (typeof list)[number]): number | null => (s.id === 'sum' ? r.sum : s.id === 'cost' ? r.n.monthly_usd_cents : r.perGb);
+    return list.sort((a, b) => {
+      if (s.id === 'name') { const c = collator.compare(a.n.name, b.n.name); return s.desc ? -c : c; }
+      const [x, y] = [key(a), key(b)];
+      if (x == null || y == null) return x == null && y == null ? 0 : x == null ? 1 : -1; // 没有的排最后，升降序都一样
+      return s.desc ? y - x : x - y;
+    });
   }, [nodes, days, sort]);
   const dates = rows[0]?.daily.map((x) => x.date) ?? [];
   const max = React.useMemo(() => Math.max(0, ...rows.flatMap((r) => r.daily.map((x) => total(x)))), [rows]);
   const foot = React.useMemo(() => dates.map((_, i) => rows.reduce((a, r) => a + total(r.daily[i]), 0)), [rows, dates]);
+  // 底行的月费与 USD/GB 只算有月费的节点（月费与流量对得上）
+  const cost = React.useMemo(() => rows.reduce((a, r) => (r.n.monthly_usd_cents == null ? a : { cents: a.cents + r.n.monthly_usd_cents, bytes: a.bytes + r.sum }), { cents: 0, bytes: 0 }), [rows]);
   const wrap = useScrollEnd(`${days}:${dates.length}`);
   const last = dates[dates.length - 1];
+  const sumAll = foot.reduce((a, v) => a + v, 0);
+  const idleTip = (avg7: number | null) => (idle ? `近 ${idle.days} 天日均 ${F.str(F.bytes(avg7 ?? 0))}，低于 ${idle.gb_per_day} GB` : undefined);
   return (
-    <Panel title="节点每日流量" count={nodes ? `${rows.length} 个` : undefined} sub={<InfoTip text={'业务流量：下载加上传；格子底色越深流量越大\nVPS 节点的合计下面写网卡计费量（按这台生效的计费方式，同流量额度）\n已退役的机器这段时间有流量的也列出'} />} flush>
+    <Panel title="节点每日流量" count={nodes ? `${rows.length} 个` : undefined} sub={<InfoTip text={'业务流量：下载加上传；格子底色越深流量越大\nVPS 节点的合计下面写网卡计费量（按这台生效的计费方式，同流量额度）\n已退役的机器这段时间有流量的也列出\n闲置：在用、上架满一周，近一周日均业务流量很低'} />} flush>
       <div ref={wrap}>
         <TableWrap data-stale={stale}>
-          <table className="dt is-one dt-heat">
-            <colgroup><col className="col-node" />{dates.map((x) => <col key={x} className="col-day" />)}<col className="col-sum" /></colgroup>
+          <table className="dt is-one dt-heat dt-cost">
+            <colgroup><col className="col-node" />{dates.map((x) => <col key={x} className="col-day" />)}<col className="col-sum" /><col className="col-aux" /><col className="col-aux" /><col className="col-aux" /></colgroup>
             <thead><tr>
               <SortTh id="name" label="节点" sort={sort} onSort={onSort} />
               {dates.map((x) => <DateHead key={x} date={x} today={x === last} />)}
               <SortTh id="sum" label={`${days} 天合计`} r sort={sort} onSort={onSort} />
+              <th className="r" data-tip={`${days} 天合计 ÷ ${days}`}>日均</th>
+              <SortTh id="cost" label="月费" r sort={sort} onSort={onSort} tip={'订阅价按周期折成每月、再折成美元（设置 → 汇率）\n没有价格显示 —'} />
+              <SortTh id="perGb" label="USD/GB" r sort={sort} onSort={onSort} tip={`月费 ÷ 按所选 ${days} 天日均折成的 30 天业务流量\n没有月费或没有流量显示 —`} />
             </tr></thead>
             <tbody>
-              {rows.map(({ n, daily, sum, nic }) => (
+              {rows.map(({ n, daily, sum, nic, perGb: pg }) => (
                 <tr key={`${n.id}${n.direct ? 'd' : ''}`} className="is-link" tabIndex={0} onClick={() => openDrawer(n.id, 'traffic')} onKeyDown={(e) => { if (e.key === 'Enter') openDrawer(n.id, 'traffic'); }}>
                   <td>
                     <div className="tr-node"><Flag country={n.country} />
-                      <div><span className="cell-main">{n.name}</span><span className="sub">{[n.team?.name ?? (n.direct ? '直出' : '未分团队'), n.lifecycle === 'retired' && '已退役'].filter(Boolean).join(' · ')}</span></div>
+                      <div>
+                        <span className="cell-main tr-name"><span>{n.name}</span>{n.idle && <Pill className="pill-sm" tip={idleTip(n.avg7)}>闲置</Pill>}</span>
+                        <span className="sub">{[n.team?.name ?? (n.direct ? '直出' : '未分团队'), n.lifecycle === 'retired' && '已退役'].filter(Boolean).join(' · ')}</span>
+                      </div>
                     </div>
                   </td>
                   {daily.map((x, i) => <td key={x.date} className="r" style={heat(total(x), max)} data-tip={total(x) || nic ? `${md(x.date)} · ↓ 下载 ${F.str(F.bytes(x.down))} · ↑ 上传 ${F.str(F.bytes(x.up))}${nic ? `
 网卡计费 ${F.str(F.bytes(nic.daily[i].billed))}（${trafficRuleShort(nic.rule)}）` : ''}` : undefined}>{cell(total(x))}</td>)}
-                  {/* 有自己网卡的节点（VPS）副行写网卡计费量（同流量额度的口径），没有的写日均 */}
-                  <td className="r strong">{cell(sum)}{nic
-                    ? <span className="sub" data-tip={`网卡计费 · ${trafficRuleLabel(nic.rule)}
-${days} 天 ↓ 下行 ${F.str(F.bytes(nic.rx))} · ↑ 上行 ${F.str(F.bytes(nic.tx))}，先加总再按规则算
-日均业务流量 ${F.str(F.bytes(sum / days))}`}>计费 {cell(nic.billed)}</span>
-                    : <span className="sub">日均 {cell(sum / days)}</span>}</td>
+                  {/* 有自己网卡的节点（VPS）副行写网卡计费量（同流量额度的口径） */}
+                  <td className="r strong">{cell(sum)}{nic && <span className="sub" data-tip={`网卡计费 · ${trafficRuleLabel(nic.rule)}
+${days} 天 ↓ 下行 ${F.str(F.bytes(nic.rx))} · ↑ 上行 ${F.str(F.bytes(nic.tx))}，先加总再按规则算`}>计费 {cell(nic.billed)}</span>}</td>
+                  <td className="r">{cell(sum / days)}</td>
+                  <td className="r">{F.money(n.monthly_usd_cents, 'USD')}</td>
+                  <td className="r">{F.usdPerGb(pg)}</td>
                 </tr>
               ))}
             </tbody>
@@ -153,7 +177,10 @@ ${days} 天 ↓ 下行 ${F.str(F.bytes(nic.rx))} · ↑ 上行 ${F.str(F.bytes(n
               <tfoot><tr>
                 <td>全部</td>
                 {foot.map((v, i) => <td key={dates[i]} className="r">{cell(v)}</td>)}
-                <td className="r">{cell(foot.reduce((a, v) => a + v, 0))}</td>
+                <td className="r">{cell(sumAll)}</td>
+                <td className="r">{cell(sumAll / days)}</td>
+                <td className="r">{cost.cents ? F.money(cost.cents, 'USD') : '—'}</td>
+                <td className="r">{F.usdPerGb(perGb(cost.cents || null, cost.bytes, days))}</td>
               </tr></tfoot>
             )}
           </table>
@@ -165,14 +192,49 @@ ${days} 天 ↓ 下行 ${F.str(F.bytes(nic.rx))} · ↑ 上行 ${F.str(F.bytes(n
   );
 });
 
-/** 可排序的表头格（同 SortHead 的按钮与图标）：节点名先升序，合计先降序；sort 为 null 是默认的合计降序 */
-function SortTh({ id, label, r, sort, onSort }: { id: 'name' | 'sum'; label: string; r?: boolean; sort: SortState | null; onSort: (s: string) => void }) {
+/** 团队成本：在用节点的月费、近 30 天业务流量、每 GB 多少美元（不随团队筛选变）；点一行按这个团队筛选，再点取消 */
+const TeamsTable = React.memo(function TeamsTable({ teams, picked, stale, onPick }: { teams: TrafficDailyTeam[]; picked: string; stale: boolean; onPick: (id: string) => void }) {
+  const all = React.useMemo(() => teams.reduce((a, t) => ({ nodes: a.nodes + t.nodes, idle: a.idle + t.idle, cents: a.cents + (t.monthly_usd_cents ?? 0), bytes: a.bytes + t.bytes_30d, unpriced: a.unpriced + t.unpriced }), { nodes: 0, idle: 0, cents: 0, bytes: 0, unpriced: 0 }), [teams]);
+  const fee = (cents: number | null, unpriced: number) => <span data-tip={unpriced ? `有 ${unpriced} 台没有价格或没有汇率，没算进月费` : undefined}>{F.money(cents, 'USD')}{unpriced > 0 && '*'}</span>;
+  return (
+    <Panel title="团队成本" sub={<InfoTip text={'月费：在用节点的订阅价折成美元的每月合计\nUSD/GB：月费 ÷ 近 30 天业务流量，不随上面的区间变\n点一行按这个团队筛选'} />} flush>
+      <TableWrap data-stale={stale}>
+        <table className="dt is-one dt-sum">
+          <thead><tr><th>团队</th><th className="r">在用节点</th><th className="r">闲置</th><th className="r">月费</th><th className="r">近 30 天流量</th><th className="r">USD/GB</th></tr></thead>
+          <tbody>
+            {teams.map((t) => (
+              <tr key={t.id} className="is-link" tabIndex={0} aria-selected={picked === t.id || undefined} onClick={() => onPick(picked === t.id ? '' : t.id)} onKeyDown={(e) => { if (e.key === 'Enter') onPick(picked === t.id ? '' : t.id); }}>
+                <td><span className="cell-main">{t.name}</span></td>
+                <td className="r">{t.nodes} 台</td>
+                <td className="r">{t.idle ? `${t.idle} 台` : '—'}</td>
+                <td className="r">{fee(t.monthly_usd_cents, t.unpriced)}</td>
+                <td className="r">{cell(t.bytes_30d)}</td>
+                <td className="r strong">{F.usdPerGb(t.usd_per_gb)}</td>
+              </tr>
+            ))}
+          </tbody>
+          {teams.length > 1 && (
+            <tfoot><tr>
+              <td>全部</td><td className="r">{all.nodes} 台</td><td className="r">{all.idle ? `${all.idle} 台` : '—'}</td>
+              <td className="r">{fee(all.cents || null, all.unpriced)}</td><td className="r">{cell(all.bytes)}</td><td className="r">{F.usdPerGb(perGb(all.cents || null, all.bytes, 30))}</td>
+            </tr></tfoot>
+          )}
+        </table>
+      </TableWrap>
+    </Panel>
+  );
+});
+
+/** 可排序的表头格（同 SortHead 的按钮与图标）：节点名先升序，数字列先降序；sort 为 null 是默认的合计降序 */
+function SortTh({ id, label, r, sort, onSort, tip }: { id: NodeSort; label: string; r?: boolean; sort: SortState | null; onSort: (s: string) => void; tip?: string }) {
   const cur = sort ?? DEFAULT_SORT;
   const dir = cur.id === id ? (cur.desc ? 'desc' : 'asc') : undefined;
-  // 名称：升序 → 降序 → 默认；合计：降序（默认）⇄ 升序
-  const next = id === 'name' ? (dir === undefined ? 'name' : dir === 'asc' ? '-name' : '') : dir === 'desc' ? 'sum' : '';
+  // 名称：升序 → 降序 → 默认；合计：降序（默认）⇄ 升序；月费、USD/GB：降序 → 升序 → 默认
+  const next = id === 'name' ? (dir === undefined ? 'name' : dir === 'asc' ? '-name' : '')
+    : id === 'sum' ? (dir === 'desc' ? 'sum' : '')
+    : dir === undefined ? `-${id}` : dir === 'desc' ? id : '';
   return (
-    <th className={r ? 'r' : undefined} aria-sort={dir === 'asc' ? 'ascending' : dir === 'desc' ? 'descending' : undefined}>
+    <th className={r ? 'r' : undefined} aria-sort={dir === 'asc' ? 'ascending' : dir === 'desc' ? 'descending' : undefined} data-tip={tip}>
       <button type="button" className="th-sort" data-dir={dir} onClick={() => onSort(next)}>{label}{dir === 'asc' ? <ChevronUp /> : dir === 'desc' ? <ChevronDown /> : <ArrowDownUp />}</button>
     </th>
   );
