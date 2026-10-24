@@ -7,7 +7,7 @@ import { entryBad, probeErr, probeFail, probeFailLabel, reachFail, reachFlaky, r
 import { useReachLabel } from '@/lib/probePoints';
 import { entryState, Num, Pill } from '@/components/app/primitives';
 import { ShowAll } from '@/components/app/Pagination';
-import { useEntryRouters, useRouterDrawer } from '@/lib/routers';
+import { openRouterDrawer, useEntryRouters } from '@/lib/routers';
 import { Checkbox } from '@/components/ui/form';
 import { Button } from '@/components/ui/button';
 import { Trunc } from '@/components/ui/overlays';
@@ -106,8 +106,7 @@ export function EntriesTable({ m, traffic, onlyBad, pick }: { m: MachineView; tr
 
 /** 被软路由的出口用着的入口：小标「软路由 N」，悬停列出是哪台的哪个出口，点开那台软路由的出口页签 */
 export function RouterMark({ users }: { users: { id: string; name: string; exit: string }[] }) {
-  const { open } = useRouterDrawer();
-  return <button type="button" className="rt-mark" data-tip={users.map((u) => `${u.name} · ${u.exit}`).join('\n')} onClick={() => open(users[0].id, 'exits')}>软路由 {users.length}</button>;
+  return <button type="button" className="rt-mark" data-tip={users.map((u) => `${u.name} · ${u.exit}`).join('\n')} onClick={() => openRouterDrawer(users[0].id, 'exits')}>软路由 {users.length}</button>;
 }
 
 /** 一行一个 memo：实时推送只换变了的入口（live.ts 的入口补丁把没变的原样返回），线路机展开全部的上百行不跟着重画。

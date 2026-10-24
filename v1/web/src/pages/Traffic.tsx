@@ -5,7 +5,7 @@ import * as React from 'react';
 import { ArrowDownUp, CalendarDays, CalendarRange, ChartColumnStacked, ChevronDown, ChevronUp, Clock } from 'lucide-react';
 import type { DailyBiz, TrafficDailyNode, TrafficDailyRelay } from '@/lib/types';
 import { useTeams, useTrafficDaily } from '@/lib/queries';
-import { useDrawer } from '@/lib/drawer';
+import { openDrawer } from '@/lib/drawer';
 import { meta, trafficRuleLabel } from '@/lib/derive';
 import { collator } from '@/lib/sort';
 import { parseSort, useUrlState } from '@/lib/urlState';
@@ -40,6 +40,7 @@ export function TrafficPage() {
   const teamOpts = React.useMemo(() => (teams ?? []).map((t) => ({ value: t.id, label: t.name })), [teams]);
   const onTeam = React.useCallback((v: string) => upd({ team: v }), [upd]);
   const onRange = React.useCallback((v: string) => upd({ d: v === DEFAULT_RANGE ? '' : v }), [upd]);
+  const onSort = React.useCallback((s: string) => upd({ sort: s }), [upd]);
 
   // KPI：今天、昨天、近 7 天、近 30 天（取回的至少 30 天）
   const kpi = React.useMemo(() => {
@@ -73,7 +74,7 @@ export function TrafficPage() {
           : <div data-stale={q.isPlaceholderData}><DailyBars days={shown} height={220} /></div>}
       </Panel>
 
-      <NodesTable nodes={d?.nodes} days={days} loading={q.isLoading} stale={q.isPlaceholderData} sortRaw={sp.get('sort')} onSort={(s) => upd({ sort: s })} filtered={!!team} />
+      <NodesTable nodes={d?.nodes} days={days} loading={q.isLoading} stale={q.isPlaceholderData} sortRaw={sp.get('sort')} onSort={onSort} filtered={!!team} />
       {d && d.relays.length > 0 && <RelaysTable relays={d.relays} days={days} stale={q.isPlaceholderData} teamName={team ? teamOpts.find((t) => t.value === team)?.label ?? '所选团队' : null} />}
     </div>
   );
@@ -101,7 +102,6 @@ const DateHead = ({ date, today }: { date: string; today: boolean }) => (
 const NodesTable = React.memo(function NodesTable({ nodes, days, loading, stale, sortRaw, onSort, filtered }: {
   nodes: TrafficDailyNode[] | undefined; days: number; loading: boolean; stale: boolean; sortRaw: string | null; onSort: (s: string) => void; filtered: boolean;
 }) {
-  const { open } = useDrawer();
   const sort = React.useMemo(() => { const s = parseSort(sortRaw); return s && (s.id === 'name' || s.id === 'sum') ? s : null; }, [sortRaw]);
   const rows = React.useMemo(() => {
     const list = (nodes ?? []).map((n) => { const daily = n.daily.slice(-days); return { n, daily, sum: total(sumOf(daily)) }; });
@@ -117,7 +117,7 @@ const NodesTable = React.memo(function NodesTable({ nodes, days, loading, stale,
     <Panel title="节点每日流量" count={nodes ? `${rows.length} 个` : undefined} sub={<InfoTip text={'下载加上传；格子底色越深流量越大\n已退役的机器这段时间有流量的也列出'} />} flush>
       <div ref={wrap}>
         <TableWrap data-stale={stale}>
-          <table className="dt is-one dt-heat" style={{ minWidth: 0 }}>
+          <table className="dt is-one dt-heat">
             <colgroup><col className="col-node" />{dates.map((x) => <col key={x} className="col-day" />)}<col className="col-sum" /></colgroup>
             <thead><tr>
               <SortTh id="name" label="节点" sort={sort} onSort={onSort} />
@@ -126,7 +126,7 @@ const NodesTable = React.memo(function NodesTable({ nodes, days, loading, stale,
             </tr></thead>
             <tbody>
               {rows.map(({ n, daily, sum }) => (
-                <tr key={`${n.id}${n.direct ? 'd' : ''}`} className="is-link" tabIndex={0} onClick={() => open(n.id, 'traffic')} onKeyDown={(e) => { if (e.key === 'Enter') open(n.id, 'traffic'); }}>
+                <tr key={`${n.id}${n.direct ? 'd' : ''}`} className="is-link" tabIndex={0} onClick={() => openDrawer(n.id, 'traffic')} onKeyDown={(e) => { if (e.key === 'Enter') openDrawer(n.id, 'traffic'); }}>
                   <td>
                     <div className="tr-node"><Flag country={n.country} />
                       <div><span className="cell-main">{n.name}</span><span className="sub">{[n.team?.name ?? (n.direct ? '直出' : '未分团队'), n.lifecycle === 'retired' && '已退役'].filter(Boolean).join(' · ')}</span></div>
@@ -167,7 +167,6 @@ function SortTh({ id, label, r, sort, onSort }: { id: 'name' | 'sum'; label: str
 }
 
 const RelaysTable = React.memo(function RelaysTable({ relays, days, stale, teamName }: { relays: TrafficDailyRelay[]; days: number; stale: boolean; teamName: string | null }) {
-  const { open } = useDrawer();
   const rows = React.useMemo(() => relays.map((r) => { const daily = r.daily.slice(-days); return { r, daily, business: r.business.slice(-days), sum: daily.reduce((a, x) => a + x.billed, 0) }; }), [relays, days]);
   const dates = rows[0]?.daily.map((x) => x.date) ?? [];
   const max = React.useMemo(() => Math.max(0, ...rows.flatMap((r) => r.daily.map((x) => x.billed))), [rows]);
@@ -177,12 +176,12 @@ const RelaysTable = React.memo(function RelaysTable({ relays, days, stale, teamN
     <Panel title="线路机每日网卡计费量" sub={<>{teamName && <span className="t-muted">整台线路机，不分团队</span>}<InfoTip text={'网卡口径：下行 = 流进线路机，上行 = 流出；每天按供应商的计费规则算一次\n悬停格子看下行、上行和经过它的业务流量'} /></>} flush>
       <div ref={wrap}>
         <TableWrap data-stale={stale}>
-          <table className="dt is-one dt-heat" style={{ minWidth: 0 }}>
+          <table className="dt is-one dt-heat">
             <colgroup><col className="col-node" />{dates.map((x) => <col key={x} className="col-day" />)}<col className="col-sum" /></colgroup>
             <thead><tr><th>线路机</th>{dates.map((x) => <DateHead key={x} date={x} today={x === last} />)}<th className="r">{days} 天合计</th></tr></thead>
             <tbody>
               {rows.map(({ r, daily, business, sum }) => (
-                <tr key={r.id} className="is-link" tabIndex={0} onClick={() => open(r.id, 'traffic')} onKeyDown={(e) => { if (e.key === 'Enter') open(r.id, 'traffic'); }}>
+                <tr key={r.id} className="is-link" tabIndex={0} onClick={() => openDrawer(r.id, 'traffic')} onKeyDown={(e) => { if (e.key === 'Enter') openDrawer(r.id, 'traffic'); }}>
                   <td>
                     <div className="tr-node"><Flag country={r.country} />
                       <div><span className="cell-main">{r.name}</span><span className="sub" data-tip={trafficRuleLabel(r.rule)}>{trafficRuleLabel(r.rule)}{r.lifecycle === 'retired' ? ' · 已退役' : ''}</span></div>
