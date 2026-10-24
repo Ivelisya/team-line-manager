@@ -292,6 +292,8 @@ FLEET_BUILD=docker FLEET_BUILD_HOST=10.172.17.213 lab/sync-server.sh 'cargo test
 - 版本号 `0.1.0+<哈希>` 里的哈希是最后一次改动 `Cargo.toml`、`Cargo.lock`、`crates`、`migrations`、`deploy` 的提交：只改前端或文档的提交不换哈希，编译主机上不重编 server 和 agent。
 - xray、ssserver、geoip.dat 先和中控 `/opt/fleet/dist` 比 sha256，相同的不上传，中控上的保持原样（docker 编译主机上没有 dist 来源时整个不带，见上）。
 - 编译失败、或 install.sh 重启后等 60 秒未登录访问 `/api/v1/auth/me` 仍不是 401，部署以非 0 退出，后者会打出 fleet-server 最近 60 行日志。中控上的安装包无论成败都删掉。
+- 安装顺序：会失败的预检（软路由隧道的 23000–23999 端口与 `sshd -t`）最先做，要换的 fleet-server、fleetctl、dist、前端先放成 `.new`，紧挨着重启 fleet-server 之前才一起换上：预检或中间任何一步失败，线上的二进制、前端、dist 原样不动（不会出现旧进程配新前端，也不会让磁盘上的新二进制在之后一次崩溃重启时无人值守地升级、跑迁移）。重启之后的步骤（Caddy、健康检查）失败时新版已经在跑，回滚见 §9。
+- install.sh 在中控的临时 systemd 单元 `fleet-install` 里跑（`systemd-run --wait --pipe --collect`）：本机 ssh 断了或 Ctrl-C，安装继续跑完；输出同时写 `/root/fleet-install.log`（断线后 `tail -f` 看进度，成功时最后一行是「fleet-server … api=401 …」，否则是失败原因）。上一次的安装还没结束时再部署会直接报错退出，不会另起一个。
 - 换下来的旧 fleet-server 留在中控 `/opt/fleet/fleet-server.prev`（同一个二进制重复部署时不覆盖它）。
 - 迁移 0029 先把币种去空白转大写，再给套餐 / 订阅 / 续费记录的币种（3 个大写字母）和通知渠道种类（当时是 telegram / wecom / webhook）加约束；存量里还有不合规的不让迁移失败，日志里有「0029：… 暂不验证」的警告。看到时查出那几行（如 `select id, currency from plan where currency !~ '^[A-Z]{3}$'`）改成正确的币种，再 `alter table plan validate constraint plan_currency_iso`（订阅 / 续费记录 / 渠道同理：`subscription_currency_iso`、`renewal_currency_iso`、`notify_channel_kind_check`）。
 - 迁移 0081 把通知渠道种类约束改成只允许 telegram / feishu，并删掉库里已有的企业微信、webhook 渠道（它们排着的待发通知一并删，发送记录里的渠道名置空）；之后在设置页新建飞书渠道。
@@ -317,6 +319,8 @@ FLEET_BUILD=docker FLEET_BUILD_HOST=10.172.17.213 lab/sync-server.sh 'cargo test
 - `fleet.dump`：`pg_dump -Fc` 整库。`host_metric`、`entry_traffic`、`probe_result`、`access_event` 四张原始时序表（按天分区，只保留几天，量最大）只备结构不备数据，其余表（机器、入口、订阅、作业、审计、告警、小时汇总等）全量。恢复后最近几天的 10 秒粒度曲线和访问明细是空的，小时汇总都在。
 - `etc/fleet/`：`secret.key`（库里 SS 密码、REALITY 私钥、通知渠道配置的加密密钥，丢了这些就解不开）、`fleet.toml`、`ssh/id_ed25519`（中控登录所有机器的密钥）。
 - `var/lib/fleet/known_hosts`：各机器的主机指纹。
+- `etc/ssh/ssh_host_ed25519_key`、`.pub`：中控 sshd 的 ed25519 主机密钥。软路由的隧道按 `/etc/fleet-tunnel/known_hosts` 里存的这把公钥做 `StrictHostKeyChecking=yes`，新机器上主机密钥是新生成的，不放回来所有软路由隧道都连不上。
+- `etc/caddy/global.d/`、`etc/caddy/sites.d/`：Caddy 的带外配置（如 `edge-proxy.caddy` 的 PROXY 协议、`http-redirect.caddy`，见 §11）。Caddyfile 本身由 install.sh 重写，不在包里；上面这几样中控上不存在的就不打（备份不会因此失败）。
 
 整个包都是敏感数据：中控上 0640 root:fleet-backup（只有拉取用户能读），PVE 上 0600 root。备份目录本身是 0755：fleet-server 要看得到最新一份的时间，超过 26 小时没有新的就开告警 `central_backup_stale`（§12）。每份旁边有一个 `<备份名>.sha256`（`sha256sum` 格式，备份时算的；明文和加密的都有），随备份一起轮换；PVE 拉取时按它核对。
 
@@ -375,11 +379,19 @@ FLEET_BUILD=docker FLEET_BUILD_HOST=10.172.17.213 lab/sync-server.sh 'cargo test
    install -m 640 -o fleet -g fleet /root/restore/var/lib/fleet/known_hosts /var/lib/fleet/known_hosts
    diff /root/restore/etc/fleet/fleet.toml /etc/fleet/fleet.toml
    ```
+   备份里有 `etc/ssh/ssh_host_ed25519_key`（以及 `.pub`）、`etc/caddy/global.d`、`etc/caddy/sites.d` 的，也放回去，再重启 ssh 与 caddy（不放回，软路由隧道因主机公钥对不上全断；经边缘机的连接因缺 PROXY 协议配置全断）：
+   ```
+   install -m 600 -o root -g root /root/restore/etc/ssh/ssh_host_ed25519_key /etc/ssh/ssh_host_ed25519_key
+   install -m 644 -o root -g root /root/restore/etc/ssh/ssh_host_ed25519_key.pub /etc/ssh/ssh_host_ed25519_key.pub
+   cp -a /root/restore/etc/caddy/global.d/. /etc/caddy/global.d/ && cp -a /root/restore/etc/caddy/sites.d/. /etc/caddy/sites.d/
+   sshd -t && systemctl restart ssh && caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null && systemctl restart caddy
+   ```
+   换 sshd 主机密钥后，人用 ssh 连这台机器会报主机指纹变了（放回备份里的这把就和以前一致，PVE 拉取的第 9 步也就不用做）。
 5. 启动并确认：`systemctl start fleet-server`（启动时跑迁移：备份来自旧版本时补上新迁移）；`curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/api/v1/auth/me` 应为 401。恢复的库里是备份时的 central-local，和第 1 步写进 `/root/.config/fleetctl/config.toml` 的令牌对不上：`/opt/fleet/fleet-server local-admin -c /etc/fleet/fleet.toml` 重建一把（§14），再 `fleetctl status` 看机器。
 6. 中控 IP 变了：把域名解析改到新机器。agent 按域名上报，解析生效后自动恢复；Caddy 自动签证书。
 7. 放回了 `etc/fleet/backup.pub` 的，再跑一次第 1 步的 deploy.sh：install.sh 看到这个文件才写拉取用户的 authorized_keys，不重跑 PVE 就一直拉不到。
 8. agent 令牌：每次装 / 升级 agent 都会换令牌、撤销旧的。备份之后升级过 agent 的机器，机器上的令牌在恢复的库里不存在，上报一律 401（线路照常通，但上报、配置下发都停了）。解析生效几分钟后 `fleetctl ls` 里 agent 一直离线的那些，逐台 `fleetctl upgrade-agent <机器> --yes` 重发令牌（中控用恢复的 SSH 密钥登录）；不确定就 `fleetctl upgrade-agent --all --yes`。
-9. 新机器的 SSH 主机指纹变了：PVE 的拉取按 accept-new 只认第一次记下的指纹，会拒绝连接（`systemctl --failed` 里 fleet-backup-pull 失败）。在 PVE 上 `ssh-keygen -R <中控主机>`（拉取用的主机名或 IP），再手动跑一次 `systemctl start fleet-backup-pull` 记下新指纹。
+9. 新机器的 SSH 主机指纹变了（第 4 步没放回 sshd 主机密钥才会；放回了就和以前一致）：PVE 的拉取按 accept-new 只认第一次记下的指纹，会拒绝连接（`systemctl --failed` 里 fleet-backup-pull 失败）。在 PVE 上 `ssh-keygen -R <中控主机>`（拉取用的主机名或 IP），再手动跑一次 `systemctl start fleet-backup-pull` 记下新指纹。
 10. 删掉 `/root/restore`（里面有密钥）。
 
 ## 11. 访问入口

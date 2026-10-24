@@ -74,7 +74,18 @@ if [ -n "$DRY" ]; then
 fi
 
 echo "== 上传并安装到 $HOST"
-fb_tar -C "$STAGE/pkg" -czf - . | ssh "$HOST" "set -e; trap 'rm -rf /root/fleet-pkg' EXIT; rm -rf /root/fleet-pkg; mkdir -p /root/fleet-pkg
+# install.sh 在中控上的临时单元 fleet-install 里跑（systemd-run --wait --pipe --collect）：本机 ssh 断了、被 Ctrl-C，安装也不会被杀在半截
+# （单元在 systemd 自己的 cgroup 里，不随 ssh 会话收掉）；输出照常回到本机，退出码原样带回。
+# 单元里 install.sh 的输出经 tee -p（忽略 SIGPIPE）同时写 /root/fleet-install.log：ssh 断了之后 install.sh 往已关的管道写也不会被 SIGPIPE 杀，
+# 断线后在中控 tail -f 这个日志看进度。安装包由单元里的包装在 install.sh 结束后删（ssh 会话断了它的 EXIT trap 不能再删，
+# 否则 install.sh 还在读的包就没了）；上一次的安装还在跑时不另起，免得 rm -rf 掉它的包。
+# 单元里没有 ssh 会话的环境，补上 HOME=/root（gpg、local-admin 写 /root/.config 用）
+fb_tar -C "$STAGE/pkg" -czf - . | ssh "$HOST" "set -e
+if systemctl is-active -q fleet-install; then echo '中控上的上一次安装（systemd 单元 fleet-install）还在跑：等它结束，tail -f /root/fleet-install.log'; exit 1; fi
+trap 'rm -rf /root/fleet-pkg' EXIT; rm -rf /root/fleet-pkg; mkdir -p /root/fleet-pkg
 tar --no-same-owner -xzf - -C /root/fleet-pkg
 find /root/fleet-pkg -name '._*' -type f -delete
-bash /root/fleet-pkg/install.sh '$DOMAIN'"
+trap - EXIT
+systemd-run --wait --pipe --collect --quiet --unit=fleet-install --setenv=HOME=/root bash -c 'umask 077; set -o pipefail
+bash /root/fleet-pkg/install.sh \"\$1\" 2>&1 | tee -p /root/fleet-install.log
+rc=\$?; rm -rf /root/fleet-pkg; exit \$rc' _ '$DOMAIN'"

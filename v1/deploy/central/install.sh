@@ -2,6 +2,7 @@
 # 在生产中控机（Debian 13，root）上安装 / 升级 fleet-server。由 deploy.sh 连同安装包传上来执行，包就在本脚本所在目录。
 # 第一次：装系统包，建 PostgreSQL 库与角色、fleet 用户、密钥（secret.key、中控 SSH 密钥）、fleet.toml、Caddy。
 # 之后每次：只替换 fleet-server、dist、前端、ipintel 与备份脚本并重启 fleet-server；已有的配置和密钥不动。
+# 顺序：会失败的预检（软路由隧道的端口与 sshd -t）最先做；要换的文件先放成 .new，紧挨着重启前才换上：中途失败时线上的版本原样不动。
 # 每次还装 /usr/local/bin/fleetctl，健康检查过后建或修复它的全权密钥 central-local（仍有效不换），写给 agent 的 /root/AGENTS.md、
 # /root/CLAUDE.md 与 fleet-ops 技能（docs/OPS.md §14：用 agent 从中控全量运维）。
 # 换下来的旧 fleet-server 留在 /opt/fleet/fleet-server.prev（回滚见 docs/OPS.md §9）；重启后未登录访问 /api/v1/auth/me 不是 401
@@ -91,21 +92,25 @@ fi
 [ -f /etc/fleet/ssh/id_ed25519 ] || { ssh-keygen -q -t ed25519 -N "" -C "fleet-central@$DOMAIN" -f /etc/fleet/ssh/id_ed25519; chown fleet:fleet /etc/fleet/ssh/id_ed25519*; }
 [ -f /var/lib/fleet/known_hosts ] || runuser -u fleet -- install -m 640 /dev/null /var/lib/fleet/known_hosts
 
+# 软路由的反向隧道（docs/OPS.md「软路由接入与隧道」）：fleet-tunnel 账号、sshd 的 AuthorizedKeysCommand（tunnel-keys）与只对它生效的
+# Match 段；23000–23999 被别的程序占着、sshd -t 不通过时停在这里（sshd 配置换回原来的）。
+# 这一步最容易失败，放在换任何二进制、前端之前：停在这里时线上的 fleet-server、前端、dist 都还是原来的
+bash "$PKG/tunnel-setup.sh" "$PKG"
+
+# 要换的二进制、dist、前端先都放成 .new，可能失败的步骤（单元、定时器、备份等）都做完、紧挨着重启 fleet-server 之前才一起换上（见下面「换上新版」）：
+# 中途失败不会留下「旧进程配新前端」，也不会让磁盘上的新二进制在之后任何一次崩溃重启时无人值守地升级、跑迁移。
 # xray、ssserver、geoip.dat 只在与这台中控上的不同时才随包带来（deploy.sh 先比对 sha256），没带的保持原样
-install -m 755 "$PKG/bin/fleet-agent" /opt/fleet/dist/
-for f in xray ssserver; do [ ! -f "$PKG/bin/$f" ] || install -m 755 "$PKG/bin/$f" /opt/fleet/dist/; done
-[ ! -f "$PKG/bin/geoip.dat" ] || install -m 644 "$PKG/bin/geoip.dat" /opt/fleet/dist/
-# 换下来的旧版留作 fleet-server.prev（同一个二进制重复部署时不覆盖它），回滚见 docs/OPS.md §9
-if [ -f /opt/fleet/fleet-server ] && ! cmp -s "$PKG/bin/fleet-server" /opt/fleet/fleet-server; then
-  cp -p /opt/fleet/fleet-server /opt/fleet/fleet-server.prev
-fi
-install -m 755 "$PKG/bin/fleet-server" /opt/fleet/fleet-server.new && mv -f /opt/fleet/fleet-server.new /opt/fleet/fleet-server
+install -m 755 "$PKG/bin/fleet-agent" /opt/fleet/dist/fleet-agent.new
+NEW_DIST=fleet-agent
+for f in xray ssserver; do
+  [ ! -f "$PKG/bin/$f" ] || { install -m 755 "$PKG/bin/$f" "/opt/fleet/dist/$f.new"; NEW_DIST="$NEW_DIST $f"; }
+done
+[ ! -f "$PKG/bin/geoip.dat" ] || { install -m 644 "$PKG/bin/geoip.dat" /opt/fleet/dist/geoip.dat.new; NEW_DIST="$NEW_DIST geoip.dat"; }
+install -m 755 "$PKG/bin/fleet-server" /opt/fleet/fleet-server.new
 # 中控本机的 fleetctl（docs/OPS.md §14）：ssh 进中控的 agent 直接用，配置与全权密钥由下面健康检查之后的 local-admin 写
-install -m 755 "$PKG/bin/fleetctl" /usr/local/bin/fleetctl.new && mv -f /usr/local/bin/fleetctl.new /usr/local/bin/fleetctl
+install -m 755 "$PKG/bin/fleetctl" /usr/local/bin/fleetctl.new
 rm -rf /opt/fleet/web.new /opt/fleet/web.old
 cp -r "$PKG/web" /opt/fleet/web.new
-[ -d /opt/fleet/web ] && mv /opt/fleet/web /opt/fleet/web.old
-mv /opt/fleet/web.new /opt/fleet/web && rm -rf /opt/fleet/web.old
 
 cat > /etc/systemd/system/fleet-server.service <<'UNIT'
 [Unit]
@@ -170,14 +175,20 @@ if [ -f /etc/fleet/backup.pub ]; then
   chmod 644 /var/lib/fleet-backup/.ssh/authorized_keys
 fi
 
-# 软路由的反向隧道（docs/OPS.md「软路由接入与隧道」）：fleet-tunnel 账号、sshd 的 AuthorizedKeysCommand（tunnel-keys）与只对它生效的
-# Match 段；23000–23999 被别的程序占着、sshd -t 不通过时停在这里（sshd 配置换回原来的）
-bash "$PKG/tunnel-setup.sh" "$PKG"
-
 systemctl daemon-reload
 systemctl enable -q fleet-server fleet-ipintel-fetch.timer fleet-backup.timer
 systemctl start fleet-ipintel-fetch.timer fleet-backup.timer
 [ -n "$(ls -A /var/lib/fleet/ipintel)" ] || systemctl start --no-block fleet-ipintel-fetch.service
+# 换上新版（紧挨着重启）：dist 与二进制各自原子 mv，前端整个目录换。换下来的旧版留作 fleet-server.prev
+# （同一个二进制重复部署时不覆盖它），回滚见 docs/OPS.md §9
+for f in $NEW_DIST; do mv -f "/opt/fleet/dist/$f.new" "/opt/fleet/dist/$f"; done
+if [ -f /opt/fleet/fleet-server ] && ! cmp -s /opt/fleet/fleet-server.new /opt/fleet/fleet-server; then
+  cp -p /opt/fleet/fleet-server /opt/fleet/fleet-server.prev
+fi
+mv -f /opt/fleet/fleet-server.new /opt/fleet/fleet-server
+mv -f /usr/local/bin/fleetctl.new /usr/local/bin/fleetctl
+[ ! -d /opt/fleet/web ] || mv /opt/fleet/web /opt/fleet/web.old
+mv /opt/fleet/web.new /opt/fleet/web && rm -rf /opt/fleet/web.old
 systemctl restart fleet-server
 
 # Caddy 终止 TLS（Let's Encrypt 自动签发续期），整站反代到本机 fleet-server；长轮询、WebSocket、gzip 上报都不用额外配置
@@ -187,6 +198,11 @@ systemctl restart fleet-server
 # Caddyfile 归本脚本，每次部署按下面重写：本机自己的配置不要改它，放进两个目录（docs/OPS.md §11）——
 # global.d/*.caddy 并进全局选项（如前置边缘机的 servers / proxy_protocol），sites.d/*.caddy 是别的站点块（如 http:// 跳转、本机别的域名）。
 # 目录空着只有一条 warn。重写前旧文件留成 Caddyfile.bak-<时间>。
+# 反代和下面的健康检查连 fleet-server 的地址：取 fleet.toml 顶层的 listen（首次安装生成 127.0.0.1:8080，之后保留带外改动）；
+# 取不到、格式不对就用 127.0.0.1:8080。0.0.0.0 / [::] 是「所有网卡」，本机连回环
+LISTEN=$(sed -n '/^\[/q; s/^[[:space:]]*listen[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' /etc/fleet/fleet.toml 2>/dev/null | head -n 1 || true)
+[[ $LISTEN =~ ^(\[[0-9A-Fa-f:]+\]|[0-9A-Za-z.-]+):[0-9]{1,5}$ ]] || LISTEN=127.0.0.1:8080
+case $LISTEN in 0.0.0.0:*) LISTEN=127.0.0.1:${LISTEN#*:} ;; "[::]:"*) LISTEN="[::1]:${LISTEN##*:}" ;; esac
 CADDY_ADMIN=unix//run/caddy/admin.sock
 CADDY="{
 	admin $CADDY_ADMIN
@@ -196,7 +212,7 @@ CADDY="{
 import /etc/caddy/sites.d/*.caddy
 
 $DOMAIN {
-	reverse_proxy 127.0.0.1:8080
+	reverse_proxy $LISTEN
 }"
 CADDY_DROPIN="[Service]
 RuntimeDirectory=caddy
@@ -227,7 +243,7 @@ fi
 # fleet-server 启动时先占端口、再跑数据库迁移（迁移期间连接先挂着，迁移完才应答）：最多等 60 秒，未登录访问应回 401
 code=000
 for _ in $(seq 60); do
-  code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/v1/auth/me || true)
+  code=$(curl -s -o /dev/null -w '%{http_code}' http://$LISTEN/api/v1/auth/me || true)
   [ "$code" = 401 ] && break
   sleep 1
 done

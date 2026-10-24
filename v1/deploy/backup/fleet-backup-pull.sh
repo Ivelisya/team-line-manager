@@ -32,6 +32,8 @@ else
   EXT=tar
   members=$(tar -tf "$TMP")
   grep -qx fleet.dump <<<"$members" && grep -qx etc/fleet/secret.key <<<"$members" || { echo "取到的备份不完整：$(wc -c < "$TMP") 字节"; exit 1; }
+  # sshd 主机密钥不在包里只警告不拒收（中控还没部署带它的备份脚本时旧备份就没有）：缺了它，新机器恢复后软路由隧道全连不上
+  grep -qx etc/ssh/ssh_host_ed25519_key <<<"$members" || echo "注意：备份里没有 etc/ssh/ssh_host_ed25519_key（中控 sshd 主机密钥）：中控的备份脚本是旧版？在中控跑一次 deploy.sh" >&2
 fi
 list() { ls -1 "$D"/fleet-prod-*.tar* 2>/dev/null | grep -v '\.sha256$' || true; }
 last=$(list | tail -n 1)   # 第一次还没有
