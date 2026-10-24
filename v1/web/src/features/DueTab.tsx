@@ -63,7 +63,7 @@ export function DueTab() {
         <TableWrap>
           {d && d.groups.length > 0 && (
             <table className="dt is-one due-table" style={{ minWidth: 820 }}>
-              <colgroup><col style={{ width: 170 }} /><col style={{ width: 210 }} /><col /><col style={{ width: 150 }} /><col style={{ width: 110 }} /><col style={{ width: 120 }} /></colgroup>
+              <colgroup><col style={{ width: 170 }} /><col style={{ width: 250 }} /><col /><col style={{ width: 150 }} /><col style={{ width: 110 }} /><col style={{ width: 120 }} /></colgroup>
               <thead><tr><th>供应商</th><th>到期日</th><th>机器</th><th className="r">小计</th><th className="r">折合 USD</th><th /></tr></thead>
               <tbody>
                 {d.groups.map((g) => {
