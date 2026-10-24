@@ -23,6 +23,7 @@ mod silence;
 mod ssh;
 mod subs;
 mod table;
+mod traffic;
 
 use clap::{Args, Parser, Subcommand};
 use client::{Client, Cred};
@@ -585,6 +586,9 @@ enum Cmd {
     Audit(cmds::AuditOpts),
     /// 访问监控：哪个节点访问了哪些域名/IP
     Access(access::AccessOpts),
+    /// 每日流量：按组织时区的自然日，每天的业务流量（下载 / 上传）合计、按区间合计排的节点前 20（带日均）、线路机每天网卡计费量之和；
+    /// --node 看这台机器的每日明细（线路机另列每天的网卡下行 / 上行 / 计费量）
+    Traffic(traffic::TrafficOpts),
     /// 查 IP 的画像（运营商、地点、接入方式）：一个 IP 给详细判定理由，多个给表格；只查中控本地离线库
     Ip {
         #[arg(required = true)]
@@ -1073,6 +1077,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         }
         Cmd::Audit(o) => cmds::audit(x, o),
         Cmd::Access(o) => access::access(x, o),
+        Cmd::Traffic(o) => traffic::traffic(x, o),
         Cmd::Ip { ips } => ipintel::ip(x, &ips),
         Cmd::Sources { machine, window, limit } => ipintel::sources(x, &machine, &window, limit),
         Cmd::IpintelStatus => ipintel::status(x),
