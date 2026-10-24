@@ -7,11 +7,11 @@ export type EntryLifecycle = 'pending' | 'active' | 'disabled' | 'removing' | 'r
 export type HealthStatus = 'ok' | 'degraded' | 'down' | 'unknown' | 'maintenance' | 'inactive';
 export type Cycle = 'monthly' | 'quarterly' | 'semiannual' | 'yearly' | string;
 
-/** 订阅的生效值：价格、币种、周期、流量上限没单独设置的跟随套餐，账单时区、提前提醒、流量重置日跟随供应商（见 SubTemplate）。
- *  traffic_gb 0 / null = 不限；traffic_reset_day 是生效的重置日。overrides：单独设置了的字段 */
+/** 订阅的生效值：价格、币种、周期、流量上限没单独设置的跟随套餐，账单时区、提前提醒、流量重置日、流量计费跟随供应商（见 SubTemplate）。
+ *  traffic_gb 0 / null = 不限；traffic_reset_day 是生效的重置日；traffic_rule 是生效的流量计费方式（双向 / 单向，只对按网卡计量的机器有意义）。overrides：单独设置了的字段 */
 export interface Subscription {
   price_cents: number; currency: string; cycle: Cycle; due_date: string; due_days: number;
-  billing_tz: string; auto_renew: boolean; remind_days: number; traffic_gb: number | null; traffic_reset_day: number | null;
+  billing_tz: string; auto_renew: boolean; remind_days: number; traffic_gb: number | null; traffic_reset_day: number | null; traffic_rule: TrafficRule;
   overrides: SubField[];
   /** 账单日（每月几号）：直接设到期日时记下，按周期续费不变（31 号的在 2-28 时仍是 31）；按账单日重置的流量重置日跟它 */
   billing_day: number;
@@ -25,9 +25,9 @@ export interface Subscription {
 /** overdue 已过期；soon 到期前 remind_days 天内且不是自动续费；其余 ok */
 export type DueState = 'ok' | 'soon' | 'overdue';
 /** 订阅里可以单独设置的字段 */
-export type SubField = 'price_cents' | 'currency' | 'cycle' | 'billing_tz' | 'remind_days' | 'traffic_gb' | 'traffic_reset_day';
+export type SubField = 'price_cents' | 'currency' | 'cycle' | 'billing_tz' | 'remind_days' | 'traffic_gb' | 'traffic_reset_day' | 'traffic_rule';
 /** 机器的订阅模板：订阅没单独设置的项取这里。没有套餐时 price_cents 为 null（要单独设置价格）；traffic_reset：供应商按自然月 / 账单日重置流量 */
-export interface SubTemplate { price_cents: number | null; currency: string; cycle: Cycle; billing_tz: string; remind_days: number; traffic_gb: number | null; traffic_reset: TrafficReset }
+export interface SubTemplate { price_cents: number | null; currency: string; cycle: Cycle; billing_tz: string; remind_days: number; traffic_gb: number | null; traffic_reset: TrafficReset; traffic_rule: TrafficRule }
 export type TrafficReset = 'month' | 'billing' | 'rolling30';
 /** 指标缺测（agent 刚装、上报不全）时对应字段为 null，使用处一律按可空处理 */
 export interface HostMetrics {
@@ -149,8 +149,8 @@ export interface FxRates {
   rates: { currency: string; usd_per_unit: number | null; per_usd: number | null; source: 'base' | 'manual' | 'auto' | null; auto_per_usd: number | null;
     manual: { usd_per_unit: number; by: string; at: string } | null; in_use: boolean }[];
 }
-/** 供应商怎么计量流量额度：网卡本周期下行、上行总量取小 / 取大 / 相加 / 只算上行 */
-export type TrafficRule = 'min' | 'max' | 'sum' | 'out';
+/** 网卡计量规则：sum 双向（下行加上行）；单向只记其中一个——取大 / 取小 / 只算上行 / 只算下行 */
+export type TrafficRule = 'min' | 'max' | 'sum' | 'out' | 'in';
 /** 供应商也是名下机器订阅的模板：账单时区（null = 跟随组织时区）、流量重置（自然月 / 账单日）、提前提醒天数 */
 export interface Provider { id: string; name: string; code: string; panel_url: string | null; timezone: string | null; traffic_rule: TrafficRule; traffic_reset: TrafficReset; remind_days: number }
 export interface Plan {
@@ -237,7 +237,7 @@ export interface ProvisionItem {
   upstream?: { protocol: 'socks5' | 'http'; host: string; port: number; username?: string; password?: string };
   ss_port?: number;
   /** 只要到期日（选了套餐时必填），其余没给的跟随套餐 / 供应商；没有套餐（含同机 IP 节点）要给 price_cents */
-  subscription?: { due_date: string; price_cents?: number; currency?: string; cycle?: string; billing_tz?: string; remind_days?: number; traffic_gb?: number; traffic_reset_day?: number };
+  subscription?: { due_date: string; price_cents?: number; currency?: string; cycle?: string; billing_tz?: string; remind_days?: number; traffic_gb?: number; traffic_reset_day?: number; traffic_rule?: TrafficRule };
   /** 同机 IP 节点：加在这台 VPS 节点（宿主机）上。带了它时 ssh_port / login / ss_port / provider_id / plan_id 不适用（服务端忽略）：
    *  SSH 端口与供应商取宿主机的、不带套餐，SS 端口由中控在宿主机上分配 */
   host_id?: string;
@@ -402,5 +402,5 @@ export interface DailyNic { date: string; rx: number; tx: number; billed: number
 /** 节点：以它为节点的全部入口（含换线前的旧入口）；direct = 线路机的直出入口（id 是线路机的）；窗口内有流量的已退役机器照列 */
 export interface TrafficDailyNode { id: string; name: string; team: { id: string; name: string } | null; kind: Kind; lifecycle: Lifecycle; country: string | null; direct: boolean; down: number; up: number; daily: DailyBiz[] }
 /** 线路机：每天的网卡与计费量（daily），经过它的业务流量（business） */
-export interface TrafficDailyRelay { id: string; name: string; lifecycle: Lifecycle; country: string | null; rule: 'min' | 'max' | 'sum' | 'out'; rx: number; tx: number; billed: number; down: number; up: number; daily: DailyNic[]; business: DailyBiz[] }
+export interface TrafficDailyRelay { id: string; name: string; lifecycle: Lifecycle; country: string | null; rule: TrafficRule; rx: number; tx: number; billed: number; down: number; up: number; daily: DailyNic[]; business: DailyBiz[] }
 export interface TrafficDaily { tz: string; dates: string[]; total: DailyBiz[]; nodes: TrafficDailyNode[]; relays: TrafficDailyRelay[] }

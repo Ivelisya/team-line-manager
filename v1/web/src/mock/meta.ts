@@ -20,7 +20,7 @@ export const META: Meta = {
   job_states: { queued: '排队中', running: '进行中', waiting: '等待中', cancelling: '取消中', succeeded: '已完成', failed: '失败', cancelled: '已取消' },
   step_states: { pending: '等待', running: '进行中', done: '已完成', skipped: '已跳过', failed: '失败', compensated: '已回滚' },
   entry_states: { pending: '应用中', active: '运行中', disabled: '已停用', removing: '移除中', removed: '已移除' },
-  traffic_rules: { min: '取下行和上行中较小的', max: '取下行和上行中较大的', sum: '下行加上行', out: '只算上行' },
+  traffic_rules: { sum: '双向：下行加上行', max: '单向：取下行和上行中较大的', min: '单向：取下行和上行中较小的', out: '单向：只算上行（出站）', in: '单向：只算下行（入站）' },
   traffic_resets: { month: '自然月', billing: '账单日', rolling30: '滚动 30 天' },
   due_states: { ok: '未到期', soon: '即将到期', overdue: '已过期' },
   policy_sync_states: { applied: '已应用', applying: '进行中', failed: '失败', gone: '已退役' },

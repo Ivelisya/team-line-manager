@@ -9,7 +9,7 @@ import { Field, InfoTip, Input, Label, Switch, UnitInput } from '@/components/ui
 import { Segmented } from '@/components/ui/overlays';
 import { DateField } from '@/components/ui/date-field';
 import { useUsdPreview } from '@/lib/fx';
-import { inheritedValue, inheritSource, inheritText, inheritValueText, isOverridden, limitGb, monthFlow, monthFlowTip, quota, quotaCycleText, quotaForecast, quotaGb, quotaNotes, quotaRuleText, quotaUsedLabel, recycleOn, remainingValue, cycleLabel, feeView, priceHint, currencyOptions, cycleOptions, meta } from '@/lib/derive';
+import { inheritedValue, inheritSource, inheritText, inheritValueText, isOverridden, limitGb, monthFlow, monthFlowTip, quota, quotaCycleText, quotaForecast, quotaGb, quotaNotes, quotaRuleText, quotaUsedLabel, recycleOn, remainingValue, cycleLabel, feeView, priceHint, currencyOptions, cycleOptions, meta, trafficRuleOptions, trafficRuleTag } from '@/lib/derive';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
 import { resetOnOpen } from '@/lib/useHeld';
@@ -17,6 +17,7 @@ import { Due, DueDate, ErrorNote, FromTag, LabelValue, LabelValueGrid, Note, Num
 import { FormDialog } from '@/components/app/dialogs';
 import { RebalanceDialog } from '@/components/app/RebalanceDialog';
 import { TzInput } from '@/components/app/TzInput';
+import { Tag } from '@/components/app/viz';
 
 export function BillingTab({ m }: { m: MachineView }) {
   const s = m.subscription;
@@ -27,7 +28,7 @@ export function BillingTab({ m }: { m: MachineView }) {
   const [editing, setEditing] = React.useState(false);
   const formRef = React.useRef<HTMLElement>(null);
   React.useEffect(() => { if (editing) formRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }, [editing]);
-  const rv = remainingValue(m.subscription); const q = quota(m); const fl = monthFlow(m);
+  const rv = remainingValue(m.subscription); const q = quota(m); const fl = monthFlow(m); const rt = trafficRuleTag(m);
   const h = m.host_machine;
   return (
     <>
@@ -54,13 +55,13 @@ export function BillingTab({ m }: { m: MachineView }) {
             {q.limit > 0 ? <>
               {/* 流量相关的两项各占一行的两列：数字、单位与「X 起」不折行 */}
               <LabelValue label={m.ip_nodes.length ? `${quotaUsedLabel(q)}（含同机 IP 节点）` : quotaUsedLabel(q)} wrap className="span-2">
-                <span className="nowrap" data-over={q.pct != null && q.pct >= 100 ? '' : undefined} data-tip={q.pct != null && q.pct >= 100 ? `已超出额度（${Math.floor(q.pct)}%）` : undefined}><span className="num">{F.str(quotaGb(q.used))}</span> <span className="unit">/ {F.str(limitGb(q.limit))}</span><FromTag from={q.from} start={q.start} /></span> <InfoTip text={[quotaRuleText(m), ...quotaNotes(m)].join('\n')} />
+                <span className="nowrap" data-over={q.pct != null && q.pct >= 100 ? '' : undefined} data-tip={q.pct != null && q.pct >= 100 ? `已超出额度（${Math.floor(q.pct)}%）` : undefined}><span className="num">{F.str(quotaGb(q.used))}</span> <span className="unit">/ {F.str(limitGb(q.limit))}</span><FromTag from={q.from} start={q.start} /></span>{rt && <> <Tag c="gray" tip={rt.tip}>{rt.text}</Tag></>} <InfoTip text={[quotaRuleText(m), ...quotaNotes(m)].join('\n')} />
               </LabelValue>
               <LabelValue label="流量周期" wrap className="span-2"><span className="nowrap">{quotaCycleText(m)}</span></LabelValue>
               {quotaForecast(m) && <LabelValue label="用满预测" wrap className="span-2"><span className="nowrap due" data-tone="warn">{quotaForecast(m)}</span> <InfoTip text="按近 7 天的日均用量估算，早于重置日才显示" /></LabelValue>}
             </> : q.shared ? <LabelValue label="流量额度">与宿主机共用</LabelValue> : (
               <LabelValue label="本月流量" wrap className="span-2">
-                <span className="nowrap">{fl.kind === 'nic' ? <>↓ 下行 <Num f={F.bytes(fl.down)} /> · ↑ 上行 <Num f={F.bytes(fl.up)} /></> : <>下载 <Num f={F.bytes(fl.down)} /> · 上传 <Num f={F.bytes(fl.up)} /></>}<FromTag from={fl.from} /></span>
+                <span className="nowrap">{fl.kind === 'nic' ? <>↓ 下行 <Num f={F.bytes(fl.down)} /> · ↑ 上行 <Num f={F.bytes(fl.up)} /></> : <>下载 <Num f={F.bytes(fl.down)} /> · 上传 <Num f={F.bytes(fl.up)} /></>}<FromTag from={fl.from} /></span>{rt && <> <Tag c="gray" tip={rt.tip}>{rt.text}</Tag></>}
                 <div className="hint">{q.unset ? '未设置流量上限' : '流量不限'} <InfoTip text={monthFlowTip(m)} /></div>
               </LabelValue>
             )}
@@ -104,7 +105,7 @@ export function BillingTab({ m }: { m: MachineView }) {
 }
 
 /** 可以单独设置的几项（表单里的顺序） */
-const OV_FIELDS: SubField[] = ['price_cents', 'currency', 'cycle', 'billing_tz', 'remind_days', 'traffic_gb', 'traffic_reset_day'];
+const OV_FIELDS: SubField[] = ['price_cents', 'currency', 'cycle', 'billing_tz', 'remind_days', 'traffic_gb', 'traffic_reset_day', 'traffic_rule'];
 
 const OV_ITEMS = [{ value: 'follow', label: '跟随' }, { value: 'own', label: '单独' }];
 /** 可跟随的一项：标签右边一个紧凑的「跟随 / 单独」切换。跟随时显示套餐 / 供应商给的值（灰色文字，不是输入框），切到「单独」才能改；
@@ -157,6 +158,7 @@ function SubForm({ m }: { m: MachineView }) {
   const [remind, setRemind] = React.useState(() => init('remind_days'));
   const [traffic, setTraffic] = React.useState(() => init('traffic_gb'));
   const [resetDay, setResetDay] = React.useState(() => init('traffic_reset_day'));
+  const [rule, setRule] = React.useState(() => init('traffic_rule') || meta().defaults.traffic_rule);
   const [auto, setAuto] = React.useState(s?.auto_renew ?? false);
   const priceNum = Number(price);
   // 保存按钮不可用时要能看出原因：空着提示必填，填错了标红（只看单独设置的项）
@@ -168,7 +170,7 @@ function SubForm({ m }: { m: MachineView }) {
   const dueBad = dueDate !== '' && !/^\d{4}-\d{2}-\d{2}$/.test(dueDate);
   const valid = dueDate !== '' && !dueBad && !priceBad && !remindBad && !resetBad && !trafficBad && !tzBad;
   const val: Record<SubField, string | number> = {
-    price_cents: Math.round(priceNum * 100), currency, cycle, billing_tz: tz, remind_days: Number(remind), traffic_gb: Number(traffic), traffic_reset_day: Number(resetDay),
+    price_cents: Math.round(priceNum * 100), currency, cycle, billing_tz: tz, remind_days: Number(remind), traffic_gb: Number(traffic), traffic_reset_day: Number(resetDay), traffic_rule: rule,
   };
   // 没改动时不能保存：和上一次保存（或打开时）提交的内容比
   const sig = JSON.stringify([dueDate, auto, OV_FIELDS.map((k) => (ov[k] ? val[k] : null))]);
@@ -197,6 +199,8 @@ function SubForm({ m }: { m: MachineView }) {
       {o('remind_days', '提前提醒（天）', <Input inputMode="numeric" value={remind} onChange={(e) => setRemind(e.target.value.replace(/\D/g, ''))} />, remindBad ? '填 0–60' : undefined)}
       {o('traffic_gb', '流量上限（GB）', <Input inputMode="numeric" value={traffic} onChange={(e) => setTraffic(e.target.value.replace(/\D/g, ''))} placeholder="0 = 不限" />, trafficBad ? '填 GB 数，0 = 不限' : undefined)}
       {o('traffic_reset_day', '流量重置日', <Input inputMode="numeric" maxLength={2} value={resetDay} onChange={(e) => setResetDay(e.target.value.replace(/\D/g, ''))} placeholder="1–31" />, resetBad ? '填 1–31' : undefined, '每月几号重置，按账单时区；月份没有这一天按月末')}
+      {/* 只有按网卡计量的机器（quota.rule 非空）才用得上；家宽代理、同机 IP 节点按业务流量，不显示 */}
+      {m.quota.rule && o('traffic_rule', '流量计费', <Select value={rule} onChange={setRule} options={trafficRuleOptions()} />, undefined, '双向是下行加上行；单向只记其中一个。以供应商面板的计费口径为准')}
       <div className="row span-2" style={{ gap: 4 }}><label className="check-row" style={{ gap: 10 }}><Switch checked={auto} onCheckedChange={setAuto} /><span>到期自动续费</span></label><InfoTip text="只用于提醒口径，不会真的扣款" /></div>
       <div className="span-2 row" style={{ justifyContent: 'flex-end' }}><Button variant="primary" disabled={!valid || sig === saved.current || save.isPending} loading={save.isPending} onClick={submit}>保存订阅</Button></div>
     </div>

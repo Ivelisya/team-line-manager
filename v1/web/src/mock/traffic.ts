@@ -14,7 +14,7 @@ const localDate = (t: number) => fmt.format(t);
 /** 组织时区今天已过去的比例 */
 const todayShare = () => { const d = new Date(Date.now() + META.org_utc_offset_s * 1000); return (d.getUTCHours() * 3600 + d.getUTCMinutes() * 60) / 86400; };
 
-function billed(rule: string, rx: number, tx: number) { return rule === 'min' ? Math.min(rx, tx) : rule === 'sum' ? rx + tx : rule === 'out' ? tx : Math.max(rx, tx); }
+function billed(rule: string, rx: number, tx: number) { return rule === 'min' ? Math.min(rx, tx) : rule === 'sum' ? rx + tx : rule === 'out' ? tx : rule === 'in' ? rx : Math.max(rx, tx); }
 
 export function installTrafficMock(R: Reg, machines: () => MachineView[], teams: () => { id: string; name: string }[], bad: (msg: string, status?: number, code?: string) => Error) {
   R('GET', '/traffic/daily', ({ query }) => {
