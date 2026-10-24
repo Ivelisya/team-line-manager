@@ -38,6 +38,7 @@ pub mod ssh;
 pub mod state;
 pub mod terminal;
 pub mod totp;
+pub mod traffic;
 pub mod views;
 
 /// 取锁。本 crate 的锁里只做算术和集合增删，别处 panic 留下的中毒标记不影响数据，照常用；

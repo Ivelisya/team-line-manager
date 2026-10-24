@@ -157,6 +157,8 @@ pub fn router() -> Router<AppState> {
         .route("/meta", get(misc::meta))
         .route("/overview", get(misc::overview))
         .route("/overview/series", get(misc::overview_series))
+        // 每日流量（只读）：按组织时区的自然日，全部、各节点、各线路机
+        .route("/traffic/daily", get(misc::traffic_daily))
         .route("/probe-beats", get(misc::probe_beats))
         .route("/incidents", get(incidents::incidents))
         .route("/incidents/{id}/ack", post(incidents::ack_incident))

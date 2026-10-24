@@ -24,6 +24,21 @@ pub async fn meta(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value
 }
 
 #[derive(Deserialize)]
+pub struct DailyQ {
+    /// 近几天（含今天），默认 30，最多 92
+    days: Option<i64>,
+    /// 团队 id 或名称
+    team: Option<String>,
+    /// 机器 id 或显示名：节点只看它自己的入口，线路机看经过它的全部入口
+    machine: Option<String>,
+}
+
+/// 每日流量（口径见 `crate::traffic`）
+pub async fn traffic_daily(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<DailyQ>) -> ApiResult<Json<Value>> {
+    Ok(ok(crate::traffic::daily(&st, q.days, q.team.as_deref(), q.machine.as_deref()).await?))
+}
+
+#[derive(Deserialize)]
 pub struct SeriesQ {
     minutes: Option<i64>,
 }

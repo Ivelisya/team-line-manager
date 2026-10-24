@@ -1,0 +1,26 @@
+/* 流量页：「节点 × 日期」明细。节点列吸在左边、合计列吸在右边，中间的日期横滑；格子底色是热度（行内 style） */
+.dt-heat { width: max-content; min-width: 100%; }
+.dt-heat .col-node { width: 184px; }
+.dt-heat .col-day { width: 84px; }
+.dt-heat .col-sum { width: 112px; }
+.dt-heat :is(th, td):first-child { position: sticky; left: 0; z-index: 1; background: var(--surface); box-shadow: 1px 0 0 var(--line); }
+.dt-heat :is(th, td):last-child { position: sticky; right: 0; z-index: 1; background: var(--surface); box-shadow: -1px 0 0 var(--line); }
+.dt-heat thead th:is(:first-child, :last-child) { background: var(--sunken); }
+@media (hover: hover) { .dt-heat tr.is-link:hover > td:is(:first-child, :last-child) { background: linear-gradient(var(--hover), var(--hover)), var(--surface); } }
+.dt-heat td { font-variant-numeric: var(--num-variant); }
+.dt-heat td.r .sub { font-weight: var(--fw-regular); }
+.dt-heat tbody td:last-child { height: var(--row-2); }
+.dt-heat .th-date { line-height: 1.15; }
+.dt-heat .th-date > * { display: block; }
+.dt-heat .th-date small { font-size: var(--fs-micro, 11px); color: var(--fg-3); font-weight: var(--fw-regular); }
+.dt-heat tfoot td { border-top: 1px solid var(--line-strong); border-bottom: 0; font-weight: var(--fw-semibold); background: var(--sunken); }
+.dt-heat tfoot td:is(:first-child, :last-child) { background: var(--sunken); }
+.tr-node { display: flex; align-items: center; gap: var(--sp-8); min-width: 0; }
+.tr-node > div { min-width: 0; }
+/* 手机：节点列、合计列收窄，中间至少露出两三天 */
+@media (max-width: 600px) {
+  .dt-heat .col-node { width: 128px; }
+  .dt-heat .col-sum { width: 96px; }
+  .dt-heat .col-day { width: 76px; }
+  .tr-node .nc-flag { display: none; }
+}

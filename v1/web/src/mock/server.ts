@@ -10,6 +10,7 @@ import { cycleMonths, META, subCalc } from './meta';
 const LIFECYCLE_LABEL = META.lifecycles;
 import { billingDay, buildDb, countryOf, hashStr, IP_STEPS, refreshFollowers, rng, SUB_FIELDS, syncSub, templateOf, trafficOf, type Db } from './fixtures';
 import { installAccessMock } from './access';
+import { installTrafficMock } from './traffic';
 import { installFxMock, toUsd, usdPerUnit, usdTotal } from './fx';
 import { installPolicyMock } from './policy';
 import { installRoutersMock } from './routers';
@@ -987,6 +988,7 @@ R('GET', '/audit', ({ query }) => {
 });
 
 installAccessMock(R, () => db.machines);
+installTrafficMock(R, () => db.machines, () => db.teams, bad);
 // 汇率变了：各台订阅的 USD 折算重算，发 settings（同中控）
 installFxMock(R, () => [...new Set([...db.plans.filter((p) => !p.archived_at).map((p) => p.currency), ...db.machines.filter((m) => m.lifecycle !== 'retired' && m.subscription).map((m) => m.subscription!.currency)])],
   () => db.user, () => { db.machines.forEach(recomputeDue); emit({ type: 'settings' }); }, bad);

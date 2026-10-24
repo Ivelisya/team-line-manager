@@ -18,6 +18,7 @@ const JobsPage = lazyPage(() => import('./pages/Jobs'), 'JobsPage');
 const CatalogPage = lazyPage(() => import('./pages/Catalog'), 'CatalogPage');
 const IncidentsPage = lazyPage(() => import('./pages/Incidents'), 'IncidentsPage');
 const SettingsPage = lazyPage(() => import('./pages/Settings'), 'SettingsPage');
+const TrafficPage = lazyPage(() => import('./pages/Traffic'), 'TrafficPage');
 const AccessPage = lazyPage(() => import('./pages/Access'), 'AccessPage');
 const PolicyPage = lazyPage(() => import('./pages/Policy'), 'PolicyPage');
 const AuditPage = lazyPage(() => import('./pages/Audit'), 'AuditPage');
@@ -39,6 +40,7 @@ export function App() {
         <Route path="provision" element={<ProvisionPage />} />
         <Route path="jobs" element={<JobsPage />} />
         <Route path="jobs/:id" element={<JobsPage />} />
+        <Route path="traffic" element={<TrafficPage />} />
         <Route path="access" element={<AccessPage />} />
         <Route path="access/policy" element={<PolicyPage />} />
         <Route path="catalog" element={<CatalogPage />} />

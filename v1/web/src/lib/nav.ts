@@ -1,5 +1,5 @@
 // 全站导航：侧栏与命令面板共用这一份（顺序、名称、图标、搜索关键词）。
-import { BellRing, Briefcase, CloudUpload, History, LayoutGrid, ListChecks, Radar, Router, Server, Settings, Waypoints, type LucideIcon } from 'lucide-react';
+import { BellRing, Briefcase, ChartColumnStacked, CloudUpload, History, LayoutGrid, ListChecks, Radar, Router, Server, Settings, Waypoints, type LucideIcon } from 'lucide-react';
 
 /** end：路径完全相同才算当前页（首页）；badge：侧栏上显示进行中的告警数；kw：命令面板的搜索关键词 */
 export interface NavItem { to: string; label: string; icon: LucideIcon; kw: string; end?: boolean; badge?: boolean }
@@ -11,6 +11,7 @@ export const NAV: NavItem[] = [
   { to: '/routers', label: '软路由', icon: Router, kw: 'routers router openwrt openclash 软路由 路由器 客户现场 出口 接入' },
   { to: '/provision', label: '上架', icon: CloudUpload, kw: 'provision 添加 新增' },
   { to: '/jobs', label: '作业', icon: ListChecks, kw: 'jobs 任务' },
+  { to: '/traffic', label: '流量', icon: ChartColumnStacked, kw: 'traffic 流量 每日 统计 下载 上传 计费 daily' },
   { to: '/access', label: '访问监控', icon: Radar, kw: 'access 访问 监控' },
   { to: '/catalog', label: '团队与套餐', icon: Briefcase, kw: 'catalog teams plans providers 目录 团队 套餐 供应商 待付 续费 到期 付款 due' },
   { to: '/incidents', label: '告警', icon: BellRing, badge: true, kw: 'incidents alerts 静默' },
