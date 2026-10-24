@@ -512,6 +512,39 @@ pub(crate) fn quota_q(m: &MachineView, now: OffsetDateTime) -> Q {
     Q { limit: q.limit_gb.map(|g| g as f64 * 1e9), used: q.used as f64, daily: q.daily_avg.unwrap_or(0) as f64, days_left }
 }
 
+/// 各线路机的折算系数 k = 网卡计费日均 ÷ 它转发的业务日均（搬迁建议、放置矩阵共用）。业务量是近 7 天（各自的日均窗口）
+/// 按入口的 relay_id 归、不限入口生命周期（窗口里搬走 / 退役的入口也算），和网卡日均同窗口；同样的业务量在双向计费（sum）的
+/// 线路机上约是单向的两倍，所以各按自己的 k 折算。没有业务量（新线路机）、日均估不出来，或实测值偏离 `rule_factor` 太多
+/// （见 `quota::sane_k`）时无从实测，按转发的物理关系取：入站 ≈ 出站 ≈ 业务量，sum 折 2，单向（max / min / in / out）折 1
+pub(crate) async fn relay_ks(db: &sqlx::PgPool, all: &[MachineView], now: OffsetDateTime) -> sqlx::Result<HashMap<Uuid, f64>> {
+    let relays: Vec<&MachineView> = all.iter().filter(|m| m.kind == "relay").collect();
+    let (rids, rsince): (Vec<Uuid>, Vec<OffsetDateTime>) = relays.iter().map(|m| (m.id, m.quota.window_start)).unzip();
+    let rows: Vec<(Uuid, i64)> = sqlx::query_as(
+        "select w.relay_id, least(coalesce(sum(h.up_bytes::numeric + h.down_bytes), 0), 9e18)::bigint
+         from unnest($1::uuid[], $2::timestamptz[]) w(relay_id, since)
+         join entry e on e.relay_id = w.relay_id join entry_traffic_hourly h on h.entry_id = e.id and h.hour >= w.since
+         group by w.relay_id",
+    )
+    .bind(&rids)
+    .bind(&rsince)
+    .fetch_all(db)
+    .await?;
+    let biz: HashMap<Uuid, i64> = rows.into_iter().collect();
+    let now_h = OffsetDateTime::from_unix_timestamp(now.unix_timestamp() / 3600 * 3600).unwrap_or(now);
+    Ok(relays
+        .into_iter()
+        .map(|t| {
+            let days = ((now_h - t.quota.window_start).as_seconds_f64() / 86400.0).max(1.0);
+            let b = biz.get(&t.id).map_or(0.0, |&b| b as f64 / days);
+            let k = match t.quota.daily_avg {
+                Some(d) if d > 0 && b > 0.0 => crate::quota::sane_k(d as f64 / b, t.quota.rule),
+                _ => crate::quota::rule_factor(t.quota.rule),
+            };
+            (t.id, k)
+        })
+        .collect())
+}
+
 /// 搬迁建议（只读，不动任何东西）：这台线路机按近 7 天的速度重置前会用满的话，挑出搬走后能撑到重置日的最少入口，
 /// 并给出搬去哪台线路机；已经超出额度的，挑出搬走后日均降到原来 `OVER_LIMIT_KEEP_PCT`% 以下的最少入口（到重置日前不再大量增长）。每个入口每天的流量按近 7 天（窗口同日均）的业务流量算，再按「线路机网卡日均 ÷ 各入口合计」折算
 /// （网卡口径与入口上下行合计不完全相等）；目标线路机接收后多出的量按目标自己的计费方式折算（见 `quota::rule_factor`）。真正执行是一次批量换线路机 `POST /moves`（fleetctl move A,B,C --to X），每台软路由只重启一次
@@ -566,31 +599,8 @@ pub async fn rebalance(_a: Actor, State(st): State<AppState>, ApiPath(relay): Ap
     let now_h = OffsetDateTime::from_unix_timestamp(now.unix_timestamp() / 3600 * 3600).unwrap_or(now);
     let wdays = ((now_h - src.quota.window_start).as_seconds_f64() / 86400.0).max(1.0);
     let rate = |e: &EntryView| traffic.get(&e.id).map_or(0.0, |t| t.1 as f64 / wdays);
-    // 各线路机（含源）近 7 天（各自的日均窗口）转发的业务流量：按入口的 relay_id 归，不限入口生命周期（窗口里搬走 / 退役的入口也算），
-    // 和网卡的日均同窗口；目标按自己的计费方式折算（源是 max、目标是 sum 时，同样的业务量在目标上约多一倍）
-    let (rids, rsince): (Vec<Uuid>, Vec<OffsetDateTime>) = all.iter().filter(|m| m.kind == "relay").map(|m| (m.id, m.quota.window_start)).unzip();
-    let rrows: Vec<(Uuid, i64)> = sqlx::query_as(
-        "select w.relay_id, least(coalesce(sum(h.up_bytes::numeric + h.down_bytes), 0), 9e18)::bigint
-         from unnest($1::uuid[], $2::timestamptz[]) w(relay_id, since)
-         join entry e on e.relay_id = w.relay_id join entry_traffic_hourly h on h.entry_id = e.id and h.hour >= w.since
-         group by w.relay_id",
-    )
-    .bind(&rids)
-    .bind(&rsince)
-    .fetch_all(&st.db)
-    .await?;
-    let r_traffic: HashMap<Uuid, i64> = rrows.into_iter().collect();
-    // 折算系数 k = 线路机网卡计费日均 ÷ 它转发的业务日均（源按它折出搬走量，目标按它折接收量）；没有业务量（新线路机）或日均估不出来、
-    // 或实测值偏离 `rule_factor` 太多（见 `quota::sane_k`）时无从实测，按线路机转发的物理关系取：
-    // 入站 ≈ 出站 ≈ 业务量，所以双向计费（sum）折 2，单向（max / min / in / out）折 1
-    let k_of = |t: &MachineView| {
-        let days = ((now_h - t.quota.window_start).as_seconds_f64() / 86400.0).max(1.0);
-        let biz = r_traffic.get(&t.id).map_or(0.0, |&b| b as f64 / days);
-        match t.quota.daily_avg {
-            Some(d) if d > 0 && biz > 0.0 => crate::quota::sane_k(d as f64 / biz, t.quota.rule),
-            _ => crate::quota::rule_factor(t.quota.rule),
-        }
-    };
+    let ks = relay_ks(&st.db, &all, now).await?;
+    let k_of = |t: &MachineView| ks.get(&t.id).copied().unwrap_or_else(|| crate::quota::rule_factor(t.quota.rule));
     let k = k_of(src);
     // 源线路机上折出的搬走量 `cut`（源的计费口径）→ 目标线路机每天多出的计费量
     let onto = |t: &MachineView, cut: f64| cut / k * k_of(t);

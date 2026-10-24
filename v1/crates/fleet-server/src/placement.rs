@@ -272,7 +272,7 @@ pub async fn view(st: &AppState, team: Option<&str>, node: Option<&str>) -> ApiR
     .await?
     .into_iter()
     .collect();
-    // 各入口近 7 天的业务流量：节点每天多少；线路机网卡日均 ÷ 它上面各入口合计 = 折算系数（同搬迁建议）
+    // 各在用入口近 7 天的业务流量：节点每天多少（搬过去的是它）；线路机的折算系数同搬迁建议（api::lifecycle::relay_ks）
     let traffic: Vec<(Uuid, Uuid, i64)> = sqlx::query_as(
         "select e.relay_id, e.node_id, least(coalesce(sum(h.up_bytes::numeric + h.down_bytes), 0), 9e18)::bigint
          from entry_traffic_hourly h join entry e on e.id = h.entry_id
@@ -283,15 +283,14 @@ pub async fn view(st: &AppState, team: Option<&str>, node: Option<&str>) -> ApiR
     let days_of = |m: &MachineView| m.activated_at.map_or(7.0, |a| ((now - a).as_seconds_f64() / 86400.0).clamp(1.0, 7.0));
     let mut node_daily: HashMap<Uuid, f64> = HashMap::new();
     let mut pair_daily: HashMap<(Uuid, Uuid), f64> = HashMap::new();
-    let mut relay_sum: HashMap<Uuid, f64> = HashMap::new();
     for (r, n, b) in &traffic {
         let d = all.iter().find(|m| m.id == *n).map_or(*b as f64 / 7.0, |m| *b as f64 / days_of(m));
         *node_daily.entry(*n).or_default() += d;
         *pair_daily.entry((*r, *n)).or_default() += d;
-        *relay_sum.entry(*r).or_default() += d;
     }
     let qs: HashMap<Uuid, Q> = relays.iter().map(|r| (r.id, crate::api::lifecycle::quota_q(r, now))).collect();
-    let k_of = |r: Uuid| relay_sum.get(&r).filter(|s| **s > 0.0).map_or(1.0, |s| qs.get(&r).map_or(0.0, |q| q.daily) / s).max(1.0);
+    let ks = crate::api::lifecycle::relay_ks(&st.db, &all, now).await?;
+    let k_of = |r: Uuid| ks.get(&r).copied().unwrap_or(1.0);
 
     // 入口状态口径同换线规划（api/lifecycle.rs 的 plan_move）：待应用、在用、停用都算节点的入口
     let live = |m: &MachineView| -> Vec<(Uuid, i32, bool)> {
