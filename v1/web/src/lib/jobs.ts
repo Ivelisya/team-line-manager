@@ -61,14 +61,14 @@ const OUTPUT: Record<string, [string, OutFmt] | null> = {
   // bind_ip 只有 1:1 NAT 映射的才有（公网 IP 映射到的宿主机本地地址），在网卡上的为 null、不显示
   ss_port: ['SS 端口', text], local_ips: ['宿主机本机 IP', text], bind_ip: ['本地地址（NAT）', text],
   // converge 的逐实例结果（同机 IP 节点每个实例一条）与系统调优
-  instances: ['SS 实例', text], ip: ['IP', text], restarted: ['重启了 ssserver', yesNo('是', '否')], xray_restarted: ['重启了 Xray', yesNo('是', '否')],
+  instances: ['SS 实例', text], ip: ['IP', text], restarted: ['ssserver', yesNo('已重启', '没有重启')], xray_restarted: ['Xray', yesNo('已重启', '没有重启')],
   tune: ['系统调优', text], profile: ['调优方案', text], journald: ['journald', text], ntp: ['时间同步', text], nofile: ['文件句柄上限', text], container: ['容器内', yesNo('是', '否')], swap_mb: ['交换分区', (v) => `${v} MB`],
   // 软路由改出口（替换节点、换线路机）
   routers: ['软路由', text], name: ['名称', text], exits: ['出口', text], exit: ['出口', text], to: ['指向', text], backup: ['备份', text], delay_ms: ['延迟（ms）', text], id: null, job: null, batch_leader: null,
   // bootstrap
   method: ['登录方式', () => '用 root 密码装上了中控公钥'],
   // converge / converge_relay（同机 IP 节点不做系统基线，bbr 为 null、不显示）
-  bbr: ['BBR', yesNo('已启用', '未启用')], nft_relays: ['防火墙放行', text], ssserver_updated: ['ssserver', yesNo('已更新', '已是最新')], xray: ['Xray 版本', text],
+  bbr: ['BBR', yesNo('已启用', '未启用')], nft_relays: ['防火墙放行', (v) => String(v).split(',').map((s) => s.trim()).filter(Boolean).join('、')], ssserver_updated: ['ssserver', yesNo('已更新', '已是最新')], xray: ['Xray 版本', text],
   // agent / wait_report（prev_version：这次换下来、留作回滚的旧程序的版本；xray_checks：升级线路机时新版本还要做到的几项）
   binary_updated: ['agent 程序', yesNo('已更新', '已是最新')], token_id: null, prev_version: ['换下的版本', text], xray_checks: ['升级后检查', (v) => jobText(String(v))],
   first_report_at: ['首次上报', (v) => dtFull(String(v).replace(/^(\S+) (\S+) \+00:00(:00)?$/, '$1T$2Z'))], agent_version: ['agent 版本', text], old_tokens_revoked: ['作废旧凭据', unit('个')],

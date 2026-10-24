@@ -151,7 +151,7 @@ export const AccessTab = React.memo(function AccessTab({ id, relay }: { id: stri
               {d.top_sources.length ? (
                 <div className="table-wrap is-boxed">
                   <table className="dt is-one" style={{ minWidth: (intel ? 560 : 0) + (relay ? 150 : 0) }}>
-                    <colgroup><col style={{ width: 132 }} />{relay && <col style={{ width: 150 }} />}{intel && <><col /><col style={{ width: 120 }} /></>}<col style={{ width: 70 }} /><col style={{ width: 110 }} /></colgroup>
+                    <colgroup><col style={{ width: 150 }} />{relay && <col style={{ width: 120 }} />}{intel && <><col /><col style={{ width: 120 }} /></>}<col style={{ width: 70 }} /><col style={{ width: 110 }} /></colgroup>
                     <thead><tr><th>来源 IP</th>{relay && <th>节点</th>}{intel && <><th>运营商 · 城市</th><th>接入方式</th></>}<th className="r">连接数</th><th>最近</th></tr></thead>
                     <tbody>
                       {sources.map((s) => (
