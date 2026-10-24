@@ -294,10 +294,9 @@ pub(crate) async fn clear_failures(tx: &mut crate::db::Tx<'_>, uname: &str, grou
         .map(|_| ())
 }
 
-/// 失败的那条记录开头已经写了，这里写审计、顺手清掉一天前的旧记录
+/// 失败的那条记录开头已经写了，这里写审计（一天前的旧记录由每小时的保留期清理删，见 db::cleanup_retention）
 pub(crate) async fn record_failure(st: &AppState, actor: &str, action: &str, uid: Option<Uuid>, detail: Value) -> ApiResult<()> {
     let mut tx = st.db.begin().await?;
-    sqlx::query("delete from login_failure where ts < now() - interval '1 day'").execute(&mut *tx).await?;
     audit(&mut tx, actor, action, "user", uid, detail).await?;
     tx.commit().await?;
     Ok(())
