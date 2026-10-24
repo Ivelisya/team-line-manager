@@ -81,9 +81,11 @@ async fn plan(st: &AppState, conn: &mut PgConnection, old_id: Uuid, b: &RepointI
         blockers.push(format!("新入口「{}」现在不在用（{}）：等它生效再改", new.name(), new.lifecycle));
     }
     // 新入口那一侧有作业要摘它（换线路机的旧入口就是它、新节点在退役或被替换）：改过去之后随即被摘。
-    // 发起时先锁新节点那一行（for share）：和退役、替换（对同一行 for update）互斥，它们也会看到这个作业（新节点按 new_id 认）
+    // 发起时先锁新节点那一行（for update）：和换线路机（对同一行 for share）、退役、替换（for update）都互斥，
+    // 先提交的作业后一方都看得到（新节点按 new_id 认）。for share 和换线路机的 for share 不互斥：两边同时发起会都成功，
+    // 路由改指向的新入口随即被换线路机摘掉。这是本事务的第一把行锁，之后只读和插作业 / 审计行（job.target_id 没有外键），不会和别人互相等死
     if lock {
-        sqlx::query("select 1 from machine where id = $1 for share").bind(new.node_id).execute(&mut *conn).await?;
+        sqlx::query("select 1 from machine where id = $1 for update").bind(new.node_id).execute(&mut *conn).await?;
     }
     let busy: Option<(String,)> = sqlx::query_as(
         "select kind from job where state in ('queued', 'running', 'waiting', 'cancelling')

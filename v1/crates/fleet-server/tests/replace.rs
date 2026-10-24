@@ -1214,6 +1214,43 @@ async fn repoint_direct_exit_to_other_relay() {
     assert_eq!((rp["title"].as_str(), rp["summary"].as_str()), (Some("改出口指向"), Some("线路机2-直出 · 线路机2:20010 → 线路机3-直出 · 线路机3:20030（改 1 台软路由）")));
 }
 
+/// 改出口指向与换线路机同时发起：改出口指向对新入口所在的节点 for update，和换线路机对同一行的 for share 互斥。
+/// 顺序模拟：换线路机的事务先锁住节点、建好要摘这个入口的作业但还没提交；改出口指向等它提交，之后看到这个作业被拒
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repoint_waits_for_concurrent_move() {
+    let w = world().await;
+    let t = &w.t;
+    let old = old_entry(&w).await;
+    let new: Uuid = sqlx::query_scalar("select id from entry where node_id = $1").bind(w.new).fetch_one(&t.st.db).await.unwrap();
+    router(&w, "团队2-路由A", 23411, &[("节点01", "198.51.100.2", 20003, Some(old))]).await;
+    let mut tx = t.st.db.begin().await.unwrap();
+    sqlx::query("select 1 from machine where id = $1 for share").bind(w.new).execute(&mut *tx).await.unwrap();
+    let ((code, body, answered), committed) = tokio::join!(
+        async {
+            let (s, v) = t.req("POST", &format!("/api/v1/entries/{old}/repoint"), Some(json!({"to_entry_id": new})), None).await;
+            (s, v, std::time::Instant::now())
+        },
+        async {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            sqlx::query("insert into job (id, kind, target_id, params, created_by) values ($1, 'move_entry', $2, $3, 'test')")
+                .bind(Uuid::now_v7())
+                .bind(w.new)
+                .bind(json!({"old_entry_id": new}))
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+            let at = std::time::Instant::now();
+            tx.commit().await.unwrap();
+            at
+        }
+    );
+    assert!(answered > committed, "改出口指向没有等换线路机的事务提交：{code} {body}");
+    assert_eq!(code, StatusCode::CONFLICT, "{body}");
+    assert!(body.to_string().contains("进行中的作业"), "{body}");
+    let n: i64 = sqlx::query_scalar("select count(*) from job where kind = 'repoint'").fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(n, 0);
+}
+
 /// 出口参数和入口不一致（凭据轮换后没同步）：持续两轮采集（满 30 秒）才开警告，告警带建议操作 fleetctl router sync；
 /// 同步作业（目标是路由）把它改成入口现在的参数、server:port 不变，客户自己的出口不动；同步好之后满 60 秒恢复。
 /// 路由上有人加的、指向别的团队入口的出口（从没对上过）：不进默认同步，点名同步被拒，要 force
