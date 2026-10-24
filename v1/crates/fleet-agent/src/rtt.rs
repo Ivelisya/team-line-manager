@@ -32,13 +32,19 @@ const COUNT: u32 = 3;
 pub async fn rtt_task(sh: Arc<Shared>, client: Arc<ServerClient>, mut sd: watch::Receiver<bool>) {
     // 第一轮等 40 秒：网络就绪，也和三网 PING 的第一轮错开
     let mut next = tokio::time::Instant::now() + Duration::from_secs(40);
+    // 关停用 wait_for 等（见 desired.rs 的 report_applied）。取清单、测一轮也要听关停：节点多时一轮超过关停宽限（25 秒），
+    // 不听的话 agent 停止 / 升级要白等到被强杀；丢掉 round 时 JoinSet 一起中止，系统 ping 是 kill_on_drop
     loop {
         tokio::select! {
             _ = tokio::time::sleep_until(next) => {}
-            _ = sd.changed() => return,
+            _ = sd.wait_for(|v| *v) => return,
         }
         // 每轮测之前向中控取一次节点清单（不随期望状态下发，见 fleet-proto 的 RttConfig）；取不到（含旧中控没有这个接口）这一轮不测
-        let cfg = match client.get_rtt().await {
+        let res = tokio::select! {
+            r = client.get_rtt() => r,
+            _ = sd.wait_for(|v| *v) => return,
+        };
+        let cfg = match res {
             Outcome::Ok(c) => c,
             o => {
                 tracing::debug!("放置矩阵：取节点清单失败，1 分钟后再取：{o:?}");
@@ -50,7 +56,10 @@ pub async fn rtt_task(sh: Arc<Shared>, client: Arc<ServerClient>, mut sd: watch:
         if cfg.targets.is_empty() {
             continue;
         }
-        let samples = round(&cfg).await;
+        let samples = tokio::select! {
+            s = round(&cfg) => s,
+            _ = sd.wait_for(|v| *v) => return,
+        };
         sh.buf.lock().unwrap().push_rtt(samples);
     }
 }
