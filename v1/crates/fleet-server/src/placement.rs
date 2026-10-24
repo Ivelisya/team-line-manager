@@ -183,9 +183,53 @@ pub fn pick(nodes: &[NodeIn], relays: &[RelayIn]) -> Vec<Pick> {
 }
 
 // ── 接口 ──────────────────────────────────────────────────────────────────
+/// 近 `WINDOW_H` 小时的格子：节点 → 线路机 → 一格（取自小时汇总，只读；搬迁建议选目标线路机也读它）
+pub async fn cells(db: &sqlx::PgPool, nodes: &[Uuid]) -> sqlx::Result<HashMap<Uuid, HashMap<Uuid, Cell>>> {
+    let since = OffsetDateTime::now_utc() - time::Duration::hours(WINDOW_H);
+    let rows: Vec<(Uuid, Uuid, i64, i64, Option<f64>)> = sqlx::query_as(
+        "with w as (select * from relay_node_rtt_hourly where node_id = any($1) and hour >= date_trunc('hour', $2::timestamptz))
+         select s.relay_id, s.node_id, s.n, s.k, p.p50 from
+           (select relay_id, node_id, sum(samples)::bigint n, sum(ok)::bigint k from w group by 1, 2) s
+           left join (select relay_id, node_id, percentile_cont(0.5) within group (order by x) p50 from w cross join lateral unnest(w.rtts) x group by 1, 2) p
+           using (relay_id, node_id)",
+    )
+    .bind(nodes)
+    .bind(since)
+    .fetch_all(db)
+    .await?;
+    let mut out: HashMap<Uuid, HashMap<Uuid, Cell>> = HashMap::new();
+    for (r, n, samples, ok, p50) in rows {
+        out.entry(n).or_default().insert(r, Cell { samples, ok, p50 });
+    }
+    Ok(out)
+}
 
-/// `GET /placement?team=`（team 填团队 id 或名称，不填 = 全部）
-pub async fn view(st: &AppState, team: Option<&str>) -> ApiResult<Value> {
+/// 搬迁目标按往返比较时一台候选线路机的成绩
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Score {
+    /// 被搬的节点到它近 24 小时 p50 的平均（毫秒），每个节点都有够格的数据
+    Rtt(f64),
+    /// 有被搬的节点到它的成功率不足 99%：不选
+    Bad,
+    /// 有被搬的节点没测过（或没有往返）：比不了
+    NoData,
+}
+
+/// 被搬的 `nodes` 到线路机 `relay` 的成绩
+pub fn score(nodes: &[Uuid], cells: &HashMap<Uuid, HashMap<Uuid, Cell>>, relay: Uuid) -> Score {
+    let cs: Vec<Option<Cell>> = nodes.iter().map(|n| cells.get(n).and_then(|c| c.get(&relay)).copied()).collect();
+    if cs.iter().flatten().any(|c| c.success().is_some_and(|s| s < MIN_SUCCESS)) {
+        return Score::Bad;
+    }
+    let p50: Vec<f64> = cs.iter().filter_map(|c| c.filter(Cell::good).and_then(|c| c.p50)).collect();
+    if p50.is_empty() || p50.len() < nodes.len() {
+        return Score::NoData;
+    }
+    Score::Rtt(p50.iter().sum::<f64>() / p50.len() as f64)
+}
+
+/// `GET /placement?team=&node=`（team 填团队 id 或名称，node 填节点 id 或显示名；都不填 = 全部）
+pub async fn view(st: &AppState, team: Option<&str>, node: Option<&str>) -> ApiResult<Value> {
     let team_id: Option<Uuid> = match team.map(str::trim).filter(|s| !s.is_empty()) {
         None => None,
         Some(t) => Some(
@@ -196,32 +240,27 @@ pub async fn view(st: &AppState, team: Option<&str>) -> ApiResult<Value> {
                 .ok_or_else(|| ApiError::not_found(format!("没有团队「{t}」")))?,
         ),
     };
+    let node_q = node.map(str::trim).filter(|s| !s.is_empty());
     let all = views::live(st).await?;
     let now = OffsetDateTime::now_utc();
     let mut relays: Vec<&MachineView> = all.iter().filter(|m| m.kind == "relay" && m.lifecycle == "active" && !m.spare).collect();
     relays.sort_by(|a, b| a.name.cmp(&b.name));
     let nodes: Vec<&MachineView> = all
         .iter()
-        .filter(|m| m.kind == "vps" && m.lifecycle == "active" && !m.spare && team_id.is_none_or(|t| m.team.as_ref().is_some_and(|x| x.id == t)))
+        .filter(|m| {
+            m.kind == "vps"
+                && m.lifecycle == "active"
+                && !m.spare
+                && team_id.is_none_or(|t| m.team.as_ref().is_some_and(|x| x.id == t))
+                && node_q.is_none_or(|q| m.id.to_string() == q || m.name == q)
+        })
         .collect();
+    if let (true, Some(q)) = (nodes.is_empty(), node_q) {
+        return Err(ApiError::not_found(format!("没有在用的 VPS 节点「{q}」")));
+    }
     let ids: Vec<Uuid> = nodes.iter().map(|m| m.id).collect();
 
-    let since = now - time::Duration::hours(WINDOW_H);
-    let rows: Vec<(Uuid, Uuid, i64, i64, Option<f64>)> = sqlx::query_as(
-        "with w as (select * from relay_node_rtt_hourly where node_id = any($1) and hour >= date_trunc('hour', $2::timestamptz))
-         select s.relay_id, s.node_id, s.n, s.k, p.p50 from
-           (select relay_id, node_id, sum(samples)::bigint n, sum(ok)::bigint k from w group by 1, 2) s
-           left join (select relay_id, node_id, percentile_cont(0.5) within group (order by x) p50 from w cross join lateral unnest(w.rtts) x group by 1, 2) p
-           using (relay_id, node_id)",
-    )
-    .bind(&ids)
-    .bind(since)
-    .fetch_all(&st.db)
-    .await?;
-    let mut cells: HashMap<Uuid, HashMap<Uuid, Cell>> = HashMap::new();
-    for (r, n, samples, ok, p50) in rows {
-        cells.entry(n).or_default().insert(r, Cell { samples, ok, p50 });
-    }
+    let mut grid = cells(&st.db, &ids).await?;
     // 近 7 天 tcp_fail 告警次数：同一条告警恢复后又触发记在 reopen_count 上
     let fails: HashMap<Uuid, i64> = sqlx::query_as(
         "select subject_id, (count(*) + coalesce(sum(reopen_count), 0))::bigint from incident
@@ -242,45 +281,70 @@ pub async fn view(st: &AppState, team: Option<&str>) -> ApiResult<Value> {
     .await?;
     let days_of = |m: &MachineView| m.activated_at.map_or(7.0, |a| ((now - a).as_seconds_f64() / 86400.0).clamp(1.0, 7.0));
     let mut node_daily: HashMap<Uuid, f64> = HashMap::new();
+    let mut pair_daily: HashMap<(Uuid, Uuid), f64> = HashMap::new();
     let mut relay_sum: HashMap<Uuid, f64> = HashMap::new();
     for (r, n, b) in &traffic {
         let d = all.iter().find(|m| m.id == *n).map_or(*b as f64 / 7.0, |m| *b as f64 / days_of(m));
         *node_daily.entry(*n).or_default() += d;
+        *pair_daily.entry((*r, *n)).or_default() += d;
         *relay_sum.entry(*r).or_default() += d;
     }
     let qs: HashMap<Uuid, Q> = relays.iter().map(|r| (r.id, crate::api::lifecycle::quota_q(r, now))).collect();
     let k_of = |r: Uuid| relay_sum.get(&r).filter(|s| **s > 0.0).map_or(1.0, |s| qs.get(&r).map_or(0.0, |q| q.daily) / s).max(1.0);
 
-    let current = |m: &MachineView| {
-        let live: Vec<_> = m.entries.iter().filter(|e| e.lifecycle == "active" && !e.direct).collect();
-        (live.len() == 1).then(|| (live[0].relay.id, live[0].port))
+    // 入口状态口径同换线规划（api/lifecycle.rs 的 plan_move）：待应用、在用、停用都算节点的入口
+    let live = |m: &MachineView| -> Vec<(Uuid, i32, bool)> {
+        m.entries.iter().filter(|e| !e.direct && matches!(e.lifecycle.as_str(), "pending" | "active" | "disabled")).map(|e| (e.relay.id, e.port, e.lifecycle == "active")).collect()
     };
-    let ins: Vec<NodeIn> = nodes
+    // 当前线路机：恰有一条入口、而且在用；否则不给批量建议（`move A,B --to X` 会被整组拒绝）
+    let current = |m: &MachineView| {
+        let l = live(m);
+        (l.len() == 1 && l[0].2).then(|| (l[0].0, l[0].1))
+    };
+    let mut ins: Vec<NodeIn> = nodes
         .iter()
         .map(|m| {
             let cur = current(m).map(|c| c.0);
-            NodeIn { current: cur, cells: cells.remove(&m.id).unwrap_or_default(), daily: node_daily.get(&m.id).copied().unwrap_or(0.0) * cur.map_or(1.0, k_of) }
+            NodeIn { current: cur, cells: grid.remove(&m.id).unwrap_or_default(), daily: node_daily.get(&m.id).copied().unwrap_or(0.0) * cur.map_or(1.0, k_of) }
         })
         .collect();
+    // 有多个在用入口的节点：每个在用入口各算一份（当前 = 这条入口所在的线路机；节点已有入口的线路机不当候选，换过去会被拒），
+    // 只给带 --from 的单条建议，不进批量命令
+    let mut multi: Vec<(usize, Uuid, i32)> = vec![];
+    for (i, m) in nodes.iter().enumerate() {
+        let l = live(m);
+        if l.iter().filter(|e| e.2).count() < 2 {
+            continue;
+        }
+        for &(relay, port, _) in l.iter().filter(|e| e.2) {
+            let mut cs = ins[i].cells.clone();
+            cs.retain(|r, _| *r == relay || !l.iter().any(|e| e.0 == *r));
+            let daily = pair_daily.get(&(relay, m.id)).copied().unwrap_or(0.0) * k_of(relay);
+            ins.push(NodeIn { current: Some(relay), cells: cs, daily });
+            multi.push((i, relay, port));
+        }
+    }
     let rin: Vec<RelayIn> = relays.iter().map(|r| RelayIn { id: r.id, usable: r.health.status != Status::Down, q: qs[&r.id] }).collect();
     let picks = pick(&ins, &rin);
 
     let pct = |c: &Cell| c.success().map(|s| (s * 1000.0).round() / 10.0);
     let ms = |v: Option<f64>| v.map(|x| (x * 10.0).round() / 10.0);
     let name_of = |id: Uuid| relays.iter().find(|r| r.id == id).map_or_else(String::new, |r| r.name.clone());
+    let sh = crate::api::incidents::sh;
+    let why = |cur: Cell, best: Cell| match (cur.good(), cur.p50, best.p50) {
+        (true, Some(c), Some(b)) => format!("慢 {:.0} ms", c - b),
+        _ => match pct(&cur) {
+            Some(s) => format!("当前成功率 {s}%"),
+            None => "当前线路机测不到".into(),
+        },
+    };
+    let cell_of = |n: &NodeIn, r: Option<Uuid>| r.and_then(|r| n.cells.get(&r)).copied().unwrap_or_default();
     let mut groups: BTreeMap<String, (Uuid, Vec<Value>)> = BTreeMap::new();
     let mut out_nodes = vec![];
-    for ((m, n), p) in nodes.iter().zip(&ins).zip(&picks) {
+    for (i, m) in nodes.iter().enumerate() {
+        let (n, p) = (&ins[i], &picks[i]);
         let cur = current(m);
-        let cur_cell = n.current.and_then(|c| n.cells.get(&c)).copied().unwrap_or_default();
-        let best_cell = p.best.and_then(|b| n.cells.get(&b)).copied().unwrap_or_default();
-        let reason = p.suggest.then(|| match (cur_cell.good(), cur_cell.p50, best_cell.p50) {
-            (true, Some(c), Some(b)) => format!("慢 {:.0} ms", c - b),
-            _ => match pct(&cur_cell) {
-                Some(s) => format!("当前成功率 {s}%"),
-                None => "当前线路机测不到".into(),
-            },
-        });
+        let reason = p.suggest.then(|| why(cell_of(n, n.current), cell_of(n, p.best)));
         let row_cells: Vec<Value> = relays
             .iter()
             .map(|r| {
@@ -291,9 +355,10 @@ pub async fn view(st: &AppState, team: Option<&str>) -> ApiResult<Value> {
         if let (true, Some(to), Some((from, port))) = (p.suggest, p.best, cur) {
             groups.entry(name_of(to)).or_insert((to, vec![])).1.push(json!({"id": m.id, "name": m.name, "from": {"id": from, "name": name_of(from)}, "port": port, "reason": reason}));
         }
+        let on: Vec<Uuid> = live(m).iter().filter(|e| e.2).map(|e| e.0).collect();
         out_nodes.push(json!({
             "id": m.id, "name": m.name, "team": m.team, "ip": m.ip,
-            "current_relay_id": n.current, "entries": m.entries.iter().filter(|e| e.lifecycle == "active" && !e.direct).count(),
+            "current_relay_id": n.current, "entry_relay_ids": on, "entries": on.len(),
             "cells": row_cells, "tcp_fail_7d": fails.get(&m.id).copied().unwrap_or(0), "daily_bytes": n.daily.round() as i64,
             "best_relay_id": p.best, "suggest": p.suggest, "reason": reason, "no_room": p.no_room,
         }));
@@ -301,13 +366,28 @@ pub async fn view(st: &AppState, team: Option<&str>) -> ApiResult<Value> {
     let suggestions: Vec<Value> = groups
         .into_iter()
         .map(|(to, (id, ns))| {
-            let names: Vec<String> = ns.iter().map(|n| crate::api::incidents::sh(n["name"].as_str().unwrap_or(""))).collect();
-            json!({"to": {"id": id, "name": to}, "nodes": ns, "command": format!("fleetctl move {} --to {}", names.join(","), crate::api::incidents::sh(&to))})
+            let names: Vec<String> = ns.iter().map(|n| sh(n["name"].as_str().unwrap_or(""))).collect();
+            json!({"to": {"id": id, "name": to}, "nodes": ns, "command": format!("fleetctl move {} --to {}", names.join(","), sh(&to))})
+        })
+        .collect();
+    // 多入口节点的单条建议：换掉哪台线路机上的入口
+    let single: Vec<Value> = multi
+        .iter()
+        .zip(&picks[nodes.len()..])
+        .zip(&ins[nodes.len()..])
+        .filter_map(|(((i, from, port), p), n)| {
+            let to = p.best.filter(|_| p.suggest)?;
+            let m = nodes[*i];
+            Some(json!({
+                "node": {"id": m.id, "name": m.name}, "from": {"id": from, "name": name_of(*from)}, "to": {"id": to, "name": name_of(to)}, "port": port,
+                "reason": why(cell_of(n, Some(*from)), cell_of(n, Some(to))),
+                "command": format!("fleetctl move {} --from {} --to {}", sh(&m.name), sh(&name_of(*from)), sh(&name_of(to))),
+            }))
         })
         .collect();
     Ok(json!({
         "relays": relays.iter().map(|r| json!({"id": r.id, "name": r.name, "status": r.health.status, "quota": {"limit_gb": r.quota.limit_gb, "used": r.quota.used, "forecast_full_at": r.quota.forecast_full_at.map(crate::meta::fmt_ts)}})).collect::<Vec<_>>(),
-        "nodes": out_nodes, "suggestions": suggestions,
+        "nodes": out_nodes, "suggestions": suggestions, "single_suggestions": single,
         "window_h": WINDOW_H, "interval_s": INTERVAL_S, "min_success_pct": MIN_SUCCESS * 100.0, "min_gain_ms": MIN_GAIN_MS,
     }))
 }

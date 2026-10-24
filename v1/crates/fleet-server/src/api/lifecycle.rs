@@ -484,12 +484,15 @@ pub async fn moves(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Mov
 pub struct PlacementQ {
     /// 团队 id 或名称；不填 = 全部
     team: Option<String>,
+    /// 只看这个节点（id 或显示名）
+    node: Option<String>,
 }
 
 /// 放置矩阵（只读，逻辑见 `crate::placement`）：每个在用 VPS 节点到各线路机近 24 小时的 p50 与成功率、当前与最优线路机，
-/// 建议换线的按目标线路机合成一条批量 `fleetctl move A,B --to X`
+/// 建议换线的按目标线路机合成一条批量 `fleetctl move A,B --to X`；
+/// 有多个在用入口的节点只给带 `--from` 的单条建议（`single_suggestions`）
 pub async fn placement(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<PlacementQ>) -> ApiResult<Json<Value>> {
-    Ok(ok(crate::placement::view(&st, q.team.as_deref()).await?))
+    Ok(ok(crate::placement::view(&st, q.team.as_deref(), q.node.as_deref()).await?))
 }
 
 // ── 搬迁建议 ──────────────────────────────────────────────────────────────
