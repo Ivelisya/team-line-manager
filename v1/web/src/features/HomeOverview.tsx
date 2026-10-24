@@ -47,6 +47,7 @@ const NORMAL_INFO = '正常 = 总数 − 故障 − 未知。降级与维护的�
 /** 问候语下的一行状态：只说有几类事要处理、是哪几类（具体台数在下面的 KPI 卡里，这里不再重复一遍数字）；没有就是「全部正常」 */
 function statusLine(o: Overview | undefined, down: number): string {
   if (!o) return '';
+  if (o.settling) return '中控刚启动，各台状态还在汇总…';
   const todo = [
     down && '故障',
     o.failed && '上架失败',
@@ -64,6 +65,8 @@ export const OverviewSection = React.memo(function OverviewSection({ o, loading 
   const qt = useQuotaTight().data; const top = qt?.top;
   const nd = useNextDue().data;
   const nodes = o?.nodes; const relays = o?.relays;
+  // 中控刚启动：健康计数还在变（先出的不准），这三张卡先显示加载态，数据到齐（settling 变 false，随实时推送到）再出数
+  const health = loading || !!o?.settling;
   const down = (nodes?.down ?? 0) + (relays?.down ?? 0);
   const tr = o?.traffic_month;
   const trTotal = tr ? tr.up + tr.down : 0; const trScale = F.bytesScale(trTotal);
@@ -77,11 +80,11 @@ export const OverviewSection = React.memo(function OverviewSection({ o, loading 
       <div className="hero-grid">
         <div className="stat-grid">
           {/* 说明行用全站同一套状态名（降级 / 维护 / 故障 / 未知）；「正常」包括降级与维护（照常服务）这一点放在大数字的悬停说明里 */}
-          <Stat loading={loading} tone="ok" icon={<Server />} label="节点正常" info={NORMAL_INFO} to={NODES_LINK} value={<span data-tip="降级和维护的机器照常服务，也算正常"><CountUp value={nodes && normal(nodes)} /></span>} unit={nodes ? `/ ${nodes.total}` : undefined}
+          <Stat loading={health} tone="ok" icon={<Server />} label="节点正常" info={NORMAL_INFO} to={NODES_LINK} value={<span data-tip="降级和维护的机器照常服务，也算正常"><CountUp value={nodes && normal(nodes)} /></span>} unit={nodes ? `/ ${nodes.total}` : undefined}
             caption={nodes && <><DotCount tone="warn" n={nodes.degraded} label="降级" />{nodes.maintenance > 0 && <DotCount tone="neutral" n={nodes.maintenance} label="维护" />}<DotCount tone="bad" n={nodes.down} label="故障" to={DOWN_LINK} />{nodes.unknown > 0 && <DotCount tone="neutral" n={nodes.unknown} label="未知" />}</>} />
-          <Stat loading={loading} tone="teal" icon={<Waypoints />} label="线路机正常" info={NORMAL_INFO} to={RELAYS_LINK} value={<span data-tip="降级和维护的机器照常服务，也算正常"><CountUp value={relays && normal(relays)} /></span>} unit={relays ? `/ ${relays.total}` : undefined}
+          <Stat loading={health} tone="teal" icon={<Waypoints />} label="线路机正常" info={NORMAL_INFO} to={RELAYS_LINK} value={<span data-tip="降级和维护的机器照常服务，也算正常"><CountUp value={relays && normal(relays)} /></span>} unit={relays ? `/ ${relays.total}` : undefined}
             caption={relays && <><DotCount tone="warn" n={relays.degraded} label="降级" />{relays.maintenance > 0 && <DotCount tone="neutral" n={relays.maintenance} label="维护" />}<DotCount tone="bad" n={relays.down} label="故障" to={`${DOWN_LINK}&kind=relay`} />{relays.unknown > 0 && <DotCount tone="neutral" n={relays.unknown} label="未知" />}</>} />
-          <Stat loading={loading} tone="bad" icon={<AlertTriangle />} label="故障" value={<CountUp value={o ? down : undefined} />} unit="台" to={DOWN_LINK} caption={o && <><DotCount tone="bad" n={o.nodes.down} label="节点" /><DotCount tone="bad" n={o.relays.down} label="线路机" />{o.failed > 0 && <DotCount tone="bad" n={o.failed} label="上架失败" />}</>} />
+          <Stat loading={health} tone="bad" icon={<AlertTriangle />} label="故障" value={<CountUp value={o ? down : undefined} />} unit="台" to={DOWN_LINK} caption={o && <><DotCount tone="bad" n={o.nodes.down} label="节点" /><DotCount tone="bad" n={o.relays.down} label="线路机" />{o.failed > 0 && <DotCount tone="bad" n={o.failed} label="上架失败" />}</>} />
           <Stat loading={loading} tone="amber" icon={<CalendarClock />} label="即将到期" value={<CountUp value={o?.due_soon} />} unit="台" to="/nodes?due=soon&sort=due" caption={o && nd !== undefined && <>{nd ? <span className="stat-who">最近<span className="ellipsis" data-tip={nd.name}>{nd.name}</span>{nd.days <= 1 ? <b>{nd.days === 0 ? '今天' : '明天'}</b> : <><b className="num">{nd.days}</b>天后</>}</span> : <span>近期没有到期</span>}{o.overdue > 0 && <DotCount tone="bad" n={o.overdue} label="已过期" />}</>} />
           <Stat loading={loading} tone="gold" icon={<CircleDollarSign />} label="每月费用" to={COST_LINK} info={`在用的节点和线路机的月费，统一折成美元。汇率在「设置 → 汇率」${usd ? `\n${usdTotalTip(usd)}` : ''}`}
             value={!usd || usdEmpty ? '—' : <span data-tip={usdTotalTip(usd)}>{F.money(usd.cents, 'USD')}</span>}
@@ -93,7 +96,7 @@ export const OverviewSection = React.memo(function OverviewSection({ o, loading 
             caption={tr && <><span>下载 <Num f={F.bytes(tr.down)} /></span><span>上传 <Num f={F.bytes(tr.up)} /></span><FromTag from={tr.counted_from} /></>} />
           {/* 有吃紧的：点卡片打开最紧那台的流量页签 */}
           <Stat loading={loading} tone="violet" icon={<Database />} label="流量额度吃紧" value={<CountUp value={qt?.n} />} unit={qt ? '台' : undefined} onClick={top ? () => openDrawer(top.id, 'traffic') : undefined}
-            caption={qt && (top ? <span className="stat-who">最紧<span className="ellipsis" data-tip={top.name}>{top.name}</span>{top.forecast ?? <>已用<b className="num">{top.pct}%</b></>}</span> : `都在 ${meta().thresholds.traffic_quota_warn_pct}% 以下`)} />
+            caption={qt && (top ? <span className="stat-who" data-tip={`${top.name}${top.forecast ? `：${top.forecast}` : `：已用 ${top.pct}%`}`}>最紧<span className="ellipsis">{top.name}</span>{top.full ? <><b className="num">{top.full}</b>满</> : <b className="num">{top.pct}%</b>}</span> : `都在 ${meta().thresholds.traffic_quota_warn_pct}% 以下`)} />
           <Stat loading={loading} tone="blue" icon={<CloudUpload />} label="上架中 · 退役中" value={o ? <CountUp value={o.provisioning + o.retiring} /> : '—'} unit="台" to="/jobs?view=running" caption={o && <span>上架 <b className="num">{o.provisioning}</b> · 退役 <b className="num">{o.retiring}</b></span>} />
         </div>
         <ClusterPanel o={o} />
@@ -130,7 +133,7 @@ function ClusterPanel({ o }: { o: Overview | undefined }) {
   const rate = total ? (online / total) * 100 : 0;
   // 三处总数对得上：KPI 的节点 + 线路机 = 在用；agent 在线的分母 = 在用 − 家宽代理；机器矩阵的「全部」= 在用 + 上架中 / 退役中 / 上架失败（备用团队的机器照常算在用）
   const active = o ? o.nodes.total + o.relays.total : 0;
-  const scope = o ? `分母 = 在用 ${active} 台（节点 ${o.nodes.total} + 线路机 ${o.relays.total}）− 家宽代理 ${o.no_agent} 台（不需要 agent）；同机 IP 节点${o.ip_nodes ? `（${o.ip_nodes} 台）` : ''}随宿主机计入
+  const scope = o ? `分母 = 在用 ${active} 台（节点 ${o.nodes.total} + 线路机 ${o.relays.total}）− 家宽代理 ${o.no_agent} 台（不需要 agent）${o.ip_nodes ? `；同机 IP 节点 ${o.ip_nodes} 台已算在内（跟随宿主机的 agent）` : ''}
 机器矩阵的「全部」${active + o.provisioning + o.retiring + o.failed} 台 = 在用 ${active} + 上架中 ${o.provisioning} + 退役中 ${o.retiring} + 上架失败 ${o.failed}` : '';
   // 格条按比例分段着色：在线绿、离线红（末尾几格）；有离线至少 1 格红，不会因为离线占比不到一格就全绿；没有机器全灰
   const colors = React.useMemo(() => {

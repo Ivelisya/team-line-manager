@@ -5,11 +5,12 @@ import { useQuery } from '@tanstack/react-query';
 import { ArrowRight, ExternalLink } from 'lucide-react';
 import { renewBatchPreview, useDue, useRenewBatch } from '@/lib/queries';
 import type { DueGroup, DueProvider } from '@/lib/types';
-import { usdTotalTip } from '@/lib/derive';
+import { meta, usdTotalTip } from '@/lib/derive';
+import { tzCity, tzLabel } from '@/lib/tz';
 import { useUsdPreview } from '@/lib/fx';
 import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
-import { Field, InfoTip, Input } from '@/components/ui/form';
+import { Field, InfoTip, Input, UnitInput } from '@/components/ui/form';
 import { SkeletonRows } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
 import { resetOnOpen, useHeld } from '@/lib/useHeld';
@@ -25,6 +26,18 @@ const dueState = (days: number) => (days < 0 ? 'overdue' : 'ok');
 const subtotal = (g: DueGroup) => [...g.total.by_currency, ...g.total.unconverted].map((p) => F.money(p.cents, p.currency)).join(' + ');
 const usdText = (t: DueGroup['total']) => `${F.money(t.cents, 'USD')}${t.unconverted.length ? '*' : ''}`;
 
+/** 到期日 + 剩余天数：天数按这组的账单时区的今天算，悬停写明；账单时区不是组织时区的，日期后标城市名（同一天到期的两组差一天时一眼看得出） */
+function DueWhen({ g, short }: { g: DueGroup; short?: boolean }) {
+  const tz = g.billing_tz;
+  const other = tz && tz !== meta().org_timezone;
+  return (
+    <span data-tip={tz ? `剩余天数按${tzLabel(tz)}时间算` : undefined}>
+      <span className="num">{short ? g.due_date.slice(5) : g.due_date}</span> <Due days={g.machines[0].due_days} state={dueState(g.machines[0].due_days)} />
+      {other && <span className="t-muted"> · {tzCity(tz)}</span>}
+    </span>
+  );
+}
+
 /** 供应商名 + 控制台链接（http(s) 才做成链接） */
 function ProviderCell({ p }: { p: DueProvider }) {
   const link = p.panel_url && /^https?:\/\//i.test(p.panel_url) ? p.panel_url : null;
@@ -39,7 +52,7 @@ function ProviderCell({ p }: { p: DueProvider }) {
 export function DueTab() {
   const q = useDue(DAYS);
   const [pay, setPay] = React.useState<DueGroup | null>(null);
-  const held = useHeld(pay ? `${pay.provider.id}|${pay.due_date}` : null, pay);
+  const held = useHeld(pay ? `${pay.provider.id}|${pay.due_date}|${pay.billing_tz}` : null, pay);
   const d = q.data;
   const n = d?.groups.reduce((s, g) => s + g.machines.length, 0) ?? 0;
   return (
@@ -56,9 +69,9 @@ export function DueTab() {
                 {d.groups.map((g) => {
                   const names = g.machines.map((m) => m.name);
                   return (
-                    <tr key={`${g.provider.id}|${g.due_date}`}>
+                    <tr key={`${g.provider.id}|${g.due_date}|${g.billing_tz}`}>
                       <td><ProviderCell p={g.provider} /></td>
-                      <td><span className="num">{g.due_date}</span> <Due days={g.machines[0].due_days} state={dueState(g.machines[0].due_days)} /></td>
+                      <td><DueWhen g={g} /></td>
                       <td data-tip={names.length > 4 ? names.join('、') : undefined}>{names.slice(0, 4).join('、')}{names.length > 4 && <span className="t-muted"> 等 {names.length} 台</span>}</td>
                       <td className="r num" data-tip={usdTotalTip(g.total)}>{subtotal(g)}</td>
                       <td className="r num">{usdText(g.total)}</td>
@@ -75,8 +88,8 @@ export function DueTab() {
               {d.groups.map((g) => {
                 const names = g.machines.map((m) => m.name);
                 return (
-                  <li key={`${g.provider.id}|${g.due_date}`} className="due-item">
-                    <div className="due-item-top"><ProviderCell p={g.provider} /><span><span className="num">{g.due_date.slice(5)}</span> <Due days={g.machines[0].due_days} state={dueState(g.machines[0].due_days)} /></span></div>
+                  <li key={`${g.provider.id}|${g.due_date}|${g.billing_tz}`} className="due-item">
+                    <div className="due-item-top"><ProviderCell p={g.provider} /><DueWhen g={g} short /></div>
                     <div className="due-item-machines">{names.slice(0, 4).join('、')}{names.length > 4 && <span className="t-muted"> 等 {names.length} 台</span>}</div>
                     <div className="due-item-foot"><span className="num" data-tip={usdTotalTip(g.total)}>{subtotal(g)}<span className="t-muted"> ≈ {usdText(g.total)}</span></span><Button size="sm" onClick={() => setPay(g)}>登记已付…</Button></div>
                   </li>
@@ -103,7 +116,7 @@ function AmountCell({ currency, value, onChange }: { currency: string; value: st
   const hint = useUsdPreview(bad ? null : Math.round(Number(value) * 100), currency);
   return (
     <div>
-      <Input inputMode="decimal" value={value} onChange={(e) => onChange(e.target.value)} aria-invalid={bad || undefined} aria-label={`实付金额（${currency}）`} style={{ maxWidth: 120 }} />
+      <UnitInput unit={currency} width={130} inputMode="decimal" value={value} onChange={(e) => onChange(e.target.value)} aria-invalid={bad || undefined} aria-label={`实付金额（${currency}）`} />
       {hint && currency !== 'USD' && <div className="hint">{hint}</div>}
     </div>
   );

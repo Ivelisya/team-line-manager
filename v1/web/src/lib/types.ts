@@ -132,9 +132,10 @@ export interface UsdTotal {
   unconverted: { currency: string; cents: number }[];
 }
 /** GET /billing/due：未来待付清单。groups 按 供应商 × 到期日 分组（不含备用团队、自动续费的）；auto 开了自动续费的（到期后自动顺延，不算待付） */
-export interface DueMachine { id: string; name: string; kind: Kind; due_date: string; due_days: number; cycle: Cycle; price_cents: number; currency: string; price_usd_cents: number | null }
+export interface DueMachine { id: string; name: string; kind: Kind; due_date: string; due_days: number; billing_tz?: string; cycle: Cycle; price_cents: number; currency: string; price_usd_cents: number | null }
 export interface DueProvider { id: string | null; name: string | null; panel_url: string | null }
-export interface DueGroup { provider: DueProvider; due_date: string; machines: DueMachine[]; total: UsdTotal }
+/** 按 供应商 × 到期日 × 账单时区 分组：剩余天数按账单时区的今天算（同一天到期、时区不同的会差一天） */
+export interface DueGroup { provider: DueProvider; due_date: string; billing_tz?: string; machines: DueMachine[]; total: UsdTotal }
 export interface DueList { days: number | null; until: string | null; groups: DueGroup[]; auto: { provider: DueProvider; machine: DueMachine }[]; total: UsdTotal }
 /** POST /renewals/batch：dry_run 为 true 时只是预览（什么都没写） */
 export interface RenewBatchResult {
@@ -166,6 +167,8 @@ export interface Overview {
   /** 在线/离线按台机器、按 agent 连通（同 isQuiet），与健康无关；同机 IP 节点随宿主机计入（ip_nodes 是其中的台数），
    *  家宽代理不需要 agent，不计入，另数 no_agent */
   online: number; offline: number; no_agent: number; ip_nodes: number;
+  /** 中控刚启动或刚恢复收上报（2 分钟内）：agent 的重发、线路机连通性还在陆续到，健康计数还会变——网页先显示加载态。旧中控没有这个字段 */
+  settling?: boolean;
   /** failed：上架失败（lifecycle = failed）的台数 */
   provisioning: number; retiring: number; failed: number;
   /** 在用机器里即将到期（due_state = soon）与已过期（overdue）的台数 */
@@ -294,7 +297,8 @@ export interface MovePreview { name?: string; from?: string; to?: string; old_en
 /** 搬迁建议（GET /relays/{id}/rebalance，只读）：重置前会用满时，搬走哪些入口、搬去哪台；daily_bytes 是搬走后这台每天少的流量 */
 export interface RebalancePlan {
   relay: { id: string; name: string }; limit_gb: number; used: number; period_end: string; daily_avg: number | null; forecast_full_at: string | null; projected_pct: number | null;
-  needed: boolean; ok: boolean; reason: string | null;
+  /** over_limit：本周期已超出额度，搬迁目标是搬走后日均降到原来的 20% 以下（到重置日前不再大量增长），不是撑到重置日 */
+  needed: boolean; ok: boolean; reason: string | null; over_limit?: boolean;
   target: { id: string; name: string; limit_gb: number | null; used: number; daily_avg: number | null; projected_pct: number | null } | null;
   moves: { node: { id: string; name: string }; entry_id: string; port: number; period_bytes: number; daily_bytes: number; needs_from: boolean }[];
   after?: { daily_avg: number; projected_pct: number }; target_after?: { fits: boolean; projected_pct: number | null };

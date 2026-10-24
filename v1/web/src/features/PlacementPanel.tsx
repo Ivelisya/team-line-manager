@@ -6,6 +6,7 @@ import type { PlacementCell, PlacementNode, PlacementView } from '@/lib/types';
 import { usePlacement } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import { cn } from '@/lib/utils';
+import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
 import { InfoTip } from '@/components/ui/form';
 import { CopyButton, ErrorNote, FilterChip, Panel, TableWrap } from '@/components/app/primitives';
@@ -35,7 +36,7 @@ function Cell({ c, n, relay }: { c: PlacementCell; n: PlacementNode; relay: stri
       {cur && <span className="pm-tag">当前</span>}
       {best && <span className="pm-tag">建议</span>}
       {c.samples === 0 ? <span className="t-muted">—</span> : c.p50_ms == null ? <span className="pm-bad">不通</span> : <>
-        <span className="num">{Math.round(c.p50_ms)}</span><span className="unit"> ms</span>
+        <span className="num">{F.ms(c.p50_ms).v}</span><span className="unit"> ms</span>
         {c.success_pct != null && c.success_pct < 100 && <span className={cn('pm-pct', weak && 'is-weak')}> · {c.success_pct}%</span>}
       </>}
     </td>

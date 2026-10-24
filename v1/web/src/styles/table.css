@@ -21,6 +21,9 @@
 .dt td { height: var(--row-2); box-sizing: border-box; }
 .dt.is-one td { height: var(--row-1); }
 .dt td.r, .dt th.r { text-align: right; }
+/* 勾选列：只放一个勾选框，不出省略号；勾选后表头那一行换成操作栏（EntriesTable），按钮放得下 */
+.dt :is(td, th).dt-pick { padding-right: 0; text-overflow: clip; }
+.dt thead th.dt-pickbar { padding-left: var(--sp-4); color: var(--fg); overflow: visible; }
 .dt td.c, .dt th.c { text-align: center; }
 .dt :is(td, th).c:last-child { padding-inline: var(--sp-6); } /* 居中的末列（只放一个图标按钮，列宽 52 左右）：不再套首末列的 16px 边距，按钮放得下、不出省略号 */
 .dt td.r, .dt td .num { font-variant-numeric: var(--num-variant); }

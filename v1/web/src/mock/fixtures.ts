@@ -319,7 +319,9 @@ export function buildDb(): Db {
   [2, 3, 4].forEach((i) => { m2Entries[i].reach = { ok: false, ts: iso(now() - 25_000), detail: `端口 ${m2Entries[i].port}：connect: 连接被拒绝 (os error 111)`, fails: 3 }; });
   // 另一个口刚才偶发连不上一次：只提示「刚才连不上 1 次」，不算连不上
   m2Entries[1].reach = { ok: false, ts: iso(now() - 40_000), detail: `端口 ${m2Entries[1].port}：connect: 连接超时`, fails: 1 };
-  machines[1].health = { status: 'down', reasons: [{ key: 'relay_unreachable', severity: 'critical', text: `中控连续 3 次以上连不上客户入口（端口 ${[2, 3, 4].map((i) => m2Entries[i].port).join('、')}）` }, { key: 'relay_apply_lag', severity: 'warning', text: '配置未应用（配置版本 8，已生效 7）' }] };
+  // 原因文本同服务端 reach.rs：每个端口一段「端口 N：原因」，同一原因的多个端口在网页上合并成「N 个端口超时 10 秒」
+  const reachText = [...m2Entries.slice(2).map((e, i) => `端口 ${e.port}：${i === 0 ? '连接被拒绝' : '超时 10 秒'}`)].join('；');
+  machines[1].health = { status: 'down', reasons: [{ key: 'relay_unreachable', severity: 'critical', text: `中控连续 3 次以上连不上客户入口（${reachText}）` }, { key: 'relay_apply_lag', severity: 'warning', text: '配置未应用（配置版本 8，已生效 7）' }] };
   machines[1].host = hostOf('r2', 58);
   // 调优样本：线路机 2 是旧档，团队1 的 03 号还没调优过
   machines[1].tune = { profile: 'tune-v1', at: iso(now() - 40 * DAY), current: false, params: null };
@@ -327,6 +329,12 @@ export function buildDb(): Db {
   if (untuned) untuned.tune = { profile: null, at: null, current: false, params: null };
 
   for (const m of machines) Object.assign(m, trafficOf(m, machines));
+  // 线路机 2 本周期已超出额度（约 113%）：额度告警、搬迁建议（超额时的口径）、费用页标红用
+  const r2 = machines[1];
+  if (r2.subscription) { r2.subscription.traffic_gb = Math.max(1, Math.floor(r2.quota.used / 1e9 / 1.13)); Object.assign(r2, trafficOf(r2, machines)); }
+  // 早先「恢复已退役机器」留下的原因（旧版写成「已恢复：原因」）
+  const restored = machines.find((x) => x.id === 'm-t1-03');
+  if (restored) restored.lifecycle_reason = '已恢复：实验：恢复';
   // 统计
   for (const t of teams) t.node_count = machines.filter((m) => m.team?.id === t.id && m.lifecycle !== 'retired').length;
   for (const p of plans) p.machine_count = machines.filter((m) => m.plan?.id === p.id && m.lifecycle !== 'retired').length;
@@ -400,7 +408,7 @@ export function buildDb(): Db {
   const incidents: Incident[] = [
     { id: 'i1', engine: 'machine', subject: { id: 'm-t1-05', name: '团队1-05' }, subject_id: 'm-t1-05', subject_name: '团队1-05', rule: 'agent_offline', rule_name: 'agent 离线', severity: 'critical', state: 'firing', summary: 'agent 已离线 14 分钟', opened_at: iso(now() - 14 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 0 },
     { id: 'i2', engine: 'machine', subject: { id: 'm-t1-05', name: '团队1-05' }, subject_id: 'm-t1-05', subject_name: '团队1-05', rule: 'tcp_fail', rule_name: '线路机到节点不通', severity: 'critical', state: 'firing', summary: '线路机到节点 TCP 探测连续失败 5 次', opened_at: iso(now() - 12 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: iso(now() - 5 * 60_000), ack_by: 'admin', reopen_count: 0 },
-    { id: 'i3', engine: 'machine', subject: { id: 'm-t1-09', name: '团队1-09' }, subject_id: 'm-t1-09', subject_name: '团队1-09', rule: 'egress_fail', rule_name: '出口不通', severity: 'warning', state: 'firing', summary: '出口验证连续失败 3 次（经线路机1:20009 访问外网超时）', opened_at: iso(now() - 50 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 2 },
+    { id: 'i3', engine: 'machine', subject: { id: 'm-t1-09', name: '团队1-09' }, subject_id: 'm-t1-09', subject_name: '团队1-09', rule: 'egress_fail', rule_name: '出口不通', severity: 'warning', state: 'firing', summary: '出口验证连续失败 3 次（经线路机1:20009 访问外网超时）', opened_at: iso(now() - 50 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 2, recent_count: 4, chronic: true },
     { id: 'i4', engine: 'machine', subject: { id: 'r2', name: '线路机2' }, subject_id: 'r2', subject_name: '线路机2', rule: 'relay_apply_lag', rule_name: '配置未应用', severity: 'warning', state: 'firing', summary: '线路机2：配置未应用（配置版本 8，已生效 7）', opened_at: iso(now() - 25 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 0 },
     { id: 'i5', engine: 'machine', subject: { id: 'm-t2-03', name: '团队2-03' }, subject_id: 'm-t2-03', subject_name: '团队2-03', rule: 'renewal_due', rule_name: '即将到期', severity: 'info', state: 'resolved', summary: '7 天内到期，请安排续费', opened_at: iso(now() - 26 * 3600_000), resolved_at: iso(now() - 25 * 3600_000), last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 0 },
     // 已恢复的历史（抽屉「最近告警」）：团队1-05 昨天出口断过半小时、来回反复，三天前 CPU 偏高；团队1-09 六天前 TCP 断过

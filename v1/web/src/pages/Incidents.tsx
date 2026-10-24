@@ -1,7 +1,7 @@
 // 告警：事件列表（确认 / 查看机器，服务端分页）+ 静默与维护窗口（独立页签，可预约开始时间）。列表都保持服务端顺序（告警严重度优先，静默按开始时间），前端不重排。
 import * as React from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { BellOff, CalendarPlus, Check, CheckCircle2, ChevronDown, ChevronRight, Plus, Trash2, Wrench } from 'lucide-react';
+import { BellOff, CalendarPlus, Check, CheckCircle2, ChevronDown, ChevronRight, Trash2, Wrench } from 'lucide-react';
 import { RenewDialog } from '@/features/BillingTab';
 import { INCIDENT_PAGE, useAck, useAckMany, useAddSilence, useDelSilence, useIncidents, useMachineBriefs, useSilences } from '@/lib/queries';
 import { usePage } from '@/lib/usePage';
@@ -10,7 +10,7 @@ import { useDrawer } from '@/lib/drawer';
 import { isRouterIncident, routerIncidentTab, showSwitch, showSync, useRouterDrawer, useRouters } from '@/lib/routers';
 import { useProbePoints } from '@/lib/probePoints';
 import * as F from '@/lib/format';
-import { errText, severityOf } from '@/lib/derive';
+import { reasonText, severityOf } from '@/lib/derive';
 import type { Incident, Silence, SilenceKind } from '@/lib/types';
 import { resetOnOpen, useHeld } from '@/lib/useHeld';
 import { useNow } from '@/lib/useNow';
@@ -25,6 +25,7 @@ import { SkeletonRows } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
 import { ConfirmDialog, FormDialog } from '@/components/app/dialogs';
 import { NodeHover } from '@/components/app/NodeHover';
+import { RecentCount, SuggestedCmds } from '@/components/app/IncidentBits';
 import { Empty, ErrorNote, Note, PageHead, Panel, Pill, TableWrap } from '@/components/app/primitives';
 
 const PAGE_SIZES = [20, INCIDENT_PAGE, 100];
@@ -33,7 +34,7 @@ const SEV = (i: Incident) => { const s = severityOf(i.severity); return i.state 
 /** 说明列：摘要以「对象名：」开头（通知要能单独看懂），对象列已有名字，去掉不重复；英文原始错误换成中文（同顶栏预览与抽屉） */
 const summaryText = (i: Incident) => {
   const name = i.subject?.name ?? i.subject_name;
-  return errText(name && i.summary.startsWith(`${name}：`) ? i.summary.slice(name.length + 1) : i.summary);
+  return reasonText(name && i.summary.startsWith(`${name}：`) ? i.summary.slice(name.length + 1) : i.summary);
 };
 /** 同一状态（进行中 / 已恢复）里，同一分钟开始的同一条规则（如一批 agent 同时离线、一批线路机入口连不上）连着出现 3 条起折成一行；只合并相邻的，顺序仍是服务端的 */
 const BATCH_MIN = 3;
@@ -110,9 +111,9 @@ export function IncidentsPage() {
           {/* 中控自身的告警（central_ 开头）没有机器可点开：只写对象名「中控」；软路由的（router_ 开头）打开路由抽屉 */}
           <td>{sid && isRouterIncident(i) ? <button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => openRouter(sid, routerIncidentTab(i))}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button>
             : sid ? <NodeHover id={sid}><button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => open(sid)}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button></NodeHover> : (i.subject_name ?? '—')}
-            <span className="sub inc-narrow">{i.rule_name} · {F.ago(i.opened_at)}</span><span className="sub inc-narrow" data-tip={sum}>{sum}</span></td>
-          <td>{i.rule_name}{i.reopen_count > 0 && <span className="sub" data-tip={`恢复后 30 分钟内又出现 ${i.reopen_count} 次，已合并成这一条`}>反复 {i.reopen_count + 1} 次</span>}{i.chronic && <span className="sub" data-tip="同一对象同一规则近 7 天反复出现，考虑换线或替换">近 7 天第 {i.recent_count} 次</span>}</td>
-          <td><span className="cell-main" data-tip={sum}>{sum}</span><IncidentOps i={i} />{(i.resolved_at || i.ack_at) && <span className="sub">{i.resolved_at
+            <span className="sub inc-narrow">{i.rule_name} · {F.ago(i.opened_at)}</span><span className="sub inc-narrow" data-tip={sum}>{sum}</span><SuggestedCmds i={i} className="inc-narrow" /></td>
+          <td>{i.rule_name}<RecentCount i={i} className="sub" /></td>
+          <td><span className="cell-main" data-tip={sum}>{sum}</span><SuggestedCmds i={i} /><IncidentOps i={i} />{(i.resolved_at || i.ack_at) && <span className="sub">{i.resolved_at
             ? <span data-tip={`恢复于 ${F.dtFull(i.resolved_at)}`}>已恢复 · 持续 {F.span(Date.parse(i.resolved_at) - Date.parse(i.opened_at))}</span>
             : `${i.ack_by ? F.actor(i.ack_by) : ''} 已确认 · ${F.ago(i.ack_at!)}`}</span>}</td>
           <td>{F.dt(i.opened_at)}<span className="sub">{F.ago(i.opened_at)}</span></td>
@@ -212,7 +213,8 @@ function Silences({ show }: { show: boolean }) {
   const list = (q.data ?? []).filter((s) => Date.parse(s.ends_at) > now);
   return (
     <>
-      {show && <Panel title="静默与维护窗口" count={list.length} sub={<InfoTip text="窗口内不会产生告警" />} tools={list.length === 0 && !q.isLoading ? <Button onClick={() => { setPreset(''); setOpen(true); }}><Plus />新建静默</Button> : undefined} flush>
+      {/* 新建在页头（哪个页签都能建），这里不再放第二个 */}
+      {show && <Panel title="静默与维护窗口" count={list.length} sub={<InfoTip text="窗口内不会产生告警" />} flush>
         {q.isError && <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div>}
         {q.isLoading ? <SkeletonRows rows={2} head /> : list.length === 0 && !q.isError ? <Empty icon={<BellOff size={22} />} text="没有进行中或已预约的静默" /> : (
           <TableWrap>

@@ -44,13 +44,13 @@ export function installRoutersMock(R: Reg, env: Env) {
       const f = fleet[i];
       const dead = i + 1 === opts.dead; const flaky = i + 1 === opts.flaky;
       return {
-        name: `节点${String(i + 1).padStart(2, '0')}`, type: 'vless', server: f?.server ?? `198.51.100.${30 + i}`, port: f?.port ?? 443, entry: f?.entry ?? null,
+        name: `节点${String(i + 1).padStart(2, '0')}`, type: 'Vless', server: f?.server ?? `198.51.100.${30 + i}`, port: f?.port ?? 443, entry: f?.entry ?? null,
         sync: !f ? 'unmanaged' : i + 1 === opts.drift ? 'drift' : 'ok', alive: !dead && !flaky, delay_ms: dead || flaky ? null : Math.round(60 + r() * 140), delay_at: iso(now - Math.floor(r() * 5) * MIN),
         fail_streak: dead ? 3 : flaky ? 1 : 0,
         conns: dead ? 0 : Math.floor(r() * 60), up_bps: dead ? 0 : r() * 3e6, down_bps: dead ? 0 : r() * 2.4e7, clients: dead ? 0 : Math.floor(r() * 6),
       };
     });
-    exits.push({ name: '节点00-默认', type: 'vless', server: '198.51.100.7', port: 443, entry: null, sync: 'unmanaged', alive: true, delay_ms: 210, delay_at: iso(now - 2 * MIN), fail_streak: 0, conns: 3, up_bps: 4e4, down_bps: 2e5, clients: 1 });
+    exits.push({ name: '节点00-默认', type: 'Vless', server: '198.51.100.7', port: 443, entry: null, sync: 'unmanaged', alive: true, delay_ms: 210, delay_at: iso(now - 2 * MIN), fail_streak: 0, conns: 3, up_bps: 4e4, down_bps: 2e5, clients: 1 });
     const clients: RouterClient[] = Array.from({ length: opts.clients }, (_, i) => {
       const online = i < opts.clients - 3;
       const via = exits.filter((e) => e.alive && e.conns > 0).sort(() => r() - 0.5).slice(0, online ? 1 + Math.floor(r() * 3) : 0);
@@ -64,7 +64,7 @@ export function installRoutersMock(R: Reg, env: Env) {
     const names = exits.map((e) => e.name);
     const groups: RouterGroup[] = [
       { name: '节点选择', type: 'Selector', now: names[0], all: names },
-      { name: '漏网之鱼', type: 'Selector', now: names[names.length - 1], all: names.slice(-4) },
+      { name: '漏网之鱼', type: 'Selector', now: names[names.length - 1], all: ['REJECT', 'DIRECT', ...names.slice(-4)] },
       { name: '自动选择', type: 'URLTest', now: names[1] ?? names[0], all: names },
     ];
     return {

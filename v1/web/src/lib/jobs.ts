@@ -77,14 +77,25 @@ const OUTPUT: Record<string, [string, OutFmt] | null> = {
   rows_deleted: ['删除数据', unit('行')], recycle_bin_id: ['回收站编号', (v) => `#${v}`], already_gone: ['状态', () => '目标已不存在，无需处理'],
 };
 
+/** 没收录的值写成可读的键值，不露原始 JSON：数组用「、」连，对象写「标签 值，标签 值」（键认得的用中文标签，内部 id 不写），true / false 写是 / 否 */
+function plain(v: unknown): string {
+  if (Array.isArray(v)) return v.map(plain).join('、');
+  if (typeof v === 'boolean') return v ? '是' : '否';
+  if (v && typeof v === 'object') {
+    return Object.entries(v).filter(([k, x]) => OUTPUT[k] !== null && x != null && x !== '')
+      .map(([k, x]) => `${OUTPUT[k]?.[0] ?? k} ${plain(x)}`).join('，');
+  }
+  return String(v);
+}
+
 /** 步骤输出（JSON 对象）→ 每行 “标签：值”；空值与内部 id 不显示 */
 export function outputLines(o: JobStep['output']): string[] {
   if (o == null) return [];
   return Object.entries(o).flatMap(([k, v]) => {
     const m = OUTPUT[k];
     if (m === null || v == null || v === '') return [];
-    // 未收录的 key（服务端新加了输出）原样显示，提醒补表
-    if (m === undefined) return [`${k}：${typeof v === 'object' ? JSON.stringify(v) : String(v)}`];
-    return [`${m[0]}：${m[1](v)}`];
+    // 未收录的 key（服务端新加了输出）照键名写，值写成可读的键值
+    if (m === undefined) return [`${k}：${plain(v)}`];
+    return [`${m[0]}：${typeof v === 'object' ? plain(v) : m[1](v)}`];
   });
 }

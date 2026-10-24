@@ -20,6 +20,7 @@ import { jobKindLabel } from '@/lib/jobs';
 import { errText, kindLabel, linkCounts, meta, probeSummary, reachWho, severityOf } from '@/lib/derive';
 import { useReachLabel } from '@/lib/probePoints';
 import { CopyButton, ErrorNote, ReasonList, HealthPill, Flag, LabelValue, LabelValueGrid, LifecyclePill, LinkCounts, Note, Pill, Section, SectionHeader } from '@/components/app/primitives';
+import { RecentCount, SuggestedCmds } from '@/components/app/IncidentBits';
 import { MachineTags } from '@/components/app/MachineTags';
 import { ManageTab } from './ManageTab';
 import { BillingTab } from './BillingTab';
@@ -173,6 +174,14 @@ function UnreachPill({ m }: { m: MachineView }) {
   return <Pill tone="warn" tip={`${who}连不上 ${ps.reachBad} 条入口在线路机上的端口，客户经这几条入口连不上\n告警记在线路机上`}>入口可达 {ps.all - ps.reachBad}/{ps.all}</Pill>;
 }
 
+/** 生命周期旁的原因写成一句话：旧版「恢复已退役机器」存的是「已恢复：原因」；进备用（退役）时填的原因加上「退役原因：」（替换、随宿主机退役的本来就是整句） */
+function lifecycleWhy(m: MachineView, raw: string) {
+  const r = errText(raw);
+  const restored = /^已恢复(?:：(.*))?$/.exec(r);
+  if (restored) return restored[1] ? `曾从已退役恢复，原因：${restored[1]}` : '曾从已退役恢复';
+  return m.spare && !/^(替换下来|随宿主机)/.test(r) ? `退役原因：${r}` : r;
+}
+
 function OverviewTab({ m }: { m: MachineView }) {
   const audit = useAudit(m.id);
   const { open } = useDrawer();
@@ -203,7 +212,7 @@ function OverviewTab({ m }: { m: MachineView }) {
           <LabelValue label="供应商服务编号">{m.service_ref ? <span className="row" style={{ gap: 4, flexWrap: 'nowrap', minWidth: 0 }}><Trunc className="mono">{m.service_ref}</Trunc><CopyButton text={m.service_ref} label="服务编号" size={13} /></span> : null}</LabelValue>
           {/* 已退役、上架失败的原因与时间在顶上的横幅里，这里只放状态（原因放这格会被截断） */}
           {/* 带原因的占满整行、可换行（半格放不下会被截断成「运行中 已恢复：实验：…」） */}
-          {(() => { const why = m.lifecycle_reason && m.lifecycle !== 'retired' && m.lifecycle !== 'failed' ? errText(m.lifecycle_reason) : null;
+          {(() => { const why = m.lifecycle_reason && m.lifecycle !== 'retired' && m.lifecycle !== 'failed' ? lifecycleWhy(m, m.lifecycle_reason) : null;
             return <LabelValue label="生命周期" className={why ? 'span-2' : undefined} wrap={!!why}><LifecyclePill lc={m.lifecycle} />{why && <span className="t-sub"> {why}</span>}</LabelValue>; })()}
           <LabelValue label="上架时间">{F.dtFull(m.activated_at)}</LabelValue>
           {m.lifecycle === 'retired' ? null : m.agent ? <>
@@ -277,8 +286,9 @@ function RecentIncidents({ m }: { m: MachineView }) {
                   </div>
                   <div className="audit-detail hint">
                     {incidentSpan(i)}
-                    {i.reopen_count > 0 && <> · <span data-tip={`恢复后 30 分钟内又出现 ${i.reopen_count} 次，已合并成这一条`}>反复 {i.reopen_count + 1} 次</span></>}
+                    {(i.chronic || i.reopen_count > 0) && <> · <RecentCount i={i} /></>}
                   </div>
+                  {firing && <SuggestedCmds i={i} />}
                 </div>
               </li>
             );

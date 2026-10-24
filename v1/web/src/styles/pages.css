@@ -19,6 +19,9 @@
 .reason-list { display: grid; gap: var(--sp-6); margin: 0; padding: 0; list-style: none; }
 .reason-list li { display: flex; align-items: flex-start; gap: var(--sp-8); font-size: var(--fs-body); }
 .reason-list .smark { margin-top: 4px; }
+.reason-list .reason-body { min-width: 0; }
+.reason-list .reason-more { height: auto; padding: 0; vertical-align: baseline; }
+.reason-list .reason-parts { display: block; margin-top: var(--sp-4); white-space: pre-line; font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); }
 .note-list .dot { margin-top: calc((1lh - var(--dot)) / 2); } /* 提示条里合并的几条说明：圆点对齐第一行文字 */
 /* 抽屉「最近操作」：第一行动作 + 对象，右边谁 · 多久前（悬停看具体时间）；第二行命令 / 详情，等宽浅色单行省略（悬停看全文） */
 /* 时间线：圆点之间一条细竖线连到下一条（操作记录页、抽屉的最近操作 / 最近告警）——事件按时间往下走，而不是一格一格的列表。
@@ -71,6 +74,12 @@
 .dt tr[data-open] .inc-fold .lucide { transform: rotate(90deg); }
 /* 告警表：窄屏收起「规则」「说明」「开始」三列（第 3–5 列宽度归零、内容藏起；不用 display: none，免得后面的格子挪到别的列上），
    内容并进对象格的第二、三行（.inc-narrow 只在窄屏出现）；表不再撑到 820 宽，不用横滑 */
+/* 告警的建议命令（IncidentBits）：等宽小字一行一条，放不下省略（悬停看全），后面跟复制按钮 */
+.inc-cmds { display: flex; flex-direction: column; gap: 2px; min-width: 0; margin-top: 2px; }
+.inc-cmd { display: flex; align-items: center; gap: var(--sp-4); min-width: 0; }
+.inc-cmd code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-micro); line-height: var(--lh-micro); color: var(--fg-2); }
+.inc-cmd .copy-btn { flex: none; }
+.alerts-pop-cmds { padding: 0 var(--sp-10) var(--sp-6) calc(var(--sp-10) + 14px); }
 .inc-narrow { display: none !important; }
 @media (max-width: 600px) {
   .inc-tbl { min-width: 0 !important; }
@@ -82,6 +91,7 @@
   .inc-tbl col:last-child { width: 104px !important; }
   .inc-tbl :is(th, td):first-child { padding-right: var(--sp-4); }
   .inc-tbl .inc-narrow { display: block !important; }
+  .inc-tbl .inc-cmds.inc-narrow { display: flex !important; }
   .inc-tbl td { height: auto; }
 }
 .chart-box { height: 180px; min-width: 0; }

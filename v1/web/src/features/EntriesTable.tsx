@@ -27,7 +27,7 @@ const failCell = (p: NonNullable<EntryView['tcp']>) => <span style={{ color: 'va
 /** 出口单元格（线路机页共用）：只写通不通，悬停给出口 IP 与这次出口验证的耗时（经节点去中控，不是线路延迟）；
  *  失败的悬停看错误（英文原始错误换成中文，errText） */
 export const probeCell = (p: EntryView['egress']) => (p == null ? <span className="t-muted">—</span> : p.ok
-  ? <span data-tip={`${p.detail ? `出口 IP ${p.detail}\n` : ''}验证耗时 ${p.latency_ms == null ? '—' : `${Math.round(p.latency_ms)} ms`}`}>正常</span>
+  ? <span data-tip={`${p.detail ? `出口 IP ${p.detail}\n` : ''}验证耗时 ${p.latency_ms == null ? '—' : F.str(F.ms(p.latency_ms))}`}>正常</span>
   : failCell(p));
 /** TCP 单元格：线路机 → 节点的建连延迟，近 1 小时中位数（悬停给最近一次）；直出入口没有节点，不做 TCP 探测 */
 export const tcpCell = (e: EntryView) => {
@@ -35,7 +35,7 @@ export const tcpCell = (e: EntryView) => {
   if (e.direct) return <span className="t-muted" data-tip="直出入口不经节点，不做 TCP 探测">—</span>;
   if (p == null) return <span className="t-muted">—</span>;
   if (!p.ok) return failCell(p);
-  return <span data-tip={`近 1 小时中位数；最近一次 ${p.latency_ms == null ? '—' : `${Math.round(p.latency_ms)} ms`}`}><Num f={F.ms(tcpMs(p))} /></span>;
+  return <span data-tip={`近 1 小时中位数；最近一次 ${p.latency_ms == null ? '—' : F.str(F.ms(p.latency_ms))}`}><Num f={F.ms(tcpMs(p))} /></span>;
 };
 
 /** 检查失败的原因：reach.rs 记的是「端口 N：原因」，提示第一行已经写了端口 */
@@ -72,19 +72,23 @@ export function EntriesTable({ m, traffic, onlyBad, pick }: { m: MachineView; tr
   const allOn = movable.length > 0 && picked.length === movable.length;
   return (
     <>
-    {picked.length > 0 && (
-      <div className="row row-between" style={{ marginBottom: 8 }}>
-        <span>已选 <b className="num">{picked.length}</b> 个节点</span>
-        <span className="row">
-          <Button size="sm" variant="quiet" onClick={() => setSel([])}>取消</Button>
-          <Button size="sm" onClick={() => setMoving(true)} data-tip="一起换到另一台线路机，每台软路由只改一次、OpenClash 只重启一次">换到…</Button>
-        </span>
-      </div>
-    )}
     <div className="table-wrap is-boxed">
       <table className="dt is-one" style={{ minWidth: 520 }}>
-        <colgroup>{picking && <col style={{ width: 36 }} />}<col style={{ width: 210 }} /><col style={{ width: 96 }} /><col style={{ width: 72 }} /><col style={{ width: 72 }} />{traffic && <col style={{ width: 112 }} />}</colgroup>
-        <thead><tr>{picking && <th>{movable.length > 0 && <Checkbox aria-label="全选可换线的入口" checked={allOn} onCheckedChange={(v) => setSel(v === true ? movable.map((e) => e.id) : [])} />}</th>}<th>{m.kind === 'relay' ? '端口 · 节点' : '线路机:端口'}</th><th>状态</th><th className="r">TCP</th><th className="r">出口</th>{traffic && <th className="r">本月业务流量</th>}</tr></thead>
+        <colgroup>{picking && <col style={{ width: 44 }} />}<col style={{ width: 210 }} /><col style={{ width: 96 }} /><col style={{ width: 72 }} /><col style={{ width: 72 }} />{traffic && <col style={{ width: 112 }} />}</colgroup>
+        {/* 勾选后表头换成操作栏（同一行、同样高），表格不往下挪 */}
+        <thead><tr>{picking && <th className="dt-pick">{movable.length > 0 && <Checkbox aria-label="全选可换线的入口" checked={allOn} onCheckedChange={(v) => setSel(v === true ? movable.map((e) => e.id) : [])} />}</th>}
+          {picked.length > 0 ? (
+            <th colSpan={traffic ? 5 : 4} className="dt-pickbar">
+              <span className="row row-between" style={{ flexWrap: 'nowrap' }}>
+                <span>已选 <b className="num">{picked.length}</b> 个节点</span>
+                <span className="row" style={{ flexWrap: 'nowrap' }}>
+                  <Button size="sm" variant="quiet" onClick={() => setSel([])}>取消</Button>
+                  <Button size="sm" onClick={() => setMoving(true)} data-tip="一起换到另一台线路机，每台软路由只改一次、OpenClash 只重启一次">换到…</Button>
+                </span>
+              </span>
+            </th>
+          ) : <><th>{m.kind === 'relay' ? '端口 · 节点' : '线路机:端口'}</th><th>状态</th><th className="r">TCP</th><th className="r">出口</th>{traffic && <th className="r">本月业务流量</th>}</>}
+        </tr></thead>
         <tbody>
           {entries.map((e) => <EntryRow key={e.id} e={e} relay={m.kind === 'relay'} traffic={!!traffic} routers={routers.get(e.id)}
             picked={picking ? (movable.some((x) => x.id === e.id) ? sel.includes(e.id) : null) : undefined} onPick={onPick} />)}
@@ -112,7 +116,7 @@ const EntryRow = React.memo(function EntryRow({ e, relay, traffic, routers, pick
   const who = reachWho(useReachLabel());
   return (
     <tr>
-      {picked !== undefined && <td>{picked !== null && <Checkbox aria-label={`选择 ${e.node.name}`} checked={picked} onCheckedChange={(v) => onPick(e.id, v === true)} />}</td>}
+      {picked !== undefined && <td className="dt-pick">{picked !== null && <Checkbox aria-label={`选择 ${e.node.name}`} checked={picked} onCheckedChange={(v) => onPick(e.id, v === true)} />}</td>}
       {/* 窄屏名字会被省略：Trunc 悬停、轻触（得到焦点）时显示全名 */}
       <td className="strong"><div className="row" style={{ gap: 0, flexWrap: 'nowrap' }}><Trunc>{relay ? `${e.port} · ${e.node.name}` : `${e.relay.name}:${e.port}`}</Trunc>{routers && <RouterMark users={routers} />}</div></td>
       <td>{entryStatus(e, who)}</td>{e.lifecycle === 'disabled' ? <><td className="r t-muted">—</td><td className="r t-muted">—</td></> : <><td className="r">{tcpCell(e)}</td><td className="r">{probeCell(e.egress)}</td></>}
