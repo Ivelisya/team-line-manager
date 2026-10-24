@@ -147,8 +147,9 @@ export function useStream(enabled: boolean) {
         if (ev.type === 'metrics') onMetrics(ev as MetricsMsg);
         else queue(ev as StreamEvent);
       };
-      // 出错之后一定会 close；会话失效（4401）也照常重连，握手会 401，登录态由各查询处理
-      s.onclose = closed;
+      // 出错之后一定会 close；会话失效（4401）也照常重连，握手会 401，登录态由各查询处理。
+      // 1008 = 同一登录的实时连接超过上限（服务端升级成功后才关）：onopen 已把退避清零，这里直接按最长间隔重连，不每秒握手、重取一遍
+      s.onclose = (e) => { if (e.code === 1008) retry = Math.ceil(Math.log2(BACKOFF_MAX / 1000)); closed(); };
     };
     const closed = () => {
       if (stopped) return;
