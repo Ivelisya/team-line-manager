@@ -16,6 +16,7 @@ mod ping;
 mod policy;
 mod probe;
 mod recycle;
+mod report;
 mod resolve;
 mod routers;
 mod settings;
@@ -518,6 +519,22 @@ enum Cmd {
         #[arg(long)]
         follow: bool,
     },
+    /// 按需测速：这台机器自己下载北美的测速文件（默认 100 MB、圣何塞），报告平均速率、耗时、首字节时间。下载走这台机器的网卡，会用掉约 N MB 流量（计入供应商额度），所以要确认（--yes）；
+    /// 目标只有北美几个（sjo 圣何塞 / lax 洛杉矶 / il 芝加哥 / nj 新泽西），不用欧洲。同机 IP 节点对宿主机测，家宽代理不适用；一台机器同时只能有一个作业
+    Speedtest {
+        machine: String,
+        /// 下载量（MB）：25 / 100 / 500，默认 100（取自中控 /meta 的 speedtest.sizes_mb）
+        #[arg(long)]
+        size: Option<u32>,
+        /// 测速目标：sjo / lax / il / nj，默认 sjo
+        #[arg(long)]
+        target: Option<String>,
+        #[arg(long)]
+        yes: bool,
+        /// 跟随作业到结束，最后打印一行结果
+        #[arg(long)]
+        follow: bool,
+    },
     /// 入口列表（可只看某台机器相关的）
     Entries { machine: Option<String> },
     /// 输出入口的分享链接（vless://…；需要 secrets 权限，记审计）。--team / --machines 一次取一批（一次请求、一条审计），每行「名称 链接」，--json 给数组。
@@ -589,6 +606,11 @@ enum Cmd {
     /// 每日流量：按组织时区的自然日，每天的业务流量（下载 / 上传）合计、按区间合计排的节点前 20（带日均）、线路机每天网卡计费量之和；
     /// --node 看这台机器的每日明细（线路机另列每天的网卡下行 / 上行 / 计费量）
     Traffic(traffic::TrafficOpts),
+    /// 报表：月度可用率汇总（uptime）、月报（monthly，每月 1 号自动发上月摘要给开了「月报」的通知渠道）
+    Report {
+        #[command(subcommand)]
+        cmd: report::ReportCmd,
+    },
     /// 查 IP 的画像（运营商、地点、接入方式）：一个 IP 给详细判定理由，多个给表格；只查中控本地离线库
     Ip {
         #[arg(required = true)]
@@ -1049,6 +1071,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::UpgradeAgent { machine, all, yes, follow } => ops::upgrade_agent(x, machine.as_deref(), all, yes, follow),
         Cmd::Tune { machine, team, all, rollback, yes, follow } => ops::tune(x, machine.as_deref(), team.as_deref(), all, rollback, yes, follow),
         Cmd::SsRefresh { machine, team, all, yes, follow } => ops::ss_refresh(x, machine.as_deref(), team.as_deref(), all, yes, follow),
+        Cmd::Speedtest { machine, size, target, yes, follow } => ops::speedtest(x, &machine, size, target.as_deref(), yes, follow),
         Cmd::Entries { machine } => cmds::entries(x, machine.as_deref()),
         Cmd::Share { entry: Some(e), .. } => ops::share(x, &e),
         Cmd::Share { team, machines, .. } => ops::share_many(x, team.as_deref(), machines.as_deref()),
@@ -1078,6 +1101,10 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Audit(o) => cmds::audit(x, o),
         Cmd::Access(o) => access::access(x, o),
         Cmd::Traffic(o) => traffic::traffic(x, o),
+        Cmd::Report { cmd } => match cmd {
+            report::ReportCmd::Uptime { month, days } => report::uptime(x, month.as_deref(), days),
+            report::ReportCmd::Monthly { month, send, yes } => report::monthly(x, month.as_deref(), send, yes),
+        },
         Cmd::Ip { ips } => ipintel::ip(x, &ips),
         Cmd::Sources { machine, window, limit } => ipintel::sources(x, &machine, &window, limit),
         Cmd::IpintelStatus => ipintel::status(x),
@@ -1158,7 +1185,7 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{insecure_http, Cli, Cmd};
+    use super::{insecure_http, report, Cli, Cmd};
     use clap::Parser;
 
     /// `ssh` 的命令行：目标 1–2 个参数（`router <名称>`），`--` 之后原样是远端命令
@@ -1174,6 +1201,23 @@ mod tests {
         assert_eq!(parse(&["ssh", "router", "团队2-路由A", "--", "logread | tail"]), Ok((vec!["router".into(), "团队2-路由A".into()], vec!["logread | tail".into()])));
         assert!(parse(&["ssh"]).is_err());
         assert!(parse(&["ssh", "router", "a", "b"]).is_err(), "目标最多两个参数");
+    }
+
+    /// `speedtest` 与 `report` 的命令行：下载量、目标、月份格式与 --month / --days 互斥
+    #[test]
+    fn speedtest_and_report_command_line() {
+        let parse = |a: &[&str]| Cli::try_parse_from(["fleetctl"].iter().chain(a)).map(|c| c.cmd).map_err(|e| e.kind());
+        match parse(&["speedtest", "团队1-03", "--size", "500", "--target", "lax", "--yes", "--follow"]) {
+            Ok(Cmd::Speedtest { machine, size, target, yes, follow }) => assert_eq!((machine.as_str(), size, target.as_deref(), yes, follow), ("团队1-03", Some(500), Some("lax"), true, true)),
+            _ => panic!("不是 speedtest"),
+        }
+        assert!(matches!(parse(&["speedtest", "a"]), Ok(Cmd::Speedtest { size: None, target: None, .. })));
+        assert!(parse(&["speedtest", "a", "--size", "abc"]).is_err());
+        assert!(matches!(parse(&["report", "uptime", "--month", "2026-09"]), Ok(Cmd::Report { cmd: report::ReportCmd::Uptime { days: None, .. } })));
+        assert!(parse(&["report", "uptime", "--month", "2026-13"]).is_err() && parse(&["report", "uptime", "--month", "9月"]).is_err());
+        assert!(parse(&["report", "uptime", "--month", "2026-09", "--days", "7"]).is_err(), "--month 与 --days 二选一");
+        assert!(parse(&["report", "uptime", "--days", "0"]).is_err() && parse(&["report", "uptime", "--days", "91"]).is_err());
+        assert!(matches!(parse(&["report", "monthly", "--send", "--yes"]), Ok(Cmd::Report { cmd: report::ReportCmd::Monthly { send: true, yes: true, month: None } })));
     }
 
     /// 命令行定义自洽（参数重名、互斥写反等 clap 在这里断言）
