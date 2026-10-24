@@ -196,13 +196,13 @@ export function quotaRuleText(m: MachineView) {
   return rule ? (nics?.length ? `按 ${nics.join('、')} 网卡，${trafficRuleLabel(rule)}` : trafficRulePlain(rule)) : '按业务流量，下载加上传';
 }
 /** 计费方式的短名（费用页签的小标签）；没有的取 /meta 的全名 */
-const RULE_SHORT: Record<string, string> = { sum: '双向：入 + 出', max: '单向：取较大', min: '单向：取较小', out: '单向：只算上行', in: '单向：只算下行' };
-/** 费用页签的计费方式小标签：「按 单向：取较大 计费」，悬停写全名和来源（这台单独设置的，或跟随供应商）；按业务流量的机器（家宽代理、同机 IP 节点）为 null */
+const RULE_SHORT: Record<string, string> = { sum: '双向计费 · 入 + 出', max: '单向计费 · 取较大', min: '单向计费 · 取较小', out: '单向计费 · 只算上行', in: '单向计费 · 只算下行' };
+/** 费用页签的计费方式小标签：「单向计费 · 取较大」，悬停写全名和来源（这台单独设置的，或跟随供应商）；按业务流量的机器（家宽代理、同机 IP 节点）为 null */
 export function trafficRuleTag(m: MachineView) {
   const rule = m.quota.rule;
   if (!rule) return null;
   const from = isOverridden(m.subscription, 'traffic_rule') ? '这台单独设置' : m.provider ? `跟随供应商「${m.provider.name}」` : '默认';
-  return { text: `按 ${RULE_SHORT[rule] ?? trafficRuleLabel(rule)} 计费`, tip: `${trafficRuleLabel(rule)}
+  return { text: RULE_SHORT[rule] ?? trafficRuleLabel(rule), tip: `${trafficRuleLabel(rule)}
 ${from}` };
 }
 /** 流量周期（费用页签）：「每月 13 号重置（跟随供应商：按账单日）· 10-13 → 11-13」，滚动 30 天「滚动 30 天（跟随供应商）」 */
