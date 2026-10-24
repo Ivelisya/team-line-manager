@@ -208,7 +208,8 @@ impl Part {
 /// 同一台软路由同时只有一个作业在改：PG 会话级 advisory lock，键由路由 id 算出。第一次拿到锁时把那条连接从连接池拿走（detach），
 /// 读配置 → 改 → 重启 → 测 / 改回期间持有；这一步结束（含出错、超时被丢弃、中控退出）连接关掉，锁随之放开。
 /// 拿不到时用的是池里的连接，什么都不占（排队时每次轮询不新建连接）。往前改都只试一次（try），拿不到就全部放开去排队，不会互相等死；
-/// 只有改回（give_up）等锁：那时手里的锁都是要改回的路由
+/// 只有改回（give_up）等锁：那时手里的锁都是要改回的路由。
+/// 中控（或 PG）重启后这把锁就没了，上一个进程起的脚本可能还在路由上跑：路由上另有一把（routers::replace 的 SCRIPT 外层），等它跑完才动手
 struct Locks<'a> {
     db: &'a sqlx::PgPool,
     conn: Option<sqlx::PgConnection>,
@@ -581,8 +582,8 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
                 };
                 (o.ssh_kind().unwrap_or(ErrKind::Network), why, untouched)
             }
-            // 2：一行没写；其它：脚本已经改回（rolled_back=1），或改回也失败了
-            Ok(o) => (ErrKind::Remote, reason(&o), o.code == 2 || o.kv("rolled_back") == Some("1")),
+            // 2、BUSY（路由上上一份还在跑、等不到锁）：一行没写；其它：脚本已经改回（rolled_back=1），或改回也失败了
+            Ok(o) => (ErrKind::Remote, reason(&o), o.code == 2 || o.code == rr::BUSY || o.kv("rolled_back") == Some("1")),
             Err(e) => (kind_of(&e), format!("{e:#}"), false),
         };
         // 这一台自己改回了（或没连上、什么都没改），而且这次的备份就是第一次改之前的：不用再改回它
