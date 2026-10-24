@@ -307,7 +307,7 @@ async fn finish(st: &AppState, id: Uuid, audit_id: i64, err: Option<&str>) -> sq
     crate::db::audit_finish(&st.db, audit_id, result).await
 }
 
-/// 中控重启时还在「安装中」的：任务已经没了，标为失败（probe_points::run_forever 启动时一次）
+/// 中控重启时还在「安装中」的：任务已经没了，标为失败（main 启动时、spawn_background 之前一次；不能放进受 supervise 的循环里：循环 panic 后原地重启会把同进程里还在跑的安装也标成中断）
 pub async fn mark_interrupted(st: &AppState) -> sqlx::Result<()> {
     sqlx::query(
         "update probe_point set install_state = 'failed', install_step = null, install_error = '中控重启，安装中断：请重新安装', install_finished_at = now()
