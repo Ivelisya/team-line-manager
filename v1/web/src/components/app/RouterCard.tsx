@@ -206,7 +206,8 @@ function RouterCardImpl({ r, current, onOpen: open }: { r: RouterView; current?:
       <div className="nc-tags">
         <div className="nc-tags-list">
           {r.team ? <Tag c={tagColor(r.team.name)} tip="团队">{r.team.name}</Tag> : <Tag c="gray">未分团队</Tag>}
-          {r.maintenance && <Tag c="amber" tip={`${healthLabel('maintenance')}：${MAINT_TIP}`}>{healthLabel('maintenance')}</Tag>}
+          {/* 状态胶囊已写「维护」时标签不再重复；部署中胶囊盖住了维护，这时才补 */}
+          {r.maintenance && r.deploy?.state === 'running' && <Tag c="amber" tip={`${healthLabel('maintenance')}：${MAINT_TIP}`}>{healthLabel('maintenance')}</Tag>}
           {s && <Tag c="gray" tip="自上次重启起的运行时长">运行 {F.str(uptimeFmt(s.uptime_s))}</Tag>}
         </div>
         {/* 离线多久已经写在中间的占位里：这里不再红字重复「最后在线」，同等待接入写创建时间 */}

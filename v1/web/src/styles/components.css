@@ -194,9 +194,9 @@
   transition: background-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std), border-color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out);
 }
 @media (hover: hover) { .fchip:hover:not(:disabled) { border-color: var(--line-strong); color: var(--fg); } } /* 触屏点一下不留悬停态 */
-.fchip[aria-pressed="true"] { background: var(--accent-soft); border-color: transparent; color: var(--accent-soft-fg); }
+.fchip:is([aria-pressed="true"], [aria-checked="true"]) { background: var(--accent-soft); border-color: transparent; color: var(--accent-soft-fg); }
 .fchip-count { font-weight: var(--fw-regular); color: var(--fg-2); }
-.fchip[aria-pressed="true"] .fchip-count { color: var(--accent-soft-fg); }
+.fchip:is([aria-pressed="true"], [aria-checked="true"]) .fchip-count { color: var(--accent-soft-fg); }
 .fchip.is-zero, .fchip.is-zero .fchip-count { color: var(--fg-3); }
 
 /* ========== 心跳条 Beat（资源格条、额度格条在 home.css 的 .cells） ========== */

@@ -43,9 +43,9 @@ export const Scrim = React.forwardRef<HTMLDivElement, { className: string }>(({ 
 Scrim.displayName = 'Scrim';
 
 /** 对话框：size sm 440 / md 660 / lg 760（原版对话框三档） */
-/** 打开时的初始焦点跳过说明里的「(i)」：不然键盘打开对话框时提示气泡立刻盖在内容上、按 Enter 也没反应。落到第一个输入框或按钮上 */
+/** 打开时的初始焦点跳过说明里的「(i)」：不然键盘打开对话框时提示气泡立刻盖在内容上、按 Enter 也没反应。落到第一个输入框或按钮上（单选组里不在 Tab 顺序的按钮不算，焦点落在已选的那颗） */
 function skipInfoTip(e: Event) {
-  const el = (e.currentTarget as HTMLElement).querySelector<HTMLElement>('input:not([disabled]), textarea:not([disabled]), select:not([disabled]), button:not([disabled]), [href], [tabindex]:not([tabindex="-1"]):not(.info-tip)');
+  const el = (e.currentTarget as HTMLElement).querySelector<HTMLElement>('input:not([disabled]), textarea:not([disabled]), select:not([disabled]), button:not([disabled]):not([tabindex="-1"]), [href], [tabindex]:not([tabindex="-1"]):not(.info-tip)');
   if (el) { e.preventDefault(); el.focus(); }
 }
 export const DialogContent = React.forwardRef<React.ElementRef<typeof DialogPrimitive.Content>, React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> & { size?: 'sm' | 'md' | 'lg' }>(
