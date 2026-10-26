@@ -122,6 +122,10 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
         teams.sort();
         sqlx::query("select 1 from team where id = any($1) order by id for update").bind(&teams).execute(&mut *tx).await?;
         host_spare_since = sqlx::query_scalar::<_, Option<OffsetDateTime>>("select spare_since from machine where id = $1 for update").bind(id).fetch_optional(&mut *tx).await?.flatten();
+        // 手动改进备用团队和退役的「移进备用」同一套资格：patch_tx 不查（替换作业也用它，自己处理过期），入口在这里
+        if let Some(why) = spare_gate(&mut tx, id, to).await? {
+            return Err(ApiError::conflict(format!("不能改到备用团队：{why}。要进备用请用退役（网页「退役」、fleetctl retire），现在就回收选「立即回收」")));
+        }
     }
     let to = b.team_id;
     // 宿主机和随行 IP 节点各自改名，线路机的代数最后统一刷一次（按 id 排序加锁，不在几次调用之间各刷各的）
@@ -219,10 +223,11 @@ pub struct RenamePreviewQ {
     number: Option<i32>,
 }
 
-/// 改团队 / 编号预览：`{name（改后的名字）, old_name, renames:[{machine_id,old_name,new_name}], ip_nodes:[{machine_id,old_name,new_name}], router_exits:[{node,router,exit}]}`。
+/// 改团队 / 编号预览：`{name（改后的名字）, old_name, renames:[{machine_id,old_name,new_name}], ip_nodes:[{machine_id,old_name,new_name}], router_exits:[{node,router,exit}], spare_blocked}`。
 /// 换团队时原团队少了这台，剩下的按编号连续压缩（PATCH 同事务做），`renames` 列出连带改号的；
 /// 宿主机上还在原团队的同机 IP 节点一起换团队（PATCH 同事务做，编号接在宿主机之后取新团队的最小空号），`ip_nodes` 列出它们的新旧名字。
 /// `router_exits`：新团队是备用团队时，还指向这台和随它一起移入的同机 IP 节点的软路由出口（只提示，不阻断）；其余为空。
+/// `spare_blocked`：改到备用团队但进不了备用时的原因（订阅已过期满 1 天、没有订阅、有进行中的作业等，同退役的「移进备用」；PATCH 会回 409），否则为 null。
 /// 没换团队、线路机三项都为空
 pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<RenamePreviewQ>) -> ApiResult<Json<Value>> {
     let mut conn = st.db.acquire().await?;
@@ -236,6 +241,7 @@ pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
     let mut renames = vec![];
     let mut ip_nodes = vec![];
     let mut router_exits = vec![];
+    let mut spare_blocked = None;
     let mut name = old_name.clone();
     if kind != "relay" {
         let to = q.team_id.or(team);
@@ -246,6 +252,9 @@ pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
             None => number.unwrap_or(1),
         };
         name = crate::names::display_name(&kind, label.as_deref(), Some(&to_name), Some(n));
+        if let Some(to) = to.filter(|t| Some(*t) != team) {
+            spare_blocked = spare_gate(&mut conn, id, to).await?;
+        }
         if let (true, Some(from)) = (to != team, team) {
             let from_name = team_name(&st.db, Some(from)).await?.unwrap_or_default();
             // 随宿主机走的同机 IP 节点：新团队里宿主机先占 n，它们依次取剩下的最小空号
@@ -298,7 +307,7 @@ pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
                 .collect();
         }
     }
-    Ok(ok(json!({"name": name, "old_name": old_name, "renames": renames, "ip_nodes": ip_nodes, "router_exits": router_exits})))
+    Ok(ok(json!({"name": name, "old_name": old_name, "renames": renames, "ip_nodes": ip_nodes, "router_exits": router_exits, "spare_blocked": spare_blocked})))
 }
 
 /// PATCH 的全部校验与写入（含审计），在调用方的事务里做。
@@ -622,6 +631,27 @@ async fn spare_check(conn: &mut sqlx::PgConnection, id: Uuid) -> ApiResult<(Resu
     .await?
     .ok_or_else(|| ApiError::not_found("没有这台机器"))?;
     Ok((crate::spare::spare_eligible(&kind, &lc, in_spare, due.zip(today)), due))
+}
+
+/// 手动把机器改到 `to` 团队时的备用资格：改进备用团队（原来不在备用、节点不是线路机）才查，同退役「移进备用」的 spare_check，
+/// 再加宿主机自己不能有进行中的作业（同机 IP 节点的作业另有检查）。不通过给原因。PATCH 与改名预览共用
+async fn spare_gate(conn: &mut sqlx::PgConnection, id: Uuid, to: Uuid) -> ApiResult<Option<String>> {
+    let (kind, old_spare, new_spare): (String, bool, bool) = sqlx::query_as(
+        "select m.kind::text, coalesce(ot.spare, false), coalesce((select spare from team where id = $2), false) from machine m left join team ot on ot.id = m.team_id where m.id = $1",
+    )
+    .bind(id)
+    .bind(to)
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or_else(|| ApiError::not_found("没有这台机器"))?;
+    if kind == "relay" || old_spare || !new_spare {
+        return Ok(None);
+    }
+    if let Err(why) = spare_check(conn, id).await?.0 {
+        return Ok(Some(why.to_string()));
+    }
+    let busy: Option<String> = sqlx::query_scalar("select kind from job where target_id = $1 and state in ('queued', 'running', 'waiting', 'cancelling') limit 1").bind(id).fetch_optional(&mut *conn).await?;
+    Ok(busy.map(|k| format!("有进行中的作业（{}），等它结束再退役", meta::job_kind_label(&k))))
 }
 
 /// 唯一的备用团队 (id, 名字) 与它占着的编号

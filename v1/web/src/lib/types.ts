@@ -307,7 +307,9 @@ export interface AuditEntry { id: string; ts: string; actor: string; action: str
  *  和随宿主机一起换团队的同机 IP 节点（ip_nodes：新团队里接在宿主机之后取最小空号） */
 export interface RenamePreview { name: string; old_name: string; renames: { machine_id: string; old_name: string; new_name: string }[]; ip_nodes: { machine_id: string; old_name: string; new_name: string }[];
   /** 新团队是备用团队时，还指向这台和一起移入的同机 IP 节点的软路由出口；其余为 [] */
-  router_exits: { node: string; router: string; exit: string }[] }
+  router_exits: { node: string; router: string; exit: string }[];
+  /** 改到备用团队但进不了备用的原因（订阅已过期满 1 天、没有订阅、有进行中的作业…；保存会被拒，要进备用请用退役）；否则 null */
+  spare_blocked: string | null }
 /** notes：指向要改名的节点的软路由出口（出口名不跟着改） */
 export interface RenumberPreview { changes: { machine_id: string; old_name: string; new_name: string }[]; notes: string[]; token: string }
 /** 软路由上要改的出口（替换节点、换线路机、搬空同一个格式）；换线路机的 new_entry_id 为 null、to 写「server:新端口」 */
