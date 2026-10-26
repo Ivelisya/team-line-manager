@@ -492,7 +492,7 @@ async fn purge_refused_while_peer_still_counts_traffic() {
         .await
         .unwrap();
     let msg = fleet_server::db::purge_blocker(&t.st.db, node).await.unwrap();
-    assert_eq!(msg, Some(format!("这台机器的入口在 {want} 前仍计入其他机器的流量统计，届时再彻底删除")));
+    assert_eq!(msg, Some(format!("这台机器的流量数据（入口业务流量、网卡）在 {want} 前仍能在流量页、月报里回看，届时再彻底删除")));
 
     // 直接建的作业：步骤里再查一次，同样拒绝，什么都不删
     let mut tx = t.st.db.begin().await.unwrap();
@@ -500,7 +500,7 @@ async fn purge_refused_while_peer_still_counts_traffic() {
     tx.commit().await.unwrap();
     let j = run_one(&t, j1).await;
     assert_eq!(j["state"], "failed", "{j}");
-    assert!(j["error"].as_str().unwrap().contains("前仍计入其他机器的流量统计"), "{j}");
+    assert!(j["error"].as_str().unwrap().contains("前仍能在流量页、月报里回看"), "{j}");
     assert_eq!(t.machine_lifecycle(node).await, "retired");
     let n: i64 = sqlx::query_scalar("select count(*) from entry_traffic_hourly where entry_id = $1").bind(eid).fetch_one(&t.st.db).await.unwrap();
     assert_eq!(n, 2);
@@ -508,8 +508,29 @@ async fn purge_refused_while_peer_still_counts_traffic() {
     sqlx::query("delete from entry_traffic_hourly where entry_id = $1 and up_bytes > 0").bind(eid).execute(&t.st.db).await.unwrap();
     assert_eq!(fleet_server::db::purge_blocker(&t.st.db, node).await.unwrap(), None);
 
-    // 线路机也退役了：统计不再用这些流量，两台按任意顺序都能删
+    // 网卡小时数据也算（线路机的流量页、月报回看用）：近 93 天内有网卡流量的等，0 字节的行不算
+    sqlx::query("insert into host_metric_hourly (machine_id, hour, net_rx, net_tx) values ($1, date_trunc('hour', now()) - interval '20 days', 5, 6), ($2, date_trunc('hour', now()) - interval '20 days', 0, 0)")
+        .bind(node)
+        .bind(relay)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let why = fleet_server::db::purge_blocker(&t.st.db, node).await.unwrap();
+    assert!(why.is_some_and(|w| w.contains("前仍能在流量页、月报里回看")), "节点自己的网卡数据");
+    assert_eq!(fleet_server::db::purge_blocker(&t.st.db, relay).await.unwrap(), None, "线路机只有 0 字节的网卡行");
+    // 入口另一端（线路机）已退役也一样等：回看窗口里的数字不能变小（等待有天数上限，互为对端的两台不会卡死）
     sqlx::query("update machine set lifecycle = 'retired' where id = $1").bind(relay).execute(&t.st.db).await.unwrap();
+    sqlx::query("insert into entry_traffic_hourly (entry_id, hour, up_bytes, down_bytes) values ($1, date_trunc('hour', now()) - interval '10 days', 100, 0)")
+        .bind(eid)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    for m in [node, relay] {
+        assert!(fleet_server::db::purge_blocker(&t.st.db, m).await.unwrap().is_some(), "两端都退役了入口流量也等：{m}");
+    }
+    // 数据过了回看窗口（这里直接清掉）：两台按任意顺序都能删
+    sqlx::query("delete from entry_traffic_hourly where entry_id = $1").bind(eid).execute(&t.st.db).await.unwrap();
+    sqlx::query("delete from host_metric_hourly where machine_id = any($1)").bind(vec![node, relay]).execute(&t.st.db).await.unwrap();
     let rname = t.get(&format!("/api/v1/machines/{relay}")).await["name"].as_str().unwrap().to_string();
     let nj = fleet_server::api::machines::start_purge(&t.st, "test", node, &name, None).await.unwrap();
     assert_eq!(run_one(&t, nj).await["state"], "succeeded");

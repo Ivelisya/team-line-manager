@@ -438,8 +438,9 @@ pub async fn cleanup_retention(db: &PgPool, r: &crate::config::Retention) -> any
 /// 少于这个天数就删，回看窗口里另一端那台机器的流量页 / 月报数字会变小。多一天是 purge_blocker 的整点和日界余量
 pub const PURGE_WAIT_DAYS: i32 = crate::traffic::MAX_DAYS as i32 + 1;
 
-/// 彻底删除会连带删掉这台机器入口的流量，而入口另一端未退役的机器拿这些流量算今日/本月/周期已用，流量页、月报还能回看到 `PURGE_WAIT_DAYS` 天前：
-/// 近 `PURGE_WAIT_DAYS` 天里还有这类流量时不能删（只看有流量的小时行：0 字节的行删了也不改任何统计）。另一端已退役（统计不再用、也在等删）的不拦，否则两台互为对端的退役机器谁都删不掉。
+/// 彻底删除会连带删掉这台机器入口的流量（入口另一端的机器拿这些流量算今日/本月/周期已用）和它自己的网卡小时数据（线路机的流量页、月报用），
+/// 流量页、月报还能回看到 `PURGE_WAIT_DAYS` 天前：近 `PURGE_WAIT_DAYS` 天里还有这两类数据时不能删（只看有流量的小时行：0 字节的行删了也不改任何统计）。
+/// 另一端是不是已退役、入口是不是线路机直出的都不例外：等待有 `PURGE_WAIT_DAYS` 天的时限，互为对端的两台也不会谁都删不掉。
 /// 宿主机上还有同机 IP 节点（含已退役的，它们的 host_id 指着它）时也不能删，先删它们。
 /// 没做完的改软路由出口作业（`routers_applied` 不空）引用的新入口在这台机器上（它是入口的节点或线路机）时也不能删：作业改回要用那条入口。
 /// 返回给用户看的原因；None = 可以删。
@@ -470,16 +471,17 @@ pub async fn purge_blocker(db: &PgPool, machine: Uuid) -> sqlx::Result<Option<St
     }
     let until: Option<Date> = sqlx::query_scalar(
         "select ((max(h.hour) + make_interval(days => $2, hours => 1)) at time zone org_tz())::date + 1
-         from entry e join entry_traffic_hourly h on h.entry_id = e.id
-              join machine o on o.id = case when e.node_id = $1 then e.relay_id else e.node_id end
-         where (e.node_id = $1 or e.relay_id = $1) and h.hour >= now() - make_interval(days => $2) and o.lifecycle <> 'retired'
-           and h.up_bytes + h.down_bytes > 0",
+         from (select h.hour from entry e join entry_traffic_hourly h on h.entry_id = e.id
+               where (e.node_id = $1 or e.relay_id = $1) and h.hour >= now() - make_interval(days => $2) and h.up_bytes + h.down_bytes > 0
+               union all
+               select hour from host_metric_hourly
+               where machine_id = $1 and hour >= now() - make_interval(days => $2) and coalesce(net_rx, 0) + coalesce(net_tx, 0) > 0) h",
     )
     .bind(machine)
     .bind(PURGE_WAIT_DAYS)
     .fetch_one(db)
     .await?;
-    Ok(until.map(|d| format!("这台机器的入口在 {d} 前仍计入其他机器的流量统计，届时再彻底删除")))
+    Ok(until.map(|d| format!("这台机器的流量数据（入口业务流量、网卡）在 {d} 前仍能在流量页、月报里回看，届时再彻底删除")))
 }
 
 /// 同机 IP 节点的 SS 端口从这里往上分（宿主机自己的 ssserver 固定 meta::SS_PORT）
