@@ -354,8 +354,8 @@ function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; o
             {/* 同机 IP 节点：中控用自己的密钥登录宿主机，没有要填的 */}
             {k !== 'proxy' && !ip && (
               // 「中控密钥登录不了」标在这里时复制入口也留着（错误替换提示的位置）
-              <Field label="root 密码" info={"只用于首次登录，成功后丢弃，不会保存\n不填的话，检查时会用中控密钥试登录"} error={loginErr && <>{loginErr} {pubkeyBtn}</>}
-                hint={pubkeyBtn && <>{pubkeyBtn} {PUBKEY_TIP}</>}>
+              <Field label="root 密码" info={`只用于首次登录，成功后丢弃，不会保存\n不填的话，检查时会用中控密钥试登录${pubkeyBtn ? `\n${PUBKEY_TIP}` : ''}`} error={loginErr && <>{loginErr} {pubkeyBtn}</>}
+                hint={pubkeyBtn}>
                 <Input type="password" autoComplete="new-password" placeholder="留空用中控密钥" value={row.login_pw} aria-invalid={fe.login_pw ? true : undefined} onChange={(e) => onChange({ login_pw: e.target.value })} />
               </Field>
             )}

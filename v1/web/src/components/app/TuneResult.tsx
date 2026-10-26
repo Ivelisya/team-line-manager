@@ -14,6 +14,9 @@ const arr = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : []);
 export const isTuneOutput = (o: Record<string, unknown> | null | undefined): o is Record<string, unknown> => !!o && Array.isArray(o.applied);
 
 /** 推导参数一句话：「缓冲上限 43.0 MiB ← 带宽 1000 Mbps（套餐 2560，按 1000 算）· RTT 172 ms（入口连接 25 条的 P90）· 内存 3.8 GB」 */
+/** 推导结果一个数：「缓冲上限 43 MiB」（写在状态行里，推导过程放 (i)） */
+export const tuneBufText = (p: TuneParams) => `缓冲上限 ${Number((p.buf_max / 1048576).toFixed(1))} MiB`;
+
 export function tuneParamsText(p: TuneParams): string {
   const bw = p.bw_source === 'plan' ? (p.bw_plan != null && p.bw_plan !== p.bw ? `套餐 ${p.bw_plan}，按 ${p.bw} 算` : '套餐') : '套餐没填带宽，用默认值';
   const rtt = p.rtt_source === 'sampled' ? `来自 ${p.rtt_samples ?? '?'} 条入口连接的实测` : (p.rtt_samples ?? 0) > 0 ? `连接样本只有 ${p.rtt_samples} 条，不够，用默认值` : '默认';
@@ -59,8 +62,8 @@ export function TuneResult({ out }: { out: Record<string, unknown> }) {
     <div className="tune-res">
       <div className="tune-sum">{rollback && '撤销调优：'}{sum.length ? sum.map(([label, n], i) => <React.Fragment key={label}>{i > 0 && ' · '}{label} <b className="num">{n}</b> 项</React.Fragment>) : '没有参数需要调整'}
         <InfoTip text={tip} /></div>
-      {params && <div className="tune-sum">{tuneParamsText(params)}
-        <InfoTip text={'按带宽和延迟推算，不低于 16 MiB，不超过「内存的 1/32」和 64 MiB 中较小的\n带宽取套餐值（最多按 1000 Mbps）；延迟：线路机取客户连接的实测（限定在 150–300 ms），节点固定 100 ms'} /></div>}
+      {params && <div className="tune-sum">{tuneBufText(params)}
+        <InfoTip text={tuneParamsText(params) + '\n按带宽和延迟推算，不低于 16 MiB，不超过「内存的 1/32」和 64 MiB 中较小的\n带宽取套餐值（最多按 1000 Mbps）；延迟：线路机取客户连接的实测（限定在 150–300 ms），节点固定 100 ms'} /></div>}
       {rows.length > 0 && (
         <table className="tune-tbl">
           <thead><tr><th>参数</th><th>结果</th><th>说明</th></tr></thead>

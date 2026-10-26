@@ -2,9 +2,14 @@
 import * as React from 'react';
 import * as F from '@/lib/format';
 import { UnitInput } from '@/components/ui/form';
-import { FilterChip } from './primitives';
 
 export type DurationItem = { min: number; label: string };
+/** 共用的常用时长（分钟）：静默与维护窗口两个对话框一份，别的时长用「自定义」填分钟数 */
+export const DURATIONS: DurationItem[] = [
+  { min: 30, label: '30 分钟' }, { min: 60, label: '1 小时' }, { min: 120, label: '2 小时' }, { min: 240, label: '4 小时' }, { min: 1440, label: '24 小时' },
+];
+/** 默认时长（分钟）：1 小时 */
+export const DEFAULT_DURATION_MIN = 60;
 /** 静默 / 维护窗口最长多久（分钟）：中控最长收 30 天 */
 export const SILENCE_MAX_MIN = 720 * 60;
 
@@ -16,15 +21,32 @@ export function useDuration(init: number, max: number) {
   return { dur, setDur, mins, setMins, max, minutes: dur === 'custom' ? n : dur, valid: dur !== 'custom' || (n >= 1 && n <= max) };
 }
 
-export function DurationField({ d, items }: { d: ReturnType<typeof useDuration>; items: DurationItem[] }) {
+export function DurationField({ d, items = DURATIONS }: { d: ReturnType<typeof useDuration>; items?: DurationItem[] }) {
   const bad = d.dur === 'custom' && d.mins !== '' && !d.valid;
+  // 单选组：只有选中的一颗在 Tab 顺序里，方向键在组内切换（焦点跟着选中走）
+  const opts: (number | 'custom')[] = [...items.map((x) => x.min), 'custom'];
+  const pick = (v: number | 'custom') => {
+    // 改成自定义时带上刚才选的时长
+    if (v === 'custom' && d.dur !== 'custom') d.setMins(String(d.dur));
+    d.setDur(v);
+  };
+  const onKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const step = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0;
+    if (!step) return;
+    e.preventDefault();
+    const i = (opts.indexOf(d.dur) + step + opts.length) % opts.length;
+    pick(opts[i]);
+    (e.currentTarget.children[i] as HTMLElement).focus();
+  };
+  const chip = (v: number | 'custom', label: string) => (
+    <button key={v} type="button" role="radio" aria-checked={d.dur === v} tabIndex={d.dur === v ? 0 : -1} className="fchip" onClick={() => pick(v)}>{label}</button>
+  );
   return (
     <div className="field">
       <span className="label">时长</span>
-      <div className="row" role="group" aria-label="时长">
-        {items.map((x) => <FilterChip key={x.min} pressed={d.dur === x.min} onClick={() => d.setDur(x.min)}>{x.label}</FilterChip>)}
-        {/* 改成自定义时带上刚才选的时长 */}
-        <FilterChip pressed={d.dur === 'custom'} onClick={() => { if (d.dur !== 'custom') d.setMins(String(d.dur)); d.setDur('custom'); }}>自定义</FilterChip>
+      <div className="row" role="radiogroup" aria-label="时长" onKeyDown={onKey}>
+        {items.map((x) => chip(x.min, x.label))}
+        {chip('custom', '自定义')}
       </div>
       {d.dur === 'custom' && (
         <UnitInput unit="分钟" width={160} inputMode="numeric" aria-label="自定义时长（分钟）" placeholder={`1–${d.max}`} autoFocus value={d.mins} aria-invalid={bad}

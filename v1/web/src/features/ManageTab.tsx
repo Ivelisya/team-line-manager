@@ -20,7 +20,7 @@ import { ShowAll } from '@/components/app/Pagination';
 import { RouterMark, entryStatus } from './EntriesTable';
 import { useEntryRouters } from '@/lib/routers';
 import { ConfirmDialog } from '@/components/app/dialogs';
-import { tuneParamsText } from '@/components/app/TuneResult';
+import { tuneBufText, tuneParamsText } from '@/components/app/TuneResult';
 import { isSpeedtestOutput, speedtestLine } from '@/components/app/SpeedtestResult';
 import { PingOverrideSection } from './PingTab';
 import { RetireDialog } from '@/components/app/RetireDialog';
@@ -197,10 +197,10 @@ function EntrySection({ m }: { m: MachineView }) {
             </div>
           )}
           {canAdd && (
-            <div className="manage-row">
+            <div className="manage-row is-ctl">
               <div className="t">加入口 <InfoTip text="挂到另一台线路机，多一条入口和分享链接，原有的不受影响" /></div>
               <span className="row" style={{ gap: 8, flexWrap: 'nowrap' }}>
-                <div style={{ width: 160 }}><Select value={relay} onChange={setRelay} options={opts} placeholder="选择线路机" aria-label="要挂到的线路机" /></div>
+                <div style={{ flex: '0 1 160px', minWidth: 0 }}><Select value={relay} onChange={setRelay} options={opts} placeholder="选择线路机" aria-label="要挂到的线路机" /></div>
                 <Button disabled={!relay || add.isPending} loading={add.isPending} onClick={() => add.mutate({ id: m.id, relay_id: relay }, { onSuccess: () => { toast.ok('已提交，新入口正在应用'); setRelay(''); }, onError: toast.err })}>添加入口</Button>
               </span>
             </div>
@@ -272,7 +272,7 @@ function TuneRow({ m }: { m: MachineView }) {
         <div>
           <div className="t">系统调优 <InfoTip text={`优化网络参数（缓冲区、拥塞控制、连接队列）、日志体积上限和时间同步\n每一项的结果在作业详情里${t.profile ? `\n版本 ${t.profile}${t.at ? ` · ${F.dtFull(t.at)}` : ''}` : ''}`} /></div>
           {/* 同别的行：标题 + 灰色副行（状态 · 推导参数），不写成「系统调优：未调优」 */}
-          <div className="hint">{state}{t.params && <> · {tuneParamsText(t.params)}</>}</div>
+          <div className="hint">{state}{t.params && <> · {tuneBufText(t.params)} <InfoTip text={tuneParamsText(t.params)} /></>}</div>
         </div>
         <Button variant="secondary" disabled={!!m.active_job} onClick={() => setAsk(true)}>{t.profile ? '重新调优…' : '调优…'}</Button>
       </div>
@@ -349,8 +349,8 @@ function SpeedtestOwnRow({ m }: { m: MachineView }) {
         description={<>这台机器会自己下载一个测速文件，<b>会用掉约 {size} MB 流量</b>，计入它的流量额度</>}
         onConfirm={async () => { const r = await run.mutateAsync({ id: m.id, size_mb: Number(size), target }); toast.ok(`已提交「${m.name}」的测速作业（${r.target_name} ${r.size_mb} MB）`); }}>
         <div className="form-grid">
-          <Field label="下载量" hint="越大越能测出跑满的带宽；慢线路 300 秒内下不完的，按已下载的算"><Select value={size} onChange={setSize} options={sizeOpts} /></Field>
-          <Field label="测速目标" hint="北美的测速主机"><Select value={target} onChange={setTarget} options={targetOpts} /></Field>
+          <Field label="下载量" info="越大越能测出跑满的带宽；慢线路 300 秒内下不完的，按已下载的算"><Select value={size} onChange={setSize} options={sizeOpts} /></Field>
+          <Field label="测速目标" info="北美的测速主机"><Select value={target} onChange={setTarget} options={targetOpts} /></Field>
         </div>
       </ConfirmDialog>
     </>

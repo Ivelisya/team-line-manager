@@ -1,4 +1,4 @@
-// 团队与套餐 → 待付：未来 30 天内到期、要付的机器，按 供应商 × 到期日 分组（服务端折好 USD）。每组一个「登记已付…」：
+// 团队与套餐 → 待付：未来 30 天内到期、要付的机器，按 供应商 × 到期日 分组（服务端折好 USD）。每组一个「登记续费…」：
 // 打开批量续费确认（金额默认订阅价），一个事务里登记整组、一条审计。不含备用团队（等到期丢弃）；开了自动续费的单列、不算待付。
 // 续不续费的依据：每台近 30 天的 USD/GB（月费 ÷ 业务流量）、可用率（出口探测成功率），闲置的标灰胶囊（判定在服务端）。
 import * as React from 'react';
@@ -74,7 +74,7 @@ export function DueTab() {
     <>
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       <Panel title={`未来 ${DAYS} 天待付`} count={d ? `${n} 台` : undefined}
-        sub={<><InfoTip text={"按供应商和到期日分组，金额是订阅的每期价格；折成美元按「设置 → 汇率」\n已过期还没续费的也在这里\n备用团队的机器等到期丢弃，不在这里\n登记已付只记账、顺延到期日，不会向供应商付款"} />{d && n > 0 && <span className="t-sub" style={{ marginLeft: 'var(--sp-8)' }} data-tip={usdTotalTip(d.total)}>合计 <span className="num">{usdText(d.total)}</span></span>}</>} flush>
+        sub={<><InfoTip text={"按供应商和到期日分组，金额是订阅的每期价格；折成美元按「设置 → 汇率」\n已过期还没续费的也在这里\n备用团队的机器等到期丢弃，不在这里\n登记续费只记账、顺延到期日，不会向供应商付款"} />{d && n > 0 && <span className="t-sub" style={{ marginLeft: 'var(--sp-8)' }} data-tip={usdTotalTip(d.total)}>合计 <span className="num">{usdText(d.total)}</span></span>}</>} flush>
         <TableWrap>
           {d && d.groups.length > 0 && (
             <table className="dt is-one due-table" style={{ minWidth: 1000 }}>
@@ -95,7 +95,7 @@ export function DueTab() {
                       <td className="r num">{usdText(g.total)}</td>
                       <td className="r num" data-tip={b.tip}>{F.usdPerGb(b.perGb)}</td>
                       <td className="r num" data-tip={b.tip}>{F.str(F.pct(b.avail, 1))}</td>
-                      <td className="c"><Button size="sm" onClick={() => setPay(g)}>登记已付…</Button></td>
+                      <td className="c"><Button size="sm" onClick={() => setPay(g)}>登记续费…</Button></td>
                     </tr>
                   );
                 })}
@@ -113,7 +113,7 @@ export function DueTab() {
                     <div className="due-item-top"><ProviderCell p={g.provider} /><DueWhen g={g} short /></div>
                     <div className="due-item-machines">{names.slice(0, 4).join('、')}{names.length > 4 && <span className="t-muted"> 等 {names.length} 台</span>}</div>
                     <div className="due-item-machines t-sub" data-tip={b.tip}>近 30 天 {F.usdPerGb(b.perGb)}/GB · 可用率 {F.str(F.pct(b.avail, 1))} <IdlePill ms={b.idle} /></div>
-                    <div className="due-item-foot"><span className="num" data-tip={usdTotalTip(g.total)}>{subtotal(g)}<span className="t-muted"> ≈ {usdText(g.total)}</span></span><Button size="sm" onClick={() => setPay(g)}>登记已付…</Button></div>
+                    <div className="due-item-foot"><span className="num" data-tip={usdTotalTip(g.total)}>{subtotal(g)}<span className="t-muted"> ≈ {usdText(g.total)}</span></span><Button size="sm" onClick={() => setPay(g)}>登记续费…</Button></div>
                   </li>
                 );
               })}
@@ -144,7 +144,7 @@ function AmountCell({ currency, value, onChange }: { currency: string; value: st
   );
 }
 
-/** 登记已付：这一组的机器一起续费一个周期（预览里是中控算的新到期日），金额逐台可改 */
+/** 登记续费：这一组的机器一起续费一个周期（预览里是中控算的新到期日），金额逐台可改 */
 const PayForm = resetOnOpen(function PayForm({ g, open, onClose }: { g: DueGroup; open: boolean; onClose: () => void }) {
   const run = useRenewBatch();
   const items = React.useMemo(() => g.machines.map((m) => ({ machine_id: m.id })), [g]);
@@ -159,7 +159,7 @@ const PayForm = resetOnOpen(function PayForm({ g, open, onClose }: { g: DueGroup
   const newDue = (id: string) => pv.data?.items.find((i) => i.machine_id === id)?.new_due;
   return (
     <FormDialog open={open} onOpenChange={(o) => !o && onClose()} size="md" dirty={!!ref.trim() || g.machines.some((m) => amounts[m.id] !== String(m.price_cents / 100))}
-      title={`登记已付 · ${g.provider.name ?? '无供应商'} · ${g.due_date.slice(5)} 到期`}
+      title={`登记续费 · ${g.provider.name ?? '无供应商'} · ${g.due_date.slice(5)} 到期`}
       desc={<>{g.machines.length} 台，折合 {usdText(g.total)} <InfoTip text={"只记录「已续费」，到期日按订阅周期顺延；不会向供应商付款。金额默认订阅价，实付不同可以改\n每台下面是续不续费的依据（近 30 天）：USD/GB = 月费 ÷ 业务流量；可用率 = 经入口的出口探测成功率；闲置 = 近 7 天日均业务流量很低"} /></>}
       submitLabel={`登记 ${g.machines.length} 台`} busy={run.isPending} valid={!bad && !pv.isError} onSubmit={submit}>
       {pv.isError && <Note tone="bad">{(pv.error as Error).message}</Note>}
@@ -173,7 +173,7 @@ const PayForm = resetOnOpen(function PayForm({ g, open, onClose }: { g: DueGroup
               <td><AmountCell currency={m.currency} value={amounts[m.id]} onChange={(v) => setAmounts((a) => ({ ...a, [m.id]: v }))} /></td></tr>
           ))}</tbody></table>
       </div>
-      <Field label="账单号（选填）"><Input value={ref} onChange={(e) => setRef(e.target.value)} placeholder="例如：#2041" maxLength={64} /></Field>
+      <Field label="账单号 / 备注（选填）"><Input value={ref} onChange={(e) => setRef(e.target.value)} placeholder="例如：账单 #2041" maxLength={64} /></Field>
     </FormDialog>
   );
 });

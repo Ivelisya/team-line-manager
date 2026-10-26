@@ -21,7 +21,7 @@ import { Popover, PopoverContent, PopoverTrigger, Segmented, Tabs, TabsList, Tab
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { collator } from '@/lib/sort';
 import { matchTier, sv } from '@/lib/match';
-import { DurationField, SILENCE_MAX_MIN, useDuration, type DurationItem } from '@/components/app/DurationField';
+import { DEFAULT_DURATION_MIN, DurationField, SILENCE_MAX_MIN, useDuration } from '@/components/app/DurationField';
 import { SkeletonRows } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
 import { ConfirmDialog, FormDialog } from '@/components/app/dialogs';
@@ -189,11 +189,6 @@ const AHEAD_DAYS = 90; // 最多提前 90 天预约（同中控）
 const MIN = 60_000;
 type StartMode = 'now' | 'at';
 const START_ITEMS: { value: StartMode; label: string }[] = [{ value: 'now', label: '现在' }, { value: 'at', label: '指定时间' }];
-/** 常用时长（分钟），默认 4 小时；别的时长用「自定义」填分钟数 */
-const DURATIONS: DurationItem[] = [
-  { min: 15, label: '15 分钟' }, { min: 30, label: '30 分钟' }, { min: 60, label: '1 小时' }, { min: 120, label: '2 小时' },
-  { min: 240, label: '4 小时' }, { min: 480, label: '8 小时' }, { min: 1440, label: '24 小时' },
-];
 /** datetime-local 的值：本地时间，到分钟 */
 const localInput = (t: number) => { const d = new Date(t); return `${d.getFullYear()}-${F.pad2(d.getMonth() + 1)}-${F.pad2(d.getDate())}T${F.pad2(d.getHours())}:${F.pad2(d.getMinutes())}`; };
 const nextHour = () => { const d = new Date(); d.setMinutes(60, 0, 0); return localInput(d.getTime()); };
@@ -258,7 +253,7 @@ function Silences({ show }: { show: boolean }) {
   );
 }
 
-/** 新建静默。每次打开重新挂载（resetOnOpen）：对象按 preset 预选，其余回到默认（现在开始、4 小时、不标记为维护——单台机器的维护走卡片菜单的「维护窗口…」）。
+/** 新建静默。每次打开重新挂载（resetOnOpen）：对象按 preset 预选，其余回到默认（现在开始、1 小时、不标记为维护——单台机器的维护走卡片菜单的「维护窗口…」）。
  *  选“全部机器”时提交前再确认一次（写明起止） */
 const SilenceDialog = resetOnOpen(function SilenceDialog({ open, onOpenChange, preset }: { open: boolean; onOpenChange: (o: boolean) => void; preset: string }) {
   const add = useAddSilence();
@@ -266,7 +261,7 @@ const SilenceDialog = resetOnOpen(function SilenceDialog({ open, onOpenChange, p
   // 预选的是机器（右键菜单、命令面板）；选了软路由、探测点时跟着换
   const [kind, setKind] = React.useState<SilenceKind | null>(preset ? 'machine' : null);
   const [mode, setMode] = React.useState<StartMode>('now'); const [start, setStart] = React.useState(nextHour);
-  const d = useDuration(240, SILENCE_MAX_MIN);
+  const d = useDuration(DEFAULT_DURATION_MIN, SILENCE_MAX_MIN);
   const [maint, setMaint] = React.useState(false); const [comment, setComment] = React.useState('');
   const what = maint ? '维护窗口' : '静默';
   const [askAll, setAskAll] = React.useState(false);
@@ -289,7 +284,7 @@ const SilenceDialog = resetOnOpen(function SilenceDialog({ open, onOpenChange, p
   return (
     <>
       <FormDialog open={open} onOpenChange={onOpenChange} title={`新建${what}`} desc={desc} submitLabel="创建" busy={add.isPending} valid={valid}
-        dirty={subject !== preset || mode !== 'now' || d.dur !== 240 || maint || !!comment.trim()}
+        dirty={subject !== preset || mode !== 'now' || d.dur !== DEFAULT_DURATION_MIN || maint || !!comment.trim()}
         onSubmit={() => (subject === ALL ? setAskAll(true) : submit())}>
         <Field label="对象"><SubjectSelect value={subject} onChange={(v, k) => { setSubject(v); setKind(k); }} /></Field>
         {subject === ALL && <Note tone="warn">全部机器（含软路由、探测点）不发告警</Note>}
@@ -301,7 +296,7 @@ const SilenceDialog = resetOnOpen(function SilenceDialog({ open, onOpenChange, p
           </div>
           {startErr ? <div className="hint is-error">{startErr}</div> : mode === 'at' && <div className="hint">最多提前 {AHEAD_DAYS} 天 <InfoTip text="按这台电脑的本地时间" /></div>}
         </div>
-        <DurationField d={d} items={DURATIONS} />
+        <DurationField d={d} />
         <div className="row" style={{ gap: 4 }}><CheckRow checked={maint} onChange={setMaint}>标记为维护</CheckRow><InfoTip text="期间不发告警，卡片上显示「维护」" /></div>
         <Field label="备注"><Input value={comment} onChange={(e) => setComment(e.target.value)} placeholder="例如：换内核" /></Field>
       </FormDialog>
