@@ -264,6 +264,43 @@ async fn profile_anomalies_and_alert_lifecycle() {
     assert_eq!(open, 0);
 }
 
+/// 闲置备用（备用团队、没有软路由出口指着）不开来源画像告警，已开着的悄悄关掉（不发恢复，closed_by = spare）；
+/// 一开始就在备用里的同样不开；留在原团队的节点不受影响
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn idle_spare_gets_no_source_profile_alert_and_open_ones_close_quietly() {
+    let t = setup(true).await;
+    let fx = seed(&t).await;
+    let now = OffsetDateTime::now_utc();
+    let (d, h) = (Duration::days, Duration::hours);
+    t.put_cache("202.102.224.68", "中国联通", "CN", Some("河南省"), Some("郑州市"), "residential").await;
+    t.put_cache("111.1.1.1", "中国移动", "CN", Some("北京市"), Some("北京市"), "residential").await;
+    // 三个节点同样的历史：10 天前一直是郑州联通，最近出现了新运营商
+    for n in fx.n {
+        t.put_hourly(n, now - d(10), "202.102.224.68", 100).await;
+        t.put_hourly(n, now - h(2), "111.1.1.1", 7).await;
+    }
+    // 节点2 一开始就在备用团队
+    sqlx::query("update machine set team_id = (select id from team where spare), number = 2 where id = $1").bind(fx.n[1]).execute(&t.st.db).await.unwrap();
+    let r = ipintel::maintain_once(&t.st, now).await.unwrap();
+    assert!(r.opened > 0, "{r:?}");
+    assert!(!rules(&t.incidents(fx.n[0]).await, "firing").is_empty() && !rules(&t.incidents(fx.n[2]).await, "firing").is_empty());
+    assert!(t.incidents(fx.n[1]).await.is_empty(), "一开始就闲置的不开");
+
+    // 节点1 退到备用：下一轮悄悄关掉，不发恢复；节点3 不受影响
+    sqlx::query("update machine set team_id = (select id from team where spare), number = 1 where id = $1").bind(fx.n[0]).execute(&t.st.db).await.unwrap();
+    t.st.live.invalidate();
+    let r = ipintel::maintain_once(&t.st, now + Duration::minutes(5)).await.unwrap();
+    assert!(r.resolved > 0 && r.opened == 0, "{r:?}");
+    let inc = t.incidents(fx.n[0]).await;
+    assert!(rules(&inc, "firing").is_empty() && !rules(&inc, "resolved").is_empty(), "{inc:?}");
+    let by: Vec<Value> = sqlx::query_scalar("select detail from incident where subject_id = $1 and engine = 'ipintel'").bind(fx.n[0]).fetch_all(&t.st.db).await.unwrap();
+    assert!(by.iter().all(|x| x["closed_by"] == "spare"), "{by:?}");
+    assert!(!rules(&t.incidents(fx.n[2]).await, "firing").is_empty());
+    // 再跑一轮不重开
+    let r = ipintel::maintain_once(&t.st, now + Duration::minutes(10)).await.unwrap();
+    assert_eq!((r.opened, r.resolved), (0, 0), "{r:?}");
+}
+
 /// 首次扫描分页（30 天前的数据要被扫到）；水位之前的小时被补算后，差值只累加一次；水位之后的差值丢弃（扫描本来就会覆盖）
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn late_hours_are_added_once_and_scan_is_paged() {

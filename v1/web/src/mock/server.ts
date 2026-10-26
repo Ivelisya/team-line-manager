@@ -650,12 +650,17 @@ const ipNodesLeaving = (m: MachineView) => db.machines.filter((x) => x.host_mach
 const exitsUsing = (m: MachineView) => (m.team && !m.spare && m.entries.some((e) => e.lifecycle === 'active') ? [{ id: `rt-${m.team.id}`, name: `${m.team.name}-路由A`, exits: [{ exit: `节点${String(m.number ?? 1).padStart(2, '0')}`, node: m.name }] }] : []);
 /** 出口还指着这台或它上面没退役的同机 IP 节点：进备用后不自动回收（同服务端 exits_using_with_ip_nodes） */
 const exitsHold = (m: MachineView, xs: MachineView[]) => [m, ...xs].some((x) => exitsUsing(x).length > 0);
+/** 进备用后不自动回收的原因（同服务端 spare_held_reason）：出口还指着，或宿主机上已经在备用里、开着自动续费的同机 IP 节点（不随这次进备用、自动续费不会被关）；没有为 null */
+function heldReason(m: MachineView, xs: MachineView[]): string | null {
+  const why = [exitsHold(m, xs) && '软路由出口还指着它', db.machines.some((x) => x.host_machine?.id === m.id && x.lifecycle !== 'retired' && x.spare && !!x.subscription?.auto_renew) && '同机 IP 节点开着自动续费'].filter(Boolean);
+  return why.length ? why.join('、') : null;
+}
 /** 进备用的自动续费提示（同服务端 spare_notes，预览 done = false、结果 done = true）：一起进备用的里开着自动续费的会在中控关掉；被出口指着（held）时不劝关供应商那边的自动扣款 */
-function spareRenewNotes(m: MachineView, xs: MachineView[], held: boolean, done: boolean): string[] {
+function spareRenewNotes(m: MachineView, xs: MachineView[], held: string | null, done: boolean): string[] {
   const on = [m, ...xs.filter((x) => !x.spare)].filter((x) => x.subscription?.auto_renew);
   if (!on.length) return [];
   const who = on.length === 1 && on[0] === m ? '' : on.map((x) => x.name).join('、');
-  const tail = '；软路由出口还指着它，不会自动回收，到期要自己登记续费，供应商那边的自动扣款先别关';
+  const tail = `；${held}，不会自动回收，到期要自己登记续费，供应商那边的自动扣款先别关`;
   if (held) return [done ? `${who ? `${who} 的` : ''}自动续费已在中控关闭${tail}` : `${who ? `${who} 开着自动续费` : '这台开着自动续费'}：进备用时中控这边会关掉${tail}`];
   return [done ? `${who ? `${who} 的` : ''}自动续费已关闭（供应商那边的自动扣款要自己去关）` : `${who ? `${who} 开着自动续费` : '这台开着自动续费'}：进备用时会关掉，到期后照常回收（供应商那边的自动扣款要自己去关）`];
 }
@@ -685,11 +690,11 @@ R('GET', '/machines/([^/]+)/retire', ({ params }) => {
   const sp = spareTeam(); const nums = freeSpareNumbers(1 + xs.length);
   const ips = xs.map((x) => ({ id: x.id, name: x.name }));
   const spareIps = xs.map((x, i) => ({ id: x.id, name: x.name, to_name: displayName(sp.name, nums[i + 1]) }));
-  const held = exitsHold(m, xs); // 进备用后不自动回收（出口还指着这台或它的同机 IP 节点），没有回收日
+  const held = heldReason(m, xs); // 进备用后不自动回收的原因（出口还指着、同机 IP 节点开着自动续费），没有回收日
   return {
     name: m.name, renames, ip_nodes: ips, routers: exitsUsing(m),
     blockers: m.kind === 'relay' && m.entries.some((e) => !e.direct) ? [`这台线路机上还有 ${m.entries.filter((e) => !e.direct).length} 个节点入口：先把节点迁走或退役。可先用「搬空线路机」把节点换到其他线路机`] : [],
-    spare: { ok: !why, why, team: { id: sp.id, name: sp.name }, to_name: displayName(sp.name, nums[0]), recycle_on: m.subscription && !held ? addDays(m.subscription.due_date, 2) : null, ip_nodes: spareIps, warnings: [], notes: spareRenewNotes(m, xs, held, false) },
+    spare: { ok: !why, why, team: { id: sp.id, name: sp.name }, to_name: displayName(sp.name, nums[0]), recycle_on: m.subscription && !held ? addDays(m.subscription.due_date, 2) : null, held, ip_nodes: spareIps, warnings: [], notes: spareRenewNotes(m, xs, held, false) },
   };
 });
 /** 移入备用（同服务端 move_to_spare）：机器照常运行，改到备用团队最小的空号，原团队前移补号 */
@@ -715,7 +720,7 @@ R('POST', '/machines/([^/]+)/retire', ({ params, body }) => {
     if (why) throw bad(`不能移入备用：${why}`, 409, 'conflict');
     const from = m.name; const xfrom = xs.map((x) => x.name);
     // 出口与自动续费要在进备用前算（进备用后 exitsUsing 不再返回）；一起进备用的同机 IP 节点的自动续费也关掉（同服务端 patch_tx）
-    const held = exitsHold(m, xs); const notes = spareRenewNotes(m, xs, held, true);
+    const held = heldReason(m, xs); const notes = spareRenewNotes(m, xs, held, true);
     const autoOff = notes.length > 0;
     for (const x of [m, ...xs.filter((y) => !y.spare)]) if (x.subscription) x.subscription.auto_renew = false;
     const at = iso(); // 宿主机和随行 IP 节点同一次进备用，时刻相同
@@ -724,7 +729,7 @@ R('POST', '/machines/([^/]+)/retire', ({ params, body }) => {
     refreshCounts();
     db.audit.unshift({ id: `a${db.seq++}`, ts: iso(), actor: db.user, action: 'machine.retire', title: '退役机器', summary: `${from} 移入备用 → ${m.name}`, target_kind: 'machine', target_id: m.id, detail: { mode: 'spare' } });
     emit({ type: 'machines' }); emit({ type: 'catalog' });
-    return { mode: 'spare', name: m.name, from, recycle_on: held ? null : m.recycle_on, ip_nodes: xs.map((x, i) => ({ id: x.id, name: x.name, from: xfrom[i] })), auto_renew_off: autoOff, notes };
+    return { mode: 'spare', name: m.name, from, recycle_on: held ? null : m.recycle_on, held, ip_nodes: xs.map((x, i) => ({ id: x.id, name: x.name, from: xfrom[i] })), auto_renew_off: autoOff, notes };
   }
   const job = startRetire(m, !!body.cleanup, body.reason ?? null);
   // 宿主机：同机 IP 节点一并退役，进行中 / 失败的作业作废，各自一个退役作业（不登录清理：宿主机的清理连同它们的实例一起删）

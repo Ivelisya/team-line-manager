@@ -793,8 +793,10 @@ pub async fn move_to_spare(st: &AppState, actor: &str, id: Uuid, reason: Option<
     if let Some(k) = busy {
         return Err(ApiError::conflict(format!("有进行中的作业（{}）：等它结束再退役", meta::job_kind_label(&k))));
     }
-    // 进备用后不自动回收的原因：出口还指着它或它的同机 IP 节点（上面没退役的同机 IP 节点都一起进备用，没有留在外面在用的）
-    let held = spare_held_reason(crate::routers::exits_using_with_ip_nodes(&st.db, &[id]).await?.contains_key(&id), false);
+    // 进备用后不自动回收的原因：出口还指着它或它的同机 IP 节点（上面没退役的同机 IP 节点都一起进备用，没有留在外面在用的）；
+    // 上面原本就在备用里、开着自动续费的同机 IP 节点（没随这次进备用、自动续费没被关）同样扣住宿主机（视图 renewing_ip_nodes）
+    let renewing = renewing_spare_ip_nodes(&mut tx, id).await?;
+    let held = spare_held_reason(crate::routers::exits_using_with_ip_nodes(&st.db, &[id]).await?.contains_key(&id), false, renewing);
     let (spare_id, spare_name, taken) = spare_team(&mut tx).await?;
     let mut free = (1..=999).filter(|n| !taken.contains(n));
     let mut revs: Vec<(Uuid, i32, Option<Uuid>, String)> = sqlx::query_as(
@@ -834,10 +836,8 @@ pub async fn move_to_spare(st: &AppState, actor: &str, id: Uuid, reason: Option<
         compacted |= !ch.is_empty();
         relays.extend(rs);
     }
-    // 被扣住（出口还指着）的不自动回收，没有回收日（视图 recycle_on 也是 null）；进备用时自动续费已关掉，不算在原因里。
-    // 上面原本就在备用里、开着自动续费的同机 IP 节点（没随这次进备用、自动续费没被关）同样扣住宿主机（视图 renewing_ip_nodes）
-    let renewing = renewing_spare_ip_nodes(&mut tx, id).await?;
-    let recycle_on = due.filter(|_| held.is_none() && !renewing).map(crate::spare::recycle_on);
+    // 被扣住的不自动回收，没有回收日（视图 recycle_on 也是 null）；进备用时自动续费已关掉，不算在原因里
+    let recycle_on = due.filter(|_| held.is_none()).map(crate::spare::recycle_on);
     let (host_from, host_to) = (moved[0].1.clone(), moved[0].2.clone());
     let ip_out: Vec<Value> = moved[1..].iter().map(|(x, f, t)| json!({"id": x, "name": t, "from": f})).collect();
     audit(
@@ -860,12 +860,12 @@ pub async fn move_to_spare(st: &AppState, actor: &str, id: Uuid, reason: Option<
         st.relay_bumped(r);
     }
     st.emit(Event::Machines);
-    let notes = spare_notes(&renew_off, &host_from, compacted.then_some(host_from.as_str()), true, held);
-    Ok(json!({"mode": "spare", "name": host_to, "from": host_from, "recycle_on": recycle_on, "ip_nodes": ip_out, "auto_renew_off": !renew_off.is_empty(), "notes": notes}))
+    let notes = spare_notes(&renew_off, &host_from, compacted.then_some(host_from.as_str()), true, held.as_deref());
+    Ok(json!({"mode": "spare", "name": host_to, "from": host_from, "recycle_on": recycle_on, "held": held, "ip_nodes": ip_out, "auto_renew_off": !renew_off.is_empty(), "notes": notes}))
 }
 
 /// 宿主机上有没有已经在备用里、开着自动续费的同机 IP 节点（同视图 renewing_ip_nodes、spare.rs keeps_live）：有的话宿主机进备用后也不自动回收
-async fn renewing_spare_ip_nodes(conn: &mut sqlx::PgConnection, host: Uuid) -> sqlx::Result<bool> {
+pub(crate) async fn renewing_spare_ip_nodes(conn: &mut sqlx::PgConnection, host: Uuid) -> sqlx::Result<bool> {
     sqlx::query_scalar(
         "select exists (select 1 from machine x join team t on t.id = x.team_id
                         where x.host_id = $1 and x.lifecycle <> 'retired' and t.spare
@@ -876,15 +876,15 @@ async fn renewing_spare_ip_nodes(conn: &mut sqlx::PgConnection, host: Uuid) -> s
     .await
 }
 
-/// 进备用后不自动回收的原因（要照常续费）：软路由出口还指着它（或它上面的同机 IP 节点）、宿主机上还有在用的同机 IP 节点；都没有为 None。
-/// 进备用的提示（`spare_notes`）、替换的提示（api/replace.rs）共用
-pub(crate) fn spare_held_reason(exits: bool, live_ip_nodes: bool) -> Option<&'static str> {
-    match (exits, live_ip_nodes) {
-        (false, false) => None,
-        (true, false) => Some("软路由出口还指着它"),
-        (false, true) => Some("同机 IP 节点还在用"),
-        (true, true) => Some("软路由出口还指着它、同机 IP 节点还在用"),
-    }
+/// 进备用后不自动回收的原因（要照常续费）：软路由出口还指着它（或它上面的同机 IP 节点）、宿主机上还有在用的同机 IP 节点、
+/// 宿主机上有已经在备用里且开着自动续费的同机 IP 节点；都没有为 None，多个用「、」连起来（同视图 recycle_held）。
+/// 进备用的预览与结果（`spare_notes`、`spare.held` / `held`）、替换的预览（api/replace.rs）共用
+pub(crate) fn spare_held_reason(exits: bool, live_ip_nodes: bool, renewing_ip_nodes: bool) -> Option<String> {
+    let why: Vec<&str> = [(exits, "软路由出口还指着它"), (live_ip_nodes, "同机 IP 节点还在用"), (renewing_ip_nodes, "同机 IP 节点开着自动续费")]
+        .into_iter()
+        .filter_map(|(on, t)| on.then_some(t))
+        .collect();
+    (!why.is_empty()).then(|| why.join("、"))
 }
 
 /// 被扣住（`spare_held_reason` 有原因）的备用机不自动回收、要照常续费：中控这边关掉自动续费（不关的话每到期顺延一期），到期自己登记续费，
@@ -1106,7 +1106,7 @@ async fn ip_nodes_of(conn: &mut sqlx::PgConnection, host: Uuid, lock: bool) -> s
 }
 
 /// 退役预览。立即回收：会一并退役的同机 IP 节点（宿主机才有）、涉及的团队里会因压缩而改名的节点（进备用时原团队同样压缩）；
-/// `spare`：能不能移进备用（不能的原因）、进去后的名字、自动回收的日子（账单时区）、一起进备用的同机 IP 节点；
+/// `spare`：能不能移进备用（不能的原因）、进去后的名字、自动回收的日子（账单时区；被扣住不自动回收时为 null，`held` 写原因，没被扣住为 null）、一起进备用的同机 IP 节点；
 /// `spare.warnings`：还被软路由出口指着的节点（这台和一起进备用的同机 IP 节点），备用团队生效的访问策略与现在不同时每台一句（客户会受影响）；
 /// `routers`：还指向这台（和它的同机 IP 节点）的软路由出口，只提示不阻断（要换掉就先「替换」）；
 /// `blockers`：立即回收提交时会被拒绝的原因（`retire_blockers`），空 = 能回收
@@ -1153,12 +1153,12 @@ pub async fn retire_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
     // 软路由出口（先查：被出口指着的不自动回收，进备用的提示要按它写）
     let exits = crate::routers::exits_using(&st.db, &leaving).await?;
     // 进备用后不自动回收的原因：出口指着这台或它上面的同机 IP 节点（没退役的同机 IP 节点都一起进，没有留在外面在用的）；口径同 move_to_spare（只排除已退役的 IP 节点）
-    let held = spare_held_reason(crate::routers::exits_using_with_ip_nodes(&st.db, &[id]).await?.contains_key(&id), false);
     let renewing = renewing_spare_ip_nodes(&mut conn, id).await?;
+    let held = spare_held_reason(crate::routers::exits_using_with_ip_nodes(&st.db, &[id]).await?.contains_key(&id), false, renewing);
     let mut spare = json!({
         "ok": eligible.is_ok(), "why": eligible.err(), "team": {"id": spare_id, "name": spare_name}, "to_name": to_name,
-        "recycle_on": due.filter(|_| held.is_none() && !renewing).map(crate::spare::recycle_on), "ip_nodes": spare_ip,
-        "notes": spare_notes(&auto_renew, &name, (!renames.is_empty()).then_some(name.as_str()), false, held),
+        "recycle_on": due.filter(|_| held.is_none()).map(crate::spare::recycle_on), "held": held, "ip_nodes": spare_ip,
+        "notes": spare_notes(&auto_renew, &name, (!renames.is_empty()).then_some(name.as_str()), false, held.as_deref()),
     });
     // 软路由出口：按路由归在一起，写明指向的是哪台
     let names: std::collections::HashMap<Uuid, &str> = std::iter::once((id, name.as_str())).chain(ip_nodes.iter().map(|x| (x.0, x.1.as_str()))).collect();
@@ -1586,8 +1586,13 @@ pub async fn put_subscription(a: Actor, State(st): State<AppState>, ApiPath(id):
     detail["before"] = json!(before);
     detail["after"] = json!(after);
     audit(&mut tx, &a.name, "subscription.set", "machine", Some(id), detail).await?;
+    // 同机 IP 节点的自动续费会改宿主机的回收日 / 是否被扣住（视图 renewing_ip_nodes、recycle_on）：宿主机的视图也要跟着刷
+    let host: Option<Uuid> = sqlx::query_scalar("select host_id from machine where id = $1").bind(id).fetch_one(&mut *tx).await?;
     tx.commit().await?;
     st.emit_keep_access(Event::Machine { id });
+    if let Some(host) = host {
+        st.emit_keep_access(Event::Machine { id: host });
+    }
     Ok(ok(json!({"ok": true})))
 }
 

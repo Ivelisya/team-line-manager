@@ -277,8 +277,11 @@ pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime
     incident::reconcile(st, Engine::Machine, open, want, exists, now, |inc| {
         let Some(m) = active.get(&inc.subject_id) else { return Close::Keep };
         // 退到备用、或被指着的备用取消了指向（或上面的 IP 节点都走了），现在没有出口指向了：关掉。报过触发的发恢复（摘要说明是转为闲置，不是原因消失）；之后若又有出口指向它，原因还在就按新告警开
-        if m.idle_spare {
-            return Close::ResolveNoted { name: &m.name, by: "spare", note: "转为闲置备用（没有软路由出口指着、没有在用的同机 IP 节点），不再告警" };
+        // 续费提醒只给被扣住的闲置备用（health.rs renewal_reason）：还被扣住的提醒消除（到期日推后、续费了）是普通恢复；
+        // 变成不再续费（用户关掉了自动续费）才是转为等到期回收，不再提醒
+        if m.idle_spare && (inc.rule != "renewal_due" || m.spare_unbilled) {
+            let note = if inc.rule == "renewal_due" { "不再续费（等到期回收），不再提醒续费" } else { "转为闲置备用（没有软路由出口指着、没有在用的同机 IP 节点），不再告警" };
+            return Close::ResolveNoted { name: &m.name, by: "spare", note };
         }
         let probe = matches!(inc.rule.as_str(), "egress_fail" | "tcp_fail");
         let was = probe_failing.get(&(inc.rule.clone(), inc.subject_id));

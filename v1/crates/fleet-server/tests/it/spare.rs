@@ -8,6 +8,7 @@ use crate::common;
 
 use axum::http::StatusCode;
 use common::{seed_node, seed_relay, seed_team, setup, T};
+use fleet_server::state::Event;
 use fleet_server::{alerts, spare};
 use serde_json::{json, Value};
 use time::macros::datetime;
@@ -137,7 +138,7 @@ async fn retire_moves_into_spare() {
     let r = t.post(&format!("/api/v1/machines/{n1}/retire"), json!({"confirm": "团队1-01", "reason": "换新机"})).await;
     assert_eq!(
         r,
-        json!({"mode": "spare", "name": "备用-02", "from": "团队1-01", "recycle_on": "2030-01-03", "ip_nodes": [], "auto_renew_off": true,
+        json!({"mode": "spare", "name": "备用-02", "from": "团队1-01", "recycle_on": "2030-01-03", "held": null, "ip_nodes": [], "auto_renew_off": true,
                "notes": ["自动续费已关闭（供应商那边的自动扣款要自己去关）", "原团队后面的节点已前移补号：撤销退役（改回原团队）拿到的是那时最小的空号，回不到团队1-01"]})
     );
     assert!(!auto(n1).await, "进备用关掉自动续费");
@@ -294,15 +295,31 @@ async fn retire_host_with_renewing_spare_ip_node_has_no_recycle_day() {
     let ip = seed_vps(&t, sp, 1, "203.0.113.96", Some(host)).await;
     sub(&t, host, "2030-01-01", "UTC").await;
     sub(&t, ip, "2030-01-01", "UTC").await;
-    sqlx::query("update subscription set auto_renew = true where machine_id = $1").bind(ip).execute(&t.st.db).await.unwrap();
+    // 宿主机自己也开着自动续费：进备用时中控这边关掉，提示里写明为什么不自动回收
+    sqlx::query("update subscription set auto_renew = true where machine_id = any($1)").bind(vec![host, ip]).execute(&t.st.db).await.unwrap();
 
+    let held = json!("同机 IP 节点开着自动续费");
+    let note = "自动续费已在中控关闭；同机 IP 节点开着自动续费，不会自动回收";
     let pv = t.get(&format!("/api/v1/machines/{host}/retire")).await;
-    assert!(pv["spare"]["ok"] == true && pv["spare"]["recycle_on"].is_null(), "{pv}");
+    assert!(pv["spare"]["ok"] == true && pv["spare"]["recycle_on"].is_null() && pv["spare"]["held"] == held, "{pv}");
+    assert!(pv["spare"]["notes"][0].as_str().unwrap().contains("这台开着自动续费：进备用时中控这边会关掉；同机 IP 节点开着自动续费，不会自动回收"), "{pv}");
     let r = t.post(&format!("/api/v1/machines/{host}/retire"), json!({"confirm": "团队1-01"})).await;
-    assert_eq!((r["mode"].clone(), r["recycle_on"].clone()), (json!("spare"), Value::Null), "{r}");
+    assert_eq!((r["mode"].clone(), r["recycle_on"].clone(), r["held"].clone()), (json!("spare"), Value::Null, held), "{r}");
+    assert!(r["notes"][0].as_str().unwrap().contains(note), "{r}");
     t.st.live.invalidate();
     let v = t.get(&format!("/api/v1/machines/{host}")).await;
     assert_eq!((v["recycle_on"].clone(), v["recycle_held"].clone()), (Value::Null, json!(true)), "{v}");
+    // 改同机 IP 节点的订阅（自动续费）：宿主机的回收日跟着变，宿主机的视图也推一次，列表不用等定时刷新
+    let mut ev = t.st.events.subscribe();
+    let (code, _) = t.req("PUT", &format!("/api/v1/machines/{ip}/subscription"), Some(json!({"price_cents": 500, "due_date": "2030-01-01", "auto_renew": false})), None).await;
+    assert_eq!(code, StatusCode::OK);
+    let mut seen = vec![];
+    while let Ok(e) = ev.try_recv() {
+        if let Event::Machine { id } = e {
+            seen.push(id);
+        }
+    }
+    assert!(seen.contains(&ip) && seen.contains(&host), "{seen:?}");
 }
 
 /// 撤销退役（宿主机从备用改回原团队）只带与它同一次进备用的 IP 节点：之前单独退役进备用的 IP 节点留在备用（spare_since 不清、仍会自动回收）；

@@ -36,7 +36,7 @@ const NOTE_MAX = 2000;
 export function ManageTab({ m, onClosed }: { m: MachineView; onClosed: () => void }) {
   const retired = m.lifecycle === 'retired';
   const active = m.lifecycle === 'active';
-  // 闲置备用（等到期放生、没有软路由出口指着、没有在用的同机 IP 节点）不再加 IP 节点、调优、替换；还被出口指着的备用保留替换
+  // 闲置备用（没有软路由出口指着、没有在用的同机 IP 节点；不开自动续费的等到期回收）不再加 IP 节点、调优、替换；还被出口指着的备用保留替换
   const idle = isIdleSpare(m);
   const ipNodes = m.kind === 'vps' && !m.host_machine && active && !idle;
   return (
@@ -112,6 +112,8 @@ function RenameSection({ m }: { m: MachineView }) {
   const toSpare = teamMoved && !!toTeam?.spare && !m.spare;
   // 移进备用后还被软路由出口指着的（宿主机自己的和一起进备用的同机 IP 节点的，预览给）
   const exitsLeft = teamMoved ? pv.data?.router_exits.length ?? 0 : 0;
+  // 宿主机上已经在备用里、开着自动续费的同机 IP 节点：宿主机进备用后同样不自动回收（回收会连带它们）
+  const renewIps = m.renewing_ip_nodes ?? [];
   // 进不了备用（订阅过期满 1 天、没有订阅、有作业…）：保存会被服务端拒，提前拦下并说明
   const spareBlocked = toSpare ? pv.data?.spare_blocked ?? null : null;
   const changeTeam = (v: string) => { setTeam(v); setNum(v === (m.team?.id ?? '') ? (m.number != null ? F.pad2(m.number) : '') : ''); };
@@ -142,7 +144,7 @@ function RenameSection({ m }: { m: MachineView }) {
         {!!alsoIps?.length && <div className="span-2"><Note>同机 IP 节点一起移{toSpare && '入备用'}：{alsoIps.map((x, i) => <React.Fragment key={x.machine_id}>{i > 0 && '、'}<span className="num">{x.old_name} → <b>{x.new_name}</b></span></React.Fragment>)}</Note></div>}
         {!!also?.length && <div className="span-2"><RenameNote renames={also} tip="原团队少了这几台，后面的节点前移补号，编号保持连续" /></div>}
         {spareBlocked && <div className="span-2"><Note tone="bad">不能改到备用团队：{spareBlocked}。要进备用请用「退役」</Note></div>}
-        {toSpare && !spareBlocked && exitsLeft === 0 && <div className="span-2"><Note tone="warn">备用团队的机器不再续费：订阅过期满 1 天自动回收</Note></div>}
+        {toSpare && !spareBlocked && exitsLeft === 0 && <div className="span-2"><Note tone="warn">{renewIps.length > 0 ? `不自动回收：同机 IP 节点 ${renewIps.join('、')} 开着自动续费（回收宿主机会连带它们）` : '备用团队的机器不再续费：订阅过期满 1 天自动回收'}</Note></div>}
         {toSpare && !spareBlocked && exitsLeft > 0 && <div className="span-2"><Note tone="warn">{exitsLeft} 个软路由出口还指向{alsoIps?.length ? '它和一起移入的同机 IP 节点' : '它'}，客户会继续用（出口指着时不自动回收）；要换机器请用替换</Note></div>}
         {teamMoved && !spareBlocked && pv.data?.warnings.map((w) => <div key={w} className="span-2"><Note tone="warn">{w}</Note></div>)}
         <div className="span-2 row row-between">

@@ -456,11 +456,15 @@ async fn plan(st: &AppState, conn: &mut PgConnection, old_id: Uuid, b: &ReplaceI
         // 进备用之后什么时候回收（spare.rs）：没有订阅的永远不回收，已过期满 1 天的下一轮维护就回收；开着的自动续费会关掉（machines::patch_tx）
         let sub: Option<(time::Date, time::Date, bool)> =
             sqlx::query_as("select due_date, local_date(billing_tz), auto_renew from subscription_eff where machine_id = $1").bind(old.id).fetch_optional(&mut *conn).await?;
-        // 被扣住（不自动回收、要照常续费）：有在用的同机 IP 节点，或不改软路由而出口还指着旧节点
-        let held = super::machines::spare_held_reason(!routers_enabled && !routers.is_empty(), !live_ips.is_empty());
+        // 被扣住（不自动回收、要照常续费）：有在用的同机 IP 节点、已经在备用里且开着自动续费的同机 IP 节点（视图 renewing_ip_nodes），或不改软路由而出口还指着旧节点
+        let renewing = super::machines::renewing_spare_ip_nodes(&mut *conn, old.id).await?;
+        let held = super::machines::spare_held_reason(!routers_enabled && !routers.is_empty(), !live_ips.is_empty(), renewing);
         if let Some(reason) = held {
             if sub.is_some_and(|s| s.2) {
-                warnings.push(format!("旧节点「{old_name}」开着自动续费：进备用时中控这边会关掉{}", super::machines::spare_held_tail(reason)));
+                warnings.push(format!("旧节点「{old_name}」开着自动续费：进备用时中控这边会关掉{}", super::machines::spare_held_tail(&reason)));
+            }
+            if renewing {
+                warnings.push("旧节点上有已在备用、开着自动续费的同机 IP 节点：旧节点进备用后不会自动回收（它们照常续费），不要了先关掉那些 IP 节点的自动续费".into());
             }
             if !live_ips.is_empty() {
                 warnings.push(format!("旧节点上的同机 IP 节点 {} 仍在用：旧节点进备用后不会自动回收，要处理先退役或换走这些 IP 节点", live_ips.join("、")));
