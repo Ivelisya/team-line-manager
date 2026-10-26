@@ -4,7 +4,8 @@
 //! 成功次数 ÷ 探测次数。区别只有分天的时区：抽屉按机器的账单时区分天，这里一个窗口按组织时区的自然日整段加总，窗口边缘至多差几个小时。
 //! 主指标是出口成功率（经线路机走到节点再出去，客户流量真正走的路径）；TCP 成功率（线路机到节点的建连）是次要列：个别供应商的节点 TCP 探测
 //! 每天有 2% 左右偶发失败而出口一直是通的，按 TCP 排会把这样的节点排成最差。
-//! 只列在用的节点（不含线路机：线路机上的探测是它到各节点的，不代表线路机自己；不含备用团队）。
+//! 只列在用的节点（不含线路机：线路机上的探测是它到各节点的，不代表线路机自己；不含闲置备用：备用团队里没被扣住的，等到期放生；
+//! 被出口指着、同机 IP 节点在用、开着自动续费的备用机照常在客户路径上或照常续费，算进来）。
 //!
 //! 断线：小时汇总里某个整点小时出口探测失败 `OUTAGE_MIN_FAILS` 次以上就算断线的一小时，连着的小时合成一次；最长一次按小时算（原始探测只留几天，
 //! 月度窗口只能用小时汇总）。告警次数是窗口内（组织时区的自然日起止）这台机器上可用性相关规则（`AVAILABILITY_RULES`）开出的告警条数，
@@ -12,7 +13,8 @@
 //! 只数严重的：按告警 detail 里的 `critical_count`（incident::reconcile 在开为严重、警告升到严重、重开为严重时各 +1）求和，复发重开时 severity 会被改成本次的、不能看它；
 //! 旧数据没有这个数时退回原规则（有 `critical` 标记或 severity = 'critical' 的，算 1 + reopen_count 次），见 `incident::CRIT_COUNT_SQL`。
 //!
-//! 月报：总流量、月费合计、USD/GB 最高的 3 台、可用率最差的 3 台、告警次数前 3 的规则、即将到期的台数，
+//! 月报：总流量、月费合计、USD/GB 最高的 3 台、可用率最差的 3 台、告警次数前 3 的规则（tcp_fail 同样只数严重的）、即将到期的台数；
+//! （USD/GB 与可用率不含闲置备用，被扣住不回收的备用机算进来），
 //! 走通知发送队列（`notify::enqueue`，`Kind::Report`），只发给开了「月报」的渠道。
 
 use crate::db::audit;
@@ -24,7 +26,7 @@ use crate::{meta, traffic};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use time::{Date, Duration, Month, OffsetDateTime};
 use uuid::Uuid;
 
@@ -184,7 +186,7 @@ pub async fn uptime(st: &AppState, w: &Window) -> ApiResult<Value> {
     let tz = meta::org_tz();
     let (from, to): (OffsetDateTime, OffsetDateTime) =
         sqlx::query_as("select $1::date::timestamp at time zone $3, ($2::date + 1)::timestamp at time zone $3").bind(w.from).bind(w.to).bind(&tz).fetch_one(&st.db).await?;
-    let rows: Vec<NodeRow> = sqlx::query_as(
+    let mut rows: Vec<NodeRow> = sqlx::query_as(
         "select m.id, display_name(m.kind::text, m.label, t.name, m.number) name, t.id team_id, t.name team_name,
                 pv.id provider_id, pv.name provider_name,
                 coalesce(sum(h.total) filter (where h.kind = 'tcp'), 0)::bigint tcp_total, coalesce(sum(h.ok) filter (where h.kind = 'tcp'), 0)::bigint tcp_ok,
@@ -192,7 +194,7 @@ pub async fn uptime(st: &AppState, w: &Window) -> ApiResult<Value> {
          from machine m left join team t on t.id = m.team_id left join plan pl on pl.id = m.plan_id left join provider pv on pv.id = coalesce(pl.provider_id, m.provider_id)
          left join entry e on e.node_id = m.id
          left join probe_hourly h on h.entry_id = e.id and h.kind in ('tcp', 'egress') and h.hour >= $1 and h.hour < $2
-         where m.kind <> 'relay' and m.lifecycle = 'active' and m.recycled_at is null and not coalesce(t.spare, false)
+         where m.kind <> 'relay' and m.lifecycle = 'active' and m.recycled_at is null
          group by m.id, t.id, pv.id
          order by t.sort_order nulls first, t.name, m.number, m.label, m.id",
     )
@@ -200,6 +202,9 @@ pub async fn uptime(st: &AppState, w: &Window) -> ApiResult<Value> {
     .bind(to)
     .fetch_all(&st.db)
     .await?;
+    // 闲置备用不参与（视图 idle_spare：备用团队里没被扣住不回收的）
+    let idle: HashSet<Uuid> = views::live(st).await?.iter().filter(|m| m.idle_spare).map(|m| m.id).collect();
+    rows.retain(|r| !idle.contains(&r.id));
     let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
     // 断线：出口失败 OUTAGE_MIN_FAILS 次以上的整点小时，连续的小时合成一段（小时序号减去段内序号是常数）
     let islands: Vec<(Uuid, i64)> = sqlx::query_as(
@@ -360,7 +365,7 @@ pub async fn monthly(st: &AppState, month: Option<&str>) -> ApiResult<Value> {
     }
     let mut costly: Vec<Value> = live
         .iter()
-        .filter(|m| m.lifecycle == "active" && !m.spare)
+        .filter(|m| m.lifecycle == "active" && !m.idle_spare)
         .filter_map(|m| {
             let usd = m.subscription.as_ref()?.monthly_usd_cents?;
             let gb = *carried.get(&m.id)? as f64 / 1e9;
@@ -380,11 +385,14 @@ pub async fn monthly(st: &AppState, month: Option<&str>) -> ApiResult<Value> {
         .map(|i| json!({"id": i["id"], "name": i["name"], "egress_pct": i["egress_pct"], "tcp_pct": i["tcp_pct"], "outages": i["outages"], "longest_outage_h": i["longest_outage_h"]}))
         .collect();
 
-    let rules: Vec<(String, i64)> = sqlx::query_as(
-        "select rule, count(*)::bigint + coalesce(sum(reopen_count), 0)::bigint c from incident
+    // 次数口径同可用率里的告警次数：tcp_fail 只数严重的（警告级是 TCP 偶发失败、出口正常），其余规则 1 + 复发次数
+    let rules: Vec<(String, i64)> = sqlx::query_as(&format!(
+        "select rule, sum(case when rule <> 'tcp_fail' then 1 + reopen_count else {} end)::bigint c from incident
          where opened_at >= $1::date::timestamp at time zone $3 and opened_at < $2::date::timestamp at time zone $3
-         group by rule order by c desc, rule limit 3",
-    )
+         group by rule having sum(case when rule <> 'tcp_fail' then 1 + reopen_count else {} end) > 0 order by c desc, rule limit 3",
+        crate::incident::CRIT_COUNT_SQL,
+        crate::incident::CRIT_COUNT_SQL
+    ))
     .bind(w.from)
     .bind(w.to + Duration::days(1))
     .bind(meta::org_tz())

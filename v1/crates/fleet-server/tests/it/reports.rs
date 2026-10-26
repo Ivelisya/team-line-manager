@@ -151,13 +151,19 @@ async fn monthly_report_goes_only_to_channels_with_the_switch() {
         .execute(&t.st.db)
         .await
         .unwrap();
-    // 本月开过一条线路机到节点不通、30 分钟内复发 2 次合并进去：月报里算 3 次
-    sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary, reopen_count) values ($1, 'machine', 'tcp_fail', $2, 'warning', 'x', 2)")
-        .bind(Uuid::now_v7())
-        .bind(n1)
-        .execute(&t.st.db)
-        .await
-        .unwrap();
+    // 本月开过一条严重的线路机到节点不通、30 分钟内复发 2 次合并进去：月报里算 3 次；警告级的 tcp_fail（复发 6 次）不算，出口失败的那条算 1 次
+    for (rule, sev, reopen, state) in [("tcp_fail", "critical", 2, "firing"), ("tcp_fail", "warning", 6, "resolved"), ("egress_fail", "warning", 0, "firing")] {
+        sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary, reopen_count, state) values ($1, 'machine', $2, $3, $4::severity, 'x', $5, $6::incident_state)")
+            .bind(Uuid::now_v7())
+            .bind(rule)
+            .bind(n1)
+            .bind(sev)
+            .bind(reopen)
+            .bind(state)
+            .execute(&t.st.db)
+            .await
+            .unwrap();
+    }
     let on = t
         .post("/api/v1/notify-channels", json!({"name": "月报群", "kind": "feishu", "config": {"url": mock.url("/hook/on")}, "min_severity": "critical", "enabled": true, "monthly_report": true}))
         .await;
@@ -197,6 +203,41 @@ async fn monthly_report_goes_only_to_channels_with_the_switch() {
     t.req("PATCH", &format!("/api/v1/notify-channels/{}", on["id"].as_str().unwrap()), Some(json!({"monthly_report": false})), None).await;
     let (s, v) = t.req("POST", "/api/v1/reports/monthly/send", Some(json!({})), None).await;
     assert!(s == StatusCode::CONFLICT && v.to_string().contains("没有开启「月报」的通知渠道"), "{s} {v}");
+}
+
+/// 备用团队的机器：闲置的（没被扣住）不进可用率、不进月报的每 GB 最贵；开着自动续费的备用机照常续费（视图 recycle_held，不是闲置备用），算进来
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn held_spare_counts_in_uptime_and_costly_but_idle_spare_does_not() {
+    let t = setup().await;
+    seed(&t).await;
+    let relay: Uuid = sqlx::query_scalar("select id from machine where kind = 'relay'").fetch_one(&t.st.db).await.unwrap();
+    let spare: Uuid = sqlx::query_scalar("select id from team where spare").fetch_one(&t.st.db).await.unwrap();
+    let idle: Uuid = sqlx::query_scalar("select id from machine where team_id = $1").bind(spare).fetch_one(&t.st.db).await.unwrap();
+    let (held, he) = seed_node(&t, relay, spare, 2, "203.0.113.10", 20010).await;
+    put_hour(&t, he, 0, "egress", 10, 5).await;
+    // 两台备用机都有订阅和 6 GB 流量；一台开着自动续费（被扣住），一台没开（闲置）
+    for (m, auto) in [(idle, false), (held, true)] {
+        sqlx::query("insert into subscription (machine_id, price_cents, due_date, auto_renew) values ($1, 600, current_date + 60, $2)").bind(m).bind(auto).execute(&t.st.db).await.unwrap();
+        sqlx::query("insert into entry_traffic_hourly (entry_id, hour, up_bytes, down_bytes) select id, date_trunc('hour', now()), 1000000000, 5000000000 from entry where node_id = $1")
+            .bind(m)
+            .execute(&t.st.db)
+            .await
+            .unwrap();
+    }
+    t.st.live.rolled_up();
+    let v = t.get(&format!("/api/v1/machines/{held}")).await;
+    assert_eq!((v["recycle_held"].clone(), v["idle_spare"].clone(), v["recycle_on"].clone()), (json!(true), json!(false), Value::Null), "{v}");
+    assert_eq!(t.get(&format!("/api/v1/machines/{idle}")).await["idle_spare"], json!(true));
+    let up = t.get("/api/v1/reports/uptime?days=7").await;
+    let names: Vec<&str> = up["items"].as_array().unwrap().iter().map(|i| i["name"].as_str().unwrap()).collect();
+    assert_eq!(names[0], "备用-02", "被扣住的备用机进可用率（出口 50%，最差）：{up}");
+    assert!(!names.contains(&"备用-01"), "闲置备用不进：{up}");
+    let cur: String = sqlx::query_scalar("select to_char(now() at time zone 'Asia/Shanghai', 'YYYY-MM')").fetch_one(&t.st.db).await.unwrap();
+    let r = t.get(&format!("/api/v1/reports/monthly?month={cur}")).await;
+    let costly: Vec<&str> = r["costly"].as_array().unwrap().iter().map(|c| c["name"].as_str().unwrap()).collect();
+    assert_eq!(costly, ["备用-02"], "每 GB 最贵：被扣住的备用机算，闲置备用不算：{r}");
+    let worst: Vec<&str> = r["worst_uptime"].as_array().unwrap().iter().map(|c| c["name"].as_str().unwrap()).collect();
+    assert_eq!(worst[0], "备用-02", "{r}");
 }
 
 /// 同机 IP 节点的流量同时算到宿主机上：钱在宿主机订阅上，客户流量走 IP 节点，月报「每 GB 最贵」里宿主机按 6 GB 算（1 美元 / GB），
