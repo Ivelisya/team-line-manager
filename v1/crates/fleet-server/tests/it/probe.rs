@@ -728,6 +728,22 @@ async fn all_down_when_next_source_also_down_keeps_supplier_wording() {
     assert_eq!(reason_text(&machine(&t, relays[0]).await, "relay_unreachable").as_deref(), Some(SUPPLIER));
 }
 
+/// 主探测点（PVE）离线、香港代测：香港全连不上而中控连得上，只写香港所在网络出境异常，不提大陆方向被封（那是主探测点才有的判断）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn all_down_wording_for_substitute_probe_does_not_blame_mainland() {
+    let t = setup().await;
+    let (relays, pve, _pve_tok, hk, hk_tok) = pve_hk_three_relays(&t).await;
+    sqlx::query("update probe_point set last_seen_at = now() - interval '10 minutes' where id = $1").bind(pve).execute(&t.st.db).await.unwrap();
+    sqlx::query("insert into relay_reach (relay_id, ts, ok, port) select r, now() - interval '30 seconds', true, 20001 from unnest($1::uuid[]) r").bind(&relays).execute(&t.st.db).await.unwrap();
+    for _ in 0..3 {
+        assert_eq!(report_json(&t, hk, &hk_tok, all_down_body(&relays)).await.1["accepted"], 3);
+    }
+    let s = reason_text(&machine(&t, relays[0]).await, "relay_unreachable").unwrap();
+    assert!(s.starts_with("香港探测点（代替离线的PVE探测点）连续 3 次以上连不上客户入口"), "{s}");
+    assert!(s.ends_with("所有线路机同时连不上，但中控连得上：多半是香港探测点所在网络出境异常"), "{s}");
+    assert!(!s.contains("大陆"), "{s}");
+}
+
 /// 后面没有别的探测点时对照中控：中控最近 2 分钟连得上就写「中控连得上」；中控的检查关着则没有下一路，写供应商的说法
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn all_down_compares_with_central_when_no_next_probe() {
