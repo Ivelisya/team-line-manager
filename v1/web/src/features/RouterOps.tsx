@@ -34,12 +34,18 @@ export function GroupsSection({ r, groups }: { r: RouterView; groups: RouterGrou
             <div key={g.name} className="manage-row">
               <div style={{ minWidth: 0 }}>
                 <div className="t ellipsis">{g.name}</div>
-                <div className="hint ellipsis">当前 {g.now ?? '—'}{s && <> · <span className="rt-warn">临时切换中</span>，原来是 {s.from}{s.back_at ? `，${F.dt(s.back_at)} 自动切回` : ''}</>}</div>
+                <div className="hint ellipsis">
+                  当前 {g.now ?? '—'}
+                  {s && <> · <span className="rt-warn">临时切换中</span>，原来是 {s.from}{s.defer_why
+                    ? <>，等原出口恢复后再切回（下次检查 {F.hm(s.back_at!)}）<InfoTip text={s.defer_why} /></>
+                    : s.back_at ? `，${F.dt(s.back_at)} 自动切回` : ''}</>}
+                  {g.used === false && <> · 未被规则引用<InfoTip text={'mihomo 的规则没有用到这个组，切换不会改变任何流量\n要把客户挪到别的出口，用「改出口指向」'} /></>}
+                </div>
               </div>
               <div className="row" style={{ gap: 6, flexWrap: 'nowrap' }}>
                 {s && <Button variant="secondary" disabled={!online} loading={back.isPending && back.variables?.group === g.name}
                   onClick={() => back.mutate({ id: r.id, group: g.name }, { onSuccess: (d) => toast.ok(`${g.name} 已切回 ${d.to}`), onError: toast.err })}>切回</Button>}
-                <Button variant="secondary" disabled={!online || g.all.length < 2} onClick={() => showSwitch({ id: r.id, name: r.name, group: g.name })}>临时切换…</Button>
+                {g.used !== false && <Button variant="secondary" disabled={!online || g.all.length < 2} onClick={() => showSwitch({ id: r.id, name: r.name, group: g.name })}>临时切换…</Button>}
               </div>
             </div>
           );
@@ -100,7 +106,7 @@ const BUILTIN = new Map([['DIRECT', '直连，不走代理'], ['REJECT', '拒绝
 /** 临时切换：选组（select 组）与要切到的出口（组里的、不是当前的），默认 4 小时后自动切回 */
 const SwitchDialog = resetOnOpen(function SwitchDialog({ open, t }: { open: boolean; t: SwitchTarget }) {
   const q = useRouter(t.id);
-  const groups = (q.data?.detail?.groups ?? []).filter((g) => g.type === 'Selector');
+  const groups = (q.data?.detail?.groups ?? []).filter((g) => g.type === 'Selector' && g.used !== false);
   const exits = q.data?.detail?.exits ?? [];
   const [group, setGroup] = React.useState(t.group ?? '');
   const [to, setTo] = React.useState(t.to ?? '');

@@ -1177,3 +1177,78 @@ async fn switch_and_auto_back() {
     assert_eq!((a["title"].as_str(), a["summary"].as_str()), (Some("临时切换被路由改回"), Some("团队2-路由W · 手动选择：已被路由自己改回（现在选中的是「节点01」），待切回已取消")), "{a}");
     assert_eq!(t.req("POST", &format!("{path}/back"), Some(json!({"group": "手动选择"})), None).await.0, StatusCode::NOT_FOUND);
 }
+
+/// 没有规则用的组（快照 used = false）切了不影响流量：409、不去动路由；used 为 true 或没有这个字段（旧快照，未知）照常能切。
+/// 到时自动切回时原出口还不通、或它指向的节点有进行中的严重机器告警：不切回，往后推 1 小时、记原因、审计一条、通知渠道只说一次；都恢复后才切回
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn switch_unused_group_and_deferred_back() {
+    let t = setup().await;
+    let mock = Mock::start().await;
+    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "feishu", "config": {"url": mock.url("/hook/a")}, "min_severity": "critical", "enabled": true})).await;
+    let (id, _) = create(&t, "团队2-路由D").await;
+    issue_key(&t, &id).await;
+    let port = 23941;
+    sqlx::query("update router set tunnel_port = $2 where id = $1::uuid").bind(&id).bind(port).execute(&t.st.db).await.unwrap();
+    let r = root(port.into());
+    let _ = std::fs::remove_dir_all(&r);
+    std::fs::create_dir_all(&r).unwrap();
+    std::fs::write(r.join("group.now"), "节点01").unwrap();
+    let (node, relay) = (Uuid::now_v7(), Uuid::now_v7());
+    let entry = json!({"id": Uuid::now_v7(), "name": "团队2-03 · 线路机1:20003", "node_id": node, "relay_id": relay, "node_name": "团队2-03", "relay_name": "线路机1", "port": 20003, "lifecycle": "active"});
+    // 原出口 节点01：streak 是它连续不通的次数，带着对应的入口
+    let snapshot = |streak: u32, now: &str| {
+        let mut s = snap(true, [streak, 0], true);
+        s["exits"][0]["alive"] = json!(streak == 0);
+        s["exits"][0]["entry"] = entry.clone();
+        s["groups"] = json!([
+            {"name": "GLOBAL", "type": "Selector", "now": "DIRECT", "all": ["DIRECT", "节点01", "节点02"], "used": false},
+            {"name": "手动选择", "type": "Selector", "now": now, "all": ["节点01", "节点02"], "used": true},
+            {"name": "旧快照", "type": "Selector", "now": "节点01", "all": ["节点01", "节点02"]},
+        ]);
+        s
+    };
+    status(&t, &id, true, 0, snapshot(0, "节点01")).await;
+    let path = format!("/api/v1/routers/{id}/switch");
+    let (code, v) = t.req("POST", &path, Some(json!({"group": "GLOBAL", "to": "节点02"})), None).await;
+    assert!(code == StatusCode::CONFLICT && v["error"]["message"].as_str().unwrap().contains("没有规则用策略组「GLOBAL」，切了不影响流量"), "{code} {v}");
+    assert!(read(&r.join("switch.log")).is_empty(), "没去动路由");
+    // 未知的（旧快照）照常能切；这里不留记录，免得影响下面
+    let (code, _) = t.req("POST", &path, Some(json!({"group": "旧快照", "to": "节点02"})), None).await;
+    assert_eq!(code, StatusCode::OK);
+    assert_eq!(read(&r.join("switch.log")), "旧快照\n");
+    t.post(&format!("{path}/back"), json!({"group": "旧快照"})).await;
+    std::fs::write(r.join("switch.log"), "").unwrap();
+    // 手动选择 切到 节点02，马上到时间；此时 节点01 连续 3 次不通
+    t.post(&path, json!({"group": "手动选择", "to": "节点02", "back_after_s": 3600})).await;
+    let past = || async { sqlx::query("update router_switch set back_at = now() - interval '1 second' where state = 'active'").execute(&t.st.db).await.unwrap(); };
+    let sw = || async { t.get(&format!("/api/v1/routers/{id}")).await["switches"][0].clone() };
+    past().await;
+    status(&t, &id, true, 0, snapshot(3, "节点02")).await;
+    routers::switch::due(&t.st).await;
+    assert_eq!(read(&r.join("group.now")), "节点02", "原出口不通：不切回");
+    let v = sw().await;
+    assert_eq!(v["defer_why"], "原出口「节点01」现在不通（连续 3 次测延迟不通）", "{v}");
+    assert!(v["deferred_at"].is_string(), "{v}");
+    let later: bool = sqlx::query_scalar("select back_at > now() + interval '59 minutes' and back_at < now() + interval '61 minutes' from router_switch where state = 'active'").fetch_one(&t.st.db).await.unwrap();
+    assert!(later, "推迟 1 小时：{v}");
+    let a = t.get(&format!("/api/v1/audit?target_id={id}")).await[0].clone();
+    assert_eq!((a["title"].as_str(), a["actor"].as_str()), (Some("推迟自动切回"), Some("系统")), "{a}");
+    mock.wait("/hook/a", 1).await;
+    let n = mock.texts("/hook/a").pop().unwrap();
+    assert!(n.starts_with("【出口自动切回推迟】团队2-路由D\n策略组「手动选择」临时切到「节点02」，到时要切回「节点01」，但原出口「节点01」现在不通"), "{n}");
+    // 出口通了，但它指向的节点有严重的出口不通告警：还是不切回，这次不再通知
+    let inc = Uuid::now_v7();
+    sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary) values ($1, 'machine', 'egress_fail', $2, 'critical', 's')").bind(inc).bind(node).execute(&t.st.db).await.unwrap();
+    past().await;
+    status(&t, &id, true, 0, snapshot(0, "节点02")).await;
+    routers::switch::due(&t.st).await;
+    assert_eq!(read(&r.join("group.now")), "节点02");
+    let why = sw().await["defer_why"].as_str().unwrap().to_string();
+    assert!(why.starts_with("原出口「节点01」指向的 团队2-03 有进行中的严重告警（"), "{why}");
+    // 都恢复了：切回，操作者是「系统」；通知一共只有最初那一条
+    sqlx::query("update incident set state = 'resolved', resolved_at = now() where id = $1").bind(inc).execute(&t.st.db).await.unwrap();
+    past().await;
+    routers::switch::due(&t.st).await;
+    assert_eq!((read(&r.join("group.now")), t.get(&format!("/api/v1/routers/{id}")).await["switches"].clone()), ("节点01".to_string(), json!([])));
+    assert_eq!(mock.texts("/hook/a").len(), 1);
+}

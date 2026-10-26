@@ -62,10 +62,12 @@ export function installRoutersMock(R: Reg, env: Env) {
     });
     // 策略组：两个 select 组（可临时切换）和一个 url-test 组（自动选择，不能手动切）
     const names = exits.map((e) => e.name);
+    // GLOBAL 是 mihomo 自带的：规则不用它（生产上的软路由多半只有它），所以 used = false，不给切换
     const groups: RouterGroup[] = [
-      { name: '节点选择', type: 'Selector', now: names[0], all: names },
-      { name: '漏网之鱼', type: 'Selector', now: names[names.length - 1], all: ['REJECT', 'DIRECT', ...names.slice(-4)] },
-      { name: '自动选择', type: 'URLTest', now: names[1] ?? names[0], all: names },
+      { name: '节点选择', type: 'Selector', now: names[0], all: names, used: true },
+      { name: '漏网之鱼', type: 'Selector', now: names[names.length - 1], all: ['REJECT', 'DIRECT', ...names.slice(-4)], used: true },
+      { name: '自动选择', type: 'URLTest', now: names[1] ?? names[0], all: names, used: true },
+      { name: 'GLOBAL', type: 'Selector', now: 'DIRECT', all: ['DIRECT', ...names], used: false },
     ];
     return {
       system: { os: 'iStoreOS 24.10.2', kernel: '6.6.73', cpu_model: r() > 0.5 ? 'Intel(R) Celeron(R) CPU J1900 @ 1.99GHz' : 'Intel(R) Core(TM) i3-5005U CPU @ 2.00GHz', cores: 4, load: [0.49, 0.62, 0.58], procs: 168 + Math.floor(r() * 40), clock_skew_s: +(r() * 2 - 1).toFixed(1), clash_rss: (90 + r() * 80) * 1024 * 1024 },
@@ -114,7 +116,10 @@ export function installRoutersMock(R: Reg, env: Env) {
     a.v.deploy = { state: 'done', step: null, error: null, started_at: iso(now - 20 * DAY), finished_at: iso(now - 20 * DAY + 40_000) };
     // 进行中的临时切换：「节点选择」从 节点01 临时切到 节点03，3 小时后自动切回
     const sel = a.d.groups![0]; const orig = sel.now!; sel.now = a.d.exits[2].name;
-    a.v.switches = [{ group: sel.name, from: orig, to: sel.now, back_at: iso(now + 3 * HOUR), by: 'admin', switched_at: iso(now - 25 * MIN) }];
+    a.v.switches = [{ group: sel.name, from: orig, to: sel.now, back_at: iso(now + 3 * HOUR), by: 'admin', switched_at: iso(now - 25 * MIN), defer_why: null, deferred_at: null }];
+    // 另一条已到时间、但原出口还不通：往后推了 1 小时，等原出口恢复后再切回
+    const sel2 = a.d.groups![1]; const orig2 = sel2.now!; sel2.now = 'DIRECT';
+    a.v.switches.push({ group: sel2.name, from: orig2, to: 'DIRECT', back_at: iso(now + 40 * MIN), by: '系统', switched_at: iso(now - 5 * HOUR), defer_why: `原出口「${orig2}」现在不通（连续 3 次测延迟不通）`, deferred_at: iso(now - 20 * MIN) });
     const b: Rt = { v: base('rt-b', '团队2-路由B', 't2', 23002, 18 * DAY), d: null, seed: hashStr('rt-b') };
     b.d = buildDetail(b.seed, 20, { clients: 19 });
     b.v.state = 'offline'; b.v.last_seen_at = iso(now - 3 * HOUR - 12 * MIN); b.v.summary = summarize(b.d, b.seed, 912_000); b.v.exit_entries = exitEntries(b.d);
@@ -203,6 +208,7 @@ export function installRoutersMock(R: Reg, env: Env) {
   };
   R('POST', '/routers/([^/]+)/switch', ({ params, body }) => {
     const rt = find(params[0]); const g = selGroup(rt, String(body.group));
+    if (g.used === false) throw env.bad(`没有规则用策略组「${g.name}」，切了不影响流量；要把客户挪走用改出口指向（fleetctl repoint）`, 409, 'conflict');
     if (!g.all.includes(body.to) || body.to === g.now) throw env.bad('要切到的出口不在组里，或就是现在的');
     const prev = rt.v.switches?.find((s) => s.group === g.name); const from = g.now!; const original = prev?.from ?? from;
     rt.v.switches = (rt.v.switches ?? []).filter((s) => s.group !== g.name);
