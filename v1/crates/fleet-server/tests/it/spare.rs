@@ -594,3 +594,31 @@ async fn auto_renew_one_failure_does_not_stop_the_rest() {
     };
     assert_eq!((due(bad).await.as_str(), due(good).await.as_str()), ("2030-01-31", "2030-03-31"));
 }
+
+/// 软路由出口还指向的备用节点到期不自动回收（回收会摘入口，出口跟着断）：归进 kept、不建退役作业；出口改走之后下一轮照常回收
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn expired_spare_still_pointed_by_router_exit_is_kept() {
+    let t = setup(false).await;
+    let sp = spare_team(&t).await;
+    let n = seed_node(&t, sp, 1, "203.0.113.41", "active").await;
+    sub(&t, n, "2026-10-20", "UTC").await;
+    let rid = Uuid::now_v7();
+    sqlx::query("insert into router (id, name, tunnel_port) values ($1, '办公室', 23001)").bind(rid).execute(&t.st.db).await.unwrap();
+    let snap = |entry: Value| json!({"exits": [{"name": "美国", "entry": entry, "sync": "ok", "linked": true}]});
+    let pointing = json!({"id": Uuid::now_v7(), "name": "备用-01 · 线路机1:20001", "node_id": n, "relay_id": Uuid::now_v7(), "node_name": "备用-01", "relay_name": "线路机1", "port": 20001, "lifecycle": "active"});
+    sqlx::query("insert into router_status (router_id, ts, reachable, data, last_ok_at) values ($1, now(), true, $2, now())")
+        .bind(rid)
+        .bind(snap(pointing))
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let now = datetime!(2026-10-23 00:00 UTC);
+    let r = spare::run_once(&t.st, now).await.unwrap();
+    assert!(r.retired.is_empty() && r.kept == [n], "{r:?}");
+    assert!(last_job(&t, n, "retire").await.is_none());
+    assert_eq!(t.machine_lifecycle(n).await, "active");
+    // 出口改指向了别处（快照里不再对上它）：照常回收
+    sqlx::query("update router_status set data = $2 where router_id = $1").bind(rid).bind(json!({"exits": []})).execute(&t.st.db).await.unwrap();
+    let r = spare::run_once(&t.st, now).await.unwrap();
+    assert!(r.retired == [n] && r.kept.is_empty(), "{r:?}");
+}

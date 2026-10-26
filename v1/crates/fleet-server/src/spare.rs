@@ -8,9 +8,11 @@
 //!    → 发起退役作业，与「立即回收」同一条路径（api::machines::start_retire，带清理；宿主机连带它上面的同机 IP 节点）。
 //!    操作人记「系统」，作业参数与审计带 auto = spare_expiry；经通知渠道发一条「自动回收」。
 //!
+//! 软路由出口还指向它的（快照里对上了它的入口，routers::exits_using）同样不自动回收：回收会摘入口，客户出口跟着断。续费提醒（health.rs）写明哪些出口指着它、要先改指向（repoint）或确认后立即回收。
+//!
 //! 机器（含它上面的同机 IP 节点）有进行中的作业时跳过，下一轮再看；物理删除失败过的不再自动重建（等人重试那个作业）。
-//! 续费顺延了到期日自然不回收；开着自动续费的不回收（自动续费那一轮出错没顺延成，也不会被当成过期清掉；进备用时会把自动续费关掉，见 api::machines::move_to_spare）。到期前的提醒复用续费告警（health.rs 在提醒文字后接 `due_note` 和还指向它的软路由出口）：
-//! 过期第 1 天的「已过期」告警就是「明天自动回收」的通知。软路由不自动改：出口还指向它的照样回收（到期时供应商通常已经停机）。
+//! 续费顺延了到期日自然不回收；开着自动续费的不回收（自动续费那一轮出错没顺延成，也不会被当成过期清掉；进备用时会把自动续费关掉，见 api::machines::move_to_spare）。到期前的提醒复用续费告警（health.rs 在提醒文字后接 `due_note`；还有软路由出口指向它的改接 `pointed_note`）：
+//! 过期第 1 天的「已过期」告警就是「明天自动回收」的通知。软路由不自动改，所以出口还指向它的不回收（见上）。
 
 use crate::api::machines::{start_purge, start_retire};
 use crate::notify::{self, Kind, Notice};
@@ -62,6 +64,13 @@ pub fn due_note(due_days: i64) -> &'static str {
     }
 }
 
+/// 备用团队的机器还有软路由出口指向它时续费提醒后面接的一句（不自动回收，所以不写哪天回收）。`exits`：「路由名 · 出口名」
+pub fn pointed_note(due_days: i64, exits: &[String]) -> String {
+    // 过期满 1 天（`expired`：due_days <= -2）本该已经回收了
+    let kept = if due_days <= -2 { "未自动回收" } else { "到期后也不会自动回收" };
+    format!("；软路由出口 {} 还指向它，{kept}：先改指向或立即回收", exits.join("、"))
+}
+
 /// 一轮做了什么（测试用；日志在各步里记）
 #[derive(Debug, Default)]
 pub struct Ran {
@@ -73,7 +82,7 @@ pub struct Ran {
     pub purged: Vec<Uuid>,
     /// 已经过期满 1 天、但有进行中的作业，这一轮跳过的
     pub busy: Vec<Uuid>,
-    /// 已经过期满 1 天、但它上面有不在备用团队的同机 IP 节点（退役会连带它们），不自动回收的
+    /// 已经过期满 1 天、但它上面有不在备用团队的同机 IP 节点（退役会连带它们），或还有软路由出口指向它（回收会摘入口），不自动回收的
     pub kept: Vec<Uuid>,
 }
 
@@ -109,10 +118,20 @@ pub async fn run_once(st: &AppState, now: OffsetDateTime) -> anyhow::Result<Ran>
     .bind(now)
     .fetch_all(&st.db)
     .await?;
-    for r in rows.into_iter().filter(|r| expired(r.today, r.due_date)) {
+    let rows: Vec<Due> = rows.into_iter().filter(|r| expired(r.today, r.due_date)).collect();
+    let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
+    let pointed = crate::routers::exits_using(&st.db, &ids).await?;
+    for r in rows {
         // 宿主机退役会连带它上面的同机 IP 节点：有不在备用团队里的（还在正常用）就不自动回收，留给人处理
         if r.keeps_live {
             tracing::warn!(machine = %r.id, "备用节点 {} 已过期满 1 天，但它上面有不在备用团队的同机 IP 节点：不自动回收", r.name);
+            ran.kept.push(r.id);
+            continue;
+        }
+        // 软路由出口还指向它：回收会摘入口、客户的出口跟着断，留给人先改指向（续费提醒里写明了）
+        if let Some(x) = pointed.get(&r.id) {
+            let names: Vec<String> = x.iter().map(|(_, rn, xn)| format!("{rn} · {xn}")).collect();
+            tracing::warn!(machine = %r.id, "备用节点 {} 已过期满 1 天，但软路由出口 {} 还指向它：不自动回收", r.name, names.join("、"));
             ran.kept.push(r.id);
             continue;
         }
@@ -237,6 +256,14 @@ mod tests {
         assert_eq!(due_note(0), "，备用节点后天自动回收");
         assert_eq!(due_note(-1), "，备用节点明天自动回收");
         assert!(due_note(5).contains("过期满 1 天后") && due_note(-3).contains("即将"));
+    }
+
+    #[test]
+    fn pointed_note_says_not_recycled() {
+        let x = vec!["办公室 · 美国".to_string(), "办公室 · 日本".to_string()];
+        assert_eq!(pointed_note(3, &x), "；软路由出口 办公室 · 美国、办公室 · 日本 还指向它，到期后也不会自动回收：先改指向或立即回收");
+        assert!(pointed_note(-1, &x).contains("到期后也不会"), "过期第 1 天还没到回收的日子");
+        assert!(pointed_note(-2, &x).contains("未自动回收"));
     }
 
     /// 各种机器能不能进备用（设计 §2.2）：不能的只剩立即回收
