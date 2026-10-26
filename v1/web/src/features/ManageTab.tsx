@@ -4,7 +4,7 @@ import * as React from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowRight } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
-import { maintOwner, useAddEntry, useEndMaintenance, usePatchMachine, useJob, useLastSpeedtest, useRelayChoices, useSilences, useSpeedtest, useSsRefresh, useTeams, useTune } from '@/lib/queries';
+import { maintOwner, useAddEntry, useEndMaintenance, usePatchMachine, useJob, useLastSpeedtest, useRelayChoices, useRenamePreview, useSilences, useSpeedtest, useSsRefresh, useTeams, useTune } from '@/lib/queries';
 import { openMaint, openUpgrade } from '@/lib/nodeActions';
 import { useDrawer } from '@/lib/drawer';
 import { entryBad, errText, meta, mmdd, reachWho, recycleOn } from '@/lib/derive';
@@ -94,6 +94,9 @@ function RenameSection({ m }: { m: MachineView }) {
   const noteChanged = note.trim() !== (m.note ?? '').trim();
   const changed = nameChanged || countryChanged || noteChanged;
   const valid = isRelay ? label.trim().length > 0 : !!team && numOk;
+  // 换团队时原团队剩下的节点按编号连续压缩（同事务）：保存前列出连带改号的
+  const teamMoved = !isRelay && !!team && !!m.team && team !== m.team.id;
+  const also = useRenamePreview(m.id, team, numOk ? n : null, teamMoved).data?.renames;
   const auto = m.country_set ? '自动（按 IP）' : `自动（按 IP：${m.country ? countryName(m.country) : '查不到'}）`;
 
   const save = () => {
@@ -119,6 +122,11 @@ function RenameSection({ m }: { m: MachineView }) {
         )}
         <Field label="国家" className="span-2" info="显示在名字前的国旗。默认按 IP 判断，不准可以手动选"><CountrySelect value={country} onChange={setCountry} autoLabel={auto} disabled={patch.isPending} aria-label="国家或地区" /></Field>
         <Field label="备注" className="span-2" error={note.length > NOTE_MAX ? `备注最多 ${NOTE_MAX} 个字符` : undefined}><Textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="例如：客户专用、合同到 2027 年" disabled={patch.isPending} /></Field>
+        {teamMoved && !!also?.length && (
+          <div className="span-2 t-sub">
+            {m.team!.name} 的编号随之连续：{also.map((r) => `${r.old_name} → ${r.new_name}`).join('，')}
+          </div>
+        )}
         <div className="span-2 row row-between">
           {/* 改了名字才出现「旧名 → 新名」 */}
           <span className="row" style={{ gap: 8 }}>
