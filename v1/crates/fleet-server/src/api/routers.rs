@@ -435,10 +435,11 @@ async fn exists(st: &AppState, id: Uuid) -> ApiResult<()> {
     n.map(|_| ()).ok_or_else(|| ApiError::not_found("没有这台软路由"))
 }
 
-/// 一个点的字段（原始点与 5 分钟平均共用；占用都换成百分比）
+/// 一个点的字段（原始点与 5 分钟平均共用；占用都换成百分比）。exits_alive 是全部出口里可用的，fleet_alive 只数 fleet 出口（对上了面板入口的，
+/// 同卡片、告警；曲线画它）；迁移 0091 之前的点没有 fleet 的读数，fleet_alive 退回 exits_alive
 const POINT: &str = "'cpu_pct', cpu_pct, 'load1', load1, 'mem_pct', mem_pct, 'disk_pct', disk_pct, 'conntrack_pct', conntrack_pct, 'temp_c', temp_c,
     'wan_rx_bps', wan_rx_bps, 'wan_tx_bps', wan_tx_bps, 'proxy_up_bps', proxy_up_bps, 'proxy_down_bps', proxy_down_bps,
-    'conns', conns, 'clients', clients, 'exits_alive', exits_alive";
+    'conns', conns, 'clients', clients, 'exits_alive', exits_alive, 'fleet_alive', fleet_alive";
 
 pub async fn metrics(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<RangeQ>) -> ApiResult<Json<Value>> {
     let (back, step) = range_of(&q)?;
@@ -448,7 +449,7 @@ pub async fn metrics(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath
             "select coalesce(json_agg(json_build_object('ts', ts, {POINT}) order by ts), '[]') from (
                select ts, cpu_pct, load1, 100.0 * mem_used / nullif(mem_total, 0) mem_pct, 100.0 * disk_used / nullif(disk_total, 0) disk_pct,
                  100.0 * conntrack / nullif(conntrack_max, 0) conntrack_pct, temp_c, wan_rx_bps, wan_tx_bps, proxy_up_bps, proxy_down_bps,
-                 conns, clients, exits_alive
+                 conns, clients, exits_alive, coalesce(fleet_alive, exits_alive) fleet_alive
                from router_metric where router_id = $1 and ts >= $2) a"
         ),
         300 => format!(
@@ -457,7 +458,8 @@ pub async fn metrics(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath
                  100.0 * avg(mem_used) / nullif(max(mem_total), 0) mem_pct, 100.0 * avg(disk_used) / nullif(max(disk_total), 0) disk_pct,
                  100.0 * avg(conntrack) / nullif(max(conntrack_max), 0) conntrack_pct, avg(temp_c) temp_c,
                  avg(wan_rx_bps)::bigint wan_rx_bps, avg(wan_tx_bps)::bigint wan_tx_bps, avg(proxy_up_bps)::bigint proxy_up_bps,
-                 avg(proxy_down_bps)::bigint proxy_down_bps, avg(conns) conns, avg(clients) clients, avg(exits_alive) exits_alive
+                 avg(proxy_down_bps)::bigint proxy_down_bps, avg(conns) conns, avg(clients) clients, avg(exits_alive) exits_alive,
+                 avg(coalesce(fleet_alive, exits_alive)) fleet_alive
                from router_metric where router_id = $1 and ts >= $2 group by 1) a"
         ),
         _ => format!(
@@ -465,7 +467,8 @@ pub async fn metrics(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath
                  'wan_tx_bps_max', wan_tx_bps_max, 'proxy_up_bps_max', proxy_up_bps_max, 'proxy_down_bps_max', proxy_down_bps_max) order by hour), '[]') from (
                select hour, cpu_pct, cpu_pct_max, load1, 100.0 * mem_used / nullif(mem_total, 0) mem_pct, 100.0 * disk_used / nullif(disk_total, 0) disk_pct,
                  100.0 * conntrack / nullif(conntrack_max, 0) conntrack_pct, temp_c, wan_rx_bps, wan_rx_bps_max, wan_tx_bps, wan_tx_bps_max,
-                 proxy_up_bps, proxy_up_bps_max, proxy_down_bps, proxy_down_bps_max, conns, clients, exits_alive
+                 proxy_up_bps, proxy_up_bps_max, proxy_down_bps, proxy_down_bps_max, conns, clients, exits_alive,
+                 coalesce(fleet_alive, exits_alive) fleet_alive
                from router_metric_hourly where router_id = $1 and hour >= $2) a"
         ),
     };

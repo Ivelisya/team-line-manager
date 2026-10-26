@@ -458,8 +458,8 @@ function ExitsTab({ r, d }: { r: RouterView; d: RouterDetail }) {
       <Section>
         <SectionHeader title="明细" meta={`${d.exits.length} 个`} />
         <div className="table-wrap">
-          <table className="dt rt-exit-tbl" style={{ minWidth: 722 }}>
-            <colgroup><col style={{ width: 90 }} /><col style={{ width: 150 }} /><col style={{ width: 88 }} /><col style={{ width: 84 }} /><col style={{ width: 90 }} /><col style={{ width: 48 }} /><col style={{ width: 104 }} /><col style={{ width: 68 }} /></colgroup>
+          <table className="dt rt-exit-tbl" style={{ minWidth: 746 }}>
+            <colgroup><col style={{ width: 90 }} /><col style={{ width: 150 }} /><col style={{ width: 112 }} /><col style={{ width: 84 }} /><col style={{ width: 90 }} /><col style={{ width: 48 }} /><col style={{ width: 104 }} /><col style={{ width: 68 }} /></colgroup>
             <thead><tr><th>出口</th><th>对应入口</th><th>参数<InfoTip text={(['drift', 'unmanaged'] as const).map((k) => `${SYNC[k].label}：${SYNC[k].tip}`).join('\n')} /></th><th className="r">延迟</th><th>近 6 小时</th><th className="r">连接</th><th className="r">↓ / ↑ 速率</th><th className="r">客户端</th></tr></thead>
             <tbody>{d.exits.map((e) => <ExitRow key={e.name} e={e} beats={m.get(e.name)} onOpen={openMachine} onSync={r.state === 'online' && syncable(e) ? onSync : undefined} />)}</tbody>
           </table>
@@ -563,7 +563,7 @@ const ClientRow = React.memo(function ClientRow({ c, offline }: { c: RouterClien
   // 认不出主机名的设备拿 IP 当名字（旁路由没有租约），正文色，不灰
   return (
     <tr className={c.online ? undefined : 'is-quiet'}>
-      <td><span className="cell-main strong">{c.hostname ?? c.ip}</span>{(c.hostname || c.mac) && <span className="sub mono">{c.hostname && c.ip}{c.mac && `${c.hostname ? ' · ' : ''}${c.mac}`}</span>}</td>
+      <td><span className="cell-main strong">{c.hostname ?? c.ip}</span>{(c.hostname || c.mac) && <Trunc className="sub mono" text={[c.hostname && c.ip, c.mac].filter(Boolean).join(' · ')}>{c.hostname && c.ip}{c.mac && `${c.hostname ? ' · ' : ''}${c.mac}`}</Trunc>}</td>
       {offline && <td>{!c.online && <Pill>离线</Pill>}</td>}
       <td className="r num">{c.conns}</td>
       <td className="r">{c.online ? <><span className="num">↓ {F.str(F.rate(c.down_bps))}</span><span className="sub">↑ {F.str(F.rate(c.up_bps))}</span></> : <span className="t-muted">—</span>}</td>

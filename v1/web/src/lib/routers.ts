@@ -68,7 +68,7 @@ export interface RouterDetail {
 /** 详情：没采集成功过（pending）时 detail 为 null */
 export type RouterFull = RouterView & { detail: RouterDetail | null };
 export interface Bootstrap { cmd: string; expires_at: string }
-/** 曲线：点里的字段 cpu_pct load1 mem_pct disk_pct conntrack_pct temp_c wan_rx_bps wan_tx_bps proxy_up_bps proxy_down_bps conns clients exits_alive */
+/** 曲线：点里的字段 cpu_pct load1 mem_pct disk_pct conntrack_pct temp_c wan_rx_bps wan_tx_bps proxy_up_bps proxy_down_bps conns clients exits_alive fleet_alive（fleet 出口里可用的，曲线画它；旧点退回 exits_alive） */
 export interface RouterMetrics { step_s: number; points: SeriesPoint[] }
 /** 各出口的曲线：点里 delay_ms（测试失败为 null）alive conns up_bps down_bps */
 export interface RouterExitMetrics { step_s: number; exits: { name: string; points: SeriesPoint[] }[] }

@@ -20,7 +20,7 @@ const L_TEMP = [{ key: 'temp_c', label: '温度', color: 'var(--m-load)' }];
 const L_WAN = [{ key: 'wan_rx_bps', label: '↓ 下行', color: 'var(--chart-1)' }, { key: 'wan_tx_bps', label: '↑ 上行', color: 'var(--chart-2)' }];
 const L_PROXY = [{ key: 'proxy_down_bps', label: '↓ 到客户端', color: 'var(--chart-1)' }, { key: 'proxy_up_bps', label: '↑ 发往出口', color: 'var(--chart-2)' }];
 const L_CONNS = [{ key: 'conns', label: '代理连接', color: 'var(--chart-1)' }];
-const L_PEOPLE = [{ key: 'clients', label: '在线客户端', color: 'var(--chart-1)' }, { key: 'exits_alive', label: '可用出口（全部，含客户自己的）', color: 'var(--chart-2)' }];
+const L_PEOPLE = [{ key: 'clients', label: '在线客户端', color: 'var(--chart-1)' }, { key: 'fleet_alive', label: '可用出口', color: 'var(--chart-2)' }];
 const L_DELAY = [{ key: 'delay_ms', label: '延迟', color: 'var(--chart-1)' }];
 const PCT: [number, number] = [0, 100];
 const yInt = (v: number) => String(Math.round(v));
@@ -58,7 +58,7 @@ function Charts({ r }: { r: RouterView }) {
         <ChartCard c="var(--chart-1)" icon={<Network />} title="WAN 速率" value={s ? <>↓ <Num f={F.rate(s.wan.rx_bps)} /> <span className="t-sub">·</span> ↑ <Num f={F.rate(s.wan.tx_bps)} /></> : '—'} caption="当前">{chart(L_WAN, yRate, vRate, { yBase: 1000 })}</ChartCard>
         <ChartCard c="var(--chart-1)" icon={<Shuffle />} title="OpenClash 代理速率" value={s ? <>↓ <Num f={F.rate(s.openclash.down_bps)} /> <span className="t-sub">·</span> ↑ <Num f={F.rate(s.openclash.up_bps)} /></> : '—'} caption="当前">{chart(L_PROXY, yRate, vRate, { yBase: 1000 })}</ChartCard>
         <ChartCard c="var(--chart-1)" icon={<Cable />} title="代理连接数" value={s ? s.openclash.conns.toLocaleString() : '—'} caption="当前">{chart(L_CONNS, yInt, vInt, { kind: 'line' })}</ChartCard>
-        <ChartCard c="var(--chart-1)" icon={<Users />} title="客户端与可用出口" meta={<InfoTip text="右上角的出口数只数面板入口对应的出口，和卡片、告警一致；曲线里的「可用出口」是全部出口（含客户自己加的），历史读数没有分开记" />} value={s ? `${s.clients} 台 · ${fleetExits(s).alive}/${fleetExits(s).total}` : '—'} caption="当前">{chart(L_PEOPLE, yInt, vInt, { kind: 'line' })}</ChartCard>
+        <ChartCard c="var(--chart-1)" icon={<Users />} title="客户端与可用出口" value={s ? `${s.clients} 台 · ${fleetExits(s).alive}/${fleetExits(s).total} 个出口可用` : '—'} caption="当前">{chart(L_PEOPLE, yInt, vInt, { kind: 'line' })}</ChartCard>
       </Section>
       <ExitDelays r={r} range={range} few={few} />
     </>
