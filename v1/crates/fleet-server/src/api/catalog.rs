@@ -151,7 +151,7 @@ pub async fn delete_team(a: Actor, State(st): State<AppState>, ApiPath(id): ApiP
     .fetch_one(&mut *tx)
     .await?;
     if let Some(u) = in_use(&[(live, "台机器"), (retired, "台已退役的机器"), (recycled, "台回收站里等待清除的机器"), (routers, "台软路由")]) {
-        return Err(ApiError::conflict(format!("「{name}」还有 {u}：先把它们移到别的团队再删（已退役的一小时内进回收站，回收站里的约 35 天内自动清除）")));
+        return Err(ApiError::conflict(format!("「{name}」还有 {u}：先把它们移到别的团队再删（已退役的一小时内进回收站，回收站里的约 {} 天内自动清除）", crate::db::PURGE_WAIT_DAYS)));
     }
     // 按规范化后的值比（仅观察不看域名：旧数据里改回仅观察时可能还留着隐藏的域名）
     if let Some(r) = policy::load_row(&mut *tx, Scope::Team, id).await? {

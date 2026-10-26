@@ -352,7 +352,7 @@ pub fn retire(ctx: &Ctx, machine: &str, now: bool, reason: Option<&str>, no_clea
     if !ctx.json {
         if now {
             let clean = if no_cleanup { "" } else { "停掉机器上的服务、" };
-            outln(format!("将立即回收 {name}（{}）：摘掉入口、{clean}撤销令牌，然后移进回收站（之后约 35 天内自动清除数据）。", st(&m, "/ip")));
+            outln(format!("将立即回收 {name}（{}）：摘掉入口、{clean}撤销令牌，然后移进回收站（之后约 93 天内自动清除数据）。", st(&m, "/ip")));
             if !ip_nodes.is_empty() {
                 outln(format!("它上面的同机 IP 节点一并回收：{}", ip_nodes.join("、")));
             }

@@ -490,11 +490,11 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 
 **到期回收**（中控每小时的维护，`spare.rs`；中控启动时先跑一轮）：
 1. 已退役、还没进回收站、没有进行中作业的（上架取消的、这一版之前就退役了的）移进回收站（审计 `machine.recycle`，`detail.auto = "retired_sweep"`）。
-2. 回收站里的机器行在 `purge_blocker` 放行时自动物理删除（作业 `purge`，操作人「系统」，`auto = "spare_expiry"`；遥测、入口、机器行删掉，回收站这一行留着）：宿主机上还有同机 IP 节点（含已退役的）先删它们；它的入口近 35 天的小时流量还计入另一端未退役机器的统计时等到那天之后。物理删除失败过的不再自动重建（等人重试那个作业）。
+2. 回收站里的机器行在 `purge_blocker` 放行时自动物理删除（作业 `purge`，操作人「系统」，`auto = "spare_expiry"`；遥测、入口、机器行删掉，回收站这一行留着）：宿主机上还有同机 IP 节点（含已退役的）先删它们；它的入口近 93 天的小时流量还计入另一端未退役机器的统计时等到那天之后。物理删除失败过的不再自动重建（等人重试那个作业）。
 3. 备用团队里在用、有订阅、账单时区的今天晚于「到期日 + 1 天」的（`recycle_on` 当天 0 点起）：发起退役作业（同立即回收，带清理，操作人「系统」，作业参数与审计 `auto = "spare_expiry"`），`lifecycle_reason` 接上「备用到期自动回收（到期日 …）」，经通知渠道发一条 `auto`（「自动回收」，写「已自动发起回收」，发给所有启用的渠道，不看级别）；这个作业（以及自动彻底删除）之后失败时发一条 `jobfail`（见下）；作业收尾时进回收站。机器（或它的同机 IP 节点）有进行中作业的这一轮跳过；宿主机上有不在备用团队的同机 IP 节点的不回收（留给人处理）。还有软路由出口指向它的（快照里出口对上了它的入口）也不回收：回收会摘入口、客户的出口跟着断，留给人先改指向（`repoint`）或立即回收。
 备用团队的机器是替换下来、等到期丢弃的，不续费：**没有软路由出口指向它的不发续费告警** `renewal_due`，也不计入总览的 `due_soon` / `overdue`（网页「即将到期」KPI 与筛选同口径）。还有软路由出口指向它的照样发（它们不会自动回收）：文案列出这些出口，还没到回收日（含已过期 1 天内）写「，到回收日也不会自动回收」，过期满 1 天后写「未自动回收」，后面都接「：先改指向或立即回收」。自动续费的先顺延（见续费），不会被回收。
 
-**移进回收站**（`recycle::record`，退役作业收尾与上面第 1 步共用）：写一行 `recycle_bin`（`source = "fleet"`，`source_id` = 机器 id，同一台只写一次）、设 `machine.recycled_at`、写审计 `machine.recycle`（`{name（回收时的名字）, from（退役前的名字）, recycle_bin_id, auto?}`）。之后这台机器在 `GET /machines`（任何 scope）、`GET /machines/{id}`（404）里都看不到；它的入口与小时流量还留着给线路机的今天 / 本月统计用，物理删除最多推迟约 35 天，用户看不到。
+**移进回收站**（`recycle::record`，退役作业收尾与上面第 1 步共用）：写一行 `recycle_bin`（`source = "fleet"`，`source_id` = 机器 id，同一台只写一次）、设 `machine.recycled_at`、写审计 `machine.recycle`（`{name（回收时的名字）, from（退役前的名字）, recycle_bin_id, auto?}`）。之后这台机器在 `GET /machines`（任何 scope）、`GET /machines/{id}`（404）里都看不到；它的入口与小时流量还留着给线路机的今天 / 本月统计用，物理删除最多推迟约 93 天，用户看不到。
 
 **旧面板导入** `POST /recycle-bin/import`：`{items:[ImportItem], confirm?: false}`。`ImportItem` = `{source_id, kind:"vps"|"proxy"|"relay", name, team?, ip?, host_name?, provider?, plan?, service_ref?, price_cents?, currency?, cycle?, activated_at?（RFC3339）, retired_at?, due_date?（"YYYY-MM-DD"）, reason?, traffic_up?, traffic_down?, nic_rx?, nic_tx?, snapshot?（旧面板的原始记录）}`；`source` 固定为 `legacy`，`source_id` 用旧面板资产的 uuid（没有就用「供应商:service_id」）。1–1000 条；`source_id` / `name` 空、`kind` 不对、`ip` 不是 IP 时 400（「第 N 条（名字）：…」）。
 → `{dry_run, inserted:[{source_id, name, id|null}], skipped:[{source_id, name, why}]}`。默认只预演（`dry_run: true`，`id` 为 null，什么都不写）；`confirm: true` 才写，写审计 `recycle.import`（`{inserted, skipped, names}`，摘要「导入 3 台，跳过 1 台」）。跳过：同一批里重复的、已经导入过的（幂等键 `(source, source_id)`，「已经导入过（回收站 #12）」）、`ip` 或（`provider` 名字或代码不分大小写, `service_ref`）对上面板里还没回收的机器的（「是在用机器 团队2-05」，不在用的写出状态）。

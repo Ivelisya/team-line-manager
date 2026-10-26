@@ -273,7 +273,7 @@ async fn auto_renew_spare_is_not_recycled() {
 }
 
 /// 到期满 1 天：退役作业收尾时同一个事务进回收站（行内容、recycled_at、视图里看不到）；之后 purge_blocker 放行就自动物理删除，
-/// 入口流量还计入线路机统计的等满 35 天；回收站这一行一直留着
+/// 入口流量还计入线路机统计的等满 93 天；回收站这一行一直留着
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn expired_spare_is_recycled_then_purged() {
     let t = setup(true).await;
@@ -333,7 +333,7 @@ async fn expired_spare_is_recycled_then_purged() {
     assert_eq!(list["total"], 2, "{list}");
     assert!(list["items"][0].get("snapshot").is_none(), "列表不带快照");
 
-    // a 没有入口流量：下一轮物理删除；b 的入口近 35 天还有流量计入线路机的统计，先留着
+    // a 没有入口流量：下一轮物理删除；b 的入口近 93 天还有流量计入线路机的统计，先留着
     let r = spare::run_once(&t.st, now).await.unwrap();
     assert!(r.recycled.is_empty() && r.purged == [a], "{r:?}");
     let (pj, p, by) = last_job(&t, a, "purge").await.unwrap();
@@ -342,7 +342,7 @@ async fn expired_spare_is_recycled_then_purged() {
     assert!(gone(&t, a).await && !gone(&t, b).await);
     assert_eq!(bin_of(&t, a).await["name"], "团队2-07", "物理删除后回收站这一行还在");
 
-    sqlx::query("update entry_traffic_hourly set hour = date_trunc('hour', now()) - interval '36 days' where entry_id = $1").bind(eid).execute(&t.st.db).await.unwrap();
+    sqlx::query("update entry_traffic_hourly set hour = date_trunc('hour', now()) - interval '94 days' where entry_id = $1").bind(eid).execute(&t.st.db).await.unwrap();
     let r = spare::run_once(&t.st, now).await.unwrap();
     assert_eq!(r.purged, [b], "{r:?}");
     let (pj, _, _) = last_job(&t, b, "purge").await.unwrap();
