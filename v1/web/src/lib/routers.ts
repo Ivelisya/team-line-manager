@@ -21,8 +21,9 @@ export interface RouterSummary {
   conntrack: number; conntrack_max: number; temp_c: number | null;
   wan: { up: boolean; ip: string | null; rx_bps: number; tx_bps: number };
   openclash: { enabled: boolean; running: boolean; version: string | null; mode: string | null; conns: number; up_bps: number; down_bps: number };
-  /** managed：server:port 对上了 fleet 入口的出口；drift：其中参数与入口当前参数不一致的；dead：不通（连续两次以上测不通，同 exitUsable）的出口名 */
-  exits: { total: number; alive: number; dead: string[]; managed: number; drift: number };
+  /** total / alive / dead 含客户自己加的出口；managed：server:port 对上了 fleet 入口的出口；drift：其中参数与入口当前参数不一致的；dead：不通（连续两次以上测不通，同 exitUsable）的出口名。
+   *  fleet：只数 managed 的那些（告警、卡片、降级看它），other：客户自己加的出口个数；旧中控的摘要没有这两项，用 `fleetExits` 读 */
+  exits: { total: number; alive: number; dead: string[]; managed: number; drift: number; fleet?: { total: number; alive: number; dead: string[] }; other?: number };
   clients: number;
 }
 /** 一键部署（中控 SSH 到路由上替你执行接入）的进度：最近一次的，从没部署过为 null。step 是当前步骤（中文） */
@@ -232,13 +233,22 @@ export function routerMeters(s: RouterSummary) {
 /** 运行时长（秒）→ 天 / 小时 / 分钟 */
 export const uptimeFmt = (s: number | null | undefined): F.Fmt => (s == null ? F.NA : s < 3600 ? { v: String(Math.max(1, Math.floor(s / 60))), u: '分钟' } : s < 86400 ? { v: String(Math.floor(s / 3600)), u: '小时' } : { v: String(Math.floor(s / 86400)), u: '天' });
 export const tempTone = (t: number | null | undefined) => (t == null ? undefined : t >= 85 ? 'bad' : t >= 70 ? 'warn' : undefined);
-/** 在线但有毛病（卡片描边变黄，状态叫「降级」）：OpenClash 启用却没在跑、WAN 断了、有出口测试不通。
- *  names：不通的出口名（取自详情；列表摘要里只有个数）。多于 3 个只列前 3 个 */
-export const routerIssues = (s: RouterSummary | null, names?: string[]): string[] => (!s ? [] : [
-  s.openclash.enabled && !s.openclash.running && 'OpenClash 已启用但没在运行',
-  !s.wan.up && 'WAN 口断开',
-  s.exits.alive < s.exits.total && (names?.length ? `${names.slice(0, 3).join('、')}${names.length > 3 ? ` 等 ${names.length} 个出口` : ''} 连续两次延迟测试不通` : `${s.exits.total - s.exits.alive} 个出口连续两次延迟测试不通`),
-].filter((x): x is string => !!x));
+/** 出口的可用 / 总数与不通名单：只看 fleet 出口（对应面板入口的，同告警 router_exits_down），客户自己加的出口单列 other，不通也不算降级。
+ *  旧中控的摘要没有 fleet 字段，退回全部出口（other 为 0） */
+export const fleetExits = (s: RouterSummary) => {
+  const f = s.exits.fleet;
+  return f ? { total: f.total, alive: f.alive, dead: f.dead, other: s.exits.other ?? 0 } : { total: s.exits.total, alive: s.exits.alive, dead: s.exits.dead, other: 0 };
+};
+/** 在线但有毛病（卡片描边变黄，状态叫「降级」）：OpenClash 启用却没在跑、WAN 断了、有 fleet 出口测试不通（客户自己的出口不算）。不通的多于 3 个只列前 3 个 */
+export const routerIssues = (s: RouterSummary | null): string[] => {
+  if (!s) return [];
+  const ex = fleetExits(s); const names = ex.dead;
+  return [
+    s.openclash.enabled && !s.openclash.running && 'OpenClash 已启用但没在运行',
+    !s.wan.up && 'WAN 口断开',
+    ex.alive < ex.total && (names.length ? `${names.slice(0, 3).join('、')}${names.length > 3 ? ` 等 ${names.length} 个出口` : ''} 连续两次延迟测试不通` : `${ex.total - ex.alive} 个出口连续两次延迟测试不通`),
+  ].filter((x): x is string => !!x);
+};
 
 // ---- 各出口的延迟测试：按固定时间窗切格 ----
 /** 各范围切几格：每格要稳稳盖住至少一次测试（5 分钟一次，实际间隔 300–330 秒），格宽取 2 倍以上，所以 1 小时只切 6 格（10 分钟一格） */

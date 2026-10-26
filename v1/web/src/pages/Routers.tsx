@@ -4,7 +4,7 @@ import * as React from 'react';
 import { Plus, Router as RouterIcon, Shuffle, Users, Waypoints } from 'lucide-react';
 import * as F from '@/lib/format';
 import { useTeams } from '@/lib/queries';
-import { setRouterOrder, useRouterDrawer, useRouters, type RouterView } from '@/lib/routers';
+import { fleetExits, setRouterOrder, useRouterDrawer, useRouters, type RouterView } from '@/lib/routers';
 import { Button } from '@/components/ui/button';
 import { Segmented } from '@/components/ui/overlays';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -19,7 +19,8 @@ function summarize(list: RouterView[]) {
   for (const r of list) {
     o[r.state]++;
     if (r.state !== 'online' || !r.summary) continue;
-    o.alive += r.summary.exits.alive; o.total += r.summary.exits.total; o.drift += r.summary.exits.drift; o.clients += r.summary.clients;
+    const f = fleetExits(r.summary);
+    o.alive += f.alive; o.total += f.total; o.drift += r.summary.exits.drift; o.clients += r.summary.clients;
     o.down_bps += r.summary.openclash.down_bps; o.up_bps += r.summary.openclash.up_bps;
   }
   return o;

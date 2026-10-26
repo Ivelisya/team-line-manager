@@ -91,7 +91,11 @@ export function installRoutersMock(R: Reg, env: Env) {
       disk_used: 0.41 * 1.9 * GiB, disk_total: 1.9 * GiB, conntrack: 1500 + Math.floor(r() * 900), conntrack_max: 65535, temp_c: 38 + Math.round(r() * 8),
       wan: { up: wan.up, ip: wan.ip, rx_bps: wan.rx_bps, tx_bps: wan.tx_bps },
       openclash: { enabled: d.openclash.enabled, running: d.openclash.running, version: d.openclash.version, mode: d.openclash.mode, conns: d.exits.reduce((s, e) => s + e.conns, 0), up_bps: d.exits.reduce((s, e) => s + e.up_bps, 0), down_bps: d.exits.reduce((s, e) => s + e.down_bps, 0) },
-      exits: { total: d.exits.length, alive: d.exits.filter(exitUsable).length, dead: d.exits.filter((e) => !exitUsable(e)).map((e) => e.name), managed: d.exits.filter((e) => e.entry).length, drift: d.exits.filter((e) => e.sync === 'drift').length },
+      exits: {
+        total: d.exits.length, alive: d.exits.filter(exitUsable).length, dead: d.exits.filter((e) => !exitUsable(e)).map((e) => e.name), managed: d.exits.filter((e) => e.entry).length, drift: d.exits.filter((e) => e.sync === 'drift').length,
+        fleet: { total: d.exits.filter((e) => e.sync !== 'unmanaged').length, alive: d.exits.filter((e) => e.sync !== 'unmanaged' && exitUsable(e)).length, dead: d.exits.filter((e) => e.sync !== 'unmanaged' && !exitUsable(e)).map((e) => e.name) },
+        other: d.exits.filter((e) => e.sync === 'unmanaged').length,
+      },
       clients: d.clients.filter((c) => c.online).length,
     };
   }
