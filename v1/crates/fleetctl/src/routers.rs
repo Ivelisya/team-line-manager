@@ -69,15 +69,45 @@ pub(crate) fn find(all: &[Value], q: &str) -> anyhow::Result<Value> {
     resolve::named(all, q, "软路由", &[&name], &name).cloned().map_err(|e| anyhow!("{e}（先 fleetctl routers 看列表）"))
 }
 
+/// 路由连不上（离线），但还留着掉线前最后一次读到的数据：这些读数不是现在的，不能当现状显示
+fn stale(r: &Value) -> bool { r["state"] == "offline" && (r["summary"].is_object() || r["detail"].is_object()) }
+
+/// 那一刻到现在多久：`不到 1 分钟` / `7 分钟` / `3 小时` / `2 天`
+fn since_cn(t: &str) -> Option<String> {
+    let t = time::OffsetDateTime::parse(t, &time::format_description::well_known::Rfc3339).ok()?;
+    let s = (time::OffsetDateTime::now_utc() - t).whole_seconds().max(0);
+    Some(match s {
+        0..=59 => "不到 1 分钟".to_string(),
+        60..=3599 => format!("{} 分钟", s / 60),
+        3600..=86399 => format!("{} 小时", s / 3600),
+        _ => format!("{} 天", s / 86400),
+    })
+}
+
+/// 出口可用 / 总数：只数 fleet 出口（对应面板入口的，告警也只看它们），客户自己加的出口单列在后面；旧中控的摘要没有 fleet 字段，退回全部出口
+fn exits_cell(s: &Value) -> String {
+    let e = &s["exits"];
+    let (alive, total, other) = match e.get("fleet").filter(|f| f.is_object()) {
+        Some(f) => (st(f, "/alive"), st(f, "/total"), e["other"].as_i64().unwrap_or(0)),
+        None => (st(e, "/alive"), st(e, "/total"), 0),
+    };
+    let mut cell = format!("{alive}/{total}");
+    if let Some(drift) = e["drift"].as_i64().filter(|d| *d > 0) {
+        cell.push_str(&format!("（{drift} 个不一致）"));
+    }
+    if other > 0 {
+        cell.push_str(&format!(" · 其他出口 {other}"));
+    }
+    cell
+}
+
 fn row(r: &Value) -> Vec<String> {
     let s = &r["summary"];
-    let exits = if s.is_object() {
-        let drift = s["exits"]["drift"].as_i64().unwrap_or(0);
-        format!("{}/{}{}", st(s, "/exits/alive"), st(s, "/exits/total"), if drift > 0 { format!("（{drift} 个不一致）") } else { String::new() })
-    } else {
-        "-".into()
-    };
-    let wan = match s.get("wan").filter(|w| w.is_object()) {
+    // 离线：出口、客户端、CPU、内存、WAN 都是掉线前的读数，显示 -（最近在线那一列看得到多久没连上）
+    let old = stale(r);
+    let dash = || "-".to_string();
+    let exits = if s.is_object() && !old { exits_cell(s) } else { dash() };
+    let wan = match s.get("wan").filter(|w| w.is_object()).filter(|_| !old) {
         Some(w) if w["up"] == false => "断开".to_string(),
         Some(w) => format!("↓{} ↑{}", rate(w, "/rx_bps"), rate(w, "/tx_bps")),
         None => "-".into(),
@@ -94,9 +124,9 @@ fn row(r: &Value) -> Vec<String> {
         r["team"]["name"].as_str().unwrap_or("-").to_string(),
         state,
         exits,
-        st(s, "/clients"),
-        num(s, "/cpu_pct").map(|c| format!("{c:.0}%")).unwrap_or_else(|| "-".into()),
-        pct(num(s, "/mem_used"), num(s, "/mem_total")),
+        if old { dash() } else { st(s, "/clients") },
+        num(s, "/cpu_pct").filter(|_| !old).map(|c| format!("{c:.0}%")).unwrap_or_else(dash),
+        if old { dash() } else { pct(num(s, "/mem_used"), num(s, "/mem_total")) },
         wan,
         table::ts(&st(r, "/last_seen_at")),
         st(r, "/id").chars().take(13).collect(),
@@ -109,6 +139,10 @@ pub fn ls(ctx: &Ctx, team: Option<&str>) -> anyhow::Result<u8> {
     let mut all = ctx.list("/routers")?;
     if let Some(t) = team {
         all.retain(|r| r["team"]["name"].as_str() == Some(t) || st(r, "/team/id") == t);
+    }
+    // --json：离线的路由 stale: true，summary 里是掉线前最后一次读到的数据
+    for r in &mut all {
+        r["stale"] = Value::Bool(stale(r));
     }
     let data = Value::Array(all.clone());
     ctx.emit(&data, || {
@@ -129,7 +163,8 @@ pub fn ls(ctx: &Ctx, team: Option<&str>) -> anyhow::Result<u8> {
 pub fn show(ctx: &Ctx, q: &str) -> anyhow::Result<u8> {
     let r = find(&ctx.list("/routers")?, q)?;
     let id = st(&r, "/id");
-    let d = ctx.c.get(&format!("/routers/{id}"))?;
+    let mut d = ctx.c.get(&format!("/routers/{id}"))?;
+    d["stale"] = Value::Bool(stale(&d));
     // 末尾带最近 5 条配置变更（--json 的 data 仍是详情原样，要变更用 router changes --json）
     let recent = if ctx.json { Value::Null } else { ctx.c.get_q(&format!("/routers/{id}/changes"), &[("limit", "5".to_string())])? };
     ctx.emit(&d, || {
@@ -207,6 +242,17 @@ pub fn changes(ctx: &Ctx, q: &str, limit: Option<u32>) -> anyhow::Result<u8> {
 }
 
 fn human_show(d: &Value) -> String {
+    let mut out = human_show_body(d);
+    if stale(d) {
+        // 掉线前最后一次读到的时间：详情的 collected_at，没有就用最近在线
+        let at = d["detail"]["collected_at"].as_str().or_else(|| d["last_seen_at"].as_str());
+        let when = at.and_then(since_cn).map_or_else(|| "掉线前最后一次".to_string(), |s| format!("{s}前"));
+        out = format!("以下是{when}读到的（路由现在连不上，读数不是现状）\n\n{out}");
+    }
+    out
+}
+
+fn human_show_body(d: &Value) -> String {
     let det = &d["detail"];
     let y = &det["system"];
     let oc = &det["openclash"];
@@ -794,6 +840,39 @@ mod tests {
         assert!(s.contains("采集出错") && s.contains("采集脚本出错（退出码 1）：x") && !s.contains("原因"), "{s}");
         assert!(s.contains("配置文件解析不了：y（出口按上次读到的配置对应入口） · 最近一次延迟测试没做成：延迟测试：ssh 执行超过 45 秒"), "{s}");
         assert!(s.contains("时钟偏差 3 秒（中控减路由，正数 = 路由慢）"), "{s}");
+    }
+
+    fn summary(exits: Value) -> Value {
+        json!({"exits": exits, "clients": 7, "cpu_pct": 12.4, "mem_used": 1, "mem_total": 4, "wan": {"up": true, "rx_bps": 1000, "tx_bps": 2000}})
+    }
+
+    /// 出口通/总只数 fleet 出口（客户自己加的单列「其他出口」）；旧中控的摘要没有 fleet 字段，退回全部出口
+    #[test]
+    fn exits_cell_counts_fleet_exits_apart() {
+        let new = summary(json!({"total": 20, "alive": 19, "dead": ["机场A"], "managed": 18, "drift": 1, "fleet": {"total": 18, "alive": 18, "dead": []}, "other": 2}));
+        assert_eq!(exits_cell(&new), "18/18（1 个不一致） · 其他出口 2");
+        let old = summary(json!({"total": 20, "alive": 19, "dead": ["机场A"], "managed": 18, "drift": 0}));
+        assert_eq!(exits_cell(&old), "19/20");
+        let r = json!({"name": "R", "state": "online", "summary": new});
+        assert_eq!(row(&r)[3], "18/18（1 个不一致） · 其他出口 2");
+    }
+
+    /// 离线的路由：出口、客户端、CPU、内存、WAN 速率显示 -（掉线前的读数不当现状）；--json 的 stale 标出来；show 顶部写多久前读到的
+    #[test]
+    fn offline_router_readings_are_stale() {
+        let s = summary(json!({"total": 2, "alive": 2, "dead": [], "managed": 2, "drift": 0}));
+        let off = json!({"name": "R", "state": "offline", "summary": s, "last_seen_at": "2026-10-24T04:30:56Z"});
+        let on = json!({"name": "R", "state": "online", "summary": s});
+        let pending = json!({"name": "R", "state": "pending", "summary": null});
+        assert!(stale(&off) && !stale(&on) && !stale(&pending));
+        // 名称 团队 状态 | 出口 客户端 CPU 内存 WAN | 最近在线
+        assert_eq!(row(&off)[3..8], ["-", "-", "-", "-", "-"]);
+        assert_eq!(row(&on)[3..8], ["2/2", "7", "12%", "25%", "↓1.0 Kbps ↑2.0 Kbps"].map(String::from)[..], "{:?}", row(&on));
+        let d = json!({"name": "R", "state": "offline", "last_seen_at": "2026-10-24T04:30:56Z", "detail": {"collected_at": "2026-10-24T04:30:56Z", "system": {"os": "OpenWrt"}}});
+        let text = human_show(&d);
+        assert!(text.starts_with("以下是") && text.contains("前读到的（路由现在连不上，读数不是现状）\n\n"), "{text}");
+        assert!(!human_show(&json!({"name": "R", "state": "online", "detail": {"system": {"os": "OpenWrt"}}})).contains("以下是"));
+        assert_eq!(since_cn("2999-01-01T00:00:00Z").as_deref(), Some("不到 1 分钟"));
     }
 
     #[test]
