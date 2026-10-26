@@ -416,9 +416,9 @@ mod tests {
     #[test]
     fn picks_fastest_that_fits() {
         let (a, b, c) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
-        let free = Q { limit: None, used: 0.0, daily: 0.0, days_left: 20.0 };
+        let free = Q { limit: None, used: 0.0, daily: 0.0, days_left: 20.0, rolling: false };
         // c：2000 GB 上限、已用 1000，日均 20 → 到重置日 1400，安全线 1600：每天还能多接 10 GB
-        let tight = Q { limit: Some(2000e9), used: 1000e9, daily: 20e9, days_left: 20.0 };
+        let tight = Q { limit: Some(2000e9), used: 1000e9, daily: 20e9, days_left: 20.0, rolling: false };
         let relays = vec![RelayIn { id: a, usable: true, q: free, k: 1.0 }, RelayIn { id: b, usable: false, q: free, k: 1.0 }, RelayIn { id: c, usable: true, q: tight, k: 1.0 }];
         let cell = |ok: i64, p50: f64| Cell { samples: 100, ok, p50: Some(p50) };
         let node = |cur: Uuid, cells: Vec<(Uuid, Cell)>, daily: f64| NodeIn { current: Some(cur), cells: cells.into_iter().collect(), daily };
@@ -447,8 +447,8 @@ mod tests {
     #[test]
     fn room_is_measured_with_the_target_k() {
         let (a, c) = (Uuid::from_u128(1), Uuid::from_u128(3));
-        let free = Q { limit: None, used: 0.0, daily: 0.0, days_left: 20.0 };
-        let tight = Q { limit: Some(2000e9), used: 1000e9, daily: 20e9, days_left: 20.0 };
+        let free = Q { limit: None, used: 0.0, daily: 0.0, days_left: 20.0, rolling: false };
+        let tight = Q { limit: Some(2000e9), used: 1000e9, daily: 20e9, days_left: 20.0, rolling: false };
         let cell = |p50: f64| Cell { samples: 100, ok: 100, p50: Some(p50) };
         let node = NodeIn { current: Some(a), cells: [(a, cell(180.0)), (c, cell(150.0))].into_iter().collect(), daily: 6e9 };
         let relays = |kc: f64| vec![RelayIn { id: a, usable: true, q: free, k: 1.0 }, RelayIn { id: c, usable: true, q: tight, k: kc }];

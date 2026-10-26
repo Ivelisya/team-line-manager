@@ -68,20 +68,23 @@ pub struct Q {
     pub daily: f64,
     /// 距重置还有多少天；按近 30 天滚动计的用 `Q::rolling`（`ROLLING_DAYS`）
     pub days_left: f64,
+    /// 近 30 天滚动计、没有重置日：预计用量按稳态算（见 `Q::rolling`）
+    pub rolling: bool,
 }
 
 /// 按近 30 天滚动计流量的线路机没有重置日，用量永远是「近 30 天合计」：看稳态，日均 × 30 天
 pub const ROLLING_DAYS: f64 = 30.0;
 
 impl Q {
-    /// 滚动 30 天的线路机：已用不另算（窗口里的量已经体现在日均里），预计用量 = 日均 × `ROLLING_DAYS`，
-    /// 承接 `extra` 的日均后 = (日均 + extra) × `ROLLING_DAYS`，余量与放不放得下都按这个（和有重置日的同一套算式）
-    pub fn rolling(limit: Option<f64>, daily: f64) -> Q {
-        Q { limit, used: 0.0, daily, days_left: ROLLING_DAYS }
+    /// 滚动 30 天的线路机：用量是近 30 天合计，预计用量 = max(已用, 日均 × `ROLLING_DAYS`)——日均已经降下来的（刚搬走了入口）看稳态，
+    /// 近 30 天合计还高的（日均刚升起来、窗口里的量还没滚出去）不能低估成稳态；
+    /// 承接 `extra` 的日均后在这个基础上加 extra × `ROLLING_DAYS`，即 (日均 + extra) × 30 与 已用 + extra × 30 都要在安全线内；余量按预计用量算
+    pub fn rolling(limit: Option<f64>, used: f64, daily: f64) -> Q {
+        Q { limit, used, daily, days_left: ROLLING_DAYS, rolling: true }
     }
-    /// 按当前速度到重置日预计的用量
+    /// 按当前速度到重置日预计的用量（滚动 30 天的见 `Q::rolling`）
     pub fn projected(&self) -> f64 {
-        self.used + self.daily * self.days_left
+        if self.rolling { self.used.max(self.daily * self.days_left) } else { self.used + self.daily * self.days_left }
     }
     /// 到重置日还能再放多少（字节），没有上限为 None
     pub fn headroom(&self) -> Option<f64> {
@@ -165,7 +168,7 @@ mod tests {
     #[test]
     fn rebalance_picks_fewest_entries() {
         // 线路机 1：日均 96，已用 1051 / 2000，还剩 20 天 → 到重置日 2971，要把日均降到 ≤ (2000-1051)/20 = 47.45
-        let q = Q { limit: Some(2000e9), used: 1051e9, daily: 96e9, days_left: 20.0 };
+        let q = Q { limit: Some(2000e9), used: 1051e9, daily: 96e9, days_left: 20.0, rolling: false };
         let allowed = (q.limit.unwrap() - q.used) / q.days_left;
         // 入口日均：40、30、20、5、1：先拿 40，缺口 8.55 → 单个能补上的最小是 20（不拿 30）
         let rates = [30e9, 40e9, 1e9, 20e9, 5e9];
@@ -176,28 +179,37 @@ mod tests {
         assert_eq!((p.len(), ok), (2, false));
         // 目标：余量最多的（线路机 3：12 TB 几乎空着）；承接 60 GB/天 到重置日仍在 80% 内才放得下
         let (a, b) = (Uuid::from_u128(1), Uuid::from_u128(3));
-        let t3 = Q { limit: Some(12000e9), used: 100e9, daily: 5e9, days_left: 20.0 };
-        assert_eq!(best_target(&[(a, Q { limit: Some(2000e9), used: 500e9, daily: 10e9, days_left: 20.0 }), (b, t3)]), Some(b));
+        let t3 = Q { limit: Some(12000e9), used: 100e9, daily: 5e9, days_left: 20.0, rolling: false };
+        assert_eq!(best_target(&[(a, Q { limit: Some(2000e9), used: 500e9, daily: 10e9, days_left: 20.0, rolling: false }), (b, t3)]), Some(b));
         assert!(t3.fits(60e9) && !t3.fits(500e9));
     }
 
     #[test]
     fn rolling30_target_counts_steady_state_daily_times_30() {
         // 上限 2000 GB、日均 40 GB：稳态 1200 GB，余量 800 GB；再承接 10 GB/天 → 1500 GB，在 80%（1600）内；承接 15 GB/天 → 1650 GB，放不下
-        let r = Q::rolling(Some(2000e9), 40e9);
+        let r = Q::rolling(Some(2000e9), 1000e9, 40e9);
         assert_eq!(r.projected(), 1200e9);
         assert_eq!(r.headroom(), Some(800e9));
         assert!(r.fits(10e9) && !r.fits(15e9));
         // 以前没有重置日时剩余天数取 0：日均和承接量都被忽略，什么都放得下
-        let old = Q { limit: Some(2000e9), used: 0.0, daily: 40e9, days_left: 0.0 };
+        let old = Q { limit: Some(2000e9), used: 0.0, daily: 40e9, days_left: 0.0, rolling: false };
         assert!(old.fits(500e9));
         // 日均大的线路机余量少，默认目标不会选它（日均 90 GB 稳态 2700 GB 已超上限）
-        let busy = Q::rolling(Some(2000e9), 90e9);
+        let busy = Q::rolling(Some(2000e9), 1000e9, 90e9);
         assert_eq!(busy.headroom(), Some(-700e9));
         assert!(!busy.fits(0.0));
         let (a, b) = (Uuid::from_u128(1), Uuid::from_u128(2));
         assert_eq!(best_target(&[(a, busy), (b, r)]), Some(b));
         // 不限流量的永远放得下
-        assert!(Q::rolling(None, 90e9).fits(1e12));
+        assert!(Q::rolling(None, 0.0, 90e9).fits(1e12));
+        // 近 30 天合计比日均 × 30 高（日均刚降下来、窗口里的量还没滚出去）：预计用量不低于已用，余量按已用算；
+        // 承接后另要 已用 + 承接日均 × 30 在上限 80% 内：已用 1500 GB、日均 10 GB（稳态 300 GB），承接 10 GB/天 → 稳态 600 GB 放得下，但 1500 + 300 = 1800 GB 超过 1600 GB
+        let tail = Q::rolling(Some(2000e9), 1500e9, 10e9);
+        assert_eq!(tail.projected(), 1500e9);
+        assert_eq!(tail.headroom(), Some(500e9));
+        assert!(tail.fits(3e9) && !tail.fits(4e9), "1500 + 3×30 = 1590 在 1600 内；1500 + 4×30 = 1620 超出");
+        assert!(!Q::rolling(Some(2000e9), 1700e9, 0.0).fits(0.0), "已用本身就超过 80%");
+        // 已用比稳态低（线路机刚上架 / 日均刚升上来）：照旧按稳态
+        assert_eq!(Q::rolling(Some(2000e9), 100e9, 40e9).projected(), 1200e9);
     }
 }
