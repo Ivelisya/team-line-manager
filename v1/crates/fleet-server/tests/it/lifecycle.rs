@@ -915,3 +915,41 @@ async fn entry_ports_are_never_reused() {
     sqlx::query("update relay set port_next = 20001 where machine_id = $1").bind(relay).execute(db).await.unwrap();
     assert_eq!(create(node(5).await).await.1, 20011);
 }
+
+/// 手动换团队：原团队少了这台，剩下的编号压缩成连续（同退役完成），预览列出连带改号的；换到的团队排到最小空号。同团队里只改编号不压缩
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn patch_team_compacts_the_team_it_leaves() {
+    let t = setup(false).await;
+    let (a, b) = (seed_team(&t, "团队1").await, seed_team(&t, "团队2").await);
+    let a1 = seed_node(&t, a, 1, "203.0.113.51", "active").await;
+    let a2 = seed_node(&t, a, 2, "203.0.113.52", "active").await;
+    let a3 = seed_node(&t, a, 3, "203.0.113.53", "active").await;
+    let b1 = seed_node(&t, b, 1, "203.0.113.54", "active").await;
+    let name = |id: Uuid| {
+        let t = &t;
+        async move { t.get(&format!("/api/v1/machines/{id}")).await["name"].as_str().unwrap().to_string() }
+    };
+
+    // 预览：02 去团队2，团队2 里排到 02；团队1 的 03 顶上来成 02
+    let pv = t.get(&format!("/api/v1/machines/{a2}/rename-preview?team_id={b}")).await;
+    assert_eq!((pv["old_name"].as_str(), pv["name"].as_str()), (Some("团队1-02"), Some("团队2-02")), "{pv}");
+    assert_eq!(pv["renames"], json!([{"machine_id": a3, "old_name": "团队1-03", "new_name": "团队1-02"}]), "{pv}");
+    // 同团队只改编号：不压缩，预览没有连带改号
+    let pv = t.get(&format!("/api/v1/machines/{a2}/rename-preview?number=9")).await;
+    assert_eq!((pv["name"].as_str(), pv["renames"].clone()), (Some("团队1-09"), json!([])), "{pv}");
+
+    let rev = t.get(&format!("/api/v1/machines/{a2}")).await["revision"].clone();
+    let (s, v) = t.req("PATCH", &format!("/api/v1/machines/{a2}"), Some(json!({"revision": rev, "team_id": b})), None).await;
+    assert_eq!((s, v["data"]["name"].as_str()), (StatusCode::OK, Some("团队2-02")), "{v}");
+    assert_eq!((name(a1).await, name(a3).await, name(b1).await), ("团队1-01".into(), "团队1-02".into(), "团队2-01".into()));
+    let nums: Vec<i32> = sqlx::query_scalar("select number from machine where team_id = $1 order by number").bind(a).fetch_all(&t.st.db).await.unwrap();
+    assert_eq!(nums, [1, 2]);
+    let n: i64 = sqlx::query_scalar("select count(*) from audit_log where action = 'team.renumber' and target_id = $1").bind(a).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(n, 1, "连带改号记了审计");
+
+    // 同团队改编号：别的机器不动（空号是人自己选的）
+    let rev = t.get(&format!("/api/v1/machines/{a3}")).await["revision"].clone();
+    let (s, _) = t.req("PATCH", &format!("/api/v1/machines/{a3}"), Some(json!({"revision": rev, "number": 5})), None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!((name(a1).await, name(a3).await), ("团队1-01".into(), "团队1-05".into()));
+}

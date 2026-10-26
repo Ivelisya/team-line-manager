@@ -109,9 +109,23 @@ impl PatchIn {
 /// PATCH 前锁住的当前值：(revision, kind, team_id, number, label, lifecycle, country)
 type PatchCur = (i32, String, Option<Uuid>, Option<i32>, Option<String>, String, Option<String>, Option<String>);
 
+/// 改团队时原团队少了这台：按编号连续压缩（同退役完成）。先锁团队（原团队、新团队，按 id 排）再锁机器，和 move_to_spare、退役收尾同一个顺序（团队 → 机器）
 pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<PatchIn>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
-    let relays = patch_tx(&mut tx, &a.name, id, b).await?.relays;
+    if let Some(to) = b.team_id {
+        let from: Option<Uuid> = sqlx::query_scalar::<_, Option<Uuid>>("select team_id from machine where id = $1").bind(id).fetch_optional(&mut *tx).await?.flatten();
+        let mut teams = vec![to];
+        teams.extend(from.filter(|f| *f != to));
+        teams.sort();
+        sqlx::query("select 1 from team where id = any($1) order by id for update").bind(&teams).execute(&mut *tx).await?;
+    }
+    let p = patch_tx(&mut tx, &a.name, id, b).await?;
+    let mut relays = p.relays;
+    if let Some(t) = p.left_team {
+        relays.extend(crate::db::compact_team(&mut tx, t, &a.name, "节点改团队后自动压缩").await?.1);
+    }
+    relays.sort();
+    relays.dedup();
     tx.commit().await?;
     for r in relays {
         st.relay_bumped(r);
@@ -126,6 +140,69 @@ pub struct Patched {
     pub relays: Vec<Uuid>,
     /// 进了备用团队、把开着的自动续费关掉了
     pub auto_renew_off: bool,
+    /// 换了团队时它原来所在的团队：少了这台，调用方要不要压缩编号自己定（PATCH 压缩；移进备用、替换节点自己压缩）
+    pub left_team: Option<Uuid>,
+}
+
+/// 团队里最小的空号（不含退役的、线路机）
+async fn free_number(tx: &mut sqlx::PgConnection, team: Option<Uuid>) -> ApiResult<i32> {
+    let n: Option<i32> = sqlx::query_scalar(
+        "select min(n)::int from generate_series(1, 999) n
+         where not exists (select 1 from machine where team_id = $1 and number = n and kind <> 'relay' and lifecycle <> 'retired')",
+    )
+    .bind(team)
+    .fetch_one(tx)
+    .await?;
+    n.ok_or_else(|| ApiError::conflict("这个团队的编号用完了"))
+}
+
+async fn team_name(db: &sqlx::PgPool, t: Option<Uuid>) -> sqlx::Result<Option<String>> {
+    sqlx::query_scalar("select name from team where id = $1").bind(t).fetch_optional(db).await
+}
+
+#[derive(Deserialize)]
+pub struct RenamePreviewQ {
+    team_id: Option<Uuid>,
+    number: Option<i32>,
+}
+
+/// 改团队 / 编号预览：`{name（改后的名字）, old_name, renames:[{machine_id,old_name,new_name}]}`。
+/// 换团队时原团队少了这台，剩下的按编号连续压缩（PATCH 同事务做），`renames` 列出连带改号的；没换团队、线路机为空
+pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<RenamePreviewQ>) -> ApiResult<Json<Value>> {
+    let mut conn = st.db.acquire().await?;
+    let (kind, label, team, number): (String, Option<String>, Option<Uuid>, Option<i32>) =
+        sqlx::query_as("select kind::text, label, team_id, number from machine where id = $1 and lifecycle <> 'retired'")
+            .bind(id)
+            .fetch_optional(&mut *conn)
+            .await?
+            .ok_or_else(|| ApiError::not_found("没有这台机器"))?;
+    let old_name = display_name_of(&st.db, id).await?.0;
+    let mut renames = vec![];
+    let mut name = old_name.clone();
+    if kind != "relay" {
+        let to = q.team_id.or(team);
+        let to_name = team_name(&st.db, to).await?.ok_or_else(|| ApiError::bad_request("没有这个团队"))?;
+        let n = match q.number {
+            Some(n) => n,
+            None if to != team => free_number(&mut conn, to).await?,
+            None => number.unwrap_or(1),
+        };
+        name = crate::names::display_name(&kind, label.as_deref(), Some(&to_name), Some(n));
+        if let (true, Some(from)) = (to != team, team) {
+            let from_name = team_name(&st.db, Some(from)).await?.unwrap_or_default();
+            let nodes: Vec<(Uuid, i32)> =
+                sqlx::query_as("select id, number from machine where team_id = $1 and kind <> 'relay' and lifecycle <> 'retired' and id <> $2 order by number")
+                    .bind(from)
+                    .bind(id)
+                    .fetch_all(&mut *conn)
+                    .await?;
+            renames = compact_numbers(nodes)
+                .into_iter()
+                .map(|(mid, o, n)| json!({"machine_id": mid, "old_name": node_name(&from_name, o), "new_name": node_name(&from_name, n)}))
+                .collect();
+        }
+    }
+    Ok(ok(json!({"name": name, "old_name": old_name, "renames": renames})))
 }
 
 /// PATCH 的全部校验与写入（含审计），在调用方的事务里做。
@@ -154,14 +231,7 @@ pub async fn patch_tx(tx: &mut crate::db::Tx<'_>, actor: &str, id: Uuid, b: Patc
         None
     } else if b.number.is_none() && team_id != cur.2 {
         // 换团队没给编号：排到新团队的最小空号（原编号在新团队里多半已经有人，「移出备用」照提示只给团队也能成）
-        let n: Option<i32> = sqlx::query_scalar(
-            "select min(n)::int from generate_series(1, 999) n
-             where not exists (select 1 from machine where team_id = $1 and number = n and kind <> 'relay' and lifecycle <> 'retired')",
-        )
-        .bind(team_id)
-        .fetch_one(&mut **tx)
-        .await?;
-        Some(n.ok_or_else(|| ApiError::conflict("这个团队的编号用完了"))?)
+        Some(free_number(&mut **tx, team_id).await?)
     } else {
         b.number.or(cur.3)
     };
@@ -248,7 +318,7 @@ pub async fn patch_tx(tx: &mut crate::db::Tx<'_>, actor: &str, id: Uuid, b: Patc
         detail["auto_renew_off"] = json!(true);
     }
     audit(tx, actor, if renamed { "machine.rename" } else { "machine.update" }, "machine", Some(id), detail).await?;
-    Ok(Patched { relays, auto_renew_off })
+    Ok(Patched { relays, auto_renew_off, left_team: cur.2.filter(|f| Some(*f) != team_id) })
 }
 
 // ── 时序 ──────────────────────────────────────────────────────────────────
