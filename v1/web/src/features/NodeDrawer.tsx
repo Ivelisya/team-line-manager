@@ -35,6 +35,11 @@ const AccessTab = React.lazy(() => import('./AccessTab').then((m) => ({ default:
 export function NodeDrawer() {
   const { id, tab: liveTab, setTab, switchTo, close } = useDrawer();
   const qc = useQueryClient();
+  // 首次挂载后空闲时预取图表块（recharts），第一次点图表页签不用等下载
+  React.useEffect(() => {
+    const t = setTimeout(() => { import('./DrawerCharts').catch(() => { /* 预取失败不要紧，真用到时会再试 */ }); }, 1500);
+    return () => clearTimeout(t);
+  }, []);
   const q = useMachine(id);
   // 关闭时 id/tab 已从地址里清掉，但抽屉还要播滑出动画：沿用最后一次的机器、页签和 id，别闪成加载骨架或跳回“概览”
   const m = useHeld(id, q.data);
