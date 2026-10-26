@@ -192,7 +192,8 @@ pub fn status(ctx: &Ctx) -> anyhow::Result<u8> {
         // 本月中途才开始有数据（在用线路机本月才接入）的标「（10-22 起）」
         let from = ov.pointer("/traffic_month/counted_from").and_then(Value::as_str).map(|t| format!("（{} 起）", crate::billing::md_of(t))).unwrap_or_default();
         let mut s = table::kv(&[
-            ("节点", bucket("nodes")),
+            // 闲置备用（备用团队里没有软路由出口指向的，等到期放生）不在共 / 各健康计数里，单列在后面
+            ("节点", format!("{} · 备用 {}", bucket("nodes"), ov["spare"].as_i64().unwrap_or(0))),
             ("线路机", bucket("relays")),
             // 按台机器：同机 IP 节点随宿主机的 agent 计入，家宽代理不需要 agent（同网页集群状态）
             ("agent", {

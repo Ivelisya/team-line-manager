@@ -380,6 +380,15 @@ pub struct MachineView {
     pub anomaly: Option<crate::anomaly::Anomaly>,
 }
 
+impl MachineView {
+    /// 闲置备用：在用、在备用团队、没有软路由出口指向（这样的机器是等到期放生的，供应商那边停了也是预期）。
+    /// 不开告警（alerts.rs）、不计入总览的健康计数（overview_of）；健康状态本身照常算，卡片上看得到。
+    /// 还被出口指向的备用机器关系到客户，不算闲置。`router_exits` 只对备用团队里在用的机器填，所以不用再判 lifecycle 之外的条件
+    pub fn idle_spare(&self) -> bool {
+        self.lifecycle == "active" && self.spare && self.router_exits.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct TuneInfo {
     /// 最近一次成功应用的调优档；null = 没调优过（迁移前上线的机器）
@@ -1602,7 +1611,7 @@ struct Bucket {
 /// 总览 KPI，只统计 active 的机器；本月业务流量是全部入口（`traffic`）的合计，数据不完整时带起点（`traffic_month.counted_from`）
 pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Value {
     let (mut nodes, mut relays) = (Bucket::default(), Bucket::default());
-    let (mut provisioning, mut retiring, mut failed, mut rx, mut tx) = (0, 0, 0, 0f64, 0f64);
+    let (mut provisioning, mut retiring, mut failed, mut spare, mut rx, mut tx) = (0, 0, 0, 0, 0f64, 0f64);
     // 本月业务流量：每条入口的字节只在它的线路机上统计一次，全部入口直接相加不重复，含已移除的入口和月中退役、替换掉的机器。
     // 网卡流量不做合计：同一个字节在线路机和节点的网卡上各算一次
     let (up, down) = traffic.values().fold((0i64, 0i64), |(u, d), t| (u.saturating_add(t.month_up), d.saturating_add(t.month_down)));
@@ -1631,15 +1640,23 @@ pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Valu
         if m.lifecycle != "active" {
             continue;
         }
+        // 闲置备用（等到期放生的）：不进健康计数，也不进在线 / 离线（放生的机器常年离线，会让「agent 离线」永远不为 0），只数个 spare；
+        // 月费照算（订阅没到期还在付钱），实时速率照算（离线的本来不算）
+        let idle = m.idle_spare();
+        if idle {
+            spare += 1;
+        }
         let bucket = if m.kind == "relay" { &mut relays } else { &mut nodes };
-        bucket.total += 1;
-        *match m.health.status {
-            Status::Ok => &mut bucket.ok,
-            Status::Degraded => &mut bucket.degraded,
-            Status::Down => &mut bucket.down,
-            Status::Maintenance => &mut bucket.maintenance,
-            _ => &mut bucket.unknown,
-        } += 1;
+        if !idle {
+            bucket.total += 1;
+            *match m.health.status {
+                Status::Ok => &mut bucket.ok,
+                Status::Degraded => &mut bucket.degraded,
+                Status::Down => &mut bucket.down,
+                Status::Maintenance => &mut bucket.maintenance,
+                _ => &mut bucket.unknown,
+            } += 1;
+        }
         if let Some(s) = &m.subscription {
             // 备用团队的不续费（替换下来等到期丢弃的），不算要续的（同前端 nextDue 与机器页「即将到期」筛选）
             match s.due_state {
@@ -1654,6 +1671,7 @@ pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Valu
         let stale = m.agent.as_ref().is_some_and(|a| !a.online);
         match &m.agent {
             None => no_agent += 1,
+            Some(_) if idle => {}
             Some(_) if stale => offline += 1,
             Some(_) => online += 1,
         }
@@ -1667,7 +1685,7 @@ pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Valu
     }
     json!({
         "nodes": nodes, "relays": relays, "provisioning": provisioning, "retiring": retiring, "failed": failed, "due_soon": due_soon, "overdue": overdue, "online": online, "offline": offline,
-        "no_agent": no_agent, "ip_nodes": ip_nodes, "monthly_usd": usd, "traffic_month": {"up": up, "down": down, "counted_from": counted_from.map(crate::meta::fmt_ts)}, "net_rx_bps": rx, "net_tx_bps": tx,
+        "no_agent": no_agent, "ip_nodes": ip_nodes, "spare": spare, "monthly_usd": usd, "traffic_month": {"up": up, "down": down, "counted_from": counted_from.map(crate::meta::fmt_ts)}, "net_rx_bps": rx, "net_tx_bps": tx,
     })
 }
 
@@ -1757,6 +1775,27 @@ mod tests {
         retired.agent.as_mut().unwrap().online = false;
         let ov = overview_of(&[crit, off, proxy, retired], &HashMap::new());
         assert_eq!((ov["online"].as_i64(), ov["offline"].as_i64(), ov["no_agent"].as_i64()), (Some(1), Some(1), Some(1)));
+    }
+
+    #[test]
+    fn overview_leaves_idle_spare_out_of_health_counts() {
+        let now = OffsetDateTime::now_utc();
+        let down = |spare: bool, exits: &[&str], online: bool| {
+            let mut m = base("vps");
+            m.entries = vec![crate::health::tests::entry(false, false)];
+            m.spare = spare;
+            m.router_exits = exits.iter().map(|s| s.to_string()).collect();
+            m.agent.as_mut().unwrap().online = online;
+            m.health = health::evaluate(&m, now);
+            m
+        };
+        // 闲置备用（故障、agent 离线）不计入；被出口指向的备用照常计入；普通节点照常
+        let (idle, idle_off, used) = (down(true, &[], true), down(true, &[], false), down(true, &["办公室2 · 美国"], true));
+        assert_eq!(idle.health.status, Status::Down, "健康状态本身照常算");
+        let ov = overview_of(&[idle, idle_off, used, down(false, &[], true)], &HashMap::new());
+        let n = &ov["nodes"];
+        assert_eq!((n["total"].as_i64(), n["down"].as_i64(), ov["spare"].as_i64()), (Some(2), Some(2), Some(2)), "{ov}");
+        assert_eq!((ov["online"].as_i64(), ov["offline"].as_i64()), (Some(2), Some(0)), "闲置备用不计在线 / 离线");
     }
 
     #[test]
