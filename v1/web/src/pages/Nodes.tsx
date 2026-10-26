@@ -109,7 +109,7 @@ function LiveNodes({ sp, upd, tools }: { sp: URLSearchParams; upd: (patch: Recor
       if (relay && !(m.id === relay || m.entries.some((e) => e.relay.id === relay))) return false;
       // 「故障」与首页 KPI 同口径：闲置备用（等到期放生的）不算，台数才对得上
       if (status && (statusOf(m) !== status || (status === 'down' && isIdleSpare(m)))) return false;
-      if (dueSoon && (m.spare || !m.subscription || m.subscription.due_state === 'ok')) return false;
+      if (dueSoon && (isIdleSpare(m) || !m.subscription || m.subscription.due_state === 'ok')) return false;
       if (plan && m.plan?.id !== plan) return false;
       if (t && !`${m.name} ${m.ip} ${m.provider?.name ?? ''} ${m.plan?.name ?? ''} ${m.service_ref ?? ''} ${m.note}`.toLowerCase().includes(t)) return false;
       return true;

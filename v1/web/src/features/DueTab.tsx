@@ -76,7 +76,7 @@ export function DueTab() {
     <>
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       <Panel title={`未来 ${DAYS} 天待付`} count={d ? `${n} 台` : undefined}
-        sub={<><InfoTip text={"按供应商和到期日分组，金额是订阅的每期价格；折成美元按「设置 → 汇率」\n已过期还没续费的也在这里\n备用团队的机器等到期丢弃，不在这里\n登记续费只记账、顺延到期日，不会向供应商付款"} />{d && n > 0 && <span className="t-sub" style={{ marginLeft: 'var(--sp-8)' }} data-tip={usdTotalTip(d.total)}>合计 <span className="num">{usdText(d.total)}</span></span>}</>} flush>
+        sub={<><InfoTip text={"按供应商和到期日分组，金额是订阅的每期价格；折成美元按「设置 → 汇率」\n已过期还没续费的也在这里\n闲置备用等到期丢弃，不在这里；备用团队里还被出口指着、有在用 IP 节点的照常续费，会在这里\n登记续费只记账、顺延到期日，不会向供应商付款"} />{d && n > 0 && <span className="t-sub" style={{ marginLeft: 'var(--sp-8)' }} data-tip={usdTotalTip(d.total)}>合计 <span className="num">{usdText(d.total)}</span></span>}</>} flush>
         <TableWrap>
           {d && d.groups.length > 0 && (
             <table className="dt is-one due-table" style={{ minWidth: 1000 }}>
@@ -169,7 +169,7 @@ const PayForm = resetOnOpen(function PayForm({ g, open, onClose }: { g: DueGroup
         <table className="dt is-one"><colgroup><col /><col style={{ width: 180 }} /><col style={{ width: 150 }} /></colgroup>
           <thead><tr><th>机器</th><th>到期日</th><th>实付</th></tr></thead>
           <tbody>{g.machines.map((m) => (
-            <tr key={m.id}><td className="strong num">{m.name} {m.idle && <Pill className="pill-sm" tip={IDLE_TIP(m)}>闲置</Pill>}
+            <tr key={m.id}><td className="strong num">{m.name} {m.idle && <Pill className="pill-sm" tip={IDLE_TIP(m)}>闲置</Pill>}{m.spare_hold && <Pill className="pill-sm" tip={`备用团队里的机器，但${m.spare_hold}：不自动回收，照常续费`}>备用</Pill>}
                 <span className="sub" style={{ fontWeight: 'var(--fw-regular)' }}>近 30 天 {F.usdPerGb(m.usd_per_gb)}/GB · 出口成功率 {F.str(F.pct(m.avail_pct, 1))}</span></td>
               <td className="num">{m.due_date} <ArrowRight size={12} style={{ color: 'var(--fg-3)' }} /> {newDue(m.id) ?? <span className="t-muted">…</span>}</td>
               <td><AmountCell currency={m.currency} value={amounts[m.id]} onChange={(v) => setAmounts((a) => ({ ...a, [m.id]: v }))} /></td></tr>

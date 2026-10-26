@@ -96,7 +96,7 @@ function TeamCost({ t }: { t: Team }) {
   const u = t.monthly_usd;
   if (!u.by_currency.length && !u.unconverted.length) return <span className="t-muted">—</span>;
   // 备用团队的机器不再续费：灰字，不计入页头合计
-  if (t.spare) return <span className="num t-muted" data-tip={`不再续费，不计入合计\n${usdTotalTip(u)}`}>{F.money(u.cents, 'USD')}{u.unconverted.length ? '*' : ''}</span>;
+  if (t.spare) return <span className="num t-muted" data-tip={`闲置备用不再续费，不计入合计；还被出口指着、有在用 IP 节点的备用机照常续费，月费算在首页「每月费用」里，这里不拆\n${usdTotalTip(u)}`}>{F.money(u.cents, 'USD')}{u.unconverted.length ? '*' : ''}</span>;
   return <span className="num" data-tip={usdTotalTip(u)}>{F.money(u.cents, 'USD')}{u.unconverted.length ? '*' : ''}</span>;
 }
 /** 团队的「在用节点」：只数在用的（同流量页「团队成本」的口径）；上架中、退役中的另列在悬停里。机器列表没到时先显示服务端的台数（含这两类） */
@@ -128,7 +128,7 @@ function TeamsTab() {
   return (
     <>
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
-      <Panel title="团队" count={list.length} sub={<><InfoTip text={"首页和表格按「排序」从小到大排列\n月费是在用机器折成美元的合计，汇率在「设置 → 汇率」\n备用团队不再续费，不计入合计\n线路机不归团队，单列一项；合计同首页「每月费用」"} />{list.length > 0 && <span className="t-sub" style={{ marginLeft: 'var(--sp-8)' }} data-tip={partial ? '带 * 的团队有币种缺汇率，没计入合计' : undefined}>月费合计 <span className="num">{F.money(total, 'USD')}</span>{partial ? '*' : ''}{relaysUsd > 0 && <> = 团队 <span className="num">{F.money(teamsUsd, 'USD')}</span> + 线路机 <span className="num">{F.money(relaysUsd, 'USD')}</span></>}</span>}</>} tools={<Button variant="primary" size="md" onClick={() => setEdit('new')}><Plus />新建团队</Button>} flush>
+      <Panel title="团队" count={list.length} sub={<><InfoTip text={"首页和表格按「排序」从小到大排列\n月费是在用机器折成美元的合计，汇率在「设置 → 汇率」\n闲置备用不再续费，不计入合计（被出口指着、有在用 IP 节点的备用机照常续费，算在首页）\n线路机不归团队，单列一项；合计同首页「每月费用」"} />{list.length > 0 && <span className="t-sub" style={{ marginLeft: 'var(--sp-8)' }} data-tip={partial ? '带 * 的团队有币种缺汇率，没计入合计' : undefined}>月费合计 <span className="num">{F.money(total, 'USD')}</span>{partial ? '*' : ''}{relaysUsd > 0 && <> = 团队 <span className="num">{F.money(teamsUsd, 'USD')}</span> + 线路机 <span className="num">{F.money(relaysUsd, 'USD')}</span></>}</span>}</>} tools={<Button variant="primary" size="md" onClick={() => setEdit('new')}><Plus />新建团队</Button>} flush>
         <TableWrap>
           <table className="dt is-one" style={{ minWidth: 430 }}>
             <colgroup><col /><col style={{ width: 90 }} /><col style={{ width: 100 }} /><col style={{ width: 110 }} /><col style={{ width: 52 }} /></colgroup>

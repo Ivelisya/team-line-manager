@@ -144,11 +144,11 @@ function overview() {
     online: biz.filter((m) => m.agent && !isQuiet(m)).length, offline: biz.filter((m) => m.agent && isQuiet(m)).length,
     // 闲置备用不计入 no_agent、ip_nodes（同 total / online / offline，同服务端 overview_of）
     no_agent: biz.filter((m) => !m.agent).length, ip_nodes: biz.filter((m) => m.host_machine).length,
-    due_soon: live.filter((m) => !m.spare && m.subscription?.due_state === 'soon').length, overdue: live.filter((m) => !m.spare && m.subscription?.due_state === 'overdue').length,
-    // 备用团队的机器不续费：月费合计不含，另列小计（同服务端 monthly_usd_spare）
-    monthly_usd: usdTotal(live.flatMap((m) => (m.subscription && !m.spare ? [m.subscription] : []))),
-    paid_machines: live.filter((m) => m.subscription && !m.spare).length,
-    monthly_usd_spare: { ...usdTotal(live.flatMap((m) => (m.subscription && m.spare ? [m.subscription] : []))), count: live.filter((m) => m.subscription && m.spare).length },
+    due_soon: biz.filter((m) => m.subscription?.due_state === 'soon').length, overdue: biz.filter((m) => m.subscription?.due_state === 'overdue').length,
+    // 闲置备用不续费：月费合计不含，另列小计（同服务端 monthly_usd_spare）；备用团队里被出口指着 / 有在用 IP 节点的照常续费，算进合计
+    monthly_usd: usdTotal(biz.flatMap((m) => (m.subscription ? [m.subscription] : []))),
+    paid_machines: biz.filter((m) => m.subscription).length,
+    monthly_usd_spare: { ...usdTotal(idle.flatMap((m) => (m.subscription ? [m.subscription] : []))), count: idle.filter((m) => m.subscription).length },
     traffic_month: { up, down, counted_from },
     // 实时速率只算数据没过期的（同 liveRate）；同机 IP 节点的读数就是宿主机的，不重复算
     net_rx_bps: live.reduce((s, m) => s + (m.host_machine ? 0 : liveRate(m)?.rx ?? 0), 0), net_tx_bps: live.reduce((s, m) => s + (m.host_machine ? 0 : liveRate(m)?.tx ?? 0), 0),
@@ -702,14 +702,17 @@ R('POST', '/machines/([^/]+)/renewals', ({ params, body }) => {
   (db.renewals[m.id] ??= []).unshift(r); m.subscription.billing_day = billingDay(newDue, m.subscription.billing_day); m.subscription.due_date = newDue; recomputeDue(m);
   emit({ type: 'machine', id: m.id }); emit({ type: 'machines' }); return { id: r.id, old_due: r.old_due, new_due: r.new_due };
 });
-// 待付清单（同服务端 billing.rs）：在用机器里窗口内到期的，按 供应商 × 到期日 分组；备用团队、自动续费的不算待付
+// 待付清单（同服务端 billing.rs）：在用机器里窗口内到期的，按 供应商 × 到期日 分组；闲置备用（要 include_spare）、自动续费的不算待付，
+// 备用团队里被出口指着 / 有在用 IP 节点的不自动回收、照常续费，机器项带 spare 与 spare_hold
 R('GET', '/billing/due', ({ query }) => {
   const days = Number(query.get('days') ?? 30);
-  const rows = db.machines.filter((m) => m.lifecycle === 'active' && !m.spare && m.subscription && m.subscription.due_days <= days)
+  const withSpare = query.get('include_spare') === 'true';
+  const rows = db.machines.filter((m) => m.lifecycle === 'active' && (!m.spare || withSpare || !isIdleSpare(m)) && m.subscription && m.subscription.due_days <= days)
     .sort((a, b) => a.subscription!.due_date.localeCompare(b.subscription!.due_date) || (a.provider?.name ?? '￿').localeCompare(b.provider?.name ?? '￿'));
   const view = (m: MachineView) => {
     const s = m.subscription!; const u = mockUsage(m); const monthly = mockMonthly(m);
-    return { id: m.id, name: m.name, kind: m.kind, due_date: s.due_date, due_days: s.due_days, billing_tz: s.billing_tz, cycle: s.cycle, price_cents: s.price_cents, currency: s.currency, price_usd_cents: toUsd(s.price_cents, s.currency),
+    const hold = m.spare && !isIdleSpare(m) ? [m.live_ip_nodes?.length ? `同机 IP 节点 ${m.live_ip_nodes.join('、')} 还在用` : '', m.router_exits?.length ? `软路由出口 ${m.router_exits.join('、')} 还指着` : ''].filter(Boolean).join('；') : null;
+    return { id: m.id, name: m.name, kind: m.kind, due_date: s.due_date, due_days: s.due_days, billing_tz: s.billing_tz, spare: m.spare, spare_hold: hold, cycle: s.cycle, price_cents: s.price_cents, currency: s.currency, price_usd_cents: toUsd(s.price_cents, s.currency),
       monthly_usd_cents: monthly, bytes_30d: u.bytes30, usd_per_gb: mockPerGb(monthly, u.bytes30, 30), idle: mockIdle(m, u.sum7), avg7: Math.round(u.sum7 / 7), avail_pct: availability(m, 30).egress_pct };
   };
   const prov = (m: MachineView) => ({ id: m.provider?.id ?? null, name: m.provider?.name ?? null, panel_url: db.providers.find((p) => p.id === m.provider?.id)?.panel_url ?? null });

@@ -185,7 +185,7 @@ const NodesTable = React.memo(function NodesTable({ nodes, days, idle, spare, lo
                   <td className="r strong">{cell(sum)}{nic && <span className="sub" data-tip={`网卡计费 · ${trafficRuleLabel(nic.rule)}
 ${days} 天 ↓ 下行 ${F.str(F.bytes(nic.rx))} · ↑ 上行 ${F.str(F.bytes(nic.tx))}，先加总再按规则算`}>计费 {cell(nic.billed)}</span>}</td>
                   <td className="r">{cell(sum / days)}</td>
-                  <td className={sp ? 'r t-muted' : 'r'} data-tip={sp ? '不再续费，不计入合计' : undefined}>{F.money(n.monthly_usd_cents, 'USD')}</td>
+                  <td className={sp ? 'r t-muted' : 'r'} data-tip={sp ? '备用团队的节点，不计入合计；闲置的不再续费，被出口指着、有在用 IP 节点的照常续费，月费算在首页「每月费用」里' : undefined}>{F.money(n.monthly_usd_cents, 'USD')}</td>
                   <td className={sp ? 'r t-muted' : 'r'}>{sp ? '—' : F.usdPerGb(pg)}</td>
                 </tr>
               ))}
@@ -226,7 +226,7 @@ const TeamsTable = React.memo(function TeamsTable({ teams, picked, stale, onPick
                 <td><span className="cell-main">{t.name}</span></td>
                 <td className="r">{t.nodes} 台</td>
                 <td className="r">{t.idle && !t.spare ? `${t.idle} 台` : '—'}</td>
-                <td className={t.spare ? 'r t-muted' : 'r'} data-tip={t.spare ? '不再续费，不计入合计' : undefined}>{fee(t.monthly_usd_cents, t.unpriced)}</td>
+                <td className={t.spare ? 'r t-muted' : 'r'} data-tip={t.spare ? '备用团队不计入合计；闲置的不再续费，被出口指着、有在用 IP 节点的备用机照常续费，月费算在首页「每月费用」里，这里不拆' : undefined}>{fee(t.monthly_usd_cents, t.unpriced)}</td>
                 <td className="r">{cell(t.bytes_30d)}</td>
                 <td className={t.spare ? 'r t-muted' : 'r strong'} data-tip={t.spare ? '备用团队不再续费，不算每 GB 成本' : undefined}>{t.spare ? '—' : F.usdPerGb(t.usd_per_gb)}</td>
               </tr>
