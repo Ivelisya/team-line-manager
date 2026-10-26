@@ -153,11 +153,23 @@ fn renewal_reason(m: &MachineView) -> Option<Reason> {
 
 const DETAIL_MAX: usize = 120;
 
+/// 探测连续失败这么多次才算严重：第一次失败可能是偶发，只给警告（界面不跳故障）。出口与 TCP 都按它。
+/// 与告警去抖同一量级：TCP 每 30 s 探一次（开告警满 90 s，约 3 次），出口失败期间也 30 s 一次（满 150 s）。视图里最多数到 3（views::Probe::streak）
+const FAIL_CRITICAL_STREAK: u8 = 2;
+/// TCP 失败时拿同一入口的出口结果作证：出口探测在这么久（秒）内通过，说明客户流量是通的，TCP 这次失败只算偶发（警告）。
+/// 出口每 60 s 探一次（TCP 的 2 倍，fleet-agent collect.rs），留两个周期；出口也不通或结果过期就不作证
+const EGRESS_FRESH_S: i64 = 120;
+
+fn probe_severity(streak: u8) -> &'static str { if streak >= FAIL_CRITICAL_STREAK { "critical" } else { "warning" } }
+
 /// 在用入口的探测结果 → egress_fail / tcp_fail。
 /// 同一条规则一台机器只开一个告警：几个入口同时失败合成一条原因，文字列出全部入口，
-/// 其中一个恢复时摘要随之变化，不会悄悄换成另一个入口
-fn probe_reasons(live: &[&EntryView], rs: &mut Vec<Reason>, unknown: &mut bool, undecided: &mut Vec<Uuid>, failing: &mut Vec<(&'static str, Uuid)>) {
-    let (mut egress, mut details, mut tcp) = (vec![], vec![], vec![]);
+/// 其中一个恢复时摘要随之变化，不会悄悄换成另一个入口。
+/// 严重度：连续失败满 `FAIL_CRITICAL_STREAK` 次才是严重，首次失败是警告；合成的原因取其中最重的。
+/// TCP 失败而同一入口的出口新鲜通过：不论连续几次都是警告（TCP 探测偶发失败，出口正常）
+fn probe_reasons(live: &[&EntryView], now: OffsetDateTime, rs: &mut Vec<Reason>, unknown: &mut bool, undecided: &mut Vec<Uuid>, failing: &mut Vec<(&'static str, Uuid)>) {
+    let (mut egress, mut details, mut tcp, mut flaky) = (vec![], vec![], vec![], vec![]);
+    let (mut egress_streak, mut tcp_streak) = (0u8, 0u8);
     for e in live {
         // 线路机的 Xray 没在运行时，经它的探测必然失败：不在节点上重复报严重告警（线路机自己有
         // relay_xray_down），这条入口按「未知」处理。
@@ -179,6 +191,7 @@ fn probe_reasons(live: &[&EntryView], rs: &mut Vec<Reason>, unknown: &mut bool, 
         match &e.egress {
             Some(p) if !p.ok => {
                 egress.push(format!("{}:{}", e.relay.name, e.port));
+                egress_streak = egress_streak.max(p.streak);
                 failing.push(("egress_fail", e.relay.id));
                 // 探测详情是线路机报的自由文本，进告警摘要和通知：截到 DETAIL_MAX 个字
                 let d: String = p.detail.as_deref().unwrap_or_default().chars().take(DETAIL_MAX).collect();
@@ -189,16 +202,30 @@ fn probe_reasons(live: &[&EntryView], rs: &mut Vec<Reason>, unknown: &mut bool, 
             None => *unknown = true,
             _ => {}
         }
-        if e.tcp.as_ref().is_some_and(|p| !p.ok) {
-            tcp.push(e.relay.name.clone());
+        if let Some(p) = e.tcp.as_ref().filter(|p| !p.ok) {
             failing.push(("tcp_fail", e.relay.id));
+            if e.egress.as_ref().is_some_and(|g| g.ok && (now - g.ts).whole_seconds() <= EGRESS_FRESH_S) {
+                flaky.push(e.relay.name.clone());
+            } else {
+                tcp.push(e.relay.name.clone());
+                tcp_streak = tcp_streak.max(p.streak);
+            }
         }
     }
     if !egress.is_empty() {
-        rs.push(Reason { key: "egress_fail", severity: "critical", text: format!("{} 出口不通：{}", egress.join("、"), details.join("；")) });
+        rs.push(Reason { key: "egress_fail", severity: probe_severity(egress_streak), text: format!("{} 出口不通：{}", egress.join("、"), details.join("；")) });
     }
-    if !tcp.is_empty() {
-        rs.push(Reason { key: "tcp_fail", severity: "critical", text: format!("{} 到节点 TCP 不通", tcp.join("、")) });
+    if !tcp.is_empty() || !flaky.is_empty() {
+        let mut parts = vec![];
+        if !tcp.is_empty() {
+            parts.push(format!("{} 到节点 TCP 不通", tcp.join("、")));
+        }
+        if !flaky.is_empty() {
+            parts.push(format!("{} 到节点 TCP 探测偶发失败，出口正常", flaky.join("、")));
+        }
+        // 只有出口也靠不住的入口才可能严重（偶发的那几条恒为警告）
+        let severity = if tcp.is_empty() { "warning" } else { probe_severity(tcp_streak) };
+        rs.push(Reason { key: "tcp_fail", severity, text: parts.join("；") });
     }
 }
 
@@ -263,7 +290,7 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
             // 直出入口（节点就是这台线路机）：出口不通照节点入口报 egress_fail；没有 TCP 探测，也不报 no_entry。
             // 挂在它上面的节点入口仍由各自的节点报
             let direct: Vec<&EntryView> = m.entries.iter().filter(|e| e.direct && e.lifecycle == "active").collect();
-            probe_reasons(&direct, &mut rs, &mut unknown, &mut probe_undecided, &mut probe_failing);
+            probe_reasons(&direct, now, &mut rs, &mut unknown, &mut probe_undecided, &mut probe_failing);
             if let Some(r) = &m.relay {
                 // 从期望代数最近一次变化起算（没有记录就退回上次应用时间）
                 let since = r.generation_at.or(r.applied_at);
@@ -290,7 +317,7 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
             if live.is_empty() {
                 rs.push(Reason { key: "no_entry", severity: "warning", text: "没有在用的入口".into() });
             }
-            probe_reasons(&live, &mut rs, &mut unknown, &mut probe_undecided, &mut probe_failing);
+            probe_reasons(&live, now, &mut rs, &mut unknown, &mut probe_undecided, &mut probe_failing);
         }
     }
 
@@ -448,8 +475,10 @@ pub(crate) mod tests {
         RelayInfo { public_host: "h".into(), generation, applied_generation: applied, applied_at, generation_at, apply_error: None, port_min: 20000, port_max: 29999, unreachable: None, reach_unknown: false }
     }
 
+    /// 探测失败的入口按「已连续失败」造（streak 3）：首次失败只是警告，见 `first_probe_failure_is_only_a_warning`
     pub(crate) fn entry(relay_xray_down: bool, egress_ok: bool) -> EntryView {
         let ts = OffsetDateTime::now_utc();
+        let streak = if egress_ok { 1 } else { 3 };
         EntryView {
             id: Uuid::now_v7(),
             relay: Ref { id: Uuid::now_v7(), name: "线路机1".into() },
@@ -462,8 +491,8 @@ pub(crate) mod tests {
             relay_xray_down,
             relay_offline: false,
             relay_maint: false,
-            tcp: Some(Probe { ok: egress_ok, latency_ms: None, detail: None, ts, median_ms: None, streak: 1 }),
-            egress: Some(Probe { ok: egress_ok, latency_ms: None, detail: Some("timeout".into()), ts, median_ms: None, streak: 1 }),
+            tcp: Some(Probe { ok: egress_ok, latency_ms: None, detail: None, ts, median_ms: None, streak }),
+            egress: Some(Probe { ok: egress_ok, latency_ms: None, detail: Some("timeout".into()), ts, median_ms: None, streak }),
             reach: None,
             traffic: Traffic::default(),
         }
@@ -589,6 +618,74 @@ pub(crate) mod tests {
         // 线路机 Xray 没在运行的入口交给线路机的告警，不算探测过期
         n.entries = vec![entry(true, false)];
         assert!(!evaluate(&n, now).probe_unknown);
+    }
+
+    /// 只有 TCP 探测失败、同一入口的出口新鲜通过：客户流量是通的，TCP 失败只给警告（降级，不算故障）；出口也不通或出口结果过期才严重
+    #[test]
+    fn tcp_failure_with_fresh_egress_is_a_warning() {
+        let now = OffsetDateTime::now_utc();
+        let mut n = base("vps");
+        let mut e = entry(false, true);
+        e.tcp = Some(Probe { ok: false, latency_ms: None, detail: None, ts: now, median_ms: None, streak: 3 });
+        n.entries = vec![e];
+        let h = evaluate(&n, now);
+        assert_eq!((keys(&h), h.reasons[0].severity, h.status), (vec!["tcp_fail"], "warning", Status::Degraded));
+        assert_eq!(h.reasons[0].text, "线路机1 到节点 TCP 探测偶发失败，出口正常");
+        assert_eq!(h.probe_failing, vec![("tcp_fail", n.entries[0].relay.id)], "照样记为失败入口：告警恢复要等它连续成功");
+        // 出口结果刚好在新鲜期内
+        n.entries[0].egress.as_mut().unwrap().ts = now - Duration::seconds(EGRESS_FRESH_S);
+        assert_eq!(evaluate(&n, now).reasons[0].severity, "warning");
+        // 出口结果过期（线路机的出口探测停了）：不作证
+        n.entries[0].egress.as_mut().unwrap().ts = now - Duration::seconds(EGRESS_FRESH_S + 1);
+        let h = evaluate(&n, now);
+        assert_eq!((h.reasons[0].severity, h.reasons[0].text.as_str(), h.status), ("critical", "线路机1 到节点 TCP 不通", Status::Down));
+        // 出口也不通：两条都严重
+        n.entries[0].egress = entry(false, false).egress;
+        let h = evaluate(&n, now);
+        assert_eq!((keys(&h), h.reasons[0].severity, h.reasons[1].severity), (vec!["egress_fail", "tcp_fail"], "critical", "critical"));
+        // 两个入口：一个出口通（偶发）、一个出口不通（TCP 不通）→ 一条原因写两句，取最重的
+        let mut ok = entry(false, true);
+        (ok.relay.name, ok.tcp) = ("线路机2".into(), Some(Probe { ok: false, latency_ms: None, detail: None, ts: now, median_ms: None, streak: 1 }));
+        n.entries = vec![entry(false, false), ok];
+        let h = evaluate(&n, now);
+        let t = h.reasons.iter().find(|r| r.key == "tcp_fail").unwrap();
+        assert_eq!((t.severity, t.text.as_str()), ("critical", "线路机1 到节点 TCP 不通；线路机2 到节点 TCP 探测偶发失败，出口正常"));
+    }
+
+    /// 首次探测失败只是警告（降级，界面不跳故障）；连续 2 次才严重。出口与 TCP 都一样
+    #[test]
+    fn first_probe_failure_is_only_a_warning() {
+        let now = OffsetDateTime::now_utc();
+        let mut n = base("vps");
+        n.entries = vec![entry(false, false)];
+        let set = |n: &mut MachineView, streak: u8| {
+            let e = &mut n.entries[0];
+            for p in [e.egress.as_mut(), e.tcp.as_mut()].into_iter().flatten() {
+                p.streak = streak;
+            }
+        };
+        set(&mut n, 1);
+        let h = evaluate(&n, now);
+        assert_eq!(keys(&h), ["egress_fail", "tcp_fail"]);
+        assert!(h.reasons.iter().all(|r| r.severity == "warning"), "{:?}", h.reasons);
+        assert_eq!(h.status, Status::Degraded);
+        assert_eq!(h.reasons[0].text, "线路机1:20000 出口不通：timeout");
+        set(&mut n, 2);
+        let h = evaluate(&n, now);
+        assert!(h.reasons.iter().all(|r| r.severity == "critical") && h.status == Status::Down, "{:?}", h.reasons);
+        // 出口连续失败、TCP 才首次：各按各的
+        set(&mut n, 3);
+        n.entries[0].tcp.as_mut().unwrap().streak = 1;
+        let h = evaluate(&n, now);
+        assert_eq!((h.reasons[0].severity, h.reasons[1].severity), ("critical", "warning"));
+        // 直出入口：没有 TCP 探测，出口首次失败同样先警告
+        let mut r = base("relay");
+        let mut d = entry(false, false);
+        (d.direct, d.tcp) = (true, None);
+        d.egress.as_mut().unwrap().streak = 1;
+        r.entries = vec![d];
+        let h = evaluate(&r, now);
+        assert_eq!((keys(&h), h.reasons[0].severity, h.status), (vec!["egress_fail"], "warning", Status::Degraded));
     }
 
     #[test]

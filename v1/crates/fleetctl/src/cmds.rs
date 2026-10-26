@@ -725,15 +725,15 @@ fn uptime_text(name: &str, d: &Value) -> String {
         .map(|(i, x)| {
             let (t, t_ok, e, e_ok) = (n(x, "tcp_total"), n(x, "tcp_ok"), n(x, "egress_total"), n(x, "egress_ok"));
             let date = if i + 1 == items.len() { format!("{}（今天）", st(x, "/date")) } else { st(x, "/date") };
-            vec![date, success_pct(rate(t_ok, t)), count(t_ok, t), success_pct(rate(e_ok, e)), count(e_ok, e)]
+            vec![date, success_pct(rate(e_ok, e)), count(e_ok, e), success_pct(rate(t_ok, t)), count(t_ok, t)]
         })
         .collect();
     format!(
-        "{name} 近 {} 天：TCP {} · 出口 {}\n{}",
+        "{name} 近 {} 天：出口 {} · TCP {}\n{}",
         st(d, "/days"),
-        success_pct(num(d, "/tcp_pct")),
         success_pct(num(d, "/egress_pct")),
-        table::render(&["日期", "TCP", "TCP 成功/次数", "出口", "出口成功/次数"], &rows)
+        success_pct(num(d, "/tcp_pct")),
+        table::render(&["日期", "出口", "出口成功/次数", "TCP", "TCP 成功/次数"], &rows)
     )
 }
 
@@ -1271,8 +1271,8 @@ mod tests {
             {"date": "2026-10-22", "tcp_total": 1440, "tcp_ok": 1439, "egress_total": 0, "egress_ok": 0}]});
         let t = uptime_text("团队1-06", &d);
         let lines: Vec<&str> = t.lines().collect();
-        assert_eq!(lines[0], "团队1-06 近 2 天：TCP 99.93% · 出口 -");
+        assert_eq!(lines[0], "团队1-06 近 2 天：出口 - · TCP 99.93%");
         assert_eq!(lines[2].split_whitespace().collect::<Vec<_>>(), ["2026-10-21", "-", "-", "-", "-"]);
-        assert_eq!(lines[3].split_whitespace().collect::<Vec<_>>(), ["2026-10-22（今天）", "99.93%", "1439/1440", "-", "-"]);
+        assert_eq!(lines[3].split_whitespace().collect::<Vec<_>>(), ["2026-10-22（今天）", "-", "-", "99.93%", "1439/1440"]);
     }
 }

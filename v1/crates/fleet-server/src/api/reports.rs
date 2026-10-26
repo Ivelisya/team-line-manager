@@ -18,7 +18,7 @@ pub struct UptimeQ {
     days: Option<i64>,
 }
 
-/// 每个在用节点的 TCP / 出口成功率、断线次数与最长断线、近 30 天告警数，再按供应商汇总（平均、最差，从差到好）
+/// 每个在用节点的出口 / TCP 成功率（出口为主）、断线次数与最长断线、窗口内告警次数，再按供应商汇总（平均、最差，从差到好）
 pub async fn uptime(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<UptimeQ>) -> ApiResult<Json<Value>> {
     let w = reports::window(&st, q.month.as_deref(), q.days).await?;
     Ok(ok(reports::uptime(&st, &w).await?))

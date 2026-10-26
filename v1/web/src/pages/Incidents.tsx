@@ -62,7 +62,7 @@ function foldBatches(list: Incident[]): (Incident | Incident[])[] {
   return out;
 }
 type State = 'firing' | 'resolved' | 'all';
-/** 页签：三种告警 + 静默与维护窗口（单独一页，不压在几百条告警下面）+ 月度可用率（按月看各供应商、各节点的 TCP / 出口成功率与断线，?month= 选月份） */
+/** 页签：三种告警 + 静默与维护窗口（单独一页，不压在几百条告警下面）+ 月度可用率（按月看各供应商、各节点的出口 / TCP 成功率与断线，?month= 选月份） */
 type Tab = State | 'silences' | 'uptime';
 const TABS: Tab[] = ['firing', 'resolved', 'all', 'silences', 'uptime'];
 const TAB_LABEL: Record<Tab, string> = { firing: '进行中', resolved: '已恢复', all: '全部', silences: '静默与维护', uptime: '月度可用率' };

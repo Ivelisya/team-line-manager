@@ -1,6 +1,7 @@
 // 报表的 mock（同服务端 reports.rs）：月度可用率 GET /reports/uptime、月报预览 GET /reports/monthly 与立即发送 POST /reports/monthly/send。
 // 每台在用节点（不含线路机、备用团队）每条入口每天 TCP 2880 次、出口 1440 次，成功率按 (机器, 月份) 的哈希生成：大多数台近乎 100%，个别有零星失败，
-// 故障中的机器明显偏低，月内才上架的算到上架那天，上架在窗口之后的没有探测（null）；节点按 TCP 成功率从差到好，供应商按平均从差到好。
+// 故障中的机器明显偏低，月内才上架的算到上架那天，上架在窗口之后的没有探测（null）；个别节点 TCP 偶发失败而出口一直是通的（DeerVPS 那种）；
+// 节点按出口成功率从差到好，供应商按平均从差到好；断线 = 出口失败 3 次以上的小时；告警次数只数窗口内可用性相关规则（含复发）。
 import type { Incident, MachineView, MonthlyReport, NotifyChannel, NotifyLogEntry, UptimeItem, UptimeProvider, UptimeReport } from '@/lib/types';
 import { hashStr, rng } from './fixtures';
 import { META } from './meta';
@@ -11,6 +12,8 @@ type Reg = (method: string, path: string, h: (c: Ctx) => unknown) => void;
 type Bad = (msg: string, status?: number, code?: string) => Error;
 
 const DAY = 86400_000;
+/** 算进告警次数的规则（同服务端 reports.rs AVAILABILITY_RULES） */
+const AVAIL_RULES = new Set(['egress_fail', 'tcp_fail', 'agent_offline', 'no_entry']);
 const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: META.org_timezone, year: 'numeric', month: '2-digit', day: '2-digit' });
 const localDate = (t: number) => fmt.format(t);
 const MONTH_RE = /^\d{4}-\d{2}$/;
@@ -36,7 +39,6 @@ export function installReportsMock(R: Reg, machines: () => MachineView[], incide
 
   function uptime(month: string | null): UptimeReport {
     const w = window(month);
-    const now = Date.now();
     const items = machines().filter((m) => m.kind !== 'relay' && m.lifecycle === 'active' && !m.spare).map((m): UptimeItem => {
       const n = Math.max(1, m.entries.filter((e) => e.lifecycle !== 'pending').length);
       // 窗口内有探测的天数：上架在窗口之后的没有；月内才上架的从上架那天起
@@ -45,32 +47,36 @@ export function installReportsMock(R: Reg, machines: () => MachineView[], incide
       const r = rng(hashStr(`${m.id}:${w.month}`));
       const down = m.health.status === 'down' && w.month === today().slice(0, 7);
       const kind = r();
-      const lossy = down ? 0.02 + r() * 0.05 : kind < 0.10 ? 0.0005 + r() * 0.004 : kind < 0.2 ? 0.0002 + r() * 0.0008 : 0;
+      // 出口失败率 / TCP 失败率：故障中的两者都高；kind < 0.10 的只有 TCP 偶发失败、出口一直通；kind < 0.2 的两者都有零星失败
+      const egLoss = down ? 0.02 + r() * 0.05 : kind >= 0.10 && kind < 0.2 ? 0.0002 + r() * 0.0008 : 0;
+      const tcpLoss = down ? egLoss * 1.2 : kind < 0.10 ? 0.01 + r() * 0.02 : egLoss * 1.5;
       const tcpTotal = Math.round(2880 * n * days); const egTotal = Math.round(1440 * n * days);
-      const tcpOk = Math.round(tcpTotal * (1 - lossy)); const egOk = Math.round(egTotal * (1 - lossy * 0.6));
-      const bad = tcpTotal - tcpOk;
-      const outages = !tcpTotal ? 0 : down ? 4 + Math.floor(r() * 4) : bad === 0 ? 0 : 1 + Math.floor(r() * 3);
-      const inc = incidents().filter((i) => (i.subject?.id ?? i.subject_id) === m.id && now - Date.parse(i.opened_at) <= 30 * DAY).length;
+      const tcpOk = Math.round(tcpTotal * (1 - tcpLoss)); const egOk = Math.round(egTotal * (1 - egLoss));
+      const bad = egTotal - egOk;
+      const outages = !egTotal ? 0 : down ? 4 + Math.floor(r() * 4) : bad < 3 ? 0 : 1 + Math.floor(r() * 3);
+      const from = Date.parse(`${w.from}T00:00:00Z`); const to = Date.parse(`${w.to}T00:00:00Z`) + DAY;
+      const inc = incidents().filter((i) => (i.subject?.id ?? i.subject_id) === m.id && AVAIL_RULES.has(i.rule) && Date.parse(i.opened_at) >= from && Date.parse(i.opened_at) < to)
+        .reduce((s, i) => s + 1 + (i.reopen_count ?? 0), 0);
       return {
         id: m.id, name: m.name, team: m.team, provider: m.provider ? { id: m.provider.id, name: m.provider.name } : null,
-        tcp_total: tcpTotal, tcp_ok: tcpOk, tcp_pct: pct(tcpOk, tcpTotal), egress_total: egTotal, egress_ok: egOk, egress_pct: pct(egOk, egTotal),
-        outages, longest_outage_h: outages ? (down ? 3 + Math.floor(r() * 9) : 1 + Math.floor(r() * 2)) : 0, incidents_30d: inc,
+        egress_total: egTotal, egress_ok: egOk, egress_pct: pct(egOk, egTotal), tcp_total: tcpTotal, tcp_ok: tcpOk, tcp_pct: pct(tcpOk, tcpTotal),
+        outages, longest_outage_h: outages ? (down ? 3 + Math.floor(r() * 9) : 1 + Math.floor(r() * 2)) : 0, incidents: inc,
       };
     });
-    items.sort((a, b) => asc(a.tcp_pct, b.tcp_pct) || asc(a.egress_pct, b.egress_pct));
+    items.sort((a, b) => asc(a.egress_pct, b.egress_pct) || asc(a.tcp_pct, b.tcp_pct));
     const groups = new Map<string | null, { name: string; its: UptimeItem[] }>();
     for (const it of items) {
       const id = it.provider?.id ?? null;
       (groups.get(id) ?? groups.set(id, { name: it.provider?.name ?? '未填供应商', its: [] }).get(id)!).its.push(it);
     }
     const providers = [...groups].map(([id, { name, its }]): UptimeProvider => {
-      const tcp = its.filter((i) => i.tcp_pct != null);
-      const eg = its.map((i) => i.egress_pct).filter((x): x is number => x != null);
+      const eg = its.filter((i) => i.egress_pct != null);
+      const tcp = its.map((i) => i.tcp_pct).filter((x): x is number => x != null);
       return {
-        id, name, nodes: its.length, with_data: tcp.length, avg_tcp_pct: mean(tcp.map((i) => i.tcp_pct!)), worst_tcp_pct: tcp[0]?.tcp_pct ?? null, worst: tcp[0] ? { id: tcp[0].id, name: tcp[0].name } : null,
-        avg_egress_pct: mean(eg), worst_egress_pct: eg.length ? Math.min(...eg) : null, outages: its.reduce((s, i) => s + i.outages, 0), incidents_30d: its.reduce((s, i) => s + i.incidents_30d, 0),
+        id, name, nodes: its.length, with_data: eg.length, avg_egress_pct: mean(eg.map((i) => i.egress_pct!)), worst_egress_pct: eg[0]?.egress_pct ?? null, worst: eg[0] ? { id: eg[0].id, name: eg[0].name } : null,
+        avg_tcp_pct: mean(tcp), worst_tcp_pct: tcp.length ? Math.min(...tcp) : null, outages: its.reduce((s, i) => s + i.outages, 0), incidents: its.reduce((s, i) => s + i.incidents, 0),
       };
-    }).sort((a, b) => asc(a.avg_tcp_pct, b.avg_tcp_pct) || a.name.localeCompare(b.name));
+    }).sort((a, b) => asc(a.avg_egress_pct, b.avg_egress_pct) || a.name.localeCompare(b.name));
     return { month: w.month, days: w.days, from: w.from, to: w.to, tz: META.org_timezone, items, providers };
   }
   R('GET', '/reports/uptime', ({ query }) => {
@@ -94,9 +100,9 @@ export function installReportsMock(R: Reg, machines: () => MachineView[], incide
     const costly = active.filter((x) => x.kind !== 'relay').map((x) => ({ x, usd: mockMonthly(x), g: mockUsage(x).bytes30 / 1e9 }))
       .filter((c) => c.usd != null && c.g >= 1).map((c) => ({ id: c.x.id, name: c.x.name, monthly_usd_cents: c.usd!, gb: c.g, usd_per_gb: c.usd! / 100 / c.g }))
       .sort((a, b) => b.usd_per_gb - a.usd_per_gb).slice(0, 3);
-    const worst = up.items.filter((i) => i.tcp_pct != null).slice(0, 3).map((i) => ({ id: i.id, name: i.name, tcp_pct: i.tcp_pct!, egress_pct: i.egress_pct, outages: i.outages, longest_outage_h: i.longest_outage_h }));
+    const worst = up.items.filter((i) => i.egress_pct != null).slice(0, 3).map((i) => ({ id: i.id, name: i.name, egress_pct: i.egress_pct!, tcp_pct: i.tcp_pct, outages: i.outages, longest_outage_h: i.longest_outage_h }));
     const ruleCount = new Map<string, number>();
-    for (const i of incidents()) ruleCount.set(i.rule, (ruleCount.get(i.rule) ?? 0) + 1);
+    for (const i of incidents()) ruleCount.set(i.rule, (ruleCount.get(i.rule) ?? 0) + 1 + (i.reopen_count ?? 0));
     const top_rules = [...ruleCount].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([rule, count]) => ({ rule, name: META.rules[rule] ?? rule, count }));
     const cents = active.reduce((s, x) => s + (mockMonthly(x) ?? 0), 0);
     const down = Math.round(2.4e12 * (0.8 + (hashStr(m) % 40) / 100)); const upb = Math.round(down * 0.11);
@@ -110,7 +116,7 @@ export function installReportsMock(R: Reg, machines: () => MachineView[], incide
       `总流量：${gb(r.traffic.total)}（下载 ${gb(r.traffic.down)}，上传 ${gb(r.traffic.up)}）`,
       `月费合计：${money(cents)}（在用 ${r.machines} 台，按当前订阅折成 USD）`,
       ...list('USD/GB 最高的 3 台', costly.map((c) => `${c.name} $${c.usd_per_gb.toFixed(3)}/GB（月费 ${money(c.monthly_usd_cents)}，流量 ${c.gb.toFixed(1)} GB）`)),
-      ...list('可用率最差的 3 台（TCP 探测成功率）', worst.map((x) => `${x.name} ${pctText(x.tcp_pct)}（出口 ${pctText(x.egress_pct)}）${x.outages ? `，断线 ${x.outages} 次、最长 ${x.longest_outage_h} 小时` : ''}`)),
+      ...list('可用率最差的 3 台（出口探测成功率）', worst.map((x) => `${x.name} ${pctText(x.egress_pct)}（TCP ${pctText(x.tcp_pct)}）${x.outages ? `，断线 ${x.outages} 次、最长 ${x.longest_outage_h} 小时` : ''}`)),
       ...list('告警次数前 3 的规则', top_rules.map((x) => `${x.name} ${x.count} 次`)),
       `即将到期：${r.due_soon} 台（已过期 ${r.overdue} 台）`,
     ].join('\n');
