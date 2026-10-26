@@ -190,9 +190,10 @@ async fn back_one(st: &AppState, actor: &str, c: &Active, why: &str) -> ApiResul
     let name: String = sqlx::query_scalar("select name from router where id = $1").bind(c.router_id).fetch_one(&st.db).await?;
     let was = exec(st, c.router_id, &c.grp, &c.from_exit).await.map_err(|e| ApiError::conflict(format!("软路由「{name}」：{e}")))?;
     let mut tx = st.db.begin().await?;
-    let n = sqlx::query("update router_switch set state = 'back', ended_at = now(), end_note = $2 where id = $1 and state = 'active'")
+    let n = sqlx::query("update router_switch set state = 'back', ended_at = now(), end_note = $2 where id = $1 and state = 'active' and switched_at = $3")
         .bind(c.id)
         .bind(why)
+        .bind(c.switched_at)
         .execute(&mut *tx)
         .await?
         .rows_affected();
@@ -213,8 +214,22 @@ pub async fn due(st: &AppState) {
         Ok(r) => r,
         Err(e) => return tracing::warn!("查到时切回的临时切换失败：{e}"),
     };
+    due_each(st, rows).await;
+}
+
+/// [`due`] 的逐条处理：每条拿到锁后按 id 重读（测试直接给一份「拿锁之前读的」旧记录来验这一步）
+pub async fn due_each(st: &AppState, rows: Vec<Active>) {
     for c in rows {
         let _g = LOCK.lock().await;
+        // 上面的记录是拿锁之前读的：等锁期间（前面每条切回最多 25 秒）人可能又切了一次或切回了，按 id 重读，不再到时的就跳过
+        let c: Active = match sqlx::query_as(&format!("{ACTIVE} and id = $1 and back_at <= now()")).bind(c.id).fetch_optional(&st.db).await {
+            Ok(Some(c)) => c,
+            Ok(None) => continue,
+            Err(e) => {
+                tracing::warn!(router = %c.router_id, group = %c.grp, "拿到锁后重读临时切换失败，下一轮再试：{e}");
+                continue;
+            }
+        };
         match origin_blocker(st, &c).await {
             Ok(Some(why)) => {
                 if let Err(e) = defer(st, &c, &why).await {

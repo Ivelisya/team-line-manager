@@ -112,6 +112,8 @@ function RenameSection({ m }: { m: MachineView }) {
   const toSpare = teamMoved && !!toTeam?.spare && !m.spare;
   // 移进备用后还被软路由出口指着的（宿主机自己的和一起进备用的同机 IP 节点的，预览给）
   const exitsLeft = teamMoved ? pv.data?.router_exits.length ?? 0 : 0;
+  // 进不了备用（订阅过期满 1 天、没有订阅、有作业…）：保存会被服务端拒，提前拦下并说明
+  const spareBlocked = toSpare ? pv.data?.spare_blocked ?? null : null;
   const changeTeam = (v: string) => { setTeam(v); setNum(v === (m.team?.id ?? '') ? (m.number != null ? F.pad2(m.number) : '') : ''); };
 
   const save = () => {
@@ -139,14 +141,15 @@ function RenameSection({ m }: { m: MachineView }) {
         <Field label="备注" className="span-2" error={note.length > NOTE_MAX ? `备注最多 ${NOTE_MAX} 个字符` : undefined}><Textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="例如：客户专用、合同到 2027 年" disabled={patch.isPending} /></Field>
         {!!alsoIps?.length && <div className="span-2"><Note>同机 IP 节点一起移{toSpare && '入备用'}：{alsoIps.map((x, i) => <React.Fragment key={x.machine_id}>{i > 0 && '、'}<span className="num">{x.old_name} → <b>{x.new_name}</b></span></React.Fragment>)}</Note></div>}
         {!!also?.length && <div className="span-2"><RenameNote renames={also} tip={`${m.team!.name} 少了这台，后面的节点前移补号，编号保持连续`} /></div>}
-        {toSpare && <div className="span-2"><Note tone="warn">备用团队的机器不再续费：订阅过期满 1 天自动回收</Note></div>}
-        {toSpare && exitsLeft > 0 && <div className="span-2"><Note tone="warn">{exitsLeft} 个软路由出口还指向{alsoIps?.length ? '它和一起移入的同机 IP 节点' : '它'}，客户会继续用；要换机器请用替换</Note></div>}
+        {spareBlocked && <div className="span-2"><Note tone="bad">不能改到备用团队：{spareBlocked}。要进备用请用「退役」</Note></div>}
+        {toSpare && !spareBlocked && <div className="span-2"><Note tone="warn">备用团队的机器不再续费：订阅过期满 1 天自动回收</Note></div>}
+        {toSpare && !spareBlocked && exitsLeft > 0 && <div className="span-2"><Note tone="warn">{exitsLeft} 个软路由出口还指向{alsoIps?.length ? '它和一起移入的同机 IP 节点' : '它'}，客户会继续用；要换机器请用替换</Note></div>}
         <div className="span-2 row row-between">
           {/* 改了名字才出现「旧名 → 新名」 */}
           <span className="row" style={{ gap: 8 }}>
             {nameChanged && <><span className="t-sub">新显示名</span><span className="preview-name">{m.name}<ArrowRight size={14} style={{ color: 'var(--fg-3)' }} />{preview || '—'}</span></>}
           </span>
-          <Button type="submit" variant="primary" disabled={!changed || !valid || note.length > NOTE_MAX || patch.isPending} loading={patch.isPending}>保存</Button>
+          <Button type="submit" variant="primary" disabled={!changed || !valid || !!spareBlocked || note.length > NOTE_MAX || patch.isPending} loading={patch.isPending}>保存</Button>
         </div>
       </form>
     </Section>

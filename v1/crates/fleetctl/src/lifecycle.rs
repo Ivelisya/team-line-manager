@@ -167,8 +167,8 @@ fn mv_many(ctx: &Ctx, names: &[&str], to: &str, from: Option<&str>, no_routers: 
         outln(SHARE_HINT);
     }
     if pv["ok"] != true {
-        // 离线软路由上面已经逐条打印过（json 模式 pv 整份已输出），这里只放 blockers，不再重复
-        bail!("现在不能换线路机（一个都没提交）：{}", moves_why(&pv));
+        // 非 json 模式离线软路由上面已逐条打印过，这里只放 blockers，不再重复；json 模式什么都没打印，原因要自己带全
+        bail!("现在不能换线路机（一个都没提交）：{}", moves_why(&pv, ctx.json));
     }
     confirm(&format!("确认把这 {} 个节点换到 {tname}？", names.len()), yes)?;
     let d = ctx.c.post("/moves", &body)?;
@@ -201,9 +201,14 @@ fn offline_lines(pv: &Value) -> Vec<String> {
         .collect()
 }
 
-/// 批量换线路机现在不能提交的原因：别的原因（blockers，带节点名）；离线的软路由不在这里（offline_lines 已逐条打印），只有它时写「见上」
-fn moves_why(pv: &Value) -> String {
-    let v: Vec<String> = pv["blockers"].as_array().into_iter().flatten().filter_map(|s| s.as_str().map(String::from)).collect();
+/// 批量换线路机现在不能提交的原因：别的原因（blockers，带节点名）。
+/// 非 json 模式离线的软路由已由 offline_lines 逐条打印，不在这里重复，只有它时写「见上」；
+/// json 模式预览什么都没输出，离线软路由也拼进原因里
+fn moves_why(pv: &Value, json: bool) -> String {
+    let mut v: Vec<String> = pv["blockers"].as_array().into_iter().flatten().filter_map(|s| s.as_str().map(String::from)).collect();
+    if json {
+        v.extend(offline_lines(pv));
+    }
     if v.is_empty() {
         "软路由不在线，见上".into()
     } else {
@@ -620,8 +625,14 @@ mod tests {
              "软路由 路由C 还没接入：出口 节点02（团队2-02） 要等它在线再换，或加 --no-routers 不改软路由"]
         );
         // 离线软路由已由 offline_lines 逐条打印，失败原因里不再重复
-        assert_eq!(moves_why(&pv), "团队2-04：还有进行中的作业");
-        assert_eq!(moves_why(&json!({"ok": false, "blockers": [], "offline_routers": [{"id": "a"}]})), "软路由不在线，见上");
+        assert_eq!(moves_why(&pv, false), "团队2-04：还有进行中的作业");
+        assert_eq!(moves_why(&json!({"ok": false, "blockers": [], "offline_routers": [{"id": "a"}]}), false), "软路由不在线，见上");
+        // json 模式什么都没打印过：离线软路由拼在 blockers 后面，只有它时也不写「见上」
+        let why = moves_why(&pv, true);
+        assert!(why.starts_with("团队2-04：还有进行中的作业；软路由 团队2-路由B 离线"), "{why}");
+        assert!(why.contains("软路由 路由C 还没接入"), "{why}");
+        let only = moves_why(&json!({"ok": false, "blockers": [], "offline_routers": [{"id": "a", "name": "路由A", "state": "offline", "exits": [{"node": "团队2-01", "exit": "节点01"}]}]}), true);
+        assert!(only.starts_with("软路由 路由A 离线") && !only.contains("见上"), "{only}");
         assert!(offline_lines(&json!({"ok": true})).is_empty(), "旧中控没有这个字段");
     }
 

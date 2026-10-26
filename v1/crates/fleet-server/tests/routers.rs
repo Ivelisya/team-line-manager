@@ -833,6 +833,60 @@ async fn exits_down_notes_maintenance_and_alerts() {
     assert!(inc.iter().any(|i| i["rule"] == "router_exits_down" && i["summary"] == ex["summary"]), "{inc:?}");
 }
 
+/// 节点维护刚结束：机器告警的计时被清、要重攒 150 秒才开，路由出口的不通计时早就满了。这段时间路由告警按 quiet 处理（开着、不单独通知），
+/// 过了这段时间机器告警还是没来，才在重新采集之后补发「触发」
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn exits_down_quiet_right_after_maintenance_ends() {
+    let t = setup().await;
+    let mock = Mock::start().await;
+    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "feishu", "config": {"url": mock.url("/hook/m")}, "min_severity": "info", "enabled": true})).await;
+    let team = seed_team(&t, "团队2").await;
+    let (relay, _) = common::seed_relay(&t).await;
+    let n3 = common::seed_node(&t, team, 3, "203.0.113.13", "active").await;
+    let (id, _) = create(&t, "团队2-路由N").await;
+    issue_key(&t, &id).await;
+    let t0 = OffsetDateTime::now_utc();
+    let at = |s: i64| (t0 + time::Duration::seconds(s)).format(&time::format_description::well_known::Rfc3339).unwrap();
+    let er = json!({"id": Uuid::now_v7(), "name": "团队2-03 · 线路机2:20003", "node_id": n3, "relay_id": relay, "node_name": "团队2-03", "relay_name": "线路机2", "port": 20003, "lifecycle": "active"});
+    let data = |collected: String| {
+        json!({
+            "system": {"cpu_pct": 10.0, "mem_used": 1, "mem_total": 4},
+            "interfaces": [{"name": "wan", "device": "eth0", "up": true}],
+            "openclash": {"enabled": true, "running": true},
+            "exits": [{"name": "节点03", "fail_streak": 2, "sync": "ok", "entry": er}, {"name": "节点04", "fail_streak": 0, "sync": "ok"}],
+            "collected_at": collected,
+        })
+    };
+    status(&t, &id, true, 0, data(at(0))).await;
+    let maint = Uuid::now_v7();
+    sqlx::query("insert into silence (id, machine_id, is_maintenance, starts_at, ends_at, created_by) values ($1, $2, true, now() - interval '10 minutes', now() + interval '1 hour', 'a')")
+        .bind(maint)
+        .bind(n3)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let mut st = alerts::AlertState::default();
+    alerts::evaluate(&t.st, &mut st, t0).await.unwrap();
+    assert!(incidents(&t, "firing").await.is_empty(), "维护中：不开");
+    // 维护刚结束，机器告警还没来得及开：路由告警开着，但不单独通知
+    sqlx::query("update silence set deleted_at = now() where id = $1").bind(maint).execute(&t.st.db).await.unwrap();
+    alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(30)).await.unwrap();
+    let inc = incidents(&t, "firing").await;
+    assert_eq!(inc.iter().filter(|i| i["rule"] == "router_exits_down").count(), 1, "{inc:?}");
+    assert!(inc.iter().any(|i| i["summary"].as_str().is_some_and(|s| s.contains("1 个指向的团队2-03 刚结束维护"))), "{inc:?}");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(mock.count("/hook/m"), 0, "机器告警还没来：先别抢着通知");
+    // 过了这段时间（维护结束已超过 180 秒）机器告警还是没开：解除 quiet，等重新采集后补发「触发」
+    sqlx::query("update silence set starts_at = now() - interval '20 minutes', deleted_at = now() - interval '4 minutes' where id = $1").bind(maint).execute(&t.st.db).await.unwrap();
+    alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(60)).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(mock.count("/hook/m"), 0, "快照还是解除之前的");
+    status(&t, &id, true, 0, data(at(70))).await;
+    alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(90)).await.unwrap();
+    mock.wait("/hook/m", 1).await;
+    assert_eq!(mock.events("/hook/m"), ["firing"]);
+}
+
 /// 出口不通开着但 quiet（指向的节点有机器告警）：机器告警先恢复后，路由告警等这台路由重新采集（快照晚于解除的时刻），出口还不通才补发「触发」；
 /// 没有新快照的评估（补采别的、到点复查）不算数；解除之后出口就好了的，既不发触发也不发恢复（不会出现「触发」随后又「恢复」）
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1334,6 +1388,47 @@ async fn switch_and_auto_back() {
     let a = audit(&t).await;
     assert_eq!((a["title"].as_str(), a["summary"].as_str()), (Some("临时切换被路由改回"), Some("团队2-路由W · 手动选择：已被路由自己改回（现在选中的是「节点01」），待切回已取消")), "{a}");
     assert_eq!(t.req("POST", &format!("{path}/back"), Some(json!({"group": "手动选择"})), None).await.0, StatusCode::NOT_FOUND);
+}
+
+/// 到时自动切回用的是拿锁之前读出的旧记录（前面每条切回最多 25 秒）：等锁期间人又切了一次、或手动切回了，
+/// 拿到锁后按 id 重读，不再到时的就跳过，不去撤销人的操作
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn due_skips_record_changed_while_waiting() {
+    let t = setup().await;
+    let (id, _) = create(&t, "团队2-路由V").await;
+    issue_key(&t, &id).await;
+    let port = 23942;
+    sqlx::query("update router set tunnel_port = $2 where id = $1::uuid").bind(&id).bind(port).execute(&t.st.db).await.unwrap();
+    let r = root(port.into());
+    let _ = std::fs::remove_dir_all(&r);
+    std::fs::create_dir_all(&r).unwrap();
+    std::fs::write(r.join("group.now"), "节点01").unwrap();
+    let mut s = snap(true, [0, 0], true);
+    s["groups"] = json!([{"name": "手动选择", "type": "Selector", "now": "节点01", "all": ["节点01", "节点02", "节点03"]}]);
+    status(&t, &id, true, 0, s).await;
+    let rid = Uuid::parse_str(&id).unwrap();
+    let path = format!("/api/v1/routers/{id}/switch");
+    // 切到 节点02 并到时，due 读到这条；等锁期间人又切到 节点03（不再自动切回）
+    t.post(&path, json!({"group": "手动选择", "to": "节点02", "back_after_s": 3600})).await;
+    sqlx::query("update router_switch set back_at = now() - interval '1 second'").execute(&t.st.db).await.unwrap();
+    let stale = routers::switch::active(&t.st.db, Some(rid)).await.unwrap();
+    assert_eq!(stale.len(), 1);
+    t.post(&path, json!({"group": "手动选择", "to": "节点03"})).await;
+    let log = read(&r.join("switch.log"));
+    routers::switch::due_each(&t.st, stale).await;
+    assert_eq!((read(&r.join("group.now")), read(&r.join("switch.log"))), ("节点03".to_string(), log.clone()), "人又切了一次：不撤销");
+    let sw = t.get(&format!("/api/v1/routers/{id}")).await["switches"][0].clone();
+    assert_eq!((sw["to"].as_str(), sw["back_at"].is_null()), (Some("节点03"), true), "{sw}");
+    // 又到时，due 读到后人手动切回了：记录已结束，同样不动路由
+    sqlx::query("update router_switch set back_at = now() - interval '1 second'").execute(&t.st.db).await.unwrap();
+    let stale = routers::switch::active(&t.st.db, Some(rid)).await.unwrap();
+    t.post(&format!("{path}/back"), json!({"group": "手动选择"})).await;
+    std::fs::write(r.join("group.now"), "节点03").unwrap();
+    let log = read(&r.join("switch.log"));
+    routers::switch::due_each(&t.st, stale).await;
+    assert_eq!((read(&r.join("group.now")), read(&r.join("switch.log"))), ("节点03".to_string(), log), "已手动切回：不再动路由");
+    let n: i64 = sqlx::query_scalar("select count(*) from audit_log where action = 'router.switch_back'").fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(n, 1, "只有手动切回那一条");
 }
 
 /// 没有规则用的组（快照 used = false）切了不影响流量：409、不去动路由；used 为 true 或没有这个字段（旧快照，未知）照常能切。

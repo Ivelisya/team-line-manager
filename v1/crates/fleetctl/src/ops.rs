@@ -437,16 +437,16 @@ pub fn rename(
         body["team_id"] = json!(ctx.team_id(t)?);
     }
     // 换团队时同机 IP 节点一起走、原团队剩下的节点会压缩编号（同事务）：先取预览，改完把连带改动的一并打出来
-    let (renames, ip_nodes): (Vec<String>, Vec<String>) = if team.is_some() {
+    let (renames, ip_nodes, router_exits): (Vec<String>, Vec<String>, Value) = if team.is_some() {
         let mut q = vec![("team_id", st(&body, "/team_id"))];
         if let Some(n) = number {
             q.push(("number", n.to_string()));
         }
         let pv = ctx.c.get_q(&format!("/machines/{id}/rename-preview"), &q)?;
         let list = |k: &str| pv[k].as_array().into_iter().flatten().map(|r| format!("{} → {}", st(r, "/old_name"), st(r, "/new_name"))).collect();
-        (list("renames"), list("ip_nodes"))
+        (list("renames"), list("ip_nodes"), pv["router_exits"].clone())
     } else {
-        (vec![], vec![])
+        (vec![], vec![], Value::Null)
     };
     if let Some(n) = number {
         body["number"] = json!(n);
@@ -469,12 +469,26 @@ pub fn rename(
     if !ip_nodes.is_empty() {
         d["ip_nodes"] = json!(ip_nodes);
     }
+    // 换到备用团队后还有软路由出口指向它（及随行 IP 节点）：只提示，不阻断
+    if router_exits.as_array().is_some_and(|a| !a.is_empty()) {
+        d["router_exits"] = router_exits.clone();
+    }
     ctx.emit(&d, || {
         let ips = if ip_nodes.is_empty() { String::new() } else { format!("\n同机 IP 节点一起移：{}", ip_nodes.join("，")) };
         let also = if renames.is_empty() { String::new() } else { format!("\n原团队编号连带改动：{}", renames.join("，")) };
-        format!("{} → {}{ips}{also}", st(&cur, "/name"), st(&d, "/name"))
+        format!("{} → {}{ips}{also}{}", st(&cur, "/name"), st(&d, "/name"), spare_exits_note(&router_exits))
     });
     Ok(0)
+}
+
+/// 改团队的预览 router_exits：换到备用团队后还指向它（及随行同机 IP 节点）的软路由出口，客户会继续用；没有则为空串
+fn spare_exits_note(router_exits: &Value) -> String {
+    let v: Vec<String> = router_exits.as_array().into_iter().flatten().map(|e| format!("{} · {}", st(e, "/router"), st(e, "/exit"))).collect();
+    if v.is_empty() {
+        String::new()
+    } else {
+        format!("\n注意：{} 个软路由出口还指向它（{}），客户会继续用；要换机器请用替换", v.len(), v.join("，"))
+    }
 }
 
 pub fn renumber(ctx: &Ctx, team: &str, yes: bool) -> anyhow::Result<u8> {
@@ -1184,6 +1198,14 @@ mod tests {
         assert_eq!(speedtest_line("团队1-03", &o), "团队1-03 测速（圣何塞）：平均 80.0 Mbit/s（10.00 MB/s），耗时 10.5 秒，首字节 500 毫秒，已下完");
         let part = json!({"target_name": "洛杉矶", "avg_mbps": 3.2, "avg_mb_s": 0.4, "total_s": 300.0, "ttfb_s": 1.0, "complete": false, "bytes": 50_000_000});
         assert!(speedtest_line("x", &part).ends_with("没下完（只下了 50.0 MB，速率按已下载的算）"));
+    }
+
+    #[test]
+    fn rename_to_spare_notes_router_exits() {
+        let ex = json!([{"node": "团队2-04", "router": "团队2-路由A", "exit": "节点04"}, {"node": "团队2-04IP2", "router": "路由B", "exit": "节点05"}]);
+        assert_eq!(spare_exits_note(&ex), "\n注意：2 个软路由出口还指向它（团队2-路由A · 节点04，路由B · 节点05），客户会继续用；要换机器请用替换");
+        assert_eq!(spare_exits_note(&json!([])), "");
+        assert_eq!(spare_exits_note(&Value::Null), "", "没换团队或旧中控没有这个字段");
     }
 
     #[test]

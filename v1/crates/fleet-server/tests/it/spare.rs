@@ -701,3 +701,45 @@ async fn rename_preview_lists_router_exits_when_moving_to_spare() {
         assert_eq!(pv["router_exits"], json!([]), "{pv}");
     }
 }
+
+/// 手动改名把机器改进备用团队，和退役的「移进备用」同一套资格：订阅已过期满 1 天、没有订阅、宿主机有进行中的作业都 409（提示改用退役），
+/// 改名预览给 spare_blocked 同样的原因；合格的照常能改；线路机、改到非备用团队、移出备用不查
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn patch_into_spare_checks_eligibility() {
+    let t = setup(false).await;
+    let sp = spare_team(&t).await;
+    let (a, b) = (seed_team(&t, "团队1").await, seed_team(&t, "团队2").await);
+    let rev = |m: Uuid| {
+        let t = &t;
+        async move { sqlx::query_scalar::<_, i32>("select revision from machine where id = $1").bind(m).fetch_one(&t.st.db).await.unwrap() }
+    };
+    let expired = seed_vps(&t, a, 1, "203.0.113.61", None).await;
+    let nosub = seed_vps(&t, a, 2, "203.0.113.62", None).await;
+    let busy = seed_vps(&t, a, 3, "203.0.113.63", None).await;
+    let good = seed_vps(&t, a, 4, "203.0.113.64", None).await;
+    sub(&t, expired, "2020-01-01", "UTC").await;
+    sub(&t, busy, "2099-01-01", "UTC").await;
+    sub(&t, good, "2099-01-01", "UTC").await;
+    sqlx::query("insert into job (id, kind, target_id, state, created_by) values ($1, 'upgrade_agent', $2, 'running', 'test')").bind(Uuid::now_v7()).bind(busy).execute(&t.st.db).await.unwrap();
+    for (m, why) in [(expired, "订阅已经过期满 1 天"), (nosub, "没有订阅"), (busy, "有进行中的作业")] {
+        let pv = t.get(&format!("/api/v1/machines/{m}/rename-preview?team_id={sp}")).await;
+        assert!(pv["spare_blocked"].as_str().is_some_and(|s| s.contains(why)), "{why}: {pv}");
+        let (s, v) = t.req("PATCH", &format!("/api/v1/machines/{m}"), Some(json!({"revision": rev(m).await, "team_id": sp})), None).await;
+        let msg = v["error"]["message"].as_str().unwrap_or_default();
+        assert!(s == StatusCode::CONFLICT && msg.contains("不能改到备用团队") && msg.contains(why) && msg.contains("退役"), "{why}: {s} {v}");
+        let team: Uuid = sqlx::query_scalar("select team_id from machine where id = $1").bind(m).fetch_one(&t.st.db).await.unwrap();
+        assert_eq!(team, a, "没有改动");
+    }
+    // 改到非备用团队不查；合格的能改进备用，预览没有拦截原因
+    let pv = t.get(&format!("/api/v1/machines/{expired}/rename-preview?team_id={b}")).await;
+    assert!(pv["spare_blocked"].is_null(), "{pv}");
+    let (s, v) = t.req("PATCH", &format!("/api/v1/machines/{expired}"), Some(json!({"revision": rev(expired).await, "team_id": b})), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let pv = t.get(&format!("/api/v1/machines/{good}/rename-preview?team_id={sp}")).await;
+    assert!(pv["spare_blocked"].is_null(), "{pv}");
+    let (s, v) = t.req("PATCH", &format!("/api/v1/machines/{good}"), Some(json!({"revision": rev(good).await, "team_id": sp})), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    // 已经在备用里的：移出不查，备用里改编号也不查
+    let (s, v) = t.req("PATCH", &format!("/api/v1/machines/{good}"), Some(json!({"revision": rev(good).await, "team_id": a})), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+}

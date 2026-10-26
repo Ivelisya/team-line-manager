@@ -122,10 +122,19 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
         teams.sort();
         sqlx::query("select 1 from team where id = any($1) order by id for update").bind(&teams).execute(&mut *tx).await?;
         host_spare_since = sqlx::query_scalar::<_, Option<OffsetDateTime>>("select spare_since from machine where id = $1 for update").bind(id).fetch_optional(&mut *tx).await?.flatten();
+        // 手动改进备用团队和退役的「移进备用」同一套资格：patch_tx 不查（替换作业也用它，自己处理过期），入口在这里
+        if let Some(why) = spare_gate(&mut tx, id, to).await? {
+            return Err(ApiError::conflict(format!("不能改到备用团队：{why}。要进备用请用退役（网页「退役」、fleetctl retire），现在就回收选「立即回收」")));
+        }
     }
     let to = b.team_id;
-    let p = patch_tx(&mut tx, &a.name, id, b).await?;
-    let mut relays = p.relays;
+    // 宿主机和随行 IP 节点各自改名，线路机的代数最后统一刷一次（按 id 排序加锁，不在几次调用之间各刷各的）
+    let mut renamed = vec![];
+    let p = patch_nobump(&mut tx, &a.name, id, b).await?;
+    if p.renamed {
+        renamed.push(id);
+    }
+    let mut relays = vec![];
     // 宿主机换了团队：它上面还在原团队的同机 IP 节点一起走（编号接在宿主机之后取新团队的最小空号，同 move_to_spare），原团队一并压缩。
     // 原团队是备用团队（撤销退役）时只带与宿主机同一次进备用的（move_to_spare 同事务写 spare_since，时刻相同）：之前单独退役进备用的不拉回
     let mut ip_moved = false;
@@ -152,10 +161,12 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
         }
         for (ip, rev) in ips {
             let n = free_number(&mut *tx, Some(to)).await?;
-            relays.extend(patch_tx(&mut tx, &a.name, ip, PatchIn::rename(rev, to, n)).await?.relays);
+            patch_nobump(&mut tx, &a.name, ip, PatchIn::rename(rev, to, n)).await?;
+            renamed.push(ip);
             ip_moved = true;
         }
     }
+    relays.extend(bump_relays_of_nodes(&mut tx, &renamed).await?);
     // 原团队压缩改了别的机器的编号（名字跟着变）：不能只发这一台的事件，其余的页面也要重取
     let mut compacted = ip_moved;
     if let Some(t) = p.left_team {
@@ -180,8 +191,10 @@ const IP_WITH_HOST: &str = "m.host_id = $1 and m.team_id = $2 and m.lifecycle no
 
 /// `patch_tx` 的结果
 pub struct Patched {
-    /// 要刷新的线路机（提交后调 `relay_bumped`）
+    /// 要刷新的线路机（提交后调 `relay_bumped`）；`patch_nobump` 里为空，调用方统一刷
     pub relays: Vec<Uuid>,
+    /// 团队、编号或线路机名变了（节点显示名变了，它入口所在的线路机要刷新）
+    pub renamed: bool,
     /// 进了备用团队、把开着的自动续费关掉了
     pub auto_renew_off: bool,
     /// 换了团队时它原来所在的团队：少了这台，调用方要不要压缩编号自己定（PATCH 压缩；移进备用、替换节点自己压缩）
@@ -210,10 +223,11 @@ pub struct RenamePreviewQ {
     number: Option<i32>,
 }
 
-/// 改团队 / 编号预览：`{name（改后的名字）, old_name, renames:[{machine_id,old_name,new_name}], ip_nodes:[{machine_id,old_name,new_name}], router_exits:[{node,router,exit}]}`。
+/// 改团队 / 编号预览：`{name（改后的名字）, old_name, renames:[{machine_id,old_name,new_name}], ip_nodes:[{machine_id,old_name,new_name}], router_exits:[{node,router,exit}], spare_blocked}`。
 /// 换团队时原团队少了这台，剩下的按编号连续压缩（PATCH 同事务做），`renames` 列出连带改号的；
 /// 宿主机上还在原团队的同机 IP 节点一起换团队（PATCH 同事务做，编号接在宿主机之后取新团队的最小空号），`ip_nodes` 列出它们的新旧名字。
 /// `router_exits`：新团队是备用团队时，还指向这台和随它一起移入的同机 IP 节点的软路由出口（只提示，不阻断）；其余为空。
+/// `spare_blocked`：改到备用团队但进不了备用时的原因（订阅已过期满 1 天、没有订阅、有进行中的作业等，同退役的「移进备用」；PATCH 会回 409），否则为 null。
 /// 没换团队、线路机三项都为空
 pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<RenamePreviewQ>) -> ApiResult<Json<Value>> {
     let mut conn = st.db.acquire().await?;
@@ -227,6 +241,7 @@ pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
     let mut renames = vec![];
     let mut ip_nodes = vec![];
     let mut router_exits = vec![];
+    let mut spare_blocked = None;
     let mut name = old_name.clone();
     if kind != "relay" {
         let to = q.team_id.or(team);
@@ -237,6 +252,9 @@ pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
             None => number.unwrap_or(1),
         };
         name = crate::names::display_name(&kind, label.as_deref(), Some(&to_name), Some(n));
+        if let Some(to) = to.filter(|t| Some(*t) != team) {
+            spare_blocked = spare_gate(&mut conn, id, to).await?;
+        }
         if let (true, Some(from)) = (to != team, team) {
             let from_name = team_name(&st.db, Some(from)).await?.unwrap_or_default();
             // 随宿主机走的同机 IP 节点：新团队里宿主机先占 n，它们依次取剩下的最小空号
@@ -289,12 +307,22 @@ pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
                 .collect();
         }
     }
-    Ok(ok(json!({"name": name, "old_name": old_name, "renames": renames, "ip_nodes": ip_nodes, "router_exits": router_exits})))
+    Ok(ok(json!({"name": name, "old_name": old_name, "renames": renames, "ip_nodes": ip_nodes, "router_exits": router_exits, "spare_blocked": spare_blocked})))
 }
 
 /// PATCH 的全部校验与写入（含审计），在调用方的事务里做。
 /// 改团队 / 编号（改名）只走这里：网页、fleetctl rename 与替换节点（jobs/steps/replace.rs）同一套规则与审计
 pub async fn patch_tx(tx: &mut crate::db::Tx<'_>, actor: &str, id: Uuid, b: PatchIn) -> ApiResult<Patched> {
+    let mut p = patch_nobump(tx, actor, id, b).await?;
+    if p.renamed {
+        p.relays = bump_relays_of_nodes(tx, &[id]).await?;
+    }
+    Ok(p)
+}
+
+/// `patch_tx` 去掉刷新线路机的那一步：一次改好几台的调用方（PATCH 带随行 IP 节点、移进备用）自己把改名的节点攒起来，
+/// 最后对 `bump_relays_of_nodes` 调一次（按线路机 id 排序加锁，几台节点的几次调用之间不各刷各的，免得并发时加锁顺序交叉）
+pub async fn patch_nobump(tx: &mut crate::db::Tx<'_>, actor: &str, id: Uuid, b: PatchIn) -> ApiResult<Patched> {
     let country = match &b.country {
         Some(c) => Some(crate::country::normalize(c.as_deref().unwrap_or("")).map_err(ApiError::bad_request)?),
         None => None,
@@ -376,8 +404,7 @@ pub async fn patch_tx(tx: &mut crate::db::Tx<'_>, actor: &str, id: Uuid, b: Patc
         }
         sqlx::query("update machine set provider_id = $2 where id = $1").bind(id).bind(pv).execute(&mut **tx).await?;
     }
-    // 入口备注随节点名变：节点改名刷新它挂的线路机；线路机改名只影响它自己的直出入口（「线路机名-直出」），没有就不动
-    let relays = if renamed { bump_relays_of_nodes(tx, &[id]).await? } else { vec![] };
+    // 入口备注随节点名变：节点改名要刷新它挂的线路机（调用方做，见 patch_tx）；线路机改名只影响它自己的直出入口（「线路机名-直出」），没有就不动
     // 审计写上改前改后的显示名（「团队1-07 → 团队1-03」）：记录保持当时的样子，之后再改名也不跟着变
     let (old_team, new_team, old_spare, new_spare): (Option<String>, Option<String>, bool, bool) = sqlx::query_as(
         "select (select name from team where id = $1), (select name from team where id = $2),
@@ -405,7 +432,7 @@ pub async fn patch_tx(tx: &mut crate::db::Tx<'_>, actor: &str, id: Uuid, b: Patc
         detail["auto_renew_off"] = json!(true);
     }
     audit(tx, actor, if renamed { "machine.rename" } else { "machine.update" }, "machine", Some(id), detail).await?;
-    Ok(Patched { relays, auto_renew_off, left_team: cur.2.filter(|f| Some(*f) != team_id) })
+    Ok(Patched { relays: vec![], renamed, auto_renew_off, left_team: cur.2.filter(|f| Some(*f) != team_id) })
 }
 
 // ── 时序 ──────────────────────────────────────────────────────────────────
@@ -606,6 +633,27 @@ async fn spare_check(conn: &mut sqlx::PgConnection, id: Uuid) -> ApiResult<(Resu
     Ok((crate::spare::spare_eligible(&kind, &lc, in_spare, due.zip(today)), due))
 }
 
+/// 手动把机器改到 `to` 团队时的备用资格：改进备用团队（原来不在备用、节点不是线路机）才查，同退役「移进备用」的 spare_check，
+/// 再加宿主机自己不能有进行中的作业（同机 IP 节点的作业另有检查）。不通过给原因。PATCH 与改名预览共用
+async fn spare_gate(conn: &mut sqlx::PgConnection, id: Uuid, to: Uuid) -> ApiResult<Option<String>> {
+    let (kind, old_spare, new_spare): (String, bool, bool) = sqlx::query_as(
+        "select m.kind::text, coalesce(ot.spare, false), coalesce((select spare from team where id = $2), false) from machine m left join team ot on ot.id = m.team_id where m.id = $1",
+    )
+    .bind(id)
+    .bind(to)
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or_else(|| ApiError::not_found("没有这台机器"))?;
+    if kind == "relay" || old_spare || !new_spare {
+        return Ok(None);
+    }
+    if let Err(why) = spare_check(conn, id).await?.0 {
+        return Ok(Some(why.to_string()));
+    }
+    let busy: Option<String> = sqlx::query_scalar("select kind from job where target_id = $1 and state in ('queued', 'running', 'waiting', 'cancelling') limit 1").bind(id).fetch_optional(&mut *conn).await?;
+    Ok(busy.map(|k| format!("有进行中的作业（{}），等它结束再退役", meta::job_kind_label(&k))))
+}
+
 /// 唯一的备用团队 (id, 名字) 与它占着的编号
 async fn spare_team(conn: &mut sqlx::PgConnection) -> sqlx::Result<(Uuid, String, HashSet<i32>)> {
     let (id, name): (Uuid, String) = sqlx::query_as("select id, name from team where spare").fetch_one(&mut *conn).await?;
@@ -655,13 +703,12 @@ pub async fn move_to_spare(st: &AppState, actor: &str, id: Uuid, reason: Option<
     let ip_reason = revs.iter().find(|r| r.0 == id).map(|r| format!("随宿主机「{}」退役", r.3)).unwrap_or_default();
     // (id, 原名, 新名)，宿主机在前
     let mut moved: Vec<(Uuid, String, String)> = vec![];
-    let mut relays = vec![];
     // patch_tx 进备用时关掉了自动续费的（原名），结果里写明
     let mut renew_off = vec![];
     for (mid, rev, _, from) in &revs {
         let n = free.next().ok_or_else(|| ApiError::conflict(format!("备用团队「{spare_name}」的编号用完了")))?;
-        let p = patch_tx(&mut tx, actor, *mid, PatchIn::rename(*rev, spare_id, n)).await?;
-        relays.extend(p.relays);
+        // 线路机的代数不在这里每台各刷一次，下面对所有改名的节点统一刷（按线路机 id 排序）
+        let p = patch_nobump(&mut tx, actor, *mid, PatchIn::rename(*rev, spare_id, n)).await?;
         if p.auto_renew_off {
             renew_off.push(from.clone());
         }
@@ -672,6 +719,7 @@ pub async fn move_to_spare(st: &AppState, actor: &str, id: Uuid, reason: Option<
             .await?;
         moved.push((*mid, from.clone(), node_name(&spare_name, n)));
     }
+    let mut relays = bump_relays_of_nodes(&mut tx, &all).await?;
     // 原团队少了这几台：压缩编号（同退役完成时）
     teams.retain(|t| *t != spare_id && revs.iter().any(|r| r.2 == Some(*t)));
     let mut compacted = false;
