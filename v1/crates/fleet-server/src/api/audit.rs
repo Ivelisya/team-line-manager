@@ -149,7 +149,7 @@ const AUDIT_ACTIONS: &[&str] = &[
     "auth.totp_recovery_regenerated", "auth.user_removed", "auth.user_disabled", "auth.password_changed", "auth.session_revoked", "auth.verify_failed", "policy.draft", "policy.discard", "policy.publish", "policy.rollback",
     "settings.access_retention", "settings.fx_rate", "terminal.open", "terminal.close", "ssh.login",
     "router.create", "router.update", "router.delete", "router.bootstrap", "router.bootstrap_used", "router.deploy", "router.sync", "router.switch", "router.switch_back",
-    "router.switch_reverted",
+    "router.switch_reverted", "router.switch_defer",
     "client_sub.create", "client_sub.update", "client_sub.rotate", "client_sub.delete",
     "probe_point.create", "probe_point.update", "probe_point.delete", "probe_point.upgrade", "probe_point.install", "probe_point.bootstrap_used",
     "settings.ping_targets", "relay.ping_override", "settings.reach_source",
@@ -248,6 +248,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "router.switch" => "临时切换出口",
         "router.switch_back" => "切回出口",
         "router.switch_reverted" => "临时切换被路由改回",
+        "router.switch_defer" => "推迟自动切回",
         "client_sub.create" => "新建客户端订阅",
         "client_sub.update" => "修改客户端订阅",
         "client_sub.rotate" => "轮换订阅链接",
@@ -335,6 +336,8 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
             format!("{} · {}：{} → {}{back}", s("name"), s("group"), s("from"), s("to"))
         }
         "router.switch_back" => format!("{} · {}：{} → {}（{}）", s("name"), s("group"), s("from"), s("to"), d["why"].as_str().unwrap_or("手动切回")),
+        // 「团队2-路由A · 手动选择：原出口「节点01」现在不通……，1 小时后再检查」
+        "router.switch_defer" => format!("{} · {}：{}，先不切回「{}」", s("name"), s("group"), s("why"), s("to")),
         "router.switch_reverted" => {
             let cancelled = if d["back_at"].is_string() { "，待切回已取消" } else { "" };
             format!("{} · {}：{}{cancelled}", s("name"), s("group"), s("note"))
