@@ -93,6 +93,8 @@
   .inc-tbl :is(th, td):first-child { padding-right: var(--sp-4); }
   .inc-tbl .inc-narrow { display: block !important; }
   .inc-tbl .inc-cmds.inc-narrow { display: flex !important; }
+  /* 说明最多两行（原来和别的 .sub 一样单行省略，只剩半句）；更长的悬停 / 长按看全文（data-tip） */
+  .inc-tbl .inc-narrow.inc-narrow-sum { display: -webkit-box !important; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; white-space: normal; overflow-wrap: anywhere; }
   .inc-tbl td { height: auto; }
 }
 .chart-box { height: 180px; min-width: 0; }
@@ -102,6 +104,9 @@
 /* 曲线全为 0 时的空状态：占住图的高度（换时间范围时卡片不跳），一句浅色说明居中 */
 .chart-empty { display: grid; place-items: center; min-width: 0; font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); text-align: center; }
 .chart-legend { display: flex; flex-wrap: wrap; gap: var(--sp-6); align-items: center; }
+/* 只读图例（每日总量柱状图）：不响应点按；今天那项的色块是下载 / 上传两色叠成的淡色，同那根柱子 */
+.chart-legend-item.is-static { pointer-events: none; }
+.chart-legend-item.is-today i { background: linear-gradient(var(--chart-1) 50%, var(--chart-2) 50%); opacity: 0.55; box-shadow: none; }
 /* 图例胶囊（--lc 是曲线色）：点掉后色块变空心、文字变淡；按下同其它文字控件微缩（components.css「交互状态」） */
 .chart-legend-item {
   display: inline-flex; align-items: center; gap: var(--sp-6); height: var(--h-chip-lg); padding: 0 var(--sp-8); cursor: pointer;
@@ -239,3 +244,6 @@
 .up-tbl td.r .up-worst { display: block; max-width: 100%; height: auto; padding: 0; margin-left: auto; font-size: var(--fs-label); line-height: var(--lh-label); font-weight: var(--fw-regular); }
 .up-range { display: inline-flex; align-items: center; gap: var(--sp-4); white-space: nowrap; }
 @media (max-width: 600px) { .up-range { display: none; } }
+/* 供应商表的两行表头：分组行（出口成功率 / TCP 成功率）居中、不画底线，下一行是平均 / 最差；两行各半高，合起来和单行表头一样高 */
+.up-tbl thead tr.up-grp th, .up-tbl thead tr.up-sub th { height: calc(var(--thead-h) / 2); }
+.up-tbl thead tr.up-grp th[colspan] { border-bottom: 0; }

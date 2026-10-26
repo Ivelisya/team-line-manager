@@ -1,4 +1,4 @@
-// 告警：事件列表（确认 / 查看机器，服务端分页）+ 静默与维护窗口（独立页签，可预约开始时间）。列表都保持服务端顺序（告警严重度优先，静默按开始时间），前端不重排。
+// 告警：三个下划线页签（换成另一类数据）——告警事件列表（确认 / 查看机器，服务端分页；下面再用分段控件筛 进行中 / 已恢复 / 全部）、静默与维护窗口（可预约开始时间）、月度可用率。列表都保持服务端顺序（告警严重度优先，静默按开始时间），前端不重排。
 import * as React from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { BellOff, CalendarPlus, Check, CheckCircle2, ChevronDown, ChevronRight, Trash2, Wrench } from 'lucide-react';
@@ -17,7 +17,7 @@ import { resetOnOpen, useHeld } from '@/lib/useHeld';
 import { useNow } from '@/lib/useNow';
 import { Button, IconButton } from '@/components/ui/button';
 import { CheckRow, Field, InfoTip, Input } from '@/components/ui/form';
-import { Popover, PopoverContent, PopoverTrigger, Segmented, Trunc } from '@/components/ui/overlays';
+import { Popover, PopoverContent, PopoverTrigger, Segmented, Tabs, TabsList, TabsTrigger, Trunc } from '@/components/ui/overlays';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { collator } from '@/lib/sort';
 import { matchTier, sv } from '@/lib/match';
@@ -62,21 +62,23 @@ function foldBatches(list: Incident[]): (Incident | Incident[])[] {
   return out;
 }
 type State = 'firing' | 'resolved' | 'all';
-/** 页签：三种告警 + 静默与维护窗口（单独一页，不压在几百条告警下面）+ 月度可用率（按月看各供应商、各节点的出口 / TCP 成功率与断线，?month= 选月份） */
-type Tab = State | 'silences' | 'uptime';
-const TABS: Tab[] = ['firing', 'resolved', 'all', 'silences', 'uptime'];
-const TAB_LABEL: Record<Tab, string> = { firing: '进行中', resolved: '已恢复', all: '全部', silences: '静默与维护', uptime: '月度可用率' };
-/** 告警列表只在这三个页签里显示 */
-const listed = (t: Tab): t is State => t !== 'silences' && t !== 'uptime';
+const STATES: { value: State; label: string }[] = [{ value: 'firing', label: '进行中' }, { value: 'resolved', label: '已恢复' }, { value: 'all', label: '全部' }];
+/** 页签（?tab=，告警是默认不写）：告警 + 静默与维护窗口（单独一页，不压在几百条告警下面）+ 月度可用率（按月看各供应商、各节点的出口 / TCP 成功率与断线，?month= 选月份）。
+ *  旧链接把这两页写在 ?state=silences / ?state=uptime 里，仍认 */
+type Tab = 'alerts' | 'silences' | 'uptime';
+const TAB_LABEL: Record<Tab, string> = { alerts: '告警', silences: '静默与维护', uptime: '月度可用率' };
+const TABS = Object.keys(TAB_LABEL) as Tab[];
 
 export function IncidentsPage() {
-  // 页签写进 URL 的 ?state=（进行中是默认，不写）；页码在 usePage 里（?p=）
+  // 页签写进 URL 的 ?tab=、告警的状态筛选写进 ?state=（都以默认为准，不写）；页码在 usePage 里（?p=）
   const [sp, setSp] = useSearchParams();
-  const tab: Tab = TABS.find((s) => s === sp.get('state')) ?? 'firing';
-  const state: State = listed(tab) ? tab : 'firing';
+  const rawState = sp.get('state');
+  const tab: Tab = TABS.find((t) => t === sp.get('tab')) ?? TABS.find((t) => t !== 'alerts' && t === rawState) ?? 'alerts';
+  const state: State = STATES.find((s) => s.value === rawState)?.value ?? 'firing';
   const month = sp.get('month') ?? orgMonth();
   const setMonth = (v: string) => setSp((p) => { const n = new URLSearchParams(p); if (v === orgMonth()) n.delete('month'); else n.set('month', v); return n; }, { replace: true });
-  const setState = (v: Tab) => setSp((p) => { const n = new URLSearchParams(p); if (v === 'firing') n.delete('state'); else n.set('state', v); return n; }, { replace: true });
+  const setState = (v: State) => setSp((p) => { const n = new URLSearchParams(p); if (v === 'firing') n.delete('state'); else n.set('state', v); return n; }, { replace: true });
+  const setTab = (v: Tab) => setSp((p) => { const n = new URLSearchParams(p); if (v === 'alerts') n.delete('tab'); else n.set('tab', v); if (!STATES.some((s) => s.value === n.get('state'))) n.delete('state'); return n; }, { replace: true });
   // 页码先于查询算出（偏移量进查询）；总数取上一次的结果。渲染中直接跟上（不等 effect 提交一遍再重渲染）
   const [total, setTotal] = React.useState<number>();
   const pg = usePage({ total, sizes: PAGE_SIZES, size: INCIDENT_PAGE, reset: [state] });
@@ -86,9 +88,9 @@ export function IncidentsPage() {
   const silences = useSilences().data;
   // 静默页签上的数：还没结束的（进行中 + 已预约），同列表
   const silenceN = silences?.filter((s) => Date.parse(s.ends_at) > Date.now()).length;
-  const tabs = React.useMemo(() => TABS.map((v) => ({ value: v, label: TAB_LABEL[v], count: v === 'silences' && silenceN ? silenceN : undefined })), [silenceN]);
   // 告警按「条」：已确认的不进主数字，另写「另有 N 条已确认」（同顶栏、标签页标题）
   const acked = state === 'firing' ? q.data?.acked ?? 0 : 0;
+  const alertN = q.data ? q.data.total - acked : undefined;
   const { open } = useDrawer();
   const { open: openRouter } = useRouterDrawer();
   const list = q.data?.items ?? [];
@@ -116,7 +118,7 @@ export function IncidentsPage() {
           {/* 中控自身的告警（central_ 开头）没有机器可点开：只写对象名「中控」；软路由的（router_ 开头）打开路由抽屉 */}
           <td>{sid && isRouterIncident(i) ? <button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => openRouter(sid, routerIncidentTab(i))}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button>
             : sid ? <NodeHover id={sid}><button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => open(sid)}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button></NodeHover> : (i.subject_name ?? '—')}
-            <span className="sub inc-narrow">{i.rule_name} · {F.ago(i.opened_at)}</span><span className="sub inc-narrow" data-tip={sum}>{sum}</span><SuggestedCmds i={i} className="inc-narrow" /></td>
+            <span className="sub inc-narrow">{i.rule_name} · {F.ago(i.opened_at)}</span><span className="sub inc-narrow inc-narrow-sum" data-tip={sum}>{sum}</span><SuggestedCmds i={i} className="inc-narrow" /></td>
           <td>{i.rule_name}<RecentCount i={i} className="sub" /></td>
           <td><span className="cell-main" data-tip={sum}>{sum}</span><SuggestedCmds i={i} /><IncidentOps i={i} />{(i.resolved_at || i.ack_at) && <span className="sub">{i.resolved_at
             ? <span data-tip={`恢复于 ${F.dtFull(i.resolved_at)}`}>已恢复 · 持续 {F.span(Date.parse(i.resolved_at) - Date.parse(i.opened_at))}</span>
@@ -128,14 +130,14 @@ export function IncidentsPage() {
   };
   return (
     <div className="stack" ref={pg.anchor}>
-      <PageHead title="告警" note={!listed(tab) ? undefined : q.data ? `${(q.data.total - acked).toLocaleString('zh-CN')} 条${acked ? ` · 另有 ${acked} 条已确认` : ''}` : undefined}
-        tools={<>
-          <Segmented label="状态" value={tab} onChange={setState} items={tabs} />
-          {/* 新建入口放在页头（走 ?silence=new，同命令面板），哪个页签都能建 */}
-          <Button onClick={() => setSp((p) => { const n = new URLSearchParams(p); n.set('silence', 'new'); return n; }, { replace: true })}><BellOff />新建静默</Button>
-        </>} />
-      {listed(tab) && q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
-      {listed(tab) && <Panel flush>
+      {/* 新建入口放在页头（走 ?silence=new，同命令面板），哪个页签都能建 */}
+      <PageHead title="告警" tools={<Button onClick={() => setSp((p) => { const n = new URLSearchParams(p); n.set('silence', 'new'); return n; }, { replace: true })}><BellOff />新建静默</Button>} />
+      <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>
+        <TabsList>{TABS.map((t) => <TabsTrigger key={t} value={t} noPanel>{TAB_LABEL[t]}{t === 'silences' && !!silenceN && <span className="seg-count">{silenceN}</span>}</TabsTrigger>)}</TabsList>
+      </Tabs>
+      {tab === 'alerts' && q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
+      {tab === 'alerts' && <Panel flush title="告警列表" count={alertN != null ? `${alertN.toLocaleString('zh-CN')} 条` : undefined} sub={acked ? `另有 ${acked} 条已确认` : undefined}
+        tools={<Segmented sm label="状态" value={state} onChange={setState} items={STATES} />}>
         <TableWrap>
           {/* 窄屏（inc-tbl，pages.css）：规则、说明、开始三列收起，并进对象格的第二、三行（规则 · 多久前 / 说明），不用横滑也看得到 */}
           <table className="dt inc-tbl" style={{ minWidth: 820 }}>

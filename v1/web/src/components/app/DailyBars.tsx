@@ -1,5 +1,6 @@
 // 每日业务流量柱状图：每天一根，下载（--chart-1）与上传（--chart-2）堆叠，悬停看当天的下载、上传与合计。流量页与抽屉「流量」页签共用。
 // 最后一根是今天（到目前为止），画淡一点
+import type * as React from 'react';
 import { memo, useMemo } from 'react';
 import type { DailyBiz } from '@/lib/types';
 import * as F from '@/lib/format';
@@ -16,6 +17,17 @@ export const md = (d: string) => d.slice(5);
 export const weekday = (d: string) => `周${WEEK[new Date(`${d}T00:00:00Z`).getUTCDay()]}`;
 const yBytes = (v: number) => { if (!v) return '0'; const s = F.bytesScale(v); return `${F.inScale(v, s)} ${s.u}`; };
 const vBytes = (_: string, v: number) => F.str(F.bytes(v));
+
+/** 图例（放在面板标题旁，只读不能点掉）：下载 / 上传，加今天那根淡色的说明（样式同 TimeChart 的 ChartLegend） */
+export function DailyLegend() {
+  const sw = (c: string) => ({ '--lc': c }) as React.CSSProperties;
+  return (
+    <div className="chart-legend" aria-hidden>
+      {Object.entries(CFG).map(([k, v]) => <span key={k} className="chart-legend-item is-static" style={sw(v.color as string)}><i />{v.label}</span>)}
+      <span className="chart-legend-item is-static is-today" style={sw('var(--chart-1)')}><i />今天（到目前为止）</span>
+    </div>
+  );
+}
 
 export const DailyBars = memo(function DailyBars({ days, height = 200 }: { days: DailyBiz[]; height?: number }) {
   const data = useMemo(() => days.map((d) => ({ ...d, sum: d.down + d.up })), [days]);
