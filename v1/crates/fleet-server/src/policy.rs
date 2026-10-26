@@ -373,6 +373,21 @@ pub async fn move_node(conn: &mut sqlx::PgConnection, from: Uuid, to: Uuid, acto
         .bind(actor)
         .execute(&mut *conn)
         .await?;
+    // 历史版本的快照里这个节点也改挂到新节点（新节点原有的那项丢掉，同上以旧节点的为准）：不然回滚到替换前的任一版，
+    // 会把策略放回已进备用的旧节点、把新节点写回默认。快照按 (团队在前, id) 排序，改挂后按同一顺序重排
+    sqlx::query(
+        "update policy_version v set snapshot = (
+             select coalesce(jsonb_agg(case when e->>'scope' = 'node' and e->>'scope_id' = $1::text then jsonb_set(e, '{scope_id}', to_jsonb($2::text)) else e end
+                                       order by e->>'scope' = 'node', case when e->>'scope' = 'node' and e->>'scope_id' = $1::text then $2::text else e->>'scope_id' end),
+                             '[]'::jsonb)
+             from jsonb_array_elements(v.snapshot) e
+             where not (e->>'scope' = 'node' and e->>'scope_id' = $2::text))
+         where exists (select 1 from jsonb_array_elements(v.snapshot) e where e->>'scope' = 'node' and e->>'scope_id' in ($1::text, $2::text))",
+    )
+    .bind(from)
+    .bind(to)
+    .execute(&mut *conn)
+    .await?;
     Ok(Some(NodeMoved { summary: old.summary(), replaced }))
 }
 
@@ -533,12 +548,15 @@ pub fn affected_relays(nodes: &[NodeRef], before: &PolicySet, after: &PolicySet)
 }
 
 /// 团队与节点的显示名（变更摘要用）
-pub async fn scope_names(db: &PgPool) -> sqlx::Result<HashMap<Uuid, String>> {
-    let mut m: HashMap<Uuid, String> = sqlx::query_as::<_, (Uuid, String)>("select id, name from team").fetch_all(db).await?.into_iter().collect();
+pub async fn scope_names(db: &PgPool) -> sqlx::Result<HashMap<Uuid, String>> { scope_names_in(&mut *db.acquire().await?).await }
+
+/// 同 `scope_names`，在调用方的连接（事务）里读
+pub async fn scope_names_in(db: &mut sqlx::PgConnection) -> sqlx::Result<HashMap<Uuid, String>> {
+    let mut m: HashMap<Uuid, String> = sqlx::query_as::<_, (Uuid, String)>("select id, name from team").fetch_all(&mut *db).await?.into_iter().collect();
     let nodes: Vec<(Uuid, String, Option<String>, Option<i32>)> = sqlx::query_as(
         "select m.id, m.kind::text, t.name, m.number from machine m left join team t on t.id = m.team_id where m.kind <> 'relay'",
     )
-    .fetch_all(db)
+    .fetch_all(&mut *db)
     .await?;
     for (id, kind, team, number) in nodes {
         m.insert(id, display_name(&kind, None, team.as_deref(), number));

@@ -862,10 +862,28 @@ pub(super) async fn renumber(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     .bind(new)
     .execute(&mut *tx)
     .await?;
+    // 访问记录里的「目标首次出现」同样跟着客户走，不然日常目标在新节点上全算「新出现」：首次出现取早、最近出现取晚、累计次数相加；旧节点的记录留着
+    sqlx::query(
+        "insert into access_target_seen (node_id, dest_host, first_seen, last_seen, total)
+         select $2, dest_host, first_seen, last_seen, total from access_target_seen where node_id = $1
+         on conflict (node_id, dest_host) do update
+           set first_seen = least(access_target_seen.first_seen, excluded.first_seen),
+               last_seen = greatest(access_target_seen.last_seen, excluded.last_seen),
+               total = access_target_seen.total + excluded.total",
+    )
+    .bind(old)
+    .bind(new)
+    .execute(&mut *tx)
+    .await?;
     // 节点单独设的访问策略（已发布的与草稿）和客户端订阅里的「排除 / 另加」同样跟着客户走：按机器 id 存，不搬的话旧节点单独设的
     // 白名单 / 黑名单 / 暂停新连接到新节点上变成跟随团队，旧节点被排除出订阅、接它编号的新节点又冒出来。
-    // 旧节点进了备用，之后没有节点级策略（跟随备用团队）；线路机的期望状态跟着上面两次改名的代数刷新一起提交，不用另外 +1
+    // 旧节点进了备用，之后没有节点级策略（跟随备用团队）；历史版本的快照也改挂到新节点，并记一条 replace 版本（线路机代数在里面 +1，随同一事务提交）
+    let policy_rows = crate::policy::load_rows(&mut *tx, false).await?;
     let policy_moved = crate::policy::move_node(&mut tx, old, new, actor).await?;
+    // 搬了策略就记一条版本（快照、变更、线路机代数）：之后的版本列表和回滚才对得上现状
+    if policy_moved.is_some() {
+        relays.extend(crate::api::policy::record_replace(&mut tx, actor, &policy_rows).await.map_err(|e| anyhow!(e.message))?);
+    }
     let subs_moved = crate::api::client_subs::swap_machine(&mut tx, old, new).await?;
     let mut renumbered = 0;
     if let Some(t) = new_team0 {
@@ -886,6 +904,9 @@ pub(super) async fn renumber(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         c.st.relay_bumped(r);
     }
     c.st.emit(crate::state::Event::Machines);
+    if policy_moved.is_some() {
+        c.st.emit(crate::state::Event::Policies);
+    }
     let name = |id: Uuid| names.iter().find(|x| x.0 == id).map(|x| x.1.clone()).unwrap_or_default();
     let (on, nn) = (name(old), name(new));
     if let Some(m) = &policy_moved {
