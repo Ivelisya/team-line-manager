@@ -1,6 +1,6 @@
 // 团队与套餐 → 待付：未来 30 天内到期、要付的机器，按 供应商 × 到期日 分组（服务端折好 USD）。每组一个「登记已付…」：
 // 打开批量续费确认（金额默认订阅价），一个事务里登记整组、一条审计。不含备用团队（等到期丢弃）；开了自动续费的单列、不算待付。
-// 续不续费的依据：每台近 30 天的 USD/GB（月费 ÷ 业务流量）、可用率（入口 TCP 成功率），闲置的标灰胶囊（判定在服务端）。
+// 续不续费的依据：每台近 30 天的 USD/GB（月费 ÷ 业务流量）、可用率（出口探测成功率），闲置的标灰胶囊（判定在服务端）。
 import * as React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ArrowRight, ExternalLink } from 'lucide-react';
@@ -85,7 +85,7 @@ export function DueTab() {
               <colgroup><col style={{ width: 170 }} /><col style={{ width: 250 }} /><col /><col style={{ width: 150 }} /><col style={{ width: 110 }} /><col style={{ width: 90 }} /><col style={{ width: 90 }} /><col style={{ width: 120 }} /></colgroup>
               <thead><tr><th>供应商</th><th>到期日</th><th>机器</th><th className="r">小计</th><th className="r">折合 USD</th>
                 <th className="r" data-tip={'近 30 天：月费 ÷ 业务流量（有月费的几台合起来算）\n悬停逐台看'}>USD/GB</th>
-                <th className="r" data-tip={'近 30 天入口 TCP 探测成功率，取组内最低\n悬停逐台看'}>可用率</th><th /></tr></thead>
+                <th className="r" data-tip={'近 30 天经入口的出口探测成功率，取组内最低\n悬停逐台看'}>可用率</th><th /></tr></thead>
               <tbody>
                 {d.groups.map((g) => {
                   const names = g.machines.map((m) => m.name);
@@ -164,7 +164,7 @@ const PayForm = resetOnOpen(function PayForm({ g, open, onClose }: { g: DueGroup
   return (
     <FormDialog open={open} onOpenChange={(o) => !o && onClose()} size="md" dirty={!!ref.trim() || g.machines.some((m) => amounts[m.id] !== String(m.price_cents / 100))}
       title={`登记已付 · ${g.provider.name ?? '无供应商'} · ${g.due_date.slice(5)} 到期`}
-      desc={<>{g.machines.length} 台，折合 {usdText(g.total)} <InfoTip text={"只记录「已续费」，到期日按订阅周期顺延；不会向供应商付款。金额默认订阅价，实付不同可以改\n每台下面是续不续费的依据（近 30 天）：USD/GB = 月费 ÷ 业务流量；可用率 = 入口 TCP 探测成功率；闲置 = 近 7 天日均业务流量很低"} /></>}
+      desc={<>{g.machines.length} 台，折合 {usdText(g.total)} <InfoTip text={"只记录「已续费」，到期日按订阅周期顺延；不会向供应商付款。金额默认订阅价，实付不同可以改\n每台下面是续不续费的依据（近 30 天）：USD/GB = 月费 ÷ 业务流量；可用率 = 经入口的出口探测成功率；闲置 = 近 7 天日均业务流量很低"} /></>}
       submitLabel={`登记 ${g.machines.length} 台`} busy={run.isPending} valid={!bad && !pv.isError} onSubmit={submit}>
       {pv.isError && <Note tone="bad">{(pv.error as Error).message}</Note>}
       <div className="table-wrap is-boxed is-capped">

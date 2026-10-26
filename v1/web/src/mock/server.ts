@@ -674,7 +674,7 @@ R('GET', '/billing/due', ({ query }) => {
   const view = (m: MachineView) => {
     const s = m.subscription!; const u = mockUsage(m); const monthly = mockMonthly(m);
     return { id: m.id, name: m.name, kind: m.kind, due_date: s.due_date, due_days: s.due_days, billing_tz: s.billing_tz, cycle: s.cycle, price_cents: s.price_cents, currency: s.currency, price_usd_cents: toUsd(s.price_cents, s.currency),
-      monthly_usd_cents: monthly, bytes_30d: u.bytes30, usd_per_gb: mockPerGb(monthly, u.bytes30, 30), idle: mockIdle(m, u.sum7), avg7: Math.round(u.sum7 / 7), avail_pct: availability(m, 30).tcp_pct };
+      monthly_usd_cents: monthly, bytes_30d: u.bytes30, usd_per_gb: mockPerGb(monthly, u.bytes30, 30), idle: mockIdle(m, u.sum7), avg7: Math.round(u.sum7 / 7), avail_pct: availability(m, 30).egress_pct };
   };
   const prov = (m: MachineView) => ({ id: m.provider?.id ?? null, name: m.provider?.name ?? null, panel_url: db.providers.find((p) => p.id === m.provider?.id)?.panel_url ?? null });
   const total = (ms: MachineView[]) => usdTotal(ms.map((m) => ({ currency: m.subscription!.currency, monthly_cents: m.subscription!.price_cents })));
