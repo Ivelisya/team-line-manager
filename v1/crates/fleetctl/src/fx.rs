@@ -44,8 +44,14 @@ pub(crate) fn monthly_cell(s: &Value) -> String {
     }
 }
 
-/// `status` 的每月费用：USD 合计，括注各原币种的金额与汇率；没有汇率的单列
-pub(crate) fn cost_cn(ov: &Value) -> String { total_cn(&ov["monthly_usd"]) }
+/// `status` 的每月费用：USD 合计，括注各原币种的金额与汇率；没有汇率的单列。合计不含备用团队（不续费），有备用的另附一句小计
+pub(crate) fn cost_cn(ov: &Value) -> String {
+    let sp = &ov["monthly_usd_spare"];
+    match sp["count"].as_i64().filter(|n| *n > 0) {
+        Some(n) => format!("{}；另有备用 {n} 台 {}，不再续费，不在合计里", total_cn(&ov["monthly_usd"]), total_cn(sp)),
+        None => total_cn(&ov["monthly_usd"]),
+    }
+}
 
 /// USD 合计（中控的 Total：`{cents, by_currency, unconverted}`，如总览的月费、待付清单、批量续费的合计）写成文字
 pub(crate) fn total_cn(u: &Value) -> String {
@@ -200,5 +206,8 @@ mod tests {
                 "by_currency": [{"currency": "CNY", "cents": 29999, "usd_cents": 3750, "usd_per_unit": 0.125}, {"currency": "USD", "cents": 96868, "usd_cents": 96868, "usd_per_unit": 1.0}]}});
         assert_eq!(cost_cn(&ov), "1006.18 USD（含 299.99 CNY ≈ 37.50 USD，1 CNY = 0.125 USD）；未折算（没有汇率）：5.00 XYZ");
         assert_eq!(cost_cn(&json!({"monthly_usd": {"cents": 0, "by_currency": [], "unconverted": []}})), "-");
+        let sp = json!({"monthly_usd": {"cents": 100, "by_currency": [{"currency": "USD", "cents": 100, "usd_cents": 100, "usd_per_unit": 1.0}], "unconverted": []},
+            "monthly_usd_spare": {"count": 7, "cents": 23876, "by_currency": [{"currency": "USD", "cents": 23876, "usd_cents": 23876, "usd_per_unit": 1.0}], "unconverted": []}});
+        assert_eq!(cost_cn(&sp), "1.00 USD；另有备用 7 台 238.76 USD，不再续费，不在合计里");
     }
 }

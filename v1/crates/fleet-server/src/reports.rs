@@ -363,10 +363,14 @@ pub async fn monthly(st: &AppState, month: Option<&str>) -> ApiResult<Value> {
     let top_rules: Vec<Value> = rules.iter().map(|(r, c)| json!({"rule": r, "name": meta::rule_label(r), "count": c})).collect();
 
     let ov = views::overview(st).await?;
+    // 月费合计里的台数 = 在用的（节点 + 线路机 + 闲置备用）去掉备用团队的（它们的月费另列，不续费）
+    let n = |p: &str| ov.pointer(p).and_then(Value::as_i64).unwrap_or(0);
+    let paid = n("/nodes/total") + n("/relays/total") + n("/spare") - n("/monthly_usd_spare/count");
     let report = json!({
         "month": month_str(first), "from": w.from, "to": w.to, "tz": meta::org_tz(),
         "traffic": {"down": down, "up": up, "total": down.saturating_add(up)},
-        "monthly_usd": ov["monthly_usd"], "machines": ov["nodes"]["total"].as_i64().unwrap_or(0) + ov["relays"]["total"].as_i64().unwrap_or(0),
+        "monthly_usd": ov["monthly_usd"], "monthly_usd_spare": ov["monthly_usd_spare"],
+        "machines": paid,
         "costly": costly, "worst_uptime": worst, "top_rules": top_rules,
         "due_soon": ov["due_soon"], "overdue": ov["overdue"],
     });
@@ -387,7 +391,9 @@ fn text_of(r: &Value) -> String {
     let unconv: Vec<String> =
         r["monthly_usd"]["unconverted"].as_array().into_iter().flatten().map(|u| format!("{} {:.2}", u["currency"].as_str().unwrap_or(""), i(&u["cents"]) as f64 / 100.0)).collect();
     let extra = if unconv.is_empty() { String::new() } else { format!("；另有 {} 没有汇率、未折算", unconv.join("、")) };
-    l.push(format!("月费合计：{}（在用 {} 台，按当前订阅折成 USD）{extra}", money(i(&r["monthly_usd"]["cents"])), i(&r["machines"])));
+    let sp = &r["monthly_usd_spare"];
+    let spare = if i(&sp["count"]) > 0 { format!("；另有备用 {} 台 {}，不再续费，不在合计里", i(&sp["count"]), money(i(&sp["cents"]))) } else { String::new() };
+    l.push(format!("月费合计：{}（在用 {} 台，按当前订阅折成 USD）{extra}{spare}", money(i(&r["monthly_usd"]["cents"])), i(&r["machines"])));
     let list = |title: &str, rows: Vec<String>| {
         if rows.is_empty() {
             return vec![format!("{title}：无")];

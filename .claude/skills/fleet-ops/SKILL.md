@@ -274,7 +274,7 @@ fleetctl plan rm <套餐> --yes                               # 还有机器（�
 - `status --json` 的 `overview.monthly_usd`：`{cents, by_currency:[{currency,cents,usd_cents,usd_per_unit}], unconverted:[{currency,cents}]}`——每月费用折成 USD 的合计（分，逐台折算后相加）、各原币种的金额与所用汇率；没有汇率的币种不算进 `cents`，单列在 `unconverted`。文字输出「每月费用」写 USD 合计，括注非 USD 币种的原价与汇率。
 - `settings fx`：`{base, auto, url, fetched_at, rates_date, last_attempt_at, last_error, missing:[在用但没有汇率的币种], rates:[{currency, usd_per_unit, per_usd, source(base|manual|auto|null), auto_per_usd, manual{usd_per_unit,by,at}, in_use}]}`；`source` 为 null = 没有汇率（费用未折算）。文字输出只列在用和手动设过的币种。
 - `status --json` 的 `overview.online` / `offline`：按 agent 连通计（家宽代理没有 agent 算在线），与健康无关。
-- `status --json` 的 `overview.spare`：闲置备用（备用团队里没有软路由出口指向的在用机器，等到期放生）的台数。它们不计入 `nodes` 的 total 与各健康计数、也不计入 online / offline，不开告警（已开的悄悄关掉）；卡片上的健康状态照常显示。文字输出节点那行末尾「备用 N」。
+- `status --json` 的 `overview.spare`：闲置备用（备用团队里没有软路由出口指向的在用机器，等到期放生）的台数。它们不计入 `nodes` 的 total 与各健康计数、也不计入 online / offline，不开告警（已开的悄悄关掉）；卡片上的健康状态照常显示。文字输出节点那行末尾「备用 N」。`overview.monthly_usd`（每月费用）不含备用团队的机器（不续费），它们的月费在 `overview.monthly_usd_spare`（同形状加 `count`），`status` 文字在每月费用后附「另有备用 N 台 …」。
 - `status --json` 的 `overview.traffic_month`：`{up, down, counted_from}`——本月全部入口业务流量合计；`counted_from`（RFC 3339 或 null）非 null 表示在用线路机本月才接入、之前的量不在内，`status` 文字写「（10-22 起）」。
 - `job`：`state`（queued|running|waiting|cancelling|succeeded|failed|cancelled）、`error`、`steps[]`、`logs[]`。`kind` 里 `provision_ip` 是上架同机 IP 节点。
 - `retire --json`：进备用 `{mode:"spare", name（备用里的名字）, from, recycle_on, ip_nodes:[{id,name,from}]}`；`--now` 为 `{mode:"now", job_id, ip_node_jobs:[{machine_id,name,job_id}]}`，后者是一并回收的同机 IP 节点各自的退役作业。
