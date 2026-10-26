@@ -76,7 +76,9 @@ pub struct AlertState {
 
 impl AlertState {
     /// 中控重启后从库里补回 quiet：还在告警、上次恢复之后没报过「触发」（`!told_firing`：从没通知过，或通知时刻不晚于最近一条恢复通知——
-    /// 恢复后重开、重开时 quiet 的也在内）、没被静默的出口告警，只可能是 quiet 开着的
+    /// 恢复后重开、重开时 quiet 的也在内）、没被静默的出口告警，一律先当 quiet。
+    /// 这些里除了真 quiet 的（开的时候机器告警在报），还有开告警时通知入队失败、所以也没有通知记录的：同样被当成 quiet，
+    /// 下一轮评估发现它其实不 quiet 时走「quiet 解除」的补发（等这台路由重新采集、出口还不通才发「触发」），只是晚一轮
     pub async fn load(db: &sqlx::PgPool) -> sqlx::Result<Self> {
         let ids: Vec<Uuid> = sqlx::query_scalar(&format!(
             "select subject_id from incident where state = 'firing' and engine = 'router' and rule = $1
@@ -102,7 +104,7 @@ pub struct View {
     /// 离线时是连不上的原因；在线时有值 = 连得上但采集出错
     pub error: Option<String>,
     pub last_ok_at: Option<OffsetDateTime>,
-    /// 连不上满 2 分钟了（扣掉中控收不到上报的时段）
+    /// 连不上满 `OFFLINE_S`（1 分钟）了（扣掉中控收不到上报的时段）
     pub offline_held: bool,
     /// 等待接入从什么时候起（重新生成接入命令、取走接入脚本、一键部署的时刻）
     pub pending_since: Option<OffsetDateTime>,
@@ -487,7 +489,7 @@ mod tests {
     }
 
     #[test]
-    fn offline_after_two_minutes_only() {
+    fn offline_after_one_minute_only() {
         let now = OffsetDateTime::now_utc();
         assert!(problems(&view("offline", None, 40, now), None, &Targets::default(), now).0.is_empty(), "不到 1 分钟");
         let (p, judged) = problems(&view("offline", Some(healthy()), 300, now), None, &Targets::default(), now);
