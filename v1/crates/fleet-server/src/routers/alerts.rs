@@ -9,7 +9,7 @@
 //! | router_offline | 警告 | 接入过的路由重新接入（重新生成接入命令、重新部署）之后 30 分钟还没连上 |
 //! | router_collect_error | 警告 | 连得上，但采集脚本出错、输出解析不了、超时（满 60 秒） |
 //! | router_openclash_down | 严重 | OpenClash 启用了、核心没在跑（满 60 秒） |
-//! | router_exits_down | 警告；全部 fleet 出口都不通升严重 | 有 fleet 出口（对上了 fleet 入口的）连续两次延迟测试不通（每 5 分钟测一次），且从第一次不通起满 180 秒（同机器 egress_fail 的 150 秒再多一轮，让机器告警先开，几十秒到几分钟的出口抖动不报）；客户自己的出口不算。摘要附上不通的出口指向的节点 / 线路机此刻在维护或严重告警中的（「其中 2 个指向的团队2-03 正在告警」）；不通的出口指向的都在维护中时不开（维护期间预期不通，开着的保持）；不通的出口指向的都已有机器的严重告警（出口不通、TCP 不通、agent 离线）在报时，告警照开、挂在路由上，但不单独通知（一个节点挂了不再每台路由各报一条），原因单独留下来时补发 |
+//! | router_exits_down | 警告；全部 fleet 出口都不通升严重 | 有 fleet 出口（对上了 fleet 入口的）连续两次延迟测试不通（每 5 分钟测一次），且从第一次不通起满 180 秒（同机器 egress_fail 的 150 秒再多一轮，让机器告警先开，几十秒到几分钟的出口抖动不报）；客户自己的出口不算。摘要附上不通的出口指向的节点 / 线路机此刻在维护或严重告警中的（「其中 2 个指向的团队2-03 正在告警」）；不通的出口指向的都在维护中时不开（维护期间预期不通，开着的保持）；不通的出口指向的都已有机器的严重告警（出口不通、TCP 不通、agent 离线）在报时，告警照开、挂在路由上，但不单独通知（一个节点挂了不再每台路由各报一条），原因单独留下来时补发；节点 / 线路机的维护刚结束（不满 180 秒）也按这样处理——维护期间机器告警的计时被清，结束后要重攒 150 秒才会开，这段时间不抢先通知 |
 //! | router_wan_down | 严重 | WAN 口（逻辑接口 wan）断开（满 60 秒） |
 //! | router_resource_high | 警告 | CPU > 90% 持续 10 分钟、内存 > 90%、存储 > 90%、连接表 > 80%（后三项满 60 秒） |
 //! | router_exit_drift | 警告 | 有出口对上了 fleet 入口、但参数和入口现在的不一致（凭据轮换后没同步、入口已删除 / 停用，见 clash.rs），持续两轮采集（满 30 秒）。抽屉与告警里可以一键同步（作业 router_sync） |
@@ -123,11 +123,22 @@ pub struct Targets {
     /// 其中 agent 离线（严重）在报的宿主机：它的同机 IP 节点也算在告警（文案写宿主机名）。宿主机的出口不通 / TCP 不通不算——
     /// IP 节点有自己的 IP 和入口，出口 / TCP 探测各报各的（health.rs），宿主机那条不代表它
     pub host_down: HashSet<Uuid>,
+    /// 维护刚结束不满 `EXITS_DOWN_S` 的（同 `maint`，同机 IP 节点看宿主机）：维护期间机器告警的计时被清掉，结束后要重攒 150 秒才会开，
+    /// 而出口的不通计时一直在走、早就满了。这段时间机器告警还没来得及开，按「原因已经有人在报」处理，免得路由告警抢在机器告警前单独通知
+    pub settled: HashSet<Uuid>,
+}
+
+/// 出口为什么可能不通：指向的节点 / 线路机在维护、有机器告警、或维护刚结束（机器告警还没来得及开）
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Why {
+    Maint,
+    Alert,
+    Settled,
 }
 
 impl Targets {
-    /// 这个出口为什么可能不通：指向的节点或线路机在维护（true）/ 告警（false），给出它的名字。维护优先、节点优先
-    fn why<'a>(&'a self, e: &'a Exit) -> Option<(&'a str, bool)> {
+    /// 这个出口为什么可能不通：指向的节点或线路机在维护 / 告警 / 刚结束维护，给出它的名字。维护优先，其次告警，节点优先
+    fn why<'a>(&'a self, e: &'a Exit) -> Option<(&'a str, Why)> {
         let er = e.entry.as_ref()?;
         let pick = |set: &HashSet<Uuid>, host_set: &HashSet<Uuid>| {
             if set.contains(&er.node_id) {
@@ -140,7 +151,10 @@ impl Targets {
                 None
             }
         };
-        pick(&self.maint, &self.maint).map(|n| (n, true)).or_else(|| pick(&self.firing, &self.host_down).map(|n| (n, false)))
+        pick(&self.maint, &self.maint)
+            .map(|n| (n, Why::Maint))
+            .or_else(|| pick(&self.firing, &self.host_down).map(|n| (n, Why::Alert)))
+            .or_else(|| pick(&self.settled, &self.settled).map(|n| (n, Why::Settled)))
     }
 }
 
@@ -153,7 +167,7 @@ fn held_down(s: &Snapshot, now: OffsetDateTime) -> impl Iterator<Item = &Exit> {
 /// 不通的出口指向的都在维护中：这一轮 router_exits_down 不开，开着的保持（同机器告警的维护：冻结）
 fn exits_paused(s: &Snapshot, tg: &Targets, now: OffsetDateTime) -> bool {
     let mut down = held_down(s, now).peekable();
-    down.peek().is_some() && down.all(|e| tg.why(e).is_some_and(|(_, m)| m))
+    down.peek().is_some() && down.all(|e| tg.why(e).is_some_and(|(_, w)| w == Why::Maint))
 }
 
 /// 出口参数为什么和入口对不上：入口已删除 / 停用，否则是凭据（uuid、SNI、公钥、short-id、flow）和入口现在的不一样
@@ -228,14 +242,17 @@ pub fn problems(v: &View, cpu_high_since: Option<OffsetDateTime>, tg: &Targets, 
             format!("{} 个出口连续两次延迟测试不通：{names}", down.len())
         };
         // 指向的节点 / 线路机此刻在维护、告警中的：按对象数一数，看的人先去看它
-        let mut why: Vec<((&str, bool), usize)> = vec![];
+        let mut why: Vec<((&str, Why), usize)> = vec![];
         for w in down.iter().filter_map(|e| tg.why(e)) {
             match why.iter_mut().find(|x| x.0 == w) {
                 Some(x) => x.1 += 1,
                 None => why.push((w, 1)),
             }
         }
-        let notes: Vec<String> = why.iter().map(|((name, m), n)| format!("{n} 个指向的{name} 正在{}", if *m { "维护" } else { "告警" })).collect();
+        let notes: Vec<String> = why
+            .iter()
+            .map(|((name, w), n)| format!("{n} 个指向的{name} {}", match w { Why::Maint => "正在维护", Why::Alert => "正在告警", Why::Settled => "刚结束维护" }))
+            .collect();
         if !notes.is_empty() {
             text.push_str(&format!("（其中 {}）", notes.join("，")));
         }
@@ -427,6 +444,8 @@ async fn targets(db: &sqlx::PgPool, views: &[View]) -> sqlx::Result<Targets> {
     .fetch_all(db)
     .await?;
     let maint = rows.iter().filter(|(id, host, _)| silences.maintenance(*id) || host.is_some_and(|h| silences.maintenance(h))).map(|(id, ..)| *id).collect();
+    let ended = crate::silence::ended_maintenance(db, EXITS_DOWN_S).await?;
+    let settled = rows.iter().filter(|(id, host, _)| ended.matches(*id) || host.is_some_and(|h| ended.matches(h))).map(|(id, ..)| *id).collect();
     let hosts: HashMap<Uuid, (Uuid, String)> = rows.into_iter().filter_map(|(id, host, name)| Some((id, (host?, name.unwrap_or_default())))).collect();
     let mut host_ids: Vec<Uuid> = hosts.values().map(|(h, _)| *h).collect();
     host_ids.sort();
@@ -440,7 +459,7 @@ async fn targets(db: &sqlx::PgPool, views: &[View]) -> sqlx::Result<Targets> {
     .fetch_all(db)
     .await?;
     let host_down = firing.iter().filter(|(id, rule)| rule == "agent_offline" && host_ids.contains(id)).map(|(id, _)| *id).collect();
-    Ok(Targets { maint, firing: firing.into_iter().map(|(id, _)| id).collect(), hosts, host_down })
+    Ok(Targets { maint, firing: firing.into_iter().map(|(id, _)| id).collect(), hosts, host_down, settled })
 }
 
 /// 删除路由时（同一事务）关掉它在告警中的告警：不发恢复
@@ -643,11 +662,19 @@ mod tests {
         let host = Uuid::from_u128(7);
         let hosts: HashMap<Uuid, (Uuid, String)> = [(n3, (host, "团队2-07".to_string())), (n4, (host, "团队2-07".to_string()))].into();
         // 宿主机自己的出口不通 / TCP 不通（在 firing 里）不代表 IP 节点：IP 节点有自己的 IP 和探测，各报各的
-        let tg = Targets { maint: HashSet::new(), firing: [host].into(), hosts: hosts.clone(), host_down: HashSet::new() };
+        let tg = Targets { maint: HashSet::new(), firing: [host].into(), hosts: hosts.clone(), host_down: HashSet::new(), ..Targets::default() };
         assert_eq!(quiet(&tg), Some(false));
-        let tg = Targets { maint: HashSet::new(), firing: [host].into(), hosts, host_down: [host].into() };
+        let tg = Targets { maint: HashSet::new(), firing: [host].into(), hosts, host_down: [host].into(), ..Targets::default() };
         assert_eq!(quiet(&tg), Some(true));
         assert_eq!(problems(&v, None, &tg, now).0.into_iter().find(|p| p.rule == EXITS_DOWN).unwrap().text, "2 个出口连续两次延迟测试不通：节点01、节点02（其中 2 个指向的团队2-07 正在告警）");
+        // 维护刚结束、机器告警还没来得及开：也算有人在报（quiet），摘要写明；机器告警开了之后以告警为准
+        let tg = Targets { settled: [n3, n4].into(), ..Targets::default() };
+        assert_eq!(quiet(&tg), Some(true));
+        assert_eq!(problems(&v, None, &tg, now).0.into_iter().find(|p| p.rule == EXITS_DOWN).unwrap().text, "2 个出口连续两次延迟测试不通：节点01、节点02（其中 1 个指向的团队2-03 刚结束维护，1 个指向的团队2-04 刚结束维护）");
+        assert_eq!(quiet(&Targets { settled: [n3].into(), ..Targets::default() }), Some(false), "只有一个出口的节点刚结束维护：另一个原因不明，照常通知");
+        assert!(!exits_paused(v.snap.as_ref().unwrap(), &tg, now), "维护已经结束：不再冻结");
+        let tg = Targets { settled: [n3, n4].into(), firing: [n3].into(), ..Targets::default() };
+        assert!(problems(&v, None, &tg, now).0.into_iter().find(|p| p.rule == EXITS_DOWN).unwrap().text.contains("1 个指向的团队2-03 正在告警"));
         // 其他规则从不 quiet
         let mut bad = healthy();
         bad.interfaces[0].up = false;

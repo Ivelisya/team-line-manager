@@ -833,6 +833,60 @@ async fn exits_down_notes_maintenance_and_alerts() {
     assert!(inc.iter().any(|i| i["rule"] == "router_exits_down" && i["summary"] == ex["summary"]), "{inc:?}");
 }
 
+/// 节点维护刚结束：机器告警的计时被清、要重攒 150 秒才开，路由出口的不通计时早就满了。这段时间路由告警按 quiet 处理（开着、不单独通知），
+/// 过了这段时间机器告警还是没来，才在重新采集之后补发「触发」
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn exits_down_quiet_right_after_maintenance_ends() {
+    let t = setup().await;
+    let mock = Mock::start().await;
+    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "feishu", "config": {"url": mock.url("/hook/m")}, "min_severity": "info", "enabled": true})).await;
+    let team = seed_team(&t, "团队2").await;
+    let (relay, _) = common::seed_relay(&t).await;
+    let n3 = common::seed_node(&t, team, 3, "203.0.113.13", "active").await;
+    let (id, _) = create(&t, "团队2-路由N").await;
+    issue_key(&t, &id).await;
+    let t0 = OffsetDateTime::now_utc();
+    let at = |s: i64| (t0 + time::Duration::seconds(s)).format(&time::format_description::well_known::Rfc3339).unwrap();
+    let er = json!({"id": Uuid::now_v7(), "name": "团队2-03 · 线路机2:20003", "node_id": n3, "relay_id": relay, "node_name": "团队2-03", "relay_name": "线路机2", "port": 20003, "lifecycle": "active"});
+    let data = |collected: String| {
+        json!({
+            "system": {"cpu_pct": 10.0, "mem_used": 1, "mem_total": 4},
+            "interfaces": [{"name": "wan", "device": "eth0", "up": true}],
+            "openclash": {"enabled": true, "running": true},
+            "exits": [{"name": "节点03", "fail_streak": 2, "sync": "ok", "entry": er}, {"name": "节点04", "fail_streak": 0, "sync": "ok"}],
+            "collected_at": collected,
+        })
+    };
+    status(&t, &id, true, 0, data(at(0))).await;
+    let maint = Uuid::now_v7();
+    sqlx::query("insert into silence (id, machine_id, is_maintenance, starts_at, ends_at, created_by) values ($1, $2, true, now() - interval '10 minutes', now() + interval '1 hour', 'a')")
+        .bind(maint)
+        .bind(n3)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let mut st = alerts::AlertState::default();
+    alerts::evaluate(&t.st, &mut st, t0).await.unwrap();
+    assert!(incidents(&t, "firing").await.is_empty(), "维护中：不开");
+    // 维护刚结束，机器告警还没来得及开：路由告警开着，但不单独通知
+    sqlx::query("update silence set deleted_at = now() where id = $1").bind(maint).execute(&t.st.db).await.unwrap();
+    alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(30)).await.unwrap();
+    let inc = incidents(&t, "firing").await;
+    assert_eq!(inc.iter().filter(|i| i["rule"] == "router_exits_down").count(), 1, "{inc:?}");
+    assert!(inc.iter().any(|i| i["summary"].as_str().is_some_and(|s| s.contains("1 个指向的团队2-03 刚结束维护"))), "{inc:?}");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(mock.count("/hook/m"), 0, "机器告警还没来：先别抢着通知");
+    // 过了这段时间（维护结束已超过 180 秒）机器告警还是没开：解除 quiet，等重新采集后补发「触发」
+    sqlx::query("update silence set starts_at = now() - interval '20 minutes', deleted_at = now() - interval '4 minutes' where id = $1").bind(maint).execute(&t.st.db).await.unwrap();
+    alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(60)).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(mock.count("/hook/m"), 0, "快照还是解除之前的");
+    status(&t, &id, true, 0, data(at(70))).await;
+    alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(90)).await.unwrap();
+    mock.wait("/hook/m", 1).await;
+    assert_eq!(mock.events("/hook/m"), ["firing"]);
+}
+
 /// 出口不通开着但 quiet（指向的节点有机器告警）：机器告警先恢复后，路由告警等这台路由重新采集（快照晚于解除的时刻），出口还不通才补发「触发」；
 /// 没有新快照的评估（补采别的、到点复查）不算数；解除之后出口就好了的，既不发触发也不发恢复（不会出现「触发」随后又「恢复」）
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

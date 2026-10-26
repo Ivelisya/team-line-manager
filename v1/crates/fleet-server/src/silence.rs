@@ -7,6 +7,28 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
+/// 刚结束的维护窗口的对象（见 [`ended_maintenance`]）；`None` = 全局维护，所有对象都算
+pub struct Ended(Vec<Option<Uuid>>);
+
+impl Ended {
+    pub fn matches(&self, id: Uuid) -> bool { self.0.iter().any(|s| s.is_none_or(|s| s == id)) }
+}
+
+/// `within_s` 秒内刚结束的维护：到期的是 ends_at，提前取消的是 deleted_at；开始之前就取消、从没生效过的不算。
+/// 维护期间机器的健康判定与告警计时被暂停，结束后要重新攒，用它分辨「刚结束、还没来得及报」
+pub async fn ended_maintenance(db: &PgPool, within_s: i64) -> sqlx::Result<Ended> {
+    Ok(Ended(
+        sqlx::query_scalar(
+            "select coalesce(machine_id, router_id, probe_point_id) from silence
+             where is_maintenance and starts_at < least(ends_at, coalesce(deleted_at, ends_at))
+               and least(ends_at, coalesce(deleted_at, ends_at)) between now() - make_interval(secs => $1) and now()",
+        )
+        .bind(within_s as f64)
+        .fetch_all(db)
+        .await?,
+    ))
+}
+
 /// 此刻生效的全部静默（含维护）：(对象 id, rule, is_maintenance)。同时生效的只有寥寥几条，整份读出来在内存里匹配
 pub struct Silences(Vec<(Option<Uuid>, Option<String>, bool)>);
 
