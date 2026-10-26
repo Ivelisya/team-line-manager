@@ -53,7 +53,7 @@ const EMPTY_MACHINES: MachineView[] = [];
 const P_LAYOUT = 'fleet:layout'; const P_VIEW = 'fleet:view'; const P_SORT = 'fleet:home-sort';
 
 /** 异常：故障、上架失败（上架失败的健康是 inactive，单看健康会漏掉）。降级照常服务、只是有提醒，算正常（同总览的「正常」）；
- *  闲置备用（等到期放生的）不通是预期，不算（同总览的故障计数） */
+ *  闲置备用（没有出口指着、没有在用 IP 节点）不通是预期，不算（同总览的故障计数） */
 const isIssue = (m: MachineView) => m.lifecycle === 'failed' || (m.health.status === 'down' && !isIdleSpare(m));
 
 /** 吸顶条是否正吸在顶栏下面：哨兵放在条的原位（高 0），滚到顶栏线以上就是吸住了（吸住后才铺毛玻璃和底线）。

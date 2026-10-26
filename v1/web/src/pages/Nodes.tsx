@@ -107,7 +107,7 @@ function LiveNodes({ sp, upd, tools }: { sp: URLSearchParams; upd: (patch: Recor
       if (team && m.team?.id !== team) return false;
       if (kind && m.kind !== kind) return false;
       if (relay && !(m.id === relay || m.entries.some((e) => e.relay.id === relay))) return false;
-      // 「故障」与首页 KPI 同口径：闲置备用（等到期放生的）不算，台数才对得上
+      // 「故障」与首页 KPI 同口径：闲置备用（没有出口指着、没有在用 IP 节点）不算，台数才对得上
       if (status && (statusOf(m) !== status || (status === 'down' && isIdleSpare(m)))) return false;
       if (dueSoon && (isUnbilledSpare(m) || !m.subscription || m.subscription.due_state === 'ok')) return false;
       if (plan && m.plan?.id !== plan) return false;

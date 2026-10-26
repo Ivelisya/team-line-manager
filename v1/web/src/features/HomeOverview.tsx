@@ -44,7 +44,7 @@ const TRAFFIC_LINK = '/nodes?sort=-traffic';
 const normal = (c: Counts) => c.total - c.down - c.unknown;
 /** 两层口径：闲置备用（o.spare）= 备用团队里没有软路由出口指向、上面也没有在用同机 IP 节点的机器，不关系到客户；备用团队里还被出口指着、有在用 IP 节点的不闲置，照常告警、续费。
  *  不续费的备用机（monthly_usd_spare.count，有订阅的才计月费）= 闲置备用里再没开自动续费的；开着自动续费的备用机仍闲置（不告警），但照常续费，月费算进合计 */
-const IDLE_SPARE_TIP = '闲置备用：备用团队里没有软路由出口指向、上面也没有在用同机 IP 节点的机器，等到期放生。不算在节点总数和故障里，也不开告警。备用团队里还被出口指着、或有在用 IP 节点的机器不算闲置，照常告警和续费';
+const IDLE_SPARE_TIP = '闲置备用：备用团队里没有软路由出口指向、上面也没有在用同机 IP 节点的机器。不算在节点总数和故障里，也不开告警；没开自动续费的等到期回收，开着自动续费的照常计费、不自动回收。备用团队里还被出口指着、或有在用 IP 节点的机器不算闲置，照常告警和续费';
 const SPARE_COST_TIP = '不续费的备用机（备用团队里没有软路由出口指向、没有在用同机 IP 节点、也没开自动续费的机器）里有订阅的，等到期放生，不再续费，不在左边的合计里，单独列在这里。备用团队里还被出口指着、有在用 IP 节点、或开着自动续费的机器照常续费，已算在左边的合计里';
 const NORMAL_INFO = '正常 = 总数 − 故障 − 未知。降级与维护的机器照常服务，都算正常';
 
@@ -117,7 +117,8 @@ export const OverviewSection = React.memo(function OverviewSection({ o, loading 
             caption={usd && <>{(usd.unconverted.length ? <span style={{ color: 'var(--warn-text)' }} data-tip="没有这些币种的汇率，未计入合计">未折算 {usd.unconverted.map((c) => F.money(c.cents, c.currency)).join(' + ')}</span>
               : foreign.length ? <span data-tip={usdTotalTip(usd)}>含 {foreign.map((p) => `${F.money(p.cents, p.currency)} ≈ ${F.money(p.usd_cents, 'USD')}`).join(' · ')}</span>
               : <span>{o!.paid_machines != null && <>在用 <b className="num">{o!.paid_machines}</b> 台 · </>}按月折算</span>)}
-              {!!sp?.count && <span data-tip={`${SPARE_COST_TIP}\n${usdTotalTip(sp)}`}>不续费的备用 <b className="num">{sp.count}</b> 台 {F.money(sp.cents, 'USD')} 另计</span>}</>} />
+              {/* 说明行默认不换行；这一句放不下时在空格处折行，不被卡片边缘切掉（完整含义在悬停里） */}
+              {!!sp?.count && <span style={{ whiteSpace: 'normal' }} data-tip={`${SPARE_COST_TIP}\n${usdTotalTip(sp)}`}>备用 <b className="num">{sp.count}</b> 台 {F.money(sp.cents, 'USD')} 另计</span>}</>} />
           {/* 每条推送都在涨，不滚数（滚到的位数也显示不出来，白白逐帧重画）：同网卡速率，直接到位 */}
           <Stat loading={loading} tone="sky" icon={<TrendingUp />} label="本月业务流量" info={"客户经所有入口的下载加上传。\n单台机器的「本周期已用」按网卡、从账单日算起，数字通常更大。"} to={TRAFFIC_LINK} value={tr ? F.inScaleBytes(trTotal, trScale) : '—'} unit={tr ? trScale.u : undefined}
             caption={tr && <><span>下载 <Num f={F.bytes(tr.down)} /></span><span>上传 <Num f={F.bytes(tr.up)} /></span><FromTag from={tr.counted_from} /></>} />
@@ -161,7 +162,7 @@ function ClusterPanel({ o }: { o: Overview | undefined }) {
   // 三处总数对得上：KPI 的节点 + 线路机 = 在用；agent 在线的分母 = 在用 − 家宽代理；机器矩阵的「全部」= 在用 + 上架中 / 退役中 / 上架失败（备用团队的机器照常算在用）
   const spare = o?.spare ?? 0;
   const active = o ? o.nodes.total + o.relays.total : 0;
-  const scope = o ? `分母 = 在用 ${active} 台（节点 ${o.nodes.total} + 线路机 ${o.relays.total}${spare ? `；另有闲置备用 ${spare} 台等放生，不计` : ''}）− 家宽代理 ${o.no_agent} 台（不需要 agent）${o.ip_nodes ? `；同机 IP 节点 ${o.ip_nodes} 台已算在内（跟随宿主机的 agent）` : ''}
+  const scope = o ? `分母 = 在用 ${active} 台（节点 ${o.nodes.total} + 线路机 ${o.relays.total}${spare ? `；另有闲置备用 ${spare} 台，不计` : ''}）− 家宽代理 ${o.no_agent} 台（不需要 agent）${o.ip_nodes ? `；同机 IP 节点 ${o.ip_nodes} 台已算在内（跟随宿主机的 agent）` : ''}
 机器矩阵的「全部」${active + spare + o.provisioning + o.retiring + o.failed} 台 = 在用 ${active}${spare ? ` + 闲置备用 ${spare}` : ''} + 上架中 ${o.provisioning} + 退役中 ${o.retiring} + 上架失败 ${o.failed}` : '';
   // 格条按比例分段着色：在线绿、离线红（末尾几格）；有离线至少 1 格红，不会因为离线占比不到一格就全绿；没有机器全灰
   const colors = React.useMemo(() => {
