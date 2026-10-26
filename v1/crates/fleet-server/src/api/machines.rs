@@ -274,7 +274,7 @@ pub struct RenamePreviewQ {
     number: Option<i32>,
 }
 
-/// 改团队 / 编号预览：`{name（改后的名字）, old_name, renames:[{machine_id,old_name,new_name}], ip_nodes:[{machine_id,old_name,new_name}], router_exits:[{node,router,exit}], spare_blocked, warnings:[string]}`。
+/// 改团队 / 编号预览：`{name（改后的名字）, old_name, renames:[{machine_id,old_name,new_name}], ip_nodes:[{machine_id,old_name,new_name}], router_exits:[{node,router,exit}], spare_blocked, held, warnings:[string]}`。
 /// 换团队时原团队少了这台，剩下的按编号连续压缩（PATCH 同事务做），`renames` 列出连带改号的；
 /// 宿主机上还在原团队的同机 IP 节点一起换团队（PATCH 同事务做，编号接在宿主机之后取新团队的最小空号），`ip_nodes` 列出它们的新旧名字；
 /// 换进备用团队时带走所有不在备用的（不只原团队里的，同退役的「移进备用」），它们所在的团队也各自压缩。
@@ -283,7 +283,7 @@ pub struct RenamePreviewQ {
 /// `spare_blocked`：改到备用团队但进不了备用时的原因（订阅已过期满 1 天、没有订阅、有进行中的作业等，同退役的「移进备用」；PATCH 会回 409），否则为 null。
 /// `held`：改到备用团队且进得了备用时，进去后不自动回收的原因（同退役预览的 `spare.held`：出口还指着这台或它上面的同机 IP 节点、上面已在备用的同机 IP 节点开着自动续费），否则为 null。
 /// `warnings`：还被软路由出口指着的节点（这台和随它走的同机 IP 节点，各按自己的原团队 → 去向团队比较）换到的团队生效的访问策略与现在不同时，每台一句（客户会受影响；只提示，不阻断）。
-/// 没换团队、线路机：renames / ip_nodes / router_exits / warnings 都为空，spare_blocked 为 null
+/// 没换团队、线路机：renames / ip_nodes / router_exits / warnings 都为空，spare_blocked、held 为 null
 pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<RenamePreviewQ>) -> ApiResult<Json<Value>> {
     let mut conn = st.db.acquire().await?;
     let (kind, label, team, number, spare_since, spare_from_team): (String, Option<String>, Option<Uuid>, Option<i32>, Option<OffsetDateTime>, Option<Uuid>) =

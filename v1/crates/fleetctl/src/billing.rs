@@ -307,7 +307,7 @@ pub struct RenewOpts {
     /// 配合 --provider：30d / 30（未来多少天内到期，含已过期）或 2026-11-20（不晚于这天）
     #[arg(long, value_name = "Nd|日期", requires = "provider")]
     pub due: Option<String>,
-    /// 配合 --provider：带上闲置备用的机器（默认不带，它们等到期丢弃）
+    /// 配合 --provider：带上不续费的备用机（默认不带，它们等到期丢弃）
     #[arg(long, requires = "provider")]
     pub include_spare: bool,
     /// 账单号：写进每条续费记录的备注（「账单 xxx」）

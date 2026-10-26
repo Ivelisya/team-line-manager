@@ -330,7 +330,7 @@ enum Cmd {
         /// 健康状态（ok/degraded/down/unknown/maintenance）或生命周期（active/provisioning/…）
         #[arg(long)]
         status: Option<String>,
-        /// 只列 N 天内到期（含已过期）的在用机器，按到期日排，表格加「到期」列（自动续费的也列出并标明；等到期放生的闲置备用机不列，它们不续费，被出口指着 / 开着自动续费等不自动回收的备用机照列）
+        /// 只列 N 天内到期（含已过期）的在用机器，按到期日排，表格加「到期」列（自动续费的也列出并标明；不续费的备用机不列（等到期回收），被出口指着 / 开着自动续费等不自动回收的备用机照列）
         #[arg(long, value_name = "DAYS")]
         due: Option<i64>,
     },
@@ -364,7 +364,7 @@ enum Cmd {
         /// 配合 --due：按 供应商 × 到期日 分组，每组机器、原币种小计与 USD 合计、供应商控制台链接（不加则每台一行）
         #[arg(long, requires = "due")]
         by_provider: bool,
-        /// 配合 --due：带上闲置备用的机器（默认不带）
+        /// 配合 --due：带上不续费的备用机（默认不带）
         #[arg(long, requires = "due")]
         include_spare: bool,
     },

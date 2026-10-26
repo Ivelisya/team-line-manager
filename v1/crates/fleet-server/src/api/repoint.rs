@@ -122,15 +122,19 @@ async fn plan(st: &AppState, conn: &mut PgConnection, old_id: Uuid, b: &RepointI
     // 下面都只是预览里的提醒：发起（lock）时不算。views::live 在重算时会持着上面对新节点的行锁等到 VIEW_WAIT，
     // 视图 503 时提交也跟着失败，不能让一条可选的提醒挡住提交
     if !lock {
-        // 目标是备用节点（临时把出口指过去的常见去向）：出口一指过去它就被扣住（不再自动回收、开始告警、计入月费、到期要自己登记续费），本来是等丢弃的，要提醒；目标此刻故障的更要说
+        // 目标是备用节点（临时把出口指过去的常见去向）：闲置的一指过去就关系到客户（开始告警、计入健康、不再自动回收），已被扣住的只是多一个原因；
+        // 自动续费关着的到期要自己登记续费。目标此刻故障的更要说
         let live = crate::views::live(st).await?;
         if let Some(m) = live.iter().find(|m| m.id == new.node_id) {
             if m.spare {
                 let due = m.subscription.as_ref().map(|s| format!("{} 到期", s.due_date)).unwrap_or_else(|| "没有订阅".into());
-                warnings.push(format!(
-                    "「{}」是备用节点，{due}：改指过去后它会被扣住（开始告警、计入月费、到期要自己登记续费；进备用时自动续费已关），不再自动回收",
-                    new.node_name
-                ));
+                // 自动续费关着的到期要自己登记续费；已经被扣住的（已有出口指着、宿主机上有在用 IP 节点、开着自动续费）只是多一个原因
+                let renew = if m.subscription.as_ref().is_some_and(|s| s.auto_renew) { "开着自动续费" } else { "到期要自己登记续费" };
+                warnings.push(if m.idle_spare {
+                    format!("「{}」是备用节点，{due}：改指过去后它关系到客户（开始告警、计入健康），不再自动回收；{renew}", new.node_name)
+                } else {
+                    format!("「{}」是备用节点，{due}：已被扣住、不自动回收，改指过去后多一个原因；{renew}", new.node_name)
+                });
             }
             if m.health.status == crate::health::Status::Down {
                 warnings.push(format!("「{}」此刻故障：改过去之后这些出口会不通", new.node_name));

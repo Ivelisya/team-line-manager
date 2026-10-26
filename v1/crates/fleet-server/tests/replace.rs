@@ -1730,7 +1730,7 @@ async fn repoint_preview_warns_when_policy_differs() {
     assert!(d["job_id"].is_string() && !d["warnings"].to_string().contains("访问策略"), "{d}");
 }
 
-/// 改出口指向的预览：目标是备用节点时写全（指过去它就被扣住：开始告警、计入月费、到期要自己登记续费，不再自动回收）；
+/// 改出口指向的预览：目标是备用节点时写全（闲置的指过去就关系到客户：开始告警、计入健康、不再自动回收，自动续费关着的到期要自己登记续费）；
 /// 旧节点是已过期满 1 天的备用机、只因出口还指着才没被回收时，说明改走后下一轮维护会自动回收
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn repoint_preview_warns_about_spare_nodes() {
@@ -1748,7 +1748,7 @@ async fn repoint_preview_warns_about_spare_nodes() {
     sqlx::query("update machine set team_id = $2, number = 1 where id = $1").bind(w.new).bind(w.spare).execute(db).await.unwrap();
     t.st.live.invalidate();
     let ws = t.get(&url).await["warnings"].to_string();
-    assert!(ws.contains("是备用节点，2099-01-01 到期：改指过去后它会被扣住（开始告警、计入月费、到期要自己登记续费；进备用时自动续费已关），不再自动回收"), "{ws}");
+    assert!(ws.contains("是备用节点，2099-01-01 到期：改指过去后它关系到客户（开始告警、计入健康），不再自动回收；到期要自己登记续费"), "{ws}");
     assert!(!ws.contains("下一轮维护"), "旧节点不在备用：{ws}");
     // 旧节点在备用、订阅已过期满 1 天：出口都改走后下一轮维护就回收
     sqlx::query("delete from subscription where machine_id = $1").bind(w.new).execute(db).await.unwrap();

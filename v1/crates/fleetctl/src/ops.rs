@@ -515,8 +515,7 @@ pub fn rename(
         let ips = if ip_nodes.is_empty() { String::new() } else { format!("\n同机 IP 节点一起移：{}", ip_nodes.join("，")) };
         let also = if renames.is_empty() { String::new() } else { format!("\n原团队编号连带改动：{}", renames.join("，")) };
         let warn: String = warnings.iter().map(|w| format!("\n注意：{w}")).collect();
-        let held = held.as_deref().map(|h| format!("
-不自动回收：{h}，到期要自己登记续费")).unwrap_or_default();
+        let held = held.as_deref().map(|h| format!("\n不自动回收：{h}，到期要自己登记续费")).unwrap_or_default();
         format!("{} → {}{ips}{also}{}{held}{warn}", st(&cur, "/name"), st(&d, "/name"), spare_exits_note(&router_exits))
     });
     Ok(0)
