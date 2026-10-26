@@ -944,6 +944,11 @@ async fn round_of(st: &AppState, mem: &mut HashMap<Uuid, Mem>, only: Option<&[Uu
     Ok(())
 }
 
+/// 快照里出口对上的（节点, 出口名）：机器视图备用机器的 router_exits 由它决定（routers::exits_to）
+fn pointed(snap: Option<&Snapshot>) -> HashSet<(Uuid, &str)> {
+    snap.into_iter().flat_map(|s| &s.exits).filter_map(|x| x.entry.as_ref().filter(|e| e.lifecycle != "removed").map(|e| (e.node_id, x.name.as_str()))).collect()
+}
+
 /// 采集一台并落库（`delay`：到时候了就测延迟）。返回状态或摘要是否变了
 async fn one(st: &AppState, t: &Target, m: &mut Mem, entries: &[Entry], delay: bool) -> anyhow::Result<bool> {
     let now = OffsetDateTime::now_utc();
@@ -1061,6 +1066,10 @@ async fn one(st: &AppState, t: &Target, m: &mut Mem, entries: &[Entry], delay: b
             // 临时切换的组被改成了别的（有人手动改、换了配置）：待切回取消（routers/switch.rs）
             if let Err(e) = super::switch::reconcile(st, t.id, &b.snap, now).await {
                 tracing::warn!(router = %t.id, "核对临时切换失败：{e:#}");
+            }
+            // 出口对上的节点变了：备用机器是不是闲置、router_exits 跟着变，机器视图不等 5 分钟的整表重算（Event::Routers 不触发它）
+            if pointed(m.last.as_ref()) != pointed(Some(&b.snap)) {
+                st.emit_keep_access(Event::Machines);
             }
             let changed = ok_changed(before.as_ref(), m.last.as_ref(), &b.snap) || m.told.is_none_or(|t| now - t >= NUMBERS_EVERY);
             if changed {
