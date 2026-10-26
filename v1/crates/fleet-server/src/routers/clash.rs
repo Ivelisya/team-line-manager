@@ -17,6 +17,45 @@ pub const MAX_CONFIG: usize = 1024 * 1024;
 struct Cfg {
     #[serde(default)]
     proxies: Vec<P>,
+    dns: Option<Dns>,
+}
+
+/// dns 段里能用 `#组名` 指定走哪个出口 / 策略组的几处：nameserver-policy 的值（字符串或列表）、nameserver、fallback、proxy-server-nameserver
+#[derive(Deserialize)]
+struct Dns {
+    #[serde(rename = "nameserver-policy", default)]
+    policy: std::collections::BTreeMap<String, OneOrMany>,
+    #[serde(default)]
+    nameserver: OneOrMany,
+    #[serde(default)]
+    fallback: OneOrMany,
+    #[serde(rename = "proxy-server-nameserver", default)]
+    proxy_server: OneOrMany,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(untagged)]
+enum OneOrMany {
+    #[default]
+    None,
+    One(String),
+    Many(Vec<String>),
+}
+
+impl OneOrMany {
+    fn items(&self) -> &[String] {
+        match self {
+            OneOrMany::None => &[],
+            OneOrMany::One(s) => std::slice::from_ref(s),
+            OneOrMany::Many(v) => v,
+        }
+    }
+}
+
+/// DNS 服务器写法里 `#` 后面的组名（`https://dns.example/dns-query#EXIT_1&h3=true` → `EXIT_1`）
+fn dns_group(s: &str) -> Option<String> {
+    let name = s.split_once('#')?.1.split('&').next()?.trim();
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 /// 全部按字符串收：按目标类型解析，`short-id: 01234567` 不会被当成数字丢掉前导 0，`port: 443` 拿到 "443"
@@ -33,6 +72,8 @@ struct P {
     sni: Option<String>,
     #[serde(rename = "reality-opts")]
     reality: Option<Reality>,
+    #[serde(rename = "dialer-proxy")]
+    dialer: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -68,13 +109,23 @@ pub struct Proxy {
 }
 
 /// 解析配置里的 `proxies`。没有名字的条目跳过；整份不是合法 YAML、或超出资源上限（别名爆炸之类）时报错
-pub fn parse(text: &str) -> Result<Vec<Proxy>, String> {
+pub fn parse(text: &str) -> Result<Vec<Proxy>, String> { parse_all(text).map(|c| c.0) }
+
+/// 同 `parse`，另给配置里规则之外引用出口 / 策略组的名字（去重排序）：出口的 `dialer-proxy`、dns 里 `#组名` 的几处。
+/// 规则里看不到这些引用，策略组有没有在用要算上它们（collect.rs mark_used）
+pub fn parse_all(text: &str) -> Result<(Vec<Proxy>, Vec<String>), String> {
     let cfg: Cfg = serde_saphyr::from_str(text).map_err(|e| {
         let m = e.to_string();
         format!("配置文件解析不了：{}", m.lines().next().unwrap_or("").chars().take(200).collect::<String>())
     })?;
     let t = |s: Option<String>| s.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-    Ok(cfg
+    let mut refs: Vec<String> = cfg.proxies.iter().filter_map(|p| t(p.dialer.clone())).collect();
+    if let Some(d) = &cfg.dns {
+        refs.extend(d.policy.values().chain([&d.nameserver, &d.fallback, &d.proxy_server]).flat_map(|v| v.items()).filter_map(|s| dns_group(s)));
+    }
+    refs.sort();
+    refs.dedup();
+    let proxies = cfg
         .proxies
         .into_iter()
         .filter_map(|p| {
@@ -91,7 +142,8 @@ pub fn parse(text: &str) -> Result<Vec<Proxy>, String> {
                 creds: Creds { uuid: t(p.uuid), flow: t(p.flow), sni: t(p.servername).or(t(p.sni)), public_key, short_id },
             })
         })
-        .collect())
+        .collect();
+    Ok((proxies, refs))
 }
 
 /// fleet 的一个入口（含已删除的）与它现在的参数
@@ -174,6 +226,33 @@ pub fn match_entry(p: &Proxy, entries: &[Entry]) -> (Option<EntryRef>, &'static 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 规则之外引用策略组的地方：出口的 dialer-proxy、dns 里 `#组名`（字符串或列表、带 & 参数）；没有 dns 段、没有 dialer 的配置为空
+    #[test]
+    fn group_refs_from_dialer_and_dns() {
+        let (ps, refs) = parse_all(
+            r#"
+proxies:
+  - {name: 节点01, type: vless, server: 198.51.100.2, port: 20003, dialer-proxy: 跳板}
+  - {name: 节点02, type: vless, server: 198.51.100.2, port: 20004}
+dns:
+  nameserver: [223.5.5.5]
+  nameserver-policy:
+    "geosite:google": https://dns.google/dns-query#EXIT_1&h3=true
+    "+.example.com": ["tls://1.1.1.1#EXIT_2", "system"]
+  fallback:
+    - "https://1.0.0.1/dns-query#EXIT_1"
+"#,
+        )
+        .unwrap();
+        assert_eq!(ps.len(), 2);
+        assert_eq!(refs, ["EXIT_1", "EXIT_2", "跳板"]);
+        assert_eq!(parse_all("proxies:
+  - {name: a, type: vless, server: s, port: 1}
+").unwrap().1, Vec::<String>::new());
+        assert!(parse_all("dns:
+  nameserver-policy: {x: [").is_err());
+    }
 
     const UUID1: &str = "6f1c2c1e-6a9b-4c55-9d3e-8a6f1b2c3d4e";
 
