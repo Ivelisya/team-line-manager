@@ -358,13 +358,13 @@ enum Cmd {
         /// 机器；用 --due 看待付清单时不用写
         #[arg(required_unless_present = "due", conflicts_with = "due")]
         machine: Option<String>,
-        /// 待付清单（所有在用机器，不含备用团队）：30d / 30（未来多少天内到期，含已过期）或 2026-11-20（不晚于这天）。自动续费的单列、不算待付
+        /// 待付清单（所有在用机器，不含闲置备用；备用团队里被出口指着 / 有在用 IP 节点的备用机照常在内）：30d / 30（未来多少天内到期，含已过期）或 2026-11-20（不晚于这天）。自动续费的单列、不算待付
         #[arg(long, value_name = "Nd|日期")]
         due: Option<String>,
         /// 配合 --due：按 供应商 × 到期日 分组，每组机器、原币种小计与 USD 合计、供应商控制台链接（不加则每台一行）
         #[arg(long, requires = "due")]
         by_provider: bool,
-        /// 配合 --due：带上备用团队的机器
+        /// 配合 --due：带上闲置备用的机器（默认不带）
         #[arg(long, requires = "due")]
         include_spare: bool,
     },

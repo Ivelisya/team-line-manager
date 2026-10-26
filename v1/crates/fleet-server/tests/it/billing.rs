@@ -392,6 +392,48 @@ async fn due_groups_by_provider_and_date_with_usd_total() {
     assert_eq!(t.get(&format!("/api/v1/billing/due?until={until}")).await["groups"].as_array().unwrap().len(), 1, "只有 5 天后到期的甲");
 }
 
+/// 备用团队里还被软路由出口指着、或上面有在用同机 IP 节点的机器不自动回收、不算闲置备用：待付清单默认也带上（`spare` 为 true、`spare_hold` 写原因），
+/// 闲置备用仍要 include_spare；机器项没有 spare_hold 的（普通机器）为 null
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn due_includes_held_spare_machines_by_default() {
+    let t = setup(false).await;
+    let team = seed_team(&t, "团队1").await;
+    let spare: Uuid = sqlx::query_scalar("select id from team where spare").fetch_one(&t.st.db).await.unwrap();
+    let normal = due_node(&t, team, 1, None, 3, 1000, "USD", false).await;
+    let idle = due_node(&t, spare, 2, None, 3, 1000, "USD", false).await;
+    let with_ip = due_node(&t, spare, 3, None, 3, 1000, "USD", false).await;
+    let pointed = due_node(&t, spare, 4, None, 3, 1000, "USD", false).await;
+    let ip = Uuid::now_v7();
+    sqlx::query("insert into machine (id, kind, team_id, number, primary_ip, ssh_port, lifecycle, host_id, activated_at) values ($1, 'vps', $2, 9, '203.0.113.109'::inet, null, 'active', $3, now())")
+        .bind(ip)
+        .bind(team)
+        .bind(with_ip)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let rid = Uuid::now_v7();
+    sqlx::query("insert into router (id, name, tunnel_port) values ($1, '办公室', 23004)").bind(rid).execute(&t.st.db).await.unwrap();
+    let entry = json!({"id": Uuid::now_v7(), "name": "x", "node_id": pointed, "relay_id": Uuid::now_v7(), "node_name": "备用-4", "relay_name": "线路机1", "port": 20001, "lifecycle": "active"});
+    let snap = json!({"exits": [{"name": "节点04", "entry": entry, "sync": "ok", "linked": true}]});
+    sqlx::query("insert into router_status (router_id, ts, reachable, data, last_ok_at) values ($1, now(), true, $2, now())").bind(rid).bind(snap).execute(&t.st.db).await.unwrap();
+
+    let by_id = |v: &Value| -> std::collections::HashMap<String, (bool, Option<String>)> {
+        v["groups"].as_array().unwrap().iter().flat_map(|g| g["machines"].as_array().unwrap().iter())
+            .map(|m| (m["id"].as_str().unwrap().to_string(), (m["spare"].as_bool().unwrap(), m["spare_hold"].as_str().map(String::from)))).collect()
+    };
+    let v = t.get("/api/v1/billing/due?days=30").await;
+    let m = by_id(&v);
+    assert_eq!(m.len(), 3, "闲置备用不在默认清单里：{v}");
+    assert_eq!(m[&normal.to_string()], (false, None));
+    assert_eq!(m[&with_ip.to_string()], (true, Some("同机 IP 节点 团队1-09 还在用".to_string())), "{v}");
+    assert_eq!(m[&pointed.to_string()], (true, Some("软路由出口 办公室 · 节点04 还指着".to_string())), "{v}");
+    assert_eq!(v["total"]["cents"], 3000, "三台都算待付：{v}");
+    // include_spare 带上闲置的
+    let m = by_id(&t.get("/api/v1/billing/due?days=30&include_spare=true").await);
+    assert_eq!(m[&idle.to_string()], (true, None));
+    assert_eq!(m.len(), 4);
+}
+
 async fn due_of(t: &T, id: Uuid) -> String { sqlx::query_scalar("select due_date::text from subscription where machine_id = $1").bind(id).fetch_one(&t.st.db).await.unwrap() }
 
 /// 批量续费：一个事务里按订阅周期顺延每台、金额默认订阅价，审计一条（列出机器）；dry_run 只预览什么都不写；有一台不行整批都不登记

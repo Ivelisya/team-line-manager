@@ -1645,11 +1645,12 @@ pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Valu
     // 同机 IP 节点跟随宿主机的 agent（视图里的 agent 就是宿主机的）照常计入；家宽代理不需要 agent，不计，另数 no_agent
     let (mut online, mut offline, mut no_agent, mut ip_nodes) = (0, 0, 0, 0);
     // 月费按汇率折成 USD 合计（monthly_usd，见 fx.rs）
-    // 备用团队的机器不续费（等到期放生），月费合计不含它们（不论有没有软路由出口指向），另数备用小计（monthly_usd_spare）
+    // 闲置备用的机器不续费（等到期放生），月费合计不含它们，另数备用小计（monthly_usd_spare）；
+    // 备用团队里还被软路由出口指着、或上面有在用同机 IP 节点的（不闲置）照常续费，算进合计
     let mut usd = crate::fx::Total::default();
     let (mut usd_spare, mut spare_paid) = (crate::fx::Total::default(), 0);
-    // 月费合计里的台数（paid_machines）：在用、不在备用团队、有订阅的——正好是 monthly_usd 加起来的那些台。
-    // 没有订阅的（家宽代理）和备用团队里的同机 IP 节点不在里面，网页首页、月报、fleetctl status 的「在用 N 台」都读它，不各自去拼
+    // 月费合计里的台数（paid_machines）：在用、不是闲置备用、有订阅的——正好是 monthly_usd 加起来的那些台。
+    // 没有订阅的（家宽代理）和闲置备用不在里面，网页首页、月报、fleetctl status 的「在用 N 台」都读它，不各自去拼
     let mut paid_machines = 0;
     for m in ms {
         match m.lifecycle.as_str() {
@@ -1663,7 +1664,7 @@ pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Valu
             continue;
         }
         // 闲置备用（等到期放生的）：不进健康计数，也不进在线 / 离线（放生的机器常年离线，会让「agent 离线」永远不为 0），只数个 spare；
-        // 实时速率照算（离线的本来不算）；月费合计不含备用团队的机器，另列 monthly_usd_spare（见下）
+        // 实时速率照算（离线的本来不算）；月费合计不含闲置备用，另列 monthly_usd_spare（见下）
         let idle = m.idle_spare();
         if idle {
             spare += 1;
@@ -1680,13 +1681,13 @@ pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Valu
             } += 1;
         }
         if let Some(s) = &m.subscription {
-            // 备用团队的不续费（替换下来等到期丢弃的），不算要续的（同前端 nextDue 与机器页「即将到期」筛选）
+            // 闲置备用的不续费（替换下来等到期丢弃的），不算要续的（同前端 nextDue 与机器页「即将到期」筛选）；还被出口指着 / 有在用 IP 节点的备用机照常续费
             match s.due_state {
-                "soon" if !m.spare => due_soon += 1,
-                "overdue" if !m.spare => overdue += 1,
+                "soon" if !idle => due_soon += 1,
+                "overdue" if !idle => overdue += 1,
                 _ => {}
             }
-            let t = if m.spare {
+            let t = if idle {
                 spare_paid += 1;
                 &mut usd_spare
             } else {
@@ -1871,6 +1872,14 @@ mod tests {
         spare_ip.host_machine = Some(Ref { id: Uuid::new_v4(), name: "团队1-03".into() });
         let ov4 = overview_of(&[with(30, false), proxy, spare_ip], &HashMap::new());
         assert_eq!(ov4["paid_machines"].as_i64(), Some(1));
+        // 备用团队里还被出口指着、或上面有在用 IP 节点的（不闲置）照常续费：进即将到期 / 已过期、月费合计与付费台数，不进备用小计
+        let (mut by_exit, mut by_ip, mut idle_soon) = (with(3, false), with(-2, false), with(3, false));
+        (by_exit.spare, by_ip.spare, idle_soon.spare) = (true, true, true);
+        by_exit.router_exits = vec!["办公室2 · 美国".into()];
+        by_ip.live_ip_nodes = vec!["团队1-02".into()];
+        let ov5 = overview_of(&[by_exit, by_ip, idle_soon], &HashMap::new());
+        assert_eq!((ov5["due_soon"].as_i64(), ov5["overdue"].as_i64(), ov5["paid_machines"].as_i64()), (Some(1), Some(1), Some(2)), "{ov5}");
+        assert_eq!((ov5["monthly_usd"]["cents"].as_i64(), ov5["monthly_usd_spare"]["cents"].as_i64(), ov5["monthly_usd_spare"]["count"].as_i64()), (Some(200), Some(100), Some(1)), "{ov5}");
         // 折算：逐台的 monthly_usd_cents 相加；没有汇率的单列，不算进合计
         let cny = |cents: i64, usd: Option<i64>| {
             let mut m = with(30, false);

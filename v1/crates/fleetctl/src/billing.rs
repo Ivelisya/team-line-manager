@@ -297,7 +297,7 @@ pub struct RenewOpts {
     /// 配合 --provider：30d / 30（未来多少天内到期，含已过期）或 2026-11-20（不晚于这天）
     #[arg(long, value_name = "Nd|日期", requires = "provider")]
     pub due: Option<String>,
-    /// 配合 --provider：带上备用团队的机器（默认不带，它们等到期丢弃）
+    /// 配合 --provider：带上闲置备用的机器（默认不带，它们等到期丢弃）
     #[arg(long, requires = "provider")]
     pub include_spare: bool,
     /// 账单号：写进每条续费记录的备注（「账单 xxx」）
@@ -407,6 +407,14 @@ fn usd_cn(t: &Value) -> String {
     format!("{}{star}", money(t["cents"].as_i64().unwrap_or(0), "USD"))
 }
 
+/// 机器名；备用机上还有出口指着 / 在用 IP 节点（`spare_hold`，不自动回收、照常续费）的后面括注原因
+fn due_name(m: &Value) -> String {
+    match m["spare_hold"].as_str() {
+        Some(h) => format!("{}（备用，{h}）", st(m, "/name")),
+        None => st(m, "/name"),
+    }
+}
+
 fn provider_cn(p: &Value) -> String { p["name"].as_str().map_or("（无供应商）".into(), String::from) }
 
 /// 待付清单的文字：默认每台一行；`by_provider` 按 供应商 × 到期日 分组。自动续费的单列、不算待付
@@ -423,7 +431,7 @@ fn due_text(d: &Value, by_provider: bool) -> String {
             .iter()
             .map(|g| {
                 let ms = g["machines"].as_array().map(Vec::as_slice).unwrap_or_default();
-                let names: Vec<String> = ms.iter().map(|m| st(m, "/name")).collect();
+                let names: Vec<String> = ms.iter().map(due_name).collect();
                 vec![
                     provider_cn(&g["provider"]),
                     format!("{}（{}）", st(g, "/due_date"), due_at(&ms[0], "/due_days")),
@@ -441,7 +449,7 @@ fn due_text(d: &Value, by_provider: bool) -> String {
             for m in g["machines"].as_array().into_iter().flatten() {
                 let price = format!("{} / {}", money_at(m, "/price_cents", &st(m, "/currency")), cycle_cn(&st(m, "/cycle")));
                 let usd = m["price_usd_cents"].as_i64().map_or("未折算".into(), |u| money(u, "USD"));
-                rows.push(vec![format!("{}（{}）", st(m, "/due_date"), due_at(m, "/due_days")), provider_cn(&g["provider"]), st(m, "/name"), price, usd]);
+                rows.push(vec![format!("{}（{}）", st(m, "/due_date"), due_at(m, "/due_days")), provider_cn(&g["provider"]), due_name(m), price, usd]);
             }
         }
         format!("{window}\n{}", table::render(&["到期日", "供应商", "机器", "每期价格", "折合 USD"], &rows))
@@ -458,7 +466,7 @@ fn due_text(d: &Value, by_provider: bool) -> String {
     out
 }
 
-/// `billing --due <Nd|日期> [--by-provider] [--include-spare]`：待付清单（所有在用机器，不含备用团队）。`--json` 是 /billing/due 的 data 原样
+/// `billing --due <Nd|日期> [--by-provider] [--include-spare]`：待付清单（所有在用机器，不含闲置备用；备用团队里被出口指着 / 有在用 IP 节点的备用机照常在内）。`--json` 是 /billing/due 的 data 原样
 pub fn billing_due(ctx: &Ctx, due: &str, by_provider: bool, include_spare: bool) -> anyhow::Result<u8> {
     let d = fetch_due(ctx, due, include_spare)?;
     ctx.emit(&d, || due_text(&d, by_provider));
@@ -875,5 +883,18 @@ mod tests {
         let m = json!({"quota": {"forecast_full_at": "2026-11-02T20:00:00Z", "period_end": "2026-11-13", "daily_avg": 96_000_000_000i64}});
         assert_eq!(forecast_cn(&m).as_deref(), Some("预计 11-03 用满（重置 11-13） · 近 7 天日均 96 GB"));
         assert_eq!(forecast_cn(&json!({"quota": {"forecast_full_at": null}})), None);
+    }
+
+    #[test]
+    fn due_text_marks_held_spare_machines() {
+        let m = |name: &str, hold: Value| {
+            json!({"name": name, "due_date": "2026-10-30", "due_days": 4, "cycle": "monthly", "price_cents": 500, "currency": "USD", "price_usd_cents": 500, "spare": hold.is_string(), "spare_hold": hold})
+        };
+        let d = json!({"days": 30, "until": null, "total": {"cents": 1000, "by_currency": [], "unconverted": []}, "auto": [],
+            "groups": [{"provider": {"name": "甲", "panel_url": null}, "due_date": "2026-10-30", "billing_tz": "UTC", "total": {"cents": 1000, "by_currency": [], "unconverted": []},
+                        "machines": [m("团队1-01", Value::Null), m("备用-02", json!("同机 IP 节点 团队1-09 还在用"))]}]});
+        let t = due_text(&d, false);
+        assert!(t.contains("备用-02（备用，同机 IP 节点 团队1-09 还在用）") && t.contains("团队1-01") && !t.contains("团队1-01（"), "{t}");
+        assert!(due_text(&d, true).contains("备用-02（备用，同机 IP 节点 团队1-09 还在用）"));
     }
 }
