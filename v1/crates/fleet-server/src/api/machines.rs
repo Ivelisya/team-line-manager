@@ -210,10 +210,11 @@ pub struct RenamePreviewQ {
     number: Option<i32>,
 }
 
-/// 改团队 / 编号预览：`{name（改后的名字）, old_name, renames:[{machine_id,old_name,new_name}], ip_nodes:[{machine_id,old_name,new_name}]}`。
+/// 改团队 / 编号预览：`{name（改后的名字）, old_name, renames:[{machine_id,old_name,new_name}], ip_nodes:[{machine_id,old_name,new_name}], router_exits:[{node,router,exit}]}`。
 /// 换团队时原团队少了这台，剩下的按编号连续压缩（PATCH 同事务做），`renames` 列出连带改号的；
 /// 宿主机上还在原团队的同机 IP 节点一起换团队（PATCH 同事务做，编号接在宿主机之后取新团队的最小空号），`ip_nodes` 列出它们的新旧名字。
-/// 没换团队、线路机两项都为空
+/// `router_exits`：新团队是备用团队时，还指向这台和随它一起移入的同机 IP 节点的软路由出口（只提示，不阻断）；其余为空。
+/// 没换团队、线路机三项都为空
 pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<RenamePreviewQ>) -> ApiResult<Json<Value>> {
     let mut conn = st.db.acquire().await?;
     let (kind, label, team, number, spare_since): (String, Option<String>, Option<Uuid>, Option<i32>, Option<OffsetDateTime>) =
@@ -225,6 +226,7 @@ pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
     let old_name = display_name_of(&st.db, id).await?.0;
     let mut renames = vec![];
     let mut ip_nodes = vec![];
+    let mut router_exits = vec![];
     let mut name = old_name.clone();
     if kind != "relay" {
         let to = q.team_id.or(team);
@@ -265,6 +267,16 @@ pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
             }
             // 原团队压缩：宿主机和随它走的 IP 节点都不在了
             let leaving: Vec<Uuid> = std::iter::once(id).chain(ips.iter().map(|x| x.0)).collect();
+            // 进备用：软路由出口还指着这些节点的，客户会继续用
+            if sqlx::query_scalar::<_, bool>("select spare from team where id = $1").bind(to).fetch_optional(&mut *conn).await?.unwrap_or(false) {
+                let names: HashMap<Uuid, &str> = std::iter::once((id, old_name.as_str())).chain(ips.iter().map(|x| (x.0, x.1.as_str()))).collect();
+                let exits = crate::routers::exits_using(&st.db, &leaving).await?;
+                for node in &leaving {
+                    for (_, router, exit) in exits.get(node).into_iter().flatten() {
+                        router_exits.push(json!({"node": names[node], "router": router, "exit": exit}));
+                    }
+                }
+            }
             let nodes: Vec<(Uuid, i32)> =
                 sqlx::query_as("select id, number from machine where team_id = $1 and kind <> 'relay' and lifecycle <> 'retired' and id <> all($2) order by number")
                     .bind(from)
@@ -277,7 +289,7 @@ pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
                 .collect();
         }
     }
-    Ok(ok(json!({"name": name, "old_name": old_name, "renames": renames, "ip_nodes": ip_nodes})))
+    Ok(ok(json!({"name": name, "old_name": old_name, "renames": renames, "ip_nodes": ip_nodes, "router_exits": router_exits})))
 }
 
 /// PATCH 的全部校验与写入（含审计），在调用方的事务里做。

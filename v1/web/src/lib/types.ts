@@ -305,7 +305,9 @@ export interface Renewal { id: string; old_due: string | null; new_due: string; 
 export interface AuditEntry { id: string; ts: string; actor: string; action: string; title: string; summary: string; target_kind: string | null; target_id: string | null; detail: unknown }
 /** GET /machines/{id}/rename-preview：改团队 / 编号后的名字，原团队因此连带改号的节点（换团队时原团队剩下的压缩成 01..N），
  *  和随宿主机一起换团队的同机 IP 节点（ip_nodes：新团队里接在宿主机之后取最小空号） */
-export interface RenamePreview { name: string; old_name: string; renames: { machine_id: string; old_name: string; new_name: string }[]; ip_nodes: { machine_id: string; old_name: string; new_name: string }[] }
+export interface RenamePreview { name: string; old_name: string; renames: { machine_id: string; old_name: string; new_name: string }[]; ip_nodes: { machine_id: string; old_name: string; new_name: string }[];
+  /** 新团队是备用团队时，还指向这台和一起移入的同机 IP 节点的软路由出口；其余为 [] */
+  router_exits: { node: string; router: string; exit: string }[] }
 /** notes：指向要改名的节点的软路由出口（出口名不跟着改） */
 export interface RenumberPreview { changes: { machine_id: string; old_name: string; new_name: string }[]; notes: string[]; token: string }
 /** 软路由上要改的出口（替换节点、换线路机、搬空同一个格式）；换线路机的 new_entry_id 为 null、to 写「server:新端口」 */

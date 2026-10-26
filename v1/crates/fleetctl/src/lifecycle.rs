@@ -167,6 +167,7 @@ fn mv_many(ctx: &Ctx, names: &[&str], to: &str, from: Option<&str>, no_routers: 
         outln(SHARE_HINT);
     }
     if pv["ok"] != true {
+        // 离线软路由上面已经逐条打印过（json 模式 pv 整份已输出），这里只放 blockers，不再重复
         bail!("现在不能换线路机（一个都没提交）：{}", moves_why(&pv));
     }
     confirm(&format!("确认把这 {} 个节点换到 {tname}？", names.len()), yes)?;
@@ -200,11 +201,14 @@ fn offline_lines(pv: &Value) -> Vec<String> {
         .collect()
 }
 
-/// 批量换线路机现在不能提交的原因：别的原因（blockers，带节点名）加上离线的软路由
+/// 批量换线路机现在不能提交的原因：别的原因（blockers，带节点名）；离线的软路由不在这里（offline_lines 已逐条打印），只有它时写「见上」
 fn moves_why(pv: &Value) -> String {
-    let mut v: Vec<String> = pv["blockers"].as_array().into_iter().flatten().filter_map(|s| s.as_str().map(String::from)).collect();
-    v.extend(offline_lines(pv));
-    v.join("；")
+    let v: Vec<String> = pv["blockers"].as_array().into_iter().flatten().filter_map(|s| s.as_str().map(String::from)).collect();
+    if v.is_empty() {
+        "软路由不在线，见上".into()
+    } else {
+        v.join("；")
+    }
 }
 
 /// 搬空、批量换线路机预览的 router_restarts：同批一起改，每台路由只重启 1 次 OpenClash（断开这台路由上的全部连接）
@@ -615,7 +619,9 @@ mod tests {
             ["软路由 团队2-路由B 离线（经隧道连不上路由：refused）：出口 节点01（团队2-01）、节点04（团队2-04） 要等它在线再换，或加 --no-routers 不改软路由",
              "软路由 路由C 还没接入：出口 节点02（团队2-02） 要等它在线再换，或加 --no-routers 不改软路由"]
         );
-        assert!(moves_why(&pv).starts_with("团队2-04：还有进行中的作业；软路由 团队2-路由B 离线"));
+        // 离线软路由已由 offline_lines 逐条打印，失败原因里不再重复
+        assert_eq!(moves_why(&pv), "团队2-04：还有进行中的作业");
+        assert_eq!(moves_why(&json!({"ok": false, "blockers": [], "offline_routers": [{"id": "a"}]})), "软路由不在线，见上");
         assert!(offline_lines(&json!({"ok": true})).is_empty(), "旧中控没有这个字段");
     }
 
