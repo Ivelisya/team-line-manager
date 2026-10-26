@@ -107,6 +107,8 @@ pub enum Close<'a> {
     Resolve(&'a str),
     /// 关掉、不发恢复，detail 记上 `closed_by`
     Quiet(&'static str),
+    /// 关掉、detail 记上 `closed_by`，报过触发的照常发「恢复」，摘要后面附 `note` 说明为什么关（不是原因消失，是条件变了，如备用机器不再有出口指向、转为闲置）
+    ResolveNoted { name: &'a str, by: &'static str, note: &'static str },
 }
 
 /// 这一轮开（含重开）、改、关了多少条
@@ -260,11 +262,12 @@ pub async fn reconcile<'n>(
         .await?;
     }
     for inc in open.into_values() {
-        let (closed_by, name) = match close(&inc) {
+        let (closed_by, name, note) = match close(&inc) {
             Close::Keep => continue,
             Close::Resolve(_) if maintenance(inc.subject_id) => continue,
-            Close::Resolve(name) => (json!({}), Some(name)),
-            Close::Quiet(by) => (json!({"closed_by": by}), None),
+            Close::Resolve(name) => (json!({}), Some(name), None),
+            Close::Quiet(by) => (json!({"closed_by": by}), None, None),
+            Close::ResolveNoted { name, by, note } => (json!({"closed_by": by}), Some(name), Some(note)),
         };
         sqlx::query("update incident set state = 'resolved', resolved_at = now(), detail = detail || $2 where id = $1 and state = 'firing'")
             .bind(inc.id)
@@ -275,7 +278,11 @@ pub async fn reconcile<'n>(
         // 上次恢复通知之后发过触发 / 提醒才报恢复（复发后还没再通知过的不重复报）。报过触发的不看普通静默（静默期间恢复了也要给触发一个下文），维护窗口照旧不发
         if let Some(name) = name.filter(|_| told_firing(inc.notified_at, inc.told_resolved_at) && !silences.maintenance(inc.subject_id)) {
             let text = notify::strip_machine(&inc.summary, name);
-            notify::enqueue(st, notice(Kind::Resolved, inc.id, &inc.rule, &inc.severity, name, text, inc.opened_at)).await;
+            let text = match note {
+                Some(n) => format!("{text}；{n}"),
+                None => text.to_string(),
+            };
+            notify::enqueue(st, notice(Kind::Resolved, inc.id, &inc.rule, &inc.severity, name, &text, inc.opened_at)).await;
         }
     }
     if t.opened + t.updated + t.resolved > 0 {
