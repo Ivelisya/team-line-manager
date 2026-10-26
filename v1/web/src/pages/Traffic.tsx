@@ -15,7 +15,7 @@ import { Select } from '@/components/ui/select';
 import { Segmented } from '@/components/ui/overlays';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Empty, ErrorNote, Flag, PageHead, Panel, Pill, Stat, TableWrap, type SortState } from '@/components/app/primitives';
-import { DailyBars, md, weekday } from '@/components/app/DailyBars';
+import { DailyBars, DailyLegend, md, weekday } from '@/components/app/DailyBars';
 import '@/styles/traffic.css';
 
 const RANGES = [{ value: '7', label: '7 天' }, { value: '14', label: '14 天' }, { value: '30', label: '30 天' }, { value: '90', label: '90 天' }];
@@ -69,7 +69,7 @@ export function TrafficPage() {
         <Stat tone="sky" icon={<ChartColumnStacked />} label="近 30 天" info="含今天" value={<StatNum f={stat(kpi?.d30)} />} loading={!kpi} caption={cap(kpi?.d30)} />
       </div>
 
-      <Panel title="每日总量" sub={d ? `近 ${days} 天 · 合计 ${F.str(F.bytes(total(sumOf(shown))))} · 日均 ${F.str(F.bytes(total(sumOf(shown)) / days))}` : undefined}>
+      <Panel title="每日总量" sub={d ? `近 ${days} 天 · 合计 ${F.str(F.bytes(total(sumOf(shown))))} · 日均 ${F.str(F.bytes(total(sumOf(shown)) / days))}` : undefined} tools={d && total(sumOf(shown)) > 0 ? <DailyLegend /> : undefined}>
         {!d ? <Skeleton h={220} /> : total(sumOf(shown)) === 0 ? <div className="chart-empty" style={{ height: 220 }}>近 {days} 天没有业务流量</div>
           : <div data-stale={q.isPlaceholderData}><DailyBars days={shown} height={220} /></div>}
       </Panel>

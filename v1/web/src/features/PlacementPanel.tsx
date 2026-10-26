@@ -1,4 +1,4 @@
-// 放置矩阵（线路页顶部）：节点为行、在用线路机为列，每格是近 24 小时这台线路机到节点 IP 的往返中位数（成功率不到 100% 时带上）。
+// 放置矩阵（线路页顶部）：节点为行、在用线路机为列，每格是近 24 小时这台线路机到节点 IP 的往返中位数（成功率不到 100% 时带上，写作「成功 97.2%」）。
 // 节点当前所在的那格标「当前」，建议换到的那格高亮。上面按目标线路机列出建议，「换线…」打开批量换线对话框（MovesDialog），
 // 那里照常预览软路由、确认后才建作业；这里只读（GET /placement）。
 import * as React from 'react';
@@ -21,7 +21,7 @@ type Group = PlacementView['suggestions'][number];
 /** 命令行参数：只有字母数字（含中文）与 -_.:/@+=, 的原样，否则加单引号（同中控 api/incidents.rs 的 sh） */
 const sh = (s: string) => (/^[\p{L}\p{N}\-_.:/@+=,]+$/u.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
 
-function Cell({ c, n, relay }: { c: PlacementCell; n: PlacementNode; relay: string }) {
+function Cell({ c, n, relay, h }: { c: PlacementCell; n: PlacementNode; relay: string; h: number }) {
   const cur = n.entry_relay_ids.includes(c.relay_id);
   const best = n.suggest && n.best_relay_id === c.relay_id;
   const weak = c.success_pct != null && c.success_pct < 99;
@@ -37,7 +37,7 @@ function Cell({ c, n, relay }: { c: PlacementCell; n: PlacementNode; relay: stri
       {best && <span className="pm-tag">建议</span>}
       {c.samples === 0 ? <span className="t-muted">—</span> : c.p50_ms == null ? <span className="pm-bad">不通</span> : <>
         <span className="num">{F.ms(c.p50_ms).v}</span><span className="unit"> ms</span>
-        {c.success_pct != null && c.success_pct < 100 && <span className={cn('pm-pct', weak && 'is-weak')}> · {c.success_pct}%</span>}
+        {c.success_pct != null && c.success_pct < 100 && <span className={cn('pm-pct', weak && 'is-weak')} data-tip={`近 ${h} 小时往返成功率`}> · 成功 {c.success_pct}%</span>}
       </>}
     </td>
   );
@@ -92,9 +92,9 @@ export const PlacementPanel = React.memo(function PlacementPanel() {
         </div>
       )}
       <TableWrap>
-        <table className="dt is-one pm-table" style={{ minWidth: 250 + p.relays.length * 170 }}>
-          {/* 列宽写死：格子里最长的「建议 158 ms · 97.2%」放得下，窄屏横滑而不是被省略 */}
-          <colgroup><col style={{ width: 130 }} />{p.relays.map((r) => <col key={r.id} style={{ width: 170 }} />)}<col style={{ width: 120 }} /></colgroup>
+        <table className="dt is-one pm-table" style={{ minWidth: 250 + p.relays.length * 200 }}>
+          {/* 列宽写死：格子里最长的「建议 158 ms · 成功 97.2%」放得下，窄屏横滑而不是被省略 */}
+          <colgroup><col style={{ width: 130 }} />{p.relays.map((r) => <col key={r.id} style={{ width: 200 }} />)}<col style={{ width: 120 }} /></colgroup>
           <thead><tr>
             <th>节点</th>
             {p.relays.map((r) => <th key={r.id} className="r">{r.name}{r.status === 'down' && <span className="pm-down"> 故障</span>}</th>)}
@@ -104,7 +104,7 @@ export const PlacementPanel = React.memo(function PlacementPanel() {
             {rows.map((n) => (
               <tr key={n.id} className="is-link" tabIndex={0} onClick={() => openDrawer(n.id)} onKeyDown={(ev) => { if (ev.key === 'Enter') openDrawer(n.id); }}>
                 <td className="strong"><span data-tip={n.current_relay_id ? undefined : n.entries > 1 ? '有多条在用入口，只给单条建议（上面带「换掉…上的入口」的）' : n.entries === 1 ? '还有待应用 / 停用的入口，不给建议' : '没有在用入口'}>{n.name}</span></td>
-                {n.cells.map((c) => <Cell key={c.relay_id} c={c} n={n} relay={relayName(c.relay_id)} />)}
+                {n.cells.map((c) => <Cell key={c.relay_id} c={c} n={n} relay={relayName(c.relay_id)} h={p.window_h} />)}
                 <td className="r">{n.tcp_fail_7d > 0 ? <><span className="num">{n.tcp_fail_7d}</span><span className="unit"> 次</span></> : <span className="t-muted">—</span>}</td>
               </tr>
             ))}
