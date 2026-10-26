@@ -1056,13 +1056,15 @@ async fn held_spare_reminder_recovery_notes_follow_the_reason() {
     assert!(incidents(&t, "firing").await.is_empty());
     log_settles(&t, 4).await;
     // 续费推后的那台没有任何转为闲置的说明，关掉自动续费的那台附「不再续费…」。
-    // 两条恢复同一轮发出，可能合成一条消息、也可能各发一条：按机器名找它那一段（下一行「规则」前的一块）
+    // 两条恢复同一轮发出，可能合成一条消息（每台一行）、也可能各发一条（「机器：名字」那条整条）：两种都按机器名找它那一段
     let resolved: Vec<String> = mock.texts("/hook/a").into_iter().filter(|x| x.contains("已恢复")).collect();
-    let all = resolved.join("\n");
     let line = |name: &str| {
-        let at = all.find(&format!("机器：{name}")).unwrap_or_else(|| panic!("没有 {name}：{resolved:?}"));
-        let rest = &all[at..];
-        rest[..rest.find("\n时间：").unwrap_or(rest.len())].to_string()
+        resolved
+            .iter()
+            .find(|m| m.contains(&format!("机器：{name}")))
+            .cloned()
+            .or_else(|| resolved.iter().flat_map(|m| m.lines()).find(|l| l.contains(name)).map(String::from))
+            .unwrap_or_else(|| panic!("没有 {name}：{resolved:?}"))
     };
     let (kept, off) = (line("备用-01"), line("备用-02"));
     assert!(!kept.contains("转为闲置备用") && !kept.contains("不再续费"), "{kept}");
