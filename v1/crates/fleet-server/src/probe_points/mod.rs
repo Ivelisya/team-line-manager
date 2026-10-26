@@ -322,7 +322,7 @@ pub async fn check_once(st: &AppState, now: OffsetDateTime) -> anyhow::Result<()
                 Some(n) => text.push_str(&format!("；它在探测顺序里排第 {n}，主来源用不了时现在也代替不了")),
                 None => {}
             }
-            Some(Want { rule: OFFLINE_RULE, subject: *id, name, severity: "warning", text, detail: None, ready: true })
+            Some(Want { rule: OFFLINE_RULE, subject: *id, name, severity: "warning", text, detail: None, ready: true, quiet: false })
         })
         .collect();
     incident::reconcile(st, Engine::Probe, open, want, "exists (select 1 from probe_point where id = $3)", now, |inc| match names.get(&inc.subject_id) {

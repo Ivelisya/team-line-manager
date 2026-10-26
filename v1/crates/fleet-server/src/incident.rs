@@ -94,6 +94,9 @@ pub struct Want<'a> {
     pub detail: Option<Value>,
     /// 还没开的这一轮能不能开（去抖满了）
     pub ready: bool,
+    /// 开着，但不单独通知（原因已经由别的告警在报，如软路由出口不通是因为节点本身在告警）：不发触发 / 提醒，也就没有恢复通知。
+    /// 开的时候没通知过，原因单独留下来（这个标记没了）时按「没入队过」补发触发
+    pub quiet: bool,
 }
 
 /// 不再成立的告警这一轮怎么办
@@ -187,7 +190,7 @@ pub async fn reconcile<'n>(
             }
             // 升级马上再发一次「触发」；否则按 `due`：重开后报过恢复的满 5 分钟发「触发」、没入队过的补发、到间隔的提醒
             let kind = if escalated { Some(Kind::Firing) } else { due(w.rule, sev, inc.notified_at, inc.told_resolved_at, inc.ack_at.is_some(), now) };
-            if let Some(kind) = kind.filter(|_| !silenced) {
+            if let Some(kind) = kind.filter(|_| !silenced && !w.quiet) {
                 let text = chronic(st, engine, w.rule, w.subject, kind, &w.text).await;
                 notify::enqueue(st, notice(kind, inc.id, w.rule, sev, w.name, &text, inc.opened_at)).await;
             }
@@ -216,7 +219,7 @@ pub async fn reconcile<'n>(
         .await?;
         if let Some((id, opened_at, notified_at, told_resolved_at)) = reopened {
             t.opened += 1;
-            if let Some(kind) = due(w.rule, w.severity, notified_at, told_resolved_at, false, now) {
+            if let Some(kind) = due(w.rule, w.severity, notified_at, told_resolved_at, false, now).filter(|_| !w.quiet) {
                 let text = chronic(st, engine, w.rule, w.subject, kind, &w.text).await;
                 notify::enqueue(st, notice(kind, id, w.rule, w.severity, w.name, &text, opened_at)).await;
             }
@@ -239,8 +242,10 @@ pub async fn reconcile<'n>(
         .await?;
         if res.rows_affected() > 0 {
             t.opened += 1;
-            let text = chronic(st, engine, w.rule, w.subject, Kind::Firing, &w.text).await;
-            notify::enqueue(st, notice(Kind::Firing, id, w.rule, w.severity, w.name, &text, now)).await;
+            if !w.quiet {
+                let text = chronic(st, engine, w.rule, w.subject, Kind::Firing, &w.text).await;
+                notify::enqueue(st, notice(Kind::Firing, id, w.rule, w.severity, w.name, &text, now)).await;
+            }
         }
     }
     if !touch.is_empty() {

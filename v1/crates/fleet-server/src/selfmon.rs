@@ -96,7 +96,7 @@ pub async fn check_once(st: &AppState, now: OffsetDateTime) -> anyhow::Result<()
     let open = incident::firing(&st.db, Engine::Central).await?;
     let channels: Vec<(Uuid, String, Option<OffsetDateTime>, Option<String>)> =
         sqlx::query_as("select id, name, failing_since, last_error from notify_channel where enabled").fetch_all(&st.db).await?;
-    let problem = |rule: &'static str, subject: Uuid, severity: &'static str, text: String| Want { rule, subject, name: NAME, severity, text, detail: None, ready: true };
+    let problem = |rule: &'static str, subject: Uuid, severity: &'static str, text: String| Want { rule, subject, name: NAME, severity, text, detail: None, ready: true, quiet: false };
     let mut want: Vec<Want> = channels
         .iter()
         .filter(|(_, _, since, _)| since.is_some_and(|s| (now - s).whole_seconds() >= CHANNEL_FAILING_S))

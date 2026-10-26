@@ -35,11 +35,14 @@ use std::time::Duration;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+/// 出口探测失败满这么久才开 egress_fail（出口探测周期长）；软路由出口告警同它（routers/alerts.rs 的 `EXITS_DOWN_S`）
+pub(crate) const EGRESS_FAIL_S: i64 = 150;
+
 /// 开、关去抖时长：探测类结果要等下一轮探测才会变，单次偶发失败也常见，拉长一些
-/// （出口探测周期长，150 s；TCP 探测 90 s）；其余规则 60 s
+/// （出口探测周期长，`EGRESS_FAIL_S`；TCP 探测 90 s）；其余规则 60 s
 fn debounce_s(rule: &str) -> i64 {
     match rule {
-        "egress_fail" => 150,
+        "egress_fail" => EGRESS_FAIL_S,
         "tcp_fail" => 90,
         _ => 60,
     }
@@ -256,7 +259,7 @@ pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime
             let since = *state.first_seen.entry(k.clone()).or_insert(now);
             let ready = slow(r.key) || crate::anomaly::hourly(r.key) || held(since, now, debounce_s(r.key));
             current.insert(k);
-            want.push(Want { rule: r.key, subject: m.id, name: &m.name, severity: r.severity, text: r.text.clone(), detail: Some(json!({"name": m.name})), ready });
+            want.push(Want { rule: r.key, subject: m.id, name: &m.name, severity: r.severity, text: r.text.clone(), detail: Some(json!({"name": m.name})), ready, quiet: false });
         }
     }
     state.first_seen.retain(|k, _| current.contains(k));

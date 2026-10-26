@@ -203,6 +203,9 @@ pub struct Exit {
     pub delay_at: Option<OffsetDateTime>,
     /// 连续几次延迟测试不通（两次起告警）
     pub fail_streak: u32,
+    /// 这一串连续不通是从哪次测试起的（第一次不通的测试时刻）：告警要首次不通满 `alerts::EXITS_DOWN_S` 才开。测通后清掉（还在确认的 `recovering` 期间留着）
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub fail_since: Option<OffsetDateTime>,
     /// 不通（连续两次以上）之后刚测通一次：再测通一次才算恢复（router_exits_down 这之前不关），这之间每轮采集都重测它
     pub recovering: bool,
     pub conns: i64,
@@ -496,20 +499,32 @@ fn exits(oc: &Value, last: Option<&Snapshot>, config: Option<&[Proxy]>, entries:
                 Some(p) => clash::match_entry(p, entries),
                 None => (None, "unmanaged"),
             };
-            let (alive, delay_ms, delay_at, fail_streak, recovering) = match results.filter(|_| !untested.contains(name.as_str())) {
+            let (alive, delay_ms, delay_at, fail_streak, fail_since, recovering) = match results.filter(|_| !untested.contains(name.as_str())) {
                 Some(r) => match r.get(&name).and_then(Value::as_i64).filter(|d| *d > 0) {
-                    // 不通之后第一次测通：还在确认（下一次也通才算恢复）
-                    Some(d) => (Some(true), Some(d), Some(now), 0, prev.is_some_and(|p| p.fail_streak >= 2)),
+                    // 不通之后第一次测通：还在确认（下一次也通才算恢复），这一串不通的起点留着；确认完了（或只不通 1 次就通了）清掉
+                    Some(d) => {
+                        let confirming = prev.is_some_and(|p| p.fail_streak >= 2);
+                        (Some(true), Some(d), Some(now), 0, prev.filter(|_| confirming).and_then(|p| p.fail_since), confirming)
+                    }
                     // 还在确认（不通之后刚测通一次）又不通：仍算连续不通（记 2），告警不关、每轮照样重测
-                    None => (Some(false), None, Some(now), prev.map_or(1, |p| if p.recovering { 2 } else { p.fail_streak + 1 }), false),
+                    None => (
+                        Some(false),
+                        None,
+                        Some(now),
+                        prev.map_or(1, |p| if p.recovering { 2 } else { p.fail_streak + 1 }),
+                        // 升级前存的快照没有起点：已经在连续不通的保持没有（告警当作满了），否则从这一次算起
+                        prev.and_then(|p| p.fail_since).or_else(|| (!prev.is_some_and(|p| p.fail_streak >= 2 || p.recovering)).then_some(now)),
+                        false,
+                    ),
                 },
                 None => match prev {
-                    Some(p) => (p.alive, p.delay_ms, p.delay_at, p.fail_streak, p.recovering),
+                    Some(p) => (p.alive, p.delay_ms, p.delay_at, p.fail_streak, p.fail_since, p.recovering),
                     None => (
                         api.and_then(|a| a.get("alive")).and_then(Value::as_bool),
                         api.and_then(|a| a.get("delay")).and_then(Value::as_i64).filter(|d| *d > 0),
                         api.and_then(|a| ts(a, "at")),
                         0,
+                        None,
                         false,
                     ),
                 },
@@ -528,6 +543,7 @@ fn exits(oc: &Value, last: Option<&Snapshot>, config: Option<&[Proxy]>, entries:
                 delay_ms,
                 delay_at,
                 fail_streak,
+                fail_since,
                 recovering,
                 conns: i(&st, "conns").unwrap_or(0),
                 up_bps: bps("up"),
@@ -1373,6 +1389,9 @@ mod tests {
         let b2 = build(&raw(0, 0, 0, tested(json!({}))), &b1.prev, Some(&b1.snap), Some(&proxies()), &[], t0 + time::Duration::seconds(300));
         assert_eq!(b2.snap.exits.iter().map(|e| e.fail_streak).collect::<Vec<_>>(), [1, 2]);
         assert_eq!(summary(&b2.snap)["exits"], json!({"total": 2, "alive": 1, "dead": ["节点02"], "managed": 0, "drift": 0}), "只测不通 1 次的还算可用");
+        // 这一串不通从第一次测不通起算，之后每次测不通都不动它
+        assert_eq!((b0.snap.exits[0].fail_since, b0.snap.exits[1].fail_since), (None, Some(t0)));
+        assert_eq!(b2.snap.exits[1].fail_since, Some(t0));
         // 测试请求本身失败（API 出错）：不算出口不通
         let b3 = build(&raw(0, 0, 0, Some(json!({"ok": false, "error": "x"}))), &b2.prev, Some(&b2.snap), Some(&proxies()), &[], t0 + time::Duration::seconds(330));
         assert_eq!(b3.snap.exits.iter().map(|e| e.fail_streak).collect::<Vec<_>>(), [1, 2]);
@@ -1386,10 +1405,17 @@ mod tests {
         let ok = |prev: &Built, at: i64| build(&raw(0, 0, 0, tested(json!({"节点01": 90, "节点02": 70}))), &prev.prev, Some(&prev.snap), Some(&proxies()), &[], t0 + time::Duration::seconds(at));
         let b5 = ok(&b4, 630);
         assert_eq!((b5.snap.exits[1].fail_streak, b5.snap.exits[1].recovering, b5.snap.exits[0].recovering), (0, true, false));
-        assert!(!ok(&b5, 660).snap.exits[1].recovering);
+        assert_eq!(b5.snap.exits[1].fail_since, Some(t0), "还在确认：起点留着");
+        let b5b = ok(&b5, 660);
+        assert!(!b5b.snap.exits[1].recovering && b5b.snap.exits[1].fail_since.is_none(), "确认完了：清掉");
         // 还在确认时又不通：仍算连续不通（告警不关、每轮照样重测），不是从 1 重新数
         let b6 = build(&raw(0, 0, 0, tested(json!({"节点01": 90}))), &b5.prev, Some(&b5.snap), Some(&proxies()), &[], t0 + time::Duration::seconds(660));
-        assert_eq!((b6.snap.exits[1].fail_streak, b6.snap.exits[1].recovering), (2, false));
+        assert_eq!((b6.snap.exits[1].fail_streak, b6.snap.exits[1].recovering, b6.snap.exits[1].fail_since), (2, false, Some(t0)), "不是从头算");
+        // 升级前存的快照（连续不通两次以上、没有起点）：保持没有起点（告警当作满了），不从这一次重新算
+        let mut old = b2.snap.clone();
+        old.exits[1].fail_since = None;
+        let b7 = build(&raw(0, 0, 0, tested(json!({}))), &b2.prev, Some(&old), Some(&proxies()), &[], t0 + time::Duration::seconds(330));
+        assert_eq!((b7.snap.exits[1].fail_streak, b7.snap.exits[1].fail_since), (3, None));
     }
 
     /// 延迟测试没做成（单独那次执行超时、OpenClash 没在跑）：出口沿用上一次，原因记在 delay_error，没测的轮次沿用它，测成了清掉
