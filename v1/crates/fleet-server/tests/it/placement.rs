@@ -44,6 +44,18 @@ async fn rtt_reports_roll_up_and_feed_placement() {
     assert_eq!(row, (5, 4, Some(115.0), Some(130.0)));
     assert_eq!(t.count("select count(*) from relay_node_rtt_hourly").await, 1);
 
+    // 近 7 天的 tcp_fail 告警次数只数严重的（含复发合并的次数）：警告级的（TCP 偶发失败、出口正常）不算
+    for (sev, reopen) in [("critical", 1), ("warning", 3)] {
+        sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary, reopen_count, state, resolved_at) values ($1, 'machine', 'tcp_fail', $2, $3::severity, 'x', $4, 'resolved', now())")
+            .bind(Uuid::now_v7())
+            .bind(node)
+            .bind(sev)
+            .bind(reopen)
+            .execute(&t.st.db)
+            .await
+            .unwrap();
+    }
+
     // r2 全通、更快：当前 r1 成功率 80% → 建议换到 r2
     let mut r = blank_report(1);
     r.xray = Some(xray(true));
@@ -55,6 +67,7 @@ async fn rtt_reports_roll_up_and_feed_placement() {
     assert_eq!((n["current_relay_id"].clone(), n["best_relay_id"].clone(), n["suggest"].clone(), n["reason"].clone()), (json!(r1), json!(r2), json!(true), json!("当前成功率 80%")), "{p}");
     let c1 = n["cells"].as_array().unwrap().iter().find(|c| c["relay_id"] == json!(r1)).unwrap();
     assert_eq!((c1["samples"].clone(), c1["success_pct"].clone(), c1["p50_ms"].clone()), (json!(5), json!(80.0), json!(115.0)));
+    assert_eq!(n["tcp_fail_7d"], json!(2), "严重的 1 次 + 复发 1 次；警告级的不算：{p}");
     let sg = &p["suggestions"][0];
     assert_eq!(sg["command"], json!(format!("fleetctl move {} --to 线路机2", n["name"].as_str().unwrap())), "{p}");
     assert_eq!(t.req("GET", "/api/v1/placement?team=没有", None, None).await.0, StatusCode::NOT_FOUND);

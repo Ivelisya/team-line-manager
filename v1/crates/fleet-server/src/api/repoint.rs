@@ -142,7 +142,7 @@ async fn plan(st: &AppState, conn: &mut PgConnection, old_id: Uuid, b: &RepointI
 /// 客户实际受的是入口所在节点的访问策略（节点单独设的 > 团队的 > 默认）：新旧入口所在节点的生效策略不同时说一声。
 /// 只看现在已发布的（线路机上跑的就是它）；同一个节点、或两边一样就没有提醒
 async fn policy_diff(conn: &mut PgConnection, old: &Ent, new: &Ent) -> ApiResult<Option<String>> {
-    use crate::policy::{self, Source};
+    use crate::policy;
     if old.node_id == new.node_id {
         return Ok(None);
     }
@@ -153,15 +153,11 @@ async fn policy_diff(conn: &mut PgConnection, old: &Ent, new: &Ent) -> ApiResult
     let eff = |e: &Ent| {
         let (team_id, team_name) = team_of(e.node_id);
         let (d, src) = set.effective(e.node_id, team_id);
-        let who = match src {
-            Source::Node => format!("节点「{}」", e.node_name),
-            Source::Team => format!("团队「{}」", team_name.unwrap_or_default()),
-            Source::Default => "默认设置".to_string(),
-        };
+        let who = src.label(&e.node_name, team_name.as_deref());
         (d, who)
     };
     let ((od, ow), (nd, nw)) = (eff(old), eff(new));
-    if od.mode == nd.mode && od.domains == nd.domains {
+    if !policy::differs(&od, &nd) {
         return Ok(None);
     }
     Ok(Some(format!("新出口受{nw}的访问策略：{}，与原来（{ow}：{}）不同", nd.summary(), od.summary())))

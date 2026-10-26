@@ -71,14 +71,21 @@ async fn seed(t: &T) -> [Uuid; 4] {
 async fn uptime_report_matches_availability_and_sorts_worst_first() {
     let t = setup().await;
     let [n1, n2, n3, _] = seed(&t).await;
-    // 01 的告警：tcp_fail 开过一次、30 分钟内复发 2 次合并进去（算 3 次）；续费提醒不算；40 天前的不在窗口内
-    for (rule, reopen, ago) in [("tcp_fail", 2, 0), ("renewal_due", 0, 0), ("egress_fail", 0, 40)] {
-        sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary, reopen_count, opened_at) values ($1, 'machine', $2, $3, 'warning', 'x', $4, now() - make_interval(days => $5))")
+    // 01 的告警：严重的 tcp_fail 开过一次、30 分钟内复发 2 次合并进去（算 3 次）；警告级的 tcp_fail（TCP 偶发失败、出口正常）不算；续费提醒不算；40 天前的不在窗口内
+    for (rule, sev, reopen, ago, state) in [
+        ("tcp_fail", "critical", 2, 0, "firing"),
+        ("tcp_fail", "warning", 4, 1, "resolved"),
+        ("renewal_due", "warning", 0, 0, "firing"),
+        ("egress_fail", "warning", 0, 40, "firing"),
+    ] {
+        sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary, reopen_count, opened_at, state) values ($1, 'machine', $2, $3, $4::severity, 'x', $5, now() - make_interval(days => $6), $7::incident_state)")
             .bind(Uuid::now_v7())
             .bind(rule)
             .bind(n1)
+            .bind(sev)
             .bind(reopen)
             .bind(ago)
+            .bind(state)
             .execute(&t.st.db)
             .await
             .unwrap();

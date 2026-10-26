@@ -279,9 +279,9 @@ pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime
     let exists = "exists (select 1 from machine where id = $3 and lifecycle = 'active' for share)";
     incident::reconcile(st, Engine::Machine, open, want, exists, now, |inc| {
         let Some(m) = active.get(&inc.subject_id) else { return Close::Keep };
-        // 退到备用、且没有出口指向了：悄悄关掉，不发恢复。之后若又有出口指向它，原因还在就按新告警开
+        // 退到备用、或被指着的备用取消了指向，现在没有出口指向了：关掉。报过触发的发恢复（摘要说明是转为闲置，不是原因消失）；之后若又有出口指向它，原因还在就按新告警开
         if m.idle_spare() {
-            return Close::Quiet("spare");
+            return Close::ResolveNoted { name: &m.name, by: "spare", note: "已无软路由出口指向，转为闲置备用" };
         }
         let probe = matches!(inc.rule.as_str(), "egress_fail" | "tcp_fail");
         let was = probe_failing.get(&(inc.rule.clone(), inc.subject_id));

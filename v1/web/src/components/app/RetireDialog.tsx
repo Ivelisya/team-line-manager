@@ -9,7 +9,7 @@ import { openEvacuate, openReplace } from '@/lib/nodeActions';
 import { CheckRow, Field, Input, InfoTip } from '@/components/ui/form';
 import { toast } from '@/components/ui/toast';
 import { Button } from '@/components/ui/button';
-import { ErrorNote, Note } from './primitives';
+import { ErrorNote, HELD_TEXT, Note } from './primitives';
 import { resetOnOpen } from '@/lib/useHeld';
 import { TypedConfirmDialog } from './dialogs';
 import { canReplace, RenameNote } from './ReplaceDialog';
@@ -75,7 +75,7 @@ export const RetireDialog = resetOnOpen(function RetireDialog({ m, open, onOpenC
       {p && canSpare && (
         <div className="choice-list" role="radiogroup" aria-label="去向">
           <Choice checked={mode === 'spare'} onSelect={() => setPick('spare')}>
-            移入备用 → {p.spare.to_name}{due && recycle ? `（到期 ${due}，${recycle} 起自动回收）` : recycle ? `（${recycle} 起自动回收）` : ''}
+            移入备用 → {p.spare.to_name}{p.routers.length > 0 ? `（${HELD_TEXT}）` : due && recycle ? `（到期 ${due}，${recycle} 起自动回收）` : recycle ? `（${recycle} 起自动回收）` : ''}
             <InfoTip text={`移到团队「${p.spare.team.name}」，改名为 ${p.spare.to_name}。机器照常运行，到期满 1 天后自动清理并移入回收站\n想留下它，把团队改回去就行`} />
           </Choice>
           <Choice checked={mode === 'now'} onSelect={() => setPick('now')}>
@@ -102,6 +102,14 @@ export const RetireDialog = resetOnOpen(function RetireDialog({ m, open, onOpenC
           </div>
           <ul className="reason-list" style={{ maxHeight: 160, overflow: 'auto' }}>
             {p.routers.map((r) => <li key={r.id}><span className="num">{r.name}</span><span className="t-sub">{r.exits.map((e) => `${e.exit}（${e.node}）`).join('、')}</span></li>)}
+          </ul>
+        </Note>
+      )}
+      {p && mode === 'spare' && p.spare.warnings.length > 0 && (
+        <Note tone="warn">
+          <div className="note-title">移入备用后访问策略会变 <InfoTip text="软路由的客户走的是节点生效的访问策略，节点换了团队就按新团队的策略。" /></div>
+          <ul className="reason-list" style={{ maxHeight: 160, overflow: 'auto' }}>
+            {p.spare.warnings.map((w) => <li key={w}>{w}</li>)}
           </ul>
         </Note>
       )}

@@ -170,7 +170,7 @@ export function buildDb(): Db {
   };
   const base = (o: Partial<MachineView> & Pick<MachineView, 'id' | 'kind' | 'name' | 'ip'>): MachineView => ({
     team: null, spare: false, number: null, label: null, ssh_port: 22, country: countryOf(o.ip), country_set: null, host_machine: null, bind_ip: null, ip_nodes: [], provider: null, provider_code: null, plan: null, service_ref: null,
-    lifecycle: 'active', lifecycle_reason: null, note: '', revision: 1, created_at: iso(now() - 120 * DAY), activated_at: iso(now() - 100 * DAY), retired_at: null, spare_from: null, spare_since: null, recycle_on: null, router_exits: [],
+    lifecycle: 'active', lifecycle_reason: null, note: '', revision: 1, created_at: iso(now() - 120 * DAY), activated_at: iso(now() - 100 * DAY), retired_at: null, spare_from: null, spare_since: null, recycle_on: null, recycle_held: false, router_exits: [],
     subscription: null, sub_template: templateOf(undefined, undefined), agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, nic: null, month_counted_from: null, quota: { used: 0, period_start: '', period_end: null, mode: 'monthly', counted_from: null, rule: null, base: null, limit_gb: null, limit_source: 'none', daily_avg: null, forecast_full_at: null }, health: { status: 'ok', reasons: [] },
     active_job: null, failed_job: null, open_incidents: 0, maintenance: false, relay: null,
     tune: o.kind === 'proxy' || o.host_machine ? null : { profile: 'tune-v2', at: iso(now() - 3 * DAY), current: true, params: o.kind === 'relay'
@@ -285,7 +285,9 @@ export function buildDb(): Db {
     entriesByRelay[rid].push(e);
     machines.push(base({
       id, kind: 'vps', name, team: { id: spare.id, name: spare.name }, spare: true, number: i + 1, ip: ip as string, service_ref: `SVC-${2000 + i}`, lifecycle_reason: why as string,
-      spare_from: displayName(team.name, n as number), spare_since: iso(now() - (days as number) * DAY / 4), recycle_on: addDays(sb.due_date, 2),
+      spare_from: displayName(team.name, n as number), spare_since: iso(now() - (days as number) * DAY / 4),
+      // 第三台的出口还被软路由指着：不给回收日（同服务端 recycle_held）
+      recycle_on: i === 2 ? null : addDays(sb.due_date, 2), recycle_held: i === 2, router_exits: i === 2 ? [`${team.name}-路由A · 节点${String(n).padStart(2, '0')}`] : [],
       provider: { id: 'p1', name: '搬瓦工' }, provider_code: 'BWH', plan: { id: p.id, name: p.name, bandwidth_mbps: p.bandwidth_mbps, traffic_gb: p.traffic_gb }, subscription: sb,
       agent: { version: '1.0.3', last_report_at: iso(now() - 9000), online: true, xray_running: null, cores: 2, health: null }, host: hostOf(id, 12), entries: [e],
     }));

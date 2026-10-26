@@ -294,3 +294,36 @@ async fn quiet_incident_stays_silent_until_it_stands_alone() {
     log_settles(&t, 2).await;
     assert_eq!(mock.events("/hook/a"), ["firing", "resolved"]);
 }
+
+fn noted() -> Close<'static> { Close::ResolveNoted { name: "测试对象", by: "spare", note: "已无软路由出口指向，转为闲置备用" } }
+
+/// 条件变了而不是原因消失的关闭（ResolveNoted，如被指着的备用取消了指向转为闲置）：detail 记 closed_by，报过触发的发「恢复」且摘要附说明；
+/// 开的时候没通知过（quiet）的不发
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn resolve_noted_sends_recovery_with_note_only_after_firing_notice() {
+    let t = setup().await;
+    let mock = Mock::start().await;
+    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "feishu", "config": {"url": mock.url("/hook/a")}, "min_severity": "info", "enabled": true})).await;
+    let (told, silent) = (Uuid::now_v7(), Uuid::now_v7());
+    let base = OffsetDateTime::now_utc();
+    let open = |subject: Uuid, quiet: bool, at: OffsetDateTime| {
+        let t = &t;
+        async move {
+            let o = incident::firing(&t.st.db, Engine::Central).await.unwrap();
+            let mut w = want(subject, "warning");
+            w.quiet = quiet;
+            incident::reconcile(&t.st, Engine::Central, o, vec![w], "true", at, |_| Close::Keep).await.unwrap();
+        }
+    };
+    open(told, false, base).await;
+    log_settles(&t, 1).await;
+    open(silent, true, base).await;
+    log_settles(&t, 1).await;
+
+    // 两条都关：报过触发的发恢复（摘要附说明），没通知过的不发
+    round(&t, base + time::Duration::seconds(60), None, noted).await;
+    log_settles(&t, 2).await;
+    assert_eq!(mock.events("/hook/a"), ["firing", "resolved"]);
+    assert!(mock.texts("/hook/a").last().unwrap().contains("出问题了；已无软路由出口指向，转为闲置备用"), "{:?}", mock.texts("/hook/a"));
+    assert_eq!(t.count("select count(*) from incident where rule = 'central_test_flap' and state = 'resolved' and detail->>'closed_by' = 'spare'").await, 2);
+}

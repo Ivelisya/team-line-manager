@@ -121,6 +121,20 @@ pub enum Source {
     Default,
 }
 
+impl Source {
+    /// 生效策略是谁定的：「节点「X」」「团队「Y」」「默认设置」。`team_name`：团队策略对应的团队名
+    pub fn label(self, node_name: &str, team_name: Option<&str>) -> String {
+        match self {
+            Source::Node => format!("节点「{node_name}」"),
+            Source::Team => format!("团队「{}」", team_name.unwrap_or_default()),
+            Source::Default => "默认设置".to_string(),
+        }
+    }
+}
+
+/// 两份生效策略是否不同（模式或域名清单；备注不算）
+pub fn differs(a: &Data, b: &Data) -> bool { a.mode != b.mode || a.domains != b.domains }
+
 // ── 域名规范化与校验 ─────────────────────────────────────────────────────────
 
 fn is_sep(c: char) -> bool { c.is_whitespace() || matches!(c, ',' | '，' | '、' | ';' | '；') }
@@ -291,6 +305,18 @@ impl PolicySet {
         }
         (Data::default(), Source::Default)
     }
+}
+
+/// 节点换团队（含移进备用团队）后生效的访问策略变不变：变了给一句提醒（客户走的出口指着这个节点时受影响），没变 None。
+/// 节点自己单独设的策略跟着节点走，不受影响；`from` / `to`：(团队 id, 团队名)，没有团队为 None
+pub fn team_change_note(set: &PolicySet, node: Uuid, node_name: &str, from: Option<(Uuid, &str)>, to: Option<(Uuid, &str)>) -> Option<String> {
+    let (od, os) = set.effective(node, from.map(|x| x.0));
+    let (nd, ns) = set.effective(node, to.map(|x| x.0));
+    if !differs(&od, &nd) {
+        return None;
+    }
+    let (ow, nw) = (os.label(node_name, from.map(|x| x.1)), ns.label(node_name, to.map(|x| x.1)));
+    Some(format!("{node_name}：访问策略会从{ow}（{}）变成{nw}（{}）；还指向它的软路由出口的客户会受影响", od.summary(), nd.summary()))
 }
 
 /// 表里的一行

@@ -279,10 +279,10 @@ pub async fn view(st: &AppState, team: Option<&str>, node: Option<&str>) -> ApiR
     let ids: Vec<Uuid> = nodes.iter().map(|m| m.id).collect();
 
     let mut grid = cells(&st.view_db, &ids).await?;
-    // 近 7 天 tcp_fail 告警次数：同一条告警恢复后又触发记在 reopen_count 上
+    // 近 7 天严重的 tcp_fail 告警次数：同一条告警恢复后又触发记在 reopen_count 上；警告级的（TCP 偶发失败、出口正常）不算
     let fails: HashMap<Uuid, i64> = sqlx::query_as(
         "select subject_id, (count(*) + coalesce(sum(reopen_count), 0))::bigint from incident
-         where rule = 'tcp_fail' and subject_id = any($1) and last_seen_at >= now() - interval '7 days' group by 1",
+         where rule = 'tcp_fail' and severity = 'critical' and subject_id = any($1) and last_seen_at >= now() - interval '7 days' group by 1",
     )
     .bind(&ids)
     .fetch_all(&st.db)

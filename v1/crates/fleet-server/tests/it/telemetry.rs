@@ -957,7 +957,7 @@ async fn stale_probes_do_not_resolve_probe_alerts() {
     assert!(incidents(&t, "firing").await.is_empty());
 }
 
-/// 闲置备用（备用团队、没有软路由出口指向）：已开着的探测告警悄悄关掉（不发恢复，closed_by = spare），新的不开；总览不算故障、数进 spare
+/// 闲置备用（备用团队、没有软路由出口指向）：已开着的探测告警关掉（closed_by = spare；报过触发的发恢复，见 tests/it/incident.rs），新的不开；总览不算故障、数进 spare
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn idle_spare_closes_alerts_quietly_and_is_not_counted() {
     let t = setup().await;

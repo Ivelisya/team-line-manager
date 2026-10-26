@@ -172,7 +172,8 @@ pub(crate) fn month_cn(m: &Value) -> String {
     format!("{v}{from}")
 }
 
-/// 备用团队里在用的机器（`spare`，即已退役、等到期回收）：哪天退役（组织时区）、原名、哪天自动回收（`recycle_on`，账单时区）。
+/// 备用团队里在用的机器（`spare`，即已退役、等到期回收）：哪天退役（组织时区）、原名、哪天自动回收（`recycle_on`，账单时区）；
+/// 软路由出口还指着它的（`recycle_held`）不自动回收，写明要先改指向。
 /// 不是备用、不在用时为 None（billing、show 共用）
 pub(crate) fn spare_cn(m: &Value) -> Option<String> {
     if m["spare"] != true || m["lifecycle"] != "active" {
@@ -183,6 +184,9 @@ pub(crate) fn spare_cn(m: &Value) -> Option<String> {
         None => "已退役".into(),
     };
     let from = m["spare_from"].as_str().map(|f| format!("（原 {f}）")).unwrap_or_default();
+    if m["recycle_held"] == true {
+        return Some(format!("{when}{from}，软路由出口还指着，不自动回收：先改指向（fleetctl repoint），或确认后 fleetctl retire --now"));
+    }
     Some(match m["recycle_on"].as_str() {
         Some(d) => format!("{when}{from}，{d} 起自动回收（账单时区）"),
         None => format!("{when}{from}，没有订阅，不会自动回收：要清理用 fleetctl retire --now"),
@@ -660,6 +664,13 @@ mod tests {
         // 退役日按组织时区（默认北京时间）：UTC 10-21 23:36 是北京 10-22
         assert_eq!(spare_cn(&m(true, "active", on.clone())).as_deref(), Some("已于 2026-10-22 退役（原 团队2-07），2026-10-22 起自动回收（账单时区）"));
         assert!(spare_cn(&m(true, "active", Value::Null)).unwrap().contains("没有订阅，不会自动回收"));
+        // 还被软路由出口指着：不写回收日
+        let mut held = m(true, "active", Value::Null);
+        held["recycle_held"] = json!(true);
+        assert_eq!(
+            spare_cn(&held).as_deref(),
+            Some("已于 2026-10-22 退役（原 团队2-07），软路由出口还指着，不自动回收：先改指向（fleetctl repoint），或确认后 fleetctl retire --now")
+        );
         assert_eq!(spare_cn(&m(false, "active", on.clone())), None);
         assert_eq!(spare_cn(&m(true, "retired", on)), None);
         // 替换下来之前就在备用团队里的（没有 spare_from / spare_since）

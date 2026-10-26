@@ -743,3 +743,91 @@ async fn patch_into_spare_checks_eligibility() {
     let (s, v) = t.req("PATCH", &format!("/api/v1/machines/{good}"), Some(json!({"revision": rev(good).await, "team_id": a})), None).await;
     assert_eq!(s, StatusCode::OK, "{v}");
 }
+
+/// 软路由出口指向备用宿主机上的同机 IP 节点（宿主机自己没被指）：宿主机同样不是闲置备用——视图的 router_exits 带上经 IP 节点的出口、不给回收日
+/// （recycle_held），续费提醒列出出口，到期满 1 天也不自动回收（kept）；出口改走之后照常回收
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn spare_host_is_held_by_router_exit_on_its_ip_node() {
+    let t = setup(false).await;
+    let sp = spare_team(&t).await;
+    let host = seed_vps(&t, sp, 1, "203.0.113.61", None).await;
+    let ip = seed_vps(&t, sp, 2, "203.0.113.62", Some(host)).await;
+    sub(&t, host, "2026-10-20", "UTC").await;
+    let rid = Uuid::now_v7();
+    sqlx::query("insert into router (id, name, tunnel_port) values ($1, '办公室', 23003)").bind(rid).execute(&t.st.db).await.unwrap();
+    let entry = json!({"id": Uuid::now_v7(), "name": "备用-02 · 线路机1:20001", "node_id": ip, "relay_id": Uuid::now_v7(), "node_name": "备用-02", "relay_name": "线路机1", "port": 20001, "lifecycle": "active"});
+    let snap = json!({"exits": [{"name": "节点02", "entry": entry, "sync": "ok", "linked": true}]});
+    sqlx::query("insert into router_status (router_id, ts, reachable, data, last_ok_at) values ($1, now(), true, $2, now())").bind(rid).bind(snap).execute(&t.st.db).await.unwrap();
+
+    let v = t.get(&format!("/api/v1/machines/{host}")).await;
+    assert_eq!(v["router_exits"], json!(["办公室 · 节点02（经同机 IP 节点 备用-02）"]), "{v}");
+    assert_eq!((v["recycle_on"].clone(), v["recycle_held"].clone()), (Value::Null, json!(true)), "{v}");
+    let renewal = v["health"]["reasons"].as_array().unwrap().iter().find(|r| r["key"] == "renewal_due").map(|r| r["text"].as_str().unwrap().to_string());
+    assert!(renewal.is_some_and(|x| x.contains("办公室 · 节点02（经同机 IP 节点 备用-02）") && x.contains("未自动回收")), "{v}");
+
+    let now = datetime!(2026-10-23 00:00 UTC);
+    let r = spare::run_once(&t.st, now).await.unwrap();
+    assert!(r.retired.is_empty() && r.kept == [host], "{r:?}");
+    assert!(last_job(&t, host, "retire").await.is_none());
+
+    // 出口改走：不再被指着，回收日恢复，下一轮照常回收
+    sqlx::query("update router_status set data = $2 where router_id = $1").bind(rid).bind(json!({"exits": []})).execute(&t.st.db).await.unwrap();
+    t.st.live.invalidate();
+    let v = t.get(&format!("/api/v1/machines/{host}")).await;
+    assert_eq!((v["router_exits"].clone(), v["recycle_on"].clone(), v["recycle_held"].clone()), (json!([]), json!("2026-10-22"), json!(false)), "{v}");
+    let r = spare::run_once(&t.st, now).await.unwrap();
+    assert!(r.retired == [host] && r.kept.is_empty(), "{r:?}");
+}
+
+/// 改团队 / 退役进备用时，还被软路由出口指着的节点生效的访问策略会变（团队策略不同）：预览的 warnings（改团队）/ spare.warnings（退役）写明；
+/// 策略一样、没有出口指着时不提
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn team_change_previews_warn_when_effective_policy_changes_for_pointed_nodes() {
+    let t = setup(false).await;
+    let sp = spare_team(&t).await;
+    let (a, b) = (seed_team(&t, "团队1").await, seed_team(&t, "团队2").await);
+    let host = seed_vps(&t, a, 1, "203.0.113.71", None).await;
+    let ip = seed_vps(&t, a, 2, "203.0.113.72", Some(host)).await;
+    let quiet_node = seed_vps(&t, a, 3, "203.0.113.73", None).await;
+    for m in [host, quiet_node] {
+        sub(&t, m, "2030-01-01", "UTC").await;
+    }
+    // 团队1 暂停新连接；团队2、备用团队用默认（仅观察）
+    sqlx::query("insert into policy (scope, scope_id, mode) values ('team', $1, 'blocked')")
+        .bind(a)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let rid = Uuid::now_v7();
+    sqlx::query("insert into router (id, name, tunnel_port) values ($1, '办公室', 23004)").bind(rid).execute(&t.st.db).await.unwrap();
+    let point = |node: Uuid, name: &str| json!({"id": Uuid::now_v7(), "name": name, "node_id": node, "relay_id": Uuid::now_v7(), "node_name": name, "relay_name": "线路机1", "port": 20001, "lifecycle": "active"});
+    let exit = |name: &str, entry: Value| json!({"name": name, "entry": entry, "sync": "ok", "linked": true});
+    let snap = json!({"exits": [exit("节点01", point(host, "团队1-01")), exit("节点02", point(ip, "团队1-02"))]});
+    sqlx::query("insert into router_status (router_id, ts, reachable, data, last_ok_at) values ($1, now(), true, $2, now())").bind(rid).bind(snap).execute(&t.st.db).await.unwrap();
+
+    // 改团队：宿主机和随它走的 IP 节点各一句；没有出口指着的节点不提
+    let pv = t.get(&format!("/api/v1/machines/{host}/rename-preview?team_id={b}")).await;
+    let w: Vec<&str> = pv["warnings"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+    assert_eq!(w.len(), 2, "{pv}");
+    assert!(w[0].starts_with("团队1-01：访问策略会从团队「团队1」（暂停新连接）变成默认设置（") && w[0].contains("客户会受影响"), "{pv}");
+    assert!(w[1].starts_with("团队1-02：访问策略会从团队「团队1」"), "{pv}");
+    let pv = t.get(&format!("/api/v1/machines/{quiet_node}/rename-preview?team_id={b}")).await;
+    assert_eq!(pv["warnings"], json!([]), "没有出口指着：{pv}");
+    // 没换团队：没有
+    let pv = t.get(&format!("/api/v1/machines/{host}/rename-preview?number=9")).await;
+    assert_eq!(pv["warnings"], json!([]), "{pv}");
+    // 退役进备用：同样的提醒在 spare.warnings
+    let pv = t.get(&format!("/api/v1/machines/{host}/retire")).await;
+    let w: Vec<&str> = pv["spare"]["warnings"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+    assert_eq!(w.len(), 2, "{pv}");
+    assert!(w[0].starts_with("团队1-01：访问策略会从团队「团队1」（暂停新连接）变成默认设置（"), "{pv}");
+    let pv = t.get(&format!("/api/v1/machines/{quiet_node}/retire")).await;
+    assert_eq!(pv["spare"]["warnings"], json!([]), "{pv}");
+    // 移进备用团队的 rename-preview 同样给 warnings（备用团队在 team_id 里）
+    let pv = t.get(&format!("/api/v1/machines/{ip}/rename-preview?team_id={sp}")).await;
+    assert_eq!(pv["warnings"].as_array().unwrap().len(), 1, "{pv}");
+    // 团队1 改回默认：策略一样，不再提
+    sqlx::query("update policy set mode = 'observe' where scope = 'team' and scope_id = $1").bind(a).execute(&t.st.db).await.unwrap();
+    let pv = t.get(&format!("/api/v1/machines/{host}/rename-preview?team_id={b}")).await;
+    assert_eq!(pv["warnings"], json!([]), "{pv}");
+}

@@ -74,11 +74,12 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
 `MachineView`（列表与详情同形）：
 ```
 { id, kind: "relay"|"vps"|"proxy", name, team:{id,name}|null, number|null, label|null, ip, ssh_port,
-  spare, spare_from|null, spare_since|null, recycle_on|null, router_exits,
+  spare, spare_from|null, spare_since|null, recycle_on|null, recycle_held, router_exits,
                                 // spare：在备用团队里（= 已退役、等到期回收；机器照常运行）。spare_from：进备用前的显示名（「团队2-07」），
                                 // spare_since：进备用的时刻（即退役时间，RFC3339），不在备用团队为 null（之前就在备用团队、没经退役进来的也为 null）。
-                                // recycle_on：备用团队里在用、有订阅的机器自动回收的日子（账单时区，到期日 + 2 天，这天 0 点起回收，"2026-11-17"），其余为 null
-                                // router_exits：备用团队里在用的机器，还指向它的软路由出口（["团队2-路由A · 节点20"]），其余为 []；在用、在备用团队、router_exits 为空 = 闲置备用（等到期放生：不开告警，总览的计数不含它，见 /overview 的 spare）
+                                // recycle_on：备用团队里在用、有订阅的机器自动回收的日子（账单时区，到期日 + 2 天，这天 0 点起回收，"2026-11-17"），其余为 null；
+                                // 还被软路由出口指着（router_exits 非空）的备用机器不自动回收，recycle_on 为 null、recycle_held 为 true（网页与 fleetctl 写「软路由出口还指着，不自动回收」），其余 false
+                                // router_exits：备用团队里在用的机器，还指向它的软路由出口（["团队2-路由A · 节点20"]；备用宿主机还含它上面没退役的同机 IP 节点的出口，后缀「（经同机 IP 节点 备用-02）」），其余为 []；在用、在备用团队、router_exits 为空 = 闲置备用（等到期放生：不开告警，总览的计数不含它，见 /overview 的 spare）
   country|null, country_set|null, // 国家的 ISO 3166-1 两位代码（"US"），网页在名字旁显示国旗。country_set 是上架 / 修改时手动指定的；
                                 // 没指定时 country 按 ip 查中控离线 IP 库，内网地址、家宽代理填的域名、库里查不到的为 null
   host_machine:{id,name}|null,  // 同机 IP 节点（kind 仍是 vps）：它所在的宿主机；它没有自己的 agent 和 SSH，下面的 agent、host 就是宿主机的，
@@ -170,7 +171,7 @@ EntryView = { id, relay:{id,name}, node:{id,name}, direct, port, lifecycle, appl
 |---|---|---|
 | GET | `/machines?scope=live\|all` | 默认 live（未退役）；all = 还没进回收站的全部机器（含退役完、还没收进回收站的，最多一小时）；回收站里的看 `GET /recycle-bin`；别的值 400（`retired` 已删）。排序：线路机在前，然后按团队、编号。加 `view=brief` 只返回 `{id, kind, name, label, ip, lifecycle, host_id, team:{id,name}\|null}`（fleetctl 按名字找机器用；`host_id` 非 null 的是同机 IP 节点） |
 | GET | `/machines/{id}` | 单台 |
-| GET | `/machines/{id}/rename-preview?team_id=&number=` | 改团队 / 编号预览：`{name（改后的名字）, old_name, renames:[{machine_id,old_name,new_name}], ip_nodes:[{machine_id,old_name,new_name}], router_exits:[{node,router,exit}], spare_blocked}`。`renames` 是换团队时原团队因压缩连带改号的节点（不含随宿主机走的 IP 节点）；`ip_nodes` 是随宿主机一起换团队的同机 IP 节点（宿主机先占新团队的最小空号或指定的编号，它们依次取剩下的最小空号；原团队是备用团队时只列与宿主机同一次进备用的，规则同 PATCH）；`router_exits` 是新团队为备用团队时，还指向这台和随它一起移入的同机 IP 节点的软路由出口（`node` 是被指的节点名，`router` 软路由名，`exit` 出口名；只提示不阻断，要换机器请用替换），其余为 `[]`；`spare_blocked`：改到备用团队但进不了备用的原因（订阅已过期满 1 天、没有订阅、宿主机有进行中的作业等，同退役的「移进备用」；PATCH 会 409，网页据此禁用保存），否则为 null；没换团队、线路机三项都是 `[]`、null；网页改名表单与 `fleetctl rename --team` 显示它们（后者打印「注意：N 个软路由出口还指向它…」，`--json` 输出带 `renames` / `ip_nodes` / `router_exits`，各自非空时才有） |
+| GET | `/machines/{id}/rename-preview?team_id=&number=` | 改团队 / 编号预览：`{name（改后的名字）, old_name, renames:[{machine_id,old_name,new_name}], ip_nodes:[{machine_id,old_name,new_name}], router_exits:[{node,router,exit}], spare_blocked, warnings:[string]}`。`renames` 是换团队时原团队因压缩连带改号的节点（不含随宿主机走的 IP 节点）；`ip_nodes` 是随宿主机一起换团队的同机 IP 节点（宿主机先占新团队的最小空号或指定的编号，它们依次取剩下的最小空号；原团队是备用团队时只列与宿主机同一次进备用的，规则同 PATCH）；`router_exits` 是新团队为备用团队时，还指向这台和随它一起移入的同机 IP 节点的软路由出口（`node` 是被指的节点名，`router` 软路由名，`exit` 出口名；只提示不阻断，要换机器请用替换），其余为 `[]`；`spare_blocked`：改到备用团队但进不了备用的原因（订阅已过期满 1 天、没有订阅、宿主机有进行中的作业等，同退役的「移进备用」；PATCH 会 409，网页据此禁用保存），否则为 null；`warnings`：还被软路由出口指着的节点（这台和随它走的同机 IP 节点）换到的团队生效的访问策略与现在不同时每台一句（客户会受影响，只提示不阻断；节点自己单独设的策略跟着节点走，不算），其余为 `[]`。没换团队、线路机三项都是 `[]`、null；网页改名表单与 `fleetctl rename --team` 显示它们（后者打印「注意：N 个软路由出口还指向它…」，`--json` 输出带 `renames` / `ip_nodes` / `router_exits`，各自非空时才有） |
 | PATCH | `/machines/{id}` | `{revision, team_id?, number?, label?, note?, provider_id?, plan_id?, service_ref?, country?}`。country 是 ISO 3166-1 两位代码（不在表里 400，「UK」提示英国是 GB），null 或空串 = 改回按 IP 自动。改团队/编号 = 改名（换团队不给编号时排到新团队的最小空号）：换了团队时（宿主机才有）它上面还在原团队、未退役的同机 IP 节点同事务一起换到新团队（编号接在宿主机之后取新团队的最小空号，与移进备用的分法一致；每台各记一条 `machine.rename`，进备用的同样记 `spare_since` / `spare_from`；已被单独挪到别的团队的 IP 节点不带；原团队是备用团队（撤销退役）时只带与宿主机同一次进备用的——`spare_since` 与宿主机改前相同，之前单独退役进备用的 IP 节点留在备用，仍会自动回收；带走的 IP 节点有进行中的作业 409（写明哪台、什么作业），整个 PATCH 不生效；手动改到备用团队（原来不在备用、不是线路机）先过和退役「移进备用」同一套资格——订阅已过期满 1 天、没有订阅、未上线、宿主机自己有进行中的作业都 409，消息写明原因并提示改用退役（网页「退役」、`fleetctl retire`；替换作业走自己的路径，不经此检查），移出备用不查；直接对 IP 节点本身换团队照旧允许，不带宿主机），原团队剩下的节点同事务压缩成 01..N（同退役；先锁团队再锁机器，审计 `team.renumber`），线路机备注随后自动同步，不换令牌、不断连接。有套餐时供应商就是套餐的：只改了套餐的，供应商跟着换；同时给了另一个供应商 400 |
 | GET | `/machines/{id}/series?metric=host\|traffic\|probe&range=1h\|6h\|24h\|7d\|30d` | 时序。≤24h 用原始点（1 分钟聚合），更长用小时汇总。同机 IP 节点的 `metric=host` 是宿主机的曲线 |
 | GET | `/machines/{id}/availability?days=30` | 近 N 天（`days` 1–90，默认 30，越界 400）每天的探测成功率：`{data:{days, items:[{date,tcp_total,tcp_ok,egress_total,egress_ok}], tcp_pct, egress_pct}}`。探测小时汇总按这台机器生效的账单时区（没有订阅按 `sub_template.billing_tz`）分到日历天（一个小时桶按起点归天），`items` 旧→新共 `days` 项、最后一项是今天（还没过完），没有探测的天各项为 0；`tcp_pct` / `egress_pct` 是整段的成功率（0–100），没有探测为 null。入口同 `series`：节点取自己的，线路机取挂在它上面的（含已移除的）。机器不存在 404 |
@@ -477,7 +478,7 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 `name` 退役前的名字（进过备用的是 `spare_from`），`last_name` 回收时的名字（「备用-03」；立即回收的同 `name`，导入的为 null），`team` 退役前的团队；`retired_at` 进备用的时刻（立即回收的是退役作业完成的时刻）；价格、币种、周期是订阅的生效值（没有订阅取模板）；`reason` 退役原因（到期回收的接上「备用到期自动回收（到期日 …）」）；`traffic_*` 入口业务流量合计（字节，整个生命周期；线路机按它上面全部入口算），`nic_*` 网卡累计（没有网卡读数的家宽代理、同机 IP 节点为 null）。数值的口径以流量改造为准。
 `snapshot`（fleet）：`{machine（机器行，不含秘密）, name, team, host, provider, plan, subscription（生效值）, renewals[], entries:[{relay,node,port,lifecycle,created_at,removed_at}], outbound（出站参数，不含秘密）}`；legacy 是导入时给的原始记录。回收站不受保留期清理影响，一直保留。
 
-**退役预览** `GET /machines/{id}/retire` → `{name, renames:[{machine_id,old_name,new_name}], ip_nodes:[{id,name}], spare:{ok, why|null, team:{id,name}, to_name|null, recycle_on|null, ip_nodes:[{id,name,to_name}], notes:[string]（开着的自动续费会关掉、原团队压缩后撤销退役回不到原编号）}, routers:[{id,name,exits:[{exit,node}]}], blockers:[string]}`：
+**退役预览** `GET /machines/{id}/retire` → `{name, renames:[{machine_id,old_name,new_name}], ip_nodes:[{id,name}], spare:{ok, why|null, team:{id,name}, to_name|null, recycle_on|null, ip_nodes:[{id,name,to_name}], notes:[string]（开着的自动续费会关掉、原团队压缩后撤销退役回不到原编号）, warnings:[string]（能进备用时：还被软路由出口指着的节点——这台和一起进备用的同机 IP 节点——进备用团队后生效的访问策略与现在不同，每台一句，同 rename-preview 的 warnings；只提示不阻断）}, routers:[{id,name,exits:[{exit,node}]}], blockers:[string]}`：
 - `renames`：机器离开后原团队压缩编号的改名（两种去向一样）；`ip_nodes`：立即回收时一并回收的同机 IP 节点（宿主机才有）。
 - `spare`：能不能移进备用（`ok`，不能时 `why`：线路机、已经在备用团队里、还没上线（上架中或上架失败）、没有订阅、订阅已经过期满 1 天——这些只能立即回收）；进去后的名字（备用团队最小的空号）、自动回收的日子（账单时区）、一起进备用的同机 IP 节点与它们的新名字（已经在备用团队的不算）。
 - `routers`：各软路由最近一次采集里还指向这台（和它的同机 IP 节点）的出口，`node` 是指向的那台；只提示、不阻断，软路由不自动改（要换掉先「替换」）。
@@ -490,7 +491,7 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 
 **到期回收**（中控每小时的维护，`spare.rs`；中控启动时先跑一轮）：
 1. 已退役、还没进回收站、没有进行中作业的（上架取消的、这一版之前就退役了的）移进回收站（审计 `machine.recycle`，`detail.auto = "retired_sweep"`）。
-2. 回收站里的机器行在 `purge_blocker` 放行时自动物理删除（作业 `purge`，操作人「系统」，`auto = "spare_expiry"`；遥测、入口、机器行删掉，回收站这一行留着）：宿主机上还有同机 IP 节点（含已退役的）先删它们；它的入口近 93 天的小时流量还计入另一端未退役机器的统计时等到那天之后。物理删除失败过的不再自动重建（等人重试那个作业）。
+2. 回收站里的机器行在 `purge_blocker` 放行时自动物理删除（作业 `purge`，操作人「系统」，`auto = "spare_expiry"`；遥测、入口、机器行删掉，回收站这一行留着）：宿主机上还有同机 IP 节点（含已退役的）先删它们；它的入口或它自己的网卡近 93 天内还有小时流量（流量页、月报能回看到）时等到那天之后，不看另一端是否已退役、入口是不是线路机直出的。物理删除失败过的不再自动重建（等人重试那个作业）。
 3. 备用团队里在用、有订阅、账单时区的今天晚于「到期日 + 1 天」的（`recycle_on` 当天 0 点起）：发起退役作业（同立即回收，带清理，操作人「系统」，作业参数与审计 `auto = "spare_expiry"`），`lifecycle_reason` 接上「备用到期自动回收（到期日 …）」，经通知渠道发一条 `auto`（「自动回收」，写「已自动发起回收」，发给所有启用的渠道，不看级别）；这个作业（以及自动彻底删除）之后失败时发一条 `jobfail`（见下）；作业收尾时进回收站。机器（或它的同机 IP 节点）有进行中作业的这一轮跳过；宿主机上有不在备用团队的同机 IP 节点的不回收（留给人处理）。还有软路由出口指向它的（快照里出口对上了它的入口）也不回收：回收会摘入口、客户的出口跟着断，留给人先改指向（`repoint`）或立即回收。
 备用团队的机器是替换下来、等到期丢弃的，不续费：**没有软路由出口指向它的不发续费告警** `renewal_due`，也不计入总览的 `due_soon` / `overdue`（网页「即将到期」KPI 与筛选同口径）。还有软路由出口指向它的照样发（它们不会自动回收）：文案列出这些出口，还没到回收日（含已过期 1 天内）写「，到回收日也不会自动回收」，过期满 1 天后写「未自动回收」，后面都接「：先改指向或立即回收」。自动续费的先顺延（见续费），不会被回收。
 
@@ -595,7 +596,7 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/placement?team=&node=` | `team`：团队 id 或名称（不填 = 全部；没有这个团队 404）；`node`：只看这个节点（id 或显示名，不是在用的 VPS 节点 404）。`{relays: [{id, name, status, quota:{limit_gb, used, forecast_full_at}}]（在用、非备用，按名称）, nodes: [{id, name, team, ip, current_relay_id（入口状态口径同换线规划：待应用、在用、停用都算入口，恰有一条、而且是在用，才是它的线路机，否则 null，不给批量建议）, entry_relay_ids（在用入口所在的线路机，多入口节点有多个）, entries（在用入口数）, cells: [{relay_id, samples, ok, success_pct, p50_ms}]（与 relays 同序；近 24 小时，没测过 samples 为 0、全不通 p50_ms 为 null）, tcp_fail_7d（近 7 天 tcp_fail 告警次数，含恢复后又触发的）, daily_bytes（节点近 7 天的业务日均；判断目标放不放得下时按目标线路机自己的折算系数换成计费量，见 api::lifecycle::relay_ks）, best_relay_id, suggest, reason（「慢 23 ms」「当前成功率 97.2%」）, no_room（更快但额度放不下而跳过的线路机 id）}], suggestions: [{to:{id,name}, nodes:[{id, name, from:{id,name}, port, reason}], command（「fleetctl move A,B --to X」）}]（每台目标线路机一条）, single_suggestions: [{node:{id,name}, from:{id,name}, to:{id,name}, port, reason, command（「fleetctl move X --from A --to B」）}]（有多个在用入口的节点：每条入口各算一份，候选不含节点已有入口的线路机；不进批量命令）, window_h: 24, interval_s: 300, min_success_pct: 99, min_gain_ms: 10}`。最优：成功率 ≥ 99%、非故障、额度放得下（`Q::fits`，同一轮建议的流量累计）的线路机里 p50 最小的；`suggest` = 最优不是当前，且当前比最优慢 ≥ 10 ms 或当前成功率 < 99%。批量建议的执行是 `POST /moves`（不带 `from_relay_id`：建议里的节点都只有一条入口）；单条建议带 `from_relay_id` |
+| GET | `/placement?team=&node=` | `team`：团队 id 或名称（不填 = 全部；没有这个团队 404）；`node`：只看这个节点（id 或显示名，不是在用的 VPS 节点 404）。`{relays: [{id, name, status, quota:{limit_gb, used, forecast_full_at}}]（在用、非备用，按名称）, nodes: [{id, name, team, ip, current_relay_id（入口状态口径同换线规划：待应用、在用、停用都算入口，恰有一条、而且是在用，才是它的线路机，否则 null，不给批量建议）, entry_relay_ids（在用入口所在的线路机，多入口节点有多个）, entries（在用入口数）, cells: [{relay_id, samples, ok, success_pct, p50_ms}]（与 relays 同序；近 24 小时，没测过 samples 为 0、全不通 p50_ms 为 null）, tcp_fail_7d（近 7 天严重的 tcp_fail 告警次数，含恢复后又触发的；警告级的「TCP 偶发失败、出口正常」不算）, daily_bytes（节点近 7 天的业务日均；判断目标放不放得下时按目标线路机自己的折算系数换成计费量，见 api::lifecycle::relay_ks）, best_relay_id, suggest, reason（「慢 23 ms」「当前成功率 97.2%」）, no_room（更快但额度放不下而跳过的线路机 id）}], suggestions: [{to:{id,name}, nodes:[{id, name, from:{id,name}, port, reason}], command（「fleetctl move A,B --to X」）}]（每台目标线路机一条）, single_suggestions: [{node:{id,name}, from:{id,name}, to:{id,name}, port, reason, command（「fleetctl move X --from A --to B」）}]（有多个在用入口的节点：每条入口各算一份，候选不含节点已有入口的线路机；不进批量命令）, window_h: 24, interval_s: 300, min_success_pct: 99, min_gain_ms: 10}`。最优：成功率 ≥ 99%、非故障、额度放得下（`Q::fits`，同一轮建议的流量累计）的线路机里 p50 最小的；`suggest` = 最优不是当前，且当前比最优慢 ≥ 10 ms 或当前成功率 < 99%。批量建议的执行是 `POST /moves`（不带 `from_relay_id`：建议里的节点都只有一条入口）；单条建议带 `from_relay_id` |
 
 ## 每日流量
 按组织时区（`meta.org_timezone`，默认北京时间）切成自然日，今天算到目前为止（同机器视图的今天 / 本月，来自小时汇总表，5 分钟一轮）。
@@ -622,7 +623,7 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 
 口径：
 - 成功率（`*_pct`，0–100）= 窗口内探测的成功数 ÷ 总数，取自入口探测的小时汇总：`egress` 是经入口走一遍出口（客户流量真正走的路径），是主指标，排序、最差排名、待付清单的 `avail_pct` 都按它；`tcp` 是线路机到节点的 TCP 建连，次要（个别供应商的节点 TCP 每天有 2% 左右偶发失败而出口一直是通的）；窗口内没有探测为 null。展示时不到 100 的最多写 99.99%（不把 99.996 写成 100%）。
-- 断线：出口探测失败 3 次以上（`OUTAGE_MIN_FAILS`，与告警去抖同一量级）的整点小时，连着的小时合成一次；`longest_outage_h` 是最长一次的小时数（没有断线为 0）。`incidents` 是所选窗口（组织时区自然日起止）内这台开出的可用性相关告警次数（规则：`egress_fail`、`tcp_fail`、`agent_offline`、`no_entry`；续费、额度、流量异常不算），30 分钟内复发合并进原告警的按次数计（同告警页的次数）。月报的「告警次数前 3 的规则」同样按开出的条数加复发次数计，不限规则。
+- 断线：出口探测失败 3 次以上（`OUTAGE_MIN_FAILS`，与告警去抖同一量级）的整点小时，连着的小时合成一次；`longest_outage_h` 是最长一次的小时数（没有断线为 0）。`incidents` 是所选窗口（组织时区自然日起止）内这台开出的可用性相关告警次数（规则：`egress_fail`、`tcp_fail`、`agent_offline`、`no_entry`，其中 `tcp_fail` 只数严重的、警告级的不算；续费、额度、流量异常不算），30 分钟内复发合并进原告警的按次数计（同告警页的次数）。月报的「告警次数前 3 的规则」同样按开出的条数加复发次数计，不限规则。
 - 供应商的出口平均、最差只看窗口内有出口探测的节点（`with_data`）；`outages`、`incidents` 是各节点之和。
 - 月报里的月费是此刻在用机器的订阅月费折成 USD（不是当月的历史价格）；USD/GB 只统计当月流量不少于 1 GB 的机器。
 

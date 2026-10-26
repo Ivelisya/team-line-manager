@@ -333,6 +333,51 @@ pub async fn exits_using(db: &sqlx::PgPool, nodes: &[Uuid]) -> sqlx::Result<Hash
     Ok(out)
 }
 
+/// 宿主机被软路由出口指着的一条：出口直接指向宿主机，或指向它上面没退役的同机 IP 节点（`via` = 那个 IP 节点的名字）
+#[derive(Debug, Clone)]
+pub struct HostExit {
+    pub router: String,
+    pub exit: String,
+    pub via: Option<String>,
+}
+
+impl HostExit {
+    /// 「路由名 · 出口名」，经 IP 节点的后面接「（经同机 IP 节点 X）」。机器视图 router_exits、续费提醒、到期不回收的日志都用它
+    pub fn label(&self) -> String {
+        match &self.via {
+            Some(v) => format!("{} · {}（经同机 IP 节点 {v}）", self.router, self.exit),
+            None => format!("{} · {}", self.router, self.exit),
+        }
+    }
+}
+
+/// 各台机器（备用宿主机）被出口指着的情况：宿主机自己的，加上它上面没退役的同机 IP 节点的。
+/// 客户的出口指向 IP 节点时，宿主机同样不是闲置备用：不能当没人用的回收，agent 离线也要报（IP 节点的 agent 离线只由宿主机报）
+pub async fn exits_using_with_ip_nodes(db: &sqlx::PgPool, hosts: &[Uuid]) -> sqlx::Result<HashMap<Uuid, Vec<HostExit>>> {
+    let mut out: HashMap<Uuid, Vec<HostExit>> = HashMap::new();
+    if hosts.is_empty() {
+        return Ok(out);
+    }
+    let ipn: Vec<(Uuid, Uuid, String)> = sqlx::query_as(
+        "select m.host_id, m.id, display_name(m.kind::text, m.label, t.name, m.number) from machine m left join team t on t.id = m.team_id
+         where m.host_id = any($1) and m.lifecycle <> 'retired' order by t.sort_order nulls first, t.name, m.number, m.id",
+    )
+    .bind(hosts)
+    .fetch_all(db)
+    .await?;
+    let nodes: Vec<Uuid> = hosts.iter().copied().chain(ipn.iter().map(|x| x.1)).collect();
+    let mut by_node = exits_using(db, &nodes).await?;
+    for &h in hosts {
+        let list = out.entry(h).or_default();
+        list.extend(by_node.remove(&h).into_iter().flatten().map(|(_, router, exit)| HostExit { router, exit, via: None }));
+        for (_, id, name) in ipn.iter().filter(|x| x.0 == h) {
+            list.extend(by_node.remove(id).into_iter().flatten().map(|(_, router, exit)| HostExit { router, exit, via: Some(name.clone()) }));
+        }
+    }
+    out.retain(|_, v| !v.is_empty());
+    Ok(out)
+}
+
 /// 各路由最近一次采集的快照里对上这个入口的出口（轮换凭据、停用入口的确认里列出）：`[{id, name, state, exits: [出口名]}]`，路由按列表的顺序
 pub async fn exits_on_entry(db: &sqlx::PgPool, entry: Uuid) -> sqlx::Result<Vec<Value>> {
     let mut out = vec![];

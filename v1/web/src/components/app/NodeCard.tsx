@@ -10,7 +10,7 @@ import { SPRING } from '@/lib/motion';
 import { ArrowDown, ArrowDownUp, ArrowUp, Calendar, CircleDollarSign, Cpu, Database, Gauge, Globe, HardDrive, MemoryStick, MoreHorizontal, Radar, RefreshCw, Settings2, PanelRightOpen, ServerOff, Wallet } from 'lucide-react';
 import type { DueState, MachineView, ProbeBeats, Subscription } from '@/lib/types';
 import * as F from '@/lib/format';
-import { BEAT_LEGEND, beatCells, beatRate, beatTitles, dueTone, entryText, errText, hasHost, hostRel, isQuiet, limitGb, liveRate, monthFlow, monthFlowTip, monthTraffic, priceHint, probeSummary, quota, quotaForecast, quotaGb, quotaTip, quotaUsedLabel, recycleOn, remainingValue, resourceMeters, subLabel, trafficTotal, beatLegendRelay, linkCounts, reachWho, reachWin, relayRttMs } from '@/lib/derive';
+import { BEAT_LEGEND, beatCells, beatRate, beatTitles, dueTone, entryText, errText, hasHost, hostRel, isQuiet, limitGb, liveRate, monthFlow, monthFlowTip, monthTraffic, priceHint, probeSummary, quota, quotaForecast, quotaGb, quotaTip, quotaUsedLabel, remainingValue, resourceMeters, subLabel, trafficTotal, beatLegendRelay, linkCounts, reachWho, reachWin, relayRttMs } from '@/lib/derive';
 import { useProbeBeats } from '@/lib/queries';
 import { useReachLabel } from '@/lib/probePoints';
 import { useLiveSeries } from '@/lib/live';
@@ -18,7 +18,7 @@ import { useNow } from '@/lib/useNow';
 import { sharedObserver, watchSize } from '@/lib/sharedObserver';
 import { type DrawerTab } from '@/lib/drawer';
 import { cn } from '@/lib/utils';
-import { Beat, Due, Flag, FromTag, HealthPill, LabelValue, LinkCounts, Mark, Num, Pill, SPARE_TIP } from './primitives';
+import { Beat, Due, Flag, FromTag, HealthPill, LabelValue, LinkCounts, Mark, Num, Pill, recycleNote, type RecycleNote } from './primitives';
 import { MachineTag, machineTagItems } from './MachineTags';
 import { PingRows } from './PingRows';
 import { CellMeter, Cells, DotTrace, QUOTA_COLORS, Tag } from './viz';
@@ -70,12 +70,12 @@ const LargeInfo = memo(function LargeInfo({ entry, plan, limit, unset, ...a }: I
   </>;
 });
 /** 标准卡：地址 + 入口 · 套餐 · 到期两行（长了省略，悬停看全文） */
-const SmallInfo = memo(function SmallInfo({ entry, plan, dueDays, dueState, recycle, ...a }: Info & { dueDays: number | undefined; dueState: DueState | undefined; recycle: string | null }) {
+const SmallInfo = memo(function SmallInfo({ entry, plan, dueDays, dueState, recycle, ...a }: Info & { dueDays: number | undefined; dueState: DueState | undefined; recycle: RecycleNote | null }) {
   const meta = `${entry} · ${plan?.name ?? (a.host ? '不带套餐' : '未设置套餐')}`;
   return (
     <div className="nc-meta2">
       <div><span data-tip={a.ip}>{a.ip}</span><IpTags {...a} /></div>
-      <div><span data-tip={meta}>{meta}</span><span className="nc-due">{recycle && <span className="nc-recycle" data-tip={SPARE_TIP}>{recycle} 自动回收</span>}<Due days={dueDays} state={dueState} tail /></span></div>
+      <div><span data-tip={meta}>{meta}</span><span className="nc-due">{recycle && <span className="nc-recycle" data-tip={recycle.tip}>{recycle.text}</span>}<Due days={dueDays} state={dueState} tail /></span></div>
     </div>
   );
 });
@@ -250,13 +250,13 @@ const BeatSlot = memo(function BeatSlot({ id, kind, lifecycle, reason, reasonKey
 });
 
 /** 已上架 · 到期 · 剩余价值：彩色读数。已上架按分钟走（memo 挡住推送，自己每分钟重画） */
-const RunRow = memo(function RunRow({ activated, sub, recycle }: { activated: string | null; sub: Subscription | null; recycle: string | null }) {
+const RunRow = memo(function RunRow({ activated, sub, recycle }: { activated: string | null; sub: Subscription | null; recycle: RecycleNote | null }) {
   const now = useNow(true, 60_000);
   const rv = remainingValue(sub);
   return (
     <section className="slot-seg nc-run">
       <div className="nc-run-item"><span className="nc-run-label"><RefreshCw />已上架</span><span className="nc-run-val" data-c="up"><Num f={F.since(activated, now)} /></span></div>
-      <div className="nc-run-item"><span className="nc-run-label"><Calendar />到期{recycle && <span className="nc-run-note" data-tip={SPARE_TIP}>{recycle} 自动回收</span>}</span><span className="nc-run-val"><Due days={sub?.due_days} state={sub?.due_state} /></span></div>
+      <div className="nc-run-item"><span className="nc-run-label"><Calendar />到期{recycle && <span className="nc-run-note" data-tip={recycle.tip}>{recycle.text}</span>}</span><span className="nc-run-val"><Due days={sub?.due_days} state={sub?.due_state} /></span></div>
       <div className="nc-run-item"><span className="nc-run-label"><Wallet />剩余价值</span><span className="nc-run-val">{rv ? <span className="num">{F.money(rv.cents, rv.currency)}</span> : <span className="t-muted">—</span>}</span></div>
     </section>
   );
@@ -388,12 +388,12 @@ const CardBody = memo(function CardBody({ m, view, current, onOpen: open, layout
         <section className="slot-seg">{flow}</section>
         <section className="slot-seg"><QuotaSlot m={m} onOpen={onOpen} large /></section>
         {beat}
-        <RunRow activated={m.activated_at} sub={m.subscription} recycle={recycleOn(m)} />
+        <RunRow activated={m.activated_at} sub={m.subscription} recycle={recycleNote(m)} />
         {tags}
       </>}
 
       {view === 'small' && <>
-        <SmallInfo {...info} dueDays={m.subscription?.due_days} dueState={m.subscription?.due_state} recycle={recycleOn(m)} />
+        <SmallInfo {...info} dueDays={m.subscription?.due_days} dueState={m.subscription?.due_state} recycle={recycleNote(m)} />
         <section className="slot-seg">{res}</section>
         <section className="slot-seg">{flow}</section>
         <section className="slot-seg"><QuotaSlot m={m} onOpen={onOpen} /></section>

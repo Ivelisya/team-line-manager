@@ -8,7 +8,7 @@
 //!    → 发起退役作业，与「立即回收」同一条路径（api::machines::start_retire，带清理；宿主机连带它上面的同机 IP 节点）。
 //!    操作人记「系统」，作业参数与审计带 auto = spare_expiry；经通知渠道发一条「自动回收」。
 //!
-//! 软路由出口还指向它的（快照里对上了它的入口，routers::exits_using）同样不自动回收：回收会摘入口，客户出口跟着断。续费提醒（health.rs）写明哪些出口指着它、要先改指向（repoint）或确认后立即回收。
+//! 软路由出口还指向它的（快照里对上了它或它上面没退役的同机 IP 节点的入口，routers::exits_using_with_ip_nodes）同样不自动回收：回收会摘入口，客户出口跟着断。续费提醒（health.rs）写明哪些出口指着它、要先改指向（repoint）或确认后立即回收。
 //!
 //! 机器（含它上面的同机 IP 节点）有进行中的作业时跳过，下一轮再看；物理删除失败过的不再自动重建（等人重试那个作业）。
 //! 续费顺延了到期日自然不回收；开着自动续费的不回收（自动续费那一轮出错没顺延成，也不会被当成过期清掉；进备用时会把自动续费关掉，见 api::machines::move_to_spare）。到期前的提醒复用续费告警（health.rs 在提醒文字后接 `due_note`；还有软路由出口指向它的改接 `pointed_note`）：
@@ -120,7 +120,7 @@ pub async fn run_once(st: &AppState, now: OffsetDateTime) -> anyhow::Result<Ran>
     .await?;
     let rows: Vec<Due> = rows.into_iter().filter(|r| expired(r.today, r.due_date)).collect();
     let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
-    let pointed = crate::routers::exits_using(&st.db, &ids).await?;
+    let pointed = crate::routers::exits_using_with_ip_nodes(&st.db, &ids).await?;
     for r in rows {
         // 宿主机退役会连带它上面的同机 IP 节点：有不在备用团队里的（还在正常用）就不自动回收，留给人处理
         if r.keeps_live {
@@ -128,9 +128,9 @@ pub async fn run_once(st: &AppState, now: OffsetDateTime) -> anyhow::Result<Ran>
             ran.kept.push(r.id);
             continue;
         }
-        // 软路由出口还指向它：回收会摘入口、客户的出口跟着断，留给人先改指向（续费提醒里写明了）
+        // 软路由出口还指向它（或它上面的同机 IP 节点）：回收会摘入口、客户的出口跟着断，留给人先改指向（续费提醒里写明了）
         if let Some(x) = pointed.get(&r.id) {
-            let names: Vec<String> = x.iter().map(|(_, rn, xn)| format!("{rn} · {xn}")).collect();
+            let names: Vec<String> = x.iter().map(|e| e.label()).collect();
             tracing::warn!(machine = %r.id, "备用节点 {} 已过期满 1 天，但软路由出口 {} 还指向它：不自动回收", r.name, names.join("、"));
             ran.kept.push(r.id);
             continue;

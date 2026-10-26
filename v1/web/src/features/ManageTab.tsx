@@ -15,7 +15,7 @@ import { Button } from '@/components/ui/button';
 import { Field, InfoTip, Input, Textarea } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
-import { Note, Section, SectionHeader } from '@/components/app/primitives';
+import { HELD_TEXT, Note, Section, SectionHeader } from '@/components/app/primitives';
 import { ShowAll } from '@/components/app/Pagination';
 import { RouterMark, entryStatus } from './EntriesTable';
 import { useEntryRouters } from '@/lib/routers';
@@ -409,7 +409,7 @@ function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }
             <div>
               <div className="t">立即回收</div>
               <div className="hint">
-                {m.spare_since ? `已于 ${mmdd(m.spare_since)} 退役` : '在备用团队'}{m.spare_from && `（原 ${m.spare_from}）`}，{on ? `${on} 起自动回收` : '没有订阅，不会自动回收'}
+                {m.spare_since ? `已于 ${mmdd(m.spare_since)} 退役` : '在备用团队'}{m.spare_from && `（原 ${m.spare_from}）`}，{m.recycle_held ? HELD_TEXT : on ? `${on} 起自动回收` : '没有订阅，不会自动回收'}
                 {' '}<InfoTip text={'清理节点并移入回收站，不等到期\n想留下它，请到上面的「改名」把团队改回去'} />
               </div>
             </div>
