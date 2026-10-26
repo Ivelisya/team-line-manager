@@ -583,8 +583,14 @@ pub async fn reconcile_incidents(st: &AppState, now: OffsetDateTime, rep: &mut S
     )
     .fetch_all(db)
     .await?;
+    // 闲置备用（没有软路由出口指着、没有在用同机 IP 节点，等到期回收）不开来源画像告警，与机器告警（alerts.rs）一致：
+    // 已开着的在下面悄悄关掉（closed_by = spare，不发恢复）。来源值仍记在基线里，之后又有出口指向它就按还开着的值重新告警
+    let idle: HashSet<Uuid> = crate::views::live(st).await?.iter().filter(|m| m.idle_spare).map(|m| m.id).collect();
     let mut want: BTreeMap<(&'static str, Uuid), Vec<OpenRow>> = BTreeMap::new();
     for (node, dim, value, conns) in rows {
+        if idle.contains(&node) {
+            continue;
+        }
         if let Some(rule) = rule_of_dim(&dim) {
             want.entry((rule, node)).or_default().push(OpenRow { value, conns });
         }
@@ -630,7 +636,7 @@ pub async fn reconcile_incidents(st: &AppState, now: OffsetDateTime, rep: &mut S
         wants.push(Want { rule, subject: *node, name, severity: "warning", text, detail: Some(detail), ready: true, quiet: false });
     }
     // 没有 open 值了（或节点不再 active）→ 恢复；一次性异常结束不发恢复通知
-    let t = incident::reconcile(st, Engine::Ipintel, open, wants, "true", now, |_| Close::Quiet("ipintel_ttl")).await?;
+    let t = incident::reconcile(st, Engine::Ipintel, open, wants, "true", now, |inc| Close::Quiet(if idle.contains(&inc.subject_id) { "spare" } else { "ipintel_ttl" })).await?;
     rep.opened += t.opened;
     rep.updated += t.updated;
     rep.resolved += t.resolved;
