@@ -244,12 +244,12 @@ async fn origin_blocker(st: &AppState, c: &Active) -> ApiResult<Option<String>> 
         return Ok(Some(format!("原出口「{}」现在不通（连续 {} 次测延迟不通）", x.name, x.fail_streak)));
     }
     let Some(e) = &x.entry else { return Ok(None) };
-    // 同机 IP 节点没有自己的 agent，agent 离线只由宿主机报：宿主机的告警也算，文案写宿主机名
+    // 同机 IP 节点没有自己的 agent，agent 离线只由宿主机报：宿主机的 agent 离线也算，文案写宿主机名；宿主机的出口不通 / TCP 不通不算（IP 节点有自己的 IP 和探测，各报各的，见 health.rs）
     let hit: Option<(Uuid, String, Option<String>)> = sqlx::query_as(
         "select i.subject_id, i.rule, case when i.subject_id <> $1 and i.subject_id <> $2 then display_name(m.kind::text, m.label, t.name, m.number) end
          from incident i left join machine m on m.id = i.subject_id left join team t on t.id = m.team_id
          where i.state = 'firing' and i.engine = 'machine' and i.severity::text = 'critical' and i.rule in ('egress_fail', 'tcp_fail', 'agent_offline')
-           and i.subject_id in ($1, $2, (select host_id from machine where id = $1)) order by i.opened_at limit 1",
+           and (i.subject_id in ($1, $2) or (i.rule = 'agent_offline' and i.subject_id = (select host_id from machine where id = $1))) order by i.opened_at limit 1",
     )
     .bind(e.node_id)
     .bind(e.relay_id)

@@ -1383,8 +1383,11 @@ async fn switch_unused_group_and_deferred_back() {
     assert_eq!(read(&r.join("group.now")), "节点02");
     let why = sw().await["defer_why"].as_str().unwrap().to_string();
     assert_eq!(why, "原出口「节点01」指向的 团队9-01 有进行中的严重告警（agent 离线）", "{why}");
-    // 都恢复了：切回，操作者是「系统」；通知一共只有最初那一条
+    // 宿主机自己的出口不通 / TCP 不通不代表这个 IP 节点（它有自己的 IP 和探测）：不拦。都恢复了：切回，操作者是「系统」；通知一共只有最初那一条
     sqlx::query("update incident set state = 'resolved', resolved_at = now() where id = $1").bind(inc).execute(&t.st.db).await.unwrap();
+    for rule in ["egress_fail", "tcp_fail"] {
+        sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary) values ($1, 'machine', $2, $3, 'critical', 's')").bind(Uuid::now_v7()).bind(rule).bind(host).execute(&t.st.db).await.unwrap();
+    }
     past().await;
     routers::switch::due(&t.st).await;
     assert_eq!((read(&r.join("group.now")), t.get(&format!("/api/v1/routers/{id}")).await["switches"].clone()), ("节点01".to_string(), json!([])));

@@ -106,18 +106,21 @@ pub struct Targets {
     pub maint: HashSet<Uuid>,
     /// 有机器的严重告警（出口不通、TCP 不通、agent 离线，见 `targets`）在报的
     pub firing: HashSet<Uuid>,
-    /// 同机 IP 节点 → (宿主机 id, 宿主机名)：这种节点没有自己的 agent，agent 离线只由宿主机报，宿主机在告警时节点也算（文案写宿主机名）
+    /// 同机 IP 节点 → (宿主机 id, 宿主机名)：这种节点没有自己的 agent，agent 离线只由宿主机报
     pub hosts: HashMap<Uuid, (Uuid, String)>,
+    /// 其中 agent 离线（严重）在报的宿主机：它的同机 IP 节点也算在告警（文案写宿主机名）。宿主机的出口不通 / TCP 不通不算——
+    /// IP 节点有自己的 IP 和入口，出口 / TCP 探测各报各的（health.rs），宿主机那条不代表它
+    pub host_down: HashSet<Uuid>,
 }
 
 impl Targets {
     /// 这个出口为什么可能不通：指向的节点或线路机在维护（true）/ 告警（false），给出它的名字。维护优先、节点优先
     fn why<'a>(&'a self, e: &'a Exit) -> Option<(&'a str, bool)> {
         let er = e.entry.as_ref()?;
-        let pick = |set: &HashSet<Uuid>| {
+        let pick = |set: &HashSet<Uuid>, host_set: &HashSet<Uuid>| {
             if set.contains(&er.node_id) {
                 Some(er.node_name.as_str())
-            } else if let Some((_, name)) = self.hosts.get(&er.node_id).filter(|(h, _)| set.contains(h)) {
+            } else if let Some((_, name)) = self.hosts.get(&er.node_id).filter(|(h, _)| host_set.contains(h)) {
                 Some(name.as_str())
             } else if set.contains(&er.relay_id) {
                 Some(er.relay_name.as_str())
@@ -125,7 +128,7 @@ impl Targets {
                 None
             }
         };
-        pick(&self.maint).map(|n| (n, true)).or_else(|| pick(&self.firing).map(|n| (n, false)))
+        pick(&self.maint, &self.maint).map(|n| (n, true)).or_else(|| pick(&self.firing, &self.host_down).map(|n| (n, false)))
     }
 }
 
@@ -394,7 +397,7 @@ pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime
 }
 
 /// 各路由不通的出口指向的节点、线路机里，此刻在维护（静默表的维护，同机 IP 节点看宿主机）、有机器的严重告警（出口不通、TCP 不通、agent 离线）在报的；
-/// 同机 IP 节点的 agent 离线只由宿主机报，所以宿主机一并查。没有不通的出口时不查库
+/// 同机 IP 节点的 agent 离线只由宿主机报，所以宿主机的 agent 离线一并查（宿主机自己的出口 / TCP 告警不算它的，见 `Targets::host_down`）。没有不通的出口时不查库
 async fn targets(db: &sqlx::PgPool, views: &[View]) -> sqlx::Result<Targets> {
     let mut ids: Vec<Uuid> =
         views.iter().filter_map(|v| v.snap.as_ref()).flat_map(|s| down_exits(s).filter_map(|e| e.entry.as_ref()).flat_map(|er| [er.node_id, er.relay_id])).collect();
@@ -413,12 +416,19 @@ async fn targets(db: &sqlx::PgPool, views: &[View]) -> sqlx::Result<Targets> {
     .await?;
     let maint = rows.iter().filter(|(id, host, _)| silences.maintenance(*id) || host.is_some_and(|h| silences.maintenance(h))).map(|(id, ..)| *id).collect();
     let hosts: HashMap<Uuid, (Uuid, String)> = rows.into_iter().filter_map(|(id, host, name)| Some((id, (host?, name.unwrap_or_default())))).collect();
-    let mut with_hosts: Vec<Uuid> = ids.iter().copied().chain(hosts.values().map(|(h, _)| *h)).collect();
-    with_hosts.sort();
-    with_hosts.dedup();
-    let firing: Vec<Uuid> =
-        sqlx::query_scalar("select distinct subject_id from incident where state = 'firing' and engine = 'machine' and severity = 'critical' and rule in ('egress_fail', 'tcp_fail', 'agent_offline') and subject_id = any($1)").bind(&with_hosts).fetch_all(db).await?;
-    Ok(Targets { maint, firing: firing.into_iter().collect(), hosts })
+    let mut host_ids: Vec<Uuid> = hosts.values().map(|(h, _)| *h).collect();
+    host_ids.sort();
+    host_ids.dedup();
+    let firing: Vec<(Uuid, String)> = sqlx::query_as(
+        "select distinct subject_id, rule from incident where state = 'firing' and engine = 'machine' and severity = 'critical' and rule in ('egress_fail', 'tcp_fail', 'agent_offline')
+           and (subject_id = any($1) or (rule = 'agent_offline' and subject_id = any($2)))",
+    )
+    .bind(&ids)
+    .bind(&host_ids)
+    .fetch_all(db)
+    .await?;
+    let host_down = firing.iter().filter(|(id, rule)| rule == "agent_offline" && host_ids.contains(id)).map(|(id, _)| *id).collect();
+    Ok(Targets { maint, firing: firing.into_iter().map(|(id, _)| id).collect(), hosts, host_down })
 }
 
 /// 删除路由时（同一事务）关掉它在告警中的告警：不发恢复
@@ -620,7 +630,10 @@ mod tests {
         // 同机 IP 节点的 agent 离线只由宿主机报：宿主机在告警，节点也算，文案写宿主机名
         let host = Uuid::from_u128(7);
         let hosts: HashMap<Uuid, (Uuid, String)> = [(n3, (host, "团队2-07".to_string())), (n4, (host, "团队2-07".to_string()))].into();
-        let tg = Targets { maint: HashSet::new(), firing: [host].into(), hosts };
+        // 宿主机自己的出口不通 / TCP 不通（在 firing 里）不代表 IP 节点：IP 节点有自己的 IP 和探测，各报各的
+        let tg = Targets { maint: HashSet::new(), firing: [host].into(), hosts: hosts.clone(), host_down: HashSet::new() };
+        assert_eq!(quiet(&tg), Some(false));
+        let tg = Targets { maint: HashSet::new(), firing: [host].into(), hosts, host_down: [host].into() };
         assert_eq!(quiet(&tg), Some(true));
         assert_eq!(problems(&v, None, &tg, now).0.into_iter().find(|p| p.rule == EXITS_DOWN).unwrap().text, "2 个出口连续两次延迟测试不通：节点01、节点02（其中 2 个指向的团队2-07 正在告警）");
         // 其他规则从不 quiet
