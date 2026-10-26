@@ -213,11 +213,16 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     }
     relays.sort();
     relays.dedup();
+    // 单独给同机 IP 节点改团队（进 / 出备用）会改宿主机的回收日 / 是否被扣住（视图 recycle_on、renewing_ip_nodes）：宿主机的卡片也要刷（没触发压缩时只发这一台的事件）
+    let host: Option<Uuid> = if compacted { None } else { sqlx::query_scalar("select host_id from machine where id = $1").bind(id).fetch_one(&mut *tx).await? };
     tx.commit().await?;
     for r in relays {
         st.relay_bumped(r);
     }
     st.emit(if compacted { Event::Machines } else { Event::Machine { id } });
+    if let Some(host) = host {
+        st.emit_keep_access(Event::Machine { id: host });
+    }
     get_one(a, State(st), ApiPath(id)).await
 }
 
@@ -276,6 +281,7 @@ pub struct RenamePreviewQ {
 /// 原团队是备用团队（撤销退役）时只列与宿主机同一次进备用的：与宿主机进备用前同一个团队的（和旧数据没记的）跟宿主机去它选的团队，其余各回自己进备用前的团队（`spare_from_team_id`）取最小空号；那个团队已不在的留在备用（`warnings` 写明）。
 /// `router_exits`：新团队是备用团队时，还指向这台和随它一起移入的同机 IP 节点的软路由出口（只提示，不阻断）；其余为空。
 /// `spare_blocked`：改到备用团队但进不了备用时的原因（订阅已过期满 1 天、没有订阅、有进行中的作业等，同退役的「移进备用」；PATCH 会回 409），否则为 null。
+/// `held`：改到备用团队且进得了备用时，进去后不自动回收的原因（同退役预览的 `spare.held`：出口还指着这台或它上面的同机 IP 节点、上面已在备用的同机 IP 节点开着自动续费），否则为 null。
 /// `warnings`：还被软路由出口指着的节点（这台和随它走的同机 IP 节点，各按自己的原团队 → 去向团队比较）换到的团队生效的访问策略与现在不同时，每台一句（客户会受影响；只提示，不阻断）。
 /// 没换团队、线路机：renames / ip_nodes / router_exits / warnings 都为空，spare_blocked 为 null
 pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<RenamePreviewQ>) -> ApiResult<Json<Value>> {
@@ -291,6 +297,7 @@ pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
     let mut ip_nodes = vec![];
     let mut router_exits = vec![];
     let mut spare_blocked = None;
+    let mut held: Option<String> = None;
     let mut warnings: Vec<String> = vec![];
     let mut name = old_name.clone();
     if kind != "relay" {
@@ -376,6 +383,11 @@ pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
             let names: HashMap<Uuid, &str> = std::iter::once((id, old_name.as_str())).chain(ips.iter().map(|x| (x.0, x.1.as_str()))).collect();
             let exits = crate::routers::exits_using(&st.db, &leaving).await?;
             if to_spare {
+                if spare_blocked.is_none() {
+                    // 同退役预览：出口指着这台或它上面的同机 IP 节点（含原本就在备用里的），或备用里的同机 IP 节点开着自动续费
+                    let renewing = renewing_spare_ip_nodes(&mut conn, id).await?;
+                    held = spare_held_reason(crate::routers::exits_using_with_ip_nodes(&st.db, &[id]).await?.contains_key(&id), false, renewing);
+                }
                 for node in &leaving {
                     for (_, router, exit) in exits.get(node).into_iter().flatten() {
                         router_exits.push(json!({"node": names[node], "router": router, "exit": exit}));
@@ -411,7 +423,7 @@ pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
             }
         }
     }
-    Ok(ok(json!({"name": name, "old_name": old_name, "renames": renames, "ip_nodes": ip_nodes, "router_exits": router_exits, "spare_blocked": spare_blocked, "warnings": warnings})))
+    Ok(ok(json!({"name": name, "old_name": old_name, "renames": renames, "ip_nodes": ip_nodes, "router_exits": router_exits, "spare_blocked": spare_blocked, "held": held, "warnings": warnings})))
 }
 
 /// PATCH 的全部校验与写入（含审计），在调用方的事务里做。

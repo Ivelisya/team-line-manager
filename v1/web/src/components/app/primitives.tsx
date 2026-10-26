@@ -108,7 +108,7 @@ export function DueDate({ sub }: { sub: { due_date: string; billing_tz?: string 
   return <span data-tip={dueTzTip(sub.billing_tz)}>{sub.due_date}</span>;
 }
 /** 备用团队的说明（团队编辑、团队列表、机器卡片与抽屉的到期旁共用） */
-export const SPARE_TIP = '备用团队的机器，到期满 1 天后自动清理并移入回收站。\n续费后到期日顺延，就不会回收。\n被软路由出口指着、宿主机上还有在用同机 IP 节点、或开着自动续费的不自动回收，照常续费。';
+export const SPARE_TIP = '备用团队的机器，到期满 1 天后自动清理并移入回收站。\n续费后到期日顺延，就不会回收。\n被软路由出口指着、宿主机上还有在用同机 IP 节点、宿主机上有开着自动续费的备用同机 IP 节点、或自己开着自动续费的不自动回收，照常续费。';
 /** 软路由出口还指着的备用机器（服务端 recycle_held 的原因之一）：不自动回收。同机 IP 节点还在用、开着自动续费的原因见 heldNote */
 export const HELD_TEXT = '软路由出口还指着，不自动回收';
 export const HELD_TIP = '到期后也不会自动回收，回收会让客户的出口断掉。\n要回收，先把出口改指别处，或确认后立即回收。';

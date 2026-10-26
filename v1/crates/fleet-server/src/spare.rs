@@ -13,8 +13,7 @@
 //! 宿主机上在备用团队里、但开着自动续费的同机 IP 节点（它自己永远不过期）同样挡住宿主机的回收（`keeps_live`，视图 renewing_ip_nodes）：宿主机照常续费，但没有客户在用，仍是闲置备用。
 //!
 //! 机器（含它上面的同机 IP 节点）有进行中的作业时跳过，下一轮再看；物理删除失败过的不再自动重建（等人重试那个作业）。
-//! 续费顺延了到期日自然不回收；开着自动续费的不回收（自动续费那一轮出错没顺延成，也不会被当成过期清掉；进备用时会把自动续费关掉，见 api::machines::move_to_spare）。到期前的提醒复用续费告警（health.rs 在提醒文字后接 `due_note`；还有软路由出口指向它的改接 `pointed_note`）：
-//! 过期第 1 天的「已过期」告警就是「明天自动回收」的通知。软路由不自动改，所以出口还指向它的不回收（见上）。
+//! 续费顺延了到期日自然不回收；开着自动续费的不回收（自动续费那一轮出错没顺延成，也不会被当成过期清掉；进备用时会把自动续费关掉，见 api::machines::move_to_spare）。不续费的备用机（没被扣住的）不发续费提醒，回收前没有预告，通知就是回收时那条「自动回收」；还有软路由出口指向它的（被扣住、照常提醒续费）在提醒后接 `pointed_note`。软路由不自动改，所以出口还指向它的不回收（见上）。
 
 use crate::api::machines::{start_purge, start_retire};
 use crate::notify::{self, Kind, Notice};
@@ -53,16 +52,6 @@ pub fn spare_eligible(kind: &str, lifecycle: &str, in_spare: bool, sub: Option<(
         None => Err("没有订阅，没有到期日可等，只能立即回收"),
         Some((due, today)) if expired(today, due) => Err("订阅已经过期满 1 天，只能立即回收"),
         Some(_) => Ok(()),
-    }
-}
-
-/// 备用团队的机器在续费提醒后面接的一句（`due_days` = 到期日 − 账单时区的今天）
-pub fn due_note(due_days: i64) -> &'static str {
-    match due_days {
-        1.. => "，备用节点过期满 1 天后自动回收",
-        0 => "，备用节点后天自动回收",
-        -1 => "，备用节点明天自动回收",
-        _ => "，备用节点即将自动回收",
     }
 }
 
@@ -281,16 +270,6 @@ mod tests {
             assert!(expired(on, due) && !expired(on.previous_day().unwrap(), due), "{due}");
         }
         assert_eq!(recycle_on(date!(2026 - 11 - 15)), date!(2026 - 11 - 17));
-    }
-
-    #[test]
-    fn note_matches_recycle_day() {
-        // 到期日 10-20 在 10-22 回收：10-20（due_days 0）写「后天」，10-21（-1）写「明天」
-        let due = date!(2026 - 10 - 20);
-        assert!(!expired(date!(2026 - 10 - 21), due) && expired(date!(2026 - 10 - 22), due));
-        assert_eq!(due_note(0), "，备用节点后天自动回收");
-        assert_eq!(due_note(-1), "，备用节点明天自动回收");
-        assert!(due_note(5).contains("过期满 1 天后") && due_note(-3).contains("即将"));
     }
 
     #[test]

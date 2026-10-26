@@ -583,7 +583,7 @@ function ipFollow(m: MachineView, to: { id: string; spare: boolean }) {
 const freeNumber = (tid: string) => { const used = new Set(db.machines.filter((x) => x.team?.id === tid && x.lifecycle !== 'retired').map((x) => x.number)); let n = 1; while (used.has(n)) n++; return n; };
 R('GET', '/machines/([^/]+)/rename-preview', ({ params, query }) => {
   const m = machine(params[0]); const tid = query.get('team_id') ?? m.team?.id; const team = tid ? teamOf(tid) : null;
-  if (!team || m.kind === 'relay') return { name: m.name, old_name: m.name, renames: [], ip_nodes: [], router_exits: [], spare_blocked: null, warnings: [] };
+  if (!team || m.kind === 'relay') return { name: m.name, old_name: m.name, renames: [], ip_nodes: [], router_exits: [], spare_blocked: null, held: null, warnings: [] };
   const number = query.get('number') ? Number(query.get('number')) : team.id !== m.team?.id ? freeNumber(team.id) : m.number!;
   const moved = !!m.team && team.id !== m.team.id;
   // 宿主机换团队：还在原团队的同机 IP 节点一起走，宿主机先占 number，它们依次取剩下的最小空号（同服务端）
@@ -598,7 +598,8 @@ R('GET', '/machines/([^/]+)/rename-preview', ({ params, query }) => {
   return { name: displayName(team.name, number), old_name: m.name, renames: moved ? shrunk.flatMap((t) => compactPlan(t, [m.id, ...ips.map((x) => x.id)])).map((c) => ({ machine_id: c.m.id, old_name: c.old_name, new_name: c.new_name })) : [], ip_nodes,
     // 进备用：还指向这台和一起移入的同机 IP 节点的软路由出口（同服务端）
     router_exits: moved && team.spare ? [m, ...ips].flatMap((x) => exitsUsing(x).flatMap((r) => r.exits.map((e) => ({ node: x.name, router: r.name, exit: e.exit })))) : [],
-    spare_blocked: moved && team.spare && !m.spare ? spareGate(m) : null, warnings: stay.map((x) => `${x.name} 原团队已不在，留在备用`) };
+    spare_blocked: moved && team.spare && !m.spare ? spareGate(m) : null,
+    held: moved && team.spare && !m.spare && !spareGate(m) ? heldReason(m, ips) : null, warnings: stay.map((x) => `${x.name} 原团队已不在，留在备用`) };
 });
 R('PATCH', '/machines/([^/]+)', ({ params, body }) => {
   const m = machine(params[0]);
@@ -687,14 +688,16 @@ R('GET', '/machines/([^/]+)/retire', ({ params }) => {
   const teams = [...new Set(leaving.flatMap((x) => (x.team ? [x.team.id] : [])))];
   const renames = teams.flatMap((t) => compactPlan(t, leaving.map((x) => x.id))).map((c) => ({ machine_id: c.m.id, old_name: c.old_name, new_name: c.new_name }));
   const why = spareWhy(m);
-  const sp = spareTeam(); const nums = freeSpareNumbers(1 + xs.length);
+  // 进备用时一起移入的：已经在备用里的同机 IP 节点不动、不列（同服务端 move_to_spare 的 ip_nodes_of 过滤）
+  const movers = xs.filter((x) => !x.spare);
+  const sp = spareTeam(); const nums = freeSpareNumbers(1 + movers.length);
   const ips = xs.map((x) => ({ id: x.id, name: x.name }));
-  const spareIps = xs.map((x, i) => ({ id: x.id, name: x.name, to_name: displayName(sp.name, nums[i + 1]) }));
-  const held = heldReason(m, xs); // 进备用后不自动回收的原因（出口还指着、同机 IP 节点开着自动续费），没有回收日
+  const spareIps = movers.map((x, i) => ({ id: x.id, name: x.name, to_name: displayName(sp.name, nums[i + 1]) }));
+  const held = heldReason(m, movers); // 进备用后不自动回收的原因（出口还指着、同机 IP 节点开着自动续费），没有回收日
   return {
     name: m.name, renames, ip_nodes: ips, routers: exitsUsing(m),
     blockers: m.kind === 'relay' && m.entries.some((e) => !e.direct) ? [`这台线路机上还有 ${m.entries.filter((e) => !e.direct).length} 个节点入口：先把节点迁走或退役。可先用「搬空线路机」把节点换到其他线路机`] : [],
-    spare: { ok: !why, why, team: { id: sp.id, name: sp.name }, to_name: displayName(sp.name, nums[0]), recycle_on: m.subscription && !held ? addDays(m.subscription.due_date, 2) : null, held, ip_nodes: spareIps, warnings: [], notes: spareRenewNotes(m, xs, held, false) },
+    spare: { ok: !why, why, team: { id: sp.id, name: sp.name }, to_name: displayName(sp.name, nums[0]), recycle_on: m.subscription && !held ? addDays(m.subscription.due_date, 2) : null, held, ip_nodes: spareIps, warnings: [], notes: spareRenewNotes(m, movers, held, false) },
   };
 });
 /** 移入备用（同服务端 move_to_spare）：机器照常运行，改到备用团队最小的空号，原团队前移补号 */
@@ -718,18 +721,18 @@ R('POST', '/machines/([^/]+)/retire', ({ params, body }) => {
   if (!body.now) {
     const why = spareWhy(m);
     if (why) throw bad(`不能移入备用：${why}`, 409, 'conflict');
-    const from = m.name; const xfrom = xs.map((x) => x.name);
+    const from = m.name; const movers = xs.filter((y) => !y.spare); const xfrom = movers.map((x) => x.name); // 已在备用里的同机 IP 节点不动、不列
     // 出口与自动续费要在进备用前算（进备用后 exitsUsing 不再返回）；一起进备用的同机 IP 节点的自动续费也关掉（同服务端 patch_tx）
-    const held = heldReason(m, xs); const notes = spareRenewNotes(m, xs, held, true);
+    const held = heldReason(m, movers); const notes = spareRenewNotes(m, movers, held, true);
     const autoOff = notes.length > 0;
-    for (const x of [m, ...xs.filter((y) => !y.spare)]) if (x.subscription) x.subscription.auto_renew = false;
+    for (const x of [m, ...movers]) if (x.subscription) x.subscription.auto_renew = false;
     const at = iso(); // 宿主机和随行 IP 节点同一次进备用，时刻相同
     moveToSpare(m, body.reason ?? null, at);
-    for (const x of xs.filter((y) => !y.spare)) moveToSpare(x, `随宿主机「${from}」退役`, at);
+    for (const x of movers) moveToSpare(x, `随宿主机「${from}」退役`, at);
     refreshCounts();
     db.audit.unshift({ id: `a${db.seq++}`, ts: iso(), actor: db.user, action: 'machine.retire', title: '退役机器', summary: `${from} 移入备用 → ${m.name}`, target_kind: 'machine', target_id: m.id, detail: { mode: 'spare' } });
     emit({ type: 'machines' }); emit({ type: 'catalog' });
-    return { mode: 'spare', name: m.name, from, recycle_on: held ? null : m.recycle_on, held, ip_nodes: xs.map((x, i) => ({ id: x.id, name: x.name, from: xfrom[i] })), auto_renew_off: autoOff, notes };
+    return { mode: 'spare', name: m.name, from, recycle_on: held ? null : m.recycle_on, held, ip_nodes: movers.map((x, i) => ({ id: x.id, name: x.name, from: xfrom[i] })), auto_renew_off: autoOff, notes };
   }
   const job = startRetire(m, !!body.cleanup, body.reason ?? null);
   // 宿主机：同机 IP 节点一并退役，进行中 / 失败的作业作废，各自一个退役作业（不登录清理：宿主机的清理连同它们的实例一起删）

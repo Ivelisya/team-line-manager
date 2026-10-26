@@ -122,14 +122,26 @@ async fn plan(st: &AppState, conn: &mut PgConnection, old_id: Uuid, b: &RepointI
     // 下面都只是预览里的提醒：发起（lock）时不算。views::live 在重算时会持着上面对新节点的行锁等到 VIEW_WAIT，
     // 视图 503 时提交也跟着失败，不能让一条可选的提醒挡住提交
     if !lock {
-        // 目标是备用节点（临时把出口指过去的常见去向）：出口指着时不会按到期自动回收（spare.rs），但它本来就是等丢弃的，提醒一声；目标此刻故障的更要说
-        if let Some(m) = crate::views::live(st).await?.iter().find(|m| m.id == new.node_id) {
+        // 目标是备用节点（临时把出口指过去的常见去向）：出口一指过去它就被扣住（不再自动回收、开始告警、计入月费、到期要自己登记续费），本来是等丢弃的，要提醒；目标此刻故障的更要说
+        let live = crate::views::live(st).await?;
+        if let Some(m) = live.iter().find(|m| m.id == new.node_id) {
             if m.spare {
                 let due = m.subscription.as_ref().map(|s| format!("{} 到期", s.due_date)).unwrap_or_else(|| "没有订阅".into());
-                warnings.push(format!("「{}」是备用节点，{due}（出口指着时不自动回收）", new.node_name));
+                warnings.push(format!(
+                    "「{}」是备用节点，{due}：改指过去后它会被扣住（开始告警、计入月费、到期要自己登记续费；进备用时自动续费已关），不再自动回收",
+                    new.node_name
+                ));
             }
             if m.health.status == crate::health::Status::Down {
                 warnings.push(format!("「{}」此刻故障：改过去之后这些出口会不通", new.node_name));
+            }
+        }
+        // 旧节点是已过期满 1 天的备用机，只因为出口还指着它才没被回收：这些出口都改走后（没有别的原因扣着它）下一轮维护就自动回收
+        let planned: usize = routers.iter().map(|r| r.exits.len()).sum();
+        if let Some(o) = live.iter().find(|m| m.id == old.node_id && m.id != new.node_id) {
+            let expired = o.subscription.as_ref().is_some_and(|s| s.due_days <= -2 && !s.auto_renew);
+            if o.spare && o.lifecycle == "active" && expired && planned > 0 && o.router_exits.len() <= planned && o.live_ip_nodes.is_empty() && o.renewing_ip_nodes.is_empty() {
+                warnings.push(format!("「{}」是已过期满 1 天的备用节点：改走后它不再被出口指着，下一轮维护（一小时内）会自动回收", old.node_name));
             }
         }
         if let Some(w) = policy_diff(&mut *conn, &old, &new).await? {

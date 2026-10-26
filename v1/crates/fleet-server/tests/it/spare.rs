@@ -322,6 +322,60 @@ async fn retire_host_with_renewing_spare_ip_node_has_no_recycle_day() {
     assert!(seen.contains(&ip) && seen.contains(&host), "{seen:?}");
 }
 
+/// 改团队预览的 held：宿主机改到备用团队（进得了备用）时，给出进去后不自动回收的原因，口径同退役预览的 spare.held——
+/// 上面已经在备用里的同机 IP 节点开着自动续费、或出口指着它（不随这次进备用，预览的 router_exits 不含它），都算；都没有为 null；进不了备用时不给。
+/// 单独给同机 IP 节点改团队（出备用）后宿主机的视图也推一次，卡片不用等定时刷新
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rename_preview_gives_held_reason_for_spare_ip_nodes() {
+    let t = setup(false).await;
+    let sp = spare_team(&t).await;
+    let a = seed_team(&t, "团队1").await;
+    let host = seed_vps(&t, a, 1, "203.0.113.81", None).await;
+    let ip = seed_vps(&t, sp, 1, "203.0.113.82", Some(host)).await;
+    let plain = seed_vps(&t, a, 2, "203.0.113.83", None).await;
+    sub(&t, host, "2030-01-01", "UTC").await;
+    sub(&t, plain, "2030-01-01", "UTC").await;
+    let url = format!("/api/v1/machines/{host}/rename-preview?team_id={sp}");
+    // 备用里的 IP 节点没有订阅：没有原因，预览照旧
+    let pv = t.get(&url).await;
+    assert!(pv["spare_blocked"].is_null() && pv["held"].is_null() && pv["router_exits"] == json!([]), "{pv}");
+    // 备用里的 IP 节点开着自动续费：宿主机进备用后不自动回收
+    sub(&t, ip, "2030-01-01", "UTC").await;
+    sqlx::query("update subscription set auto_renew = true where machine_id = $1").bind(ip).execute(&t.st.db).await.unwrap();
+    let pv = t.get(&url).await;
+    assert_eq!(pv["held"], "同机 IP 节点开着自动续费", "{pv}");
+    // 出口还指着备用里的那台 IP 节点：原因里加上出口（router_exits 只列随行的，这里仍为空）
+    let rid = Uuid::now_v7();
+    sqlx::query("insert into router (id, name, tunnel_port) values ($1, '办公室', 23003)").bind(rid).execute(&t.st.db).await.unwrap();
+    let pointing = json!({"id": Uuid::now_v7(), "name": "备用-01", "node_id": ip, "relay_id": Uuid::now_v7(), "node_name": "备用-01", "relay_name": "线路机1", "port": 20001, "lifecycle": "active"});
+    let snap = json!({"exits": [{"name": "节点01", "entry": pointing, "sync": "ok", "linked": true}]});
+    sqlx::query("insert into router_status (router_id, ts, reachable, data, last_ok_at) values ($1, now(), true, $2, now())").bind(rid).bind(snap).execute(&t.st.db).await.unwrap();
+    let pv = t.get(&url).await;
+    assert_eq!((pv["held"].clone(), pv["router_exits"].clone()), (json!("软路由出口还指着它、同机 IP 节点开着自动续费"), json!([])), "{pv}");
+    // 进不了备用（没有订阅）时不给 held；改到非备用团队也不给
+    let pv = t.get(&format!("/api/v1/machines/{plain}/rename-preview?team_id={sp}")).await;
+    assert!(pv["spare_blocked"].is_null() && pv["held"].is_null(), "{pv}");
+    sqlx::query("delete from subscription where machine_id = $1").bind(host).execute(&t.st.db).await.unwrap();
+    let pv = t.get(&url).await;
+    assert!(pv["spare_blocked"].is_string() && pv["held"].is_null(), "{pv}");
+    let b = seed_team(&t, "团队2").await;
+    let pv = t.get(&format!("/api/v1/machines/{host}/rename-preview?team_id={b}")).await;
+    assert!(pv["held"].is_null(), "{pv}");
+
+    // 单独把这台 IP 节点从备用改回团队1：它自己和宿主机的 Machine 事件都发
+    let rev: i32 = sqlx::query_scalar("select revision from machine where id = $1").bind(ip).fetch_one(&t.st.db).await.unwrap();
+    let mut ev = t.st.events.subscribe();
+    let (code, v) = t.req("PATCH", &format!("/api/v1/machines/{ip}"), Some(json!({"revision": rev, "team_id": a})), None).await;
+    assert_eq!(code, StatusCode::OK, "{v}");
+    let mut seen = vec![];
+    while let Ok(e) = ev.try_recv() {
+        if let Event::Machine { id } = e {
+            seen.push(id);
+        }
+    }
+    assert!(seen.contains(&ip) && seen.contains(&host), "{seen:?}");
+}
+
 /// 撤销退役（宿主机从备用改回原团队）只带与它同一次进备用的 IP 节点：之前单独退役进备用的 IP 节点留在备用（spare_since 不清、仍会自动回收）；
 /// 带走的 IP 节点有进行中的作业时 409，预览与实际一致
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

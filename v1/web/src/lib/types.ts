@@ -327,6 +327,8 @@ export interface RenamePreview { name: string; old_name: string; renames: { mach
   router_exits: { node: string; router: string; exit: string }[];
   /** 改到备用团队但进不了备用的原因（订阅已过期满 1 天、没有订阅、有进行中的作业…；保存会被拒，要进备用请用退役）；否则 null */
   spare_blocked: string | null
+  /** 改到备用团队且进得了备用时，进去后不自动回收的原因（出口还指着这台或它上面的同机 IP 节点、已在备用的同机 IP 节点开着自动续费；同退役预览 spare.held）；否则 null */
+  held: string | null
   /** 还被软路由出口指着的节点（这台和随它走的同机 IP 节点）换到的团队生效的访问策略与现在不同时，每台一句；其余为 [] */
   warnings: string[] }
 /** notes：指向要改名的节点的软路由出口（出口名不跟着改） */
