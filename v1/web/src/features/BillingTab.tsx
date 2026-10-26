@@ -47,7 +47,7 @@ export function BillingTab({ m }: { m: MachineView }) {
             <LabelValue label="费用"><span className="num">{feeView(s).main}</span> <span className="unit">{feeView(s).unit}</span>
               {/* 这一格只有四分之一宽：小字只写原价与跟随谁，汇率（或未折算的原因）放悬停，免得「1 CNY = 0.1404 USD」被拆成两行 */}
               <div className="hint" data-tip={priceHint(s) ?? undefined}>{[priceHint(s)?.split(' · ')[0], s.monthly_usd_cents == null && '未折算', (['price_cents', 'currency', 'cycle'] as const).some((k) => isOverridden(s, k)) ? '单独设置' : inheritSource(m, 'price_cents')].filter(Boolean).join(' · ')}</div></LabelValue>
-            <LabelValue label="到期日" wrap><span style={{ whiteSpace: 'nowrap' }}><DueDate sub={s} /> <Due days={s.due_days} state={s.due_state} /></span>{recycleOn(m) && <div className="hint"><SpareDue on={recycleOn(m)!} /></div>}</LabelValue>
+            <LabelValue label="到期日" wrap><span style={{ whiteSpace: 'nowrap' }}><DueDate sub={s} /> <Due days={s.due_days} state={s.due_state} /></span>{(recycleOn(m) || m.recycle_held) && <div className="hint"><SpareDue m={m} /></div>}</LabelValue>
             {/* 剩余比例只写一个百分数，天数在悬停里；预付了多期只写金额，期数在 (i) 里 */}
             <LabelValue label="剩余价值">{rv ? <><span className="num">{F.money(rv.cents, rv.currency)}</span> {rv.frac > 1
               ? <InfoTip text={`已预付 ${rv.frac.toFixed(1)} 期 · 每期 ${rv.days} 天`} />

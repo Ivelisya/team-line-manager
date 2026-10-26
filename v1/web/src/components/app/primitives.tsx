@@ -109,8 +109,23 @@ export function DueDate({ sub }: { sub: { due_date: string; billing_tz?: string 
 }
 /** 备用团队的说明（团队编辑、团队列表、机器卡片与抽屉的到期旁共用） */
 export const SPARE_TIP = '备用团队的机器，到期满 1 天后自动清理并移入回收站。\n续费后到期日顺延，就不会回收。';
-/** 备用团队在用机器的到期旁：「MM-DD 起自动回收」+ (i)；iconOnly 只放 (i)（卡片上地方小，短句放进悬停） */
-export function SpareDue({ on, iconOnly }: { on: string; iconOnly?: boolean }) {
+/** 还被软路由出口指着的备用机器（服务端 recycle_held）：不自动回收 */
+export const HELD_TEXT = '软路由出口还指着，不自动回收';
+export const HELD_TIP = '到期后也不会自动回收，回收会让客户的出口断掉。\n要回收，先把出口改指别处，或确认后立即回收。';
+type RecycleView = Pick<MachineView, 'lifecycle' | 'recycle_on' | 'recycle_held'>;
+export type RecycleNote = { text: string; tip: string };
+/** 备用在用机器的回收提示（机器卡片上的短句 + 悬停）：被出口指着的不自动回收，其余 MM-DD 自动回收；不在备用里为 null */
+export function recycleNote(m: RecycleView): RecycleNote | null {
+  if (m.lifecycle !== 'active') return null;
+  if (m.recycle_held) return { text: '不自动回收', tip: `${HELD_TEXT}。\n${HELD_TIP}` };
+  return m.recycle_on ? { text: `${m.recycle_on.slice(5)} 自动回收`, tip: SPARE_TIP } : null;
+}
+/** 备用团队在用机器的到期旁：「MM-DD 起自动回收」+ (i)，被出口指着的写「软路由出口还指着，不自动回收」；iconOnly 只放 (i)（卡片上地方小，短句放进悬停）；不在备用里不渲染 */
+export function SpareDue({ m, iconOnly }: { m: RecycleView; iconOnly?: boolean }) {
+  if (m.lifecycle !== 'active') return null;
+  if (m.recycle_held) return <>{' '}{!iconOnly && <span className="t-sub">{HELD_TEXT}</span>}<InfoTip text={iconOnly ? `${HELD_TEXT}。\n${HELD_TIP}` : HELD_TIP} /></>;
+  const on = m.recycle_on?.slice(5);
+  if (!on) return null;
   return <>{' '}{!iconOnly && <span className="t-sub">{on} 起自动回收</span>}<InfoTip text={iconOnly ? `${on} 起自动回收：${SPARE_TIP}` : SPARE_TIP} /></>;
 }
 export const LifecyclePill = ({ lc }: { lc: Lifecycle | string }) => (

@@ -64,7 +64,9 @@ export interface MachineView {
   spare: boolean;
   /** 备用里的机器：进备用前的显示名（如 团队2-07）与进备用（= 退役）的时刻、自动回收的起始日（YYYY-MM-DD，没有订阅为 null）；不在备用里为 null */
   spare_from: string | null; spare_since: string | null; recycle_on: string | null;
-  /** 备用团队里在用的机器：还指向它的软路由出口（「路由名 · 出口名」）；其余为 []。在用、在备用里、这里为空 = 闲置备用（等到期放生，见 isIdleSpare） */
+  /** 备用里在用、还被软路由出口指着（router_exits 非空）：不自动回收，recycle_on 为 null */
+  recycle_held: boolean;
+  /** 备用团队里在用的机器：还指向它（备用宿主机还含它上面没退役的同机 IP 节点，后缀「（经同机 IP 节点 X）」）的软路由出口（「路由名 · 出口名」）；其余为 []。在用、在备用里、这里为空 = 闲置备用（等到期放生，见 isIdleSpare） */
   router_exits: string[];
   ip: string; ssh_port: number;
   /** 国家或地区（ISO 3166-1 两位大写，如 US）：手动设了用手动的，否则中控离线 IP 库按机器自己的 IP 查；
@@ -307,7 +309,9 @@ export interface AuditEntry { id: string; ts: string; actor: string; action: str
  *  和随宿主机一起换团队的同机 IP 节点（ip_nodes：新团队里接在宿主机之后取最小空号） */
 export interface RenamePreview { name: string; old_name: string; renames: { machine_id: string; old_name: string; new_name: string }[]; ip_nodes: { machine_id: string; old_name: string; new_name: string }[];
   /** 新团队是备用团队时，还指向这台和一起移入的同机 IP 节点的软路由出口；其余为 [] */
-  router_exits: { node: string; router: string; exit: string }[] }
+  router_exits: { node: string; router: string; exit: string }[];
+  /** 还被软路由出口指着的节点（这台和随它走的同机 IP 节点）换到的团队生效的访问策略与现在不同时，每台一句；其余为 [] */
+  warnings: string[] }
 /** notes：指向要改名的节点的软路由出口（出口名不跟着改） */
 export interface RenumberPreview { changes: { machine_id: string; old_name: string; new_name: string }[]; notes: string[]; token: string }
 /** 软路由上要改的出口（替换节点、换线路机、搬空同一个格式）；换线路机的 new_entry_id 为 null、to 写「server:新端口」 */
@@ -368,8 +372,8 @@ export interface ReplaceBody { new_machine_id: string; old_to?: { team_id?: stri
  *  renames：原团队后面的节点前移补号，按所有受影响的团队算 */
 export interface RetirePreview {
   name: string;
-  /** notes：进备用的提示（开着的自动续费会关掉、撤销退役回不到原编号） */
-  spare: { ok: boolean; why: string | null; team: { id: string; name: string }; to_name: string; recycle_on: string | null; ip_nodes: { id: string; name: string; to_name: string }[]; notes: string[] };
+  /** notes：进备用的提示（开着的自动续费会关掉、撤销退役回不到原编号）；warnings：还被出口指着的节点进备用后访问策略会变（客户受影响） */
+  spare: { ok: boolean; why: string | null; team: { id: string; name: string }; to_name: string; recycle_on: string | null; ip_nodes: { id: string; name: string; to_name: string }[]; notes: string[]; warnings: string[] };
   routers: { id: string; name: string; exits: { exit: string; node: string }[] }[];
   renames: { machine_id: string; old_name: string; new_name: string }[];
   ip_nodes: { id: string; name: string }[];

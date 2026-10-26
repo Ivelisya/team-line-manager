@@ -5,7 +5,7 @@ import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/h
 import type { MachineView } from '@/lib/types';
 import { useMachine } from '@/lib/queries';
 import * as F from '@/lib/format';
-import { recycleOn, entryText, isQuiet, kindLabel, resourceMeters } from '@/lib/derive';
+import { entryText, isQuiet, kindLabel, resourceMeters } from '@/lib/derive';
 import { CopyButton, Due, DueDate, Flag, HealthPill, ReasonList, SpareDue } from './primitives';
 import { MiniMeter } from './viz';
 
@@ -33,7 +33,7 @@ function MiniCard({ m }: { m: MachineView }) {
         {/* 同机 IP 节点：下面的 CPU / 内存是宿主机的 */}
         {m.host_machine && <div><dt>宿主机</dt><dd className="ellipsis">{m.host_machine.name}（读数共用）</dd></div>}
         <div><dt>{m.kind === 'relay' ? '入口' : '线路机:端口'}</dt><dd className="ellipsis">{entryText(m)}</dd></div>
-        <div><dt>到期</dt><dd>{m.subscription ? <><Due days={m.subscription.due_days} state={m.subscription.due_state} /> <span className="t-sub">· <DueDate sub={m.subscription} /></span>{recycleOn(m) && <SpareDue on={recycleOn(m)!} iconOnly />}</> : <span className="t-muted">未设置</span>}</dd></div>
+        <div><dt>到期</dt><dd>{m.subscription ? <><Due days={m.subscription.due_days} state={m.subscription.due_state} /> <span className="t-sub">· <DueDate sub={m.subscription} /></span><SpareDue m={m} iconOnly /></> : <span className="t-muted">未设置</span>}</dd></div>
       </dl>
       {r ? (
         <div className="hc-bars">

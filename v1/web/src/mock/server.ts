@@ -116,7 +116,8 @@ function refreshAllFollowers() {
 }
 function recomputeDue(m: MachineView) {
   if (m.subscription) { m.subscription.due_days = Math.ceil((new Date(m.subscription.due_date).getTime() - Date.now()) / DAY); subCalc(m.subscription); }
-  m.recycle_on = m.spare && m.lifecycle === 'active' && m.subscription ? addDays(m.subscription.due_date, 2) : null; // 备用：到期 + 2 天 0 点起自动回收
+  m.recycle_held = m.spare && m.lifecycle === 'active' && m.router_exits.length > 0; // 还被出口指着的备用不自动回收
+  m.recycle_on = m.spare && m.lifecycle === 'active' && m.subscription && !m.recycle_held ? addDays(m.subscription.due_date, 2) : null; // 备用：到期 + 2 天 0 点起自动回收
 }
 
 function overview() {
@@ -408,7 +409,7 @@ function createMachine(it: ProvisionItem, c: MockCheck): MachineView {
     id, kind: it.kind, name: c.name, team: team ? { id: team.id, name: team.name } : null, spare: team?.spare ?? false, number: it.kind === 'relay' ? null : c.number, label: it.kind === 'relay' ? it.label ?? null : null,
     ip: it.ip, ssh_port: h?.ssh_port ?? it.ssh_port ?? 22, country: it.country ?? countryOf(it.ip), country_set: it.country ?? null, host_machine: h && { id: h.id, name: h.name }, bind_ip: null, ip_nodes: [], provider: pv ? { id: pv.id, name: pv.name } : null, provider_code: pv?.code ?? null,
     plan: plan ? { id: plan.id, name: plan.name, bandwidth_mbps: plan.bandwidth_mbps, traffic_gb: plan.traffic_gb } : null, service_ref: it.service_ref ?? null,
-    sub_template: templateOf(plan ?? undefined, pv ?? undefined), lifecycle: 'provisioning', lifecycle_reason: null, note: it.note ?? '', revision: 1, created_at: iso(), activated_at: null, retired_at: null, spare_from: null, spare_since: null, router_exits: [], recycle_on: null,
+    sub_template: templateOf(plan ?? undefined, pv ?? undefined), lifecycle: 'provisioning', lifecycle_reason: null, note: it.note ?? '', revision: 1, created_at: iso(), activated_at: null, retired_at: null, spare_from: null, spare_since: null, router_exits: [], recycle_on: null, recycle_held: false,
     subscription: it.subscription?.due_date ? subCalc({ price_cents: it.subscription.price_cents ?? plan?.price_cents ?? 0, currency: plan?.currency ?? META.defaults.currency, cycle: it.subscription.cycle ?? plan?.cycle ?? META.defaults.cycle, due_date: it.subscription.due_date, due_days: 0, billing_tz: it.subscription.billing_tz ?? pv?.timezone ?? META.org_timezone, auto_renew: false, remind_days: pv?.remind_days ?? META.defaults.remind_days, traffic_gb: plan?.traffic_gb || null, traffic_reset_day: 1, traffic_rule: pv?.traffic_rule ?? META.defaults.traffic_rule } as NonNullable<MachineView['subscription']>) : null,
     agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, nic: null, month_counted_from: null, quota: { used: 0, period_start: '', period_end: null, mode: 'monthly', counted_from: null, rule: null, base: null, limit_gb: null, limit_source: 'none', daily_avg: null, forecast_full_at: null }, health: { status: 'unknown', reasons: [{ key: 'provisioning', severity: 'info', text: '上架作业进行中' }] }, active_job: null, failed_job: null, open_incidents: 0, maintenance: false,
     relay: it.kind === 'relay' ? { public_host: it.ip, generation: 1, applied_generation: 0, applied_at: null, apply_error: null, port_min: 20001, port_max: 20999 } : null,
@@ -549,7 +550,7 @@ R('GET', '/machines/([^/]+)', ({ params }) => clone(machine(params[0])));
 const freeNumber = (tid: string) => { const used = new Set(db.machines.filter((x) => x.team?.id === tid && x.lifecycle !== 'retired').map((x) => x.number)); let n = 1; while (used.has(n)) n++; return n; };
 R('GET', '/machines/([^/]+)/rename-preview', ({ params, query }) => {
   const m = machine(params[0]); const tid = query.get('team_id') ?? m.team?.id; const team = tid ? teamOf(tid) : null;
-  if (!team || m.kind === 'relay') return { name: m.name, old_name: m.name, renames: [], ip_nodes: [], router_exits: [] };
+  if (!team || m.kind === 'relay') return { name: m.name, old_name: m.name, renames: [], ip_nodes: [], router_exits: [], warnings: [] };
   const number = query.get('number') ? Number(query.get('number')) : team.id !== m.team?.id ? freeNumber(team.id) : m.number!;
   const moved = !!m.team && team.id !== m.team.id;
   // 宿主机换团队：还在原团队的同机 IP 节点一起走，宿主机先占 number，它们依次取剩下的最小空号（同服务端）
@@ -558,7 +559,7 @@ R('GET', '/machines/([^/]+)/rename-preview', ({ params, query }) => {
   const ip_nodes = ips.map((x) => { let k = 1; while (taken.has(k)) k++; taken.add(k); return { machine_id: x.id, old_name: x.name, new_name: displayName(team.name, k) }; });
   return { name: displayName(team.name, number), old_name: m.name, renames: moved ? compactPlan(m.team!.id, [m.id, ...ips.map((x) => x.id)]).map((c) => ({ machine_id: c.m.id, old_name: c.old_name, new_name: c.new_name })) : [], ip_nodes,
     // 进备用：还指向这台和一起移入的同机 IP 节点的软路由出口（同服务端）
-    router_exits: moved && team.spare ? [m, ...ips].flatMap((x) => exitsUsing(x).flatMap((r) => r.exits.map((e) => ({ node: x.name, router: r.name, exit: e.exit })))) : [] };
+    router_exits: moved && team.spare ? [m, ...ips].flatMap((x) => exitsUsing(x).flatMap((r) => r.exits.map((e) => ({ node: x.name, router: r.name, exit: e.exit })))) : [], warnings: [] };
 });
 R('PATCH', '/machines/([^/]+)', ({ params, body }) => {
   const m = machine(params[0]);
@@ -628,7 +629,7 @@ R('GET', '/machines/([^/]+)/retire', ({ params }) => {
   return {
     name: m.name, renames, ip_nodes: ips, routers: exitsUsing(m),
     blockers: m.kind === 'relay' && m.entries.some((e) => !e.direct) ? [`这台线路机上还有 ${m.entries.filter((e) => !e.direct).length} 个节点入口：先把节点迁走或退役。可先用「搬空线路机」把节点换到其他线路机`] : [],
-    spare: { ok: !why, why, team: { id: sp.id, name: sp.name }, to_name: displayName(sp.name, nums[0]), recycle_on: m.subscription ? addDays(m.subscription.due_date, 2) : null, ip_nodes: spareIps, notes: m.subscription?.auto_renew ? ['这台开着自动续费：进备用时会关掉，到期后照常回收（供应商那边的自动扣款要自己去关）'] : [] },
+    spare: { ok: !why, why, team: { id: sp.id, name: sp.name }, to_name: displayName(sp.name, nums[0]), recycle_on: m.subscription ? addDays(m.subscription.due_date, 2) : null, ip_nodes: spareIps, warnings: [], notes: m.subscription?.auto_renew ? ['这台开着自动续费：进备用时会关掉，到期后照常回收（供应商那边的自动扣款要自己去关）'] : [] },
   };
 });
 /** 移入备用（同服务端 move_to_spare）：机器照常运行，改到备用团队最小的空号，原团队前移补号 */
