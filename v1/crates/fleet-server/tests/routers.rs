@@ -1245,6 +1245,29 @@ async fn switch_unused_group_and_deferred_back() {
     assert_eq!(read(&r.join("group.now")), "节点02");
     let why = sw().await["defer_why"].as_str().unwrap().to_string();
     assert!(why.starts_with("原出口「节点01」指向的 团队2-03 有进行中的严重告警（"), "{why}");
+    // 同机 IP 节点：agent 离线只由宿主机报，宿主机在告警也拦，文案写宿主机名
+    sqlx::query("update incident set state = 'resolved', resolved_at = now() where id = $1").bind(inc).execute(&t.st.db).await.unwrap();
+    let team = seed_team(&t, "团队9").await;
+    let host = Uuid::now_v7();
+    for (id, number, host_id) in [(host, 1, None), (node, 2, Some(host))] {
+        sqlx::query("insert into machine (id, kind, team_id, number, primary_ip, ssh_port, lifecycle, host_id, activated_at) values ($1, 'vps', $2, $3, $4::inet, $6, 'active', $5, now())")
+            .bind(id)
+            .bind(team)
+            .bind(number)
+            .bind(format!("203.0.113.{}", 40 + number))
+            .bind(host_id)
+            .bind(host_id.is_none().then_some(22))
+            .execute(&t.st.db)
+            .await
+            .unwrap();
+    }
+    let inc = Uuid::now_v7();
+    sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary) values ($1, 'machine', 'agent_offline', $2, 'critical', 's')").bind(inc).bind(host).execute(&t.st.db).await.unwrap();
+    past().await;
+    routers::switch::due(&t.st).await;
+    assert_eq!(read(&r.join("group.now")), "节点02");
+    let why = sw().await["defer_why"].as_str().unwrap().to_string();
+    assert_eq!(why, "原出口「节点01」指向的 团队9-01 有进行中的严重告警（agent 离线）", "{why}");
     // 都恢复了：切回，操作者是「系统」；通知一共只有最初那一条
     sqlx::query("update incident set state = 'resolved', resolved_at = now() where id = $1").bind(inc).execute(&t.st.db).await.unwrap();
     past().await;

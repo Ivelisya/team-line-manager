@@ -93,15 +93,19 @@ pub struct Targets {
     pub maint: HashSet<Uuid>,
     /// 有机器的严重告警（出口不通、TCP 不通、agent 离线，见 `targets`）在报的
     pub firing: HashSet<Uuid>,
+    /// 同机 IP 节点 → (宿主机 id, 宿主机名)：这种节点没有自己的 agent，agent 离线只由宿主机报，宿主机在告警时节点也算（文案写宿主机名）
+    pub hosts: HashMap<Uuid, (Uuid, String)>,
 }
 
 impl Targets {
     /// 这个出口为什么可能不通：指向的节点或线路机在维护（true）/ 告警（false），给出它的名字。维护优先、节点优先
-    fn why<'a>(&self, e: &'a Exit) -> Option<(&'a str, bool)> {
+    fn why<'a>(&'a self, e: &'a Exit) -> Option<(&'a str, bool)> {
         let er = e.entry.as_ref()?;
         let pick = |set: &HashSet<Uuid>| {
             if set.contains(&er.node_id) {
                 Some(er.node_name.as_str())
+            } else if let Some((_, name)) = self.hosts.get(&er.node_id).filter(|(h, _)| set.contains(h)) {
+                Some(name.as_str())
             } else if set.contains(&er.relay_id) {
                 Some(er.relay_name.as_str())
             } else {
@@ -356,7 +360,8 @@ pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime
     Ok(recheck)
 }
 
-/// 各路由不通的出口指向的节点、线路机里，此刻在维护（静默表的维护，同机 IP 节点看宿主机）、有机器的严重告警（出口不通、TCP 不通、agent 离线）在报的。没有不通的出口时不查库
+/// 各路由不通的出口指向的节点、线路机里，此刻在维护（静默表的维护，同机 IP 节点看宿主机）、有机器的严重告警（出口不通、TCP 不通、agent 离线）在报的；
+/// 同机 IP 节点的 agent 离线只由宿主机报，所以宿主机一并查。没有不通的出口时不查库
 async fn targets(db: &sqlx::PgPool, views: &[View]) -> sqlx::Result<Targets> {
     let mut ids: Vec<Uuid> =
         views.iter().filter_map(|v| v.snap.as_ref()).flat_map(|s| down_exits(s).filter_map(|e| e.entry.as_ref()).flat_map(|er| [er.node_id, er.relay_id])).collect();
@@ -366,11 +371,21 @@ async fn targets(db: &sqlx::PgPool, views: &[View]) -> sqlx::Result<Targets> {
         return Ok(Targets::default());
     }
     let silences = Silences::load(db).await?;
-    let hosts: Vec<(Uuid, Option<Uuid>)> = sqlx::query_as("select id, host_id from machine where id = any($1)").bind(&ids).fetch_all(db).await?;
-    let maint = hosts.iter().filter(|(id, host)| silences.maintenance(*id) || host.is_some_and(|h| silences.maintenance(h))).map(|(id, _)| *id).collect();
+    let rows: Vec<(Uuid, Option<Uuid>, Option<String>)> = sqlx::query_as(
+        "select m.id, m.host_id, display_name(h.kind::text, h.label, t.name, h.number)
+         from machine m left join machine h on h.id = m.host_id left join team t on t.id = h.team_id where m.id = any($1)",
+    )
+    .bind(&ids)
+    .fetch_all(db)
+    .await?;
+    let maint = rows.iter().filter(|(id, host, _)| silences.maintenance(*id) || host.is_some_and(|h| silences.maintenance(h))).map(|(id, ..)| *id).collect();
+    let hosts: HashMap<Uuid, (Uuid, String)> = rows.into_iter().filter_map(|(id, host, name)| Some((id, (host?, name.unwrap_or_default())))).collect();
+    let mut with_hosts: Vec<Uuid> = ids.iter().copied().chain(hosts.values().map(|(h, _)| *h)).collect();
+    with_hosts.sort();
+    with_hosts.dedup();
     let firing: Vec<Uuid> =
-        sqlx::query_scalar("select distinct subject_id from incident where state = 'firing' and engine = 'machine' and severity = 'critical' and rule in ('egress_fail', 'tcp_fail', 'agent_offline') and subject_id = any($1)").bind(&ids).fetch_all(db).await?;
-    Ok(Targets { maint, firing: firing.into_iter().collect() })
+        sqlx::query_scalar("select distinct subject_id from incident where state = 'firing' and engine = 'machine' and severity = 'critical' and rule in ('egress_fail', 'tcp_fail', 'agent_offline') and subject_id = any($1)").bind(&with_hosts).fetch_all(db).await?;
+    Ok(Targets { maint, firing: firing.into_iter().collect(), hosts })
 }
 
 /// 删除路由时（同一事务）关掉它在告警中的告警：不发恢复
@@ -512,11 +527,11 @@ mod tests {
         let v = view("online", Some(s.clone()), 0, now);
         let ex = |tg: &Targets| problems(&v, None, tg, now).0.into_iter().find(|p| p.rule == EXITS_DOWN);
         assert_eq!(ex(&Targets::default()).unwrap().text, "3 个出口连续两次延迟测试不通：节点01、节点02、节点03");
-        let tg = Targets { maint: [n3].into(), firing: [relay].into() };
+        let tg = Targets { maint: [n3].into(), firing: [relay].into(), ..Targets::default() };
         assert_eq!(ex(&tg).unwrap().text, "3 个出口连续两次延迟测试不通：节点01、节点02、节点03（其中 2 个指向的团队2-03 正在维护，1 个指向的线路机2 正在告警）");
         assert!(!exits_paused(&s, &tg, now));
         // 不通的都指向维护中的（线路机在维护）：不开，评估时开着的保持
-        let tg = Targets { maint: [relay].into(), firing: HashSet::new() };
+        let tg = Targets { maint: [relay].into(), firing: HashSet::new(), ..Targets::default() };
         assert!(ex(&tg).is_none() && exits_paused(&s, &tg, now));
     }
 
@@ -565,10 +580,16 @@ mod tests {
         let v = view("online", Some(s), 0, now);
         let quiet = |tg: &Targets| problems(&v, None, tg, now).0.into_iter().find(|p| p.rule == EXITS_DOWN).map(|p| p.quiet);
         assert_eq!(quiet(&Targets::default()), Some(false), "没有机器告警在报：照常通知");
-        assert_eq!(quiet(&Targets { maint: HashSet::new(), firing: [n3].into() }), Some(false), "只有一个出口的节点在告警：另一个原因不明，照常通知");
-        assert_eq!(quiet(&Targets { maint: HashSet::new(), firing: [n3, n4].into() }), Some(true));
-        assert_eq!(quiet(&Targets { maint: HashSet::new(), firing: [relay].into() }), Some(true), "线路机在告警：它下面的出口都算");
-        assert_eq!(quiet(&Targets { maint: [n3].into(), firing: [n4].into() }), Some(true));
+        assert_eq!(quiet(&Targets { maint: HashSet::new(), firing: [n3].into(), ..Targets::default() }), Some(false), "只有一个出口的节点在告警：另一个原因不明，照常通知");
+        assert_eq!(quiet(&Targets { maint: HashSet::new(), firing: [n3, n4].into(), ..Targets::default() }), Some(true));
+        assert_eq!(quiet(&Targets { maint: HashSet::new(), firing: [relay].into(), ..Targets::default() }), Some(true), "线路机在告警：它下面的出口都算");
+        assert_eq!(quiet(&Targets { maint: [n3].into(), firing: [n4].into(), ..Targets::default() }), Some(true));
+        // 同机 IP 节点的 agent 离线只由宿主机报：宿主机在告警，节点也算，文案写宿主机名
+        let host = Uuid::from_u128(7);
+        let hosts: HashMap<Uuid, (Uuid, String)> = [(n3, (host, "团队2-07".to_string())), (n4, (host, "团队2-07".to_string()))].into();
+        let tg = Targets { maint: HashSet::new(), firing: [host].into(), hosts };
+        assert_eq!(quiet(&tg), Some(true));
+        assert_eq!(problems(&v, None, &tg, now).0.into_iter().find(|p| p.rule == EXITS_DOWN).unwrap().text, "2 个出口连续两次延迟测试不通：节点01、节点02（其中 2 个指向的团队2-07 正在告警）");
         // 其他规则从不 quiet
         let mut bad = healthy();
         bad.interfaces[0].up = false;

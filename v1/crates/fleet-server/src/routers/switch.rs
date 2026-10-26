@@ -244,16 +244,25 @@ async fn origin_blocker(st: &AppState, c: &Active) -> ApiResult<Option<String>> 
         return Ok(Some(format!("原出口「{}」现在不通（连续 {} 次测延迟不通）", x.name, x.fail_streak)));
     }
     let Some(e) = &x.entry else { return Ok(None) };
-    let hit: Option<(Uuid, String)> = sqlx::query_as(
-        "select subject_id, rule from incident where state = 'firing' and engine = 'machine' and severity::text = 'critical'
-           and rule in ('egress_fail', 'tcp_fail', 'agent_offline') and subject_id in ($1, $2) order by opened_at limit 1",
+    // 同机 IP 节点没有自己的 agent，agent 离线只由宿主机报：宿主机的告警也算，文案写宿主机名
+    let hit: Option<(Uuid, String, Option<String>)> = sqlx::query_as(
+        "select i.subject_id, i.rule, case when i.subject_id <> $1 and i.subject_id <> $2 then display_name(m.kind::text, m.label, t.name, m.number) end
+         from incident i left join machine m on m.id = i.subject_id left join team t on t.id = m.team_id
+         where i.state = 'firing' and i.engine = 'machine' and i.severity::text = 'critical' and i.rule in ('egress_fail', 'tcp_fail', 'agent_offline')
+           and i.subject_id in ($1, $2, (select host_id from machine where id = $1)) order by i.opened_at limit 1",
     )
     .bind(e.node_id)
     .bind(e.relay_id)
     .fetch_optional(&st.db)
     .await?;
-    Ok(hit.map(|(id, rule)| {
-        let who = if id == e.node_id { &e.node_name } else { &e.relay_name };
+    Ok(hit.map(|(id, rule, host)| {
+        let who = if id == e.node_id {
+            &e.node_name
+        } else if id == e.relay_id {
+            &e.relay_name
+        } else {
+            host.as_ref().unwrap_or(&e.node_name)
+        };
         format!("原出口「{}」指向的 {who} 有进行中的严重告警（{}）", x.name, crate::meta::rule_label(&rule))
     }))
 }
