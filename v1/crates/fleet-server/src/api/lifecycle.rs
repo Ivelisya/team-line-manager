@@ -508,8 +508,11 @@ pub struct RebalanceIn {
 
 pub(crate) fn quota_q(m: &MachineView, now: OffsetDateTime) -> Q {
     let q = &m.quota;
-    let days_left = q.period_end.map_or(0.0, |e| ((q.period_start_at + time::Duration::days((e - q.period_start).whole_days())) - now).as_seconds_f64().max(0.0) / 86400.0);
-    Q { limit: q.limit_gb.map(|g| g as f64 * 1e9), used: q.used as f64, daily: q.daily_avg.unwrap_or(0) as f64, days_left }
+    let (limit, daily) = (q.limit_gb.map(|g| g as f64 * 1e9), q.daily_avg.unwrap_or(0) as f64);
+    // 近 30 天滚动计的没有重置日：按 30 天稳态算（见 `Q::rolling`），不是只看已用
+    let Some(e) = q.period_end else { return Q::rolling(limit, daily) };
+    let days_left = ((q.period_start_at + time::Duration::days((e - q.period_start).whole_days())) - now).as_seconds_f64().max(0.0) / 86400.0;
+    Q { limit, used: q.used as f64, daily, days_left }
 }
 
 /// 各线路机的折算系数 k = 网卡计费日均 ÷ 它转发的业务日均（搬迁建议、放置矩阵共用）。业务量是近 7 天（各自的日均窗口）
@@ -675,7 +678,7 @@ pub async fn rebalance(_a: Actor, State(st): State<AppState>, ApiPath(relay): Ap
     } else if !reached {
         out["reason"] = json!("能搬的入口都搬走也撑不到重置日（被排除的、已在目标上有入口的、直出的不算）");
     } else if !tq.fits(extra) {
-        out["reason"] = json!(format!("目标线路机放不下：接收后到重置日预计超过它上限的 {}%", crate::quota::TARGET_SAFE_PCT));
+        out["reason"] = json!(format!("目标线路机放不下：接收后{}预计超过它上限的 {}%", if tgt.quota.period_end.is_none() { "按近 30 天的速度" } else { "到重置日" }, crate::quota::TARGET_SAFE_PCT));
     }
     Ok(ok(out))
 }
