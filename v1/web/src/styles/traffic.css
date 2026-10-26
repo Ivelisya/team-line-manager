@@ -19,7 +19,7 @@
 .dt-heat tfoot td:is(:first-child, :last-child) { background: var(--sunken); }
 .dt-sum tfoot td { font-variant-numeric: var(--num-variant); }
 .dt-sum td { font-variant-numeric: var(--num-variant); }
-/* 窄屏不把数字挤成省略号：撑开到 520px，外层 TableWrap 横滑 */
+/* 窄屏不把数字挤成省略号：撑开到 560px，外层 TableWrap 横滑 */
 .dt-sum { min-width: 560px; }
 .tr-name { display: flex; align-items: center; gap: var(--sp-6); }
 .tr-name > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }

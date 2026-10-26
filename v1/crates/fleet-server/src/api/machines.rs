@@ -229,7 +229,7 @@ pub struct RenamePreviewQ {
 /// `router_exits`：新团队是备用团队时，还指向这台和随它一起移入的同机 IP 节点的软路由出口（只提示，不阻断）；其余为空。
 /// `spare_blocked`：改到备用团队但进不了备用时的原因（订阅已过期满 1 天、没有订阅、有进行中的作业等，同退役的「移进备用」；PATCH 会回 409），否则为 null。
 /// `warnings`：还被软路由出口指着的节点（这台和随它走的同机 IP 节点）换到的团队生效的访问策略与现在不同时，每台一句（客户会受影响；只提示，不阻断）。
-/// 没换团队、线路机四项都为空
+/// 没换团队、线路机：renames / ip_nodes / router_exits / warnings 都为空，spare_blocked 为 null
 pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<RenamePreviewQ>) -> ApiResult<Json<Value>> {
     let mut conn = st.db.acquire().await?;
     let (kind, label, team, number, spare_since): (String, Option<String>, Option<Uuid>, Option<i32>, Option<OffsetDateTime>) =

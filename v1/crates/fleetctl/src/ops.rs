@@ -359,12 +359,15 @@ pub fn retire(ctx: &Ctx, machine: &str, now: bool, reason: Option<&str>, no_clea
         } else {
             // 还有软路由出口指着它（或随行 IP 节点）时到期也不自动回收（spare.rs），不写回收日
             let held = pre["routers"].as_array().is_some_and(|r| !r.is_empty());
-            let when = if held { "软路由出口还指着时不自动回收".to_string() } else { format!("{} 起自动回收（账单时区）", st(sp, "/recycle_on")) };
-            outln(format!(
-                "将把 {name} 移进备用：→ {}，机器照常运行，{when}。在那之前移出备用（fleetctl rename {} --team <团队>）就是撤销退役。",
-                st(sp, "/to_name"),
-                st(sp, "/to_name")
-            ));
+            let to = st(sp, "/to_name");
+            outln(if held {
+                format!("将把 {name} 移进备用：→ {to}，机器照常运行，软路由出口还指着时不自动回收。移出备用（fleetctl rename {to} --team <团队>）就是撤销退役。")
+            } else {
+                format!(
+                    "将把 {name} 移进备用：→ {to}，机器照常运行，{} 起自动回收（账单时区）。在那之前移出备用（fleetctl rename {to} --team <团队>）就是撤销退役。",
+                    st(sp, "/recycle_on")
+                )
+            });
             if !ip_nodes.is_empty() {
                 outln(format!("同机 IP 节点一起进备用：{}", ip_nodes.join("，")));
             }

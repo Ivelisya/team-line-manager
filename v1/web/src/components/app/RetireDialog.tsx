@@ -76,7 +76,7 @@ export const RetireDialog = resetOnOpen(function RetireDialog({ m, open, onOpenC
         <div className="choice-list" role="radiogroup" aria-label="去向">
           <Choice checked={mode === 'spare'} onSelect={() => setPick('spare')}>
             移入备用 → {p.spare.to_name}{p.routers.length > 0 ? `（${HELD_TEXT}）` : due && recycle ? `（到期 ${due}，${recycle} 起自动回收）` : recycle ? `（${recycle} 起自动回收）` : ''}
-            <InfoTip text={`移到团队「${p.spare.team.name}」，改名为 ${p.spare.to_name}。机器照常运行，到期满 1 天后自动清理并移入回收站\n想留下它，把团队改回去就行`} />
+            <InfoTip text={`移到团队「${p.spare.team.name}」，改名为 ${p.spare.to_name}。机器照常运行，${p.routers.length > 0 ? '软路由出口还指着它时不自动回收（先改指向或立即回收）' : '到期满 1 天后自动清理并移入回收站'}\n想留下它，把团队改回去就行`} />
           </Choice>
           <Choice checked={mode === 'now'} onSelect={() => setPick('now')}>
             立即清理并移入回收站 <span className="t-sub">已有连接会断开</span>

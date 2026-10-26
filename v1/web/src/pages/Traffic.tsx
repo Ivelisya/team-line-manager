@@ -85,13 +85,18 @@ export function TrafficPage() {
 /** KPI 的读数：数 + 小单位（Stat 的 unit 只收字符串，这里单位跟着数走） */
 const StatNum = ({ f }: { f: F.Fmt }) => <>{f.v}{f.u && <small>{f.u}</small>}</>;
 
-/** 打开到最右（最近几天），再对齐到列边：固定的第一列不盖住右对齐数字的前几位 */
+/** 打开到最右（最近几天）。滚到底时固定的第一列会盖住半截列（右对齐的数字丢前几位，39.4 GB 看成 9.4 GB）：
+ *  表格右边补一段不到一列宽的空白，让最右的滚动位置正好落在列边上 */
 function scrollToEnd(w: HTMLElement) {
+  const table = w.querySelector<HTMLElement>('table');
+  if (table) table.style.marginRight = '';
   w.scrollLeft = w.scrollWidth;
-  const ths = Array.from(w.querySelectorAll<HTMLElement>('thead tr:first-child th'));
-  const sticky = ths[0]?.offsetWidth ?? 0;
-  const col = ths.slice(1).find((th) => th.offsetLeft >= w.scrollLeft + sticky);
-  if (col) w.scrollLeft = col.offsetLeft - sticky;
+  const edge = w.scrollLeft + (w.querySelector<HTMLElement>('thead tr:first-child th')?.offsetWidth ?? 0);
+  if (!table || w.scrollLeft <= 0) return;
+  const cut = Array.from(w.querySelectorAll<HTMLElement>('thead tr:first-child th')).slice(1).find((th) => th.offsetLeft < edge && th.offsetLeft + th.offsetWidth > edge);
+  if (!cut) return;
+  table.style.marginRight = `${cut.offsetLeft + cut.offsetWidth - edge}px`;
+  w.scrollLeft = w.scrollWidth;
 }
 
 function useScrollEnd(dep: unknown) {
