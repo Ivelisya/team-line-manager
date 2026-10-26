@@ -480,6 +480,19 @@ async fn validation() {
     assert!(t.get(&url(w.new)).await["warnings"].to_string().contains("开着自动续费：进备用时会关掉"));
     sqlx::query("update subscription set due_date = '2020-01-01' where machine_id = $1").bind(w.old).execute(&t.st.db).await.unwrap();
     assert!(t.get(&url(w.new)).await["warnings"].to_string().contains("订阅已过期满 1 天：进备用后下一轮维护（一小时内）就自动回收"));
+    // 旧节点上还有在用的同机 IP 节点：替换不带走它们，旧节点进备用后不会自动回收（视图 live_ip_nodes）；IP 节点自己也进了备用就不提
+    let old_team: Uuid = sqlx::query_scalar("select team_id from machine where id = $1").bind(w.old).fetch_one(&t.st.db).await.unwrap();
+    let ip = Uuid::now_v7();
+    sqlx::query("insert into machine (id, kind, team_id, number, primary_ip, ssh_port, lifecycle, host_id, activated_at) values ($1, 'vps', $2, 9, '203.0.113.77'::inet, null, 'active', $3, now())")
+        .bind(ip)
+        .bind(old_team)
+        .bind(w.old)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    assert!(t.get(&url(w.new)).await["warnings"].to_string().contains("旧节点上的同机 IP 节点 团队2-09 仍在用：旧节点进备用后不会自动回收"));
+    sqlx::query("update machine set team_id = $2 where id = $1").bind(ip).bind(w.spare).execute(&t.st.db).await.unwrap();
+    assert!(!t.get(&url(w.new)).await["warnings"].to_string().contains("同机 IP 节点"));
     // 新节点在别的团队：替换时改到旧节点的团队（提示一下）
     let other = seed_team(t, "待分配").await;
     let x = node(t, other, 1, "203.0.113.30").await;

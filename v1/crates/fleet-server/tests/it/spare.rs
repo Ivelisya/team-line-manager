@@ -8,9 +8,10 @@ use crate::common;
 
 use axum::http::StatusCode;
 use common::{seed_node, seed_relay, seed_team, setup, T};
-use fleet_server::spare;
+use fleet_server::{alerts, spare};
 use serde_json::{json, Value};
 use time::macros::datetime;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// 迁移建好的唯一备用团队
@@ -777,6 +778,75 @@ async fn spare_host_is_held_by_router_exit_on_its_ip_node() {
     assert_eq!((v["router_exits"].clone(), v["recycle_on"].clone(), v["recycle_held"].clone()), (json!([]), json!("2026-10-22"), json!(false)), "{v}");
     let r = spare::run_once(&t.st, now).await.unwrap();
     assert!(r.retired == [host] && r.kept.is_empty(), "{r:?}");
+}
+
+/// 备用宿主机上还有在用（不在备用团队）的同机 IP 节点：宿主机不是闲置备用——视图的 live_ip_nodes 列出它们、不给回收日（recycle_held），
+/// 照常告警（续费提醒开出来、带「同机 IP 节点 X 还在用」的说明），到期满 1 天也不自动回收（kept）；IP 节点进了备用之后恢复闲置、照常回收
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn spare_host_with_live_ip_node_is_not_idle() {
+    let t = setup(false).await;
+    let sp = spare_team(&t).await;
+    let a = seed_team(&t, "团队1").await;
+    let host = seed_vps(&t, sp, 1, "203.0.113.81", None).await;
+    let ip = seed_vps(&t, a, 1, "203.0.113.82", Some(host)).await;
+    sub(&t, host, "2026-10-20", "UTC").await;
+
+    let v = t.get(&format!("/api/v1/machines/{host}")).await;
+    assert_eq!((v["live_ip_nodes"].clone(), v["router_exits"].clone()), (json!(["团队1-01"]), json!([])), "{v}");
+    assert_eq!((v["recycle_on"].clone(), v["recycle_held"].clone()), (Value::Null, json!(true)), "{v}");
+    let renewal = v["health"]["reasons"].as_array().unwrap().iter().find(|r| r["key"] == "renewal_due").map(|r| r["text"].as_str().unwrap().to_string());
+    assert!(renewal.is_some_and(|x| x.contains("同机 IP 节点 团队1-01 还在用") && x.contains("未自动回收") && !x.contains("软路由出口")), "{v}");
+    // 不是闲置备用：告警照常开（闲置备用一条都不开）
+    let mut state = alerts::AlertState::default();
+    t.st.live.invalidate();
+    alerts::evaluate_once(&t.st, &mut state, OffsetDateTime::now_utc()).await.unwrap();
+    assert_eq!(t.count(&format!("select count(*) from incident where state = 'firing' and rule = 'renewal_due' and subject_id = '{host}'")).await, 1);
+
+    let now = datetime!(2026-10-23 00:00 UTC);
+    let r = spare::run_once(&t.st, now).await.unwrap();
+    assert!(r.retired.is_empty() && r.kept == [host], "{r:?}");
+    assert!(last_job(&t, host, "retire").await.is_none());
+
+    // IP 节点也进了备用：宿主机恢复闲置，回收日回来，下一轮照常回收
+    sqlx::query("update machine set team_id = $2, number = 2 where id = $1").bind(ip).bind(sp).execute(&t.st.db).await.unwrap();
+    t.st.live.invalidate();
+    let v = t.get(&format!("/api/v1/machines/{host}")).await;
+    assert_eq!((v["live_ip_nodes"].clone(), v["recycle_on"].clone(), v["recycle_held"].clone()), (json!([]), json!("2026-10-22"), json!(false)), "{v}");
+    let r = spare::run_once(&t.st, now).await.unwrap();
+    assert!(r.retired == [host] && r.kept.is_empty(), "{r:?}");
+}
+
+/// 手动把宿主机改进备用团队：随行的同机 IP 节点口径和退役的「移进备用」一致，带走所有不在备用、没退役的，不只同团队的；
+/// 它们原来所在的团队各自压缩编号；预览（ip_nodes、renames）同口径
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn patch_host_into_spare_takes_ip_nodes_of_other_teams() {
+    let t = setup(false).await;
+    let sp = spare_team(&t).await;
+    let (a, b) = (seed_team(&t, "团队1").await, seed_team(&t, "团队2").await);
+    let host = seed_vps(&t, a, 1, "203.0.113.91", None).await;
+    let ip_same = seed_vps(&t, a, 2, "203.0.113.92", Some(host)).await;
+    let ip_other = seed_vps(&t, b, 1, "203.0.113.93", Some(host)).await;
+    let stay = seed_vps(&t, b, 2, "203.0.113.94", None).await;
+    // 单独退役进备用的 IP 节点留在备用，不算「带走」
+    let ip_spare = seed_vps(&t, sp, 1, "203.0.113.95", Some(host)).await;
+    sub(&t, host, "2099-01-01", "UTC").await;
+
+    let pv = t.get(&format!("/api/v1/machines/{host}/rename-preview?team_id={sp}")).await;
+    let ips: Vec<(&str, &str)> = pv["ip_nodes"].as_array().unwrap().iter().map(|x| (x["old_name"].as_str().unwrap(), x["new_name"].as_str().unwrap())).collect();
+    assert_eq!(ips, [("团队1-02", "备用-03"), ("团队2-01", "备用-04")], "{pv}");
+    let renames: Vec<(&str, &str)> = pv["renames"].as_array().unwrap().iter().map(|x| (x["old_name"].as_str().unwrap(), x["new_name"].as_str().unwrap())).collect();
+    assert_eq!(renames, [("团队2-02", "团队2-01")], "团队1 里宿主机和 02 都走了没有要补的号；团队2 的 02 前移：{pv}");
+
+    let rev: i32 = sqlx::query_scalar("select revision from machine where id = $1").bind(host).fetch_one(&t.st.db).await.unwrap();
+    let (s, v) = t.req("PATCH", &format!("/api/v1/machines/{host}"), Some(json!({"revision": rev, "team_id": sp})), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let row = |m: Uuid| {
+        let t = &t;
+        async move { sqlx::query_as::<_, (Uuid, Option<i32>)>("select team_id, number from machine where id = $1").bind(m).fetch_one(&t.st.db).await.unwrap() }
+    };
+    assert_eq!((row(host).await, row(ip_same).await, row(ip_other).await), ((sp, Some(2)), (sp, Some(3)), (sp, Some(4))));
+    assert_eq!(row(ip_spare).await, (sp, Some(1)), "原来就在备用的不动");
+    assert_eq!(row(stay).await, (b, Some(1)), "团队2 少了 01，02 前移补号");
 }
 
 /// 改团队 / 退役进备用时，还被软路由出口指着的节点生效的访问策略会变（团队策略不同）：预览的 warnings（改团队）/ spare.warnings（退役）写明；

@@ -9,6 +9,7 @@
 //!    操作人记「系统」，作业参数与审计带 auto = spare_expiry；经通知渠道发一条「自动回收」。
 //!
 //! 软路由出口还指向它的（快照里对上了它或它上面没退役的同机 IP 节点的入口，routers::exits_using_with_ip_nodes）同样不自动回收：回收会摘入口，客户出口跟着断。续费提醒（health.rs）写明哪些出口指着它、要先改指向（repoint）或确认后立即回收。
+//! 宿主机上还有不在备用团队的同机 IP 节点（`keeps_live`）的也不自动回收，视图里不算闲置备用（views::MachineView::live_ip_nodes）：照常告警、照常提醒续费（宿主机断了 IP 节点跟着断）。
 //!
 //! 机器（含它上面的同机 IP 节点）有进行中的作业时跳过，下一轮再看；物理删除失败过的不再自动重建（等人重试那个作业）。
 //! 续费顺延了到期日自然不回收；开着自动续费的不回收（自动续费那一轮出错没顺延成，也不会被当成过期清掉；进备用时会把自动续费关掉，见 api::machines::move_to_spare）。到期前的提醒复用续费告警（health.rs 在提醒文字后接 `due_note`；还有软路由出口指向它的改接 `pointed_note`）：
@@ -69,6 +70,24 @@ pub fn pointed_note(due_days: i64, exits: &[String]) -> String {
     // 过期满 1 天（`expired`：due_days <= -2）本该已经回收了；还没到回收日的（含过期第 1 天）写「到回收日也不会」，不写「到期后」（可能已经过期了）
     let kept = if due_days <= -2 { "未自动回收" } else { "到回收日也不会自动回收" };
     format!("；软路由出口 {} 还指向它，{kept}：先改指向或立即回收", exits.join("、"))
+}
+
+/// 备用宿主机上还有不在备用团队的同机 IP 节点时续费提醒后面接的一句（宿主机退役会连带它们，所以不自动回收；宿主机不续费，IP 节点跟着断）。`nodes`：IP 节点的显示名
+pub fn live_ip_note(due_days: i64, nodes: &[String]) -> String {
+    let kept = if due_days <= -2 { "未自动回收" } else { "到回收日也不会自动回收" };
+    format!("；同机 IP 节点 {} 还在用，{kept}：先退役或换走这些 IP 节点，或给这台宿主机续费", nodes.join("、"))
+}
+
+/// 备用机器不自动回收的原因（软路由出口还指着、上面还有在用的同机 IP 节点）接在续费提醒后面的话；两样都没有为空串
+pub fn held_note(due_days: i64, exits: &[String], ip_nodes: &[String]) -> String {
+    let mut s = String::new();
+    if !exits.is_empty() {
+        s += &pointed_note(due_days, exits);
+    }
+    if !ip_nodes.is_empty() {
+        s += &live_ip_note(due_days, ip_nodes);
+    }
+    s
 }
 
 /// 一轮做了什么（测试用；日志在各步里记）

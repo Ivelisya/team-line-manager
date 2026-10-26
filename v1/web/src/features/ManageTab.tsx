@@ -15,7 +15,7 @@ import { Button } from '@/components/ui/button';
 import { Field, InfoTip, Input, Textarea } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
-import { HELD_TEXT, Note, Section, SectionHeader } from '@/components/app/primitives';
+import { HELD_TEXT, heldNote, Note, Section, SectionHeader } from '@/components/app/primitives';
 import { ShowAll } from '@/components/app/Pagination';
 import { RouterMark, entryStatus } from './EntriesTable';
 import { useEntryRouters } from '@/lib/routers';
@@ -36,7 +36,7 @@ const NOTE_MAX = 2000;
 export function ManageTab({ m, onClosed }: { m: MachineView; onClosed: () => void }) {
   const retired = m.lifecycle === 'retired';
   const active = m.lifecycle === 'active';
-  // 闲置备用（等到期放生、没有软路由出口指着）不再加 IP 节点、调优、替换；还被出口指着的备用保留替换
+  // 闲置备用（等到期放生、没有软路由出口指着、没有在用的同机 IP 节点）不再加 IP 节点、调优、替换；还被出口指着的备用保留替换
   const idle = isIdleSpare(m);
   const ipNodes = m.kind === 'vps' && !m.host_machine && active && !idle;
   return (
@@ -398,6 +398,10 @@ function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }
   // 备用里的机器：退役已经做过了，这里只剩提前回收；要留下它就改回别的团队（上面的改名）
   const inSpare = m.spare && m.lifecycle === 'active';
   const on = recycleOn(m);
+  // 软路由出口指着这台（含它上面同机 IP 节点的入口）：移入备用后不自动回收（m.router_exits 只对已在备用里的机器填，这里按入口上的软路由标记判断）
+  const routers = useEntryRouters();
+  const machines = useMachines().data;
+  const pointed = [m, ...(machines ?? []).filter((x) => x.host_machine?.id === m.id && x.lifecycle !== 'retired')].some((x) => x.entries.some((e) => routers.has(e.id)));
   // ip_nodes 含已在退役中的；退役宿主机只连带还没开始退役的（同服务端），说法按这个写
   const n = m.ip_nodes.length;
   if (m.lifecycle === 'retired') return null;
@@ -410,7 +414,7 @@ function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }
             <div>
               <div className="t">立即回收</div>
               <div className="hint">
-                {m.spare_since ? `已于 ${mmdd(m.spare_since)} 退役` : '在备用团队'}{m.spare_from && `（原 ${m.spare_from}）`}，{m.recycle_held ? HELD_TEXT : on ? `${on} 起自动回收` : '没有订阅，不会自动回收'}
+                {m.spare_since ? `已于 ${mmdd(m.spare_since)} 退役` : '在备用团队'}{m.spare_from && `（原 ${m.spare_from}）`}，{m.recycle_held ? heldNote(m).text : on ? `${on} 起自动回收` : '没有订阅，不会自动回收'}
                 {' '}<InfoTip text={'清理节点并移入回收站，不等到期\n想留下它，请到上面的「改名」把团队改回去'} />
               </div>
             </div>
@@ -421,7 +425,7 @@ function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }
                   '同团队后面的节点会自动前移补号。', n > 0 && `这台机器上还有 ${n} 个同机 IP 节点，会一起退役`,
                 ].filter(Boolean).join('\n')} /></>}</div>
               {/* 线路机不能进备用；节点默认移入备用，没有同机关系时也写一句短话，不留一个孤零零的 (i) */}
-              <div className="hint">{m.kind === 'relay' ? '线路机只能立即回收。请先搬空节点，直出入口会一起移除' : m.host_machine ? `宿主机「${m.host_machine.name}」不受影响` : n > 0 ? `${n} 个同机 IP 节点会一起退役` : `移入备用${m.subscription ? ` · ${F.addDays(m.subscription.due_date, 2).slice(5)} 起自动回收` : ''}`}</div>
+              <div className="hint">{m.kind === 'relay' ? '线路机只能立即回收。请先搬空节点，直出入口会一起移除' : m.host_machine ? `宿主机「${m.host_machine.name}」不受影响` : n > 0 ? `${n} 个同机 IP 节点会一起退役` : `移入备用${pointed ? ` · ${HELD_TEXT}` : m.subscription ? ` · ${F.addDays(m.subscription.due_date, 2).slice(5)} 起自动回收` : ''}`}</div>
             </div>
           )}
           <Button variant="outline-danger" disabled={busyJob || m.lifecycle === 'retiring'} onClick={() => setOpen(true)}>{inSpare ? '立即回收…' : '退役…'}</Button>
