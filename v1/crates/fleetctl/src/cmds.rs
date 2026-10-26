@@ -291,9 +291,17 @@ fn incident_table(list: &[Value], with_state: bool) -> String {
     table::render(head, &rows)
 }
 
-/// `ls --due N`：在用、有订阅、N 天内到期（含已过期）。自动续费的也算（到期列标出来）
+/// 闲置备用机（备用团队里等到期放生的，不续费；视图 `idle_spare`）。旧中控没有这个字段：备用团队的机器按闲置算，只有 `recycle_held`（被扣住不回收）为 true 的不算
+fn idle_spare(m: &Value) -> bool {
+    match m["idle_spare"].as_bool() {
+        Some(b) => b,
+        None => m["spare"] == true && m["recycle_held"] != true,
+    }
+}
+
+/// `ls --due N`：在用、有订阅、N 天内到期（含已过期）。自动续费的也算（到期列标出来）；闲置备用机不算（它们不续费，到期了等着自动回收）
 fn due_within(m: &Value, n: i64) -> bool {
-    st(m, "/lifecycle") == "active" && m.pointer("/subscription/due_days").and_then(Value::as_i64).is_some_and(|d| d <= n)
+    st(m, "/lifecycle") == "active" && !idle_spare(m) && m.pointer("/subscription/due_days").and_then(Value::as_i64).is_some_and(|d| d <= n)
 }
 
 /// `ls --due` 的到期列：`2026-10-25（3 天后到期）`；自动续费的到期前不提醒、过期才告警，标出来
@@ -1233,6 +1241,19 @@ mod tests {
         assert!(due_within(&m("active", 7), 7) && due_within(&m("active", -2), 0));
         // 不在用的、到期还远的、没有订阅的不列
         assert!(!due_within(&m("active", 8), 7) && !due_within(&m("provisioning", 1), 7) && !due_within(&json!({"lifecycle": "active", "subscription": null}), 7));
+        // 闲置备用机不列（生产里 status 即将到期 0、ls --due 却列了 6 台备用）；被扣住不回收的照列；旧中控没有 idle_spare 字段按备用团队算
+        let sp = |extra: Value| {
+            let mut v = m("active", -1);
+            v["spare"] = json!(true);
+            for (k, x) in extra.as_object().unwrap() {
+                v[k] = x.clone();
+            }
+            v
+        };
+        assert!(!due_within(&sp(json!({"idle_spare": true})), 7), "闲置备用不列");
+        assert!(due_within(&sp(json!({"idle_spare": false, "recycle_held": true})), 7), "被扣住的备用照列");
+        assert!(!due_within(&sp(json!({})), 7) && !due_within(&sp(json!({"recycle_held": false})), 7), "旧中控：备用团队的按闲置算");
+        assert!(due_within(&sp(json!({"recycle_held": true})), 7), "旧中控：被扣住的照列");
         assert_eq!(due_cell(&ls_item(&m("active", -2), true)), "2026-10-20（已过期 2 天）");
         let auto = ls_item(&json!({"subscription": {"due_date": "2026-10-25", "due_days": 3, "auto_renew": true}}), true);
         assert_eq!(due_cell(&auto), "2026-10-25（3 天后到期，自动续费）");

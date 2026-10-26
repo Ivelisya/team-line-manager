@@ -330,7 +330,7 @@ enum Cmd {
         /// 健康状态（ok/degraded/down/unknown/maintenance）或生命周期（active/provisioning/…）
         #[arg(long)]
         status: Option<String>,
-        /// 只列 N 天内到期（含已过期）的在用机器，按到期日排，表格加「到期」列（自动续费的也列出并标明）
+        /// 只列 N 天内到期（含已过期）的在用机器，按到期日排，表格加「到期」列（自动续费的也列出并标明；等到期放生的闲置备用机不列，它们不续费，被出口指着 / 开着自动续费等不自动回收的备用机照列）
         #[arg(long, value_name = "DAYS")]
         due: Option<i64>,
     },
