@@ -136,7 +136,7 @@ tune-v2 借鉴了开源脚本 tcpfit 的缓冲区推导（只搬这一处推导�
   原始时序保留 `retention.raw_days`（默认 3 天：读原始点的曲线最多 24 小时，7d / 30d 走小时汇总，agent 离线队列 6 小时就淘汰）。
   另外几张不分区的表也在 `[retention]` 里：客户入口连通性原始记录 `reach_days`（默认 2 天；小时汇总 `relay_reach_hourly` 一直留着）、
   三网 PING 原始记录 `ping_days`（默认 7 天）与小时汇总 `ping_hourly_days`（默认 90 天）。不填照旧。
-  放置矩阵只存小时汇总 `relay_node_rtt_hourly`，固定 30 天（`placement.rs` 的后台循环每小时清）。
+  放置矩阵只存小时汇总 `relay_node_rtt_hourly`，固定 7 天（`placement.rs` 的后台循环每小时清；早于上一小时的 rtts 数组也在这一轮清空，矩阵只读各小时的 p50_ms）。
   访问记录（原始记录、小时汇总、新目标、来源画像）的保留期在面板里设（默认原始记录 7 天、汇总 31 天，1–90 天；`retention.access_days`
   只作没设过时的默认值，见 OPS.md §13）；上报接收窗口、分区维护、彻底删除的时间窗都按这些值推出。
 - 流量计量（v2，迁移 0040）：两路，口径不混。
