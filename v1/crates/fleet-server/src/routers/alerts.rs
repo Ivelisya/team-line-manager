@@ -9,7 +9,7 @@
 //! | router_offline | 警告 | 接入过的路由重新接入（重新生成接入命令、重新部署）之后 30 分钟还没连上 |
 //! | router_collect_error | 警告 | 连得上，但采集脚本出错、输出解析不了、超时（满 60 秒） |
 //! | router_openclash_down | 严重 | OpenClash 启用了、核心没在跑（满 60 秒） |
-//! | router_exits_down | 警告；全部 fleet 出口都不通升严重 | 有 fleet 出口（对上了 fleet 入口的）连续两次延迟测试不通（每 5 分钟测一次），且从第一次不通起满 150 秒（同机器 egress_fail 的去抖，几十秒到几分钟的出口抖动不报）；客户自己的出口不算。摘要附上不通的出口指向的节点 / 线路机此刻在维护或严重告警中的（「其中 2 个指向的团队2-03 正在告警」）；不通的出口指向的都在维护中时不开（维护期间预期不通，开着的保持）；不通的出口指向的都已有机器的严重告警（出口不通、TCP 不通、agent 离线）在报时，告警照开、挂在路由上，但不单独通知（一个节点挂了不再每台路由各报一条），原因单独留下来时补发 |
+//! | router_exits_down | 警告；全部 fleet 出口都不通升严重 | 有 fleet 出口（对上了 fleet 入口的）连续两次延迟测试不通（每 5 分钟测一次），且从第一次不通起满 180 秒（同机器 egress_fail 的 150 秒再多一轮，让机器告警先开，几十秒到几分钟的出口抖动不报）；客户自己的出口不算。摘要附上不通的出口指向的节点 / 线路机此刻在维护或严重告警中的（「其中 2 个指向的团队2-03 正在告警」）；不通的出口指向的都在维护中时不开（维护期间预期不通，开着的保持）；不通的出口指向的都已有机器的严重告警（出口不通、TCP 不通、agent 离线）在报时，告警照开、挂在路由上，但不单独通知（一个节点挂了不再每台路由各报一条），原因单独留下来时补发 |
 //! | router_wan_down | 严重 | WAN 口（逻辑接口 wan）断开（满 60 秒） |
 //! | router_resource_high | 警告 | CPU > 90% 持续 10 分钟、内存 > 90%、存储 > 90%、连接表 > 80%（后三项满 60 秒） |
 //! | router_exit_drift | 警告 | 有出口对上了 fleet 入口、但参数和入口现在的不一致（凭据轮换后没同步、入口已删除 / 停用，见 clash.rs），持续两轮采集（满 30 秒）。抽屉与告警里可以一键同步（作业 router_sync） |
@@ -47,8 +47,13 @@ const DEBOUNCE_S: i64 = 60;
 const OFFLINE_S: i64 = 60;
 /// CPU 持续偏高满这么久
 const CPU_SUSTAIN_S: i64 = 600;
-/// 出口连续不通：从第一次不通的测试起满这么久才开（同机器 egress_fail，见 alerts.rs `EGRESS_FAIL_S`）。采集每 30 秒重测不通的出口，所以到这时已经测了五次左右
-const EXITS_DOWN_S: i64 = crate::alerts::EGRESS_FAIL_S;
+/// 采集 / 评估的间隔（秒）：路由采集和机器告警评估都是每 30 秒一轮
+const EVAL_TICK_S: i64 = 30;
+/// 出口连续不通：从第一次不通的测试起满这么久才开 = 同机器 egress_fail 的去抖（alerts.rs `EGRESS_FAIL_S`）再多一轮。
+/// 路由出口不通通常和指向的节点 / 线路机的 egress_fail 同时发生；两边都在 150 秒开的话，路由告警可能先入库，
+/// 那一轮机器告警还没开，quiet 判不出来就会单独通知。晚一轮，机器告警先开，路由告警判 quiet 时看得到。
+/// 采集每 30 秒重测不通的出口，所以到这时已经测了六次左右
+const EXITS_DOWN_S: i64 = crate::alerts::EGRESS_FAIL_S + EVAL_TICK_S;
 /// 出口参数不一致持续这么久（两轮采集）才开：替换、改出口指向的作业改配置的那一会儿不报
 const DRIFT_HOLD_S: i64 = 30;
 /// 时长判定的余量：采集每 30 秒一轮、每轮耗时不一，「满 60 秒」实际量到的是 59.x 秒，差这几秒不该再多等一轮
@@ -515,19 +520,19 @@ mod tests {
         assert!(ex(&tg).is_none() && exits_paused(&s, &tg, now));
     }
 
-    /// 出口不通要从第一次不通的测试起满 150 秒（同机器 egress_fail）才开；只不通 1 次、几十秒就恢复的不报
+    /// 出口不通要从第一次不通的测试起满 180 秒（同机器 egress_fail 的 150 秒再多一轮）才开；只不通 1 次、几十秒就恢复的不报
     #[test]
-    fn exits_down_needs_150s() {
+    fn exits_down_needs_180s() {
         let now = OffsetDateTime::now_utc();
         let mut s = healthy();
         s.exits[1].fail_streak = 2;
         let ex = |s: &Snapshot| problems(&view("online", Some(s.clone()), 0, now), None, &Targets::default(), now).0.into_iter().find(|p| p.rule == EXITS_DOWN);
-        for secs in [30, 60, 120, 144] {
+        for secs in [30, 60, 120, 150, 174] {
             s.exits[1].fail_since = Some(now - time::Duration::seconds(secs));
             assert!(ex(&s).is_none(), "{secs} 秒还不到");
         }
-        // 满 150 秒（含 5 秒余量）开
-        for secs in [145, 150, 600] {
+        // 满 180 秒（含 5 秒余量）开
+        for secs in [175, 180, 600] {
             s.exits[1].fail_since = Some(now - time::Duration::seconds(secs));
             assert_eq!(ex(&s).unwrap().text, "1 个出口连续两次延迟测试不通：节点02", "{secs} 秒");
         }
