@@ -17,39 +17,30 @@ pub const MAX_CONFIG: usize = 1024 * 1024;
 struct Cfg {
     #[serde(default)]
     proxies: Vec<P>,
-    dns: Option<Dns>,
 }
 
-/// dns 段里能用 `#组名` 指定走哪个出口 / 策略组的几处：nameserver-policy 的值（字符串或列表）、nameserver、fallback、proxy-server-nameserver
+/// 只取 dns 段，按通用值读（形状不对也读得进来）：它只用来找 `#组名`，读不了不该连累 `proxies`，所以和 `Cfg` 分开解析
 #[derive(Deserialize)]
-struct Dns {
-    #[serde(rename = "nameserver-policy", default)]
-    policy: std::collections::BTreeMap<String, OneOrMany>,
-    #[serde(default)]
-    nameserver: OneOrMany,
-    #[serde(default)]
-    fallback: OneOrMany,
-    #[serde(rename = "proxy-server-nameserver", default)]
-    proxy_server: OneOrMany,
+struct DnsOnly {
+    dns: Option<serde_json::Value>,
 }
 
-#[derive(Deserialize, Default)]
-#[serde(untagged)]
-enum OneOrMany {
-    #[default]
-    None,
-    One(String),
-    Many(Vec<String>),
-}
-
-impl OneOrMany {
-    fn items(&self) -> &[String] {
-        match self {
-            OneOrMany::None => &[],
-            OneOrMany::One(s) => std::slice::from_ref(s),
-            OneOrMany::Many(v) => v,
+/// dns 段里能用 `#组名` 指定走哪个出口 / 策略组的几处：nameserver-policy 的值（字符串或列表）、nameserver、fallback、proxy-server-nameserver。
+/// 形状不对的（不是字符串或字符串列表、列表里混着数字 / 映射）跳过那一项，其余照取
+fn dns_refs(dns: &serde_json::Value) -> Vec<String> {
+    use serde_json::Value;
+    fn strs(v: &Value) -> Vec<&str> {
+        match v {
+            Value::String(s) => vec![s.as_str()],
+            Value::Array(a) => a.iter().filter_map(Value::as_str).collect(),
+            _ => vec![],
         }
     }
+    let mut out: Vec<&str> = ["nameserver", "fallback", "proxy-server-nameserver"].iter().filter_map(|k| dns.get(*k)).flat_map(strs).collect();
+    if let Some(p) = dns.get("nameserver-policy").and_then(Value::as_object) {
+        out.extend(p.values().flat_map(strs));
+    }
+    out.into_iter().filter_map(dns_group).collect()
 }
 
 /// DNS 服务器写法里 `#` 后面的组名（`https://dns.example/dns-query#EXIT_1&h3=true` → `EXIT_1`）
@@ -120,8 +111,9 @@ pub fn parse_all(text: &str) -> Result<(Vec<Proxy>, Vec<String>), String> {
     })?;
     let t = |s: Option<String>| s.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     let mut refs: Vec<String> = cfg.proxies.iter().filter_map(|p| t(p.dialer.clone())).collect();
-    if let Some(d) = &cfg.dns {
-        refs.extend(d.policy.values().chain([&d.nameserver, &d.fallback, &d.proxy_server]).flat_map(|v| v.items()).filter_map(|s| dns_group(s)));
+    // dns 段读不了（形状不对）只是少几处引用，不影响 proxies
+    if let Some(d) = serde_saphyr::from_str::<DnsOnly>(text).ok().and_then(|c| c.dns) {
+        refs.extend(dns_refs(&d));
     }
     refs.sort();
     refs.dedup();
@@ -252,6 +244,36 @@ dns:
 ").unwrap().1, Vec::<String>::new());
         assert!(parse_all("dns:
   nameserver-policy: {x: [").is_err());
+    }
+
+    /// dns 段形状不对不连累 proxies：列表里混着数字 / 映射只跳过那一项，整段不是映射（或根本读不了）只放弃 dns 里的引用
+    #[test]
+    fn odd_dns_shapes_do_not_break_proxies() {
+        let proxies = "proxies:
+  - {name: 节点01, type: vless, server: 198.51.100.2, port: 20003, dialer-proxy: 跳板}
+";
+        let with = |dns: &str| parse_all(&format!("{proxies}{dns}")).unwrap_or_else(|e| panic!("{dns}：{e}"));
+        let (ps, refs) = with("dns:
+  nameserver-policy:
+    a.com: [1.1.1.1, 2]
+    b.com: [{x: 1}, \"tls://1.1.1.1#EXIT_3\"]
+    c.com: 5
+    d.com: {y: z}
+  nameserver: [8.8.8.8, 3, \"https://dns#EXIT_1\"]
+  fallback: 7
+");
+        assert_eq!((ps.len(), refs), (1, vec!["EXIT_1".to_string(), "EXIT_3".into(), "跳板".into()]));
+        for dns in ["dns: 5
+", "dns: [1, 2]
+", "dns: just text
+", "dns:
+  nameserver-policy: [a, b]
+  nameserver: {k: v}
+", "dns: ~
+"] {
+            let (ps, refs) = with(dns);
+            assert_eq!((ps.len(), refs), (1, vec!["跳板".to_string()]), "{dns}");
+        }
     }
 
     const UUID1: &str = "6f1c2c1e-6a9b-4c55-9d3e-8a6f1b2c3d4e";

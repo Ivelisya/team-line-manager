@@ -361,41 +361,62 @@ pub async fn load_row<'e, E: sqlx::PgExecutor<'e>>(ex: E, scope: Scope, id: Uuid
 }
 
 /// 节点单独设的访问策略（已发布的与草稿）改挂到另一个节点：替换节点交换编号时，「跟着客户走」的一部分（和来源画像一样）。
-/// 要换下来的节点原本就没有（或只是默认的跟随团队）什么都不动；新节点自己有节点级策略的以旧节点的为准，返回里带上被覆盖的那份。
+/// 要换下来的节点当前没有（或只是默认的跟随团队）节点级策略时，当前的策略行不动；历史版本的快照照样改写（旧节点曾经设过又清掉的，
+/// 回滚到那些版本也不能把策略放回进了备用的旧节点；重复执行结果不变）。新节点自己有节点级策略的以旧节点的为准，返回里带上被覆盖的那份。
 /// 调用方须已拿访问规则的锁（`api::policy::lock`，在事务开头、任何行锁之前）。线路机的期望状态由调用方同事务里刷新代数
-pub async fn move_node(conn: &mut sqlx::PgConnection, from: Uuid, to: Uuid, actor: &str) -> sqlx::Result<Option<NodeMoved>> {
-    let Some(old) = load_row(&mut *conn, Scope::Node, from).await?.filter(|r| !r.is_default()) else { return Ok(None) };
-    let replaced = load_row(&mut *conn, Scope::Node, to).await?.filter(|r| !r.is_default()).map(|r| r.summary());
-    sqlx::query("delete from policy where scope = 'node' and scope_id = $1").bind(to).execute(&mut *conn).await?;
-    sqlx::query("update policy set scope_id = $2, revision = revision + 1, updated_by = $3, updated_at = now() where scope = 'node' and scope_id = $1")
-        .bind(from)
-        .bind(to)
-        .bind(actor)
-        .execute(&mut *conn)
-        .await?;
+pub async fn move_node(conn: &mut sqlx::PgConnection, from: Uuid, to: Uuid, actor: &str) -> sqlx::Result<NodeMoved> {
+    let mut moved = NodeMoved::default();
+    if let Some(old) = load_row(&mut *conn, Scope::Node, from).await?.filter(|r| !r.is_default()) {
+        moved.replaced = load_row(&mut *conn, Scope::Node, to).await?.filter(|r| !r.is_default()).map(|r| r.summary());
+        moved.summary = Some(old.summary());
+        sqlx::query("delete from policy where scope = 'node' and scope_id = $1").bind(to).execute(&mut *conn).await?;
+        sqlx::query("update policy set scope_id = $2, revision = revision + 1, updated_by = $3, updated_at = now() where scope = 'node' and scope_id = $1")
+            .bind(from)
+            .bind(to)
+            .bind(actor)
+            .execute(&mut *conn)
+            .await?;
+    }
     // 历史版本的快照里这个节点也改挂到新节点（新节点原有的那项丢掉，同上以旧节点的为准）：不然回滚到替换前的任一版，
     // 会把策略放回已进备用的旧节点、把新节点写回默认。快照按 (团队在前, id) 排序，改挂后按同一顺序重排
-    sqlx::query(
-        "update policy_version v set snapshot = (
+    // 只改写含旧节点那项的版本（所以再来一遍是空操作）；同一版里新节点也有一项的，丢掉新节点的（以旧节点的为准）。
+    // 被改写的版本号，以及其中丢掉了新节点原有项的，审计里记下，改写可追溯
+    let hit: Vec<(i64, bool)> = sqlx::query_as(
+        "with hit as materialized (
+             select v.seq, exists (select 1 from jsonb_array_elements(v.snapshot) e where e->>'scope' = 'node' and e->>'scope_id' = $2::text) as dropped
+             from policy_version v
+             where exists (select 1 from jsonb_array_elements(v.snapshot) e where e->>'scope' = 'node' and e->>'scope_id' = $1::text))
+         update policy_version v set snapshot = (
              select coalesce(jsonb_agg(case when e->>'scope' = 'node' and e->>'scope_id' = $1::text then jsonb_set(e, '{scope_id}', to_jsonb($2::text)) else e end
                                        order by e->>'scope' = 'node', case when e->>'scope' = 'node' and e->>'scope_id' = $1::text then $2::text else e->>'scope_id' end),
                              '[]'::jsonb)
              from jsonb_array_elements(v.snapshot) e
              where not (e->>'scope' = 'node' and e->>'scope_id' = $2::text))
-         where exists (select 1 from jsonb_array_elements(v.snapshot) e where e->>'scope' = 'node' and e->>'scope_id' in ($1::text, $2::text))",
+         from hit where v.seq = hit.seq
+         returning v.seq, hit.dropped",
     )
     .bind(from)
     .bind(to)
-    .execute(&mut *conn)
+    .fetch_all(&mut *conn)
     .await?;
-    Ok(Some(NodeMoved { summary: old.summary(), replaced }))
+    moved.rewritten_seqs = hit.iter().map(|h| h.0).collect();
+    moved.dropped_seqs = hit.iter().filter(|h| h.1).map(|h| h.0).collect();
+    moved.rewritten_seqs.sort_unstable();
+    moved.dropped_seqs.sort_unstable();
+    Ok(moved)
 }
 
-/// `move_node` 搬走的那份策略（给作业日志用）
+/// `move_node` 做了什么（给作业日志、审计用）
+#[derive(Default)]
 pub struct NodeMoved {
-    pub summary: String,
+    /// 搬走的当前节点级策略；旧节点当前没有的为 None（此时没有策略行被搬，不记 replace 版本）
+    pub summary: Option<String>,
     /// 新节点原来自己有的节点级策略（被覆盖）
     pub replaced: Option<String>,
+    /// 快照被改写的历史版本号
+    pub rewritten_seqs: Vec<i64>,
+    /// 其中丢掉了新节点原有项的版本号
+    pub dropped_seqs: Vec<i64>,
 }
 
 /// 生效值视图

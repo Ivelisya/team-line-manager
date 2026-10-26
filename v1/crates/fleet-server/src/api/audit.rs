@@ -570,6 +570,9 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
             if let Some(n) = d["relays"].as_u64().filter(|n| *n > 0) {
                 parts.push(format!("{n} 台线路机"));
             }
+            if let Some(seqs) = d["rewritten_seqs"].as_array().filter(|a| !a.is_empty()) {
+                parts.push(format!("改写历史版本 {}", seqs.iter().filter_map(|s| s.as_i64()).map(|s| format!("v{s}")).collect::<Vec<_>>().join("、")));
+            }
             parts.join(" · ")
         }
         // 「原始记录 7 → 3 天，汇总 31 天」：改了的写从几天到几天，没改的只写天数

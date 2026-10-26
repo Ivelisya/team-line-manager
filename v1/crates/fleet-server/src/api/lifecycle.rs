@@ -509,10 +509,10 @@ pub struct RebalanceIn {
 pub(crate) fn quota_q(m: &MachineView, now: OffsetDateTime) -> Q {
     let q = &m.quota;
     let (limit, daily) = (q.limit_gb.map(|g| g as f64 * 1e9), q.daily_avg.unwrap_or(0) as f64);
-    // 近 30 天滚动计的没有重置日：按 30 天稳态算（见 `Q::rolling`），不是只看已用
-    let Some(e) = q.period_end else { return Q::rolling(limit, daily) };
+    // 近 30 天滚动计的没有重置日：预计用量取 max(已用, 日均 × 30)（见 `Q::rolling`）
+    let Some(e) = q.period_end else { return Q::rolling(limit, q.used as f64, daily) };
     let days_left = ((q.period_start_at + time::Duration::days((e - q.period_start).whole_days())) - now).as_seconds_f64().max(0.0) / 86400.0;
-    Q { limit, used: q.used as f64, daily, days_left }
+    Q { limit, used: q.used as f64, daily, days_left, rolling: false }
 }
 
 /// 各线路机的折算系数 k = 网卡计费日均 ÷ 它转发的业务日均（搬迁建议、放置矩阵共用）。业务量是近 7 天（各自的日均窗口）

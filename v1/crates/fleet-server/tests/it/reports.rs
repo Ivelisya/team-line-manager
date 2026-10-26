@@ -199,3 +199,26 @@ async fn monthly_costly_counts_ip_node_traffic_on_host() {
     assert_eq!(c["id"], host.to_string(), "{r}");
     assert!((c["gb"].as_f64().unwrap() - 6.0).abs() < 1e-6 && (c["usd_per_gb"].as_f64().unwrap() - 1.0).abs() < 1e-6, "{c}");
 }
+
+/// 本月退役的同机 IP 节点：窗口里它的流量还在，照样算到宿主机上（宿主机对应表同流量页，含已退役）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn monthly_costly_counts_retired_ip_node_traffic_on_host() {
+    let t = setup().await;
+    let [host, ipn, ..] = seed(&t).await;
+    sqlx::query("update machine set kind = 'vps' where id = $1").bind(host).execute(&t.st.db).await.unwrap();
+    sqlx::query("update machine set kind = 'vps', ssh_port = null, host_id = $2 where id = $1").bind(ipn).bind(host).execute(&t.st.db).await.unwrap();
+    sqlx::query("insert into subscription (machine_id, price_cents, due_date) values ($1, 600, current_date + 60)").bind(host).execute(&t.st.db).await.unwrap();
+    sqlx::query("insert into entry_traffic_hourly (entry_id, hour, up_bytes, down_bytes) select id, date_trunc('hour', now()), 1000000000, 5000000000 from entry where node_id = $1")
+        .bind(ipn)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    sqlx::query("update machine set lifecycle = 'retired', retired_at = now() where id = $1").bind(ipn).execute(&t.st.db).await.unwrap();
+    t.st.live.rolled_up();
+    let cur: String = sqlx::query_scalar("select to_char(now() at time zone 'Asia/Shanghai', 'YYYY-MM')").fetch_one(&t.st.db).await.unwrap();
+    let r = t.get(&format!("/api/v1/reports/monthly?month={cur}")).await;
+    let costly = r["costly"].as_array().unwrap();
+    assert_eq!(costly.len(), 1, "{r}");
+    assert_eq!(costly[0]["id"], host.to_string(), "{r}");
+    assert!((costly[0]["gb"].as_f64().unwrap() - 6.0).abs() < 1e-6, "{}", costly[0]);
+}
