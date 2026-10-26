@@ -157,9 +157,21 @@ function ifaces() {
 	for (let i in (d.interface || [])) {
 		let a = i['ipv4-address'];
 		let dev = i.l3_device || i.device;
+		// 接口上的全部地址（IPv4、IPv6、委派到本接口的前缀里路由自己的那个）：路由自己发起的连接来源是这些地址，中控不把它们当客户端
+		let ips = [];
+		for (let k in ['ipv4-address', 'ipv6-address']) {
+			if (type(i[k]) == 'array')
+				for (let x in i[k])
+					if (x.address)
+						push(ips, x.address);
+		}
+		if (type(i['ipv6-prefix-assignment']) == 'array')
+			for (let x in i['ipv6-prefix-assignment'])
+				if (x['local-address'] && x['local-address'].address)
+					push(ips, x['local-address'].address);
 		push(out.ifaces, {
 			name: i.interface, up: i.up ? true : false, proto: i.proto, device: dev,
-			ip: (type(a) == 'array' && length(a) > 0) ? a[0].address : null, uptime: i.uptime
+			ip: (type(a) == 'array' && length(a) > 0) ? a[0].address : null, ips: ips, uptime: i.uptime
 		});
 		if (dev)
 			devs[dev] = true;
