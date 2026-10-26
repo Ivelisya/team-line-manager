@@ -300,12 +300,19 @@ async fn purge_runs_twice_without_error() {
         .unwrap();
     sqlx::query("update machine set lifecycle = 'retired' where id = $1").bind(node).execute(&t.st.db).await.unwrap();
     // 后台起来时维护任务先跑一轮：可能已经把它收进回收站、建好了物理删除作业
+    let mut rx = t.st.events.subscribe();
     let first = match fleet_server::api::machines::start_purge(&t.st, "test", node, &name, None).await {
         Ok(j) => j.to_string(),
         Err(_) => sqlx::query_scalar::<_, Uuid>("select id from job where target_id = $1 and kind = 'purge'").bind(node).fetch_one(&t.st.db).await.unwrap().to_string(),
     };
     let j = t.wait_job(&first, "succeeded").await;
     assert_eq!(j["steps"][0]["state"], "done");
+    // 机器没了：结束时要发 Machines（整表重取）
+    let mut seen = vec![];
+    while let Ok(e) = rx.try_recv() {
+        seen.push(format!("{e:?}"));
+    }
+    assert!(seen.iter().any(|e| e == "Machines"), "purge 结束没发 Machines：{seen:?}");
     for tbl in ["access_hourly", "access_daily", "access_source_hourly", "access_target_seen", "access_source_late"] {
         let n: i64 = sqlx::query_scalar(&format!("select count(*) from {tbl} where node_id = $1")).bind(node).fetch_one(&t.st.db).await.unwrap();
         assert_eq!(n, 0, "{tbl} 没清干净");
@@ -325,6 +332,23 @@ async fn purge_runs_twice_without_error() {
     tx.commit().await.unwrap();
     let j = t.wait_job(&second, "succeeded").await;
     assert_eq!(j["steps"][0]["output"]["already_gone"], true, "{j}");
+}
+
+/// 机器事件只在改了访问页显示的东西（名字、团队、编号、机器增删）时才作废访问查询缓存；连通性、续费、调优这类用 emit_keep_access
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn machine_events_clear_access_cache_only_when_names_may_change() {
+    use fleet_server::state::Event;
+    let t = setup(false).await;
+    let id = Uuid::now_v7();
+    let g = t.st.access_cache.gen();
+    t.st.emit_keep_access(Event::Machine { id });
+    t.st.emit_keep_access(Event::Machines);
+    t.st.emit(Event::Job { id, target: None });
+    assert_eq!(t.st.access_cache.gen(), g, "不改名字的事件不该清访问缓存");
+    t.st.emit(Event::Machine { id });
+    assert_eq!(t.st.access_cache.gen(), g + 1);
+    t.st.emit(Event::Machines);
+    assert_eq!(t.st.access_cache.gen(), g + 2);
 }
 
 /// 领取并推进一个作业，返回作业视图

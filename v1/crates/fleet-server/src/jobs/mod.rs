@@ -840,8 +840,47 @@ pub async fn advance(st: &AppState, mut job: JobRow, owner: &str) -> anyhow::Res
         Some(_) => log(st, job.id, "info", "作业完成").await,
     }
     notify(st, &job);
-    st.emit(Event::Machines);
+    match view_change(&job.kind) {
+        ViewChange::Quiet => {}
+        ViewChange::View => st.emit_keep_access(Event::Machines),
+        ViewChange::Names => st.emit(Event::Machines),
+    }
     Ok(())
+}
+
+/// 作业成功结束时，机器视图（`/machines`）与访问页缓存要不要跟着变
+#[derive(Debug, PartialEq, Eq)]
+enum ViewChange {
+    /// 视图里没有要整份重算的字段：只发 Job 事件（作业状态由 touched 补 active_job，agent 版本由补指标补，其余步骤里自己发了 Machine）
+    Quiet,
+    /// 生命周期、入口、线路机归属、软路由出口指向变了：发 Machines，访问页显示的机器名、团队、编号不变
+    View,
+    /// 同上，且机器名 / 编号 / 团队变了或机器没了：访问页缓存一并作废
+    Names,
+}
+
+/// 按作业类型判断结束时改了视图里的哪些字段（依据逐条写在下面；拿不准的算 View，宁多发不漏发）
+fn view_change(kind: &str) -> ViewChange {
+    match kind {
+        // 推送并重启 agent、等新版本上报：只动机器上的程序与令牌；agent 版本 / 在线取自 agent_state，经补指标（live 的 agent 字段）到前端
+        "upgrade_agent" => ViewChange::Quiet,
+        // 跑 node_ss 脚本 + 出口验收：只改机器上的 ssserver 配置，库里没有视图字段（同机 IP 节点的 bind_ip 在 provision_ip 的 ip_check 里改并自己发 Machine）
+        "ss_refresh" => ViewChange::Quiet,
+        // 调优档 / 时间 / 参数在步骤里改了就发 Machine（apply_tune、回滚），结束时没有别的变化
+        "tune" => ViewChange::Quiet,
+        // 结果只在作业输出里（useLastSpeedtest / useJob 随 Job 事件重取），不写机器
+        "speedtest" => ViewChange::Quiet,
+        // 只把路由上参数对不上的出口改成入口现在的参数（server:port 不变）：出口 → 入口 → 节点的对应不变，视图里的 router_exits 不变
+        "router_sync" => ViewChange::Quiet,
+        // 退役完成：生命周期 → retired（移出列表）、同团队压缩编号；清除数据：机器与入口删除
+        "retire" | "purge" => ViewChange::Names,
+        // 上架 / 补入口 / 换线路机 / 改出口指向：生命周期、入口增删与归属、备用机器的 router_exits 变；名字、团队、编号不动
+        // 替换节点：交换编号那一步已自己发了 Machines（同时清访问缓存），结束时再补一次视图（路由出口指向也在这一次之前变了）
+        k if provisions(k) => ViewChange::View,
+        "attach_entry" | "move_entry" | "repoint" | "replace" => ViewChange::View,
+        // 没有归类的类型：保持现状
+        _ => ViewChange::Names,
+    }
 }
 
 /// dist 里 agent 程序的 sha256（十六进制）
@@ -1068,6 +1107,21 @@ mod tests {
         assert_eq!(keys("provision_ip"), ["ip_check", "converge", "attach", "wait_applied", "verify", "activate"]);
         let zh = crate::meta::job_kind_label;
         assert_eq!((zh("provision_ip"), zh("provision_vps")), ("上架同机 IP 节点", "上架 VPS 节点"));
+    }
+
+    #[test]
+    fn view_change_by_kind() {
+        use ViewChange::*;
+        // 不改视图字段的作业结束只发 Job 事件
+        for k in ["upgrade_agent", "ss_refresh", "tune", "speedtest", "router_sync"] {
+            assert_eq!(view_change(k), Quiet, "{k}");
+        }
+        for k in ["provision_vps", "provision_proxy", "provision_relay", "provision_ip", "attach_entry", "move_entry", "repoint", "replace"] {
+            assert_eq!(view_change(k), View, "{k}");
+        }
+        for k in ["retire", "purge", "不认识的类型"] {
+            assert_eq!(view_change(k), Names, "{k}");
+        }
     }
 
     #[test]
