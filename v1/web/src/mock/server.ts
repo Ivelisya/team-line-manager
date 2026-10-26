@@ -121,7 +121,7 @@ function recomputeDue(m: MachineView) {
 
 function overview() {
   const live = db.machines.filter((m) => m.lifecycle === 'active');
-  // 闲置备用（同服务端 MachineView::idle_spare）：不进健康计数与在线 / 离线，另数 spare；月费、速率照算
+  // 闲置备用（同服务端 MachineView::idle_spare）：不进健康计数与在线 / 离线，另数 spare；速率照算
   const idle = live.filter(isIdleSpare); const biz = live.filter((m) => !isIdleSpare(m));
   const cnt = (list: MachineView[]) => ({
     total: list.length, ok: list.filter((m) => m.health.status === 'ok').length, degraded: list.filter((m) => m.health.status === 'degraded').length,
@@ -141,7 +141,9 @@ function overview() {
     online: biz.filter((m) => m.agent && !isQuiet(m)).length, offline: biz.filter((m) => m.agent && isQuiet(m)).length,
     no_agent: live.filter((m) => !m.agent).length, ip_nodes: live.filter((m) => m.host_machine).length,
     due_soon: live.filter((m) => !m.spare && m.subscription?.due_state === 'soon').length, overdue: live.filter((m) => !m.spare && m.subscription?.due_state === 'overdue').length,
-    monthly_usd: usdTotal(live.flatMap((m) => (m.subscription ? [m.subscription] : []))),
+    // 备用团队的机器不续费：月费合计不含，另列小计（同服务端 monthly_usd_spare）
+    monthly_usd: usdTotal(live.flatMap((m) => (m.subscription && !m.spare ? [m.subscription] : []))),
+    monthly_usd_spare: { ...usdTotal(live.flatMap((m) => (m.subscription && m.spare ? [m.subscription] : []))), count: live.filter((m) => m.subscription && m.spare).length },
     traffic_month: { up, down, counted_from },
     // 实时速率只算数据没过期的（同 liveRate）；同机 IP 节点的读数就是宿主机的，不重复算
     net_rx_bps: live.reduce((s, m) => s + (m.host_machine ? 0 : liveRate(m)?.rx ?? 0), 0), net_tx_bps: live.reduce((s, m) => s + (m.host_machine ? 0 : liveRate(m)?.tx ?? 0), 0),

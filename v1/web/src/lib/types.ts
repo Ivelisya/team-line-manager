@@ -173,7 +173,7 @@ export interface Overview {
   /** 在线/离线按台机器、按 agent 连通（同 isQuiet），与健康无关；同机 IP 节点随宿主机计入（ip_nodes 是其中的台数），
    *  家宽代理不需要 agent，不计入，另数 no_agent */
   online: number; offline: number; no_agent: number; ip_nodes: number;
-  /** 闲置备用（isIdleSpare）的台数：它们不在 nodes / relays 的 total 与各健康计数里，也不计入 online / offline；月费、速率照算。旧中控没有这个字段 */
+  /** 闲置备用（isIdleSpare）的台数：它们不在 nodes / relays 的 total 与各健康计数里，也不计入 online / offline；速率照算。旧中控没有这个字段 */
   spare?: number;
   /** 中控刚启动或刚恢复收上报（2 分钟内）：agent 的重发、线路机连通性还在陆续到，健康计数还会变——网页先显示加载态。旧中控没有这个字段 */
   settling?: boolean;
@@ -183,6 +183,8 @@ export interface Overview {
   due_soon: number; overdue: number;
   /** 月费合计折成 USD（每台的 monthly_usd_cents 相加；没有汇率的单列） */
   monthly_usd: UsdTotal;
+  /** 备用团队的机器的月费小计（不续费，不在 monthly_usd 里）；count = 备用团队里有订阅的在用机器台数。旧中控没有 */
+  monthly_usd_spare?: UsdTotal & { count: number };
   /** counted_from：本月数据不完整时的起点（RFC 3339，agent 接入晚于月初），完整则 null */
   traffic_month: { up: number; down: number; counted_from: string | null }; net_rx_bps: number; net_tx_bps: number;
 }
