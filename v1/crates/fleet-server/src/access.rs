@@ -27,6 +27,7 @@ const LOCK_KEY: i64 = 0x6163_6365_7373;
 /// 重算 [hour, hour+1h) 的汇总。$1 = hour, $2 = hour + 1h, $3 = 「已关闭」的边界（早于它的小时可能已被来源画像累加过）。
 /// 一次扫描原始记录，同时产出 access_hourly、access_source_hourly、access_target_seen 三张表。
 /// 先按 (节点, 目标, 来源) 分组，再只对去重后的目标做合并，避免对每条记录调用 plpgsql。
+/// 合并那步（hm）必须 `materialized`：它只被引用一次，不写的话 PG 会把它内联进连接里，plpgsql 函数就在每一行上算（实测 69.6 万次，而去重后的目标只有 3.9 万个）。
 /// target_seen.total 按「本次重算值 - 旧值」累加，所以重复执行不会重复计数。
 /// 三处 upsert 都只在值真的变了时才写（重算当前小时时大部分行没变，不产生死元组）。
 /// 早于 $3 的小时若来源连接数变了，把差值记进 access_source_late，由 ipintel 的来源同步补记（见 ipintel::sync_sources）。
@@ -37,7 +38,7 @@ with rawg as (
     from access_event e join entry en on en.id = e.entry_id
     where e.ts >= $1 and e.ts < $2
     group by 1, 2, 3, 4
-), hm as (
+), hm as materialized (
     select h, access_collapse(h) c from (select distinct h from rawg) d
 ), agg as (
     select r.node_id, r.relay_id, hm.c dest_host, access_kind(hm.c) kind,
@@ -212,10 +213,11 @@ pub async fn run_forever(st: AppState) {
 
 // ── 查询 ─────────────────────────────────────────────────────────────────────
 
-/// 24h / 7d / 30d 查询结果的缓存（键 = 接口 + 全部查询参数，窗口起点已对齐整点）。
-/// 这些窗口读的是小时汇总表，只在每轮汇总后才变：每轮汇总成功后整体作废（代数 +1），聚合结果（summary / targets / sources）
+/// 查询结果的缓存（键 = 接口 + 全部查询参数，汇总窗口的起点已对齐整点，1h 窗口的起点取整到 30 秒，见 `Filter::cache_key`）。
+/// 24h / 7d / 30d 读的是小时汇总表，只在每轮汇总后才变：每轮汇总成功后整体作废（代数 +1），聚合结果（summary / targets / sources）
 /// 缓存 `ttl`，选 7d / 30d 时不必每次轮询都重算全量聚合；单台机器的结果（带最近的原始记录、来源画像的基线与异常）
-/// 不全随汇总变，最多缓存 `SHORT_TTL`。1h 窗口读原始记录，不缓存。存 `Arc`：命中时直接拿去序列化响应，不深拷贝整份结果
+/// 不全随汇总变，最多缓存 `SHORT_TTL`。1h 窗口读原始记录，随时在变，同样只缓存 `SHORT_TTL`：访问页每 30 秒轮询一轮，
+/// 同时开着的几个页面 / 几个视图不必各做一遍原始聚合。存 `Arc`：命中时直接拿去序列化响应，不深拷贝整份结果
 pub struct QueryCache {
     ttl: StdDuration,
     /// 每轮汇总成功后 +1。计算前记下，期间汇总过的结果放进来也不会命中
@@ -228,7 +230,7 @@ type Cached = (std::time::Instant, u64, Arc<serde_json::Value>);
 
 impl QueryCache {
     const MAX: usize = 256;
-    /// 单台机器的结果最多缓存这么久
+    /// 单台机器、1h 窗口的结果最多缓存这么久
     const SHORT_TTL: StdDuration = StdDuration::from_secs(30);
 
     pub fn new(ttl: StdDuration) -> Self {
@@ -340,6 +342,17 @@ impl Filter {
         let raw = now - window.duration();
         Self { from: if events { raw } else { floor_hour(raw) }, events, team: None, nodes: None, relay: None, like: None, kind: None, action: "all", host: None }
     }
+
+    /// 缓存键里的筛选部分。1h 窗口的起点是精确到纳秒的「现在 - 1 小时」，每次请求都不同，键里把它取整到 30 秒，
+    /// 30 秒内同样的请求才命中同一份缓存（这类结果只缓存 `SHORT_TTL`）
+    pub fn cache_key(&self) -> String {
+        let mut f = self.clone();
+        if f.events {
+            let t = f.from.unix_timestamp();
+            f.from = OffsetDateTime::from_unix_timestamp(t - t.rem_euclid(30)).unwrap_or(f.from);
+        }
+        format!("{f:?}")
+    }
 }
 
 /// 用户输入 → ilike 模式。开头的「*.」当后缀匹配（只留「.」）：小时汇总存的是合并后的「*.example.com」，
@@ -435,6 +448,7 @@ fn scope_where(f: &Filter, a: &mut Args, t: &str, search: &str) -> String {
 /// 聚合成 (节点, 目标) → 连接数、阻止数、来源数：小时表，或原始记录（1h 窗口，同样的输出列）；
 /// 再按目标类型与处理结果筛选（blocked 视图里连接数就是被阻止数，routed 视图里去掉被阻止的）。
 /// 只看一个目标时：小时表直接按目标查（走 (dest_host, hour) 索引）；原始记录要先合并随机子域名，合并后再筛
+/// 原始记录里合并目标的 hm 同样要 `materialized`，原因见 `ROLLUP`。
 fn cte(f: &Filter, a: &mut Args) -> String {
     let agg = if f.events {
         let host = f.host.as_ref().map(|h| format!(" where hm.c = {}", a.add(h))).unwrap_or_default();
@@ -445,7 +459,7 @@ fn cte(f: &Filter, a: &mut Args) -> String {
     from access_event e join entry en on en.id = e.entry_id
     where {}
     group by 1, 2, 3
-), hm as (
+), hm as materialized (
     select h, access_collapse(h) c from (select distinct h from rawg) d
 ), agg as (
     select r.node_id, hm.c dest_host, access_kind(hm.c) kind, sum(r.c)::bigint conns, sum(r.b)::bigint blocked,
@@ -970,6 +984,18 @@ mod tests {
         let off = QueryCache::new(StdDuration::ZERO);
         off.put("a".into(), off.gen(), Arc::new(serde_json::json!(1)));
         assert!(off.get("a", false).is_none(), "ttl 为 0 等于不缓存");
+    }
+
+    #[test]
+    fn cache_key_rounds_events_start_to_30s() {
+        let at = |s: &str| OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).unwrap();
+        let key = |now: &str| Filter::new(Window::H1, at(now)).cache_key();
+        // 1h 窗口：起点不同但在同一个 30 秒里，键相同；跨过 30 秒就不同
+        assert_eq!(key("2026-10-23T11:20:01.123Z"), key("2026-10-23T11:20:29.999Z"));
+        assert_ne!(key("2026-10-23T11:20:29.999Z"), key("2026-10-23T11:20:30.000Z"));
+        // 汇总窗口的起点本来就对齐整点，键不受影响
+        let h24 = |now: &str| Filter::new(Window::H24, at(now)).cache_key();
+        assert_eq!(h24("2026-10-23T11:20:01Z"), h24("2026-10-23T11:59:59Z"));
     }
 
     #[test]
