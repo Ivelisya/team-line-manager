@@ -71,12 +71,17 @@
 .stat-cap .num { color: var(--fg); font-weight: var(--fw-semibold); }
 .stat-cap .unit { font-size: inherit; color: inherit; }
 .stat-cap .dotline { display: inline-flex; align-items: center; gap: var(--sp-4); }
+/* 一组分项（含 降级 1 · 维护 1 / 另 故障 2）：前缀字 + 各项，项之间一个间隔点 */
+.stat-cap .stat-grp { display: inline-flex; align-items: center; gap: var(--sp-4); }
+.stat-grp > * { display: inline-flex; align-items: center; gap: var(--sp-4); }
+.stat-grp > * + *::before { content: "·"; }
 .dotline[data-tone="warn"] b { color: var(--warn-text); }
 .dotline[data-tone="bad"] b { color: var(--bad-text); }
 /* 可点的分项（故障 N → 机器页的故障筛选）：同说明行的字，悬停下划线 */
 a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 @media (hover: hover) { a.dotline:hover { text-decoration: underline; text-underline-offset: 2px; } }
-.stat-cap .stat-who { display: inline-flex; align-items: center; gap: var(--sp-4); min-width: 0; } /* 流量额度「最紧 某台 已用 93%」：名称放不下时省略，百分比留着 */
+.stat-cap .stat-who { display: inline-flex; align-items: center; gap: var(--sp-4); min-width: 0; }
+.stat-cap .stat-who > .ellipsis { min-width: 4em; } /* 流量额度「最紧 某台 已用 93%」：名称放不下时省略，百分比留着 */
 @media (max-width: 760px) { .stat { padding: var(--sp-12); min-height: 92px; } .stat-value { font-size: var(--fs-metric); } }
 
 /* ---------- 集群状态 ---------- */

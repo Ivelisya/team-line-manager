@@ -6,8 +6,7 @@ import { useQuery } from '@tanstack/react-query';
 import { ArrowRight, ExternalLink } from 'lucide-react';
 import { renewBatchPreview, useDue, useRenewBatch } from '@/lib/queries';
 import type { DueGroup, DueMachine, DueProvider } from '@/lib/types';
-import { meta, usdTotalTip } from '@/lib/derive';
-import { tzCity, tzLabel } from '@/lib/tz';
+import { usdTotalTip } from '@/lib/derive';
 import { useUsdPreview } from '@/lib/fx';
 import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
@@ -15,7 +14,7 @@ import { Field, InfoTip, Input, UnitInput } from '@/components/ui/form';
 import { SkeletonRows } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
 import { resetOnOpen, useHeld } from '@/lib/useHeld';
-import { Due, Empty, ErrorNote, Note, Panel, Pill, TableWrap } from '@/components/app/primitives';
+import { Due, Empty, ErrorNote, Note, Panel, Pill, TableWrap, dueTzTip } from '@/components/app/primitives';
 import { FormDialog } from '@/components/app/dialogs';
 
 /** 看未来多少天 */
@@ -47,12 +46,9 @@ const IdlePill = ({ ms }: { ms: DueMachine[] }) => (ms.length ? <Pill className=
 
 /** 到期日 + 剩余天数：天数按这组的账单时区的今天算，悬停写明；账单时区不是组织时区的，日期后标城市名（同一天到期的两组差一天时一眼看得出） */
 function DueWhen({ g, short }: { g: DueGroup; short?: boolean }) {
-  const tz = g.billing_tz;
-  const other = tz && tz !== meta().org_timezone;
   return (
-    <span data-tip={tz ? `剩余天数按${tzLabel(tz)}时间算` : undefined}>
+    <span data-tip={dueTzTip(g.billing_tz)}>
       <span className="num">{short ? g.due_date.slice(5) : g.due_date}</span> <Due days={g.machines[0].due_days} state={dueState(g.machines[0].due_days)} />
-      {other && <span className="t-muted"> · {tzCity(tz)}</span>}
     </span>
   );
 }

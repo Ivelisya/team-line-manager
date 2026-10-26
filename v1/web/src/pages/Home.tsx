@@ -126,6 +126,8 @@ export function HomePage() {
   // 当前分组：「仅看异常」的计数与筛选都从它出发
   const grouped = React.useMemo(() => (team === 'all' ? all : team === 'relay' ? all.filter((m) => m.kind === 'relay') : all.filter((m) => m.team?.id === team)), [all, team]);
   const issueCount = React.useMemo(() => grouped.filter(isIssue).length, [grouped]);
+  // 悬停说明：异常 = 故障 + 上架失败（闲置备用的故障不算），拆开写，两项相加等于胶囊上的数
+  const issueTip = React.useMemo(() => { const f = grouped.filter((m) => m.lifecycle === 'failed').length; return `故障 ${issueCount - f} + 上架失败 ${f}`; }, [grouped, issueCount]);
 
   // 「仅看异常」开着时成员不随实时推送移出（像邮件的「未读」筛选）：恢复正常的那台留在原位、照常显示正常状态，
   // 鼠标下的卡不会被换走、页面不跳。命中过的记在这里（筛选时只加不删，重复加无妨）；切换分组、开关筛选时换一个空的
@@ -177,7 +179,7 @@ export function HomePage() {
         <div className="hbar" ref={sb.bar} data-stuck={sb.stuck ? '' : undefined}>
           <div className="hgroups" role="group" aria-label="筛选">
             <SegmentedOverflow label="分组" value={team} onChange={pickTeam} items={groups} />
-            <FilterChip pressed={onlyIssues} onClick={toggleIssues} count={issueCount}><AlertTriangle size={13} />仅看异常</FilterChip>
+            <FilterChip pressed={onlyIssues} onClick={toggleIssues} count={issueCount} tip={issueTip}><AlertTriangle size={13} />仅看异常</FilterChip>
           </div>
           <div className="hctrls">
             <Select sm value={sortValue} onChange={pickSort} options={sortValue === 'custom' ? SORTS_CUSTOM : SORTS} className="w-[150px]" aria-label="排序" />

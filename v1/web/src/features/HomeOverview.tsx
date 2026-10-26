@@ -60,6 +60,27 @@ function statusLine(o: Overview | undefined, down: number): string {
   return unknown ? `${unknown} 台状态未知` : '全部正常';
 }
 
+/** 「正常」卡的说明行：算在正常里的（降级、维护）与另外的（故障、未知）分两组写，每组为 0 的项省略；加起来对得上大数字与总数 */
+function HealthCaption({ c, to }: { c: Counts; to: string }) {
+  return (
+    <>
+      {(c.degraded > 0 || c.maintenance > 0) && <span className="stat-grp">含{c.degraded > 0 && <DotCount tone="warn" n={c.degraded} label="降级" />}{c.maintenance > 0 && <DotCount tone="neutral" n={c.maintenance} label="维护" />}</span>}
+      {(c.down > 0 || c.unknown > 0) && <span className="stat-grp">另{c.down > 0 && <DotCount tone="bad" n={c.down} label="故障" to={to} />}{c.unknown > 0 && <DotCount tone="neutral" n={c.unknown} label="未知" />}</span>}
+    </>
+  );
+}
+/** 「上架中 · 退役中」卡的说明行：上架、退役各几台，上架失败的也在这里（不计在左边的大数字里）；为 0 的省略 */
+function ProvisionCaption({ o }: { o: Overview }) {
+  if (!o.provisioning && !o.retiring && !o.failed) return <span>没有进行中的</span>;
+  return (
+    <span className="stat-grp">
+      {o.provisioning > 0 && <DotCount tone="neutral" n={o.provisioning} label="上架" />}
+      {o.retiring > 0 && <DotCount tone="neutral" n={o.retiring} label="退役" />}
+      {o.failed > 0 && <span data-tip="上架失败的不计在左边的台数里，要处理（也算异常）"><DotCount tone="bad" n={o.failed} label="失败" /></span>}
+    </span>
+  );
+}
+
 /** memo：首页因机器列表推送、筛选、开关抽屉重渲染时，总览只在 overview 数据（metrics 推送单独更新）或额度吃紧的结果变了才重画 */
 export const OverviewSection = React.memo(function OverviewSection({ o, loading }: { o: Overview | undefined; loading: boolean }) {
   const me = useMe().data;
@@ -82,26 +103,26 @@ export const OverviewSection = React.memo(function OverviewSection({ o, loading 
       <div className="hero-grid">
         <div className="stat-grid">
           {/* 说明行用全站同一套状态名（降级 / 维护 / 故障 / 未知）；「正常」包括降级与维护（照常服务）这一点放在大数字的悬停说明里 */}
-          <Stat loading={health} tone="ok" icon={<Server />} label="节点正常" info={NORMAL_INFO} to={NODES_LINK} value={<span data-tip="降级和维护的机器照常服务，也算正常"><CountUp value={nodes && normal(nodes)} /></span>} unit={nodes ? `/ ${nodes.total}` : undefined}
-            caption={nodes && <><DotCount tone="warn" n={nodes.degraded} label="降级" />{nodes.maintenance > 0 && <DotCount tone="neutral" n={nodes.maintenance} label="维护" />}<DotCount tone="bad" n={nodes.down} label="故障" to={DOWN_LINK} />{nodes.unknown > 0 && <DotCount tone="neutral" n={nodes.unknown} label="未知" />}{!!o?.spare && <span data-tip={SPARE_TIP}><DotCount tone="neutral" n={o.spare} label="备用" /></span>}</>} />
+          <Stat loading={health} tone="ok" icon={<Server />} label="节点正常" info={`${NORMAL_INFO}${o?.spare ? `\n另有备用 ${o.spare} 台，不计在内：${SPARE_TIP}` : ''}`} to={NODES_LINK} value={<span data-tip="降级和维护的机器照常服务，也算正常"><CountUp value={nodes && normal(nodes)} /></span>} unit={nodes ? `/ ${nodes.total}` : undefined}
+            caption={nodes && <HealthCaption c={nodes} to={DOWN_LINK} />} />
           <Stat loading={health} tone="teal" icon={<Waypoints />} label="线路机正常" info={NORMAL_INFO} to={RELAYS_LINK} value={<span data-tip="降级和维护的机器照常服务，也算正常"><CountUp value={relays && normal(relays)} /></span>} unit={relays ? `/ ${relays.total}` : undefined}
-            caption={relays && <><DotCount tone="warn" n={relays.degraded} label="降级" />{relays.maintenance > 0 && <DotCount tone="neutral" n={relays.maintenance} label="维护" />}<DotCount tone="bad" n={relays.down} label="故障" to={`${DOWN_LINK}&kind=relay`} />{relays.unknown > 0 && <DotCount tone="neutral" n={relays.unknown} label="未知" />}</>} />
-          <Stat loading={health} tone="bad" icon={<AlertTriangle />} label="故障" value={<CountUp value={o ? down : undefined} />} unit="台" to={DOWN_LINK} caption={o && <><DotCount tone="bad" n={o.nodes.down} label="节点" /><DotCount tone="bad" n={o.relays.down} label="线路机" />{o.failed > 0 && <DotCount tone="bad" n={o.failed} label="上架失败" />}</>} />
+            caption={relays && <HealthCaption c={relays} to={`${DOWN_LINK}&kind=relay`} />} />
+          <Stat loading={health} tone="bad" icon={<AlertTriangle />} label="故障" value={<CountUp value={o ? down : undefined} />} unit="台" to={DOWN_LINK} caption={o && <><DotCount tone="bad" n={o.nodes.down} label="节点" /><DotCount tone="bad" n={o.relays.down} label="线路机" /></>} />
           <Stat loading={loading} tone="amber" icon={<CalendarClock />} label="即将到期" value={<CountUp value={o?.due_soon} />} unit="台" to="/nodes?due=soon&sort=due" caption={o && nd !== undefined && <>{nd ? <span className="stat-who">最近<span className="ellipsis" data-tip={nd.name}>{nd.name}</span>{nd.days <= 1 ? <b>{nd.days === 0 ? '今天' : '明天'}</b> : <><b className="num">{nd.days}</b>天后</>}</span> : <span>近期没有到期</span>}{o.overdue > 0 && <DotCount tone="bad" n={o.overdue} label="已过期" />}</>} />
-          <Stat loading={loading} tone="gold" icon={<CircleDollarSign />} label="每月费用" to={COST_LINK} info={`在用的节点和线路机的月费，统一折成美元；不含备用团队的机器（它们不再续费，另列在下面）。汇率在「设置 → 汇率」${usd ? `\n${usdTotalTip(usd)}` : ''}`}
+          <Stat loading={loading} tone="gold" icon={<CircleDollarSign />} label="每月费用" to={COST_LINK} info={`在用的节点和线路机的月费，统一折成美元；不含备用团队的机器（它们不再续费，另列在说明行）。汇率在「设置 → 汇率」${usd ? `\n${usdTotalTip(usd)}` : ''}`}
             value={!usd || usdEmpty ? '—' : <span data-tip={usdTotalTip(usd)}>{F.money(usd.cents, 'USD')}</span>}
             caption={usd && <>{(usd.unconverted.length ? <span style={{ color: 'var(--warn-text)' }} data-tip="没有这些币种的汇率，未计入合计">未折算 {usd.unconverted.map((c) => F.money(c.cents, c.currency)).join(' + ')}</span>
               : foreign.length ? <span data-tip={usdTotalTip(usd)}>含 {foreign.map((p) => `${F.money(p.cents, p.currency)} ≈ ${F.money(p.usd_cents, 'USD')}`).join(' · ')}</span>
               : <span>在用 <b className="num">{o!.nodes.total + o!.relays.total + (o!.spare ?? 0) - (sp?.count ?? 0)}</b> 台 · 按月折算</span>)}
-              {!!sp?.count && <span data-tip={`备用团队的机器等到期放生，不续费，不在左边的合计里
-${usdTotalTip(sp)}`}>另有备用 <b className="num">{sp.count}</b> 台 {F.money(sp.cents, 'USD')}，不再续费</span>}</>} />
+              {!!sp?.count && <span data-tip={`备用团队的机器等到期放生，不再续费，不在左边的合计里，单独列在这里
+${usdTotalTip(sp)}`}>备用 <b className="num">{sp.count}</b> 台 {F.money(sp.cents, 'USD')} 另计</span>}</>} />
           {/* 每条推送都在涨，不滚数（滚到的位数也显示不出来，白白逐帧重画）：同网卡速率，直接到位 */}
           <Stat loading={loading} tone="sky" icon={<TrendingUp />} label="本月业务流量" info={"客户经所有入口的下载加上传。\n单台机器的「本周期已用」按网卡、从账单日算起，数字通常更大。"} to={TRAFFIC_LINK} value={tr ? F.inScaleBytes(trTotal, trScale) : '—'} unit={tr ? trScale.u : undefined}
             caption={tr && <><span>下载 <Num f={F.bytes(tr.down)} /></span><span>上传 <Num f={F.bytes(tr.up)} /></span><FromTag from={tr.counted_from} /></>} />
           {/* 有吃紧的：点卡片打开最紧那台的流量页签 */}
           <Stat loading={loading} tone="violet" icon={<Database />} label="流量额度吃紧" value={<CountUp value={qt?.n} />} unit={qt ? '台' : undefined} onClick={top ? () => openDrawer(top.id, 'traffic') : undefined}
-            caption={qt && (top ? <span className="stat-who" data-tip={`${top.name}${top.forecast ? `：${top.forecast}` : `：已用 ${top.pct}%`}`}>最紧<span className="ellipsis">{top.name}</span>{top.full ? <><b className="num">{top.full}</b>满</> : <>{top.over && '已超限 '}<b className="num">{top.pct}%</b></>}</span> : `都在 ${meta().thresholds.traffic_quota_warn_pct}% 以下`)} />
-          <Stat loading={loading} tone="blue" icon={<CloudUpload />} label="上架中 · 退役中" value={o ? <CountUp value={o.provisioning + o.retiring} /> : '—'} unit="台" to="/jobs?view=running" caption={o && <span>上架 <b className="num">{o.provisioning}</b> · 退役 <b className="num">{o.retiring}</b></span>} />
+            caption={qt && (top ? <span className="stat-who" data-tip={`${top.name}${top.forecast ? `：${top.forecast}` : `：已用 ${top.pct}%`}`}>最紧<span className="ellipsis">{top.name}</span>{top.full ? <><b className="num">{top.full}</b>满</> : <b className="num">{top.pct}%</b>}</span> : `都在 ${meta().thresholds.traffic_quota_warn_pct}% 以下`)} />
+          <Stat loading={loading} tone="blue" icon={<CloudUpload />} label="上架中 · 退役中" value={o ? <CountUp value={o.provisioning + o.retiring} /> : '—'} unit="台" to="/jobs?view=running" caption={o && <ProvisionCaption o={o} />} />
         </div>
         <ClusterPanel o={o} />
       </div>
