@@ -211,9 +211,9 @@ struct LogOut {
     ts: OffsetDateTime,
     ok: bool,
     error: Option<String>,
-    /// firing / repeat / resolved / test / silence（有人新建、删除了静默或维护窗口）/ auto（备用团队的机器到期自动回收）/ switch（临时切换的自动切回推迟了）/ report（月报）
+    /// firing / repeat / resolved / test / silence（有人新建、删除了静默或维护窗口）/ auto（备用团队的机器到期自动回收）/ jobfail（系统发起或停在需要人工处理的作业失败了）/ switch（临时切换的自动切回推迟了）/ report（月报）
     kind: String,
-    /// 告警对象的显示名（中控自身的告警是「中控」，软路由的是路由名）；静默 / 维护变更是「静默 / 维护变更」，自动回收是「自动回收」，月报是「月报」；
+    /// 告警对象的显示名（中控自身的告警是「中控」，软路由的是路由名）；静默 / 维护变更是「静默 / 维护变更」，自动回收是「自动回收」，作业失败是「作业失败」，出口自动切回推迟是「出口自动切回推迟」（发送记录没存对象，拿不到具体机器 / 路由名），月报是「月报」；
     /// 测试消息、机器或路由已删除时为 null
     subject_name: Option<String>,
     /// 告警对象：机器 `{id, name}`，软路由 `{id, name, kind: "router"}`；中控自身、静默 / 维护变更、测试消息、对象已删除时为 null
