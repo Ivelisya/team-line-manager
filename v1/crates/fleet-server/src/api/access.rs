@@ -89,8 +89,8 @@ fn page_of(q: &Q, default_limit: i64) -> ApiResult<(i64, i64)> {
     Ok((limit, offset))
 }
 
-/// 走 `access_cache`：命中时直接序列化缓存里的那份；没命中就算出来放进去。`key` 为 None（1h 窗口读原始记录）时不缓存；
-/// `short`：结果里有不随访问汇总变的部分（单台机器的最近原始记录、来源画像的基线与异常），只短缓存
+/// 走 `access_cache`：命中时直接序列化缓存里的那份；没命中就算出来放进去。`key` 为 None 时不缓存；
+/// `short`：结果里有不随访问汇总变的部分（单台机器的最近原始记录、来源画像的基线与异常）或读的是原始记录（1h 窗口），只短缓存
 pub(super) async fn cached(st: &AppState, key: Option<String>, short: bool, compute: impl Future<Output = ApiResult<Value>>) -> ApiResult<Response> {
     if let Some(v) = key.as_deref().and_then(|k| st.access_cache.get(k, short)) {
         return Ok(Json(&*v).into_response());
@@ -105,8 +105,8 @@ pub(super) async fn cached(st: &AppState, key: Option<String>, short: bool, comp
 
 pub async fn summary(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<Q>) -> ApiResult<Response> {
     let f = filter_of(&q, agg_window(&st, &q)?)?;
-    let key = (!f.events).then(|| format!("summary|{f:?}"));
-    cached(&st, key, false, async {
+    let key = Some(format!("summary|{}", f.cache_key()));
+    cached(&st, key, f.events, async {
         let (kpi, nodes) = access::summary(&st.access_db, &f).await?;
         Ok(ok(json!({"kpi": kpi, "nodes": nodes, "window_start": access::fmt_ts(f.from)})).0)
     })
@@ -131,8 +131,8 @@ pub async fn targets(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuer
     };
     // 只缓存第一页：往后翻的页一般只有正在看它的那个页面在轮询，进缓存命中不了几次，
     // 反而按页数把缓存撑满、把第一页这些常用的挤掉
-    let key = (!f.events && offset == 0).then(|| format!("targets|{f:?}|{sort:?}|{limit}|{by_target}"));
-    cached(&st, key, false, async {
+    let key = (offset == 0).then(|| format!("targets|{}|{sort:?}|{limit}|{by_target}", f.cache_key()));
+    cached(&st, key, f.events, async {
         let window_start = access::fmt_ts(f.from);
         if by_target {
             let (items, total) = access::target_groups(&st.access_db, &f, sort, limit, offset).await?;
@@ -159,8 +159,8 @@ pub async fn sources(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuer
         Some(c @ ("residential" | "mobile" | "datacenter" | "vpn" | "unknown")) => Some(c.to_string()),
         Some(_) => return Err(ApiError::bad_request("conn 只能是 all、residential、mobile、datacenter、vpn、unknown")),
     };
-    let key = (!f.events).then(|| format!("sources|{f:?}|{limit}|{conn:?}"));
-    cached(&st, key, false, async {
+    let key = Some(format!("sources|{}|{limit}|{conn:?}", f.cache_key()));
+    cached(&st, key, f.events, async {
         let ver = st.ipintel.version();
         let scan = if conn.is_some() { CONN_SCAN } else { limit };
         let mut items = access::sources(&st.access_db, &f, conn.as_deref().map(|c| (c, ver.as_str())), scan).await?;
@@ -203,7 +203,7 @@ pub async fn new_targets(_a: Actor, State(st): State<AppState>, ApiQuery(q): Api
 
 pub async fn machine(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<Q>) -> ApiResult<Response> {
     let w = agg_window(&st, &q)?;
-    let key = (w != Window::H1).then(|| format!("machine|{id}|{w:?}"));
+    let key = Some(format!("machine|{id}|{w:?}"));
     cached(&st, key, true, async {
         let mut m = access::machine_access(&st.access_db, id, w, st.access_retention().raw_days).await?;
         crate::ipintel::attach(&st, &mut m.top_sources).await;

@@ -96,3 +96,53 @@ async fn rtt_reports_roll_up_and_feed_placement() {
     assert_eq!(s, StatusCode::OK, "{v}");
     assert!(serde_json::from_value::<RttConfig>(v).unwrap().targets.iter().any(|x| x.node_id == ipn));
 }
+
+/// 矩阵里的往返是各小时 p50_ms 的中位数；每小时一轮清掉早于上一小时的 rtts，清空后迟到的上报只加轮数、不改 p50
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn p50_is_median_of_hourly_p50_and_old_rtts_are_pruned() {
+    let t = setup().await;
+    let r1 = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let team = seed_team(&t, "团队1").await;
+    let (node, _) = seed_node(&t, r1, team, 1, "203.0.113.5", 20001).await;
+    sqlx::query("update machine set kind = 'vps' where id = $1").bind(node).execute(&t.st.db).await.unwrap();
+    // 当前小时往前 0..3 小时：p50 依次 80 / 70 / 60 / 50，每行都带 rtts
+    for (ago, p50) in [(0, 80.0f32), (1, 70.0), (2, 60.0), (3, 50.0)] {
+        sqlx::query(
+            "insert into relay_node_rtt_hourly (relay_id, node_id, hour, samples, ok, p50_ms, max_ms, rtts)
+             values ($1, $2, date_trunc('hour', now()) - make_interval(hours => $3), 10, 10, $4, $4 + 5, array[$4, $4 + 5])",
+        )
+        .bind(r1)
+        .bind(node)
+        .bind(ago)
+        .bind(p50)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    }
+    let cell = |p: &serde_json::Value| p["nodes"][0]["cells"].as_array().unwrap().iter().find(|c| c["relay_id"] == json!(r1)).unwrap().clone();
+    let c = cell(&t.get("/api/v1/placement?team=团队1").await);
+    assert_eq!((c["samples"].clone(), c["p50_ms"].clone()), (json!(40), json!(65.0)), "{c}");
+
+    // 早于上一小时的（2、3 小时前）清空 rtts，当前与上一小时留着
+    fleet_server::placement::prune(&t.st.db).await.unwrap();
+    let left: Vec<(i32, bool)> =
+        sqlx::query_as("select (extract(epoch from date_trunc('hour', now()) - hour) / 3600)::int, cardinality(rtts) > 0 from relay_node_rtt_hourly order by hour desc")
+            .fetch_all(&t.st.db)
+            .await
+            .unwrap();
+    assert_eq!(left, vec![(0, true), (1, true), (2, false), (3, false)]);
+    assert_eq!(cell(&t.get("/api/v1/placement?team=团队1").await)["p50_ms"], json!(65.0), "清 rtts 不改矩阵上的数");
+
+    // 3 小时前那一小时迟到一份上报：轮数照加，p50 与 rtts 不动（否则会被只剩迟到的值重算）
+    let ts = common::now_ms() / 3_600_000 * 3_600_000 - 3 * 3_600_000 + 60_000;
+    let mut r = blank_report(1);
+    r.xray = Some(xray(true));
+    r.rtt = vec![RttSample { node_id: node, ts_ms: ts, ok: true, rtt_ms: Some(200.0) }];
+    assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
+    let row: (i32, i32, Option<f32>, i32) =
+        sqlx::query_as("select samples, ok, p50_ms, cardinality(rtts) from relay_node_rtt_hourly where hour = date_trunc('hour', now()) - interval '3 hours'")
+            .fetch_one(&t.st.db)
+            .await
+            .unwrap();
+    assert_eq!(row, (11, 11, Some(50.0), 0));
+}

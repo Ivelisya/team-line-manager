@@ -634,7 +634,7 @@ pub async fn rebalance(_a: Actor, State(st): State<AppState>, ApiPath(relay): Ap
             let idx: Vec<usize> = if fits.is_empty() { (0..pool.len()).collect() } else { fits };
             let moved = |i: usize| -> Vec<Uuid> { plans[i].2.iter().map(|&j| plans[i].0[j].node.id).collect() };
             let all_moved: Vec<Uuid> = idx.iter().flat_map(|&i| moved(i)).collect();
-            let grid = crate::placement::cells(&st.db, &all_moved).await?;
+            let grid = crate::placement::cells(&st.view_db, &all_moved).await?;
             let scores: Vec<Score> = idx.iter().map(|&i| crate::placement::score(&moved(i), &grid, pool[i].id)).collect();
             let fastest = idx.iter().zip(&scores).filter_map(|(&i, s)| if let Score::Rtt(v) = s { Some((i, *v)) } else { None }).min_by(|a, b| a.1.total_cmp(&b.1));
             let chosen = match fastest {

@@ -99,11 +99,12 @@ export const useAccessSources = (f: AccessFilter, conn = '', enabled = true) =>
     queryFn: ({ signal }) => get<{ items: AccessSource[]; scan_capped?: boolean }>(`/access/sources?${accessQS(f, { limit: SOURCES_LIMIT, conn })}`, signal),
   });
 
-/** 原始记录的一页：before 是上一页响应里的 next_before 游标，原样传回、不要自己拼（'' = 最新一页）。只有最新一页轮询，往前翻的页是固定的历史 */
+/** 原始记录的一页：before 是上一页响应里的 next_before 游标，原样传回、不要自己拼（'' = 最新一页）。只有最新一页轮询，往前翻的页是固定的历史；
+ *  带关键词搜索时也不轮询（搜索要扫整个窗口的原始记录，不值得每 30 秒一次，改了条件、切回来或手动刷新才重查） */
 export const EVENTS_PAGE = 100;
 export const useAccessEvents = (f: AccessFilter, before: string, enabled = true) =>
   useQuery({
-    queryKey: ['access', 'events', f, before], enabled, refetchInterval: before ? false : POLL, placeholderData: keepPreviousData,
+    queryKey: ['access', 'events', f, before], enabled, refetchInterval: before || f.search.trim() ? false : POLL, placeholderData: keepPreviousData,
     queryFn: ({ signal }) => get<AccessEvents>(`/access/events?${accessQS(f, { limit: EVENTS_PAGE, before })}`, signal),
   });
 

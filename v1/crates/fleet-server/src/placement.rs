@@ -6,7 +6,7 @@
 //!   带着再重启一次、断一次全部客户连接（fleet-agent 的 desired.rs 只拦同一代数）；单独取也就不用记清单摘要、不在一个事务里锁全部线路机。
 //! - 测：agent 每 5 分钟一轮，最多 4 个节点同时测，只用 ICMP（系统 ping 3 次），用不了就不测。不连 SS 端口（节点防火墙只放行
 //!   它所挂的线路机），也不连 SSH 端口（fail2ban 可能把线路机 IP 封掉、连带断业务流量），见 fleet-agent 的 rtt.rs。
-//! - 存：`relay_node_rtt_hourly` 小时汇总（迁移 0083），上报入库时直接累加（[`ingest`]），保留 30 天。
+//! - 存：`relay_node_rtt_hourly` 小时汇总（迁移 0083），上报入库时直接累加（[`ingest`]），保留 7 天；每小时一轮把早于上一小时的 rtts 清空（只有当前小时与上一小时的 p50 还要靠它重算）。
 //! - 看：`GET /placement?team=&node=`（[`view`]）：每个节点到各线路机近 24 小时的 p50 与成功率、近 7 天 tcp_fail 告警次数、当前与最优线路机，
 //!   以及「当前比最优慢 ≥ 10 ms 或当前成功率 < 99%」的换线建议（按目标线路机合成批量 `fleetctl move A,B --to X`）。
 
@@ -30,7 +30,7 @@ pub const MIN_SUCCESS: f64 = 0.99;
 pub const MIN_GAIN_MS: f64 = 10.0;
 /// 矩阵看近多少小时；小时汇总保留多少天
 pub const WINDOW_H: i64 = 24;
-pub const KEEP_DAYS: i32 = 30;
+pub const KEEP_DAYS: i32 = 7;
 
 /// 要测的节点：在用的 VPS 节点（含同机 IP 节点），不含家宽代理、备用团队里的
 pub async fn targets(db: &sqlx::PgPool) -> sqlx::Result<Vec<RttTarget>> {
@@ -49,7 +49,9 @@ pub async fn config(db: &sqlx::PgPool) -> sqlx::Result<RttConfig> {
 }
 
 /// 上报里的样本按 (节点, 小时) 累加进小时汇总（agent_api 的事务里调）：时间戳在 [lo, hi]（Unix 毫秒）之外的丢掉，
-/// 已经不存在的节点跳过（不让整份上报因外键失败）
+/// 已经不存在的节点跳过（不让整份上报因外键失败）。
+/// 迟到的上报可能落进 rtts 已被清空的旧小时（有 max_ms 却没有 rtts）：这种行的 p50_ms 保持不变、不再累加 rtts，只累加轮数
+/// （否则 p50 会被只剩迟到那几个值重算成另一个数）
 pub(crate) async fn ingest(tx: &mut Tx<'_>, relay: Uuid, samples: &[RttSample], lo: i64, hi: i64) -> sqlx::Result<()> {
     // (节点, 小时) → (轮数, 通了几轮, 通了的往返)
     let mut acc: BTreeMap<(Uuid, i64), (i32, i32, Vec<f32>)> = BTreeMap::new();
@@ -75,8 +77,10 @@ pub(crate) async fn ingest(tx: &mut Tx<'_>, relay: Uuid, samples: &[RttSample], 
          join machine m on m.id = u.node
          cross join lateral (select coalesce(array_agg(e::real), '{}') a from jsonb_array_elements_text(u.j) e) r
          on conflict (relay_id, node_id, hour) do update set
-           samples = h.samples + excluded.samples, ok = h.ok + excluded.ok, rtts = h.rtts || excluded.rtts,
-           p50_ms = (select percentile_cont(0.5) within group (order by x) from unnest(h.rtts || excluded.rtts) x),
+           samples = h.samples + excluded.samples, ok = h.ok + excluded.ok,
+           rtts = case when cardinality(h.rtts) = 0 and h.max_ms is not null then h.rtts else h.rtts || excluded.rtts end,
+           p50_ms = case when cardinality(h.rtts) = 0 and h.max_ms is not null then h.p50_ms
+                         else (select percentile_cont(0.5) within group (order by x) from unnest(h.rtts || excluded.rtts) x) end,
            max_ms = greatest(h.max_ms, excluded.max_ms)",
     )
     .bind(relay)
@@ -90,16 +94,27 @@ pub(crate) async fn ingest(tx: &mut Tx<'_>, relay: Uuid, samples: &[RttSample], 
     Ok(())
 }
 
-/// 后台：每小时清一次 30 天前的汇总
+/// 后台：每小时一轮，清掉保留期外的汇总，并把早于上一小时的 rtts 清空。
+/// rtts 只用来在当前小时继续累加时重算 p50（上一小时留着，给跨整点才到的上报）；更早的小时 p50_ms 已定，矩阵也只读 p50_ms，
+/// 留着它们是每行十几个 float 的白占空间
 pub async fn run_forever(st: AppState) {
     let mut t = tokio::time::interval(Duration::from_secs(3600));
     t.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         t.tick().await;
-        if let Err(e) = sqlx::query("delete from relay_node_rtt_hourly where hour < now() - make_interval(days => $1)").bind(KEEP_DAYS).execute(&st.db).await {
-            tracing::error!("放置矩阵保留期清理失败：{e:#}");
+        if let Err(e) = prune(&st.db).await {
+            tracing::error!("放置矩阵清理失败：{e:#}");
         }
     }
+}
+
+/// 每小时那一轮：先把早于上一小时的 rtts 清空，再删保留期外的汇总
+pub async fn prune(db: &sqlx::PgPool) -> sqlx::Result<()> {
+    sqlx::query("update relay_node_rtt_hourly set rtts = '{}' where hour < date_trunc('hour', now()) - interval '1 hour' and cardinality(rtts) > 0")
+        .execute(db)
+        .await?;
+    sqlx::query("delete from relay_node_rtt_hourly where hour < now() - make_interval(days => $1)").bind(KEEP_DAYS).execute(db).await?;
+    Ok(())
 }
 
 // ── 选最优线路机（纯计算，单元测试不起库）────────────────────────────────
@@ -187,15 +202,14 @@ pub fn pick(nodes: &[NodeIn], relays: &[RelayIn]) -> Vec<Pick> {
 }
 
 // ── 接口 ──────────────────────────────────────────────────────────────────
-/// 近 `WINDOW_H` 小时的格子：节点 → 线路机 → 一格（取自小时汇总，只读；搬迁建议选目标线路机也读它）
+/// 近 `WINDOW_H` 小时的格子：节点 → 线路机 → 一格（取自小时汇总，只读；搬迁建议选目标线路机也读它）。
+/// 往返取各小时 p50_ms 的中位数（中位数的中位数），是近似值：与成功率一样按小时汇总算，不展开 24 小时的 rtts（早于上一小时的已清空）；
+/// 调用方传视图池（有语句超时）
 pub async fn cells(db: &sqlx::PgPool, nodes: &[Uuid]) -> sqlx::Result<HashMap<Uuid, HashMap<Uuid, Cell>>> {
     let since = OffsetDateTime::now_utc() - time::Duration::hours(WINDOW_H);
     let rows: Vec<(Uuid, Uuid, i64, i64, Option<f64>)> = sqlx::query_as(
-        "with w as (select * from relay_node_rtt_hourly where node_id = any($1) and hour >= date_trunc('hour', $2::timestamptz))
-         select s.relay_id, s.node_id, s.n, s.k, p.p50 from
-           (select relay_id, node_id, sum(samples)::bigint n, sum(ok)::bigint k from w group by 1, 2) s
-           left join (select relay_id, node_id, percentile_cont(0.5) within group (order by x) p50 from w cross join lateral unnest(w.rtts) x group by 1, 2) p
-           using (relay_id, node_id)",
+        "select relay_id, node_id, sum(samples)::bigint, sum(ok)::bigint, percentile_cont(0.5) within group (order by p50_ms)
+         from relay_node_rtt_hourly where node_id = any($1) and hour >= date_trunc('hour', $2::timestamptz) group by 1, 2",
     )
     .bind(nodes)
     .bind(since)
@@ -264,7 +278,7 @@ pub async fn view(st: &AppState, team: Option<&str>, node: Option<&str>) -> ApiR
     }
     let ids: Vec<Uuid> = nodes.iter().map(|m| m.id).collect();
 
-    let mut grid = cells(&st.db, &ids).await?;
+    let mut grid = cells(&st.view_db, &ids).await?;
     // 近 7 天 tcp_fail 告警次数：同一条告警恢复后又触发记在 reopen_count 上
     let fails: HashMap<Uuid, i64> = sqlx::query_as(
         "select subject_id, (count(*) + coalesce(sum(reopen_count), 0))::bigint from incident

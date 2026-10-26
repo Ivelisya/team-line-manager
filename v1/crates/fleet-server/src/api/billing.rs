@@ -85,13 +85,15 @@ pub async fn due(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<Du
     let rate = fx::current(&st.db).await?;
     // 续不续费的依据：近 30 天的业务流量（USD/GB、闲置，口径同流量页）与可用率（出口探测成功率，同 availability / fleetctl uptime，按这台的账单时区分天）
     let uses = traffic::usage(&st).await?;
-    let avail = futures::future::try_join_all(rows.iter().map(|r| machines::availability_of(&st.db, r.id, &r.billing_tz, traffic::COST_DAYS as i32))).await?;
+    let tzs: Vec<(Uuid, String)> = rows.iter().map(|r| (r.id, r.billing_tz.clone())).collect();
+    let mut avail = machines::availability_many(&st.db, &tzs, traffic::COST_DAYS as i32).await?;
     let mut total = fx::Total::default();
     // 按 (供应商, 到期日, 账单时区) 分组：供应商 JSON、组内合计、组内机器
     type Group = (Option<Uuid>, Date, String, Value, fx::Total, Vec<Value>);
     let mut groups: Vec<Group> = vec![];
     let mut auto = vec![];
-    for (r, (_, _, egress_pct)) in rows.into_iter().zip(avail) {
+    for r in rows {
+        let egress_pct = avail.remove(&r.id).and_then(|(_, _, egress_pct)| egress_pct);
         let provider = json!({"id": r.provider_id, "name": r.provider, "panel_url": r.panel_url});
         let (usd, r_) = fx::convert(&rate, i64::from(r.price_cents), &r.currency);
         let u = uses.get(&r.id).copied().unwrap_or_default();
