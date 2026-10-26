@@ -183,6 +183,52 @@ async fn retire_moves_into_spare() {
     assert_eq!((xv["spare_from"].as_str(), xv["lifecycle_reason"].as_str()), (Some("团队1-08"), Some("随宿主机「团队1-07」退役")), "{xv}");
 }
 
+/// 撤销退役（宿主机从备用改回原团队）只带与它同一次进备用的 IP 节点：之前单独退役进备用的 IP 节点留在备用（spare_since 不清、仍会自动回收）；
+/// 带走的 IP 节点有进行中的作业时 409，预览与实际一致
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn undo_retire_only_takes_ip_nodes_retired_with_the_host() {
+    let t = setup(false).await;
+    let team = seed_team(&t, "团队1").await;
+    let host = seed_vps(&t, team, 1, "203.0.113.41", None).await;
+    let x = seed_vps(&t, team, 2, "203.0.113.42", Some(host)).await;
+    let y = seed_vps(&t, team, 3, "203.0.113.43", Some(host)).await;
+    for m in [host, x, y] {
+        sub(&t, m, "2030-01-01", "UTC").await;
+    }
+    // X 先单独退役进备用（宿主机还在团队1），再宿主机退役：带走 Y，X 已在备用不动
+    let r = t.post(&format!("/api/v1/machines/{x}/retire"), json!({"confirm": "团队1-02"})).await;
+    assert_eq!(r["mode"], "spare", "{r}");
+    let r = t.post(&format!("/api/v1/machines/{host}/retire"), json!({"confirm": "团队1-01"})).await;
+    assert_eq!(r["ip_nodes"].as_array().unwrap().len(), 1, "{r}");
+    let spare_since = |m: Uuid| {
+        let db = t.st.db.clone();
+        async move { sqlx::query_scalar::<_, Option<time::OffsetDateTime>>("select spare_since from machine where id = $1").bind(m).fetch_one(&db).await.unwrap() }
+    };
+    let x_since = spare_since(x).await;
+    assert!(x_since.is_some() && spare_since(y).await == spare_since(host).await && spare_since(host).await != x_since);
+
+    // 预览：只列 Y
+    let pv = t.get(&format!("/api/v1/machines/{host}/rename-preview?team_id={team}")).await;
+    let ips: Vec<&Value> = pv["ip_nodes"].as_array().unwrap().iter().collect();
+    assert!(ips.len() == 1 && ips[0]["machine_id"] == y.to_string(), "{pv}");
+    // Y 有进行中的作业：整个 PATCH 回滚
+    let bj = Uuid::now_v7();
+    sqlx::query("insert into job (id, kind, target_id, state, created_by) values ($1, 'upgrade_agent', $2, 'running', 'test')").bind(bj).bind(y).execute(&t.st.db).await.unwrap();
+    let rev = t.get(&format!("/api/v1/machines/{host}")).await["revision"].clone();
+    let (s, v) = t.req("PATCH", &format!("/api/v1/machines/{host}"), Some(json!({"revision": rev, "team_id": team})), None).await;
+    assert!(s == StatusCode::CONFLICT && v.to_string().contains("进行中的作业") && v.to_string().contains("备用-"), "{s} {v}");
+    assert_eq!(t.get(&format!("/api/v1/machines/{host}")).await["spare"], true, "回滚：宿主机还在备用");
+    sqlx::query("update job set state = 'succeeded' where id = $1").bind(bj).execute(&t.st.db).await.unwrap();
+
+    let rev = t.get(&format!("/api/v1/machines/{host}")).await["revision"].clone();
+    let (s, v) = t.req("PATCH", &format!("/api/v1/machines/{host}"), Some(json!({"revision": rev, "team_id": team})), None).await;
+    assert_eq!((s, v["data"]["spare"].clone()), (StatusCode::OK, json!(false)), "{v}");
+    let (yv, xv) = (t.get(&format!("/api/v1/machines/{y}")).await, t.get(&format!("/api/v1/machines/{x}")).await);
+    assert_eq!((yv["spare"].clone(), yv["spare_since"].clone()), (json!(false), Value::Null), "Y 跟着回团队1：{yv}");
+    assert_eq!(xv["spare"], true, "X 仍在备用：{xv}");
+    assert_eq!(spare_since(x).await, x_since, "X 的 spare_since 不变");
+}
+
 /// 到期判断：账单时区里「到期日 + 1 天」那天结束后才回收；不同时区各按各的；非备用、没订阅、退役中的不动；有进行中作业的这一轮跳过；不重复建作业
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn expiry_boundaries_by_billing_timezone() {
