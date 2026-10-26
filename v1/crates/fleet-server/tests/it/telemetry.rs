@@ -954,10 +954,13 @@ async fn idle_spare_closes_alerts_quietly_and_is_not_counted() {
     let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
     let team = seed_team(&t, "团队1").await;
     let (node, entry) = seed_node(&t, relay, team, 1, "203.0.113.5", 20000).await;
-    let mut r = blank_report(1);
-    r.xray = Some(xray(true));
-    r.probes = vec![probe(entry, now_ms() - 2_000, ProbeKind::Egress, false), probe(entry, now_ms() - 2_000, ProbeKind::Tcp, false)];
-    assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
+    // 连续失败 2 次才算故障（首次失败只是警告）
+    for (seq, ago) in [(1, 4_000), (2, 2_000)] {
+        let mut r = blank_report(seq);
+        r.xray = Some(xray(true));
+        r.probes = vec![probe(entry, now_ms() - ago, ProbeKind::Egress, false), probe(entry, now_ms() - ago, ProbeKind::Tcp, false)];
+        assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
+    }
     let mut state = AlertState::default();
     let base = OffsetDateTime::now_utc();
     pass(&t, &mut state, base, 0).await;
