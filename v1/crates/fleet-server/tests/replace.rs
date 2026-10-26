@@ -454,6 +454,27 @@ async fn renumber_only_and_compaction() {
     assert_eq!(name_of(t, w.old).await, "团队2备用-01");
 }
 
+/// 选了「不改软路由」而出口还指着旧节点：旧节点进备用后被扣住（不自动回收、要照常续费），自动续费的提示不再写「到期后照常回收」「供应商那边要自己去关」，
+/// 改写要自己登记续费、供应商那边先别关；改软路由（出口会跟到新节点）时不被扣住，说法照旧
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn replace_without_router_change_holds_old_node_in_spare() {
+    let w = world().await;
+    let oe = old_entry(&w).await;
+    router(&w, "路由A", 23199, &[("节点01", "198.51.100.2", 20003, Some(oe))]).await;
+    let t = &w.t;
+    sqlx::query("insert into subscription (machine_id, price_cents, currency, due_date, billing_tz, auto_renew) values ($1, 500, 'USD', '2099-01-01', 'UTC', true)")
+        .bind(w.old)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let url = format!("/api/v1/machines/{}/replace?new_machine_id={}", w.old, w.new);
+    let on = t.get(&url).await["warnings"].to_string();
+    assert!(on.contains("开着自动续费：进备用时会关掉，到期后照常回收（供应商那边的自动扣款要自己去关）"), "改软路由：出口跟到新节点，旧节点闲置备用：{on}");
+    let off = t.get(&format!("{url}&routers=false")).await["warnings"].to_string();
+    assert!(off.contains("开着自动续费：进备用时中控这边会关掉；软路由出口还指着它，不会自动回收，到期要自己登记续费，供应商那边的自动扣款先别关"), "{off}");
+    assert!(!off.contains("照常回收") && !off.contains("要自己去关") && off.contains("出口仍指向旧节点"), "{off}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn validation() {
     let w = world().await;
@@ -494,7 +515,8 @@ async fn validation() {
     assert!(w_ip.contains("旧节点上的同机 IP 节点 团队2-09 仍在用：旧节点进备用后不会自动回收"), "{w_ip}");
     // 这时订阅已过期、自动续费也开着，但不会回收：「什么时候回收」那几条不写，只留 IP 节点这句，自动续费会关掉保留但不写「照常回收」
     assert!(!w_ip.contains("订阅已过期满 1 天") && !w_ip.contains("照常回收") && !w_ip.contains("没有订阅"), "{w_ip}");
-    assert!(w_ip.contains("开着自动续费：进备用时会关掉（供应商那边的自动扣款要自己去关），之后到期要自己登记续费"), "{w_ip}");
+    assert!(w_ip.contains("开着自动续费：进备用时中控这边会关掉；同机 IP 节点还在用，不会自动回收，到期要自己登记续费，供应商那边的自动扣款先别关"), "{w_ip}");
+    assert!(!w_ip.contains("要自己去关"), "{w_ip}");
     sqlx::query("update machine set team_id = $2 where id = $1").bind(ip).bind(w.spare).execute(&t.st.db).await.unwrap();
     assert!(!t.get(&url(w.new)).await["warnings"].to_string().contains("同机 IP 节点"));
     // 新节点在别的团队：替换时改到旧节点的团队（提示一下）

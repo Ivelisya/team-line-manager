@@ -184,6 +184,68 @@ async fn retire_moves_into_spare() {
     assert_eq!((xv["spare_from"].as_str(), xv["lifecycle_reason"].as_str()), (Some("团队1-08"), Some("随宿主机「团队1-07」退役")), "{xv}");
 }
 
+/// 进备用的自动续费提示：软路由出口还指着它（被扣住、到期不自动回收）时，不再劝人去关供应商那边的自动扣款，改写要自己登记续费、供应商那边先别关；
+/// 中控这边的自动续费照样关掉。预览与提交后的结果一致
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn spare_auto_renew_note_does_not_say_cancel_when_exit_holds_it() {
+    let t = setup(false).await;
+    let team = seed_team(&t, "团队1").await;
+    let n = seed_node(&t, team, 1, "203.0.113.71", "active").await;
+    let free = seed_node(&t, team, 2, "203.0.113.72", "active").await;
+    for m in [n, free] {
+        sub(&t, m, "2030-01-01", "UTC").await;
+        sqlx::query("update subscription set auto_renew = true where machine_id = $1").bind(m).execute(&t.st.db).await.unwrap();
+    }
+    let rid = Uuid::now_v7();
+    sqlx::query("insert into router (id, name, tunnel_port) values ($1, '办公室', 23005)").bind(rid).execute(&t.st.db).await.unwrap();
+    let entry = json!({"id": Uuid::now_v7(), "name": "团队1-01 · 线路机1:20001", "node_id": n, "relay_id": Uuid::now_v7(), "node_name": "团队1-01", "relay_name": "线路机1", "port": 20001, "lifecycle": "active"});
+    let snap = json!({"exits": [{"name": "节点01", "entry": entry, "sync": "ok", "linked": true}]});
+    sqlx::query("insert into router_status (router_id, ts, reachable, data, last_ok_at) values ($1, now(), true, $2, now())").bind(rid).bind(snap).execute(&t.st.db).await.unwrap();
+
+    let held_tail = "；软路由出口还指着它，不会自动回收，到期要自己登记续费，供应商那边的自动扣款先别关";
+    let pv = t.get(&format!("/api/v1/machines/{n}/retire")).await;
+    let notes: Vec<&str> = pv["spare"]["notes"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+    assert_eq!(notes[0], format!("这台开着自动续费：进备用时中控这边会关掉{held_tail}"), "{pv}");
+    assert!(!pv.to_string().contains("要自己去关"), "{pv}");
+    // 没有出口指着的一台照旧
+    let pv = t.get(&format!("/api/v1/machines/{free}/retire")).await;
+    assert_eq!(pv["spare"]["notes"][0], "这台开着自动续费：进备用时会关掉，到期后照常回收（供应商那边的自动扣款要自己去关）", "{pv}");
+
+    let r = t.post(&format!("/api/v1/machines/{n}/retire"), json!({"confirm": "团队1-01"})).await;
+    assert_eq!(r["notes"][0], format!("自动续费已在中控关闭{held_tail}"), "{r}");
+    assert_eq!(r["auto_renew_off"], true);
+    let on: bool = sqlx::query_scalar("select auto_renew from subscription where machine_id = $1").bind(n).fetch_one(&t.st.db).await.unwrap();
+    assert!(!on, "中控这边的自动续费照样关掉");
+    let v = t.get(&format!("/api/v1/machines/{n}")).await;
+    assert_eq!((v["recycle_held"].clone(), v["idle_spare"].clone()), (json!(true), json!(false)), "{v}");
+}
+
+/// 开着自动续费的备用机不是闲置备用：一直续、永远到不了回收日，不给回收日（recycle_held）、不算闲置（idle_spare），
+/// 到期提醒与待付清单（默认带上）照常；关掉自动续费后又是闲置备用
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn spare_with_auto_renew_is_held_not_idle() {
+    let t = setup(false).await;
+    let sp = spare_team(&t).await;
+    let m = seed_node(&t, sp, 1, "203.0.113.75", "active").await;
+    sub(&t, m, "2026-10-20", "UTC").await;
+    let v = t.get(&format!("/api/v1/machines/{m}")).await;
+    assert_eq!((v["idle_spare"].clone(), v["recycle_held"].clone(), v["recycle_on"].clone()), (json!(true), json!(false), json!("2026-10-22")), "{v}");
+    sqlx::query("update subscription set auto_renew = true where machine_id = $1").bind(m).execute(&t.st.db).await.unwrap();
+    t.st.live.invalidate();
+    let v = t.get(&format!("/api/v1/machines/{m}")).await;
+    assert_eq!((v["idle_spare"].clone(), v["recycle_held"].clone(), v["recycle_on"].clone()), (json!(false), json!(true), Value::Null), "{v}");
+    // 待付清单默认带上（开着自动续费的单列在 auto）
+    let d = t.get("/api/v1/billing/due?days=3650").await;
+    let auto: Vec<&Value> = d["auto"].as_array().unwrap().iter().filter(|x| x["machine"]["id"] == m.to_string()).collect();
+    assert!(auto.len() == 1 && auto[0]["machine"]["spare_hold"].as_str().is_some_and(|h| h.contains("开着自动续费")), "{d}");
+    sqlx::query("update subscription set auto_renew = false where machine_id = $1").bind(m).execute(&t.st.db).await.unwrap();
+    t.st.live.invalidate();
+    let v = t.get(&format!("/api/v1/machines/{m}")).await;
+    assert_eq!((v["idle_spare"].clone(), v["recycle_held"].clone()), (json!(true), json!(false)), "{v}");
+    let d = t.get("/api/v1/billing/due?days=3650").await;
+    assert!(!d.to_string().contains(&m.to_string()), "闲置备用不在默认清单里：{d}");
+}
+
 /// 撤销退役（宿主机从备用改回原团队）只带与它同一次进备用的 IP 节点：之前单独退役进备用的 IP 节点留在备用（spare_since 不清、仍会自动回收）；
 /// 带走的 IP 节点有进行中的作业时 409，预览与实际一致
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -288,6 +350,34 @@ async fn undo_retire_sends_ip_nodes_back_to_their_own_teams() {
     assert_eq!(name(q).await["name"], "团队2-01", "团队 2 里原有的不动");
     let wv = name(w).await;
     assert_eq!((wv["spare"].clone(), wv["spare_since"].is_string()), (json!(true), true), "原团队已删的 IP 节点留在备用：{wv}");
+}
+
+/// 撤销退役改到别的团队（不是原团队）：原本和宿主机同团队的 IP 节点跟宿主机走（同普通改团队），去宿主机选的团队；别的团队的 IP 节点照旧各回自己的团队；
+/// 预览与实际一致
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn undo_retire_to_another_team_takes_same_team_ip_nodes_with_the_host() {
+    let t = setup(false).await;
+    let (t1, t2, t4) = (seed_team(&t, "团队1").await, seed_team(&t, "团队2").await, seed_team(&t, "团队4").await);
+    let host = seed_vps(&t, t1, 1, "203.0.113.91", None).await;
+    let x = seed_vps(&t, t1, 2, "203.0.113.92", Some(host)).await;
+    let z = seed_vps(&t, t2, 1, "203.0.113.93", Some(host)).await;
+    for m in [host, x, z] {
+        sub(&t, m, "2030-01-01", "UTC").await;
+    }
+    let r = t.post(&format!("/api/v1/machines/{host}/retire"), json!({"confirm": "团队1-01"})).await;
+    assert_eq!(r["ip_nodes"].as_array().unwrap().len(), 2, "{r}");
+    // 撤销到团队4：X（进备用前和宿主机同在团队1）跟宿主机去团队4，Z 回自己的团队2
+    let pv = t.get(&format!("/api/v1/machines/{host}/rename-preview?team_id={t4}")).await;
+    let to: std::collections::HashMap<String, String> =
+        pv["ip_nodes"].as_array().unwrap().iter().map(|i| (i["machine_id"].as_str().unwrap().to_string(), i["new_name"].as_str().unwrap().to_string())).collect();
+    assert_eq!((pv["name"].as_str(), to.get(&x.to_string()).map(String::as_str), to.get(&z.to_string()).map(String::as_str)), (Some("团队4-01"), Some("团队4-02"), Some("团队2-01")), "{pv}");
+    let rev = t.get(&format!("/api/v1/machines/{host}")).await["revision"].clone();
+    let (s, r) = t.req("PATCH", &format!("/api/v1/machines/{host}"), Some(json!({"revision": rev, "team_id": t4})), None).await;
+    assert_eq!((s, r["data"]["name"].clone()), (StatusCode::OK, json!("团队4-01")), "{r}");
+    for (m, name) in [(x, "团队4-02"), (z, "团队2-01")] {
+        let mv = t.get(&format!("/api/v1/machines/{m}")).await;
+        assert_eq!((mv["name"].as_str(), mv["spare"].clone(), mv["spare_since"].clone()), (Some(name), json!(false), Value::Null), "{mv}");
+    }
 }
 
 /// 到期判断：账单时区里「到期日 + 1 天」那天结束后才回收；不同时区各按各的；非备用、没订阅、退役中的不动；有进行中作业的这一轮跳过；不重复建作业

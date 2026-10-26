@@ -311,16 +311,19 @@ pub struct MachineView {
     #[serde(with = "time::serde::rfc3339::option")]
     pub spare_since: Option<OffsetDateTime>,
     /// 备用团队里在用、有订阅的机器自动回收的日子（账单时区，到期日 + 2 天，见 spare::recycle_on）；其余为 null。
-    /// 还被软路由出口指着的（`router_exits` 非空）、上面还有在用的同机 IP 节点的（`live_ip_nodes` 非空）不自动回收，这里为 null、`recycle_held` 为 true
+    /// 还被软路由出口指着的（`router_exits` 非空）、上面还有在用的同机 IP 节点的（`live_ip_nodes` 非空）、开着自动续费的不自动回收，这里为 null、`recycle_held` 为 true
     pub recycle_on: Option<Date>,
-    /// 备用团队里在用的机器，因为软路由出口还指着它（`router_exits`）或上面还有在用的同机 IP 节点（`live_ip_nodes`）所以不自动回收：
-    /// 显示「软路由出口还指着，不自动回收」/「同机 IP 节点 X 还在用，不自动回收」（两个都有就都写），不写回收日
+    /// 备用团队里在用的机器，因为软路由出口还指着它（`router_exits`）、上面还有在用的同机 IP 节点（`live_ip_nodes`）或开着自动续费（订阅的 `auto_renew`：
+    /// 一直续下去，永远到不了回收日）所以不自动回收：显示「软路由出口还指着，不自动回收」/「同机 IP 节点 X 还在用，不自动回收」/「开着自动续费，不自动回收」（有几个都写），不写回收日
     pub recycle_held: bool,
+    /// 闲置备用：备用团队里在用、没有被扣住不回收（`recycle_held`）的机器，是等到期放生的：不开告警、不进总览的健康计数、不提醒续费、不算到期，月费不计入合计。
+    /// 网页、fleetctl 据此判断，不自己拼条件
+    pub idle_spare: bool,
     /// 备用团队里在用的宿主机：它上面不在备用团队、没退役的同机 IP 节点（显示名，如「团队1-02」）——宿主机退役会连带它们，所以不自动回收（spare::run_once keeps_live），
     /// 也不是闲置备用（宿主机断了它们跟着断，要续费、要告警）；其余为空
     pub live_ip_nodes: Vec<String>,
     /// 备用团队里在用的机器：还指向它（备用宿主机还包括它上面没退役的同机 IP 节点，后缀「（经同机 IP 节点 X）」）的软路由出口（「路由名 · 出口名」），续费提醒里列出来；
-    /// 它和 `live_ip_nodes` 都为空的就是闲置备用（`idle_spare`，网页据此不把它算进异常）
+    /// 它、`live_ip_nodes` 都为空、又没开自动续费的就是闲置备用（`idle_spare`，网页据此不把它算进异常）
     pub router_exits: Vec<String>,
     pub number: Option<i32>,
     pub label: Option<String>,
@@ -393,12 +396,14 @@ pub fn held_ids(live: Option<Arc<Vec<MachineView>>>) -> HashSet<Uuid> {
     live.map(|v| v.iter().filter(|m| m.recycle_held).map(|m| m.id).collect()).unwrap_or_default()
 }
 
+#[cfg(test)]
 impl MachineView {
-    /// 闲置备用：在用、在备用团队、没有软路由出口指向、上面没有在用的同机 IP 节点（这样的机器是等到期放生的，供应商那边停了也是预期）。
-    /// 不开告警（alerts.rs）、不计入总览的健康计数（overview_of）；健康状态本身照常算，卡片上看得到。
-    /// 还被出口指向的、上面还有在用 IP 节点的备用机器关系到客户，不算闲置。`router_exits`、`live_ip_nodes` 只对备用团队里在用的机器填，所以不用再判 lifecycle 之外的条件
-    pub fn idle_spare(&self) -> bool {
-        self.lifecycle == "active" && self.spare && self.router_exits.is_empty() && self.live_ip_nodes.is_empty()
+    /// 测试用：按 spare / lifecycle / router_exits / live_ip_nodes / 订阅的 auto_renew 补算 `recycle_held`、`idle_spare`（同视图构造里的算法）
+    pub(crate) fn settle_spare(mut self) -> Self {
+        let in_spare = self.spare && self.lifecycle == "active";
+        self.recycle_held = in_spare && !(self.router_exits.is_empty() && self.live_ip_nodes.is_empty() && !self.subscription.as_ref().is_some_and(|s| s.auto_renew));
+        self.idle_spare = in_spare && !self.recycle_held;
+        self
     }
 }
 
@@ -1541,8 +1546,11 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
             let spare = r.team_spare.unwrap_or(false);
             let router_exits: Vec<String> = exits.remove(&r.id).unwrap_or_default().iter().map(|e| e.label()).collect();
             let live_ip_nodes = live_ip_nodes.remove(&r.id).filter(|_| spare && r.lifecycle == "active").unwrap_or_default();
-            // 还被出口指着、上面还有在用 IP 节点的备用不自动回收（spare::run_once），不给回收日
-            let recycle_held = spare && r.lifecycle == "active" && !(router_exits.is_empty() && live_ip_nodes.is_empty());
+            // 还被出口指着、上面还有在用 IP 节点、开着自动续费的备用不自动回收（spare::run_once），不给回收日，也不是闲置备用
+            let auto_renew = subscription.as_ref().is_some_and(|s| s.auto_renew);
+            let in_spare = spare && r.lifecycle == "active";
+            let recycle_held = in_spare && !(router_exits.is_empty() && live_ip_nodes.is_empty() && !auto_renew);
+            let idle_spare = in_spare && !recycle_held;
             let recycle_on = subscription.as_ref().filter(|_| spare && r.lifecycle == "active" && !recycle_held).map(|s| crate::spare::recycle_on(s.due_date));
             let mut v = MachineView {
                 id: r.id,
@@ -1554,6 +1562,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 spare_since: r.spare_since,
                 recycle_on,
                 recycle_held,
+                idle_spare,
                 live_ip_nodes,
                 router_exits,
                 number: r.number,
@@ -1671,7 +1680,7 @@ pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Valu
         }
         // 闲置备用（等到期放生的）：不进健康计数，也不进在线 / 离线（放生的机器常年离线，会让「agent 离线」永远不为 0），只数个 spare；
         // 实时速率照算（离线的本来不算）；月费合计不含闲置备用，另列 monthly_usd_spare（见下）
-        let idle = m.idle_spare();
+        let idle = m.idle_spare;
         if idle {
             spare += 1;
         }
@@ -1826,7 +1835,7 @@ mod tests {
             m.router_exits = exits.iter().map(|s| s.to_string()).collect();
             m.agent.as_mut().unwrap().online = online;
             m.health = health::evaluate(&m, now);
-            m
+            m.settle_spare()
         };
         // 闲置备用（故障、agent 离线）不计入；被出口指向的备用照常计入；普通节点照常
         let (idle, idle_off, used) = (down(true, &[], true), down(true, &[], false), down(true, &["办公室2 · 美国"], true));
@@ -1866,7 +1875,7 @@ mod tests {
         assert_eq!(ov1["overdue"].as_i64(), Some(0), "自动续费的到期日次日还不算已过期");
         let (mut spare_soon, mut spare_over) = (with(3, false), with(-2, false));
         (spare_soon.spare, spare_over.spare) = (true, true);
-        let ov2 = overview_of(&[spare_soon, spare_over], &HashMap::new());
+        let ov2 = overview_of(&[spare_soon.settle_spare(), spare_over.settle_spare()], &HashMap::new());
         assert_eq!((ov2["due_soon"].as_i64(), ov2["overdue"].as_i64()), (Some(0), Some(0)), "备用团队的不算");
         assert_eq!((ov2["monthly_usd"]["cents"].as_i64(), ov2["monthly_usd_spare"]["cents"].as_i64(), ov2["monthly_usd_spare"]["count"].as_i64()), (Some(0), Some(200), Some(2)), "备用的月费不进合计，另列小计");
         assert_eq!(ov["monthly_usd"]["cents"], 433, "测试用的订阅是 USD，汇率 1");
@@ -1876,16 +1885,19 @@ mod tests {
         proxy.subscription = None;
         (spare_ip.subscription, spare_ip.spare) = (None, true);
         spare_ip.host_machine = Some(Ref { id: Uuid::new_v4(), name: "团队1-03".into() });
-        let ov4 = overview_of(&[with(30, false), proxy, spare_ip], &HashMap::new());
+        let ov4 = overview_of(&[with(30, false), proxy, spare_ip.settle_spare()], &HashMap::new());
         assert_eq!(ov4["paid_machines"].as_i64(), Some(1));
         // 备用团队里还被出口指着、或上面有在用 IP 节点的（不闲置）照常续费：进即将到期 / 已过期、月费合计与付费台数，不进备用小计
         let (mut by_exit, mut by_ip, mut idle_soon) = (with(3, false), with(-2, false), with(3, false));
         (by_exit.spare, by_ip.spare, idle_soon.spare) = (true, true, true);
         by_exit.router_exits = vec!["办公室2 · 美国".into()];
         by_ip.live_ip_nodes = vec!["团队1-02".into()];
-        let ov5 = overview_of(&[by_exit, by_ip, idle_soon], &HashMap::new());
-        assert_eq!((ov5["due_soon"].as_i64(), ov5["overdue"].as_i64(), ov5["paid_machines"].as_i64()), (Some(1), Some(1), Some(2)), "{ov5}");
-        assert_eq!((ov5["monthly_usd"]["cents"].as_i64(), ov5["monthly_usd_spare"]["cents"].as_i64(), ov5["monthly_usd_spare"]["count"].as_i64()), (Some(200), Some(100), Some(1)), "{ov5}");
+        // 开着自动续费的备用机也不是闲置：照常续费（自动续费到期日次日才算已过期，这里用 3 天后到期的，不进即将到期）
+        let mut by_auto = with(3, true);
+        by_auto.spare = true;
+        let ov5 = overview_of(&[by_exit.settle_spare(), by_ip.settle_spare(), by_auto.settle_spare(), idle_soon.settle_spare()], &HashMap::new());
+        assert_eq!((ov5["due_soon"].as_i64(), ov5["overdue"].as_i64(), ov5["paid_machines"].as_i64()), (Some(1), Some(1), Some(3)), "{ov5}");
+        assert_eq!((ov5["monthly_usd"]["cents"].as_i64(), ov5["monthly_usd_spare"]["cents"].as_i64(), ov5["monthly_usd_spare"]["count"].as_i64()), (Some(300), Some(100), Some(1)), "{ov5}");
         // 折算：逐台的 monthly_usd_cents 相加；没有汇率的单列，不算进合计
         let cny = |cents: i64, usd: Option<i64>| {
             let mut m = with(30, false);

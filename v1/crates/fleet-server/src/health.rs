@@ -133,16 +133,16 @@ pub fn quota_forecast_lingers(m: &MachineView, now: OffsetDateTime) -> bool {
 /// 续费提醒（renewal_due）：线路机和节点都有账单。到期状态由视图按生效的提前提醒天数算（meta::due_state），总览、网页、fleetctl 同一口径。
 /// 即将到期与已过期是同一条规则：到期后严重度从警告升到严重（告警引擎「只升不降、升级马上再发一次触发」），不先发一条「已恢复」。
 /// 备用团队的机器是替换下来、等到期丢弃的，不续费，也就不提醒（过期满 1 天自动回收，spare.rs）；
-/// 只有还被软路由出口指向的、上面还有在用同机 IP 节点的要提醒：这些备用不自动回收（回收会摘入口、出口就不通了；宿主机退役会连带 IP 节点），
+/// 只有还被软路由出口指向的、上面还有在用同机 IP 节点的、开着自动续费的（不是闲置备用，视图 idle_spare）要提醒：这些备用不自动回收（回收会摘入口、出口就不通了；宿主机退役会连带 IP 节点），
 /// 提醒后面写明是哪些出口还指着它（要换掉就先「替换」或改指向）、哪些 IP 节点还在用
 fn renewal_reason(m: &MachineView) -> Option<Reason> {
     let s = m.subscription.as_ref()?;
     let note = if !m.spare {
         String::new()
-    } else if m.router_exits.is_empty() && m.live_ip_nodes.is_empty() {
+    } else if m.router_exits.is_empty() && m.live_ip_nodes.is_empty() && !s.auto_renew {
         return None;
     } else {
-        crate::spare::held_note(s.due_days, &m.router_exits, &m.live_ip_nodes)
+        crate::spare::held_note(s.due_days, &m.router_exits, &m.live_ip_nodes, s.auto_renew)
     };
     match s.due_state {
         "overdue" => Some(Reason { key: "renewal_due", severity: "critical", text: format!("已过期 {} 天{note}", -s.due_days) }),
@@ -369,6 +369,7 @@ pub(crate) mod tests {
             spare_since: None,
             recycle_on: None,
             recycle_held: false,
+            idle_spare: false,
             live_ip_nodes: vec![],
             router_exits: vec![],
             number: None,
@@ -532,13 +533,13 @@ pub(crate) mod tests {
         }
         m.router_exits = vec!["团队2 新办公室 · 节点20".into(), "办公室2 · 美国".into()];
         m.subscription = Some(sub(3));
-        assert_eq!(text(&m).as_deref(), Some("3 天后到期；软路由出口 团队2 新办公室 · 节点20、办公室2 · 美国 还指向它，到回收日也不会自动回收：先改指向或立即回收"));
+        assert_eq!(text(&m).as_deref(), Some("3 天后到期；软路由出口 团队2 新办公室 · 节点20、办公室2 · 美国 还指向它，到回收日也不会自动回收：先改指向或立即回收，或给这台续费"));
         m.subscription = Some(sub(0));
-        assert_eq!(text(&m).as_deref(), Some("今天到期；软路由出口 团队2 新办公室 · 节点20、办公室2 · 美国 还指向它，到回收日也不会自动回收：先改指向或立即回收"));
+        assert_eq!(text(&m).as_deref(), Some("今天到期；软路由出口 团队2 新办公室 · 节点20、办公室2 · 美国 还指向它，到回收日也不会自动回收：先改指向或立即回收，或给这台续费"));
         m.subscription = Some(sub(-1));
-        assert_eq!(text(&m).as_deref(), Some("已过期 1 天；软路由出口 团队2 新办公室 · 节点20、办公室2 · 美国 还指向它，到回收日也不会自动回收：先改指向或立即回收"));
+        assert_eq!(text(&m).as_deref(), Some("已过期 1 天；软路由出口 团队2 新办公室 · 节点20、办公室2 · 美国 还指向它，到回收日也不会自动回收：先改指向或立即回收，或给这台续费"));
         m.subscription = Some(sub(-2));
-        assert_eq!(text(&m).as_deref(), Some("已过期 2 天；软路由出口 团队2 新办公室 · 节点20、办公室2 · 美国 还指向它，未自动回收：先改指向或立即回收"));
+        assert_eq!(text(&m).as_deref(), Some("已过期 2 天；软路由出口 团队2 新办公室 · 节点20、办公室2 · 美国 还指向它，未自动回收：先改指向或立即回收，或给这台续费"));
         m.subscription = Some(sub_with(-1, true));
         assert_eq!(text(&m), None, "自动续费的过期放宽 1 天");
         m.spare = false;
@@ -554,6 +555,13 @@ pub(crate) mod tests {
         assert_eq!(text(&m).as_deref(), Some("已过期 2 天；同机 IP 节点 团队1-02 还在用，未自动回收：先退役或换走这些 IP 节点，或给这台宿主机续费"));
         m.router_exits = vec!["办公室2 · 美国".into()];
         assert!(text(&m).unwrap().contains("软路由出口 办公室2 · 美国 还指向它") && text(&m).unwrap().contains("同机 IP 节点 团队1-02 还在用"), "两样都有：都写");
+        // 开着自动续费的备用机不是闲置备用：没有出口、没有 IP 节点也提醒（自动续费这一轮没顺延成才会到这里：过期放宽 1 天），写明不自动回收；没过期的不提醒
+        m.router_exits.clear();
+        m.live_ip_nodes.clear();
+        m.subscription = Some(sub_with(-2, true));
+        assert_eq!(text(&m).as_deref(), Some("已过期 2 天；开着自动续费，不自动回收：这一轮自动续费没顺延成，查一下订阅，或手动登记续费"));
+        m.subscription = Some(sub_with(3, true));
+        assert_eq!(text(&m), None);
     }
 
     #[test]

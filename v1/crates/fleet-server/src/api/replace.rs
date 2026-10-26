@@ -430,6 +430,14 @@ async fn plan(st: &AppState, conn: &mut PgConnection, old_id: Uuid, b: &ReplaceI
         _ => old_name.clone(),
     };
     let new_after = node_name(&old_team_name, old_number);
+    // 软路由计划先算（旧节点进备用后是不是被扣住，要看出口还指不指着它）；它的提示与阻断留到最后再接
+    let routers_enabled = b.routers != Some(false);
+    let (mut router_blockers, mut router_warnings) = (vec![], vec![]);
+    let routers = if old.kind == "relay" || new.kind == "relay" {
+        vec![]
+    } else {
+        router_plan(st, conn, &old, &new, old_team, routers_enabled, &mut router_blockers, &mut router_warnings).await?
+    };
     if new.team_id != Some(old_team) && new.kind != "relay" {
         warnings.push(format!("新节点「{new_name}」不在旧节点的团队（{old_team_name}），替换时改到这个团队"));
     }
@@ -448,11 +456,18 @@ async fn plan(st: &AppState, conn: &mut PgConnection, old_id: Uuid, b: &ReplaceI
         // 进备用之后什么时候回收（spare.rs）：没有订阅的永远不回收，已过期满 1 天的下一轮维护就回收；开着的自动续费会关掉（machines::patch_tx）
         let sub: Option<(time::Date, time::Date, bool)> =
             sqlx::query_as("select due_date, local_date(billing_tz), auto_renew from subscription_eff where machine_id = $1").bind(old.id).fetch_optional(&mut *conn).await?;
-        if !live_ips.is_empty() {
+        // 被扣住（不自动回收、要照常续费）：有在用的同机 IP 节点，或不改软路由而出口还指着旧节点
+        let held = super::machines::spare_held_reason(!routers_enabled && !routers.is_empty(), !live_ips.is_empty());
+        if let Some(reason) = held {
             if sub.is_some_and(|s| s.2) {
-                warnings.push(format!("旧节点「{old_name}」开着自动续费：进备用时会关掉（供应商那边的自动扣款要自己去关），之后到期要自己登记续费"));
+                warnings.push(format!("旧节点「{old_name}」开着自动续费：进备用时中控这边会关掉{}", super::machines::spare_held_tail(reason)));
             }
-            warnings.push(format!("旧节点上的同机 IP 节点 {} 仍在用：旧节点进备用后不会自动回收，要处理先退役或换走这些 IP 节点", live_ips.join("、")));
+            if !live_ips.is_empty() {
+                warnings.push(format!("旧节点上的同机 IP 节点 {} 仍在用：旧节点进备用后不会自动回收，要处理先退役或换走这些 IP 节点", live_ips.join("、")));
+            }
+            if !routers_enabled && !routers.is_empty() {
+                warnings.push("没有改软路由：出口仍指向旧节点，旧节点进备用后不会自动回收，要处理先改指向或之后「立即回收」".into());
+            }
         } else {
             match sub {
                 None => warnings.push(format!("旧节点「{old_name}」没有订阅：进备用后没有到期日，不会自动回收（不要了就之后「立即回收」）")),
@@ -508,13 +523,9 @@ async fn plan(st: &AppState, conn: &mut PgConnection, old_id: Uuid, b: &ReplaceI
             .collect();
     }
 
-    // 软路由
-    let routers_enabled = b.routers != Some(false);
-    let routers = if old.kind == "relay" || new.kind == "relay" {
-        vec![]
-    } else {
-        router_plan(st, conn, &old, &new, old_team, routers_enabled, &mut blockers, &mut warnings).await?
-    };
+    // 软路由计划的提示与阻断接在最后（计划在上面先算出来）
+    blockers.extend(router_blockers);
+    warnings.extend(router_warnings);
     Ok(Plan { old, new, to_team, to_number, number_given: b.old_to.number.is_some(), old_after, new_after, renames, routers_enabled, routers, blockers, invalid, warnings })
 }
 
