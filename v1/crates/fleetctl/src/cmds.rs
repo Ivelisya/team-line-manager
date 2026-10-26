@@ -790,8 +790,9 @@ fn job_row(j: &Value) -> Vec<String> {
     ]
 }
 
-pub fn jobs(ctx: &Ctx, active: bool, kind: Option<&str>, limit: i64) -> anyhow::Result<u8> {
-    let mut q = vec![("state", if active { "active" } else { "all" }.to_string()), ("limit", limit.to_string())];
+pub fn jobs(ctx: &Ctx, active: bool, failed: bool, kind: Option<&str>, limit: i64) -> anyhow::Result<u8> {
+    let state = if active { "active" } else if failed { "failed" } else { "all" };
+    let mut q = vec![("state", state.to_string()), ("limit", limit.to_string())];
     if let Some(k) = kind {
         q.push(("kind", k.to_string()));
     }

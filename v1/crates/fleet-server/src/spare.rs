@@ -159,7 +159,7 @@ pub async fn run_once(st: &AppState, now: OffsetDateTime) -> anyhow::Result<Ran>
                         rule: AUTO.into(),
                         severity: "warning".into(),
                         machine: r.name.clone(),
-                        summary: format!("备用节点已过期满 1 天（到期日 {}）：已自动退役并清理服务{with}，完成后移进回收站", r.due_date),
+                        summary: format!("备用节点已过期满 1 天（到期日 {}）：已自动发起回收{with}：清理服务、完成退役后移进回收站（中途失败会另发「作业失败」通知）", r.due_date),
                         at: now,
                         opened_at: None,
                     },

@@ -53,7 +53,7 @@ fleetctl ssh router <名称> [-- 'logread | tail -50']        # 软路由（Open
 | 快到期的机器、一台机器的费用与续费记录 | `fleetctl --json ls --due 7`（7 天内到期、含已过期的在用机器，按到期排；`status` 的 `overview.due_soon` / `overdue` 是按各台提前提醒天数算的即将到期 / 已过期台数）、`fleetctl --json billing <机器>`、未来待付清单 `fleetctl --json billing --due 30d --by-provider`（登记续费、改订阅见下文「到期与续费」） |
 | 静默与维护窗口（进行中 / 已预约） | `fleetctl --json silence ls`（开、删见下文「维护窗口与静默」） |
 | 入口列表 | `fleetctl --json entries [<机器>]` |
-| 作业 | `fleetctl --json jobs [--active]`、`fleetctl job <id>`、`fleetctl job <id> --follow` |
+| 作业 | `fleetctl --json jobs [--active | --failed] [--kind 类型]`（系统发起的作业失败，如备用到期自动回收中途失败，会收到「作业失败」通知，按里面的 `fleetctl retry <id>` 处理）、`fleetctl job <id>`、`fleetctl job <id> --follow` |
 | 清理作业记录（用户说清掉旧作业 / 测试留下的作业） | `fleetctl jobs-prune [--before YYYY-MM-DD]` 先报数量，用户同意后加 `--yes`：只删已成功、已取消的（连同步骤与日志），失败的、进行中的不动；不要直接改库 |
 | 审计 | `fleetctl --json audit [--target <机器>] [--limit 50] [--before <上一页最后一条的 id>]` |
 | 实时事件 | `fleetctl watch --count 20` |

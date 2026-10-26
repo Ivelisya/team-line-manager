@@ -395,7 +395,10 @@ enum Cmd {
     Jobs {
         #[arg(long)]
         active: bool,
-        /// 只看这类作业：provision（各类上架）| attach_entry | move_entry | replace | upgrade_agent | tune | retire | purge
+        /// 只看失败的作业（和 --active 二选一）
+        #[arg(long, conflicts_with = "active")]
+        failed: bool,
+        /// 只看这类作业：provision（各类上架）| attach_entry | move_entry | replace | repoint | router_sync | upgrade_agent | tune | ss_refresh | speedtest | retire | purge
         #[arg(long)]
         kind: Option<String>,
         #[arg(long, default_value_t = 30)]
@@ -1042,7 +1045,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             SilenceCmd::Add(o) => silence::add(x, o),
             SilenceCmd::Rm { id } => silence::rm(x, &id),
         },
-        Cmd::Jobs { active, kind, limit } => cmds::jobs(x, active, kind.as_deref(), limit),
+        Cmd::Jobs { active, failed, kind, limit } => cmds::jobs(x, active, failed, kind.as_deref(), limit),
         Cmd::Job { id, follow } => cmds::job(x, &id, follow),
         Cmd::JobsPrune { before, yes } => ops::jobs_prune(x, before.as_deref(), yes),
         Cmd::Retry { id, reset_host_key, password_env } => cmds::job_retry(x, &id, reset_host_key, password_env.as_deref()),
