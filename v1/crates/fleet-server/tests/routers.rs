@@ -833,49 +833,54 @@ async fn exits_down_notes_maintenance_and_alerts() {
     assert!(inc.iter().any(|i| i["rule"] == "router_exits_down" && i["summary"] == ex["summary"]), "{inc:?}");
 }
 
-/// 出口不通开着但 quiet（指向的节点有机器告警）：机器告警先恢复后，路由告警再等一轮，出口还不通才补发「触发」；
-/// 这一轮出口就好了的，既不发触发也不发恢复（不会出现「触发」随后又「恢复」）
+/// 出口不通开着但 quiet（指向的节点有机器告警）：机器告警先恢复后，路由告警等这台路由重新采集（快照晚于解除的时刻），出口还不通才补发「触发」；
+/// 没有新快照的评估（补采别的、到点复查）不算数；解除之后出口就好了的，既不发触发也不发恢复（不会出现「触发」随后又「恢复」）
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn quiet_exits_down_waits_one_round_after_machine_alert_resolves() {
+async fn quiet_exits_down_waits_for_fresh_snapshot_after_machine_alert_resolves() {
     let t = setup().await;
     let mock = Mock::start().await;
     t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "feishu", "config": {"url": mock.url("/hook/q")}, "min_severity": "info", "enabled": true})).await;
     let team = seed_team(&t, "团队2").await;
     let (relay, _) = common::seed_relay(&t).await;
+    let t0 = OffsetDateTime::now_utc();
+    let at = |s: i64| (t0 + time::Duration::seconds(s)).format(&time::format_description::well_known::Rfc3339).unwrap();
     let mut routers = vec![];
     for (name, number) in [("团队2-路由A", 3), ("团队2-路由B", 4)] {
         let node = common::seed_node(&t, team, number, &format!("203.0.113.{}", 10 + number), "active").await;
         let (id, _) = create(&t, name).await;
         issue_key(&t, &id).await;
         let er = json!({"id": Uuid::now_v7(), "name": "入口", "node_id": node, "relay_id": relay, "node_name": format!("团队2-0{number}"), "relay_name": "线路机2", "port": 20003, "lifecycle": "active"});
-        let data = |streak: u32| {
+        let data = move |streak: u32, collected: String| {
             json!({
                 "system": {"cpu_pct": 10.0, "mem_used": 1, "mem_total": 4},
                 "interfaces": [{"name": "wan", "device": "eth0", "up": true}],
                 "openclash": {"enabled": true, "running": true},
                 "exits": [{"name": "节点01", "fail_streak": streak, "sync": "ok", "entry": er}, {"name": "节点02", "fail_streak": 0, "sync": "ok"}],
+                "collected_at": collected,
             })
         };
-        status(&t, &id, true, 0, data(2)).await;
+        status(&t, &id, true, 0, data(2, at(0))).await;
         let inc = Uuid::now_v7();
         sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary) values ($1, 'machine', 'egress_fail', $2, 'critical', 'x')").bind(inc).bind(node).execute(&t.st.db).await.unwrap();
-        routers.push((id, inc, data(0)));
+        routers.push((id, data));
     }
     let mut st = alerts::AlertState::default();
-    let t0 = OffsetDateTime::now_utc();
     // 机器告警在报：路由的出口告警开着、不通知
     alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(0)).await.unwrap();
     alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(30)).await.unwrap();
     assert_eq!(incidents(&t, "firing").await.iter().filter(|i| i["rule"] == "router_exits_down").count(), 2);
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(mock.count("/hook/q"), 0);
-    // 机器告警恢复，出口还不通：这一轮（解除 quiet 的第一轮）还是不通知
+    // 机器告警恢复，出口还不通：解除 quiet 的这一轮、之后没有新快照的评估（补采别的、到点复查）都还是不通知
     sqlx::query("update incident set state = 'resolved', resolved_at = now() where engine = 'machine'").execute(&t.st.db).await.unwrap();
-    alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(60)).await.unwrap();
+    for s in [60, 75] {
+        alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(s)).await.unwrap();
+    }
     tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(mock.count("/hook/q"), 0, "再等一轮");
-    // B 的出口这一轮就好了：不发触发也不发恢复；A 还不通：补发触发
-    status(&t, &routers[1].0, true, 0, routers[1].2.clone()).await;
+    assert_eq!(mock.count("/hook/q"), 0, "快照还是解除之前的：不算重新测过");
+    // 两台都重新采集了：B 的出口好了，不发触发也不发恢复；A 还不通：补发触发
+    status(&t, &routers[1].0, true, 0, (routers[1].1)(0, at(80))).await;
+    status(&t, &routers[0].0, true, 0, (routers[0].1)(2, at(80))).await;
     alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(90)).await.unwrap();
     mock.wait("/hook/q", 1).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -884,10 +889,53 @@ async fn quiet_exits_down_waits_one_round_after_machine_alert_resolves() {
     let firing = incidents(&t, "firing").await;
     assert_eq!(firing.iter().filter(|i| i["rule"] == "router_exits_down").count(), 1, "B 的已恢复");
     // A 也好了：报恢复
-    status(&t, &routers[0].0, true, 0, routers[0].2.clone()).await;
+    status(&t, &routers[0].0, true, 0, (routers[0].1)(0, at(120))).await;
     alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(120)).await.unwrap();
     mock.wait("/hook/q", 2).await;
     assert_eq!(mock.events("/hook/q"), ["firing", "resolved"]);
+}
+
+/// 中控重启后（AlertState 重建）：重启前就开着的 quiet 告警（还在告警、没通知过、没被静默）从库里补回 quiet，
+/// 机器告警已经恢复时同样等重新采集再补发；已通知过的、被静默的不当 quiet
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn alert_state_load_restores_quiet_exits_down() {
+    let t = setup().await;
+    let mock = Mock::start().await;
+    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "feishu", "config": {"url": mock.url("/hook/l")}, "min_severity": "info", "enabled": true})).await;
+    let team = seed_team(&t, "团队2").await;
+    let (relay, _) = common::seed_relay(&t).await;
+    let t0 = OffsetDateTime::now_utc();
+    let at = |s: i64| (t0 + time::Duration::seconds(s)).format(&time::format_description::well_known::Rfc3339).unwrap();
+    let node = common::seed_node(&t, team, 3, "203.0.113.13", "active").await;
+    let (id, _) = create(&t, "团队2-路由A").await;
+    issue_key(&t, &id).await;
+    let er = json!({"id": Uuid::now_v7(), "name": "入口", "node_id": node, "relay_id": relay, "node_name": "团队2-03", "relay_name": "线路机2", "port": 20003, "lifecycle": "active"});
+    let data = |collected: String| {
+        json!({
+            "system": {"cpu_pct": 10.0, "mem_used": 1, "mem_total": 4},
+            "interfaces": [{"name": "wan", "device": "eth0", "up": true}],
+            "openclash": {"enabled": true, "running": true},
+            "exits": [{"name": "节点01", "fail_streak": 2, "sync": "ok", "entry": er.clone(), "fail_since": at(-300)}, {"name": "节点02", "fail_streak": 0, "sync": "ok"}],
+            "collected_at": collected,
+        })
+    };
+    status(&t, &id, true, 0, data(at(0))).await;
+    // 重启前开的 quiet 告警：开的时候没通知过
+    sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary) values ($1, 'router', 'router_exits_down', $2::uuid, 'warning', '团队2-路由A：1 个出口连续两次延迟测试不通：节点01')")
+        .bind(Uuid::now_v7())
+        .bind(&id)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    // 机器告警早已恢复（没有在报的），出口还不通：不能一上来就当「新的」通知
+    let mut st = alerts::AlertState::load(&t.st.db).await.unwrap();
+    alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(10)).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(mock.count("/hook/l"), 0, "补回了 quiet：解除后先等重新采集");
+    status(&t, &id, true, 0, data(at(20))).await;
+    alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(40)).await.unwrap();
+    mock.wait("/hook/l", 1).await;
+    assert_eq!(mock.events("/hook/l"), ["firing"]);
 }
 
 /// 中控停机的时段不算路由连不上：停之前刚连上过的，恢复后第一轮还没连上不报离线（同 agent）

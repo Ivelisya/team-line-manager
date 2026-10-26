@@ -62,14 +62,26 @@ const SLACK_S: i64 = 5;
 /// 从 `since` 到 `now` 已经满 `secs` 秒（含余量）
 fn held(since: OffsetDateTime, now: OffsetDateTime, secs: i64) -> bool { (now - since).whole_seconds() + SLACK_S >= secs }
 
-/// 评估之间要记住的：各问题第一次出现的时间、上一轮是 quiet 的问题、各告警原因消失的时间、CPU 从什么时候起一直偏高、上一轮在维护中的路由
+/// 评估之间要记住的：各问题第一次出现的时间、上一轮是 quiet 的问题、quiet 解除的时刻、各告警原因消失的时间、CPU 从什么时候起一直偏高、上一轮在维护中的路由
 #[derive(Default)]
 pub struct AlertState {
     first_seen: HashMap<(&'static str, Uuid), OffsetDateTime>,
     quiet: HashSet<(&'static str, Uuid)>,
+    /// quiet 解除（机器告警先恢复了）的时刻：这台路由的快照要晚于它才算「解除之后重新测过」，才判断要不要补发「触发」
+    unquiet_at: HashMap<(&'static str, Uuid), OffsetDateTime>,
     clean_since: HashMap<Uuid, OffsetDateTime>,
     cpu_high_since: HashMap<Uuid, OffsetDateTime>,
     maintenance: HashSet<Uuid>,
+}
+
+impl AlertState {
+    /// 中控重启后从库里补回 quiet：还在告警、开的时候没通知过（notified_at 为空）、没被静默的出口告警，只可能是 quiet 开着的
+    pub async fn load(db: &sqlx::PgPool) -> sqlx::Result<Self> {
+        let ids: Vec<Uuid> =
+            sqlx::query_scalar("select subject_id from incident where state = 'firing' and engine = 'router' and rule = $1 and notified_at is null").bind(EXITS_DOWN).fetch_all(db).await?;
+        let silences = Silences::load(db).await?;
+        Ok(Self { quiet: ids.into_iter().filter(|id| !silences.matches(EXITS_DOWN, *id)).map(|id| (EXITS_DOWN, id)).collect(), ..Self::default() })
+    }
 }
 
 /// 一台路由此刻的样子
@@ -315,15 +327,28 @@ pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime
             seen.insert(key);
             let since = *state.first_seen.entry(key).or_insert(now);
             let ready = p.hold_s == 0 || held(since, now, p.hold_s);
-            // 上一轮还是 quiet、这一轮不是了（机器告警先恢复）：再等一轮，路由出口还不通才补发「触发」；这一轮出口就好了的，既不发触发也不发恢复
+            // 上一轮还是 quiet、这一轮不是了（机器告警先恢复）：记下这一刻，等这台路由重新采集（快照晚于它）之后出口还不通才补发「触发」；
+            // 等的是新数据而不是一轮：评估也跑在补采几台、到点复查时，这台的快照可能还是旧的。解除之后出口就好了的，既不发触发也不发恢复
             if p.quiet {
                 quiet.insert(key);
+                state.unquiet_at.remove(&key);
+            } else if state.quiet.contains(&key) {
+                state.unquiet_at.entry(key).or_insert(now);
             }
-            let settling = !p.quiet && state.quiet.contains(&key);
+            let collected = v.snap.as_ref().and_then(|s| s.collected_at);
+            let settling = match state.unquiet_at.get(&key) {
+                Some(&at) if collected.is_some_and(|c| c > at) => {
+                    state.unquiet_at.remove(&key);
+                    false
+                }
+                Some(_) => true,
+                None => false,
+            };
             want.push(Want { rule: p.rule, subject: v.id, name: &v.name, severity: p.severity, text: p.text, detail: Some(json!({"name": v.name, "kind": "router"})), ready, quiet: p.quiet || settling });
         }
     }
     state.first_seen.retain(|k, _| seen.contains(k));
+    state.unquiet_at.retain(|k, _| seen.contains(k));
     state.quiet = quiet;
     // 问题还在的：恢复的去抖从头算
     for o in &open {

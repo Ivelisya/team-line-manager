@@ -788,7 +788,11 @@ pub async fn run_forever(st: AppState) {
         tracing::warn!("建 {} 失败：{e}", st.cfg.routers.control_dir.display());
     }
     let mut mem: HashMap<Uuid, Mem> = HashMap::new();
-    let mut alerts = super::alerts::AlertState::default();
+    // 重启前开着的 quiet 告警补回来（否则 quiet 解除时不知道要等重新采集）
+    let mut alerts = super::alerts::AlertState::load(&st.db).await.unwrap_or_else(|e| {
+        tracing::warn!("读软路由告警的 quiet 状态失败：{e:#}");
+        Default::default()
+    });
     let mut tick = tokio::time::interval(Duration::from_secs(30));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let refresh = &st.routers_refresh;
