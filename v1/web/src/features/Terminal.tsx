@@ -65,7 +65,9 @@ export function Terminal({ kind, id, name }: TermTarget) {
     const f = new FitAddon();
     t.loadAddon(f);
     t.open(el);
-    f.fit();
+    // 容器还没有宽高（对话框刚挂上、动画中）时 fit 会读到 undefined 的 dimensions 报错：等下一帧、有尺寸再适配，之后的变化由 ResizeObserver 接着
+    const fitNow = () => { if (el.clientWidth > 0 && el.clientHeight > 0) f.fit(); };
+    const raf = requestAnimationFrame(fitNow);
     const enc = new TextEncoder();
     const send = (d: Uint8Array | string) => { const ws = sock.current; if (ws?.readyState === WebSocket.OPEN) ws.send(d); };
     // 一条消息有上限（超了服务端以 1009 断开）：大段粘贴切成几条发，终端按字节拼回去
@@ -78,12 +80,12 @@ export function Terminal({ kind, id, name }: TermTarget) {
     // 终端里的按键不再冒泡到 window：全站快捷键（Ctrl+K 打开命令面板、Esc 收起侧栏）不能抢 shell 的 Ctrl+K、vim 的 Esc
     const stop = (e: KeyboardEvent) => e.stopPropagation();
     el.addEventListener('keydown', stop);
-    const ro = new ResizeObserver(() => { if (el.clientWidth > 0 && el.clientHeight > 0) f.fit(); });
+    const ro = new ResizeObserver(fitNow);
     ro.observe(el);
     const mo = new MutationObserver(() => { t.options.theme = readTheme(); });
     mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-palette'] });
     term.current = t; fit.current = f;
-    return () => { ro.disconnect(); mo.disconnect(); el.removeEventListener('keydown', stop); t.dispose(); term.current = null; fit.current = null; };
+    return () => { cancelAnimationFrame(raf); ro.disconnect(); mo.disconnect(); el.removeEventListener('keydown', stop); t.dispose(); term.current = null; fit.current = null; };
   }, []);
 
   /** 写一行暗色的状态说明进终端（断开原因留在输出里，往回翻也看得到） */

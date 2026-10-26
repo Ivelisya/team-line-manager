@@ -333,7 +333,7 @@ const ChannelDialog = resetOnOpen(function ChannelDialog({ target, open, onClose
       <div className="form-grid">
         <Field label="最低级别"><Select value={sev} onChange={setSev} options={SEVERITIES} /></Field>
         <Field label="状态"><label className="check-row" style={{ gap: 10, height: 'var(--h-lg)' }}><Switch checked={enabled} onCheckedChange={setEnabled} /><span>{enabled ? '启用' : '已停用'}</span></label></Field>
-        <Field label="月报" className="span-2" hint="每月 1 号发上月摘要（总流量、月费、可用率最差的几台等），不看最低级别；渠道要处于启用状态才会收到">
+        <Field label="月报" className="span-2" info="每月 1 号发上月摘要（总流量、月费、可用率最差的几台等），不看最低级别；渠道要处于启用状态才会收到">
           <label className="check-row" style={{ gap: 10, height: 'var(--h-lg)' }}><Switch checked={monthly} onCheckedChange={setMonthly} aria-label="接收月报" /><span>{monthly ? '接收月报' : '不接收'}</span></label>
         </Field>
       </div>

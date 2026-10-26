@@ -1224,6 +1224,23 @@ R('GET', '/relays/([^/]+)/evacuate', ({ params, query }) => {
   }
   return { from: src.name, to: dst.name, jobs, skipped, warnings: [], router_restarts: [], share_changed: jobs.length > 0, note: SHARE_NOTE };
 });
+// 批量换线路机（同后端 moves_view）：ids 里每个节点各算一次计划；有一个不能换就 ok 为 false、原因进 blockers
+function movesPlan(ids: string[], toId: string, fromId?: string) {
+  const dst = machine(toId);
+  const plans: { node: MachineView; plan: { old: EntryView; to: MachineView } }[] = []; const skipped: { machine_id: string; name: string | null; reason: string }[] = [];
+  for (const id of ids) {
+    const node = machine(id);
+    const plan = planMove(node, dst.id, fromId);
+    if (typeof plan === 'string') skipped.push({ machine_id: node.id, name: node.name, reason: plan }); else plans.push({ node, plan });
+  }
+  const blockers = skipped.map((k) => (k.reason.includes(k.name ?? '') ? k.reason : `${k.name ?? '节点'}：${k.reason}`));
+  return { dst, plans, skipped, blockers };
+}
+R('GET', '/moves', ({ query }) => {
+  const { dst, plans, skipped, blockers } = movesPlan((query.get('machine_ids') ?? '').split(',').filter(Boolean), query.get('to_relay_id') ?? '', query.get('from_relay_id') ?? undefined);
+  const jobs = plans.map(({ node, plan }) => ({ machine_id: node.id, name: node.name, from: plan.old.relay.name, old_entry: { id: plan.old.id, relay: plan.old.relay.name, port: plan.old.port }, routers: [] }));
+  return { from: jobs.length ? [...new Set(plans.map((x) => x.plan.old.relay.name))].join('、') : '', to: dst.name, jobs, skipped, warnings: [], router_restarts: [], share_changed: jobs.length > 0, note: SHARE_NOTE, ok: blockers.length === 0, blockers };
+});
 // 搬迁建议（mock 的简化算法：按本月流量从大到小，凑够需要少走的日均）
 R('GET', '/relays/([^/]+)/rebalance', ({ params, query }) => {
   const src = machine(params[0]); const q = src.quota; const limit = (q.limit_gb ?? 0) * 1e9;
@@ -1310,6 +1327,15 @@ R('POST', '/relays/([^/]+)/evacuate', ({ params, body }) => {
   db.audit.unshift({ id: `a${db.seq++}`, ts: iso(), actor: db.user, action: 'relay.evacuate', title: '搬空线路机', summary: `${src.name} → ${dst.name}（${jobs.length} 个作业）`, target_kind: 'machine', target_id: src.id, detail: {} });
   emit({ type: 'machines' });
   return { from: src.name, to: dst.name, jobs, skipped, warnings: [], share_changed: jobs.length > 0, note: SHARE_NOTE };
+});
+
+R('POST', '/moves', ({ body }) => {
+  const { dst, plans, skipped, blockers } = movesPlan(body.machine_ids ?? [], body.to_relay_id, body.from_relay_id);
+  if (blockers.length) throw bad(blockers.join('；'), 409, 'conflict');
+  const jobs = plans.map(({ node, plan }) => ({ machine_id: node.id, name: node.name, from: plan.old.relay.name, old_entry: { id: plan.old.id, relay: plan.old.relay.name, port: plan.old.port }, job_id: startMove(node, plan).id, routers: [] }));
+  db.audit.unshift({ id: `a${db.seq++}`, ts: iso(), actor: db.user, action: 'entry.move', title: '批量换线路机', summary: `${jobs.length} 个节点 → ${dst.name}`, target_kind: 'machine', target_id: dst.id, detail: {} });
+  emit({ type: 'machines' });
+  return { from: [...new Set(jobs.map((x) => x.from))].join('、'), to: dst.name, jobs, skipped, warnings: [], router_restarts: [], share_changed: jobs.length > 0, note: SHARE_NOTE, ok: true, blockers: [] };
 });
 
 // ---------- 替换节点 ----------

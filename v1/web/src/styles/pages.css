@@ -160,8 +160,12 @@
 /* 三网 PING 的槽位表：格子里是标准尺寸的输入框（撑满列宽）；方式下拉限宽 */
 .ping-tbl td > .input { width: 100%; }
 .ping-mode { width: 240px; max-width: 100%; }
-.manage-row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-12); flex-wrap: wrap; }
-.manage-row > div:first-child { min-width: 0; flex: 1 1 220px; }
+/* 左边文字、右边操作：窄屏只让左侧文字折行，按钮不换行、不掉到下一行；右边是下拉 + 按钮的（is-ctl）让右边收缩 */
+.manage-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--sp-12); }
+.manage-row > :first-child { min-width: 0; }
+.manage-row .btn { white-space: nowrap; }
+.manage-row.is-ctl { grid-template-columns: auto minmax(0, 1fr); }
+.manage-row.is-ctl > :last-child { justify-self: end; min-width: 0; max-width: 100%; }
 .manage-row .t { font-weight: var(--fw-medium); }
 .preview-name { display: inline-flex; align-items: center; gap: var(--sp-8); padding: var(--sp-6) var(--sp-12); border-radius: var(--r-control); background: var(--sunken); font-weight: var(--fw-semibold); font-size: var(--fs-emph); }
 
