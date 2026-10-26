@@ -295,7 +295,7 @@ async fn quiet_incident_stays_silent_until_it_stands_alone() {
     assert_eq!(mock.events("/hook/a"), ["firing", "resolved"]);
 }
 
-fn noted() -> Close<'static> { Close::ResolveNoted { name: "测试对象", by: "spare", note: "已无软路由出口指向，转为闲置备用" } }
+fn noted() -> Close<'static> { Close::ResolveNoted { name: "测试对象", by: "spare", note: "没有软路由出口指向（闲置备用），不再告警" } }
 
 /// 条件变了而不是原因消失的关闭（ResolveNoted，如被指着的备用取消了指向转为闲置）：detail 记 closed_by，报过触发的发「恢复」且摘要附说明；
 /// 开的时候没通知过（quiet）的不发
@@ -324,6 +324,87 @@ async fn resolve_noted_sends_recovery_with_note_only_after_firing_notice() {
     round(&t, base + time::Duration::seconds(60), None, noted).await;
     log_settles(&t, 2).await;
     assert_eq!(mock.events("/hook/a"), ["firing", "resolved"]);
-    assert!(mock.texts("/hook/a").last().unwrap().contains("出问题了；已无软路由出口指向，转为闲置备用"), "{:?}", mock.texts("/hook/a"));
+    assert!(mock.texts("/hook/a").last().unwrap().contains("出问题了；没有软路由出口指向（闲置备用），不再告警"), "{:?}", mock.texts("/hook/a"));
     assert_eq!(t.count("select count(*) from incident where rule = 'central_test_flap' and state = 'resolved' and detail->>'closed_by' = 'spare'").await, 2);
+}
+
+/// 维护窗口里 ResolveNoted 同 Resolve：保持原状、不关（原来只有 Resolve 在维护中跳过，ResolveNoted 直接关掉、恢复通知又因维护不发，告警就悄悄没了）；
+/// 维护结束后按那时的状态再判。维护窗口只对有维护概念的引擎（软路由、探测点）生效
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn resolve_noted_waits_for_maintenance_like_resolve() {
+    let t = setup().await;
+    let subject = Uuid::now_v7();
+    let base = OffsetDateTime::now_utc();
+    let at = |s: i64| base + time::Duration::seconds(s);
+    let round = |at: OffsetDateTime, w: Option<Want<'static>>, close: fn() -> Close<'static>| {
+        let t = &t;
+        async move {
+            let open = incident::firing(&t.st.db, Engine::Router).await.unwrap();
+            incident::reconcile(&t.st, Engine::Router, open, w.into_iter().collect(), "true", at, |_| close()).await.unwrap();
+        }
+    };
+    round(at(0), Some(want(subject, "warning")), resolve).await;
+    assert_eq!(state(&t).await[0].1, "firing");
+    sqlx::query("insert into silence (id, starts_at, ends_at, is_maintenance, created_by) values ($1, now() - interval '1 minute', now() + interval '1 hour', true, 'u')")
+        .bind(Uuid::now_v7())
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    for close in [noted, resolve] {
+        round(at(60), None, close).await;
+        assert_eq!(state(&t).await[0].1, "firing", "维护中不关");
+    }
+    sqlx::query("update silence set deleted_at = now()").execute(&t.st.db).await.unwrap();
+    round(at(120), None, noted).await;
+    assert_eq!(state(&t).await[0].1, "resolved", "维护结束后照常关");
+    assert_eq!(t.count("select count(*) from incident where rule = 'central_test_flap' and detail->>'closed_by' = 'spare'").await, 1);
+}
+
+/// detail 里的 critical 标记：开、升级、重开为严重时并入，只增不减（重开直接写本次的 severity，复发时严重度会被改低，「只数严重的」要看这个标记）；
+/// 标记不算 detail 变了（不会每轮都改一次）；只出现过警告的没有
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn critical_marker_survives_reopen_and_detail_changes() {
+    let t = setup().await;
+    let (a, b, c) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+    let base = OffsetDateTime::now_utc();
+    let at = |s: i64| base + time::Duration::seconds(s);
+    let of = |subject: Uuid| {
+        let t = &t;
+        async move {
+            sqlx::query_as::<_, (String, serde_json::Value)>("select severity::text, detail from incident where rule = $1 and subject_id = $2")
+                .bind(RULE)
+                .bind(subject)
+                .fetch_one(&t.st.db)
+                .await
+                .unwrap()
+        }
+    };
+    let run = |subject: Uuid, sev: &'static str, w: bool, now: OffsetDateTime| {
+        let t = &t;
+        async move {
+            let open = incident::firing(&t.st.db, Engine::Central).await.unwrap();
+            let wants = if w { vec![Want { detail: Some(json!({"name": "x"})), ..want(subject, sev) }] } else { vec![] };
+            incident::reconcile(&t.st, Engine::Central, open, wants, "true", now, |_| Close::Resolve("测试对象")).await.unwrap()
+        }
+    };
+    // 先是警告：没有标记
+    run(a, "warning", true, at(0)).await;
+    assert_eq!(of(a).await, ("warning".to_string(), json!({"name": "x"})));
+    assert_eq!(run(a, "warning", true, at(30)).await.updated, 0);
+    // 升级为严重：并入标记；之后同样的 detail 不算变了
+    run(a, "critical", true, at(60)).await;
+    assert_eq!(of(a).await, ("critical".to_string(), json!({"name": "x", "critical": true})));
+    assert_eq!(run(a, "critical", true, at(90)).await.updated, 0);
+    // 恢复后 30 分钟内复发，这次只是警告：severity 被改成警告，标记还在
+    run(a, "warning", false, at(120)).await;
+    assert_eq!(state(&t).await[0].1, "resolved");
+    run(a, "warning", true, at(180)).await;
+    assert_eq!(of(a).await, ("warning".to_string(), json!({"name": "x", "critical": true})));
+    assert_eq!(run(a, "warning", true, at(210)).await.updated, 0);
+    // 一开始就是严重的：开的时候就带标记；重开为严重的也带
+    run(b, "critical", true, at(0)).await;
+    assert_eq!(of(b).await.1, json!({"name": "x", "critical": true}));
+    // 只出现过警告的一直没有
+    run(c, "warning", true, at(0)).await;
+    assert_eq!(of(c).await.1, json!({"name": "x"}));
 }

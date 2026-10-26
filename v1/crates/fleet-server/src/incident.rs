@@ -70,6 +70,18 @@ pub struct Firing {
     told_resolved_at: Option<OffsetDateTime>,
 }
 
+/// 告警 detail 里「出现过严重」的标记：开、升级、重开为严重时并入，只增不减（重开直接写本次的 severity，复发时会被改低，所以「只数严重的」看它）。
+/// 比较「detail 变了没有」时要先去掉它
+const CRITICAL_KEY: &str = "critical";
+
+fn detail_of(d: &Value) -> Value {
+    let mut d = d.clone();
+    if let Some(o) = d.as_object_mut() {
+        o.remove(CRITICAL_KEY);
+    }
+    d
+}
+
 /// 这个引擎在告警的
 pub async fn firing(db: &sqlx::PgPool, engine: Engine) -> sqlx::Result<Vec<Firing>> {
     sqlx::query_as(&format!(
@@ -172,10 +184,12 @@ pub async fn reconcile<'n>(
         if let Some(inc) = open.remove(&(w.rule.to_string(), w.subject)) {
             let escalated = rank(w.severity) > rank(&inc.severity);
             let sev = if escalated { w.severity } else { inc.severity.as_str() };
-            if escalated || !same_summary(&inc.summary, &summary) || w.detail.as_ref().is_some_and(|d| *d != inc.detail) {
-                // 升级时清掉之前的确认（同机器的告警）：确认的是警告，严重是新情况
+            if escalated || !same_summary(&inc.summary, &summary) || w.detail.as_ref().is_some_and(|d| *d != detail_of(&inc.detail)) {
+                // 升级时清掉之前的确认（同机器的告警）：确认的是警告，严重是新情况。
+                // detail 里的 critical 标记（开、升级、重开为严重时并入，只增不减）在换 detail 时保留
                 sqlx::query(
-                    "update incident set summary = $2, severity = $3::severity, detail = coalesce($4, detail), last_seen_at = now(),
+                    "update incident set summary = $2, severity = $3::severity, last_seen_at = now(),
+                         detail = coalesce($4, detail) || case when $6 or detail ? 'critical' or severity = 'critical' then jsonb_build_object('critical', true) else jsonb_build_object() end,
                          ack_at = case when $5 then null else ack_at end, ack_by = case when $5 then null else ack_by end
                      where id = $1",
                 )
@@ -184,6 +198,7 @@ pub async fn reconcile<'n>(
                 .bind(sev)
                 .bind(&w.detail)
                 .bind(escalated)
+                .bind(w.severity == "critical")
                 .execute(&st.db)
                 .await?;
                 t.updated += 1;
@@ -204,7 +219,8 @@ pub async fn reconcile<'n>(
         // 窗口内刚恢复过（不是悄悄关掉的）：重开原告警（复发计数 +1、清掉确认），按 `due` 决定马上通知还是等满限流时长。对象也要还在（`exists`）
         let reopened: Option<(Uuid, OffsetDateTime, Option<OffsetDateTime>, Option<OffsetDateTime>)> = sqlx::query_as(&format!(
             "update incident set state = 'firing', resolved_at = null, ack_at = null, ack_by = null, reopen_count = reopen_count + 1, last_seen_at = now(),
-                 severity = $2::severity, summary = $4, detail = coalesce($6, detail)
+                 severity = $2::severity, summary = $4,
+                 detail = coalesce($6, detail) || case when $8 or detail ? 'critical' or severity = 'critical' then jsonb_build_object('critical', true) else jsonb_build_object() end
              where id = (select id from incident where engine = $7 and rule = $1 and subject_id = $3 and state = 'resolved' and resolved_at > $5 and not detail ? 'closed_by'
                          order by resolved_at desc limit 1)
                and {exists}
@@ -217,6 +233,7 @@ pub async fn reconcile<'n>(
         .bind(now - time::Duration::seconds(REOPEN_WINDOW_S))
         .bind(&w.detail)
         .bind(engine.as_str())
+        .bind(w.severity == "critical")
         .fetch_optional(&st.db)
         .await?;
         if let Some((id, opened_at, notified_at, told_resolved_at)) = reopened {
@@ -230,7 +247,8 @@ pub async fn reconcile<'n>(
         let id = crate::db::new_id();
         let res = sqlx::query(&format!(
             "insert into incident (id, engine, rule, subject_id, severity, summary, detail)
-             select $1, $7, $2, $3, $4::severity, $5, coalesce($6, '{{}}') where {exists}
+             select $1, $7, $2, $3, $4::severity, $5,
+                    coalesce($6, jsonb_build_object()) || case when $8 then jsonb_build_object('critical', true) else jsonb_build_object() end where {exists}
              on conflict (engine, rule, subject_id) where state = 'firing' do nothing"
         ))
         .bind(id)
@@ -240,6 +258,7 @@ pub async fn reconcile<'n>(
         .bind(&summary)
         .bind(&w.detail)
         .bind(engine.as_str())
+        .bind(w.severity == "critical")
         .execute(&st.db)
         .await?;
         if res.rows_affected() > 0 {
@@ -264,7 +283,7 @@ pub async fn reconcile<'n>(
     for inc in open.into_values() {
         let (closed_by, name, note) = match close(&inc) {
             Close::Keep => continue,
-            Close::Resolve(_) if maintenance(inc.subject_id) => continue,
+            Close::Resolve(_) | Close::ResolveNoted { .. } if maintenance(inc.subject_id) => continue,
             Close::Resolve(name) => (json!({}), Some(name), None),
             Close::Quiet(by) => (json!({"closed_by": by}), None, None),
             Close::ResolveNoted { name, by, note } => (json!({"closed_by": by}), Some(name), Some(note)),
