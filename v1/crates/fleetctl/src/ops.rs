@@ -466,7 +466,7 @@ pub fn rename(
         body["team_id"] = json!(ctx.team_id(t)?);
     }
     // 换团队时同机 IP 节点一起走、原团队剩下的节点会压缩编号（同事务）：先取预览，改完把连带改动的一并打出来
-    let (renames, ip_nodes, router_exits, warnings): (Vec<String>, Vec<String>, Value, Vec<String>) = if team.is_some() {
+    let (renames, ip_nodes, router_exits, held, warnings): (Vec<String>, Vec<String>, Value, Option<String>, Vec<String>) = if team.is_some() {
         let mut q = vec![("team_id", st(&body, "/team_id"))];
         if let Some(n) = number {
             q.push(("number", n.to_string()));
@@ -475,9 +475,9 @@ pub fn rename(
         let list = |k: &str| pv[k].as_array().into_iter().flatten().map(|r| format!("{} → {}", st(r, "/old_name"), st(r, "/new_name"))).collect();
         // 还被软路由出口指着的节点生效的访问策略会变（客户受影响）：只提示
         let warnings = pv["warnings"].as_array().into_iter().flatten().filter_map(|w| w.as_str().map(String::from)).collect();
-        (list("renames"), list("ip_nodes"), pv["router_exits"].clone(), warnings)
+        (list("renames"), list("ip_nodes"), pv["router_exits"].clone(), pv["held"].as_str().map(String::from), warnings)
     } else {
-        (vec![], vec![], Value::Null, vec![])
+        (vec![], vec![], Value::Null, None, vec![])
     };
     if let Some(n) = number {
         body["number"] = json!(n);
@@ -504,6 +504,10 @@ pub fn rename(
     if router_exits.as_array().is_some_and(|a| !a.is_empty()) {
         d["router_exits"] = router_exits.clone();
     }
+    // 换到备用团队后不自动回收的原因（出口还指着、同机 IP 节点开着自动续费…）：要照常续费
+    if let Some(h) = &held {
+        d["held"] = json!(h);
+    }
     if !warnings.is_empty() {
         d["warnings"] = json!(warnings);
     }
@@ -511,7 +515,9 @@ pub fn rename(
         let ips = if ip_nodes.is_empty() { String::new() } else { format!("\n同机 IP 节点一起移：{}", ip_nodes.join("，")) };
         let also = if renames.is_empty() { String::new() } else { format!("\n原团队编号连带改动：{}", renames.join("，")) };
         let warn: String = warnings.iter().map(|w| format!("\n注意：{w}")).collect();
-        format!("{} → {}{ips}{also}{}{warn}", st(&cur, "/name"), st(&d, "/name"), spare_exits_note(&router_exits))
+        let held = held.as_deref().map(|h| format!("
+不自动回收：{h}，到期要自己登记续费")).unwrap_or_default();
+        format!("{} → {}{ips}{also}{}{held}{warn}", st(&cur, "/name"), st(&d, "/name"), spare_exits_note(&router_exits))
     });
     Ok(0)
 }

@@ -583,7 +583,7 @@ function ipFollow(m: MachineView, to: { id: string; spare: boolean }) {
 const freeNumber = (tid: string) => { const used = new Set(db.machines.filter((x) => x.team?.id === tid && x.lifecycle !== 'retired').map((x) => x.number)); let n = 1; while (used.has(n)) n++; return n; };
 R('GET', '/machines/([^/]+)/rename-preview', ({ params, query }) => {
   const m = machine(params[0]); const tid = query.get('team_id') ?? m.team?.id; const team = tid ? teamOf(tid) : null;
-  if (!team || m.kind === 'relay') return { name: m.name, old_name: m.name, renames: [], ip_nodes: [], router_exits: [], spare_blocked: null, warnings: [] };
+  if (!team || m.kind === 'relay') return { name: m.name, old_name: m.name, renames: [], ip_nodes: [], router_exits: [], spare_blocked: null, held: null, warnings: [] };
   const number = query.get('number') ? Number(query.get('number')) : team.id !== m.team?.id ? freeNumber(team.id) : m.number!;
   const moved = !!m.team && team.id !== m.team.id;
   // 宿主机换团队：还在原团队的同机 IP 节点一起走，宿主机先占 number，它们依次取剩下的最小空号（同服务端）
@@ -598,7 +598,8 @@ R('GET', '/machines/([^/]+)/rename-preview', ({ params, query }) => {
   return { name: displayName(team.name, number), old_name: m.name, renames: moved ? shrunk.flatMap((t) => compactPlan(t, [m.id, ...ips.map((x) => x.id)])).map((c) => ({ machine_id: c.m.id, old_name: c.old_name, new_name: c.new_name })) : [], ip_nodes,
     // 进备用：还指向这台和一起移入的同机 IP 节点的软路由出口（同服务端）
     router_exits: moved && team.spare ? [m, ...ips].flatMap((x) => exitsUsing(x).flatMap((r) => r.exits.map((e) => ({ node: x.name, router: r.name, exit: e.exit })))) : [],
-    spare_blocked: moved && team.spare && !m.spare ? spareGate(m) : null, warnings: stay.map((x) => `${x.name} 原团队已不在，留在备用`) };
+    spare_blocked: moved && team.spare && !m.spare ? spareGate(m) : null,
+    held: moved && team.spare && !m.spare && !spareGate(m) ? heldReason(m, ips) : null, warnings: stay.map((x) => `${x.name} 原团队已不在，留在备用`) };
 });
 R('PATCH', '/machines/([^/]+)', ({ params, body }) => {
   const m = machine(params[0]);
