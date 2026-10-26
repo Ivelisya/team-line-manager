@@ -207,33 +207,36 @@ async fn spare_auto_renew_note_does_not_say_cancel_when_exit_holds_it() {
     let notes: Vec<&str> = pv["spare"]["notes"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
     assert_eq!(notes[0], format!("这台开着自动续费：进备用时中控这边会关掉{held_tail}"), "{pv}");
     assert!(!pv.to_string().contains("要自己去关"), "{pv}");
+    // 被出口指着：预览没有回收日（进备用后自动续费关掉，回收日也不给，同视图）
+    assert_eq!(pv["spare"]["recycle_on"], Value::Null, "{pv}");
     // 没有出口指着的一台照旧
     let pv = t.get(&format!("/api/v1/machines/{free}/retire")).await;
     assert_eq!(pv["spare"]["notes"][0], "这台开着自动续费：进备用时会关掉，到期后照常回收（供应商那边的自动扣款要自己去关）", "{pv}");
+    assert!(pv["spare"]["recycle_on"].is_string(), "{pv}");
 
     let r = t.post(&format!("/api/v1/machines/{n}/retire"), json!({"confirm": "团队1-01"})).await;
     assert_eq!(r["notes"][0], format!("自动续费已在中控关闭{held_tail}"), "{r}");
-    assert_eq!(r["auto_renew_off"], true);
+    assert_eq!((r["auto_renew_off"].clone(), r["recycle_on"].clone()), (json!(true), Value::Null), "被扣住：结果也没有回收日：{r}");
     let on: bool = sqlx::query_scalar("select auto_renew from subscription where machine_id = $1").bind(n).fetch_one(&t.st.db).await.unwrap();
     assert!(!on, "中控这边的自动续费照样关掉");
     let v = t.get(&format!("/api/v1/machines/{n}")).await;
     assert_eq!((v["recycle_held"].clone(), v["idle_spare"].clone()), (json!(true), json!(false)), "{v}");
 }
 
-/// 开着自动续费的备用机不是闲置备用：一直续、永远到不了回收日，不给回收日（recycle_held）、不算闲置（idle_spare），
-/// 到期提醒与待付清单（默认带上）照常；关掉自动续费后又是闲置备用
+/// 开着自动续费的备用机照常续费：一直续、永远到不了回收日，不给回收日（recycle_held）、不是不续费的备用机（spare_unbilled），
+/// 到期提醒与待付清单（默认带上）照常；但没有客户在用它，仍是闲置备用（idle_spare：不告警、不计故障）。关掉自动续费后又不续费
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn spare_with_auto_renew_is_held_not_idle() {
+async fn spare_with_auto_renew_is_held_and_billed_but_still_idle() {
     let t = setup(false).await;
     let sp = spare_team(&t).await;
     let m = seed_node(&t, sp, 1, "203.0.113.75", "active").await;
     sub(&t, m, "2026-10-20", "UTC").await;
     let v = t.get(&format!("/api/v1/machines/{m}")).await;
-    assert_eq!((v["idle_spare"].clone(), v["recycle_held"].clone(), v["recycle_on"].clone()), (json!(true), json!(false), json!("2026-10-22")), "{v}");
+    assert_eq!((v["idle_spare"].clone(), v["spare_unbilled"].clone(), v["recycle_held"].clone(), v["recycle_on"].clone()), (json!(true), json!(true), json!(false), json!("2026-10-22")), "{v}");
     sqlx::query("update subscription set auto_renew = true where machine_id = $1").bind(m).execute(&t.st.db).await.unwrap();
     t.st.live.invalidate();
     let v = t.get(&format!("/api/v1/machines/{m}")).await;
-    assert_eq!((v["idle_spare"].clone(), v["recycle_held"].clone(), v["recycle_on"].clone()), (json!(false), json!(true), Value::Null), "{v}");
+    assert_eq!((v["idle_spare"].clone(), v["spare_unbilled"].clone(), v["recycle_held"].clone(), v["recycle_on"].clone()), (json!(true), json!(false), json!(true), Value::Null), "{v}");
     // 待付清单默认带上（开着自动续费的单列在 auto）
     let d = t.get("/api/v1/billing/due?days=3650").await;
     let auto: Vec<&Value> = d["auto"].as_array().unwrap().iter().filter(|x| x["machine"]["id"] == m.to_string()).collect();
@@ -241,9 +244,43 @@ async fn spare_with_auto_renew_is_held_not_idle() {
     sqlx::query("update subscription set auto_renew = false where machine_id = $1").bind(m).execute(&t.st.db).await.unwrap();
     t.st.live.invalidate();
     let v = t.get(&format!("/api/v1/machines/{m}")).await;
-    assert_eq!((v["idle_spare"].clone(), v["recycle_held"].clone()), (json!(true), json!(false)), "{v}");
+    assert_eq!((v["idle_spare"].clone(), v["spare_unbilled"].clone(), v["recycle_held"].clone()), (json!(true), json!(true), json!(false)), "{v}");
     let d = t.get("/api/v1/billing/due?days=3650").await;
-    assert!(!d.to_string().contains(&m.to_string()), "闲置备用不在默认清单里：{d}");
+    assert!(!d.to_string().contains(&m.to_string()), "不续费的备用机不在默认清单里：{d}");
+}
+
+/// 备用宿主机上有一台在备用团队里、开着自动续费的同机 IP 节点：宿主机回收会连带它，所以宿主机也不自动回收（kept），
+/// 视图 renewing_ip_nodes 列出它、不给回收日（recycle_held）、续费提醒与待付清单写明原因；没有客户在用，仍是闲置备用。IP 节点关掉自动续费后照常回收
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn spare_host_is_held_by_auto_renew_on_its_spare_ip_node() {
+    let t = setup(false).await;
+    let sp = spare_team(&t).await;
+    let host = seed_vps(&t, sp, 1, "203.0.113.91", None).await;
+    let ip = seed_vps(&t, sp, 2, "203.0.113.92", Some(host)).await;
+    sub(&t, host, "2026-10-20", "UTC").await;
+    sub(&t, ip, "2030-01-01", "UTC").await;
+    sqlx::query("update subscription set auto_renew = true where machine_id = $1").bind(ip).execute(&t.st.db).await.unwrap();
+
+    let v = t.get(&format!("/api/v1/machines/{host}")).await;
+    assert_eq!((v["renewing_ip_nodes"].clone(), v["live_ip_nodes"].clone()), (json!(["备用-02"]), json!([])), "{v}");
+    assert_eq!((v["recycle_on"].clone(), v["recycle_held"].clone(), v["idle_spare"].clone(), v["spare_unbilled"].clone()), (Value::Null, json!(true), json!(true), json!(false)), "{v}");
+    let renewal = v["health"]["reasons"].as_array().unwrap().iter().find(|r| r["key"] == "renewal_due").map(|r| r["text"].as_str().unwrap().to_string());
+    assert!(renewal.is_some_and(|x| x.contains("同机 IP 节点 备用-02 开着自动续费") && x.contains("未自动回收")), "{v}");
+    let d = t.get("/api/v1/billing/due?days=3650").await;
+    assert!(d.to_string().contains("同机 IP 节点 备用-02 开着自动续费"), "待付清单默认带上并写明原因：{d}");
+
+    let now = datetime!(2026-10-23 00:00 UTC);
+    let r = spare::run_once(&t.st, now).await.unwrap();
+    assert!(r.retired.is_empty() && r.kept == [host], "{r:?}");
+    assert!(last_job(&t, host, "retire").await.is_none());
+
+    // IP 节点关掉自动续费：宿主机回收日回来，下一轮照常回收
+    sqlx::query("update subscription set auto_renew = false where machine_id = $1").bind(ip).execute(&t.st.db).await.unwrap();
+    t.st.live.invalidate();
+    let v = t.get(&format!("/api/v1/machines/{host}")).await;
+    assert_eq!((v["renewing_ip_nodes"].clone(), v["recycle_on"].clone(), v["recycle_held"].clone(), v["spare_unbilled"].clone()), (json!([]), json!("2026-10-22"), json!(false), json!(true)), "{v}");
+    let r = spare::run_once(&t.st, now).await.unwrap();
+    assert!(r.retired == [host] && r.kept.is_empty(), "{r:?}");
 }
 
 /// 撤销退役（宿主机从备用改回原团队）只带与它同一次进备用的 IP 节点：之前单独退役进备用的 IP 节点留在备用（spare_since 不清、仍会自动回收）；

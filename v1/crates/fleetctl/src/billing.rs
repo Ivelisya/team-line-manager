@@ -173,7 +173,7 @@ pub(crate) fn month_cn(m: &Value) -> String {
 }
 
 /// 备用团队里在用的机器（`spare`，即已退役、等到期回收）：哪天退役（组织时区）、原名、哪天自动回收（`recycle_on`，账单时区）；
-/// 软路由出口还指着它的、上面还有在用的同机 IP 节点的、开着自动续费的（`recycle_held`，原因在 `router_exits` / `live_ip_nodes` / 订阅的 `auto_renew`）不自动回收，写明要先改指向 / 处理这些 IP 节点 / 关掉自动续费。
+/// 软路由出口还指着它的、上面还有在用的同机 IP 节点的（或有开着自动续费的备用同机 IP 节点）、开着自动续费的（`recycle_held`，原因在 `router_exits` / `live_ip_nodes` / `renewing_ip_nodes` / 订阅的 `auto_renew`）不自动回收，写明要先改指向 / 处理这些 IP 节点 / 关掉自动续费。
 /// 不是备用、不在用时为 None（billing、show 共用）
 pub(crate) fn spare_cn(m: &Value) -> Option<String> {
     if m["spare"] != true || m["lifecycle"] != "active" {
@@ -186,16 +186,21 @@ pub(crate) fn spare_cn(m: &Value) -> Option<String> {
     let from = m["spare_from"].as_str().map(|f| format!("（原 {f}）")).unwrap_or_default();
     if m["recycle_held"] == true {
         let ips: Vec<&str> = m["live_ip_nodes"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+        let renewing: Vec<&str> = m["renewing_ip_nodes"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
         let auto = m["subscription"]["auto_renew"] == true;
         // 没有 live_ip_nodes（旧中控）、也不是因为自动续费时按出口写
         let (mut why, mut todo) = (vec![], vec![]);
-        if (ips.is_empty() && !auto) || m["router_exits"].as_array().is_some_and(|a| !a.is_empty()) {
+        if (ips.is_empty() && renewing.is_empty() && !auto) || m["router_exits"].as_array().is_some_and(|a| !a.is_empty()) {
             why.push("软路由出口还指着".to_string());
             todo.push("改指向（fleetctl repoint）");
         }
         if !ips.is_empty() {
             why.push(format!("同机 IP 节点 {} 还在用", ips.join("、")));
             todo.push("退役或换走这些 IP 节点");
+        }
+        if !renewing.is_empty() {
+            why.push(format!("同机 IP 节点 {} 开着自动续费", renewing.join("、")));
+            todo.push("关掉这些 IP 节点的自动续费（fleetctl subscription set --auto-renew false）");
         }
         if auto {
             why.push("开着自动续费".to_string());
@@ -471,7 +476,7 @@ fn due_text(d: &Value, by_provider: bool) -> String {
     out
 }
 
-/// `billing --due <Nd|日期> [--by-provider] [--include-spare]`：待付清单（所有在用机器，不含闲置备用；备用团队里被出口指着 / 有在用 IP 节点的备用机照常在内）。`--json` 是 /billing/due 的 data 原样
+/// `billing --due <Nd|日期> [--by-provider] [--include-spare]`：待付清单（所有在用机器，不含不续费的备用机；备用团队里被出口指着 / 有在用 IP 节点 / 开着自动续费的备用机照常在内）。`--json` 是 /billing/due 的 data 原样
 pub fn billing_due(ctx: &Ctx, due: &str, by_provider: bool, include_spare: bool) -> anyhow::Result<u8> {
     let d = fetch_due(ctx, due, include_spare)?;
     ctx.emit(&d, || due_text(&d, by_provider));
@@ -718,6 +723,14 @@ mod tests {
         );
         auto["router_exits"] = json!(["办公室 · 节点01"]);
         assert!(spare_cn(&auto).unwrap().contains("软路由出口还指着、开着自动续费"));
+        // 上面有开着自动续费的备用同机 IP 节点：宿主机回收会连带它们
+        let mut ren = m(true, "active", Value::Null);
+        ren["recycle_held"] = json!(true);
+        ren["renewing_ip_nodes"] = json!(["备用-02"]);
+        assert_eq!(
+            spare_cn(&ren).as_deref(),
+            Some("已于 2026-10-22 退役（原 团队2-07），同机 IP 节点 备用-02 开着自动续费，不自动回收：先关掉这些 IP 节点的自动续费（fleetctl subscription set --auto-renew false），或确认后 fleetctl retire --now")
+        );
         assert_eq!(spare_cn(&m(false, "active", on.clone())), None);
         assert_eq!(spare_cn(&m(true, "retired", on)), None);
         // 替换下来之前就在备用团队里的（没有 spare_from / spare_since）

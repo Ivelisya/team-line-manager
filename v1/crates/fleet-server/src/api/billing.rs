@@ -51,6 +51,8 @@ struct DueRow {
     spare: bool,
     /// 备用机上还在用的同机 IP 节点（不在备用团队、没退役的，显示名用「、」连起来），没有为 null
     live_ips: Option<String>,
+    /// 备用机上在备用团队里、开着自动续费的同机 IP 节点（宿主机回收会连带它们，所以宿主机也不自动回收），没有为 null
+    renew_ips: Option<String>,
     /// 上架已满 `traffic::IDLE_DAYS` 天（不满不判闲置）
     aged: bool,
 }
@@ -60,7 +62,7 @@ struct DueRow {
 /// 开了自动续费的不算待付，单列在 `auto`（到期后由中控按周期顺延，只记账）。`groups[].machines[].price_cents` 是订阅的每期价格（登记已付的默认金额）。
 /// 每台另带续不续费的依据（近 30 天）：`monthly_usd_cents` 月费、`bytes_30d` 业务流量、`usd_per_gb`（月费 ÷ 近 30 天业务流量，没有月费或没流量为 null）、
 /// `avail_pct`（出口探测成功率，没有探测为 null）、`idle`（闲置，判定见 traffic.rs）与 `avg7`（近 7 天日均业务流量，字节）。
-/// 备用团队里还被软路由出口指着、上面有在用同机 IP 节点、开着自动续费的机器（不自动回收，不算闲置备用，视图 idle_spare）默认也在清单里，机器项 `spare` 为 true、`spare_hold` 写明原因；其余备用机要 `include_spare`
+/// 备用团队里还被软路由出口指着、上面有在用同机 IP 节点（或有开着自动续费的备用同机 IP 节点）、开着自动续费的机器（不自动回收，照常续费，视图 recycle_held，即不是 spare_unbilled）默认也在清单里，机器项 `spare` 为 true、`spare_hold` 写明原因；其余备用机要 `include_spare`
 pub async fn due(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<DueQuery>) -> ApiResult<Json<Value>> {
     if q.days.is_some() && q.until.is_some() {
         return Err(ApiError::bad_request("days 与 until 给一个"));
@@ -76,6 +78,9 @@ pub async fn due(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<Du
                 (select string_agg(display_name(x.kind::text, x.label, tx.name, x.number), '、' order by tx.sort_order nulls first, tx.name, x.number, x.id)
                  from machine x left join team tx on tx.id = x.team_id
                  where x.host_id = m.id and x.lifecycle <> 'retired' and not coalesce(tx.spare, false)) live_ips,
+                (select string_agg(display_name(x.kind::text, x.label, tx.name, x.number), '、' order by tx.sort_order nulls first, tx.name, x.number, x.id)
+                 from machine x join team tx on tx.id = x.team_id join subscription_eff xs on xs.machine_id = x.id
+                 where x.host_id = m.id and x.lifecycle <> 'retired' and tx.spare and xs.auto_renew) renew_ips,
                 coalesce(m.activated_at <= now() - make_interval(days => $3), false) aged
          from subscription s join subscription_eff e on e.machine_id = s.machine_id join machine m on m.id = s.machine_id
          left join team t on t.id = m.team_id left join plan pl on pl.id = m.plan_id left join provider pv on pv.id = coalesce(pl.provider_id, m.provider_id)
@@ -88,7 +93,7 @@ pub async fn due(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<Du
     .bind(traffic::IDLE_DAYS as i32)
     .fetch_all(&st.db)
     .await?;
-    // 备用团队的机器：闲置的等到期丢弃（要 include_spare 才带上）；还被出口指着、上面有在用 IP 节点、开着自动续费的不自动回收，照常续费
+    // 备用团队的机器：不续费的（spare_unbilled）等到期丢弃，要 include_spare 才带上；还被出口指着、上面有在用 IP 节点（或开着自动续费的备用 IP 节点）、开着自动续费的不自动回收，照常续费
     let spare_ids: Vec<Uuid> = rows.iter().filter(|r| r.spare).map(|r| r.id).collect();
     let pointed = routers::exits_using_with_ip_nodes(&st.db, &spare_ids).await?;
     let hold = |r: &DueRow| -> Option<String> {
@@ -98,6 +103,9 @@ pub async fn due(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<Du
         }
         if let Some(x) = pointed.get(&r.id) {
             why.push(format!("软路由出口 {} 还指着", x.iter().map(|e| e.label()).collect::<Vec<_>>().join("、")));
+        }
+        if let Some(x) = &r.renew_ips {
+            why.push(format!("同机 IP 节点 {x} 开着自动续费"));
         }
         if r.auto_renew {
             why.push("开着自动续费".to_string());

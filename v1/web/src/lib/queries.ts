@@ -181,10 +181,10 @@ export interface StreamEvent { type: string; id?: string }
  *  机器增减、改名换团队、团队改名都会改它（只有挂着的查询会重取，策略页没开时只是标成过期；不带发布确认框里的预览，免得框开着时内容在眼前变）；
  *  machine：这台的详情与机器列表里的这一台由 stream.ts 单独取回拼上（live.ts refreshMachine），这里不带；拼不上（改名、换团队、生命周期变了等）
  *  或页面在后台、机器列表和这台的详情都没人看时才按 MACHINE_LIST_KEYS 整表失效——incidents / jobs 列表里带机器名，跟着重取让名字立刻跟上；
- *  availability：近 N 天可用率按账单时区分天，改订阅（machine 事件）可能换了时区；traffic-daily：流量页的计费量按生效的计费方式算，改订阅（machine）、改供应商（catalog）都会变 */
+ *  availability：近 N 天可用率按账单时区分天，改订阅（machine 事件）可能换了时区；traffic-daily：流量页的计费量按生效的计费方式算，改订阅（machine）、改供应商（catalog）都会变；teams：团队页的月费合计随改订阅 / 续费变 */
 export function eventKeys(ev: StreamEvent): unknown[][] {
   switch (ev.type) {
-    case 'machine': return [['billing-due'], ['traffic-daily'], ['machine-ping', ev.id], ['recycle-bin'], ['overview'], ['audit'], ['policies', 'list'], ['policies', 'versions'], ['availability', ev.id]];
+    case 'machine': return [['billing-due'], ['teams'], ['traffic-daily'], ['machine-ping', ev.id], ['recycle-bin'], ['overview'], ['audit'], ['policies', 'list'], ['policies', 'versions'], ['availability', ev.id]];
     case 'machines': return [['billing-due'], ['machine'], ['machines'], ['recycle-bin'], ['relays'], ['overview'], ['audit'], ['policies', 'list'], ['policies', 'versions']];
     case 'relay': return [['relays'], ['machines']];
     case 'job': return [['jobs'], ['job', ev.id]];
@@ -225,10 +225,10 @@ export type PlanBody = Omit<Plan, 'id' | 'archived_at' | 'machine_count'>;
 export const useLogin = () => useWrite((b: { username: string; password: string; totp?: string }) => post<{ username: string }>('/auth/login', b), [['me']]);
 export const usePatchMachine = () => useWrite(({ id, ...b }: { id: string } & MachinePatchBody) => patch<MachineView>(`/machines/${id}`, b), [...M, ['teams']]);
 export const useRetire = () => useWrite(({ id, ...b }: { id: string; confirm: string; reason?: string; now?: boolean; cleanup?: boolean }) => post<RetireResult>(`/machines/${id}/retire`, b), [...M, ['jobs'], ['teams'], ['recycle-bin']]);
-export const useSaveSubscription = () => useWrite(({ id, ...b }: { id: string } & SubscriptionBody) => put(`/machines/${id}/subscription`, b), M);
+export const useSaveSubscription = () => useWrite(({ id, ...b }: { id: string } & SubscriptionBody) => put(`/machines/${id}/subscription`, b), [...M, ['teams']]);
 /** 续费：new_due 与 cycles（续几个周期，服务端算新到期日）二选一 */
 export const useRenew = () => useWrite(({ id, ...b }: { id: string; amount_cents?: number; note?: string } & ({ new_due: string } | { cycles: number })) =>
-  post<{ id: string; old_due: string | null; new_due: string }>(`/machines/${id}/renewals`, b), [...M, ['renewals']]);
+  post<{ id: string; old_due: string | null; new_due: string }>(`/machines/${id}/renewals`, b), [...M, ['renewals'], ['teams']]);
 /** 未来 N 天待付清单（按供应商 × 到期日分组，服务端折好 USD）；到期日随续费、改订阅变，靠 machine 事件失效 */
 export const useDue = (days: number) => useQuery({ queryKey: ['billing-due', days], queryFn: ({ signal }) => get<DueList>(`/billing/due?days=${days}`, signal), staleTime: 300_000 });
 /** 批量登记续费：一个事务、一条审计，按订阅周期顺延；dry_run 只预览（新到期日、金额，什么都不写） */

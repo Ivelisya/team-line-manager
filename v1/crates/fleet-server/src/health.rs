@@ -133,16 +133,17 @@ pub fn quota_forecast_lingers(m: &MachineView, now: OffsetDateTime) -> bool {
 /// 续费提醒（renewal_due）：线路机和节点都有账单。到期状态由视图按生效的提前提醒天数算（meta::due_state），总览、网页、fleetctl 同一口径。
 /// 即将到期与已过期是同一条规则：到期后严重度从警告升到严重（告警引擎「只升不降、升级马上再发一次触发」），不先发一条「已恢复」。
 /// 备用团队的机器是替换下来、等到期丢弃的，不续费，也就不提醒（过期满 1 天自动回收，spare.rs）；
-/// 只有还被软路由出口指向的、上面还有在用同机 IP 节点的、开着自动续费的（不是闲置备用，视图 idle_spare）要提醒：这些备用不自动回收（回收会摘入口、出口就不通了；宿主机退役会连带 IP 节点），
-/// 提醒后面写明是哪些出口还指着它（要换掉就先「替换」或改指向）、哪些 IP 节点还在用
+/// 只有被扣住不回收的（视图 recycle_held，不是 spare_unbilled）要提醒：还被软路由出口指向的、上面还有在用同机 IP 节点的、上面有开着自动续费的备用同机 IP 节点的、自己开着自动续费的
+/// （回收会摘入口、出口就不通了；宿主机退役会连带 IP 节点；自动续费一直续），提醒后面写明是哪些出口还指着它（要换掉就先「替换」或改指向）、哪些 IP 节点还在用。
+/// 只因开着自动续费被扣住的虽是闲置备用（不告警、不计故障，alerts.rs），这条续费提醒照发
 fn renewal_reason(m: &MachineView) -> Option<Reason> {
     let s = m.subscription.as_ref()?;
     let note = if !m.spare {
         String::new()
-    } else if m.router_exits.is_empty() && m.live_ip_nodes.is_empty() && !s.auto_renew {
+    } else if m.router_exits.is_empty() && m.live_ip_nodes.is_empty() && m.renewing_ip_nodes.is_empty() && !s.auto_renew {
         return None;
     } else {
-        crate::spare::held_note(s.due_days, &m.router_exits, &m.live_ip_nodes, s.auto_renew)
+        crate::spare::held_note(s.due_days, &m.router_exits, &m.live_ip_nodes, &m.renewing_ip_nodes, s.auto_renew)
     };
     match s.due_state {
         "overdue" => Some(Reason { key: "renewal_due", severity: "critical", text: format!("已过期 {} 天{note}", -s.due_days) }),
@@ -370,7 +371,9 @@ pub(crate) mod tests {
             recycle_on: None,
             recycle_held: false,
             idle_spare: false,
+            spare_unbilled: false,
             live_ip_nodes: vec![],
+            renewing_ip_nodes: vec![],
             router_exits: vec![],
             number: None,
             label: None,

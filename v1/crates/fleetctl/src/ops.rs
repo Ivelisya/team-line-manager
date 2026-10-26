@@ -327,6 +327,11 @@ pub fn provision(ctx: &Ctx, o: ProvisionOpts) -> anyhow::Result<u8> {
 
 // ── 退役 / 改名 / 编号 / 升级 ──────────────────────────────────
 
+/// 进备用没有回收日（服务端 recycle_on 为 null）时的说明：软路由出口还指着（或随行 IP 节点）不自动回收；否则是没有订阅、没有到期日可等
+fn no_recycle(held: bool) -> String {
+    if held { "不自动回收（软路由出口还指着 / 同机 IP 节点还在用）".into() } else { "没有订阅，不会自动回收".into() }
+}
+
 /// `fleetctl retire <机器>`：默认移进备用团队（机器照常运行，订阅过期满 1 天后中控自动回收；移出备用就是撤销），
 /// `--now` 立即回收（退役作业：摘入口、清理、撤令牌、移进回收站）。先打印预览：去向与自动回收的日子、一起走的同机 IP 节点、
 /// 还指向它的软路由出口（不会自动改）、原团队的改名；进不了备用的说明原因（只能 --now），--now 会被拒绝的列出阻断原因。`--follow` 只对 --now 有用
@@ -349,6 +354,8 @@ pub fn retire(ctx: &Ctx, machine: &str, now: bool, reason: Option<&str>, no_clea
             .unwrap_or_default()
     };
     let ip_nodes = if now { names("/ip_nodes", false) } else { names("/spare/ip_nodes", true) };
+    // 还有软路由出口指着它（或随行 IP 节点）：进备用后不自动回收
+    let held = pre["routers"].as_array().is_some_and(|r| !r.is_empty());
     if !ctx.json {
         if now {
             let clean = if no_cleanup { "" } else { "停掉机器上的服务、" };
@@ -357,16 +364,13 @@ pub fn retire(ctx: &Ctx, machine: &str, now: bool, reason: Option<&str>, no_clea
                 outln(format!("它上面的同机 IP 节点一并回收：{}", ip_nodes.join("、")));
             }
         } else {
-            // 还有软路由出口指着它（或随行 IP 节点）时到期也不自动回收（spare.rs），不写回收日
-            let held = pre["routers"].as_array().is_some_and(|r| !r.is_empty());
+            // 没有回收日（recycle_on 为 null）：软路由出口还指着它（或随行 IP 节点）时到期也不自动回收（spare.rs）；没有订阅就没有到期日，也不会自动回收
             let to = st(sp, "/to_name");
-            outln(if held {
-                format!("将把 {name} 移进备用：→ {to}，机器照常运行，软路由出口还指着时不自动回收。移出备用（fleetctl rename {to} --team <团队>）就是撤销退役。")
-            } else {
-                format!(
-                    "将把 {name} 移进备用：→ {to}，机器照常运行，{} 起自动回收（账单时区）。在那之前移出备用（fleetctl rename {to} --team <团队>）就是撤销退役。",
-                    st(sp, "/recycle_on")
-                )
+            outln(match sp["recycle_on"].as_str() {
+                Some(on) => format!(
+                    "将把 {name} 移进备用：→ {to}，机器照常运行，{on} 起自动回收（账单时区）。在那之前移出备用（fleetctl rename {to} --team <团队>）就是撤销退役。"
+                ),
+                None => format!("将把 {name} 移进备用：→ {to}，机器照常运行，{}。移出备用（fleetctl rename {to} --team <团队>）就是撤销退役。", no_recycle(held)),
             });
             if !ip_nodes.is_empty() {
                 outln(format!("同机 IP 节点一起进备用：{}", ip_nodes.join("，")));
@@ -402,7 +406,11 @@ pub fn retire(ctx: &Ctx, machine: &str, now: bool, reason: Option<&str>, no_clea
     let d = ctx.c.post(&format!("/machines/{id}/retire"), &body)?;
     if !now {
         ctx.emit(&d, || {
-            let mut s = format!("{} → {}，{} 起自动回收", st(&d, "/from"), st(&d, "/name"), st(&d, "/recycle_on"));
+            let when = match d["recycle_on"].as_str() {
+                Some(on) => format!("{on} 起自动回收"),
+                None => no_recycle(held),
+            };
+            let mut s = format!("{} → {}，{when}", st(&d, "/from"), st(&d, "/name"));
             for x in d["ip_nodes"].as_array().into_iter().flatten() {
                 s += &format!("\n一起进备用：{} → {}", st(x, "/from"), st(x, "/name"));
             }

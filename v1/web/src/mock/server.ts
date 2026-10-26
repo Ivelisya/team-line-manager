@@ -3,7 +3,7 @@
 
 import type { Availability, AvailabilityDay, EntryView, Incident, Job, JobLog, JobSummary, MachineView, ProbeBucket, ProvisionCheckItem, ProvisionItem, SeriesPoint, SilenceKind } from '@/lib/types';
 import { addDays, addMonths, displayName } from '@/lib/format';
-import { inheritedValue, isIdleSpare, isQuiet, liveRate } from '@/lib/derive';
+import { inheritedValue, isIdleSpare, isQuiet, isUnbilledSpare, liveRate } from '@/lib/derive';
 import { makeDefaultCompare } from '@/lib/sort';
 import { cycleMonths, META, subCalc } from './meta';
 
@@ -118,8 +118,11 @@ function recomputeDue(m: MachineView) {
   if (m.subscription) { m.subscription.due_days = Math.ceil((new Date(m.subscription.due_date).getTime() - Date.now()) / DAY); subCalc(m.subscription); }
   // 备用宿主机上不在备用团队、没退役的同机 IP 节点（同服务端 live_ip_nodes）
   m.live_ip_nodes = m.spare && m.lifecycle === 'active' ? db.machines.filter((x) => x.host_machine?.id === m.id && x.lifecycle !== 'retired' && !x.spare).map((x) => x.name) : [];
-  m.recycle_held = m.spare && m.lifecycle === 'active' && (m.router_exits.length > 0 || m.live_ip_nodes.length > 0 || !!m.subscription?.auto_renew); // 还被出口指着、IP 节点还在用、开着自动续费的备用不自动回收
-  m.idle_spare = m.spare && m.lifecycle === 'active' && !m.recycle_held; // 闲置备用：没被扣住
+  // 备用宿主机上在备用团队里、开着自动续费的同机 IP 节点（同服务端 renewing_ip_nodes）：宿主机回收会连带它们
+  m.renewing_ip_nodes = m.spare && m.lifecycle === 'active' ? db.machines.filter((x) => x.host_machine?.id === m.id && x.lifecycle !== 'retired' && x.spare && !!x.subscription?.auto_renew).map((x) => x.name) : [];
+  m.recycle_held = m.spare && m.lifecycle === 'active' && (m.router_exits.length > 0 || m.live_ip_nodes.length > 0 || m.renewing_ip_nodes.length > 0 || !!m.subscription?.auto_renew); // 费用侧：还被出口指着、IP 节点还在用、IP 节点开着自动续费、自己开着自动续费的备用不自动回收，照常续费
+  m.idle_spare = m.spare && m.lifecycle === 'active' && !m.router_exits.length && !m.live_ip_nodes.length; // 闲置备用（客户侧）：没有出口指着、没有在用 IP 节点，不看自动续费
+  m.spare_unbilled = m.spare && m.lifecycle === 'active' && !m.recycle_held; // 不续费的备用机（费用侧）：没被扣住
   m.recycle_on = m.spare && m.lifecycle === 'active' && m.subscription && !m.recycle_held ? addDays(m.subscription.due_date, 2) : null; // 备用：到期 + 2 天 0 点起自动回收
 }
 
@@ -127,6 +130,8 @@ function overview() {
   const live = db.machines.filter((m) => m.lifecycle === 'active');
   // 闲置备用（同服务端 MachineView::idle_spare）：不进健康计数与在线 / 离线，另数 spare；速率照算
   const idle = live.filter(isIdleSpare); const biz = live.filter((m) => !isIdleSpare(m));
+  // 费用侧（同服务端 spare_unbilled）：不续费的备用机不算到期、月费不进合计，另列小计；开着自动续费的闲置备用照常续费
+  const unbilled = live.filter(isUnbilledSpare); const billed = live.filter((m) => !isUnbilledSpare(m));
   const cnt = (list: MachineView[]) => ({
     total: list.length, ok: list.filter((m) => m.health.status === 'ok').length, degraded: list.filter((m) => m.health.status === 'degraded').length,
     down: list.filter((m) => m.health.status === 'down').length, unknown: list.filter((m) => m.health.status === 'unknown').length, maintenance: list.filter((m) => m.health.status === 'maintenance').length,
@@ -145,11 +150,11 @@ function overview() {
     online: biz.filter((m) => m.agent && !isQuiet(m)).length, offline: biz.filter((m) => m.agent && isQuiet(m)).length,
     // 闲置备用不计入 no_agent、ip_nodes（同 total / online / offline，同服务端 overview_of）
     no_agent: biz.filter((m) => !m.agent).length, ip_nodes: biz.filter((m) => m.host_machine).length,
-    due_soon: biz.filter((m) => m.subscription?.due_state === 'soon').length, overdue: biz.filter((m) => m.subscription?.due_state === 'overdue').length,
-    // 闲置备用不续费：月费合计不含，另列小计（同服务端 monthly_usd_spare）；备用团队里被出口指着 / 有在用 IP 节点的照常续费，算进合计
-    monthly_usd: usdTotal(biz.flatMap((m) => (m.subscription ? [m.subscription] : []))),
-    paid_machines: biz.filter((m) => m.subscription).length,
-    monthly_usd_spare: { ...usdTotal(idle.flatMap((m) => (m.subscription ? [m.subscription] : []))), count: idle.filter((m) => m.subscription).length },
+    due_soon: billed.filter((m) => m.subscription?.due_state === 'soon').length, overdue: billed.filter((m) => m.subscription?.due_state === 'overdue').length,
+    // 不续费的备用机：月费合计不含，另列小计（同服务端 monthly_usd_spare）；备用团队里被出口指着 / 有在用 IP 节点 / 开着自动续费的照常续费，算进合计
+    monthly_usd: usdTotal(billed.flatMap((m) => (m.subscription ? [m.subscription] : []))),
+    paid_machines: billed.filter((m) => m.subscription).length,
+    monthly_usd_spare: { ...usdTotal(unbilled.flatMap((m) => (m.subscription ? [m.subscription] : []))), count: unbilled.filter((m) => m.subscription).length },
     traffic_month: { up, down, counted_from },
     // 实时速率只算数据没过期的（同 liveRate）；同机 IP 节点的读数就是宿主机的，不重复算
     net_rx_bps: live.reduce((s, m) => s + (m.host_machine ? 0 : liveRate(m)?.rx ?? 0), 0), net_tx_bps: live.reduce((s, m) => s + (m.host_machine ? 0 : liveRate(m)?.tx ?? 0), 0),
@@ -643,6 +648,17 @@ R('GET', '/machines/([^/]+)/availability', ({ params, query }) => availability(m
 const ipNodesLeaving = (m: MachineView) => db.machines.filter((x) => x.host_machine?.id === m.id && x.lifecycle !== 'retiring' && x.lifecycle !== 'retired');
 /** 软路由里还指向这台的出口（mock 只有每个团队一台软路由，出口名按编号） */
 const exitsUsing = (m: MachineView) => (m.team && !m.spare && m.entries.some((e) => e.lifecycle === 'active') ? [{ id: `rt-${m.team.id}`, name: `${m.team.name}-路由A`, exits: [{ exit: `节点${String(m.number ?? 1).padStart(2, '0')}`, node: m.name }] }] : []);
+/** 出口还指着这台或它上面没退役的同机 IP 节点：进备用后不自动回收（同服务端 exits_using_with_ip_nodes） */
+const exitsHold = (m: MachineView, xs: MachineView[]) => [m, ...xs].some((x) => exitsUsing(x).length > 0);
+/** 进备用的自动续费提示（同服务端 spare_notes，预览 done = false、结果 done = true）：一起进备用的里开着自动续费的会在中控关掉；被出口指着（held）时不劝关供应商那边的自动扣款 */
+function spareRenewNotes(m: MachineView, xs: MachineView[], held: boolean, done: boolean): string[] {
+  const on = [m, ...xs.filter((x) => !x.spare)].filter((x) => x.subscription?.auto_renew);
+  if (!on.length) return [];
+  const who = on.length === 1 && on[0] === m ? '' : on.map((x) => x.name).join('、');
+  const tail = '；软路由出口还指着它，不会自动回收，到期要自己登记续费，供应商那边的自动扣款先别关';
+  if (held) return [done ? `${who ? `${who} 的` : ''}自动续费已在中控关闭${tail}` : `${who ? `${who} 开着自动续费` : '这台开着自动续费'}：进备用时中控这边会关掉${tail}`];
+  return [done ? `${who ? `${who} 的` : ''}自动续费已关闭（供应商那边的自动扣款要自己去关）` : `${who ? `${who} 开着自动续费` : '这台开着自动续费'}：进备用时会关掉，到期后照常回收（供应商那边的自动扣款要自己去关）`];
+}
 /** 不能移入备用的原因（同服务端 spare_eligible），能则 null */
 function spareWhy(m: MachineView): string | null {
   if (m.kind === 'relay') return '线路机不属于任何团队';
@@ -669,10 +685,11 @@ R('GET', '/machines/([^/]+)/retire', ({ params }) => {
   const sp = spareTeam(); const nums = freeSpareNumbers(1 + xs.length);
   const ips = xs.map((x) => ({ id: x.id, name: x.name }));
   const spareIps = xs.map((x, i) => ({ id: x.id, name: x.name, to_name: displayName(sp.name, nums[i + 1]) }));
+  const held = exitsHold(m, xs); // 进备用后不自动回收（出口还指着这台或它的同机 IP 节点），没有回收日
   return {
     name: m.name, renames, ip_nodes: ips, routers: exitsUsing(m),
     blockers: m.kind === 'relay' && m.entries.some((e) => !e.direct) ? [`这台线路机上还有 ${m.entries.filter((e) => !e.direct).length} 个节点入口：先把节点迁走或退役。可先用「搬空线路机」把节点换到其他线路机`] : [],
-    spare: { ok: !why, why, team: { id: sp.id, name: sp.name }, to_name: displayName(sp.name, nums[0]), recycle_on: m.subscription ? addDays(m.subscription.due_date, 2) : null, ip_nodes: spareIps, warnings: [], notes: m.subscription?.auto_renew ? [exitsUsing(m).length ? '这台开着自动续费：进备用时中控这边会关掉；软路由出口还指着它，不会自动回收，到期要自己登记续费，供应商那边的自动扣款先别关' : '这台开着自动续费：进备用时会关掉，到期后照常回收（供应商那边的自动扣款要自己去关）'] : [] },
+    spare: { ok: !why, why, team: { id: sp.id, name: sp.name }, to_name: displayName(sp.name, nums[0]), recycle_on: m.subscription && !held ? addDays(m.subscription.due_date, 2) : null, ip_nodes: spareIps, warnings: [], notes: spareRenewNotes(m, xs, held, false) },
   };
 });
 /** 移入备用（同服务端 move_to_spare）：机器照常运行，改到备用团队最小的空号，原团队前移补号 */
@@ -697,15 +714,17 @@ R('POST', '/machines/([^/]+)/retire', ({ params, body }) => {
     const why = spareWhy(m);
     if (why) throw bad(`不能移入备用：${why}`, 409, 'conflict');
     const from = m.name; const xfrom = xs.map((x) => x.name);
-    const autoOff = !!m.subscription?.auto_renew;
-    if (m.subscription) m.subscription.auto_renew = false;
+    // 出口与自动续费要在进备用前算（进备用后 exitsUsing 不再返回）；一起进备用的同机 IP 节点的自动续费也关掉（同服务端 patch_tx）
+    const held = exitsHold(m, xs); const notes = spareRenewNotes(m, xs, held, true);
+    const autoOff = notes.length > 0;
+    for (const x of [m, ...xs.filter((y) => !y.spare)]) if (x.subscription) x.subscription.auto_renew = false;
     const at = iso(); // 宿主机和随行 IP 节点同一次进备用，时刻相同
     moveToSpare(m, body.reason ?? null, at);
     for (const x of xs.filter((y) => !y.spare)) moveToSpare(x, `随宿主机「${from}」退役`, at);
     refreshCounts();
     db.audit.unshift({ id: `a${db.seq++}`, ts: iso(), actor: db.user, action: 'machine.retire', title: '退役机器', summary: `${from} 移入备用 → ${m.name}`, target_kind: 'machine', target_id: m.id, detail: { mode: 'spare' } });
     emit({ type: 'machines' }); emit({ type: 'catalog' });
-    return { mode: 'spare', name: m.name, from, recycle_on: m.recycle_on, ip_nodes: xs.map((x, i) => ({ id: x.id, name: x.name, from: xfrom[i] })), auto_renew_off: autoOff, notes: autoOff ? [exitsUsing(m).length ? '自动续费已在中控关闭；软路由出口还指着它，不会自动回收，到期要自己登记续费，供应商那边的自动扣款先别关' : '自动续费已关闭（供应商那边的自动扣款要自己去关）'] : [] };
+    return { mode: 'spare', name: m.name, from, recycle_on: held ? null : m.recycle_on, ip_nodes: xs.map((x, i) => ({ id: x.id, name: x.name, from: xfrom[i] })), auto_renew_off: autoOff, notes };
   }
   const job = startRetire(m, !!body.cleanup, body.reason ?? null);
   // 宿主机：同机 IP 节点一并退役，进行中 / 失败的作业作废，各自一个退役作业（不登录清理：宿主机的清理连同它们的实例一起删）
@@ -739,16 +758,16 @@ R('POST', '/machines/([^/]+)/renewals', ({ params, body }) => {
   (db.renewals[m.id] ??= []).unshift(r); m.subscription.billing_day = billingDay(newDue, m.subscription.billing_day); m.subscription.due_date = newDue; recomputeDue(m);
   emit({ type: 'machine', id: m.id }); emit({ type: 'machines' }); return { id: r.id, old_due: r.old_due, new_due: r.new_due };
 });
-// 待付清单（同服务端 billing.rs）：在用机器里窗口内到期的，按 供应商 × 到期日 分组；闲置备用（要 include_spare）、自动续费的不算待付，
-// 备用团队里被出口指着 / 有在用 IP 节点的不自动回收、照常续费，机器项带 spare 与 spare_hold
+// 待付清单（同服务端 billing.rs）：在用机器里窗口内到期的，按 供应商 × 到期日 分组；不续费的备用机（要 include_spare）、自动续费的不算待付，
+// 备用团队里被出口指着 / 有在用 IP 节点 / 开着自动续费的不自动回收、照常续费，机器项带 spare 与 spare_hold
 R('GET', '/billing/due', ({ query }) => {
   const days = Number(query.get('days') ?? 30);
   const withSpare = query.get('include_spare') === 'true';
-  const rows = db.machines.filter((m) => m.lifecycle === 'active' && (!m.spare || withSpare || !isIdleSpare(m)) && m.subscription && m.subscription.due_days <= days)
+  const rows = db.machines.filter((m) => m.lifecycle === 'active' && (!m.spare || withSpare || !isUnbilledSpare(m)) && m.subscription && m.subscription.due_days <= days)
     .sort((a, b) => a.subscription!.due_date.localeCompare(b.subscription!.due_date) || (a.provider?.name ?? '￿').localeCompare(b.provider?.name ?? '￿'));
   const view = (m: MachineView) => {
     const s = m.subscription!; const u = mockUsage(m); const monthly = mockMonthly(m);
-    const hold = m.spare && !isIdleSpare(m) ? [m.live_ip_nodes?.length ? `同机 IP 节点 ${m.live_ip_nodes.join('、')} 还在用` : '', m.router_exits?.length ? `软路由出口 ${m.router_exits.join('、')} 还指着` : ''].filter(Boolean).join('；') : null;
+    const hold = m.spare && !isUnbilledSpare(m) ? [m.live_ip_nodes?.length ? `同机 IP 节点 ${m.live_ip_nodes.join('、')} 还在用` : '', m.router_exits?.length ? `软路由出口 ${m.router_exits.join('、')} 还指着` : '', m.renewing_ip_nodes?.length ? `同机 IP 节点 ${m.renewing_ip_nodes.join('、')} 开着自动续费` : '', s.auto_renew ? '开着自动续费' : ''].filter(Boolean).join('；') : null;
     return { id: m.id, name: m.name, kind: m.kind, due_date: s.due_date, due_days: s.due_days, billing_tz: s.billing_tz, spare: m.spare, spare_hold: hold, cycle: s.cycle, price_cents: s.price_cents, currency: s.currency, price_usd_cents: toUsd(s.price_cents, s.currency),
       monthly_usd_cents: monthly, bytes_30d: u.bytes30, usd_per_gb: mockPerGb(monthly, u.bytes30, 30), idle: mockIdle(m, u.sum7), avg7: Math.round(u.sum7 / 7), avail_pct: availability(m, 30).egress_pct };
   };
