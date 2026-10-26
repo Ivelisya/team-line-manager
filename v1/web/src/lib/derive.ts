@@ -166,8 +166,9 @@ export const reachFail = (e: EntryView) => { const r = reachOf(e); return r && r
 export const reachFlaky = (e: EntryView) => { const r = reachOf(e); return r && r.fails < REACH_FAILS ? r : null; };
 /** 入口表里的异常行（排在前面、折叠时也全露出、计入「N 条异常」）：中控连不上、线路机到节点探测不通、应用失败 */
 export const entryBad = (e: EntryView) => !!reachFail(e) || !!probeFail(e) || (e.lifecycle === 'active' && !!e.apply_error);
-/** 闲置备用：在用、在备用团队、没有软路由出口指向、上面没有在用的同机 IP 节点——等到期放生的，不开告警，总览不算进故障（同服务端 MachineView::idle_spare）；卡片上状态照常显示 */
-export const isIdleSpare = (m: MachineView) => m.lifecycle === 'active' && m.spare && !m.router_exits?.length && !m.live_ip_nodes?.length;
+/** 闲置备用：在用、在备用团队、没有被扣住不回收（软路由出口指着、同机 IP 节点在用、开着自动续费）——等到期放生的，不开告警，总览不算进故障（读服务端 MachineView::idle_spare；旧中控没有这个字段，按出口与 IP 节点推）；卡片上状态照常显示 */
+export const isIdleSpare = (m: MachineView) =>
+  m.lifecycle === 'active' && m.spare && (m.idle_spare ?? (!m.router_exits?.length && !m.live_ip_nodes?.length && !m.subscription?.auto_renew));
 /** 状态筛选、状态列排序用的值：在用的看健康，其余看生命周期（同机器页状态筛选下拉的 value） */
 export const statusOf = (m: MachineView) => (m.lifecycle === 'active' ? m.health.status : m.lifecycle);
 /** 状态列升序：有问题的在前（上架失败、故障、降级…），正常的在后。机器页、首页表格的状态列与首页的「异常优先」共用 */

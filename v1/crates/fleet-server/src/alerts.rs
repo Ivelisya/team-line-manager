@@ -88,7 +88,7 @@ const MASS_OFFLINE_MIN: usize = 3;
 pub fn agents_unreachable(ms: &[views::MachineView]) -> Option<(usize, usize)> {
     let online: Vec<bool> = ms
         .iter()
-        .filter(|m| m.lifecycle == "active" && !m.maintenance && m.host_machine.is_none() && !m.idle_spare())
+        .filter(|m| m.lifecycle == "active" && !m.maintenance && m.host_machine.is_none() && !m.idle_spare)
         .filter_map(|m| m.agent.as_ref().map(|a| a.online))
         .collect();
     let off = online.iter().filter(|o| !**o).count();
@@ -239,7 +239,7 @@ pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime
     for m in ms.iter() {
         // 闲置备用（备用团队、没有软路由出口指向、上面没有在用的同机 IP 节点，等到期放生）：供应商那边停了是预期，不开任何告警（续费提醒在 health.rs renewal_reason 里同理）；
         // 已开着的在下面悄悄关掉。健康状态照常算，卡片上看得到
-        if m.idle_spare() {
+        if m.idle_spare {
             continue;
         }
         for r in &m.health.reasons {
@@ -280,7 +280,7 @@ pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime
     incident::reconcile(st, Engine::Machine, open, want, exists, now, |inc| {
         let Some(m) = active.get(&inc.subject_id) else { return Close::Keep };
         // 退到备用、或被指着的备用取消了指向（或上面的 IP 节点都走了），现在没有出口指向了：关掉。报过触发的发恢复（摘要说明是转为闲置，不是原因消失）；之后若又有出口指向它，原因还在就按新告警开
-        if m.idle_spare() {
+        if m.idle_spare {
             return Close::ResolveNoted { name: &m.name, by: "spare", note: "没有软路由出口指向（闲置备用），不再告警" };
         }
         let probe = matches!(inc.rule.as_str(), "egress_fail" | "tcp_fail");
@@ -382,7 +382,7 @@ mod tests {
             m.spare = spare;
             m.router_exits = exits.iter().map(|s| s.to_string()).collect();
             m.agent.as_mut().unwrap().online = online;
-            m
+            m.settle_spare()
         };
         // 放生的备用机器全挂：不算全网失联（在用的 2 台都在线）
         let ms: Vec<_> = [m(true, &[], false), m(true, &[], false), m(true, &[], false), m(false, &[], true), m(false, &[], true)].into();
@@ -394,7 +394,7 @@ mod tests {
         let host = |online: bool| {
             let mut x = m(true, &[], online);
             x.live_ip_nodes = vec!["团队1-02".into()];
-            x
+            x.settle_spare()
         };
         let ms: Vec<_> = [host(false), host(false), host(false), m(false, &[], true)].into();
         assert_eq!(agents_unreachable(&ms), Some((3, 4)));

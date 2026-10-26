@@ -74,14 +74,14 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
 `MachineView`（列表与详情同形）：
 ```
 { id, kind: "relay"|"vps"|"proxy", name, team:{id,name}|null, number|null, label|null, ip, ssh_port,
-  spare, spare_from|null, spare_since|null, recycle_on|null, recycle_held, live_ip_nodes, router_exits,
+  spare, spare_from|null, spare_since|null, recycle_on|null, recycle_held, idle_spare, live_ip_nodes, router_exits,
                                 // spare：在备用团队里（= 已退役、等到期回收；机器照常运行）。spare_from：进备用前的显示名（「团队2-07」），
                                 // spare_since：进备用的时刻（即退役时间，RFC3339），不在备用团队为 null（之前就在备用团队、没经退役进来的也为 null）。
                                 // recycle_on：备用团队里在用、有订阅的机器自动回收的日子（账单时区，到期日 + 2 天，这天 0 点起回收，"2026-11-17"），其余为 null；
-                                // 还被软路由出口指着（router_exits 非空）、上面还有在用的同机 IP 节点（live_ip_nodes 非空）的备用机器不自动回收，recycle_on 为 null、recycle_held 为 true（网页与 fleetctl 按原因写「软路由出口还指着，不自动回收」/「同机 IP 节点 X 还在用，不自动回收」，两样都有就都写），其余 false
+                                // 还被软路由出口指着（router_exits 非空）、上面还有在用的同机 IP 节点（live_ip_nodes 非空）、开着自动续费（订阅 auto_renew：一直续，到不了回收日）的备用机器不自动回收，recycle_on 为 null、recycle_held 为 true（网页与 fleetctl 按原因写「软路由出口还指着，不自动回收」/「同机 IP 节点 X 还在用，不自动回收」/「开着自动续费，不自动回收」，有几样写几样），其余 false
                                 // router_exits：备用团队里在用的机器，还指向它的软路由出口（["团队2-路由A · 节点20"]；备用宿主机还含它上面没退役的同机 IP 节点的出口，后缀「（经同机 IP 节点 备用-02）」），其余为 []；
                                 // live_ip_nodes：备用团队里在用的宿主机，上面不在备用团队、没退役的同机 IP 节点的显示名（["团队1-02"]；宿主机退役会连带它们，所以不自动回收，续费提醒写明），其余为 []；
-                                // 在用、在备用团队、router_exits 与 live_ip_nodes 都为空 = 闲置备用（等到期放生：不开告警，总览的计数不含它，见 /overview 的 spare）
+                                // idle_spare：闲置备用 = 在用、在备用团队、没有被扣住不回收（recycle_held 为 false）（等到期放生：不开告警，不提醒续费，总览的计数不含它，见 /overview 的 spare；fleetctl ls --due、月报的 USD/GB 与可用率据此跳过它）
   country|null, country_set|null, // 国家的 ISO 3166-1 两位代码（"US"），网页在名字旁显示国旗。country_set 是上架 / 修改时手动指定的；
                                 // 没指定时 country 按 ip 查中控离线 IP 库，内网地址、家宽代理填的域名、库里查不到的为 null
   host_machine:{id,name}|null,  // 同机 IP 节点（kind 仍是 vps）：它所在的宿主机；它没有自己的 agent 和 SSH，下面的 agent、host 就是宿主机的，

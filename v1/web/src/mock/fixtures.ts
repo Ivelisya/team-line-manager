@@ -287,7 +287,7 @@ export function buildDb(): Db {
       id, kind: 'vps', name, team: { id: spare.id, name: spare.name }, spare: true, number: i + 1, ip: ip as string, service_ref: `SVC-${2000 + i}`, lifecycle_reason: why as string,
       spare_from: displayName(team.name, n as number), spare_since: iso(now() - (days as number) * DAY / 4),
       // 第三台的出口还被软路由指着：不给回收日（同服务端 recycle_held）
-      recycle_on: i === 2 ? null : addDays(sb.due_date, 2), recycle_held: i === 2, router_exits: i === 2 ? [`${team.name}-路由A · 节点${String(n).padStart(2, '0')}`] : [],
+      recycle_on: i === 2 ? null : addDays(sb.due_date, 2), recycle_held: i === 2, idle_spare: i !== 2, router_exits: i === 2 ? [`${team.name}-路由A · 节点${String(n).padStart(2, '0')}`] : [],
       provider: { id: 'p1', name: '搬瓦工' }, provider_code: 'BWH', plan: { id: p.id, name: p.name, bandwidth_mbps: p.bandwidth_mbps, traffic_gb: p.traffic_gb }, subscription: sb,
       agent: { version: '1.0.3', last_report_at: iso(now() - 9000), online: true, xray_running: null, cores: 2, health: null }, host: hostOf(id, 12), entries: [e],
     }));

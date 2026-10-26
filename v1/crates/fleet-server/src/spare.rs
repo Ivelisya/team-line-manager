@@ -69,7 +69,7 @@ pub fn due_note(due_days: i64) -> &'static str {
 pub fn pointed_note(due_days: i64, exits: &[String]) -> String {
     // 过期满 1 天（`expired`：due_days <= -2）本该已经回收了；还没到回收日的（含过期第 1 天）写「到回收日也不会」，不写「到期后」（可能已经过期了）
     let kept = if due_days <= -2 { "未自动回收" } else { "到回收日也不会自动回收" };
-    format!("；软路由出口 {} 还指向它，{kept}：先改指向或立即回收", exits.join("、"))
+    format!("；软路由出口 {} 还指向它，{kept}：先改指向或立即回收，或给这台续费", exits.join("、"))
 }
 
 /// 备用宿主机上还有不在备用团队的同机 IP 节点时续费提醒后面接的一句（宿主机退役会连带它们，所以不自动回收；宿主机不续费，IP 节点跟着断）。`nodes`：IP 节点的显示名
@@ -78,14 +78,20 @@ pub fn live_ip_note(due_days: i64, nodes: &[String]) -> String {
     format!("；同机 IP 节点 {} 还在用，{kept}：先退役或换走这些 IP 节点，或给这台宿主机续费", nodes.join("、"))
 }
 
-/// 备用机器不自动回收的原因（软路由出口还指着、上面还有在用的同机 IP 节点）接在续费提醒后面的话；两样都没有为空串
-pub fn held_note(due_days: i64, exits: &[String], ip_nodes: &[String]) -> String {
+/// 备用机器开着自动续费时续费提醒后面接的一句（自动续费会一直顺延，不自动回收；能提醒到这里说明自动续费这一轮没顺延成）
+pub fn auto_renew_note() -> &'static str { "；开着自动续费，不自动回收：这一轮自动续费没顺延成，查一下订阅，或手动登记续费" }
+
+/// 备用机器不自动回收的原因（软路由出口还指着、上面还有在用的同机 IP 节点、开着自动续费）接在续费提醒后面的话；都没有为空串
+pub fn held_note(due_days: i64, exits: &[String], ip_nodes: &[String], auto_renew: bool) -> String {
     let mut s = String::new();
     if !exits.is_empty() {
         s += &pointed_note(due_days, exits);
     }
     if !ip_nodes.is_empty() {
         s += &live_ip_note(due_days, ip_nodes);
+    }
+    if auto_renew {
+        s += auto_renew_note();
     }
     s
 }
@@ -280,7 +286,7 @@ mod tests {
     #[test]
     fn pointed_note_says_not_recycled() {
         let x = vec!["办公室 · 美国".to_string(), "办公室 · 日本".to_string()];
-        assert_eq!(pointed_note(3, &x), "；软路由出口 办公室 · 美国、办公室 · 日本 还指向它，到回收日也不会自动回收：先改指向或立即回收");
+        assert_eq!(pointed_note(3, &x), "；软路由出口 办公室 · 美国、办公室 · 日本 还指向它，到回收日也不会自动回收：先改指向或立即回收，或给这台续费");
         let n = pointed_note(-1, &x);
         assert!(n.contains("到回收日也不会自动回收") && !n.contains("到期后"), "过期第 1 天还没到回收的日子，不能写「到期后」");
         assert!(pointed_note(-2, &x).contains("未自动回收"));

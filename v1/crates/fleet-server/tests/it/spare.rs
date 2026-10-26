@@ -217,7 +217,33 @@ async fn spare_auto_renew_note_does_not_say_cancel_when_exit_holds_it() {
     let on: bool = sqlx::query_scalar("select auto_renew from subscription where machine_id = $1").bind(n).fetch_one(&t.st.db).await.unwrap();
     assert!(!on, "中控这边的自动续费照样关掉");
     let v = t.get(&format!("/api/v1/machines/{n}")).await;
-    assert_eq!(v["recycle_held"], json!(true), "{v}");
+    assert_eq!((v["recycle_held"].clone(), v["idle_spare"].clone()), (json!(true), json!(false)), "{v}");
+}
+
+/// 开着自动续费的备用机不是闲置备用：一直续、永远到不了回收日，不给回收日（recycle_held）、不算闲置（idle_spare），
+/// 到期提醒与待付清单（默认带上）照常；关掉自动续费后又是闲置备用
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn spare_with_auto_renew_is_held_not_idle() {
+    let t = setup(false).await;
+    let sp = spare_team(&t).await;
+    let m = seed_node(&t, sp, 1, "203.0.113.75", "active").await;
+    sub(&t, m, "2026-10-20", "UTC").await;
+    let v = t.get(&format!("/api/v1/machines/{m}")).await;
+    assert_eq!((v["idle_spare"].clone(), v["recycle_held"].clone(), v["recycle_on"].clone()), (json!(true), json!(false), json!("2026-10-22")), "{v}");
+    sqlx::query("update subscription set auto_renew = true where machine_id = $1").bind(m).execute(&t.st.db).await.unwrap();
+    t.st.live.invalidate();
+    let v = t.get(&format!("/api/v1/machines/{m}")).await;
+    assert_eq!((v["idle_spare"].clone(), v["recycle_held"].clone(), v["recycle_on"].clone()), (json!(false), json!(true), Value::Null), "{v}");
+    // 待付清单默认带上（开着自动续费的单列在 auto）
+    let d = t.get("/api/v1/billing/due?days=3650").await;
+    let auto: Vec<&Value> = d["auto"].as_array().unwrap().iter().filter(|x| x["machine"]["id"] == m.to_string()).collect();
+    assert!(auto.len() == 1 && auto[0]["machine"]["spare_hold"].as_str().is_some_and(|h| h.contains("开着自动续费")), "{d}");
+    sqlx::query("update subscription set auto_renew = false where machine_id = $1").bind(m).execute(&t.st.db).await.unwrap();
+    t.st.live.invalidate();
+    let v = t.get(&format!("/api/v1/machines/{m}")).await;
+    assert_eq!((v["idle_spare"].clone(), v["recycle_held"].clone()), (json!(true), json!(false)), "{v}");
+    let d = t.get("/api/v1/billing/due?days=3650").await;
+    assert!(!d.to_string().contains(&m.to_string()), "闲置备用不在默认清单里：{d}");
 }
 
 /// 撤销退役（宿主机从备用改回原团队）只带与它同一次进备用的 IP 节点：之前单独退役进备用的 IP 节点留在备用（spare_since 不清、仍会自动回收）；
