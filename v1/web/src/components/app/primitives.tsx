@@ -112,16 +112,18 @@ export const SPARE_TIP = '备用团队的机器，到期满 1 天后自动清理
 /** 只有软路由出口还指着的备用机器（服务端 recycle_held）：不自动回收。同机 IP 节点还在用的原因见 heldNote */
 export const HELD_TEXT = '软路由出口还指着，不自动回收';
 export const HELD_TIP = '到期后也不会自动回收，回收会让客户的出口断掉。\n要回收，先把出口改指别处，或确认后立即回收。';
-type HeldView = Pick<MachineView, 'router_exits' | 'live_ip_nodes'>;
+type HeldView = Pick<MachineView, 'router_exits' | 'live_ip_nodes' | 'subscription'>;
 type RecycleView = Pick<MachineView, 'lifecycle' | 'recycle_on' | 'recycle_held'> & HeldView;
-/** 不自动回收的原因（短句 + 悬停）：软路由出口还指着、同机 IP 节点还在用，两样都有就都写；旧中控没有 live_ip_nodes 时按出口写 */
+/** 不自动回收的原因（短句 + 悬停）：软路由出口还指着、同机 IP 节点还在用、开着自动续费，有几样写几样；旧中控没有 live_ip_nodes 时按出口写 */
 export function heldNote(m: HeldView): { text: string; tip: string } {
   const ips = m.live_ip_nodes ?? [];
-  const exits = ips.length === 0 || !!m.router_exits?.length;
-  const why = [exits && '软路由出口还指着', ips.length > 0 && `同机 IP 节点 ${ips.join('、')} 还在用`].filter(Boolean).join('、');
+  const renew = !!m.subscription?.auto_renew;
+  const exits = !!m.router_exits?.length || (ips.length === 0 && !renew);
+  const why = [exits && '软路由出口还指着', ips.length > 0 && `同机 IP 节点 ${ips.join('、')} 还在用`, renew && '开着自动续费'].filter(Boolean).join('、');
   const tip = [
     exits && HELD_TIP,
     ips.length > 0 && '宿主机回收会连带它上面的同机 IP 节点，它们还在用，宿主机断了它们也跟着断。\n要回收，先退役或换走这些 IP 节点，或确认后立即回收（连它们一起回收）。',
+    renew && '开着自动续费的会一直顺延到期日，不会回收，照常计费。\n不想再续，到「费用」里关掉自动续费，之后到期满 1 天自动回收。',
   ].filter(Boolean).join('\n');
   return { text: `${why}，不自动回收`, tip };
 }
