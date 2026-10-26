@@ -249,7 +249,7 @@ pub async fn save_override(st: &AppState, actor: &str, relay: Uuid, new: Option<
     for r in bumped {
         st.relay_bumped(r);
     }
-    st.emit(Event::Machine { id: relay });
+    st.emit_keep_access(Event::Machine { id: relay });
     Ok(())
 }
 

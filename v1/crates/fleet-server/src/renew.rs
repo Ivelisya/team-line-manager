@@ -97,7 +97,7 @@ async fn renew_one(st: &AppState, r: &Due) -> anyhow::Result<bool> {
     sqlx::query("update subscription set due_date = $2, updated_at = now() where machine_id = $1").bind(r.id).bind(last).execute(&mut *tx).await?;
     tx.commit().await?;
     tracing::info!(machine = %r.id, "{} 自动续费：到期日 {} → {}（{} 期）", r.name, r.due, last, ps.len());
-    st.emit(Event::Machine { id: r.id });
+    st.emit_keep_access(Event::Machine { id: r.id });
     Ok(true)
 }
 

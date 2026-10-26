@@ -1294,7 +1294,7 @@ pub async fn put_subscription(a: Actor, State(st): State<AppState>, ApiPath(id):
     detail["after"] = json!(after);
     audit(&mut tx, &a.name, "subscription.set", "machine", Some(id), detail).await?;
     tx.commit().await?;
-    st.emit(Event::Machine { id });
+    st.emit_keep_access(Event::Machine { id });
     Ok(ok(json!({"ok": true})))
 }
 
@@ -1410,7 +1410,7 @@ pub async fn add_renewal(a: Actor, State(st): State<AppState>, ApiPath(id): ApiP
     let r = renew_in_tx(&mut tx, &a.name, id, &b, false).await?;
     audit(&mut tx, &a.name, "renewal", "machine", Some(id), json!({"old_due": r.old_due, "new_due": r.new_due, "amount_cents": b.amount_cents, "currency": r.currency, "cycles": b.cycles})).await?;
     tx.commit().await?;
-    st.emit(Event::Machine { id });
+    st.emit_keep_access(Event::Machine { id });
     Ok(ok(json!({"id": r.id, "old_due": r.old_due, "new_due": r.new_due})))
 }
 
