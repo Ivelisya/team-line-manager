@@ -344,11 +344,12 @@ pub async fn monthly(st: &AppState, month: Option<&str>) -> ApiResult<Value> {
 
     let live = views::live(st).await?;
     // 同机 IP 节点的流量同时算到宿主机上（钱在宿主机订阅上，客户流量走的是 IP 节点，不算的话宿主机每 GB 成本偏高）；
-    // IP 节点自己有订阅的，它那份仍按它自己的流量算（同流量页）
+    // IP 节点自己有订阅的，它那份仍按它自己的流量算（同流量页）。宿主机对应表同流量页（含本月退役的 IP 节点：它们的流量还在窗口里）
+    let hosts = traffic::ip_hosts(&st.db).await?;
     let mut carried = bytes.clone();
-    for m in live.iter() {
-        if let (Some(h), Some(b)) = (&m.host_machine, bytes.get(&m.id)) {
-            let c = carried.entry(h.id).or_insert(0);
+    for (id, b) in &bytes {
+        if let Some(h) = hosts.get(id) {
+            let c = carried.entry(*h).or_insert(0);
             *c = c.saturating_add(*b);
         }
     }

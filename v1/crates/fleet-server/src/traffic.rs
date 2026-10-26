@@ -91,7 +91,7 @@ pub(crate) fn usage_of(raw: &Raw, hosts: &HashMap<Uuid, Uuid>) -> HashMap<Uuid, 
 }
 
 /// 同机 IP 节点 → 宿主机（含已退役的：窗口内它们的流量还在）
-async fn ip_hosts(db: &sqlx::PgPool) -> sqlx::Result<HashMap<Uuid, Uuid>> {
+pub(crate) async fn ip_hosts(db: &sqlx::PgPool) -> sqlx::Result<HashMap<Uuid, Uuid>> {
     Ok(sqlx::query_as::<_, (Uuid, Uuid)>("select id, host_id from machine where host_id is not null").fetch_all(db).await?.into_iter().collect())
 }
 
