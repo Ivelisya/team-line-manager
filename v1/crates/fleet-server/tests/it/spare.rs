@@ -8,6 +8,7 @@ use crate::common;
 
 use axum::http::StatusCode;
 use common::{seed_node, seed_relay, seed_team, setup, T};
+use fleet_server::state::Event;
 use fleet_server::{alerts, spare};
 use serde_json::{json, Value};
 use time::macros::datetime;
@@ -308,6 +309,17 @@ async fn retire_host_with_renewing_spare_ip_node_has_no_recycle_day() {
     t.st.live.invalidate();
     let v = t.get(&format!("/api/v1/machines/{host}")).await;
     assert_eq!((v["recycle_on"].clone(), v["recycle_held"].clone()), (Value::Null, json!(true)), "{v}");
+    // 改同机 IP 节点的订阅（自动续费）：宿主机的回收日跟着变，宿主机的视图也推一次，列表不用等定时刷新
+    let mut ev = t.st.events.subscribe();
+    let (code, _) = t.req("PUT", &format!("/api/v1/machines/{ip}/subscription"), Some(json!({"price_cents": 500, "due_date": "2030-01-01", "auto_renew": false})), None).await;
+    assert_eq!(code, StatusCode::OK);
+    let mut seen = vec![];
+    while let Ok(e) = ev.try_recv() {
+        if let Event::Machine { id } = e {
+            seen.push(id);
+        }
+    }
+    assert!(seen.contains(&ip) && seen.contains(&host), "{seen:?}");
 }
 
 /// 撤销退役（宿主机从备用改回原团队）只带与它同一次进备用的 IP 节点：之前单独退役进备用的 IP 节点留在备用（spare_since 不清、仍会自动回收）；

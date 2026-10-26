@@ -1586,8 +1586,13 @@ pub async fn put_subscription(a: Actor, State(st): State<AppState>, ApiPath(id):
     detail["before"] = json!(before);
     detail["after"] = json!(after);
     audit(&mut tx, &a.name, "subscription.set", "machine", Some(id), detail).await?;
+    // 同机 IP 节点的自动续费会改宿主机的回收日 / 是否被扣住（视图 renewing_ip_nodes、recycle_on）：宿主机的视图也要跟着刷
+    let host: Option<Uuid> = sqlx::query_scalar("select host_id from machine where id = $1").bind(id).fetch_one(&mut *tx).await?;
     tx.commit().await?;
     st.emit_keep_access(Event::Machine { id });
+    if let Some(host) = host {
+        st.emit_keep_access(Event::Machine { id: host });
+    }
     Ok(ok(json!({"ok": true})))
 }
 
