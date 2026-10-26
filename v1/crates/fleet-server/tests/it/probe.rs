@@ -662,3 +662,84 @@ async fn probe_point_audit_has_title_and_is_searchable() {
     let v = t.get(&format!("/api/v1/audit?q={}", "%E6%96%B0%E5%BB%BA%E6%8E%A2%E6%B5%8B%E7%82%B9")).await;
     assert_eq!(v.as_array().unwrap().len(), 1, "{v}");
 }
+
+/// 三台线路机、两个探测点（PVE 排第一、香港第二），探测顺序 PVE → 香港；香港已经报过一轮（线路机全通）。返回 (线路机们, pve, pve 令牌, hk, hk 令牌)
+async fn pve_hk_three_relays(t: &T) -> (Vec<Uuid>, Uuid, String, Uuid, String) {
+    let team = seed_team(t, "团队1").await;
+    let mut relays = vec![];
+    for i in 1..=3 {
+        let r = seed_relay(t, &format!("线路机{i}"), &format!("198.51.100.{i}"), &format!("tok{i}")).await;
+        seed_node(t, r, team, i, &format!("203.0.113.{i}"), 20001).await;
+        relays.push(r);
+    }
+    let (pve, pve_tok) = add_probe(t, "PVE").await;
+    let (hk, hk_tok) = add_probe(t, "香港").await;
+    t.req("PUT", "/api/v1/settings/reach-source", Some(json!({"order": [pve, hk]})), None).await;
+    let ok: Vec<_> = relays.iter().map(|r| (*r, 20001, true, Some(150.0))).collect();
+    report(t, hk, &hk_tok, &ok).await;
+    report(t, pve, &pve_tok, &ok).await;
+    (relays, pve, pve_tok, hk, hk_tok)
+}
+
+async fn discard_reason(t: &T, id: Uuid) -> Option<String> {
+    sqlx::query_scalar("select discard_reason from probe_point where id = $1").bind(id).fetch_one(&t.st.db).await.unwrap()
+}
+
+/// PVE 的一份全连不上的上报（对照目标通：带 all_down）
+fn all_down_body(relays: &[Uuid]) -> Value {
+    let rs: Vec<Value> = relays.iter().map(|r| json!({"relay_id": r, "port": 20001, "ok": false, "detail": "超时 10 秒"})).collect();
+    json!({"version": "0.1.0+test", "all_down": true, "results": rs})
+}
+
+const SUPPLIER: &str = "PVE探测点连续 3 次以上连不上客户入口（端口 20001：超时 10 秒）；所有线路机同时连不上，可能是供应商整体故障";
+
+/// 主来源（PVE）全部线路机同时连不上、但下一路（香港）连得上：照记、照开 relay_unreachable（不作废、不换来源），
+/// 只是摘要不写「供应商整体故障」，改写成大陆方向被封或 PVE 所在网络出境异常；香港的结果过了 2 分钟就不拿来对照，回到供应商的说法
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn all_down_with_next_source_reachable_changes_only_the_wording() {
+    let t = setup().await;
+    let (relays, pve, pve_tok, hk, _hk_tok) = pve_hk_three_relays(&t).await;
+    for _ in 0..3 {
+        let (st, v) = report_json(&t, pve, &pve_tok, all_down_body(&relays)).await;
+        assert_eq!((st, v["accepted"].clone()), (StatusCode::OK, json!(3)), "{v}");
+    }
+    assert_eq!(t.count(&format!("select count(*) from relay_reach where probe_point_id = '{pve}' and all_down")).await, 9);
+    let blocked = "PVE探测点连续 3 次以上连不上客户入口（端口 20001：超时 10 秒）；所有线路机同时连不上，但香港探测点连得上：多半是大陆方向到线路机被封，或PVE探测点所在网络出境异常，先看客户软路由出口是否正常";
+    assert_eq!(reason_text(&machine(&t, relays[0]).await, "relay_unreachable").as_deref(), Some(blocked));
+    // 没有作废：仍是主来源、没有 discard_reason
+    assert_eq!(t.get("/api/v1/settings/reach-source").await["effective"]["state"], "probe");
+    assert_eq!(discard_reason(&t, pve).await, None);
+    assert_eq!(t.get("/api/v1/probe-points").await[0]["state"], "online");
+    // 香港的结果过了 2 分钟：不拿来对照，回到供应商的说法
+    sqlx::query("update relay_reach set ts = now() - interval '3 minutes' where probe_point_id = $1").bind(hk).execute(&t.st.db).await.unwrap();
+    assert_eq!(reason_text(&machine(&t, relays[0]).await, "relay_unreachable").as_deref(), Some(SUPPLIER));
+}
+
+/// 下一路（香港）最近也全连不上：照原来的说法写供应商整体故障
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn all_down_when_next_source_also_down_keeps_supplier_wording() {
+    let t = setup().await;
+    let (relays, pve, pve_tok, hk, hk_tok) = pve_hk_three_relays(&t).await;
+    assert_eq!(report_json(&t, hk, &hk_tok, all_down_body(&relays)).await.1["accepted"], 3);
+    sqlx::query("delete from relay_reach where probe_point_id = $1 and ok").bind(hk).execute(&t.st.db).await.unwrap();
+    for _ in 0..3 {
+        assert_eq!(report_json(&t, pve, &pve_tok, all_down_body(&relays)).await.1["accepted"], 3);
+    }
+    assert_eq!(reason_text(&machine(&t, relays[0]).await, "relay_unreachable").as_deref(), Some(SUPPLIER));
+}
+
+/// 后面没有别的探测点时对照中控：中控最近 2 分钟连得上就写「中控连得上」；中控的检查关着则没有下一路，写供应商的说法
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn all_down_compares_with_central_when_no_next_probe() {
+    let t = setup().await;
+    let (relays, pve, pve_tok, _hk, _hk_tok) = pve_hk_three_relays(&t).await;
+    t.req("PUT", "/api/v1/settings/reach-source", Some(json!({"order": [pve]})), None).await;
+    sqlx::query("insert into relay_reach (relay_id, ts, ok, port) select r, now() - interval '30 seconds', true, 20001 from unnest($1::uuid[]) r").bind(&relays).execute(&t.st.db).await.unwrap();
+    for _ in 0..3 {
+        assert_eq!(report_json(&t, pve, &pve_tok, all_down_body(&relays)).await.1["accepted"], 3);
+    }
+    let s = reason_text(&machine(&t, relays[0]).await, "relay_unreachable").unwrap();
+    assert!(s.contains("所有线路机同时连不上，但中控连得上：多半是大陆方向到线路机被封，或PVE探测点所在网络出境异常"), "{s}");
+    t.req("PUT", "/api/v1/settings/reach-source", Some(json!({"central_enabled": false})), None).await;
+    assert_eq!(reason_text(&machine(&t, relays[0]).await, "relay_unreachable").as_deref(), Some(SUPPLIER));
+}

@@ -21,6 +21,9 @@
 //! 对照目标通、三台以上线路机却全部连不上（`fleet_proto::all_down`）照记，行上标 all_down：以前当成测的这一方的问题整轮作废，
 //! 但生产几台线路机在同一家供应商的同一个 /24，供应商整段故障时就是这样，正是要报的时候；relay_unreachable 的摘要写明
 //! 「全部线路机同时连不上（可能是供应商整段故障）」，看的人一眼知道该先查供应商还是测的这一方。
+//! 探测点这样一轮全部线路机同时连不上时，摘要先对照顺序里的下一路（`probe_points::Effective::compare`）最近 2 分钟：下一路连得上，
+//! 就不写供应商整段故障，改写「多半是大陆方向到线路机被封，或这个探测点所在网络出境异常，先看客户软路由出口是否正常」——
+//! 探测点就是从靠近客户的网络测的，它连不上、别处连得上，正是客户那一侧被封的样子；只改说法，照记、照告警。
 //!
 //! 结果进 relay_reach，保留 [retention] reach_days（默认 2 天，db::cleanup_retention）；每小时汇总进 relay_reach_hourly（db::rollup_hour，留 180 天），
 //! 探测点页与线路机抽屉的 24 小时 / 7 天 / 30 天成功率读它（[`quality`]）。查询都按来源过滤，索引带着来源（迁移 0046）。
@@ -67,13 +70,23 @@ pub async fn run_forever(st: AppState) {
 /// - 整台不通：最近 3 轮（5 分钟内）都连不上，取这 3 次的原因；
 /// - 单个口坏了：某个在用入口端口最近 3 次都连不上（轮流连，N 个口每 N 轮才轮到一次：看 30 分钟与 3 遍轮换里取长的），取它最近一次的原因。
 ///
-/// 用到的检查里有全部线路机同时连不上的轮次（all_down）时，后面加「；全部线路机同时连不上（可能是供应商整段故障）」。
+/// 用到的检查里有全部线路机同时连不上的轮次（all_down）时，后面加「；所有线路机同时连不上，可能是供应商整体故障」；
+/// 这一路是探测点、顺序里的下一路最近 2 分钟连得上某台在用线路机时，改写成 [`all_down_reachable`] 那句。
 ///
 /// 视图的 `RelayInfo::unreachable` 与写入前后的比对共用
 pub(crate) fn unreachable_sql(relay: &str, src: &Effective) -> String {
     if src.state == "none" {
         return "null::text".into();
     }
+    let all_down = match &src.compare {
+        Some(c) => format!(
+            "case when exists (select 1 from relay_reach nx where {cond} and nx.ok and nx.ts > now() - interval '2 minutes'
+                              and nx.relay_id in (select id from machine where kind = 'relay' and lifecycle = 'active')) then '{yes}' else '{ALL_DOWN}' end",
+            cond = c.cond("nx"),
+            yes = all_down_reachable(c).replace('\'', "''")
+        ),
+        None => format!("'{ALL_DOWN}'"),
+    };
     format!(
         "(with x as (select rr.port, rr.ok, coalesce(rr.detail, '-') detail, rr.all_down, rr.ts > now() - interval '5 minutes' fresh,
                             row_number() over (order by rr.ts desc) n, row_number() over (partition by rr.port order by rr.ts desc) np
@@ -83,7 +96,7 @@ pub(crate) fn unreachable_sql(relay: &str, src: &Effective) -> String {
                bad as (select port from x where np <= 3 and port in (select e.port from entry e where e.relay_id = {relay} and e.lifecycle = 'active')
                        group by port having count(*) = 3 and not bool_or(ok))
           select {label} || '连续 3 次以上连不上客户入口（' || string_agg(distinct detail, '；' order by detail) || '）'
-                 || case when bool_or(all_down) then '；{ALL_DOWN}' else '' end from x
+                 || case when bool_or(all_down) then '；' || {all_down} else '' end from x
           where (n <= 3 and fresh and (select down from whole)) or (np = 1 and port in (select port from bad)))",
         cond = src.cond("rr"),
         label = src.label_sql()
@@ -92,6 +105,11 @@ pub(crate) fn unreachable_sql(relay: &str, src: &Effective) -> String {
 
 /// relay_unreachable 摘要里全部线路机同时连不上时的说法
 pub const ALL_DOWN: &str = "所有线路机同时连不上，可能是供应商整体故障";
+
+/// 全部线路机同时连不上、但对照的下一路连得上时的说法
+pub(crate) fn all_down_reachable(c: &crate::probe_points::Compare) -> String {
+    format!("所有线路机同时连不上，但{}连得上：多半是大陆方向到线路机被封，或{}所在网络出境异常，先看客户软路由出口是否正常", c.label, c.own)
+}
 
 /// 线路机 `relay` 整台连不连得上判不出：有在用入口，5 分钟内 `src` 那一路的检查却不到 3 轮（中控 / 探测点刚重启、整轮作废），
 /// 或此刻没有可用的来源（标灰）、暂由中控代替离线的探测点（中控连得上不能当成探测点那边恢复了）。
