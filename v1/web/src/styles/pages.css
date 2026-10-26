@@ -93,6 +93,8 @@
   .inc-tbl :is(th, td):first-child { padding-right: var(--sp-4); }
   .inc-tbl .inc-narrow { display: block !important; }
   .inc-tbl .inc-cmds.inc-narrow { display: flex !important; }
+  /* 说明最多两行（原来和别的 .sub 一样单行省略，只剩半句）；更长的悬停 / 长按看全文（data-tip） */
+  .inc-tbl .inc-narrow.inc-narrow-sum { display: -webkit-box !important; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; white-space: normal; overflow-wrap: anywhere; }
   .inc-tbl td { height: auto; }
 }
 .chart-box { height: 180px; min-width: 0; }
