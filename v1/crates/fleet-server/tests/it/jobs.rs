@@ -301,7 +301,7 @@ async fn purge_runs_twice_without_error() {
     ] {
         sqlx::query(sql).bind(node).execute(&t.st.db).await.unwrap();
     }
-    // 入口流量都在 35 天前：不再计入对端线路机的统计，可以删
+    // 入口流量都在 93 天前：不再计入对端线路机的统计，可以删
     let (relay, _) = seed_relay(&t).await;
     let eid = Uuid::now_v7();
     sqlx::query("insert into entry (id, relay_id, node_id, port, client_uuid, short_id, lifecycle) values ($1, $2, $3, 20001, $4, 'ab', 'removed')")
@@ -312,7 +312,7 @@ async fn purge_runs_twice_without_error() {
         .execute(&t.st.db)
         .await
         .unwrap();
-    sqlx::query("insert into entry_traffic_hourly (entry_id, hour, up_bytes, down_bytes) values ($1, date_trunc('hour', now()) - interval '36 days', 100, 0)")
+    sqlx::query("insert into entry_traffic_hourly (entry_id, hour, up_bytes, down_bytes) values ($1, date_trunc('hour', now()) - interval '94 days', 100, 0)")
         .bind(eid)
         .execute(&t.st.db)
         .await
@@ -487,7 +487,7 @@ async fn purge_refused_while_peer_still_counts_traffic() {
         .await
         .unwrap();
     sqlx::query("update machine set lifecycle = 'retired' where id = $1").bind(node).execute(&t.st.db).await.unwrap();
-    let want: String = sqlx::query_scalar("select (((date_trunc('hour', now()) - interval '10 days' + interval '35 days 1 hour') at time zone 'Asia/Shanghai')::date + 1)::text")
+    let want: String = sqlx::query_scalar("select (((date_trunc('hour', now()) - interval '10 days' + interval '93 days 1 hour') at time zone 'Asia/Shanghai')::date + 1)::text")
         .fetch_one(&t.st.db)
         .await
         .unwrap();
@@ -517,6 +517,36 @@ async fn purge_refused_while_peer_still_counts_traffic() {
     assert_eq!(run_one(&t, rj).await["state"], "succeeded");
     for m in [node, relay] {
         assert_eq!(t.req("GET", &format!("/api/v1/machines/{m}"), None, None).await.0, StatusCode::NOT_FOUND);
+    }
+}
+
+/// 等待期是流量页能回看的天数加一天（traffic::MAX_DAYS + 1 = 93）：40 天前、92 天前的流量还拦着（流量页还看得到），94 天前的不拦
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn purge_waits_as_long_as_traffic_page_looks_back() {
+    let t = setup(false).await;
+    let team = seed_team(&t, "团队1").await;
+    let node = seed_node(&t, team, 1, "203.0.113.10", "retiring").await;
+    let (relay, _) = seed_relay(&t).await;
+    let eid = Uuid::now_v7();
+    sqlx::query("insert into entry (id, relay_id, node_id, port, client_uuid, short_id, lifecycle) values ($1, $2, $3, 20001, $4, 'ab', 'removed')")
+        .bind(eid)
+        .bind(relay)
+        .bind(node)
+        .bind(Uuid::now_v7())
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    assert_eq!(fleet_server::db::PURGE_WAIT_DAYS as i64, fleet_server::traffic::MAX_DAYS + 1);
+    for (days, blocked) in [(40, true), (92, true), (94, false)] {
+        sqlx::query("delete from entry_traffic_hourly where entry_id = $1").bind(eid).execute(&t.st.db).await.unwrap();
+        sqlx::query("insert into entry_traffic_hourly (entry_id, hour, up_bytes, down_bytes) values ($1, date_trunc('hour', now()) - make_interval(days => $2), 100, 0)")
+            .bind(eid)
+            .bind(days)
+            .execute(&t.st.db)
+            .await
+            .unwrap();
+        let why = fleet_server::db::purge_blocker(&t.st.db, node).await.unwrap();
+        assert_eq!(why.is_some(), blocked, "{days} 天前的流量：{why:?}");
     }
 }
 

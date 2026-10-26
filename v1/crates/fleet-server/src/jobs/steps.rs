@@ -1239,7 +1239,7 @@ async fn purge(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
-    // 小时流量删了（只剩 35 天前的、或对端已退役）：流量缓存跟着作废
+    // 小时流量删了（只剩 93 天前的、或对端已退役）：流量缓存跟着作废
     c.st.live.rolled_up();
     Ok(Outcome::Done(json!({"rows_deleted": n, "entries": eids.len()})))
 }

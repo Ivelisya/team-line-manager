@@ -212,3 +212,53 @@ async fn cost_per_gb_and_idle() {
     let m = d["groups"][0]["machines"].as_array().unwrap().iter().find(|m| m["id"] == ids[0].to_string()).cloned().unwrap();
     assert!(near(&m["usd_per_gb"], 30.0) && m["idle"] == true && m["avail_pct"].is_null(), "{m}");
 }
+
+/// 同机 IP 节点的流量同时算到宿主机上（成本 / 闲置口径）：宿主机自己只有 1 GB、IP 节点 4 GB（没订阅），
+/// 宿主机按 5 GB 算每 GB 成本与闲置（近 7 天日均 0.71 GB，不闲置；只算自己的 1 GB 会被当成闲置）；
+/// 节点行的下载 / 上传、团队的近 30 天流量仍只算各自入口（不重复）；团队里没订阅的 IP 节点不算「没价格」；待付清单同口径
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ip_node_traffic_counts_on_host_for_cost_and_idle() {
+    let t = setup(false).await;
+    let db = &t.st.db;
+    let (relay, _) = seed_relay(&t).await;
+    let team = seed_team(&t, "团队1").await;
+    let mut ids = vec![];
+    for (n, down) in [(1, 1_000_000_000i64), (2, 4_000_000_000)] {
+        let id = seed_node(&t, team, n, &format!("203.0.113.{}", 10 + n), "active").await;
+        sqlx::query("update machine set kind = 'vps', activated_at = now() - interval '10 days' where id = $1").bind(id).execute(db).await.unwrap();
+        let e = Uuid::now_v7();
+        sqlx::query("insert into entry (id, relay_id, node_id, port, client_uuid, short_id, lifecycle) values ($1, $2, $3, $4, $5, 'ab', 'active')").bind(e).bind(relay).bind(id).bind(20000 + n).bind(Uuid::now_v7()).execute(db).await.unwrap();
+        sqlx::query("insert into entry_traffic_hourly (entry_id, hour, up_bytes, down_bytes) values ($1, (now() at time zone 'Asia/Shanghai')::date::timestamp at time zone 'Asia/Shanghai', 0, $2)").bind(e).bind(down).execute(db).await.unwrap();
+        ids.push(id);
+    }
+    let (host, ipn) = (ids[0], ids[1]);
+    sqlx::query("update machine set ssh_port = null, host_id = $2 where id = $1").bind(ipn).bind(host).execute(db).await.unwrap();
+    sqlx::query("insert into subscription (machine_id, price_cents, currency, due_date) values ($1, 3000, 'USD', current_date + 5)").bind(host).execute(db).await.unwrap();
+    t.st.live.rolled_up();
+
+    let v = t.get("/api/v1/traffic/daily?days=7").await;
+    let node = |id: Uuid| v["nodes"].as_array().unwrap().iter().find(|n| n["id"] == id.to_string()).cloned().unwrap();
+    let near = |x: &Value, want: f64| (x.as_f64().unwrap() - want).abs() < 1e-6;
+    let (h, i) = (node(host), node(ipn));
+    // 宿主机：行里仍是自己的 1 GB；每 GB 成本按 5 GB 算（5 GB / 7 天 → 30 天 21.43 GB，30 USD → 1.4 USD/GB）；日均 0.71 GB 不闲置
+    assert_eq!(h["down"].as_i64(), Some(1_000_000_000), "{h}");
+    assert!(near(&h["usd_per_gb"], 1.4), "{h}");
+    assert_eq!((h["idle"].as_bool(), h["avg7"].as_i64()), (Some(false), Some(5_000_000_000 / 7)), "{h}");
+    // IP 节点：没订阅、没价格，自己的 4 GB 不变
+    assert_eq!((i["down"].as_i64(), i["monthly_usd_cents"].is_null(), i["usd_per_gb"].is_null()), (Some(4_000_000_000), true, true), "{i}");
+    // 团队：2 台在用，没有闲置；没订阅的 IP 节点不算「没价格」；近 30 天流量 5 GB（不重复算）
+    let tm = &v["teams"][0];
+    assert_eq!((tm["nodes"].as_i64(), tm["idle"].as_i64(), tm["monthly_usd_cents"].as_i64(), tm["unpriced"].as_i64(), tm["bytes_30d"].as_i64()), (Some(2), Some(0), Some(3000), Some(0), Some(5_000_000_000)), "{tm}");
+    assert!(near(&tm["usd_per_gb"], 6.0), "{tm}");
+    // 待付清单（近 30 天）：宿主机 5 GB → 6 USD/GB，不是闲置
+    let d = t.get("/api/v1/billing/due?days=30").await;
+    let m = d["groups"][0]["machines"].as_array().unwrap().iter().find(|m| m["id"] == host.to_string()).cloned().unwrap();
+    assert!(near(&m["usd_per_gb"], 6.0) && m["idle"] == false && m["bytes_30d"].as_i64() == Some(5_000_000_000), "{m}");
+
+    // 没有 IP 节点时（解除挂靠）宿主机按自己的 1 GB 算：闲置
+    sqlx::query("update machine set host_id = null, ssh_port = 22 where id = $1").bind(ipn).execute(db).await.unwrap();
+    t.st.live.rolled_up();
+    let v = t.get("/api/v1/traffic/daily?days=7").await;
+    let h = v["nodes"].as_array().unwrap().iter().find(|n| n["id"] == host.to_string()).cloned().unwrap();
+    assert_eq!(h["idle"].as_bool(), Some(true), "{h}");
+}

@@ -66,11 +66,19 @@ pub struct Q {
     pub limit: Option<f64>,
     pub used: f64,
     pub daily: f64,
-    /// 距重置还有多少天（没有重置日为 0：只看已用）
+    /// 距重置还有多少天；按近 30 天滚动计的用 `Q::rolling`（`ROLLING_DAYS`）
     pub days_left: f64,
 }
 
+/// 按近 30 天滚动计流量的线路机没有重置日，用量永远是「近 30 天合计」：看稳态，日均 × 30 天
+pub const ROLLING_DAYS: f64 = 30.0;
+
 impl Q {
+    /// 滚动 30 天的线路机：已用不另算（窗口里的量已经体现在日均里），预计用量 = 日均 × `ROLLING_DAYS`，
+    /// 承接 `extra` 的日均后 = (日均 + extra) × `ROLLING_DAYS`，余量与放不放得下都按这个（和有重置日的同一套算式）
+    pub fn rolling(limit: Option<f64>, daily: f64) -> Q {
+        Q { limit, used: 0.0, daily, days_left: ROLLING_DAYS }
+    }
     /// 按当前速度到重置日预计的用量
     pub fn projected(&self) -> f64 {
         self.used + self.daily * self.days_left
@@ -171,5 +179,25 @@ mod tests {
         let t3 = Q { limit: Some(12000e9), used: 100e9, daily: 5e9, days_left: 20.0 };
         assert_eq!(best_target(&[(a, Q { limit: Some(2000e9), used: 500e9, daily: 10e9, days_left: 20.0 }), (b, t3)]), Some(b));
         assert!(t3.fits(60e9) && !t3.fits(500e9));
+    }
+
+    #[test]
+    fn rolling30_target_counts_steady_state_daily_times_30() {
+        // 上限 2000 GB、日均 40 GB：稳态 1200 GB，余量 800 GB；再承接 10 GB/天 → 1500 GB，在 80%（1600）内；承接 15 GB/天 → 1650 GB，放不下
+        let r = Q::rolling(Some(2000e9), 40e9);
+        assert_eq!(r.projected(), 1200e9);
+        assert_eq!(r.headroom(), Some(800e9));
+        assert!(r.fits(10e9) && !r.fits(15e9));
+        // 以前没有重置日时剩余天数取 0：日均和承接量都被忽略，什么都放得下
+        let old = Q { limit: Some(2000e9), used: 0.0, daily: 40e9, days_left: 0.0 };
+        assert!(old.fits(500e9));
+        // 日均大的线路机余量少，默认目标不会选它（日均 90 GB 稳态 2700 GB 已超上限）
+        let busy = Q::rolling(Some(2000e9), 90e9);
+        assert_eq!(busy.headroom(), Some(-700e9));
+        assert!(!busy.fits(0.0));
+        let (a, b) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        assert_eq!(best_target(&[(a, busy), (b, r)]), Some(b));
+        // 不限流量的永远放得下
+        assert!(Q::rolling(None, 90e9).fits(1e12));
     }
 }

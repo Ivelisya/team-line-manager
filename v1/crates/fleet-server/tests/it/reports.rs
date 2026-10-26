@@ -175,3 +175,27 @@ async fn monthly_report_goes_only_to_channels_with_the_switch() {
     let (s, v) = t.req("POST", "/api/v1/reports/monthly/send", Some(json!({})), None).await;
     assert!(s == StatusCode::CONFLICT && v.to_string().contains("没有开启「月报」的通知渠道"), "{s} {v}");
 }
+
+/// 同机 IP 节点的流量同时算到宿主机上：钱在宿主机订阅上，客户流量走 IP 节点，月报「每 GB 最贵」里宿主机按 6 GB 算（1 美元 / GB），
+/// 而不是 0 GB（达不到最低流量门槛，直接不上榜）；IP 节点自己没订阅，不上榜
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn monthly_costly_counts_ip_node_traffic_on_host() {
+    let t = setup().await;
+    let [host, ipn, ..] = seed(&t).await;
+    sqlx::query("update machine set kind = 'vps' where id = $1").bind(host).execute(&t.st.db).await.unwrap();
+    sqlx::query("update machine set kind = 'vps', ssh_port = null, host_id = $2 where id = $1").bind(ipn).bind(host).execute(&t.st.db).await.unwrap();
+    sqlx::query("insert into subscription (machine_id, price_cents, due_date) values ($1, 600, current_date + 60)").bind(host).execute(&t.st.db).await.unwrap();
+    sqlx::query("insert into entry_traffic_hourly (entry_id, hour, up_bytes, down_bytes) select id, date_trunc('hour', now()), 1000000000, 5000000000 from entry where node_id = $1")
+        .bind(ipn)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    t.st.live.rolled_up();
+    let cur: String = sqlx::query_scalar("select to_char(now() at time zone 'Asia/Shanghai', 'YYYY-MM')").fetch_one(&t.st.db).await.unwrap();
+    let r = t.get(&format!("/api/v1/reports/monthly?month={cur}")).await;
+    let costly = r["costly"].as_array().unwrap();
+    assert_eq!(costly.len(), 1, "{r}");
+    let c = &costly[0];
+    assert_eq!(c["id"], host.to_string(), "{r}");
+    assert!((c["gb"].as_f64().unwrap() - 6.0).abs() < 1e-6 && (c["usd_per_gb"].as_f64().unwrap() - 1.0).abs() < 1e-6, "{c}");
+}
