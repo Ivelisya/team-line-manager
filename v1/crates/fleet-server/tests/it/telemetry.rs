@@ -1025,6 +1025,46 @@ async fn auto_renew_spare_is_idle_for_alerts_but_billed_and_reminded() {
     assert_eq!(ov["monthly_usd_spare"]["count"].as_i64(), Some(0), "{ov}");
 }
 
+/// 被扣住的闲置备用机，续费提醒消除时的恢复通知：到期日推后、续费了（仍被扣住）是普通恢复，不说「转为闲置备用」；
+/// 用户关掉自动续费（不再被扣住、转为等到期回收）才附「不再续费（等到期回收），不再提醒续费」并记 closed_by = spare
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn held_spare_reminder_recovery_notes_follow_the_reason() {
+    let t = setup().await;
+    let mock = Mock::start().await;
+    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "feishu", "config": {"url": mock.url("/hook/a")}, "min_severity": "info", "enabled": true})).await;
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let team = seed_team(&t, "团队1").await;
+    let (renewed, _) = seed_node(&t, relay, team, 1, "203.0.113.5", 20000).await;
+    let (stopped, _) = seed_node(&t, relay, team, 2, "203.0.113.6", 20001).await;
+    for n in [renewed, stopped] {
+        sqlx::query("update machine set team_id = (select id from team where spare) where id = $1").bind(n).execute(&t.st.db).await.unwrap();
+        sqlx::query("insert into subscription (machine_id, price_cents, due_date, auto_renew) values ($1, 600, current_date - 5, true)").bind(n).execute(&t.st.db).await.unwrap();
+    }
+    xray_report(&t, 1, true).await;
+    let mut state = AlertState::default();
+    let base = OffsetDateTime::now_utc();
+    pass(&t, &mut state, base, 0).await;
+    pass(&t, &mut state, base, 151).await;
+    assert_eq!(incidents(&t, "firing").await.len(), 2);
+    log_settles(&t, 2).await;
+    // 一台续费推后了到期日（仍开着自动续费，被扣住），一台关掉了自动续费
+    sqlx::query("update subscription set due_date = current_date + 60 where machine_id = $1").bind(renewed).execute(&t.st.db).await.unwrap();
+    sqlx::query("update subscription set auto_renew = false where machine_id = $1").bind(stopped).execute(&t.st.db).await.unwrap();
+    for secs in [200, 300, 400] {
+        pass(&t, &mut state, base, secs).await;
+    }
+    assert!(incidents(&t, "firing").await.is_empty());
+    log_settles(&t, 4).await;
+    // 恢复通知按行合并成一条：续费推后的那台没有任何转为闲置的说明，关掉自动续费的那台附「不再续费…」
+    let resolved: Vec<String> = mock.texts("/hook/a").into_iter().filter(|x| x.contains("已恢复")).collect();
+    assert_eq!(resolved.len(), 1, "{resolved:?}");
+    let line = |name: &str| resolved[0].lines().find(|l| l.contains(name)).unwrap_or_else(|| panic!("没有 {name}：{resolved:?}")).to_string();
+    let (kept, off) = (line("备用-01"), line("备用-02"));
+    assert!(!kept.contains("转为闲置备用") && !kept.contains("不再续费"), "{kept}");
+    assert!(off.contains("不再续费（等到期回收），不再提醒续费") && !off.contains("转为闲置备用"), "{off}");
+    assert_eq!(t.count("select count(*) from incident where state = 'resolved' and detail->>'closed_by' = 'spare'").await, 1);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn relay_xray_down_alert_lifecycle() {
     let t = setup().await;
