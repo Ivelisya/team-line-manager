@@ -123,7 +123,7 @@ export function installTrafficMock(R: Reg, machines: () => MachineView[], teams:
       const u = use.get(m.id) ?? { b30: 0, s7: 0 };
       t.bytes_30d += u.b30;
       if (m.lifecycle === 'active') {
-        t.nodes++; t.idle += mockIdle(m, u.s7) ? 1 : 0;
+        t.nodes++; t.idle += !m.spare && mockIdle(m, u.s7) ? 1 : 0;
         // 备用团队只有被扣住不回收的几台照常续费（同服务端），月费、没价格、USD/GB 只算它们
         const held = !!m.spare && !!m.recycle_held;
         if (held) { t.held++; t.held_bytes_30d += u.b30; }

@@ -443,7 +443,8 @@ R('GET', '/auth/me', () => { if (sessionStorage.getItem('mock:auth') === '0') th
 R('GET', '/teams', () => clone(db.teams).map((t) => {
   const ms = db.machines.filter((m) => m.lifecycle === 'active' && m.team?.id === t.id && m.subscription);
   const held = t.spare ? ms.filter((m) => m.recycle_held) : [];
-  return { ...t, monthly_usd: usdTotal(ms.map((m) => m.subscription!)), monthly_usd_held: usdTotal(held.map((m) => m.subscription!)), held_count: held.length };
+  return { ...t, monthly_usd: usdTotal(ms.map((m) => m.subscription!)), monthly_usd_held: usdTotal(held.map((m) => m.subscription!)), held_count: held.length,
+    held_total: t.spare ? db.machines.filter((m) => m.lifecycle === 'active' && m.team?.id === t.id && m.recycle_held).length : 0 };
 }));
 R('POST', '/teams', ({ body }) => {
   if (!body.name?.trim()) throw bad('团队名不能为空');

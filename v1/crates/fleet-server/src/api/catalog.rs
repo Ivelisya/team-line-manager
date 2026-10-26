@@ -29,8 +29,12 @@ pub struct Team {
     /// 备用团队里被扣住不回收的（软路由出口还指着 / 同机 IP 节点还在用，视图 recycle_held）在用机器：照常续费，月费算进首页合计，所以单列它们的月费与台数；别的团队为空、0
     #[sqlx(skip)]
     monthly_usd_held: crate::fx::Total,
+    /// 其中有订阅、计入 monthly_usd_held 的台数
     #[sqlx(skip)]
     held_count: i64,
+    /// 被扣住不回收的总台数（不论有没有订阅）；别的团队 0
+    #[sqlx(skip)]
+    held_total: i64,
 }
 
 pub async fn list_teams(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
@@ -58,6 +62,16 @@ pub async fn list_teams(_a: Actor, State(st): State<AppState>) -> ApiResult<Json
             if t.spare && held.contains(&id) {
                 t.monthly_usd_held.add(&currency, monthly, usd.zip(rate));
                 t.held_count += 1;
+            }
+        }
+    }
+    if !held.is_empty() {
+        let actives: Vec<(Uuid, Uuid)> = sqlx::query_as("select team_id, id from machine where lifecycle = 'active' and team_id is not null").fetch_all(&st.db).await?;
+        for (team, id) in actives {
+            if held.contains(&id) {
+                if let Some(t) = v.iter_mut().find(|t| t.id == team && t.spare) {
+                    t.held_total += 1;
+                }
             }
         }
     }

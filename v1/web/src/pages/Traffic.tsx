@@ -109,7 +109,14 @@ function useScrollEnd(dep: unknown) {
     // 窗口变了列宽跟着变：还停在最右的重新对齐（人自己滚开了就不动）。在不在最右按滚动时记下的算，缩放后可滚宽度已经变了
     let atEnd = true;
     const onScroll = () => { if (w) atEnd = w.scrollLeft >= w.scrollWidth - w.clientWidth - 2; };
-    const onResize = () => { if (w && atEnd) scrollToEnd(w); };
+    // 从「放得下」缩到「放不下」时，resize 事件先于尺寸监听摘 data-fit，这时滚不动：等两帧再对齐
+    let r1 = 0; let r2 = 0;
+    const onResize = () => {
+      if (!w || !atEnd) return;
+      if (!w.hasAttribute('data-fit')) { scrollToEnd(w); return; }
+      cancelAnimationFrame(r1); cancelAnimationFrame(r2);
+      r1 = requestAnimationFrame(() => { r2 = requestAnimationFrame(() => { if (w) scrollToEnd(w); }); });
+    };
     const a = requestAnimationFrame(() => { b = requestAnimationFrame(() => {
       w = ref.current?.querySelector<HTMLElement>('.table-wrap');
       if (!w) return;
@@ -117,7 +124,7 @@ function useScrollEnd(dep: unknown) {
       w.addEventListener('scroll', onScroll, { passive: true });
     }); });
     window.addEventListener('resize', onResize);
-    return () => { cancelAnimationFrame(a); cancelAnimationFrame(b); w?.removeEventListener('scroll', onScroll); window.removeEventListener('resize', onResize); };
+    return () => { cancelAnimationFrame(a); cancelAnimationFrame(b); cancelAnimationFrame(r1); cancelAnimationFrame(r2); w?.removeEventListener('scroll', onScroll); window.removeEventListener('resize', onResize); };
   }, [dep]);
   return ref;
 }
@@ -236,7 +243,7 @@ const TeamsTable = React.memo(function TeamsTable({ teams, picked, stale, onPick
             {teams.map((t) => (
               <tr key={t.id} className="is-link" tabIndex={0} aria-selected={picked === t.id || undefined} onClick={() => onPick(picked === t.id ? '' : t.id)} onKeyDown={(e) => { if (e.key === 'Enter') onPick(picked === t.id ? '' : t.id); }}>
                 <td><span className="cell-main">{t.name}</span></td>
-                <td className="r">{t.nodes} 台</td>
+                <td className="r" data-tip={t.spare && t.nodes > t.held ? `另 ${t.nodes - t.held} 台闲置备用不计` : undefined}>{t.spare ? t.held : t.nodes} 台</td>
                 <td className="r">{t.idle && !t.spare ? `${t.idle} 台` : '—'}</td>
                 <td className={t.spare && !t.held ? 'r t-muted' : 'r'} data-tip={t.spare ? (t.held ? `其中 ${t.held} 台被扣住不回收（软路由出口还指着 / 同机 IP 节点还在用），照常续费，已算进合计；${t.nodes > t.held ? `其余 ${t.nodes - t.held} 台闲置备用不计` : '没有闲置备用'}` : '闲置备用不再续费，不计入合计') : undefined}>{t.spare && !t.held ? '—' : fee(t.monthly_usd_cents, t.unpriced)}</td>
                 <td className="r">{cell(t.bytes_30d)}</td>

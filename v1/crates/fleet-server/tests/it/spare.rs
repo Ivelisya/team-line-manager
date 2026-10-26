@@ -1017,6 +1017,7 @@ async fn held_spare_cost_counts_in_teams_and_traffic() {
     let teams = t.get("/api/v1/teams").await;
     let team = teams.as_array().unwrap().iter().find(|x| x["spare"] == json!(true)).unwrap();
     assert_eq!((team["monthly_usd"]["cents"].as_i64(), team["monthly_usd_held"]["cents"].as_i64(), team["held_count"].as_i64()), (Some(1000), Some(500), Some(1)), "{team}");
+    assert_eq!(team["held_total"].as_i64(), Some(1), "{team}"); // 被扣住的总台数（不论有没有订阅）
 
     let v = t.get("/api/v1/traffic/daily?days=7").await;
     let row = v["teams"].as_array().unwrap().iter().find(|x| x["spare"] == json!(true)).unwrap();

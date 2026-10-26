@@ -99,8 +99,9 @@ function TeamCost({ t, active }: { t: Team; active?: number }) {
   if (t.spare) {
     const h = t.monthly_usd_held; const n = t.held_count ?? 0;
     if (h && n > 0) {
-      const idle = active != null ? active - n : null;
-      return <span className="num" data-tip={`其中 ${n} 台被扣住不回收（软路由出口还指着 / 同机 IP 节点还在用），照常续费，已算进合计；${idle ? `其余 ${idle} 台闲置备用不计` : '没有闲置备用'}
+      // 被扣住的总台数用服务端的 held_total（含没订阅的），在用台数没加载出来时不写后半句
+      const idle = active != null ? active - (t.held_total ?? n) : null;
+      return <span className="num" data-tip={`其中 ${n} 台被扣住不回收（软路由出口还指着 / 同机 IP 节点还在用），照常续费，已算进合计${idle == null ? '' : idle > 0 ? `；其余 ${idle} 台闲置备用不计` : '；没有闲置备用'}
 ${usdTotalTip(h)}`}>{F.money(h.cents, 'USD')}{h.unconverted.length ? '*' : ''}</span>;
     }
     return <span className="num t-muted" data-tip={`闲置备用不再续费，不计入合计
