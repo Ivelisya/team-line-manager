@@ -98,7 +98,7 @@ pub(super) async fn cached(st: &AppState, key: Option<String>, short: bool, comp
     let gen = st.access_cache.gen();
     let v = Arc::new(compute.await?);
     if let Some(k) = key {
-        st.access_cache.put(k, gen, v.clone());
+        st.access_cache.put(k, gen, short, v.clone());
     }
     Ok(Json(&*v).into_response())
 }

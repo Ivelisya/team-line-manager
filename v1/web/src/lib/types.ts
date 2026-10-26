@@ -183,6 +183,8 @@ export interface Overview {
   due_soon: number; overdue: number;
   /** 月费合计折成 USD（每台的 monthly_usd_cents 相加；没有汇率的单列） */
   monthly_usd: UsdTotal;
+  /** 月费合计里的台数：在用、不在备用团队、有订阅的（正好是 monthly_usd 加起来的那些台）。旧中控没有 */
+  paid_machines?: number;
   /** 备用团队的机器的月费小计（不续费，不在 monthly_usd 里）；count = 备用团队里有订阅的在用机器台数。旧中控没有 */
   monthly_usd_spare?: UsdTotal & { count: number };
   /** counted_from：本月数据不完整时的起点（RFC 3339，agent 接入晚于月初），完整则 null */

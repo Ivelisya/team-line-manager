@@ -44,12 +44,18 @@ pub(crate) fn monthly_cell(s: &Value) -> String {
     }
 }
 
-/// `status` 的每月费用：USD 合计，括注各原币种的金额与汇率；没有汇率的单列。合计不含备用团队（不续费），有备用的另附一句小计
+/// `status` 的每月费用：USD 合计，括注各原币种的金额与汇率；没有汇率的单列。合计不含备用团队（不续费），有备用的另附一句小计。
+/// 合计按几台算的读中控的 `paid_machines`（旧中控没有就不写）
 pub(crate) fn cost_cn(ov: &Value) -> String {
     let sp = &ov["monthly_usd_spare"];
+    let total = total_cn(&ov["monthly_usd"]);
+    let total = match ov["paid_machines"].as_i64() {
+        Some(n) if total != "-" => format!("{total}（在用 {n} 台）"),
+        _ => total,
+    };
     match sp["count"].as_i64().filter(|n| *n > 0) {
-        Some(n) => format!("{}；另有备用 {n} 台 {}，不再续费，不在合计里", total_cn(&ov["monthly_usd"]), total_cn(sp)),
-        None => total_cn(&ov["monthly_usd"]),
+        Some(n) => format!("{total}；另有备用 {n} 台 {}，不再续费，不在合计里", total_cn(sp)),
+        None => total,
     }
 }
 
@@ -209,5 +215,8 @@ mod tests {
         let sp = json!({"monthly_usd": {"cents": 100, "by_currency": [{"currency": "USD", "cents": 100, "usd_cents": 100, "usd_per_unit": 1.0}], "unconverted": []},
             "monthly_usd_spare": {"count": 7, "cents": 23876, "by_currency": [{"currency": "USD", "cents": 23876, "usd_cents": 23876, "usd_per_unit": 1.0}], "unconverted": []}});
         assert_eq!(cost_cn(&sp), "1.00 USD；另有备用 7 台 238.76 USD，不再续费，不在合计里");
+        let mut paid = sp.clone();
+        paid["paid_machines"] = json!(12);
+        assert_eq!(cost_cn(&paid), "1.00 USD（在用 12 台）；另有备用 7 台 238.76 USD，不再续费，不在合计里");
     }
 }

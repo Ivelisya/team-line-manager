@@ -378,14 +378,12 @@ pub async fn monthly(st: &AppState, month: Option<&str>) -> ApiResult<Value> {
     let top_rules: Vec<Value> = rules.iter().map(|(r, c)| json!({"rule": r, "name": meta::rule_label(r), "count": c})).collect();
 
     let ov = views::overview(st).await?;
-    // 月费合计里的台数 = 在用的（节点 + 线路机 + 闲置备用）去掉备用团队的（它们的月费另列，不续费）
-    let n = |p: &str| ov.pointer(p).and_then(Value::as_i64).unwrap_or(0);
-    let paid = n("/nodes/total") + n("/relays/total") + n("/spare") - n("/monthly_usd_spare/count");
+    // 月费合计里的台数直接读总览的 paid_machines（在用、非备用团队、有订阅的）
     let report = json!({
         "month": month_str(first), "from": w.from, "to": w.to, "tz": meta::org_tz(),
         "traffic": {"down": down, "up": up, "total": down.saturating_add(up)},
         "monthly_usd": ov["monthly_usd"], "monthly_usd_spare": ov["monthly_usd_spare"],
-        "machines": paid,
+        "machines": ov["paid_machines"],
         "costly": costly, "worst_uptime": worst, "top_rules": top_rules,
         "due_soon": ov["due_soon"], "overdue": ov["overdue"],
     });

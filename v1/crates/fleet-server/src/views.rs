@@ -1630,6 +1630,9 @@ pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Valu
     // 备用团队的机器不续费（等到期放生），月费合计不含它们（不论有没有软路由出口指向），另数备用小计（monthly_usd_spare）
     let mut usd = crate::fx::Total::default();
     let (mut usd_spare, mut spare_paid) = (crate::fx::Total::default(), 0);
+    // 月费合计里的台数（paid_machines）：在用、不在备用团队、有订阅的——正好是 monthly_usd 加起来的那些台。
+    // 没有订阅的（家宽代理）和备用团队里的同机 IP 节点不在里面，网页首页、月报、fleetctl status 的「在用 N 台」都读它，不各自去拼
+    let mut paid_machines = 0;
     for m in ms {
         match m.lifecycle.as_str() {
             "provisioning" | "draft" => provisioning += 1,
@@ -1669,6 +1672,7 @@ pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Valu
                 spare_paid += 1;
                 &mut usd_spare
             } else {
+                paid_machines += 1;
                 &mut usd
             };
             t.add(&s.currency, s.monthly_cents, s.monthly_usd_cents.zip(s.usd_per_unit));
@@ -1676,13 +1680,14 @@ pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Valu
         // 实时速率只算数据没过期的：agent 离线的机器，最后一份上报的速率不算（同前端 liveRate）。
         // 告警（哪怕严重）不影响：机器照常每 10 秒上报。同机 IP 节点的读数就是宿主机的：在线离线照常按节点计，速率不再算一遍
         let stale = m.agent.as_ref().is_some_and(|a| !a.online);
+        // 闲置备用不计入 no_agent、ip_nodes（与 total / online / offline 同口径）
         match &m.agent {
+            _ if idle => {}
             None => no_agent += 1,
-            Some(_) if idle => {}
             Some(_) if stale => offline += 1,
             Some(_) => online += 1,
         }
-        if m.host_machine.is_some() {
+        if m.host_machine.is_some() && !idle {
             ip_nodes += 1;
         }
         if let Some(h) = m.host.as_ref().filter(|_| !stale && m.host_machine.is_none()) {
@@ -1694,7 +1699,7 @@ pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Valu
     usd_spare["count"] = json!(spare_paid);
     json!({
         "nodes": nodes, "relays": relays, "provisioning": provisioning, "retiring": retiring, "failed": failed, "due_soon": due_soon, "overdue": overdue, "online": online, "offline": offline,
-        "no_agent": no_agent, "ip_nodes": ip_nodes, "spare": spare, "monthly_usd": usd, "monthly_usd_spare": usd_spare, "traffic_month": {"up": up, "down": down, "counted_from": counted_from.map(crate::meta::fmt_ts)}, "net_rx_bps": rx, "net_tx_bps": tx,
+        "no_agent": no_agent, "ip_nodes": ip_nodes, "spare": spare, "monthly_usd": usd, "paid_machines": paid_machines, "monthly_usd_spare": usd_spare, "traffic_month": {"up": up, "down": down, "counted_from": counted_from.map(crate::meta::fmt_ts)}, "net_rx_bps": rx, "net_tx_bps": tx,
     })
 }
 
@@ -1805,6 +1810,18 @@ mod tests {
         let n = &ov["nodes"];
         assert_eq!((n["total"].as_i64(), n["down"].as_i64(), ov["spare"].as_i64()), (Some(2), Some(2), Some(2)), "{ov}");
         assert_eq!((ov["online"].as_i64(), ov["offline"].as_i64()), (Some(2), Some(0)), "闲置备用不计在线 / 离线");
+
+        // 闲置备用里的家宽代理（没 agent）、同机 IP 节点也不计入 no_agent / ip_nodes；被出口指向的、普通的照常计
+        let mut idle_proxy = down(true, &[], true);
+        idle_proxy.agent = None;
+        let mut idle_ip = down(true, &[], true);
+        idle_ip.host_machine = Some(Ref { id: Uuid::new_v4(), name: "团队1-03".into() });
+        let mut used_proxy = down(true, &["办公室2 · 美国"], true);
+        used_proxy.agent = None;
+        let mut used_ip = down(true, &["办公室2 · 美国"], true);
+        used_ip.host_machine = Some(Ref { id: Uuid::new_v4(), name: "团队1-03".into() });
+        let ov = overview_of(&[idle_proxy, idle_ip, used_proxy, used_ip], &HashMap::new());
+        assert_eq!((ov["no_agent"].as_i64(), ov["ip_nodes"].as_i64(), ov["spare"].as_i64()), (Some(1), Some(1), Some(2)), "{ov}");
     }
 
     #[test]
@@ -1828,6 +1845,14 @@ mod tests {
         assert_eq!((ov2["due_soon"].as_i64(), ov2["overdue"].as_i64()), (Some(0), Some(0)), "备用团队的不算");
         assert_eq!((ov2["monthly_usd"]["cents"].as_i64(), ov2["monthly_usd_spare"]["cents"].as_i64(), ov2["monthly_usd_spare"]["count"].as_i64()), (Some(0), Some(200), Some(2)), "备用的月费不进合计，另列小计");
         assert_eq!(ov["monthly_usd"]["cents"], 433, "测试用的订阅是 USD，汇率 1");
+        assert_eq!((ov["paid_machines"].as_i64(), ov2["paid_machines"].as_i64()), (Some(5), Some(0)), "付费台数 = 月费合计里的台数，备用团队的不算");
+        // 没有订阅的（家宽代理）、备用团队里没订阅的同机 IP 节点都不在付费台数里
+        let (mut proxy, mut spare_ip) = (base("proxy"), base("vps"));
+        proxy.subscription = None;
+        (spare_ip.subscription, spare_ip.spare) = (None, true);
+        spare_ip.host_machine = Some(Ref { id: Uuid::new_v4(), name: "团队1-03".into() });
+        let ov4 = overview_of(&[with(30, false), proxy, spare_ip], &HashMap::new());
+        assert_eq!(ov4["paid_machines"].as_i64(), Some(1));
         // 折算：逐台的 monthly_usd_cents 相加；没有汇率的单列，不算进合计
         let cny = |cents: i64, usd: Option<i64>| {
             let mut m = with(30, false);

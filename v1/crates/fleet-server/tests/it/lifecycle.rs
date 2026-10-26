@@ -939,8 +939,15 @@ async fn patch_team_compacts_the_team_it_leaves() {
     assert_eq!((pv["name"].as_str(), pv["renames"].clone()), (Some("团队1-09"), json!([])), "{pv}");
 
     let rev = t.get(&format!("/api/v1/machines/{a2}")).await["revision"].clone();
+    let mut rx = t.st.events.subscribe();
     let (s, v) = t.req("PATCH", &format!("/api/v1/machines/{a2}"), Some(json!({"revision": rev, "team_id": b})), None).await;
     assert_eq!((s, v["data"]["name"].as_str()), (StatusCode::OK, Some("团队2-02")), "{v}");
+    // 原团队压缩改了别的机器的名字：要发 Machines（整表重取），不能只发这一台的事件
+    let mut seen = vec![];
+    while let Ok(e) = rx.try_recv() {
+        seen.push(format!("{e:?}"));
+    }
+    assert!(seen.iter().any(|e| e == "Machines"), "压缩了原团队却没发 Machines：{seen:?}");
     assert_eq!((name(a1).await, name(a3).await, name(b1).await), ("团队1-01".into(), "团队1-02".into(), "团队2-01".into()));
     let nums: Vec<i32> = sqlx::query_scalar("select number from machine where team_id = $1 order by number").bind(a).fetch_all(&t.st.db).await.unwrap();
     assert_eq!(nums, [1, 2]);

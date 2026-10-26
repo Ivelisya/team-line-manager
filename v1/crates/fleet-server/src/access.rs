@@ -225,8 +225,8 @@ pub struct QueryCache {
     map: std::sync::Mutex<std::collections::HashMap<String, Cached>>,
 }
 
-/// (放进来的时间, 计算前的代数, 结果)
-type Cached = (std::time::Instant, u64, Arc<serde_json::Value>);
+/// (放进来的时间, 计算前的代数, 这一项自己的 ttl, 结果)
+type Cached = (std::time::Instant, u64, StdDuration, Arc<serde_json::Value>);
 
 impl QueryCache {
     const MAX: usize = 256;
@@ -243,30 +243,38 @@ impl QueryCache {
     /// 汇总表变了，之前的结果全部作废
     pub fn invalidate(&self) { self.gen.fetch_add(1, Ordering::SeqCst); }
 
-    /// `short`：单台机器的结果，按 `SHORT_TTL` 过期
+    /// 这一项的 ttl：`short`（单台机器的结果、1h 窗口）按 `SHORT_TTL`，其余按配置的
+    fn ttl_of(&self, short: bool) -> StdDuration {
+        if short { self.ttl.min(Self::SHORT_TTL) } else { self.ttl }
+    }
+
     pub fn get(&self, key: &str, short: bool) -> Option<Arc<serde_json::Value>> {
         if self.ttl.is_zero() {
             return None;
         }
-        let ttl = if short { self.ttl.min(Self::SHORT_TTL) } else { self.ttl };
+        let ttl = self.ttl_of(short);
         let g = self.gen();
         let m = lock(&self.map);
-        m.get(key).filter(|(at, eg, _)| *eg == g && at.elapsed() < ttl).map(|(_, _, v)| v.clone())
+        m.get(key).filter(|(at, eg, _, _)| *eg == g && at.elapsed() < ttl).map(|(_, _, _, v)| v.clone())
     }
 
-    pub fn put(&self, key: String, gen: u64, v: Arc<serde_json::Value>) {
+    /// 满了先清过期的（每项按自己的 ttl 判：30 秒的短缓存键每轮都换，不能按长 ttl 当没过期），还满就淘汰最旧的一项，不整体清空——
+    /// 否则短缓存键攒满会把 7d / 30d 的贵结果一起清掉
+    pub fn put(&self, key: String, gen: u64, short: bool, v: Arc<serde_json::Value>) {
         if self.ttl.is_zero() {
             return;
         }
         let mut m = lock(&self.map);
-        if m.len() >= Self::MAX {
-            let (ttl, g) = (self.ttl, self.gen());
-            m.retain(|_, (at, eg, _)| *eg == g && at.elapsed() < ttl);
+        if m.len() >= Self::MAX && !m.contains_key(&key) {
+            let g = self.gen();
+            m.retain(|_, (at, eg, ttl, _)| *eg == g && at.elapsed() < *ttl);
             if m.len() >= Self::MAX {
-                m.clear();
+                if let Some(oldest) = m.iter().min_by_key(|(_, (at, ..))| *at).map(|(k, _)| k.clone()) {
+                    m.remove(&oldest);
+                }
             }
         }
-        m.insert(key, (std::time::Instant::now(), gen, v));
+        m.insert(key, (std::time::Instant::now(), gen, self.ttl_of(short), v));
     }
 }
 
@@ -970,20 +978,57 @@ mod tests {
     fn query_cache_ttl() {
         let c = QueryCache::new(StdDuration::from_millis(60));
         assert!(c.get("a", false).is_none());
-        c.put("a".into(), c.gen(), Arc::new(serde_json::json!(1)));
+        c.put("a".into(), c.gen(), false, Arc::new(serde_json::json!(1)));
         assert_eq!(c.get("a", false).as_deref(), Some(&serde_json::json!(1)));
         std::thread::sleep(StdDuration::from_millis(80));
         assert!(c.get("a", false).is_none(), "过期不再命中");
         // 汇总后作废：之前放进来的、以及汇总前开始算的结果都不再命中
         let g = c.gen();
-        c.put("a".into(), g, Arc::new(serde_json::json!(1)));
+        c.put("a".into(), g, false, Arc::new(serde_json::json!(1)));
         c.invalidate();
         assert!(c.get("a", false).is_none());
-        c.put("a".into(), g, Arc::new(serde_json::json!(1)));
+        c.put("a".into(), g, false, Arc::new(serde_json::json!(1)));
         assert!(c.get("a", false).is_none(), "汇总前开始算的结果");
         let off = QueryCache::new(StdDuration::ZERO);
-        off.put("a".into(), off.gen(), Arc::new(serde_json::json!(1)));
+        off.put("a".into(), off.gen(), false, Arc::new(serde_json::json!(1)));
         assert!(off.get("a", false).is_none(), "ttl 为 0 等于不缓存");
+    }
+
+    /// 满了：先清已过期的（短缓存项按自己的 30 秒判），还满只淘汰最旧的一项，长缓存的贵结果不被整体清掉
+    #[test]
+    fn query_cache_full_evicts_expired_then_oldest() {
+        let v = || Arc::new(serde_json::json!(1));
+        let c = QueryCache::new(StdDuration::from_secs(3600));
+        let g = c.gen();
+        // 两项长缓存（7d / 30d），其余填满短缓存项
+        c.put("d7".into(), g, false, v());
+        std::thread::sleep(StdDuration::from_millis(2));
+        c.put("d30".into(), g, false, v());
+        for i in 0..QueryCache::MAX - 2 {
+            c.put(format!("h1-{i}"), g, true, v());
+        }
+        assert_eq!(lock(&c.map).len(), QueryCache::MAX);
+        // 把短缓存项都搬成「放进来已超过 30 秒」：满了再放，只清这些过期的，长缓存的两项留着
+        let old = std::time::Instant::now().checked_sub(QueryCache::SHORT_TTL + StdDuration::from_secs(1)).expect("Instant 够大");
+        for (k, e) in lock(&c.map).iter_mut() {
+            if k.starts_with("h1-") {
+                e.0 = old;
+            }
+        }
+        c.put("h1-new".into(), g, true, v());
+        assert!(c.get("d7", false).is_some() && c.get("d30", false).is_some(), "长缓存不被连带清掉");
+        assert!(c.get("h1-new", true).is_some());
+        assert_eq!(lock(&c.map).len(), 3, "过期的短缓存项已清");
+        // 全都没过期还满：只淘汰最旧的一项，不整体清空
+        for i in 0..QueryCache::MAX - 3 {
+            c.put(format!("x-{i}"), g, false, v());
+        }
+        assert_eq!(lock(&c.map).len(), QueryCache::MAX);
+        c.put("fresh".into(), g, false, v());
+        let m = lock(&c.map);
+        assert_eq!(m.len(), QueryCache::MAX, "还是满的，没有整体清空");
+        assert!(m.contains_key("fresh") && !m.contains_key("d7"), "淘汰了最旧的一项（d7）");
+        assert!(m.contains_key("d30"));
     }
 
     #[test]

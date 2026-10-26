@@ -139,10 +139,12 @@ function overview() {
     // 需要续费的按订阅的 due_state（同服务端）：自动续费的只在已过期时算
     // 在线/离线按台机器、按 agent 连通（同 isQuiet）：同机 IP 节点随宿主机计入，家宽代理不需要 agent（no_agent）
     online: biz.filter((m) => m.agent && !isQuiet(m)).length, offline: biz.filter((m) => m.agent && isQuiet(m)).length,
-    no_agent: live.filter((m) => !m.agent).length, ip_nodes: live.filter((m) => m.host_machine).length,
+    // 闲置备用不计入 no_agent、ip_nodes（同 total / online / offline，同服务端 overview_of）
+    no_agent: biz.filter((m) => !m.agent).length, ip_nodes: biz.filter((m) => m.host_machine).length,
     due_soon: live.filter((m) => !m.spare && m.subscription?.due_state === 'soon').length, overdue: live.filter((m) => !m.spare && m.subscription?.due_state === 'overdue').length,
     // 备用团队的机器不续费：月费合计不含，另列小计（同服务端 monthly_usd_spare）
     monthly_usd: usdTotal(live.flatMap((m) => (m.subscription && !m.spare ? [m.subscription] : []))),
+    paid_machines: live.filter((m) => m.subscription && !m.spare).length,
     monthly_usd_spare: { ...usdTotal(live.flatMap((m) => (m.subscription && m.spare ? [m.subscription] : []))), count: live.filter((m) => m.subscription && m.spare).length },
     traffic_month: { up, down, counted_from },
     // 实时速率只算数据没过期的（同 liveRate）；同机 IP 节点的读数就是宿主机的，不重复算

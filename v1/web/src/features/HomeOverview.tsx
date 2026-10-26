@@ -42,7 +42,9 @@ const COST_LINK = '/nodes?sort=-cost';
 const TRAFFIC_LINK = '/nodes?sort=-traffic';
 /** 算正常的：只有故障算异常，降级（照常服务、只是有提醒）与维护都算正常；未知（还判断不了）两头都不算 */
 const normal = (c: Counts) => c.total - c.down - c.unknown;
-const SPARE_TIP = '闲置备用：备用团队里没有软路由出口指向的机器，等到期放生。不算在节点总数和故障里，也不开告警；月费不在每月费用合计里（另列备用小计）';
+/** 两个口径：闲置备用 = 备用团队里没有软路由出口指向的机器（o.spare）；备用团队的付费机器 = 备用团队里有订阅的（monthly_usd_spare.count），含还被出口指向的 */
+const IDLE_SPARE_TIP = '闲置备用：备用团队里没有软路由出口指向的机器，等到期放生。不算在节点总数和故障里，也不开告警';
+const SPARE_COST_TIP = '备用团队里有订阅的机器（含还被软路由出口指向的），等到期放生，不再续费，不在左边的合计里，单独列在这里';
 const NORMAL_INFO = '正常 = 总数 − 故障 − 未知。降级与维护的机器照常服务，都算正常';
 
 /** 问候语下的一行状态：只说有几类事要处理、是哪几类（具体台数在下面的 KPI 卡里，这里不再重复一遍数字）；没有就是「全部正常」 */
@@ -103,7 +105,7 @@ export const OverviewSection = React.memo(function OverviewSection({ o, loading 
       <div className="hero-grid">
         <div className="stat-grid">
           {/* 说明行用全站同一套状态名（降级 / 维护 / 故障 / 未知）；「正常」包括降级与维护（照常服务）这一点放在大数字的悬停说明里 */}
-          <Stat loading={health} tone="ok" icon={<Server />} label="节点正常" info={`${NORMAL_INFO}${o?.spare ? `\n另有备用 ${o.spare} 台，不计在内：${SPARE_TIP}` : ''}`} to={NODES_LINK} value={<span data-tip="降级和维护的机器照常服务，也算正常"><CountUp value={nodes && normal(nodes)} /></span>} unit={nodes ? `/ ${nodes.total}` : undefined}
+          <Stat loading={health} tone="ok" icon={<Server />} label="节点正常" info={`${NORMAL_INFO}${o?.spare ? `\n另有闲置备用 ${o.spare} 台，不计在内：${IDLE_SPARE_TIP}` : ''}`} to={NODES_LINK} value={<span data-tip="降级和维护的机器照常服务，也算正常"><CountUp value={nodes && normal(nodes)} /></span>} unit={nodes ? `/ ${nodes.total}` : undefined}
             caption={nodes && <HealthCaption c={nodes} to={DOWN_LINK} />} />
           <Stat loading={health} tone="teal" icon={<Waypoints />} label="线路机正常" info={NORMAL_INFO} to={RELAYS_LINK} value={<span data-tip="降级和维护的机器照常服务，也算正常"><CountUp value={relays && normal(relays)} /></span>} unit={relays ? `/ ${relays.total}` : undefined}
             caption={relays && <HealthCaption c={relays} to={`${DOWN_LINK}&kind=relay`} />} />
@@ -113,9 +115,8 @@ export const OverviewSection = React.memo(function OverviewSection({ o, loading 
             value={!usd || usdEmpty ? '—' : <span data-tip={usdTotalTip(usd)}>{F.money(usd.cents, 'USD')}</span>}
             caption={usd && <>{(usd.unconverted.length ? <span style={{ color: 'var(--warn-text)' }} data-tip="没有这些币种的汇率，未计入合计">未折算 {usd.unconverted.map((c) => F.money(c.cents, c.currency)).join(' + ')}</span>
               : foreign.length ? <span data-tip={usdTotalTip(usd)}>含 {foreign.map((p) => `${F.money(p.cents, p.currency)} ≈ ${F.money(p.usd_cents, 'USD')}`).join(' · ')}</span>
-              : <span>在用 <b className="num">{o!.nodes.total + o!.relays.total + (o!.spare ?? 0) - (sp?.count ?? 0)}</b> 台 · 按月折算</span>)}
-              {!!sp?.count && <span data-tip={`备用团队的机器等到期放生，不再续费，不在左边的合计里，单独列在这里
-${usdTotalTip(sp)}`}>备用 <b className="num">{sp.count}</b> 台 {F.money(sp.cents, 'USD')} 另计</span>}</>} />
+              : <span>{o!.paid_machines != null && <>在用 <b className="num">{o!.paid_machines}</b> 台 · </>}按月折算</span>)}
+              {!!sp?.count && <span data-tip={`${SPARE_COST_TIP}\n${usdTotalTip(sp)}`}>备用团队 <b className="num">{sp.count}</b> 台 {F.money(sp.cents, 'USD')} 另计</span>}</>} />
           {/* 每条推送都在涨，不滚数（滚到的位数也显示不出来，白白逐帧重画）：同网卡速率，直接到位 */}
           <Stat loading={loading} tone="sky" icon={<TrendingUp />} label="本月业务流量" info={"客户经所有入口的下载加上传。\n单台机器的「本周期已用」按网卡、从账单日算起，数字通常更大。"} to={TRAFFIC_LINK} value={tr ? F.inScaleBytes(trTotal, trScale) : '—'} unit={tr ? trScale.u : undefined}
             caption={tr && <><span>下载 <Num f={F.bytes(tr.down)} /></span><span>上传 <Num f={F.bytes(tr.up)} /></span><FromTag from={tr.counted_from} /></>} />

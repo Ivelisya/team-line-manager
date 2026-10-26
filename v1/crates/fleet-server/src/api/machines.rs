@@ -122,8 +122,12 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     }
     let p = patch_tx(&mut tx, &a.name, id, b).await?;
     let mut relays = p.relays;
+    // 原团队压缩改了别的机器的编号（名字跟着变）：不能只发这一台的事件，其余的页面也要重取
+    let mut compacted = false;
     if let Some(t) = p.left_team {
-        relays.extend(crate::db::compact_team(&mut tx, t, &a.name, "节点改团队后自动压缩").await?.1);
+        let (changes, rs) = crate::db::compact_team(&mut tx, t, &a.name, "节点改团队后自动压缩").await?;
+        compacted = !changes.is_empty();
+        relays.extend(rs);
     }
     relays.sort();
     relays.dedup();
@@ -131,7 +135,7 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     for r in relays {
         st.relay_bumped(r);
     }
-    st.emit(Event::Machine { id });
+    st.emit(if compacted { Event::Machines } else { Event::Machine { id } });
     get_one(a, State(st), ApiPath(id)).await
 }
 
