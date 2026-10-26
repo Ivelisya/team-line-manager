@@ -120,13 +120,30 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
         teams.sort();
         sqlx::query("select 1 from team where id = any($1) order by id for update").bind(&teams).execute(&mut *tx).await?;
     }
+    let to = b.team_id;
     let p = patch_tx(&mut tx, &a.name, id, b).await?;
     let mut relays = p.relays;
+    // 宿主机换了团队：它上面还在原团队的同机 IP 节点一起走（编号接在宿主机之后取新团队的最小空号，同 move_to_spare），原团队一并压缩
+    let mut ip_moved = false;
+    if let (Some(from), Some(to)) = (p.left_team, to) {
+        let ips: Vec<(Uuid, i32)> = sqlx::query_as(
+            "select id, revision from machine where host_id = $1 and team_id = $2 and lifecycle not in ('retiring', 'retired') order by number for update",
+        )
+        .bind(id)
+        .bind(from)
+        .fetch_all(&mut *tx)
+        .await?;
+        for (ip, rev) in ips {
+            let n = free_number(&mut *tx, Some(to)).await?;
+            relays.extend(patch_tx(&mut tx, &a.name, ip, PatchIn::rename(rev, to, n)).await?.relays);
+            ip_moved = true;
+        }
+    }
     // 原团队压缩改了别的机器的编号（名字跟着变）：不能只发这一台的事件，其余的页面也要重取
-    let mut compacted = false;
+    let mut compacted = ip_moved;
     if let Some(t) = p.left_team {
         let (changes, rs) = crate::db::compact_team(&mut tx, t, &a.name, "节点改团队后自动压缩").await?;
-        compacted = !changes.is_empty();
+        compacted |= !changes.is_empty();
         relays.extend(rs);
     }
     relays.sort();
@@ -171,8 +188,10 @@ pub struct RenamePreviewQ {
     number: Option<i32>,
 }
 
-/// 改团队 / 编号预览：`{name（改后的名字）, old_name, renames:[{machine_id,old_name,new_name}]}`。
-/// 换团队时原团队少了这台，剩下的按编号连续压缩（PATCH 同事务做），`renames` 列出连带改号的；没换团队、线路机为空
+/// 改团队 / 编号预览：`{name（改后的名字）, old_name, renames:[{machine_id,old_name,new_name}], ip_nodes:[{machine_id,old_name,new_name}]}`。
+/// 换团队时原团队少了这台，剩下的按编号连续压缩（PATCH 同事务做），`renames` 列出连带改号的；
+/// 宿主机上还在原团队的同机 IP 节点一起换团队（PATCH 同事务做，编号接在宿主机之后取新团队的最小空号），`ip_nodes` 列出它们的新旧名字。
+/// 没换团队、线路机两项都为空
 pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<RenamePreviewQ>) -> ApiResult<Json<Value>> {
     let mut conn = st.db.acquire().await?;
     let (kind, label, team, number): (String, Option<String>, Option<Uuid>, Option<i32>) =
@@ -183,6 +202,7 @@ pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
             .ok_or_else(|| ApiError::not_found("没有这台机器"))?;
     let old_name = display_name_of(&st.db, id).await?.0;
     let mut renames = vec![];
+    let mut ip_nodes = vec![];
     let mut name = old_name.clone();
     if kind != "relay" {
         let to = q.team_id.or(team);
@@ -195,10 +215,35 @@ pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
         name = crate::names::display_name(&kind, label.as_deref(), Some(&to_name), Some(n));
         if let (true, Some(from)) = (to != team, team) {
             let from_name = team_name(&st.db, Some(from)).await?.unwrap_or_default();
+            // 随宿主机走的同机 IP 节点：新团队里宿主机先占 n，它们依次取剩下的最小空号
+            let ips: Vec<(Uuid, String)> = sqlx::query_as(
+                "select m.id, display_name(m.kind::text, m.label, t.name, m.number) from machine m join team t on t.id = m.team_id
+                 where m.host_id = $1 and m.team_id = $2 and m.lifecycle not in ('retiring', 'retired') order by m.number",
+            )
+            .bind(id)
+            .bind(from)
+            .fetch_all(&mut *conn)
+            .await?;
+            if !ips.is_empty() {
+                let mut taken: HashSet<i32> = sqlx::query_scalar("select number from machine where team_id = $1 and number is not null and kind <> 'relay' and lifecycle <> 'retired'")
+                    .bind(to)
+                    .fetch_all(&mut *conn)
+                    .await?
+                    .into_iter()
+                    .collect();
+                taken.insert(n);
+                let mut free = (1..=999).filter(|k| !taken.contains(k));
+                for (mid, old) in &ips {
+                    let k = free.next().ok_or_else(|| ApiError::conflict("这个团队的编号用完了"))?;
+                    ip_nodes.push(json!({"machine_id": mid, "old_name": old, "new_name": node_name(&to_name, k)}));
+                }
+            }
+            // 原团队压缩：宿主机和随它走的 IP 节点都不在了
+            let leaving: Vec<Uuid> = std::iter::once(id).chain(ips.iter().map(|x| x.0)).collect();
             let nodes: Vec<(Uuid, i32)> =
-                sqlx::query_as("select id, number from machine where team_id = $1 and kind <> 'relay' and lifecycle <> 'retired' and id <> $2 order by number")
+                sqlx::query_as("select id, number from machine where team_id = $1 and kind <> 'relay' and lifecycle <> 'retired' and id <> all($2) order by number")
                     .bind(from)
-                    .bind(id)
+                    .bind(&leaving)
                     .fetch_all(&mut *conn)
                     .await?;
             renames = compact_numbers(nodes)
@@ -207,7 +252,7 @@ pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
                 .collect();
         }
     }
-    Ok(ok(json!({"name": name, "old_name": old_name, "renames": renames})))
+    Ok(ok(json!({"name": name, "old_name": old_name, "renames": renames, "ip_nodes": ip_nodes})))
 }
 
 /// PATCH 的全部校验与写入（含审计），在调用方的事务里做。

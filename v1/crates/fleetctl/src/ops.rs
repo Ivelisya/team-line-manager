@@ -436,16 +436,17 @@ pub fn rename(
     if let Some(t) = team {
         body["team_id"] = json!(ctx.team_id(t)?);
     }
-    // 换团队时原团队剩下的节点会压缩编号（同事务）：先取预览，改完把连带改号的一并打出来
-    let renames: Vec<String> = if team.is_some() {
+    // 换团队时同机 IP 节点一起走、原团队剩下的节点会压缩编号（同事务）：先取预览，改完把连带改动的一并打出来
+    let (renames, ip_nodes): (Vec<String>, Vec<String>) = if team.is_some() {
         let mut q = vec![("team_id", st(&body, "/team_id"))];
         if let Some(n) = number {
             q.push(("number", n.to_string()));
         }
         let pv = ctx.c.get_q(&format!("/machines/{id}/rename-preview"), &q)?;
-        pv["renames"].as_array().into_iter().flatten().map(|r| format!("{} → {}", st(r, "/old_name"), st(r, "/new_name"))).collect()
+        let list = |k: &str| pv[k].as_array().into_iter().flatten().map(|r| format!("{} → {}", st(r, "/old_name"), st(r, "/new_name"))).collect();
+        (list("renames"), list("ip_nodes"))
     } else {
-        vec![]
+        (vec![], vec![])
     };
     if let Some(n) = number {
         body["number"] = json!(n);
@@ -465,9 +466,13 @@ pub fn rename(
     if !renames.is_empty() {
         d["renames"] = json!(renames);
     }
+    if !ip_nodes.is_empty() {
+        d["ip_nodes"] = json!(ip_nodes);
+    }
     ctx.emit(&d, || {
+        let ips = if ip_nodes.is_empty() { String::new() } else { format!("\n同机 IP 节点一起移：{}", ip_nodes.join("，")) };
         let also = if renames.is_empty() { String::new() } else { format!("\n原团队编号连带改动：{}", renames.join("，")) };
-        format!("{} → {}{also}", st(&cur, "/name"), st(&d, "/name"))
+        format!("{} → {}{ips}{also}", st(&cur, "/name"), st(&d, "/name"))
     });
     Ok(0)
 }
