@@ -26,7 +26,7 @@ pub struct Team {
     /// 在用（active）机器的月费合计，折成 USD（同总览的 monthly_usd：逐台折算后相加，没有汇率的单列，见 fx.rs）
     #[sqlx(skip)]
     monthly_usd: crate::fx::Total,
-    /// 备用团队里被扣住不回收的（软路由出口还指着 / 同机 IP 节点还在用，视图 recycle_held）在用机器：照常续费，月费算进首页合计，所以单列它们的月费与台数；别的团队为空、0
+    /// 备用团队里被扣住不回收的（软路由出口还指着 / 同机 IP 节点还在用 / 开着自动续费，视图 recycle_held）在用机器：照常续费，月费算进首页合计，所以单列它们的月费与台数；别的团队为空、0
     #[sqlx(skip)]
     monthly_usd_held: crate::fx::Total,
     /// 其中有订阅、计入 monthly_usd_held 的台数

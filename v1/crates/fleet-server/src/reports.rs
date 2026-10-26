@@ -202,7 +202,7 @@ pub async fn uptime(st: &AppState, w: &Window) -> ApiResult<Value> {
     .bind(to)
     .fetch_all(&st.db)
     .await?;
-    // 闲置备用不参与（视图 idle_spare：备用团队里没被扣住不回收的）
+    // 闲置备用不参与（视图 idle_spare：备用团队里没有出口指着、没有在用同机 IP 节点的，不看自动续费）
     let idle: HashSet<Uuid> = views::live(st).await?.iter().filter(|m| m.idle_spare).map(|m| m.id).collect();
     rows.retain(|r| !idle.contains(&r.id));
     let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
@@ -365,7 +365,7 @@ pub async fn monthly(st: &AppState, month: Option<&str>) -> ApiResult<Value> {
     }
     let mut costly: Vec<Value> = live
         .iter()
-        .filter(|m| m.lifecycle == "active" && !m.idle_spare)
+        .filter(|m| m.lifecycle == "active" && !m.spare_unbilled)
         .filter_map(|m| {
             let usd = m.subscription.as_ref()?.monthly_usd_cents?;
             let gb = *carried.get(&m.id)? as f64 / 1e9;

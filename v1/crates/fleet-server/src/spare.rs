@@ -10,6 +10,7 @@
 //!
 //! 软路由出口还指向它的（快照里对上了它或它上面没退役的同机 IP 节点的入口，routers::exits_using_with_ip_nodes）同样不自动回收：回收会摘入口，客户出口跟着断。续费提醒（health.rs）写明哪些出口指着它、要先改指向（repoint）或确认后立即回收。
 //! 宿主机上还有不在备用团队的同机 IP 节点（`keeps_live`）的也不自动回收，视图里不算闲置备用（views::MachineView::live_ip_nodes）：照常告警、照常提醒续费（宿主机断了 IP 节点跟着断）。
+//! 宿主机上在备用团队里、但开着自动续费的同机 IP 节点（它自己永远不过期）同样挡住宿主机的回收（`keeps_live`，视图 renewing_ip_nodes）：宿主机照常续费，但没有客户在用，仍是闲置备用。
 //!
 //! 机器（含它上面的同机 IP 节点）有进行中的作业时跳过，下一轮再看；物理删除失败过的不再自动重建（等人重试那个作业）。
 //! 续费顺延了到期日自然不回收；开着自动续费的不回收（自动续费那一轮出错没顺延成，也不会被当成过期清掉；进备用时会把自动续费关掉，见 api::machines::move_to_spare）。到期前的提醒复用续费告警（health.rs 在提醒文字后接 `due_note`；还有软路由出口指向它的改接 `pointed_note`）：
@@ -78,17 +79,26 @@ pub fn live_ip_note(due_days: i64, nodes: &[String]) -> String {
     format!("；同机 IP 节点 {} 还在用，{kept}：先退役或换走这些 IP 节点，或给这台宿主机续费", nodes.join("、"))
 }
 
+/// 备用宿主机上有在备用团队里、开着自动续费的同机 IP 节点时续费提醒后面接的一句（宿主机回收会连带它们，所以不自动回收）。`nodes`：IP 节点的显示名
+pub fn renewing_ip_note(due_days: i64, nodes: &[String]) -> String {
+    let kept = if due_days <= -2 { "未自动回收" } else { "到回收日也不会自动回收" };
+    format!("；同机 IP 节点 {} 开着自动续费，{kept}：回收宿主机会连带它们，先给这些 IP 节点关掉自动续费或换走，或给这台宿主机续费", nodes.join("、"))
+}
+
 /// 备用机器开着自动续费时续费提醒后面接的一句（自动续费会一直顺延，不自动回收；能提醒到这里说明自动续费这一轮没顺延成）
 pub fn auto_renew_note() -> &'static str { "；开着自动续费，不自动回收：这一轮自动续费没顺延成，查一下订阅，或手动登记续费" }
 
-/// 备用机器不自动回收的原因（软路由出口还指着、上面还有在用的同机 IP 节点、开着自动续费）接在续费提醒后面的话；都没有为空串
-pub fn held_note(due_days: i64, exits: &[String], ip_nodes: &[String], auto_renew: bool) -> String {
+/// 备用机器不自动回收的原因（软路由出口还指着、上面还有在用的同机 IP 节点、上面有开着自动续费的备用同机 IP 节点、开着自动续费）接在续费提醒后面的话；都没有为空串
+pub fn held_note(due_days: i64, exits: &[String], ip_nodes: &[String], renewing_ip_nodes: &[String], auto_renew: bool) -> String {
     let mut s = String::new();
     if !exits.is_empty() {
         s += &pointed_note(due_days, exits);
     }
     if !ip_nodes.is_empty() {
         s += &live_ip_note(due_days, ip_nodes);
+    }
+    if !renewing_ip_nodes.is_empty() {
+        s += &renewing_ip_note(due_days, renewing_ip_nodes);
     }
     if auto_renew {
         s += auto_renew_note();
@@ -134,8 +144,8 @@ pub async fn run_once(st: &AppState, now: OffsetDateTime) -> anyhow::Result<Ran>
                 ($1::timestamptz at time zone s.billing_tz)::date today,
                 exists (select 1 from job j where j.state in ('queued', 'running', 'waiting', 'cancelling')
                         and (j.target_id = m.id or j.target_id in (select x.id from machine x where x.host_id = m.id))) busy,
-                exists (select 1 from machine x left join team tx on tx.id = x.team_id
-                        where x.host_id = m.id and x.lifecycle <> 'retired' and not coalesce(tx.spare, false)) keeps_live
+                exists (select 1 from machine x left join team tx on tx.id = x.team_id left join subscription_eff xs on xs.machine_id = x.id
+                        where x.host_id = m.id and x.lifecycle <> 'retired' and (not coalesce(tx.spare, false) or coalesce(xs.auto_renew, false))) keeps_live
          from machine m join team t on t.id = m.team_id join subscription_eff s on s.machine_id = m.id
          where t.spare and m.lifecycle = 'active' and not s.auto_renew
          order by t.sort_order, t.name, m.number, m.id",
@@ -147,7 +157,7 @@ pub async fn run_once(st: &AppState, now: OffsetDateTime) -> anyhow::Result<Ran>
     let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
     let pointed = crate::routers::exits_using_with_ip_nodes(&st.db, &ids).await?;
     for r in rows {
-        // 宿主机退役会连带它上面的同机 IP 节点：有不在备用团队里的（还在正常用）就不自动回收，留给人处理
+        // 宿主机退役会连带它上面的同机 IP 节点：有不在备用团队里的（还在正常用）、或在备用里但开着自动续费的（自动续费的备用机不自动回收）就不自动回收，留给人处理
         if r.keeps_live {
             tracing::warn!(machine = %r.id, "备用节点 {} 已过期满 1 天，但它上面有不在备用团队的同机 IP 节点：不自动回收", r.name);
             ran.kept.push(r.id);

@@ -994,6 +994,37 @@ async fn idle_spare_closes_alerts_quietly_and_is_not_counted() {
     assert!(incidents(&t, "firing").await.is_empty());
 }
 
+/// 只因开着自动续费被扣住的备用机（没有出口指着、没有在用的同机 IP 节点）仍是闲置备用——客户侧：探测告警不开、不计故障、不进健康计数；
+/// 费用侧照常：月费合计、付费台数、已过期都算它，续费提醒（renewal_due）照发
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn auto_renew_spare_is_idle_for_alerts_but_billed_and_reminded() {
+    let t = setup().await;
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let team = seed_team(&t, "团队1").await;
+    let (node, entry) = seed_node(&t, relay, team, 1, "203.0.113.5", 20000).await;
+    sqlx::query("update machine set team_id = (select id from team where spare) where id = $1").bind(node).execute(&t.st.db).await.unwrap();
+    // 到期日早已过去（自动续费那一轮没顺延成）
+    sqlx::query("insert into subscription (machine_id, price_cents, due_date, auto_renew) values ($1, 600, current_date - 5, true)").bind(node).execute(&t.st.db).await.unwrap();
+    for (seq, ago) in [(1, 4_000), (2, 2_000)] {
+        let mut r = blank_report(seq);
+        r.xray = Some(xray(true));
+        r.probes = vec![probe(entry, now_ms() - ago, ProbeKind::Egress, false), probe(entry, now_ms() - ago, ProbeKind::Tcp, false)];
+        assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
+    }
+    let mut state = AlertState::default();
+    let base = OffsetDateTime::now_utc();
+    pass(&t, &mut state, base, 0).await;
+    pass(&t, &mut state, base, 151).await;
+    let firing = incidents(&t, "firing").await;
+    assert!(has_rule(&firing, "renewal_due") && !has_rule(&firing, "egress_fail") && !has_rule(&firing, "tcp_fail"), "只发续费提醒，不开探测告警：{firing:?}");
+    let v = t.get(&format!("/api/v1/machines/{node}")).await;
+    assert_eq!((v["idle_spare"].clone(), v["recycle_held"].clone(), v["spare_unbilled"].clone()), (json!(true), json!(true), json!(false)), "{v}");
+    let ov = t.get("/api/v1/overview").await;
+    assert_eq!((ov["nodes"]["total"].as_i64(), ov["nodes"]["down"].as_i64(), ov["spare"].as_i64()), (Some(0), Some(0), Some(1)), "不计故障：{ov}");
+    assert_eq!((ov["monthly_usd"]["cents"].as_i64(), ov["paid_machines"].as_i64(), ov["overdue"].as_i64()), (Some(600), Some(1), Some(1)), "费用侧照常：{ov}");
+    assert_eq!(ov["monthly_usd_spare"]["count"].as_i64(), Some(0), "{ov}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn relay_xray_down_alert_lifecycle() {
     let t = setup().await;
