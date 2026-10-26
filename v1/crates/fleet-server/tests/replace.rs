@@ -1647,6 +1647,10 @@ async fn replace_rewrites_history_even_without_current_node_policy() {
     let kinds: Vec<String> = sqlx::query_scalar("select kind from policy_version order by seq").fetch_all(db).await.unwrap();
     assert_eq!(kinds, ["publish", "publish"], "当前策略没有搬：不记 replace 版本");
     assert_eq!(sqlx::query_scalar::<_, i64>("select count(*) from audit_log where action = 'policy.replace'").fetch_one(db).await.unwrap(), 0);
+    // 只改写了历史快照：单独记一条 policy.rewrite_history
+    let rh: Vec<Value> = sqlx::query_scalar("select detail from audit_log where action = 'policy.rewrite_history'").fetch_all(db).await.unwrap();
+    let seq0: i64 = sqlx::query_scalar("select seq from policy_version order by seq limit 1").fetch_one(db).await.unwrap();
+    assert_eq!(rh, [json!({"from": w.old, "to": w.new, "rewritten_seqs": [seq0], "dropped_seqs": []})], "{rh:?}");
     // 幂等：再改写一遍，快照不变
     let mut tx = db.begin().await.unwrap();
     let m = fleet_server::policy::move_node(&mut tx, w.old, w.new, "test").await.unwrap();
