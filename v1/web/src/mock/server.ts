@@ -13,10 +13,10 @@ import { installAccessMock } from './access';
 import { installReportsMock } from './reports';
 import { installTrafficMock, mockIdle, mockMonthly, mockPerGb, mockUsage } from './traffic';
 import { installFxMock, toUsd, usdPerUnit, usdTotal } from './fx';
-import { installPolicyMock } from './policy';
+import { installPolicyMock, policyHook } from './policy';
 import { installRoutersMock } from './routers';
 import { installTerminalMock } from './terminal';
-import { installClientSubsMock } from './clientSubs';
+import { installClientSubsMock, subNamesOfMachine } from './clientSubs';
 
 const db: Db = buildDb();
 const DAY = 86400_000;
@@ -1387,6 +1387,15 @@ function replacePlan(old: MachineView, newId: string | null, teamId: string | nu
     }),
   }] : [];
   if (routers && rts.length === 0) warnings.push('没有软路由的出口指向旧节点：只交换编号');
+  // 访问策略与订阅设置按机器 id 存：随编号转给新节点（同 api/replace.rs），预览列出来
+  const oldPolicy = policyHook.nodeSummary(old.id); const oldSubs = subNamesOfMachine(old.id);
+  if (oldPolicy || oldSubs.length) {
+    const parts = [oldPolicy && `访问策略（${oldPolicy}）`, oldSubs.length && `客户端订阅的排除 / 另加（${oldSubs.join('、')}）`].filter(Boolean);
+    let w = `旧节点「${old.name}」单独设的${parts.join('和')}随编号转给新节点「${nw.name}」；旧节点进备用后跟随备用团队`;
+    const newPolicy = oldPolicy ? policyHook.nodeSummary(nw.id) : null;
+    if (newPolicy) w += `，新节点自己单独设的访问策略（${newPolicy}）会被覆盖`;
+    warnings.push(w);
+  }
   const side = (x: MachineView) => ({ id: x.id, name: x.name, kind: x.kind, team: x.team });
   return {
     nw, spare, num,

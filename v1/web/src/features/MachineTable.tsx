@@ -22,13 +22,13 @@ const PCT = { cpu: resPct('cpu'), mem: resPct('mem'), disk: resPct('disk') };
 const cols: Col[] = [
   { id: 'name', header: '名称', size: 172, ...byStr((m) => m.name),
     cell: (m) => <div className="tname"><Flag country={m.country} manual={!!m.country_set} ip={m.ip} /><div>
-      <div className="row" style={{ flexWrap: 'nowrap', gap: 6 }}><span className="cell-main strong">{m.name}</span><HostTag id={m.id} host={m.host_machine} nodes={m.ip_nodes} short /></div>
-      <span className="sub">{m.ip}{m.spare_from && ` · 原 ${m.spare_from}`}</span>
+      <div className="row" style={{ flexWrap: 'nowrap', gap: 6 }}><span className="cell-main strong">{m.name}</span><HostTag id={m.id} host={m.host_machine} nodes={m.ip_nodes} short />{m.spare_from && <span className="tag tag-from" data-tip={`原名 ${m.spare_from}：退役或被替换前的名字`}>原 {m.spare_from}</span>}</div>
+      <span className="sub">{m.ip}</span>
     </div></div> },
-  { id: 'status', header: '状态', size: 88, ...byNum(statusRank, 'asc'), cell: (m) => <HealthPill m={m} /> },
+  { id: 'status', header: '状态', size: 100, ...byNum(statusRank, 'asc'), cell: (m) => <HealthPill m={m} /> },
   ...(['cpu', 'mem', 'disk'] as const).map((k): Col => ({ id: k, header: k === 'cpu' ? 'CPU' : k === 'mem' ? '内存' : '磁盘', size: 82, drop: k === 'disk' ? 3 : k === 'mem' ? 4 : undefined, ...byNum(PCT[k]),
     cell: (m) => { const r = resourceMeters(m); return r ? <MiniMeter pct={r[k].pct} metric={k} empty={isQuiet(m)} /> : <span className="t-muted">—</span>; } })),
-  ...(['down', 'up'] as const).map((k): Col => ({ id: k, header: k === 'up' ? '上行' : '下行', size: 92, r: true, ...byNum((m) => (k === 'up' ? liveRate(m)?.tx : liveRate(m)?.rx) ?? null),
+  ...(['down', 'up'] as const).map((k): Col => ({ id: k, header: k === 'up' ? '上行' : '下行', size: 86, r: true, ...byNum((m) => (k === 'up' ? liveRate(m)?.tx : liveRate(m)?.rx) ?? null),
     cell: (m) => { const r = liveRate(m); const v = r && (k === 'up' ? r.tx : r.rx); return <span className="trate" data-speed={r && v != null ? F.speedOf(v, m.plan?.bandwidth_mbps) : undefined}><Num f={F.rate(v)} /></span>; } })),
   { id: 'traffic', header: '本月流量', size: 176, r: true, ...byNum(trafficTotal), cell: (m) => <MonthFlowCell m={m} /> },
   // 不限额度、与宿主机共用的没有「剩余」可比，排在最后

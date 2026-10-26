@@ -1,7 +1,7 @@
 // 访问规则的 mock：草稿 / 预览 / 发布 / 回滚都在内存里走一遍，规则与服务端一致（有效策略 = 节点 > 团队 > 默认）。
 // 首次访问时放几份演示数据：团队1 黑名单（带一份未发布的草稿）、团队2 白名单、一个暂停的节点，以及三个历史版本。
 import type { MachineView, Team } from '@/lib/types';
-import type { PolicyBody, PolicyChange, PolicyList, PolicyMode, PolicyPreview, PolicyVersion, PreviewNode, ScopePolicy, VersionStatus } from '@/lib/policy';
+import { modeLabel, type PolicyBody, type PolicyChange, type PolicyList, type PolicyMode, type PolicyPreview, type PolicyVersion, type PreviewNode, type ScopePolicy, type VersionStatus } from '@/lib/policy';
 import { parseDomainText } from '@/lib/policyDomains';
 import { hashStr, rng } from './fixtures';
 
@@ -43,6 +43,9 @@ function wouldBlock(b: { mode: PolicyMode; domains: string[] }, host: string): b
   return false;
 }
 
+/** 节点单独设的访问策略的一句话（「白名单 · 3 个域名」，有草稿加一句）；没设或只是默认的跟随团队为 null。替换预览的警告用（同服务端 load_row + summary） */
+export const policyHook: { nodeSummary: (id: string) => string | null } = { nodeSummary: () => null };
+
 export function installPolicyMock(R: Reg, env: Env) {
   const rows = new Map<string, Row>();
   const versions: Ver[] = [];
@@ -55,6 +58,13 @@ export function installPolicyMock(R: Reg, env: Env) {
 
   const get = (s: Scope, id: string): Row => rows.get(key(s, id)) ?? { scope: s, id, cur: defaults(s), draft: null, revision: 0, updated_by: null, updated_at: null };
   const put = (r: Row) => { rows.set(key(r.scope, r.id), r); return r; };
+  policyHook.nodeSummary = (id) => {
+    seed();
+    const r = get('node', id);
+    if (same(r.cur, defaults('node')) && !r.draft) return null;
+    const cur = uses(r.cur.mode) ? `${modeLabel(r.cur.mode)} · ${r.cur.domains.length} 个域名` : modeLabel(r.cur.mode);
+    return r.draft ? `${cur}，另有未发布的草稿` : cur;
+  };
 
   /** 有效策略：节点（非 inherit）> 团队 > 默认 */
   function effective(node: MachineView, useDraft: boolean) {

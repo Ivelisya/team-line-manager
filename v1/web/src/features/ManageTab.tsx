@@ -4,10 +4,10 @@ import * as React from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowRight } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
-import { maintOwner, useAddEntry, useEndMaintenance, usePatchMachine, useJob, useLastSpeedtest, useRelayChoices, useRenamePreview, useSilences, useSpeedtest, useSsRefresh, useTeams, useTune } from '@/lib/queries';
+import { maintOwner, useAddEntry, useEndMaintenance, usePatchMachine, useJob, useLastSpeedtest, useMachines, useRelayChoices, useRenamePreview, useSilences, useSpeedtest, useSsRefresh, useTeams, useTune } from '@/lib/queries';
 import { openMaint, openUpgrade } from '@/lib/nodeActions';
 import { useDrawer } from '@/lib/drawer';
-import { entryBad, errText, meta, mmdd, reachWho, recycleOn } from '@/lib/derive';
+import { entryBad, errText, isIdleSpare, meta, mmdd, reachWho, recycleOn } from '@/lib/derive';
 import { jobLive } from '@/lib/jobs';
 import { useReachLabel } from '@/lib/probePoints';
 import * as F from '@/lib/format';
@@ -26,7 +26,7 @@ import { PingOverrideSection } from './PingTab';
 import { RetireDialog } from '@/components/app/RetireDialog';
 import { EntryMenuButton, EntryMenus, entryLabel } from '@/components/app/EntryActions';
 import { EvacuateDialog, MoveDialog, movableEntries } from '@/components/app/LifecycleDialogs';
-import { ReplaceDialog, canReplace } from '@/components/app/ReplaceDialog';
+import { ReplaceDialog, RenameNote, canReplace } from '@/components/app/ReplaceDialog';
 import { CountrySelect } from '@/components/app/CountrySelect';
 import { countryName } from '@/lib/flags';
 
@@ -36,7 +36,9 @@ const NOTE_MAX = 2000;
 export function ManageTab({ m, onClosed }: { m: MachineView; onClosed: () => void }) {
   const retired = m.lifecycle === 'retired';
   const active = m.lifecycle === 'active';
-  const ipNodes = m.kind === 'vps' && !m.host_machine && active;
+  // 闲置备用（等到期放生、没有软路由出口指着）不再加 IP 节点、调优、替换；还被出口指着的备用保留替换
+  const idle = isIdleSpare(m);
+  const ipNodes = m.kind === 'vps' && !m.host_machine && active && !idle;
   return (
     <>
       {!retired && <RenameSection m={m} />}
@@ -47,10 +49,10 @@ export function ManageTab({ m, onClosed }: { m: MachineView; onClosed: () => voi
       {/* 在用的普通 VPS 节点都能当宿主机：上面另配的公网 IP 各上架成一台同机 IP 节点 */}
       {(canReplace(m) || ipNodes || active) && (
         <Section><div className="mgroup">
-          {canReplace(m) && <ReplaceRow m={m} />}
+          {canReplace(m) && !idle && <ReplaceRow m={m} />}
           {ipNodes && <IpNodesRow m={m} />}
           {m.agent && active && <AgentRow m={m} />}
-          {m.tune && active && <TuneRow m={m} />}
+          {m.tune && active && !idle && <TuneRow m={m} />}
           {m.kind === 'vps' && !m.host_machine && active && m.entries.length > 0 && <SsRefreshRow m={m} />}
           {m.kind !== 'proxy' && active && <SpeedtestRow m={m} />}
           {active && <MaintRow m={m} />}
@@ -71,6 +73,7 @@ function RenameSection({ m }: { m: MachineView }) {
   const patch = usePatchMachine();
   const isRelay = m.kind === 'relay';
   const [team, setTeam] = React.useState(m.team?.id ?? '');
+  const machines = useMachines().data;
   const [num, setNum] = React.useState(m.number != null ? F.pad2(m.number) : '');
   const [label, setLabel] = React.useState(m.label ?? '');
   const [country, setCountry] = React.useState(m.country_set ?? '');
@@ -85,22 +88,31 @@ function RenameSection({ m }: { m: MachineView }) {
     setTeam((v) => keep(v, prev.team, srv.team)); setNum((v) => keep(v, prev.num, srv.num)); setLabel((v) => keep(v, prev.label, srv.label)); setCountry((v) => keep(v, prev.country, srv.country)); setNote((v) => keep(v, prev.note, srv.note));
   }, [srv.id, srv.team, srv.num, srv.label, srv.country, srv.note]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const teamName = teams?.find((t) => t.id === team)?.name;
+  const toTeam = teams?.find((t) => t.id === team);
+  const teamName = toTeam?.name;
   const n = Number(num);
   const numOk = Number.isInteger(n) && n >= 1 && n <= 999; // 与服务端一致：编号范围 1–999
-  const preview = isRelay ? label.trim() : teamName && numOk ? F.displayName(teamName, n) : '';
+  // 换团队时编号框清空：不填就由服务端排到新团队的最小空号（原编号带过去多半已被占）
+  const teamMoved = !isRelay && !!team && !!m.team && team !== m.team.id;
+  const auto = teamMoved && !num; // 换了团队、编号留空：用服务端分配的空号
+  const pv = useRenamePreview(m.id, team, numOk ? n : null, teamMoved);
+  const also = teamMoved ? pv.data?.renames : undefined;
+  // 自己填的编号被同团队别的机器占着：保存前就标红（预览接口不查冲突）
+  const taken = !isRelay && numOk && !!teamName && !!machines?.some((x) => x.id !== m.id && x.team?.id === team && x.number === n);
+  const preview = isRelay ? label.trim() : auto ? pv.data?.name ?? '' : teamName && numOk ? F.displayName(teamName, n) : '';
   const nameChanged = isRelay ? label.trim() !== (m.label ?? '') : team !== (m.team?.id ?? '') || (numOk && n !== m.number);
   const countryChanged = country !== (m.country_set ?? '');
   const noteChanged = note.trim() !== (m.note ?? '').trim();
   const changed = nameChanged || countryChanged || noteChanged;
-  const valid = isRelay ? label.trim().length > 0 : !!team && numOk;
+  const valid = isRelay ? label.trim().length > 0 : !!team && (numOk || auto) && !taken;
   // 换团队时原团队剩下的节点按编号连续压缩（同事务）：保存前列出连带改号的
-  const teamMoved = !isRelay && !!team && !!m.team && team !== m.team.id;
-  const also = useRenamePreview(m.id, team, numOk ? n : null, teamMoved).data?.renames;
-  const auto = m.country_set ? '自动（按 IP）' : `自动（按 IP：${m.country ? countryName(m.country) : '查不到'}）`;
+  const autoNum = pv.data?.name.match(/(\d+)$/)?.[1];
+  const autoCountry = m.country_set ? '自动（按 IP）' : `自动（按 IP：${m.country ? countryName(m.country) : '查不到'}）`;
+  const toSpare = teamMoved && !!toTeam?.spare && !m.spare;
+  const changeTeam = (v: string) => { setTeam(v); setNum(v === (m.team?.id ?? '') ? (m.number != null ? F.pad2(m.number) : '') : ''); };
 
   const save = () => {
-    const body = { ...(nameChanged ? (isRelay ? { label: label.trim() } : { team_id: team, number: n }) : null), ...(countryChanged ? { country: country || null } : null), ...(noteChanged ? { note: note.trim() } : null) };
+    const body = { ...(nameChanged ? (isRelay ? { label: label.trim() } : { team_id: team, number: numOk ? n : undefined }) : null), ...(countryChanged ? { country: country || null } : null), ...(noteChanged ? { note: note.trim() } : null) };
     const what = [countryChanged && '国家', noteChanged && '备注'].filter(Boolean).join('、');
     patch.mutate({ id: m.id, revision: m.revision, ...body }, {
       onSuccess: () => toast.ok(nameChanged ? `已改名为 ${preview}${what ? `，${what}已更新` : ''}` : countryChanged && !noteChanged ? (country ? `国家已改为${countryName(country)}` : '国家已改回按 IP 自动') : `${what}已更新`), onError: toast.err,
@@ -114,19 +126,16 @@ function RenameSection({ m }: { m: MachineView }) {
           <Field label="线路机名称" className="span-2"><Input value={label} onChange={(e) => setLabel(e.target.value)} /></Field>
         ) : (
           <>
-            <Field label="团队"><Select value={team} onChange={setTeam} options={teamOpts} /></Field>
-            <Field label="编号" error={num && !numOk ? '编号应为 1–999 的整数' : undefined}>
-              <Input inputMode="numeric" value={num} onChange={(e) => setNum(e.target.value.replace(/\D/g, ''))} aria-invalid={!!num && !numOk} />
+            <Field label="团队"><Select value={team} onChange={changeTeam} options={teamOpts} /></Field>
+            <Field label="编号" error={num && !numOk ? '编号应为 1–999 的整数' : taken ? `${F.displayName(teamName!, n)} 已被占用` : undefined}>
+              <Input inputMode="numeric" value={num} onChange={(e) => setNum(e.target.value.replace(/\D/g, ''))} placeholder={teamMoved ? (autoNum ? `自动：${autoNum}` : '自动') : undefined} aria-invalid={(!!num && !numOk) || taken} />
             </Field>
           </>
         )}
-        <Field label="国家" className="span-2" info="显示在名字前的国旗。默认按 IP 判断，不准可以手动选"><CountrySelect value={country} onChange={setCountry} autoLabel={auto} disabled={patch.isPending} aria-label="国家或地区" /></Field>
+        <Field label="国家" className="span-2" info="显示在名字前的国旗。默认按 IP 判断，不准可以手动选"><CountrySelect value={country} onChange={setCountry} autoLabel={autoCountry} disabled={patch.isPending} aria-label="国家或地区" /></Field>
         <Field label="备注" className="span-2" error={note.length > NOTE_MAX ? `备注最多 ${NOTE_MAX} 个字符` : undefined}><Textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="例如：客户专用、合同到 2027 年" disabled={patch.isPending} /></Field>
-        {teamMoved && !!also?.length && (
-          <div className="span-2 t-sub">
-            {m.team!.name} 的编号随之连续：{also.map((r) => `${r.old_name} → ${r.new_name}`).join('，')}
-          </div>
-        )}
+        {!!also?.length && <div className="span-2"><RenameNote renames={also} tip={`${m.team!.name} 少了这台，后面的节点前移补号，编号保持连续`} /></div>}
+        {toSpare && <div className="span-2"><Note tone="warn">备用团队的机器不再续费：订阅过期满 1 天自动回收</Note></div>}
         <div className="span-2 row row-between">
           {/* 改了名字才出现「旧名 → 新名」 */}
           <span className="row" style={{ gap: 8 }}>
