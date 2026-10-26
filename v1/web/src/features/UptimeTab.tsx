@@ -58,7 +58,7 @@ export function UptimeTab({ month, onMonth }: { month: string; onMonth: (m: stri
     <>
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       <Panel title="按供应商" count={d ? `${d.providers.length} 家` : undefined} tools={<>{range}{picker}</>}
-        sub={<InfoTip text={'可用率 = 出口探测的成功次数 ÷ 探测次数（TCP 作参考）；平均、最差只看窗口内有探测的节点，没有探测的显示 —；全部 100% 时不列最差的那台\n从差到好排；只列在用的节点（不含线路机和备用团队）\n最差节点点开看它的连接质量'} />} flush>
+        sub={<InfoTip text={'可用率 = 出口探测的成功次数 ÷ 探测次数（TCP 作参考）；平均、最差只看窗口内有探测的节点，没有探测的显示 —；全部 100% 时不列最差的那台\n从差到好排；只列在用的节点（不含线路机和闲置备用）\n最差节点点开看它的连接质量'} />} flush>
         {q.isLoading ? <SkeletonRows rows={4} head /> : d && d.providers.length === 0 ? <Empty text="这个月没有在用的节点" /> : d && (
           <TableWrap>
             <table className="dt up-tbl" style={{ minWidth: 860 }}>

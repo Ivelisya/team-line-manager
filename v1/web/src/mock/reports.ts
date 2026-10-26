@@ -1,8 +1,9 @@
 // 报表的 mock（同服务端 reports.rs）：月度可用率 GET /reports/uptime、月报预览 GET /reports/monthly 与立即发送 POST /reports/monthly/send。
-// 每台在用节点（不含线路机、备用团队）每条入口每天 TCP 2880 次、出口 1440 次，成功率按 (机器, 月份) 的哈希生成：大多数台近乎 100%，个别有零星失败，
+// 每台在用节点（不含线路机、闲置备用）每条入口每天 TCP 2880 次、出口 1440 次，成功率按 (机器, 月份) 的哈希生成：大多数台近乎 100%，个别有零星失败，
 // 故障中的机器明显偏低，月内才上架的算到上架那天，上架在窗口之后的没有探测（null）；个别节点 TCP 偶发失败而出口一直是通的（DeerVPS 那种）；
 // 节点按出口成功率从差到好，供应商按平均从差到好；断线 = 出口失败 3 次以上的小时；告警次数只数窗口内可用性相关规则（含复发）。
 import type { Incident, MachineView, MonthlyReport, NotifyChannel, NotifyLogEntry, UptimeItem, UptimeProvider, UptimeReport } from '@/lib/types';
+import { isIdleSpare, isUnbilledSpare } from '@/lib/derive';
 import { hashStr, rng } from './fixtures';
 import { META } from './meta';
 import { mockMonthly, mockUsage } from './traffic';
@@ -39,7 +40,7 @@ export function installReportsMock(R: Reg, machines: () => MachineView[], incide
 
   function uptime(month: string | null): UptimeReport {
     const w = window(month);
-    const items = machines().filter((m) => m.kind !== 'relay' && m.lifecycle === 'active' && !m.spare).map((m): UptimeItem => {
+    const items = machines().filter((m) => m.kind !== 'relay' && m.lifecycle === 'active' && !isIdleSpare(m)).map((m): UptimeItem => {
       const n = Math.max(1, m.entries.filter((e) => e.lifecycle !== 'pending').length);
       // 窗口内有探测的天数：上架在窗口之后的没有；月内才上架的从上架那天起
       const start = m.activated_at ? localDate(Date.parse(m.activated_at)) : w.from;
@@ -96,7 +97,8 @@ export function installReportsMock(R: Reg, machines: () => MachineView[], incide
     const m = month || prevMonth(today().slice(0, 7));
     const w = window(m);
     const up = uptime(m);
-    const active = machines().filter((x) => x.lifecycle === 'active' && !x.spare);
+    // 月费、USD/GB、到期按费用侧口径（不续费的备用机不算，开着自动续费的备用机照常算），可用率按客户侧（闲置备用不算）
+    const active = machines().filter((x) => x.lifecycle === 'active' && !isUnbilledSpare(x));
     const costly = active.filter((x) => x.kind !== 'relay').map((x) => ({ x, usd: mockMonthly(x), g: mockUsage(x).bytes30 / 1e9 }))
       .filter((c) => c.usd != null && c.g >= 1).map((c) => ({ id: c.x.id, name: c.x.name, monthly_usd_cents: c.usd!, gb: c.g, usd_per_gb: c.usd! / 100 / c.g }))
       .sort((a, b) => b.usd_per_gb - a.usd_per_gb).slice(0, 3);

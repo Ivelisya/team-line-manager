@@ -146,7 +146,7 @@ const perGb = (monthlyCents: number | null, bytes: number, days: number) => (mon
 const NodesTable = React.memo(function NodesTable({ nodes, days, idle, spare, loading, failed, stale, sortRaw, onSort, filtered }: {
   nodes: TrafficDailyNode[] | undefined; days: number; idle: TrafficDaily['idle'] | undefined; spare: TrafficDailyTeam[] | undefined; loading: boolean; failed: boolean; stale: boolean; sortRaw: string | null; onSort: (s: string) => void; filtered: boolean;
 }) {
-  // 闲置备用的节点不再续费：月费灰字、不进底行合计，也不标闲置（同团队成本表）；被扣住不回收的备用机（n.held）照常续费，不灰、计入底行
+  // 不续费的备用机：月费灰字、不进底行合计，也不标闲置（同团队成本表）；被扣住不回收的备用机（n.held）照常续费，不灰、计入底行
   const spareIds = React.useMemo(() => new Set((spare ?? []).filter((t) => t.spare).map((t) => t.id)), [spare]);
   const sort = React.useMemo(() => { const s = parseSort(sortRaw); return s && (['name', 'sum', 'cost', 'perGb'] as string[]).includes(s.id) ? s : null; }, [sortRaw]);
   const rows = React.useMemo(() => {
@@ -167,7 +167,7 @@ const NodesTable = React.memo(function NodesTable({ nodes, days, idle, spare, lo
   const dates = rows[0]?.daily.map((x) => x.date) ?? [];
   const max = React.useMemo(() => Math.max(0, ...rows.flatMap((r) => r.daily.map((x) => total(x)))), [rows]);
   const foot = React.useMemo(() => dates.map((_, i) => rows.reduce((a, r) => a + total(r.daily[i]), 0)), [rows, dates]);
-  // 底行的月费与 USD/GB 只算有月费、不是闲置备用的节点（月费与流量对得上）
+  // 底行的月费与 USD/GB 只算有月费、不是不续费的备用机的节点（月费与流量对得上）
   const cost = React.useMemo(() => rows.reduce((a, r) => (r.n.monthly_usd_cents == null || r.sp ? a : { cents: a.cents + r.n.monthly_usd_cents, bytes: a.bytes + r.sum }), { cents: 0, bytes: 0 }), [rows]);
   const wrap = useScrollEnd(`${days}:${dates.length}`);
   const last = dates[dates.length - 1];
@@ -204,7 +204,7 @@ const NodesTable = React.memo(function NodesTable({ nodes, days, idle, spare, lo
                   <td className="r strong">{cell(sum)}{nic && <span className="sub" data-tip={`网卡计费 · ${trafficRuleLabel(nic.rule)}
 ${days} 天 ↓ 下行 ${F.str(F.bytes(nic.rx))} · ↑ 上行 ${F.str(F.bytes(nic.tx))}，先加总再按规则算`}>计费 {cell(nic.billed)}</span>}</td>
                   <td className="r">{cell(sum / days)}</td>
-                  <td className={sp ? 'r t-muted' : 'r'} data-tip={sp ? '闲置备用不再续费，不计入合计' : undefined}>{F.money(n.monthly_usd_cents, 'USD')}</td>
+                  <td className={sp ? 'r t-muted' : 'r'} data-tip={sp ? '不续费的备用机，不计入合计' : undefined}>{F.money(n.monthly_usd_cents, 'USD')}</td>
                   <td className={sp ? 'r t-muted' : 'r'}>{sp ? '—' : F.usdPerGb(pg)}</td>
                 </tr>
               ))}
@@ -231,7 +231,7 @@ ${days} 天 ↓ 下行 ${F.str(F.bytes(nic.rx))} · ↑ 上行 ${F.str(F.bytes(n
 
 /** 团队成本：在用节点的月费、近 30 天业务流量、每 GB 多少美元（不随团队筛选变）；点一行按这个团队筛选，再点取消 */
 const TeamsTable = React.memo(function TeamsTable({ teams, picked, stale, onPick }: { teams: TrafficDailyTeam[]; picked: string; stale: boolean; onPick: (id: string) => void }) {
-  // 「全部」不含闲置备用（不续费、等放生）；备用团队里被扣住不回收的几台照常续费，月费、流量、没价格台数算进来（服务端备用团队的月费只按它们算）
+  // 「全部」不含不续费的备用机（等放生）；备用团队里被扣住不回收的几台照常续费，月费、流量、没价格台数算进来（服务端备用团队的月费只按它们算）
   const all = React.useMemo(() => teams.filter((t) => !t.spare || t.held > 0).reduce((a, t) => ({ nodes: a.nodes + (t.spare ? t.held : t.nodes), idle: a.idle + t.idle, cents: a.cents + (t.monthly_usd_cents ?? 0), bytes: a.bytes + (t.spare ? t.held_bytes_30d : t.bytes_30d), unpriced: a.unpriced + t.unpriced }), { nodes: 0, idle: 0, cents: 0, bytes: 0, unpriced: 0 }), [teams]);
   const fee = (cents: number | null, unpriced: number) => <span data-tip={unpriced ? `有 ${unpriced} 台没有价格或没有汇率，没算进月费` : undefined}>{F.money(cents, 'USD')}{unpriced > 0 && '*'}</span>;
   return (
@@ -243,11 +243,11 @@ const TeamsTable = React.memo(function TeamsTable({ teams, picked, stale, onPick
             {teams.map((t) => (
               <tr key={t.id} className="is-link" tabIndex={0} aria-selected={picked === t.id || undefined} onClick={() => onPick(picked === t.id ? '' : t.id)} onKeyDown={(e) => { if (e.key === 'Enter') onPick(picked === t.id ? '' : t.id); }}>
                 <td><span className="cell-main">{t.name}</span></td>
-                <td className="r" data-tip={t.spare && t.nodes > t.held ? `另 ${t.nodes - t.held} 台闲置备用不计` : undefined}>{t.spare ? t.held : t.nodes} 台</td>
+                <td className="r" data-tip={t.spare && t.nodes > t.held ? `另 ${t.nodes - t.held} 台不续费的备用机不计` : undefined}>{t.spare ? t.held : t.nodes} 台</td>
                 <td className="r">{t.idle && !t.spare ? `${t.idle} 台` : '—'}</td>
-                <td className={t.spare && !t.held ? 'r t-muted' : 'r'} data-tip={t.spare ? (t.held ? `其中 ${t.held} 台被扣住不回收（软路由出口还指着 / 同机 IP 节点还在用），照常续费，已算进合计；${t.nodes > t.held ? `其余 ${t.nodes - t.held} 台闲置备用不计` : '没有闲置备用'}` : '闲置备用不再续费，不计入合计') : undefined}>{t.spare && !t.held ? '—' : fee(t.monthly_usd_cents, t.unpriced)}</td>
+                <td className={t.spare && !t.held ? 'r t-muted' : 'r'} data-tip={t.spare ? (t.held ? `其中 ${t.held} 台被扣住不回收（软路由出口还指着 / 同机 IP 节点还在用 / 开着自动续费），照常续费，已算进合计；${t.nodes > t.held ? `其余 ${t.nodes - t.held} 台不续费的备用机不计` : '没有不续费的备用机'}` : '不续费的备用机，不计入合计') : undefined}>{t.spare && !t.held ? '—' : fee(t.monthly_usd_cents, t.unpriced)}</td>
                 <td className="r">{cell(t.bytes_30d)}</td>
-                <td className={t.spare && !t.held ? 'r t-muted' : 'r strong'} data-tip={t.spare ? (t.held ? `只按被扣住不回收的 ${t.held} 台算（月费 ÷ 它们近 30 天的业务流量）` : '闲置备用不再续费，不算每 GB 成本') : undefined}>{t.spare && !t.held ? '—' : F.usdPerGb(t.usd_per_gb)}</td>
+                <td className={t.spare && !t.held ? 'r t-muted' : 'r strong'} data-tip={t.spare ? (t.held ? `只按被扣住不回收的 ${t.held} 台算（月费 ÷ 它们近 30 天的业务流量）` : '不续费的备用机，不算每 GB 成本') : undefined}>{t.spare && !t.held ? '—' : F.usdPerGb(t.usd_per_gb)}</td>
               </tr>
             ))}
           </tbody>

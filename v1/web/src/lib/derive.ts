@@ -166,9 +166,14 @@ export const reachFail = (e: EntryView) => { const r = reachOf(e); return r && r
 export const reachFlaky = (e: EntryView) => { const r = reachOf(e); return r && r.fails < REACH_FAILS ? r : null; };
 /** 入口表里的异常行（排在前面、折叠时也全露出、计入「N 条异常」）：中控连不上、线路机到节点探测不通、应用失败 */
 export const entryBad = (e: EntryView) => !!reachFail(e) || !!probeFail(e) || (e.lifecycle === 'active' && !!e.apply_error);
-/** 闲置备用：在用、在备用团队、没有被扣住不回收（软路由出口指着、同机 IP 节点在用、开着自动续费）——等到期放生的，不开告警，总览不算进故障（读服务端 MachineView::idle_spare；旧中控没有这个字段，按出口与 IP 节点推）；卡片上状态照常显示 */
+/** 闲置备用（客户侧口径）：在用、在备用团队、没有软路由出口指着、没有在用的同机 IP 节点——不关系到客户，不开告警，总览不算进故障，可用率不含（读服务端 MachineView::idle_spare；旧中控没有这个字段，按出口与 IP 节点推）；
+ *  不看自动续费（只开着自动续费的备用机照样闲置，只是照常续费，见 isUnbilledSpare）；卡片上状态照常显示 */
 export const isIdleSpare = (m: MachineView) =>
-  m.lifecycle === 'active' && m.spare && (m.idle_spare ?? (!m.router_exits?.length && !m.live_ip_nodes?.length && !m.subscription?.auto_renew));
+  m.lifecycle === 'active' && m.spare && (m.idle_spare ?? (!m.router_exits?.length && !m.live_ip_nodes?.length));
+/** 不续费的备用机（费用侧口径）：在用、在备用团队、没被扣住不回收（软路由出口指着 / 同机 IP 节点在用 / 开着自动续费都算被扣住）——等到期放生的，不提醒续费、不算到期，月费不进合计，待付清单默认不列。
+ *  读服务端 MachineView::spare_unbilled；旧中控没有这个字段，读 recycle_held，再没有按出口、IP 节点与自动续费推。一定是闲置备用 */
+export const isUnbilledSpare = (m: MachineView) =>
+  m.lifecycle === 'active' && m.spare && (m.spare_unbilled ?? (m.recycle_held != null ? !m.recycle_held : !m.router_exits?.length && !m.live_ip_nodes?.length && !m.renewing_ip_nodes?.length && !m.subscription?.auto_renew));
 /** 状态筛选、状态列排序用的值：在用的看健康，其余看生命周期（同机器页状态筛选下拉的 value） */
 export const statusOf = (m: MachineView) => (m.lifecycle === 'active' ? m.health.status : m.lifecycle);
 /** 状态列升序：有问题的在前（上架失败、故障、降级…），正常的在后。机器页、首页表格的状态列与首页的「异常优先」共用 */
@@ -323,12 +328,12 @@ export function quotaTight(list: MachineView[]) {
 }
 /** 集群状态在线率格条的悬停：离线（agent 不再上报）的机器名，同 overview.offline 的口径（同机 IP 节点随宿主机的 agent，宿主机离线它们也各计一台） */
 export const offlineNames = (list: MachineView[]) => list.filter((m) => m.agent && !m.agent.online).map((m) => m.name);
-/** 即将到期（due_state = soon，不含闲置备用；备用团队里被出口指着、有在用 IP 节点的照常续费）里最近的一台（首页 KPI「即将到期」的说明行）；没有为 null */
+/** 即将到期（due_state = soon，不含不续费的备用机；备用团队里被出口指着、有在用 IP 节点、开着自动续费的照常续费）里最近的一台（首页 KPI「即将到期」的说明行）；没有为 null */
 export function nextDue(list: MachineView[]) {
   let top: { id: string; name: string; days: number } | null = null;
   for (const m of list) {
     const s = m.subscription;
-    if (m.lifecycle !== 'active' || isIdleSpare(m) || s?.due_state !== 'soon') continue;
+    if (m.lifecycle !== 'active' || isUnbilledSpare(m) || s?.due_state !== 'soon') continue;
     if (!top || s.due_days < top.days) top = { id: m.id, name: m.name, days: s.due_days };
   }
   return top;

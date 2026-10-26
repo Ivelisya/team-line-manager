@@ -64,13 +64,18 @@ export interface MachineView {
   spare: boolean;
   /** 备用里的机器：进备用前的显示名（如 团队2-07）与进备用（= 退役）的时刻、自动回收的起始日（YYYY-MM-DD，没有订阅为 null）；不在备用里为 null */
   spare_from: string | null; spare_since: string | null; recycle_on: string | null;
-  /** 备用里在用、还被软路由出口指着（router_exits 非空）、上面还有在用的同机 IP 节点（live_ip_nodes 非空）或开着自动续费（subscription.auto_renew）：不自动回收，recycle_on 为 null */
+  /** 费用侧：备用里在用、还被软路由出口指着（router_exits 非空）、上面还有在用的同机 IP 节点（live_ip_nodes 非空）、上面有开着自动续费的备用同机 IP 节点（renewing_ip_nodes 非空）或开着自动续费（subscription.auto_renew）：
+   *  不自动回收，recycle_on 为 null，照常续费（月费、到期、待付清单、续费提醒） */
   recycle_held: boolean;
-  /** 闲置备用（服务端算好）：备用里在用、没有被扣住不回收（recycle_held）——等到期放生的，不开告警、不算进健康计数、不提醒续费。旧中控没有这个字段，按 router_exits / live_ip_nodes 推 */
+  /** 闲置备用（服务端算好，客户侧口径）：备用里在用、没有软路由出口指着、没有在用的同机 IP 节点——不开告警、不算进健康计数与在线 / 离线、可用率不含；不看自动续费。旧中控没有这个字段，按 router_exits / live_ip_nodes 推 */
   idle_spare?: boolean;
+  /** 不续费的备用机（服务端算好，费用侧口径）：备用里在用、没被扣住不回收（recycle_held 为 false）——不提醒续费、不算到期、月费不进合计。一定是闲置备用，反过来只开着自动续费的闲置备用机不是它。旧中控没有这个字段，按 recycle_held 推 */
+  spare_unbilled?: boolean;
+  /** 备用团队里在用的宿主机：它上面在备用团队里、开着自动续费的同机 IP 节点（显示名）——宿主机回收会连带它们，所以也不自动回收、照常续费；其余为 []。旧中控没有这个字段 */
+  renewing_ip_nodes?: string[];
   /** 备用团队里在用的宿主机：上面不在备用团队、没退役的同机 IP 节点（显示名）——宿主机退役会连带它们，所以不自动回收，也不是闲置备用；其余为 []。旧中控没有这个字段 */
   live_ip_nodes?: string[];
-  /** 备用团队里在用的机器：还指向它（备用宿主机还含它上面没退役的同机 IP 节点，后缀「（经同机 IP 节点 X）」）的软路由出口（「路由名 · 出口名」）；其余为 []。在用、在备用里、这里和 live_ip_nodes 都为空 = 闲置备用（等到期放生，见 isIdleSpare） */
+  /** 备用团队里在用的机器：还指向它（备用宿主机还含它上面没退役的同机 IP 节点，后缀「（经同机 IP 节点 X）」）的软路由出口（「路由名 · 出口名」）；其余为 []。在用、在备用里、这里和 live_ip_nodes 都为空 = 闲置备用（等到期放生，见 isIdleSpare；再没开自动续费才是不续费的，见 isUnbilledSpare） */
   router_exits: string[];
   ip: string; ssh_port: number;
   /** 国家或地区（ISO 3166-1 两位大写，如 US）：手动设了用手动的，否则中控离线 IP 库按机器自己的 IP 查；
@@ -133,7 +138,7 @@ export interface TuneParams {
 export interface Team { id: string; name: string; sort_order: number; spare: boolean; node_count: number;
   /** 在用机器的月费合计（USD，同总览） */
   monthly_usd: UsdTotal;
-  /** 备用团队里被扣住不回收（出口还指着 / 同机 IP 节点还在用）的机器的月费与台数：照常续费、计入合计；别的团队为空、0。旧中控没有 */
+  /** 备用团队里被扣住不回收（出口还指着 / 同机 IP 节点还在用 / 开着自动续费）的机器的月费与台数：照常续费、计入合计；别的团队为空、0。旧中控没有 */
   monthly_usd_held?: UsdTotal; held_count?: number;
   /** 备用团队里被扣住不回收的总台数（不论有没有订阅；held_count 只数有订阅的）。旧中控没有 */
   held_total?: number }
@@ -143,12 +148,12 @@ export interface UsdTotal {
   by_currency: { currency: string; cents: number; usd_cents: number; usd_per_unit: number }[];
   unconverted: { currency: string; cents: number }[];
 }
-/** GET /billing/due：未来待付清单。groups 按 供应商 × 到期日 分组（不含闲置备用、自动续费的；备用团队里被出口指着 / 有在用 IP 节点的备用机在内，见 spare_hold）；auto 开了自动续费的（到期后自动顺延，不算待付） */
+/** GET /billing/due：未来待付清单。groups 按 供应商 × 到期日 分组（不含不续费的备用机、自动续费的；备用团队里被出口指着 / 有在用 IP 节点 / 开着自动续费的备用机在内，见 spare_hold）；auto 开了自动续费的（到期后自动顺延，不算待付） */
 export interface DueMachine {
   id: string; name: string; kind: Kind; due_date: string; due_days: number; billing_tz?: string; cycle: Cycle; price_cents: number; currency: string; price_usd_cents: number | null;
   /** 续不续费的依据（近 30 天）：月费（USD 分）、业务流量（字节）、月费 ÷ 流量、TCP 可用率 %（没有探测为 null）、闲置与近 7 天日均业务流量（字节） */
   monthly_usd_cents: number | null; bytes_30d: number; usd_per_gb: number | null; avail_pct: number | null; idle: boolean; avg7: number;
-  /** 备用团队里的机器；spare_hold：还被软路由出口指着 / 上面有在用同机 IP 节点所以不自动回收、照常续费的原因（普通机器与闲置备用为 null）。旧中控没有 */
+  /** 备用团队里的机器；spare_hold：还被软路由出口指着 / 上面有在用同机 IP 节点 / 开着自动续费所以不自动回收、照常续费的原因（普通机器与不续费的备用机为 null）。旧中控没有 */
   spare?: boolean; spare_hold?: string | null;
 }
 export interface DueProvider { id: string | null; name: string | null; panel_url: string | null }
@@ -185,7 +190,7 @@ export interface Overview {
   /** 在线/离线按台机器、按 agent 连通（同 isQuiet），与健康无关；同机 IP 节点随宿主机计入（ip_nodes 是其中的台数），
    *  家宽代理不需要 agent，不计入，另数 no_agent */
   online: number; offline: number; no_agent: number; ip_nodes: number;
-  /** 闲置备用（isIdleSpare）的台数：它们不在 nodes / relays 的 total 与各健康计数里，也不计入 online / offline；速率照算。旧中控没有这个字段 */
+  /** 闲置备用（isIdleSpare，客户侧口径：没有出口指着、没有在用 IP 节点）的台数：它们不在 nodes / relays 的 total 与各健康计数里，也不计入 online / offline；速率照算。旧中控没有这个字段 */
   spare?: number;
   /** 中控刚启动或刚恢复收上报（2 分钟内）：agent 的重发、线路机连通性还在陆续到，健康计数还会变——网页先显示加载态。旧中控没有这个字段 */
   settling?: boolean;
@@ -197,7 +202,7 @@ export interface Overview {
   monthly_usd: UsdTotal;
   /** 月费合计里的台数：在用、不在备用团队、有订阅的（正好是 monthly_usd 加起来的那些台）。旧中控没有 */
   paid_machines?: number;
-  /** 闲置备用的月费小计（不续费，不在 monthly_usd 里）；count = 闲置备用里有订阅的台数（备用团队里被出口指着 / 有在用 IP 节点的照常续费，算在 monthly_usd 里）。旧中控没有 */
+  /** 不续费的备用机（isUnbilledSpare）的月费小计（不在 monthly_usd 里）；count = 其中有订阅的台数（备用团队里被出口指着 / 有在用 IP 节点 / 开着自动续费的照常续费，算在 monthly_usd 里）。旧中控没有 */
   monthly_usd_spare?: UsdTotal & { count: number };
   /** counted_from：本月数据不完整时的起点（RFC 3339，agent 接入晚于月初），完整则 null */
   traffic_month: { up: number; down: number; counted_from: string | null }; net_rx_bps: number; net_tx_bps: number;
@@ -454,12 +459,12 @@ export interface TrafficDailyNode {
   avg7: number | null;
   /** 闲置：在用、上架满 idle.days 天、avg7 低于 idle.gb_per_day（阈值只在服务端定义） */
   idle: boolean;
-  /** 被扣住不回收的备用机（软路由出口还指着 / 同机 IP 节点还在用）：照常续费，月费计入合计、不灰显 */
+  /** 被扣住不回收的备用机（软路由出口还指着 / 同机 IP 节点还在用 / 开着自动续费）：照常续费，月费计入合计、不灰显 */
   held: boolean;
 }
 /** 团队成本（近 30 天，不受团队筛选影响）：unpriced = 在用节点里没价格、没算进月费的台数 */
 export interface TrafficDailyTeam { id: string; name: string; spare: boolean; nodes: number; idle: number; monthly_usd_cents: number | null; unpriced: number; bytes_30d: number; usd_per_gb: number | null;
-  /** 备用团队里被扣住不回收的在用台数及它们近 30 天的流量（别的团队为 0）；备用团队的月费、没价格台数、USD/GB 只按这几台算（闲置备用不续费） */
+  /** 备用团队里被扣住不回收的在用台数及它们近 30 天的流量（别的团队为 0）；备用团队的月费、没价格台数、USD/GB 只按这几台算（不续费的备用机不算） */
   held: number; held_bytes_30d: number }
 /** 线路机：每天的网卡与计费量（daily），经过它的业务流量（business） */
 export interface TrafficDailyRelay { id: string; name: string; lifecycle: Lifecycle; country: string | null; rule: TrafficRule; rx: number; tx: number; billed: number; down: number; up: number; daily: DailyNic[]; business: DailyBiz[] }

@@ -108,21 +108,23 @@ export function DueDate({ sub }: { sub: { due_date: string; billing_tz?: string 
   return <span data-tip={dueTzTip(sub.billing_tz)}>{sub.due_date}</span>;
 }
 /** 备用团队的说明（团队编辑、团队列表、机器卡片与抽屉的到期旁共用） */
-export const SPARE_TIP = '备用团队的机器，到期满 1 天后自动清理并移入回收站。\n续费后到期日顺延，就不会回收。\n被软路由出口指着、或宿主机上还有在用同机 IP 节点的不自动回收，照常续费。';
-/** 只有软路由出口还指着的备用机器（服务端 recycle_held）：不自动回收。同机 IP 节点还在用的原因见 heldNote */
+export const SPARE_TIP = '备用团队的机器，到期满 1 天后自动清理并移入回收站。\n续费后到期日顺延，就不会回收。\n被软路由出口指着、宿主机上还有在用同机 IP 节点、或开着自动续费的不自动回收，照常续费。';
+/** 软路由出口还指着的备用机器（服务端 recycle_held 的原因之一）：不自动回收。同机 IP 节点还在用、开着自动续费的原因见 heldNote */
 export const HELD_TEXT = '软路由出口还指着，不自动回收';
 export const HELD_TIP = '到期后也不会自动回收，回收会让客户的出口断掉。\n要回收，先把出口改指别处，或确认后立即回收。';
-type HeldView = Pick<MachineView, 'router_exits' | 'live_ip_nodes' | 'subscription'>;
+type HeldView = Pick<MachineView, 'router_exits' | 'live_ip_nodes' | 'renewing_ip_nodes' | 'subscription'>;
 type RecycleView = Pick<MachineView, 'lifecycle' | 'recycle_on' | 'recycle_held'> & HeldView;
-/** 不自动回收的原因（短句 + 悬停）：软路由出口还指着、同机 IP 节点还在用、开着自动续费，有几样写几样；旧中控没有 live_ip_nodes 时按出口写 */
+/** 不自动回收的原因（短句 + 悬停）：软路由出口还指着、同机 IP 节点还在用、同机 IP 节点开着自动续费、开着自动续费，有几样写几样；旧中控没有 live_ip_nodes 时按出口写 */
 export function heldNote(m: HeldView): { text: string; tip: string } {
   const ips = m.live_ip_nodes ?? [];
+  const ipRenew = m.renewing_ip_nodes ?? [];
   const renew = !!m.subscription?.auto_renew;
-  const exits = !!m.router_exits?.length || (ips.length === 0 && !renew);
-  const why = [exits && '软路由出口还指着', ips.length > 0 && `同机 IP 节点 ${ips.join('、')} 还在用`, renew && '开着自动续费'].filter(Boolean).join('、');
+  const exits = !!m.router_exits?.length || (ips.length === 0 && ipRenew.length === 0 && !renew);
+  const why = [exits && '软路由出口还指着', ips.length > 0 && `同机 IP 节点 ${ips.join('、')} 还在用`, ipRenew.length > 0 && `同机 IP 节点 ${ipRenew.join('、')} 开着自动续费`, renew && '开着自动续费'].filter(Boolean).join('、');
   const tip = [
     exits && HELD_TIP,
     ips.length > 0 && '宿主机回收会连带它上面的同机 IP 节点，它们还在用，宿主机断了它们也跟着断。\n要回收，先退役或换走这些 IP 节点，或确认后立即回收（连它们一起回收）。',
+    ipRenew.length > 0 && '宿主机回收会连带它上面的同机 IP 节点，它们开着自动续费，不会到期。\n要回收，先关掉这些 IP 节点的自动续费或换走它们，或确认后立即回收（连它们一起回收）。',
     renew && '开着自动续费的会一直顺延到期日，不会回收，照常计费。\n不想再续，到「费用」里关掉自动续费，之后到期满 1 天自动回收。',
   ].filter(Boolean).join('\n');
   return { text: `${why}，不自动回收`, tip };

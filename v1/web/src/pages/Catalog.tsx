@@ -95,16 +95,16 @@ const TEAM_KEY: Record<string, (t: Team) => number | string> = { name: (t) => t.
 function TeamCost({ t, active }: { t: Team; active?: number }) {
   const u = t.monthly_usd;
   if (!u.by_currency.length && !u.unconverted.length) return <span className="t-muted">—</span>;
-  // 备用团队：被扣住不回收的几台（出口还指着 / 同机 IP 节点还在用）照常续费，只显示它们的月费、已算进页头合计；其余闲置备用不续费、不计
+  // 备用团队：被扣住不回收的几台（出口还指着 / 同机 IP 节点还在用 / 开着自动续费）照常续费，只显示它们的月费、已算进页头合计；其余不续费的备用机不计
   if (t.spare) {
     const h = t.monthly_usd_held; const n = t.held_count ?? 0;
     if (h && n > 0) {
       // 被扣住的总台数用服务端的 held_total（含没订阅的），在用台数没加载出来时不写后半句
       const idle = active != null ? active - (t.held_total ?? n) : null;
-      return <span className="num" data-tip={`其中 ${n} 台被扣住不回收（软路由出口还指着 / 同机 IP 节点还在用），照常续费，已算进合计${idle == null ? '' : idle > 0 ? `；其余 ${idle} 台闲置备用不计` : '；没有闲置备用'}
+      return <span className="num" data-tip={`其中 ${n} 台被扣住不回收（软路由出口还指着 / 同机 IP 节点还在用 / 开着自动续费），照常续费，已算进合计${idle == null ? '' : idle > 0 ? `；其余 ${idle} 台不续费的备用机不计` : '；没有不续费的备用机'}
 ${usdTotalTip(h)}`}>{F.money(h.cents, 'USD')}{h.unconverted.length ? '*' : ''}</span>;
     }
-    return <span className="num t-muted" data-tip={`闲置备用不再续费，不计入合计
+    return <span className="num t-muted" data-tip={`不续费的备用机，不计入合计
 ${usdTotalTip(u)}`}>{F.money(u.cents, 'USD')}{u.unconverted.length ? '*' : ''}</span>;
   }
   return <span className="num" data-tip={usdTotalTip(u)}>{F.money(u.cents, 'USD')}{u.unconverted.length ? '*' : ''}</span>;
@@ -128,7 +128,7 @@ function TeamsTab() {
   const held = useHeld(edit === 'new' ? 'new' : edit?.id, edit);
   const renumHeld = useHeld(renum?.id, renum);
   const list = sortRows([...(q.data ?? [])].sort((a, b) => a.sort_order - b.sort_order), sort, { ...TEAM_KEY, nodes: (t) => counts?.[t.id]?.active ?? t.node_count });
-  // 各团队在用机器的月费合计（USD）；备用团队只算被扣住不回收、照常续费的几台，闲置备用不计（同首页）；有团队带没折算的币种时注明
+  // 各团队在用机器的月费合计（USD）；备用团队只算被扣住不回收、照常续费的几台，不续费的备用机不计（同首页）；有团队带没折算的币种时注明
   const paidTeams = list.filter((t) => !t.spare || (t.held_count ?? 0) > 0);
   const feeOf = (t: Team) => (t.spare ? t.monthly_usd_held : t.monthly_usd);
   const teamsUsd = paidTeams.reduce((s, t) => s + (feeOf(t)?.cents ?? 0), 0);
@@ -139,7 +139,7 @@ function TeamsTab() {
   return (
     <>
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
-      <Panel title="团队" count={list.length} sub={<><InfoTip text={"首页和表格按「排序」从小到大排列\n月费是在用机器折成美元的合计，汇率在「设置 → 汇率」\n闲置备用不再续费，不计入合计；被出口指着、有在用 IP 节点的备用机照常续费，已算进合计\n线路机不归团队，单列一项；合计同首页「每月费用」"} />{list.length > 0 && <span className="t-sub" style={{ marginLeft: 'var(--sp-8)' }} data-tip={partial ? '带 * 的团队有币种缺汇率，没计入合计' : undefined}>月费合计 <span className="num">{F.money(total, 'USD')}</span>{partial ? '*' : ''}{relaysUsd > 0 && <> = 团队 <span className="num">{F.money(teamsUsd, 'USD')}</span> + 线路机 <span className="num">{F.money(relaysUsd, 'USD')}</span></>}</span>}</>} tools={<Button variant="primary" size="md" onClick={() => setEdit('new')}><Plus />新建团队</Button>} flush>
+      <Panel title="团队" count={list.length} sub={<><InfoTip text={"首页和表格按「排序」从小到大排列\n月费是在用机器折成美元的合计，汇率在「设置 → 汇率」\n不续费的备用机不计入合计；被出口指着、有在用 IP 节点、开着自动续费的备用机照常续费，已算进合计\n线路机不归团队，单列一项；合计同首页「每月费用」"} />{list.length > 0 && <span className="t-sub" style={{ marginLeft: 'var(--sp-8)' }} data-tip={partial ? '带 * 的团队有币种缺汇率，没计入合计' : undefined}>月费合计 <span className="num">{F.money(total, 'USD')}</span>{partial ? '*' : ''}{relaysUsd > 0 && <> = 团队 <span className="num">{F.money(teamsUsd, 'USD')}</span> + 线路机 <span className="num">{F.money(relaysUsd, 'USD')}</span></>}</span>}</>} tools={<Button variant="primary" size="md" onClick={() => setEdit('new')}><Plus />新建团队</Button>} flush>
         <TableWrap>
           <table className="dt is-one" style={{ minWidth: 430 }}>
             <colgroup><col /><col style={{ width: 90 }} /><col style={{ width: 100 }} /><col style={{ width: 110 }} /><col style={{ width: 52 }} /></colgroup>

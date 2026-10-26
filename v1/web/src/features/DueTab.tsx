@@ -82,7 +82,7 @@ export function DueTab() {
     <>
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       <Panel title={`未来 ${DAYS} 天待付`} count={d ? `${n} 台` : undefined}
-        sub={<><InfoTip text={"按供应商和到期日分组，金额是订阅的每期价格；折成美元按「设置 → 汇率」\n已过期还没续费的也在这里\n闲置备用等到期丢弃，不在这里；备用团队里还被出口指着、有在用 IP 节点的照常续费，会在这里\n登记续费只记账、顺延到期日，不会向供应商付款"} />{d && n > 0 && <span className="t-sub" style={{ marginLeft: 'var(--sp-8)' }} data-tip={usdTotalTip(d.total)}>合计 <span className="num">{usdText(d.total)}</span></span>}</>} flush>
+        sub={<><InfoTip text={"按供应商和到期日分组，金额是订阅的每期价格；折成美元按「设置 → 汇率」\n已过期还没续费的也在这里\n不续费的备用机等到期丢弃，不在这里；备用团队里还被出口指着、有在用 IP 节点、开着自动续费的照常续费，会在这里\n登记续费只记账、顺延到期日，不会向供应商付款"} />{d && n > 0 && <span className="t-sub" style={{ marginLeft: 'var(--sp-8)' }} data-tip={usdTotalTip(d.total)}>合计 <span className="num">{usdText(d.total)}</span></span>}</>} flush>
         <TableWrap>
           {d && d.groups.length > 0 && (
             <table className="dt is-one due-table" style={{ minWidth: 1000 }}>
