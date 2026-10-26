@@ -142,8 +142,9 @@ function RenameSection({ m }: { m: MachineView }) {
         {!!alsoIps?.length && <div className="span-2"><Note>同机 IP 节点一起移{toSpare && '入备用'}：{alsoIps.map((x, i) => <React.Fragment key={x.machine_id}>{i > 0 && '、'}<span className="num">{x.old_name} → <b>{x.new_name}</b></span></React.Fragment>)}</Note></div>}
         {!!also?.length && <div className="span-2"><RenameNote renames={also} tip={`${m.team!.name} 少了这台，后面的节点前移补号，编号保持连续`} /></div>}
         {spareBlocked && <div className="span-2"><Note tone="bad">不能改到备用团队：{spareBlocked}。要进备用请用「退役」</Note></div>}
-        {toSpare && !spareBlocked && <div className="span-2"><Note tone="warn">备用团队的机器不再续费：订阅过期满 1 天自动回收</Note></div>}
-        {toSpare && !spareBlocked && exitsLeft > 0 && <div className="span-2"><Note tone="warn">{exitsLeft} 个软路由出口还指向{alsoIps?.length ? '它和一起移入的同机 IP 节点' : '它'}，客户会继续用；要换机器请用替换</Note></div>}
+        {toSpare && !spareBlocked && exitsLeft === 0 && <div className="span-2"><Note tone="warn">备用团队的机器不再续费：订阅过期满 1 天自动回收</Note></div>}
+        {toSpare && !spareBlocked && exitsLeft > 0 && <div className="span-2"><Note tone="warn">{exitsLeft} 个软路由出口还指向{alsoIps?.length ? '它和一起移入的同机 IP 节点' : '它'}，客户会继续用（出口指着时不自动回收）；要换机器请用替换</Note></div>}
+        {teamMoved && !spareBlocked && pv.data?.warnings.map((w) => <div key={w} className="span-2"><Note tone="warn">{w}</Note></div>)}
         <div className="span-2 row row-between">
           {/* 改了名字才出现「旧名 → 新名」 */}
           <span className="row" style={{ gap: 8 }}>

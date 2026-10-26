@@ -357,16 +357,19 @@ pub fn retire(ctx: &Ctx, machine: &str, now: bool, reason: Option<&str>, no_clea
                 outln(format!("它上面的同机 IP 节点一并回收：{}", ip_nodes.join("、")));
             }
         } else {
+            // 还有软路由出口指着它（或随行 IP 节点）时到期也不自动回收（spare.rs），不写回收日
+            let held = pre["routers"].as_array().is_some_and(|r| !r.is_empty());
+            let when = if held { "软路由出口还指着时不自动回收".to_string() } else { format!("{} 起自动回收（账单时区）", st(sp, "/recycle_on")) };
             outln(format!(
-                "将把 {name} 移进备用：→ {}，机器照常运行，{} 起自动回收（账单时区）。在那之前移出备用（fleetctl rename {} --team <团队>）就是撤销退役。",
+                "将把 {name} 移进备用：→ {}，机器照常运行，{when}。在那之前移出备用（fleetctl rename {} --team <团队>）就是撤销退役。",
                 st(sp, "/to_name"),
-                st(sp, "/recycle_on"),
                 st(sp, "/to_name")
             ));
             if !ip_nodes.is_empty() {
                 outln(format!("同机 IP 节点一起进备用：{}", ip_nodes.join("，")));
             }
-            for n in sp["notes"].as_array().into_iter().flatten() {
+            // notes：自动续费关掉、编号连带改动等；warnings：还被软路由出口指着的节点访问策略会变
+            for n in sp["notes"].as_array().into_iter().flatten().chain(sp["warnings"].as_array().into_iter().flatten()) {
                 outln(format!("注意：{}", n.as_str().unwrap_or("")));
             }
         }
@@ -437,16 +440,18 @@ pub fn rename(
         body["team_id"] = json!(ctx.team_id(t)?);
     }
     // 换团队时同机 IP 节点一起走、原团队剩下的节点会压缩编号（同事务）：先取预览，改完把连带改动的一并打出来
-    let (renames, ip_nodes, router_exits): (Vec<String>, Vec<String>, Value) = if team.is_some() {
+    let (renames, ip_nodes, router_exits, warnings): (Vec<String>, Vec<String>, Value, Vec<String>) = if team.is_some() {
         let mut q = vec![("team_id", st(&body, "/team_id"))];
         if let Some(n) = number {
             q.push(("number", n.to_string()));
         }
         let pv = ctx.c.get_q(&format!("/machines/{id}/rename-preview"), &q)?;
         let list = |k: &str| pv[k].as_array().into_iter().flatten().map(|r| format!("{} → {}", st(r, "/old_name"), st(r, "/new_name"))).collect();
-        (list("renames"), list("ip_nodes"), pv["router_exits"].clone())
+        // 还被软路由出口指着的节点生效的访问策略会变（客户受影响）：只提示
+        let warnings = pv["warnings"].as_array().into_iter().flatten().filter_map(|w| w.as_str().map(String::from)).collect();
+        (list("renames"), list("ip_nodes"), pv["router_exits"].clone(), warnings)
     } else {
-        (vec![], vec![], Value::Null)
+        (vec![], vec![], Value::Null, vec![])
     };
     if let Some(n) = number {
         body["number"] = json!(n);
@@ -473,10 +478,14 @@ pub fn rename(
     if router_exits.as_array().is_some_and(|a| !a.is_empty()) {
         d["router_exits"] = router_exits.clone();
     }
+    if !warnings.is_empty() {
+        d["warnings"] = json!(warnings);
+    }
     ctx.emit(&d, || {
         let ips = if ip_nodes.is_empty() { String::new() } else { format!("\n同机 IP 节点一起移：{}", ip_nodes.join("，")) };
         let also = if renames.is_empty() { String::new() } else { format!("\n原团队编号连带改动：{}", renames.join("，")) };
-        format!("{} → {}{ips}{also}{}", st(&cur, "/name"), st(&d, "/name"), spare_exits_note(&router_exits))
+        let warn: String = warnings.iter().map(|w| format!("\n注意：{w}")).collect();
+        format!("{} → {}{ips}{also}{}{warn}", st(&cur, "/name"), st(&d, "/name"), spare_exits_note(&router_exits))
     });
     Ok(0)
 }
