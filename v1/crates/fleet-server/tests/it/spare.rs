@@ -993,3 +993,34 @@ async fn team_change_previews_warn_when_effective_policy_changes_for_pointed_nod
     let pv = t.get(&format!("/api/v1/machines/{host}/rename-preview?team_id={b}")).await;
     assert_eq!(pv["warnings"], json!([]), "{pv}");
 }
+
+/// 被扣住不回收的备用机照常续费：团队列表的 monthly_usd_held / held_count 只数它们（闲置备用不数），
+/// 流量页团队成本里备用团队的 held / 月费 / USD/GB 只按它们算，节点行带 held（和首页 monthly_usd 的口径一致）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn held_spare_cost_counts_in_teams_and_traffic() {
+    let t = setup(false).await;
+    let sp = spare_team(&t).await;
+    let held = seed_vps(&t, sp, 1, "203.0.113.71", None).await;
+    let idle = seed_vps(&t, sp, 2, "203.0.113.72", None).await;
+    sub(&t, held, "2026-10-20", "UTC").await;
+    sub(&t, idle, "2026-10-20", "UTC").await;
+    let rid = Uuid::now_v7();
+    sqlx::query("insert into router (id, name, tunnel_port) values ($1, '办公室', 23004)").bind(rid).execute(&t.st.db).await.unwrap();
+    let entry = json!({"id": Uuid::now_v7(), "name": "备用-01 · 线路机1:20001", "node_id": held, "relay_id": Uuid::now_v7(), "node_name": "备用-01", "relay_name": "线路机1", "port": 20001, "lifecycle": "active"});
+    let snap = json!({"exits": [{"name": "节点01", "entry": entry, "sync": "ok", "linked": true}]});
+    sqlx::query("insert into router_status (router_id, ts, reachable, data, last_ok_at) values ($1, now(), true, $2, now())").bind(rid).bind(snap).execute(&t.st.db).await.unwrap();
+    assert_eq!(t.get(&format!("/api/v1/machines/{held}")).await["recycle_held"], json!(true));
+    assert_eq!(t.get(&format!("/api/v1/machines/{idle}")).await["recycle_held"], json!(false));
+
+    t.st.live.invalidate();
+    t.get("/api/v1/machines").await; // 视图重算一遍（团队列表、流量取最近一次算好的）
+    let teams = t.get("/api/v1/teams").await;
+    let team = teams.as_array().unwrap().iter().find(|x| x["spare"] == json!(true)).unwrap();
+    assert_eq!((team["monthly_usd"]["cents"].as_i64(), team["monthly_usd_held"]["cents"].as_i64(), team["held_count"].as_i64()), (Some(1000), Some(500), Some(1)), "{team}");
+
+    let v = t.get("/api/v1/traffic/daily?days=7").await;
+    let row = v["teams"].as_array().unwrap().iter().find(|x| x["spare"] == json!(true)).unwrap();
+    assert_eq!((row["nodes"].as_i64(), row["held"].as_i64(), row["monthly_usd_cents"].as_i64()), (Some(2), Some(1), Some(500)), "{row}");
+    let flags: Vec<(String, bool)> = v["nodes"].as_array().unwrap().iter().map(|n| (n["id"].as_str().unwrap().to_string(), n["held"].as_bool().unwrap())).collect();
+    assert!(flags.contains(&(held.to_string(), true)) && flags.contains(&(idle.to_string(), false)), "{flags:?}");
+}

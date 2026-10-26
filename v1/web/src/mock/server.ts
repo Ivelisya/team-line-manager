@@ -440,7 +440,11 @@ R('POST', '/auth/logout', () => { sessionStorage.setItem('mock:auth', '0'); retu
 R('GET', '/auth/me', () => { if (sessionStorage.getItem('mock:auth') === '0') throw bad('未登录', 401, 'unauthorized'); return { username: db.user }; });
 
 // 团队带在用机器的月费合计（USD，同服务端）
-R('GET', '/teams', () => clone(db.teams).map((t) => ({ ...t, monthly_usd: usdTotal(db.machines.filter((m) => m.lifecycle === 'active' && m.team?.id === t.id && m.subscription).map((m) => m.subscription!)) })));
+R('GET', '/teams', () => clone(db.teams).map((t) => {
+  const ms = db.machines.filter((m) => m.lifecycle === 'active' && m.team?.id === t.id && m.subscription);
+  const held = t.spare ? ms.filter((m) => m.recycle_held) : [];
+  return { ...t, monthly_usd: usdTotal(ms.map((m) => m.subscription!)), monthly_usd_held: usdTotal(held.map((m) => m.subscription!)), held_count: held.length };
+}));
 R('POST', '/teams', ({ body }) => {
   if (!body.name?.trim()) throw bad('团队名不能为空');
   if (db.teams.some((t) => t.name === body.name)) throw bad('团队名已存在', 409, 'conflict');

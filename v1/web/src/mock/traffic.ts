@@ -31,7 +31,7 @@ export function mockUsage(m: MachineView): { bytes30: number; sum7: number } {
 
 function billed(rule: string, rx: number, tx: number) { return rule === 'min' ? Math.min(rx, tx) : rule === 'sum' ? rx + tx : rule === 'out' ? tx : rule === 'in' ? rx : Math.max(rx, tx); }
 const NO_NIC = { rule: null, rx: null, tx: null, billed: null, nic_daily: null } as const;
-const NO_COST = { monthly_usd_cents: null, usd_per_gb: null, avg7: null, idle: false };
+const NO_COST = { monthly_usd_cents: null, usd_per_gb: null, avg7: null, idle: false, held: false };
 /** 网卡 ≈ 经过的业务流量（进、出各一次）再加一点开销；每天按规则算计费量，区间合计先求下行、上行之和再套规则 */
 function nicOf(id: string, biz: DailyBiz[], rule: string) {
   const daily: DailyNic[] = biz.map((d) => { const s = d.down + d.up; const rx = Math.round(s * (1.02 + 0.03 * (hashStr(id + d.date) % 10) / 10)); const tx = Math.round(s * 1.01); return { date: d.date, rx, tx, billed: billed(rule, rx, tx) }; });
@@ -113,22 +113,25 @@ export function installTrafficMock(R: Reg, machines: () => MachineView[], teams:
     }
     for (const n of list) {
       const m = byId.get(n.id); if (!m || n.direct) continue;
-      n.monthly_usd_cents = mockMonthly(m); n.usd_per_gb = mockPerGb(n.monthly_usd_cents, n.down + n.up, days);
+      n.held = !!m.recycle_held; n.monthly_usd_cents = mockMonthly(m); n.usd_per_gb = mockPerGb(n.monthly_usd_cents, n.down + n.up, days);
       const s7 = use.get(n.id)?.s7 ?? 0; n.avg7 = Math.round(s7 / IDLE.days); n.idle = mockIdle(m, s7);
     }
     const teamRows = new Map<string, TrafficDailyTeam>();
     for (const m of all) {
       if (m.kind === 'relay' || !m.team) continue;
-      const t = teamRows.get(m.team.id) ?? { id: m.team.id, name: m.team.name, spare: !!m.spare, nodes: 0, idle: 0, monthly_usd_cents: null, unpriced: 0, bytes_30d: 0, usd_per_gb: null };
+      const t = teamRows.get(m.team.id) ?? { id: m.team.id, name: m.team.name, spare: !!m.spare, nodes: 0, idle: 0, monthly_usd_cents: null, held: 0, held_bytes_30d: 0, unpriced: 0, bytes_30d: 0, usd_per_gb: null };
       const u = use.get(m.id) ?? { b30: 0, s7: 0 };
       t.bytes_30d += u.b30;
       if (m.lifecycle === 'active') {
         t.nodes++; t.idle += mockIdle(m, u.s7) ? 1 : 0;
-        const c = mockMonthly(m); if (c == null) t.unpriced++; else t.monthly_usd_cents = (t.monthly_usd_cents ?? 0) + c;
+        // 备用团队只有被扣住不回收的几台照常续费（同服务端），月费、没价格、USD/GB 只算它们
+        const held = !!m.spare && !!m.recycle_held;
+        if (held) { t.held++; t.held_bytes_30d += u.b30; }
+        if (!m.spare || held) { const c = mockMonthly(m); if (c == null) t.unpriced++; else t.monthly_usd_cents = (t.monthly_usd_cents ?? 0) + c; }
       }
       teamRows.set(m.team.id, t);
     }
-    const teamList = teams().map((x) => teamRows.get(x.id)).filter((t): t is TrafficDailyTeam => !!t && (t.nodes > 0 || t.bytes_30d > 0)).map((t) => ({ ...t, usd_per_gb: mockPerGb(t.monthly_usd_cents, t.bytes_30d, 30) }));
+    const teamList = teams().map((x) => teamRows.get(x.id)).filter((t): t is TrafficDailyTeam => !!t && (t.nodes > 0 || t.bytes_30d > 0)).map((t) => ({ ...t, usd_per_gb: mockPerGb(t.monthly_usd_cents, t.spare ? t.held_bytes_30d : t.bytes_30d, 30) }));
     list.sort((a, b) => b.down + b.up - (a.down + a.up));
     const filtered = !!team || !!pick;
     const relays: TrafficDailyRelay[] = all.filter((r) => r.kind === 'relay' && (filtered ? biz.has(r.id) || pick?.id === r.id : r.lifecycle !== 'retired')).map((r) => {

@@ -139,14 +139,14 @@ const perGb = (monthlyCents: number | null, bytes: number, days: number) => (mon
 const NodesTable = React.memo(function NodesTable({ nodes, days, idle, spare, loading, failed, stale, sortRaw, onSort, filtered }: {
   nodes: TrafficDailyNode[] | undefined; days: number; idle: TrafficDaily['idle'] | undefined; spare: TrafficDailyTeam[] | undefined; loading: boolean; failed: boolean; stale: boolean; sortRaw: string | null; onSort: (s: string) => void; filtered: boolean;
 }) {
-  // 备用团队的节点不再续费：月费灰字、不进底行合计，也不标闲置（同团队成本表）
+  // 闲置备用的节点不再续费：月费灰字、不进底行合计，也不标闲置（同团队成本表）；被扣住不回收的备用机（n.held）照常续费，不灰、计入底行
   const spareIds = React.useMemo(() => new Set((spare ?? []).filter((t) => t.spare).map((t) => t.id)), [spare]);
   const sort = React.useMemo(() => { const s = parseSort(sortRaw); return s && (['name', 'sum', 'cost', 'perGb'] as string[]).includes(s.id) ? s : null; }, [sortRaw]);
   const rows = React.useMemo(() => {
     const list = (nodes ?? []).map((n) => {
       const daily = n.daily.slice(-days); const sum = total(sumOf(daily));
-      const sp = !!n.team && spareIds.has(n.team.id);
-      return { n, daily, sum, sp, perGb: sp ? null : perGb(n.monthly_usd_cents, sum, days), nic: n.rule && n.nic_daily ? nicRange(n.rule, n.nic_daily.slice(-days)) : null };
+      const inSpare = !!n.team && spareIds.has(n.team.id); const sp = inSpare && !n.held;
+      return { n, daily, sum, sp, inSpare, perGb: sp ? null : perGb(n.monthly_usd_cents, sum, days), nic: n.rule && n.nic_daily ? nicRange(n.rule, n.nic_daily.slice(-days)) : null };
     });
     const s = sort ?? DEFAULT_SORT;
     const key = (r: (typeof list)[number]): number | null => (s.id === 'sum' ? r.sum : s.id === 'cost' ? r.n.monthly_usd_cents : r.perGb);
@@ -160,7 +160,7 @@ const NodesTable = React.memo(function NodesTable({ nodes, days, idle, spare, lo
   const dates = rows[0]?.daily.map((x) => x.date) ?? [];
   const max = React.useMemo(() => Math.max(0, ...rows.flatMap((r) => r.daily.map((x) => total(x)))), [rows]);
   const foot = React.useMemo(() => dates.map((_, i) => rows.reduce((a, r) => a + total(r.daily[i]), 0)), [rows, dates]);
-  // 底行的月费与 USD/GB 只算有月费、不在备用团队的节点（月费与流量对得上）
+  // 底行的月费与 USD/GB 只算有月费、不是闲置备用的节点（月费与流量对得上）
   const cost = React.useMemo(() => rows.reduce((a, r) => (r.n.monthly_usd_cents == null || r.sp ? a : { cents: a.cents + r.n.monthly_usd_cents, bytes: a.bytes + r.sum }), { cents: 0, bytes: 0 }), [rows]);
   const wrap = useScrollEnd(`${days}:${dates.length}`);
   const last = dates[dates.length - 1];
@@ -181,12 +181,12 @@ const NodesTable = React.memo(function NodesTable({ nodes, days, idle, spare, lo
               <SortTh id="perGb" label="USD/GB" r sort={sort} onSort={onSort} tip={`月费 ÷ 按所选 ${days} 天日均折成的 30 天业务流量\n没有月费或没有流量显示 —`} />
             </tr></thead>
             <tbody>
-              {rows.map(({ n, daily, sum, nic, sp, perGb: pg }) => (
+              {rows.map(({ n, daily, sum, nic, sp, inSpare, perGb: pg }) => (
                 <tr key={`${n.id}${n.direct ? 'd' : ''}`} className="is-link" tabIndex={0} onClick={() => openDrawer(n.id, 'traffic')} onKeyDown={(e) => { if (e.key === 'Enter') openDrawer(n.id, 'traffic'); }}>
                   <td>
                     <div className="tr-node"><Flag country={n.country} />
                       <div>
-                        <span className="cell-main tr-name"><span>{n.name}</span>{n.idle && !sp && <Pill className="pill-sm" tip={idleTip(n.avg7)}>闲置</Pill>}</span>
+                        <span className="cell-main tr-name"><span>{n.name}</span>{n.idle && !inSpare && <Pill className="pill-sm" tip={idleTip(n.avg7)}>闲置</Pill>}</span>
                         <span className="sub">{[n.team?.name ?? (n.direct ? '直出' : '未分团队'), n.lifecycle === 'retired' && '已退役'].filter(Boolean).join(' · ')}</span>
                       </div>
                     </div>
@@ -197,7 +197,7 @@ const NodesTable = React.memo(function NodesTable({ nodes, days, idle, spare, lo
                   <td className="r strong">{cell(sum)}{nic && <span className="sub" data-tip={`网卡计费 · ${trafficRuleLabel(nic.rule)}
 ${days} 天 ↓ 下行 ${F.str(F.bytes(nic.rx))} · ↑ 上行 ${F.str(F.bytes(nic.tx))}，先加总再按规则算`}>计费 {cell(nic.billed)}</span>}</td>
                   <td className="r">{cell(sum / days)}</td>
-                  <td className={sp ? 'r t-muted' : 'r'} data-tip={sp ? '备用团队的节点，不计入合计；闲置的不再续费，被出口指着、有在用 IP 节点的照常续费，月费算在首页「每月费用」里' : undefined}>{F.money(n.monthly_usd_cents, 'USD')}</td>
+                  <td className={sp ? 'r t-muted' : 'r'} data-tip={sp ? '闲置备用不再续费，不计入合计' : undefined}>{F.money(n.monthly_usd_cents, 'USD')}</td>
                   <td className={sp ? 'r t-muted' : 'r'}>{sp ? '—' : F.usdPerGb(pg)}</td>
                 </tr>
               ))}
@@ -224,8 +224,8 @@ ${days} 天 ↓ 下行 ${F.str(F.bytes(nic.rx))} · ↑ 上行 ${F.str(F.bytes(n
 
 /** 团队成本：在用节点的月费、近 30 天业务流量、每 GB 多少美元（不随团队筛选变）；点一行按这个团队筛选，再点取消 */
 const TeamsTable = React.memo(function TeamsTable({ teams, picked, stale, onPick }: { teams: TrafficDailyTeam[]; picked: string; stale: boolean; onPick: (id: string) => void }) {
-  // 「全部」不含备用团队（它们不续费、等放生，月费和流量另算）
-  const all = React.useMemo(() => teams.filter((t) => !t.spare).reduce((a, t) => ({ nodes: a.nodes + t.nodes, idle: a.idle + t.idle, cents: a.cents + (t.monthly_usd_cents ?? 0), bytes: a.bytes + t.bytes_30d, unpriced: a.unpriced + t.unpriced }), { nodes: 0, idle: 0, cents: 0, bytes: 0, unpriced: 0 }), [teams]);
+  // 「全部」不含闲置备用（不续费、等放生）；备用团队里被扣住不回收的几台照常续费，月费、流量、没价格台数算进来（服务端备用团队的月费只按它们算）
+  const all = React.useMemo(() => teams.filter((t) => !t.spare || t.held > 0).reduce((a, t) => ({ nodes: a.nodes + (t.spare ? t.held : t.nodes), idle: a.idle + t.idle, cents: a.cents + (t.monthly_usd_cents ?? 0), bytes: a.bytes + (t.spare ? t.held_bytes_30d : t.bytes_30d), unpriced: a.unpriced + t.unpriced }), { nodes: 0, idle: 0, cents: 0, bytes: 0, unpriced: 0 }), [teams]);
   const fee = (cents: number | null, unpriced: number) => <span data-tip={unpriced ? `有 ${unpriced} 台没有价格或没有汇率，没算进月费` : undefined}>{F.money(cents, 'USD')}{unpriced > 0 && '*'}</span>;
   return (
     <Panel title="团队成本" sub={<InfoTip text={'月费：在用节点的订阅价折成美元的每月合计\nUSD/GB：月费 ÷ 近 30 天业务流量，不随上面的区间变\n点一行按这个团队筛选'} />} flush>
@@ -238,13 +238,13 @@ const TeamsTable = React.memo(function TeamsTable({ teams, picked, stale, onPick
                 <td><span className="cell-main">{t.name}</span></td>
                 <td className="r">{t.nodes} 台</td>
                 <td className="r">{t.idle && !t.spare ? `${t.idle} 台` : '—'}</td>
-                <td className={t.spare ? 'r t-muted' : 'r'} data-tip={t.spare ? '备用团队不计入合计；闲置的不再续费，被出口指着、有在用 IP 节点的备用机照常续费，月费算在首页「每月费用」里，这里不拆' : undefined}>{fee(t.monthly_usd_cents, t.unpriced)}</td>
+                <td className={t.spare && !t.held ? 'r t-muted' : 'r'} data-tip={t.spare ? (t.held ? `其中 ${t.held} 台被扣住不回收（软路由出口还指着 / 同机 IP 节点还在用），照常续费，已算进合计；${t.nodes > t.held ? `其余 ${t.nodes - t.held} 台闲置备用不计` : '没有闲置备用'}` : '闲置备用不再续费，不计入合计') : undefined}>{t.spare && !t.held ? '—' : fee(t.monthly_usd_cents, t.unpriced)}</td>
                 <td className="r">{cell(t.bytes_30d)}</td>
-                <td className={t.spare ? 'r t-muted' : 'r strong'} data-tip={t.spare ? '备用团队不再续费，不算每 GB 成本' : undefined}>{t.spare ? '—' : F.usdPerGb(t.usd_per_gb)}</td>
+                <td className={t.spare && !t.held ? 'r t-muted' : 'r strong'} data-tip={t.spare ? (t.held ? `只按被扣住不回收的 ${t.held} 台算（月费 ÷ 它们近 30 天的业务流量）` : '闲置备用不再续费，不算每 GB 成本') : undefined}>{t.spare && !t.held ? '—' : F.usdPerGb(t.usd_per_gb)}</td>
               </tr>
             ))}
           </tbody>
-          {teams.filter((t) => !t.spare).length > 1 && (
+          {teams.filter((t) => !t.spare || t.held > 0).length > 1 && (
             <tfoot><tr>
               <td>全部</td><td className="r">{all.nodes} 台</td><td className="r">{all.idle ? `${all.idle} 台` : '—'}</td>
               <td className="r">{fee(all.cents || null, all.unpriced)}</td><td className="r">{cell(all.bytes)}</td><td className="r">{F.usdPerGb(perGb(all.cents || null, all.bytes, 30))}</td>

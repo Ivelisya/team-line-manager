@@ -387,6 +387,12 @@ pub struct MachineView {
     pub anomaly: Option<crate::anomaly::Anomaly>,
 }
 
+/// 被扣住不回收的备用机（`recycle_held`：软路由出口还指着、或上面还有在用的同机 IP 节点）：它们照常续费，团队页、流量页的月费合计要带上。
+/// 调用方传在用机器视图（views::live，最多旧 3 秒；算不出来时退回最近一份），都没有为空
+pub fn held_ids(live: Option<Arc<Vec<MachineView>>>) -> HashSet<Uuid> {
+    live.map(|v| v.iter().filter(|m| m.recycle_held).map(|m| m.id).collect()).unwrap_or_default()
+}
+
 impl MachineView {
     /// 闲置备用：在用、在备用团队、没有软路由出口指向、上面没有在用的同机 IP 节点（这样的机器是等到期放生的，供应商那边停了也是预期）。
     /// 不开告警（alerts.rs）、不计入总览的健康计数（overview_of）；健康状态本身照常算，卡片上看得到。

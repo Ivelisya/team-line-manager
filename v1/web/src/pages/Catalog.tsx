@@ -92,11 +92,20 @@ const TEAM_COLS = [
 ];
 const TEAM_KEY: Record<string, (t: Team) => number | string> = { name: (t) => t.name, order: (t) => t.sort_order, nodes: (t) => t.node_count, cost: (t) => t.monthly_usd.cents };
 /** 团队的月费（USD，服务端折好的在用机器合计）：悬停列出原币种与汇率；有没折算的币种时加「*」 */
-function TeamCost({ t }: { t: Team }) {
+function TeamCost({ t, active }: { t: Team; active?: number }) {
   const u = t.monthly_usd;
   if (!u.by_currency.length && !u.unconverted.length) return <span className="t-muted">—</span>;
-  // 备用团队的机器不再续费：灰字，不计入页头合计
-  if (t.spare) return <span className="num t-muted" data-tip={`闲置备用不再续费，不计入合计；还被出口指着、有在用 IP 节点的备用机照常续费，月费算在首页「每月费用」里，这里不拆\n${usdTotalTip(u)}`}>{F.money(u.cents, 'USD')}{u.unconverted.length ? '*' : ''}</span>;
+  // 备用团队：被扣住不回收的几台（出口还指着 / 同机 IP 节点还在用）照常续费，只显示它们的月费、已算进页头合计；其余闲置备用不续费、不计
+  if (t.spare) {
+    const h = t.monthly_usd_held; const n = t.held_count ?? 0;
+    if (h && n > 0) {
+      const idle = active != null ? active - n : null;
+      return <span className="num" data-tip={`其中 ${n} 台被扣住不回收（软路由出口还指着 / 同机 IP 节点还在用），照常续费，已算进合计；${idle ? `其余 ${idle} 台闲置备用不计` : '没有闲置备用'}
+${usdTotalTip(h)}`}>{F.money(h.cents, 'USD')}{h.unconverted.length ? '*' : ''}</span>;
+    }
+    return <span className="num t-muted" data-tip={`闲置备用不再续费，不计入合计
+${usdTotalTip(u)}`}>{F.money(u.cents, 'USD')}{u.unconverted.length ? '*' : ''}</span>;
+  }
   return <span className="num" data-tip={usdTotalTip(u)}>{F.money(u.cents, 'USD')}{u.unconverted.length ? '*' : ''}</span>;
 }
 /** 团队的「在用节点」：只数在用的（同流量页「团队成本」的口径）；上架中、退役中的另列在悬停里。机器列表没到时先显示服务端的台数（含这两类） */
@@ -118,17 +127,18 @@ function TeamsTab() {
   const held = useHeld(edit === 'new' ? 'new' : edit?.id, edit);
   const renumHeld = useHeld(renum?.id, renum);
   const list = sortRows([...(q.data ?? [])].sort((a, b) => a.sort_order - b.sort_order), sort, { ...TEAM_KEY, nodes: (t) => counts?.[t.id]?.active ?? t.node_count });
-  // 各团队在用机器的月费合计（USD），不含备用团队（它们不再续费，同首页）；有团队带没折算的币种时注明
-  const paidTeams = list.filter((t) => !t.spare);
-  const teamsUsd = paidTeams.reduce((s, t) => s + t.monthly_usd.cents, 0);
+  // 各团队在用机器的月费合计（USD）；备用团队只算被扣住不回收、照常续费的几台，闲置备用不计（同首页）；有团队带没折算的币种时注明
+  const paidTeams = list.filter((t) => !t.spare || (t.held_count ?? 0) > 0);
+  const feeOf = (t: Team) => (t.spare ? t.monthly_usd_held : t.monthly_usd);
+  const teamsUsd = paidTeams.reduce((s, t) => s + (feeOf(t)?.cents ?? 0), 0);
   // 线路机不归团队：单列一项，合计 = 各团队 + 线路机，同首页「每月费用」
   const relaysUsd = useRelaysMonthlyUsd().data ?? 0;
   const total = teamsUsd + relaysUsd;
-  const partial = paidTeams.some((t) => t.monthly_usd.unconverted.length);
+  const partial = paidTeams.some((t) => feeOf(t)?.unconverted.length);
   return (
     <>
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
-      <Panel title="团队" count={list.length} sub={<><InfoTip text={"首页和表格按「排序」从小到大排列\n月费是在用机器折成美元的合计，汇率在「设置 → 汇率」\n闲置备用不再续费，不计入合计（被出口指着、有在用 IP 节点的备用机照常续费，算在首页）\n线路机不归团队，单列一项；合计同首页「每月费用」"} />{list.length > 0 && <span className="t-sub" style={{ marginLeft: 'var(--sp-8)' }} data-tip={partial ? '带 * 的团队有币种缺汇率，没计入合计' : undefined}>月费合计 <span className="num">{F.money(total, 'USD')}</span>{partial ? '*' : ''}{relaysUsd > 0 && <> = 团队 <span className="num">{F.money(teamsUsd, 'USD')}</span> + 线路机 <span className="num">{F.money(relaysUsd, 'USD')}</span></>}</span>}</>} tools={<Button variant="primary" size="md" onClick={() => setEdit('new')}><Plus />新建团队</Button>} flush>
+      <Panel title="团队" count={list.length} sub={<><InfoTip text={"首页和表格按「排序」从小到大排列\n月费是在用机器折成美元的合计，汇率在「设置 → 汇率」\n闲置备用不再续费，不计入合计；被出口指着、有在用 IP 节点的备用机照常续费，已算进合计\n线路机不归团队，单列一项；合计同首页「每月费用」"} />{list.length > 0 && <span className="t-sub" style={{ marginLeft: 'var(--sp-8)' }} data-tip={partial ? '带 * 的团队有币种缺汇率，没计入合计' : undefined}>月费合计 <span className="num">{F.money(total, 'USD')}</span>{partial ? '*' : ''}{relaysUsd > 0 && <> = 团队 <span className="num">{F.money(teamsUsd, 'USD')}</span> + 线路机 <span className="num">{F.money(relaysUsd, 'USD')}</span></>}</span>}</>} tools={<Button variant="primary" size="md" onClick={() => setEdit('new')}><Plus />新建团队</Button>} flush>
         <TableWrap>
           <table className="dt is-one" style={{ minWidth: 430 }}>
             <colgroup><col /><col style={{ width: 90 }} /><col style={{ width: 100 }} /><col style={{ width: 110 }} /><col style={{ width: 52 }} /></colgroup>
@@ -138,7 +148,7 @@ function TeamsTab() {
                 // 编号已经连续（或团队里还没有节点）就没有可调的；机器列表还没到时先不禁用
                 const done = compact ? compact[t.id] ?? true : false;
                 return (
-                  <tr key={t.id} {...rowProps(() => setEdit(t))}><td className="strong">{t.name}{t.spare && <> <InfoTip text={SPARE_TIP} /></>}</td><td className="r num">{t.spare ? <span className="t-muted">最后</span> : t.sort_order}</td><td className="r num"><TeamNodes t={t} counts={counts?.[t.id]} /></td><td className="r"><TeamCost t={t} /></td>
+                  <tr key={t.id} {...rowProps(() => setEdit(t))}><td className="strong">{t.name}{t.spare && <> <InfoTip text={SPARE_TIP} /></>}</td><td className="r num">{t.spare ? <span className="t-muted">最后</span> : t.sort_order}</td><td className="r num"><TeamNodes t={t} counts={counts?.[t.id]} /></td><td className="r"><TeamCost t={t} active={counts?.[t.id]?.active} /></td>
                     <td className="c"><RowMenu label={`团队「${t.name}」的操作`}>
                       <DropdownMenuItem onSelect={() => setEdit(t)}>改名 / 排序…</DropdownMenuItem>
                       <DropdownMenuItem disabled={done} onSelect={() => setRenum(t)}>{done ? '重新编号（编号已连续）' : '重新编号…'}</DropdownMenuItem>
