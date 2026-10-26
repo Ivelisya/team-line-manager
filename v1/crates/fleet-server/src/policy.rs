@@ -105,6 +105,12 @@ impl Data {
         }
         self
     }
+
+    /// 给人看的一句话：「白名单 · 3 个域名」「暂停新连接」
+    pub fn summary(&self) -> String {
+        let m = crate::meta::label(crate::meta::POLICY_MODES, self.mode.as_str());
+        if self.mode.needs_domains() { format!("{m} · {} 个域名", self.domains.len()) } else { m.to_string() }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -328,6 +334,17 @@ impl RowRaw {
     }
 }
 
+impl Row {
+    /// 没有生效的设置、也没有草稿：等于这个范围没有记录
+    pub fn is_default(&self) -> bool { self.cur == self.scope.default_data() && self.draft.is_none() }
+
+    /// 「白名单 · 3 个域名」，有未发布的草稿时后面加一句
+    pub fn summary(&self) -> String {
+        let cur = self.cur.summary();
+        if self.draft.is_some() { format!("{cur}，另有未发布的草稿") } else { cur }
+    }
+}
+
 const ROW_COLS: &str = "scope, scope_id, mode, domains, note, draft, revision, updated_by, updated_at";
 
 pub async fn load_rows<'e, E: sqlx::PgExecutor<'e>>(ex: E, lock: bool) -> sqlx::Result<Vec<Row>> {
@@ -341,6 +358,29 @@ pub async fn load_row<'e, E: sqlx::PgExecutor<'e>>(ex: E, scope: Scope, id: Uuid
     let sql = format!("select {ROW_COLS} from policy where scope = $1 and scope_id = $2");
     let raw: Option<RowRaw> = sqlx::query_as(&sql).bind(scope.as_str()).bind(id).fetch_optional(ex).await?;
     Ok(raw.and_then(RowRaw::into_row))
+}
+
+/// 节点单独设的访问策略（已发布的与草稿）改挂到另一个节点：替换节点交换编号时，「跟着客户走」的一部分（和来源画像一样）。
+/// 要换下来的节点原本就没有（或只是默认的跟随团队）什么都不动；新节点自己有节点级策略的以旧节点的为准，返回里带上被覆盖的那份。
+/// 调用方须已拿访问规则的锁（`api::policy::lock`，在事务开头、任何行锁之前）。线路机的期望状态由调用方同事务里刷新代数
+pub async fn move_node(conn: &mut sqlx::PgConnection, from: Uuid, to: Uuid, actor: &str) -> sqlx::Result<Option<NodeMoved>> {
+    let Some(old) = load_row(&mut *conn, Scope::Node, from).await?.filter(|r| !r.is_default()) else { return Ok(None) };
+    let replaced = load_row(&mut *conn, Scope::Node, to).await?.filter(|r| !r.is_default()).map(|r| r.summary());
+    sqlx::query("delete from policy where scope = 'node' and scope_id = $1").bind(to).execute(&mut *conn).await?;
+    sqlx::query("update policy set scope_id = $2, revision = revision + 1, updated_by = $3, updated_at = now() where scope = 'node' and scope_id = $1")
+        .bind(from)
+        .bind(to)
+        .bind(actor)
+        .execute(&mut *conn)
+        .await?;
+    Ok(Some(NodeMoved { summary: old.summary(), replaced }))
+}
+
+/// `move_node` 搬走的那份策略（给作业日志用）
+pub struct NodeMoved {
+    pub summary: String,
+    /// 新节点原来自己有的节点级策略（被覆盖）
+    pub replaced: Option<String>,
 }
 
 /// 生效值视图

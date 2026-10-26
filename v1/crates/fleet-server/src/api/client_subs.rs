@@ -268,6 +268,26 @@ struct Row {
 
 const COLS: &str = "id, name, team_mode, team_ids, direct, include_ids, exclude_ids, enabled, token_at, last_fetch_at, host(last_fetch_ip) last_fetch_ip";
 
+/// 订阅规则里「排除」或「另加」了这台机器的订阅名（已排序）：替换节点的预览用，和 `swap_machine` 同一个口径
+pub(crate) async fn names_of_machine(conn: &mut sqlx::PgConnection, machine: Uuid) -> sqlx::Result<Vec<String>> {
+    sqlx::query_scalar("select name from client_sub where $1 = any(exclude_ids) or $1 = any(include_ids) order by name").bind(machine).fetch_all(&mut *conn).await
+}
+
+/// 替换节点交换编号时：订阅规则里引用旧节点 id 的「排除 / 另加」换成新节点 id（这两个按机器 id 记，不跟着编号走的话，
+/// 旧节点被排除、替换后接它编号的新节点会重新出现在订阅里）。新节点本来就在同一份名单里的去重。返回改了的订阅名（已排序）。
+/// 调用方已锁着两台机器的行（和 `Rule::check` 的共享锁互斥）
+pub(crate) async fn swap_machine(conn: &mut sqlx::PgConnection, from: Uuid, to: Uuid) -> sqlx::Result<Vec<String>> {
+    let swap = |col: &str| format!("(select coalesce(array_agg(distinct case when x = $1 then $2 else x end), '{{}}') from unnest({col}) x)");
+    let sql = format!(
+        "update client_sub set exclude_ids = {}, include_ids = {}, updated_at = now() where $1 = any(exclude_ids) or $1 = any(include_ids) returning name",
+        swap("exclude_ids"),
+        swap("include_ids")
+    );
+    let mut names: Vec<String> = sqlx::query_scalar(&sql).bind(from).bind(to).fetch_all(&mut *conn).await?;
+    names.sort();
+    Ok(names)
+}
+
 /// 机器的 (id, kind, label, 团队名, 编号)
 type MachineRef = (Uuid, String, Option<String>, Option<String>, Option<i32>);
 
