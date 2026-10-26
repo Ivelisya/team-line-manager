@@ -1336,6 +1336,47 @@ async fn switch_and_auto_back() {
     assert_eq!(t.req("POST", &format!("{path}/back"), Some(json!({"group": "手动选择"})), None).await.0, StatusCode::NOT_FOUND);
 }
 
+/// 到时自动切回用的是拿锁之前读出的旧记录（前面每条切回最多 25 秒）：等锁期间人又切了一次、或手动切回了，
+/// 拿到锁后按 id 重读，不再到时的就跳过，不去撤销人的操作
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn due_skips_record_changed_while_waiting() {
+    let t = setup().await;
+    let (id, _) = create(&t, "团队2-路由V").await;
+    issue_key(&t, &id).await;
+    let port = 23942;
+    sqlx::query("update router set tunnel_port = $2 where id = $1::uuid").bind(&id).bind(port).execute(&t.st.db).await.unwrap();
+    let r = root(port.into());
+    let _ = std::fs::remove_dir_all(&r);
+    std::fs::create_dir_all(&r).unwrap();
+    std::fs::write(r.join("group.now"), "节点01").unwrap();
+    let mut s = snap(true, [0, 0], true);
+    s["groups"] = json!([{"name": "手动选择", "type": "Selector", "now": "节点01", "all": ["节点01", "节点02", "节点03"]}]);
+    status(&t, &id, true, 0, s).await;
+    let rid = Uuid::parse_str(&id).unwrap();
+    let path = format!("/api/v1/routers/{id}/switch");
+    // 切到 节点02 并到时，due 读到这条；等锁期间人又切到 节点03（不再自动切回）
+    t.post(&path, json!({"group": "手动选择", "to": "节点02", "back_after_s": 3600})).await;
+    sqlx::query("update router_switch set back_at = now() - interval '1 second'").execute(&t.st.db).await.unwrap();
+    let stale = routers::switch::active(&t.st.db, Some(rid)).await.unwrap();
+    assert_eq!(stale.len(), 1);
+    t.post(&path, json!({"group": "手动选择", "to": "节点03"})).await;
+    let log = read(&r.join("switch.log"));
+    routers::switch::due_each(&t.st, stale).await;
+    assert_eq!((read(&r.join("group.now")), read(&r.join("switch.log"))), ("节点03".to_string(), log.clone()), "人又切了一次：不撤销");
+    let sw = t.get(&format!("/api/v1/routers/{id}")).await["switches"][0].clone();
+    assert_eq!((sw["to"].as_str(), sw["back_at"].is_null()), (Some("节点03"), true), "{sw}");
+    // 又到时，due 读到后人手动切回了：记录已结束，同样不动路由
+    sqlx::query("update router_switch set back_at = now() - interval '1 second'").execute(&t.st.db).await.unwrap();
+    let stale = routers::switch::active(&t.st.db, Some(rid)).await.unwrap();
+    t.post(&format!("{path}/back"), json!({"group": "手动选择"})).await;
+    std::fs::write(r.join("group.now"), "节点03").unwrap();
+    let log = read(&r.join("switch.log"));
+    routers::switch::due_each(&t.st, stale).await;
+    assert_eq!((read(&r.join("group.now")), read(&r.join("switch.log"))), ("节点03".to_string(), log), "已手动切回：不再动路由");
+    let n: i64 = sqlx::query_scalar("select count(*) from audit_log where action = 'router.switch_back'").fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(n, 1, "只有手动切回那一条");
+}
+
 /// 没有规则用的组（快照 used = false）切了不影响流量：409、不去动路由；used 为 true 或没有这个字段（旧快照，未知）照常能切。
 /// 到时自动切回时原出口还不通、或它指向的节点有进行中的严重机器告警：不切回，往后推 1 小时、记原因、审计一条、通知渠道只说一次；都恢复后才切回
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
