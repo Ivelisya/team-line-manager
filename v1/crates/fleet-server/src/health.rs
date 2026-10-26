@@ -502,7 +502,7 @@ pub(crate) mod tests {
         m.subscription = Some(sub(0));
         assert_eq!(text(&m).as_deref(), Some("今天到期；软路由出口 团队2 新办公室 · 节点20、办公室2 · 美国 还指向它，到期后也不会自动回收：先改指向或立即回收"));
         m.subscription = Some(sub(-1));
-        assert_eq!(text(&m).as_deref(), Some("已过期 1 天；软路由出口 团队2 新办公室 · 节点20、办公室2 · 美国 还指向它，到期后也不会自动回收：先改指向或立即回收");
+        assert_eq!(text(&m).as_deref(), Some("已过期 1 天；软路由出口 团队2 新办公室 · 节点20、办公室2 · 美国 还指向它，到期后也不会自动回收：先改指向或立即回收"));
         m.subscription = Some(sub(-2));
         assert_eq!(text(&m).as_deref(), Some("已过期 2 天；软路由出口 团队2 新办公室 · 节点20、办公室2 · 美国 还指向它，未自动回收：先改指向或立即回收"));
         m.subscription = Some(sub_with(-1, true));

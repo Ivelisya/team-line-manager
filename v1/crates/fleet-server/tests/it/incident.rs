@@ -212,3 +212,50 @@ async fn rule_without_any_prefix_is_not_closed_by_other_engines() {
     alerts::evaluate_once(&t.st, &mut Default::default(), base).await.unwrap();
     assert_eq!(firing().await, ["ipintel", "machine"]);
 }
+
+/// 已确认的告警不再发「提醒」；报过触发的告警在普通静默期间恢复照报「恢复」，维护窗口内不报
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn acked_incident_gets_no_repeat_and_silenced_recovery_is_still_told() {
+    let t = setup().await;
+    let mock = Mock::start().await;
+    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "feishu", "config": {"url": mock.url("/hook/a")}, "min_severity": "info", "enabled": true})).await;
+    let events = || mock.events("/hook/a");
+    let (s1, s2) = (Uuid::now_v7(), Uuid::now_v7());
+    let base = OffsetDateTime::now_utc();
+    let at = |s: i64| base + time::Duration::seconds(s);
+    let hours = |h: i64| h * 3600;
+
+    // 严重告警：触发后确认，过了提醒间隔（4 小时）也不再提醒
+    round(&t, at(0), Some(want(s1, "critical")), resolve).await;
+    log_settles(&t, 1).await;
+    stamp_last_notice(&t, at(0)).await;
+    let id1 = state(&t).await[0].0;
+    ack(&t, id1).await;
+    round(&t, at(hours(5)), Some(want(s1, "critical")), resolve).await;
+    log_settles(&t, 1).await;
+
+    // 普通静默期间恢复：触发已经发过，「恢复」照发（否则群里只留一条触发）
+    sqlx::query("insert into silence (id, rule, starts_at, ends_at, created_by) values ($1, $2, now() - interval '1 minute', now() + interval '1 hour', 'u')")
+        .bind(Uuid::now_v7())
+        .bind(RULE)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    round(&t, at(hours(5) + 60), None, resolve).await;
+    assert_eq!(state(&t).await[0].1, "resolved");
+    log_settles(&t, 2).await;
+    assert_eq!(events(), ["firing", "resolved"]);
+
+    // 维护窗口内恢复不报
+    sqlx::query("update silence set deleted_at = now()").execute(&t.st.db).await.unwrap();
+    round(&t, at(hours(6)), Some(want(s2, "critical")), resolve).await;
+    log_settles(&t, 3).await;
+    sqlx::query("insert into silence (id, starts_at, ends_at, is_maintenance, created_by) values ($1, now() - interval '1 minute', now() + interval '1 hour', true, 'u')")
+        .bind(Uuid::now_v7())
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    round(&t, at(hours(6) + 60), None, resolve).await;
+    log_settles(&t, 3).await;
+    assert_eq!(events(), ["firing", "resolved", "firing"]);
+}
