@@ -370,7 +370,7 @@ pub async fn publish(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<H
         .execute(&mut *tx)
         .await?;
     }
-    let (vid, relays) = record_version(&mut tx, &a.name, "publish", None, &rows, &before, &after, &nodes, &names).await?;
+    let (vid, relays) = record_version(&mut tx, &a.name, "publish", None, &rows, &before, &after, &nodes, &names, None).await?;
     tx.commit().await?;
     done(&st, &relays);
     Ok(ok(version_one(&st, vid).await?))
@@ -411,6 +411,7 @@ async fn record_version(
     after: &PolicySet,
     nodes: &[policy::NodeRef],
     names: &HashMap<Uuid, String>,
+    extra: Option<Value>,
 ) -> ApiResult<(Uuid, Vec<Uuid>)> {
     let rows_after = policy::load_rows(&mut **tx, false).await?;
     let snapshot = Value::Array(policy::snapshot_of(&rows_after));
@@ -434,25 +435,23 @@ async fn record_version(
     .bind(Value::Array(gens))
     .fetch_one(&mut **tx)
     .await?;
-    audit(
-        tx,
-        actor,
-        &format!("policy.{kind}"),
-        "policy_version",
-        Some(vid),
-        json!({"seq": seq, "rollback_of_seq": rollback_of_seq, "changes": changes, "relays": relays.len()}),
-    )
-    .await?;
+    let mut detail = json!({"seq": seq, "rollback_of_seq": rollback_of_seq, "changes": changes, "relays": relays.len()});
+    if let (Some(Value::Object(x)), Some(d)) = (extra, detail.as_object_mut()) {
+        d.extend(x);
+    }
+    audit(tx, actor, &format!("policy.{kind}"), "policy_version", Some(vid), detail).await?;
     Ok((vid, relays))
 }
 
 /// 替换节点把节点级策略改挂到新节点之后（同一事务里，访问规则的锁已拿）：记一条 kind = replace 的版本（快照、变更、线路机代数）。
-/// `rows_before` 是改挂之前的规则行。线路机名单按改名后的团队算（改名本身已刷新过一次代数，这里再 +1 只让版本记下它）。返回被 +1 的线路机
-pub(crate) async fn record_replace(tx: &mut Tx<'_>, actor: &str, rows_before: &[Row]) -> ApiResult<Vec<Uuid>> {
+/// `rows_before` 是改挂之前的规则行。线路机名单按改名后的团队算（改名本身已刷新过一次代数，这里再 +1 只让版本记下它）。
+/// 审计的 detail 另记 `{from, to, rewritten_seqs, dropped_seqs}`：旧 / 新节点，被改写快照的历史版本号，其中丢掉了新节点原有项的版本号。返回被 +1 的线路机
+pub(crate) async fn record_replace(tx: &mut Tx<'_>, actor: &str, rows_before: &[Row], from: Uuid, to: Uuid, moved: &policy::NodeMoved) -> ApiResult<Vec<Uuid>> {
     let names = policy::scope_names_in(&mut **tx).await?;
     let nodes = policy::live_nodes(&mut **tx).await?;
     let after = policy::set_current(&policy::load_rows(&mut **tx, false).await?);
-    let (_, relays) = record_version(tx, actor, "replace", None, rows_before, &policy::set_current(rows_before), &after, &nodes, &names).await?;
+    let extra = json!({"from": from, "to": to, "rewritten_seqs": moved.rewritten_seqs, "dropped_seqs": moved.dropped_seqs});
+    let (_, relays) = record_version(tx, actor, "replace", None, rows_before, &policy::set_current(rows_before), &after, &nodes, &names, Some(extra)).await?;
     Ok(relays)
 }
 
@@ -665,7 +664,7 @@ pub async fn rollback(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath
             }
         }
     }
-    let (vid, relays) = record_version(&mut tx, &a.name, "rollback", Some(id), &rows, &before, &after, &nodes, &names).await?;
+    let (vid, relays) = record_version(&mut tx, &a.name, "rollback", Some(id), &rows, &before, &after, &nodes, &names, None).await?;
     tx.commit().await?;
     done(&st, &relays);
     Ok(ok(version_one(&st, vid).await?))

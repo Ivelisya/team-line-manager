@@ -1565,12 +1565,51 @@ async fn replace_moves_node_policy_and_sub_settings() {
     let ids: Vec<&str> = pre["changes"].as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap()).collect();
     assert_eq!(ids, [w.new.to_string()], "回滚到最早一版只改新节点，不碰旧节点：{pre}");
     assert_eq!(sqlx::query_scalar::<_, i64>("select count(*) from audit_log where action = 'policy.replace'").fetch_one(db).await.unwrap(), 1);
+    // 审计记下改挂的两个节点、被改写的历史版本（v2、v3）和其中丢掉了新节点原有项的（v3）
+    let seqs: Vec<i64> = sqlx::query_scalar("select seq from policy_version where kind = 'publish' order by seq").fetch_all(db).await.unwrap();
+    let detail: Value = sqlx::query_scalar("select detail from audit_log where action = 'policy.replace'").fetch_one(db).await.unwrap();
+    assert_eq!((&detail["from"], &detail["to"]), (&json!(w.old), &json!(w.new)), "{detail}");
+    assert_eq!((&detail["rewritten_seqs"], &detail["dropped_seqs"]), (&json!([seqs[1], seqs[2]]), &json!([seqs[2]])), "{detail}");
+    assert!(l.contains(&format!("历史版本的快照里旧节点的访问策略改指新节点：v{}、v{}，其中 v{} 里新节点原有的项被丢掉", seqs[1], seqs[2], seqs[2])), "{l}");
     let subs: Vec<(String, Vec<Uuid>, Vec<Uuid>)> = sqlx::query_as("select name, exclude_ids, include_ids from client_sub order by name").fetch_all(db).await.unwrap();
     assert_eq!(
         subs,
         [("公司".to_string(), vec![], vec![w.new]), ("家里".into(), vec![w.new], vec![]), ("无关".into(), vec![w.new], vec![])],
         "引用旧节点的换成新节点，新节点本来就在名单里的去重"
     );
+}
+
+/// 旧节点当前没有节点级策略（设过又清掉了）：当前的策略行不动、不记 replace 版本，但历史快照里旧节点那项照样改挂到新节点，
+/// 回滚到那些版本不会把策略放回进了备用的旧节点；再来一遍结果不变
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn replace_rewrites_history_even_without_current_node_policy() {
+    let w = world().await;
+    let t = &w.t;
+    let db = &t.st.db;
+    let item = |id: Uuid| json!({"scope": "node", "scope_id": id, "mode": "denylist", "domains": ["bad.com"], "note": ""});
+    for s in [json!([item(w.old)]), json!([])] {
+        sqlx::query("insert into policy_version (id, kind, actor, snapshot) values ($1, 'publish', 'test', $2)").bind(Uuid::now_v7()).bind(s).execute(db).await.unwrap();
+    }
+    let d = t.post(&format!("/api/v1/machines/{}/replace", w.old), json!({"new_machine_id": w.new})).await;
+    let job = d["job_id"].as_str().unwrap().to_string();
+    drive(t).await;
+    let j = t.job(&job).await;
+    let l = logs(t, &job).await;
+    assert_eq!(j["state"], "succeeded", "{j} {l}");
+    assert!(!l.contains("访问策略随编号转给新节点"), "{l}");
+    assert!(l.contains("历史版本的快照里旧节点的访问策略改指新节点：v"), "{l}");
+    let snaps: Vec<Value> = sqlx::query_scalar("select snapshot from policy_version order by seq").fetch_all(db).await.unwrap();
+    assert_eq!(snaps, [json!([item(w.new)]), json!([])], "第一版里旧节点那项改挂到新节点");
+    let kinds: Vec<String> = sqlx::query_scalar("select kind from policy_version order by seq").fetch_all(db).await.unwrap();
+    assert_eq!(kinds, ["publish", "publish"], "当前策略没有搬：不记 replace 版本");
+    assert_eq!(sqlx::query_scalar::<_, i64>("select count(*) from audit_log where action = 'policy.replace'").fetch_one(db).await.unwrap(), 0);
+    // 幂等：再改写一遍，快照不变
+    let mut tx = db.begin().await.unwrap();
+    let m = fleet_server::policy::move_node(&mut tx, w.old, w.new, "test").await.unwrap();
+    tx.commit().await.unwrap();
+    assert!(m.summary.is_none() && m.rewritten_seqs.is_empty() && m.dropped_seqs.is_empty(), "再来一遍：已经没有含旧节点的版本，什么都不动");
+    let again: Vec<Value> = sqlx::query_scalar("select snapshot from policy_version order by seq").fetch_all(db).await.unwrap();
+    assert_eq!(again, snaps);
 }
 
 /// 改出口指向的预览：新旧入口所在节点的生效访问策略不同时提醒（客户实际受的是目标节点 / 团队的策略）；发起时不算这类提醒

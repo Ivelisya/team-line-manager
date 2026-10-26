@@ -880,9 +880,10 @@ pub(super) async fn renumber(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     // 旧节点进了备用，之后没有节点级策略（跟随备用团队）；历史版本的快照也改挂到新节点，并记一条 replace 版本（线路机代数在里面 +1，随同一事务提交）
     let policy_rows = crate::policy::load_rows(&mut *tx, false).await?;
     let policy_moved = crate::policy::move_node(&mut tx, old, new, actor).await?;
-    // 搬了策略就记一条版本（快照、变更、线路机代数）：之后的版本列表和回滚才对得上现状
-    if policy_moved.is_some() {
-        relays.extend(crate::api::policy::record_replace(&mut tx, actor, &policy_rows).await.map_err(|e| anyhow!(e.message))?);
+    // 搬了策略行才记一条版本（快照、变更、线路机代数）：之后的版本列表和回滚才对得上现状；只改写了历史快照的（旧节点当前没有节点级策略）当前状态没变，不记
+    let policy_moved_now = policy_moved.summary.is_some();
+    if policy_moved_now {
+        relays.extend(crate::api::policy::record_replace(&mut tx, actor, &policy_rows, old, new, &policy_moved).await.map_err(|e| anyhow!(e.message))?);
     }
     let subs_moved = crate::api::client_subs::swap_machine(&mut tx, old, new).await?;
     let mut renumbered = 0;
@@ -904,19 +905,24 @@ pub(super) async fn renumber(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         c.st.relay_bumped(r);
     }
     c.st.emit(crate::state::Event::Machines);
-    if policy_moved.is_some() {
+    if policy_moved_now {
         c.st.emit(crate::state::Event::Policies);
     }
     let name = |id: Uuid| names.iter().find(|x| x.0 == id).map(|x| x.1.clone()).unwrap_or_default();
     let (on, nn) = (name(old), name(new));
-    if let Some(m) = &policy_moved {
-        c.log(format!("访问策略随编号转给新节点：{}{}", m.summary, m.replaced.as_ref().map(|r| format!("（新节点自己单独设的「{r}」被覆盖）")).unwrap_or_default())).await;
+    if let Some(s) = &policy_moved.summary {
+        c.log(format!("访问策略随编号转给新节点：{s}{}", policy_moved.replaced.as_ref().map(|r| format!("（新节点自己单独设的「{r}」被覆盖）")).unwrap_or_default())).await;
+    }
+    if !policy_moved.rewritten_seqs.is_empty() {
+        let vs = |v: &[i64]| v.iter().map(|s| format!("v{s}")).collect::<Vec<_>>().join("、");
+        let dropped = if policy_moved.dropped_seqs.is_empty() { String::new() } else { format!("，其中 {} 里新节点原有的项被丢掉", vs(&policy_moved.dropped_seqs)) };
+        c.log(format!("历史版本的快照里旧节点的访问策略改指新节点：{}{dropped}", vs(&policy_moved.rewritten_seqs))).await;
     }
     if !subs_moved.is_empty() {
         c.log(format!("客户端订阅的排除 / 另加改指新节点：{}", subs_moved.join("、"))).await;
     }
     c.log(format!("编号已交换：新节点现在是 {nn}，旧节点现在是 {on}{}", if renumbered > 0 { format!("；{renumbered} 台节点因压缩改了编号（见审计）") } else { String::new() })).await;
-    Ok(Outcome::Done(json!({"old": on, "new": nn, "renumbered": renumbered, "policy_moved": policy_moved.is_some(), "subs_moved": subs_moved})))
+    Ok(Outcome::Done(json!({"old": on, "new": nn, "renumbered": renumbered, "policy_moved": policy_moved_now, "subs_moved": subs_moved})))
 }
 
 #[cfg(test)]
