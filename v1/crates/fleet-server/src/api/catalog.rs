@@ -49,7 +49,7 @@ pub async fn list_teams(_a: Actor, State(st): State<AppState>) -> ApiResult<Json
     .fetch_all(&st.db)
     .await?;
     let fx = crate::fx::current(&st.db).await?;
-    let held = crate::views::held_ids(st.live.latest());
+    let held = crate::views::held_ids(crate::views::live(&st).await.ok().or_else(|| st.live.latest()));
     for (team, id, price, currency, cycle) in subs {
         let monthly = meta::monthly_cents(price, &cycle);
         if let Some(t) = v.iter_mut().find(|t| t.id == team) {

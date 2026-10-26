@@ -307,7 +307,7 @@ pub async fn daily(st: &AppState, days: Option<i64>, team: Option<&str>, machine
     let (all_dates, biz, nic) = &*raw;
     let dates = &all_dates[all_dates.len() - days as usize..];
     let hosts = ip_hosts(&st.db).await?;
-    let held = views::held_ids(st.live.latest());
+    let held = views::held_ids(views::live(st).await.ok().or_else(|| st.live.latest()));
     let uses = usage_of(&raw, &hosts);
     let fx = crate::fx::current(&st.db).await?;
     let ids: Vec<Uuid> = biz.iter().flat_map(|b| [b.0, b.1]).chain(nic.iter().map(|n| n.0)).collect::<HashSet<_>>().into_iter().collect();

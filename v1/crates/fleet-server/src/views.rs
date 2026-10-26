@@ -388,7 +388,7 @@ pub struct MachineView {
 }
 
 /// 被扣住不回收的备用机（`recycle_held`：软路由出口还指着、或上面还有在用的同机 IP 节点）：它们照常续费，团队页、流量页的月费合计要带上。
-/// 取最近一次算好的视图，还没算过为空
+/// 调用方传在用机器视图（views::live，最多旧 3 秒；算不出来时退回最近一份），都没有为空
 pub fn held_ids(live: Option<Arc<Vec<MachineView>>>) -> HashSet<Uuid> {
     live.map(|v| v.iter().filter(|m| m.recycle_held).map(|m| m.id).collect()).unwrap_or_default()
 }
