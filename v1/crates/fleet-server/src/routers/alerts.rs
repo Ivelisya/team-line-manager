@@ -62,10 +62,11 @@ const SLACK_S: i64 = 5;
 /// 从 `since` 到 `now` 已经满 `secs` 秒（含余量）
 fn held(since: OffsetDateTime, now: OffsetDateTime, secs: i64) -> bool { (now - since).whole_seconds() + SLACK_S >= secs }
 
-/// 评估之间要记住的：各问题第一次出现的时间、各告警原因消失的时间、CPU 从什么时候起一直偏高、上一轮在维护中的路由
+/// 评估之间要记住的：各问题第一次出现的时间、上一轮是 quiet 的问题、各告警原因消失的时间、CPU 从什么时候起一直偏高、上一轮在维护中的路由
 #[derive(Default)]
 pub struct AlertState {
     first_seen: HashMap<(&'static str, Uuid), OffsetDateTime>,
+    quiet: HashSet<(&'static str, Uuid)>,
     clean_since: HashMap<Uuid, OffsetDateTime>,
     cpu_high_since: HashMap<Uuid, OffsetDateTime>,
     maintenance: HashSet<Uuid>,
@@ -289,6 +290,7 @@ pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime
     // 不通的出口指向的都在维护中的路由：出口告警冻结
     let mut paused: HashSet<Uuid> = HashSet::new();
     let mut want = vec![];
+    let mut quiet: HashSet<(&'static str, Uuid)> = HashSet::new();
     for v in &views {
         // CPU 从什么时候起一直超过 90%（连不上、采集出错的这一轮不动它）
         if v.state == "online" && v.error.is_none() {
@@ -313,10 +315,16 @@ pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime
             seen.insert(key);
             let since = *state.first_seen.entry(key).or_insert(now);
             let ready = p.hold_s == 0 || held(since, now, p.hold_s);
-            want.push(Want { rule: p.rule, subject: v.id, name: &v.name, severity: p.severity, text: p.text, detail: Some(json!({"name": v.name, "kind": "router"})), ready, quiet: p.quiet });
+            // 上一轮还是 quiet、这一轮不是了（机器告警先恢复）：再等一轮，路由出口还不通才补发「触发」；这一轮出口就好了的，既不发触发也不发恢复
+            if p.quiet {
+                quiet.insert(key);
+            }
+            let settling = !p.quiet && state.quiet.contains(&key);
+            want.push(Want { rule: p.rule, subject: v.id, name: &v.name, severity: p.severity, text: p.text, detail: Some(json!({"name": v.name, "kind": "router"})), ready, quiet: p.quiet || settling });
         }
     }
     state.first_seen.retain(|k, _| seen.contains(k));
+    state.quiet = quiet;
     // 问题还在的：恢复的去抖从头算
     for o in &open {
         if seen.contains(&(o.rule.as_str(), o.subject_id)) {
