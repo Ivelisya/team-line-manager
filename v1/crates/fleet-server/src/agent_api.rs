@@ -676,7 +676,7 @@ async fn ingest(st: &AppState, a: AgentId, mut r: Report) -> Result<Json<ReportA
     tx.commit().await?;
     charge(&mut lock(&BUCKETS), a.machine_id, r.seq, host.len());
     if last.is_none() {
-        st.emit(Event::Machine { id: a.machine_id });
+        st.emit_keep_access(Event::Machine { id: a.machine_id });
         // 上架中「等待首次上报」的作业
         crate::jobs::wake_for(st, a.machine_id).await;
     }
@@ -784,7 +784,7 @@ async fn applied(State(st): State<AppState>, ClientIp(ip): ClientIp, req: Reques
     if changed {
         crate::jobs::wake_for(&st, a.machine_id).await;
         st.emit(Event::Relay { id: a.machine_id });
-        st.emit(Event::Machines);
+        st.emit_keep_access(Event::Machines);
     }
     Ok(StatusCode::NO_CONTENT.into_response())
 }

@@ -161,7 +161,7 @@ pub(crate) async fn record(st: &AppState, src: Option<Uuid>, ts: OffsetDateTime,
                     (x, y) => x.is_none() == y.is_none(),
                 };
             if !same {
-                st.emit(Event::Machine { id: *id });
+                st.emit_keep_access(Event::Machine { id: *id });
                 changed = true;
             }
         }

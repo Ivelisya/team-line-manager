@@ -17,7 +17,7 @@ pub enum Event {
     Machines,
     Relay { id: Uuid },
     /// 作业变化。`target` 不发给前端：目标机器的 active_job 由 metrics 推送（前端见它变了再重取这台的详情）。
-    /// 改了机器生命周期的地方（上架、退役、恢复、取消补偿、作业结束）另发 Machines
+    /// 改了机器生命周期的地方（上架、退役、恢复、取消补偿、会改视图字段的作业结束——升级 agent、下发 SS、调优、测速、同步出口不发，见 jobs::view_change）另发 Machines
     Job {
         id: Uuid,
         #[serde(skip)]
@@ -161,6 +161,16 @@ impl AppState {
     }
 
     pub fn emit(&self, e: Event) {
+        if matches!(e, Event::Machine { .. } | Event::Machines) {
+            // 访问监控的结果里带机器名与团队：改名、重新编号、换团队、机器增删后不等下一轮汇总。
+            // 其余机器事件（连通性结论、续费、订阅、调优档、作业结束……）不改这些，调用方用 `emit_keep_access`
+            self.access_cache.invalidate();
+        }
+        self.emit_keep_access(e);
+    }
+
+    /// 同 `emit`，但不作废访问监控的查询缓存：调用方保证这次变更不动机器名、团队、编号、机器增删（访问页上显示的那几样）
+    pub fn emit_keep_access(&self, e: Event) {
         match e {
             // 密钥、软路由不在机器视图里
             Event::ApiKeys | Event::Routers => {}
@@ -171,10 +181,6 @@ impl AppState {
                 self.metrics_dirty.store(true, std::sync::atomic::Ordering::Relaxed);
             }
             _ => self.live.invalidate(),
-        }
-        if matches!(e, Event::Machine { .. } | Event::Machines) {
-            // 访问监控的结果里带机器名与团队：改名、重新编号后不等下一轮汇总
-            self.access_cache.invalidate();
         }
         let _ = self.events.send(e);
     }
