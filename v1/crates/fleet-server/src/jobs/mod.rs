@@ -26,6 +26,7 @@ pub use steps::sync_exit;
 
 use crate::db::Tx;
 use crate::error::ApiResult;
+use crate::notify::{Kind, Notice};
 use crate::ssh::{kind_of, ErrKind, StepError};
 use crate::state::{AppState, Event};
 use serde_json::{json, Value};
@@ -1040,8 +1041,61 @@ async fn fail_job(st: &AppState, job: &JobRow, owner: &str, err: &str) -> anyhow
     if marked {
         st.emit(Event::Machines);
     }
+    if state == "failed" {
+        tell_failure(st, job, err).await;
+    }
     notify(st, job);
     Ok(())
+}
+
+/// 失败要不要通知渠道：系统发起的（没人盯着，如备用到期自动回收）、或停在「需要人工处理」的才发；
+/// 人手动发起的普通作业失败不发（人在看作业页 / `fleetctl job`）。`params` 是失败那一刻库里的作业参数
+/// （租约时读的 `job.params` 可能不含这一步刚记下的 `routers_stuck`）
+fn failure_notice(job: &JobRow, params: &Value, machine: &str, err: &str, at: OffsetDateTime) -> Option<Notice> {
+    let by_system = job.created_by == crate::spare::ACTOR;
+    let manual = manual(&job.kind, job.step, "failed", &params["routers_stuck"]);
+    if !by_system && manual.is_null() {
+        return None;
+    }
+    let mut lines = vec![format!("{}{}失败", crate::meta::job_kind_label(&job.kind), if by_system { "（系统发起）" } else { "" })];
+    lines.push(format!("失败步骤：{}", err.chars().take(300).collect::<String>()));
+    if let Some(m) = manual["message"].as_str() {
+        lines.push(format!("需要人工处理：{m}"));
+    }
+    let mut next = format!("下一步：问题处理后 fleetctl retry {}（网页作业页点「重试」）", job.id);
+    if cancel_blocker(&job.kind, job.step, "failed", params).is_none() {
+        next += &format!("；不要了就 fleetctl cancel {}", job.id);
+    }
+    lines.push(next);
+    Some(Notice {
+        kind: Kind::JobFail,
+        incident_id: None,
+        rule: "job_failed".into(),
+        severity: "warning".into(),
+        machine: machine.into(),
+        summary: lines.join("\n"),
+        at,
+        opened_at: None,
+    })
+}
+
+/// 作业失败后按需发通知；查不到的字段不挡失败的收尾
+async fn tell_failure(st: &AppState, job: &JobRow, err: &str) {
+    let params: Value = sqlx::query_scalar("select params from job where id = $1").bind(job.id).fetch_optional(&st.db).await.ok().flatten().unwrap_or_else(|| job.params.clone());
+    let machine: Option<String> = match job.target_id {
+        Some(t) => sqlx::query_scalar(
+            "select display_name(m.kind::text, m.label, t.name, m.number) from machine m left join team t on t.id = m.team_id where m.id = $1",
+        )
+        .bind(t)
+        .fetch_optional(&st.db)
+        .await
+        .ok()
+        .flatten(),
+        None => None,
+    };
+    if let Some(n) = failure_notice(job, &params, machine.as_deref().unwrap_or("（无目标机器）"), err, OffsetDateTime::now_utc()) {
+        crate::notify::enqueue(st, n).await;
+    }
 }
 
 /// 清理结果
@@ -1107,6 +1161,26 @@ mod tests {
         assert_eq!(keys("provision_ip"), ["ip_check", "converge", "attach", "wait_applied", "verify", "activate"]);
         let zh = crate::meta::job_kind_label;
         assert_eq!((zh("provision_ip"), zh("provision_vps")), ("上架同机 IP 节点", "上架 VPS 节点"));
+    }
+
+    fn job_of(kind: &str, step: i32, by: &str) -> JobRow {
+        JobRow { id: Uuid::nil(), kind: kind.into(), target_id: None, params: Value::Null, state: "failed".into(), step, created_by: by.into() }
+    }
+
+    #[test]
+    fn failure_notice_only_for_system_or_manual() {
+        let at = OffsetDateTime::UNIX_EPOCH;
+        // 人手动发起的普通作业：不发
+        assert!(failure_notice(&job_of("retire", 2, "apikey:ops"), &Value::Null, "团队1-03", "清理服务：连不上", at).is_none());
+        // 系统发起的：发，写明类型、机器、失败步骤、重试命令
+        let n = failure_notice(&job_of("retire", 2, "系统"), &Value::Null, "备用-03", "清理服务：连不上", at).unwrap();
+        assert_eq!((n.kind, n.machine.as_str()), (Kind::JobFail, "备用-03"));
+        assert!(n.summary.starts_with("退役（系统发起）失败\n失败步骤：清理服务：连不上\n下一步："), "{}", n.summary);
+        assert!(n.summary.contains("fleetctl retry 00000000-0000-0000-0000-000000000000"), "{}", n.summary);
+        // 人手动发起、但改软路由出口没能改回：发，带人工处理说明；这时不能取消，不提 cancel
+        let params = json!({"routers_stuck": [{"id": Uuid::nil(), "name": "路由A", "exits": ["出口1"], "was": ["1.2.3.4:1"]}]});
+        let n = failure_notice(&job_of("replace", 0, "apikey:ops"), &params, "团队2-01", "改软路由出口：超时", at).unwrap();
+        assert!(n.summary.contains("需要人工处理：软路由「路由A」的出口 出口1（原来指向 1.2.3.4:1）") && !n.summary.contains("fleetctl cancel"), "{}", n.summary);
     }
 
     #[test]

@@ -73,6 +73,34 @@ async fn preflight_needs_ssh_banner() {
     drop(silent);
 }
 
+/// 作业失败只在系统发起（或停在需要人工处理）时通知渠道：人手动发起的失败不发，改成系统发起的同一个作业重试再失败发一条
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn failed_job_notifies_only_when_system_started() {
+    let t = setup(true).await;
+    let (relay, _) = seed_relay(&t).await;
+    let team = seed_team(&t, "团队1").await;
+    sqlx::query("insert into notify_channel (id, kind, name, config_enc, min_severity) values ($1, 'feishu', 'wh', '\\x00', 'critical')")
+        .bind(Uuid::now_v7())
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let (_, job) = provision_unreachable_vps(&t, team, relay).await;
+    t.wait_job(&job, "failed").await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    // 渠道配置是假的，发不出去的会很快被放弃记进 notify_log：队列和记录一起数
+    let q = "select (select count(*) from notify_outbox where notice->>'kind' = 'jobfail') + (select count(*) from notify_log where kind = 'jobfail')";
+    assert_eq!(t.count(q).await, 0, "人手动发起的作业失败不通知");
+    sqlx::query("update job set created_by = '系统' where id = $1::uuid").bind(&job).execute(&t.st.db).await.unwrap();
+    t.post(&format!("/api/v1/jobs/{job}/retry"), json!({"ssh_password": "new-root-pw"})).await;
+    for _ in 0..100 {
+        if t.count(q).await > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(t.count(q).await, 1);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancel_while_running_ends_cancelled_and_compensates() {
     let t = setup(true).await;
