@@ -343,12 +343,21 @@ pub async fn monthly(st: &AppState, month: Option<&str>) -> ApiResult<Value> {
     }
 
     let live = views::live(st).await?;
+    // 同机 IP 节点的流量同时算到宿主机上（钱在宿主机订阅上，客户流量走的是 IP 节点，不算的话宿主机每 GB 成本偏高）；
+    // IP 节点自己有订阅的，它那份仍按它自己的流量算（同流量页）
+    let mut carried = bytes.clone();
+    for m in live.iter() {
+        if let (Some(h), Some(b)) = (&m.host_machine, bytes.get(&m.id)) {
+            let c = carried.entry(h.id).or_insert(0);
+            *c = c.saturating_add(*b);
+        }
+    }
     let mut costly: Vec<Value> = live
         .iter()
         .filter(|m| m.lifecycle == "active" && !m.spare)
         .filter_map(|m| {
             let usd = m.subscription.as_ref()?.monthly_usd_cents?;
-            let gb = *bytes.get(&m.id)? as f64 / 1e9;
+            let gb = *carried.get(&m.id)? as f64 / 1e9;
             (gb >= MIN_GB).then(|| json!({"id": m.id, "name": m.name, "monthly_usd_cents": usd, "gb": gb, "usd_per_gb": usd as f64 / 100.0 / gb}))
         })
         .collect();
