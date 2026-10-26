@@ -66,8 +66,8 @@ pub fn due_note(due_days: i64) -> &'static str {
 
 /// 备用团队的机器还有软路由出口指向它时续费提醒后面接的一句（不自动回收，所以不写哪天回收）。`exits`：「路由名 · 出口名」
 pub fn pointed_note(due_days: i64, exits: &[String]) -> String {
-    // 过期满 1 天（`expired`：due_days <= -2）本该已经回收了
-    let kept = if due_days <= -2 { "未自动回收" } else { "到期后也不会自动回收" };
+    // 过期满 1 天（`expired`：due_days <= -2）本该已经回收了；还没到回收日的（含过期第 1 天）写「到回收日也不会」，不写「到期后」（可能已经过期了）
+    let kept = if due_days <= -2 { "未自动回收" } else { "到回收日也不会自动回收" };
     format!("；软路由出口 {} 还指向它，{kept}：先改指向或立即回收", exits.join("、"))
 }
 
@@ -261,8 +261,9 @@ mod tests {
     #[test]
     fn pointed_note_says_not_recycled() {
         let x = vec!["办公室 · 美国".to_string(), "办公室 · 日本".to_string()];
-        assert_eq!(pointed_note(3, &x), "；软路由出口 办公室 · 美国、办公室 · 日本 还指向它，到期后也不会自动回收：先改指向或立即回收");
-        assert!(pointed_note(-1, &x).contains("到期后也不会"), "过期第 1 天还没到回收的日子");
+        assert_eq!(pointed_note(3, &x), "；软路由出口 办公室 · 美国、办公室 · 日本 还指向它，到回收日也不会自动回收：先改指向或立即回收");
+        let n = pointed_note(-1, &x);
+        assert!(n.contains("到回收日也不会自动回收") && !n.contains("到期后"), "过期第 1 天还没到回收的日子，不能写「到期后」");
         assert!(pointed_note(-2, &x).contains("未自动回收"));
     }
 
