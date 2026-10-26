@@ -108,6 +108,22 @@ const jobsTarget = (jobs: { job_id?: string }[]) => {
 
 // ── 几个节点一起换线路机 ────────────────────────────────────────────────
 
+/** 软路由离线 / 未接入的阻断原因（服务端按节点、按路由各写一条）：同一台路由合并成一条，出口并在一起；其余阻断原样留下。
+ *  已在阻断里的路由，「OpenClash 重启 1 次」就不再提示（byRouter 的键） */
+const OFFLINE_RX = /软路由「([^」]+)」现在(离线|还没接入)[^。]*。它的出口 (.+?) 指向/;
+function mergeOffline(blockers: string[]) {
+  const byRouter = new Map<string, { state: string; exits: Set<string> }>();
+  const rest: string[] = [];
+  for (const b of blockers) {
+    const m = OFFLINE_RX.exec(b);
+    if (!m) { rest.push(b); continue; }
+    const o = byRouter.get(m[1]) ?? { state: m[2] === '离线' ? '离线' : '未接入', exits: new Set<string>() };
+    m[3].split('、').forEach((x) => o.exits.add(x));
+    byRouter.set(m[1], o);
+  }
+  return { byRouter, rest };
+}
+
 /** 要一起换的节点：port 是要换走的入口端口；from 是它所在的线路机（不给 = 对话框的 from，入口都在那一台上） */
 export interface MoveNode { id: string; name: string; port: number; from?: { id: string; name: string } }
 
@@ -123,6 +139,7 @@ export const MovesDialog = resetOnOpen(function MovesDialog({ nodes, from, open,
   // 不给 from：各节点只有一条在用入口，换的就是它（放置矩阵的建议，节点可能在不同的线路机上）
   const q = useMovesPreview(open, { machine_ids: ids, to_relay_id: to, from_relay_id: from?.id, routers });
   const pv = q.isFetchedAfterMount && to ? q.data : undefined;
+  const offline = mergeOffline(pv?.blockers ?? []);
   const froms = new Set([from?.id, ...nodes.map((n) => n.from?.id)]);
   const opts = targetOptions(relays, (r) => !froms.has(r.id));
   return (
@@ -148,8 +165,9 @@ export const MovesDialog = resetOnOpen(function MovesDialog({ nodes, from, open,
           {routers
             ? <RouterExitList routers={pv.jobs.flatMap((j) => j.routers.map((plan) => ({ node: j.name, plan })))} title={<>要改的软路由出口 <InfoTip text="各节点都验收完新入口后一起改，每台软路由只改一次" /></>} />
             : pv.jobs.some((j) => j.routers.length > 0) && <Note tone="bad">不改软路由的话，指向这些入口的出口会在旧入口移除后断开</Note>}
-          {routers && (pv.router_restarts ?? []).map((r) => <Note key={r.id} tone="warn">软路由「{r.name}」上 {r.nodes} 个节点的出口一起改，OpenClash 重启 1 次，会断开路由上的所有连接</Note>)}
-          <PlanBlockers routers={[]} blockers={pv.blockers} />
+          {routers && (pv.router_restarts ?? []).filter((r) => !offline.byRouter.has(r.name)).map((r) => <Note key={r.id} tone="warn">软路由「{r.name}」上 {r.nodes} 个节点的出口一起改，OpenClash 重启 1 次，会断开路由上的所有连接</Note>)}
+          {[...offline.byRouter].map(([name, o]) => <Note key={name} tone="bad">{name} {o.state}：出口 {[...o.exits].join('、')} 要等它在线再换（或选不改软路由）</Note>)}
+          <PlanBlockers routers={[]} blockers={offline.rest} />
           {pv.warnings.map((w) => <Note key={w} tone="warn">{w}</Note>)}
         </div>
       )}

@@ -93,7 +93,8 @@
 .nc-marks { display: inline-flex; align-items: center; gap: var(--sp-4); flex: none; }
 .nc-marks .tag, .rc-head .tag, .dt button.tag, .dt .tag-from { height: var(--h-chip-sm); padding: 0 var(--sp-6); font-size: var(--fs-micro); line-height: var(--h-chip-sm); }
 .rc-head .tag, .dt button.tag { flex: none; } /* 名称后面的同机关系标（表格里只认它：可点的标签就是它）：放不下时先省略名称 */
-.dt .tag-from { flex: 0 100 auto; min-width: 3em; } /* 原名标（备用里的机器）：放不下时它先省略，名称尽量写全；原名全文在悬停里 */
+.dt .tag-from { flex: 0 100 auto; min-width: 0; } /* 原名标（备用里的机器）：放不下时它先省略（可缩到只剩省略号），名称不缩；原名全文在悬停里 */
+.dt .row:has(> .tag-from) > :first-child { flex: none; }
 .nc-meta2 { display: grid; min-height: 44px; margin-top: var(--sp-2); font-size: var(--fs-label); line-height: 22px; color: var(--fg-2); }
 .nc-meta2 > div { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); min-width: 0; }
 .nc-meta2 span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
