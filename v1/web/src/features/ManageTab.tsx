@@ -110,8 +110,8 @@ function RenameSection({ m }: { m: MachineView }) {
   const autoNum = pv.data?.name.match(/(\d+)$/)?.[1];
   const autoCountry = m.country_set ? '自动（按 IP）' : `自动（按 IP：${m.country ? countryName(m.country) : '查不到'}）`;
   const toSpare = teamMoved && !!toTeam?.spare && !m.spare;
-  // 移进备用后还被软路由出口指着的：宿主机自己的，加上一起进备用的同机 IP 节点的
-  const exitsLeft = (m.router_exits?.length ?? 0) + (alsoIps ?? []).reduce((sum, x) => sum + (machines?.find((y) => y.id === x.machine_id)?.router_exits?.length ?? 0), 0);
+  // 移进备用后还被软路由出口指着的（宿主机自己的和一起进备用的同机 IP 节点的，预览给）
+  const exitsLeft = teamMoved ? pv.data?.router_exits.length ?? 0 : 0;
   const changeTeam = (v: string) => { setTeam(v); setNum(v === (m.team?.id ?? '') ? (m.number != null ? F.pad2(m.number) : '') : ''); };
 
   const save = () => {

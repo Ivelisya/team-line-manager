@@ -668,3 +668,36 @@ async fn expired_spare_still_pointed_by_router_exit_is_kept() {
     let r = spare::run_once(&t.st, now).await.unwrap();
     assert!(r.retired == [n] && r.kept.is_empty(), "{r:?}");
 }
+
+/// 改团队预览的 router_exits：改到备用团队时列出还指向宿主机和随它一起移入的同机 IP 节点的软路由出口；改到非备用团队、没有出口指着时为空
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rename_preview_lists_router_exits_when_moving_to_spare() {
+    let t = setup(false).await;
+    let sp = spare_team(&t).await;
+    let (a, b) = (seed_team(&t, "团队1").await, seed_team(&t, "团队2").await);
+    let host = seed_vps(&t, a, 1, "203.0.113.51", None).await;
+    let ip = seed_vps(&t, a, 2, "203.0.113.52", Some(host)).await;
+    let other = seed_vps(&t, a, 3, "203.0.113.53", None).await;
+    let rid = Uuid::now_v7();
+    sqlx::query("insert into router (id, name, tunnel_port) values ($1, '办公室', 23002)").bind(rid).execute(&t.st.db).await.unwrap();
+    let point = |node: Uuid, name: &str| json!({"id": Uuid::now_v7(), "name": name, "node_id": node, "relay_id": Uuid::now_v7(), "node_name": name, "relay_name": "线路机1", "port": 20001, "lifecycle": "active"});
+    let exit = |name: &str, entry: Value| json!({"name": name, "entry": entry, "sync": "ok", "linked": true});
+    let snap = json!({"exits": [exit("节点01", point(host, "团队1-01")), exit("节点02", point(ip, "团队1-02")), exit("节点03", point(other, "团队1-03"))]});
+    sqlx::query("insert into router_status (router_id, ts, reachable, data, last_ok_at) values ($1, now(), true, $2, now())").bind(rid).bind(snap).execute(&t.st.db).await.unwrap();
+
+    // 宿主机进备用：它和 IP 节点的出口列出来（别的节点的不算）
+    let pv = t.get(&format!("/api/v1/machines/{host}/rename-preview?team_id={sp}")).await;
+    assert_eq!(
+        pv["router_exits"],
+        json!([{"node": "团队1-01", "router": "办公室", "exit": "节点01"}, {"node": "团队1-02", "router": "办公室", "exit": "节点02"}]),
+        "{pv}"
+    );
+    // IP 节点自己进备用只看它自己
+    let pv = t.get(&format!("/api/v1/machines/{ip}/rename-preview?team_id={sp}")).await;
+    assert_eq!(pv["router_exits"], json!([{"node": "团队1-02", "router": "办公室", "exit": "节点02"}]), "{pv}");
+    // 改到非备用团队、没换团队：不返回
+    for q in [format!("team_id={b}"), "number=9".to_string()] {
+        let pv = t.get(&format!("/api/v1/machines/{host}/rename-preview?{q}")).await;
+        assert_eq!(pv["router_exits"], json!([]), "{pv}");
+    }
+}
