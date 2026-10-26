@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 
 #[derive(Subcommand)]
 pub enum ReportCmd {
-    /// 月度可用率汇总：先按供应商（平均 / 最差 TCP 成功率，从差到好），再列每个在用节点（TCP / 出口成功率、断线次数与最长断线、近 30 天告警，从差到好）。
+    /// 月度可用率汇总：先按供应商（平均 / 最差出口成功率，从差到好），再列每个在用节点（出口 / TCP 成功率、断线次数与最长断线、告警次数，从差到好）。
     /// 默认本月（算到今天）；--month 看某个月，--days 看近几天（含今天），二选一。成功率取自小时汇总的探测，窗口内没有探测的写「-」
     Uptime {
         /// YYYY-MM
@@ -72,20 +72,20 @@ pub fn uptime(ctx: &Ctx, month: Option<&str>, days: Option<i64>) -> anyhow::Resu
         let prov: Vec<Vec<String>> = providers
             .iter()
             .map(|p| {
-                let worst = if p["worst"].is_object() { format!("{}（{}）", st(p, "/worst/name"), pct_cell(p, "worst_tcp_pct")) } else { "-".into() };
-                vec![st(p, "/name"), st(p, "/nodes"), st(p, "/with_data"), pct_cell(p, "avg_tcp_pct"), worst, pct_cell(p, "avg_egress_pct"), pct_cell(p, "worst_egress_pct"), st(p, "/outages"), st(p, "/incidents_30d")]
+                let worst = if p["worst"].is_object() { format!("{}（{}）", st(p, "/worst/name"), pct_cell(p, "worst_egress_pct")) } else { "-".into() };
+                vec![st(p, "/name"), st(p, "/nodes"), st(p, "/with_data"), pct_cell(p, "avg_egress_pct"), worst, pct_cell(p, "avg_tcp_pct"), pct_cell(p, "worst_tcp_pct"), st(p, "/outages"), st(p, "/incidents")]
             })
             .collect();
         let rows: Vec<Vec<String>> = items
             .iter()
             .map(|i| {
-                vec![st(i, "/name"), st(i, "/team/name"), st(i, "/provider/name"), pct_cell(i, "tcp_pct"), pct_cell(i, "egress_pct"), st(i, "/outages"), hours(i["longest_outage_h"].as_i64().unwrap_or(0)), st(i, "/incidents_30d")]
+                vec![st(i, "/name"), st(i, "/team/name"), st(i, "/provider/name"), pct_cell(i, "egress_pct"), pct_cell(i, "tcp_pct"), st(i, "/outages"), hours(i["longest_outage_h"].as_i64().unwrap_or(0)), st(i, "/incidents")]
             })
             .collect();
         format!(
-            "{head}\n\n按供应商（从差到好；平均 / 最差只看窗口内有探测的节点；断线次数是各节点之和）\n{}\n\n按节点（TCP 成功率从差到好，没有探测的在最后；断线 = 有 TCP 探测失败的整点小时，连着的算一次；告警是近 30 天）\n{}",
-            table::render(&["供应商", "节点", "有数据", "平均 TCP", "最差 TCP（节点）", "平均出口", "最差出口", "断线", "近30天告警"], &prov),
-            table::render(&["节点", "团队", "供应商", "TCP", "出口", "断线", "最长断线", "近30天告警"], &rows)
+            "{head}\n\n按供应商（从差到好；平均 / 最差只看窗口内有探测的节点；断线次数是各节点之和）\n{}\n\n按节点（出口成功率从差到好，没有探测的在最后；断线 = 出口探测失败 3 次以上的整点小时，连着的算一次；告警 = 窗口内可用性相关的告警次数）\n{}",
+            table::render(&["供应商", "节点", "有数据", "平均出口", "最差出口（节点）", "平均 TCP", "最差 TCP", "断线", "告警"], &prov),
+            table::render(&["节点", "团队", "供应商", "出口", "TCP", "断线", "最长断线", "告警"], &rows)
         )
     });
     Ok(0)

@@ -2,10 +2,13 @@
 //!
 //! 可用率口径同 `GET /machines/{id}/availability`（api/machines.rs）：节点的全部入口（含已移除的）探测小时汇总 `probe_hourly` 里 tcp / egress 的
 //! 成功次数 ÷ 探测次数。区别只有分天的时区：抽屉按机器的账单时区分天，这里一个窗口按组织时区的自然日整段加总，窗口边缘至多差几个小时。
+//! 主指标是出口成功率（经线路机走到节点再出去，客户流量真正走的路径）；TCP 成功率（线路机到节点的建连）是次要列：个别供应商的节点 TCP 探测
+//! 每天有 2% 左右偶发失败而出口一直是通的，按 TCP 排会把这样的节点排成最差。
 //! 只列在用的节点（不含线路机：线路机上的探测是它到各节点的，不代表线路机自己；不含备用团队）。
 //!
-//! 断线：小时汇总里某个整点小时有 TCP 探测失败（成功 < 次数）就算断线的一小时，连着的小时合成一次；最长一次按小时算（原始探测只留几天，
-//! 月度窗口只能用小时汇总）。近 30 天告警次数是此刻往前 30 天内这台机器开出的告警条数（不论是否已恢复）。
+//! 断线：小时汇总里某个整点小时出口探测失败 `OUTAGE_MIN_FAILS` 次以上就算断线的一小时，连着的小时合成一次；最长一次按小时算（原始探测只留几天，
+//! 月度窗口只能用小时汇总）。告警次数是窗口内（组织时区的自然日起止）这台机器上可用性相关规则（`AVAILABILITY_RULES`）开出的告警条数，
+//! 30 分钟内复发合并进原告警的也算（`reopen_count`，同告警页的次数）。
 //!
 //! 月报：总流量、月费合计、USD/GB 最高的 3 台、可用率最差的 3 台、告警次数前 3 的规则、即将到期的台数，
 //! 走通知发送队列（`notify::enqueue`，`Kind::Report`），只发给开了「月报」的渠道。
@@ -31,6 +34,12 @@ const SENT_KEY: &str = "monthly_report_sent";
 const ACTOR: &str = "系统";
 /// USD/GB 排名：这个月流量不足这么多 GB 的不参与（几乎没流量的机器会排到无穷大）
 const MIN_GB: f64 = 1.0;
+/// 一个整点小时里出口探测失败这么多次，这一小时算断线。与告警去抖同一量级：出口失败期间每 30 s 探一次，告警要连续失败满 150 s；
+/// 偶发的一两次失败（探测自己的抖动）不算
+const OUTAGE_MIN_FAILS: i64 = 3;
+/// 算进「告警次数」的规则：节点自己的可用性。出口 / TCP 不通、agent 离线、没有在用的入口。
+/// 线路机侧的 relay_xray_down / relay_unreachable 开在线路机上、不在节点名下（这里只列节点），续费、额度、流量异常与可用性无关
+const AVAILABILITY_RULES: [&str; 4] = ["egress_fail", "tcp_fail", "agent_offline", "no_entry"];
 
 /// 统计窗口：组织时区的自然日，`from`、`to` 都含
 pub struct Window {
@@ -117,19 +126,20 @@ struct Item {
     name: String,
     team: Option<Ref>,
     provider: Option<Ref>,
-    tcp_total: i64,
-    tcp_ok: i64,
-    /// 0–100；窗口内没有探测为 null
-    tcp_pct: Option<f64>,
+    /// 主指标：出口探测成功率。0–100；窗口内没有探测为 null
     egress_total: i64,
     egress_ok: i64,
     egress_pct: Option<f64>,
-    /// 断线次数：有 TCP 探测失败的整点小时，连着的合成一次
+    /// 次要：线路机到节点的 TCP 建连成功率
+    tcp_total: i64,
+    tcp_ok: i64,
+    tcp_pct: Option<f64>,
+    /// 断线次数：出口探测失败 `OUTAGE_MIN_FAILS` 次以上的整点小时，连着的合成一次
     outages: i64,
     /// 最长一次断线的小时数（没有断线为 0）
     longest_outage_h: i64,
-    /// 近 30 天（此刻往前）这台机器开出的告警条数
-    incidents_30d: i64,
+    /// 窗口内这台机器上可用性相关规则开出的告警次数（含 30 分钟内复发合并的）
+    incidents: i64,
 }
 
 #[derive(Serialize)]
@@ -137,16 +147,16 @@ struct ProviderRow {
     id: Option<Uuid>,
     name: String,
     nodes: i64,
-    /// 窗口内有 TCP 探测的节点数（平均、最差只看它们）
+    /// 窗口内有出口探测的节点数（出口的平均、最差只看它们）
     with_data: i64,
-    avg_tcp_pct: Option<f64>,
-    worst_tcp_pct: Option<f64>,
-    /// TCP 成功率最差的那台
-    worst: Option<Ref>,
     avg_egress_pct: Option<f64>,
     worst_egress_pct: Option<f64>,
+    /// 出口成功率最差的那台
+    worst: Option<Ref>,
+    avg_tcp_pct: Option<f64>,
+    worst_tcp_pct: Option<f64>,
     outages: i64,
-    incidents_30d: i64,
+    incidents: i64,
 }
 
 fn pct(ok: i64, total: i64) -> Option<f64> { (total > 0).then(|| 100.0 * ok as f64 / total as f64) }
@@ -166,8 +176,8 @@ fn mean(v: impl Iterator<Item = f64>) -> Option<f64> {
     (n > 0).then(|| sum / n as f64)
 }
 
-/// 窗口内每个在用节点的可用率（TCP、出口成功率、断线、告警），再按供应商汇总。
-/// 节点按 TCP 成功率从差到好排（没有探测的在最后）；供应商按平均 TCP 成功率从差到好排
+/// 窗口内每个在用节点的可用率（出口、TCP 成功率、断线、告警），再按供应商汇总。
+/// 节点按出口成功率从差到好排（没有探测的在最后，出口相同再看 TCP）；供应商按平均出口成功率从差到好排
 pub async fn uptime(st: &AppState, w: &Window) -> ApiResult<Value> {
     let tz = meta::org_tz();
     let (from, to): (OffsetDateTime, OffsetDateTime) =
@@ -189,19 +199,20 @@ pub async fn uptime(st: &AppState, w: &Window) -> ApiResult<Value> {
     .fetch_all(&st.db)
     .await?;
     let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
-    // 断线：有 TCP 失败的整点小时，连续的小时合成一段（小时序号减去段内序号是常数）
+    // 断线：出口失败 OUTAGE_MIN_FAILS 次以上的整点小时，连续的小时合成一段（小时序号减去段内序号是常数）
     let islands: Vec<(Uuid, i64)> = sqlx::query_as(
         "with hrs as (
            select m.id, h.hour, sum(h.total) total, sum(h.ok) ok
            from machine m join entry e on e.node_id = m.id join probe_hourly h on h.entry_id = e.id
-           where m.id = any($1) and h.kind = 'tcp' and h.hour >= $2 and h.hour < $3 group by m.id, h.hour),
+           where m.id = any($1) and h.kind = 'egress' and h.hour >= $2 and h.hour < $3 group by m.id, h.hour),
          bad as (
-           select id, (extract(epoch from hour) / 3600)::bigint - row_number() over (partition by id order by hour) grp from hrs where ok < total)
+           select id, (extract(epoch from hour) / 3600)::bigint - row_number() over (partition by id order by hour) grp from hrs where total - ok >= $4)
          select id, count(*)::bigint from bad group by id, grp",
     )
     .bind(&ids)
     .bind(from)
     .bind(to)
+    .bind(OUTAGE_MIN_FAILS)
     .fetch_all(&st.db)
     .await?;
     let mut outage: HashMap<Uuid, (i64, i64)> = HashMap::new();
@@ -211,9 +222,13 @@ pub async fn uptime(st: &AppState, w: &Window) -> ApiResult<Value> {
         o.1 = o.1.max(len);
     }
     let incidents: HashMap<Uuid, i64> = sqlx::query_as::<_, (Uuid, i64)>(
-        "select subject_id, count(*)::bigint from incident where subject_id = any($1) and opened_at >= now() - interval '30 days' group by 1",
+        "select subject_id, count(*)::bigint + coalesce(sum(reopen_count), 0)::bigint from incident
+         where engine = 'machine' and subject_id = any($1) and rule = any($4) and opened_at >= $2 and opened_at < $3 group by 1",
     )
     .bind(&ids)
+    .bind(from)
+    .bind(to)
+    .bind(AVAILABILITY_RULES.as_slice())
     .fetch_all(&st.db)
     .await?
     .into_iter()
@@ -228,7 +243,7 @@ pub async fn uptime(st: &AppState, w: &Window) -> ApiResult<Value> {
                 egress_pct: pct(r.egress_ok, r.egress_total),
                 outages,
                 longest_outage_h,
-                incidents_30d: incidents.get(&r.id).copied().unwrap_or(0),
+                incidents: incidents.get(&r.id).copied().unwrap_or(0),
                 team: r.team_id.map(|id| Ref { id, name: r.team_name.unwrap_or_default() }),
                 provider: r.provider_id.map(|id| Ref { id, name: r.provider_name.unwrap_or_default() }),
                 id: r.id,
@@ -240,7 +255,7 @@ pub async fn uptime(st: &AppState, w: &Window) -> ApiResult<Value> {
             }
         })
         .collect();
-    items.sort_by(|a, b| asc(a.tcp_pct, b.tcp_pct).then_with(|| asc(a.egress_pct, b.egress_pct)));
+    items.sort_by(|a, b| asc(a.egress_pct, b.egress_pct).then_with(|| asc(a.tcp_pct, b.tcp_pct)));
 
     let mut groups: Vec<(Option<Uuid>, String, Vec<&Item>)> = vec![];
     for it in &items {
@@ -253,25 +268,25 @@ pub async fn uptime(st: &AppState, w: &Window) -> ApiResult<Value> {
     let mut providers: Vec<ProviderRow> = groups
         .into_iter()
         .map(|(id, name, its)| {
-            let tcp: Vec<&&Item> = its.iter().filter(|i| i.tcp_pct.is_some()).collect();
-            // its 已按 TCP 成功率从差到好，第一个有数据的就是最差的
-            let worst = tcp.first().map(|i| Ref { id: i.id, name: i.name.clone() });
+            let egress: Vec<&&Item> = its.iter().filter(|i| i.egress_pct.is_some()).collect();
+            // its 已按出口成功率从差到好，第一个有数据的就是最差的
+            let worst = egress.first().map(|i| Ref { id: i.id, name: i.name.clone() });
             ProviderRow {
                 id,
                 name,
                 nodes: its.len() as i64,
-                with_data: tcp.len() as i64,
-                avg_tcp_pct: mean(tcp.iter().filter_map(|i| i.tcp_pct)),
-                worst_tcp_pct: tcp.first().and_then(|i| i.tcp_pct),
+                with_data: egress.len() as i64,
+                avg_egress_pct: mean(egress.iter().filter_map(|i| i.egress_pct)),
+                worst_egress_pct: egress.first().and_then(|i| i.egress_pct),
                 worst,
-                avg_egress_pct: mean(its.iter().filter_map(|i| i.egress_pct)),
-                worst_egress_pct: its.iter().filter_map(|i| i.egress_pct).min_by(|a, b| a.total_cmp(b)),
+                avg_tcp_pct: mean(its.iter().filter_map(|i| i.tcp_pct)),
+                worst_tcp_pct: its.iter().filter_map(|i| i.tcp_pct).min_by(|a, b| a.total_cmp(b)),
                 outages: its.iter().map(|i| i.outages).sum(),
-                incidents_30d: its.iter().map(|i| i.incidents_30d).sum(),
+                incidents: its.iter().map(|i| i.incidents).sum(),
             }
         })
         .collect();
-    providers.sort_by(|a, b| asc(a.avg_tcp_pct, b.avg_tcp_pct).then_with(|| a.name.cmp(&b.name)));
+    providers.sort_by(|a, b| asc(a.avg_egress_pct, b.avg_egress_pct).then_with(|| a.name.cmp(&b.name)));
 
     Ok(json!({
         "month": w.month, "days": w.days, "from": w.from, "to": w.to, "tz": tz,
@@ -345,13 +360,13 @@ pub async fn monthly(st: &AppState, month: Option<&str>) -> ApiResult<Value> {
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|i| i["tcp_pct"].is_f64())
+        .filter(|i| i["egress_pct"].is_f64())
         .take(3)
-        .map(|i| json!({"id": i["id"], "name": i["name"], "tcp_pct": i["tcp_pct"], "egress_pct": i["egress_pct"], "outages": i["outages"], "longest_outage_h": i["longest_outage_h"]}))
+        .map(|i| json!({"id": i["id"], "name": i["name"], "egress_pct": i["egress_pct"], "tcp_pct": i["tcp_pct"], "outages": i["outages"], "longest_outage_h": i["longest_outage_h"]}))
         .collect();
 
     let rules: Vec<(String, i64)> = sqlx::query_as(
-        "select rule, count(*)::bigint c from incident
+        "select rule, count(*)::bigint + coalesce(sum(reopen_count), 0)::bigint c from incident
          where opened_at >= $1::date::timestamp at time zone $3 and opened_at < $2::date::timestamp at time zone $3
          group by rule order by c desc, rule limit 3",
     )
@@ -404,14 +419,14 @@ fn text_of(r: &Value) -> String {
             .collect(),
     ));
     l.extend(list(
-        "可用率最差的 3 台（TCP 探测成功率）",
+        "可用率最差的 3 台（出口探测成功率）",
         r["worst_uptime"]
             .as_array()
             .into_iter()
             .flatten()
             .map(|w| {
                 let out = if i(&w["outages"]) > 0 { format!("，断线 {} 次、最长 {} 小时", i(&w["outages"]), i(&w["longest_outage_h"])) } else { String::new() };
-                format!("{} {}（出口 {}）{out}", w["name"].as_str().unwrap_or(""), pct_text(w["tcp_pct"].as_f64()), pct_text(w["egress_pct"].as_f64()))
+                format!("{} {}（TCP {}）{out}", w["name"].as_str().unwrap_or(""), pct_text(w["egress_pct"].as_f64()), pct_text(w["tcp_pct"].as_f64()))
             })
             .collect(),
     ));
