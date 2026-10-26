@@ -113,26 +113,43 @@ type PatchCur = (i32, String, Option<Uuid>, Option<i32>, Option<String>, String,
 /// 改团队时原团队少了这台：按编号连续压缩（同退役完成）。先锁团队（原团队、新团队，按 id 排）再锁机器，和 move_to_spare、退役收尾同一个顺序（团队 → 机器）
 pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<PatchIn>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
+    // 宿主机改前的 spare_since（原团队是备用时，只带与它同一次进备用的 IP 节点）
+    let mut host_spare_since: Option<OffsetDateTime> = None;
     if let Some(to) = b.team_id {
         let from: Option<Uuid> = sqlx::query_scalar::<_, Option<Uuid>>("select team_id from machine where id = $1").bind(id).fetch_optional(&mut *tx).await?.flatten();
         let mut teams = vec![to];
         teams.extend(from.filter(|f| *f != to));
         teams.sort();
         sqlx::query("select 1 from team where id = any($1) order by id for update").bind(&teams).execute(&mut *tx).await?;
+        host_spare_since = sqlx::query_scalar::<_, Option<OffsetDateTime>>("select spare_since from machine where id = $1 for update").bind(id).fetch_optional(&mut *tx).await?.flatten();
     }
     let to = b.team_id;
     let p = patch_tx(&mut tx, &a.name, id, b).await?;
     let mut relays = p.relays;
-    // 宿主机换了团队：它上面还在原团队的同机 IP 节点一起走（编号接在宿主机之后取新团队的最小空号，同 move_to_spare），原团队一并压缩
+    // 宿主机换了团队：它上面还在原团队的同机 IP 节点一起走（编号接在宿主机之后取新团队的最小空号，同 move_to_spare），原团队一并压缩。
+    // 原团队是备用团队（撤销退役）时只带与宿主机同一次进备用的（move_to_spare 同事务写 spare_since，时刻相同）：之前单独退役进备用的不拉回
     let mut ip_moved = false;
     if let (Some(from), Some(to)) = (p.left_team, to) {
-        let ips: Vec<(Uuid, i32)> = sqlx::query_as(
-            "select id, revision from machine where host_id = $1 and team_id = $2 and lifecycle not in ('retiring', 'retired') order by number for update",
-        )
+        let ips: Vec<(Uuid, i32)> = sqlx::query_as(&format!(
+            "select m.id, m.revision from machine m where {IP_WITH_HOST} order by m.number for update"
+        ))
         .bind(id)
         .bind(from)
+        .bind(host_spare_since)
         .fetch_all(&mut *tx)
         .await?;
+        // 和 move_to_spare 一样：带走的 IP 节点有进行中的作业不动
+        let ip_ids: Vec<Uuid> = ips.iter().map(|x| x.0).collect();
+        let busy: Option<(String, String)> = sqlx::query_as(
+            "select display_name(m.kind::text, m.label, t.name, m.number), j.kind from job j join machine m on m.id = j.target_id left join team t on t.id = m.team_id
+             where j.target_id = any($1) and j.state in ('queued', 'running', 'waiting', 'cancelling') limit 1",
+        )
+        .bind(&ip_ids)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some((name, k)) = busy {
+            return Err(ApiError::conflict(format!("同机 IP 节点 {name} 有进行中的作业（{}）：等它结束再改团队", meta::job_kind_label(&k))));
+        }
         for (ip, rev) in ips {
             let n = free_number(&mut *tx, Some(to)).await?;
             relays.extend(patch_tx(&mut tx, &a.name, ip, PatchIn::rename(rev, to, n)).await?.relays);
@@ -155,6 +172,11 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     st.emit(if compacted { Event::Machines } else { Event::Machine { id } });
     get_one(a, State(st), ApiPath(id)).await
 }
+
+/// 随宿主机换团队的同机 IP 节点（$1 宿主机、$2 原团队、$3 宿主机改前的 spare_since）：还在原团队、没退役的；
+/// 原团队是备用团队时只要与宿主机同一次进备用的（spare_since 相同），之前单独进备用的留在备用
+const IP_WITH_HOST: &str = "m.host_id = $1 and m.team_id = $2 and m.lifecycle not in ('retiring', 'retired')
+    and (not (select spare from team where id = $2) or m.spare_since = $3)";
 
 /// `patch_tx` 的结果
 pub struct Patched {
@@ -194,8 +216,8 @@ pub struct RenamePreviewQ {
 /// 没换团队、线路机两项都为空
 pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<RenamePreviewQ>) -> ApiResult<Json<Value>> {
     let mut conn = st.db.acquire().await?;
-    let (kind, label, team, number): (String, Option<String>, Option<Uuid>, Option<i32>) =
-        sqlx::query_as("select kind::text, label, team_id, number from machine where id = $1 and lifecycle <> 'retired'")
+    let (kind, label, team, number, spare_since): (String, Option<String>, Option<Uuid>, Option<i32>, Option<OffsetDateTime>) =
+        sqlx::query_as("select kind::text, label, team_id, number, spare_since from machine where id = $1 and lifecycle <> 'retired'")
             .bind(id)
             .fetch_optional(&mut *conn)
             .await?
@@ -217,11 +239,14 @@ pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
             let from_name = team_name(&st.db, Some(from)).await?.unwrap_or_default();
             // 随宿主机走的同机 IP 节点：新团队里宿主机先占 n，它们依次取剩下的最小空号
             let ips: Vec<(Uuid, String)> = sqlx::query_as(
-                "select m.id, display_name(m.kind::text, m.label, t.name, m.number) from machine m join team t on t.id = m.team_id
-                 where m.host_id = $1 and m.team_id = $2 and m.lifecycle not in ('retiring', 'retired') order by m.number",
+                &format!(
+                    "select m.id, display_name(m.kind::text, m.label, t.name, m.number) from machine m join team t on t.id = m.team_id
+                     where {IP_WITH_HOST} order by m.number"
+                ),
             )
             .bind(id)
             .bind(from)
+            .bind(spare_since)
             .fetch_all(&mut *conn)
             .await?;
             if !ips.is_empty() {

@@ -75,13 +75,23 @@ pub struct AlertState {
 }
 
 impl AlertState {
-    /// 中控重启后从库里补回 quiet：还在告警、开的时候没通知过（notified_at 为空）、没被静默的出口告警，只可能是 quiet 开着的
+    /// 中控重启后从库里补回 quiet：还在告警、上次恢复之后没报过「触发」（`!told_firing`：从没通知过，或通知时刻不晚于最近一条恢复通知——
+    /// 恢复后重开、重开时 quiet 的也在内）、没被静默的出口告警，只可能是 quiet 开着的
     pub async fn load(db: &sqlx::PgPool) -> sqlx::Result<Self> {
-        let ids: Vec<Uuid> =
-            sqlx::query_scalar("select subject_id from incident where state = 'firing' and engine = 'router' and rule = $1 and notified_at is null").bind(EXITS_DOWN).fetch_all(db).await?;
+        let ids: Vec<Uuid> = sqlx::query_scalar(&format!(
+            "select subject_id from incident where state = 'firing' and engine = 'router' and rule = $1
+               and (notified_at is null or notified_at <= {})",
+            crate::alerts::TOLD_RESOLVED_SQL
+        ))
+        .bind(EXITS_DOWN)
+        .fetch_all(db)
+        .await?;
         let silences = Silences::load(db).await?;
         Ok(Self { quiet: ids.into_iter().filter(|id| !silences.matches(EXITS_DOWN, *id)).map(|id| (EXITS_DOWN, id)).collect(), ..Self::default() })
     }
+
+    /// 这条出口告警此刻是 quiet（开的时候机器告警在报，还没单独通知过）
+    pub fn is_quiet(&self, router: Uuid) -> bool { self.quiet.contains(&(EXITS_DOWN, router)) }
 }
 
 /// 一台路由此刻的样子

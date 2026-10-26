@@ -880,10 +880,21 @@ pub(super) async fn renumber(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     // 旧节点进了备用，之后没有节点级策略（跟随备用团队）；历史版本的快照也改挂到新节点，并记一条 replace 版本（线路机代数在里面 +1，随同一事务提交）
     let policy_rows = crate::policy::load_rows(&mut *tx, false).await?;
     let policy_moved = crate::policy::move_node(&mut tx, old, new, actor).await?;
-    // 搬了策略行才记一条版本（快照、变更、线路机代数）：之后的版本列表和回滚才对得上现状；只改写了历史快照的（旧节点当前没有节点级策略）当前状态没变，不记
+    // 搬了策略行才记一条版本（快照、变更、线路机代数）：之后的版本列表和回滚才对得上现状；只改写了历史快照的（旧节点当前没有节点级策略）当前状态没变，不记版本，
+    // 但历史快照确实被改了：单独写一条审计（policy.rewrite_history），不然这次改写没有任何记录
     let policy_moved_now = policy_moved.summary.is_some();
     if policy_moved_now {
         relays.extend(crate::api::policy::record_replace(&mut tx, actor, &policy_rows, old, new, &policy_moved).await.map_err(|e| anyhow!(e.message))?);
+    } else if !policy_moved.rewritten_seqs.is_empty() {
+        crate::db::audit(
+            &mut tx,
+            actor,
+            "policy.rewrite_history",
+            "machine",
+            Some(new),
+            json!({"from": old, "to": new, "rewritten_seqs": policy_moved.rewritten_seqs, "dropped_seqs": policy_moved.dropped_seqs}),
+        )
+        .await?;
     }
     let subs_moved = crate::api::client_subs::swap_machine(&mut tx, old, new).await?;
     let mut renumbered = 0;

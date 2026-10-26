@@ -146,7 +146,7 @@ const AUDIT_ACTIONS: &[&str] = &[
     "entry.disable", "entry.rotate", "entry.share", "entry.add", "entry.move", "entry.repoint", "relay.evacuate", "job.retry", "job.cancel", "job.prune", "silence.create",
     "silence.delete", "incident.ack", "restore.probe", "agent.upgrade", "notify.create", "notify.update", "notify.delete", "exec", "machine.logs", "server.logs", "apikey.create",
     "apikey.revoke", "auth.login", "auth.login_failed", "auth.logout", "auth.totp_enabled", "auth.totp_disabled", "auth.totp_recovery_used",
-    "auth.totp_recovery_regenerated", "auth.user_removed", "auth.user_disabled", "auth.password_changed", "auth.session_revoked", "auth.verify_failed", "policy.draft", "policy.discard", "policy.publish", "policy.rollback", "policy.replace",
+    "auth.totp_recovery_regenerated", "auth.user_removed", "auth.user_disabled", "auth.password_changed", "auth.session_revoked", "auth.verify_failed", "policy.draft", "policy.discard", "policy.publish", "policy.rollback", "policy.replace", "policy.rewrite_history",
     "settings.access_retention", "settings.fx_rate", "terminal.open", "terminal.close", "ssh.login",
     "router.create", "router.update", "router.delete", "router.bootstrap", "router.bootstrap_used", "router.deploy", "router.sync", "router.switch", "router.switch_back",
     "router.switch_reverted", "router.switch_defer",
@@ -237,6 +237,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "policy.publish" => "发布访问规则",
         "policy.rollback" => "回滚访问规则",
         "policy.replace" => "替换节点时转移访问规则",
+        "policy.rewrite_history" => "替换节点时改写访问规则历史版本",
         "settings.access_retention" => "修改访问记录保留期",
         "settings.fx_rate" => "修改汇率",
         "router.create" => "新建软路由",
@@ -555,6 +556,15 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
             let how = if d["password"] == true { "密码" } else { "中控密钥" };
             format!("{} · {}@{}:{}（{how}）· {res}", s("name"), s("user"), s("host"), d["port"])
         }
+        // 「改写历史版本 v2、v3 · 其中 v3 里新节点原有的项被丢掉」（旧节点当前没有节点级策略，只改了历史快照）
+        "policy.rewrite_history" => {
+            let vs = |k: &str| d[k].as_array().into_iter().flatten().filter_map(Value::as_i64).map(|s| format!("v{s}")).collect::<Vec<_>>().join("、");
+            let mut s = format!("改写历史版本 {}", vs("rewritten_seqs"));
+            if d["dropped_seqs"].as_array().is_some_and(|a| !a.is_empty()) {
+                s += &format!(" · 其中 {} 里新节点原有的项被丢掉", vs("dropped_seqs"));
+            }
+            s
+        }
         // 「v5 · 回滚到 v3 · 团队1：黑名单 → 仅观察；团队2-03：白名单 · 域名 2 → 3 个 · 6 台线路机」
         "policy.publish" | "policy.rollback" | "policy.replace" => {
             let ch = d["changes"].as_array().cloned().unwrap_or_default();
@@ -829,6 +839,8 @@ mod tests {
             "v5 · 团队1：黑名单 → 仅观察；团队2-03：白名单 · 域名 2 → 3 个 · 6 台线路机"
         );
         assert_eq!(t("policy.rollback", json!({"seq": 6, "rollback_of_seq": 4, "changes": [ch("团队1", "observe", 0, "denylist", 2)], "relays": 0})).1, "v6 · 回滚到 v4 · 团队1：仅观察 → 黑名单（2 个域名）");
+        assert_eq!(t("policy.rewrite_history", json!({"rewritten_seqs": [2, 3], "dropped_seqs": [3]})).1, "改写历史版本 v2、v3 · 其中 v3 里新节点原有的项被丢掉");
+        assert_eq!(t("policy.rewrite_history", json!({"rewritten_seqs": [1], "dropped_seqs": []})).1, "改写历史版本 v1");
         // 同模式同个数：分得清只改了备注、换了域名、两样都改
         let same = |dc: bool, nc: bool| {
             let mut c = ch("团队1", "denylist", 2, "denylist", 2);
