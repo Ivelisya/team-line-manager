@@ -95,6 +95,8 @@ const TEAM_KEY: Record<string, (t: Team) => number | string> = { name: (t) => t.
 function TeamCost({ t }: { t: Team }) {
   const u = t.monthly_usd;
   if (!u.by_currency.length && !u.unconverted.length) return <span className="t-muted">—</span>;
+  // 备用团队的机器不再续费：灰字，不计入页头合计
+  if (t.spare) return <span className="num t-muted" data-tip={`不再续费，不计入合计\n${usdTotalTip(u)}`}>{F.money(u.cents, 'USD')}{u.unconverted.length ? '*' : ''}</span>;
   return <span className="num" data-tip={usdTotalTip(u)}>{F.money(u.cents, 'USD')}{u.unconverted.length ? '*' : ''}</span>;
 }
 /** 团队的「在用节点」：只数在用的（同流量页「团队成本」的口径）；上架中、退役中的另列在悬停里。机器列表没到时先显示服务端的台数（含这两类） */
@@ -116,16 +118,17 @@ function TeamsTab() {
   const held = useHeld(edit === 'new' ? 'new' : edit?.id, edit);
   const renumHeld = useHeld(renum?.id, renum);
   const list = sortRows([...(q.data ?? [])].sort((a, b) => a.sort_order - b.sort_order), sort, { ...TEAM_KEY, nodes: (t) => counts?.[t.id]?.active ?? t.node_count });
-  // 各团队在用机器的月费合计（USD）；有团队带没折算的币种时注明
-  const teamsUsd = list.reduce((s, t) => s + t.monthly_usd.cents, 0);
+  // 各团队在用机器的月费合计（USD），不含备用团队（它们不再续费，同首页）；有团队带没折算的币种时注明
+  const paidTeams = list.filter((t) => !t.spare);
+  const teamsUsd = paidTeams.reduce((s, t) => s + t.monthly_usd.cents, 0);
   // 线路机不归团队：单列一项，合计 = 各团队 + 线路机，同首页「每月费用」
   const relaysUsd = useRelaysMonthlyUsd().data ?? 0;
   const total = teamsUsd + relaysUsd;
-  const partial = list.some((t) => t.monthly_usd.unconverted.length);
+  const partial = paidTeams.some((t) => t.monthly_usd.unconverted.length);
   return (
     <>
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
-      <Panel title="团队" count={list.length} sub={<><InfoTip text={"首页和表格按「排序」从小到大排列\n月费是在用机器折成美元的合计，汇率在「设置 → 汇率」\n线路机不归团队，单列一项；合计同首页「每月费用」"} />{list.length > 0 && <span className="t-sub" style={{ marginLeft: 'var(--sp-8)' }} data-tip={partial ? '带 * 的团队有币种缺汇率，没计入合计' : undefined}>月费合计 <span className="num">{F.money(total, 'USD')}</span>{partial ? '*' : ''}{relaysUsd > 0 && <> = 团队 <span className="num">{F.money(teamsUsd, 'USD')}</span> + 线路机 <span className="num">{F.money(relaysUsd, 'USD')}</span></>}</span>}</>} tools={<Button variant="primary" size="md" onClick={() => setEdit('new')}><Plus />新建团队</Button>} flush>
+      <Panel title="团队" count={list.length} sub={<><InfoTip text={"首页和表格按「排序」从小到大排列\n月费是在用机器折成美元的合计，汇率在「设置 → 汇率」\n备用团队不再续费，不计入合计\n线路机不归团队，单列一项；合计同首页「每月费用」"} />{list.length > 0 && <span className="t-sub" style={{ marginLeft: 'var(--sp-8)' }} data-tip={partial ? '带 * 的团队有币种缺汇率，没计入合计' : undefined}>月费合计 <span className="num">{F.money(total, 'USD')}</span>{partial ? '*' : ''}{relaysUsd > 0 && <> = 团队 <span className="num">{F.money(teamsUsd, 'USD')}</span> + 线路机 <span className="num">{F.money(relaysUsd, 'USD')}</span></>}</span>}</>} tools={<Button variant="primary" size="md" onClick={() => setEdit('new')}><Plus />新建团队</Button>} flush>
         <TableWrap>
           <table className="dt is-one" style={{ minWidth: 430 }}>
             <colgroup><col /><col style={{ width: 90 }} /><col style={{ width: 100 }} /><col style={{ width: 110 }} /><col style={{ width: 52 }} /></colgroup>
