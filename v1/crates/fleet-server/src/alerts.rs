@@ -182,12 +182,13 @@ pub(crate) const TOLD_RESOLVED_SQL: &str = "(select case when l.kind = 'resolved
      where l.incident_id = incident.id and l.ok and l.kind in ('firing', 'repeat', 'resolved') order by l.ts desc, l.id desc limit 1)";
 
 /// 仍在触发的告警这一轮该发的通知：报过恢复的，距那条恢复通知满 REOPEN_QUIET_S 发「触发」；还没入队过（开告警时入队失败）的补发「触发」；
-/// 否则按持续提醒间隔发「提醒」。notify_log 在送达后才写（渠道失败重试时更晚），`notified_at` 在入队时就更新：
+/// 否则按持续提醒间隔发「提醒」（已确认的 `acked` 不再提醒：确认就是知道了，想继续催只能靠升级 / 复发重开清掉确认）。notify_log 在送达后才写（渠道失败重试时更晚），`notified_at` 在入队时就更新：
 /// 比那条恢复通知新，说明「触发」已经在发了，按提醒间隔算。机器与 incident.rs 的告警共用
-pub(crate) fn due(rule: &str, severity: &str, notified_at: Option<OffsetDateTime>, told_resolved_at: Option<OffsetDateTime>, now: OffsetDateTime) -> Option<Kind> {
+pub(crate) fn due(rule: &str, severity: &str, notified_at: Option<OffsetDateTime>, told_resolved_at: Option<OffsetDateTime>, acked: bool, now: OffsetDateTime) -> Option<Kind> {
     match (told_resolved_at.filter(|t| notified_at.is_none_or(|n| n < *t)), notified_at) {
         (Some(t), _) => ((now - t).whole_seconds() >= REOPEN_QUIET_S).then_some(Kind::Firing),
         (None, None) => Some(Kind::Firing),
+        (None, Some(_)) if acked => None,
         (None, Some(n)) => {
             let every = repeat_interval_s(rule, severity)?;
             ((now - n).whole_seconds() >= every).then_some(Kind::Repeat)
@@ -195,7 +196,7 @@ pub(crate) fn due(rule: &str, severity: &str, notified_at: Option<OffsetDateTime
     }
 }
 
-/// 恢复时要不要报「恢复」：上次恢复通知之后发过（入队过）触发/提醒才报。
+/// 恢复时要不要报「恢复」：上次恢复通知之后发过（入队过）触发/提醒才报（报过触发的恢复不看普通静默，否则群里只留一条触发没有下文；维护窗口照旧不发，见 incident.rs）。
 /// 看入队时就刷新的 `notified_at`，不看 notify_log（送达后才写，触发还在队列里时查不到，恢复通知就被吞了）；
 /// 同一渠道的队列先进先出，恢复排在触发之后，没收到触发的渠道发送时跳过。机器与 incident.rs 的告警共用
 pub(crate) fn told_firing(notified_at: Option<OffsetDateTime>, told_resolved_at: Option<OffsetDateTime>) -> bool {
@@ -331,7 +332,7 @@ mod tests {
     fn reopen_firing_not_resent_while_in_flight() {
         let now = OffsetDateTime::now_utc();
         let ago = |s: i64| now - time::Duration::seconds(s);
-        let due = |notified, resolved, sev| due("relay_xray_down", sev, notified, resolved, now);
+        let due = |notified, resolved, sev| due("relay_xray_down", sev, notified, resolved, false, now);
         // 恢复通知 10 分钟前，之后没再发过：发「触发」
         assert!(matches!(due(Some(ago(900)), Some(ago(600)), "critical"), Some(Kind::Firing)));
         // 「触发」30 s 前已开始发送、还没写进 notify_log（最近一条仍是恢复）：不重发
@@ -340,6 +341,21 @@ mod tests {
         assert!(matches!(due(None, None, "warning"), Some(Kind::Firing)));
         // 入队过、没到提醒间隔：不发
         assert!(due(Some(ago(60)), None, "critical").is_none());
+    }
+
+    #[test]
+    fn acked_incident_gets_no_repeat() {
+        let now = OffsetDateTime::now_utc();
+        let ago = |s: i64| now - time::Duration::seconds(s);
+        // 严重告警 5 小时前通知过、没确认：到间隔发「提醒」
+        assert!(matches!(due("relay_xray_down", "critical", Some(ago(5 * 3600)), None, false, now), Some(Kind::Repeat)));
+        // 已确认：不再提醒（续费类每天一次的提醒同理）
+        assert!(due("relay_xray_down", "critical", Some(ago(5 * 3600)), None, true, now).is_none());
+        assert!(matches!(due("renewal_due", "warning", Some(ago(25 * 3600)), None, false, now), Some(Kind::Repeat)));
+        assert!(due("renewal_due", "warning", Some(ago(25 * 3600)), None, true, now).is_none());
+        // 确认不挡「触发」：开告警时没入队过的补发；报过恢复后复发（重开清掉确认，传进来的就是 false）也照常发
+        assert!(matches!(due("relay_xray_down", "critical", None, None, true, now), Some(Kind::Firing)));
+        assert!(matches!(due("relay_xray_down", "critical", Some(ago(900)), Some(ago(600)), true, now), Some(Kind::Firing)));
     }
 
     #[test]

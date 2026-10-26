@@ -436,6 +436,17 @@ pub fn rename(
     if let Some(t) = team {
         body["team_id"] = json!(ctx.team_id(t)?);
     }
+    // 换团队时原团队剩下的节点会压缩编号（同事务）：先取预览，改完把连带改号的一并打出来
+    let renames: Vec<String> = if team.is_some() {
+        let mut q = vec![("team_id", st(&body, "/team_id"))];
+        if let Some(n) = number {
+            q.push(("number", n.to_string()));
+        }
+        let pv = ctx.c.get_q(&format!("/machines/{id}/rename-preview"), &q)?;
+        pv["renames"].as_array().into_iter().flatten().map(|r| format!("{} → {}", st(r, "/old_name"), st(r, "/new_name"))).collect()
+    } else {
+        vec![]
+    };
     if let Some(n) = number {
         body["number"] = json!(n);
     }
@@ -450,8 +461,14 @@ pub fn rename(
         body["country"] = if c.eq_ignore_ascii_case("auto") { Value::Null } else { json!(c) };
     }
     // PATCH 返回改完后的完整视图，新名字直接从里面取
-    let d = ctx.c.patch(&format!("/machines/{id}"), &body)?;
-    ctx.emit(&d, || format!("{} → {}", st(&cur, "/name"), st(&d, "/name")));
+    let mut d = ctx.c.patch(&format!("/machines/{id}"), &body)?;
+    if !renames.is_empty() {
+        d["renames"] = json!(renames);
+    }
+    ctx.emit(&d, || {
+        let also = if renames.is_empty() { String::new() } else { format!("\n原团队编号连带改动：{}", renames.join("，")) };
+        format!("{} → {}{also}", st(&cur, "/name"), st(&d, "/name"))
+    });
     Ok(0)
 }
 

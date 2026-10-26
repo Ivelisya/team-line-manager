@@ -544,16 +544,26 @@ R('GET', '/machines', () => {
   return clone(db.machines); // 回收了的不在列表里（scope=live / all 同）
 });
 R('GET', '/machines/([^/]+)', ({ params }) => clone(machine(params[0])));
+const freeNumber = (tid: string) => { const used = new Set(db.machines.filter((x) => x.team?.id === tid && x.lifecycle !== 'retired').map((x) => x.number)); let n = 1; while (used.has(n)) n++; return n; };
+R('GET', '/machines/([^/]+)/rename-preview', ({ params, query }) => {
+  const m = machine(params[0]); const tid = query.get('team_id') ?? m.team?.id; const team = tid ? teamOf(tid) : null;
+  if (!team || m.kind === 'relay') return { name: m.name, old_name: m.name, renames: [] };
+  const number = query.get('number') ? Number(query.get('number')) : team.id !== m.team?.id ? freeNumber(team.id) : m.number!;
+  const moved = !!m.team && team.id !== m.team.id;
+  return { name: displayName(team.name, number), old_name: m.name, renames: moved ? compactPlan(m.team!.id, [m.id]).map((c) => ({ machine_id: c.m.id, old_name: c.old_name, new_name: c.new_name })) : [] };
+});
 R('PATCH', '/machines/([^/]+)', ({ params, body }) => {
   const m = machine(params[0]);
   if (body.revision !== m.revision) throw bad('这台机器刚被其他人修改过，请刷新后重试', 409, 'revision_conflict');
   if (body.team_id !== undefined || body.number !== undefined) {
     const team = teamOf(body.team_id ?? m.team?.id);
-    const number = body.number ?? m.number;
+    const from = m.team?.id;
+    const number = body.number ?? (team.id !== from ? freeNumber(team.id) : m.number); // 换团队没给编号：排到新团队的最小空号（同服务端）
     if (db.machines.some((x) => x.id !== m.id && x.team?.id === team.id && x.number === number && x.lifecycle !== 'retired')) throw bad(`${displayName(team.name, number)} 已被占用`, 409, 'conflict');
     const wasSpare = m.spare, oldName = m.name;
     m.team = { id: team.id, name: team.name }; m.spare = team.spare; m.number = number;
     if (m.spare && !wasSpare) { m.spare_from = oldName; m.spare_since = iso(); } else if (!m.spare) { m.spare_from = null; m.spare_since = null; } // 同服务端 patch_tx
+    if (from && from !== team.id) compactApply(from, '改团队后'); // 原团队少了这台：编号连续（已经不在原团队，直接压缩）
   }
   if (body.label !== undefined) m.label = body.label;
   if (body.country !== undefined) {

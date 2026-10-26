@@ -77,6 +77,7 @@ pub fn router() -> Router<AppState> {
         // 机器
         .route("/machines", get(machines::list))
         .route("/machines/{id}", get(machines::get_one).patch(machines::patch))
+        .route("/machines/{id}/rename-preview", get(machines::rename_preview))
         .route("/machines/{id}/series", get(machines::series))
         .route("/machines/{id}/availability", get(machines::availability))
         .route("/machines/{id}/reach-quality", get(probe_points::relay_quality))

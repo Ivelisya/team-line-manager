@@ -119,6 +119,16 @@ async fn plan(st: &AppState, conn: &mut PgConnection, old_id: Uuid, b: &RepointI
     if new.node_id != old.node_id {
         warnings.push(format!("改完后这些出口的流量走「{}」：入口本身都不动，「{}」照常在用", new.name(), old.name()));
     }
+    // 目标是备用节点（临时把出口指过去的常见去向）：出口指着时不会按到期自动回收（spare.rs），但它本来就是等丢弃的，提醒一声；目标此刻故障的更要说
+    if let Some(m) = crate::views::live(st).await?.iter().find(|m| m.id == new.node_id) {
+        if m.spare {
+            let due = m.subscription.as_ref().map(|s| format!("{} 到期", s.due_date)).unwrap_or_else(|| "没有订阅".into());
+            warnings.push(format!("「{}」是备用节点，{due}（出口指着时不自动回收）", new.node_name));
+        }
+        if m.health.status == crate::health::Status::Down {
+            warnings.push(format!("「{}」此刻故障：改过去之后这些出口会不通", new.node_name));
+        }
+    }
     Ok(Plan { old, new, router_ids: b.router_ids.clone(), routers, blockers, invalid, warnings })
 }
 

@@ -6,7 +6,7 @@
 //! 复发与限流（判断函数在 alerts.rs）：
 //! - 恢复后 30 分钟内同一 (规则, 对象) 又成立（`ready`）：重开原告警（`reopen_count` +1、清掉确认），不新建；悄悄关掉的（带 closed_by：对象删了、停用了、来源画像过期）不重开；
 //! - 重开时已报过恢复的，距那条恢复通知满 5 分钟才发「触发」（不满则等满 5 分钟仍在触发再发），恢复只在上次恢复通知之后发过触发 / 提醒时才报：
-//!   反复抖动的告警每 5 分钟最多一对触发 / 恢复，真故障最多晚 5 分钟报。被静默的不发任何通知。
+//!   反复抖动的告警每 5 分钟最多一对触发 / 恢复，真故障最多晚 5 分钟报。被静默的不发任何通知（已报过触发的告警恢复时照报「恢复」，维护窗口内不报）；已确认的告警不再发「提醒」。
 //!
 //! 维护窗口（软路由、探测点；全局维护也算）同机器：开着的告警保持原状（不改、不恢复、不发通知），不开新的；
 //! 维护结束后按那时的状态再判。对象删了、停用了这类悄悄关掉（`Close::Quiet`）的照关。
@@ -64,6 +64,8 @@ pub struct Firing {
     opened_at: OffsetDateTime,
     /// 最近一次把触发 / 提醒写进发送队列的时间；null = 开的时候入队失败
     notified_at: Option<OffsetDateTime>,
+    /// 有人确认过（升级、复发重开会清掉）：不再发「提醒」
+    ack_at: Option<OffsetDateTime>,
     /// 最近一条送达的通知是「恢复」时它的发送时间（复发重开后还没再通知过）
     told_resolved_at: Option<OffsetDateTime>,
 }
@@ -71,7 +73,7 @@ pub struct Firing {
 /// 这个引擎在告警的
 pub async fn firing(db: &sqlx::PgPool, engine: Engine) -> sqlx::Result<Vec<Firing>> {
     sqlx::query_as(&format!(
-        "select id, rule, subject_id, severity::text severity, summary, detail, opened_at, notified_at, {TOLD_RESOLVED_SQL} told_resolved_at from incident
+        "select id, rule, subject_id, severity::text severity, summary, detail, opened_at, notified_at, ack_at, {TOLD_RESOLVED_SQL} told_resolved_at from incident
          where state = 'firing' and engine = $1"
     ))
     .bind(engine.as_str())
@@ -184,7 +186,7 @@ pub async fn reconcile<'n>(
                 touch.push((inc.id, summary));
             }
             // 升级马上再发一次「触发」；否则按 `due`：重开后报过恢复的满 5 分钟发「触发」、没入队过的补发、到间隔的提醒
-            let kind = if escalated { Some(Kind::Firing) } else { due(w.rule, sev, inc.notified_at, inc.told_resolved_at, now) };
+            let kind = if escalated { Some(Kind::Firing) } else { due(w.rule, sev, inc.notified_at, inc.told_resolved_at, inc.ack_at.is_some(), now) };
             if let Some(kind) = kind.filter(|_| !silenced) {
                 let text = chronic(st, engine, w.rule, w.subject, kind, &w.text).await;
                 notify::enqueue(st, notice(kind, inc.id, w.rule, sev, w.name, &text, inc.opened_at)).await;
@@ -214,7 +216,7 @@ pub async fn reconcile<'n>(
         .await?;
         if let Some((id, opened_at, notified_at, told_resolved_at)) = reopened {
             t.opened += 1;
-            if let Some(kind) = due(w.rule, w.severity, notified_at, told_resolved_at, now) {
+            if let Some(kind) = due(w.rule, w.severity, notified_at, told_resolved_at, false, now) {
                 let text = chronic(st, engine, w.rule, w.subject, kind, &w.text).await;
                 notify::enqueue(st, notice(kind, id, w.rule, w.severity, w.name, &text, opened_at)).await;
             }
@@ -265,8 +267,8 @@ pub async fn reconcile<'n>(
             .execute(&st.db)
             .await?;
         t.resolved += 1;
-        // 上次恢复通知之后发过触发 / 提醒才报恢复（复发后还没再通知过的不重复报）
-        if let Some(name) = name.filter(|_| told_firing(inc.notified_at, inc.told_resolved_at) && !silences.matches(&inc.rule, inc.subject_id)) {
+        // 上次恢复通知之后发过触发 / 提醒才报恢复（复发后还没再通知过的不重复报）。报过触发的不看普通静默（静默期间恢复了也要给触发一个下文），维护窗口照旧不发
+        if let Some(name) = name.filter(|_| told_firing(inc.notified_at, inc.told_resolved_at) && !silences.maintenance(inc.subject_id)) {
             let text = notify::strip_machine(&inc.summary, name);
             notify::enqueue(st, notice(Kind::Resolved, inc.id, &inc.rule, &inc.severity, name, text, inc.opened_at)).await;
         }
