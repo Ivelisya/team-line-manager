@@ -15,7 +15,8 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use sqlx::{FromRow, Row};
+use std::collections::{HashMap, HashSet};
 use time::{Date, OffsetDateTime};
 use uuid::Uuid;
 
@@ -431,27 +432,51 @@ pub async fn availability(_a: Actor, State(st): State<AppState>, ApiPath(id): Ap
     Ok(ok(json!({"days": days, "items": items, "tcp_pct": tcp_pct, "egress_pct": egress_pct})))
 }
 
-/// 按账单时区 `tz` 分天的近 `days` 天探测成功率：(每天, TCP 成功率 %, 出口成功率 %)，没有探测为 None（`availability` 与待付清单共用）
+/// 一台机器按账单时区 `tz` 分天的近 `days` 天探测成功率：(每天, TCP 成功率 %, 出口成功率 %)，没有探测为 None（`availability` 用）
 pub(crate) async fn availability_of(db: &sqlx::PgPool, id: Uuid, tz: &str, days: i32) -> sqlx::Result<(Vec<DayAvailability>, Option<f64>, Option<f64>)> {
-    let items: Vec<DayAvailability> = sqlx::query_as(AVAILABILITY).bind(id).bind(tz).bind(days).fetch_all(db).await?;
-    let pct = |good: i64, total: i64| (total > 0).then(|| 100.0 * good as f64 / total as f64);
-    let sum = |f: fn(&DayAvailability) -> i64| items.iter().map(f).sum::<i64>();
-    let (tcp_pct, egress_pct) = (pct(sum(|d| d.tcp_ok), sum(|d| d.tcp_total)), pct(sum(|d| d.egress_ok), sum(|d| d.egress_total)));
-    Ok((items, tcp_pct, egress_pct))
+    Ok(availability_many(db, &[(id, tz.to_string())], days).await?.remove(&id).unwrap_or_default())
 }
 
-/// 小时汇总按 UTC 整点分桶，一桶按起点归到账单时区（$2）的那一天：整点时区正好落在零点边界，半小时时区跨零点的那一桶归前一天
-const AVAILABILITY: &str = "with d as (select local_date($2) - i as day from generate_series($3 - 1, 0, -1) i),
+/// 一批机器（各自的账单时区）一条查询算出的 `availability_of`，待付清单用：一台一次查询时到期的机器多就是几十次并发查询
+pub(crate) async fn availability_many(db: &sqlx::PgPool, machines: &[(Uuid, String)], days: i32) -> sqlx::Result<HashMap<Uuid, (Vec<DayAvailability>, Option<f64>, Option<f64>)>> {
+    let (ids, tzs): (Vec<Uuid>, Vec<String>) = machines.iter().cloned().unzip();
+    let rows: Vec<(Uuid, DayAvailability)> = sqlx::query(AVAILABILITY)
+        .bind(ids)
+        .bind(tzs)
+        .bind(days)
+        .try_map(|r: sqlx::postgres::PgRow| Ok((r.try_get("id")?, DayAvailability::from_row(&r)?)))
+        .fetch_all(db)
+        .await?;
+    let mut by_id: HashMap<Uuid, Vec<DayAvailability>> = HashMap::new();
+    for (id, d) in rows {
+        by_id.entry(id).or_default().push(d);
+    }
+    let pct = |good: i64, total: i64| (total > 0).then(|| 100.0 * good as f64 / total as f64);
+    Ok(by_id
+        .into_iter()
+        .map(|(id, items)| {
+            let sum = |f: fn(&DayAvailability) -> i64| items.iter().map(f).sum::<i64>();
+            let (tcp_pct, egress_pct) = (pct(sum(|d| d.tcp_ok), sum(|d| d.tcp_total)), pct(sum(|d| d.egress_ok), sum(|d| d.egress_total)));
+            (id, (items, tcp_pct, egress_pct))
+        })
+        .collect())
+}
+
+/// 小时汇总按 UTC 整点分桶，一桶按起点归到账单时区的那一天：整点时区正好落在零点边界，半小时时区跨零点的那一桶归前一天。
+/// $1 = 机器 id 数组，$2 = 各自的账单时区数组（与 $1 对位，unnest 成 (id, tz)），$3 = 天数；按 机器 × 日历天 出行，机器内旧→新
+/// 机器的入口（te）用 union 而不是 `node_id = t.id or relay_id = t.id` 连接：后者让规划器放弃按入口走 probe_hourly 的主键索引，改成全表扫描（实测 100 台 455 ms，union 版 171 ms）
+const AVAILABILITY: &str = "with t as (select u.id, u.tz from unnest($1::uuid[], $2::text[]) u(id, tz)),
+  d as (select t.id, local_date(t.tz) - i as day from t cross join generate_series($3 - 1, 0, -1) i),
+  te as (select t.id, t.tz, e.id eid from t join entry e on e.node_id = t.id union select t.id, t.tz, e.id from t join entry e on e.relay_id = t.id),
   p as (
-    select (h.hour at time zone $2)::date as day,
+    select te.id, (h.hour at time zone te.tz)::date as day,
       sum(h.total) filter (where h.kind = 'tcp') tcp_total, sum(h.ok) filter (where h.kind = 'tcp') tcp_ok,
       sum(h.total) filter (where h.kind = 'egress') egress_total, sum(h.ok) filter (where h.kind = 'egress') egress_ok
-    from probe_hourly h join entry e on e.id = h.entry_id
-    where (e.node_id = $1 or e.relay_id = $1) and h.kind in ('tcp', 'egress')
-      and h.hour >= (local_date($2) - ($3 - 1))::timestamp at time zone $2
-    group by 1)
-  select d.day as date, coalesce(p.tcp_total, 0) tcp_total, coalesce(p.tcp_ok, 0) tcp_ok, coalesce(p.egress_total, 0) egress_total, coalesce(p.egress_ok, 0) egress_ok
-  from d left join p using (day) order by d.day";
+    from te join probe_hourly h on h.entry_id = te.eid
+    where h.kind in ('tcp', 'egress') and h.hour >= (local_date(te.tz) - ($3 - 1))::timestamp at time zone te.tz
+    group by 1, 2)
+  select d.id, d.day as date, coalesce(p.tcp_total, 0) tcp_total, coalesce(p.tcp_ok, 0) tcp_ok, coalesce(p.egress_total, 0) egress_total, coalesce(p.egress_ok, 0) egress_ok
+  from d left join p on p.id = d.id and p.day = d.day order by d.id, d.day";
 
 // ── 退役（进备用 / 立即回收）与物理删除 ─────────────────────────────────────
 

@@ -335,6 +335,16 @@ async fn availability_days_follow_billing_tz() {
     let v = t.get(&format!("/api/v1/machines/{n3}/availability?days=2")).await;
     assert_eq!((v["tcp_pct"].as_f64(), v["egress_pct"].is_null()), (Some(90.0), true), "{v}");
 
+    // 待付清单一条查询算全部到期机器的可用率（出口成功率，各按自己的账单时区），与上面逐台的 egress_pct 一致：节点 1 洛杉矶 100%、节点 2 北京 100%、节点 3 没有出口探测为 null
+    for n in [n2, n3] {
+        sqlx::query("insert into subscription (machine_id, price_cents, due_date, billing_tz) values ($1, 500, current_date + 5, 'Asia/Shanghai')").bind(n).execute(&t.st.db).await.unwrap();
+    }
+    let due = t.get("/api/v1/billing/due?days=90").await;
+    let avail = |id: Uuid| {
+        due["groups"].as_array().unwrap().iter().flat_map(|g| g["machines"].as_array().unwrap()).find(|m| m["id"] == id.to_string()).map(|m| m["avail_pct"].clone()).unwrap_or_else(|| panic!("{due}"))
+    };
+    assert_eq!((avail(n1).as_f64(), avail(n2).as_f64(), avail(n3).is_null()), (Some(100.0), Some(100.0), true), "{due}");
+
     for bad in ["0", "91", "x"] {
         let (s, v) = t.req("GET", &format!("/api/v1/machines/{n1}/availability?days={bad}"), None, None).await;
         assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
