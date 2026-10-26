@@ -90,12 +90,20 @@ const StatNum = ({ f }: { f: F.Fmt }) => <>{f.v}{f.u && <small>{f.u}</small>}</>
 function scrollToEnd(w: HTMLElement) {
   const table = w.querySelector<HTMLElement>('table');
   if (table) table.style.marginRight = '';
+  w.style.paddingInlineEnd = '';
   w.scrollLeft = w.scrollWidth;
   const edge = w.scrollLeft + (w.querySelector<HTMLElement>('thead tr:first-child th')?.offsetWidth ?? 0);
   if (!table || w.scrollLeft <= 0) return;
   const cut = Array.from(w.querySelectorAll<HTMLElement>('thead tr:first-child th')).slice(1).find((th) => th.offsetLeft < edge && th.offsetLeft + th.offsetWidth > edge);
   if (!cut) return;
-  table.style.marginRight = `${cut.offsetLeft + cut.offsetWidth - edge}px`;
+  const gap = `${cut.offsetLeft + cut.offsetWidth - edge}px`;
+  const before = w.scrollWidth;
+  table.style.marginRight = gap;
+  // 有的浏览器不把子元素的右外边距算进可滚宽度：退回给滚动容器补右内边距
+  if (w.scrollWidth <= before) {
+    table.style.marginRight = '';
+    w.style.paddingInlineEnd = gap;
+  }
   w.scrollLeft = w.scrollWidth;
 }
 
@@ -104,8 +112,19 @@ function useScrollEnd(dep: unknown) {
   // 等两帧：TableWrap 的「放得下」标记（data-fit，overflow 为 clip 时滚不动）由尺寸监听在布局之后才摘掉
   React.useEffect(() => {
     let b = 0;
-    const a = requestAnimationFrame(() => { b = requestAnimationFrame(() => { const w = ref.current?.querySelector<HTMLElement>('.table-wrap'); if (w) scrollToEnd(w); }); });
-    return () => { cancelAnimationFrame(a); cancelAnimationFrame(b); };
+    let w: HTMLElement | null | undefined;
+    // 窗口变了列宽跟着变：还停在最右的重新对齐（人自己滚开了就不动）。在不在最右按滚动时记下的算，缩放后可滚宽度已经变了
+    let atEnd = true;
+    const onScroll = () => { if (w) atEnd = w.scrollLeft >= w.scrollWidth - w.clientWidth - 2; };
+    const onResize = () => { if (w && atEnd) scrollToEnd(w); };
+    const a = requestAnimationFrame(() => { b = requestAnimationFrame(() => {
+      w = ref.current?.querySelector<HTMLElement>('.table-wrap');
+      if (!w) return;
+      scrollToEnd(w);
+      w.addEventListener('scroll', onScroll, { passive: true });
+    }); });
+    window.addEventListener('resize', onResize);
+    return () => { cancelAnimationFrame(a); cancelAnimationFrame(b); w?.removeEventListener('scroll', onScroll); window.removeEventListener('resize', onResize); };
   }, [dep]);
   return ref;
 }
