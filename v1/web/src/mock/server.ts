@@ -116,7 +116,9 @@ function refreshAllFollowers() {
 }
 function recomputeDue(m: MachineView) {
   if (m.subscription) { m.subscription.due_days = Math.ceil((new Date(m.subscription.due_date).getTime() - Date.now()) / DAY); subCalc(m.subscription); }
-  m.recycle_held = m.spare && m.lifecycle === 'active' && m.router_exits.length > 0; // 还被出口指着的备用不自动回收
+  // 备用宿主机上不在备用团队、没退役的同机 IP 节点（同服务端 live_ip_nodes）
+  m.live_ip_nodes = m.spare && m.lifecycle === 'active' ? db.machines.filter((x) => x.host_machine?.id === m.id && x.lifecycle !== 'retired' && !x.spare).map((x) => x.name) : [];
+  m.recycle_held = m.spare && m.lifecycle === 'active' && (m.router_exits.length > 0 || m.live_ip_nodes.length > 0); // 还被出口指着、IP 节点还在用的备用不自动回收
   m.recycle_on = m.spare && m.lifecycle === 'active' && m.subscription && !m.recycle_held ? addDays(m.subscription.due_date, 2) : null; // 备用：到期 + 2 天 0 点起自动回收
 }
 

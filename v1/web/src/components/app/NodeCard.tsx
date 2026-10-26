@@ -256,7 +256,7 @@ const RunRow = memo(function RunRow({ activated, sub, recycle }: { activated: st
   return (
     <section className="slot-seg nc-run">
       <div className="nc-run-item"><span className="nc-run-label"><RefreshCw />已上架</span><span className="nc-run-val" data-c="up"><Num f={F.since(activated, now)} /></span></div>
-      <div className="nc-run-item"><span className="nc-run-label"><Calendar />到期{recycle && <span className="nc-run-note" data-tip={recycle.tip}>{recycle.text}</span>}</span><span className="nc-run-val"><Due days={sub?.due_days} state={sub?.due_state} /></span></div>
+      <div className="nc-run-item"><span className="nc-run-label"><Calendar />到期</span><span className="nc-run-val"><Due days={sub?.due_days} state={sub?.due_state} /></span>{recycle && <span className="nc-run-note" data-tip={recycle.tip}>{recycle.text}</span>}</div>
       <div className="nc-run-item"><span className="nc-run-label"><Wallet />剩余价值</span><span className="nc-run-val">{rv ? <span className="num">{F.money(rv.cents, rv.currency)}</span> : <span className="t-muted">—</span>}</span></div>
     </section>
   );

@@ -162,8 +162,8 @@
 .nc-qfc { font-size: var(--fs-label); line-height: var(--lh-label); color: var(--warn-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } /* 预计用满：有预测才有这一行 */
 .nc-quse { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--fg-2); } /* 本周期已用 / 上限：要读的信息，不用 --fg-3；窄卡放不下时先省略它 */
 
-/* 备用机器：到期旁直接写哪天自动回收（短句，说明在悬停里） */
-.nc-run-note { margin-left: var(--sp-4); min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: var(--fw-regular); color: var(--fg-2); }
+/* 备用机器：到期值下面单独一行写哪天自动回收（短句，不截断，全文含日期在悬停里） */
+.nc-run-note { min-width: 0; overflow-wrap: anywhere; font: var(--fw-regular) var(--fs-micro) / var(--lh-micro) var(--font-sans); color: var(--fg-2); }
 .nc-recycle { margin-right: var(--sp-6); font-weight: var(--fw-regular); color: var(--fg-2); }
 /* 8 已上架 · 到期 · 剩余价值：彩色读数 */
 .nc-run { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp-12); }

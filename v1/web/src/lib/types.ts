@@ -64,9 +64,11 @@ export interface MachineView {
   spare: boolean;
   /** 备用里的机器：进备用前的显示名（如 团队2-07）与进备用（= 退役）的时刻、自动回收的起始日（YYYY-MM-DD，没有订阅为 null）；不在备用里为 null */
   spare_from: string | null; spare_since: string | null; recycle_on: string | null;
-  /** 备用里在用、还被软路由出口指着（router_exits 非空）：不自动回收，recycle_on 为 null */
+  /** 备用里在用、还被软路由出口指着（router_exits 非空）或上面还有在用的同机 IP 节点（live_ip_nodes 非空）：不自动回收，recycle_on 为 null */
   recycle_held: boolean;
-  /** 备用团队里在用的机器：还指向它（备用宿主机还含它上面没退役的同机 IP 节点，后缀「（经同机 IP 节点 X）」）的软路由出口（「路由名 · 出口名」）；其余为 []。在用、在备用里、这里为空 = 闲置备用（等到期放生，见 isIdleSpare） */
+  /** 备用团队里在用的宿主机：上面不在备用团队、没退役的同机 IP 节点（显示名）——宿主机退役会连带它们，所以不自动回收，也不是闲置备用；其余为 []。旧中控没有这个字段 */
+  live_ip_nodes?: string[];
+  /** 备用团队里在用的机器：还指向它（备用宿主机还含它上面没退役的同机 IP 节点，后缀「（经同机 IP 节点 X）」）的软路由出口（「路由名 · 出口名」）；其余为 []。在用、在备用里、这里和 live_ip_nodes 都为空 = 闲置备用（等到期放生，见 isIdleSpare） */
   router_exits: string[];
   ip: string; ssh_port: number;
   /** 国家或地区（ISO 3166-1 两位大写，如 US）：手动设了用手动的，否则中控离线 IP 库按机器自己的 IP 查；
