@@ -109,11 +109,38 @@ pub struct Group {
     pub now: Option<String>,
     /// 组里的成员（按配置的顺序）
     pub all: Vec<String>,
+    /// 有没有规则用它（规则的目标是它，或被某个这样的组嵌套引用；模式是 global 时 GLOBAL 算在用）。没规则用的组切了不影响流量。
+    /// None = 不知道（旧快照没这个字段、/rules 没取到、有子规则看不到目标）：按能切处理
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub used: Option<bool>,
 }
 
 impl Group {
     /// select 组：只有它能手动选（url-test / fallback / load-balance 由 mihomo 自己选）
     pub fn selectable(&self) -> bool { self.kind == "Selector" }
+}
+
+/// 按采集脚本回的 `rules`（{mode, targets, sub}）给每个组标有没有规则用它：规则的目标是起点（global 模式只有 GLOBAL，direct 模式没有），
+/// 沿成员里的嵌套组往下算（组里的任一成员都算，不只是当前选中的）。没取到 `rules` 时都不知道；有子规则（目标在子规则集里看不到）时没找到的也不知道
+fn mark_used(groups: &mut [Group], rules: Option<&Value>) {
+    let Some(rules) = rules else { return };
+    let mut used: HashSet<String> = match rules.get("mode").and_then(Value::as_str).map(str::to_ascii_lowercase).as_deref() {
+        Some("global") => HashSet::from(["GLOBAL".to_string()]),
+        Some("direct") => HashSet::new(),
+        _ => rules.get("targets").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(String::from).collect(),
+    };
+    let mut todo: Vec<String> = used.iter().cloned().collect();
+    while let Some(n) = todo.pop() {
+        for m in groups.iter().find(|g| g.name == n).map_or(&[][..], |g| &g.all[..]) {
+            if groups.iter().any(|g| &g.name == m) && used.insert(m.clone()) {
+                todo.push(m.clone());
+            }
+        }
+    }
+    let sub = rules.get("sub").and_then(Value::as_bool) == Some(true);
+    for g in groups {
+        g.used = if used.contains(&g.name) { Some(true) } else if sub { None } else { Some(false) };
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -422,7 +449,8 @@ pub fn build(raw: &Value, prev: &Prev, last: Option<&Snapshot>, config: Option<&
         },
     };
     let exits = exits(&oc, last, config, entries, now);
-    let groups = oc.get("groups").and_then(Value::as_array).map(|a| a.iter().filter_map(|g| serde_json::from_value(g.clone()).ok()).collect()).unwrap_or_default();
+    let mut groups: Vec<Group> = oc.get("groups").and_then(Value::as_array).map(|a| a.iter().filter_map(|g| serde_json::from_value(g.clone()).ok()).collect()).unwrap_or_default();
+    mark_used(&mut groups, oc.get("rules"));
     let clients = clients(raw, &oc, &interfaces);
     let wan = interfaces.iter().find(|w| w.name == "wan");
     let metric = MetricRow {
@@ -1027,7 +1055,7 @@ fn signature(s: &Snapshot) -> Value {
         "ifaces": s.interfaces.iter().map(|i| (&i.name, &i.device, i.up, &i.ip)).collect::<Vec<_>>(),
         "oc": (o.enabled, o.running, &o.version, &o.mode, &o.config_path, o.config_mtime.map(|t| t.unix_timestamp()), &o.error, &o.config_error, o.config_stale, &o.delay_error),
         "exits": s.exits.iter().map(|e| serde_json::json!([e.name, e.server, e.port, e.entry, e.sync, e.linked, e.alive, usable(e)])).collect::<Vec<_>>(),
-        "groups": s.groups.iter().map(|g| (&g.name, &g.now)).collect::<Vec<_>>(),
+        "groups": s.groups.iter().map(|g| (&g.name, &g.now, g.used)).collect::<Vec<_>>(),
         "clients": s.clients.iter().filter(|c| c.online).map(|c| (&c.ip, &c.hostname)).collect::<Vec<_>>(),
     })
 }
@@ -1512,5 +1540,41 @@ mod tests {
         // 字段缺的旧快照也读得回来
         let old: Snapshot = serde_json::from_value(json!({"system": {"cores": 2}})).unwrap();
         assert_eq!(old.system.cores, Some(2));
+        // 旧快照的组没有 used：读成未知（按能切处理），序列化时也不写出来
+        let old: Snapshot = serde_json::from_value(json!({"groups": [{"name": "GLOBAL", "type": "Selector", "now": "DIRECT", "all": ["DIRECT"]}]})).unwrap();
+        assert_eq!(old.groups[0].used, None);
+        assert!(serde_json::to_value(&old).unwrap()["groups"][0].get("used").is_none());
+    }
+
+    /// 策略组有没有规则用它：规则的目标、被用到的组嵌套的组；global 模式只算 GLOBAL；取不到规则或有子规则时不下结论
+    #[test]
+    fn marks_groups_used_by_rules() {
+        let g = |name: &str, all: &[&str]| Group { name: name.into(), kind: "Selector".into(), now: all.first().map(|s| s.to_string()), all: all.iter().map(|s| s.to_string()).collect(), used: None };
+        let groups = || vec![g("GLOBAL", &["DIRECT", "EXIT_1", "手动"]), g("EXIT_1", &["节点01", "节点02"]), g("手动", &["EXIT_2", "节点01"]), g("EXIT_2", &["节点02"]), g("闲置", &["节点01"])];
+        fn used(gs: &[Group]) -> Vec<(&str, Option<bool>)> { gs.iter().map(|g| (g.name.as_str(), g.used)).collect() }
+        // 规则指向 EXIT_1 与 手动：手动里嵌套的 EXIT_2 也算；GLOBAL 与 闲置 没人用
+        let mut gs = groups();
+        mark_used(&mut gs, Some(&json!({"mode": "rule", "targets": ["EXIT_1", "手动", "DIRECT"], "sub": false})));
+        assert_eq!(used(&gs), [("GLOBAL", Some(false)), ("EXIT_1", Some(true)), ("手动", Some(true)), ("EXIT_2", Some(true)), ("闲置", Some(false))]);
+        // 只有 GLOBAL 的生产形态：客户按规则直接走 EXIT_n，GLOBAL 不在其中
+        let mut gs = vec![g("GLOBAL", &["DIRECT", "EXIT_1"])];
+        mark_used(&mut gs, Some(&json!({"mode": "Rule", "targets": ["EXIT_1", "节点01"]})));
+        assert_eq!(used(&gs), [("GLOBAL", Some(false))]);
+        // global 模式：GLOBAL 在用，连同它里面嵌套的组；规则不算
+        let mut gs = groups();
+        mark_used(&mut gs, Some(&json!({"mode": "global", "targets": ["闲置"]})));
+        assert_eq!(used(&gs), [("GLOBAL", Some(true)), ("EXIT_1", Some(true)), ("手动", Some(true)), ("EXIT_2", Some(true)), ("闲置", Some(false))]);
+        // direct 模式：谁都不在用
+        let mut gs = groups();
+        mark_used(&mut gs, Some(&json!({"mode": "direct", "targets": ["EXIT_1"]})));
+        assert!(gs.iter().all(|g| g.used == Some(false)));
+        // 有子规则：找到的算在用，没找到的不知道
+        let mut gs = groups();
+        mark_used(&mut gs, Some(&json!({"mode": "rule", "targets": ["EXIT_1"], "sub": true})));
+        assert_eq!(used(&gs), [("GLOBAL", None), ("EXIT_1", Some(true)), ("手动", None), ("EXIT_2", None), ("闲置", None)]);
+        // 没取到规则：都不知道
+        let mut gs = groups();
+        mark_used(&mut gs, None);
+        assert!(gs.iter().all(|g| g.used.is_none()));
     }
 }
