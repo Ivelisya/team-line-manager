@@ -313,14 +313,25 @@ fn human_show(d: &Value) -> String {
             .iter()
             .map(|g| {
                 let s = sw.iter().find(|s| s["group"] == g["name"]);
-                let note = s.map_or_else(String::new, |s| {
-                    let back = s["back_at"].as_str().map(|t| format!("，{} 自动切回", table::ts(t))).unwrap_or_default();
+                let mut note = s.map_or_else(String::new, |s| {
+                    let back = match (s["defer_why"].as_str(), s["back_at"].as_str()) {
+                        (Some(_), next) => format!("，等原出口恢复后再切回，下次检查 {}", next.map(table::ts).unwrap_or_default()),
+                        (None, Some(t)) => format!("，{} 自动切回", table::ts(t)),
+                        (None, None) => String::new(),
+                    };
                     format!("临时切换中（原来是 {}{back}）", st(s, "/from"))
                 });
+                if g["used"] == false {
+                    note.push_str(if note.is_empty() { "未被规则引用（切了不影响流量）" } else { "；未被规则引用" });
+                }
                 vec![st(g, "/name"), group_kind_cn(&st(g, "/type")).into(), st(g, "/now"), g["all"].as_array().map_or(0, Vec::len).to_string(), note]
             })
             .collect();
         out.push_str(&format!("\n\n策略组（select 组可以临时切换：fleetctl router switch）\n{}", table::render(&["组", "类型", "当前出口", "成员", "临时切换"], &rows)));
+        // 推迟自动切回的原因放表外（表里放不下）
+        for s in sw.iter().filter(|s| s["defer_why"].is_string()) {
+            out.push_str(&format!("\n{}：{}", st(s, "/group"), st(s, "/defer_why")));
+        }
     }
     if let Some(cl) = det["clients"].as_array().filter(|a| !a.is_empty()) {
         let rows: Vec<Vec<String>> = cl
@@ -794,6 +805,24 @@ mod tests {
         assert!(s.contains("采集出错") && s.contains("采集脚本出错（退出码 1）：x") && !s.contains("原因"), "{s}");
         assert!(s.contains("配置文件解析不了：y（出口按上次读到的配置对应入口） · 最近一次延迟测试没做成：延迟测试：ssh 执行超过 45 秒"), "{s}");
         assert!(s.contains("时钟偏差 3 秒（中控减路由，正数 = 路由慢）"), "{s}");
+    }
+
+    /// 策略组表：没有规则用的组写「未被规则引用」；切换中的写原来是谁，原出口还没恢复而推迟的写下次检查与原因
+    #[test]
+    fn show_groups_unused_and_deferred() {
+        let d = json!({
+            "name": "R", "state": "online",
+            "detail": {"groups": [
+                {"name": "GLOBAL", "type": "Selector", "now": "DIRECT", "all": ["DIRECT", "节点01"], "used": false},
+                {"name": "手动选择", "type": "Selector", "now": "DIRECT", "all": ["DIRECT", "节点01"], "used": true},
+                {"name": "旧快照", "type": "Selector", "now": "节点01", "all": ["节点01"]},
+            ]},
+            "switches": [{"group": "手动选择", "from": "节点01", "to": "DIRECT", "back_at": "2026-10-24T04:30:56Z", "defer_why": "原出口「节点01」现在不通"}],
+        });
+        let s = human_show(&d);
+        assert!(s.contains("未被规则引用（切了不影响流量）"), "{s}");
+        assert!(s.contains("临时切换中（原来是 节点01，等原出口恢复后再切回，下次检查 ") && s.contains("\n手动选择：原出口「节点01」现在不通"), "{s}");
+        assert_eq!(s.matches("未被规则引用").count(), 1, "{s}");
     }
 
     #[test]

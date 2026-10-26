@@ -380,6 +380,25 @@ function delay(oc, port) {
 	}
 }
 
+// 规则用到的策略与 mihomo 的模式（/configs 的 mode：rule / global / direct）：中控据此给每个策略组标「有没有规则用它」（routers/collect.rs mark_used）。
+// /rules 在规则多时有几百 KB：只回去重后的目标（规则的 proxy 字段）。子规则（SubRules）的目标在子规则集里看不到，标 sub。任何一个接口调不通就不回，中控按「未知」处理
+function rules(oc, port) {
+	let c = api(port, '/configs', 5);
+	let r = api(port, '/rules', 8);
+	if (c.data == null || r.data == null)
+		return;
+	let seen = {}, targets = [], sub = false;
+	for (let x in (r.data.rules || [])) {
+		if (match(lc('' + x.type), /^sub/))
+			sub = true;
+		if (x.proxy != null && !seen[x.proxy]) {
+			seen[x.proxy] = true;
+			push(targets, x.proxy);
+		}
+	}
+	oc.rules = { mode: c.data.mode, targets: targets, sub: sub };
+}
+
 function openclash() {
 	let oc = { enabled: uci('enable') == '1', mode: uci('en_mode'), config_path: uci('config_path') };
 	out.oc = oc;
@@ -410,6 +429,7 @@ function openclash() {
 	oc.version = v.data.version;
 	connections(oc, port);
 	proxies(oc, port);
+	rules(oc, port);
 }
 
 // 只测延迟（FLEET_MODE=delay）：OpenClash 没在跑、API 调不通时 delay.ok = false 并写明原因（中控不算出口不通）

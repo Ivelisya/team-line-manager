@@ -6,13 +6,17 @@
 //!   切回（手动 `--back`、或到 back_at 自动）总是回到 from_exit；手动切到的正好是 from_exit 也算切回。
 //! - 路由重启、OpenClash 重载（替换节点、改出口指向都会重启它）之后组选择由 OpenClash 自己恢复（配置默认值或它记住的选择）：
 //!   采集时发现组现在选中的不是 to_exit（或组没了），记录结束（reverted / gone），待切回随之取消，记审计。只看切换生效之后才开始的采集。
-//! - 全部记审计：router.switch（切换）、router.switch_back（切回，自动的操作者是「系统」）、router.switch_reverted（路由自己改回了）。
+//! - 没有规则用的组（快照里 used = false，见 collect.rs mark_used）切了也不改变流量：拒绝（409），要把客户挪走用改出口指向。旧快照没有这个字段（未知）照常能切。
+//! - 到时自动切回之前先看原出口：快照里它不可用、或它指向的节点 / 线路机有进行中的严重机器告警（出口不通、TCP 不通、agent 离线），
+//!   就不切回（免得把客户切回坏出口），back_at 往后推 1 小时（defer_why 记原因），第一次推迟时经通知渠道说一声，审计记一条。
+//! - 全部记审计：router.switch（切换）、router.switch_back（切回，自动的操作者是「系统」）、router.switch_reverted（路由自己改回了）、router.switch_defer（推迟自动切回）。
 //! - 切换、切回在中控上串行（一把锁）：每次一两秒，不值得按路由分锁。
 
 use super::collect::{Group, Snapshot};
 use super::tunnel;
 use crate::db::{audit, new_id};
 use crate::error::{ApiError, ApiResult};
+use crate::notify::{self, Kind, Notice};
 use crate::state::{AppState, Event};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -21,6 +25,8 @@ use uuid::Uuid;
 
 /// 自动切回最多这么久之后（更久的就该替换节点 / 改出口指向）
 pub const MAX_BACK_S: i64 = 7 * 86400;
+/// 原出口还没恢复时，自动切回推迟这么久再看
+pub const DEFER_S: i64 = 3600;
 /// 一次切换最多等这么久
 const TIMEOUT: Duration = Duration::from_secs(25);
 /// 自动切回的操作者
@@ -39,6 +45,9 @@ pub struct Active {
     pub back_at: Option<OffsetDateTime>,
     pub created_by: String,
     pub switched_at: OffsetDateTime,
+    /// 到时没切回的原因（原出口还没恢复）；`back_at` 是下次检查的时刻
+    pub defer_why: Option<String>,
+    pub deferred_at: Option<OffsetDateTime>,
 }
 
 impl Active {
@@ -46,11 +55,12 @@ impl Active {
         json!({
             "group": self.grp, "from": self.from_exit, "to": self.to_exit,
             "back_at": self.back_at.map(crate::meta::fmt_ts), "by": self.created_by, "switched_at": crate::meta::fmt_ts(self.switched_at),
+            "defer_why": self.defer_why, "deferred_at": self.deferred_at.map(crate::meta::fmt_ts),
         })
     }
 }
 
-const ACTIVE: &str = "select id, router_id, grp, from_exit, to_exit, back_at, created_by, switched_at from router_switch where state = 'active'";
+const ACTIVE: &str = "select id, router_id, grp, from_exit, to_exit, back_at, created_by, switched_at, defer_why, deferred_at from router_switch where state = 'active'";
 
 /// 进行中的临时切换（`router` 给了只要这台的；列表与详情里给出）
 pub async fn active(db: &sqlx::PgPool, router: Option<Uuid>) -> sqlx::Result<Vec<Active>> {
@@ -64,6 +74,11 @@ pub fn check<'a>(snap: &'a Snapshot, group: &str, to: &str) -> ApiResult<&'a Gro
         return Err(ApiError::bad_request(format!(
             "「{group}」是 {} 组：由 mihomo 按延迟 / 可用性自己选出口，不能手动切换；只有 select 组可以（要换它里面的出口，改配置或用 fleetctl repoint）",
             kind_cn(&g.kind)
+        )));
+    }
+    if g.used == Some(false) {
+        return Err(ApiError::conflict(format!(
+            "没有规则用策略组「{group}」，切了不影响流量；要把客户挪走用改出口指向（fleetctl repoint）"
         )));
     }
     if !g.all.iter().any(|x| x == to) {
@@ -125,7 +140,7 @@ pub async fn switch(st: &AppState, actor: &str, id: Uuid, group: &str, to: &str,
             sqlx::query("update router_switch set state = 'back', ended_at = now(), end_note = '手动切回原来的出口' where id = $1").bind(c.id).execute(&mut *tx).await?;
         }
         Some(c) => {
-            sqlx::query("update router_switch set to_exit = $2, back_at = $3, created_by = $4, switched_at = $5 where id = $1")
+            sqlx::query("update router_switch set to_exit = $2, back_at = $3, created_by = $4, switched_at = $5, defer_why = null, deferred_at = null where id = $1")
                 .bind(c.id)
                 .bind(to)
                 .bind(back_at)
@@ -191,7 +206,8 @@ async fn back_one(st: &AppState, actor: &str, c: &Active, why: &str) -> ApiResul
     Ok(json!({"group": c.grp, "from": from, "to": c.from_exit, "ended": true}))
 }
 
-/// 到时间的切回去（采集循环每轮整轮之后调）。切不了的（路由不在线、mihomo 不通）留着，下一轮再试，失败只记日志
+/// 到时间的切回去（采集循环每轮整轮之后调）。切不了的（路由不在线、mihomo 不通）留着，下一轮再试，失败只记日志；
+/// 原出口还没恢复的不切回，推迟 [`DEFER_S`] 再看（见 [`origin_blocker`]）
 pub async fn due(st: &AppState) {
     let rows: Vec<Active> = match sqlx::query_as(&format!("{ACTIVE} and back_at <= now() order by back_at")).fetch_all(&st.db).await {
         Ok(r) => r,
@@ -199,10 +215,86 @@ pub async fn due(st: &AppState) {
     };
     for c in rows {
         let _g = LOCK.lock().await;
+        match origin_blocker(st, &c).await {
+            Ok(Some(why)) => {
+                if let Err(e) = defer(st, &c, &why).await {
+                    tracing::warn!(router = %c.router_id, group = %c.grp, "推迟自动切回没记成，下一轮再试：{}", e.message);
+                }
+                continue;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(router = %c.router_id, group = %c.grp, "查原出口恢复了没有时出错，下一轮再试：{}", e.message);
+                continue;
+            }
+        }
         if let Err(e) = back_one(st, AUTO, &c, "到时自动切回").await {
             tracing::warn!(router = %c.router_id, group = %c.grp, "到时自动切回没成，下一轮再试：{}", e.message);
         }
     }
+}
+
+/// 原出口现在能不能把客户切回去：快照里它连续不通，或它指向的节点 / 线路机有进行中的严重机器告警（出口不通、TCP 不通、agent 离线）时，返回原因。
+/// 路由不在线（切回本来就做不成）、原出口不是单个出口（嵌套的组、DIRECT）、快照里没有它时没法判断，不拦
+async fn origin_blocker(st: &AppState, c: &Active) -> ApiResult<Option<String>> {
+    let Some(r) = super::load(&st.db, Some(c.router_id)).await?.into_iter().next().filter(|r| r.state() == "online") else { return Ok(None) };
+    let snap = r.snapshot().unwrap_or_default();
+    let Some(x) = snap.exits.iter().find(|x| x.name == c.from_exit) else { return Ok(None) };
+    if !super::collect::usable(x) {
+        return Ok(Some(format!("原出口「{}」现在不通（连续 {} 次测延迟不通）", x.name, x.fail_streak)));
+    }
+    let Some(e) = &x.entry else { return Ok(None) };
+    let hit: Option<(Uuid, String)> = sqlx::query_as(
+        "select subject_id, rule from incident where state = 'firing' and engine = 'machine' and severity::text = 'critical'
+           and rule in ('egress_fail', 'tcp_fail', 'agent_offline') and subject_id in ($1, $2) order by opened_at limit 1",
+    )
+    .bind(e.node_id)
+    .bind(e.relay_id)
+    .fetch_optional(&st.db)
+    .await?;
+    Ok(hit.map(|(id, rule)| {
+        let who = if id == e.node_id { &e.node_name } else { &e.relay_name };
+        format!("原出口「{}」指向的 {who} 有进行中的严重告警（{}）", x.name, crate::meta::rule_label(&rule))
+    }))
+}
+
+/// 推迟自动切回：back_at 往后推 [`DEFER_S`]，记原因；第一次推迟时记审计、经通知渠道说一声（之后每小时复查，原因变了只更新记录）
+async fn defer(st: &AppState, c: &Active, why: &str) -> ApiResult<()> {
+    let name: String = sqlx::query_scalar("select name from router where id = $1").bind(c.router_id).fetch_one(&st.db).await?;
+    let now = OffsetDateTime::now_utc();
+    let next = now + time::Duration::seconds(DEFER_S);
+    let mut tx = st.db.begin().await?;
+    // 只推迟这次看到的这一条（期间又切了一次的，switched_at 变了，不动）
+    let n = sqlx::query("update router_switch set back_at = $2, defer_why = $3, deferred_at = coalesce(deferred_at, $4) where id = $1 and state = 'active' and switched_at = $5")
+        .bind(c.id)
+        .bind(next)
+        .bind(why)
+        .bind(now)
+        .bind(c.switched_at)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    let first = n > 0 && c.deferred_at.is_none();
+    if first {
+        let detail = json!({"name": name, "group": c.grp, "to": c.from_exit, "why": why, "next_check": crate::meta::fmt_ts(next)});
+        audit(&mut tx, AUTO, "router.switch_defer", "router", Some(c.router_id), detail).await?;
+    }
+    tx.commit().await?;
+    if n == 0 {
+        return Ok(());
+    }
+    st.emit(Event::Routers);
+    if first {
+        let summary = format!(
+            "策略组「{}」临时切到「{}」，到时要切回「{}」，但{why}：先不切回，{} 再检查，恢复后自动切回",
+            c.grp,
+            c.to_exit,
+            c.from_exit,
+            crate::meta::org_time(next)
+        );
+        notify::enqueue(st, Notice { kind: Kind::Switch, incident_id: None, rule: "router_switch_defer".into(), severity: "warning".into(), machine: name, summary, at: now, opened_at: None }).await;
+    }
+    Ok(())
 }
 
 /// 采集成功之后核对：组现在选中的不是记录里切到的（或组没了）= 路由那边改了（有人手动改、换了配置；OpenClash 重启一般保留选择），记录结束、待切回取消。

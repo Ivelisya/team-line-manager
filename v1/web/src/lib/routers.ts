@@ -38,9 +38,10 @@ export interface RouterView {
   /** 出口对上的入口（没对上的不列；没采集成功过为空）：「出口 → 入口」的对应读它，不必逐台取详情 */
   exit_entries: { exit: string; entry_id: string }[];
 }
-export interface RouterSwitch { group: string; from: string; to: string; back_at: string | null; by: string; switched_at: string }
-/** 策略组：type 是 mihomo 的类型，只有 Selector（select）能手动切换；now 是当前选中的 */
-export interface RouterGroup { name: string; type: string; now: string | null; all: string[] }
+/** defer_why / deferred_at：到时没切回的原因（原出口还没恢复）与第一次推迟的时刻，此时 back_at 是下次检查的时刻；没推迟过为 null，旧中控没有这两个字段 */
+export interface RouterSwitch { group: string; from: string; to: string; back_at: string | null; by: string; switched_at: string; defer_why?: string | null; deferred_at?: string | null }
+/** 策略组：type 是 mihomo 的类型，只有 Selector（select）能手动切换；now 是当前选中的；used === false 是没有规则用它（切了不影响流量，不给切换），没有这个字段 = 不知道（旧快照、没取到规则） */
+export interface RouterGroup { name: string; type: string; now: string | null; all: string[]; used?: boolean }
 export interface RouterIface { name: string; device: string; up: boolean; proto: string; ip: string | null; uptime_s: number | null; rx_bps: number; tx_bps: number; rx_bytes: number; tx_bytes: number }
 /** ok：参数与 fleet 入口一致；drift：server:port 对上了，但 uuid / reality 参数不一致；unmanaged：没对上任何 fleet 入口 */
 export type ExitSync = 'ok' | 'drift' | 'unmanaged';

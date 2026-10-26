@@ -211,7 +211,7 @@ struct LogOut {
     ts: OffsetDateTime,
     ok: bool,
     error: Option<String>,
-    /// firing / repeat / resolved / test / silence（有人新建、删除了静默或维护窗口）/ auto（备用团队的机器到期自动回收）/ report（月报）
+    /// firing / repeat / resolved / test / silence（有人新建、删除了静默或维护窗口）/ auto（备用团队的机器到期自动回收）/ switch（临时切换的自动切回推迟了）/ report（月报）
     kind: String,
     /// 告警对象的显示名（中控自身的告警是「中控」，软路由的是路由名）；静默 / 维护变更是「静默 / 维护变更」，自动回收是「自动回收」，月报是「月报」；
     /// 测试消息、机器或路由已删除时为 null
@@ -233,7 +233,7 @@ struct LogOut {
 pub async fn log(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<LogQ>) -> ApiResult<Json<Value>> {
     let mut v: Vec<LogOut> = sqlx::query_as(
         "select l.id, l.channel_id, c.name channel_name, l.incident_id, l.ts, l.ok, l.error, l.kind,
-                case when l.kind = 'silence' then '静默 / 维护变更' when l.kind = 'auto' then '自动回收' when l.kind = 'jobfail' then '作业失败' when l.kind = 'report' then '月报' when i.engine = 'central' then '中控'
+                case when l.kind = 'silence' then '静默 / 维护变更' when l.kind = 'auto' then '自动回收' when l.kind = 'jobfail' then '作业失败' when l.kind = 'switch' then '出口自动切回推迟' when l.kind = 'report' then '月报' when i.engine = 'central' then '中控'
                      when i.engine = 'router' then r.name when i.engine = 'probe' then coalesce(pp.name, '探测点（已删除）')
                      else display_name(m.kind::text, m.label, t.name, m.number) || case when m.lifecycle = 'retired' then '（已退役）' else '' end end subject_name,
                 i.subject_id, case when r.id is not null then 'router' when m.id is not null then 'machine' end subject_kind, i.rule

@@ -185,7 +185,7 @@ fn switches(routers: &[routers::Row], only: Option<Uuid>, bad: impl Fn(&routers:
     for r in routers.iter().filter(|r| only.is_none_or(|id| id == r.id) && r.state() == "online") {
         let Some(snap) = r.snapshot() else { continue };
         let exit = |n: &str| snap.exits.iter().find(|x| x.name == n);
-        for g in snap.groups.iter().filter(|g| g.selectable()) {
+        for g in snap.groups.iter().filter(|g| g.selectable() && g.used != Some(false)) {
             let Some(now) = g.now.as_deref().filter(|n| exit(n).is_some_and(&bad)) else { continue };
             // fleet 的出口优先，其次客户自己的
             let ok = |x: &&routers::collect::Exit| !bad(x) && routers::collect::usable(x);

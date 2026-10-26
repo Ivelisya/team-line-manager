@@ -924,7 +924,8 @@ enum RouterCmd {
         follow: bool,
     },
     /// 临时切换出口：把 select 组经 mihomo API 切到组里另一个出口（不改配置、不重启 OpenClash、不断已有连接），
-    /// --for 4h 到时自动切回；--back 切回第一次切之前的出口。url-test / fallback 组不能手动切。组与当前出口见 router show
+    /// --for 4h 到时自动切回（到时原出口还不通就推迟 1 小时再看）；--back 切回第一次切之前的出口。url-test / fallback 组不能手动切，
+    /// 没有规则用的组（router show 里标「未被规则引用」，如 mihomo 自带的 GLOBAL）切了不影响流量，也会被拒绝。组与当前出口见 router show
     Switch {
         router: String,
         /// 策略组名（带空格、表情的加引号）
