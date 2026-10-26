@@ -327,9 +327,22 @@ pub fn provision(ctx: &Ctx, o: ProvisionOpts) -> anyhow::Result<u8> {
 
 // ── 退役 / 改名 / 编号 / 升级 ──────────────────────────────────
 
-/// 进备用没有回收日（服务端 recycle_on 为 null）时的说明：软路由出口还指着（或随行 IP 节点）不自动回收；否则是没有订阅、没有到期日可等
-fn no_recycle(held: bool) -> String {
-    if held { "不自动回收（软路由出口还指着 / 同机 IP 节点还在用）".into() } else { "没有订阅，不会自动回收".into() }
+/// 进备用没有回收日（服务端 recycle_on 为 null）时的说明：`held` 是被扣住不自动回收的原因（服务端 `spare.held` / `held`）；没有原因而有订阅
+/// （旧中控不给 held、原因没判出来）只说不自动回收；既没有原因也没有订阅，是没有到期日可等
+fn no_recycle(held: Option<&str>, has_sub: bool) -> String {
+    match held {
+        Some(why) => format!("不自动回收（{why}）"),
+        None if has_sub => "不自动回收".into(),
+        None => "没有订阅，不会自动回收".into(),
+    }
+}
+
+/// 服务端给的被扣住原因（`held`，null = 没被扣住）；旧中控没有这个字段时退回按软路由出口判断
+fn held_reason(v: &Value, routers_pointing: bool) -> Option<String> {
+    match v.get("held") {
+        Some(h) => h.as_str().map(String::from),
+        None => routers_pointing.then(|| "软路由出口还指着 / 同机 IP 节点还在用".to_string()),
+    }
 }
 
 /// `fleetctl retire <机器>`：默认移进备用团队（机器照常运行，订阅过期满 1 天后中控自动回收；移出备用就是撤销），
@@ -354,8 +367,10 @@ pub fn retire(ctx: &Ctx, machine: &str, now: bool, reason: Option<&str>, no_clea
             .unwrap_or_default()
     };
     let ip_nodes = if now { names("/ip_nodes", false) } else { names("/spare/ip_nodes", true) };
-    // 还有软路由出口指着它（或随行 IP 节点）：进备用后不自动回收
-    let held = pre["routers"].as_array().is_some_and(|r| !r.is_empty());
+    // 进备用后不自动回收的原因（服务端 spare.held：软路由出口还指着、同机 IP 节点还在用 / 开着自动续费）
+    let routers_pointing = pre["routers"].as_array().is_some_and(|r| !r.is_empty());
+    let has_sub = !m["subscription"].is_null();
+    let held = held_reason(sp, routers_pointing);
     if !ctx.json {
         if now {
             let clean = if no_cleanup { "" } else { "停掉机器上的服务、" };
@@ -364,13 +379,13 @@ pub fn retire(ctx: &Ctx, machine: &str, now: bool, reason: Option<&str>, no_clea
                 outln(format!("它上面的同机 IP 节点一并回收：{}", ip_nodes.join("、")));
             }
         } else {
-            // 没有回收日（recycle_on 为 null）：软路由出口还指着它（或随行 IP 节点）时到期也不自动回收（spare.rs）；没有订阅就没有到期日，也不会自动回收
+            // 没有回收日（recycle_on 为 null）：被扣住（出口还指着、同机 IP 节点还在用 / 开着自动续费）时到期也不自动回收（spare.rs）；没有订阅就没有到期日，也不会自动回收
             let to = st(sp, "/to_name");
             outln(match sp["recycle_on"].as_str() {
                 Some(on) => format!(
                     "将把 {name} 移进备用：→ {to}，机器照常运行，{on} 起自动回收（账单时区）。在那之前移出备用（fleetctl rename {to} --team <团队>）就是撤销退役。"
                 ),
-                None => format!("将把 {name} 移进备用：→ {to}，机器照常运行，{}。移出备用（fleetctl rename {to} --team <团队>）就是撤销退役。", no_recycle(held)),
+                None => format!("将把 {name} 移进备用：→ {to}，机器照常运行，{}。移出备用（fleetctl rename {to} --team <团队>）就是撤销退役。", no_recycle(held.as_deref(), has_sub)),
             });
             if !ip_nodes.is_empty() {
                 outln(format!("同机 IP 节点一起进备用：{}", ip_nodes.join("，")));
@@ -408,7 +423,7 @@ pub fn retire(ctx: &Ctx, machine: &str, now: bool, reason: Option<&str>, no_clea
         ctx.emit(&d, || {
             let when = match d["recycle_on"].as_str() {
                 Some(on) => format!("{on} 起自动回收"),
-                None => no_recycle(held),
+                None => no_recycle(held_reason(&d, routers_pointing).as_deref(), has_sub),
             };
             let mut s = format!("{} → {}，{when}", st(&d, "/from"), st(&d, "/name"));
             for x in d["ip_nodes"].as_array().into_iter().flatten() {
@@ -1218,6 +1233,18 @@ mod tests {
         assert_eq!(speedtest_line("团队1-03", &o), "团队1-03 测速（圣何塞）：平均 80.0 Mbit/s（10.00 MB/s），耗时 10.5 秒，首字节 500 毫秒，已下完");
         let part = json!({"target_name": "洛杉矶", "avg_mbps": 3.2, "avg_mb_s": 0.4, "total_s": 300.0, "ttfb_s": 1.0, "complete": false, "bytes": 50_000_000});
         assert!(speedtest_line("x", &part).ends_with("没下完（只下了 50.0 MB，速率按已下载的算）"));
+    }
+
+    /// 进备用没有回收日的说明：服务端给了原因就照写（含同机 IP 节点开着自动续费）；旧中控没有 held 字段退回按出口判断；有订阅时不写「没有订阅」
+    #[test]
+    fn no_recycle_follows_server_held_reason() {
+        let sp = json!({"recycle_on": null, "held": "同机 IP 节点开着自动续费"});
+        assert_eq!(no_recycle(held_reason(&sp, false).as_deref(), true), "不自动回收（同机 IP 节点开着自动续费）");
+        assert_eq!(no_recycle(held_reason(&json!({"recycle_on": null, "held": null}), false).as_deref(), false), "没有订阅，不会自动回收");
+        let old = json!({"recycle_on": null});
+        assert_eq!(no_recycle(held_reason(&old, true).as_deref(), true), "不自动回收（软路由出口还指着 / 同机 IP 节点还在用）");
+        assert_eq!(no_recycle(held_reason(&old, false).as_deref(), true), "不自动回收");
+        assert_eq!(no_recycle(held_reason(&old, false).as_deref(), false), "没有订阅，不会自动回收");
     }
 
     #[test]

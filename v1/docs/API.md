@@ -473,7 +473,7 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/machines/{id}/retire` | 退役预览，见下 |
-| POST | `/machines/{id}/retire` | `{confirm: <显示名>, reason?, now?: false, cleanup?: true}`。默认移进备用团队 → `{mode:"spare", name（备用里的新名字）, from（原名）, recycle_on（还被软路由出口指着时为 null，不自动回收）, ip_nodes:[{id, name, from}], auto_renew_off, notes:[string]}`；`now: true` 立即回收（退役作业）→ `{mode:"now", job_id, ip_node_jobs:[{machine_id,name,job_id}]}`。见下 |
+| POST | `/machines/{id}/retire` | `{confirm: <显示名>, reason?, now?: false, cleanup?: true}`。默认移进备用团队 → `{mode:"spare", name（备用里的新名字）, from（原名）, recycle_on（被扣住不自动回收时为 null）, held（不自动回收的原因，没被扣住为 null）, ip_nodes:[{id, name, from}], auto_renew_off, notes:[string]}`；`now: true` 立即回收（退役作业）→ `{mode:"now", job_id, ip_node_jobs:[{machine_id,name,job_id}]}`。见下 |
 | GET | `/recycle-bin?q=&source=&limit=100&offset=0` | 回收站列表（只读，不含快照），按回收时间倒序：`{items:[RecycleItem], total, next_offset}`。`q`：不分大小写的包含匹配，搜名字（含回收时的名字）、IP、团队、供应商、套餐、供应商编号、宿主机名；`source`：`fleet` / `legacy`（别的值 400）；`limit` 1–500 |
 | GET | `/recycle-bin/{id}` | 单条：`RecycleItem` 加 `snapshot`；没有 404 |
 | POST | `/recycle-bin/import` | 旧面板的退役机器导入（要 `write`），见下 |
@@ -482,7 +482,7 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 `name` 退役前的名字（进过备用的是 `spare_from`），`last_name` 回收时的名字（「备用-03」；立即回收的同 `name`，导入的为 null），`team` 退役前的团队；`retired_at` 进备用的时刻（立即回收的是退役作业完成的时刻）；价格、币种、周期是订阅的生效值（没有订阅取模板）；`reason` 退役原因（到期回收的接上「备用到期自动回收（到期日 …）」）；`traffic_*` 入口业务流量合计（字节，整个生命周期；线路机按它上面全部入口算），`nic_*` 网卡累计（没有网卡读数的家宽代理、同机 IP 节点为 null）。数值的口径以流量改造为准。
 `snapshot`（fleet）：`{machine（机器行，不含秘密）, name, team, host, provider, plan, subscription（生效值）, renewals[], entries:[{relay,node,port,lifecycle,created_at,removed_at}], outbound（出站参数，不含秘密）}`；legacy 是导入时给的原始记录。回收站不受保留期清理影响，一直保留。
 
-**退役预览** `GET /machines/{id}/retire` → `{name, renames:[{machine_id,old_name,new_name}], ip_nodes:[{id,name}], spare:{ok, why|null, team:{id,name}, to_name|null, recycle_on|null（还被软路由出口指着，含经同机 IP 节点，进备用后不自动回收时为 null，同机器视图；进备用时自动续费会关掉，不算原因）, ip_nodes:[{id,name,to_name}], notes:[string]（开着的自动续费会关掉、原团队压缩后撤销退役回不到原编号）, warnings:[string]（能进备用时：还被软路由出口指着的节点——这台和一起进备用的同机 IP 节点——进备用团队后生效的访问策略与现在不同，每台一句，同 rename-preview 的 warnings；只提示不阻断）}, routers:[{id,name,exits:[{exit,node}]}], blockers:[string]}`：
+**退役预览** `GET /machines/{id}/retire` → `{name, renames:[{machine_id,old_name,new_name}], ip_nodes:[{id,name}], spare:{ok, why|null, team:{id,name}, to_name|null, recycle_on|null（进备用后不自动回收时为 null，同机器视图 recycle_held；进备用时自动续费会关掉，不算原因）, held|null（不自动回收的原因，多个用「、」连：「软路由出口还指着它」含经同机 IP 节点、「同机 IP 节点开着自动续费」宿主机上已在备用里且开着自动续费的同机 IP 节点；没被扣住为 null；旧中控没有这个字段）, ip_nodes:[{id,name,to_name}], notes:[string]（开着的自动续费会关掉、原团队压缩后撤销退役回不到原编号）, warnings:[string]（能进备用时：还被软路由出口指着的节点——这台和一起进备用的同机 IP 节点——进备用团队后生效的访问策略与现在不同，每台一句，同 rename-preview 的 warnings；只提示不阻断）}, routers:[{id,name,exits:[{exit,node}]}], blockers:[string]}`：
 - `renames`：机器离开后原团队压缩编号的改名（两种去向一样）；`ip_nodes`：立即回收时一并回收的同机 IP 节点（宿主机才有）。
 - `spare`：能不能移进备用（`ok`，不能时 `why`：线路机、已经在备用团队里、还没上线（上架中或上架失败）、没有订阅、订阅已经过期满 1 天——这些只能立即回收）；进去后的名字（备用团队最小的空号）、自动回收的日子（账单时区）、一起进备用的同机 IP 节点与它们的新名字（已经在备用团队的不算）。
 - `routers`：各软路由最近一次采集里还指向这台（和它的同机 IP 节点）的出口，`node` 是指向的那台；只提示、不阻断，软路由不自动改（要换掉先「替换」）。

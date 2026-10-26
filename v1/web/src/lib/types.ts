@@ -75,7 +75,7 @@ export interface MachineView {
   renewing_ip_nodes?: string[];
   /** 备用团队里在用的宿主机：上面不在备用团队、没退役的同机 IP 节点（显示名）——宿主机退役会连带它们，所以不自动回收，也不是闲置备用；其余为 []。旧中控没有这个字段 */
   live_ip_nodes?: string[];
-  /** 备用团队里在用的机器：还指向它（备用宿主机还含它上面没退役的同机 IP 节点，后缀「（经同机 IP 节点 X）」）的软路由出口（「路由名 · 出口名」）；其余为 []。在用、在备用里、这里和 live_ip_nodes 都为空 = 闲置备用（等到期放生，见 isIdleSpare；再没开自动续费才是不续费的，见 isUnbilledSpare） */
+  /** 备用团队里在用的机器：还指向它（备用宿主机还含它上面没退役的同机 IP 节点，后缀「（经同机 IP 节点 X）」）的软路由出口（「路由名 · 出口名」）；其余为 []。在用、在备用里、这里和 live_ip_nodes 都为空 = 闲置备用（不开告警、不计健康，见 isIdleSpare；再没开自动续费才是不续费的，见 isUnbilledSpare） */
   router_exits: string[];
   ip: string; ssh_port: number;
   /** 国家或地区（ISO 3166-1 两位大写，如 US）：手动设了用手动的，否则中控离线 IP 库按机器自己的 IP 查；
@@ -390,7 +390,10 @@ export interface ReplaceBody { new_machine_id: string; old_to?: { team_id?: stri
 export interface RetirePreview {
   name: string;
   /** notes：进备用的提示（开着的自动续费会关掉、撤销退役回不到原编号）；warnings：还被出口指着的节点进备用后访问策略会变（客户受影响） */
-  spare: { ok: boolean; why: string | null; team: { id: string; name: string }; to_name: string; recycle_on: string | null; ip_nodes: { id: string; name: string; to_name: string }[]; notes: string[]; warnings: string[] };
+  spare: { ok: boolean; why: string | null; team: { id: string; name: string }; to_name: string; recycle_on: string | null;
+    /** 进备用后不自动回收的原因（软路由出口还指着、同机 IP 节点还在用 / 开着自动续费，多个用「、」连）；null = 没被扣住；旧中控没有这个字段 */
+    held?: string | null;
+    ip_nodes: { id: string; name: string; to_name: string }[]; notes: string[]; warnings: string[] };
   routers: { id: string; name: string; exits: { exit: string; node: string }[] }[];
   renames: { machine_id: string; old_name: string; new_name: string }[];
   ip_nodes: { id: string; name: string }[];
@@ -399,7 +402,7 @@ export interface RetirePreview {
 }
 /** 退役：mode=spare 已移入备用（name 是新名、from 原名、recycle_on 起自动回收）；mode=now 提交了清理作业（宿主机的同机 IP 节点各一个，没有为 []） */
 export type RetireResult =
-  | { mode: 'spare'; name: string; from: string; recycle_on: string | null; ip_nodes: { id: string; name: string; from: string }[]; auto_renew_off: boolean; notes: string[] }
+  | { mode: 'spare'; name: string; from: string; recycle_on: string | null; held?: string | null; ip_nodes: { id: string; name: string; from: string }[]; auto_renew_off: boolean; notes: string[] }
   | { mode: 'now'; job_id: string; ip_node_jobs: { machine_id: string; name: string; job_id: string }[] };
 
 /** 回收站一行（GET /recycle-bin，只读）：source = fleet 本面板 / legacy 旧面板导入；name 是退役前的名字，last_name 回收时的名字 */

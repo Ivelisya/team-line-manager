@@ -519,6 +519,16 @@ async fn validation() {
     assert!(!w_ip.contains("要自己去关"), "{w_ip}");
     sqlx::query("update machine set team_id = $2 where id = $1").bind(ip).bind(w.spare).execute(&t.st.db).await.unwrap();
     assert!(!t.get(&url(w.new)).await["warnings"].to_string().contains("同机 IP 节点"));
+    // IP 节点已在备用、开着自动续费：宿主机进备用后同样被扣住（视图 renewing_ip_nodes），不写「照常回收」
+    sqlx::query("insert into subscription (machine_id, price_cents, currency, due_date, billing_tz, auto_renew) values ($1, 500, 'USD', '2099-01-01', 'UTC', true)")
+        .bind(ip)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let w_ren = t.get(&url(w.new)).await["warnings"].to_string();
+    assert!(w_ren.contains("开着自动续费：进备用时中控这边会关掉；同机 IP 节点开着自动续费，不会自动回收，到期要自己登记续费"), "{w_ren}");
+    assert!(w_ren.contains("旧节点上有已在备用、开着自动续费的同机 IP 节点") && !w_ren.contains("照常回收") && !w_ren.contains("订阅已过期满 1 天"), "{w_ren}");
+    sqlx::query("delete from subscription where machine_id = $1").bind(ip).execute(&t.st.db).await.unwrap();
     // 新节点在别的团队：替换时改到旧节点的团队（提示一下）
     let other = seed_team(t, "待分配").await;
     let x = node(t, other, 1, "203.0.113.30").await;

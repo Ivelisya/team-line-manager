@@ -117,7 +117,7 @@ pub struct Ran {
     pub purged: Vec<Uuid>,
     /// 已经过期满 1 天、但有进行中的作业，这一轮跳过的
     pub busy: Vec<Uuid>,
-    /// 已经过期满 1 天、但它上面有不在备用团队的同机 IP 节点（退役会连带它们），或还有软路由出口指向它（回收会摘入口），不自动回收的
+    /// 已经过期满 1 天、但它上面有不在备用团队的、或在备用团队但开着自动续费的同机 IP 节点（退役会连带它们），或还有软路由出口指向它（回收会摘入口），不自动回收的
     pub kept: Vec<Uuid>,
 }
 
@@ -159,7 +159,7 @@ pub async fn run_once(st: &AppState, now: OffsetDateTime) -> anyhow::Result<Ran>
     for r in rows {
         // 宿主机退役会连带它上面的同机 IP 节点：有不在备用团队里的（还在正常用）、或在备用里但开着自动续费的（自动续费的备用机不自动回收）就不自动回收，留给人处理
         if r.keeps_live {
-            tracing::warn!(machine = %r.id, "备用节点 {} 已过期满 1 天，但它上面有不在备用团队的同机 IP 节点：不自动回收", r.name);
+            tracing::warn!(machine = %r.id, "备用节点 {} 已过期满 1 天，但它上面有不在备用团队的、或开着自动续费的备用同机 IP 节点：不自动回收", r.name);
             ran.kept.push(r.id);
             continue;
         }
