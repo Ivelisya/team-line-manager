@@ -92,6 +92,7 @@
   .inc-tbl td:last-child .btn .lucide:not(.spin) { display: none; } /* 末列只有 104：「全部确认」「登记续费」带图标会顶出单元格，窄屏只留字（对象列让不出更多） */
   .inc-tbl :is(th, td):first-child { padding-right: var(--sp-4); }
   .inc-tbl .inc-narrow { display: block !important; }
+  .inc-tbl .inc-narrow.sub:not(.inc-narrow-sum) { white-space: normal; overflow-wrap: anywhere; } /* 第二行「规则 · 时间」放不下就折行，不截掉时间 */
   .inc-tbl .inc-ack-narrow { display: inline-flex !important; margin-left: var(--sp-6); vertical-align: 1px; } /* 已确认：窄屏没有「状态」那行，胶囊跟在对象名后面 */
   .inc-tbl .inc-cmds.inc-narrow { display: flex !important; }
   /* 说明最多两行（原来和别的 .sub 一样单行省略，只剩半句）；更长的悬停 / 长按看全文（data-tip） */

@@ -76,7 +76,7 @@ export function TrafficPage() {
 
       {q.isError && !d && <Panel title="团队成本"><Empty icon={<ChartColumnStacked size={22} />} text="加载失败，暂无数据" /></Panel>}
       {d && d.teams.length > 0 && <TeamsTable teams={d.teams} picked={team} stale={q.isPlaceholderData} onPick={onTeam} />}
-      <NodesTable nodes={d?.nodes} days={days} idle={d?.idle} loading={q.isLoading} failed={q.isError && !d} stale={q.isPlaceholderData} sortRaw={sp.get('sort')} onSort={onSort} filtered={!!team} />
+      <NodesTable nodes={d?.nodes} days={days} idle={d?.idle} spare={d?.teams} loading={q.isLoading} failed={q.isError && !d} stale={q.isPlaceholderData} sortRaw={sp.get('sort')} onSort={onSort} filtered={!!team} />
       {d && d.relays.length > 0 && <RelaysTable relays={d.relays} days={days} stale={q.isPlaceholderData} teamName={team ? teamOpts.find((t) => t.value === team)?.label ?? '所选团队' : null} />}
     </div>
   );
@@ -111,14 +111,17 @@ type NodeSort = 'name' | 'sum' | 'cost' | 'perGb';
 /** 每 GB 业务流量的美元：月费 ÷ 按区间日均折成的 30 天流量（同服务端 traffic::usd_per_gb，区间由页面选，所以在这里按所选天数算）；没月费、没流量为 null */
 const perGb = (monthlyCents: number | null, bytes: number, days: number) => (monthlyCents == null || bytes <= 0 ? null : monthlyCents / 100 / ((bytes / days) * 30 / 1e9));
 
-const NodesTable = React.memo(function NodesTable({ nodes, days, idle, loading, failed, stale, sortRaw, onSort, filtered }: {
-  nodes: TrafficDailyNode[] | undefined; days: number; idle: TrafficDaily['idle'] | undefined; loading: boolean; failed: boolean; stale: boolean; sortRaw: string | null; onSort: (s: string) => void; filtered: boolean;
+const NodesTable = React.memo(function NodesTable({ nodes, days, idle, spare, loading, failed, stale, sortRaw, onSort, filtered }: {
+  nodes: TrafficDailyNode[] | undefined; days: number; idle: TrafficDaily['idle'] | undefined; spare: TrafficDailyTeam[] | undefined; loading: boolean; failed: boolean; stale: boolean; sortRaw: string | null; onSort: (s: string) => void; filtered: boolean;
 }) {
+  // 备用团队的节点不再续费：月费灰字、不进底行合计，也不标闲置（同团队成本表）
+  const spareIds = React.useMemo(() => new Set((spare ?? []).filter((t) => t.spare).map((t) => t.id)), [spare]);
   const sort = React.useMemo(() => { const s = parseSort(sortRaw); return s && (['name', 'sum', 'cost', 'perGb'] as string[]).includes(s.id) ? s : null; }, [sortRaw]);
   const rows = React.useMemo(() => {
     const list = (nodes ?? []).map((n) => {
       const daily = n.daily.slice(-days); const sum = total(sumOf(daily));
-      return { n, daily, sum, perGb: perGb(n.monthly_usd_cents, sum, days), nic: n.rule && n.nic_daily ? nicRange(n.rule, n.nic_daily.slice(-days)) : null };
+      const sp = !!n.team && spareIds.has(n.team.id);
+      return { n, daily, sum, sp, perGb: sp ? null : perGb(n.monthly_usd_cents, sum, days), nic: n.rule && n.nic_daily ? nicRange(n.rule, n.nic_daily.slice(-days)) : null };
     });
     const s = sort ?? DEFAULT_SORT;
     const key = (r: (typeof list)[number]): number | null => (s.id === 'sum' ? r.sum : s.id === 'cost' ? r.n.monthly_usd_cents : r.perGb);
@@ -128,12 +131,12 @@ const NodesTable = React.memo(function NodesTable({ nodes, days, idle, loading, 
       if (x == null || y == null) return x == null && y == null ? 0 : x == null ? 1 : -1; // 没有的排最后，升降序都一样
       return s.desc ? y - x : x - y;
     });
-  }, [nodes, days, sort]);
+  }, [nodes, days, sort, spareIds]);
   const dates = rows[0]?.daily.map((x) => x.date) ?? [];
   const max = React.useMemo(() => Math.max(0, ...rows.flatMap((r) => r.daily.map((x) => total(x)))), [rows]);
   const foot = React.useMemo(() => dates.map((_, i) => rows.reduce((a, r) => a + total(r.daily[i]), 0)), [rows, dates]);
-  // 底行的月费与 USD/GB 只算有月费的节点（月费与流量对得上）
-  const cost = React.useMemo(() => rows.reduce((a, r) => (r.n.monthly_usd_cents == null ? a : { cents: a.cents + r.n.monthly_usd_cents, bytes: a.bytes + r.sum }), { cents: 0, bytes: 0 }), [rows]);
+  // 底行的月费与 USD/GB 只算有月费、不在备用团队的节点（月费与流量对得上）
+  const cost = React.useMemo(() => rows.reduce((a, r) => (r.n.monthly_usd_cents == null || r.sp ? a : { cents: a.cents + r.n.monthly_usd_cents, bytes: a.bytes + r.sum }), { cents: 0, bytes: 0 }), [rows]);
   const wrap = useScrollEnd(`${days}:${dates.length}`);
   const last = dates[dates.length - 1];
   const sumAll = foot.reduce((a, v) => a + v, 0);
@@ -153,12 +156,12 @@ const NodesTable = React.memo(function NodesTable({ nodes, days, idle, loading, 
               <SortTh id="perGb" label="USD/GB" r sort={sort} onSort={onSort} tip={`月费 ÷ 按所选 ${days} 天日均折成的 30 天业务流量\n没有月费或没有流量显示 —`} />
             </tr></thead>
             <tbody>
-              {rows.map(({ n, daily, sum, nic, perGb: pg }) => (
+              {rows.map(({ n, daily, sum, nic, sp, perGb: pg }) => (
                 <tr key={`${n.id}${n.direct ? 'd' : ''}`} className="is-link" tabIndex={0} onClick={() => openDrawer(n.id, 'traffic')} onKeyDown={(e) => { if (e.key === 'Enter') openDrawer(n.id, 'traffic'); }}>
                   <td>
                     <div className="tr-node"><Flag country={n.country} />
                       <div>
-                        <span className="cell-main tr-name"><span>{n.name}</span>{n.idle && <Pill className="pill-sm" tip={idleTip(n.avg7)}>闲置</Pill>}</span>
+                        <span className="cell-main tr-name"><span>{n.name}</span>{n.idle && !sp && <Pill className="pill-sm" tip={idleTip(n.avg7)}>闲置</Pill>}</span>
                         <span className="sub">{[n.team?.name ?? (n.direct ? '直出' : '未分团队'), n.lifecycle === 'retired' && '已退役'].filter(Boolean).join(' · ')}</span>
                       </div>
                     </div>
@@ -169,8 +172,8 @@ const NodesTable = React.memo(function NodesTable({ nodes, days, idle, loading, 
                   <td className="r strong">{cell(sum)}{nic && <span className="sub" data-tip={`网卡计费 · ${trafficRuleLabel(nic.rule)}
 ${days} 天 ↓ 下行 ${F.str(F.bytes(nic.rx))} · ↑ 上行 ${F.str(F.bytes(nic.tx))}，先加总再按规则算`}>计费 {cell(nic.billed)}</span>}</td>
                   <td className="r">{cell(sum / days)}</td>
-                  <td className="r">{F.money(n.monthly_usd_cents, 'USD')}</td>
-                  <td className="r">{F.usdPerGb(pg)}</td>
+                  <td className={sp ? 'r t-muted' : 'r'} data-tip={sp ? '不再续费，不计入合计' : undefined}>{F.money(n.monthly_usd_cents, 'USD')}</td>
+                  <td className={sp ? 'r t-muted' : 'r'}>{sp ? '—' : F.usdPerGb(pg)}</td>
                 </tr>
               ))}
             </tbody>
