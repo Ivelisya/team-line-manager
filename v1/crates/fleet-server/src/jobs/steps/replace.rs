@@ -799,6 +799,8 @@ pub(super) async fn renumber(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let given = c.job.params["to_number"].as_i64().map(|n| n as i32);
     let actor = c.job.created_by.as_str();
     let mut tx = c.st.db.begin().await?;
+    // 访问规则的锁在最前面（发布 / 删团队同序，见 entries::lock_policy_shared）：下面要把旧节点的节点级策略改挂到新节点
+    crate::api::policy::lock(&mut tx).await.map_err(|e| anyhow!(e.message))?;
     // 先锁团队（按 id）再锁机器（按 id）：和退役收尾的「团队 → 机器」同序
     let new_team0: Option<Uuid> = sqlx::query_scalar("select team_id from machine where id = $1").bind(new).fetch_optional(&mut *tx).await?.flatten();
     let mut teams: Vec<Uuid> = [Some(old_team), Some(to_team), new_team0].into_iter().flatten().collect();
@@ -860,6 +862,11 @@ pub(super) async fn renumber(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     .bind(new)
     .execute(&mut *tx)
     .await?;
+    // 节点单独设的访问策略（已发布的与草稿）和客户端订阅里的「排除 / 另加」同样跟着客户走：按机器 id 存，不搬的话旧节点单独设的
+    // 白名单 / 黑名单 / 暂停新连接到新节点上变成跟随团队，旧节点被排除出订阅、接它编号的新节点又冒出来。
+    // 旧节点进了备用，之后没有节点级策略（跟随备用团队）；线路机的期望状态跟着上面两次改名的代数刷新一起提交，不用另外 +1
+    let policy_moved = crate::policy::move_node(&mut tx, old, new, actor).await?;
+    let subs_moved = crate::api::client_subs::swap_machine(&mut tx, old, new).await?;
     let mut renumbered = 0;
     if let Some(t) = new_team0 {
         let (ch, rs) = crate::db::compact_team(&mut tx, t, actor, "替换节点后自动压缩").await?;
@@ -881,8 +888,14 @@ pub(super) async fn renumber(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     c.st.emit(crate::state::Event::Machines);
     let name = |id: Uuid| names.iter().find(|x| x.0 == id).map(|x| x.1.clone()).unwrap_or_default();
     let (on, nn) = (name(old), name(new));
+    if let Some(m) = &policy_moved {
+        c.log(format!("访问策略随编号转给新节点：{}{}", m.summary, m.replaced.as_ref().map(|r| format!("（新节点自己单独设的「{r}」被覆盖）")).unwrap_or_default())).await;
+    }
+    if !subs_moved.is_empty() {
+        c.log(format!("客户端订阅的排除 / 另加改指新节点：{}", subs_moved.join("、"))).await;
+    }
     c.log(format!("编号已交换：新节点现在是 {nn}，旧节点现在是 {on}{}", if renumbered > 0 { format!("；{renumbered} 台节点因压缩改了编号（见审计）") } else { String::new() })).await;
-    Ok(Outcome::Done(json!({"old": on, "new": nn, "renumbered": renumbered})))
+    Ok(Outcome::Done(json!({"old": on, "new": nn, "renumbered": renumbered, "policy_moved": policy_moved.is_some(), "subs_moved": subs_moved})))
 }
 
 #[cfg(test)]

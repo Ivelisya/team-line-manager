@@ -228,7 +228,7 @@ pub async fn put_one(a: Actor, State(st): State<AppState>, ApiPath((scope, id)):
 }
 
 /// 访问规则的锁（见 policy::LOCK_KEY）；删团队也拿它
-pub(super) async fn lock(tx: &mut Tx<'_>) -> ApiResult<()> {
+pub(crate) async fn lock(tx: &mut Tx<'_>) -> ApiResult<()> {
     sqlx::query("select pg_advisory_xact_lock($1)").bind(policy::LOCK_KEY).execute(&mut **tx).await?;
     Ok(())
 }

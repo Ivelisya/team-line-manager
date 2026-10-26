@@ -119,17 +119,52 @@ async fn plan(st: &AppState, conn: &mut PgConnection, old_id: Uuid, b: &RepointI
     if new.node_id != old.node_id {
         warnings.push(format!("改完后这些出口的流量走「{}」：入口本身都不动，「{}」照常在用", new.name(), old.name()));
     }
-    // 目标是备用节点（临时把出口指过去的常见去向）：出口指着时不会按到期自动回收（spare.rs），但它本来就是等丢弃的，提醒一声；目标此刻故障的更要说
-    if let Some(m) = crate::views::live(st).await?.iter().find(|m| m.id == new.node_id) {
-        if m.spare {
-            let due = m.subscription.as_ref().map(|s| format!("{} 到期", s.due_date)).unwrap_or_else(|| "没有订阅".into());
-            warnings.push(format!("「{}」是备用节点，{due}（出口指着时不自动回收）", new.node_name));
+    // 下面都只是预览里的提醒：发起（lock）时不算。views::live 在重算时会持着上面对新节点的行锁等到 VIEW_WAIT，
+    // 视图 503 时提交也跟着失败，不能让一条可选的提醒挡住提交
+    if !lock {
+        // 目标是备用节点（临时把出口指过去的常见去向）：出口指着时不会按到期自动回收（spare.rs），但它本来就是等丢弃的，提醒一声；目标此刻故障的更要说
+        if let Some(m) = crate::views::live(st).await?.iter().find(|m| m.id == new.node_id) {
+            if m.spare {
+                let due = m.subscription.as_ref().map(|s| format!("{} 到期", s.due_date)).unwrap_or_else(|| "没有订阅".into());
+                warnings.push(format!("「{}」是备用节点，{due}（出口指着时不自动回收）", new.node_name));
+            }
+            if m.health.status == crate::health::Status::Down {
+                warnings.push(format!("「{}」此刻故障：改过去之后这些出口会不通", new.node_name));
+            }
         }
-        if m.health.status == crate::health::Status::Down {
-            warnings.push(format!("「{}」此刻故障：改过去之后这些出口会不通", new.node_name));
+        if let Some(w) = policy_diff(&mut *conn, &old, &new).await? {
+            warnings.push(w);
         }
     }
     Ok(Plan { old, new, router_ids: b.router_ids.clone(), routers, blockers, invalid, warnings })
+}
+
+/// 客户实际受的是入口所在节点的访问策略（节点单独设的 > 团队的 > 默认）：新旧入口所在节点的生效策略不同时说一声。
+/// 只看现在已发布的（线路机上跑的就是它）；同一个节点、或两边一样就没有提醒
+async fn policy_diff(conn: &mut PgConnection, old: &Ent, new: &Ent) -> ApiResult<Option<String>> {
+    use crate::policy::{self, Source};
+    if old.node_id == new.node_id {
+        return Ok(None);
+    }
+    let teams: Vec<(Uuid, Option<Uuid>, Option<String>)> =
+        sqlx::query_as("select m.id, m.team_id, t.name from machine m left join team t on t.id = m.team_id where m.id = any($1)").bind(vec![old.node_id, new.node_id]).fetch_all(&mut *conn).await?;
+    let team_of = |id: Uuid| teams.iter().find(|t| t.0 == id).map(|t| (t.1, t.2.clone())).unwrap_or((None, None));
+    let set = policy::set_current(&policy::load_rows(&mut *conn, false).await?);
+    let eff = |e: &Ent| {
+        let (team_id, team_name) = team_of(e.node_id);
+        let (d, src) = set.effective(e.node_id, team_id);
+        let who = match src {
+            Source::Node => format!("节点「{}」", e.node_name),
+            Source::Team => format!("团队「{}」", team_name.unwrap_or_default()),
+            Source::Default => "默认设置".to_string(),
+        };
+        (d, who)
+    };
+    let ((od, ow), (nd, nw)) = (eff(old), eff(new));
+    if od.mode == nd.mode && od.domains == nd.domains {
+        return Ok(None);
+    }
+    Ok(Some(format!("新出口受{nw}的访问策略：{}，与原来（{ow}：{}）不同", nd.summary(), od.summary())))
 }
 
 impl Plan {

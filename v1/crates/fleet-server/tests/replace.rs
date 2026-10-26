@@ -1478,3 +1478,77 @@ async fn drift_alert_and_sync() {
     assert!(logs(t, &job).await.contains("跳过"), "{}", logs(t, &job).await);
     assert_eq!(applies(23501).len(), 1, "没有再改路由");
 }
+
+/// 交换编号时，旧节点单独设的访问策略（已发布的与草稿）和客户端订阅的「排除 / 另加」跟着编号转给新节点：
+/// 预览列出这一条，替换后策略在新节点上（新节点自己原有的被覆盖、日志里写明），旧节点不再有节点级策略，线路机代数往前走
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn replace_moves_node_policy_and_sub_settings() {
+    let w = world().await;
+    let t = &w.t;
+    let db = &t.st.db;
+    let ins = |id: Uuid, mode: &'static str, domains: Vec<&'static str>, draft: Option<Value>| {
+        sqlx::query("insert into policy (scope, scope_id, mode, domains, draft) values ('node', $1, $2, $3::text[], $4)")
+            .bind(id)
+            .bind(mode)
+            .bind(domains.into_iter().map(String::from).collect::<Vec<_>>())
+            .bind(draft)
+    };
+    ins(w.old, "denylist", vec!["bad.com"], Some(json!({"mode": "allowlist", "domains": ["ok.com"], "note": ""}))).execute(db).await.unwrap();
+    ins(w.new, "blocked", vec![], None).execute(db).await.unwrap();
+    for (name, ex, inc) in [("家里", vec![w.old], vec![]), ("公司", vec![], vec![w.old, w.new]), ("无关", vec![w.new], vec![])] {
+        sqlx::query("insert into client_sub (id, name, token_hash, exclude_ids, include_ids) values ($1, $2, decode(md5($2), 'hex'), $3, $4)")
+            .bind(Uuid::now_v7())
+            .bind(name)
+            .bind(ex)
+            .bind(inc)
+            .execute(db)
+            .await
+            .unwrap();
+    }
+    let p = t.get(&format!("/api/v1/machines/{}/replace?new_machine_id={}", w.old, w.new)).await;
+    let ws = p["warnings"].to_string();
+    assert!(ws.contains("单独设的访问策略（黑名单 · 1 个域名，另有未发布的草稿）和客户端订阅的排除 / 另加（公司、家里）随编号转给新节点「团队2-02」"), "{ws}");
+    assert!(ws.contains("新节点自己单独设的访问策略（暂停新连接）会被覆盖"), "{ws}");
+    // 都没有时不提
+    let gen = || async { sqlx::query_scalar::<_, i64>("select generation from relay where machine_id = $1").bind(w.relay).fetch_one(db).await.unwrap() };
+    let g0 = gen().await;
+
+    let d = t.post(&format!("/api/v1/machines/{}/replace", w.old), json!({"new_machine_id": w.new})).await;
+    let job = d["job_id"].as_str().unwrap().to_string();
+    drive(t).await;
+    let j = t.job(&job).await;
+    let l = logs(t, &job).await;
+    assert_eq!(j["state"], "succeeded", "{j} {l}");
+    assert!(l.contains("访问策略随编号转给新节点：黑名单 · 1 个域名，另有未发布的草稿（新节点自己单独设的「暂停新连接」被覆盖）"), "{l}");
+    assert!(l.contains("客户端订阅的排除 / 另加改指新节点：公司、家里"), "{l}");
+    assert!(gen().await > g0, "线路机期望状态代数要往前走");
+    let rows: Vec<(Uuid, String, Option<String>)> = sqlx::query_as("select scope_id, mode, draft->>'mode' from policy where scope = 'node'").fetch_all(db).await.unwrap();
+    assert_eq!(rows, [(w.new, "denylist".to_string(), Some("allowlist".to_string()))], "旧节点不再有节点级策略，草稿跟着走");
+    let subs: Vec<(String, Vec<Uuid>, Vec<Uuid>)> = sqlx::query_as("select name, exclude_ids, include_ids from client_sub order by name").fetch_all(db).await.unwrap();
+    assert_eq!(
+        subs,
+        [("公司".to_string(), vec![], vec![w.new]), ("家里".into(), vec![w.new], vec![]), ("无关".into(), vec![w.new], vec![])],
+        "引用旧节点的换成新节点，新节点本来就在名单里的去重"
+    );
+}
+
+/// 改出口指向的预览：新旧入口所在节点的生效访问策略不同时提醒（客户实际受的是目标节点 / 团队的策略）；发起时不算这类提醒
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repoint_preview_warns_when_policy_differs() {
+    let w = world().await;
+    let t = &w.t;
+    let db = &t.st.db;
+    let oe = old_entry(&w).await;
+    let ne: Uuid = sqlx::query_scalar("select id from entry where node_id = $1").bind(w.new).fetch_one(db).await.unwrap();
+    router(&w, "团队2-路由A", 23601, &[("节点01", "198.51.100.2", 20003, Some(oe))]).await;
+    let url = format!("/api/v1/entries/{oe}/repoint?to_entry_id={ne}");
+    let ws = t.get(&url).await["warnings"].to_string();
+    assert!(!ws.contains("访问策略"), "两边都是默认：{ws}");
+    // 团队策略黑名单；旧节点自己设了暂停新连接 → 新出口（跟随团队）受黑名单
+    sqlx::query("insert into policy (scope, scope_id, mode, domains) values ('team', $1, 'denylist', '{bad.com}'), ('node', $2, 'blocked', '{}')").bind(w.team).bind(w.old).execute(db).await.unwrap();
+    let p = t.get(&url).await;
+    assert!(p["warnings"].to_string().contains("新出口受团队「团队2」的访问策略：黑名单 · 1 个域名，与原来（节点「团队2-01」：暂停新连接）不同"), "{p}");
+    // 发起时不算（views::live 重算会拖住提交），其余照常
+    let d = t.post(&format!("/api/v1/entries/{oe}/repoint"), json!({"to_entry_id": ne})).await;
+    assert!(d["job_id"].is_string() && !d["warnings"].to_string().contains("访问策略"), "{d}");
+}

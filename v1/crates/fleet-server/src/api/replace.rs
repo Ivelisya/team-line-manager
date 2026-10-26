@@ -392,6 +392,26 @@ async fn plan(st: &AppState, conn: &mut PgConnection, old_id: Uuid, b: &ReplaceI
         }
     }
 
+    // 访问策略与订阅设置按机器 id 存：交换编号时随编号转给新节点（jobs/steps/replace.rs），预览列出来，免得替换后才发现客户的限制变了
+    let old_policy = crate::policy::load_row(&mut *conn, crate::policy::Scope::Node, old.id).await?.filter(|r| !r.is_default());
+    let old_subs = super::client_subs::names_of_machine(&mut *conn, old.id).await?;
+    if old_policy.is_some() || !old_subs.is_empty() {
+        let mut parts = vec![];
+        if let Some(p) = &old_policy {
+            parts.push(format!("访问策略（{}）", p.summary()));
+        }
+        if !old_subs.is_empty() {
+            parts.push(format!("客户端订阅的排除 / 另加（{}）", old_subs.join("、")));
+        }
+        let mut w = format!("旧节点「{old_name}」单独设的{}随编号转给新节点「{new_name}」；旧节点进备用后跟随备用团队", parts.join("和"));
+        if old_policy.is_some() {
+            if let Some(p) = crate::policy::load_row(&mut *conn, crate::policy::Scope::Node, new.id).await?.filter(|r| !r.is_default()) {
+                w += &format!("，新节点自己单独设的访问策略（{}）会被覆盖", p.summary());
+            }
+        }
+        warnings.push(w);
+    }
+
     // 编号压缩：新节点原来的团队少了一台（同退役）
     let mut renames = vec![];
     if let (Some(nt), Some(nn)) = (new.team_id, new.team_name.as_deref()) {
