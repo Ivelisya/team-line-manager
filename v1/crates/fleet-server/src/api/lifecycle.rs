@@ -9,7 +9,7 @@
 //! `routers = false` 只换入口，路由上的出口留着指向旧入口（摘掉后就断了）。
 
 use super::ok;
-use super::replace::{new_server, routers_view, scan_routers, ExitPlan, RouterPlan};
+use super::replace::{new_server, routers_view, scan_routers_offline, ExitPlan, OfflineRouter, RouterPlan};
 use crate::auth::Actor;
 use crate::db::{audit, Tx};
 use crate::error::{ApiError, ApiJson, ApiPath, ApiQuery, ApiResult};
@@ -48,19 +48,29 @@ struct MovePlan {
     routers_enabled: bool,
     /// 指向旧入口、要改成新入口的出口
     routers: Vec<RouterPlan>,
-    /// 改不了路由的原因（路由不在线…）：不能发起
+    /// 改不了的原因：不能发起
     blockers: Vec<String>,
+    /// 指向旧入口的出口所在的软路由不在线：也不能发起，结构化列出（批量换线路机、搬空按路由合并各节点的）
+    offline: Vec<OfflineRouter>,
     warnings: Vec<String>,
 }
+
+/// 离线软路由阻断原因的措辞（`scan_routers` 的 `(verb, what)`）
+const OFFLINE_TEXT: (&str, &str) = ("换线路机", "这个入口");
 
 impl MovePlan {
     fn view(&self) -> Value {
         json!({
             "name": self.node_name, "from": self.from_name, "to": self.to_name, "old_entry": self.old_entry_view(),
             "routers_enabled": self.routers_enabled, "routers": routers_view(&self.routers),
-            "ok": self.blockers.is_empty(), "blockers": self.blockers, "warnings": self.warnings,
+            "ok": self.blockers.is_empty() && self.offline.is_empty(), "blockers": self.all_blockers(), "warnings": self.warnings,
             "share_changed": true, "note": SHARE_NOTE,
         })
+    }
+
+    /// 所有不能发起的原因（离线软路由写成文字接在后面）
+    fn all_blockers(&self) -> Vec<String> {
+        self.blockers.iter().cloned().chain(self.offline.iter().map(|o| o.text(OFFLINE_TEXT))).collect()
     }
 
     /// 换走的入口（新入口的端口建好时才分配，作业完成后见作业的 result）
@@ -142,11 +152,14 @@ async fn plan_move(
     // 软路由上指向旧入口的出口：server 按旧线路机的 IP / 新线路机的 IP、public_host 换
     let (from_ip, _) = relay_addr(&mut **tx, from_relay).await?;
     let to_addr = relay_addr(&mut **tx, to).await?;
-    let (mut blockers, mut warnings) = (vec![], vec![]);
-    let rs = scan_routers(routers, node_id, team_id, routers_on, routers_on, ("换线路机", "这个入口"), &mut blockers, &mut warnings, |er, srv, port| {
+    let (mut blockers, mut warnings, mut offline) = (vec![], vec![], vec![]);
+    let rs = scan_routers_offline(routers, node_id, team_id, routers_on, routers_on, OFFLINE_TEXT.1, &mut blockers, &mut warnings, &mut offline, |er, srv, port| {
         move_exit(er, old_entry, None, &from_ip, &to_addr, srv, port).map(Ok)
     });
-    Ok(Ok(MovePlan { node_name: name, from_relay, from_name, to_name, old_entry, old_port, routers_enabled: routers_on, routers: rs, blockers, warnings }))
+    for e in offline.iter_mut().flat_map(|o| &mut o.exits) {
+        e.node = name.clone();
+    }
+    Ok(Ok(MovePlan { node_name: name, from_relay, from_name, to_name, old_entry, old_port, routers_enabled: routers_on, routers: rs, blockers, offline, warnings }))
 }
 
 /// 线路机的 (IP, public_host)
@@ -219,8 +232,9 @@ pub async fn move_node(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPat
     let routers = crate::routers::load(&st.db, None).await?;
     let mut tx = st.db.begin().await?;
     let plan = plan_move(&mut tx, id, b.from_relay_id, b.to_relay_id, &routers, b.routers != Some(false)).await?.map_err(ApiError::conflict)?;
-    if !plan.blockers.is_empty() {
-        return Err(ApiError::conflict(plan.blockers.join("；")).with_detail(json!({"blockers": plan.blockers})));
+    let blockers = plan.all_blockers();
+    if !blockers.is_empty() {
+        return Err(ApiError::conflict(blockers.join("；")).with_detail(json!({"blockers": blockers})));
     }
     let job = enqueue_move(&mut tx, &a.name, id, &plan, b.to_relay_id, "move", None).await?;
     tx.commit().await?;
@@ -243,7 +257,19 @@ struct Evac {
     from_name: String,
     to_name: String,
     plans: Vec<(Uuid, MovePlan)>,
-    skipped: Vec<Value>,
+    skipped: Vec<Skip>,
+    /// 因软路由不在线而被跳过的节点的出口，按软路由合并（每台路由一条）
+    offline: Vec<OfflineRouter>,
+}
+
+/// 暂时不能搬的节点
+struct Skip {
+    machine_id: Uuid,
+    name: Option<String>,
+    /// 完整原因（含离线软路由的文字）
+    reason: String,
+    /// 去掉离线软路由之后的原因（批量换线路机的 blockers 用；离线软路由单列在 offline_routers）
+    other: String,
 }
 
 impl Evac {
@@ -263,8 +289,12 @@ impl Evac {
         let mut warnings: Vec<&String> = self.plans.iter().flat_map(|(_, p)| &p.warnings).collect();
         warnings.sort();
         warnings.dedup();
-        json!({"from": self.from_name, "to": self.to_name, "jobs": list, "skipped": self.skipped, "warnings": warnings,
-               "router_restarts": self.router_restarts(), "share_changed": !self.plans.is_empty(), "note": SHARE_NOTE})
+        json!({"from": self.from_name, "to": self.to_name, "jobs": list, "skipped": self.skipped_view(), "warnings": warnings,
+               "router_restarts": self.router_restarts(), "offline_routers": self.offline, "share_changed": !self.plans.is_empty(), "note": SHARE_NOTE})
+    }
+
+    fn skipped_view(&self) -> Vec<Value> {
+        self.skipped.iter().map(|k| json!({"machine_id": k.machine_id, "name": k.name, "reason": k.reason})).collect()
     }
 
     /// 要改的软路由：同批一起改，每台只重启一次 OpenClash（断开这台路由上的全部连接）；`nodes` 是有出口要改的节点数
@@ -313,7 +343,7 @@ async fn plan_evacuate(st: &AppState, tx: &mut Tx<'_>, relay: Uuid, to: Uuid, ro
     .fetch_all(&mut **tx)
     .await?;
     let routers = crate::routers::load(&st.db, None).await?;
-    let mut e = Evac { from_name, to_name, plans: vec![], skipped: vec![] };
+    let mut e = Evac { from_name, to_name, plans: vec![], skipped: vec![], offline: vec![] };
     for (node,) in nodes {
         e.plan(tx, node, Some(relay), to, &routers, routers_on).await?;
     }
@@ -323,13 +353,24 @@ async fn plan_evacuate(st: &AppState, tx: &mut Tx<'_>, relay: Uuid, to: Uuid, ro
 impl Evac {
     /// 规划一个节点：能换的进 plans，不能换的连同原因进 skipped
     async fn plan(&mut self, tx: &mut Tx<'_>, node: Uuid, from: Option<Uuid>, to: Uuid, routers: &[crate::routers::Row], routers_on: bool) -> ApiResult<()> {
-        let reason = match plan_move(tx, node, from, to, routers, routers_on).await? {
-            Ok(plan) if plan.blockers.is_empty() => {
+        let (reason, other) = match plan_move(tx, node, from, to, routers, routers_on).await? {
+            Ok(plan) if plan.blockers.is_empty() && plan.offline.is_empty() => {
                 self.plans.push((node, plan));
                 return Ok(());
             }
-            Ok(plan) => plan.blockers.join("；"),
-            Err(reason) => reason,
+            Ok(plan) => {
+                // 离线的软路由按路由合并进 self.offline；这个节点跳过的完整原因里仍带上它们的文字
+                let reason = plan.all_blockers().join("；");
+                let other = plan.blockers.join("；");
+                for o in plan.offline {
+                    match self.offline.iter_mut().find(|x| x.id == o.id) {
+                        Some(x) => x.exits.extend(o.exits),
+                        None => self.offline.push(o),
+                    }
+                }
+                (reason, other)
+            }
+            Err(reason) => (reason.clone(), reason),
         };
         let name: Option<(String,)> = sqlx::query_as(
             "select display_name(m.kind::text, m.label, t.name, m.number)
@@ -338,7 +379,7 @@ impl Evac {
         .bind(node)
         .fetch_optional(&mut **tx)
         .await?;
-        self.skipped.push(json!({"machine_id": node, "name": name.map(|(n,)| n), "reason": reason}));
+        self.skipped.push(Skip { machine_id: node, name: name.map(|(n,)| n), reason, other });
         Ok(())
     }
 }
@@ -371,7 +412,7 @@ pub async fn evacuate(a: Actor, State(st): State<AppState>, ApiPath(relay): ApiP
         Some(relay),
         json!({"from": e.from_name, "to": e.to_name, "to_relay_id": b.to_relay_id,
                "jobs": e.plans.iter().zip(&created).map(|((n, p), j)| json!({"machine_id": n, "name": p.node_name, "job_id": j})).collect::<Vec<_>>(),
-               "skipped": e.skipped}),
+               "skipped": e.skipped_view()}),
     )
     .await?;
     tx.commit().await?;
@@ -415,7 +456,7 @@ async fn plan_moves(st: &AppState, tx: &mut Tx<'_>, ids: &[Uuid], from: Option<U
     let to_name: Option<String> = sqlx::query_scalar("select coalesce(label, '') from machine where id = $1 and kind = 'relay'").bind(to).fetch_optional(&mut **tx).await?;
     let to_name = to_name.ok_or_else(|| ApiError::not_found("目标线路机不存在"))?;
     let routers = crate::routers::load(&st.db, None).await?;
-    let mut e = Evac { from_name: String::new(), to_name, plans: vec![], skipped: vec![] };
+    let mut e = Evac { from_name: String::new(), to_name, plans: vec![], skipped: vec![], offline: vec![] };
     for &node in ids {
         e.plan(tx, node, from, to, &routers, routers_on).await?;
     }
@@ -426,18 +467,19 @@ async fn plan_moves(st: &AppState, tx: &mut Tx<'_>, ids: &[Uuid], from: Option<U
     Ok(e)
 }
 
-/// 同搬空的结果，另有 ok / blockers（不能换的节点，前面带节点名）
+/// 同搬空的结果，另有 ok / blockers（不能换的节点，前面带节点名）。因软路由不在线不能换的不在 blockers 里：按路由合并列在 `offline_routers`
 fn moves_view(e: &Evac, jobs: Option<&[Uuid]>) -> Value {
     let mut v = e.view(jobs);
     let blockers: Vec<String> = e
         .skipped
         .iter()
+        .filter(|k| !k.other.is_empty())
         .map(|k| {
-            let (n, r) = (k["name"].as_str().unwrap_or("节点"), k["reason"].as_str().unwrap_or(""));
-            if r.contains(n) { r.to_string() } else { format!("{n}：{r}") }
+            let n = k.name.as_deref().unwrap_or("节点");
+            if k.other.contains(n) { k.other.clone() } else { format!("{n}：{}", k.other) }
         })
         .collect();
-    v["ok"] = json!(blockers.is_empty());
+    v["ok"] = json!(e.skipped.is_empty());
     v["blockers"] = json!(blockers);
     v
 }
@@ -462,8 +504,9 @@ pub async fn moves(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Mov
     let e = plan_moves(&st, &mut tx, &b.machine_ids, b.from_relay_id, b.to_relay_id, b.routers != Some(false)).await?;
     let pv = moves_view(&e, None);
     if pv["ok"] != true {
-        let why: Vec<&str> = pv["blockers"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
-        return Err(ApiError::conflict(why.join("；")).with_detail(json!({"blockers": pv["blockers"], "skipped": e.skipped})));
+        let mut why: Vec<String> = pv["blockers"].as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from).collect();
+        why.extend(e.offline.iter().map(|o| o.text((OFFLINE_TEXT.0, "换走的入口"))));
+        return Err(ApiError::conflict(why.join("；")).with_detail(json!({"blockers": pv["blockers"], "offline_routers": e.offline, "skipped": e.skipped_view()})));
     }
     let batch = (e.plans.len() > 1).then(crate::db::new_id);
     let mut created = vec![];

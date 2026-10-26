@@ -59,6 +59,43 @@ pub struct RouterPlan {
     pub exits: Vec<ExitPlan>,
 }
 
+/// 出口指向要改的入口、却不在线（离线 / 还没接入）而要改路由时挡住发起的软路由；`exits` 是它挡住的出口（换线路机批量、搬空时按路由合并各节点的）
+#[derive(Clone, Debug, Serialize)]
+pub struct OfflineRouter {
+    pub id: Uuid,
+    pub name: String,
+    /// offline / pending
+    pub state: String,
+    pub error: Option<String>,
+    pub exits: Vec<OfflineExit>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct OfflineExit {
+    /// 出口指向的节点（显示名）
+    pub node: String,
+    pub exit: String,
+}
+
+impl OfflineRouter {
+    /// 阻断原因的文字（单个节点的预览、409 报错、搬空跳过的原因）。`(verb, what)` 同 `scan_routers`
+    pub fn text(&self, (verb, what): (&str, &str)) -> String {
+        let why = self.error.as_deref().map(|e| format!("：{e}")).unwrap_or_default();
+        let mut exits: Vec<&str> = vec![];
+        for e in &self.exits {
+            if !exits.contains(&e.exit.as_str()) {
+                exits.push(&e.exit);
+            }
+        }
+        format!(
+            "软路由「{}」现在{}{why}。它的出口 {} 指向{what}，要等它在线再{verb}（或选不改软路由）",
+            self.name,
+            if self.state == "offline" { "离线" } else { "还没接入" },
+            exits.join("、")
+        )
+    }
+}
+
 #[derive(sqlx::FromRow)]
 struct Node {
     id: Uuid,
@@ -153,9 +190,29 @@ pub fn scan_routers(
     team: Option<Uuid>,
     enabled: bool,
     blocking: bool,
-    (verb, what): (&str, &str),
+    texts: (&str, &str),
     blockers: &mut Vec<String>,
     warnings: &mut Vec<String>,
+    pick: impl FnMut(&EntryRef, &str, u16) -> Option<Result<ExitPlan, String>>,
+) -> Vec<RouterPlan> {
+    let mut offline = vec![];
+    let out = scan_routers_offline(rows, node, team, enabled, blocking, texts.1, blockers, warnings, &mut offline, pick);
+    blockers.extend(offline.iter().map(|o| o.text(texts)));
+    out
+}
+
+/// `scan_routers` 的底层（`what` 是提示里的「旧节点」/「旧入口」）：不在线的软路由不写进 blockers 文字，而是结构化地放进 `offline`（出口的 `node` 留空，由调用方填）
+#[allow(clippy::too_many_arguments)]
+pub fn scan_routers_offline(
+    rows: &[crate::routers::Row],
+    node: Uuid,
+    team: Option<Uuid>,
+    enabled: bool,
+    blocking: bool,
+    what: &str,
+    blockers: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+    offline: &mut Vec<OfflineRouter>,
     mut pick: impl FnMut(&EntryRef, &str, u16) -> Option<Result<ExitPlan, String>>,
 ) -> Vec<RouterPlan> {
     let mut out = vec![];
@@ -202,13 +259,13 @@ pub fn scan_routers(
         }
         let state = r.state();
         if enabled && state != "online" {
-            let why = r.error.as_deref().map(|e| format!("：{e}")).unwrap_or_default();
-            blockers.push(format!(
-                "软路由「{}」现在{}{why}。它的出口 {} 指向{what}，要等它在线再{verb}（或选不改软路由）",
-                r.name,
-                if state == "offline" { "离线" } else { "还没接入" },
-                exits.iter().map(|e| e.exit.as_str()).collect::<Vec<_>>().join("、")
-            ));
+            offline.push(OfflineRouter {
+                id: r.id,
+                name: r.name.clone(),
+                state: state.to_string(),
+                error: r.error.clone(),
+                exits: exits.iter().map(|e| OfflineExit { node: String::new(), exit: e.exit.clone() }).collect(),
+            });
         }
         out.push(RouterPlan { id: r.id, name: r.name.clone(), state: state.to_string(), exits });
     }

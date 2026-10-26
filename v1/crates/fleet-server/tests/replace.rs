@@ -859,6 +859,50 @@ async fn batch_move_changes_router_once() {
     }
 }
 
+/// 批量换线路机 / 搬空时软路由不在线：被挡的节点进 skipped（不计入 router_restarts），离线路由按路由合并成 offline_routers
+/// （一台路由一条、出口带节点名），blockers 里只留别的原因；提交 409，详情里也带 offline_routers
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn batch_move_merges_offline_routers() {
+    let w = world().await;
+    let oe = old_entry(&w).await;
+    let ne: Uuid = sqlx::query_scalar("select id from entry where node_id = $1").bind(w.new).fetch_one(&w.t.st.db).await.unwrap();
+    let n3 = node(&w.t, w.team, 3, "203.0.113.13").await;
+    let e3 = entry(&w.t, w.relay, n3, 20021, "33333333-3333-4333-8333-333333333333", "active").await;
+    let n4 = node(&w.t, w.team, 4, "203.0.113.14").await;
+    entry(&w.t, w.relay, n4, 20022, "44444444-4444-4444-8444-444444444444", "active").await;
+    let a = router(&w, "路由A", 23261, &[("节点01", "198.51.100.2", 20003, Some(oe)), ("节点02", "198.51.100.2", 20020, Some(ne))]).await;
+    let b = router(&w, "路由B", 23262, &[("节点03", "198.51.100.2", 20021, Some(e3))]).await;
+    let t = &w.t;
+    let (rb, _tb) = seed_relay_b(t).await;
+    sqlx::query("update router_status set reachable = false, error = '经隧道连不上路由：refused' where router_id = $1").bind(a).execute(&t.st.db).await.unwrap();
+    // 团队2-04 有进行中的作业：别的原因，照旧在 blockers 里
+    sqlx::query("insert into job (id, kind, target_id, state, created_by) values ($1, 'upgrade_agent', $2, 'running', 'test')").bind(Uuid::now_v7()).bind(n4).execute(&t.st.db).await.unwrap();
+    let csv = [w.old, w.new, n3, n4].iter().map(Uuid::to_string).collect::<Vec<_>>().join(",");
+    let p = t.get(&format!("/api/v1/moves?machine_ids={csv}&to_relay_id={rb}")).await;
+    assert_eq!(p["ok"], false, "{p}");
+    assert_eq!(
+        p["offline_routers"],
+        json!([{"id": a, "name": "路由A", "state": "offline", "error": "经隧道连不上路由：refused",
+                "exits": [{"node": "团队2-01", "exit": "节点01"}, {"node": "团队2-02", "exit": "节点02"}]}]),
+        "{p}"
+    );
+    let bl: Vec<&str> = p["blockers"].as_array().unwrap().iter().map(|x| x.as_str().unwrap()).collect();
+    assert!(bl.len() == 1 && bl[0].contains("团队2-04") && !bl[0].contains("软路由"), "{bl:?}");
+    assert_eq!(p["skipped"].as_array().unwrap().len(), 3, "团队2-01、02（路由A 离线）和 04（作业）被跳过：{p}");
+    // 能换的 03 仍列在 jobs 里，只有它的路由B 会重启；被挡的节点不计入 router_restarts
+    assert_eq!(p["router_restarts"], json!([{"id": b, "name": "路由B", "times": 1, "nodes": 1}]), "{p}");
+    let (s, v) = t.req("POST", "/api/v1/moves", Some(json!({"machine_ids": [w.old, w.new, n3], "to_relay_id": rb})), None).await;
+    let v = v.to_string();
+    assert!(s == StatusCode::CONFLICT && v.contains("offline_routers") && v.contains("软路由「路由A」现在离线"), "{s} {v}");
+    // 搬空预览共用同一份结构
+    let ev = t.get(&format!("/api/v1/relays/{}/evacuate?to_relay_id={rb}", w.relay)).await;
+    assert_eq!(ev["offline_routers"][0]["id"], json!(a), "{ev}");
+    assert_eq!(ev["offline_routers"][0]["exits"].as_array().unwrap().len(), 2, "{ev}");
+    // 不改软路由：没有离线路由要报
+    let p = t.get(&format!("/api/v1/moves?machine_ids={},{}&to_relay_id={rb}&routers=false", w.old, w.new)).await;
+    assert_eq!((p["ok"].clone(), p["offline_routers"].clone()), (json!(true), json!([])), "{p}");
+}
+
 /// 批量换线路机一起改时一台路由失败：同搬空，已改的全部换回、旧入口都不摘，跟着的一起失败；都能取消，取消摘掉新入口、只剩旧入口
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn batch_move_failure_rolls_back_all() {

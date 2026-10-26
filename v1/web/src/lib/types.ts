@@ -342,8 +342,12 @@ export interface PlacementView {
 export interface MoveResult extends MovePreview { job_id: string; name: string; from: string; to: string }
 export interface EvacuateResult { from: string; to: string; /** job_id 只在真正搬空（POST）的结果里有，预览没有 */ jobs: { machine_id: string; name: string; from: string; old_entry: OldEntry; job_id?: string; routers: RouterExitPlan[] }[]; skipped: { machine_id: string; name: string | null; reason: string }[]; warnings: string[];
   /** 要改的软路由：同批一起改，每台只重启 1 次 OpenClash（times 恒为 1）；nodes 是有出口要改的节点数 */
-  router_restarts?: { id: string; name: string; times: number; nodes: number }[]; share_changed: boolean; note: string }
-/** 批量换线路机（GET / POST /moves）：同搬空；有一个节点不能换（skipped，原因带节点名的在 blockers）就 ok 为 false、整批不能提交 */
+  router_restarts?: { id: string; name: string; times: number; nodes: number }[];
+  /** 因软路由不在线（offline）/ 还没接入（pending）而被跳过的节点的出口，按软路由合并（每台一条；这些节点不计入 router_restarts） */
+  offline_routers?: OfflineRouter[]; share_changed: boolean; note: string }
+export interface OfflineRouter { id: string; name: string; state: string; error: string | null; exits: { node: string; exit: string }[] }
+/** 批量换线路机（GET / POST /moves）：同搬空；有一个节点不能换（都在 skipped 里）就 ok 为 false、整批不能提交。
+ *  blockers 是别的原因（带节点名）；因软路由不在线不能换的不在 blockers 里，列在 offline_routers */
 export interface MovesResult extends EvacuateResult { ok: boolean; blockers: string[] }
 /** 替换节点预览（GET /machines/{old}/replace）：新节点接旧编号（new_name），旧节点去 old_to（默认同团队的备用团队）；
  *  routers：出口指向旧节点、会改成新节点入口的软路由（state 不是 online 时 blockers 里有原因）；renames：新节点原来的团队压缩编号 */

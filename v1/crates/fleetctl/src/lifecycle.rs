@@ -158,13 +158,16 @@ fn mv_many(ctx: &Ctx, names: &[&str], to: &str, from: Option<&str>, no_routers: 
                 outln(format!("注意：{line}"));
             }
         }
+        for line in offline_lines(&pv) {
+            outln(format!("不能换：{line}"));
+        }
         for w in pv["warnings"].as_array().cloned().unwrap_or_default() {
             outln(format!("注意：{}", w.as_str().unwrap_or("")));
         }
         outln(SHARE_HINT);
     }
     if pv["ok"] != true {
-        bail!("现在不能换线路机（一个都没提交）：{}", blockers(&pv));
+        bail!("现在不能换线路机（一个都没提交）：{}", moves_why(&pv));
     }
     confirm(&format!("确认把这 {} 个节点换到 {tname}？", names.len()), yes)?;
     let d = ctx.c.post("/moves", &body)?;
@@ -181,6 +184,27 @@ fn mv_many(ctx: &Ctx, names: &[&str], to: &str, from: Option<&str>, no_routers: 
         return Ok(code);
     }
     Ok(0)
+}
+
+/// 批量换线路机预览的 offline_routers：不在线的软路由，一台一条（它挡住的节点在 skipped 里，不在 blockers 里）
+fn offline_lines(pv: &Value) -> Vec<String> {
+    pv["offline_routers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|o| {
+            let why = o["error"].as_str().map(|e| format!("（{e}）")).unwrap_or_default();
+            let exits: Vec<String> = o["exits"].as_array().into_iter().flatten().map(|e| format!("{}（{}）", st(e, "/exit"), st(e, "/node"))).collect();
+            format!("软路由 {} {}{why}：出口 {} 要等它在线再换，或加 --no-routers 不改软路由", st(o, "/name"), if o["state"] == "offline" { "离线" } else { "还没接入" }, exits.join("、"))
+        })
+        .collect()
+}
+
+/// 批量换线路机现在不能提交的原因：别的原因（blockers，带节点名）加上离线的软路由
+fn moves_why(pv: &Value) -> String {
+    let mut v: Vec<String> = pv["blockers"].as_array().into_iter().flatten().filter_map(|s| s.as_str().map(String::from)).collect();
+    v.extend(offline_lines(pv));
+    v.join("；")
 }
 
 /// 搬空、批量换线路机预览的 router_restarts：同批一起改，每台路由只重启 1 次 OpenClash（断开这台路由上的全部连接）
@@ -579,6 +603,20 @@ mod tests {
         let pv = json!({"router_restarts": [{"id": "a", "name": "团队2-路由A", "times": 1, "nodes": 3}, {"id": "b", "name": "路由B", "times": 1, "nodes": 1}]});
         assert_eq!(restart_lines(&pv), ["软路由 团队2-路由A 的 3 个节点的出口一起改，OpenClash 重启 1 次（断开它上面全部连接）", "软路由 路由B 的 1 个节点的出口一起改，OpenClash 重启 1 次（断开它上面全部连接）"]);
         assert!(restart_lines(&json!({})).is_empty(), "旧中控没有这个字段");
+    }
+
+    #[test]
+    fn moves_preview_merges_offline_routers() {
+        let pv = json!({"ok": false, "blockers": ["团队2-04：还有进行中的作业"], "offline_routers": [
+            {"id": "a", "name": "团队2-路由B", "state": "offline", "error": "经隧道连不上路由：refused", "exits": [{"node": "团队2-01", "exit": "节点01"}, {"node": "团队2-04", "exit": "节点04"}]},
+            {"id": "b", "name": "路由C", "state": "pending", "error": null, "exits": [{"node": "团队2-02", "exit": "节点02"}]}]});
+        assert_eq!(
+            offline_lines(&pv),
+            ["软路由 团队2-路由B 离线（经隧道连不上路由：refused）：出口 节点01（团队2-01）、节点04（团队2-04） 要等它在线再换，或加 --no-routers 不改软路由",
+             "软路由 路由C 还没接入：出口 节点02（团队2-02） 要等它在线再换，或加 --no-routers 不改软路由"]
+        );
+        assert!(moves_why(&pv).starts_with("团队2-04：还有进行中的作业；软路由 团队2-路由B 离线"));
+        assert!(offline_lines(&json!({"ok": true})).is_empty(), "旧中控没有这个字段");
     }
 
     /// 搬空的入口来自线路机的完整视图（`GET /machines/{id}`）：精简列表没有 entries，曾因此永远「无需搬空」
