@@ -64,6 +64,8 @@ export interface MachineView {
   spare: boolean;
   /** 备用里的机器：进备用前的显示名（如 团队2-07）与进备用（= 退役）的时刻、自动回收的起始日（YYYY-MM-DD，没有订阅为 null）；不在备用里为 null */
   spare_from: string | null; spare_since: string | null; recycle_on: string | null;
+  /** 备用团队里在用的机器：还指向它的软路由出口（「路由名 · 出口名」）；其余为 []。在用、在备用里、这里为空 = 闲置备用（等到期放生，见 isIdleSpare） */
+  router_exits: string[];
   ip: string; ssh_port: number;
   /** 国家或地区（ISO 3166-1 两位大写，如 US）：手动设了用手动的，否则中控离线 IP 库按机器自己的 IP 查；
    *  内网、家宽代理填的域名、库没装时为 null */
@@ -171,6 +173,8 @@ export interface Overview {
   /** 在线/离线按台机器、按 agent 连通（同 isQuiet），与健康无关；同机 IP 节点随宿主机计入（ip_nodes 是其中的台数），
    *  家宽代理不需要 agent，不计入，另数 no_agent */
   online: number; offline: number; no_agent: number; ip_nodes: number;
+  /** 闲置备用（isIdleSpare）的台数：它们不在 nodes / relays 的 total 与各健康计数里，也不计入 online / offline；月费、速率照算。旧中控没有这个字段 */
+  spare?: number;
   /** 中控刚启动或刚恢复收上报（2 分钟内）：agent 的重发、线路机连通性还在陆续到，健康计数还会变——网页先显示加载态。旧中控没有这个字段 */
   settling?: boolean;
   /** failed：上架失败（lifecycle = failed）的台数 */

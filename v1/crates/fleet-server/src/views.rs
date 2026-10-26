@@ -312,8 +312,7 @@ pub struct MachineView {
     pub spare_since: Option<OffsetDateTime>,
     /// 备用团队里在用、有订阅的机器自动回收的日子（账单时区，到期日 + 2 天，见 spare::recycle_on）；其余为 null
     pub recycle_on: Option<Date>,
-    /// 备用团队里在用的机器：还指向它的软路由出口（「路由名 · 出口名」），续费提醒里列出来（只给健康判定用，不对外输出）
-    #[serde(skip)]
+    /// 备用团队里在用的机器：还指向它的软路由出口（「路由名 · 出口名」），续费提醒里列出来；为空的就是闲置备用（`idle_spare`，网页据此不把它算进异常）
     pub router_exits: Vec<String>,
     pub number: Option<i32>,
     pub label: Option<String>,
