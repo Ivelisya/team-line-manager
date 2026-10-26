@@ -627,7 +627,7 @@ pub async fn reconcile_incidents(st: &AppState, now: OffsetDateTime, rep: &mut S
             _ => format!("出现机房 / VPN 来源 IP：{}", join_values(&shown, total)),
         };
         let detail = json!({"name": name, "values": vals.iter().map(|o| json!({"value": o.value, "conns": o.conns})).collect::<Vec<_>>()});
-        wants.push(Want { rule, subject: *node, name, severity: "warning", text, detail: Some(detail), ready: true });
+        wants.push(Want { rule, subject: *node, name, severity: "warning", text, detail: Some(detail), ready: true, quiet: false });
     }
     // 没有 open 值了（或节点不再 active）→ 恢复；一次性异常结束不发恢复通知
     let t = incident::reconcile(st, Engine::Ipintel, open, wants, "true", now, |_| Close::Quiet("ipintel_ttl")).await?;

@@ -17,7 +17,7 @@ use uuid::Uuid;
 const RULE: &str = "central_test_flap";
 
 fn want(subject: Uuid, severity: &'static str) -> Want<'static> {
-    Want { rule: RULE, subject, name: "测试对象", severity, text: "出问题了".into(), detail: None, ready: true }
+    Want { rule: RULE, subject, name: "测试对象", severity, text: "出问题了".into(), detail: None, ready: true, quiet: false }
 }
 
 /// 一轮：`up` = 这一轮问题成立（给出 Want），否则不成立时按 `close` 关
@@ -189,7 +189,7 @@ async fn rule_without_any_prefix_is_not_closed_by_other_engines() {
     let t = setup().await;
     let subject = Uuid::now_v7();
     let base = OffsetDateTime::now_utc();
-    let w = || Want { rule: "plain_new_rule", subject, name: "对象", severity: "warning", text: "出问题了".into(), detail: None, ready: true };
+    let w = || Want { rule: "plain_new_rule", subject, name: "对象", severity: "warning", text: "出问题了".into(), detail: None, ready: true, quiet: false };
     for e in [Engine::Machine, Engine::Ipintel, Engine::Central, Engine::Router, Engine::Probe] {
         incident::reconcile(&t.st, e, vec![], vec![w()], "true", base, |_| resolve()).await.unwrap();
     }
@@ -258,4 +258,39 @@ async fn acked_incident_gets_no_repeat_and_silenced_recovery_is_still_told() {
     round(&t, at(hours(6) + 60), None, resolve).await;
     log_settles(&t, 3).await;
     assert_eq!(events(), ["firing", "resolved", "firing"]);
+}
+
+/// 跟着别的告警一起报的（`quiet`）：开着、不发触发 / 提醒，也没有恢复通知；原因单独留下来（不再 quiet）时按「没入队过」补发一次触发
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn quiet_incident_stays_silent_until_it_stands_alone() {
+    let t = setup().await;
+    let mock = Mock::start().await;
+    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "feishu", "config": {"url": mock.url("/hook/a")}, "min_severity": "info", "enabled": true})).await;
+    let (s1, s2) = (Uuid::now_v7(), Uuid::now_v7());
+    let base = OffsetDateTime::now_utc();
+    let at = |s: i64| base + time::Duration::seconds(s);
+    let quiet_want = |s: Uuid| Want { quiet: true, ..want(s, "critical") };
+
+    // 开了、不通知；再评估一轮（含严重告警的提醒间隔之后）也不通知
+    round(&t, at(0), Some(quiet_want(s1)), resolve).await;
+    round(&t, at(60), Some(quiet_want(s1)), resolve).await;
+    round(&t, at(5 * 3600), Some(quiet_want(s1)), resolve).await;
+    assert_eq!(state(&t).await.iter().map(|r| r.1.as_str()).collect::<Vec<_>>(), ["firing"]);
+    log_settles(&t, 0).await;
+    // 另一条 quiet 的直接恢复：没报过触发，也不报恢复
+    round(&t, at(10), Some(quiet_want(s2)), resolve).await;
+    round(&t, at(70), None, resolve).await;
+    assert_eq!(state(&t).await.iter().filter(|r| r.1 == "resolved").count(), 2, "两条都恢复了");
+    log_settles(&t, 0).await;
+    // 再来一条：先 quiet，后来原因单独留下（不再 quiet）：补发一次触发，之后恢复才报恢复
+    let s3 = Uuid::now_v7();
+    round(&t, at(100), Some(quiet_want(s3)), resolve).await;
+    log_settles(&t, 0).await;
+    round(&t, at(130), Some(want(s3, "critical")), resolve).await;
+    log_settles(&t, 1).await;
+    mock.wait("/hook/a", 1).await;
+    assert_eq!(mock.events("/hook/a"), ["firing"]);
+    round(&t, at(200), None, resolve).await;
+    log_settles(&t, 2).await;
+    assert_eq!(mock.events("/hook/a"), ["firing", "resolved"]);
 }

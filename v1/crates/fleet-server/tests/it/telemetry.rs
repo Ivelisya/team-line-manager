@@ -2871,7 +2871,7 @@ async fn desired_format_change_bumps_relays_once() {
 async fn machine_round(t: &T, fire: &[(Uuid, &'static str, &'static str)]) {
     use fleet_server::incident::{self, Close, Engine, Want};
     let open = incident::firing(&t.st.db, Engine::Machine).await.unwrap();
-    let want = fire.iter().map(|&(subject, rule, name)| Want { rule, subject, name, severity: "critical", text: "出口不通：timeout".into(), detail: None, ready: true }).collect();
+    let want = fire.iter().map(|&(subject, rule, name)| Want { rule, subject, name, severity: "critical", text: "出口不通：timeout".into(), detail: None, ready: true, quiet: false }).collect();
     incident::reconcile(&t.st, Engine::Machine, open, want, "true", OffsetDateTime::now_utc(), |_| Close::Resolve("团队2-09")).await.unwrap();
 }
 
@@ -2922,7 +2922,7 @@ async fn different_rules_and_kinds_are_not_merged() {
     let st2 = send_queued(&t, 2);
     {
         use fleet_server::incident::{self, Close, Engine, Want};
-        let want = vec![Want { rule: "central_disk_low", subject: Uuid::new_v4(), name: "中控", severity: "critical", text: "磁盘只剩 3%".into(), detail: None, ready: true }];
+        let want = vec![Want { rule: "central_disk_low", subject: Uuid::new_v4(), name: "中控", severity: "critical", text: "磁盘只剩 3%".into(), detail: None, ready: true, quiet: false }];
         incident::reconcile(&st2, Engine::Central, vec![], want, "true", OffsetDateTime::now_utc(), |_| Close::Keep).await.unwrap();
     }
     mock.wait("/hook/a", 1).await;

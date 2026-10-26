@@ -8,7 +8,7 @@ import { healthLabel, tagColor } from '@/lib/derive';
 import { HEALTH_TONE } from '@/lib/sort';
 import { useNow } from '@/lib/useNow';
 import { cn } from '@/lib/utils';
-import { deploySteps, routerIssues, routerMeters, showBootstrap, showDeploy, tempTone, uptimeFmt, useRegenBootstrap, useRouterMetrics, type RouterSummary, type RouterTab, type RouterView } from '@/lib/routers';
+import { deploySteps, fleetExits, routerIssues, routerMeters, showBootstrap, showDeploy, tempTone, uptimeFmt, useRegenBootstrap, useRouterMetrics, type RouterSummary, type RouterTab, type RouterView } from '@/lib/routers';
 import type { BeatCell } from '@/lib/derive';
 import { Button } from '@/components/ui/button';
 import { InfoTip } from '@/components/ui/form';
@@ -32,7 +32,7 @@ export function RouterStatePill({ r }: { r: Pick<RouterView, 'id' | 'state' | 'e
   if (r.state === 'offline') return <Pill tone="bad" tip={r.error ?? undefined} tabIndex={r.error ? 0 : undefined}>离线</Pill>;
   // 在线却带原因：连得上但这次没读到状态，数据是上一次的
   if (r.error) return <Pill tone="warn" tip={`${r.error}\n路由连得上，显示的是上次读到的数据`} tabIndex={0}>读取出错</Pill>;
-  const issues = routerIssues(r.summary, r.summary?.exits.dead);
+  const issues = routerIssues(r.summary);
   return issues.length ? <Pill tone="warn" tip={issues.join('\n')} tabIndex={0}>降级</Pill> : <Pill tone="ok">在线</Pill>;
 }
 /** 卡片描边：离线红、在线但有毛病黄（同机器卡的故障 / 降级）；维护中同机器卡的维护（不描红黄） */
@@ -144,7 +144,7 @@ function RouterCardImpl({ r, current, onOpen: open }: { r: RouterView; current?:
   // 读数只给在线、且采集成功过的；部署中的那台（重新部署时隧道在重启）也先不显示
   const s = r.state === 'online' && r.deploy?.state !== 'running' ? r.summary : null;
   const oc = s?.openclash;
-  const ex = s?.exits;
+  const ex = s && fleetExits(s);
   const tt = tempTone(s?.temp_c);
   return (
     <article className={cn('ncard', current && 'is-current', !s && 'is-quiet')} data-view="large" data-health={routerHealth(r)} style={{ '--rows': 8 } as CSSProperties}>
@@ -186,9 +186,11 @@ function RouterCardImpl({ r, current, onOpen: open }: { r: RouterView; current?:
             <span className="nc-qlabel rt-exits"><Waypoints />出口可用
               <b className={cn('num', ex!.alive < ex!.total && 'is-warn')}>{ex!.alive}/{ex!.total}</b>
             </span>
-            {ex!.drift > 0
-              ? <span className="nc-quse rt-drift" data-tip={"这些出口的地址和端口能对上入口，但凭据已经变了，可能连不上\n入口换过凭据或线路机时会这样"}>{ex!.drift} 个与入口不一致</span>
-              : <span className="nc-quse" data-tip="和入口对得上的出口数。其余是路由上自己加的，不归中控管">{ex!.managed} 个对应入口</span>}
+            {s!.exits.drift > 0
+              ? <span className="nc-quse rt-drift" data-tip={"这些出口的地址和端口能对上入口，但凭据已经变了，可能连不上\n入口换过凭据或线路机时会这样"}>{s!.exits.drift} 个与入口不一致</span>
+              : ex!.other > 0
+                ? <span className="nc-quse t-muted" data-tip={`路由上自己加的出口（订阅、机场节点）${ex!.other} 个，不归中控管：不算进左边的可用数，不通也不告警`}>其他出口 {ex!.other}</span>
+                : <span className="nc-quse" data-tip="和入口对得上的出口数。其余是路由上自己加的，不归中控管">{s!.exits.managed} 个对应入口</span>}
           </span>
           <Cells pct={ex!.total ? (ex!.alive / ex!.total) * 100 : null} n={ex!.total || 18} color="var(--ok)" />
           <span className="sr-only">（查看出口页签）</span>

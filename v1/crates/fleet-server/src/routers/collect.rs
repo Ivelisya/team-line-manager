@@ -25,6 +25,7 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -178,6 +179,8 @@ pub struct Iface {
     pub up: bool,
     pub proto: Option<String>,
     pub ip: Option<String>,
+    /// 这个接口上的全部地址（IPv4、IPv6）：路由自己的地址不算客户端（见 `own_ips`）。旧采集脚本没有它，只有 `ip`
+    pub ips: Vec<String>,
     pub uptime_s: Option<i64>,
     pub rx_bps: Option<i64>,
     pub tx_bps: Option<i64>,
@@ -230,6 +233,9 @@ pub struct Exit {
     pub delay_at: Option<OffsetDateTime>,
     /// 连续几次延迟测试不通（两次起告警）
     pub fail_streak: u32,
+    /// 这一串连续不通是从哪次测试起的（第一次不通的测试时刻）：告警要首次不通满 `alerts::EXITS_DOWN_S` 才开。测通后清掉（还在确认的 `recovering` 期间留着）
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub fail_since: Option<OffsetDateTime>,
     /// 不通（连续两次以上）之后刚测通一次：再测通一次才算恢复（router_exits_down 这之前不关），这之间每轮采集都重测它
     pub recovering: bool,
     pub conns: i64,
@@ -280,6 +286,13 @@ pub fn summary(s: &Snapshot) -> Value {
             "dead": s.exits.iter().filter(|e| !usable(e)).map(|e| e.name.as_str()).collect::<Vec<_>>(),
             "managed": s.exits.iter().filter(|e| e.sync != "unmanaged").count(),
             "drift": s.exits.iter().filter(|e| e.sync == "drift").count(),
+            // fleet 出口（对上了面板入口的）单独数：告警、卡片、降级只看它们；客户自己加的出口（订阅、机场节点）不通不归我们管，单列 other
+            "fleet": {
+                "total": s.exits.iter().filter(|e| e.sync != "unmanaged").count(),
+                "alive": s.exits.iter().filter(|e| e.sync != "unmanaged" && usable(e)).count(),
+                "dead": s.exits.iter().filter(|e| e.sync != "unmanaged" && !usable(e)).map(|e| e.name.as_str()).collect::<Vec<_>>(),
+            },
+            "other": s.exits.iter().filter(|e| e.sync == "unmanaged").count(),
         },
         "clients": s.clients.iter().filter(|c| c.online).count(),
     })
@@ -416,6 +429,7 @@ pub fn build(raw: &Value, prev: &Prev, last: Option<&Snapshot>, config: Option<&
                 up: x.get("up").and_then(Value::as_bool).unwrap_or(false),
                 proto: s(x, "proto"),
                 ip: s(x, "ip"),
+                ips: x.get("ips").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect()).unwrap_or_default(),
                 uptime_s: i(x, "uptime"),
                 rx_bps: rate(cur.map(|c| c.0), old.map(|o| o.0), dt),
                 tx_bps: rate(cur.map(|c| c.1), old.map(|o| o.1), dt),
@@ -448,10 +462,11 @@ pub fn build(raw: &Value, prev: &Prev, last: Option<&Snapshot>, config: Option<&
             None => last.and_then(|l| l.openclash.delay_error.clone()),
         },
     };
-    let exits = exits(&oc, last, config, entries, now);
+    let own = own_ips(&interfaces);
+    let exits = exits(&oc, last, config, entries, &own, now);
     let mut groups: Vec<Group> = oc.get("groups").and_then(Value::as_array).map(|a| a.iter().filter_map(|g| serde_json::from_value(g.clone()).ok()).collect()).unwrap_or_default();
     mark_used(&mut groups, oc.get("rules"));
-    let clients = clients(raw, &oc, &interfaces);
+    let clients = clients(raw, &oc, &interfaces, &own);
     let wan = interfaces.iter().find(|w| w.name == "wan");
     let metric = MetricRow {
         cpu_pct: system.cpu_pct,
@@ -498,7 +513,7 @@ fn untested_exits(oc: &Value) -> HashSet<&str> {
 
 /// 出口：配置里的（按配置的顺序）加上 mihomo /proxies 里另有的叶子出口（按名字）。
 /// 这一轮测了延迟的按测的结果更新 alive / delay_ms / 连续失败次数，没测的沿用上一份快照（没有上一份时用 mihomo 自己记的）
-fn exits(oc: &Value, last: Option<&Snapshot>, config: Option<&[Proxy]>, entries: &[Entry], now: OffsetDateTime) -> Vec<Exit> {
+fn exits(oc: &Value, last: Option<&Snapshot>, config: Option<&[Proxy]>, entries: &[Entry], own: &HashSet<IpAddr>, now: OffsetDateTime) -> Vec<Exit> {
     let api: Vec<&Value> = oc.get("proxies").and_then(Value::as_array).map(|a| a.iter().collect()).unwrap_or_default();
     let api_by: HashMap<&str, &Value> = api.iter().filter_map(|p| Some((p.get("name")?.as_str()?, *p))).collect();
     let mut names: Vec<String> = config.unwrap_or_default().iter().map(|p| p.name.clone()).collect();
@@ -524,20 +539,32 @@ fn exits(oc: &Value, last: Option<&Snapshot>, config: Option<&[Proxy]>, entries:
                 Some(p) => clash::match_entry(p, entries),
                 None => (None, "unmanaged"),
             };
-            let (alive, delay_ms, delay_at, fail_streak, recovering) = match results.filter(|_| !untested.contains(name.as_str())) {
+            let (alive, delay_ms, delay_at, fail_streak, fail_since, recovering) = match results.filter(|_| !untested.contains(name.as_str())) {
                 Some(r) => match r.get(&name).and_then(Value::as_i64).filter(|d| *d > 0) {
-                    // 不通之后第一次测通：还在确认（下一次也通才算恢复）
-                    Some(d) => (Some(true), Some(d), Some(now), 0, prev.is_some_and(|p| p.fail_streak >= 2)),
+                    // 不通之后第一次测通：还在确认（下一次也通才算恢复），这一串不通的起点留着；确认完了（或只不通 1 次就通了）清掉
+                    Some(d) => {
+                        let confirming = prev.is_some_and(|p| p.fail_streak >= 2);
+                        (Some(true), Some(d), Some(now), 0, prev.filter(|_| confirming).and_then(|p| p.fail_since), confirming)
+                    }
                     // 还在确认（不通之后刚测通一次）又不通：仍算连续不通（记 2），告警不关、每轮照样重测
-                    None => (Some(false), None, Some(now), prev.map_or(1, |p| if p.recovering { 2 } else { p.fail_streak + 1 }), false),
+                    None => (
+                        Some(false),
+                        None,
+                        Some(now),
+                        prev.map_or(1, |p| if p.recovering { 2 } else { p.fail_streak + 1 }),
+                        // 升级前存的快照没有起点：已经在连续不通的保持没有（告警当作满了），否则从这一次算起
+                        prev.and_then(|p| p.fail_since).or_else(|| (!prev.is_some_and(|p| p.fail_streak >= 2 || p.recovering)).then_some(now)),
+                        false,
+                    ),
                 },
                 None => match prev {
-                    Some(p) => (p.alive, p.delay_ms, p.delay_at, p.fail_streak, p.recovering),
+                    Some(p) => (p.alive, p.delay_ms, p.delay_at, p.fail_streak, p.fail_since, p.recovering),
                     None => (
                         api.and_then(|a| a.get("alive")).and_then(Value::as_bool),
                         api.and_then(|a| a.get("delay")).and_then(Value::as_i64).filter(|d| *d > 0),
                         api.and_then(|a| ts(a, "at")),
                         0,
+                        None,
                         false,
                     ),
                 },
@@ -556,20 +583,36 @@ fn exits(oc: &Value, last: Option<&Snapshot>, config: Option<&[Proxy]>, entries:
                 delay_ms,
                 delay_at,
                 fail_streak,
+                fail_since,
                 recovering,
                 conns: i(&st, "conns").unwrap_or(0),
                 up_bps: bps("up"),
                 down_bps: bps("down"),
-                clients: i(&st, "clients").unwrap_or(0),
+                clients: exit_clients(oc, &name, own),
                 name,
             }
         })
         .collect()
 }
 
+/// 路由自己的地址（各接口的全部地址，旧脚本只有每个接口的第一个 IPv4）：mihomo 的连接里也有路由自己发起的（来源 IP 是 WAN 或 LAN 地址），它不是客户端
+fn own_ips(ifaces: &[Iface]) -> HashSet<IpAddr> {
+    ifaces.iter().flat_map(|i| i.ip.iter().chain(&i.ips)).filter_map(|a| a.parse::<IpAddr>().ok()).map(|a| a.to_canonical()).collect()
+}
+
+fn is_own(own: &HashSet<IpAddr>, ip: &str) -> bool { ip.parse::<IpAddr>().is_ok_and(|a| own.contains(&a.to_canonical())) }
+
+/// 一个出口的客户端数：经过它的来源 IP 个数，不含路由自己。由 `oc.clients` 里各来源 IP 走过哪些出口数出来（脚本按出口数的 `clients` 含路由自己，旧脚本也一样处理）
+fn exit_clients(oc: &Value, name: &str, own: &HashSet<IpAddr>) -> i64 {
+    let n = oc.get("clients").and_then(Value::as_object).map_or(0, |m| {
+        m.iter().filter(|(ip, v)| !(ip.starts_with("127.") || *ip == "::1" || is_own(own, ip)) && v.get("exits").and_then(Value::as_object).is_some_and(|e| e.contains_key(name))).count()
+    });
+    n as i64
+}
+
 /// 客户端：DHCP 租约（主机名、MAC）+ 邻居表（REACHABLE / STALE / DELAY / PROBE 算在线；WAN 口那一侧的不算：旁路由的 WAN 就是 br-lan，
 /// 整个家里的局域网都在邻居表里，它的客户端靠下一条）+ mihomo 连接里的来源 IP（有连接即在线，速率由它算）。在线的在前，按连接数
-fn clients(raw: &Value, oc: &Value, ifaces: &[Iface]) -> Vec<Client> {
+fn clients(raw: &Value, oc: &Value, ifaces: &[Iface], own: &HashSet<IpAddr>) -> Vec<Client> {
     let wan_dev: HashSet<&str> = ifaces.iter().filter(|i| i.name == "wan" || i.name == "wan6").filter_map(|i| i.device.as_deref()).collect();
     let mut by: BTreeMap<String, Client> = BTreeMap::new();
     let str_at = |a: &Value, n: usize| a.get(n).and_then(Value::as_str).map(str::to_string).filter(|s| !s.is_empty());
@@ -598,7 +641,7 @@ fn clients(raw: &Value, oc: &Value, ifaces: &[Iface]) -> Vec<Client> {
     let bps = |v: &Value, k: &str| dt.and_then(|dt| f(v, k).map(|b| (b * 8.0 / dt).round() as i64));
     if let Some(m) = oc.get("clients").and_then(Value::as_object) {
         for (ip, v) in m {
-            if ip.starts_with("127.") || ip == "::1" {
+            if ip.starts_with("127.") || ip == "::1" || is_own(own, ip) {
                 continue;
             }
             let c = by.entry(ip.clone()).or_insert_with(|| Client { ip: ip.clone(), ..Client::default() });
@@ -1400,7 +1443,14 @@ mod tests {
         // 全部不通（mihomo 回 504，结果为空）：都 +1
         let b2 = build(&raw(0, 0, 0, tested(json!({}))), &b1.prev, Some(&b1.snap), Some(&proxies()), &[], t0 + time::Duration::seconds(300));
         assert_eq!(b2.snap.exits.iter().map(|e| e.fail_streak).collect::<Vec<_>>(), [1, 2]);
-        assert_eq!(summary(&b2.snap)["exits"], json!({"total": 2, "alive": 1, "dead": ["节点02"], "managed": 0, "drift": 0}), "只测不通 1 次的还算可用");
+        assert_eq!(
+            summary(&b2.snap)["exits"],
+            json!({"total": 2, "alive": 1, "dead": ["节点02"], "managed": 0, "drift": 0, "fleet": {"total": 0, "alive": 0, "dead": []}, "other": 2}),
+            "只测不通 1 次的还算可用"
+        );
+        // 这一串不通从第一次测不通起算，之后每次测不通都不动它
+        assert_eq!((b0.snap.exits[0].fail_since, b0.snap.exits[1].fail_since), (None, Some(t0)));
+        assert_eq!(b2.snap.exits[1].fail_since, Some(t0));
         // 测试请求本身失败（API 出错）：不算出口不通
         let b3 = build(&raw(0, 0, 0, Some(json!({"ok": false, "error": "x"}))), &b2.prev, Some(&b2.snap), Some(&proxies()), &[], t0 + time::Duration::seconds(330));
         assert_eq!(b3.snap.exits.iter().map(|e| e.fail_streak).collect::<Vec<_>>(), [1, 2]);
@@ -1414,10 +1464,62 @@ mod tests {
         let ok = |prev: &Built, at: i64| build(&raw(0, 0, 0, tested(json!({"节点01": 90, "节点02": 70}))), &prev.prev, Some(&prev.snap), Some(&proxies()), &[], t0 + time::Duration::seconds(at));
         let b5 = ok(&b4, 630);
         assert_eq!((b5.snap.exits[1].fail_streak, b5.snap.exits[1].recovering, b5.snap.exits[0].recovering), (0, true, false));
-        assert!(!ok(&b5, 660).snap.exits[1].recovering);
+        assert_eq!(b5.snap.exits[1].fail_since, Some(t0), "还在确认：起点留着");
+        let b5b = ok(&b5, 660);
+        assert!(!b5b.snap.exits[1].recovering && b5b.snap.exits[1].fail_since.is_none(), "确认完了：清掉");
         // 还在确认时又不通：仍算连续不通（告警不关、每轮照样重测），不是从 1 重新数
         let b6 = build(&raw(0, 0, 0, tested(json!({"节点01": 90}))), &b5.prev, Some(&b5.snap), Some(&proxies()), &[], t0 + time::Duration::seconds(660));
-        assert_eq!((b6.snap.exits[1].fail_streak, b6.snap.exits[1].recovering), (2, false));
+        assert_eq!((b6.snap.exits[1].fail_streak, b6.snap.exits[1].recovering, b6.snap.exits[1].fail_since), (2, false, Some(t0)), "不是从头算");
+        // 升级前存的快照（连续不通两次以上、没有起点）：保持没有起点（告警当作满了），不从这一次重新算
+        let mut old = b2.snap.clone();
+        old.exits[1].fail_since = None;
+        let b7 = build(&raw(0, 0, 0, tested(json!({}))), &b2.prev, Some(&old), Some(&proxies()), &[], t0 + time::Duration::seconds(330));
+        assert_eq!((b7.snap.exits[1].fail_streak, b7.snap.exits[1].fail_since), (3, None));
+    }
+
+    /// 摘要里 fleet 出口（对上了面板入口的）与客户自己的出口分开数：告警、卡片只看 fleet 的
+    #[test]
+    fn summary_counts_fleet_and_other_exits_apart() {
+        let now = OffsetDateTime::now_utc();
+        let mut snap = build(&raw(0, 0, 0, None), &Prev::default(), None, Some(&proxies()), &[], now).snap;
+        snap.exits = ["节点01", "节点02", "节点03", "机场A", "机场B"]
+            .iter()
+            .map(|n| Exit { name: n.to_string(), sync: if n.starts_with('节') { "ok".into() } else { "unmanaged".into() }, alive: Some(true), ..Exit::default() })
+            .collect();
+        // 节点02 连续不通；机场A 连续不通；节点03 只不通 1 次（还算可用）
+        (snap.exits[1].alive, snap.exits[1].fail_streak) = (Some(false), 2);
+        (snap.exits[3].alive, snap.exits[3].fail_streak) = (Some(false), 4);
+        (snap.exits[2].alive, snap.exits[2].fail_streak) = (Some(false), 1);
+        let e = &summary(&snap)["exits"];
+        assert_eq!((&e["fleet"], &e["other"]), (&json!({"total": 3, "alive": 2, "dead": ["节点02"]}), &json!(2)));
+        assert_eq!((e["total"].as_i64(), e["alive"].as_i64(), &e["dead"]), (Some(5), Some(3), &json!(["节点02", "机场A"])), "旧字段仍含全部出口");
+    }
+
+    /// 路由自己的地址（各接口的全部地址；旧脚本只有每个接口的第一个 IPv4）不算客户端，各出口的客户端数也扣掉
+    #[test]
+    fn router_own_addresses_are_not_clients() {
+        let now = OffsetDateTime::now_utc();
+        let mut r = raw(0, 0, 0, None);
+        let me = json!({"conns": 3, "exits": {"节点01": 3}, "up": 1, "down": 1});
+        // WAN 地址（旧脚本也有）、LAN 口的第二个地址与 IPv6（新脚本的 ips）、IPv4 映射写法
+        for ip in ["192.168.1.2", "192.168.124.254", "fd00::1", "::ffff:192.168.124.1"] {
+            r["oc"]["clients"][ip] = me.clone();
+        }
+        r["oc"]["exits"]["节点01"]["clients"] = json!(5);
+        r["ifaces"][1]["ips"] = json!(["192.168.124.1", "192.168.124.254", "fd00::1"]);
+        let b = build(&r, &Prev::default(), None, Some(&proxies()), &[], now);
+        let ips: Vec<&str> = b.snap.clients.iter().map(|c| c.ip.as_str()).collect();
+        assert_eq!(ips, ["192.168.124.100", "192.168.124.9", "192.168.124.101"]);
+        assert_eq!((b.metric.clients, summary(&b.snap)["clients"].as_i64()), (2, Some(2)));
+        assert_eq!(b.snap.interfaces[1].ips.len(), 3);
+        // 出口的客户端数由来源 IP 走过哪些出口数出来：只剩 192.168.124.100 走节点01
+        assert_eq!((b.snap.exits[0].clients, b.snap.exits[1].clients, b.exits[0].clients), (1, 0, 1));
+        // 旧脚本没有 ips：WAN 地址（接口的 ip）照样扣掉，别的地址认不出，不误伤
+        let mut old = r.clone();
+        old["ifaces"][1].as_object_mut().unwrap().remove("ips");
+        let b = build(&old, &Prev::default(), None, Some(&proxies()), &[], now);
+        let ips: Vec<&str> = b.snap.clients.iter().map(|c| c.ip.as_str()).collect();
+        assert!(!ips.contains(&"192.168.1.2") && !ips.contains(&"::ffff:192.168.124.1") && ips.contains(&"192.168.124.254") && ips.contains(&"fd00::1"), "{ips:?}");
     }
 
     /// 延迟测试没做成（单独那次执行超时、OpenClash 没在跑）：出口沿用上一次，原因记在 delay_error，没测的轮次沿用它，测成了清掉

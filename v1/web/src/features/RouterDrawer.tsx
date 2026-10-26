@@ -20,7 +20,7 @@ import { DeployTimeline, MiniBeat, RouterMeters, RouterStatePill, Seen, useShowB
 import { useEndSubjectMaint, useMachineBriefs, useTeams } from '@/lib/queries';
 import { MaintenanceDialog } from '@/components/app/MaintenanceDialog';
 import { GroupsSection } from './RouterOps';
-import { exitBeats, showSync, exitUsable, ROUTER_TABS, routerIssues, routerSiblings, showDeploy, showRemoved, tempTone, uptimeFmt, useDeleteRouter, usePatchRouter, useRouter, useRouterDrawer, useRouterChanges, useRouterExitMetrics, useRouters, type RouterClient, type RouterDetail, type RouterExit, type RouterTab, type RouterView } from '@/lib/routers';
+import { exitBeats, showSync, exitUsable, fleetExits, ROUTER_TABS, routerIssues, routerSiblings, showDeploy, showRemoved, tempTone, uptimeFmt, useDeleteRouter, usePatchRouter, useRouter, useRouterDrawer, useRouterChanges, useRouterExitMetrics, useRouters, type RouterClient, type RouterDetail, type RouterExit, type RouterTab, type RouterView } from '@/lib/routers';
 import { jobKindLabel, tagColor } from '@/lib/derive';
 import { useHeld } from '@/lib/useHeld';
 import { openTerminal } from '@/lib/terminal';
@@ -304,7 +304,8 @@ const skewWord = (s: number) => (Math.round(s) === 0 ? '一致' : `${s > 0 ? '�
 function OverviewTab({ r, detail }: { r: RouterView; detail: RouterDetail | null | undefined }) {
   const s = r.summary;
   const { setTab } = useRouterDrawer();
-  const issues = r.state === 'online' ? routerIssues(s, s?.exits.dead) : [];
+  const issues = r.state === 'online' ? routerIssues(s) : [];
+  const fx = s && fleetExits(s);
   const d = r.deploy;
   // 部署时间线：在跑、失败了，或刚做完（10 分钟内）才放
   const showDeployTl = d && (d.state !== 'done' || (d.finished_at != null && Date.now() - Date.parse(d.finished_at) < 600_000));
@@ -325,10 +326,11 @@ function OverviewTab({ r, detail }: { r: RouterView; detail: RouterDetail | null
       {s && (
         <Section className={staleCls}>
           <div className="rt-hero">
-            <div className="rt-hero-main"><b className="rt-hero-num num">{s.exits.alive}<small>/{s.exits.total}</small></b><span className="rt-hero-unit">个出口可用</span></div>
+            <div className="rt-hero-main"><b className="rt-hero-num num">{fx!.alive}<small>/{fx!.total}</small></b><span className="rt-hero-unit">个出口可用</span></div>
             <p className="rt-hero-sum">
               {s.clients} 台客户端在线 · OpenClash {s.openclash.conns.toLocaleString()} 条连接 · WAN ↓ {F.str(F.rate(s.wan.rx_bps))} ↑ {F.str(F.rate(s.wan.tx_bps))} · 已运行 {F.str(uptimeFmt(s.uptime_s))}
               {s.exits.drift > 0 && <> · <span className="rt-warn">{s.exits.drift} 个出口与入口不一致</span></>}
+              {fx!.other > 0 && <> · <span className="t-muted">其他出口 {fx!.other} 个</span><InfoTip text="路由上自己加的出口（订阅、机场节点），不归中控管：不算进左边的可用数，不通也不告警" /></>}
             </p>
             {issues.length > 0 && (
               <ul className="reason-list">

@@ -371,7 +371,7 @@ async fn one_collection_round() {
     let s = &d["summary"];
     assert_eq!((s["cpu_pct"].as_f64(), s["cores"].as_i64(), s["mem_used"].as_i64(), s["clients"].as_i64()), (Some(12.5), Some(4), Some(1_000_000_000), Some(1)));
     // 「别人的」这次没测通，但只不通 1 次：同告警，还算可用
-    assert_eq!(s["exits"], json!({"total": 3, "alive": 3, "dead": [], "managed": 2, "drift": 1}));
+    assert_eq!(s["exits"], json!({"total": 3, "alive": 3, "dead": [], "managed": 2, "drift": 1, "fleet": {"total": 2, "alive": 2, "dead": []}, "other": 1}));
     assert_eq!(s["openclash"]["version"], "alpha-g99e68e9");
     assert!(s["wan"]["rx_bps"].is_null(), "第一次没有速率");
     let ex = d["detail"]["exits"].as_array().unwrap();

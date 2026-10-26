@@ -8,7 +8,7 @@ import type { Overview } from '@/lib/types';
 import * as F from '@/lib/format';
 import { useMe, useNextDue, useOfflineNames, useQuotaTight } from '@/lib/queries';
 import { openDrawer } from '@/lib/drawer';
-import { useRouters } from '@/lib/routers';
+import { fleetExits, useRouters } from '@/lib/routers';
 import { useFleetSeries } from '@/lib/live';
 import { cn } from '@/lib/utils';
 import { meta, usdTotalTip } from '@/lib/derive';
@@ -138,7 +138,7 @@ function RoutersLink() {
   const list = useRouters().data;
   if (!list?.length) return null;
   const on = list.filter((r) => r.state === 'online');
-  const ex = on.reduce((a, r) => ({ alive: a.alive + (r.summary?.exits.alive ?? 0), total: a.total + (r.summary?.exits.total ?? 0) }), { alive: 0, total: 0 });
+  const ex = on.reduce((a, r) => { const f = r.summary && fleetExits(r.summary); return { alive: a.alive + (f?.alive ?? 0), total: a.total + (f?.total ?? 0) }; }, { alive: 0, total: 0 });
   const bad = list.some((r) => r.state === 'offline');
   return (
     <Link to="/routers" className="cluster-routers" aria-label="软路由">
