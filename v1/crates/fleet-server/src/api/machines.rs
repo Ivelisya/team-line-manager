@@ -113,8 +113,10 @@ type PatchCur = (i32, String, Option<Uuid>, Option<i32>, Option<String>, String,
 /// 改团队时原团队少了这台：按编号连续压缩（同退役完成）。先锁团队（原团队、新团队，按 id 排）再锁机器，和 move_to_spare、退役收尾同一个顺序（团队 → 机器）
 pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<PatchIn>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
-    // 宿主机改前的 spare_since（原团队是备用时，只带与它同一次进备用的 IP 节点）；新团队是不是备用团队（是的话带走所有不在备用的同机 IP 节点）
+    // 宿主机改前的 spare_since 与 spare_from_team_id（原团队是备用时，只带与它同一次进备用的 IP 节点；与宿主机进备用前同一个团队的跟宿主机走）；
+    // 新团队是不是备用团队（是的话带走所有不在备用的同机 IP 节点）
     let mut host_spare_since: Option<OffsetDateTime> = None;
+    let mut host_spare_from: Option<Uuid> = None;
     let mut to_spare = false;
     if let Some(to) = b.team_id {
         let from: Option<Uuid> = sqlx::query_scalar::<_, Option<Uuid>>("select team_id from machine where id = $1").bind(id).fetch_optional(&mut *tx).await?.flatten();
@@ -141,7 +143,11 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
         teams.sort();
         teams.dedup();
         sqlx::query("select 1 from team where id = any($1) order by id for update").bind(&teams).execute(&mut *tx).await?;
-        host_spare_since = sqlx::query_scalar::<_, Option<OffsetDateTime>>("select spare_since from machine where id = $1 for update").bind(id).fetch_optional(&mut *tx).await?.flatten();
+        (host_spare_since, host_spare_from) = sqlx::query_as::<_, (Option<OffsetDateTime>, Option<Uuid>)>("select spare_since, spare_from_team_id from machine where id = $1 for update")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .unwrap_or_default();
         // 手动改进备用团队和退役的「移进备用」同一套资格：patch_tx 不查（替换作业也用它，自己处理过期），入口在这里
         if let Some(why) = spare_gate(&mut tx, id, to).await? {
             return Err(ApiError::conflict(format!("不能改到备用团队：{why}。要进备用请用退役（网页「退役」、fleetctl retire），现在就回收选「立即回收」")));
@@ -158,7 +164,7 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     // 宿主机换了团队：它上面还在原团队的同机 IP 节点一起走（编号接在宿主机之后取新团队的最小空号，同 move_to_spare），原团队一并压缩。
     // 新团队是备用团队（进备用）时带走所有不在备用、没退役的同机 IP 节点，不只原团队里的（同 move_to_spare），它们所在的团队各自压缩；
     // 原团队是备用团队（撤销退役）时只带与宿主机同一次进备用的（move_to_spare 同事务写 spare_since，时刻相同）：之前单独退役进备用的不拉回；
-    // 带回的各回自己进备用前的团队（IP_DEST），那个团队已不在的留在备用
+    // 带回的：与宿主机进备用前同团队的跟宿主机走（去它选的团队），其余各回自己进备用前的团队（IP_DEST），那个团队已不在的留在备用
     let mut ip_moved = false;
     let mut shrunk: Vec<Uuid> = p.left_team.into_iter().collect();
     if let (Some(from), Some(to)) = (p.left_team, to) {
@@ -171,6 +177,7 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
         .bind(host_spare_since)
         .bind(to_spare)
         .bind(to)
+        .bind(host_spare_from)
         .fetch_all(&mut *tx)
         .await?;
         // 和 move_to_spare 一样：带走的 IP 节点有进行中的作业不动
@@ -214,16 +221,18 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     get_one(a, State(st), ApiPath(id)).await
 }
 
-/// 随宿主机换团队的同机 IP 节点（$1 宿主机、$2 原团队、$3 宿主机改前的 spare_since、$4 新团队是备用团队；去向 IP_DEST 另有 $5 新团队）：没退役的；
+/// 随宿主机换团队的同机 IP 节点（$1 宿主机、$2 原团队、$3 宿主机改前的 spare_since、$4 新团队是备用团队；去向 IP_DEST 另有 $5 新团队、$6 宿主机改前的 spare_from_team_id）：没退役的；
 /// 换进备用团队（$4）时带走所有不在备用的（不只原团队里的，同 move_to_spare）；否则只要还在原团队的，
 /// 原团队是备用团队时只要与宿主机同一次进备用的（spare_since 相同），之前单独进备用的留在备用
 const IP_WITH_HOST: &str = "m.host_id = $1 and m.lifecycle not in ('retiring', 'retired')
     and case when $4 then not coalesce((select spare from team where id = m.team_id), false)
              else m.team_id = $2 and (not (select spare from team where id = $2) or m.spare_since = $3) end";
 
-/// 随行 IP 节点的去向团队（$2 原团队、$4 新团队是备用团队、$5 新团队）：进备用都去新团队；撤销退役（原团队是备用团队）时各回自己进备用前的团队
-/// （spare_from_team_id；与宿主机同团队、或旧数据没记的跟宿主机走），那个团队已不在（或已成备用团队）的为空 = 留在备用
-const IP_DEST: &str = "case when $4 or not (select spare from team where id = $2) or m.spare_from_team_id is null or m.spare_from_team_id = $5::uuid then $5::uuid
+/// 随行 IP 节点的去向团队（$2 原团队、$4 新团队是备用团队、$5 新团队、$6 宿主机改前的 spare_from_team_id）：进备用都去新团队；撤销退役（原团队是备用团队）时
+/// 与宿主机进备用前同一个团队的（含旧数据没记的）跟宿主机走，同普通改团队——宿主机撤销到别的团队，它们跟去；其余的各回自己进备用前的团队
+/// （spare_from_team_id），那个团队已不在（或已成备用团队）的为空 = 留在备用
+const IP_DEST: &str = "case when $4 or not (select spare from team where id = $2) or m.spare_from_team_id is null or m.spare_from_team_id = $5::uuid
+              or m.spare_from_team_id is not distinct from $6::uuid then $5::uuid
          when exists (select 1 from team x where x.id = m.spare_from_team_id and not x.spare) then m.spare_from_team_id end";
 
 /// `patch_tx` 的结果
@@ -264,15 +273,15 @@ pub struct RenamePreviewQ {
 /// 换团队时原团队少了这台，剩下的按编号连续压缩（PATCH 同事务做），`renames` 列出连带改号的；
 /// 宿主机上还在原团队的同机 IP 节点一起换团队（PATCH 同事务做，编号接在宿主机之后取新团队的最小空号），`ip_nodes` 列出它们的新旧名字；
 /// 换进备用团队时带走所有不在备用的（不只原团队里的，同退役的「移进备用」），它们所在的团队也各自压缩。
-/// 原团队是备用团队（撤销退役）时只列与宿主机同一次进备用的，各回自己进备用前的团队（`spare_from_team_id`）取最小空号；那个团队已不在的留在备用（`warnings` 写明），旧数据没记的跟宿主机走。
+/// 原团队是备用团队（撤销退役）时只列与宿主机同一次进备用的：与宿主机进备用前同一个团队的（和旧数据没记的）跟宿主机去它选的团队，其余各回自己进备用前的团队（`spare_from_team_id`）取最小空号；那个团队已不在的留在备用（`warnings` 写明）。
 /// `router_exits`：新团队是备用团队时，还指向这台和随它一起移入的同机 IP 节点的软路由出口（只提示，不阻断）；其余为空。
 /// `spare_blocked`：改到备用团队但进不了备用时的原因（订阅已过期满 1 天、没有订阅、有进行中的作业等，同退役的「移进备用」；PATCH 会回 409），否则为 null。
 /// `warnings`：还被软路由出口指着的节点（这台和随它走的同机 IP 节点，各按自己的原团队 → 去向团队比较）换到的团队生效的访问策略与现在不同时，每台一句（客户会受影响；只提示，不阻断）。
 /// 没换团队、线路机：renames / ip_nodes / router_exits / warnings 都为空，spare_blocked 为 null
 pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<RenamePreviewQ>) -> ApiResult<Json<Value>> {
     let mut conn = st.db.acquire().await?;
-    let (kind, label, team, number, spare_since): (String, Option<String>, Option<Uuid>, Option<i32>, Option<OffsetDateTime>) =
-        sqlx::query_as("select kind::text, label, team_id, number, spare_since from machine where id = $1 and lifecycle <> 'retired'")
+    let (kind, label, team, number, spare_since, spare_from_team): (String, Option<String>, Option<Uuid>, Option<i32>, Option<OffsetDateTime>, Option<Uuid>) =
+        sqlx::query_as("select kind::text, label, team_id, number, spare_since, spare_from_team_id from machine where id = $1 and lifecycle <> 'retired'")
             .bind(id)
             .fetch_optional(&mut *conn)
             .await?
@@ -299,7 +308,7 @@ pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
         if let (true, Some(from), Some(to)) = (to != team, team, to) {
             let from_name = team_name(&st.db, Some(from)).await?.unwrap_or_default();
             let to_spare = sqlx::query_scalar::<_, bool>("select spare from team where id = $1").bind(to).fetch_optional(&mut *conn).await?.unwrap_or(false);
-            // 随宿主机走的同机 IP 节点：去向团队见 IP_DEST（撤销退役时各回进备用前的团队）；去向团队里宿主机先占 n，它们依次取剩下的最小空号
+            // 随宿主机走的同机 IP 节点：去向团队见 IP_DEST（撤销退役时跟宿主机走，或各回进备用前的团队）；去向团队里宿主机先占 n，它们依次取剩下的最小空号
             let ips: Vec<(Uuid, String, Option<Uuid>, Option<String>, Uuid)> = sqlx::query_as(&format!(
                 "select m.id, display_name(m.kind::text, m.label, t.name, m.number), m.team_id, t.name, {IP_DEST} from machine m left join team t on t.id = m.team_id
                  where {IP_WITH_HOST} and ({IP_DEST}) is not null order by t.sort_order nulls first, t.name, m.number, m.id"
@@ -309,6 +318,7 @@ pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
             .bind(spare_since)
             .bind(to_spare)
             .bind(to)
+            .bind(spare_from_team)
             .fetch_all(&mut *conn)
             .await?;
             let mut dest_name: HashMap<Uuid, String> = HashMap::from([(to, to_name.clone())]);
@@ -355,6 +365,7 @@ pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
                 .bind(spare_since)
                 .bind(to_spare)
                 .bind(to)
+                .bind(spare_from_team)
                 .fetch_all(&mut *conn)
                 .await?;
                 warnings.extend(stay.into_iter().map(|x| format!("{x} 原团队已不在，留在备用")));

@@ -326,6 +326,34 @@ async fn undo_retire_sends_ip_nodes_back_to_their_own_teams() {
     assert_eq!((wv["spare"].clone(), wv["spare_since"].is_string()), (json!(true), true), "原团队已删的 IP 节点留在备用：{wv}");
 }
 
+/// 撤销退役改到别的团队（不是原团队）：原本和宿主机同团队的 IP 节点跟宿主机走（同普通改团队），去宿主机选的团队；别的团队的 IP 节点照旧各回自己的团队；
+/// 预览与实际一致
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn undo_retire_to_another_team_takes_same_team_ip_nodes_with_the_host() {
+    let t = setup(false).await;
+    let (t1, t2, t4) = (seed_team(&t, "团队1").await, seed_team(&t, "团队2").await, seed_team(&t, "团队4").await);
+    let host = seed_vps(&t, t1, 1, "203.0.113.91", None).await;
+    let x = seed_vps(&t, t1, 2, "203.0.113.92", Some(host)).await;
+    let z = seed_vps(&t, t2, 1, "203.0.113.93", Some(host)).await;
+    for m in [host, x, z] {
+        sub(&t, m, "2030-01-01", "UTC").await;
+    }
+    let r = t.post(&format!("/api/v1/machines/{host}/retire"), json!({"confirm": "团队1-01"})).await;
+    assert_eq!(r["ip_nodes"].as_array().unwrap().len(), 2, "{r}");
+    // 撤销到团队4：X（进备用前和宿主机同在团队1）跟宿主机去团队4，Z 回自己的团队2
+    let pv = t.get(&format!("/api/v1/machines/{host}/rename-preview?team_id={t4}")).await;
+    let to: std::collections::HashMap<String, String> =
+        pv["ip_nodes"].as_array().unwrap().iter().map(|i| (i["machine_id"].as_str().unwrap().to_string(), i["new_name"].as_str().unwrap().to_string())).collect();
+    assert_eq!((pv["name"].as_str(), to.get(&x.to_string()).map(String::as_str), to.get(&z.to_string()).map(String::as_str)), (Some("团队4-01"), Some("团队4-02"), Some("团队2-01")), "{pv}");
+    let rev = t.get(&format!("/api/v1/machines/{host}")).await["revision"].clone();
+    let (s, r) = t.req("PATCH", &format!("/api/v1/machines/{host}"), Some(json!({"revision": rev, "team_id": t4})), None).await;
+    assert_eq!((s, r["data"]["name"].clone()), (StatusCode::OK, json!("团队4-01")), "{r}");
+    for (m, name) in [(x, "团队4-02"), (z, "团队2-01")] {
+        let mv = t.get(&format!("/api/v1/machines/{m}")).await;
+        assert_eq!((mv["name"].as_str(), mv["spare"].clone(), mv["spare_since"].clone()), (Some(name), json!(false), Value::Null), "{mv}");
+    }
+}
+
 /// 到期判断：账单时区里「到期日 + 1 天」那天结束后才回收；不同时区各按各的；非备用、没订阅、退役中的不动；有进行中作业的这一轮跳过；不重复建作业
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn expiry_boundaries_by_billing_timezone() {
