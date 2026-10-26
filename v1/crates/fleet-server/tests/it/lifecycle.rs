@@ -960,3 +960,52 @@ async fn patch_team_compacts_the_team_it_leaves() {
     assert_eq!(s, StatusCode::OK);
     assert_eq!((name(a1).await, name(a3).await), ("团队1-01".into(), "团队1-05".into()));
 }
+
+/// 手动换团队：宿主机上还在原团队的同机 IP 节点一起走（宿主机先取新团队的最小空号，IP 节点接着取），原团队连带压缩，预览列出 IP 节点。
+/// 自己给宿主机指定编号时宿主机用它、IP 节点仍取最小空号；已经被单独挪到别的团队的 IP 节点不跟着走
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn patch_team_moves_ip_nodes_with_the_host() {
+    let t = setup(false).await;
+    let (a, b, c) = (seed_team(&t, "团队1").await, seed_team(&t, "团队2").await, seed_team(&t, "团队3").await);
+    let host = seed_node(&t, a, 1, "203.0.113.61", "active").await;
+    let ip1 = seed_node(&t, a, 2, "203.0.113.62", "active").await;
+    let ip2 = seed_node(&t, c, 1, "203.0.113.63", "active").await;
+    let a4 = seed_node(&t, a, 4, "203.0.113.64", "active").await;
+    let b1 = seed_node(&t, b, 1, "203.0.113.65", "active").await;
+    let b2 = seed_node(&t, b, 2, "203.0.113.66", "active").await;
+    for ip in [ip1, ip2] {
+        sqlx::query("update machine set kind = 'vps', ssh_port = null, host_id = $2 where id = $1").bind(ip).bind(host).execute(&t.st.db).await.unwrap();
+    }
+    let name = |id: Uuid| {
+        let t = &t;
+        async move { t.get(&format!("/api/v1/machines/{id}")).await["name"].as_str().unwrap().to_string() }
+    };
+
+    // 预览：宿主机团队2-03，IP 节点接着 04（团队3 里的那台不动）；团队1 里剩下的 04 顶上来成 01
+    let pv = t.get(&format!("/api/v1/machines/{host}/rename-preview?team_id={b}")).await;
+    assert_eq!((pv["old_name"].as_str(), pv["name"].as_str()), (Some("团队1-01"), Some("团队2-03")), "{pv}");
+    assert_eq!(pv["ip_nodes"], json!([{"machine_id": ip1, "old_name": "团队1-02", "new_name": "团队2-04"}]), "{pv}");
+    assert_eq!(pv["renames"], json!([{"machine_id": a4, "old_name": "团队1-04", "new_name": "团队1-01"}]), "{pv}");
+    // 指定编号：宿主机用它，IP 节点仍取最小空号；同团队改编号不连带 IP 节点
+    let pv = t.get(&format!("/api/v1/machines/{host}/rename-preview?team_id={b}&number=9")).await;
+    assert_eq!((pv["name"].as_str(), pv["ip_nodes"].clone()), (Some("团队2-09"), json!([{"machine_id": ip1, "old_name": "团队1-02", "new_name": "团队2-03"}])), "{pv}");
+    let pv = t.get(&format!("/api/v1/machines/{host}/rename-preview?number=9")).await;
+    assert_eq!((pv["name"].as_str(), pv["ip_nodes"].clone(), pv["renames"].clone()), (Some("团队1-09"), json!([]), json!([])), "{pv}");
+
+    let rev = t.get(&format!("/api/v1/machines/{host}")).await["revision"].clone();
+    let mut rx = t.st.events.subscribe();
+    let (s, v) = t.req("PATCH", &format!("/api/v1/machines/{host}"), Some(json!({"revision": rev, "team_id": b})), None).await;
+    assert_eq!((s, v["data"]["name"].as_str()), (StatusCode::OK, Some("团队2-03")), "{v}");
+    let mut seen = vec![];
+    while let Ok(e) = rx.try_recv() {
+        seen.push(format!("{e:?}"));
+    }
+    assert!(seen.iter().any(|e| e == "Machines"), "{seen:?}");
+    assert_eq!((name(ip1).await, name(ip2).await, name(a4).await), ("团队2-04".into(), "团队3-01".into(), "团队1-01".into()));
+    assert_eq!((name(b1).await, name(b2).await), ("团队2-01".into(), "团队2-02".into()));
+    let nums: Vec<i32> = sqlx::query_scalar("select number from machine where team_id = $1 order by number").bind(a).fetch_all(&t.st.db).await.unwrap();
+    assert_eq!(nums, [1], "原团队压缩");
+    // 每台各记一条改名审计
+    let n: i64 = sqlx::query_scalar("select count(*) from audit_log where action = 'machine.rename' and target_id = any($1)").bind([host, ip1]).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(n, 2);
+}

@@ -549,10 +549,14 @@ R('GET', '/machines/([^/]+)', ({ params }) => clone(machine(params[0])));
 const freeNumber = (tid: string) => { const used = new Set(db.machines.filter((x) => x.team?.id === tid && x.lifecycle !== 'retired').map((x) => x.number)); let n = 1; while (used.has(n)) n++; return n; };
 R('GET', '/machines/([^/]+)/rename-preview', ({ params, query }) => {
   const m = machine(params[0]); const tid = query.get('team_id') ?? m.team?.id; const team = tid ? teamOf(tid) : null;
-  if (!team || m.kind === 'relay') return { name: m.name, old_name: m.name, renames: [] };
+  if (!team || m.kind === 'relay') return { name: m.name, old_name: m.name, renames: [], ip_nodes: [] };
   const number = query.get('number') ? Number(query.get('number')) : team.id !== m.team?.id ? freeNumber(team.id) : m.number!;
   const moved = !!m.team && team.id !== m.team.id;
-  return { name: displayName(team.name, number), old_name: m.name, renames: moved ? compactPlan(m.team!.id, [m.id]).map((c) => ({ machine_id: c.m.id, old_name: c.old_name, new_name: c.new_name })) : [] };
+  // 宿主机换团队：还在原团队的同机 IP 节点一起走，宿主机先占 number，它们依次取剩下的最小空号（同服务端）
+  const ips = moved ? ipNodesLeaving(m).filter((x) => x.team?.id === m.team!.id) : [];
+  const taken = new Set(db.machines.filter((x) => x.team?.id === team.id && x.lifecycle !== 'retired').map((x) => x.number)); taken.add(number);
+  const ip_nodes = ips.map((x) => { let k = 1; while (taken.has(k)) k++; taken.add(k); return { machine_id: x.id, old_name: x.name, new_name: displayName(team.name, k) }; });
+  return { name: displayName(team.name, number), old_name: m.name, renames: moved ? compactPlan(m.team!.id, [m.id, ...ips.map((x) => x.id)]).map((c) => ({ machine_id: c.m.id, old_name: c.old_name, new_name: c.new_name })) : [], ip_nodes };
 });
 R('PATCH', '/machines/([^/]+)', ({ params, body }) => {
   const m = machine(params[0]);
@@ -563,8 +567,14 @@ R('PATCH', '/machines/([^/]+)', ({ params, body }) => {
     const number = body.number ?? (team.id !== from ? freeNumber(team.id) : m.number); // 换团队没给编号：排到新团队的最小空号（同服务端）
     if (db.machines.some((x) => x.id !== m.id && x.team?.id === team.id && x.number === number && x.lifecycle !== 'retired')) throw bad(`${displayName(team.name, number)} 已被占用`, 409, 'conflict');
     const wasSpare = m.spare, oldName = m.name;
+    const ips = from && from !== team.id ? ipNodesLeaving(m).filter((x) => x.team?.id === from) : []; // 宿主机换团队：还在原团队的同机 IP 节点一起走
     m.team = { id: team.id, name: team.name }; m.spare = team.spare; m.number = number;
     if (m.spare && !wasSpare) { m.spare_from = oldName; m.spare_since = iso(); } else if (!m.spare) { m.spare_from = null; m.spare_since = null; } // 同服务端 patch_tx
+    for (const x of ips) { // 接在宿主机之后取新团队的最小空号
+      const xold = x.name; x.team = { id: team.id, name: team.name }; x.spare = team.spare; x.number = freeNumber(team.id); x.revision++;
+      if (x.spare && !wasSpare) { x.spare_from = xold; x.spare_since = iso(); } else if (!x.spare) { x.spare_from = null; x.spare_since = null; }
+      renameMachine(x);
+    }
     if (from && from !== team.id) compactApply(from, '改团队后'); // 原团队少了这台：编号连续（已经不在原团队，直接压缩）
   }
   if (body.label !== undefined) m.label = body.label;
