@@ -86,24 +86,17 @@ export function TrafficPage() {
 const StatNum = ({ f }: { f: F.Fmt }) => <>{f.v}{f.u && <small>{f.u}</small>}</>;
 
 /** 打开到最右（最近几天）。滚到底时固定的第一列会盖住半截列（右对齐的数字丢前几位，39.4 GB 看成 9.4 GB）：
- *  表格右边补一段不到一列宽的空白，让最右的滚动位置正好落在列边上 */
+ *  把固定的第一列加宽不到一列宽，让最右的滚动位置正好落在列边上（加在表格里，表头底色、行线照样铺到框边） */
 function scrollToEnd(w: HTMLElement) {
-  const table = w.querySelector<HTMLElement>('table');
-  if (table) table.style.marginRight = '';
-  w.style.paddingInlineEnd = '';
+  const th0 = w.querySelector<HTMLElement>('thead tr:first-child th');
+  if (!th0) return;
+  th0.style.minWidth = th0.style.width = '';
   w.scrollLeft = w.scrollWidth;
-  const edge = w.scrollLeft + (w.querySelector<HTMLElement>('thead tr:first-child th')?.offsetWidth ?? 0);
-  if (!table || w.scrollLeft <= 0) return;
+  if (w.scrollLeft <= 0) return;
+  const edge = w.scrollLeft + th0.offsetWidth;
   const cut = Array.from(w.querySelectorAll<HTMLElement>('thead tr:first-child th')).slice(1).find((th) => th.offsetLeft < edge && th.offsetLeft + th.offsetWidth > edge);
   if (!cut) return;
-  const gap = `${cut.offsetLeft + cut.offsetWidth - edge}px`;
-  const before = w.scrollWidth;
-  table.style.marginRight = gap;
-  // 有的浏览器不把子元素的右外边距算进可滚宽度：退回给滚动容器补右内边距
-  if (w.scrollWidth <= before) {
-    table.style.marginRight = '';
-    w.style.paddingInlineEnd = gap;
-  }
+  th0.style.minWidth = th0.style.width = `${th0.offsetWidth + cut.offsetLeft + cut.offsetWidth - edge}px`;
   w.scrollLeft = w.scrollWidth;
 }
 
