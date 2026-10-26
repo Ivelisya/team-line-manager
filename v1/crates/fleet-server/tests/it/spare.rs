@@ -701,3 +701,38 @@ async fn rename_preview_lists_router_exits_when_moving_to_spare() {
         assert_eq!(pv["router_exits"], json!([]), "{pv}");
     }
 }
+
+/// 软路由出口指向备用宿主机上的同机 IP 节点（宿主机自己没被指）：宿主机同样不是闲置备用——视图的 router_exits 带上经 IP 节点的出口、不给回收日
+/// （recycle_held），续费提醒列出出口，到期满 1 天也不自动回收（kept）；出口改走之后照常回收
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn spare_host_is_held_by_router_exit_on_its_ip_node() {
+    let t = setup(false).await;
+    let sp = spare_team(&t).await;
+    let host = seed_vps(&t, sp, 1, "203.0.113.61", None).await;
+    let ip = seed_vps(&t, sp, 2, "203.0.113.62", Some(host)).await;
+    sub(&t, host, "2026-10-20", "UTC").await;
+    let rid = Uuid::now_v7();
+    sqlx::query("insert into router (id, name, tunnel_port) values ($1, '办公室', 23003)").bind(rid).execute(&t.st.db).await.unwrap();
+    let entry = json!({"id": Uuid::now_v7(), "name": "备用-02 · 线路机1:20001", "node_id": ip, "relay_id": Uuid::now_v7(), "node_name": "备用-02", "relay_name": "线路机1", "port": 20001, "lifecycle": "active"});
+    let snap = json!({"exits": [{"name": "节点02", "entry": entry, "sync": "ok", "linked": true}]});
+    sqlx::query("insert into router_status (router_id, ts, reachable, data, last_ok_at) values ($1, now(), true, $2, now())").bind(rid).bind(snap).execute(&t.st.db).await.unwrap();
+
+    let v = t.get(&format!("/api/v1/machines/{host}")).await;
+    assert_eq!(v["router_exits"], json!(["办公室 · 节点02（经同机 IP 节点 备用-02）"]), "{v}");
+    assert_eq!((v["recycle_on"].clone(), v["recycle_held"].clone()), (Value::Null, json!(true)), "{v}");
+    let renewal = v["health"]["reasons"].as_array().unwrap().iter().find(|r| r["key"] == "renewal_due").map(|r| r["text"].as_str().unwrap().to_string());
+    assert!(renewal.is_some_and(|x| x.contains("办公室 · 节点02（经同机 IP 节点 备用-02）") && x.contains("未自动回收")), "{v}");
+
+    let now = datetime!(2026-10-23 00:00 UTC);
+    let r = spare::run_once(&t.st, now).await.unwrap();
+    assert!(r.retired.is_empty() && r.kept == [host], "{r:?}");
+    assert!(last_job(&t, host, "retire").await.is_none());
+
+    // 出口改走：不再被指着，回收日恢复，下一轮照常回收
+    sqlx::query("update router_status set data = $2 where router_id = $1").bind(rid).bind(json!({"exits": []})).execute(&t.st.db).await.unwrap();
+    t.st.live.invalidate();
+    let v = t.get(&format!("/api/v1/machines/{host}")).await;
+    assert_eq!((v["router_exits"].clone(), v["recycle_on"].clone(), v["recycle_held"].clone()), (json!([]), json!("2026-10-22"), json!(false)), "{v}");
+    let r = spare::run_once(&t.st, now).await.unwrap();
+    assert!(r.retired == [host] && r.kept.is_empty(), "{r:?}");
+}

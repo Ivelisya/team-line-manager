@@ -365,6 +365,7 @@ pub(crate) mod tests {
             spare_from: None,
             spare_since: None,
             recycle_on: None,
+            recycle_held: false,
             router_exits: vec![],
             number: None,
             label: None,

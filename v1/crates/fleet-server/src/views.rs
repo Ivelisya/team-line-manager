@@ -310,9 +310,13 @@ pub struct MachineView {
     pub spare_from: Option<String>,
     #[serde(with = "time::serde::rfc3339::option")]
     pub spare_since: Option<OffsetDateTime>,
-    /// 备用团队里在用、有订阅的机器自动回收的日子（账单时区，到期日 + 2 天，见 spare::recycle_on）；其余为 null
+    /// 备用团队里在用、有订阅的机器自动回收的日子（账单时区，到期日 + 2 天，见 spare::recycle_on）；其余为 null。
+    /// 还被软路由出口指着的（`router_exits` 非空）不自动回收，这里为 null、`recycle_held` 为 true
     pub recycle_on: Option<Date>,
-    /// 备用团队里在用的机器：还指向它的软路由出口（「路由名 · 出口名」），续费提醒里列出来；为空的就是闲置备用（`idle_spare`，网页据此不把它算进异常）
+    /// 备用团队里在用的机器，软路由出口还指着它所以不自动回收：显示「软路由出口还指着，不自动回收」，不写回收日
+    pub recycle_held: bool,
+    /// 备用团队里在用的机器：还指向它（备用宿主机还包括它上面没退役的同机 IP 节点，后缀「（经同机 IP 节点 X）」）的软路由出口（「路由名 · 出口名」），续费提醒里列出来；
+    /// 为空的就是闲置备用（`idle_spare`，网页据此不把它算进异常）
     pub router_exits: Vec<String>,
     pub number: Option<i32>,
     pub label: Option<String>,
@@ -1322,9 +1326,9 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
     )
     .bind(&ids)
     .fetch_all(db);
-    // 备用团队里在用的机器：还指向它的软路由出口（到期提醒里列出，让人先「替换」）
+    // 备用团队里在用的机器：还指向它（或它上面同机 IP 节点）的软路由出口（到期提醒里列出，让人先「替换」）
     let spare_ids: Vec<Uuid> = rows.iter().filter(|r| r.team_spare == Some(true) && r.lifecycle == "active").map(|r| r.id).collect();
-    let exits_q = crate::routers::exits_using(db, &spare_ids);
+    let exits_q = crate::routers::exits_using_with_ip_nodes(db, &spare_ids);
     let period_of: HashMap<Uuid, (Date, Option<&'static str>)> = periods.iter().map(|k| (k.0, (k.1, k.3))).collect();
     let (intel, host, (es, probes, reach), (traffic, nic, removed), (live_jobs, failed_jobs), inc, silences, sustained, policies, period_used, ipn, mut exits) = tokio::try_join!(
         intel_q,
@@ -1520,8 +1524,10 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
             let policy_blocked = r.kind != "relay" && policies.effective(r.id, r.team_id).0.mode == crate::policy::Mode::Blocked;
             let failed_job = failed_job(&failed_jobs, r.id, &r.lifecycle);
             let spare = r.team_spare.unwrap_or(false);
-            let recycle_on = subscription.as_ref().filter(|_| spare && r.lifecycle == "active").map(|s| crate::spare::recycle_on(s.due_date));
-            let router_exits = exits.remove(&r.id).unwrap_or_default().into_iter().map(|(_, rn, x)| format!("{rn} · {x}")).collect();
+            let router_exits: Vec<String> = exits.remove(&r.id).unwrap_or_default().iter().map(|e| e.label()).collect();
+            // 还被出口指着的备用不自动回收（spare::run_once），不给回收日
+            let recycle_held = spare && r.lifecycle == "active" && !router_exits.is_empty();
+            let recycle_on = subscription.as_ref().filter(|_| spare && r.lifecycle == "active" && !recycle_held).map(|s| crate::spare::recycle_on(s.due_date));
             let mut v = MachineView {
                 id: r.id,
                 kind: r.kind,
@@ -1531,6 +1537,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 spare_from: r.spare_from,
                 spare_since: r.spare_since,
                 recycle_on,
+                recycle_held,
                 router_exits,
                 number: r.number,
                 label: r.label,
