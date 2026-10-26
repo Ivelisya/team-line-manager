@@ -960,11 +960,17 @@ async fn relay_xray_down_alert_lifecycle() {
     r.probes = vec![probe(entry, now_ms() - 2_000, ProbeKind::Egress, false), probe(entry, now_ms() - 2_000, ProbeKind::Tcp, false)];
     assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
     let (st, rs) = t.health(node).await;
-    assert_eq!((st.as_str(), rs.as_slice()), ("down", ["egress_fail".to_string(), "tcp_fail".to_string()].as_slice()));
+    assert_eq!((st.as_str(), rs.as_slice()), ("degraded", ["egress_fail".to_string(), "tcp_fail".to_string()].as_slice()), "首次失败只是警告");
+    let mut r = blank_report(2);
+    r.xray = Some(xray(true));
+    r.probes = vec![probe(entry, now_ms() - 1_000, ProbeKind::Egress, false), probe(entry, now_ms() - 1_000, ProbeKind::Tcp, false)];
+    assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
+    let (st, rs) = t.health(node).await;
+    assert_eq!((st.as_str(), rs.as_slice()), ("down", ["egress_fail".to_string(), "tcp_fail".to_string()].as_slice()), "连续 2 次失败才是故障");
     assert_eq!(t.health(relay).await.1, Vec::<String>::new());
 
     // Xray 挂了：线路机报 relay_xray_down，节点不再重复报严重告警（按未知处理）
-    let mut r = blank_report(2);
+    let mut r = blank_report(3);
     r.xray = Some(xray(false));
     assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
     assert_eq!(t.health(relay).await, ("down".to_string(), vec!["relay_xray_down".to_string()]));
@@ -992,7 +998,7 @@ async fn relay_xray_down_alert_lifecycle() {
     assert_eq!(incidents(&t, "firing").await.len(), 1, "同一条告警不重复开");
 
     // 恢复：Xray 起来后原因要连续消失满 60 秒才算恢复（和开告警的去抖对称）
-    let mut r = blank_report(3);
+    let mut r = blank_report(4);
     r.xray = Some(xray(true));
     r.probes = vec![probe(entry, now_ms(), ProbeKind::Egress, true), probe(entry, now_ms(), ProbeKind::Tcp, true)];
     assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
@@ -1204,7 +1210,7 @@ async fn other_relay_maintenance_does_not_hold_node_probe_alerts() {
     pass(&t, &mut state, base, 0).await;
     pass(&t, &mut state, base, 91).await;
     let firing = incidents(&t, "firing").await;
-    assert!(firing.iter().any(|i| i["rule"] == "tcp_fail" && i["summary"].as_str().unwrap().contains("线路机2 到节点 TCP 不通")), "{firing:?}");
+    assert!(firing.iter().any(|i| i["rule"] == "tcp_fail" && i["summary"].as_str().unwrap().contains("线路机2 到节点 TCP 探测偶发失败，出口正常")), "{firing:?}");
     let f = time::format_description::well_known::Rfc3339;
     let now = OffsetDateTime::now_utc();
     t.post("/api/v1/silences", json!({
