@@ -25,6 +25,8 @@ const dueState = (days: number) => (days < 0 ? 'overdue' : 'ok');
 /** 一组的原币种小计：「¥80.00 + $10.00」，没有汇率的币种照写 */
 const subtotal = (g: DueGroup) => [...g.total.by_currency, ...g.total.unconverted].map((p) => F.money(p.cents, p.currency)).join(' + ');
 const usdText = (t: DueGroup['total']) => `${F.money(t.cents, 'USD')}${t.unconverted.length ? '*' : ''}`;
+/** 小计本来就全是美元：窄屏卡片不再写「≈ 同一个数」 */
+const onlyUsd = (t: DueGroup['total']) => !t.unconverted.length && t.by_currency.every((p) => p.currency === 'USD');
 
 /** 一台的近 30 天依据：「$0.80/GB · 出口成功率 99.9%」，闲置的末尾加「· 闲置」 */
 const basis = (m: DueMachine) => `${F.usdPerGb(m.usd_per_gb)}/GB · 出口成功率 ${F.str(F.pct(m.avail_pct, 1))}${m.idle ? ' · 闲置' : ''}`;
@@ -113,7 +115,7 @@ export function DueTab() {
                     <div className="due-item-top"><ProviderCell p={g.provider} /><DueWhen g={g} short /></div>
                     <div className="due-item-machines">{names.slice(0, 4).join('、')}{names.length > 4 && <span className="t-muted"> 等 {names.length} 台</span>}</div>
                     <div className="due-item-machines t-sub" data-tip={b.tip}>近 30 天 {F.usdPerGb(b.perGb)}/GB · 出口成功率 {F.str(F.pct(b.avail, 1))} <IdlePill ms={b.idle} /></div>
-                    <div className="due-item-foot"><span className="num" data-tip={usdTotalTip(g.total)}>{subtotal(g)}<span className="t-muted"> ≈ {usdText(g.total)}</span></span><Button size="sm" onClick={() => setPay(g)}>登记续费…</Button></div>
+                    <div className="due-item-foot"><span className="num" data-tip={usdTotalTip(g.total)}>{subtotal(g)}{onlyUsd(g.total) ? null : <span className="t-muted"> ≈ {usdText(g.total)}</span>}</span><Button size="sm" onClick={() => setPay(g)}>登记续费…</Button></div>
                   </li>
                 );
               })}

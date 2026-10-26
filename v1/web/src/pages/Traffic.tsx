@@ -85,13 +85,21 @@ export function TrafficPage() {
 /** KPI 的读数：数 + 小单位（Stat 的 unit 只收字符串，这里单位跟着数走） */
 const StatNum = ({ f }: { f: F.Fmt }) => <>{f.v}{f.u && <small>{f.u}</small>}</>;
 
-/** 打开到最右（最近几天） */
+/** 打开到最右（最近几天），再对齐到列边：固定的第一列不盖住右对齐数字的前几位 */
+function scrollToEnd(w: HTMLElement) {
+  w.scrollLeft = w.scrollWidth;
+  const ths = Array.from(w.querySelectorAll<HTMLElement>('thead tr:first-child th'));
+  const sticky = ths[0]?.offsetWidth ?? 0;
+  const col = ths.slice(1).find((th) => th.offsetLeft >= w.scrollLeft + sticky);
+  if (col) w.scrollLeft = col.offsetLeft - sticky;
+}
+
 function useScrollEnd(dep: unknown) {
   const ref = React.useRef<HTMLDivElement>(null);
   // 等两帧：TableWrap 的「放得下」标记（data-fit，overflow 为 clip 时滚不动）由尺寸监听在布局之后才摘掉
   React.useEffect(() => {
     let b = 0;
-    const a = requestAnimationFrame(() => { b = requestAnimationFrame(() => { const w = ref.current?.querySelector('.table-wrap'); if (w) w.scrollLeft = w.scrollWidth; }); });
+    const a = requestAnimationFrame(() => { b = requestAnimationFrame(() => { const w = ref.current?.querySelector<HTMLElement>('.table-wrap'); if (w) scrollToEnd(w); }); });
     return () => { cancelAnimationFrame(a); cancelAnimationFrame(b); };
   }, [dep]);
   return ref;
