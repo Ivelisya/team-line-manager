@@ -283,6 +283,28 @@ async fn spare_host_is_held_by_auto_renew_on_its_spare_ip_node() {
     assert!(r.retired == [host] && r.kept.is_empty(), "{r:?}");
 }
 
+/// 宿主机退役进备用时，上面已经有一台在备用里、开着自动续费的同机 IP 节点（没随这次进备用、自动续费不会被关）：
+/// 宿主机进备用后同样被扣住，退役预览与结果都不给回收日（同视图 recycle_on 为 null）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retire_host_with_renewing_spare_ip_node_has_no_recycle_day() {
+    let t = setup(false).await;
+    let sp = spare_team(&t).await;
+    let a = seed_team(&t, "团队1").await;
+    let host = seed_vps(&t, a, 1, "203.0.113.95", None).await;
+    let ip = seed_vps(&t, sp, 1, "203.0.113.96", Some(host)).await;
+    sub(&t, host, "2030-01-01", "UTC").await;
+    sub(&t, ip, "2030-01-01", "UTC").await;
+    sqlx::query("update subscription set auto_renew = true where machine_id = $1").bind(ip).execute(&t.st.db).await.unwrap();
+
+    let pv = t.get(&format!("/api/v1/machines/{host}/retire")).await;
+    assert!(pv["spare"]["ok"] == true && pv["spare"]["recycle_on"].is_null(), "{pv}");
+    let r = t.post(&format!("/api/v1/machines/{host}/retire"), json!({"confirm": "团队1-01"})).await;
+    assert_eq!((r["mode"].clone(), r["recycle_on"].clone()), (json!("spare"), Value::Null), "{r}");
+    t.st.live.invalidate();
+    let v = t.get(&format!("/api/v1/machines/{host}")).await;
+    assert_eq!((v["recycle_on"].clone(), v["recycle_held"].clone()), (Value::Null, json!(true)), "{v}");
+}
+
 /// 撤销退役（宿主机从备用改回原团队）只带与它同一次进备用的 IP 节点：之前单独退役进备用的 IP 节点留在备用（spare_since 不清、仍会自动回收）；
 /// 带走的 IP 节点有进行中的作业时 409，预览与实际一致
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
