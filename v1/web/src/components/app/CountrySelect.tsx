@@ -9,7 +9,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/overlay
 
 const FlagImg = ({ cc }: { cc: string }) => {
   const url = flagUrl(cc);
-  return url ? <img className="nc-flag" src={url} alt="" /> : <span className="nc-flag is-none"><Globe /></span>;
+  return url ? <img className="nc-flag" src={url} alt="" loading="lazy" decoding="async" /> : <span className="nc-flag is-none"><Globe /></span>;
 };
 
 export function CountrySelect({ id, value, onChange, autoLabel, className, disabled, 'aria-label': aria, onPaste }: {

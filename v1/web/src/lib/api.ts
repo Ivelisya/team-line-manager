@@ -9,6 +9,9 @@ type Opts = { method?: string; body?: unknown; signal?: AbortSignal };
 /** 401 时通知外壳跳转登录 */
 export const AUTH_EVENT = 'fleet:unauthorized';
 
+/** GET 加 30 秒超时（中控无响应时不让请求一直挂着）；超时抛 TimeoutError，下面按网络错误报，react-query 照常重试。写请求（上架等长请求）不设 */
+const withTimeout = (s?: AbortSignal) => (s ? AbortSignal.any([s, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000));
+
 export async function api<T = unknown>(path: string, opts: Opts = {}): Promise<T> {
   const method = (opts.method ?? 'GET').toUpperCase();
   const headers: Record<string, string> = { Accept: 'application/json' };
@@ -17,7 +20,7 @@ export async function api<T = unknown>(path: string, opts: Opts = {}): Promise<T
   if (opts.body !== undefined) { headers['Content-Type'] = 'application/json'; body = JSON.stringify(opts.body); }
   let res: Response;
   try {
-    res = await fetch(`/api/v1${path}`, { method, headers, body, credentials: 'same-origin', signal: opts.signal });
+    res = await fetch(`/api/v1${path}`, { method, headers, body, credentials: 'same-origin', signal: method === 'GET' ? withTimeout(opts.signal) : opts.signal });
   } catch (e) {
     if ((e as Error).name === 'AbortError') throw e;
     throw new ApiError(0, 'network', '无法连接到中控，请检查网络');

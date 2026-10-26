@@ -6,6 +6,7 @@ import { Boxes, LogOut, Menu, Monitor, Moon, RotateCw, Sun } from 'lucide-react'
 import { NAV } from '@/lib/nav';
 import { ApiError, AUTH_EVENT, post } from '@/lib/api';
 import { useIncidents, useMe, useMeta } from '@/lib/queries';
+import { useReachLabel } from '@/lib/probePoints';
 import { useStream } from '@/lib/stream';
 import { useTheme, type Palette, type ThemePref } from '@/lib/theme';
 import { useTitleAlerts } from '@/lib/title';
@@ -98,8 +99,10 @@ function TermHost() {
 
 export function Shell() {
   const me = useMe();
-  // 中文名、阈值等（/meta）到了才渲染外壳与页面：derive 里的 kindLabel 等同步读取它
-  const meta = useMeta(!!me.data);
+  // 中文名、阈值等（/meta）到了才渲染外壳与页面：derive 里的 kindLabel 等同步读取它。不等 /auth/me，两个请求并发；
+  // 未登录时 /meta 的 401 照常走会话过期通知，/auth/me 的 401 才决定跳登录页
+  const meta = useMeta(true);
+  useReachLabel(); // 顺手预取「谁连不上」的来源，页面里的卡片挂载时已有缓存
   const qc = useQueryClient();
   const loc = useLocation();
   const [navOpen, setNavOpen] = React.useState(false);
@@ -150,7 +153,8 @@ export function Shell() {
 
   // 只有确认是 401 才去登录页；网络错误 / 5xx 显示可重试的错误态，不要把人踢走
   if (me.isError && me.error instanceof ApiError && me.error.status === 401) return <Navigate to="/login" replace state={{ from: loc.pathname + loc.search }} />;
-  const failed = me.isError && !me.data ? me : meta.isError && !meta.data ? meta : null;
+  const metaDenied = meta.error instanceof ApiError && meta.error.status === 401; // 没登录：等 /auth/me 的 401 把人带去登录页，不闪错误态
+  const failed = me.isError && !me.data ? me : meta.isError && !meta.data && !metaDenied ? meta : null;
   if (failed) {
     return (
       <div className="login-screen">
