@@ -241,3 +241,6 @@
 .up-tbl td.r .up-worst { display: block; max-width: 100%; height: auto; padding: 0; margin-left: auto; font-size: var(--fs-label); line-height: var(--lh-label); font-weight: var(--fw-regular); }
 .up-range { display: inline-flex; align-items: center; gap: var(--sp-4); white-space: nowrap; }
 @media (max-width: 600px) { .up-range { display: none; } }
+/* 供应商表的两行表头：分组行（出口成功率 / TCP 成功率）居中、不画底线，下一行是平均 / 最差；两行各半高，合起来和单行表头一样高 */
+.up-tbl thead tr.up-grp th, .up-tbl thead tr.up-sub th { height: calc(var(--thead-h) / 2); }
+.up-tbl thead tr.up-grp th[colspan] { border-bottom: 0; }
