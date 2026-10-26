@@ -118,6 +118,7 @@ export function IncidentsPage() {
           {/* 中控自身的告警（central_ 开头）没有机器可点开：只写对象名「中控」；软路由的（router_ 开头）打开路由抽屉 */}
           <td>{sid && isRouterIncident(i) ? <button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => openRouter(sid, routerIncidentTab(i))}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button>
             : sid ? <NodeHover id={sid}><button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => open(sid)}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button></NodeHover> : (i.subject_name ?? '—')}
+            {i.ack_at && !i.resolved_at && <Pill tone="neutral" className="pill-sm inc-ack-narrow" tip={`${i.ack_by ? `${F.actor(i.ack_by)} ` : ''}已确认 · ${F.ago(i.ack_at)}`}>已确认</Pill>}
             <span className="sub inc-narrow">{i.rule_name} · {F.ago(i.opened_at)}</span><span className="sub inc-narrow inc-narrow-sum" data-tip={sum}>{sum}</span><SuggestedCmds i={i} className="inc-narrow" /></td>
           <td>{i.rule_name}<RecentCount i={i} className="sub" /></td>
           <td><span className="cell-main" data-tip={sum}>{sum}</span><SuggestedCmds i={i} /><IncidentOps i={i} />{(i.resolved_at || i.ack_at) && <span className="sub">{i.resolved_at
@@ -230,7 +231,7 @@ function Silences({ show }: { show: boolean }) {
                 return (
                   <tr key={s.id}>
                     <td><span className="cell-main strong">{s.subject_name ?? '全部机器'}</span>
-                      {(s.subject_kind || s.rule) && <span className="sub">{[s.subject_kind && KIND_LABEL[s.subject_kind], s.rule && `只静默「${s.rule_name ?? s.rule}」`].filter(Boolean).join(' · ')}</span>}</td>
+                      {(s.subject_kind || s.rule) && (() => { const t = [s.subject_kind && KIND_LABEL[s.subject_kind], s.rule && `只静默「${s.rule_name ?? s.rule}」`].filter(Boolean).join(' · '); return <span className="sub" data-tip={t}>{t}</span>; })()}</td>
                     <td>{s.is_maintenance ? <Pill tone="info" dot="none"><Wrench size={11} />维护</Pill> : <Pill>静默</Pill>}</td>
                     <td>{on ? <Pill tone="ok">进行中</Pill> : <Pill>已预约</Pill>}</td>
                     <td>{F.dt(s.starts_at)} → {F.dt(s.ends_at)}<span className="sub">{on ? `还剩 ${F.span(Date.parse(s.ends_at) - now)}` : `${F.span(start - now)}后开始`}</span></td>

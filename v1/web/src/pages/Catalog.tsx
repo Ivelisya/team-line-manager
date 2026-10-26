@@ -261,11 +261,11 @@ function ProvidersTab() {
             <tbody>{list.map((p) => (
               <tr key={p.id} {...rowProps(() => setEdit(p))}><td className="strong">{p.name}</td><td><Chip>{p.code}</Chip></td>
                 <td data-tip={p.timezone ?? meta().org_timezone}>{p.timezone ? tzLabel(p.timezone) : <span className="t-muted">{orgTz()}</span>}</td>
-                <td>{trafficRuleLabel(p.traffic_rule)}</td>
+                <td data-tip={trafficRuleLabel(p.traffic_rule)}>{trafficRuleLabel(p.traffic_rule)}</td>
                 <td data-tip={resetOptions().find((o) => o.value === p.traffic_reset)?.label}>{trafficResetText(p.traffic_reset)}</td>
                 <td>提前 <span className="num">{p.remind_days}</span> 天</td>
                 <td className="r num">{planCount.get(p.id) ?? <span className="t-muted">0</span>}</td>
-                {panel && <td>{p.panel_url && /^https?:\/\//i.test(p.panel_url) ? <a href={p.panel_url} target="_blank" rel="noreferrer noopener" className="btn-link btn" style={{ gap: 4, maxWidth: '100%' }}><span className="ellipsis">{p.panel_url.replace(/^https?:\/\//, '')}</span><ExternalLink size={12} /></a> : (p.panel_url || <span className="t-muted">—</span>)}</td>}
+                {panel && <td>{p.panel_url && /^https?:\/\//i.test(p.panel_url) ? <a href={p.panel_url} target="_blank" rel="noreferrer noopener" className="btn-link btn" style={{ gap: 4, maxWidth: '100%' }} data-tip={p.panel_url}><span className="ellipsis">{p.panel_url.replace(/^https?:\/\//, '')}</span><ExternalLink size={12} /></a> : (p.panel_url || <span className="t-muted">—</span>)}</td>}
                 <td className="c"><RowMenu label={`供应商「${p.name}」的操作`}>
                   <DropdownMenuItem onSelect={() => setEdit(p)}>编辑…</DropdownMenuItem>
                   <DropdownMenuSeparator />

@@ -61,21 +61,22 @@ export function TrafficPage() {
           <Segmented label="区间" value={range} onChange={onRange} items={RANGES} />
         </>} />
 
-      {q.isError && !d && <ErrorNote error={q.error} onRetry={() => void q.refetch()}>流量加载失败：</ErrorNote>}
+      {q.isError && !d && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       <div className="stat-grid" data-stale={q.isPlaceholderData}>
-        <Stat tone="blue" icon={<Clock />} label="今天" info="到目前为止" value={<StatNum f={stat(kpi?.today)} />} loading={!kpi} caption={cap(kpi?.today)} />
-        <Stat tone="violet" icon={<CalendarDays />} label="昨天" value={<StatNum f={stat(kpi?.yesterday)} />} loading={!kpi} caption={cap(kpi?.yesterday)} />
-        <Stat tone="teal" icon={<CalendarRange />} label="近 7 天" info="含今天" value={<StatNum f={stat(kpi?.d7)} />} loading={!kpi} caption={cap(kpi?.d7)} />
-        <Stat tone="sky" icon={<ChartColumnStacked />} label="近 30 天" info="含今天" value={<StatNum f={stat(kpi?.d30)} />} loading={!kpi} caption={cap(kpi?.d30)} />
+        <Stat tone="blue" icon={<Clock />} label="今天" info="到目前为止" value={<StatNum f={stat(kpi?.today)} />} loading={!kpi && !q.isError} caption={cap(kpi?.today)} />
+        <Stat tone="violet" icon={<CalendarDays />} label="昨天" value={<StatNum f={stat(kpi?.yesterday)} />} loading={!kpi && !q.isError} caption={cap(kpi?.yesterday)} />
+        <Stat tone="teal" icon={<CalendarRange />} label="近 7 天" info="含今天" value={<StatNum f={stat(kpi?.d7)} />} loading={!kpi && !q.isError} caption={cap(kpi?.d7)} />
+        <Stat tone="sky" icon={<ChartColumnStacked />} label="近 30 天" info="含今天" value={<StatNum f={stat(kpi?.d30)} />} loading={!kpi && !q.isError} caption={cap(kpi?.d30)} />
       </div>
 
       <Panel title="每日总量" sub={d ? `近 ${days} 天 · 合计 ${F.str(F.bytes(total(sumOf(shown))))} · 日均 ${F.str(F.bytes(total(sumOf(shown)) / days))}` : undefined} tools={d && total(sumOf(shown)) > 0 ? <DailyLegend /> : undefined}>
-        {!d ? <Skeleton h={220} /> : total(sumOf(shown)) === 0 ? <div className="chart-empty" style={{ height: 220 }}>近 {days} 天没有业务流量</div>
+        {!d ? (q.isError ? <div className="chart-empty" style={{ height: 220 }}>加载失败，暂无数据</div> : <Skeleton h={220} />) : total(sumOf(shown)) === 0 ? <div className="chart-empty" style={{ height: 220 }}>近 {days} 天没有业务流量</div>
           : <div data-stale={q.isPlaceholderData}><DailyBars days={shown} height={220} /></div>}
       </Panel>
 
+      {q.isError && !d && <Panel title="团队成本"><Empty icon={<ChartColumnStacked size={22} />} text="加载失败，暂无数据" /></Panel>}
       {d && d.teams.length > 0 && <TeamsTable teams={d.teams} picked={team} stale={q.isPlaceholderData} onPick={onTeam} />}
-      <NodesTable nodes={d?.nodes} days={days} idle={d?.idle} loading={q.isLoading} stale={q.isPlaceholderData} sortRaw={sp.get('sort')} onSort={onSort} filtered={!!team} />
+      <NodesTable nodes={d?.nodes} days={days} idle={d?.idle} loading={q.isLoading} failed={q.isError && !d} stale={q.isPlaceholderData} sortRaw={sp.get('sort')} onSort={onSort} filtered={!!team} />
       {d && d.relays.length > 0 && <RelaysTable relays={d.relays} days={days} stale={q.isPlaceholderData} teamName={team ? teamOpts.find((t) => t.value === team)?.label ?? '所选团队' : null} />}
     </div>
   );
@@ -110,8 +111,8 @@ type NodeSort = 'name' | 'sum' | 'cost' | 'perGb';
 /** 每 GB 业务流量的美元：月费 ÷ 按区间日均折成的 30 天流量（同服务端 traffic::usd_per_gb，区间由页面选，所以在这里按所选天数算）；没月费、没流量为 null */
 const perGb = (monthlyCents: number | null, bytes: number, days: number) => (monthlyCents == null || bytes <= 0 ? null : monthlyCents / 100 / ((bytes / days) * 30 / 1e9));
 
-const NodesTable = React.memo(function NodesTable({ nodes, days, idle, loading, stale, sortRaw, onSort, filtered }: {
-  nodes: TrafficDailyNode[] | undefined; days: number; idle: TrafficDaily['idle'] | undefined; loading: boolean; stale: boolean; sortRaw: string | null; onSort: (s: string) => void; filtered: boolean;
+const NodesTable = React.memo(function NodesTable({ nodes, days, idle, loading, failed, stale, sortRaw, onSort, filtered }: {
+  nodes: TrafficDailyNode[] | undefined; days: number; idle: TrafficDaily['idle'] | undefined; loading: boolean; failed: boolean; stale: boolean; sortRaw: string | null; onSort: (s: string) => void; filtered: boolean;
 }) {
   const sort = React.useMemo(() => { const s = parseSort(sortRaw); return s && (['name', 'sum', 'cost', 'perGb'] as string[]).includes(s.id) ? s : null; }, [sortRaw]);
   const rows = React.useMemo(() => {
@@ -187,6 +188,7 @@ ${days} 天 ↓ 下行 ${F.str(F.bytes(nic.rx))} · ↑ 上行 ${F.str(F.bytes(n
         </TableWrap>
       </div>
       {loading && <div style={{ padding: 12 }}><Skeleton h={160} /></div>}
+      {failed && <Empty icon={<ChartColumnStacked size={22} />} text="加载失败，暂无数据" />}
       {nodes && rows.length === 0 && <Empty icon={<ChartColumnStacked size={22} />} text={filtered ? '这个团队没有节点' : '还没有节点'} />}
     </Panel>
   );
@@ -208,9 +210,9 @@ const TeamsTable = React.memo(function TeamsTable({ teams, picked, stale, onPick
                 <td><span className="cell-main">{t.name}</span></td>
                 <td className="r">{t.nodes} 台</td>
                 <td className="r">{t.idle && !t.spare ? `${t.idle} 台` : '—'}</td>
-                <td className="r">{fee(t.monthly_usd_cents, t.unpriced)}</td>
+                <td className={t.spare ? 'r t-muted' : 'r'} data-tip={t.spare ? '不再续费，不计入合计' : undefined}>{fee(t.monthly_usd_cents, t.unpriced)}</td>
                 <td className="r">{cell(t.bytes_30d)}</td>
-                <td className="r strong">{F.usdPerGb(t.usd_per_gb)}</td>
+                <td className={t.spare ? 'r t-muted' : 'r strong'} data-tip={t.spare ? '备用团队不再续费，不算每 GB 成本' : undefined}>{t.spare ? '—' : F.usdPerGb(t.usd_per_gb)}</td>
               </tr>
             ))}
           </tbody>
