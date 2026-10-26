@@ -590,6 +590,31 @@ async fn migration_0042_backfills_spare_columns_from_audit() {
     assert_eq!(rules, ["renewal_overdue", "renewal_due"], "结束了的不动");
 }
 
+/// 迁移 0092：已在备用团队里的机器（有 spare_since）按最近一条改进备用团队的改名审计回填 spare_from_team_id（before.team_id）；
+/// 没有审计的、没进备用的留空（撤销时跟宿主机走），可重复执行
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn migration_0092_backfills_spare_from_team() {
+    let t = setup(false).await;
+    let (team, sp) = (seed_team(&t, "团队2").await, spare_team(&t).await);
+    let (a, b, c) = (seed_node(&t, sp, 1, "203.0.113.61", "active").await, seed_node(&t, sp, 2, "203.0.113.62", "active").await, seed_node(&t, sp, 3, "203.0.113.63", "active").await);
+    sqlx::query("update machine set spare_since = now() where id = any($1)").bind(vec![a, b]).execute(&t.st.db).await.unwrap();
+    let audit = |m: Uuid, ts: &'static str, detail: Value| {
+        sqlx::query("insert into audit_log (ts, actor, action, target_kind, target_id, detail) values ($1::timestamptz, 'u', 'machine.rename', 'machine', $2, $3)")
+            .bind(ts)
+            .bind(m)
+            .bind(detail)
+            .execute(&t.st.db)
+    };
+    // A：团队2 → 备用，之后备用里换过号（before 也是备用，不算）
+    audit(a, "2026-10-01T00:00:00Z", json!({"before": {"team_id": team, "number": 7}, "after": {"team_id": sp, "number": 1}})).await.unwrap();
+    audit(a, "2026-10-05T00:00:00Z", json!({"before": {"team_id": sp, "number": 3}, "after": {"team_id": sp, "number": 1}})).await.unwrap();
+    for _ in 0..2 {
+        sqlx::raw_sql(include_str!("../../../../migrations/0092_machine_spare_from_team.sql")).execute(&t.st.db).await.unwrap();
+    }
+    let got: Vec<(Uuid, Option<Uuid>)> = sqlx::query_as("select id, spare_from_team_id from machine where id = any($1) order by number").bind(vec![a, b, c]).fetch_all(&t.st.db).await.unwrap();
+    assert_eq!(got, [(a, Some(team)), (b, None), (c, None)]);
+}
+
 /// 旧面板导入：默认只预演；同一个 source_id 导两次只有一行；IP 或（供应商, 供应商编号）对上面板里还没回收的机器的跳过并说明；格式不对 400
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn legacy_import_is_idempotent_and_skips_live_machines() {
