@@ -100,6 +100,12 @@ export const MoveDialog = resetOnOpen(function MoveDialog({ m, open, onOpenChang
   );
 });
 
+/** 提交后去哪：只建了一个作业就直接看它，多个则列出在跑的（不落到列表里无关的旧作业上） */
+const jobsTarget = (jobs: { job_id?: string }[]) => {
+  const ids = jobs.flatMap((j) => (j.job_id ? [j.job_id] : []));
+  return ids.length === 1 ? `/jobs/${ids[0]}` : '/jobs?view=running';
+};
+
 // ── 几个节点一起换线路机 ────────────────────────────────────────────────
 
 /** 要一起换的节点：port 是要换走的入口端口；from 是它所在的线路机（不给 = 对话框的 from，入口都在那一台上） */
@@ -126,7 +132,7 @@ export const MovesDialog = resetOnOpen(function MovesDialog({ nodes, from, open,
         const r = await moves.mutateAsync({ machine_ids: ids, to_relay_id: to, from_relay_id: from?.id, routers });
         toast.ok(`已为 ${r.jobs.length} 个节点提交换线路机：${from?.name ?? r.from} → ${r.to}`);
         onDone?.();
-        nav('/jobs');
+        nav(jobsTarget(r.jobs));
       }}>
       <Field label="目标线路机"><Select value={to} onChange={setTo} options={opts} placeholder="选择目标线路机" /></Field>
       <RoutersCheck checked={routers} onChange={setRouters} />
@@ -176,7 +182,7 @@ export const EvacuateDialog = resetOnOpen(function EvacuateDialog({ relay, open,
         toast.ok(`已为 ${r.jobs.length} 个节点提交换线路机作业${r.skipped.length ? `，${r.skipped.length} 个被跳过` : ''}`);
         for (const s of r.skipped) toast.info(`${s.name ?? '节点'} 被跳过：${s.reason}`);
         onDone?.();
-        nav('/jobs');
+        nav(jobsTarget(r.jobs));
       }}>
       <Field label="搬到哪台线路机"><Select value={to} onChange={setTo} options={opts} placeholder="选择目标线路机" /></Field>
       <RoutersCheck checked={routers} onChange={setRouters} />

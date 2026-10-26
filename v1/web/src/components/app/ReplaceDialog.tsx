@@ -166,7 +166,7 @@ export const ReplaceDialog = resetOnOpen(function ReplaceDialog({ m, open, onOpe
   const pv = q.isFetchedAfterMount && q.data && q.data.new.id === pick ? q.data : undefined;
   const stale = q.isFetching || settledNum !== num;
   const ready = !!pv && pv.ok && !stale && !q.isError;
-  const teamOpts = teams.map((t) => ({ value: t.id, label: t.spare ? <>{t.name} <span className="t-sub">· 备用</span></> : t.name }));
+  const teamOpts = teams.map((t) => ({ value: t.id, label: t.spare && !t.name.includes('备用') ? <>{t.name} <span className="t-sub">· 备用</span></> : t.name }));
 
   const submit = async () => {
     const r = await replace.mutateAsync({ id: m.id, new_machine_id: pick, old_to: { team_id: team || undefined, number }, routers });
@@ -199,7 +199,7 @@ export const ReplaceDialog = resetOnOpen(function ReplaceDialog({ m, open, onOpe
           <div className="row" style={{ gap: 8 }}>
             <span className="t-sub" style={{ minWidth: 48 }}>旧节点</span>
             <span className="preview-name">{pv.old.name}<ArrowRight size={14} style={{ color: 'var(--fg-3)' }} />{pv.old_to.name}</span>
-            {pv.old_to.team?.spare && <Pill tone="neutral">备用</Pill>}
+            {pv.old_to.team?.spare && !pv.old_to.team.name.includes('备用') && <Pill tone="neutral">备用</Pill>}
           </div>
           {pv.routers_enabled && <RouterExitList routers={pv.routers.map((plan) => ({ node: pv.old.name, plan }))} />}
           <RenameNote renames={pv.renames} tip="新节点原来的团队空出一个编号，后面的节点前移补号，编号保持连续。" />

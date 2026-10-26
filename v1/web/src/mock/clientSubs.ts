@@ -9,6 +9,9 @@ interface Env { teams: () => Team[]; machines: () => MachineView[]; bad: (msg: s
 const subs: ClientSub[] = [];
 const token = () => Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'[b & 63]).join('').slice(0, 43);
 
+/** 排除 / 另加里引用了这台机器的订阅名（已排序）。替换预览的警告用（同服务端 names_of_machine） */
+export const subNamesOfMachine = (id: string) => subs.filter((s) => s.rule.exclude_ids.includes(id) || s.rule.include_ids.includes(id)).map((s) => s.name).sort();
+
 export function installClientSubsMock(R: Reg, env: Env) {
   const picks = (r: SubRule, m: MachineView, direct: boolean) => {
     if (r.exclude_ids.includes(m.id)) return false;
