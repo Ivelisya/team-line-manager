@@ -30,12 +30,12 @@ export function sortByCol(rows: MachineView[], cols: Col[], sort: SortState | nu
 
 /** 可以收起的列，按收起的先后（drop 小的先收）；正在按它排序的列不收，排序标记和取消排序的表头一直看得见 */
 const droppable = (cols: Col[], sortId: string | undefined) => cols.filter((c) => c.drop != null && c.id !== sortId).sort((a, b) => a.drop! - b.drop!);
-/** 按容器宽度要收起几列才放得下，以及收起后放不放得下；全部收起仍放不下就不收，横滑 */
+/** 按容器宽度要收起几列才放得下，以及收起后放不放得下；全部收起仍放不下时可收的列也全收掉，再横滑 */
 function fitCols(cols: Col[], order: Col[], width: number) {
   let w = cols.reduce((s, c) => s + c.size, 0);
   let n = 0;
   while (w > width && n < order.length) w -= order[n++].size;
-  return w > width ? { n: 0, fit: false } : { n, fit: true };
+  return { n, fit: w <= width };
 }
 
 /** 整张表：固定列宽（colgroup，最小宽度为显示列的列宽合计），点行 / 回车打开抽屉，右键菜单整个 tbody 共用一份（NodeMenus）。

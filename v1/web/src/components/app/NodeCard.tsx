@@ -224,8 +224,11 @@ const BeatSlot = memo(function BeatSlot({ id, kind, lifecycle, reason, reasonKey
   // 入口连不上（relay_unreachable）时原因就是「入口可达」那个数，不再另写一遍；整台连不上、但还没有哪个端口满 3 次时（轮流检查）照写原因。
   // 别的原因写在前面；延迟放进悬停
   const reachReason = reasonKey === 'relay_unreachable' && reachBad > 0;
-  const relayCounts = <span data-tip={`${reachReason ? `${reason}\n` : ''}下面的格子是${who}连线路机入口的结果${off ? `\n停用的 ${off} 条入口不计` : ''}${rtt != null && reason ? `\n${src?.label ?? '探测点'}连到这台线路机的延迟 ${Math.round(rtt)} ms（近 1 小时中位数）` : ''}`}><LinkCounts c={links} who={who} only={['reach']} /></span>;
-  const rttTag = rtt == null ? null : <> · <span data-tip={`${src?.label ?? '探测点'}连到这台线路机的延迟，近 1 小时中位数`}>延迟 <b className="num">{Math.round(rtt)} ms</b></span></>;
+  // 节点通 / 出口通不是全通时才跟在「入口可达」后面（LinkCounts only），这时一行放不下延迟：延迟只进悬停；三段都写时连时间窗前面的来源也让给它（来源在悬停里），只剩「近 1 小时」
+  const bad = (['node', 'egress'] as const).filter((k) => links[k].total > 0 && links[k].ok < links[k].total).length;
+  const extra = bad > 0;
+  const relayCounts = <span data-tip={`${reachReason ? `${reason}\n` : ''}下面的格子是${who}连线路机入口的结果${off ? `\n停用的 ${off} 条入口不计` : ''}${rtt != null && (reason || extra) ? `\n${src?.label ?? '探测点'}连到这台线路机的延迟 ${Math.round(rtt)} ms（近 1 小时中位数）` : ''}`}><LinkCounts c={links} who={who} only={['reach']} /></span>;
+  const rttTag = rtt == null || extra ? null : <> · <span data-tip={`${src?.label ?? '探测点'}连到这台线路机的延迟，近 1 小时中位数`}>延迟 <b className="num">{Math.round(rtt)} ms</b></span></>;
   const rate = kind === 'proxy' && live ? beatRate(beats) : null;
   const empty = live && bq.isSuccess && !beats?.some((b) => b[0] > 0); // 整条都没有探测：标题写明、格子画虚线，不是 20 格灰块
   const cap = !live ? <span className="t-muted">{lifecycle === 'retired' ? '已退役' : '还没开始探测'}</span>
@@ -240,7 +243,7 @@ const BeatSlot = memo(function BeatSlot({ id, kind, lifecycle, reason, reasonKey
   const titles = useMemo(() => (live ? beatTitles(beats, bq.dataUpdatedAt) : undefined), [live, beats, bq.dataUpdatedAt]);
   return (
     <button type="button" className="nc-beat nc-click" onClick={() => onOpen('quality')}>
-      <Beat cells={live ? beatCells(beats, kind === 'relay') : []} titles={titles} caption={cap} win={kind === 'relay' ? reachWin(src) : '近 1 小时'} empty={empty} legend={kind === 'relay' ? beatLegendRelay(src) : BEAT_LEGEND} />
+      <Beat cells={live ? beatCells(beats, kind === 'relay') : []} titles={titles} caption={cap} win={kind === 'relay' && bad < 2 ? reachWin(src) : '近 1 小时'} empty={empty} legend={kind === 'relay' ? beatLegendRelay(src) : BEAT_LEGEND} />
       <span className="sr-only">（查看连接质量页签）</span>
     </button>
   );

@@ -118,17 +118,17 @@ function LiveNodes({ sp, upd, tools }: { sp: URLSearchParams; upd: (patch: Recor
 
   const columns = React.useMemo<Col[]>(() => {
     const c: Col[] = [
-      // 同机关系标跟在名称后面（在悬浮卡的触发区外），只写「同机」/「+N IP」，宿主机名在悬停说明里；备用里的机器在 IP 后面写原名
-      { id: 'name', header: '名称', size: 168, ...byStr((m) => m.name),
+      // 同机关系标跟在名称后面（在悬浮卡的触发区外），只写「同机」/「+N IP」，宿主机名在悬停说明里；备用里的机器在名称后面标原名
+      { id: 'name', header: '名称', size: 184, ...byStr((m) => m.name),
         cell: (m) => <div className="row" style={{ flexWrap: 'nowrap', gap: 8 }}><Flag country={m.country} manual={!!m.country_set} ip={m.ip} /><div style={{ minWidth: 0 }}>
-          <div className="row" style={{ flexWrap: 'nowrap', gap: 6 }}><NodeHover id={m.id} noFocus><span className="cell-main strong">{m.name}</span></NodeHover><HostTag id={m.id} host={m.host_machine} nodes={m.ip_nodes} short /></div>
-          <span className="sub">{m.ip}{m.spare_from && ` · 原 ${m.spare_from}`}</span>
+          <div className="row" style={{ flexWrap: 'nowrap', gap: 6 }}><NodeHover id={m.id} noFocus><span className="cell-main strong">{m.name}</span></NodeHover><HostTag id={m.id} host={m.host_machine} nodes={m.ip_nodes} short />{m.spare_from && <span className="tag tag-from" data-tip={`原名 ${m.spare_from}：退役或被替换前的名字`}>原 {m.spare_from}</span>}</div>
+          <span className="sub" data-tip={m.ip}>{m.ip}</span>
         </div></div> },
       { id: 'kind', header: '类型', size: 84, drop: 1, ...byStr((m) => kindLabel(m.kind)), cell: (m) => kindLabel(m.kind) },
-      { id: 'status', header: '状态', size: 96, ...byNum(statusRank, 'asc'), cell: (m) => <HealthPill m={m} /> },
-      { id: 'entry', header: '入口', size: 188, cell: (m) => <EntryCell m={m} /> },
+      { id: 'status', header: '状态', size: 110, ...byNum(statusRank, 'asc'), cell: (m) => <HealthPill m={m} /> },
+      { id: 'entry', header: '入口', size: 150, cell: (m) => <EntryCell m={m} /> },
       { id: 'plan', header: '套餐 · 供应商', size: 176, drop: 3,
-        cell: (m) => <>{m.plan ? <Trunc className="cell-main">{m.plan.name}</Trunc> : <span className="cell-main t-muted">{m.host_machine ? '不带套餐' : '未设置'}</span>}<span className="sub">{m.provider?.name ?? '—'}</span></> },
+        cell: (m) => <>{m.plan ? <Trunc className="cell-main">{m.plan.name}</Trunc> : <span className="cell-main t-muted">{m.host_machine ? '不带套餐' : '未设置'}</span>}<span className="sub" data-tip={m.provider?.name}>{m.provider?.name ?? '—'}</span></> },
       { id: 'traffic', header: '本月流量', size: 144, r: true, ...byNum(trafficTotal),
         cell: (m) => <MonthFlowCell m={m} /> },
       // 没有订阅的（无值）不论升降序都排在最后
