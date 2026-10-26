@@ -490,7 +490,11 @@ async fn validation() {
         .execute(&t.st.db)
         .await
         .unwrap();
-    assert!(t.get(&url(w.new)).await["warnings"].to_string().contains("旧节点上的同机 IP 节点 团队2-09 仍在用：旧节点进备用后不会自动回收"));
+    let w_ip = t.get(&url(w.new)).await["warnings"].to_string();
+    assert!(w_ip.contains("旧节点上的同机 IP 节点 团队2-09 仍在用：旧节点进备用后不会自动回收"), "{w_ip}");
+    // 这时订阅已过期、自动续费也开着，但不会回收：「什么时候回收」那几条不写，只留 IP 节点这句，自动续费会关掉保留但不写「照常回收」
+    assert!(!w_ip.contains("订阅已过期满 1 天") && !w_ip.contains("照常回收") && !w_ip.contains("没有订阅"), "{w_ip}");
+    assert!(w_ip.contains("开着自动续费：进备用时会关掉（供应商那边的自动扣款要自己去关），之后到期要自己登记续费"), "{w_ip}");
     sqlx::query("update machine set team_id = $2 where id = $1").bind(ip).bind(w.spare).execute(&t.st.db).await.unwrap();
     assert!(!t.get(&url(w.new)).await["warnings"].to_string().contains("同机 IP 节点"));
     // 新节点在别的团队：替换时改到旧节点的团队（提示一下）
