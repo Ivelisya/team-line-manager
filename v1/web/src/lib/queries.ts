@@ -76,6 +76,18 @@ const numbersCompact = (d: MachineView[]) => {
   for (const m of d) if (m.team && m.kind !== 'relay' && m.lifecycle !== 'retired' && m.number != null) (by[m.team.id] ??= []).push(m.number);
   return Object.fromEntries(Object.entries(by).map(([t, ns]) => [t, ns.sort((a, b) => a - b).every((n, i) => n === i + 1)]));
 };
+/** 团队与套餐页「在用节点」：各团队按生命周期数台数（在用 / 上架中 / 上架失败 / 退役中；已退役的不在列表里）。同一份缓存，结构共享 */
+export interface TeamNodeCounts { active: number; listing: number; failed: number; retiring: number }
+const teamNodeCounts = (d: MachineView[]) => {
+  const by: Record<string, TeamNodeCounts> = {};
+  for (const m of d) {
+    if (!m.team || m.kind === 'relay') continue;
+    const c = (by[m.team.id] ??= { active: 0, listing: 0, failed: 0, retiring: 0 });
+    if (m.lifecycle === 'active') c.active++; else if (m.lifecycle === 'draft' || m.lifecycle === 'provisioning') c.listing++; else if (m.lifecycle === 'failed') c.failed++; else if (m.lifecycle === 'retiring') c.retiring++;
+  }
+  return by;
+};
+export const useTeamNodeCounts = () => useQuery({ ...machinesQuery, select: teamNodeCounts });
 export const useTeamsCompact = () => useQuery({ ...machinesQuery, select: numbersCompact });
 /** 首页 KPI「流量额度」：同一份机器列表缓存，只取吃紧的台数与最紧的一台；结果做结构共享，没变时首页总览不跟着推送重渲染 */
 export const useQuotaTight = () => useQuery({ ...machinesQuery, select: quotaTight });

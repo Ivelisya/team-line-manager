@@ -12,6 +12,7 @@ import { Select } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
 import { ErrorBoundary } from '@/components/app/ErrorBoundary';
+import { Gone, isGone } from '@/components/app/Gone';
 import { ConfirmDialog, TypedConfirmDialog } from '@/components/app/dialogs';
 import { CopyButton, ErrorNote, LabelValue, LabelValueGrid, Note, Num, Pill, Section, SectionHeader, SeverityMark } from '@/components/app/primitives';
 import { Tag } from '@/components/app/viz';
@@ -54,8 +55,8 @@ export function RouterDrawer() {
         <ErrorBoundary compact resetKey={`${r?.id}:${tab}`}>
           {!r ? (
             <>
-              <div className="drawer-head"><SheetTitle className="drawer-title">{q.isError ? '无法加载软路由' : '加载中…'}</SheetTitle></div>
-              <div className="drawer-body">{q.isError ? <ErrorNote error={q.error} onRetry={() => void q.refetch()} /> : <Skeleton h={120} />}</div>
+              <div className="drawer-head"><SheetTitle className="drawer-title">{q.isError ? (isGone(q.error) ? '软路由不存在' : '无法加载软路由') : '加载中…'}</SheetTitle></div>
+              <div className="drawer-body">{q.isError ? (isGone(q.error) ? <Gone text="这台软路由已不存在"><Button size="sm" onClick={close}>关闭</Button></Gone> : <ErrorNote error={q.error} onRetry={() => void q.refetch()} />) : <Skeleton h={120} />}</div>
             </>
           ) : (
             <>
@@ -266,6 +267,20 @@ function DeleteSection({ r, onClosed }: { r: RouterView; onClosed: () => void })
   const [ask, setAsk] = React.useState(false);
   // 删除被 409 拦下（有作业改过它的出口、没确认改回）：对话框里留着原因，确认按钮换成强制删除，已输入的名称清空、要重新输入
   const [force, setForce] = React.useState(false);
+  // 只有会影响客户的才要输名称：路由还在线、或还有客户端连着；离线又没人连的，红色确认按钮就够
+  const clients = r.summary?.clients ?? 0;
+  const typed = r.state === 'online' || clients > 0 || force;
+  const why = r.state === 'online' ? '路由还在线。' : clients > 0 ? `最近一次读到还有 ${clients} 台客户端连着。` : '';
+  const onOpenChange = (o: boolean) => { setAsk(o); if (!o) setForce(false); };
+  const onConfirm = async () => {
+    let jobs: string[] = [];
+    try { jobs = (await del.mutateAsync({ id: r.id, force })).jobs ?? []; } catch (e) { if (e instanceof ApiError && e.status === 409) setForce(true); throw e; }
+    onClosed();
+    // 强制删除摘掉了哪些作业：它们改过的这台路由的出口不会再有人改回
+    if (jobs.length) toast.show({ tone: 'info', title: `已从 ${jobs.length} 个作业里摘掉「${r.name}」`, text: `作业 ${jobs.join('、')} 改过的出口不会再改回，需要自己处理`, duration: 15_000 });
+    // 从没连上过、也没一键部署过的：路由上没装 fleet-tunnel，不用给清理命令
+    if (r.last_seen_at || r.deploy) showRemoved(r.name); else toast.ok(`已删除「${r.name}」`);
+  };
   return (
     <Section>
       <div className="mgroup is-danger">
@@ -274,17 +289,11 @@ function DeleteSection({ r, onClosed }: { r: RouterView; onClosed: () => void })
           <Button variant="outline-danger" onClick={() => setAsk(true)}>删除…</Button>
         </div>
       </div>
-      <TypedConfirmDialog open={ask} onOpenChange={(o) => { setAsk(o); if (!o) setForce(false); }} title={`删除软路由「${r.name}」？`} confirmLabel={force ? '强制删除' : '删除'} danger expected={r.name} prompt="请输入名称"
-        description="只删面板里的记录，路由本身不受影响" retype={force}
-        onConfirm={async () => {
-          let jobs: string[] = [];
-          try { jobs = (await del.mutateAsync({ id: r.id, force })).jobs ?? []; } catch (e) { if (e instanceof ApiError && e.status === 409) setForce(true); throw e; }
-          onClosed();
-          // 强制删除摘掉了哪些作业：它们改过的这台路由的出口不会再有人改回
-          if (jobs.length) toast.show({ tone: 'info', title: `已从 ${jobs.length} 个作业里摘掉「${r.name}」`, text: `作业 ${jobs.join('、')} 改过的出口不会再改回，需要自己处理`, duration: 15_000 });
-          // 从没连上过、也没一键部署过的：路由上没装 fleet-tunnel，不用给清理命令
-          if (r.last_seen_at || r.deploy) showRemoved(r.name); else toast.ok(`已删除「${r.name}」`);
-        }} />
+      {typed
+        ? <TypedConfirmDialog open={ask} onOpenChange={onOpenChange} title={`删除软路由「${r.name}」？`} confirmLabel={force ? '强制删除' : '删除'} danger expected={r.name} prompt="请输入名称"
+            description={`${why}只删面板里的记录，路由本身不受影响`} retype={force} onConfirm={onConfirm} />
+        : <ConfirmDialog open={ask} onOpenChange={onOpenChange} title={`删除软路由「${r.name}」？`} confirmLabel="删除" danger
+            description="路由不在线、也没有客户端连着。只删面板里的记录，路由本身不受影响" onConfirm={onConfirm} />}
     </Section>
   );
 }

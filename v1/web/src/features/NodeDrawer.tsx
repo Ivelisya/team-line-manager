@@ -8,6 +8,8 @@ import { Tabs, TabsList, TabsTrigger, Trunc } from '@/components/ui/overlays';
 import { InfoTip } from '@/components/ui/form';
 import { IconButton } from '@/components/ui/button';
 import { ErrorBoundary } from '@/components/app/ErrorBoundary';
+import { Gone, isGone } from '@/components/app/Gone';
+import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import type { Incident, MachineView } from '@/lib/types';
 import { useMachine, useAudit, useMachineIncidents } from '@/lib/queries';
@@ -61,8 +63,8 @@ export function NodeDrawer() {
         <ErrorBoundary compact resetKey={`${heldId.current}:${tab}`}>
         {!m ? (
           <>
-            <div className="drawer-head"><SheetTitle className="drawer-title">{q.isError ? '无法加载机器' : '加载中…'}</SheetTitle></div>
-            <div className="drawer-body">{q.isError ? <ErrorNote error={q.error} onRetry={() => void q.refetch()} /> : <Skeleton h={120} />}</div>
+            <div className="drawer-head"><SheetTitle className="drawer-title">{q.isError ? (isGone(q.error) ? '机器不存在' : '无法加载机器') : '加载中…'}</SheetTitle></div>
+            <div className="drawer-body">{q.isError ? (isGone(q.error) ? <Gone text="这台机器已不存在"><Button size="sm" onClick={close}>关闭</Button></Gone> : <ErrorNote error={q.error} onRetry={() => void q.refetch()} />) : <Skeleton h={120} />}</div>
           </>
         ) : (
           <>

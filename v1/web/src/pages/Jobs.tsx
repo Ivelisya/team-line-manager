@@ -2,7 +2,7 @@
 // 步骤状态只在步骤时间线里讲一遍（带错误详情）：详情顶部不再放横向步骤条和「失败于」横幅，左侧列表项留一句失败原因。
 import * as React from 'react';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, ArrowDownToLine, Check, CircleDashed, Copy, ListChecks, Loader2, Minus, Pause, Play, RotateCw, Square, TriangleAlert, Undo2, X } from 'lucide-react';
+import { ArrowLeft, ArrowDownToLine, Check, CircleDashed, Copy, ListChecks, Loader2, Minus, Pause, Play, RotateCw, CircleStop, TriangleAlert, Undo2, X } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { fetchAllLogs, fetchTailLogs, pruneJobsPreview, useCancelJob, useJob, useJobs, useMachine, usePruneJobs, useRetryJob } from '@/lib/queries';
 import type { Job, JobLog, JobManual } from '@/lib/types';
@@ -20,6 +20,7 @@ import { Progress } from '@/components/ui/progress';
 import { SkeletonRows } from '@/components/ui/skeleton';
 import { ConfirmDialog } from '@/components/app/dialogs';
 import { JobProgressBar } from '@/components/app/JobProgress';
+import { Gone, isGone } from '@/components/app/Gone';
 import { TuneResult, isTuneOutput } from '@/components/app/TuneResult';
 import { SpeedtestResult, isSpeedtestOutput } from '@/components/app/SpeedtestResult';
 import { RouterEditResult, isRouterEditOutput } from '@/components/app/RouterEditResult';
@@ -169,6 +170,7 @@ function JobDetail({ id }: { id: string }) {
   const live = !!j && jobLive(j.state);
   // 失败原因下面的步骤里已经写了（标红、带错误详情）：顶部不再重复；只有对不到哪一步的原因（取消、作业级错误）才写在顶部
   const failedStep = j?.state === 'failed' ? j.steps.find((s) => stepKind(s) === 'failed' && s.error) : undefined;
+  if (q.isError && !j && isGone(q.error)) return <Panel><Gone text="这个作业已不存在（可能已被清理）"><Button asChild size="sm"><Link to={{ pathname: '/jobs', search }}>回到列表</Link></Button></Gone></Panel>;
   if (q.isError && !j) return <Panel><div style={{ padding: 'var(--sp-12)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div></Panel>;
   if (!j) return <Panel><div className="skel" style={{ height: 160, margin: 16 }} /></Panel>;
   return (
@@ -177,7 +179,7 @@ function JobDetail({ id }: { id: string }) {
         <JobPill state={j.state} manual={j.manual} />
         {j.manual && <span className="t-sub">先手动处理再重试</span>}
         {j.state === 'failed' && <RetryButton j={j} />}
-        {j.cancellable && <Button size="sm" onClick={() => setCancelAsk(true)}><Square />取消</Button>}
+        {j.cancellable && <Button size="sm" onClick={() => setCancelAsk(true)}><CircleStop />取消</Button>}
       </>}>
         {j.manual && <ManualNote m={j.manual} />}
         <div className="stack">

@@ -3,7 +3,7 @@ import * as React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
 import { ArrowRight, ExternalLink, MoreHorizontal, Plus } from 'lucide-react';
-import { fetchRenumber, useAddPlan, useAddProvider, useAddTeam, useDelPlan, useDelProvider, useDelTeam, usePatchPlan, usePatchProvider, usePatchTeam, usePlans, useProviders, useRelaysMonthlyUsd, useRenumber, useTeams, useTeamsCompact } from '@/lib/queries';
+import { fetchRenumber, type TeamNodeCounts, useAddPlan, useAddProvider, useAddTeam, useDelPlan, useDelProvider, useDelTeam, usePatchPlan, usePatchProvider, usePatchTeam, usePlans, useProviders, useRelaysMonthlyUsd, useRenumber, useTeamNodeCounts, useTeams, useTeamsCompact } from '@/lib/queries';
 import type { Plan, Provider, Team, TrafficReset, TrafficRule } from '@/lib/types';
 import { currencyOptions, cycleOptions, feeView, limitGb, meta, trafficResetText, trafficRuleLabel, trafficRuleOptions, usdTotalTip } from '@/lib/derive';
 import { useUsdPreview } from '@/lib/fx';
@@ -76,14 +76,14 @@ function sortRows<T>(list: T[], sort: SortState | null, key: Record<string, (x: 
 function DeleteDialog({ what, item, onClose, run }: { what: string; item: { id: string; name: string } | null; onClose: () => void; run: (id: string) => Promise<unknown> }) {
   const held = useHeld(item?.id, item);
   return (
-    <ConfirmDialog open={!!item} onOpenChange={(o) => !o && onClose()} danger confirmLabel="删除" title={`删除${what} · ${held?.name ?? ''}`}
-      description={<>删了不能恢复 <InfoTip text={what === '供应商' ? '还有机器（包括已回收、待清除的）或套餐（包括已归档的）在用，就删不掉。会提示是哪些' : '还有机器用着（含回收后等待清除的）时删不掉，会提示还有哪些'} /></>}
+    <ConfirmDialog open={!!item} onOpenChange={(o) => !o && onClose()} danger confirmLabel={`删除${what}`} title={`删除${what} · ${held?.name ?? ''}`}
+      description={<>删除后不能恢复；{what === '供应商' ? '还有机器（含已回收、待清除的）或套餐（含已归档的）在用时删不掉' : what === '团队' ? '团队里还有机器（含回收后等待清除的）时删不掉' : '还有机器在用时删不掉'}，会提示是哪些</>}
       onConfirm={async () => { await run(item!.id); toast.ok(`${what}「${item!.name}」已删除`); }} />
   );
 }
 
 /** 机器数：点了去机器页看这些机器（筛选参数同机器页：team / q） */
-const CountLink = ({ n, to }: { n: number; to: string }) => (n > 0 ? <Link className="num-link" to={to}>{n}</Link> : <span className="t-muted">0</span>);
+const CountLink = ({ n, to, tip }: { n: number; to: string; tip?: string }) => (n > 0 ? <Link className="num-link" to={to} data-tip={tip}>{n}</Link> : <span className="t-muted" data-tip={tip}>0</span>);
 
 /* ---------------------------------------------------------------- 团队 */
 const TEAM_COLS = [
@@ -97,8 +97,15 @@ function TeamCost({ t }: { t: Team }) {
   if (!u.by_currency.length && !u.unconverted.length) return <span className="t-muted">—</span>;
   return <span className="num" data-tip={usdTotalTip(u)}>{F.money(u.cents, 'USD')}{u.unconverted.length ? '*' : ''}</span>;
 }
+/** 团队的「在用节点」：只数在用的（同流量页「团队成本」的口径）；上架中、退役中的另列在悬停里。机器列表没到时先显示服务端的台数（含这两类） */
+function TeamNodes({ t, counts }: { t: Team; counts?: TeamNodeCounts }) {
+  if (!counts) return <CountLink n={t.node_count} to={`/nodes?team=${t.id}`} />;
+  const other = ([['上架中', counts.listing], ['上架失败', counts.failed], ['退役中', counts.retiring]] as [string, number][]).filter(([, n]) => n);
+  return <CountLink n={counts.active} to={`/nodes?team=${t.id}`} tip={other.length ? `另有${other.map(([k, n]) => `${k} ${n}`).join(' · ')}` : undefined} />;
+}
 function TeamsTab() {
   const q = useTeams();
+  const counts = useTeamNodeCounts().data;
   const compact = useTeamsCompact().data;
   const [sort, setSort] = useUrlSort();
   const [edit, setEdit] = React.useState<Team | 'new' | null>(null);
@@ -108,7 +115,7 @@ function TeamsTab() {
   // 关闭动画期间沿用最近的对象，标题与内容不闪变
   const held = useHeld(edit === 'new' ? 'new' : edit?.id, edit);
   const renumHeld = useHeld(renum?.id, renum);
-  const list = sortRows([...(q.data ?? [])].sort((a, b) => a.sort_order - b.sort_order), sort, TEAM_KEY);
+  const list = sortRows([...(q.data ?? [])].sort((a, b) => a.sort_order - b.sort_order), sort, { ...TEAM_KEY, nodes: (t) => counts?.[t.id]?.active ?? t.node_count });
   // 各团队在用机器的月费合计（USD）；有团队带没折算的币种时注明
   const teamsUsd = list.reduce((s, t) => s + t.monthly_usd.cents, 0);
   // 线路机不归团队：单列一项，合计 = 各团队 + 线路机，同首页「每月费用」
@@ -128,7 +135,7 @@ function TeamsTab() {
                 // 编号已经连续（或团队里还没有节点）就没有可调的；机器列表还没到时先不禁用
                 const done = compact ? compact[t.id] ?? true : false;
                 return (
-                  <tr key={t.id} {...rowProps(() => setEdit(t))}><td className="strong">{t.name}{t.spare && <> <InfoTip text={SPARE_TIP} /></>}</td><td className="r num">{t.sort_order}</td><td className="r num"><CountLink n={t.node_count} to={`/nodes?team=${t.id}`} /></td><td className="r"><TeamCost t={t} /></td>
+                  <tr key={t.id} {...rowProps(() => setEdit(t))}><td className="strong">{t.name}{t.spare && <> <InfoTip text={SPARE_TIP} /></>}</td><td className="r num">{t.spare ? <span className="t-muted">最后</span> : t.sort_order}</td><td className="r num"><TeamNodes t={t} counts={counts?.[t.id]} /></td><td className="r"><TeamCost t={t} /></td>
                     <td className="c"><RowMenu label={`团队「${t.name}」的操作`}>
                       <DropdownMenuItem onSelect={() => setEdit(t)}>改名 / 排序…</DropdownMenuItem>
                       <DropdownMenuItem disabled={done} onSelect={() => setRenum(t)}>{done ? '重新编号（编号已连续）' : '重新编号…'}</DropdownMenuItem>
