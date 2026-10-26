@@ -204,7 +204,7 @@ pub async fn renew_batch(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJs
     audit(&mut tx, &a.name, "renewal.batch", "machine", None, json!({"ref": bill_ref, "note": b.note, "cycles": cycles, "machines": items})).await?;
     tx.commit().await?;
     for id in &ids {
-        st.emit(Event::Machine { id: *id });
+        st.emit_keep_access(Event::Machine { id: *id });
     }
     Ok(ok(json!({"dry_run": false, "items": items, "total": total})))
 }
