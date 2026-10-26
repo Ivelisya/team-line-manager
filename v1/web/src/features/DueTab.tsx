@@ -44,6 +44,12 @@ function groupBasis(g: DueGroup) {
     tip: g.machines.map((m) => `${m.name}　${basis(m)}`).join('\n'),
   };
 }
+const HOLD_TIP = (m: DueMachine) => `备用团队里的机器，但${m.spare_hold}：不自动回收，照常续费`;
+/** 被扣住不回收的备用机：挑出来标「备用」（悬停写原因） */
+const HoldPill = ({ ms }: { ms: DueMachine[] }) => {
+  const hs = ms.filter((m) => m.spare_hold);
+  return hs.length ? <Pill className="pill-sm" tip={hs.map((m) => `${m.name}：${HOLD_TIP(m)}`).join('\n')}>备用{hs.length > 1 ? ` ${hs.length} 台` : ''}</Pill> : null;
+};
 const IdlePill = ({ ms }: { ms: DueMachine[] }) => (ms.length ? <Pill className="pill-sm" tip={ms.map((m) => `${m.name}：${IDLE_TIP(m)}`).join('\n')}>闲置 {ms.length} 台</Pill> : null);
 
 /** 到期日 + 剩余天数：天数按这组的账单时区的今天算，悬停写明；账单时区不是组织时区的，日期后标城市名（同一天到期的两组差一天时一眼看得出） */
@@ -92,7 +98,7 @@ export function DueTab() {
                     <tr key={`${g.provider.id}|${g.due_date}|${g.billing_tz}`}>
                       <td><ProviderCell p={g.provider} /></td>
                       <td><DueWhen g={g} /></td>
-                      <td data-tip={names.length > 4 ? names.join('、') : undefined}>{names.slice(0, 4).join('、')}{names.length > 4 && <span className="t-muted"> 等 {names.length} 台</span>} <IdlePill ms={b.idle} /></td>
+                      <td data-tip={names.length > 4 ? names.join('、') : undefined}>{names.slice(0, 4).join('、')}{names.length > 4 && <span className="t-muted"> 等 {names.length} 台</span>} <HoldPill ms={g.machines} /> <IdlePill ms={b.idle} /></td>
                       <td className="r num" data-tip={usdTotalTip(g.total)}>{subtotal(g)}</td>
                       <td className="r num">{usdText(g.total)}</td>
                       <td className="r num" data-tip={b.tip}>{F.usdPerGb(b.perGb)}</td>
@@ -113,7 +119,7 @@ export function DueTab() {
                 return (
                   <li key={`${g.provider.id}|${g.due_date}|${g.billing_tz}`} className="due-item">
                     <div className="due-item-top"><ProviderCell p={g.provider} /><DueWhen g={g} short /></div>
-                    <div className="due-item-machines">{names.slice(0, 4).join('、')}{names.length > 4 && <span className="t-muted"> 等 {names.length} 台</span>}</div>
+                    <div className="due-item-machines">{names.slice(0, 4).join('、')}{names.length > 4 && <span className="t-muted"> 等 {names.length} 台</span>} <HoldPill ms={g.machines} /></div>
                     <div className="due-item-machines t-sub" data-tip={b.tip}>近 30 天 {F.usdPerGb(b.perGb)}/GB · 出口成功率 {F.str(F.pct(b.avail, 1))} <IdlePill ms={b.idle} /></div>
                     <div className="due-item-foot"><span className="num" data-tip={usdTotalTip(g.total)}>{subtotal(g)}{onlyUsd(g.total) ? null : <span className="t-muted"> ≈ {usdText(g.total)}</span>}</span><Button size="sm" onClick={() => setPay(g)}>登记续费…</Button></div>
                   </li>
@@ -169,7 +175,7 @@ const PayForm = resetOnOpen(function PayForm({ g, open, onClose }: { g: DueGroup
         <table className="dt is-one"><colgroup><col /><col style={{ width: 180 }} /><col style={{ width: 150 }} /></colgroup>
           <thead><tr><th>机器</th><th>到期日</th><th>实付</th></tr></thead>
           <tbody>{g.machines.map((m) => (
-            <tr key={m.id}><td className="strong num">{m.name} {m.idle && <Pill className="pill-sm" tip={IDLE_TIP(m)}>闲置</Pill>}{m.spare_hold && <Pill className="pill-sm" tip={`备用团队里的机器，但${m.spare_hold}：不自动回收，照常续费`}>备用</Pill>}
+            <tr key={m.id}><td className="strong num">{m.name} {m.idle && <Pill className="pill-sm" tip={IDLE_TIP(m)}>闲置</Pill>}{m.spare_hold && <Pill className="pill-sm" tip={HOLD_TIP(m)}>备用</Pill>}
                 <span className="sub" style={{ fontWeight: 'var(--fw-regular)' }}>近 30 天 {F.usdPerGb(m.usd_per_gb)}/GB · 出口成功率 {F.str(F.pct(m.avail_pct, 1))}</span></td>
               <td className="num">{m.due_date} <ArrowRight size={12} style={{ color: 'var(--fg-3)' }} /> {newDue(m.id) ?? <span className="t-muted">…</span>}</td>
               <td><AmountCell currency={m.currency} value={amounts[m.id]} onChange={(v) => setAmounts((a) => ({ ...a, [m.id]: v }))} /></td></tr>

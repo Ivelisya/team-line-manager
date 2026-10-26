@@ -132,7 +132,9 @@ export interface Team { id: string; name: string; sort_order: number; spare: boo
   /** 在用机器的月费合计（USD，同总览） */
   monthly_usd: UsdTotal;
   /** 备用团队里被扣住不回收（出口还指着 / 同机 IP 节点还在用）的机器的月费与台数：照常续费、计入合计；别的团队为空、0。旧中控没有 */
-  monthly_usd_held?: UsdTotal; held_count?: number }
+  monthly_usd_held?: UsdTotal; held_count?: number;
+  /** 备用团队里被扣住不回收的总台数（不论有没有订阅；held_count 只数有订阅的）。旧中控没有 */
+  held_total?: number }
 /** 月费合计（USD）：cents 是能折算部分的合计；by_currency 各原币种的金额、折成的 USD 与所用汇率；unconverted 没有汇率、没算进合计的 */
 export interface UsdTotal {
   cents: number;
