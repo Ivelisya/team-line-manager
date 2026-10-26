@@ -401,7 +401,7 @@ pub async fn monthly(st: &AppState, month: Option<&str>) -> ApiResult<Value> {
     let top_rules: Vec<Value> = rules.iter().map(|(r, c)| json!({"rule": r, "name": meta::rule_label(r), "count": c})).collect();
 
     let ov = views::overview(st).await?;
-    // 月费合计里的台数直接读总览的 paid_machines（在用、不是闲置备用、有订阅的）
+    // 月费合计里的台数直接读总览的 paid_machines（在用、不是不续费的备用机、有订阅的）；monthly_usd_spare 是不续费的备用机（spare_unbilled）的小计
     let report = json!({
         "month": month_str(first), "from": w.from, "to": w.to, "tz": meta::org_tz(),
         "traffic": {"down": down, "up": up, "total": down.saturating_add(up)},
@@ -428,7 +428,7 @@ fn text_of(r: &Value) -> String {
         r["monthly_usd"]["unconverted"].as_array().into_iter().flatten().map(|u| format!("{} {:.2}", u["currency"].as_str().unwrap_or(""), i(&u["cents"]) as f64 / 100.0)).collect();
     let extra = if unconv.is_empty() { String::new() } else { format!("；另有 {} 没有汇率、未折算", unconv.join("、")) };
     let sp = &r["monthly_usd_spare"];
-    let spare = if i(&sp["count"]) > 0 { format!("；另有闲置备用 {} 台 {}，不再续费，不在合计里", i(&sp["count"]), money(i(&sp["cents"]))) } else { String::new() };
+    let spare = if i(&sp["count"]) > 0 { format!("；另有不续费的备用 {} 台 {}，不在合计里", i(&sp["count"]), money(i(&sp["cents"]))) } else { String::new() };
     l.push(format!("月费合计：{}（在用 {} 台，按当前订阅折成 USD）{extra}{spare}", money(i(&r["monthly_usd"]["cents"])), i(&r["machines"])));
     let list = |title: &str, rows: Vec<String>| {
         if rows.is_empty() {
