@@ -1227,21 +1227,33 @@ R('GET', '/relays/([^/]+)/evacuate', ({ params, query }) => {
   return { from: src.name, to: dst.name, jobs, skipped, warnings: [], router_restarts: [], share_changed: jobs.length > 0, note: SHARE_NOTE };
 });
 // 批量换线路机（同后端 moves_view）：ids 里每个节点各算一次计划；有一个不能换就 ok 为 false、原因进 blockers
-function movesPlan(ids: string[], toId: string, fromId?: string) {
+function movesPlan(ids: string[], toId: string, fromId?: string, routersOn = true) {
   const dst = machine(toId);
-  const plans: { node: MachineView; plan: { old: EntryView; to: MachineView } }[] = []; const skipped: { machine_id: string; name: string | null; reason: string }[] = [];
+  const plans: { node: MachineView; plan: { old: EntryView; to: MachineView }; routers: import('@/lib/types').RouterExitPlan[] }[] = []; const skipped: { machine_id: string; name: string | null; reason: string }[] = [];
+  const blockers: string[] = []; const restarts = new Map<string, { id: string; name: string; times: number; nodes: number }>();
   for (const id of ids) {
     const node = machine(id);
     const plan = planMove(node, dst.id, fromId);
-    if (typeof plan === 'string') skipped.push({ machine_id: node.id, name: node.name, reason: plan }); else plans.push({ node, plan });
+    if (typeof plan === 'string') { skipped.push({ machine_id: node.id, name: node.name, reason: plan }); continue; }
+    // 指向旧入口的软路由出口（同后端 routers_view：换线路机的新端口建好才知道，new_entry_id 为 null、to 写「server:新端口」）；开着改软路由时不在线的路由挡住
+    const routers = routersMock.routers().flatMap((r) => {
+      const exits = (r.exit_entries ?? []).filter((x) => x.entry_id === plan.old.id).map((x) => ({ exit: x.exit, old_entry_id: plan.old.id, new_entry_id: null, from: `${machine(plan.old.relay.id).ip}:${plan.old.port}`, to: `${dst.ip}:新端口` }));
+      if (!exits.length) return [];
+      if (routersOn) {
+        const t = restarts.get(r.id) ?? { id: r.id, name: r.name, times: 1, nodes: 0 }; t.nodes++; restarts.set(r.id, t);
+        if (r.state !== 'online') blockers.push(`软路由「${r.name}」现在${r.state === 'offline' ? '离线' : '还没接入'}。它的出口 ${exits.map((e) => e.exit).join('、')} 指向换走的入口，要等它在线再换（或选不改软路由）`);
+      }
+      return [{ id: r.id, name: r.name, state: r.state, exits }];
+    });
+    plans.push({ node, plan, routers });
   }
-  const blockers = skipped.map((k) => (k.reason.includes(k.name ?? '') ? k.reason : `${k.name ?? '节点'}：${k.reason}`));
-  return { dst, plans, skipped, blockers };
+  blockers.unshift(...skipped.map((k) => (k.reason.includes(k.name ?? '') ? k.reason : `${k.name ?? '节点'}：${k.reason}`)));
+  return { dst, plans, skipped, blockers: [...new Set(blockers)], routerRestarts: [...restarts.values()].sort((a, b) => b.nodes - a.nodes || a.name.localeCompare(b.name)) };
 }
 R('GET', '/moves', ({ query }) => {
-  const { dst, plans, skipped, blockers } = movesPlan((query.get('machine_ids') ?? '').split(',').filter(Boolean), query.get('to_relay_id') ?? '', query.get('from_relay_id') ?? undefined);
-  const jobs = plans.map(({ node, plan }) => ({ machine_id: node.id, name: node.name, from: plan.old.relay.name, old_entry: { id: plan.old.id, relay: plan.old.relay.name, port: plan.old.port }, routers: [] }));
-  return { from: jobs.length ? [...new Set(plans.map((x) => x.plan.old.relay.name))].join('、') : '', to: dst.name, jobs, skipped, warnings: [], router_restarts: [], share_changed: jobs.length > 0, note: SHARE_NOTE, ok: blockers.length === 0, blockers };
+  const { dst, plans, skipped, blockers, routerRestarts } = movesPlan((query.get('machine_ids') ?? '').split(',').filter(Boolean), query.get('to_relay_id') ?? '', query.get('from_relay_id') ?? undefined, query.get('routers') !== 'false');
+  const jobs = plans.map(({ node, plan, routers }) => ({ machine_id: node.id, name: node.name, from: plan.old.relay.name, old_entry: { id: plan.old.id, relay: plan.old.relay.name, port: plan.old.port }, routers }));
+  return { from: jobs.length ? [...new Set(plans.map((x) => x.plan.old.relay.name))].join('、') : '', to: dst.name, jobs, skipped, warnings: [], router_restarts: routerRestarts, share_changed: jobs.length > 0, note: SHARE_NOTE, ok: blockers.length === 0, blockers };
 });
 // 搬迁建议（mock 的简化算法：按本月流量从大到小，凑够需要少走的日均）
 R('GET', '/relays/([^/]+)/rebalance', ({ params, query }) => {
@@ -1332,12 +1344,12 @@ R('POST', '/relays/([^/]+)/evacuate', ({ params, body }) => {
 });
 
 R('POST', '/moves', ({ body }) => {
-  const { dst, plans, skipped, blockers } = movesPlan(body.machine_ids ?? [], body.to_relay_id, body.from_relay_id);
+  const { dst, plans, skipped, blockers, routerRestarts } = movesPlan(body.machine_ids ?? [], body.to_relay_id, body.from_relay_id, body.routers !== false);
   if (blockers.length) throw bad(blockers.join('；'), 409, 'conflict');
-  const jobs = plans.map(({ node, plan }) => ({ machine_id: node.id, name: node.name, from: plan.old.relay.name, old_entry: { id: plan.old.id, relay: plan.old.relay.name, port: plan.old.port }, job_id: startMove(node, plan).id, routers: [] }));
+  const jobs = plans.map(({ node, plan, routers }) => ({ machine_id: node.id, name: node.name, from: plan.old.relay.name, old_entry: { id: plan.old.id, relay: plan.old.relay.name, port: plan.old.port }, job_id: startMove(node, plan).id, routers }));
   db.audit.unshift({ id: `a${db.seq++}`, ts: iso(), actor: db.user, action: 'entry.move', title: '批量换线路机', summary: `${jobs.length} 个节点 → ${dst.name}`, target_kind: 'machine', target_id: dst.id, detail: {} });
   emit({ type: 'machines' });
-  return { from: [...new Set(jobs.map((x) => x.from))].join('、'), to: dst.name, jobs, skipped, warnings: [], router_restarts: [], share_changed: jobs.length > 0, note: SHARE_NOTE, ok: true, blockers: [] };
+  return { from: [...new Set(jobs.map((x) => x.from))].join('、'), to: dst.name, jobs, skipped, warnings: [], router_restarts: routerRestarts, share_changed: jobs.length > 0, note: SHARE_NOTE, ok: true, blockers: [] };
 });
 
 // ---------- 替换节点 ----------
