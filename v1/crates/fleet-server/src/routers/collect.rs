@@ -338,6 +338,9 @@ pub struct MetricRow {
     pub clients: i64,
     pub exits_total: i64,
     pub exits_alive: i64,
+    /// 其中 fleet 出口（对上了面板入口的）的总数与可用数，同摘要里的 exits.fleet；曲线按它画，和卡片、告警一致
+    pub fleet_total: i64,
+    pub fleet_alive: i64,
 }
 
 /// 一行 router_exit_metric
@@ -491,6 +494,8 @@ pub fn build(raw: &Value, prev: &Prev, last: Option<&Snapshot>, config: Option<&
         clients: clients.iter().filter(|c| c.online).count() as i64,
         exits_total: exits.len() as i64,
         exits_alive: exits.iter().filter(|e| usable(e)).count() as i64,
+        fleet_total: exits.iter().filter(|e| e.sync != "unmanaged").count() as i64,
+        fleet_alive: exits.iter().filter(|e| e.sync != "unmanaged" && usable(e)).count() as i64,
     };
     let tested = oc.pointer("/delay/ok").and_then(Value::as_bool) == Some(true);
     let untested = untested_exits(&oc);
@@ -998,8 +1003,9 @@ async fn one(st: &AppState, t: &Target, m: &mut Mem, entries: &[Entry], delay: b
             let r = &b.metric;
             sqlx::query(
                 "insert into router_metric (router_id, ts, cpu_pct, load1, mem_used, mem_total, disk_used, disk_total, conntrack, conntrack_max, temp_c,
-                    wan_rx_bps, wan_tx_bps, proxy_up_bps, proxy_down_bps, conns, clients, exits_total, exits_alive)
-                 values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) on conflict do nothing",
+                    wan_rx_bps, wan_tx_bps, proxy_up_bps, proxy_down_bps, conns, clients, exits_total, exits_alive,
+                    fleet_total, fleet_alive)
+                 values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21) on conflict do nothing",
             )
             .bind(t.id)
             .bind(now)
@@ -1020,6 +1026,8 @@ async fn one(st: &AppState, t: &Target, m: &mut Mem, entries: &[Entry], delay: b
             .bind(r.clients as i32)
             .bind(r.exits_total as i32)
             .bind(r.exits_alive as i32)
+            .bind(r.fleet_total as i32)
+            .bind(r.fleet_alive as i32)
             .execute(&mut *tx)
             .await?;
             if let Some(c) = &change {
@@ -1292,11 +1300,13 @@ pub async fn rollup(db: &sqlx::PgPool) -> anyhow::Result<()> {
         sqlx::query(
             "insert into router_metric_hourly (router_id, hour, samples, cpu_pct, cpu_pct_max, load1, mem_used, mem_total, disk_used, disk_total,
                 conntrack, conntrack_max, temp_c, wan_rx_bps, wan_rx_bps_max, wan_tx_bps, wan_tx_bps_max, proxy_up_bps, proxy_up_bps_max,
-                proxy_down_bps, proxy_down_bps_max, conns, clients, exits_total, exits_alive)
+                proxy_down_bps, proxy_down_bps_max, conns, clients, exits_total, exits_alive,
+                fleet_total, fleet_alive)
              select router_id, $1, count(*), avg(cpu_pct), max(cpu_pct), avg(load1), avg(mem_used)::bigint, max(mem_total), avg(disk_used)::bigint,
                 max(disk_total), avg(conntrack), max(conntrack_max), avg(temp_c), avg(wan_rx_bps)::bigint, max(wan_rx_bps), avg(wan_tx_bps)::bigint,
                 max(wan_tx_bps), avg(proxy_up_bps)::bigint, max(proxy_up_bps), avg(proxy_down_bps)::bigint, max(proxy_down_bps),
-                avg(conns), avg(clients), avg(exits_total), avg(exits_alive)
+                avg(conns), avg(clients), avg(exits_total), avg(exits_alive),
+                avg(fleet_total), avg(fleet_alive)
              from router_metric where ts >= $1 and ts < $1 + interval '1 hour' group by router_id
              on conflict (router_id, hour) do update set samples = excluded.samples, cpu_pct = excluded.cpu_pct, cpu_pct_max = excluded.cpu_pct_max,
                 load1 = excluded.load1, mem_used = excluded.mem_used, mem_total = excluded.mem_total, disk_used = excluded.disk_used,
@@ -1304,7 +1314,8 @@ pub async fn rollup(db: &sqlx::PgPool) -> anyhow::Result<()> {
                 wan_rx_bps = excluded.wan_rx_bps, wan_rx_bps_max = excluded.wan_rx_bps_max, wan_tx_bps = excluded.wan_tx_bps,
                 wan_tx_bps_max = excluded.wan_tx_bps_max, proxy_up_bps = excluded.proxy_up_bps, proxy_up_bps_max = excluded.proxy_up_bps_max,
                 proxy_down_bps = excluded.proxy_down_bps, proxy_down_bps_max = excluded.proxy_down_bps_max, conns = excluded.conns,
-                clients = excluded.clients, exits_total = excluded.exits_total, exits_alive = excluded.exits_alive",
+                clients = excluded.clients, exits_total = excluded.exits_total, exits_alive = excluded.exits_alive,
+                fleet_total = excluded.fleet_total, fleet_alive = excluded.fleet_alive",
         )
         .bind(h)
         .execute(db)
@@ -1416,6 +1427,8 @@ mod tests {
         assert_eq!(b.snap.interfaces.iter().map(|i| i.name.as_str()).collect::<Vec<_>>(), ["wan", "lan"], "回环接口不列");
         assert_eq!(b.snap.openclash.up_bps, None);
         assert_eq!((b.metric.wan_rx_bps, b.metric.conns, b.metric.exits_total), (None, Some(3), 2));
+        // 没有对上面板入口的出口：fleet 口径都是 0
+        assert_eq!((b.metric.fleet_total, b.metric.fleet_alive), (0, 0));
         // 没测过延迟：用 mihomo 自己记的
         let e = &b.snap.exits;
         assert_eq!((e[0].name.as_str(), e[0].alive, e[0].delay_ms, e[0].port), ("节点01", Some(true), Some(120), Some(20003)));

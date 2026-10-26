@@ -384,6 +384,8 @@ async fn one_collection_round() {
     assert_eq!(d["detail"]["clients"][0]["hostname"], "laptop");
     assert_eq!(t.count(&format!("select count(*) from router_metric where router_id = '{id}'")).await, 1);
     assert_eq!(t.count(&format!("select count(*) from router_exit_metric where router_id = '{id}' and delay_ms is not null")).await, 2);
+    // 指标点里 fleet 出口（对上了入口的）与全部出口分开记，同摘要的 exits.fleet
+    assert_eq!(t.count(&format!("select count(*) from router_metric where router_id = '{id}' and exits_total = 3 and exits_alive = 3 and fleet_total = 2 and fleet_alive = 2")).await, 1);
     // 第二轮：有速率了；测延迟每 5 分钟一次，这一轮不测（exit 行 alive 为空）
     std::fs::write(r.join("collect.json"), collect_json(now + 30, 4_750_000).to_string()).unwrap();
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -997,14 +999,18 @@ async fn metrics_rollup_and_retention() {
     let t = setup().await;
     let (id, _) = create(&t, "路由M").await;
     let db = &t.st.db;
-    for (ago, cpu) in [(600, 10.0f32), (300, 30.0), (5 * 86400, 99.0)] {
+    // 全部出口 3 个都可用；第一点另记 fleet 出口 2 个、可用 1 个，其余是迁移 0091 之前的点（fleet 两列为空）
+    for (ago, cpu, fleet) in [(600, 10.0f32, Some((2, 1))), (300, 30.0, None), (5 * 86400, 99.0, None)] {
         sqlx::query(
-            "insert into router_metric (router_id, ts, cpu_pct, mem_used, mem_total, conntrack, conntrack_max, wan_rx_bps, conns, clients, exits_total, exits_alive)
-             values ($1::uuid, now() - make_interval(secs => $2), $3, 50, 100, 10, 100, 8000, 4, 2, 3, 3)",
+            "insert into router_metric (router_id, ts, cpu_pct, mem_used, mem_total, conntrack, conntrack_max, wan_rx_bps, conns, clients, exits_total, exits_alive,
+                fleet_total, fleet_alive)
+             values ($1::uuid, now() - make_interval(secs => $2), $3, 50, 100, 10, 100, 8000, 4, 2, 3, 3, $4, $5)",
         )
         .bind(&id)
         .bind(ago as f64)
         .bind(cpu)
+        .bind(fleet.map(|f: (i32, i32)| f.0))
+        .bind(fleet.map(|f| f.1))
         .execute(db)
         .await
         .unwrap();
@@ -1024,9 +1030,11 @@ async fn metrics_rollup_and_retention() {
     let p = m["points"].as_array().unwrap();
     assert_eq!(p.len(), 2);
     assert_eq!((p[0]["cpu_pct"].as_f64(), p[0]["mem_pct"].as_f64(), p[0]["conntrack_pct"].as_f64(), p[0]["wan_rx_bps"].as_i64()), (Some(10.0), Some(50.0), Some(10.0), Some(8000)));
-    for k in ["ts", "load1", "disk_pct", "temp_c", "wan_tx_bps", "proxy_up_bps", "proxy_down_bps", "conns", "clients", "exits_alive"] {
+    for k in ["ts", "load1", "disk_pct", "temp_c", "wan_tx_bps", "proxy_up_bps", "proxy_down_bps", "conns", "clients", "exits_alive", "fleet_alive"] {
         assert!(p[0].get(k).is_some(), "{k}");
     }
+    // 可用出口按 fleet 出口算；没有 fleet 读数的旧点退回全部出口
+    assert_eq!((p[0]["exits_alive"].as_i64(), p[0]["fleet_alive"].as_i64(), p[1]["fleet_alive"].as_i64()), (Some(3), Some(1), Some(3)));
     assert_eq!(t.get(&format!("/api/v1/routers/{id}/metrics?range=24h")).await["step_s"], 300);
     let e = t.get(&format!("/api/v1/routers/{id}/exits/metrics?range=1h")).await;
     assert_eq!((e["step_s"].as_i64(), e["exits"][0]["name"].as_str()), (Some(30), Some("节点01")));
@@ -1043,6 +1051,8 @@ async fn metrics_rollup_and_retention() {
     let h = t.get(&format!("/api/v1/routers/{id}/metrics?range=7d")).await;
     assert_eq!(h["step_s"], 3600);
     assert!(!h["points"].as_array().unwrap().is_empty() && h["points"][0].get("cpu_max").is_some(), "{h}");
+    // 小时点：1 与 3（旧点退回 exits_alive）的平均不会是 null；小时里全是旧点时就是 3
+    assert!(h["points"].as_array().unwrap().iter().all(|p| p["fleet_alive"].as_f64().is_some_and(|v| (1.0..=3.0).contains(&v))), "{h}");
     let eh = t.get(&format!("/api/v1/routers/{id}/exits/metrics?range=30d")).await;
     let hp = &eh["exits"][0]["points"];
     assert_eq!(sum(tests(hp)), (2, 1), "{eh}");
