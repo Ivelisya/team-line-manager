@@ -237,7 +237,7 @@ pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime
     let mut want = vec![];
     let mass_offline = agents_unreachable(&ms).is_some();
     for m in ms.iter() {
-        // 闲置备用（备用团队、没有软路由出口指向，等到期放生）：供应商那边停了是预期，不开任何告警（续费提醒在 health.rs renewal_reason 里同理）；
+        // 闲置备用（备用团队、没有软路由出口指向、上面没有在用的同机 IP 节点，等到期放生）：供应商那边停了是预期，不开任何告警（续费提醒在 health.rs renewal_reason 里同理）；
         // 已开着的在下面悄悄关掉。健康状态照常算，卡片上看得到
         if m.idle_spare() {
             continue;
@@ -279,9 +279,9 @@ pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime
     let exists = "exists (select 1 from machine where id = $3 and lifecycle = 'active' for share)";
     incident::reconcile(st, Engine::Machine, open, want, exists, now, |inc| {
         let Some(m) = active.get(&inc.subject_id) else { return Close::Keep };
-        // 退到备用、或被指着的备用取消了指向，现在没有出口指向了：关掉。报过触发的发恢复（摘要说明是转为闲置，不是原因消失）；之后若又有出口指向它，原因还在就按新告警开
+        // 退到备用、或被指着的备用取消了指向（或上面的 IP 节点都走了），现在没有出口指向了：关掉。报过触发的发恢复（摘要说明是转为闲置，不是原因消失）；之后若又有出口指向它，原因还在就按新告警开
         if m.idle_spare() {
-            return Close::ResolveNoted { name: &m.name, by: "spare", note: "已无软路由出口指向，转为闲置备用" };
+            return Close::ResolveNoted { name: &m.name, by: "spare", note: "没有软路由出口指向（闲置备用），不再告警" };
         }
         let probe = matches!(inc.rule.as_str(), "egress_fail" | "tcp_fail");
         let was = probe_failing.get(&(inc.rule.clone(), inc.subject_id));
@@ -389,6 +389,14 @@ mod tests {
         assert_eq!(agents_unreachable(&ms), None);
         // 被软路由出口指向的备用机器照常算
         let ms: Vec<_> = [m(true, &["办公室2 · 美国"], false), m(true, &["办公室2 · 美国"], false), m(true, &["办公室2 · 美国"], false), m(false, &[], true)].into();
+        assert_eq!(agents_unreachable(&ms), Some((3, 4)));
+        // 上面还有在用同机 IP 节点的备用宿主机同样照常算
+        let host = |online: bool| {
+            let mut x = m(true, &[], online);
+            x.live_ip_nodes = vec!["团队1-02".into()];
+            x
+        };
+        let ms: Vec<_> = [host(false), host(false), host(false), m(false, &[], true)].into();
         assert_eq!(agents_unreachable(&ms), Some((3, 4)));
     }
 

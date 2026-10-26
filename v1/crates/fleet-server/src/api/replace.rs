@@ -447,6 +447,17 @@ async fn plan(st: &AppState, conn: &mut PgConnection, old_id: Uuid, b: &ReplaceI
             Some((_, _, true)) => warnings.push(format!("旧节点「{old_name}」开着自动续费：进备用时会关掉，到期后照常回收（供应商那边的自动扣款要自己去关）")),
             Some(_) => {}
         }
+        // 替换不带走旧节点上的同机 IP 节点：它们留在原团队继续用，宿主机退役会连带它们，所以旧节点进备用后不会自动回收（视图 live_ip_nodes）
+        let live_ips: Vec<String> = sqlx::query_scalar(
+            "select display_name(m.kind::text, m.label, t.name, m.number) from machine m left join team t on t.id = m.team_id
+             where m.host_id = $1 and m.lifecycle <> 'retired' and not coalesce(t.spare, false) order by t.sort_order nulls first, t.name, m.number, m.id",
+        )
+        .bind(old.id)
+        .fetch_all(&mut *conn)
+        .await?;
+        if !live_ips.is_empty() {
+            warnings.push(format!("旧节点上的同机 IP 节点 {} 仍在用：旧节点进备用后不会自动回收，要处理先退役或换走这些 IP 节点", live_ips.join("、")));
+        }
     }
 
     // 访问策略与订阅设置按机器 id 存：交换编号时随编号转给新节点（jobs/steps/replace.rs），预览列出来，免得替换后才发现客户的限制变了
