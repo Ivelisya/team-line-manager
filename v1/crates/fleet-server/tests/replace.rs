@@ -1531,3 +1531,24 @@ async fn replace_moves_node_policy_and_sub_settings() {
         "引用旧节点的换成新节点，新节点本来就在名单里的去重"
     );
 }
+
+/// 改出口指向的预览：新旧入口所在节点的生效访问策略不同时提醒（客户实际受的是目标节点 / 团队的策略）；发起时不算这类提醒
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repoint_preview_warns_when_policy_differs() {
+    let w = world().await;
+    let t = &w.t;
+    let db = &t.st.db;
+    let oe = old_entry(&w).await;
+    let ne: Uuid = sqlx::query_scalar("select id from entry where node_id = $1").bind(w.new).fetch_one(db).await.unwrap();
+    router(&w, "团队2-路由A", 23601, &[("节点01", "198.51.100.2", 20003, Some(oe))]).await;
+    let url = format!("/api/v1/entries/{oe}/repoint?to_entry_id={ne}");
+    let ws = t.get(&url).await["warnings"].to_string();
+    assert!(!ws.contains("访问策略"), "两边都是默认：{ws}");
+    // 团队策略黑名单；旧节点自己设了暂停新连接 → 新出口（跟随团队）受黑名单
+    sqlx::query("insert into policy (scope, scope_id, mode, domains) values ('team', $1, 'denylist', '{bad.com}'), ('node', $2, 'blocked', '{}')").bind(w.team).bind(w.old).execute(db).await.unwrap();
+    let p = t.get(&url).await;
+    assert!(p["warnings"].to_string().contains("新出口受团队「团队2」的访问策略：黑名单 · 1 个域名，与原来（节点「团队2-01」：暂停新连接）不同"), "{p}");
+    // 发起时不算（views::live 重算会拖住提交），其余照常
+    let d = t.post(&format!("/api/v1/entries/{oe}/repoint"), json!({"to_entry_id": ne})).await;
+    assert!(d["job_id"].is_string() && !d["warnings"].to_string().contains("访问策略"), "{d}");
+}
