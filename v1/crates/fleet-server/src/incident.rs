@@ -70,14 +70,21 @@ pub struct Firing {
     told_resolved_at: Option<OffsetDateTime>,
 }
 
-/// 告警 detail 里「出现过严重」的标记：开、升级、重开为严重时并入，只增不减（重开直接写本次的 severity，复发时会被改低，所以「只数严重的」看它）。
-/// 比较「detail 变了没有」时要先去掉它
+/// 告警 detail 里「出现过严重」的标记：开、升级、重开为严重时并入，只增不减（重开直接写本次的 severity，复发时会被改低）。
+/// 精确的次数在 `critical_count`（`CRITICAL_COUNT_KEY`）；标记留着兼容。比较「detail 变了没有」时两个都要先去掉
 const CRITICAL_KEY: &str = "critical";
+/// 告警 detail 里严重的次数：开为严重 +1、警告升到严重 +1、重开为严重 +1（「只数严重的 tcp_fail」按它求和，见 reports.rs、placement.rs）。
+/// 旧告警没有这个数，按 `CRIT_COUNT_SQL` 退回原规则（有 critical 标记或 severity = 'critical' 时算 1 + reopen_count 次）
+const CRITICAL_COUNT_KEY: &str = "critical_count";
+
+/// 一条告警严重的次数（SQL 表达式，行上有 detail、severity、reopen_count）：有 `critical_count` 用它，旧数据退回「有 critical 标记或 severity = 'critical' 时 1 + reopen_count」
+pub const CRIT_COUNT_SQL: &str = "coalesce((detail->>'critical_count')::bigint, case when detail ? 'critical' or severity = 'critical' then 1 + reopen_count else 0 end)";
 
 fn detail_of(d: &Value) -> Value {
     let mut d = d.clone();
     if let Some(o) = d.as_object_mut() {
         o.remove(CRITICAL_KEY);
+        o.remove(CRITICAL_COUNT_KEY);
     }
     d
 }
@@ -187,18 +194,21 @@ pub async fn reconcile<'n>(
             if escalated || !same_summary(&inc.summary, &summary) || w.detail.as_ref().is_some_and(|d| *d != detail_of(&inc.detail)) {
                 // 升级时清掉之前的确认（同机器的告警）：确认的是警告，严重是新情况。
                 // detail 里的 critical 标记（开、升级、重开为严重时并入，只增不减）在换 detail 时保留
-                sqlx::query(
+                sqlx::query(&format!(
                     "update incident set summary = $2, severity = $3::severity, last_seen_at = now(),
-                         detail = coalesce($4, detail) || case when $6 or detail ? 'critical' or severity = 'critical' then jsonb_build_object('critical', true) else jsonb_build_object() end,
+                         detail = coalesce($4, detail)
+                             || case when $6 or detail ? 'critical' or severity = 'critical' then jsonb_build_object('critical', true) else jsonb_build_object() end
+                             || case when {CRIT_COUNT_SQL} + $7 > 0 then jsonb_build_object('critical_count', {CRIT_COUNT_SQL} + $7) else jsonb_build_object() end,
                          ack_at = case when $5 then null else ack_at end, ack_by = case when $5 then null else ack_by end
-                     where id = $1",
-                )
+                     where id = $1"
+                ))
                 .bind(inc.id)
                 .bind(&summary)
                 .bind(sev)
                 .bind(&w.detail)
                 .bind(escalated)
                 .bind(w.severity == "critical")
+                .bind(i64::from(escalated && w.severity == "critical"))
                 .execute(&st.db)
                 .await?;
                 t.updated += 1;
@@ -220,7 +230,9 @@ pub async fn reconcile<'n>(
         let reopened: Option<(Uuid, OffsetDateTime, Option<OffsetDateTime>, Option<OffsetDateTime>)> = sqlx::query_as(&format!(
             "update incident set state = 'firing', resolved_at = null, ack_at = null, ack_by = null, reopen_count = reopen_count + 1, last_seen_at = now(),
                  severity = $2::severity, summary = $4,
-                 detail = coalesce($6, detail) || case when $8 or detail ? 'critical' or severity = 'critical' then jsonb_build_object('critical', true) else jsonb_build_object() end
+                 detail = coalesce($6, detail)
+                     || case when $8 or detail ? 'critical' or severity = 'critical' then jsonb_build_object('critical', true) else jsonb_build_object() end
+                     || case when {CRIT_COUNT_SQL} + $8::int > 0 then jsonb_build_object('critical_count', {CRIT_COUNT_SQL} + $8::int) else jsonb_build_object() end
              where id = (select id from incident where engine = $7 and rule = $1 and subject_id = $3 and state = 'resolved' and resolved_at > $5 and not detail ? 'closed_by'
                          order by resolved_at desc limit 1)
                and {exists}
@@ -248,7 +260,7 @@ pub async fn reconcile<'n>(
         let res = sqlx::query(&format!(
             "insert into incident (id, engine, rule, subject_id, severity, summary, detail)
              select $1, $7, $2, $3, $4::severity, $5,
-                    coalesce($6, jsonb_build_object()) || case when $8 then jsonb_build_object('critical', true) else jsonb_build_object() end where {exists}
+                    coalesce($6, jsonb_build_object()) || case when $8 then jsonb_build_object('critical', true, 'critical_count', 1) else jsonb_build_object() end where {exists}
              on conflict (engine, rule, subject_id) where state = 'firing' do nothing"
         ))
         .bind(id)
