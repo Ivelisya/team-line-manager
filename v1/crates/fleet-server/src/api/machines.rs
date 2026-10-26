@@ -782,6 +782,8 @@ pub async fn move_to_spare(st: &AppState, actor: &str, id: Uuid, reason: Option<
     if let Some(k) = busy {
         return Err(ApiError::conflict(format!("有进行中的作业（{}）：等它结束再退役", meta::job_kind_label(&k))));
     }
+    // 进备用后不自动回收的原因：出口还指着它或它的同机 IP 节点（上面没退役的同机 IP 节点都一起进备用，没有留在外面在用的）
+    let held = spare_held_reason(crate::routers::exits_using_with_ip_nodes(&st.db, &[id]).await?.contains_key(&id), false);
     let (spare_id, spare_name, taken) = spare_team(&mut tx).await?;
     let mut free = (1..=999).filter(|n| !taken.contains(n));
     let mut revs: Vec<(Uuid, i32, Option<Uuid>, String)> = sqlx::query_as(
@@ -844,21 +846,41 @@ pub async fn move_to_spare(st: &AppState, actor: &str, id: Uuid, reason: Option<
         st.relay_bumped(r);
     }
     st.emit(Event::Machines);
-    let notes = spare_notes(&renew_off, &host_from, compacted.then_some(host_from.as_str()), true);
+    let notes = spare_notes(&renew_off, &host_from, compacted.then_some(host_from.as_str()), true, held);
     Ok(json!({"mode": "spare", "name": host_to, "from": host_from, "recycle_on": recycle_on, "ip_nodes": ip_out, "auto_renew_off": !renew_off.is_empty(), "notes": notes}))
 }
 
+/// 进备用后不自动回收的原因（要照常续费）：软路由出口还指着它（或它上面的同机 IP 节点）、宿主机上还有在用的同机 IP 节点；都没有为 None。
+/// 进备用的提示（`spare_notes`）、替换的提示（api/replace.rs）共用
+pub(crate) fn spare_held_reason(exits: bool, live_ip_nodes: bool) -> Option<&'static str> {
+    match (exits, live_ip_nodes) {
+        (false, false) => None,
+        (true, false) => Some("软路由出口还指着它"),
+        (false, true) => Some("同机 IP 节点还在用"),
+        (true, true) => Some("软路由出口还指着它、同机 IP 节点还在用"),
+    }
+}
+
+/// 被扣住（`spare_held_reason` 有原因）的备用机不自动回收、要照常续费：中控这边关掉自动续费（不关的话每到期顺延一期），到期自己登记续费，
+/// 供应商那边的自动扣款不能关（关了就真断了）。接在「自动续费已关」后面
+pub(crate) fn spare_held_tail(reason: &str) -> String { format!("；{reason}，不会自动回收，到期要自己登记续费，供应商那边的自动扣款先别关") }
+
 /// 进备用的提示（预览 `done = false`、结果 `done = true`）：开着的自动续费会关掉（不关的话每到期顺延一期，永远不回收；`auto_renew` 是开着的那几台，
-/// 只有这台自己时不写名字，同机 IP 节点一起进的写上名字）；原团队压缩了编号时，撤销退役（改回原团队）拿到的是那时最小的空号，回不到原来的名字（`renumbered` = 原名）
-fn spare_notes(auto_renew: &[String], host: &str, renumbered: Option<&str>, done: bool) -> Vec<String> {
+/// 只有这台自己时不写名字，同机 IP 节点一起进的写上名字）；`held`：被扣住不回收的原因（`spare_held_reason`），这时不写「到期后照常回收」，
+/// 改写要自己登记续费、供应商那边的自动扣款先别关；原团队压缩了编号时，撤销退役（改回原团队）拿到的是那时最小的空号，回不到原来的名字（`renumbered` = 原名）
+fn spare_notes(auto_renew: &[String], host: &str, renumbered: Option<&str>, done: bool, held: Option<&str>) -> Vec<String> {
     let mut v = vec![];
     if !auto_renew.is_empty() {
         let who = (auto_renew != [host]).then(|| auto_renew.join("、"));
-        v.push(match (done, who) {
-            (true, None) => "自动续费已关闭（供应商那边的自动扣款要自己去关）".to_string(),
-            (true, Some(w)) => format!("{w} 的自动续费已关闭（供应商那边的自动扣款要自己去关）"),
-            (false, None) => "这台开着自动续费：进备用时会关掉，到期后照常回收（供应商那边的自动扣款要自己去关）".to_string(),
-            (false, Some(w)) => format!("{w} 开着自动续费：进备用时会关掉，到期后照常回收（供应商那边的自动扣款要自己去关）"),
+        v.push(match (done, who, held) {
+            (true, None, None) => "自动续费已关闭（供应商那边的自动扣款要自己去关）".to_string(),
+            (true, Some(w), None) => format!("{w} 的自动续费已关闭（供应商那边的自动扣款要自己去关）"),
+            (false, None, None) => "这台开着自动续费：进备用时会关掉，到期后照常回收（供应商那边的自动扣款要自己去关）".to_string(),
+            (false, Some(w), None) => format!("{w} 开着自动续费：进备用时会关掉，到期后照常回收（供应商那边的自动扣款要自己去关）"),
+            (true, None, Some(r)) => format!("自动续费已在中控关闭{}", spare_held_tail(r)),
+            (true, Some(w), Some(r)) => format!("{w} 的自动续费已在中控关闭{}", spare_held_tail(r)),
+            (false, None, Some(r)) => format!("这台开着自动续费：进备用时中控这边会关掉{}", spare_held_tail(r)),
+            (false, Some(w), Some(r)) => format!("{w} 开着自动续费：进备用时中控这边会关掉{}", spare_held_tail(r)),
         });
     }
     if let Some(n) = renumbered {
@@ -1102,15 +1124,18 @@ pub async fn retire_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
         .fetch_all(&mut *conn)
         .await?;
     let auto_renew: Vec<String> = going.iter().filter(|x| on.contains(&x.0)).map(|x| x.1.to_string()).collect();
+    // 软路由出口（先查：被出口指着的不自动回收，进备用的提示要按它写）
+    let exits = crate::routers::exits_using(&st.db, &leaving).await?;
+    // 进备用后不自动回收的原因：出口指着这台或一起进备用的同机 IP 节点（没退役的同机 IP 节点都一起进，没有留在外面在用的）
+    let held = spare_held_reason(leaving.iter().any(|n| exits.contains_key(n)), false);
     let mut spare = json!({
         "ok": eligible.is_ok(), "why": eligible.err(), "team": {"id": spare_id, "name": spare_name}, "to_name": to_name,
         "recycle_on": due.map(crate::spare::recycle_on), "ip_nodes": spare_ip,
-        "notes": spare_notes(&auto_renew, &name, (!renames.is_empty()).then_some(name.as_str()), false),
+        "notes": spare_notes(&auto_renew, &name, (!renames.is_empty()).then_some(name.as_str()), false, held),
     });
     // 软路由出口：按路由归在一起，写明指向的是哪台
     let names: std::collections::HashMap<Uuid, &str> = std::iter::once((id, name.as_str())).chain(ip_nodes.iter().map(|x| (x.0, x.1.as_str()))).collect();
     let mut routers: Vec<(Uuid, String, Vec<Value>)> = vec![];
-    let exits = crate::routers::exits_using(&st.db, &leaving).await?;
     for node in &leaving {
         for (rid, rname, exit) in exits.get(node).into_iter().flatten() {
             let e = json!({"exit": exit, "node": names[node]});

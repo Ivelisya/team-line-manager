@@ -184,6 +184,42 @@ async fn retire_moves_into_spare() {
     assert_eq!((xv["spare_from"].as_str(), xv["lifecycle_reason"].as_str()), (Some("团队1-08"), Some("随宿主机「团队1-07」退役")), "{xv}");
 }
 
+/// 进备用的自动续费提示：软路由出口还指着它（被扣住、到期不自动回收）时，不再劝人去关供应商那边的自动扣款，改写要自己登记续费、供应商那边先别关；
+/// 中控这边的自动续费照样关掉。预览与提交后的结果一致
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn spare_auto_renew_note_does_not_say_cancel_when_exit_holds_it() {
+    let t = setup(false).await;
+    let team = seed_team(&t, "团队1").await;
+    let n = seed_node(&t, team, 1, "203.0.113.71", "active").await;
+    let free = seed_node(&t, team, 2, "203.0.113.72", "active").await;
+    for m in [n, free] {
+        sub(&t, m, "2030-01-01", "UTC").await;
+        sqlx::query("update subscription set auto_renew = true where machine_id = $1").bind(m).execute(&t.st.db).await.unwrap();
+    }
+    let rid = Uuid::now_v7();
+    sqlx::query("insert into router (id, name, tunnel_port) values ($1, '办公室', 23005)").bind(rid).execute(&t.st.db).await.unwrap();
+    let entry = json!({"id": Uuid::now_v7(), "name": "团队1-01 · 线路机1:20001", "node_id": n, "relay_id": Uuid::now_v7(), "node_name": "团队1-01", "relay_name": "线路机1", "port": 20001, "lifecycle": "active"});
+    let snap = json!({"exits": [{"name": "节点01", "entry": entry, "sync": "ok", "linked": true}]});
+    sqlx::query("insert into router_status (router_id, ts, reachable, data, last_ok_at) values ($1, now(), true, $2, now())").bind(rid).bind(snap).execute(&t.st.db).await.unwrap();
+
+    let held_tail = "；软路由出口还指着它，不会自动回收，到期要自己登记续费，供应商那边的自动扣款先别关";
+    let pv = t.get(&format!("/api/v1/machines/{n}/retire")).await;
+    let notes: Vec<&str> = pv["spare"]["notes"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+    assert_eq!(notes[0], format!("这台开着自动续费：进备用时中控这边会关掉{held_tail}"), "{pv}");
+    assert!(!pv.to_string().contains("要自己去关"), "{pv}");
+    // 没有出口指着的一台照旧
+    let pv = t.get(&format!("/api/v1/machines/{free}/retire")).await;
+    assert_eq!(pv["spare"]["notes"][0], "这台开着自动续费：进备用时会关掉，到期后照常回收（供应商那边的自动扣款要自己去关）", "{pv}");
+
+    let r = t.post(&format!("/api/v1/machines/{n}/retire"), json!({"confirm": "团队1-01"})).await;
+    assert_eq!(r["notes"][0], format!("自动续费已在中控关闭{held_tail}"), "{r}");
+    assert_eq!(r["auto_renew_off"], true);
+    let on: bool = sqlx::query_scalar("select auto_renew from subscription where machine_id = $1").bind(n).fetch_one(&t.st.db).await.unwrap();
+    assert!(!on, "中控这边的自动续费照样关掉");
+    let v = t.get(&format!("/api/v1/machines/{n}")).await;
+    assert_eq!(v["recycle_held"], json!(true), "{v}");
+}
+
 /// 撤销退役（宿主机从备用改回原团队）只带与它同一次进备用的 IP 节点：之前单独退役进备用的 IP 节点留在备用（spare_since 不清、仍会自动回收）；
 /// 带走的 IP 节点有进行中的作业时 409，预览与实际一致
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
