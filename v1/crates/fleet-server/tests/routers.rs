@@ -936,6 +936,49 @@ async fn alert_state_load_restores_quiet_exits_down() {
     alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(40)).await.unwrap();
     mock.wait("/hook/l", 1).await;
     assert_eq!(mock.events("/hook/l"), ["firing"]);
+
+    // 判 quiet 看「上次恢复之后有没有报过触发」：从没通知过的、通知时刻不晚于最近一条恢复通知的（恢复后重开、重开时 quiet）是 quiet；
+    // 恢复之后又报过触发的、没恢复过但通知过的不是
+    let open = |notified: &str| {
+        let (db, id, notified) = (t.st.db.clone(), Uuid::now_v7(), notified.to_string());
+        async move {
+            let inc = Uuid::now_v7();
+            sqlx::query(&format!(
+                "insert into incident (id, engine, rule, subject_id, severity, summary, notified_at) values ($1, 'router', 'router_exits_down', $2, 'warning', 's', {notified})"
+            ))
+            .bind(inc)
+            .bind(id)
+            .execute(&db)
+            .await
+            .unwrap();
+            (inc, id)
+        }
+    };
+    let log = |inc: Uuid, kind: &'static str, ago: i64| {
+        let db = t.st.db.clone();
+        async move {
+            sqlx::query("insert into notify_log (incident_id, ok, kind, ts) values ($1, true, $2, now() - make_interval(secs => $3))")
+                .bind(inc)
+                .bind(kind)
+                .bind(ago as f64)
+                .execute(&db)
+                .await
+                .unwrap();
+        }
+    };
+    let (reopened, reopened_id) = open("now() - interval '300 seconds'").await;
+    log(reopened, "firing", 300).await;
+    log(reopened, "resolved", 200).await;
+    let (told_again, told_again_id) = open("now() - interval '30 seconds'").await;
+    log(told_again, "resolved", 200).await;
+    let (told, told_id) = open("now() - interval '30 seconds'").await;
+    log(told, "firing", 30).await;
+    let st = alerts::AlertState::load(&t.st.db).await.unwrap();
+    assert_eq!(
+        (st.is_quiet(reopened_id), st.is_quiet(told_again_id), st.is_quiet(told_id), st.is_quiet(id.parse().unwrap())),
+        (true, false, false, false),
+        "恢复后重开且没再报过触发的补回 quiet；上面已经单独通知过的（没恢复过）不是"
+    );
 }
 
 /// 中控停机的时段不算路由连不上：停之前刚连上过的，恢复后第一轮还没连上不报离线（同 agent）
