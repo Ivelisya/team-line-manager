@@ -132,6 +132,8 @@ pub struct NodeRow {
     pub up: i64,
     /// 月费（USD 分）：在用且有订阅、有汇率的；直出、没价格的为 null
     pub monthly_usd_cents: Option<i64>,
+    /// 被扣住不回收的备用机（软路由出口还指着 / 同机 IP 节点还在用）：照常续费，网页不灰显、计入合计
+    pub held: bool,
     /// 每 GB 业务流量的 USD（月费 ÷ 按本次区间日均折成的 30 天流量）；没有月费或区间内没流量为 null
     pub usd_per_gb: Option<f64>,
     /// 近 `idle.days` 天（含今天）日均业务流量（字节）；直出为 null
@@ -159,9 +161,13 @@ pub struct TeamRow {
     pub nodes: i64,
     /// 其中闲置的
     pub idle: i64,
-    /// 在用节点的月费合计（USD 分）；全都没价格为 null
+    /// 在用节点的月费合计（USD 分）；全都没价格为 null。备用团队只算被扣住不回收的那几台（闲置备用不续费，同首页）
     pub monthly_usd_cents: Option<i64>,
-    /// 在用节点里没价格（没订阅或没汇率）、没算进月费的台数
+    /// 备用团队里被扣住不回收的在用台数（别的团队为 0）；`monthly_usd_cents`、`usd_per_gb`、`unpriced` 在备用团队只按这几台算
+    pub held: i64,
+    /// 这几台近 30 天的业务流量（字节）；别的团队为 0
+    pub held_bytes_30d: i64,
+    /// 在用节点里没价格（没订阅或没汇率）、没算进月费的台数（备用团队只数被扣住的）
     pub unpriced: i64,
     /// 近 30 天业务流量（字节）
     pub bytes_30d: i64,
@@ -301,6 +307,7 @@ pub async fn daily(st: &AppState, days: Option<i64>, team: Option<&str>, machine
     let (all_dates, biz, nic) = &*raw;
     let dates = &all_dates[all_dates.len() - days as usize..];
     let hosts = ip_hosts(&st.db).await?;
+    let held = views::held_ids(st.live.latest());
     let uses = usage_of(&raw, &hosts);
     let fx = crate::fx::current(&st.db).await?;
     let ids: Vec<Uuid> = biz.iter().flat_map(|b| [b.0, b.1]).chain(nic.iter().map(|n| n.0)).collect::<HashSet<_>>().into_iter().collect();
@@ -398,6 +405,7 @@ pub async fn daily(st: &AppState, days: Option<i64>, team: Option<&str>, machine
                 down,
                 up,
                 monthly_usd_cents,
+                held: held.contains(&id),
                 usd_per_gb: usd_per_gb(monthly_usd_cents, down.saturating_add(up).saturating_add(ip_extra.get(&id).copied().unwrap_or(0)), days),
                 avg7: sum7.map(|s| s / IDLE_DAYS),
                 idle: sum7.is_some_and(|s| m.lifecycle == "active" && is_idle(s, m.aged)),
@@ -461,7 +469,7 @@ pub async fn daily(st: &AppState, days: Option<i64>, team: Option<&str>, machine
     for m in ms.iter().filter(|m| m.kind != "relay") {
         let Some(tid) = m.team_id else { continue };
         let i = teams.iter().position(|t| t.id == tid).unwrap_or_else(|| {
-            teams.push(TeamRow { id: tid, name: m.team_name.clone().unwrap_or_default(), spare: m.team_spare, nodes: 0, idle: 0, monthly_usd_cents: None, unpriced: 0, bytes_30d: 0, usd_per_gb: None });
+            teams.push(TeamRow { id: tid, name: m.team_name.clone().unwrap_or_default(), spare: m.team_spare, nodes: 0, idle: 0, monthly_usd_cents: None, held: 0, held_bytes_30d: 0, unpriced: 0, bytes_30d: 0, usd_per_gb: None });
             teams.len() - 1
         });
         let (t, u) = (&mut teams[i], uses.get(&m.id).copied().unwrap_or_default());
@@ -470,17 +478,25 @@ pub async fn daily(st: &AppState, days: Option<i64>, team: Option<&str>, machine
             t.nodes += 1;
             // 备用团队的机器本来就是放着不用的，不标闲置
             t.idle += i64::from(!m.team_spare && is_idle(u.sum7, m.aged));
-            match monthly_usd(m) {
-                Some(c) => t.monthly_usd_cents = Some(t.monthly_usd_cents.unwrap_or(0) + c),
-                // 同机 IP 节点默认不记费用（钱在宿主机订阅上），没订阅的不算「没价格」；有订阅却折不出 USD（没汇率）的照算
-                None if m.host_id.is_some() && m.price.is_none() => {}
-                None => t.unpriced += 1,
+            // 备用团队只有被扣住不回收的几台照常续费，月费、没价格只算它们
+            let is_held = m.team_spare && held.contains(&m.id);
+            t.held += i64::from(is_held);
+            if is_held {
+                t.held_bytes_30d = t.held_bytes_30d.saturating_add(u.own30);
+            }
+            if !m.team_spare || is_held {
+                match monthly_usd(m) {
+                    Some(c) => t.monthly_usd_cents = Some(t.monthly_usd_cents.unwrap_or(0) + c),
+                    // 同机 IP 节点默认不记费用（钱在宿主机订阅上），没订阅的不算「没价格」；有订阅却折不出 USD（没汇率）的照算
+                    None if m.host_id.is_some() && m.price.is_none() => {}
+                    None => t.unpriced += 1,
+                }
             }
         }
     }
     teams.retain(|t| t.nodes > 0 || t.bytes_30d > 0);
     for t in &mut teams {
-        t.usd_per_gb = usd_per_gb(t.monthly_usd_cents, t.bytes_30d, COST_DAYS);
+        t.usd_per_gb = usd_per_gb(t.monthly_usd_cents, if t.spare { t.held_bytes_30d } else { t.bytes_30d }, COST_DAYS);
     }
     Ok(Daily { tz: crate::meta::org_tz(), dates: dates.to_vec(), total, idle: Idle { days: IDLE_DAYS, gb_per_day: IDLE_GB_PER_DAY }, teams, nodes, relays })
 }

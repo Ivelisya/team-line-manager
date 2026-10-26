@@ -130,7 +130,9 @@ export interface TuneParams {
 /** spare：唯一的备用团队（系统管理，不能删、不能取消；里面在用的机器订阅过期满 1 天后自动回收） */
 export interface Team { id: string; name: string; sort_order: number; spare: boolean; node_count: number;
   /** 在用机器的月费合计（USD，同总览） */
-  monthly_usd: UsdTotal }
+  monthly_usd: UsdTotal;
+  /** 备用团队里被扣住不回收（出口还指着 / 同机 IP 节点还在用）的机器的月费与台数：照常续费、计入合计；别的团队为空、0。旧中控没有 */
+  monthly_usd_held?: UsdTotal; held_count?: number }
 /** 月费合计（USD）：cents 是能折算部分的合计；by_currency 各原币种的金额、折成的 USD 与所用汇率；unconverted 没有汇率、没算进合计的 */
 export interface UsdTotal {
   cents: number;
@@ -448,9 +450,13 @@ export interface TrafficDailyNode {
   avg7: number | null;
   /** 闲置：在用、上架满 idle.days 天、avg7 低于 idle.gb_per_day（阈值只在服务端定义） */
   idle: boolean;
+  /** 被扣住不回收的备用机（软路由出口还指着 / 同机 IP 节点还在用）：照常续费，月费计入合计、不灰显 */
+  held: boolean;
 }
 /** 团队成本（近 30 天，不受团队筛选影响）：unpriced = 在用节点里没价格、没算进月费的台数 */
-export interface TrafficDailyTeam { id: string; name: string; spare: boolean; nodes: number; idle: number; monthly_usd_cents: number | null; unpriced: number; bytes_30d: number; usd_per_gb: number | null }
+export interface TrafficDailyTeam { id: string; name: string; spare: boolean; nodes: number; idle: number; monthly_usd_cents: number | null; unpriced: number; bytes_30d: number; usd_per_gb: number | null;
+  /** 备用团队里被扣住不回收的在用台数及它们近 30 天的流量（别的团队为 0）；备用团队的月费、没价格台数、USD/GB 只按这几台算（闲置备用不续费） */
+  held: number; held_bytes_30d: number }
 /** 线路机：每天的网卡与计费量（daily），经过它的业务流量（business） */
 export interface TrafficDailyRelay { id: string; name: string; lifecycle: Lifecycle; country: string | null; rule: TrafficRule; rx: number; tx: number; billed: number; down: number; up: number; daily: DailyNic[]; business: DailyBiz[] }
 export interface TrafficDaily { tz: string; dates: string[]; total: DailyBiz[]; idle: { days: number; gb_per_day: number }; teams: TrafficDailyTeam[]; nodes: TrafficDailyNode[]; relays: TrafficDailyRelay[] }

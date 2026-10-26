@@ -26,6 +26,11 @@ pub struct Team {
     /// 在用（active）机器的月费合计，折成 USD（同总览的 monthly_usd：逐台折算后相加，没有汇率的单列，见 fx.rs）
     #[sqlx(skip)]
     monthly_usd: crate::fx::Total,
+    /// 备用团队里被扣住不回收的（软路由出口还指着 / 同机 IP 节点还在用，视图 recycle_held）在用机器：照常续费，月费算进首页合计，所以单列它们的月费与台数；别的团队为空、0
+    #[sqlx(skip)]
+    monthly_usd_held: crate::fx::Total,
+    #[sqlx(skip)]
+    held_count: i64,
 }
 
 pub async fn list_teams(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
@@ -37,18 +42,23 @@ pub async fn list_teams(_a: Actor, State(st): State<AppState>) -> ApiResult<Json
     .fetch_all(&st.db)
     .await?;
     // 各台的生效价格（同机器视图的 subscription：有订阅才算），按周期折成每月再折 USD
-    let subs: Vec<(Uuid, i32, String, String)> = sqlx::query_as(
-        "select m.team_id, e.price_cents, e.currency, e.cycle::text from machine m join subscription_eff e on e.machine_id = m.id
+    let subs: Vec<(Uuid, Uuid, i32, String, String)> = sqlx::query_as(
+        "select m.team_id, m.id, e.price_cents, e.currency, e.cycle::text from machine m join subscription_eff e on e.machine_id = m.id
          where m.lifecycle = 'active' and m.team_id is not null",
     )
     .fetch_all(&st.db)
     .await?;
     let fx = crate::fx::current(&st.db).await?;
-    for (team, price, currency, cycle) in subs {
+    let held = crate::views::held_ids(st.live.latest());
+    for (team, id, price, currency, cycle) in subs {
         let monthly = meta::monthly_cents(price, &cycle);
         if let Some(t) = v.iter_mut().find(|t| t.id == team) {
             let (usd, rate) = crate::fx::convert(&fx, monthly, &currency);
             t.monthly_usd.add(&currency, monthly, usd.zip(rate));
+            if t.spare && held.contains(&id) {
+                t.monthly_usd_held.add(&currency, monthly, usd.zip(rate));
+                t.held_count += 1;
+            }
         }
     }
     Ok(ok(v))
