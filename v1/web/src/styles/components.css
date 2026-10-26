@@ -432,7 +432,8 @@
 .drawer-sub { font-size: var(--fs-label); } /* 标题下一行（IP · 同机 / 套餐）：其余同 .dialog-desc */
 .drawer-tabs { flex: none; padding: 0 var(--sp-16); overflow: hidden; scrollbar-gutter: stable; } /* 同正文留出滚动条槽：页签下的线与正文右缘对齐 */
 .drawer-body { flex: 1 1 auto; overflow-y: auto; scrollbar-gutter: stable; padding: var(--sp-16); display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-16); align-content: start; } /* 滚动条槽位常驻：切页签、内容长短变化时正文不左右横跳 */
-@media (max-width: 600px) { :root { --drawer-w: 100vw; } }
+/* 窄屏占满：用 100% 不用 100vw（100vw 含常驻的滚动条槽，抽屉左边会被多出的那一截裁掉） */
+@media (max-width: 600px) { :root { --drawer-w: 100%; } }
 /* 页签里吸顶的一条（主机页签的时间范围）：贴在抽屉正文滚动区的顶边（抵掉正文的上内边距），毛玻璃底，滚过去的曲线从下面淡淡透出 */
 .tab-sticky {
   position: sticky; top: calc(-1 * var(--sp-16)); z-index: 3; display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8);
