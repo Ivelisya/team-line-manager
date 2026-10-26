@@ -436,18 +436,8 @@ async fn plan(st: &AppState, conn: &mut PgConnection, old_id: Uuid, b: &ReplaceI
     if to_team.as_ref().is_some_and(|t| !t.2) {
         warnings.push("旧节点要去的不是备用团队：不会到期自动回收".into());
     } else if to_team.is_some() {
-        // 进备用之后什么时候回收（spare.rs）：没有订阅的永远不回收，已过期满 1 天的下一轮维护就回收；开着的自动续费会关掉（machines::patch_tx）
-        let sub: Option<(time::Date, time::Date, bool)> =
-            sqlx::query_as("select due_date, local_date(billing_tz), auto_renew from subscription_eff where machine_id = $1").bind(old.id).fetch_optional(&mut *conn).await?;
-        match sub {
-            None => warnings.push(format!("旧节点「{old_name}」没有订阅：进备用后没有到期日，不会自动回收（不要了就之后「立即回收」）")),
-            Some((due, today, _)) if crate::spare::expired(today, due) => {
-                warnings.push(format!("旧节点「{old_name}」的订阅已过期满 1 天：进备用后下一轮维护（一小时内）就自动回收；还想留几天对账，先续费或改到期日"))
-            }
-            Some((_, _, true)) => warnings.push(format!("旧节点「{old_name}」开着自动续费：进备用时会关掉，到期后照常回收（供应商那边的自动扣款要自己去关）")),
-            Some(_) => {}
-        }
-        // 替换不带走旧节点上的同机 IP 节点：它们留在原团队继续用，宿主机退役会连带它们，所以旧节点进备用后不会自动回收（视图 live_ip_nodes）
+        // 替换不带走旧节点上的同机 IP 节点：它们留在原团队继续用，宿主机退役会连带它们，所以旧节点进备用后不会自动回收（视图 live_ip_nodes），
+        // 这时「什么时候回收」那几条（过期、自动续费后照常回收）都不成立，只留这一句
         let live_ips: Vec<String> = sqlx::query_scalar(
             "select display_name(m.kind::text, m.label, t.name, m.number) from machine m left join team t on t.id = m.team_id
              where m.host_id = $1 and m.lifecycle <> 'retired' and not coalesce(t.spare, false) order by t.sort_order nulls first, t.name, m.number, m.id",
@@ -455,8 +445,23 @@ async fn plan(st: &AppState, conn: &mut PgConnection, old_id: Uuid, b: &ReplaceI
         .bind(old.id)
         .fetch_all(&mut *conn)
         .await?;
+        // 进备用之后什么时候回收（spare.rs）：没有订阅的永远不回收，已过期满 1 天的下一轮维护就回收；开着的自动续费会关掉（machines::patch_tx）
+        let sub: Option<(time::Date, time::Date, bool)> =
+            sqlx::query_as("select due_date, local_date(billing_tz), auto_renew from subscription_eff where machine_id = $1").bind(old.id).fetch_optional(&mut *conn).await?;
         if !live_ips.is_empty() {
+            if sub.is_some_and(|s| s.2) {
+                warnings.push(format!("旧节点「{old_name}」开着自动续费：进备用时会关掉（供应商那边的自动扣款要自己去关），之后到期要自己登记续费"));
+            }
             warnings.push(format!("旧节点上的同机 IP 节点 {} 仍在用：旧节点进备用后不会自动回收，要处理先退役或换走这些 IP 节点", live_ips.join("、")));
+        } else {
+            match sub {
+                None => warnings.push(format!("旧节点「{old_name}」没有订阅：进备用后没有到期日，不会自动回收（不要了就之后「立即回收」）")),
+                Some((due, today, _)) if crate::spare::expired(today, due) => {
+                    warnings.push(format!("旧节点「{old_name}」的订阅已过期满 1 天：进备用后下一轮维护（一小时内）就自动回收；还想留几天对账，先续费或改到期日"))
+                }
+                Some((_, _, true)) => warnings.push(format!("旧节点「{old_name}」开着自动续费：进备用时会关掉，到期后照常回收（供应商那边的自动扣款要自己去关）")),
+                Some(_) => {}
+            }
         }
     }
 

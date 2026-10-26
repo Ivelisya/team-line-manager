@@ -140,7 +140,7 @@ function RenameSection({ m }: { m: MachineView }) {
         <Field label="国家" className="span-2" info="显示在名字前的国旗。默认按 IP 判断，不准可以手动选"><CountrySelect value={country} onChange={setCountry} autoLabel={autoCountry} disabled={patch.isPending} aria-label="国家或地区" /></Field>
         <Field label="备注" className="span-2" error={note.length > NOTE_MAX ? `备注最多 ${NOTE_MAX} 个字符` : undefined}><Textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="例如：客户专用、合同到 2027 年" disabled={patch.isPending} /></Field>
         {!!alsoIps?.length && <div className="span-2"><Note>同机 IP 节点一起移{toSpare && '入备用'}：{alsoIps.map((x, i) => <React.Fragment key={x.machine_id}>{i > 0 && '、'}<span className="num">{x.old_name} → <b>{x.new_name}</b></span></React.Fragment>)}</Note></div>}
-        {!!also?.length && <div className="span-2"><RenameNote renames={also} tip={`${m.team!.name} 少了这台，后面的节点前移补号，编号保持连续`} /></div>}
+        {!!also?.length && <div className="span-2"><RenameNote renames={also} tip="原团队少了这几台，后面的节点前移补号，编号保持连续" /></div>}
         {spareBlocked && <div className="span-2"><Note tone="bad">不能改到备用团队：{spareBlocked}。要进备用请用「退役」</Note></div>}
         {toSpare && !spareBlocked && exitsLeft === 0 && <div className="span-2"><Note tone="warn">备用团队的机器不再续费：订阅过期满 1 天自动回收</Note></div>}
         {toSpare && !spareBlocked && exitsLeft > 0 && <div className="span-2"><Note tone="warn">{exitsLeft} 个软路由出口还指向{alsoIps?.length ? '它和一起移入的同机 IP 节点' : '它'}，客户会继续用（出口指着时不自动回收）；要换机器请用替换</Note></div>}

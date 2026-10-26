@@ -230,6 +230,66 @@ async fn undo_retire_only_takes_ip_nodes_retired_with_the_host() {
     assert_eq!(spare_since(x).await, x_since, "X 的 spare_since 不变");
 }
 
+/// 宿主机和别的团队的同机 IP 节点一起进备用，撤销退役时各回进备用前的团队（spare_from_team_id），不一律拉进宿主机的团队：
+/// 团队 2 的 IP 节点回团队 2 取最小空号（团队 2 不压缩）；那个团队已删除的留在备用（预览写明）；旧数据没记原团队的跟宿主机走；预览与实际一致
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn undo_retire_sends_ip_nodes_back_to_their_own_teams() {
+    let t = setup(false).await;
+    let (t1, t2, t3) = (seed_team(&t, "团队1").await, seed_team(&t, "团队2").await, seed_team(&t, "团队3").await);
+    let host = seed_vps(&t, t1, 1, "203.0.113.51", None).await;
+    let x = seed_vps(&t, t1, 2, "203.0.113.52", Some(host)).await;
+    let q = seed_vps(&t, t2, 1, "203.0.113.53", None).await;
+    let z = seed_vps(&t, t2, 2, "203.0.113.54", Some(host)).await;
+    let v = seed_vps(&t, t2, 3, "203.0.113.55", Some(host)).await;
+    let w = seed_vps(&t, t3, 1, "203.0.113.56", Some(host)).await;
+    for m in [host, x, q, z, v, w] {
+        sub(&t, m, "2030-01-01", "UTC").await;
+    }
+    let r = t.post(&format!("/api/v1/machines/{host}/retire"), json!({"confirm": "团队1-01"})).await;
+    assert_eq!(r["mode"], "spare", "{r}");
+    assert_eq!(r["ip_nodes"].as_array().unwrap().len(), 4, "跨团队的 IP 节点一起进备用：{r}");
+    let from_team = |m: Uuid| {
+        let db = t.st.db.clone();
+        async move { sqlx::query_scalar::<_, Option<Uuid>>("select spare_from_team_id from machine where id = $1").bind(m).fetch_one(&db).await.unwrap() }
+    };
+    for (m, team) in [(host, t1), (x, t1), (z, t2), (v, t2), (w, t3)] {
+        assert_eq!(from_team(m).await, Some(team), "进备用时记下原团队");
+    }
+    assert_eq!(from_team(q).await, None, "没进备用的不记");
+    assert_eq!(t.get(&format!("/api/v1/machines/{q}")).await["name"], "团队2-01", "团队 2 压缩后 q 还是 01");
+    // 团队 3 删掉（空了）；V 是旧数据（没记原团队）
+    sqlx::query("delete from team where id = $1").bind(t3).execute(&t.st.db).await.unwrap();
+    sqlx::query("update machine set spare_from_team_id = null where id = $1").bind(v).execute(&t.st.db).await.unwrap();
+
+    // 预览：X 回团队 1（宿主机占 01）、Z 回团队 2 的最小空号、V 旧数据跟宿主机去团队 1、W 留在备用
+    let pv = t.get(&format!("/api/v1/machines/{host}/rename-preview?team_id={t1}")).await;
+    let to: std::collections::HashMap<String, String> =
+        pv["ip_nodes"].as_array().unwrap().iter().map(|i| (i["machine_id"].as_str().unwrap().to_string(), i["new_name"].as_str().unwrap().to_string())).collect();
+    assert_eq!(to.len(), 3, "{pv}");
+    assert_eq!(to[&z.to_string()], "团队2-02", "{pv}");
+    let mut t1_names = [to[&x.to_string()].clone(), to[&v.to_string()].clone()];
+    t1_names.sort();
+    assert_eq!(t1_names, ["团队1-02", "团队1-03"], "{pv}");
+    assert!(pv["warnings"].to_string().contains("原团队已不在，留在备用"), "{pv}");
+    assert_eq!(pv["name"], "团队1-01", "{pv}");
+
+    let rev = t.get(&format!("/api/v1/machines/{host}")).await["revision"].clone();
+    let (s, r) = t.req("PATCH", &format!("/api/v1/machines/{host}"), Some(json!({"revision": rev, "team_id": t1})), None).await;
+    assert_eq!((s, r["data"]["name"].clone()), (StatusCode::OK, json!("团队1-01")), "{r}");
+    let name = |m: Uuid| {
+        let t = &t;
+        async move { t.get(&format!("/api/v1/machines/{m}")).await }
+    };
+    for (m, expect) in [(x, to[&x.to_string()].as_str()), (v, to[&v.to_string()].as_str()), (z, "团队2-02")] {
+        let mv = name(m).await;
+        assert_eq!((mv["name"].as_str(), mv["spare"].clone(), mv["spare_since"].clone()), (Some(expect), json!(false), Value::Null), "{mv}");
+        assert_eq!(from_team(m).await, None, "移出备用清掉原团队");
+    }
+    assert_eq!(name(q).await["name"], "团队2-01", "团队 2 里原有的不动");
+    let wv = name(w).await;
+    assert_eq!((wv["spare"].clone(), wv["spare_since"].is_string()), (json!(true), true), "原团队已删的 IP 节点留在备用：{wv}");
+}
+
 /// 到期判断：账单时区里「到期日 + 1 天」那天结束后才回收；不同时区各按各的；非备用、没订阅、退役中的不动；有进行中作业的这一轮跳过；不重复建作业
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn expiry_boundaries_by_billing_timezone() {
@@ -528,6 +588,31 @@ async fn migration_0042_backfills_spare_columns_from_audit() {
     );
     let rules: Vec<String> = sqlx::query_scalar("select rule from silence order by ends_at").fetch_all(&t.st.db).await.unwrap();
     assert_eq!(rules, ["renewal_overdue", "renewal_due"], "结束了的不动");
+}
+
+/// 迁移 0092：已在备用团队里的机器（有 spare_since）按最近一条改进备用团队的改名审计回填 spare_from_team_id（before.team_id）；
+/// 没有审计的、没进备用的留空（撤销时跟宿主机走），可重复执行
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn migration_0092_backfills_spare_from_team() {
+    let t = setup(false).await;
+    let (team, sp) = (seed_team(&t, "团队2").await, spare_team(&t).await);
+    let (a, b, c) = (seed_node(&t, sp, 1, "203.0.113.61", "active").await, seed_node(&t, sp, 2, "203.0.113.62", "active").await, seed_node(&t, sp, 3, "203.0.113.63", "active").await);
+    sqlx::query("update machine set spare_since = now() where id = any($1)").bind(vec![a, b]).execute(&t.st.db).await.unwrap();
+    let audit = |m: Uuid, ts: &'static str, detail: Value| {
+        sqlx::query("insert into audit_log (ts, actor, action, target_kind, target_id, detail) values ($1::timestamptz, 'u', 'machine.rename', 'machine', $2, $3)")
+            .bind(ts)
+            .bind(m)
+            .bind(detail)
+            .execute(&t.st.db)
+    };
+    // A：团队2 → 备用，之后备用里换过号（before 也是备用，不算）
+    audit(a, "2026-10-01T00:00:00Z", json!({"before": {"team_id": team, "number": 7}, "after": {"team_id": sp, "number": 1}})).await.unwrap();
+    audit(a, "2026-10-05T00:00:00Z", json!({"before": {"team_id": sp, "number": 3}, "after": {"team_id": sp, "number": 1}})).await.unwrap();
+    for _ in 0..2 {
+        sqlx::raw_sql(include_str!("../../../../migrations/0092_machine_spare_from_team.sql")).execute(&t.st.db).await.unwrap();
+    }
+    let got: Vec<(Uuid, Option<Uuid>)> = sqlx::query_as("select id, spare_from_team_id from machine where id = any($1) order by number").bind(vec![a, b, c]).fetch_all(&t.st.db).await.unwrap();
+    assert_eq!(got, [(a, Some(team)), (b, None), (c, None)]);
 }
 
 /// 旧面板导入：默认只预演；同一个 source_id 导两次只有一行；IP 或（供应商, 供应商编号）对上面板里还没回收的机器的跳过并说明；格式不对 400
@@ -859,6 +944,8 @@ async fn team_change_previews_warn_when_effective_policy_changes_for_pointed_nod
     let host = seed_vps(&t, a, 1, "203.0.113.71", None).await;
     let ip = seed_vps(&t, a, 2, "203.0.113.72", Some(host)).await;
     let quiet_node = seed_vps(&t, a, 3, "203.0.113.73", None).await;
+    // 宿主机上还有一台在团队2 的同机 IP 节点（团队2 用默认策略，进备用前后策略一样）：按它自己的团队比较，不跟宿主机比
+    let ip_b = seed_vps(&t, b, 1, "203.0.113.74", Some(host)).await;
     for m in [host, quiet_node] {
         sub(&t, m, "2030-01-01", "UTC").await;
     }
@@ -872,7 +959,7 @@ async fn team_change_previews_warn_when_effective_policy_changes_for_pointed_nod
     sqlx::query("insert into router (id, name, tunnel_port) values ($1, '办公室', 23004)").bind(rid).execute(&t.st.db).await.unwrap();
     let point = |node: Uuid, name: &str| json!({"id": Uuid::now_v7(), "name": name, "node_id": node, "relay_id": Uuid::now_v7(), "node_name": name, "relay_name": "线路机1", "port": 20001, "lifecycle": "active"});
     let exit = |name: &str, entry: Value| json!({"name": name, "entry": entry, "sync": "ok", "linked": true});
-    let snap = json!({"exits": [exit("节点01", point(host, "团队1-01")), exit("节点02", point(ip, "团队1-02"))]});
+    let snap = json!({"exits": [exit("节点01", point(host, "团队1-01")), exit("节点02", point(ip, "团队1-02")), exit("节点03", point(ip_b, "团队2-01"))]});
     sqlx::query("insert into router_status (router_id, ts, reachable, data, last_ok_at) values ($1, now(), true, $2, now())").bind(rid).bind(snap).execute(&t.st.db).await.unwrap();
 
     // 改团队：宿主机和随它走的 IP 节点各一句；没有出口指着的节点不提
@@ -896,6 +983,11 @@ async fn team_change_previews_warn_when_effective_policy_changes_for_pointed_nod
     // 移进备用团队的 rename-preview 同样给 warnings（备用团队在 team_id 里）
     let pv = t.get(&format!("/api/v1/machines/{ip}/rename-preview?team_id={sp}")).await;
     assert_eq!(pv["warnings"].as_array().unwrap().len(), 1, "{pv}");
+    // 宿主机移进备用：团队2 的 IP 节点（默认 → 默认）不提，只有宿主机和团队1 的 IP 节点各一句
+    let pv = t.get(&format!("/api/v1/machines/{host}/rename-preview?team_id={sp}")).await;
+    let w: Vec<&str> = pv["warnings"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+    assert_eq!(w.len(), 2, "{pv}");
+    assert!(w[0].starts_with("团队1-01：") && w[1].starts_with("团队1-02：") && !pv["warnings"].to_string().contains("团队2-01"), "{pv}");
     // 团队1 改回默认：策略一样，不再提
     sqlx::query("update policy set mode = 'observe' where scope = 'team' and scope_id = $1").bind(a).execute(&t.st.db).await.unwrap();
     let pv = t.get(&format!("/api/v1/machines/{host}/rename-preview?team_id={b}")).await;

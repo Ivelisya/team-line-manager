@@ -137,11 +137,13 @@ export interface UsdTotal {
   by_currency: { currency: string; cents: number; usd_cents: number; usd_per_unit: number }[];
   unconverted: { currency: string; cents: number }[];
 }
-/** GET /billing/due：未来待付清单。groups 按 供应商 × 到期日 分组（不含备用团队、自动续费的）；auto 开了自动续费的（到期后自动顺延，不算待付） */
+/** GET /billing/due：未来待付清单。groups 按 供应商 × 到期日 分组（不含闲置备用、自动续费的；备用团队里被出口指着 / 有在用 IP 节点的备用机在内，见 spare_hold）；auto 开了自动续费的（到期后自动顺延，不算待付） */
 export interface DueMachine {
   id: string; name: string; kind: Kind; due_date: string; due_days: number; billing_tz?: string; cycle: Cycle; price_cents: number; currency: string; price_usd_cents: number | null;
   /** 续不续费的依据（近 30 天）：月费（USD 分）、业务流量（字节）、月费 ÷ 流量、TCP 可用率 %（没有探测为 null）、闲置与近 7 天日均业务流量（字节） */
   monthly_usd_cents: number | null; bytes_30d: number; usd_per_gb: number | null; avail_pct: number | null; idle: boolean; avg7: number;
+  /** 备用团队里的机器；spare_hold：还被软路由出口指着 / 上面有在用同机 IP 节点所以不自动回收、照常续费的原因（普通机器与闲置备用为 null）。旧中控没有 */
+  spare?: boolean; spare_hold?: string | null;
 }
 export interface DueProvider { id: string | null; name: string | null; panel_url: string | null }
 /** 按 供应商 × 到期日 × 账单时区 分组：剩余天数按账单时区的今天算（同一天到期、时区不同的会差一天） */
@@ -189,7 +191,7 @@ export interface Overview {
   monthly_usd: UsdTotal;
   /** 月费合计里的台数：在用、不在备用团队、有订阅的（正好是 monthly_usd 加起来的那些台）。旧中控没有 */
   paid_machines?: number;
-  /** 备用团队的机器的月费小计（不续费，不在 monthly_usd 里）；count = 备用团队里有订阅的在用机器台数。旧中控没有 */
+  /** 闲置备用的月费小计（不续费，不在 monthly_usd 里）；count = 闲置备用里有订阅的台数（备用团队里被出口指着 / 有在用 IP 节点的照常续费，算在 monthly_usd 里）。旧中控没有 */
   monthly_usd_spare?: UsdTotal & { count: number };
   /** counted_from：本月数据不完整时的起点（RFC 3339，agent 接入晚于月初），完整则 null */
   traffic_month: { up: number; down: number; counted_from: string | null }; net_rx_bps: number; net_tx_bps: number;

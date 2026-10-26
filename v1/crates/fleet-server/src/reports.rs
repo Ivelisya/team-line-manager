@@ -9,8 +9,8 @@
 //! 断线：小时汇总里某个整点小时出口探测失败 `OUTAGE_MIN_FAILS` 次以上就算断线的一小时，连着的小时合成一次；最长一次按小时算（原始探测只留几天，
 //! 月度窗口只能用小时汇总）。告警次数是窗口内（组织时区的自然日起止）这台机器上可用性相关规则（`AVAILABILITY_RULES`）开出的告警条数，
 //! 30 分钟内复发合并进原告警的也算（`reopen_count`，同告警页的次数）。警告级的 tcp_fail（TCP 偶发失败、出口正常，health::probe_reasons）不算：
-//! 只数严重的：告警 detail 里 `critical` 标记（incident::reconcile 在开、升级、重开为严重时并入，只增不减）为准，复发重开时 severity 会被改成本次的、不能看它；
-//! 旧数据没有标记时退回 severity = 'critical'。
+//! 只数严重的：按告警 detail 里的 `critical_count`（incident::reconcile 在开为严重、警告升到严重、重开为严重时各 +1）求和，复发重开时 severity 会被改成本次的、不能看它；
+//! 旧数据没有这个数时退回原规则（有 `critical` 标记或 severity = 'critical' 的，算 1 + reopen_count 次），见 `incident::CRIT_COUNT_SQL`。
 //!
 //! 月报：总流量、月费合计、USD/GB 最高的 3 台、可用率最差的 3 台、告警次数前 3 的规则、即将到期的台数，
 //! 走通知发送队列（`notify::enqueue`，`Kind::Report`），只发给开了「月报」的渠道。
@@ -224,9 +224,11 @@ pub async fn uptime(st: &AppState, w: &Window) -> ApiResult<Value> {
         o.1 = o.1.max(len);
     }
     let incidents: HashMap<Uuid, i64> = sqlx::query_as::<_, (Uuid, i64)>(
-        "select subject_id, count(*)::bigint + coalesce(sum(reopen_count), 0)::bigint from incident
-         where engine = 'machine' and subject_id = any($1) and rule = any($4) and (rule <> 'tcp_fail' or detail ? 'critical' or severity = 'critical')
-           and opened_at >= $2 and opened_at < $3 group by 1",
+        &format!(
+            "select subject_id, sum(case when rule <> 'tcp_fail' then 1 + reopen_count else {} end)::bigint from incident
+             where engine = 'machine' and subject_id = any($1) and rule = any($4) and opened_at >= $2 and opened_at < $3 group by 1",
+            crate::incident::CRIT_COUNT_SQL
+        ),
     )
     .bind(&ids)
     .bind(from)
@@ -391,7 +393,7 @@ pub async fn monthly(st: &AppState, month: Option<&str>) -> ApiResult<Value> {
     let top_rules: Vec<Value> = rules.iter().map(|(r, c)| json!({"rule": r, "name": meta::rule_label(r), "count": c})).collect();
 
     let ov = views::overview(st).await?;
-    // 月费合计里的台数直接读总览的 paid_machines（在用、非备用团队、有订阅的）
+    // 月费合计里的台数直接读总览的 paid_machines（在用、不是闲置备用、有订阅的）
     let report = json!({
         "month": month_str(first), "from": w.from, "to": w.to, "tz": meta::org_tz(),
         "traffic": {"down": down, "up": up, "total": down.saturating_add(up)},
@@ -418,7 +420,7 @@ fn text_of(r: &Value) -> String {
         r["monthly_usd"]["unconverted"].as_array().into_iter().flatten().map(|u| format!("{} {:.2}", u["currency"].as_str().unwrap_or(""), i(&u["cents"]) as f64 / 100.0)).collect();
     let extra = if unconv.is_empty() { String::new() } else { format!("；另有 {} 没有汇率、未折算", unconv.join("、")) };
     let sp = &r["monthly_usd_spare"];
-    let spare = if i(&sp["count"]) > 0 { format!("；另有备用 {} 台 {}，不再续费，不在合计里", i(&sp["count"]), money(i(&sp["cents"]))) } else { String::new() };
+    let spare = if i(&sp["count"]) > 0 { format!("；另有闲置备用 {} 台 {}，不再续费，不在合计里", i(&sp["count"]), money(i(&sp["cents"]))) } else { String::new() };
     l.push(format!("月费合计：{}（在用 {} 台，按当前订阅折成 USD）{extra}{spare}", money(i(&r["monthly_usd"]["cents"])), i(&r["machines"])));
     let list = |title: &str, rows: Vec<String>| {
         if rows.is_empty() {

@@ -360,8 +360,8 @@ async fn resolve_noted_waits_for_maintenance_like_resolve() {
     assert_eq!(t.count("select count(*) from incident where rule = 'central_test_flap' and detail->>'closed_by' = 'spare'").await, 1);
 }
 
-/// detail 里的 critical 标记：开、升级、重开为严重时并入，只增不减（重开直接写本次的 severity，复发时严重度会被改低，「只数严重的」要看这个标记）；
-/// 标记不算 detail 变了（不会每轮都改一次）；只出现过警告的没有
+/// detail 里的 critical 标记与 critical_count：开、升级、重开为严重时标记并入（只增不减）、次数 +1（重开直接写本次的 severity，复发时严重度会被改低，
+/// 「只数严重的」按次数求和）；两个都不算 detail 变了（不会每轮都改一次）；只出现过警告的没有
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn critical_marker_survives_reopen_and_detail_changes() {
     let t = setup().await;
@@ -391,19 +391,24 @@ async fn critical_marker_survives_reopen_and_detail_changes() {
     run(a, "warning", true, at(0)).await;
     assert_eq!(of(a).await, ("warning".to_string(), json!({"name": "x"})));
     assert_eq!(run(a, "warning", true, at(30)).await.updated, 0);
-    // 升级为严重：并入标记；之后同样的 detail 不算变了
+    // 升级为严重：并入标记、次数 1；之后同样的 detail 不算变了
     run(a, "critical", true, at(60)).await;
-    assert_eq!(of(a).await, ("critical".to_string(), json!({"name": "x", "critical": true})));
+    assert_eq!(of(a).await, ("critical".to_string(), json!({"name": "x", "critical": true, "critical_count": 1})));
     assert_eq!(run(a, "critical", true, at(90)).await.updated, 0);
     // 恢复后 30 分钟内复发，这次只是警告：severity 被改成警告，标记还在
     run(a, "warning", false, at(120)).await;
     assert_eq!(state(&t).await[0].1, "resolved");
     run(a, "warning", true, at(180)).await;
-    assert_eq!(of(a).await, ("warning".to_string(), json!({"name": "x", "critical": true})));
+    assert_eq!(of(a).await, ("warning".to_string(), json!({"name": "x", "critical": true, "critical_count": 1})), "重开为警告不加次数");
     assert_eq!(run(a, "warning", true, at(210)).await.updated, 0);
+    // 再恢复、再复发这次是严重的：次数 +1
+    run(a, "warning", false, at(240)).await;
+    run(a, "critical", true, at(300)).await;
+    assert_eq!(of(a).await, ("critical".to_string(), json!({"name": "x", "critical": true, "critical_count": 2})));
+    assert_eq!(run(a, "critical", true, at(330)).await.updated, 0);
     // 一开始就是严重的：开的时候就带标记；重开为严重的也带
     run(b, "critical", true, at(0)).await;
-    assert_eq!(of(b).await.1, json!({"name": "x", "critical": true}));
+    assert_eq!(of(b).await.1, json!({"name": "x", "critical": true, "critical_count": 1}));
     // 只出现过警告的一直没有
     run(c, "warning", true, at(0)).await;
     assert_eq!(of(c).await.1, json!({"name": "x"}));

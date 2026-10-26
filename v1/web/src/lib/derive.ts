@@ -322,12 +322,12 @@ export function quotaTight(list: MachineView[]) {
 }
 /** 集群状态在线率格条的悬停：离线（agent 不再上报）的机器名，同 overview.offline 的口径（同机 IP 节点随宿主机的 agent，宿主机离线它们也各计一台） */
 export const offlineNames = (list: MachineView[]) => list.filter((m) => m.agent && !m.agent.online).map((m) => m.name);
-/** 即将到期（due_state = soon，不含备用团队）里最近的一台（首页 KPI「即将到期」的说明行）；没有为 null */
+/** 即将到期（due_state = soon，不含闲置备用；备用团队里被出口指着、有在用 IP 节点的照常续费）里最近的一台（首页 KPI「即将到期」的说明行）；没有为 null */
 export function nextDue(list: MachineView[]) {
   let top: { id: string; name: string; days: number } | null = null;
   for (const m of list) {
     const s = m.subscription;
-    if (m.lifecycle !== 'active' || m.spare || s?.due_state !== 'soon') continue;
+    if (m.lifecycle !== 'active' || isIdleSpare(m) || s?.due_state !== 'soon') continue;
     if (!top || s.due_days < top.days) top = { id: m.id, name: m.name, days: s.due_days };
   }
   return top;

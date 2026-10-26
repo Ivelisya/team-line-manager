@@ -42,9 +42,9 @@ const COST_LINK = '/nodes?sort=-cost';
 const TRAFFIC_LINK = '/nodes?sort=-traffic';
 /** 算正常的：只有故障算异常，降级（照常服务、只是有提醒）与维护都算正常；未知（还判断不了）两头都不算 */
 const normal = (c: Counts) => c.total - c.down - c.unknown;
-/** 两个口径：闲置备用 = 备用团队里没有软路由出口指向、上面也没有在用同机 IP 节点的机器（o.spare）；备用团队的付费机器 = 备用团队里有订阅的（monthly_usd_spare.count），含还被出口指向的 */
-const IDLE_SPARE_TIP = '闲置备用：备用团队里没有软路由出口指向、上面也没有在用同机 IP 节点的机器，等到期放生。不算在节点总数和故障里，也不开告警';
-const SPARE_COST_TIP = '备用团队里有订阅的机器（含还被软路由出口指向、上面还有在用同机 IP 节点的），等到期放生，不再续费，不在左边的合计里，单独列在这里';
+/** 闲置备用 = 备用团队里没有软路由出口指向、上面也没有在用同机 IP 节点的机器（o.spare、monthly_usd_spare.count 同一批，有订阅的才计月费）。备用团队里还被出口指着、有在用 IP 节点的不闲置：照常告警、续费，月费算进合计 */
+const IDLE_SPARE_TIP = '闲置备用：备用团队里没有软路由出口指向、上面也没有在用同机 IP 节点的机器，等到期放生。不算在节点总数和故障里，也不开告警。备用团队里还被出口指着、或有在用 IP 节点的机器不算闲置，照常告警和续费';
+const SPARE_COST_TIP = '闲置备用（备用团队里没有软路由出口指向、上面也没有在用同机 IP 节点的机器）里有订阅的，等到期放生，不再续费，不在左边的合计里，单独列在这里。备用团队里还被出口指着、有在用 IP 节点的机器照常续费，已算在左边的合计里';
 const NORMAL_INFO = '正常 = 总数 − 故障 − 未知。降级与维护的机器照常服务，都算正常';
 
 /** 问候语下的一行状态：只说有几类事要处理、是哪几类（具体台数在下面的 KPI 卡里，这里不再重复一遍数字）；没有就是「全部正常」 */
@@ -111,12 +111,12 @@ export const OverviewSection = React.memo(function OverviewSection({ o, loading 
             caption={relays && <HealthCaption c={relays} to={`${DOWN_LINK}&kind=relay`} />} />
           <Stat loading={health} tone="bad" icon={<AlertTriangle />} label="故障" value={<CountUp value={o ? down : undefined} />} unit="台" to={DOWN_LINK} caption={o && <><DotCount tone="bad" n={o.nodes.down} label="节点" /><DotCount tone="bad" n={o.relays.down} label="线路机" /></>} />
           <Stat loading={loading} tone="amber" icon={<CalendarClock />} label="即将到期" value={<CountUp value={o?.due_soon} />} unit="台" to="/nodes?due=soon&sort=due" caption={o && nd !== undefined && <>{nd ? <span className="stat-who">最近<span className="ellipsis" data-tip={nd.name}>{nd.name}</span>{nd.days <= 1 ? <b>{nd.days === 0 ? '今天' : '明天'}</b> : <><b className="num">{nd.days}</b>天后</>}</span> : <span>近期没有到期</span>}{o.overdue > 0 && <DotCount tone="bad" n={o.overdue} label="已过期" />}</>} />
-          <Stat loading={loading} tone="gold" icon={<CircleDollarSign />} label="每月费用" to={COST_LINK} info={`在用的节点和线路机的月费，统一折成美元；不含备用团队的机器（它们不再续费，另列在说明行）。汇率在「设置 → 汇率」${usd ? `\n${usdTotalTip(usd)}` : ''}`}
+          <Stat loading={loading} tone="gold" icon={<CircleDollarSign />} label="每月费用" to={COST_LINK} info={`在用的节点和线路机的月费，统一折成美元；不含闲置备用的机器（它们不再续费，另列在说明行；备用团队里还被出口指着、有在用 IP 节点的机器照常续费，已算在内）。汇率在「设置 → 汇率」${usd ? `\n${usdTotalTip(usd)}` : ''}`}
             value={!usd || usdEmpty ? '—' : <span data-tip={usdTotalTip(usd)}>{F.money(usd.cents, 'USD')}</span>}
             caption={usd && <>{(usd.unconverted.length ? <span style={{ color: 'var(--warn-text)' }} data-tip="没有这些币种的汇率，未计入合计">未折算 {usd.unconverted.map((c) => F.money(c.cents, c.currency)).join(' + ')}</span>
               : foreign.length ? <span data-tip={usdTotalTip(usd)}>含 {foreign.map((p) => `${F.money(p.cents, p.currency)} ≈ ${F.money(p.usd_cents, 'USD')}`).join(' · ')}</span>
               : <span>{o!.paid_machines != null && <>在用 <b className="num">{o!.paid_machines}</b> 台 · </>}按月折算</span>)}
-              {!!sp?.count && <span data-tip={`${SPARE_COST_TIP}\n${usdTotalTip(sp)}`}>备用团队 <b className="num">{sp.count}</b> 台 {F.money(sp.cents, 'USD')} 另计</span>}</>} />
+              {!!sp?.count && <span data-tip={`${SPARE_COST_TIP}\n${usdTotalTip(sp)}`}>闲置备用 <b className="num">{sp.count}</b> 台 {F.money(sp.cents, 'USD')} 另计</span>}</>} />
           {/* 每条推送都在涨，不滚数（滚到的位数也显示不出来，白白逐帧重画）：同网卡速率，直接到位 */}
           <Stat loading={loading} tone="sky" icon={<TrendingUp />} label="本月业务流量" info={"客户经所有入口的下载加上传。\n单台机器的「本周期已用」按网卡、从账单日算起，数字通常更大。"} to={TRAFFIC_LINK} value={tr ? F.inScaleBytes(trTotal, trScale) : '—'} unit={tr ? trScale.u : undefined}
             caption={tr && <><span>下载 <Num f={F.bytes(tr.down)} /></span><span>上传 <Num f={F.bytes(tr.up)} /></span><FromTag from={tr.counted_from} /></>} />

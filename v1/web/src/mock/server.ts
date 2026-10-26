@@ -144,11 +144,11 @@ function overview() {
     online: biz.filter((m) => m.agent && !isQuiet(m)).length, offline: biz.filter((m) => m.agent && isQuiet(m)).length,
     // 闲置备用不计入 no_agent、ip_nodes（同 total / online / offline，同服务端 overview_of）
     no_agent: biz.filter((m) => !m.agent).length, ip_nodes: biz.filter((m) => m.host_machine).length,
-    due_soon: live.filter((m) => !m.spare && m.subscription?.due_state === 'soon').length, overdue: live.filter((m) => !m.spare && m.subscription?.due_state === 'overdue').length,
-    // 备用团队的机器不续费：月费合计不含，另列小计（同服务端 monthly_usd_spare）
-    monthly_usd: usdTotal(live.flatMap((m) => (m.subscription && !m.spare ? [m.subscription] : []))),
-    paid_machines: live.filter((m) => m.subscription && !m.spare).length,
-    monthly_usd_spare: { ...usdTotal(live.flatMap((m) => (m.subscription && m.spare ? [m.subscription] : []))), count: live.filter((m) => m.subscription && m.spare).length },
+    due_soon: biz.filter((m) => m.subscription?.due_state === 'soon').length, overdue: biz.filter((m) => m.subscription?.due_state === 'overdue').length,
+    // 闲置备用不续费：月费合计不含，另列小计（同服务端 monthly_usd_spare）；备用团队里被出口指着 / 有在用 IP 节点的照常续费，算进合计
+    monthly_usd: usdTotal(biz.flatMap((m) => (m.subscription ? [m.subscription] : []))),
+    paid_machines: biz.filter((m) => m.subscription).length,
+    monthly_usd_spare: { ...usdTotal(idle.flatMap((m) => (m.subscription ? [m.subscription] : []))), count: idle.filter((m) => m.subscription).length },
     traffic_month: { up, down, counted_from },
     // 实时速率只算数据没过期的（同 liveRate）；同机 IP 节点的读数就是宿主机的，不重复算
     net_rx_bps: live.reduce((s, m) => s + (m.host_machine ? 0 : liveRate(m)?.rx ?? 0), 0), net_tx_bps: live.reduce((s, m) => s + (m.host_machine ? 0 : liveRate(m)?.tx ?? 0), 0),
@@ -549,6 +549,25 @@ R('GET', '/machines', () => {
   return clone(db.machines); // 回收了的不在列表里（scope=live / all 同）
 });
 R('GET', '/machines/([^/]+)', ({ params }) => clone(machine(params[0])));
+/** 进备用时记下的原团队（同服务端 machine.spare_from_team_id）：机器 id → 团队 id；移出备用清掉 */
+const spareFromTeam = new Map<string, string>();
+/** 随宿主机换团队的同机 IP 节点及去向团队（同服务端 IP_WITH_HOST / IP_DEST）：进备用带走所有不在备用的（含别的团队的）；
+ *  撤销退役（原团队是备用团队）只带与宿主机同一次进备用的（spare_since 相同），各回进备用前的团队（那个团队已不在的留在备用，没记的跟宿主机走）；
+ *  其余只带还在原团队的。`stay`：撤销时原团队已不在、留在备用的 */
+function ipFollow(m: MachineView, to: { id: string; spare: boolean }) {
+  const out: { x: MachineView; dest: string }[] = []; const stay: MachineView[] = [];
+  const from = m.team?.id; if (!from || from === to.id) return { out, stay };
+  const fromSpare = !!m.spare;
+  for (const x of ipNodesLeaving(m)) {
+    if (to.spare) { if (!x.spare) out.push({ x, dest: to.id }); continue; }
+    if (x.team?.id !== from || (fromSpare && x.spare_since !== m.spare_since)) continue;
+    const back = fromSpare ? spareFromTeam.get(x.id) : undefined;
+    if (!back || back === to.id) out.push({ x, dest: to.id });
+    else if (db.teams.some((t) => t.id === back && !t.spare)) out.push({ x, dest: back });
+    else stay.push(x);
+  }
+  return { out, stay };
+}
 const freeNumber = (tid: string) => { const used = new Set(db.machines.filter((x) => x.team?.id === tid && x.lifecycle !== 'retired').map((x) => x.number)); let n = 1; while (used.has(n)) n++; return n; };
 R('GET', '/machines/([^/]+)/rename-preview', ({ params, query }) => {
   const m = machine(params[0]); const tid = query.get('team_id') ?? m.team?.id; const team = tid ? teamOf(tid) : null;
@@ -556,13 +575,18 @@ R('GET', '/machines/([^/]+)/rename-preview', ({ params, query }) => {
   const number = query.get('number') ? Number(query.get('number')) : team.id !== m.team?.id ? freeNumber(team.id) : m.number!;
   const moved = !!m.team && team.id !== m.team.id;
   // 宿主机换团队：还在原团队的同机 IP 节点一起走，宿主机先占 number，它们依次取剩下的最小空号（同服务端）
-  const ips = moved ? ipNodesLeaving(m).filter((x) => x.team?.id === m.team!.id) : [];
-  const taken = new Set(db.machines.filter((x) => x.team?.id === team.id && x.lifecycle !== 'retired').map((x) => x.number)); taken.add(number);
-  const ip_nodes = ips.map((x) => { let k = 1; while (taken.has(k)) k++; taken.add(k); return { machine_id: x.id, old_name: x.name, new_name: displayName(team.name, k) }; });
-  return { name: displayName(team.name, number), old_name: m.name, renames: moved ? compactPlan(m.team!.id, [m.id, ...ips.map((x) => x.id)]).map((c) => ({ machine_id: c.m.id, old_name: c.old_name, new_name: c.new_name })) : [], ip_nodes,
+  const { out: follow, stay } = moved ? ipFollow(m, team) : { out: [], stay: [] };
+  const ips = follow.map((f) => f.x);
+  const takenOf = new Map<string, Set<number>>();
+  const takenIn = (tid: string) => { let t = takenOf.get(tid); if (!t) { t = new Set(db.machines.filter((x) => x.team?.id === tid && x.lifecycle !== 'retired').map((x) => x.number!)); takenOf.set(tid, t); } return t; };
+  takenIn(team.id).add(number);
+  const ip_nodes = follow.map(({ x, dest }) => { const t = takenIn(dest); let k = 1; while (t.has(k)) k++; t.add(k); return { machine_id: x.id, old_name: x.name, new_name: displayName(teamOf(dest).name, k) }; });
+  // 少了人的团队：原团队，加上带走的 IP 节点所在的别的团队（目标团队只取空号，不压缩）
+  const shrunk = [...new Set([m, ...ips].flatMap((x) => (x.team && x.team.id !== team.id ? [x.team.id] : [])))];
+  return { name: displayName(team.name, number), old_name: m.name, renames: moved ? shrunk.flatMap((t) => compactPlan(t, [m.id, ...ips.map((x) => x.id)])).map((c) => ({ machine_id: c.m.id, old_name: c.old_name, new_name: c.new_name })) : [], ip_nodes,
     // 进备用：还指向这台和一起移入的同机 IP 节点的软路由出口（同服务端）
     router_exits: moved && team.spare ? [m, ...ips].flatMap((x) => exitsUsing(x).flatMap((r) => r.exits.map((e) => ({ node: x.name, router: r.name, exit: e.exit })))) : [],
-    spare_blocked: moved && team.spare && !m.spare ? spareGate(m) : null, warnings: [] };
+    spare_blocked: moved && team.spare && !m.spare ? spareGate(m) : null, warnings: stay.map((x) => `${x.name} 原团队已不在，留在备用`) };
 });
 R('PATCH', '/machines/([^/]+)', ({ params, body }) => {
   const m = machine(params[0]);
@@ -575,15 +599,20 @@ R('PATCH', '/machines/([^/]+)', ({ params, body }) => {
     const wasSpare = m.spare, oldName = m.name;
     const blocked = team.id !== from && team.spare && !wasSpare ? spareGate(m) : null; // 手动改进备用和退役的「移进备用」同一套资格（同服务端 spare_gate）
     if (blocked) throw bad(`不能改到备用团队：${blocked}。要进备用请用退役（网页「退役」、fleetctl retire），现在就回收选「立即回收」`, 409, 'conflict');
-    const ips = from && from !== team.id ? ipNodesLeaving(m).filter((x) => x.team?.id === from) : []; // 宿主机换团队：还在原团队的同机 IP 节点一起走
+    const ips = ipFollow(m, team).out; // 宿主机换团队：同机 IP 节点一起走（进备用带走所有不在备用的；撤销退役只带同一次进备用的，各回自己进备用前的团队）
+    const at = iso(); // 同一次进备用的时刻相同（撤销时据此认）
+    const srcTeams = [...new Set([...(from ? [from] : []), ...ips.flatMap(({ x }) => (x.team ? [x.team.id] : []))])].filter((t) => t !== team.id);
+    const enter = (x: MachineView, old: string, oldTeam: string | undefined) => { // 同服务端 patch_nobump：进备用记时刻、原名、原团队，移出备用清掉
+      if (x.spare && !wasSpare) { x.spare_from = old; x.spare_since = at; if (oldTeam) spareFromTeam.set(x.id, oldTeam); } else if (!x.spare) { x.spare_from = null; x.spare_since = null; spareFromTeam.delete(x.id); }
+    };
     m.team = { id: team.id, name: team.name }; m.spare = team.spare; m.number = number;
-    if (m.spare && !wasSpare) { m.spare_from = oldName; m.spare_since = iso(); } else if (!m.spare) { m.spare_from = null; m.spare_since = null; } // 同服务端 patch_tx
-    for (const x of ips) { // 接在宿主机之后取新团队的最小空号
-      const xold = x.name; x.team = { id: team.id, name: team.name }; x.spare = team.spare; x.number = freeNumber(team.id); x.revision++;
-      if (x.spare && !wasSpare) { x.spare_from = xold; x.spare_since = iso(); } else if (!x.spare) { x.spare_from = null; x.spare_since = null; }
+    enter(m, oldName, from);
+    for (const { x, dest } of ips) { // 接在宿主机之后取去向团队的最小空号
+      const xold = x.name, xteam = x.team?.id; const dt = teamOf(dest); const k = freeNumber(dt.id); x.team = { id: dt.id, name: dt.name }; x.spare = dt.spare; x.number = k; x.revision++;
+      enter(x, xold, xteam);
       renameMachine(x);
     }
-    if (from && from !== team.id) compactApply(from, '改团队后'); // 原团队少了这台：编号连续（已经不在原团队，直接压缩）
+    for (const t of srcTeams) compactApply(t, '改团队后'); // 原团队（和带走的 IP 节点所在的团队）少了人：编号连续
   }
   if (body.label !== undefined) m.label = body.label;
   if (body.country !== undefined) {
@@ -640,9 +669,9 @@ R('GET', '/machines/([^/]+)/retire', ({ params }) => {
   };
 });
 /** 移入备用（同服务端 move_to_spare）：机器照常运行，改到备用团队最小的空号，原团队前移补号 */
-function moveToSpare(m: MachineView, reason: string | null) {
+function moveToSpare(m: MachineView, reason: string | null, at = iso()) {
   const sp = spareTeam(); const from = m.team!;
-  m.spare_from = m.name; m.spare_since = iso(); m.team = { id: sp.id, name: sp.name }; m.spare = true; m.number = freeSpareNumber([m.id]); m.lifecycle_reason = reason; m.revision++;
+  m.spare_from = m.name; m.spare_since = at; spareFromTeam.set(m.id, from.id); m.team = { id: sp.id, name: sp.name }; m.spare = true; m.number = freeSpareNumber([m.id]); m.lifecycle_reason = reason; m.revision++;
   renameMachine(m); compactApply(from.id, `${m.spare_from} 退役后`);
 }
 function startRetire(m: MachineView, cleanup: boolean, reason: string | null) {
@@ -663,8 +692,9 @@ R('POST', '/machines/([^/]+)/retire', ({ params, body }) => {
     const from = m.name; const xfrom = xs.map((x) => x.name);
     const autoOff = !!m.subscription?.auto_renew;
     if (m.subscription) m.subscription.auto_renew = false;
-    moveToSpare(m, body.reason ?? null);
-    for (const x of xs) moveToSpare(x, `随宿主机「${from}」退役`);
+    const at = iso(); // 宿主机和随行 IP 节点同一次进备用，时刻相同
+    moveToSpare(m, body.reason ?? null, at);
+    for (const x of xs.filter((y) => !y.spare)) moveToSpare(x, `随宿主机「${from}」退役`, at);
     refreshCounts();
     db.audit.unshift({ id: `a${db.seq++}`, ts: iso(), actor: db.user, action: 'machine.retire', title: '退役机器', summary: `${from} 移入备用 → ${m.name}`, target_kind: 'machine', target_id: m.id, detail: { mode: 'spare' } });
     emit({ type: 'machines' }); emit({ type: 'catalog' });
@@ -702,14 +732,17 @@ R('POST', '/machines/([^/]+)/renewals', ({ params, body }) => {
   (db.renewals[m.id] ??= []).unshift(r); m.subscription.billing_day = billingDay(newDue, m.subscription.billing_day); m.subscription.due_date = newDue; recomputeDue(m);
   emit({ type: 'machine', id: m.id }); emit({ type: 'machines' }); return { id: r.id, old_due: r.old_due, new_due: r.new_due };
 });
-// 待付清单（同服务端 billing.rs）：在用机器里窗口内到期的，按 供应商 × 到期日 分组；备用团队、自动续费的不算待付
+// 待付清单（同服务端 billing.rs）：在用机器里窗口内到期的，按 供应商 × 到期日 分组；闲置备用（要 include_spare）、自动续费的不算待付，
+// 备用团队里被出口指着 / 有在用 IP 节点的不自动回收、照常续费，机器项带 spare 与 spare_hold
 R('GET', '/billing/due', ({ query }) => {
   const days = Number(query.get('days') ?? 30);
-  const rows = db.machines.filter((m) => m.lifecycle === 'active' && !m.spare && m.subscription && m.subscription.due_days <= days)
+  const withSpare = query.get('include_spare') === 'true';
+  const rows = db.machines.filter((m) => m.lifecycle === 'active' && (!m.spare || withSpare || !isIdleSpare(m)) && m.subscription && m.subscription.due_days <= days)
     .sort((a, b) => a.subscription!.due_date.localeCompare(b.subscription!.due_date) || (a.provider?.name ?? '￿').localeCompare(b.provider?.name ?? '￿'));
   const view = (m: MachineView) => {
     const s = m.subscription!; const u = mockUsage(m); const monthly = mockMonthly(m);
-    return { id: m.id, name: m.name, kind: m.kind, due_date: s.due_date, due_days: s.due_days, billing_tz: s.billing_tz, cycle: s.cycle, price_cents: s.price_cents, currency: s.currency, price_usd_cents: toUsd(s.price_cents, s.currency),
+    const hold = m.spare && !isIdleSpare(m) ? [m.live_ip_nodes?.length ? `同机 IP 节点 ${m.live_ip_nodes.join('、')} 还在用` : '', m.router_exits?.length ? `软路由出口 ${m.router_exits.join('、')} 还指着` : ''].filter(Boolean).join('；') : null;
+    return { id: m.id, name: m.name, kind: m.kind, due_date: s.due_date, due_days: s.due_days, billing_tz: s.billing_tz, spare: m.spare, spare_hold: hold, cycle: s.cycle, price_cents: s.price_cents, currency: s.currency, price_usd_cents: toUsd(s.price_cents, s.currency),
       monthly_usd_cents: monthly, bytes_30d: u.bytes30, usd_per_gb: mockPerGb(monthly, u.bytes30, 30), idle: mockIdle(m, u.sum7), avg7: Math.round(u.sum7 / 7), avail_pct: availability(m, 30).egress_pct };
   };
   const prov = (m: MachineView) => ({ id: m.provider?.id ?? null, name: m.provider?.name ?? null, panel_url: db.providers.find((p) => p.id === m.provider?.id)?.panel_url ?? null });

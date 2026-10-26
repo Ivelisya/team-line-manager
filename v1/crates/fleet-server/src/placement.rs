@@ -280,11 +280,12 @@ pub async fn view(st: &AppState, team: Option<&str>, node: Option<&str>) -> ApiR
 
     let mut grid = cells(&st.view_db, &ids).await?;
     // 近 7 天严重的 tcp_fail 告警次数：同一条告警恢复后又触发记在 reopen_count 上；警告级的（TCP 偶发失败、出口正常）不算。
-    // 「严重」看 detail 的 critical 标记（出现过严重，复发重开把 severity 改低也不丢），旧数据没有标记时退回 severity
-    let fails: HashMap<Uuid, i64> = sqlx::query_as(
-        "select subject_id, (count(*) + coalesce(sum(reopen_count), 0))::bigint from incident
-         where rule = 'tcp_fail' and (detail ? 'critical' or severity = 'critical') and subject_id = any($1) and last_seen_at >= now() - interval '7 days' group by 1",
-    )
+    // 「严重」按 detail 的 critical_count 求和（开为严重、警告升到严重、重开为严重各 +1，复发重开把 severity 改低也不丢），旧数据没有这个数时退回原规则
+    let fails: HashMap<Uuid, i64> = sqlx::query_as(&format!(
+        "select subject_id, sum({})::bigint from incident
+         where rule = 'tcp_fail' and subject_id = any($1) and last_seen_at >= now() - interval '7 days' group by 1",
+        crate::incident::CRIT_COUNT_SQL
+    ))
     .bind(&ids)
     .fetch_all(&st.db)
     .await?

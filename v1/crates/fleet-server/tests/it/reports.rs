@@ -99,12 +99,20 @@ async fn uptime_report_matches_availability_and_sorts_worst_first() {
         .await
         .unwrap();
 
+    // 有 critical_count 的按它算（严重 2 次，复发重开成警告的 5 次不算）
+    sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary, reopen_count, state, detail) values ($1, 'machine', 'tcp_fail', $2, 'warning', 'x', 5, 'resolved', '{\"critical\": true, \"critical_count\": 2}')")
+        .bind(Uuid::now_v7())
+        .bind(n1)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+
     let v = t.get("/api/v1/reports/uptime?days=7").await;
     let names: Vec<&str> = v["items"].as_array().unwrap().iter().map(|i| i["name"].as_str().unwrap()).collect();
     assert_eq!(names, ["团队1-01", "团队1-03", "团队1-02", "团队1-04"], "按出口成功率排：02 的 TCP 比 03 差，但出口全通，排在 03 之后：{v}");
     let a = &v["items"][0];
     assert_eq!((a["egress_total"].as_i64(), a["egress_ok"].as_i64(), a["tcp_total"].as_i64(), a["tcp_ok"].as_i64()), (Some(240), Some(231), Some(240), Some(232)), "{a}");
-    assert_eq!((a["outages"].as_i64(), a["longest_outage_h"].as_i64(), a["incidents"].as_i64()), (Some(1), Some(2), Some(5)), "{a}");
+    assert_eq!((a["outages"].as_i64(), a["longest_outage_h"].as_i64(), a["incidents"].as_i64()), (Some(1), Some(2), Some(7)), "{a}");
     assert_eq!((v["items"][1]["outages"].as_i64(), v["items"][2]["outages"].as_i64()), (Some(0), Some(0)), "03 失败 1 次、02 只有 TCP 失败：都不算断线");
     assert_eq!((v["items"][2]["tcp_pct"].as_f64(), v["items"][2]["egress_pct"].as_f64()), (Some(100.0 * 50.0 / 60.0), Some(100.0)));
     assert!(v["items"][3]["egress_pct"].is_null() && v["items"][3]["provider"].is_null(), "没有探测：成功率为 null");
@@ -118,7 +126,7 @@ async fn uptime_report_matches_availability_and_sorts_worst_first() {
         v["providers"].as_array().unwrap().iter().map(|p| (p["name"].as_str().unwrap(), p["avg_egress_pct"].as_f64(), p["worst"]["name"].as_str())).collect();
     let deer = (100.0 * 231.0 / 240.0 + 100.0) / 2.0;
     assert_eq!(ps, [("DeerVPS", Some(deer), Some("团队1-01")), ("Other", Some(99.0), Some("团队1-03")), ("未填供应商", None, None)], "{v}");
-    assert_eq!((v["providers"][0]["nodes"].as_i64(), v["providers"][0]["outages"].as_i64(), v["providers"][0]["incidents"].as_i64()), (Some(2), Some(1), Some(5)));
+    assert_eq!((v["providers"][0]["nodes"].as_i64(), v["providers"][0]["outages"].as_i64(), v["providers"][0]["incidents"].as_i64()), (Some(2), Some(1), Some(7)));
 
     // 默认（本月）与 month=本月 同一窗口；month 与 days 不能同时给，格式不对、将来的月份、days 越界都是 400
     let cur: String = sqlx::query_scalar("select to_char(now() at time zone 'Asia/Shanghai', 'YYYY-MM')").fetch_one(&t.st.db).await.unwrap();
