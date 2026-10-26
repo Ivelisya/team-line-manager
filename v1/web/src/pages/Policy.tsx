@@ -491,7 +491,7 @@ function VersionsPanel() {
                 {list.map((v) => (
                   <tr key={v.id}>
                     {/* 「当前」只标最新一版；更早的、内容和当前一样的写「与当前相同」（不能回滚到它） */}
-                    <td><b className="strong">v{v.seq}</b>{v.is_latest ? <span className="pill pill-sm pol-cur" data-tone="accent">当前</span> : v.is_current && <span className="pill pill-sm pol-cur">与当前相同</span>}<span className="sub">{v.kind === 'rollback' ? `回滚到 v${v.rollback_of_seq ?? '?'}` : '发布'}</span></td>
+                    <td><b className="strong">v{v.seq}</b>{v.is_latest ? <span className="pill pill-sm pol-cur" data-tone="accent">当前</span> : v.is_current && <span className="pill pill-sm pol-cur">与当前相同</span>}<span className="sub">{v.kind === 'rollback' ? `回滚到 v${v.rollback_of_seq ?? '?'}` : v.kind === 'replace' ? '替换节点' : '发布'}</span></td>
                     <td data-tip={`${F.dtFull(v.created_at)}\n${F.actor(v.actor)}`}>{F.dt(v.created_at)}<span className="sub ellipsis">{F.actor(v.actor)}</span></td>
                     <td><VersionChanges changes={v.changes} /></td>
                     <td><VersionApply v={v} /></td>

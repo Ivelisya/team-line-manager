@@ -177,8 +177,8 @@ const KINDS: Record<string, { label: string; icon: React.ReactNode; fields: { ke
 };
 const SEVERITIES = [{ value: 'info', label: '提示及以上（全部）' }, { value: 'warning', label: '警告及以上' }, { value: 'critical', label: '只发严重' }];
 /** 发送记录的种类（服务端 notify::Kind） */
-// 静默变更、自动回收、月报的对象名（subject_name）就是「静默 / 维护变更」「自动回收」「月报」，不再加前缀
-const NOTIFY_KIND: Record<NotifyLogEntry['kind'], string> = { firing: '触发', repeat: '提醒', resolved: '恢复', test: '测试', silence: '', auto: '', report: '' };
+// 静默变更、自动回收、作业失败、出口自动切回推迟、月报的对象名（subject_name）就是「静默 / 维护变更」「自动回收」「作业失败」「出口自动切回推迟」「月报」，不再加前缀
+const NOTIFY_KIND: Record<NotifyLogEntry['kind'], string> = { firing: '触发', repeat: '提醒', resolved: '恢复', test: '测试', silence: '', auto: '', jobfail: '', switch: '', report: '' };
 const sevPill = (s: string) => (s === 'critical' ? <Pill tone="bad" dot="none">严重</Pill> : s === 'warning' ? <Pill tone="warn" dot="none">警告及以上</Pill> : <Pill tone="info" dot="none">全部</Pill>);
 
 interface TestResult { ok: boolean; error: string | null }

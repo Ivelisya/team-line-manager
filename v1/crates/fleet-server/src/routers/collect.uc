@@ -393,22 +393,47 @@ function delay(oc, port) {
 }
 
 // 规则用到的策略与 mihomo 的模式（/configs 的 mode：rule / global / direct）：中控据此给每个策略组标「有没有规则用它」（routers/collect.rs mark_used）。
-// /rules 在规则多时有几百 KB：只回去重后的目标（规则的 proxy 字段）。子规则（SubRules）的目标在子规则集里看不到，标 sub。任何一个接口调不通就不回，中控按「未知」处理
-function rules(oc, port) {
-	let c = api(port, '/configs', 5);
-	let r = api(port, '/rules', 8);
-	if (c.data == null || r.data == null)
+// /rules 在规则多时有几百 KB：只回去重后的目标（规则的 proxy 字段）。子规则（SubRules）的目标在子规则集里看不到，标 sub。任何一个接口调不通就不回，中控按「未知」处理。
+// /configs（模式随时可改）每轮调，超时 3 秒；/rules 又大又慢（超时 5 秒），配置文件的 sha256 和核心进程都没变就用 /tmp 里缓存的去重结果，最多用 RULES_TTL 秒
+// （配置热重载时进程不变，靠过期兜底）。缓存读写失败不影响采集，照常取
+const RULES_TTL = 600;
+
+function rules(oc, port, pid) {
+	let c = api(port, '/configs', 3);
+	if (c.data == null)
 		return;
-	let seen = {}, targets = [], sub = false;
-	for (let x in (r.data.rules || [])) {
-		if (match(lc('' + x.type), /^sub/))
-			sub = true;
-		if (x.proxy != null && !seen[x.proxy]) {
-			seen[x.proxy] = true;
-			push(targets, x.proxy);
+	let key = (oc.config_sha256 && pid) ? oc.config_sha256 + ':' + pid : null;
+	let r = null;
+	if (key != null) {
+		try {
+			let k = json(fs.readfile(D + '/rules.json'));
+			if (k.key == key && time() >= k.at && time() - k.at < RULES_TTL)
+				r = k;
+		}
+		catch (e) {}
+	}
+	if (r == null) {
+		let x = api(port, '/rules', 5);
+		if (x.data == null)
+			return;
+		let seen = {}, targets = [], sub = false;
+		for (let y in (x.data.rules || [])) {
+			if (match(lc('' + y.type), /^sub/))
+				sub = true;
+			if (y.proxy != null && !seen[y.proxy]) {
+				seen[y.proxy] = true;
+				push(targets, y.proxy);
+			}
+		}
+		r = { key: key, at: time(), targets: targets, sub: sub };
+		if (key != null) {
+			try {
+				fs.writefile(D + '/rules.json', sprintf('%J', r));
+			}
+			catch (e) {}
 		}
 	}
-	oc.rules = { mode: c.data.mode, targets: targets, sub: sub };
+	oc.rules = { mode: c.data.mode, targets: r.targets, sub: r.sub };
 }
 
 function openclash() {
@@ -441,7 +466,7 @@ function openclash() {
 	oc.version = v.data.version;
 	connections(oc, port);
 	proxies(oc, port);
-	rules(oc, port);
+	rules(oc, port, pid);
 }
 
 // 只测延迟（FLEET_MODE=delay）：OpenClash 没在跑、API 调不通时 delay.ok = false 并写明原因（中控不算出口不通）

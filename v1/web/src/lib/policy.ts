@@ -52,7 +52,7 @@ export interface VersionRelay {
   status: VersionStatus | 'gone'; error: string | null;
 }
 export interface PolicyVersion {
-  id: string; seq: number; kind: 'publish' | 'rollback'; rollback_of_seq: number | null; actor: string; created_at: string;
+  id: string; seq: number; kind: 'publish' | 'rollback' | 'replace'; rollback_of_seq: number | null; actor: string; created_at: string;
   status: VersionStatus; changes: PolicyChange[]; relays: VersionRelay[];
   /** is_latest：最新一版（即当前生效的）；is_current：内容与当前相同（不可回滚） */
   is_latest: boolean; is_current: boolean; rollbackable: boolean;

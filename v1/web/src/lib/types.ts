@@ -402,8 +402,8 @@ export type NotifySeverity = 'info' | 'warning' | 'critical';
 export interface NotifyChannel { id: string; name: string; kind: NotifyKind | string; min_severity: NotifySeverity | string; enabled: boolean; /** 收每月 1 号发的上月摘要 */ monthly_report: boolean; created_at: string; config_hint: string }
 /** channel_name：渠道删了之后为 null（发送记录还留着） */
 export interface NotifyLogEntry { id: string; channel_id: string; channel_name: string | null; incident_id: string | null; ts: string; ok: boolean; error: string | null;
-  /** firing / repeat / resolved / test；silence 静默 / 维护变更；auto 备用团队的机器到期自动回收；report 月报（subject_name 是「月报」） */
-  kind: 'firing' | 'repeat' | 'resolved' | 'test' | 'silence' | 'auto' | 'report'; subject_name: string | null; rule_name: string | null }
+  /** firing / repeat / resolved / test；silence 静默 / 维护变更；auto 备用团队的机器到期自动回收；jobfail 作业失败；switch 出口自动切回推迟；report 月报（subject_name 是「月报」） */
+  kind: 'firing' | 'repeat' | 'resolved' | 'test' | 'silence' | 'auto' | 'jobfail' | 'switch' | 'report'; subject_name: string | null; rule_name: string | null }
 
 /** 服务端分页列表（/jobs、/incidents）：next_offset 只在后面还有数据时给出 */
 export interface Paged<T> { items: T[]; total: number; next_offset: number | null }

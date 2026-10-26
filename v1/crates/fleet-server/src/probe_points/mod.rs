@@ -20,7 +20,7 @@
 //! 上报恢复（且有轮次被采纳）后恢复；停用、删除时关掉、不发恢复。由这里的循环每 30 秒对齐一次（incident.rs，30 分钟内复发重开原告警），
 //! 不走机器的告警（alerts.rs 跳过 `probe_` 开头的规则）。
 //! 实际用的是探测点、这一轮全部线路机同时连不上（`all_down`）时，relay_unreachable 的摘要对照一下顺序里的下一路（[`Effective::compare`]）最近 2 分钟：
-//! 下一路连得上，多半是大陆方向到线路机被封或这个探测点所在网络出境异常，不写「供应商整体故障」；下一路也连不上才写供应商整体故障。只改说法，照常记、照常告警。
+//! 下一路连得上：这一路是主探测点（顺序第一个）时，多半是大陆方向到线路机被封或这个探测点所在网络出境异常；是代替离线主探测点的后面一路时，只写它所在网络出境异常；都不写「供应商整体故障」。下一路也连不上才写供应商整体故障。只改说法，照常记、照常告警。
 //! 「多久没上报」「多久没采纳」都扣掉中控收不到上报的时段（`AppState::report_gaps`，同 agent 离线）：中控或库停一阵恢复后，不会先判离线、退回中控再切回来。
 //!
 //! - agent.rs：探测点用的 `/agent/v1/probe/*`（令牌鉴权）；
@@ -109,6 +109,9 @@ pub struct Compare {
     pub id: Option<Uuid>,
     pub label: String,
     pub own: String,
+    /// 现在这一路就是探测顺序里的第一个（主探测点）：它是从靠近客户的网络测的，连不上而别处连得上才指向大陆方向被封；
+    /// 代替离线主探测点的后面一路（如香港）不是，只能说它自己所在网络出境异常
+    pub primary: bool,
 }
 
 impl Compare {
@@ -202,10 +205,11 @@ pub async fn effective(st: &AppState, db: &sqlx::PgPool) -> sqlx::Result<Effecti
 /// 纯函数部分（便于测试）：`central` = 中控的检查开不开，`cands` = 探测顺序里的探测点（按顺序）
 pub fn decide(central: bool, cands: &[Cand]) -> Effective {
     let mut e = pick(central, cands);
+    let primary = e.state == "probe";
     // 实际用的是探测点：记下顺序里它后面的下一路（全部线路机同时连不上时拿来对照）
     e.compare = e.probe_point_id.and_then(|id| {
         let own = label_of(cands.iter().find(|c| c.id == id)?.name?);
-        next_source(central, cands, id).map(|(id, label)| Compare { id, label, own })
+        next_source(central, cands, id).map(|(id, label)| Compare { id, label, own, primary })
     });
     e
 }
@@ -538,15 +542,15 @@ mod tests {
     #[test]
     fn effective_compare_follows_the_used_probe() {
         let (pve, hk) = (Uuid::now_v7(), Uuid::now_v7());
-        let cmp = |id, label: &str, own: &str| Some(Compare { id, label: label.into(), own: own.into() });
+        let cmp = |id, label: &str, own: &str, primary| Some(Compare { id, label: label.into(), own: own.into(), primary });
         let e = decide(true, &[c(pve, Some("PVE"), true, UP), c(hk, Some("香港"), true, UP)]);
-        assert_eq!(e.compare, cmp(Some(hk), "香港探测点", "PVE探测点"));
+        assert_eq!(e.compare, cmp(Some(hk), "香港探测点", "PVE探测点", true));
         assert_eq!(e.compare.unwrap().cond("nx"), format!("nx.probe_point_id = '{hk}'::uuid"));
         // 只有一个探测点：下一路是中控；中控关着没有
-        assert_eq!(decide(true, &[c(pve, Some("PVE"), true, UP)]).compare, cmp(None, "中控", "PVE探测点"));
+        assert_eq!(decide(true, &[c(pve, Some("PVE"), true, UP)]).compare, cmp(None, "中控", "PVE探测点", true));
         assert_eq!(decide(false, &[c(pve, Some("PVE"), true, UP)]).compare, None);
         // PVE 用不了、香港代测：对照香港后面的（这里是中控）
-        assert_eq!(decide(true, &[c(pve, Some("PVE"), true, OFF), c(hk, Some("香港"), true, UP)]).compare, cmp(None, "中控", "香港探测点"));
+        assert_eq!(decide(true, &[c(pve, Some("PVE"), true, OFF), c(hk, Some("香港"), true, UP)]).compare, cmp(None, "中控", "香港探测点", false));
         // 中控代测、主来源是中控、标灰：没有
         assert_eq!(decide(true, &[c(pve, Some("PVE"), true, OFF)]).compare, None);
         assert_eq!(decide(true, &[]).compare, None);

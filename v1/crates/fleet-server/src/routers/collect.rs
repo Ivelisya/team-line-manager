@@ -121,8 +121,9 @@ impl Group {
     pub fn selectable(&self) -> bool { self.kind == "Selector" }
 }
 
-/// 按采集脚本回的 `rules`（{mode, targets, sub}）给每个组标有没有规则用它：规则的目标是起点（global 模式只有 GLOBAL，direct 模式没有），
-/// 沿成员里的嵌套组往下算（组里的任一成员都算，不只是当前选中的）。没取到 `rules` 时都不知道；有子规则（目标在子规则集里看不到）时没找到的也不知道
+/// 按采集脚本回的 `rules`（{mode, targets, sub}，中控另加 config_refs / config_missing）给每个组标有没有规则用它：规则的目标、配置里 dialer-proxy 与 dns 的 #组名
+/// 引用的组是起点（global 模式规则的目标换成 GLOBAL，direct 模式没有），沿成员里的嵌套组往下算（组里的任一成员都算，不只是当前选中的）。
+/// 没取到 `rules` 时都不知道；有子规则（目标在子规则集里看不到）、或配置读不到（dialer-proxy、dns 的引用看不到）时没找到的也不知道
 fn mark_used(groups: &mut [Group], rules: Option<&Value>) {
     let Some(rules) = rules else { return };
     let mut used: HashSet<String> = match rules.get("mode").and_then(Value::as_str).map(str::to_ascii_lowercase).as_deref() {
@@ -130,6 +131,9 @@ fn mark_used(groups: &mut [Group], rules: Option<&Value>) {
         Some("direct") => HashSet::new(),
         _ => rules.get("targets").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(String::from).collect(),
     };
+    // 规则之外引用策略组的地方（出口的 dialer-proxy、dns 的 #组名）：中控读到配置时并进来（config_refs）；读不到配置时（config_missing）看不到这些引用，
+    // 没被规则用到的组是不是真没人用就不知道（宁可放过、不误拦）
+    used.extend(rules.get("config_refs").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(String::from));
     let mut todo: Vec<String> = used.iter().cloned().collect();
     while let Some(n) = todo.pop() {
         for m in groups.iter().find(|g| g.name == n).map_or(&[][..], |g| &g.all[..]) {
@@ -138,9 +142,10 @@ fn mark_used(groups: &mut [Group], rules: Option<&Value>) {
             }
         }
     }
-    let sub = rules.get("sub").and_then(Value::as_bool) == Some(true);
+    let flag = |k: &str| rules.get(k).and_then(Value::as_bool) == Some(true);
+    let unknown = flag("sub") || flag("config_missing");
     for g in groups {
-        g.used = if used.contains(&g.name) { Some(true) } else if sub { None } else { Some(false) };
+        g.used = if used.contains(&g.name) { Some(true) } else if unknown { None } else { Some(false) };
     }
 }
 
@@ -688,6 +693,8 @@ pub struct Mem {
     stored: Option<(String, Option<Vec<Proxy>>)>,
     /// 上一次解析成功的出口：配置解析不了时沿用
     good: Option<Vec<Proxy>>,
+    /// 上一次解析成功的配置里规则之外引用的策略组（clash::parse_all），随 `good` 一起沿用
+    good_refs: Option<Vec<String>>,
     /// 上一次测延迟（没测成也算）的时间
     last_delay: Option<OffsetDateTime>,
     /// 上一次为这台发实时事件的时间：状态没变也每 [`NUMBERS_EVERY`] 发一次，卡片上的 CPU、速率、连接数不至于停在几分钟前
@@ -1154,10 +1161,11 @@ async fn collect(st: &AppState, t: &Target, m: &mut Mem, entries: &[Entry], now:
     if let (Some(sha), Some(path)) = (sha.as_ref(), path.as_ref()) {
         if m.config.as_ref().is_none_or(|c| &c.0 != sha) {
             let parsed = fetch_config(st, t, path).await;
-            if let Ok(p) = &parsed {
+            if let Ok((p, refs)) = &parsed {
                 m.good = Some(p.clone());
+                m.good_refs = Some(refs.clone());
             }
-            m.config = Some((sha.clone(), parsed));
+            m.config = Some((sha.clone(), parsed.map(|c| c.0)));
         }
     }
     // 和上一份存下来的快照比：配置变了就记一条（来源、出口差异见 changes.rs）
@@ -1174,6 +1182,13 @@ async fn collect(st: &AppState, t: &Target, m: &mut Mem, entries: &[Entry], now:
         Some((_, Err(e))) => (m.good.as_deref(), Some(e.clone())),
         None => (None, None),
     };
+    // 策略组有没有在用要算上配置里规则之外的引用（dialer-proxy、dns 的 #组名）；配置读不到时标出来，mark_used 对没被规则用到的组不下结论
+    if let Some(rules) = raw.pointer_mut("/oc/rules").filter(|r| r.is_object()) {
+        match (config, &m.good_refs) {
+            (Some(_), Some(refs)) => rules["config_refs"] = serde_json::json!(refs),
+            _ => rules["config_missing"] = serde_json::json!(true),
+        }
+    }
     // 测延迟：采集成功、mihomo 的出口列表拿到了才测；没测成（超时、出错）这一轮也算测过，不每轮重来。
     // 没到 5 分钟时只重测还在确认的 fleet 出口（不通过一次的也算，同步、轮换后不用等 5 分钟）；多于 RETEST_MAX 个多半是路由自己断网，不重测
     if delay_ok && raw.pointer("/oc/proxies").is_some() {
@@ -1256,7 +1271,7 @@ async fn delay(st: &AppState, t: &Target, managed: &[String], only: &[String]) -
 }
 
 /// 经隧道取回 OpenClash 的源配置（顶层 `secret:` 行在路由上先删掉，不传回来），在内存里解析出口
-async fn fetch_config(st: &AppState, t: &Target, path: &str) -> Result<Vec<Proxy>, String> {
+async fn fetch_config(st: &AppState, t: &Target, path: &str) -> Result<(Vec<Proxy>, Vec<String>), String> {
     let script = crate::jobs::scripts::vars(&[("P", path)]) + &format!("sed '/^secret[[:space:]]*:/d' \"$P\" | head -c {}\n", clash::MAX_CONFIG + 1);
     let out = crate::ssh::exec(tunnel::via_tunnel(&st.cfg, t.id, t.tunnel_port), &script, CONFIG_TIMEOUT).await.map_err(|e| format!("取配置文件失败：{e:#}"))?;
     if out.code != 0 {
@@ -1265,7 +1280,7 @@ async fn fetch_config(st: &AppState, t: &Target, path: &str) -> Result<Vec<Proxy
     if out.stdout.len() > clash::MAX_CONFIG {
         return Err(format!("配置文件 {path} 超过 1 MiB，不解析"));
     }
-    clash::parse(&out.stdout)
+    clash::parse_all(&out.stdout)
 }
 
 // ── 小时汇总与保留期 ────────────────────────────────────────────────────
@@ -1678,5 +1693,13 @@ mod tests {
         let mut gs = groups();
         mark_used(&mut gs, None);
         assert!(gs.iter().all(|g| g.used.is_none()));
+        // 配置里被 dialer-proxy / dns 的 #组名 引用的组也算在用（连同它嵌套的组），规则里看不到它们
+        let mut gs = groups();
+        mark_used(&mut gs, Some(&json!({"mode": "rule", "targets": ["EXIT_1"], "sub": false, "config_refs": ["手动"]})));
+        assert_eq!(used(&gs), [("GLOBAL", Some(false)), ("EXIT_1", Some(true)), ("手动", Some(true)), ("EXIT_2", Some(true)), ("闲置", Some(false))]);
+        // 配置读不到：没被规则用到的组不知道（允许切换），规则用到的照旧在用
+        let mut gs = groups();
+        mark_used(&mut gs, Some(&json!({"mode": "rule", "targets": ["EXIT_1"], "sub": false, "config_missing": true})));
+        assert_eq!(used(&gs), [("GLOBAL", None), ("EXIT_1", Some(true)), ("手动", None), ("EXIT_2", None), ("闲置", None)]);
     }
 }

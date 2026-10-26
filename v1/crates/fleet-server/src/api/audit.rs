@@ -146,7 +146,7 @@ const AUDIT_ACTIONS: &[&str] = &[
     "entry.disable", "entry.rotate", "entry.share", "entry.add", "entry.move", "entry.repoint", "relay.evacuate", "job.retry", "job.cancel", "job.prune", "silence.create",
     "silence.delete", "incident.ack", "restore.probe", "agent.upgrade", "notify.create", "notify.update", "notify.delete", "exec", "machine.logs", "server.logs", "apikey.create",
     "apikey.revoke", "auth.login", "auth.login_failed", "auth.logout", "auth.totp_enabled", "auth.totp_disabled", "auth.totp_recovery_used",
-    "auth.totp_recovery_regenerated", "auth.user_removed", "auth.user_disabled", "auth.password_changed", "auth.session_revoked", "auth.verify_failed", "policy.draft", "policy.discard", "policy.publish", "policy.rollback",
+    "auth.totp_recovery_regenerated", "auth.user_removed", "auth.user_disabled", "auth.password_changed", "auth.session_revoked", "auth.verify_failed", "policy.draft", "policy.discard", "policy.publish", "policy.rollback", "policy.replace",
     "settings.access_retention", "settings.fx_rate", "terminal.open", "terminal.close", "ssh.login",
     "router.create", "router.update", "router.delete", "router.bootstrap", "router.bootstrap_used", "router.deploy", "router.sync", "router.switch", "router.switch_back",
     "router.switch_reverted", "router.switch_defer",
@@ -236,6 +236,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "policy.discard" => "丢弃访问规则草稿",
         "policy.publish" => "发布访问规则",
         "policy.rollback" => "回滚访问规则",
+        "policy.replace" => "替换节点时转移访问规则",
         "settings.access_retention" => "修改访问记录保留期",
         "settings.fx_rate" => "修改汇率",
         "router.create" => "新建软路由",
@@ -555,7 +556,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
             format!("{} · {}@{}:{}（{how}）· {res}", s("name"), s("user"), s("host"), d["port"])
         }
         // 「v5 · 回滚到 v3 · 团队1：黑名单 → 仅观察；团队2-03：白名单 · 域名 2 → 3 个 · 6 台线路机」
-        "policy.publish" | "policy.rollback" => {
+        "policy.publish" | "policy.rollback" | "policy.replace" => {
             let ch = d["changes"].as_array().cloned().unwrap_or_default();
             let mut parts = vec![format!("v{}", d["seq"])];
             if let Some(to) = d["rollback_of_seq"].as_i64() {

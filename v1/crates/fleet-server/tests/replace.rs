@@ -1505,6 +1505,23 @@ async fn replace_moves_node_policy_and_sub_settings() {
             .await
             .unwrap();
     }
+    // 替换前的历史版本：v1 还没有任何节点级策略；v2 只有旧节点；v3 旧节点和新节点都有
+    let snap = |items: Vec<Value>| Value::Array(items);
+    let item = |id: Uuid, mode: &str, domains: Vec<&str>| json!({"scope": "node", "scope_id": id, "mode": mode, "domains": domains, "note": ""});
+    for s in [snap(vec![]), snap(vec![item(w.old, "denylist", vec!["bad.com"])]), snap(vec![item(w.old, "denylist", vec!["bad.com"]), item(w.new, "blocked", vec![])])] {
+        sqlx::query("insert into policy_version (id, kind, actor, snapshot) values ($1, 'publish', 'test', $2)").bind(Uuid::now_v7()).bind(s).execute(db).await.unwrap();
+    }
+    // 旧节点见过的目标跟到新节点：首次出现取早、最近出现取晚、次数相加
+    sqlx::query(
+        "insert into access_target_seen (node_id, dest_host, first_seen, last_seen, total) values
+           ($1, 'a.com', '2026-09-01T00:00:00Z', '2026-10-20T00:00:00Z', 10), ($1, 'b.com', '2026-09-05T00:00:00Z', '2026-10-01T00:00:00Z', 4),
+           ($2, 'a.com', '2026-10-10T00:00:00Z', '2026-10-25T00:00:00Z', 5)",
+    )
+    .bind(w.old)
+    .bind(w.new)
+    .execute(db)
+    .await
+    .unwrap();
     let p = t.get(&format!("/api/v1/machines/{}/replace?new_machine_id={}", w.old, w.new)).await;
     let ws = p["warnings"].to_string();
     assert!(ws.contains("单独设的访问策略（黑名单 · 1 个域名，另有未发布的草稿）和客户端订阅的排除 / 另加（公司、家里）随编号转给新节点「团队2-02」"), "{ws}");
@@ -1524,6 +1541,30 @@ async fn replace_moves_node_policy_and_sub_settings() {
     assert!(gen().await > g0, "线路机期望状态代数要往前走");
     let rows: Vec<(Uuid, String, Option<String>)> = sqlx::query_as("select scope_id, mode, draft->>'mode' from policy where scope = 'node'").fetch_all(db).await.unwrap();
     assert_eq!(rows, [(w.new, "denylist".to_string(), Some("allowlist".to_string()))], "旧节点不再有节点级策略，草稿跟着走");
+    // 目标首次出现并到新节点（旧节点的留着）
+    let seen: Vec<(String, String, String, i64)> =
+        sqlx::query_as("select dest_host, first_seen::date::text, last_seen::date::text, total from access_target_seen where node_id = $1 order by dest_host").bind(w.new).fetch_all(db).await.unwrap();
+    assert_eq!(
+        seen,
+        [("a.com".to_string(), "2026-09-01".to_string(), "2026-10-25".to_string(), 15), ("b.com".into(), "2026-09-05".into(), "2026-10-01".into(), 4)]
+    );
+    assert_eq!(sqlx::query_scalar::<_, i64>("select count(*) from access_target_seen where node_id = $1").bind(w.old).fetch_one(db).await.unwrap(), 2);
+    // 版本：多一条 replace，快照 = 当前生效值；替换前的历史快照里旧节点改挂到新节点，回滚到它们不会把策略放回旧节点
+    let vs = t.get("/api/v1/policies/versions").await;
+    let kinds: Vec<&str> = vs.as_array().unwrap().iter().map(|v| v["kind"].as_str().unwrap()).collect();
+    assert_eq!(kinds, ["replace", "publish", "publish", "publish"], "{vs}");
+    assert_eq!((vs[0]["is_latest"].as_bool(), vs[0]["is_current"].as_bool(), vs[0]["rollbackable"].as_bool()), (Some(true), Some(true), Some(false)), "{vs}");
+    assert_eq!(vs[0]["relays"][0]["relay_id"], json!(w.relay));
+    assert_eq!(vs[0]["changes"].as_array().unwrap().len(), 2, "旧节点 → 默认，新节点 → 旧节点的策略：{vs}");
+    let snap_now: Value = sqlx::query_scalar("select snapshot from policy_version order by seq desc limit 1").fetch_one(db).await.unwrap();
+    assert_eq!(snap_now, json!([{"scope": "node", "scope_id": w.new, "mode": "denylist", "domains": ["bad.com"], "note": ""}]));
+    for i in [1, 2] {
+        assert_eq!((vs[i]["is_current"].as_bool(), vs[i]["rollbackable"].as_bool()), (Some(true), Some(false)), "替换前的第 {i} 版：策略已在新节点上，和当前相同：{vs}");
+    }
+    let pre = t.get(&format!("/api/v1/policies/versions/{}/rollback", vs[3]["id"].as_str().unwrap())).await;
+    let ids: Vec<&str> = pre["changes"].as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, [w.new.to_string()], "回滚到最早一版只改新节点，不碰旧节点：{pre}");
+    assert_eq!(sqlx::query_scalar::<_, i64>("select count(*) from audit_log where action = 'policy.replace'").fetch_one(db).await.unwrap(), 1);
     let subs: Vec<(String, Vec<Uuid>, Vec<Uuid>)> = sqlx::query_as("select name, exclude_ids, include_ids from client_sub order by name").fetch_all(db).await.unwrap();
     assert_eq!(
         subs,

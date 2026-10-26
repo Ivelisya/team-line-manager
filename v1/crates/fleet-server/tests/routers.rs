@@ -831,6 +831,63 @@ async fn exits_down_notes_maintenance_and_alerts() {
     assert!(inc.iter().any(|i| i["rule"] == "router_exits_down" && i["summary"] == ex["summary"]), "{inc:?}");
 }
 
+/// 出口不通开着但 quiet（指向的节点有机器告警）：机器告警先恢复后，路由告警再等一轮，出口还不通才补发「触发」；
+/// 这一轮出口就好了的，既不发触发也不发恢复（不会出现「触发」随后又「恢复」）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn quiet_exits_down_waits_one_round_after_machine_alert_resolves() {
+    let t = setup().await;
+    let mock = Mock::start().await;
+    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "feishu", "config": {"url": mock.url("/hook/q")}, "min_severity": "info", "enabled": true})).await;
+    let team = seed_team(&t, "团队2").await;
+    let (relay, _) = common::seed_relay(&t).await;
+    let mut routers = vec![];
+    for (name, number) in [("团队2-路由A", 3), ("团队2-路由B", 4)] {
+        let node = common::seed_node(&t, team, number, &format!("203.0.113.{}", 10 + number), "active").await;
+        let (id, _) = create(&t, name).await;
+        issue_key(&t, &id).await;
+        let er = json!({"id": Uuid::now_v7(), "name": "入口", "node_id": node, "relay_id": relay, "node_name": format!("团队2-0{number}"), "relay_name": "线路机2", "port": 20003, "lifecycle": "active"});
+        let data = |streak: u32| {
+            json!({
+                "system": {"cpu_pct": 10.0, "mem_used": 1, "mem_total": 4},
+                "interfaces": [{"name": "wan", "device": "eth0", "up": true}],
+                "openclash": {"enabled": true, "running": true},
+                "exits": [{"name": "节点01", "fail_streak": streak, "sync": "ok", "entry": er}, {"name": "节点02", "fail_streak": 0, "sync": "ok"}],
+            })
+        };
+        status(&t, &id, true, 0, data(2)).await;
+        let inc = Uuid::now_v7();
+        sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary) values ($1, 'machine', 'egress_fail', $2, 'critical', 'x')").bind(inc).bind(node).execute(&t.st.db).await.unwrap();
+        routers.push((id, inc, data(0)));
+    }
+    let mut st = alerts::AlertState::default();
+    let t0 = OffsetDateTime::now_utc();
+    // 机器告警在报：路由的出口告警开着、不通知
+    alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(0)).await.unwrap();
+    alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(30)).await.unwrap();
+    assert_eq!(incidents(&t, "firing").await.iter().filter(|i| i["rule"] == "router_exits_down").count(), 2);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(mock.count("/hook/q"), 0);
+    // 机器告警恢复，出口还不通：这一轮（解除 quiet 的第一轮）还是不通知
+    sqlx::query("update incident set state = 'resolved', resolved_at = now() where engine = 'machine'").execute(&t.st.db).await.unwrap();
+    alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(60)).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(mock.count("/hook/q"), 0, "再等一轮");
+    // B 的出口这一轮就好了：不发触发也不发恢复；A 还不通：补发触发
+    status(&t, &routers[1].0, true, 0, routers[1].2.clone()).await;
+    alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(90)).await.unwrap();
+    mock.wait("/hook/q", 1).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(mock.events("/hook/q"), ["firing"]);
+    assert!(mock.texts("/hook/q")[0].contains("机器：团队2-路由A"), "{:?}", mock.texts("/hook/q"));
+    let firing = incidents(&t, "firing").await;
+    assert_eq!(firing.iter().filter(|i| i["rule"] == "router_exits_down").count(), 1, "B 的已恢复");
+    // A 也好了：报恢复
+    status(&t, &routers[0].0, true, 0, routers[0].2.clone()).await;
+    alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(120)).await.unwrap();
+    mock.wait("/hook/q", 2).await;
+    assert_eq!(mock.events("/hook/q"), ["firing", "resolved"]);
+}
+
 /// 中控停机的时段不算路由连不上：停之前刚连上过的，恢复后第一轮还没连上不报离线（同 agent）
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn central_downtime_is_not_router_silence() {
@@ -1245,6 +1302,29 @@ async fn switch_unused_group_and_deferred_back() {
     assert_eq!(read(&r.join("group.now")), "节点02");
     let why = sw().await["defer_why"].as_str().unwrap().to_string();
     assert!(why.starts_with("原出口「节点01」指向的 团队2-03 有进行中的严重告警（"), "{why}");
+    // 同机 IP 节点：agent 离线只由宿主机报，宿主机在告警也拦，文案写宿主机名
+    sqlx::query("update incident set state = 'resolved', resolved_at = now() where id = $1").bind(inc).execute(&t.st.db).await.unwrap();
+    let team = seed_team(&t, "团队9").await;
+    let host = Uuid::now_v7();
+    for (id, number, host_id) in [(host, 1, None), (node, 2, Some(host))] {
+        sqlx::query("insert into machine (id, kind, team_id, number, primary_ip, ssh_port, lifecycle, host_id, activated_at) values ($1, 'vps', $2, $3, $4::inet, $6, 'active', $5, now())")
+            .bind(id)
+            .bind(team)
+            .bind(number)
+            .bind(format!("203.0.113.{}", 40 + number))
+            .bind(host_id)
+            .bind(host_id.is_none().then_some(22))
+            .execute(&t.st.db)
+            .await
+            .unwrap();
+    }
+    let inc = Uuid::now_v7();
+    sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary) values ($1, 'machine', 'agent_offline', $2, 'critical', 's')").bind(inc).bind(host).execute(&t.st.db).await.unwrap();
+    past().await;
+    routers::switch::due(&t.st).await;
+    assert_eq!(read(&r.join("group.now")), "节点02");
+    let why = sw().await["defer_why"].as_str().unwrap().to_string();
+    assert_eq!(why, "原出口「节点01」指向的 团队9-01 有进行中的严重告警（agent 离线）", "{why}");
     // 都恢复了：切回，操作者是「系统」；通知一共只有最初那一条
     sqlx::query("update incident set state = 'resolved', resolved_at = now() where id = $1").bind(inc).execute(&t.st.db).await.unwrap();
     past().await;

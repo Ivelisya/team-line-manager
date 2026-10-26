@@ -370,7 +370,7 @@ pub async fn publish(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<H
         .execute(&mut *tx)
         .await?;
     }
-    let (vid, relays) = record_version(&mut tx, &a, "publish", None, &rows, &before, &after, &nodes, &names).await?;
+    let (vid, relays) = record_version(&mut tx, &a.name, "publish", None, &rows, &before, &after, &nodes, &names).await?;
     tx.commit().await?;
     done(&st, &relays);
     Ok(ok(version_one(&st, vid).await?))
@@ -403,7 +403,7 @@ pub async fn discard(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<H
 #[allow(clippy::too_many_arguments)]
 async fn record_version(
     tx: &mut Tx<'_>,
-    a: &Actor,
+    actor: &str,
     kind: &str,
     rollback_of: Option<Uuid>,
     rows_before: &[Row],
@@ -428,7 +428,7 @@ async fn record_version(
     .bind(vid)
     .bind(kind)
     .bind(rollback_of)
-    .bind(&a.name)
+    .bind(actor)
     .bind(&snapshot)
     .bind(Value::Array(changes.clone()))
     .bind(Value::Array(gens))
@@ -436,7 +436,7 @@ async fn record_version(
     .await?;
     audit(
         tx,
-        &a.name,
+        actor,
         &format!("policy.{kind}"),
         "policy_version",
         Some(vid),
@@ -444,6 +444,16 @@ async fn record_version(
     )
     .await?;
     Ok((vid, relays))
+}
+
+/// 替换节点把节点级策略改挂到新节点之后（同一事务里，访问规则的锁已拿）：记一条 kind = replace 的版本（快照、变更、线路机代数）。
+/// `rows_before` 是改挂之前的规则行。线路机名单按改名后的团队算（改名本身已刷新过一次代数，这里再 +1 只让版本记下它）。返回被 +1 的线路机
+pub(crate) async fn record_replace(tx: &mut Tx<'_>, actor: &str, rows_before: &[Row]) -> ApiResult<Vec<Uuid>> {
+    let names = policy::scope_names_in(&mut **tx).await?;
+    let nodes = policy::live_nodes(&mut **tx).await?;
+    let after = policy::set_current(&policy::load_rows(&mut **tx, false).await?);
+    let (_, relays) = record_version(tx, actor, "replace", None, rows_before, &policy::set_current(rows_before), &after, &nodes, &names).await?;
+    Ok(relays)
 }
 
 fn done(st: &AppState, relays: &[Uuid]) {
@@ -655,7 +665,7 @@ pub async fn rollback(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath
             }
         }
     }
-    let (vid, relays) = record_version(&mut tx, &a, "rollback", Some(id), &rows, &before, &after, &nodes, &names).await?;
+    let (vid, relays) = record_version(&mut tx, &a.name, "rollback", Some(id), &rows, &before, &after, &nodes, &names).await?;
     tx.commit().await?;
     done(&st, &relays);
     Ok(ok(version_one(&st, vid).await?))
