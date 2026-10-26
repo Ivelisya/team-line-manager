@@ -8,7 +8,7 @@ import { ChevronRight, RotateCcw, SearchX, X } from 'lucide-react';
 import { useMachines, usePlans, useTeams } from '@/lib/queries';
 import { setDrawerOrder, useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
-import { feeView, healthLabel, kindLabel, lifecycleLabel, monthFlow, statusOf, statusRank, trafficTotal } from '@/lib/derive';
+import { feeView, healthLabel, isIdleSpare, kindLabel, lifecycleLabel, monthFlow, statusOf, statusRank, trafficTotal } from '@/lib/derive';
 import { HEALTH_TONE, KIND_ORDER, useStableOrder } from '@/lib/sort';
 import type { MachineView } from '@/lib/types';
 import { Button } from '@/components/ui/button';
@@ -107,7 +107,8 @@ function LiveNodes({ sp, upd, tools }: { sp: URLSearchParams; upd: (patch: Recor
       if (team && m.team?.id !== team) return false;
       if (kind && m.kind !== kind) return false;
       if (relay && !(m.id === relay || m.entries.some((e) => e.relay.id === relay))) return false;
-      if (status && statusOf(m) !== status) return false;
+      // 「故障」与首页 KPI 同口径：闲置备用（等到期放生的）不算，台数才对得上
+      if (status && (statusOf(m) !== status || (status === 'down' && isIdleSpare(m)))) return false;
       if (dueSoon && (m.spare || !m.subscription || m.subscription.due_state === 'ok')) return false;
       if (plan && m.plan?.id !== plan) return false;
       if (t && !`${m.name} ${m.ip} ${m.provider?.name ?? ''} ${m.plan?.name ?? ''} ${m.service_ref ?? ''} ${m.note}`.toLowerCase().includes(t)) return false;

@@ -947,6 +947,40 @@ async fn stale_probes_do_not_resolve_probe_alerts() {
     assert!(incidents(&t, "firing").await.is_empty());
 }
 
+/// 闲置备用（备用团队、没有软路由出口指向）：已开着的探测告警悄悄关掉（不发恢复，closed_by = spare），新的不开；总览不算故障、数进 spare
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn idle_spare_closes_alerts_quietly_and_is_not_counted() {
+    let t = setup().await;
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let team = seed_team(&t, "团队1").await;
+    let (node, entry) = seed_node(&t, relay, team, 1, "203.0.113.5", 20000).await;
+    let mut r = blank_report(1);
+    r.xray = Some(xray(true));
+    r.probes = vec![probe(entry, now_ms() - 2_000, ProbeKind::Egress, false), probe(entry, now_ms() - 2_000, ProbeKind::Tcp, false)];
+    assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
+    let mut state = AlertState::default();
+    let base = OffsetDateTime::now_utc();
+    pass(&t, &mut state, base, 0).await;
+    pass(&t, &mut state, base, 151).await;
+    assert_eq!(incidents(&t, "firing").await.len(), 2);
+    t.st.live.invalidate();
+    let ov = t.get("/api/v1/overview").await;
+    assert_eq!((ov["nodes"]["down"].as_i64(), ov["spare"].as_i64()), (Some(1), Some(0)), "{ov}");
+
+    // 退到备用团队：健康状态照旧是故障，但告警悄悄关掉，总览不再算它
+    sqlx::query("update machine set team_id = (select id from team where spare) where id = $1").bind(node).execute(&t.st.db).await.unwrap();
+    pass(&t, &mut state, base, 160).await;
+    assert!(incidents(&t, "firing").await.is_empty());
+    assert_eq!(t.count("select count(*) from incident where state = 'resolved' and detail->>'closed_by' = 'spare'").await, 2);
+    assert_eq!(t.health(node).await.0, "down");
+    let ov = t.get("/api/v1/overview").await;
+    assert_eq!((ov["nodes"]["total"].as_i64(), ov["nodes"]["down"].as_i64(), ov["spare"].as_i64()), (Some(0), Some(0), Some(1)), "{ov}");
+    // 之后继续不通也不再开
+    pass(&t, &mut state, base, 400).await;
+    pass(&t, &mut state, base, 800).await;
+    assert!(incidents(&t, "firing").await.is_empty());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn relay_xray_down_alert_lifecycle() {
     let t = setup().await;

@@ -440,7 +440,8 @@ pub async fn daily(st: &AppState, days: Option<i64>, team: Option<&str>, machine
         t.bytes_30d = t.bytes_30d.saturating_add(u.bytes30);
         if m.lifecycle == "active" {
             t.nodes += 1;
-            t.idle += i64::from(is_idle(u.sum7, m.aged));
+            // 备用团队的机器本来就是放着不用的，不标闲置
+            t.idle += i64::from(!m.team_spare && is_idle(u.sum7, m.aged));
             match monthly_usd(m) {
                 Some(c) => t.monthly_usd_cents = Some(t.monthly_usd_cents.unwrap_or(0) + c),
                 None => t.unpriced += 1,

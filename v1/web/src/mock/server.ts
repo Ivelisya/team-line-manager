@@ -3,7 +3,7 @@
 
 import type { Availability, AvailabilityDay, EntryView, Incident, Job, JobLog, JobSummary, MachineView, ProbeBucket, ProvisionCheckItem, ProvisionItem, SeriesPoint, SilenceKind } from '@/lib/types';
 import { addDays, addMonths, displayName } from '@/lib/format';
-import { inheritedValue, isQuiet, liveRate } from '@/lib/derive';
+import { inheritedValue, isIdleSpare, isQuiet, liveRate } from '@/lib/derive';
 import { makeDefaultCompare } from '@/lib/sort';
 import { cycleMonths, META, subCalc } from './meta';
 
@@ -121,6 +121,8 @@ function recomputeDue(m: MachineView) {
 
 function overview() {
   const live = db.machines.filter((m) => m.lifecycle === 'active');
+  // 闲置备用（同服务端 MachineView::idle_spare）：不进健康计数与在线 / 离线，另数 spare；速率照算
+  const idle = live.filter(isIdleSpare); const biz = live.filter((m) => !isIdleSpare(m));
   const cnt = (list: MachineView[]) => ({
     total: list.length, ok: list.filter((m) => m.health.status === 'ok').length, degraded: list.filter((m) => m.health.status === 'degraded').length,
     down: list.filter((m) => m.health.status === 'down').length, unknown: list.filter((m) => m.health.status === 'unknown').length, maintenance: list.filter((m) => m.health.status === 'maintenance').length,
@@ -131,15 +133,17 @@ function overview() {
   const rf = live.filter((m) => m.kind === 'relay').map((m) => m.month_counted_from);
   const counted_from = rf.some((t) => !t) ? null : rf.sort()[0] ?? null;
   return {
-    nodes: cnt(live.filter((m) => m.kind !== 'relay')), relays: cnt(live.filter((m) => m.kind === 'relay')),
+    nodes: cnt(biz.filter((m) => m.kind !== 'relay')), relays: cnt(biz.filter((m) => m.kind === 'relay')), spare: idle.length,
     provisioning: db.machines.filter((m) => m.lifecycle === 'provisioning').length, retiring: db.machines.filter((m) => m.lifecycle === 'retiring').length,
     failed: db.machines.filter((m) => m.lifecycle === 'failed').length,
     // 需要续费的按订阅的 due_state（同服务端）：自动续费的只在已过期时算
     // 在线/离线按台机器、按 agent 连通（同 isQuiet）：同机 IP 节点随宿主机计入，家宽代理不需要 agent（no_agent）
-    online: live.filter((m) => m.agent && !isQuiet(m)).length, offline: live.filter((m) => m.agent && isQuiet(m)).length,
+    online: biz.filter((m) => m.agent && !isQuiet(m)).length, offline: biz.filter((m) => m.agent && isQuiet(m)).length,
     no_agent: live.filter((m) => !m.agent).length, ip_nodes: live.filter((m) => m.host_machine).length,
     due_soon: live.filter((m) => !m.spare && m.subscription?.due_state === 'soon').length, overdue: live.filter((m) => !m.spare && m.subscription?.due_state === 'overdue').length,
-    monthly_usd: usdTotal(live.flatMap((m) => (m.subscription ? [m.subscription] : []))),
+    // 备用团队的机器不续费：月费合计不含，另列小计（同服务端 monthly_usd_spare）
+    monthly_usd: usdTotal(live.flatMap((m) => (m.subscription && !m.spare ? [m.subscription] : []))),
+    monthly_usd_spare: { ...usdTotal(live.flatMap((m) => (m.subscription && m.spare ? [m.subscription] : []))), count: live.filter((m) => m.subscription && m.spare).length },
     traffic_month: { up, down, counted_from },
     // 实时速率只算数据没过期的（同 liveRate）；同机 IP 节点的读数就是宿主机的，不重复算
     net_rx_bps: live.reduce((s, m) => s + (m.host_machine ? 0 : liveRate(m)?.rx ?? 0), 0), net_tx_bps: live.reduce((s, m) => s + (m.host_machine ? 0 : liveRate(m)?.tx ?? 0), 0),
@@ -402,7 +406,7 @@ function createMachine(it: ProvisionItem, c: MockCheck): MachineView {
     id, kind: it.kind, name: c.name, team: team ? { id: team.id, name: team.name } : null, spare: team?.spare ?? false, number: it.kind === 'relay' ? null : c.number, label: it.kind === 'relay' ? it.label ?? null : null,
     ip: it.ip, ssh_port: h?.ssh_port ?? it.ssh_port ?? 22, country: it.country ?? countryOf(it.ip), country_set: it.country ?? null, host_machine: h && { id: h.id, name: h.name }, bind_ip: null, ip_nodes: [], provider: pv ? { id: pv.id, name: pv.name } : null, provider_code: pv?.code ?? null,
     plan: plan ? { id: plan.id, name: plan.name, bandwidth_mbps: plan.bandwidth_mbps, traffic_gb: plan.traffic_gb } : null, service_ref: it.service_ref ?? null,
-    sub_template: templateOf(plan ?? undefined, pv ?? undefined), lifecycle: 'provisioning', lifecycle_reason: null, note: it.note ?? '', revision: 1, created_at: iso(), activated_at: null, retired_at: null, spare_from: null, spare_since: null, recycle_on: null,
+    sub_template: templateOf(plan ?? undefined, pv ?? undefined), lifecycle: 'provisioning', lifecycle_reason: null, note: it.note ?? '', revision: 1, created_at: iso(), activated_at: null, retired_at: null, spare_from: null, spare_since: null, router_exits: [], recycle_on: null,
     subscription: it.subscription?.due_date ? subCalc({ price_cents: it.subscription.price_cents ?? plan?.price_cents ?? 0, currency: plan?.currency ?? META.defaults.currency, cycle: it.subscription.cycle ?? plan?.cycle ?? META.defaults.cycle, due_date: it.subscription.due_date, due_days: 0, billing_tz: it.subscription.billing_tz ?? pv?.timezone ?? META.org_timezone, auto_renew: false, remind_days: pv?.remind_days ?? META.defaults.remind_days, traffic_gb: plan?.traffic_gb || null, traffic_reset_day: 1, traffic_rule: pv?.traffic_rule ?? META.defaults.traffic_rule } as NonNullable<MachineView['subscription']>) : null,
     agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, nic: null, month_counted_from: null, quota: { used: 0, period_start: '', period_end: null, mode: 'monthly', counted_from: null, rule: null, base: null, limit_gb: null, limit_source: 'none', daily_avg: null, forecast_full_at: null }, health: { status: 'unknown', reasons: [{ key: 'provisioning', severity: 'info', text: '上架作业进行中' }] }, active_job: null, failed_job: null, open_incidents: 0, maintenance: false,
     relay: it.kind === 'relay' ? { public_host: it.ip, generation: 1, applied_generation: 0, applied_at: null, apply_error: null, port_min: 20001, port_max: 20999 } : null,

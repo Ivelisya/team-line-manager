@@ -194,7 +194,8 @@ ${days} 天 ↓ 下行 ${F.str(F.bytes(nic.rx))} · ↑ 上行 ${F.str(F.bytes(n
 
 /** 团队成本：在用节点的月费、近 30 天业务流量、每 GB 多少美元（不随团队筛选变）；点一行按这个团队筛选，再点取消 */
 const TeamsTable = React.memo(function TeamsTable({ teams, picked, stale, onPick }: { teams: TrafficDailyTeam[]; picked: string; stale: boolean; onPick: (id: string) => void }) {
-  const all = React.useMemo(() => teams.reduce((a, t) => ({ nodes: a.nodes + t.nodes, idle: a.idle + t.idle, cents: a.cents + (t.monthly_usd_cents ?? 0), bytes: a.bytes + t.bytes_30d, unpriced: a.unpriced + t.unpriced }), { nodes: 0, idle: 0, cents: 0, bytes: 0, unpriced: 0 }), [teams]);
+  // 「全部」不含备用团队（它们不续费、等放生，月费和流量另算）
+  const all = React.useMemo(() => teams.filter((t) => !t.spare).reduce((a, t) => ({ nodes: a.nodes + t.nodes, idle: a.idle + t.idle, cents: a.cents + (t.monthly_usd_cents ?? 0), bytes: a.bytes + t.bytes_30d, unpriced: a.unpriced + t.unpriced }), { nodes: 0, idle: 0, cents: 0, bytes: 0, unpriced: 0 }), [teams]);
   const fee = (cents: number | null, unpriced: number) => <span data-tip={unpriced ? `有 ${unpriced} 台没有价格或没有汇率，没算进月费` : undefined}>{F.money(cents, 'USD')}{unpriced > 0 && '*'}</span>;
   return (
     <Panel title="团队成本" sub={<InfoTip text={'月费：在用节点的订阅价折成美元的每月合计\nUSD/GB：月费 ÷ 近 30 天业务流量，不随上面的区间变\n点一行按这个团队筛选'} />} flush>
@@ -206,14 +207,14 @@ const TeamsTable = React.memo(function TeamsTable({ teams, picked, stale, onPick
               <tr key={t.id} className="is-link" tabIndex={0} aria-selected={picked === t.id || undefined} onClick={() => onPick(picked === t.id ? '' : t.id)} onKeyDown={(e) => { if (e.key === 'Enter') onPick(picked === t.id ? '' : t.id); }}>
                 <td><span className="cell-main">{t.name}</span></td>
                 <td className="r">{t.nodes} 台</td>
-                <td className="r">{t.idle ? `${t.idle} 台` : '—'}</td>
+                <td className="r">{t.idle && !t.spare ? `${t.idle} 台` : '—'}</td>
                 <td className="r">{fee(t.monthly_usd_cents, t.unpriced)}</td>
                 <td className="r">{cell(t.bytes_30d)}</td>
                 <td className="r strong">{F.usdPerGb(t.usd_per_gb)}</td>
               </tr>
             ))}
           </tbody>
-          {teams.length > 1 && (
+          {teams.filter((t) => !t.spare).length > 1 && (
             <tfoot><tr>
               <td>全部</td><td className="r">{all.nodes} 台</td><td className="r">{all.idle ? `${all.idle} 台` : '—'}</td>
               <td className="r">{fee(all.cents || null, all.unpriced)}</td><td className="r">{cell(all.bytes)}</td><td className="r">{F.usdPerGb(perGb(all.cents || null, all.bytes, 30))}</td>

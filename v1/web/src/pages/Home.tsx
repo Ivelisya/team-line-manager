@@ -8,6 +8,7 @@ import { AlertTriangle, CircleGauge, CloudUpload, Inbox, LayoutGrid, Server, Tab
 import { useMachines, useOverview, useProbeBeatsPoll, useTeams } from '@/lib/queries';
 import { usePingBeatsPoll } from '@/lib/ping';
 import { setDrawerOrder, useDrawer } from '@/lib/drawer';
+import { isIdleSpare } from '@/lib/derive';
 import { prefOf, prefs } from '@/lib/prefs';
 import { parseSort, sortParam, useUrlState } from '@/lib/urlState';
 import type { MachineView } from '@/lib/types';
@@ -51,8 +52,9 @@ const EMPTY_MACHINES: MachineView[] = [];
 // 本地偏好的键（没写在地址里时用上次的选择）
 const P_LAYOUT = 'fleet:layout'; const P_VIEW = 'fleet:view'; const P_SORT = 'fleet:home-sort';
 
-/** 异常：故障、上架失败（上架失败的健康是 inactive，单看健康会漏掉）。降级照常服务、只是有提醒，算正常（同总览的「正常」） */
-const isIssue = (m: MachineView) => m.lifecycle === 'failed' || m.health.status === 'down';
+/** 异常：故障、上架失败（上架失败的健康是 inactive，单看健康会漏掉）。降级照常服务、只是有提醒，算正常（同总览的「正常」）；
+ *  闲置备用（等到期放生的）不通是预期，不算（同总览的故障计数） */
+const isIssue = (m: MachineView) => m.lifecycle === 'failed' || (m.health.status === 'down' && !isIdleSpare(m));
 
 /** 吸顶条是否正吸在顶栏下面：哨兵放在条的原位（高 0），滚到顶栏线以上就是吸住了（吸住后才铺毛玻璃和底线）。
  *  按滚动事件（每帧一次）量哨兵的位置，不用 IntersectionObserver：一下子滚过很远（锚点、刷新后恢复滚动位置）时哨兵从视口下方直接跳到上方，观察器不会触发。

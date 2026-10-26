@@ -80,12 +80,12 @@ fn slow(rule: &str) -> bool {
 /// 全网同时失联至少要这么多台 agent 离线（另要超过一半）
 const MASS_OFFLINE_MIN: usize = 3;
 
-/// 有自己 agent 的在用机器（不含维护中的、同机 IP 节点）里同时离线的超过一半、且至少 `MASS_OFFLINE_MIN` 台时给出 (离线, 总数)：
+/// 有自己 agent 的在用机器（不含维护中的、同机 IP 节点、闲置备用——放生的机器全挂了不是「全网失联」）里同时离线的超过一半、且至少 `MASS_OFFLINE_MIN` 台时给出 (离线, 总数)：
 /// 多半是 agent 到不了中控（边缘机、Caddy、DNS），由 selfmon.rs 开一条中控侧的告警，不按单机各报一条 agent 离线
 pub fn agents_unreachable(ms: &[views::MachineView]) -> Option<(usize, usize)> {
     let online: Vec<bool> = ms
         .iter()
-        .filter(|m| m.lifecycle == "active" && !m.maintenance && m.host_machine.is_none())
+        .filter(|m| m.lifecycle == "active" && !m.maintenance && m.host_machine.is_none() && !m.idle_spare())
         .filter_map(|m| m.agent.as_ref().map(|a| a.online))
         .collect();
     let off = online.iter().filter(|o| !**o).count();
@@ -233,6 +233,11 @@ pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime
     let mut want = vec![];
     let mass_offline = agents_unreachable(&ms).is_some();
     for m in ms.iter() {
+        // 闲置备用（备用团队、没有软路由出口指向，等到期放生）：供应商那边停了是预期，不开任何告警（续费提醒在 health.rs renewal_reason 里同理）；
+        // 已开着的在下面悄悄关掉。健康状态照常算，卡片上看得到
+        if m.idle_spare() {
+            continue;
+        }
         for r in &m.health.reasons {
             // info 级只用于界面提示（如访问策略暂停新连接），不开告警
             if r.severity == "info" {
@@ -270,6 +275,10 @@ pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime
     let exists = "exists (select 1 from machine where id = $3 and lifecycle = 'active' for share)";
     incident::reconcile(st, Engine::Machine, open, want, exists, now, |inc| {
         let Some(m) = active.get(&inc.subject_id) else { return Close::Keep };
+        // 退到备用、且没有出口指向了：悄悄关掉，不发恢复。之后若又有出口指向它，原因还在就按新告警开
+        if m.idle_spare() {
+            return Close::Quiet("spare");
+        }
         let probe = matches!(inc.rule.as_str(), "egress_fail" | "tcp_fail");
         let was = probe_failing.get(&(inc.rule.clone(), inc.subject_id));
         // 维护中 evaluate 不给原因：不是恢复，保持原状，维护结束后按那时的状态再判（同探测过期）。
@@ -345,6 +354,23 @@ mod tests {
         assert!(told_firing(Some(ago(30)), Some(ago(600))));
         // 最近一条是恢复、之后没再入队触发：不重复报
         assert!(!told_firing(Some(ago(900)), Some(ago(600))));
+    }
+
+    #[test]
+    fn idle_spare_offline_is_not_mass_offline() {
+        let m = |spare: bool, exits: &[&str], online: bool| {
+            let mut m = crate::health::tests::base("vps");
+            m.spare = spare;
+            m.router_exits = exits.iter().map(|s| s.to_string()).collect();
+            m.agent.as_mut().unwrap().online = online;
+            m
+        };
+        // 放生的备用机器全挂：不算全网失联（在用的 2 台都在线）
+        let ms: Vec<_> = [m(true, &[], false), m(true, &[], false), m(true, &[], false), m(false, &[], true), m(false, &[], true)].into();
+        assert_eq!(agents_unreachable(&ms), None);
+        // 被软路由出口指向的备用机器照常算
+        let ms: Vec<_> = [m(true, &["办公室2 · 美国"], false), m(true, &["办公室2 · 美国"], false), m(true, &["办公室2 · 美国"], false), m(false, &[], true)].into();
+        assert_eq!(agents_unreachable(&ms), Some((3, 4)));
     }
 
     #[test]
