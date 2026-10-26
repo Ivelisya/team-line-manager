@@ -510,7 +510,7 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/machines/{old}/replace?new_machine_id=&team_id=&number=&routers=` | 替换节点预览（只读库，不登录路由）。见下 |
-| GET | `/entries/{old}/repoint?to_entry_id=&routers=<id,id>` | 改出口指向预览：软路由上指向入口 `old` 的出口改成入口 `to_entry_id`（两个入口都不动），`routers` 只看这几台。`warnings` 另有：目标节点是备用节点（「X 是备用节点，2026-11-15 到期（出口指着时不自动回收）」）、目标节点此刻故障（出口会不通）。见下 |
+| GET | `/entries/{old}/repoint?to_entry_id=&routers=<id,id>` | 改出口指向预览：软路由上指向入口 `old` 的出口改成入口 `to_entry_id`（两个入口都不动），`routers` 只看这几台。`warnings` 另有：目标节点是备用节点（「X 是备用节点，2026-11-15 到期：改指过去后它会被扣住（开始告警、计入月费、到期要自己登记续费；进备用时自动续费已关），不再自动回收」）、旧节点是已过期满 1 天的备用机且这些出口都改走后没有别的原因扣着它（「X 是已过期满 1 天的备用节点：改走后它不再被出口指着，下一轮维护（一小时内）会自动回收」）、目标节点此刻故障（出口会不通）。见下 |
 | POST | `/entries/{old}/repoint` | `{to_entry_id, router_ids?:[…]}` → 预览同样的内容加 `job_id`。新入口就是旧入口、路由不存在 400；新入口不在用、旧入口已删除、没有出口要改、要改的路由不在线 409（见 blockers）。写审计 `entry.repoint` |
 | POST | `/machines/{old}/replace` | `{new_machine_id, old_to?:{team_id?, number?}, routers?（默认 true）}` → 预览同样的内容加 `job_id`。输入不对 400（新节点不存在 / 就是旧节点、指定的团队不存在、编号不在 1–999）；不满足条件 409（见 blockers）。写审计 `machine.replace`（不含凭据） |
 | GET | `/machines/{id}/move?to_relay_id=&from_relay_id=&routers=` | 换线路机预览（只读库）：`{name, from, to, old_entry:{id,relay,port}（换走的入口；新入口的端口作业建好时才分配，见作业的 result）, routers_enabled, routers:[同替换，exits[].new_entry_id 为 null、to 为「server:新端口」], ok, blockers[], warnings[], share_changed, note}`；不能换时 `ok:false`、原因在 blockers |
