@@ -19,6 +19,9 @@ const KIND: Record<string, string> = { URLTest: 'url-test', Fallback: 'fallback'
 /** 抽屉出口页签的「策略组」：select 组一行一个（当前出口，切换中的写原来是谁、几点切回），自动选择的组收成一句 */
 export function GroupsSection({ r, groups }: { r: RouterView; groups: RouterGroup[] }) {
   const back = useSwitchBack();
+  // 中控推迟了自动切回（原出口还没恢复）时，手动切回先确认：现在切回可能切到不通的出口
+  const [ask, setAsk] = React.useState<RouterSwitch | null>(null);
+  const held = useHeld(ask?.group, ask);
   const sel = groups.filter((g) => g.type === 'Selector');
   const auto = groups.filter((g) => g.type !== 'Selector');
   if (!groups.length) return null;
@@ -31,10 +34,10 @@ export function GroupsSection({ r, groups }: { r: RouterView; groups: RouterGrou
         {sel.map((g) => {
           const s = sw(g);
           return (
-            <div key={g.name} className="manage-row">
+            <div key={g.name} className="manage-row is-stack">
               <div style={{ minWidth: 0 }}>
                 <div className="t ellipsis">{g.name}</div>
-                <div className="hint ellipsis">
+                <div className="hint">
                   当前 {g.now ?? '—'}
                   {s && <> · <span className="rt-warn">临时切换中</span>，原来是 {s.from}{s.defer_why
                     ? <>，等原出口恢复后再切回（下次检查 {F.hm(s.back_at!)}）<InfoTip text={s.defer_why} /></>
@@ -44,7 +47,7 @@ export function GroupsSection({ r, groups }: { r: RouterView; groups: RouterGrou
               </div>
               <div className="row" style={{ gap: 6, flexWrap: 'nowrap' }}>
                 {s && <Button variant="secondary" disabled={!online} loading={back.isPending && back.variables?.group === g.name}
-                  onClick={() => back.mutate({ id: r.id, group: g.name }, { onSuccess: (d) => toast.ok(`${g.name} 已切回 ${d.to}`), onError: toast.err })}>切回</Button>}
+                  onClick={() => s.defer_why ? setAsk(s) : back.mutate({ id: r.id, group: g.name }, { onSuccess: (d) => toast.ok(`${g.name} 已切回 ${d.to}`), onError: toast.err })}>切回</Button>}
                 {g.used !== false && <Button variant="secondary" disabled={!online || g.all.length < 2} onClick={() => showSwitch({ id: r.id, name: r.name, group: g.name })}>临时切换…</Button>}
               </div>
             </div>
@@ -56,6 +59,11 @@ export function GroupsSection({ r, groups }: { r: RouterView; groups: RouterGrou
           </div>
         )}
       </div>
+      {held && (
+        <ConfirmDialog open={!!ask} onOpenChange={(o) => !o && setAsk(null)} title={`切回 ${held.from} · ${held.group}`} confirmLabel="仍要切回"
+          description={`中控因为 ${held.defer_why} 推迟了自动切回，现在切回可能切到不通的出口`}
+          onConfirm={async () => { const d = await back.mutateAsync({ id: r.id, group: held.group }); toast.ok(`${held.group} 已切回 ${d.to}`); }} />
+      )}
     </Section>
   );
 }
