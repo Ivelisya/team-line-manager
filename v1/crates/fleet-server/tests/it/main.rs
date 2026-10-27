@@ -22,6 +22,7 @@ mod reports;
 mod retention;
 mod spare;
 mod subs;
+mod tcp_loss;
 mod telemetry;
 mod terminal;
 mod traffic;

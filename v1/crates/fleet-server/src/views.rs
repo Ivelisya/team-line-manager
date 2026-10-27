@@ -397,6 +397,9 @@ pub struct MachineView {
     /// 流量异常的判断（anomaly.rs，按小时汇总算）；中控启动后还没算过、或这台不在用为 None
     #[serde(skip)]
     pub anomaly: Option<crate::anomaly::Anomaly>,
+    /// 持续握手丢包的判断（tcp_loss.rs，每 60 秒算一次）：完整加载与补指标时都取最新那份；中控启动后还没算过为 Unknown
+    #[serde(skip)]
+    pub tcp_loss: crate::tcp_loss::Loss,
 }
 
 /// 被扣住不回收的备用机（`recycle_held`：软路由出口还指着、上面还有在用的同机 IP 节点、开着自动续费）：它们照常续费，团队页、流量页的月费合计要带上。
@@ -619,6 +622,8 @@ pub struct LiveCache {
     pub(crate) daily: tokio::sync::Mutex<crate::traffic::Cache>,
     /// 流量异常（anomaly.rs）：小时汇总每轮之后算好放这里，完整加载时带进视图；中控启动后还没算过为 None
     anomaly: std::sync::Mutex<Option<crate::anomaly::Map>>,
+    /// 持续握手丢包（tcp_loss.rs）：每 60 秒算好放这里，取视图时（含只补指标）带进去；中控启动后还没算过为 None
+    tcp_loss: std::sync::Mutex<Option<crate::tcp_loss::Map>>,
 }
 
 /// (周期内下行之和, 上行之和, 接入前读数在周期内, 周期起点时刻, 近 7 天窗口内下行之和, 上行之和, 窗口起点时刻)；
@@ -653,6 +658,11 @@ impl LiveCache {
     /// 小时汇总之后算好的流量异常（随后的 `rolled_up` 让视图完整加载、带上它）
     pub fn set_anomaly(&self, a: std::collections::HashMap<Uuid, crate::anomaly::Anomaly>) {
         *crate::lock(&self.anomaly) = Some(Arc::new(a));
+    }
+
+    /// 刚算好的持续握手丢包：下次补指标（最多 3 秒后）就带上，不用作废整份视图
+    pub fn set_tcp_loss(&self, m: std::collections::HashMap<Uuid, crate::tcp_loss::Loss>) {
+        *crate::lock(&self.tcp_loss) = Some(Arc::new(m));
     }
 
     /// 小时汇总跑完的轮数
@@ -829,8 +839,10 @@ async fn refresh(st: &AppState, prev: &[MachineView], jobs: bool) -> sqlx::Resul
         tokio::try_join!(host_now(db, &cids), sustained_of(db, &cids), probes_of(db, &eids), crate::silence::Silences::load(db), jobs_q)?;
 
     let now = OffsetDateTime::now_utc();
+    let loss = crate::lock(&st.live.tcp_loss).clone();
     let mut out = prev.to_vec();
     for m in &mut out {
+        m.tcp_loss = crate::tcp_loss::of(loss.as_ref(), m.id);
         let h = hid(m);
         if let Some(a) = changed.get(&h) {
             if m.agent.is_some() {
@@ -1441,6 +1453,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
     // 组织时区本月 1 号 0 点（同 `flows` 的本月起点）：首次上架晚于它的，本月流量标「X 起」
     let month0 = today.replace_day(1).expect("1 号").midnight().assume_offset(meta::org_offset());
     let anomaly = crate::lock(&st.live.anomaly).clone();
+    let loss = crate::lock(&st.live.tcp_loss).clone();
     Ok(rows
         .into_iter()
         .map(|r| {
@@ -1632,6 +1645,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 sustained: sustained.get(&hid).copied().unwrap_or_default(),
                 policy_blocked,
                 anomaly: anomaly.as_ref().and_then(|a| a.get(&r.id).cloned()),
+                tcp_loss: crate::tcp_loss::of(loss.as_ref(), r.id),
             };
             v.health = health::evaluate(&v, now);
             v

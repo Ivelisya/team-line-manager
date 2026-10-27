@@ -158,7 +158,8 @@ struct Advice {
 fn cmd(c: String) -> Vec<Advice> { vec![Advice { cmd: c, switch: None }] }
 
 /// 告警规则 → 建议操作。只这几条：出口不通 → 把用着它的 select 组临时切到别的出口；参数不一致 → 同步；线路机额度吃紧 → 搬迁建议；agent 离线 → 看日志；
-/// 非业务流量偏高 → 看日志、看连接与防火墙；业务流量突增 → 同出口不通（切走用着它的 select 组），没有组在用它时看近 7 天每日流量
+/// 非业务流量偏高 → 看日志、看连接与防火墙；业务流量突增 → 同出口不通（切走用着它的 select 组），没有组在用它时看近 7 天每日流量；
+/// 持续握手丢包 → `fleetctl diag`
 fn suggest(i: &IncidentOut, routers: &[routers::Row]) -> Vec<Advice> {
     let Some(name) = i.subject_name.as_deref() else { return vec![] };
     match i.rule.as_str() {
@@ -167,6 +168,8 @@ fn suggest(i: &IncidentOut, routers: &[routers::Row]) -> Vec<Advice> {
         routers::alerts::EXIT_DRIFT => cmd(format!("fleetctl router sync {}", sh(name))),
         "traffic_quota_high" if i.subject_kind.as_deref() == Some("relay") => cmd(format!("fleetctl rebalance {}", sh(name))),
         "agent_offline" => cmd(format!("fleetctl logs {}", sh(name))),
+        // 持续握手丢包：先拿双向 ping / mtr / 握手的原始数据分清入站过滤还是链路问题（可直接发给供应商）
+        crate::tcp_loss::RULE => cmd(format!("fleetctl diag {}", sh(name))),
         crate::anomaly::NONBIZ_RULE => vec![
             Advice { cmd: format!("fleetctl logs {}", sh(name)), switch: None },
             Advice { cmd: format!("fleetctl exec {} -- 'ss -s; nft list ruleset | head -50'", sh(name)), switch: None },
