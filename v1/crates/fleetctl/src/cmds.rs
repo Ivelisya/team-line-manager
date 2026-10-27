@@ -604,6 +604,8 @@ fn entry_item(e: &Value) -> Value {
     json!({
         "id": e["id"], "relay": e.pointer("/relay/name"), "port": e["port"], "node": e.pointer("/node/name"),
         "lifecycle": e["lifecycle"], "applied": e["applied"], "apply_error": e["apply_error"],
+        // 穿透（reverse）：节点主动连入口，线路机不连节点，没有 TCP 探测；旧中控没有这个字段，按普通
+        "mode": e.get("mode").and_then(Value::as_str).unwrap_or("normal"),
         "tcp_ok": e.pointer("/tcp/ok"), "egress_ok": e.pointer("/egress/ok"),
         "today_down": e.pointer("/traffic/today_down"), "today_up": e.pointer("/traffic/today_up"),
     })
@@ -619,19 +621,22 @@ fn entry_table(items: &[Value]) -> String {
                 Some(false) => "不通".to_string(),
                 None => "-".to_string(),
             };
+            let reverse = e["mode"] == "reverse";
             vec![
                 st(e, "/id").chars().take(8).collect(),
                 format!("{}:{}", st(e, "/relay"), st(e, "/port")),
                 st(e, "/node"),
                 entry_state_cn(e).into(),
-                probe("tcp_ok"),
+                if reverse { "穿透" } else { "普通" }.into(),
+                // 穿透入口没有线路机 → 节点的 TCP 探测：写明原因，不是「不通」
+                if reverse { "-（穿透）".into() } else { probe("tcp_ok") },
                 probe("egress_ok"),
                 format!("下载 {} / 上传 {}", traffic(num(e, "/today_down").unwrap_or(0.0)), traffic(num(e, "/today_up").unwrap_or(0.0))),
                 e["apply_error"].as_str().unwrap_or("").to_string(),
             ]
         })
         .collect();
-    table::render(&["id", "入口", "节点", "状态", "TCP", "出口", "今日业务流量", "错误"], &rows)
+    table::render(&["id", "入口", "节点", "状态", "模式", "TCP", "出口", "今日业务流量", "错误"], &rows)
 }
 
 fn take_entries(mut m: Value) -> Vec<Value> {
@@ -1172,6 +1177,23 @@ pub fn watch(ctx: &Ctx, count: Option<usize>, metrics: bool) -> anyhow::Result<u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn entries_table_shows_mode_and_reverse_tcp() {
+        let e = |mode: Option<&str>, tcp: Value| {
+            let mut v = json!({"id": "01a17cec-0000", "relay": {"name": "线路机2"}, "port": 20013, "node": {"name": "团队1-06"}, "lifecycle": "active", "applied": true, "tcp": tcp, "egress": {"ok": true}});
+            if let Some(m) = mode {
+                v["mode"] = json!(m);
+            }
+            entry_item(&v)
+        };
+        let t = entry_table(&[e(Some("reverse"), Value::Null), e(Some("normal"), json!({"ok": false})), e(None, json!({"ok": true}))]);
+        let lines: Vec<&str> = t.lines().collect();
+        assert!(lines[0].contains("模式") && lines[0].contains("TCP"), "{t}");
+        assert!(lines[1].contains("穿透") && lines[1].contains("-（穿透）") && !lines[1].contains("不通"), "{t}");
+        assert!(lines[2].contains("普通") && lines[2].contains("不通"), "{t}");
+        assert!(lines[3].contains("普通"), "旧中控没有 mode 字段：按普通：{t}");
+    }
     use crate::client::ApiError;
 
     fn api(status: u16) -> anyhow::Error {

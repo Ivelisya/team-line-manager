@@ -143,6 +143,14 @@ enum SettingsCmd {
     /// 汇率（计费统一折成 USD）：不带参数看各币种的汇率与来源；<币种> --usd / --per-usd 手动设置（自动更新不再改它），
     /// <币种> --auto 取消手动、改回自动更新的值；--refresh 立即从汇率源更新（默认每天自动一次）
     Fx(fx::FxOpts),
+    /// 新入口默认模式（上架、加入口不指定时用）：不带参数显示当前的；normal（普通）/ reverse（穿透）改。没设过时是穿透。
+    /// 只影响之后新建的入口，存量入口不动（用 fleetctl entry reverse 逐个切）
+    EntryMode {
+        /// normal / reverse
+        mode: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -566,15 +574,22 @@ enum Cmd {
         #[command(subcommand)]
         cmd: SubCmd,
     },
-    /// 入口启用/停用/轮换凭据；add-direct 给线路机加直出入口（从线路机自己的 IP 出去，每台至多一条）
+    /// 入口启用/停用/轮换凭据；add-direct 给线路机加直出入口（从线路机自己的 IP 出去，每台至多一条）；
+    /// reverse --on / --off 开关穿透（节点主动连入口，供应商丢入站 SYN 的节点用；不加 --yes 只打印预览）
     Entry {
         #[arg(value_enum)]
         action: ops::EntryAction,
         /// 入口（id、`线路机名:端口`、节点显示名）；add-direct 时是线路机
         entry: String,
+        /// reverse：开启穿透
+        #[arg(long, conflicts_with = "off")]
+        on: bool,
+        /// reverse：关闭穿透（切回线路机连节点 ssserver）
+        #[arg(long)]
+        off: bool,
         #[arg(long)]
         yes: bool,
-        /// add-direct：提交后跟随作业直到结束
+        /// add-direct、reverse：提交后跟随作业直到结束
         #[arg(long)]
         follow: bool,
     },
@@ -1099,7 +1114,13 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             SubCmd::Rm { sub, yes } => subs::rm(x, &sub, yes),
             SubCmd::Show { sub } => subs::show(x, &sub),
         },
-        Cmd::Entry { action, entry, yes, follow } => ops::entry_action(x, action, &entry, yes, follow),
+        Cmd::Entry { action: ops::EntryAction::Reverse, entry, on, off, yes, follow } => ops::reverse(x, &entry, on, off, yes, follow),
+        Cmd::Entry { action, entry, on, off, yes, follow } => {
+            if on || off {
+                anyhow::bail!("--on / --off 只给 entry reverse 用");
+            }
+            ops::entry_action(x, action, &entry, yes, follow)
+        }
         Cmd::Exec(o) => ops::exec(x, o),
         Cmd::Logs { machine, unit, lines } => cmds::logs(x, &machine, &unit, lines),
         Cmd::ServerLogs { lines } => cmds::server_logs(x, lines),
@@ -1123,6 +1144,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::IpintelStatus => ipintel::status(x),
         Cmd::Settings { cmd: SettingsCmd::Retention { raw, hourly, yes } } => settings::retention(x, raw, hourly, yes),
         Cmd::Settings { cmd: SettingsCmd::Fx(o) } => fx::fx(x, o),
+        Cmd::Settings { cmd: SettingsCmd::EntryMode { mode, yes } } => settings::entry_mode(x, mode.as_deref(), yes),
         Cmd::Policy { cmd } => match cmd {
             PolicyCmd::Ls => policy::ls(x),
             PolicyCmd::Show { who } => policy::show(x, &who),

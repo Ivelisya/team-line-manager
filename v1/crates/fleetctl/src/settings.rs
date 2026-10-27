@@ -61,6 +61,28 @@ pub fn retention(ctx: &Ctx, raw: Option<i64>, hourly: Option<i64>, yes: bool) ->
     Ok(0)
 }
 
+/// 新入口默认模式（`settings entry-mode`）：不给 `mode` 显示当前的；给了先确认再改
+pub fn entry_mode(ctx: &Ctx, mode: Option<&str>, yes: bool) -> anyhow::Result<u8> {
+    const P: &str = "/settings/entry-mode";
+    let cur = ctx.c.get(P)?;
+    let label = |v: &Value| format!("{}{}", v["label"].as_str().unwrap_or("?"), if v["set"] == true { "" } else { "（没设过，按内置默认）" });
+    let Some(m) = mode else {
+        ctx.emit(&cur, || format!("新入口默认模式：{}
+只影响之后上架、加入口新建的入口；存量入口用 fleetctl entry reverse 逐个切", label(&cur)));
+        return Ok(0);
+    };
+    let m = match m.trim() {
+        "normal" | "普通" => "normal",
+        "reverse" | "穿透" => "reverse",
+        x => bail!("模式只能是 normal（普通）或 reverse（穿透），给的是「{x}」"),
+    };
+    let zh = if m == "reverse" { "穿透" } else { "普通" };
+    confirm(&format!("确认把新入口默认模式改成「{zh}」（现在是{}）？只影响之后新建的入口", label(&cur)), yes)?;
+    let d = ctx.c.put(P, &json!({"default": m}))?;
+    ctx.emit(&d, || format!("新入口默认模式：{}", label(&d)));
+    Ok(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
