@@ -448,6 +448,8 @@ async fn baseline_restarts_sshd_older_than_its_config() {
     started(&root, "ssh", hours(1));
     let o = run().await;
     assert_eq!((o.code, o.kv("sshd_password"), restarts()), (0, Some("no"), 1), "{o:?}");
+    // 桩 apt-get 什么都不装：mtr 装不上只报出来，基线照样成功
+    assert_eq!(o.kv("mtr"), Some("missing"), "{o:?}");
     assert!(read(&conf[1]).starts_with("Include "), "{}", read(&conf[1]));
     // sshd 在配置改过之后启动：不重启
     for f in &conf {

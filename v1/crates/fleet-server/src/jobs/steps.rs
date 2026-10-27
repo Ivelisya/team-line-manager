@@ -448,6 +448,7 @@ async fn converge_node(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         if base.kv("sshd_password") != Some("no") {
             return Err(remote(format!("sshd 仍允许密码登录（{}）", base.kv("sshd_password").unwrap_or("?"))));
         }
+        warn_no_mtr(c, &base).await;
         tuned = Some(apply_tune(c, &m, &t).await?);
     }
     let pushed = t.push(&c.dist("ssserver"), "/usr/local/bin/ssserver", "0755", Duration::from_secs(180)).await?;
@@ -471,6 +472,7 @@ async fn converge_relay(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     if base.kv("sshd_password") != Some("no") {
         return Err(remote(format!("sshd 仍允许密码登录（{}）", base.kv("sshd_password").unwrap_or("?"))));
     }
+    warn_no_mtr(c, &base).await;
     let tuned = apply_tune(c, &m, &t).await?;
     t.push(&c.dist("xray"), "/usr/local/bin/xray", "0755", Duration::from_secs(300)).await?;
     // 渲染出的配置只用到 geoip:private（策略不允许 geosite: 规则），geosite.dat 不推
@@ -575,6 +577,13 @@ async fn speedtest_step(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
 }
 
 /// 装单元的脚本报了 `linklocal_dns=1`（见 scripts::LINKLOCAL_DNS）：记一条 warn。`what` 是哪个程序
+/// 基线没装上 mtr（`mtr=missing`）：不影响上架，`fleetctl diag` 在这台上只能用 ping（或 `--install-mtr` 现装）
+async fn warn_no_mtr(c: &Ctx<'_>, base: &Output) {
+    if base.kv("mtr") == Some("missing") {
+        c.warn("没装上 mtr（mtr-tiny）：不影响使用，只是 fleetctl diag 在这台上只有 ping 没有 mtr；可以之后 fleetctl diag <节点> --install-mtr --yes").await;
+    }
+}
+
 async fn warn_linklocal_dns(c: &Ctx<'_>, out: &Output, what: &str) {
     if out.kv("linklocal_dns") == Some("1") {
         c.warn(format!(

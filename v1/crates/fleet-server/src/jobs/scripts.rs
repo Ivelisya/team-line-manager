@@ -54,13 +54,20 @@ chmod 600 /root/.ssh/authorized_keys
 echo bootstrap=ok
 "#;
 
-/// 系统基线：缺的基础包补上（线路机访问日志轮转要 logrotate，精简系统可能没装）、sshd 只允许密钥。BBR 等内核参数归调优档管（见 tune.rs）
+/// 系统基线：缺的基础包补上（线路机访问日志轮转要 logrotate，精简系统可能没装）、sshd 只允许密钥。BBR 等内核参数归调优档管（见 tune.rs）。
+/// mtr 给 `fleetctl diag` 用（供应商要 mtr 原始数据）：Debian 12/13、Ubuntu 22.04/24.04 的包名都是 `mtr-tiny`（不带图形界面依赖）。
+/// 它不是运行必需的，装不上（源坏了、没网）不让基线失败，只输出 `mtr=missing`，步骤记一条 warn
 pub const BASELINE: &str = r#"
 set -eu
 export DEBIAN_FRONTEND=noninteractive
 need=""; command -v nft >/dev/null || need="$need nftables"; command -v curl >/dev/null || need="$need curl"
 command -v logrotate >/dev/null || need="$need logrotate"
 if [ -n "$need" ]; then timeout 240 apt-get update -qq >/dev/null 2>&1 || true; timeout 300 apt-get install -y -qq $need >/dev/null; fi
+# 先直接装（包索引多半是新的）；不行再更新索引重试（上面刚更新过就不再更新）。超时放短：基线整体 600 秒，别被它拖垮
+if ! command -v mtr >/dev/null; then
+  timeout 120 apt-get install -y -qq mtr-tiny >/dev/null 2>&1 </dev/null || { [ -n "$need" ] || timeout 120 apt-get update -qq >/dev/null 2>&1 </dev/null || true; timeout 120 apt-get install -y -qq mtr-tiny >/dev/null 2>&1 </dev/null || true; }
+fi
+if command -v mtr >/dev/null; then echo mtr=ok; else echo mtr=missing; fi
 install -d -m 755 /etc/ssh/sshd_config.d
 F=/etc/ssh/sshd_config.d/00-fleet-keyonly.conf
 printf '%s\n' '# fleet：只允许密钥登录' 'PasswordAuthentication no' 'KbdInteractiveAuthentication no' 'PermitRootLogin prohibit-password' 'PubkeyAuthentication yes' > $F.tmp
@@ -915,6 +922,17 @@ ACL
             assert!(s.contains("nft -f $N || {"));
         }
         assert!(super::NODE_NFT_ONLY.contains("[^}]*"), "替换放行名单的 sed 不能吃掉集合的右花括号");
+    }
+
+    /// 基线补装 mtr-tiny（fleetctl diag 用）：装不上不让基线失败（set -e 下每条 apt-get 都有兜底），只报 mtr=missing
+    #[test]
+    fn baseline_installs_mtr_best_effort() {
+        let b = super::BASELINE;
+        assert!(b.contains("timeout 120 apt-get install -y -qq mtr-tiny >/dev/null 2>&1 </dev/null || {"));
+        assert!(b.contains("timeout 120 apt-get install -y -qq mtr-tiny >/dev/null 2>&1 </dev/null || true; }"));
+        assert!(b.contains("if command -v mtr >/dev/null; then echo mtr=ok; else echo mtr=missing; fi"));
+        // 在 sshd 那段之前：sshd -t 失败时脚本退出，mtr 的结果也照样报过了
+        assert!(b.find("mtr-tiny").unwrap() < b.find("sshd_config.d").unwrap());
     }
 
     #[test]
