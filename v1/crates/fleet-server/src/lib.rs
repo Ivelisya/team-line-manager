@@ -38,6 +38,7 @@ pub mod silence;
 pub mod spare;
 pub mod ssh;
 pub mod state;
+pub mod tcp_loss;
 pub mod terminal;
 pub mod totp;
 pub mod traffic;
@@ -129,7 +130,7 @@ async fn response_headers(State(https): State<bool>, req: axum::extract::Request
     res
 }
 
-/// 后台任务：作业、告警、实时指标、访问汇总、来源画像、通知发送、分区维护、小时汇总、软路由采集（含它的告警）、中控到线路机的连通性、汇率更新、探测点（离线告警、主来源切换）、三网 PING（小时汇总与保留期）。
+/// 后台任务：作业、告警、实时指标、访问汇总、来源画像、通知发送、分区维护、小时汇总、软路由采集（含它的告警）、中控到线路机的连通性、汇率更新、探测点（离线告警、主来源切换）、三网 PING（小时汇总与保留期）、持续握手丢包（tcp_loss.rs）。
 /// 都在 `supervise` 下跑：panic 或意外返回时记 error、10 秒后原地重启（这些循环的状态在库里，内存里的去抖计数、缓存重启后重新累计）。
 /// 作业引擎也一样：清旧租约只在 main 启动时做一次，本进程还在推进的作业不会被再领（`jobs::Running`），原地重启不会让两个执行者推进同一个作业
 pub fn spawn_background(st: &AppState) {
@@ -155,6 +156,7 @@ pub fn spawn_background(st: &AppState) {
     supervise(st, "探测点", probe_points::run_forever);
     supervise(st, "三网 PING 汇总与清理", ping::run_forever);
     supervise(st, "放置矩阵", placement::run_forever);
+    supervise(st, "持续握手丢包", tcp_loss::run_forever);
 }
 
 /// 命令行（user-set 重设密码）在别的进程里删会话：经 NOTIFY 转来，实时流的连接马上复核。

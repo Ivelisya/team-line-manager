@@ -1042,6 +1042,7 @@ function suggest(i: Incident): string[] {
   const kind = db.machines.find((m) => m.id === i.subject_id)?.kind;
   if (i.rule === 'traffic_quota_high' && kind === 'relay') return [`fleetctl rebalance ${shq(name)}`];
   if (i.rule === 'agent_offline') return [`fleetctl logs ${shq(name)}`];
+  if (i.rule === 'tcp_loss_high') return [`fleetctl diag ${shq(name)}`];
   if (i.rule === 'nonbusiness_traffic_high') return [`fleetctl logs ${shq(name)}`, `fleetctl exec ${shq(name)} -- 'ss -s; nft list ruleset | head -50'`];
   if (i.rule === 'business_traffic_spike') return [`fleetctl traffic --node ${shq(name)} --days 7`];
   if (i.rule === 'router_exit_drift') return [`fleetctl router sync ${shq(name)}`];

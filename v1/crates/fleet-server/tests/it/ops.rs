@@ -199,6 +199,67 @@ async fn exec_preconditions() {
     assert_eq!(s, StatusCode::BAD_REQUEST);
 }
 
+/// `fleetctl diag` 的计划：节点地址、SS 出站端口、每台在用线路机（是不是它挂的、一个在用入口端口）、对照目标；要 exec 权限；
+/// 线路机 400、不在用 409；家宽代理 ssh=false
+#[tokio::test]
+async fn diag_plan() {
+    let t = setup().await;
+    let (r2, _) = common::seed_relay(&t).await;
+    let (r3, _) = common::seed_relay_b(&t).await;
+    let team = t.ok("POST", "/api/v1/teams", Some(json!({"name": "团队1"}))).await;
+    let tid: Uuid = team["id"].as_str().unwrap().parse().unwrap();
+    let p = t.ok("POST", "/api/v1/providers", Some(json!({"name": "DeerVPS", "code": "DV"}))).await;
+    let (node, other) = (Uuid::now_v7(), Uuid::now_v7());
+    for (id, n, ip) in [(node, 1, "203.0.113.5"), (other, 2, "203.0.113.6")] {
+        sqlx::query("insert into machine (id, kind, team_id, number, primary_ip, provider_id, lifecycle) values ($1, 'vps', $2, $3, $4::inet, $5, 'active')")
+            .bind(id)
+            .bind(tid)
+            .bind(n)
+            .bind(ip)
+            .bind(p["id"].as_str().unwrap().parse::<Uuid>().unwrap())
+            .execute(&t.st.db)
+            .await
+            .unwrap();
+    }
+    sqlx::query("insert into node_outbound (machine_id, protocol, host, port, method, secret_enc) values ($1, 'shadowsocks', '203.0.113.5', 8388, 'aes-256-gcm', '\\x00')")
+        .bind(node)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    // 节点挂在线路机2；线路机3 上只有别的节点的入口（端口 20031）
+    for (relay, n, port) in [(r2, node, 20005), (r3, other, 20031)] {
+        sqlx::query("insert into entry (id, relay_id, node_id, port, client_uuid, short_id, lifecycle) values ($1, $2, $3, $4, $5, 'abcd', 'active')")
+            .bind(Uuid::now_v7())
+            .bind(relay)
+            .bind(n)
+            .bind(port)
+            .bind(Uuid::now_v7())
+            .execute(&t.st.db)
+            .await
+            .unwrap();
+    }
+    let d = t.ok("GET", &format!("/api/v1/machines/{node}/diag-plan"), None).await;
+    assert_eq!(d["node"], json!({"id": node, "name": "团队1-01", "kind": "vps", "ip": "203.0.113.5", "bind_ip": null, "host": null, "provider": "DeerVPS", "ssh": true}));
+    assert_eq!(d["ss"], json!({"host": "203.0.113.5", "port": 8388}));
+    assert_eq!(
+        d["relays"],
+        json!([
+            {"id": r2, "name": "线路机2", "ip": "198.51.100.2", "own": true, "port": 20005},
+            {"id": r3, "name": "线路机3", "ip": "198.51.100.3", "own": false, "port": 20031},
+        ])
+    );
+    assert_eq!(d["control"], json!({"host": "1.1.1.1", "port": 443}));
+    // read 密钥 403；线路机 400；退役的 409
+    let (_, read_tok) = t.make_key("ci-read", &["read"]).await;
+    let (s, _) = t.call("GET", &format!("/api/v1/machines/{node}/diag-plan"), None, Auth::Key(&read_tok)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, v) = t.call("GET", &format!("/api/v1/machines/{r2}/diag-plan"), None, Auth::Session).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    sqlx::query("update machine set lifecycle = 'retired', retired_at = now() where id = $1").bind(other).execute(&t.st.db).await.unwrap();
+    let (s, _) = t.call("GET", &format!("/api/v1/machines/{other}/diag-plan"), None, Auth::Session).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+}
+
 /// 输入错误统一 400 且是 JSON：坏 uuid / 坏查询参数 / 枚举值不对 / 引用不存在的对象
 #[tokio::test]
 async fn bad_input_is_json_400() {

@@ -135,6 +135,7 @@ pub fn router() -> Router<AppState> {
         .route("/api-keys/{id}", axum::routing::delete(keys::revoke))
         .route("/machines/{id}/exec", post(exec::exec))
         .route("/machines/{id}/logs", get(exec::machine_logs))
+        .route("/machines/{id}/diag-plan", get(exec::diag_plan))
         .route("/server/logs", get(exec::server_logs))
         // 网页终端（只给会话用户）
         .route("/terminal/tickets", post(terminal::create_ticket))
