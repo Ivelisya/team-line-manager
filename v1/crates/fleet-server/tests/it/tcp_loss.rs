@@ -193,3 +193,24 @@ async fn offline_relay_is_not_counted() {
     assert!(firing(&t).await.is_empty());
     assert!(!t.health(a).await.1.contains(&"tcp_loss_high".to_string()));
 }
+
+/// 入口切成穿透：线路机 → 节点不再有 TCP 探测，窗口里切换之前的探测也不再算；节点上没有别的要探测的入口时开着的直接撤掉
+/// （不能按「样本不够、保持」一直开着——生产团队2-08 开穿透后就会这样）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn switching_to_reverse_clears() {
+    let t = setup().await;
+    let relay = online_relay(&t).await;
+    let team = seed_team(&t, "团队1").await;
+    let (a, ea) = seed_node(&t, relay, team, 1, "203.0.113.5", 20001).await;
+    let now = OffsetDateTime::now_utc();
+    probes(&t, ea, now + Duration::seconds(60), 60, 8, 18).await;
+    let (mut ls, mut s) = (LossState::default(), AlertState::default());
+    pass(&t, &mut ls, &mut s, now).await;
+    pass(&t, &mut ls, &mut s, now + Duration::seconds(60)).await;
+    assert_eq!(firing(&t).await.len(), 1);
+    sqlx::query("update entry set mode = 'reverse' where id = $1").bind(ea).execute(&t.st.db).await.unwrap();
+    pass(&t, &mut ls, &mut s, now + Duration::seconds(120)).await;
+    assert!(!t.health(a).await.1.contains(&"tcp_loss_high".to_string()), "切到穿透：立刻不再降级");
+    pass(&t, &mut ls, &mut s, now + Duration::seconds(180)).await;
+    assert!(firing(&t).await.is_empty(), "告警去抖后关");
+}

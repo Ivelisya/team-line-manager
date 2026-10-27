@@ -7,7 +7,8 @@
 //!
 //! 每 60 秒算一次（`run_forever`）：在用的节点（VPS、家宽代理、同机 IP 节点；不含维护中的）汇总它在用入口近 `WINDOW_MIN` 分钟的
 //! TCP 探测（probe_result kind = tcp，每条入口每 30 秒一次，30 分钟约 60 次）。经离线、维护中、Xray 停了的线路机的入口不算（同 tcp_fail：
-//! 那时的失败不是节点的问题）。没有复用 probe_hourly：它按整点小时、也不记重传；网页心跳条（api/misc.rs probe_beats）是 3 分钟一格的展示查询。
+//! 那时的失败不是节点的问题）。穿透入口没有这项探测，不算；
+//! 节点的入口都切成穿透后开着的直接撤掉（入站丢包已经绕开了）。没有复用 probe_hourly：它按整点小时、也不记重传；网页心跳条（api/misc.rs probe_beats）是 3 分钟一格的展示查询。
 //!
 //! - 开：样本 ≥ `MIN_SAMPLES`，且失败 ≥ `FAIL_PCT`%（并且至少 `FAIL_MIN` 次）或成功建连里带 SYN 重传的 ≥ `RETRANS_PCT`%（并且至少 `RETRANS_MIN` 次）。
 //! - 关（滞回）：失败率与重传率都低于各自阈值的一半，连续 `CLEAR_HOLD_S` 秒才关；样本不够时判不出，开着的保持。
@@ -16,6 +17,7 @@
 //! - 供应商 / 网段关联：同一轮里同供应商（machine.provider_id）或同 /24 的其他在用节点也在触发时，摘要追加「同供应商 X 共 N 台同时（可能是供应商入站丢包）」，
 //!   通知合并成一条后一眼能看出是供应商的问题，先找供应商（`fleetctl diag` 给原始数据）而不是逐台查。
 
+use crate::reverse;
 use crate::state::AppState;
 use crate::views::{self, MachineView};
 use std::collections::HashMap;
@@ -146,8 +148,11 @@ fn correlate(me: &Peer, firing: &[&Peer]) -> String {
 /// 参与判断的节点：在用、不是线路机、不在维护
 fn judged(m: &MachineView) -> bool { m.lifecycle == "active" && m.kind != "relay" && !m.maintenance }
 
-/// 计入统计的入口：在用、不是直出；经离线、维护中、Xray 停了的线路机的不算（同 health.rs probe_reasons）
-fn counted(e: &views::EntryView) -> bool { e.lifecycle == "active" && !e.direct && !e.relay_offline && !e.relay_maint && !e.relay_xray_down }
+/// 有线路机 → 节点 TCP 探测的入口：在用、不是直出、不是穿透（穿透是节点主动连线路机，没有这项探测，入站握手丢包也不影响它）
+fn probed(e: &views::EntryView) -> bool { e.lifecycle == "active" && !e.direct && e.mode != reverse::REVERSE }
+
+/// 计入统计的入口：有 TCP 探测的；经离线、维护中、Xray 停了的线路机的不算（同 health.rs probe_reasons）
+fn counted(e: &views::EntryView) -> bool { probed(e) && !e.relay_offline && !e.relay_maint && !e.relay_xray_down }
 
 /// 各入口在 (`now` − 窗口, `now`] 里的 TCP 探测
 async fn entry_stats(db: &sqlx::PgPool, ids: &[Uuid], now: OffsetDateTime) -> sqlx::Result<HashMap<Uuid, Stats>> {
@@ -179,6 +184,8 @@ pub async fn evaluate(st: &AppState, state: &mut LossState, now: OffsetDateTime)
         state.seeded = true;
     }
     let ms = views::live(st).await?;
+    // 节点上已经没有要探测的入口（都切成穿透、入口都撤了）：再也等不到样本，开着的直接撤掉，否则一直「样本不够、保持」收不回来
+    state.latched.retain(|id, _| !ms.iter().any(|m| m.id == *id && judged(m) && !m.entries.iter().any(probed)));
     let ids: Vec<Uuid> = ms.iter().filter(|m| judged(m)).flat_map(|m| m.entries.iter().filter(|e| counted(e)).map(|e| e.id)).collect();
     let per_entry = entry_stats(&st.db, &ids, now).await?;
     let mut stats: HashMap<Uuid, Stats> = HashMap::new();
