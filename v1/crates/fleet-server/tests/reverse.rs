@@ -46,8 +46,16 @@ for a; do shift; if [ -n "$skip" ]; then skip=; elif [ "$a" = -g ]; then skip=1;
 exec /usr/bin/install "$@"
 "#;
 
-/// dist 里的 xray：-test 一律通过，version 打印生产同款版本行
-const XRAY: &str = "#!/bin/sh\n[ \"$1\" = version ] && echo 'Xray 26.3.27 (Xray, Penetrates Everything.) d2758a0'\nexit 0\n";
+/// dist 里的 xray：version 打印生产同款版本行；-test 同真 xray 按 -c 的扩展名认格式，认不出又没给 -format 就失败（报错在标准输出），
+/// 其余一律通过
+const XRAY: &str = r#"#!/bin/sh
+[ "$1" = version ] && { echo 'Xray 26.3.27 (Xray, Penetrates Everything.) d2758a0'; exit 0; }
+fmt=; cfg=
+while [ $# -gt 0 ]; do case "$1" in -format) fmt=$2; shift;; -c) cfg=$2; shift;; esac; shift; done
+case "$fmt:$cfg" in :|:*.json|:*.yaml|:*.yml|:*.toml|?*:*) exit 0;; esac
+echo "Failed to start: main: failed to load config files: [$cfg] > core: Failed to get format of $cfg"
+exit 23
+"#;
 
 static FAKE: LazyLock<tempfile::TempDir> = LazyLock::new(|| {
     let dir = tempfile::tempdir().unwrap();

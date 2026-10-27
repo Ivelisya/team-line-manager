@@ -542,8 +542,9 @@ if __LINKLOCAL_DNS__; then
 elif [ -f $RC ]; then rm -f $RC; RESTART=1; fi
 (umask 077; printf '%s
 ' "$CONFIG" > $C.tmp)
-if ! /usr/local/bin/xray run -test -c $C.tmp >/dev/null 2>$C.err; then
-  echo bridge=bad_config; cat $C.err >&2; rm -f $C.tmp $C.err; exit 5
+# 临时文件扩展名是 .tmp：xray 按扩展名认格式，不给 -format 就报「Failed to get format」。报错打在标准输出，去掉开头的版本行
+if ! /usr/local/bin/xray run -test -format json -c $C.tmp >$C.err 2>&1; then
+  echo bridge=bad_config; sed '/^Xray /d;/^A unified platform/d' $C.err >&2; rm -f $C.tmp $C.err; exit 5
 fi
 rm -f $C.err
 if cmp -s $C.tmp $C; then rm -f $C.tmp; else mv $C.tmp $C; [ "$ACTION" = quiet ] || RESTART=1; fi
