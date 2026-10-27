@@ -106,13 +106,13 @@ async fn switch(t: &T, e: Uuid, on: bool) -> String {
     t.post(&format!("/api/v1/entries/{e}/reverse"), json!({"on": on})).await["job_id"].as_str().unwrap().to_string()
 }
 
-/// 一轮：各线路机拉期望状态、回报、报出口探测（`fail_reverse` 时穿透入口的出口探测报不通）；再领取并推进一次作业
-async fn round(t: &T, sims: &mut [&mut Sim], bad: Option<(&str, &mut u64)>, job: &str) -> Value {
+/// 一轮：各线路机拉期望状态、回报、报出口探测（`manual` 的那台由测试自己报：穿透入口的出口探测通不通由它定）；再领取并推进一次作业
+async fn round(t: &T, sims: &mut [&mut Sim], manual: Option<(&str, &mut u64, bool)>, job: &str) -> Value {
     for s in sims.iter_mut() {
         s.round(t).await;
     }
-    if let Some((tok, seq)) = bad {
-        bad_round(t, tok, seq).await;
+    if let Some((tok, seq, reverse_ok)) = manual {
+        relay_round(t, tok, seq, reverse_ok).await;
     }
     sqlx::query("update job set run_after = now() where id = $1::uuid").bind(job).execute(&t.st.db).await.unwrap();
     if let Some(j) = jobs::claim(&t.st, "test").await.unwrap() {
@@ -133,8 +133,8 @@ async fn drive(t: &T, sims: &mut [&mut Sim], job: &str) -> Value {
     panic!("作业 {job} 没结束：{}", t.job(job).await);
 }
 
-/// 线路机回报应用成功，但穿透入口的出口探测不通（隧道挂不上）
-async fn bad_round(t: &T, tok: &str, seq: &mut u64) {
+/// 线路机回报应用成功；`reverse_ok` 为假时穿透入口的出口探测不通（隧道挂不上）
+async fn relay_round(t: &T, tok: &str, seq: &mut u64, reverse_ok: bool) {
     let (s, v) = t.req("GET", "/agent/v1/desired?after=0", None, Some(tok)).await;
     assert_eq!(s, StatusCode::OK);
     let ds: DesiredState = serde_json::from_value(v).unwrap();
@@ -145,7 +145,7 @@ async fn bad_round(t: &T, tok: &str, seq: &mut u64) {
         .entries
         .iter()
         .map(|e| {
-            let ok = !matches!(e.outbound, Outbound::Reverse { .. });
+            let ok = reverse_ok || !matches!(e.outbound, Outbound::Reverse { .. });
             ProbeSample { entry_id: e.id, ts_ms: now_ms(), kind: ProbeKind::Egress, ok, latency_ms: None, detail: Some(if ok { e.expect_egress_ip.to_string() } else { "连接被关闭".into() }), retrans: None }
         })
         .collect();
@@ -216,20 +216,33 @@ async fn switch_on_then_off() {
     assert!(read(&root.join("systemctl.log")).contains("disable --now fleet-xray-bridge"));
 }
 
-/// 开启后出口验收一直不过：自动切回普通模式、作业失败（错误写明已切回）；取消：补偿把节点上的 bridge 收起（没有别的穿透入口）
+/// 推到作业结束，线路机由测试自己报（见 relay_round）
+async fn drive_manual(t: &T, tok: &str, seq: &mut u64, reverse_ok: bool, job: &str) -> Value {
+    for _ in 0..100 {
+        let j = round(t, &mut [], Some((tok, &mut *seq, reverse_ok)), job).await;
+        if matches!(j["state"].as_str(), Some("succeeded" | "failed" | "cancelled")) {
+            return j;
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    panic!("作业 {job} 没结束：{}", t.job(job).await);
+}
+
+/// 开启后出口验收一直不过：自动切回普通模式、作业失败（错误写明已切回），这条隧道从 bridge 上撤掉（节点上没有别的穿透入口：整个收起）；
+/// 修好后重试：从切换那一步重来，先把隧道推回去，验收通过。另一次开启在推完 bridge 后取消：补偿收起 bridge，模式不变
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn failed_verify_reverts_and_cancel_cleans_up() {
+async fn failed_verify_reverts_then_retry_and_cancel() {
     let t = setup(false).await;
     let (ra, ta) = seed_relay(&t).await;
     let (n, root) = node(&t, "203.0.113.52").await;
     let e = entry(&t, ra, n, "normal").await;
-    Sim::new(ta.clone()).round(&t).await;
+    let mut seq = 0u64;
+    relay_round(&t, &ta, &mut seq, true).await;
     let job = switch(&t, e, true).await;
-    let mut seq = 100u64;
     let mut j = Value::Null;
     for i in 0..60 {
-        j = round(&t, &mut [], Some((&ta, &mut seq)), &job).await;
-        if j["state"] != "running" && j["state"] != "waiting" && j["state"] != "queued" {
+        j = round(&t, &mut [], Some((&ta, &mut seq, false)), &job).await;
+        if !matches!(j["state"].as_str(), Some("running" | "waiting" | "queued")) {
             break;
         }
         // 切换之后线路机已应用、出口一直不通：把这一步的开始时间往前挪到超时
@@ -241,13 +254,24 @@ async fn failed_verify_reverts_and_cancel_cleans_up() {
     let err = j["error"].as_str().unwrap();
     assert!(err.contains("出口探测一直没通过") && err.contains("已自动切回普通模式"), "{err}");
     assert_eq!(mode_of(&t, e).await, "normal", "切回去了");
-    assert!(root.join("etc/fleet-bridge/xray.json").exists(), "失败时 bridge 留着（重试接着用）");
-    // 取消：补偿收起 bridge（入口已经是普通，不再切）
-    t.post(&format!("/api/v1/jobs/{job}/cancel"), json!({})).await;
-    sqlx::query("update job set run_after = now() where id = $1::uuid").bind(&job).execute(&t.st.db).await.unwrap();
-    let c = jobs::claim(&t.st, "test").await.unwrap().unwrap();
-    jobs::advance(&t.st, c, "test").await.unwrap();
-    assert_eq!(t.job(&job).await["state"], "cancelled");
+    assert!(!root.join("etc/fleet-bridge/xray.json").exists(), "隧道从 bridge 上撤掉：节点上没有别的穿透入口，整个收起");
+    // 修好之后重试：先把隧道推回去，再切、验收
+    t.post(&format!("/api/v1/jobs/{job}/retry"), json!({})).await;
+    let j = drive_manual(&t, &ta, &mut seq, true, &job).await;
+    assert_eq!(j["state"], "succeeded", "{j}");
+    assert_eq!(mode_of(&t, e).await, "reverse");
+    assert!(root.join("etc/fleet-bridge/xray.json").exists());
+
+    // 关掉之后再开、推完 bridge 就取消：补偿收起 bridge，入口还是普通
+    let off = switch(&t, e, false).await;
+    assert_eq!(drive_manual(&t, &ta, &mut seq, true, &off).await["state"], "succeeded");
+    let on = switch(&t, e, true).await;
+    let j = round(&t, &mut [], Some((&ta, &mut seq, true)), &on).await;
+    assert_eq!(j["steps"][0]["state"], "done", "{j}");
+    assert!(root.join("etc/fleet-bridge/xray.json").exists());
+    t.post(&format!("/api/v1/jobs/{on}/cancel"), json!({})).await;
+    let j = drive_manual(&t, &ta, &mut seq, true, &on).await;
+    assert_eq!(j["state"], "cancelled", "{j}");
     assert!(!root.join("etc/fleet-bridge/xray.json").exists(), "取消后 bridge 收起");
     assert_eq!(mode_of(&t, e).await, "normal");
 }

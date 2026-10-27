@@ -126,9 +126,13 @@ pub(super) async fn switch(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let eid = c.param_uuid("entry_id")?;
     let (to, from) = if want_on(c) { (reverse::REVERSE, reverse::NORMAL) } else { (reverse::NORMAL, reverse::REVERSE) };
     if c.first {
+        // 上一次开启失败、切回时已经把这条隧道从 bridge 上撤了（见 revert）：重试先推回去
+        if want_on(c) && c.job.params["reverted"] == json!(true) && sync_bridge(c, c.target_id()?, Some(eid), None, false).await?.is_none() {
+            bail!("入口已经不在了");
+        }
         let mut tx = c.st.db.begin().await?;
         let (relay, gen) = reverse::set_mode(&mut tx, eid, to).await.map_err(|e| anyhow!(e.message))?;
-        let n = sqlx::query("update job set params = (params - 'applied_at') || $2 where id = $1 and lease_owner = $3")
+        let n = sqlx::query("update job set params = (params - 'applied_at' - 'reverted') || $2 where id = $1 and lease_owner = $3")
             .bind(c.job.id)
             .bind(json!({"switch_gen": gen}))
             .bind(c.owner)
@@ -206,7 +210,8 @@ pub(super) async fn switch(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     }
 }
 
-/// 切换失败：改回原来的模式（线路机代数 +1）。开启失败时 bridge 留着（重试接着用；取消作业时收起）。返回作业的错误
+/// 切换失败：改回原来的模式（线路机代数 +1）。开启失败时把这条隧道从 bridge 上撤掉（尽力而为）：入口回到普通模式后线路机不再认
+/// bridge 的 UUID，bridge 每 2 秒试连一次、线路机的访问日志每次记一行拒绝；重试时 `switch` 先推回去。返回作业的错误
 async fn revert(c: &Ctx<'_>, eid: Uuid, from: &str, why: &str) -> anyhow::Error {
     let r = async {
         let mut tx = c.st.db.begin().await?;
@@ -217,6 +222,18 @@ async fn revert(c: &Ctx<'_>, eid: Uuid, from: &str, why: &str) -> anyhow::Error 
         anyhow::Ok(gen)
     }
     .await;
+    if r.is_ok() && from == reverse::NORMAL {
+        let pulled = match c.target_id() {
+            Ok(node) => sync_bridge(c, node, None, None, true).await.map(|_| ()),
+            Err(e) => Err(e),
+        };
+        match pulled {
+            Ok(()) => {
+                let _ = c.set_params(json!({"reverted": true})).await;
+            }
+            Err(e) => c.warn(format!("把这条隧道从 bridge 上撤掉没成功（不影响客户，取消作业时会再收一次）：{e:#}")).await,
+        }
+    }
     match r {
         Ok(gen) => {
             c.warn(format!("已自动切回{}模式（线路机代数 {gen}），客户照旧经原来的路径", reverse::mode_zh(from))).await;
