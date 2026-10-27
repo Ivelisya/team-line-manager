@@ -620,7 +620,7 @@ async fn move_rewrites_router_exits() {
     config(23153, &[("x", "198.51.100.2", 20003)]);
     let j = run(t, &mut [Sim::new(RELAY_TOKEN.into()), Sim::new(tb)], &job).await;
     assert_eq!(j["state"], "succeeded", "{j} {}", logs(t, &job).await);
-    assert_eq!((j["steps"][4]["key"].as_str(), j["steps"][4]["state"].as_str()), (Some("routers"), Some("done")));
+    assert_eq!((j["steps"][5]["key"].as_str(), j["steps"][5]["state"].as_str()), (Some("routers"), Some("done")));
     let (np, uuid): (i32, Uuid) = sqlx::query_as("select port, client_uuid from entry where node_id = $1 and relay_id = $2").bind(w.old).bind(rb).fetch_one(&t.st.db).await.unwrap();
     let a = applies(23151);
     assert_eq!(a.len(), 1);
@@ -633,7 +633,7 @@ async fn move_rewrites_router_exits() {
     let l = logs(t, &job).await;
     assert!(l.contains(&format!("节点01 198.51.100.2:20003 → 198.51.100.3:{np}")), "{l}");
     assert!(l.contains("按软路由现在的配置要改：路由A 的 节点01、节点01备；路由C 的 x（发起时的预览是：路由A 的 节点01；路由B 的 节点01）"), "{l}");
-    let out = &j["steps"][4]["output"]["routers"];
+    let out = &j["steps"][5]["output"]["routers"];
     assert_eq!(out.as_array().map(|r| r.iter().map(|x| x["name"].as_str().unwrap()).collect::<Vec<_>>()), Some(vec!["路由A", "路由C"]), "{out}");
 }
 
@@ -659,7 +659,7 @@ async fn move_router_failure_keeps_old_entry() {
     let job = d["job_id"].as_str().unwrap().to_string();
     let mut sims = [Sim::new(RELAY_TOKEN.into()), Sim::new(tb)];
     let j = run(t, &mut sims, &job).await;
-    assert_eq!((j["state"].as_str(), j["steps"][4]["state"].as_str()), (Some("failed"), Some("failed")), "{j}");
+    assert_eq!((j["state"].as_str(), j["steps"][5]["state"].as_str()), (Some("failed"), Some("failed")), "{j}");
     let err = j["error"].as_str().unwrap();
     assert!(err.contains("软路由「路由B」：出口「节点01」换成新入口后测了 3 次都不通；已改回原配置：路由A。软路由都是原样，旧入口没摘"), "{err}");
     let stamp_a = read(root(23161).join("apply-1.sh")).lines().find_map(|l| l.strip_prefix("STAMP='").map(|s| s.trim_end_matches('\'').to_string())).unwrap();
@@ -746,7 +746,7 @@ async fn evacuate_changes_each_router_once() {
     for _ in 0..100 {
         drive_holding(t, &mut sims, 23171, &mut held).await;
         let j = t.job(&follow).await;
-        if held.len() == 1 && j["step"] == 4 && j["state"] == "waiting" && logs(t, &follow).await.contains("带头") {
+        if held.len() == 1 && j["step"] == 5 && j["state"] == "waiting" && logs(t, &follow).await.contains("带头") {
             waiting = j;
             break;
         }
@@ -772,8 +772,8 @@ async fn evacuate_changes_each_router_once() {
     assert!(bp.len() == 1 && bp[0].contains(&format!("NAME_1='节点02'\nOSRV_1='relay.test'\nOPORT_1='20020'\nSRV_1='relay3.test'\nPORT_1='{pb}'")), "{bp:?}");
     // 步骤输出：带头的列出全部（标明各出口归哪个作业）和认领的作业，跟着的只有自己的出口
     let (lj, fj) = (t.job(&lead).await, t.job(&follow).await);
-    assert_eq!(lj["steps"][4]["output"]["batch"], json!([follow]), "{lj}");
-    let fo = &fj["steps"][4]["output"];
+    assert_eq!(lj["steps"][5]["output"]["batch"], json!([follow]), "{lj}");
+    let fo = &fj["steps"][5]["output"];
     assert_eq!(fo["batch_leader"], json!(lead));
     let mine: Vec<(&str, &str)> = fo["routers"].as_array().unwrap().iter().flat_map(|r| r["exits"].as_array().unwrap().iter().map(move |x| (r["name"].as_str().unwrap(), x["exit"].as_str().unwrap()))).collect();
     assert_eq!(mine, [("路由A", "节点02"), ("路由B", "节点02")], "{fo}");
@@ -1019,7 +1019,7 @@ async fn evacuate_batch_stuck_holds_followers() {
     t.post(&format!("/api/v1/jobs/{}/retry", ids[1]), json!({})).await;
     let fj = run(t, &mut sims, &ids[1]).await;
     assert_eq!(fj["state"], "succeeded", "{}", logs(t, &ids[1]).await);
-    assert_eq!(fj["steps"][4]["output"]["routers"][0]["exits"][0]["exit"], "节点02", "{fj}");
+    assert_eq!(fj["steps"][5]["output"]["routers"][0]["exits"][0]["exit"], "节点02", "{fj}");
     assert_eq!(applies(23173).len(), 2, "带头的接着改完那一次，跟着的不再动路由");
     assert_eq!((entry_state(t, oe).await, entry_state(t, ne).await), ("removed".to_string(), "removed".to_string()));
 }
@@ -1084,15 +1084,15 @@ async fn separate_jobs_take_turns_on_a_router() {
         if let [(first, _)] = held.as_slice() {
             let other = ids.iter().find(|i| *i != first).unwrap().clone();
             let j = t.job(&other).await;
-            if j["step"] == 4 && j["state"] == "waiting" {
+            if j["step"] == 5 && j["state"] == "waiting" {
                 queued = (other, j);
                 break;
             }
         }
     }
     let (second, j) = &queued;
-    assert!(held.len() == 1 && j["steps"][4]["state"] == "running", "{j} {}", logs(t, second).await);
-    assert!(j["steps"][4]["started_at"].is_null() && j["cancellable"] == true, "排队不算这一步的时间、还能取消：{j}");
+    assert!(held.len() == 1 && j["steps"][5]["state"] == "running", "{j} {}", logs(t, second).await);
+    assert!(j["steps"][5]["started_at"].is_null() && j["cancellable"] == true, "排队不算这一步的时间、还能取消：{j}");
     assert_eq!(applies(23178).len(), 1, "后到的没碰路由");
     let reads = read(root(23178).join("reads")).lines().count();
     // 再领几次照样排队，不读路由的配置；日志只写一次
@@ -1114,7 +1114,7 @@ async fn separate_jobs_take_turns_on_a_router() {
     let name = |id: &str| if id == ids[0] { "节点01" } else { "节点02" };
     let a = applies(23178);
     assert!(a.len() == 2 && a[0].contains(&format!("NAME_1='{}'\n", name(&first))) && a[1].contains(&format!("NAME_1='{}'\n", name(second))), "{a:?}");
-    assert_eq!(t.job(second).await["steps"][4]["state"], "done");
+    assert_eq!(t.job(second).await["steps"][5]["state"], "done");
 }
 
 /// 中控升级前建的作业（步骤是旧定义的）：按步骤 key 对齐现在的定义。第 45 轮之前的换线路机只有 7 步（没有改软路由出口），
@@ -1129,7 +1129,7 @@ async fn old_jobs_align_by_step_key() {
     let d = t.post(&format!("/api/v1/machines/{}/move", w.old), json!({"to_relay_id": rb})).await;
     let job = d["job_id"].as_str().unwrap().to_string();
     let id = Uuid::parse_str(&job).unwrap();
-    // 改回旧定义：去掉 routers（idx 4），后面的往前挪；参数也同旧作业（没有 routers / plan）
+    // 改回旧定义：去掉 routers（idx 5），后面的往前挪；参数也同旧作业（没有 routers / plan）
     let db = &t.st.db;
     sqlx::query("delete from job_step where job_id = $1 and key = 'routers'").bind(id).execute(db).await.unwrap();
     // 主键 (job_id, idx)：先挪到负数再挪回来
@@ -1140,7 +1140,7 @@ async fn old_jobs_align_by_step_key() {
     assert_eq!(j["state"], "succeeded", "{j} {}", logs(t, &job).await);
     let keys: Vec<&str> = j["steps"].as_array().unwrap().iter().map(|s| s["key"].as_str().unwrap()).collect();
     assert_eq!(keys, jobs::defs("move_entry").iter().map(|d| d.key).collect::<Vec<_>>());
-    assert_eq!(j["steps"][4]["state"], "done");
+    assert_eq!(j["steps"][5]["state"], "done");
     assert!(logs(t, &job).await.contains("按步骤名对齐：新增的「改软路由出口」照做"));
     assert_eq!(applies(23191).len(), 1, "按路由现在的配置改了出口");
     assert_eq!(entry_state(t, oe).await, "removed");

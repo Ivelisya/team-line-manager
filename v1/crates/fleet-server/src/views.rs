@@ -270,6 +270,8 @@ pub struct EntryView {
     pub node: Ref,
     /// 线路机直出：从线路机自己的 IP 出去，没有落地节点，也就没有 TCP 探测（tcp 恒为 null）
     pub direct: bool,
+    /// normal / reverse（穿透：节点主动连这个入口，线路机不连节点，也就没有 TCP 探测，tcp 恒为 null，见 crate::reverse）
+    pub mode: String,
     pub port: i32,
     pub lifecycle: String,
     /// 线路机已应用到这条入口的最近一次改动
@@ -860,7 +862,7 @@ async fn refresh(st: &AppState, prev: &[MachineView], jobs: bool) -> sqlx::Resul
     for m in &mut out {
         for e in &mut m.entries {
             if changed.contains_key(&e.relay.id) {
-                e.tcp = probes.get(&(e.id, "tcp".into())).cloned();
+                e.tcp = if e.mode == crate::reverse::REVERSE { None } else { probes.get(&(e.id, "tcp".into())).cloned() };
                 e.egress = probes.get(&(e.id, "egress".into())).cloned();
             }
             if let Some(&(d, off)) = xray_down.get(&e.relay.id) {
@@ -1306,6 +1308,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
         apply_error: Option<String>,
         relay_xray_down: bool,
         relay_last: Option<OffsetDateTime>,
+        mode: String,
     }
     // 下面这些查询互不依赖（探测要等入口列表），并发跑
     let entries_q = async {
@@ -1313,7 +1316,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
             "select e.id, e.relay_id, rm.label relay_label, e.node_id, nm.label node_label, t.name node_team, nm.number node_number, e.port,
                     e.lifecycle::text lifecycle, r.applied_generation >= e.changed_gen applied, e.apply_error,
                     coalesce((ra.info->'xray'->>'running')::bool = false and ra.last_report_at > now() - make_interval(secs => $2), false) relay_xray_down,
-                    ra.last_report_at relay_last
+                    ra.last_report_at relay_last, e.mode
              from entry e join machine rm on rm.id = e.relay_id join relay r on r.machine_id = e.relay_id
              left join agent_state ra on ra.machine_id = e.relay_id
              join machine nm on nm.id = e.node_id left join team t on t.id = nm.team_id
@@ -1425,7 +1428,9 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
             relay_xray_down: e.relay_xray_down,
             relay_offline: !e.relay_last.is_some_and(|t| st.report_gaps.online(t, now)),
             relay_maint: silences.maintenance(e.relay_id),
-            tcp: probes.get(&(e.id, "tcp".into())).cloned(),
+            // 穿透入口线路机不连节点：切换之前留下的 TCP 探测（15 分钟内的）不算数，不显示也不进告警
+            tcp: if e.mode == crate::reverse::REVERSE { None } else { probes.get(&(e.id, "tcp".into())).cloned() },
+            mode: e.mode,
             egress: probes.get(&(e.id, "egress".into())).cloned(),
             reach: reach.get(&e.id).cloned(),
             traffic: traffic.get(&e.id).cloned().unwrap_or_default(),

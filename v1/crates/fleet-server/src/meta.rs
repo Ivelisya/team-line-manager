@@ -235,6 +235,7 @@ pub const JOB_KINDS: Labels = &[
     ("speedtest", "测速"),
     ("repoint", "改出口指向"),
     ("router_sync", "同步软路由出口"),
+    ("reverse", "切换穿透"),
 ];
 
 pub const JOB_STATES: Labels = &[

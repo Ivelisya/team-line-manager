@@ -20,6 +20,7 @@ mod policy;
 mod probe;
 mod reports;
 mod retention;
+mod reverse;
 mod spare;
 mod subs;
 mod telemetry;

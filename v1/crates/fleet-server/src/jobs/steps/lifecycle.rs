@@ -19,16 +19,16 @@ pub(super) async fn attach_new(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let mut tx = c.st.db.begin().await?;
     // 先拿策略共享锁再锁旧入口行（和发布的加锁顺序一致）
     entries::lock_policy_shared(&mut tx).await.map_err(|e| anyhow!(e.message))?;
-    let cur: Option<(String,)> = sqlx::query_as("select lifecycle::text from entry where id = $1 and node_id = $2 for update")
+    let cur: Option<(String, String)> = sqlx::query_as("select lifecycle::text, mode from entry where id = $1 and node_id = $2 for update")
         .bind(old)
         .bind(node)
         .fetch_optional(&mut *tx)
         .await?;
-    match cur.as_ref().map(|(l,)| l.as_str()) {
-        Some("active") => {}
-        Some(l) => bail!("旧入口现在是「{}」，不能再换线路机（旧作业不会自动复活，请重新发起）", entries::state_zh(l)),
+    let old_mode = match cur.as_ref().map(|(l, m)| (l.as_str(), m.as_str())) {
+        Some(("active", m)) => m.to_string(),
+        Some((l, _)) => bail!("旧入口现在是「{}」，不能再换线路机（旧作业不会自动复活，请重新发起）", entries::state_zh(l)),
         None => bail!("旧入口已经不存在"),
-    }
+    };
     let dup: Option<(Uuid,)> = sqlx::query_as("select id from entry where node_id = $1 and relay_id = $2 and lifecycle <> 'removed'")
         .bind(node)
         .bind(to)
@@ -37,7 +37,9 @@ pub(super) async fn attach_new(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     if dup.is_some() {
         bail!("这个节点在目标线路机上已经有入口");
     }
-    let (eid, port, gen) = entries::create(&mut tx, to, node).await.map_err(|e| anyhow!(e.message))?;
+    // 新入口沿用旧入口的模式；目标线路机的 agent 太旧等用不了穿透时退回普通（新入口验收照样经入口，换完后可再开）
+    let (mode, why) = crate::reverse::resolve_new(&mut tx, node, to, &old_mode).await?;
+    let (eid, port, gen) = entries::create_with(&mut tx, to, node, mode).await.map_err(|e| anyhow!(e.message))?;
     // 记 entry_id 时同时确认租约还在：不在就整个事务回滚，不留下孤儿入口
     let n = sqlx::query("update job set params = params || $2 where id = $1 and lease_owner = $3")
         .bind(c.job.id)
@@ -52,8 +54,11 @@ pub(super) async fn attach_new(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     tx.commit().await?;
     c.st.relay_bumped(to);
     let (label,): (String,) = sqlx::query_as("select coalesce(label, '') from machine where id = $1").bind(to).fetch_one(&c.st.db).await?;
-    c.log(format!("新入口已建：{label}:{port}（等线路机应用）；旧入口保持不动，换线期间不断网")).await;
-    Ok(Outcome::Done(json!({"entry_id": eid, "relay_id": to, "relay": label, "port": port, "generation": gen})))
+    c.log(format!("新入口已建：{label}:{port}（{}模式，等线路机应用）；旧入口保持不动，换线期间不断网", crate::reverse::mode_zh(mode))).await;
+    if let Some(w) = why {
+        c.warn(w).await;
+    }
+    Ok(Outcome::Done(json!({"entry_id": eid, "relay_id": to, "relay": label, "port": port, "generation": gen, "mode": mode})))
 }
 
 /// 摘旧入口（removing，旧线路机代数 +1）。不可回滚，所以：作业正在取消、新入口还没生效时都不动手。幂等。
@@ -123,6 +128,14 @@ pub(super) async fn firewall_narrow(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         .fetch_one(&c.st.db)
         .await?;
     let out = if left > 0 { Outcome::Skipped("节点在旧线路机上还有入口，防火墙保持放行".into()) } else { firewall(c).await? };
+    // 旧入口是穿透的：bridge 配置里去掉它（只删隧道不重启，不断新入口的连接；节点上没有别的穿透入口了就停掉删掉）。
+    // 失败不挡换线：多出来的隧道只是连一个已经关掉的端口
+    let old_mode: Option<String> = sqlx::query_scalar("select mode from entry where id = $1").bind(c.param_uuid("old_entry_id")?).fetch_optional(&c.st.db).await?;
+    if old_mode.as_deref() == Some(crate::reverse::REVERSE) {
+        if let Err(e) = super::bridge::sync_bridge(c, node, None, None, true).await {
+            c.warn(format!("bridge 配置没能去掉旧入口（不影响新入口）：{e:#}")).await;
+        }
+    }
     let new = c.param_uuid("entry_id")?;
     let row: Option<(String, i32)> = sqlx::query_as("select coalesce(m.label, ''), e.port from entry e join machine m on m.id = e.relay_id where e.id = $1")
         .bind(new)

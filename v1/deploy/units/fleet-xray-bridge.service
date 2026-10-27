@@ -1,0 +1,46 @@
+[Unit]
+Description=Xray 穿透 bridge（节点主动连线路机入口，由 fleet-server 经 SSH 管理配置）
+After=network-online.target
+Wants=network-online.target
+# 配置由中控渲染、作业写入（入口切到穿透时装，切回普通时停掉删掉）；fleet-agent 只在中控要求时重启它
+ConditionPathExists=/etc/fleet-bridge/xray.json
+
+[Service]
+Type=simple
+# 同线路机的 fleet-xray：动态用户，配置由 systemd 以 root 打开、作为标准输入交给 Xray（-c stdin:），Xray 自己读不到 /etc/fleet-bridge。
+# 重启时 systemd 重新打开新写的配置。不开 API、不写访问日志（警告进 journal）
+DynamicUser=yes
+StandardInput=file:/etc/fleet-bridge/xray.json
+ExecStart=/usr/local/bin/xray run -c stdin:
+Restart=always
+RestartSec=2
+LimitNOFILE=65536
+# 只主动往外连（线路机入口、客户的目标），不监听任何端口，用不着任何能力
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK
+# 同 fleet-xray：客户经域名也到不了云厂商的元数据服务（路由里的私网拦截按解析结果拦，这一层兜住解析之后又换了地址的）。
+# 不拦回环：/etc/resolv.conf 常指 127.0.0.53（systemd-resolved），拦了解析不了域名；回环目标由路由的私网拦截挡
+IPAddressDeny=link-local 100.100.100.200/32
+# DNS 是链路本地地址的机器上，同 fleet-xray 挂公共解析器（文件由安装脚本写，见 jobs/scripts.rs 的 LINKLOCAL_DNS）
+BindReadOnlyPaths=-/etc/fleet-xray/resolv.conf:/etc/resolv.conf
+InaccessiblePaths=-/etc/fleet-agent -/var/lib/fleet-agent -/etc/ssh -/etc/shadowsocks-rust
+
+[Install]
+WantedBy=multi-user.target

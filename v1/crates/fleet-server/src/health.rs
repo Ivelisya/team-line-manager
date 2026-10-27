@@ -189,7 +189,8 @@ fn probe_reasons(live: &[&EntryView], now: OffsetDateTime, rs: &mut Vec<Reason>,
             continue;
         }
         // 15 分钟内没有探测结果（视图只取这么久的）：这条入口通不通不知道。直出入口本来就没有 TCP 探测
-        if e.egress.is_none() || (e.tcp.is_none() && !e.direct) {
+        // 直出、穿透入口没有 TCP 探测（线路机不连节点）：只看出口
+        if e.egress.is_none() || (e.tcp.is_none() && !e.direct && e.mode != crate::reverse::REVERSE) {
             undecided.push(e.relay.id);
         }
         match &e.egress {
@@ -493,6 +494,7 @@ pub(crate) mod tests {
             relay: Ref { id: Uuid::now_v7(), name: "线路机1".into() },
             node: Ref { id: Uuid::now_v7(), name: "n".into() },
             direct: false,
+            mode: "normal".into(),
             port: 20000,
             lifecycle: "active".into(),
             applied: true,
@@ -713,6 +715,20 @@ pub(crate) mod tests {
         r.entries = vec![d];
         let h = evaluate(&r, now);
         assert_eq!((keys(&h), h.reasons[0].severity, h.status), (vec!["egress_fail"], "warning", Status::Degraded));
+    }
+
+    #[test]
+    fn reverse_entry_judged_by_egress_only() {
+        // 穿透入口没有 TCP 探测（视图里 tcp 恒为 null）：出口通就是好的，不当成「判不出」；出口不通照常报 egress_fail，不报 tcp_fail
+        let now = OffsetDateTime::now_utc();
+        let mut n = base("vps");
+        n.entries = vec![entry(false, true)];
+        (n.entries[0].mode, n.entries[0].tcp) = ("reverse".into(), None);
+        let h = evaluate(&n, now);
+        assert!(h.reasons.is_empty() && !h.undecided("tcp_fail") && !h.undecided("egress_fail") && h.status != Status::Unknown, "{:?}", keys(&h));
+        n.entries = vec![entry(false, false)];
+        (n.entries[0].mode, n.entries[0].tcp) = ("reverse".into(), None);
+        assert_eq!(keys(&evaluate(&n, now)), ["egress_fail"]);
     }
 
     #[test]

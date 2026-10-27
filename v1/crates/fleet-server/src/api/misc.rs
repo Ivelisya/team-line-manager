@@ -85,7 +85,7 @@ type Bucket = (i64, i64, Option<f64>, i64);
 
 /// 探测心跳条：每台在用机器按墙钟 3 分钟整格（date_bin 对齐 epoch）共 20 格，旧→新，最后一格是当前这格（还没走完）；
 /// 每格 [次数, 成功次数, 成功的延迟中位数 ms 或 null, 建连时 SYN 重发过的次数]；这 20 格里没有数据的机器不出现。
-/// - 节点：线路机 → 节点的 TCP 探测（线路机的 agent 做），汇总它的入口；
+/// - 节点：线路机 → 节点的 TCP 探测（线路机的 agent 做），汇总它的入口；穿透入口线路机不连节点，用经入口的出口探测（只看通不通，延迟为 null）；
 /// - 线路机：主探测来源（中控或探测点，见 probe_points/；GET /settings/reach-source 说是哪一路）→ 线路机的连通性（reach.rs）。
 ///   中控只判通不通（延迟为 null）；探测点另记建连的往返时间，延迟是它的中位数。重发恒为 0。主来源离线时是代替它的中控的，标灰时没有线路机。
 ///   不再汇总它上面的入口：入口通不通是各节点的事，19 条入口合成一格时 114 次里断 2 次就黄，线路机自己好好的也一片黄。
@@ -99,11 +99,11 @@ pub async fn probe_beats(_a: Actor, State(st): State<AppState>) -> ApiResult<Jso
     let rows: Vec<(Uuid, i32, i64, i64, Option<f64>, i64)> = sqlx::query_as(&format!(
         "with w as (select s, s + interval '60 minutes' e from (select date_bin('3 minutes', now(), timestamptz 'epoch') - interval '57 minutes' s) z),
          p as (
-           select e.node_id m, floor(extract(epoch from x.ts - w.s) / 180)::int i, x.ok, x.latency_ms, x.retrans
+           select e.node_id m, floor(extract(epoch from x.ts - w.s) / 180)::int i, x.ok, case when e.mode = 'reverse' then null else x.latency_ms end, x.retrans
            from w cross join entry e join machine mn on mn.id = e.node_id
            cross join lateral (
              select ts, ok, latency_ms, retrans from probe_result
-             where entry_id = e.id and kind = 'tcp' and ts >= w.s and ts < w.e) x
+             where entry_id = e.id and kind = case when e.mode = 'reverse' then 'egress' else 'tcp' end and ts >= w.s and ts < w.e) x
            where mn.lifecycle <> 'retired' and (e.lifecycle <> 'removed' or e.removed_at >= w.s)
            union all
            select r.relay_id, floor(extract(epoch from r.ts - w.s) / 180)::int, r.ok, r.rtt_ms, null::smallint

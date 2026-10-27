@@ -21,6 +21,7 @@ pub mod provision;
 pub mod recycle;
 pub mod relays;
 pub mod reports;
+pub mod reverse;
 pub mod replace;
 pub mod repoint;
 pub mod router_ops;
@@ -110,6 +111,7 @@ pub fn router() -> Router<AppState> {
         .route("/machines/{id}/replace", get(replace::preview).post(replace::replace))
         // 改出口指向：软路由上指向这个入口的出口改成另一个入口（GET 预览，POST 建作业）
         .route("/entries/{id}/repoint", get(repoint::preview).post(repoint::repoint))
+        .route("/entries/{id}/reverse", get(reverse::preview).post(reverse::reverse))
         // 上架
         .route("/provision/check", post(provision::check))
         .route("/provision", post(provision::create))
@@ -149,6 +151,7 @@ pub fn router() -> Router<AppState> {
         .route("/machines/{id}/access", get(access::machine))
         // 访问记录保留期
         .route("/settings/access-retention", get(settings::get_access_retention).put(settings::put_access_retention))
+        .route("/settings/entry-mode", get(reverse::get_entry_mode).put(reverse::put_entry_mode))
         // 汇率（计费折成 USD）
         .route("/settings/fx-rates", get(fx::get_rates))
         .route("/settings/fx-rates/refresh", post(fx::refresh))
