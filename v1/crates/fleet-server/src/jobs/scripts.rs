@@ -496,6 +496,71 @@ systemctl enable -q fleet-xray
 echo "xray_version=$(/usr/local/bin/xray version 2>/dev/null | head -1 | awk '{print $2}')"
 "#;
 
+pub const BRIDGE_UNIT: &str = include_str!("../../../../deploy/units/fleet-xray-bridge.service");
+
+/// 读节点上 bridge 现在的配置（base64，没有为空）与运行状态：中控据此决定这次要不要重启 bridge（reverse::only_removed）
+pub const BRIDGE_READ: &str = r#"
+set -u
+C=/etc/fleet-bridge/xray.json
+if [ -f $C ]; then echo "config=$(base64 -w0 < $C)"; else echo config=; fi
+echo "active=$(systemctl is-active fleet-xray-bridge 2>/dev/null || true)"
+"#;
+
+/// 节点上穿透的 bridge（fleet-xray-bridge，配置见 reverse::render）。变量 CONFIG（整份 JSON）、ACTION：
+/// - `restart`：写单元与配置，配置先 `xray run -test`，变了（或程序换了：BIN_CHANGED=1、没在跑）就重启——会断开这台节点上全部经隧道的连接；
+/// - `quiet`：只删了隧道，写配置不重启（运行中的 bridge 对删掉的入口还会试连，对面端口已关，无害；下次重启按新配置）；
+/// - `remove`：节点上不再有穿透入口：停掉、删单元与配置（xray 程序留着，下次开启不用再推）。
+/// DNS 是链路本地地址时同线路机写 /etc/fleet-xray/resolv.conf（单元挂到 Xray 看到的 /etc/resolv.conf），变了也要重启才生效。
+/// 输出 `bridge=active|removed|crashing|…`、`restarted=0|1`；配置没过 -test 时 `bridge=bad_config` 并以 5 退出（原配置不动）
+pub fn bridge() -> String { BRIDGE.replace("__UNIT__", BRIDGE_UNIT.trim_end()).replace("__LINKLOCAL_DNS__", LINKLOCAL_DNS) }
+
+const BRIDGE: &str = r#"
+set -eu
+umask 022
+U=/etc/systemd/system/fleet-xray-bridge.service
+C=/etc/fleet-bridge/xray.json
+if [ "$ACTION" = remove ]; then
+  systemctl disable --now fleet-xray-bridge 2>/dev/null || true
+  rm -f $U; rm -rf /etc/fleet-bridge /etc/fleet-xray
+  systemctl daemon-reload
+  echo restarted=0
+  echo bridge=removed
+  exit 0
+fi
+install -d -m 700 /etc/fleet-bridge
+RESTART=0
+cat > $U.tmp <<'UNIT' || exit 1
+__UNIT__
+UNIT
+cmp -s $U.tmp $U && rm -f $U.tmp || { mv $U.tmp $U || exit 1; systemctl daemon-reload; RESTART=1; }
+RC=/etc/fleet-xray/resolv.conf
+if __LINKLOCAL_DNS__; then
+  echo linklocal_dns=1
+  install -d -m 755 /etc/fleet-xray
+  printf 'nameserver %s\n' 1.1.1.1 8.8.8.8 2606:4700:4700::1111 > $RC.tmp && chmod 644 $RC.tmp
+  cmp -s $RC.tmp $RC && rm -f $RC.tmp || { mv $RC.tmp $RC; RESTART=1; }
+elif [ -f $RC ]; then rm -f $RC; RESTART=1; fi
+(umask 077; printf '%s
+' "$CONFIG" > $C.tmp)
+if ! /usr/local/bin/xray run -test -c $C.tmp >/dev/null 2>$C.err; then
+  echo bridge=bad_config; cat $C.err >&2; rm -f $C.tmp $C.err; exit 5
+fi
+rm -f $C.err
+if cmp -s $C.tmp $C; then rm -f $C.tmp; else mv $C.tmp $C; [ "$ACTION" = quiet ] || RESTART=1; fi
+[ "${BIN_CHANGED:-0}" = 1 ] && RESTART=1
+systemctl enable -q fleet-xray-bridge
+pid=
+if [ $RESTART = 1 ] || ! systemctl -q is-active fleet-xray-bridge; then
+  systemctl restart fleet-xray-bridge; pid=$(systemctl show -p MainPID --value fleet-xray-bridge); echo restarted=1
+else echo restarted=0; fi
+# 刚重启时 is-active 一定是 active：隔 3 秒再看，主进程换了就是起来就退出、被反复拉起（同 agent）
+[ -n "$pid" ] && sleep 3
+st=$(systemctl is-active fleet-xray-bridge || true)
+[ -n "$pid" ] && [ "$st" = active ] && [ "$(systemctl show -p MainPID --value fleet-xray-bridge)" != "$pid" ] && st=crashing
+echo "xray_version=$(/usr/local/bin/xray version 2>/dev/null | head -1 | awk '{print $2}')"
+echo "bridge=$st"
+"#;
+
 /// 装 agent：变量 SERVER_URL ROLE MACHINE_ID，TOKEN（可空：空则沿用节点上已有的令牌文件）。
 /// 输出 `agent`（active 才算起来了）、`version`（磁盘上这份程序的版本）、`prev_version`（有 .prev 时它的版本）
 pub fn agent() -> String { AGENT.replace("__UNIT__", AGENT_UNIT.trim_end()).replace("__AGENT_STATE__", AGENT_STATE) }
@@ -556,11 +621,13 @@ echo "version=$($B --version 2>/dev/null | awk '{print $2}')"
 echo "boot_id=$(cat /proc/sys/kernel/random/boot_id)"
 "#;
 
-/// 退役清理（节点）：先停 agent 与 ssserver（宿主机连同它上面同机 IP 节点的实例），删防火墙表和文件。中控随后撤销令牌。
+/// 退役清理（节点）：先停 agent、ssserver（宿主机连同它上面同机 IP 节点的实例）与穿透的 bridge，删防火墙表和文件。中控随后撤销令牌。
 pub const NODE_CLEANUP: &str = r##"
 set -u
 exec 9>/run/fleet-ss.lock; flock 9
 systemctl disable --now fleet-agent 2>/dev/null; systemctl disable --now fleet-ssserver 2>/dev/null
+systemctl disable --now fleet-xray-bridge 2>/dev/null
+rm -f /etc/systemd/system/fleet-xray-bridge.service; rm -rf /etc/fleet-bridge /etc/fleet-xray /usr/local/bin/xray
 for f in /etc/shadowsocks-rust/[0-9]*.json; do
   [ -e "$f" ] || continue
   p=$(basename "$f" .json)

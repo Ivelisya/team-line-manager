@@ -1,9 +1,10 @@
 // 设置：API 密钥（创建时 token 只显示一次）、告警通知渠道（Telegram / 飞书，可发测试、看最近发送记录）、
-// 账户安全（两步验证、修改密码、登录会话，见 features/AccountTab）、数据保留（features/RetentionTab）、汇率（计费折成美元，见 features/FxTab）、探测点与主探测来源（features/ProbeTab）、三网 PING 的全局目标（features/PingTab）、客户端订阅（features/SubsTab）。
+// 账户安全（两步验证、修改密码、登录会话，见 features/AccountTab）、新入口默认模式（普通 / 穿透，features/EntryModeTab）、数据保留（features/RetentionTab）、汇率（计费折成美元，见 features/FxTab）、探测点与主探测来源（features/ProbeTab）、三网 PING 的全局目标（features/PingTab）、客户端订阅（features/SubsTab）。
 import * as React from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Ban, Bell, BellOff, Eye, EyeOff, Feather, FlaskConical, KeyRound, Pencil, Plus, Send, ShieldAlert, Trash2 } from 'lucide-react';
 import { RetentionTab } from '@/features/RetentionTab';
+import { EntryModeTab } from '@/features/EntryModeTab';
 import { FxTab } from '@/features/FxTab';
 import { ProbeTab } from '@/features/ProbeTab';
 import { PingTab } from '@/features/PingTab';
@@ -29,7 +30,7 @@ import '@/styles/settings.css';
 export function SettingsPage() {
   const [sp, setSp] = useSearchParams();
   const sec = sp.get('section');
-  const tab = sec === 'notify' || sec === 'account' || sec === 'retention' || sec === 'fx' || sec === 'probes' || sec === 'ping' || sec === 'subs' ? sec : 'keys';
+  const tab = sec === 'notify' || sec === 'account' || sec === 'entries' || sec === 'retention' || sec === 'fx' || sec === 'probes' || sec === 'ping' || sec === 'subs' ? sec : 'keys';
   return (
     <div className="stack">
       <PageHead title="设置" />
@@ -38,6 +39,7 @@ export function SettingsPage() {
           <TabsTrigger value="keys" noPanel>API 密钥</TabsTrigger>
           <TabsTrigger value="notify" noPanel>告警通知</TabsTrigger>
           <TabsTrigger value="account" noPanel>账户安全</TabsTrigger>
+          <TabsTrigger value="entries" noPanel>入口</TabsTrigger>
           <TabsTrigger value="retention" noPanel>数据保留</TabsTrigger>
           <TabsTrigger value="fx" noPanel>汇率</TabsTrigger>
           <TabsTrigger value="probes" noPanel>探测点</TabsTrigger>
@@ -45,7 +47,7 @@ export function SettingsPage() {
           <TabsTrigger value="subs" noPanel>客户端订阅</TabsTrigger>
         </TabsList>
       </Tabs>
-      {tab === 'keys' ? <ApiKeysSection /> : tab === 'notify' ? <NotifySection /> : tab === 'account' ? <AccountTab /> : tab === 'fx' ? <FxTab /> : tab === 'probes' ? <ProbeTab /> : tab === 'ping' ? <PingTab /> : tab === 'subs' ? <SubsTab /> : <RetentionTab />}
+      {tab === 'keys' ? <ApiKeysSection /> : tab === 'notify' ? <NotifySection /> : tab === 'account' ? <AccountTab /> : tab === 'fx' ? <FxTab /> : tab === 'probes' ? <ProbeTab /> : tab === 'ping' ? <PingTab /> : tab === 'subs' ? <SubsTab /> : tab === 'entries' ? <EntryModeTab /> : <RetentionTab />}
     </div>
   );
 }

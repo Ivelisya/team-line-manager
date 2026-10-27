@@ -39,10 +39,13 @@ export interface ProbeResult { ok: boolean; latency_ms: number | null; detail: s
 export interface EntryTraffic { today_up: number; today_down: number; month_up: number; month_down: number }
 /** 网卡口径的今日 / 本月流量（字节）：rx = 本机收（下行）、tx = 本机发（上行）。只有自己有 agent 的机器有 */
 export interface NicTraffic { today_rx: number; today_tx: number; month_rx: number; month_tx: number }
+export type EntryMode = 'normal' | 'reverse';
 export interface EntryView {
   id: string; relay: { id: string; name: string }; node: { id: string; name: string };
   /** 线路机直出：节点就是线路机自己（node.id = relay.id，node.name =「线路机名-直出」），从线路机自己的 IP 出去；没有 TCP 探测，不能换线路机 / 搬空 */
   direct: boolean;
+  /** 穿透（reverse）：节点上的 bridge 主动连这个入口，线路机不连节点——没有 TCP 探测（tcp 恒为 null），只看出口。旧中控没有这个字段，按普通 */
+  mode?: EntryMode;
   port: number;
   lifecycle: EntryLifecycle; applied: boolean; apply_error: string | null;
   tcp: ProbeResult | null; egress: ProbeResult | null;
@@ -275,6 +278,8 @@ export interface ProvisionItem {
   country?: string;
   upstream?: { protocol: 'socks5' | 'http'; host: string; port: number; username?: string; password?: string };
   ss_port?: number;
+  /** 入口模式；不给 = 面板设置的新入口默认模式（GET /settings/entry-mode） */
+  entry_mode?: EntryMode;
   /** 只要到期日（选了套餐时必填），其余没给的跟随套餐 / 供应商；没有套餐（含同机 IP 节点）要给 price_cents */
   subscription?: { due_date: string; price_cents?: number; currency?: string; cycle?: string; billing_tz?: string; remind_days?: number; traffic_gb?: number; traffic_reset_day?: number; traffic_rule?: TrafficRule };
   /** 同机 IP 节点：加在这台 VPS 节点（宿主机）上。带了它时 ssh_port / login / ss_port / provider_id / plan_id 不适用（服务端忽略）：
@@ -283,7 +288,8 @@ export interface ProvisionItem {
 }
 /** ss_port：同机 IP 节点暂定的 SS 端口（作业在宿主机上核对时被占用会换），其它为 null */
 /** warnings：不影响通过的提醒（发行版已过标准支持期、用中控密钥试登录没有结果）；旧中控没有这个字段 */
-export interface ProvisionCheckItem { ok: boolean; errors: string[]; warnings: string[]; name: string; number: number | null; ss_port: number | null }
+/** entry_mode：这台新入口的模式（线路机为 null；家宽代理、同机 IP 节点要穿透时已退回普通，warnings 里写明）。旧中控没有这个字段 */
+export interface ProvisionCheckItem { ok: boolean; errors: string[]; warnings: string[]; name: string; number: number | null; ss_port: number | null; entry_mode?: EntryMode | null }
 
 // ---- 以 API.md「返回形状补充」为准 ----
 /** series：{metric, range, resolution, points}，点里时间字段叫 ts。

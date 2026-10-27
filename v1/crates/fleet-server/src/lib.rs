@@ -31,6 +31,7 @@ pub mod quota;
 pub mod recycle;
 pub mod renew;
 pub mod reports;
+pub mod reverse;
 pub mod routers;
 pub mod selfmon;
 pub mod settings;

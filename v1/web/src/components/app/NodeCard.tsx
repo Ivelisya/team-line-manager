@@ -10,7 +10,7 @@ import { SPRING } from '@/lib/motion';
 import { ArrowDown, ArrowDownUp, ArrowUp, Calendar, CircleDollarSign, Cpu, Database, Gauge, Globe, HardDrive, MemoryStick, MoreHorizontal, Radar, RefreshCw, Settings2, PanelRightOpen, ServerOff, Wallet } from 'lucide-react';
 import type { DueState, MachineView, ProbeBeats, Subscription } from '@/lib/types';
 import * as F from '@/lib/format';
-import { BEAT_LEGEND, beatCells, beatRate, beatTitles, dueTone, entryText, errText, hasHost, hostRel, isQuiet, limitGb, liveRate, monthFlow, monthFlowTip, monthTraffic, priceHint, probeSummary, quota, quotaForecast, quotaGb, quotaTip, quotaUsedLabel, remainingValue, resourceMeters, subLabel, trafficTotal, beatLegendRelay, linkCounts, reachWho, reachWin, relayRttMs } from '@/lib/derive';
+import { BEAT_LEGEND, REVERSE_TIP, beatCells, beatRate, beatTitles, dueTone, entryText, errText, hasHost, hostRel, isQuiet, limitGb, liveRate, monthFlow, monthFlowTip, monthTraffic, priceHint, probeSummary, quota, quotaForecast, quotaGb, quotaTip, quotaUsedLabel, remainingValue, resourceMeters, subLabel, trafficTotal, beatLegendRelay, linkCounts, reachWho, reachWin, relayRttMs } from '@/lib/derive';
 import { useProbeBeats } from '@/lib/queries';
 import { useReachLabel } from '@/lib/probePoints';
 import { useLiveSeries } from '@/lib/live';
@@ -213,7 +213,7 @@ const NO_ENTRY_TIP = '探测连的是线路机上客户用的入口端口\n这�
  *  说明文字随来源变，探测点另有建连延迟：标题后面写近 1 小时的中位延迟）。
  *  标题：故障的写第一条健康原因（同状态胶囊的悬停），线路机写「入口可达 x/y」（同抽屉，linkCounts；节点通、出口通不全通时跟在后面），
  *  家宽代理写成功率（延迟已在上面），其余写 TCP 延迟 · 出口通不通。节点自己的 agent 离线不影响它的心跳格：探测不是它自己做的，照常上色 */
-const BeatSlot = memo(function BeatSlot({ id, kind, lifecycle, reason, reasonKey, onOpen, tcp, tcpTip, egressOk, tcpFail, egressFail, all, off, total, tcpOk, egressBad, reachBad }: { id: string; kind: MachineView['kind']; lifecycle: MachineView['lifecycle']; reason: string | undefined; reasonKey: string | undefined; onOpen: Open } & ReturnType<typeof probeSummary>) {
+const BeatSlot = memo(function BeatSlot({ id, kind, lifecycle, reason, reasonKey, onOpen, tcp, tcpTip, egressOk, tcpFail, egressFail, all, off, total, tcpOk, egressBad, reachBad, reverse }: { id: string; kind: MachineView['kind']; lifecycle: MachineView['lifecycle']; reason: string | undefined; reasonKey: string | undefined; onOpen: Open } & ReturnType<typeof probeSummary>) {
   const live = lifecycle === 'active';
   const src = useReachLabel();
   const bq = useProbeBeats(useCallback((d: ProbeBeats) => d[id], [id]));
@@ -238,7 +238,9 @@ const BeatSlot = memo(function BeatSlot({ id, kind, lifecycle, reason, reasonKey
     : empty ? <span className="t-muted">暂无探测</span>
     : kind === 'relay' ? <>{relayCounts}{rttTag}</>
     : kind === 'proxy' ? <>探测成功 <b className="num">{rate == null ? '—' : `${Math.round(rate)}%`}</b></>
-    : <><span data-tip={tcpTip}>TCP <b>{probeMs(tcp, tcpFail)}</b></span> · 出口 <b>{egressText(egressOk, egressFail)}</b></>;
+    // 入口全是穿透的节点：没有 TCP 读数，写「穿透」（格子是经入口的出口探测）；混着普通入口的照写 TCP
+    : total === 0 && reverse > 0 ? <><span data-tip={`${REVERSE_TIP}\n下面的格子是经入口的出口探测`}><b>穿透</b></span> · 出口 <b>{egressText(egressOk, egressFail)}</b></>
+    : <><span data-tip={tcpTip}>TCP <b>{probeMs(tcp, tcpFail)}</b></span>{reverse > 0 && <span data-tip={REVERSE_TIP}>（另有 {reverse} 条穿透）</span>} · 出口 <b>{egressText(egressOk, egressFail)}</b></>;
   // 时段按这份数据取回的时刻对齐（轮询间隔 2 分钟，用当前时刻在跨格时会错一格）
   const titles = useMemo(() => (live ? beatTitles(beats, bq.dataUpdatedAt) : undefined), [live, beats, bq.dataUpdatedAt]);
   return (

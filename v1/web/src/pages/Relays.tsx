@@ -5,7 +5,7 @@ import * as React from 'react';
 import { CheckCircle2, ChevronRight, CircleAlert, Loader2, PackageOpen } from 'lucide-react';
 import { useRelays } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
-import { entryBad, healthLabel, linkCounts, probeSummary, reachWho } from '@/lib/derive';
+import { entryBad, healthLabel, isReverse, linkCounts, probeSummary, reachWho } from '@/lib/derive';
 import { useReachLabel } from '@/lib/probePoints';
 import * as F from '@/lib/format';
 import type { EntryView, MachineView } from '@/lib/types';
@@ -20,7 +20,7 @@ import { openEvacuate } from '@/lib/nodeActions';
 import { movableEntries } from '@/components/app/LifecycleDialogs';
 import { ShowAll } from '@/components/app/Pagination';
 import { scrollBackTo } from '@/lib/usePage';
-import { ENTRY_CAP, RouterMark, activeEntries, entryStatus, probeCell, tcpCell } from '@/features/EntriesTable';
+import { ENTRY_CAP, ReverseMark, RouterMark, activeEntries, entryStatus, probeCell, tcpCell } from '@/features/EntriesTable';
 import { useEntryRouters } from '@/lib/routers';
 import { HEALTH_TONE } from '@/lib/sort';
 import { PlacementPanel } from '@/features/PlacementPanel';
@@ -41,6 +41,7 @@ const EntryRow = React.memo(function EntryRow({ e, open, routers }: { e: EntryVi
       <td><div className="row" style={{ gap: 0, flexWrap: 'nowrap' }}>
         {e.direct ? <span className="ellipsis" data-tip="从线路机自己的 IP 出去，不经节点">{e.node.name}</span>
           : <NodeHover id={e.node.id} noFocus><span className="ellipsis">{e.node.name}</span></NodeHover>}
+        {isReverse(e) && <ReverseMark />}
         {routers && <RouterMark users={routers} />}
       </div></td>
       <td>{entryStatus(e, who)}</td>

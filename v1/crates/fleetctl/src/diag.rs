@@ -504,7 +504,7 @@ pub fn judge(plan: &Plan, got: &[Got]) -> Vec<String> {
     let bad_i = |v: &[(String, f64)]| worst(v).is_some_and(|w| w >= ICMP_BAD_PCT);
     let (in_t, out_t, ctl_t, in_i, out_i, ctl_i) = (bad_t(&tin), bad_t(&tout), bad_t(&tctl), bad_i(&iin), bad_i(&iout), bad_i(&ictl));
     let bad_from: Vec<&str> = iin.iter().filter(|x| x.1 >= ICMP_BAD_PCT).map(|x| x.0.as_str()).collect();
-    let advice = "把上面的原始数据发给供应商；客户受影响时先换到备用节点（fleetctl replace），或开穿透绕开入站";
+    let advice = "把上面的原始数据发给供应商；客户受影响时开穿透绕开入站（fleetctl entry reverse <入口> --on），或换到备用节点（fleetctl replace）";
     let verdict = if tin.n == 0 && iin.is_empty() && !out_side {
         "→ 没测成（线路机上的命令都没跑起来，看上面各段的原因）".to_string()
     } else if !out_side {

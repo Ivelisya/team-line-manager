@@ -143,7 +143,7 @@ pub async fn audit(a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<A
 const AUDIT_ACTIONS: &[&str] = &[
     "machine.provision", "machine.retire", "machine.recycle", "recycle.import", "machine.purge", "machine.rename", "machine.update", "machine.restore", "machine.replace", "machine.tune", "machine.ss_refresh", "machine.speedtest", "report.send", "subscription.set", "renewal", "renewal.batch",
     "team.create", "team.update", "team.delete", "team.renumber", "provider.create", "provider.update", "provider.delete", "plan.create", "plan.update", "plan.delete", "entry.enable",
-    "entry.disable", "entry.rotate", "entry.share", "entry.add", "entry.move", "entry.repoint", "relay.evacuate", "job.retry", "job.cancel", "job.prune", "silence.create",
+    "entry.disable", "entry.rotate", "entry.share", "entry.add", "entry.move", "entry.repoint", "entry.reverse", "relay.evacuate", "job.retry", "job.cancel", "job.prune", "silence.create",
     "silence.delete", "incident.ack", "restore.probe", "agent.upgrade", "notify.create", "notify.update", "notify.delete", "exec", "machine.logs", "server.logs", "apikey.create",
     "apikey.revoke", "auth.login", "auth.login_failed", "auth.logout", "auth.totp_enabled", "auth.totp_disabled", "auth.totp_recovery_used",
     "auth.totp_recovery_regenerated", "auth.user_removed", "auth.user_disabled", "auth.password_changed", "auth.session_revoked", "auth.verify_failed", "policy.draft", "policy.discard", "policy.publish", "policy.rollback", "policy.replace", "policy.rewrite_history",
@@ -152,7 +152,7 @@ const AUDIT_ACTIONS: &[&str] = &[
     "router.switch_reverted", "router.switch_defer",
     "client_sub.create", "client_sub.update", "client_sub.rotate", "client_sub.delete",
     "probe_point.create", "probe_point.update", "probe_point.delete", "probe_point.upgrade", "probe_point.install", "probe_point.bootstrap_used",
-    "settings.ping_targets", "relay.ping_override", "settings.reach_source",
+    "settings.ping_targets", "relay.ping_override", "settings.reach_source", "settings.entry_mode",
 ];
 
 /// 审计记录的中文标题与一句话摘要（界面直接显示）
@@ -191,6 +191,9 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "entry.add" => "添加入口",
         "entry.move" => "换线路机",
         "entry.repoint" => "改出口指向",
+        "entry.reverse" if d["on"] == true => "开启穿透",
+        "entry.reverse" => "关闭穿透",
+        "settings.entry_mode" => "新入口默认模式",
         "relay.evacuate" => "搬空线路机",
         "machine.restore" => "恢复机器",
         "machine.replace" => "替换节点",
@@ -326,6 +329,9 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
             format!("{why}{}", parts.join("，"))
         }
         "entry.move" => format!("{} · {} → {}", s("name"), s("from"), s("to")),
+        // 「团队1-06 · 线路机2:20013」
+        "entry.reverse" => format!("{} · {}:{}", s("entry"), s("relay"), d["port"]),
+        "settings.entry_mode" => format!("{} → {}", crate::reverse::mode_zh(&s("from")), crate::reverse::mode_zh(&s("to"))),
         // 「线路机1-直出 · 线路机1:20010 → 线路机3-直出 · 线路机3:20000（改 2 台软路由）」
         "entry.repoint" => format!("{} → {}（改 {} 台软路由）", s("from"), s("to"), d["routers"].as_array().map_or(0, |a| a.len())),
         "relay.evacuate" => format!("{} → {}（{} 个作业）", s("from"), s("to"), d["jobs"].as_array().map_or(0, |a| a.len())),

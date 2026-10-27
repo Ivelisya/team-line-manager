@@ -149,9 +149,10 @@ async fn move_proxy_node_never_loses_its_entry() {
     assert_eq!(j["result"]["new_entry_id"], new_entry.to_string());
     assert_eq!(j["result"]["share_changed"], true);
     let keys: Vec<&str> = j["steps"].as_array().unwrap().iter().map(|s| s["key"].as_str().unwrap()).collect();
-    assert_eq!(keys, ["attach_new", "firewall_widen", "wait_applied_new", "verify_new", "routers", "detach_old", "wait_detached_old", "firewall_narrow"]);
+    assert_eq!(keys, ["attach_new", "firewall_widen", "bridge", "wait_applied_new", "verify_new", "routers", "detach_old", "wait_detached_old", "firewall_narrow"]);
     assert_eq!(j["steps"][1]["state"], "skipped", "家宽代理没有防火墙");
-    assert_eq!(j["steps"][4]["output"]["reason"], "没有软路由的出口指向旧入口");
+    assert_eq!(j["steps"][2]["state"], "skipped", "家宽代理的入口是普通模式，不用 bridge");
+    assert_eq!(j["steps"][5]["output"]["reason"], "没有软路由的出口指向旧入口");
     assert!(log_msgs(&t, &job).await.iter().any(|m| m.contains("新的分享链接")));
     // 新入口的分享链接指向新线路机
     let share = t.get(&format!("/api/v1/entries/{new_entry}/share")).await;

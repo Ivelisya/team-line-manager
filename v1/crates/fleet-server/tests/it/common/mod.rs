@@ -347,6 +347,8 @@ impl Sim {
                 .iter()
                 .map(|e| ProbeSample { entry_id: e.id, ts_ms: now_ms(), kind: ProbeKind::Egress, ok: true, latency_ms: Some(12.0), detail: Some(e.expect_egress_ip.to_string()), retrans: None })
                 .collect(),
+            // 同现在的 agent：报自己会穿透
+            caps: fleet_proto::CAPS.iter().map(|c| c.to_string()).collect(),
             ..Default::default()
         };
         let (s, v) = t.req("POST", "/agent/v1/report", Some(serde_json::to_value(&r).unwrap()), Some(&self.tok)).await;

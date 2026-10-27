@@ -100,6 +100,11 @@ pub struct ProvisionOpts {
     /// 流量每月几号重置（1–31）
     #[arg(long)]
     pub reset_day: Option<String>,
+    /// 入口模式：normal（普通）/ reverse（穿透：节点主动连入口，供应商丢入站 SYN 的节点用）；不填按面板的「新入口默认模式」
+    /// （fleetctl settings entry-mode，没设过是穿透）。--file 批量时作为每条没写 entry_mode 的条目的默认值。
+    /// 家宽代理、同机 IP 节点不支持穿透，自动按普通建（校验结果里有提醒）
+    #[arg(long, value_parser = ["normal", "reverse"])]
+    pub entry_mode: Option<String>,
     /// 只校验，不提交
     #[arg(long)]
     pub dry_run: bool,
@@ -257,6 +262,15 @@ fn single_item(o: &ProvisionOpts) -> anyhow::Result<Value> {
     Ok(Value::Object(m))
 }
 
+/// 校验结果里这台的入口模式（线路机没有；旧中控不给为「-」）
+fn entry_mode_cn(r: &Value) -> &'static str {
+    match r["entry_mode"].as_str() {
+        Some("reverse") => "穿透",
+        Some("normal") => "普通",
+        _ => "-",
+    }
+}
+
 /// JSON 字符串数组里的各项（不是数组为空）
 fn strs(v: &Value) -> Vec<&str> { v.as_array().map(|a| a.iter().filter_map(|e| e.as_str()).collect()).unwrap_or_default() }
 
@@ -283,6 +297,10 @@ pub fn provision(ctx: &Ctx, o: ProvisionOpts) -> anyhow::Result<u8> {
     let mut cache = Cache::default();
     for it in &mut items {
         normalize_item(ctx, it, &mut cache)?;
+        // --entry-mode 给没写模式的条目（文件里单独写了的以文件为准）
+        if let (Some(m), Some(o)) = (&o.entry_mode, it.as_object_mut()) {
+            o.entry("entry_mode").or_insert_with(|| json!(m));
+        }
     }
     let body = json!({"items": items});
     // 先校验（不落库）
@@ -300,12 +318,12 @@ pub fn provision(ctx: &Ctx, o: ProvisionOpts) -> anyhow::Result<u8> {
                         (true, false) => "通过（有提醒，见下）",
                         (true, true) => "通过",
                     };
-                    vec![(i + 1).to_string(), st(&items[i], "/ip"), st(r, "/name"), st(r, "/number"), verdict.into()]
+                    vec![(i + 1).to_string(), st(&items[i], "/ip"), st(r, "/name"), st(r, "/number"), entry_mode_cn(r).into(), verdict.into()]
                 })
                 .collect();
             format!(
                 "{}\n{}{}",
-                table::render(&["#", "IP", "名称", "编号", "校验"], &rows),
+                table::render(&["#", "IP", "名称", "编号", "入口模式", "校验"], &rows),
                 check_notes(&res),
                 if all_ok { "校验全部通过（--dry-run，未提交）" } else { "校验未通过，未提交" }
             )
@@ -313,7 +331,7 @@ pub fn provision(ctx: &Ctx, o: ProvisionOpts) -> anyhow::Result<u8> {
         return Ok(if all_ok { 0 } else { 1 });
     }
     if !ctx.json {
-        let names: Vec<String> = res.iter().zip(&items).map(|(r, it)| format!("{}（{}）", st(r, "/name"), st(it, "/ip"))).collect();
+        let names: Vec<String> = res.iter().zip(&items).map(|(r, it)| format!("{}（{}，{}模式）", st(r, "/name"), st(it, "/ip"), entry_mode_cn(r))).collect();
         outln(format!("{}校验通过，将上架 {} 台：{}", check_notes(&res), res.len(), names.join("、")));
     }
     confirm(&format!("确认上架这 {} 台机器？会登录机器安装软件", res.len()), o.yes)?;
@@ -905,7 +923,8 @@ pub fn add_direct(ctx: &Ctx, relay: &str, yes: bool, follow: bool) -> anyhow::Re
         bail!("「{name}」不是线路机：直出入口只能加在线路机上");
     }
     confirm(&format!("确认给 {name} 加直出入口（从 {} 出去，新分享链接名「{name}-直出」）？", st(&m, "/ip")), yes)?;
-    let d = ctx.c.post(&format!("/machines/{id}/entries"), &json!({"relay_id": id}))?;
+    // 直出入口没有落地节点，只能是普通模式（写明，免得按「新入口默认模式」再被退回一次）
+    let d = ctx.c.post(&format!("/machines/{id}/entries"), &json!({"relay_id": id, "mode": "normal"}))?;
     let job = st(&d, "/job_id");
     ctx.emit(&d, || format!("已提交新增直出入口作业 {job}\n看进度：fleetctl job {job} --follow；完成后 fleetctl share {name}-直出 取分享链接"));
     if follow { cmds::follow_job(ctx, &job) } else { Ok(0) }
@@ -920,6 +939,8 @@ pub enum EntryAction {
     Rotate,
     /// 给线路机加直出入口（这时 <入口> 写线路机）
     AddDirect,
+    /// 开关穿透（--on / --off）：节点主动连线路机的这个入口，客户流量经隧道从节点自己的 IP 出去
+    Reverse,
 }
 
 pub fn entry_action(ctx: &Ctx, action: EntryAction, entry: &str, yes: bool, follow: bool) -> anyhow::Result<u8> {
@@ -928,6 +949,7 @@ pub fn entry_action(ctx: &Ctx, action: EntryAction, entry: &str, yes: bool, foll
         EntryAction::Disable => ("disable", "停用"),
         EntryAction::Rotate => ("rotate", "轮换凭据"),
         EntryAction::AddDirect => return add_direct(ctx, entry, yes, follow),
+        EntryAction::Reverse => bail!("entry reverse 要带 --on（开启）或 --off（关闭）"),
     };
     let es = cmds::all_entries(ctx)?;
     let e = resolve::entry(&es, entry).map_err(|e| anyhow!(e))?;
@@ -950,6 +972,55 @@ pub fn entry_action(ctx: &Ctx, action: EntryAction, entry: &str, yes: bool, foll
     let d = ctx.c.post(&format!("/entries/{}/actions", st(e, "/id")), &body)?;
     ctx.emit(&d, || format!("已{done} {label}（期望状态代数 {}）{}", st(&d, "/generation"), router_note(&d["router_exits"], done)));
     Ok(0)
+}
+
+/// `entry reverse <入口> --on|--off`：先打预览（会发生什么、不能切的原因），加 --yes 才建作业（推 bridge → 切换 → 经入口验收出口；
+/// 关闭反过来）。验收不过中控自动切回原来的模式
+pub fn reverse(ctx: &Ctx, entry: &str, on: bool, off: bool, yes: bool, follow: bool) -> anyhow::Result<u8> {
+    if on == off {
+        bail!("要写 --on（开启穿透）或 --off（关闭穿透）");
+    }
+    let es = cmds::all_entries(ctx)?;
+    let e = resolve::entry(&es, entry).map_err(|e| anyhow!(e))?;
+    let id = st(e, "/id");
+    let pv = ctx.c.get_q(&format!("/entries/{id}/reverse"), &[("on", on.to_string())])?;
+    if !ctx.json || !yes {
+        if ctx.json {
+            ctx.emit(&pv, String::new);
+        } else {
+            outln(reverse_preview(&pv));
+        }
+    }
+    if pv["ok"] != true {
+        let bs: Vec<&str> = pv["blockers"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+        bail!("现在不能切换：{}", bs.join("；"));
+    }
+    if !yes {
+        if !ctx.json {
+            outln("以上是预览，没有改动。确认无误后加 --yes 执行（--follow 跟进度）");
+        }
+        return Ok(0);
+    }
+    let d = ctx.c.post(&format!("/entries/{id}/reverse"), &json!({"on": on}))?;
+    let what = if on { "开启穿透" } else { "关闭穿透" };
+    ctx.emit(&d, || format!("已提交{what}作业 {}（{}）
+看进度：fleetctl job {} --follow", st(&d, "/job_id"), st(&d, "/entry/name"), st(&d, "/job_id")));
+    if follow {
+        return cmds::follow_job(ctx, &st(&d, "/job_id"));
+    }
+    Ok(0)
+}
+
+/// 穿透开关的预览（`GET /entries/{id}/reverse`）
+fn reverse_preview(pv: &Value) -> String {
+    let zh = |m: &str| if m == "reverse" { "穿透" } else { "普通" };
+    let mut s = table::kv(&[("入口", st(pv, "/entry/name")), ("模式", format!("{} → {}", zh(&st(pv, "/from")), zh(&st(pv, "/to"))))]);
+    for (k, label) in [("impacts", "会发生"), ("warnings", "注意"), ("blockers", "不能切换")] {
+        for x in pv[k].as_array().into_iter().flatten().filter_map(Value::as_str) {
+            s.push_str(&format!("\n{label}：{x}"));
+        }
+    }
+    s
 }
 
 /// 指向这个入口的软路由出口（`GET /entries/{id}/routers`）：「。这些软路由出口指向它，{停用}后会连不上：路由A 的 节点01；…」，没有为空
@@ -1327,6 +1398,18 @@ mod tests {
     }
 
     /// 检查结果的错误与提醒逐条一行列在表下，行首是表里的 #；都没有时为空
+    #[test]
+    fn reverse_preview_lists_impacts_and_blockers() {
+        let pv = json!({
+            "entry": {"name": "团队1-06 · 线路机2:20013"}, "from": "normal", "to": "reverse", "ok": false,
+            "impacts": ["节点上装 bridge"], "warnings": ["没有 TCP 探测"], "blockers": ["线路机 线路机2 的 agent 版本过旧"]
+        });
+        let s = reverse_preview(&pv);
+        assert!(s.contains("团队1-06 · 线路机2:20013") && s.contains("普通 → 穿透"), "{s}");
+        assert!(s.contains("\n会发生：节点上装 bridge\n注意：没有 TCP 探测\n不能切换：线路机 线路机2 的 agent 版本过旧"), "{s}");
+        assert_eq!((entry_mode_cn(&json!({"entry_mode": "reverse"})), entry_mode_cn(&json!({}))), ("穿透", "-"));
+    }
+
     #[test]
     fn provision_check_notes() {
         let res = vec![

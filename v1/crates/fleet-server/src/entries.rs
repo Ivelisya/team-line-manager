@@ -19,9 +19,12 @@ pub async fn lock_policy_shared(tx: &mut Tx<'_>) -> ApiResult<()> {
     Ok(())
 }
 
+/// 新建入口（普通模式），见 [`create_with`]
+pub async fn create(tx: &mut Tx<'_>, relay_id: Uuid, node_id: Uuid) -> ApiResult<(Uuid, i32, i64)> { create_with(tx, relay_id, node_id, crate::reverse::NORMAL).await }
+
 /// 新建入口：锁线路机 → 从 `relay.port_next` 分端口（不低于现有入口的最大端口 + 1；分完 +1）→ 代数 +1。返回 (entry_id, port, generation)。
-/// 调用方须已在事务开头调过 [`lock_policy_shared`]。
-pub async fn create(tx: &mut Tx<'_>, relay_id: Uuid, node_id: Uuid) -> ApiResult<(Uuid, i32, i64)> {
+/// `mode` 是 normal / reverse（穿透，调用方已按 `reverse::resolve_new` 确认能用）。调用方须已在事务开头调过 [`lock_policy_shared`]。
+pub async fn create_with(tx: &mut Tx<'_>, relay_id: Uuid, node_id: Uuid, mode: &str) -> ApiResult<(Uuid, i32, i64)> {
     let (pmin, pmax, next, top): (i32, i32, i32, Option<i32>) = sqlx::query_as(
         "select r.port_min, r.port_max, r.port_next, (select max(e.port) from entry e where e.relay_id = r.machine_id)
          from relay r join machine m on m.id = r.machine_id
@@ -55,8 +58,8 @@ pub async fn create(tx: &mut Tx<'_>, relay_id: Uuid, node_id: Uuid) -> ApiResult
     let gen = bump_relay(tx, relay_id).await?;
     let id = new_id();
     sqlx::query(
-        "insert into entry (id, relay_id, node_id, port, client_uuid, short_id, lifecycle, changed_gen)
-         values ($1, $2, $3, $4, $5, $6, 'pending', $7)",
+        "insert into entry (id, relay_id, node_id, port, client_uuid, short_id, lifecycle, changed_gen, mode)
+         values ($1, $2, $3, $4, $5, $6, 'pending', $7, $8)",
     )
     .bind(id)
     .bind(relay_id)
@@ -65,6 +68,7 @@ pub async fn create(tx: &mut Tx<'_>, relay_id: Uuid, node_id: Uuid) -> ApiResult
     .bind(Uuid::new_v4())
     .bind(short_id())
     .bind(gen)
+    .bind(mode)
     .execute(&mut **tx)
     .await?;
     Ok((id, port, gen))
@@ -144,11 +148,14 @@ pub async fn desired_state(db: &PgPool, secrets: &SecretBox, relay_id: Uuid, ech
         method: Option<String>,
         username: Option<String>,
         secret_enc: Option<Vec<u8>>,
+        mode: String,
+        bridge_uuid: Uuid,
     }
     // 直出入口没有 node_outbound 行（节点就是线路机自己）；节点入口缺出站参数（或秘密已在退役时清掉）的照旧不下发
     let rows: Vec<Row> = sqlx::query_as(
         "select e.id, e.node_id, m.team_id, e.port, e.lifecycle::text lifecycle, e.client_uuid, e.short_id, m.kind::text kind, t.name team, m.number,
-                m.label, host(m.primary_ip) ip, e.node_id = e.relay_id direct, o.protocol, o.host, o.port oport, o.method, o.username, o.secret_enc
+                m.label, host(m.primary_ip) ip, e.node_id = e.relay_id direct, o.protocol, o.host, o.port oport, o.method, o.username, o.secret_enc,
+                e.mode, e.bridge_uuid
          from entry e join machine m on m.id = e.node_id left join team t on t.id = m.team_id
          left join node_outbound o on o.machine_id = e.node_id
          where e.relay_id = $1 and e.lifecycle in ('pending', 'active', 'disabled') and (e.node_id = e.relay_id or o.secret_enc is not null)
@@ -160,8 +167,10 @@ pub async fn desired_state(db: &PgPool, secrets: &SecretBox, relay_id: Uuid, ech
     let policies = crate::policy::load_current(db).await?;
     let mut entries = Vec::with_capacity(rows.len());
     for r in rows {
+        // 穿透：线路机不连节点，出站参数（节点的 ssserver）留在库里不下发，切回普通模式时照旧用
         let outbound = match (r.direct, r.protocol.as_deref(), r.host, r.oport, r.secret_enc) {
             (true, ..) => Outbound::Direct,
+            (false, ..) if r.mode == crate::reverse::REVERSE => Outbound::Reverse { bridge_uuid: r.bridge_uuid },
             (false, Some(p), Some(host), Some(oport), Some(enc)) => {
                 let (secret, port) = (secrets.open_str(&enc)?, oport as u16);
                 match p {

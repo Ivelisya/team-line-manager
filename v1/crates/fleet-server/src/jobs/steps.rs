@@ -1,6 +1,7 @@
 //! 各作业步骤的实现。每步幂等：重跑不会重复产生副作用。
 
 mod batch;
+mod bridge;
 mod lifecycle;
 mod replace;
 
@@ -169,6 +170,11 @@ pub async fn run(c: &Ctx<'_>, key: &str) -> anyhow::Result<Outcome> {
         // 替换节点
         "routers" => replace::routers(c).await,
         "renumber" => replace::renumber(c).await,
+        // 穿透（steps/bridge.rs）
+        "bridge" => bridge::bridge_for_new(c).await,
+        "bridge_up" => bridge::bridge_up(c).await,
+        "switch" => bridge::switch(c).await,
+        "bridge_down" => bridge::bridge_down(c).await,
         _ => bail!("未知步骤 {key}"),
     }
 }
@@ -875,9 +881,12 @@ async fn attach(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     }
     let node = c.target_id()?;
     let relay = c.param_uuid("relay_id")?;
+    // 入口模式：发起时定的（上架、加入口的参数，没给按面板的默认模式），此刻还用不了穿透（线路机、节点 agent 太旧）就退回普通
+    let requested = c.job.params["entry_mode"].as_str().unwrap_or(crate::reverse::NORMAL).to_string();
     let mut tx = c.st.db.begin().await?;
     entries::lock_policy_shared(&mut tx).await.map_err(|e| anyhow!(e.message))?;
-    let (eid, port, gen) = entries::create(&mut tx, relay, node).await.map_err(|e| anyhow!(e.message))?;
+    let (mode, why) = crate::reverse::resolve_new(&mut tx, node, relay, &requested).await?;
+    let (eid, port, gen) = entries::create_with(&mut tx, relay, node, mode).await.map_err(|e| anyhow!(e.message))?;
     // 记 entry_id 时同时确认租约还在：不在就整个事务回滚，不留下孤儿入口
     let n = sqlx::query("update job set params = params || $2 where id = $1 and lease_owner = $3")
         .bind(c.job.id)
@@ -891,7 +900,16 @@ async fn attach(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     }
     tx.commit().await?;
     c.st.relay_bumped(relay);
-    Ok(Outcome::Done(json!({"entry_id": eid, "port": port, "generation": gen})))
+    // 上架时就按机器类型退回了普通的（家宽代理、同机 IP 节点），原因在参数里
+    if let Some(n) = c.job.params["entry_mode_note"].as_str() {
+        c.warn(n).await;
+    }
+    if let Some(w) = why {
+        c.warn(w).await;
+    } else if mode == crate::reverse::REVERSE {
+        c.log("入口是穿透模式：接着在节点上装 bridge，由节点主动连这个入口").await;
+    }
+    Ok(Outcome::Done(json!({"entry_id": eid, "port": port, "generation": gen, "mode": mode})))
 }
 
 async fn firewall(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
@@ -1287,6 +1305,9 @@ pub async fn compensate(st: &AppState, job: &JobRow, owner: &str) {
     let c = Ctx { st, job, owner, started: OffsetDateTime::now_utc(), first: false };
     if job.kind == "move_entry" {
         return lifecycle::compensate_move(&c).await;
+    }
+    if job.kind == "reverse" {
+        return bridge::compensate(&c).await;
     }
     // 上架类先看机器状态：已经上线（取消赶在「上线」之后，或上线改完状态后记账失败再取消）的机器入口已经在用，
     // 摘掉会让客户断线，机器也不能退役，什么都不动

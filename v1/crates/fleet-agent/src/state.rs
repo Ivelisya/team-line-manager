@@ -29,6 +29,8 @@ pub struct Buffers {
     pub xray: Option<XrayStatus>,
     /// 流量基线：报告落盘成功后才持久化，崩溃时不会"基线前移但增量丢失"
     pub stats_commit: Option<StatsState>,
+    /// 线路机：此刻隧道没挂上的穿透入口（stats_task 每轮重算的快照，不累积；随每份带样本的报告发）
+    pub tunnels_down: Vec<uuid::Uuid>,
 }
 
 /// 缓冲满时每次推入都会丢弃：日志只在前几次和之后每 100 次打一条（`hits` 为该缓冲的丢弃次数）
