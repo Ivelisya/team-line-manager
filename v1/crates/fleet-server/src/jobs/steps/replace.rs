@@ -823,28 +823,24 @@ pub(super) async fn renumber(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     if o.2 != Some(old_team) || o.3 != Some(old_number) {
         return Err(remote("旧节点的团队或编号在发起替换之后被改过，编号没有动：软路由已经指向新节点，按需要手动改名（fleetctl rename）"));
     }
-    let to_number = match given {
-        Some(x) => x,
-        None => {
-            let taken: Vec<i32> = sqlx::query_scalar(
-                "select number from machine where team_id = $1 and number is not null and kind <> 'relay' and lifecycle <> 'retired' and id <> all($2)",
-            )
-            .bind(to_team)
-            .bind(vec![old, new])
-            .fetch_all(&mut *tx)
-            .await?;
-            let mut taken: BTreeSet<i32> = taken.into_iter().collect();
-            if to_team == old_team {
-                taken.insert(old_number);
-            }
-            (1..=999).find(|x| !taken.contains(x)).ok_or_else(|| remote("旧节点要去的团队编号用完了"))?
-        }
-    };
+    // 和预览同一份计算（api::replace::old_to_number）：新节点在目标团队里的号算空着，旧节点接它
+    let to_number = crate::api::replace::old_to_number(&mut *tx, to_team, (old, new), (old_team, old_number), given).await?.map_err(|e| remote(e.to_string()))?;
     use crate::api::machines::{patch_tx, PatchIn};
     let api = |e: crate::error::ApiError| remote(e.message);
-    // 旧节点先挪开，旧编号空出来再给新节点（唯一索引 machine_number_live）
-    let mut relays = patch_tx(&mut tx, actor, old, PatchIn::rename(o.1, to_team, to_number)).await.map_err(api)?.relays;
+    // 旧节点先挪开，旧编号空出来再给新节点（唯一索引 machine_number_live，不能延迟检查）。旧节点要接的号此刻还被新节点占着时
+    // （新节点从目标团队来、旧节点接它的号）：旧节点先放到临时号，新节点挪走后再改到这个号；审计里旧节点因此有两条改名（同一事务）
+    let swap = crate::api::replace::swap_slot(n.2, n.3, to_team, to_number);
+    let first = if swap {
+        crate::api::replace::temp_number(&mut *tx, to_team, old, (old_team, old_number)).await?.ok_or_else(|| remote("旧节点要去的团队编号用完了（交换时要先占一个临时号）"))?
+    } else {
+        to_number
+    };
+    let mut relays = patch_tx(&mut tx, actor, old, PatchIn::rename(o.1, to_team, first)).await.map_err(api)?.relays;
     relays.extend(patch_tx(&mut tx, actor, new, PatchIn::rename(n.1, old_team, old_number)).await.map_err(api)?.relays);
+    if swap {
+        let rev: i32 = sqlx::query_scalar("select revision from machine where id = $1").bind(old).fetch_one(&mut *tx).await?;
+        relays.extend(patch_tx(&mut tx, actor, old, PatchIn::rename(rev, to_team, to_number)).await.map_err(api)?.relays);
+    }
     // 旧节点进了备用：回收站的「原因」写明是被谁替换下来的
     let (old_before, new_before) = (c.job.params["old_name"].as_str().unwrap_or(""), c.job.params["new_name"].as_str().unwrap_or(""));
     sqlx::query("update machine m set lifecycle_reason = $2 from team t where m.id = $1 and t.id = m.team_id and t.spare")

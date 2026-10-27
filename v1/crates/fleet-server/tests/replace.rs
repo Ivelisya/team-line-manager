@@ -454,6 +454,118 @@ async fn renumber_only_and_compaction() {
     assert_eq!(name_of(t, w.old).await, "团队2备用-01");
 }
 
+/// 新节点从备用团队来（最常见的用法）、备用团队编号连续占满、不给编号：旧节点接新节点在备用里空出来的号。
+/// 原来预览和作业都把新节点的号当空号、作业却先挪旧节点，撞唯一索引失败「这个团队里已经有这个编号」（2026-10-27 生产上踩到）。
+/// 现在预览与作业同一份计算，作业先放临时号再改过去：作业成功、备用团队谁都不改名、团队2 的编号不动。
+/// 同带上：指定的编号正好是新节点现在的号；旧节点留在旧团队、新节点也在旧团队（目标团队就是新节点的团队）；指定别的空号时备用团队照常压缩
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn new_node_from_full_spare_team_takes_over_its_slot() {
+    let w = world().await;
+    let t = &w.t;
+    let db = &t.st.db;
+    // 团队2：01 旧节点、02、03 在用；备用：01 新节点、02–07 占满
+    sqlx::query("update machine set team_id = $2, number = 1 where id = $1").bind(w.new).bind(w.spare).execute(db).await.unwrap();
+    let n2 = node(t, w.team, 2, "203.0.113.22").await;
+    let n3 = node(t, w.team, 3, "203.0.113.23").await;
+    let mut spares = vec![];
+    for k in 2..=7 {
+        spares.push(node(t, w.spare, k, &format!("203.0.113.{}", 40 + k)).await);
+    }
+    let oe = old_entry(&w).await;
+    router(&w, "团队2-路由A", 23711, &[("节点01", "198.51.100.2", 20003, Some(oe))]).await;
+    let p = t.get(&format!("/api/v1/machines/{}/replace?new_machine_id={}", w.old, w.new)).await;
+    assert_eq!(p["ok"], true, "{p}");
+    assert_eq!((p["new"]["name"].as_str(), p["new_name"].as_str()), (Some("团队2备用-01"), Some("团队2-01")));
+    assert_eq!(p["old_to"], json!({"team": {"id": w.spare, "name": "团队2备用", "spare": true}, "number": 1, "name": "团队2备用-01"}), "旧节点接新节点空出来的号：{p}");
+    assert_eq!(p["renames"], json!([]), "备用团队不压缩：{p}");
+
+    let d = t.post(&format!("/api/v1/machines/{}/replace", w.old), json!({"new_machine_id": w.new})).await;
+    let job = d["job_id"].as_str().unwrap().to_string();
+    drive(t).await;
+    let j = t.job(&job).await;
+    assert_eq!(j["state"], "succeeded", "{j} {}", logs(t, &job).await);
+    assert_eq!((name_of(t, w.new).await, name_of(t, w.old).await), ("团队2-01".to_string(), "团队2备用-01".to_string()));
+    assert_eq!((name_of(t, n2).await, name_of(t, n3).await), ("团队2-02".to_string(), "团队2-03".to_string()), "团队2 编号不动");
+    for (k, s) in spares.iter().enumerate() {
+        assert_eq!(name_of(t, *s).await, format!("团队2备用-{:02}", k + 2), "备用团队谁都不改名");
+    }
+    let ov = t.get(&format!("/api/v1/machines/{}", w.old)).await;
+    assert_eq!((ov["spare"].as_bool(), ov["spare_from"].as_str()), (Some(true), Some("团队2-01")), "进备用记下的原名是团队2 的名字，不是临时号：{ov}");
+    assert_eq!(ov["lifecycle_reason"], "替换下来：团队2备用-01 接替了 团队2-01", "{ov}");
+    let nv = t.get(&format!("/api/v1/machines/{}", w.new)).await;
+    assert_eq!((nv["spare"].as_bool(), nv["spare_from"].is_null()), (Some(false), true), "新节点出了备用：{nv}");
+    // 审计：旧节点先放临时号（备用 08）再改到 01，两条改名都在
+    let au = t.get(&format!("/api/v1/audit?target_id={}", w.old)).await;
+    let mut renames: Vec<&str> = au.as_array().unwrap().iter().filter(|a| a["action"] == "machine.rename").map(|a| a["summary"].as_str().unwrap()).collect();
+    renames.sort();
+    assert_eq!(renames, ["团队2-01 → 团队2备用-08", "团队2备用-08 → 团队2备用-01"], "{au}");
+    assert!(logs(t, &job).await.contains("编号已交换：新节点现在是 团队2-01，旧节点现在是 团队2备用-01"));
+
+    // 指定的编号正好是新节点现在的号：同样先放临时号
+    let w = world().await;
+    let t = &w.t;
+    let db = &t.st.db;
+    sqlx::query("update machine set team_id = $2, number = 1 where id = $1").bind(w.new).bind(w.spare).execute(db).await.unwrap();
+    let s2 = node(t, w.spare, 2, "203.0.113.52").await;
+    let p = t.get(&format!("/api/v1/machines/{}/replace?new_machine_id={}&number=1", w.old, w.new)).await;
+    assert_eq!((p["ok"].as_bool(), p["old_to"]["name"].as_str()), (Some(true), Some("团队2备用-01")), "{p}");
+    let d = t.post(&format!("/api/v1/machines/{}/replace", w.old), json!({"new_machine_id": w.new, "old_to": {"number": 1}})).await;
+    drive(t).await;
+    assert_eq!(t.job(d["job_id"].as_str().unwrap()).await["state"], "succeeded");
+    assert_eq!((name_of(t, w.old).await, name_of(t, s2).await), ("团队2备用-01".to_string(), "团队2备用-02".to_string()));
+    // 指定别的空号（03）：不经临时号；新节点走后备用团队压缩，旧节点跟着前移到 02
+    let w = world().await;
+    let t = &w.t;
+    let db = &t.st.db;
+    sqlx::query("update machine set team_id = $2, number = 1 where id = $1").bind(w.new).bind(w.spare).execute(db).await.unwrap();
+    let s2 = node(t, w.spare, 2, "203.0.113.52").await;
+    let p = t.get(&format!("/api/v1/machines/{}/replace?new_machine_id={}&number=3", w.old, w.new)).await;
+    let ren: Vec<(&str, &str)> = p["renames"].as_array().unwrap().iter().map(|r| (r["old_name"].as_str().unwrap(), r["new_name"].as_str().unwrap())).collect();
+    assert_eq!(ren, [("团队2备用-02", "团队2备用-01"), ("团队2备用-03", "团队2备用-02")], "{p}");
+    let d = t.post(&format!("/api/v1/machines/{}/replace", w.old), json!({"new_machine_id": w.new, "old_to": {"number": 3}})).await;
+    drive(t).await;
+    assert_eq!(t.job(d["job_id"].as_str().unwrap()).await["state"], "succeeded");
+    assert_eq!((name_of(t, s2).await, name_of(t, w.old).await, name_of(t, w.new).await), ("团队2备用-01".to_string(), "团队2备用-02".to_string(), "团队2-01".to_string()));
+
+    // 旧节点留在旧团队（--to 团队2）、新节点也在团队2：旧编号留给新节点，旧节点接新节点的号——两台互换编号
+    let w = world().await;
+    let t = &w.t;
+    let p = t.get(&format!("/api/v1/machines/{}/replace?new_machine_id={}&team_id={}", w.old, w.new, w.team)).await;
+    assert_eq!((p["ok"].as_bool(), p["old_to"]["name"].as_str(), p["renames"].clone()), (Some(true), Some("团队2-02"), json!([])), "{p}");
+    let d = t.post(&format!("/api/v1/machines/{}/replace", w.old), json!({"new_machine_id": w.new, "old_to": {"team_id": w.team}})).await;
+    drive(t).await;
+    let j = t.job(d["job_id"].as_str().unwrap()).await;
+    assert_eq!(j["state"], "succeeded", "{j}");
+    assert_eq!((name_of(t, w.new).await, name_of(t, w.old).await), ("团队2-01".to_string(), "团队2-02".to_string()));
+}
+
+/// 替换预览的提醒：新节点快到期（从备用来的写明自动续费关着）；新节点原来的团队压缩改名的节点还被软路由出口指着（面板名和出口名会错位）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn replace_preview_warns_new_node_due_and_compaction_exits() {
+    let w = world().await;
+    let t = &w.t;
+    let db = &t.st.db;
+    // 新节点在备用 01、3 天后到期；备用 02 被「路由B」的出口「节点02」指着：新节点走后它压缩成 01
+    sqlx::query("update machine set team_id = $2, number = 1 where id = $1").bind(w.new).bind(w.spare).execute(db).await.unwrap();
+    sqlx::query("insert into subscription (machine_id, price_cents, currency, due_date, billing_tz) values ($1, 500, 'USD', (now() at time zone 'UTC')::date + 3, 'UTC')")
+        .bind(w.new)
+        .execute(db)
+        .await
+        .unwrap();
+    let s2 = node(t, w.spare, 2, "203.0.113.52").await;
+    let e2 = entry(t, w.relay, s2, 20052, "55555555-5555-4555-8555-555555555555", "active").await;
+    router(&w, "路由B", 23712, &[("节点02", "198.51.100.2", 20052, Some(e2))]).await;
+    t.st.live.invalidate();
+    // 指定 03：旧节点不接新节点的号，备用团队压缩，02 → 01
+    let p = t.get(&format!("/api/v1/machines/{}/replace?new_machine_id={}&number=3", w.old, w.new)).await;
+    let ws = p["warnings"].to_string();
+    assert!(ws.contains("新节点「团队2备用-01」") && ws.contains("到期（还有 3 天）；它在备用里，进备用时自动续费关了"), "{ws}");
+    assert!(ws.contains("团队2备用-02（路由B · 节点02）→ 团队2备用-01") && ws.contains("不想错位就换一台新节点"), "{ws}");
+    // 不指定：旧节点接新节点的号，备用团队不压缩，不提醒错位
+    let p = t.get(&format!("/api/v1/machines/{}/replace?new_machine_id={}", w.old, w.new)).await;
+    assert!(!p["warnings"].to_string().contains("对不上"), "{p}");
+}
+
 /// 选了「不改软路由」而出口还指着旧节点：旧节点进备用后被扣住（不自动回收、要照常续费），自动续费的提示不再写「到期后照常回收」「供应商那边要自己去关」，
 /// 改写要自己登记续费、供应商那边先别关；改软路由（出口会跟到新节点）时不被扣住，说法照旧
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -919,7 +1031,7 @@ async fn batch_move_merges_offline_routers() {
     let e3 = entry(&w.t, w.relay, n3, 20021, "33333333-3333-4333-8333-333333333333", "active").await;
     let n4 = node(&w.t, w.team, 4, "203.0.113.14").await;
     entry(&w.t, w.relay, n4, 20022, "44444444-4444-4444-8444-444444444444", "active").await;
-    let a = router(&w, "路由A", 23261, &[("节点01", "198.51.100.2", 20003, Some(oe)), ("节点02", "198.51.100.2", 20020, Some(ne))]).await;
+    let a = router(&w, "路由A", 23713, &[("节点01", "198.51.100.2", 20003, Some(oe)), ("节点02", "198.51.100.2", 20020, Some(ne))]).await;
     let b = router(&w, "路由B", 23262, &[("节点03", "198.51.100.2", 20021, Some(e3))]).await;
     let t = &w.t;
     let (rb, _tb) = seed_relay_b(t).await;

@@ -338,6 +338,9 @@ export function buildDb(): Db {
   // 线路机 2 本周期已超出额度（约 113%）：额度告警、搬迁建议（超额时的口径）、费用页标红用
   const r2 = machines[1];
   if (r2.subscription) { r2.subscription.traffic_gb = Math.max(1, Math.floor(r2.quota.used / 1e9 / 1.13)); Object.assign(r2, trafficOf(r2, machines)); }
+  // 团队2 的 05 号：出口已改指向别处，团队的软路由都没有出口指着它（抽屉标一句，同服务端 no_router_exits）
+  const unpointed = machines.find((x) => x.team?.id === 't2' && x.number === 5 && x.kind !== 'relay');
+  if (unpointed) unpointed.no_router_exits = true;
   // 早先「恢复已退役机器」留下的原因（旧版写成「已恢复：原因」）
   const restored = machines.find((x) => x.id === 'm-t1-03');
   if (restored) restored.lifecycle_reason = '已恢复：实验：恢复';

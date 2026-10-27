@@ -334,6 +334,10 @@ pub struct MachineView {
     /// 备用团队里在用的机器：还指向它（备用宿主机还包括它上面没退役的同机 IP 节点，后缀「（经同机 IP 节点 X）」）的软路由出口（「路由名 · 出口名」），续费提醒里列出来；
     /// 它、`live_ip_nodes` 都为空的就是闲置备用（`idle_spare`，网页据此不把它算进异常）
     pub router_exits: Vec<String>,
+    /// 团队里在用的节点（不在备用）、所在团队的软路由都看得清出口（routers::pointed_nodes），却没有任何出口指着它：
+    /// 多半是出口被改指向别处（改出口指向、手改）之后留下的，卡片看着像正常在用、其实没有客户。网页抽屉与 fleetctl show 标一句，不影响健康与告警。
+    /// 团队没有软路由、有路由还没采集到 / 配置读不了的都为 false（看不出）
+    pub no_router_exits: bool,
     pub number: Option<i32>,
     pub label: Option<String>,
     pub ip: String,
@@ -1357,8 +1361,10 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
     // 备用团队里在用的机器：还指向它（或它上面同机 IP 节点）的软路由出口（到期提醒里列出，让人先「替换」）
     let spare_ids: Vec<Uuid> = rows.iter().filter(|r| r.team_spare == Some(true) && r.lifecycle == "active").map(|r| r.id).collect();
     let exits_q = crate::routers::exits_using_with_ip_nodes(db, &spare_ids);
+    // 团队里的节点有没有出口指着（no_router_exits）
+    let pointed_q = crate::routers::pointed_nodes(db);
     let period_of: HashMap<Uuid, (Date, Option<&'static str>)> = periods.iter().map(|k| (k.0, (k.1, k.3))).collect();
-    let (intel, host, (es, probes, reach), (traffic, nic, removed), (live_jobs, failed_jobs), inc, silences, sustained, policies, period_used, ipn, mut exits) = tokio::try_join!(
+    let (intel, host, (es, probes, reach), (traffic, nic, removed), (live_jobs, failed_jobs), inc, silences, sustained, policies, period_used, ipn, mut exits, (seen_teams, pointed)) = tokio::try_join!(
         intel_q,
         host_now(db, &hids),
         entries_q,
@@ -1370,7 +1376,8 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
         crate::policy::load_modes(db),
         quota_used(st, periods),
         ipn_q,
-        exits_q
+        exits_q,
+        pointed_q
     )?;
     // 汇率：订阅的价格、月费折成 USD（fx.rs）
     let fx = crate::fx::current(db).await?;
@@ -1572,6 +1579,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
             let recycle_held = in_spare && !(router_exits.is_empty() && live_ip_nodes.is_empty() && renewing_ip_nodes.is_empty() && !auto_renew);
             let idle_spare = in_spare && router_exits.is_empty() && live_ip_nodes.is_empty();
             let spare_unbilled = in_spare && !recycle_held;
+            let no_router_exits = !spare && r.lifecycle == "active" && r.kind != "relay" && r.team_id.is_some_and(|t| seen_teams.contains(&t)) && !pointed.contains(&r.id);
             let recycle_on = subscription.as_ref().filter(|_| spare && r.lifecycle == "active" && !recycle_held).map(|s| crate::spare::recycle_on(s.due_date));
             let mut v = MachineView {
                 id: r.id,
@@ -1588,6 +1596,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 live_ip_nodes,
                 renewing_ip_nodes,
                 router_exits,
+                no_router_exits,
                 number: r.number,
                 label: r.label,
                 country: r.country.clone().or_else(|| r.ip.parse::<IpAddr>().ok().and_then(|ip| intel.get(&ip)).and_then(|b| b.country.clone())),
@@ -1652,7 +1661,7 @@ pub fn settling(st: &AppState, v: &mut Value) {
     v["settling"] = json!(st.report_gaps.settling(OffsetDateTime::now_utc()));
 }
 
-/// 总览里节点、线路机各一份的健康计数
+/// 总览里节点、线路机、闲置备用各一份的健康计数
 #[derive(Default, Serialize)]
 struct Bucket {
     total: i64,
@@ -1667,6 +1676,8 @@ struct Bucket {
 pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Value {
     let (mut nodes, mut relays) = (Bucket::default(), Bucket::default());
     let (mut provisioning, mut retiring, mut failed, mut spare, mut rx, mut tx) = (0, 0, 0, 0, 0f64, 0f64);
+    // 闲置备用按同一套健康口径另数（spare_health）：备用池里有几台此刻能顶上（正常 / 降级），几台故障、不通——挑替换用的新节点时一眼看出，不用去查库
+    let mut spare_health = Bucket::default();
     // 本月业务流量：每条入口的字节只在它的线路机上统计一次，全部入口直接相加不重复，含已移除的入口和月中退役、替换掉的机器。
     // 网卡流量不做合计：同一个字节在线路机和节点的网卡上各算一次
     let (up, down) = traffic.values().fold((0i64, 0i64), |(u, d), t| (u.saturating_add(t.month_up), d.saturating_add(t.month_down)));
@@ -1708,8 +1719,14 @@ pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Valu
         if idle {
             spare += 1;
         }
-        let bucket = if m.kind == "relay" { &mut relays } else { &mut nodes };
-        if !idle {
+        let bucket = if idle {
+            &mut spare_health
+        } else if m.kind == "relay" {
+            &mut relays
+        } else {
+            &mut nodes
+        };
+        {
             bucket.total += 1;
             *match m.health.status {
                 Status::Ok => &mut bucket.ok,
@@ -1757,7 +1774,7 @@ pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Valu
     usd_spare["count"] = json!(spare_paid);
     json!({
         "nodes": nodes, "relays": relays, "provisioning": provisioning, "retiring": retiring, "failed": failed, "due_soon": due_soon, "overdue": overdue, "online": online, "offline": offline,
-        "no_agent": no_agent, "ip_nodes": ip_nodes, "spare": spare, "monthly_usd": usd, "paid_machines": paid_machines, "monthly_usd_spare": usd_spare, "traffic_month": {"up": up, "down": down, "counted_from": counted_from.map(crate::meta::fmt_ts)}, "net_rx_bps": rx, "net_tx_bps": tx,
+        "no_agent": no_agent, "ip_nodes": ip_nodes, "spare": spare, "spare_health": spare_health, "monthly_usd": usd, "paid_machines": paid_machines, "monthly_usd_spare": usd_spare, "traffic_month": {"up": up, "down": down, "counted_from": counted_from.map(crate::meta::fmt_ts)}, "net_rx_bps": rx, "net_tx_bps": tx,
     })
 }
 
@@ -1868,6 +1885,14 @@ mod tests {
         let n = &ov["nodes"];
         assert_eq!((n["total"].as_i64(), n["down"].as_i64(), ov["spare"].as_i64()), (Some(2), Some(2), Some(2)), "{ov}");
         assert_eq!((ov["online"].as_i64(), ov["offline"].as_i64()), (Some(2), Some(0)), "闲置备用不计在线 / 离线");
+        // 闲置备用另有一份健康计数：备用池里有几台能顶上
+        let sh = &ov["spare_health"];
+        assert_eq!((sh["total"].as_i64(), sh["down"].as_i64(), sh["ok"].as_i64()), (Some(2), Some(2), Some(0)), "{ov}");
+        let mut fine = base("vps");
+        fine.spare = true;
+        fine.health.status = Status::Ok;
+        let fine = fine.settle_spare();
+        assert_eq!(overview_of(&[fine], &HashMap::new())["spare_health"]["ok"], 1);
 
         // 闲置备用里的家宽代理（没 agent）、同机 IP 节点也不计入 no_agent / ip_nodes；被出口指向的、普通的照常计
         let mut idle_proxy = down(true, &[], true);

@@ -6,7 +6,8 @@
 //!   作业执行时按路由当时的配置重新确定（同一套匹配，`replace_exit`）。
 //!   新入口按线路机一一对应（旧入口在哪台线路机，就换成新节点在同一台上的入口）；对不上时新节点只有一个在用入口就用它，否则报错说明。
 //! - 改编号与 PATCH /machines/{id} 同一套代码（machines::patch_tx）：同样的校验、审计（machine.rename）、刷新线路机。
-//!   编号先挪开旧节点、再给新节点，新节点原来所在的团队随后压缩（同退役）。旧节点不退役：
+//!   编号先挪开旧节点、再给新节点，新节点原来所在的团队随后压缩（同退役）。旧节点拿的号预览与作业同一份计算（`old_to_number`）：
+//!   新节点在目标团队里的号算空着——新节点从备用来时旧节点就接它在备用里的号（作业先放临时号再改过去），备用团队谁都不改名。旧节点不退役：
 //!   放进备用团队后由备用到期自动回收（spare.rs）接手。
 
 use super::ok;
@@ -291,6 +292,77 @@ async fn default_spare(conn: &mut PgConnection) -> ApiResult<(Uuid, String)> {
     Ok(sqlx::query_as("select id, name from team where spare").fetch_one(&mut *conn).await?)
 }
 
+/// 旧节点在目标团队拿不到编号的原因（`old_to_number`）
+#[derive(Debug, PartialEq, Eq)]
+pub enum NumberErr {
+    /// 给的编号不在 1–999（输入错误，提交时回 400）
+    Range,
+    /// 给的编号已被别的机器占着
+    Taken(i32),
+    /// 没给编号，目标团队 1–999 都占满了
+    Full,
+}
+
+impl std::fmt::Display for NumberErr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NumberErr::Range => f.write_str("编号范围 1–999"),
+            NumberErr::Taken(n) => write!(f, "编号 {n} 已被占用"),
+            NumberErr::Full => f.write_str("旧节点要去的团队编号用完了"),
+        }
+    }
+}
+
+/// 旧节点在目标团队 `to_team` 最后拿哪个编号：预览（plan）与作业（jobs/steps/replace.rs `renumber`，锁住团队和两台机器后再算一次）共用这一份，
+/// 不各算各的。`given` 是指定的编号，没给取最小空号。
+/// 算空号时不算旧节点自己（它要挪走），**新节点在目标团队里的编号也算空着**：交换完它就离开了，旧节点正好接它空出来的号——
+/// 新节点从备用团队来（最常见的用法）时旧节点就接新节点在备用里的号，备用团队不用压缩、谁都不改名。
+/// 这个号在交换那一刻还被新节点占着，作业要先把旧节点放到临时号、新节点挪走后再改过去（`swap_slot`）。目标就是旧团队时，旧编号要给新节点，算占着
+pub async fn old_to_number(
+    conn: &mut PgConnection,
+    to_team: Uuid,
+    (old, new): (Uuid, Uuid),
+    (old_team, old_number): (Uuid, i32),
+    given: Option<i32>,
+) -> sqlx::Result<Result<i32, NumberErr>> {
+    if given.is_some_and(|n| !(1..=999).contains(&n)) {
+        return Ok(Err(NumberErr::Range));
+    }
+    let taken: Vec<i32> = sqlx::query_scalar(
+        "select number from machine where team_id = $1 and number is not null and kind <> 'relay' and lifecycle <> 'retired' and id <> all($2)",
+    )
+    .bind(to_team)
+    .bind(vec![old, new])
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut taken: HashSet<i32> = taken.into_iter().collect();
+    if to_team == old_team {
+        taken.insert(old_number);
+    }
+    Ok(match given {
+        Some(n) if taken.contains(&n) => Err(NumberErr::Taken(n)),
+        Some(n) => Ok(n),
+        None => (1..=999).find(|n| !taken.contains(n)).ok_or(NumberErr::Full),
+    })
+}
+
+/// 旧节点要接的号此刻还被新节点占着（新节点就在目标团队、号正是 `to_number`）：交换时要先把旧节点放到临时号（`temp_number`）
+pub fn swap_slot(new_team: Option<Uuid>, new_number: Option<i32>, to_team: Uuid, to_number: i32) -> bool { new_team == Some(to_team) && new_number == Some(to_number) }
+
+/// `swap_slot` 时旧节点先放的临时号：目标团队里除旧节点外谁都没占的最小号（新节点的号占着）；目标就是旧团队时旧编号要留给新节点，也不能用
+pub async fn temp_number(conn: &mut PgConnection, to_team: Uuid, old: Uuid, (old_team, old_number): (Uuid, i32)) -> sqlx::Result<Option<i32>> {
+    let taken: Vec<i32> = sqlx::query_scalar("select number from machine where team_id = $1 and number is not null and kind <> 'relay' and lifecycle <> 'retired' and id <> $2")
+        .bind(to_team)
+        .bind(old)
+        .fetch_all(&mut *conn)
+        .await?;
+    let mut taken: HashSet<i32> = taken.into_iter().collect();
+    if to_team == old_team {
+        taken.insert(old_number);
+    }
+    Ok((1..=999).find(|n| !taken.contains(n)))
+}
+
 /// 替换的完整计划（预览与提交共用）
 pub struct Plan {
     old: Node,
@@ -393,35 +465,15 @@ async fn plan(st: &AppState, conn: &mut PgConnection, old_id: Uuid, b: &ReplaceI
     };
     let mut to_number = None;
     if let Some((t, _, _)) = &to_team {
-        // 目标团队里占着的编号：不算旧、新两台（它们都要挪）；目标就是旧团队时，旧编号要给新节点
-        let taken: Vec<i32> = sqlx::query_scalar(
-            "select number from machine where team_id = $1 and number is not null and kind <> 'relay' and lifecycle <> 'retired' and id <> all($2)",
-        )
-        .bind(t)
-        .bind(vec![old.id, new.id])
-        .fetch_all(&mut *conn)
-        .await?;
-        let mut taken: HashSet<i32> = taken.into_iter().collect();
-        if *t == old_team {
-            taken.insert(old_number);
-        }
-        to_number = match b.old_to.number {
-            Some(n) if !(1..=999).contains(&n) => {
-                blockers.push("编号范围 1–999".into());
-                invalid.push("编号范围 1–999".into());
-                None
-            }
-            Some(n) if taken.contains(&n) => {
-                blockers.push(format!("编号 {n} 已被占用"));
-                None
-            }
-            Some(n) => Some(n),
-            None => {
-                let n = (1..=999).find(|n| !taken.contains(n));
-                if n.is_none() {
-                    blockers.push("旧节点要去的团队编号用完了".into());
+        // 和作业同一份计算（old_to_number）：新节点在目标团队里的号算空着，交换时旧节点接它
+        to_number = match old_to_number(&mut *conn, *t, (old.id, new.id), (old_team, old_number), b.old_to.number).await? {
+            Ok(n) => Some(n),
+            Err(e) => {
+                if e == NumberErr::Range {
+                    invalid.push(e.to_string());
                 }
-                n
+                blockers.push(e.to_string());
+                None
             }
         };
     }
@@ -504,6 +556,15 @@ async fn plan(st: &AppState, conn: &mut PgConnection, old_id: Uuid, b: &ReplaceI
         warnings.push(w);
     }
 
+    // 新节点此刻的健康与到期：替换后它接客户（同改出口指向预览的写法）。只在预览里算：发起时（lock）持着两台机器的行锁，
+    // views::live 重算会等这把锁到 VIEW_WAIT，不能让一条可选的提醒挡住提交（见 repoint.rs）
+    if !lock && new.kind != "relay" {
+        let live = crate::views::live(st).await?;
+        if let Some(m) = live.iter().find(|m| m.id == new.id) {
+            warnings.extend(new_node_notes(m, &new_name));
+        }
+    }
+
     // 编号压缩：新节点原来的团队少了一台（同退役）
     let mut renames = vec![];
     if let (Some(nt), Some(nn)) = (new.team_id, new.team_name.as_deref()) {
@@ -521,16 +582,41 @@ async fn plan(st: &AppState, conn: &mut PgConnection, old_id: Uuid, b: &ReplaceI
                 members.push((old.id, n));
             }
         }
-        renames = compact_numbers(members)
-            .into_iter()
-            .map(|(id, o, n)| json!({"machine_id": id, "old_name": node_name(nn, o), "new_name": node_name(nn, n)}))
-            .collect();
+        let changes: Vec<(Uuid, String, String)> = compact_numbers(members).into_iter().map(|(id, o, n)| (id, node_name(nn, o), node_name(nn, n))).collect();
+        renames = changes.iter().map(|(id, o, n)| json!({"machine_id": id, "old_name": o, "new_name": n})).collect();
+        // 压缩改名的节点还被出口指着：面板名和出口名会错位。旧节点自己不算（它的出口这次就改到新节点）
+        let others: Vec<(Uuid, String, String)> = changes.into_iter().filter(|c| c.0 != old.id).collect();
+        let tail = format!("不想错位就换一台新节点：用备用团队里的，或{nn}里编号最大的那台（后面没有节点要前移）");
+        warnings.extend(crate::routers::compact_exits_note(&st.db, &others, &tail).await?);
     }
 
     // 软路由计划的提示与阻断接在最后（计划在上面先算出来）
     blockers.extend(router_blockers);
     warnings.extend(router_warnings);
     Ok(Plan { old, new, to_team, to_number, number_given: b.old_to.number.is_some(), old_after, new_after, renames, routers_enabled, routers, blockers, invalid, warnings })
+}
+
+/// 新节点的提醒（预览）：此刻故障 / 降级（写上原因：替换后客户的出口就走它），没开自动续费、提前提醒天数内到期或已过期（写到期日，同改出口指向预览）。
+/// 从备用来的另说一句：进备用时自动续费关了，替换出来也不会自己打开
+pub fn new_node_notes(m: &crate::views::MachineView, name: &str) -> Vec<String> {
+    use crate::health::Status;
+    let mut out = vec![];
+    let why = || if m.health.reasons.is_empty() { String::new() } else { format!("（{}）", m.health.reasons.iter().map(|r| r.text.as_str()).collect::<Vec<_>>().join("；")) };
+    match m.health.status {
+        Status::Down => out.push(format!("新节点「{name}」此刻故障{}：替换后客户的出口就走它，会不通；先查清，或换一台正常的", why())),
+        Status::Degraded => out.push(format!("新节点「{name}」此刻降级{}：照常能用，替换前先看看原因", why())),
+        _ => {}
+    }
+    if let Some(s) = m.subscription.as_ref().filter(|s| !s.auto_renew && s.due_days <= i64::from(s.remind_days)) {
+        let left = match s.due_days {
+            d if d < 0 => format!("已过期 {} 天", -d),
+            0 => "今天到期".into(),
+            d => format!("还有 {d} 天"),
+        };
+        let spare = if m.spare { "；它在备用里，进备用时自动续费关了，替换出来也不会自己打开" } else { "" };
+        out.push(format!("新节点「{name}」{} 到期（{left}）{spare}：替换后它接客户，要继续用记得登记续费（或打开自动续费）", s.due_date));
+    }
+    out
 }
 
 /// 哪些路由的哪些出口指向旧节点、各换成新节点的哪个入口
@@ -651,6 +737,39 @@ mod tests {
 
     fn ent(relay: Uuid, name: &str, port: i32) -> Ent {
         Ent { id: Uuid::now_v7(), relay_id: relay, port, lifecycle: "active".into(), public_host: format!("{name}.test"), relay_ip: "198.51.100.2".into(), relay_name: name.into() }
+    }
+
+    /// 新节点的提醒：故障 / 降级写原因；没开自动续费、提前提醒天数内到期的写到期日（备用里来的另说自动续费已关）；开着自动续费、还早的不说
+    #[test]
+    fn new_node_notes_health_and_due() {
+        use crate::health::tests::{base, sub, sub_with};
+        use crate::health::{Reason, Status};
+        let mut m = base("proxy");
+        assert!(new_node_notes(&m, "备用-04").is_empty());
+        m.health.status = Status::Down;
+        m.health.reasons = vec![Reason { key: "tcp_fail", severity: "critical", text: "TCP 探测全部失败".into() }];
+        m.spare = true;
+        m.subscription = Some(sub(2));
+        assert_eq!(
+            new_node_notes(&m, "备用-04"),
+            [
+                "新节点「备用-04」此刻故障（TCP 探测全部失败）：替换后客户的出口就走它，会不通；先查清，或换一台正常的",
+                "新节点「备用-04」2030-01-01 到期（还有 2 天）；它在备用里，进备用时自动续费关了，替换出来也不会自己打开：替换后它接客户，要继续用记得登记续费（或打开自动续费）",
+            ]
+        );
+        m.health.status = Status::Degraded;
+        m.health.reasons.clear();
+        m.spare = false;
+        m.subscription = Some(sub(-3));
+        assert_eq!(
+            new_node_notes(&m, "团队3-02"),
+            ["新节点「团队3-02」此刻降级：照常能用，替换前先看看原因", "新节点「团队3-02」2030-01-01 到期（已过期 3 天）：替换后它接客户，要继续用记得登记续费（或打开自动续费）"]
+        );
+        m.health.status = Status::Ok;
+        for s in [sub(30), sub_with(1, true)] {
+            m.subscription = Some(s);
+            assert!(new_node_notes(&m, "x").is_empty());
+        }
     }
 
     #[test]

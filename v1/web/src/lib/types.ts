@@ -77,6 +77,9 @@ export interface MachineView {
   live_ip_nodes?: string[];
   /** 备用团队里在用的机器：还指向它（备用宿主机还含它上面没退役的同机 IP 节点，后缀「（经同机 IP 节点 X）」）的软路由出口（「路由名 · 出口名」）；其余为 []。在用、在备用里、这里和 live_ip_nodes 都为空 = 闲置备用（不开告警、不计健康，见 isIdleSpare；再没开自动续费才是不续费的，见 isUnbilledSpare） */
   router_exits: string[];
+  /** 团队里在用的节点（不在备用）、团队的软路由都看得清出口，却没有任何出口指着它：多半是出口改指向别处后留下的，看着像在用其实没客户（抽屉标一句）。
+   *  团队没有软路由、有路由没采集到 / 配置读不了为 false。旧中控没有这个字段 */
+  no_router_exits?: boolean;
   ip: string; ssh_port: number;
   /** 国家或地区（ISO 3166-1 两位大写，如 US）：手动设了用手动的，否则中控离线 IP 库按机器自己的 IP 查；
    *  内网、家宽代理填的域名、库没装时为 null */
@@ -192,6 +195,8 @@ export interface Overview {
   online: number; offline: number; no_agent: number; ip_nodes: number;
   /** 闲置备用（isIdleSpare，客户侧口径：没有出口指着、没有在用 IP 节点）的台数：它们不在 nodes / relays 的 total 与各健康计数里，也不计入 online / offline；速率照算。旧中控没有这个字段 */
   spare?: number;
+  /** 闲置备用自己的健康计数（同 nodes 的口径）：备用池里有几台此刻能顶替（总数 − 故障 − 未知）。旧中控没有这个字段 */
+  spare_health?: Record<'total' | 'ok' | 'degraded' | 'down' | 'unknown' | 'maintenance', number>;
   /** 中控刚启动或刚恢复收上报（2 分钟内）：agent 的重发、线路机连通性还在陆续到，健康计数还会变——网页先显示加载态。旧中控没有这个字段 */
   settling?: boolean;
   /** failed：上架失败（lifecycle = failed）的台数 */
@@ -323,13 +328,14 @@ export interface AuditEntry { id: string; ts: string; actor: string; action: str
 /** GET /machines/{id}/rename-preview：改团队 / 编号后的名字，原团队因此连带改号的节点（换团队时原团队剩下的压缩成 01..N），
  *  和随宿主机一起换团队的同机 IP 节点（ip_nodes：新团队里接在宿主机之后取最小空号） */
 export interface RenamePreview { name: string; old_name: string; renames: { machine_id: string; old_name: string; new_name: string }[]; ip_nodes: { machine_id: string; old_name: string; new_name: string }[];
-  /** 新团队是备用团队时，还指向这台和一起移入的同机 IP 节点的软路由出口；其余为 [] */
+  /** 换团队时还指向这台和一起走的同机 IP 节点的软路由出口（进备用的客户会继续用；换到别的团队的改名后出口名不跟着改）；没换团队为 [] */
   router_exits: { node: string; router: string; exit: string }[];
   /** 改到备用团队但进不了备用的原因（订阅已过期满 1 天、没有订阅、有进行中的作业…；保存会被拒，要进备用请用退役）；否则 null */
   spare_blocked: string | null
   /** 改到备用团队且进得了备用时，进去后不自动回收的原因（出口还指着这台或它上面的同机 IP 节点、已在备用的同机 IP 节点开着自动续费；同退役预览 spare.held）；否则 null */
   held: string | null
-  /** 还被软路由出口指着的节点（这台和随它走的同机 IP 节点）换到的团队生效的访问策略与现在不同时，每台一句；其余为 [] */
+  /** 还被软路由出口指着的节点（这台和随它走的同机 IP 节点）换到的团队生效的访问策略与现在不同时，每台一句；
+   *  原团队压缩改名的节点还被出口指着时一句「团队2-09（路由 · 节点09）→ 团队2-08」（面板名和出口名会对不上）；其余为 [] */
   warnings: string[] }
 /** notes：指向要改名的节点的软路由出口（出口名不跟着改） */
 export interface RenumberPreview { changes: { machine_id: string; old_name: string; new_name: string }[]; notes: string[]; token: string }
@@ -401,6 +407,8 @@ export interface RetirePreview {
   ip_nodes: { id: string; name: string }[];
   /** 现在做不了的原因（如线路机还挂着节点入口，要先搬空）；没有或为空 = 可以退役 */
   blockers?: string[];
+  /** 两种去向都有的提醒：原团队前移改名的节点还被软路由出口指着（面板名和出口名会对不上）。旧中控没有这个字段 */
+  warnings?: string[];
 }
 /** 退役：mode=spare 已移入备用（name 是新名、from 原名、recycle_on 起自动回收）；mode=now 提交了清理作业（宿主机的同机 IP 节点各一个，没有为 []） */
 export type RetireResult =
