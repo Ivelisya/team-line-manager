@@ -1,11 +1,12 @@
-// 入口操作：停用/启用、轮换凭据（输入 线路机名:端口 确认）、分享链接。节点抽屉的“管理”页与线路页共用。
+// 入口操作：停用/启用、开关穿透（确认对话框列出预览）、轮换凭据（输入 线路机名:端口 确认）、分享链接。节点抽屉的“管理”页与线路页共用。
 // 菜单、对话框与 mutation 按容器挂一份（EntryMenus：一张线路机卡、抽屉管理页的入口区），行里只放 EntryMenuButton——
 // 不要每行挂一个 Radix DropdownMenu 根（各给 document 加一个 keydown 捕获监听）和一个 mutation 观察者：入口几十条的卡随推送重渲染时会一起重画。
 import * as React from 'react';
 import { Slot } from '@radix-ui/react-slot';
-import { KeyRound, Link2, Loader2, MoreHorizontal, Power, PowerOff } from 'lucide-react';
+import { ArrowLeftRight, KeyRound, Link2, Loader2, MoreHorizontal, Power, PowerOff } from 'lucide-react';
 import type { EntryView } from '@/lib/types';
-import { fetchShare, useEntryAction, useEntryRouterExits } from '@/lib/queries';
+import { fetchShare, useEntryAction, useEntryRouterExits, useReverse, useReversePreview } from '@/lib/queries';
+import { isReverse } from '@/lib/derive';
 import { DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/overlays';
 import { IconButton, Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, DialogHeader } from '@/components/ui/dialog';
@@ -34,7 +35,34 @@ function RouterExitsNote({ entryId, open, verb }: { entryId: string; open: boole
   );
 }
 
-type Dlg = { k: 'rotate' | 'disable' | 'share'; e: EntryView; url: string; open: boolean };
+/** 穿透开关的确认对话框：打开时取预览，逐条列出会发生什么、注意、不能切的原因；确认后建作业（推 bridge → 切换 → 经入口验收出口，
+ *  验收不过中控自动切回原来的模式），进度在作业页 */
+function ReverseDialog({ e, open, onOpenChange }: { e: EntryView; open: boolean; onOpenChange: (o: boolean) => void }) {
+  const on = !isReverse(e);
+  const pv = useReversePreview(e.id, on, open);
+  const go = useReverse();
+  const d = pv.data;
+  return (
+    <ConfirmDialog open={open} onOpenChange={onOpenChange} size="md" title={`${on ? '开启' : '关闭'}穿透 · ${entryLabel(e)}`}
+      description={on ? <>由节点主动连这个入口，客户流量经隧道从节点自己的 IP 出去 <InfoTip text="给供应商丢入站连接（SYN）的节点用：线路机不再向节点新建连接。分享链接、订阅、软路由出口都不变。" /></>
+        : <>改回线路机连节点的 ssserver</>}
+      confirmLabel={on ? '开启穿透' : '关闭穿透'} confirmDisabled={!d?.ok}
+      onConfirm={async () => {
+        const r = await go.mutateAsync({ id: e.id, on });
+        toast.ok(`已提交${on ? '开启' : '关闭'}穿透：${r.entry.name}（作业页看进度）`);
+      }}>
+      {pv.isLoading && <div className="hint"><Loader2 size={14} className="spin" /> 正在检查…</div>}
+      {pv.isError && <Note tone="bad">{(pv.error as Error).message}</Note>}
+      {d && <>
+        {d.blockers.length > 0 && <Note tone="bad">现在不能切换：<ul className="reason-list">{d.blockers.map((b) => <li key={b}><span>{b}</span></li>)}</ul></Note>}
+        <ul className="reason-list">{d.impacts.map((x) => <li key={x}><span>{x}</span></li>)}</ul>
+        {d.warnings.map((w) => <Note key={w} tone="warn">{w}</Note>)}
+      </>}
+    </ConfirmDialog>
+  );
+}
+
+type Dlg = { k: 'rotate' | 'disable' | 'share' | 'reverse'; e: EntryView; url: string; open: boolean };
 
 /** 容器级的入口菜单：children（须是 DOM 元素）里的 EntryMenuButton 被点时弹出共享下拉（useAnchoredDropdown，同 NodeMenus 的“⋯”）。
  *  entries：容器里的入口，菜单内容随推送更新 */
@@ -64,9 +92,13 @@ export function EntryMenus({ entries, children }: { entries: EntryView[]; childr
           ? <DropdownMenuItem disabled={enabling} onSelect={(ev) => { ev.preventDefault(); act.mutate({ id: cur.id, action: 'enable' }, { onSuccess: () => { dd.close(); toast.ok(`入口 ${entryLabel(cur)} 已启用`); }, onError: toast.err }); }}>
             {enabling ? <Loader2 className="spin" /> : <Power />}{enabling ? '正在启用…' : '启用入口'}</DropdownMenuItem>
           : <DropdownMenuItem onSelect={() => show('disable', cur)} disabled={!canAct}><PowerOff />停用入口…</DropdownMenuItem>}
+        {/* 穿透：只有节点入口（直出没有节点），停用的先启用 */}
+        {!cur.direct && <DropdownMenuItem onSelect={() => show('reverse', cur)} disabled={cur.lifecycle !== 'active'}><ArrowLeftRight />{isReverse(cur) ? '关闭穿透…' : '开启穿透…'}</DropdownMenuItem>}
         <DropdownMenuSeparator />
         <DropdownMenuItem danger onSelect={() => show('rotate', cur)} disabled={!canAct}><KeyRound />轮换凭据…</DropdownMenuItem>
       </>)}
+
+      {dlg?.k === 'reverse' && <ReverseDialog e={dlg.e} open={dlg.open} onOpenChange={hide} />}
 
       {dlg?.k === 'disable' && <ConfirmDialog open={dlg.open} onOpenChange={hide} title={`停用入口 · ${entryLabel(dlg.e)}`}
         description={<>已有连接会断开 <InfoTip text="停用后入口立即停止转发，随时可以重新启用" /></>} confirmLabel="停用入口" danger

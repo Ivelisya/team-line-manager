@@ -3,7 +3,7 @@
 import * as React from 'react';
 import type { EntryView, MachineView } from '@/lib/types';
 import * as F from '@/lib/format';
-import { entryBad, probeErr, probeFail, probeFailLabel, reachFail, reachFlaky, reachWho, tcpMs } from '@/lib/derive';
+import { REVERSE_TIP, entryBad, isReverse, probeErr, probeFail, probeFailLabel, reachFail, reachFlaky, reachWho, tcpMs } from '@/lib/derive';
 import { useReachLabel } from '@/lib/probePoints';
 import { entryState, Num, Pill } from '@/components/app/primitives';
 import { ShowAll } from '@/components/app/Pagination';
@@ -29,10 +29,11 @@ const failCell = (p: NonNullable<EntryView['tcp']>) => <span style={{ color: 'va
 export const probeCell = (p: EntryView['egress']) => (p == null ? <span className="t-muted">—</span> : p.ok
   ? <span data-tip={`${p.detail ? `出口 IP ${p.detail}\n` : ''}验证耗时 ${p.latency_ms == null ? '—' : F.str(F.ms(p.latency_ms))}`}>正常</span>
   : failCell(p));
-/** TCP 单元格：线路机 → 节点的建连延迟，近 1 小时中位数（悬停给最近一次）；直出入口没有节点，不做 TCP 探测 */
+/** TCP 单元格：线路机 → 节点的建连延迟，近 1 小时中位数（悬停给最近一次）；直出入口没有节点、穿透入口线路机不连节点，都不做 TCP 探测 */
 export const tcpCell = (e: EntryView) => {
   const p = e.tcp;
   if (e.direct) return <span className="t-muted" data-tip="直出入口不经节点，不做 TCP 探测">—</span>;
+  if (isReverse(e)) return <span className="t-muted" data-tip={REVERSE_TIP}>-（穿透）</span>;
   if (p == null) return <span className="t-muted">—</span>;
   if (!p.ok) return failCell(p);
   return <span data-tip={`近 1 小时中位数；最近一次 ${p.latency_ms == null ? '—' : F.str(F.ms(p.latency_ms))}`}><Num f={F.ms(tcpMs(p))} /></span>;
@@ -104,6 +105,9 @@ export function EntriesTable({ m, traffic, onlyBad, pick }: { m: MachineView; tr
   );
 }
 
+/** 穿透入口的小标（入口表、线路页共用） */
+export const ReverseMark = () => <span className="rt-mark" data-tip={REVERSE_TIP}>穿透</span>;
+
 /** 被软路由的出口用着的入口：小标「软路由 N」，悬停列出是哪台的哪个出口，点开那台软路由的出口页签 */
 export function RouterMark({ users }: { users: { id: string; name: string; exit: string }[] }) {
   return <button type="button" className="rt-mark" data-tip={users.map((u) => `${u.name} · ${u.exit}`).join('\n')} onClick={() => openRouterDrawer(users[0].id, 'exits')}>软路由 {users.length}</button>;
@@ -117,7 +121,7 @@ const EntryRow = React.memo(function EntryRow({ e, relay, traffic, routers, pick
     <tr>
       {picked !== undefined && <td className="dt-pick">{picked !== null && <Checkbox aria-label={`选择 ${e.node.name}`} checked={picked} onCheckedChange={(v) => onPick(e.id, v === true)} />}</td>}
       {/* 窄屏名字会被省略：Trunc 悬停、轻触（得到焦点）时显示全名 */}
-      <td className="strong"><div className="row" style={{ gap: 0, flexWrap: 'nowrap' }}><Trunc>{relay ? `${e.port} · ${e.node.name}` : `${e.relay.name}:${e.port}`}</Trunc>{routers && <RouterMark users={routers} />}</div></td>
+      <td className="strong"><div className="row" style={{ gap: 0, flexWrap: 'nowrap' }}><Trunc>{relay ? `${e.port} · ${e.node.name}` : `${e.relay.name}:${e.port}`}</Trunc>{isReverse(e) && <ReverseMark />}{routers && <RouterMark users={routers} />}</div></td>
       <td>{entryStatus(e, who)}</td>{e.lifecycle === 'disabled' ? <><td className="r t-muted">—</td><td className="r t-muted">—</td></> : <><td className="r">{tcpCell(e)}</td><td className="r">{probeCell(e.egress)}</td></>}
       {traffic && <td className="r"><Num f={F.bytes(e.traffic.month_up + e.traffic.month_down)} /></td>}
     </tr>

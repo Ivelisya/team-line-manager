@@ -3,8 +3,8 @@
 import * as React from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Check, CheckCircle2, ChevronDown, ClipboardPaste, Info, KeyRound, ListChecks, Plus, Trash2, TriangleAlert } from 'lucide-react';
-import { useHostChoices, usePlans, useProviders, useProvision, useProvisionCheck, useRelayChoices, useTeams, type HostChoice } from '@/lib/queries';
-import type { Kind, ProvisionCheckItem } from '@/lib/types';
+import { useEntryModeSetting, useHostChoices, usePlans, useProviders, useProvision, useProvisionCheck, useRelayChoices, useTeams, type HostChoice } from '@/lib/queries';
+import type { EntryMode, Kind, ProvisionCheckItem } from '@/lib/types';
 import { KIND_ORDER } from '@/lib/sort';
 import { prefixScore } from '@/lib/match';
 import { inheritSummary, kindLabel, meta } from '@/lib/derive';
@@ -97,7 +97,10 @@ export function ProvisionPage() {
     const filled = rows.filter((r) => !isBlank(r));
     return filled.length ? filled : rows.slice(0, 1);
   }, [mode, rows]);
-  const items = React.useMemo(() => active.map((r) => toItem(r)), [active]);
+  // 入口模式：整批一个（'' = 跟随设置里的新入口默认模式）；线路机没有入口，不带
+  const [entryMode, setEntryMode] = React.useState<EntryMode | ''>('');
+  const modeSetting = useEntryModeSetting();
+  const items = React.useMemo(() => active.map((r) => { const it = toItem(r); return entryMode && it.kind !== 'relay' ? { ...it, entry_mode: entryMode } : it; }), [active, entryMode]);
   // 底栏的「共 N 台」只数填了的行（全空时 active 留着第一行是为了让它报「请填写 IP」，不算一台）
   const filledN = mode === 'single' ? 1 : rows.filter((r) => !isBlank(r)).length;
   const curSig = JSON.stringify([items, active.map((r) => r.unresolved)]);
@@ -194,6 +197,13 @@ export function ProvisionPage() {
         <InfoTip text="检查不会改动任何东西；开始时只需确认一次。" />
       </div>
 
+      <div className="row" style={{ gap: 'var(--sp-12)', alignItems: 'center' }}>
+        <span className="t-sub">入口模式</span>
+        <Select sm value={entryMode} onChange={(v) => setEntryMode(v as EntryMode | '')} aria-label="入口模式"
+          allowEmpty={`跟随默认（${modeSetting.data?.label ?? '穿透'}）`} options={[{ value: 'reverse', label: '穿透：节点主动连入口' }, { value: 'normal', label: '普通：线路机连节点' }]} />
+        <InfoTip text={'穿透给供应商丢入站连接（SYN）的节点用：节点上装 bridge 主动连线路机入口，线路机不再向节点新建连接\n家宽代理、同机 IP 节点不支持，自动按普通建（检查结果里有提醒）\n默认在「设置 → 入口」里改'} />
+      </div>
+
       {mode === 'single'
         ? <SingleForm key={rows[0].id} row={rows[0]} onChange={(p) => setRow(0, p)} ctx={ctx} result={resOf(rows[0].id)} errors={errOf(rows[0].id)} stale={stale} />
         : <BatchGrid rows={rows} setRows={setRows} ctx={ctx} resOf={resOf} errOf={errOf} checkedAny={results != null} stale={stale} />}
@@ -216,7 +226,7 @@ export function ProvisionPage() {
         <ul className="reason-list" style={{ maxHeight: 220, overflow: 'auto' }}>
           {results?.map((r, i) => (
             <li key={i}><span className="dot" /><span><b>{r.name}</b> <span className="t-sub">
-              {isIpNode(active[i]) ? `同机 · ${hostName(active[i].host_id)}` : kindLabel(active[i].kind)} · {active[i].ip}{r.ss_port ? ` · SS 端口暂定 ${r.ss_port}` : ''}
+              {isIpNode(active[i]) ? `同机 · ${hostName(active[i].host_id)}` : kindLabel(active[i].kind)} · {active[i].ip}{r.ss_port ? ` · SS 端口暂定 ${r.ss_port}` : ''}{r.entry_mode ? ` · ${r.entry_mode === 'reverse' ? '穿透' : '普通'}` : ''}
             </span></span></li>
           ))}
         </ul>

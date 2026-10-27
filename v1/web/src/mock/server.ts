@@ -1,7 +1,7 @@
 // 浏览器内 mock：拦截 /api/v1/* 的 fetch 和实时流 WebSocket。VITE_MOCK=1 时由 main.tsx 安装。
 // 有状态：改名、退役、上架、续费等操作都会改内存里的数据，并通过 mock 实时流通知前端刷新。
 
-import type { Availability, AvailabilityDay, EntryView, Incident, Job, JobLog, JobSummary, MachineView, ProbeBucket, ProvisionCheckItem, ProvisionItem, SeriesPoint, SilenceKind } from '@/lib/types';
+import type { Availability, AvailabilityDay, EntryMode, EntryView, Incident, Job, JobLog, JobSummary, MachineView, ProbeBucket, ProvisionCheckItem, ProvisionItem, SeriesPoint, SilenceKind } from '@/lib/types';
 import { addDays, addMonths, displayName } from '@/lib/format';
 import { inheritedValue, isIdleSpare, isQuiet, isUnbilledSpare, liveRate } from '@/lib/derive';
 import { makeDefaultCompare } from '@/lib/sort';
@@ -400,7 +400,15 @@ function checkProvision(items: ProvisionItem[]): MockCheck[] {
       if (it.ip.endsWith('.66') && !it.login?.password) errors.push(`中控密钥登录不了 ${port}（密钥被拒），也没填 root 密码。二选一：提供 root 密码（网页填「root 密码」，fleetctl 用 --ssh-password-env 变量名）；或在供应商面板（或机器上 root 的 ~/.ssh/authorized_keys）录入中控公钥：${META.ssh_public_key}`);
       else if (it.ip.endsWith('.20')) warnings.push('系统是 Ubuntu 20.04，已过标准支持期、不再有常规安全更新（Ubuntu 22.04 起仍在支持）：可以照常上架，建议找机会重装成新版本');
     }
-    out.push({ ok: errors.length === 0, errors, warnings, name, number, relay_port: relayPort, ss_port: ssPort });
+    // 入口模式（同服务端 provision::entry_modes）：没给按设置里的默认；家宽代理、同机 IP 节点要穿透时退回普通并提醒
+    let entryMode: EntryMode | null = null;
+    if (it.kind !== 'relay') {
+      const want = it.entry_mode ?? ENTRY_MODE.default;
+      const why = want === 'reverse' ? (it.kind === 'proxy' ? '家宽代理没有 SSH 和 agent，装不了穿透要的 bridge' : it.host_id ? '同机 IP 节点暂不支持穿透（bridge 要从它自己的 IP 出站，第一版没做）' : null) : null;
+      entryMode = why ? 'normal' : want;
+      if (why) warnings.push(`按普通模式建入口：${why}`);
+    }
+    out.push({ ok: errors.length === 0, errors, warnings, name, number, relay_port: relayPort, ss_port: ssPort, entry_mode: entryMode });
   }
   return out;
 }
@@ -426,7 +434,7 @@ function createMachine(it: ProvisionItem, c: MockCheck): MachineView {
   if (h) borrowHost(m, h);
   if (m.kind !== 'relay') {
     const relay = machine(it.relay_id!);
-    const e: EntryView = { id: `e${db.seq++}`, relay: { id: relay.id, name: relay.name }, node: { id, name: m.name }, direct: false, port: c.relay_port ?? 20999, lifecycle: 'pending', applied: false, apply_error: null, tcp: null, egress: null, reach: null, traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 } };
+    const e: EntryView = { id: `e${db.seq++}`, relay: { id: relay.id, name: relay.name }, node: { id, name: m.name }, direct: false, mode: c.entry_mode ?? 'normal', port: c.relay_port ?? 20999, lifecycle: 'pending', applied: false, apply_error: null, tcp: null, egress: null, reach: null, traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 } };
     m.entries = [e]; relay.entries.push(e);
   }
   recomputeDue(m); Object.assign(m, trafficOf(m, db.machines));
@@ -849,12 +857,52 @@ R('POST', '/machines/([^/]+)/entries', ({ params, body }) => {
   if (direct && relay.id !== m.id) throw bad('线路机上只能加它自己的直出入口（relay_id 填这台线路机自己）', 409, 'conflict');
   if (direct && m.entries.some((x) => x.direct)) throw bad('这台线路机已经有直出入口', 409, 'conflict');
   const port = Math.max(20000, ...relay.entries.map((x) => x.port)) + 1;
-  const e: EntryView = { id: `e${db.seq++}`, relay: { id: relay.id, name: relay.name }, node: { id: m.id, name: direct ? `${m.name}-直出` : m.name }, direct, port, lifecycle: 'pending', applied: false, apply_error: null, tcp: null, egress: null, reach: null, traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 } };
+  // 模式（同服务端 add_entry）：没给按默认；直出、家宽代理、同机 IP 节点只能普通
+  const want: EntryMode = body.mode ?? ENTRY_MODE.default;
+  const why = want !== 'reverse' ? null : direct ? '线路机直出入口没有落地节点，用不着穿透' : m.kind === 'proxy' ? '家宽代理没有 SSH 和 agent，装不了穿透要的 bridge' : m.host_machine ? '同机 IP 节点暂不支持穿透（bridge 要从它自己的 IP 出站，第一版没做）' : null;
+  const mode: EntryMode = why ? 'normal' : want;
+  const e: EntryView = { id: `e${db.seq++}`, relay: { id: relay.id, name: relay.name }, node: { id: m.id, name: direct ? `${m.name}-直出` : m.name }, direct, mode, port, lifecycle: 'pending', applied: false, apply_error: null, tcp: null, egress: null, reach: null, traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 } };
   if (!direct) m.entries.push(e);
   relay.entries.push(e);
   const job = newJob('attach_entry', { id: m.id, name: m.name }, [['apply', '等待线路机应用'], ['verify', '出口验收']]);
   drive(job, 2000, () => { e.lifecycle = 'active'; e.applied = true; });
-  emit({ type: 'machines' }); return { job_id: job.id };
+  emit({ type: 'machines' }); return { job_id: job.id, entry_mode: mode, note: why ? `按普通模式建入口：${why}` : null };
+});
+
+// 穿透开关（同服务端 api/reverse.rs）：预览列出会发生什么与不能切的原因；发起建作业（推 bridge → 切换 → 验收），完成后改模式、TCP 一格变成「-（穿透）」
+const ENTRY_MODE: { default: EntryMode; set: boolean } = { default: 'reverse', set: false };
+const entryModeView = () => ({ default: ENTRY_MODE.default, label: ENTRY_MODE.default === 'reverse' ? '穿透' : '普通', set: ENTRY_MODE.set, builtin: 'reverse' });
+R('GET', '/settings/entry-mode', () => entryModeView());
+R('PUT', '/settings/entry-mode', ({ body }) => {
+  if (body.default !== 'normal' && body.default !== 'reverse') throw bad(`入口模式只能是 normal（普通）或 reverse（穿透），给的是「${body.default}」`);
+  Object.assign(ENTRY_MODE, { default: body.default, set: true }); emit({ type: 'settings' }); return entryModeView();
+});
+function reversePlan(id: string, on: boolean) {
+  const e = findEntry(id); const node = machine(e.node.id); const relay = machine(e.relay.id);
+  const blockers: string[] = [];
+  if (e.direct) blockers.push('线路机直出入口没有落地节点，用不着穿透');
+  if (e.lifecycle !== 'active') blockers.push('入口现在不在用：只有在用的入口能切换（停用的先启用）');
+  if ((e.mode === 'reverse') === on) blockers.push(`入口已经是${on ? '穿透' : '普通'}模式`);
+  if (on && node.kind === 'proxy') blockers.push('家宽代理没有 SSH 和 agent，装不了穿透要的 bridge');
+  if (on && node.host_machine) blockers.push('同机 IP 节点暂不支持穿透（bridge 要从它自己的 IP 出站，第一版没做）');
+  if (node.active_job) blockers.push(`「${node.name}」还有进行中的作业：等它结束再切换`);
+  const impacts = on
+    ? [`节点「${node.name}」上装 bridge（推 xray 程序、装 fleet-xray-bridge 单元），由它主动连 ${relay.ip}:${e.port}（这个入口自己的端口），客户流量经这条隧道从节点自己的 IP 出去`]
+    : [`线路机 ${relay.name} 改回连节点的 ssserver（节点上一直留着，防火墙照旧放行这台线路机），节点入站丢包的问题会回来`, '验收通过后节点上的 bridge 停掉删掉（xray 程序留着）'];
+  impacts.push(`线路机 ${relay.name} 不重启 Xray：只换这个入口的入站，这个入口上正在进行的连接断开一次、客户端自动重连；线路机上别的入口不受影响`, '分享链接、客户端订阅、软路由出口都不变（同一个入口端口与凭据）', '验收：线路机应用后经入口的出口探测要看到节点自己的 IP；不通就自动切回原来的模式、作业失败');
+  const warnings = on ? ['之后这个入口没有线路机 → 节点的 TCP 探测（显示「-（穿透）」）；隧道断了体现为出口探测失败（照常告警），隧道挂不上时中控会叫节点 agent 重启 bridge'] : [];
+  const mode = e.mode ?? 'normal';
+  return { e, node, view: { entry: { id: e.id, name: `${node.name} · ${relay.name}:${e.port}`, node_id: node.id, node: node.name, relay_id: relay.id, relay: relay.name, port: e.port, mode }, on, from: mode, to: on ? 'reverse' : 'normal', ok: !blockers.length, blockers, impacts, warnings } };
+}
+R('GET', '/entries/([^/]+)/reverse', ({ params, query }) => reversePlan(params[0], query.get('on') === 'true').view);
+R('POST', '/entries/([^/]+)/reverse', ({ params, body }) => {
+  const on = body.on === true;
+  const { e, node, view } = reversePlan(params[0], on);
+  if (!view.ok) throw bad(view.blockers.join('；'), 409, 'conflict');
+  const job = newJob('reverse', { id: node.id, name: node.name }, [['bridge_up', '推 bridge 并启动'], ['switch', '切换入口模式并验收出口'], ['bridge_down', '收起 bridge']]);
+  node.active_job = { id: job.id, kind: 'reverse', state: 'running' };
+  drive(job, 2000, () => { e.mode = on ? 'reverse' : 'normal'; if (on) e.tcp = null; else e.tcp = { ok: true, latency_ms: 48, detail: null, ts: iso() }; node.active_job = null; });
+  emit({ type: 'machines' }); return { ...view, job_id: job.id };
 });
 
 /** 分页接口的形状（同服务端 api::paged） */

@@ -7,7 +7,7 @@ import type { MachineView } from '@/lib/types';
 import { maintOwner, useAddEntry, useEndMaintenance, usePatchMachine, useJob, useLastSpeedtest, useMachines, useRelayChoices, useRenamePreview, useSilences, useSpeedtest, useSsRefresh, useTeams, useTune } from '@/lib/queries';
 import { openMaint, openUpgrade } from '@/lib/nodeActions';
 import { useDrawer } from '@/lib/drawer';
-import { entryBad, errText, isIdleSpare, meta, mmdd, reachWho, recycleOn } from '@/lib/derive';
+import { entryBad, errText, isIdleSpare, isReverse, meta, mmdd, reachWho, recycleOn } from '@/lib/derive';
 import { jobLive } from '@/lib/jobs';
 import { useReachLabel } from '@/lib/probePoints';
 import * as F from '@/lib/format';
@@ -17,7 +17,7 @@ import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
 import { HELD_TEXT, heldNote, Note, Section, SectionHeader } from '@/components/app/primitives';
 import { ShowAll } from '@/components/app/Pagination';
-import { RouterMark, entryStatus } from './EntriesTable';
+import { ReverseMark, RouterMark, entryStatus } from './EntriesTable';
 import { useEntryRouters } from '@/lib/routers';
 import { ConfirmDialog } from '@/components/app/dialogs';
 import { tuneBufText, tuneParamsText } from '@/components/app/TuneResult';
@@ -188,7 +188,7 @@ function EntrySection({ m }: { m: MachineView }) {
         {/* 入口行的副标题是配置状态（是否已推到线路机），右边的胶囊只标不正常的（中控连不上、探测不通…），两者各说各的 */}
         {m.entries.length > 0 && <div className="mgroup">{shown.map((e) => (
           <div key={e.id} className="manage-row">
-            <div><div className="t">{m.kind === 'relay' ? `${e.port} · ${e.node.name}` : entryLabel(e)}{routers.get(e.id) && <RouterMark users={routers.get(e.id)!} />}</div><div className="hint">{e.apply_error ? errText(e.apply_error) : e.applied ? '配置已应用' : '配置未应用'}</div></div>
+            <div><div className="t">{m.kind === 'relay' ? `${e.port} · ${e.node.name}` : entryLabel(e)}{isReverse(e) && <ReverseMark />}{routers.get(e.id) && <RouterMark users={routers.get(e.id)!} />}</div><div className="hint">{e.apply_error ? errText(e.apply_error) : e.applied ? '配置已应用' : '配置未应用'}</div></div>
             <span className="row" style={{ gap: 8 }}>{entryStatus(e, who)}<EntryMenuButton entry={e} /></span>
           </div>
         ))}<ShowAll total={m.entries.length} cap={cap} open={all} onToggle={() => setAll((v) => !v)} /></div>}
@@ -212,7 +212,7 @@ function EntrySection({ m }: { m: MachineView }) {
             <div className="manage-row">
               <div><div className="t">直出入口</div><div className="hint">从 {m.ip} 直接出去 <InfoTip text={`不经过节点。每台线路机只能有一条，分享链接叫「${m.name}-直出」`} /></div></div>
               <Button variant="secondary" disabled={add.isPending || !!m.active_job} loading={add.isPending}
-                onClick={() => add.mutate({ id: m.id, relay_id: m.id }, { onSuccess: () => toast.ok('已提交，直出入口正在应用'), onError: toast.err })}>添加直出入口</Button>
+                onClick={() => add.mutate({ id: m.id, relay_id: m.id, mode: 'normal' }, { onSuccess: () => toast.ok('已提交，直出入口正在应用'), onError: toast.err })}>添加直出入口</Button>
             </div>
           )}
           {canAdd && (
@@ -220,7 +220,8 @@ function EntrySection({ m }: { m: MachineView }) {
               <div className="t">加入口 <InfoTip text="挂到另一台线路机，多一条入口和分享链接，原有的不受影响" /></div>
               <span className="row" style={{ gap: 8, flexWrap: 'nowrap' }}>
                 <div style={{ flex: '0 1 160px', minWidth: 0 }}><Select value={relay} onChange={setRelay} options={opts} placeholder="选择线路机" aria-label="要挂到的线路机" /></div>
-                <Button disabled={!relay || add.isPending} loading={add.isPending} onClick={() => add.mutate({ id: m.id, relay_id: relay }, { onSuccess: () => { toast.ok('已提交，新入口正在应用'); setRelay(''); }, onError: toast.err })}>添加入口</Button>
+                {/* 模式按「设置 → 入口」的默认；不支持穿透的（家宽代理、同机 IP 节点）中控自动按普通建，结果里写明 */}
+                <Button disabled={!relay || add.isPending} loading={add.isPending} onClick={() => add.mutate({ id: m.id, relay_id: relay }, { onSuccess: (r) => { toast.ok(`已提交，新入口（${r.entry_mode === 'reverse' ? '穿透' : '普通'}模式）正在应用${r.note ? `：${r.note}` : ''}`); setRelay(''); }, onError: toast.err })}>添加入口</Button>
               </span>
             </div>
           )}

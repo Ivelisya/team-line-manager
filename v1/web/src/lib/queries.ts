@@ -6,7 +6,7 @@ import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClie
 import { del, get, patch, post, put } from './api';
 import { collator, makeDefaultCompare } from './sort';
 import { nextDue, offlineNames, quotaTight, setMeta } from './derive';
-import type { ApiKey, Availability, Incident, Job, JobSummary, Paged, JobLog, MachineView, Meta, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenamePreview, RenumberPreview, RetirePreview, RetireResult, DueList, RenewBatchResult, RecycleItem, RecycleDetail, ReplaceBody, ReplacePreview, MovePreview, MoveResult, EvacuateResult, RebalancePlan, PlacementView, ProbeBeats, SeriesResp, Silence, TrafficDaily, SilenceKind, SubField, Team, AuditEntry, NotifyChannel, NotifyLogEntry, UptimeReport, MonthlyReport, MonthlySendResult, SpeedtestStarted, AccountSession, TotpSetup, TotpStatus, MovesResult } from './types';
+import type { ApiKey, Availability, Incident, Job, JobSummary, Paged, JobLog, MachineView, Meta, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenamePreview, RenumberPreview, RetirePreview, RetireResult, DueList, RenewBatchResult, RecycleItem, RecycleDetail, ReplaceBody, ReplacePreview, MovePreview, MoveResult, EvacuateResult, RebalancePlan, PlacementView, ProbeBeats, SeriesResp, Silence, TrafficDaily, SilenceKind, SubField, Team, AuditEntry, NotifyChannel, NotifyLogEntry, UptimeReport, MonthlyReport, MonthlySendResult, SpeedtestStarted, AccountSession, TotpSetup, TotpStatus, MovesResult, EntryMode } from './types';
 
 export const useMe = () => useQuery({ queryKey: ['me'], queryFn: () => get<{ username: string }>('/auth/me'), retry: false, staleTime: 5 * 60_000 });
 /** 中文名、枚举、阈值、默认值（服务端 meta.rs），一次会话内不变：取回时同时交给 derive 的同步读取（kindLabel 等）。外壳等它到了才渲染页面 */
@@ -236,7 +236,20 @@ export interface RenewBatchBody { items: { machine_id: string; amount_cents?: nu
 export const renewBatchPreview = (items: RenewBatchBody['items']) => post<RenewBatchResult>('/renewals/batch', { items, dry_run: true });
 export const useRenewBatch = () => useWrite((b: RenewBatchBody) => post<RenewBatchResult>('/renewals/batch', b), [...M, ['renewals'], ['billing-due'], ['teams']]);
 export const useEntryAction = () => useWrite(({ id, ...b }: { id: string; action: 'enable' | 'disable' | 'rotate'; confirm?: string }) => post(`/entries/${id}/actions`, b), M);
-export const useAddEntry = () => useWrite(({ id, relay_id }: { id: string; relay_id: string }) => post<{ job_id: string }>(`/machines/${id}/entries`, { relay_id }), [...M, ['jobs']]);
+export const useAddEntry = () => useWrite(({ id, relay_id, mode }: { id: string; relay_id: string; mode?: EntryMode }) =>
+  post<{ job_id: string; entry_mode?: EntryMode; note?: string | null }>(`/machines/${id}/entries`, { relay_id, mode }), [...M, ['jobs']]);
+/** 穿透开关的预览（GET /entries/{id}/reverse?on=）：会发生什么（impacts）、注意（warnings）、不能切的原因（blockers）。打开对话框时才取、每次重取 */
+export interface ReversePreview {
+  entry: { id: string; name: string; node_id: string; node: string; relay_id: string; relay: string; port: number; mode: EntryMode };
+  on: boolean; from: EntryMode; to: EntryMode; ok: boolean; blockers: string[]; impacts: string[]; warnings: string[];
+}
+export const useReversePreview = (entryId: string, on: boolean, enabled: boolean) =>
+  useQuery({ queryKey: ['entry-reverse', entryId, on], queryFn: ({ signal }) => get<ReversePreview>(`/entries/${entryId}/reverse?on=${on}`, signal), enabled, staleTime: 0, gcTime: 0 });
+export const useReverse = () => useWrite(({ id, on }: { id: string; on: boolean }) => post<ReversePreview & { job_id: string }>(`/entries/${id}/reverse`, { on }), [...M, ['jobs']]);
+/** 新入口默认模式（上架、加入口不指定时用；没设过 set 为 false，按 builtin 即穿透） */
+export interface EntryModeSetting { default: EntryMode; label: string; set: boolean; builtin: EntryMode }
+export const useEntryModeSetting = () => useQuery({ queryKey: ['settings', 'entry-mode'], queryFn: ({ signal }) => get<EntryModeSetting>('/settings/entry-mode', signal), staleTime: 60_000 });
+export const useSaveEntryMode = () => useWrite((mode: EntryMode) => put<EntryModeSetting>('/settings/entry-mode', { default: mode }), [['settings', 'entry-mode'], ['audit']]);
 export const useMoveEntry = () => useWrite(({ id, ...b }: { id: string; to_relay_id: string; from_relay_id?: string; routers: boolean }) => post<MoveResult>(`/machines/${id}/move`, b), [...M, ['jobs']]);
 /** 批量换线路机：几个节点一起换，每台软路由只改一次、OpenClash 只重启一次 */
 export const useMoves = () => useWrite((b: { machine_ids: string[]; to_relay_id: string; from_relay_id?: string; routers: boolean }) => post<MovesResult>('/moves', b), [...M, ['jobs']]);
