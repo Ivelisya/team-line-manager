@@ -35,12 +35,12 @@ job ─< job_step ─< job_log      audit_log      user / session / api_key
     它没有自己的 agent 和 SSH：作业、远程执行都登录宿主机，视图里的 agent 状态与主机读数借宿主机的（总览网速不重复算），agent 离线、时钟、持续高负载只由宿主机报，入口探测、无入口、续费照常自己报；宿主机维护时它也维护。
     `ssh_port` 不存（null，迁移 0029；读时取宿主机的），供应商取宿主机的、不带套餐、默认不记费用（可在它的「费用」里单独填）；宿主机的流量额度按它的网卡计量，同机节点的流量也走这块网卡（共用额度）；同机节点自己的「已用」是它入口的业务流量。
     节点在宿主机上是 ssserver 模板单元的一个实例 `fleet-ssserver@<SS 端口>`（端口从 8389 起由中控分配）：监听并从自己的 IP 出站（`outbound_bind_addr`），nft 表 `ss_guard_<端口>` 只放行它自己的线路机；宿主机原来的 `fleet-ssserver` / `ss_guard`（8388）原样不动。
-- **entry**：线路机上的一个入口（VLESS REALITY 入站 → SS 出站到节点）。`id, relay_id, node_id, port, client_uuid, short_id, lifecycle, changed_gen`（最近一次改动时线路机的期望代数；线路机 `applied_generation ≥ changed_gen` 即已应用）。备注由节点显示名生成，改名后随期望状态自动同步。
+- **entry**：线路机上的一个入口（VLESS REALITY 入站 → SS 出站到节点）。`id, relay_id, node_id, port, client_uuid, short_id, lifecycle, changed_gen`（最近一次改动时线路机的期望代数；线路机 `applied_generation ≥ changed_gen` 即已应用）`, mode, bridge_uuid, reverse_kick_at`（穿透，见 §4「穿透入口」，迁移 0093）。备注由节点显示名生成，改名后随期望状态自动同步。
   直出入口：`node_id = relay_id`（节点就是线路机自己），freedom 出站，从线路机自己的 IP 出去；每台线路机至多一条（同一个 (node_id, relay_id) 唯一索引），备注「线路机名-直出」，随线路机退役摘除。
 - **备用团队**（`team.spare`，唯一索引 `team_one_spare`，迁移 0041 建好「备用」）：系统管理，不能新建、取消、删除，可以改名。退役的、替换下来的机器放这里，`spare_since` / `spare_from` 记进备用的时刻与原名（`patch_tx` 统一维护：退役、替换、手动改团队进出都一样；移出 = 撤销退役，一并清空）。
 - **recycle_bin**（回收站，迁移 0041）：退役的终点，一台一行的审计表——退役前的名字与团队、回收时的名字、IP、供应商与套餐、价格周期（生效值）、上架 / 退役 / 回收时间、原因、流量合计、回收时的快照（不含秘密）；旧面板导入的 `source = legacy`。幂等键 `(source, source_id)`，不受保留期清理影响。机器行写进来后 `recycled_at` 非空、从所有视图消失，入口与小时流量留给线路机统计，`purge_blocker` 放行后由中控自动物理删除。
 - **subscription**：机器的账单。`due_date, auto_renew`，以及可「单独设置」的 `price_cents, currency, cycle, billing_tz, remind_days, traffic_gb, traffic_reset_day, traffic_rule`（null = 跟随模板：价格、币种、周期、流量上限跟随机器的套餐 `machine.plan_id`，账单时区、提前提醒、流量重置、流量计费方式（`traffic_rule`：`sum` 双向，`max` / `min` / `out` / `in` 单向，迁移 0084）跟随供应商，供应商没填时区时是组织时区 `org_timezone`）；生效值只在库里的视图 `subscription_eff` 算。到期状态（ok / soon / overdue）、月费、下一个到期日由视图层 `meta` 的同一组函数算；续费记录单独一张表。批量续费（`api/billing.rs`）一个事务里逐台调单台续费的同一段逻辑（`machines::renew_in_tx`），审计只记一条 `renewal.batch`；待付清单（`GET /billing/due`）按 供应商 × 到期日 分组，不含闲置备用（备用团队里被出口指着、有在用 IP 节点的备用机不自动回收，照常在清单里）和自动续费的。价格按供应商收的币种存，展示统一折成 USD：汇率存在 `app_setting` 的 `fx_rates`（每天从 ECB 参考汇率自动更新，可按币种手动覆盖，见 `fx.rs` 与 API.md「汇率」），视图层算好 `monthly_usd_cents` 等，前端不折算。
-- **job**：`kind (provision_vps | provision_proxy | provision_relay | provision_ip | attach_entry | move_entry | replace | retire | purge | upgrade_agent | tune), target, params, state, steps[]`。每一步记录开始、结束、输出、错误类别；失败可从该步重试（升级 agent 从推送重来），取消会执行已完成步骤的补偿。`params.after` 指向要等的作业：它结束前不领取，它在推送之后失败（看它的 `params.pushed`）或被取消就直接取消，推送之前就失败的不算（「全部升级 agent」的金丝雀与线路机逐台）；`params.rollout` 记发起时 dist 里 agent 的 sha256 与版本号，开始前与推送时核对，换了就停。
+- **job**：`kind (provision_vps | provision_proxy | provision_relay | provision_ip | attach_entry | move_entry | replace | retire | purge | upgrade_agent | tune | reverse), target, params, state, steps[]`。每一步记录开始、结束、输出、错误类别；失败可从该步重试（升级 agent 从推送重来），取消会执行已完成步骤的补偿。`params.after` 指向要等的作业：它结束前不领取，它在推送之后失败（看它的 `params.pushed`）或被取消就直接取消，推送之前就失败的不算（「全部升级 agent」的金丝雀与线路机逐台）；`params.rollout` 记发起时 dist 里 agent 的 sha256 与版本号，开始前与推送时核对，换了就停。
 
 ## 3. 关键流程
 
@@ -128,6 +128,24 @@ tune-v2 借鉴了开源脚本 tcpfit 的缓冲区推导（只搬这一处推导�
 - 上报与存储：`Report.rtt = [{node_id, ts_ms, ok, rtt_ms}]`，入库时按 (线路机, 节点, 小时) 直接累加进 `relay_node_rtt_hourly`（轮数、通了几轮、p50、最大值，另存通了的那几轮的往返用来重算中位数），不存原始点，保留 30 天（迁移 0083）。
 - 最优：成功率 ≥ 99%、非故障（降级算正常）、额度放得下的线路机里近 24 小时 p50 最小的。额度用 `Q::fits`（同搬迁建议：接下这个节点近 7 天的日均流量——按当前线路机「网卡日均 ÷ 入口合计」折算——后到重置日不超过上限的 80%），同一轮里建议换过去的节点流量累计；收益大的节点先挑（当前不够格的最先）。建议换线 = 最优不是当前，且当前比最优慢 ≥ 10 ms 或当前成功率 < 99%。当前线路机的口径同换线规划（`plan_move`）：待应用、在用、停用都算节点的入口，恰有一条而且在用才是「当前」，否则不给批量建议（`move A,B --to X` 会整组被拒）；有多个在用入口的节点，每条入口各算一份、候选不含节点已有入口的线路机，只给带 `--from` 的单条建议（`single_suggestions`），不进批量命令。
 - 只给建议、不自动换：换线要重启软路由的 OpenClash，由人（或 AI 经用户同意）照建议执行批量 move。
+
+### 穿透入口：节点主动连线路机
+
+**为什么**（2026-10-27 生产实测）：DeerVPS（23.116.71.0/24，上游 AT&T）的节点，外面新发起到节点的 TCP 连接（入站 SYN 那一侧）丢 10–30%，ICMP 基本不丢；节点自己往外建连 200 次 0 超时 0 重传；连接建好之后两个方向都正常。普通模式下每条新客户连接都要线路机向节点新建一次 TCP（连 ssserver），正好撞上被丢的入站 SYN（重发要等 1 秒、再 2 秒），客户感受是隔一会转圈 1–3 秒。供应商的说法是「当没公网 IP 用，直接穿透，出站没问题」。
+
+**怎么做**：入口的模式 `entry.mode` = `normal` | `reverse`。穿透 = 节点上的 bridge（独立的 Xray，systemd 单元 `fleet-xray-bridge`）用这个入口专用的客户端 UUID（`entry.bridge_uuid`，和客户的 `client_uuid` 分开）主动连**这个入口自己的 REALITY 入站**、建长连接；线路机把这个入口的客户流量经这条隧道交给 bridge，bridge 用 freedom 从节点自己的公网 IP 出去。出口 IP、入口端口、凭据都不变：分享链接、客户端订阅、软路由出口一概不动。节点上的 ssserver 与防火墙照旧留着，切回普通模式即用。
+
+- 线路机（agent 渲染，fleet-agent `xray/render.rs`）：期望状态里的出站是 `{"protocol": "reverse", "bridge_uuid"}`；入站的 `clients` 多一个 `{id: bridge_uuid, email: "r-<入口>", reverse: {tag: "rvs-<入口>"}}`，不渲染 `out-<入口>`，客户规则、探测规则、白名单放行规则都指向 `rvs-<入口>`。这个出站是 bridge 连上来时 Xray 自己建的，agent 不增不删、核对运行态时不算（`plan.rs` / `verify` 认 `rvs-` 前缀）；它还没建时路由到它的连接被 Xray 直接关掉、不落到默认出站（26.3.27 源码注明、实测）。流量统计只取 `user>>>e-`，隧道（`r-`）不重复计。
+- 节点（中控渲染 `reverse::render`，作业经 SSH 写 `/etc/fleet-bridge/xray.json`）：每条隧道一个 VLESS 出站（地址是线路机的 IP，端口与 REALITY 参数同客户的分享链接，`reverse.tag = r-in`）；路由 `IPOnDemand`，先按解析结果拦私网段（同 ssserver 的出站黑名单，中控地址所在那段除外），其余 `r-in → direct`；TCP 保活 10 + 5 秒、`tcpUserTimeout` 15 秒。单元同 fleet-xray：动态用户、配置经标准输入、不开 API、不写访问日志、`IPAddressDeny=link-local`、DNS 是链路本地地址时挂公共解析器。一台节点上的全部穿透入口（换线路机时新旧两条）在同一份配置里。
+- **为什么选这种写法**：Xray 的老写法是顶层 `reverse.bridges / portals` + 域名路由（内部走 mux），portal 是顶层配置，加一个就要重启线路机 Xray（断开这台线路机上全部客户）；26.x 的「VLESS 反向代理」把反向写在入站的客户端上，能经 API 热增删。bridge 连入口自己的端口而不是另开隧道端口：不用新端口、不改线路机防火墙和端口池，流量看上去就是一个普通 REALITY 客户端。隧道客户端不带 flow（不用 Vision）：线路机 ⇄ 节点是美国境内链路，Vision 防的 TLS-in-TLS 特征在这里没意义；实验里带 Vision 的隧道在 1500 个新连接 × 6 轮压测里两轮出现 mux 帧错乱（`invalid metalen`）、整批连接失败，不带的 8 轮 0 失败。
+- **开 / 关不重启 Xray**：骨架（`static_part`）不变，agent 只经 API 换这个入口的入站（rmi + adi）、整表换规则、删 / 加 `out-<入口>`——这个入口上正在进行的连接断开一次，线路机上别的入口不受影响（实测：真 agent 对 26.3.27 热切换 4 步，Xray 进程号不变）。节点上的 bridge：加隧道、参数变了要重启（断开经它的全部连接约 2 秒）；只删隧道写配置不重启（运行中的还会对已关的端口试连，无声无害，下次重启消失）。
+- **隧道挂不上时叫节点重启 bridge**：入口的入站被换掉（轮换凭据、停用后再启用）时 Xray 连带删掉 `rvs-<入口>`，但 bridge 那条旧连接不断（线路机侧旧连接还在发心跳），bridge 不会重连——实测一直不通。线路机 agent 每 10 秒看一次，`rvs-<入口>` 缺席满 30 秒就随上报报 `tunnels_down`；中控记 `entry.reverse_kick_at`（同一入口 3 分钟内不重复），节点 agent 在下一份回执里拿到 `bridge_kick`，对没见过的值重启一次 bridge（约 2.5 秒恢复）。从入站被换到恢复约 45–60 秒。不用线路机 agent 杀连接（它没有 CAP_NET_ADMIN），也不用中控 SSH 到节点（正是入站不可靠的那一侧）。
+- **断线与恢复**（编译主机 docker，26.3.27）：线路机 Xray 重启后 1.8 秒重新挂上；bridge 被杀后起来 2.5 秒；节点与线路机之间断网 20 秒，恢复后 2.2 秒通；断网 60 秒，恢复后约 27 秒（线路机侧旧连接的 TCP 重传退避：bridge 早已换了新连接，线路机还会把新请求分给旧的那条，等它的重传撞上 RST 才放弃）；不设保活时同样断 60 秒要 47 秒。
+- **性能与并发**（同上，节点出向加 25 ms 延迟 + 0.3% 丢包；节点入站 SYN 随机丢 20% 模拟生产）：400 个新连接（16 KB，并发 20）普通模式 85 个超过 0.9 秒、p90 1.17 秒、p99 2.2 秒、最长 4.2 秒，穿透 0 个、p99 0.19 秒；单流下载 93 → 79 MB/s（丢 SYN 时 66），上传持平；32 路并发下载合计 770 → 157 MB/s（多路共用几条隧道连接：bridge 平均每条超过 16 路才多开一条，丢包时一条连接的拥塞窗口要背所有流）；300 路并发各 1 MB 全部成功（4.1 秒，普通 4.6 秒）；不丢 SYN 时短连接 p50 0.10 秒（普通 0.13）。生产节点带宽 50 Mbps–1 Gbps，合计 157 MB/s（约 1.25 Gbps）不是瓶颈，但大流量多路并发的吞吐低于普通模式。
+- **监控口径**：穿透入口没有线路机 → 节点的 TCP 探测（`Outbound::addr()` 为 None），视图里 `tcp` 恒为 null（切换前留下的不显示、不进健康），入口表写「-（穿透）」，卡片写「穿透 · 出口」，心跳格对穿透入口用出口探测；隧道断了体现为出口探测失败（`egress_fail` 照常告警）。放置矩阵（ICMP）不受影响。
+- **开关作业 `reverse`**（jobs/steps/bridge.rs）：开 = 推 bridge 并启动 → 切模式（写期望状态）→ 等线路机应用 → 经入口验收出口 IP；关 = 切回 → 等应用 → 验收 → 收起 bridge（没有别的穿透入口就停掉删掉）。切换那一步失败**自动切回原来的模式**再让作业失败（这是正在服务客户的入口，不能停在不通的状态等人来点）；取消补偿同样切回并重推 bridge。门槛：线路机与节点的 agent 都报过会穿透（`Report.caps` 含 `reverse`；agent 版本号只是包版本 + 提交哈希，比不出先后，按能力判断）——线路机 agent 太旧会整份期望状态解析失败，节点 agent 太旧不会按要求重启 bridge；中控 dist 里有 xray；节点上没有别的动入口的作业。
+- **新入口默认模式**（`app_setting.entry_mode_default`，没设过 = 穿透：新上架的多是 AT&T 系、入站质量差的机器）：上架、加入口不指定时用它；换线路机的新入口沿用旧入口的模式。家宽代理、同机 IP 节点、直出自动按普通建；线路机或节点 agent 太旧时也按普通建（作业日志 warn）。存量入口不自动切换，只用 `fleetctl entry reverse` / 网页入口菜单逐个切。
+- **限制**：同机 IP 节点不支持（bridge 要从它自己的 IP 出站，要配 `sendThrough` 并处理 1:1 NAT，第一版没做）；家宽代理没有 SSH 和 agent。改线路机的 REALITY 参数或 IP（现在没有接口，只有手工改库）后 bridge 的配置是旧的，要对其上的穿透入口 `--off` 再 `--on`。入口的「连接数」含 1–3 条隧道连接。长时间断网恢复得比普通模式慢（见上）。轮换凭据、停用后再启用的穿透入口约 1 分钟不通（等重启 bridge）。
 
 ## 5. 存储（PostgreSQL）
 

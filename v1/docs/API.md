@@ -199,7 +199,9 @@ EntryView = { id, relay:{id,name}, node:{id,name}, direct, port, lifecycle, appl
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | POST | `/provision/check` | 校验（不落库）：`{items:[ProvisionItem]}` → `{data:{items:[{ok,errors:[...],warnings:[...],name,number,ss_port}]}}`（`ss_port`：同机 IP 节点暂定的 SS 端口，其它为 null；`warnings` 是不影响 `ok` 的提醒）。还会探测 SSH 端口（同一批最多同时 8 个；连上后 5 秒内要读到 `SSH-` 开头的版本行才算通，不通时写明「连接被拒绝」「3 秒没有响应」「没有响应 SSH 握手」还是「不是 SSH 服务」）；端口通了再用中控密钥试登录一次（`BatchMode`、只用公钥、连接超时 5 秒、整个 10 秒，和端口探测共用那 8 个并发；不核对也不记录主机公钥——`StrictHostKeyChecking=no`、`UserKnownHostsFile=/dev/null`，记录指纹仍是上架作业第一步的事），只读 `/etc/os-release`：密钥被拒且没填 root 密码（`login.password` 为空等于没填）的报「中控密钥登录不了 ip:port（密钥被拒），也没填 root 密码。二选一：提供 root 密码…；或在供应商面板…录入中控公钥：<公钥全文>」（公钥全文在末尾）；填了密码的照旧通过（作业会用密码装上公钥）；登进去了而发行版已过标准支持期（`jobs/scripts.rs` 的 `OS_EOL`：Ubuntu < 22.04、Debian < 12）进 `warnings`；没填密码、试登录有别的问题（超时、被断开）也只进 `warnings`；同机 IP 节点登录宿主机核对这个 IP 在不在它的网卡上（同上架作业第一步；每台宿主机只登录一次，算一次探测）；整个检查最多 30 秒，到点没查完的条目报「检查超时」；回环、链路本地、未指定、组播地址直接报错不探测；按操作人限速（突发 300 次探测、每秒补 1 次，超了回 429 `rate_limited`） |
-| POST | `/provision` | 同样的 body，全部通过才创建：每台建机器（provisioning）+ 一个作业 → `{data:{jobs:[{machine_id,job_id,name}]}}` |
+| POST | `/provision` | 同样的 body，全部通过才创建：每台建机器（provisioning）+ 一个作业 → `{data:{jobs:[{machine_id,job_id,name,entry_mode,entry_mode_note}]}}` |
+
+`ProvisionItem.entry_mode`（可选）：新入口的模式 `normal`（普通）/ `reverse`（穿透，见 DESIGN.md「穿透入口」）；不给 = 「新入口默认模式」（`GET /settings/entry-mode`，没设过是穿透）；别的值是这一条的 `errors`。家宽代理、同机 IP 节点要穿透时自动按普通建：检查结果的 `warnings` 里写「按普通模式建入口：…」，`entry_mode` 为 `normal`，作业参数记 `entry_mode_note`、建入口那一步写进作业日志（warn）。检查结果每条另有 `entry_mode`（线路机为 null）。作业建入口时（`attach`）再核一次线路机 / 节点 agent 报没报过会穿透（`Report.caps`），没有就退回普通并记 warn。穿透的 VPS 节点上架多一步 `bridge`「装穿透 bridge（穿透模式）」（建入口之后、等线路机应用之前：推 xray、装 fleet-xray-bridge 单元与配置并启动；普通模式跳过、不登录），出口验收照常经入口。
 
 ```
 ProvisionItem = {
@@ -235,7 +237,9 @@ ProvisionItem = {
 | GET | `/entries/{id}/routers` | 指向这个入口的软路由出口（各路由最近一次采集的快照里 `exits[].entry.id` 是它的）：`[{id, name, state, exits:[出口名]}]`，路由按列表顺序；入口不存在 404。轮换、停用的确认里列出 |
 | GET | `/entries/{id}/share` | `{data:{url}}`（vless:// 分享链接；记审计） |
 | POST | `/entries/share` | `{ids:[入口 id]}`（1–500 条）→ `{items:[{id, name, url}]}`，按请求顺序；要 `secrets`；一次请求只记一条审计 `entry.share`（`detail.entries` 列出入口名，不记链接）；有一条不存在整批 404 |
-| POST | `/machines/{node_id}/entries` | 给节点再挂一条入口：`{relay_id}` → 作业（`attach_entry`，审计 `entry.add`）。`relay_id` 指向的线路机不存在 400；线路机不在用、节点在它上面已有入口 409（不建作业）。**线路机直出入口**：路径和 `relay_id` 都是这台线路机（`POST /machines/{线路机}/entries {relay_id: 线路机}`），出站是 freedom、从线路机自己的公网 IP 出去，出口验收期望的就是线路机的 IP；每台线路机至多一条（409「这台线路机已经有直出入口」），`relay_id` 填别的线路机 409。端口、REALITY 参数、代数、等应用、出口验收、审计与普通入口相同；作业的「更新节点防火墙」一步跳过。分享链接 # 后是「线路机名-直出」，线路机改名后随期望状态同步 |
+| GET | `/entries/{id}/reverse?on=true\|false` | 穿透开关的预览（只读）：`{entry:{id,name,node_id,node,relay_id,relay,port,mode}, on, from, to, ok, blockers:[…], impacts:[…], warnings:[…]}`。`impacts` 逐条写会发生什么（节点上装 bridge 连哪个地址、线路机不重启 Xray 只换这个入口的入站、节点上别的穿透入口要不要跟着重启 bridge、分享链接订阅软路由不变、验收不过自动切回）；`blockers` 有：直出入口、入口不在用（停用的先启用）、节点不在用、已经是这个模式、家宽代理、同机 IP 节点、**线路机 agent 没报过会穿透**（「线路机 X 的 agent 版本过旧…：先 fleetctl upgrade-agent X」：旧 agent 不认识 `reverse` 出站，整份期望状态解析失败）、**节点 agent 没报过会穿透**（不会按中控要求重启 bridge）、中控 dist 里没有 xray、节点上还有进行中的加入口 / 换线路机 / 退役 / 替换 / 穿透 / 上架作业。入口不存在 404 |
+| POST | `/entries/{id}/reverse` | `{on: bool}` → 预览同样的内容加 `job_id`；有 blockers 时 409（`detail.blockers`）。先锁节点行（同换线路机、退役）。建作业 `reverse`（目标是节点，参数 `{entry_id, on, from, relay_id, name}`），审计 `entry.reverse`（`detail:{relay, port, entry, on, job_id}`，标题「开启穿透」/「关闭穿透」，摘要「团队1-06 · 线路机2:20013」）。步骤见「作业」 |
+| POST | `/machines/{node_id}/entries` | 给节点再挂一条入口：`{relay_id, mode?}` → `{job_id, entry_mode, note}`（作业 `attach_entry`，审计 `entry.add` 带 `mode`）。`mode` 是 normal / reverse（写错 400），不给按「新入口默认模式」；直出、家宽代理、同机 IP 节点一律普通，`note` 写原因（其余为 null）；作业建入口时再按 agent 核一次（同上架）。穿透的入口在「更新节点防火墙」之后多一步 `bridge`。`relay_id` 指向的线路机不存在 400；线路机不在用、节点在它上面已有入口 409（不建作业）。**线路机直出入口**：路径和 `relay_id` 都是这台线路机（`POST /machines/{线路机}/entries {relay_id: 线路机}`），出站是 freedom、从线路机自己的公网 IP 出去，出口验收期望的就是线路机的 IP；每台线路机至多一条（409「这台线路机已经有直出入口」），`relay_id` 填别的线路机 409。端口、REALITY 参数、代数、等应用、出口验收、审计与普通入口相同；作业的「更新节点防火墙」一步跳过。分享链接 # 后是「线路机名-直出」，线路机改名后随期望状态同步 |
 
 ## 客户端订阅
 自己的客户端（Clash Verge、OpenClash 的 proxy-provider、v2rayN / Shadowrocket）按一个链接拉入口列表。订阅 = 名称 + 令牌（32 字节随机，库里只存 sha256，新建、轮换时返回一次完整链接 `url`）+ 选择规则 + 启用状态 + 最近拉取。管理接口都要 `secrets`；新建、修改、轮换、删除写审计（`client_sub.create` / `update` / `rotate` / `delete`，记名称与规则摘要，不记链接）。
@@ -340,13 +344,16 @@ ProvisionItem = {
   `egress_fail` / `tcp_fail`（探测类）：探测**连续失败 2 次**（视图里最多数到 3，`views::Probe::streak`）才是 critical，第一次失败只是 warning（`health.status` 先是 degraded，不跳 down）；同一条规则合成一条原因，取其中最重的。TCP 失败而同一入口最新的出口探测在 2 分钟内通过时恒为 warning（文案「线路机1 到节点 TCP 探测偶发失败，出口正常」）：客户流量是通的，不算故障；出口也不通或出口结果过期才按连续失败次数判 critical。告警按规则名记严重度、只升不降：一条 TCP 告警以 warning 开、之后出口也挂了会升成 critical 并再发一次触发。
   `clock_skew`（warning，「agent 时钟不准」）：agent 在线且 `|agent.clock_skew_ms|` > 60 秒，文案如「agent 时钟慢 17 分钟：读数可能缺失或冻结，请校时」——样本按 agent 的时间入库，当前读数只看最近 15 分钟、持续负载只看最近 5 分钟；比中控超前 10 分钟以上的样本（含入口流量、探测）直接丢弃。和其它 warning 原因一样满 60 秒去抖后开告警。
   同机 IP 节点不报 `agent_offline`、`clock_skew`、`host_cpu_high` / `host_mem_high` / `host_disk_high`（agent 与主机是宿主机的，由宿主机报）；`egress_fail`、`tcp_fail`、`no_entry`、续费照常自己报（宿主机整台宕机时宿主机和它的每个同机节点各报各的探测告警，不抑制）。
+- 入口（机器视图的 `entries[]`，`EntryView`）另有 `mode`：`normal` / `reverse`。穿透入口的 `tcp` 恒为 null（切换前留下的 TCP 探测不显示、不进健康），健康只看出口探测；`GET /probe-beats` 里节点的格子对穿透入口用出口探测（只看通不通，延迟为 null）。
 - `GET /machines/{id}/series` → `{metric, range, resolution: "1m"|"1h", points: [...]}`，点里时间字段统一叫 `ts`：
   - host：`{ts, cpu_pct, mem_pct, disk_pct, load1, net_rx_bps, net_tx_bps}`（1h 分辨率另有 `cpu_max`，无 `load1`）
   - traffic：`{ts, up, down, conns}`（字节，该时间桶内的增量）
   - probe：`{ts, tcp_ok, tcp_ms, egress_ok, egress_ms}`（失败时 `*_ms` 为 null；1m 分辨率另有 `tcp_n`、`tcp_ok_n`（该分钟 TCP 探测次数 / 成功次数，线路机为其所有入口合计）；1h 分辨率另有 `tcp_success_pct`、`egress_success_pct`）
 - 作业 `Job`：`{id, kind, target: {id,name}|null, state, step, step_count, step_title, error, manual, created_by, created_at, started_at, finished_at}`（`step` 当前或失败的步骤下标，`step_title` 它的标题，做完为 null；`manual` 见「作业」）；
   `state` ∈ `queued | running | waiting | cancelling | succeeded | failed | cancelled`；详情另有 `steps[]`（`output` 是 JSON 对象或 null；各步骤输出的 key 与中文展示见 `web/src/lib/jobs.ts` 的 `OUTPUT`，跳过的步骤为 `{reason}`）与 `cancellable`。
-  作业 `kind` ∈ `provision_vps | provision_proxy | provision_relay | provision_ip | attach_entry | move_entry | replace | repoint | router_sync | retire | purge | upgrade_agent | tune | ss_refresh | speedtest`（`restore_*` 已删，旧记录照样显示中文名）。
+  作业 `kind` ∈ `provision_vps | provision_proxy | provision_relay | provision_ip | attach_entry | move_entry | replace | repoint | router_sync | retire | purge | upgrade_agent | tune | ss_refresh | speedtest | reverse`（`restore_*` 已删，旧记录照样显示中文名）。
+  `reverse`（切换穿透，目标是节点，参数 `{entry_id, on, from}`）的步骤：`bridge_up`「推 bridge 并启动」（开启时：推 xray、装 fleet-xray-bridge 单元，配置带上这个入口和节点上已有的穿透入口，先 `xray run -test`，变了就重启 bridge；关闭时跳过。输出 `{tunnels, action:"restart"|"quiet", restarted, xray_updated, xray}`）→ `switch`「切换入口模式并验收出口」（第一次运行改入口模式、线路机代数 +1；等线路机应用，再等应用之后的出口探测通过，输出 `{mode, egress_ip}`。线路机应用出错、420 秒内没应用或出口探测一直不通：**自动切回原来的模式**（代数再 +1，日志 warn「已自动切回…」）再失败，错误写明原因与「已自动切回」；开启失败时 bridge 留着，重试从这一步重新切）→ `bridge_down`「收起 bridge」（关闭时按库里此刻的穿透入口重推：只删了隧道写配置不重启（`action:"quiet"`），一条都不剩就停掉、删单元与配置（`action:"remove"`，xray 程序留着）；开启时跳过）。随时能取消：补偿把入口改回发起前的模式，动过 bridge 的按库里的穿透入口重推。
+  上架（`provision_vps`）、`attach_entry`、`move_entry` 在建入口之后多一步 `bridge`「装穿透 bridge（穿透模式）」：新入口是穿透的就推 bridge（输出同 `bridge_up`），普通的跳过（不登录）；`move_entry` 的新入口沿用旧入口的模式（目标线路机 agent 太旧时退回普通，日志 warn），`firewall_narrow` 顺带把旧入口从 bridge 配置里去掉（只删不重启；没有穿透入口了就收起）。退役清理（`NODE_CLEANUP`）连同 bridge 一起停掉删掉。
   `provision_ip`（上架同机 IP 节点）的步骤：`ip_check`（在宿主机上核对 IP，输出 `{ss_port, local_ips, egress_ip, bind_ip}`：最终的 SS 端口、宿主机本机的 IPv4（逗号加空格分隔的字符串）、经这个 IP 访问中控 /echo 回显的地址、1:1 NAT 映射时公网 IP 映射到的本机地址（在网卡上的为 null；写进机器的 `bind_ip`，详情 JSON 里同名字段）→ `converge`（推 ssserver、装它自己的实例与防火墙，输出同 VPS 节点，`bbr` 为 null——不做系统基线）→ `attach` → `wait_applied` → `verify` → `activate`。
   `ip_check` 失败：宿主机 SSH 连不上（network）；IP 不在宿主机网卡上、也没有哪个本机地址经 NAT 出去是它（「IP x 不在宿主机 H 的网卡上（本机：…），也没有哪个本机地址经 NAT 出去是这个 IP（…）」，remote；有几个本机地址都是它时也失败）；回显的来源不是这个 IP（出站路由不对，remote）。暂定的 SS 端口在宿主机上被占用时自动换成最小空闲端口，日志里有一条警告。
   同机 IP 节点的退役作业 `cleanup` 一步只删它自己的实例（输出 `ss` 是 gone / still_listening，指它自己的端口）。
@@ -383,6 +390,10 @@ ProvisionItem = {
 ## agent（`/agent/v1`，Bearer 令牌）
 见 `crates/fleet-proto/src/lib.rs`。另：`GET /echo` 返回请求方 IP（纯文本），供出口探测用，无需鉴权。线路机经入口访问它没拿到 IP 时，agent 核对两次：不走代理直连它一次，直连也拿不到 IP（中控重启、部署中）就不记这次出口探测；直连拿得到，再经入口访问备用目标 `https://www.gstatic.com/generate_204`，通的话说明出口好好的、只是节点去 /echo 的那条路不通（如边缘机反代配置坏了），同样不记，都不算节点出口失败。经入口回了 IP 但不是期望的照常记失败。探测入站的放行规则 `probe-<入口>` 因此也放行备用目标（与回显服务都是域名时合成一条，回显服务是 IP 时另加 `probe-<入口>-1`）。
 TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建连，超时 10 秒（盖住 SYN 第 1、3、7 秒的三次重发），域名先解析、不计时；`latency_ms` 是内核 TCP_INFO 的往返时间，`retrans` 是建连时 SYN 重发次数（新字段，旧 agent 不报、旧中控忽略）。各入口的探测落在周期里按 id 错开的固定时刻，不在同一秒一齐发。
+
+穿透入口（DESIGN.md「穿透入口」）在期望状态里是 `"outbound": {"protocol": "reverse", "bridge_uuid": "<uuid>"}`（`expect_egress_ip` 照旧是节点的 IP）。agent 在这个入口的 REALITY 入站里多加一个客户端 `{id: bridge_uuid, email: "r-<入口>", reverse: {tag: "rvs-<入口>"}}`（不带 flow），不渲染 `out-<入口>`；客户规则、探测规则、白名单放行规则都指向 `rvs-<入口>`——它是节点上的 bridge 连上来时 Xray 自己建的出站，agent 不增不删、核对运行态时不算（`rvs-` 前缀）。骨架不变：开 / 关穿透都只走热更新（换这个入口的入站、整表换规则、删 / 加 `out-<入口>`），不重启 Xray。不做 TCP 探测；出口探测经入口、经隧道照常验收节点的 IP。中控只在线路机 agent 报过 `caps` 含 `reverse` 时才下发它（旧 agent 不认识会整份解析失败）。
+
+`Report` 的新字段：`caps`（agent 会什么，现在是 `["reverse"]`；中控每份都写进 `agent_state.info.caps`，旧 agent 写成 `[]`）、`tunnels_down`（线路机：启用的穿透入口里 Xray 中缺 `rvs-<入口>` 连续 30 秒以上的入口 id）。中控收到 `tunnels_down` 后给属于这台线路机、在用的穿透入口记 `entry.reverse_kick_at`（同一入口 3 分钟内不重复）；节点的 `ReportAck.bridge_kick` 是它的穿透入口里 10 分钟内最近一次记下的时刻（Unix 毫秒，没有为 null），节点 agent 对没见过的值重启一次 `fleet-xray-bridge`（记在 data_dir/bridge_kick.json）。为什么要这样：入口的入站被换掉（轮换凭据、停用后再启用）时 Xray 连带删掉 `rvs-<入口>`，但 bridge 那条旧连接不断、不会重连（26.3.27 实测一直不通），只能重启 bridge。
 
 直出入口在期望状态里是 `"outbound": {"protocol": "direct"}`（`expect_egress_ip` 为线路机自己的 IP）。不认识它的旧 agent 整份期望状态解析失败、回报「agent 版本过旧」（线路机 apply_error），所以**先升级线路机 agent，再建直出入口**。agent 为它渲染入口自己的 freedom 出站（`out-<入口>`，不复用共享的 `direct`），不做 TCP 探测；路由和节点入口相同（AsIs，`block-private` / `block-bittorrent` 在前），另在该入口规则最前面加 `guard-<入口>-api`：目标端口是本机 Xray API（62789）或任一入口的回环探测入站（入口端口 + 10000）的连接一律 blocked（各入口的探测规则 `probe-<入口>` 本身也只放行到回显服务，即 echo_url 的主机与端口，和出口探测的备用目标，别的目标落到默认的 `deny`：探测入站是不要密码的 SOCKS，不能当跳板）——`block-private` 只拦 IP 目标，客户写解析到回环的域名（`localhost`、`127.0.0.1.nip.io`）时 freedom 会在线路机本机解析并连上 API。解析到内网其它地址的域名仍能连（与旧系统的主入口相同）；没有改成 IPIfNonMatch 先解析再过 `block-private`，是因为 fake-ip DNS 环境（实验室，域名都解析到 198.18.0.0/15）里那样会把所有域名都拦掉。
 
@@ -431,6 +442,15 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 - 「新目标」「新运营商 / 新城市 / 首次出现的机房来源」都是「保留期内没见过」：超过期限没再出现的记录删了，之后再出现就算新的。
 - 汇总类视图（`/access/summary`、`/access/targets`、`/access/sources`、`/access/new-targets`、`/machines/{id}/access`、`/machines/{id}/sources`）的 `window` 不能比 `hourly_days` 长（`1h` 读原始记录，总能看）：超了 400「访问记录的汇总只保留 N 天，看不了最近 7 天；要看更久，先在设置里把保留期调长」。`/access/events` 不拦，窗口比原始记录的保留期长时更早的已经没有了。
 - 调长不会找回已经删掉的数据。每日备份里的汇总与来源画像随备份轮换才消失（OPS.md §13）。
+
+## 新入口默认模式
+
+上架节点、给节点加入口时不指定入口模式就用它（`app_setting.entry_mode_default`）；只影响之后新建的入口，存量入口用 `POST /entries/{id}/reverse` 逐个切。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/settings/entry-mode` | `{default:"normal"\|"reverse", label:"普通"\|"穿透", set, builtin:"reverse"}`：`set` = 面板里设过；没设过时按 `builtin`（穿透：新上架的多是入站质量差的 AT&T 系机器） |
+| PUT | `/settings/entry-mode` | `{default}`，要 `write`；不是 normal / reverse 400。写审计 `settings.entry_mode`（`detail:{from, to}`，摘要「穿透 → 普通」），有变化时发 `{type:"settings"}`。返回同 GET |
 
 ## 汇率（计费折成 USD）
 

@@ -68,11 +68,13 @@
 | 测速（这台机器自己下载北美的测速文件，看实际下载速率；换线、换供应商、用户反馈慢时用） | `fleetctl speedtest 团队1-06`、`fleetctl speedtest 线路机1 --size 500 --target lax --yes --follow`。`--size` 25 / 100 / 500（MB，默认 100），`--target` `sjo` 圣何塞（默认）/ `lax` 洛杉矶 / `il` 芝加哥 / `nj` 新泽西，只有北美目标、不用欧洲。**下载走机器的网卡，计入供应商的流量额度（约用掉 size MB）**，所以要确认（`--yes`），慢线路上别随手测 500；先 25 / 100。`--follow` 跟到结束再打印一行：平均 Mbit/s（MB/s）、耗时、首字节、是否下完（300 秒内没下完的标「没下完」，速率按已下载的算）。同机 IP 节点对宿主机测，家宽代理、非在用机器 409；一台机器同时只能有一个作业，只能在排队时取消。接口见 API.md `POST /machines/{id}/speedtest` |
 | 月度可用率 / 月报（哪家供应商、哪台节点这个月最不稳；每月 1 号自动发的月报） | `fleetctl report uptime [--month 2026-09 \| --days 30]`：先按供应商（平均 / 最差出口成功率、断线次数，从差到好），再列每个在用节点（出口 / TCP 成功率、断线次数与最长断线、告警次数，从差到好；出口为主指标，断线 = 出口探测失败 3 次以上的整点小时），`--json` 给原始数；默认本月（算到今天），`--days` 1–90。`fleetctl report monthly [--month 2026-09]` 打印月报文字（默认上个月：总流量、月费合计、USD/GB 最高 3 台、可用率最差 3 台、告警最多的规则、到期）；`fleetctl report monthly --send --yes` 立即发一次（测试用），只发给**开了「月报」的已启用通知渠道**，没有这样的渠道会报错（409）。通知渠道的「月报」开关在网页设置的通知渠道里（或接口 `monthly_report`），fleetctl 没有通知渠道命令；中控每月 1 号（组织时区）自动发上个月的，同一个月只发一次。口径见 API.md「报表」。单台机器每天的成功率用 `fleetctl uptime <机器>` |
 | 入口启停、轮换凭据 | `fleetctl entries`、`fleetctl entry disable 线路机2:20001 --yes`、`fleetctl entry rotate … --yes`（确认语列出指向这个入口的软路由出口：轮换、停用不会改路由，这些出口之后就连不上；网页的确认对话框同样列出） |
+| 节点入站被丢 / 供应商说「只能出站、当没公网 IP 用」/ 客户隔一会转圈 1–3 秒（见 §6「穿透入口」） | 先预览 `fleetctl entry reverse 团队1-06 --on`，确认后 `--yes --follow`；切回 `fleetctl entry reverse 团队1-06 --off --yes --follow`。`fleetctl entries` 的「模式」列看哪些是穿透；新入口默认模式 `fleetctl settings entry-mode [normal\|reverse]` |
 | 线路机直出入口（从线路机自己的 IP 出去，旧系统的「节点00-默认」） | `fleetctl entry add-direct 线路机2 --yes --follow`（每台线路机至多一条；线路机 agent 要先升到新版本）；链接 `fleetctl share 线路机2-直出` |
 | 分享链接 | `fleetctl share 线路机2:20001`（需要 secrets，记审计）；一批 `fleetctl share --team 团队2` / `--machines a,b,c`（一次请求、一条审计，每行「名称 链接」，`--json` 给数组）。自己的客户端用订阅链接（`fleetctl sub`），给别人才用分享链接 |
 | 自己的客户端（Clash Verge、OpenClash、v2rayN）一次拿到全部入口，换节点后自动更新 | `fleetctl sub add 家里`（默认全部团队、不含备用团队、含线路机直出；链接只输出这一次），见 §20 |
 | 谁做过什么 | `fleetctl audit --target 团队1-06`；按分类、搜索：`fleetctl audit --cat exec -q reboot` |
 | 盯实时变化 | `fleetctl watch` |
+| 新入口默认模式（上架、加入口不指定时用；没设过是穿透） | `fleetctl settings entry-mode`；`fleetctl settings entry-mode normal --yes`。只影响之后新建的入口；上架单独指定 `fleetctl provision … --entry-mode normal`（批量文件条目写 `"entry_mode"`） |
 | 访问记录留几天、改保留期（见 §13） | `fleetctl settings retention`；`fleetctl settings retention --raw 3 --hourly 14 --yes`（调短会删数据） |
 | 密钥管理 | 网页，或 `FLEET_PASSWORD=… fleetctl keys ls --user admin`（密钥管理只认登录会话） |
 
@@ -164,7 +166,7 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 - 线路机 DNS 是链路本地地址时：装 Xray 单元时（上架、升级 agent）写 `/etc/fleet-xray/resolv.conf`（1.1.1.1、8.8.8.8、2606:4700:4700::1111），单元用 `BindReadOnlyPaths=-/etc/fleet-xray/resolv.conf:/etc/resolv.conf` 把它挂到 Xray 看到的 `/etc/resolv.conf` 上：REALITY 伪装目标、写成域名的家宽代理上游与节点地址、直出都经公共解析器解析，Xray 的配置不变。不是链路本地 DNS 的机器上没有这个文件，Xray 用系统的。上架时装单元不重启 Xray（agent 随后才拉起它）；装 agent（上架、升级）时先装 Xray 单元、后换 agent，正在跑的 Xray 看到的还不是这份文件（单元刚换上挂载）就重启一次 Xray（会断开这台线路机上客户的连接，作业日志记一条说明），重启过的不再重启。同一台机器同时只处理一份上报、一份应用回报，另一份回 429（Retry-After 1 秒）；agent 本来就逐份发送，正常碰不到。
 - 危险操作（退役、删除、轮换、批量升级、会改状态的 exec）先向负责人确认，再加 `--yes`。
 
-## 6. 换线路机 / 搬空线路机 / 替换节点 / 退役与回收站 / 同机 IP 节点
+## 6. 换线路机 / 搬空线路机 / 替换节点 / 退役与回收站 / 穿透入口 / 同机 IP 节点
 
 ### 替换节点（新节点接替旧节点，软路由跟着换）
 用于把一台节点换成新买的机器、客户那边不用动：团队软路由上指向旧节点的出口（如「节点01」）改成新节点的入口，新节点接旧节点的编号，旧节点进备用团队。
@@ -180,6 +182,7 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 1. `fleetctl move 团队1-06 --to 线路机3`（交互确认）或加 `--yes --follow`。节点必须在用，且只有一个在用入口（有多个用 `--from 线路机2` 指定换掉哪条）。
    **几个节点要换到同一台线路机时用一条批量命令**：`fleetctl move 团队1-02,团队1-05,团队1-07 --to 线路机3 --yes --follow`（逗号分隔；`--from` 对每个节点都适用）。各节点一个作业，同搬空一样都验收完新入口后由一个「带头」的一起改软路由：每台路由只改一次、OpenClash 只重启一次（逐个 move 时同一台路由每换一个节点就重启一次、客户断线一次，10-24 团队1 旁路由因此断了 6 次）；失败、取消、重试、需要人工处理的行为同搬空（下一节）。预览里有一个节点不能换就一个都不提交，先处理或把它去掉。网页：线路机抽屉概览的入口表勾选几个节点 →「换到…」。
 2. 作业先在目标线路机建新入口（新端口、新凭据），节点是 VPS 节点时同时把新线路机 IP 加进节点防火墙放行名单（nft 表，节点上 ufw / firewalld 在运行时一并放行，见 §3）；新入口应用完、出口探测通过之后才摘旧入口，最后把旧线路机 IP 从放行名单拿掉。换线期间节点始终有一个可用入口，不断网。
+   旧入口是穿透的，新入口也是穿透（目标线路机 agent 太旧时按普通建，日志 warn）：建好后节点的 bridge 加上新隧道并重启（旧入口经隧道的连接断开几秒，紧接着改软路由本来也要断），最后一步把旧隧道从 bridge 配置里去掉（不重启）。
 3. **入口的线路机和端口都会变**：预览与提交结果列出换走的入口（原线路机:端口），`--follow` 完成后列出「原入口 → 新入口」。用客户端订阅（§20）的客户端更新订阅后自动换上新入口；用分享链接的要换：`fleetctl share 团队1-06` 取新链接发给客户端，旧链接失效。网页上作业完成的通知里有「复制新分享链接」。
 4. 想中止：摘旧入口之前 `fleetctl cancel <job>`，新入口被摘除、防火墙恢复，旧入口不动。摘了旧入口之后只能 `fleetctl retry` 到完成。旧线路机不在线时「等待旧线路机摘除」会失败，线路机恢复后重试。
 
@@ -196,6 +199,26 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 6. **回收站**（`fleetctl recycle ls / show`，网页机器页的「回收站」）：只读，一行一台：退役前的名字与团队、回收时的名字、IP、供应商与套餐、价格周期、上架 / 退役 / 回收时间、原因、流量合计，以及回收时的快照（续费记录、入口历史、出站参数，不含秘密）。不受保留期清理影响。机器行连同遥测、入口由中控在不再被线路机统计用到后自动物理删除（最多约 93 天），用户看不到、也不用管。
 7. **旧面板的退役机器**：运维从旧库只读整理出 JSON（`source_id` 用旧面板资产 uuid，没有就「供应商:service_id」；格式见 API.md「退役与回收站」），先 `fleetctl recycle import --file legacy.json` 预演，把会导入、会跳过的名单给用户确认，再加 `--yes`。同一个 `source_id` 重复导入只有一行；IP 或供应商编号对上面板里还没回收的机器的会跳过并说明。
 
+### 穿透入口（节点主动连线路机，DESIGN.md §4「穿透入口」）
+
+**什么时候用**：节点的供应商丢「外面新发起到节点」的连接（入站 SYN），节点自己往外连没问题——表现是客户隔一会转圈 1–3 秒、`fleetctl show <节点>` 的 TCP 探测有 SYN 重发（`retrans`）或偶发不通而出口正常；供应商的原话常是「当没公网 IP 用、直接穿透、出站没问题」。可以先在节点上自测：`fleetctl exec <节点> -- 'for i in $(seq 50); do timeout 3 bash -c "</dev/tcp/1.1.1.1/443" || echo fail; done | grep -c fail'`（出站几乎不失败），再从线路机连节点的 SS 端口对比。新上架的节点默认就是穿透（`fleetctl settings entry-mode` 看、改；没设过是穿透）；存量入口不会自动切换。
+
+**开启**：
+1. 线路机与节点的 agent 要是这一版的（会穿透）：预览说「agent 版本过旧」时先 `fleetctl upgrade-agent <线路机或节点> --yes --follow`。
+2. `fleetctl entry reverse <入口或节点> --on` 看预览（会在节点上装 bridge 连哪个地址、线路机不重启 Xray、节点上别的穿透入口要不要跟着重启 bridge）；确认后加 `--yes --follow`。网页：入口的「⋯」→「开启穿透…」。
+3. 作业三步：推 bridge 并启动 → 切换并经入口验收出口 IP → （开启时跳过）收起 bridge。验收不过中控**自动切回普通模式**、作业失败，错误写明原因；查清后 `fleetctl retry <作业>` 从切换那一步重来，或 `fleetctl cancel <作业>`（补偿收起 bridge）。
+4. 这个入口上正在进行的连接会断开一次（客户端自动重连），线路机上别的入口不受影响；分享链接、订阅、软路由出口都不变。
+
+**验证**：`fleetctl entries <节点>` 的「模式」是「穿透」、TCP 一格「-（穿透）」、出口「通」；`fleetctl exec <节点> -- 'systemctl is-active fleet-xray-bridge; journalctl -u fleet-xray-bridge -n 20 --no-pager'`；`fleetctl exec <线路机> -- '/usr/local/bin/xray api lso --server=127.0.0.1:62789 | grep rvs-'`（有 `rvs-<入口>` = 隧道挂上了）。客户那边新连接不再转圈。
+
+**切回普通**：`fleetctl entry reverse <入口> --off --yes --follow`：线路机改回连节点的 ssserver（一直留着，防火墙照旧放行），验收通过后节点上没有别的穿透入口就停掉删掉 bridge（xray 程序留着）。入站丢包的问题会回来。
+
+**出问题时**：
+- 穿透入口告警 `egress_fail`：隧道断了或节点出不去。线路机报隧道缺席满 30 秒时中控会自动叫节点 agent 重启 bridge（节点 agent 日志「中控发现穿透隧道没挂上，已重启 fleet-xray-bridge」），一般 1 分钟内恢复；没恢复看 bridge 日志（连不上线路机入口？节点出站被挡？）。轮换凭据、停用后再启用的穿透入口也会这样断约 1 分钟，等它自动恢复。
+- 手动重启 bridge（修改状态，先确认）：`fleetctl exec <节点> -- 'systemctl restart fleet-xray-bridge'`——断开这台节点上全部经隧道的连接约 2 秒。
+- 改过线路机的 REALITY 参数或 IP（手工改库）后，对其上的穿透入口 `--off` 再 `--on`（bridge 的配置要重推）。
+- 同机 IP 节点、家宽代理不支持穿透（预览里写明；上架、加入口时自动按普通建）。
+
 ### 同机 IP 节点（一台 VPS 节点上的多个 IP）
 供应商给一台 VPS 节点加了 IP 时，每个附加 IP 上架成一台独立的节点（自己的团队编号、入口、出口 IP），按 IP 计节点：
 1. 先在供应商那边把 IP 直接配到这台机器的网卡上（`ip -4 addr` 看得到）；从这个 IP 发出的流量对外显示的要是它自己（作业第一步会用 `curl --interface` 访问中控自动核对）。
@@ -210,6 +233,7 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 先升中控（`lab/deploy-server.sh` 就是先装 fleet-server、再把新 agent 放进 dist），再 `fleetctl upgrade-agent --all --yes` 升 agent：新 agent 的上报可能带旧中控不认的字段形状（如容器里 `load1` 为 null），旧中控会拒收整份上报。
 探测口径修正（迁移 0038）两边都兼容，仍按这个顺序：新中控收旧 agent 的上报照常（没有 `retrans`，卡片读数已改成近 1 小时中位数，SYN 重发尖刺不再左右它）；新 agent 报的 `retrans` 旧中控忽略。线路机的心跳格改由中控探（`relay_reach`），只要中控升级就生效。
 反过来，期望状态里的新东西旧 agent 也不认：直出入口（出站 `direct`）要等那台线路机的 agent 升级后再建，否则线路机报「agent 版本过旧」、整台的配置停在旧代数（这时升级 agent，或取消那个新增入口作业把直出入口摘掉，都能恢复）。
+穿透入口（出站 `reverse`）由中控把关：线路机与节点的 agent 都报过会穿透（`Report.caps`）才能开，旧 agent 时开关被挡、上架 / 加入口自动按普通建（作业日志 warn），不会把旧线路机的配置弄坏。所以上线顺序是：先备份库（迁移 0093，见 §9 回滚）→ 部署中控 → `fleetctl upgrade-agent --all --yes` → 之后新上架的才按默认的穿透建；存量入口挑着 `entry reverse --on`。
 中控改了期望状态的生成逻辑（加字段、改算法），而库里的数据没变时，线路机不会自己重拉：改的人要把 `db::DESIRED_FORMAT` +1，新中控启动时和库里记的（app_setting `desired_format`）不同就给所有未退役线路机代数 +1，日志里有一行「期望状态格式版本变为 n」。
 
 ### 升级 agent：金丝雀与回滚
@@ -299,6 +323,7 @@ FLEET_BUILD=docker FLEET_BUILD_HOST=10.172.17.213 lab/sync-server.sh 'cargo test
 - install.sh 在中控的临时 systemd 单元 `fleet-install` 里跑（`systemd-run --wait --pipe --collect`）：本机 ssh 断了或 Ctrl-C，安装继续跑完；输出同时写 `/root/fleet-install.log`（断线后 `tail -f` 看进度，成功时最后一行是「fleet-server … api=401 …」，否则是失败原因）。上一次的安装还没结束时再部署会直接报错退出，不会另起一个。
 - 换下来的旧 fleet-server 留在中控 `/opt/fleet/fleet-server.prev`（同一个二进制重复部署时不覆盖它）。
 - 迁移 0029 先把币种去空白转大写，再给套餐 / 订阅 / 续费记录的币种（3 个大写字母）和通知渠道种类（当时是 telegram / wecom / webhook）加约束；存量里还有不合规的不让迁移失败，日志里有「0029：… 暂不验证」的警告。看到时查出那几行（如 `select id, currency from plan where currency !~ '^[A-Z]{3}$'`）改成正确的币种，再 `alter table plan validate constraint plan_currency_iso`（订阅 / 续费记录 / 渠道同理：`subscription_currency_iso`、`renewal_currency_iso`、`notify_channel_kind_check`）。
+- 迁移 0093（穿透入口）只给 `entry` 加三列（`mode` 默认 normal、`bridge_uuid` 随机生成、`reverse_kick_at`），存量入口一律普通模式，不改任何行为。新迁移照 §9 回滚的规矩：上线前先 `systemctl start fleet-backup`。
 - 迁移 0081 把通知渠道种类约束改成只允许 telegram / feishu，并删掉库里已有的企业微信、webhook 渠道（它们排着的待发通知一并删，发送记录里的渠道名置空）；之后在设置页新建飞书渠道。
 - 重启时 fleet-server 优雅退出：不再领新作业，正在跑的步骤做完就停在两步之间（最多等 60 秒，没做完的重启后从这一步重做），这期间接口照常；之后停止接新连接，进行中的请求最多再等 10 秒。有作业在跑时一次重启最多约 70 秒才换上新版本。
 - fleet-server 启动时先占端口再碰库：手动再起一个 `fleet-server serve` 会因端口被占直接退出，不会动在跑实例的作业。
