@@ -279,10 +279,11 @@ pub struct RenamePreviewQ {
 /// 宿主机上还在原团队的同机 IP 节点一起换团队（PATCH 同事务做，编号接在宿主机之后取新团队的最小空号），`ip_nodes` 列出它们的新旧名字；
 /// 换进备用团队时带走所有不在备用的（不只原团队里的，同退役的「移进备用」），它们所在的团队也各自压缩。
 /// 原团队是备用团队（撤销退役）时只列与宿主机同一次进备用的：与宿主机进备用前同一个团队的（和旧数据没记的）跟宿主机去它选的团队，其余各回自己进备用前的团队（`spare_from_team_id`）取最小空号；那个团队已不在的留在备用（`warnings` 写明）。
-/// `router_exits`：新团队是备用团队时，还指向这台和随它一起移入的同机 IP 节点的软路由出口（只提示，不阻断）；其余为空。
+/// `router_exits`：换团队时还指向这台和随它一起走的同机 IP 节点的软路由出口（只提示，不阻断：进备用的客户会继续用、不自动回收；换到别的团队的改名后出口名不跟着改）；没换团队为空。
 /// `spare_blocked`：改到备用团队但进不了备用时的原因（订阅已过期满 1 天、没有订阅、有进行中的作业等，同退役的「移进备用」；PATCH 会回 409），否则为 null。
 /// `held`：改到备用团队且进得了备用时，进去后不自动回收的原因（同退役预览的 `spare.held`：出口还指着这台或它上面的同机 IP 节点、上面已在备用的同机 IP 节点开着自动续费），否则为 null。
-/// `warnings`：还被软路由出口指着的节点（这台和随它走的同机 IP 节点，各按自己的原团队 → 去向团队比较）换到的团队生效的访问策略与现在不同时，每台一句（客户会受影响；只提示，不阻断）。
+/// `warnings`：还被软路由出口指着的节点（这台和随它走的同机 IP 节点，各按自己的原团队 → 去向团队比较）换到的团队生效的访问策略与现在不同时，每台一句（客户会受影响；只提示，不阻断）；
+/// `renames` 里有软路由出口指着的，一句列出「团队2-09（路由 · 出口）→ 团队2-08」（压缩改名后面板名和出口名对不上，routers::compact_exits_note）。
 /// 没换团队、线路机：renames / ip_nodes / router_exits / warnings 都为空，spare_blocked、held 为 null
 pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<RenamePreviewQ>) -> ApiResult<Json<Value>> {
     let mut conn = st.db.acquire().await?;
@@ -382,16 +383,15 @@ pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
             // 软路由出口还指着这些节点的，客户会继续用：进备用时列出出口；换到生效访问策略不同的团队时提醒策略会变
             let names: HashMap<Uuid, &str> = std::iter::once((id, old_name.as_str())).chain(ips.iter().map(|x| (x.0, x.1.as_str()))).collect();
             let exits = crate::routers::exits_using(&st.db, &leaving).await?;
-            if to_spare {
-                if spare_blocked.is_none() {
-                    // 同退役预览：出口指着这台或它上面的同机 IP 节点（含原本就在备用里的），或备用里的同机 IP 节点开着自动续费
-                    let renewing = renewing_spare_ip_nodes(&mut conn, id).await?;
-                    held = spare_held_reason(crate::routers::exits_using_with_ip_nodes(&st.db, &[id]).await?.contains_key(&id), false, renewing);
-                }
-                for node in &leaving {
-                    for (_, router, exit) in exits.get(node).into_iter().flatten() {
-                        router_exits.push(json!({"node": names[node], "router": router, "exit": exit}));
-                    }
+            if to_spare && spare_blocked.is_none() {
+                // 同退役预览：出口指着这台或它上面的同机 IP 节点（含原本就在备用里的），或备用里的同机 IP 节点开着自动续费
+                let renewing = renewing_spare_ip_nodes(&mut conn, id).await?;
+                held = spare_held_reason(crate::routers::exits_using_with_ip_nodes(&st.db, &[id]).await?.contains_key(&id), false, renewing);
+            }
+            // 还指着这台和随它走的 IP 节点的出口：进备用的客户会继续用（不自动回收），换到别的团队的改名后出口名不跟着改
+            for node in &leaving {
+                for (_, router, exit) in exits.get(node).into_iter().flatten() {
+                    router_exits.push(json!({"node": names[node], "router": router, "exit": exit}));
                 }
             }
             if !exits.is_empty() {
@@ -407,6 +407,7 @@ pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
             let mut shrunk: Vec<Uuid> = std::iter::once(from).chain(ips.iter().filter_map(|x| x.2)).filter(|t| *t != to).collect();
             shrunk.sort();
             shrunk.dedup();
+            let mut changes: Vec<(Uuid, String, String)> = vec![];
             for t in shrunk {
                 let t_name = if t == from { from_name.clone() } else { team_name(&st.db, Some(t)).await?.unwrap_or_default() };
                 let nodes: Vec<(Uuid, i32)> =
@@ -415,12 +416,12 @@ pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
                         .bind(&leaving)
                         .fetch_all(&mut *conn)
                         .await?;
-                renames.extend(
-                    compact_numbers(nodes)
-                        .into_iter()
-                        .map(|(mid, o, n)| json!({"machine_id": mid, "old_name": node_name(&t_name, o), "new_name": node_name(&t_name, n)})),
-                );
+                changes.extend(compact_numbers(nodes).into_iter().map(|(mid, o, n)| (mid, node_name(&t_name, o), node_name(&t_name, n))));
             }
+            renames = changes.iter().map(|(mid, o, n)| json!({"machine_id": mid, "old_name": o, "new_name": n})).collect();
+            // 压缩改名的节点还被出口指着：面板名和出口名会错位（运维约定一一对应），没有确认就执行时最伤人
+            let tail = "不想错位就别把这台挪走：要换掉它用替换（新节点接它的编号，团队里谁都不改名）";
+            warnings.extend(crate::routers::compact_exits_note(&st.db, &changes, tail).await?);
         }
     }
     Ok(ok(json!({"name": name, "old_name": old_name, "renames": renames, "ip_nodes": ip_nodes, "router_exits": router_exits, "spare_blocked": spare_blocked, "held": held, "warnings": warnings})))
@@ -1121,14 +1122,15 @@ async fn ip_nodes_of(conn: &mut sqlx::PgConnection, host: Uuid, lock: bool) -> s
 /// `spare`：能不能移进备用（不能的原因）、进去后的名字、自动回收的日子（账单时区；被扣住不自动回收时为 null，`held` 写原因，没被扣住为 null）、一起进备用的同机 IP 节点；
 /// `spare.warnings`：还被软路由出口指着的节点（这台和一起进备用的同机 IP 节点），备用团队生效的访问策略与现在不同时每台一句（客户会受影响）；
 /// `routers`：还指向这台（和它的同机 IP 节点）的软路由出口，只提示不阻断（要换掉就先「替换」）；
-/// `blockers`：立即回收提交时会被拒绝的原因（`retire_blockers`），空 = 能回收
+/// `blockers`：立即回收提交时会被拒绝的原因（`retire_blockers`），空 = 能回收；
+/// `warnings`：两种去向都有的提醒——`renames` 里有软路由出口指着的，一句列出「旧名（路由 · 出口）→ 新名」（压缩改名后面板名和出口名对不上，routers::compact_exits_note）
 pub async fn retire_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
     let (name, kind, lc) = display_name_of(&st.db, id).await?;
     let mut conn = st.db.acquire().await?;
     let ip_nodes = ip_nodes_of(&mut conn, id, false).await?;
     let leaving: Vec<Uuid> = std::iter::once(id).chain(ip_nodes.iter().map(|x| x.0)).collect();
     let blockers = retire_blockers(&mut conn, id, &kind, &lc, &leaving, false).await?;
-    let mut renames = vec![];
+    let mut changes: Vec<(Uuid, String, String)> = vec![];
     let teams: Vec<(Uuid, String)> =
         sqlx::query_as("select id, name from team where id in (select team_id from machine where id = any($1)) order by sort_order, name")
             .bind(&leaving)
@@ -1142,12 +1144,12 @@ pub async fn retire_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
         .bind(&leaving)
         .fetch_all(&mut *conn)
         .await?;
-        renames.extend(
-            compact_numbers(nodes)
-                .into_iter()
-                .map(|(mid, o, n)| json!({"machine_id": mid, "old_name": node_name(&team, o), "new_name": node_name(&team, n)})),
-        );
+        changes.extend(compact_numbers(nodes).into_iter().map(|(mid, o, n)| (mid, node_name(&team, o), node_name(&team, n))));
     }
+    let renames: Vec<Value> = changes.iter().map(|(mid, o, n)| json!({"machine_id": mid, "old_name": o, "new_name": n})).collect();
+    // 进备用、立即回收都压缩原团队：改名的节点还被出口指着时，面板名和出口名会错位
+    let tail = "要换掉这台又不想错位，先用替换（新节点接它的编号，团队里谁都不改名，它自己进备用）";
+    let warnings_top: Vec<String> = crate::routers::compact_exits_note(&st.db, &changes, tail).await?.into_iter().collect();
     // 进备用：编号按 move_to_spare 的分法（宿主机先取最小的空号，同机 IP 节点接着取）
     let (eligible, due) = spare_check(&mut conn, id).await?;
     let (spare_id, spare_name, taken) = spare_team(&mut conn).await?;
@@ -1199,7 +1201,7 @@ pub async fn retire_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
     spare["warnings"] = json!(warnings);
     let routers: Vec<Value> = routers.into_iter().map(|(i, n, e)| json!({"id": i, "name": n, "exits": e})).collect();
     let ip_nodes: Vec<Value> = ip_nodes.iter().map(|(i, n, _, _)| json!({"id": i, "name": n})).collect();
-    Ok(ok(json!({"name": name, "renames": renames, "ip_nodes": ip_nodes, "spare": spare, "routers": routers, "blockers": blockers})))
+    Ok(ok(json!({"name": name, "renames": renames, "ip_nodes": ip_nodes, "spare": spare, "routers": routers, "blockers": blockers, "warnings": warnings_top})))
 }
 
 /// 建物理删除作业并记审计（调用方已核对过：已进回收站、`db::purge_blocker` 不拦）。只由维护任务调（spare.rs `purge_pass`）；

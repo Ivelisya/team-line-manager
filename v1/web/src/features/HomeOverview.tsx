@@ -47,6 +47,14 @@ const normal = (c: Counts) => c.total - c.down - c.unknown;
 const IDLE_SPARE_TIP = '闲置备用：备用团队里没有软路由出口指向、上面也没有在用同机 IP 节点的机器。不算在节点总数和故障里，也不开告警；没开自动续费的等到期回收，开着自动续费的（或宿主机上有开着自动续费的备用同机 IP 节点的）照常计费、不自动回收。备用团队里还被出口指着、或有在用 IP 节点的机器不算闲置，照常告警和续费';
 const SPARE_COST_TIP = '不续费的备用机（备用团队里没有软路由出口指向、没有在用同机 IP 节点、也没开自动续费、宿主机上也没有开着自动续费的备用同机 IP 节点的机器）里有订阅的，等到期放生，不再续费，不在左边的合计里，单独列在这里。备用团队里还被出口指着、有在用 IP 节点、或开着自动续费（含它上面的备用同机 IP 节点开着）的机器照常续费，已算在左边的合计里';
 const NORMAL_INFO = '正常 = 总数 − 故障 − 未知。降级与维护的机器照常服务，都算正常';
+/** 闲置备用的健康（服务端 spare_health）：「（能顶替 3 台：正常 2 · 降级 1；故障 4）」，挑替换用的新节点时一眼看出备用池里几台能用；旧中控没有这个字段为空串 */
+const spareHealth = (c: Overview['spare_health']) => {
+  if (!c?.total) return '';
+  const part = (n: number, label: string) => (n ? [`${label} ${n}`] : []);
+  const good = [...part(c.ok, '正常'), ...part(c.degraded, '降级'), ...part(c.maintenance, '维护')].join(' · ');
+  const bad = [...part(c.down, '故障'), ...part(c.unknown, '未知')].join(' · ');
+  return `（能顶替 ${normal(c)} 台${good ? `：${good}` : ''}${bad ? `；${bad}` : ''}）`;
+};
 
 /** 问候语下的一行状态：只说有几类事要处理、是哪几类（具体台数在下面的 KPI 卡里，这里不再重复一遍数字）；没有就是「全部正常」 */
 function statusLine(o: Overview | undefined, down: number): string {
@@ -106,7 +114,7 @@ export const OverviewSection = React.memo(function OverviewSection({ o, loading 
       <div className="hero-grid">
         <div className="stat-grid">
           {/* 说明行用全站同一套状态名（降级 / 维护 / 故障 / 未知）；「正常」包括降级与维护（照常服务）这一点放在大数字的悬停说明里 */}
-          <Stat loading={health} tone="ok" icon={<Server />} label="节点正常" info={`${NORMAL_INFO}${o?.spare ? `\n另有闲置备用 ${o.spare} 台，不计在内：${IDLE_SPARE_TIP}` : ''}`} to={NODES_LINK} value={<span data-tip="降级和维护的机器照常服务，也算正常"><CountUp value={nodes && normal(nodes)} /></span>} unit={nodes ? `/ ${nodes.total}` : undefined}
+          <Stat loading={health} tone="ok" icon={<Server />} label="节点正常" info={`${NORMAL_INFO}${o?.spare ? `\n另有闲置备用 ${o.spare} 台${spareHealth(o.spare_health)}，不计在内：${IDLE_SPARE_TIP}` : ''}`} to={NODES_LINK} value={<span data-tip="降级和维护的机器照常服务，也算正常"><CountUp value={nodes && normal(nodes)} /></span>} unit={nodes ? `/ ${nodes.total}` : undefined}
             caption={nodes && <HealthCaption c={nodes} to={DOWN_LINK} />} />
           <Stat loading={health} tone="teal" icon={<Waypoints />} label="线路机正常" info={NORMAL_INFO} to={RELAYS_LINK} value={<span data-tip="降级和维护的机器照常服务，也算正常"><CountUp value={relays && normal(relays)} /></span>} unit={relays ? `/ ${relays.total}` : undefined}
             caption={relays && <HealthCaption c={relays} to={`${DOWN_LINK}&kind=relay`} />} />

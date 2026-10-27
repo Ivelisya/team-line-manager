@@ -143,6 +143,7 @@ function overview() {
   const counted_from = rf.some((t) => !t) ? null : rf.sort()[0] ?? null;
   return {
     nodes: cnt(biz.filter((m) => m.kind !== 'relay')), relays: cnt(biz.filter((m) => m.kind === 'relay')), spare: idle.length,
+    spare_health: cnt(idle), // 闲置备用自己的健康计数（同服务端）：备用池里有几台能顶替
     provisioning: db.machines.filter((m) => m.lifecycle === 'provisioning').length, retiring: db.machines.filter((m) => m.lifecycle === 'retiring').length,
     failed: db.machines.filter((m) => m.lifecycle === 'failed').length,
     // 需要续费的按订阅的 due_state（同服务端）：自动续费的只在已过期时算
@@ -595,11 +596,13 @@ R('GET', '/machines/([^/]+)/rename-preview', ({ params, query }) => {
   const ip_nodes = follow.map(({ x, dest }) => { const t = takenIn(dest); let k = 1; while (t.has(k)) k++; t.add(k); return { machine_id: x.id, old_name: x.name, new_name: displayName(teamOf(dest).name, k) }; });
   // 少了人的团队：原团队，加上带走的 IP 节点所在的别的团队（目标团队只取空号，不压缩）
   const shrunk = [...new Set([m, ...ips].flatMap((x) => (x.team && x.team.id !== team.id ? [x.team.id] : [])))];
-  return { name: displayName(team.name, number), old_name: m.name, renames: moved ? shrunk.flatMap((t) => compactPlan(t, [m.id, ...ips.map((x) => x.id)])).map((c) => ({ machine_id: c.m.id, old_name: c.old_name, new_name: c.new_name })) : [], ip_nodes,
-    // 进备用：还指向这台和一起移入的同机 IP 节点的软路由出口（同服务端）
-    router_exits: moved && team.spare ? [m, ...ips].flatMap((x) => exitsUsing(x).flatMap((r) => r.exits.map((e) => ({ node: x.name, router: r.name, exit: e.exit })))) : [],
+  const plan = moved ? shrunk.flatMap((t) => compactPlan(t, [m.id, ...ips.map((x) => x.id)])) : [];
+  return { name: displayName(team.name, number), old_name: m.name, renames: plan.map((c) => ({ machine_id: c.m.id, old_name: c.old_name, new_name: c.new_name })), ip_nodes,
+    // 换团队：还指向这台和一起走的同机 IP 节点的软路由出口（同服务端，进备用、改到别的团队都列）
+    router_exits: moved ? [m, ...ips].flatMap((x) => exitsUsing(x).flatMap((r) => r.exits.map((e) => ({ node: x.name, router: r.name, exit: e.exit })))) : [],
     spare_blocked: moved && team.spare && !m.spare ? spareGate(m) : null,
-    held: moved && team.spare && !m.spare && !spareGate(m) ? heldReason(m, ips) : null, warnings: stay.map((x) => `${x.name} 原团队已不在，留在备用`) };
+    held: moved && team.spare && !m.spare && !spareGate(m) ? heldReason(m, ips) : null,
+    warnings: [...stay.map((x) => `${x.name} 原团队已不在，留在备用`), ...compactExitsNote(plan, '不想错位就别把这台挪走：要换掉它用替换（新节点接它的编号，团队里谁都不改名）')] };
 });
 R('PATCH', '/machines/([^/]+)', ({ params, body }) => {
   const m = machine(params[0]);
@@ -649,6 +652,11 @@ R('GET', '/machines/([^/]+)/availability', ({ params, query }) => availability(m
 const ipNodesLeaving = (m: MachineView) => db.machines.filter((x) => x.host_machine?.id === m.id && x.lifecycle !== 'retiring' && x.lifecycle !== 'retired');
 /** 软路由里还指向这台的出口（mock 只有每个团队一台软路由，出口名按编号） */
 const exitsUsing = (m: MachineView) => (m.team && !m.spare && m.entries.some((e) => e.lifecycle === 'active') ? [{ id: `rt-${m.team.id}`, name: `${m.team.name}-路由A`, exits: [{ exit: `节点${String(m.number ?? 1).padStart(2, '0')}`, node: m.name }] }] : []);
+/** 压缩改名的节点还被出口指着：面板名和出口名会对不上（同服务端 routers::compact_exits_note）；没有返回 [] */
+function compactExitsNote(changes: { m: MachineView; old_name: string; new_name: string }[], tail: string): string[] {
+  const list = changes.flatMap((c) => { const xs = exitsUsing(c.m).flatMap((r) => r.exits.map((e) => `${r.name} · ${e.exit}`)); return xs.length ? [`${c.old_name}（${xs.join('、')}）→ ${c.new_name}`] : []; });
+  return list.length ? [`编号压缩会给软路由出口指着的节点改名，出口名不跟着改，改完面板名和出口名就对不上了：${list.join('；')}。${tail}`] : [];
+}
 /** 出口还指着这台或它上面没退役的同机 IP 节点：进备用后不自动回收（同服务端 exits_using_with_ip_nodes） */
 const exitsHold = (m: MachineView, xs: MachineView[]) => [m, ...xs].some((x) => exitsUsing(x).length > 0);
 /** 进备用后不自动回收的原因（同服务端 spare_held_reason）：出口还指着，或宿主机上已经在备用里、开着自动续费的同机 IP 节点（不随这次进备用、自动续费不会被关）；没有为 null */
@@ -686,7 +694,9 @@ R('GET', '/machines/([^/]+)/retire', ({ params }) => {
   // 改名按所有受影响的团队算（同服务端）
   const leaving = m.lifecycle !== 'retired' ? [m, ...xs] : [];
   const teams = [...new Set(leaving.flatMap((x) => (x.team ? [x.team.id] : [])))];
-  const renames = teams.flatMap((t) => compactPlan(t, leaving.map((x) => x.id))).map((c) => ({ machine_id: c.m.id, old_name: c.old_name, new_name: c.new_name }));
+  const plan = teams.flatMap((t) => compactPlan(t, leaving.map((x) => x.id)));
+  const renames = plan.map((c) => ({ machine_id: c.m.id, old_name: c.old_name, new_name: c.new_name }));
+  const warnings = compactExitsNote(plan, '要换掉这台又不想错位，先用替换（新节点接它的编号，团队里谁都不改名，它自己进备用）');
   const why = spareWhy(m);
   // 进备用时一起移入的：已经在备用里的同机 IP 节点不动、不列（同服务端 move_to_spare 的 ip_nodes_of 过滤）
   const movers = xs.filter((x) => !x.spare);
@@ -695,7 +705,7 @@ R('GET', '/machines/([^/]+)/retire', ({ params }) => {
   const spareIps = movers.map((x, i) => ({ id: x.id, name: x.name, to_name: displayName(sp.name, nums[i + 1]) }));
   const held = heldReason(m, movers); // 进备用后不自动回收的原因（出口还指着、同机 IP 节点开着自动续费），没有回收日
   return {
-    name: m.name, renames, ip_nodes: ips, routers: exitsUsing(m),
+    name: m.name, renames, ip_nodes: ips, routers: exitsUsing(m), warnings,
     blockers: m.kind === 'relay' && m.entries.some((e) => !e.direct) ? [`这台线路机上还有 ${m.entries.filter((e) => !e.direct).length} 个节点入口：先把节点迁走或退役。可先用「搬空线路机」把节点换到其他线路机`] : [],
     spare: { ok: !why, why, team: { id: sp.id, name: sp.name }, to_name: displayName(sp.name, nums[0]), recycle_on: m.subscription && !held ? addDays(m.subscription.due_date, 2) : null, held, ip_nodes: spareIps, warnings: [], notes: spareRenewNotes(m, movers, held, false) },
   };
@@ -1488,13 +1498,24 @@ function replacePlan(old: MachineView, newId: string | null, teamId: string | nu
     if (newPolicy) w += `，新节点自己单独设的访问策略（${newPolicy}）会被覆盖`;
     warnings.push(w);
   }
+  // 新节点此刻故障 / 降级、没开自动续费又快到期（同服务端 new_node_notes）
+  const why = nw.health.reasons.length ? `（${nw.health.reasons.map((r) => r.text).join('；')}）` : '';
+  if (nw.health.status === 'down') warnings.push(`新节点「${nw.name}」此刻故障${why}：替换后客户的出口就走它，会不通；先查清，或换一台正常的`);
+  else if (nw.health.status === 'degraded') warnings.push(`新节点「${nw.name}」此刻降级${why}：照常能用，替换前先看看原因`);
+  const ns = nw.subscription;
+  if (ns && !ns.auto_renew && ns.due_days <= ns.remind_days) {
+    const left = ns.due_days < 0 ? `已过期 ${-ns.due_days} 天` : ns.due_days === 0 ? '今天到期' : `还有 ${ns.due_days} 天`;
+    warnings.push(`新节点「${nw.name}」${ns.due_date} 到期（${left}）${nw.spare ? '；它在备用里，进备用时自动续费关了，替换出来也不会自己打开' : ''}：替换后它接客户，要继续用记得登记续费（或打开自动续费）`);
+  }
+  const plan = nw.team ? compactPlan(nw.team.id, [nw.id]) : [];
+  if (nw.team) warnings.push(...compactExitsNote(plan.filter((c) => c.m.id !== old.id), `不想错位就换一台新节点：用备用团队里的，或${nw.team.name}里编号最大的那台（后面没有节点要前移）`));
   const side = (x: MachineView) => ({ id: x.id, name: x.name, kind: x.kind, team: x.team });
   return {
     nw, spare, num,
     view: {
       old: side(old), new: side(nw), new_name: old.team && old.number != null ? displayName(old.team.name, old.number) : old.name,
       old_to: { team: spare ? { id: spare.id, name: spare.name, spare: spare.spare } : null, number: num, name: spare && num != null ? displayName(spare.name, num) : old.name },
-      renames: nw.team ? compactPlan(nw.team.id, [nw.id]).map((c) => ({ machine_id: c.m.id, old_name: c.old_name, new_name: c.new_name })) : [], routers_enabled: routers, routers: rts, ok: blockers.length === 0, blockers, warnings,
+      renames: plan.map((c) => ({ machine_id: c.m.id, old_name: c.old_name, new_name: c.new_name })), routers_enabled: routers, routers: rts, ok: blockers.length === 0, blockers, warnings,
     },
   };
 }

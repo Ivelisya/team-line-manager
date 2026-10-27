@@ -455,7 +455,8 @@ enum Cmd {
         #[command(subcommand)]
         cmd: RecycleCmd,
     },
-    /// 改名 = 改团队/编号/线路机名/备注；也改国家（名字旁的国旗）
+    /// 改名 = 改团队/编号/线路机名/备注；也改国家（名字旁的国旗）。换团队（原团队会压缩编号、同机 IP 节点一起走）
+    /// 不加 --yes 只打印预览；只改线路机名 / 备注 / 国家、团队内改到空号的直接执行
     Rename {
         machine: String,
         #[arg(long)]
@@ -469,6 +470,9 @@ enum Cmd {
         /// ISO 3166-1 两位代码（如 US、JP）；auto = 改回按 IP 自动
         #[arg(long)]
         country: Option<String>,
+        /// 换团队等会连带别的机器改名的改动：看过预览后加它执行
+        #[arg(long)]
+        yes: bool,
     },
     /// 团队编号压缩成连续；不加 --yes 只预览
     Renumber {
@@ -1058,8 +1062,8 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             RecycleCmd::Show { which } => recycle::show(x, &which),
             RecycleCmd::Import { file, yes } => recycle::import(x, &file, yes),
         },
-        Cmd::Rename { machine, team, number, label, note, country } => {
-            ops::rename(x, &machine, team.as_deref(), number, label.as_deref(), note.as_deref(), country.as_deref())
+        Cmd::Rename { machine, team, number, label, note, country, yes } => {
+            ops::rename(x, &machine, ops::RenameOpts { team: team.as_deref(), number, label: label.as_deref(), note: note.as_deref(), country: country.as_deref(), yes })
         }
         Cmd::Renumber { team, yes } => ops::renumber(x, &team, yes),
         Cmd::Team { cmd } => match cmd {

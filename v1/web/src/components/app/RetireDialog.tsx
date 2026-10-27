@@ -108,6 +108,8 @@ export const RetireDialog = resetOnOpen(function RetireDialog({ m, open, onOpenC
           </ul>
         </Note>
       )}
+      {/* 两种去向都压缩原团队：前移改名的节点还被出口指着时，面板名和出口名会对不上 */}
+      {p?.warnings?.map((w) => <Note key={w} tone="warn">{w}</Note>)}
       {p && mode === 'spare' && p.spare.warnings.length > 0 && (
         <Note tone="warn">
           <div className="note-title">移入备用后访问策略会变 <InfoTip text="软路由的客户走的是节点生效的访问策略，节点换了团队就按新团队的策略。" /></div>

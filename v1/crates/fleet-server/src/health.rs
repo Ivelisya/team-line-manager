@@ -375,6 +375,7 @@ pub(crate) mod tests {
             live_ip_nodes: vec![],
             renewing_ip_nodes: vec![],
             router_exits: vec![],
+            no_router_exits: false,
             number: None,
             label: None,
             ip: "192.0.2.1".into(),
