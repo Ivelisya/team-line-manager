@@ -585,6 +585,26 @@ pub async fn sync_desired_format(db: &PgPool) -> sqlx::Result<u64> {
     Ok(n)
 }
 
+/// 中控启动时（迁移之后）调：打码规则版本低于 `api::audit::REDACT_VERSION`（含 P-21 之前的原文）的执行命令审计，用同一份 Rust 规则重新打码、
+/// 重算搜索文本，返回改了几条；都是当前版本时只有一次查询。规则只有 Rust 这一份，不在迁移里写 SQL 版
+pub async fn sync_audit_redact(db: &PgPool) -> sqlx::Result<u64> {
+    use crate::api::audit::{audit_search_text, redact_exec_detail, REDACT_VERSION};
+    let mut tx = db.begin().await?;
+    let rows: Vec<(i64, serde_json::Value)> = sqlx::query_as(
+        "select id, detail from audit_log where action = 'exec' and coalesce((detail->>'redact_version')::bigint, 0) < $1 for update",
+    )
+    .bind(REDACT_VERSION)
+    .fetch_all(&mut *tx)
+    .await?;
+    for (id, detail) in &rows {
+        let detail = redact_exec_detail("exec", detail.clone());
+        let search = audit_search_text("exec", &detail);
+        sqlx::query("update audit_log set detail = $2, search = $3 where id = $1").bind(id).bind(&detail).bind(search).execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
+    Ok(rows.len() as u64)
+}
+
 /// 把团队的未退役节点编号压缩成 1..n（锁团队行；新号 ≤ 旧号，按新号升序更新不撞唯一索引）。
 /// 写审计；返回 (改动列表 (id, 旧号, 新号), 需要刷新的线路机)。
 pub async fn compact_team(tx: &mut Tx<'_>, team_id: Uuid, actor: &str, why: &str) -> sqlx::Result<(Vec<(Uuid, i32, i32)>, Vec<Uuid>)> {

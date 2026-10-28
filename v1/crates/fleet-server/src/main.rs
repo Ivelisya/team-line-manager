@@ -58,7 +58,8 @@ async fn main() -> anyhow::Result<()> {
             let cfg = Config::load(&cfg_path)?;
             let pool = db::connect(&cfg.database_url).await?;
             db::MIGRATOR.run(&pool).await?;
-            println!("迁移完成");
+            let n = db::sync_audit_redact(&pool).await.context("执行命令审计重新打码")?;
+            println!("迁移完成{}", if n > 0 { format!("（{n} 条执行命令审计按新规则重新打码）") } else { String::new() });
         }
         "user-set" => {
             let cfg = Config::load(&cfg_path)?;
@@ -119,6 +120,10 @@ async fn main() -> anyhow::Result<()> {
             let pool = db::connect(&cfg.database_url).await?;
             db::MIGRATOR.run(&pool).await.context("数据库迁移")?;
             fleet_server::meta::sync_org_tz(&pool, &cfg.org_timezone).await?;
+            let n = db::sync_audit_redact(&pool).await.context("执行命令审计重新打码")?;
+            if n > 0 {
+                tracing::info!("打码规则版本变为 {}：{n} 条执行命令审计重新打码", fleet_server::api::audit::REDACT_VERSION);
+            }
             // 期望状态的生成逻辑改过（DESIRED_FORMAT 升了）：线路机代数统一 +1，重连后重拉
             let n = db::sync_desired_format(&pool).await.context("核对期望状态格式版本")?;
             if n > 0 {

@@ -26,40 +26,64 @@ pub struct AuditQ {
     q: Option<String>,
 }
 
-/// 执行命令的审计里命令的写法：凭据打码（见 `redact_command`），另记原文的 sha256（`command_sha256`）供核对「是不是这条命令」，原文不落库。
-/// 与 SSH 登录「内容不记录」同一口径。在 `db::audit_insert` 统一处理，存量由迁移 0097 用同一组规则打码
+/// 执行命令的审计里命令的写法：凭据打码（见 `redact_command`），另记打码后文本的 sha256（`command_sha256`，不对原文算：短口令能穷举出来），
+/// 记下打码规则版本 `redact_version`。原文不落库，与 SSH 登录「内容不记录」同一口径。新写的在 `db::audit_insert` 统一处理；
+/// 存量由启动时的 `db::sync_audit_redact` 按版本重跑本函数（对已打码的文本再跑结果不变）
 pub fn redact_exec_detail(action: &str, mut detail: Value) -> Value {
     if action == "exec" {
         if let Some(cmd) = detail["command"].as_str() {
-            let sha = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(cmd.as_bytes()));
-            detail["command"] = Value::from(redact_command(cmd));
-            detail["command_sha256"] = Value::from(sha);
+            let masked = redact_command(cmd);
+            detail["command_sha256"] = Value::from(hex::encode(<sha2::Sha256 as sha2::Digest>::digest(masked.as_bytes())));
+            detail["command"] = Value::from(masked);
+            detail["redact_version"] = Value::from(REDACT_VERSION);
         }
     }
     detail
 }
 
-/// 打码规则（不区分大小写，按顺序替换，值换成 `***`）。**迁移 0097 里有同一组规则的 SQL 写法，改这里要一起改**
-/// （只用 Rust regex 与 PostgreSQL 正则都支持的写法：不用 `\b`、环视）
+/// 打码规则的版本：改 `REDACT_RULES` / `WHOLE_HIDE` 时 +1，启动时把旧版本打的存量重新打一遍（`db::sync_audit_redact`）
+pub const REDACT_VERSION: i64 = 2;
+
+/// 引号里的值（允许 `\"` 转义）或不带引号的一个词
+const VAL: &str = r#"("(?:[^"\\]|\\.)*"|'[^']*'|[^\s;&|"']+)"#;
+
+/// 打码规则（不区分大小写，按顺序替换；`{VAL}` 是值，前面的分组原样保留、值换成 `***`）
 const REDACT_RULES: &[(&str, &str)] = &[
-    // 名字带 pass / pwd / secret / token / key / auth / credential 的 `名=值`（环境变量、`--password=x`）
-    (r#"([a-z0-9_.-]*(pass|pwd|secret|token|key|auth|credential)[a-z0-9_.-]*=)("[^"]*"|'[^']*'|[^[:space:];&|"']+)"#, "${1}***"),
-    // `--password x` 这样用空格隔开的参数
-    (r#"(--?(password|passwd|pass|token|secret|api-key|apikey)[[:space:]]+)("[^"]*"|'[^']*'|[^[:space:];&|"']+)"#, "${1}***"),
-    // HTTP 认证头
-    (r#"(authorization:[[:space:]]*((bearer|basic|token)[[:space:]]+)?)[^[:space:]"']+"#, "${1}***"),
-    // URL 里的 user:password@
-    (r"(://[^:/@[:space:]]+:)[^@/[:space:]]+@", "${1}***@"),
+    // 名字带 pass / pwd / secret / token / key / auth / credential 的 `名=值`（环境变量、`--password=x`、URL 查询串），等号两边可以有空格
+    (r"([a-z0-9_.-]*(?:pass|pwd|secret|token|key|auth|credential)[a-z0-9_.-]*\s*=\s*){VAL}", "${1}***"),
+    // `--password x` 这样用空格隔开的长参数
+    (r"(--?(?:password|passwd|pass|token|secret|api-key|apikey|with-token)\s+){VAL}", "${1}***"),
+    // `-p` 只在认它是密码的命令里：mysql -phunter2 / -p hunter2、sshpass、docker/podman/helm login；redis-cli -a
+    (r"((?:mysql[a-z]*|mariadb|sshpass|login)\b[^;&|\n]*?\s-p\s*){VAL}", "${1}***"),
+    (r"(redis-cli\b[^;&|\n]*?\s-a\s*){VAL}", "${1}***"),
+    // curl -u / --user 的 user:密码
+    (r#"((?:-u|--user)\s+[^\s:"']+:){VAL}"#, "${1}***"),
+    // 认证类请求头：到引号或行尾为止整段（Bearer 后面几个词都算）
+    (r"((?:proxy-)?authorization|cookie|x-[a-z0-9-]*(?:key|token|auth|secret)[a-z0-9-]*)(\s*:\s*)[^\n\x22']+", "${1}${2}***"),
+    // URL 里 @ 前的全部（user:密码、只有令牌的用户名、密码里带 @）
+    (r"(://)[^/\s@]*(?:@[^/\s@]*)*@", "${1}***@"),
+    // 有固定前缀的令牌：GitHub、AWS access key、Slack、OpenAI 类 sk-、JWT
+    (r"\b(?:(?:ghp|gho|ghs|ghu|ghr|github_pat)_[a-z0-9_]+|akia[0-9a-z]{16}|xox[abposr]-[a-z0-9-]+|sk-[a-z0-9_-]{16,}|eyj[a-z0-9_-]+\.[a-z0-9_-]+(?:\.[a-z0-9_-]*)?)", "***"),
     // 40 个字符以上的 base64 / 十六进制串（密钥、令牌）
     (r"[a-z0-9+/=_-]{40,}", "***"),
 ];
 
-/// 把命令里的凭据换成 `***`（规则见 `REDACT_RULES`）
+/// 规则认不全的写法——heredoc、往 passwd / chpasswd / --stdin / base64 -d 里管道传——整条隐藏，只留首词
+const WHOLE_HIDE: &str = r"<<|\|\s*(?:\S+\s+)*?(?:passwd|chpasswd|base64\s+(?:-d|--decode))\b|--(?:password-)?stdin\b";
+
+/// 把命令里的凭据换成 `***`（规则见 `REDACT_RULES`、`WHOLE_HIDE`）
 pub fn redact_command(cmd: &str) -> String {
-    static RES: std::sync::LazyLock<Vec<(regex::Regex, &str)>> = std::sync::LazyLock::new(|| {
-        REDACT_RULES.iter().map(|(p, to)| (regex::RegexBuilder::new(p).case_insensitive(true).build().expect("打码规则"), *to)).collect()
-    });
-    RES.iter().fold(cmd.to_string(), |s, (re, to)| re.replace_all(&s, *to).into_owned())
+    use regex::{Regex, RegexBuilder};
+    use std::sync::LazyLock;
+    fn re(p: &str) -> Regex { RegexBuilder::new(&p.replace("{VAL}", VAL)).case_insensitive(true).build().expect("打码规则") }
+    static RES: LazyLock<Vec<(Regex, &str)>> = LazyLock::new(|| REDACT_RULES.iter().map(|(p, to)| (re(p), *to)).collect());
+    static WHOLE: LazyLock<Regex> = LazyLock::new(|| re(WHOLE_HIDE));
+    let s = RES.iter().fold(cmd.to_string(), |s, (re, to)| re.replace_all(&s, *to).into_owned());
+    if WHOLE.is_match(cmd) {
+        let first = s.split_whitespace().next().unwrap_or("");
+        return format!("{first} ***（含 heredoc / 管道传入，整条已隐藏）");
+    }
+    s
 }
 
 /// 远程执行类的动作：在机器上跑命令、SSH 登录、网页终端、取日志（restore.probe 是已删掉的恢复预检留下的旧记录）
@@ -81,7 +105,7 @@ fn audit_cat(args: &mut Args, cat: &str) -> ApiResult<String> {
 
 /// 搜索条件：只搜界面上看得到的——操作人（按界面上的写法：中控命令行、「名称（API 密钥）」）、标题（标题含关键字的动作）、
 /// 写审计时存下的标题与摘要（search 列，见 `audit_search_text`），不翻 detail 里界面不展示的值。
-/// search 里的命令是隐藏的（没有 exec 权限的人看到的那份，免得靠搜索试出命令内容）；有 exec 权限的另搜命令原文
+/// search 里的命令是隐藏的（没有 exec 权限的人看到的那份，免得靠搜索试出命令内容）；有 exec 权限的另搜（打码后的）命令
 fn audit_search(args: &mut Args, q: &str, can_exec: bool) -> Option<String> {
     let like = crate::access::like_pattern(q)?;
     let lower = q.trim().to_lowercase();
@@ -922,14 +946,58 @@ mod tests {
     #[test]
     fn redact_command_masks_credentials() {
         let r = redact_command;
-        assert_eq!(r("PASSWORD=xxx ./deploy.sh"), "PASSWORD=*** ./deploy.sh");
-        assert_eq!(r("export DB_PASS='a b c'; mysql_token=\"q\" x"), "export DB_PASS=***; mysql_token=*** x");
-        assert_eq!(r("curl --password hunter2 -u x --token=abc"), "curl --password *** -u x --token=***");
-        assert_eq!(r("curl -H \"Authorization: Bearer eyJabc.def\" https://u:pw@h/x"), "curl -H \"Authorization: Bearer ***\" https://u:***@h/x");
         let blob = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlq";
-        assert_eq!(r(&format!("echo {blob} | base64 -d")), "echo *** | base64 -d");
-        // 普通命令原样
-        for c in ["ss -tn state established | grep -c 23.116.71", "systemctl is-active fleet-xray-bridge; journalctl -u fleet-xray-bridge --since \"2026-10-28 11:30\"", "uptime"] {
+        let cases: &[(&str, &str)] = &[
+            // 名=值：带空格、转义引号
+            ("PASSWORD=xxx ./deploy.sh", "PASSWORD=*** ./deploy.sh"),
+            ("export DB_PASS='a b c'; mysql_token=\"q\" x", "export DB_PASS=***; mysql_token=*** x"),
+            ("TOKEN = abc ./run", "TOKEN = *** ./run"),
+            (r#"export SECRET="a\"b c" && run"#, "export SECRET=*** && run"),
+            // 长参数
+            ("curl --password hunter2 -u x --token=abc", "curl --password *** -u x --token=***"),
+            // -p 的各种写法
+            ("mysql -uroot -phunter2 db", "mysql -uroot -p*** db"),
+            ("mysql -u root -p hunter2", "mysql -u root -p ***"),
+            ("sshpass -p hunter2 ssh h", "sshpass -p *** ssh h"),
+            ("docker login -u x -p hunter2 reg", "docker login -u x -p *** reg"),
+            ("redis-cli -h h -a hunter2 ping", "redis-cli -h h -a *** ping"),
+            // curl -u user:pass
+            ("curl -u admin:hunter2 https://h", "curl -u admin:*** https://h"),
+            ("curl --user admin:hunter2 https://h", "curl --user admin:*** https://h"),
+            // URL：user:pass@、只有 token 的用户名、密码里带 @、查询串里的 token
+            ("curl https://u:pw@h/x", "curl https://***@h/x"),
+            ("git clone https://ghp_tok@github.com/a/b", "git clone https://***@github.com/a/b"),
+            ("psql postgresql://u:p@ss@h/db", "psql postgresql://***@h/db"),
+            ("curl 'https://h/x?a=1&access_token=abc&b=2'", "curl 'https://h/x?a=1&access_token=***&b=2'"),
+            // 请求头：Authorization 多词、X-Api-Key、Cookie
+            ("curl -H \"Authorization: Bearer abc def\" https://h", "curl -H \"Authorization: ***\" https://h"),
+            ("curl -H 'X-Api-Key: abc' -H 'Cookie: sid=1; t=2' h", "curl -H 'X-Api-Key: ***' -H 'Cookie: ***' h"),
+            // 有前缀的短令牌、JWT
+            ("gh auth login --with-token ghp_abc123", "gh auth login --with-token ***"),
+            ("echo github_pat_11AB_cd", "echo ***"),
+            ("aws configure set aws_access_key_id AKIAIOSFODNN7EXAMPLE", "aws configure set aws_access_key_id ***"),
+            ("slack xoxb-123-456-abc", "slack ***"),
+            ("openai sk-proj1234567890abcdef", "openai ***"),
+            ("x eyJhbGciOi.eyJzdWIi.sig_1", "x ***"),
+            (&format!("echo {blob} > k"), "echo *** > k"),
+            // heredoc、管道传密：整条隐藏，只留首词
+            ("cat <<EOF > .env\nDB_PASSWORD hunter2\nEOF", "cat ***（含 heredoc / 管道传入，整条已隐藏）"),
+            ("echo hunter2 | passwd --stdin root", "echo ***（含 heredoc / 管道传入，整条已隐藏）"),
+            ("echo 'root:hunter2' | chpasswd", "echo ***（含 heredoc / 管道传入，整条已隐藏）"),
+            ("echo aHVudGVyMg== | base64 -d", "echo ***（含 heredoc / 管道传入，整条已隐藏）"),
+            ("echo hunter2 | docker login -u x --password-stdin", "echo ***（含 heredoc / 管道传入，整条已隐藏）"),
+        ];
+        for (c, want) in cases {
+            assert_eq!(r(c), *want, "{c}");
+        }
+        // 普通命令原样（-u / -p / -a 在别的命令里另有意思）
+        for c in [
+            "ss -tn state established | grep -c 23.116.71",
+            "systemctl is-active fleet-xray-bridge; journalctl -u fleet-xray-bridge --since \"2026-10-28 11:30\"",
+            "mkdir -p /opt/x && ssh -p 22 h uptime && ls -a",
+            "df -h | sort -k5 && disk-usage --keys",
+            "uptime",
+        ] {
             assert_eq!(r(c), c);
         }
     }
@@ -938,8 +1006,12 @@ mod tests {
     fn exec_detail_keeps_only_masked_command_and_hash() {
         let d = redact_exec_detail("exec", json!({"name": "n", "command": "PASSWORD=xxx run", "started": true}));
         assert_eq!(d["command"], "PASSWORD=*** run");
-        assert_eq!(d["command_sha256"], hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"PASSWORD=xxx run")));
+        // 哈希只对打码后的文本算：短口令穷举不出来
+        assert_eq!(d["command_sha256"], hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"PASSWORD=*** run")));
+        assert_eq!(d["redact_version"], REDACT_VERSION);
         assert!(!d.to_string().contains("xxx"));
+        // 再跑一遍（规则升级时给存量重新打码）结果不变
+        assert_eq!(redact_exec_detail("exec", d.clone()), d);
         // 别的动作不动
         assert_eq!(redact_exec_detail("ssh.login", json!({"command": true})), json!({"command": true}));
     }
