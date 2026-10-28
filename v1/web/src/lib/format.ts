@@ -99,25 +99,22 @@ export function since(iso: string | null | undefined, now = Date.now()): Fmt {
   return { v: String(Math.floor(s / 86400)), u: '天' };
 }
 const p2 = (n: number) => String(n).padStart(2, '0');
-/** 本机时区的 `HH:MM` */
-export function hm(t: string | number): string {
-  const d = new Date(t);
-  return `${p2(d.getHours())}:${p2(d.getMinutes())}`;
-}
-/** 本机时区的 `MM-DD HH:MM`；时间戳（毫秒）或 ISO 字符串，空为「—」 */
-export function dt(iso: string | number | null | undefined): string {
-  if (iso == null || iso === '') return '—';
-  const d = new Date(iso);
-  return `${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${hm(d.getTime())}`;
-}
+// ── 时刻按组织时区显示（P-23）：浏览器可能在别的时区（如 UTC），零点附近会差一天；/meta 取回时 setMeta 设上，之前（登录页）用本机时区 ──
+let TZ: string | undefined;
+let wall: Intl.DateTimeFormat | null = null;
+export const setTimeZone = (tz?: string) => { TZ = tz; wall = null; };
+/** 组织时区里的「YYYY-MM-DD HH:MM:SS」（sv-SE 就是这个写法；格式化器按时区缓存，推送热路径上不每次新建） */
+const local = (t: string | number) => (wall ??= new Intl.DateTimeFormat('sv-SE', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' })).format(new Date(t));
+/** 组织时区的 `HH:MM` */
+export const hm = (t: string | number): string => local(t).slice(11, 16);
+/** 组织时区的 `MM-DD HH:MM`；时间戳（毫秒）或 ISO 字符串，空为「—」 */
+export const dt = (iso: string | number | null | undefined): string => (iso == null || iso === '' ? '—' : local(iso).slice(5, 16));
 /** 月-日（MM-DD） */
 export const md = (iso: string | null | undefined): string => (iso ? dt(iso).slice(0, 5) : '—');
-export function dtFull(iso: string | null | undefined): string {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
-}
-export const clock = (iso: string) => { const d = new Date(iso); return `${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`; };
+/** 组织时区的 `YYYY-MM-DD HH:MM` */
+export const dtFull = (iso: string | null | undefined): string => (iso ? local(iso).slice(0, 16) : '—');
+/** 组织时区的 `HH:MM:SS` */
+export const clock = (iso: string) => local(iso).slice(11);
 export function ago(iso: string | null | undefined, now = Date.now()): string {
   if (!iso) return '—';
   const s = Math.max(0, (now - new Date(iso).getTime()) / 1000);

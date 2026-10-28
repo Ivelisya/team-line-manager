@@ -7,7 +7,7 @@ import { primaryIssue, substituteOf, type ReachEffective } from './probePoints';
 // ── /meta：中文名、枚举、阈值、默认值只认服务端这一份 ──
 // 外壳等 /meta 取回（useMeta 的 queryFn 里 setMeta）之后才渲染页面，所以下面这些同步读取在页面里总有值；登录页不用它们
 let META: Meta | null = null;
-export const setMeta = (m: Meta) => { META = m; };
+export const setMeta = (m: Meta) => { META = m; F.setTimeZone(m.org_timezone); };
 export function meta(): Meta {
   if (!META) throw new Error('/meta 还没取回');
   return META;

@@ -11,7 +11,7 @@ import { useDrawer } from '@/lib/drawer';
 import { isRouterIncident, routerIncidentTab, showSwitch, showSync, useRouterDrawer, useRouters } from '@/lib/routers';
 import { useProbePoints } from '@/lib/probePoints';
 import * as F from '@/lib/format';
-import { reasonText, severityOf } from '@/lib/derive';
+import { meta, reasonText, severityOf } from '@/lib/derive';
 import type { Incident, Silence, SilenceKind } from '@/lib/types';
 import { resetOnOpen, useHeld } from '@/lib/useHeld';
 import { useNow } from '@/lib/useNow';
@@ -144,7 +144,7 @@ export function IncidentsPage() {
           <table className="dt inc-tbl" style={{ minWidth: 820 }}>
             {/* 末列 120：「登记续费」小按钮 90（边框 2 + 内边距 20 + 图标 14 + 间距 6 + 四个字 48）+ 单元格内边距 12 + 16 = 118，留 2px 余量；多出的从说明列（自适应）让出 */}
             <colgroup><col style={{ width: 100 }} /><col style={{ width: 150 }} /><col style={{ width: 150 }} /><col /><col style={{ width: 110 }} /><col style={{ width: 120 }} /></colgroup>
-            <thead><tr><th>级别</th><th>对象</th><th>规则</th><th>说明</th><th>开始</th><th /></tr></thead>
+            <thead><tr><th>级别</th><th>对象</th><th>规则</th><th>说明</th><th>开始（{meta().org_timezone_label}）</th><th /></tr></thead>
             <tbody>
               {rows.map((r) => {
                 if (!Array.isArray(r)) return row(r);
