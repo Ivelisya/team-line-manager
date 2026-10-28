@@ -945,14 +945,17 @@ async fn stale_probes_do_not_resolve_probe_alerts() {
     for secs in [181, 400, 1200] {
         pass(&t, &mut state, base, secs).await;
     }
-    assert_eq!(incidents(&t, "firing").await.len(), 2, "探测过期不是恢复");
+    let probe_rules = |v: Vec<Value>| v.iter().filter(|i| matches!(i["rule"].as_str(), Some("egress_fail" | "tcp_fail"))).count();
+    let firing = incidents(&t, "firing").await;
+    assert_eq!(probe_rules(firing.clone()), 2, "探测过期不是恢复");
+    assert!(has_rule(&firing, "health_unknown"), "探测停了满 5 分钟：状态未知另开一条（P-17）");
 
     let mut r = blank_report(2);
     r.xray = Some(xray(true));
     r.probes = vec![probe(entry, now_ms(), ProbeKind::Egress, true), probe(entry, now_ms(), ProbeKind::Tcp, true)];
     assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
     pass(&t, &mut state, base, 1230).await;
-    assert_eq!(incidents(&t, "firing").await.len(), 2, "去抖从有新探测时起算");
+    assert_eq!(probe_rules(incidents(&t, "firing").await), 2, "去抖从有新探测时起算");
     pass(&t, &mut state, base, 1400).await;
     assert!(incidents(&t, "firing").await.is_empty());
 }

@@ -46,7 +46,6 @@ fn debounce_s(rule: &str) -> i64 {
     match rule {
         "egress_fail" => EGRESS_FAIL_S,
         "tcp_fail" => 90,
-        UNKNOWN => GAP_S,
         _ => 60,
     }
 }
@@ -129,7 +128,8 @@ pub const UNKNOWN: &str = "health_unknown";
 /// 故障 / 未知持续这么久还没有告警盖着，自检算矛盾；也是 `health_unknown` 的去抖
 pub const GAP_S: i64 = 300;
 
-/// 已过期的备用机（P-06）：备用团队里、订阅已过到期日（等回收）：不开任何告警，开着的关掉。还被软路由出口指着也一样（客户侧由软路由的出口告警报）
+/// 已过期的备用机（P-06）：备用团队里、订阅已过到期日（等回收）：不开故障类告警（出口 / TCP / agent 离线 / 未知…），开着的关掉。
+/// 还被软路由出口指着也一样（客户侧由软路由的出口告警报）；续费提醒（renewal_due，health.rs 只给被扣住的）照发——要续费还是放生由人定
 pub fn expired_spare(m: &MachineView) -> bool { m.spare && m.lifecycle == "active" && m.subscription.as_ref().is_some_and(|s| s.due_days < 0) }
 
 /// 不变量自检（P-17）：在用、不在维护、不在备用团队，状态故障或未知满 `GAP_S` 秒的机器，必须有告警盖着——自己开着的机器告警；
@@ -302,7 +302,7 @@ pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime
         // 已开着的在下面悄悄关掉。健康状态照常算，卡片上看得到。只开着自动续费被扣住的闲置备用照常续费，续费提醒（renewal_due）照发（health.rs renewal_reason 只给被扣住的），其余原因不开
         for r in &m.health.reasons {
             // info 级只用于界面提示（如访问策略暂停新连接），不开告警
-            if r.severity == "info" || (m.idle_spare && r.key != "renewal_due") || expired_spare(m) {
+            if r.severity == "info" || (m.idle_spare && r.key != "renewal_due") || (expired_spare(m) && r.key != "renewal_due") {
                 continue;
             }
             let k = (r.key.to_string(), m.id);
@@ -349,8 +349,8 @@ pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime
         // 退到备用、或被指着的备用取消了指向（或上面的 IP 节点都走了），现在没有出口指向了：关掉。报过触发的发恢复（摘要说明是转为闲置，不是原因消失）；之后若又有出口指向它，原因还在就按新告警开
         // 续费提醒只给被扣住的闲置备用（health.rs renewal_reason）：还被扣住的提醒消除（到期日推后、续费了）是普通恢复；
         // 变成不再续费（用户关掉了自动续费）才是转为等到期回收，不再提醒
-        if expired_spare(m) {
-            return Close::ResolveNoted { name: &m.name, by: "spare", note: "备用机订阅已过期（等回收），不再告警" };
+        if expired_spare(m) && inc.rule != "renewal_due" {
+            return Close::ResolveNoted { name: &m.name, by: "spare", note: "备用机订阅已过期（等回收），不再开故障类告警" };
         }
         if m.idle_spare && (inc.rule != "renewal_due" || m.spare_unbilled) {
             let note = if inc.rule == "renewal_due" { "不再续费（等到期回收），不再提醒续费" } else { "转为闲置备用（没有软路由出口指着、没有在用的同机 IP 节点），不再告警" };

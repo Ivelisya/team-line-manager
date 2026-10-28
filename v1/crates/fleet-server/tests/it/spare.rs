@@ -1338,5 +1338,5 @@ async fn expired_spare_does_not_alert_even_when_pointed_by_router_exit() {
         t.st.live.invalidate();
         alerts::evaluate_once(&t.st, &mut state, base + time::Duration::seconds(secs)).await.unwrap();
     }
-    assert_eq!(t.count(&format!("select count(*) from incident where state = 'firing' and subject_id = '{n}'")).await, 0, "已过期的备用机不告警");
+    assert_eq!(t.count(&format!("select count(*) from incident where state = 'firing' and subject_id = '{n}' and rule not like 'renewal%'")).await, 0, "已过期的备用机不开故障类告警（续费提醒照发）");
 }
