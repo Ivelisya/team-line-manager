@@ -7,6 +7,7 @@ import { useAuditLog } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import { useUrlSearch, useUrlState } from '@/lib/urlState';
 import type { AuditEntry } from '@/lib/types';
+import { dayKey, dayLabel } from '@/lib/format';
 import { Button } from '@/components/ui/button';
 import { SearchInput } from '@/components/ui/form';
 import { Segmented } from '@/components/ui/overlays';
@@ -20,15 +21,13 @@ const CATS: { value: Cat; label: string }[] = [
   { value: 'machine', label: '机器与入口' }, { value: 'config', label: '设置与告警' },
 ];
 const EMPTY: AuditEntry[] = [];
-const WEEK = '日一二三四五六';
-const dayKey = (d: Date) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
-/** 按本地日期分段（记录本来就是新→旧），段标题：今天 / 昨天 / 10月20日 周一 */
+/** 按组织时区的日期分段（记录本来就是新→旧），段标题：今天 / 昨天 / 10月20日 周一（F.dayLabel） */
 function byDay(rows: AuditEntry[]) {
-  const now = new Date(); const today = dayKey(now); const yday = dayKey(new Date(now.getTime() - 86400_000));
+  const now = Date.now();
   const out: { key: string; label: string; items: AuditEntry[] }[] = [];
   for (const a of rows) {
-    const d = new Date(a.ts); const k = dayKey(d);
-    if (out[out.length - 1]?.key !== k) out.push({ key: k, label: k === today ? '今天' : k === yday ? '昨天' : `${d.getMonth() + 1}月${d.getDate()}日 周${WEEK[d.getDay()]}`, items: [] });
+    const k = dayKey(a.ts);
+    if (out[out.length - 1]?.key !== k) out.push({ key: k, label: dayLabel(a.ts, now), items: [] });
     out[out.length - 1].items.push(a);
   }
   return out;

@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as F from '../src/lib/format.ts';
 
-const setTz = (tz?: string) => (F as { setTimeZone?: (tz?: string) => void }).setTimeZone?.(tz);
+const setTz = F.setTimeZone;
 
 test('跨日：UTC 前一天 18:30 = 新加坡次日 02:30', () => {
   setTz('Asia/Singapore');
@@ -33,4 +33,40 @@ test('没设组织时区（/meta 取回前）用本机时区；空值为「—�
   assert.equal(F.dt('2026-10-28T18:30:00Z'), '10-28 18:30');
   assert.equal(F.dt(null), '—');
   assert.equal(F.dtFull(''), '—');
+});
+
+// 复审：按天分组、零点对齐、datetime-local 输入同样按组织时区；非法时间戳不崩页
+test('日期键、今天 / 昨天按组织时区', () => {
+  setTz('Asia/Singapore');
+  assert.equal(F.dayKey('2026-10-28T18:30:00Z'), '2026-10-29');
+  const now = Date.parse('2026-10-28T17:00:00Z'); // 新加坡 10-29 01:00
+  assert.equal(F.dayLabel('2026-10-28T16:30:00Z', now), '今天');
+  assert.equal(F.dayLabel('2026-10-28T15:59:00Z', now), '昨天');
+  assert.equal(F.dayLabel('2026-10-26T12:00:00Z', now), '10月26日 周一');
+});
+
+test('组织时区的零点', () => {
+  setTz('Asia/Singapore');
+  assert.equal(F.startOfDay(Date.parse('2026-10-28T18:30:00Z')), Date.parse('2026-10-28T16:00:00Z'));
+  setTz('America/Los_Angeles');
+  assert.equal(F.startOfDay(Date.parse('2026-10-29T03:00:00Z')), Date.parse('2026-10-28T07:00:00Z'));
+});
+
+test('datetime-local 的值按组织时区写、按组织时区解析', () => {
+  setTz('Asia/Singapore');
+  const t = Date.parse('2026-10-28T18:30:00Z');
+  assert.equal(F.wallInput(t), '2026-10-29T02:30');
+  assert.equal(F.parseWall('2026-10-29T02:30'), t);
+  assert.ok(Number.isNaN(F.parseWall('')));
+  assert.ok(Number.isNaN(F.parseWall('2026-10-29T')));
+});
+
+test('非法时间戳显示「—」、非法时区退回本机时区，不抛错', () => {
+  setTz('Asia/Singapore');
+  assert.equal(F.dt('garbage'), '—');
+  assert.equal(F.hm(Number.NaN), '—');
+  assert.equal(F.dtFull('2026-13-45'), '—');
+  assert.equal(F.clock('x'), '—');
+  assert.doesNotThrow(() => setTz('Not/AZone'));
+  assert.equal(F.dt('2026-10-28T18:30:00Z'), '10-28 18:30');
 });

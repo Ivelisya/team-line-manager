@@ -190,9 +190,10 @@ const AHEAD_DAYS = 90; // 最多提前 90 天预约（同中控）
 const MIN = 60_000;
 type StartMode = 'now' | 'at';
 const START_ITEMS: { value: StartMode; label: string }[] = [{ value: 'now', label: '现在' }, { value: 'at', label: '指定时间' }];
-/** datetime-local 的值：本地时间，到分钟 */
-const localInput = (t: number) => { const d = new Date(t); return `${d.getFullYear()}-${F.pad2(d.getMonth() + 1)}-${F.pad2(d.getDate())}T${F.pad2(d.getHours())}:${F.pad2(d.getMinutes())}`; };
-const nextHour = () => { const d = new Date(); d.setMinutes(60, 0, 0); return localInput(d.getTime()); };
+/** datetime-local 的值：组织时区的墙上时间，到分钟（F.wallInput / F.parseWall，同表头的「北京时间」） */
+const localInput = F.wallInput;
+/** 组织时区的下一个整点 */
+const nextHour = () => { const now = Date.now(); const d0 = F.startOfDay(now); return localInput(d0 + (Math.floor((now - d0) / 3_600_000) + 1) * 3_600_000); };
 const dtMs = (t: number) => (Number.isNaN(t) ? '—' : F.dt(new Date(t).toISOString()));
 
 /** show：在「静默与维护」页签上才列出；对话框（含 ?silence= 打开的新建）一直挂着，哪个页签都能用 */
@@ -269,7 +270,7 @@ const SilenceDialog = resetOnOpen(function SilenceDialog({ open, onOpenChange, p
   // 指定时间时走表：对话框开着不动，选好的时间过去了也要提示
   useNow(open && mode === 'at', 10_000);
   const now = Date.now();
-  const startMs = Date.parse(start); // datetime-local 的值不带时区，按本地时间解析；没填完时为 NaN
+  const startMs = F.parseWall(start); // datetime-local 的值不带时区，按组织时区解析；没填完时为 NaN
   // 当前这一分钟还算数（同 fleetctl）
   const startErr = mode === 'now' ? undefined : Number.isNaN(startMs) ? '请选择开始时间' : startMs + MIN <= now ? '这个时间已过，可选「现在」'
     : startMs > now + AHEAD_DAYS * 1440 * MIN ? `最多提前 ${AHEAD_DAYS} 天预约` : undefined;
@@ -290,7 +291,7 @@ const SilenceDialog = resetOnOpen(function SilenceDialog({ open, onOpenChange, p
         <Field label="对象"><SubjectSelect value={subject} onChange={(v, k) => { setSubject(v); setKind(k); }} /></Field>
         {subject === ALL && <Note tone="warn">全部机器（含软路由、探测点）不发告警</Note>}
         <div className="field">
-          <span className="label">开始</span>
+          <span className="label">开始（{meta().org_timezone_label}）</span>
           <div className="row">
             <Segmented label="开始" value={mode} onChange={setMode} items={START_ITEMS} />
             {mode === 'at' && <Input type="datetime-local" aria-label="开始时间" value={start} min={localInput(now)} max={localInput(now + AHEAD_DAYS * 1440 * MIN)} onChange={(e) => setStart(e.target.value)} aria-invalid={!!startErr} style={{ flex: '1 1 200px', width: 'auto' }} />}
