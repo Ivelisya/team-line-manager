@@ -448,6 +448,24 @@ async fn recent_count_is_fixed_when_the_incident_fires() {
     round(&t, at(330), None, resolve).await;
     round(&t, at(360), Some(want(subject, "warning")), resolve).await;
     assert_eq!(counts().await, [(1, false), (2, false), (3, true), (5, true)]);
+    // 已恢复的另显示「共 N 次」：recent_total 是整组现在的总数（4 条 + 合并进去的 1 次复发），每条都一样
+    let items = t.get(&format!("/api/v1/incidents?state=all&subject_id={subject}")).await["items"].as_array().unwrap().clone();
+    assert!(items.iter().all(|i| i["recent_total"] == 5), "{items:?}");
+}
+
+/// 重开的那条自己开得早于 7 天（窗口外）时也要算上它自己：开过 1 条 + 这次重开 = 第 2 次
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reopen_counts_itself_even_if_opened_over_7_days_ago() {
+    let t = setup().await;
+    let subject = Uuid::now_v7();
+    let base = OffsetDateTime::now_utc();
+    let at = |s: i64| base + time::Duration::seconds(s);
+    round(&t, at(0), Some(want(subject, "warning")), resolve).await;
+    round(&t, at(30), None, resolve).await;
+    sqlx::query("update incident set opened_at = now() - interval '8 days' where rule = $1 and subject_id = $2").bind(RULE).bind(subject).execute(&t.st.db).await.unwrap();
+    round(&t, at(60), Some(want(subject, "warning")), resolve).await;
+    let (seq, reopen): (i32, i32) = sqlx::query_as("select occurrence_seq, reopen_count from incident where rule = $1 and subject_id = $2").bind(RULE).bind(subject).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!((seq, reopen), (2, 1));
 }
 
 /// 迁移 0094 回填存量：每条按自己触发时往前 7 天算（含自己的复发次数），更早的不算、别的对象不算

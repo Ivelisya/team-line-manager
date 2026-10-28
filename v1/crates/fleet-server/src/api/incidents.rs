@@ -103,12 +103,27 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQu
     } else {
         vec![]
     };
+    // 「共 N 次」：同（引擎, 规则, 对象）近 7 天到现在一共几次（开过的条数 + 30 分钟内复发合并进去的次数），已恢复的和「第 k 次」一起显示。一条分组查询，不逐条查
+    let subjects: Vec<Uuid> = v.iter().map(|i| i.subject_id).collect();
+    let totals: std::collections::HashMap<(String, String, Uuid), i64> = sqlx::query_as::<_, (String, String, Uuid, i64)>(
+        "select engine, rule, subject_id, count(*) + sum(reopen_count) from incident
+         where subject_id = any($1) and opened_at > now() - interval '7 days' group by engine, rule, subject_id",
+    )
+    .bind(&subjects)
+    .fetch_all(&st.db)
+    .await?
+    .into_iter()
+    .map(|(e, r, s, n)| ((e, r, s), n))
+    .collect();
     let out: Vec<Value> = v
         .iter()
         .map(|i| {
             let mut j = serde_json::to_value(i).unwrap_or_default();
             let chronic = i64::from(i.occurrence_seq) >= CHRONIC_MIN;
             j["chronic"] = json!(chronic);
+            // 窗口外开的（重开的那条自己早于 7 天）不在分组里：至少是它自己的第几次
+            let total = totals.get(&(i.engine.clone(), i.rule.clone(), i.subject_id)).copied().unwrap_or(0).max(i64::from(i.occurrence_seq));
+            j["recent_total"] = json!(total);
             if i.engine == Engine::Central.as_str() || i.engine == Engine::Probe.as_str() {
                 // 中控自身、探测点的告警：对象不是机器，没有可点开的机器（探测点的名字在 subject_name）
                 j["subject"] = Value::Null;

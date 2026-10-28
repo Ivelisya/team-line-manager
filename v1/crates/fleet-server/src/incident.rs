@@ -139,11 +139,12 @@ pub struct Tally {
 }
 
 /// 这次触发是同（引擎, 规则, 对象）近 7 天的第几次（含这次）：开过的条数 + 恢复后 30 分钟内复发合并进去的次数，开、重开时写进 `occurrence_seq`，
-/// 之后不再改（告警页的「近 7 天第 N 次」读它）。参数是 SQL 里引擎、规则、对象的占位符
-fn occurrence_sql(engine: &str, rule: &str, subject: &str) -> String {
+/// 之后不再改（告警页的「近 7 天第 N 次」读它）。参数是 SQL 里引擎、规则、对象的占位符；`this` 是重开的那条（新开传 `null`）：
+/// 它自己开得早于 7 天也要算上，不然重开成了「第 1 次」
+fn occurrence_sql(engine: &str, rule: &str, subject: &str, this: &str) -> String {
     format!(
         "(select count(*) + coalesce(sum(p.reopen_count), 0) + 1 from incident p
-          where p.engine = {engine} and p.rule = {rule} and p.subject_id = {subject} and p.opened_at > now() - interval '7 days')"
+          where p.engine = {engine} and p.rule = {rule} and p.subject_id = {subject} and (p.opened_at > now() - interval '7 days' or p.id = {this}))"
     )
 }
 
@@ -246,7 +247,7 @@ pub async fn reconcile<'n>(
                          order by resolved_at desc limit 1)
                and {exists}
              returning id, opened_at, notified_at, {TOLD_RESOLVED_SQL} told_resolved_at",
-            seq = occurrence_sql("$7", "$1", "$3")
+            seq = occurrence_sql("$7", "$1", "$3", "incident.id")
         ))
         .bind(w.rule)
         .bind(w.severity)
@@ -274,7 +275,7 @@ pub async fn reconcile<'n>(
                     {seq}
              where {exists}
              on conflict (engine, rule, subject_id) where state = 'firing' do nothing",
-            seq = occurrence_sql("$7", "$2", "$3")
+            seq = occurrence_sql("$7", "$2", "$3", "null")
         ))
         .bind(id)
         .bind(w.rule)
