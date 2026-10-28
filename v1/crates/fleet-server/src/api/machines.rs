@@ -194,7 +194,7 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
             return Err(ApiError::conflict(format!("同机 IP 节点 {name} 有进行中的作业（{}）：等它结束再改团队", meta::job_kind_label(&k))));
         }
         for (ip, rev, _, dest) in ips {
-            let n = free_number(&mut *tx, Some(dest)).await?;
+            let n = free_number(&mut tx, Some(dest)).await?;
             patch_nobump(&mut tx, &a.name, ip, PatchIn::rename(rev, dest, n)).await?;
             renamed.push(ip);
             ip_moved = true;
@@ -274,6 +274,11 @@ pub struct RenamePreviewQ {
     number: Option<i32>,
 }
 
+/// rename_preview 读的这台机器：(kind, label, team_id, number, spare_since, spare_from_team_id)
+type MachineRow = (String, Option<String>, Option<Uuid>, Option<i32>, Option<OffsetDateTime>, Option<Uuid>);
+/// 随宿主机走的同机 IP 节点：(id, 显示名, team_id, 团队名, 去向团队)
+type IpNodeRow = (Uuid, String, Option<Uuid>, Option<String>, Uuid);
+
 /// 改团队 / 编号预览：`{name（改后的名字）, old_name, renames:[{machine_id,old_name,new_name}], ip_nodes:[{machine_id,old_name,new_name}], router_exits:[{node,router,exit}], spare_blocked, held, warnings:[string]}`。
 /// 换团队时原团队少了这台，剩下的按编号连续压缩（PATCH 同事务做），`renames` 列出连带改号的；
 /// 宿主机上还在原团队的同机 IP 节点一起换团队（PATCH 同事务做，编号接在宿主机之后取新团队的最小空号），`ip_nodes` 列出它们的新旧名字；
@@ -287,7 +292,7 @@ pub struct RenamePreviewQ {
 /// 没换团队、线路机：renames / ip_nodes / router_exits / warnings 都为空，spare_blocked、held 为 null
 pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<RenamePreviewQ>) -> ApiResult<Json<Value>> {
     let mut conn = st.db.acquire().await?;
-    let (kind, label, team, number, spare_since, spare_from_team): (String, Option<String>, Option<Uuid>, Option<i32>, Option<OffsetDateTime>, Option<Uuid>) =
+    let (kind, label, team, number, spare_since, spare_from_team): MachineRow =
         sqlx::query_as("select kind::text, label, team_id, number, spare_since, spare_from_team_id from machine where id = $1 and lifecycle <> 'retired'")
             .bind(id)
             .fetch_optional(&mut *conn)
@@ -317,7 +322,7 @@ pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
             let from_name = team_name(&st.db, Some(from)).await?.unwrap_or_default();
             let to_spare = sqlx::query_scalar::<_, bool>("select spare from team where id = $1").bind(to).fetch_optional(&mut *conn).await?.unwrap_or(false);
             // 随宿主机走的同机 IP 节点：去向团队见 IP_DEST（撤销退役时跟宿主机走，或各回进备用前的团队）；去向团队里宿主机先占 n，它们依次取剩下的最小空号
-            let ips: Vec<(Uuid, String, Option<Uuid>, Option<String>, Uuid)> = sqlx::query_as(&format!(
+            let ips: Vec<IpNodeRow> = sqlx::query_as(&format!(
                 "select m.id, display_name(m.kind::text, m.label, t.name, m.number), m.team_id, t.name, {IP_DEST} from machine m left join team t on t.id = m.team_id
                  where {IP_WITH_HOST} and ({IP_DEST}) is not null order by t.sort_order nulls first, t.name, m.number, m.id"
             ))
@@ -463,7 +468,7 @@ pub async fn patch_nobump(tx: &mut crate::db::Tx<'_>, actor: &str, id: Uuid, b: 
         None
     } else if b.number.is_none() && team_id != cur.2 {
         // 换团队没给编号：排到新团队的最小空号（原编号在新团队里多半已经有人，「移出备用」照提示只给团队也能成）
-        Some(free_number(&mut **tx, team_id).await?)
+        Some(free_number(tx, team_id).await?)
     } else {
         b.number.or(cur.3)
     };
