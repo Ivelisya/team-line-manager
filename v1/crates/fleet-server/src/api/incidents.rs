@@ -101,6 +101,12 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQu
     } else {
         vec![]
     };
+    // 穿透节点（建议不同）：有节点类告警才读视图（缓存）
+    let reversed: std::collections::HashSet<Uuid> = if v.iter().any(|i| i.subject_kind.as_deref() == Some("vps")) {
+        crate::views::live(&st).await?.iter().filter(|m| crate::reverse::reverse_node(m)).map(|m| m.id).collect()
+    } else {
+        Default::default()
+    };
     // 近 7 天同对象同规则出现过几次（含这次）：开过的条数 + 恢复后 30 分钟内复发合并进这些条的次数。一条分组查询，不逐条查
     let subjects: Vec<Uuid> = v.iter().map(|i| i.subject_id).collect();
     let recent: std::collections::HashMap<(String, String, Uuid), i64> = sqlx::query_as::<_, (String, String, Uuid, i64)>(
@@ -133,9 +139,15 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQu
             }
             j["rule_name"] = json!(crate::meta::rule_label_of(&i.rule, &i.severity));
             let mut advice = if i.state == "firing" { suggest(i, &routers) } else { vec![] };
-            // 节点反复连不上 / 出口不通：先看换到哪台线路机更合适（已恢复的也给，status 的「近 7 天反复」用）
+            // 节点反复连不上 / 出口不通：先看换到哪台线路机更合适（已恢复的也给，status 的「近 7 天反复」用）；
+            // 穿透节点不按线路机放置，看 bridge 日志与诊断
             if let (true, true, Some(name)) = (chronic, matches!(i.rule.as_str(), "tcp_fail" | "egress_fail") && i.subject_kind.as_deref() == Some("vps"), i.subject_name.as_deref()) {
-                advice.push(Advice { cmd: format!("fleetctl placement --node {}", sh(name)), switch: None });
+                if reversed.contains(&i.subject_id) {
+                    advice.extend(cmd(format!("fleetctl logs {} --unit fleet-xray-bridge", sh(name))));
+                    advice.extend(cmd(format!("fleetctl diag {}", sh(name))));
+                } else {
+                    advice.extend(cmd(format!("fleetctl placement --node {}", sh(name))));
+                }
             }
             j["suggested"] = json!(advice.iter().map(|a| &a.cmd).collect::<Vec<_>>());
             j["quick_switch"] = json!(advice.iter().filter_map(|a| a.switch.as_ref()).collect::<Vec<_>>());

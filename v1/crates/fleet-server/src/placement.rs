@@ -331,7 +331,7 @@ pub async fn view(st: &AppState, team: Option<&str>, node: Option<&str>) -> ApiR
     let mut multi: Vec<(usize, Uuid, i32)> = vec![];
     for (i, m) in nodes.iter().enumerate() {
         let l = live(m);
-        if l.iter().filter(|e| e.2).count() < 2 {
+        if l.iter().filter(|e| e.2).count() < 2 || crate::reverse::reverse_node(m) {
             continue;
         }
         for &(relay, port, _) in l.iter().filter(|e| e.2) {
@@ -362,7 +362,10 @@ pub async fn view(st: &AppState, team: Option<&str>, node: Option<&str>) -> ApiR
     for (i, m) in nodes.iter().enumerate() {
         let (n, p) = (&ins[i], &picks[i]);
         let cur = current(m);
-        let reason = p.suggest.then(|| why(cell_of(n, n.current), cell_of(n, p.best)));
+        // 穿透节点：节点主动连线路机，不按往返换线（「穿透，不适用」）
+        let rev = crate::reverse::reverse_node(m);
+        let suggest = p.suggest && !rev;
+        let reason = suggest.then(|| why(cell_of(n, n.current), cell_of(n, p.best)));
         let row_cells: Vec<Value> = relays
             .iter()
             .map(|r| {
@@ -370,7 +373,7 @@ pub async fn view(st: &AppState, team: Option<&str>, node: Option<&str>) -> ApiR
                 json!({"relay_id": r.id, "samples": c.samples, "ok": c.ok, "success_pct": pct(&c), "p50_ms": ms(c.p50)})
             })
             .collect();
-        if let (true, Some(to), Some((from, port))) = (p.suggest, p.best, cur) {
+        if let (true, Some(to), Some((from, port))) = (suggest, p.best, cur) {
             groups.entry(name_of(to)).or_insert((to, vec![])).1.push(json!({"id": m.id, "name": m.name, "from": {"id": from, "name": name_of(from)}, "port": port, "reason": reason}));
         }
         let on: Vec<Uuid> = live(m).iter().filter(|e| e.2).map(|e| e.0).collect();
@@ -378,7 +381,7 @@ pub async fn view(st: &AppState, team: Option<&str>, node: Option<&str>) -> ApiR
             "id": m.id, "name": m.name, "team": m.team, "ip": m.ip,
             "current_relay_id": n.current, "entry_relay_ids": on, "entries": on.len(),
             "cells": row_cells, "tcp_fail_7d": fails.get(&m.id).copied().unwrap_or(0), "daily_bytes": n.daily.round() as i64,
-            "best_relay_id": p.best, "suggest": p.suggest, "reason": reason, "no_room": p.no_room,
+            "best_relay_id": p.best, "suggest": suggest, "reason": reason, "no_room": p.no_room, "reverse": rev,
         }));
     }
     let suggestions: Vec<Value> = groups

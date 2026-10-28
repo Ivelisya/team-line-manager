@@ -104,7 +104,9 @@ export const PlacementPanel = React.memo(function PlacementPanel() {
             {rows.map((n) => (
               <tr key={n.id} className="is-link" tabIndex={0} onClick={() => openDrawer(n.id)} onKeyDown={(ev) => { if (ev.key === 'Enter') openDrawer(n.id); }}>
                 <td className="strong"><span data-tip={n.current_relay_id ? undefined : n.entries > 1 ? '有多条在用入口，只给单条建议（上面带「换掉…上的入口」的）' : n.entries === 1 ? '还有待应用 / 停用的入口，不给建议' : '没有在用入口'}>{n.name}</span></td>
-                {n.cells.map((c) => <Cell key={c.relay_id} c={c} n={n} relay={relayName(c.relay_id)} h={p.window_h} />)}
+                {n.reverse
+                  ? <td colSpan={n.cells.length} className="t-muted" data-tip="入口都是穿透：节点主动连线路机，不按往返换线；连不上看 bridge 日志（fleetctl logs <节点> --unit fleet-xray-bridge）与 fleetctl diag">穿透，不适用</td>
+                  : n.cells.map((c) => <Cell key={c.relay_id} c={c} n={n} relay={relayName(c.relay_id)} h={p.window_h} />)}
                 <td className="r">{n.tcp_fail_7d > 0 ? <><span className="num">{n.tcp_fail_7d}</span><span className="unit"> 次</span></> : <span className="t-muted">—</span>}</td>
               </tr>
             ))}

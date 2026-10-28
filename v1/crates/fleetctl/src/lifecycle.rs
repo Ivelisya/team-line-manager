@@ -420,6 +420,12 @@ pub fn placement(ctx: &Ctx, team: Option<&str>, node: Option<&str>) -> anyhow::R
             .iter()
             .map(|n| {
                 let mut row = vec![st(n, "/name")];
+                // 穿透节点：节点主动连线路机，不按往返换线，整行不列数
+                if n["reverse"] == true {
+                    row.extend(relays.iter().map(|_| "-".to_string()));
+                    row.extend([format!("{} 次", n["tcp_fail_7d"].as_i64().unwrap_or(0)), "穿透，不适用".into()]);
+                    return row;
+                }
                 for (r, c) in relays.iter().zip(n["cells"].as_array().into_iter().flatten()) {
                     let mark = if n["entry_relay_ids"].as_array().is_some_and(|a| a.contains(&r["id"])) { "*" } else if n["suggest"] == true && n["best_relay_id"] == r["id"] { "→" } else { "" };
                     row.push(format!("{mark}{}", rtt_cell(c)));
