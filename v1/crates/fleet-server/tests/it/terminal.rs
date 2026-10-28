@@ -369,14 +369,14 @@ async fn websocket_checks_origin_ticket_and_session() {
     send_ticket(&mut ws, &tk).await;
     assert!(until_exit(&mut ws, 5).await.1.contains("票据不对或已经用过"));
 
-    // 同机 IP 节点：登录的是宿主机（127.0.0.1:closed），ssh 连不上，报错原样到终端里，结束原因说明 255
+    // 同机 IP 节点：登录的是宿主机（127.0.0.1:closed），ssh 连不上，报错原样到终端里，结束原因按 ssh 的报错归类（P-20：连接被拒 = 节点离线），并说明 255
     let (_, v) = ticket(&t, &t.cookie, json!({"kind": "machine", "id": ipnode})).await;
     let tk = v["data"]["ticket"].as_str().unwrap().to_string();
     let mut ws = connect(addr, Some(&t.cookie), Some(ORIGIN), None).await.unwrap();
     ws.send(Message::Text(json!({"type": "auth", "ticket": tk, "cols": 120, "rows": 40}).to_string().into())).await.unwrap();
     let (out, reason, code) = until_exit(&mut ws, 15).await;
     assert!(out.contains("Connection refused") && out.contains(&format!("port {closed}")), "{out}");
-    assert!(reason.contains("255"), "{reason}");
+    assert!(reason.starts_with("节点离线，无法连接") && reason.contains("255"), "{reason}");
     assert_eq!(code, Some(1000));
     // 同一张票不能再用
     let mut ws = connect(addr, Some(&t.cookie), Some(ORIGIN), None).await.unwrap();
@@ -444,7 +444,7 @@ async fn router_terminal_goes_through_tunnel() {
     send_ticket(&mut ws, v["data"]["ticket"].as_str().unwrap()).await;
     let (out, reason, _) = until_exit(&mut ws, 15).await;
     assert!(out.contains("Connection refused") && out.contains(&format!("port {port}")), "{out}");
-    assert!(reason.contains("255"), "{reason}");
+    assert!(reason.starts_with("节点离线，无法连接") && reason.contains("255"), "{reason}");
     let open = audits(&t, "terminal.open").await;
     assert_eq!((open[0]["kind"].as_str(), open[0]["name"].as_str(), open[0]["ip"].as_str(), open[0]["port"].as_i64()), (Some("router"), Some("团队2-路由A"), Some("127.0.0.1"), Some(port as i64)));
     let target: (String, Uuid) = sqlx::query_as("select target_kind, target_id from audit_log where action = 'terminal.close'").fetch_one(&t.st.db).await.unwrap();
