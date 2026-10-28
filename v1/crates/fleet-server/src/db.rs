@@ -516,6 +516,7 @@ pub async fn audit_insert<'e, E: sqlx::PgExecutor<'e>>(
     target_id: Option<Uuid>,
     detail: serde_json::Value,
 ) -> sqlx::Result<i64> {
+    let detail = crate::api::audit::redact_exec_detail(action, detail);
     let search = crate::api::audit::audit_search_text(action, &detail);
     sqlx::query_scalar("insert into audit_log (actor, action, target_kind, target_id, detail, search) values ($1, $2, $3, $4, $5, $6) returning id")
         .bind(actor)

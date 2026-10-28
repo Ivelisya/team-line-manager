@@ -5,6 +5,7 @@ mod common;
 
 mod access;
 mod account;
+mod audit;
 mod billing;
 mod flow;
 mod fx;

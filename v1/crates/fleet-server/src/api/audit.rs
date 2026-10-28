@@ -26,6 +26,42 @@ pub struct AuditQ {
     q: Option<String>,
 }
 
+/// 执行命令的审计里命令的写法：凭据打码（见 `redact_command`），另记原文的 sha256（`command_sha256`）供核对「是不是这条命令」，原文不落库。
+/// 与 SSH 登录「内容不记录」同一口径。在 `db::audit_insert` 统一处理，存量由迁移 0097 用同一组规则打码
+pub fn redact_exec_detail(action: &str, mut detail: Value) -> Value {
+    if action == "exec" {
+        if let Some(cmd) = detail["command"].as_str() {
+            let sha = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(cmd.as_bytes()));
+            detail["command"] = Value::from(redact_command(cmd));
+            detail["command_sha256"] = Value::from(sha);
+        }
+    }
+    detail
+}
+
+/// 打码规则（不区分大小写，按顺序替换，值换成 `***`）。**迁移 0097 里有同一组规则的 SQL 写法，改这里要一起改**
+/// （只用 Rust regex 与 PostgreSQL 正则都支持的写法：不用 `\b`、环视）
+const REDACT_RULES: &[(&str, &str)] = &[
+    // 名字带 pass / pwd / secret / token / key / auth / credential 的 `名=值`（环境变量、`--password=x`）
+    (r#"([a-z0-9_.-]*(pass|pwd|secret|token|key|auth|credential)[a-z0-9_.-]*=)("[^"]*"|'[^']*'|[^[:space:];&|"']+)"#, "${1}***"),
+    // `--password x` 这样用空格隔开的参数
+    (r#"(--?(password|passwd|pass|token|secret|api-key|apikey)[[:space:]]+)("[^"]*"|'[^']*'|[^[:space:];&|"']+)"#, "${1}***"),
+    // HTTP 认证头
+    (r#"(authorization:[[:space:]]*((bearer|basic|token)[[:space:]]+)?)[^[:space:]"']+"#, "${1}***"),
+    // URL 里的 user:password@
+    (r"(://[^:/@[:space:]]+:)[^@/[:space:]]+@", "${1}***@"),
+    // 40 个字符以上的 base64 / 十六进制串（密钥、令牌）
+    (r"[a-z0-9+/=_-]{40,}", "***"),
+];
+
+/// 把命令里的凭据换成 `***`（规则见 `REDACT_RULES`）
+pub fn redact_command(cmd: &str) -> String {
+    static RES: std::sync::LazyLock<Vec<(regex::Regex, &str)>> = std::sync::LazyLock::new(|| {
+        REDACT_RULES.iter().map(|(p, to)| (regex::RegexBuilder::new(p).case_insensitive(true).build().expect("打码规则"), *to)).collect()
+    });
+    RES.iter().fold(cmd.to_string(), |s, (re, to)| re.replace_all(&s, *to).into_owned())
+}
+
 /// 远程执行类的动作：在机器上跑命令、SSH 登录、网页终端、取日志（restore.probe 是已删掉的恢复预检留下的旧记录）
 const EXEC_ACTIONS: &[&str] = &["exec", "ssh.login", "terminal.open", "terminal.close", "machine.logs", "server.logs", "restore.probe"];
 
@@ -881,6 +917,31 @@ mod tests {
         assert_eq!(t("machine.tune", json!({"name": "团队1-03", "profile": "tune-v1"})), ("系统调优".to_string(), "团队1-03 · tune-v1".to_string()));
         assert_eq!(t("machine.tune", json!({"name": "团队1-03", "rollback": true})).1, "团队1-03 · 撤销调优");
         assert_eq!(t("job.cancel", json!({})).1, "");
+    }
+
+    #[test]
+    fn redact_command_masks_credentials() {
+        let r = redact_command;
+        assert_eq!(r("PASSWORD=xxx ./deploy.sh"), "PASSWORD=*** ./deploy.sh");
+        assert_eq!(r("export DB_PASS='a b c'; mysql_token=\"q\" x"), "export DB_PASS=***; mysql_token=*** x");
+        assert_eq!(r("curl --password hunter2 -u x --token=abc"), "curl --password *** -u x --token=***");
+        assert_eq!(r("curl -H \"Authorization: Bearer eyJabc.def\" https://u:pw@h/x"), "curl -H \"Authorization: Bearer ***\" https://u:***@h/x");
+        let blob = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlq";
+        assert_eq!(r(&format!("echo {blob} | base64 -d")), "echo *** | base64 -d");
+        // 普通命令原样
+        for c in ["ss -tn state established | grep -c 23.116.71", "systemctl is-active fleet-xray-bridge; journalctl -u fleet-xray-bridge --since \"2026-10-28 11:30\"", "uptime"] {
+            assert_eq!(r(c), c);
+        }
+    }
+
+    #[test]
+    fn exec_detail_keeps_only_masked_command_and_hash() {
+        let d = redact_exec_detail("exec", json!({"name": "n", "command": "PASSWORD=xxx run", "started": true}));
+        assert_eq!(d["command"], "PASSWORD=*** run");
+        assert_eq!(d["command_sha256"], hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"PASSWORD=xxx run")));
+        assert!(!d.to_string().contains("xxx"));
+        // 别的动作不动
+        assert_eq!(redact_exec_detail("ssh.login", json!({"command": true})), json!({"command": true}));
     }
 
     #[test]

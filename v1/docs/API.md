@@ -278,7 +278,7 @@ ProvisionItem = {
 | POST | `/jobs/prune` | 写权限。手动清理作业记录：已成功、已取消、且结束早于 `before`（RFC 3339，默认此刻）的作业连同步骤与日志一起删（每小时的自动清理只删 90 天前的）；失败的（可能还要重试或人工处理）与进行中的不动。别处（退役闸门、改软路由出口的改回、备份时间戳）只看进行中 / 失败的作业，不受影响。`{before?, dry_run?}`：`dry_run: true` 只数不删 → `{data:{jobs, before, dry_run}}`；真删写审计 `job.prune`（「清理作业记录 · 187 个（结束早于 …）」），发 `resync` 事件 → `{data:{jobs, before}}`。网页：作业页「清理记录…」；`fleetctl jobs-prune [--before YYYY-MM-DD] [--yes]` |
 
 ## 运维：远程执行与日志
-需要 `exec` scope（会话用户直接可用）。中控用自己的 SSH 密钥和 known_hosts 登录；机器必须不是已退役、不是家宽代理（proxy 没有 SSH）。命令原样当 bash 脚本执行（stdin 接 /dev/null），超时由远端 `timeout` 杀掉。每次执行写审计（actor、机器、命令全文、退出码、耗时），**不要在命令里写密码**。
+需要 `exec` scope（会话用户直接可用）。中控用自己的 SSH 密钥和 known_hosts 登录；机器必须不是已退役、不是家宽代理（proxy 没有 SSH）。命令原样当 bash 脚本执行（stdin 接 /dev/null），超时由远端 `timeout` 杀掉。每次执行写审计（actor、机器、打码后的命令、原文的 `command_sha256`、退出码、耗时）：命令原文不落库（与 SSH 登录「内容不记录」一致），名字带 pass/pwd/secret/token/key/auth/credential 的 `名=值`、`--password x` 这类参数、`Authorization:` 头、URL 里的 `user:密码@`、40 字符以上的 base64/十六进制串都换成 `***`（如 `PASSWORD=xxx` 记成 `PASSWORD=***`；规则见 `api::audit::REDACT_RULES`，迁移 0097 按同一规则给存量打码）。打码只是兜底，**仍不要在命令里写密码**。
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | POST | `/machines/{id}/exec` | `{command, timeout_s?: 1-600 (默认 60)}` → `{data:{exit_code, stdout, stderr, duration_ms, truncated, timed_out}}`。同机 IP 节点没有自己的 SSH：命令在它的宿主机上执行（审计记在这台节点名下）。stdout/stderr 各截断到 256 KiB（`truncated=true`）；超时 `timed_out=true`：到点远端 `timeout` 发 TERM，`exit_code=124`；命令不理会 TERM 的，再过 5 秒被 KILL（`timeout -k 5`），`exit_code=137`；远端没能按时结束、中控本地等到 `timeout_s+15` 秒仍没返回时也按超时返回 `exit_code=124`。SSH 连不上时 `exit_code=255` 且 stderr 有原因（命令自己退出 255 也是 255）。**只执行一次、不自动重试**（255 时命令可能已经执行过）。机器不存在 404、已退役或 proxy 409、命令空/超时越界 400、SSH 无法启动 502；同时最多 8 条命令在执行，排队 30 秒还轮不到回 429（`busy`） |
