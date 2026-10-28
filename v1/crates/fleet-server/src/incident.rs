@@ -138,6 +138,15 @@ pub struct Tally {
     pub resolved: usize,
 }
 
+/// 这次触发是同（引擎, 规则, 对象）近 7 天的第几次（含这次）：开过的条数 + 恢复后 30 分钟内复发合并进去的次数，开、重开时写进 `occurrence_seq`，
+/// 之后不再改（告警页的「近 7 天第 N 次」读它）。参数是 SQL 里引擎、规则、对象的占位符
+fn occurrence_sql(engine: &str, rule: &str, subject: &str) -> String {
+    format!(
+        "(select count(*) + coalesce(sum(p.reopen_count), 0) + 1 from incident p
+          where p.engine = {engine} and p.rule = {rule} and p.subject_id = {subject} and p.opened_at > now() - interval '7 days')"
+    )
+}
+
 /// 触发通知的摘要：近 24 小时同对象同规则出现过不止一次（开过的条数 + 30 分钟内复发合并进去的次数，同告警页的次数）时末尾加「（近 24 小时第 N 次）」；提醒和恢复不加
 async fn chronic(st: &AppState, engine: Engine, rule: &str, subject: Uuid, kind: Kind, text: &str) -> String {
     if kind != Kind::Firing {
@@ -229,14 +238,15 @@ pub async fn reconcile<'n>(
         // 窗口内刚恢复过（不是悄悄关掉的）：重开原告警（复发计数 +1、清掉确认），按 `due` 决定马上通知还是等满限流时长。对象也要还在（`exists`）
         let reopened: Option<(Uuid, OffsetDateTime, Option<OffsetDateTime>, Option<OffsetDateTime>)> = sqlx::query_as(&format!(
             "update incident set state = 'firing', resolved_at = null, ack_at = null, ack_by = null, reopen_count = reopen_count + 1, last_seen_at = now(),
-                 severity = $2::severity, summary = $4,
+                 severity = $2::severity, summary = $4, occurrence_seq = {seq},
                  detail = coalesce($6, detail)
                      || case when $8 or detail ? 'critical' or severity = 'critical' then jsonb_build_object('critical', true) else jsonb_build_object() end
                      || case when {CRIT_COUNT_SQL} + $8::int > 0 then jsonb_build_object('critical_count', {CRIT_COUNT_SQL} + $8::int) else jsonb_build_object() end
              where id = (select id from incident where engine = $7 and rule = $1 and subject_id = $3 and state = 'resolved' and resolved_at > $5 and not detail ? 'closed_by'
                          order by resolved_at desc limit 1)
                and {exists}
-             returning id, opened_at, notified_at, {TOLD_RESOLVED_SQL} told_resolved_at"
+             returning id, opened_at, notified_at, {TOLD_RESOLVED_SQL} told_resolved_at",
+            seq = occurrence_sql("$7", "$1", "$3")
         ))
         .bind(w.rule)
         .bind(w.severity)
@@ -258,10 +268,13 @@ pub async fn reconcile<'n>(
         }
         let id = crate::db::new_id();
         let res = sqlx::query(&format!(
-            "insert into incident (id, engine, rule, subject_id, severity, summary, detail)
+            "insert into incident (id, engine, rule, subject_id, severity, summary, detail, occurrence_seq)
              select $1, $7, $2, $3, $4::severity, $5,
-                    coalesce($6, jsonb_build_object()) || case when $8 then jsonb_build_object('critical', true, 'critical_count', 1) else jsonb_build_object() end where {exists}
-             on conflict (engine, rule, subject_id) where state = 'firing' do nothing"
+                    coalesce($6, jsonb_build_object()) || case when $8 then jsonb_build_object('critical', true, 'critical_count', 1) else jsonb_build_object() end,
+                    {seq}
+             where {exists}
+             on conflict (engine, rule, subject_id) where state = 'firing' do nothing",
+            seq = occurrence_sql("$7", "$2", "$3")
         ))
         .bind(id)
         .bind(w.rule)

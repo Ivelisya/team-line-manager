@@ -127,11 +127,12 @@ async fn reconcile_reopens_throttles_and_clears_ack_like_machine_alerts() {
     let s = state(&t).await;
     assert_eq!((s.len(), s[2].1.as_str(), s[2].2), (3, "firing", 0), "{s:?}");
 
-    // 隔得远的老毛病：近 7 天开了 3 条（第一条另合并过 3 次复发），recent_count = 3 + 3；触发通知摘要带「近 24 小时第 N 次」
+    // 隔得远的老毛病：近 7 天开了 3 条（第一条另合并过 3 次复发）。recent_count 是各条触发时定下的第几次（新的在前）：
+    // 第一条最后一次重开时第 4 次，后两条第 5、6 次，不按现在的总数回填；触发通知摘要带「近 24 小时第 N 次」
     tokio::time::sleep(Duration::from_millis(500)).await;
     let items = t.get("/api/v1/incidents?state=all").await["items"].as_array().unwrap().clone();
     let counts: Vec<_> = items.iter().filter(|i| i["rule"] == RULE).map(|i| i["recent_count"].as_i64().unwrap()).collect();
-    assert_eq!(counts, [6, 6, 6], "{items:?}");
+    assert_eq!(counts, [6, 5, 4], "{items:?}");
     // 反复的门槛在中控：每条带 chronic；state=chronic 每个（规则, 对象）只取最近一条
     assert!(items.iter().filter(|i| i["rule"] == RULE).all(|i| i["chronic"] == true), "{items:?}");
     let chronic = t.get("/api/v1/incidents?state=chronic").await["items"].as_array().unwrap().clone();
@@ -412,4 +413,64 @@ async fn critical_marker_survives_reopen_and_detail_changes() {
     // 只出现过警告的一直没有
     run(c, "warning", true, at(0)).await;
     assert_eq!(of(c).await.1, json!({"name": "x"}));
+}
+
+/// 「近 7 天第 N 次」在告警触发时定下（incident.occurrence_seq），之后不随新告警变：
+/// 同对象同规则隔开重开窗口开 3 条，依次是第 1 / 2 / 3 次；再开第 4 条，前三条仍是 1 / 2 / 3（不是都变成 4）。
+/// 窗口内复发重开的那条按重开时算：第 4 条重开一次后是第 5 次
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn recent_count_is_fixed_when_the_incident_fires() {
+    let t = setup().await;
+    let subject = Uuid::now_v7();
+    let base = OffsetDateTime::now_utc();
+    let at = |s: i64| base + time::Duration::seconds(s);
+    // 开一条、恢复，再把恢复时间挪出重开窗口：下一次是新告警
+    let fire_and_age = |s: i64| {
+        let t = &t;
+        async move {
+            round(t, at(s), Some(want(subject, "warning")), resolve).await;
+            round(t, at(s + 30), None, resolve).await;
+            sqlx::query("update incident set resolved_at = now() - interval '1 hour' where rule = $1 and subject_id = $2").bind(RULE).bind(subject).execute(&t.st.db).await.unwrap();
+        }
+    };
+    let counts = || async {
+        let items = t.get(&format!("/api/v1/incidents?state=all&subject_id={subject}")).await["items"].as_array().unwrap().clone();
+        // 列表新的在前，翻过来按触发先后
+        items.iter().rev().map(|i| (i["recent_count"].as_i64().unwrap(), i["chronic"] == true)).collect::<Vec<_>>()
+    };
+    for s in [0, 100, 200] {
+        fire_and_age(s).await;
+    }
+    assert_eq!(counts().await, [(1, false), (2, false), (3, true)]);
+    round(&t, at(300), Some(want(subject, "warning")), resolve).await;
+    assert_eq!(counts().await, [(1, false), (2, false), (3, true), (4, true)], "新开第 4 条，前三条不变");
+    // 第 4 条窗口内复发重开：它本身按重开时算（第 5 次），前三条照旧
+    round(&t, at(330), None, resolve).await;
+    round(&t, at(360), Some(want(subject, "warning")), resolve).await;
+    assert_eq!(counts().await, [(1, false), (2, false), (3, true), (5, true)]);
+}
+
+/// 迁移 0094 回填存量：每条按自己触发时往前 7 天算（含自己的复发次数），更早的不算、别的对象不算
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn migration_backfills_occurrence_seq_as_of_each_incident() {
+    let (pool, _schema) = common::db_until(93).await;
+    let (a, b) = (Uuid::now_v7(), Uuid::now_v7());
+    // a：10 天前 1 条（窗口外）、3 天前 1 条（复发合并过 2 次）、2 天前、1 天前各 1 条；b 同规则 1 条
+    for (subject, days, reopen) in [(a, 10, 0), (a, 3, 2), (a, 2, 0), (a, 1, 0), (b, 2, 0)] {
+        sqlx::query(
+            "insert into incident (id, engine, rule, subject_id, severity, state, summary, opened_at, reopen_count)
+             values ($1, 'central', $2, $3, 'warning', 'resolved', 'x', now() - make_interval(days => $4), $5)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(RULE)
+        .bind(subject)
+        .bind(days)
+        .bind(reopen)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    common::migrator(None).run(&pool).await.unwrap();
+    let seq: Vec<(Uuid, i32)> = sqlx::query_as("select subject_id, occurrence_seq from incident order by subject_id, opened_at").fetch_all(&pool).await.unwrap();
+    assert_eq!(seq, [(a, 1), (a, 3), (a, 4), (a, 5), (b, 1)]);
 }

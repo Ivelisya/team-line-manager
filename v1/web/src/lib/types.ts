@@ -315,7 +315,7 @@ export interface Incident {
   opened_at: string; last_seen_at: string | null; resolved_at: string | null; ack_at: string | null; ack_by: string | null;
   /** 恢复后 30 分钟内复发、合并进这条的次数 */
   reopen_count: number;
-  /** 近 7 天同对象同规则开过几次（含这次） */
+  /** 这条触发（或最近一次重开）时是同对象同规则近 7 天的第几次（含这次）：触发时定下，之后不变 */
   recent_count?: number;
   /** 近 7 天反复（recent_count 达到中控定的门槛）：网页标「近 7 天第 N 次」、status 列入「近 7 天反复」 */
   chronic?: boolean;
