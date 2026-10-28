@@ -15,6 +15,7 @@
 //!   - `central_view_stuck`（严重）：机器视图连续 2 分钟算不出来（查询被锁住、超时，见 views::cached）——机器告警跟着停了评估，
 //!     列表与总览停在旧数据。算成一次就恢复
 //!   - `central_tunnel_host`（警告）：软路由隧道回连的主机（[routers] ssh_host，没配时 public_url 的主机名）解析到的不是中控
+//!   - `central_alert_gap`（警告）：不变量自检——在用、非备用的机器故障 / 未知满 5 分钟却没有告警盖着（alerts::gaps，每轮机器告警评估后更新）
 //!     （经 CDN / 边缘机、解析不了）：路由断线后回连不上。有软路由时启动和每 10 分钟查一次（routers::selfcheck），对了就恢复；
 //!     连不上 SSH 口（可能只是中控连不回自己的公网地址）只算判断不了，不开
 //!
@@ -41,6 +42,7 @@ pub const DISK_LOW: &str = "central_disk_low";
 pub const INGRESS: &str = "central_ingress";
 pub const VIEW_STUCK: &str = "central_view_stuck";
 pub const TUNNEL_HOST: &str = "central_tunnel_host";
+pub const ALERT_GAP: &str = "central_alert_gap";
 /// 中控自身告警的对象 id（不是机器；渠道连续失败的告警用渠道 id）
 pub const CENTRAL: Uuid = Uuid::nil();
 /// 告警、通知里中控的名字
@@ -131,6 +133,10 @@ pub async fn check_once(st: &AppState, now: OffsetDateTime) -> anyhow::Result<()
     }
     if let Some(text) = lock(&st.tunnel_host).clone() {
         want.push(problem(TUNNEL_HOST, CENTRAL, "warning", text));
+    }
+    let gaps = lock(&st.alert_gaps).clone();
+    if !gaps.is_empty() {
+        want.push(problem(ALERT_GAP, CENTRAL, "warning", format!("{} 台在用机器故障或未知却没有告警：{}", gaps.len(), gaps.join("、"))));
     }
     let enabled: HashSet<Uuid> = channels.iter().map(|c| c.0).collect();
     // 问题没了的恢复；渠道停用或删了不是恢复：关掉、不发通知

@@ -224,7 +224,7 @@ export interface Meta {
   currencies: string[];
   cycles: { key: string; label: string; months: number }[];
   kinds: Record<string, string>; ip_node_label: string;
-  lifecycles: Record<string, string>; healths: Record<string, string>;
+  lifecycles: Record<string, string>; healths: Record<string, string>; health_hints?: Record<string, string>;
   job_kinds: Record<string, string>; job_states: Record<string, string>; step_states: Record<string, string>; entry_states: Record<string, string>;
   traffic_rules: Record<string, string>;
   /** 计费方式短名（小标签用，key 同 traffic_rules）：「双向 · 入 + 出」「单向 · 取较大」… */

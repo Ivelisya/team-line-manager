@@ -17,6 +17,8 @@ const lbl = (t: Record<string, string>, k: string) => t[k] ?? k;
 export const kindLabel = (k: string) => lbl(meta().kinds, k);
 export const lifecycleLabel = (k: string) => lbl(meta().lifecycles, k);
 export const healthLabel = (k: string) => lbl(meta().healths, k);
+/** 状态图例（悬停显示）；旧中控没下发时为空 */
+export const healthHint = (k: string) => meta().health_hints?.[k] ?? '';
 export const entryLabel = (k: string) => lbl(meta().entry_states, k);
 export const jobKindLabel = (k: string) => lbl(meta().job_kinds, k);
 export const jobStateLabel = (k: string) => lbl(meta().job_states, k);

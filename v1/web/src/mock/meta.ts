@@ -12,6 +12,7 @@ export const META: Meta = {
   kinds: { vps: 'VPS 节点', proxy: '家宽代理', relay: '线路机' }, ip_node_label: '同机 IP 节点',
   lifecycles: { draft: '草稿', provisioning: '上架中', active: '运行中', retiring: '退役中', retired: '已退役', failed: '上架失败' },
   healths: { ok: '正常', degraded: '降级', down: '故障', unknown: '未知', maintenance: '维护', inactive: '未启用' },
+  health_hints: { ok: '没有告警级原因，探测结果可判', degraded: '有警告级原因', down: '有严重原因（agent 离线、出口 / TCP 连续失败、Xray 未运行等）', unknown: '没有故障原因，但有在用入口 15 分钟内没有探测结果；探测停了满 5 分钟开「状态未知」告警', maintenance: '维护中，不开告警', inactive: '未启用 / 退役中，不评估' },
   job_kinds: {
     provision_vps: '上架 VPS 节点', provision_proxy: '上架家宽代理', provision_relay: '上架线路机', provision_ip: '上架同机 IP 节点',
     attach_entry: '添加入口', move_entry: '换线路机', restore_vps: '恢复 VPS 节点', restore_proxy: '恢复家宽代理', restore_relay: '恢复线路机', restore_ip: '恢复同机 IP 节点',
@@ -27,10 +28,10 @@ export const META: Meta = {
   policy_sync_states: { applied: '已应用', applying: '进行中', failed: '失败', gone: '已退役' },
   policy_modes: { observe: '仅观察', allowlist: '白名单', denylist: '黑名单', blocked: '暂停新连接', inherit: '跟随团队' },
   rules: {
-    agent_offline: 'agent 离线', clock_skew: 'agent 时钟不准', no_entry: '没有在用入口', egress_fail: '出口不通', tcp_fail: '线路机到节点不通', tcp_loss_high: '持续握手丢包', renewal_due: '即将到期', renewal_overdue: '已过期',
+    agent_offline: 'agent 离线', clock_skew: 'agent 时钟不准', no_entry: '没有在用入口', egress_fail: '出口不通', health_unknown: '状态未知', tcp_fail: '线路机到节点不通', tcp_loss_high: '持续握手丢包', renewal_due: '即将到期', renewal_overdue: '已过期',
     relay_apply_lag: '配置未应用', relay_apply_error: '配置应用失败', relay_xray_down: 'Xray 未运行', relay_unreachable: '客户入口连不上', host_cpu_high: 'CPU 持续偏高', host_mem_high: '内存持续偏高', host_disk_high: '磁盘空间不足',
     traffic_quota_high: '流量额度吃紧', nonbusiness_traffic_high: '非业务流量偏高', business_traffic_spike: '业务流量突增', ipintel_new_isp: '来源出现新运营商', ipintel_new_city: '来源出现新城市', ipintel_datacenter_source: '机房 / VPN 来源', policy_blocked: '访问规则暂停',
-    central_channel_failing: '通知渠道发送失败', central_backup_stale: '备份过期', central_disk_low: '中控磁盘空间不足', central_ingress: 'agent 同时失联', central_view_stuck: '机器视图算不出来', central_tunnel_host: '软路由回连地址不是中控',
+    central_channel_failing: '通知渠道发送失败', central_backup_stale: '备份过期', central_disk_low: '中控磁盘空间不足', central_ingress: 'agent 同时失联', central_view_stuck: '机器视图算不出来', central_tunnel_host: '软路由回连地址不是中控', central_alert_gap: '故障/未知却没有告警',
     router_offline: '软路由离线', router_collect_error: '软路由读取出错', router_openclash_down: 'OpenClash 没在运行', router_exits_down: '软路由出口不通', router_wan_down: '软路由 WAN 口断开', router_resource_high: '软路由资源吃紧', router_exit_drift: '软路由出口参数不一致',
   },
   severities: { critical: { label: '严重', tone: 'bad' }, warning: { label: '警告', tone: 'warn' }, info: { label: '提示', tone: 'info' } },

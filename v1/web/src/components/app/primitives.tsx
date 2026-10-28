@@ -11,7 +11,7 @@ import { Tip, Trunc } from '@/components/ui/overlays';
 import { InfoTip } from '@/components/ui/form';
 import { useCountUp } from '@/lib/useCountUp';
 import { tzCity } from '@/lib/tz';
-import { compactPorts, dueTone, meta, entryLabel, errText, reasonText, healthLabel, fromLabel, hostRel, LINK_LABEL, linkTip, lifecycleLabel, monthFlow, monthFlowTip, severityOf, type BeatCell, type linkCounts, type LinkKey } from '@/lib/derive';
+import { compactPorts, dueTone, meta, entryLabel, errText, reasonText, healthLabel, healthHint, fromLabel, hostRel, LINK_LABEL, linkTip, lifecycleLabel, monthFlow, monthFlowTip, severityOf, type BeatCell, type linkCounts, type LinkKey } from '@/lib/derive';
 import { openDrawer } from '@/lib/drawer';
 import { copyText } from '@/lib/clipboard';
 import { watchSize } from '@/lib/sharedObserver';
@@ -66,7 +66,9 @@ export function HealthPill({ m }: { m: Pick<MachineView, 'health' | 'lifecycle' 
   if (lc === 'failed') return <Pill tone="bad">{lifecycleLabel(lc)}</Pill>;
   // 原因写成 data-tip（一条一行）交给全站一份 TipHost：卡片、表格里成批的胶囊不各挂一个 Radix Tooltip 根
   const s = m.health.status; const rs = m.health.reasons;
-  return <Pill tone={HEALTH_TONE[s]} tabIndex={rs.length ? 0 : undefined} tip={rs.map((r) => reasonText(r.text)).join('\n')}>{healthLabel(s)}</Pill>;
+  // 首行是状态图例（/meta health_hints），其后一条原因一行
+  const tip = [`${healthLabel(s)}：${healthHint(s)}`, ...rs.map((r) => reasonText(r.text))].join('\n');
+  return <Pill tone={HEALTH_TONE[s]} tabIndex={0} tip={tip}>{healthLabel(s)}</Pill>;
 }
 /** 健康原因列表（带严重度图标）：抽屉“状态原因”。英文原始错误换成中文（errText，同卡片与胶囊悬停） */
 export const ReasonList = ({ reasons, className }: { reasons: HealthReason[]; className: string }) => (

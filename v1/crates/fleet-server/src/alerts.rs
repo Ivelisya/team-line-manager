@@ -24,6 +24,7 @@
 //! 所以反复抖动的告警每 5 分钟最多一对触发/恢复，真故障最多晚 5 分钟报。被静默（含维护）的不发任何通知。
 //! 「发过」= 写进了库里的发送队列（notify_outbox，`notified_at` 同一事务刷新）：之后由发送循环重试到送达或放弃，中控重启也不丢。
 
+use crate::health::Status;
 use crate::incident::{self, Close, Engine, Want};
 use crate::notify::Kind;
 use crate::selfmon;
@@ -45,6 +46,7 @@ fn debounce_s(rule: &str) -> i64 {
     match rule {
         "egress_fail" => EGRESS_FAIL_S,
         "tcp_fail" => 90,
+        UNKNOWN => GAP_S,
         _ => 60,
     }
 }
@@ -104,14 +106,53 @@ pub struct UnknownCauses {
     pub relays: Vec<Uuid>,
 }
 
-pub fn unknown_causes(_m: &MachineView) -> UnknownCauses { UnknownCauses::default() }
+pub fn unknown_causes(m: &MachineView) -> UnknownCauses {
+    let mut c = UnknownCauses::default();
+    // 与 health.rs 判「未知」看同一批入口：线路机只看直出入口，其余看全部在用入口
+    for e in m.entries.iter().filter(|e| e.lifecycle == "active" && (m.kind != "relay" || e.direct)) {
+        if e.relay_maint {
+            continue;
+        }
+        if e.relay_offline || e.relay_xray_down {
+            if !c.relays.contains(&e.relay.id) {
+                c.relays.push(e.relay.id);
+            }
+        } else if e.egress.is_none() {
+            c.stale.push(format!("{}:{}", e.relay.name, e.port));
+        }
+    }
+    c
+}
+
+/// 「未知」告警（P-17）：探测停了满 `GAP_S` 秒，警告级
+pub const UNKNOWN: &str = "health_unknown";
+/// 故障 / 未知持续这么久还没有告警盖着，自检算矛盾；也是 `health_unknown` 的去抖
+pub const GAP_S: i64 = 300;
 
 /// 已过期的备用机（P-06）：备用团队里、订阅已过到期日（等回收）：不开任何告警，开着的关掉。还被软路由出口指着也一样（客户侧由软路由的出口告警报）
-pub fn expired_spare(_m: &MachineView) -> bool { false }
+pub fn expired_spare(m: &MachineView) -> bool { m.spare && m.lifecycle == "active" && m.subscription.as_ref().is_some_and(|s| s.due_days < 0) }
 
 /// 不变量自检（P-17）：在用、不在维护、不在备用团队，状态故障或未知满 `GAP_S` 秒的机器，必须有告警盖着——自己开着的机器告警；
 /// 全网同时失联时由中控那一条（central_ingress）盖；未知只因线路机离线 / Xray 未运行的，由那几台线路机开着的告警盖。返回没盖住的「名字（状态）」
-pub fn gaps(_ms: &[MachineView], _firing: &HashSet<Uuid>, _mass_offline: bool, _bad_since: &HashMap<Uuid, OffsetDateTime>, _now: OffsetDateTime) -> Vec<String> { vec![] }
+pub fn gaps(ms: &[MachineView], firing: &HashSet<Uuid>, mass_offline: bool, bad_since: &HashMap<Uuid, OffsetDateTime>, now: OffsetDateTime) -> Vec<String> {
+    ms.iter()
+        .filter(|m| m.lifecycle == "active" && !m.maintenance && !m.spare && bad(m))
+        .filter(|m| bad_since.get(&m.id).is_some_and(|t| held(*t, now, GAP_S)))
+        .filter(|m| {
+            let down = m.health.status == Status::Down;
+            let covered = firing.contains(&m.id)
+                || (mass_offline && m.agent.as_ref().is_some_and(|a| !a.online))
+                || (!down && {
+                    let c = unknown_causes(m);
+                    c.stale.is_empty() && c.relays.iter().all(|r| firing.contains(r))
+                });
+            !covered
+        })
+        .map(|m| format!("{}（{}）", m.name, if m.health.status == Status::Down { "故障" } else { "未知" }))
+        .collect()
+}
+
+fn bad(m: &MachineView) -> bool { matches!(m.health.status, Status::Down | Status::Unknown) }
 
 /// 评估循环在两次之间要记住的东西
 #[derive(Default)]
@@ -122,6 +163,8 @@ pub struct AlertState {
     /// 出口 / TCP 告警最近一次有原因时是哪几条入口失败的（所在线路机）：原因消失时只看它们判不判得出（health::Health::probe_undecided）、
     /// 是不是都连续探测成功了（`probes_recovered`）
     probe_failing: HashMap<(String, Uuid), Vec<Uuid>>,
+    /// 机器从什么时候起一直故障 / 未知（不变量自检 `gaps` 用）
+    bad_since: HashMap<Uuid, OffsetDateTime>,
 }
 
 /// 每 30 秒：记下中控还在跑（report_gaps::ReportGaps::alive），评估机器的告警，成功了 ping 死人开关；再检查中控自身（selfmon.rs）。
@@ -259,7 +302,7 @@ pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime
         // 已开着的在下面悄悄关掉。健康状态照常算，卡片上看得到。只开着自动续费被扣住的闲置备用照常续费，续费提醒（renewal_due）照发（health.rs renewal_reason 只给被扣住的），其余原因不开
         for r in &m.health.reasons {
             // info 级只用于界面提示（如访问策略暂停新连接），不开告警
-            if r.severity == "info" || (m.idle_spare && r.key != "renewal_due") {
+            if r.severity == "info" || (m.idle_spare && r.key != "renewal_due") || expired_spare(m) {
                 continue;
             }
             let k = (r.key.to_string(), m.id);
@@ -275,6 +318,15 @@ pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime
             let ready = slow(r.key) || crate::anomaly::hourly(r.key) || held(since, now, debounce_s(r.key));
             current.insert(k);
             want.push(Want { rule: r.key, subject: m.id, name: &m.name, severity: r.severity, text: r.text.clone(), detail: Some(json!({"name": m.name})), ready, quiet: false });
+        }
+        // 「未知」只因探测停了（线路机在线、Xray 在跑、不在维护）：节点自己报；线路机离线 / Xray 未运行由线路机的告警报，全网失联由中控那一条报
+        let stale = unknown_causes(m).stale;
+        if m.lifecycle == "active" && !m.maintenance && !m.idle_spare && !expired_spare(m) && !mass_offline && m.health.status == Status::Unknown && !stale.is_empty() {
+            let k = (UNKNOWN.to_string(), m.id);
+            let since = *state.first_seen.entry(k.clone()).or_insert(now);
+            let text = format!("状态未知：{} 15 分钟内没有探测结果", stale.join("、"));
+            want.push(Want { rule: UNKNOWN, subject: m.id, name: &m.name, severity: "warning", text, detail: Some(json!({"name": m.name})), ready: held(since, now, GAP_S), quiet: false });
+            current.insert(k);
         }
     }
     state.first_seen.retain(|k, _| current.contains(k));
@@ -297,6 +349,9 @@ pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime
         // 退到备用、或被指着的备用取消了指向（或上面的 IP 节点都走了），现在没有出口指向了：关掉。报过触发的发恢复（摘要说明是转为闲置，不是原因消失）；之后若又有出口指向它，原因还在就按新告警开
         // 续费提醒只给被扣住的闲置备用（health.rs renewal_reason）：还被扣住的提醒消除（到期日推后、续费了）是普通恢复；
         // 变成不再续费（用户关掉了自动续费）才是转为等到期回收，不再提醒
+        if expired_spare(m) {
+            return Close::ResolveNoted { name: &m.name, by: "spare", note: "备用机订阅已过期（等回收），不再告警" };
+        }
         if m.idle_spare && (inc.rule != "renewal_due" || m.spare_unbilled) {
             let note = if inc.rule == "renewal_due" { "不再续费（等到期回收），不再提醒续费" } else { "转为闲置备用（没有软路由出口指着、没有在用的同机 IP 节点），不再告警" };
             return Close::ResolveNoted { name: &m.name, by: "spare", note };
@@ -335,6 +390,17 @@ pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime
     // 已经不在告警的计数清掉
     state.clean_since.retain(|id, _| open_ids.contains(id));
     state.probe_failing.retain(|k, _| current.contains(k) || open_keys.contains(k));
+    // 不变量自检：在用且故障 / 未知的必有告警盖着（selfmon.rs 照它开 central_alert_gap）
+    state.bad_since.retain(|id, _| ms.iter().any(|m| m.id == *id && bad(m)));
+    for m in ms.iter().filter(|m| bad(m)) {
+        state.bad_since.entry(m.id).or_insert(now);
+    }
+    let firing: HashSet<Uuid> = incident::firing(&st.db, Engine::Machine).await?.iter().map(|o| o.subject_id).collect();
+    let g = gaps(&ms, &firing, mass_offline, &state.bad_since, now);
+    if !g.is_empty() {
+        tracing::warn!(gaps = %g.join("、"), "在用且故障/未知的机器没有告警");
+    }
+    *st.alert_gaps.lock().unwrap() = g;
     Ok(())
 }
 

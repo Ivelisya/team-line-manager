@@ -209,6 +209,15 @@ pub const LIFECYCLES: Labels = &[
 ];
 
 /// 健康状态（health::Status）：全站只用这几个词，不加「含」「中」之类的前后缀
+/// 状态图例（P-17，状态徽章悬停显示）：与 health.rs evaluate 的判定一致
+pub const HEALTH_HINTS: Labels = &[
+    ("ok", "没有告警级原因，探测结果可判"),
+    ("degraded", "有警告级原因（如 TCP 偶发失败、负载高、配置未应用）"),
+    ("down", "有严重原因（agent 离线、出口 / TCP 连续失败、Xray 未运行等）"),
+    ("unknown", "没有故障原因，但有在用入口 15 分钟内没有探测结果（线路机离线、Xray 未运行、维护中，或探测停了）；探测停了满 5 分钟开「状态未知」告警"),
+    ("maintenance", "维护中，不开告警"),
+    ("inactive", "未启用 / 退役中，不评估"),
+];
 pub const HEALTHS: Labels = &[("ok", "正常"), ("degraded", "降级"), ("down", "故障"), ("unknown", "未知"), ("maintenance", "维护"), ("inactive", "未启用")];
 
 /// 告警级别：中文名与色调（网页按色调着色）
@@ -295,6 +304,7 @@ pub const RULES: Labels = &[
     ("clock_skew", "agent 时钟不准"),
     ("no_entry", "没有在用入口"),
     ("egress_fail", "出口不通"),
+    ("health_unknown", "状态未知"),
     ("tcp_fail", "线路机到节点不通"),
     ("tcp_loss_high", "持续握手丢包"),
     ("renewal_due", "即将到期"),
@@ -320,6 +330,7 @@ pub const RULES: Labels = &[
     ("central_ingress", "agent 同时失联"),
     ("central_view_stuck", "机器视图算不出来"),
     ("central_tunnel_host", "软路由回连地址不是中控"),
+    ("central_alert_gap", "故障/未知却没有告警"),
     ("router_offline", "软路由离线"),
     ("router_collect_error", "软路由读取出错"),
     ("router_openclash_down", "OpenClash 没在运行"),
@@ -364,6 +375,7 @@ pub fn to_json() -> Value {
         "ip_node_label": IP_NODE,
         "lifecycles": map(LIFECYCLES),
         "healths": map(HEALTHS),
+        "health_hints": map(HEALTH_HINTS),
         "severities": SEVERITIES.iter().map(|(k, l, t)| (k.to_string(), json!({"label": l, "tone": t}))).collect::<Map<_, _>>(),
         "job_kinds": map(JOB_KINDS),
         "job_states": map(JOB_STATES),
