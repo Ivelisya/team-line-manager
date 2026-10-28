@@ -1311,3 +1311,32 @@ async fn view_marks_nodes_no_router_exit_points_to() {
         assert_eq!(flag(&v), Some(want), "{} {v}", v["name"]);
     }
 }
+
+/// P-06：已过期的备用机不再告警——还被软路由出口指着（不闲置）也一样：没有入口、已过期都不开
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn expired_spare_does_not_alert_even_when_pointed_by_router_exit() {
+    let t = setup(false).await;
+    let sp = spare_team(&t).await;
+    let n = seed_node(&t, sp, 1, "203.0.113.42", "active").await;
+    let due = (OffsetDateTime::now_utc().date() - time::Duration::days(5)).to_string();
+    sub(&t, n, &due, "UTC").await;
+    let rid = Uuid::now_v7();
+    sqlx::query("insert into router (id, name, tunnel_port) values ($1, '办公室', 23002)").bind(rid).execute(&t.st.db).await.unwrap();
+    let pointing = json!({"id": Uuid::now_v7(), "name": "备用-01 · 线路机1:20001", "node_id": n, "relay_id": Uuid::now_v7(), "node_name": "备用-01", "relay_name": "线路机1", "port": 20001, "lifecycle": "active"});
+    sqlx::query("insert into router_status (router_id, ts, reachable, data, last_ok_at) values ($1, now(), true, $2, now())")
+        .bind(rid)
+        .bind(json!({"exits": [{"name": "美国", "entry": pointing, "sync": "ok", "linked": true}]}))
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    t.st.live.invalidate();
+    let v = t.get(&format!("/api/v1/machines/{n}")).await;
+    assert_eq!(v["idle_spare"], json!(false), "被出口指着，不是闲置：{v}");
+    let mut state = alerts::AlertState::default();
+    let base = OffsetDateTime::now_utc();
+    for secs in [0, 400] {
+        t.st.live.invalidate();
+        alerts::evaluate_once(&t.st, &mut state, base + time::Duration::seconds(secs)).await.unwrap();
+    }
+    assert_eq!(t.count(&format!("select count(*) from incident where state = 'firing' and subject_id = '{n}'")).await, 0, "已过期的备用机不告警");
+}

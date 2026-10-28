@@ -96,6 +96,23 @@ pub fn agents_unreachable(ms: &[views::MachineView]) -> Option<(usize, usize)> {
     (off >= MASS_OFFLINE_MIN && off * 2 > online.len()).then_some((off, online.len()))
 }
 
+/// 「未知」的原因（P-17）：`stale`：线路机在线、Xray 在跑、不在维护，这条在用入口却 15 分钟内没有可用探测结果（探测停了）——节点自己开 `health_unknown`；
+/// `relays`：经它探测的线路机离线或 Xray 未运行（线路机自己有告警，节点不重复开）。线路机在维护中是预期的，不算
+#[derive(Debug, Default, PartialEq)]
+pub struct UnknownCauses {
+    pub stale: Vec<String>,
+    pub relays: Vec<Uuid>,
+}
+
+pub fn unknown_causes(_m: &MachineView) -> UnknownCauses { UnknownCauses::default() }
+
+/// 已过期的备用机（P-06）：备用团队里、订阅已过到期日（等回收）：不开任何告警，开着的关掉。还被软路由出口指着也一样（客户侧由软路由的出口告警报）
+pub fn expired_spare(_m: &MachineView) -> bool { false }
+
+/// 不变量自检（P-17）：在用、不在维护、不在备用团队，状态故障或未知满 `GAP_S` 秒的机器，必须有告警盖着——自己开着的机器告警；
+/// 全网同时失联时由中控那一条（central_ingress）盖；未知只因线路机离线 / Xray 未运行的，由那几台线路机开着的告警盖。返回没盖住的「名字（状态）」
+pub fn gaps(_ms: &[MachineView], _firing: &HashSet<Uuid>, _mass_offline: bool, _bad_since: &HashMap<Uuid, OffsetDateTime>, _now: OffsetDateTime) -> Vec<String> { vec![] }
+
 /// 评估循环在两次之间要记住的东西
 #[derive(Default)]
 pub struct AlertState {
@@ -324,6 +341,61 @@ pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn node(f: impl FnOnce(&mut MachineView)) -> MachineView {
+        let mut m = crate::health::tests::base("vps");
+        m.entries = vec![crate::health::tests::entry(false, true)];
+        f(&mut m);
+        m.health = crate::health::evaluate(&m, OffsetDateTime::now_utc());
+        m
+    }
+
+    #[test]
+    fn down_or_unknown_without_alert_is_a_gap() {
+        let now = OffsetDateTime::now_utc();
+        let down = node(|m| m.entries = vec![crate::health::tests::entry(false, false)]);
+        assert_eq!(down.health.status, crate::health::Status::Down);
+        let since = |m: &MachineView, s: i64| HashMap::from([(m.id, now - time::Duration::seconds(s))]);
+        assert_eq!(gaps(std::slice::from_ref(&down), &HashSet::new(), false, &since(&down, 301), now).len(), 1, "故障满 5 分钟没有告警：矛盾");
+        assert!(gaps(std::slice::from_ref(&down), &HashSet::from([down.id]), false, &since(&down, 301), now).is_empty(), "有告警盖着");
+        assert!(gaps(std::slice::from_ref(&down), &HashSet::new(), false, &since(&down, 30), now).is_empty(), "还在去抖");
+        let spare = node(|m| {
+            m.entries = vec![crate::health::tests::entry(false, false)];
+            m.spare = true;
+            m.idle_spare = true;
+        });
+        assert!(gaps(std::slice::from_ref(&spare), &HashSet::new(), false, &since(&spare, 301), now).is_empty(), "备用团队不在不变量里");
+        // 未知：探测停了要自己有告警；只因线路机离线的由线路机的告警盖
+        let stale = node(|m| m.entries[0].egress = None);
+        assert_eq!(stale.health.status, crate::health::Status::Unknown);
+        assert_eq!(gaps(std::slice::from_ref(&stale), &HashSet::new(), false, &since(&stale, 301), now).len(), 1);
+        let via = node(|m| m.entries[0].relay_offline = true);
+        let relay = via.entries[0].relay.id;
+        assert_eq!(gaps(std::slice::from_ref(&via), &HashSet::new(), false, &since(&via, 301), now).len(), 1, "线路机也没告警：矛盾");
+        assert!(gaps(std::slice::from_ref(&via), &HashSet::from([relay]), false, &since(&via, 301), now).is_empty());
+        // 全网失联：由中控那一条盖
+        let off = node(|m| m.agent.as_mut().unwrap().online = false);
+        assert_eq!(off.health.status, crate::health::Status::Down);
+        assert!(gaps(std::slice::from_ref(&off), &HashSet::new(), true, &since(&off, 301), now).is_empty());
+    }
+
+    #[test]
+    fn unknown_causes_split_stale_probes_from_relay_problems() {
+        let stale = node(|m| m.entries[0].egress = None);
+        assert_eq!(unknown_causes(&stale).stale.len(), 1);
+        let via = node(|m| m.entries[0].relay_offline = true);
+        assert_eq!(unknown_causes(&via), UnknownCauses { stale: vec![], relays: vec![via.entries[0].relay.id] });
+        let maint = node(|m| m.entries[0].relay_maint = true);
+        assert_eq!(unknown_causes(&maint), UnknownCauses::default(), "线路机维护中是预期的");
+    }
+
+    #[test]
+    fn expired_spare_is_detected_by_due_date() {
+        let mk = |spare: bool, due: i64| node(|m| { m.spare = spare; m.subscription = Some(crate::health::tests::sub(due)); });
+        assert!(expired_spare(&mk(true, -1)));
+        assert!(!expired_spare(&mk(true, 3)), "没过期");
+        assert!(!expired_spare(&mk(false, -1)), "不在备用团队");
+    }
 
     #[test]
     fn summary_digits_do_not_count_as_change() {
