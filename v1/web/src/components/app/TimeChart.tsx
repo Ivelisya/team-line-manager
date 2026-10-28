@@ -3,29 +3,26 @@
 import { memo, useCallback, useId, useMemo, useState } from 'react';
 import type { SeriesPoint } from '@/lib/types';
 import { RANGE_MS } from '@/lib/chart';
-import { dt, hm } from '@/lib/format';
+import { dt, hm, startOfDay } from '@/lib/format';
 import { ChartContainer, ChartLegend, chartTooltip, Recharts, axisProps, type ChartConfig } from '@/components/ui/chart';
 
 const { AreaChart, Area, LineChart, Line, XAxis, YAxis, CartesianGrid, ReferenceArea, ReferenceDot } = Recharts;
 export const RANGES = [{ value: '1h', label: '1 小时' }, { value: '6h', label: '6 小时' }, { value: '24h', label: '24 小时' }, { value: '7d', label: '7 天' }, { value: '30d', label: '30 天' }] as const;
 
 /** 按天的标日期；按小时的标时刻，落在零点的标日期（一两天的曲线跨日，不会出现两个一样的 06:00 分不清哪天） */
-const xFmt = (range: string) => (t: string | number) => {
-  const d = new Date(t);
-  return range === '7d' || range === '30d' || (d.getHours() === 0 && d.getMinutes() === 0) ? dt(t).slice(0, 5) : hm(t);
-};
+const xFmt = (range: string) => (t: string | number) => (range === '7d' || range === '30d' || hm(t) === '00:00' ? dt(t).slice(0, 5) : hm(t));
 
 const MIN = 60_000; const HOUR = 60 * MIN; const DAY = 24 * HOUR;
 const TICK_STEP: Record<string, number> = { '1h': 10 * MIN, '6h': HOUR, '24h': 3 * HOUR, '7d': DAY, '30d': 5 * DAY };
 /** 刻度步长与格式按数据实际跨度取，不按所选范围：刚上架或早已离线的机器看「7 天」，数据只有一天多，按 7 天只标日期会标出一排相同的 10-20 */
 const spanRange = (span: number) => (span <= HOUR ? '1h' : span <= 6 * HOUR ? '6h' : span <= 2 * DAY ? '24h' : span <= 7 * DAY ? '7d' : '30d');
-/** 横轴刻度落在本地时间的整十分 / 整点 / 零点上（recharts 自己取的是 13:46、16:40 这种） */
+/** 横轴刻度落在组织时区的整十分 / 整点 / 零点上（recharts 自己取的是 13:46、16:40 这种） */
 function timeTicks(min: number, max: number, range: string): number[] | undefined {
   const step = TICK_STEP[range];
   if (!step || !(max > min)) return undefined;
-  const d = new Date(min); d.setHours(0, 0, 0, 0);
+  const d0 = startOfDay(min);
   const out: number[] = [];
-  for (let t = d.getTime() + Math.ceil((min - d.getTime()) / step) * step; t <= max; t += step) out.push(t);
+  for (let t = d0 + Math.ceil((min - d0) / step) * step; t <= max; t += step) out.push(t);
   return out.length >= 2 ? out : undefined; // 数据比一个步长还短（刚上架的机器看 7 天）：交给 recharts 自己取
 }
 

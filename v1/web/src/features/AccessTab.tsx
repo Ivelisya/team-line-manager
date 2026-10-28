@@ -46,14 +46,13 @@ function HostBars({ items, limit }: { items: MachineAccess['top_domains']; limit
 const ipKey = (ip: string) => (/^\d+(\.\d+){3}$/.test(ip) ? ip.split('.').reduce((n, x) => n * 256 + Number(x), 0) : null);
 const byIp = (a: string, b: string) => { const x = ipKey(a); const y = ipKey(b); return x != null && y != null ? x - y : a.localeCompare(b); };
 
-const p2 = F.pad2;
-/** 提示框标题：这一小时的时段，如 10-21 01:00–02:00 */
-const hourSpan = (l: string | number) => { const d = new Date(Number(l)); const e = new Date(Number(l) + 3_600_000); return `${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:00–${p2(e.getHours())}:00`; };
+/** 提示框标题：这一小时的时段（组织时区），如 10-21 01:00–02:00 */
+const hourSpan = (l: string | number) => `${F.dt(Number(l))}–${F.hm(Number(l) + 3_600_000)}`;
 /** 每小时连接数柱状图 */
 function HourlyBars({ points, height = 160 }: { points: MachineAccess['hourly']; height?: number }) {
   const long = points.length > 30;
   const data = React.useMemo(() => points.map((p) => ({ t: new Date(p.hour).getTime(), routed: Math.max(0, p.conns - p.blocked), blocked: p.blocked })), [points]);
-  const tick = (t: number) => { const d = new Date(t); return long ? `${p2(d.getMonth() + 1)}-${p2(d.getDate())}` : `${p2(d.getHours())}:00`; };
+  const tick = (t: number) => (long ? F.md(t) : F.hm(t));
   return (
     <ChartContainer config={BAR_CFG} height={height}>
       <BarChart data={data} margin={{ top: 6, right: 8, bottom: 0, left: 0 }} barCategoryGap={long ? 0 : 2}>
@@ -78,7 +77,7 @@ function RecentTable({ items }: { items: AccessEvent[] }) {
         <tbody>
           {items.map((e, i) => (
             <tr key={`${e.ts}-${i}`}>
-              <td data-tip={F.dtFull(e.ts)}>{F.dt(e.ts)}:{p2(new Date(e.ts).getSeconds())}</td>
+              <td data-tip={F.dtFull(e.ts)}>{F.dt(e.ts)}:{F.clock(e.ts).slice(6)}</td>
               <td>{e.src_ip ?? '—'}</td>
               <td data-tip={e.dest_host}><span className="strong">{e.dest_host}</span>{e.dest_port != null && <span className="t-sub">:{e.dest_port}</span>}</td>
               {/* 胶囊比单元格宽一点点时 .dt 的省略号会接在后面：这一格不省略 */}

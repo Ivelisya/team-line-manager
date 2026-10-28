@@ -99,25 +99,56 @@ export function since(iso: string | null | undefined, now = Date.now()): Fmt {
   return { v: String(Math.floor(s / 86400)), u: '天' };
 }
 const p2 = (n: number) => String(n).padStart(2, '0');
-/** 本机时区的 `HH:MM` */
-export function hm(t: string | number): string {
+// ── 时刻按组织时区显示（P-23）：浏览器可能在别的时区（如 UTC），零点附近会差一天；/meta 取回时 setMeta 设上，之前（登录页）用本机时区 ──
+let TZ: string | undefined;
+let wall: Intl.DateTimeFormat | null = null;
+const fmtFor = (tz?: string) => new Intl.DateTimeFormat('sv-SE', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
+/** 设组织时区；认不出的时区（Intl 会抛 RangeError）退回本机时区，不让整页崩掉 */
+export const setTimeZone = (tz?: string) => {
+  try { wall = fmtFor(tz); TZ = tz; } catch { wall = fmtFor(undefined); TZ = undefined; }
+};
+/** 组织时区里的「YYYY-MM-DD HH:MM:SS」（sv-SE 就是这个写法；格式化器按时区缓存，推送热路径上不每次新建）；非法时间为 null */
+const local = (t: string | number): string | null => {
   const d = new Date(t);
-  return `${p2(d.getHours())}:${p2(d.getMinutes())}`;
-}
-/** 本机时区的 `MM-DD HH:MM`；时间戳（毫秒）或 ISO 字符串，空为「—」 */
-export function dt(iso: string | number | null | undefined): string {
-  if (iso == null || iso === '') return '—';
-  const d = new Date(iso);
-  return `${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${hm(d.getTime())}`;
-}
+  return Number.isNaN(d.getTime()) ? null : (wall ??= fmtFor(TZ)).format(d);
+};
+/** 取 local 的一段，非法时间为「—」 */
+const cut = (t: string | number, a: number, b?: number) => local(t)?.slice(a, b) ?? '—';
+/** 组织时区的 `HH:MM` */
+export const hm = (t: string | number): string => cut(t, 11, 16);
+/** 组织时区的 `MM-DD HH:MM`；时间戳（毫秒）或 ISO 字符串，空为「—」 */
+export const dt = (iso: string | number | null | undefined): string => (iso == null || iso === '' ? '—' : cut(iso, 5, 16));
 /** 月-日（MM-DD） */
-export const md = (iso: string | null | undefined): string => (iso ? dt(iso).slice(0, 5) : '—');
-export function dtFull(iso: string | null | undefined): string {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
+export const md = (iso: string | number | null | undefined): string => (iso == null || iso === '' ? '—' : cut(iso, 5, 10));
+/** 组织时区的 `YYYY-MM-DD HH:MM` */
+export const dtFull = (iso: string | null | undefined): string => (iso ? cut(iso, 0, 16) : '—');
+/** 组织时区的 `HH:MM:SS` */
+export const clock = (iso: string) => cut(iso, 11);
+/** 组织时区的日期 `YYYY-MM-DD`（按天分组的键） */
+export const dayKey = (t: string | number): string => cut(t, 0, 10);
+/** 组织时区的墙上时间当成 UTC 读出的毫秒数（减去 t 就是这一刻的时区偏移） */
+const wallMs = (t: number) => { const s = local(t); return s ? Date.parse(`${s.replace(' ', 'T')}Z`) : Number.NaN; };
+/** t 所在那天组织时区零点的时刻（毫秒）：图表刻度按它对齐 */
+export const startOfDay = (t: number): number => t - (wallMs(t) - Date.parse(`${dayKey(t)}T00:00:00Z`)) - (t % 1000);
+const WEEK = '日一二三四五六';
+/** 按天分段的标题：今天 / 昨天 / 10月20日 周一（组织时区） */
+export function dayLabel(t: string | number, now = Date.now()): string {
+  const k = dayKey(t);
+  if (k === dayKey(now)) return '今天';
+  if (k === dayKey(now - 86_400_000)) return '昨天';
+  const [y, m, d] = k.split('-').map(Number);
+  return Number.isNaN(d) ? '—' : `${m}月${d}日 周${WEEK[new Date(Date.UTC(y, m - 1, d)).getUTCDay()]}`;
 }
-export const clock = (iso: string) => { const d = new Date(iso); return `${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`; };
+/** datetime-local 输入框的值：组织时区的墙上时间，到分钟 */
+export const wallInput = (t: number): string => cut(t, 0, 16).replace(' ', 'T');
+/** 把 datetime-local 的值（不带时区）按组织时区解析成时刻；没填完为 NaN */
+export function parseWall(v: string): number {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(v)) return Number.NaN;
+  const guess = Date.parse(`${v}:00Z`);
+  // 先按 guess 那一刻的偏移换算，再按换算结果那一刻的偏移校正一次（夏令时切换附近两者不同）
+  const first = guess - (wallMs(guess) - guess);
+  return guess - (wallMs(first) - first);
+}
 export function ago(iso: string | null | undefined, now = Date.now()): string {
   if (!iso) return '—';
   const s = Math.max(0, (now - new Date(iso).getTime()) / 1000);
