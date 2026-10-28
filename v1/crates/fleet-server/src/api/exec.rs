@@ -190,6 +190,9 @@ pub async fn audit_ssh(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson
 pub const DIAG_CONTROL: &str = "1.1.1.1";
 pub const DIAG_CONTROL_PORT: u16 = 443;
 
+/// diag_plan 里一台在用线路机：(id, label, 地址, 节点挂没挂在它上面, 它的一个在用入口端口)
+type RelayRow = (Uuid, Option<String>, String, bool, Option<i32>);
+
 /// `fleetctl diag` 要在哪些机器上测什么：节点自己（地址、SS 出站地址与端口、能不能登录）、每台在用线路机（地址、是不是它所挂的、
 /// 它的一个在用入口端口）。只读，不执行任何命令（命令由 fleetctl 经 `POST /machines/{id}/exec` 逐台跑，每次照常审计）。
 /// 要 exec 权限：它只给 diag 用，没有 exec 的密钥在这里就被拦下，不用等测到一半才失败。
@@ -224,7 +227,7 @@ pub async fn diag_plan(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPat
     .fetch_one(&st.db)
     .await?;
     // 在用线路机，带上这台节点挂没挂在它上面、它的一个在用入口端口（节点往线路机建连的目标：入口端口对外开放）
-    let relays: Vec<(Uuid, Option<String>, String, bool, Option<i32>)> = sqlx::query_as(
+    let relays: Vec<RelayRow> = sqlx::query_as(
         "select r.id, r.label, host(r.primary_ip),
                 exists (select 1 from entry e where e.relay_id = r.id and e.node_id = $1 and e.lifecycle = 'active'),
                 (select min(e.port) from entry e where e.relay_id = r.id and e.lifecycle = 'active')

@@ -824,14 +824,14 @@ pub(super) async fn renumber(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         return Err(remote("旧节点的团队或编号在发起替换之后被改过，编号没有动：软路由已经指向新节点，按需要手动改名（fleetctl rename）"));
     }
     // 和预览同一份计算（api::replace::old_to_number）：新节点在目标团队里的号算空着，旧节点接它
-    let to_number = crate::api::replace::old_to_number(&mut *tx, to_team, (old, new), (old_team, old_number), given).await?.map_err(|e| remote(e.to_string()))?;
+    let to_number = crate::api::replace::old_to_number(&mut tx, to_team, (old, new), (old_team, old_number), given).await?.map_err(|e| remote(e.to_string()))?;
     use crate::api::machines::{patch_tx, PatchIn};
     let api = |e: crate::error::ApiError| remote(e.message);
     // 旧节点先挪开，旧编号空出来再给新节点（唯一索引 machine_number_live，不能延迟检查）。旧节点要接的号此刻还被新节点占着时
     // （新节点从目标团队来、旧节点接它的号）：旧节点先放到临时号，新节点挪走后再改到这个号；审计里旧节点因此有两条改名（同一事务）
     let swap = crate::api::replace::swap_slot(n.2, n.3, to_team, to_number);
     let first = if swap {
-        crate::api::replace::temp_number(&mut *tx, to_team, old, (old_team, old_number)).await?.ok_or_else(|| remote("旧节点要去的团队编号用完了（交换时要先占一个临时号）"))?
+        crate::api::replace::temp_number(&mut tx, to_team, old, (old_team, old_number)).await?.ok_or_else(|| remote("旧节点要去的团队编号用完了（交换时要先占一个临时号）"))?
     } else {
         to_number
     };

@@ -341,11 +341,11 @@ mod tests {
         let (a, b, c) = (t(1, 20001), t(2, 20002), t(3, 20003));
         let u = "https://fleet.example.com";
         let two = render(&[a.clone(), b.clone()], u);
-        assert!(only_removed(&two, &render(&[a.clone()], u)));
+        assert!(only_removed(&two, &render(std::slice::from_ref(&a), u)));
         assert!(only_removed(&two, &render(&[], u)));
         assert!(!only_removed(&two, &two), "没变不算");
         assert!(!only_removed(&two, &render(&[a.clone(), c.clone()], u)), "换了一条：要重启");
-        assert!(!only_removed(&render(&[a.clone()], u), &two), "加了一条：要重启");
+        assert!(!only_removed(&render(std::slice::from_ref(&a), u), &two), "加了一条：要重启");
         let mut a2 = a.clone();
         a2.sni = "other".into();
         assert!(!only_removed(&two, &render(&[a2], u)), "留下的那条参数变了：要重启");

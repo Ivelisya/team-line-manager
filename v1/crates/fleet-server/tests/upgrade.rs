@@ -5,6 +5,7 @@
 //! 机器是假的：PATH 最前面放一个假 ssh，远端命令在「机器根目录」`<临时目录>/<IP>/` 里真的执行（/run、/usr/local/bin、/etc、/var/lib
 //! 改到里面；根目录里有 refuse 时登录被拒），systemctl 换成桩：记下调用；装着的 agent 版本号里带 crash 的，每次查主进程号都不一样（起来就退出、被反复拉起）。
 //! 会改测试机本身的命令（建用户、nft、sysctl、apt-get…）也换成桩（见 STUBS）。
+//! 基线查 mtr 装没装（`command -v mtr`）改成查机器根目录的 usr/local/bin/mtr：结果不随测试机自己装没装 mtr 变。
 //! agent 程序是 shell 脚本，`--version` 打印版本。上报由测试直接写库模拟；线路机的用作业装到机器上的令牌走真的上报接口
 //! （Xray 状态要记上报它的版本）。
 //! PATH 是整个测试进程共用的，所以单独一个测试文件；各测试的机器 IP 不同，根目录互不相干。
@@ -31,7 +32,7 @@ for a; do last=$a; case $a in root@*) ip=${a#root@};; esac; done
 export R="$FAKE_ROOT/$ip"
 [ -e "$R/refuse" ] && { echo "root@$ip: Permission denied (publickey)." >&2; exit 255; }
 mkdir -p "$R/etc/systemd/system" "$R/run"
-fix() { sed "s#/run/#$R/run/#g; s#/usr/local/bin/#$R/usr/local/bin/#g; s#/etc/#$R/etc/#g; s#/var/lib/#$R/var/lib/#g; s#^PS=/proc/sys\$#PS=$R/proc/sys#; s#^MI=/proc/meminfo\$#MI=$R/proc/meminfo#"; }
+fix() { sed "s#command -v mtr#command -v /usr/local/bin/mtr#g; s#/run/#$R/run/#g; s#/usr/local/bin/#$R/usr/local/bin/#g; s#/etc/#$R/etc/#g; s#/var/lib/#$R/var/lib/#g; s#^PS=/proc/sys\$#PS=$R/proc/sys#; s#^MI=/proc/meminfo\$#MI=$R/proc/meminfo#"; }
 if [ "$last" = "bash -s" ]; then fix | bash -s; else sh -c "$(printf '%s' "$last" | fix)"; fi
 "#;
 
@@ -459,8 +460,10 @@ async fn baseline_restarts_sshd_older_than_its_config() {
     assert_eq!((run().await.code, restarts()), (0, 1));
     // 换上配置之后没来得及重启就被打断：配置比运行中的 sshd 新，这次文件没变也重启
     set_mtime(&conf[0], now - time::Duration::minutes(10));
+    // 机器上有 mtr 时报 ok
+    exe(&root.join("usr/local/bin/mtr"), "#!/bin/sh\n");
     let o = run().await;
-    assert_eq!((o.code, o.kv("sshd_password"), restarts()), (0, Some("no"), 2), "{o:?}");
+    assert_eq!((o.code, o.kv("sshd_password"), restarts(), o.kv("mtr")), (0, Some("no"), 2, Some("ok")), "{o:?}");
 }
 
 /// 节点的 ssserver 重跑时以运行中的实例为准：换上新密码之后没来得及重启就被打断（配置比实例新），重跑时文件没变也重启，

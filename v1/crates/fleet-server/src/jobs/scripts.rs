@@ -510,6 +510,7 @@ echo "active=$(systemctl is-active fleet-xray-bridge 2>/dev/null || true)"
 /// - `restart`：写单元与配置，配置先 `xray run -test`，变了（或程序换了：BIN_CHANGED=1、没在跑）就重启——会断开这台节点上全部经隧道的连接；
 /// - `quiet`：只删了隧道，写配置不重启（运行中的 bridge 对删掉的入口还会试连，对面端口已关，无害；下次重启按新配置）；
 /// - `remove`：节点上不再有穿透入口：停掉、删单元与配置（xray 程序留着，下次开启不用再推）。
+///
 /// DNS 是链路本地地址时同线路机写 /etc/fleet-xray/resolv.conf（单元挂到 Xray 看到的 /etc/resolv.conf），变了也要重启才生效。
 /// 输出 `bridge=active|removed|crashing|…`、`restarted=0|1`；配置没过 -test 时 `bridge=bad_config` 并以 5 退出（原配置不动）
 pub fn bridge() -> String { BRIDGE.replace("__UNIT__", BRIDGE_UNIT.trim_end()).replace("__LINKLOCAL_DNS__", LINKLOCAL_DNS) }

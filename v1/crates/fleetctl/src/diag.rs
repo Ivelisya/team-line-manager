@@ -382,8 +382,9 @@ pub fn ping_summary(body: &str) -> Option<(u32, u32, f64, Option<f64>)> {
 }
 
 /// mtr 报告最后一跳的丢包 %（「 9.|-- 203.0.113.5  12.0%  100 …」或带 AS 号的写法：第一个以 % 结尾的数）
+#[cfg(test)]
 pub fn mtr_last_loss(body: &str) -> Option<f64> {
-    let last = body.lines().filter(|l| l.trim_start().split('.').next().is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))).last()?;
+    let last = body.lines().rfind(|l| l.trim_start().split('.').next().is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit())))?;
     last.split_whitespace().find_map(|w| w.strip_suffix('%')?.parse().ok())
 }
 
