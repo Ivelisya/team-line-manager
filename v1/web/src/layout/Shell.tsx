@@ -11,12 +11,15 @@ import { useStream } from '@/lib/stream';
 import { useTheme, type Palette, type ThemePref } from '@/lib/theme';
 import { useTitleAlerts } from '@/lib/title';
 import { closeEvacuate, closeMaint, closeMove, closeRenew, closeRetire, closeUpgrade, useEvacuateTarget, useMaintTarget, useMoveTarget, useRenewTarget, useRetireTarget, useUpgradeTarget } from '@/lib/nodeActions';
-import { resetTerminal, useTerminalTarget } from '@/lib/terminal';
+import { resetTerminal, setTerminalStash, useTerminalTarget } from '@/lib/terminal';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger, Tip, TipHost } from '@/components/ui/overlays';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Toaster } from '@/components/ui/toast';
-import { useDrawer } from '@/lib/drawer';
+import { stashDrawers, useDrawer } from '@/lib/drawer';
+
+// 打开终端时收起开着的抽屉、关掉终端再打开回来（P-20）
+setTerminalStash(stashDrawers);
 import { setOverlay } from '@/lib/palette';
 import { useBootTarget, useDeployTarget, useRemoved, useRouterDrawer, useSwitchTarget, useSyncTarget } from '@/lib/routers';
 import { Hotkeys, PaletteTrigger } from '@/features/Hotkeys';

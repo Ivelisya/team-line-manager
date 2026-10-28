@@ -41,6 +41,18 @@ export function useDrawer() {
   return { id, tab, range, open, switchTo, setTab, setRange, close };
 }
 
+const DRAWER_KEYS = ['m', 'tab', 'range', 'r', 'rtab'];
+/** 收起开着的机器 / 软路由抽屉，返回按原样（同一台、同一页签）打开回来的函数；没开着返回 undefined。
+ *  终端面板要占右侧那块地方时用（lib/terminal setTerminalStash，P-20） */
+export function stashDrawers(): (() => void) | undefined {
+  const set = setLatest?.current;
+  const cur = new URLSearchParams(location.search);
+  const kept = DRAWER_KEYS.flatMap((k) => { const v = cur.get(k); return v == null ? [] : [[k, v] as const]; });
+  if (!set || !kept.some(([k]) => k === 'm' || k === 'r')) return undefined;
+  set((p) => { const n = new URLSearchParams(p); DRAWER_KEYS.forEach((k) => n.delete(k)); return n; });
+  return () => setLatest?.current((p) => { const n = new URLSearchParams(p); kept.forEach(([k, v]) => n.set(k, v)); return n; });
+}
+
 // 上一台 / 下一台的顺序来源：列着机器的页面（首页、机器页）把当前筛选、排序、分组后的整份顺序（不只当前页）交过来，离开页面时清掉
 let order: readonly string[] | null = null;
 export const setDrawerOrder = (ids: readonly string[] | null) => { order = ids; };

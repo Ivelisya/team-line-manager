@@ -733,7 +733,8 @@ async fn run(io: &mut Io<'_>, st: &AppState, who: &Who, mut events: broadcast::R
     };
     tracing::info!(user = %who.user, target = %target.name, ip = %target.ip, "打开网页终端");
     let pty = Arc::new(pty);
-    let (stop, bytes_in, bytes_out) = pump(io, st, who, &pty, &mut slot.kicked, &mut events).await;
+    let tail = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (stop, bytes_in, bytes_out) = pump(io, st, who, &pty, &tail, &mut slot.kicked, &mut events).await;
     // 中控在重启：systemd 停服务时连同 ssh 一起结束，读到 EOF 可能比踢人的通知先到
     let stop = if matches!(stop, Stop::RemoteExit) && st.terminals.closing() { Stop::Shutdown } else { stop };
     let grace = if matches!(stop, Stop::Shutdown) { SHUTDOWN_GRACE } else { KILL_GRACE };
@@ -744,7 +745,7 @@ async fn run(io: &mut Io<'_>, st: &AppState, who: &Who, mut events: broadcast::R
             None
         }
     };
-    let reason = stop.describe(status);
+    let reason = stop.describe(status, &tail.lock().unwrap());
     let secs = t0.elapsed().as_secs();
     tracing::info!(user = %who.user, target = %target.name, secs, bytes_in, bytes_out, "网页终端断开：{reason}");
     let exit_code = status.and_then(|s| s.code());
@@ -801,11 +802,11 @@ impl Stop {
     }
 
     /// 给人看的原因（浏览器、审计）
-    fn describe(&self, status: Option<ExitStatus>) -> String {
+    fn describe(&self, status: Option<ExitStatus>, tail: &[u8]) -> String {
         match self {
             Stop::RemoteExit => match status.and_then(|s| s.code()) {
                 Some(0) => "远端 shell 已退出".into(),
-                Some(255) => "ssh 断开了（退出码 255：连不上、登录被拒、主机指纹不对，或被结束），详细原因见终端里 ssh 的提示".into(),
+                Some(255) => ssh_failed(tail),
                 Some(c) => format!("远端 shell 已退出（退出码 {c}）"),
                 None => "ssh 被信号结束".into(),
             },
@@ -823,6 +824,29 @@ impl Stop {
     }
 }
 
+/// 留着终端输出的最后这么多字节：ssh 自己失败（255）时它的报错在最后几行，用来归类（`ssh_failed`）
+const TAIL: usize = 1024;
+
+/// ssh 自己失败（退出码 255）时的原因：按输出里最后一行非空的报错归类（P-20），沿用远程执行的 `ssh::classify_ssh_stderr`，
+/// 网络类再分出超时。只看最后一行：登录成功后远端打印过的 Permission denied 之类不算
+fn ssh_failed(tail: &[u8]) -> String {
+    let text = String::from_utf8_lossy(tail);
+    let last = text.lines().map(str::trim).rfind(|l| !l.is_empty()).unwrap_or("");
+    let lower = last.to_lowercase();
+    let what = if last.is_empty() {
+        "ssh 断开了（连不上、登录被拒、主机指纹不对，或被结束）"
+    } else if lower.contains("timed out") || lower.contains("timeout") {
+        "连接超时：节点没有响应（可能离线、被防火墙拦了，或网络不通）"
+    } else {
+        match ssh::classify_ssh_stderr(last) {
+            ssh::ErrKind::Auth => "认证失败：节点拒绝了中控的密钥（authorized_keys 被改了？）",
+            ssh::ErrKind::HostKey => "主机指纹不对：节点重装过或被替换了，确认无误后再重新登记主机指纹",
+            _ => "节点离线，无法连接（连接被拒、无路由或被重置）",
+        }
+    };
+    format!("{what}，ssh 退出码 255，详细原因见终端里 ssh 的提示")
+}
+
 /// PTY → 写浏览器的任务为什么结束
 enum ReadEnd {
     Eof,
@@ -834,7 +858,7 @@ enum ReadEnd {
 
 /// PTY → 写浏览器的任务（有界通道）。通道满了先等（停读期间 ssh 的输出积在内核的 PTY 缓冲里，ssh 随之不再读网络、远端被流控），
 /// STALL 内还腾不出位置就结束（主循环随即断开这个终端）。`read` 记从终端读出、交出去的字节数（审计的下行）
-async fn read_pty(pty: Arc<Pty>, tx: mpsc::Sender<Out>, read: Arc<AtomicU64>) -> ReadEnd {
+async fn read_pty(pty: Arc<Pty>, tx: mpsc::Sender<Out>, read: Arc<AtomicU64>, tail: Arc<std::sync::Mutex<Vec<u8>>>) -> ReadEnd {
     let mut buf = vec![0u8; READ_CHUNK];
     loop {
         match pty.read(&mut buf).await {
@@ -842,6 +866,10 @@ async fn read_pty(pty: Arc<Pty>, tx: mpsc::Sender<Out>, read: Arc<AtomicU64>) ->
             Ok(n) => match tx.send_timeout(Out::Data(Bytes::copy_from_slice(&buf[..n])), STALL).await {
                 Ok(()) => {
                     read.fetch_add(n as u64, Ordering::Relaxed);
+                    let mut t = tail.lock().unwrap();
+                    t.extend_from_slice(&buf[..n]);
+                    let over = t.len().saturating_sub(TAIL);
+                    t.drain(..over);
                 }
                 Err(mpsc::error::SendTimeoutError::Timeout(_)) => return ReadEnd::Stalled,
                 Err(mpsc::error::SendTimeoutError::Closed(_)) => return ReadEnd::WriterGone,
@@ -879,12 +907,13 @@ async fn pump(
     st: &AppState,
     who: &Who,
     pty: &Arc<Pty>,
+    tail: &Arc<std::sync::Mutex<Vec<u8>>>,
     kicked: &mut watch::Receiver<Option<Kick>>,
     events: &mut broadcast::Receiver<Event>,
 ) -> (Stop, u64, u64) {
     let (in_tx, in_rx) = mpsc::channel::<Bytes>(IN_QUEUE);
     let read = Arc::new(AtomicU64::new(0));
-    let mut reader = tokio::spawn(read_pty(pty.clone(), io.out.clone(), read.clone()));
+    let mut reader = tokio::spawn(read_pty(pty.clone(), io.out.clone(), read.clone(), tail.clone()));
     let writer = tokio::spawn(write_pty(pty.clone(), in_rx));
     let _abort = AbortOnDrop(vec![reader.abort_handle(), writer.abort_handle()]);
     let mut rc = Rechecker::new();
@@ -1068,6 +1097,28 @@ pub fn audit_summary(action: &str, d: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// P-20：ssh 自己失败（255）时按它最后的报错分 节点离线 / 超时 / 认证失败 / 主机指纹，认不出的照旧笼统说
+    #[test]
+    fn ssh_failure_is_classified_from_its_last_words() {
+        let cases = [
+            ("ssh: connect to host 1.2.3.4 port 22: Connection refused\r\n", "节点离线，无法连接"),
+            ("ssh: connect to host 1.2.3.4 port 22: No route to host\r\n", "节点离线，无法连接"),
+            ("kex_exchange_identification: read: Connection reset by peer\r\n", "节点离线，无法连接"),
+            ("ssh: connect to host 1.2.3.4 port 22: Connection timed out\r\n", "连接超时"),
+            ("Timeout, server 1.2.3.4 not responding.\r\n", "连接超时"),
+            ("root@1.2.3.4: Permission denied (publickey).\r\n", "认证失败"),
+            ("Host key verification failed.\r\n", "主机指纹不对"),
+            ("", "ssh 断开了"),
+        ];
+        for (tail, want) in cases {
+            let r = ssh_failed(tail.as_bytes());
+            assert!(r.starts_with(want) && r.contains("255"), "{tail:?} → {r}");
+        }
+        // 先登录成功、之后掉线的：按最后的报错算，前面的输出不影响
+        let r = ssh_failed(b"Last login: ...\r\n$ Permission denied\r\nclient_loop: send disconnect: Broken pipe\r\n");
+        assert!(r.starts_with("节点离线，无法连接"), "{r}");
+    }
 
     fn s(b: u8) -> Vec<u8> { vec![b; 32] }
 

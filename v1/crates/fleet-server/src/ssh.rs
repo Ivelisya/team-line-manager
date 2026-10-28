@@ -82,7 +82,7 @@ pub struct Output {
 }
 
 /// 按 ssh 的错误输出判断类别（只对 ssh 自己失败，即退出码 255 的情形调用）
-fn classify_ssh_stderr(stderr: &str) -> ErrKind {
+pub(crate) fn classify_ssh_stderr(stderr: &str) -> ErrKind {
     let s = stderr.to_lowercase();
     if s.contains("host key verification failed") || s.contains("remote host identification has changed") || s.contains("no matching host key") {
         ErrKind::HostKey
