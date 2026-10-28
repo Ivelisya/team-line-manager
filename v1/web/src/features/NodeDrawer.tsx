@@ -2,7 +2,8 @@
 import * as React from 'react';
 import { Link } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight, SquareTerminal } from 'lucide-react';
+import { canTerminal, openTerminal } from '@/lib/terminal';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/dialog';
 import { Tabs, TabsList, TabsTrigger, Trunc } from '@/components/ui/overlays';
 import { InfoTip } from '@/components/ui/form';
@@ -80,6 +81,9 @@ export function NodeDrawer() {
                 <div className="m-head-row"><SheetTitle className="drawer-title ellipsis">{m.name}</SheetTitle><HealthPill m={m} /><UnreachPill m={m} />{/* 维护中已由状态胶囊写了，标签里不再重复 */}<MachineTags m={m.maintenance ? { ...m, maintenance: false } : m} /></div>
                 <SheetDescription className="drawer-sub ellipsis">{m.ip} · {m.host_machine ? `同机 · ${m.host_machine.name}` : m.plan?.name ?? '未设套餐'}{!m.provider && ' · 未设供应商'}{m.spare_from && ` · 原 ${m.spare_from}`}</SheetDescription>
               </div>
+              {canTerminal(m) && (
+                <IconButton label={m.host_machine ? '终端（宿主机）' : '终端'} onClick={() => openTerminal({ kind: 'machine', id: m.id, name: m.name })}><SquareTerminal size={16} /></IconButton>
+              )}
               {sib && (
                 <div className="drawer-nav">
                   <IconButton label="上一台" tip={false} data-tip="上一台（快捷键 [）" aria-keyshortcuts="[" disabled={!sib.prev} onClick={() => sib.prev && switchTo(sib.prev)}><ChevronLeft size={16} /></IconButton>

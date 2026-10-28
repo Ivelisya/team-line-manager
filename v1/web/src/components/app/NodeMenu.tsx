@@ -9,7 +9,7 @@ import { fetchShare, maintOwner, useEndMaintenance, useSilences } from '@/lib/qu
 import { useDrawer } from '@/lib/drawer';
 import { openMaint, openMove, openRenew, openReplace, openRetire, openUpgrade } from '@/lib/nodeActions';
 import { collator } from '@/lib/sort';
-import { openTerminal } from '@/lib/terminal';
+import { canTerminal, openTerminal } from '@/lib/terminal';
 import { copyShareLink, copyText } from '@/lib/clipboard';
 import { useHeld } from '@/lib/useHeld';
 import { toast } from '@/components/ui/toast';
@@ -58,7 +58,7 @@ function useNodeMenu(m: MachineView): MenuEntry[] {
   items.push(shareItem, { key: 'sep1', sep: true });
   items.push(
     // 家宽代理没有主机可登录；同机 IP 节点没有自己的 SSH，中控连到它的宿主机
-    ...(m.kind !== 'proxy' && m.lifecycle === 'active'
+    ...(canTerminal(m)
       ? [{ key: 'term', label: m.host_machine ? '打开终端（宿主机）' : '打开终端', icon: <SquareTerminal />, onSelect: () => openTerminal({ kind: 'machine', id: m.id, name: m.name }) } as MenuEntry] : []),
     // 同机 IP 节点没有自己的 agent（用宿主机的），不给升级
     // 升级会重启 agent、作业开始后不能取消：先弹确认（外壳里的 UpgradeDialog）。中控不报「当前 agent 版本」，判断不了是否已是最新

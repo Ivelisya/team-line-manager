@@ -171,7 +171,7 @@ function ManageTab({ r, onClosed }: { r: RouterView; onClosed: () => void }) {
   return (
     <>
       <RenameSection r={r} />
-      <AccessSection r={r} onClosed={onClosed} />
+      <AccessSection r={r} />
       <MaintSection r={r} />
       <DeleteSection r={r} onClosed={onClosed} />
     </>
@@ -211,8 +211,7 @@ function RenameSection({ r }: { r: RouterView }) {
 }
 
 /** 接入命令、重新部署、终端：每项一行（标题 + 灰色副行，右边按钮），同机器管理页签的分组列表 */
-function AccessSection({ r, onClosed }: { r: RouterView; onClosed: () => void }) {
-  const { open } = useRouterDrawer();
+function AccessSection({ r }: { r: RouterView }) {
   const boot = useShowBootstrap();
   const [askRegen, setAskRegen] = React.useState(false);
   const pending = r.state === 'pending';
@@ -231,8 +230,8 @@ function AccessSection({ r, onClosed }: { r: RouterView; onClosed: () => void })
         {!pending && (
           <div className="manage-row">
             <div><div className="t">终端</div><div className="hint">经隧道登录路由</div></div>
-            {/* 打开终端先收起抽屉：终端窗口的层级在抽屉遮罩之下，开着抽屉会被盖住；关掉终端回到这一页 */}
-            <Button variant="secondary" onClick={() => { onClosed(); openTerminal({ kind: 'router', id: r.id, name: r.name }, () => open(r.id, 'manage')); }}>打开终端</Button>
+            {/* 打开终端时抽屉先收起、关掉终端回到这一页（lib/terminal 统一做） */}
+            <Button variant="secondary" onClick={() => openTerminal({ kind: 'router', id: r.id, name: r.name })}>打开终端</Button>
           </div>
         )}
       </div>

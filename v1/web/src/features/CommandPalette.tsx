@@ -11,7 +11,7 @@ import { kindLabel } from '@/lib/derive';
 import { setOverlay, useOverlay } from '@/lib/palette';
 import { matchTier, sv } from '@/lib/match';
 import { openEvacuate, openRenew } from '@/lib/nodeActions';
-import { openTerminal } from '@/lib/terminal';
+import { canTerminal, openTerminal } from '@/lib/terminal';
 import type { ThemePref } from '@/lib/theme';
 import { Command, CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { toast } from '@/components/ui/toast';
@@ -71,7 +71,7 @@ function PaletteBody({ theme, askUpgrade }: { theme: Theme; askUpgrade: () => vo
   ];
 
   // 终端：在用的线路机和节点（家宽代理没有主机可登录）
-  const pool = mode === 'evacuate' ? machines.filter((m) => m.kind === 'relay') : mode === 'terminal' ? machines.filter((m) => m.kind !== 'proxy' && m.lifecycle === 'active') : machines;
+  const pool = mode === 'evacuate' ? machines.filter((m) => m.kind === 'relay') : mode === 'terminal' ? machines.filter(canTerminal) : machines;
   const q = search.trim();
   const list = q || mode === 'evacuate' ? pool : pool.slice(0, LIMIT);
   const value = (m: (typeof list)[number]) => sv(m.name, m.ip, `${m.team?.name ?? ''} ${kindLabel(m.kind)}`);

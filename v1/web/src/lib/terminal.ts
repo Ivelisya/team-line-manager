@@ -6,6 +6,9 @@ import { post } from './api';
 /** kind：machine 机器、router 软路由（同一个窗口组件） */
 export interface TermTarget { kind: 'machine' | 'router'; id: string; name: string }
 
+/** 能不能开终端：家宽代理没有 SSH；只有在用的（同机 IP 节点连到它的宿主机）。机器菜单、命令面板、抽屉头部的按钮共用 */
+export const canTerminal = (m: { kind: string; lifecycle: string }) => m.kind !== 'proxy' && m.lifecycle === 'active';
+
 const target = createStore<TermTarget | null>(null);
 /** 会话在连着时要先问一句才换台或关窗：「close」= 关窗，TermTarget = 换到那一台 */
 const asking = createStore<TermTarget | 'close' | null>(null);
@@ -20,15 +23,19 @@ let live = false;
 export const setTerminalLive = (v: boolean) => { live = v; };
 let pendingBack: (() => void) | undefined;
 let back: (() => void) | undefined;
+// 终端面板在抽屉下面一层（tokens.css --z-term：临时打开的抽屉、对话框盖在它上面）：所以真正打开终端时先收起开着的抽屉，
+// 关掉终端再按原样打开（P-20，不管从哪儿打开）。外壳登记收抽屉的函数（lib/drawer stashDrawers），返回打开回来的函数
+let stash: () => (() => void) | undefined = () => undefined;
+export const setTerminalStash = (f: typeof stash) => { stash = f; };
 const show = (t: TermTarget | null) => {
   const was = back;
-  back = t ? pendingBack : undefined;
+  back = t ? pendingBack ?? stash() : undefined;
   pendingBack = undefined;
   cur = t; live = false; asking.set(null); target.set(t);
   if (!t) was?.();
 };
 
-/** onClosed：这个终端关掉时（只此一次）做的事；换到别的终端不算 */
+/** onClosed：这个终端关掉时（只此一次）做的事；换到别的终端不算。不给时默认收起开着的抽屉、关窗后打开回来 */
 export function openTerminal(t: TermTarget, onClosed?: () => void) {
   if (cur && cur.kind === t.kind && cur.id === t.id) { back = onClosed ?? back; return; }
   pendingBack = onClosed;
