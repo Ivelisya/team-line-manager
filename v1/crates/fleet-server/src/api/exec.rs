@@ -258,6 +258,7 @@ fn unit_name(u: &str) -> Option<&'static str> {
     match u {
         "fleet-agent" => Some("fleet-agent"),
         "fleet-xray" => Some("fleet-xray"),
+        "fleet-xray-bridge" => Some("fleet-xray-bridge"),
         "ssserver" | "fleet-ssserver" => Some("fleet-ssserver"),
         _ => None,
     }
@@ -343,6 +344,7 @@ mod tests {
     #[test]
     fn unit_whitelist() {
         assert_eq!(unit_name("ssserver"), Some("fleet-ssserver"));
+        assert_eq!(unit_name("fleet-xray-bridge"), Some("fleet-xray-bridge"), "穿透节点的 bridge");
         assert_eq!(unit_name("sshd"), None);
         assert_eq!(unit_name("fleet-agent; reboot"), None);
     }

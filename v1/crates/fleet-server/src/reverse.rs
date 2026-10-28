@@ -22,6 +22,13 @@ pub const REVERSE: &str = "reverse";
 /// 模式的中文（网页、fleetctl、作业日志）
 pub fn mode_zh(m: &str) -> &'static str { if m == REVERSE { "穿透" } else { "普通" } }
 
+/// 穿透节点：经线路机的在用入口至少一条、而且都是穿透。线路机 → 节点没有 TCP 探测、也不按放置矩阵换线，
+/// 告警建议看 bridge 日志与 `fleetctl diag`，不建议 placement / move
+pub fn reverse_node(m: &crate::views::MachineView) -> bool {
+    let mut es = m.entries.iter().filter(|e| e.lifecycle == "active" && !e.direct).peekable();
+    es.peek().is_some() && es.all(|e| e.mode == REVERSE)
+}
+
 /// 「新入口默认模式」存在 app_setting 的这一项（值是 "normal" / "reverse"）。没设过 = 穿透：
 /// 新上架的多是 AT&T 系、入站质量差的机器（用户 2026-10-27 定）
 const SETTING_KEY: &str = "entry_mode_default";

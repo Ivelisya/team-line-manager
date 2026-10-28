@@ -618,7 +618,7 @@ enum Cmd {
     /// 机器上的服务日志（journalctl）
     Logs {
         machine: String,
-        /// fleet-agent | fleet-xray | ssserver
+        /// fleet-agent | fleet-xray | fleet-xray-bridge（穿透节点）| ssserver
         #[arg(long, default_value = "fleet-agent")]
         unit: String,
         #[arg(long, default_value_t = 200)]

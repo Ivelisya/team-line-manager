@@ -174,3 +174,33 @@ async fn p50_is_median_of_hourly_p50_and_old_rtts_are_pruned() {
             .unwrap();
     assert_eq!(row, (11, 11, Some(50.0), 0));
 }
+
+/// 建议操作按入口模式区分：反复 TCP 不通的普通节点建议看放置矩阵；入口都切成穿透的节点不在线路机上放置，建议看 bridge 日志与 diag；
+/// 放置矩阵里穿透节点标「穿透」、不给换线建议
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reverse_nodes_are_not_pointed_at_placement() {
+    let t = setup().await;
+    let r1 = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let team = seed_team(&t, "团队1").await;
+    let (a, _) = seed_node(&t, r1, team, 1, "203.0.113.5", 20001).await;
+    let (b, eb) = seed_node(&t, r1, team, 2, "203.0.113.6", 20002).await;
+    sqlx::query("update machine set kind = 'vps' where id = any($1)").bind(vec![a, b]).execute(&t.st.db).await.unwrap();
+    sqlx::query("update entry set mode = 'reverse' where id = $1").bind(eb).execute(&t.st.db).await.unwrap();
+    t.st.live.invalidate();
+    for m in [a, b] {
+        sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary, reopen_count) values ($1, 'machine', 'tcp_fail', $2, 'critical', 'x', 3)")
+            .bind(Uuid::now_v7())
+            .bind(m)
+            .execute(&t.st.db)
+            .await
+            .unwrap();
+    }
+    let inc = t.get("/api/v1/incidents").await["items"].as_array().unwrap().clone();
+    let of = |id: Uuid| inc.iter().find(|i| i["subject_id"] == json!(id)).unwrap()["suggested"].clone();
+    assert_eq!(of(a), json!(["fleetctl placement --node 团队1-01"]), "{inc:?}");
+    assert_eq!(of(b), json!(["fleetctl logs 团队1-02 --unit fleet-xray-bridge", "fleetctl diag 团队1-02"]), "{inc:?}");
+
+    let p = t.get("/api/v1/placement?team=团队1").await;
+    let n = |id: Uuid| p["nodes"].as_array().unwrap().iter().find(|n| n["id"] == json!(id)).unwrap().clone();
+    assert_eq!((n(a)["reverse"].clone(), n(b)["reverse"].clone(), n(b)["suggest"].clone()), (json!(false), json!(true), json!(false)), "{p}");
+}

@@ -367,6 +367,8 @@ export interface PlacementCell { relay_id: string; samples: number; ok: number; 
 export interface PlacementNode {
   id: string; name: string; team: { id: string; name: string } | null; ip: string; current_relay_id: string | null; entry_relay_ids: string[]; entries: number;
   cells: PlacementCell[]; tcp_fail_7d: number; daily_bytes: number; best_relay_id: string | null; suggest: boolean; reason: string | null; no_room: string[];
+  /** 穿透节点：节点主动连线路机，不按往返换线（「穿透，不适用」） */
+  reverse: boolean;
 }
 export interface PlacementView {
   relays: { id: string; name: string; status: HealthStatus }[];

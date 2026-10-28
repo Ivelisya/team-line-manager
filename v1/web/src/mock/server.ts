@@ -1094,7 +1094,10 @@ function suggest(i: Incident): string[] {
   if (i.rule === 'nonbusiness_traffic_high') return [`fleetctl logs ${shq(name)}`, `fleetctl exec ${shq(name)} -- 'ss -s; nft list ruleset | head -50'`];
   if (i.rule === 'business_traffic_spike') return [`fleetctl traffic --node ${shq(name)} --days 7`];
   if (i.rule === 'router_exit_drift') return [`fleetctl router sync ${shq(name)}`];
-  if (i.chronic && kind === 'vps' && (i.rule === 'tcp_fail' || i.rule === 'egress_fail')) return [`fleetctl placement --node ${shq(name)}`];
+  if (i.chronic && kind === 'vps' && (i.rule === 'tcp_fail' || i.rule === 'egress_fail')) {
+    const m = db.machines.find((x) => x.id === i.subject_id);
+    return m && reverseNode(m) ? [`fleetctl logs ${shq(name)} --unit fleet-xray-bridge`, `fleetctl diag ${shq(name)}`] : [`fleetctl placement --node ${shq(name)}`];
+  }
   return [];
 }
 R('GET', '/incidents', ({ query }) => {
@@ -1435,6 +1438,11 @@ R('GET', '/relays/([^/]+)/rebalance', ({ params, query }) => {
   };
 });
 // 放置矩阵（mock：往返按 id 算出固定的值，当前线路机偏慢一点让几个节点有建议；不看额度）
+/** 穿透节点（同服务端 reverse::reverse_node）：经线路机的在用入口至少一条、而且都是穿透 */
+const reverseNode = (m: { entries: EntryView[] }) => {
+  const es = m.entries.filter((e) => e.lifecycle === 'active' && !e.direct);
+  return es.length > 0 && es.every((e) => e.mode === 'reverse');
+};
 R('GET', '/placement', () => {
   const relays = db.machines.filter((x) => x.kind === 'relay' && x.lifecycle === 'active');
   const nodes = db.machines.filter((x) => x.kind === 'vps' && x.lifecycle === 'active' && !x.spare);
@@ -1453,10 +1461,11 @@ R('GET', '/placement', () => {
     const best = good[0]?.relay_id ?? null;
     const cc = cells.find((c) => c.relay_id === cur?.relay.id);
     const curGood = !!cc && (cc.success_pct ?? 0) >= 99;
-    const suggest = !!cur && !!best && best !== cur.relay.id && (!curGood || cc!.p50_ms - good[0].p50_ms >= 10);
+    const reverse = reverseNode(n);
+    const suggest = !reverse && !!cur && !!best && best !== cur.relay.id && (!curGood || cc!.p50_ms - good[0].p50_ms >= 10);
     const reason = suggest ? (curGood ? `可快 ${cc!.p50_ms - good[0].p50_ms} ms` : `当前成功率 ${cc?.success_pct}%`) : null;
     if (suggest && cur && best) groups.set(best, [...(groups.get(best) ?? []), { id: n.id, name: n.name, from: { id: cur.relay.id, name: cur.relay.name }, port: cur.port, reason: reason! }]);
-    return { id: n.id, name: n.name, team: n.team, ip: n.ip, current_relay_id: cur?.relay.id ?? null, entry_relay_ids: live.map((e) => e.relay.id), entries: live.length, cells, tcp_fail_7d: h(n.id) % 7 === 0 ? 3 : 0, daily_bytes: 5e9, best_relay_id: best, suggest, reason, no_room: [] };
+    return { id: n.id, name: n.name, team: n.team, ip: n.ip, current_relay_id: cur?.relay.id ?? null, entry_relay_ids: live.map((e) => e.relay.id), entries: live.length, cells, tcp_fail_7d: h(n.id) % 7 === 0 ? 3 : 0, daily_bytes: 5e9, best_relay_id: best, suggest, reason, no_room: [], reverse };
   });
   return {
     relays: relays.map((r) => ({ id: r.id, name: r.name, status: r.health.status })), nodes: out,
