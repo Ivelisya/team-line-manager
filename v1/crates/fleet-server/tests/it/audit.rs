@@ -54,3 +54,28 @@ async fn startup_reredacts_stored_exec_commands_like_new_writes() {
     assert_eq!(d["redact_version"], REDACT_VERSION);
     assert!(!d.to_string().contains("xxx") && !search.contains("xxx"), "{d} {search}");
 }
+
+/// 复审第二轮：重脱敏按库里记下的版本（app_setting）判断，版本没变直接跳过、不再每次启动全表扫；分批提交，超过一批的也都处理完
+#[tokio::test]
+async fn reredact_runs_in_batches_and_skips_when_version_unchanged() {
+    let (pool, _schema) = common::db_until(i64::MAX).await;
+    let old = |n: i64| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query("insert into audit_log (actor, action, target_kind, detail, search) select 'a', 'exec', 'machine', jsonb_build_object('name', 'n', 'command', 'PASSWORD=xxx run ' || g), 'x' from generate_series(1, $1) g")
+                .bind(n)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+    };
+    old(2500).await;
+    assert_eq!(db::sync_audit_redact(&pool).await.unwrap(), 2500, "超过一批（1000 条）的也都处理完");
+    let plain: i64 = sqlx::query_scalar("select count(*) from audit_log where detail::text like '%xxx%'").fetch_one(&pool).await.unwrap();
+    assert_eq!(plain, 0);
+    let v: i64 = sqlx::query_scalar("select (value #>> '{}')::bigint from app_setting where key = 'audit_redact_version'").fetch_one(&pool).await.unwrap();
+    assert_eq!(v, REDACT_VERSION, "记下已同步到的版本");
+    // 版本没变：不再扫表（库里就算混进一条旧版本的也不碰——新写入都走 audit_insert，一定是当前版本）
+    old(1).await;
+    assert_eq!(db::sync_audit_redact(&pool).await.unwrap(), 0, "版本没变直接跳过");
+}

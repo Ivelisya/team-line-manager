@@ -120,10 +120,6 @@ async fn main() -> anyhow::Result<()> {
             let pool = db::connect(&cfg.database_url).await?;
             db::MIGRATOR.run(&pool).await.context("数据库迁移")?;
             fleet_server::meta::sync_org_tz(&pool, &cfg.org_timezone).await?;
-            let n = db::sync_audit_redact(&pool).await.context("执行命令审计重新打码")?;
-            if n > 0 {
-                tracing::info!("打码规则版本变为 {}：{n} 条执行命令审计重新打码", fleet_server::api::audit::REDACT_VERSION);
-            }
             // 期望状态的生成逻辑改过（DESIRED_FORMAT 升了）：线路机代数统一 +1，重连后重拉
             let n = db::sync_desired_format(&pool).await.context("核对期望状态格式版本")?;
             if n > 0 {
@@ -141,6 +137,15 @@ async fn main() -> anyhow::Result<()> {
                 tracing::warn!("把中断的探测点安装标为失败：{e:#}");
             }
             fleet_server::spawn_background(&st);
+            // 打码规则升级后给存量重新打码：后台分批跑，不挡开始处理请求（版本没变时只读一行设置）
+            let db = st.db.clone();
+            tokio::spawn(async move {
+                match db::sync_audit_redact(&db).await {
+                    Ok(0) => {}
+                    Ok(n) => tracing::info!("打码规则版本变为 {}：{n} 条执行命令审计重新打码", fleet_server::api::audit::REDACT_VERSION),
+                    Err(e) => tracing::warn!("执行命令审计重新打码失败（下次启动接着做）：{e:#}"),
+                }
+            });
             let app = fleet_server::app(st.clone());
             tracing::info!("fleet-server {} 监听 {listen}", fleet_proto::build_version());
             // 开始处理请求之前就装上信号处理：能应答请求时 SIGTERM 一定走优雅退出
