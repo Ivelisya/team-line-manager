@@ -516,6 +516,7 @@ pub async fn audit_insert<'e, E: sqlx::PgExecutor<'e>>(
     target_id: Option<Uuid>,
     detail: serde_json::Value,
 ) -> sqlx::Result<i64> {
+    let detail = crate::api::audit::redact_exec_detail(action, detail);
     let search = crate::api::audit::audit_search_text(action, &detail);
     sqlx::query_scalar("insert into audit_log (actor, action, target_kind, target_id, detail, search) values ($1, $2, $3, $4, $5, $6) returning id")
         .bind(actor)
@@ -581,6 +582,53 @@ pub async fn sync_desired_format(db: &PgPool) -> sqlx::Result<u64> {
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
+    Ok(n)
+}
+
+/// 库里记「执行命令审计已按哪一版打码规则同步过」的 app_setting 键
+const AUDIT_REDACT_KEY: &str = "audit_redact_version";
+/// 重新打码每批的条数：每批单独提交，不开长事务、不把全表 detail 读进内存
+const AUDIT_REDACT_BATCH: i64 = 1000;
+
+/// 打码规则版本低于 `api::audit::REDACT_VERSION`（含 P-21 之前的原文）的执行命令审计，用同一份 Rust 规则重新打码、重算搜索文本，返回改了几条。
+/// 库里记的版本（`AUDIT_REDACT_KEY`）和当前相同就直接跳过，不扫表（新写入都走 `audit_insert`，一定是当前版本）；
+/// 否则按 id 每批 `AUDIT_REDACT_BATCH` 条、每批单独提交，全部做完才记下新版本（中途退出下次接着做，对已打码的再跑结果不变）。
+/// serve 在开始处理请求之后放到后台跑（main.rs），migrate 子命令里同步跑。规则只有 Rust 这一份，不在迁移里写 SQL 版
+pub async fn sync_audit_redact(db: &PgPool) -> sqlx::Result<u64> {
+    use crate::api::audit::{audit_search_text, redact_exec_detail, REDACT_VERSION};
+    let done: Option<i64> = sqlx::query_scalar("select (value #>> '{}')::bigint from app_setting where key = $1").bind(AUDIT_REDACT_KEY).fetch_optional(db).await?;
+    if done == Some(REDACT_VERSION) {
+        return Ok(0);
+    }
+    let (mut last, mut n) = (0i64, 0u64);
+    loop {
+        let mut tx = db.begin().await?;
+        let rows: Vec<(i64, serde_json::Value)> = sqlx::query_as(
+            "select id, detail from audit_log where action = 'exec' and id > $2 and coalesce((detail->>'redact_version')::bigint, 0) < $1 order by id limit $3 for update",
+        )
+        .bind(REDACT_VERSION)
+        .bind(last)
+        .bind(AUDIT_REDACT_BATCH)
+        .fetch_all(&mut *tx)
+        .await?;
+        let Some((end, _)) = rows.last() else { break };
+        last = *end;
+        for (id, detail) in &rows {
+            let detail = redact_exec_detail("exec", detail.clone());
+            let search = audit_search_text("exec", &detail);
+            sqlx::query("update audit_log set detail = $2, search = $3 where id = $1").bind(id).bind(&detail).bind(search).execute(&mut *tx).await?;
+        }
+        tx.commit().await?;
+        n += rows.len() as u64;
+    }
+    sqlx::query(
+        "insert into app_setting (key, value, updated_by) values ($1, to_jsonb($2::bigint), 'fleet-server')
+         on conflict (key) do update set value = excluded.value, updated_at = now(), updated_by = excluded.updated_by",
+    )
+    .bind(AUDIT_REDACT_KEY)
+    .bind(REDACT_VERSION)
+    .execute(db)
+    .await?;
     Ok(n)
 }
 
