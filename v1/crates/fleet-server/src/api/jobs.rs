@@ -39,7 +39,7 @@ pub struct JobOut {
 }
 
 const SELECT: &str = "select j.id, j.kind, j.target_id,
-    coalesce(display_name(m.kind::text, m.label, t.name, m.number), ro.name) target_name,
+    coalesce(case when j.kind = 'replace' then j.params->>'old_name' end, display_name(m.kind::text, m.label, t.name, m.number), ro.name) target_name,
     coalesce(m.spare_from, (select rb.name from recycle_bin rb where rb.source = 'fleet' and rb.source_id = j.target_id::text)) target_origin,
     j.state::text state, j.step, j.error, j.created_by, j.created_at, j.started_at, j.finished_at, j.params->'routers_stuck' routers_stuck
   from job j left join machine m on m.id = j.target_id left join team t on t.id = m.team_id left join router ro on ro.id = j.target_id";
@@ -54,7 +54,7 @@ pub struct ListQ {
     kind: Option<String>,
 }
 
-/// 作业 JSON：目标机器以 `target{id,name,origin}` 给出（origin：退役前的名字，没退役过为 null）；`step_title` = 当前（或失败的）步骤标题，做完为 null；
+/// 作业 JSON：目标机器以 `target{id,name,origin}` 给出（替换作业的 name 是发起时旧节点的名字（快照），之后旧节点改名进备用也不变；origin：退役前的名字，没退役过为 null）；`step_title` = 当前（或失败的）步骤标题，做完为 null；
 /// `manual` = 要人工处理时的说明（jobs::manual），否则 null。列表不带 steps
 fn job_json(j: &JobOut) -> Value {
     let mut v = serde_json::to_value(j).unwrap_or_default();
