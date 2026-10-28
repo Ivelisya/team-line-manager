@@ -7,3 +7,12 @@ alter table incident add column if not exists subject_team text;
 alter table incident add column if not exists subject_ip text;
 
 update incident set subject_name = detail->>'name' where subject_name is null and engine = 'machine' and detail ? 'name';
+
+-- replaced_by：告警开着的机器后来被替换下来时，接替它的节点（replace 作业交换编号时写，见 incident::mark_replaced）。
+-- 回填：开了之后最早成功完成的那次 replace 作业（之后在备用里开的不算）；作业记录 90 天后会被清理，所以固化到告警上
+alter table incident add column if not exists replaced_by uuid;
+
+update incident i set replaced_by = (select (j.params->>'new_id')::uuid from job j
+                                        where j.kind = 'replace' and j.state = 'succeeded' and j.target_id = i.subject_id and j.finished_at >= i.opened_at
+                                        order by j.finished_at limit 1)
+ where i.engine = 'machine' and i.replaced_by is null;

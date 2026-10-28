@@ -28,7 +28,7 @@ struct IncidentOut {
     fired_name: Option<String>,
     subject_team: Option<String>,
     subject_ip: Option<String>,
-    /// 机器被替换下来了（最近一次成功的 replace 作业）：接替它的节点 id 与现名
+    /// 告警开着的那台机器后来被替换下来了：接替它的节点 id 与现名（incident.replaced_by，替换交换编号时写，不依赖会被清理的作业记录）
     #[serde(skip)]
     replaced_by_id: Option<Uuid>,
     #[serde(skip)]
@@ -99,9 +99,7 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQu
               left join router r on r.id = i.subject_id and i.engine = 'router'
               left join probe_point pp on pp.id = i.subject_id and i.engine = 'probe'
               left join lateral (select n.id, display_name(n.kind::text, n.label, nt.name, n.number) name
-                                 from job j join machine n on n.id = (j.params->>'new_id')::uuid left join team nt on nt.id = n.team_id
-                                 where i.engine = 'machine' and j.kind = 'replace' and j.target_id = i.subject_id and j.state = 'succeeded'
-                                 order by j.finished_at desc limit 1) rb on true
+                                 from machine n left join team nt on nt.id = n.team_id where n.id = i.replaced_by) rb on true
          where {} order by {order} limit {} offset {}",
         cond(&mut a),
         a.add(limit),

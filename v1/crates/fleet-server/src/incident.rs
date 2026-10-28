@@ -153,6 +153,17 @@ async fn chronic(st: &AppState, engine: Engine, rule: &str, subject: Uuid, kind:
     if n > 1 { format!("{text}（近 24 小时第 {n} 次）") } else { text.to_string() }
 }
 
+/// 机器被替换（replace 作业交换编号那一步，同一事务）：旧节点此刻已有的告警记下接替它的节点。之后旧节点在备用里再开的告警不算；
+/// 固化在告警上，作业记录 90 天后被清掉也不丢
+pub async fn mark_replaced(tx: &mut crate::db::Tx<'_>, old: Uuid, new: Uuid) -> sqlx::Result<()> {
+    sqlx::query("update incident set replaced_by = $2 where engine = 'machine' and subject_id = $1 and replaced_by is null")
+        .bind(old)
+        .bind(new)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
 /// 对齐一轮。`open`：`firing` 按同一个 `engine` 读出来的；`exists`：新开时对象还在的 SQL 条件（`$3` 是对象 id，不用查就是 `true`）；
 /// `close`：`want` 里没有的那些怎么办。有变化时发 `Event::Incidents`
 pub async fn reconcile<'n>(
