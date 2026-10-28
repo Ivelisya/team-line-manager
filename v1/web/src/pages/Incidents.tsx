@@ -26,7 +26,7 @@ import { SkeletonRows } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
 import { ConfirmDialog, FormDialog } from '@/components/app/dialogs';
 import { NodeHover } from '@/components/app/NodeHover';
-import { RecentCount, SuggestedCmds } from '@/components/app/IncidentBits';
+import { RecentCount, SubjectNow, SuggestedCmds } from '@/components/app/IncidentBits';
 import { Empty, ErrorNote, Note, PageHead, Panel, Pill, TableWrap } from '@/components/app/primitives';
 
 const PAGE_SIZES = [20, INCIDENT_PAGE, 100];
@@ -117,7 +117,8 @@ export function IncidentsPage() {
           <td>{SEV(i)}</td>
           {/* 中控自身的告警（central_ 开头）没有机器可点开：只写对象名「中控」；软路由的（router_ 开头）打开路由抽屉 */}
           <td>{sid && isRouterIncident(i) ? <button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => openRouter(sid, routerIncidentTab(i))}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button>
-            : sid ? <NodeHover id={sid}><button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => open(sid)}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button></NodeHover> : (i.subject_name ?? '—')}
+            : sid ? <NodeHover id={sid}><button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => open(sid)}><span className="ellipsis">{i.subject_name ?? i.subject?.name}</span></button></NodeHover> : (i.subject_name ?? '—')}
+            <SubjectNow i={i} />
             {i.ack_at && !i.resolved_at && <Pill tone="neutral" className="pill-sm inc-ack-narrow" tip={`${i.ack_by ? `${F.actor(i.ack_by)} ` : ''}已确认 · ${F.ago(i.ack_at)}`}>已确认</Pill>}
             <span className="sub inc-narrow">{i.rule_name} · {F.ago(i.opened_at)}</span><span className="sub inc-narrow inc-narrow-sum" data-tip={sum}>{sum}</span><SuggestedCmds i={i} className="inc-narrow" /></td>
           <td>{i.rule_name}<RecentCount i={i} className="sub" /></td>

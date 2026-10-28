@@ -258,9 +258,12 @@ pub async fn reconcile<'n>(
         }
         let id = crate::db::new_id();
         let res = sqlx::query(&format!(
-            "insert into incident (id, engine, rule, subject_id, severity, summary, detail)
+            "insert into incident (id, engine, rule, subject_id, severity, summary, detail, subject_name, subject_team, subject_ip)
              select $1, $7, $2, $3, $4::severity, $5,
-                    coalesce($6, jsonb_build_object()) || case when $8 then jsonb_build_object('critical', true, 'critical_count', 1) else jsonb_build_object() end where {exists}
+                    coalesce($6, jsonb_build_object()) || case when $8 then jsonb_build_object('critical', true, 'critical_count', 1) else jsonb_build_object() end,
+                    $9, m.team, m.ip
+             from (select 1) one left join (select t.name team, host(m.primary_ip) ip from machine m left join team t on t.id = m.team_id where m.id = $3 and $7 = 'machine') m on true
+             where {exists}
              on conflict (engine, rule, subject_id) where state = 'firing' do nothing"
         ))
         .bind(id)
@@ -271,6 +274,8 @@ pub async fn reconcile<'n>(
         .bind(&w.detail)
         .bind(engine.as_str())
         .bind(w.severity == "critical")
+        // 触发时的身份（名字、团队、IP）随告警存下，之后改名、替换都不改它（P-01）
+        .bind(w.name)
         .execute(&st.db)
         .await?;
         if res.rows_affected() > 0 {

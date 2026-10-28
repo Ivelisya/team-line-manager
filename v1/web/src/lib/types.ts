@@ -313,6 +313,9 @@ export interface Incident {
   id: string; engine: 'machine' | 'ipintel' | 'central' | 'router' | 'probe'; rule: string; rule_name: string; subject: { id: string; name: string; kind?: 'router' } | null; subject_id: string | null; subject_name: string | null;
   severity: 'info' | 'warning' | 'critical' | string; state: 'firing' | 'resolved'; summary: string;
   opened_at: string; last_seen_at: string | null; resolved_at: string | null; ack_at: string | null; ack_by: string | null;
+  /** subject_name 是触发时的名字（subject.name 是现名，点开、建议命令用）；current_name：现名与触发时不同（改过名、被替换）时给出，否则 null；
+   *  subject_team / subject_ip：触发时机器的团队、出口 IP；replaced_by：机器被替换下来时接替它的节点。旧中控没有这几个字段 */
+  current_name?: string | null; subject_team?: string | null; subject_ip?: string | null; replaced_by?: { id: string; name: string } | null;
   /** 恢复后 30 分钟内复发、合并进这条的次数 */
   reopen_count: number;
   /** 近 7 天同对象同规则开过几次（含这次） */

@@ -257,16 +257,24 @@ fn incident_items(ctx: &Ctx, state: &str, subject: Option<&str>) -> anyhow::Resu
 }
 
 /// `incidents` / `status` 的一条告警：与表格同列（另带规则 key、对象 id、状态与恢复时间），`--json` 输出这些而不是完整的告警对象。
-/// 对象名取 subject.name：机器已删除时是「（已删除）」；中控自身的告警（central_ 开头）没有 subject、subject_id，对象名是 subject_name「中控」
+/// 对象名取 subject_name：触发时的名字（之后改名、替换不变），中控自身的告警（central_ 开头）是「中控」；旧中控没记时退回 subject.name（现名，机器已删除时是「（已删除）」）。
+/// current_name：现名与触发时不同时给出；replaced_by：被替换下来时接替它的节点名
 fn incident_item(i: &Value) -> Value {
     json!({
         "id": i["id"], "severity": i["severity"], "rule": i["rule"], "rule_name": i["rule_name"],
-        "subject_id": i["subject_id"], "subject_name": i.pointer("/subject/name").or(i.get("subject_name")),
+        "subject_id": i["subject_id"], "subject_name": i.get("subject_name").filter(|v| !v.is_null()).or(i.pointer("/subject/name")),
+        "current_name": i.get("current_name").cloned().unwrap_or(Value::Null), "replaced_by": i.pointer("/replaced_by/name").cloned().unwrap_or(Value::Null),
         "summary": i["summary"], "reopen_count": i["reopen_count"], "recent_count": i["recent_count"], "chronic": i["chronic"], "state": i["state"],
         "opened_at": i["opened_at"], "resolved_at": i["resolved_at"], "ack_by": i["ack_by"],
         // 中控按规则给的建议操作（可以直接执行的 fleetctl 命令）；旧中控没有，为 []
         "suggested": i.get("suggested").cloned().unwrap_or_else(|| json!([])),
     })
+}
+
+/// 对象列：触发时的名字，改过名 / 被替换的跟「（现：备用-01，已由 团队2-07 接替）」
+fn subject_cell(i: &Value) -> String {
+    let now: Vec<String> = [i["current_name"].as_str().map(|n| format!("现：{n}")), i["replaced_by"].as_str().map(|n| format!("已由 {n} 接替"))].into_iter().flatten().collect();
+    if now.is_empty() { st(i, "/subject_name") } else { format!("{}（{}）", st(i, "/subject_name"), now.join("，")) }
 }
 
 /// `list` 是 `incident_item` 的输出。`with_state`：列表里有已恢复的（`incidents --all`）时加一列状态（进行中 / 恢复时间）
@@ -277,7 +285,7 @@ fn incident_table(list: &[Value], with_state: bool) -> String {
             let mut r = vec![
                 severity_cn(&st(i, "/severity")).to_string(),
                 st(i, "/rule_name"),
-                st(i, "/subject_name"),
+                subject_cell(i),
                 {
                     let mut t = match i["reopen_count"].as_i64() {
                         Some(n) if n > 0 => format!("{}（反复 {} 次）", st(i, "/summary"), n + 1),
@@ -1195,6 +1203,15 @@ pub fn watch(ctx: &Ctx, count: Option<usize>, metrics: bool) -> anyhow::Result<u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 告警的对象写触发时的名字；改过名 / 被替换的跟现名与接替的节点（P-01）。旧中控没有 subject_name 的退回 subject.name
+    #[test]
+    fn incident_subject_shows_name_when_fired() {
+        let i = incident_item(&json!({"subject": {"name": "备用-01"}, "subject_name": "团队2-07", "current_name": "备用-01", "replaced_by": {"id": "x", "name": "团队2-07"}}));
+        assert_eq!(subject_cell(&i), "团队2-07（现：备用-01，已由 团队2-07 接替）");
+        assert_eq!(subject_cell(&incident_item(&json!({"subject": {"name": "团队2-08"}, "subject_name": "团队2-08", "current_name": null}))), "团队2-08");
+        assert_eq!(subject_cell(&incident_item(&json!({"subject": {"name": "团队2-08"}}))), "团队2-08");
+    }
 
     /// status 的闲置备用：带上健康计数（非 0 的）和能顶替几台；没有闲置备用、旧中控没有 spare_health 只写台数
     #[test]
