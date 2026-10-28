@@ -945,14 +945,17 @@ async fn stale_probes_do_not_resolve_probe_alerts() {
     for secs in [181, 400, 1200] {
         pass(&t, &mut state, base, secs).await;
     }
-    assert_eq!(incidents(&t, "firing").await.len(), 2, "探测过期不是恢复");
+    let probe_rules = |v: Vec<Value>| v.iter().filter(|i| matches!(i["rule"].as_str(), Some("egress_fail" | "tcp_fail"))).count();
+    let firing = incidents(&t, "firing").await;
+    assert_eq!(probe_rules(firing.clone()), 2, "探测过期不是恢复");
+    assert!(has_rule(&firing, "health_unknown"), "探测停了满 5 分钟：状态未知另开一条（P-17）");
 
     let mut r = blank_report(2);
     r.xray = Some(xray(true));
     r.probes = vec![probe(entry, now_ms(), ProbeKind::Egress, true), probe(entry, now_ms(), ProbeKind::Tcp, true)];
     assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
     pass(&t, &mut state, base, 1230).await;
-    assert_eq!(incidents(&t, "firing").await.len(), 2, "去抖从有新探测时起算");
+    assert_eq!(probe_rules(incidents(&t, "firing").await), 2, "去抖从有新探测时起算");
     pass(&t, &mut state, base, 1400).await;
     assert!(incidents(&t, "firing").await.is_empty());
 }
@@ -3010,4 +3013,37 @@ async fn different_rules_and_kinds_are_not_merged() {
     let texts = mock.texts("/hook/a");
     assert_eq!(mock.events("/hook/a"), ["firing", "firing", "firing", "resolved"]);
     assert!(texts[1].contains("告警触发：2 台 出口不通") && texts[2].contains("规则：Xray 未运行") && texts[3].contains("机器：团队2-09"), "{texts:?}");
+}
+
+/// P-17 不变量：线路机在线、Xray 在跑，节点入口却一直没有探测结果（探测停了）——状态「未知」满 5 分钟开 health_unknown；
+/// 自检 0 条矛盾；有了探测结果、状态正常后恢复
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unknown_node_gets_an_alert_and_no_alert_gaps() {
+    let t = setup().await;
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let team = seed_team(&t, "团队1").await;
+    let (node, entry) = seed_node(&t, relay, team, 1, "203.0.113.5", 20000).await;
+    let mut r = blank_report(1);
+    r.xray = Some(xray(true));
+    assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
+    assert_eq!(t.health(node).await.0, "unknown");
+    let mut state = AlertState::default();
+    let base = OffsetDateTime::now_utc();
+    pass(&t, &mut state, base, 0).await;
+    pass(&t, &mut state, base, 120).await;
+    assert!(!has_rule(&incidents(&t, "firing").await, "health_unknown"), "未知去抖 5 分钟");
+    pass(&t, &mut state, base, 301).await;
+    let firing = incidents(&t, "firing").await;
+    let inc = firing.iter().find(|i| i["rule"] == "health_unknown" && i["subject_id"] == json!(node)).unwrap_or_else(|| panic!("未知满 5 分钟要有告警：{firing:?}"));
+    assert_eq!(inc["severity"], "warning");
+    assert!(inc["summary"].as_str().unwrap().contains("线路机1"), "{inc}");
+    assert!(t.st.alert_gaps.lock().unwrap().is_empty(), "自检 0 条矛盾");
+
+    let mut r = blank_report(2);
+    r.xray = Some(xray(true));
+    r.probes = vec![probe(entry, now_ms(), ProbeKind::Egress, true), probe(entry, now_ms(), ProbeKind::Tcp, true)];
+    assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
+    pass(&t, &mut state, base, 330).await;
+    pass(&t, &mut state, base, 400).await;
+    assert!(!has_rule(&incidents(&t, "firing").await, "health_unknown"), "判得出了就恢复");
 }

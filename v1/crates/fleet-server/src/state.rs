@@ -103,6 +103,8 @@ pub struct Inner {
     pub routers_refresh: crate::routers::collect::Refresh,
     /// 软路由隧道回连主机不是中控时的告警摘要（routers::selfcheck 定期查，selfmon 照它开 central_tunnel_host）
     pub tunnel_host: std::sync::Mutex<Option<String>>,
+    /// 不变量自检（alerts::gaps）没盖住的机器：每轮机器告警评估后更新，selfmon 照它开 central_alert_gap（为空 = 0 条矛盾）
+    pub alert_gaps: std::sync::Mutex<Vec<String>>,
 }
 
 impl std::ops::Deref for AppState {
@@ -157,6 +159,7 @@ impl AppState {
             terminals: Default::default(),
             routers_refresh: Default::default(),
             tunnel_host: Default::default(),
+            alert_gaps: Default::default(),
         }))
     }
 
