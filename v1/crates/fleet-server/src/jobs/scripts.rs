@@ -399,9 +399,32 @@ pub fn relay_xray() -> String { RELAY_XRAY.replace("__XRAY_UNIT_SH__", xray_unit
 /// 只是补装：包在子 shell 里，失败只输出 `xray_unit=error`，不让 agent 步骤失败
 pub fn relay_xray_unit() -> String { format!("(\n{}\n) && (\n{}\n) || echo xray_unit=error\n", xray_unit_sh().trim(), XRAY_RESOLV_SH.trim()) }
 
-/// 线路机装 agent：先收敛 Xray 单元（需要时重启 Xray，见 `XRAY_RESOLV_SH`）和日志轮转，再换 agent——
-/// 新 agent 起来时 Xray 已经用上公共解析器，它的第一次应用（骨架没变，只热更新、不重启 Xray）解析得了域名
-pub fn relay_agent() -> String { format!("umask 022\n{}{}{}", relay_xray_unit(), relay_logrotate(), agent()) }
+/// 线路机装 agent：先收敛 Xray 单元（需要时重启 Xray，见 `XRAY_RESOLV_SH`）、AnyTLS 外壳的单元（`relay_singbox`）和日志轮转，再换 agent——
+/// 新 agent 起来时 Xray 已经用上公共解析器，它的第一次应用（骨架没变，只热更新、不重启 Xray）解析得了域名；
+/// /etc/fleet-singbox 也已经建好（agent 单元把它列进 ReadWritePaths，启动时不存在就写不进去）
+pub fn relay_agent() -> String { format!("umask 022\n{}{}{}{}", relay_xray_unit(), relay_singbox(), relay_logrotate(), agent()) }
+
+/// 线路机的 AnyTLS 外壳（sing-box，配置由 agent 生成，见 fleet-agent 的 singbox.rs）：建 /etc/fleet-singbox（0700），
+/// 程序在（/usr/local/bin/sing-box，中控 dist 里有才推）时收敛 fleet-singbox 单元并 enable。单元变了只 daemon-reload（同 fleet-xray，不为换单元重启）；
+/// 程序换了（变量 SINGBOX_CHANGED=1）且正在跑才重启一次换上新程序，输出 `singbox_restart=1`（只断开这台线路机上的 AnyTLS 连接，Reality 不受影响；失败为 `error`）。
+/// 输出 `singbox_version=`；程序不在时 `singbox=missing`。上架、升级 agent 都用这一段，只是补装：包在子 shell 里，失败只输出 `singbox_unit=error`，不让步骤失败
+pub fn relay_singbox() -> String { format!("(\n{}\n) || echo singbox_unit=error\n", SINGBOX_SH.replace("__UNIT__", SINGBOX_UNIT.trim_end()).trim()) }
+
+const SINGBOX_SH: &str = r#"
+install -d -m 700 /etc/fleet-singbox || exit 1
+if [ -x /usr/local/bin/sing-box ]; then
+S=/etc/systemd/system/fleet-singbox.service
+cat > $S.tmp <<'UNIT' || exit 1
+__UNIT__
+UNIT
+cmp -s $S.tmp $S && rm -f $S.tmp || { mv $S.tmp $S || exit 1; systemctl daemon-reload; }
+systemctl enable -q fleet-singbox || exit 1
+if [ "${SINGBOX_CHANGED:-0}" = 1 ] && systemctl -q is-active fleet-singbox; then
+if systemctl restart fleet-singbox; then echo singbox_restart=1; else echo singbox_restart=error; fi
+fi
+echo "singbox_version=$(/usr/local/bin/sing-box version 2>/dev/null | head -1 | awk '{print $3}')"
+else echo singbox=missing; fi
+"#;
 
 /// DNS 是链路本地地址（装单元时写了 /etc/fleet-xray/resolv.conf）、正在跑的 Xray 看到的 /etc/resolv.conf 却不是它（单元刚换上这个挂载，
 /// 或换上之后 Xray 还没重启过）：重启一次 Xray，挂载才生效——不然 Xray 还用着被 IPAddressDeny=link-local 拦掉的解析器，解析不了域名，
@@ -476,6 +499,7 @@ systemctl enable -q --now fleet-xray-logrotate.timer
 /// systemd 单元、logrotate 配置：唯一来源在 deploy/
 pub const AGENT_UNIT: &str = include_str!("../../../../deploy/units/fleet-agent.service");
 pub const XRAY_UNIT: &str = include_str!("../../../../deploy/units/fleet-xray.service");
+pub const SINGBOX_UNIT: &str = include_str!("../../../../deploy/units/fleet-singbox.service");
 pub const XRAY_LOGROTATE: &str = include_str!("../../../../deploy/logrotate/fleet-xray");
 pub const XRAY_LOGROTATE_SERVICE: &str = include_str!("../../../../deploy/units/fleet-xray-logrotate.service");
 pub const XRAY_LOGROTATE_TIMER: &str = include_str!("../../../../deploy/units/fleet-xray-logrotate.timer");
@@ -581,10 +605,11 @@ ss -Hltn "sport = :$SS_PORT" | grep -q . && echo ss=still_listening || echo ss=g
 echo cleanup=done
 "##;
 
-/// 退役清理（线路机）：停 agent 与 xray，删配置、日志轮转（含每小时的定时器）和 xray 二进制与数据文件
+/// 退役清理（线路机）：停 agent、xray 与 sing-box，删配置、日志轮转（含每小时的定时器）和 xray、sing-box 的二进制与数据文件
 pub const RELAY_CLEANUP: &str = r#"
 set -u
 systemctl disable --now fleet-agent 2>/dev/null; systemctl disable --now fleet-xray 2>/dev/null; systemctl disable --now fleet-xray-logrotate.timer 2>/dev/null
+systemctl disable --now fleet-singbox 2>/dev/null; rm -f /etc/systemd/system/fleet-singbox.service; rm -rf /etc/fleet-singbox /usr/local/bin/sing-box
 rm -f /etc/systemd/system/fleet-agent.service /etc/systemd/system/fleet-xray.service /etc/logrotate.d/fleet-xray
 rm -f /etc/systemd/system/fleet-xray-logrotate.service /etc/systemd/system/fleet-xray-logrotate.timer
 rm -rf /etc/fleet-agent /etc/fleet-xray /var/lib/fleet-agent /var/log/fleet-xray /var/log/private/fleet-xray /usr/local/bin/fleet-agent /usr/local/bin/fleet-agent.prev /usr/local/bin/xray /usr/local/share/xray
@@ -985,6 +1010,13 @@ ACL
         let s = super::relay_agent();
         let (unit, lr, agent) = (s.find(&super::relay_xray_unit()).unwrap(), s.find(&super::relay_logrotate()).unwrap(), s.find(&super::agent()).unwrap());
         assert!(unit < lr && lr < agent && s.contains("systemctl restart fleet-agent"), "{s}");
+        // AnyTLS 外壳：/etc/fleet-singbox 在换 agent 之前建好（agent 单元的 ReadWritePaths 要它在）；失败不让步骤失败
+        let sb = super::relay_singbox();
+        assert!(s.find(&sb).unwrap() < agent && sb.ends_with("\n) || echo singbox_unit=error\n") && !sb.contains("__"), "{sb}");
+        assert!(sb.starts_with("(\ninstall -d -m 700 /etc/fleet-singbox || exit 1\n"), "{sb}");
+        assert!(sb.contains("DynamicUser=yes\nStandardInput=file:/etc/fleet-singbox/config.json\nExecStart=/usr/local/bin/sing-box run -c stdin --disable-color\n"), "{sb}");
+        assert!(super::AGENT_UNIT.contains("\nReadWritePaths=/var/lib/fleet-agent /etc/fleet-agent -/etc/fleet-singbox\n"));
+        assert!(super::RELAY_CLEANUP.contains("systemctl disable --now fleet-singbox") && super::RELAY_CLEANUP.contains("/usr/local/bin/sing-box"));
     }
 
     /// 链路本地 DNS：运行中的 Xray 看到的 /etc/resolv.conf 不是公共解析器那份时重启一次 Xray；重启过（看到的一致了）、

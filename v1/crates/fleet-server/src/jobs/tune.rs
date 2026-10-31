@@ -1,10 +1,15 @@
-//! 系统调优档 tune-v2：上架时紧跟系统基线固定执行（converge / converge_relay），已有机器用作业 `tune` 重做，`tune` 带 `rollback` 时按原值快照撤销。
+//! 系统调优档 tune-v3：上架时紧跟系统基线固定执行（converge / converge_relay），已有机器用作业 `tune` 重做，`tune` 带 `rollback` 时按原值快照撤销。
 //! 调优档就是这里的代码常量，跟中控版本走：改任何一项值或推导方法都升版本号（tune-v3 …），实验室验证、部署中控后 `fleetctl tune --all` 重做。
 //! 选值依据与每一项的理由见 docs/DESIGN.md §3「系统调优」。
 //!
 //! tune-v2 相对 tune-v1：TCP 缓冲区上限不再固定 16 MB，而是按这台机器推导（`buf_max`，借鉴 tcpfit 的 2×BDP+2 MiB，只搬这一处推导）：
 //! 带宽取套餐（中控渲染时代入），RTT 线路机在远端被动采样入口连接（`ss -ti`）、节点固定，内存远端读 /proc/meminfo，计算在远端 awk 里做，
 //! 输入与结果原样输出进步骤结果（中控按同一公式核对）。另补几项固定值与「只纠正被改坏的」守卫项；任何「至少」键都不往下调。
+//!
+//! tune-v3 相对 tune-v2：线路机的 ip_local_reserved_ports 多保留入口的 AnyTLS 公网端口段（入口端口 + `ANYTLS_PORT_OFFSET`）与
+//! 回环桥接端口段（+ `ANYTLS_BRIDGE_OFFSET`）：sing-box 每次换配置都要重启、重新绑端口，Xray 骨架变了重启时也要重新绑桥接入站，
+//! 被本机出站连接占去就绑不上。默认端口池 20000–29999 时保留 20000–59999（加 Xray API 端口），出站连接可用的本地端口
+//! 剩 10240–19999 与 60000–65535（每个目标地址各自这么多）。节点的值没变，只是档名跟着升
 //!
 //! 远端脚本逐键直接写 `/proc/sys/…` 再读回，只把读回一致的键写进 `/etc/sysctl.d/99-zz-fleet-tune.conf`（容器里写不了的键不进文件，
 //! 开机时也不报错）。`nf_conntrack_max` 存在（模块已加载）时另写 `/etc/modules-load.d/90-fleet-conntrack.conf`：开机时
@@ -15,7 +20,7 @@
 use serde_json::{json, Map, Value};
 
 /// 当前调优档。`machine.tune_profile` 记机器上最近一次成功应用的档；和它不一样就是「旧档」
-pub const PROFILE: &str = "tune-v2";
+pub const PROFILE: &str = "tune-v3";
 
 const MIB: i64 = 1 << 20;
 /// 缓冲区上限的下限：tune-v1 的固定值，推导结果不会比它小（不会因为换档把已有机器的缓冲调小）
@@ -100,13 +105,19 @@ const BUF: &str = "@BUF@";
 const XRAY_API_PORT: i32 = fleet_proto::XRAY_API_PORT as i32;
 /// 探测入站端口 = 入口端口 + 此偏移（agent xray/render.rs 的 probe_ports）
 const PROBE_PORT_OFFSET: i32 = fleet_proto::PROBE_PORT_OFFSET as i32;
+/// AnyTLS 公网端口、回环桥接端口的偏移（fleet_proto::anytls_ports）
+const ANYTLS_PORT_OFFSET: i32 = fleet_proto::ANYTLS_PORT_OFFSET as i32;
+const ANYTLS_BRIDGE_OFFSET: i32 = fleet_proto::ANYTLS_BRIDGE_OFFSET as i32;
 
-/// 要保留的本地端口：入口端口池，加上各入口的回环探测入站端口（入口端口 + `PROBE_PORT_OFFSET`）与 Xray API 端口。
+/// 要保留的本地端口：入口端口池，加上各入口的回环探测入站端口（入口端口 + `PROBE_PORT_OFFSET`）、AnyTLS 公网端口（+ `ANYTLS_PORT_OFFSET`）、
+/// AnyTLS 回环桥接端口（+ `ANYTLS_BRIDGE_OFFSET`）与 Xray API 端口。超出 65535 的部分截掉（那些入口本来就没有对应的端口）。
 /// 写成内核读回的格式（按端口排序，相邻或重叠的段合并成一段，单个端口不写成段），读回才对得上
 fn reserved(min: i32, max: i32) -> String {
     let mut segs = vec![(min, max), (XRAY_API_PORT, XRAY_API_PORT)];
-    if min + PROBE_PORT_OFFSET <= 65535 {
-        segs.push((min + PROBE_PORT_OFFSET, (max + PROBE_PORT_OFFSET).min(65535)));
+    for off in [PROBE_PORT_OFFSET, ANYTLS_PORT_OFFSET, ANYTLS_BRIDGE_OFFSET] {
+        if min + off <= 65535 {
+            segs.push((min + off, (max + off).min(65535)));
+        }
     }
     segs.sort();
     let mut merged: Vec<(i32, i32)> = vec![];
@@ -508,19 +519,19 @@ mod tests {
     #[test]
     fn relay_script_reserves_the_entry_port_pool_before_the_port_range() {
         let s = script(RELAY, Some(1000));
-        // 入口端口池 20000-29999 与回环探测入站 30000-39999 相邻，合成一段；Xray API 端口单独一个
-        let (res, range) = (s.find("= net.ipv4.ip_local_reserved_ports 20000-39999,62789\n").unwrap(), s.find("= net.ipv4.ip_local_port_range 10240 65535\n").unwrap());
+        // 入口端口池 20000-29999、回环探测入站 30000-39999、AnyTLS 公网 40000-49999、AnyTLS 桥接 50000-59999 相邻，合成一段；Xray API 端口单独一个
+        let (res, range) = (s.find("= net.ipv4.ip_local_reserved_ports 20000-59999,62789\n").unwrap(), s.find("= net.ipv4.ip_local_port_range 10240 65535\n").unwrap());
         assert!(res < range, "先保留入口端口池，再放宽本地端口范围");
         assert!(s.contains(">= net.netfilter.nf_conntrack_max 262144\n") && !s.contains("nf_conntrack_max 131072"));
         assert!(s.contains("= net.ipv4.tcp_tw_reuse 1\n") && s.contains("show -p LimitNOFILE --value fleet-xray "));
         assert!(!s.contains("__") && !s.contains(RESERVED));
         // 入口端口池按这台线路机自己的来
         let s = script(Role::Relay { port_min: 21000, port_max: 21999 }, None);
-        assert!(s.contains("= net.ipv4.ip_local_reserved_ports 21000-21999,31000-31999,62789\n"));
-        // API 端口落在端口池里、紧挨着探测入站段
+        assert!(s.contains("= net.ipv4.ip_local_reserved_ports 21000-21999,31000-31999,41000-41999,51000-51999,62789\n"));
+        // 偏移后超出 65535 的段截掉或不要；API 端口落在某一段里就不单写
         assert_eq!(
-            (reserved(60000, 65000), reserved(20000, 35000), reserved(42000, 52788), reserved(40000, 49999)),
-            ("60000-65000".into(), "20000-45000,62789".into(), "42000-62789".into(), "40000-59999,62789".into())
+            (reserved(60000, 65000), reserved(20000, 35000), reserved(42000, 52788), reserved(10000, 12000)),
+            ("60000-65000".into(), "20000-65000".into(), "42000-65535".into(), "10000-12000,20000-22000,30000-32000,40000-42000,62789".into())
         );
     }
 

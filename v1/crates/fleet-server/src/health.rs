@@ -415,6 +415,7 @@ pub(crate) mod tests {
                 health: None,
                 clock_skew_ms: None,
                 nic_ifaces: vec![],
+                anytls: None,
             }),
             host: None,
             entries: vec![],

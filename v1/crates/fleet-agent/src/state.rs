@@ -3,7 +3,7 @@
 use crate::config::Config;
 use crate::util::{load_json, save_json};
 use crate::xray::stats::StatsState;
-use fleet_proto::{DesiredState, EntrySample, HostSample, PingSample, ProbeSample, RttSample, SystemInfo, XrayStatus};
+use fleet_proto::{DesiredState, EntrySample, HostSample, PingSample, ProbeSample, RttSample, SingboxStatus, SystemInfo, XrayStatus};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -27,6 +27,8 @@ pub struct Buffers {
     pub rtt: Vec<RttSample>,
     pub info: Option<SystemInfo>,
     pub xray: Option<XrayStatus>,
+    /// AnyTLS 外壳（sing-box）的状态：每份报告都带最近一次查到的
+    pub singbox: Option<SingboxStatus>,
     /// 流量基线：报告落盘成功后才持久化，崩溃时不会"基线前移但增量丢失"
     pub stats_commit: Option<StatsState>,
 }

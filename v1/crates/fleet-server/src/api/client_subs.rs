@@ -1,7 +1,9 @@
 //! 客户端订阅：自己的客户端（Windows 上的 Clash Verge、OpenClash 的 proxy-provider、v2rayN / Shadowrocket）按一个链接拉入口列表。
 //! 订阅 = 名称 + 令牌（库里只存 sha256，新建、轮换时只给一次完整链接）+ 选择规则（存团队 / 机器 id，不存入口参数，见迁移 0077）。
 //! 拉取（`GET /sub/{令牌}`，不登录）按请求时的入口现算：替换节点、换线路机、轮换凭据后客户端更新订阅就是新的。
-//! 管理接口都要 secrets 权限（同分享链接）；新建、修改、轮换、删除记审计，拉取不记（只节流写最近拉取时间与来源）
+//! 管理接口都要 secrets 权限（同分享链接）；新建、修改、轮换、删除记审计，拉取不记（只节流写最近拉取时间与来源）。
+//! 协议（`protocols`，迁移 0094）：reality（默认）/ anytls / both。AnyTLS 条目只给线路机报了 sing-box 在跑、入口有 AnyTLS 端口的
+//! （entries::anytls_live；没在跑时链接是坏的）：选 anytls 时这样的入口不出现，选 both 时只有 Reality 那条
 
 use super::ok;
 use crate::auth::{self, Actor, ClientIp};
@@ -118,6 +120,35 @@ struct Cand {
     country: Option<String>,
     provider: Option<String>,
     relay: String,
+    /// AnyTLS 公网端口：线路机上真能用 AnyTLS 时才有（candidates 里按 entries::anytls_live 填）
+    #[sqlx(skip)]
+    anytls: Option<u16>,
+}
+
+/// 订阅的协议：reality / anytls / both
+fn check_protocols(p: &str) -> ApiResult<String> {
+    match p {
+        "reality" | "anytls" | "both" => Ok(p.to_string()),
+        _ => Err(ApiError::bad_request("protocols 只能是 reality、anytls、both")),
+    }
+}
+
+/// 订阅里的一条：入口、是不是 AnyTLS、在客户端里的名字（AnyTLS 那条是 names::sub_name_anytls）
+type Item<'a> = (&'a Cand, bool, String);
+
+/// 按协议展开：同一入口 Reality 在前、AnyTLS 紧跟其后；入口没有 AnyTLS 就只有 Reality（选 anytls 时整条不出）
+fn expand<'a>(items: Vec<(&'a Cand, String)>, protocols: &str) -> Vec<Item<'a>> {
+    let (reality, anytls) = (protocols != "anytls", protocols != "reality");
+    let mut out = Vec::with_capacity(items.len());
+    for (c, name) in items {
+        if reality {
+            out.push((c, false, name.clone()));
+        }
+        if anytls && c.anytls.is_some() {
+            out.push((c, true, names::sub_name_anytls(&name)));
+        }
+    }
+    out
 }
 
 /// 全部候选入口，按线路机直出在前、团队、编号、线路机排（同机器列表）。`country`：没手动指定国家的按 IP 查画像（同名字旁的国旗）
@@ -133,6 +164,10 @@ async fn candidates(st: &AppState, country: bool) -> ApiResult<Vec<Cand>> {
     )
     .fetch_all(&st.db)
     .await?;
+    let at = crate::entries::anytls_live(&st.db, &[]).await?;
+    for c in &mut cs {
+        c.anytls = at.get(&c.entry_id).copied();
+    }
     if country {
         let ips: Vec<IpAddr> = cs.iter().filter(|c| c.country.is_none()).filter_map(|c| c.ip.parse().ok()).collect();
         if !ips.is_empty() {
@@ -162,14 +197,26 @@ fn pick<'a>(cs: &'a [Cand], rule: &Rule) -> Vec<(&'a Cand, String)> {
         .collect()
 }
 
-/// mihomo 的 proxy-provider 文件（只有 `proxies:`）。字符串一律加双引号（JSON 字符串就是合法的 YAML 双引号标量）：short-id 写成 01234567 不会被当成数字
-fn clash(items: &[(&Cand, String)]) -> String {
+/// mihomo 的 proxy-provider 文件（只有 `proxies:`）。字符串一律加双引号（JSON 字符串就是合法的 YAML 双引号标量）：short-id 写成 01234567 不会被当成数字。
+/// AnyTLS：证书是线路机自签的，skip-cert-verify；sni 用线路机的 reality_sni（证书就是按它签的）
+fn clash(items: &[Item]) -> String {
     let q = |s: &str| serde_json::to_string(s).unwrap_or_default();
     if items.is_empty() {
         return "proxies: []\n".into();
     }
     let mut o = String::from("proxies:\n");
-    for (c, name) in items {
+    for (c, at, name) in items {
+        if *at {
+            o += &format!(
+                "  - name: {}\n    type: anytls\n    server: {}\n    port: {}\n    password: {}\n    sni: {}\n    skip-cert-verify: true\n    client-fingerprint: chrome\n    udp: true\n",
+                q(name),
+                q(&c.host),
+                c.anytls.unwrap_or_default(),
+                q(&c.client_uuid.to_string()),
+                q(&c.sni)
+            );
+            continue;
+        }
         o += &format!(
             "  - name: {}\n    type: vless\n    server: {}\n    port: {}\n    uuid: {}\n    network: tcp\n    tls: true\n    udp: true\n    flow: xtls-rprx-vision\n    servername: {}\n    client-fingerprint: chrome\n    reality-opts:\n      public-key: {}\n      short-id: {}\n",
             q(name),
@@ -184,10 +231,16 @@ fn clash(items: &[(&Cand, String)]) -> String {
     o
 }
 
-/// vless:// 链接一行一条，整体 base64（v2rayN、Shadowrocket 的订阅格式）
-fn base64_list(items: &[(&Cand, String)]) -> String {
+/// vless:// / anytls:// 链接一行一条，整体 base64（v2rayN、Shadowrocket 的订阅格式）
+fn base64_list(items: &[Item]) -> String {
     use base64::Engine;
-    let lines: Vec<String> = items.iter().map(|(c, name)| crate::entries::share_url(c.client_uuid, &c.host, c.port, &c.sni, &c.pbk, &c.short_id, name)).collect();
+    let lines: Vec<String> = items
+        .iter()
+        .map(|(c, at, name)| match (at, c.anytls) {
+            (true, Some(p)) => crate::entries::anytls_url(c.client_uuid, &c.host, p, &c.sni, name),
+            _ => crate::entries::share_url(c.client_uuid, &c.host, c.port, &c.sni, &c.pbk, &c.short_id, name),
+        })
+        .collect();
     base64::engine::general_purpose::STANDARD.encode(lines.join("\n"))
 }
 
@@ -229,7 +282,7 @@ async fn fetch_inner(st: &AppState, ip: Option<IpAddr>, token: &str, fmt: &str) 
     let attempt = auth::begin_attempt(st, &key, ip.map(auth::ip_group)).await?;
     let row: Option<Row> = sqlx::query_as(&format!("select {COLS} from client_sub where token_hash = $1 and enabled")).bind(&hash).fetch_optional(&st.db).await?;
     // 不对：开头记下的那条失败留着
-    let Some(Row { id, name, rule, .. }) = row else { return Ok(text(StatusCode::NOT_FOUND, "订阅链接不对或已停用\n".into())) };
+    let Some(Row { id, name, rule, protocols, .. }) = row else { return Ok(text(StatusCode::NOT_FOUND, "订阅链接不对或已停用\n".into())) };
     auth::forget_attempt(st, attempt).await?;
     sqlx::query(
         "update client_sub set last_fetch_at = now(), last_fetch_ip = $2
@@ -240,7 +293,7 @@ async fn fetch_inner(st: &AppState, ip: Option<IpAddr>, token: &str, fmt: &str) 
     .execute(&st.db)
     .await?;
     let cs = candidates(st, true).await?;
-    let items = pick(&cs, &rule);
+    let items = expand(pick(&cs, &rule), &protocols);
     let body = if fmt == "base64" { base64_list(&items) } else { clash(&items) };
     let mut r = text(StatusCode::OK, body);
     let h = r.headers_mut();
@@ -260,13 +313,14 @@ struct Row {
     name: String,
     #[sqlx(flatten)]
     rule: Rule,
+    protocols: String,
     enabled: bool,
     token_at: OffsetDateTime,
     last_fetch_at: Option<OffsetDateTime>,
     last_fetch_ip: Option<String>,
 }
 
-const COLS: &str = "id, name, team_mode, team_ids, direct, include_ids, exclude_ids, enabled, token_at, last_fetch_at, host(last_fetch_ip) last_fetch_ip";
+const COLS: &str = "id, name, team_mode, team_ids, direct, include_ids, exclude_ids, protocols, enabled, token_at, last_fetch_at, host(last_fetch_ip) last_fetch_ip";
 
 /// 订阅规则里「排除」或「另加」了这台机器的订阅名（已排序）：替换节点的预览用，和 `swap_machine` 同一个口径
 pub(crate) async fn names_of_machine(conn: &mut sqlx::PgConnection, machine: Uuid) -> sqlx::Result<Vec<String>> {
@@ -326,7 +380,7 @@ fn rule_text(r: &Rule, names: &HashMap<Uuid, String>) -> String {
 
 fn view(r: &Row, cs: &[Cand], names: &HashMap<Uuid, String>) -> Value {
     json!({
-        "id": r.id, "name": r.name, "enabled": r.enabled, "rule": r.rule, "rule_text": rule_text(&r.rule, names),
+        "id": r.id, "name": r.name, "enabled": r.enabled, "rule": r.rule, "rule_text": rule_text(&r.rule, names), "protocols": r.protocols,
         "items": cs.iter().filter(|c| r.rule.picks(c)).count(),
         "token_at": r.token_at.format(&time::format_description::well_known::Rfc3339).ok(),
         "last_fetch_at": r.last_fetch_at.and_then(|t| t.format(&time::format_description::well_known::Rfc3339).ok()),
@@ -362,15 +416,17 @@ pub async fn list(a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>
     Ok(ok(rows.iter().map(|r| view(r, &cs, &names)).collect::<Vec<_>>()))
 }
 
-/// 一个订阅与它现在的条目（名字、走哪台线路机哪个端口；不含凭据）
+/// 一个订阅与它现在的条目（名字、走哪台线路机哪个端口、AnyTLS 端口（这份订阅出 AnyTLS 条目时才有）；不含凭据）
 pub async fn get_one(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
     a.require_scope("secrets")?;
     let r = load(&st, id).await?;
     let cs = candidates(&st, true).await?;
     let mut v = view(&r, &cs, &ref_names(&st.db, &[&r.rule]).await?);
+    let at = r.protocols != "reality";
     v["entries"] = pick(&cs, &r.rule)
         .into_iter()
-        .map(|(c, name)| json!({"name": name, "entry_id": c.entry_id, "relay": c.relay, "port": c.port}))
+        .filter(|(c, _)| r.protocols != "anytls" || c.anytls.is_some())
+        .map(|(c, name)| json!({"name": name, "entry_id": c.entry_id, "relay": c.relay, "port": c.port, "anytls_port": c.anytls.filter(|_| at)}))
         .collect();
     Ok(ok(v))
 }
@@ -380,17 +436,21 @@ pub struct CreateIn {
     name: String,
     #[serde(default)]
     rule: Rule,
+    /// reality（默认）/ anytls / both
+    #[serde(default)]
+    protocols: Option<String>,
 }
 
 /// 新建：返回的 `url` 只给这一次（库里只存哈希）
 pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<CreateIn>) -> ApiResult<Json<Value>> {
     a.require_scope("secrets")?;
     let name = check_name(&b.name)?;
+    let protocols = check_protocols(b.protocols.as_deref().unwrap_or("reality"))?;
     let (id, token) = (new_id(), random_token(32));
     let mut tx = st.db.begin().await?;
     let rule = b.rule.check(&mut tx).await?;
     sqlx::query(
-        "insert into client_sub (id, name, token_hash, team_mode, team_ids, direct, include_ids, exclude_ids) values ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "insert into client_sub (id, name, token_hash, team_mode, team_ids, direct, include_ids, exclude_ids, protocols) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind(id)
     .bind(&name)
@@ -400,11 +460,12 @@ pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Cr
     .bind(rule.direct)
     .bind(&rule.include_ids)
     .bind(&rule.exclude_ids)
+    .bind(&protocols)
     .execute(&mut *tx)
     .await?;
     let r: Row = sqlx::query_as(&format!("select {COLS} from client_sub where id = $1")).bind(id).fetch_one(&mut *tx).await?;
     let mut v = view_one(&st, &r).await?;
-    audit(&mut tx, &a.name, "client_sub.create", "client_sub", Some(id), json!({"name": name, "rule": v["rule_text"]})).await?;
+    audit(&mut tx, &a.name, "client_sub.create", "client_sub", Some(id), json!({"name": name, "rule": v["rule_text"], "protocols": protocols})).await?;
     tx.commit().await?;
     v["url"] = json!(link(&st, &token));
     Ok(ok(v))
@@ -416,6 +477,7 @@ pub struct PatchIn {
     name: Option<String>,
     rule: Option<Rule>,
     enabled: Option<bool>,
+    protocols: Option<String>,
 }
 
 /// 改名称、规则（整份替换）、启用 / 停用（停用后拉取回 404，令牌不变）。只写实际改的列：只改名 / 启停不碰规则列，不会把并发的删团队摘掉的 team_ids 写回
@@ -423,16 +485,18 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     a.require_scope("secrets")?;
     let cur = load(&st, id).await?;
     let name = b.name.as_deref().map(check_name).transpose()?;
+    let protocols = b.protocols.as_deref().map(check_protocols).transpose()?;
     let mut tx = st.db.begin().await?;
     // 先校验规则（团队行 for share）再写订阅行：和删团队（先锁团队、再改订阅）同序，两者并发不会死锁
     let rule = match b.rule {
         Some(r) => Some(r.check(&mut tx).await?),
         None => None,
     };
-    sqlx::query("update client_sub set name = coalesce($2, name), enabled = coalesce($3, enabled), updated_at = now() where id = $1")
+    sqlx::query("update client_sub set name = coalesce($2, name), enabled = coalesce($3, enabled), protocols = coalesce($4, protocols), updated_at = now() where id = $1")
         .bind(id)
         .bind(&name)
         .bind(b.enabled)
+        .bind(&protocols)
         .execute(&mut *tx)
         .await?;
     if let Some(rule) = rule {
@@ -448,7 +512,7 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     }
     let r: Row = sqlx::query_as(&format!("select {COLS} from client_sub where id = $1")).bind(id).fetch_one(&mut *tx).await?;
     let v = view_one(&st, &r).await?;
-    audit(&mut tx, &a.name, "client_sub.update", "client_sub", Some(id), json!({"name": r.name, "old_name": cur.name, "enabled": r.enabled, "rule": v["rule_text"]})).await?;
+    audit(&mut tx, &a.name, "client_sub.update", "client_sub", Some(id), json!({"name": r.name, "old_name": cur.name, "enabled": r.enabled, "rule": v["rule_text"], "protocols": r.protocols})).await?;
     tx.commit().await?;
     Ok(ok(v))
 }

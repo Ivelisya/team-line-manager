@@ -369,7 +369,8 @@ export const usePatchPlan = () => useWrite(({ id, ...b }: { id: string; archived
 export const useDelTeam = () => useWrite((id: string) => del(`/teams/${id}`), [['teams'], ['policies']]);
 export const useDelProvider = () => useWrite((id: string) => del(`/providers/${id}`), [['providers']]);
 export const useDelPlan = () => useWrite((id: string) => del(`/plans/${id}`), [['plans']]);
-export const fetchShare = (entryId: string) => get<{ url: string }>(`/entries/${entryId}/share`);
+/** url：vless://（Reality）；anytls_url：线路机上 AnyTLS 可用时才有 */
+export const fetchShare = (entryId: string) => get<{ url: string; anytls_url?: string | null }>(`/entries/${entryId}/share`);
 /** 指向这个入口的软路由出口（按各路由最近一次采集）：轮换凭据、停用入口的确认对话框里列出来，打开时才取、每次重取 */
 export interface EntryRouterExits { id: string; name: string; state: string; exits: string[] }
 export const useEntryRouterExits = (entryId: string, enabled: boolean) =>

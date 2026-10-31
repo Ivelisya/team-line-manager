@@ -199,6 +199,7 @@ fn unit_name(u: &str) -> Option<&'static str> {
     match u {
         "fleet-agent" => Some("fleet-agent"),
         "fleet-xray" => Some("fleet-xray"),
+        "fleet-singbox" | "sing-box" => Some("fleet-singbox"),
         "ssserver" | "fleet-ssserver" => Some("fleet-ssserver"),
         _ => None,
     }
@@ -207,7 +208,7 @@ fn unit_name(u: &str) -> Option<&'static str> {
 pub async fn machine_logs(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<LogsQ>) -> ApiResult<Json<Value>> {
     a.require_scope("exec")?;
     let want = q.unit.as_deref().unwrap_or("fleet-agent");
-    let mut unit = unit_name(want).ok_or_else(|| ApiError::bad_request("unit 只能是 fleet-agent / fleet-xray / ssserver"))?.to_string();
+    let mut unit = unit_name(want).ok_or_else(|| ApiError::bad_request("unit 只能是 fleet-agent / fleet-xray / fleet-singbox / ssserver"))?.to_string();
     // 同机 IP 节点的 ssserver 是宿主机上的模板实例 fleet-ssserver@<端口>（fleet-agent 就是宿主机的）
     let ip_port: Option<i32> =
         sqlx::query_scalar("select o.port from machine m join node_outbound o on o.machine_id = m.id where m.id = $1 and m.host_id is not null")

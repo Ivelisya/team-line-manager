@@ -6,13 +6,15 @@ import { del, get, patch, post } from './api';
 /** team_mode：all 全部团队（不含备用团队）；only 只要 team_ids；except 全部团队（不含备用团队）除了 team_ids。
  *  include_ids：另外带上的机器（节点，或线路机 = 它的直出入口）；exclude_ids：一律不带，优先于其余规则 */
 export interface SubRule { team_mode: 'all' | 'only' | 'except'; team_ids: string[]; direct: boolean; include_ids: string[]; exclude_ids: string[] }
-/** items：按现在的入口算的条目数；last_fetch_*：最近一次成功拉取（10 分钟内只记一次），轮换后清空 */
+/** reality（默认）/ anytls / both：AnyTLS 条目只出在 sing-box 在跑的线路机上的入口 */
+export type SubProtocols = 'reality' | 'anytls' | 'both';
+/** items：按现在的入口算的入口数；last_fetch_*：最近一次成功拉取（10 分钟内只记一次），轮换后清空 */
 export interface ClientSub {
-  id: string; name: string; enabled: boolean; rule: SubRule; rule_text: string; items: number;
+  id: string; name: string; enabled: boolean; rule: SubRule; rule_text: string; items: number; protocols: SubProtocols;
   token_at: string; last_fetch_at: string | null; last_fetch_ip: string | null;
 }
-/** 条目：客户端里的名字、走哪台线路机哪个端口（不含凭据） */
-export interface ClientSubEntry { name: string; entry_id: string; relay: string; port: number }
+/** 条目：客户端里的名字、走哪台线路机哪个端口（不含凭据）；anytls_port：这份订阅出 AnyTLS、且这条有时才有 */
+export interface ClientSubEntry { name: string; entry_id: string; relay: string; port: number; anytls_port?: number | null }
 export type ClientSubWithUrl = ClientSub & { url: string };
 
 export const DEFAULT_RULE: SubRule = { team_mode: 'all', team_ids: [], direct: true, include_ids: [], exclude_ids: [] };
@@ -25,7 +27,7 @@ function useSubWrite<A, R>(fn: (a: A) => Promise<R>) {
   const qc = useQueryClient();
   return useMutation({ mutationFn: fn, onSuccess: () => { void qc.invalidateQueries({ queryKey: ['client-subs'] }); void qc.invalidateQueries({ queryKey: ['audit'] }); } });
 }
-export const useCreateClientSub = () => useSubWrite((b: { name: string; rule: SubRule }) => post<ClientSubWithUrl>('/client-subs', b));
-export const usePatchClientSub = () => useSubWrite(({ id, ...b }: { id: string; name?: string; rule?: SubRule; enabled?: boolean }) => patch<ClientSub>(`/client-subs/${id}`, b));
+export const useCreateClientSub = () => useSubWrite((b: { name: string; rule: SubRule; protocols?: SubProtocols }) => post<ClientSubWithUrl>('/client-subs', b));
+export const usePatchClientSub = () => useSubWrite(({ id, ...b }: { id: string; name?: string; rule?: SubRule; enabled?: boolean; protocols?: SubProtocols }) => patch<ClientSub>(`/client-subs/${id}`, b));
 export const useRotateClientSub = () => useSubWrite((id: string) => post<ClientSubWithUrl>(`/client-subs/${id}/rotate`));
 export const useDelClientSub = () => useSubWrite((id: string) => del(`/client-subs/${id}`));

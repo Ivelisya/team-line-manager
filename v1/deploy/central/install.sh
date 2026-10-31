@@ -102,10 +102,10 @@ bash "$PKG/tunnel-setup.sh" "$PKG"
 
 # 要换的二进制、dist、前端先都放成 .new，可能失败的步骤（单元、定时器、备份等）都做完、紧挨着重启 fleet-server 之前才一起换上（见下面「换上新版」）：
 # 中途失败不会留下「旧进程配新前端」，也不会让磁盘上的新二进制在之后任何一次崩溃重启时无人值守地升级、跑迁移。
-# xray、ssserver、geoip.dat 只在与这台中控上的不同时才随包带来（deploy.sh 先比对 sha256），没带的保持原样
+# xray、ssserver、geoip.dat、sing-box 只在与这台中控上的不同时才随包带来（deploy.sh 先比对 sha256），没带的保持原样
 install -m 755 "$PKG/bin/fleet-agent" /opt/fleet/dist/fleet-agent.new
 NEW_DIST=fleet-agent
-for f in xray ssserver; do
+for f in xray ssserver sing-box; do
   [ ! -f "$PKG/bin/$f" ] || { install -m 755 "$PKG/bin/$f" "/opt/fleet/dist/$f.new"; NEW_DIST="$NEW_DIST $f"; }
 done
 [ ! -f "$PKG/bin/geoip.dat" ] || { install -m 644 "$PKG/bin/geoip.dat" /opt/fleet/dist/geoip.dat.new; NEW_DIST="$NEW_DIST geoip.dat"; }

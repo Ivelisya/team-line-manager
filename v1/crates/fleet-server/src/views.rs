@@ -131,6 +131,8 @@ pub struct Agent {
     pub clock_skew_ms: Option<i64>,
     /// agent 计量流量用的网卡（SystemInfo.nic_ifaces）；旧 agent 没报过为空
     pub nic_ifaces: Vec<String>,
+    /// 线路机的 AnyTLS 外壳（sing-box）：装没装、在不在跑、版本、最近一次应用错误；旧 agent / 节点没报过为 None
+    pub anytls: Option<fleet_proto::SingboxStatus>,
 }
 
 /// 最近 5 分钟主机负载的「最低值」：最低值都超阈值才算持续高负载（健康判定用，不对外输出）
@@ -539,12 +541,13 @@ struct ACols {
     a_xray: Option<bool>,
     a_cores: Option<i32>,
     a_health: Option<sqlx::types::Json<fleet_proto::AgentHealth>>,
+    a_singbox: Option<sqlx::types::Json<fleet_proto::SingboxStatus>>,
     a_skew: Option<i64>,
     a_nic: Option<sqlx::types::Json<Vec<String>>>,
 }
 
 const A_COLS: &str = "a.agent_version a_version, a.last_report_at a_last, (a.info->'xray'->>'running')::bool a_xray, (a.info->>'cpu_cores')::int a_cores,
-                a.info->'agent_health' a_health, (a.info->>'clock_skew_ms')::bigint a_skew, a.info->'nic_ifaces' a_nic";
+                a.info->'agent_health' a_health, (a.info->>'clock_skew_ms')::bigint a_skew, a.info->'nic_ifaces' a_nic, a.info->'singbox' a_singbox";
 
 impl ACols {
     fn agent(self, st: &AppState, now: OffsetDateTime) -> Agent {
@@ -557,6 +560,7 @@ impl ACols {
             health: self.a_health.map(|h| h.0),
             clock_skew_ms: self.a_skew,
             nic_ifaces: self.a_nic.map(|n| n.0).unwrap_or_default(),
+            anytls: self.a_singbox.map(|s| s.0),
         }
     }
 }

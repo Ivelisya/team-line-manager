@@ -418,6 +418,14 @@ fn sanitize(r: &mut Report) {
     if let Some(v) = r.xray.as_mut().and_then(|x| x.version.as_mut()) {
         clip(v, 64);
     }
+    if let Some(s) = &mut r.singbox {
+        if let Some(v) = &mut s.version {
+            clip(v, 64);
+        }
+        if let Some(e) = &mut s.last_error {
+            clip(e, MAX_TEXT);
+        }
+    }
     if let Some(h) = &mut r.agent_health {
         for s in [&mut h.last_apply_error, &mut h.disk_write_error].into_iter().flatten() {
             clip(s, MAX_TEXT);
@@ -542,6 +550,8 @@ async fn ingest(st: &AppState, a: AgentId, mut r: Report) -> Result<Json<ReportA
         v
     });
     let agent_health = r.agent_health.as_ref().map(|h| serde_json::to_value(h).unwrap_or_default());
+    // AnyTLS（sing-box）的状态：每份都带，覆盖旧值；旧 agent 不报，info 里就没有（界面显示「未知」，分享与订阅不给 AnyTLS）
+    let singbox = r.singbox.as_ref().map(|s| serde_json::to_value(s).unwrap_or_default());
     // 时钟偏差 = 中控收到时刻 − sent_at_ms（正数 = agent 时钟慢）。sent_at_ms 是建报时刻，积压补发、失败重发的报告会偏大，
     // 只认新鲜的：建报时离线队列为空（之前的报告都已确认，建报一定晚于中控收到上一份）且上一份是 30 秒内收到的，误差不超过 30 秒
     let fresh = r.agent_health.as_ref().is_some_and(|h| h.queue_len == 0) && prev.is_some_and(|p| p.1);
@@ -549,10 +559,10 @@ async fn ingest(st: &AppState, a: AgentId, mut r: Report) -> Result<Json<ReportA
     // info 是合并而不是覆盖：只报系统信息时不能把之前记下的 xray / agent 健康状态 / 时钟偏差冲掉
     sqlx::query(
         "insert into agent_state (machine_id, agent_version, boot_id, last_seq, last_report_at, info)
-         values ($1, $2, $3, $4, now(), coalesce($5, '{}'::jsonb) || jsonb_strip_nulls(jsonb_build_object('xray', $6::jsonb, 'agent_health', $7::jsonb, 'clock_skew_ms', $8::bigint)))
+         values ($1, $2, $3, $4, now(), coalesce($5, '{}'::jsonb) || jsonb_strip_nulls(jsonb_build_object('xray', $6::jsonb, 'agent_health', $7::jsonb, 'clock_skew_ms', $8::bigint, 'singbox', $9::jsonb)))
          on conflict (machine_id) do update set agent_version = excluded.agent_version, boot_id = excluded.boot_id,
            last_seq = greatest(agent_state.last_seq, excluded.last_seq), last_report_at = now(),
-           info = agent_state.info || coalesce($5, '{}'::jsonb) || jsonb_strip_nulls(jsonb_build_object('xray', $6::jsonb, 'agent_health', $7::jsonb, 'clock_skew_ms', $8::bigint))",
+           info = agent_state.info || coalesce($5, '{}'::jsonb) || jsonb_strip_nulls(jsonb_build_object('xray', $6::jsonb, 'agent_health', $7::jsonb, 'clock_skew_ms', $8::bigint, 'singbox', $9::jsonb))",
     )
     .bind(a.machine_id)
     .bind(&r.agent_version)
@@ -562,6 +572,7 @@ async fn ingest(st: &AppState, a: AgentId, mut r: Report) -> Result<Json<ReportA
     .bind(xray)
     .bind(agent_health)
     .bind(skew)
+    .bind(singbox)
     .execute(&mut *tx)
     .await?;
 

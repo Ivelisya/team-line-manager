@@ -559,7 +559,7 @@ async fn tune_script_writes_reads_back_and_skips() {
 
     // 50M 套餐的节点：RTT 固定 100、不采样，缓冲区上限落在下限 16 MiB
     let o = run(ip, jobs::tune::script(jobs::tune::Role::Node, Some(50))).await;
-    assert_eq!((o.code, o.kv("tune_profile"), o.kv("journald"), o.kv("ntp"), o.kv("nofile"), o.kv("container")), (0, Some("tune-v2"), Some("changed"), Some("synced"), Some("65536"), Some("0")), "{o:?}");
+    assert_eq!((o.code, o.kv("tune_profile"), o.kv("journald"), o.kv("ntp"), o.kv("nofile"), o.kv("container")), (0, Some("tune-v3"), Some("changed"), Some("synced"), Some("65536"), Some("0")), "{o:?}");
     assert_eq!((o.kv("bw"), o.kv("rtt"), o.kv("rtt_source"), o.kv("mem_kb"), o.kv("buf_max"), o.kv("snapshot")), (Some("50"), Some("100"), Some("default"), Some("4005000"), Some("16777216"), Some("created")), "{o:?}");
     let kv: Vec<_> = [
         "net.core.rmem_max", "net.core.somaxconn", "net.ipv4.tcp_slow_start_after_idle", "net.ipv4.tcp_rmem", "net.ipv4.tcp_fin_timeout", "net.netfilter.nf_conntrack_max",
@@ -576,13 +576,13 @@ async fn tune_script_writes_reads_back_and_skips() {
     // 只有读回一致的键进文件；旧的 BBR 文件并入后删掉；journald 体积上限写好并重启一次
     assert_eq!(
         read(&conf),
-        "# fleet tune-v2（中控生成，勿手改）\nnet.core.rmem_max = 16777216\nnet.ipv4.tcp_rmem = 4096 131072 16777216\nnet.ipv4.tcp_slow_start_after_idle = 0\nnet.ipv4.tcp_sack = 1\n"
+        "# fleet tune-v3（中控生成，勿手改）\nnet.core.rmem_max = 16777216\nnet.ipv4.tcp_rmem = 4096 131072 16777216\nnet.ipv4.tcp_slow_start_after_idle = 0\nnet.ipv4.tcp_sack = 1\n"
     );
     assert!(!root.join("etc/sysctl.d/90-fleet-bbr.conf").exists() && read(&journald).contains("SystemMaxUse=300M\n") && journald_restarts() == 1);
     assert!(!root.join("etc/modules-load.d/90-fleet-conntrack.conf").exists(), "没有 conntrack 键：不写开机载入");
     // 原值快照：改之前的值，只有 root 能读
     let snap = read(&orig);
-    assert!(snap.starts_with("# fleet 调优前的原值（tune-v2 首次调优时记下") && snap.contains(" prior=created\n"), "{snap}");
+    assert!(snap.starts_with("# fleet 调优前的原值（tune-v3 首次调优时记下") && snap.contains(" prior=created\n"), "{snap}");
     for l in ["net.core.rmem_max = 212992\n", "net.ipv4.tcp_rmem = 4096 131072 6291456\n", "fs.file-max = 9223372036854775807\n", "net.ipv4.tcp_sack = 0\n", "net.ipv4.tcp_fin_timeout = \n"] {
         assert!(snap.contains(l), "{l} {snap}");
     }
@@ -647,14 +647,14 @@ async fn tune_script_writes_reads_back_and_skips() {
     // 25 条取第 23 小的 172.4 → 172；1000（2560 封顶）× 172 × 250 + 2 MiB
     assert_eq!((o.kv("bw"), o.kv("rtt"), o.kv("rtt_source"), o.kv("rtt_samples"), o.kv("buf_max")), (Some("1000"), Some("172"), Some("sampled"), Some("25"), Some("45097152")), "{o:?}");
     assert_eq!(read(&sysctl_file(&root, "net.ipv4.tcp_wmem")), "4096 16384 45097152");
-    assert_eq!(read(&sysctl_file(&root, "net.ipv4.ip_local_reserved_ports")), "20000-39999,62789");
+    assert_eq!(read(&sysctl_file(&root, "net.ipv4.ip_local_reserved_ports")), "20000-59999,62789");
     assert_eq!((read(&sysctl_file(&root, "net.ipv4.ip_local_port_range")), read(&sysctl_file(&root, "net.ipv4.tcp_tw_reuse"))), ("10240 65535".into(), "1".into()));
     let c = read(&root.join("etc/sysctl.d/99-zz-fleet-tune.conf"));
-    assert!(c.find("ip_local_reserved_ports = 20000-39999,62789\n").unwrap() < c.find("ip_local_port_range = 10240 65535").unwrap(), "{c}");
+    assert!(c.find("ip_local_reserved_ports = 20000-59999,62789\n").unwrap() < c.find("ip_local_port_range = 10240 65535").unwrap(), "{c}");
     // conntrack 键存在：设上，并让开机时 systemd-sysctl 之前先载入模块
     assert_eq!((o.kv("tune.net.netfilter.nf_conntrack_max"), read(&sysctl_file(&root, "net.netfilter.nf_conntrack_max"))), (Some("applied:65536"), "262144".into()));
     assert!(c.contains("net.netfilter.nf_conntrack_max = 262144\n"), "{c}");
-    assert_eq!(read(&root.join("etc/modules-load.d/90-fleet-conntrack.conf")), "# fleet tune-v2（中控生成，勿手改）\nnf_conntrack\n");
+    assert_eq!(read(&root.join("etc/modules-load.d/90-fleet-conntrack.conf")), "# fleet tune-v3（中控生成，勿手改）\nnf_conntrack\n");
     assert!(read(&root.join("systemctl.log")).contains("show -p LimitNOFILE --value fleet-xray"));
     let r = jobs::tune::parse(&o.stdout);
     assert_eq!((&r.result["params"]["bw_plan"], &r.result["params"]["rtt_samples"], &r.result["route"]), (&json!(2560), &json!(25), &json!({"initcwnd": 10000, "initrwnd": 10000})));
@@ -693,14 +693,14 @@ async fn tune_job_records_the_profile() {
     let job = v["data"]["job_id"].as_str().unwrap().to_string();
     assert_eq!(post(m, json!({})).await.0, StatusCode::CONFLICT, "已有进行中的作业");
     let au = t.get("/api/v1/audit?cat=machine").await;
-    assert_eq!((&au[0]["title"], &au[0]["summary"]), (&json!("系统调优"), &json!("团队1-01 · tune-v2")), "{au}");
+    assert_eq!((&au[0]["title"], &au[0]["summary"]), (&json!("系统调优"), &json!("团队1-01 · tune-v3")), "{au}");
     let j = run_round(&t, &job).await;
     assert_eq!(j["state"], "succeeded", "{j}");
-    assert_eq!((j["steps"][0]["output"]["profile"].as_str(), &j["steps"][0]["output"]["applied"]), (Some("tune-v2"), &json!(["net.core.rmem_max"])), "{j}");
+    assert_eq!((j["steps"][0]["output"]["profile"].as_str(), &j["steps"][0]["output"]["applied"]), (Some("tune-v3"), &json!(["net.core.rmem_max"])), "{j}");
     // 没有套餐：带宽按 1000，节点 RTT 100：1000 × 100 × 250 + 2 MiB（1 GB 内存的封顶 MemTotal/32 = 32000000 没碰到）
     assert_eq!(read(&sysctl_file(&root, "net.core.rmem_max")), "27097152");
     let v = t.get(&format!("/api/v1/machines/{m}")).await;
-    assert_eq!((v["tune"]["profile"].as_str(), v["tune"]["current"].as_bool()), (Some("tune-v2"), Some(true)), "{v}");
+    assert_eq!((v["tune"]["profile"].as_str(), v["tune"]["current"].as_bool()), (Some("tune-v3"), Some(true)), "{v}");
     assert_eq!(
         v["tune"]["params"],
         json!({"bw": 1000, "bw_plan": null, "bw_source": "default", "rtt": 100, "rtt_source": "default", "rtt_samples": 0, "mem_mb": 976, "buf_max": 27097152})

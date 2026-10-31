@@ -137,3 +137,75 @@ async fn share_batch_keeps_request_order() {
     let n: i64 = sqlx::query_scalar("select count(*) from audit_log where action = 'entry.share'").fetch_one(&t.st.db).await.unwrap();
     assert_eq!(n, 1);
 }
+
+/// AnyTLS：期望状态给每个启用入口带 anytls_port（入口端口 + 20000）；订阅 protocols=both 时，线路机报了 sing-box 在跑才出 AnyTLS 条目
+/// （Clash 的 type: anytls、base64 的 anytls://），分享链接同样；只要 anytls 的订阅只出 AnyTLS 条目；默认（reality）不变
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn anytls_in_desired_subs_and_share() {
+    let t = common::boot(false, "trust_forwarded_for = true").await;
+    seed(&t).await;
+    // 节点要有出站参数才进期望状态（AnyTLS 端口按进期望状态的入口算）
+    sqlx::query("insert into node_outbound (machine_id, protocol, host, port, method, secret_enc) select id, 'shadowsocks', host(primary_ip), 8388, 'aes-256-gcm', $1 from machine where kind = 'proxy'")
+        .bind(t.st.secrets.seal_str("pw"))
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let (s, v) = t.req("GET", "/agent/v1/desired?after=0", None, Some("tok1")).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let ports: Vec<(u64, Option<u64>)> = v["entries"].as_array().unwrap().iter().map(|e| (e["port"].as_u64().unwrap(), e["anytls_port"].as_u64())).collect();
+    assert_eq!(ports, [(20000, Some(40000)), (20001, Some(40001)), (20002, Some(40002))]);
+    let both = t.post("/api/v1/client-subs", json!({"name": "两种", "protocols": "both"})).await;
+    let only = t.post("/api/v1/client-subs", json!({"name": "只 AnyTLS", "protocols": "anytls"})).await;
+    let plain = t.post("/api/v1/client-subs", json!({"name": "默认"})).await;
+    assert_eq!((both["protocols"].as_str(), plain["protocols"].as_str()), (Some("both"), Some("reality")));
+    t.fail("POST", "/api/v1/client-subs", Some(json!({"name": "x", "protocols": "hy2"})), StatusCode::BAD_REQUEST).await;
+    let (bp, op, pp) = (sub_path(&both["url"]), sub_path(&only["url"]), sub_path(&plain["url"]));
+    let ids: Vec<Uuid> = sqlx::query_scalar("select id from entry order by port").fetch_all(&t.st.db).await.unwrap();
+
+    // 线路机还没报 sing-box 在跑：一条 AnyTLS 都不出，分享链接也没有
+    let (_, _, y) = pull(&t, &bp).await;
+    assert!(!y.contains("anytls") && y.contains("type: vless"), "{y}");
+    assert_eq!(pull(&t, &op).await.2, "proxies: []\n");
+    assert!(t.get(&format!("/api/v1/entries/{}/share", ids[0])).await["anytls_url"].is_null());
+
+    // 报 sing-box 在跑
+    let mut r = tele::blank_report(1);
+    r.singbox = Some(fleet_proto::SingboxStatus { installed: true, running: true, version: Some("1.14.4".into()), last_error: None });
+    let (s, v) = t.req("POST", "/agent/v1/report", Some(serde_json::to_value(&r).unwrap()), Some("tok1")).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let relay: Uuid = sqlx::query_scalar("select machine_id from relay").fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(t.get(&format!("/api/v1/machines/{relay}")).await["agent"]["anytls"]["running"], true);
+    let (pw, sni): (Uuid, String) = sqlx::query_as("select e.client_uuid, r.reality_sni from entry e join relay r on r.machine_id = e.relay_id where e.port = 20000")
+        .fetch_one(&t.st.db)
+        .await
+        .unwrap();
+    let (_, _, y) = pull(&t, &bp).await;
+    let block = format!(
+        "  - name: \"家宽 · 团队1-01 · 203.0.113.5 · AnyTLS\"\n    type: anytls\n    server: \"relay.test\"\n    port: 40000\n    password: \"{pw}\"\n    sni: \"{sni}\"\n    skip-cert-verify: true\n    client-fingerprint: chrome\n    udp: true\n"
+    );
+    assert!(y.contains(&block), "{y}");
+    // 同一入口 Reality 在前、AnyTLS 紧跟；备用团队的不出
+    assert_eq!((y.matches("type: vless").count(), y.matches("type: anytls").count()), (2, 2), "{y}");
+    assert!(y.find("· 203.0.113.5 · VLESS Reality\"").unwrap() < y.find(&block).unwrap() && !y.contains("40001"), "{y}");
+    let (_, _, b) = pull(&t, &format!("{bp}?format=base64")).await;
+    let lines = String::from_utf8(base64::engine::general_purpose::STANDARD.decode(b.trim()).unwrap()).unwrap();
+    let at: Vec<&str> = lines.lines().filter(|l| l.starts_with("anytls://")).collect();
+    assert_eq!((lines.lines().filter(|l| l.starts_with("vless://")).count(), at.len()), (2, 2), "{lines}");
+    assert!(lines.contains(&format!("anytls://{pw}@relay.test:40000/?sni={sni}&insecure=1#%E5%AE%B6%E5%AE%BD%20%C2%B7%20")), "{lines}");
+    // 只要 AnyTLS：只有 AnyTLS 条目；默认的不变
+    let (_, _, y) = pull(&t, &op).await;
+    assert_eq!((y.matches("type: vless").count(), y.matches("type: anytls").count()), (0, 2), "{y}");
+    assert!(!pull(&t, &pp).await.2.contains("anytls"));
+    let show = t.get(&format!("/api/v1/client-subs/{}", both["id"].as_str().unwrap())).await;
+    assert_eq!(show["entries"].as_array().unwrap().iter().filter_map(|e| e["anytls_port"].as_u64()).collect::<Vec<_>>(), [40002, 40000], "{show}");
+    // 分享链接同时给 AnyTLS；改协议
+    let sh = t.get(&format!("/api/v1/entries/{}/share", ids[0])).await;
+    assert!(sh["url"].as_str().unwrap().starts_with("vless://") && sh["anytls_url"].as_str().unwrap().starts_with(&format!("anytls://{pw}@relay.test:40000/")), "{sh}");
+    let (s, v) = t.req("PATCH", &format!("/api/v1/client-subs/{}", plain["id"].as_str().unwrap()), Some(json!({"protocols": "both"})), None).await;
+    assert_eq!((s, v["data"]["protocols"].as_str()), (StatusCode::OK, Some("both")), "{v}");
+    // sing-box 停了：又只剩 Reality
+    r.seq = 2;
+    r.singbox = Some(fleet_proto::SingboxStatus { installed: true, running: false, version: None, last_error: Some("x".into()) });
+    t.req("POST", "/agent/v1/report", Some(serde_json::to_value(&r).unwrap()), Some("tok1")).await;
+    assert!(!pull(&t, &bp).await.2.contains("anytls"));
+}

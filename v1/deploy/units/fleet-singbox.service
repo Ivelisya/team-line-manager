@@ -1,0 +1,47 @@
+[Unit]
+Description=sing-box AnyTLS 外壳 (由 fleet-agent 全权管理配置)
+After=network-online.target
+Wants=network-online.target
+# 配置（含自签证书与私钥）由 fleet-agent 生成；还没生成时不启动
+ConditionPathExists=/etc/fleet-singbox/config.json
+
+[Service]
+Type=simple
+# 同 fleet-xray：动态用户，配置由 systemd 以 root 打开、作为标准输入交给 sing-box（-c stdin），sing-box 自己读不到 /etc/fleet-singbox 下的任何文件。
+# 只在启动时读一次：agent 换配置后 systemctl restart，systemd 重新打开新写的 config.json
+DynamicUser=yes
+StandardInput=file:/etc/fleet-singbox/config.json
+ExecStart=/usr/local/bin/sing-box run -c stdin --disable-color
+Restart=always
+RestartSec=2
+LimitNOFILE=65536
+# 只听入口端口 + 20000 这一段（默认 40000–49999），用不着任何特权
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+# 不放 AF_UNIX：连不上 systemd / D-Bus 的本地套接字
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK
+# 它只往 127.0.0.1 上的 Xray 桥接入站连，到不了云厂商的元数据服务（同 fleet-xray，多一层）
+IPAddressDeny=link-local 100.100.100.200/32
+# 用不着的敏感目录整个藏起来（动态用户本来也读不到，多一层）。不存在的路径由「-」跳过
+InaccessiblePaths=-/etc/fleet-agent -/var/lib/fleet-agent -/etc/fleet-singbox -/etc/ssh
+# 不加 SystemCallFilter / MemoryDenyWriteExecute：同 fleet-xray，Go 程序升级时用到的系统调用会变
+
+[Install]
+WantedBy=multi-user.target

@@ -385,7 +385,7 @@ fn commit(sh: &Shared, tailer: &mut Option<Tailer>, cursor: Option<Cursor>, stat
 /// 以及写不进磁盘、留在内存里待发的这份（见 `Unsaved`）。
 /// `online`：上报没有连续失败（Reporter::fails == 0）
 fn build_and_push_blocking(sh: &Shared, core: &Mutex<Core>, boot_id: &str, with_samples: bool, online: bool) -> (bool, Option<Unsaved>) {
-    let (mut host, mut entries, mut probes, mut ping, mut rtt, mut info, mut xray, mut stats_commit) = (vec![], vec![], vec![], vec![], vec![], None, None, None);
+    let (mut host, mut entries, mut probes, mut ping, mut rtt, mut info, mut xray, mut singbox, mut stats_commit) = (vec![], vec![], vec![], vec![], vec![], None, None, None, None);
     if with_samples {
         let mut b = sh.buf.lock().unwrap();
         let n = b.host.len().min(MAX_HOST_PER_REPORT);
@@ -400,6 +400,7 @@ fn build_and_push_blocking(sh: &Shared, core: &Mutex<Core>, boot_id: &str, with_
         rtt = b.rtt.drain(..n).collect();
         info = b.info.take();
         xray = b.xray.clone();
+        singbox = b.singbox.clone();
         stats_commit = b.stats_commit.take();
     }
     let mut guard = lock(core);
@@ -449,6 +450,7 @@ fn build_and_push_blocking(sh: &Shared, core: &Mutex<Core>, boot_id: &str, with_
         probes,
         access,
         xray,
+        singbox,
         agent_health: with_samples.then(|| health_of(sh, queue, tailer.as_ref())),
         ping,
         rtt,

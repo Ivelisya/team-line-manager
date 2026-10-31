@@ -104,6 +104,21 @@ pub fn probe_ports(entries: &[DesiredEntry]) -> HashMap<Uuid, u16> {
         .collect()
 }
 
+/// 有 AnyTLS 的启用入口：入口 → (公网端口, 回环桥接端口)。中控下发了 `anytls_port`、且和 `fleet_proto::anytls_ports` 按这份期望状态算出的一致才算
+/// （同一条规则，算不出来或对不上就不开，不会监听一个分享链接里没有的端口）
+pub fn anytls_ports(entries: &[DesiredEntry]) -> HashMap<Uuid, (u16, u16)> {
+    let enabled: Vec<(Uuid, u16)> = entries.iter().filter(|e| e.enabled).map(|e| (e.id, e.port)).collect();
+    let calc = fleet_proto::anytls_ports(&enabled);
+    entries
+        .iter()
+        .filter(|e| e.enabled)
+        .filter_map(|e| {
+            let p = e.anytls_port.filter(|p| calc.get(&e.id) == Some(p))?;
+            Some((e.id, (p, e.port.checked_add(fleet_proto::ANYTLS_BRIDGE_OFFSET)?)))
+        })
+        .collect()
+}
+
 pub fn probe_tag(id: Uuid) -> String {
     format!("probe-{}", id.simple())
 }
@@ -171,6 +186,33 @@ fn inbound_json(e: &DesiredEntry, rp: &RelayParams, min_ver: &str) -> Value {
     })
 }
 
+/// AnyTLS 的回环桥接入站：sing-box 卸掉 AnyTLS 之后经它把连接交给 Xray，入口的路由、访问策略、守卫规则照常生效。
+/// 只听 127.0.0.1、VLESS 不加密（回环上没有第三方）、不用 flow（vision 要 TLS）；client 与 email 同主入站：
+/// 流量计数按 email 合并到入口，访问日志按入站 tag 认入口（来源是回环，不当真实来源，见 access.rs）。sniffing 同主入站
+fn bridge_inbound_json(e: &DesiredEntry, port: u16) -> Value {
+    json!({
+        "listen": "127.0.0.1",
+        "port": port,
+        "protocol": "vless",
+        "tag": tags::bridge(e.id),
+        "settings": {
+            "clients": [{"id": e.client_uuid.to_string(), "email": tags::email(e.id)}],
+            "decryption": "none"
+        },
+        "streamSettings": {"network": "tcp", "security": "none"},
+        "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"], "metadataOnly": false, "routeOnly": false}
+    })
+}
+
+/// 入口自己的入站 tag：主入站，有 AnyTLS 时加上桥接入站。入口的路由、访问策略、守卫规则都匹配这一组
+fn entry_inbounds(e: &DesiredEntry, anytls: bool) -> Vec<String> {
+    let mut v = vec![tags::inbound(e.id)];
+    if anytls {
+        v.push(tags::bridge(e.id));
+    }
+    v
+}
+
 fn dest_with_port(d: &str) -> String {
     if d.starts_with('[') && d.contains("]:") || (!d.starts_with('[') && d.matches(':').count() == 1) {
         d.to_string()
@@ -183,13 +225,13 @@ pub fn policy_tag(id: Uuid, part: &str) -> String {
     format!("policy-{}-{part}", id.simple())
 }
 
-/// 直出入口的守卫规则：目标端口是本机 Xray API 或任一入口的探测入站（`ports`）的连接一律 blocked，排在该入口其它规则之前。
+/// 直出入口的守卫规则：目标端口是本机 Xray API、任一入口的探测入站或 AnyTLS 桥接入站（`ports`）的连接一律 blocked，排在该入口其它规则之前。
 /// 路由是 AsIs，block-private 只拦 IP 目标；客户写一个解析到回环的域名（localhost、127.0.0.1.nip.io），
 /// freedom 会在线路机本机替他解析并连上 API（可增删入站出站）或探测入站。按端口拦和怎么解析无关。
 /// 不改成 IPIfNonMatch 让域名先解析再过 block-private：解析结果落在 198.18.0.0/15 的 fake-ip DNS 环境（实验室）里，
 /// 所有域名都会被当成内网拦掉
-fn guard_rule(e: &DesiredEntry, ports: &str) -> Value {
-    json!({"type": "field", "ruleTag": format!("guard-{}-api", e.id.simple()), "inboundTag": [tags::inbound(e.id)], "port": ports, "outboundTag": "blocked"})
+fn guard_rule(e: &DesiredEntry, inb: &[String], ports: &str) -> Value {
+    json!({"type": "field", "ruleTag": format!("guard-{}-api", e.id.simple()), "inboundTag": inb, "port": ports, "outboundTag": "blocked"})
 }
 
 /// 探测入站只放行到回显服务（echo_url 的主机与端口）和出口探测的备用目标（probe_matchers）：探测入站是回环上不要密码的 SOCKS，守卫规则之外它也不该是跳板——
@@ -241,15 +283,14 @@ fn probe_rule(id: Uuid, n: usize, m: &Value) -> Value {
     r
 }
 
-/// 访问策略规则：排在该入口默认路由规则之前，只匹配该入口自己的入站（探测入站有独立规则，不受影响）。
+/// 访问策略规则：排在该入口默认路由规则之前，只匹配该入口自己的入站（主入站与 AnyTLS 桥接入站；探测入站有独立规则，不受影响）。
 /// - allowlist：名单内走原出站，其余 blocked
 /// - denylist：名单内 blocked，其余落到默认规则
 /// - blocked：该入口全部 blocked
 ///
 /// observe（没有 policy）不产生规则。
-fn policy_rules(e: &DesiredEntry) -> Vec<Value> {
+fn policy_rules(e: &DesiredEntry, inb: &[String]) -> Vec<Value> {
     let Some(EntryPolicy { mode, domains }) = &e.policy else { return vec![] };
-    let inb = vec![tags::inbound(e.id)];
     let rule = |part: &str, domains: Option<&Vec<String>>, out: String| {
         let mut r = json!({"type": "field", "ruleTag": policy_tag(e.id, part), "inboundTag": inb, "outboundTag": out});
         if let Some(d) = domains {
@@ -344,10 +385,12 @@ pub fn render(d: &DesiredState, ctx: &RenderCtx) -> Result<Rendered> {
     let min_ver = validate(d)?;
     let (log, api, stats, policy) = skeleton_parts(ctx);
     let probes = probe_ports(&d.entries);
+    let anytls = anytls_ports(&d.entries);
     let enabled: Vec<&DesiredEntry> = d.entries.iter().filter(|e| e.enabled).collect();
     let matchers = probe_matchers(&d.relay.echo_url);
-    // 守卫规则拦的端口：本机 Xray API 与全部探测入站（升序：同样的入口渲染出同样的规则，不会白白整表替换）
-    let mut guard: Vec<u16> = probes.values().copied().chain([API_PORT]).collect();
+    // 守卫规则拦的端口：本机 Xray API、全部探测入站与 AnyTLS 桥接入站（升序：同样的入口渲染出同样的规则，不会白白整表替换）。
+    // 桥接入站要 UUID，但别的入口的 UUID 不该成为直出客户在线路机本机上的跳板，一并拦
+    let mut guard: Vec<u16> = probes.values().copied().chain(anytls.values().map(|p| p.1)).chain([API_PORT]).collect();
     guard.sort_unstable();
     let guard = guard.iter().map(u16::to_string).collect::<Vec<_>>().join(",");
 
@@ -362,16 +405,20 @@ pub fn render(d: &DesiredState, ctx: &RenderCtx) -> Result<Rendered> {
     let mut entry_rules = vec![];
     for e in &enabled {
         inbounds.push(inbound_json(e, &d.relay, &min_ver));
+        if let Some(&(_, bridge)) = anytls.get(&e.id) {
+            inbounds.push(bridge_inbound_json(e, bridge));
+        }
+        let inb = entry_inbounds(e, anytls.contains_key(&e.id));
         outbounds.push(outbound_json(e.id, &e.outbound));
         if let Some(p) = probes.get(&e.id) {
             inbounds.push(probe_inbound_json(e.id, *p));
             rules.extend(matchers.iter().enumerate().map(|(n, m)| probe_rule(e.id, n, m)));
         }
         if e.outbound == Outbound::Direct {
-            entry_rules.push(guard_rule(e, &guard));
+            entry_rules.push(guard_rule(e, &inb, &guard));
         }
-        entry_rules.extend(policy_rules(e));
-        entry_rules.push(json!({"type": "field", "ruleTag": tags::rule(e.id), "inboundTag": [tags::inbound(e.id)], "outboundTag": tags::outbound(e.id)}));
+        entry_rules.extend(policy_rules(e, &inb));
+        entry_rules.push(json!({"type": "field", "ruleTag": tags::rule(e.id), "inboundTag": inb, "outboundTag": tags::outbound(e.id)}));
     }
     rules.push(json!({"type": "field", "ruleTag": "block-private", "ip": ["geoip:private"], "outboundTag": "blocked"}));
     rules.push(json!({"type": "field", "ruleTag": "block-bittorrent", "protocol": ["bittorrent"], "outboundTag": "blocked"}));
@@ -422,6 +469,7 @@ pub mod tests {
             outbound: Outbound::Shadowsocks { host: "10.0.0.9".into(), port: 8388, method: "aes-256-gcm".into(), password: "pw".into() },
             expect_egress_ip: "203.0.113.9".parse::<IpAddr>().unwrap(),
             policy: None,
+            anytls_port: None,
         }
     }
 
@@ -719,6 +767,66 @@ x"]));
         assert_eq!(r.rules[4]["outboundTag"], format!("out-{id}"));
         assert_eq!(r.rules[4]["domain"], json!(["domain:a.com"]));
         assert_eq!(r.rules[5]["outboundTag"], "blocked");
+    }
+
+    pub fn with_anytls(mut e: DesiredEntry) -> DesiredEntry {
+        e.anytls_port = e.port.checked_add(fleet_proto::ANYTLS_PORT_OFFSET);
+        e
+    }
+
+    #[test]
+    fn anytls_bridge_inbound_and_rules_cover_both_inbounds() {
+        let mut d2 = with_anytls(direct(2, 20002));
+        d2.policy = Some(EntryPolicy { mode: PolicyMode::Denylist, domains: vec!["domain:a.com".into()] });
+        let r = render(&desired(vec![with_anytls(entry(1, 20001, true)), d2]), &ctx()).unwrap();
+        let (id1, id2) = (Uuid::from_u128(1).simple().to_string(), Uuid::from_u128(2).simple().to_string());
+        // 桥接入站：回环、入口端口 + 30000、VLESS 不加密不带 flow，client 与 email 同主入站
+        let b = r.inbounds.iter().find(|i| tag_of(i) == format!("at-{id1}")).unwrap();
+        assert_eq!(
+            b,
+            &json!({
+                "listen": "127.0.0.1", "port": 50001, "protocol": "vless", "tag": format!("at-{id1}"),
+                "settings": {"clients": [{"id": Uuid::from_u128(1001).to_string(), "email": format!("e-{id1}")}], "decryption": "none"},
+                "streamSettings": {"network": "tcp", "security": "none"},
+                "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"], "metadataOnly": false, "routeOnly": false}
+            })
+        );
+        assert!(r.inbounds.iter().any(|i| tag_of(i) == format!("at-{id2}") && i["port"] == 50002));
+        // 入口的路由、访问策略、守卫规则都同时匹配主入站与桥接入站；探测规则只匹配探测入站
+        let rule = |t: String| r.rules.iter().find(|x| rule_tag_of(x) == t).unwrap().clone();
+        for id in [&id1, &id2] {
+            assert_eq!(rule(format!("rule-{id}"))["inboundTag"], json!([format!("in-{id}"), format!("at-{id}")]));
+            assert_eq!(rule(format!("probe-{id}"))["inboundTag"], json!([format!("probe-{id}")]));
+        }
+        assert_eq!(rule(format!("policy-{id2}-match"))["inboundTag"], json!([format!("in-{id2}"), format!("at-{id2}")]));
+        // 直出入口的守卫：API、探测入站之外，桥接入站的端口也拦
+        let g = rule(format!("guard-{id2}-api"));
+        assert_eq!(g["inboundTag"], json!([format!("in-{id2}"), format!("at-{id2}")]));
+        assert_eq!(g["port"], "30001,30002,50001,50002,62789");
+        // 桥接入站与它的规则都属于入口部分：开关 AnyTLS 只走热增删，不重启 Xray
+        assert_eq!(r.static_part, render(&desired(vec![entry(1, 20001, true)]), &ctx()).unwrap().static_part);
+        assert_eq!(Rendered::from_full(r.full.clone()), r);
+    }
+
+    #[test]
+    fn anytls_absent_on_overflow_or_mismatch() {
+        // 入口端口 40000：公网 60000 没超，桥接 70000 超出 65535 → 没有 AnyTLS（中控同一条规则，本来也不会下发）
+        let mut e = entry(1, 40000, true);
+        e.anytls_port = Some(60000);
+        // 下发的端口和按规则算的不一致：不开
+        let mut e2 = entry(2, 20002, true);
+        e2.anytls_port = Some(12345);
+        // 停用的入口：没有
+        let e3 = with_anytls(entry(3, 20003, false));
+        let ds = vec![e, e2, e3];
+        assert!(anytls_ports(&ds).is_empty());
+        let r = render(&desired(ds), &ctx()).unwrap();
+        assert!(!r.inbounds.iter().any(|i| tag_of(i).starts_with("at-")));
+        let id = Uuid::from_u128(1).simple().to_string();
+        let rule = r.rules.iter().find(|x| rule_tag_of(x) == format!("rule-{id}")).unwrap();
+        assert_eq!(rule["inboundTag"], json!([format!("in-{id}")]));
+        // 正常的：(公网, 桥接)
+        assert_eq!(anytls_ports(&[with_anytls(entry(4, 20004, true))])[&Uuid::from_u128(4)], (40004, 50004));
     }
 
     #[test]

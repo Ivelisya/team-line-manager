@@ -82,9 +82,29 @@ pub async fn host_task(sh: Arc<Shared>, mut sd: watch::Receiver<bool>) {
     }
 }
 
-/// 当前启用的入口 (id, port)
-fn enabled_entries(sh: &Shared) -> Vec<(uuid::Uuid, u16)> {
-    sh.applied.read().unwrap().as_ref().map(|d| d.entries.iter().filter(|e| e.enabled).map(|e| (e.id, e.port)).collect()).unwrap_or_default()
+/// 当前启用的入口 (id, 端口, AnyTLS 公网端口)
+fn enabled_entries(sh: &Shared) -> Vec<(uuid::Uuid, u16, Option<u16>)> {
+    let g = sh.applied.read().unwrap();
+    let Some(d) = g.as_ref() else { return vec![] };
+    let at = render::anytls_ports(&d.entries);
+    d.entries.iter().filter(|e| e.enabled).map(|e| (e.id, e.port, at.get(&e.id).map(|p| p.0))).collect()
+}
+
+/// sing-box 多久查一次状态（systemctl is-active 子进程）。状态只用于界面显示和「订阅里给不给 AnyTLS」，不必像 Xray 那样 10 秒一查
+const SINGBOX_STATUS_EVERY: Duration = Duration::from_secs(30);
+
+/// AnyTLS 外壳（sing-box）的状态：启动时查一次，之后每 SINGBOX_STATUS_EVERY 一次，放进缓冲随报告带上
+pub async fn singbox_task(sh: Arc<Shared>, sb: Arc<crate::singbox::Singbox>, mut sd: watch::Receiver<bool>) {
+    let mut tick = interval_at(Instant::now(), SINGBOX_STATUS_EVERY);
+    tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = tick.tick() => {}
+            _ = sd.changed() => return,
+        }
+        let st = sb.status().await;
+        sh.buf.lock().unwrap().singbox = Some(st);
+    }
 }
 
 /// Xray 流量增量 + 连接数 + 进程状态
@@ -157,16 +177,18 @@ pub async fn stats_task(sh: Arc<Shared>, cli: XrayCli, mut sd: watch::Receiver<b
             // pid/启动时间取不到：本轮不算增量（保留基线和上一轮 core_id），免得被误判成 Xray 重启而重复计数
             if let Ok(list) = res {
                 let entries = enabled_entries(&sh);
-                let ids: HashSet<uuid::Uuid> = entries.iter().map(|&(id, _)| id).collect();
+                let ids: HashSet<uuid::Uuid> = entries.iter().map(|&(id, ..)| id).collect();
                 let cur = stats::entry_counters(list, &ids.union(&last_ids).copied().collect());
                 if let Some(deltas) = stats::compute_if_known(&mut st, core_id.as_deref(), &cur) {
                     last_core = core_id.clone();
-                    let ports: Vec<u16> = entries.iter().map(|&(_, port)| port).collect();
+                    // 连接数按端口数：Reality 的入口端口，加上 AnyTLS 的公网端口（sing-box 在听，客户连的就是它）
+                    let ports: Vec<u16> = entries.iter().flat_map(|&(_, port, at)| std::iter::once(port).chain(at)).collect();
                     let cn = tokio::task::spawn_blocking(move || conns::count_now(&ports)).await.expect("统计连接数的任务异常终止");
+                    let n = |p: u16| cn.get(&p).copied().unwrap_or(0);
                     // 上一轮启用、这一轮停用的入口补出最后一段流量（端口已不归它，连接数记 0）
                     let with_conns: Vec<_> = entries
                         .iter()
-                        .map(|&(id, port)| (id, cn.get(&port).copied().unwrap_or(0)))
+                        .map(|&(id, port, at)| (id, n(port) + at.map_or(0, n)))
                         .chain(last_ids.difference(&ids).map(|&id| (id, 0)))
                         .collect();
                     last_ids = ids;

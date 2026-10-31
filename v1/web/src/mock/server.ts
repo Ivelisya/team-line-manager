@@ -841,7 +841,10 @@ R('GET', '/entries/([^/]+)/routers', ({ params }) => {
 });
 R('GET', '/entries/([^/]+)/share', ({ params }) => {
   const e = findEntry(params[0]); const relay = machine(e.relay.id);
-  return { url: `vless://00000000-0000-4000-8000-${String(hashStr(e.id)).padStart(12, '0')}@${relay.relay?.public_host ?? relay.ip}:${e.port}?encryption=none&type=tcp#${encodeURIComponent(e.node.name)}` };
+  const pw = `00000000-0000-4000-8000-${String(hashStr(e.id)).padStart(12, '0')}`; const host = relay.relay?.public_host ?? relay.ip;
+  return { url: `vless://${pw}@${host}:${e.port}?encryption=none&type=tcp#${encodeURIComponent(e.node.name)}`,
+    // 同服务端：线路机的 AnyTLS 在跑才给
+    anytls_url: relay.agent?.anytls?.running ? `anytls://${pw}@${host}:${e.port + 20000}/?sni=www.cloudflare.com&insecure=1#${encodeURIComponent(`${e.node.name} AnyTLS`)}` : null };
 });
 R('POST', '/machines/([^/]+)/entries', ({ params, body }) => {
   const m = machine(params[0]); const relay = machine(body.relay_id);

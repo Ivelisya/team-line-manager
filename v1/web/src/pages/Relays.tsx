@@ -24,6 +24,7 @@ import { ENTRY_CAP, RouterMark, activeEntries, entryStatus, probeCell, tcpCell }
 import { useEntryRouters } from '@/lib/routers';
 import { HEALTH_TONE } from '@/lib/sort';
 import { PlacementPanel } from '@/features/PlacementPanel';
+import { AnytlsState } from '@/components/app/AnytlsState';
 import { scrollBehavior } from '@/lib/utils';
 
 type Open = ReturnType<typeof useDrawer>['open'];
@@ -64,6 +65,8 @@ function ApplyStatus({ m }: { m: MachineView }) {
         : <Pill tone="ok" dot="none"><CheckCircle2 size={12} />已应用</Pill>}
       <Tip text="两个数相等表示线路机已同步"><span tabIndex={0}>配置版本 <b className="num" style={{ color: 'var(--fg)' }}>{r.generation}</b> · 已生效 <b className="num" style={{ color: 'var(--fg)' }}>{r.applied_generation}</b></span></Tip>
       {pending && pendingEntries > 0 && <span>{pendingEntries} 条入口应用中</span>}
+      {/* 旧 agent 没报过 AnyTLS 状态时不显示（抽屉里写「未知」） */}
+      {m.agent?.anytls && <span>AnyTLS <AnytlsState a={m.agent.anytls} /></span>}
       <span style={{ marginLeft: 'auto' }} data-tip={r.applied_at ? F.dtFull(r.applied_at) : undefined}>最近应用 {F.dt(r.applied_at)}</span>
       {r.apply_error && <div style={{ flexBasis: '100%', color: 'var(--bad-text)' }}>{r.apply_error}</div>}
     </div>

@@ -9,6 +9,7 @@ use crate::error::{ApiError, ApiResult};
 use crate::names::entry_name;
 use fleet_proto::{ApplyReport, DesiredEntry, DesiredState, Outbound, RelayParams};
 use sqlx::PgPool;
+use std::collections::HashMap;
 use std::net::IpAddr;
 use uuid::Uuid;
 
@@ -158,6 +159,8 @@ pub async fn desired_state(db: &PgPool, secrets: &SecretBox, relay_id: Uuid, ech
     .fetch_all(db)
     .await?;
     let policies = crate::policy::load_current(db).await?;
+    // AnyTLS 端口：按启用入口算（agent 用同一个函数核对，见 fleet_proto::anytls_ports）
+    let at = fleet_proto::anytls_ports(&rows.iter().filter(|r| r.lifecycle != "disabled").map(|r| (r.id, r.port as u16)).collect::<Vec<_>>());
     let mut entries = Vec::with_capacity(rows.len());
     for r in rows {
         let outbound = match (r.direct, r.protocol.as_deref(), r.host, r.oport, r.secret_enc) {
@@ -182,6 +185,7 @@ pub async fn desired_state(db: &PgPool, secrets: &SecretBox, relay_id: Uuid, ech
             outbound,
             expect_egress_ip: r.ip.parse::<IpAddr>()?,
             policy: crate::policy::compile(&policies.effective(r.node_id, r.team_id).0),
+            anytls_port: at.get(&r.id).copied(),
         });
     }
     Ok(DesiredState {
@@ -279,6 +283,35 @@ pub(crate) fn pct(s: &str) -> String {
     o
 }
 
+/// 线路机上真能用 AnyTLS 的入口：入口 → AnyTLS 公网端口。只算 agent 报了 sing-box 在跑的线路机（没在跑时链接是坏的，不给），
+/// 端口按进期望状态的启用入口（同 `desired_state` 的口径：应用中 / 运行中、节点出站参数齐全）用 `fleet_proto::anytls_ports` 算，
+/// 和下发给 agent 的一致。`relays` 为空 = 全部线路机
+pub async fn anytls_live(db: &PgPool, relays: &[Uuid]) -> sqlx::Result<HashMap<Uuid, u16>> {
+    let rows: Vec<(Uuid, Uuid, i32)> = sqlx::query_as(
+        "select e.relay_id, e.id, e.port from entry e join agent_state a on a.machine_id = e.relay_id
+         left join node_outbound o on o.machine_id = e.node_id
+         where (cardinality($1::uuid[]) = 0 or e.relay_id = any($1)) and e.lifecycle in ('pending', 'active')
+           and (e.node_id = e.relay_id or o.secret_enc is not null) and (a.info->'singbox'->>'running')::bool",
+    )
+    .bind(relays)
+    .fetch_all(db)
+    .await?;
+    let mut per: HashMap<Uuid, Vec<(Uuid, u16)>> = HashMap::new();
+    for (relay, id, port) in rows {
+        per.entry(relay).or_default().push((id, port as u16));
+    }
+    Ok(per.values().flat_map(|es| fleet_proto::anytls_ports(es)).collect())
+}
+
+/// 分享链接里 AnyTLS 那条的显示名：入口名后面加「 AnyTLS」，和 Reality 那条区分（订阅里的见 names::sub_name_anytls）
+pub fn anytls_name(name: &str) -> String { format!("{name} AnyTLS") }
+
+/// anytls:// 链接：密码是入口的 client_uuid，证书是线路机自签的，客户端跳过校验（insecure=1）；
+/// fragment 原样放调用方给的显示名（分享链接 `anytls_name`、订阅 `names::sub_name_anytls`）
+pub fn anytls_url(password: Uuid, host: &str, port: u16, sni: &str, name: &str) -> String {
+    format!("anytls://{password}@{host}:{port}/?sni={}&insecure=1#{}", pct(sni), pct(name))
+}
+
 /// vless:// 分享链接；fragment 只放显示名，不放任何 IP。
 pub fn share_url(uuid: Uuid, host: &str, port: i32, sni: &str, pbk: &str, sid: &str, remark: &str) -> String {
     format!(
@@ -297,5 +330,11 @@ mod tests {
         let u = super::share_url(uuid::Uuid::nil(), "relay.example", 20001, "www.cloudflare.com", "pk", "ab", "团队1-06");
         assert!(u.starts_with("vless://00000000-0000-0000-0000-000000000000@relay.example:20001?"));
         assert!(u.ends_with("#%E5%9B%A2%E9%98%9F1-06"));
+    }
+
+    #[test]
+    fn anytls_url_shape() {
+        let u = super::anytls_url(uuid::Uuid::nil(), "relay.example", 40001, "www.cloudflare.com", &super::anytls_name("团队1-06"));
+        assert_eq!(u, "anytls://00000000-0000-0000-0000-000000000000@relay.example:40001/?sni=www.cloudflare.com&insecure=1#%E5%9B%A2%E9%98%9F1-06%20AnyTLS");
     }
 }

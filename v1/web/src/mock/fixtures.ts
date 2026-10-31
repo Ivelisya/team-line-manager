@@ -188,7 +188,9 @@ export function buildDb(): Db {
     machines.push(base({
       id: d.id, kind: 'relay', name: d.label, label: d.label, ip: d.ip, provider: { id: 'p2', name: '腾讯云' }, provider_code: 'TCT',
       plan: { id: p.id, name: p.name, bandwidth_mbps: p.bandwidth_mbps, traffic_gb: p.traffic_gb }, subscription: sub(d.planId, d.due, p.traffic_gb),
-      agent: { version: '1.0.3', last_report_at: iso(now() - 8000), online: true, xray_running: true, cores: 2, health: null, nic_ifaces: ['ens3'] }, host: hostOf(d.id, d.id === 'r1' ? 32 : 18),
+      // AnyTLS：线路机1 在跑，线路机2 还没装 sing-box
+      agent: { version: '1.0.3', last_report_at: iso(now() - 8000), online: true, xray_running: true, cores: 2, health: null, nic_ifaces: ['ens3'],
+        anytls: d.id === 'r1' ? { installed: true, running: true, version: '1.14.4', last_error: null } : { installed: false, running: false } }, host: hostOf(d.id, d.id === 'r1' ? 32 : 18),
       relay: { public_host: d.host, generation: d.gen, applied_generation: d.applied, applied_at: iso(now() - 2 * 3600_000), apply_error: null, port_min: 20001, port_max: 20999 },
       health: { status: 'ok', reasons: [] },
     }));

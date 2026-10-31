@@ -91,7 +91,7 @@ fleetctl ssh router <名称> [-- 'logread | tail -50']        # 软路由（Open
 ## 日志与执行
 
 ```
-fleetctl logs <机器> --unit fleet-agent|fleet-xray|ssserver --lines 200
+fleetctl logs <机器> --unit fleet-agent|fleet-xray|fleet-singbox|ssserver --lines 200   # fleet-singbox：线路机的 AnyTLS（sing-box）
 fleetctl server-logs --lines 200
 fleetctl exec <机器> -- systemctl is-active fleet-agent
 fleetctl exec <机器> -- 'df -h | tail -5'                   # 单个参数原样当脚本，可含管道
@@ -221,7 +221,7 @@ fleetctl entry rotate <入口> --yes                         # 旧分享链接�
 fleetctl entry disable <入口> --yes
 fleetctl entry add-direct <线路机> --yes [--follow]          # 线路机直出入口：从线路机自己的 IP 出去（旧系统的「节点00-默认」），每台至多一条；链接 fleetctl share <线路机>-直出
 fleetctl upgrade-agent <机器> | --all --yes                # 重启 agent；--all 先升一台金丝雀，成功后线路机逐台、VPS 节点并发；排队中的可 fleetctl cancel <作业>
-fleetctl tune <机器>[,<机器>…] | --team <团队> | --all [--yes] [--follow]   # 重做系统调优（上架时已自动做；档 tune-v2：TCP 缓冲上限按套餐带宽、客户连接 RTT、内存推导，任何参数不往小改）：内核网络参数、BBR、日志体积上限、时间同步，不重启 ss/Xray、不断连接；--team/--all 先做一台（线路机优先）并跟到结束，成功后其余逐台提交，有进行中作业的跳过并列出；--all 要 --yes；同机 IP 节点、家宽代理 409；`ls` 的「调优」列看谁是旧档（tune-v1）/ 未调优，`show` 的「调优推导」看缓冲上限怎么来的
+fleetctl tune <机器>[,<机器>…] | --team <团队> | --all [--yes] [--follow]   # 重做系统调优（上架时已自动做；档 tune-v3：TCP 缓冲上限按套餐带宽、客户连接 RTT、内存推导，任何参数不往小改；线路机保留入口、探测、AnyTLS 端口段）：内核网络参数、BBR、日志体积上限、时间同步，不重启 ss/Xray、不断连接；--team/--all 先做一台（线路机优先）并跟到结束，成功后其余逐台提交，有进行中作业的跳过并列出；--all 要 --yes；同机 IP 节点、家宽代理 409；`ls` 的「调优」列看谁是旧档 / 未调优，`show` 的「调优推导」看缓冲上限怎么来的
 fleetctl tune <机器>[,<机器>…] --rollback --yes [--follow]   # 撤销调优：按机器上第一次调优前记的原值写回、删掉调优的 sysctl 配置（没有原值快照的机器作业失败，什么都不改）；先向用户确认
 fleetctl ss-refresh <机器>[,<机器>…] | --team <团队> | --all [--yes] [--follow]   # 重新下发节点的 SS 配置：升级中控后把新的 ssserver 配置（如出站目标黑名单 fleet.acl）推到存量节点；配置有变化才重启 ssserver（该节点连接断开几秒），同机 IP 节点随宿主机一起刷，做完经入口验收出口（失败不自动回滚）；--team/--all 只含在用的 VPS 节点，先做一台并跟到结束，成功后其余逐台提交，有进行中作业的跳过并列出；--all 要 --yes；线路机、家宽代理、同机 IP 节点单独下发、没有入口的节点 409
 fleetctl speedtest <机器> [--size 25|100|500] [--target sjo|lax|il|nj] [--yes] [--follow]   # 按需测速：这台机器自己下载北美的测速文件（默认 100 MB、圣何塞）。**会占这台机器的流量额度（约用掉 size MB，计入供应商额度）**，确认里写明了，向用户确认后再 --yes；慢线路先 25 / 100，别随手 500。**只用北美目标（sjo 圣何塞 / lax 洛杉矶 / il 芝加哥 / nj 新泽西），不要用欧洲目标**（接口只收这四个，别想办法绕）。--follow 跟到结束再打印一行：平均 Mbit/s（MB/s）、耗时、首字节、是否下完；--json 的结果在作业 `steps[0].output`（`avg_mbps avg_mb_s total_s ttfb_s complete bytes target_name`）。同机 IP 节点对宿主机测，家宽代理 / 非在用机器 409，同一台同时只能一个作业
@@ -270,8 +270,9 @@ fleetctl plan rm <套餐> --yes                               # 还有机器（�
 - 改出口指向（用户说「把软路由的直连 / 默认出口换成线路机3」）：`fleetctl repoint 线路机1-直出 --to 线路机3-直出 [--router 团队2-老办公室]`。入口写入口 id、`线路机名:端口` 或节点显示名（直出入口是「线路机名-直出」）；目标线路机还没有直出入口就先 `fleetctl entry add-direct <线路机> --yes --follow`。旧入口照常在用（别的客户端、个人订阅还能用它），不要的话另行停用。不要手改路由的 OpenClash 配置、不要用 router-swap 一类脚本。
 - 改名：`fleetctl rename <机器> --team 团队2 --number 3`。
 - 国家（名字旁的国旗）：默认按 IP 查离线库自动定；查错了或想固定就 `fleetctl rename <机器> --country JP`（ISO 3166-1 两位代码，英国是 GB），`--country auto` 改回自动；上架时也可以 `fleetctl provision … --country US`。
-- 分享链接 `fleetctl share <入口>` 需要 `secrets` scope，会记审计；链接是凭据，只给用户本人，不写进文件或日志。一批用 `fleetctl share --team <团队>` 或 `--machines a,b,c`（一次请求、一条审计，每行「名称 链接」，`--json` 给数组），不要逐个 `share`。给用户自己的客户端优先用订阅链接（`fleetctl sub`，换线路后自动更新），给别人才用 `share`。
-- 客户端订阅（用户自己的 Clash Verge、OpenClash、v2rayN 一次拿全部入口）：`fleetctl sub ls|show <订阅>`；新建 `fleetctl sub add <名称> [--only-teams …|--except-teams …] [--no-direct] [--include <机器,…>] [--exclude <机器,…>]`（默认全部团队、不含备用团队、含线路机直出），改规则 `sub edit`，`sub rotate --yes` 旧链接立即失效，`sub rm --yes`。要 `secrets`；链接只在 add / rotate 输出一次，是凭据，只给用户本人。换节点（replace）、换线路机（move）、轮换凭据后用订阅的客户端会自动更新，不用再手改客户端配置。不要替用户把他现有的客户端改成订阅，那由用户决定。
+- 分享链接 `fleetctl share <入口>` 需要 `secrets` scope，会记审计；链接是凭据，只给用户本人，不写进文件或日志。第一行是 Reality（vless://），线路机的 AnyTLS 在跑时第二行是 AnyTLS（anytls://，自签证书、已带 insecure=1）。一批用 `fleetctl share --team <团队>` 或 `--machines a,b,c`（一次请求、一条审计，每行「名称 链接」，AnyTLS 那行是「名称 AnyTLS 链接」，`--json` 给数组、带 anytls_url），不要逐个 `share`。给用户自己的客户端优先用订阅链接（`fleetctl sub`，换线路后自动更新），给别人才用 `share`。
+- AnyTLS（线路机入口的第二种协议，sing-box 只做外壳，策略、统计都还在 Xray）：`fleetctl show <线路机>` 的「AnyTLS」看在跑 / 没在跑 / 出错 / 未安装；没装的线路机 `fleetctl upgrade-agent <线路机>` 时顺带装（中控 dist 里要有 sing-box），之后 `fleetctl tune <线路机> --yes`（tune-v3 保留 AnyTLS 端口段）。端口 = 入口端口 + 20000（默认 40000–49999，云安全组要放行）。增删入口、轮换凭据会让这台线路机的 AnyTLS 连接断一下，Reality 不受影响。详见 OPS.md §21
+- 客户端订阅（用户自己的 Clash Verge、OpenClash、v2rayN 一次拿全部入口）：`fleetctl sub ls|show <订阅>`；新建 `fleetctl sub add <名称> [--only-teams …|--except-teams …] [--no-direct] [--include <机器,…>] [--exclude <机器,…>] [--protocols reality|anytls|both]`（默认全部团队、不含备用团队、含线路机直出、只 Reality；AnyTLS 条目只出在 AnyTLS 在跑的线路机上），改规则、协议 `sub edit`，`sub rotate --yes` 旧链接立即失效，`sub rm --yes`。要 `secrets`；链接只在 add / rotate 输出一次，是凭据，只给用户本人。换节点（replace）、换线路机（move）、轮换凭据后用订阅的客户端会自动更新，不用再手改客户端配置。不要替用户把他现有的客户端改成订阅，那由用户决定。
 - 密钥管理（`fleetctl keys ...`）只认登录会话，AI 不做；需要新密钥时请用户在网页「设置 → API 密钥」创建。
 
 ## --json 字段速查

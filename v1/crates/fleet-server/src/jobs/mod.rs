@@ -48,7 +48,7 @@ pub struct StepDef {
 const fn s(key: &'static str, title: &'static str, timeout_s: i64) -> StepDef { StepDef { key, title, timeout_s } }
 
 // 超时要覆盖步骤内所有 ssh/推送的累计时间（含瞬时错误重试），否则会被外层超时截断：
-// converge ≈ 基线 600 + 调优 480 + 推 ssserver 200 + 脚本 120 + 重启 30；converge_relay ≈ 基线 600 + 调优 480 + 推 xray 320 + 推 geo 2×320 + 脚本 60
+// converge ≈ 基线 600 + 调优 480 + 推 ssserver 200 + 脚本 120 + 重启 30；converge_relay ≈ 基线 600 + 调优 480 + 推 xray 320 + 推 geo 2×320 + 推 sing-box 320 + 脚本 60
 const PROVISION_VPS: &[StepDef] = &[
     s("preflight", "预检与身份", 240),
     s("bootstrap", "引导密钥", 240),
@@ -123,7 +123,8 @@ const REPOINT: &[StepDef] = &[s("routers", "改软路由出口", 1800)];
 // 同步软路由出口参数（api/router_ops.rs）：参数和对应入口不一致的出口改成入口现在的参数（同一步「改软路由出口」，目标是路由），入口不动
 const ROUTER_SYNC: &[StepDef] = &[s("routers", "改软路由出口", 1800)];
 // 推送时旧程序留成 .prev；起不来、或 2 分钟内等不到新版本上报，就换回去并让作业失败（见 steps::agent / wait_report）。重试从推送重来
-const UPGRADE_AGENT: &[StepDef] = &[s("agent", "推送并重启 agent", 600), s("wait_report", "等待新版本上报", 180)];
+// 线路机升级 agent 时顺带推 sing-box（约 30 MB，推送上限 300 s）
+const UPGRADE_AGENT: &[StepDef] = &[s("agent", "推送并重启 agent", 900), s("wait_report", "等待新版本上报", 180)];
 // 系统调优（当前档见 tune.rs；参数 rollback 时按原值快照撤销）：一个幂等脚本，不重启 ssserver / Xray；时间没同步的机器要装 systemd-timesyncd，留足 apt 的时间
 const TUNE: &[StepDef] = &[s("tune", "系统调优", 600)];
 // 重新下发节点 SS 配置：跑上架同一份 node_ss 脚本（配置或出站黑名单有变化才重启 ssserver，同机的实例一起刷），再经入口做出口验收。不自动回滚
