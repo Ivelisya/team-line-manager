@@ -2,6 +2,7 @@
 //! 退出码：0 成功；1 失败（错误信息在 stderr）；2 命令行参数不对。exec 单台时沿用远端命令的退出码。
 
 mod access;
+mod batches;
 mod billing;
 mod catalog;
 mod client;
@@ -189,6 +190,31 @@ enum SubCmd {
     },
     /// 规则与现在的条目（客户端里的名字、线路机:端口）；不显示链接
     Show { sub: String },
+}
+
+#[derive(Subcommand)]
+enum BatchCmd {
+    /// 团队的客户批次（含已到期的）：编号、地区、起止、当前个数、时长、节点月、状态，另附客户页链接状态。--periods 再列每批的各段
+    List {
+        team: String,
+        #[arg(long)]
+        periods: bool,
+    },
+    /// 新建批次（首购一段）。--end 不给就是开始日加 --months 个月（月底对齐）；编号不给就是团队里最大的加 1
+    Add(batches::AddOpts),
+    /// 续期：追加一段，开始日 = 现在的到期日，个数默认沿用（--count 可以变，如 5 → 4）
+    Renew(batches::RenewOpts),
+    /// 改地区、说明、编号
+    Edit(batches::EditOpts),
+    /// 删除整个批次（要确认）
+    Rm {
+        /// 批次：团队#编号，如 团队2#05
+        batch: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// 改某一段的日期、月数、个数，或 --rm 删掉这一段（同批次的段不能重叠）
+    Period(batches::PeriodOpts),
 }
 
 #[derive(Subcommand)]
@@ -561,6 +587,13 @@ enum Cmd {
         #[arg(long, value_name = "机器,…", conflicts_with = "entry")]
         machines: Option<String>,
     },
+    /// 客户批次账（卖给客户的节点什么时候到期，与供应商订阅无关）：list / add / renew / edit / rm / period。批次用 团队#编号 指定，如 团队2#05
+    Batch {
+        #[command(subcommand)]
+        cmd: BatchCmd,
+    },
+    /// 客户到期页的只读分享链接（客户不登录，页面不出现 IP、供应商、价格、节点名）：不带参数显示链接与状态；--rotate 生成或换新链接（旧链接立即失效）、--disable / --enable、--delete
+    CustomerPage(batches::PageOpts),
     /// 客户端订阅：自己的客户端（Clash Verge、OpenClash、v2rayN）按一个链接拉入口，换节点、换线路机、轮换凭据后自动是新的（需要 secrets 权限）
     Sub {
         #[command(subcommand)]
@@ -1088,6 +1121,15 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Entries { machine } => cmds::entries(x, machine.as_deref()),
         Cmd::Share { entry: Some(e), .. } => ops::share(x, &e),
         Cmd::Share { team, machines, .. } => ops::share_many(x, team.as_deref(), machines.as_deref()),
+        Cmd::Batch { cmd } => match cmd {
+            BatchCmd::List { team, periods } => batches::list(x, &team, periods),
+            BatchCmd::Add(o) => batches::add(x, &o),
+            BatchCmd::Renew(o) => batches::renew(x, &o),
+            BatchCmd::Edit(o) => batches::edit(x, &o),
+            BatchCmd::Rm { batch, yes } => batches::rm(x, &batch, yes),
+            BatchCmd::Period(o) => batches::period(x, &o),
+        },
+        Cmd::CustomerPage(o) => batches::page(x, &o),
         Cmd::Sub { cmd } => match cmd {
             SubCmd::Ls => subs::ls(x),
             SubCmd::Add { name, rule } => subs::add(x, &name, &rule),
