@@ -83,7 +83,7 @@ async fn targets(State(st): State<AppState>, h: HeaderMap) -> ApiResult<Json<Pro
         reach::targets(&st.db)
             .await?
             .into_iter()
-            .map(|(relay_id, host, ports)| ProbeTarget { relay_id, host, ports: ports.into_iter().filter_map(|x| u16::try_from(x).ok()).collect() })
+            .map(|(relay_id, host, ports)| ProbeTarget { relay_id, host, ports: ports.into_iter().filter_map(|(x, _)| u16::try_from(x).ok()).collect() })
             .collect()
     } else {
         vec![]
@@ -168,15 +168,16 @@ async fn report(State(st): State<AppState>, ClientIp(ip): ClientIp, h: HeaderMap
 
 /// 只收在用线路机的在用入口端口。返回写入的条数
 async fn ingest(st: &AppState, id: Uuid, r: &ProbeReport) -> anyhow::Result<usize> {
-    let live: HashMap<Uuid, HashSet<i32>> = reach::targets(&st.db).await?.into_iter().map(|(rid, _, ps)| (rid, ps.into_iter().collect())).collect();
+    // 要连的端口 → 入口端口（只留 AnyTLS 的线路机连的是 AnyTLS 端口，记录按入口端口记，见 reach::targets）
+    let live: HashMap<Uuid, HashMap<i32, i32>> = reach::targets(&st.db).await?.into_iter().map(|(rid, _, ps)| (rid, ps.into_iter().collect())).collect();
     let mut seen = HashSet::new();
     let samples: Vec<Sample> = r
         .results
         .iter()
-        .filter(|x| live.get(&x.relay_id).is_some_and(|ps| ps.contains(&i32::from(x.port))) && seen.insert(x.relay_id))
+        .filter(|x| live.get(&x.relay_id).is_some_and(|ps| ps.contains_key(&i32::from(x.port))) && seen.insert(x.relay_id))
         .map(|x| Sample {
             relay: x.relay_id,
-            port: i32::from(x.port),
+            port: live[&x.relay_id][&i32::from(x.port)],
             ok: x.ok,
             // 失败原因带上端口（同中控的），截短：告警摘要里放得下
             detail: (!x.ok).then(|| format!("端口 {}：{}", x.port, x.detail.as_deref().unwrap_or("连不上").chars().take(80).collect::<String>())),

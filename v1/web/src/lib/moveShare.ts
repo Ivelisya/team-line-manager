@@ -1,6 +1,6 @@
 // 换线路机完成后，客户端要换成新的分享链接：按作业记下的新入口 id 取链接并复制。
 import { get } from './api';
-import { fetchShare } from './queries';
+import { fetchShare, mainShare } from './queries';
 import { copyShareLink } from './clipboard';
 import type { Job } from './types';
 import { toast } from '@/components/ui/toast';
@@ -11,6 +11,6 @@ export async function copyNewShareLink(jobId: string) {
     const id = j.result?.new_entry_id ?? (j.steps.find((s) => s.key === 'attach_new')?.output?.entry_id as string | undefined);
     if (!id) throw new Error('找不到这次换线路机建的新入口');
     const r = await fetchShare(id);
-    await copyShareLink(r.url, '新分享链接');
+    await copyShareLink(mainShare(r), '新分享链接');
   } catch (e) { toast.err(e); }
 }

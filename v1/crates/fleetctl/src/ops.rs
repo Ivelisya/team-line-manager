@@ -860,11 +860,8 @@ pub fn share(ctx: &Ctx, entry: &str) -> anyhow::Result<u8> {
     let es = cmds::all_entries(ctx)?;
     let e = resolve::entry(&es, entry).map_err(|e| anyhow!(e))?;
     let d = ctx.c.get(&format!("/entries/{}/share", st(e, "/id")))?;
-    // 第一行 Reality（vless://）；线路机上 AnyTLS 可用时第二行是 anytls://
-    ctx.emit(&d, || match d["anytls_url"].as_str() {
-        Some(a) => format!("{}\n{a}", st(&d, "/url")),
-        None => st(&d, "/url"),
-    });
+    // 一行一条：Reality（vless://，线路机只留 AnyTLS 时没有）、AnyTLS（anytls://，线路机上 AnyTLS 可用时才有）
+    ctx.emit(&d, || [d["url"].as_str(), d["anytls_url"].as_str()].into_iter().flatten().collect::<Vec<_>>().join("\n"));
     Ok(0)
 }
 
@@ -918,7 +915,9 @@ pub fn share_many(ctx: &Ctx, team: Option<&str>, machines: Option<&str>) -> anyh
     ctx.emit(&items, || {
         let mut lines = vec![];
         for i in items.as_array().map(Vec::as_slice).unwrap_or_default() {
-            lines.push(format!("{} {}", st(i, "/name"), st(i, "/url")));
+            if let Some(u) = i["url"].as_str() {
+                lines.push(format!("{} {u}", st(i, "/name")));
+            }
             if let Some(a) = i["anytls_url"].as_str() {
                 lines.push(format!("{} AnyTLS {a}", st(i, "/name")));
             }

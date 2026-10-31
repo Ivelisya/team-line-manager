@@ -131,15 +131,35 @@ pub(crate) fn unknown_sql(relay: &str, src: &Effective) -> String {
     )
 }
 
-/// 要测的线路机：在用的、有在用入口的，(id, 客户连的地址, 在用入口端口升序)。中控与探测点（取目标的接口）共用
-pub(crate) async fn targets(db: &sqlx::PgPool) -> sqlx::Result<Vec<(Uuid, String, Vec<i32>)>> {
-    sqlx::query_as(
-        "select m.id, r.public_host, array_agg(e.port order by e.port) from machine m join relay r on r.machine_id = m.id
+/// 一台要测的线路机：(id, 客户连的地址, [(要连的端口, 入口端口)]，按入口端口升序)
+pub(crate) type Target = (Uuid, String, Vec<(i32, i32)>);
+
+/// 要测的线路机：在用的、有在用入口的。中控与探测点（取目标的接口）共用。
+/// 线路机只留 AnyTLS（relay.protocols = anytls）时 Reality 入站听回环、公网连不上，连的是入口的 AnyTLS 端口（TCP 建连同样说明客户连得上）；
+/// 记录（relay_reach.port）仍按入口端口记，入口表、告警按入口端口对得上。算不出 AnyTLS 端口的入口（端口相撞）客户也连不上，不测
+pub(crate) async fn targets(db: &sqlx::PgPool) -> sqlx::Result<Vec<Target>> {
+    // (线路机, 地址, 入口协议, 入口 id, 入口端口)
+    type Row = (Uuid, String, String, Vec<Uuid>, Vec<i32>);
+    let rows: Vec<Row> = sqlx::query_as(
+        "select m.id, r.public_host, r.protocols, array_agg(e.id order by e.port), array_agg(e.port order by e.port) from machine m join relay r on r.machine_id = m.id
          join entry e on e.relay_id = m.id and e.lifecycle = 'active'
-         where m.kind = 'relay' and m.lifecycle = 'active' group by m.id, r.public_host order by m.id",
+         where m.kind = 'relay' and m.lifecycle = 'active' group by m.id, r.public_host, r.protocols order by m.id",
     )
     .fetch_all(db)
-    .await
+    .await?;
+    let only: Vec<Uuid> = rows.iter().filter(|r| r.2 == crate::entries::ANYTLS).map(|r| r.0).collect();
+    let at = if only.is_empty() { Default::default() } else { crate::entries::anytls_ports_on(db, &only, false).await? };
+    Ok(rows
+        .into_iter()
+        .filter_map(|(id, host, proto, eids, ports)| {
+            let ps: Vec<(i32, i32)> = eids
+                .iter()
+                .zip(ports)
+                .filter_map(|(e, p)| if proto == crate::entries::ANYTLS { at.get(e).map(|&a| (i32::from(a), p)) } else { Some((p, p)) })
+                .collect();
+            (!ps.is_empty()).then_some((id, host, ps))
+        })
+        .collect())
 }
 
 /// 一次检查（写进 relay_reach 的一行）
@@ -204,8 +224,9 @@ pub async fn round(st: &AppState, controls: &[&str], turn: usize) -> anyhow::Res
         return Ok(0);
     }
     let ts = OffsetDateTime::now_utc();
-    let ports: Vec<u16> = targets.iter().map(|(_, _, ps)| ps[turn % ps.len()] as u16).collect();
-    let relays = futures::future::join_all(targets.iter().zip(&ports).map(|((_, host, _), port)| connect(host.clone(), *port)));
+    // (要连的端口, 入口端口)
+    let ports: Vec<(u16, i32)> = targets.iter().map(|(_, _, ps)| ps[turn % ps.len()]).map(|(d, e)| (d as u16, e)).collect();
+    let relays = futures::future::join_all(targets.iter().zip(&ports).map(|((_, host, _), (port, _))| connect(host.clone(), *port)));
     let ctl = futures::future::join_all(controls.iter().map(|a| connect_addr(a)));
     let (res, ctl) = tokio::join!(relays, ctl);
     if !(controls.is_empty() || ctl.iter().any(|r| r.is_ok())) {
@@ -218,7 +239,7 @@ pub async fn round(st: &AppState, controls: &[&str], turn: usize) -> anyhow::Res
         .iter()
         .zip(&ports)
         .zip(&res)
-        .map(|(((id, _, _), port), r)| Sample { relay: *id, port: i32::from(*port), ok: r.is_ok(), detail: r.as_ref().err().map(|e| format!("端口 {port}：{e}")), rtt_ms: None })
+        .map(|(((id, _, _), (port, entry)), r)| Sample { relay: *id, port: *entry, ok: r.is_ok(), detail: r.as_ref().err().map(|e| format!("端口 {port}：{e}")), rtt_ms: None })
         .collect();
     record(st, None, ts, &samples, fleet_proto::all_down(&oks)).await?;
     Ok(targets.len())

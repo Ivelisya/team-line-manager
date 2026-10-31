@@ -74,7 +74,8 @@ pub async fn entry_routers(_a: Actor, State(st): State<AppState>, ApiPath(id): A
 /// 一条入口的分享链接
 #[derive(Clone)]
 struct Share {
-    url: String,
+    /// Reality（vless://）：线路机只留 AnyTLS（relay.protocols = anytls）时没有
+    url: Option<String>,
     /// AnyTLS 链接：线路机报了 sing-box 在跑、入口有 AnyTLS 端口时才有（entries::anytls_live）
     anytls_url: Option<String>,
     /// 入口名「节点名」或「线路机名-直出」
@@ -101,9 +102,10 @@ async fn share_links(db: &sqlx::PgPool, ids: &[Uuid]) -> ApiResult<Vec<Share>> {
         label: Option<String>,
         direct: bool,
         relay_label: Option<String>,
+        protocols: String,
     }
     let rows: Vec<Row> = sqlx::query_as(
-        "select e.id, e.relay_id, e.client_uuid, e.short_id, e.port, r.public_host, r.reality_sni, r.reality_public_key,
+        "select e.id, e.relay_id, e.client_uuid, e.short_id, e.port, r.public_host, r.reality_sni, r.reality_public_key, r.protocols,
                 n.kind::text kind, t.name team, n.number, n.label, e.node_id = e.relay_id direct, rm.label relay_label
          from entry e join relay r on r.machine_id = e.relay_id join machine rm on rm.id = e.relay_id join machine n on n.id = e.node_id
          left join team t on t.id = n.team_id where e.id = any($1) and e.lifecycle <> 'removed'",
@@ -119,7 +121,7 @@ async fn share_links(db: &sqlx::PgPool, ids: &[Uuid]) -> ApiResult<Vec<Share>> {
         .into_iter()
         .map(|r| {
             let name = crate::names::entry_name(r.direct, &r.kind, r.label.as_deref(), r.team.as_deref(), r.number);
-            let url = entries::share_url(r.client_uuid, &r.public_host, r.port, &r.reality_sni, &r.reality_public_key, &r.short_id, &name);
+            let url = (r.protocols != entries::ANYTLS).then(|| entries::share_url(r.client_uuid, &r.public_host, r.port, &r.reality_sni, &r.reality_public_key, &r.short_id, &name));
             let anytls_url = at.get(&r.id).map(|&p| entries::anytls_url(r.client_uuid, &r.public_host, p, &r.reality_sni, &entries::anytls_name(&name)));
             (r.id, Share { url, anytls_url, name, relay: r.relay_label, port: r.port })
         })
@@ -144,7 +146,7 @@ pub struct ShareBatchIn {
 }
 
 /// 批量取分享链接（`POST /entries/share`，要 secrets 权限）：一次请求、一条审计（列出入口名，不记链接）。
-/// 返回 `{items: [{id, name, url, anytls_url}]}`（anytls_url 没有时为 null），按请求的顺序；有一条不存在就整批失败
+/// 返回 `{items: [{id, name, url, anytls_url}]}`（url 在线路机只留 AnyTLS 时为 null，anytls_url 没有时为 null），按请求的顺序；有一条不存在就整批失败
 pub async fn share_batch(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<ShareBatchIn>) -> ApiResult<Json<Value>> {
     a.require_scope("secrets")?;
     if b.ids.is_empty() || b.ids.len() > 500 {
@@ -157,6 +159,76 @@ pub async fn share_batch(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJs
     audit(&mut tx, &a.name, "entry.share", "entry", None, json!({"entries": names})).await?;
     tx.commit().await?;
     Ok(ok(json!({"items": items})))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RelayPatchIn {
+    protocols: String,
+}
+
+/// 改线路机的入口协议（`PATCH /relays/{id}`，`{protocols: both|reality|anytls}`）：代数 +1、记审计 `relay.protocols`。
+/// 改成只 AnyTLS（Reality 入站改听回环、公网只剩 AnyTLS）要先满足三条，否则 409：
+/// ①线路机 agent 报了 sing-box 在跑、且认 `reality_public`（caps 有 reality_private），不然公网一个协议都没有或 Reality 照样开着；
+/// ②这台线路机上没有穿透入口：节点的 bridge 连的是入口的公网 REALITY 端口；
+/// ③没有软路由出口指着这台线路机上的入口：软路由（OpenClash）只用 Reality
+pub async fn patch_relay(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<RelayPatchIn>) -> ApiResult<Json<Value>> {
+    let p = b.protocols.trim();
+    if ![entries::BOTH, entries::REALITY, entries::ANYTLS].contains(&p) {
+        return Err(ApiError::bad_request("protocols 只能是 both、reality、anytls"));
+    }
+    // (名称, 现在的协议, sing-box 在跑, agent 的 caps)
+    type Cur = (Option<String>, String, Option<bool>, Option<Value>);
+    let cur: Option<Cur> = sqlx::query_as(
+        "select m.label, r.protocols, (a.info->'singbox'->>'running')::bool, a.info->'caps'
+         from relay r join machine m on m.id = r.machine_id left join agent_state a on a.machine_id = r.machine_id where r.machine_id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&st.db)
+    .await?;
+    let (label, from, singbox, caps) = cur.ok_or_else(|| ApiError::not_found("没有这台线路机"))?;
+    let name = label.unwrap_or_default();
+    if p == entries::ANYTLS {
+        if singbox != Some(true) {
+            return Err(ApiError::conflict("线路机还没装好 AnyTLS（sing-box），先升级 agent"));
+        }
+        if !caps.as_ref().and_then(Value::as_array).is_some_and(|c| c.iter().any(|x| x == fleet_proto::CAP_REALITY_PRIVATE)) {
+            return Err(ApiError::conflict("线路机的 agent 版本旧，不认「只留 AnyTLS」（Reality 会照样对公网开着），先升级 agent"));
+        }
+        // 穿透入口的节点 (kind, label, 团队, 编号) 与入口端口
+        type Rev = (String, Option<String>, Option<String>, Option<i32>, i32);
+        let rev: Vec<Rev> = sqlx::query_as(
+            "select n.kind::text, n.label, t.name, n.number, e.port from entry e join machine n on n.id = e.node_id left join team t on t.id = n.team_id
+             where e.relay_id = $1 and e.mode = $2 and e.lifecycle in ('pending', 'active', 'disabled') order by e.port",
+        )
+        .bind(id)
+        .bind(crate::reverse::REVERSE)
+        .fetch_all(&st.db)
+        .await?;
+        if !rev.is_empty() {
+            let names: Vec<String> = rev.iter().map(|(k, l, t, n, port)| format!("{}（{port}）", crate::names::entry_name(false, k, l.as_deref(), t.as_deref(), *n))).collect();
+            return Err(ApiError::conflict(format!("这台线路机上有穿透入口：{}。穿透的 bridge 连的是入口的公网 Reality 端口，先关掉穿透", names.join("、")))
+                .with_detail(json!({"reverse_entries": names})));
+        }
+        let ids: Vec<Uuid> = sqlx::query_scalar("select id from entry where relay_id = $1 and lifecycle <> 'removed'").bind(id).fetch_all(&st.db).await?;
+        let rs = crate::routers::exits_on_entries(&st.db, &ids).await?;
+        if !rs.is_empty() {
+            return Err(ApiError::conflict(format!("软路由只用 Reality，这些出口指着这台线路机上的入口：{}。先把它们改指到别的线路机", crate::routers::exits_text(&rs)))
+                .with_detail(json!({"router_exits": rs})));
+        }
+    }
+    if p == from {
+        let g: i64 = sqlx::query_scalar("select generation from relay where machine_id = $1").bind(id).fetch_one(&st.db).await?;
+        return Ok(ok(json!({"relay_id": id, "name": name, "protocols": p, "generation": g, "changed": false})));
+    }
+    let mut tx = st.db.begin().await?;
+    sqlx::query("update relay set protocols = $2 where machine_id = $1").bind(id).bind(p).execute(&mut *tx).await?;
+    let gen = crate::db::bump_relay(&mut tx, id).await?;
+    audit(&mut tx, &a.name, "relay.protocols", "machine", Some(id), json!({"relay": name, "from": from, "to": p, "generation": gen})).await?;
+    tx.commit().await?;
+    st.relay_bumped(id);
+    st.emit(Event::Machines);
+    Ok(ok(json!({"relay_id": id, "name": name, "protocols": p, "generation": gen, "changed": true})))
 }
 
 #[derive(Deserialize)]

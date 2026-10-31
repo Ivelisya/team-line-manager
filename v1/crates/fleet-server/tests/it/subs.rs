@@ -209,3 +209,78 @@ async fn anytls_in_desired_subs_and_share() {
     t.req("POST", "/agent/v1/report", Some(serde_json::to_value(&r).unwrap()), Some("tok1")).await;
     assert!(!pull(&t, &bp).await.2.contains("anytls"));
 }
+
+/// 线路机的入口协议（PATCH /relays/{id}）：改成只 AnyTLS 的三条 409（AnyTLS 没在跑 / agent 不认、有穿透入口、有软路由出口指着），
+/// 改成后下发 reality_public=false、分享与订阅只给 AnyTLS；改成只 Reality 后不再下发、不再给 AnyTLS
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn relay_protocols_switch() {
+    let t = common::boot(false, "trust_forwarded_for = true").await;
+    seed(&t).await;
+    sqlx::query("insert into node_outbound (machine_id, protocol, host, port, method, secret_enc) select id, 'shadowsocks', host(primary_ip), 8388, 'aes-256-gcm', $1 from machine where kind = 'proxy'")
+        .bind(t.st.secrets.seal_str("pw"))
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let relay: Uuid = sqlx::query_scalar("select machine_id from relay").fetch_one(&t.st.db).await.unwrap();
+    let path = format!("/api/v1/relays/{relay}");
+    let fail = |b: serde_json::Value| { let (t, path) = (&t, path.clone()); async move { t.req("PATCH", &path, Some(b), None).await } };
+    let anytls = json!({"protocols": "anytls"});
+    let (s, v) = fail(anytls.clone()).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().contains("先升级 agent"), "{v}");
+    let report = |seq: u64, caps: Vec<&str>| {
+        let mut r = tele::blank_report(seq);
+        r.singbox = Some(fleet_proto::SingboxStatus { installed: true, running: true, version: Some("1.14.4".into()), last_error: None });
+        r.caps = caps.into_iter().map(String::from).collect();
+        serde_json::to_value(&r).unwrap()
+    };
+    // sing-box 在跑但 agent 不认 reality_public：仍 409
+    assert_eq!(t.req("POST", "/agent/v1/report", Some(report(1, vec!["reverse"])), Some("tok1")).await.0, StatusCode::OK);
+    let (s, v) = fail(anytls.clone()).await;
+    assert!(s == StatusCode::CONFLICT && v["error"]["message"].as_str().unwrap().contains("版本旧"), "{v}");
+    assert_eq!(t.req("POST", "/agent/v1/report", Some(report(2, fleet_proto::CAPS.to_vec())), Some("tok1")).await.0, StatusCode::OK);
+    // 有穿透入口
+    sqlx::query("update entry set mode = 'reverse' where port = 20000").execute(&t.st.db).await.unwrap();
+    let (s, v) = fail(anytls.clone()).await;
+    assert!(s == StatusCode::CONFLICT && v["error"]["message"].as_str().unwrap().contains("穿透入口：团队1-01（20000）"), "{v}");
+    sqlx::query("update entry set mode = 'normal' where port = 20000").execute(&t.st.db).await.unwrap();
+    // 有软路由出口指着这台线路机上的入口
+    let (eid, nid): (Uuid, Uuid) = sqlx::query_as("select id, node_id from entry where port = 20000").fetch_one(&t.st.db).await.unwrap();
+    let rid = Uuid::now_v7();
+    sqlx::query("insert into router (id, name, tunnel_port) values ($1, '团队1-路由A', 23006)").bind(rid).execute(&t.st.db).await.unwrap();
+    let entry = json!({"id": eid, "name": "团队1-01 · 线路机1:20000", "node_id": nid, "relay_id": relay, "node_name": "团队1-01", "relay_name": "线路机1", "port": 20000, "lifecycle": "active"});
+    let snap = json!({"exits": [{"name": "节点01", "entry": entry, "sync": "ok", "linked": true}]});
+    sqlx::query("insert into router_status (router_id, ts, reachable, data, last_ok_at) values ($1, now(), true, $2, now())").bind(rid).bind(snap).execute(&t.st.db).await.unwrap();
+    let (s, v) = fail(anytls.clone()).await;
+    assert!(s == StatusCode::CONFLICT && v["error"]["message"].as_str().unwrap().contains("团队1-路由A 的 节点01"), "{v}");
+    sqlx::query("delete from router_status").execute(&t.st.db).await.unwrap();
+    t.fail("PATCH", &path, Some(json!({"protocols": "vmess"})), StatusCode::BAD_REQUEST).await;
+
+    // 改成只 AnyTLS：代数 +1、审计；下发 reality_public=false
+    let g0: i64 = sqlx::query_scalar("select generation from relay").fetch_one(&t.st.db).await.unwrap();
+    let (s, v) = fail(anytls.clone()).await;
+    assert_eq!((s, v["data"]["protocols"].as_str(), v["data"]["generation"].as_i64()), (StatusCode::OK, Some("anytls"), Some(g0 + 1)), "{v}");
+    let n: i64 = sqlx::query_scalar("select count(*) from audit_log where action = 'relay.protocols'").fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(n, 1);
+    assert_eq!(t.get(&format!("/api/v1/machines/{relay}")).await["relay"]["protocols"], "anytls");
+    let (_, d) = t.req("GET", "/agent/v1/desired?after=0", None, Some("tok1")).await;
+    assert_eq!(d["relay"]["reality_public"], false, "{d}");
+    assert!(d["entries"].as_array().unwrap().iter().all(|e| e["anytls_port"].is_u64()), "{d}");
+    // 分享只给 AnyTLS；订阅：both 只出 AnyTLS，只要 Reality 的整条不出
+    let sh = t.get(&format!("/api/v1/entries/{eid}/share")).await;
+    assert!(sh["url"].is_null() && sh["anytls_url"].as_str().unwrap().starts_with("anytls://"), "{sh}");
+    let both = t.post("/api/v1/client-subs", json!({"name": "两种", "protocols": "both"})).await;
+    let plain = t.post("/api/v1/client-subs", json!({"name": "默认"})).await;
+    let (_, _, y) = pull(&t, &sub_path(&both["url"])).await;
+    assert_eq!((y.matches("type: vless").count(), y.matches("type: anytls").count()), (0, 2), "{y}");
+    assert_eq!(pull(&t, &sub_path(&plain["url"])).await.2, "proxies: []\n");
+    assert_eq!(plain["items"], 0, "{plain}");
+
+    // 改成只 Reality：不下发 AnyTLS 端口、Reality 对公网开，分享只给 Reality
+    let (s, _) = fail(json!({"protocols": "reality"})).await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, d) = t.req("GET", "/agent/v1/desired?after=0", None, Some("tok1")).await;
+    assert!(d["relay"].get("reality_public").is_none() && d["entries"].as_array().unwrap().iter().all(|e| e.get("anytls_port").is_none()), "{d}");
+    let sh = t.get(&format!("/api/v1/entries/{eid}/share")).await;
+    assert!(sh["url"].as_str().unwrap().starts_with("vless://") && sh["anytls_url"].is_null(), "{sh}");
+}

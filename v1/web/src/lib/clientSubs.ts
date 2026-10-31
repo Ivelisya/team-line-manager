@@ -14,7 +14,7 @@ export interface ClientSub {
   token_at: string; last_fetch_at: string | null; last_fetch_ip: string | null;
 }
 /** 条目：客户端里的名字、走哪台线路机哪个端口（不含凭据）；anytls_port：这份订阅出 AnyTLS、且这条有时才有 */
-export interface ClientSubEntry { name: string; entry_id: string; relay: string; port: number; anytls_port?: number | null }
+export interface ClientSubEntry { name: string; entry_id: string; relay: string; port: number; anytls_port?: number | null; reality?: boolean }
 export type ClientSubWithUrl = ClientSub & { url: string };
 
 export const DEFAULT_RULE: SubRule = { team_mode: 'all', team_ids: [], direct: true, include_ids: [], exclude_ids: [] };

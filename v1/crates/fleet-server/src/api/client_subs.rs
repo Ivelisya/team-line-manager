@@ -3,7 +3,8 @@
 //! 拉取（`GET /sub/{令牌}`，不登录）按请求时的入口现算：替换节点、换线路机、轮换凭据后客户端更新订阅就是新的。
 //! 管理接口都要 secrets 权限（同分享链接）；新建、修改、轮换、删除记审计，拉取不记（只节流写最近拉取时间与来源）。
 //! 协议（`protocols`，迁移 0094）：reality（默认）/ anytls / both。AnyTLS 条目只给线路机报了 sing-box 在跑、入口有 AnyTLS 端口的
-//! （entries::anytls_live；没在跑时链接是坏的）：选 anytls 时这样的入口不出现，选 both 时只有 Reality 那条
+//! （entries::anytls_live；没在跑时链接是坏的）：选 anytls 时这样的入口不出现，选 both 时只有 Reality 那条。
+//! 线路机的入口协议（relay.protocols，迁移 0096）再收一层：只 AnyTLS 的线路机上的入口不出 Reality（订阅只要 Reality 的就整条不出），只 Reality 的不出 AnyTLS
 
 use super::ok;
 use crate::auth::{self, Actor, ClientIp};
@@ -120,9 +121,18 @@ struct Cand {
     country: Option<String>,
     provider: Option<String>,
     relay: String,
-    /// AnyTLS 公网端口：线路机上真能用 AnyTLS 时才有（candidates 里按 entries::anytls_live 填）
+    /// 线路机的入口协议（both / reality / anytls）
+    relay_proto: String,
+    /// AnyTLS 公网端口：线路机上真能用 AnyTLS 时才有（candidates 里按 entries::anytls_live 填；只 Reality 的线路机没有）
     #[sqlx(skip)]
     anytls: Option<u16>,
+}
+
+impl Cand {
+    /// 按订阅的协议，这条入口出不出 (Reality, AnyTLS)
+    fn offers(&self, protocols: &str) -> (bool, bool) {
+        (protocols != "anytls" && self.relay_proto != crate::entries::ANYTLS, protocols != "reality" && self.anytls.is_some())
+    }
 }
 
 /// 订阅的协议：reality / anytls / both
@@ -138,13 +148,13 @@ type Item<'a> = (&'a Cand, bool, String);
 
 /// 按协议展开：同一入口 Reality 在前、AnyTLS 紧跟其后；入口没有 AnyTLS 就只有 Reality（选 anytls 时整条不出）
 fn expand<'a>(items: Vec<(&'a Cand, String)>, protocols: &str) -> Vec<Item<'a>> {
-    let (reality, anytls) = (protocols != "anytls", protocols != "reality");
     let mut out = Vec::with_capacity(items.len());
     for (c, name) in items {
+        let (reality, anytls) = c.offers(protocols);
         if reality {
             out.push((c, false, name.clone()));
         }
-        if anytls && c.anytls.is_some() {
+        if anytls {
             out.push((c, true, names::sub_name_anytls(&name)));
         }
     }
@@ -156,7 +166,7 @@ async fn candidates(st: &AppState, country: bool) -> ApiResult<Vec<Cand>> {
     let mut cs: Vec<Cand> = sqlx::query_as(
         "select e.id entry_id, e.node_id, n.team_id, coalesce(t.spare, false) spare, e.node_id = e.relay_id direct, e.port, e.client_uuid, e.short_id,
                 r.public_host host, r.reality_sni sni, r.reality_public_key pbk, n.kind::text kind, t.name team, n.number, n.label,
-                host(n.primary_ip) ip, n.country, p.name provider, rm.label relay
+                host(n.primary_ip) ip, n.country, p.name provider, rm.label relay, r.protocols relay_proto
          from entry e join relay r on r.machine_id = e.relay_id join machine rm on rm.id = e.relay_id join machine n on n.id = e.node_id
          left join team t on t.id = n.team_id left join provider p on p.id = n.provider_id
          where e.lifecycle = 'active' and n.lifecycle = 'active' and rm.lifecycle = 'active'
@@ -381,7 +391,8 @@ fn rule_text(r: &Rule, names: &HashMap<Uuid, String>) -> String {
 fn view(r: &Row, cs: &[Cand], names: &HashMap<Uuid, String>) -> Value {
     json!({
         "id": r.id, "name": r.name, "enabled": r.enabled, "rule": r.rule, "rule_text": rule_text(&r.rule, names), "protocols": r.protocols,
-        "items": cs.iter().filter(|c| r.rule.picks(c)).count(),
+        // 按协议真出得了条目的入口数（只 AnyTLS 的线路机上的入口进不了只要 Reality 的订阅）
+        "items": cs.iter().filter(|c| r.rule.picks(c) && c.offers(&r.protocols) != (false, false)).count(),
         "token_at": r.token_at.format(&time::format_description::well_known::Rfc3339).ok(),
         "last_fetch_at": r.last_fetch_at.and_then(|t| t.format(&time::format_description::well_known::Rfc3339).ok()),
         "last_fetch_ip": r.last_fetch_ip,
@@ -422,11 +433,13 @@ pub async fn get_one(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<
     let r = load(&st, id).await?;
     let cs = candidates(&st, true).await?;
     let mut v = view(&r, &cs, &ref_names(&st.db, &[&r.rule]).await?);
-    let at = r.protocols != "reality";
     v["entries"] = pick(&cs, &r.rule)
         .into_iter()
-        .filter(|(c, _)| r.protocols != "anytls" || c.anytls.is_some())
-        .map(|(c, name)| json!({"name": name, "entry_id": c.entry_id, "relay": c.relay, "port": c.port, "anytls_port": c.anytls.filter(|_| at)}))
+        .filter(|(c, _)| c.offers(&r.protocols) != (false, false))
+        .map(|(c, name)| {
+            let (reality, anytls) = c.offers(&r.protocols);
+            json!({"name": name, "entry_id": c.entry_id, "relay": c.relay, "port": c.port, "reality": reality, "anytls_port": c.anytls.filter(|_| anytls)})
+        })
         .collect();
     Ok(ok(v))
 }

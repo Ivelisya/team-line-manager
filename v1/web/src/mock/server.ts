@@ -841,6 +841,23 @@ R('POST', '/provision', ({ body }) => {
 });
 
 R('GET', '/relays', () => clone(db.machines.filter((m) => m.kind === 'relay' && m.lifecycle !== 'retired')));
+// 线路机的入口协议（同服务端 api/relays.rs patch_relay 的三条校验）
+R('PATCH', '/relays/([^/]+)', ({ params, body }) => {
+  const m = machine(params[0]);
+  if (!m.relay) throw bad('没有这台线路机', 404, 'not_found');
+  const p = body.protocols;
+  if (!['both', 'reality', 'anytls'].includes(p)) throw bad('protocols 只能是 both、reality、anytls');
+  if (p === 'anytls') {
+    if (!m.agent?.anytls?.running) throw bad('线路机还没装好 AnyTLS（sing-box），先升级 agent', 409, 'conflict');
+    const rev = m.entries.filter((e) => e.mode === 'reverse' && e.lifecycle !== 'removed');
+    if (rev.length) throw bad(`这台线路机上有穿透入口：${rev.map((e) => `${e.node.name}（${e.port}）`).join('、')}。穿透的 bridge 连的是入口的公网 Reality 端口，先关掉穿透`, 409, 'conflict');
+    const used = m.entries.filter((e) => !e.direct && e.lifecycle === 'active');
+    if (used.length) throw bad(`软路由只用 Reality，这些出口指着这台线路机上的入口：团队1-路由A 的 ${used.map((e) => e.node.name).join('、')}。先把它们改指到别的线路机`, 409, 'conflict');
+  }
+  const changed = m.relay.protocols !== p;
+  if (changed) { m.relay.protocols = p; m.relay.generation += 1; }
+  return { relay_id: m.id, name: m.name, protocols: p, generation: m.relay.generation, changed };
+});
 const findEntry = (id: string) => { for (const m of db.machines) for (const e of m.entries) if (e.id === id) return e; throw bad('入口不存在', 404, 'not_found'); };
 /** 同一个入口在线路机与节点两处各有一份引用（同一对象），改一次即可 */
 R('POST', '/entries/([^/]+)/actions', ({ params, body }) => {
@@ -860,9 +877,10 @@ R('GET', '/entries/([^/]+)/routers', ({ params }) => {
 R('GET', '/entries/([^/]+)/share', ({ params }) => {
   const e = findEntry(params[0]); const relay = machine(e.relay.id);
   const pw = `00000000-0000-4000-8000-${String(hashStr(e.id)).padStart(12, '0')}`; const host = relay.relay?.public_host ?? relay.ip;
-  return { url: `vless://${pw}@${host}:${e.port}?encryption=none&type=tcp#${encodeURIComponent(e.node.name)}`,
-    // 同服务端：线路机的 AnyTLS 在跑才给
-    anytls_url: relay.agent?.anytls?.running ? `anytls://${pw}@${host}:${e.port + 20000}/?sni=www.cloudflare.com&insecure=1#${encodeURIComponent(`${e.node.name} AnyTLS`)}` : null };
+  const proto = relay.relay?.protocols ?? 'both';
+  // 同服务端：线路机只留 AnyTLS 时没有 Reality 链接；AnyTLS 在跑、且不是只 Reality 才给 AnyTLS
+  return { url: proto === 'anytls' ? null : `vless://${pw}@${host}:${e.port}?encryption=none&type=tcp#${encodeURIComponent(e.node.name)}`,
+    anytls_url: relay.agent?.anytls?.running && proto !== 'reality' ? `anytls://${pw}@${host}:${e.port + 20000}/?sni=www.cloudflare.com&insecure=1#${encodeURIComponent(`${e.node.name} AnyTLS`)}` : null };
 });
 R('POST', '/machines/([^/]+)/entries', ({ params, body }) => {
   const m = machine(params[0]); const relay = machine(body.relay_id);

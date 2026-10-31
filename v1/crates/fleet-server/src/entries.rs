@@ -121,8 +121,8 @@ pub async fn transition(tx: &mut Tx<'_>, entry_id: Uuid, to: &str, rotate: bool)
 
 /// 线路机的期望状态。改了这里生成的内容（数据没变、结果会变的那种）要把 `db::DESIRED_FORMAT` +1，否则线路机拿不到新的
 pub async fn desired_state(db: &PgPool, secrets: &SecretBox, relay_id: Uuid, echo_url: &str) -> anyhow::Result<DesiredState> {
-    let (gen, dest, sni, sk_enc, mcv): (i64, String, String, Vec<u8>, Option<String>) = sqlx::query_as(
-        "select generation, reality_dest, reality_sni, reality_private_enc, min_client_ver from relay where machine_id = $1",
+    let (gen, dest, sni, sk_enc, mcv, protocols): (i64, String, String, Vec<u8>, Option<String>, String) = sqlx::query_as(
+        "select generation, reality_dest, reality_sni, reality_private_enc, min_client_ver, protocols from relay where machine_id = $1",
     )
     .bind(relay_id)
     .fetch_one(db)
@@ -166,8 +166,8 @@ pub async fn desired_state(db: &PgPool, secrets: &SecretBox, relay_id: Uuid, ech
     .fetch_all(db)
     .await?;
     let policies = crate::policy::load_current(db).await?;
-    // AnyTLS 端口：按启用入口算（agent 用同一个函数核对，见 fleet_proto::anytls_ports）
-    let at = fleet_proto::anytls_ports(&rows.iter().filter(|r| r.lifecycle != "disabled").map(|r| (r.id, r.port as u16)).collect::<Vec<_>>());
+    // AnyTLS 端口：按启用入口算（agent 用同一个函数核对，见 fleet_proto::anytls_ports）；线路机只开 Reality 时一个都不给
+    let at = if protocols == REALITY { Default::default() } else { fleet_proto::anytls_ports(&rows.iter().filter(|r| r.lifecycle != "disabled").map(|r| (r.id, r.port as u16)).collect::<Vec<_>>()) };
     let mut entries = Vec::with_capacity(rows.len());
     for r in rows {
         // 穿透：线路机不连节点，出站参数（节点的 ssserver）留在库里不下发，切回普通模式时照旧用
@@ -206,6 +206,8 @@ pub async fn desired_state(db: &PgPool, secrets: &SecretBox, relay_id: Uuid, ech
             min_client_ver: mcv,
             echo_url: echo_url.to_string(),
             probe_interval_s: 30,
+            // 只留 AnyTLS：Reality 入站改听回环（中控改协议时已核对过 agent 认这个字段，见 api::relays::patch）
+            reality_public: protocols != ANYTLS,
         },
         entries,
         // 三网 PING 的目标：全局 + 这台的覆盖（ping.rs）
@@ -292,17 +294,27 @@ pub(crate) fn pct(s: &str) -> String {
     o
 }
 
-/// 线路机上真能用 AnyTLS 的入口：入口 → AnyTLS 公网端口。只算 agent 报了 sing-box 在跑的线路机（没在跑时链接是坏的，不给），
+/// 线路机的入口协议（relay.protocols，迁移 0096）：两种都开（默认）/ 只 Reality / 只 AnyTLS
+pub const BOTH: &str = "both";
+pub const REALITY: &str = "reality";
+pub const ANYTLS: &str = "anytls";
+
+/// 线路机上真能用 AnyTLS 的入口：入口 → AnyTLS 公网端口。只算 agent 报了 sing-box 在跑、入口协议不是只 Reality 的线路机（没在跑时链接是坏的，不给），
 /// 端口按进期望状态的启用入口（同 `desired_state` 的口径：应用中 / 运行中、节点出站参数齐全）用 `fleet_proto::anytls_ports` 算，
 /// 和下发给 agent 的一致。`relays` 为空 = 全部线路机
-pub async fn anytls_live(db: &PgPool, relays: &[Uuid]) -> sqlx::Result<HashMap<Uuid, u16>> {
+pub async fn anytls_live(db: &PgPool, relays: &[Uuid]) -> sqlx::Result<HashMap<Uuid, u16>> { anytls_ports_on(db, relays, true).await }
+
+/// 同 `anytls_live`；`running` 为 false 时不看 sing-box 在不在跑（探测只留 AnyTLS 的线路机：sing-box 没在跑就该测出连不上）
+pub async fn anytls_ports_on(db: &PgPool, relays: &[Uuid], running: bool) -> sqlx::Result<HashMap<Uuid, u16>> {
     let rows: Vec<(Uuid, Uuid, i32)> = sqlx::query_as(
-        "select e.relay_id, e.id, e.port from entry e join agent_state a on a.machine_id = e.relay_id
+        "select e.relay_id, e.id, e.port from entry e left join agent_state a on a.machine_id = e.relay_id
          left join node_outbound o on o.machine_id = e.node_id
          where (cardinality($1::uuid[]) = 0 or e.relay_id = any($1)) and e.lifecycle in ('pending', 'active')
-           and (e.node_id = e.relay_id or o.secret_enc is not null) and (a.info->'singbox'->>'running')::bool",
+           and (e.node_id = e.relay_id or o.secret_enc is not null) and (not $2 or coalesce((a.info->'singbox'->>'running')::bool, false))
+           and exists (select 1 from relay r where r.machine_id = e.relay_id and r.protocols <> 'reality')",
     )
     .bind(relays)
+    .bind(running)
     .fetch_all(db)
     .await?;
     let mut per: HashMap<Uuid, Vec<(Uuid, u16)>> = HashMap::new();

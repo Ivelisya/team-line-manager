@@ -25,7 +25,8 @@ export function installClientSubsMock(R: Reg, env: Env) {
       name: [m.country, m.kind === 'relay' ? `${m.provider?.name ?? ''} ${m.name} 直出`.trim() : `${m.provider?.name ?? ''} 家宽`.trim(), m.kind === 'relay' ? null : m.name, m.ip, 'VLESS Reality'].filter(Boolean).join(' · '),
       entry_id: e.id, relay: e.relay.name, port: e.port,
       // 同服务端：线路机的 AnyTLS 在跑才有（入口端口 + 20000）
-      anytls_port: env.machines().find((x) => x.id === e.relay.id)?.agent?.anytls?.running ? e.port + 20000 : null,
+      // 同服务端：线路机 AnyTLS 在跑、且入口协议不是只 Reality 才有；只 AnyTLS 的线路机不出 Reality
+      ...((r) => ({ anytls_port: r?.agent?.anytls?.running && r.relay?.protocols !== 'reality' ? e.port + 20000 : null, reality: r?.relay?.protocols !== 'anytls' }))(env.machines().find((x) => x.id === e.relay.id)),
     })));
   const names = (ids: string[]) => ids.map((id) => env.teams().find((t) => t.id === id)?.name ?? env.machines().find((m) => m.id === id)?.name ?? '（已删除）').join('、');
   const text = (r: SubRule) => [
@@ -39,7 +40,7 @@ export function installClientSubsMock(R: Reg, env: Env) {
   R('GET', '/client-subs/([^/]+)', ({ params }) => {
     const s = find(params[0]);
     const es = entries(s.rule).map((e) => ({ ...e, anytls_port: s.protocols === 'reality' ? null : e.anytls_port }));
-    return { ...view(s), entries: s.protocols === 'anytls' ? es.filter((e) => e.anytls_port != null) : es };
+    return { ...view(s), entries: es.filter((e) => (s.protocols !== 'anytls' && e.reality) || e.anytls_port != null) };
   });
   R('POST', '/client-subs', ({ body }) => {
     const name = String(body.name ?? '').trim();

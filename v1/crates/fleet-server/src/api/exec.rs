@@ -233,9 +233,14 @@ pub async fn diag_plan(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPat
     .bind(id)
     .fetch_all(&st.db)
     .await?;
+    // 只留 AnyTLS 的线路机 Reality 端口对公网关着：按客户入口探测同一份目标（reach::targets）取实际对外开着的端口
+    let dial: std::collections::HashMap<Uuid, i32> = crate::reach::targets(&st.db).await?.into_iter().filter_map(|(rid, _, ps)| ps.first().map(|p| (rid, p.0))).collect();
     let relays: Vec<Value> = relays
         .into_iter()
-        .map(|(rid, label, ip, own, port)| json!({"id": rid, "name": crate::names::display_name("relay", label.as_deref(), None, None), "ip": ip, "own": own, "port": port}))
+        .map(|(rid, label, ip, own, port)| {
+            let port = dial.get(&rid).copied().or(port);
+            json!({"id": rid, "name": crate::names::display_name("relay", label.as_deref(), None, None), "ip": ip, "own": own, "port": port})
+        })
         .collect();
     Ok(ok(json!({
         "node": {"id": id, "name": name, "kind": kind, "ip": n.ip, "bind_ip": n.bind_ip, "host": n.host_name, "provider": n.provider, "ssh": kind != "proxy"},

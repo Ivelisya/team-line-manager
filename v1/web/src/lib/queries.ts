@@ -6,7 +6,7 @@ import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClie
 import { del, get, patch, post, put } from './api';
 import { collator, makeDefaultCompare } from './sort';
 import { nextDue, offlineNames, quotaTight, setMeta } from './derive';
-import type { CustomerBatch, CustomerPage, PublicCustomer, TeamBatches } from './types';
+import type { CustomerBatch, CustomerPage, PublicCustomer, RelayProtocols, TeamBatches } from './types';
 import type { ApiKey, Availability, Incident, Job, JobSummary, Paged, JobLog, MachineView, Meta, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenamePreview, RenumberPreview, RetirePreview, RetireResult, DueList, RenewBatchResult, RecycleItem, RecycleDetail, ReplaceBody, ReplacePreview, MovePreview, MoveResult, EvacuateResult, RebalancePlan, PlacementView, ProbeBeats, SeriesResp, Silence, TrafficDaily, SilenceKind, SubField, Team, AuditEntry, NotifyChannel, NotifyLogEntry, UptimeReport, MonthlyReport, MonthlySendResult, SpeedtestStarted, AccountSession, TotpSetup, TotpStatus, MovesResult, EntryMode } from './types';
 
 export const useMe = () => useQuery({ queryKey: ['me'], queryFn: () => get<{ username: string }>('/auth/me'), retry: false, staleTime: 5 * 60_000 });
@@ -382,8 +382,13 @@ export const usePatchPlan = () => useWrite(({ id, ...b }: { id: string; archived
 export const useDelTeam = () => useWrite((id: string) => del(`/teams/${id}`), [['teams'], ['policies']]);
 export const useDelProvider = () => useWrite((id: string) => del(`/providers/${id}`), [['providers']]);
 export const useDelPlan = () => useWrite((id: string) => del(`/plans/${id}`), [['plans']]);
-/** url：vless://（Reality）；anytls_url：线路机上 AnyTLS 可用时才有 */
-export const fetchShare = (entryId: string) => get<{ url: string; anytls_url?: string | null }>(`/entries/${entryId}/share`);
+/** url：vless://（Reality；线路机只留 AnyTLS 时为 null）；anytls_url：线路机上 AnyTLS 可用时才有 */
+export const fetchShare = (entryId: string) => get<{ url: string | null; anytls_url?: string | null }>(`/entries/${entryId}/share`);
+/** 只复制一条时用哪条：有 Reality 用 Reality，线路机只留 AnyTLS 时用 AnyTLS */
+export const mainShare = (r: { url: string | null; anytls_url?: string | null }) => r.url ?? r.anytls_url ?? '';
+/** 改线路机的入口协议（失败的 409 原因原样给调用方显示） */
+export const useRelayProtocols = () => useWrite(({ id, protocols }: { id: string; protocols: RelayProtocols }) =>
+  patch<{ protocols: RelayProtocols; generation: number; changed: boolean }>(`/relays/${id}`, { protocols }), M);
 /** 指向这个入口的软路由出口（按各路由最近一次采集）：轮换凭据、停用入口的确认对话框里列出来，打开时才取、每次重取 */
 export interface EntryRouterExits { id: string; name: string; state: string; exits: string[] }
 export const useEntryRouterExits = (entryId: string, enabled: boolean) =>
