@@ -6,6 +6,7 @@ import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClie
 import { del, get, patch, post, put } from './api';
 import { collator, makeDefaultCompare } from './sort';
 import { nextDue, offlineNames, quotaTight, setMeta } from './derive';
+import type { CustomerBatch, CustomerPage, PublicCustomer, TeamBatches } from './types';
 import type { ApiKey, Availability, Incident, Job, JobSummary, Paged, JobLog, MachineView, Meta, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenamePreview, RenumberPreview, RetirePreview, RetireResult, DueList, RenewBatchResult, RecycleItem, RecycleDetail, ReplaceBody, ReplacePreview, MovePreview, MoveResult, EvacuateResult, RebalancePlan, PlacementView, ProbeBeats, SeriesResp, Silence, TrafficDaily, SilenceKind, SubField, Team, AuditEntry, NotifyChannel, NotifyLogEntry, UptimeReport, MonthlyReport, MonthlySendResult, SpeedtestStarted, AccountSession, TotpSetup, TotpStatus, MovesResult } from './types';
 
 export const useMe = () => useQuery({ queryKey: ['me'], queryFn: () => get<{ username: string }>('/auth/me'), retry: false, staleTime: 5 * 60_000 });
@@ -440,3 +441,27 @@ export const useRecycleBin = (o: { q: string; source: string; offset: number; li
 });
 /** 展开一行才取：快照里的关键字段 */
 export const useRecycleDetail = (id: number | null) => useQuery({ queryKey: ['recycle-bin', 'one', id], enabled: id != null, staleTime: Infinity, queryFn: ({ signal }) => get<RecycleDetail>(`/recycle-bin/${id}`, signal) });
+
+// ---- 客户到期页（客户批次账）：团队与套餐 → 客户到期；公开页 /c/:token ----
+/** 一个团队的批次（含已到期的，按编号升序）与客户页链接 */
+export const useTeamBatches = (teamId: string) => useQuery({
+  queryKey: ['batches', teamId], enabled: !!teamId, queryFn: ({ signal }) => get<TeamBatches>(`/teams/${teamId}/batches`, signal),
+});
+const B = [['batches'], ['audit']];
+/** end_date 不传 = 服务端按 start_date 加 months 个日历月（月底对齐）；seq 不传 = 团队内最大 + 1 */
+export interface NewBatchBody { region: string; start_date: string; months: number; count: number; end_date?: string; note?: string; seq?: number }
+export const useAddBatch = () => useWrite(({ teamId, ...b }: { teamId: string } & NewBatchBody) => post<CustomerBatch>(`/teams/${teamId}/batches`, b), B);
+export const usePatchBatch = () => useWrite(({ id, ...b }: { id: string; region?: string; note?: string; seq?: number }) => patch<CustomerBatch>(`/batches/${id}`, b), B);
+export const useDelBatch = () => useWrite((id: string) => del<{ id: string }>(`/batches/${id}`), B);
+/** 续期：追加一段，start = 当前到期日；count 不传沿用当前个数，end_date 不传按月数推算 */
+export const useRenewCustomerBatch = () => useWrite(({ id, ...b }: { id: string; months: number; count?: number; end_date?: string }) => post<CustomerBatch>(`/batches/${id}/renew`, b), B);
+export const usePatchBatchPeriod = () => useWrite(({ id, ...b }: { id: string; start_date?: string; end_date?: string; months?: number; count?: number }) => patch<CustomerBatch>(`/batch-periods/${id}`, b), B);
+/** 批次只剩这一段时 409（要删就删整个批次） */
+export const useDelBatchPeriod = () => useWrite((id: string) => del<CustomerBatch>(`/batch-periods/${id}`), B);
+/** 没有就生成，有就换新令牌（旧链接立即失效） */
+export const useRotateCustomerPage = () => useWrite((teamId: string) => post<CustomerPage>(`/teams/${teamId}/customer-page`), B);
+export const usePatchCustomerPage = () => useWrite(({ teamId, enabled }: { teamId: string; enabled: boolean }) => patch<CustomerPage>(`/teams/${teamId}/customer-page`, { enabled }), B);
+/** 公开页：不登录；令牌不对或已停用 404（不区分） */
+export const usePublicCustomer = (token: string) => useQuery({
+  queryKey: ['public-customer', token], queryFn: ({ signal }) => get<PublicCustomer>(`/public/customer/${encodeURIComponent(token)}`, signal), staleTime: 60_000,
+});

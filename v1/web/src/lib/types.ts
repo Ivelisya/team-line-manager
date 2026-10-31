@@ -509,3 +509,30 @@ export interface MonthlySendResult { month: string; channels: number; text: stri
 export interface SpeedtestStarted { machine_id: string; name: string; job_id: string; size_mb: number; target: string; target_name: string; traffic_mb: number }
 /** 测速作业步骤的输出（jobs/speedtest.rs summarize）：avg_mbps 只算收到第一个字节之后的；complete = false 时 300 秒内没下完，速率按已下载的算 */
 export interface SpeedtestOutput { target: string; target_name: string; url: string; size_mb: number; bytes: number; complete: boolean; avg_mbps: number; avg_mb_s: number; total_s: number; ttfb_s: number; remote_ip: string }
+
+// ---- 客户到期页（客户批次账）：与供应商订阅无关。派生字段（summary / title / state / node_months …）都由服务端算，前端只显示 ----
+/** expired：到期日早于今天；today：今天到期（仍算有效）；active：有效 */
+export type BatchState = 'active' | 'today' | 'expired';
+/** 一段：首购一段 + 每次续期一段，首尾相接；节点月 = count × months */
+export interface BatchPeriod { id: string; start_date: string; end_date: string; months: number; count: number }
+/** 管理端的批次（GET /teams/{id}/batches）。start / end = 最早段起点 / 最晚段终点；count = 最后一段的个数；months = 各段之和；renewals = 段数 − 1 */
+export interface CustomerBatch {
+  id: string; seq: number; region: string; note: string; summary: string; title: string;
+  start_date: string; end_date: string; count: number; months: number; node_months: number; renewals: number; state: BatchState;
+  periods: BatchPeriod[];
+}
+/** 团队的客户页链接：link = {public_url}/c/{token}，管理端随时能再复制 */
+export interface CustomerPage { enabled: boolean; link: string; created_at: string; token_at: string; last_view_at: string | null }
+export interface TeamBatches { team: { id: string; name: string }; today: string; page: CustomerPage | null; batches: CustomerBatch[] }
+/** 公开页的批次：不给 id；desc 是标题下一行的说明（summary 与 note 用「；」接起来） */
+export interface PublicBatch {
+  seq: number; region: string; title: string; desc: string; start_date: string; end_date: string;
+  count: number; months: number; node_months: number; state: BatchState;
+  periods: Omit<BatchPeriod, 'id'>[];
+}
+/** GET /public/customer/{token}：只含有效批次；regions 按批次首次出现的顺序，counts 是各有效批次的个数 */
+export interface PublicCustomer {
+  team: string; today: string; node_months: number;
+  regions: { region: string; counts: number[]; total: number; today_count: number }[];
+  batches: PublicBatch[];
+}

@@ -17,6 +17,7 @@ import { installPolicyMock, policyHook } from './policy';
 import { installRoutersMock } from './routers';
 import { installTerminalMock } from './terminal';
 import { installClientSubsMock, subNamesOfMachine } from './clientSubs';
+import { installCustomerMock } from './customer';
 
 const db: Db = buildDb();
 const DAY = 86400_000;
@@ -1119,6 +1120,7 @@ installPolicyMock(R, { teams: () => db.teams, machines: () => db.machines, emit,
 const routersMock = installRoutersMock(R, { teams: () => db.teams, machines: () => db.machines, incidents: () => db.incidents, maintenance: inMaint, emit, bad });
 installTerminalMock(R, { machines: () => db.machines, routers: routersMock.routers, bad });
 installClientSubsMock(R, { teams: () => db.teams, machines: () => db.machines, bad });
+installCustomerMock(R, { teams: () => db.teams, bad });
 // ---------- 升级 agent ----------
 const UPSTEPS: [string, string][] = [['push', '推送 agent'], ['restart', '重启 agent'], ['verify', '确认上报']];
 /** 「全部升级」的编排（同中控作业参数 after）：排队中的作业 → 它要等的作业；halted：因为要等的没成功而取消的 */
@@ -1686,7 +1688,8 @@ export function installMock() {
     await new Promise((r) => setTimeout(r, 60 + Math.random() * 120));
     const json = (status: number, b: unknown) => new Response(JSON.stringify(b), { status, headers: { 'Content-Type': 'application/json' } });
     if (method !== 'GET' && new Headers(init?.headers).get('X-Fleet-Request') !== '1') return json(403, { error: { code: 'csrf', message: '缺少 X-Fleet-Request 头' } });
-    if (path !== '/auth/login' && path !== '/auth/me' && sessionStorage.getItem('mock:auth') === '0') return json(401, { error: { code: 'unauthorized', message: '未登录' } });
+    // 客户到期页的公开接口不要求登录
+    if (path !== '/auth/login' && path !== '/auth/me' && !path.startsWith('/public/') && sessionStorage.getItem('mock:auth') === '0') return json(401, { error: { code: 'unauthorized', message: '未登录' } });
     for (const [m, re, h] of routes) {
       if (m !== method) continue;
       const mt = re.exec(path); if (!mt) continue;
