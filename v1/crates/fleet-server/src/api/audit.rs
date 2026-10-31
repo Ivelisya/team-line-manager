@@ -152,6 +152,7 @@ const AUDIT_ACTIONS: &[&str] = &[
     "router.switch_reverted", "router.switch_defer",
     "client_sub.create", "client_sub.update", "client_sub.rotate", "client_sub.delete",
     "customer_batch.create", "customer_batch.update", "customer_batch.delete", "customer_batch.renew", "customer_batch.period_update", "customer_batch.period_delete",
+    "billing.init", "billing.slot_add", "billing.slot_update", "billing.slot_delete", "billing.exempt",
     "customer_page.create", "customer_page.rotate", "customer_page.enable", "customer_page.disable", "customer_page.delete",
     "probe_point.create", "probe_point.update", "probe_point.delete", "probe_point.upgrade", "probe_point.install", "probe_point.bootstrap_used",
     "settings.ping_targets", "relay.ping_override", "settings.reach_source", "settings.entry_mode",
@@ -266,6 +267,11 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "customer_batch.renew" => "客户批次续期",
         "customer_batch.period_update" => "修改客户批次的一段",
         "customer_batch.period_delete" => "删除客户批次的一段",
+        "billing.init" => "计费初始化",
+        "billing.slot_add" => "添加手动计费节点",
+        "billing.slot_update" => "修改计费节点",
+        "billing.slot_delete" => "删除手动计费节点",
+        "billing.exempt" => "设置节点计费",
         "customer_page.create" => "生成客户页链接",
         "customer_page.rotate" => "换新客户页链接",
         "customer_page.enable" => "启用客户页",
@@ -524,6 +530,8 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         // 「团队2 · 第05批 美区 · 续期 1 月，2026-10-15 至 2026-11-14，4 个」
         a if a.starts_with("customer_batch.") => format!("{} · 第{:02}批 {} · {}", s("team"), d["seq"].as_i64().unwrap_or(0), s("region"), s("what")),
         a if a.starts_with("customer_page.") => s("team"),
+        // 「团队1 · 团队1-05 设为不计费」；初始化没有团队，只有 what
+        a if a.starts_with("billing.") => if s("team").is_empty() { s("what") } else { format!("{} · {}", s("team"), s("what")) },
         // 「香港 · 经 SSH 安装」「香港 · 一次性安装命令」
         "probe_point.create" => format!("{} · {}", s("name"), if d["method"] == "ssh" { "经 SSH 安装" } else { "一次性安装命令" }),
         // 「香港 → 香港2 · 备注 「旧」 → （空） · 停用」

@@ -1,11 +1,12 @@
-//! 客户批次账与客户到期页：batch list / add / renew / edit / rm / period，customer-page。
-//! 批次账记的是「卖给客户的节点什么时候到期」，与供应商订阅无关；一个批次 = 首购一段 + 每次续期一段。
-//! 批次用 `团队#编号` 指定（`团队2#05` 或 `团队2#5`）。客户页链接是只读分享链接，客户不登录，页面不出现 IP、供应商、价格、节点名
+//! 计费台账（按节点数向团队收费）与客户到期页：batch list，billing init / month / slot / add / rm / exempt，customer-page。
+//! 计费名额 = 团队里一个按月计费的节点位置，由中控每分钟对账自动增减（节点加入 / 离开，24 小时内一进一出算替换）；批次 = 同一天起算、同地区的名额，
+//! 从起算日起每月同日续一期。名额用 id 前缀（batch list <团队> --slots 能看到）或占用它的节点名指定。客户页链接是只读分享链接，客户不登录，页面不出现 IP、供应商、价格、节点名
 
 use crate::cmds::{st, Ctx};
 use crate::ops::confirm;
+use crate::resolve::Want;
 use crate::table;
-use anyhow::{anyhow, bail};
+use anyhow::bail;
 use serde_json::{json, Value};
 
 fn state_cn(s: &str) -> &str {
@@ -16,31 +17,19 @@ fn state_cn(s: &str) -> &str {
     }
 }
 
-/// `团队2#05` → (团队2, 5)
-fn split_ref(r: &str) -> anyhow::Result<(&str, i64)> {
-    let bad = || anyhow!("批次要写成 团队#编号，如 团队2#05（先 fleetctl batch list <团队> 看列表）：「{r}」");
-    let (team, seq) = r.trim().rsplit_once('#').ok_or_else(bad)?;
-    let seq: i64 = seq.trim().parse().map_err(|_| bad())?;
-    if team.trim().is_empty() {
-        return Err(bad());
+fn slot_state_cn(s: &Value) -> String {
+    match s["state"].as_str() {
+        Some("vacated") => format!("空出待定（{} 起）", table::ts(&st(s, "/vacated_at")).chars().take(16).collect::<String>()),
+        Some("ended") => format!("已结束 {}", st(s, "/end_date")),
+        _ if s["end_date"].is_string() => format!("在用（{} 结束）", st(s, "/end_date")),
+        _ => "在用".into(),
     }
-    Ok((team.trim(), seq))
 }
 
-/// 团队的批次接口数据 `{team, today, page, batches}`，附团队 id
-fn load(ctx: &Ctx, team: &str) -> anyhow::Result<(String, Value)> {
+/// 团队的计费数据 `GET /teams/{id}/batches`
+fn load(ctx: &Ctx, team: &str) -> anyhow::Result<Value> {
     let id = ctx.team_id(team)?;
-    let d = ctx.c.get(&format!("/teams/{id}/batches"))?;
-    Ok((id, d))
-}
-
-/// 找 `团队#编号` 指的批次，返回 (团队名, 批次)
-fn find(ctx: &Ctx, r: &str) -> anyhow::Result<(String, Value)> {
-    let (team, seq) = split_ref(r)?;
-    let (_, d) = load(ctx, team)?;
-    let name = st(&d, "/team/name");
-    let b = d["batches"].as_array().and_then(|a| a.iter().find(|b| b["seq"].as_i64() == Some(seq))).cloned();
-    b.map(|b| (name.clone(), b)).ok_or_else(|| anyhow!("{name} 里没有第{seq:02}批（fleetctl batch list {name} 看列表）"))
+    ctx.c.get(&format!("/teams/{id}/batches"))
 }
 
 /// 团队的正式名字（用户可能写的是 id 前缀）；查不到就用原写法
@@ -48,34 +37,308 @@ fn team_name(ctx: &Ctx, id: &str, fallback: &str) -> String {
     ctx.teams().ok().and_then(|t| t.as_array().and_then(|a| a.iter().find(|x| st(x, "/id") == id).map(|x| st(x, "/name")))).unwrap_or_else(|| fallback.to_string())
 }
 
-fn span(b: &Value) -> String { format!("{} → {}", st(b, "/start_date"), st(b, "/end_date")) }
+fn arr(v: &Value) -> &[Value] { v.as_array().map_or(&[][..], Vec::as_slice) }
 
-fn periods_table(b: &Value) -> String {
-    let rows: Vec<Vec<String>> = b["periods"]
-        .as_array()
-        .map(Vec::as_slice)
-        .unwrap_or_default()
-        .iter()
-        .enumerate()
-        .map(|(i, p)| vec![(i + 1).to_string(), st(p, "/start_date"), st(p, "/end_date"), format!("{} 个月", st(p, "/months")), format!("{} 个", st(p, "/count"))])
-        .collect();
-    table::render(&["段", "开始", "到期", "月数", "个数"], &rows)
+/// 下次续费：有效批次里最近的终点与个数（最多 2 个日子）
+fn next_renewals(d: &Value) -> String {
+    let mut ends: Vec<(String, i64)> = vec![];
+    for b in arr(&d["batches"]).iter().filter(|b| b["state"] != "expired") {
+        let e = st(b, "/end_date");
+        let c = b["count"].as_i64().unwrap_or(0);
+        match ends.iter_mut().find(|x| x.0 == e) {
+            Some(x) => x.1 += c,
+            None => ends.push((e, c)),
+        }
+    }
+    ends.sort();
+    if ends.is_empty() {
+        return "-".into();
+    }
+    ends.iter().take(2).map(|(e, c)| format!("{e}（{c} 个）")).collect::<Vec<_>>().join("、")
 }
 
-/// 一个批次的详情：标题、起止、时长、节点月、说明，再列每一段（`period` 命令的段序号就是这里的序号）
-fn detail(team: &str, b: &Value) -> String {
-    let mut rows = vec![
-        ("批次", format!("{team}#{:02} {}", b["seq"].as_i64().unwrap_or(0), st(b, "/title"))),
-        ("起止", format!("{}（{}）", span(b), state_cn(&st(b, "/state")))),
-        ("时长", format!("{} 个月，{} 个节点月", st(b, "/months"), st(b, "/node_months"))),
-    ];
-    if let Some(s) = b["summary"].as_str().filter(|s| !s.is_empty()) {
-        rows.push(("自动说明", s.to_string()));
+fn slots_table(d: &Value) -> String {
+    let rows: Vec<Vec<String>> = arr(&d["slots"])
+        .iter()
+        .map(|s| {
+            vec![
+                st(s, "/id").chars().take(8).collect(),
+                st(s, "/name"),
+                st(s, "/region"),
+                st(s, "/start_date"),
+                s["batch_seq"].as_i64().map_or("-".into(), |n| format!("{n:02}")),
+                slot_state_cn(s),
+            ]
+        })
+        .collect();
+    table::render(&["名额", "节点", "地区", "起算", "批次", "状态"], &rows)
+}
+
+fn events_table(evs: &[Value]) -> String {
+    let rows: Vec<Vec<String>> = evs.iter().map(|e| vec![table::ts(&st(e, "/at")).chars().take(16).collect(), st(e, "/text")]).collect();
+    table::render(&["时间", "记录"], &rows)
+}
+
+/// `batch list <团队> [--slots] [--events]`
+pub fn list(ctx: &Ctx, team: &str, slots: bool, events: bool) -> anyhow::Result<u8> {
+    let d = load(ctx, team)?;
+    let evs = if events { Some(ctx.c.get_q(&format!("/teams/{}/billing-events", st(&d, "/team/id")), &[("limit", "200".into())])?.as_array().cloned().unwrap_or_default()) } else { None };
+    let data = match &evs {
+        Some(e) => {
+            let mut x = d.clone();
+            x["events"] = json!(e);
+            x
+        }
+        None => d.clone(),
+    };
+    ctx.emit(&data, || {
+        let name = st(&d, "/team/name");
+        let t = &d["totals"];
+        let mut out = format!(
+            "{name} · 今天 {} · 当前计费节点 {} 个（待定 {}、空出待定 {}）· 下次续费 {}\n",
+            st(&d, "/today"),
+            st(t, "/active"),
+            st(t, "/pending"),
+            st(t, "/vacated"),
+            next_renewals(&d)
+        );
+        let bs = arr(&d["batches"]);
+        if bs.is_empty() {
+            out.push_str("还没有计费批次（还没初始化：fleetctl billing init --since 2026-10-01）");
+        } else {
+            let rows: Vec<Vec<String>> = bs
+                .iter()
+                .map(|b| {
+                    vec![
+                        format!("{:02}", b["seq"].as_i64().unwrap_or(0)),
+                        st(b, "/region"),
+                        format!("{} → {}", st(b, "/start_date"), st(b, "/end_date")),
+                        format!("{} 个", st(b, "/count")),
+                        format!("{} 期", st(b, "/months")),
+                        st(b, "/node_months"),
+                        state_cn(&st(b, "/state")).to_string(),
+                        b["summary"].as_str().unwrap_or("").to_string(),
+                    ]
+                })
+                .collect();
+            out.push_str(&table::render(&["批次", "地区", "起算 → 下次续费", "当前个数", "已计", "节点月", "状态", "说明"], &rows));
+        }
+        let pending = arr(&d["pending"]);
+        if !pending.is_empty() {
+            out.push_str("\n\n待定（24 小时内有节点离开就算替换，否则到点算新增）：\n");
+            let rows: Vec<Vec<String>> =
+                pending.iter().map(|p| vec![st(p, "/machine/name"), table::ts(&st(p, "/seen_at")).chars().take(16).collect(), table::ts(&st(p, "/decide_at")).chars().take(16).collect()]).collect();
+            out.push_str(&table::render(&["节点", "加入", "到点"], &rows));
+        }
+        if slots {
+            out.push_str(&format!("\n\n计费名额：\n{}", slots_table(&d)));
+        }
+        if let Some(e) = &evs {
+            out.push_str(&format!("\n\n增减记录（新的在前）：\n{}", if e.is_empty() { "（没有）".into() } else { events_table(e) }));
+        }
+        out.push_str(&format!("\n\n{}", page_text(&name, &d["page"])));
+        out
+    });
+    Ok(0)
+}
+
+/// `billing init --since 日期 [--yes]`：不加 --yes 只预览
+pub fn init(ctx: &Ctx, since: &str, yes: bool) -> anyhow::Result<u8> {
+    let p = ctx.c.post("/billing/init", &json!({"since": since, "dry_run": true}))?;
+    let show = |v: &Value| {
+        let mut out = String::new();
+        for t in arr(&v["teams"]) {
+            if t["skipped"] == true {
+                out.push_str(&format!("{}：已有 {} 个名额，跳过\n", st(t, "/team/name"), st(t, "/existing")));
+            } else {
+                let names: Vec<String> = arr(&t["nodes"]).iter().map(|n| format!("{}（{}）", st(n, "/name"), st(n, "/region"))).collect();
+                out.push_str(&format!("{}：{} 个 {}\n", st(t, "/team/name"), st(t, "/count"), names.join("、")));
+            }
+        }
+        out
+    };
+    if !yes {
+        ctx.emit(&p, || format!("预览（{} 起算，共 {} 个；加 --yes 才会建）：\n{}", st(&p, "/since"), st(&p, "/total"), show(&p)));
+        return Ok(0);
     }
-    if let Some(n) = b["note"].as_str().filter(|s| !s.is_empty()) {
-        rows.push(("备注", n.to_string()));
+    let d = ctx.c.post("/billing/init", &json!({"since": since}))?;
+    ctx.emit(&d, || format!("已初始化（{} 起算，建了 {} 个；之后中控每分钟自动对账）：\n{}", st(&d, "/since"), st(&d, "/total"), show(&d)));
+    Ok(0)
+}
+
+/// `billing month <团队> [2026-11]`：月度应收
+pub fn month(ctx: &Ctx, team: &str, month: Option<&str>) -> anyhow::Result<u8> {
+    let id = ctx.team_id(team)?;
+    let q: Vec<(&str, String)> = month.map(|m| vec![("month", m.to_string())]).unwrap_or_default();
+    let d = ctx.c.get_q(&format!("/teams/{id}/receivable"), &q)?;
+    ctx.emit(&d, || {
+        let name = team_name(ctx, &id, team);
+        let mut out = format!("{name} · {} 月度应收{}\n", st(&d, "/month"), if d["projected"] == true { "（含预估：还没到的续期按现在的名额算）" } else { "" });
+        let lines = arr(&d["lines"]);
+        if lines.is_empty() {
+            out.push_str("这个月没有要收的期\n");
+        } else {
+            let rows: Vec<Vec<String>> = lines
+                .iter()
+                .map(|l| {
+                    vec![
+                        format!("第{:02}批", l["batch_seq"].as_i64().unwrap_or(0)),
+                        st(l, "/region"),
+                        format!("{} → {}", st(l, "/period_start"), st(l, "/period_end")),
+                        format!("{} 个{}", st(l, "/count"), if l["projected"] == true { "（预估）" } else { "" }),
+                    ]
+                })
+                .collect();
+            out.push_str(&table::render(&["批次", "地区", "本期", "个数"], &rows));
+            out.push('\n');
+        }
+        out.push_str(&format!("合计：本月应收 {} 个节点月", st(&d, "/total")));
+        if !d["start_count"].is_null() {
+            out.push_str(&format!("；月初 {} 个、月末（本月是今天）{} 个", st(&d, "/start_count"), st(&d, "/end_count")));
+        }
+        let evs = arr(&d["events"]);
+        if !evs.is_empty() {
+            out.push_str(&format!("\n\n本月增减：\n{}", events_table(evs)));
+        }
+        out
+    });
+    Ok(0)
+}
+
+/// 找名额：id 前缀（≥ 4 位）或节点名（占用它的，或空出 / 结束前占用它的；有多个时先要没结束的）。返回 (名额, 团队名)
+fn find_slot(ctx: &Ctx, q: &str) -> anyhow::Result<(Value, String)> {
+    let q = q.trim();
+    let mut hits: Vec<(Value, String)> = vec![];
+    for t in arr(&ctx.teams()?).iter().filter(|t| t["spare"] != true) {
+        let d = ctx.c.get(&format!("/teams/{}/batches", st(t, "/id")))?;
+        for s in arr(&d["slots"]) {
+            let id = st(s, "/id");
+            if (q.len() >= 4 && id.starts_with(&q.to_ascii_lowercase())) || st(s, "/name") == q {
+                hits.push((s.clone(), st(t, "/name")));
+            }
+        }
     }
-    format!("{}\n\n{}", table::kv(&rows), periods_table(b))
+    if hits.len() > 1 {
+        let live: Vec<(Value, String)> = hits.iter().filter(|(s, _)| s["state"] != "ended").cloned().collect();
+        if !live.is_empty() {
+            hits = live;
+        }
+    }
+    match hits.len() {
+        0 => bail!("找不到计费名额「{q}」（fleetctl batch list <团队> --slots 看名额 id）"),
+        1 => Ok(hits.remove(0)),
+        _ => {
+            let lines: Vec<String> = hits.iter().map(|(s, t)| format!("  {}  {t} {}  {}  {}", &st(s, "/id")[..8], st(s, "/name"), st(s, "/start_date"), slot_state_cn(s))).collect();
+            bail!("「{q}」对上了多个名额，用名额 id 前缀指定：\n{}", lines.join("\n"))
+        }
+    }
+}
+
+fn slot_line(team: &str, s: &Value) -> String {
+    format!(
+        "{team} · {} · {} · {} 起算 · 第{}批 · {}{}",
+        st(s, "/name"),
+        st(s, "/region"),
+        st(s, "/start_date"),
+        s["batch_seq"].as_i64().map_or("-".into(), |n| format!("{n:02}")),
+        slot_state_cn(s),
+        s["note"].as_str().filter(|n| !n.is_empty() && s["manual"] != true).map(|n| format!(" · {n}")).unwrap_or_default()
+    )
+}
+
+#[derive(clap::Args)]
+pub struct SlotOpts {
+    /// 名额：id 前缀，或占用它的节点名（团队1-10）
+    slot: String,
+    /// 改起算日，如 2026-10-30
+    #[arg(long, value_name = "日期")]
+    start: Option<String>,
+    /// 改地区（美区、墨西哥…）
+    #[arg(long)]
+    region: Option<String>,
+    /// 改备注（≤ 60 字；空字符串清掉）
+    #[arg(long)]
+    note: Option<String>,
+    /// 结束计费（只限手动名额与已空出的）：算到这天所在的那一期
+    #[arg(long, value_name = "日期", conflicts_with = "reopen")]
+    end: Option<String>,
+    /// 恢复计费（只限手动名额）
+    #[arg(long)]
+    reopen: bool,
+}
+
+/// `billing slot <名额> [--start] [--region] [--note] [--end|--reopen]`：不给改动时显示这个名额
+pub fn slot(ctx: &Ctx, o: &SlotOpts) -> anyhow::Result<u8> {
+    let (cur, team) = find_slot(ctx, &o.slot)?;
+    let mut body = json!({});
+    for (k, v) in [("start_date", &o.start), ("region", &o.region), ("note", &o.note), ("end_date", &o.end)] {
+        if let Some(v) = v {
+            body[k] = json!(v);
+        }
+    }
+    if o.reopen {
+        body["end_date"] = Value::Null;
+    }
+    if body.as_object().is_some_and(|m| m.is_empty()) {
+        ctx.emit(&cur, || slot_line(&team, &cur));
+        return Ok(0);
+    }
+    let s = ctx.c.patch(&format!("/billing-slots/{}", st(&cur, "/id")), &body)?;
+    ctx.emit(&s, || format!("已保存\n{}", slot_line(&team, &s)));
+    Ok(0)
+}
+
+#[derive(clap::Args)]
+pub struct AddOpts {
+    /// 团队
+    team: String,
+    /// 起算日，如 2026-10-15
+    #[arg(long, value_name = "日期")]
+    start: String,
+    /// 地区：美区、墨西哥、菲律宾…（1–20 字）
+    #[arg(long)]
+    region: String,
+    /// 个数（1–50）
+    #[arg(long, default_value_t = 1)]
+    count: i32,
+    /// 备注（≤ 60 字），如 墨西哥家宽
+    #[arg(long)]
+    note: Option<String>,
+}
+
+/// `billing add <团队> --start --region [--count N] [--note]`：手动名额（系统外的节点）
+pub fn add(ctx: &Ctx, o: &AddOpts) -> anyhow::Result<u8> {
+    let id = ctx.team_id(&o.team)?;
+    let v = ctx.c.post(&format!("/teams/{id}/billing-slots"), &json!({"region": o.region, "start_date": o.start, "count": o.count, "note": o.note.clone().unwrap_or_default()}))?;
+    let team = team_name(ctx, &id, &o.team);
+    ctx.emit(&v, || format!("已添加 {} 个手动计费节点\n{}", arr(&v).len(), arr(&v).iter().map(|s| slot_line(&team, s)).collect::<Vec<_>>().join("\n")));
+    Ok(0)
+}
+
+/// `billing rm <名额>`：只能删手动名额（录错了）
+pub fn rm(ctx: &Ctx, q: &str, yes: bool) -> anyhow::Result<u8> {
+    let (cur, team) = find_slot(ctx, q)?;
+    if cur["manual"] != true {
+        bail!("只有手动添加的计费节点能删除；系统节点离开团队后由对账自动结束，不想收它的钱用 fleetctl billing exempt <节点> --on");
+    }
+    confirm(&format!("删除 {}？", slot_line(&team, &cur)), yes)?;
+    let d = ctx.c.delete(&format!("/billing-slots/{}", st(&cur, "/id")))?;
+    ctx.emit(&d, || "已删除".into());
+    Ok(0)
+}
+
+/// `billing exempt <节点> --on|--off`
+pub fn exempt(ctx: &Ctx, node: &str, on: bool) -> anyhow::Result<u8> {
+    let (id, name) = ctx.find_id(node, Want::Live)?;
+    let d = ctx.c.put(&format!("/machines/{id}/billing-exempt"), &json!({"exempt": on}))?;
+    ctx.emit(&d, || {
+        if on {
+            format!("{name} 已设为不计费：中控对账时当它离开团队（24 小时内有新节点加入算替换，否则计费节点减少）")
+        } else {
+            format!("{name} 已恢复计费：中控对账时当它加入团队（24 小时内有节点离开算替换，否则新增）")
+        }
+    });
+    Ok(0)
 }
 
 /// 客户页链接的一段说明（没有链接时提示怎么生成）
@@ -89,220 +352,6 @@ fn page_text(team: &str, p: &Value) -> String {
     };
     let state = if p["enabled"] == true { "启用" } else { "已停用（打开回 404）" };
     format!("客户页链接：{}\n  状态 {state}；链接生成于 {}；{viewed}", p["link"].as_str().unwrap_or("（解不开，--rotate 换新链接）"), table::ts(&st(p, "/token_at")))
-}
-
-pub fn list(ctx: &Ctx, team: &str, periods: bool) -> anyhow::Result<u8> {
-    let (_, d) = load(ctx, team)?;
-    ctx.emit(&d, || {
-        let name = st(&d, "/team/name");
-        let bs = d["batches"].as_array().cloned().unwrap_or_default();
-        let mut out = format!("{name} · 今天 {}\n", st(&d, "/today"));
-        if bs.is_empty() {
-            out.push_str(&format!("还没有批次（fleetctl batch add {name} --region 美区 --start 2026-09-15 --months 1 --count 5 建一个）"));
-        } else {
-            let rows: Vec<Vec<String>> = bs
-                .iter()
-                .map(|b| {
-                    vec![
-                        format!("{:02}", b["seq"].as_i64().unwrap_or(0)),
-                        st(b, "/region"),
-                        span(b),
-                        format!("{} 个", st(b, "/count")),
-                        format!("{} 个月", st(b, "/months")),
-                        st(b, "/node_months"),
-                        state_cn(&st(b, "/state")).to_string(),
-                        b["summary"].as_str().unwrap_or("").to_string(),
-                    ]
-                })
-                .collect();
-            out.push_str(&table::render(&["编号", "地区", "起止", "当前个数", "时长", "节点月", "状态", "说明"], &rows));
-            let live: Vec<&Value> = bs.iter().filter(|b| b["state"] != "expired").collect();
-            out.push_str(&format!(
-                "\n共 {} 批，有效 {} 批，客户页上的节点月 {}",
-                bs.len(),
-                live.len(),
-                live.iter().map(|b| b["node_months"].as_i64().unwrap_or(0)).sum::<i64>()
-            ));
-            if periods {
-                for b in &bs {
-                    out.push_str(&format!("\n\n{}\n{}", st(b, "/title"), periods_table(b)));
-                }
-            }
-        }
-        out.push_str(&format!("\n\n{}", page_text(&name, &d["page"])));
-        out
-    });
-    Ok(0)
-}
-
-#[derive(clap::Args)]
-pub struct AddOpts {
-    /// 团队
-    team: String,
-    /// 地区：美区、墨西哥、菲律宾…（1–20 字）
-    #[arg(long)]
-    region: String,
-    /// 开始日期（购买日），如 2026-09-15
-    #[arg(long, value_name = "日期")]
-    start: String,
-    /// 计费月数
-    #[arg(long)]
-    months: i32,
-    /// 节点个数
-    #[arg(long)]
-    count: i32,
-    /// 到期日期：不给就是开始日加 --months 个月（月底对齐）
-    #[arg(long, value_name = "日期")]
-    end: Option<String>,
-    /// 客户页标题下一行的说明（≤ 60 字）
-    #[arg(long)]
-    note: Option<String>,
-    /// 批次编号：不给就是团队里最大的加 1
-    #[arg(long)]
-    seq: Option<i32>,
-}
-
-pub fn add(ctx: &Ctx, o: &AddOpts) -> anyhow::Result<u8> {
-    let id = ctx.team_id(&o.team)?;
-    let mut body = json!({"region": o.region, "start_date": o.start, "months": o.months, "count": o.count});
-    for (k, v) in [("end_date", &o.end), ("note", &o.note)] {
-        if let Some(v) = v {
-            body[k] = json!(v);
-        }
-    }
-    if let Some(s) = o.seq {
-        body["seq"] = json!(s);
-    }
-    let b = ctx.c.post(&format!("/teams/{id}/batches"), &body)?;
-    ctx.emit(&b, || format!("已新建\n{}", detail(&team_name(ctx, &id, &o.team), &b)));
-    Ok(0)
-}
-
-#[derive(clap::Args)]
-pub struct RenewOpts {
-    /// 批次：团队#编号，如 团队2#05
-    batch: String,
-    /// 续期月数
-    #[arg(long)]
-    months: i32,
-    /// 续期后的个数：不给沿用现在的
-    #[arg(long)]
-    count: Option<i32>,
-    /// 续期后的到期日期：不给就是现在的到期日加 --months 个月
-    #[arg(long, value_name = "日期")]
-    end: Option<String>,
-}
-
-pub fn renew(ctx: &Ctx, o: &RenewOpts) -> anyhow::Result<u8> {
-    let (team, cur) = find(ctx, &o.batch)?;
-    let mut body = json!({"months": o.months});
-    if let Some(c) = o.count {
-        body["count"] = json!(c);
-    }
-    if let Some(e) = &o.end {
-        body["end_date"] = json!(e);
-    }
-    let b = ctx.c.post(&format!("/batches/{}/renew", st(&cur, "/id")), &body)?;
-    ctx.emit(&b, || format!("已续期\n{}", detail(&team, &b)));
-    Ok(0)
-}
-
-#[derive(clap::Args)]
-pub struct EditOpts {
-    /// 批次：团队#编号
-    batch: String,
-    #[arg(long)]
-    region: Option<String>,
-    /// 说明（≤ 60 字）；给空字符串清掉
-    #[arg(long)]
-    note: Option<String>,
-    /// 新的批次编号（团队里不能重复）
-    #[arg(long)]
-    seq: Option<i32>,
-}
-
-pub fn edit(ctx: &Ctx, o: &EditOpts) -> anyhow::Result<u8> {
-    if o.region.is_none() && o.note.is_none() && o.seq.is_none() {
-        bail!("没有要改的：给 --region、--note 或 --seq");
-    }
-    let (team, cur) = find(ctx, &o.batch)?;
-    let mut body = json!({});
-    if let Some(r) = &o.region {
-        body["region"] = json!(r);
-    }
-    if let Some(n) = &o.note {
-        body["note"] = json!(n);
-    }
-    if let Some(s) = o.seq {
-        body["seq"] = json!(s);
-    }
-    let b = ctx.c.patch(&format!("/batches/{}", st(&cur, "/id")), &body)?;
-    ctx.emit(&b, || format!("已保存\n{}", detail(&team, &b)));
-    Ok(0)
-}
-
-pub fn rm(ctx: &Ctx, batch: &str, yes: bool) -> anyhow::Result<u8> {
-    let (team, cur) = find(ctx, batch)?;
-    confirm(&format!("删除 {team} 的{}（连同它的 {} 段记录，客户页上也不再显示）？", st(&cur, "/title"), cur["periods"].as_array().map_or(0, Vec::len)), yes)?;
-    let d = ctx.c.delete(&format!("/batches/{}", st(&cur, "/id")))?;
-    ctx.emit(&d, || format!("已删除 {team}#{:02}", cur["seq"].as_i64().unwrap_or(0)));
-    Ok(0)
-}
-
-#[derive(clap::Args)]
-pub struct PeriodOpts {
-    /// 批次：团队#编号
-    batch: String,
-    /// 第几段（从 1 起，按开始日期；batch list --periods 能看到）
-    index: usize,
-    /// 开始日期
-    #[arg(long, value_name = "日期")]
-    start: Option<String>,
-    /// 到期日期
-    #[arg(long, value_name = "日期")]
-    end: Option<String>,
-    /// 计费月数
-    #[arg(long)]
-    months: Option<i32>,
-    /// 这一段的节点个数
-    #[arg(long)]
-    count: Option<i32>,
-    /// 删掉这一段（批次只剩一段时不能删，要删就删整个批次）
-    #[arg(long, conflicts_with_all = ["start", "end", "months", "count"])]
-    rm: bool,
-    #[arg(long)]
-    yes: bool,
-}
-
-pub fn period(ctx: &Ctx, o: &PeriodOpts) -> anyhow::Result<u8> {
-    if !o.rm && o.start.is_none() && o.end.is_none() && o.months.is_none() && o.count.is_none() {
-        bail!("没有要改的：给 --start、--end、--months、--count 之一，或 --rm 删掉这一段");
-    }
-    let (team, cur) = find(ctx, &o.batch)?;
-    let periods = cur["periods"].as_array().cloned().unwrap_or_default();
-    let p = o.index.checked_sub(1).and_then(|i| periods.get(i)).ok_or_else(|| anyhow!("{}#{:02} 只有 {} 段，没有第 {} 段", team, cur["seq"].as_i64().unwrap_or(0), periods.len(), o.index))?;
-    let pid = st(p, "/id");
-    if o.rm {
-        confirm(&format!("删除 {team}#{:02} 的第 {} 段（{} → {}）？", cur["seq"].as_i64().unwrap_or(0), o.index, st(p, "/start_date"), st(p, "/end_date")), o.yes)?;
-        let b = ctx.c.delete(&format!("/batch-periods/{pid}"))?;
-        ctx.emit(&b, || format!("已删除第 {} 段\n{}", o.index, detail(&team, &b)));
-        return Ok(0);
-    }
-    let mut body = json!({});
-    for (k, v) in [("start_date", &o.start), ("end_date", &o.end)] {
-        if let Some(v) = v {
-            body[k] = json!(v);
-        }
-    }
-    if let Some(m) = o.months {
-        body["months"] = json!(m);
-    }
-    if let Some(c) = o.count {
-        body["count"] = json!(c);
-    }
-    let b = ctx.c.patch(&format!("/batch-periods/{pid}"), &body)?;
-    ctx.emit(&b, || format!("已保存第 {} 段\n{}", o.index, detail(&team, &b)));
-    Ok(0)
 }
 
 #[derive(clap::Args)]
@@ -341,7 +390,7 @@ pub fn page(ctx: &Ctx, o: &PageOpts) -> anyhow::Result<u8> {
         let p = ctx.c.patch(&path, &json!({"enabled": o.enable}))?;
         ctx.emit(&p, || format!("{}\n{}", if o.enable { "已启用" } else { "已停用" }, page_text(&name(), &p)));
     } else if o.delete {
-        confirm(&format!("删除 {} 的客户页链接？用它的客户之后打不开（批次记录保留）", name()), o.yes)?;
+        confirm(&format!("删除 {} 的客户页链接？用它的客户之后打不开（计费记录保留）", name()), o.yes)?;
         let d = ctx.c.delete(&path)?;
         ctx.emit(&d, || "已删除客户页链接".to_string());
     } else {
@@ -352,17 +401,3 @@ pub fn page(ctx: &Ctx, o: &PageOpts) -> anyhow::Result<u8> {
     Ok(0)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn batch_ref_accepts_padded_and_plain_seq() {
-        assert_eq!(split_ref("团队2#05").unwrap(), ("团队2", 5));
-        assert_eq!(split_ref("团队2#5").unwrap(), ("团队2", 5));
-        assert_eq!(split_ref(" 团队2 # 12 ").unwrap(), ("团队2", 12));
-        for bad in ["团队2", "团队2#", "#5", "团队2#x"] {
-            assert!(split_ref(bad).is_err(), "{bad}");
-        }
-    }
-}
