@@ -142,8 +142,10 @@ export function BatchTimeline({ items, today, actions }: { items: TimelineItem[]
   const [vw, setVw] = React.useState(0);
   React.useLayoutEffect(() => {
     const el = ref.current!;
-    setVw(el.clientWidth);
-    return watchSize(el, () => setVw(el.clientWidth));
+    // 取实际宽度向下取整：clientWidth 是四舍五入的，宽度带小数时会比可用宽度多出零点几像素，冒出一条横向滚动条
+    const measure = () => setVw(Math.floor(el.getBoundingClientRect().width));
+    measure();
+    return watchSize(el, measure);
   }, []);
 
   const { start, days } = React.useMemo(() => rangeOf(items, today), [items, today]);
@@ -151,7 +153,9 @@ export function BatchTimeline({ items, today, actions }: { items: TimelineItem[]
     if (!vw) return null;
     const ppd = Math.max(MIN_PPD, (vw - PAD_L - PAD_R) / days);
     const d0 = dayNum(start);
-    return { start, days, ppd, W: Math.max(vw, Math.ceil(PAD_L + days * ppd + PAD_R)), x: (d) => PAD_L + (dayNum(d) - d0) * ppd };
+    // 铺满时宽度就是可见宽度（向上取整会多出 1px，出现一条没必要的横向滚动条）
+    const W = ppd > MIN_PPD ? vw : Math.ceil(PAD_L + days * ppd + PAD_R);
+    return { start, days, ppd, W, x: (d) => PAD_L + (dayNum(d) - d0) * ppd };
   }, [vw, start, days]);
   const ticks = React.useMemo(() => (s ? ticksPath(s) : ''), [s]);
 

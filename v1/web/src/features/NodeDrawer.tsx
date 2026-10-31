@@ -5,7 +5,8 @@ import { useQueryClient } from '@tanstack/react-query';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/dialog';
 import { Tabs, TabsList, TabsTrigger, Trunc } from '@/components/ui/overlays';
-import { InfoTip } from '@/components/ui/form';
+import { InfoTip, Switch } from '@/components/ui/form';
+import { toast } from '@/components/ui/toast';
 import { IconButton } from '@/components/ui/button';
 import { ErrorBoundary } from '@/components/app/ErrorBoundary';
 import { Gone, isGone } from '@/components/app/Gone';
@@ -14,7 +15,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import type { Incident, MachineView } from '@/lib/types';
 import { AnytlsState } from '@/components/app/AnytlsState';
 import { RelayProtocolsField } from '@/components/app/RelayProtocols';
-import { useMachine, useAudit, useMachineIncidents } from '@/lib/queries';
+import { useMachine, useAudit, useBillingExempt, useMachineIncidents } from '@/lib/queries';
 import { AuditList } from '@/components/app/AuditList';
 import { DRAWER_TABS, drawerSiblings, useDrawer, type DrawerTab } from '@/lib/drawer';
 import { useHeld } from '@/lib/useHeld';
@@ -195,6 +196,23 @@ function lifecycleWhy(m: MachineView, raw: string) {
   return m.spare && !/^(替换下来|随宿主机)/.test(r) ? `退役原因：${r}` : r;
 }
 
+/** 向团队收费时算不算这个节点（团队与套餐 → 客户到期）：在用、在团队里（不在备用）的节点才有；旧中控没有 billing_exempt 时不显示 */
+function BillingRow({ m }: { m: MachineView }) {
+  const set = useBillingExempt();
+  if (m.kind === 'relay' || !m.team || m.spare_from || m.lifecycle !== 'active' || m.billing_exempt === undefined) return null;
+  const on = !m.billing_exempt;
+  return (
+    <LabelValue label="计费" wrap>
+      <span className="row" style={{ gap: 8, flexWrap: 'nowrap' }}>
+        <Switch checked={on} disabled={set.isPending} aria-label="向团队收这个节点的钱"
+          onCheckedChange={(v) => set.mutate({ id: m.id, exempt: !v }, { onSuccess: () => toast.ok(v ? `${m.name} 恢复计费` : `${m.name} 设为不计费`), onError: toast.err })} />
+        <span>{on ? '计费' : '不计费'}</span>
+        <InfoTip text={'按节点数向团队收费时算不算这个节点（团队与套餐 → 客户到期）\n切换后按离开 / 加入处理：24 小时内有节点加入或离开就算替换，计费不变'} />
+      </span>
+    </LabelValue>
+  );
+}
+
 function OverviewTab({ m }: { m: MachineView }) {
   const audit = useAudit(m.id);
   const { open } = useDrawer();
@@ -240,6 +258,7 @@ function OverviewTab({ m }: { m: MachineView }) {
             </LabelValue>
           )}
           {m.note && <LabelValue label="备注" className="span-2" wrap>{m.note}</LabelValue>}
+          <BillingRow m={m} />
         </LabelValueGrid>
         <AgentHealthNote m={m} />
       </Section>

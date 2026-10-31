@@ -119,3 +119,31 @@ html.is-cx body::before { content: none; }
   .cxa-prow > :first-child { grid-column: 1 / -1; }
   .cxa-prow > :nth-child(6) { grid-row: 2; grid-column: 3; }
 }
+
+/* 顶部数字：不套卡片，三组大数字并排，窄屏换行 */
+.cxa-figs { display: flex; flex-wrap: wrap; gap: var(--sp-16) clamp(28px, 6vw, 72px); padding: var(--sp-4) var(--sp-4) 0; }
+.cxa-fig { display: grid; gap: var(--sp-2); min-width: 0; }
+.cxa-fig-k { display: inline-flex; align-items: center; gap: var(--sp-4); font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); font-weight: var(--fw-medium); }
+.cxa-fig-v { font: var(--fw-bold) var(--fs-kpi) / var(--lh-kpi) var(--font-num); font-variant-numeric: var(--num-variant); color: var(--fg); letter-spacing: -0.01em; white-space: nowrap; }
+.cxa-fig-v small { margin-left: 4px; font: var(--fw-medium) var(--fs-body) / 1 var(--font-sans); color: var(--fg-2); letter-spacing: 0; }
+.cxa-fig-s { font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); white-space: pre; }
+.cxa-warn { color: var(--warn-text); }
+.cxa-node { height: auto; padding: 0; font-weight: inherit; }
+.dt tr.cxa-group td { background: var(--sunken); font-size: var(--fs-label); font-weight: var(--fw-medium); color: var(--fg-2); }
+/* 月度应收 */
+.cxa-mswitch { display: inline-flex; align-items: center; gap: var(--sp-4); }
+.cxa-mlabel { min-width: 7.5em; text-align: center; font-weight: var(--fw-medium); }
+.cxa-rcv { display: grid; gap: var(--sp-8); transition: opacity var(--dur-1) var(--ease-std); }
+.cxa-rcv[data-stale] { opacity: var(--o-stale); }
+.cxa-rcv-total { display: flex; align-items: center; gap: var(--sp-6); font-size: var(--fs-emph); line-height: var(--lh-emph); }
+.cxa-rcv-total b { font-size: 22px; font-weight: var(--fw-bold); }
+.cxa-rcv-sub { font-size: var(--fs-label); }
+.cxa-lines { display: grid; margin: 0; padding: 0; list-style: none; }
+.cxa-lines li { display: grid; grid-template-columns: minmax(0, 1fr) auto 4.5em; align-items: baseline; gap: var(--sp-12); padding: var(--sp-6) 0; border-top: 1px solid var(--line); font-size: var(--fs-body); }
+.cxa-lines-n { text-align: right; font-weight: var(--fw-semibold); }
+.cxa-sub-h { margin-top: var(--sp-8); font-size: var(--fs-label); font-weight: var(--fw-semibold); color: var(--fg-2); }
+/* 增减记录：左时间，右一句话 */
+.cxa-events { display: grid; margin: 0; padding: 0; list-style: none; }
+.cxa-events li { display: grid; grid-template-columns: 7.5em minmax(0, 1fr); gap: var(--sp-10); padding: var(--sp-6) 0; font-size: var(--fs-body); line-height: var(--lh-body); }
+.cxa-events li + li { border-top: 1px solid var(--line); }
+.cxa-events li > :first-child { font-size: var(--fs-label); }
