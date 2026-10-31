@@ -1,6 +1,7 @@
 pub mod access;
 pub mod account;
 pub mod audit;
+pub mod batches;
 pub mod billing;
 pub mod catalog;
 pub mod client_subs;
@@ -70,6 +71,13 @@ pub fn router() -> Router<AppState> {
         .route("/teams", get(catalog::list_teams).post(catalog::create_team))
         .route("/teams/{id}", patch(catalog::patch_team).delete(catalog::delete_team))
         .route("/teams/{id}/renumber", get(machines::renumber_preview).post(machines::renumber_apply))
+        // 客户批次账与客户到期页：管理接口要登录；公开接口按令牌取（不登录，没有 Actor 提取器），见 batches.rs
+        .route("/teams/{id}/batches", get(batches::list).post(batches::create))
+        .route("/batches/{id}", patch(batches::patch).delete(batches::delete))
+        .route("/batches/{id}/renew", post(batches::renew))
+        .route("/batch-periods/{id}", patch(batches::patch_period).delete(batches::delete_period))
+        .route("/teams/{id}/customer-page", post(batches::page_create).patch(batches::page_patch).delete(batches::page_delete))
+        .route("/public/customer/{token}", get(batches::public_view))
         .route("/providers", get(catalog::list_providers).post(catalog::create_provider))
         .route("/providers/{id}", patch(catalog::patch_provider).delete(catalog::delete_provider))
         .route("/plans", get(catalog::list_plans).post(catalog::create_plan))

@@ -4,6 +4,7 @@ pub mod alerts;
 pub mod anomaly;
 pub mod api;
 pub mod auth;
+pub mod batches;
 pub mod config;
 pub mod country;
 pub mod crypto;
@@ -85,13 +86,15 @@ const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsa
 /// 缓存头与安全头。
 /// 缓存：/assets/ 下的文件名带内容哈希，可以永久缓存；index.html 等其余页面每次都要重新验证，否则发布新版后浏览器还拿着旧的入口文件；
 /// 接口没自己设 Cache-Control 的一律 no-store（数据里有 IP、令牌提示、审计，不留在浏览器和中间缓存里）。
-/// 安全：所有响应带 nosniff、同源才带 Referer、不许被嵌进框架；前端页面（/api、/agent、/sub、/echo 以外）再带 CSP；`https`（public_url 是 https）时带 HSTS
+/// 安全：所有响应带 nosniff、同源才带 Referer、不许被嵌进框架；前端页面（/api、/agent、/sub、/echo 以外）再带 CSP；`https`（public_url 是 https）时带 HSTS。
+/// 客户到期页（/c/ 开头的页面）和它的公开接口（/api/v1/public/）再带 X-Robots-Tag: noindex，不让搜索引擎收录
 async fn response_headers(State(https): State<bool>, req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
     use axum::http::header::{CACHE_CONTROL, CONTENT_SECURITY_POLICY, REFERRER_POLICY, STRICT_TRANSPORT_SECURITY, X_CONTENT_TYPE_OPTIONS, X_FRAME_OPTIONS};
     use axum::http::HeaderValue;
     let path = req.uri().path();
     let api = path.starts_with("/api/");
     let page = !api && !path.starts_with("/agent/") && !path.starts_with("/sub/") && path != "/echo";
+    let noindex = path.starts_with("/c/") || path.starts_with("/api/v1/public/");
     let cache = if path.starts_with("/assets/") {
         Some("public, max-age=31536000, immutable")
     } else if page {
@@ -119,6 +122,9 @@ async fn response_headers(State(https): State<bool>, req: axum::extract::Request
         if let Ok(v) = HeaderValue::from_str(fleet_proto::build_version()) {
             h.insert("x-fleet-version", v);
         }
+    }
+    if noindex {
+        h.insert("x-robots-tag", HeaderValue::from_static("noindex"));
     }
     if page {
         h.insert(CONTENT_SECURITY_POLICY, HeaderValue::from_static(CSP));

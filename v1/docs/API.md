@@ -255,6 +255,30 @@ ProvisionItem = {
 
 **拉取**：`GET /sub/{令牌}?format=clash|base64`（挂在根上，不在 `/api/v1` 下，不要登录）。`clash`（默认）是 mihomo 可直接用的 proxy-provider 文件（只有 `proxies:`，字符串都带双引号）；`base64` 是 vless:// 链接（同分享链接的写法，`#` 后是上面的条目名）一行一条、整体 base64。按请求时的入口现算。响应 `text/plain`、`Cache-Control: no-store`，另带 `Content-Disposition`（订阅名）与 `profile-update-interval: 6`（Clash Verge 每 6 小时更新）。令牌不对或订阅停用 404，并和登录共用按来源的失败限速（`auth::begin_attempt`：同一来源 15 分钟 20 次，含登录失败；限速键按令牌哈希分开）；超了 429（带 `Retry-After`），对的令牌也一样。成功不写审计，`last_fetch_at` / `last_fetch_ip` 10 分钟内只写一次。`format` 不对 400。
 
+## 客户批次账与客户到期页
+卖给客户的节点什么时候到期的另一本账，与供应商订阅（`subscription` / `due_date`）完全无关。一个**批次** = 首购一段 + 每次续期一段（段与段首尾相接，续期段起点 = 上一段终点；同一批次的段不得重叠，409 写明哪两段）。每个团队一个只读分享链接，客户不登录，页面不出现 IP、供应商、价格、节点名。管理接口读要 `read`、写要 `write`，写操作记审计（`customer_batch.create` / `update` / `renew` / `period_update` / `period_delete` / `delete`，`customer_page.create` / `rotate` / `enable` / `disable` / `delete`）。
+
+口径（服务端算，前端只显示）：「今天」= 组织时区（默认北京时间）的日期；批次 `start_date` = 最早段起点，`end_date` = 最晚段终点；`count` = 最后一段（按起点）的个数；`months` = 各段月数之和；`node_months` = Σ 个数×月数；`renewals` = 段数 − 1；`state`：`expired`（终点早于今天）/ `today`（终点就是今天，仍算有效）/ `active`。`summary`（自动说明）：一段 → `""`；多段个数都一样 → `含N次续期`；个数有变 → `初始5个 → 续期4个`（多次变化按顺序串起来，相邻相同的合并，如 `初始6个 → 续期5个 → 续期4个`）。`title`：有效 `第05批 · 美区 · 当前有效4个`，已到期 `第01批 · 美区 · 原4个（已到期）`。默认终点 = 起点加 N 个日历月，月底对齐（1-31 加 1 月是 2-28 / 2-29）。
+
+`Batch = {id, seq, region, note, summary, title, start_date, end_date, count, months, node_months, renewals, state, periods:[{id, start_date, end_date, months, count}]}`（日期 `YYYY-MM-DD`，段按起点升序）。`page = null | {enabled, link, created_at, token_at, last_view_at, last_view_ip}`，`link = {public_url}/c/{令牌}`。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/teams/{id}/batches` | `{team:{id,name}, today, page, batches:[Batch]}`，批次按 `seq` 升序，含已到期的；团队不存在 404 |
+| POST | `/teams/{id}/batches` | `{region（1–20 字）, start_date, months（1–36）, count（1–999）, end_date?, note?（≤ 60 字）, seq?（1–999）}` → `Batch`。`end_date` 默认 = 开始日加 `months` 个日历月；`seq` 默认 = 团队内最大 + 1，冲突 409；`end_date` 不晚于开始日 400 |
+| PATCH | `/batches/{id}` | `{region?, note?, seq?}`（`note: ""` 清空）→ `Batch` |
+| DELETE | `/batches/{id}` | 连同各段 → `{id}` |
+| POST | `/batches/{id}/renew` | `{months, count?, end_date?}`：追加一段，起点 = 当前 `end_date`，`count` 默认沿用当前个数，`end_date` 默认 = 起点加 `months` 个日历月 → `Batch` |
+| PATCH | `/batch-periods/{id}` | `{start_date?, end_date?, months?, count?}`；改完与同批次别的段重叠 409 → `Batch` |
+| DELETE | `/batch-periods/{id}` | 批次只剩这一段时 409「只剩这一段，要删就删整个批次」 → `Batch` |
+| POST | `/teams/{id}/customer-page` | 没有就建，有就换新令牌（旧链接立即失效、`last_view_*` 清空；启用 / 停用状态不变）→ `page` |
+| PATCH | `/teams/{id}/customer-page` | `{enabled}`；还没有链接 404 → `page` |
+| DELETE | `/teams/{id}/customer-page` | `{team_id}`；还没有链接 404 |
+
+令牌 32 字节随机（base64url）：库里存 sha256（`token_hash`，用来查）和 SecretBox 密文（`token_enc`，管理端随时能再复制链接）。
+
+**公开接口**（不登录，没有 Actor 提取器，登录只在提取器里校验，所以不会被拦）：`GET /api/v1/public/customer/{令牌}` → `{team:"团队2", today, regions:[{region, counts:[各有效批次的个数], total, today_count（今天到期的个数）}], node_months, batches:[PublicBatch]}`。`PublicBatch = {seq, region, title, desc, start_date, end_date, count, months, node_months, state, periods:[{start_date, end_date, months, count}]}`（无 `id`、无 `note` 原文；`desc` = 自动说明与备注用「；」接起来，哪个空就只写另一个）。只含 `state ≠ expired` 的批次（按 `seq` 升序）；`regions` 按批次里首次出现的顺序；`node_months` 只算显示出来的批次。令牌不对或已停用一律 404（不区分），并和登录、订阅拉取共用按来源的失败限速（`auth::begin_attempt`，键 `cust:` + 令牌哈希前缀），超了 429。`last_view_at` / `last_view_ip` 10 分钟内只写一次，成功不写审计。响应 `Cache-Control: no-store`；`/c/` 开头的页面与 `/api/v1/public/` 都带 `X-Robots-Tag: noindex`（`lib.rs` 的响应头中间件）。前端页面是 `/c/:token`（不在 Shell 里，不要求登录）。
+
 ## 作业
 `Job = {id,kind,target:{id,name}|null,state,step,step_count,step_title,error,manual,created_by,created_at,started_at,finished_at,steps:[{idx,key,title,state,started_at,finished_at,output,error}]}`（`step_count` = 该种作业的步骤数，`step_title` = 第 `step` 步的标题，做完为 null）
 
