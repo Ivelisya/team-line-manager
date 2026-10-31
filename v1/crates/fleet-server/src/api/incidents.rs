@@ -20,7 +20,19 @@ struct IncidentOut {
     engine: String,
     rule: String,
     subject_id: Uuid,
+    /// 对象的现名：可点开的对象、建议命令用它（照着执行要找得到机器）
+    #[serde(skip)]
     subject_name: Option<String>,
+    /// 触发时对象的身份（incident.subject_name / subject_team / subject_ip，P-01）：接口的 `subject_name` 是它（没记的旧告警退回现名）
+    #[serde(skip)]
+    fired_name: Option<String>,
+    subject_team: Option<String>,
+    subject_ip: Option<String>,
+    /// 告警开着的那台机器后来被替换下来了：接替它的节点 id 与现名（incident.replaced_by，替换交换编号时写，不依赖会被清理的作业记录）
+    #[serde(skip)]
+    replaced_by_id: Option<Uuid>,
+    #[serde(skip)]
+    replaced_by_name: Option<String>,
     severity: String,
     state: String,
     summary: String,
@@ -80,11 +92,14 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQu
             case when i.engine = 'central' then '中控' when i.engine = 'router' then r.name
                  when i.engine = 'probe' then coalesce(pp.name, '探测点（已删除）')
                  else display_name(m.kind::text, m.label, t.name, m.number) end subject_name,
+            case when i.engine <> 'central' then i.subject_name end fired_name, i.subject_team, i.subject_ip, rb.id replaced_by_id, rb.name replaced_by_name,
             i.severity::text severity, i.state::text state, i.summary, i.opened_at, i.last_seen_at, i.resolved_at, i.ack_at, i.ack_by, i.reopen_count,
             case when i.engine = 'machine' and m.lifecycle = 'active' and not coalesce(t.spare, false) then m.kind::text end subject_kind
          from incident i left join machine m on m.id = i.subject_id left join team t on t.id = m.team_id
               left join router r on r.id = i.subject_id and i.engine = 'router'
               left join probe_point pp on pp.id = i.subject_id and i.engine = 'probe'
+              left join lateral (select n.id, display_name(n.kind::text, n.label, nt.name, n.number) name
+                                 from machine n left join team nt on nt.id = n.team_id where n.id = i.replaced_by) rb on true
          where {} order by {order} limit {} offset {}",
         cond(&mut a),
         a.add(limit),
@@ -131,6 +146,14 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQu
             } else {
                 j["subject"] = json!({"id": i.subject_id, "name": i.subject_name.clone().unwrap_or_else(|| "（已删除）".into())});
             }
+            // 触发时的名字；现名不同（改过名、被替换）时另给 current_name，被替换的给接替它的节点
+            let fired = i.fired_name.as_ref().or(i.subject_name.as_ref());
+            j["subject_name"] = json!(fired);
+            j["current_name"] = json!(i.subject_name.as_ref().filter(|n| i.engine == Engine::Machine.as_str() && Some(*n) != fired));
+            j["replaced_by"] = match (i.replaced_by_id, &i.replaced_by_name) {
+                (Some(id), Some(name)) => json!({"id": id, "name": name}),
+                _ => Value::Null,
+            };
             j["rule_name"] = json!(crate::meta::rule_label_of(&i.rule, &i.severity));
             let mut advice = if i.state == "firing" { suggest(i, &routers) } else { vec![] };
             // 节点反复连不上 / 出口不通：先看换到哪台线路机更合适（已恢复的也给，status 的「近 7 天反复」用）

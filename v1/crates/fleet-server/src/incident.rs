@@ -153,6 +153,17 @@ async fn chronic(st: &AppState, engine: Engine, rule: &str, subject: Uuid, kind:
     if n > 1 { format!("{text}（近 24 小时第 {n} 次）") } else { text.to_string() }
 }
 
+/// 机器被替换（replace 作业交换编号那一步，同一事务）：旧节点此刻已有的告警记下接替它的节点。之后旧节点在备用里再开的告警不算；
+/// 固化在告警上，作业记录 90 天后被清掉也不丢
+pub async fn mark_replaced(tx: &mut crate::db::Tx<'_>, old: Uuid, new: Uuid) -> sqlx::Result<()> {
+    sqlx::query("update incident set replaced_by = $2 where engine = 'machine' and subject_id = $1 and replaced_by is null")
+        .bind(old)
+        .bind(new)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
 /// 对齐一轮。`open`：`firing` 按同一个 `engine` 读出来的；`exists`：新开时对象还在的 SQL 条件（`$3` 是对象 id，不用查就是 `true`）；
 /// `close`：`want` 里没有的那些怎么办。有变化时发 `Event::Incidents`
 pub async fn reconcile<'n>(
@@ -258,9 +269,12 @@ pub async fn reconcile<'n>(
         }
         let id = crate::db::new_id();
         let res = sqlx::query(&format!(
-            "insert into incident (id, engine, rule, subject_id, severity, summary, detail)
+            "insert into incident (id, engine, rule, subject_id, severity, summary, detail, subject_name, subject_team, subject_ip)
              select $1, $7, $2, $3, $4::severity, $5,
-                    coalesce($6, jsonb_build_object()) || case when $8 then jsonb_build_object('critical', true, 'critical_count', 1) else jsonb_build_object() end where {exists}
+                    coalesce($6, jsonb_build_object()) || case when $8 then jsonb_build_object('critical', true, 'critical_count', 1) else jsonb_build_object() end,
+                    $9, m.team, m.ip
+             from (select 1) one left join (select t.name team, host(m.primary_ip) ip from machine m left join team t on t.id = m.team_id where m.id = $3 and $7 = 'machine') m on true
+             where {exists}
              on conflict (engine, rule, subject_id) where state = 'firing' do nothing"
         ))
         .bind(id)
@@ -271,6 +285,8 @@ pub async fn reconcile<'n>(
         .bind(&w.detail)
         .bind(engine.as_str())
         .bind(w.severity == "critical")
+        // 触发时的身份（名字、团队、IP）随告警存下，之后改名、替换都不改它（P-01）
+        .bind(w.name)
         .execute(&st.db)
         .await?;
         if res.rows_affected() > 0 {

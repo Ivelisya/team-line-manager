@@ -18,6 +18,12 @@ export function SuggestedCmds({ i, className }: { i: Incident; className?: strin
   );
 }
 
+/** 对象现在的身份（P-01）：告警的对象名是触发时的；之后改过名的写「现：备用-01」，被替换下来的再写「已由 团队2-07 接替」 */
+export function SubjectNow({ i }: { i: Incident }) {
+  const t = [i.current_name && `现：${i.current_name}`, i.replaced_by && `已由 ${i.replaced_by.name} 接替`].filter(Boolean).join(' · ');
+  return t ? <span className="sub" data-tip={i.subject_ip ? `触发时 ${i.subject_name}（${[i.subject_team, i.subject_ip].filter(Boolean).join(' · ')}）` : undefined}>{t}</span> : null;
+}
+
 /** 次数标签：进行中的（同组最多一条，就是最新那次）写「近 7 天第 N 次」，已恢复的写「近 7 天共 N 次」（recent_count 是整组的总数）。只在中控判定反复（chronic，次数含 30 分钟内复发合并进来的）时标；合并过的次数写在悬停里 */
 export function RecentCount({ i, className }: { i: Incident; className?: string }) {
   if (!i.chronic) return null;

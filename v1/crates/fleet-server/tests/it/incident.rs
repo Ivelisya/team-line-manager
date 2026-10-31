@@ -413,3 +413,89 @@ async fn critical_marker_survives_reopen_and_detail_changes() {
     run(c, "warning", true, at(0)).await;
     assert_eq!(of(c).await.1, json!({"name": "x"}));
 }
+
+/// P-01：告警记下触发时对象的身份（名字、团队、IP），改名 / 替换之后历史告警仍显示原名，另带现名（`current_name`）；
+/// 被替换下来的旧节点带接替它的节点（`replaced_by`）。新开的告警用新名字
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn incident_keeps_subject_identity_from_when_it_fired() {
+    let t = setup().await;
+    let team = common::seed_team(&t, "团队2").await;
+    let spare: Uuid = sqlx::query_scalar("select id from team where spare").fetch_one(&t.st.db).await.unwrap();
+    let old = common::seed_node(&t, team, 7, "203.0.113.7", "active").await;
+    let fire = |subject: Uuid, name: &'static str| {
+        let t = &t;
+        async move {
+            let w = Want { rule: "egress_fail", subject, name, severity: "warning", text: "出口不通".into(), detail: None, ready: true, quiet: false };
+            let open = incident::firing(&t.st.db, Engine::Machine).await.unwrap();
+            incident::reconcile(&t.st, Engine::Machine, open, vec![w], "true", OffsetDateTime::now_utc(), |_| Close::Keep).await.unwrap();
+        }
+    };
+    let item = |subject: Uuid| {
+        let t = &t;
+        async move { t.get(&format!("/api/v1/incidents?state=all&subject_id={subject}")).await["items"][0].clone() }
+    };
+    fire(old, "团队2-07").await;
+    let i = item(old).await;
+    assert_eq!((i["subject_name"].as_str(), i["subject_team"].as_str(), i["subject_ip"].as_str()), (Some("团队2-07"), Some("团队2"), Some("203.0.113.7")), "{i}");
+    assert!(i["current_name"].is_null() && i["replaced_by"].is_null(), "没改名：不带现名 {i}");
+
+    // 改名：历史告警仍是原名，另带现名
+    sqlx::query("update machine set number = 8 where id = $1").bind(old).execute(&t.st.db).await.unwrap();
+    let i = item(old).await;
+    assert_eq!((i["subject_name"].as_str(), i["current_name"].as_str()), (Some("团队2-07"), Some("团队2-08")), "{i}");
+
+    // 替换：新节点接 团队2-07，旧节点进备用（同 replace 作业的 renumber）。旧节点的告警仍叫 团队2-07，现名 备用-01，由新节点接替
+    sqlx::query("update machine set number = 7 where id = $1").bind(old).execute(&t.st.db).await.unwrap();
+    let new = common::seed_node(&t, spare, 1, "203.0.113.17", "active").await;
+    sqlx::query("update machine set team_id = $2, number = 2 where id = $1").bind(old).bind(spare).execute(&t.st.db).await.unwrap();
+    sqlx::query("update machine set team_id = $2, number = 7 where id = $1").bind(new).bind(team).execute(&t.st.db).await.unwrap();
+    sqlx::query("update machine set number = 1 where id = $1").bind(old).execute(&t.st.db).await.unwrap();
+    // 替换作业交换编号时把接替关系记进旧节点的告警（同 replace 作业的 renumber 那一步）；之后作业记录被清掉也不丢
+    let mut tx = t.st.db.begin().await.unwrap();
+    incident::mark_replaced(&mut tx, old, new).await.unwrap();
+    tx.commit().await.unwrap();
+    sqlx::query("delete from job where kind = 'replace'").execute(&t.st.db).await.unwrap();
+    let i = item(old).await;
+    assert_eq!((i["subject_name"].as_str(), i["current_name"].as_str()), (Some("团队2-07"), Some("备用-01")), "{i}");
+    assert_eq!(i["replaced_by"], json!({"id": new, "name": "团队2-07"}), "{i}");
+    // 建议命令按现名（照着执行要找得到机器）
+    assert_eq!(i["subject"]["name"], "备用-01");
+    // 替换之后旧节点（在备用里）再开的告警：不是被接替之前的事，不标接替
+    sqlx::query("update incident set state = 'resolved', resolved_at = now() - interval '1 hour' where subject_id = $1").bind(old).execute(&t.st.db).await.unwrap();
+    fire(old, "备用-01").await;
+    let later = item(old).await;
+    assert_eq!(later["subject_name"], "备用-01", "{later}");
+    assert!(later["replaced_by"].is_null(), "替换之后开的不标接替 {later}");
+
+    // 新节点上的新告警：新名字，没有现名、没有接替
+    fire(new, "团队2-07").await;
+    let n = item(new).await;
+    assert_eq!((n["subject_name"].as_str(), n["subject_ip"].as_str()), (Some("团队2-07"), Some("203.0.113.17")), "{n}");
+    assert!(n["current_name"].is_null() && n["replaced_by"].is_null(), "{n}");
+}
+
+/// 迁移 0095 回填接替关系：只给替换完成之前开的告警记（之后在备用里开的不算），取开了之后最早完成的那次替换
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn migration_backfills_replaced_by_only_for_incidents_before_the_replace() {
+    let (pool, _schema) = common::db_until(94).await;
+    let (old, new) = (Uuid::now_v7(), Uuid::now_v7());
+    let inc = |days: i32| {
+        let pool = &pool;
+        async move {
+            let id = Uuid::now_v7();
+            sqlx::query("insert into incident (id, engine, rule, subject_id, severity, state, summary, opened_at) values ($1, 'machine', $2, $3, 'warning', 'resolved', 'x', now() - make_interval(days => $4))")
+                .bind(id).bind(RULE).bind(old).bind(days).execute(pool).await.unwrap();
+            id
+        }
+    };
+    let (before, after) = (inc(5).await, inc(1).await);
+    sqlx::query("insert into job (id, kind, target_id, params, state, created_by, finished_at) values ($1, 'replace', $2, $3, 'succeeded', 'admin', now() - interval '3 days')")
+        .bind(Uuid::now_v7()).bind(old).bind(json!({"new_id": new})).execute(&pool).await.unwrap();
+    common::migrator(None).run(&pool).await.unwrap();
+    let rb = |id: Uuid| {
+        let pool = &pool;
+        async move { sqlx::query_scalar::<_, Option<Uuid>>("select replaced_by from incident where id = $1").bind(id).fetch_one(pool).await.unwrap() }
+    };
+    assert_eq!(rb(before).await, Some(new));
+    assert_eq!(rb(after).await, None);
+}

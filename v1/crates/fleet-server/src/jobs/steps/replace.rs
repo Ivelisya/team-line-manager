@@ -893,6 +893,8 @@ pub(super) async fn renumber(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         .await?;
     }
     let subs_moved = crate::api::client_subs::swap_machine(&mut tx, old, new).await?;
+    // 旧节点现有的告警记下被谁接替（告警页「已由 X 接替」）
+    crate::incident::mark_replaced(&mut tx, old, new).await?;
     let mut renumbered = 0;
     if let Some(t) = new_team0 {
         let (ch, rs) = crate::db::compact_team(&mut tx, t, actor, "替换节点后自动压缩").await?;
