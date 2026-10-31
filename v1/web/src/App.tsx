@@ -22,6 +22,8 @@ const TrafficPage = lazyPage(() => import('./pages/Traffic'), 'TrafficPage');
 const AccessPage = lazyPage(() => import('./pages/Access'), 'AccessPage');
 const PolicyPage = lazyPage(() => import('./pages/Policy'), 'PolicyPage');
 const AuditPage = lazyPage(() => import('./pages/Audit'), 'AuditPage');
+// 客户到期页：给客户看的公开页，不在外壳里、不要求登录（外壳才会把没登录的人带去 /login）
+const CustomerPage = lazyPage(() => import('./pages/Customer'), 'CustomerPage');
 
 /** 没有这个页面（手输错的地址、旧书签）：说清楚，给一个回首页的按钮，不静默跳回首页 */
 function NotFound() {
@@ -32,6 +34,7 @@ export function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/c/:token" element={<React.Suspense fallback={null}><CustomerPage /></React.Suspense>} />
       <Route element={<Shell />}>
         <Route index element={<HomePage />} />
         <Route path="nodes" element={<NodesPage />} />

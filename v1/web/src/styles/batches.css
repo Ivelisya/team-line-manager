@@ -1,0 +1,121 @@
+/* 客户批次时间轴（features/BatchTimeline）与客户到期页（pages/Customer）。随这两处按需加载。
+   条的蓝色不跟配色（粉紫 / 靛蓝）走：客户页给外人看，蓝条是参考图定的样子，深浅两档区分续期段 */
+.btl {
+  --btl-a: #0a6cdf; --btl-b: #74aef2;
+  --btl-x-a: #a3a9b4; --btl-x-b: #ccd1d8;
+  --btl-now: var(--bad);
+}
+:root[data-theme="dark"] .btl {
+  --btl-a: #3d8bfd; --btl-b: #94c3ff;
+  --btl-x-a: #6b7280; --btl-x-b: #4b5160;
+}
+
+/* 横向滚动容器：放得下时不出现滚动条 */
+.btl-scroll { overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; min-width: 0; }
+.btl-canvas { position: relative; }
+.btl-canvas svg { display: block; overflow: visible; }
+
+/* 顶部横轴 */
+.btl-axis-line, .btl-axis-tick { stroke: var(--line-strong); stroke-width: 1; fill: none; shape-rendering: crispEdges; }
+.btl-month { font: var(--fw-medium) var(--fs-label) / 1 var(--font-sans); fill: var(--fg-2); }
+.btl-now rect { fill: var(--btl-now); }
+.btl-now text { font: var(--fw-semibold) var(--fs-micro) / 1 var(--font-num); font-variant-numeric: var(--num-variant); fill: #fff; }
+/* 今天竖线：从今天标签下面一直画到最后一行 */
+.btl-today { position: absolute; top: 19px; bottom: 0; width: 0; border-left: 1px solid color-mix(in srgb, var(--btl-now) 55%, transparent); pointer-events: none; z-index: 0; }
+
+/* 一行：标题行 + 说明 sticky 在左边不跟着横滑，宽度等于可见宽度 */
+.btl-row { position: relative; padding-top: var(--sp-14); }
+.btl-row + .btl-row { border-top: 1px solid var(--line); }
+.btl-axis + .btl-today + .btl-row { margin-top: var(--sp-4); }
+.btl-head { position: sticky; left: 0; z-index: 1; width: var(--btl-vw); padding-inline: var(--sp-4); box-sizing: border-box; display: grid; gap: var(--sp-2); }
+.btl-line {
+  display: grid; grid-template-columns: minmax(0, 1fr) 9.5em 7.5em; align-items: baseline; column-gap: var(--sp-16);
+  font-size: var(--fs-body); line-height: var(--lh-body);
+}
+.btl-line.has-act { grid-template-columns: minmax(0, 1fr) 9.5em 7.5em 28px; }
+.btl-title { font-weight: var(--fw-semibold); color: var(--fg); min-width: 0; text-wrap: pretty; }
+.btl-flag { margin-left: var(--sp-8); font-size: var(--fs-label); font-weight: var(--fw-medium); color: var(--warn-text); white-space: nowrap; }
+.btl-dur { white-space: nowrap; color: var(--fg); }
+.btl-nm { white-space: nowrap; text-align: right; color: var(--fg); }
+.btl-line b { font-weight: var(--fw-semibold); }
+.btl-act { align-self: center; display: flex; justify-content: flex-end; }
+.btl-desc { font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); text-wrap: pretty; }
+/* 窄：标题独占一行，时长与节点月排在下一行 */
+@container btl (max-width: 520px) {
+  .btl-line, .btl-line.has-act { grid-template-columns: auto minmax(0, 1fr); row-gap: var(--sp-2); }
+  .btl-title { grid-column: 1 / -1; }
+  .btl-line.has-act .btl-title { grid-column: 1 / 2; grid-row: 1; }
+  .btl-line.has-act .btl-act { grid-column: 2; grid-row: 1; }
+  .btl-nm { text-align: left; }
+}
+.btl-head { container: btl / inline-size; }
+
+/* 时间条 */
+.btl-track { margin-top: var(--sp-2); }
+.btl-ticks { stroke: var(--line-strong); stroke-width: 1; fill: none; shape-rendering: crispEdges; }
+.btl-hit { fill: transparent; }
+.btl-solid { stroke: none; }
+.btl-future { stroke-width: 2.5; stroke-dasharray: 5 4; stroke-linecap: butt; fill: none; }
+.is-a.btl-solid, .is-a .btl-solid, .is-a.btl-start { fill: var(--btl-a); }
+.is-b .btl-solid, .is-b.btl-start { fill: var(--btl-b); }
+.is-a.btl-future, .is-a .btl-future { stroke: var(--btl-a); }
+.is-b .btl-future { stroke: var(--btl-b); }
+.btl-start { stroke: var(--surface); stroke-width: 1.5; }
+.btl-end { fill: var(--surface); stroke-width: 2; }
+.btl-end.is-a { stroke: var(--btl-a); }
+.btl-end.is-b { stroke: var(--btl-b); }
+.btl-date { font: var(--fw-medium) var(--fs-micro) / 1 var(--font-num); font-variant-numeric: var(--num-variant); fill: var(--fg-2); }
+@media (hover: hover) { .btl-track g[data-tip]:hover .btl-solid { filter: brightness(1.08); } }
+
+/* 已到期（管理端）：整行灰 */
+.btl-row[data-state="expired"], .btl-legend [data-tone="x"] { --btl-a: var(--btl-x-a); --btl-b: var(--btl-x-b); }
+.btl-row[data-state="expired"] .btl-title { color: var(--fg-2); font-weight: var(--fw-medium); }
+
+/* 图例 */
+.btl-legend { display: flex; flex-wrap: wrap; gap: var(--sp-6) var(--sp-16); font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); }
+.btl-legend > span { display: inline-flex; align-items: center; gap: var(--sp-6); white-space: nowrap; }
+.btl-legend svg { display: block; }
+
+/* ---------------------------------------------------------------- 客户到期页 /c/:token：白底，内容居中 */
+html.is-cx { background: var(--surface); }
+html.is-cx body::before { content: none; }
+.cx-page { max-width: 1080px; margin: 0 auto; padding: clamp(20px, 5vw, 56px) clamp(16px, 4vw, 40px) 48px; display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-24); }
+.cx-head { display: grid; gap: var(--sp-6); }
+.cx-title { margin: 0; font-size: clamp(22px, 3.2vw, 30px); line-height: 1.2; font-weight: var(--fw-bold); letter-spacing: -0.02em; color: var(--fg); text-wrap: balance; }
+.cx-sub { margin: 0; font-size: var(--fs-body); line-height: var(--lh-body); color: var(--fg-2); }
+/* 汇总：每个地区一格，大数字 + 一行算式 */
+.cx-sum { display: grid; gap: var(--sp-10); }
+.cx-sum-head { font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); font-weight: var(--fw-medium); }
+.cx-regions { display: flex; flex-wrap: wrap; gap: var(--sp-16) clamp(24px, 5vw, 56px); }
+.cx-region { display: grid; gap: var(--sp-2); min-width: 0; }
+.cx-region-name { font-size: var(--fs-body); color: var(--fg-2); }
+.cx-region-val { font: var(--fw-bold) 28px / 34px var(--font-num); font-variant-numeric: var(--num-variant); color: var(--fg); letter-spacing: -0.01em; }
+.cx-region-val small { margin-left: 2px; font-size: var(--fs-body); font-weight: var(--fw-medium); color: var(--fg-2); letter-spacing: 0; }
+.cx-region-calc { font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); }
+.cx-region-calc .is-today { color: var(--warn-text); }
+.cx-board { display: grid; gap: var(--sp-12); }
+.cx-foot { display: grid; gap: var(--sp-4); padding-top: var(--sp-16); border-top: 1px solid var(--line); }
+.cx-total { font-size: var(--fs-emph); line-height: var(--lh-emph); font-weight: var(--fw-semibold); color: var(--fg); }
+.cx-total .num { font-size: 20px; }
+.cx-note { font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); }
+
+/* ---------------------------------------------------------------- 管理端：团队与套餐 → 客户到期 */
+.cxa-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-8) var(--sp-16); min-width: 0; }
+.cxa-team { width: 180px; }
+.cxa-link { display: inline-flex; align-items: center; gap: var(--sp-6); min-width: 0; flex: 1 1 320px; font-size: var(--fs-body); }
+.cxa-url { max-width: 380px; color: var(--accent); text-decoration: none; font-variant-numeric: var(--num-variant); }
+@media (hover: hover) { .cxa-url:hover { text-decoration: underline; text-underline-offset: 3px; } }
+.cxa-link[data-off] .cxa-url { color: var(--fg-3); text-decoration: line-through; }
+.cxa-seen { margin-left: var(--sp-6); white-space: nowrap; font-size: var(--fs-label); }
+.cxa-reset { height: auto; padding: 0; }
+/* 编辑对话框里的各段：一段一行 */
+.cxa-periods { display: grid; gap: var(--sp-8); }
+.cxa-prow { display: grid; grid-template-columns: 44px minmax(0, 1fr) minmax(0, 1fr) 76px 76px 28px; align-items: center; gap: var(--sp-8); }
+.cxa-prow.is-head { font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); }
+.cxa-prow .datefield { width: 100%; }
+@media (max-width: 560px) {
+  .cxa-prow { grid-template-columns: 1fr 1fr 28px; }
+  .cxa-prow.is-head { display: none; }
+  .cxa-prow > :first-child { grid-column: 1 / -1; }
+  .cxa-prow > :nth-child(6) { grid-row: 2; grid-column: 3; }
+}
