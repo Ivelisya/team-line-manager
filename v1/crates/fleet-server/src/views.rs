@@ -350,6 +350,8 @@ pub struct MachineView {
     pub country: Option<String>,
     /// 上架或修改时手动指定的国家；null = 按 IP 自动
     pub country_set: Option<String>,
+    /// 标了不计费（PUT /machines/{id}/billing-exempt）：计费对账把它当不在团队里（ledger.rs）
+    pub billing_exempt: bool,
     pub ssh_port: i32,
     /// 同机 IP 节点：它所在的宿主机（SSH、agent、主机读数都是宿主机的，`agent` / `host` 就是宿主机的）；其它机器为 null
     pub host_machine: Option<Ref>,
@@ -493,6 +495,7 @@ struct MRow {
     plan_traffic: Option<i32>,
     service_ref: Option<String>,
     country: Option<String>,
+    billing_exempt: bool,
     lifecycle: String,
     lifecycle_reason: Option<String>,
     note: String,
@@ -1258,7 +1261,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
         "select m.id, m.kind::text kind, m.team_id, t.name team_name, t.spare team_spare, m.spare_from, m.spare_since, m.number, m.label, host(m.primary_ip) ip, coalesce(hm.ssh_port, m.ssh_port) ssh_port,
                 m.host_id, display_name(hm.kind::text, hm.label, ht.name, hm.number) host_name, host(m.bind_ip) bind_ip,
                 p.id provider_id, p.name provider_name, p.code provider_code, m.plan_id, pl.name plan_name,
-                pl.bandwidth_mbps plan_bw, pl.traffic_gb plan_traffic, m.service_ref, m.country, m.lifecycle::text lifecycle,
+                pl.bandwidth_mbps plan_bw, pl.traffic_gb plan_traffic, m.service_ref, m.country, exists (select 1 from billing_exempt be where be.machine_id = m.id) billing_exempt, m.lifecycle::text lifecycle,
                 m.lifecycle_reason, m.note, m.revision, m.created_at, m.activated_at, m.retired_at,
                 s.price_cents s_price, s.currency s_currency, s.cycle::text s_cycle, s.due_date s_due, s.billing_tz s_tz,
                 local_date(s.billing_tz) s_today, s.auto_renew s_auto, s.remind_days s_remind, s.traffic_gb s_traffic, s.traffic_reset_day s_reset,
@@ -1627,6 +1630,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 label: r.label,
                 country: r.country.clone().or_else(|| r.ip.parse::<IpAddr>().ok().and_then(|ip| intel.get(&ip)).and_then(|b| b.country.clone())),
                 country_set: r.country,
+                billing_exempt: r.billing_exempt,
                 ip: r.ip,
                 ssh_port: r.ssh_port,
                 host_machine: r.host_id.map(|id| Ref { id, name: r.host_name.clone().unwrap_or_default() }),

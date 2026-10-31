@@ -209,27 +209,46 @@ enum SubCmd {
 
 #[derive(Subcommand)]
 enum BatchCmd {
-    /// 团队的客户批次（含已到期的）：编号、地区、起止、当前个数、时长、节点月、状态，另附客户页链接状态。--periods 再列每批的各段
+    /// 团队的计费批次（含已到期的）：编号、地区、起算 → 下次续费、当前个数、已计期数、节点月、状态，另附当前计费节点数、待定、下次续费与客户页链接状态。
+    /// --slots 再列计费名额（名额 id 前 8 位、节点、地区、起算、状态），--events 再列增减记录
     List {
         team: String,
         #[arg(long)]
-        periods: bool,
+        slots: bool,
+        #[arg(long)]
+        events: bool,
     },
-    /// 新建批次（首购一段）。--end 不给就是开始日加 --months 个月（月底对齐）；编号不给就是团队里最大的加 1
-    Add(batches::AddOpts),
-    /// 续期：追加一段，开始日 = 现在的到期日，个数默认沿用（--count 可以变，如 5 → 4）
-    Renew(batches::RenewOpts),
-    /// 改地区、说明、编号
-    Edit(batches::EditOpts),
-    /// 删除整个批次（要确认）
-    Rm {
-        /// 批次：团队#编号，如 团队2#05
-        batch: String,
+}
+
+#[derive(Subcommand)]
+enum LedgerCmd {
+    /// 一次性初始化：给还没有名额的团队，把现在每个计费节点建一个名额（起算日 = --since）；已有名额的团队跳过。不加 --yes 只预览。初始化之后中控才开始自动对账
+    Init {
+        #[arg(long, value_name = "日期")]
+        since: String,
         #[arg(long)]
         yes: bool,
     },
-    /// 改某一段的日期、月数、个数，或 --rm 删掉这一段（同批次的段不能重叠）
-    Period(batches::PeriodOpts),
+    /// 月度应收：每批本月那一期一行、合计节点月、月初 / 月末个数、本月增减（月份默认本月，写 2026-11；以后的月份是预估）
+    Month { team: String, month: Option<String> },
+    /// 看或改一个计费名额：--start 起算日、--region、--note，--end 结束（只限手动名额与已空出的）/ --reopen 恢复（只限手动名额）。名额写 id 前缀或节点名
+    Slot(batches::SlotOpts),
+    /// 添加手动计费节点（系统外的节点，如墨西哥家宽）：不会自动结束，用 slot --end 结束
+    Add(batches::AddOpts),
+    /// 删除手动计费节点（录错了）；系统节点的名额由对账自动结束
+    Rm {
+        slot: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// 节点设为不计费（--on）/ 恢复计费（--off）：对账当它离开 / 加入团队，照样走 24 小时替换配对
+    Exempt {
+        node: String,
+        #[arg(long, conflicts_with = "off", required_unless_present = "off")]
+        on: bool,
+        #[arg(long)]
+        off: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -394,8 +413,12 @@ enum Cmd {
         #[arg(long, default_value_t = 30)]
         days: i64,
     },
-    /// 费用：订阅（价格、到期、自动续费、提醒、账单时区、流量上限与本周期已用）与最近的续费记录
+    /// 费用：订阅（价格、到期、自动续费、提醒、账单时区、流量上限与本周期已用）与最近的续费记录。
+    /// 向团队收费的计费台账用子命令：init / month / slot / add / rm / exempt（批次表看 batch list）
+    #[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
     Billing {
+        #[command(subcommand)]
+        cmd: Option<LedgerCmd>,
         /// 机器；用 --due 看待付清单时不用写
         #[arg(required_unless_present = "due", conflicts_with = "due")]
         machine: Option<String>,
@@ -606,7 +629,7 @@ enum Cmd {
         #[arg(long, value_name = "机器,…", conflicts_with = "entry")]
         machines: Option<String>,
     },
-    /// 客户批次账（卖给客户的节点什么时候到期，与供应商订阅无关）：list / add / renew / edit / rm / period。批次用 团队#编号 指定，如 团队2#05
+    /// 计费批次（按节点数向团队收费，由中控自动对账：节点加入 / 离开自动增减，24 小时内一进一出算替换）：batch list <团队>；改名额、手动名额、月度应收用 fleetctl billing
     Batch {
         #[command(subcommand)]
         cmd: BatchCmd,
@@ -1103,7 +1126,15 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Show { machine } => cmds::show(x, &machine),
         Cmd::Series { machine, range, metric } => cmds::series(x, &machine, &range, &metric),
         Cmd::Uptime { machine, days } => cmds::uptime(x, &machine, days),
-        Cmd::Billing { machine, due, by_provider, include_spare } => match (machine, due) {
+        Cmd::Billing { cmd: Some(c), .. } => match c {
+            LedgerCmd::Init { since, yes } => batches::init(x, &since, yes),
+            LedgerCmd::Month { team, month } => batches::month(x, &team, month.as_deref()),
+            LedgerCmd::Slot(o) => batches::slot(x, &o),
+            LedgerCmd::Add(o) => batches::add(x, &o),
+            LedgerCmd::Rm { slot, yes } => batches::rm(x, &slot, yes),
+            LedgerCmd::Exempt { node, on, .. } => batches::exempt(x, &node, on),
+        },
+        Cmd::Billing { cmd: None, machine, due, by_provider, include_spare } => match (machine, due) {
             (_, Some(d)) => billing::billing_due(x, &d, by_provider, include_spare),
             (Some(m), None) => billing::billing(x, &m),
             (None, None) => unreachable!("clap 要求给机器或 --due"),
@@ -1159,14 +1190,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Entries { machine } => cmds::entries(x, machine.as_deref()),
         Cmd::Share { entry: Some(e), .. } => ops::share(x, &e),
         Cmd::Share { team, machines, .. } => ops::share_many(x, team.as_deref(), machines.as_deref()),
-        Cmd::Batch { cmd } => match cmd {
-            BatchCmd::List { team, periods } => batches::list(x, &team, periods),
-            BatchCmd::Add(o) => batches::add(x, &o),
-            BatchCmd::Renew(o) => batches::renew(x, &o),
-            BatchCmd::Edit(o) => batches::edit(x, &o),
-            BatchCmd::Rm { batch, yes } => batches::rm(x, &batch, yes),
-            BatchCmd::Period(o) => batches::period(x, &o),
-        },
+        Cmd::Batch { cmd: BatchCmd::List { team, slots, events } } => batches::list(x, &team, slots, events),
         Cmd::CustomerPage(o) => batches::page(x, &o),
         Cmd::Sub { cmd } => match cmd {
             SubCmd::Ls => subs::ls(x),

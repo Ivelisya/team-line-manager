@@ -394,6 +394,7 @@ pub(crate) mod tests {
             ip: "192.0.2.1".into(),
             country: None,
             country_set: None,
+            billing_exempt: false,
             ssh_port: 22,
             host_machine: None,
             bind_ip: None,
