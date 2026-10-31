@@ -71,11 +71,24 @@ pub async fn entry_routers(_a: Actor, State(st): State<AppState>, ApiPath(id): A
     Ok(ok(crate::routers::exits_on_entry(&st.db, id).await?))
 }
 
-/// 一批入口的分享链接，一次查回，按 ids 的顺序：(链接, 入口名「节点名」或「线路机名-直出」, 线路机名, 端口)；有一条查不到就是 404
-async fn share_links(db: &sqlx::PgPool, ids: &[Uuid]) -> ApiResult<Vec<(String, String, Option<String>, i32)>> {
+/// 一条入口的分享链接
+#[derive(Clone)]
+struct Share {
+    url: String,
+    /// AnyTLS 链接：线路机报了 sing-box 在跑、入口有 AnyTLS 端口时才有（entries::anytls_live）
+    anytls_url: Option<String>,
+    /// 入口名「节点名」或「线路机名-直出」
+    name: String,
+    relay: Option<String>,
+    port: i32,
+}
+
+/// 一批入口的分享链接，一次查回，按 ids 的顺序；有一条查不到就是 404
+async fn share_links(db: &sqlx::PgPool, ids: &[Uuid]) -> ApiResult<Vec<Share>> {
     #[derive(sqlx::FromRow)]
     struct Row {
         id: Uuid,
+        relay_id: Uuid,
         client_uuid: Uuid,
         short_id: String,
         port: i32,
@@ -90,7 +103,7 @@ async fn share_links(db: &sqlx::PgPool, ids: &[Uuid]) -> ApiResult<Vec<(String, 
         relay_label: Option<String>,
     }
     let rows: Vec<Row> = sqlx::query_as(
-        "select e.id, e.client_uuid, e.short_id, e.port, r.public_host, r.reality_sni, r.reality_public_key,
+        "select e.id, e.relay_id, e.client_uuid, e.short_id, e.port, r.public_host, r.reality_sni, r.reality_public_key,
                 n.kind::text kind, t.name team, n.number, n.label, e.node_id = e.relay_id direct, rm.label relay_label
          from entry e join relay r on r.machine_id = e.relay_id join machine rm on rm.id = e.relay_id join machine n on n.id = e.node_id
          left join team t on t.id = n.team_id where e.id = any($1) and e.lifecycle <> 'removed'",
@@ -98,12 +111,17 @@ async fn share_links(db: &sqlx::PgPool, ids: &[Uuid]) -> ApiResult<Vec<(String, 
     .bind(ids)
     .fetch_all(db)
     .await?;
-    let links: HashMap<Uuid, _> = rows
+    let mut relays: Vec<Uuid> = rows.iter().map(|r| r.relay_id).collect();
+    relays.sort();
+    relays.dedup();
+    let at = if relays.is_empty() { HashMap::new() } else { entries::anytls_live(db, &relays).await? };
+    let links: HashMap<Uuid, Share> = rows
         .into_iter()
         .map(|r| {
-            let remark = crate::names::entry_name(r.direct, &r.kind, r.label.as_deref(), r.team.as_deref(), r.number);
-            let url = entries::share_url(r.client_uuid, &r.public_host, r.port, &r.reality_sni, &r.reality_public_key, &r.short_id, &remark);
-            (r.id, (url, remark, r.relay_label, r.port))
+            let name = crate::names::entry_name(r.direct, &r.kind, r.label.as_deref(), r.team.as_deref(), r.number);
+            let url = entries::share_url(r.client_uuid, &r.public_host, r.port, &r.reality_sni, &r.reality_public_key, &r.short_id, &name);
+            let anytls_url = at.get(&r.id).map(|&p| entries::anytls_url(r.client_uuid, &r.public_host, p, &r.reality_sni, &entries::anytls_name(&name)));
+            (r.id, Share { url, anytls_url, name, relay: r.relay_label, port: r.port })
         })
         .collect();
     // 重复的 id 各出一条（同逐个取）
@@ -112,12 +130,12 @@ async fn share_links(db: &sqlx::PgPool, ids: &[Uuid]) -> ApiResult<Vec<(String, 
 
 pub async fn share(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
     a.require_scope("secrets")?;
-    let (url, remark, relay, port) = share_links(&st.db, &[id]).await?.swap_remove(0);
+    let s = share_links(&st.db, &[id]).await?.swap_remove(0);
     let mut tx = st.db.begin().await?;
     // 记是哪条入口（同启用 / 停用的写法加入口名），不记链接本身
-    audit(&mut tx, &a.name, "entry.share", "entry", Some(id), json!({"relay": relay, "port": port, "entry": remark})).await?;
+    audit(&mut tx, &a.name, "entry.share", "entry", Some(id), json!({"relay": s.relay, "port": s.port, "entry": s.name})).await?;
     tx.commit().await?;
-    Ok(ok(json!({"url": url})))
+    Ok(ok(json!({"url": s.url, "anytls_url": s.anytls_url})))
 }
 
 #[derive(Deserialize)]
@@ -126,14 +144,14 @@ pub struct ShareBatchIn {
 }
 
 /// 批量取分享链接（`POST /entries/share`，要 secrets 权限）：一次请求、一条审计（列出入口名，不记链接）。
-/// 返回 `{items: [{id, name, url}]}`，按请求的顺序；有一条不存在就整批失败
+/// 返回 `{items: [{id, name, url, anytls_url}]}`（anytls_url 没有时为 null），按请求的顺序；有一条不存在就整批失败
 pub async fn share_batch(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<ShareBatchIn>) -> ApiResult<Json<Value>> {
     a.require_scope("secrets")?;
     if b.ids.is_empty() || b.ids.len() > 500 {
         return Err(ApiError::bad_request("一次取 1–500 条入口的链接"));
     }
     let links = share_links(&st.db, &b.ids).await?;
-    let items: Vec<Value> = b.ids.iter().zip(links).map(|(id, (url, name, _, _))| json!({"id": id, "name": name, "url": url})).collect();
+    let items: Vec<Value> = b.ids.iter().zip(links).map(|(id, s)| json!({"id": id, "name": s.name, "url": s.url, "anytls_url": s.anytls_url})).collect();
     let names: Vec<&Value> = items.iter().map(|i| &i["name"]).collect();
     let mut tx = st.db.begin().await?;
     audit(&mut tx, &a.name, "entry.share", "entry", None, json!({"entries": names})).await?;

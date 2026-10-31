@@ -45,6 +45,14 @@ pub fn sub_name(country: Option<&str>, provider: Option<&str>, who: &str, direct
     parts.join(" · ")
 }
 
+/// 客户端订阅里 AnyTLS 那条的名字：同一入口的 Reality 名字（`sub_name`）把最后的「VLESS Reality」换成「AnyTLS」
+pub fn sub_name_anytls(reality: &str) -> String {
+    match reality.strip_suffix("VLESS Reality") {
+        Some(b) => format!("{b}AnyTLS"),
+        None => format!("{reality} · AnyTLS"),
+    }
+}
+
 /// 重新编号：按现有编号顺序压缩成 1..n。返回 (machine_id, 旧号, 新号)，只含有变化的。
 /// 新号 ≤ 旧号，所以按新号升序逐条更新不会撞唯一索引。
 pub fn compact_numbers<I: Clone>(mut nodes: Vec<(I, i32)>) -> Vec<(I, i32, i32)> {

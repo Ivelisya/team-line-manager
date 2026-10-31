@@ -553,7 +553,7 @@ pub async fn bump_relay(tx: &mut Tx<'_>, relay_id: Uuid) -> sqlx::Result<i64> {
 /// 期望状态的格式版本：`entries::desired_state` 生成的内容变了（加字段、改算法、改默认值），而库里的数据没变时，**手动 +1**。
 /// 线路机只在代数变了时才重拉期望状态，中控升级后数据没变就一直用旧格式的那份；启动时和库里记的比（`sync_desired_format`），
 /// 不同就给所有未退役线路机代数 +1
-pub const DESIRED_FORMAT: i64 = 1;
+pub const DESIRED_FORMAT: i64 = 2;
 /// 库里记 `DESIRED_FORMAT` 的 app_setting 键
 const DESIRED_FORMAT_KEY: &str = "desired_format";
 
