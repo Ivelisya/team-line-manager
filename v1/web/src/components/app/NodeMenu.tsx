@@ -5,7 +5,7 @@ import * as React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowUpCircle, BellOff, CalendarPlus, Copy, Link2, PanelRightOpen, PencilLine, Power, Repeat2, Replace, SquareTerminal, Wrench } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
-import { fetchShare, maintOwner, useEndMaintenance, useSilences } from '@/lib/queries';
+import { fetchShare, mainShare, maintOwner, useEndMaintenance, useSilences } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import { openMaint, openMove, openRenew, openReplace, openRetire, openUpgrade } from '@/lib/nodeActions';
 import { collator } from '@/lib/sort';
@@ -37,7 +37,7 @@ function useNodeMenu(m: MachineView): MenuEntry[] {
   const maintOnHost = m.maintenance && !!silences && maintOwner(silences, m).onHost;
   const retired = m.lifecycle === 'retired';
   const share = async (entryId: string) => {
-    try { const r = await fetchShare(entryId); await copyShareLink(r.url); } catch (e) { toast.err(e); }
+    try { const r = await fetchShare(entryId); await copyShareLink(mainShare(r)); } catch (e) { toast.err(e); }
   };
   // 还在应用或正在移除的入口不给分享
   const shareable = m.entries.filter((e) => e.lifecycle !== 'pending' && e.lifecycle !== 'removing');

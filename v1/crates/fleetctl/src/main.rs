@@ -816,6 +816,14 @@ enum Cmd {
         #[command(subcommand)]
         cmd: Option<PingTargetsCmd>,
     },
+    /// 改线路机的参数。--protocols：入口协议，both（Reality + AnyTLS，默认）/ reality（不给 AnyTLS）/ anytls（只留 AnyTLS：
+    /// Reality 入站改听回环，分享链接、订阅只给 AnyTLS；要线路机 AnyTLS 在跑、没有穿透入口、没有软路由出口指着它的入口，否则中控拒绝并写明原因）
+    RelaySet {
+        /// 线路机（id / 名称 / IP）
+        relay: String,
+        #[arg(long, value_parser = ["both", "reality", "anytls"])]
+        protocols: String,
+    },
     /// 一台线路机的三网 PING：不给子命令显示目标与当前读数；set / reset / mode 改这台的单独设置
     Ping {
         /// 线路机（id / 名称 / IP）
@@ -1251,6 +1259,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             Some(PingTargetsCmd::Set { slot, name, target }) => ping::targets_set(x, slot, name.as_deref(), target.as_deref()),
             Some(PingTargetsCmd::Mode { mode }) => ping::targets_mode(x, &mode),
         },
+        Cmd::RelaySet { relay, protocols } => lifecycle::relay_set(x, &relay, &protocols),
         Cmd::Ping { relay, cmd } => match cmd {
             None => ping::show(x, &relay),
             Some(PingCmd::Set { slot, name, target }) => ping::set(x, &relay, slot, name.as_deref(), target.as_deref()),

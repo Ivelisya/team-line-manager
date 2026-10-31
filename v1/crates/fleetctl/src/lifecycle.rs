@@ -18,6 +18,26 @@ fn find_relay(ctx: &Ctx, q: &str) -> anyhow::Result<Value> {
     Ok(m)
 }
 
+/// 线路机入口协议的中文
+pub fn protocols_cn(p: &str) -> &str {
+    match p {
+        "reality" => "仅 Reality",
+        "anytls" => "仅 AnyTLS（Reality 对公网关闭）",
+        _ => "Reality + AnyTLS",
+    }
+}
+
+/// `fleetctl relay-set <线路机> --protocols both|reality|anytls`：改线路机的入口协议（PATCH /relays/{id}，代数 +1，线路机热更新、不重启 Xray）
+pub fn relay_set(ctx: &Ctx, relay: &str, protocols: &str) -> anyhow::Result<u8> {
+    let m = find_relay(ctx, relay)?;
+    let d = ctx.c.patch(&format!("/relays/{}", st(&m, "/id")), &serde_json::json!({"protocols": protocols}))?;
+    ctx.emit(&d, || {
+        let p = protocols_cn(&st(&d, "/protocols")).to_string();
+        if d["changed"] == true { format!("已把 {} 的入口协议改成 {p}（配置版本 {}，线路机会自己应用）", st(&d, "/name"), st(&d, "/generation")) } else { format!("{} 的入口协议本来就是 {p}", st(&d, "/name")) }
+    });
+    Ok(0)
+}
+
 /// 预览里要改的软路由出口（替换、换线路机、搬空同一个格式）：软路由、状态、出口、现在、改成
 pub(crate) fn exit_rows(routers: &[Value], node: Option<&str>) -> Vec<Vec<String>> {
     let mut t = vec![];

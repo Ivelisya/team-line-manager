@@ -56,6 +56,8 @@ export interface EntryView {
 }
 export interface HealthReason { key: string; severity: 'info' | 'warning' | 'critical' | string; text: string }
 /** agent 自报的健康数据（只列界面用到的字段，完整见 docs/API.md） */
+export type RelayProtocols = 'both' | 'reality' | 'anytls';
+
 /** 线路机的 AnyTLS 外壳（sing-box）：installed = 有 sing-box 程序；running = fleet-singbox 在跑；last_error = 最近一次应用配置的错误 */
 export interface AnytlsStatus { installed: boolean; running: boolean; version?: string | null; last_error?: string | null }
 
@@ -130,7 +132,8 @@ export interface MachineView {
   /** 上架失败（lifecycle = failed）：失败的上架/恢复作业；退役中（retiring）且最近的退役作业失败：那个退役作业 */
   failed_job: { id: string; kind: string; state: string } | null;
   open_incidents: number; maintenance: boolean;
-  relay: { public_host: string; generation: number; applied_generation: number; applied_at: string | null; apply_error: string | null; port_min: number; port_max: number } | null;
+  /** protocols：入口协议（PATCH /relays/{id}）——both Reality + AnyTLS / reality 仅 Reality / anytls 仅 AnyTLS（Reality 入站听回环） */
+  relay: { public_host: string; generation: number; applied_generation: number; applied_at: string | null; apply_error: string | null; port_min: number; port_max: number; protocols?: RelayProtocols } | null;
   /** 系统调优记录：profile 为 null = 未调优（迁移前上线的机器、已撤销）；current = 就是中控当前的档，false 为旧档或未调优；
    *  params = 最近一次调优的推导参数（tune-v2 起，旧档与未调优为 null）。家宽代理、同机 IP 节点为 null */
   tune: { profile: string | null; at: string | null; current: boolean; params: TuneParams | null } | null;

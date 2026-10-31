@@ -497,7 +497,7 @@ pub(crate) mod tests {
     }
 
     fn relay_info(generation: i64, applied: i64, generation_at: Option<OffsetDateTime>, applied_at: Option<OffsetDateTime>) -> RelayInfo {
-        RelayInfo { public_host: "h".into(), generation, applied_generation: applied, applied_at, generation_at, apply_error: None, port_min: 20000, port_max: 29999, unreachable: None, reach_unknown: false }
+        RelayInfo { public_host: "h".into(), generation, applied_generation: applied, applied_at, generation_at, apply_error: None, port_min: 20000, port_max: 29999, protocols: "both".into(), unreachable: None, reach_unknown: false }
     }
 
     /// 探测失败的入口按「已连续失败」造（streak 3）：首次失败只是警告，见 `first_probe_failure_is_only_a_warning`

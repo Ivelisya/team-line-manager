@@ -554,6 +554,9 @@ pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
         if let Some(h) = m.pointer("/agent/health").filter(|h| !h.is_null()) {
             rows.push(("agent 自报", agent_health_cn(h)));
         }
+        if let Some(p) = m.pointer("/relay/protocols").and_then(Value::as_str) {
+            rows.push(("入口协议", crate::lifecycle::protocols_cn(p).to_string()));
+        }
         if st(&m, "/kind") == "relay" && !m["agent"].is_null() {
             rows.push(("AnyTLS", anytls_cn(&m["agent"]["anytls"])));
         }

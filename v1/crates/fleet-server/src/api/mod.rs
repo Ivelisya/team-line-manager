@@ -125,6 +125,7 @@ pub fn router() -> Router<AppState> {
         .route("/provision", post(provision::create))
         // 线路机与入口
         .route("/relays", get(relays::list))
+        .route("/relays/{id}", patch(relays::patch_relay))
         .route("/entries/{id}/actions", post(relays::entry_action))
         .route("/entries/{id}/routers", get(relays::entry_routers))
         .route("/entries/{id}/share", get(relays::share))

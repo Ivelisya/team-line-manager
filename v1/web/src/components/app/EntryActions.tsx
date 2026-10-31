@@ -5,7 +5,7 @@ import * as React from 'react';
 import { Slot } from '@radix-ui/react-slot';
 import { ArrowLeftRight, KeyRound, Link2, Loader2, MoreHorizontal, Power, PowerOff } from 'lucide-react';
 import type { EntryView } from '@/lib/types';
-import { fetchShare, useEntryAction, useEntryRouterExits, useReverse, useReversePreview } from '@/lib/queries';
+import { fetchShare, mainShare, useEntryAction, useEntryRouterExits, useReverse, useReversePreview } from '@/lib/queries';
 import { isReverse } from '@/lib/derive';
 import { DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/overlays';
 import { IconButton, Button } from '@/components/ui/button';
@@ -76,7 +76,7 @@ export function EntryMenus({ entries, children }: { entries: EntryView[]; childr
   const show = (k: Dlg['k'], e: EntryView, url = '', at: string | null = null) => setDlg({ k, e, url, at, open: true });
   const hide = (o: boolean) => { if (!o) setDlg((d) => d && { ...d, open: false }); };
   const share = async (e: EntryView) => {
-    try { const r = await fetchShare(e.id); show('share', e, r.url, r.anytls_url ?? null); } catch (err) { toast.err(err); }
+    try { const r = await fetchShare(e.id); show('share', e, r.url ?? '', r.anytls_url ?? null); } catch (err) { toast.err(err); }
   };
   const off = cur?.lifecycle === 'disabled';
   const canAct = cur?.lifecycle === 'active' || off;
@@ -113,7 +113,7 @@ export function EntryMenus({ entries, children }: { entries: EntryView[]; childr
           await act.mutateAsync({ id: e.id, action: 'rotate', confirm: entryLabel(e) });
           // 旧链接已失效：通知里直接给新链接，不用再去菜单里找
           toast.show({ tone: 'ok', text: `入口「${entryLabel(e)}」的凭据已轮换，旧链接已失效`, duration: 15000,
-            action: { label: '复制新链接', onClick: () => void fetchShare(e.id).then((r) => copyText(r.url, '新分享链接'), toast.err) } });
+            action: { label: '复制新链接', onClick: () => void fetchShare(e.id).then((r) => copyText(mainShare(r), '新分享链接'), toast.err) } });
         }}>
         <RouterExitsNote entryId={dlg.e.id} open={dlg.open} verb="轮换" />
       </TypedConfirmDialog>}
@@ -121,15 +121,15 @@ export function EntryMenus({ entries, children }: { entries: EntryView[]; childr
       {dlg?.k === 'share' && <Dialog open={dlg.open} onOpenChange={hide}>
         <DialogContent size="md">
           <DialogHeader><DialogTitle>分享链接 · {entryLabel(dlg.e)}</DialogTitle><DialogDescription>只发给需要的人 <InfoTip text="链接等同于凭据；查看分享链接会记入审计。" /></DialogDescription></DialogHeader>
-          {/* 线路机上 AnyTLS 可用时两条：Reality 与 AnyTLS（同一入口、同一份凭据），各自复制 */}
-          {dlg.at ? <>
+          {/* 线路机上 AnyTLS 可用时两条：Reality 与 AnyTLS（同一入口、同一份凭据），各自复制；线路机只留 AnyTLS 时只有 AnyTLS 一条 */}
+          {dlg.at && dlg.url ? <>
             <Field label="Reality"><Textarea readOnly value={dlg.url} rows={3} className="mono" onFocus={(ev) => ev.currentTarget.select()} /></Field>
             <Field label="AnyTLS" info="证书是线路机自签的，链接里已带跳过校验"><Textarea readOnly value={dlg.at} rows={2} className="mono" onFocus={(ev) => ev.currentTarget.select()} /></Field>
-          </> : <Textarea readOnly value={dlg.url} rows={4} className="mono" onFocus={(ev) => ev.currentTarget.select()} />}
+          </> : <Textarea readOnly value={dlg.url || dlg.at || ''} rows={4} className="mono" onFocus={(ev) => ev.currentTarget.select()} />}
           <DialogFooter>
             <Button onClick={() => hide(false)}>关闭</Button>
-            {dlg.at && <Button onClick={() => void copyText(dlg.at ?? '', 'AnyTLS 链接')}>复制 AnyTLS</Button>}
-            <Button variant="primary" onClick={() => void copyText(dlg.url, '链接')}>{dlg.at ? '复制 Reality' : '复制链接'}</Button>
+            {dlg.at && dlg.url && <Button onClick={() => void copyText(dlg.at ?? '', 'AnyTLS 链接')}>复制 AnyTLS</Button>}
+            <Button variant="primary" onClick={() => void copyText(dlg.url || dlg.at || '', '链接')}>{dlg.at && dlg.url ? '复制 Reality' : '复制链接'}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>}

@@ -455,6 +455,8 @@ pub struct RelayInfo {
     pub apply_error: Option<String>,
     pub port_min: i32,
     pub port_max: i32,
+    /// 入口协议：both（Reality 与 AnyTLS）/ reality / anytls（只留 AnyTLS，Reality 入站听回环），见 `PATCH /relays/{id}`
+    pub protocols: String,
     /// 主探测来源（中控或探测点，reach.rs）最近 3 轮（5 分钟内）都连不上，或某个在用入口端口最近 3 次（30 分钟、至少 3 遍轮换内）都连不上：
     /// 告警摘要（写明哪一路测的，括号里是失败原因：去重，带端口；单个端口的取它最近一次）；否则为 None（`reach::unreachable_sql`）。
     /// 健康判定据此报 relay_unreachable；它变了 reach.rs 发 `Event::Machine`（视图完整重算），不对外输出
@@ -535,6 +537,7 @@ struct MRow {
     r_err: Option<String>,
     r_pmin: Option<i32>,
     r_pmax: Option<i32>,
+    r_proto: Option<String>,
     tune_profile: Option<String>,
     tuned_at: Option<OffsetDateTime>,
     tune_params: Option<serde_json::Value>,
@@ -1262,7 +1265,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 s.traffic_used_base s_base, s.traffic_used_base_at s_base_at, s.overrides s_overrides, sb.billing_day::int s_bday, s.traffic_rule s_rule, tp.traffic_rule t_rule,
                 tp.price_cents t_price, tp.currency t_currency, tp.cycle::text t_cycle, tp.billing_tz t_tz, tp.traffic_gb t_traffic, tp.traffic_reset t_reset, tp.remind_days t_remind, local_date(tp.billing_tz) t_today,
                 {A_COLS}, r.public_host r_host, r.generation r_gen, r.applied_generation r_applied, r.applied_at r_applied_at, r.generation_at r_gen_at,
-                r.apply_error r_err, r.port_min r_pmin, r.port_max r_pmax, m.tune_profile, m.tuned_at, m.tune_params, case when m.kind = 'relay' then {unreach} end r_unreach,
+                r.apply_error r_err, r.port_min r_pmin, r.port_max r_pmax, r.protocols r_proto, m.tune_profile, m.tuned_at, m.tune_params, case when m.kind = 'relay' then {unreach} end r_unreach,
                 m.kind = 'relay' and {reach_unknown} r_reach_unknown
          from machine m
          left join team t on t.id = m.team_id
@@ -1529,6 +1532,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 apply_error: r.r_err.clone(),
                 port_min: r.r_pmin.unwrap_or(0),
                 port_max: r.r_pmax.unwrap_or(0),
+                protocols: r.r_proto.clone().unwrap_or_else(|| crate::entries::BOTH.into()),
                 unreachable: r.r_unreach.clone(),
                 reach_unknown: r.r_reach_unknown,
             });

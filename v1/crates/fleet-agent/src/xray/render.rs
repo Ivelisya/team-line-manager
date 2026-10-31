@@ -166,6 +166,9 @@ pub fn route_tag(e: &DesiredEntry) -> String {
 /// - 只有 VLESS + REALITY，传输 tcp、`header.type` 为 none，flow 用 `xtls-rprx-vision`，sniffing 的 `destOverride` 含 `quic`；
 /// - `minClientVer` 不得高于 `MAX_MIN_CLIENT_VER`（1.8.2）：更高的值会让 mihomo 被 Xray 26.7+ 拒绝连接；
 /// - 分享链接里 `fp=chrome`、`flow=xtls-rprx-vision`、`type=tcp`
+///
+/// 线路机只留 AnyTLS（`RelayParams::reality_public` 为 false）时只把监听地址改成 127.0.0.1：入站本身、tag、客户端、
+/// 统计与规则全都照旧，只是公网连不上 Reality。改监听走差异应用（同一个 tag 内容变了：rmi + adi，不重启 Xray）
 fn inbound_json(e: &DesiredEntry, rp: &RelayParams, min_ver: &str) -> Value {
     let mut clients = vec![json!({"id": e.client_uuid.to_string(), "email": tags::email(e.id), "flow": "xtls-rprx-vision"})];
     // 穿透：入站里多一个 bridge 专用的客户端（Xray 26 的 VLESS 反向代理）。它连上来时 Xray 建出站 `rvs-<入口>`、
@@ -176,7 +179,7 @@ fn inbound_json(e: &DesiredEntry, rp: &RelayParams, min_ver: &str) -> Value {
         clients.push(json!({"id": bridge_uuid.to_string(), "email": tags::bridge_email(e.id), "reverse": {"tag": tags::reverse(e.id)}}));
     }
     json!({
-        "listen": "0.0.0.0",
+        "listen": if rp.reality_public { "0.0.0.0" } else { "127.0.0.1" },
         "port": e.port,
         "protocol": "vless",
         "tag": tags::inbound(e.id),
@@ -467,6 +470,7 @@ pub fn skeleton(ctx: &RenderCtx) -> Rendered {
             min_client_ver: None,
             echo_url: String::new(),
             probe_interval_s: 30,
+            reality_public: true,
         },
         entries: vec![],
         ping: None,
@@ -508,6 +512,7 @@ pub mod tests {
                 min_client_ver: Some("1.8.2".into()),
                 echo_url: "http://echo.example/ip".into(),
                 probe_interval_s: 30,
+                reality_public: true,
             },
             entries,
             ping: None,
@@ -897,6 +902,37 @@ x"]));
         assert_eq!(rule(format!("probe-{id}"))["inboundTag"], json!([format!("probe-{id}")]));
         assert!(!r.outbounds.iter().any(|o| tag_of(o) == format!("out-{id}")));
         assert_eq!(Rendered::from_full(r.full.clone()), r);
+    }
+
+    /// 线路机只留 AnyTLS：Reality 入站只改听 127.0.0.1，别的（入站集合、规则、骨架）全都不变；差异应用是同一个 tag 的换入站
+    #[test]
+    fn reality_private_only_changes_listen() {
+        let ds = || desired(vec![with_anytls(entry(1, 20001, true)), with_anytls(direct(2, 20002))]);
+        let public = render(&ds(), &ctx()).unwrap();
+        let mut d = ds();
+        d.relay.reality_public = false;
+        let private = render(&d, &ctx()).unwrap();
+        let id = Uuid::from_u128(1).simple().to_string();
+        let main = |r: &Rendered| r.inbounds.iter().find(|i| tag_of(i) == format!("in-{id}")).unwrap().clone();
+        assert_eq!((main(&public)["listen"].as_str(), main(&private)["listen"].as_str()), (Some("0.0.0.0"), Some("127.0.0.1")));
+        let mut m = main(&private);
+        m["listen"] = json!("0.0.0.0");
+        assert_eq!(m, main(&public), "只差监听地址");
+        assert_eq!((&private.rules, &private.outbounds, &private.static_part), (&public.rules, &public.outbounds, &public.static_part));
+        let tags = |r: &Rendered| r.inbounds.iter().map(|i| tag_of(i).to_string()).collect::<Vec<_>>();
+        assert_eq!(tags(&private), tags(&public));
+        assert!(private.inbounds.iter().filter(|i| tag_of(i).starts_with("at-") || tag_of(i).starts_with("probe-")).all(|i| i["listen"] == "127.0.0.1"));
+        // 差异应用：两个主入站各换一次（rmi + adi 相邻），没有别的步骤
+        let rt = crate::xray::cli::Runtime {
+            inbounds: tags(&public),
+            outbounds: public.outbounds.iter().map(|o| tag_of(o).to_string()).collect(),
+            rules: public.rules.iter().map(|r| (rule_tag_of(r).to_string(), r["outboundTag"].as_str().unwrap_or("").to_string())).collect(),
+        };
+        let steps = crate::xray::plan::plan(&rt, &public, &private);
+        assert_eq!(steps.iter().map(|s| s.op.describe()).collect::<Vec<_>>(), [
+            format!("rmi in-{id}"), format!("adi in-{id}"),
+            format!("rmi in-{}", Uuid::from_u128(2).simple()), format!("adi in-{}", Uuid::from_u128(2).simple()),
+        ]);
     }
 
     #[test]
