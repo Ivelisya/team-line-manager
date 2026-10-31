@@ -806,12 +806,17 @@ pub fn share(ctx: &Ctx, entry: &str) -> anyhow::Result<u8> {
     let es = cmds::all_entries(ctx)?;
     let e = resolve::entry(&es, entry).map_err(|e| anyhow!(e))?;
     let d = ctx.c.get(&format!("/entries/{}/share", st(e, "/id")))?;
-    ctx.emit(&d, || st(&d, "/url"));
+    // 第一行 Reality（vless://）；线路机上 AnyTLS 可用时第二行是 anytls://
+    ctx.emit(&d, || match d["anytls_url"].as_str() {
+        Some(a) => format!("{}\n{a}", st(&d, "/url")),
+        None => st(&d, "/url"),
+    });
     Ok(0)
 }
 
 /// `share --team <团队> | --machines a,b,c`：一次请求取一批在用入口的分享链接（一条审计）。
-/// 团队 = 团队里在用节点的入口；机器 = 节点的入口、线路机的直出入口。输出每行「名称 链接」，`--json` 是 `[{id, name, relay, url}]`；
+/// 团队 = 团队里在用节点的入口；机器 = 节点的入口、线路机的直出入口。输出每行「名称 链接」（链接在最后一列），线路机上 AnyTLS 可用的入口
+/// 紧跟一行「名称 AnyTLS anytls://…」；`--json` 是 `[{id, name, relay, url, anytls_url}]`（anytls_url 没有时为 null）；
 /// 没有在用入口的机器写到 stderr，不进输出（输出可以直接给脚本读）
 pub fn share_many(ctx: &Ctx, team: Option<&str>, machines: Option<&str>) -> anyhow::Result<u8> {
     let mut nodes: Vec<(String, String)> = vec![];
@@ -853,11 +858,19 @@ pub fn share_many(ctx: &Ctx, team: Option<&str>, machines: Option<&str>) -> anyh
         .unwrap_or_default()
         .iter()
         .zip(&picked)
-        .map(|(i, e)| json!({"id": i["id"], "name": i["name"], "relay": e.pointer("/relay/name"), "url": i["url"]}))
+        .map(|(i, e)| json!({"id": i["id"], "name": i["name"], "relay": e.pointer("/relay/name"), "url": i["url"], "anytls_url": i["anytls_url"]}))
         .collect();
     let items = Value::Array(items);
-    ctx.emit(&items, || items.as_array().map(Vec::as_slice).unwrap_or_default().iter().map(|i| format!("{} {}", st(i, "/name"), st(i, "/url"))).collect::<Vec<_>>().join("
-"));
+    ctx.emit(&items, || {
+        let mut lines = vec![];
+        for i in items.as_array().map(Vec::as_slice).unwrap_or_default() {
+            lines.push(format!("{} {}", st(i, "/name"), st(i, "/url")));
+            if let Some(a) = i["anytls_url"].as_str() {
+                lines.push(format!("{} AnyTLS {a}", st(i, "/name")));
+            }
+        }
+        lines.join("\n")
+    });
     Ok(0)
 }
 

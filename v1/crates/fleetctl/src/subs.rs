@@ -1,6 +1,7 @@
 //! 客户端订阅：sub ls / add / edit / rotate / rm / show（都要 secrets 权限，同 share）。
 //! 订阅是给自己的客户端（Clash Verge、OpenClash 的 proxy-provider、v2rayN / Shadowrocket）按一个链接拉入口列表：
-//! 按规则（团队、指定机器）在请求时现算，替换节点、换线路机、轮换凭据后客户端更新订阅就是新的。链接只在 add / rotate 时输出一次
+//! 按规则（团队、指定机器）在请求时现算，替换节点、换线路机、轮换凭据后客户端更新订阅就是新的。链接只在 add / rotate 时输出一次。
+//! 协议（--protocols）：reality（默认）/ anytls / both；AnyTLS 条目只出在 sing-box 在跑的线路机上的入口
 
 use crate::cmds::{st, Ctx};
 use crate::ops::confirm;
@@ -33,6 +34,15 @@ pub struct RuleArgs {
     /// 一律不带的机器（逗号分隔），优先于其余规则；none 清空
     #[arg(long, value_name = "机器,…")]
     exclude: Option<String>,
+}
+
+/// 协议的中文
+fn proto_cn(p: &str) -> &str {
+    match p {
+        "anytls" => "只 AnyTLS",
+        "both" => "Reality + AnyTLS",
+        _ => "Reality",
+    }
 }
 
 fn split(s: &str) -> Vec<&str> { s.split([',', '，']).map(str::trim).filter(|x| !x.is_empty()).collect() }
@@ -104,6 +114,7 @@ pub fn ls(ctx: &Ctx) -> anyhow::Result<u8> {
                 vec![
                     st(v, "/name"),
                     st(v, "/rule_text"),
+                    proto_cn(&st(v, "/protocols")).to_string(),
                     format!("{} 条", st(v, "/items")),
                     if v["enabled"] == true { "启用".into() } else { "已停用".into() },
                     fetched(v),
@@ -111,19 +122,23 @@ pub fn ls(ctx: &Ctx) -> anyhow::Result<u8> {
                 ]
             })
             .collect();
-        table::render(&["名称", "规则", "条目", "状态", "最近拉取（来源）", "id"], &rows)
+        table::render(&["名称", "规则", "协议", "入口", "状态", "最近拉取（来源）", "id"], &rows)
     });
     Ok(0)
 }
 
-pub fn add(ctx: &Ctx, name: &str, rule: &RuleArgs) -> anyhow::Result<u8> {
+pub fn add(ctx: &Ctx, name: &str, rule: &RuleArgs, protocols: Option<&str>) -> anyhow::Result<u8> {
     let r = rule.apply(ctx, json!({}))?;
-    let d = ctx.c.post("/client-subs", &json!({"name": name, "rule": r}))?;
-    ctx.emit(&d, || format!("已建订阅「{}」：{}，现在 {} 条\n{}", st(&d, "/name"), st(&d, "/rule_text"), st(&d, "/items"), link_text(&d)));
+    let mut body = json!({"name": name, "rule": r});
+    if let Some(p) = protocols {
+        body["protocols"] = json!(p);
+    }
+    let d = ctx.c.post("/client-subs", &body)?;
+    ctx.emit(&d, || format!("已建订阅「{}」：{}，{}，现在 {} 个入口\n{}", st(&d, "/name"), st(&d, "/rule_text"), proto_cn(&st(&d, "/protocols")), st(&d, "/items"), link_text(&d)));
     Ok(0)
 }
 
-pub fn edit(ctx: &Ctx, q: &str, name: Option<&str>, rule: &RuleArgs, enabled: Option<bool>) -> anyhow::Result<u8> {
+pub fn edit(ctx: &Ctx, q: &str, name: Option<&str>, rule: &RuleArgs, enabled: Option<bool>, protocols: Option<&str>) -> anyhow::Result<u8> {
     let cur = find(ctx, q)?;
     let mut body = json!({"rule": rule.apply(ctx, cur["rule"].clone())?});
     if let Some(n) = name {
@@ -132,10 +147,13 @@ pub fn edit(ctx: &Ctx, q: &str, name: Option<&str>, rule: &RuleArgs, enabled: Op
     if let Some(e) = enabled {
         body["enabled"] = json!(e);
     }
+    if let Some(p) = protocols {
+        body["protocols"] = json!(p);
+    }
     let d = ctx.c.patch(&format!("/client-subs/{}", st(&cur, "/id")), &body)?;
     ctx.emit(&d, || {
         let state = if d["enabled"] == true { "" } else { "（已停用：拉取回 404，令牌不变）" };
-        format!("已保存「{}」：{}，现在 {} 条{state}", st(&d, "/name"), st(&d, "/rule_text"), st(&d, "/items"))
+        format!("已保存「{}」：{}，{}，现在 {} 个入口{state}", st(&d, "/name"), st(&d, "/rule_text"), proto_cn(&st(&d, "/protocols")), st(&d, "/items"))
     });
     Ok(0)
 }
@@ -156,7 +174,7 @@ pub fn rm(ctx: &Ctx, q: &str, yes: bool) -> anyhow::Result<u8> {
     Ok(0)
 }
 
-/// 规则与现在的条目（客户端里的名字、走哪台线路机哪个端口）；不显示链接
+/// 规则与现在的条目（客户端里的名字、走哪台线路机哪个端口、AnyTLS 端口）；不显示链接
 pub fn show(ctx: &Ctx, q: &str) -> anyhow::Result<u8> {
     let id = st(&find(ctx, q)?, "/id");
     let d = ctx.c.get(&format!("/client-subs/{id}"))?;
@@ -164,6 +182,7 @@ pub fn show(ctx: &Ctx, q: &str) -> anyhow::Result<u8> {
         let mut s = table::kv(&[
             ("名称", st(&d, "/name")),
             ("规则", st(&d, "/rule_text")),
+            ("协议", proto_cn(&st(&d, "/protocols")).to_string()),
             ("状态", if d["enabled"] == true { "启用".into() } else { "已停用".into() }),
             ("最近拉取", fetched(&d)),
             ("链接生成于", table::ts(&st(&d, "/token_at"))),
@@ -173,8 +192,20 @@ pub fn show(ctx: &Ctx, q: &str) -> anyhow::Result<u8> {
         if es.is_empty() {
             s.push_str("\n\n现在没有条目");
         } else {
-            let rows: Vec<Vec<String>> = es.iter().map(|e| vec![st(e, "/name"), format!("{}:{}", st(e, "/relay"), st(e, "/port"))]).collect();
-            s.push_str(&format!("\n\n{} 条：\n{}", es.len(), table::render(&["客户端里的名字", "线路机:端口"], &rows)));
+            // AnyTLS 列：这份订阅出 AnyTLS 时有端口的那条才出 AnyTLS（线路机 sing-box 没在跑的为「-」）
+            let at = d["protocols"].as_str().is_some_and(|p| p != "reality");
+            let rows: Vec<Vec<String>> = es
+                .iter()
+                .map(|e| {
+                    let mut r = vec![st(e, "/name"), format!("{}:{}", st(e, "/relay"), st(e, "/port"))];
+                    if at {
+                        r.push(e["anytls_port"].as_u64().map_or("-".into(), |p| p.to_string()));
+                    }
+                    r
+                })
+                .collect();
+            let head: &[&str] = if at { &["客户端里的名字", "线路机:端口", "AnyTLS 端口"] } else { &["客户端里的名字", "线路机:端口"] };
+            s.push_str(&format!("\n\n{} 个入口：\n{}", es.len(), table::render(head, &rows)));
         }
         s
     });

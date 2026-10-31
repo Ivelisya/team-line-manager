@@ -457,6 +457,22 @@ fn load_cn(load1: Option<f64>, cores: Option<i64>) -> String {
 
 /// agent 自报的健康数据（`MachineView.agent.health`）：离线队列现有多少份；其余是 agent 进程启动以来的累计次数。
 /// 访问日志解析不了 / 丢弃的行数为 0 时不显示
+/// 线路机的 AnyTLS 外壳（sing-box）状态（`agent.anytls`）：在跑 / 没在跑 / 出错 / 未安装 / 旧 agent 没报过
+pub fn anytls_cn(a: &Value) -> String {
+    if a.is_null() {
+        return "未知（agent 版本旧，没报过）".into();
+    }
+    if a["installed"] != true {
+        return "未安装（中控 dist 里有 sing-box 后，升级这台的 agent 时装上）".into();
+    }
+    let v = a["version"].as_str().map(|v| format!("（sing-box {v}）")).unwrap_or_default();
+    match (a["running"] == true, a["last_error"].as_str()) {
+        (_, Some(e)) => format!("出错{v}：{e}"),
+        (true, None) => format!("在跑{v}"),
+        (false, None) => format!("没在跑{v}"),
+    }
+}
+
 fn agent_health_cn(h: &Value) -> String {
     let n = |k: &str| st(h, &format!("/{k}"));
     let mut s = format!(
@@ -523,6 +539,9 @@ pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
         }
         if let Some(h) = m.pointer("/agent/health").filter(|h| !h.is_null()) {
             rows.push(("agent 自报", agent_health_cn(h)));
+        }
+        if st(&m, "/kind") == "relay" && !m["agent"].is_null() {
+            rows.push(("AnyTLS", anytls_cn(&m["agent"]["anytls"])));
         }
         if !m["tune"].is_null() {
             let at = m["tune"]["at"].as_str().map(|a| format!("（{}）", table::ts(a))).unwrap_or_default();
@@ -1284,6 +1303,9 @@ mod tests {
         h["access_unparsed"] = json!(4);
         h["last_apply_error"] = json!("xray 配置校验失败");
         assert!(agent_health_cn(&h).ends_with("被截断 0 次、4 行解析不了；最近一次应用配置失败：xray 配置校验失败"));
+        assert_eq!(anytls_cn(&json!({"installed": true, "running": true, "version": "1.14.4"})), "在跑（sing-box 1.14.4）");
+        assert_eq!(anytls_cn(&json!({"installed": true, "running": false, "last_error": "sing-box check 未通过"})), "出错：sing-box check 未通过");
+        assert!(anytls_cn(&json!({"installed": false, "running": false})).starts_with("未安装") && anytls_cn(&Value::Null).starts_with("未知"));
         h["disk_write_error"] = json!("No space left on device (os error 28)");
         assert!(agent_health_cn(&h).ends_with("；报告写不进磁盘、正从内存直接上报：No space left on device (os error 28)"));
     }

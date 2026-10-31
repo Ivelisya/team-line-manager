@@ -154,13 +154,16 @@ enum SubscriptionCmd {
 
 #[derive(Subcommand)]
 enum SubCmd {
-    /// 列表：名称、规则、条目数、启用、最近拉取（时间与来源 IP）
+    /// 列表：名称、规则、协议、入口数、启用、最近拉取（时间与来源 IP）
     Ls,
     /// 新建：输出一次链接（Clash Verge / OpenClash 用原链接，v2rayN / Shadowrocket 加 ?format=base64）。默认全部团队（不含备用团队）+ 线路机直出
     Add {
         name: String,
         #[command(flatten)]
         rule: subs::RuleArgs,
+        /// 出哪种协议：reality（默认）/ anytls / both（AnyTLS 只出在 sing-box 在跑的线路机上的入口）
+        #[arg(long, value_parser = ["reality", "anytls", "both"])]
+        protocols: Option<String>,
     },
     /// 改名称、规则（只改给了的）、启用 / 停用（停用后拉取回 404，链接不变）
     Edit {
@@ -174,6 +177,9 @@ enum SubCmd {
         enable: bool,
         #[arg(long)]
         disable: bool,
+        /// 出哪种协议：reality / anytls / both
+        #[arg(long, value_parser = ["reality", "anytls", "both"])]
+        protocols: Option<String>,
     },
     /// 轮换链接：旧链接立即失效，输出一次新链接
     Rotate {
@@ -187,7 +193,7 @@ enum SubCmd {
         #[arg(long)]
         yes: bool,
     },
-    /// 规则与现在的条目（客户端里的名字、线路机:端口）；不显示链接
+    /// 规则、协议与现在的条目（客户端里的名字、线路机:端口、AnyTLS 端口）；不显示链接
     Show { sub: String },
 }
 
@@ -548,7 +554,7 @@ enum Cmd {
     },
     /// 入口列表（可只看某台机器相关的）
     Entries { machine: Option<String> },
-    /// 输出入口的分享链接（vless://…；需要 secrets 权限，记审计）。--team / --machines 一次取一批（一次请求、一条审计），每行「名称 链接」，--json 给数组。
+    /// 输出入口的分享链接（vless://…，线路机上 AnyTLS 可用时下一行再给 anytls://…；需要 secrets 权限，记审计）。--team / --machines 一次取一批（一次请求、一条审计），每行「名称 链接」（AnyTLS 那行是「名称 AnyTLS 链接」），--json 给数组。
     /// 给自己的客户端用订阅链接（sub），给别人才用分享链接
     Share {
         /// 入口 id、`线路机名:端口` 或节点显示名
@@ -1090,10 +1096,10 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Share { team, machines, .. } => ops::share_many(x, team.as_deref(), machines.as_deref()),
         Cmd::Sub { cmd } => match cmd {
             SubCmd::Ls => subs::ls(x),
-            SubCmd::Add { name, rule } => subs::add(x, &name, &rule),
-            SubCmd::Edit { sub, name, rule, enable, disable } => {
+            SubCmd::Add { name, rule, protocols } => subs::add(x, &name, &rule, protocols.as_deref()),
+            SubCmd::Edit { sub, name, rule, enable, disable, protocols } => {
                 let en = if enable { Some(true) } else if disable { Some(false) } else { None };
-                subs::edit(x, &sub, name.as_deref(), &rule, en)
+                subs::edit(x, &sub, name.as_deref(), &rule, en, protocols.as_deref())
             }
             SubCmd::Rotate { sub, yes } => subs::rotate(x, &sub, yes),
             SubCmd::Rm { sub, yes } => subs::rm(x, &sub, yes),
