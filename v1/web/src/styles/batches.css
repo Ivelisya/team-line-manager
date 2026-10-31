@@ -20,13 +20,13 @@
 .btl-month { font: var(--fw-medium) var(--fs-label) / 1 var(--font-sans); fill: var(--fg-2); }
 .btl-now rect { fill: var(--btl-now); }
 .btl-now text { font: var(--fw-semibold) var(--fs-micro) / 1 var(--font-num); font-variant-numeric: var(--num-variant); fill: #fff; }
-/* 今天竖线：从今天标签下面一直画到最后一行 */
-.btl-today { position: absolute; top: 19px; bottom: 0; width: 0; border-left: 1px solid color-mix(in srgb, var(--btl-now) 55%, transparent); pointer-events: none; z-index: 0; }
+/* 今天竖线：每行时间条里各画一段（Track） */
+.btl-today { stroke: color-mix(in srgb, var(--btl-now) 55%, transparent); stroke-width: 1; shape-rendering: crispEdges; pointer-events: none; }
 
 /* 一行：标题行 + 说明 sticky 在左边不跟着横滑，宽度等于可见宽度 */
 .btl-row { position: relative; padding-top: var(--sp-14); }
 .btl-row + .btl-row { border-top: 1px solid var(--line); }
-.btl-axis + .btl-today + .btl-row { margin-top: var(--sp-4); }
+.btl-axis + .btl-row { margin-top: var(--sp-4); }
 .btl-head { position: sticky; left: 0; z-index: 1; width: var(--btl-vw); padding-inline: var(--sp-4); box-sizing: border-box; display: grid; gap: var(--sp-2); }
 .btl-line {
   display: grid; grid-template-columns: minmax(0, 1fr) 9.5em 7.5em; align-items: baseline; column-gap: var(--sp-16);

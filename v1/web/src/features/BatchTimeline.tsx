@@ -76,6 +76,8 @@ function Track({ b, s, today, ticks }: { b: TimelineItem; s: Scale; today: strin
   return (
     <svg className="btl-track" width={s.W} height={ROW_H} role="img" aria-label={`${b.title}：${b.start_date} 起，${b.end_date} 到期`}>
       <path d={ticks} className="btl-ticks" />
+      {/* 今天竖线只画在时间条这一段：贯穿整列会从标题、时长文字上穿过 */}
+      <line className="btl-today" x1={t} x2={t} y1={0} y2={ROW_H} />
       {ps.map((p, i) => {
         const a = s.x(p.start_date); const z = s.x(p.end_date);
         const solid = Math.min(z, t); const dash = Math.max(a, t);
@@ -167,7 +169,6 @@ export function BatchTimeline({ items, today, actions }: { items: TimelineItem[]
       {s && (
         <div className="btl-canvas" style={{ width: s.W, '--btl-vw': `${vw}px` } as React.CSSProperties}>
           <Axis s={s} today={today} />
-          <div className="btl-today" style={{ left: s.x(today) - 0.5 }} aria-hidden />
           {items.map((b) => (
             <div key={b.key} className="btl-row" data-state={b.state}>
               <div className="btl-head">
