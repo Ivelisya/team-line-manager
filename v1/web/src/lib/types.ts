@@ -85,6 +85,8 @@ export interface MachineView {
   live_ip_nodes?: string[];
   /** 备用团队里在用的机器：还指向它（备用宿主机还含它上面没退役的同机 IP 节点，后缀「（经同机 IP 节点 X）」）的软路由出口（「路由名 · 出口名」）；其余为 []。在用、在备用里、这里和 live_ip_nodes 都为空 = 闲置备用（不开告警、不计健康，见 isIdleSpare；再没开自动续费才是不续费的，见 isUnbilledSpare） */
   router_exits: string[];
+  /** 标了「不计费」（PUT /machines/{id}/billing-exempt）：不算进向团队收费的计费节点。旧中控没有这个字段 */
+  billing_exempt?: boolean;
   /** 团队里在用的节点（不在备用）、团队的软路由都看得清出口，却没有任何出口指着它：多半是出口改指向别处后留下的，看着像在用其实没客户（抽屉标一句）。
    *  团队没有软路由、有路由没采集到 / 配置读不了为 false。旧中控没有这个字段 */
   no_router_exits?: boolean;
@@ -531,25 +533,50 @@ export interface SpeedtestStarted { machine_id: string; name: string; job_id: st
 /** 测速作业步骤的输出（jobs/speedtest.rs summarize）：avg_mbps 只算收到第一个字节之后的；complete = false 时 300 秒内没下完，速率按已下载的算 */
 export interface SpeedtestOutput { target: string; target_name: string; url: string; size_mb: number; bytes: number; complete: boolean; avg_mbps: number; avg_mb_s: number; total_s: number; ttfb_s: number; remote_ip: string }
 
-// ---- 客户到期页（客户批次账）：与供应商订阅无关。派生字段（summary / title / state / node_months …）都由服务端算，前端只显示 ----
+// ---- 按节点数向团队收费：计费名额自动派生的批次、客户到期页。派生字段（summary / title / state / node_months …）都由服务端算，前端只显示 ----
 /** expired：到期日早于今天；today：今天到期（仍算有效）；active：有效 */
 export type BatchState = 'active' | 'today' | 'expired';
-/** 一段：首购一段 + 每次续期一段，首尾相接；节点月 = count × months */
-export interface BatchPeriod { id: string; start_date: string; end_date: string; months: number; count: number }
-/** 管理端的批次（GET /teams/{id}/batches）。start / end = 最早段起点 / 最晚段终点；count = 最后一段的个数；months = 各段之和；renewals = 段数 − 1 */
+/** 一期：从起算日起每月同日续一期（months 恒为 1）；count = 这一期计费的名额数 */
+export interface BatchPeriod { start_date: string; end_date: string; months: number; count: number }
+/** 派生批次：同一团队里起算日、地区都相同的计费名额。key =「起算日|地区」，seq 按 (起算日, 地区) 排，第01批最早。
+ *  end_date = 最后一期的终点（下次续费日 / 到期日）；count = 最后一期的个数；months = 期数；renewals = 期数 − 1 */
 export interface CustomerBatch {
-  id: string; seq: number; region: string; note: string; summary: string; title: string;
+  key: string; seq: number; region: string; summary: string; title: string;
   start_date: string; end_date: string; count: number; months: number; node_months: number; renewals: number; state: BatchState;
   periods: BatchPeriod[];
 }
+/** 计费名额：团队里一个按月计费的节点位置。替换节点时名额不变（新节点接过去，起算日不变）。
+ *  active 在用；vacated 占用的节点刚离开，24 小时内有节点加入就算替换（vacated_at 起算）；ended 已结束（end_date 那天）。
+ *  manual：系统外的节点（如家宽），只能手动结束 / 删除 */
+export type SlotState = 'active' | 'vacated' | 'ended';
+export interface BillingSlot {
+  id: string; batch_seq: number; region: string; start_date: string; state: SlotState;
+  holder: { id: string; name: string } | null; vacated_at: string | null; end_date: string | null; manual: boolean; note: string;
+}
+/** 新加入、还没定是替换还是新增的节点：decide_at（= seen_at + 24 小时）前有名额空出就接过去，否则算新增 */
+export interface BillingPending { machine: { id: string; name: string }; seen_at: string; decide_at: string }
+export type BillingEventKind = 'init' | 'add' | 'remove' | 'swap' | 'edit' | 'manual_add' | 'manual_end' | 'exempt';
+/** 增减记录：text 是服务端拼好的一句话；swap 时 machine_name 是新节点、other_name 是换下来的（名字是当时的快照） */
+export interface BillingEvent { id: string; at: string; kind: BillingEventKind; machine_name: string | null; other_name: string | null; slot_id: string | null; text: string }
+/** GET /teams/{id}/receivable?month=YYYY-MM：起点落在这个月的每一期一行；total = Σcount（节点月）；
+ *  start_count 月初的计费节点数，end_count 月末（本月为今天）的；events 这个月的增减 */
+export interface Receivable {
+  month: string; total: number; start_count: number; end_count: number;
+  lines: { batch_seq: number; region: string; period_start: string; period_end: string; count: number }[];
+  events: BillingEvent[];
+}
 /** 团队的客户页链接：link = {public_url}/c/{token}，管理端随时能再复制 */
 export interface CustomerPage { enabled: boolean; link: string; created_at: string; token_at: string; last_view_at: string | null }
-export interface TeamBatches { team: { id: string; name: string }; today: string; page: CustomerPage | null; batches: CustomerBatch[] }
-/** 公开页的批次：不给 id；desc 是标题下一行的说明（summary 与 note 用「；」接起来） */
+/** totals：active 在用的名额（含手动）、pending 待定的节点、vacated 空出待定的名额 */
+export interface TeamBatches {
+  team: { id: string; name: string }; today: string; page: CustomerPage | null; batches: CustomerBatch[];
+  slots: BillingSlot[]; pending: BillingPending[]; totals: { active: number; pending: number; vacated: number };
+}
+/** 公开页的批次：desc 是标题下一行的说明（即 summary）；不出现节点名 */
 export interface PublicBatch {
   seq: number; region: string; title: string; desc: string; start_date: string; end_date: string;
   count: number; months: number; node_months: number; state: BatchState;
-  periods: Omit<BatchPeriod, 'id'>[];
+  periods: BatchPeriod[];
 }
 /** GET /public/customer/{token}：只含有效批次；regions 按批次首次出现的顺序，counts 是各有效批次的个数 */
 export interface PublicCustomer {
