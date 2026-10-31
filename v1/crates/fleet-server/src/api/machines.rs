@@ -440,6 +440,14 @@ pub async fn patch_tx(tx: &mut crate::db::Tx<'_>, actor: &str, id: Uuid, b: Patc
 /// `patch_tx` 去掉刷新线路机的那一步：一次改好几台的调用方（PATCH 带随行 IP 节点、移进备用）自己把改名的节点攒起来，
 /// 最后对 `bump_relays_of_nodes` 调一次（按线路机 id 排序加锁，几台节点的几次调用之间不各刷各的，免得并发时加锁顺序交叉）
 pub async fn patch_nobump(tx: &mut crate::db::Tx<'_>, actor: &str, id: Uuid, b: PatchIn) -> ApiResult<Patched> {
+    let (p, detail) = patch_write(tx, id, b).await?;
+    audit(tx, actor, if p.renamed { "machine.rename" } else { "machine.update" }, "machine", Some(id), detail).await?;
+    Ok(p)
+}
+
+/// PATCH 的校验与写入，不记审计也不刷新线路机，返回审计用的明细：替换节点（jobs/steps/replace.rs）交换编号用，
+/// 整次替换只记发起时那一条 machine.replace
+pub async fn patch_write(tx: &mut crate::db::Tx<'_>, id: Uuid, b: PatchIn) -> ApiResult<(Patched, Value)> {
     let country = match &b.country {
         Some(c) => Some(crate::country::normalize(c.as_deref().unwrap_or("")).map_err(ApiError::bad_request)?),
         None => None,
@@ -548,8 +556,7 @@ pub async fn patch_nobump(tx: &mut crate::db::Tx<'_>, actor: &str, id: Uuid, b: 
     if auto_renew_off {
         detail["auto_renew_off"] = json!(true);
     }
-    audit(tx, actor, if renamed { "machine.rename" } else { "machine.update" }, "machine", Some(id), detail).await?;
-    Ok(Patched { relays: vec![], renamed, auto_renew_off, left_team: cur.2.filter(|f| Some(*f) != team_id) })
+    Ok((Patched { relays: vec![], renamed, auto_renew_off, left_team: cur.2.filter(|f| Some(*f) != team_id) }, detail))
 }
 
 // ── 时序 ──────────────────────────────────────────────────────────────────

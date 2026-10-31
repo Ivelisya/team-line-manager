@@ -241,14 +241,18 @@ async fn preview_and_full_run() {
         .await
         .unwrap();
     assert!(!dump.contains(NEW_UUID) && !dump.contains("abcd'"), "凭据不进日志、参数、审计");
-    // 审计：替换一条，改名两条（同 PATCH），摘要看得懂
+    // 审计：整次替换只有一条 machine.replace，两台都不记改名（P-08），摘要看得懂
     let au = t.get(&format!("/api/v1/audit?target_id={}", w.old)).await;
     let acts: Vec<&str> = au.as_array().unwrap().iter().map(|a| a["action"].as_str().unwrap()).collect();
-    assert!(acts.contains(&"machine.replace") && acts.contains(&"machine.rename"), "{acts:?}");
-    let rep = au.as_array().unwrap().iter().find(|a| a["action"] == "machine.replace").unwrap();
+    assert_eq!(acts, ["machine.replace"], "{au}");
+    let rep = &au[0];
     assert_eq!((rep["title"].as_str(), rep["summary"].as_str()), (Some("替换节点"), Some("团队2-01 由 团队2-02 接替，旧节点改为 团队2备用-01（改 2 台软路由）")));
     let au = t.get(&format!("/api/v1/audit?target_id={}", w.new)).await;
-    assert_eq!(au[0]["summary"], "团队2-02 → 团队2-01");
+    assert_eq!(au, json!([]), "新节点不记改名：{au}");
+    // 作业列表的目标是发起时的名字（快照），不是旧节点改名后的
+    let js = t.get("/api/v1/jobs").await;
+    let jv = js.as_array().or(js["items"].as_array()).unwrap().iter().find(|x| x["id"] == job.as_str()).cloned().unwrap();
+    assert_eq!(jv["target"]["name"], "团队2-01", "{jv}");
     // 作业已结束：不能取消
     assert_eq!(t.req("POST", &format!("/api/v1/jobs/{job}/cancel"), None, None).await.0, StatusCode::CONFLICT);
 }
@@ -494,14 +498,14 @@ async fn new_node_from_full_spare_team_takes_over_its_slot() {
     assert_eq!(ov["lifecycle_reason"], "替换下来：团队2备用-01 接替了 团队2-01", "{ov}");
     let nv = t.get(&format!("/api/v1/machines/{}", w.new)).await;
     assert_eq!((nv["spare"].as_bool(), nv["spare_from"].is_null()), (Some(false), true), "新节点出了备用：{nv}");
-    // 审计：旧节点先放临时号（备用 08）再改到 01，两条改名都在
+    // 审计：直接交换编号，不经临时号（没有「团队2备用-08」），也不记改名
     let au = t.get(&format!("/api/v1/audit?target_id={}", w.old)).await;
-    let mut renames: Vec<&str> = au.as_array().unwrap().iter().filter(|a| a["action"] == "machine.rename").map(|a| a["summary"].as_str().unwrap()).collect();
-    renames.sort();
-    assert_eq!(renames, ["团队2-01 → 团队2备用-08", "团队2备用-08 → 团队2备用-01"], "{au}");
+    let acts: Vec<&str> = au.as_array().unwrap().iter().map(|a| a["action"].as_str().unwrap()).collect();
+    assert_eq!(acts, ["machine.replace"], "{au}");
+    assert!(!au.to_string().contains("备用-08"), "{au}");
     assert!(logs(t, &job).await.contains("编号已交换：新节点现在是 团队2-01，旧节点现在是 团队2备用-01"));
 
-    // 指定的编号正好是新节点现在的号：同样先放临时号
+    // 指定的编号正好是新节点现在的号：同样直接交换
     let w = world().await;
     let t = &w.t;
     let db = &t.st.db;

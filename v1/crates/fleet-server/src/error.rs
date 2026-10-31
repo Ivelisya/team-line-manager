@@ -58,8 +58,8 @@ impl From<sqlx::Error> for ApiError {
         }
         if let Some(db) = e.as_database_error() {
             match db.code().as_deref() {
-                // unique_violation：把约束名翻译成人话
-                Some("23505") => {
+                // unique_violation / exclusion_violation（machine_number_live 是可延迟的排他约束，见迁移 0096）：把约束名翻译成人话
+                Some("23505" | "23P01") => {
                     let m = match db.constraint() {
                         Some("machine_ip_live") => "这个 IP 已经属于一台未退役的机器",
                         Some("machine_number_live") => "这个团队里已经有这个编号",

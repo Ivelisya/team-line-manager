@@ -825,22 +825,14 @@ pub(super) async fn renumber(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     }
     // 和预览同一份计算（api::replace::old_to_number）：新节点在目标团队里的号算空着，旧节点接它
     let to_number = crate::api::replace::old_to_number(&mut *tx, to_team, (old, new), (old_team, old_number), given).await?.map_err(|e| remote(e.to_string()))?;
-    use crate::api::machines::{patch_tx, PatchIn};
+    use crate::api::machines::{patch_write, PatchIn};
     let api = |e: crate::error::ApiError| remote(e.message);
-    // 旧节点先挪开，旧编号空出来再给新节点（唯一索引 machine_number_live，不能延迟检查）。旧节点要接的号此刻还被新节点占着时
-    // （新节点从目标团队来、旧节点接它的号）：旧节点先放到临时号，新节点挪走后再改到这个号；审计里旧节点因此有两条改名（同一事务）
-    let swap = crate::api::replace::swap_slot(n.2, n.3, to_team, to_number);
-    let first = if swap {
-        crate::api::replace::temp_number(&mut *tx, to_team, old, (old_team, old_number)).await?.ok_or_else(|| remote("旧节点要去的团队编号用完了（交换时要先占一个临时号）"))?
-    } else {
-        to_number
-    };
-    let mut relays = patch_tx(&mut tx, actor, old, PatchIn::rename(o.1, to_team, first)).await.map_err(api)?.relays;
-    relays.extend(patch_tx(&mut tx, actor, new, PatchIn::rename(n.1, old_team, old_number)).await.map_err(api)?.relays);
-    if swap {
-        let rev: i32 = sqlx::query_scalar("select revision from machine where id = $1").bind(old).fetch_one(&mut *tx).await?;
-        relays.extend(patch_tx(&mut tx, actor, old, PatchIn::rename(rev, to_team, to_number)).await.map_err(api)?.relays);
-    }
+    // 直接交换，不经临时号、不记改名（整次替换只有发起时那条 machine.replace）：旧节点要接的号可能此刻还被新节点占着
+    // （新节点从目标团队来、旧节点接它的号），编号唯一在本事务里延迟到提交时再查（迁移 0096）
+    sqlx::query("set constraints machine_number_live deferred").execute(&mut *tx).await?;
+    patch_write(&mut tx, old, PatchIn::rename(o.1, to_team, to_number)).await.map_err(api)?;
+    patch_write(&mut tx, new, PatchIn::rename(n.1, old_team, old_number)).await.map_err(api)?;
+    let mut relays = crate::db::bump_relays_of_nodes(&mut tx, &[old, new]).await?;
     // 旧节点进了备用：回收站的「原因」写明是被谁替换下来的
     let (old_before, new_before) = (c.job.params["old_name"].as_str().unwrap_or(""), c.job.params["new_name"].as_str().unwrap_or(""));
     sqlx::query("update machine m set lifecycle_reason = $2 from team t where m.id = $1 and t.id = m.team_id and t.spare")

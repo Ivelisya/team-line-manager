@@ -7,7 +7,7 @@
 //!   新入口按线路机一一对应（旧入口在哪台线路机，就换成新节点在同一台上的入口）；对不上时新节点只有一个在用入口就用它，否则报错说明。
 //! - 改编号与 PATCH /machines/{id} 同一套代码（machines::patch_tx）：同样的校验、审计（machine.rename）、刷新线路机。
 //!   编号先挪开旧节点、再给新节点，新节点原来所在的团队随后压缩（同退役）。旧节点拿的号预览与作业同一份计算（`old_to_number`）：
-//!   新节点在目标团队里的号算空着——新节点从备用来时旧节点就接它在备用里的号（作业先放临时号再改过去），备用团队谁都不改名。旧节点不退役：
+//!   新节点在目标团队里的号算空着——新节点从备用来时旧节点就接它在备用里的号（作业直接交换，不经临时号），备用团队谁都不改名。旧节点不退役：
 //!   放进备用团队后由备用到期自动回收（spare.rs）接手。
 
 use super::ok;
@@ -317,7 +317,7 @@ impl std::fmt::Display for NumberErr {
 /// 不各算各的。`given` 是指定的编号，没给取最小空号。
 /// 算空号时不算旧节点自己（它要挪走），**新节点在目标团队里的编号也算空着**：交换完它就离开了，旧节点正好接它空出来的号——
 /// 新节点从备用团队来（最常见的用法）时旧节点就接新节点在备用里的号，备用团队不用压缩、谁都不改名。
-/// 这个号在交换那一刻还被新节点占着，作业要先把旧节点放到临时号、新节点挪走后再改过去（`swap_slot`）。目标就是旧团队时，旧编号要给新节点，算占着
+/// 这个号在交换那一刻还被新节点占着，作业里编号唯一延迟到提交时检查、直接交换（迁移 0096）。目标就是旧团队时，旧编号要给新节点，算占着
 pub async fn old_to_number(
     conn: &mut PgConnection,
     to_team: Uuid,
@@ -344,23 +344,6 @@ pub async fn old_to_number(
         Some(n) => Ok(n),
         None => (1..=999).find(|n| !taken.contains(n)).ok_or(NumberErr::Full),
     })
-}
-
-/// 旧节点要接的号此刻还被新节点占着（新节点就在目标团队、号正是 `to_number`）：交换时要先把旧节点放到临时号（`temp_number`）
-pub fn swap_slot(new_team: Option<Uuid>, new_number: Option<i32>, to_team: Uuid, to_number: i32) -> bool { new_team == Some(to_team) && new_number == Some(to_number) }
-
-/// `swap_slot` 时旧节点先放的临时号：目标团队里除旧节点外谁都没占的最小号（新节点的号占着）；目标就是旧团队时旧编号要留给新节点，也不能用
-pub async fn temp_number(conn: &mut PgConnection, to_team: Uuid, old: Uuid, (old_team, old_number): (Uuid, i32)) -> sqlx::Result<Option<i32>> {
-    let taken: Vec<i32> = sqlx::query_scalar("select number from machine where team_id = $1 and number is not null and kind <> 'relay' and lifecycle <> 'retired' and id <> $2")
-        .bind(to_team)
-        .bind(old)
-        .fetch_all(&mut *conn)
-        .await?;
-    let mut taken: HashSet<i32> = taken.into_iter().collect();
-    if to_team == old_team {
-        taken.insert(old_number);
-    }
-    Ok((1..=999).find(|n| !taken.contains(n)))
 }
 
 /// 替换的完整计划（预览与提交共用）
