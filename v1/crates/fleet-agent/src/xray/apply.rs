@@ -338,9 +338,10 @@ impl Applier {
     }
 }
 
+/// 比较回滚前后的运行态：穿透的反向出站（`rvs-`）随 bridge 连上 / 断开自己出现消失，不算
 fn sorted(r: &Runtime) -> (Vec<String>, Vec<String>, Vec<(String, String)>) {
     let mut a = r.inbounds.clone();
-    let mut b = r.outbounds.clone();
+    let mut b: Vec<String> = r.outbounds.iter().filter(|t| !t.starts_with(tags::REVERSE_PREFIX)).cloned().collect();
     a.sort();
     b.sort();
     (a, b, r.rules.clone())

@@ -224,14 +224,17 @@ export function buildDb(): Db {
     const status: HealthStatus = d.status ?? 'ok';
     const down = status === 'down'; const offline = down && !d.online; // 故障但 agent 照常上报（如出口不通）
     const lifecycle: Lifecycle = d.lifecycle ?? 'active';
+    // 几台 VPS 节点是穿透入口（节点主动连入口）：没有 TCP 探测
+    const reverse = d.kind === 'vps' && d.n % 4 === 2 && !offline;
     const entry: EntryView = {
-      id: `e${eSeq++}`, relay: { id: relay.id, name: relay.name }, node: { id, name }, direct: false, port,
+      id: `e${eSeq++}`, relay: { id: relay.id, name: relay.name }, node: { id, name }, direct: false, mode: reverse ? 'reverse' : 'normal', port,
       lifecycle: lifecycle === 'retiring' ? 'disabled' : 'active', applied: true, apply_error: null, reach: REACH_OK(),
       tcp: { ok: !offline, latency_ms: offline ? null : Math.round(18 + r() * 160), detail: offline ? '连接超时' : null, ts: iso(now() - 20_000) },
       egress: { ok: !down, latency_ms: down ? null : Math.round(120 + r() * 220), detail: down ? '出口探测失败' : null, ts: iso(now() - 40_000) },
       traffic: { today_up: Math.round((0.3 + r() * 6) * GiB), today_down: Math.round((0.5 + r() * 14) * GiB), month_up: Math.round((20 + r() * 220) * GiB), month_down: Math.round((60 + r() * 520) * GiB) },
     };
     if (d.kind === 'proxy') entry.egress = { ok: true, latency_ms: 210, detail: null, ts: iso(now() - 30_000) };
+    if (reverse) entry.tcp = null;
     entriesByRelay[d.relay].push(entry);
     const reasons = offline ? [{ key: 'agent_offline', severity: 'critical', text: '14 分钟没有上报' }, { key: 'tcp_fail', severity: 'critical', text: '线路机1 到节点 TCP 不通' }]
       : down ? [{ key: 'egress_fail', severity: 'critical', text: `${relay.name}:${port} 出口不通：timeout` }]
@@ -340,6 +343,9 @@ export function buildDb(): Db {
   // 线路机 2 本周期已超出额度（约 113%）：额度告警、搬迁建议（超额时的口径）、费用页标红用
   const r2 = machines[1];
   if (r2.subscription) { r2.subscription.traffic_gb = Math.max(1, Math.floor(r2.quota.used / 1e9 / 1.13)); Object.assign(r2, trafficOf(r2, machines)); }
+  // 团队2 的 05 号：出口已改指向别处，团队的软路由都没有出口指着它（抽屉标一句，同服务端 no_router_exits）
+  const unpointed = machines.find((x) => x.team?.id === 't2' && x.number === 5 && x.kind !== 'relay');
+  if (unpointed) unpointed.no_router_exits = true;
   // 早先「恢复已退役机器」留下的原因（旧版写成「已恢复：原因」）
   const restored = machines.find((x) => x.id === 'm-t1-03');
   if (restored) restored.lifecycle_reason = '已恢复：实验：恢复';
@@ -424,6 +430,8 @@ export function buildDb(): Db {
     { id: 'i7', engine: 'machine', subject: { id: 'm-t1-05', name: '团队1-05' }, subject_id: 'm-t1-05', subject_name: '团队1-05', rule: 'host_cpu_high', rule_name: 'CPU 持续偏高', severity: 'warning', state: 'resolved', summary: 'CPU 持续 10 分钟高于 90%（最高 97%）', opened_at: iso(now() - 3 * DAY), resolved_at: iso(now() - 3 * DAY + 95 * 60_000), last_seen_at: iso(now() - 3 * DAY + 94 * 60_000), ack_at: iso(now() - 3 * DAY + 20 * 60_000), ack_by: 'admin', reopen_count: 0 },
     { id: 'i8', engine: 'machine', subject: { id: 'm-t1-09', name: '团队1-09' }, subject_id: 'm-t1-09', subject_name: '团队1-09', rule: 'tcp_fail', rule_name: '线路机到节点不通', severity: 'critical', state: 'resolved', summary: '线路机到节点 TCP 探测连续失败 5 次', opened_at: iso(now() - 6 * DAY), resolved_at: iso(now() - 6 * DAY + 12 * 60_000), last_seen_at: iso(now() - 6 * DAY + 11 * 60_000), ack_at: null, ack_by: null, reopen_count: 0 },
     { id: 'i9', engine: 'machine', subject: { id: 'm-t1-09', name: '团队1-09' }, subject_id: 'm-t1-09', subject_name: '团队1-09', rule: 'egress_fail', rule_name: '出口不通', severity: 'warning', state: 'resolved', summary: '出口验证连续失败 3 次（经线路机1:20009 访问外网超时）', opened_at: iso(now() - 2 * DAY), resolved_at: iso(now() - 2 * DAY + 20 * 60_000), last_seen_at: iso(now() - 2 * DAY + 20 * 60_000), ack_at: null, ack_by: null, reopen_count: 0, recent_count: 4, chronic: true },
+    // 持续握手丢包（tcp_loss_high）：四天前同供应商两台一起，摘要带供应商关联
+    { id: 'i10', engine: 'machine', subject: { id: 'm-t1-09', name: '团队1-09' }, subject_id: 'm-t1-09', subject_name: '团队1-09', rule: 'tcp_loss_high', rule_name: '持续握手丢包', severity: 'warning', state: 'resolved', summary: '团队1-09：近 30 分钟线路机到节点 TCP 探测 62 次，失败 8 次（13%），成功的 54 次里 21 次 SYN 重传（39%）；同供应商 ATTVPS 共 2 台同时（可能是供应商入站丢包）', opened_at: iso(now() - 4 * DAY), resolved_at: iso(now() - 4 * DAY + 3 * 3600_000), last_seen_at: iso(now() - 4 * DAY + 3 * 3600_000 - 60_000), ack_at: null, ack_by: null, reopen_count: 0 },
   ];
   // 流量额度吃紧（traffic_quota_high，同服务端规则）：本周期已用 ≥ 90% 警告、≥ 100% 严重；开始时间错开几小时
   let tight = 0;

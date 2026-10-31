@@ -1,7 +1,7 @@
 // 浏览器内 mock：拦截 /api/v1/* 的 fetch 和实时流 WebSocket。VITE_MOCK=1 时由 main.tsx 安装。
 // 有状态：改名、退役、上架、续费等操作都会改内存里的数据，并通过 mock 实时流通知前端刷新。
 
-import type { Availability, AvailabilityDay, EntryView, Incident, Job, JobLog, JobSummary, MachineView, ProbeBucket, ProvisionCheckItem, ProvisionItem, SeriesPoint, SilenceKind } from '@/lib/types';
+import type { Availability, AvailabilityDay, EntryMode, EntryView, Incident, Job, JobLog, JobSummary, MachineView, ProbeBucket, ProvisionCheckItem, ProvisionItem, SeriesPoint, SilenceKind } from '@/lib/types';
 import { addDays, addMonths, displayName } from '@/lib/format';
 import { inheritedValue, isIdleSpare, isQuiet, isUnbilledSpare, liveRate } from '@/lib/derive';
 import { makeDefaultCompare } from '@/lib/sort';
@@ -144,6 +144,7 @@ function overview() {
   const counted_from = rf.some((t) => !t) ? null : rf.sort()[0] ?? null;
   return {
     nodes: cnt(biz.filter((m) => m.kind !== 'relay')), relays: cnt(biz.filter((m) => m.kind === 'relay')), spare: idle.length,
+    spare_health: cnt(idle), // 闲置备用自己的健康计数（同服务端）：备用池里有几台能顶替
     provisioning: db.machines.filter((m) => m.lifecycle === 'provisioning').length, retiring: db.machines.filter((m) => m.lifecycle === 'retiring').length,
     failed: db.machines.filter((m) => m.lifecycle === 'failed').length,
     // 需要续费的按订阅的 due_state（同服务端）：自动续费的只在已过期时算
@@ -401,7 +402,15 @@ function checkProvision(items: ProvisionItem[]): MockCheck[] {
       if (it.ip.endsWith('.66') && !it.login?.password) errors.push(`中控密钥登录不了 ${port}（密钥被拒），也没填 root 密码。二选一：提供 root 密码（网页填「root 密码」，fleetctl 用 --ssh-password-env 变量名）；或在供应商面板（或机器上 root 的 ~/.ssh/authorized_keys）录入中控公钥：${META.ssh_public_key}`);
       else if (it.ip.endsWith('.20')) warnings.push('系统是 Ubuntu 20.04，已过标准支持期、不再有常规安全更新（Ubuntu 22.04 起仍在支持）：可以照常上架，建议找机会重装成新版本');
     }
-    out.push({ ok: errors.length === 0, errors, warnings, name, number, relay_port: relayPort, ss_port: ssPort });
+    // 入口模式（同服务端 provision::entry_modes）：没给按设置里的默认；家宽代理、同机 IP 节点要穿透时退回普通并提醒
+    let entryMode: EntryMode | null = null;
+    if (it.kind !== 'relay') {
+      const want = it.entry_mode ?? ENTRY_MODE.default;
+      const why = want === 'reverse' ? (it.kind === 'proxy' ? '家宽代理没有 SSH 和 agent，装不了穿透要的 bridge' : it.host_id ? '同机 IP 节点暂不支持穿透（bridge 要从它自己的 IP 出站，第一版没做）' : null) : null;
+      entryMode = why ? 'normal' : want;
+      if (why) warnings.push(`按普通模式建入口：${why}`);
+    }
+    out.push({ ok: errors.length === 0, errors, warnings, name, number, relay_port: relayPort, ss_port: ssPort, entry_mode: entryMode });
   }
   return out;
 }
@@ -427,7 +436,7 @@ function createMachine(it: ProvisionItem, c: MockCheck): MachineView {
   if (h) borrowHost(m, h);
   if (m.kind !== 'relay') {
     const relay = machine(it.relay_id!);
-    const e: EntryView = { id: `e${db.seq++}`, relay: { id: relay.id, name: relay.name }, node: { id, name: m.name }, direct: false, port: c.relay_port ?? 20999, lifecycle: 'pending', applied: false, apply_error: null, tcp: null, egress: null, reach: null, traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 } };
+    const e: EntryView = { id: `e${db.seq++}`, relay: { id: relay.id, name: relay.name }, node: { id, name: m.name }, direct: false, mode: c.entry_mode ?? 'normal', port: c.relay_port ?? 20999, lifecycle: 'pending', applied: false, apply_error: null, tcp: null, egress: null, reach: null, traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 } };
     m.entries = [e]; relay.entries.push(e);
   }
   recomputeDue(m); Object.assign(m, trafficOf(m, db.machines));
@@ -596,11 +605,13 @@ R('GET', '/machines/([^/]+)/rename-preview', ({ params, query }) => {
   const ip_nodes = follow.map(({ x, dest }) => { const t = takenIn(dest); let k = 1; while (t.has(k)) k++; t.add(k); return { machine_id: x.id, old_name: x.name, new_name: displayName(teamOf(dest).name, k) }; });
   // 少了人的团队：原团队，加上带走的 IP 节点所在的别的团队（目标团队只取空号，不压缩）
   const shrunk = [...new Set([m, ...ips].flatMap((x) => (x.team && x.team.id !== team.id ? [x.team.id] : [])))];
-  return { name: displayName(team.name, number), old_name: m.name, renames: moved ? shrunk.flatMap((t) => compactPlan(t, [m.id, ...ips.map((x) => x.id)])).map((c) => ({ machine_id: c.m.id, old_name: c.old_name, new_name: c.new_name })) : [], ip_nodes,
-    // 进备用：还指向这台和一起移入的同机 IP 节点的软路由出口（同服务端）
-    router_exits: moved && team.spare ? [m, ...ips].flatMap((x) => exitsUsing(x).flatMap((r) => r.exits.map((e) => ({ node: x.name, router: r.name, exit: e.exit })))) : [],
+  const plan = moved ? shrunk.flatMap((t) => compactPlan(t, [m.id, ...ips.map((x) => x.id)])) : [];
+  return { name: displayName(team.name, number), old_name: m.name, renames: plan.map((c) => ({ machine_id: c.m.id, old_name: c.old_name, new_name: c.new_name })), ip_nodes,
+    // 换团队：还指向这台和一起走的同机 IP 节点的软路由出口（同服务端，进备用、改到别的团队都列）
+    router_exits: moved ? [m, ...ips].flatMap((x) => exitsUsing(x).flatMap((r) => r.exits.map((e) => ({ node: x.name, router: r.name, exit: e.exit })))) : [],
     spare_blocked: moved && team.spare && !m.spare ? spareGate(m) : null,
-    held: moved && team.spare && !m.spare && !spareGate(m) ? heldReason(m, ips) : null, warnings: stay.map((x) => `${x.name} 原团队已不在，留在备用`) };
+    held: moved && team.spare && !m.spare && !spareGate(m) ? heldReason(m, ips) : null,
+    warnings: [...stay.map((x) => `${x.name} 原团队已不在，留在备用`), ...compactExitsNote(plan, '不想错位就别把这台挪走：要换掉它用替换（新节点接它的编号，团队里谁都不改名）')] };
 });
 R('PATCH', '/machines/([^/]+)', ({ params, body }) => {
   const m = machine(params[0]);
@@ -650,6 +661,11 @@ R('GET', '/machines/([^/]+)/availability', ({ params, query }) => availability(m
 const ipNodesLeaving = (m: MachineView) => db.machines.filter((x) => x.host_machine?.id === m.id && x.lifecycle !== 'retiring' && x.lifecycle !== 'retired');
 /** 软路由里还指向这台的出口（mock 只有每个团队一台软路由，出口名按编号） */
 const exitsUsing = (m: MachineView) => (m.team && !m.spare && m.entries.some((e) => e.lifecycle === 'active') ? [{ id: `rt-${m.team.id}`, name: `${m.team.name}-路由A`, exits: [{ exit: `节点${String(m.number ?? 1).padStart(2, '0')}`, node: m.name }] }] : []);
+/** 压缩改名的节点还被出口指着：面板名和出口名会对不上（同服务端 routers::compact_exits_note）；没有返回 [] */
+function compactExitsNote(changes: { m: MachineView; old_name: string; new_name: string }[], tail: string): string[] {
+  const list = changes.flatMap((c) => { const xs = exitsUsing(c.m).flatMap((r) => r.exits.map((e) => `${r.name} · ${e.exit}`)); return xs.length ? [`${c.old_name}（${xs.join('、')}）→ ${c.new_name}`] : []; });
+  return list.length ? [`编号压缩会给软路由出口指着的节点改名，出口名不跟着改，改完面板名和出口名就对不上了：${list.join('；')}。${tail}`] : [];
+}
 /** 出口还指着这台或它上面没退役的同机 IP 节点：进备用后不自动回收（同服务端 exits_using_with_ip_nodes） */
 const exitsHold = (m: MachineView, xs: MachineView[]) => [m, ...xs].some((x) => exitsUsing(x).length > 0);
 /** 进备用后不自动回收的原因（同服务端 spare_held_reason）：出口还指着，或宿主机上已经在备用里、开着自动续费的同机 IP 节点（不随这次进备用、自动续费不会被关）；没有为 null */
@@ -687,7 +703,9 @@ R('GET', '/machines/([^/]+)/retire', ({ params }) => {
   // 改名按所有受影响的团队算（同服务端）
   const leaving = m.lifecycle !== 'retired' ? [m, ...xs] : [];
   const teams = [...new Set(leaving.flatMap((x) => (x.team ? [x.team.id] : [])))];
-  const renames = teams.flatMap((t) => compactPlan(t, leaving.map((x) => x.id))).map((c) => ({ machine_id: c.m.id, old_name: c.old_name, new_name: c.new_name }));
+  const plan = teams.flatMap((t) => compactPlan(t, leaving.map((x) => x.id)));
+  const renames = plan.map((c) => ({ machine_id: c.m.id, old_name: c.old_name, new_name: c.new_name }));
+  const warnings = compactExitsNote(plan, '要换掉这台又不想错位，先用替换（新节点接它的编号，团队里谁都不改名，它自己进备用）');
   const why = spareWhy(m);
   // 进备用时一起移入的：已经在备用里的同机 IP 节点不动、不列（同服务端 move_to_spare 的 ip_nodes_of 过滤）
   const movers = xs.filter((x) => !x.spare);
@@ -696,7 +714,7 @@ R('GET', '/machines/([^/]+)/retire', ({ params }) => {
   const spareIps = movers.map((x, i) => ({ id: x.id, name: x.name, to_name: displayName(sp.name, nums[i + 1]) }));
   const held = heldReason(m, movers); // 进备用后不自动回收的原因（出口还指着、同机 IP 节点开着自动续费），没有回收日
   return {
-    name: m.name, renames, ip_nodes: ips, routers: exitsUsing(m),
+    name: m.name, renames, ip_nodes: ips, routers: exitsUsing(m), warnings,
     blockers: m.kind === 'relay' && m.entries.some((e) => !e.direct) ? [`这台线路机上还有 ${m.entries.filter((e) => !e.direct).length} 个节点入口：先把节点迁走或退役。可先用「搬空线路机」把节点换到其他线路机`] : [],
     spare: { ok: !why, why, team: { id: sp.id, name: sp.name }, to_name: displayName(sp.name, nums[0]), recycle_on: m.subscription && !held ? addDays(m.subscription.due_date, 2) : null, held, ip_nodes: spareIps, warnings: [], notes: spareRenewNotes(m, movers, held, false) },
   };
@@ -853,12 +871,52 @@ R('POST', '/machines/([^/]+)/entries', ({ params, body }) => {
   if (direct && relay.id !== m.id) throw bad('线路机上只能加它自己的直出入口（relay_id 填这台线路机自己）', 409, 'conflict');
   if (direct && m.entries.some((x) => x.direct)) throw bad('这台线路机已经有直出入口', 409, 'conflict');
   const port = Math.max(20000, ...relay.entries.map((x) => x.port)) + 1;
-  const e: EntryView = { id: `e${db.seq++}`, relay: { id: relay.id, name: relay.name }, node: { id: m.id, name: direct ? `${m.name}-直出` : m.name }, direct, port, lifecycle: 'pending', applied: false, apply_error: null, tcp: null, egress: null, reach: null, traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 } };
+  // 模式（同服务端 add_entry）：没给按默认；直出、家宽代理、同机 IP 节点只能普通
+  const want: EntryMode = body.mode ?? ENTRY_MODE.default;
+  const why = want !== 'reverse' ? null : direct ? '线路机直出入口没有落地节点，用不着穿透' : m.kind === 'proxy' ? '家宽代理没有 SSH 和 agent，装不了穿透要的 bridge' : m.host_machine ? '同机 IP 节点暂不支持穿透（bridge 要从它自己的 IP 出站，第一版没做）' : null;
+  const mode: EntryMode = why ? 'normal' : want;
+  const e: EntryView = { id: `e${db.seq++}`, relay: { id: relay.id, name: relay.name }, node: { id: m.id, name: direct ? `${m.name}-直出` : m.name }, direct, mode, port, lifecycle: 'pending', applied: false, apply_error: null, tcp: null, egress: null, reach: null, traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 } };
   if (!direct) m.entries.push(e);
   relay.entries.push(e);
   const job = newJob('attach_entry', { id: m.id, name: m.name }, [['apply', '等待线路机应用'], ['verify', '出口验收']]);
   drive(job, 2000, () => { e.lifecycle = 'active'; e.applied = true; });
-  emit({ type: 'machines' }); return { job_id: job.id };
+  emit({ type: 'machines' }); return { job_id: job.id, entry_mode: mode, note: why ? `按普通模式建入口：${why}` : null };
+});
+
+// 穿透开关（同服务端 api/reverse.rs）：预览列出会发生什么与不能切的原因；发起建作业（推 bridge → 切换 → 验收），完成后改模式、TCP 一格变成「-（穿透）」
+const ENTRY_MODE: { default: EntryMode; set: boolean } = { default: 'reverse', set: false };
+const entryModeView = () => ({ default: ENTRY_MODE.default, label: ENTRY_MODE.default === 'reverse' ? '穿透' : '普通', set: ENTRY_MODE.set, builtin: 'reverse' });
+R('GET', '/settings/entry-mode', () => entryModeView());
+R('PUT', '/settings/entry-mode', ({ body }) => {
+  if (body.default !== 'normal' && body.default !== 'reverse') throw bad(`入口模式只能是 normal（普通）或 reverse（穿透），给的是「${body.default}」`);
+  Object.assign(ENTRY_MODE, { default: body.default, set: true }); emit({ type: 'settings' }); return entryModeView();
+});
+function reversePlan(id: string, on: boolean) {
+  const e = findEntry(id); const node = machine(e.node.id); const relay = machine(e.relay.id);
+  const blockers: string[] = [];
+  if (e.direct) blockers.push('线路机直出入口没有落地节点，用不着穿透');
+  if (e.lifecycle !== 'active') blockers.push('入口现在不在用：只有在用的入口能切换（停用的先启用）');
+  if ((e.mode === 'reverse') === on) blockers.push(`入口已经是${on ? '穿透' : '普通'}模式`);
+  if (on && node.kind === 'proxy') blockers.push('家宽代理没有 SSH 和 agent，装不了穿透要的 bridge');
+  if (on && node.host_machine) blockers.push('同机 IP 节点暂不支持穿透（bridge 要从它自己的 IP 出站，第一版没做）');
+  if (node.active_job) blockers.push(`「${node.name}」还有进行中的作业：等它结束再切换`);
+  const impacts = on
+    ? [`节点「${node.name}」上装 bridge（推 xray 程序、装 fleet-xray-bridge 单元），由它主动连 ${relay.ip}:${e.port}（这个入口自己的端口），客户流量经这条隧道从节点自己的 IP 出去`]
+    : [`线路机 ${relay.name} 改回连节点的 ssserver（节点上一直留着，防火墙照旧放行这台线路机），节点入站丢包的问题会回来`, '验收通过后节点上的 bridge 停掉删掉（xray 程序留着）'];
+  impacts.push(`线路机 ${relay.name} 不重启 Xray：只换这个入口的入站，这个入口上正在进行的连接断开一次、客户端自动重连；线路机上别的入口不受影响`, '分享链接、客户端订阅、软路由出口都不变（同一个入口端口与凭据）', '验收：线路机应用后经入口的出口探测要看到节点自己的 IP；不通就自动切回原来的模式、作业失败');
+  const warnings = on ? ['之后这个入口没有线路机 → 节点的 TCP 探测（显示「-（穿透）」）；隧道断了体现为出口探测失败（照常告警），隧道挂不上时中控会叫节点 agent 重启 bridge'] : [];
+  const mode = e.mode ?? 'normal';
+  return { e, node, view: { entry: { id: e.id, name: `${node.name} · ${relay.name}:${e.port}`, node_id: node.id, node: node.name, relay_id: relay.id, relay: relay.name, port: e.port, mode }, on, from: mode, to: on ? 'reverse' : 'normal', ok: !blockers.length, blockers, impacts, warnings } };
+}
+R('GET', '/entries/([^/]+)/reverse', ({ params, query }) => reversePlan(params[0], query.get('on') === 'true').view);
+R('POST', '/entries/([^/]+)/reverse', ({ params, body }) => {
+  const on = body.on === true;
+  const { e, node, view } = reversePlan(params[0], on);
+  if (!view.ok) throw bad(view.blockers.join('；'), 409, 'conflict');
+  const job = newJob('reverse', { id: node.id, name: node.name }, [['bridge_up', '推 bridge 并启动'], ['switch', '切换入口模式并验收出口'], ['bridge_down', '收起 bridge']]);
+  node.active_job = { id: job.id, kind: 'reverse', state: 'running' };
+  drive(job, 2000, () => { e.mode = on ? 'reverse' : 'normal'; if (on) e.tcp = null; else e.tcp = { ok: true, latency_ms: 48, detail: null, ts: iso() }; node.active_job = null; });
+  emit({ type: 'machines' }); return { ...view, job_id: job.id };
 });
 
 /** 分页接口的形状（同服务端 api::paged） */
@@ -1036,6 +1094,7 @@ function suggest(i: Incident): string[] {
   const kind = db.machines.find((m) => m.id === i.subject_id)?.kind;
   if (i.rule === 'traffic_quota_high' && kind === 'relay') return [`fleetctl rebalance ${shq(name)}`];
   if (i.rule === 'agent_offline') return [`fleetctl logs ${shq(name)}`];
+  if (i.rule === 'tcp_loss_high') return [`fleetctl diag ${shq(name)}`];
   if (i.rule === 'nonbusiness_traffic_high') return [`fleetctl logs ${shq(name)}`, `fleetctl exec ${shq(name)} -- 'ss -s; nft list ruleset | head -50'`];
   if (i.rule === 'business_traffic_spike') return [`fleetctl traffic --node ${shq(name)} --days 7`];
   if (i.rule === 'router_exit_drift') return [`fleetctl router sync ${shq(name)}`];
@@ -1493,13 +1552,24 @@ function replacePlan(old: MachineView, newId: string | null, teamId: string | nu
     if (newPolicy) w += `，新节点自己单独设的访问策略（${newPolicy}）会被覆盖`;
     warnings.push(w);
   }
+  // 新节点此刻故障 / 降级、没开自动续费又快到期（同服务端 new_node_notes）
+  const why = nw.health.reasons.length ? `（${nw.health.reasons.map((r) => r.text).join('；')}）` : '';
+  if (nw.health.status === 'down') warnings.push(`新节点「${nw.name}」此刻故障${why}：替换后客户的出口就走它，会不通；先查清，或换一台正常的`);
+  else if (nw.health.status === 'degraded') warnings.push(`新节点「${nw.name}」此刻降级${why}：照常能用，替换前先看看原因`);
+  const ns = nw.subscription;
+  if (ns && !ns.auto_renew && ns.due_days <= ns.remind_days) {
+    const left = ns.due_days < 0 ? `已过期 ${-ns.due_days} 天` : ns.due_days === 0 ? '今天到期' : `还有 ${ns.due_days} 天`;
+    warnings.push(`新节点「${nw.name}」${ns.due_date} 到期（${left}）${nw.spare ? '；它在备用里，进备用时自动续费关了，替换出来也不会自己打开' : ''}：替换后它接客户，要继续用记得登记续费（或打开自动续费）`);
+  }
+  const plan = nw.team ? compactPlan(nw.team.id, [nw.id]) : [];
+  if (nw.team) warnings.push(...compactExitsNote(plan.filter((c) => c.m.id !== old.id), `不想错位就换一台新节点：用备用团队里的，或${nw.team.name}里编号最大的那台（后面没有节点要前移）`));
   const side = (x: MachineView) => ({ id: x.id, name: x.name, kind: x.kind, team: x.team });
   return {
     nw, spare, num,
     view: {
       old: side(old), new: side(nw), new_name: old.team && old.number != null ? displayName(old.team.name, old.number) : old.name,
       old_to: { team: spare ? { id: spare.id, name: spare.name, spare: spare.spare } : null, number: num, name: spare && num != null ? displayName(spare.name, num) : old.name },
-      renames: nw.team ? compactPlan(nw.team.id, [nw.id]).map((c) => ({ machine_id: c.m.id, old_name: c.old_name, new_name: c.new_name })) : [], routers_enabled: routers, routers: rts, ok: blockers.length === 0, blockers, warnings,
+      renames: plan.map((c) => ({ machine_id: c.m.id, old_name: c.old_name, new_name: c.new_name })), routers_enabled: routers, routers: rts, ok: blockers.length === 0, blockers, warnings,
     },
   };
 }

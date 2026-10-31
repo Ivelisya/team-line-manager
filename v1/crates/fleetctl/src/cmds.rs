@@ -192,8 +192,9 @@ pub fn status(ctx: &Ctx) -> anyhow::Result<u8> {
         // 本月中途才开始有数据（在用线路机本月才接入）的标「（10-22 起）」
         let from = ov.pointer("/traffic_month/counted_from").and_then(Value::as_str).map(|t| format!("（{} 起）", crate::billing::md_of(t))).unwrap_or_default();
         let mut s = table::kv(&[
-            // 闲置备用（备用团队里没有软路由出口指向、没有在用同机 IP 节点的）不在共 / 各健康计数里，单列在后面；和下面「每月费用」里不续费的备用台数口径不同（那边还要没被扣住）
-            ("节点", format!("{} · 闲置备用 {}", bucket("nodes"), ov["spare"].as_i64().unwrap_or(0))),
+            // 闲置备用（备用团队里没有软路由出口指向、没有在用同机 IP 节点的）不在共 / 各健康计数里，单列在后面，带上它们自己的健康计数（能顶替几台）；
+            // 和下面「每月费用」里不续费的备用台数口径不同（那边还要没被扣住）
+            ("节点", format!("{} · {}", bucket("nodes"), spare_line(&ov))),
             ("线路机", bucket("relays")),
             // 按台机器：同机 IP 节点随宿主机的 agent 计入，家宽代理不需要 agent（同网页集群状态）
             ("agent", {
@@ -233,6 +234,16 @@ pub fn status(ctx: &Ctx) -> anyhow::Result<u8> {
         s
     });
     Ok(0)
+}
+
+/// status 节点行末尾的闲置备用：「闲置备用 7（正常 2 · 降级 1 · 故障 4；能顶替 3 台）」。能顶替 = 总数 − 故障 − 未知（同网页首页「节点正常」：降级、维护照常服务）；
+/// 健康计数只写不为 0 的。旧中控没有 spare_health 只写台数
+fn spare_line(ov: &Value) -> String {
+    let n = ov["spare"].as_i64().unwrap_or(0);
+    let Some(h) = ov.get("spare_health").filter(|_| n > 0) else { return format!("闲置备用 {n}") };
+    let c = |k: &str| h[k].as_i64().unwrap_or(0);
+    let parts: Vec<String> = ["ok", "degraded", "down", "unknown", "maintenance"].iter().filter(|k| c(k) > 0).map(|k| format!("{} {}", health_cn(k), c(k))).collect();
+    format!("闲置备用 {n}（{}；能顶替 {} 台）", parts.join(" · "), c("total") - c("down") - c("unknown"))
 }
 
 /// 告警列表（state = firing | all | chronic，最多 500 条；`subject` 是机器 id 时只看这台），每条是 `incident_item`
@@ -497,6 +508,9 @@ fn agent_health_cn(h: &Value) -> String {
     s
 }
 
+/// show 的「软路由」一行（网页节点抽屉同一句）
+const NO_EXITS_NOTE: &str = "没有软路由出口指着这台（团队里的软路由都看过了，出口可能已改指向别处）";
+
 pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
     let (id, _) = ctx.find_id(machine, Want::Any)?;
     let mut m = ctx.c.get(&format!("/machines/{id}"))?;
@@ -581,6 +595,10 @@ pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
         if let Some(sp) = crate::billing::spare_cn(&m) {
             rows.push(("备用", sp));
         }
+        // 团队里的软路由都看得清出口、却没有一个指着这台（中控算好 no_router_exits）：多半是出口改指向别处后留下的，看着像在用其实没客户
+        if m["no_router_exits"] == true {
+            rows.push(("软路由", NO_EXITS_NOTE.into()));
+        }
         // 有额度的才有「本周期」；不限流量的只看下面的本月流量（同网页、billing）
         if !m["quota"]["limit_gb"].is_null() {
             let period = if m["quota"]["mode"] == "rolling30" { "近 30 天已用" } else { "本周期已用" };
@@ -623,6 +641,8 @@ fn entry_item(e: &Value) -> Value {
     json!({
         "id": e["id"], "relay": e.pointer("/relay/name"), "port": e["port"], "node": e.pointer("/node/name"),
         "lifecycle": e["lifecycle"], "applied": e["applied"], "apply_error": e["apply_error"],
+        // 穿透（reverse）：节点主动连入口，线路机不连节点，没有 TCP 探测；旧中控没有这个字段，按普通
+        "mode": e.get("mode").and_then(Value::as_str).unwrap_or("normal"),
         "tcp_ok": e.pointer("/tcp/ok"), "egress_ok": e.pointer("/egress/ok"),
         "today_down": e.pointer("/traffic/today_down"), "today_up": e.pointer("/traffic/today_up"),
     })
@@ -638,19 +658,22 @@ fn entry_table(items: &[Value]) -> String {
                 Some(false) => "不通".to_string(),
                 None => "-".to_string(),
             };
+            let reverse = e["mode"] == "reverse";
             vec![
                 st(e, "/id").chars().take(8).collect(),
                 format!("{}:{}", st(e, "/relay"), st(e, "/port")),
                 st(e, "/node"),
                 entry_state_cn(e).into(),
-                probe("tcp_ok"),
+                if reverse { "穿透" } else { "普通" }.into(),
+                // 穿透入口没有线路机 → 节点的 TCP 探测：写明原因，不是「不通」
+                if reverse { "-（穿透）".into() } else { probe("tcp_ok") },
                 probe("egress_ok"),
                 format!("下载 {} / 上传 {}", traffic(num(e, "/today_down").unwrap_or(0.0)), traffic(num(e, "/today_up").unwrap_or(0.0))),
                 e["apply_error"].as_str().unwrap_or("").to_string(),
             ]
         })
         .collect();
-    table::render(&["id", "入口", "节点", "状态", "TCP", "出口", "今日业务流量", "错误"], &rows)
+    table::render(&["id", "入口", "节点", "状态", "模式", "TCP", "出口", "今日业务流量", "错误"], &rows)
 }
 
 fn take_entries(mut m: Value) -> Vec<Value> {
@@ -1191,6 +1214,36 @@ pub fn watch(ctx: &Ctx, count: Option<usize>, metrics: bool) -> anyhow::Result<u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// status 的闲置备用：带上健康计数（非 0 的）和能顶替几台；没有闲置备用、旧中控没有 spare_health 只写台数
+    #[test]
+    fn status_spare_line() {
+        // 状态的中文名取中控的 /meta（单测里没有，退回原值），这里按 health_cn 拼
+        let (ok, degraded, down, unknown) = (health_cn("ok"), health_cn("degraded"), health_cn("down"), health_cn("unknown"));
+        let ov = json!({"spare": 7, "spare_health": {"total": 7, "ok": 3, "degraded": 0, "down": 4, "unknown": 0, "maintenance": 0}});
+        assert_eq!(spare_line(&ov), format!("闲置备用 7（{ok} 3 · {down} 4；能顶替 3 台）"));
+        let ov = json!({"spare": 3, "spare_health": {"total": 3, "ok": 1, "degraded": 1, "down": 0, "unknown": 1, "maintenance": 0}});
+        assert_eq!(spare_line(&ov), format!("闲置备用 3（{ok} 1 · {degraded} 1 · {unknown} 1；能顶替 2 台）"));
+        assert_eq!(spare_line(&json!({"spare": 0, "spare_health": {"total": 0}})), "闲置备用 0");
+        assert_eq!(spare_line(&json!({"spare": 2})), "闲置备用 2");
+    }
+
+    #[test]
+    fn entries_table_shows_mode_and_reverse_tcp() {
+        let e = |mode: Option<&str>, tcp: Value| {
+            let mut v = json!({"id": "01a17cec-0000", "relay": {"name": "线路机2"}, "port": 20013, "node": {"name": "团队1-06"}, "lifecycle": "active", "applied": true, "tcp": tcp, "egress": {"ok": true}});
+            if let Some(m) = mode {
+                v["mode"] = json!(m);
+            }
+            entry_item(&v)
+        };
+        let t = entry_table(&[e(Some("reverse"), Value::Null), e(Some("normal"), json!({"ok": false})), e(None, json!({"ok": true}))]);
+        let lines: Vec<&str> = t.lines().collect();
+        assert!(lines[0].contains("模式") && lines[0].contains("TCP"), "{t}");
+        assert!(lines[1].contains("穿透") && lines[1].contains("-（穿透）") && !lines[1].contains("不通"), "{t}");
+        assert!(lines[2].contains("普通") && lines[2].contains("不通"), "{t}");
+        assert!(lines[3].contains("普通"), "旧中控没有 mode 字段：按普通：{t}");
+    }
     use crate::client::ApiError;
 
     fn api(status: u16) -> anyhow::Error {

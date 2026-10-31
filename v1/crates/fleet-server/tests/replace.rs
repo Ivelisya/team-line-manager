@@ -454,6 +454,118 @@ async fn renumber_only_and_compaction() {
     assert_eq!(name_of(t, w.old).await, "团队2备用-01");
 }
 
+/// 新节点从备用团队来（最常见的用法）、备用团队编号连续占满、不给编号：旧节点接新节点在备用里空出来的号。
+/// 原来预览和作业都把新节点的号当空号、作业却先挪旧节点，撞唯一索引失败「这个团队里已经有这个编号」（2026-10-27 生产上踩到）。
+/// 现在预览与作业同一份计算，作业先放临时号再改过去：作业成功、备用团队谁都不改名、团队2 的编号不动。
+/// 同带上：指定的编号正好是新节点现在的号；旧节点留在旧团队、新节点也在旧团队（目标团队就是新节点的团队）；指定别的空号时备用团队照常压缩
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn new_node_from_full_spare_team_takes_over_its_slot() {
+    let w = world().await;
+    let t = &w.t;
+    let db = &t.st.db;
+    // 团队2：01 旧节点、02、03 在用；备用：01 新节点、02–07 占满
+    sqlx::query("update machine set team_id = $2, number = 1 where id = $1").bind(w.new).bind(w.spare).execute(db).await.unwrap();
+    let n2 = node(t, w.team, 2, "203.0.113.22").await;
+    let n3 = node(t, w.team, 3, "203.0.113.23").await;
+    let mut spares = vec![];
+    for k in 2..=7 {
+        spares.push(node(t, w.spare, k, &format!("203.0.113.{}", 40 + k)).await);
+    }
+    let oe = old_entry(&w).await;
+    router(&w, "团队2-路由A", 23711, &[("节点01", "198.51.100.2", 20003, Some(oe))]).await;
+    let p = t.get(&format!("/api/v1/machines/{}/replace?new_machine_id={}", w.old, w.new)).await;
+    assert_eq!(p["ok"], true, "{p}");
+    assert_eq!((p["new"]["name"].as_str(), p["new_name"].as_str()), (Some("团队2备用-01"), Some("团队2-01")));
+    assert_eq!(p["old_to"], json!({"team": {"id": w.spare, "name": "团队2备用", "spare": true}, "number": 1, "name": "团队2备用-01"}), "旧节点接新节点空出来的号：{p}");
+    assert_eq!(p["renames"], json!([]), "备用团队不压缩：{p}");
+
+    let d = t.post(&format!("/api/v1/machines/{}/replace", w.old), json!({"new_machine_id": w.new})).await;
+    let job = d["job_id"].as_str().unwrap().to_string();
+    drive(t).await;
+    let j = t.job(&job).await;
+    assert_eq!(j["state"], "succeeded", "{j} {}", logs(t, &job).await);
+    assert_eq!((name_of(t, w.new).await, name_of(t, w.old).await), ("团队2-01".to_string(), "团队2备用-01".to_string()));
+    assert_eq!((name_of(t, n2).await, name_of(t, n3).await), ("团队2-02".to_string(), "团队2-03".to_string()), "团队2 编号不动");
+    for (k, s) in spares.iter().enumerate() {
+        assert_eq!(name_of(t, *s).await, format!("团队2备用-{:02}", k + 2), "备用团队谁都不改名");
+    }
+    let ov = t.get(&format!("/api/v1/machines/{}", w.old)).await;
+    assert_eq!((ov["spare"].as_bool(), ov["spare_from"].as_str()), (Some(true), Some("团队2-01")), "进备用记下的原名是团队2 的名字，不是临时号：{ov}");
+    assert_eq!(ov["lifecycle_reason"], "替换下来：团队2备用-01 接替了 团队2-01", "{ov}");
+    let nv = t.get(&format!("/api/v1/machines/{}", w.new)).await;
+    assert_eq!((nv["spare"].as_bool(), nv["spare_from"].is_null()), (Some(false), true), "新节点出了备用：{nv}");
+    // 审计：旧节点先放临时号（备用 08）再改到 01，两条改名都在
+    let au = t.get(&format!("/api/v1/audit?target_id={}", w.old)).await;
+    let mut renames: Vec<&str> = au.as_array().unwrap().iter().filter(|a| a["action"] == "machine.rename").map(|a| a["summary"].as_str().unwrap()).collect();
+    renames.sort();
+    assert_eq!(renames, ["团队2-01 → 团队2备用-08", "团队2备用-08 → 团队2备用-01"], "{au}");
+    assert!(logs(t, &job).await.contains("编号已交换：新节点现在是 团队2-01，旧节点现在是 团队2备用-01"));
+
+    // 指定的编号正好是新节点现在的号：同样先放临时号
+    let w = world().await;
+    let t = &w.t;
+    let db = &t.st.db;
+    sqlx::query("update machine set team_id = $2, number = 1 where id = $1").bind(w.new).bind(w.spare).execute(db).await.unwrap();
+    let s2 = node(t, w.spare, 2, "203.0.113.52").await;
+    let p = t.get(&format!("/api/v1/machines/{}/replace?new_machine_id={}&number=1", w.old, w.new)).await;
+    assert_eq!((p["ok"].as_bool(), p["old_to"]["name"].as_str()), (Some(true), Some("团队2备用-01")), "{p}");
+    let d = t.post(&format!("/api/v1/machines/{}/replace", w.old), json!({"new_machine_id": w.new, "old_to": {"number": 1}})).await;
+    drive(t).await;
+    assert_eq!(t.job(d["job_id"].as_str().unwrap()).await["state"], "succeeded");
+    assert_eq!((name_of(t, w.old).await, name_of(t, s2).await), ("团队2备用-01".to_string(), "团队2备用-02".to_string()));
+    // 指定别的空号（03）：不经临时号；新节点走后备用团队压缩，旧节点跟着前移到 02
+    let w = world().await;
+    let t = &w.t;
+    let db = &t.st.db;
+    sqlx::query("update machine set team_id = $2, number = 1 where id = $1").bind(w.new).bind(w.spare).execute(db).await.unwrap();
+    let s2 = node(t, w.spare, 2, "203.0.113.52").await;
+    let p = t.get(&format!("/api/v1/machines/{}/replace?new_machine_id={}&number=3", w.old, w.new)).await;
+    let ren: Vec<(&str, &str)> = p["renames"].as_array().unwrap().iter().map(|r| (r["old_name"].as_str().unwrap(), r["new_name"].as_str().unwrap())).collect();
+    assert_eq!(ren, [("团队2备用-02", "团队2备用-01"), ("团队2备用-03", "团队2备用-02")], "{p}");
+    let d = t.post(&format!("/api/v1/machines/{}/replace", w.old), json!({"new_machine_id": w.new, "old_to": {"number": 3}})).await;
+    drive(t).await;
+    assert_eq!(t.job(d["job_id"].as_str().unwrap()).await["state"], "succeeded");
+    assert_eq!((name_of(t, s2).await, name_of(t, w.old).await, name_of(t, w.new).await), ("团队2备用-01".to_string(), "团队2备用-02".to_string(), "团队2-01".to_string()));
+
+    // 旧节点留在旧团队（--to 团队2）、新节点也在团队2：旧编号留给新节点，旧节点接新节点的号——两台互换编号
+    let w = world().await;
+    let t = &w.t;
+    let p = t.get(&format!("/api/v1/machines/{}/replace?new_machine_id={}&team_id={}", w.old, w.new, w.team)).await;
+    assert_eq!((p["ok"].as_bool(), p["old_to"]["name"].as_str(), p["renames"].clone()), (Some(true), Some("团队2-02"), json!([])), "{p}");
+    let d = t.post(&format!("/api/v1/machines/{}/replace", w.old), json!({"new_machine_id": w.new, "old_to": {"team_id": w.team}})).await;
+    drive(t).await;
+    let j = t.job(d["job_id"].as_str().unwrap()).await;
+    assert_eq!(j["state"], "succeeded", "{j}");
+    assert_eq!((name_of(t, w.new).await, name_of(t, w.old).await), ("团队2-01".to_string(), "团队2-02".to_string()));
+}
+
+/// 替换预览的提醒：新节点快到期（从备用来的写明自动续费关着）；新节点原来的团队压缩改名的节点还被软路由出口指着（面板名和出口名会错位）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn replace_preview_warns_new_node_due_and_compaction_exits() {
+    let w = world().await;
+    let t = &w.t;
+    let db = &t.st.db;
+    // 新节点在备用 01、3 天后到期；备用 02 被「路由B」的出口「节点02」指着：新节点走后它压缩成 01
+    sqlx::query("update machine set team_id = $2, number = 1 where id = $1").bind(w.new).bind(w.spare).execute(db).await.unwrap();
+    sqlx::query("insert into subscription (machine_id, price_cents, currency, due_date, billing_tz) values ($1, 500, 'USD', (now() at time zone 'UTC')::date + 3, 'UTC')")
+        .bind(w.new)
+        .execute(db)
+        .await
+        .unwrap();
+    let s2 = node(t, w.spare, 2, "203.0.113.52").await;
+    let e2 = entry(t, w.relay, s2, 20052, "55555555-5555-4555-8555-555555555555", "active").await;
+    router(&w, "路由B", 23712, &[("节点02", "198.51.100.2", 20052, Some(e2))]).await;
+    t.st.live.invalidate();
+    // 指定 03：旧节点不接新节点的号，备用团队压缩，02 → 01
+    let p = t.get(&format!("/api/v1/machines/{}/replace?new_machine_id={}&number=3", w.old, w.new)).await;
+    let ws = p["warnings"].to_string();
+    assert!(ws.contains("新节点「团队2备用-01」") && ws.contains("到期（还有 3 天）；它在备用里，进备用时自动续费关了"), "{ws}");
+    assert!(ws.contains("团队2备用-02（路由B · 节点02）→ 团队2备用-01") && ws.contains("不想错位就换一台新节点"), "{ws}");
+    // 不指定：旧节点接新节点的号，备用团队不压缩，不提醒错位
+    let p = t.get(&format!("/api/v1/machines/{}/replace?new_machine_id={}", w.old, w.new)).await;
+    assert!(!p["warnings"].to_string().contains("对不上"), "{p}");
+}
+
 /// 选了「不改软路由」而出口还指着旧节点：旧节点进备用后被扣住（不自动回收、要照常续费），自动续费的提示不再写「到期后照常回收」「供应商那边要自己去关」，
 /// 改写要自己登记续费、供应商那边先别关；改软路由（出口会跟到新节点）时不被扣住，说法照旧
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -620,7 +732,7 @@ async fn move_rewrites_router_exits() {
     config(23153, &[("x", "198.51.100.2", 20003)]);
     let j = run(t, &mut [Sim::new(RELAY_TOKEN.into()), Sim::new(tb)], &job).await;
     assert_eq!(j["state"], "succeeded", "{j} {}", logs(t, &job).await);
-    assert_eq!((j["steps"][4]["key"].as_str(), j["steps"][4]["state"].as_str()), (Some("routers"), Some("done")));
+    assert_eq!((j["steps"][5]["key"].as_str(), j["steps"][5]["state"].as_str()), (Some("routers"), Some("done")));
     let (np, uuid): (i32, Uuid) = sqlx::query_as("select port, client_uuid from entry where node_id = $1 and relay_id = $2").bind(w.old).bind(rb).fetch_one(&t.st.db).await.unwrap();
     let a = applies(23151);
     assert_eq!(a.len(), 1);
@@ -633,7 +745,7 @@ async fn move_rewrites_router_exits() {
     let l = logs(t, &job).await;
     assert!(l.contains(&format!("节点01 198.51.100.2:20003 → 198.51.100.3:{np}")), "{l}");
     assert!(l.contains("按软路由现在的配置要改：路由A 的 节点01、节点01备；路由C 的 x（发起时的预览是：路由A 的 节点01；路由B 的 节点01）"), "{l}");
-    let out = &j["steps"][4]["output"]["routers"];
+    let out = &j["steps"][5]["output"]["routers"];
     assert_eq!(out.as_array().map(|r| r.iter().map(|x| x["name"].as_str().unwrap()).collect::<Vec<_>>()), Some(vec!["路由A", "路由C"]), "{out}");
 }
 
@@ -659,7 +771,7 @@ async fn move_router_failure_keeps_old_entry() {
     let job = d["job_id"].as_str().unwrap().to_string();
     let mut sims = [Sim::new(RELAY_TOKEN.into()), Sim::new(tb)];
     let j = run(t, &mut sims, &job).await;
-    assert_eq!((j["state"].as_str(), j["steps"][4]["state"].as_str()), (Some("failed"), Some("failed")), "{j}");
+    assert_eq!((j["state"].as_str(), j["steps"][5]["state"].as_str()), (Some("failed"), Some("failed")), "{j}");
     let err = j["error"].as_str().unwrap();
     assert!(err.contains("软路由「路由B」：出口「节点01」换成新入口后测了 3 次都不通；已改回原配置：路由A。软路由都是原样，旧入口没摘"), "{err}");
     let stamp_a = read(root(23161).join("apply-1.sh")).lines().find_map(|l| l.strip_prefix("STAMP='").map(|s| s.trim_end_matches('\'').to_string())).unwrap();
@@ -746,7 +858,7 @@ async fn evacuate_changes_each_router_once() {
     for _ in 0..100 {
         drive_holding(t, &mut sims, 23171, &mut held).await;
         let j = t.job(&follow).await;
-        if held.len() == 1 && j["step"] == 4 && j["state"] == "waiting" && logs(t, &follow).await.contains("带头") {
+        if held.len() == 1 && j["step"] == 5 && j["state"] == "waiting" && logs(t, &follow).await.contains("带头") {
             waiting = j;
             break;
         }
@@ -772,8 +884,8 @@ async fn evacuate_changes_each_router_once() {
     assert!(bp.len() == 1 && bp[0].contains(&format!("NAME_1='节点02'\nOSRV_1='relay.test'\nOPORT_1='20020'\nSRV_1='relay3.test'\nPORT_1='{pb}'")), "{bp:?}");
     // 步骤输出：带头的列出全部（标明各出口归哪个作业）和认领的作业，跟着的只有自己的出口
     let (lj, fj) = (t.job(&lead).await, t.job(&follow).await);
-    assert_eq!(lj["steps"][4]["output"]["batch"], json!([follow]), "{lj}");
-    let fo = &fj["steps"][4]["output"];
+    assert_eq!(lj["steps"][5]["output"]["batch"], json!([follow]), "{lj}");
+    let fo = &fj["steps"][5]["output"];
     assert_eq!(fo["batch_leader"], json!(lead));
     let mine: Vec<(&str, &str)> = fo["routers"].as_array().unwrap().iter().flat_map(|r| r["exits"].as_array().unwrap().iter().map(move |x| (r["name"].as_str().unwrap(), x["exit"].as_str().unwrap()))).collect();
     assert_eq!(mine, [("路由A", "节点02"), ("路由B", "节点02")], "{fo}");
@@ -919,7 +1031,7 @@ async fn batch_move_merges_offline_routers() {
     let e3 = entry(&w.t, w.relay, n3, 20021, "33333333-3333-4333-8333-333333333333", "active").await;
     let n4 = node(&w.t, w.team, 4, "203.0.113.14").await;
     entry(&w.t, w.relay, n4, 20022, "44444444-4444-4444-8444-444444444444", "active").await;
-    let a = router(&w, "路由A", 23261, &[("节点01", "198.51.100.2", 20003, Some(oe)), ("节点02", "198.51.100.2", 20020, Some(ne))]).await;
+    let a = router(&w, "路由A", 23713, &[("节点01", "198.51.100.2", 20003, Some(oe)), ("节点02", "198.51.100.2", 20020, Some(ne))]).await;
     let b = router(&w, "路由B", 23262, &[("节点03", "198.51.100.2", 20021, Some(e3))]).await;
     let t = &w.t;
     let (rb, _tb) = seed_relay_b(t).await;
@@ -1019,7 +1131,7 @@ async fn evacuate_batch_stuck_holds_followers() {
     t.post(&format!("/api/v1/jobs/{}/retry", ids[1]), json!({})).await;
     let fj = run(t, &mut sims, &ids[1]).await;
     assert_eq!(fj["state"], "succeeded", "{}", logs(t, &ids[1]).await);
-    assert_eq!(fj["steps"][4]["output"]["routers"][0]["exits"][0]["exit"], "节点02", "{fj}");
+    assert_eq!(fj["steps"][5]["output"]["routers"][0]["exits"][0]["exit"], "节点02", "{fj}");
     assert_eq!(applies(23173).len(), 2, "带头的接着改完那一次，跟着的不再动路由");
     assert_eq!((entry_state(t, oe).await, entry_state(t, ne).await), ("removed".to_string(), "removed".to_string()));
 }
@@ -1084,15 +1196,15 @@ async fn separate_jobs_take_turns_on_a_router() {
         if let [(first, _)] = held.as_slice() {
             let other = ids.iter().find(|i| *i != first).unwrap().clone();
             let j = t.job(&other).await;
-            if j["step"] == 4 && j["state"] == "waiting" {
+            if j["step"] == 5 && j["state"] == "waiting" {
                 queued = (other, j);
                 break;
             }
         }
     }
     let (second, j) = &queued;
-    assert!(held.len() == 1 && j["steps"][4]["state"] == "running", "{j} {}", logs(t, second).await);
-    assert!(j["steps"][4]["started_at"].is_null() && j["cancellable"] == true, "排队不算这一步的时间、还能取消：{j}");
+    assert!(held.len() == 1 && j["steps"][5]["state"] == "running", "{j} {}", logs(t, second).await);
+    assert!(j["steps"][5]["started_at"].is_null() && j["cancellable"] == true, "排队不算这一步的时间、还能取消：{j}");
     assert_eq!(applies(23178).len(), 1, "后到的没碰路由");
     let reads = read(root(23178).join("reads")).lines().count();
     // 再领几次照样排队，不读路由的配置；日志只写一次
@@ -1114,7 +1226,7 @@ async fn separate_jobs_take_turns_on_a_router() {
     let name = |id: &str| if id == ids[0] { "节点01" } else { "节点02" };
     let a = applies(23178);
     assert!(a.len() == 2 && a[0].contains(&format!("NAME_1='{}'\n", name(&first))) && a[1].contains(&format!("NAME_1='{}'\n", name(second))), "{a:?}");
-    assert_eq!(t.job(second).await["steps"][4]["state"], "done");
+    assert_eq!(t.job(second).await["steps"][5]["state"], "done");
 }
 
 /// 中控升级前建的作业（步骤是旧定义的）：按步骤 key 对齐现在的定义。第 45 轮之前的换线路机只有 7 步（没有改软路由出口），
@@ -1129,7 +1241,7 @@ async fn old_jobs_align_by_step_key() {
     let d = t.post(&format!("/api/v1/machines/{}/move", w.old), json!({"to_relay_id": rb})).await;
     let job = d["job_id"].as_str().unwrap().to_string();
     let id = Uuid::parse_str(&job).unwrap();
-    // 改回旧定义：去掉 routers（idx 4），后面的往前挪；参数也同旧作业（没有 routers / plan）
+    // 改回旧定义：去掉 routers（idx 5），后面的往前挪；参数也同旧作业（没有 routers / plan）
     let db = &t.st.db;
     sqlx::query("delete from job_step where job_id = $1 and key = 'routers'").bind(id).execute(db).await.unwrap();
     // 主键 (job_id, idx)：先挪到负数再挪回来
@@ -1140,7 +1252,7 @@ async fn old_jobs_align_by_step_key() {
     assert_eq!(j["state"], "succeeded", "{j} {}", logs(t, &job).await);
     let keys: Vec<&str> = j["steps"].as_array().unwrap().iter().map(|s| s["key"].as_str().unwrap()).collect();
     assert_eq!(keys, jobs::defs("move_entry").iter().map(|d| d.key).collect::<Vec<_>>());
-    assert_eq!(j["steps"][4]["state"], "done");
+    assert_eq!(j["steps"][5]["state"], "done");
     assert!(logs(t, &job).await.contains("按步骤名对齐：新增的「改软路由出口」照做"));
     assert_eq!(applies(23191).len(), 1, "按路由现在的配置改了出口");
     assert_eq!(entry_state(t, oe).await, "removed");
@@ -1235,10 +1347,10 @@ async fn half_done_router_stays_protected_until_verified() {
 async fn redo_not_written_keeps_previous_params() {
     let w = world().await;
     let oe = old_entry(&w).await;
-    router(&w, "路由A", 23261, &[("节点01", "198.51.100.2", 20003, Some(oe))]).await;
+    router(&w, "路由A", 23281, &[("节点01", "198.51.100.2", 20003, Some(oe))]).await;
     let t = &w.t;
-    std::fs::write(root(23261).join("mode"), "drop").unwrap();
-    std::fs::write(root(23261).join("rollback-fail"), "").unwrap();
+    std::fs::write(root(23281).join("mode"), "drop").unwrap();
+    std::fs::write(root(23281).join("rollback-fail"), "").unwrap();
     let d = t.post(&format!("/api/v1/machines/{}/replace", w.old), json!({"new_machine_id": w.new})).await;
     let job = d["job_id"].as_str().unwrap().to_string();
     let jid = Uuid::parse_str(&job).unwrap();
@@ -1246,22 +1358,22 @@ async fn redo_not_written_keeps_previous_params() {
     assert!(t.job(&job).await["error"].as_str().unwrap().contains("需要人工处理"));
     let rotated = "33333333-3333-4333-8333-333333333333";
     sqlx::query("update entry set client_uuid = $2::uuid where node_id = $1").bind(w.new).bind(rotated).execute(&t.st.db).await.unwrap();
-    std::fs::remove_file(root(23261).join("rollback-fail")).unwrap();
+    std::fs::remove_file(root(23281).join("rollback-fail")).unwrap();
     let written = || async { sqlx::query_scalar::<_, Option<String>>("select params->'routers_applied'->0->'written'->0->>'uuid' from job where id = $1").bind(jid).fetch_one(&t.st.db).await.unwrap() };
     // 等不到路由上的锁：这次的（轮换后的）没写进去，记录还是上一次的
-    std::fs::write(root(23261).join("mode"), "busy").unwrap();
+    std::fs::write(root(23281).join("mode"), "busy").unwrap();
     t.post(&format!("/api/v1/jobs/{job}/retry"), json!({})).await;
     drive(t).await;
     assert_eq!(t.job(&job).await["state"], "waiting");
-    assert!(applies(23261)[1].contains(&format!("UUID_1='{rotated}'")));
+    assert!(applies(23281)[1].contains(&format!("UUID_1='{rotated}'")));
     assert_eq!(written().await.as_deref(), Some(NEW_UUID));
     // 核对没过、一行没写：改回带的是上一次写的 uuid
-    std::fs::write(root(23261).join("mode"), "refuse").unwrap();
+    std::fs::write(root(23281).join("mode"), "refuse").unwrap();
     rerun(t, jid).await;
     let j = t.job(&job).await;
     assert!(j["error"].as_str().unwrap().contains("已改回原配置：路由A。软路由都是原样"), "{j}");
-    assert_eq!(applies(23261).len(), 3);
-    assert_eq!(read(root(23261).join("rollback-uuid")), format!("{NEW_UUID}\n"), "按上一次写的核对");
+    assert_eq!(applies(23281).len(), 3);
+    assert_eq!(read(root(23281).join("rollback-uuid")), format!("{NEW_UUID}\n"), "按上一次写的核对");
 }
 
 /// 执行时出口对不上新入口（发起之后新节点的入口变了；路由C 发起时的快照里没有出口指向旧节点）：动手之前作业失败，

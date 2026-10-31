@@ -235,6 +235,7 @@ pub const JOB_KINDS: Labels = &[
     ("speedtest", "测速"),
     ("repoint", "改出口指向"),
     ("router_sync", "同步软路由出口"),
+    ("reverse", "切换穿透"),
 ];
 
 pub const JOB_STATES: Labels = &[
@@ -295,6 +296,7 @@ pub const RULES: Labels = &[
     ("no_entry", "没有在用入口"),
     ("egress_fail", "出口不通"),
     ("tcp_fail", "线路机到节点不通"),
+    ("tcp_loss_high", "持续握手丢包"),
     ("renewal_due", "即将到期"),
     // 已过期并进了 renewal_due（严重）：留着名字，旧告警记录照样显示
     ("renewal_overdue", "已过期"),

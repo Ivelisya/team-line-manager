@@ -49,6 +49,7 @@ const fn s(key: &'static str, title: &'static str, timeout_s: i64) -> StepDef { 
 
 // 超时要覆盖步骤内所有 ssh/推送的累计时间（含瞬时错误重试），否则会被外层超时截断：
 // converge ≈ 基线 600 + 调优 480 + 推 ssserver 200 + 脚本 120 + 重启 30；converge_relay ≈ 基线 600 + 调优 480 + 推 xray 320 + 推 geo 2×320 + 推 sing-box 320 + 脚本 60
+// 穿透 bridge ≈ 推 xray 300 + 读配置 + 脚本 90（入口是普通模式时跳过，不登录）
 const PROVISION_VPS: &[StepDef] = &[
     s("preflight", "预检与身份", 240),
     s("bootstrap", "引导密钥", 240),
@@ -56,6 +57,7 @@ const PROVISION_VPS: &[StepDef] = &[
     s("agent", "安装 agent", 600),
     s("wait_report", "等待首次上报", 180),
     s("attach", "接入线路机", 60),
+    s("bridge", "装穿透 bridge（穿透模式）", 600),
     s("wait_applied", "等待线路机应用", 300),
     s("verify", "出口验收", 300),
     s("activate", "上线", 30),
@@ -88,6 +90,7 @@ const PROVISION_RELAY: &[StepDef] = &[
 const ATTACH_ENTRY: &[StepDef] = &[
     s("attach", "接入线路机", 60),
     s("firewall", "更新节点防火墙", 300),
+    s("bridge", "装穿透 bridge（穿透模式）", 600),
     s("wait_applied", "等待线路机应用", 300),
     s("verify", "出口验收", 300),
 ];
@@ -101,9 +104,12 @@ const RETIRE: &[StepDef] = &[
 // 换线路机：新入口先建好并验收，再把软路由上指向旧入口的出口改成新入口（同替换节点的「改软路由出口」，失败全部换回、旧入口不摘），
 // 同批换线路机的由一个带头的一起改（每台路由只改一次、重启一次，见 steps/batch.rs）。
 // 最后摘旧入口，节点全程至少有一个可用入口。开始改路由之后不能取消（排队等路由、改路由失败且已换回原配置时除外），detach_old 之后不可回滚（见 cancel_blocker）。
+// 新入口沿用旧入口的模式：穿透的在建好之后把它加进节点的 bridge（重启 bridge，旧入口经隧道的连接断开几秒）。
+// 收紧防火墙那一步顺带把旧入口从 bridge 配置里去掉（只删不重启）
 const MOVE_ENTRY: &[StepDef] = &[
     s("attach_new", "在新线路机建入口", 60),
     s("firewall_widen", "放行新线路机（节点防火墙）", 300),
+    s("bridge", "装穿透 bridge（穿透模式）", 600),
     s("wait_applied_new", "等待新线路机应用", 300),
     s("verify_new", "经新入口出口验收", 300),
     s("routers", "改软路由出口", 1800),
@@ -112,7 +118,7 @@ const MOVE_ENTRY: &[StepDef] = &[
     s("firewall_narrow", "收紧节点防火墙", 300),
 ];
 /// MOVE_ENTRY 里 routers 的下标：从这一步起不能再取消（排队等路由、这一步失败停着且路由已换回时除外）
-const MOVE_ROUTERS: i32 = 4;
+const MOVE_ROUTERS: i32 = 5;
 const PURGE: &[StepDef] = &[s("purge", "删除数据", 600)];
 // 替换节点（见 steps/replace.rs）：先把软路由上指向旧节点的出口换成新节点的入口（一台一台改，失败的连同已改好的都换回原配置），
 // 再交换编号（旧节点去备用团队 / 空号，新节点接旧编号）。改路由一开始就不能取消（排队等路由时除外，见 cancel_blocker）。
@@ -131,6 +137,9 @@ const TUNE: &[StepDef] = &[s("tune", "系统调优", 600)];
 const SS_REFRESH: &[StepDef] = &[s("ss", "下发 SS 配置", 300), s("verify", "出口验收", 300)];
 // 按需测速（见 speedtest.rs）：机器本机下载一个北美的测速文件，curl 自己最多 300 秒（speedtest::MAX_TIME_S），再留 SSH 建连与解析的余量
 const SPEEDTEST: &[StepDef] = &[s("speedtest", "测速", 360)];
+// 穿透开关（steps/bridge.rs，参数 entry_id / on / from）：开 = 推 bridge → 切换并验收；关 = 切换并验收 → 收起 bridge。
+// 切换那一步失败自动切回原来的模式；取消补偿同样切回并按库里的穿透入口重推 bridge
+const REVERSE: &[StepDef] = &[s("bridge_up", "推 bridge 并启动", 600), s("switch", "切换入口模式并验收出口", 600), s("bridge_down", "收起 bridge", 300)];
 
 pub fn defs(kind: &str) -> &'static [StepDef] {
     match kind {
@@ -149,6 +158,7 @@ pub fn defs(kind: &str) -> &'static [StepDef] {
         "tune" => TUNE,
         "ss_refresh" => SS_REFRESH,
         "speedtest" => SPEEDTEST,
+        "reverse" => REVERSE,
         _ => &[],
     }
 }
@@ -160,7 +170,7 @@ pub fn title_of(kind: &str, key: &str) -> &'static str {
 /// 上架类作业：目标机器处于上架中，失败时机器标为上架失败
 pub fn provisions(kind: &str) -> bool { kind.starts_with("provision_") }
 
-pub fn cancellable(kind: &str) -> bool { provisions(kind) || matches!(kind, "attach_entry" | "move_entry" | "upgrade_agent" | "replace" | "repoint" | "router_sync" | "tune" | "ss_refresh" | "speedtest") }
+pub fn cancellable(kind: &str) -> bool { provisions(kind) || matches!(kind, "attach_entry" | "move_entry" | "upgrade_agent" | "replace" | "repoint" | "router_sync" | "tune" | "ss_refresh" | "speedtest" | "reverse") }
 
 /// 停在「改软路由出口」这一步
 fn at_routers(kind: &str, step: i32) -> bool { (matches!(kind, "replace" | "repoint" | "router_sync") && step == 0) || (kind == "move_entry" && step == MOVE_ROUTERS) }
@@ -251,7 +261,7 @@ fn outer_timeout(d: &StepDef) -> Duration { Duration::from_secs(d.timeout_s as u
 fn required_lifecycle(kind: &str) -> Option<&'static str> {
     match kind {
         k if k.starts_with("provision_") => Some("provisioning"),
-        "attach_entry" | "move_entry" | "upgrade_agent" | "replace" | "tune" | "ss_refresh" | "speedtest" => Some("active"),
+        "attach_entry" | "move_entry" | "upgrade_agent" | "replace" | "tune" | "ss_refresh" | "speedtest" | "reverse" => Some("active"),
         "retire" => Some("retiring"),
         "purge" => Some("retired"),
         _ => None,
@@ -879,7 +889,8 @@ fn view_change(kind: &str) -> ViewChange {
         // 上架 / 补入口 / 换线路机 / 改出口指向：生命周期、入口增删与归属、备用机器的 router_exits 变；名字、团队、编号不动
         // 替换节点：交换编号那一步已自己发了 Machines（同时清访问缓存），结束时再补一次视图（路由出口指向也在这一次之前变了）
         k if provisions(k) => ViewChange::View,
-        "attach_entry" | "move_entry" | "repoint" | "replace" => ViewChange::View,
+        // 穿透开关：入口的模式变了（视图里入口带 mode）
+        "attach_entry" | "move_entry" | "repoint" | "replace" | "reverse" => ViewChange::View,
         // 没有归类的类型：保持现状
         _ => ViewChange::Names,
     }
@@ -1191,7 +1202,7 @@ mod tests {
         for k in ["upgrade_agent", "ss_refresh", "tune", "speedtest", "router_sync"] {
             assert_eq!(view_change(k), Quiet, "{k}");
         }
-        for k in ["provision_vps", "provision_proxy", "provision_relay", "provision_ip", "attach_entry", "move_entry", "repoint", "replace"] {
+        for k in ["provision_vps", "provision_proxy", "provision_relay", "provision_ip", "attach_entry", "move_entry", "repoint", "replace", "reverse"] {
             assert_eq!(view_change(k), View, "{k}");
         }
         for k in ["retire", "purge", "不认识的类型"] {
@@ -1202,7 +1213,7 @@ mod tests {
     #[test]
     fn outer_timeout_covers_step_timeout() {
         for k in [
-            "provision_vps", "provision_proxy", "provision_relay", "provision_ip", "attach_entry", "retire", "purge", "upgrade_agent", "move_entry", "replace", "repoint", "router_sync", "tune", "ss_refresh", "speedtest",
+            "provision_vps", "provision_proxy", "provision_relay", "provision_ip", "attach_entry", "retire", "purge", "upgrade_agent", "move_entry", "replace", "repoint", "router_sync", "tune", "ss_refresh", "speedtest", "reverse",
         ] {
             for d in defs(k) {
                 assert!(outer_timeout(d).as_secs() as i64 >= d.timeout_s + 120);
@@ -1224,9 +1235,12 @@ mod tests {
     #[test]
     fn cancel_window() {
         let can = |kind, step, state| cancel_blocker(kind, step, state, &Value::Null).is_none();
-        assert!(can("move_entry", 0, "running") && can("move_entry", 3, "failed"));
-        assert!(can("move_entry", 4, "failed") && !can("move_entry", 4, "running"), "改路由失败（已换回）还能取消，在改时不能");
-        assert!(!can("move_entry", 5, "running") && !can("move_entry", 5, "failed") && !can("move_entry", 7, "failed"), "摘旧入口之后不能取消");
+        assert!(can("move_entry", 0, "running") && can("move_entry", 4, "failed"));
+        assert!(can("move_entry", 5, "failed") && !can("move_entry", 5, "running"), "改路由失败（已换回）还能取消，在改时不能");
+        assert!(!can("move_entry", 6, "running") && !can("move_entry", 6, "failed") && !can("move_entry", 8, "failed"), "摘旧入口之后不能取消");
+        // 穿透开关：任何时候都能取消（补偿切回原来的模式、重推 bridge）
+        assert!(can("reverse", 0, "running") && can("reverse", 1, "waiting") && can("reverse", 1, "failed"));
+        assert_eq!(defs("reverse").iter().map(|d| d.key).collect::<Vec<_>>(), ["bridge_up", "switch", "bridge_down"]);
         assert_eq!(defs("move_entry")[MOVE_ROUTERS as usize].key, "routers");
         assert_eq!(defs("move_entry")[MOVE_ROUTERS as usize + 1].key, "detach_old");
         assert!(can("provision_vps", 8, "failed") && can("provision_vps", 8, "waiting"));
@@ -1247,37 +1261,37 @@ mod tests {
         // 改软路由这一步：排队等别的作业改同一台路由时能取消；改失败、有路由没换回时不能
         let with = |kind, step, state, p: Value| cancel_blocker(kind, step, state, &p).is_none();
         let queued = json!({"routers_queued": "路由A"});
-        assert!(with("move_entry", 4, "waiting", queued.clone()) && with("replace", 0, "waiting", queued.clone()));
-        assert!(!with("move_entry", 4, "running", queued.clone()) && !with("move_entry", 5, "waiting", queued), "轮到了、或已经过了这一步");
+        assert!(with("move_entry", 5, "waiting", queued.clone()) && with("replace", 0, "waiting", queued.clone()));
+        assert!(!with("move_entry", 5, "running", queued.clone()) && !with("move_entry", 6, "waiting", queued), "轮到了、或已经过了这一步");
         let stuck = json!({"routers_stuck": ["路由A"]});
-        assert!(!with("move_entry", 4, "failed", stuck.clone()) && !with("replace", 0, "failed", stuck));
-        assert!(with("move_entry", 4, "failed", json!({"routers_stuck": []})));
+        assert!(!with("move_entry", 5, "failed", stuck.clone()) && !with("replace", 0, "failed", stuck));
+        assert!(with("move_entry", 5, "failed", json!({"routers_stuck": []})));
         // 路由可能改着一部分（中途被打断、改回失败）：失败停着、重试后排队 / 等锁，都不能取消；这一步做完之后照常看后面的步骤
         let applied = json!({"routers_applied": [{"id": Uuid::nil()}], "routers_stuck": [], "routers_queued": "路由A"});
-        for (kind, step) in [("move_entry", 4), ("replace", 0)] {
+        for (kind, step) in [("move_entry", 5), ("replace", 0)] {
             for state in ["failed", "queued", "waiting", "running"] {
                 assert!(!with(kind, step, state, applied.clone()), "{kind} {state}");
             }
         }
-        assert!(cancel_blocker("move_entry", 4, "failed", &applied).unwrap().contains("中途被打断"));
-        assert!(cancel_blocker("move_entry", 4, "failed", &json!({"routers_stuck": [{"id": Uuid::nil()}]})).unwrap().contains("需要人工处理"));
-        assert!(!with("replace", 1, "failed", applied.clone()) && with("move_entry", 4, "failed", json!({"routers_applied": []})));
+        assert!(cancel_blocker("move_entry", 5, "failed", &applied).unwrap().contains("中途被打断"));
+        assert!(cancel_blocker("move_entry", 5, "failed", &json!({"routers_stuck": [{"id": Uuid::nil()}]})).unwrap().contains("需要人工处理"));
+        assert!(!with("replace", 1, "failed", applied.clone()) && with("move_entry", 5, "failed", json!({"routers_applied": []})));
         // 同批换线路机：等着一起改时能取消，被带头的认领之后不能
-        assert!(with("move_entry", 4, "waiting", json!({"routers_queued": "等同批换线路机的作业一起改软路由", "routers_batch_leader": null})));
-        assert!(cancel_blocker("move_entry", 4, "waiting", &json!({"routers_queued": "x", "routers_batch_leader": Uuid::nil().to_string()})).unwrap().contains("带头"));
+        assert!(with("move_entry", 5, "waiting", json!({"routers_queued": "等同批换线路机的作业一起改软路由", "routers_batch_leader": null})));
+        assert!(cancel_blocker("move_entry", 5, "waiting", &json!({"routers_queued": "x", "routers_batch_leader": Uuid::nil().to_string()})).unwrap().contains("带头"));
     }
 
     #[test]
     fn manual_only_when_revert_failed() {
         let stuck = json!([{"id": Uuid::nil(), "name": "路由A", "exits": ["节点01", "节点02"], "was": ["198.51.100.2:20003", "relay.test:20003"]}]);
-        let m = manual("move_entry", 4, "failed", &stuck);
+        let m = manual("move_entry", 5, "failed", &stuck);
         assert_eq!(m["routers"], json!([{"id": Uuid::nil(), "name": "路由A", "exits": ["节点01", "节点02"]}]));
         let msg = m["message"].as_str().unwrap();
         assert!(msg.starts_with("软路由「路由A」的出口 节点01（原来指向 198.51.100.2:20003）、节点02（原来指向 relay.test:20003）可能停在改了一半"), "{msg}");
         assert!(msg.contains("点「重试」") && !msg.is_ascii(), "{msg}");
         for (kind, step, state, s) in [
-            ("move_entry", 4, "running", stuck.clone()),
-            ("move_entry", 5, "failed", stuck.clone()),
+            ("move_entry", 5, "running", stuck.clone()),
+            ("move_entry", 6, "failed", stuck.clone()),
             ("replace", 0, "failed", json!([])),
             ("replace", 0, "failed", Value::Null),
         ] {
@@ -1286,11 +1300,11 @@ mod tests {
         assert!(!manual("replace", 0, "failed", &stuck).is_null());
     }
 
-    /// 作业定义变了：按步骤 key 对齐。MOVE_ENTRY 在第 4 步插入了 routers（原来 7 步）
+    /// 作业定义变了：按步骤 key 对齐。当年 MOVE_ENTRY 在第 4 步插入了 routers（原来 7 步）：这里按那时的两份定义算
     #[test]
     fn align_by_key() {
         let old = ["attach_new", "firewall_widen", "wait_applied_new", "verify_new", "detach_old", "wait_detached_old", "firewall_narrow"];
-        let keys: Vec<&str> = defs("move_entry").iter().map(|d| d.key).collect();
+        let keys: Vec<&str> = vec!["attach_new", "firewall_widen", "wait_applied_new", "verify_new", "routers", "detach_old", "wait_detached_old", "firewall_narrow"];
         let rows = |states: &[&str]| old.iter().zip(states).map(|(k, s)| (k.to_string(), s.to_string())).collect::<Vec<_>>();
         let same: Vec<(String, String)> = keys.iter().map(|k| (k.to_string(), "pending".to_string())).collect();
         assert_eq!(align_plan(&same, &keys), Ok(None));
@@ -1315,5 +1329,13 @@ mod tests {
         let mut swapped = same;
         swapped.swap(0, 1);
         assert!(align_plan(&swapped, &keys).unwrap_err().contains("先后"));
+        // 这一版在放行新线路机之后插入了 bridge（穿透）：部署时还在等新线路机应用的换线作业照做 bridge、再接着等；已经验收过的跳过
+        let now: Vec<&str> = defs("move_entry").iter().map(|d| d.key).collect();
+        assert_eq!(now[2], "bridge");
+        let prev = |states: &[&str]| keys.iter().zip(states).map(|(k, s)| (k.to_string(), s.to_string())).collect::<Vec<_>>();
+        let (slots, step) = align_plan(&prev(&["done", "done", "running", "pending", "pending", "pending", "pending", "pending"]), &now).unwrap().unwrap();
+        assert_eq!((slots[2].clone(), step), (New, 2));
+        let (slots, step) = align_plan(&prev(&["done", "done", "done", "done", "running", "pending", "pending", "pending"]), &now).unwrap().unwrap();
+        assert_eq!((slots[2].clone(), step), (Skip, 5));
     }
 }

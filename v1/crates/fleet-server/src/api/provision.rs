@@ -70,6 +70,9 @@ pub struct Item {
     /// 同机 IP 节点：加在这台 VPS 节点（宿主机）上，SSH 与 agent 用宿主机的；`ip` 是它自己的出口 IP，要已配在宿主机网卡上。
     /// 这时 ssh_port、login、ss_port、provider_id、plan_id、reset_host_key 不适用（忽略）：SSH 端口与供应商取宿主机的、不带套餐，SS 端口由中控分配
     host_id: Option<Uuid>,
+    /// 入口模式 normal / reverse（穿透，见 crate::reverse）；不填 = 面板设置的新入口默认模式。家宽代理、同机 IP 节点不支持穿透，
+    /// 自动按普通建（预览的 warnings、作业日志里写明）；线路机 agent 太旧等作业到建入口时才知道的，同样退回普通并记日志
+    entry_mode: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -102,8 +105,32 @@ struct Checked {
     /// 规范化后的国家（None = 按 IP 自动）
     country: Option<String>,
     errors: Vec<String>,
-    /// 不影响通过的提醒（发行版已过标准支持期、试登录没有结果）：只有「检查」会填
+    /// 不影响通过的提醒（发行版已过标准支持期、试登录没有结果、要穿透但不支持）：只有「检查」会填
     warnings: Vec<String>,
+    /// 新入口的模式（家宽代理、同机 IP 节点已退回普通；线路机为 None）与退回的原因
+    entry_mode: Option<&'static str>,
+    entry_mode_note: Option<String>,
+}
+
+/// 定下每台的入口模式：给了的用给的（写错了报错），没给的按面板的默认模式；家宽代理、同机 IP 节点要穿透时退回普通并记原因
+async fn entry_modes(st: &AppState, v: &mut [Checked]) -> ApiResult<()> {
+    let (default, _) = crate::reverse::default_mode(&st.db).await?;
+    for c in v.iter_mut().filter(|c| c.item.kind != "relay") {
+        let want = match c.item.entry_mode.as_deref().filter(|m| !m.trim().is_empty()) {
+            Some(m) => match crate::reverse::parse_mode(m) {
+                Ok(m) => m,
+                Err(e) => {
+                    c.errors.push(e);
+                    continue;
+                }
+            },
+            None => default,
+        };
+        let why = (want == crate::reverse::REVERSE).then(|| crate::reverse::kind_unsupported(&c.item.kind, c.item.host_id)).flatten();
+        c.entry_mode = Some(if why.is_some() { crate::reverse::NORMAL } else { want });
+        c.entry_mode_note = why.map(|w| format!("按普通模式建入口：{w}"));
+    }
+    Ok(())
 }
 
 impl Item {
@@ -297,7 +324,7 @@ async fn validate(tx: &mut Tx<'_>, items: &[Item]) -> ApiResult<Vec<Checked>> {
             }
         }
         let plan_provider = plan.and_then(|p| plans.get(&p).copied());
-        out.push(Checked { item: it.clone(), ip, number: it.number, name: String::new(), host, ss_port, plan_provider, country, errors, warnings: vec![] });
+        out.push(Checked { item: it.clone(), ip, number: it.number, name: String::new(), host, ss_port, plan_provider, country, errors, warnings: vec![], entry_mode: None, entry_mode_note: None });
     }
     for c in out.iter_mut() {
         if c.item.kind == "relay" {
@@ -325,7 +352,10 @@ async fn validate(tx: &mut Tx<'_>, items: &[Item]) -> ApiResult<Vec<Checked>> {
 }
 
 fn report(v: &[Checked]) -> Value {
-    json!({"items": v.iter().map(|c| json!({"ok": c.errors.is_empty(), "errors": c.errors, "warnings": c.warnings, "name": c.name, "number": c.number, "ss_port": c.ss_port})).collect::<Vec<_>>()})
+    json!({"items": v.iter().map(|c| json!({
+        "ok": c.errors.is_empty(), "errors": c.errors, "warnings": c.warnings, "name": c.name, "number": c.number, "ss_port": c.ss_port,
+        "entry_mode": c.entry_mode,
+    })).collect::<Vec<_>>()})
 }
 
 /// 「检查」里探测 SSH 端口的限速，按操作人：一批最多 100 台，连着查三批没问题，之后每秒补 1 次。
@@ -367,6 +397,12 @@ pub async fn check(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Bat
     let mut tx = st.db.begin().await?;
     let mut v = validate(&mut tx, &b.items).await?;
     tx.rollback().await?;
+    entry_modes(&st, &mut v).await?;
+    for c in v.iter_mut() {
+        if let Some(n) = c.entry_mode_note.clone() {
+            c.warnings.push(n);
+        }
+    }
     // 只查库的校验之外再看一眼 SSH 端口通不通（要读到 SSH 版本行，只连上 TCP 不算）：地址填错、防火墙没放行在这里就能看出来，不用等上架作业失败。
     // 通了再用中控密钥试登录一次（`ssh_check`）：没填 root 密码又登不进的，作业第一步一定失败，在这里就报，并给出中控公钥；
     // 登得进的读发行版，已过标准支持期的给警告（不影响通过）。
@@ -517,7 +553,8 @@ async fn host_ips(t: &crate::ssh::Target, host: &str, script: &str) -> Result<(S
 
 pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Batch>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
-    let v = validate(&mut tx, &b.items).await?;
+    let mut v = validate(&mut tx, &b.items).await?;
+    entry_modes(&st, &mut v).await?;
     if v.iter().any(|c| !c.errors.is_empty()) {
         return Err(ApiError::new(axum::http::StatusCode::UNPROCESSABLE_ENTITY, "invalid", "有机器没通过校验，请先检查").with_detail(report(&v)));
     }
@@ -600,6 +637,13 @@ pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Ba
             ov.write(&mut tx, id, s.due_date).await?;
         }
         let mut params = json!({"relay_id": it.relay_id});
+        // 入口模式（建入口那一步再按线路机 / 节点 agent 核一次，用不了穿透时退回普通）
+        if let Some(m) = c.entry_mode {
+            params["entry_mode"] = json!(m);
+        }
+        if let Some(n) = &c.entry_mode_note {
+            params["entry_mode_note"] = json!(n);
+        }
         // 同机 IP 节点用中控密钥登录宿主机：不收 root 密码，也不重置宿主机的主机指纹
         if c.host.is_none() {
             if it.reset_host_key == Some(true) {
@@ -621,7 +665,7 @@ pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Ba
             json!({"name": c.name, "ip": c.ip.to_string(), "kind": kind, "job_id": job, "host_id": it.host_id}),
         )
         .await?;
-        created.push(json!({"machine_id": id, "job_id": job, "name": c.name}));
+        created.push(json!({"machine_id": id, "job_id": job, "name": c.name, "entry_mode": c.entry_mode, "entry_mode_note": c.entry_mode_note}));
     }
     tx.commit().await?;
     st.wake_jobs();

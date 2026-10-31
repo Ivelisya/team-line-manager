@@ -127,6 +127,7 @@ pub async fn stats_task(sh: Arc<Shared>, cli: XrayCli, mut sd: watch::Receiver<b
     let (mut pid_misses, mut pid_skip) = (0u32, 0u32);
     // 上一次算增量时启用的入口：这一轮刚停用的照样算、出样本（见 stats::entry_counters）
     let mut last_ids: HashSet<uuid::Uuid> = HashSet::new();
+    let mut tunnel_watch = TunnelWatch::default();
     loop {
         tokio::select! {
             _ = tick.tick() => {}
@@ -212,6 +213,53 @@ pub async fn stats_task(sh: Arc<Shared>, cli: XrayCli, mut sd: watch::Receiver<b
         }
         let status = XrayStatus { running: up, version: version.as_ref().map(|v| v.1.clone()), applied_generation: sh.applied_gen.load(Ordering::Relaxed) };
         sh.buf.lock().unwrap().xray = Some(status);
+        // 穿透隧道：有启用的穿透入口时每轮看一次 Xray 里有没有它的反向出站（lso 很轻）。Xray 不可达时不看（全都会缺）
+        let rev = reverse_entries(&sh);
+        if !rev.is_empty() && up {
+            if let Ok(outs) = cli.lso().await {
+                let down = tunnel_watch.update(&rev, &outs, Instant::now());
+                sh.buf.lock().unwrap().tunnels_down = down;
+            }
+        } else if rev.is_empty() {
+            tunnel_watch.since.clear();
+            sh.buf.lock().unwrap().tunnels_down.clear();
+        }
+    }
+}
+
+/// 已应用的期望状态里启用的穿透入口
+fn reverse_entries(sh: &Shared) -> Vec<uuid::Uuid> {
+    let a = sh.applied.read().unwrap();
+    a.as_ref().map(|d| d.entries.iter().filter(|e| e.enabled && matches!(e.outbound, fleet_proto::Outbound::Reverse { .. })).map(|e| e.id).collect()).unwrap_or_default()
+}
+
+/// 穿透隧道有没有挂上：Xray 里有 `rvs-<入口>` 出站 = bridge 自这个入站建立以来连上过。
+/// 入站被换掉（轮换凭据、停用后再启用、改 REALITY 参数）时 Xray 连带删掉这个出站，但 bridge 那条旧 TCP 连接不会断、
+/// 也就不会重连（26.3.27 实测：一直不通），只能让节点重启 bridge——缺席满 `TUNNEL_DOWN_AFTER_S` 秒就随上报报给中控，
+/// 中控在节点的下一份回执里要它重启（`ReportAck::bridge_kick`）。bridge 正常重连只要约 2 秒，到不了这个时长
+#[derive(Default)]
+pub struct TunnelWatch {
+    /// 入口 → 第一次发现缺席的时刻
+    since: HashMap<uuid::Uuid, Instant>,
+}
+
+impl TunnelWatch {
+    pub fn update(&mut self, rev: &[uuid::Uuid], outbounds: &[String], now: Instant) -> Vec<uuid::Uuid> {
+        let present: HashSet<&str> = outbounds.iter().map(|s| s.as_str()).collect();
+        self.since.retain(|id, _| rev.contains(id) && !present.contains(tags::reverse(*id).as_str()));
+        let after = Duration::from_secs(fleet_proto::TUNNEL_DOWN_AFTER_S);
+        let mut down = vec![];
+        for id in rev {
+            if present.contains(tags::reverse(*id).as_str()) {
+                continue;
+            }
+            let t0 = *self.since.entry(*id).or_insert(now);
+            if now.duration_since(t0) >= after {
+                down.push(*id);
+            }
+        }
+        down.sort();
+        down
     }
 }
 
@@ -454,5 +502,29 @@ mod tests {
         let now = t0 + Duration::from_secs(100);
         assert_eq!(soon(now, 1, uuid::Uuid::from_u128(2_500)), now + Duration::from_millis(3_500));
         assert!((0..50u128).map(|n| soon(now, 1, uuid::Uuid::from_u128(n * 977))).all(|s| s >= now + Duration::from_secs(1) && s < now + Duration::from_secs(4)));
+    }
+}
+
+#[cfg(test)]
+mod tunnel_tests {
+    use super::*;
+
+    #[test]
+    fn tunnel_down_after_30s_absent_and_clears_when_back() {
+        let (a, b) = (uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2));
+        let mut w = TunnelWatch::default();
+        let t0 = Instant::now();
+        let outs = |ids: &[uuid::Uuid]| ids.iter().map(|i| tags::reverse(*i)).chain(["deny".to_string()]).collect::<Vec<_>>();
+        // a 挂着、b 缺席：刚缺席不报，满 30 秒才报
+        assert!(w.update(&[a, b], &outs(&[a]), t0).is_empty());
+        assert!(w.update(&[a, b], &outs(&[a]), t0 + Duration::from_secs(29)).is_empty());
+        assert_eq!(w.update(&[a, b], &outs(&[a]), t0 + Duration::from_secs(31)), vec![b]);
+        // b 回来了：不再报；再缺席从头计时
+        assert!(w.update(&[a, b], &outs(&[a, b]), t0 + Duration::from_secs(40)).is_empty());
+        assert!(w.update(&[a, b], &outs(&[a]), t0 + Duration::from_secs(50)).is_empty());
+        assert_eq!(w.update(&[a, b], &outs(&[a]), t0 + Duration::from_secs(81)), vec![b]);
+        // 入口不再是穿透（切回普通 / 删掉）：忘掉
+        assert!(w.update(&[a], &outs(&[a]), t0 + Duration::from_secs(90)).is_empty());
+        assert!(w.since.is_empty());
     }
 }

@@ -975,7 +975,8 @@ async fn expired_spare_still_pointed_by_router_exit_is_kept() {
     assert!(r.retired == [n] && r.kept.is_empty(), "{r:?}");
 }
 
-/// 改团队预览的 router_exits：改到备用团队时列出还指向宿主机和随它一起移入的同机 IP 节点的软路由出口；改到非备用团队、没有出口指着时为空
+/// 改团队预览的 router_exits：换团队时列出还指向宿主机和随它一起走的同机 IP 节点的软路由出口（进备用、改到别的团队都列）；没换团队为空。
+/// 原团队压缩改名的节点还被出口指着时，warnings 里一句列出「旧名（路由 · 出口）→ 新名」（面板名和出口名会对不上）
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn rename_preview_lists_router_exits_when_moving_to_spare() {
     let t = setup(false).await;
@@ -998,14 +999,21 @@ async fn rename_preview_lists_router_exits_when_moving_to_spare() {
         json!([{"node": "团队1-01", "router": "办公室", "exit": "节点01"}, {"node": "团队1-02", "router": "办公室", "exit": "节点02"}]),
         "{pv}"
     );
-    // IP 节点自己进备用只看它自己
+    // 宿主机和 IP 节点走了，团队1-03 压缩成 01，而「节点03」还指着它：提醒面板名和出口名会错位
+    let ws = pv["warnings"].to_string();
+    assert!(ws.contains("改完面板名和出口名就对不上了：团队1-03（办公室 · 节点03）→ 团队1-01。不想错位就别把这台挪走"), "{ws}");
+    // IP 节点自己进备用只看它自己；团队1-03 → 02 同样提醒
     let pv = t.get(&format!("/api/v1/machines/{ip}/rename-preview?team_id={sp}")).await;
     assert_eq!(pv["router_exits"], json!([{"node": "团队1-02", "router": "办公室", "exit": "节点02"}]), "{pv}");
-    // 改到非备用团队、没换团队：不返回
-    for q in [format!("team_id={b}"), "number=9".to_string()] {
-        let pv = t.get(&format!("/api/v1/machines/{host}/rename-preview?{q}")).await;
-        assert_eq!(pv["router_exits"], json!([]), "{pv}");
-    }
+    assert!(pv["warnings"].to_string().contains("团队1-03（办公室 · 节点03）→ 团队1-02"), "{pv}");
+    // 改到非备用团队同样列出（改名后出口名不跟着改）；没换团队不返回
+    let pv = t.get(&format!("/api/v1/machines/{host}/rename-preview?team_id={b}")).await;
+    assert_eq!(pv["router_exits"].as_array().map(Vec::len), Some(2), "{pv}");
+    let pv = t.get(&format!("/api/v1/machines/{host}/rename-preview?number=9")).await;
+    assert_eq!((pv["router_exits"].clone(), pv["warnings"].clone()), (json!([]), json!([])), "{pv}");
+    // 压缩改名的节点没有出口指着：不提醒
+    let pv = t.get(&format!("/api/v1/machines/{other}/rename-preview?team_id={b}")).await;
+    assert!(!pv["warnings"].to_string().contains("对不上"), "{pv}");
 }
 
 /// 手动改名把机器改进备用团队，和退役的「移进备用」同一套资格：订阅已过期满 1 天、没有订阅、宿主机有进行中的作业都 409（提示改用退役），
@@ -1244,4 +1252,62 @@ async fn held_spare_cost_counts_in_teams_and_traffic() {
     assert_eq!((row["nodes"].as_i64(), row["held"].as_i64(), row["monthly_usd_cents"].as_i64()), (Some(2), Some(1), Some(500)), "{row}");
     let flags: Vec<(String, bool)> = v["nodes"].as_array().unwrap().iter().map(|n| (n["id"].as_str().unwrap().to_string(), n["held"].as_bool().unwrap())).collect();
     assert!(flags.contains(&(held.to_string(), true)) && flags.contains(&(idle.to_string(), false)), "{flags:?}");
+}
+
+/// 一台路由的快照：出口名 → 指向的节点（测试只关心 node_id）
+async fn snap_router(t: &T, name: &str, team: Option<Uuid>, port: i32, exits: &[(&str, Uuid)]) -> Uuid {
+    let rid = Uuid::now_v7();
+    sqlx::query("insert into router (id, name, team_id, tunnel_port) values ($1, $2, $3, $4)").bind(rid).bind(name).bind(team).bind(port).execute(&t.st.db).await.unwrap();
+    let xs: Vec<Value> = exits
+        .iter()
+        .map(|(x, n)| json!({"name": x, "entry": {"id": Uuid::now_v7(), "name": "", "node_id": n, "relay_id": Uuid::now_v7(), "node_name": "", "relay_name": "线路机1", "port": 20001, "lifecycle": "active"}, "sync": "ok", "linked": true}))
+        .collect();
+    sqlx::query("insert into router_status (router_id, ts, reachable, data, last_ok_at) values ($1, now(), true, $2, now())").bind(rid).bind(json!({"exits": xs})).execute(&t.st.db).await.unwrap();
+    rid
+}
+
+/// 退役预览的顶层 warnings：原团队压缩改名的节点还被软路由出口指着时一句列出「旧名（路由 · 出口）→ 新名」（进备用、立即回收都会压缩）；没有出口指着的不提
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retire_preview_warns_compaction_breaks_exit_names() {
+    let t = setup(false).await;
+    let team = seed_team(&t, "团队2").await;
+    let n1 = seed_node(&t, team, 1, "203.0.113.97", "active").await;
+    let n2 = seed_node(&t, team, 2, "203.0.113.98", "active").await;
+    let n3 = seed_node(&t, team, 3, "203.0.113.99", "active").await;
+    sub(&t, n1, "2030-01-01", "UTC").await;
+    snap_router(&t, "团队2 新办公室", Some(team), 23401, &[("节点02", n2), ("节点01", n1)]).await;
+    let pv = t.get(&format!("/api/v1/machines/{n1}/retire")).await;
+    let ws: Vec<&str> = pv["warnings"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+    assert_eq!(ws.len(), 1, "{pv}");
+    assert!(ws[0].contains("面板名和出口名就对不上了：团队2-02（团队2 新办公室 · 节点02）→ 团队2-01。要换掉这台又不想错位，先用替换"), "{pv}");
+    assert!(!ws[0].contains("团队2-03"), "没有出口指着的不列：{pv}");
+    // 最后一台退役：后面没人前移
+    let pv = t.get(&format!("/api/v1/machines/{n3}/retire")).await;
+    assert_eq!(pv["warnings"], json!([]), "{pv}");
+}
+
+/// 视图的 no_router_exits：团队里在用的节点、团队的软路由都看得清出口、却没有一个出口指着它才为 true；
+/// 别的团队的路由指着也算有人用；团队没有软路由、有路由没采集到 / 配置读不了、备用里的都为 false
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn view_marks_nodes_no_router_exit_points_to() {
+    let t = setup(false).await;
+    let sp = spare_team(&t).await;
+    let (a, b, c) = (seed_team(&t, "团队1").await, seed_team(&t, "团队2").await, seed_team(&t, "团队3").await);
+    let a1 = seed_node(&t, a, 1, "203.0.113.111", "active").await;
+    let a2 = seed_node(&t, a, 2, "203.0.113.112", "active").await;
+    let a3 = seed_node(&t, a, 3, "203.0.113.113", "active").await;
+    let b1 = seed_node(&t, b, 1, "203.0.113.121", "active").await;
+    let c1 = seed_node(&t, c, 1, "203.0.113.131", "active").await;
+    let s1 = seed_node(&t, sp, 1, "203.0.113.141", "active").await;
+    snap_router(&t, "团队1-路由A", Some(a), 23411, &[("节点01", a1)]).await;
+    // 团队2 的路由借用团队1-03
+    snap_router(&t, "团队2-路由A", Some(b), 23412, &[("节点03", a3)]).await;
+    // 团队3 的路由还没采集到：看不出
+    sqlx::query("insert into router (id, name, team_id, tunnel_port) values ($1, '团队3-路由A', $2, 23413)").bind(Uuid::now_v7()).bind(c).execute(&t.st.db).await.unwrap();
+    t.st.live.invalidate();
+    let flag = |v: &Value| v["no_router_exits"].as_bool();
+    for (m, want) in [(a1, false), (a2, true), (a3, false), (b1, true), (c1, false), (s1, false)] {
+        let v = t.get(&format!("/api/v1/machines/{m}")).await;
+        assert_eq!(flag(&v), Some(want), "{} {v}", v["name"]);
+    }
 }

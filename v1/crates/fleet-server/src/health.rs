@@ -46,6 +46,9 @@ pub struct Health {
     /// 中控检查线路机入口的新记录还不够 3 轮：整台连不连得上判不出（只给告警用）
     #[serde(skip)]
     pub reach_unknown: bool,
+    /// 持续握手丢包判不出（中控刚启动还没算过、在触发的这一轮样本不够，tcp_loss.rs）：开着的 tcp_loss_high 不恢复（只给告警用）
+    #[serde(skip)]
+    pub loss_unknown: bool,
 }
 
 impl Health {
@@ -56,6 +59,7 @@ impl Health {
             "host_cpu_high" | "host_mem_high" | "host_disk_high" => self.load_unknown,
             "clock_skew" => self.clock_unknown,
             "relay_unreachable" => self.reach_unknown,
+            crate::tcp_loss::RULE => self.loss_unknown,
             _ => false,
         }
     }
@@ -189,7 +193,8 @@ fn probe_reasons(live: &[&EntryView], now: OffsetDateTime, rs: &mut Vec<Reason>,
             continue;
         }
         // 15 分钟内没有探测结果（视图只取这么久的）：这条入口通不通不知道。直出入口本来就没有 TCP 探测
-        if e.egress.is_none() || (e.tcp.is_none() && !e.direct) {
+        // 直出、穿透入口没有 TCP 探测（线路机不连节点）：只看出口
+        if e.egress.is_none() || (e.tcp.is_none() && !e.direct && e.mode != crate::reverse::REVERSE) {
             undecided.push(e.relay.id);
         }
         match &e.egress {
@@ -243,6 +248,7 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
     let mut rs: Vec<Reason> = vec![];
     let mut unknown = false;
     let (mut probe_undecided, mut probe_failing) = (vec![], vec![]);
+    let mut loss_unknown = false;
     let agent_online = m.agent.as_ref().is_some_and(|a| a.online);
     // 同机 IP 节点的 agent 与主机读数是宿主机的：agent 离线、时钟、持续高负载只由宿主机报，入口和续费照常自己报
     let own_agent = m.host_machine.is_none();
@@ -322,6 +328,13 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
                 rs.push(Reason { key: "no_entry", severity: "warning", text: "没有在用的入口".into() });
             }
             probe_reasons(&live, now, &mut rs, &mut unknown, &mut probe_undecided, &mut probe_failing);
+            // 持续握手丢包（近 30 分钟的比例，tcp_loss.rs 已算好、带滞回）：和 tcp_fail 互补——那条看连续失败，这条看零散但持续的失败与 SYN 重传。
+            // 警告级，节点算「降级」：客户新建连接时不时要多等 1–3 秒或失败，是要处理的问题
+            match &m.tcp_loss {
+                crate::tcp_loss::Loss::Lossy(text) => rs.push(Reason { key: crate::tcp_loss::RULE, severity: "warning", text: text.clone() }),
+                crate::tcp_loss::Loss::Unknown => loss_unknown = true,
+                crate::tcp_loss::Loss::Clear => {}
+            }
         }
     }
 
@@ -348,7 +361,7 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
         rs.extend(a.spike.clone().map(|text| Reason { key: crate::anomaly::SPIKE_RULE, severity: "warning", text }));
     }
     let reach_unknown = m.relay.as_ref().is_some_and(|r| r.reach_unknown);
-    Health { status, reasons: rs, probe_unknown: !probe_undecided.is_empty(), probe_undecided, probe_failing, load_unknown, clock_unknown, reach_unknown }
+    Health { status, reasons: rs, probe_unknown: !probe_undecided.is_empty(), probe_undecided, probe_failing, load_unknown, clock_unknown, reach_unknown, loss_unknown }
 }
 
 #[cfg(test)]
@@ -375,6 +388,7 @@ pub(crate) mod tests {
             live_ip_nodes: vec![],
             renewing_ip_nodes: vec![],
             router_exits: vec![],
+            no_router_exits: false,
             number: None,
             label: None,
             ip: "192.0.2.1".into(),
@@ -449,6 +463,7 @@ pub(crate) mod tests {
             sustained: Sustained::default(),
             policy_blocked: false,
             anomaly: None,
+            tcp_loss: crate::tcp_loss::Loss::Clear,
         }
     }
 
@@ -494,6 +509,7 @@ pub(crate) mod tests {
             relay: Ref { id: Uuid::now_v7(), name: "线路机1".into() },
             node: Ref { id: Uuid::now_v7(), name: "n".into() },
             direct: false,
+            mode: "normal".into(),
             port: 20000,
             lifecycle: "active".into(),
             applied: true,
@@ -648,6 +664,23 @@ pub(crate) mod tests {
         assert!(!evaluate(&n, now).probe_unknown);
     }
 
+    /// 持续握手丢包：节点算降级（警告）；判不出时不给原因、标 undecided（开着的不恢复）；线路机不判
+    #[test]
+    fn tcp_loss_degrades_node() {
+        let now = OffsetDateTime::now_utc();
+        let mut n = base("vps");
+        n.entries = vec![entry(false, true)];
+        n.tcp_loss = crate::tcp_loss::Loss::Lossy("近 30 分钟…".into());
+        let h = evaluate(&n, now);
+        assert_eq!((keys(&h), h.reasons[0].severity, h.status), (vec!["tcp_loss_high"], "warning", Status::Degraded));
+        n.tcp_loss = crate::tcp_loss::Loss::Unknown;
+        let h = evaluate(&n, now);
+        assert!(h.reasons.is_empty() && h.status == Status::Ok && h.undecided("tcp_loss_high") && !h.undecided("tcp_fail"));
+        let mut r = base("relay");
+        r.tcp_loss = crate::tcp_loss::Loss::Lossy("x".into());
+        assert!(evaluate(&r, now).reasons.is_empty());
+    }
+
     /// 只有 TCP 探测失败、同一入口的出口新鲜通过：客户流量是通的，TCP 失败只给警告（降级，不算故障）；出口也不通或出口结果过期才严重
     #[test]
     fn tcp_failure_with_fresh_egress_is_a_warning() {
@@ -714,6 +747,20 @@ pub(crate) mod tests {
         r.entries = vec![d];
         let h = evaluate(&r, now);
         assert_eq!((keys(&h), h.reasons[0].severity, h.status), (vec!["egress_fail"], "warning", Status::Degraded));
+    }
+
+    #[test]
+    fn reverse_entry_judged_by_egress_only() {
+        // 穿透入口没有 TCP 探测（视图里 tcp 恒为 null）：出口通就是好的，不当成「判不出」；出口不通照常报 egress_fail，不报 tcp_fail
+        let now = OffsetDateTime::now_utc();
+        let mut n = base("vps");
+        n.entries = vec![entry(false, true)];
+        (n.entries[0].mode, n.entries[0].tcp) = ("reverse".into(), None);
+        let h = evaluate(&n, now);
+        assert!(h.reasons.is_empty() && !h.undecided("tcp_fail") && !h.undecided("egress_fail") && h.status != Status::Unknown, "{:?}", keys(&h));
+        n.entries = vec![entry(false, false)];
+        (n.entries[0].mode, n.entries[0].tcp) = ("reverse".into(), None);
+        assert_eq!(keys(&evaluate(&n, now)), ["egress_fail"]);
     }
 
     #[test]

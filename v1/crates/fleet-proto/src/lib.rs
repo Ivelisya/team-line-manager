@@ -56,7 +56,22 @@ pub struct Report {
     /// 线路机 → 各 VPS 节点的网络往返（`GET /agent/v1/rtt` 给的节点；放置矩阵，见 fleet-server 的 placement.rs）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rtt: Vec<RttSample>,
+    /// 这个 agent 会的东西（[`CAP_REVERSE`] 等）。中控据此判断能不能下发它不认识就会整份解析失败的期望状态：
+    /// agent 版本号只是包版本 + 提交哈希，比不出先后。旧 agent 不带（空）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub caps: Vec<String>,
+    /// 线路机：穿透入口里隧道没挂上的（Xray 里没有 `rvs-<入口>` 出站，连续 [`TUNNEL_DOWN_AFTER_S`] 秒以上）。
+    /// 中控据此让节点重启 bridge（`ReportAck::bridge_kick`），见 fleet-agent 的 xray/render.rs「穿透」
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tunnels_down: Vec<Uuid>,
 }
+
+/// agent 会穿透入口：线路机渲染 `Outbound::Reverse`、上报 `tunnels_down`；节点按 `ReportAck::bridge_kick` 重启 bridge
+pub const CAP_REVERSE: &str = "reverse";
+/// 本 agent 的全部能力（随每份上报带上）
+pub const CAPS: &[&str] = &[CAP_REVERSE];
+/// 穿透入口的隧道在线路机 Xray 里缺席这么久才报 `tunnels_down`：bridge 断线重连约 2 秒，正常切换、重启都到不了这么久
+pub const TUNNEL_DOWN_AFTER_S: u64 = 30;
 
 /// 一个节点一轮：`ok` = 这一轮 ICMP 有回应；`rtt_ms` 是这一轮的往返时间（几次回应的中位数），不通为 None。
 /// 线路机上系统 ping 用不了时不出样本
@@ -233,6 +248,10 @@ pub struct ReportAck {
     /// 上报间隔（秒），恒为 `REPORT_INTERVAL_S`；agent 不再读它，下一版删掉
     #[serde(default)]
     pub interval_s: u32,
+    /// 节点：要它重启穿透的 bridge（fleet-xray-bridge）。值是中控决定重启的时刻（Unix 毫秒），同一个值只重启一次
+    /// （agent 记在 data_dir）；没有要重启的为 None。旧 agent 不认识，忽略
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bridge_kick: Option<i64>,
 }
 
 // ── 下发（线路机）────────────────────────────────────────────────────────────
@@ -414,14 +433,18 @@ pub enum Outbound {
     /// 线路机直出：从线路机自己的公网 IP 出去（Xray freedom），没有落地节点。
     /// 旧 agent 不认识这个值，整份期望状态解析失败、回报「agent 版本过旧」：先升级线路机 agent 再建直出入口
     Direct,
+    /// 穿透：节点上的 bridge 用 `bridge_uuid` 主动连这个入口自己的 REALITY 入站（VLESS 反向代理），客户流量经这条隧道
+    /// 交给节点、从节点自己的 IP 出去。线路机不向节点发起连接（供应商丢入站 SYN 的节点用）。
+    /// 旧 agent 不认识，整份期望状态解析失败：中控只在线路机 agent 报了 [`CAP_REVERSE`] 时才下发
+    Reverse { bridge_uuid: Uuid },
 }
 
 impl Outbound {
-    /// 出站服务器地址 (host, port)；直出没有（不做线路机 → 节点的 TCP 探测）
+    /// 出站服务器地址 (host, port)；直出、穿透没有（不做线路机 → 节点的 TCP 探测：穿透时线路机根本不连节点）
     pub fn addr(&self) -> Option<(&str, u16)> {
         match self {
             Outbound::Shadowsocks { host, port, .. } | Outbound::Socks5 { host, port, .. } | Outbound::Http { host, port, .. } => Some((host, *port)),
-            Outbound::Direct => None,
+            Outbound::Direct | Outbound::Reverse { .. } => None,
         }
     }
 }
@@ -526,8 +549,14 @@ pub mod tags {
     pub fn rule(id: Uuid) -> String { format!("rule-{}", id.simple()) }
     /// 客户端在 Xray 统计里的 email
     pub fn email(id: Uuid) -> String { format!("e-{}", id.simple()) }
-    /// AnyTLS 的回环桥接入站（Xray 里，sing-box 连它）：email 与主入站相同，流量、在线统计合并到入口
-    pub fn bridge(id: Uuid) -> String { format!("at-{}", id.simple()) }
+    /// AnyTLS 的回环桥接入站（和穿透入口的 bridge 无关）（Xray 里，sing-box 连它）：email 与主入站相同，流量、在线统计合并到入口
+    pub fn anytls(id: Uuid) -> String { format!("at-{}", id.simple()) }
+    /// 穿透入口：bridge 那个客户端的 email（不以 e- 开头：流量统计只取 `user>>>e-`，隧道流量不重复计）
+    pub fn bridge_email(id: Uuid) -> String { format!("r-{}", id.simple()) }
+    /// 穿透入口：bridge 连上后 Xray 自己建的反向出站（路由规则指向它；它不在配置里，agent 不增不删）
+    pub fn reverse(id: Uuid) -> String { format!("rvs-{}", id.simple()) }
+    /// 反向出站的前缀（`reverse`）：核对运行态时这些出站由 Xray 管，不算多出来的
+    pub const REVERSE_PREFIX: &str = "rvs-";
     pub fn parse_entry_id(tag: &str) -> Option<Uuid> {
         let s = tag.split_once('-')?.1;
         Uuid::try_parse(s).ok()
@@ -580,5 +609,24 @@ mod tests {
         let o = Outbound::Socks5 { host: "h".into(), port: 1, username: None, password: None };
         let v = serde_json::to_value(&o).unwrap();
         assert_eq!(v["protocol"], "socks5");
+        // 穿透：协议名 reverse，带 bridge 的 UUID；没有线路机 → 节点的地址
+        let o = Outbound::Reverse { bridge_uuid: Uuid::from_u128(7) };
+        let v = serde_json::to_value(&o).unwrap();
+        assert_eq!(v, serde_json::json!({"protocol": "reverse", "bridge_uuid": Uuid::from_u128(7)}));
+        assert_eq!(serde_json::from_value::<Outbound>(v).unwrap(), o);
+        assert!(o.addr().is_none());
+        assert_eq!(tags::reverse(Uuid::from_u128(7)), format!("rvs-{}", Uuid::from_u128(7).simple()));
+        assert!(tags::reverse(Uuid::nil()).starts_with(tags::REVERSE_PREFIX) && !tags::bridge_email(Uuid::nil()).starts_with("e-"));
+    }
+
+    #[test]
+    fn new_report_fields_are_optional_both_ways() {
+        // 旧 agent 的上报没有 caps / tunnels_down；旧中控的回执没有 bridge_kick
+        let r: Report = serde_json::from_str(r#"{"seq":1,"boot_id":"b","agent_version":"v","sent_at_ms":0}"#).unwrap();
+        assert!(r.caps.is_empty() && r.tunnels_down.is_empty());
+        let a: ReportAck = serde_json::from_str(r#"{"accepted_seq":3,"interval_s":10}"#).unwrap();
+        assert_eq!(a.bridge_kick, None);
+        let s = serde_json::to_string(&ReportAck { accepted_seq: 1, interval_s: 10, bridge_kick: None }).unwrap();
+        assert!(!s.contains("bridge_kick"), "{s}");
     }
 }

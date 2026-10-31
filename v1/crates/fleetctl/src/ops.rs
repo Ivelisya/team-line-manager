@@ -100,6 +100,11 @@ pub struct ProvisionOpts {
     /// 流量每月几号重置（1–31）
     #[arg(long)]
     pub reset_day: Option<String>,
+    /// 入口模式：normal（普通）/ reverse（穿透：节点主动连入口，供应商丢入站 SYN 的节点用）；不填按面板的「新入口默认模式」
+    /// （fleetctl settings entry-mode，没设过是穿透）。--file 批量时作为每条没写 entry_mode 的条目的默认值。
+    /// 家宽代理、同机 IP 节点不支持穿透，自动按普通建（校验结果里有提醒）
+    #[arg(long, value_parser = ["normal", "reverse"])]
+    pub entry_mode: Option<String>,
     /// 只校验，不提交
     #[arg(long)]
     pub dry_run: bool,
@@ -257,6 +262,15 @@ fn single_item(o: &ProvisionOpts) -> anyhow::Result<Value> {
     Ok(Value::Object(m))
 }
 
+/// 校验结果里这台的入口模式（线路机没有；旧中控不给为「-」）
+fn entry_mode_cn(r: &Value) -> &'static str {
+    match r["entry_mode"].as_str() {
+        Some("reverse") => "穿透",
+        Some("normal") => "普通",
+        _ => "-",
+    }
+}
+
 /// JSON 字符串数组里的各项（不是数组为空）
 fn strs(v: &Value) -> Vec<&str> { v.as_array().map(|a| a.iter().filter_map(|e| e.as_str()).collect()).unwrap_or_default() }
 
@@ -283,6 +297,10 @@ pub fn provision(ctx: &Ctx, o: ProvisionOpts) -> anyhow::Result<u8> {
     let mut cache = Cache::default();
     for it in &mut items {
         normalize_item(ctx, it, &mut cache)?;
+        // --entry-mode 给没写模式的条目（文件里单独写了的以文件为准）
+        if let (Some(m), Some(o)) = (&o.entry_mode, it.as_object_mut()) {
+            o.entry("entry_mode").or_insert_with(|| json!(m));
+        }
     }
     let body = json!({"items": items});
     // 先校验（不落库）
@@ -300,12 +318,12 @@ pub fn provision(ctx: &Ctx, o: ProvisionOpts) -> anyhow::Result<u8> {
                         (true, false) => "通过（有提醒，见下）",
                         (true, true) => "通过",
                     };
-                    vec![(i + 1).to_string(), st(&items[i], "/ip"), st(r, "/name"), st(r, "/number"), verdict.into()]
+                    vec![(i + 1).to_string(), st(&items[i], "/ip"), st(r, "/name"), st(r, "/number"), entry_mode_cn(r).into(), verdict.into()]
                 })
                 .collect();
             format!(
                 "{}\n{}{}",
-                table::render(&["#", "IP", "名称", "编号", "校验"], &rows),
+                table::render(&["#", "IP", "名称", "编号", "入口模式", "校验"], &rows),
                 check_notes(&res),
                 if all_ok { "校验全部通过（--dry-run，未提交）" } else { "校验未通过，未提交" }
             )
@@ -313,7 +331,7 @@ pub fn provision(ctx: &Ctx, o: ProvisionOpts) -> anyhow::Result<u8> {
         return Ok(if all_ok { 0 } else { 1 });
     }
     if !ctx.json {
-        let names: Vec<String> = res.iter().zip(&items).map(|(r, it)| format!("{}（{}）", st(r, "/name"), st(it, "/ip"))).collect();
+        let names: Vec<String> = res.iter().zip(&items).map(|(r, it)| format!("{}（{}，{}模式）", st(r, "/name"), st(it, "/ip"), entry_mode_cn(r))).collect();
         outln(format!("{}校验通过，将上架 {} 台：{}", check_notes(&res), res.len(), names.join("、")));
     }
     confirm(&format!("确认上架这 {} 台机器？会登录机器安装软件", res.len()), o.yes)?;
@@ -410,6 +428,10 @@ pub fn retire(ctx: &Ctx, machine: &str, now: bool, reason: Option<&str>, no_clea
                 outln(format!("  {} → {}", st(r, "/old_name"), st(r, "/new_name")));
             }
         }
+        // 两种去向都有的提醒：前移改名的节点还被软路由出口指着（面板名和出口名会对不上）；旧中控没有这个字段
+        for w in pre["warnings"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+            outln(format!("注意：{w}"));
+        }
     }
     let also = if ip_nodes.is_empty() { String::new() } else { "（连同同机 IP 节点）".into() };
     let what = if now { "立即回收" } else { "退役（移进备用）" };
@@ -447,87 +469,119 @@ pub fn retire(ctx: &Ctx, machine: &str, now: bool, reason: Option<&str>, no_clea
     if follow { cmds::follow_jobs(ctx, std::iter::once(&d).chain(&ip_jobs)) } else { Ok(0) }
 }
 
-pub fn rename(
-    ctx: &Ctx,
-    machine: &str,
-    team: Option<&str>,
-    number: Option<i32>,
-    label: Option<&str>,
-    note: Option<&str>,
-    country: Option<&str>,
-) -> anyhow::Result<u8> {
-    if team.is_none() && number.is_none() && label.is_none() && note.is_none() && country.is_none() {
+/// `fleetctl rename` 的参数
+pub struct RenameOpts<'a> {
+    pub team: Option<&'a str>,
+    pub number: Option<i32>,
+    pub label: Option<&'a str>,
+    pub note: Option<&'a str>,
+    pub country: Option<&'a str>,
+    pub yes: bool,
+}
+
+/// 改团队 / 编号 / 线路机名 / 备注 / 国家。给了 --team 或 --number 先取 rename-preview：换团队（原团队剩下的压缩编号、同机 IP 节点一起走），
+/// 或预览里有别的机器要连带改名（renames / ip_nodes 非空）时，不加 --yes 只打印预览（同 replace / repoint 的确认方式）——
+/// 压缩会让团队后面的节点全部改号，而客户软路由的出口名（「节点08」）是固定的，执行完才看到就只能一台台挪回去。
+/// 只改线路机名 / 备注 / 国家、团队内改到空号（不连带别人）的照旧直接执行
+pub fn rename(ctx: &Ctx, machine: &str, o: RenameOpts) -> anyhow::Result<u8> {
+    if o.team.is_none() && o.number.is_none() && o.label.is_none() && o.note.is_none() && o.country.is_none() {
         bail!("没有要改的内容：给 --team / --number / --label / --note / --country 之一");
     }
     let (id, _) = ctx.find_id(machine, Want::Live)?;
     let cur = ctx.c.get(&format!("/machines/{id}"))?;
     let mut body = json!({"revision": cur["revision"]});
-    if let Some(t) = team {
+    if let Some(t) = o.team {
         body["team_id"] = json!(ctx.team_id(t)?);
     }
-    // 换团队时同机 IP 节点一起走、原团队剩下的节点会压缩编号（同事务）：先取预览，改完把连带改动的一并打出来
-    let (renames, ip_nodes, router_exits, held, warnings): (Vec<String>, Vec<String>, Value, Option<String>, Vec<String>) = if team.is_some() {
-        let mut q = vec![("team_id", st(&body, "/team_id"))];
-        if let Some(n) = number {
+    let to_team = body["team_id"].as_str().map(String::from);
+    let moved = to_team.as_deref().is_some_and(|t| cur.pointer("/team/id").and_then(Value::as_str) != Some(t));
+    let to_spare = moved && ctx.teams()?.as_array().into_iter().flatten().any(|t| t["id"].as_str() == to_team.as_deref() && t["spare"] == true);
+    // 改团队 / 编号：先取预览（谁 → 谁、原团队连带改号的、随行的同机 IP 节点、还指着的软路由出口、进备用后扣住的原因、提醒）
+    let pv = if o.team.is_some() || o.number.is_some() {
+        let mut q = vec![];
+        if let Some(t) = &to_team {
+            q.push(("team_id", t.clone()));
+        }
+        if let Some(n) = o.number {
             q.push(("number", n.to_string()));
         }
-        let pv = ctx.c.get_q(&format!("/machines/{id}/rename-preview"), &q)?;
-        let list = |k: &str| pv[k].as_array().into_iter().flatten().map(|r| format!("{} → {}", st(r, "/old_name"), st(r, "/new_name"))).collect();
-        // 还被软路由出口指着的节点生效的访问策略会变（客户受影响）：只提示
-        let warnings = pv["warnings"].as_array().into_iter().flatten().filter_map(|w| w.as_str().map(String::from)).collect();
-        (list("renames"), list("ip_nodes"), pv["router_exits"].clone(), pv["held"].as_str().map(String::from), warnings)
+        ctx.c.get_q(&format!("/machines/{id}/rename-preview"), &q)?
     } else {
-        (vec![], vec![], Value::Null, None, vec![])
+        Value::Null
     };
-    if let Some(n) = number {
+    let has = |k: &str| pv[k].as_array().is_some_and(|a| !a.is_empty());
+    if (moved || has("renames") || has("ip_nodes")) && !o.yes {
+        ctx.emit(&pv, || format!("{} → {}（预览）{}\n以上是预览，没有改动。确认无误后加 --yes 执行", st(&cur, "/name"), st(&pv, "/name"), rename_details(&pv, to_spare, true)));
+        return Ok(0);
+    }
+    if let Some(n) = o.number {
         body["number"] = json!(n);
     }
-    if let Some(l) = label {
+    if let Some(l) = o.label {
         body["label"] = json!(l);
     }
-    if let Some(n) = note {
+    if let Some(n) = o.note {
         body["note"] = json!(n);
     }
     // 国家：auto = 改回按 IP 自动（null）；代码由中控按 ISO 表校验
-    if let Some(c) = country {
+    if let Some(c) = o.country {
         body["country"] = if c.eq_ignore_ascii_case("auto") { Value::Null } else { json!(c) };
     }
-    // PATCH 返回改完后的完整视图，新名字直接从里面取
+    // PATCH 返回改完后的完整视图，新名字直接从里面取；预览里的连带改动一并带上（--json 同名字段）
     let mut d = ctx.c.patch(&format!("/machines/{id}"), &body)?;
-    if !renames.is_empty() {
-        d["renames"] = json!(renames);
+    let list = |k: &str| -> Vec<String> { pv[k].as_array().into_iter().flatten().map(|r| format!("{} → {}", st(r, "/old_name"), st(r, "/new_name"))).collect() };
+    for k in ["renames", "ip_nodes"] {
+        if has(k) {
+            d[k] = json!(list(k));
+        }
     }
-    if !ip_nodes.is_empty() {
-        d["ip_nodes"] = json!(ip_nodes);
+    for k in ["router_exits", "warnings"] {
+        if has(k) {
+            d[k] = pv[k].clone();
+        }
     }
-    // 换到备用团队后还有软路由出口指向它（及随行 IP 节点）：只提示，不阻断
-    if router_exits.as_array().is_some_and(|a| !a.is_empty()) {
-        d["router_exits"] = router_exits.clone();
-    }
-    // 换到备用团队后不自动回收的原因（出口还指着、同机 IP 节点开着自动续费…）：要照常续费
-    if let Some(h) = &held {
+    if let Some(h) = pv["held"].as_str() {
         d["held"] = json!(h);
     }
-    if !warnings.is_empty() {
-        d["warnings"] = json!(warnings);
-    }
-    ctx.emit(&d, || {
-        let ips = if ip_nodes.is_empty() { String::new() } else { format!("\n同机 IP 节点一起移：{}", ip_nodes.join("，")) };
-        let also = if renames.is_empty() { String::new() } else { format!("\n原团队编号连带改动：{}", renames.join("，")) };
-        let warn: String = warnings.iter().map(|w| format!("\n注意：{w}")).collect();
-        let held = held.as_deref().map(|h| format!("\n不自动回收：{h}，到期要自己登记续费")).unwrap_or_default();
-        format!("{} → {}{ips}{also}{}{held}{warn}", st(&cur, "/name"), st(&d, "/name"), spare_exits_note(&router_exits))
-    });
+    ctx.emit(&d, || format!("{} → {}{}", st(&cur, "/name"), st(&d, "/name"), rename_details(&pv, to_spare, false)));
     Ok(0)
 }
 
-/// 改团队的预览 router_exits：换到备用团队后还指向它（及随行同机 IP 节点）的软路由出口，客户会继续用；没有则为空串
-fn spare_exits_note(router_exits: &Value) -> String {
+/// 改团队预览（rename-preview）里的连带改动，每项一行（前面带换行）：随行的同机 IP 节点、原团队连带改号的、还指着的软路由出口、
+/// 进备用后不自动回收的原因、提醒（压缩后面板名和出口名对不上、访问策略会变……）。`preview`：执行前（进不了备用的原因也写上）；没有预览（只改备注等）为空串
+fn rename_details(pv: &Value, to_spare: bool, preview: bool) -> String {
+    let list = |k: &str| -> Vec<String> { pv[k].as_array().into_iter().flatten().map(|r| format!("{} → {}", st(r, "/old_name"), st(r, "/new_name"))).collect() };
+    let mut s = String::new();
+    let ips = list("ip_nodes");
+    if !ips.is_empty() {
+        s += &format!("\n同机 IP 节点一起移：{}", ips.join("，"));
+    }
+    let renames = list("renames");
+    if !renames.is_empty() {
+        s += &format!("\n原团队编号连带改动（{} 台）：{}", renames.len(), renames.join("，"));
+    }
+    s += &spare_exits_note(&pv["router_exits"], to_spare);
+    if let Some(b) = pv["spare_blocked"].as_str().filter(|_| preview) {
+        s += &format!("\n不能改到备用团队：{b}（加 --yes 也会被拒）；要进备用请用 fleetctl retire");
+    }
+    if let Some(h) = pv["held"].as_str() {
+        s += &format!("\n不自动回收：{h}，到期要自己登记续费");
+    }
+    for w in pv["warnings"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+        s += &format!("\n注意：{w}");
+    }
+    s
+}
+
+/// 改团队的预览 router_exits：还指向它（及随行同机 IP 节点）的软路由出口，客户会继续用；进备用的不自动回收，换到别的团队的改名后出口名不跟着改。没有则为空串
+fn spare_exits_note(router_exits: &Value, to_spare: bool) -> String {
     let v: Vec<String> = router_exits.as_array().into_iter().flatten().map(|e| format!("{} · {}", st(e, "/router"), st(e, "/exit"))).collect();
     if v.is_empty() {
         String::new()
-    } else {
+    } else if to_spare {
         format!("\n注意：{} 个软路由出口还指向它（{}），客户会继续用；要换机器请用替换", v.len(), v.join("，"))
+    } else {
+        format!("\n注意：{} 个软路由出口还指向它（{}），客户照常用；改名后出口名不跟着改", v.len(), v.join("，"))
     }
 }
 
@@ -882,7 +936,8 @@ pub fn add_direct(ctx: &Ctx, relay: &str, yes: bool, follow: bool) -> anyhow::Re
         bail!("「{name}」不是线路机：直出入口只能加在线路机上");
     }
     confirm(&format!("确认给 {name} 加直出入口（从 {} 出去，新分享链接名「{name}-直出」）？", st(&m, "/ip")), yes)?;
-    let d = ctx.c.post(&format!("/machines/{id}/entries"), &json!({"relay_id": id}))?;
+    // 直出入口没有落地节点，只能是普通模式（写明，免得按「新入口默认模式」再被退回一次）
+    let d = ctx.c.post(&format!("/machines/{id}/entries"), &json!({"relay_id": id, "mode": "normal"}))?;
     let job = st(&d, "/job_id");
     ctx.emit(&d, || format!("已提交新增直出入口作业 {job}\n看进度：fleetctl job {job} --follow；完成后 fleetctl share {name}-直出 取分享链接"));
     if follow { cmds::follow_job(ctx, &job) } else { Ok(0) }
@@ -897,6 +952,8 @@ pub enum EntryAction {
     Rotate,
     /// 给线路机加直出入口（这时 <入口> 写线路机）
     AddDirect,
+    /// 开关穿透（--on / --off）：节点主动连线路机的这个入口，客户流量经隧道从节点自己的 IP 出去
+    Reverse,
 }
 
 pub fn entry_action(ctx: &Ctx, action: EntryAction, entry: &str, yes: bool, follow: bool) -> anyhow::Result<u8> {
@@ -905,6 +962,7 @@ pub fn entry_action(ctx: &Ctx, action: EntryAction, entry: &str, yes: bool, foll
         EntryAction::Disable => ("disable", "停用"),
         EntryAction::Rotate => ("rotate", "轮换凭据"),
         EntryAction::AddDirect => return add_direct(ctx, entry, yes, follow),
+        EntryAction::Reverse => bail!("entry reverse 要带 --on（开启）或 --off（关闭）"),
     };
     let es = cmds::all_entries(ctx)?;
     let e = resolve::entry(&es, entry).map_err(|e| anyhow!(e))?;
@@ -927,6 +985,55 @@ pub fn entry_action(ctx: &Ctx, action: EntryAction, entry: &str, yes: bool, foll
     let d = ctx.c.post(&format!("/entries/{}/actions", st(e, "/id")), &body)?;
     ctx.emit(&d, || format!("已{done} {label}（期望状态代数 {}）{}", st(&d, "/generation"), router_note(&d["router_exits"], done)));
     Ok(0)
+}
+
+/// `entry reverse <入口> --on|--off`：先打预览（会发生什么、不能切的原因），加 --yes 才建作业（推 bridge → 切换 → 经入口验收出口；
+/// 关闭反过来）。验收不过中控自动切回原来的模式
+pub fn reverse(ctx: &Ctx, entry: &str, on: bool, off: bool, yes: bool, follow: bool) -> anyhow::Result<u8> {
+    if on == off {
+        bail!("要写 --on（开启穿透）或 --off（关闭穿透）");
+    }
+    let es = cmds::all_entries(ctx)?;
+    let e = resolve::entry(&es, entry).map_err(|e| anyhow!(e))?;
+    let id = st(e, "/id");
+    let pv = ctx.c.get_q(&format!("/entries/{id}/reverse"), &[("on", on.to_string())])?;
+    if !ctx.json || !yes {
+        if ctx.json {
+            ctx.emit(&pv, String::new);
+        } else {
+            outln(reverse_preview(&pv));
+        }
+    }
+    if pv["ok"] != true {
+        let bs: Vec<&str> = pv["blockers"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+        bail!("现在不能切换：{}", bs.join("；"));
+    }
+    if !yes {
+        if !ctx.json {
+            outln("以上是预览，没有改动。确认无误后加 --yes 执行（--follow 跟进度）");
+        }
+        return Ok(0);
+    }
+    let d = ctx.c.post(&format!("/entries/{id}/reverse"), &json!({"on": on}))?;
+    let what = if on { "开启穿透" } else { "关闭穿透" };
+    ctx.emit(&d, || format!("已提交{what}作业 {}（{}）
+看进度：fleetctl job {} --follow", st(&d, "/job_id"), st(&d, "/entry/name"), st(&d, "/job_id")));
+    if follow {
+        return cmds::follow_job(ctx, &st(&d, "/job_id"));
+    }
+    Ok(0)
+}
+
+/// 穿透开关的预览（`GET /entries/{id}/reverse`）
+fn reverse_preview(pv: &Value) -> String {
+    let zh = |m: &str| if m == "reverse" { "穿透" } else { "普通" };
+    let mut s = table::kv(&[("入口", st(pv, "/entry/name")), ("模式", format!("{} → {}", zh(&st(pv, "/from")), zh(&st(pv, "/to"))))]);
+    for (k, label) in [("impacts", "会发生"), ("warnings", "注意"), ("blockers", "不能切换")] {
+        for x in pv[k].as_array().into_iter().flatten().filter_map(Value::as_str) {
+            s.push_str(&format!("\n{label}：{x}"));
+        }
+    }
+    s
 }
 
 /// 指向这个入口的软路由出口（`GET /entries/{id}/routers`）：「。这些软路由出口指向它，{停用}后会连不上：路由A 的 节点01；…」，没有为空
@@ -1268,9 +1375,31 @@ mod tests {
     #[test]
     fn rename_to_spare_notes_router_exits() {
         let ex = json!([{"node": "团队2-04", "router": "团队2-路由A", "exit": "节点04"}, {"node": "团队2-04IP2", "router": "路由B", "exit": "节点05"}]);
-        assert_eq!(spare_exits_note(&ex), "\n注意：2 个软路由出口还指向它（团队2-路由A · 节点04，路由B · 节点05），客户会继续用；要换机器请用替换");
-        assert_eq!(spare_exits_note(&json!([])), "");
-        assert_eq!(spare_exits_note(&Value::Null), "", "没换团队或旧中控没有这个字段");
+        assert_eq!(spare_exits_note(&ex, true), "\n注意：2 个软路由出口还指向它（团队2-路由A · 节点04，路由B · 节点05），客户会继续用；要换机器请用替换");
+        assert_eq!(spare_exits_note(&ex, false), "\n注意：2 个软路由出口还指向它（团队2-路由A · 节点04，路由B · 节点05），客户照常用；改名后出口名不跟着改");
+        assert_eq!(spare_exits_note(&json!([]), true), "");
+        assert_eq!(spare_exits_note(&Value::Null, false), "", "没换团队或旧中控没有这个字段");
+    }
+
+    /// rename 的预览：随行 IP 节点、原团队连带改号（写台数）、出口、进不了备用的原因（只在预览里）、扣住的原因、提醒，每项一行；没有预览为空串
+    #[test]
+    fn rename_preview_details() {
+        let pv = json!({
+            "name": "备用-08", "old_name": "团队2-07",
+            "renames": [{"machine_id": "a", "old_name": "团队2-08", "new_name": "团队2-07"}, {"machine_id": "b", "old_name": "团队2-09", "new_name": "团队2-08"}],
+            "ip_nodes": [{"machine_id": "c", "old_name": "团队2-20", "new_name": "备用-09"}],
+            "router_exits": [{"node": "团队2-07", "router": "团队2 新办公室", "exit": "节点07"}],
+            "spare_blocked": null, "held": "软路由出口还指着它",
+            "warnings": ["编号压缩会给软路由出口指着的节点改名……"],
+        });
+        assert_eq!(
+            rename_details(&pv, true, true),
+            "\n同机 IP 节点一起移：团队2-20 → 备用-09\n原团队编号连带改动（2 台）：团队2-08 → 团队2-07，团队2-09 → 团队2-08\n注意：1 个软路由出口还指向它（团队2 新办公室 · 节点07），客户会继续用；要换机器请用替换\n不自动回收：软路由出口还指着它，到期要自己登记续费\n注意：编号压缩会给软路由出口指着的节点改名……"
+        );
+        let blocked = json!({"renames": [], "ip_nodes": [], "router_exits": [], "spare_blocked": "订阅已过期满 1 天", "held": null, "warnings": []});
+        assert_eq!(rename_details(&blocked, true, true), "\n不能改到备用团队：订阅已过期满 1 天（加 --yes 也会被拒）；要进备用请用 fleetctl retire");
+        assert_eq!(rename_details(&blocked, true, false), "");
+        assert_eq!(rename_details(&Value::Null, false, false), "", "只改备注等没有预览");
     }
 
     #[test]
@@ -1282,6 +1411,18 @@ mod tests {
     }
 
     /// 检查结果的错误与提醒逐条一行列在表下，行首是表里的 #；都没有时为空
+    #[test]
+    fn reverse_preview_lists_impacts_and_blockers() {
+        let pv = json!({
+            "entry": {"name": "团队1-06 · 线路机2:20013"}, "from": "normal", "to": "reverse", "ok": false,
+            "impacts": ["节点上装 bridge"], "warnings": ["没有 TCP 探测"], "blockers": ["线路机 线路机2 的 agent 版本过旧"]
+        });
+        let s = reverse_preview(&pv);
+        assert!(s.contains("团队1-06 · 线路机2:20013") && s.contains("普通 → 穿透"), "{s}");
+        assert!(s.contains("\n会发生：节点上装 bridge\n注意：没有 TCP 探测\n不能切换：线路机 线路机2 的 agent 版本过旧"), "{s}");
+        assert_eq!((entry_mode_cn(&json!({"entry_mode": "reverse"})), entry_mode_cn(&json!({}))), ("穿透", "-"));
+    }
+
     #[test]
     fn provision_check_notes() {
         let res = vec![

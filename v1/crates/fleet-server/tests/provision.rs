@@ -141,11 +141,12 @@ async fn check_tries_key_login() {
     let kh = std::fs::read_to_string(t.dir.path().join("known_hosts")).unwrap_or_default();
     assert!(!kh.contains(&me), "检查不写 known_hosts：{kh}");
 
-    // 家宽代理不 SSH，不试登录
+    // 家宽代理不 SSH，不试登录；新入口默认穿透，家宽代理不支持，按普通建（只是提醒）
     let r = check(json!({"kind": "proxy", "ip": "203.0.113.10", "team_id": team, "relay_id": relay,
                          "upstream": {"protocol": "socks5", "host": "p.example", "port": 1080}}))
     .await;
-    assert_eq!((&r["ok"], &r["warnings"]), (&json!(true), &json!([])), "{r}");
+    assert_eq!((&r["ok"], &r["entry_mode"]), (&json!(true), &json!("normal")), "{r}");
+    assert_eq!(r["warnings"], json!(["按普通模式建入口：家宽代理没有 SSH 和 agent，装不了穿透要的 bridge"]), "{r}");
 
     assert_eq!(t.get("/api/v1/meta").await["ssh_public_key"], PUBKEY);
 }

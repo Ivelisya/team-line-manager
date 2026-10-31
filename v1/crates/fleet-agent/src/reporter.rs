@@ -117,6 +117,8 @@ pub struct Reporter {
     rejects: u32,
     next_send: Instant,
     unsaved: Option<Unsaved>,
+    /// 节点：按回执重启穿透的 bridge
+    kicker: Option<crate::bridge::Kicker>,
 }
 
 /// 失败期间建报的间隔：正常 `fleet_proto::REPORT_INTERVAL_S`（常量，不听服务端的 `ReportAck.interval_s`），连续失败时至少 OFFLINE_BUILD_INTERVAL
@@ -138,7 +140,9 @@ impl Reporter {
         let stats = load_json::<StatsFile>(&stats_path(&cfg)).unwrap_or_default();
         tracing::info!(pending = queue.len(), seq = seq.seq, carried_entries = stats.carry.len(), "上报器启动");
         let core = Arc::new(Mutex::new(Core { queue, seq, tailer, stats, disk: DiskLog::default() }));
-        Ok(Self { sh, core, client, boot_id: host::boot_id(), fails: 0, rejects: 0, next_send: Instant::now(), unsaved: None })
+        // 只有节点会装 bridge（线路机的回执里中控也不会带 bridge_kick）
+        let kicker = (cfg.role == Role::Node).then(|| crate::bridge::Kicker::new(&cfg));
+        Ok(Self { sh, core, client, boot_id: host::boot_id(), fails: 0, rejects: 0, next_send: Instant::now(), unsaved: None, kicker })
     }
 
     pub async fn run(mut self, mut sd: watch::Receiver<bool>) {
@@ -268,6 +272,9 @@ impl Reporter {
             };
             match out {
                 Outcome::Ok(ack) => {
+                    if let Some(k) = self.kicker.as_mut() {
+                        k.on_ack(ack.bridge_kick);
+                    }
                     let local_seq = lock(&self.core).seq.seq;
                     if ack.accepted_seq > local_seq {
                         // 服务端已确认的序号比本地发出过的最大序号还大（时钟回拨 / 本地状态丢失）：
@@ -386,6 +393,7 @@ fn commit(sh: &Shared, tailer: &mut Option<Tailer>, cursor: Option<Cursor>, stat
 /// `online`：上报没有连续失败（Reporter::fails == 0）
 fn build_and_push_blocking(sh: &Shared, core: &Mutex<Core>, boot_id: &str, with_samples: bool, online: bool) -> (bool, Option<Unsaved>) {
     let (mut host, mut entries, mut probes, mut ping, mut rtt, mut info, mut xray, mut singbox, mut stats_commit) = (vec![], vec![], vec![], vec![], vec![], None, None, None, None);
+    let mut tunnels_down = vec![];
     if with_samples {
         let mut b = sh.buf.lock().unwrap();
         let n = b.host.len().min(MAX_HOST_PER_REPORT);
@@ -402,6 +410,8 @@ fn build_and_push_blocking(sh: &Shared, core: &Mutex<Core>, boot_id: &str, with_
         xray = b.xray.clone();
         singbox = b.singbox.clone();
         stats_commit = b.stats_commit.take();
+        // 快照，不取走：每份带样本的报告都带上此刻的（中控按「这一份里有」处理）
+        tunnels_down = b.tunnels_down.clone();
     }
     let mut guard = lock(core);
     let Core { queue, seq, tailer, stats, disk } = &mut *guard;
@@ -454,6 +464,8 @@ fn build_and_push_blocking(sh: &Shared, core: &Mutex<Core>, boot_id: &str, with_
         agent_health: with_samples.then(|| health_of(sh, queue, tailer.as_ref())),
         ping,
         rtt,
+        caps: fleet_proto::CAPS.iter().map(|c| c.to_string()).collect(),
+        tunnels_down,
     };
     let err = match seq_err {
         Some(e) => e,

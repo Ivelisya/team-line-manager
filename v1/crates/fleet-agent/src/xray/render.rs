@@ -123,7 +123,8 @@ pub fn probe_tag(id: Uuid) -> String {
     format!("probe-{}", id.simple())
 }
 
-fn outbound_json(id: Uuid, o: &Outbound) -> Value {
+/// 入口自己的出站 `out-<入口>`；穿透入口没有（见 `route_tag`）
+fn outbound_json(id: Uuid, o: &Outbound) -> Option<Value> {
     let tag = tags::outbound(id);
     let server = |host: &str, port: u16, user: &Option<String>, pass: &Option<String>| {
         let mut s = json!({"address": host, "port": port});
@@ -132,7 +133,7 @@ fn outbound_json(id: Uuid, o: &Outbound) -> Value {
         }
         s
     };
-    match o {
+    Some(match o {
         Outbound::Shadowsocks { host, port, method, password } => json!({
             "tag": tag, "protocol": "shadowsocks",
             "settings": {"servers": [{"address": host, "port": port, "method": method, "password": password}]}
@@ -148,6 +149,16 @@ fn outbound_json(id: Uuid, o: &Outbound) -> Value {
         // 直出也用入口自己的出站 tag（不用共享的 direct）：探测入站、访问策略的放行规则都指向 out-<入口>，
         // 增删、回滚、核对和节点入口走同一条路
         Outbound::Direct => json!({"tag": tag, "protocol": "freedom", "settings": {"domainStrategy": "AsIs"}}),
+        Outbound::Reverse { .. } => return None,
+    })
+}
+
+/// 入口的流量交给哪个出站：穿透入口是 bridge 连上后 Xray 自己建的反向出站 `rvs-<入口>`，其余是入口自己的 `out-<入口>`。
+/// 客户规则、探测规则、访问策略的放行规则都指向它
+pub fn route_tag(e: &DesiredEntry) -> String {
+    match e.outbound {
+        Outbound::Reverse { .. } => tags::reverse(e.id),
+        _ => tags::outbound(e.id),
     }
 }
 
@@ -156,13 +167,21 @@ fn outbound_json(id: Uuid, o: &Outbound) -> Value {
 /// - `minClientVer` 不得高于 `MAX_MIN_CLIENT_VER`（1.8.2）：更高的值会让 mihomo 被 Xray 26.7+ 拒绝连接；
 /// - 分享链接里 `fp=chrome`、`flow=xtls-rprx-vision`、`type=tcp`
 fn inbound_json(e: &DesiredEntry, rp: &RelayParams, min_ver: &str) -> Value {
+    let mut clients = vec![json!({"id": e.client_uuid.to_string(), "email": tags::email(e.id), "flow": "xtls-rprx-vision"})];
+    // 穿透：入站里多一个 bridge 专用的客户端（Xray 26 的 VLESS 反向代理）。它连上来时 Xray 建出站 `rvs-<入口>`、
+    // 把路由到它的连接经这条连接交给 bridge；这个客户端只能建隧道，不能当普通代理用（Xray 自己拒绝）。
+    // 不带 flow（不用 Vision）：隧道是线路机 ⇄ 节点的美国境内链路，Vision 防的 TLS-in-TLS 特征在这里没意义；
+    // 实验室压测（1500 个新连接 × 6 轮）里带 Vision 的隧道两轮出现 mux 帧错乱（invalid metalen）、整批连接失败，不带的 0 失败
+    if let Outbound::Reverse { bridge_uuid } = e.outbound {
+        clients.push(json!({"id": bridge_uuid.to_string(), "email": tags::bridge_email(e.id), "reverse": {"tag": tags::reverse(e.id)}}));
+    }
     json!({
         "listen": "0.0.0.0",
         "port": e.port,
         "protocol": "vless",
         "tag": tags::inbound(e.id),
         "settings": {
-            "clients": [{"id": e.client_uuid.to_string(), "email": tags::email(e.id), "flow": "xtls-rprx-vision"}],
+            "clients": clients,
             "decryption": "none",
             "fallbacks": []
         },
@@ -189,12 +208,12 @@ fn inbound_json(e: &DesiredEntry, rp: &RelayParams, min_ver: &str) -> Value {
 /// AnyTLS 的回环桥接入站：sing-box 卸掉 AnyTLS 之后经它把连接交给 Xray，入口的路由、访问策略、守卫规则照常生效。
 /// 只听 127.0.0.1、VLESS 不加密（回环上没有第三方）、不用 flow（vision 要 TLS）；client 与 email 同主入站：
 /// 流量计数按 email 合并到入口，访问日志按入站 tag 认入口（来源是回环，不当真实来源，见 access.rs）。sniffing 同主入站
-fn bridge_inbound_json(e: &DesiredEntry, port: u16) -> Value {
+fn anytls_inbound_json(e: &DesiredEntry, port: u16) -> Value {
     json!({
         "listen": "127.0.0.1",
         "port": port,
         "protocol": "vless",
-        "tag": tags::bridge(e.id),
+        "tag": tags::anytls(e.id),
         "settings": {
             "clients": [{"id": e.client_uuid.to_string(), "email": tags::email(e.id)}],
             "decryption": "none"
@@ -208,7 +227,7 @@ fn bridge_inbound_json(e: &DesiredEntry, port: u16) -> Value {
 fn entry_inbounds(e: &DesiredEntry, anytls: bool) -> Vec<String> {
     let mut v = vec![tags::inbound(e.id)];
     if anytls {
-        v.push(tags::bridge(e.id));
+        v.push(tags::anytls(e.id));
     }
     v
 }
@@ -274,12 +293,12 @@ fn probe_matchers(echo_url: &str) -> Vec<Value> {
 }
 
 /// 第一条用 `probe-<入口>`，其余（备用目标）`probe-<入口>-<n>`
-fn probe_rule(id: Uuid, n: usize, m: &Value) -> Value {
+fn probe_rule(e: &DesiredEntry, n: usize, m: &Value) -> Value {
     let mut r = m.clone();
     r["type"] = json!("field");
-    r["ruleTag"] = json!(if n == 0 { probe_tag(id) } else { format!("{}-{n}", probe_tag(id)) });
-    r["inboundTag"] = json!([probe_tag(id)]);
-    r["outboundTag"] = json!(tags::outbound(id));
+    r["ruleTag"] = json!(if n == 0 { probe_tag(e.id) } else { format!("{}-{n}", probe_tag(e.id)) });
+    r["inboundTag"] = json!([probe_tag(e.id)]);
+    r["outboundTag"] = json!(route_tag(e));
     r
 }
 
@@ -300,7 +319,7 @@ fn policy_rules(e: &DesiredEntry, inb: &[String]) -> Vec<Value> {
     };
     match mode {
         PolicyMode::Allowlist => vec![
-            rule("match", Some(domains), tags::outbound(e.id)),
+            rule("match", Some(domains), route_tag(e)),
             rule("default", None, "blocked".into()),
         ],
         PolicyMode::Denylist => vec![rule("match", Some(domains), "blocked".into())],
@@ -350,6 +369,10 @@ fn validate(d: &DesiredState) -> Result<String> {
         );
         if let Some((host, port)) = e.outbound.addr() {
             ensure!(!host.trim().is_empty() && port != 0, "入口 {} 出站地址无效", e.id);
+        }
+        if let Outbound::Reverse { bridge_uuid } = e.outbound {
+            // 同一个 UUID 两个客户端：Xray 按 UUID 认人，客户会被当成 bridge（只许建隧道）
+            ensure!(bridge_uuid != e.client_uuid && !bridge_uuid.is_nil(), "入口 {} 的 bridge UUID 无效", e.id);
         }
         if let Some(p) = &e.policy {
             match p.mode {
@@ -405,20 +428,22 @@ pub fn render(d: &DesiredState, ctx: &RenderCtx) -> Result<Rendered> {
     let mut entry_rules = vec![];
     for e in &enabled {
         inbounds.push(inbound_json(e, &d.relay, &min_ver));
-        if let Some(&(_, bridge)) = anytls.get(&e.id) {
-            inbounds.push(bridge_inbound_json(e, bridge));
+        if let Some(&(_, port)) = anytls.get(&e.id) {
+            inbounds.push(anytls_inbound_json(e, port));
         }
         let inb = entry_inbounds(e, anytls.contains_key(&e.id));
-        outbounds.push(outbound_json(e.id, &e.outbound));
+        // 穿透入口没有配置里的出站：`rvs-<入口>` 由 Xray 在 bridge 连上时建（plan / verify 不管它）。
+        // 它还没建（bridge 没连上）时路由到它的连接被 Xray 直接关掉（26.3.27 实测，源码注明不落到默认出站）
+        outbounds.extend(outbound_json(e.id, &e.outbound));
         if let Some(p) = probes.get(&e.id) {
             inbounds.push(probe_inbound_json(e.id, *p));
-            rules.extend(matchers.iter().enumerate().map(|(n, m)| probe_rule(e.id, n, m)));
+            rules.extend(matchers.iter().enumerate().map(|(n, m)| probe_rule(e, n, m)));
         }
         if e.outbound == Outbound::Direct {
             entry_rules.push(guard_rule(e, &inb, &guard));
         }
         entry_rules.extend(policy_rules(e, &inb));
-        entry_rules.push(json!({"type": "field", "ruleTag": tags::rule(e.id), "inboundTag": inb, "outboundTag": tags::outbound(e.id)}));
+        entry_rules.push(json!({"type": "field", "ruleTag": tags::rule(e.id), "inboundTag": inb, "outboundTag": route_tag(e)}));
     }
     rules.push(json!({"type": "field", "ruleTag": "block-private", "ip": ["geoip:private"], "outboundTag": "blocked"}));
     rules.push(json!({"type": "field", "ruleTag": "block-bittorrent", "protocol": ["bittorrent"], "outboundTag": "blocked"}));
@@ -689,6 +714,53 @@ x"]));
         e
     }
 
+    pub fn reverse(n: u128, port: u16) -> DesiredEntry {
+        let mut e = entry(n, port, true);
+        e.outbound = Outbound::Reverse { bridge_uuid: Uuid::from_u128(n + 5000) };
+        e
+    }
+
+    #[test]
+    fn reverse_entry_adds_bridge_client_and_routes_to_xray_reverse_outbound() {
+        let r = render(&desired(vec![entry(1, 20001, true), reverse(2, 20002)]), &ctx()).unwrap();
+        let (id1, id2) = (Uuid::from_u128(1).simple().to_string(), Uuid::from_u128(2).simple().to_string());
+        let inb = r.inbounds.iter().find(|i| tag_of(i) == format!("in-{id2}")).unwrap();
+        // 同一个 REALITY 入站（同端口、同参数），客户端多一个 bridge：带 reverse 标签，不带 flow
+        assert_eq!(
+            inb["settings"]["clients"],
+            json!([
+                {"id": Uuid::from_u128(1002).to_string(), "email": format!("e-{id2}"), "flow": "xtls-rprx-vision"},
+                {"id": Uuid::from_u128(5002).to_string(), "email": format!("r-{id2}"), "reverse": {"tag": format!("rvs-{id2}")}}
+            ])
+        );
+        assert_eq!(inb["streamSettings"], r.inbounds.iter().find(|i| tag_of(i) == format!("in-{id1}")).unwrap()["streamSettings"]);
+        // 没有 out-<入口>：客户、探测都路由到 Xray 建的 rvs-<入口>
+        assert!(!r.outbounds.iter().any(|o| tag_of(o) == format!("out-{id2}")));
+        let to = |t: String| r.rules.iter().find(|x| rule_tag_of(x) == t).unwrap()["outboundTag"].clone();
+        assert_eq!(to(format!("rule-{id2}")), json!(format!("rvs-{id2}")));
+        assert_eq!(to(format!("probe-{id2}")), json!(format!("rvs-{id2}")));
+        assert_eq!(to(format!("rule-{id1}")), json!(format!("out-{id1}")));
+        // 探测入站照旧（出口探测经隧道验收出口 IP）；没有直出的守卫规则；骨架不变
+        assert!(r.inbounds.iter().any(|i| tag_of(i) == format!("probe-{id2}") && i["port"] == 30002));
+        assert!(!rule_tags(&r).iter().any(|t| t.starts_with("guard-")));
+        assert_eq!(r.static_part, render(&desired(vec![entry(1, 20001, true)]), &ctx()).unwrap().static_part);
+        assert_eq!(Rendered::from_full(r.full.clone()), r);
+        // 白名单的放行规则也指向反向出站
+        let mut e = reverse(3, 20003);
+        e.policy = Some(EntryPolicy { mode: PolicyMode::Allowlist, domains: vec!["domain:a.com".into()] });
+        let r = render(&desired(vec![e]), &ctx()).unwrap();
+        let id3 = Uuid::from_u128(3).simple().to_string();
+        assert_eq!(r.rules.iter().find(|x| rule_tag_of(x) == format!("policy-{id3}-match")).unwrap()["outboundTag"], format!("rvs-{id3}"));
+        // bridge 与客户同一个 UUID：拒绝（Xray 按 UUID 认人）
+        let mut e = reverse(4, 20004);
+        e.outbound = Outbound::Reverse { bridge_uuid: e.client_uuid };
+        assert!(render(&desired(vec![e]), &ctx()).is_err());
+        // 停用：整组摘掉，和没有这个入口一样
+        let mut e = reverse(2, 20002);
+        e.enabled = false;
+        assert_eq!(render(&desired(vec![entry(1, 20001, true), e]), &ctx()).unwrap().full, render(&desired(vec![entry(1, 20001, true)]), &ctx()).unwrap().full);
+    }
+
     #[test]
     fn direct_entry_renders_own_freedom_outbound() {
         let r = render(&desired(vec![entry(1, 20001, true), direct(2, 20002)]), &ctx()).unwrap();
@@ -805,6 +877,25 @@ x"]));
         assert_eq!(g["port"], "30001,30002,50001,50002,62789");
         // 桥接入站与它的规则都属于入口部分：开关 AnyTLS 只走热增删，不重启 Xray
         assert_eq!(r.static_part, render(&desired(vec![entry(1, 20001, true)]), &ctx()).unwrap().static_part);
+        assert_eq!(Rendered::from_full(r.full.clone()), r);
+    }
+
+    /// 穿透入口也有 AnyTLS：桥接入站 at-<入口> 只有客户的 UUID（bridge 客户端只在主 REALITY 入站上），规则和主入站一样指向 rvs-<入口>。
+    /// 实验（Xray 26.3.27 + sing-box 1.14.4）：AnyTLS → at- → rvs- → 隧道 → bridge 出去通；bridge 停了 rvs- 消失，连接被关掉，同 Reality
+    #[test]
+    fn anytls_on_reverse_entry_routes_to_reverse_outbound() {
+        let mut e = with_anytls(reverse(1, 20001));
+        e.policy = Some(EntryPolicy { mode: PolicyMode::Allowlist, domains: vec!["domain:a.com".into()] });
+        let r = render(&desired(vec![e]), &ctx()).unwrap();
+        let id = Uuid::from_u128(1).simple().to_string();
+        let at = r.inbounds.iter().find(|i| tag_of(i) == format!("at-{id}")).unwrap();
+        assert_eq!(at["settings"]["clients"], json!([{"id": Uuid::from_u128(1001).to_string(), "email": format!("e-{id}")}]));
+        let rule = |t: String| r.rules.iter().find(|x| rule_tag_of(x) == t).unwrap().clone();
+        for t in [format!("rule-{id}"), format!("policy-{id}-match")] {
+            assert_eq!((&rule(t.clone())["inboundTag"], &rule(t)["outboundTag"]), (&json!([format!("in-{id}"), format!("at-{id}")]), &json!(format!("rvs-{id}"))));
+        }
+        assert_eq!(rule(format!("probe-{id}"))["inboundTag"], json!([format!("probe-{id}")]));
+        assert!(!r.outbounds.iter().any(|o| tag_of(o) == format!("out-{id}")));
         assert_eq!(Rendered::from_full(r.full.clone()), r);
     }
 

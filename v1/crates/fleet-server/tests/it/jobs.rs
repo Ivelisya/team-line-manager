@@ -226,7 +226,7 @@ async fn retired_machine_old_provision_job_cannot_be_retried() {
     assert_eq!(item["id"], job.as_str());
     assert!(item.get("steps").is_none(), "{item}");
     assert_eq!(item["step"], 0);
-    assert_eq!(item["step_count"], 9);
+    assert_eq!(item["step_count"], 10);
     assert_eq!(item["step_title"], "预检与身份");
 
     // 带 root 密码重试（原密码已被清掉）：机器回到上架中，密码和上架时一样加密存进作业参数供重试的作业使用；再次失败又回到上架失败

@@ -8,6 +8,7 @@ mod catalog;
 mod client;
 mod cmds;
 mod config;
+mod diag;
 mod fx;
 mod ipintel;
 mod lifecycle;
@@ -144,6 +145,14 @@ enum SettingsCmd {
     /// 汇率（计费统一折成 USD）：不带参数看各币种的汇率与来源；<币种> --usd / --per-usd 手动设置（自动更新不再改它），
     /// <币种> --auto 取消手动、改回自动更新的值；--refresh 立即从汇率源更新（默认每天自动一次）
     Fx(fx::FxOpts),
+    /// 新入口默认模式（上架、加入口不指定时用）：不带参数显示当前的；normal（普通）/ reverse（穿透）改。没设过时是穿透。
+    /// 只影响之后新建的入口，存量入口不动（用 fleetctl entry reverse 逐个切）
+    EntryMode {
+        /// normal / reverse
+        mode: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -487,7 +496,8 @@ enum Cmd {
         #[command(subcommand)]
         cmd: RecycleCmd,
     },
-    /// 改名 = 改团队/编号/线路机名/备注；也改国家（名字旁的国旗）
+    /// 改名 = 改团队/编号/线路机名/备注；也改国家（名字旁的国旗）。换团队（原团队会压缩编号、同机 IP 节点一起走）
+    /// 不加 --yes 只打印预览；只改线路机名 / 备注 / 国家、团队内改到空号的直接执行
     Rename {
         machine: String,
         #[arg(long)]
@@ -501,6 +511,9 @@ enum Cmd {
         /// ISO 3166-1 两位代码（如 US、JP）；auto = 改回按 IP 自动
         #[arg(long)]
         country: Option<String>,
+        /// 换团队等会连带别的机器改名的改动：看过预览后加它执行
+        #[arg(long)]
+        yes: bool,
     },
     /// 团队编号压缩成连续；不加 --yes 只预览
     Renumber {
@@ -605,21 +618,32 @@ enum Cmd {
         #[command(subcommand)]
         cmd: SubCmd,
     },
-    /// 入口启用/停用/轮换凭据；add-direct 给线路机加直出入口（从线路机自己的 IP 出去，每台至多一条）
+    /// 入口启用/停用/轮换凭据；add-direct 给线路机加直出入口（从线路机自己的 IP 出去，每台至多一条）；
+    /// reverse --on / --off 开关穿透（节点主动连入口，供应商丢入站 SYN 的节点用；不加 --yes 只打印预览）
     Entry {
         #[arg(value_enum)]
         action: ops::EntryAction,
         /// 入口（id、`线路机名:端口`、节点显示名）；add-direct 时是线路机
         entry: String,
+        /// reverse：开启穿透
+        #[arg(long, conflicts_with = "off")]
+        on: bool,
+        /// reverse：关闭穿透（切回线路机连节点 ssserver）
+        #[arg(long)]
+        off: bool,
         #[arg(long)]
         yes: bool,
-        /// add-direct：提交后跟随作业直到结束
+        /// add-direct、reverse：提交后跟随作业直到结束
         #[arg(long)]
         follow: bool,
     },
     /// 在机器上执行命令（需要 exec 权限，全程审计）。多台：逗号分隔或 --team，并发 4。
     /// 单个参数原样当脚本（可含管道）；多个参数会逐个加引号。
     Exec(ops::ExecOpts),
+    /// 节点卡、丢包要找供应商：在每台在用线路机和节点上跑 ping / mtr / TCP 握手（双向，另对照 1.1.1.1），原样给出每段输出（源 → 目的、UTC 时间、命令行），
+    /// 最后一段判断（入站过滤 / 入方向链路 / 双向 / 出方向）。经中控的远程执行，要 exec 权限、每台都记审计；并发 4，默认约 1 分钟（--quick 半分钟）。
+    /// 只读不用 --yes；没有 mtr 的机器只给 ping，--install-mtr --yes 先装 mtr-tiny。家宽代理没有 SSH，只测线路机 → 它
+    Diag(diag::DiagOpts),
     /// 在中控上直接登录机器（同机 IP 节点登录宿主机）或软路由：不带命令是交互式，`--` 后带命令则执行完退出、退出码同远端。
     /// 只在中控上能用（用中控的 SSH 密钥，要 root）；主机指纹只认中控记下的；每次登录记审计（不记命令内容，要留命令全文用 exec）
     Ssh {
@@ -1097,8 +1121,8 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             RecycleCmd::Show { which } => recycle::show(x, &which),
             RecycleCmd::Import { file, yes } => recycle::import(x, &file, yes),
         },
-        Cmd::Rename { machine, team, number, label, note, country } => {
-            ops::rename(x, &machine, team.as_deref(), number, label.as_deref(), note.as_deref(), country.as_deref())
+        Cmd::Rename { machine, team, number, label, note, country, yes } => {
+            ops::rename(x, &machine, ops::RenameOpts { team: team.as_deref(), number, label: label.as_deref(), note: note.as_deref(), country: country.as_deref(), yes })
         }
         Cmd::Renumber { team, yes } => ops::renumber(x, &team, yes),
         Cmd::Team { cmd } => match cmd {
@@ -1147,8 +1171,15 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             SubCmd::Rm { sub, yes } => subs::rm(x, &sub, yes),
             SubCmd::Show { sub } => subs::show(x, &sub),
         },
-        Cmd::Entry { action, entry, yes, follow } => ops::entry_action(x, action, &entry, yes, follow),
+        Cmd::Entry { action: ops::EntryAction::Reverse, entry, on, off, yes, follow } => ops::reverse(x, &entry, on, off, yes, follow),
+        Cmd::Entry { action, entry, on, off, yes, follow } => {
+            if on || off {
+                anyhow::bail!("--on / --off 只给 entry reverse 用");
+            }
+            ops::entry_action(x, action, &entry, yes, follow)
+        }
         Cmd::Exec(o) => ops::exec(x, o),
+        Cmd::Diag(o) => diag::run(x, o),
         Cmd::Logs { machine, unit, lines } => cmds::logs(x, &machine, &unit, lines),
         Cmd::ServerLogs { lines } => cmds::server_logs(x, lines),
         Cmd::Keys { cmd } => {
@@ -1171,6 +1202,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::IpintelStatus => ipintel::status(x),
         Cmd::Settings { cmd: SettingsCmd::Retention { raw, hourly, yes } } => settings::retention(x, raw, hourly, yes),
         Cmd::Settings { cmd: SettingsCmd::Fx(o) } => fx::fx(x, o),
+        Cmd::Settings { cmd: SettingsCmd::EntryMode { mode, yes } } => settings::entry_mode(x, mode.as_deref(), yes),
         Cmd::Policy { cmd } => match cmd {
             PolicyCmd::Ls => policy::ls(x),
             PolicyCmd::Show { who } => policy::show(x, &who),
@@ -1262,6 +1294,18 @@ mod tests {
         assert_eq!(parse(&["ssh", "router", "团队2-路由A", "--", "logread | tail"]), Ok((vec!["router".into(), "团队2-路由A".into()], vec!["logread | tail".into()])));
         assert!(parse(&["ssh"]).is_err());
         assert!(parse(&["ssh", "router", "a", "b"]).is_err(), "目标最多两个参数");
+    }
+
+    /// `diag` 的命令行：默认值在 run 里按 --quick 定，这里只解析
+    #[test]
+    fn diag_command_line() {
+        let parse = |a: &[&str]| Cli::try_parse_from(["fleetctl"].iter().chain(a)).map(|c| c.cmd).map_err(|e| e.kind());
+        match parse(&["diag", "团队1-01", "--quick", "--out", "/tmp/x.txt", "--install-mtr", "--yes"]) {
+            Ok(Cmd::Diag(o)) => assert_eq!((o.node.as_str(), o.quick, o.count, o.tcp, o.interval, o.install_mtr, o.yes), ("团队1-01", true, None, None, 0.2, true, true)),
+            _ => panic!("不是 diag"),
+        }
+        assert!(matches!(parse(&["diag", "a", "--count", "300", "--tcp", "200", "--interval", "0.5"]), Ok(Cmd::Diag(o)) if o.count == Some(300) && o.tcp == Some(200) && o.interval == 0.5));
+        assert!(parse(&["diag"]).is_err());
     }
 
     /// `speedtest` 与 `report` 的命令行：下载量、目标、月份格式与 --month / --days 互斥

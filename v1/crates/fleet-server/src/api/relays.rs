@@ -162,6 +162,8 @@ pub async fn share_batch(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJs
 #[derive(Deserialize)]
 pub struct AddEntryIn {
     relay_id: Uuid,
+    /// 入口模式 normal / reverse（穿透）；不填 = 面板设置的新入口默认模式。家宽代理、同机 IP 节点、直出入口一律普通（结果里 note 写明）
+    mode: Option<String>,
 }
 
 /// 给已在用的节点再挂一条入口（作业：建入口 → 等线路机应用 → 等出口探测通过）。
@@ -200,11 +202,28 @@ pub async fn add_entry(a: Actor, State(st): State<AppState>, ApiPath(node_id): A
     if dup.is_some() {
         return Err(ApiError::conflict(if direct { "这台线路机已经有直出入口" } else { "这个节点在这台线路机上已经有入口" }));
     }
+    // 入口模式：给了的用给的，没给按面板的默认；只看机器类型就知道不支持的退回普通（agent 太旧等由作业建入口时再核）
+    let want = match b.mode.as_deref().filter(|m| !m.trim().is_empty()) {
+        Some(m) => crate::reverse::parse_mode(m).map_err(ApiError::bad_request)?,
+        None => crate::reverse::default_mode(&st.db).await?.0,
+    };
+    let host_id: Option<Uuid> = sqlx::query_scalar("select host_id from machine where id = $1").bind(node_id).fetch_one(&st.db).await?;
+    let why = match (want == crate::reverse::REVERSE, direct) {
+        (false, _) => None,
+        (true, true) => Some("线路机直出入口没有落地节点，用不着穿透"),
+        (true, false) => crate::reverse::kind_unsupported(&kind, host_id),
+    };
+    let mode = if why.is_some() { crate::reverse::NORMAL } else { want };
+    let note = why.map(|w| format!("按普通模式建入口：{w}"));
+    let mut params = json!({"relay_id": b.relay_id, "entry_mode": mode});
+    if let Some(n) = &note {
+        params["entry_mode_note"] = json!(n);
+    }
     let mut tx = st.db.begin().await?;
-    let job = jobs::enqueue(&mut tx, "attach_entry", Some(node_id), json!({"relay_id": b.relay_id}), &a.name).await?;
-    audit(&mut tx, &a.name, "entry.add", "machine", Some(node_id), json!({"relay_id": b.relay_id, "job_id": job, "direct": direct})).await?;
+    let job = jobs::enqueue(&mut tx, "attach_entry", Some(node_id), params, &a.name).await?;
+    audit(&mut tx, &a.name, "entry.add", "machine", Some(node_id), json!({"relay_id": b.relay_id, "job_id": job, "direct": direct, "mode": mode})).await?;
     tx.commit().await?;
     st.wake_jobs();
     st.emit(Event::Job { id: job, target: Some(node_id) });
-    Ok(ok(json!({"job_id": job})))
+    Ok(ok(json!({"job_id": job, "entry_mode": mode, "note": note})))
 }

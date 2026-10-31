@@ -333,6 +333,47 @@ pub async fn exits_using(db: &sqlx::PgPool, nodes: &[Uuid]) -> sqlx::Result<Hash
     Ok(out)
 }
 
+/// 机器视图的 `no_router_exits` 用：(看得清出口的团队, 被任一软路由出口指着的节点)。
+/// 团队「看得清」= 它有软路由，且每台都采集到了快照、配置读得出出口（没有快照、配置读不了且没有上次的出口的，看不出它指着谁，整个团队都不判）；
+/// 被指着的节点不限路由所在的团队（别的团队的路由借用这台也算有人用）
+pub async fn pointed_nodes(db: &sqlx::PgPool) -> sqlx::Result<(HashSet<Uuid>, HashSet<Uuid>)> {
+    let (mut teams, mut blind, mut nodes) = (HashSet::new(), HashSet::new(), HashSet::new());
+    for r in load(db, None).await? {
+        let snap = r.snapshot().filter(|s| s.openclash.config_error.is_none() || s.openclash.config_stale);
+        let Some(snap) = snap else {
+            blind.extend(r.team_id);
+            continue;
+        };
+        teams.extend(r.team_id);
+        nodes.extend(snap.exits.iter().filter_map(|x| x.entry.as_ref().filter(|er| er.lifecycle != "removed").map(|er| er.node_id)));
+    }
+    teams.retain(|t| !blind.contains(t));
+    Ok((teams, nodes))
+}
+
+/// 编号压缩（团队少了人，后面的前移补号）会改名的节点里还被软路由出口指着的，合成一条提醒；没有返回 None。
+/// 出口名是路由上自己起的（「节点09」），压缩不会去改它，而面板名（团队2-09）和出口名一一对应是运维约定：压缩一下就全错位，
+/// 只能一台台挪回去。改团队预览、退役预览、替换预览（凡是会触发 db::compact_team 的）都按它提醒。`changes`：(机器, 旧名, 新名)；
+/// `tail` 接在后面，写这个场景下怎么避开（各预览不同）
+pub async fn compact_exits_note(db: &sqlx::PgPool, changes: &[(Uuid, String, String)], tail: &str) -> sqlx::Result<Option<String>> {
+    let ids: Vec<Uuid> = changes.iter().map(|c| c.0).collect();
+    Ok(compact_exits_text(changes, &exits_using(db, &ids).await?, tail))
+}
+
+/// `compact_exits_note` 的文字（单测用）：「团队2-09（团队2 新办公室 · 节点09）→ 团队2-08」，按 `changes` 的顺序
+pub fn compact_exits_text(changes: &[(Uuid, String, String)], exits: &HashMap<Uuid, Vec<(Uuid, String, String)>>, tail: &str) -> Option<String> {
+    let list: Vec<String> = changes
+        .iter()
+        .filter_map(|(id, from, to)| {
+            let xs = exits.get(id).filter(|v| !v.is_empty())?;
+            Some(format!("{from}（{}）→ {to}", xs.iter().map(|(_, r, x)| format!("{r} · {x}")).collect::<Vec<_>>().join("、")))
+        })
+        .collect();
+    (!list.is_empty()).then(|| {
+        format!("编号压缩会给软路由出口指着的节点改名，出口名不跟着改，改完面板名和出口名就对不上了：{}。{tail}", list.join("；"))
+    })
+}
+
 /// 宿主机被软路由出口指着的一条：出口直接指向宿主机，或指向它上面没退役的同机 IP 节点（`via` = 那个 IP 节点的名字）
 #[derive(Debug, Clone)]
 pub struct HostExit {
@@ -408,6 +449,23 @@ mod tests {
         let rs = vec![json!({"name": "路由A", "exits": ["节点01", "节点02"]}), json!({"name": "路由B", "exits": ["节点01"]})];
         assert_eq!(exits_text(&rs), "路由A 的 节点01、节点02；路由B 的 节点01");
         assert_eq!(exits_text(&[]), "");
+    }
+
+    /// 压缩改名的提醒只列有出口指着的，按改名的顺序；一台被几台路由指着的都写上；都没有就没有提醒
+    #[test]
+    fn compact_exits_sentence() {
+        let (a, b, c) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+        let changes = vec![(a, "团队2-09".to_string(), "团队2-08".to_string()), (b, "团队2-10".into(), "团队2-09".into()), (c, "团队2-11".into(), "团队2-10".into())];
+        let r = Uuid::now_v7();
+        let exits = HashMap::from([
+            (c, vec![(r, "团队2 新办公室".to_string(), "节点11".to_string())]),
+            (a, vec![(r, "团队2 新办公室".to_string(), "节点09".to_string()), (r, "路由B".into(), "节点09".into())]),
+        ]);
+        assert_eq!(
+            compact_exits_text(&changes, &exits, "要换机器用替换。").as_deref(),
+            Some("编号压缩会给软路由出口指着的节点改名，出口名不跟着改，改完面板名和出口名就对不上了：团队2-09（团队2 新办公室 · 节点09、路由B · 节点09）→ 团队2-08；团队2-11（团队2 新办公室 · 节点11）→ 团队2-10。要换机器用替换。")
+        );
+        assert_eq!(compact_exits_text(&changes, &HashMap::new(), ""), None);
     }
 
     #[test]

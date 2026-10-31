@@ -3,6 +3,7 @@
 //! 用法：fleet-agent [--config PATH] [run|once|render|apply|probe|version] [--desired FILE]
 //! `probe`：探测点模式（放在靠近客户的地方测线路机的客户入口，见 probe_point.rs），配置默认 /etc/fleet/probe.toml
 
+mod bridge;
 mod collect;
 mod config;
 mod desired;

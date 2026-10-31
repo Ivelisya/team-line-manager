@@ -105,6 +105,10 @@ export function NodeDrawer() {
                   退役失败 · <Link to={`/jobs/${m.failed_job.id}`} className="btn btn-link" onClick={close}>查看作业</Link> <InfoTip text="机器停在「退役中」，在作业页从失败的步骤重试即可完成退役。" />
                 </Note>
               )}
+              {/* 团队的软路由都看得清出口、却没有一个指着这台（服务端 no_router_exits）：卡片看着像在用，其实没有客户 */}
+              {m.no_router_exits && (
+                <Note tone="info">没有软路由出口指着这台 <InfoTip text="团队里的软路由都看过了，没有出口指向它，出口可能已改指向别处（改出口指向、替换、手改）。看着在用其实没有客户；不要了可以退役，要接回客户就把出口改指回来。" /></Note>
+              )}
               {m.active_job && (
                 <Note tone="info">
                   {jobKindLabel(m.active_job.kind)}进行中。<Link to={`/jobs/${m.active_job.id}`} className="btn btn-link" onClick={close}>查看作业</Link>

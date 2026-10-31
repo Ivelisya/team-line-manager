@@ -154,7 +154,13 @@ export function probeErr(detail: string | null | undefined) {
   return text === raw ? raw : `${text}\n${raw}`;
 }
 /** 运行中的入口探测失败（直出入口不做 TCP 探测）：返回失败的那次探测。抽屉入口表、线路机页的状态列写「不通」，悬停看 errText(detail) */
-export const probeFail = (e: EntryView) => (e.lifecycle !== 'active' || !e.applied ? null : !e.direct && e.tcp && !e.tcp.ok ? e.tcp : e.egress && !e.egress.ok ? e.egress : null);
+/** 穿透入口：节点主动连入口，线路机不连节点 */
+export const isReverse = (e: EntryView) => e.mode === 'reverse';
+/** 穿透入口不做 TCP 探测的说明（入口表、卡片共用） */
+export const REVERSE_TIP = '穿透：节点上的 bridge 主动连这个入口，线路机不连节点，没有 TCP 探测\n隧道断了体现为出口探测失败（照常告警）';
+/** 没有线路机 → 节点的 TCP 探测：直出（没有节点）、穿透（线路机不连节点） */
+export const noTcp = (e: EntryView) => e.direct || isReverse(e);
+export const probeFail = (e: EntryView) => (e.lifecycle !== 'active' || !e.applied ? null : !noTcp(e) && e.tcp && !e.tcp.ok ? e.tcp : e.egress && !e.egress.ok ? e.egress : null);
 /** 入口状态列的「不通」写明是哪一段：TCP 连不上入口，还是连上了但出口验收失败（抽屉的「入口探测 N/M 连通」只算 TCP） */
 export const probeFailLabel = (e: EntryView) => (probeFail(e) === e.tcp ? 'TCP 不通' : '出口不通');
 /** 同一个端口连续连不上几次才算「中控连不上」：同 relay_unreachable 告警（reach.rs） */
@@ -442,12 +448,12 @@ export const tcpMs = (p: ProbeResult | null) => p?.median_ms ?? p?.latency_ms ??
  *  TCP 读数取各入口近 1 小时中位数里最小的那条（挂两台线路机、一条 5 ms 一条 65 ms 时，平均出来的数哪条线都不是），tcpTip 列各条。
  *  出口探测只判通不通、IP 对不对：它的耗时是经节点去中控回显服务（在德国）的，不是线路延迟，不当读数。
  *  只算 active 的入口（同服务端健康规则）：应用中的还没有探测。
- *  直出入口没有节点、不做 TCP 探测：TCP 的连通数（total / tcpOk）与延迟只算经节点的入口，出口照算。
+ *  直出入口没有节点、穿透入口线路机不连节点，都不做 TCP 探测：TCP 的连通数（total / tcpOk）与延迟只算线路机连节点的入口，出口照算；reverse 是在用的穿透入口条数（卡片上标「穿透」）。
  *  入口可用（线路机卡片）：all = 全部在用入口（含直出），usable = TCP（直出不看）与出口都通的条数；
  *  tcpBad / egressBad 是各自不通（含还没有探测）的条数 */
 export function probeSummary(m: MachineView) {
   const es = m.entries.filter((e) => e.lifecycle === 'active');
-  const viaNode = es.filter((e) => !e.direct);
+  const viaNode = es.filter((e) => !noTcp(e));
   const tcpOk = viaNode.filter((e) => e.tcp?.ok).length;
   const egOk = es.filter((e) => e.egress?.ok).length;
   const lat = viaNode.flatMap((e) => { const ms = tcpMs(e.tcp); return ms == null ? [] : [{ name: `${e.relay.name}:${e.port}`, ms }]; });
@@ -456,7 +462,7 @@ export function probeSummary(m: MachineView) {
     total: viaNode.length, tcpOk, tcp: lat.length ? Math.round(Math.min(...lat.map((x) => x.ms))) : null,
     tcpTip: `线路机到节点的 TCP 延迟，近 1 小时中位数${lat.length > 1 ? '，取最小的一条' : ''}\n曲线是按分钟的平均，数字会略有不同${each}`,
     tcpFail: allFailed(viaNode.map((e) => e.tcp)), egressFail: allFailed(es.map((e) => e.egress)), egressOk: egOk > 0,
-    off: m.entries.filter((e) => e.lifecycle === 'disabled').length, all: es.length, usable: es.filter((e) => (e.direct || e.tcp?.ok) && e.egress?.ok).length, tcpBad: viaNode.length - tcpOk, egressBad: es.length - egOk, reachBad: es.filter(reachFail).length,
+    off: m.entries.filter((e) => e.lifecycle === 'disabled').length, all: es.length, usable: es.filter((e) => (noTcp(e) || e.tcp?.ok) && e.egress?.ok).length, reverse: es.filter(isReverse).length, tcpBad: viaNode.length - tcpOk, egressBad: es.length - egOk, reachBad: es.filter(reachFail).length,
   };
 }
 /** 入口三段连通数（全站同一组名词与数字，卡片、抽屉、线路页都从 probeSummary 来）：

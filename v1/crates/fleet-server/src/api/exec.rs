@@ -186,6 +186,65 @@ pub async fn audit_ssh(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson
     Ok(ok(json!({"ok": true})))
 }
 
+/// 节点往外测的对照目标：节点到它也丢，说明是节点自己（或机房）出网的问题，不是到线路机这一段
+pub const DIAG_CONTROL: &str = "1.1.1.1";
+pub const DIAG_CONTROL_PORT: u16 = 443;
+
+/// `fleetctl diag` 要在哪些机器上测什么：节点自己（地址、SS 出站地址与端口、能不能登录）、每台在用线路机（地址、是不是它所挂的、
+/// 它的一个在用入口端口）。只读，不执行任何命令（命令由 fleetctl 经 `POST /machines/{id}/exec` 逐台跑，每次照常审计）。
+/// 要 exec 权限：它只给 diag 用，没有 exec 的密钥在这里就被拦下，不用等测到一半才失败。
+/// 节点的 nft 只放行它所挂的线路机（`own`）连 SS 端口：别的线路机连不上是正常的，不能当成丢包，所以入站握手只从 `own` 的测
+pub async fn diag_plan(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
+    a.require_scope("exec")?;
+    let (name, kind, lifecycle) = display_name_of(&st.db, id).await?;
+    if kind == "relay" {
+        return Err(ApiError::bad_request(format!("{name} 是线路机：diag 查的是节点（线路机 ↔ 节点）；线路机往外的线路质量看三网 PING（fleetctl ping）")));
+    }
+    if lifecycle != "active" {
+        return Err(ApiError::conflict(format!("{name} 不在用（{}），不诊断", crate::meta::lifecycle_label(&lifecycle))));
+    }
+    #[derive(sqlx::FromRow)]
+    struct N {
+        ip: String,
+        bind_ip: Option<String>,
+        host_name: Option<String>,
+        provider: Option<String>,
+        ss_host: Option<String>,
+        ss_port: Option<i32>,
+    }
+    let n: N = sqlx::query_as(
+        "select host(m.primary_ip) ip, host(m.bind_ip) bind_ip,
+                case when h.id is not null then display_name(h.kind::text, h.label, ht.name, h.number) end host_name,
+                p.name provider, o.host ss_host, o.port ss_port
+         from machine m left join machine h on h.id = m.host_id left join team ht on ht.id = h.team_id
+              left join provider p on p.id = m.provider_id left join node_outbound o on o.machine_id = m.id
+         where m.id = $1",
+    )
+    .bind(id)
+    .fetch_one(&st.db)
+    .await?;
+    // 在用线路机，带上这台节点挂没挂在它上面、它的一个在用入口端口（节点往线路机建连的目标：入口端口对外开放）
+    let relays: Vec<(Uuid, Option<String>, String, bool, Option<i32>)> = sqlx::query_as(
+        "select r.id, r.label, host(r.primary_ip),
+                exists (select 1 from entry e where e.relay_id = r.id and e.node_id = $1 and e.lifecycle = 'active'),
+                (select min(e.port) from entry e where e.relay_id = r.id and e.lifecycle = 'active')
+         from machine r where r.kind = 'relay' and r.lifecycle = 'active' order by r.label, r.id",
+    )
+    .bind(id)
+    .fetch_all(&st.db)
+    .await?;
+    let relays: Vec<Value> = relays
+        .into_iter()
+        .map(|(rid, label, ip, own, port)| json!({"id": rid, "name": crate::names::display_name("relay", label.as_deref(), None, None), "ip": ip, "own": own, "port": port}))
+        .collect();
+    Ok(ok(json!({
+        "node": {"id": id, "name": name, "kind": kind, "ip": n.ip, "bind_ip": n.bind_ip, "host": n.host_name, "provider": n.provider, "ssh": kind != "proxy"},
+        "ss": n.ss_host.zip(n.ss_port).map(|(host, port)| json!({"host": host, "port": port})),
+        "relays": relays,
+        "control": {"host": DIAG_CONTROL, "port": DIAG_CONTROL_PORT},
+    })))
+}
+
 #[derive(Deserialize)]
 pub struct LogsQ {
     unit: Option<String>,

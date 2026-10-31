@@ -54,13 +54,20 @@ chmod 600 /root/.ssh/authorized_keys
 echo bootstrap=ok
 "#;
 
-/// 系统基线：缺的基础包补上（线路机访问日志轮转要 logrotate，精简系统可能没装）、sshd 只允许密钥。BBR 等内核参数归调优档管（见 tune.rs）
+/// 系统基线：缺的基础包补上（线路机访问日志轮转要 logrotate，精简系统可能没装）、sshd 只允许密钥。BBR 等内核参数归调优档管（见 tune.rs）。
+/// mtr 给 `fleetctl diag` 用（供应商要 mtr 原始数据）：Debian 12/13、Ubuntu 22.04/24.04 的包名都是 `mtr-tiny`（不带图形界面依赖）。
+/// 它不是运行必需的，装不上（源坏了、没网）不让基线失败，只输出 `mtr=missing`，步骤记一条 warn
 pub const BASELINE: &str = r#"
 set -eu
 export DEBIAN_FRONTEND=noninteractive
 need=""; command -v nft >/dev/null || need="$need nftables"; command -v curl >/dev/null || need="$need curl"
 command -v logrotate >/dev/null || need="$need logrotate"
 if [ -n "$need" ]; then timeout 240 apt-get update -qq >/dev/null 2>&1 || true; timeout 300 apt-get install -y -qq $need >/dev/null; fi
+# 先直接装（包索引多半是新的）；不行再更新索引重试（上面刚更新过就不再更新）。超时放短：基线整体 600 秒，别被它拖垮
+if ! command -v mtr >/dev/null; then
+  timeout 120 apt-get install -y -qq mtr-tiny >/dev/null 2>&1 </dev/null || { [ -n "$need" ] || timeout 120 apt-get update -qq >/dev/null 2>&1 </dev/null || true; timeout 120 apt-get install -y -qq mtr-tiny >/dev/null 2>&1 </dev/null || true; }
+fi
+if command -v mtr >/dev/null; then echo mtr=ok; else echo mtr=missing; fi
 install -d -m 755 /etc/ssh/sshd_config.d
 F=/etc/ssh/sshd_config.d/00-fleet-keyonly.conf
 printf '%s\n' '# fleet：只允许密钥登录' 'PasswordAuthentication no' 'KbdInteractiveAuthentication no' 'PermitRootLogin prohibit-password' 'PubkeyAuthentication yes' > $F.tmp
@@ -513,6 +520,72 @@ systemctl enable -q fleet-xray
 echo "xray_version=$(/usr/local/bin/xray version 2>/dev/null | head -1 | awk '{print $2}')"
 "#;
 
+pub const BRIDGE_UNIT: &str = include_str!("../../../../deploy/units/fleet-xray-bridge.service");
+
+/// 读节点上 bridge 现在的配置（base64，没有为空）与运行状态：中控据此决定这次要不要重启 bridge（reverse::only_removed）
+pub const BRIDGE_READ: &str = r#"
+set -u
+C=/etc/fleet-bridge/xray.json
+if [ -f $C ]; then echo "config=$(base64 -w0 < $C)"; else echo config=; fi
+echo "active=$(systemctl is-active fleet-xray-bridge 2>/dev/null || true)"
+"#;
+
+/// 节点上穿透的 bridge（fleet-xray-bridge，配置见 reverse::render）。变量 CONFIG（整份 JSON）、ACTION：
+/// - `restart`：写单元与配置，配置先 `xray run -test`，变了（或程序换了：BIN_CHANGED=1、没在跑）就重启——会断开这台节点上全部经隧道的连接；
+/// - `quiet`：只删了隧道，写配置不重启（运行中的 bridge 对删掉的入口还会试连，对面端口已关，无害；下次重启按新配置）；
+/// - `remove`：节点上不再有穿透入口：停掉、删单元与配置（xray 程序留着，下次开启不用再推）。
+/// DNS 是链路本地地址时同线路机写 /etc/fleet-xray/resolv.conf（单元挂到 Xray 看到的 /etc/resolv.conf），变了也要重启才生效。
+/// 输出 `bridge=active|removed|crashing|…`、`restarted=0|1`；配置没过 -test 时 `bridge=bad_config` 并以 5 退出（原配置不动）
+pub fn bridge() -> String { BRIDGE.replace("__UNIT__", BRIDGE_UNIT.trim_end()).replace("__LINKLOCAL_DNS__", LINKLOCAL_DNS) }
+
+const BRIDGE: &str = r#"
+set -eu
+umask 022
+U=/etc/systemd/system/fleet-xray-bridge.service
+C=/etc/fleet-bridge/xray.json
+if [ "$ACTION" = remove ]; then
+  systemctl disable --now fleet-xray-bridge 2>/dev/null || true
+  rm -f $U; rm -rf /etc/fleet-bridge /etc/fleet-xray
+  systemctl daemon-reload
+  echo restarted=0
+  echo bridge=removed
+  exit 0
+fi
+install -d -m 700 /etc/fleet-bridge
+RESTART=0
+cat > $U.tmp <<'UNIT' || exit 1
+__UNIT__
+UNIT
+cmp -s $U.tmp $U && rm -f $U.tmp || { mv $U.tmp $U || exit 1; systemctl daemon-reload; RESTART=1; }
+RC=/etc/fleet-xray/resolv.conf
+if __LINKLOCAL_DNS__; then
+  echo linklocal_dns=1
+  install -d -m 755 /etc/fleet-xray
+  printf 'nameserver %s\n' 1.1.1.1 8.8.8.8 2606:4700:4700::1111 > $RC.tmp && chmod 644 $RC.tmp
+  cmp -s $RC.tmp $RC && rm -f $RC.tmp || { mv $RC.tmp $RC; RESTART=1; }
+elif [ -f $RC ]; then rm -f $RC; RESTART=1; fi
+(umask 077; printf '%s
+' "$CONFIG" > $C.tmp)
+# 临时文件扩展名是 .tmp：xray 按扩展名认格式，不给 -format 就报「Failed to get format」。报错打在标准输出，去掉开头的版本行
+if ! /usr/local/bin/xray run -test -format json -c $C.tmp >$C.err 2>&1; then
+  echo bridge=bad_config; sed '/^Xray /d;/^A unified platform/d' $C.err >&2; rm -f $C.tmp $C.err; exit 5
+fi
+rm -f $C.err
+if cmp -s $C.tmp $C; then rm -f $C.tmp; else mv $C.tmp $C; [ "$ACTION" = quiet ] || RESTART=1; fi
+[ "${BIN_CHANGED:-0}" = 1 ] && RESTART=1
+systemctl enable -q fleet-xray-bridge
+pid=
+if [ $RESTART = 1 ] || ! systemctl -q is-active fleet-xray-bridge; then
+  systemctl restart fleet-xray-bridge; pid=$(systemctl show -p MainPID --value fleet-xray-bridge); echo restarted=1
+else echo restarted=0; fi
+# 刚重启时 is-active 一定是 active：隔 3 秒再看，主进程换了就是起来就退出、被反复拉起（同 agent）
+[ -n "$pid" ] && sleep 3
+st=$(systemctl is-active fleet-xray-bridge || true)
+[ -n "$pid" ] && [ "$st" = active ] && [ "$(systemctl show -p MainPID --value fleet-xray-bridge)" != "$pid" ] && st=crashing
+echo "xray_version=$(/usr/local/bin/xray version 2>/dev/null | head -1 | awk '{print $2}')"
+echo "bridge=$st"
+"#;
+
 /// 装 agent：变量 SERVER_URL ROLE MACHINE_ID，TOKEN（可空：空则沿用节点上已有的令牌文件）。
 /// 输出 `agent`（active 才算起来了）、`version`（磁盘上这份程序的版本）、`prev_version`（有 .prev 时它的版本）
 pub fn agent() -> String { AGENT.replace("__UNIT__", AGENT_UNIT.trim_end()).replace("__AGENT_STATE__", AGENT_STATE) }
@@ -573,11 +646,13 @@ echo "version=$($B --version 2>/dev/null | awk '{print $2}')"
 echo "boot_id=$(cat /proc/sys/kernel/random/boot_id)"
 "#;
 
-/// 退役清理（节点）：先停 agent 与 ssserver（宿主机连同它上面同机 IP 节点的实例），删防火墙表和文件。中控随后撤销令牌。
+/// 退役清理（节点）：先停 agent、ssserver（宿主机连同它上面同机 IP 节点的实例）与穿透的 bridge，删防火墙表和文件。中控随后撤销令牌。
 pub const NODE_CLEANUP: &str = r##"
 set -u
 exec 9>/run/fleet-ss.lock; flock 9
 systemctl disable --now fleet-agent 2>/dev/null; systemctl disable --now fleet-ssserver 2>/dev/null
+systemctl disable --now fleet-xray-bridge 2>/dev/null
+rm -f /etc/systemd/system/fleet-xray-bridge.service; rm -rf /etc/fleet-bridge /etc/fleet-xray /usr/local/bin/xray
 for f in /etc/shadowsocks-rust/[0-9]*.json; do
   [ -e "$f" ] || continue
   p=$(basename "$f" .json)
@@ -940,6 +1015,17 @@ ACL
             assert!(s.contains("nft -f $N || {"));
         }
         assert!(super::NODE_NFT_ONLY.contains("[^}]*"), "替换放行名单的 sed 不能吃掉集合的右花括号");
+    }
+
+    /// 基线补装 mtr-tiny（fleetctl diag 用）：装不上不让基线失败（set -e 下每条 apt-get 都有兜底），只报 mtr=missing
+    #[test]
+    fn baseline_installs_mtr_best_effort() {
+        let b = super::BASELINE;
+        assert!(b.contains("timeout 120 apt-get install -y -qq mtr-tiny >/dev/null 2>&1 </dev/null || {"));
+        assert!(b.contains("timeout 120 apt-get install -y -qq mtr-tiny >/dev/null 2>&1 </dev/null || true; }"));
+        assert!(b.contains("if command -v mtr >/dev/null; then echo mtr=ok; else echo mtr=missing; fi"));
+        // 在 sshd 那段之前：sshd -t 失败时脚本退出，mtr 的结果也照样报过了
+        assert!(b.find("mtr-tiny").unwrap() < b.find("sshd_config.d").unwrap());
     }
 
     #[test]

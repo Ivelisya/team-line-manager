@@ -13,6 +13,7 @@
 
 use super::cli::{Op, Runtime};
 use super::render::{is_static_outbound, rule_tag_of, tag_of, Rendered, API_TAG};
+use fleet_proto::tags;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
@@ -105,9 +106,10 @@ pub fn plan(rt: &Runtime, prev: &Rendered, cand: &Rendered) -> Vec<Step> {
         steps.push(Step { op: Op::SetRules(cand.rules.clone()), undo: Some(Op::SetRules(prev.rules.clone())), tag: "rules".into() });
     }
 
-    // 4. 出站删除
+    // 4. 出站删除。穿透的反向出站 `rvs-<入口>` 不归 agent 管：Xray 在 bridge 连上时建、在入站删掉（或换掉）时自己删，
+    // 这里删它会把正在用的隧道摘掉，而且它在快照之后可能已经被入站的替换带走，rmo 报「不存在」让整次应用回滚
     for t in rt.outbounds.iter().map(|s| s.as_str()) {
-        if is_static_outbound(t) || cand_o_tags.contains(t) {
+        if is_static_outbound(t) || cand_o_tags.contains(t) || t.starts_with(tags::REVERSE_PREFIX) {
             continue;
         }
         steps.push(Step { op: Op::RemoveOutbound(t.into()), undo: prev_o.get(t).map(|o| Op::AddOutbound((*o).clone())), tag: t.into() });
@@ -130,8 +132,10 @@ pub fn verify(rt: &Runtime, cand: &Rendered) -> Result<(), String> {
     if sorted(&rt.inbounds) != set(&cand.inbounds) {
         return Err(format!("入站不一致：运行态 {:?}，期望 {:?}", sorted(&rt.inbounds), set(&cand.inbounds)));
     }
-    if sorted(&rt.outbounds) != set(&cand.outbounds) {
-        return Err(format!("出站不一致：运行态 {:?}，期望 {:?}", sorted(&rt.outbounds), set(&cand.outbounds)));
+    // 穿透的反向出站有没有取决于 bridge 此刻连没连上，不算不一致
+    let rt_out: Vec<String> = rt.outbounds.iter().filter(|t| !t.starts_with(tags::REVERSE_PREFIX)).cloned().collect();
+    if sorted(&rt_out) != set(&cand.outbounds) {
+        return Err(format!("出站不一致：运行态 {:?}，期望 {:?}", sorted(&rt_out), set(&cand.outbounds)));
     }
     if rt.rules != rule_pairs(&cand.rules) {
         return Err(format!("规则不一致：运行态 {:?}，期望 {:?}", rt.rules, rule_pairs(&cand.rules)));
@@ -386,6 +390,40 @@ mod tests {
         d.enabled = false;
         let off = render(&desired(vec![entry(1, 20001, true), d]), &ctx()).unwrap();
         assert_eq!(off.full, base.full);
+    }
+
+    #[test]
+    fn reverse_switch_is_hot_and_leaves_xray_owned_outbound_alone() {
+        use super::super::render::tests::reverse;
+        let id = Uuid::from_u128(2);
+        let (inb, out, rvs) = (tags::inbound(id), tags::outbound(id), tags::reverse(id));
+        let normal = render(&desired(vec![entry(1, 20001, true), entry(2, 20002, true)]), &ctx()).unwrap();
+        let rev = render(&desired(vec![entry(1, 20001, true), reverse(2, 20002)]), &ctx()).unwrap();
+        // 骨架不变：开 / 关穿透都只走热更新，不重启 Xray（不断这台线路机上别的入口的客户）
+        assert_eq!(normal.static_part, rev.static_part);
+        // 普通 → 穿透：入站换成带 bridge 客户端的（只断这个入口），规则整表换，最后删掉原来的 SS 出站
+        let steps = plan(&rt_of(&normal), &normal, &rev);
+        assert_eq!(kinds(&steps), vec![format!("rmi {inb}"), format!("adi {inb}"), "adrules (6 条)".to_string(), format!("rmo {out}")]);
+        assert_reaches(&normal, &steps, &rev);
+        // bridge 连上后 Xray 自己建了 rvs-<入口>：核对照样通过，再应用一次是空计划（不去删它）
+        let mut rt = rt_of(&rev);
+        rt.outbounds.push(rvs.clone());
+        assert!(verify(&rt, &rev).is_ok());
+        assert!(plan(&rt, &rev, &rev).is_empty());
+        // 穿透 → 普通：先加回 SS 出站，再换入站（换掉入站时 Xray 连带删 rvs-<入口>），规则换回；计划里没有 rmo rvs-
+        let steps = plan(&rt, &rev, &normal);
+        assert_eq!(kinds(&steps), vec![format!("ado {out}"), format!("rmi {inb}"), format!("adi {inb}"), "adrules (6 条)".to_string()]);
+        assert!(steps.iter().all(|s| s.tag != rvs));
+        let mut sim = rt.clone();
+        simulate(&mut sim, &steps).unwrap();
+        assert!(verify(&sim, &normal).is_ok(), "{sim:?}");
+        // 撤回：全部 undo 回到穿透
+        let undo = undo_of(&plan(&rt_of(&rev), &rev, &normal));
+        assert_reaches(&normal, &undo, &rev);
+        // 运行态里残留别的入口的反向出站（入口已删、Xray 还没清）也不碰
+        let mut rt = rt_of(&normal);
+        rt.outbounds.push(tags::reverse(Uuid::from_u128(9)));
+        assert!(plan(&rt, &normal, &normal).is_empty() && verify(&rt, &normal).is_ok());
     }
 
     #[test]

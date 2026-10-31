@@ -272,6 +272,8 @@ pub struct EntryView {
     pub node: Ref,
     /// 线路机直出：从线路机自己的 IP 出去，没有落地节点，也就没有 TCP 探测（tcp 恒为 null）
     pub direct: bool,
+    /// normal / reverse（穿透：节点主动连这个入口，线路机不连节点，也就没有 TCP 探测，tcp 恒为 null，见 crate::reverse）
+    pub mode: String,
     pub port: i32,
     pub lifecycle: String,
     /// 线路机已应用到这条入口的最近一次改动
@@ -336,6 +338,10 @@ pub struct MachineView {
     /// 备用团队里在用的机器：还指向它（备用宿主机还包括它上面没退役的同机 IP 节点，后缀「（经同机 IP 节点 X）」）的软路由出口（「路由名 · 出口名」），续费提醒里列出来；
     /// 它、`live_ip_nodes` 都为空的就是闲置备用（`idle_spare`，网页据此不把它算进异常）
     pub router_exits: Vec<String>,
+    /// 团队里在用的节点（不在备用）、所在团队的软路由都看得清出口（routers::pointed_nodes），却没有任何出口指着它：
+    /// 多半是出口被改指向别处（改出口指向、手改）之后留下的，卡片看着像正常在用、其实没有客户。网页抽屉与 fleetctl show 标一句，不影响健康与告警。
+    /// 团队没有软路由、有路由还没采集到 / 配置读不了的都为 false（看不出）
+    pub no_router_exits: bool,
     pub number: Option<i32>,
     pub label: Option<String>,
     pub ip: String,
@@ -399,6 +405,9 @@ pub struct MachineView {
     /// 流量异常的判断（anomaly.rs，按小时汇总算）；中控启动后还没算过、或这台不在用为 None
     #[serde(skip)]
     pub anomaly: Option<crate::anomaly::Anomaly>,
+    /// 持续握手丢包的判断（tcp_loss.rs，每 60 秒算一次）：完整加载与补指标时都取最新那份；中控启动后还没算过为 Unknown
+    #[serde(skip)]
+    pub tcp_loss: crate::tcp_loss::Loss,
 }
 
 /// 被扣住不回收的备用机（`recycle_held`：软路由出口还指着、上面还有在用的同机 IP 节点、开着自动续费）：它们照常续费，团队页、流量页的月费合计要带上。
@@ -623,6 +632,8 @@ pub struct LiveCache {
     pub(crate) daily: tokio::sync::Mutex<crate::traffic::Cache>,
     /// 流量异常（anomaly.rs）：小时汇总每轮之后算好放这里，完整加载时带进视图；中控启动后还没算过为 None
     anomaly: std::sync::Mutex<Option<crate::anomaly::Map>>,
+    /// 持续握手丢包（tcp_loss.rs）：每 60 秒算好放这里，取视图时（含只补指标）带进去；中控启动后还没算过为 None
+    tcp_loss: std::sync::Mutex<Option<crate::tcp_loss::Map>>,
 }
 
 /// (周期内下行之和, 上行之和, 接入前读数在周期内, 周期起点时刻, 近 7 天窗口内下行之和, 上行之和, 窗口起点时刻)；
@@ -657,6 +668,11 @@ impl LiveCache {
     /// 小时汇总之后算好的流量异常（随后的 `rolled_up` 让视图完整加载、带上它）
     pub fn set_anomaly(&self, a: std::collections::HashMap<Uuid, crate::anomaly::Anomaly>) {
         *crate::lock(&self.anomaly) = Some(Arc::new(a));
+    }
+
+    /// 刚算好的持续握手丢包：下次补指标（最多 3 秒后）就带上，不用作废整份视图
+    pub fn set_tcp_loss(&self, m: std::collections::HashMap<Uuid, crate::tcp_loss::Loss>) {
+        *crate::lock(&self.tcp_loss) = Some(Arc::new(m));
     }
 
     /// 小时汇总跑完的轮数
@@ -833,8 +849,10 @@ async fn refresh(st: &AppState, prev: &[MachineView], jobs: bool) -> sqlx::Resul
         tokio::try_join!(host_now(db, &cids), sustained_of(db, &cids), probes_of(db, &eids), crate::silence::Silences::load(db), jobs_q)?;
 
     let now = OffsetDateTime::now_utc();
+    let loss = crate::lock(&st.live.tcp_loss).clone();
     let mut out = prev.to_vec();
     for m in &mut out {
+        m.tcp_loss = crate::tcp_loss::of(loss.as_ref(), m.id);
         let h = hid(m);
         if let Some(a) = changed.get(&h) {
             if m.agent.is_some() {
@@ -864,7 +882,7 @@ async fn refresh(st: &AppState, prev: &[MachineView], jobs: bool) -> sqlx::Resul
     for m in &mut out {
         for e in &mut m.entries {
             if changed.contains_key(&e.relay.id) {
-                e.tcp = probes.get(&(e.id, "tcp".into())).cloned();
+                e.tcp = if e.mode == crate::reverse::REVERSE { None } else { probes.get(&(e.id, "tcp".into())).cloned() };
                 e.egress = probes.get(&(e.id, "egress".into())).cloned();
             }
             if let Some(&(d, off)) = xray_down.get(&e.relay.id) {
@@ -1310,6 +1328,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
         apply_error: Option<String>,
         relay_xray_down: bool,
         relay_last: Option<OffsetDateTime>,
+        mode: String,
     }
     // 下面这些查询互不依赖（探测要等入口列表），并发跑
     let entries_q = async {
@@ -1317,7 +1336,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
             "select e.id, e.relay_id, rm.label relay_label, e.node_id, nm.label node_label, t.name node_team, nm.number node_number, e.port,
                     e.lifecycle::text lifecycle, r.applied_generation >= e.changed_gen applied, e.apply_error,
                     coalesce((ra.info->'xray'->>'running')::bool = false and ra.last_report_at > now() - make_interval(secs => $2), false) relay_xray_down,
-                    ra.last_report_at relay_last
+                    ra.last_report_at relay_last, e.mode
              from entry e join machine rm on rm.id = e.relay_id join relay r on r.machine_id = e.relay_id
              left join agent_state ra on ra.machine_id = e.relay_id
              join machine nm on nm.id = e.node_id left join team t on t.id = nm.team_id
@@ -1361,8 +1380,10 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
     // 备用团队里在用的机器：还指向它（或它上面同机 IP 节点）的软路由出口（到期提醒里列出，让人先「替换」）
     let spare_ids: Vec<Uuid> = rows.iter().filter(|r| r.team_spare == Some(true) && r.lifecycle == "active").map(|r| r.id).collect();
     let exits_q = crate::routers::exits_using_with_ip_nodes(db, &spare_ids);
+    // 团队里的节点有没有出口指着（no_router_exits）
+    let pointed_q = crate::routers::pointed_nodes(db);
     let period_of: HashMap<Uuid, (Date, Option<&'static str>)> = periods.iter().map(|k| (k.0, (k.1, k.3))).collect();
-    let (intel, host, (es, probes, reach), (traffic, nic, removed), (live_jobs, failed_jobs), inc, silences, sustained, policies, period_used, ipn, mut exits) = tokio::try_join!(
+    let (intel, host, (es, probes, reach), (traffic, nic, removed), (live_jobs, failed_jobs), inc, silences, sustained, policies, period_used, ipn, mut exits, (seen_teams, pointed)) = tokio::try_join!(
         intel_q,
         host_now(db, &hids),
         entries_q,
@@ -1374,7 +1395,8 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
         crate::policy::load_modes(db),
         quota_used(st, periods),
         ipn_q,
-        exits_q
+        exits_q,
+        pointed_q
     )?;
     // 汇率：订阅的价格、月费折成 USD（fx.rs）
     let fx = crate::fx::current(db).await?;
@@ -1429,7 +1451,9 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
             relay_xray_down: e.relay_xray_down,
             relay_offline: !e.relay_last.is_some_and(|t| st.report_gaps.online(t, now)),
             relay_maint: silences.maintenance(e.relay_id),
-            tcp: probes.get(&(e.id, "tcp".into())).cloned(),
+            // 穿透入口线路机不连节点：切换之前留下的 TCP 探测（15 分钟内的）不算数，不显示也不进告警
+            tcp: if e.mode == crate::reverse::REVERSE { None } else { probes.get(&(e.id, "tcp".into())).cloned() },
+            mode: e.mode,
             egress: probes.get(&(e.id, "egress".into())).cloned(),
             reach: reach.get(&e.id).cloned(),
             traffic: traffic.get(&e.id).cloned().unwrap_or_default(),
@@ -1445,6 +1469,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
     // 组织时区本月 1 号 0 点（同 `flows` 的本月起点）：首次上架晚于它的，本月流量标「X 起」
     let month0 = today.replace_day(1).expect("1 号").midnight().assume_offset(meta::org_offset());
     let anomaly = crate::lock(&st.live.anomaly).clone();
+    let loss = crate::lock(&st.live.tcp_loss).clone();
     Ok(rows
         .into_iter()
         .map(|r| {
@@ -1576,6 +1601,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
             let recycle_held = in_spare && !(router_exits.is_empty() && live_ip_nodes.is_empty() && renewing_ip_nodes.is_empty() && !auto_renew);
             let idle_spare = in_spare && router_exits.is_empty() && live_ip_nodes.is_empty();
             let spare_unbilled = in_spare && !recycle_held;
+            let no_router_exits = !spare && r.lifecycle == "active" && r.kind != "relay" && r.team_id.is_some_and(|t| seen_teams.contains(&t)) && !pointed.contains(&r.id);
             let recycle_on = subscription.as_ref().filter(|_| spare && r.lifecycle == "active" && !recycle_held).map(|s| crate::spare::recycle_on(s.due_date));
             let mut v = MachineView {
                 id: r.id,
@@ -1592,6 +1618,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 live_ip_nodes,
                 renewing_ip_nodes,
                 router_exits,
+                no_router_exits,
                 number: r.number,
                 label: r.label,
                 country: r.country.clone().or_else(|| r.ip.parse::<IpAddr>().ok().and_then(|ip| intel.get(&ip)).and_then(|b| b.country.clone())),
@@ -1636,6 +1663,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 sustained: sustained.get(&hid).copied().unwrap_or_default(),
                 policy_blocked,
                 anomaly: anomaly.as_ref().and_then(|a| a.get(&r.id).cloned()),
+                tcp_loss: crate::tcp_loss::of(loss.as_ref(), r.id),
             };
             v.health = health::evaluate(&v, now);
             v
@@ -1656,7 +1684,7 @@ pub fn settling(st: &AppState, v: &mut Value) {
     v["settling"] = json!(st.report_gaps.settling(OffsetDateTime::now_utc()));
 }
 
-/// 总览里节点、线路机各一份的健康计数
+/// 总览里节点、线路机、闲置备用各一份的健康计数
 #[derive(Default, Serialize)]
 struct Bucket {
     total: i64,
@@ -1671,6 +1699,8 @@ struct Bucket {
 pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Value {
     let (mut nodes, mut relays) = (Bucket::default(), Bucket::default());
     let (mut provisioning, mut retiring, mut failed, mut spare, mut rx, mut tx) = (0, 0, 0, 0, 0f64, 0f64);
+    // 闲置备用按同一套健康口径另数（spare_health）：备用池里有几台此刻能顶上（正常 / 降级），几台故障、不通——挑替换用的新节点时一眼看出，不用去查库
+    let mut spare_health = Bucket::default();
     // 本月业务流量：每条入口的字节只在它的线路机上统计一次，全部入口直接相加不重复，含已移除的入口和月中退役、替换掉的机器。
     // 网卡流量不做合计：同一个字节在线路机和节点的网卡上各算一次
     let (up, down) = traffic.values().fold((0i64, 0i64), |(u, d), t| (u.saturating_add(t.month_up), d.saturating_add(t.month_down)));
@@ -1712,8 +1742,14 @@ pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Valu
         if idle {
             spare += 1;
         }
-        let bucket = if m.kind == "relay" { &mut relays } else { &mut nodes };
-        if !idle {
+        let bucket = if idle {
+            &mut spare_health
+        } else if m.kind == "relay" {
+            &mut relays
+        } else {
+            &mut nodes
+        };
+        {
             bucket.total += 1;
             *match m.health.status {
                 Status::Ok => &mut bucket.ok,
@@ -1761,7 +1797,7 @@ pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Valu
     usd_spare["count"] = json!(spare_paid);
     json!({
         "nodes": nodes, "relays": relays, "provisioning": provisioning, "retiring": retiring, "failed": failed, "due_soon": due_soon, "overdue": overdue, "online": online, "offline": offline,
-        "no_agent": no_agent, "ip_nodes": ip_nodes, "spare": spare, "monthly_usd": usd, "paid_machines": paid_machines, "monthly_usd_spare": usd_spare, "traffic_month": {"up": up, "down": down, "counted_from": counted_from.map(crate::meta::fmt_ts)}, "net_rx_bps": rx, "net_tx_bps": tx,
+        "no_agent": no_agent, "ip_nodes": ip_nodes, "spare": spare, "spare_health": spare_health, "monthly_usd": usd, "paid_machines": paid_machines, "monthly_usd_spare": usd_spare, "traffic_month": {"up": up, "down": down, "counted_from": counted_from.map(crate::meta::fmt_ts)}, "net_rx_bps": rx, "net_tx_bps": tx,
     })
 }
 
@@ -1872,6 +1908,14 @@ mod tests {
         let n = &ov["nodes"];
         assert_eq!((n["total"].as_i64(), n["down"].as_i64(), ov["spare"].as_i64()), (Some(2), Some(2), Some(2)), "{ov}");
         assert_eq!((ov["online"].as_i64(), ov["offline"].as_i64()), (Some(2), Some(0)), "闲置备用不计在线 / 离线");
+        // 闲置备用另有一份健康计数：备用池里有几台能顶上
+        let sh = &ov["spare_health"];
+        assert_eq!((sh["total"].as_i64(), sh["down"].as_i64(), sh["ok"].as_i64()), (Some(2), Some(2), Some(0)), "{ov}");
+        let mut fine = base("vps");
+        fine.spare = true;
+        fine.health.status = Status::Ok;
+        let fine = fine.settle_spare();
+        assert_eq!(overview_of(&[fine], &HashMap::new())["spare_health"]["ok"], 1);
 
         // 闲置备用里的家宽代理（没 agent）、同机 IP 节点也不计入 no_agent / ip_nodes；被出口指向的、普通的照常计
         let mut idle_proxy = down(true, &[], true);

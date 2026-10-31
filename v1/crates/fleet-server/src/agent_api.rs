@@ -481,7 +481,9 @@ async fn ingest(st: &AppState, a: AgentId, mut r: Report) -> Result<Json<ReportA
     // ── 入库前整理：时间窗口过滤、补建分区。单条坏样本绝不能让整份上报失败 ──
     let mut host = windowed(r.host.iter(), |s| s.ts_ms, raw_lo, hi, &mut dropped);
     let Some(keep) = peek_token(&mut lock(&BUCKETS), a.machine_id, r.seq, host.len(), Instant::now()).map_err(IngestErr::Limited)? else {
-        return Ok(resent(st, a.machine_id).await?);
+        let mut ack = resent(st, a.machine_id).await?;
+        ack.bridge_kick = kick(st, &a).await;
+        return Ok(ack);
     };
     // 超出余额的丢最早的：最新的读数要进实时视图
     if keep < host.len() {
@@ -538,7 +540,7 @@ async fn ingest(st: &AppState, a: AgentId, mut r: Report) -> Result<Json<ReportA
                 .execute(&mut *tx)
                 .await?;
             tx.commit().await?;
-            return Ok(Json(ReportAck { accepted_seq: *seq as u64, interval_s: fleet_proto::REPORT_INTERVAL_S }));
+            return Ok(Json(ReportAck { accepted_seq: *seq as u64, interval_s: fleet_proto::REPORT_INTERVAL_S, bridge_kick: kick(st, &a).await }));
         }
     }
     let info = r.info.as_ref().map(|i| serde_json::to_value(i).unwrap_or_default());
@@ -557,12 +559,14 @@ async fn ingest(st: &AppState, a: AgentId, mut r: Report) -> Result<Json<ReportA
     let fresh = r.agent_health.as_ref().is_some_and(|h| h.queue_len == 0) && prev.is_some_and(|p| p.1);
     let skew = fresh.then(|| now_ms.saturating_sub(r.sent_at_ms));
     // info 是合并而不是覆盖：只报系统信息时不能把之前记下的 xray / agent 健康状态 / 时钟偏差冲掉
+    // caps（agent 会什么，见 fleet_proto::CAPS）每份都写，旧 agent 写成空数组：换回旧版本（升级回滚）之后不能还留着新版本的能力，
+    // 中控据此判断能不能下发穿透入口（reverse::unsupported）
     sqlx::query(
         "insert into agent_state (machine_id, agent_version, boot_id, last_seq, last_report_at, info)
-         values ($1, $2, $3, $4, now(), coalesce($5, '{}'::jsonb) || jsonb_strip_nulls(jsonb_build_object('xray', $6::jsonb, 'agent_health', $7::jsonb, 'clock_skew_ms', $8::bigint, 'singbox', $9::jsonb)))
+         values ($1, $2, $3, $4, now(), coalesce($5, '{}'::jsonb) || jsonb_strip_nulls(jsonb_build_object('xray', $6::jsonb, 'agent_health', $7::jsonb, 'clock_skew_ms', $8::bigint, 'singbox', $10::jsonb)) || jsonb_build_object('caps', to_jsonb($9::text[])))
          on conflict (machine_id) do update set agent_version = excluded.agent_version, boot_id = excluded.boot_id,
            last_seq = greatest(agent_state.last_seq, excluded.last_seq), last_report_at = now(),
-           info = agent_state.info || coalesce($5, '{}'::jsonb) || jsonb_strip_nulls(jsonb_build_object('xray', $6::jsonb, 'agent_health', $7::jsonb, 'clock_skew_ms', $8::bigint, 'singbox', $9::jsonb))",
+           info = agent_state.info || coalesce($5, '{}'::jsonb) || jsonb_strip_nulls(jsonb_build_object('xray', $6::jsonb, 'agent_health', $7::jsonb, 'clock_skew_ms', $8::bigint, 'singbox', $10::jsonb)) || jsonb_build_object('caps', to_jsonb($9::text[]))",
     )
     .bind(a.machine_id)
     .bind(&r.agent_version)
@@ -572,6 +576,7 @@ async fn ingest(st: &AppState, a: AgentId, mut r: Report) -> Result<Json<ReportA
     .bind(xray)
     .bind(agent_health)
     .bind(skew)
+    .bind(&r.caps)
     .bind(singbox)
     .execute(&mut *tx)
     .await?;
@@ -700,7 +705,24 @@ async fn ingest(st: &AppState, a: AgentId, mut r: Report) -> Result<Json<ReportA
     if crate::alerts::report_matters(st, a.machine_id, was_offline, r.xray.as_ref().map(|x| x.running), &probes) {
         st.wake_alerts();
     }
-    Ok(Json(ReportAck { accepted_seq: r.seq, interval_s: fleet_proto::REPORT_INTERVAL_S }))
+    // 穿透隧道没挂上（线路机报的）：记下要节点重启 bridge，节点的下一份回执带上。尽力而为：失败只记日志，线路机下一份还会报
+    if a.kind == "relay" && !r.tunnels_down.is_empty() {
+        if let Err(e) = crate::reverse::on_tunnels_down(&st.db, a.machine_id, &r.tunnels_down).await {
+            tracing::warn!(relay = %a.machine_id, "记下穿透隧道重启请求失败：{e}");
+        }
+    }
+    Ok(Json(ReportAck { accepted_seq: r.seq, interval_s: fleet_proto::REPORT_INTERVAL_S, bridge_kick: kick(st, &a).await }))
+}
+
+/// 节点回执里的 bridge 重启请求（reverse::kick_for）；只有 VPS 节点装 bridge。查不到不挡回执
+async fn kick(st: &AppState, a: &AgentId) -> Option<i64> {
+    if a.kind != "vps" {
+        return None;
+    }
+    crate::reverse::kick_for(&st.db, a.machine_id).await.unwrap_or_else(|e| {
+        tracing::warn!(node = %a.machine_id, "读穿透 bridge 重启请求失败：{e}");
+        None
+    })
 }
 
 /// 本进程已入库过的一份又发来（确认在路上丢了、503 后重试）：不查入口、不补建分区、不进去重事务，只刷新最近上报时间（agent 活着），
@@ -710,7 +732,7 @@ async fn resent(st: &AppState, machine: Uuid) -> sqlx::Result<Json<ReportAck>> {
         .bind(machine)
         .fetch_one(&st.db)
         .await?;
-    Ok(Json(ReportAck { accepted_seq: last as u64, interval_s: fleet_proto::REPORT_INTERVAL_S }))
+    Ok(Json(ReportAck { accepted_seq: last as u64, interval_s: fleet_proto::REPORT_INTERVAL_S, bridge_kick: None }))
 }
 
 #[derive(Deserialize)]
