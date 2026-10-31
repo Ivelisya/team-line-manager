@@ -14,6 +14,7 @@ mod probe_point;
 mod queue;
 mod reporter;
 mod server;
+mod singbox;
 mod state;
 mod util;
 mod xray;
@@ -157,6 +158,8 @@ async fn real_main() -> Result<()> {
             let rep = ap.apply(&d).await;
             if rep.ok {
                 state::save_applied(&cfg, &d);
+                // AnyTLS 外壳跟着换（没装 sing-box 时什么都不做）
+                singbox::Singbox::new(cfg.clone()).apply(&d).await;
             }
             println!("{}", serde_json::to_string_pretty(&rep)?);
             if !rep.ok {
@@ -181,11 +184,12 @@ async fn once(cfg: Config) -> Result<()> {
     let mut hs = vec![hc.sample()];
     tokio::time::sleep(Duration::from_secs(1)).await;
     hs.push(hc.sample());
-    let mut xs = None;
+    let (mut xs, mut sb) = (None, None);
     if cfg.role == Role::Relay {
         let ap = xray::apply::Applier::new(Arc::new(cfg.clone()));
         let up = ap.cli.runtime().await;
         xs = Some(fleet_proto::XrayStatus { running: up.is_ok(), version: ap.cli.version().await.ok(), applied_generation: state::load_applied(&cfg).map(|a| a.generation).unwrap_or(0) });
+        sb = Some(singbox::Singbox::new(Arc::new(cfg.clone())).status().await);
     }
     let r = Report {
         seq: 0,
@@ -195,6 +199,7 @@ async fn once(cfg: Config) -> Result<()> {
         info: Some(host::collect_info(hc.ifaces())),
         host: hs,
         xray: xs,
+        singbox: sb,
         ..Default::default()
     };
     println!("{}", serde_json::to_string_pretty(&r)?);
@@ -229,13 +234,15 @@ async fn run(cfg: Config) -> Result<()> {
 
     if cfg.role == Role::Relay {
         let applier = Arc::new(xray::apply::Applier::new(cfg.clone()));
+        let sb = Arc::new(singbox::Singbox::new(cfg.clone()));
         applier.ensure_boot().await;
         desired::restore(&sh);
         spawn_named(&mut set, "stats_task", collect::stats_task(sh.clone(), applier.cli.clone(), sd_rx.clone()));
         spawn_named(&mut set, "probe_task", collect::probe_task(sh.clone(), probe::direct_client()?, sd_rx.clone()));
         spawn_named(&mut set, "ping_task", ping::ping_task(sh.clone(), sd_rx.clone()));
         spawn_named(&mut set, "rtt_task", rtt::rtt_task(sh.clone(), client.clone(), sd_rx.clone()));
-        spawn_named(&mut set, "desired_task", desired::desired_task(sh.clone(), applier.clone(), client.clone(), sd_rx.clone()));
+        spawn_named(&mut set, "singbox_task", collect::singbox_task(sh.clone(), sb.clone(), sd_rx.clone()));
+        spawn_named(&mut set, "desired_task", desired::desired_task(sh.clone(), applier.clone(), sb, client.clone(), sd_rx.clone()));
         applier_handle = Some(applier);
     }
 

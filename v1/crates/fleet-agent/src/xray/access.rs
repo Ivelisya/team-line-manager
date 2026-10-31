@@ -151,9 +151,12 @@ pub fn parse_line(line: &str, utc_offset_s: i64) -> Parsed {
             Some((a.trim().to_string(), b.trim().to_string()))
         })
         .unwrap_or_default();
-    if !inbound.starts_with("in-") {
+    // AnyTLS 的桥接入站（at-）也是入口流量：连接是 sing-box 从回环转进来的，来源只看得到 127.0.0.1，不当真实来源记
+    let bridged = inbound.starts_with("at-");
+    if !inbound.starts_with("in-") && !bridged {
         return Parsed::Other;
     }
+    let src_ip = if bridged { None } else { src_ip };
     // 入口按入站 tag 认；有 email（路由之后、最后一个）就必须是同一个入口
     let Some(entry_id) = tags::parse_entry_id(&inbound) else { return Parsed::Bad };
     let email = tail[route_end..].iter().rposition(|t| *t == "email:").map(|k| tail.get(route_end + k + 1).copied());
@@ -461,6 +464,15 @@ mod tests {
         // 扫描器被 Xray 拒绝：不算解析失败，否则 access_unparsed 永远不为 0
         assert!(matches!(parse_line("2026/10/20 13:50:56 from 1.2.3.4:5 rejected proxy/vless/inbound: invalid request", 0), Parsed::Other));
         assert!(matches!(parse_line("2026/10/20 13:50:56 from 1.2.3.4:5 accepted tcp:a.com:99999 [in-x -> y]", 0), Parsed::Bad));
+    }
+
+    #[test]
+    fn anytls_bridge_events_count_without_source() {
+        // 经 AnyTLS 进来的连接在 Xray 里是桥接入站 at-<入口>：算这个入口的访问，来源是回环、不记
+        let me = id().simple();
+        let l = format!("2026/10/20 13:50:56 from 127.0.0.1:41234 accepted tcp:a.com:443 [at-{me} -> blocked] email: e-{me}");
+        let Parsed::Event(e) = parse_line(&l, 0) else { panic!("{l}") };
+        assert_eq!((e.entry_id, e.src_ip, e.blocked, e.dest_host.as_str()), (id(), None, true, "a.com"));
     }
 
     fn tmp(n: &str) -> crate::util::TmpDir { crate::util::TmpDir::new(&format!("acc-{n}")) }

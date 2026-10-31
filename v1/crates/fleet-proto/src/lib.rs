@@ -44,6 +44,9 @@ pub struct Report {
     pub access: Vec<AccessEvent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub xray: Option<XrayStatus>,
+    /// 线路机上 AnyTLS 外壳（sing-box）的状态；旧 agent 不报，旧中控忽略
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub singbox: Option<SingboxStatus>,
     /// Agent 自身健康（累计值，自进程启动起算）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_health: Option<AgentHealth>,
@@ -205,6 +208,21 @@ pub struct XrayStatus {
     pub applied_generation: u64,
 }
 
+/// 线路机上 sing-box（只做 AnyTLS 外壳，见 fleet-agent 的 singbox.rs）的状态。中控存进 agent_state.info.singbox；
+/// 入口的 AnyTLS 链接、订阅里的 AnyTLS 条目只在 `running` 时才给（没在跑时链接是坏的）
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct SingboxStatus {
+    /// 线路机上有 sing-box 程序（没有 = 未安装，agent 跳过 AnyTLS，Xray 那一侧照常）
+    pub installed: bool,
+    /// fleet-singbox 单元在跑
+    pub running: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// 最近一次应用 sing-box 配置的错误（成功后清空）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
 /// Agent 的上报间隔（秒）。固定值：新 agent 不再读 `ReportAck.interval_s`，中控回的也是它
 pub const REPORT_INTERVAL_S: u32 = 10;
 
@@ -271,6 +289,38 @@ pub const PING_TCP_DEFAULT_PORT: u16 = 80;
 pub const XRAY_API_PORT: u16 = 62789;
 /// 每个启用入口的回环探测入站端口 = 入口端口 + 此偏移（agent 的 `probe_ports`；中控 tune 同样要保留这段端口）
 pub const PROBE_PORT_OFFSET: u16 = 10000;
+/// 入口的 AnyTLS 公网端口（sing-box 监听）= 入口端口 + 此偏移；默认端口池 20000–29999 落在 40000–49999
+pub const ANYTLS_PORT_OFFSET: u16 = 20000;
+/// 入口的 AnyTLS 回环桥接端口（Xray 的 VLESS 入站 `at-<入口>`，sing-box 连它）= 入口端口 + 此偏移；默认落在 50000–59999
+pub const ANYTLS_BRIDGE_OFFSET: u16 = 30000;
+
+/// 哪些入口有 AnyTLS：`entries` 是启用入口的 (id, 端口)，返回 入口 → AnyTLS 公网端口。
+/// 公网端口、桥接端口都要不超过 65535，且在「全部入口端口、探测端口、Xray API 端口、全部 AnyTLS 公网 / 桥接端口」里只被它自己占用；
+/// 撞了的两边都没有（结果只取决于入口集合，和顺序无关）。中控下发 `DesiredEntry::anytls_port`、算分享链接 / 订阅，
+/// agent 渲染时都用它：两边同一条规则，链接里的端口就是线路机上真在监听的
+pub fn anytls_ports(entries: &[(Uuid, u16)]) -> std::collections::HashMap<Uuid, u16> {
+    let pair = |p: u16| Some((p.checked_add(ANYTLS_PORT_OFFSET)?, p.checked_add(ANYTLS_BRIDGE_OFFSET)?));
+    let mut claims: std::collections::HashMap<u16, u32> = std::collections::HashMap::new();
+    let mut claim = |p: u16| *claims.entry(p).or_default() += 1;
+    claim(XRAY_API_PORT);
+    for &(_, p) in entries {
+        claim(p);
+        if let Some(x) = p.checked_add(PROBE_PORT_OFFSET) {
+            claim(x);
+        }
+        if let Some((a, b)) = pair(p) {
+            claim(a);
+            claim(b);
+        }
+    }
+    entries
+        .iter()
+        .filter_map(|&(id, p)| {
+            let (a, b) = pair(p)?;
+            (claims[&a] == 1 && claims[&b] == 1).then_some((id, a))
+        })
+        .collect()
+}
 
 /// 拆 `target`：(主机, 端口)。`[v6]:port`、`[v6]`、裸 IPv6、`host:port`、`host`；端口不对为 None
 pub fn split_target(t: &str) -> Option<(String, Option<u16>)> {
@@ -329,6 +379,9 @@ pub struct DesiredEntry {
     /// 访问策略（按域名黑白名单/暂停）。`None` = observe，不产生任何路由规则。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy: Option<EntryPolicy>,
+    /// AnyTLS 公网端口（中控按 [`anytls_ports`] 算好下发；None = 这个入口没有 AnyTLS）。旧 agent 忽略，只有 Reality
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anytls_port: Option<u16>,
 }
 
 /// 入口的访问策略（中控已按「节点策略 > 团队策略 > observe」算出的有效值）。
@@ -473,6 +526,8 @@ pub mod tags {
     pub fn rule(id: Uuid) -> String { format!("rule-{}", id.simple()) }
     /// 客户端在 Xray 统计里的 email
     pub fn email(id: Uuid) -> String { format!("e-{}", id.simple()) }
+    /// AnyTLS 的回环桥接入站（Xray 里，sing-box 连它）：email 与主入站相同，流量、在线统计合并到入口
+    pub fn bridge(id: Uuid) -> String { format!("at-{}", id.simple()) }
     pub fn parse_entry_id(tag: &str) -> Option<Uuid> {
         let s = tag.split_once('-')?.1;
         Uuid::try_parse(s).ok()
@@ -501,6 +556,23 @@ mod tests {
         assert!(!all_down(&[false, false]), "两台全不通：不算全部");
         assert!(all_down(&[false, false, false]), "三台以上全不通：全部线路机同时连不上");
         assert!(!all_down(&[false, true, false]) && !all_down(&[]));
+    }
+
+    #[test]
+    fn anytls_ports_skip_overflow_and_conflicts() {
+        let id = Uuid::from_u128;
+        // 默认端口池：公网 = 入口 + 20000
+        let p = anytls_ports(&[(id(1), 20001), (id(2), 20002)]);
+        assert_eq!((p[&id(1)], p[&id(2)]), (40001, 40002));
+        // 桥接端口溢出（40000 + 30000 > 65535）：没有
+        assert!(anytls_ports(&[(id(1), 40000)]).is_empty());
+        // 入口 2 的端口 = 入口 1 的公网端口：入口 1 没有；入口 2 自己的公网 / 桥接（60001 / 70001 溢出）也没有
+        let p = anytls_ports(&[(id(1), 20001), (id(2), 40001)]);
+        assert!(p.is_empty(), "{p:?}");
+        // 入口 1 的桥接端口 = 入口 2 的公网端口（20001 + 30000 = 30001 + 20000）：两边都没有；不相干的入口 3 照常有
+        let p = anytls_ports(&[(id(1), 20001), (id(2), 30001), (id(3), 21000)]);
+        assert!(!p.contains_key(&id(1)) && !p.contains_key(&id(2)), "{p:?}");
+        assert_eq!(p.get(&id(3)), Some(&41000));
     }
 
     #[test]

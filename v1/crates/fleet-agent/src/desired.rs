@@ -1,6 +1,7 @@
 //! 线路机：长轮询期望状态 → 应用 → 回报。
 
 use crate::server::{Desired, Outcome, ServerClient, REVOKED_SLEEP};
+use crate::singbox::Singbox;
 use crate::state::{load_applied, pending_ack_path, save_applied, Shared};
 use crate::util::{backoff, load_json, save_json};
 use crate::xray::apply::Applier;
@@ -79,12 +80,13 @@ fn paused_note(gen: u64, fails: u32, wait: Duration) -> String {
 
 /// 启动对齐：applied.json 说"已应用"，但 xray.json 可能缺失（只写了空骨架）或 Xray 是新起的 ——
 /// 把上次成功应用的期望状态幂等地再应用一遍，确保磁盘与运行态都对得上，之后才敢报告这个代数。
-async fn startup_align(sh: &Shared, applier: &Applier) {
+async fn startup_align(sh: &Shared, applier: &Applier, sb: &Singbox) {
     let Some(a) = load_applied(&sh.cfg) else { return };
     tracing::info!(generation = a.generation, "启动对齐：幂等应用上次的期望状态");
     let rep = applier.apply(&a.desired).await;
     note_apply(sh, &rep, None);
     if rep.ok {
+        sb.apply(&a.desired).await;
         tracing::info!(generation = a.generation, "启动对齐完成");
         sh.applied_gen.store(a.generation, Ordering::Relaxed);
     } else {
@@ -94,8 +96,10 @@ async fn startup_align(sh: &Shared, applier: &Applier) {
 }
 
 /// 周期对齐：轻量检查（不跑 xray -test），不一致才完整应用一次修复，并记日志。
-async fn periodic_align(sh: &Shared, applier: &Applier, gate: &mut RestartGate) {
+/// AnyTLS（sing-box）每次都按已应用的那份对一遍：配置一样、单元在跑就什么都不做；它只跟着 Xray 已应用的状态走，不受 Xray 这次修没修好影响
+async fn periodic_align(sh: &Shared, applier: &Applier, sb: &Singbox, gate: &mut RestartGate) {
     let Some(d) = sh.applied.read().unwrap().clone() else { return };
+    sb.apply(&d).await;
     let Err(why) = applier.check_aligned(&d).await else { return };
     // 闸门只为不反复断开客户连接：Xray 确实没在跑（崩了 / 被停了）就没有客户可断，照常应用把它拉起来
     if gate.remaining().is_some() && !applier.is_down().await {
@@ -163,7 +167,7 @@ async fn report_applied(sh: &Shared, client: &ServerClient, rep: &ApplyReport, s
     false
 }
 
-pub async fn desired_task(sh: Arc<Shared>, applier: Arc<Applier>, client: Arc<ServerClient>, mut sd: watch::Receiver<bool>) {
+pub async fn desired_task(sh: Arc<Shared>, applier: Arc<Applier>, sb: Arc<Singbox>, client: Arc<ServerClient>, mut sd: watch::Receiver<bool>) {
     let mut fails = 0u32;
     let mut gate = RestartGate::default();
     // 本版本解析不了的最新代数：已回报"版本过旧"，之后带着它去长轮询，直到中控出了更新的一代。
@@ -175,7 +179,7 @@ pub async fn desired_task(sh: Arc<Shared>, applier: Arc<Applier>, client: Arc<Se
     if refetch {
         tracing::info!("期望状态是别的 agent 版本存下的（刚升级过），向中控重新要一份完整的");
     }
-    startup_align(&sh, &applier).await;
+    startup_align(&sh, &applier, &sb).await;
     let mut last_align = Instant::now();
     loop {
         if *sd.borrow() {
@@ -183,7 +187,7 @@ pub async fn desired_task(sh: Arc<Shared>, applier: Arc<Applier>, client: Arc<Se
         }
         if last_align.elapsed() >= REALIGN_EVERY {
             last_align = Instant::now();
-            periodic_align(&sh, &applier, &mut gate).await;
+            periodic_align(&sh, &applier, &sb, &mut gate).await;
         }
         // 先补发上次没送达的回报
         let path = pending_ack_path(&sh.cfg);
@@ -233,6 +237,9 @@ pub async fn desired_task(sh: Arc<Shared>, applier: Arc<Applier>, client: Arc<Se
                     refetch = false;
                     note_apply(&sh, &rep, None);
                     gate.clear();
+                    // Xray 那一侧（含 AnyTLS 的桥接入站）已就位，再换 sing-box：它连的桥接端口这时都在。失败只记在 sing-box 的状态里，
+                    // 不影响这次的应用回报（Reality 照常可用）
+                    sb.apply(&d).await;
                     let generation = d.generation;
                     let d = Arc::new(d);
                     let (cfg, d2) = (sh.cfg.clone(), d.clone());

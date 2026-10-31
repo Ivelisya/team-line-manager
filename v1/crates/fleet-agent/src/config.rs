@@ -34,6 +34,14 @@ pub struct Config {
     /// geoip.dat / geosite.dat 所在目录（XRAY_LOCATION_ASSET）
     #[serde(default = "d_asset_dir")]
     pub xray_asset_dir: PathBuf,
+    /// sing-box（线路机的 AnyTLS 外壳）：程序不在就不管 AnyTLS，只报「未安装」
+    #[serde(default = "d_singbox_bin")]
+    pub singbox_bin: PathBuf,
+    /// sing-box 的配置、自签证书所在目录（root 0700；fleet-agent 单元把它列进 ReadWritePaths）
+    #[serde(default = "d_singbox_dir")]
+    pub singbox_dir: PathBuf,
+    #[serde(default = "d_singbox_service")]
+    pub singbox_service: String,
     /// 流量计量只计这些网卡（特殊机型手动指定）；不写则按默认路由 / 公网地址自动挑选
     #[serde(default)]
     pub nic_ifaces: Vec<String>,
@@ -50,6 +58,9 @@ fn d_xray_config() -> PathBuf { "/etc/fleet-agent/xray.json".into() }
 fn d_xray_service() -> String { "fleet-xray.service".into() }
 fn d_access_log() -> PathBuf { "/var/log/fleet-xray/access.log".into() }
 fn d_asset_dir() -> PathBuf { "/usr/local/share/xray".into() }
+fn d_singbox_bin() -> PathBuf { "/usr/local/bin/sing-box".into() }
+fn d_singbox_dir() -> PathBuf { "/etc/fleet-singbox".into() }
+fn d_singbox_service() -> String { "fleet-singbox.service".into() }
 
 impl Config {
     pub fn load(path: &Path) -> Result<Self> {
