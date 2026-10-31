@@ -35,6 +35,9 @@ struct IncidentOut {
     ack_by: Option<String>,
     /// 恢复后又在重开窗口内复发的次数
     reopen_count: i32,
+    /// 这条触发（或最近一次重开）时是近 7 天的第几次（incident.occurrence_seq，触发时定下，不随之后的新告警变）
+    #[serde(rename = "recent_count")]
+    occurrence_seq: i32,
     /// 机器告警的对象是哪类机器（relay / vps / proxy / ip），建议操作用；机器已不在用或进了备用团队为 None（不给针对它的建议）
     #[serde(skip)]
     subject_kind: Option<String>,
@@ -57,12 +60,11 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQu
     let f = match q.state.as_deref() {
         Some("resolved") => "i.state = 'resolved'".to_string(),
         Some("all") => "true".to_string(),
-        // 组 = 引擎 + 规则 + 对象，近 7 天出现过 CHRONIC_MIN 次以上的（开过的条数 + 30 分钟内复发合并进去的次数），每组只取最近一条
+        // 组 = 引擎 + 规则 + 对象：近 7 天开过的里每组取最近一条，它触发时已是近 7 天第 CHRONIC_MIN 次以上的
         Some("chronic") => format!(
-            "i.id in (select id from (select id, row_number() over (partition by engine, rule, subject_id order by opened_at desc, id desc) rn,
-                                                     count(*) over (partition by engine, rule, subject_id) + sum(reopen_count) over (partition by engine, rule, subject_id) c
+            "i.id in (select id from (select id, occurrence_seq, row_number() over (partition by engine, rule, subject_id order by opened_at desc, id desc) rn
                                       from incident where opened_at > now() - interval '7 days') x
-                      where rn = 1 and c >= {CHRONIC_MIN})"
+                      where rn = 1 and occurrence_seq >= {CHRONIC_MIN})"
         ),
         _ => "i.state = 'firing'".to_string(),
     };
@@ -80,7 +82,7 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQu
             case when i.engine = 'central' then '中控' when i.engine = 'router' then r.name
                  when i.engine = 'probe' then coalesce(pp.name, '探测点（已删除）')
                  else display_name(m.kind::text, m.label, t.name, m.number) end subject_name,
-            i.severity::text severity, i.state::text state, i.summary, i.opened_at, i.last_seen_at, i.resolved_at, i.ack_at, i.ack_by, i.reopen_count,
+            i.severity::text severity, i.state::text state, i.summary, i.opened_at, i.last_seen_at, i.resolved_at, i.ack_at, i.ack_by, i.reopen_count, i.occurrence_seq,
             case when i.engine = 'machine' and m.lifecycle = 'active' and not coalesce(t.spare, false) then m.kind::text end subject_kind
          from incident i left join machine m on m.id = i.subject_id left join team t on t.id = m.team_id
               left join router r on r.id = i.subject_id and i.engine = 'router'
@@ -101,9 +103,9 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQu
     } else {
         vec![]
     };
-    // 近 7 天同对象同规则出现过几次（含这次）：开过的条数 + 恢复后 30 分钟内复发合并进这些条的次数。一条分组查询，不逐条查
+    // 「共 N 次」：同（引擎, 规则, 对象）近 7 天到现在一共几次（开过的条数 + 30 分钟内复发合并进去的次数），已恢复的和「第 k 次」一起显示。一条分组查询，不逐条查
     let subjects: Vec<Uuid> = v.iter().map(|i| i.subject_id).collect();
-    let recent: std::collections::HashMap<(String, String, Uuid), i64> = sqlx::query_as::<_, (String, String, Uuid, i64)>(
+    let totals: std::collections::HashMap<(String, String, Uuid), i64> = sqlx::query_as::<_, (String, String, Uuid, i64)>(
         "select engine, rule, subject_id, count(*) + sum(reopen_count) from incident
          where subject_id = any($1) and opened_at > now() - interval '7 days' group by engine, rule, subject_id",
     )
@@ -117,10 +119,11 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQu
         .iter()
         .map(|i| {
             let mut j = serde_json::to_value(i).unwrap_or_default();
-            let recent_count = recent.get(&(i.engine.clone(), i.rule.clone(), i.subject_id)).copied().unwrap_or(1).max(1);
-            let chronic = recent_count >= CHRONIC_MIN;
-            j["recent_count"] = json!(recent_count);
+            let chronic = i64::from(i.occurrence_seq) >= CHRONIC_MIN;
             j["chronic"] = json!(chronic);
+            // 窗口外开的（重开的那条自己早于 7 天）不在分组里：至少是它自己的第几次
+            let total = totals.get(&(i.engine.clone(), i.rule.clone(), i.subject_id)).copied().unwrap_or(0).max(i64::from(i.occurrence_seq));
+            j["recent_total"] = json!(total);
             if i.engine == Engine::Central.as_str() || i.engine == Engine::Probe.as_str() {
                 // 中控自身、探测点的告警：对象不是机器，没有可点开的机器（探测点的名字在 subject_name）
                 j["subject"] = Value::Null;
