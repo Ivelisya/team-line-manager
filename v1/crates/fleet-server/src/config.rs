@@ -18,7 +18,7 @@ pub struct Config {
     pub ssh_key: PathBuf,
     /// 中控自己维护的 known_hosts（上架预检时记录指纹，之后严格校验）
     pub known_hosts: PathBuf,
-    /// 推送到机器上的二进制：fleet-agent、ssserver、xray
+    /// 推送到机器上的二进制：fleet-agent、ssserver、xray、geoip.dat，可选的 sing-box（线路机的 AnyTLS 外壳）
     pub dist_dir: PathBuf,
     /// 位于反向代理之后时信任 X-Forwarded-For
     #[serde(default)]

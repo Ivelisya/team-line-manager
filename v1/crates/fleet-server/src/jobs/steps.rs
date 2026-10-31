@@ -475,12 +475,44 @@ async fn converge_relay(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     t.push(&c.dist("xray"), "/usr/local/bin/xray", "0755", Duration::from_secs(300)).await?;
     // 渲染出的配置只用到 geoip:private（策略不允许 geosite: 规则），geosite.dat 不推
     t.push(&c.dist("geoip.dat"), "/usr/local/share/xray/geoip.dat", "0644", Duration::from_secs(300)).await?;
-    let out = t.run(&scripts::relay_xray(), Duration::from_secs(60)).await?;
+    let sb = push_singbox(c, &t).await;
+    let script = vars(&[("SINGBOX_CHANGED", if sb == Some(true) { "1" } else { "0" })]) + &scripts::relay_xray() + &scripts::relay_singbox();
+    let out = t.run(&script, Duration::from_secs(60)).await?;
     if !out.ok() {
         return Err(out.fail("安装 fleet-xray 失败"));
     }
     warn_linklocal_dns(c, &out, "Xray").await;
-    Ok(Outcome::Done(json!({"xray": out.kv("xray_version"), "bbr": tuned["bbr"], "tune": tuned})))
+    report_singbox(c, &out).await;
+    Ok(Outcome::Done(json!({"xray": out.kv("xray_version"), "singbox": out.kv("singbox_version").filter(|v| !v.is_empty()), "bbr": tuned["bbr"], "tune": tuned})))
+}
+
+/// 推 sing-box（线路机入口的 AnyTLS 外壳）到 /usr/local/bin/sing-box。可选：dist 里没有（lab/fetch-dist.sh 没下）就记警告、返回 None，
+/// 这台线路机的入口先只有 Reality；推送失败也只记警告（上架、升级 agent 不为它失败）。返回是否换了程序
+async fn push_singbox(c: &Ctx<'_>, t: &Target) -> Option<bool> {
+    let p = c.dist("sing-box");
+    if !tokio::fs::try_exists(&p).await.unwrap_or(false) {
+        c.warn("中控 dist 里没有 sing-box（lab/fetch-dist.sh 下载）：这台线路机的入口暂时只有 Reality，没有 AnyTLS").await;
+        return None;
+    }
+    match t.push(&p, "/usr/local/bin/sing-box", "0755", Duration::from_secs(300)).await {
+        Ok(changed) => Some(changed),
+        Err(e) => {
+            c.warn(format!("推送 sing-box 失败，这台线路机的 AnyTLS 先保持原样：{e:#}")).await;
+            None
+        }
+    }
+}
+
+/// `scripts::relay_singbox` 的输出：单元没装上、换程序后重启失败记 warn；重启过记一条日志
+async fn report_singbox(c: &Ctx<'_>, out: &Output) {
+    if out.kv("singbox_unit") == Some("error") {
+        c.warn(format!("fleet-singbox 单元没装上（AnyTLS 不可用，Reality 不受影响）：{}", out.stderr.trim())).await;
+    }
+    match out.kv("singbox_restart") {
+        Some("1") => c.log("换了 sing-box 程序，重启了一次 fleet-singbox（这台线路机上的 AnyTLS 连接断开了一下，Reality 不受影响）").await,
+        Some("error") => c.warn("换了 sing-box 程序，但重启 fleet-singbox 失败：agent 下一次对齐时会再拉起，或手动 systemctl restart fleet-singbox").await,
+        _ => {}
+    }
 }
 
 /// 系统调优（当前档见 tune.rs）：上架收敛和作业 `tune` 共用。脚本自己出错（写文件、原值快照失败）才失败；写不进的键、没同步的时钟、
@@ -728,13 +760,15 @@ async fn agent(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     // 记下这枚新令牌，wait_report 用它判断「新 agent 已经在用新令牌上报」。
     // 从这里起要用 dist 里的程序重启 agent（pushed）：之后的失败（起不来、没上报、线路机检查没通过）与新版本有关
     c.set_params(json!({"agent_token_id": token_id, "agent_replaced": replaced, "pushed": true})).await?;
-    // 线路机先收敛 Xray 单元、后换 agent（见 scripts::relay_agent）
+    // 线路机顺带推 sing-box（AnyTLS 外壳，可选），先收敛 Xray、sing-box 单元，后换 agent（见 scripts::relay_agent）
+    let sb = if m.kind == "relay" { push_singbox(c, &t).await } else { None };
     let script = vars(&[
         ("SERVER_URL", &c.st.cfg.public_url),
         ("ROLE", if m.kind == "relay" { "relay" } else { "node" }),
         ("MACHINE_ID", &m.id.to_string()),
         ("TOKEN", &token),
         ("BIN_CHANGED", if pushed { "1" } else { "0" }),
+        ("SINGBOX_CHANGED", if sb == Some(true) { "1" } else { "0" }),
     ]) + &if m.kind == "relay" { scripts::relay_agent() } else { scripts::agent() };
     let out = match t.run(&script, Duration::from_secs(120)).await {
         Ok(o) => o,
@@ -772,6 +806,7 @@ async fn agent(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     if out.kv("logrotate") == Some("error") {
         c.warn(format!("访问日志轮转配置没装上：{}", out.stderr.trim())).await;
     }
+    report_singbox(c, &out).await;
     // xray_checks：等新版本上报时线路机还要做到的几项（程序换过才查，见 wait_report）
     Ok(Outcome::Done(json!({
         "binary_updated": pushed, "token_id": token_id, "agent_version": version, "prev_version": out.kv("prev_version").filter(|_| replaced),

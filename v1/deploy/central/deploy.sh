@@ -1,6 +1,6 @@
 #!/bin/bash
 # 生产中控部署 / 升级。在编译主机上按当前提交编译 fleet-server（glibc）、fleet-agent 与 fleetctl（后两个 musl 静态），连同 dist 来源里
-# 验证过的 xray、ssserver、geoip.dat（只带与生产不同的）、本机构建的前端、给中控上 agent 的说明模板与 fleet-ops 技能打成一个包，
+# 验证过的 xray、ssserver、geoip.dat、sing-box（只带与生产不同的；sing-box 可选）、本机构建的前端、给中控上 agent 的说明模板与 fleet-ops 技能打成一个包，
 # 传到中控机由 install.sh 安装并重启。
 # 编译主机：默认家里实验室的 fleet-dev（rustup，dist 来源 fleet-dev:/opt/fleet/dist）；FLEET_BUILD=docker FLEET_BUILD_HOST=<主机>
 # 在任意一台有 docker 的机器上编（dist 来源是那台的 FLEET_BUILD_DIST，没有就不带 dist，中控上现有的保持原样）。见 lab/build-lib.sh、docs/OPS.md §9。
@@ -38,15 +38,18 @@ else
   want=$(fb_ssh "cd $FB_DIST_DIR 2>/dev/null && sha256sum xray ssserver geoip.dat 2>/dev/null" || true)
   [ "$(printf '%s' "$want" | grep -c .)" = 3 ] || want=
 fi
+# sing-box（线路机入口的 AnyTLS 外壳，lab/fetch-dist.sh 下载）可选：dist 来源里有才比对、带上；没有时线路机上架、升级只记警告
+[ -z "$want" ] || want="$want
+$(fb_ssh "cd $FB_DIST_DIR 2>/dev/null && sha256sum sing-box 2>/dev/null" || true)"
 if [ -z "$want" ]; then
   DIST=
   echo "== dist 不随包：$FB_DESC 的 $FB_DIST_DIR 里没有齐 xray、ssserver、geoip.dat，中控上现有的保持原样"
 else
   if [ -n "$DRY" ]; then have=
-  else have=$(ssh "$HOST" 'cd /opt/fleet/dist 2>/dev/null && sha256sum xray ssserver geoip.dat 2>/dev/null' || true)
+  else have=$(ssh "$HOST" 'cd /opt/fleet/dist 2>/dev/null && sha256sum xray ssserver geoip.dat sing-box 2>/dev/null' || true)
   fi
   DIST=$(comm -13 <(sort <<<"$have") <(sort <<<"$want") | awk '{print $2}' | xargs)
-  echo "== dist 随包：${DIST:-无（xray、ssserver、geoip.dat 与生产相同）}${DRY:+（演练不连中控，按全部带上算）}"
+  echo "== dist 随包：${DIST:-无（xray、ssserver、geoip.dat、sing-box 与生产相同）}${DRY:+（演练不连中控，按全部带上算）}"
 fi
 
 STAGE=$(mktemp -d)
