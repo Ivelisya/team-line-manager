@@ -552,6 +552,8 @@ export type SlotState = 'active' | 'vacated' | 'ended';
 export interface BillingSlot {
   id: string; batch_seq: number; region: string; start_date: string; state: SlotState;
   holder: { id: string; name: string } | null; vacated_at: string | null; end_date: string | null; manual: boolean; note: string;
+  /** 空出待定 / 已结束的名额最后占用它的节点名（当时的快照） */
+  last_holder_name?: string | null;
 }
 /** 新加入、还没定是替换还是新增的节点：decide_at（= seen_at + 24 小时）前有名额空出就接过去，否则算新增 */
 export interface BillingPending { machine: { id: string; name: string }; seen_at: string; decide_at: string }
@@ -561,8 +563,10 @@ export interface BillingEvent { id: string; at: string; kind: BillingEventKind; 
 /** GET /teams/{id}/receivable?month=YYYY-MM：起点落在这个月的每一期一行；total = Σcount（节点月）；
  *  start_count 月初的计费节点数，end_count 月末（本月为今天）的；events 这个月的增减 */
 export interface Receivable {
-  month: string; total: number; start_count: number; end_count: number;
-  lines: { batch_seq: number; region: string; period_start: string; period_end: string; count: number }[];
+  month: string; total: number; start_count: number | null; end_count: number | null;
+  /** 有还没到起点的期（按现在的名额预估）时为 true；以后的月份月初 / 月末个数为 null */
+  projected?: boolean;
+  lines: { batch_seq: number; region: string; period_start: string; period_end: string; count: number; projected?: boolean }[];
   events: BillingEvent[];
 }
 /** 团队的客户页链接：link = {public_url}/c/{token}，管理端随时能再复制 */

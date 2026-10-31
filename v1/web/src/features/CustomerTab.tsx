@@ -27,7 +27,7 @@ const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const digits = (s: string) => s.replace(/\D/g, '');
 const md = (d: string) => d.slice(5, 10);
 /** 名额在列表里的名字：节点名；手动名额「手动 · 备注」；空出的「空出的名额」 */
-const slotName = (s: BillingSlot) => s.holder?.name ?? (s.manual ? `手动${s.note ? ` · ${s.note}` : ''}` : '空出的名额');
+const slotName = (s: BillingSlot) => s.holder?.name ?? (s.manual ? `手动${s.note ? ` · ${s.note}` : ''}` : s.last_holder_name ? `${s.last_holder_name}（已离开）` : '空出的名额');
 const monthLabel = (m: string) => `${m.slice(0, 4)}年${Number(m.slice(5, 7))}月`;
 const shiftMonth = (m: string, n: number) => F.addMonths(`${m}-01`, n).slice(0, 7);
 const PAIR_TIP = '节点离开（退役、换团队、进备用、设为不计费）后名额先空出 24 小时：这期间有节点加入就算替换，接过名额和起算日，计费不变；没有就算减少，算到离开那天。\n新加入的节点同样先待定 24 小时：有名额空出就算替换，否则算新增，从加入那天起算。';
@@ -333,12 +333,12 @@ function MonthPanel({ d, teamId, month, setMonth }: { d: TeamBatches; teamId: st
             <span>{month === d.today.slice(0, 7) ? '本月应收' : `${Number(month.slice(5))}月应收`} <b className="num">{r.total}</b> 个节点月</span>
             <InfoTip text={'起点落在这个月的每一期按个数计：1 个节点 1 期 = 1 个节点月\n还没到的月份按现在的节点数预估'} />
           </div>
-          {month <= d.today.slice(0, 7) && <div className="t-sub cxa-rcv-sub">月初 <span className="num">{r.start_count}</span> 个 · {month === d.today.slice(0, 7) ? '今天' : '月末'} <span className="num">{r.end_count}</span> 个</div>}
+          {month <= d.today.slice(0, 7) && r.start_count != null && <div className="t-sub cxa-rcv-sub">月初 <span className="num">{r.start_count}</span> 个 · {month === d.today.slice(0, 7) ? '今天' : '月末'} <span className="num">{r.end_count}</span> 个</div>}
           {r.lines.length > 0
             ? <ul className="cxa-lines">{r.lines.map((l) => (
               <li key={`${l.batch_seq}-${l.period_start}`}>
                 <span>第{F.pad2(l.batch_seq)}批 · {l.region}</span>
-                <span className="t-sub num">本期 {md(l.period_start)} → {md(l.period_end)}</span>
+                <span className="t-sub num">{l.projected ? '待续' : '本期'} {md(l.period_start)} → {md(l.period_end)}</span>
                 <span className="num cxa-lines-n">{l.count}个</span>
               </li>
             ))}</ul>
