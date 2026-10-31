@@ -24,6 +24,8 @@ export function installClientSubsMock(R: Reg, env: Env) {
     m.entries.filter((e) => e.lifecycle === 'active' && e.node.id === m.id).filter(() => picks(r, m, m.kind === 'relay')).map((e) => ({
       name: [m.country, m.kind === 'relay' ? `${m.provider?.name ?? ''} ${m.name} 直出`.trim() : `${m.provider?.name ?? ''} 家宽`.trim(), m.kind === 'relay' ? null : m.name, m.ip, 'VLESS Reality'].filter(Boolean).join(' · '),
       entry_id: e.id, relay: e.relay.name, port: e.port,
+      // 同服务端：线路机的 AnyTLS 在跑才有（入口端口 + 20000）
+      anytls_port: env.machines().find((x) => x.id === e.relay.id)?.agent?.anytls?.running ? e.port + 20000 : null,
     })));
   const names = (ids: string[]) => ids.map((id) => env.teams().find((t) => t.id === id)?.name ?? env.machines().find((m) => m.id === id)?.name ?? '（已删除）').join('、');
   const text = (r: SubRule) => [
@@ -34,12 +36,16 @@ export function installClientSubsMock(R: Reg, env: Env) {
   const find = (id: string) => { const s = subs.find((x) => x.id === id); if (!s) throw env.bad('没有这个订阅', 404, 'not_found'); return s; };
   const url = () => `${location.origin}/sub/${token()}`;
   R('GET', '/client-subs', () => subs.map(view));
-  R('GET', '/client-subs/([^/]+)', ({ params }) => { const s = find(params[0]); return { ...view(s), entries: entries(s.rule) }; });
+  R('GET', '/client-subs/([^/]+)', ({ params }) => {
+    const s = find(params[0]);
+    const es = entries(s.rule).map((e) => ({ ...e, anytls_port: s.protocols === 'reality' ? null : e.anytls_port }));
+    return { ...view(s), entries: s.protocols === 'anytls' ? es.filter((e) => e.anytls_port != null) : es };
+  });
   R('POST', '/client-subs', ({ body }) => {
     const name = String(body.name ?? '').trim();
     if (subs.some((s) => s.name === name)) throw env.bad('已经有同名的订阅', 409, 'conflict');
     const now = new Date().toISOString();
-    const s: ClientSub = { id: crypto.randomUUID(), name, enabled: true, rule: { team_mode: 'all', team_ids: [], direct: true, include_ids: [], exclude_ids: [], ...body.rule }, rule_text: '', items: 0, token_at: now, last_fetch_at: null, last_fetch_ip: null };
+    const s: ClientSub = { id: crypto.randomUUID(), name, enabled: true, rule: { team_mode: 'all', team_ids: [], direct: true, include_ids: [], exclude_ids: [], ...body.rule }, rule_text: '', items: 0, protocols: body.protocols ?? 'reality', token_at: now, last_fetch_at: null, last_fetch_ip: null };
     subs.push(s);
     return { ...view(s), url: url() };
   });
@@ -48,6 +54,7 @@ export function installClientSubsMock(R: Reg, env: Env) {
     if (body.name !== undefined) s.name = String(body.name).trim();
     if (body.rule) s.rule = body.rule;
     if (body.enabled !== undefined) s.enabled = body.enabled;
+    if (body.protocols !== undefined) s.protocols = body.protocols;
     return view(s);
   });
   R('POST', '/client-subs/([^/]+)/rotate', ({ params }) => {

@@ -9,7 +9,7 @@ import { fetchShare, useEntryAction, useEntryRouterExits } from '@/lib/queries';
 import { DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/overlays';
 import { IconButton, Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, DialogHeader } from '@/components/ui/dialog';
-import { InfoTip, Textarea } from '@/components/ui/form';
+import { Field, InfoTip, Textarea } from '@/components/ui/form';
 import { Note } from './primitives';
 import { toast } from '@/components/ui/toast';
 import { copyText } from '@/lib/clipboard';
@@ -34,7 +34,7 @@ function RouterExitsNote({ entryId, open, verb }: { entryId: string; open: boole
   );
 }
 
-type Dlg = { k: 'rotate' | 'disable' | 'share'; e: EntryView; url: string; open: boolean };
+type Dlg = { k: 'rotate' | 'disable' | 'share'; e: EntryView; url: string; at?: string | null; open: boolean };
 
 /** 容器级的入口菜单：children（须是 DOM 元素）里的 EntryMenuButton 被点时弹出共享下拉（useAnchoredDropdown，同 NodeMenus 的“⋯”）。
  *  entries：容器里的入口，菜单内容随推送更新 */
@@ -45,10 +45,10 @@ export function EntryMenus({ entries, children }: { entries: EntryView[]; childr
   const cur = dd.cur;
   // 对话框第一次打开后才挂载，关闭后保留（关闭动画不被截断）；dlg.e 是打开时的那条入口
   const [dlg, setDlg] = React.useState<Dlg | null>(null);
-  const show = (k: Dlg['k'], e: EntryView, url = '') => setDlg({ k, e, url, open: true });
+  const show = (k: Dlg['k'], e: EntryView, url = '', at: string | null = null) => setDlg({ k, e, url, at, open: true });
   const hide = (o: boolean) => { if (!o) setDlg((d) => d && { ...d, open: false }); };
   const share = async (e: EntryView) => {
-    try { const r = await fetchShare(e.id); show('share', e, r.url); } catch (err) { toast.err(err); }
+    try { const r = await fetchShare(e.id); show('share', e, r.url, r.anytls_url ?? null); } catch (err) { toast.err(err); }
   };
   const off = cur?.lifecycle === 'disabled';
   const canAct = cur?.lifecycle === 'active' || off;
@@ -89,10 +89,15 @@ export function EntryMenus({ entries, children }: { entries: EntryView[]; childr
       {dlg?.k === 'share' && <Dialog open={dlg.open} onOpenChange={hide}>
         <DialogContent size="md">
           <DialogHeader><DialogTitle>分享链接 · {entryLabel(dlg.e)}</DialogTitle><DialogDescription>只发给需要的人 <InfoTip text="链接等同于凭据；查看分享链接会记入审计。" /></DialogDescription></DialogHeader>
-          <Textarea readOnly value={dlg.url} rows={4} className="mono" onFocus={(ev) => ev.currentTarget.select()} />
+          {/* 线路机上 AnyTLS 可用时两条：Reality 与 AnyTLS（同一入口、同一份凭据），各自复制 */}
+          {dlg.at ? <>
+            <Field label="Reality"><Textarea readOnly value={dlg.url} rows={3} className="mono" onFocus={(ev) => ev.currentTarget.select()} /></Field>
+            <Field label="AnyTLS" info="证书是线路机自签的，链接里已带跳过校验"><Textarea readOnly value={dlg.at} rows={2} className="mono" onFocus={(ev) => ev.currentTarget.select()} /></Field>
+          </> : <Textarea readOnly value={dlg.url} rows={4} className="mono" onFocus={(ev) => ev.currentTarget.select()} />}
           <DialogFooter>
             <Button onClick={() => hide(false)}>关闭</Button>
-            <Button variant="primary" onClick={() => void copyText(dlg.url, '链接')}>复制链接</Button>
+            {dlg.at && <Button onClick={() => void copyText(dlg.at ?? '', 'AnyTLS 链接')}>复制 AnyTLS</Button>}
+            <Button variant="primary" onClick={() => void copyText(dlg.url, '链接')}>{dlg.at ? '复制 Reality' : '复制链接'}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>}

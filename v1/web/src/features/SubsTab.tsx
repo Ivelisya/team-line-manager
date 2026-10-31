@@ -2,7 +2,7 @@
 // 按规则（团队、指定机器）在拉取时现算在用的入口。列表（规则、条目数、最近拉取）、新建（链接只显示一次）、改规则、启用 / 停用、轮换链接、删除、看条目。
 import * as React from 'react';
 import { List, Pencil, Plus, RefreshCw, Rss, ShieldAlert, Trash2, X } from 'lucide-react';
-import { DEFAULT_RULE, useClientSub, useClientSubs, useCreateClientSub, useDelClientSub, usePatchClientSub, useRotateClientSub, type ClientSub, type ClientSubWithUrl, type SubRule } from '@/lib/clientSubs';
+import { DEFAULT_RULE, useClientSub, useClientSubs, useCreateClientSub, useDelClientSub, usePatchClientSub, useRotateClientSub, type ClientSub, type ClientSubWithUrl, type SubProtocols, type SubRule } from '@/lib/clientSubs';
 import { useMachineBriefs, useTeams } from '@/lib/queries';
 import * as F from '@/lib/format';
 import { useHeld } from '@/lib/useHeld';
@@ -17,6 +17,8 @@ import { ConfirmDialog, FormDialog } from '@/components/app/dialogs';
 import { Chip, CopyButton, Empty, ErrorNote, Note, Panel, TableWrap } from '@/components/app/primitives';
 
 const INTRO = '给自己的客户端用：Clash Verge、OpenClash 填链接，v2rayN、Shadowrocket 在链接后加 ?format=base64\n每次拉取按规则现算在用的入口，换节点、换线路机、轮换凭据后客户端更新订阅就是新的';
+const PROTOS: { value: SubProtocols; label: string }[] = [{ value: 'reality', label: 'Reality' }, { value: 'both', label: 'Reality + AnyTLS' }, { value: 'anytls', label: '只 AnyTLS' }];
+const protoLabel = (p: SubProtocols | undefined) => PROTOS.find((x) => x.value === p)?.label ?? 'Reality';
 const MODES = [{ value: 'all', label: '全部团队（不含备用团队）' }, { value: 'except', label: '全部团队，除了…' }, { value: 'only', label: '只要这些团队' }];
 
 export function SubsTab() {
@@ -40,13 +42,14 @@ export function SubsTab() {
         ) : (
           <TableWrap>
             <table className="dt" style={{ minWidth: 820 }}>
-              <colgroup><col /><col style={{ width: 90 }} /><col style={{ width: 150 }} /><col style={{ width: 64 }} /><col style={{ width: 150 }} /></colgroup>
-              <thead><tr><th>名称</th><th className="r">条目</th><th>最近拉取</th><th>启用</th><th /></tr></thead>
+              <colgroup><col /><col style={{ width: 130 }} /><col style={{ width: 90 }} /><col style={{ width: 150 }} /><col style={{ width: 64 }} /><col style={{ width: 150 }} /></colgroup>
+              <thead><tr><th>名称</th><th>协议</th><th className="r">入口</th><th>最近拉取</th><th>启用</th><th /></tr></thead>
               <tbody>
                 {list.map((s) => (
                   <tr key={s.id} className={s.enabled ? undefined : 'is-retired'}>
                     <td><Trunc className="cell-main strong">{s.name}</Trunc><Trunc className="sub" text={s.rule_text}>{s.rule_text}</Trunc></td>
-                    <td className="r num">{s.items} 条</td>
+                    <td>{protoLabel(s.protocols)}</td>
+                    <td className="r num">{s.items} 个</td>
                     <td>{s.last_fetch_at ? <><span data-tip={F.dt(s.last_fetch_at)}>{F.ago(s.last_fetch_at)}</span><span className="sub mono">{s.last_fetch_ip ?? ''}</span></> : <span className="t-sub">还没拉过</span>}</td>
                     <td><Switch checked={s.enabled} disabled={patch.isPending && patch.variables?.id === s.id} aria-label={`${s.enabled ? '停用' : '启用'}「${s.name}」`}
                       onCheckedChange={(v) => patch.mutate({ id: s.id, enabled: v }, { onSuccess: () => toast.ok(v ? '订阅已启用' : '订阅已停用，拉取会失败'), onError: toast.err })} /></td>
@@ -101,6 +104,7 @@ function EntriesDialog({ sub, onClose }: { sub: ClientSub | null; onClose: () =>
   const held = useHeld(sub?.id, sub);
   const q = useClientSub(sub?.id ?? null);
   const es = q.data?.entries ?? [];
+  const at = !!q.data && q.data.protocols !== 'reality';
   return (
     <Dialog open={!!sub} onOpenChange={(o) => !o && onClose()}>
       <DialogContent size="lg">
@@ -108,8 +112,9 @@ function EntriesDialog({ sub, onClose }: { sub: ClientSub | null; onClose: () =>
         {q.isError ? <ErrorNote error={q.error} onRetry={() => void q.refetch()} /> : q.isLoading ? <SkeletonRows rows={3} /> : !es.length ? <Empty text="现在没有条目" /> : (
           <TableWrap>
             <table className="dt is-one">
-              <thead><tr><th>客户端里的名字</th><th>线路机:端口</th></tr></thead>
-              <tbody>{es.map((e) => <tr key={e.entry_id}><td><Trunc className="cell-main">{e.name}</Trunc></td><td className="num">{e.relay}:{e.port}</td></tr>)}</tbody>
+              <thead><tr><th>客户端里的名字</th><th>线路机:端口</th>{at && <th>AnyTLS 端口</th>}</tr></thead>
+              <tbody>{es.map((e) => <tr key={e.entry_id}><td><Trunc className="cell-main">{e.name}</Trunc></td><td className="num">{e.relay}:{e.port}</td>
+                {at && <td className="num">{e.anytls_port ?? <span className="t-sub" data-tip="线路机的 AnyTLS 没在跑">—</span>}</td>}</tr>)}</tbody>
             </table>
           </TableWrap>
         )}
@@ -141,22 +146,24 @@ function SubDialog({ target, open, onClose, onCreated }: { target: ClientSub | '
   const teams = useTeams().data ?? []; const machines = useMachineBriefs().data ?? [];
   const cur = target === 'new' ? null : target;
   const [name, setName] = React.useState(''); const [rule, setRule] = React.useState<SubRule>(DEFAULT_RULE);
-  React.useEffect(() => { if (open) { setName(cur?.name ?? ''); setRule(cur?.rule ?? DEFAULT_RULE); } }, [open, cur]);
+  const [protocols, setProtocols] = React.useState<SubProtocols>('reality');
+  React.useEffect(() => { if (open) { setName(cur?.name ?? ''); setRule(cur?.rule ?? DEFAULT_RULE); setProtocols(cur?.protocols ?? 'reality'); } }, [open, cur]);
   const set = (p: Partial<SubRule>) => setRule((r) => ({ ...r, ...p }));
   const mOpts = React.useMemo(() => machines.map((m) => ({ value: m.id, label: m.kind === 'relay' ? `${m.name}（直出）` : m.name })), [machines]);
   const setInc = React.useCallback((ids: string[]) => setRule((r) => ({ ...r, include_ids: ids })), []);
   const setExc = React.useCallback((ids: string[]) => setRule((r) => ({ ...r, exclude_ids: ids })), []);
   const valid = !!name.trim() && (rule.team_mode !== 'only' || rule.team_ids.length > 0);
-  const dirty = cur ? name !== cur.name || JSON.stringify(rule) !== JSON.stringify(cur.rule) : !!name.trim();
-  const body = { name: name.trim(), rule: rule.team_mode === 'all' ? { ...rule, team_ids: [] } : rule };
+  const dirty = cur ? name !== cur.name || JSON.stringify(rule) !== JSON.stringify(cur.rule) || protocols !== cur.protocols : !!name.trim();
+  const body = { name: name.trim(), rule: rule.team_mode === 'all' ? { ...rule, team_ids: [] } : rule, protocols };
   const submit = () => {
-    if (cur) patch.mutate({ id: cur.id, ...body }, { onSuccess: (s) => { toast.ok(`已保存，现在 ${s.items} 条`); onClose(); }, onError: toast.err });
+    if (cur) patch.mutate({ id: cur.id, ...body }, { onSuccess: (s) => { toast.ok(`已保存，现在 ${s.items} 个入口`); onClose(); }, onError: toast.err });
     else create.mutate(body, { onSuccess: (s) => { onClose(); onCreated(s); }, onError: toast.err });
   };
   return (
     <FormDialog size="md" open={open} onOpenChange={(o) => !o && onClose()} title={cur ? `编辑订阅 · ${cur.name}` : '新建客户端订阅'} desc={cur ? '改规则不换链接' : '创建后链接只显示一次'}
       submitLabel={cur ? '保存' : '创建'} busy={create.isPending || patch.isPending} valid={valid} dirty={dirty} onSubmit={submit}>
       <Field label="名称"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：家里 OpenClash" maxLength={40} autoFocus autoComplete="off" /></Field>
+      <Field label="协议" info="AnyTLS 只出在 AnyTLS 在跑的线路机上的入口"><Select value={protocols} onChange={(v) => setProtocols(v as SubProtocols)} options={PROTOS} /></Field>
       <Field label="团队"><Select value={rule.team_mode} onChange={(v) => set({ team_mode: v as SubRule['team_mode'] })} options={MODES} /></Field>
       {rule.team_mode !== 'all' && (
         <div className="scope-list">

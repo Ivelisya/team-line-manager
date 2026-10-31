@@ -53,6 +53,9 @@ export interface EntryView {
 }
 export interface HealthReason { key: string; severity: 'info' | 'warning' | 'critical' | string; text: string }
 /** agent 自报的健康数据（只列界面用到的字段，完整见 docs/API.md） */
+/** 线路机的 AnyTLS 外壳（sing-box）：installed = 有 sing-box 程序；running = fleet-singbox 在跑；last_error = 最近一次应用配置的错误 */
+export interface AnytlsStatus { installed: boolean; running: boolean; version?: string | null; last_error?: string | null }
+
 export interface AgentHealth {
   queue_len: number; queue_dropped: number; queue_dead: number;
   access_unparsed: number; access_dropped_lines: number; access_rotation_gaps: number; access_truncations: number; last_apply_error?: string | null;
@@ -98,8 +101,9 @@ export interface MachineView {
   subscription: Subscription | null;
   sub_template: SubTemplate;
   /** cores：agent 报的可用核数（容器里是限额），没报过为 null；
-   *  health：agent 自报的健康数据（自 agent 进程启动起累计；旧 agent 没报过为 null），不随实时推送更新 */
-  agent: { version: string | null; last_report_at: string | null; online: boolean; xray_running: boolean | null; cores: number | null; health: AgentHealth | null; nic_ifaces?: string[] } | null;
+   *  health：agent 自报的健康数据（自 agent 进程启动起累计；旧 agent 没报过为 null），不随实时推送更新；
+   *  anytls：线路机的 AnyTLS（sing-box）状态，旧 agent、节点为 null，不随实时推送更新 */
+  agent: { version: string | null; last_report_at: string | null; online: boolean; xray_running: boolean | null; cores: number | null; health: AgentHealth | null; nic_ifaces?: string[]; anytls?: AnytlsStatus | null } | null;
   host: HostMetrics | null;
   entries: EntryView[];
   removed_traffic: EntryTraffic; // 已移除入口（如换线路机后的旧入口）今天/本月的流量，不在 entries 里

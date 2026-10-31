@@ -12,6 +12,7 @@ import { Gone, isGone } from '@/components/app/Gone';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import type { Incident, MachineView } from '@/lib/types';
+import { AnytlsState } from '@/components/app/AnytlsState';
 import { useMachine, useAudit, useMachineIncidents } from '@/lib/queries';
 import { AuditList } from '@/components/app/AuditList';
 import { DRAWER_TABS, drawerSiblings, useDrawer, type DrawerTab } from '@/lib/drawer';
@@ -247,6 +248,7 @@ function OverviewTab({ m }: { m: MachineView }) {
             <LabelValue label="配置">{m.relay.generation === m.relay.applied_generation ? '已应用'
               : <span style={{ color: 'var(--warn-text)' }}>配置未应用（配置版本 {m.relay.generation}，已生效 {m.relay.applied_generation}）</span>}</LabelValue>
             <LabelValue label="上次应用">{F.dtFull(m.relay.applied_at)}</LabelValue>
+            <LabelValue label="AnyTLS"><AnytlsState a={m.agent?.anytls} /></LabelValue>
           </LabelValueGrid>
           {m.relay.apply_error && <div style={{ marginTop: 8 }}><Note tone="bad">{errText(m.relay.apply_error)}</Note></div>}
         </Section>
