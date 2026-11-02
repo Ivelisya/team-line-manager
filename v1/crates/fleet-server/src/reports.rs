@@ -7,8 +7,8 @@
 //! 只列在用的节点（不含线路机：线路机上的探测是它到各节点的，不代表线路机自己；不含闲置备用：备用团队里没有软路由出口指着、没有在用同机 IP 节点的，
 //! 客户不走它们；被出口指着、同机 IP 节点在用的备用机照常在客户路径上，算进来）。
 //!
-//! 断线：小时汇总里某个整点小时出口探测失败 `OUTAGE_MIN_FAILS` 次以上就算断线的一小时，连着的小时合成一次；最长一次按小时算（原始探测只留几天，
-//! 月度窗口只能用小时汇总）。告警次数是窗口内（组织时区的自然日起止）这台机器上可用性相关规则（`AVAILABILITY_RULES`）开出的告警条数，
+//! 断线：小时汇总里某个整点小时出口探测失败 `OUTAGE_MIN_FAILS` 次以上就算断线的一小时，连着的小时合成一次；最长一次按失败次数估算分钟数（`fails × entries::PROBE_INTERVAL_S`：
+//! 出口不通期间 agent 按 TCP 周期重探；原始探测只留几天，月度窗口只能用小时汇总，估算与实际差一两次探测）。多个入口的节点同一小时取失败最多的入口，不把各入口加起来。告警次数是窗口内（组织时区的自然日起止）这台机器上可用性相关规则（`AVAILABILITY_RULES`）开出的告警条数，
 //! 30 分钟内复发合并进原告警的也算（`reopen_count`，同告警页的次数）。警告级的 tcp_fail（TCP 偶发失败、出口正常，health::probe_reasons）不算：
 //! 只数严重的：按告警 detail 里的 `critical_count`（incident::reconcile 在开为严重、警告升到严重、重开为严重时各 +1）求和，复发重开时 severity 会被改成本次的、不能看它；
 //! 旧告警的这个数由迁移 0099 回填，见 `incident::CRIT_COUNT_SQL`。
@@ -140,8 +140,8 @@ struct Item {
     tcp_pct: Option<f64>,
     /// 断线次数：出口探测失败 `OUTAGE_MIN_FAILS` 次以上的整点小时，连着的合成一次
     outages: i64,
-    /// 最长一次断线的小时数（没有断线为 0）
-    longest_outage_h: i64,
+    /// 最长一次断线的估算分钟数（没有断线为 0）
+    longest_outage_min: i64,
     /// 窗口内这台机器上可用性相关规则开出的告警次数（含 30 分钟内复发合并的）
     incidents: i64,
 }
@@ -206,20 +206,23 @@ pub async fn uptime(st: &AppState, w: &Window) -> ApiResult<Value> {
     let idle: HashSet<Uuid> = views::live(st).await?.iter().filter(|m| m.idle_spare).map(|m| m.id).collect();
     rows.retain(|r| !idle.contains(&r.id));
     let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
-    // 断线：出口失败 OUTAGE_MIN_FAILS 次以上的整点小时，连续的小时合成一段（小时序号减去段内序号是常数）
+    // 断线：出口失败 OUTAGE_MIN_FAILS 次以上的整点小时，连续的小时合成一段（小时序号减去段内序号是常数）；一段的时长 = 失败次数 × 探测间隔。
+    // 出口失败期间 agent 每 PROBE_INTERVAL_S 秒重探一次（正常时是 2 倍间隔），所以一次失败约等于这么多秒的不通。
+    // 失败次数先按 (节点, 入口, 小时) 算（total - ok），再对 (节点, 小时) 取各入口的最大值：入口都走同一台节点，节点不通时每个入口各记一份失败，加起来会翻倍
     let islands: Vec<(Uuid, i64)> = sqlx::query_as(
         "with hrs as (
-           select m.id, h.hour, sum(h.total) total, sum(h.ok) ok
+           select m.id, h.hour, max(h.total - h.ok) fails
            from machine m join entry e on e.node_id = m.id join probe_hourly h on h.entry_id = e.id
            where m.id = any($1) and h.kind = 'egress' and h.hour >= $2 and h.hour < $3 group by m.id, h.hour),
          bad as (
-           select id, (extract(epoch from hour) / 3600)::bigint - row_number() over (partition by id order by hour) grp from hrs where total - ok >= $4)
-         select id, count(*)::bigint from bad group by id, grp",
+           select id, fails, (extract(epoch from hour) / 3600)::bigint - row_number() over (partition by id order by hour) grp from hrs where fails >= $4)
+         select id, round(sum(fails)::float8 * $5 / 60.0)::bigint from bad group by id, grp",
     )
     .bind(&ids)
     .bind(from)
     .bind(to)
     .bind(OUTAGE_MIN_FAILS)
+    .bind(f64::from(crate::entries::PROBE_INTERVAL_S))
     .fetch_all(&st.db)
     .await?;
     let mut outage: HashMap<Uuid, (i64, i64)> = HashMap::new();
@@ -247,12 +250,12 @@ pub async fn uptime(st: &AppState, w: &Window) -> ApiResult<Value> {
     let mut items: Vec<Item> = rows
         .into_iter()
         .map(|r| {
-            let (outages, longest_outage_h) = outage.get(&r.id).copied().unwrap_or_default();
+            let (outages, longest_outage_min) = outage.get(&r.id).copied().unwrap_or_default();
             Item {
                 tcp_pct: pct(r.tcp_ok, r.tcp_total),
                 egress_pct: pct(r.egress_ok, r.egress_total),
                 outages,
-                longest_outage_h,
+                longest_outage_min,
                 incidents: incidents.get(&r.id).copied().unwrap_or(0),
                 team: r.team_id.map(|id| Ref { id, name: r.team_name.unwrap_or_default() }),
                 provider: r.provider_id.map(|id| Ref { id, name: r.provider_name.unwrap_or_default() }),
@@ -319,6 +322,14 @@ fn fmt_bytes(b: i64) -> String {
     }
 }
 
+/// 断线时长（估算的分钟数）：不满 60 分钟「约 N 分钟」，再长「约 N 小时」（最多一位小数，同 fleetctl、网页）
+fn outage_text(min: i64) -> String {
+    if min < 60 {
+        return format!("约 {} 分钟", min.max(1));
+    }
+    format!("约 {} 小时", (min as f64 / 6.0).round() / 10.0)
+}
+
 fn pct_text(p: Option<f64>) -> String {
     match p {
         None => "-".into(),
@@ -382,7 +393,7 @@ pub async fn monthly(st: &AppState, month: Option<&str>) -> ApiResult<Value> {
         .flatten()
         .filter(|i| i["egress_pct"].is_f64())
         .take(3)
-        .map(|i| json!({"id": i["id"], "name": i["name"], "egress_pct": i["egress_pct"], "tcp_pct": i["tcp_pct"], "outages": i["outages"], "longest_outage_h": i["longest_outage_h"]}))
+        .map(|i| json!({"id": i["id"], "name": i["name"], "egress_pct": i["egress_pct"], "tcp_pct": i["tcp_pct"], "outages": i["outages"], "longest_outage_min": i["longest_outage_min"]}))
         .collect();
 
     // 次数口径同可用率里的告警次数：tcp_fail 只数严重的（警告级是 TCP 偶发失败、出口正常），其余规则 1 + 复发次数
@@ -452,7 +463,7 @@ fn text_of(r: &Value) -> String {
             .into_iter()
             .flatten()
             .map(|w| {
-                let out = if i(&w["outages"]) > 0 { format!("，断线 {} 次、最长 {} 小时", i(&w["outages"]), i(&w["longest_outage_h"])) } else { String::new() };
+                let out = if i(&w["outages"]) > 0 { format!("，断线 {} 次、最长{}", i(&w["outages"]), outage_text(i(&w["longest_outage_min"]))) } else { String::new() };
                 format!("{} {}（TCP {}）{out}", w["name"].as_str().unwrap_or(""), pct_text(w["egress_pct"].as_f64()), pct_text(w["tcp_pct"].as_f64()))
             })
             .collect(),
@@ -536,4 +547,19 @@ pub async fn send_once(st: &AppState, month: &str) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::outage_text;
+
+    #[test]
+    fn outage_text_minutes_then_hours() {
+        assert_eq!(outage_text(0), "约 1 分钟");
+        assert_eq!(outage_text(6), "约 6 分钟");
+        assert_eq!(outage_text(59), "约 59 分钟");
+        assert_eq!(outage_text(60), "约 1 小时");
+        assert_eq!(outage_text(90), "约 1.5 小时");
+        assert_eq!(outage_text(600), "约 10 小时");
+    }
 }

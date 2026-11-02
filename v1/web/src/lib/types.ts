@@ -500,12 +500,12 @@ export interface TrafficDaily { tz: string; dates: string[]; total: DailyBiz[]; 
 
 // ---- 报表：月度可用率（GET /reports/uptime）、月报（GET /reports/monthly、POST /reports/monthly/send）与按需测速 ----
 /** 一个在用节点（不含线路机、备用团队）在窗口内的可用率：成功率 = 小时汇总里成功次数 ÷ 探测次数（同抽屉「连接质量」），窗口内没有探测为 null；
- *  出口成功率是主指标（客户流量走的路径），TCP 是次要的参考；断线次数：出口探测失败 3 次以上的整点小时，连着的合成一次；
+ *  出口成功率是主指标（客户流量走的路径），TCP 是次要的参考；断线次数：出口探测失败 3 次以上的整点小时，连着的合成一次，longest_outage_min 是最长一次按失败次数估算的分钟数；
  *  incidents 是窗口内可用性相关规则（出口 / TCP 不通、agent 离线、没有入口）开出的告警次数，含 30 分钟内复发合并的 */
 export interface UptimeItem {
   id: string; name: string; team: { id: string; name: string } | null; provider: { id: string; name: string } | null;
   egress_total: number; egress_ok: number; egress_pct: number | null; tcp_total: number; tcp_ok: number; tcp_pct: number | null;
-  outages: number; longest_outage_h: number; incidents: number;
+  outages: number; longest_outage_min: number; incidents: number;
 }
 /** 按供应商汇总（id 为 null = 未填供应商）：with_data = 窗口内有出口探测的节点数，平均 / 最差的出口只看它们；worst = 出口最差的那台 */
 export interface UptimeProvider {
@@ -521,7 +521,7 @@ export interface MonthlyReport {
   monthly_usd: { cents: number; unconverted?: { currency: string; cents: number }[] };
   machines: number;
   costly: { id: string; name: string; monthly_usd_cents: number; gb: number; usd_per_gb: number }[];
-  worst_uptime: { id: string; name: string; egress_pct: number; tcp_pct: number | null; outages: number; longest_outage_h: number }[];
+  worst_uptime: { id: string; name: string; egress_pct: number; tcp_pct: number | null; outages: number; longest_outage_min: number }[];
   top_rules: { rule: string; name: string; count: number }[];
   due_soon: number; overdue: number;
   /** 通知里发出的整段文字 */

@@ -13,6 +13,10 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use uuid::Uuid;
 
+/// 线路机 agent 的探测间隔（秒，期望状态的 `relay.probe_interval_s`，目前不可配）：TCP 探测的周期；出口探测正常时是它的 2 倍，失败期间同它
+/// （fleet-agent collect.rs probe_task）。可用率页的断线时长按它估算（reports.rs）
+pub const PROBE_INTERVAL_S: u32 = 30;
+
 /// 策略锁的共享锁：发布在锁内读在用节点，建入口的事务拿着它就不会被漏掉。
 /// 必须在事务开头、任何行锁之前拿（和发布的加锁顺序一致，否则会和发布互相等）。
 pub async fn lock_policy_shared(tx: &mut Tx<'_>) -> ApiResult<()> {
@@ -205,7 +209,7 @@ pub async fn desired_state(db: &PgPool, secrets: &SecretBox, relay_id: Uuid, ech
             reality_private_key: secrets.open_str(&sk_enc)?,
             min_client_ver: mcv,
             echo_url: echo_url.to_string(),
-            probe_interval_s: 30,
+            probe_interval_s: PROBE_INTERVAL_S,
             // 只留 AnyTLS：Reality 入站改听回环（中控改协议时已核对过 agent 认这个字段，见 api::relays::patch）
             reality_public: protocols != ANYTLS,
         },
