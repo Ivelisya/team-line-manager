@@ -8,7 +8,7 @@ import { ApiError } from '@/lib/api';
 import { usePublicCustomer } from '@/lib/publicCustomer';
 import type { PublicCustomer } from '@/lib/types';
 import { Button } from '@/components/ui/button';
-import { TipHost } from '@/components/ui/overlays';
+import { TipHost } from '@/components/ui/tip';
 import { Empty } from '@/components/app/empty';
 import { BatchTimeline, TimelineLegend, mmdd, type TimelineItem } from '@/features/BatchTimeline';
 
