@@ -1,7 +1,7 @@
 #!/bin/bash
 # 生产中控部署 / 升级。在编译主机上按当前提交编译 fleet-server（glibc）、fleet-agent 与 fleetctl（后两个 musl 静态），连同 dist 来源里
 # 验证过的 xray、ssserver、geoip.dat、sing-box（只带与生产不同的；sing-box 可选）、本机构建的前端、给中控上 agent 的说明模板与 fleet-ops 技能打成一个包，
-# 传到中控机由 install.sh 安装并重启。
+# 传到中控机由 install.sh 安装（二进制或单元变了才重启）。
 # 编译主机：默认家里实验室的 fleet-dev（rustup，dist 来源 fleet-dev:/opt/fleet/dist）；FLEET_BUILD=docker FLEET_BUILD_HOST=<主机>
 # 在任意一台有 docker 的机器上编（dist 来源是那台的 FLEET_BUILD_DIST，没有就不带 dist，中控上现有的保持原样）。见 lab/build-lib.sh、docs/OPS.md §9。
 # 幂等，升级同样用它。编译失败或 install.sh 的健康检查不过，整个部署以非 0 退出；回滚见 docs/OPS.md §9。
