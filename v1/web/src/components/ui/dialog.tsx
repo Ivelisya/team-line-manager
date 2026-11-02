@@ -48,15 +48,41 @@ function skipInfoTip(e: Event) {
   const el = (e.currentTarget as HTMLElement).querySelector<HTMLElement>('input:not([disabled]), textarea:not([disabled]), select:not([disabled]), button:not([disabled]):not([tabindex="-1"]), [href], [tabindex]:not([tabindex="-1"]):not(.info-tip)');
   if (el) { e.preventDefault(); el.focus(); }
 }
+/** 打开时记下焦点在谁身上（Radix 的 Trigger 在全站都没用上：对话框、抽屉都是受控打开，triggerRef 为空，模态 Content 自己的还焦点又 preventDefault 掉了 FocusScope 的兜底），
+ *  关闭后把焦点还给它：调用方没 preventDefault；那个元素还在文档里；焦点此刻在 body 或刚关掉的面板里（已被别处接走的，如 MachineGrid 还给表格行、AnchoredDropdown 交给回调的，不抢）。
+ *  从菜单项打开的，记下的菜单项已卸载，什么都不做。onOpen 是调用方的打开处理（先记焦点再交给它） */
+type FocusHandler = (e: Event) => void;
+export function useRestoreFocus(panel: React.RefObject<HTMLElement | null>, onOpen?: FocusHandler, onClose?: FocusHandler) {
+  const back = React.useRef<HTMLElement | null>(null);
+  /** 记下当前焦点。命令面板的输入框带 autoFocus，挂载时焦点就已在面板里，Radix 不会触发 onOpenAutoFocus，得自己在打开那一刻调用 */
+  const remember = () => {
+    const a = document.activeElement as HTMLElement | null;
+    back.current = a && a !== document.body && !panel.current?.contains(a) ? a : null;
+  };
+  return {
+    remember,
+    onOpenAutoFocus: (e: Event) => { remember(); onOpen?.(e); },
+    onCloseAutoFocus: (e: Event) => {
+      onClose?.(e);
+      if (e.defaultPrevented) return;
+      e.preventDefault();
+      const el = back.current; back.current = null;
+      const a = document.activeElement;
+      if (el?.isConnected && (!a || a === document.body || panel.current?.contains(a))) el.focus({ preventScroll: true });
+    },
+  };
+}
+
 export const DialogContent = React.forwardRef<React.ElementRef<typeof DialogPrimitive.Content>, React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> & { size?: 'sm' | 'md' | 'lg' }>(
-  ({ className, size = 'sm', children, onPointerDownOutside, onInteractOutside, onOpenAutoFocus, ...p }, ref) => {
+  ({ className, size = 'sm', children, onPointerDownOutside, onInteractOutside, onOpenAutoFocus, onCloseAutoFocus, ...p }, ref) => {
     const panel = React.useRef<HTMLDivElement>(null);
     React.useImperativeHandle(ref, () => panel.current!, []);
+    const focus = useRestoreFocus(panel, onOpenAutoFocus ?? skipInfoTip, onCloseAutoFocus);
     return (
       <DialogPrimitive.Portal>
         <Scrim className="overlay" />
         <DialogPrimitive.Content ref={panel} className={cn('dialog', size === 'md' && 'dialog-md', size === 'lg' && 'dialog-lg', className)}
-          onPointerDownOutside={keepOnToast(onPointerDownOutside)} onInteractOutside={bounceWhenKept(onInteractOutside, panel)} onOpenAutoFocus={onOpenAutoFocus ?? skipInfoTip} {...p}>
+          onPointerDownOutside={keepOnToast(onPointerDownOutside)} onInteractOutside={bounceWhenKept(onInteractOutside, panel)} {...p} onOpenAutoFocus={focus.onOpenAutoFocus} onCloseAutoFocus={focus.onCloseAutoFocus}>
           {children}
           {/* 手机上对话框是底部面板，右上角补关闭键；宽屏 display: none（components.css .dialog-x） */}
           <DialogPrimitive.Close asChild><IconButton label="关闭" className="dialog-x"><X size={16} /></IconButton></DialogPrimitive.Close>
@@ -97,10 +123,11 @@ const keepOnRightClick = (cb: OutsideHandler): OutsideHandler => (e) => {
   cb?.(e);
 };
 export const SheetContent = React.forwardRef<React.ElementRef<typeof DialogPrimitive.Content>, React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> & { hideClose?: boolean }>(
-  ({ className, children, hideClose, onPointerDownOutside, ...p }, ref) => {
+  ({ className, children, hideClose, onPointerDownOutside, onOpenAutoFocus, onCloseAutoFocus, ...p }, ref) => {
     const open = React.useContext(SheetOpen);
     const panel = React.useRef<HTMLDivElement>(null);
     React.useImperativeHandle(ref, () => panel.current!, []);
+    const focus = useRestoreFocus(panel, onOpenAutoFocus ?? ((e) => { e.preventDefault(); panel.current?.focus({ preventScroll: true }); }), onCloseAutoFocus);
     React.useLayoutEffect(() => {
       if (!open) return;
       if (drawers++ === 0) document.documentElement.dataset.drawer = '';
@@ -110,8 +137,8 @@ export const SheetContent = React.forwardRef<React.ElementRef<typeof DialogPrimi
       <DialogPrimitive.Portal>
         {/* 退场动画靠 data-state，Portal 里的 Presence 等它播完再卸载 */}
         <div className="drawer-overlay" data-state={open ? 'open' : 'closed'} aria-hidden />
-        <DialogPrimitive.Content ref={panel} className={cn('drawer', className)} onOpenAutoFocus={(e) => { e.preventDefault(); panel.current?.focus({ preventScroll: true }); }}
-          onFocusOutside={(e) => e.preventDefault()} onPointerDownOutside={keepOnToast(keepOnRightClick(onPointerDownOutside))} {...p}>
+        <DialogPrimitive.Content ref={panel} className={cn('drawer', className)}
+          onFocusOutside={(e) => e.preventDefault()} onPointerDownOutside={keepOnToast(keepOnRightClick(onPointerDownOutside))} {...p} onOpenAutoFocus={focus.onOpenAutoFocus} onCloseAutoFocus={focus.onCloseAutoFocus}>
           {children}
           {!hideClose && (
             <DialogPrimitive.Close asChild>
