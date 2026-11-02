@@ -6,7 +6,7 @@ import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClie
 import { del, get, patch, post, put } from './api';
 import { collator, makeDefaultCompare } from './sort';
 import { nextDue, offlineNames, quotaTight, setMeta } from './derive';
-import type { BillingEvent, CustomerBatch, CustomerPage, Receivable, RelayProtocols, TeamBatches } from './types';
+import type { BillingEvent, BillingMonth, CustomerPage, RelayProtocols } from './types';
 import type { ApiKey, Availability, Incident, Job, JobSummary, Paged, JobLog, MachineView, Meta, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenamePreview, RenumberPreview, RetirePreview, RetireResult, DueList, RenewBatchResult, RecycleItem, RecycleDetail, ReplaceBody, ReplacePreview, MovePreview, MoveResult, EvacuateResult, RebalancePlan, PlacementView, ProbeBeats, SeriesResp, Silence, TrafficDaily, SilenceKind, SubField, Team, AuditEntry, NotifyChannel, NotifyLogEntry, UptimeReport, MonthlyReport, MonthlySendResult, SpeedtestStarted, AccountSession, TotpSetup, TotpStatus, MovesResult, EntryMode } from './types';
 
 export const useMe = () => useQuery({ queryKey: ['me'], queryFn: () => get<{ username: string }>('/auth/me'), retry: false, staleTime: 5 * 60_000 });
@@ -198,7 +198,7 @@ export function eventKeys(ev: StreamEvent): unknown[][] {
     // 软路由：增删改与每轮采集（最多一次）都发这一个，列表与各台详情一起重取（曲线另按时间轮询，见 lib/routers）
     case 'routers': return [['routers']];
     // 计费：对账有变化或计费写操作后推送（id = 团队）：该团队的批次 / 名额、增减记录、各月应收一起重取
-    case 'billing': return [['batches', ev.id], ['billing', 'events', ev.id], ['billing', 'receivable', ev.id]];
+    case 'billing': return [['billing', 'month', ev.id], ['billing', 'events', ev.id]];
     default: return [];
   }
 }
@@ -465,14 +465,15 @@ export const useRecycleBin = (o: { q: string; source: string; offset: number; li
 export const useRecycleDetail = (id: number | null) => useQuery({ queryKey: ['recycle-bin', 'one', id], enabled: id != null, staleTime: Infinity, queryFn: ({ signal }) => get<RecycleDetail>(`/recycle-bin/${id}`, signal) });
 
 // ---- 按节点数向团队收费（团队与套餐 → 计费台账）与客户页 /c/:token ----
-/** 一个团队的派生批次（含已到期的，按编号升序）、计费名额、待定节点与客户页链接 */
-export const useTeamBatches = (teamId: string) => useQuery({
-  queryKey: ['batches', teamId], enabled: !!teamId, queryFn: ({ signal }) => get<TeamBatches>(`/teams/${teamId}/batches`, signal),
-  // 换团队时先留着上一个团队的（调用方按 isPlaceholderData 调淡、不可操作），不整页塌成骨架
+/** 一个团队某月的清单（month = YYYY-MM，空 = 本月）：每个节点起点在这个月的那一期、已收 / 没收，另带客户页链接与待定节点。
+ *  换团队、翻月时先留着上一份（调用方按 isPlaceholderData 调淡、不可操作），不整页塌成骨架 */
+export const useBillingMonth = (teamId: string, month: string) => useQuery({
+  queryKey: ['billing', 'month', teamId, month], enabled: !!teamId,
+  queryFn: ({ signal }) => get<BillingMonth>(`/teams/${teamId}/billing/month${month ? `?month=${month}` : ''}`, signal),
   placeholderData: keepPreviousData,
 });
-/** 计费相关的写操作：批次、应收、增减记录都跟着变 */
-const B = [['batches'], ['billing'], ['audit']];
+/** 计费相关的写操作：清单、增减记录都跟着变 */
+const B = [['billing'], ['audit']];
 const EVENT_PAGE = 50;
 /** 增减记录（按时间倒序）：一页 EVENT_PAGE 条，满页就能再往前翻（before = 上一页最后一条的 id） */
 export const useBillingEvents = (teamId: string) => useInfiniteQuery({
@@ -482,17 +483,11 @@ export const useBillingEvents = (teamId: string) => useInfiniteQuery({
   // 换团队时先留着上一个团队的（调用方按 isPlaceholderData 调淡、不可操作），不塌成骨架
   placeholderData: keepPreviousData,
 });
-/** 月度应收：month = YYYY-MM。翻月、换团队时先留着上一份（调用方按 isPlaceholderData 调淡），不塌成骨架 */
-export const useReceivable = (teamId: string, month: string) => useQuery({
-  queryKey: ['billing', 'receivable', teamId, month], enabled: !!teamId && !!month,
-  queryFn: ({ signal }) => get<Receivable>(`/teams/${teamId}/receivable?month=${month}`, signal),
-  placeholderData: keepPreviousData,
-});
-/** 整批改起算日（一个事务，要么全改要么都不改）：key = Batch.key（起算日|地区）；返回新的批次 */
-export const usePatchBatch = () => useWrite(({ teamId, key, start_date }: { teamId: string; key: string; start_date: string }) => patch<CustomerBatch>(`/teams/${teamId}/batches/${encodeURIComponent(key)}`, { start_date }), B);
-/** 添加手动计费节点（系统外的节点，如家宽）：count 个同起算日、同地区的手动名额 */
+/** 标记已收 / 改回没收：这些节点起点在 month 这个月的那一期；返回该月清单 */
+export const useMarkPaid = () => useWrite(({ teamId, ...b }: { teamId: string; month: string; slot_ids: string[]; paid: boolean }) => post<BillingMonth>(`/teams/${teamId}/billing/paid`, b), B);
+/** 添加手动计费节点（系统外的节点，如家宽）：count 个同开始收费日、同地区的 */
 export const useAddBillingSlot = () => useWrite(({ teamId, ...b }: { teamId: string; region: string; start_date: string; count?: number; note: string }) => post(`/teams/${teamId}/billing-slots`, b), B);
-/** 改起算日 / 地区 / 备注；end_date 只给手动或空出的名额（结束），null = 恢复（只限手动） */
+/** 改开始收费日 / 地区 / 备注；end_date（停止收费日）只给手动添加的或等补位的，null = 恢复（只限手动） */
 export const usePatchBillingSlot = () => useWrite(({ id, ...b }: { id: string; start_date?: string; region?: string; note?: string; end_date?: string | null }) => patch(`/billing-slots/${id}`, b), B);
 /** 删除：只限手动名额（录错了删） */
 export const useDelBillingSlot = () => useWrite((id: string) => del(`/billing-slots/${id}`), B);

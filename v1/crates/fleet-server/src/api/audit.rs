@@ -139,7 +139,7 @@ pub async fn audit(a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<A
 }
 
 /// 所有写审计的动作（git grep 'audit(' 核对过）；新增动作时补这里和 audit_text。按标题搜索时在这里面找。
-/// machine.restore 是已删掉的「恢复已退役机器」留下的旧记录，标题照样显示
+/// machine.restore 是已删掉的「恢复已退役机器」、billing.batch_update 是已删掉的「整批改起算日」留下的旧记录，标题照样显示
 const AUDIT_ACTIONS: &[&str] = &[
     "machine.provision", "machine.retire", "machine.recycle", "recycle.import", "machine.purge", "machine.rename", "machine.update", "machine.restore", "machine.replace", "machine.tune", "machine.ss_refresh", "machine.speedtest", "report.send", "subscription.set", "renewal", "renewal.batch",
     "team.create", "team.update", "team.delete", "team.renumber", "provider.create", "provider.update", "provider.delete", "plan.create", "plan.update", "plan.delete", "entry.enable",
@@ -152,7 +152,7 @@ const AUDIT_ACTIONS: &[&str] = &[
     "router.switch_reverted", "router.switch_defer",
     "client_sub.create", "client_sub.update", "client_sub.rotate", "client_sub.delete",
     "customer_batch.create", "customer_batch.update", "customer_batch.delete", "customer_batch.renew", "customer_batch.period_update", "customer_batch.period_delete",
-    "billing.init", "billing.slot_add", "billing.slot_update", "billing.slot_delete", "billing.batch_update", "billing.exempt",
+    "billing.init", "billing.slot_add", "billing.slot_update", "billing.slot_delete", "billing.batch_update", "billing.exempt", "billing.paid", "billing.unpaid",
     "customer_page.create", "customer_page.rotate", "customer_page.enable", "customer_page.disable", "customer_page.delete",
     "probe_point.create", "probe_point.update", "probe_point.delete", "probe_point.upgrade", "probe_point.install", "probe_point.bootstrap_used",
     "settings.ping_targets", "relay.ping_override", "settings.reach_source", "settings.entry_mode",
@@ -272,6 +272,8 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "billing.slot_delete" => "删除手动计费节点",
         "billing.batch_update" => "修改计费批次的起算日",
         "billing.exempt" => "设置节点计费",
+        "billing.paid" => "标记已收",
+        "billing.unpaid" => "改回没收",
         "customer_page.create" => "生成客户页链接",
         "customer_page.rotate" => "换新客户页链接",
         "customer_page.enable" => "启用客户页",

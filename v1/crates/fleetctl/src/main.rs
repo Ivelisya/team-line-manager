@@ -209,12 +209,10 @@ enum SubCmd {
 
 #[derive(Subcommand)]
 enum BatchCmd {
-    /// 团队的计费批次（含已到期的）：编号、地区、起算 → 下次续费、当前个数、已计期数、节点月、状态，另附当前计费节点数、待定、下次续费与客户页链接状态。
-    /// --slots 再列计费名额（名额 id 前 8 位、节点、地区、起算、状态），--events 再列增减记录
+    /// 团队的计费节点（含已停止的）：名额 id 前 8 位、节点、地区、开始收费日、状态，另附收费中的个数、新加入待定的与客户页链接状态。
+    /// --events 再列增减记录。每个月收了没有看 fleetctl billing month
     List {
         team: String,
-        #[arg(long)]
-        slots: bool,
         #[arg(long)]
         events: bool,
     },
@@ -222,28 +220,29 @@ enum BatchCmd {
 
 #[derive(Subcommand)]
 enum LedgerCmd {
-    /// 一次性初始化：给还没有名额的团队，把现在每个计费节点建一个名额（起算日 = --since）；已有名额的团队跳过。不加 --yes 只预览。初始化之后中控才开始自动对账
+    /// 一次性开始记账：给还没有计费节点的团队，把现在每个节点建一个计费节点（开始收费日 = --since）；已有的团队跳过。不加 --yes 只预览。之后中控才开始自动对账
     Init {
         #[arg(long, value_name = "日期")]
         since: String,
         #[arg(long)]
         yes: bool,
     },
-    /// 月度应收：每批本月那一期一行、合计节点月、月初 / 月末个数、本月增减（月份默认本月，写 2026-11；以后的月份是预估）
+    /// 按月看收了没有：每个节点从开始收费日起每满一个月收一次（一期），列出起点在这个月的那一期——一句话（要收几个、已收几个、没收哪些）+ 每个节点一行
+    /// （节点、地区、这一期的区间、已收 / 没收）。月份默认本月，写 2026-11；以后的月份标「还没到」
     Month { team: String, month: Option<String> },
-    /// 看或改一个计费名额：--start 起算日、--region、--note，--end 结束（只限手动名额与已空出的）/ --reopen 恢复（只限手动名额）。名额写 id 前缀或节点名
+    /// 标记已收 / 改回没收（--unpaid）：节点写名字（可多个）或 --all（这个月所有没收的）；--month 默认本月。还没到的期也能先标（预付）。不加 --yes 只预览
+    Paid(batches::PaidOpts),
+    /// 看或改一个计费节点：--start 开始收费日、--region、--note，--end 停止收费（只限手动添加的与已离开等补位的）/ --reopen 恢复（只限手动添加的）。写名额 id 前缀或节点名
     Slot(batches::SlotOpts),
-    /// 整批改起算日：批次写编号（2）或 key（2026-10-01|美区，batch list 能看到编号）；该批全部名额一起改，新起算日要早于已结束名额的结束日
-    Batch { team: String, batch: String, #[arg(long, value_name = "日期")] start: String },
-    /// 添加手动计费节点（系统外的节点，如墨西哥家宽）：不会自动结束，用 slot --end 结束
+    /// 手动添加计费节点（系统外的节点，如墨西哥家宽）：不会自动停止，用 slot --end 停止
     Add(batches::AddOpts),
-    /// 删除手动计费节点（录错了）；系统节点的名额由对账自动结束
+    /// 删除手动添加的计费节点（录错了）；系统节点由对账自动停止收费
     Rm {
         slot: String,
         #[arg(long)]
         yes: bool,
     },
-    /// 节点设为不计费（--on）/ 恢复计费（--off）：对账当它离开 / 加入团队，照样走 24 小时替换配对
+    /// 节点设为不收费（--on）/ 恢复收费（--off）：对账当它离开 / 加入团队，照样走 24 小时补位配对
     Exempt {
         node: String,
         #[arg(long, conflicts_with = "off", required_unless_present = "off")]
@@ -416,7 +415,7 @@ enum Cmd {
         days: i64,
     },
     /// 费用：订阅（价格、到期、自动续费、提醒、账单时区、流量上限与本周期已用）与最近的续费记录。
-    /// 向团队收费的计费台账用子命令：init / month / slot / add / rm / exempt（批次表看 batch list）
+    /// 向团队收费的计费台账用子命令：init / month / paid / slot / add / rm / exempt（计费节点表看 batch list）
     #[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
     Billing {
         #[command(subcommand)]
@@ -632,12 +631,12 @@ enum Cmd {
         #[arg(long, value_name = "机器,…", conflicts_with = "entry")]
         machines: Option<String>,
     },
-    /// 计费批次（按节点数向团队收费，由中控自动对账：节点加入 / 离开自动增减，24 小时内一进一出算替换）：batch list <团队>；改名额、手动名额、月度应收用 fleetctl billing
+    /// 计费节点（按节点数向团队收费，由中控自动对账：节点加入 / 离开自动增减，24 小时内一进一出算替换）：batch list <团队>；按月收了没有、标记已收、改计费节点用 fleetctl billing
     Batch {
         #[command(subcommand)]
         cmd: BatchCmd,
     },
-    /// 客户到期页的只读分享链接（客户不登录，页面不出现 IP、供应商、价格、节点名）：不带参数显示链接与状态；--rotate 生成或换新链接（旧链接立即失效）、--disable / --enable、--delete
+    /// 客户页的只读分享链接（客户不登录；页面按月列每个节点的这一期已付 / 待付，不出现 IP、供应商、价格）：不带参数显示链接与状态；--rotate 生成或换新链接（旧链接立即失效）、--disable / --enable、--delete
     CustomerPage(batches::PageOpts),
     /// 客户端订阅：自己的客户端（Clash Verge、OpenClash、v2rayN）按一个链接拉入口，换节点、换线路机、轮换凭据后自动是新的（需要 secrets 权限）
     Sub {
@@ -1132,7 +1131,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Billing { cmd: Some(c), .. } => match c {
             LedgerCmd::Init { since, yes } => batches::init(x, &since, yes),
             LedgerCmd::Month { team, month } => batches::month(x, &team, month.as_deref()),
-            LedgerCmd::Batch { team, batch, start } => batches::batch(x, &team, &batch, &start),
+            LedgerCmd::Paid(o) => batches::paid(x, &o),
             LedgerCmd::Slot(o) => batches::slot(x, &o),
             LedgerCmd::Add(o) => batches::add(x, &o),
             LedgerCmd::Rm { slot, yes } => batches::rm(x, &slot, yes),
@@ -1194,7 +1193,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Entries { machine } => cmds::entries(x, machine.as_deref()),
         Cmd::Share { entry: Some(e), .. } => ops::share(x, &e),
         Cmd::Share { team, machines, .. } => ops::share_many(x, team.as_deref(), machines.as_deref()),
-        Cmd::Batch { cmd: BatchCmd::List { team, slots, events } } => batches::list(x, &team, slots, events),
+        Cmd::Batch { cmd: BatchCmd::List { team, events } } => batches::list(x, &team, events),
         Cmd::CustomerPage(o) => batches::page(x, &o),
         Cmd::Sub { cmd } => match cmd {
             SubCmd::Ls => subs::ls(x),

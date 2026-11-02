@@ -1,11 +1,11 @@
-//! 计费台账与客户到期页：初始化（预览、只建没有名额的团队）→ 改起算日 → 手动名额 → 批次 / 月度应收 → 客户页只出有效批次；
-//! 对账（传入「现在」）：替换、超时新增、标不计费后超时减少、机器被物理删除；增减记录与审计。
-//! 24 小时配对的各种边界在 ledger.rs 的单测里（纯函数），这里只验证读库写库这一层接得上。
+//! 计费台账与客户页：初始化（预览、只建没有名额的团队）→ 改开始收费日 → 手动名额 → 按月看每个节点起点在这个月的那一期（标记已收 / 改回没收、
+//! 提前标、没有这一期的报 400）→ 客户页（只有名字、地区、这一期的区间、已付 / 待付）；对账（传入「现在」）：替换（收费状态跟着名额）、超时新增、标不收费后超时减少、
+//! 机器被物理删除；增减记录与审计。24 小时配对的各种边界在 ledger.rs 的单测里（纯函数），这里只验证读库写库这一层接得上。
 
 use crate::common::{self, seed_node, T};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use fleet_server::batches::{fmt_date, today};
+use fleet_server::batches::{fmt_cn, fmt_date, fmt_month, today};
 use fleet_server::state::Event;
 use fleet_server::{ledger, meta};
 use http_body_util::BodyExt;
@@ -37,6 +37,11 @@ async fn texts(t: &T, team: Uuid) -> Vec<String> {
     v.as_array().unwrap().iter().map(|e| e["text"].as_str().unwrap().to_string()).collect()
 }
 
+/// 某月清单里的 (名字, 已收)，按接口给的顺序
+fn listed(v: &Value) -> Vec<(String, bool)> { v["nodes"].as_array().unwrap().iter().map(|n| (n["name"].as_str().unwrap().to_string(), n["paid"] == true)).collect() }
+
+fn named(names: &[(&str, bool)]) -> Vec<(String, bool)> { names.iter().map(|(n, p)| (n.to_string(), *p)).collect() }
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn billing_ledger_and_customer_page() {
     let t = common::boot(false, "trust_forwarded_for = true").await;
@@ -53,7 +58,7 @@ async fn billing_ledger_and_customer_page() {
     assert_eq!(ledger::reconcile(&t.st, now0).await.unwrap(), 0);
     assert_eq!(t.get(&base1).await["totals"]["pending"], 0);
 
-    // 起算日 = 上个月 1 号；预览不写
+    // 开始收费日 = 上个月 1 号；预览不写
     let s = today().replace_day(1).unwrap();
     let s = meta::add_months(s, -1).unwrap();
     let day = |n: i64| fmt_date(s + Duration::days(n));
@@ -66,9 +71,9 @@ async fn billing_ledger_and_customer_page() {
     let again = t.post("/api/v1/billing/init", json!({"since": day(0)})).await;
     assert_eq!((again["total"].as_i64(), again["teams"][0]["skipped"].as_bool()), (Some(0), Some(true)), "{again}");
     let v = t.get(&format!("/api/v1/teams/{team2}/batches")).await;
-    assert_eq!(v["batches"][0]["region"], "墨西哥", "{v}");
+    assert_eq!(v["slots"][0]["region"], "墨西哥", "{v}");
 
-    // 改团队1-03 的起算日；有节点占着的名额不能手动结束、不能删
+    // 团队1-03 月中开始收费（day 10）；有节点占着的名额不能手动停止、不能删
     let s3 = slot_of(&t.get(&base1).await, "团队1-03")["id"].as_str().unwrap().to_string();
     let r = t.req("PATCH", &format!("/api/v1/billing-slots/{s3}"), Some(json!({"start_date": day(10)})), None).await;
     assert_eq!((r.0, r.1["data"]["start_date"].as_str()), (StatusCode::OK, Some(day(10).as_str())), "{r:?}");
@@ -76,98 +81,153 @@ async fn billing_ledger_and_customer_page() {
     assert_eq!((st, v["error"]["message"].as_str()), (StatusCode::CONFLICT, Some("节点还在团队里；不收这个节点的钱请把节点设为不计费")));
     assert_eq!(t.req("DELETE", &format!("/api/v1/billing-slots/{s3}"), None, None).await.0, StatusCode::CONFLICT);
 
-    // 手动名额：一个有效的（墨西哥家宽），一个三个月前就结束了的（只管理端看得到）
+    // 手动名额：一个在收费的（墨西哥家宽），一个三个月前月中开始、10 天后就停了的（没写备注）
     let m = t.post(&format!("/api/v1/teams/{team1}/billing-slots"), json!({"region": "墨西哥", "start_date": day(14), "note": "墨西哥家宽"})).await;
-    assert_eq!((m[0]["manual"].as_bool(), m[0]["name"].as_str()), (Some(true), Some("手动 · 墨西哥家宽")), "{m}");
-    let old_start = meta::add_months(s, -3).unwrap();
+    assert_eq!((m[0]["manual"].as_bool(), m[0]["name"].as_str()), (Some(true), Some("墨西哥家宽")), "{m}");
+    let old_start = meta::add_months(s, -3).unwrap() + Duration::days(5);
     let old = t.post(&format!("/api/v1/teams/{team1}/billing-slots"), json!({"region": "菲律宾", "start_date": fmt_date(old_start)})).await;
-    let old_id = old[0]["id"].as_str().unwrap();
+    let old_id = old[0]["id"].as_str().unwrap().to_string();
     let r = t.req("PATCH", &format!("/api/v1/billing-slots/{old_id}"), Some(json!({"end_date": fmt_date(old_start + Duration::days(10))})), None).await;
     assert_eq!((r.0, r.1["data"]["state"].as_str()), (StatusCode::OK, Some("ended")), "{r:?}");
 
-    // 批次：按 (起算日, 地区) 编号，第01批（菲律宾）已到期
-    let v = t.get(&base1).await;
-    let got: Vec<(i64, String, i64, String)> =
-        v["batches"].as_array().unwrap().iter().map(|b| (b["seq"].as_i64().unwrap(), b["region"].as_str().unwrap().into(), b["count"].as_i64().unwrap(), b["state"].as_str().unwrap().into())).collect();
-    assert_eq!(got, [(1, "菲律宾".into(), 1, "expired".into()), (2, "美区".into(), 2, "active".into()), (3, "美区".into(), 1, "active".into()), (4, "墨西哥".into(), 1, "active".into())], "{v}");
-    assert_eq!(v["batches"][1]["key"], format!("{}|美区", day(0)));
-    assert_eq!((v["totals"]["active"].as_i64(), slot_of(&v, "团队1-03")["batch_seq"].as_i64()), (Some(4), Some(3)), "{v}");
+    // ── 按月 ──
+    let month = |m: i64| fmt_month(meta::add_months(s, m).unwrap());
+    let get_month = |m: String| {
+        let t = &t;
+        async move { t.get(&format!("/api/v1/teams/{team1}/billing/month?month={m}")).await }
+    };
+    // 上个月：月初的两个、月中开始的团队1-03、月中开始的家宽，各有一期从这个月开始（加入那个月就有一期）；默认都没收，按名字排；三个月前停掉的不在
+    let v = get_month(month(0)).await;
+    assert_eq!(listed(&v), named(&[("团队1-01", false), ("团队1-02", false), ("团队1-03", false), ("墨西哥家宽", false)]), "{v}");
+    assert_eq!((v["paid_count"].as_i64(), v["unpaid_count"].as_i64(), v["month"].as_str()), (Some(0), Some(4), Some(month(0).as_str())), "{v}");
+    // 每行是这个节点自己的一期：团队1-03 从 day 10 起满一个月
+    let n03 = v["nodes"].as_array().unwrap().iter().find(|n| n["name"] == "团队1-03").unwrap();
+    let pe03 = fmt_date(meta::add_months(s + Duration::days(10), 1).unwrap());
+    assert_eq!((n03["period_start"].as_str(), n03["period_end"].as_str(), n03["upcoming"].as_bool()), (Some(day(10).as_str()), Some(pe03.as_str()), Some(false)), "{v}");
+    // 可以翻看的月份：最早开始收费的那个月 → 下个月
+    let months: Vec<&str> = v["months"].as_array().unwrap().iter().map(|m| m.as_str().unwrap()).collect();
+    assert_eq!(months, [month(-3), month(-2), month(-1), month(0), month(1), month(2)], "{v}");
+    // 开始 10 天就停了的只有开始那个月的一期；之后的月份没有
+    assert_eq!(listed(&get_month(month(-3)).await), named(&[("手动添加的节点", false)]));
+    assert!(listed(&get_month(month(-2)).await).is_empty());
+    // 默认本月；月份写错 400
+    assert_eq!(t.get(&format!("/api/v1/teams/{team1}/billing/month")).await["month"], month(1));
+    assert_eq!(t.req("GET", &format!("/api/v1/teams/{team1}/billing/month?month=2026-13"), None, None).await.0, StatusCode::BAD_REQUEST);
 
-    // 月度应收（上个月）：每批起点落在这个月的期
-    let mon = &day(0)[..7];
-    let r = t.get(&format!("/api/v1/teams/{team1}/receivable?month={mon}")).await;
-    let lines: Vec<(i64, String, i64)> = r["lines"].as_array().unwrap().iter().map(|l| (l["batch_seq"].as_i64().unwrap(), l["period_start"].as_str().unwrap().into(), l["count"].as_i64().unwrap())).collect();
-    assert_eq!(lines, [(2, day(0), 2), (3, day(10), 1), (4, day(14), 1)], "{r}");
-    assert_eq!((r["total"].as_i64(), r["start_count"].as_i64(), r["end_count"].as_i64(), r["projected"].as_bool()), (Some(4), Some(2), Some(4), Some(false)), "{r}");
-    // 下下个月：整月预估，没有月初 / 月末个数
-    let fut = fmt_date(meta::add_months(s, 3).unwrap());
-    let r = t.get(&format!("/api/v1/teams/{team1}/receivable?month={}", &fut[..7])).await;
-    assert_eq!((r["total"].as_i64(), r["projected"].as_bool(), r["start_count"].is_null()), (Some(4), Some(true), true), "{r}");
+    // 标记已收：团队1-01、团队1-02 → 已收的排到后面；再标一次不重复记
+    let id_of = |v: &Value, name: &str| v["nodes"].as_array().unwrap().iter().find(|n| n["name"] == name).unwrap()["slot_id"].as_str().unwrap().to_string();
+    let (s1, s2) = (id_of(&v, "团队1-01"), id_of(&v, "团队1-02"));
+    let paid = |ids: Vec<&String>, m: String, on: bool| {
+        let t = &t;
+        let ids: Vec<String> = ids.into_iter().cloned().collect();
+        async move { t.req("POST", &format!("/api/v1/teams/{team1}/billing/paid"), Some(json!({"month": m, "slot_ids": ids, "paid": on})), None).await }
+    };
+    let mut ev = t.st.events.subscribe();
+    let (st, v) = paid(vec![&s1, &s2], month(0), true).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(listed(&v["data"]), named(&[("团队1-03", false), ("墨西哥家宽", false), ("团队1-01", true), ("团队1-02", true)]), "{v}");
+    assert_eq!((v["data"]["paid_count"].as_i64(), v["data"]["unpaid_count"].as_i64()), (Some(2), Some(2)));
+    assert!(v["data"]["nodes"][2]["paid_at"].is_string(), "{v}");
+    assert!(std::iter::from_fn(|| ev.try_recv().ok()).any(|e| matches!(e, Event::Billing { id } if id == team1)), "标记要发 billing 事件");
+    assert_eq!(paid(vec![&s1], month(0), true).await.0, StatusCode::OK);
+    // 改回没收
+    let (_, v) = paid(vec![&s2], month(0), false).await;
+    assert_eq!(listed(&v["data"])[..3], named(&[("团队1-02", false), ("团队1-03", false), ("墨西哥家宽", false)])[..], "{v}");
+    // 还没到的期也能先标（客户预付）
+    let (st, v) = paid(vec![&s1], month(2), true).await;
+    let row = v["data"]["nodes"].as_array().unwrap().iter().find(|n| n["slot_id"] == s1.as_str()).cloned().unwrap();
+    assert_eq!((st, row["paid"].as_bool(), row["upcoming"].as_bool()), (StatusCode::OK, Some(true), Some(true)), "{v}");
+    // 不该收的月份 / 不是这个团队的节点：400，什么都不改
+    let (st, v) = paid(vec![&old_id], month(0), true).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().contains("没有要收这些节点的钱"), "{v}");
+    let other = t.get(&format!("/api/v1/teams/{team2}/batches")).await["slots"][0]["id"].as_str().unwrap().to_string();
+    assert_eq!(paid(vec![&s1, &other], month(0), false).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(paid(vec![&s1], month(-2), true).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(paid(vec![&s1], "2026/11".into(), true).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(get_month(month(0)).await["paid_count"], 1);
+    // 别的月份各记各的：本月团队1-01 还是未收
+    assert!(listed(&get_month(month(1)).await).contains(&("团队1-01".to_string(), false)));
 
-    // 客户页：只出有效的批次；节点清单只有收费中的（已结束的菲律宾不在），手动的写备注，按下次续费日排；不出 IP、供应商、价格
+    // 客户页：这个月每个节点的那一期 名字 · 地区 · 区间 · 已付 / 待付（待付在前）；只有这几项，不出 IP、供应商、价格
     let page = t.post(&format!("/api/v1/teams/{team1}/customer-page"), json!({})).await;
-    let (st, pv) = public(&t, page["link"].as_str().unwrap()).await;
+    let link = page["link"].as_str().unwrap();
+    let (st, pv) = public(&t, &format!("{link}?month={}", month(0))).await;
     assert_eq!(st, StatusCode::OK, "{pv}");
-    let shown: Vec<i64> = pv["data"]["batches"].as_array().unwrap().iter().map(|b| b["seq"].as_i64().unwrap()).collect();
-    assert_eq!(shown, [2, 3, 4], "{pv}");
-    let nodes = pv["data"]["nodes"].as_array().unwrap();
-    let mut names: Vec<&str> = nodes.iter().map(|n| n["name"].as_str().unwrap()).collect();
-    let ends: Vec<&str> = nodes.iter().map(|n| n["period_end"].as_str().unwrap()).collect();
-    assert!(ends.windows(2).all(|w| w[0] <= w[1]), "按下次续费日排：{pv}");
-    let td = fmt_date(today());
-    assert!(nodes.iter().all(|n| n["period_start"].as_str().unwrap() <= td.as_str() && td.as_str() < n["period_end"].as_str().unwrap() && n["renews"] == true), "本期含今天：{pv}");
-    let h = nodes.iter().find(|n| n["name"] == "墨西哥家宽").unwrap();
-    assert_eq!((h["region"].as_str(), h["start_date"].as_str()), (Some("墨西哥"), Some(day(14).as_str())), "{pv}");
-    names.sort();
-    assert_eq!(names, ["团队1-01", "团队1-02", "团队1-03", "墨西哥家宽"], "{pv}");
+    let d = &pv["data"];
+    assert_eq!(listed(d), named(&[("团队1-02", false), ("团队1-03", false), ("墨西哥家宽", false), ("团队1-01", true)]), "{pv}");
+    assert_eq!((d["paid_count"].as_i64(), d["unpaid_count"].as_i64(), d["team"].as_str(), d["months"].as_array().map(|a| a.len())), (Some(1), Some(3), Some("团队1"), Some(6)), "{pv}");
+    let h = d["nodes"].as_array().unwrap().iter().find(|n| n["name"] == "墨西哥家宽").unwrap();
+    let pe = fmt_date(meta::add_months(s + Duration::days(14), 1).unwrap());
+    assert_eq!(h, &json!({"name": "墨西哥家宽", "region": "墨西哥", "period_start": day(14), "period_end": pe, "paid": false}), "{pv}");
     let body = pv.to_string();
-    assert!(!body.contains("203.0.113") && !body.contains("provider") && !body.contains("price") && !body.contains("菲律宾"), "{pv}");
+    assert!(!body.contains("203.0.113") && !body.contains("provider") && !body.contains("price") && !body.contains("slot_id") && !body.contains("菲律宾"), "{pv}");
+    // 默认本月；月份写错 400
+    assert_eq!(public(&t, link).await.1["data"]["month"], month(1));
+    assert_eq!(public(&t, &format!("{link}?month=abc")).await.0, StatusCode::BAD_REQUEST);
 
     // ── 对账（传入的「现在」）──
-    // 团队1-01 退役、同一轮来了团队1-04：替换，起算日不变
+    // 团队1-01 退役、同一轮来了团队1-04：替换，开始收费日不变，上个月的「已收」跟着名额到团队1-04
     sqlx::query("update machine set lifecycle = 'retired', retired_at = now() where id = $1").bind(n1).execute(&t.st.db).await.unwrap();
     let n4 = node(&t, team1, 4, "US").await;
     ledger::reconcile(&t.st, now0).await.unwrap();
     let v = t.get(&base1).await;
     let s4 = slot_of(&v, "团队1-04");
     assert_eq!((s4["start_date"].as_str(), s4["holder"]["id"].as_str()), (Some(day(0).as_str()), Some(n4.to_string().as_str())), "{v}");
-    // 再加一个：待定，25 小时后成新名额（起算日 = 第一次看到它那天）
+    assert!(listed(&get_month(month(0)).await).contains(&("团队1-04".to_string(), true)));
+    // 再加一个：待定（本月的清单里不列，只给 pending），25 小时后成新名额（开始收费日 = 第一次看到它那天）
     node(&t, team1, 5, "US").await;
     ledger::reconcile(&t.st, now0).await.unwrap();
     let v = t.get(&base1).await;
     assert_eq!((v["pending"][0]["machine"]["name"].as_str(), v["totals"]["pending"].as_i64()), (Some("团队1-05"), Some(1)), "{v}");
+    let cur = get_month(month(1)).await;
+    assert_eq!((cur["pending"][0]["machine"]["name"].as_str(), listed(&cur).iter().any(|n| n.0 == "团队1-05")), (Some("团队1-05"), false), "{cur}");
+    assert!(get_month(month(0)).await["pending"].as_array().unwrap().is_empty(), "以前的月份不提待定");
     ledger::reconcile(&t.st, now0 + Duration::hours(25)).await.unwrap();
     let v = t.get(&base1).await;
-    let seen_day = fmt_date(now0.to_offset(meta::org_offset()).date());
+    let seen = now0.to_offset(meta::org_offset()).date();
+    let seen_day = fmt_date(seen);
     assert_eq!((slot_of(&v, "团队1-05")["start_date"].as_str(), v["totals"]["pending"].as_i64()), (Some(seen_day.as_str()), Some(0)), "{v}");
-    // 团队1-02 设为不计费：机器视图带上；设完马上对账一次，名额立刻空出待定，满 24 小时没人接 → 结束
+    // 团队1-02 设为不计费：机器视图带上；设完马上对账一次，名额立刻空出待定（清单里还在，标着 vacated），满 24 小时没人接 → 结束
     let mut ev = t.st.events.subscribe();
     let r = t.req("PUT", &format!("/api/v1/machines/{n2}/billing-exempt"), Some(json!({"exempt": true})), None).await;
     assert_eq!(r.0, StatusCode::OK, "{r:?}");
     assert_eq!(t.get(&format!("/api/v1/machines/{n2}")).await["billing_exempt"], true);
     assert!(std::iter::from_fn(|| ev.try_recv().ok()).any(|e| matches!(e, Event::Billing { id } if id == team1)), "设不计费要发 billing 事件");
     let v = t.get(&base1).await;
-    let s2 = slot_of(&v, "团队1-02");
-    assert_eq!((s2["state"].as_str(), s2["last_holder_name"].as_str(), v["totals"]["vacated"].as_i64()), (Some("vacated"), Some("团队1-02"), Some(1)), "{v}");
+    let s2v = slot_of(&v, "团队1-02");
+    assert_eq!((s2v["state"].as_str(), s2v["last_holder_name"].as_str(), v["totals"]["vacated"].as_i64()), (Some("vacated"), Some("团队1-02"), Some(1)), "{v}");
+    let row = get_month(month(1)).await["nodes"].as_array().unwrap().iter().find(|n| n["name"] == "团队1-02").cloned().unwrap();
+    assert_eq!((row["vacated"].as_bool(), row["holder_id"].is_null()), (Some(true), true), "{row}");
     let t26 = now0 + Duration::hours(26);
     ledger::reconcile(&t.st, t26).await.unwrap();
-    let s2 = slot_of(&t.get(&base1).await, "团队1-02").clone();
+    let s2v = slot_of(&t.get(&base1).await, "团队1-02").clone();
     // （空出就在刚才，结束日 = 空出那天）
-    assert_eq!(s2["end_date"].as_str(), Some(seen_day.as_str()), "{s2}");
+    assert_eq!(s2v["end_date"].as_str(), Some(seen_day.as_str()), "{s2v}");
     // 空出原因：被设为不计费、节点还在团队里 = exempt；有占用者 = null
-    assert_eq!((s2["left_reason"].as_str(), slot_of(&t.get(&base1).await, "团队1-04")["left_reason"].is_null()), (Some("exempt"), true), "{s2}");
+    assert_eq!((s2v["left_reason"].as_str(), slot_of(&t.get(&base1).await, "团队1-04")["left_reason"].is_null()), (Some("exempt"), true), "{s2v}");
     // 机器被物理删除：外键置空，对账照常把名额空出（不报错）
     sqlx::query("delete from machine where id = $1").bind(n3).execute(&t.st.db).await.unwrap();
     ledger::reconcile(&t.st, t26 + Duration::hours(52)).await.unwrap();
-    let s3 = slot_of(&t.get(&base1).await, "团队1-03").clone();
-    assert_eq!((s3["state"].as_str(), s3["left_reason"].as_str()), (Some("vacated"), Some("left")), "{s3}");
+    let s3v = slot_of(&t.get(&base1).await, "团队1-03").clone();
+    assert_eq!((s3v["state"].as_str(), s3v["left_reason"].as_str()), (Some("vacated"), Some("left")), "{s3v}");
 
     // 增减记录：一句话、新的在前、可翻页
     let all = texts(&t, team1).await;
-    for want in ["团队1-01 → 团队1-04 替换，计费不变", &format!("团队1-05 加入，新增计费节点（{} 起算）", &seen_day[5..]), "团队1-02 设为不计费", "初始化：3 个节点计入计费（"] {
-        assert!(all.iter().any(|x| x.starts_with(want)), "没有「{want}」: {all:?}");
+    let m0 = format!("{} 月", u8::from(s.month()));
+    let m2 = format!("{} 月", u8::from(meta::add_months(s, 2).unwrap().month()));
+    for want in [
+        "团队1-01 → 团队1-04 替换，收费不变".to_string(),
+        format!("团队1-05 加入，从 {}开始收费", fmt_cn(seen)),
+        "团队1-02 设为不收费".into(),
+        "团队1-02 离开，收费到 ".into(),
+        "开始记账：3 个节点从 ".into(),
+        format!("{m0}已收：团队1-01、团队1-02（共 2 个）"),
+        format!("{m0}改回没收：团队1-02（共 1 个）"),
+        format!("{}已收：团队1-01（共 1 个）", m2),
+    ] {
+        assert!(all.iter().any(|x| x.starts_with(&want)), "没有「{want}」: {all:?}");
     }
-    assert!(all.iter().any(|x| x.starts_with("团队1-02 离开，计费节点减少（算到 ")), "{all:?}");
     // 初始化每个团队只一条，名单在 detail 里
     let inits: Vec<Value> = sqlx::query_scalar("select detail from billing_event where team_id = $1 and kind = 'init'").bind(team1).fetch_all(&t.st.db).await.unwrap();
     assert_eq!((inits.len(), inits[0]["nodes"].as_array().map(|a| a.len())), (1, Some(3)), "{inits:?}");
@@ -176,53 +236,26 @@ async fn billing_ledger_and_customer_page() {
     assert_eq!(next[0]["text"].as_str(), Some(all[2].as_str()));
 
     let acts: Vec<String> = sqlx::query_scalar("select action from audit_log where action like 'billing.%' order by id").fetch_all(&t.st.db).await.unwrap();
-    assert_eq!(acts, ["billing.init", "billing.init", "billing.slot_update", "billing.slot_add", "billing.slot_add", "billing.slot_update", "billing.exempt"]);
+    assert_eq!(acts, ["billing.init", "billing.init", "billing.slot_update", "billing.slot_add", "billing.slot_add", "billing.slot_update", "billing.paid", "billing.unpaid", "billing.paid", "billing.exempt"]);
 }
 
-/// 整批改起算日；空出的系统名额填结束日
+/// 空出的系统名额填停止收费日：不能晚于今天，填今天就结束
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn batch_start_and_vacated_end() {
+async fn vacated_slot_end() {
     let t = common::boot(false, "").await;
     let team = common::seed_team(&t, "团队1").await;
     let n1 = node(&t, team, 1, "US").await;
     node(&t, team, 2, "US").await;
     let s = meta::add_months(today().replace_day(1).unwrap(), -1).unwrap();
-    let day = |n: i64| fmt_date(s + Duration::days(n));
-    t.post("/api/v1/billing/init", json!({"since": day(0)})).await;
-    // 一个手动名额在 day(20) 结束，同一批（同起算日、同地区）
-    let m = t.post(&format!("/api/v1/teams/{team}/billing-slots"), json!({"region": "美区", "start_date": day(0)})).await;
-    let m_id = m[0]["id"].as_str().unwrap().to_string();
-    let r = t.req("PATCH", &format!("/api/v1/billing-slots/{m_id}"), Some(json!({"end_date": day(20)})), None).await;
-    assert_eq!(r.0, StatusCode::OK, "{r:?}");
-    let path = format!("/api/v1/teams/{team}/batches/{}%7C%E7%BE%8E%E5%8C%BA", day(0));
-    // 新起算日不早于已结束名额的结束日：拒绝，什么都不改
-    let (st, v) = t.req("PATCH", &path, Some(json!({"start_date": day(20)})), None).await;
-    assert_eq!(st, StatusCode::BAD_REQUEST, "{v}");
-    assert!(v["error"]["message"].as_str().unwrap().contains("要早于已结束名额的结束日"), "{v}");
-    assert_eq!(t.get(&format!("/api/v1/teams/{team}/batches")).await["batches"][0]["start_date"], day(0));
-    // 不存在的批次
-    let (st, _) = t.req("PATCH", &format!("/api/v1/teams/{team}/batches/{}%7C%E5%A2%A8", day(0)), Some(json!({"start_date": day(5)})), None).await;
-    assert_eq!(st, StatusCode::NOT_FOUND);
-    // 早于结束日：整批一起改
-    let mut ev = t.st.events.subscribe();
-    let (st, v) = t.req("PATCH", &path, Some(json!({"start_date": day(5)})), None).await;
-    assert_eq!(st, StatusCode::OK, "{v}");
-    assert_eq!((v["data"]["key"].as_str(), v["data"]["start_date"].as_str()), (Some(format!("{}|美区", day(5)).as_str()), Some(day(5).as_str())), "{v}");
-    assert!(std::iter::from_fn(|| ev.try_recv().ok()).any(|e| matches!(e, Event::Billing { id } if id == team)));
-    let d = t.get(&format!("/api/v1/teams/{team}/batches")).await;
-    assert!(d["slots"].as_array().unwrap().iter().all(|x| x["start_date"] == day(5)), "{d}");
-    assert!(texts(&t, team).await.iter().any(|x| x.contains("起算日") && x.contains("（整批 3 个）")), "{:?}", texts(&t, team).await);
-    let acts: Vec<String> = sqlx::query_scalar("select action from audit_log where action = 'billing.batch_update'").fetch_all(&t.st.db).await.unwrap();
-    assert_eq!(acts.len(), 1);
-
-    // 节点设不计费：马上空出待定；给空出的系统名额填以后的结束日被拒，填今天结束
+    t.post("/api/v1/billing/init", json!({"since": fmt_date(s)})).await;
+    // 节点设不计费：马上空出待定；给空出的系统名额填以后的停止收费日被拒，填今天结束
     t.req("PUT", &format!("/api/v1/machines/{n1}/billing-exempt"), Some(json!({"exempt": true})), None).await;
     let d = t.get(&format!("/api/v1/teams/{team}/batches")).await;
     let sid = slot_of(&d, "团队1-01")["id"].as_str().unwrap().to_string();
     assert_eq!((slot_of(&d, "团队1-01")["state"].as_str(), d["totals"]["vacated"].as_i64(), d["totals"]["active"].as_i64()), (Some("vacated"), Some(1), Some(1)), "{d}");
     let tomorrow = fmt_date(today() + Duration::days(1));
     let (st, v) = t.req("PATCH", &format!("/api/v1/billing-slots/{sid}"), Some(json!({"end_date": tomorrow})), None).await;
-    assert_eq!((st, v["error"]["message"].as_str()), (StatusCode::BAD_REQUEST, Some("空出的计费节点结束日不能晚于今天")), "{v}");
+    assert_eq!((st, v["error"]["message"].as_str()), (StatusCode::BAD_REQUEST, Some("等补位的节点停止收费日不能晚于今天")), "{v}");
     let (st, v) = t.req("PATCH", &format!("/api/v1/billing-slots/{sid}"), Some(json!({"end_date": fmt_date(today())})), None).await;
     assert_eq!((st, v["data"]["state"].as_str(), v["data"]["left_reason"].as_str()), (StatusCode::OK, Some("ended"), Some("exempt")), "手动结束保留空出原因：{v}");
 }

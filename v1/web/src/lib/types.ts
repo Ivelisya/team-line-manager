@@ -533,64 +533,30 @@ export interface SpeedtestStarted { machine_id: string; name: string; job_id: st
 /** 测速作业步骤的输出（jobs/speedtest.rs summarize）：avg_mbps 只算收到第一个字节之后的；complete = false 时 300 秒内没下完，速率按已下载的算 */
 export interface SpeedtestOutput { target: string; target_name: string; url: string; size_mb: number; bytes: number; complete: boolean; avg_mbps: number; avg_mb_s: number; total_s: number; ttfb_s: number; remote_ip: string }
 
-// ---- 按节点数向团队收费：计费名额自动派生的批次、客户到期页。派生字段（summary / title / state / node_months …）都由服务端算，前端只显示 ----
-/** expired：到期日早于今天；today：今天到期（仍算有效）；active：有效 */
-export type BatchState = 'active' | 'today' | 'expired';
-/** 一期：从起算日起每月同日续一期（months 恒为 1）；count = 这一期计费的名额数 */
-export interface BatchPeriod { start_date: string; end_date: string; months: number; count: number }
-/** 派生批次：同一团队里起算日、地区都相同的计费名额。key =「起算日|地区」，seq 按 (起算日, 地区) 排，第01批最早。
- *  end_date = 最后一期的终点（下次续费日 / 到期日）；count = 最后一期的个数；months = 期数；renewals = 期数 − 1 */
-export interface CustomerBatch {
-  key: string; seq: number; region: string; summary: string; title: string;
-  start_date: string; end_date: string; count: number; months: number; node_months: number; renewals: number; state: BatchState;
-  periods: BatchPeriod[];
-}
-/** 计费名额：团队里一个按月计费的节点位置。替换节点时名额不变（新节点接过去，起算日不变）。
- *  active 在用；vacated 占用的节点刚离开，24 小时内有节点加入就算替换（vacated_at 起算）；ended 已结束（end_date 那天）。
- *  manual：系统外的节点（如家宽），只能手动结束 / 删除 */
-export type SlotState = 'active' | 'vacated' | 'ended';
-export interface BillingSlot {
-  id: string; batch_seq: number; region: string; start_date: string; state: SlotState;
-  holder: { id: string; name: string } | null; vacated_at: string | null; end_date: string | null; manual: boolean; note: string;
-  /** 空出待定 / 已结束的名额最后占用它的节点名（当时的快照） */
-  last_holder_name?: string | null;
-  /** 没有占用者的系统名额为什么空着：exempt 原节点被设为不计费（还在团队里）；left 离开团队 / 退役 / 进备用 / 被删；有占用者与手动名额为 null */
-  left_reason?: 'exempt' | 'left' | null;
-}
-/** 新加入、还没定是替换还是新增的节点：decide_at（= seen_at + 24 小时）前有名额空出就接过去，否则算新增 */
+// ---- 按节点数向团队收费（计费台账）与客户页：每个节点从开始收费日起每满一个月收一次（一期），每一期只有已收 / 没收；按月看 = 每个节点起点在这个月的那一期 ----
+/** 新加入、还没定是补位还是新增的节点：decide_at（= seen_at + 24 小时）前有节点离开就接过去，否则算新增 */
 export interface BillingPending { machine: { id: string; name: string }; seen_at: string; decide_at: string }
-export type BillingEventKind = 'init' | 'add' | 'remove' | 'swap' | 'edit' | 'manual_add' | 'manual_end' | 'exempt';
+export type BillingEventKind = 'init' | 'add' | 'remove' | 'swap' | 'edit' | 'manual_add' | 'manual_end' | 'exempt' | 'paid' | 'unpaid';
 /** 增减记录：text 是服务端拼好的一句话；swap 时 machine_name 是新节点、other_name 是换下来的（名字是当时的快照） */
 export interface BillingEvent { id: string; at: string; kind: BillingEventKind; machine_name: string | null; other_name: string | null; slot_id: string | null; text: string }
-/** GET /teams/{id}/receivable?month=YYYY-MM：起点落在这个月的每一期一行；total = Σcount（节点月）；
- *  start_count 月初的计费节点数，end_count 月末（本月为今天）的；events 这个月的增减 */
-export interface Receivable {
-  month: string; total: number; start_count: number | null; end_count: number | null;
-  /** 有还没到起点的期（按现在的名额预估）时为 true；以后的月份月初 / 月末个数为 null */
-  projected?: boolean;
-  lines: { batch_seq: number; region: string; period_start: string; period_end: string; count: number; projected?: boolean }[];
-  events: BillingEvent[];
-}
 /** 团队的客户页链接：link = {public_url}/c/{token}，管理端随时能再复制 */
 export interface CustomerPage { enabled: boolean; link: string; created_at: string; token_at: string; last_view_at: string | null }
-/** initialized：计费初始化过没有（fleetctl billing init，全局）；totals：active 在用的名额（含手动）、pending 待定的节点、vacated 空出待定的名额 */
-export interface TeamBatches {
-  team: { id: string; name: string }; today: string; initialized: boolean; page: CustomerPage | null; batches: CustomerBatch[];
-  slots: BillingSlot[]; pending: BillingPending[]; totals: { active: number; pending: number; vacated: number };
+/** 某月清单的一行：一个节点起点在这个月的那一期 [period_start, period_end)（显示到 period_end 前一天）。
+ *  name：节点名，等补位的是原节点名，手动添加的是备注（没有备注「手动添加的节点」）；upcoming：这一期还没开始；
+ *  vacated：节点离开了、24 小时内等新节点补位；ended：已停止收费（这一期照收）；holder_id：现在占着它的节点（点名字打开抽屉） */
+export interface BillingMonthNode {
+  slot_id: string; name: string; region: string; start_date: string; end_date: string | null; period_start: string; period_end: string; upcoming: boolean;
+  manual: boolean; note: string; holder_id: string | null; vacated: boolean; ended: boolean; paid: boolean; paid_at: string | null;
 }
-/** 公开页的批次：desc 是标题下一行的说明（即 summary）；不出现节点名 */
-export interface PublicBatch {
-  seq: number; region: string; title: string; desc: string; start_date: string; end_date: string;
-  count: number; months: number; node_months: number; state: BatchState;
-  periods: BatchPeriod[];
+/** GET /teams/{id}/billing/month?month=YYYY-MM（默认本月）：nodes 没收在前、再按名字；months 可以翻看的月份（最早的开始收费月 → 下个月）；
+ *  pending 只在本月给；initialized：开始记账了没有（fleetctl billing init，全局） */
+export interface BillingMonth {
+  team: { id: string; name: string }; today: string; initialized: boolean; page: CustomerPage | null;
+  month: string; months: string[]; nodes: BillingMonthNode[]; paid_count: number; unpaid_count: number; pending: BillingPending[];
 }
-/** 客户页的节点清单：收费中的节点各自的本期 [period_start, period_end)；period_end 就是下次续费日。
- *  name：节点名，空出待定的是原节点名，手动的是备注（没有备注「手动添加的节点」）；renews：本期结束后还续不续 */
-export interface PublicNode { name: string; region: string; start_date: string; period_start: string; period_end: string; renews: boolean }
-/** GET /public/customer/{token}：只含有效批次；regions 按批次首次出现的顺序，counts 是各有效批次的个数；nodes 按下次续费日、名字排 */
+/** GET /public/customer/{token}?month=YYYY-MM：同管理端的按月看，每个节点只有名字、地区、这一期、已付 / 待付（待付在前、再按名字） */
 export interface PublicCustomer {
-  team: string; today: string; node_months: number;
-  regions: { region: string; counts: number[]; total: number; today_count: number }[];
-  batches: PublicBatch[];
-  nodes: PublicNode[];
+  team: string; today: string; month: string; months: string[];
+  nodes: { name: string; region: string; period_start: string; period_end: string; paid: boolean }[];
+  paid_count: number; unpaid_count: number;
 }

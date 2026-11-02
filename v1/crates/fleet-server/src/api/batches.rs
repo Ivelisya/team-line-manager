@@ -1,13 +1,14 @@
-//! 计费台账（迁移 0097，派生口径在 batches.rs，对账在 ledger.rs）与客户到期页。
-//! 计费名额 = 团队里一个按月计费的节点位置；批次、到期、月度应收都从名额派生。名额由对账自动增减，这里只有：看（批次、名额、待定、增减记录、月度应收）、
-//! 改名额（起算日、地区、备注、结束 / 恢复）、手动名额（系统外的节点）、节点设不计费、一次性初始化。读要 read、写要 write（写审计）。
+//! 计费台账（名额：迁移 0097，对账在 ledger.rs；每一期已收 / 没收：迁移 0100，口径在 batches.rs）与客户页。
+//! 计费名额 = 团队里一个按月计费的节点位置，由对账自动增减。每个节点从开始收费日起每满一个月收一次（一期），每一期只有已收 / 没收（默认没收，手动标记）；
+//! 按月看 = 每个节点起点落在这个月的那一期。这里有：看（名额、待定、增减记录、某月清单）、标记已收 / 改回没收、改名额（开始收费日、地区、备注、停止 / 恢复）、
+//! 手动名额（系统外的节点）、节点设不收费、一次性初始化。读要 read、写要 write（写审计）。
 //! 每个团队一个只读分享链接（令牌 32 字节随机，库里存 sha256 用来查、SecretBox 密文用来随时再复制链接），
-//! 公开接口 `GET /api/v1/public/customer/{令牌}` 不登录（和 client_subs 的 /sub/{令牌} 一样没有 Actor 提取器，登录只在提取器里校验，所以不会被拦）。
-//! 客户页不出现 IP、供应商、价格；节点清单（nodes）里有节点名与各自的本期、下次续费日。
+//! 公开接口 `GET /api/v1/public/customer/{令牌}?month=` 不登录（和 client_subs 的 /sub/{令牌} 一样没有 Actor 提取器，登录只在提取器里校验，所以不会被拦）。
+//! 客户页只有某月每个节点的名字、地区、这一期的区间、已付 / 待付，不出现 IP、供应商、价格。
 
 use super::ok;
 use crate::auth::{self, Actor, ClientIp};
-use crate::batches::{self as bt, Batch};
+use crate::batches as bt;
 use crate::crypto::{random_token, sha256};
 use crate::db::{audit, new_id, Tx};
 use crate::error::{ApiError, ApiJson, ApiPath, ApiQuery, ApiResult};
@@ -21,19 +22,19 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sqlx::PgConnection;
+use std::collections::HashMap;
 use time::{Date, OffsetDateTime};
 use uuid::Uuid;
 
 // ── 读取 ──────────────────────────────────────────────────────────────
 
-const SLOT_COLS: &str = "s.id, s.team_id, s.region, s.start_date, s.end_date, s.holder_id, display_name(hm.kind::text, hm.label, ht.name, hm.number) holder_now,
+const SLOT_COLS: &str = "s.id, s.region, s.start_date, s.end_date, s.holder_id, display_name(hm.kind::text, hm.label, ht.name, hm.number) holder_now,
                          s.holder_name, s.vacated_at, s.manual, s.note, s.vacate_reason";
 const SLOT_FROM: &str = "billing_slot s left join machine hm on hm.id = s.holder_id left join team ht on ht.id = hm.team_id";
 
 #[derive(sqlx::FromRow, Clone)]
 struct SlotRow {
     id: Uuid,
-    team_id: Uuid,
     region: String,
     start_date: Date,
     end_date: Option<Date>,
@@ -67,7 +68,6 @@ impl SlotRow {
         }
     }
 
-    fn lite(&self) -> bt::Slot { bt::Slot { start: self.start_date, end: self.end_date, region: self.region.clone() } }
 }
 
 /// 团队的全部名额（含已结束的）
@@ -80,12 +80,9 @@ async fn one_slot(db: &mut PgConnection, id: Uuid) -> ApiResult<SlotRow> {
     r.ok_or_else(|| ApiError::not_found("没有这个计费节点"))
 }
 
-fn derive_all(slots: &[SlotRow], today: Date) -> Vec<Batch> { bt::derive_batches(&slots.iter().map(SlotRow::lite).collect::<Vec<_>>(), today) }
-
-fn slot_json(s: &SlotRow, batches: &[Batch], today: Date) -> Value {
-    let key = bt::key(s.start_date, &s.region);
+fn slot_json(s: &SlotRow, today: Date) -> Value {
     json!({
-        "id": s.id, "batch_seq": batches.iter().find(|b| b.key == key).map(|b| b.seq), "region": s.region, "start_date": bt::fmt_date(s.start_date),
+        "id": s.id, "region": s.region, "start_date": bt::fmt_date(s.start_date),
         "state": s.state(today), "name": s.name(),
         "holder": s.holder_id.map(|id| json!({"id": id, "name": s.holder_now.clone().unwrap_or_default()})),
         "last_holder_name": if s.holder_id.is_none() && !s.manual { s.holder_name.clone() } else { None },
@@ -95,13 +92,8 @@ fn slot_json(s: &SlotRow, batches: &[Batch], today: Date) -> Value {
     })
 }
 
-/// 一个名额的 Slot（批次编号按团队现在的名额重新派生）
-async fn slot_out(db: &mut PgConnection, id: Uuid) -> ApiResult<Value> {
-    let s = one_slot(db, id).await?;
-    let today = bt::today();
-    let all = team_slots(db, s.team_id).await?;
-    Ok(slot_json(&s, &derive_all(&all, today), today))
-}
+/// 一个名额的 Slot
+async fn slot_out(db: &mut PgConnection, id: Uuid) -> ApiResult<Value> { Ok(slot_json(&one_slot(db, id).await?, bt::today())) }
 
 async fn team_name(db: &mut PgConnection, team: Uuid) -> ApiResult<String> {
     sqlx::query_scalar("select name from team where id = $1").bind(team).fetch_optional(&mut *db).await?.ok_or_else(|| ApiError::not_found("没有这个团队"))
@@ -127,31 +119,186 @@ fn event_json(e: &EventRow) -> Value {
 
 const EVENT_COLS: &str = "id, at, kind, machine_name, other_name, slot_id, detail";
 
-/// `GET /teams/{id}/batches`：派生批次（含已到期）、名额、待定节点、个数与客户页链接状态
+/// 团队里新加入、还没定是补位还是新增的节点（Pending）
+async fn pending_json(db: &mut PgConnection, team: Uuid) -> ApiResult<Vec<Value>> {
+    let rows: Vec<(Uuid, String, OffsetDateTime)> = sqlx::query_as(
+        "select p.machine_id, display_name(m.kind::text, m.label, t.name, m.number), p.seen_at
+         from billing_pending p join machine m on m.id = p.machine_id left join team t on t.id = m.team_id where p.team_id = $1 order by p.seen_at, m.number",
+    )
+    .bind(team)
+    .fetch_all(&mut *db)
+    .await?;
+    Ok(rows.iter().map(|(id, n, at)| json!({"machine": {"id": id, "name": n}, "seen_at": meta::fmt_ts(*at), "decide_at": meta::fmt_ts(*at + ledger::GRACE)})).collect())
+}
+
+/// `GET /teams/{id}/batches`：名额（含已结束的）、待定节点、个数与客户页链接状态
 pub async fn list(_a: Actor, State(st): State<AppState>, ApiPath(team): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
     let mut conn = st.db.acquire().await?;
     let name = team_name(&mut conn, team).await?;
     let today = bt::today();
     let mut slots = team_slots(&mut conn, team).await?;
-    let derived = derive_all(&slots, today);
-    let batches: Vec<Value> = derived.iter().filter_map(|b| bt::derive(b, today).map(|d| bt::admin_json(b, &d))).collect();
     slots.sort_by_key(|s| (s.start_date, s.name()));
-    let pending: Vec<(Uuid, String, OffsetDateTime)> = sqlx::query_as(
-        "select p.machine_id, display_name(m.kind::text, m.label, t.name, m.number), p.seen_at
-         from billing_pending p join machine m on m.id = p.machine_id left join team t on t.id = m.team_id where p.team_id = $1 order by p.seen_at, m.number",
-    )
-    .bind(team)
-    .fetch_all(&mut *conn)
-    .await?;
+    let pending = pending_json(&mut conn, team).await?;
     let count = |st: &str| slots.iter().filter(|s| s.state(today) == st).count();
     let page = page_json(&st, &mut conn, team).await?;
     let initialized = ledger::initialized(&st.db).await?;
     Ok(ok(json!({
-        "team": {"id": team, "name": name}, "today": bt::fmt_date(today), "initialized": initialized, "page": page, "batches": batches,
-        "slots": slots.iter().map(|s| slot_json(s, &derived, today)).collect::<Vec<_>>(),
-        "pending": pending.iter().map(|(id, n, at)| json!({"machine": {"id": id, "name": n}, "seen_at": meta::fmt_ts(*at), "decide_at": meta::fmt_ts(*at + ledger::GRACE)})).collect::<Vec<_>>(),
+        "team": {"id": team, "name": name}, "today": bt::fmt_date(today), "initialized": initialized, "page": page,
+        "slots": slots.iter().map(|s| slot_json(s, today)).collect::<Vec<_>>(),
         "totals": {"active": count("active"), "pending": pending.len(), "vacated": count("vacated")},
+        "pending": pending,
     })))
+}
+
+// ── 按月看：每个节点起点落在这个月的那一期，已收 / 没收 ──────────────────
+
+#[derive(Deserialize)]
+pub struct MonthQ {
+    month: Option<String>,
+}
+
+/// `?month=2026-11`（默认本月）→ 该月 1 日
+fn month_in(m: Option<&str>) -> ApiResult<Date> {
+    match m.filter(|m| !m.trim().is_empty()) {
+        Some(m) => bt::parse_month(m).ok_or_else(|| ApiError::bad_request("月份要写成 2026-11 这样")),
+        None => Ok(bt::this_month()),
+    }
+}
+
+/// 某月清单的一行：名额、起点落在这个月的那一期 [ps, pe)、已收时刻（没收为 None）
+struct MonthRow {
+    s: SlotRow,
+    ps: Date,
+    pe: Date,
+    paid_at: Option<OffsetDateTime>,
+}
+
+/// 某月的清单（没收在前、再按名字）与可以翻看的月份（最早的开始收费月 → 下个月）
+async fn month_rows(db: &mut PgConnection, team: Uuid, month: Date) -> ApiResult<(Vec<Date>, Vec<MonthRow>)> {
+    let next = meta::add_months(month, 1).ok_or_else(|| ApiError::bad_request("日期超出范围"))?;
+    let slots = team_slots(db, team).await?;
+    let paid: HashMap<(Uuid, Date), OffsetDateTime> = sqlx::query_as::<_, (Uuid, Date, OffsetDateTime)>(
+        "select p.slot_id, p.period_start, p.paid_at from billing_paid p join billing_slot s on s.id = p.slot_id
+         where s.team_id = $1 and p.period_start >= $2 and p.period_start < $3",
+    )
+    .bind(team)
+    .bind(month)
+    .bind(next)
+    .fetch_all(&mut *db)
+    .await?
+    .into_iter()
+    .map(|(id, ps, at)| ((id, ps), at))
+    .collect();
+    let months = bt::months(slots.iter().map(|s| s.start_date), meta::add_months(bt::this_month(), 1).unwrap_or(next));
+    let mut rows: Vec<MonthRow> = slots
+        .into_iter()
+        .filter_map(|s| {
+            let (ps, pe) = bt::period_in(s.start_date, s.end_date, month)?;
+            let paid_at = paid.get(&(s.id, ps)).copied();
+            Some(MonthRow { s, ps, pe, paid_at })
+        })
+        .collect();
+    rows.sort_by_cached_key(|r| (r.paid_at.is_some(), r.s.name()));
+    Ok((months, rows))
+}
+
+fn counts(rows: &[MonthRow]) -> (usize, usize) {
+    let paid = rows.iter().filter(|r| r.paid_at.is_some()).count();
+    (paid, rows.len() - paid)
+}
+
+/// 管理端的月份清单（GET 与标记后都回它）
+async fn month_view(st: &AppState, db: &mut PgConnection, team: Uuid, month: Date) -> ApiResult<Value> {
+    let name = team_name(db, team).await?;
+    let today = bt::today();
+    let (months, rows) = month_rows(db, team, month).await?;
+    let (paid, unpaid) = counts(&rows);
+    // 待定是「现在」的状态，只在本月里提
+    let pending = if month == bt::this_month() { pending_json(db, team).await? } else { vec![] };
+    let page = page_json(st, db, team).await?;
+    let initialized = ledger::initialized(&st.db).await?;
+    let nodes: Vec<Value> = rows
+        .iter()
+        .map(|r| {
+            let s = &r.s;
+            json!({
+                "slot_id": s.id, "name": s.name(), "region": s.region, "start_date": bt::fmt_date(s.start_date), "end_date": s.end_date.map(bt::fmt_date),
+                "period_start": bt::fmt_date(r.ps), "period_end": bt::fmt_date(r.pe), "upcoming": r.ps > today,
+                "manual": s.manual, "note": s.note, "holder_id": s.holder_id, "vacated": s.state(today) == "vacated", "ended": s.state(today) == "ended",
+                "paid": r.paid_at.is_some(), "paid_at": r.paid_at.map(meta::fmt_ts),
+            })
+        })
+        .collect();
+    Ok(json!({
+        "team": {"id": team, "name": name}, "today": bt::fmt_date(today), "initialized": initialized, "page": page,
+        "month": bt::fmt_month(month), "months": months.into_iter().map(bt::fmt_month).collect::<Vec<_>>(),
+        "nodes": nodes, "paid_count": paid, "unpaid_count": unpaid, "pending": pending,
+    }))
+}
+
+/// `GET /teams/{id}/billing/month?month=2026-11`（默认本月）：每个节点起点落在这个月的那一期（区间、已收 / 没收；没收在前、再按名字）、个数、
+/// 可以翻看的月份（最早的开始收费月 → 下个月）、本月的待定节点、客户页链接状态
+pub async fn month(_a: Actor, State(st): State<AppState>, ApiPath(team): ApiPath<Uuid>, ApiQuery(q): ApiQuery<MonthQ>) -> ApiResult<Json<Value>> {
+    let month = month_in(q.month.as_deref())?;
+    let mut conn = st.db.acquire().await?;
+    Ok(ok(month_view(&st, &mut conn, team, month).await?))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PaidIn {
+    month: String,
+    slot_ids: Vec<Uuid>,
+    paid: bool,
+}
+
+/// `POST /teams/{id}/billing/paid` `{month, slot_ids, paid}`：把这些节点起点落在这个月的那一期标为已收 / 改回没收（还没到的期也能先标，客户可能预付）。
+/// 节点这个月没有要收费的期（不是这个团队的、还没开始、已停止）→ 400，什么都不改。真有变化的记一条 paid / unpaid 增减记录和一条审计 → 该月清单（同 GET）
+pub async fn paid(a: Actor, State(st): State<AppState>, ApiPath(team): ApiPath<Uuid>, ApiJson(b): ApiJson<PaidIn>) -> ApiResult<Json<Value>> {
+    let month = bt::parse_month(&b.month).ok_or_else(|| ApiError::bad_request("月份要写成 2026-11 这样"))?;
+    if b.slot_ids.is_empty() || b.slot_ids.len() > 500 {
+        return Err(ApiError::bad_request("一次标记 1–500 个节点"));
+    }
+    let mut tx = st.db.begin().await?;
+    let tname = lock_billing_team(&mut tx, team).await?;
+    let (_, rows) = month_rows(&mut tx, team, month).await?;
+    let mut ids = vec![];
+    let mut starts = vec![];
+    let mut wrong = vec![];
+    for id in &b.slot_ids {
+        match rows.iter().find(|r| r.s.id == *id) {
+            Some(r) => {
+                ids.push(*id);
+                starts.push(r.ps);
+            }
+            None => wrong.push(id.to_string()[..8].to_string()),
+        }
+    }
+    if !wrong.is_empty() {
+        return Err(ApiError::bad_request(format!("{} 月没有要收这些节点的钱（不是这个团队的，或这个月不收费）：{}", u8::from(month.month()), wrong.join("、"))));
+    }
+    let changed: Vec<Uuid> = if b.paid {
+        sqlx::query_scalar("insert into billing_paid (slot_id, period_start) select * from unnest($1::uuid[], $2::date[]) on conflict do nothing returning slot_id")
+    } else {
+        sqlx::query_scalar("delete from billing_paid p using unnest($1::uuid[], $2::date[]) x(slot_id, period_start) where p.slot_id = x.slot_id and p.period_start = x.period_start returning p.slot_id")
+    }
+    .bind(&ids)
+    .bind(&starts)
+    .fetch_all(&mut *tx)
+    .await?;
+    if !changed.is_empty() {
+        let names: Vec<String> = rows.iter().filter(|r| changed.contains(&r.s.id)).map(|r| r.s.name()).collect();
+        let kind = if b.paid { "paid" } else { "unpaid" };
+        let detail = json!({"month": bt::fmt_month(month), "names": names});
+        ledger::log(&mut tx, team, None, OffsetDateTime::now_utc(), kind, None, None, detail.clone()).await?;
+        log_audit(&mut tx, &a, &format!("billing.{kind}"), None, &tname, ledger::event_text(kind, None, None, &detail)).await?;
+    }
+    let out = month_view(&st, &mut tx, team, month).await?;
+    tx.commit().await?;
+    if !changed.is_empty() {
+        st.emit(Event::Billing { id: team });
+    }
+    Ok(ok(out))
 }
 
 #[derive(Deserialize)]
@@ -178,47 +325,6 @@ pub async fn events(_a: Actor, State(st): State<AppState>, ApiPath(team): ApiPat
     Ok(ok(rows.iter().map(event_json).collect::<Vec<_>>()))
 }
 
-#[derive(Deserialize)]
-pub struct MonthQ {
-    month: Option<String>,
-}
-
-/// `GET /teams/{id}/receivable?month=2026-11`（默认本月）：各批起点落在这个月的期、合计节点月、月初 / 月末（本月是今天）有效个数、本月增减。
-/// 还没到起点的期是预估（`projected`：现在没结束的名额——在用与空出待定——都按续下去算）；以后的月份整月是预估，月初 / 月末个数为 null、没有增减
-pub async fn receivable(_a: Actor, State(st): State<AppState>, ApiPath(team): ApiPath<Uuid>, ApiQuery(q): ApiQuery<MonthQ>) -> ApiResult<Json<Value>> {
-    let today = bt::today();
-    let month = match q.month.as_deref() {
-        Some(m) => bt::parse_month(m).ok_or_else(|| ApiError::bad_request("月份要写成 2026-11 这样"))?,
-        None => today.replace_day(1).map_err(|_| ApiError::internal("日期出错"))?,
-    };
-    let next = meta::add_months(month, 1).ok_or_else(|| ApiError::bad_request("日期超出范围"))?;
-    let mut conn = st.db.acquire().await?;
-    team_name(&mut conn, team).await?;
-    let slots: Vec<bt::Slot> = team_slots(&mut conn, team).await?.iter().map(SlotRow::lite).collect();
-    let batches = bt::derive_batches(&slots, today);
-    let lines = bt::receivable(&slots, &batches, month);
-    let future = month > today;
-    let last = if (month..next).contains(&today) { today } else { next.previous_day().unwrap_or(next) };
-    let off = meta::org_offset();
-    let rows: Vec<EventRow> = if future { vec![] } else { sqlx::query_as(&format!(
-        "select {EVENT_COLS} from billing_event where team_id = $1 and at >= $2 and at < $3 and kind in ('add', 'remove', 'swap', 'manual_add', 'manual_end')
-         order by at, id"
-    ))
-    .bind(team)
-    .bind(month.midnight().assume_offset(off))
-    .bind(next.midnight().assume_offset(off))
-    .fetch_all(&mut *conn)
-    .await? };
-    Ok(ok(json!({
-        "month": format!("{:04}-{:02}", month.year(), u8::from(month.month())),
-        "lines": lines.iter().map(|l| json!({"batch_seq": l.seq, "region": l.region, "period_start": bt::fmt_date(l.start), "period_end": bt::fmt_date(l.end), "count": l.count, "projected": l.start > today})).collect::<Vec<_>>(),
-        "total": lines.iter().map(|l| i64::from(l.count)).sum::<i64>(),
-        "projected": future || lines.iter().any(|l| l.start > today),
-        "start_count": (!future).then(|| bt::active_on(&slots, month)), "end_count": (!future).then(|| bt::active_on(&slots, last)),
-        "events": rows.iter().map(event_json).collect::<Vec<_>>(),
-    })))
-}
-
 // ── 校验 ──────────────────────────────────────────────────────────────
 
 fn date_in(s: &str, what: &str) -> ApiResult<Date> { bt::parse_date(s).ok_or_else(|| ApiError::bad_request(format!("{what}要写成 2026-10-31 这样的日期"))) }
@@ -241,7 +347,7 @@ fn check_note(s: &str) -> ApiResult<String> {
 
 fn check_range(start: Date, end: Date) -> ApiResult<()> {
     if end <= start {
-        return Err(ApiError::bad_request(format!("结束日 {} 要晚于起算日 {}", bt::fmt_date(end), bt::fmt_date(start))));
+        return Err(ApiError::bad_request(format!("停止收费日 {} 要晚于开始收费日 {}", bt::fmt_date(end), bt::fmt_date(start))));
     }
     Ok(())
 }
@@ -278,7 +384,7 @@ pub struct AddIn {
 pub async fn slot_add(a: Actor, State(st): State<AppState>, ApiPath(team): ApiPath<Uuid>, ApiJson(b): ApiJson<AddIn>) -> ApiResult<Json<Value>> {
     let region = check_region(&b.region)?;
     let note = check_note(b.note.as_deref().unwrap_or(""))?;
-    let start = date_in(&b.start_date, "起算日")?;
+    let start = date_in(&b.start_date, "开始收费日")?;
     let count = b.count.unwrap_or(1);
     if !(1..=50).contains(&count) {
         return Err(ApiError::bad_request("一次添加 1–50 个"));
@@ -300,7 +406,7 @@ pub async fn slot_add(a: Actor, State(st): State<AppState>, ApiPath(team): ApiPa
         ledger::log(&mut tx, team, Some(id), now, "manual_add", Some(&manual_name(&note)), None, json!({"region": region, "start_date": bt::fmt_date(start)})).await?;
         ids.push(id);
     }
-    log_audit(&mut tx, &a, "billing.slot_add", ids.first().copied(), &tname, format!("{} × {count}，{} 起算{}", region, bt::fmt_date(start), if note.is_empty() { String::new() } else { format!("（{note}）") }))
+    log_audit(&mut tx, &a, "billing.slot_add", ids.first().copied(), &tname, format!("{} × {count}，{} 开始收费{}", region, bt::fmt_date(start), if note.is_empty() { String::new() } else { format!("（{note}）") }))
         .await?;
     let mut out = vec![];
     for id in &ids {
@@ -325,13 +431,13 @@ pub struct PatchIn {
 /// `PATCH /billing-slots/{id}` `{start_date?, region?, note?, end_date?}`：改起算日 / 地区 / 备注（记 edit）；
 /// end_date 只能给手动名额或已空出的名额（记 manual_end），有节点占着的 409；end_date: null = 恢复，只限手动名额 → `Slot`
 pub async fn slot_patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<PatchIn>) -> ApiResult<Json<Value>> {
-    let start = b.start_date.as_deref().map(|s| date_in(s, "起算日")).transpose()?;
+    let start = b.start_date.as_deref().map(|s| date_in(s, "开始收费日")).transpose()?;
     let region = b.region.as_deref().map(check_region).transpose()?;
     let note = b.note.as_deref().map(check_note).transpose()?;
     let end = match &b.end_date {
         None => None,
         Some(None) => Some(None),
-        Some(Some(s)) => Some(Some(date_in(s, "结束日")?)),
+        Some(Some(s)) => Some(Some(date_in(s, "停止收费日")?)),
     };
     let mut tx = st.db.begin().await?;
     let team: Uuid = sqlx::query_scalar("select team_id from billing_slot where id = $1").bind(id).fetch_optional(&mut *tx).await?.ok_or_else(|| ApiError::not_found("没有这个计费节点"))?;
@@ -352,7 +458,7 @@ pub async fn slot_patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPa
                 return Err(ApiError::conflict("这个计费节点没有空出，不能手动结束"));
             }
             if e.is_some_and(|d| !old.manual && d > bt::today()) {
-                return Err(ApiError::bad_request("空出的计费节点结束日不能晚于今天"));
+                return Err(ApiError::bad_request("等补位的节点停止收费日不能晚于今天"));
             }
             e
         }
@@ -372,7 +478,7 @@ pub async fn slot_patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPa
     let name = now_row.name();
     let mut what = vec![];
     if old.start_date != now_row.start_date {
-        what.push(format!("起算日 {} → {}", bt::fmt_md(old.start_date), bt::fmt_md(now_row.start_date)));
+        what.push(format!("开始收费日 {} → {}", bt::fmt_cn(old.start_date), bt::fmt_cn(now_row.start_date)));
     }
     if old.region != now_row.region {
         what.push(format!("地区 {} → {}", old.region, now_row.region));
@@ -386,8 +492,8 @@ pub async fn slot_patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPa
             let until = bt::billed_until(now_row.start_date, e).map(bt::fmt_date);
             ledger::log(&mut tx, team, Some(id), at, "manual_end", Some(&name), None, json!({"end_date": bt::fmt_date(e), "billed_until": until})).await?;
         }
-        (Some(_), None) => what.push("恢复计费".into()),
-        (Some(a), Some(b)) if a != b => what.push(format!("结束日 {} → {}", bt::fmt_md(a), bt::fmt_md(b))),
+        (Some(_), None) => what.push("恢复收费".into()),
+        (Some(a), Some(b)) if a != b => what.push(format!("停止收费日 {} → {}", bt::fmt_cn(a), bt::fmt_cn(b))),
         _ => {}
     }
     if !what.is_empty() {
@@ -395,7 +501,7 @@ pub async fn slot_patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPa
     }
     let mut all = what.clone();
     if let (None, Some(e)) = (old.end_date, now_row.end_date) {
-        all.push(format!("结束于 {}", bt::fmt_date(e)));
+        all.push(format!("{}停止收费", bt::fmt_cn(e)));
     }
     log_audit(&mut tx, &a, "billing.slot_update", Some(id), &tname, format!("{name}：{}", if all.is_empty() { "没有改动".into() } else { all.join("，") })).await?;
     let out = slot_out(&mut tx, id).await?;
@@ -415,53 +521,12 @@ pub async fn slot_delete(a: Actor, State(st): State<AppState>, ApiPath(id): ApiP
         return Err(ApiError::conflict("只有手动添加的计费节点能删除；系统节点离开团队后由对账自动结束，也可以把节点设为不计费"));
     }
     sqlx::query("delete from billing_slot where id = $1").bind(id).execute(&mut *tx).await?;
-    let what = format!("删除了手动计费节点（{}，{} 起算）", s.region, bt::fmt_md(s.start_date));
+    let what = format!("删除了手动添加的节点（{}，{}开始收费）", s.region, bt::fmt_cn(s.start_date));
     ledger::log(&mut tx, team, Some(id), OffsetDateTime::now_utc(), "edit", Some(&s.name()), None, json!({"what": what})).await?;
     log_audit(&mut tx, &a, "billing.slot_delete", Some(id), &tname, format!("{} · {what}", s.name())).await?;
     tx.commit().await?;
     st.emit(Event::Billing { id: team });
     Ok(ok(json!({"id": id})))
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BatchIn {
-    start_date: String,
-}
-
-/// `PATCH /teams/{id}/batches/{key}` `{start_date}`：整批改起算日（key = Batch.key，如 `2026-10-01|美区`，URL 里要转义）；该批全部名额一起改，
-/// 记一条 edit 和一条审计。新起算日要早于该批所有已结束名额的结束日（否则 400）；改到与别的批次同日同地区就并进那一批 → 新的 `Batch`
-pub async fn batch_patch(a: Actor, State(st): State<AppState>, ApiPath((team, key)): ApiPath<(Uuid, String)>, ApiJson(b): ApiJson<BatchIn>) -> ApiResult<Json<Value>> {
-    let new_start = date_in(&b.start_date, "起算日")?;
-    let (old_start, region) = key.split_once('|').and_then(|(d, r)| Some((bt::parse_date(d)?, r.to_string()))).ok_or_else(|| ApiError::bad_request("批次 key 要写成 2026-10-01|美区 这样"))?;
-    let mut tx = st.db.begin().await?;
-    let tname = lock_billing_team(&mut tx, team).await?;
-    let today = bt::today();
-    let before = derive_all(&team_slots(&mut tx, team).await?, today);
-    let seq = before.iter().find(|x| x.key == key).map(|x| x.seq).ok_or_else(|| ApiError::not_found("没有这个批次"))?;
-    let (n, min_end): (i64, Option<Date>) = sqlx::query_as("select count(*), min(end_date) from billing_slot where team_id = $1 and region = $2 and start_date = $3")
-        .bind(team)
-        .bind(&region)
-        .bind(old_start)
-        .fetch_one(&mut *tx)
-        .await?;
-    if let Some(e) = min_end {
-        if new_start >= e {
-            return Err(ApiError::bad_request(format!("起算日 {} 要早于已结束名额的结束日 {}", bt::fmt_date(new_start), bt::fmt_date(e))));
-        }
-    }
-    if new_start != old_start {
-        sqlx::query("update billing_slot set start_date = $4 where team_id = $1 and region = $2 and start_date = $3").bind(team).bind(&region).bind(old_start).bind(new_start).execute(&mut *tx).await?;
-        let label = format!("第{seq:02}批 · {region}");
-        let what = format!("起算日 {} → {}（整批 {n} 个）", bt::fmt_md(old_start), bt::fmt_md(new_start));
-        ledger::log(&mut tx, team, None, OffsetDateTime::now_utc(), "edit", Some(&label), None, json!({"what": what})).await?;
-        log_audit(&mut tx, &a, "billing.batch_update", None, &tname, format!("{label}：{what}")).await?;
-    }
-    let after = derive_all(&team_slots(&mut tx, team).await?, today);
-    let out = after.iter().find(|x| x.key == bt::key(new_start, &region)).and_then(|x| bt::derive(x, today).map(|d| bt::admin_json(x, &d))).ok_or_else(|| ApiError::internal("批次派生失败"))?;
-    tx.commit().await?;
-    st.emit(Event::Billing { id: team });
-    Ok(ok(out))
 }
 
 #[derive(Deserialize)]
@@ -529,7 +594,7 @@ pub struct InitIn {
 /// `POST /billing/init` `{since, dry_run?}`：一次性初始化——对还没有任何名额的非备用团队，把现在每个可计费节点建一个名额（起算日 = since，地区按国家，记 init）；
 /// 已有名额的团队跳过。第一次初始化之后对账才开始（app_setting 的 billing_since）。返回每个团队建了几个、哪些节点
 pub async fn init(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<InitIn>) -> ApiResult<Json<Value>> {
-    let since = date_in(&b.since, "起算日")?;
+    let since = date_in(&b.since, "开始收费日")?;
     let mut tx = st.db.begin().await?;
     let teams: Vec<(Uuid, String)> = sqlx::query_as("select id, name from team where not spare order by sort_order, name").fetch_all(&mut *tx).await?;
     let now = OffsetDateTime::now_utc();
@@ -566,7 +631,7 @@ pub async fn init(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Init
             .bind(&a.name)
             .execute(&mut *tx)
             .await?;
-        audit(&mut tx, &a.name, "billing.init", "billing_slot", None, json!({"team": "", "what": format!("{} 起算，建了 {total} 个计费节点", bt::fmt_date(since))})).await?;
+        audit(&mut tx, &a.name, "billing.init", "billing_slot", None, json!({"team": "", "what": format!("{} 开始收费，建了 {total} 个计费节点", bt::fmt_date(since))})).await?;
         tx.commit().await?;
         for team in touched {
             st.emit(Event::Billing { id: team });
@@ -668,35 +733,12 @@ pub async fn page_delete(a: Actor, State(st): State<AppState>, ApiPath(team): Ap
 
 // ── 公开（不登录）─────────────────────────────────────────────────────
 
-/// 客户页的节点清单：收费中的名额（没结束，或结束日在今天以后；含空出待定的），各自的本期（含今天的那一期，[period_start, period_end)），
-/// 按下次续费日（period_end）、名字排。名字：占用者现在的名字；空出待定的是原占用者；手动的写备注，没有备注写「手动添加的节点」。
-/// renews：本期结束后还续不续（结束日晚于 period_end 或没结束）。不含 IP、供应商、价格
-fn public_nodes(slots: &[SlotRow], today: Date) -> Vec<Value> {
-    let mut out: Vec<(Date, String, Value)> = slots
-        .iter()
-        .filter(|s| s.state(today) != "ended")
-        .filter_map(|s| {
-            let (ps, pe) = bt::period(s.start_date, bt::last_period(s.start_date, &[None], today)?)?;
-            let name = match (s.manual, s.note.is_empty()) {
-                (true, true) => "手动添加的节点".to_string(),
-                (true, false) => s.note.clone(),
-                _ => s.name(),
-            };
-            let v = json!({
-                "name": name, "region": s.region, "start_date": bt::fmt_date(s.start_date),
-                "period_start": bt::fmt_date(ps), "period_end": bt::fmt_date(pe), "renews": s.end_date.is_none_or(|e| e > pe),
-            });
-            Some((pe, name, v))
-        })
-        .collect();
-    out.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
-    out.into_iter().map(|(_, _, v)| v).collect()
-}
-
-/// `GET /api/v1/public/customer/{令牌}`：令牌不对或已停用一律 404（不区分）。令牌按 sha256 查库；
+/// `GET /api/v1/public/customer/{令牌}?month=2026-11`（默认本月）：每个节点起点落在这个月的那一期，已付 / 待付（待付在前、再按名字）。
+/// 每个节点只有名字（手动的写备注）、地区、这一期 [period_start, period_end)、paid，不含 IP、供应商、价格。令牌不对或已停用一律 404（不区分）。令牌按 sha256 查库；
 /// 和订阅拉取一样，不对的记一次失败、与登录共用按来源的限速（键按令牌哈希分开，别人猜错的不会把对的令牌一起封掉）。
 /// 最近查看时间与来源 10 分钟内只写一次。X-Robots-Tag 由 lib.rs 的响应头中间件统一加
-pub async fn public_view(State(st): State<AppState>, ClientIp(ip): ClientIp, ApiPath(token): ApiPath<String>) -> ApiResult<Response> {
+pub async fn public_view(State(st): State<AppState>, ClientIp(ip): ClientIp, ApiPath(token): ApiPath<String>, ApiQuery(q): ApiQuery<MonthQ>) -> ApiResult<Response> {
+    let month = month_in(q.month.as_deref())?;
     let hash = sha256(token.as_bytes());
     let key = format!("cust:{}", &hex::encode(&hash)[..16]);
     let attempt = auth::begin_attempt(&st, &key, ip.map(auth::ip_group)).await.map_err(|e| {
@@ -718,10 +760,16 @@ pub async fn public_view(State(st): State<AppState>, ClientIp(ip): ClientIp, Api
     .bind(ip.map(ipnetwork::IpNetwork::from))
     .execute(&st.db)
     .await?;
-    let today = bt::today();
-    let slots = team_slots(&mut *st.db.acquire().await?, team).await?;
-    let mut page = bt::public_page(&name, today, &derive_all(&slots, today));
-    page["nodes"] = Value::Array(public_nodes(&slots, today));
+    let (months, rows) = month_rows(&mut *st.db.acquire().await?, team, month).await?;
+    let (paid, unpaid) = counts(&rows);
+    let nodes: Vec<Value> = rows
+        .iter()
+        .map(|r| json!({"name": r.s.name(), "region": r.s.region, "period_start": bt::fmt_date(r.ps), "period_end": bt::fmt_date(r.pe), "paid": r.paid_at.is_some()}))
+        .collect();
+    let page = json!({
+        "team": name, "today": bt::fmt_date(bt::today()), "month": bt::fmt_month(month), "months": months.into_iter().map(bt::fmt_month).collect::<Vec<_>>(),
+        "nodes": nodes, "paid_count": paid, "unpaid_count": unpaid,
+    });
     let mut r = ok(page).into_response();
     r.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(r)

@@ -1,0 +1,62 @@
+/* 计费台账（features/CustomerTab）与客户页（pages/Customer），随 features/billing.tsx 按需加载。
+   两边一样的读法：一句话总结 → 每个节点一行（名字 · 地区 · 这一期的区间 · 收了没有），手机上不横向滚动 */
+
+/* 月份切换「‹ 2026 年 11 月 ›」 */
+.bm-switch { display: inline-flex; align-items: center; gap: var(--sp-4); }
+.bm-switch-label { min-width: 7.5em; text-align: center; font-weight: var(--fw-semibold); }
+
+/* ---------------------------------------------------------------- 客户页 /c/:token：白底（html.is-cx 在 base.css），内容居中 */
+.cx-page { max-width: 760px; margin: 0 auto; padding: clamp(20px, 5vw, 56px) clamp(16px, 4vw, 40px) 48px; display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-20); }
+.cx-state { display: grid; place-items: center; min-height: 60vh; } /* 链接无效 / 打不开：唯一的内容，在可视区里居中，不缩在左上角 */
+.cx-body { display: grid; gap: var(--sp-20); }
+.cx-head { display: grid; gap: var(--sp-12); }
+.cx-title { margin: 0; font-size: clamp(22px, 3.2vw, 30px); line-height: 1.2; font-weight: var(--fw-bold); letter-spacing: -0.02em; color: var(--fg); text-wrap: balance; }
+.cx-head .bm-switch { margin-left: calc(-1 * var(--sp-6)); }
+/* 一句话总结 */
+.cx-lead { margin: 0; font-size: var(--fs-title); line-height: 26px; color: var(--fg); text-wrap: pretty; }
+.cx-lead b { font-weight: var(--fw-semibold); font-variant-numeric: var(--num-variant); }
+.cx-lead span { white-space: nowrap; }
+.cx-done { color: var(--ok-text); font-weight: var(--fw-semibold); white-space: nowrap; }
+
+/* ---------------------------------------------------------------- 两边共用的节点行：左边名字与小字（地区 · 区间），右边收了没有 */
+.bm-list { margin: 0; padding: 0; list-style: none; }
+.bm-row { display: flex; align-items: center; gap: var(--sp-12); padding: var(--sp-10) var(--card-pad); min-height: 52px; box-sizing: border-box; }
+.bm-row + .bm-row { border-top: 1px solid var(--line); }
+.bm-main { flex: 1 1 auto; min-width: 0; display: grid; gap: 2px; }
+.bm-name { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-4) var(--sp-8); font-size: var(--fs-emph); line-height: var(--lh-emph); font-weight: var(--fw-semibold); color: var(--fg); min-width: 0; overflow-wrap: anywhere; }
+.bm-sub { font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); font-variant-numeric: var(--num-variant); }
+.bm-side { flex: none; display: inline-flex; align-items: center; gap: var(--sp-6); }
+/* 已收 ✓：绿色字；没收 / 待付：琥珀色底的小标签，醒目但不刺眼 */
+.bm-paid { display: inline-flex; align-items: center; gap: var(--sp-4); font-weight: var(--fw-semibold); color: var(--ok-text); white-space: nowrap; }
+.bm-paid svg { width: 16px; height: 16px; }
+.bm-due { display: inline-flex; align-items: center; height: 24px; padding: 0 var(--sp-10); border-radius: 999px; background: var(--warn-bg); color: var(--warn-text); font-size: var(--fs-label); font-weight: var(--fw-semibold); white-space: nowrap; }
+.bm-tag { font-size: var(--fs-label); line-height: var(--lh-label); font-weight: var(--fw-regular); color: var(--fg-2); white-space: nowrap; }
+.bm-tag[data-tone="warn"] { color: var(--warn-text); }
+/* 客户页的列表：一张白卡，圆角细边 */
+.cx-page .bm-list { border: 1px solid var(--line); border-radius: 14px; background: var(--surface); overflow: hidden; }
+.cx-page .bm-row { --card-pad: 16px; }
+
+/* ---------------------------------------------------------------- 管理端：团队与套餐 → 计费台账 */
+.cxa-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-8) var(--sp-16); min-width: 0; }
+.cxa-team { width: 180px; }
+.cxa-link { display: inline-flex; align-items: center; gap: var(--sp-6); min-width: 0; flex: 1 1 320px; font-size: var(--fs-body); }
+.cxa-url { max-width: 380px; color: var(--accent); text-decoration: none; font-variant-numeric: var(--num-variant); }
+@media (hover: hover) { .cxa-url:hover { text-decoration: underline; text-underline-offset: 3px; } }
+.cxa-link[data-off] .cxa-url { color: var(--fg-3); text-decoration: line-through; }
+.cxa-link > .t-sub:first-child { white-space: nowrap; }
+.cxa-seen { margin-left: var(--sp-6); white-space: nowrap; font-size: var(--fs-label); }
+/* 月份切换 + 「⋯」，下面一句话总结 */
+.cxa-month { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); margin-left: calc(-1 * var(--sp-6)); }
+.cxa-lead { margin: 0; max-width: 60em; font-size: var(--fs-title); line-height: 26px; color: var(--fg); text-wrap: pretty; }
+.cxa-lead b { font-weight: var(--fw-semibold); font-variant-numeric: var(--num-variant); }
+.cxa-lead span { white-space: nowrap; }
+.cxa-node { height: auto; padding: 0; font: inherit; color: inherit; }
+@media (hover: hover) { .cxa-node:hover { color: var(--accent); } }
+/* 「没收」那一块的标题数字用提示色 */
+.cxa-due-count { color: var(--warn-text); }
+/* 增减记录：左时间，右一句话 */
+.cxa-events { display: grid; margin: 0; padding: 0; list-style: none; }
+.cxa-events li { display: grid; grid-template-columns: 8.5em minmax(0, 1fr); gap: var(--sp-10); padding: var(--sp-6) 0; font-size: var(--fs-body); line-height: var(--lh-body); }
+.cxa-events li + li { border-top: 1px solid var(--line); }
+.cxa-events li > :first-child { font-size: var(--fs-label); white-space: nowrap; }
+@container content (max-width: 520px) { .cxa-events li { grid-template-columns: minmax(0, 1fr); gap: 0; } }

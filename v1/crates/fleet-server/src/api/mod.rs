@@ -74,9 +74,9 @@ pub fn router() -> Router<AppState> {
         .route("/teams/{id}/renumber", get(machines::renumber_preview).post(machines::renumber_apply))
         // 计费台账与客户到期页：管理接口要登录；公开接口按令牌取（不登录，没有 Actor 提取器），见 batches.rs
         .route("/teams/{id}/batches", get(batches::list))
-        .route("/teams/{id}/batches/{key}", patch(batches::batch_patch))
         .route("/teams/{id}/billing-events", get(batches::events))
-        .route("/teams/{id}/receivable", get(batches::receivable))
+        .route("/teams/{id}/billing/month", get(batches::month))
+        .route("/teams/{id}/billing/paid", post(batches::paid))
         .route("/teams/{id}/billing-slots", post(batches::slot_add))
         .route("/billing-slots/{id}", patch(batches::slot_patch).delete(batches::slot_delete))
         .route("/billing/init", post(batches::init))
