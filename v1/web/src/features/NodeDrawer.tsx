@@ -236,6 +236,8 @@ function OverviewTab({ m }: { m: MachineView }) {
           {h && m.bind_ip && <LabelValue label="本地地址"><><span className="num">{m.bind_ip}</span> <InfoTip text={`公网 IP 是 1:1 NAT 映射到宿主机这个地址上的：ssserver 监听并从它出站，线路机连的仍是 ${m.ip}`} /></></LabelValue>}
           {/* 端口转发型 NAT 节点：线路机连上面的 IP（入口），出站是这个 IP */}
           {m.egress_ip && <LabelValue label="出口 IP"><><span className="num">{m.egress_ip}</span> <InfoTip text={`线路机连的是 ${m.ip}，机器出站的公网 IP 是这个；出口验收看的就是它`} /></></LabelValue>}
+          {/* 出口 IP 动态（供应商的出口会变）：括号里是最近一次成功出口探测看到的 IP */}
+          {m.egress_dynamic && <LabelValue label="出口 IP"><>{m.egress_seen ? <>动态（最近 <span className="num">{m.egress_seen}</span>）</> : '动态（暂无成功的出口探测）'} <InfoTip text="供应商的出口 IP 会变，只验收能经节点出网，不比对具体 IP" /></></LabelValue>}
           <LabelValue label="SSH 端口">{`${m.ssh_port}${ofHost}`}</LabelValue>
           <LabelValue label="供应商">{m.provider?.name}</LabelValue>
           <LabelValue label="套餐">{m.plan?.name ?? (h ? '不带套餐' : undefined)}</LabelValue>

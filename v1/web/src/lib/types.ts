@@ -104,6 +104,10 @@ export interface MachineView {
   bind_ip: string | null;
   /** 端口转发型 NAT 节点（入口 IP 与出站 IP 不同）：它的出口 IP，ip 是线路机连的入口；null = 出口就是 ip */
   egress_ip: string | null;
+  /** 出口 IP 动态（供应商的出口会变，只验收能出网；此时 egress_ip 为 null） */
+  egress_dynamic: boolean;
+  /** 动态出口节点：最近一次成功出口探测看到的 IP；其它为 null */
+  egress_seen: string | null;
   /** 宿主机：它上面未退役的同机 IP 节点（按团队、编号）；其它机器为 []。宿主机的 quota.used 按网卡算，含它们的流量 */
   ip_nodes: { id: string; name: string }[];
   provider: { id: string; name: string } | null; provider_code: string | null;

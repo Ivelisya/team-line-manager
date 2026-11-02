@@ -169,7 +169,7 @@ export function buildDb(): Db {
     };
   };
   const base = (o: Partial<MachineView> & Pick<MachineView, 'id' | 'kind' | 'name' | 'ip'>): MachineView => ({
-    team: null, spare: false, number: null, label: null, ssh_port: 22, country: countryOf(o.ip), country_set: null, host_machine: null, bind_ip: null, egress_ip: null, ip_nodes: [], provider: null, provider_code: null, plan: null, service_ref: null,
+    team: null, spare: false, number: null, label: null, ssh_port: 22, country: countryOf(o.ip), country_set: null, host_machine: null, bind_ip: null, egress_ip: null, egress_dynamic: false, egress_seen: null, ip_nodes: [], provider: null, provider_code: null, plan: null, service_ref: null,
     lifecycle: 'active', lifecycle_reason: null, note: '', revision: 1, created_at: iso(now() - 120 * DAY), activated_at: iso(now() - 100 * DAY), retired_at: null, spare_from: null, spare_since: null, recycle_on: null, recycle_held: false, idle_spare: false, spare_unbilled: false, live_ip_nodes: [], renewing_ip_nodes: [], router_exits: [], billing_exempt: false, no_router_exits: false,
     subscription: null, sub_template: templateOf(undefined, undefined), agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, nic: null, month_counted_from: null, quota: { used: 0, period_start: '', period_end: null, mode: 'monthly', counted_from: null, rule: null, base: null, limit_gb: null, limit_source: 'none', daily_avg: null, forecast_full_at: null }, health: { status: 'ok', reasons: [] },
     active_job: null, failed_job: null, open_incidents: 0, maintenance: false, relay: null,
