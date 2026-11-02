@@ -93,16 +93,29 @@ fn enabled_entries(sh: &Shared) -> Vec<(uuid::Uuid, u16, Option<u16>)> {
 /// sing-box 多久查一次状态（systemctl is-active 子进程）。状态只用于界面显示和「订阅里给不给 AnyTLS」，不必像 Xray 那样 10 秒一查
 const SINGBOX_STATUS_EVERY: Duration = Duration::from_secs(30);
 
-/// AnyTLS 外壳（sing-box）的状态：启动时查一次，之后每 SINGBOX_STATUS_EVERY 一次，放进缓冲随报告带上
+/// sing-box 没在跑时，隔这么久自己再应用一次（带关占端口连接、reset-failed），不等配置变化
+const SINGBOX_RETRY_EVERY: Duration = Duration::from_secs(60);
+
+/// AnyTLS 外壳（sing-box）的状态：启动时查一次，之后每 SINGBOX_STATUS_EVERY 一次，放进缓冲随报告带上；
+/// 装了却没在跑（端口被占、撞过 StartLimit 等）就每 SINGBOX_RETRY_EVERY 按已应用的期望状态重新拉起一次
 pub async fn singbox_task(sh: Arc<Shared>, sb: Arc<crate::singbox::Singbox>, mut sd: watch::Receiver<bool>) {
     let mut tick = interval_at(Instant::now(), SINGBOX_STATUS_EVERY);
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut last_retry: Option<Instant> = None;
     loop {
         tokio::select! {
             _ = tick.tick() => {}
             _ = sd.changed() => return,
         }
-        let st = sb.status().await;
+        let mut st = sb.status().await;
+        if st.installed && !st.running && last_retry.is_none_or(|t| t.elapsed() >= SINGBOX_RETRY_EVERY) {
+            let applied = sh.applied.read().unwrap().clone();
+            if let Some(d) = applied {
+                last_retry = Some(Instant::now());
+                sb.apply(&d).await;
+                st = sb.status().await;
+            }
+        }
         sh.buf.lock().unwrap().singbox = Some(st);
     }
 }

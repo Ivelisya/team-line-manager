@@ -8,11 +8,14 @@
 //! - 证书没有（或服务名换了）时用 `sing-box generate tls-keypair <服务名> -m 120` 生成到同一目录（私钥 0600）。自签：客户端一律跳过校验
 //!   （链接里 insecure=1、Clash 里 skip-cert-verify），有效期给足 10 年，生成命令默认只有 1 个月；
 //! - 配置变了才动：`sing-box check` → 原子换上 → `systemctl restart`。sing-box 没有热更新的接口，重启会断开这台线路机上全部 AnyTLS 连接
-//!   （Reality 不受影响），所以内容一样就不重启；单元没在跑时拉起；
+//!   （Reality 不受影响），所以内容一样就不重启；单元没在跑（或要监听的端口没都在听）时拉起；
+//! - 启动前先 `reset-failed`（撞过 StartLimit 的单元停在 failed，不清掉 restart 也会被拒），再把占着 AnyTLS 端口的非监听连接关掉（见 sockfree.rs）。
+//!   没在跑时 collect.rs 的 singbox_task 每分钟左右再调一次 `apply`，不等配置变化；
 //! - 程序不在（还没装）：什么都不做，上报「未安装」，不影响 Xray 那一侧的应用与回报。
 
 use crate::config::Config;
 use crate::xray::ctl;
+use crate::sockfree;
 use crate::xray::render::anytls_ports;
 use anyhow::{bail, ensure, Context, Result};
 use fleet_proto::{tags, DesiredState, SingboxStatus};
@@ -26,6 +29,9 @@ use tokio::process::Command;
 const CERT_MONTHS: &str = "120";
 /// 重启后隔这么久再看单元是不是还在跑（Type=simple：刚重启时一定是 active，起来就退出的要等一会儿才看得出来）
 const SETTLE: Duration = Duration::from_secs(2);
+
+/// 重启后等单元起来、端口都听上的最长时间（在 SETTLE 之后再等）
+const LISTEN_WAIT: Duration = Duration::from_secs(3);
 
 pub fn inbound_tag(id: uuid::Uuid) -> String { format!("at-in-{}", id.simple()) }
 pub fn outbound_tag(id: uuid::Uuid) -> String { format!("at-out-{}", id.simple()) }
@@ -62,6 +68,15 @@ pub fn render(d: &DesiredState, cert: &str, key: &str) -> Value {
     })
 }
 
+/// 这份期望状态下 sing-box 要监听的公网端口（同 `render` 里的入站）
+fn listen_ports(d: &DesiredState) -> Vec<u16> {
+    let ports = anytls_ports(&d.entries);
+    let mut v: Vec<u16> = d.entries.iter().filter(|e| e.enabled).filter_map(|e| ports.get(&e.id).map(|p| p.0)).collect();
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
 /// `sing-box generate tls-keypair` 的输出：先私钥后证书 → (证书, 私钥)
 fn split_keypair(out: &str) -> Option<(String, String)> {
     let i = out.find("-----BEGIN CERTIFICATE-----")?;
@@ -77,14 +92,18 @@ fn parse_version(out: &str) -> Option<String> {
 pub struct Singbox {
     cfg: Arc<Config>,
     lock: tokio::sync::Mutex<()>,
-    last_error: Mutex<Option<String>>,
+    /// 最近一次应用的错误，和它是不是「启动 / 重启」这一步出的（配置或证书的错误为 false）：
+    /// 启动类的错误在单元恢复后由 `status` 清掉，配置类的要等下一次应用成功才清（单元还在跑旧配置时不能当没事）
+    last_error: Mutex<Option<(String, bool)>>,
+    /// 最近一次应用的期望状态里 sing-box 要监听的端口：单元 active 之外，这些端口都在听才算「在跑」
+    ports: Mutex<Vec<u16>>,
     /// (程序的修改时间, 版本)：换了程序才重新问
     version: Mutex<Option<(std::time::SystemTime, String)>>,
 }
 
 impl Singbox {
     pub fn new(cfg: Arc<Config>) -> Self {
-        Self { cfg, lock: tokio::sync::Mutex::new(()), last_error: Mutex::new(None), version: Mutex::new(None) }
+        Self { cfg, lock: tokio::sync::Mutex::new(()), last_error: Mutex::new(None), ports: Mutex::new(vec![]), version: Mutex::new(None) }
     }
 
     fn dir(&self) -> &Path { &self.cfg.singbox_dir }
@@ -107,43 +126,74 @@ impl Singbox {
         Ok(String::from_utf8_lossy(&out.stdout).to_string())
     }
 
-    /// 应用期望状态（Xray 那一侧应用成功之后、周期对齐时调）。结果记进 `last_error`，随状态上报；不影响 Xray 的回报
+    /// 应用期望状态（Xray 那一侧应用成功之后、周期对齐时、sing-box 没在跑时调）。结果记进 `last_error`，随状态上报；不影响 Xray 的回报
     pub async fn apply(&self, d: &DesiredState) {
         let _g = self.lock.lock().await;
-        let r = if self.installed() { self.apply_inner(d).await } else { Ok(()) };
-        if let Err(e) = &r {
+        if !self.installed() {
+            *self.last_error.lock().unwrap() = None;
+            return;
+        }
+        let ports = listen_ports(d);
+        *self.ports.lock().unwrap() = ports.clone();
+        let r = match self.prepare(d).await {
+            Err(e) => Err((e, false)),
+            Ok(changed) if !changed && self.is_running().await => Ok(()),
+            Ok(changed) => {
+                if !changed {
+                    tracing::warn!("{} 没在跑，拉起", self.cfg.singbox_service);
+                }
+                self.start(&ports).await.map_err(|e| (e, true))
+            }
+        };
+        if let Err((e, _)) = &r {
             tracing::error!("AnyTLS（sing-box）应用失败：{e:#}");
         }
-        *self.last_error.lock().unwrap() = r.err().map(|e| format!("{e:#}"));
+        *self.last_error.lock().unwrap() = r.err().map(|(e, runtime)| (format!("{e:#}"), runtime));
     }
 
-    async fn apply_inner(&self, d: &DesiredState) -> Result<()> {
+    /// 备好证书和配置：配置有变就 check 后原子换上。返回配置是不是换了（换了就必须重启）
+    async fn prepare(&self, d: &DesiredState) -> Result<bool> {
         let (cert, key) = self.ensure_cert(&d.relay.reality_sni).await?;
         let mut data = serde_json::to_vec_pretty(&render(d, &cert, &key))?;
         data.push(b'\n');
         let path = self.config_path();
-        let svc = self.cfg.singbox_service.clone();
-        let same = tokio::fs::read(&path).await.ok().is_some_and(|cur| cur == data);
-        if same {
-            if self.is_active().await {
-                return Ok(());
-            }
-            tracing::warn!("{svc} 没在跑，拉起");
-        } else {
-            let new = self.dir().join("config.json.new");
-            let (n2, d2) = (new.clone(), data);
-            tokio::task::spawn_blocking(move || crate::util::write_atomic(&n2, &d2, true)).await.context("写配置任务异常终止")??;
-            if let Err(e) = self.run(&["check", "-c", new.to_str().unwrap_or("")], Duration::from_secs(60)).await {
-                let _ = std::fs::remove_file(&new);
-                return Err(e.context("sing-box check 未通过"));
-            }
-            std::fs::rename(&new, &path).with_context(|| format!("rename → {}", path.display()))?;
-            tracing::info!("AnyTLS 配置有变，重启 {svc}");
+        if tokio::fs::read(&path).await.ok().is_some_and(|cur| cur == data) {
+            return Ok(false);
         }
+        let new = self.dir().join("config.json.new");
+        let (n2, d2) = (new.clone(), data);
+        tokio::task::spawn_blocking(move || crate::util::write_atomic(&n2, &d2, true)).await.context("写配置任务异常终止")??;
+        if let Err(e) = self.run(&["check", "-c", new.to_str().unwrap_or("")], Duration::from_secs(60)).await {
+            let _ = std::fs::remove_file(&new);
+            return Err(e.context("sing-box check 未通过"));
+        }
+        std::fs::rename(&new, &path).with_context(|| format!("rename → {}", path.display()))?;
+        tracing::info!("AnyTLS 配置有变，重启 {}", self.cfg.singbox_service);
+        Ok(true)
+    }
+
+    /// 重启单元：先清掉 failed 状态、关掉占着端口的连接，重启后确认单元在跑且端口都听上了
+    async fn start(&self, ports: &[u16]) -> Result<()> {
+        let svc = self.cfg.singbox_service.clone();
+        let _ = ctl::systemctl(&["reset-failed", &svc]).await;
+        sockfree::free_ports(ports).await;
         ctl::systemctl(&["restart", &svc]).await?;
         tokio::time::sleep(SETTLE).await;
-        ensure!(self.is_active().await, "{svc} 重启后没在跑（journalctl -u {svc} 看原因）");
+        let deadline = tokio::time::Instant::now() + LISTEN_WAIT;
+        while !self.is_running().await {
+            ensure!(tokio::time::Instant::now() < deadline, "{svc} 重启后没在跑或端口没都听上（journalctl -u {svc} 看原因）");
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
         Ok(())
+    }
+
+    /// 单元 active，且最近一次应用要监听的端口都在听（`ss` 用不了时只看单元）
+    async fn is_running(&self) -> bool {
+        if !self.is_active().await {
+            return false;
+        }
+        let ports = self.ports.lock().unwrap().clone();
+        sockfree::listening(&ports).await.is_none_or(|l| ports.iter().all(|p| l.contains(p)))
     }
 
     async fn is_active(&self) -> bool {
@@ -180,13 +230,20 @@ impl Singbox {
         Ok((cert, key))
     }
 
-    /// 现在的状态（上报用）：程序在不在、单元在不在跑、版本、最近一次应用的错误
+    /// 现在的状态（上报用）：程序在不在、单元在不在跑、版本、最近一次应用的错误。「在跑」以当前实际为准，启动类的旧错误恢复后清掉
     pub async fn status(&self) -> SingboxStatus {
-        let last_error = self.last_error.lock().unwrap().clone();
         if !self.installed() {
+            let last_error = self.last_error.lock().unwrap().as_ref().map(|e| e.0.clone());
             return SingboxStatus { installed: false, running: false, version: None, last_error };
         }
-        let running = self.is_active().await;
+        let running = self.is_running().await;
+        let last_error = {
+            let mut g = self.last_error.lock().unwrap();
+            if running && g.as_ref().is_some_and(|e| e.1) {
+                *g = None;
+            }
+            g.as_ref().map(|e| e.0.clone())
+        };
         let mtime = std::fs::metadata(&self.cfg.singbox_bin).and_then(|m| m.modified()).ok();
         let cached = self.version.lock().unwrap().clone().filter(|(t, _)| Some(*t) == mtime).map(|v| v.1);
         let version = match cached {

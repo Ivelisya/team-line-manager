@@ -16,6 +16,7 @@ mod queue;
 mod reporter;
 mod server;
 mod singbox;
+mod sockfree;
 mod state;
 mod util;
 mod xray;
