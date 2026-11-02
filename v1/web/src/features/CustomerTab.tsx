@@ -4,7 +4,7 @@
 // → 计费节点列表（含待定的；改起算日 / 地区备注 / 结束 / 删除手动名额；添加手动计费节点）→ 月度应收（按月翻）与增减记录。
 // 团队、「只看有效」、应收的月份写进地址（?team= / ?active=1 / ?month=）。
 import * as React from 'react';
-import { ChevronLeft, ChevronRight, ExternalLink, Link2, MoreHorizontal, Plus } from 'lucide-react';
+import { CalendarClock, CalendarDays, ChevronLeft, ChevronRight, ExternalLink, Link2, MoreHorizontal, Plus, Server } from 'lucide-react';
 import { useAddBillingSlot, useBillingEvents, useDelBillingSlot, usePatchBatch, usePatchBillingSlot, usePatchCustomerPage, useReceivable, useRotateCustomerPage, useTeamBatches, useTeams } from '@/lib/queries';
 import type { BillingSlot, CustomerBatch, CustomerPage, TeamBatches } from '@/lib/types';
 import { useUrlState } from '@/lib/urlState';
@@ -17,7 +17,7 @@ import { DateField } from '@/components/ui/date-field';
 import { Select } from '@/components/ui/select';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, Segmented, Tip } from '@/components/ui/overlays';
 import { toast } from '@/components/ui/toast';
-import { CopyButton, Empty, ErrorNote, Panel, Pill, TableWrap } from '@/components/app/primitives';
+import { CopyButton, Empty, ErrorNote, Panel, Pill, Stat, TableWrap } from '@/components/app/primitives';
 import { ConfirmDialog, FormDialog } from '@/components/app/dialogs';
 import { BatchTimeline, TimelineLegend, type TimelineItem } from './BatchTimeline';
 
@@ -97,23 +97,12 @@ function Figures({ d, teamId }: { d: TeamBatches; teamId: string }) {
   const side = [t.pending > 0 && `待定 ${t.pending} 个`, t.vacated > 0 && `空出待定 ${t.vacated} 个`].filter(Boolean).join(' · ');
   return (
     <section className="cxa-figs" aria-label="计费概况">
-      <div className="cxa-fig">
-        <span className="cxa-fig-k">当前计费节点 <InfoTip text={PAIR_TIP} /></span>
-        <span className="cxa-fig-v">{t.active}<small>个</small></span>
-        <span className="cxa-fig-s">{side || ' '}</span>
-      </div>
-      <div className="cxa-fig">
-        <span className="cxa-fig-k">本月应收 <InfoTip text={'这个月里开始的每一期按个数计，1 个节点 1 期 = 1 个节点月\n明细见下面「月度应收」'} /></span>
-        <span className="cxa-fig-v" data-stale={cur.isPlaceholderData}>{cur.data ? cur.data.total : '—'}<small>个节点月</small></span>
-        <span className="cxa-fig-s">{monthLabel(d.today.slice(0, 7))}</span>
-      </div>
-      <div className="cxa-fig">
-        <span className="cxa-fig-k">下次续费</span>
-        {next.length ? <>
-          <span className="cxa-fig-v"><span className="num">{md(next[0][0])}</span><small>续 {next[0][1]} 个</small></span>
-          <span className="cxa-fig-s">{next[1] ? <>之后 <span className="num">{md(next[1][0])}</span> 续 {next[1][1]} 个</> : ' '}</span>
-        </> : <><span className="cxa-fig-v t-muted">—</span><span className="cxa-fig-s"> </span></>}
-      </div>
+      <Stat tone="blue" icon={<Server />} label="当前计费节点" info={PAIR_TIP} value={t.active} unit="个" caption={side || undefined} />
+      <Stat tone="violet" icon={<CalendarDays />} label="本月应收" info={'这个月里开始的每一期按个数计，1 个节点 1 期 = 1 个节点月\n明细见下面「月度应收」'}
+        value={<span data-stale={cur.isPlaceholderData}>{cur.data ? cur.data.total : '—'}</span>} unit="个节点月" caption={monthLabel(d.today.slice(0, 7))} />
+      <Stat tone="amber" icon={<CalendarClock />} label="下次续费"
+        value={next.length ? <span className="num">{md(next[0][0])}</span> : <span className="t-muted">—</span>} unit={next.length ? `续 ${next[0][1]} 个` : undefined}
+        caption={next[1] ? <>之后 <span className="num">{md(next[1][0])}</span> 续 {next[1][1]} 个</> : undefined} />
     </section>
   );
 }

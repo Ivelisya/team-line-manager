@@ -23,7 +23,7 @@ const SOURCE_LABEL: Record<string, string> = { fleet: '本面板', legacy: '旧�
 const SOURCE_OPTS = Object.entries(SOURCE_LABEL).map(([value, label]) => ({ value, label }));
 type ColDef = { id: string; header: string; width?: number; r?: boolean; first?: 'asc' | 'desc' };
 const COLS: ColDef[] = [
-  { id: 'name', header: '名称', width: 160, first: 'asc' }, { id: 'ip', header: 'IP', width: 136 }, { id: 'plan', header: '套餐 · 供应商', width: 140 }, { id: 'price', header: '价格 / 周期', width: 116 },
+  { id: 'name', header: '名称', width: 160, first: 'asc' }, { id: 'ip', header: 'IP', width: 136 }, { id: 'plan', header: '套餐 · 供应商', width: 176 }, { id: 'price', header: '价格 / 周期', width: 116 },
   { id: 'recycled', header: '上架 → 退役 → 回收', width: 164, first: 'desc' }, { id: 'reason', header: '原因' }, { id: 'traffic', header: '业务流量', width: 96, r: true, first: 'desc' },
   { id: 'source', header: '来源', width: 84 }, { id: 'chev', header: '', width: 36 },
 ];
@@ -157,7 +157,7 @@ export function RecycleBin({ sp, upd, tools }: { sp: URLSearchParams; upd: (patc
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       <Panel flush>
         <TableWrap>
-          <table className="dt" style={{ minWidth: 1040 }}>
+          <table className="dt" style={{ minWidth: 1080 }}>
             <colgroup>{cols.map((c) => <col key={c.id} style={{ width: c.width }} />)}</colgroup>
             <SortHead cols={cols.map((c) => ({ id: c.id, header: c.header, r: c.r, first: sortable ? c.first : undefined }))} sort={sort} onSort={setSort} />
             <tbody>{rows.map((r) => <Row key={r.id} r={r} open={r.id === openId} source={showSource} span={cols.length} onToggle={setOpenId} />)}</tbody>
