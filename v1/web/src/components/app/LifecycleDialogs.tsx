@@ -2,14 +2,15 @@
 // 抽屉“管理”页、线路页、卡片/表格的右键菜单、命令面板共用；菜单触发的（连同退役）走 LifecycleDialogsHost（外壳里只渲染一份）。
 import * as React from 'react';
 import { useNavigate } from 'react-router-dom';
-import type { MachineView } from '@/lib/types';
-import { useEvacuate, useEvacuatePreview, useMachine, useMoveEntry, useMovePreview, useMoves, useMovesPreview, useRelays } from '@/lib/queries';
+import type { MachineView, PlacementCell, PlacementNode, PlacementView } from '@/lib/types';
+import { useEvacuate, useEvacuatePreview, useMachine, useMoveEntry, useMovePreview, useMoves, useMovesPreview, usePlacement, useRelays } from '@/lib/queries';
 import { HEALTH_TONE } from '@/lib/sort';
 import { closeEvacuate, closeMove, closeRenew, closeReplace, closeRetire, useEvacuateTarget, useMoveTarget, useRenewTarget, useReplaceTarget, useRetireTarget } from '@/lib/nodeActions';
 import { PlanBlockers, ReplaceDialog, RouterExitList } from './ReplaceDialog';
 import { RenewDialog } from '@/features/BillingTab';
 import { useDrawer } from '@/lib/drawer';
 import { errText, healthLabel } from '@/lib/derive';
+import * as F from '@/lib/format';
 import { CheckRow, Field, InfoTip } from '@/components/ui/form';
 import { Select, type Option } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
@@ -28,8 +29,9 @@ function RoutersCheck({ checked, onChange, none, failed }: { checked: boolean; o
 }
 
 /** 换线 / 搬空的目标线路机下拉：在用的线路机，每项写状态、入口数、到期；降级、故障、即将到期、已过期按级别着色。
- *  正常的（含降级）排前面，故障的排后面置灰、悬停写原因，仍可选 */
-function targetOptions(relays: MachineView[], keep: (r: MachineView) => boolean): Option[] {
+ *  正常的（含降级）排前面，故障的排后面置灰、悬停写原因，仍可选。
+ *  给了 rtt（放置矩阵里这个节点到各线路机的格子）时，每项后面写往返，suggested 那项标「建议」 */
+function targetOptions(relays: MachineView[], keep: (r: MachineView) => boolean, rtt?: { cell: (id: string) => PlacementCell | undefined; suggested: string }): Option[] {
   const down = (r: MachineView) => r.health.status === 'down';
   const list = relays.filter((r) => r.lifecycle === 'active' && keep(r));
   return [...list.filter((r) => !down(r)), ...list.filter(down)].map((r) => {
@@ -40,9 +42,32 @@ function targetOptions(relays: MachineView[], keep: (r: MachineView) => boolean)
       label: <span className={down(r) ? 'opt-relay is-down' : 'opt-relay'} data-tip={down(r) ? r.health.reasons.map((x) => errText(x.text)).join('\n') || undefined : undefined}>{r.name}<span className="t-sub">
         {' · '}<span className="due" data-tone={tone === 'warn' || tone === 'bad' ? tone : undefined}>{healthLabel(r.health.status)}</span>
         {` · ${r.entries.length} 条入口`}{s && <>{' · '}<Due days={s.due_days} state={s.due_state} tail /></>}
-      </span></span>,
+        {rtt && <RttTail c={rtt.cell(r.id)} />}
+      </span>{rtt?.suggested === r.id && <span className="pm-tag" style={{ marginLeft: 'var(--sp-6)' }}>建议</span>}</span>,
     };
   });
+}
+
+/** 选项后面的往返：「 · 38 ms」，成功率不到 100% 加「 · 成功 97.2%」；测到但不通写「不通」，没测到什么都不写 */
+function RttTail({ c }: { c?: PlacementCell }) {
+  if (!c || c.samples === 0) return null;
+  if (c.p50_ms == null) return <>{' · '}<span className="pm-bad">不通</span></>;
+  return <>{' · '}<span className="num">{F.ms(c.p50_ms).v}</span> ms{c.success_pct != null && c.success_pct < 100 && <span className={c.success_pct < 99 ? 'pm-pct is-weak' : 'pm-pct'}>{` · 成功 ${c.success_pct}%`}</span>}</>;
+}
+
+/** 这台节点到各线路机的往返格子，以及里面往返最低且可达的那台（在 ids 里挑：成功率够格、没故障、额度放得下）。放置数据还没有 / 没这个节点 / 没有够格的 → suggested 为空 */
+function placementFor(p: PlacementView | undefined, nodeId: string, ids: string[]): { cell: (id: string) => PlacementCell | undefined; suggested: string } | undefined {
+  const n: PlacementNode | undefined = p?.nodes.find((x) => x.id === nodeId);
+  if (!p || !n) return undefined;
+  const cell = (id: string) => n.cells.find((c) => c.relay_id === id);
+  const down = new Set(p.relays.filter((r) => r.status === 'down').map((r) => r.id));
+  let best: PlacementCell | undefined;
+  for (const id of ids) {
+    const c = cell(id);
+    if (!c || c.p50_ms == null || down.has(id) || n.no_room.includes(id) || (c.success_pct ?? 100) < p.min_success_pct) continue;
+    if (!best || c.p50_ms < best.p50_ms!) best = c;
+  }
+  return { cell, suggested: best?.relay_id ?? '' };
 }
 
 /** 节点当前在用的入口（可以被换走的）。线路机的直出入口不搬：退役线路机时随之摘除 */
@@ -56,10 +81,12 @@ export const MoveDialog = resetOnOpen(function MoveDialog({ m, open, onOpenChang
   const move = useMoveEntry();
   const relays = useRelays().data ?? [];
   const cur = movableEntries(m);
-  const [to, setTo] = React.useState(initialTo ?? '');
+  const [picked, setTo] = React.useState(initialTo ?? '');
   const [from, setFrom] = React.useState(() => (cur.length === 1 ? cur[0].relay.id : initialFrom ?? ''));
   const used = new Set(m.entries.map((e) => e.relay.id));
-  const opts = targetOptions(relays, (r) => !used.has(r.id));
+  const pl = placementFor(usePlacement().data, m.id, relays.filter((r) => r.lifecycle === 'active' && !used.has(r.id)).map((r) => r.id));
+  const opts = targetOptions(relays, (r) => !used.has(r.id), pl);
+  const to = picked || pl?.suggested || '';  // 没选过就用往返最低的那台（没有放置数据时空着）
   const multi = cur.length > 1;
   const [routers, setRouters] = React.useState(true);
   const q = useMovePreview(m.id, open && cur.length > 0 && (!multi || !!from), { to_relay_id: to, from_relay_id: multi ? from : undefined, routers });
