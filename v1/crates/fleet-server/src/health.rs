@@ -180,9 +180,10 @@ fn probe_reasons(live: &[&EntryView], now: OffsetDateTime, rs: &mut Vec<Reason>,
     let (mut egress_streak, mut tcp_streak) = (0u8, 0u8);
     for e in live {
         // 线路机的 Xray 没在运行时，经它的探测必然失败：不在节点上重复报严重告警（线路机自己有
-        // relay_xray_down），这条入口按「未知」处理。
+        // relay_xray_down），这条入口按「未知」处理：不新开节点告警，已开着的保持原状（同线路机离线、维护，不因原因被跳过而当成恢复）。
         if e.relay_xray_down {
             *unknown = true;
+            undecided.push(e.relay.id);
             continue;
         }
         // 线路机 agent 离线（探测是它做的）：最后报的那次结果不再更新，失败的不开告警，开着的也不因此恢复。
@@ -660,9 +661,11 @@ pub(crate) mod tests {
         let h = evaluate(&n, now);
         assert_eq!(keys(&h), ["egress_fail", "tcp_fail"]);
         assert!(h.probe_unknown);
-        // 线路机 Xray 没在运行的入口交给线路机的告警，不算探测过期
+        // 线路机 Xray 没在运行的入口交给线路机的告警，节点上不开新的；但判不出，已开着的出口 / TCP 告警保持原状
         n.entries = vec![entry(true, false)];
-        assert!(!evaluate(&n, now).probe_unknown);
+        let h = evaluate(&n, now);
+        assert!(h.reasons.is_empty() && h.probe_unknown && h.undecided("egress_fail") && h.undecided("tcp_fail"), "{:?}", keys(&h));
+        assert_eq!(h.probe_undecided, vec![n.entries[0].relay.id]);
     }
 
     /// 持续握手丢包：节点算降级（警告）；判不出时不给原因、标 undecided（开着的不恢复）；线路机不判

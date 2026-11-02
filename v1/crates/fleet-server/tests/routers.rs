@@ -55,7 +55,7 @@ case $script in
     printf '%s' "$to" > "$R/group.now"
     echo "{\"v\":1,\"now\":0,\"sw\":{\"ok\":true,\"type\":\"Selector\",\"was\":\"$was\",\"now\":\"$to\"}}"; exit 0 ;;
   *FLEET_UC*) cat "$R/collect.json"; exit 0 ;;
-  *"head -c"*) cat "$R/config.yaml"; exit 0 ;;
+  *"head -c"*) cat "$R/config.yaml"; exit $? ;;
 esac
 printf '%s\n' "$script" | sed "s#/etc/#$R/etc/#g" | sh -s
 "#;
@@ -529,6 +529,42 @@ async fn config_changes_timeline() {
     );
     assert!(!v.to_string().contains(UUID_OK) && !v.to_string().contains("11111111-1111"), "凭据不输出");
     assert_eq!(t.get(&format!("{url}?limit=1")).await.as_array().unwrap().len(), 1);
+}
+
+/// 取配置文件失败（隧道断、超时、读不到）是临时的：不按这个 sha 缓存，这一轮标 config_error 沿用旧出口，下一轮配置没变也重取；
+/// 取到了但解析不了才按 sha 缓存（见 collect_error_is_not_offline）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn config_fetch_failure_is_retried() {
+    let t = setup().await;
+    let entry = seed_entry(&t).await;
+    let (id, _) = create(&t, "团队1-路由F").await;
+    issue_key(&t, &id).await;
+    let port = 23952;
+    sqlx::query("update router set tunnel_port = $2 where id = $1::uuid").bind(&id).bind(port as i32).execute(&t.st.db).await.unwrap();
+    let r = root(port);
+    std::fs::create_dir_all(&r).unwrap();
+    let now = OffsetDateTime::now_utc().unix_timestamp();
+    let with_sha = |n: i64, sha: &str| { let mut c = collect_json(now + n, 1_000_000 + n as u64); c["oc"]["config_sha256"] = json!(sha); c.to_string() };
+    std::fs::write(r.join("collect.json"), with_sha(0, "sha-1")).unwrap();
+    std::fs::write(r.join("config.yaml"), CONFIG).unwrap();
+    let mut mem = Default::default();
+    collect::round(&t.st, &mut mem).await.unwrap();
+    // 配置变了（sha-2），但这一轮取不回来：标原因、出口沿用对上的入口，不按 sha-2 缓存
+    std::fs::write(r.join("collect.json"), with_sha(30, "sha-2")).unwrap();
+    std::fs::remove_file(r.join("config.yaml")).unwrap();
+    collect::round(&t.st, &mut mem).await.unwrap();
+    let d = t.get(&format!("/api/v1/routers/{id}")).await;
+    let oc = &d["detail"]["openclash"];
+    assert!(oc["config_error"].as_str().unwrap().starts_with("取配置文件 /etc/openclash/config/c.yaml 失败"), "{oc}");
+    assert_eq!((oc["config_stale"].as_bool(), d["detail"]["exits"][0]["entry"]["id"].clone()), (Some(true), json!(entry)), "{d}");
+    // 文件回来、sha 没再变：下一轮重取，错误清掉
+    std::fs::write(r.join("collect.json"), with_sha(60, "sha-2")).unwrap();
+    std::fs::write(r.join("config.yaml"), CONFIG).unwrap();
+    collect::round(&t.st, &mut mem).await.unwrap();
+    let d = t.get(&format!("/api/v1/routers/{id}")).await;
+    let oc = &d["detail"]["openclash"];
+    assert_eq!((oc["config_error"].clone(), oc["config_stale"].as_bool()), (Value::Null, Some(false)), "{oc}");
+    assert_eq!(d["detail"]["exits"][0]["entry"]["id"], json!(entry));
 }
 
 // ── 告警 ──────────────────────────────────────────────────────────────────

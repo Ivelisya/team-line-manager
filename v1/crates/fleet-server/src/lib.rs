@@ -138,7 +138,7 @@ async fn response_headers(State(https): State<bool>, req: axum::extract::Request
     res
 }
 
-/// 后台任务：作业、告警、实时指标、访问汇总、来源画像、通知发送、分区维护、小时汇总、软路由采集（含它的告警）、中控到线路机的连通性、汇率更新、探测点（离线告警、主来源切换）、三网 PING（小时汇总与保留期）、持续握手丢包（tcp_loss.rs）、计费对账（ledger.rs）。
+/// 后台任务：作业、告警、实时指标、访问汇总、来源画像、通知发送、分区维护、小时汇总、软路由采集（含它的告警）、软路由临时切换到时切回（routers/switch.rs）、中控到线路机的连通性、汇率更新、探测点（离线告警、主来源切换）、三网 PING（小时汇总与保留期）、持续握手丢包（tcp_loss.rs）、计费对账（ledger.rs）。
 /// 都在 `supervise` 下跑：panic 或意外返回时记 error、10 秒后原地重启（这些循环的状态在库里，内存里的去抖计数、缓存重启后重新累计）。
 /// 作业引擎也一样：清旧租约只在 main 启动时做一次，本进程还在推进的作业不会被再领（`jobs::Running`），原地重启不会让两个执行者推进同一个作业
 pub fn spawn_background(st: &AppState) {
@@ -158,6 +158,7 @@ pub fn spawn_background(st: &AppState) {
     supervise(st, "会话撤销通知", revoked_listener);
     supervise(st, "软路由采集", routers::collect::run_forever);
     supervise(st, "软路由隧道监听", routers::collect::watch_tunnels);
+    supervise(st, "软路由临时切换到时切回", routers::switch::run_forever);
     supervise(st, "软路由隧道回连主机自检", routers::selfcheck::run_forever);
     supervise(st, "中控到线路机的连通性", reach::run_forever);
     supervise(st, "汇率更新", fx::run_forever);

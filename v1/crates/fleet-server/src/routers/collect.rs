@@ -797,7 +797,7 @@ pub async fn run_forever(st: AppState) {
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let refresh = &st.routers_refresh;
     refresh.running.store(true, Ordering::Relaxed);
-    // 连不上的路由满 1 分钟的那一刻再评估告警（alerts::evaluate 的返回值）
+    // 连不上的路由满 3 分钟的那一刻再评估告警（alerts::evaluate 的返回值）
     let mut eval_at: Option<tokio::time::Instant> = None;
     loop {
         let due_eval = async move {
@@ -825,10 +825,6 @@ pub async fn run_forever(st: AppState) {
             }
         }
         refresh.served.send_replace(seq);
-        // 到时间的临时切换切回去（每轮整轮采集之后看一次）
-        if full {
-            super::switch::due(&st).await;
-        }
         // 每轮（含马上采的那几台）之后评估告警：隧道连上马上采成功，离线告警当场恢复
         if full || eval_only || !due.is_empty() {
             eval_at = None;
@@ -846,7 +842,7 @@ const WATCH_EVERY: Duration = Duration::from_secs(2);
 /// 盯着本机隧道端口的监听：路由的反向隧道连上（中控 sshd 开始在 127.0.0.1:<端口> 上监听）或断开（监听没了）时马上采一次这几台，
 /// 不等 30 秒一轮——界面上的在线 / 离线随即跟上（采完发 `Event::Routers`），连上了离线告警当场恢复。
 /// 路由断电、断网这类没告别的断开，中控 sshd 要 ClientAlive 约 30 秒才发现（deploy/central/sshd-fleet-tunnel.conf）；
-/// 离线告警本身按「连不上满 1 分钟」开（alerts.rs），不靠它。读不了 /proc/net/tcp（不是 Linux）就不盯，照 30 秒一轮
+/// 离线告警本身按「连不上满 3 分钟」开（alerts.rs），不靠它。读不了 /proc/net/tcp（不是 Linux）就不盯，照 30 秒一轮
 pub async fn watch_tunnels(st: AppState) {
     let (lo, hi) = (crate::config::TUNNEL_PORT_MIN, crate::config::TUNNEL_PORT_MAX);
     let mut prev: Option<HashSet<u16>> = None;
@@ -1179,29 +1175,36 @@ async fn collect(st: &AppState, t: &Target, m: &mut Mem, entries: &[Entry], now:
     // 配置文件变了（或还没取过）才取回来解析
     let sha = raw.pointer("/oc/config_sha256").and_then(Value::as_str).map(String::from);
     let path = raw.pointer("/oc/config_path").and_then(Value::as_str).map(String::from);
+    // 取失败（隧道断、超时）是临时的：只把原因记在这一轮的 config_error 上，不按这个 sha 缓存，下一轮重取；解析不了才按 sha 缓存
+    let mut fetch_error = None;
     if let (Some(sha), Some(path)) = (sha.as_ref(), path.as_ref()) {
         if m.config.as_ref().is_none_or(|c| &c.0 != sha) {
-            let parsed = fetch_config(st, t, path).await;
-            if let Ok((p, refs)) = &parsed {
-                m.good = Some(p.clone());
-                m.good_refs = Some(refs.clone());
+            match fetch_config(st, t, path).await {
+                Ok(parsed) => {
+                    if let Ok((p, refs)) = &parsed {
+                        m.good = Some(p.clone());
+                        m.good_refs = Some(refs.clone());
+                    }
+                    m.config = Some((sha.clone(), parsed.map(|c| c.0)));
+                }
+                Err(e) => fetch_error = Some(e),
             }
-            m.config = Some((sha.clone(), parsed.map(|c| c.0)));
         }
     }
     // 和上一份存下来的快照比：配置变了就记一条（来源、出口差异见 changes.rs）
     let old_sha = m.last.as_ref().and_then(|l| l.openclash.config_sha256.as_deref());
     let change = sha.as_deref().zip(old_sha).filter(|(n, o)| n != o).map(|(n, o)| {
         let new = m.config.as_ref().map(|(s, r)| (s.as_str(), r.as_deref().ok()));
-        let new_err = m.config.as_ref().and_then(|(_, r)| r.as_ref().err()).map(String::as_str);
+        let new_err = fetch_error.as_deref().or_else(|| m.config.as_ref().and_then(|(_, r)| r.as_ref().err()).map(String::as_str));
         let old = m.stored.as_ref().map(|(s, p)| (s.as_str(), p.as_deref()));
         changes::detect(&st.routers_refresh.claims, t.id, o, n, old, new, new_err)
     });
-    // 解析不了：沿用上一次解析成功的
-    let (config, config_error) = match &m.config {
-        Some((_, Ok(p))) => (Some(p.as_slice()), None),
-        Some((_, Err(e))) => (m.good.as_deref(), Some(e.clone())),
-        None => (None, None),
+    // 取不到、解析不了：沿用上一次解析成功的
+    let (config, config_error) = match (&fetch_error, &m.config) {
+        (Some(e), _) => (m.good.as_deref(), Some(e.clone())),
+        (None, Some((_, Ok(p)))) => (Some(p.as_slice()), None),
+        (None, Some((_, Err(e)))) => (m.good.as_deref(), Some(e.clone())),
+        (None, None) => (None, None),
     };
     // 策略组有没有在用要算上配置里规则之外的引用（dialer-proxy、dns 的 #组名）；配置读不到时标出来，mark_used 对没被规则用到的组不下结论
     if let Some(rules) = raw.pointer_mut("/oc/rules").filter(|r| r.is_object()) {
@@ -1291,17 +1294,18 @@ async fn delay(st: &AppState, t: &Target, managed: &[String], only: &[String]) -
         .ok_or_else(|| format!("延迟测试脚本出错（退出码 {}）：{}", out.code, detail(&out)))
 }
 
-/// 经隧道取回 OpenClash 的源配置（顶层 `secret:` 行在路由上先删掉，不传回来），在内存里解析出口
-async fn fetch_config(st: &AppState, t: &Target, path: &str) -> Result<(Vec<Proxy>, Vec<String>), String> {
+/// 经隧道取回 OpenClash 的源配置（顶层 `secret:` 行在路由上先删掉，不传回来），在内存里解析出口。
+/// 外层 Err 是没取到（ssh 失败、超时、退出码非 0，临时的）；内层 Err 是取到了但解析不了（配置不变就一直如此）
+async fn fetch_config(st: &AppState, t: &Target, path: &str) -> Result<Result<(Vec<Proxy>, Vec<String>), String>, String> {
     let script = crate::jobs::scripts::vars(&[("P", path)]) + &format!("sed '/^secret[[:space:]]*:/d' \"$P\" | head -c {}\n", clash::MAX_CONFIG + 1);
     let out = crate::ssh::exec(tunnel::via_tunnel(&st.cfg, t.id, t.tunnel_port), &script, CONFIG_TIMEOUT).await.map_err(|e| format!("取配置文件失败：{e:#}"))?;
     if out.code != 0 {
         return Err(format!("取配置文件 {path} 失败：{}", out.stderr.trim().chars().take(200).collect::<String>()));
     }
     if out.stdout.len() > clash::MAX_CONFIG {
-        return Err(format!("配置文件 {path} 超过 1 MiB，不解析"));
+        return Ok(Err(format!("配置文件 {path} 超过 1 MiB，不解析")));
     }
-    clash::parse_all(&out.stdout)
+    Ok(clash::parse_all(&out.stdout))
 }
 
 // ── 小时汇总与保留期 ────────────────────────────────────────────────────
