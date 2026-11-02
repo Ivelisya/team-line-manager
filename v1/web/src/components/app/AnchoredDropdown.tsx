@@ -8,6 +8,13 @@ import { createPortal } from 'react-dom';
 import { useHeld } from '@/lib/useHeld';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/components/ui/overlays';
 
+// 菜单项要把焦点交给菜单外的面板（终端的密码框）时，得等菜单完全关掉再动手：菜单退场动画期间面板抢到焦点，会被菜单的焦点圈拉回去，
+// 菜单卸载后焦点落在 body、再被下面的 onCloseAutoFocus 回给“⋯”按钮。登记一个回调，菜单关完（onCloseAutoFocus）时执行，且不再把焦点回给按钮
+let afterClose: (() => void) | undefined;
+export const runAfterMenuClosed = (fn: () => void) => { afterClose = fn; };
+/** 菜单关完时调用（下拉和右键菜单各一处）：有登记的回调就执行并返回 true */
+export const flushAfterMenuClosed = () => { const run = afterClose; afterClose = undefined; run?.(); return !!run; };
+
 /** btn：“⋯”按钮的选择器；idOf：按钮 → 对象 id；find：按 id 取容器里当前的对象（找不到 = 已不在容器里）。
  *  返回 onClick（挂在容器上，点击从按钮冒泡上来）、cur（打开的那个对象，关闭动画期间是最近的那个）、menu（渲染下拉，菜单项按 cur 给） */
 export function useAnchoredDropdown<T>(btn: string, idOf: (el: HTMLElement) => string | undefined, find: (id: string | undefined) => T | undefined) {
@@ -30,9 +37,9 @@ export function useAnchoredDropdown<T>(btn: string, idOf: (el: HTMLElement) => s
     <DropdownMenu open={open} onOpenChange={(o) => { if (!o) close(); }}>
       {at && createPortal(<DropdownMenuTrigger asChild><span className="menu-anchor" aria-label={label} /></DropdownMenuTrigger>, at.el)}
       {/* 关闭后焦点回到被点的“⋯”（Radix 默认回到触发元素，这里的触发元素是看不见的定位框）。
-          焦点已被别处接走（菜单项弹出的密码框、对话框）就不抢回来，只在焦点落在 body 上时才回按钮。
+          焦点已被别处接走（菜单项弹出的对话框）就不抢回来，只在焦点落在 body 上时才回按钮；菜单项登记了关闭后执行的回调（runAfterMenuClosed）则执行它、不回按钮。
           关闭动画播完再撤掉定位框：不一直挂在最后点过的按钮里（那张卡被筛掉、翻页后成了脱离文档的节点）；期间又点开了别的就不撤 */}
-      <DropdownMenuContent align="end" onCloseAutoFocus={(e) => { e.preventDefault(); const f = document.activeElement; if (at?.el.isConnected && (!f || f === document.body)) at.el.focus(); setAt((a) => (openRef.current ? a : null)); }}>{items}</DropdownMenuContent>
+      <DropdownMenuContent align="end" onCloseAutoFocus={(e) => { e.preventDefault(); const f = document.activeElement; if (flushAfterMenuClosed()) { /* 焦点交给回调打开的面板 */ } else if (at?.el.isConnected && (!f || f === document.body)) at.el.focus(); setAt((a) => (openRef.current ? a : null)); }}>{items}</DropdownMenuContent>
     </DropdownMenu>
   );
   return { onClick, cur, menu, close };
