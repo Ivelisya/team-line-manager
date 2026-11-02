@@ -11,7 +11,7 @@
 //! 月度窗口只能用小时汇总）。告警次数是窗口内（组织时区的自然日起止）这台机器上可用性相关规则（`AVAILABILITY_RULES`）开出的告警条数，
 //! 30 分钟内复发合并进原告警的也算（`reopen_count`，同告警页的次数）。警告级的 tcp_fail（TCP 偶发失败、出口正常，health::probe_reasons）不算：
 //! 只数严重的：按告警 detail 里的 `critical_count`（incident::reconcile 在开为严重、警告升到严重、重开为严重时各 +1）求和，复发重开时 severity 会被改成本次的、不能看它；
-//! 旧告警的这个数由迁移 0099 回填（有 `critical` 标记或 severity = 'critical' 的，写成 1 + reopen_count），见 `incident::CRIT_COUNT_SQL`。
+//! 旧告警的这个数由迁移 0099 回填，见 `incident::CRIT_COUNT_SQL`。
 //!
 //! 月报：总流量、月费合计、USD/GB 最高的 3 台、可用率最差的 3 台、告警次数前 3 的规则（tcp_fail 同样只数严重的）、即将到期的台数；
 //! （USD/GB 与可用率不含闲置备用，被扣住不回收的备用机算进来），

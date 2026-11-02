@@ -32,7 +32,7 @@ export function useAnchoredDropdown<T>(btn: string, idOf: (el: HTMLElement) => s
       {/* 关闭后焦点回到被点的“⋯”（Radix 默认回到触发元素，这里的触发元素是看不见的定位框）。
           焦点已被别处接走（菜单项弹出的密码框、对话框）就不抢回来，只在焦点落在 body 上时才回按钮。
           关闭动画播完再撤掉定位框：不一直挂在最后点过的按钮里（那张卡被筛掉、翻页后成了脱离文档的节点）；期间又点开了别的就不撤 */}
-      <DropdownMenuContent align="end" onCloseAutoFocus={(e) => { e.preventDefault(); const a = document.activeElement; if (at?.el.isConnected && (!a || a === document.body)) at.el.focus(); setAt((a) => (openRef.current ? a : null)); }}>{items}</DropdownMenuContent>
+      <DropdownMenuContent align="end" onCloseAutoFocus={(e) => { e.preventDefault(); const f = document.activeElement; if (at?.el.isConnected && (!f || f === document.body)) at.el.focus(); setAt((a) => (openRef.current ? a : null)); }}>{items}</DropdownMenuContent>
     </DropdownMenu>
   );
   return { onClick, cur, menu, close };

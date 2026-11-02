@@ -133,11 +133,11 @@ function TeamsTab() {
   // 各团队在用机器的月费合计（USD）；备用团队只算被扣住不回收、照常续费的几台，不续费的备用机不计（同首页）；有团队带没折算的币种时注明
   const paidTeams = list.filter((t) => !t.spare || t.held_count > 0);
   const feeOf = (t: Team) => (t.spare ? t.monthly_usd_held : t.monthly_usd);
-  const teamsUsd = paidTeams.reduce((s, t) => s + (feeOf(t)?.cents ?? 0), 0);
+  const teamsUsd = paidTeams.reduce((s, t) => s + feeOf(t).cents, 0);
   // 线路机不归团队：单列一项，合计 = 各团队 + 线路机，同首页「每月费用」
   const relaysUsd = useRelaysMonthlyUsd().data ?? 0;
   const total = teamsUsd + relaysUsd;
-  const partial = paidTeams.some((t) => feeOf(t)?.unconverted.length);
+  const partial = paidTeams.some((t) => feeOf(t).unconverted.length);
   return (
     <>
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}

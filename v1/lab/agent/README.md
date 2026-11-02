@@ -31,7 +31,7 @@ cargo build -p fleet-agent --release --target x86_64-unknown-linux-musl   # 约 
 | `/var/lib/fleet-agent/` (0700) | `state.json`（seq）、`queue/`（离线队列，`queue/dead/` 是被服务端永久拒绝的报告）、`stats.json`（流量基线）、`access.json`（访问日志游标）、`applied.json`（上次成功应用的期望状态）、`pending_ack.json`、`tmp/` |
 | `/var/log/fleet-xray/access.log` | Xray 访问日志（agent 只读）；用 `deploy/logrotate/fleet-xray`（copytruncate，按天、超过 200M 提前；线路机上架、升级 agent 时由中控装到 `/etc/logrotate.d/fleet-xray`，连同每小时只跑这一份的 `fleet-xray-logrotate.timer`；`lab/agent/fleet-xray.logrotate` 是同一份） |
 
-**运行身份（v1 的取舍）**：agent 以 root 运行，但 `CapabilityBoundingSet=` 为空、`ProtectSystem=strict`（只有 `/var/lib/fleet-agent`、`/etc/fleet-agent` 可写）、`NoNewPrivileges`、`PrivateTmp`、`PrivateDevices`、`RestrictAddressFamilies`。原因：线路机上要 `systemctl restart fleet-xray`（仅 Xray 没在运行/骨架变更时）并读写 0600 的 xray.json；专用用户 + polkit 在 v1 里得不偿失。`/etc/fleet-agent` 必须事先存在（单元的 ReadWritePaths 依赖它）。Xray 单元同样加固，只保留 `CAP_NET_BIND_SERVICE`；它也是 uid 0，属主是 root 的文件照样读得到，所以用 `InaccessiblePaths` 藏起 `/etc/ssh`、agent 令牌与 `/var/lib/fleet-agent`、`/etc/shadow` 等。单元在上架和升级 agent 时收敛，变了只 `daemon-reload`、不重启 Xray，等它下次重启才生效。
+**运行身份（v1 的取舍）**：agent 以 root 运行，但 `CapabilityBoundingSet=` 只留 `CAP_DAC_READ_SEARCH`（读 Xray 访问日志）与 `CAP_NET_RAW`（系统 ping）、`ProtectSystem=strict`（只有 `/var/lib/fleet-agent`、`/etc/fleet-agent` 可写）、`NoNewPrivileges`、`PrivateTmp`、`PrivateDevices`、`RestrictAddressFamilies`。原因：线路机上要 `systemctl restart fleet-xray`（仅 Xray 没在运行/骨架变更时）并读写 0600 的 xray.json；专用用户 + polkit 在 v1 里得不偿失。`/etc/fleet-agent` 必须事先存在（单元的 ReadWritePaths 依赖它）。Xray 单元同样加固，只保留 `CAP_NET_BIND_SERVICE`；它也是 uid 0，属主是 root 的文件照样读得到，所以用 `InaccessiblePaths` 藏起 `/etc/ssh`、agent 令牌与 `/var/lib/fleet-agent`、`/etc/shadow` 等。单元在上架和升级 agent 时收敛，变了只 `daemon-reload`、不重启 Xray，等它下次重启才生效。
 
 ## 应用 Xray 配置的行为（relay）
 

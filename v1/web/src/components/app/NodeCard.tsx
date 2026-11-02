@@ -212,7 +212,7 @@ const NO_ENTRY_TIP = '探测连的是线路机上客户用的入口端口\n这�
  *  格子：节点是线路机 → 节点的 TCP 建连（线路机的 agent 探）；线路机是主探测来源 → 线路机的连通性（中控，或靠近客户的探测点；
  *  说明文字随来源变，探测点另有建连延迟：标题后面写近 1 小时的中位延迟）。
  *  标题：故障的写第一条健康原因（同状态胶囊的悬停），线路机写「入口可达 x/y」（同抽屉，linkCounts；节点通、出口通不全通时跟在后面），
- *  家宽代理写成功率（延迟已在上面），其余写 TCP 延迟 · 出口通不通（有入口的线路机端口连不上时再跟一段「入口可达 x/y」，卡片不然是全绿的）。节点自己的 agent 离线不影响它的心跳格：探测不是它自己做的，照常上色 */
+ *  家宽代理写成功率（延迟已在上面），其余写 TCP 延迟 · 出口通不通（有入口的线路机端口连不上时再跟一段「入口可达 x/y」，否则卡片全绿、看不出客户连不上）。节点自己的 agent 离线不影响它的心跳格：探测不是它自己做的，照常上色 */
 const BeatSlot = memo(function BeatSlot({ id, kind, lifecycle, reason, reasonKey, onOpen, tcp, tcpTip, egressOk, tcpFail, egressFail, all, off, total, tcpOk, egressBad, reachBad, reverse }: { id: string; kind: MachineView['kind']; lifecycle: MachineView['lifecycle']; reason: string | undefined; reasonKey: string | undefined; onOpen: Open } & ReturnType<typeof probeSummary>) {
   const live = lifecycle === 'active';
   const src = useReachLabel();

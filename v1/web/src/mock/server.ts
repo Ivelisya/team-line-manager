@@ -794,7 +794,7 @@ R('GET', '/billing/due', ({ query }) => {
     .sort((a, b) => a.subscription!.due_date.localeCompare(b.subscription!.due_date) || (a.provider?.name ?? '￿').localeCompare(b.provider?.name ?? '￿'));
   const view = (m: MachineView) => {
     const s = m.subscription!; const u = mockUsage(m); const monthly = mockMonthly(m);
-    const hold = m.spare && !isUnbilledSpare(m) ? [m.live_ip_nodes?.length ? `同机 IP 节点 ${m.live_ip_nodes.join('、')} 还在用` : '', m.router_exits?.length ? `软路由出口 ${m.router_exits.join('、')} 还指着` : '', m.renewing_ip_nodes?.length ? `同机 IP 节点 ${m.renewing_ip_nodes.join('、')} 开着自动续费` : '', s.auto_renew ? '开着自动续费' : ''].filter(Boolean).join('；') : null;
+    const hold = m.spare && !isUnbilledSpare(m) ? [m.live_ip_nodes.length ? `同机 IP 节点 ${m.live_ip_nodes.join('、')} 还在用` : '', m.router_exits.length ? `软路由出口 ${m.router_exits.join('、')} 还指着` : '', m.renewing_ip_nodes.length ? `同机 IP 节点 ${m.renewing_ip_nodes.join('、')} 开着自动续费` : '', s.auto_renew ? '开着自动续费' : ''].filter(Boolean).join('；') : null;
     return { id: m.id, name: m.name, kind: m.kind, due_date: s.due_date, due_days: s.due_days, billing_tz: s.billing_tz, spare: m.spare, spare_hold: hold, cycle: s.cycle, price_cents: s.price_cents, currency: s.currency, price_usd_cents: toUsd(s.price_cents, s.currency),
       monthly_usd_cents: monthly, bytes_30d: u.bytes30, usd_per_gb: mockPerGb(monthly, u.bytes30, 30), idle: mockIdle(m, u.sum7), avg7: Math.round(u.sum7 / 7), avail_pct: availability(m, 30).egress_pct };
   };

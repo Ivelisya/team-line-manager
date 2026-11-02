@@ -441,7 +441,8 @@ export function availTitles(days: AvailabilityDay[]): string[] {
   const part = (label: string, ok: number, total: number) => (total ? `${label} ${successPct((ok / total) * 100)}（${ok}/${total}）` : '');
   return days.map((d, i) => {
     const what = [part('节点通', d.tcp_ok, d.tcp_total), part('出口通', d.egress_ok, d.egress_total)].filter(Boolean).join('\n') || '没有探测';
-    return `${d.date.slice(5)}${i === days.length - 1 ? '（今天）' : ''} · ${what}`;
+    return `${d.date.slice(5)}${i === days.length - 1 ? '（今天）' : ''}
+${what}`;
   });
 }
 /** 有探测、却一个都没成功（延迟为 null）：显示「失败」，和「—」（还没有探测）区分开 */
