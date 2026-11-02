@@ -39,7 +39,8 @@ chmod 640 "$W/$NAME" "$W/$NAME.sha256"   # fleet-backup 用户（PVE 拉取）�
 mv "$W/$NAME.sha256" "$D/$NAME.sha256"
 mv "$W/$NAME" "$D/$NAME"
 list() { ls -1 "$D"/fleet-*.tar* | grep -v '\.sha256$'; }
-# 轮换：每个北京日期只留最后一份，只留最近 KEEP 个日期（同一天上线前的同步备份、手动备份不挤占 14 天的覆盖）。
+# 轮换：每个北京日期只留最后一份，只留最近 KEEP 个日期（同一天上线前的同步备份、手动备份不挤占 14 天的覆盖）；
+# 另外总是保留最新 3 份（同一天部署两次、或部署后不久定时备份跑了，部署前那份迁移前的库还在）。
 # 只认 fleet-<8 位日期>-<6 位时间>.tar[.age]；别的名字不动
 declare -A last=()
 while read -r f; do
@@ -49,6 +50,7 @@ done < <(list)
 mapfile -t days < <(printf '%s\n' "${!last[@]}" | sort | tail -n "$KEEP")
 declare -A keep=()
 for d in "${days[@]}"; do keep[${last[$d]}]=1; done
+while read -r f; do keep[$f]=1; done < <(list | grep -E '/fleet-[0-9]{8}-[0-9]{6}\.tar(\.age)?$' | tail -n 3)
 while read -r f; do
   [[ ${f##*/} =~ ^fleet-[0-9]{8}-[0-9]{6}\.tar(\.age)?$ ]] || continue
   [ -n "${keep[$f]:-}" ] || rm -f "$f" "$f.sha256"

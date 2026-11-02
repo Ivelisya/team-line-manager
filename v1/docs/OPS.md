@@ -330,7 +330,7 @@ FLEET_BUILD=docker FLEET_BUILD_HOST=10.172.17.213 lab/sync-server.sh 'cargo test
 - 安装顺序：会失败的预检（软路由隧道的 23000–23999 端口与 `sshd -t`）最先做，要换的 fleet-server、fleetctl、dist、前端先放成 `.new`，紧挨着重启 fleet-server 之前才一起换上：预检或中间任何一步失败，线上的二进制、前端、dist 原样不动（不会出现旧进程配新前端，也不会让磁盘上的新二进制在之后一次崩溃重启时无人值守地升级、跑迁移）。重启之后的步骤（Caddy、健康检查）失败时新版已经在跑，回滚见 §9。
 - install.sh 在中控的临时 systemd 单元 `fleet-install` 里跑（`systemd-run --wait --pipe --collect`）：本机 ssh 断了或 Ctrl-C，安装继续跑完；输出同时写 `/root/fleet-install.log`（断线后 `tail -f` 看进度，成功时最后一行是「fleet-server … api=401 …」，否则是失败原因）。上一次的安装还没结束时再部署会直接报错退出，不会另起一个。
 - 换下来的旧版本留在中控：fleet-server 在 `/opt/fleet/fleet-server.prev`，前端在 `/opt/fleet/web.prev`，agent 在 `/opt/fleet/dist/fleet-agent.prev`（各自内容相同的重复部署不覆盖它们；只留上一版，geoip.dat、xray、ssserver、sing-box 不留）。
-- 换上新版之前，install.sh 先同步做一份备份（`systemctl start fleet-backup`，等它做完；备份失败部署就停在这里，线上的版本、前端、dist 原样不动）：这是上线前的回滚点，不用再手动 `systemctl start fleet-backup`，也不用手工在 `/root/pre-deploy-*` 里存。首次安装（中控上还没有 fleet-server、库是空的）跳过这一步，装完后照旧再做第一份。每天一份的备份目录里同一个北京日期只留最后一份（见 §10），所以当天部署前的这份会顶掉当天 03:30 那份，不会挤掉更早日期的。已有的 `/root/pre-deploy-*` 是历史回滚点，不动。
+- 换上新版之前，install.sh 先同步做一份备份（`systemctl start fleet-backup`，等它做完；备份失败部署就停在这里，线上的版本、前端、dist 原样不动）：这是上线前的回滚点，不用再手动 `systemctl start fleet-backup`，也不用手工在 `/root/pre-deploy-*` 里存。首次安装（中控上还没有 fleet-server、库是空的）跳过这一步，装完后照旧再做第一份。备份目录按「每个北京日期最后一份 + 最新 3 份」轮换（见 §10），所以部署前这份至少会保留到之后又有 3 份新备份；要长期留着的回滚点另存。已有的 `/root/pre-deploy-*` 是历史回滚点，不动。
 - 迁移 0029 先把币种去空白转大写，再给套餐 / 订阅 / 续费记录的币种（3 个大写字母）和通知渠道种类（当时是 telegram / wecom / webhook）加约束；存量里还有不合规的不让迁移失败，日志里有「0029：… 暂不验证」的警告。看到时查出那几行（如 `select id, currency from plan where currency !~ '^[A-Z]{3}$'`）改成正确的币种，再 `alter table plan validate constraint plan_currency_iso`（订阅 / 续费记录 / 渠道同理：`subscription_currency_iso`、`renewal_currency_iso`、`notify_channel_kind_check`）。
 - 迁移 0093（穿透入口）只给 `entry` 加三列（`mode` 默认 normal、`bridge_uuid` 随机生成、`reverse_kick_at`），存量入口一律普通模式，不改任何行为。新迁移照 §9 回滚的规矩：上线前要有备份（install.sh 换版前自动做）。
 - 迁移 0098 把旧的逐节点 `init` 增减记录（每个节点一条）按团队合并成一条（节点名单进 `detail.nodes`），并给 `billing_slot` 加 `vacate_reason`（空出原因）：现有空出 / 已结束的系统名额按「现在」的不计费状态回填一次（近似），之后由对账在空出时落库。上线前的备份由 install.sh 自动做。
@@ -352,7 +352,7 @@ FLEET_BUILD=docker FLEET_BUILD_HOST=10.172.17.213 lab/sync-server.sh 'cargo test
 
 ## 10. 备份与恢复
 
-中控每天北京时间 03:30 做一份备份（`fleet-backup.timer` → `/opt/fleet/backup/fleet-backup.sh`），放在中控 `/var/backups/fleet/fleet-<北京时间>.tar`（开了加密是 `.tar.age`，见下文「加密备份」），留最近 14 个北京日期、每个日期只留最后一份（同一天里部署前的同步备份、手动备份不会多占名额）；第一次装上时 install.sh 立即做一份，之后每次部署换版前也同步做一份（§9）。手动做一份：`systemctl start fleet-backup`，`journalctl -u fleet-backup -n 5` 看结果。一份 tar 里有：
+中控每天北京时间 03:30 做一份备份（`fleet-backup.timer` → `/opt/fleet/backup/fleet-backup.sh`），放在中控 `/var/backups/fleet/fleet-<北京时间>.tar`（开了加密是 `.tar.age`，见下文「加密备份」），留最近 14 个北京日期、每个日期只留最后一份，另外总是保留最新 3 份（同一天里部署前的同步备份、手动备份不会多占 14 天的名额，也不会被当天后来的备份马上顶掉）；第一次装上时 install.sh 立即做一份，之后每次部署换版前也同步做一份（§9）。手动做一份：`systemctl start fleet-backup`，`journalctl -u fleet-backup -n 5` 看结果。一份 tar 里有：
 
 - `fleet.dump`：`pg_dump -Fc` 整库。`host_metric`、`entry_traffic`、`probe_result`、`access_event` 四张原始时序表（按天分区，只保留几天，量最大）只备结构不备数据，其余表（机器、入口、订阅、作业、审计、告警、小时汇总等）全量。恢复后最近几天的 10 秒粒度曲线和访问明细是空的，小时汇总都在。
 - `etc/fleet/`：`secret.key`（库里 SS 密码、REALITY 私钥、通知渠道配置的加密密钥，丢了这些就解不开）、`fleet.toml`、`ssh/id_ed25519`（中控登录所有机器的密钥）。

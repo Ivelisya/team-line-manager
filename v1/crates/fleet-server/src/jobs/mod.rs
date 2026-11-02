@@ -501,7 +501,31 @@ async fn panicked(st: &AppState, job: &JobRow, owner: &str, p: Box<dyn std::any:
     let msg = p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_else(|| "未知".into());
     let msg: String = msg.chars().take(200).collect();
     tracing::error!(job = %job.id, "作业推进时 panic：{msg}");
-    if let Err(e) = fail_job(st, job, owner, &format!("中控内部错误（panic）：{msg}")).await {
+    let err = format!("中控内部错误（panic）：{msg}");
+    // 领取时就是 cancelling：补偿本身 panic。`fail_job` 对 cancelling 保持原状、让下一轮去补偿，会马上重领再 panic，成热循环；
+    // 这里直接置失败，等人工处理。其它状态走 `fail_job`（推进中被取消的转入 cancelling 补偿一次，补偿再 panic 就落到这里）
+    let res = if job.state == "cancelling" {
+        let r = sqlx::query(
+            "update job set state = 'failed', error = $2, finished_at = now(), lease_until = null, lease_owner = null where id = $1 and lease_owner = $3",
+        )
+        .bind(job.id)
+        .bind(&err)
+        .bind(owner)
+        .execute(&st.db)
+        .await;
+        match r {
+            Ok(r) if r.rows_affected() == 0 => lost(st, job).await,
+            Ok(_) => {
+                log(st, job.id, "error", format!("补偿时 panic，作业置失败，需要人工处理：{msg}")).await;
+                notify(st, job);
+                Ok(())
+            }
+            Err(e) => Err(e.into()),
+        }
+    } else {
+        fail_job(st, job, owner, &err).await
+    };
+    if let Err(e) = res {
         retry_later(st, job.id, owner, &e).await;
     }
 }
