@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 use tokio::sync::broadcast::{self, error::RecvError};
+use tokio::sync::watch;
 
 /// 实时流连接用的凭据，用来定期复核「会话/密钥还有效吗」
 enum Cred {
@@ -92,6 +93,7 @@ pub const CLOSE_TOO_MANY: u16 = 1008;
 /// 实时流（WebSocket，JSON 文本帧）：资源变更通知 + 实时指标（`live.rs`）。
 /// 广播落后丢了消息时发 `resync`（前端让全部查询失效）；每 60 s 复核一次会话/密钥，被撤销就以 4401 关闭；
 /// 撤销会话 / 密钥的地方另发 `Event::Revoked`，各连接马上复核。每个凭据最多同时 [`MAX_PER_CRED`] 条，超出的升级后立刻以 1008 关闭。
+/// 中控退出时（`AppState::shutdown`）以 1012 关闭，前端按退避重连。
 pub async fn stream(a: Actor, State(st): State<AppState>, jar: CookieJar, headers: HeaderMap, ws: WebSocketUpgrade) -> Response {
     // 会话（Cookie）连接要求 Origin 是中控自己（public_url 的协议 + 主机 + 端口）：WebSocket 握手不受同源策略约束，
     // 别的页面能借浏览器自动带上的 Cookie 连上来读实时数据。API 密钥不是浏览器带的，不查
@@ -110,10 +112,11 @@ pub async fn stream(a: Actor, State(st): State<AppState>, jar: CookieJar, header
     // 握手前就订阅：升级期间的消息也不漏
     let rx = st.events.subscribe();
     let db = st.db.clone();
-    ws.on_upgrade(move |socket| serve_ws(socket, rx, db, cred))
+    let down = st.shutdown.subscribe();
+    ws.on_upgrade(move |socket| serve_ws(socket, rx, down, db, cred))
 }
 
-async fn serve_ws(mut ws: WebSocket, mut rx: broadcast::Receiver<Event>, db: sqlx::PgPool, cred: Option<Cred>) {
+async fn serve_ws(mut ws: WebSocket, mut rx: broadcast::Receiver<Event>, mut down: watch::Receiver<bool>, db: sqlx::PgPool, cred: Option<Cred>) {
     let _slot = match cred.as_ref().map(Slot::take) {
         Some(None) => {
             let close = CloseFrame { code: CLOSE_TOO_MANY, reason: "同一登录的实时连接过多，请关掉多余的标签页".into() };
@@ -171,6 +174,11 @@ async fn serve_ws(mut ws: WebSocket, mut rx: broadcast::Receiver<Event>, db: sql
                     return;
                 }
                 continue;
+            }
+            // 中控要退出了：1012（服务重启）关闭，前端按退避重连到新进程
+            _ = crate::state::shutting_down(&mut down) => {
+                send(&mut ws, Message::Close(Some(CloseFrame { code: 1012, reason: "中控正在重启".into() }))).await;
+                return;
             }
         };
         if !send(&mut ws, Message::Text(text)).await {

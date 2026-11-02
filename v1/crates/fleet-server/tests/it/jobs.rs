@@ -1185,6 +1185,25 @@ async fn step_retried_when_the_database_drops_its_query() {
     assert_eq!(j["steps"][4]["state"], "done", "{j}");
 }
 
+/// 中控要退出时（main 在 drain 之后、停止接新连接之前置 `shutdown`）：线路机挂着的期望状态长轮询马上回 204，不等 30 秒到点
+/// （否则优雅退出的 10 秒总被顶满）；已经置位之后新来的长轮询同样立刻返回
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn shutdown_ends_the_desired_long_poll_at_once() {
+    let t = setup(true).await;
+    let (_, tok) = seed_relay(&t).await;
+    let g = t.agent_desired(&tok).await.generation;
+    let url = format!("/agent/v1/desired?after={g}");
+    let started = std::time::Instant::now();
+    let ((s, _), ()) = tokio::join!(t.req("GET", &url, None, Some(&tok)), async {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        t.st.shutdown.send_replace(true);
+    });
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    assert!(started.elapsed() < Duration::from_secs(5), "长轮询没有被退出信号打断：{:?}", started.elapsed());
+    let (s, _) = t.req("GET", &url, None, Some(&tok)).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+}
+
 /// 优雅退出：不再领新作业；推进中的做完当前这一步就放开租约，不往下做，重启后从下一步接着做；等不完的到时返回还在推进的个数
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn drain_lets_the_running_step_finish_then_lets_go() {
