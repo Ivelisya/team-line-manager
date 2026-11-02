@@ -1,30 +1,17 @@
-// 客户到期页 /c/:token：给客户看的只读页面，不登录、不在外壳里（App.tsx 里单独一条懒加载路由）。
+// 客户到期页 /c/:token：给客户看的只读页面，不登录、不在外壳里（customerEntry.tsx 单独的入口，不带管理端）。
 // 只放有效的批次：标题、各地区有效个数、时间轴、节点月总计。不出现 IP、供应商、价格、节点名，也没有管理端导航。
-// 白底；深浅色跟随访客系统（theme-init.js 首屏解析，lib/theme 接管之后的系统切换）。
+// 白底与中性标题由 theme-init.js 首屏就设好（html.is-cx）；深浅色跟随访客系统（theme-init.js 首屏解析，lib/theme 接管之后的系统切换）。
 import * as React from 'react';
 import { useParams } from 'react-router-dom';
 import { Link2Off, RotateCw } from 'lucide-react';
 import { ApiError } from '@/lib/api';
-import { usePublicCustomer } from '@/lib/queries';
+import { usePublicCustomer } from '@/lib/publicCustomer';
 import type { PublicCustomer } from '@/lib/types';
 import '@/lib/theme';
 import { Button } from '@/components/ui/button';
 import { TipHost } from '@/components/ui/overlays';
-import { Empty } from '@/components/app/primitives';
+import { Empty } from '@/components/app/empty';
 import { BatchTimeline, TimelineLegend, mmdd, type TimelineItem } from '@/features/BatchTimeline';
-
-/** 白底：整页换成卡片色、去掉管理端画布的光晕；搜索引擎不收录（服务端也回 X-Robots-Tag）。离开时还原 */
-function usePublicChrome(title: string) {
-  React.useEffect(() => {
-    const root = document.documentElement;
-    root.classList.add('is-cx');
-    const meta = document.createElement('meta');
-    meta.name = 'robots'; meta.content = 'noindex, nofollow';
-    document.head.append(meta);
-    return () => { root.classList.remove('is-cx'); meta.remove(); };
-  }, []);
-  React.useEffect(() => { document.title = title; }, [title]);
-}
 
 /** 副标题的年份：今天这一年；时间轴跨年时写成「2025–2026年」 */
 function yearsOf(d: PublicCustomer): string {
@@ -60,7 +47,8 @@ export function CustomerPage() {
   const { token = '' } = useParams();
   const q = usePublicCustomer(token);
   const d = q.data;
-  usePublicChrome(d ? `${d.team} · 节点到期时间轴` : '节点到期时间轴');
+  const title = d ? `${d.team} · 节点到期时间轴` : '节点到期时间轴';
+  React.useEffect(() => { document.title = title; }, [title]);
   const items = React.useMemo<TimelineItem[]>(() => (d?.batches ?? []).map((b) => ({ ...b, key: String(b.seq) })), [d]);
 
   let body: React.ReactNode;

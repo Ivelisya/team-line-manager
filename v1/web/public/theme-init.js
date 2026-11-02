@@ -7,3 +7,8 @@ try {
   var p = localStorage.getItem('fleet:palette');
   if (p) document.documentElement.dataset.palette = p;
 } catch (e) {}
+// 客户页 /c/：首屏就是白底（html.is-cx，样式在 base.css）和中性标题，不先闪一下管理端的底色与「团队线路管理」
+if (location.pathname.indexOf('/c/') === 0) {
+  document.documentElement.classList.add('is-cx');
+  document.title = '节点到期时间轴';
+}

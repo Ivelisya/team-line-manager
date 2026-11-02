@@ -1,7 +1,7 @@
 // 通用展示原件：每种只有一份实现（状态 pill / 圆点、KPI 卡、到期读数、表头排序、标签/值、段标题、面板、页头…）。
 import * as React from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowDownUp, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Copy, Globe, Inbox, RotateCw } from 'lucide-react';
+import { ArrowDownUp, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Copy, Globe, RotateCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { bytes, dueFmt, str, type Fmt } from '@/lib/format';
 import type { DueState, EntryView, HealthReason, Lifecycle, MachineView } from '@/lib/types';
@@ -302,10 +302,7 @@ export function PageHead({ title, note, tools }: { title: string; note?: React.R
   );
 }
 
-/** 空状态：图标放在柔和的圆底里，一句话说明现状；children 放下一步操作 */
-export function Empty({ icon, text, hint, children }: { icon?: React.ReactNode; text: string; hint?: React.ReactNode; children?: React.ReactNode }) {
-  return <div className="empty"><span className="empty-ic">{icon ?? <Inbox size={22} />}</span><div className="empty-text">{text}</div>{hint && <div className="hint">{hint}</div>}{children}</div>;
-}
+export { Empty } from './empty';
 export const Note = ({ tone = 'info', icon, children }: { tone?: 'info' | 'ok' | 'warn' | 'bad'; icon?: React.ReactNode; children: React.ReactNode }) => (
   <div className="note" data-tone={tone}>{icon}<div style={{ flex: 1, minWidth: 0 }}>{children}</div></div>
 );
