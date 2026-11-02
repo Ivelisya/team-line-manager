@@ -49,15 +49,15 @@ const rowSig = (m: MachineView) => {
     s?.due_days, s?.due_state, s?.due_date, s?.price_cents, s?.monthly_cents, s?.monthly_usd_cents, s?.currency, s?.cycle, m.spare_from].join('\u0001');
 };
 
-/** 入口列：线路机写入口条数；节点写第一条「线路机:端口」，其余几条收成「+N」小标签，悬停列出 */
+/** 入口列：线路机写入口条数；节点写第一条「线路机:端口」，其余几条收成「+N」小标签，悬停列出全部入口 */
 function EntryCell({ m }: { m: MachineView }) {
   if (m.kind === 'relay') return <span className="cell-main">{m.entries.length} 条入口</span>;
   const [first, ...rest] = m.entries;
   if (!first) return <span className="t-muted">—</span>;
   return (
     <div className="row" style={{ flexWrap: 'nowrap', gap: 6 }}>
-      <Trunc className="cell-main">{entryOf(first)}</Trunc>
-      {rest.length > 0 && <span className="tag" style={{ flex: 'none' }} data-tip={`其余入口\n${rest.map(entryOf).join('\n')}`}>+{rest.length}</span>}
+      <span className="cell-main ellipsis" style={{ minWidth: 0 }} data-tip={entryOf(first)}>{entryOf(first)}</span>
+      {rest.length > 0 && <span className="tag" style={{ flex: 'none' }} data-tip={`全部入口\n${m.entries.map(entryOf).join('\n')}`}>+{rest.length}</span>}
     </div>
   );
 }
@@ -126,7 +126,7 @@ function LiveNodes({ sp, upd, tools }: { sp: URLSearchParams; upd: (patch: Recor
         </div></div> },
       { id: 'kind', header: '类型', size: 84, drop: 1, ...byStr((m) => kindLabel(m.kind)), cell: (m) => kindLabel(m.kind) },
       { id: 'status', header: '状态', size: 110, ...byNum(statusRank, 'asc'), cell: (m) => <HealthPill m={m} /> },
-      { id: 'entry', header: '入口', size: 150, cell: (m) => <EntryCell m={m} /> },
+      { id: 'entry', header: '入口', size: 184, cell: (m) => <EntryCell m={m} /> },
       { id: 'plan', header: '套餐 · 供应商', size: 176, drop: 3,
         cell: (m) => <>{m.plan ? <Trunc className="cell-main">{m.plan.name}</Trunc> : <span className="cell-main t-muted">{m.host_machine ? '不带套餐' : '未设置'}</span>}<span className="sub" data-tip={m.provider?.name}>{m.provider?.name ?? '—'}</span></> },
       { id: 'traffic', header: '本月流量', size: 144, r: true, ...byNum(trafficTotal),
