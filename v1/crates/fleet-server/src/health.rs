@@ -399,6 +399,7 @@ pub(crate) mod tests {
             ssh_port: 22,
             host_machine: None,
             bind_ip: None,
+            egress_ip: None,
             ip_nodes: vec![],
             provider: None,
             provider_code: None,

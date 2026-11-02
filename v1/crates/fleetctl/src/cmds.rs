@@ -552,6 +552,10 @@ pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
             // 同机 IP 节点没有自己的 SSH（登录宿主机），只写 IP，不拼上宿主机的 SSH 端口
             ("IP", if m["host_machine"].is_null() { format!("{}:{}", st(&m, "/ip"), st(&m, "/ssh_port")) } else { st(&m, "/ip") }),
         ];
+        // 端口转发型 NAT 节点：线路机连上面的 IP（入口），出站是这个 IP；出口探测期望的就是它
+        if let Some(e) = m["egress_ip"].as_str() {
+            rows.push(("出口 IP", format!("{e}（出站公网 IP；线路机连的是上面的 IP）")));
+        }
         // 同机关系：同机 IP 节点的 SSH、agent、主机读数都是宿主机的；宿主机列出它上面的同机 IP 节点
         if !m["host_machine"].is_null() {
             rows.push(("宿主机", format!("{}（SSH、agent、主机读数都用它的）", st(&m, "/host_machine/name"))));

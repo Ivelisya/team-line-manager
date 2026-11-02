@@ -86,7 +86,12 @@
 [{"kind":"vps","ip":"203.0.113.10","team":"团队1","relay":"线路机2","provider":"ATTVPS","plan":"基础版"}]
 ```
 
-`ss_port` 只给 NAT 机填：供应商映射到节点 8388 的公网端口（节点上 ssserver 固定监听 8388），非 NAT 机省略。
+`ss_port` 只给 NAT 机填：供应商给的公网端口（节点上 ssserver 固定监听 8388），非 NAT 机省略。供应商把公网端口映射到机器 8388 的，直接填那个端口；
+供应商是同号映射（公网 P → 机器 P）的也填 P，收敛时节点的 nft 表 `ss_guard` 会多一条 nat 链把 P 转到 8388，入站过滤照常只放行线路机。
+
+端口转发型 NAT 节点（供应商给一个公网入口 IP 加几个同号映射端口，机器出站的公网 IP 和入口 IP 不同，来源 IP 保留）：`--ip` 填入口 IP，`--ssh-port` 填映射到 22 的公网端口，
+`--ss-port` 填映射给 SS 的公网端口，`--egress-ip` 填机器出站的公网 IP，例如 `fleetctl provision --kind vps --ip 125.103.212.100 --ssh-port 16350 --ss-port 16351 --egress-ip 133.106.194.112 …`
+（批量文件条目写 `"egress_ip"`）。线路机连入口 IP:ss_port，出口验收 / 出口探测期望看到出口 IP；之后改或清用 `fleetctl rename <机器> --egress-ip <IP|none>`（none = 出口跟随 IP）。
 
 同机 IP 节点在条目里写 `"host": "团队1-03"`（宿主机的名字），不写 `ssh_port`、`login`、`ss_port`、`provider`、`plan`。
 

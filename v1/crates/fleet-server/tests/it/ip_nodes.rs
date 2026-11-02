@@ -312,3 +312,119 @@ async fn retiring_host_retires_its_ip_nodes() {
     assert_eq!(r.purged, [host], "{r:?}");
 }
 
+
+async fn desired(t: &T, tok: &str) -> DesiredState {
+    let (_, v) = t.req("GET", "/agent/v1/desired?after=0", None, Some(tok)).await;
+    serde_json::from_value(v).unwrap()
+}
+
+/// 端口转发型 NAT 节点：入口 IP（线路机连、SSH）与出口 IP 不同。上架可填 egress_ip（只 VPS 节点、非同机 IP 节点、要 IPv4、和 IP 相同按没填）；
+/// 出口验收期望 coalesce(egress_ip, primary_ip)；之后能 PATCH 改 / 清，变了要刷新入口所在线路机；审计带前后值
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn egress_ip_of_port_forward_nat_node() {
+    let t = setup(false).await;
+    let (relay, tok) = seed_relay(&t).await;
+    let team = seed_team(&t, "团队2").await;
+    let host = seed_vps(&t, team, 1, "203.0.113.5", 22, "active", None).await;
+
+    // 上架校验：不是 IPv4、线路机 / 家宽代理 / 同机 IP 节点都不能填
+    let vps = |extra: Value| {
+        let mut v = json!({"kind": "vps", "ip": "125.103.212.100", "ssh_port": 16350, "ss_port": 16351, "team_id": team, "relay_id": relay});
+        v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        v
+    };
+    let chk = t
+        .post(
+            "/api/v1/provision/check",
+            json!({"items": [vps(json!({"egress_ip": "not-an-ip"})), vps(json!({"ip": "203.0.113.31", "egress_ip": "2001:db8::1"})),
+                             json!({"kind": "proxy", "ip": "203.0.113.32", "team_id": team, "relay_id": relay, "egress_ip": "133.106.194.112",
+                                    "upstream": {"protocol": "socks5", "host": "p.example", "port": 1080}}),
+                             json!({"kind": "relay", "ip": "203.0.113.33", "label": "线路机9", "egress_ip": "133.106.194.112"}),
+                             ip_item("203.0.113.34", host, team, relay)
+                                 .as_object().map(|o| { let mut o = o.clone(); o.insert("egress_ip".into(), json!("133.106.194.112")); Value::Object(o) }).unwrap()]}),
+        )
+        .await;
+    for (i, want) in ["要填 IPv4", "要填 IPv4", "只用于 VPS 节点", "只用于 VPS 节点", "只用于 VPS 节点"].iter().enumerate() {
+        assert!(errors(&chk, i).contains(want), "{i}: {}", errors(&chk, i));
+    }
+    // 上架：写进 machine.egress_ip（和 ip 相同 / 空串按没填），审计带上
+    let created = t
+        .post(
+            "/api/v1/provision",
+            json!({"items": [vps(json!({"egress_ip": " 133.106.194.112 "})), vps(json!({"ip": "203.0.113.41", "egress_ip": "203.0.113.41"})), vps(json!({"ip": "203.0.113.42", "egress_ip": ""}))]}),
+        )
+        .await;
+    let ids: Vec<Uuid> = created["jobs"].as_array().unwrap().iter().map(|j| j["machine_id"].as_str().unwrap().parse().unwrap()).collect();
+    let stored: Vec<Option<String>> = {
+        let mut v = vec![];
+        for id in &ids {
+            v.push(sqlx::query_scalar("select host(egress_ip) from machine where id = $1").bind(id).fetch_one(&t.st.db).await.unwrap());
+        }
+        v
+    };
+    assert_eq!(stored, [Some("133.106.194.112".to_string()), None, None]);
+    let a = t.get("/api/v1/audit?limit=20").await;
+    assert!(a.as_array().unwrap().iter().any(|x| x["action"] == "machine.provision" && x["detail"]["egress_ip"] == "133.106.194.112"), "{a}");
+    let v = t.get(&format!("/api/v1/machines/{}", ids[0])).await;
+    assert_eq!((v["ip"].as_str(), v["egress_ip"].as_str()), (Some("125.103.212.100"), Some("133.106.194.112")), "{v}");
+    sqlx::query("update job set state = 'cancelled' where target_id = any($1)").bind(&ids).execute(&t.st.db).await.unwrap();
+
+    // 另一台普通 VPS 节点（有在用入口）：期望出口 = 它的 IP；PATCH 设出口 IP 后期望变成出口 IP，线路机代数 +1
+    let n = seed_vps(&t, team, 20, "125.103.212.101", 16350, "active", None).await;
+    let secret = t.st.secrets.seal_str("pw");
+    sqlx::query("insert into node_outbound (machine_id, protocol, host, port, method, secret_enc) values ($1, 'shadowsocks', '125.103.212.101', 16351, 'aes-256-gcm', $2)")
+        .bind(n)
+        .bind(secret)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let mut tx = t.st.db.begin().await.unwrap();
+    fleet_server::entries::lock_policy_shared(&mut tx).await.unwrap();
+    let (e, _, _) = fleet_server::entries::create(&mut tx, relay, n).await.unwrap();
+    tx.commit().await.unwrap();
+    sqlx::query("update entry set lifecycle = 'active' where id = $1").bind(e).execute(&t.st.db).await.unwrap();
+    let ds0 = desired(&t, &tok).await;
+    assert_eq!(ds0.entries[0].expect_egress_ip.to_string(), "125.103.212.101");
+
+    let path = format!("/api/v1/machines/{n}");
+    let patch = |rev: Value, ip: Value| json!({"revision": rev, "egress_ip": ip});
+    let m = t.get(&path).await;
+    let (s, b) = t.req("PATCH", &path, Some(patch(m["revision"].clone(), json!("133.106.194.112"))), None).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    let ds1 = desired(&t, &tok).await;
+    assert_eq!(ds1.entries[0].expect_egress_ip.to_string(), "133.106.194.112");
+    assert!(ds1.generation > ds0.generation, "出口 IP 变了要刷新入口所在的线路机");
+    match &ds1.entries[0].outbound {
+        Outbound::Shadowsocks { host, port, .. } => assert_eq!((host.as_str(), *port), ("125.103.212.101", 16351), "线路机连的仍是入口 IP 与映射端口"),
+        o => panic!("{o:?}"),
+    }
+    let m = t.get(&path).await;
+    assert_eq!((m["ip"].as_str(), m["egress_ip"].as_str()), (Some("125.103.212.101"), Some("133.106.194.112")), "{m}");
+    let a = t.get("/api/v1/audit?limit=5").await;
+    let au = a.as_array().unwrap().iter().find(|x| x["action"] == "machine.update" && x["target_id"] == n.to_string()).unwrap_or_else(|| panic!("{a}"));
+    assert_eq!((au["detail"]["before"]["egress_ip"].clone(), au["detail"]["after"]["egress_ip"].clone()), (Value::Null, json!("133.106.194.112")));
+
+    // 不是 IPv4、线路机 / 同机 IP 节点不能设；和 IP 相同等于清掉；null 或空串清掉；没传这个字段不动它
+    for bad in [json!("x"), json!("2001:db8::1")] {
+        let (s, _) = t.req("PATCH", &path, Some(patch(m["revision"].clone(), bad)), None).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+    }
+    let (s, b) = t.req("PATCH", &format!("/api/v1/machines/{relay}"), Some(patch(t.get(&format!("/api/v1/machines/{relay}")).await["revision"].clone(), json!("133.106.194.112"))), None).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{b}");
+    let ipn = seed_vps(&t, team, 21, "203.0.113.50", 22, "active", Some(host)).await;
+    let (s, _) = t.req("PATCH", &format!("/api/v1/machines/{ipn}"), Some(patch(t.get(&format!("/api/v1/machines/{ipn}")).await["revision"].clone(), json!("133.106.194.112"))), None).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, _) = t.req("PATCH", &path, Some(json!({"revision": m["revision"], "note": "x"})), None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(t.get(&path).await["egress_ip"], "133.106.194.112");
+    for clear in [Value::Null, json!(""), json!("125.103.212.101")] {
+        let m = t.get(&path).await;
+        let (s, _) = t.req("PATCH", &path, Some(patch(m["revision"].clone(), json!("133.106.194.112"))), None).await;
+        assert_eq!(s, StatusCode::OK);
+        let m = t.get(&path).await;
+        let (s, _) = t.req("PATCH", &path, Some(patch(m["revision"].clone(), clear)), None).await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(t.get(&path).await["egress_ip"], Value::Null);
+    }
+    assert_eq!(desired(&t, &tok).await.entries[0].expect_egress_ip.to_string(), "125.103.212.101", "清掉后跟随 IP");
+}

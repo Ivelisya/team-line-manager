@@ -377,19 +377,25 @@ fn check_nft(out: &Output, allow: &str, table: &str) -> anyhow::Result<()> {
 /// 渲染节点 `m` 的 ssserver 实例脚本（上架收敛和作业 `ss_refresh` 共用）：SS 密码等从库里取，放行名单 = 它所挂线路机的 IP（含 `extra`）。
 /// 返回 (实例, 放行名单, 脚本)
 async fn render_ss(c: &Ctx<'_>, m: &M, extra: Option<Uuid>) -> anyhow::Result<(SsInst, String, String)> {
-    let (method, secret): (Option<String>, Vec<u8>) = sqlx::query_as("select method, secret_enc from node_outbound where machine_id = $1")
+    let (method, secret, public_port): (Option<String>, Vec<u8>, i32) = sqlx::query_as("select method, secret_enc, port from node_outbound where machine_id = $1")
         .bind(m.id)
         .fetch_one(&c.st.db)
         .await?;
     let password = c.st.secrets.open_str(&secret)?;
     let allow = relay_ips_for(c, m.id, extra).await?;
     let inst = c.ss_inst(m).await?;
-    let script = vars(&[
-        ("SS_PORT", &inst.port.to_string()),
-        ("SS_METHOD", method.as_deref().unwrap_or(crate::meta::SS_METHOD)),
-        ("SS_PASSWORD", &password),
-        ("ALLOW", &allow),
-    ]) + &scripts::node_ss(&inst, &c.st.cfg.public_url);
+    let mut kv = vec![
+        ("SS_PORT", inst.port.to_string()),
+        ("SS_METHOD", method.unwrap_or_else(|| crate::meta::SS_METHOD.into())),
+        ("SS_PASSWORD", password),
+        ("ALLOW", allow.clone()),
+    ];
+    // 同号映射的供应商（公网 P → 机器 P）：宿主机实例固定听 8388，节点上把 P 转到 8388（NODE_SS 的 nat 链）；P 就是 8388 或供应商映射到 8388 的不用
+    if inst.ip.is_none() && public_port != i32::from(inst.port) {
+        kv.push(("SS_PUBLIC_PORT", public_port.to_string()));
+    }
+    let kv: Vec<(&str, &str)> = kv.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let script = vars(&kv) + &scripts::node_ss(&inst, &c.st.cfg.public_url);
     Ok((inst, allow, script))
 }
 

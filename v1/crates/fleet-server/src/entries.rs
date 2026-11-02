@@ -156,10 +156,11 @@ pub async fn desired_state(db: &PgPool, secrets: &SecretBox, relay_id: Uuid, ech
         mode: String,
         bridge_uuid: Uuid,
     }
+    // 期望出口 IP = 机器的出口 IP（端口转发型 NAT 节点入口与出站 IP 不同，见 machine.egress_ip），没填就是 primary_ip
     // 直出入口没有 node_outbound 行（节点就是线路机自己）；节点入口缺出站参数（或秘密已在退役时清掉）的照旧不下发
     let rows: Vec<Row> = sqlx::query_as(
         "select e.id, e.node_id, m.team_id, e.port, e.lifecycle::text lifecycle, e.client_uuid, e.short_id, m.kind::text kind, t.name team, m.number,
-                m.label, host(m.primary_ip) ip, e.node_id = e.relay_id direct, o.protocol, o.host, o.port oport, o.method, o.username, o.secret_enc,
+                m.label, host(coalesce(m.egress_ip, m.primary_ip)) ip, e.node_id = e.relay_id direct, o.protocol, o.host, o.port oport, o.method, o.username, o.secret_enc,
                 e.mode, e.bridge_uuid
          from entry e join machine m on m.id = e.node_id left join team t on t.id = m.team_id
          left join node_outbound o on o.machine_id = e.node_id

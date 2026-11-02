@@ -536,6 +536,9 @@ enum Cmd {
         /// ISO 3166-1 两位代码（如 US、JP）；auto = 改回按 IP 自动
         #[arg(long)]
         country: Option<String>,
+        /// 出口 IP（端口转发型 NAT 节点：入站 IP 与出站公网 IP 不同）；none = 清掉，出口跟随 IP。只用于 VPS 节点
+        #[arg(long)]
+        egress_ip: Option<String>,
         /// 换团队等会连带别的机器改名的改动：看过预览后加它执行
         #[arg(long)]
         yes: bool,
@@ -1163,8 +1166,8 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             RecycleCmd::Show { which } => recycle::show(x, &which),
             RecycleCmd::Import { file, yes } => recycle::import(x, &file, yes),
         },
-        Cmd::Rename { machine, team, number, label, note, country, yes } => {
-            ops::rename(x, &machine, ops::RenameOpts { team: team.as_deref(), number, label: label.as_deref(), note: note.as_deref(), country: country.as_deref(), yes })
+        Cmd::Rename { machine, team, number, label, note, country, egress_ip, yes } => {
+            ops::rename(x, &machine, ops::RenameOpts { team: team.as_deref(), number, label: label.as_deref(), note: note.as_deref(), country: country.as_deref(), egress_ip: egress_ip.as_deref(), yes })
         }
         Cmd::Renumber { team, yes } => ops::renumber(x, &team, yes),
         Cmd::Team { cmd } => match cmd {

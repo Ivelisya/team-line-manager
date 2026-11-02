@@ -98,17 +98,30 @@ pub struct PatchIn {
     /// 国家（ISO 3166-1 两位代码）；null 或空串 = 改回按 IP 自动
     #[serde(default, deserialize_with = "super::some")]
     country: Option<Option<String>>,
+    /// 出口 IP（端口转发型 NAT 节点：入口 IP 与出站 IP 不同）；null 或空串 = 清掉，出口跟随 IP。只有 VPS 节点、非同机 IP 节点能设
+    #[serde(default, deserialize_with = "super::some")]
+    egress_ip: Option<Option<String>>,
 }
 
 impl PatchIn {
     /// 只改团队与编号（改名）：替换节点（jobs/steps/replace.rs）用，其余字段不动
     pub fn rename(revision: i32, team_id: Uuid, number: i32) -> Self {
-        PatchIn { revision, team_id: Some(team_id), number: Some(number), label: None, note: None, provider_id: None, plan_id: None, service_ref: None, country: None }
+        PatchIn { revision, team_id: Some(team_id), number: Some(number), label: None, note: None, provider_id: None, plan_id: None, service_ref: None, country: None, egress_ip: None }
     }
 }
 
-/// PATCH 前锁住的当前值：(revision, kind, team_id, number, label, lifecycle, country)
-type PatchCur = (i32, String, Option<Uuid>, Option<i32>, Option<String>, String, Option<String>, Option<String>);
+/// 出口 IP 的取值（上架、PATCH 共用）：空 = 没有；要是 IPv4；和入口 IP 相同等于没设
+pub fn parse_egress_ip(raw: &str, primary: &str) -> Result<Option<std::net::Ipv4Addr>, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let ip: std::net::Ipv4Addr = raw.parse().map_err(|_| format!("出口 IP「{raw}」不合法：要填 IPv4 地址"))?;
+    Ok(Some(ip).filter(|ip| ip.to_string() != primary))
+}
+
+/// PATCH 前锁住的当前值：(revision, kind, team_id, number, label, lifecycle, country, note, 入口 IP, 出口 IP, 宿主机)
+type PatchCur = (i32, String, Option<Uuid>, Option<i32>, Option<String>, String, Option<String>, Option<String>, String, Option<String>, Option<Uuid>);
 
 /// 改团队时原团队少了这台：按编号连续压缩（同退役完成）。先锁团队（原团队、新团队，按 id 排）再锁机器，和 move_to_spare、退役收尾同一个顺序（团队 → 机器）
 pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<PatchIn>) -> ApiResult<Json<Value>> {
@@ -244,7 +257,7 @@ const IP_DEST: &str = "case when $4 or not (select spare from team where id = $2
 pub struct Patched {
     /// 要刷新的线路机（提交后调 `relay_bumped`）；`patch_nobump` 里为空，调用方统一刷
     pub relays: Vec<Uuid>,
-    /// 团队、编号或线路机名变了（节点显示名变了，它入口所在的线路机要刷新）
+    /// 团队、编号、线路机名或出口 IP 变了（节点显示名、期望出口变了，它入口所在的线路机要刷新）
     pub renamed: bool,
     /// 进了备用团队、把开着的自动续费关掉了
     pub auto_renew_off: bool,
@@ -445,7 +458,7 @@ pub async fn patch_nobump(tx: &mut crate::db::Tx<'_>, actor: &str, id: Uuid, b: 
         None => None,
     };
     let cur: PatchCur = sqlx::query_as(
-        "select revision, kind::text, team_id, number, label, lifecycle::text, country, note from machine where id = $1 for update",
+        "select revision, kind::text, team_id, number, label, lifecycle::text, country, note, host(primary_ip), host(egress_ip), host_id from machine where id = $1 for update",
     )
     .bind(id)
     .fetch_optional(&mut **tx)
@@ -457,6 +470,18 @@ pub async fn patch_nobump(tx: &mut crate::db::Tx<'_>, actor: &str, id: Uuid, b: 
     if cur.5 == "retired" {
         return Err(ApiError::conflict("已退役的机器不能修改"));
     }
+    // 出口 IP：Some(None) = 清掉；只有 VPS 节点、非同机 IP 节点能设
+    let egress: Option<Option<std::net::Ipv4Addr>> = match &b.egress_ip {
+        None => None,
+        Some(v) => {
+            let ip = parse_egress_ip(v.as_deref().unwrap_or(""), &cur.8).map_err(ApiError::bad_request)?;
+            if ip.is_some() && (cur.1 != "vps" || cur.10.is_some()) {
+                return Err(ApiError::bad_request("只有 VPS 节点能设出口 IP（线路机、家宽代理、同机 IP 节点不用）"));
+            }
+            Some(ip)
+        }
+    };
+    let egress_changed = egress.is_some_and(|ip| ip.map(|i| i.to_string()) != cur.9);
     let is_relay = cur.1 == "relay";
     let team_id = if is_relay { None } else { b.team_id.or(cur.2) };
     let number = if is_relay {
@@ -490,6 +515,7 @@ pub async fn patch_nobump(tx: &mut crate::db::Tx<'_>, actor: &str, id: Uuid, b: 
             plan_id = case when $8 then $9 else plan_id end,
             service_ref = case when $10 then $11 else service_ref end,
             country = case when $12 then $13 else country end,
+            egress_ip = case when $14 then $15 else egress_ip end,
             revision = revision + 1, updated_at = now()
          where id = $1",
     )
@@ -506,6 +532,8 @@ pub async fn patch_nobump(tx: &mut crate::db::Tx<'_>, actor: &str, id: Uuid, b: 
     .bind(b.service_ref.clone().flatten())
     .bind(country.is_some())
     .bind(country.clone().flatten())
+    .bind(egress.is_some())
+    .bind(egress.flatten().map(|ip| ipnetwork::IpNetwork::from(std::net::IpAddr::V4(ip))))
     .execute(&mut **tx)
     .await?;
     // 有套餐时供应商就是套餐的：只换了套餐的跟着换供应商，明确给了另一个供应商的报错
@@ -543,13 +571,15 @@ pub async fn patch_nobump(tx: &mut crate::db::Tx<'_>, actor: &str, id: Uuid, b: 
         sqlx::query("update machine set spare_since = null, spare_from = null, spare_from_team_id = null, lifecycle_reason = null where id = $1").bind(id).execute(&mut **tx).await?;
     }
     let mut detail = json!({"name": name, "old_name": old_name,
-           "before": {"team_id": cur.2, "number": cur.3, "label": cur.4, "country": cur.6, "note": cur.7},
-           "after": {"team_id": team_id, "number": number, "label": label, "country": country.clone().unwrap_or(cur.6.clone()), "note": b.note.clone().or(cur.7.clone())}});
+           "before": {"team_id": cur.2, "number": cur.3, "label": cur.4, "country": cur.6, "note": cur.7, "egress_ip": cur.9},
+           "after": {"team_id": team_id, "number": number, "label": label, "country": country.clone().unwrap_or(cur.6.clone()), "note": b.note.clone().or(cur.7.clone()),
+                     "egress_ip": egress.map_or(cur.9.clone(), |ip| ip.map(|i| i.to_string()))}});
     if auto_renew_off {
         detail["auto_renew_off"] = json!(true);
     }
     audit(tx, actor, if renamed { "machine.rename" } else { "machine.update" }, "machine", Some(id), detail).await?;
-    Ok(Patched { relays: vec![], renamed, auto_renew_off, left_team: cur.2.filter(|f| Some(*f) != team_id) })
+    // 出口 IP 变了也要刷新入口所在的线路机（期望出口在下发给它的期望状态里）
+    Ok(Patched { relays: vec![], renamed: renamed || egress_changed, auto_renew_off, left_team: cur.2.filter(|f| Some(*f) != team_id) })
 }
 
 // ── 时序 ──────────────────────────────────────────────────────────────────

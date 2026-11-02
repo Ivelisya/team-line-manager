@@ -73,9 +73,13 @@ pub struct ProvisionOpts {
     pub country: Option<String>,
     #[arg(long)]
     pub note: Option<String>,
-    /// vps 的公网（NAT 映射）SS 端口；节点上 ssserver 固定监听 8388，非 NAT 机不要填
+    /// vps 的公网（NAT 映射）SS 端口，不填 = 8388。节点上 ssserver 固定监听 8388：供应商把公网端口映射到 8388 的，填那个公网端口；
+    /// 同号映射（公网 P → 机器 P）的也填 P，节点上会多一条把 P 转到 8388 的 nft 规则。非 NAT 机不要填
     #[arg(long)]
     pub ss_port: Option<u16>,
+    /// vps 的出口 IP：端口转发型 NAT 节点的入站 IP（--ip，线路机连它）和机器出站的公网 IP 不同时填；不填 = 出口就是 --ip。不用于同机 IP 节点
+    #[arg(long)]
+    pub egress_ip: Option<String>,
     /// 家宽代理（proxy）的上游：socks5://用户:密码@主机:端口
     #[arg(long)]
     pub upstream: Option<String>,
@@ -238,6 +242,7 @@ fn single_item(o: &ProvisionOpts) -> anyhow::Result<Value> {
     put("country", o.country.as_ref().map(|v| json!(v)));
     put("note", o.note.as_ref().map(|v| json!(v)));
     put("ss_port", o.ss_port.map(|v| json!(v)));
+    put("egress_ip", o.egress_ip.as_ref().map(|v| json!(v)));
     if let Some(u) = &o.upstream {
         put("upstream", Some(parse_upstream(u)?));
     }
@@ -476,6 +481,7 @@ pub struct RenameOpts<'a> {
     pub label: Option<&'a str>,
     pub note: Option<&'a str>,
     pub country: Option<&'a str>,
+    pub egress_ip: Option<&'a str>,
     pub yes: bool,
 }
 
@@ -484,8 +490,8 @@ pub struct RenameOpts<'a> {
 /// 压缩会让团队后面的节点全部改号，而客户软路由的出口名（「节点08」）是固定的，执行完才看到就只能一台台挪回去。
 /// 只改线路机名 / 备注 / 国家、团队内改到空号（不连带别人）的照旧直接执行
 pub fn rename(ctx: &Ctx, machine: &str, o: RenameOpts) -> anyhow::Result<u8> {
-    if o.team.is_none() && o.number.is_none() && o.label.is_none() && o.note.is_none() && o.country.is_none() {
-        bail!("没有要改的内容：给 --team / --number / --label / --note / --country 之一");
+    if o.team.is_none() && o.number.is_none() && o.label.is_none() && o.note.is_none() && o.country.is_none() && o.egress_ip.is_none() {
+        bail!("没有要改的内容：给 --team / --number / --label / --note / --country / --egress-ip 之一");
     }
     let (id, _) = ctx.find_id(machine, Want::Live)?;
     let cur = ctx.c.get(&format!("/machines/{id}"))?;
@@ -527,6 +533,10 @@ pub fn rename(ctx: &Ctx, machine: &str, o: RenameOpts) -> anyhow::Result<u8> {
     if let Some(c) = o.country {
         body["country"] = if c.eq_ignore_ascii_case("auto") { Value::Null } else { json!(c) };
     }
+    // 出口 IP：none = 清掉（出口跟随 IP）；格式与适用范围由中控校验
+    if let Some(e) = o.egress_ip {
+        body["egress_ip"] = if e.eq_ignore_ascii_case("none") { Value::Null } else { json!(e) };
+    }
     // PATCH 返回改完后的完整视图，新名字直接从里面取；预览里的连带改动一并带上（--json 同名字段）
     let mut d = ctx.c.patch(&format!("/machines/{id}"), &body)?;
     let list = |k: &str| -> Vec<String> { pv[k].as_array().into_iter().flatten().map(|r| format!("{} → {}", st(r, "/old_name"), st(r, "/new_name"))).collect() };
@@ -543,7 +553,8 @@ pub fn rename(ctx: &Ctx, machine: &str, o: RenameOpts) -> anyhow::Result<u8> {
     if let Some(h) = pv["held"].as_str() {
         d["held"] = json!(h);
     }
-    ctx.emit(&d, || format!("{} → {}{}", st(&cur, "/name"), st(&d, "/name"), rename_details(&pv, to_spare, false)));
+    let egress = if o.egress_ip.is_some() { format!("\n出口 IP：{}", d["egress_ip"].as_str().unwrap_or("无（跟随 IP）")) } else { String::new() };
+    ctx.emit(&d, || format!("{} → {}{}{egress}", st(&cur, "/name"), st(&d, "/name"), rename_details(&pv, to_spare, false)));
     Ok(0)
 }
 

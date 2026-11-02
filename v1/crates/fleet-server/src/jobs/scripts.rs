@@ -287,6 +287,15 @@ echo ss_restarted=$RESTART
 # 防火墙：SS 端口只放行线路机
 install -d -m 755 /etc/fleet/nft
 N=/etc/fleet/nft/__T__.nft
+# 同号映射的供应商（公网 P → 机器 P，变量 SS_PUBLIC_PORT）：把 P 转到 SS 端口，入站过滤链看到的已是 SS 端口，照常只放行线路机。
+# 没有这个变量时什么都不加，nft 文件和原来逐字相同
+NATCH=
+[ -z "${SS_PUBLIC_PORT:-}" ] || NATCH="
+  chain nat_pre {
+    type nat hook prerouting priority -100;
+    tcp dport $SS_PUBLIC_PORT redirect to :$SS_PORT
+    udp dport $SS_PUBLIC_PORT redirect to :$SS_PORT
+  }"
 cat > $N.tmp <<NFT
 table inet __T__
 delete table inet __T__
@@ -298,7 +307,7 @@ table inet __T__ {
     udp dport $SS_PORT ip saddr @relays accept
     tcp dport $SS_PORT drop
     udp dport $SS_PORT drop
-  }
+  }$NATCH
 }
 NFT
 # set -e 对 && 链中间的失败不会退出，这里逐条显式判断；任何一步失败都让脚本以非 0 退出
@@ -860,6 +869,55 @@ ACL
         assert!(s.contains("tcp dport $SS_PORT ip saddr @relays accept"));
         let direct = SsInst::ip_node(8389, "203.0.113.7", None);
         assert_eq!(direct.ip.as_deref(), Some("203.0.113.7"));
+    }
+
+    /// 渲染出的 NODE_SS 里写 nft 文件的那一段在 bash 里真跑，返回写出的 nft 文件内容（路径换到临时目录；`public` = 变量 SS_PUBLIC_PORT）
+    #[cfg(unix)]
+    fn nft_file_of(i: &SsInst, public: Option<&str>) -> String {
+        let dir = tempfile::tempdir().unwrap();
+        let s = node_ss(i, URL);
+        let from = s.find("N=/etc/fleet/nft/").unwrap();
+        let end = "\nNFT\n";
+        let block = &s[from..from + s[from..].find(end).unwrap() + end.len()];
+        let n = dir.path().join("out.nft");
+        let sh = format!(
+            "set -eu\nSS_PORT={}\n{}{}",
+            i.port,
+            public.map(|p| format!("SS_PUBLIC_PORT={p}\n")).unwrap_or_default(),
+            block.replace(&format!("N=/etc/fleet/nft/{}.nft", i.table()), &format!("N={}", n.display()))
+        );
+        let out = std::process::Command::new("bash").arg("-c").arg(&sh).env("ALLOW", "198.51.100.1, 198.51.100.2").output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        std::fs::read_to_string(dir.path().join("out.nft.tmp")).unwrap()
+    }
+
+    /// 同号映射的供应商（公网 P → 机器 P）：给了 SS_PUBLIC_PORT 才多一条 nat 链把 P 转到 SS 端口；不给时 nft 文件与引入这条链之前逐字相同（现有节点重新收敛不变）
+    #[cfg(unix)]
+    #[test]
+    fn same_number_nat_port_adds_redirect_chain() {
+        let plain = "table inet ss_guard
+delete table inet ss_guard
+table inet ss_guard {
+  set relays { type ipv4_addr; elements = { $ALLOW } }
+  chain input {
+    type filter hook input priority -10; policy accept;
+    tcp dport 8388 ip saddr @relays accept
+    udp dport 8388 ip saddr @relays accept
+    tcp dport 8388 drop
+    udp dport 8388 drop
+  }
+}
+"
+        .replace("$ALLOW", "198.51.100.1, 198.51.100.2");
+        assert_eq!(nft_file_of(&SsInst::host(), None), plain);
+        let with = nft_file_of(&SsInst::host(), Some("16351"));
+        let want = plain.replace(
+            "  }\n}\n",
+            "  }\n  chain nat_pre {\n    type nat hook prerouting priority -100;\n    tcp dport 16351 redirect to :8388\n    udp dport 16351 redirect to :8388\n  }\n}\n",
+        );
+        assert_eq!(with, want);
+        // 放行名单的 sed（NODE_NFT_ONLY）只动 elements，不碰新链
+        assert!(super::NODE_NFT_ONLY.contains("s/elements = { [^}]* }/"));
     }
 
     /// 公网 IP 在网卡上 → 不用 bind 地址；不在时找经 NAT 出去是它的那一个本机地址；找不到、找到几个都报错

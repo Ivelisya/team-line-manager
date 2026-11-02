@@ -63,7 +63,10 @@ pub struct Item {
     relay_id: Option<Uuid>,
     login: Option<Login>,
     upstream: Option<Upstream>,
+    /// 供应商映射到节点 ssserver 的公网端口（`ip` 上的端口）。不填 = 8388；填了不是 8388（同号映射：公网 P → 机器 P）时，节点上多一条把 P 转到 8388 的 nft 规则
     ss_port: Option<u16>,
+    /// 出口 IP：端口转发型 NAT 节点入口 IP（`ip`，线路机连它）与出站公网 IP 不同时填。只用于 VPS 节点（不含同机 IP 节点）；和 `ip` 相同等于不填
+    egress_ip: Option<String>,
     subscription: Option<SubIn>,
     /// 机器重装过、主机指纹变了：允许预检时覆盖已记录的指纹
     reset_host_key: Option<bool>,
@@ -100,6 +103,8 @@ struct Checked {
     host: Option<Option<Uuid>>,
     /// 同机 IP 节点暂定的 SS 端口（作业在宿主机上核对时发现被占用会改）
     ss_port: Option<u16>,
+    /// 规范化后的出口 IP（None = 出口就是 ip）
+    egress: Option<std::net::Ipv4Addr>,
     /// 所选套餐的供应商
     plan_provider: Option<Uuid>,
     /// 规范化后的国家（None = 按 IP 自动）
@@ -331,8 +336,20 @@ async fn validate(tx: &mut Tx<'_>, items: &[Item]) -> ApiResult<Vec<Checked>> {
                 }
             }
         }
+        // 出口 IP：只给 VPS 节点（不含同机 IP 节点）；和 IP 相同按没填
+        let egress = match it.egress_ip.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            None => None,
+            Some(_) if it.kind != "vps" || it.host_id.is_some() => {
+                errors.push("出口 IP 只用于 VPS 节点（线路机、家宽代理、同机 IP 节点不用）".into());
+                None
+            }
+            Some(raw) => super::machines::parse_egress_ip(raw, &ip.to_string()).unwrap_or_else(|e| {
+                errors.push(e);
+                None
+            }),
+        };
         let plan_provider = plan.and_then(|p| plans.get(&p).copied());
-        out.push(Checked { item: it.clone(), ip, number: it.number, name: String::new(), host, ss_port, plan_provider, country, errors, warnings: vec![], entry_mode: None, entry_mode_note: None });
+        out.push(Checked { item: it.clone(), ip, number: it.number, name: String::new(), host, ss_port, egress, plan_provider, country, errors, warnings: vec![], entry_mode: None, entry_mode_note: None });
     }
     for c in out.iter_mut() {
         if c.item.kind == "relay" {
@@ -578,8 +595,8 @@ pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Ba
             None => (Some(it.ssh_port.unwrap_or(22) as i32), c.plan_provider.or(it.provider_id), it.plan_id),
         };
         sqlx::query(
-            "insert into machine (id, kind, team_id, number, label, primary_ip, ssh_port, provider_id, plan_id, service_ref, note, host_id, country, lifecycle)
-             values ($1, $2::machine_kind, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'provisioning')",
+            "insert into machine (id, kind, team_id, number, label, primary_ip, ssh_port, provider_id, plan_id, service_ref, note, host_id, country, egress_ip, lifecycle)
+             values ($1, $2::machine_kind, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'provisioning')",
         )
         .bind(id)
         .bind(kind)
@@ -594,6 +611,7 @@ pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Ba
         .bind(it.note.as_deref().unwrap_or(""))
         .bind(it.host_id)
         .bind(&c.country)
+        .bind(c.egress.map(|ip| ipnetwork::IpNetwork::from(IpAddr::V4(ip))))
         .execute(&mut *tx)
         .await?;
         match kind {
@@ -670,7 +688,7 @@ pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Ba
             "machine.provision",
             "machine",
             Some(id),
-            json!({"name": c.name, "ip": c.ip.to_string(), "kind": kind, "job_id": job, "host_id": it.host_id}),
+            json!({"name": c.name, "ip": c.ip.to_string(), "kind": kind, "job_id": job, "host_id": it.host_id, "egress_ip": c.egress.map(|ip| ip.to_string())}),
         )
         .await?;
         created.push(json!({"machine_id": id, "job_id": job, "name": c.name, "entry_mode": c.entry_mode, "entry_mode_note": c.entry_mode_note}));
