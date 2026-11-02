@@ -191,12 +191,15 @@ systemctl enable -q fleet-server fleet-ipintel-fetch.timer fleet-backup.timer
 systemctl start fleet-ipintel-fetch.timer fleet-backup.timer
 [ -n "$(ls -A /var/lib/fleet/ipintel)" ] || systemctl start --no-block fleet-ipintel-fetch.service
 # 上线前的回滚点：换上新版之前同步做一份备份（新版启动会自动跑迁移，旧库只能靠它回去，docs/OPS.md §9）。放在这里：备份脚本与单元
-# 上面刚装好并 daemon-reload，库此时还是旧版的；失败（set -e）就停在这里，线上的版本原样不动。
+# 上面刚装好并 daemon-reload，库此时还是旧版的；失败就 exit 1 停在换版之前（fleet-server、前端、dist 不动）。
 # 首次安装（还没有 fleet-server，库是空的）跳过：装完后面会再做第一份
-if [ -f /opt/fleet/fleet-server ] && ! systemctl start fleet-backup.service; then
-  echo "上线前的备份没做成，未换任何文件、线上的版本原样不动。日志："
-  journalctl -u fleet-backup -n 20 --no-pager || true
-  exit 1
+if [ -f /opt/fleet/fleet-server ]; then
+  if ! systemctl start fleet-backup.service; then
+    echo "上线前的备份没做成，部署停在换版之前：fleet-server、前端、dist 还是原来的（单元与备份脚本已更新）。日志："
+    journalctl -u fleet-backup -n 20 --no-pager || true
+    exit 1
+  fi
+  echo "上线前备份：$(ls -1t /var/backups/fleet/fleet-*.tar* 2>/dev/null | grep -v '\.sha256$' | head -1)"
 fi
 # 换上新版（紧挨着重启）：dist 与二进制各自原子 mv，前端整个目录换。换下来的旧版留作 .prev：fleet-server.prev、fleet-agent.prev、web.prev
 # （同一个文件 / 前端重复部署时不覆盖它），回滚见 docs/OPS.md §9

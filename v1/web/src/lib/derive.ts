@@ -176,12 +176,10 @@ export const reachFlaky = (e: EntryView) => { const r = reachOf(e); return r && 
 export const entryBad = (e: EntryView) => !!reachFail(e) || !!probeFail(e) || (e.lifecycle === 'active' && !!e.apply_error);
 /** 闲置备用（客户侧口径）：在用、在备用团队、没有软路由出口指着、没有在用的同机 IP 节点——不关系到客户，不开告警，总览不算进故障，可用率不含（读服务端 MachineView::idle_spare）；
  *  不看自动续费（只开着自动续费的备用机照样闲置，只是照常续费，见 isUnbilledSpare）；卡片上状态照常显示 */
-export const isIdleSpare = (m: MachineView) =>
-  m.lifecycle === 'active' && m.spare && m.idle_spare;
+export const isIdleSpare = (m: MachineView) => m.idle_spare;
 /** 不续费的备用机（费用侧口径）：在用、在备用团队、没被扣住不回收（软路由出口指着 / 同机 IP 节点在用 / 开着自动续费都算被扣住）——等到期放生的，不提醒续费、不算到期，月费不进合计，待付清单默认不列。
  *  读服务端 MachineView::spare_unbilled。一定是闲置备用 */
-export const isUnbilledSpare = (m: MachineView) =>
-  m.lifecycle === 'active' && m.spare && m.spare_unbilled;
+export const isUnbilledSpare = (m: MachineView) => m.spare_unbilled;
 /** 状态筛选、状态列排序用的值：在用的看健康，其余看生命周期（同机器页状态筛选下拉的 value） */
 export const statusOf = (m: MachineView) => (m.lifecycle === 'active' ? m.health.status : m.lifecycle);
 /** 状态列升序：有问题的在前（上架失败、故障、降级…），正常的在后。机器页、首页表格的状态列与首页的「异常优先」共用 */

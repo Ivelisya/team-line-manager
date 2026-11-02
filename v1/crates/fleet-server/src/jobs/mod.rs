@@ -523,7 +523,34 @@ async fn panicked(st: &AppState, job: &JobRow, owner: &str, p: Box<dyn std::any:
             Err(e) => Err(e.into()),
         }
     } else {
-        fail_job(st, job, owner, &err).await
+        // 领取时克隆的 row 停在领取那一步，advance 每做完一步都把 step 写回库：按库里当前的步骤把 panic 的那一步记成失败（同 `fail`），
+        // 失败通知（要不要人工处理）也按这一步判断
+        match sqlx::query_scalar::<_, i32>("select step from job where id = $1 and lease_owner = $2")
+            .bind(job.id)
+            .bind(owner)
+            .fetch_optional(&st.db)
+            .await
+        {
+            Ok(None) => lost(st, job).await,
+            Ok(Some(step)) => {
+                let job = JobRow { step, ..job.clone() };
+                let r = sqlx::query(&format!(
+                    "update job_step set state = 'failed', finished_at = now(), error = $4, error_kind = $5 where job_id = $1 and idx = $2 and state = 'running' and {OWN}"
+                ))
+                .bind(job.id)
+                .bind(step)
+                .bind(owner)
+                .bind(&err)
+                .bind(ErrKind::Internal.as_str())
+                .execute(&st.db)
+                .await;
+                match r {
+                    Ok(_) => fail_job(st, &job, owner, &err).await,
+                    Err(e) => Err(e.into()),
+                }
+            }
+            Err(e) => Err(e.into()),
+        }
     };
     if let Err(e) = res {
         retry_later(st, job.id, owner, &e).await;

@@ -47,8 +47,7 @@ export const RetireDialog = resetOnOpen(function RetireDialog({ m, open, onOpenC
   const due = m.subscription?.due_date.slice(5);
   const recycle = p?.spare.recycle_on?.slice(5);
   // 进备用后不自动回收的原因（服务端 spare.held）
-  const held = p?.spare.held ?? null;
-  const heldText = held === null ? null : held ? `不自动回收：${held}` : '不自动回收';
+  const heldText = p?.spare.held ? `不自动回收：${p.spare.held}` : null;
   const go = mode === 'spare' ? '一起移入备用' : inSpare ? '一起回收' : '一起清理并回收';
   return (
     <TypedConfirmDialog open={open} onOpenChange={onOpenChange} size="md" title={`${inSpare ? '回收' : '退役'} · ${m.name}`} expected={m.name} prompt="请输入显示名"

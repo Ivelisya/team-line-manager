@@ -242,7 +242,7 @@ const BeatSlot = memo(function BeatSlot({ id, kind, lifecycle, reason, reasonKey
     : kind === 'relay' && all === 0 ? <span className="t-muted" data-tip={NO_ENTRY_TIP}>还没有入口，不用探测</span>
     : empty ? <span className="t-muted">暂无探测</span>
     : kind === 'relay' ? <>{relayCounts}{rttTag}</>
-    : kind === 'proxy' ? <>探测成功 <b className="num">{rate == null ? '—' : `${Math.round(rate)}%`}</b></>
+    : kind === 'proxy' ? <>探测成功 <b className="num">{rate == null ? '—' : `${Math.round(rate)}%`}</b>{unreach}</>
     // 入口全是穿透的节点：没有 TCP 读数，写「穿透」（格子是经入口的出口探测）；混着普通入口的照写 TCP
     : total === 0 && reverse > 0 ? <><span data-tip={`${REVERSE_TIP}\n下面的格子是经入口的出口探测`}><b>穿透</b></span> · 出口 <b>{egressText(egressOk, egressFail)}</b>{unreach}</>
     : <><span data-tip={tcpTip}>TCP <b>{probeMs(tcp, tcpFail)}</b></span>{reverse > 0 && <span data-tip={REVERSE_TIP}>（另有 {reverse} 条穿透）</span>} · 出口 <b>{egressText(egressOk, egressFail)}</b>{unreach}</>;
