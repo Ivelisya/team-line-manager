@@ -61,10 +61,12 @@ export const PlacementPanel = React.memo(function PlacementPanel() {
   const nSuggest = groups.reduce((s, g) => s + g.nodes.length, 0) + singles.length;
   const cap = Math.max(CAP, nSuggest);
   const rows = all ? sorted : sorted.slice(0, cap);
+  // 一格样本都没有：线路机没上报往返（刚上线，或线路机上 ping 不可用），矩阵整片是「—」，说一句
+  const empty = p.nodes.every((n) => n.cells.every((c) => c.samples === 0));
   const relayName = (id: string) => p.relays.find((r) => r.id === id)?.name ?? '';
   return (
     <Panel flush title="节点放置" count={nSuggest > 0 ? `${nSuggest} 个建议换线` : undefined}
-      sub={<>近 {p.window_h} 小时线路机到节点的往返 <InfoTip text={`每 ${p.interval_s / 60} 分钟从每台线路机测一次到各节点 IP 的往返（ICMP），每格是中位数，成功率不到 100% 时写在后面\n最优：成功率 ≥ ${p.min_success_pct}%、没故障、流量额度放得下这个节点的线路机里最快的\n当前比最优慢 ${p.min_gain_ms} ms 以上，或当前成功率不到 ${p.min_success_pct}%，就建议换`} /></>}
+      sub={<>近 {p.window_h} 小时线路机到节点的往返 <InfoTip text={`每 ${p.interval_s / 60} 分钟从每台线路机测一次到各节点 IP 的往返（ICMP），每格是中位数，成功率不到 100% 时写在后面\n最优：成功率 ≥ ${p.min_success_pct}%、没故障、流量额度放得下这个节点的线路机里最快的\n当前比最优慢 ${p.min_gain_ms} ms 以上，或当前成功率不到 ${p.min_success_pct}%，就建议换`} />{empty && <> · <span data-tip={`线路机每 ${p.interval_s / 60} 分钟测一次到节点的往返，刚上线或线路机上 ping 不可用时为空`}>还没有往返数据</span></>}</>}
       tools={teams.length > 1 && <>
         <FilterChip pressed={!team} onClick={() => setTeam(null)}>全部</FilterChip>
         {teams.map((t) => <FilterChip key={t.id} pressed={team === t.id} onClick={() => setTeam(t.id)}>{t.name}</FilterChip>)}

@@ -60,7 +60,7 @@ export function AlertsIndicator() {
             );
           })}
         </ul>
-        <Link to="/incidents" onClick={() => setOpen(false)} className="pop-all">查看全部 {all} 条 →</Link>
+        <Link to="/incidents" onClick={() => setOpen(false)} className="pop-all">查看全部 →</Link>
       </HoverCardContent>
     </HoverCard>
   );

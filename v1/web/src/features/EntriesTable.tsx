@@ -77,7 +77,7 @@ export function EntriesTable({ m, traffic, onlyBad, pick }: { m: MachineView; tr
       <table className="dt is-one" style={{ minWidth: 520 }}>
         <colgroup>{picking && <col style={{ width: 44 }} />}<col style={{ width: 210 }} /><col style={{ width: 132 }} /><col style={{ width: 72 }} /><col style={{ width: 72 }} />{traffic && <col style={{ width: 112 }} />}</colgroup>
         {/* 勾选后表头换成操作栏（同一行、同样高），表格不往下挪 */}
-        <thead><tr>{picking && <th className="dt-pick">{movable.length > 0 && <Checkbox aria-label="全选可换线的入口" checked={allOn} onCheckedChange={(v) => setSel(v === true ? movable.map((e) => e.id) : [])} />}</th>}
+        <thead><tr>{picking && <th className="dt-pick">{movable.length > 0 && <Checkbox aria-label="全选可换线的入口" checked={allOn ? true : picked.length > 0 ? 'indeterminate' : false} onCheckedChange={(v) => setSel(v === true ? movable.map((e) => e.id) : [])} />}</th>}
           {picked.length > 0 ? (
             <th colSpan={traffic ? 5 : 4} className="dt-pickbar">
               <span className="row row-between" style={{ flexWrap: 'nowrap' }}>

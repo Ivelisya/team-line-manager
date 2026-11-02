@@ -2,7 +2,7 @@ import * as React from 'react';
 import * as LabelPrimitive from '@radix-ui/react-label';
 import * as CheckboxPrimitive from '@radix-ui/react-checkbox';
 import * as SwitchPrimitive from '@radix-ui/react-switch';
-import { Check, Info, Search } from 'lucide-react';
+import { Check, Info, Minus, Search } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 /** 登录用的输入：密码框，或 autoComplete 写明是用户名 / 密码 / 验证码的。其余文本框（团队名、套餐名、搜索…）不让密码管理器挂图标 */
@@ -53,7 +53,7 @@ SearchInput.displayName = 'SearchInput';
 
 export const Checkbox = React.forwardRef<React.ElementRef<typeof CheckboxPrimitive.Root>, React.ComponentPropsWithoutRef<typeof CheckboxPrimitive.Root>>(({ className, ...p }, ref) => (
   <CheckboxPrimitive.Root ref={ref} className={cn('checkbox', className)} {...p}>
-    <CheckboxPrimitive.Indicator><Check /></CheckboxPrimitive.Indicator>
+    <CheckboxPrimitive.Indicator>{p.checked === 'indeterminate' ? <Minus /> : <Check />}</CheckboxPrimitive.Indicator>
   </CheckboxPrimitive.Root>
 ));
 Checkbox.displayName = 'Checkbox';
