@@ -59,9 +59,19 @@ pub fn billed_until(start: Date, end: Date) -> Option<Date> {
     period(start, k).and_then(|(_, e)| e.previous_day())
 }
 
-/// 可以翻看的月份：最早的开始收费月 → last（没有名额时只有 last）
-pub fn months(starts: impl IntoIterator<Item = Date>, last: Date) -> Vec<Date> {
-    let first = starts.into_iter().map(month_of).min().filter(|m| *m < last).unwrap_or(last);
+/// 第 period_start 是 start 的第几期（k，从 0 起）；不在 start 的期序列上为 None
+pub fn period_no(start: Date, period_start: Date) -> Option<i64> {
+    let k = month_no(period_start) - month_no(start);
+    (k >= 0 && period(start, k)?.0 == period_start).then_some(k)
+}
+
+/// 开始收费日最晚填到今天加一个月（再晚的期超出能翻看的月份）
+pub fn latest_start(today: Date) -> Date { meta::add_months(today, 1).unwrap_or(today) }
+
+/// 可以翻看的月份：最早的开始收费月（没有或晚于本月就从本月）→ 下个月（开始收费日最晚是今天加一个月，落在下个月）
+pub fn months(starts: impl IntoIterator<Item = Date>, this: Date) -> Vec<Date> {
+    let first = starts.into_iter().map(month_of).fold(this, Date::min);
+    let last = meta::add_months(this, 1).unwrap_or(this);
     let mut out = vec![];
     let mut m = first;
     while m <= last {
@@ -100,6 +110,17 @@ mod tests {
     }
 
     #[test]
+    fn period_numbers() {
+        let s = date!(2026 - 01 - 31);
+        assert_eq!(period_no(s, s), Some(0));
+        assert_eq!(period_no(s, date!(2026 - 02 - 28)), Some(1));
+        assert_eq!(period_no(s, date!(2026 - 03 - 31)), Some(2));
+        // 不在期序列上、或早于开始收费日
+        assert_eq!(period_no(s, date!(2026 - 02 - 27)), None);
+        assert_eq!(period_no(s, date!(2025 - 12 - 31)), None);
+    }
+
+    #[test]
     fn billed_until_last_period() {
         assert_eq!(billed_until(date!(2026 - 08 - 15), date!(2026 - 10 - 15)), Some(date!(2026 - 10 - 14)));
         assert_eq!(billed_until(date!(2026 - 08 - 15), date!(2026 - 10 - 16)), Some(date!(2026 - 11 - 14)));
@@ -108,10 +129,13 @@ mod tests {
 
     #[test]
     fn month_range() {
-        let dec = date!(2026 - 12 - 01);
-        assert_eq!(months([date!(2026 - 10 - 30), date!(2026 - 10 - 01), date!(2027 - 01 - 05)], dec), [date!(2026 - 10 - 01), date!(2026 - 11 - 01), dec]);
-        assert_eq!(months([], dec), [dec]);
+        let (nov, dec) = (date!(2026 - 11 - 01), date!(2026 - 12 - 01));
+        // 本月 11 月：最早 10 月开始 → 10、11、12 月（下个月）；没有名额 / 最早的在下个月之后 → 本月和下个月（一定含本月）
+        assert_eq!(months([date!(2026 - 10 - 30), date!(2026 - 10 - 01), date!(2026 - 12 - 05)], nov), [date!(2026 - 10 - 01), nov, dec]);
+        assert_eq!(months([], nov), [nov, dec]);
+        assert_eq!(months([date!(2026 - 12 - 05)], nov), [nov, dec]);
         assert_eq!(fmt_month(dec), "2026-12");
+        assert_eq!(latest_start(date!(2026 - 01 - 31)), date!(2026 - 02 - 28));
         assert_eq!((parse_month("2026-12"), parse_month("2026-13")), (Some(dec), None));
     }
 }

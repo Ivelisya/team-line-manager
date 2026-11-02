@@ -173,7 +173,7 @@ struct MonthRow {
     paid_at: Option<OffsetDateTime>,
 }
 
-/// 某月的清单（没收在前、再按名字）与可以翻看的月份（最早的开始收费月 → 下个月）
+/// 某月的清单（没收在前、再按名字）与可以翻看的月份（最早的开始收费月或本月 → 下个月）
 async fn month_rows(db: &mut PgConnection, team: Uuid, month: Date) -> ApiResult<(Vec<Date>, Vec<MonthRow>)> {
     let next = meta::add_months(month, 1).ok_or_else(|| ApiError::bad_request("日期超出范围"))?;
     let slots = team_slots(db, team).await?;
@@ -189,7 +189,7 @@ async fn month_rows(db: &mut PgConnection, team: Uuid, month: Date) -> ApiResult
     .into_iter()
     .map(|(id, ps, at)| ((id, ps), at))
     .collect();
-    let months = bt::months(slots.iter().map(|s| s.start_date), meta::add_months(bt::this_month(), 1).unwrap_or(next));
+    let months = bt::months(slots.iter().map(|s| s.start_date), bt::this_month());
     let mut rows: Vec<MonthRow> = slots
         .into_iter()
         .filter_map(|s| {
@@ -202,17 +202,11 @@ async fn month_rows(db: &mut PgConnection, team: Uuid, month: Date) -> ApiResult
     Ok((months, rows))
 }
 
-fn counts(rows: &[MonthRow]) -> (usize, usize) {
-    let paid = rows.iter().filter(|r| r.paid_at.is_some()).count();
-    (paid, rows.len() - paid)
-}
-
 /// 管理端的月份清单（GET 与标记后都回它）
 async fn month_view(st: &AppState, db: &mut PgConnection, team: Uuid, month: Date) -> ApiResult<Value> {
     let name = team_name(db, team).await?;
     let today = bt::today();
     let (months, rows) = month_rows(db, team, month).await?;
-    let (paid, unpaid) = counts(&rows);
     // 待定是「现在」的状态，只在本月里提
     let pending = if month == bt::this_month() { pending_json(db, team).await? } else { vec![] };
     let page = page_json(st, db, team).await?;
@@ -222,7 +216,7 @@ async fn month_view(st: &AppState, db: &mut PgConnection, team: Uuid, month: Dat
         .map(|r| {
             let s = &r.s;
             json!({
-                "slot_id": s.id, "name": s.name(), "region": s.region, "start_date": bt::fmt_date(s.start_date), "end_date": s.end_date.map(bt::fmt_date),
+                "slot_id": s.id, "name": s.name(), "region": s.region, "start_date": bt::fmt_date(s.start_date),
                 "period_start": bt::fmt_date(r.ps), "period_end": bt::fmt_date(r.pe), "upcoming": r.ps > today,
                 "manual": s.manual, "note": s.note, "holder_id": s.holder_id, "vacated": s.state(today) == "vacated", "ended": s.state(today) == "ended",
                 "paid": r.paid_at.is_some(), "paid_at": r.paid_at.map(meta::fmt_ts),
@@ -232,12 +226,12 @@ async fn month_view(st: &AppState, db: &mut PgConnection, team: Uuid, month: Dat
     Ok(json!({
         "team": {"id": team, "name": name}, "today": bt::fmt_date(today), "initialized": initialized, "page": page,
         "month": bt::fmt_month(month), "months": months.into_iter().map(bt::fmt_month).collect::<Vec<_>>(),
-        "nodes": nodes, "paid_count": paid, "unpaid_count": unpaid, "pending": pending,
+        "nodes": nodes, "pending": pending,
     }))
 }
 
 /// `GET /teams/{id}/billing/month?month=2026-11`（默认本月）：每个节点起点落在这个月的那一期（区间、已收 / 没收；没收在前、再按名字）、个数、
-/// 可以翻看的月份（最早的开始收费月 → 下个月）、本月的待定节点、客户页链接状态
+/// 可以翻看的月份（最早的开始收费月或本月 → 下个月）、本月的待定节点、客户页链接状态
 pub async fn month(_a: Actor, State(st): State<AppState>, ApiPath(team): ApiPath<Uuid>, ApiQuery(q): ApiQuery<MonthQ>) -> ApiResult<Json<Value>> {
     let month = month_in(q.month.as_deref())?;
     let mut conn = st.db.acquire().await?;
@@ -345,6 +339,15 @@ fn check_note(s: &str) -> ApiResult<String> {
     Ok(s.to_string())
 }
 
+/// 开始收费日最晚今天加一个月（再晚的期在月份清单里翻不到）
+fn check_start(d: Date) -> ApiResult<Date> {
+    let max = bt::latest_start(bt::today());
+    if d > max {
+        return Err(ApiError::bad_request(format!("开始收费日最晚填到 {}（今天起一个月内）", bt::fmt_date(max))));
+    }
+    Ok(d)
+}
+
 fn check_range(start: Date, end: Date) -> ApiResult<()> {
     if end <= start {
         return Err(ApiError::bad_request(format!("停止收费日 {} 要晚于开始收费日 {}", bt::fmt_date(end), bt::fmt_date(start))));
@@ -384,7 +387,7 @@ pub struct AddIn {
 pub async fn slot_add(a: Actor, State(st): State<AppState>, ApiPath(team): ApiPath<Uuid>, ApiJson(b): ApiJson<AddIn>) -> ApiResult<Json<Value>> {
     let region = check_region(&b.region)?;
     let note = check_note(b.note.as_deref().unwrap_or(""))?;
-    let start = date_in(&b.start_date, "开始收费日")?;
+    let start = date_in(&b.start_date, "开始收费日").and_then(check_start)?;
     let count = b.count.unwrap_or(1);
     if !(1..=50).contains(&count) {
         return Err(ApiError::bad_request("一次添加 1–50 个"));
@@ -428,10 +431,22 @@ pub struct PatchIn {
     end_date: Option<Option<String>>,
 }
 
-/// `PATCH /billing-slots/{id}` `{start_date?, region?, note?, end_date?}`：改起算日 / 地区 / 备注（记 edit）；
+/// 开始收费日改了：这个名额已收的期按期序号 k 平移到新开始日的第 k 期（保留已收时刻）；不在旧开始日期序列上、或新的期超出日期范围的删掉。返回 (挪了几条, 删了几条)
+async fn shift_paid(tx: &mut Tx<'_>, id: Uuid, old: Date, new: Date) -> ApiResult<(usize, usize)> {
+    let rows: Vec<(Date, OffsetDateTime)> = sqlx::query_as("delete from billing_paid where slot_id = $1 returning period_start, paid_at").bind(id).fetch_all(&mut **tx).await?;
+    let mut moved = 0;
+    for (ps, at) in &rows {
+        let Some(nps) = bt::period_no(old, *ps).and_then(|k| bt::period(new, k)).map(|p| p.0) else { continue };
+        sqlx::query("insert into billing_paid (slot_id, period_start, paid_at) values ($1, $2, $3)").bind(id).bind(nps).bind(*at).execute(&mut **tx).await?;
+        moved += 1;
+    }
+    Ok((moved, rows.len() - moved))
+}
+
+/// `PATCH /billing-slots/{id}` `{start_date?, region?, note?, end_date?}`：改开始收费日（最晚今天加一个月；已收的期按期序号跟着挪到新的期）/ 地区 / 备注（记 edit）；
 /// end_date 只能给手动名额或已空出的名额（记 manual_end），有节点占着的 409；end_date: null = 恢复，只限手动名额 → `Slot`
 pub async fn slot_patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<PatchIn>) -> ApiResult<Json<Value>> {
-    let start = b.start_date.as_deref().map(|s| date_in(s, "开始收费日")).transpose()?;
+    let start = b.start_date.as_deref().map(|s| date_in(s, "开始收费日").and_then(check_start)).transpose()?;
     let region = b.region.as_deref().map(check_region).transpose()?;
     let note = b.note.as_deref().map(check_note).transpose()?;
     let end = match &b.end_date {
@@ -474,11 +489,21 @@ pub async fn slot_patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPa
         .bind(new_end)
         .execute(&mut *tx)
         .await?;
+    let shifted = if old.start_date != new_start { Some(shift_paid(&mut tx, id, old.start_date, new_start).await?) } else { None };
     let now_row = one_slot(&mut tx, id).await?;
     let name = now_row.name();
     let mut what = vec![];
     if old.start_date != now_row.start_date {
-        what.push(format!("开始收费日 {} → {}", bt::fmt_cn(old.start_date), bt::fmt_cn(now_row.start_date)));
+        let mut w = format!("开始收费日 {} → {}", bt::fmt_cn(old.start_date), bt::fmt_cn(now_row.start_date));
+        if let Some((moved, dropped)) = shifted {
+            if moved > 0 {
+                w.push_str(&format!("（{moved} 期的已收按期序号挪到了新的期）"));
+            }
+            if dropped > 0 {
+                w.push_str(&format!("（{dropped} 条对不上期的已收记录已清掉）"));
+            }
+        }
+        what.push(w);
     }
     if old.region != now_row.region {
         what.push(format!("地区 {} → {}", old.region, now_row.region));
@@ -591,10 +616,10 @@ pub struct InitIn {
     dry_run: bool,
 }
 
-/// `POST /billing/init` `{since, dry_run?}`：一次性初始化——对还没有任何名额的非备用团队，把现在每个可计费节点建一个名额（起算日 = since，地区按国家，记 init）；
+/// `POST /billing/init` `{since, dry_run?}`：一次性初始化——对还没有任何名额的非备用团队，把现在每个可计费节点建一个名额（开始收费日 = since，地区按国家，记 init）；
 /// 已有名额的团队跳过。第一次初始化之后对账才开始（app_setting 的 billing_since）。返回每个团队建了几个、哪些节点
 pub async fn init(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<InitIn>) -> ApiResult<Json<Value>> {
-    let since = date_in(&b.since, "开始收费日")?;
+    let since = date_in(&b.since, "开始收费日").and_then(check_start)?;
     let mut tx = st.db.begin().await?;
     let teams: Vec<(Uuid, String)> = sqlx::query_as("select id, name from team where not spare order by sort_order, name").fetch_all(&mut *tx).await?;
     let now = OffsetDateTime::now_utc();
@@ -657,7 +682,7 @@ const PAGE_COLS: &str = "token_enc, enabled, created_at, token_at, last_view_at,
 fn link(st: &AppState, token: &str) -> String { format!("{}/c/{token}", st.cfg.public_url.trim_end_matches('/')) }
 
 fn page_of(st: &AppState, r: &PageRow) -> Value {
-    // 密钥换了解不开时不报错（批次照常能看），链接给 null，换新链接即可
+    // 密钥换了解不开时不报错（月份清单照常能看），链接给 null，换新链接即可
     let token = st.secrets.open_str(&r.token_enc).map_err(|e| tracing::warn!("客户页令牌解密失败：{e:#}")).ok();
     json!({
         "enabled": r.enabled, "link": token.map(|t| link(st, &t)),
@@ -761,14 +786,13 @@ pub async fn public_view(State(st): State<AppState>, ClientIp(ip): ClientIp, Api
     .execute(&st.db)
     .await?;
     let (months, rows) = month_rows(&mut *st.db.acquire().await?, team, month).await?;
-    let (paid, unpaid) = counts(&rows);
     let nodes: Vec<Value> = rows
         .iter()
         .map(|r| json!({"name": r.s.name(), "region": r.s.region, "period_start": bt::fmt_date(r.ps), "period_end": bt::fmt_date(r.pe), "paid": r.paid_at.is_some()}))
         .collect();
     let page = json!({
         "team": name, "today": bt::fmt_date(bt::today()), "month": bt::fmt_month(month), "months": months.into_iter().map(bt::fmt_month).collect::<Vec<_>>(),
-        "nodes": nodes, "paid_count": paid, "unpaid_count": unpaid,
+        "nodes": nodes,
     });
     let mut r = ok(page).into_response();
     r.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
