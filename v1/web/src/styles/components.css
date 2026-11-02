@@ -208,11 +208,16 @@
 .beat-win[data-tone="ok"] { color: var(--ok-text); }
 .beat-win[data-tone="warn"] { color: var(--warn-text); }
 .beat-win[data-tone="bad"] { color: var(--bad-text); }
-.beat-cells { display: flex; gap: var(--beat-gap); width: 100%; overflow: hidden; height: var(--beat-h); }
+.beat-cells { display: flex; gap: var(--beat-gap); width: 100%; overflow-x: clip; overflow-y: visible; height: var(--beat-h); } /* 竖向不裁：悬停的单格要往上下长 */
 .beat-cells > i { display: block; flex: 1 1 0; min-width: 2px; max-width: var(--beat-w-max); height: var(--beat-h); background: var(--line); border-radius: 2px; } /* 换色不过渡（同 .cells） */
 .beat-cells > i[data-t="ok"] { background: var(--latency-ok); }
 .beat-cells > i[data-t="warn"] { background: var(--warn); }
 .beat-cells > i[data-t="bad"] { background: var(--bad); }
+/* 悬停单格：竖向放大 1.35 倍（颜色、间距不变），只在能悬停且不减弱动效时 */
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .beat-cells > i, .rt-minibeat > i { transition: transform var(--dur-1) var(--ease-out); }
+  .beat-cells > i:hover, .rt-minibeat > i:hover { transform: scaleY(1.35); }
+}
 .beat.is-stale .beat-cells > i { background: transparent; box-shadow: inset 0 0 0 1px var(--line-strong); }
 .beat.is-empty .beat-cells > i { background: transparent; border: 1px dashed var(--line-strong); box-sizing: border-box; } /* 整条都没有探测：虚线空格 */
 
@@ -363,19 +368,29 @@
    水平居中用独立的 translate 属性：关键帧只写自己的 transform，点遮罩被拦下时的回弹（dialog.tsx，独立 scale）也不用管居中 */
 .overlay { position: fixed; inset: 0; z-index: var(--z-dialog); background: var(--scrim); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); animation: fade-in var(--dur-2) var(--ease-out); }
 .overlay[data-state="closed"] { animation: fade-out var(--dur-1) var(--ease-std) forwards; }
-/* 顶部锚定（同命令面板）：内容异步变多时只往下长，不上下跳；矮屏时自身滚动 */
+/* 顶部锚定（同命令面板）：内容异步变多时只往下长，不上下跳；矮屏时整块滚动，底部按钮条吸底（下面的 .dialog-foot），不会被截掉 */
 .dialog {
   position: fixed; z-index: var(--z-dialog); left: 50%; top: min(10vh, 96px); translate: -50% 0; transform-origin: 50% 0;
   width: min(var(--dialog-sm), calc(100vw - 32px)); max-height: calc(100dvh - min(10vh, 96px) - 16px); overflow: auto;
   background: var(--raised); border: 1px solid var(--line-float); border-radius: var(--r-card); box-shadow: var(--shadow-modal);
-  padding: var(--sp-20); display: grid; gap: var(--sp-16); animation: panel-in var(--dur-2) var(--ease-out);
+  --dlg-pb: var(--sp-20); padding: var(--sp-20) var(--sp-20) var(--dlg-pb); display: flex; flex-direction: column; gap: var(--sp-16); animation: panel-in var(--dur-2) var(--ease-out);
 }
+/* 直接子元素按内容高度排（同原来的网格行）；form 只是提交的壳，让里面的块直接成为弹层的子元素，按钮条才吸得住（吸附不跨网格行） */
+.dialog > * { flex: none; }
+.dialog-form { display: contents; }
 .dialog-md { width: min(var(--dialog-md), calc(100vw - 32px)); }
 .dialog-lg { width: min(var(--dialog-lg), calc(100vw - 32px)); }
 .dialog-title { margin: 0; font: var(--fw-semibold) var(--fs-title) / var(--lh-title) var(--font-sans); letter-spacing: var(--tracking-title); text-wrap: balance; }
 .dialog-desc { margin: 0; color: var(--fg-2); font-size: var(--fs-body); line-height: var(--lh-body); text-wrap: pretty; }
 .dialog-head { display: grid; gap: var(--sp-6); }
 .dialog-foot { display: flex; justify-content: flex-end; gap: var(--control-gap); flex-wrap: wrap; }
+/* 吸底按钮条：毛玻璃底，通栏（抵消弹层的内边距），内容滚到下面时顶上出一条细线；不滚时与原来的位置、间距一致 */
+.dialog .dialog-foot { position: sticky; bottom: 0; z-index: 1; margin: calc(-1 * var(--sp-8)) calc(-1 * var(--sp-20)) calc(-1 * var(--dlg-pb)); padding: var(--sp-12) var(--sp-20) var(--dlg-pb); background: var(--glass); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); }
+.dialog .dialog-foot::before { content: ""; position: absolute; inset: 0 0 auto; height: 1px; background: var(--line); opacity: 0; pointer-events: none; }
+@supports (animation-timeline: scroll()) {
+  .dialog .dialog-foot::before { animation: foot-edge linear both; animation-timeline: scroll(nearest block); }
+}
+@keyframes foot-edge { 0%, 94% { opacity: 1; } 100% { opacity: 0; } }
 .dialog[data-state="closed"] { animation: panel-out var(--dur-1) var(--ease-std) forwards; }
 @keyframes panel-in { from { opacity: 0; transform: translateY(-6px) scale(.98); } }
 @keyframes panel-out { to { opacity: 0; transform: translateY(-4px); } }
@@ -384,7 +399,7 @@
 @media (max-width: 600px) {
   .dialog {
     top: auto; bottom: 0; left: 0; translate: none; width: 100vw; max-height: calc(100dvh - var(--topbar-h));
-    border-width: 1px 0 0; border-radius: var(--r-card) var(--r-card) 0 0; padding-bottom: calc(var(--sp-20) + env(safe-area-inset-bottom, 0px));
+    border-width: 1px 0 0; border-radius: var(--r-card) var(--r-card) 0 0; --dlg-pb: calc(var(--sp-20) + env(safe-area-inset-bottom, 0px));
     transform-origin: 50% 100%; animation-name: sheet-in;
   }
   .dialog[data-state="closed"] { animation-name: sheet-out; }

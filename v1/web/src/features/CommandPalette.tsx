@@ -25,6 +25,13 @@ const PAGES = NAV.flatMap((n) => (n.to === '/access' ? [n, POLICY] : [n]));
 const LIMIT = 8; // 不输入时只列前几台，输入后在全部机器里搜
 
 
+/** 结果里把输入的字标出来（连续命中的第一处；模糊命中的不标） */
+function Hl({ text, q }: { text: string; q: string }) {
+  const i = q ? text.toLowerCase().indexOf(q.toLowerCase()) : -1;
+  // 包一层 span：.cmd-main 是 flex，裸文本和 mark 会各成一项、被 gap 隔开
+  return i < 0 ? <span>{text}</span> : <span>{text.slice(0, i)}<mark>{text.slice(i, i + q.length)}</mark>{text.slice(i + q.length)}</span>;
+}
+
 type Theme = { pref: ThemePref; setPref: (p: ThemePref) => void };
 type Mode = 'root' | 'copy-ip' | 'evacuate' | 'renew' | 'terminal';
 const close = () => setOverlay(null);
@@ -89,7 +96,7 @@ function PaletteBody({ theme, askUpgrade }: { theme: Theme; askUpgrade: () => vo
     <CommandItem key={m.id} value={value(m)} keywords={[m.id]}
       onSelect={() => { close(); if (mode === 'copy-ip') void copyText(m.ip, ' IP', true); else if (mode === 'evacuate') openEvacuate(m.id); else if (mode === 'renew') openRenew(m.id); else if (mode === 'terminal') openTerminal({ kind: 'machine', id: m.id, name: m.name }); else openDrawer(m.id); }}>
       <Flag country={m.country} manual={!!m.country_set} ip={m.ip} />
-      <span className="cmd-main"><b className="ellipsis">{m.name}</b>{m.health.status !== 'ok' && <HealthPill m={m} />}</span>
+      <span className="cmd-main"><b className="ellipsis"><Hl text={m.name} q={q} /></b>{m.health.status !== 'ok' && <HealthPill m={m} />}</span>
       <span className="cmd-aside">{mode === 'copy-ip' ? <>复制 <span className="num">{m.ip}</span></> : mode === 'evacuate' ? <span>搬空…</span> : mode === 'renew' ? <span>登记续费…</span> : mode === 'terminal' ? <span>打开终端</span> : <span className="num">{m.ip}</span>}</span>
     </CommandItem>
   ));
@@ -104,12 +111,12 @@ function PaletteBody({ theme, askUpgrade }: { theme: Theme; askUpgrade: () => vo
           <>
             <CommandGroup heading="跳转页面">
               {PAGES.map((p) => (
-                <CommandItem key={p.to} value={sv(p.label, '', p.kw)} onSelect={() => go(p.to)}><p.icon /><span className="cmd-main">{p.label}</span></CommandItem>
+                <CommandItem key={p.to} value={sv(p.label, '', p.kw)} onSelect={() => go(p.to)}><p.icon /><span className="cmd-main"><Hl text={p.label} q={q} /></span></CommandItem>
               ))}
             </CommandGroup>
             <CommandGroup heading="动作">
               {actions.map((a) => (
-                <CommandItem key={a.kw} value={sv(a.label.replace(/…$/, ''), '', a.kw)} onSelect={a.run}><a.icon /><span className="cmd-main">{a.label}</span></CommandItem>
+                <CommandItem key={a.kw} value={sv(a.label.replace(/…$/, ''), '', a.kw)} onSelect={a.run}><a.icon /><span className="cmd-main"><Hl text={a.label} q={q} /></span></CommandItem>
               ))}
             </CommandGroup>
             {/* 团队：只在输入后出现，跳到机器页的团队筛选 */}
@@ -117,7 +124,7 @@ function PaletteBody({ theme, askUpgrade }: { theme: Theme; askUpgrade: () => vo
               <CommandGroup heading="团队">
                 {teams.map((t) => (
                   <CommandItem key={t.id} value={sv(t.name, '', 'team 团队')} onSelect={() => go(`/nodes?team=${t.id}`)}>
-                    <Users /><span className="cmd-main">{t.name}</span><span className="cmd-aside"><span className="num">{t.node_count}</span> 台</span>
+                    <Users /><span className="cmd-main"><Hl text={t.name} q={q} /></span><span className="cmd-aside"><span className="num">{t.node_count}</span> 台</span>
                   </CommandItem>
                 ))}
               </CommandGroup>

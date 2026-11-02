@@ -48,7 +48,12 @@
 }
 .dt th.r .th-sort { justify-content: flex-end; }
 @media (hover: hover) { .th-sort:hover { color: var(--fg); } }
-.th-sort .lucide { width: var(--icon-2xs); height: var(--icon-2xs); color: var(--fg-3); }
+.th-sort .lucide { width: var(--icon-2xs); height: var(--icon-2xs); color: var(--fg-3); transition: opacity var(--dur-1) var(--ease-std); }
+/* 没排序的列平时不露排序图标（占位不变，不跳），悬停该列表头或键盘聚焦时淡入；正在排序的一直显示。触屏没有悬停，常显 */
+@media (hover: hover) {
+  .th-sort:not([data-dir]) .lucide { opacity: 0; }
+  th:hover > .th-sort .lucide, .th-sort:focus-visible .lucide { opacity: 1; }
+}
 .th-sort[data-dir] .lucide { color: var(--accent); }
 /* 手机上横滑的表：首列（名称）吸在左边、窄的操作列吸在右边，滑到中间也知道是哪一行、点得到「确认 / 撤销」。
    窄的操作列 = 末列里只放一个按钮，或只放几个图标按钮；放几个文字按钮的宽操作列（团队与套餐的「改名 / 重新编号」）吸住会占掉大半屏，不吸。

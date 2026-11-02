@@ -42,7 +42,7 @@ export function ConfirmDialog({ open, onOpenChange, title, description, confirmL
     <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
       <DialogContent size={size} onInteractOutside={(e) => { if (dirty) e.preventDefault(); }}>
         {asForm
-          ? <form style={{ display: 'grid', gap: 16 }} onSubmit={(e) => { e.preventDefault(); e.stopPropagation(); if (!confirmDisabled && !busy) void run(); }}>{body}</form>
+          ? <form className="dialog-form" onSubmit={(e) => { e.preventDefault(); e.stopPropagation(); if (!confirmDisabled && !busy) void run(); }}>{body}</form>
           : body}
       </DialogContent>
     </Dialog>
@@ -56,7 +56,7 @@ export function FormDialog({ open, onOpenChange, title, desc, children, onSubmit
   return (
     <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
       <DialogContent size={size} onInteractOutside={(e) => { if (dirty) e.preventDefault(); }}>
-        <form style={{ display: 'grid', gap: 16 }} onSubmit={(e) => { e.preventDefault(); if (valid && !busy) onSubmit(); }}>
+        <form className="dialog-form" onSubmit={(e) => { e.preventDefault(); if (valid && !busy) onSubmit(); }}>
           <DialogHeader><DialogTitle>{title}</DialogTitle>{desc && <DialogDescription>{desc}</DialogDescription>}</DialogHeader>
           {children}
           <DialogFooter><Button type="button" onClick={() => onOpenChange(false)} disabled={busy}>取消</Button><Button type="submit" variant="primary" loading={busy} disabled={!valid}>{submitLabel}</Button></DialogFooter>
