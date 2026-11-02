@@ -31,7 +31,7 @@ export function SubsTab() {
   const askHeld = useHeld(ask?.s.id, ask);
   const [view, setView] = React.useState<ClientSub | null>(null);
   const list = q.data ?? [];
-  const newBtn = <Button variant="primary" onClick={() => setEdit('new')}><Plus />新建订阅</Button>;
+  const newBtn = <Button size="sm" variant="primary" onClick={() => setEdit('new')}><Plus />新建订阅</Button>;
   const isEmpty = !q.isLoading && !q.isError && list.length === 0; // 空态里已有一个「新建订阅」，标题旁不再放第二个
   return (
     <>

@@ -99,9 +99,9 @@ export function ProbeTab() {
         )}
       </Panel>
       <Panel title={<>探测点<InfoTip text="放在离客户近的地方（比如香港）的小机器，定时连各线路机的入口，记录通不通和延迟" /></>}
-        tools={<>{(q.isLoading || list.length > 0) && <Segmented sm label="时间范围" value={win} onChange={setWin} items={WINDOWS} />}<Button variant="primary" size="sm" onClick={() => setAdding(true)}><Plus />新增探测点</Button></>}>
+        tools={<>{(q.isLoading || list.length > 0) && <Segmented sm label="时间范围" value={win} onChange={setWin} items={WINDOWS} />}<Button variant="primary" size="sm" onClick={() => setAdding(true)}><Plus />新建探测点</Button></>}>
         {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
-        {q.isLoading ? <SkeletonRows rows={2} /> : !list.length ? <Empty icon={<Radar size={22} />} text="还没有探测点" hint={<>新增后在探测点上执行安装命令 <InfoTip text="中控能 SSH 到它的话，也可以用 fleetctl probe add <名称> --host <IP> 直接装" /></>} /> : (
+        {q.isLoading ? <SkeletonRows rows={2} /> : !list.length ? <Empty icon={<Radar size={22} />} text="还没有探测点" hint={<>新建后在探测点上执行安装命令 <InfoTip text="中控能 SSH 到它的话，也可以用 fleetctl probe add <名称> --host <IP> 直接装" /></>} /> : (
           <TableWrap data-stale={q.isPlaceholderData}>
             <table className="dt" style={{ minWidth: 860 }}>
               <colgroup><col style={{ width: 150 }} /><col style={{ width: 170 }} /><col style={{ width: 110 }} /><col style={{ width: 110 }} /><col /><col style={{ width: 64 }} /><col style={{ width: 116 }} /></colgroup>
@@ -165,7 +165,7 @@ const AddDialog = resetOnOpen(function AddDialog({ open, onClose, onBootstrap }:
     onError: toast.err,
   });
   return (
-    <FormDialog open={open} onOpenChange={(o) => !o && onClose()} title="新增探测点" onSubmit={submit} submitLabel="生成安装命令" busy={add.isPending} valid={!!name.trim()} dirty={!!name}
+    <FormDialog open={open} onOpenChange={(o) => !o && onClose()} title="新建探测点" onSubmit={submit} submitLabel="生成安装命令" busy={add.isPending} valid={!!name.trim()} dirty={!!name}
       desc={"生成一条安装命令（30 分钟内有效，只能用一次），用 root 在探测点上执行。中控能 SSH 到它时，也可以用 fleetctl probe add <名称> --host <IP> 代为安装"}>
       <Field label="名称" info="名称填「香港」，卡片上显示为「香港探测点」">
         <Input autoFocus maxLength={40} value={name} onChange={(e) => setName(e.target.value)} placeholder="香港" />

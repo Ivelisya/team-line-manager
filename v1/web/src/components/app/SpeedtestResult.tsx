@@ -7,12 +7,12 @@ import * as F from '@/lib/format';
 export const isSpeedtestOutput = (o: Record<string, unknown> | null | undefined): o is Record<string, unknown> & SpeedtestOutput => !!o && typeof o.avg_mbps === 'number';
 
 const secs = (n: number) => `${n >= 100 ? Math.round(n) : n.toFixed(1)} 秒`;
-const ttfb = (s: number) => `${Math.round(s * 1000)} 毫秒`;
+const ttfb = (s: number) => `${Math.round(s * 1000)} ms`;
 const rate = (o: SpeedtestOutput) => F.str(F.mbps(o.avg_mbps));
 /** 没下完的说明：300 秒内只下了多少、计划多少 */
 const partial = (o: SpeedtestOutput) => `没下完：${Math.round(o.total_s)} 秒内只下载了 ${F.str(F.bytes(o.bytes))}（计划 ${o.size_mb} MB），速率按已下载的算，慢线路建议换小一点的下载量`;
 
-/** 一句话：「86.4 Mbps（10.8 MB/s）· 耗时 10.5 秒 · 首字节 500 毫秒 · 圣何塞 100 MB」，没下完的末尾标一句 */
+/** 一句话：「86.4 Mbps（10.8 MB/s）· 耗时 10.5 秒 · 首字节 500 ms · 圣何塞 100 MB」，没下完的末尾标一句 */
 export const speedtestLine = (o: SpeedtestOutput) => `${rate(o)}（${o.avg_mb_s} MB/s）· 耗时 ${secs(o.total_s)} · 首字节 ${ttfb(o.ttfb_s)} · ${o.target_name} ${o.size_mb} MB${o.complete ? '' : ' · 没下完'}`;
 
 export function SpeedtestResult({ out }: { out: SpeedtestOutput }) {

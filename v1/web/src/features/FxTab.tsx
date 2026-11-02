@@ -45,8 +45,8 @@ export function FxTab() {
   return (
     <>
       <Panel flush title={<>汇率<InfoTip text={'价格按供应商的币种录入，月费和合计按这里的汇率折成美元\n汇率每天自动更新（来自欧洲央行）。手动设置的不会被覆盖，随时可以改回自动\n没有汇率的币种不折算，各处显示「未折算」'} /></>}
-        tools={<><Button onClick={() => setEdit('new')}><Plus />手动设置其他币种</Button>
-          <Button variant="primary" loading={refresh.isPending} onClick={() => refresh.mutate(undefined, { onSuccess: () => toast.ok('汇率已更新'), onError: toast.err })}><RefreshCw />立即更新</Button></>}>
+        tools={<><Button size="sm" onClick={() => setEdit('new')}><Plus />手动设置其他币种</Button>
+          <Button size="sm" variant="primary" loading={refresh.isPending} onClick={() => refresh.mutate(undefined, { onSuccess: () => toast.ok('汇率已更新'), onError: toast.err })}><RefreshCw />立即更新</Button></>}>
         {q.isError && <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div>}
         {q.isLoading ? <SkeletonRows rows={3} head /> : d && (
           <>

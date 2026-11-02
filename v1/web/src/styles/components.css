@@ -20,6 +20,8 @@
 .btn .lucide { width: var(--icon-sm); height: var(--icon-sm); }
 .btn-md { height: var(--h-md); padding: 0 var(--sp-12); }
 .btn-sm { height: var(--h-sm); padding: 0 var(--sp-10); font-size: var(--fs-label); line-height: var(--lh-label); }
+/* 控件高度两档：页头工具条与对话框底部的按钮和同行的输入、下拉、分段一样高（36，= 不带 size 的 .btn）；面板头的工具区用 sm（28）。手机底部面板的按钮条另有 44（下面 .dialog-foot > .btn） */
+.page-tools .btn-md, .dialog-foot .btn-md { height: var(--h-lg); padding: 0 var(--sp-14); }
 .btn-primary { background: var(--accent-solid); color: var(--on-accent); box-shadow: var(--shadow-btn); }
 .btn-secondary { background: var(--surface); border-color: var(--line-strong); color: var(--fg); }
 .btn-secondary[aria-expanded="true"] { background: linear-gradient(var(--hover), var(--hover)), var(--surface); } /* 展开着的下拉触发按钮：同悬停底 */
@@ -315,7 +317,7 @@ svg.copied-ic { color: var(--ok); animation: copy-pop var(--dur-2) var(--ease-ou
   width: 100%; min-width: 0; box-sizing: border-box; height: var(--h-lg); padding: 0 var(--sp-10);
   border: 1px solid var(--line-strong); border-radius: var(--r-control); background: var(--surface); color: var(--fg);
   font: var(--fw-regular) var(--fs-body) / var(--lh-body) var(--font-sans);
-  transition: border-color var(--dur-1) var(--ease-std), box-shadow var(--dur-1) var(--ease-std);
+  transition: border-color var(--dur-1) var(--ease-std), box-shadow var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out);
 }
 .input::placeholder, .textarea::placeholder { color: var(--fg-3); }
 @media (hover: hover) { .select-trigger:hover:not(:disabled, :focus-visible, [data-state="open"]) { border-color: color-mix(in srgb, var(--line-strong), var(--fg) 12%); } }
@@ -603,7 +605,8 @@ svg.copied-ic { color: var(--ok); animation: copy-pop var(--dur-2) var(--ease-ou
    行（菜单项、下拉项、命令项、表格行、导航项、作业项、树节点、权限行、操作记录行、表头排序、侧栏底部快捷键）不缩放：悬停底上叠一层 --state-press。
    禁用的按钮不响应（:not(:disabled)）；禁用的菜单项是 pointer-events: none，不会按下。导航当前项的底是渐变（粉紫），不叠 */
 :is(.icon-btn, .top-btn, .pol-chev, .cal-day):active:not(:disabled) { scale: var(--press-sm); transition-duration: var(--dur-press); }
-:is(.btn, .fchip, .seg-item, .tab, .chart-legend-item, .cmd-trigger, .top-alert, .nc-name, .relay-name, button.rt-topo-pill):active:not(:disabled) { scale: var(--press-md); transition-duration: var(--dur-press); }
+:is(.btn, .fchip, .seg-item, .tab, .chart-legend-item, .cmd-trigger, .top-alert, .nc-name, .relay-name, .host-pick, button.rt-topo-pill):active:not(:disabled) { scale: var(--press-md); transition-duration: var(--dur-press); }
+.select-trigger:active:not(:disabled, [data-state="open"]) { scale: var(--press-md); transition-duration: var(--dur-press); } /* 展开后不再缩：Radix 在按下那一刻按触发器的框量下拉宽度，缩着量会窄几像素 */
 button.tag:active { scale: var(--press-md); transition-duration: var(--dur-press); } /* 可点的标签（同机关系标）；只认按钮，纯展示的 span 标签按下不缩 */
 .tab:active:not(:disabled) .tab-ind { scale: calc(1 / var(--press-md)) 1; transition-duration: var(--dur-press); }
 :is(.flow-trend, .flow-foot, .nc-quota, .nc-click, .rc-rings, .stat.is-link):active:not(:disabled) { scale: var(--press-lg); transition-duration: var(--dur-press); }

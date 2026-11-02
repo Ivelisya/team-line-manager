@@ -20,7 +20,8 @@
 .totp-steps b { color: var(--fg); font-weight: var(--fw-medium); }
 .recovery-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-6) var(--sp-16); padding: var(--sp-12) var(--sp-16); border: 1px solid var(--line-strong); border-radius: var(--r-float); background: var(--sunken); }
 .recovery-grid code { font: var(--fs-body) / 22px var(--font-mono); color: var(--fg); user-select: all; }
-.account-form { display: grid; gap: var(--sp-16); max-width: 720px; }
+.account-form { display: grid; gap: var(--sp-16); }
+.account-form > :not(.account-foot) { max-width: 720px; } /* 字段限宽；提交按钮那一行不限，和其他面板的「保存」一样靠面板右缘 */
 @media (max-width: 560px) {
   .totp-setup { flex-direction: column; align-items: center; }
   .recovery-grid { grid-template-columns: minmax(0, 1fr); }
@@ -33,5 +34,5 @@
 .probe-order { list-style: none; margin: 0; padding: 0; }
 .probe-order .choice { cursor: default; flex-wrap: wrap; row-gap: var(--sp-4); }
 .probe-order-n { display: inline-grid; place-items: center; flex: none; width: 20px; height: 20px; border-radius: 50%; background: var(--sunken); box-shadow: inset 0 0 0 1px var(--line); color: var(--fg-2); font-size: var(--fs-micro); }
-/* 月报预览：要发出去的整段文字，等宽、保留换行（同作业步骤输出的写法） */
-.report-text { margin: 0; padding: var(--sp-12) var(--sp-16); max-height: min(320px, 42dvh); overflow: auto; border: 1px solid var(--line); border-radius: var(--r-float); background: var(--sunken); font: var(--fs-label) / var(--lh-label) var(--font-mono); color: var(--fg-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+/* 月报预览：要发出去的整段文字（中文为主，用界面字体）、保留换行 */
+.report-text { margin: 0; padding: var(--sp-12) var(--sp-16); max-height: min(320px, 42dvh); overflow: auto; border: 1px solid var(--line); border-radius: var(--r-float); background: var(--sunken); font: var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2); white-space: pre-wrap; overflow-wrap: anywhere; }

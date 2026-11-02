@@ -54,7 +54,7 @@
 .step-title b { font-weight: var(--fw-medium); }
 .step-title .pill { align-self: center; }
 .step-time { font-size: var(--fs-label); color: var(--fg-2); }
-.step-out { margin: var(--sp-4) 0 0; font: var(--fs-label) / var(--lh-label) var(--font-mono); color: var(--fg-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+.step-out { margin: var(--sp-4) 0 0; font: var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2); white-space: pre-wrap; overflow-wrap: anywhere; }
 /* 系统调优的结果块：摘要一行、参数表、其余几项一行 */
 .tune-res { display: grid; gap: var(--sp-6); margin-top: var(--sp-4); min-width: 0; }
 .tune-sum { font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); }

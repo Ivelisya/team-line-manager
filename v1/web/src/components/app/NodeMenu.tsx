@@ -26,7 +26,7 @@ const FILTER_MIN = 8;
 type MenuItem = Exclude<MenuEntry, { sep: true }>;
 /** 把几项收进一个子菜单（项数多了菜单太高）；只有一项（或没有）时不收，直接放出来（保留它自己的图标） */
 const group = (key: string, label: string, icon: React.ReactNode, list: MenuItem[]): MenuEntry[] =>
-  list.length < 2 ? list : [{ key, label, icon, children: list.map((c) => ({ ...c, icon: undefined })) }];
+  list.length < 2 ? list : [{ key, label, icon, children: list }];
 
 function useNodeMenu(m: MachineView): MenuEntry[] {
   const { open } = useDrawer();
@@ -84,7 +84,7 @@ function useNodeMenu(m: MachineView): MenuEntry[] {
         ? { key: 'maint', label: maintOnHost ? '结束宿主机维护' : '结束维护', icon: <Wrench />,
             onSelect: () => { endMaint.mutateAsync(m).then((o) => toast.ok(`${o.name} 已结束维护`), (e) => toast.err(e)); } }
         : { key: 'maint', label: '维护窗口…', icon: <Wrench />, onSelect: () => openMaint(m.id) },
-      { key: 'silence', label: '新建静默', icon: <BellOff />, onSelect: () => nav(`/incidents?silence=${m.id}`) },
+      { key: 'silence', label: '新建静默…', icon: <BellOff />, onSelect: () => nav(`/incidents?silence=${m.id}`) },
     ]),
     { key: 'sep2', sep: true },
     { key: 'retire', label: m.spare && m.lifecycle === 'active' ? '立即回收…' : '退役…', icon: <Power />, danger: true, disabled: m.lifecycle === 'retiring' || (m.lifecycle === 'provisioning' && !!m.active_job), why: m.lifecycle === 'retiring' ? '正在退役' : '上架作业还在进行，等它结束', onSelect: () => openRetire(m.id) },
@@ -144,7 +144,7 @@ function SubItems({ items, filter, Item }: { items: MenuEntry[]; filter?: string
   return (
     <>
       {filter && <div className="menu-filter"><input ref={input} value={q} onChange={(e) => setQ(e.target.value)} placeholder={filter} aria-label={filter} onKeyDown={onKey} /></div>}
-      {shown.map((c) => <Item key={c.key} onSelect={c.onSelect} disabled={c.disabled} data-tip={c.disabled ? c.why : undefined}>{c.label}</Item>)}
+      {shown.map((c) => <Item key={c.key} onSelect={c.onSelect} disabled={c.disabled} data-tip={c.disabled ? c.why : undefined}>{c.icon}{c.label}</Item>)}
       {filter && !shown.length && <div className="menu-label">没有匹配的</div>}
     </>
   );
