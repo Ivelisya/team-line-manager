@@ -5,7 +5,7 @@ import * as React from 'react';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, DialogHeader } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/form';
-import { toast } from '@/components/ui/toast';
+import { errMessage, toast } from '@/components/ui/toast';
 import { resetOnOpen } from '@/lib/useHeld';
 import { Note } from './primitives';
 
@@ -21,8 +21,8 @@ const SCROLL_BODY: React.CSSProperties = {
   margin: '0 calc(-1 * var(--sp-20))', padding: '2px var(--sp-20)',
 };
 
-/** asForm：内容包在 form 里，可确认时在输入框里按 Enter 即执行 */
-export function ConfirmDialog({ open, onOpenChange, title, description, confirmLabel, danger, confirmDisabled, onConfirm, children, size, dirty, asForm, scroll, cancelLabel }: Base & { asForm?: boolean; scroll?: boolean }) {
+/** asForm：内容包在 form 里，可确认时在输入框里按 Enter 即执行。hideCancel：只留确认键（确认只是「知道了」，取消与它等价时用；Esc 仍可关） */
+export function ConfirmDialog({ open, onOpenChange, title, description, confirmLabel, danger, confirmDisabled, onConfirm, children, size, dirty, asForm, scroll, cancelLabel, hideCancel }: Base & { asForm?: boolean; scroll?: boolean; hideCancel?: boolean }) {
   const [busy, setBusy] = React.useState(false);
   const run = async () => {
     setBusy(true);
@@ -33,7 +33,7 @@ export function ConfirmDialog({ open, onOpenChange, title, description, confirmL
       <DialogHeader><DialogTitle>{title}</DialogTitle>{description && <DialogDescription>{description}</DialogDescription>}</DialogHeader>
       {scroll ? <div style={SCROLL_BODY}>{children}</div> : children}
       <DialogFooter>
-        <Button onClick={() => onOpenChange(false)} disabled={busy}>{cancelLabel ?? '取消'}</Button>
+        {!hideCancel && <Button onClick={() => onOpenChange(false)} disabled={busy}>{cancelLabel ?? '取消'}</Button>}
         <Button type={asForm ? 'submit' : 'button'} variant={danger ? 'danger' : 'primary'} loading={busy} disabled={confirmDisabled} onClick={asForm ? undefined : run}>{confirmLabel}</Button>
       </DialogFooter>
     </>
@@ -49,9 +49,10 @@ export function ConfirmDialog({ open, onOpenChange, title, description, confirmL
   );
 }
 
-/** 表单对话框：可提交（valid）时在输入框里按 Enter 即提交。提交中（busy）不能关；dirty（有未保存的改动）时点遮罩不关，Esc 与取消仍可关 */
-export function FormDialog({ open, onOpenChange, title, desc, children, onSubmit, submitLabel, busy, valid = true, size, dirty }: {
-  open: boolean; onOpenChange: (o: boolean) => void; title: string; desc?: React.ReactNode; children: React.ReactNode; onSubmit: () => void; submitLabel: string; busy?: boolean; valid?: boolean; size?: 'sm' | 'md'; dirty?: boolean;
+/** 表单对话框：可提交（valid）时在输入框里按 Enter 即提交。提交中（busy）不能关；dirty（有未保存的改动）时点遮罩不关，Esc 与取消仍可关。
+ *  error：提交失败的原因（调用方传 mutation.error），留在对话框里显示；这样用的调用方不再另发错误通知 */
+export function FormDialog({ open, onOpenChange, title, desc, children, onSubmit, submitLabel, busy, valid = true, size, dirty, error }: {
+  open: boolean; onOpenChange: (o: boolean) => void; title: string; desc?: React.ReactNode; children: React.ReactNode; onSubmit: () => void; submitLabel: string; busy?: boolean; valid?: boolean; size?: 'sm' | 'md'; dirty?: boolean; error?: unknown;
 }) {
   return (
     <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
@@ -59,6 +60,7 @@ export function FormDialog({ open, onOpenChange, title, desc, children, onSubmit
         <form className="dialog-form" onSubmit={(e) => { e.preventDefault(); if (valid && !busy) onSubmit(); }}>
           <DialogHeader><DialogTitle>{title}</DialogTitle>{desc && <DialogDescription>{desc}</DialogDescription>}</DialogHeader>
           {children}
+          {error != null && <Note tone="bad">{errMessage(error)}</Note>}
           <DialogFooter><Button type="button" onClick={() => onOpenChange(false)} disabled={busy}>取消</Button><Button type="submit" variant="primary" loading={busy} disabled={!valid}>{submitLabel}</Button></DialogFooter>
         </form>
       </DialogContent>
