@@ -104,13 +104,24 @@ async fn billing_ledger_and_customer_page() {
     let r = t.get(&format!("/api/v1/teams/{team1}/receivable?month={}", &fut[..7])).await;
     assert_eq!((r["total"].as_i64(), r["projected"].as_bool(), r["start_count"].is_null()), (Some(4), Some(true), true), "{r}");
 
-    // 客户页：只出有效的批次，不出节点名
+    // 客户页：只出有效的批次；节点清单只有收费中的（已结束的菲律宾不在），手动的写备注，按下次续费日排；不出 IP、供应商、价格
     let page = t.post(&format!("/api/v1/teams/{team1}/customer-page"), json!({})).await;
     let (st, pv) = public(&t, page["link"].as_str().unwrap()).await;
     assert_eq!(st, StatusCode::OK, "{pv}");
     let shown: Vec<i64> = pv["data"]["batches"].as_array().unwrap().iter().map(|b| b["seq"].as_i64().unwrap()).collect();
     assert_eq!(shown, [2, 3, 4], "{pv}");
-    assert!(!pv.to_string().contains("团队1-0"), "{pv}");
+    let nodes = pv["data"]["nodes"].as_array().unwrap();
+    let mut names: Vec<&str> = nodes.iter().map(|n| n["name"].as_str().unwrap()).collect();
+    let ends: Vec<&str> = nodes.iter().map(|n| n["period_end"].as_str().unwrap()).collect();
+    assert!(ends.windows(2).all(|w| w[0] <= w[1]), "按下次续费日排：{pv}");
+    let td = fmt_date(today());
+    assert!(nodes.iter().all(|n| n["period_start"].as_str().unwrap() <= td.as_str() && td.as_str() < n["period_end"].as_str().unwrap() && n["renews"] == true), "本期含今天：{pv}");
+    let h = nodes.iter().find(|n| n["name"] == "墨西哥家宽").unwrap();
+    assert_eq!((h["region"].as_str(), h["start_date"].as_str()), (Some("墨西哥"), Some(day(14).as_str())), "{pv}");
+    names.sort();
+    assert_eq!(names, ["团队1-01", "团队1-02", "团队1-03", "墨西哥家宽"], "{pv}");
+    let body = pv.to_string();
+    assert!(!body.contains("203.0.113") && !body.contains("provider") && !body.contains("price") && !body.contains("菲律宾"), "{pv}");
 
     // ── 对账（传入的「现在」）──
     // 团队1-01 退役、同一轮来了团队1-04：替换，起算日不变

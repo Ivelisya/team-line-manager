@@ -55,6 +55,18 @@ for (const [tid, n] of [['t1', 9], ['t2', 19]] as const) {
   }
   pending.push({ team_id: 't2', machine: { id: 'm-t2-20', name: '团队2-20' }, seen_at: '2026-10-31T09:12:00+08:00' });
 }
+// 各种状态的样例（只为界面覆盖，不是生产形状）：手动节点、已停止收费、等补位、整组已停止、本期后不再续费、未标地区、31 号开始收费、今天到期
+{
+  const add = (team_id: 't1' | 't2', region: string, start_date: string, o: Partial<MSlot>) => slots.push({ id: nid('sl'), team_id, region, start_date, holder: null, last_holder_name: null, vacated_at: null, end_date: null, manual: false, note: '', ...o });
+  add('t1', '墨西哥', '2026-10-15', { manual: true, note: '墨西哥家宽' });
+  add('t1', '美区', '2026-10-01', { last_holder_name: '团队1-11', left_reason: 'left', end_date: '2026-10-20' });
+  add('t1', '美区', '2026-10-01', { last_holder_name: '团队1-12', left_reason: 'left', vacated_at: '2026-10-31T02:00:00Z' });
+  add('t1', '菲律宾', '2026-08-05', { last_holder_name: '团队1-13', left_reason: 'left', end_date: '2026-09-10' });
+  add('t1', '日本', '2026-10-20', { manual: true, note: '日本测试机', end_date: '2026-10-25' });
+  add('t2', '未知', '2026-10-12', { holder: { id: 'm-t2-21', name: '团队2-21' } });
+  add('t2', '美区', '2026-08-31', { holder: { id: 'm-t2-22', name: '团队2-22' } });
+  add('t2', '加拿大', '2026-08-31', { last_holder_name: '团队2-23', left_reason: 'exempt', end_date: '2026-10-15' });
+}
 const pages = new Map<string, MPage>([['t2', { token: 'demo', enabled: true, created_at: '2026-10-20T10:12:00Z', token_at: '2026-10-20T10:12:00Z', last_view_at: '2026-10-31T01:40:00Z' }]]);
 
 // ---------- 派生 ----------
@@ -273,8 +285,15 @@ export function installCustomerMock(R: Reg, o: { teams: () => Team[]; machines: 
       r.counts.push(b.count); r.total += b.count;
       if (b.state === 'today') r.today_count += b.count;
     }
+    // 节点清单（同服务端 public_nodes）：没结束或结束日在今天以后的名额，本期 = 含今天的那一期，按下次续费日、名字排
+    const nodes: PublicCustomer['nodes'] = slots.filter((s) => s.team_id === tid && (!s.end_date || s.end_date > TODAY)).map((s) => {
+      let k = 0;
+      while (addMonths(s.start_date, k + 1) <= TODAY) k++;
+      const pe = addMonths(s.start_date, k + 1);
+      return { name: s.manual ? s.note || '手动添加的节点' : s.holder?.name ?? s.last_holder_name ?? '（已删除的节点）', region: s.region, start_date: s.start_date, period_start: addMonths(s.start_date, k), period_end: pe, renews: !s.end_date || s.end_date > pe };
+    }).sort((a, b) => cmp(a.period_end, b.period_end) || cmp(a.name, b.name));
     const out: PublicCustomer = {
-      team: team(tid).name, today: TODAY, regions, node_months: live.reduce((s, b) => s + b.node_months, 0),
+      team: team(tid).name, today: TODAY, regions, nodes, node_months: live.reduce((s, b) => s + b.node_months, 0),
       batches: live.map((b) => ({ seq: b.seq, region: b.region, title: b.title, desc: b.summary, start_date: b.start_date, end_date: b.end_date, count: b.count, months: b.months, node_months: b.node_months, state: b.state, periods: b.periods })),
     };
     return out;

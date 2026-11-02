@@ -1,5 +1,7 @@
-// 客户到期页 /c/:token：给客户看的只读页面，不登录、不在外壳里（customerEntry.tsx 单独的入口，不带管理端）。
-// 只放有效的批次：标题、各地区有效个数、时间轴、节点月总计。不出现 IP、供应商、价格、节点名，也没有管理端导航。
+// 客户页 /c/:token：给客户看的只读页面，不登录、不在外壳里（customerEntry.tsx 单独的入口，不带管理端）。
+// 读者是客户、不懂技术：一句话总结（几个节点在用、哪天续几个）→ 逐个节点的清单（节点 · 地区 · 本期 · 下次续费 · 还有几天，按下次续费日排；
+// 手机上每个节点两行，不横向滚动）。时间轴只在管理端：客户要知道的是哪个节点哪天续费，清单已经说清楚了。
+// 不写「批次 / 节点月」；服务端给的 node_months（各组从开始到本期的累计）对不上任何一笔账，不显示。不出现 IP、供应商、价格。
 // 白底与中性标题由 theme-init.js 首屏就设好（html.is-cx）；一律浅色（theme-init.js 在 /c/ 下不读存储的主题，这里也不引 lib/theme）。
 import * as React from 'react';
 import { useParams } from 'react-router-dom';
@@ -10,34 +12,42 @@ import type { PublicCustomer } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { TipHost } from '@/components/ui/tip';
 import { Empty } from '@/components/app/empty';
-import { BatchTimeline, TimelineLegend, mmdd, type TimelineItem } from '@/features/BatchTimeline';
+import { cnDate, cnSpan, daysBetween, regionLabel } from '@/features/BatchTimeline';
 
-/** 副标题的年份：今天这一年；时间轴跨年时写成「2025–2026年」 */
-function yearsOf(d: PublicCustomer): string {
-  const ys = [d.today, ...d.batches.flatMap((b) => [b.start_date, b.end_date])].map((s) => s.slice(0, 4));
-  const lo = ys.reduce((a, b) => (b < a ? b : a)); const hi = ys.reduce((a, b) => (b > a ? b : a));
-  return lo === hi ? `${lo}年` : `${lo}–${hi}年`;
+/** 一句话总结：「你们现在有 10 个节点在用（美区 9 个，墨西哥 1 个）。下次续费：11 月 30 日（1 个），12 月 1 日（9 个）。」 */
+function Lead({ d }: { d: PublicCustomer }) {
+  const regions = new Map<string, number>();
+  const due = new Map<string, number>();
+  for (const n of d.nodes) {
+    regions.set(n.region, (regions.get(n.region) ?? 0) + 1);
+    if (n.renews) due.set(n.period_end, (due.get(n.period_end) ?? 0) + 1);
+  }
+  const next = [...due.entries()].sort(([a], [b]) => (a < b ? -1 : 1)).slice(0, 2);
+  return (
+    <p className="cx-lead">
+      你们现在有 <b>{d.nodes.length} 个节点</b>在用{regions.size > 1 && <>（{[...regions].map(([r, n], i) => <React.Fragment key={r}>{i > 0 && '，'}<span>{regionLabel(r)} {n} 个</span></React.Fragment>)}）</>}。
+      {next.length > 0 && <>下次续费：{next.map(([s, n], i) => <React.Fragment key={s}>{i > 0 && '，'}<span><b>{cnDate(s, d.today)}</b>（{n} 个）</span></React.Fragment>)}。</>}
+    </p>
+  );
 }
 
-function Regions({ d }: { d: PublicCustomer }) {
+/** 逐个节点：宽屏是一张表，窄屏每个节点两行（名字 · 地区 · 还有几天 / 本期 · 下次续费） */
+function Nodes({ d }: { d: PublicCustomer }) {
   return (
-    <section className="cx-sum" aria-label="当前有效节点">
-      <div className="cx-sum-head"><span className="num">{mmdd(d.today)}</span> 当前有效</div>
-      <div className="cx-regions">
-        {d.regions.map((r) => (
-          <div key={r.region} className="cx-region">
-            <span className="cx-region-name">{r.region === '未知' ? (d.regions.length > 1 ? '其他' : '当前') : r.region}有效</span>
-            <span className="cx-region-val">{r.total}<small>个</small></span>
-            {(r.counts.length > 1 || r.today_count > 0) && (
-              <span className="cx-region-calc">
-                {r.counts.length > 1 && <span className="num">{r.counts.join('+')}={r.total} 个</span>}
-                {r.counts.length > 1 && r.today_count > 0 && ' · '}
-                {r.today_count > 0 && <span className="is-today">含今日到期 <span className="num">{r.today_count}</span> 个</span>}
-              </span>
-            )}
+    <section className="cx-nodes" aria-label="每个节点的续费时间">
+      <div className="cx-nrow cx-nhead" aria-hidden><span>节点</span><span>地区</span><span>本期</span><span>下次续费</span><span className="cx-nleft">还有几天</span></div>
+      {d.nodes.map((n) => {
+        const left = daysBetween(d.today, n.period_end);
+        return (
+          <div key={`${n.name}|${n.period_start}`} className="cx-nrow">
+            <span className="cx-nname">{n.name}</span>
+            <span className="cx-nregion">{regionLabel(n.region)}</span>
+            <span className="cx-nspan"><span className="cx-nlabel">本期 </span><span className="num">{cnSpan(n.period_start, n.period_end, d.today)}</span></span>
+            <span className="cx-nnext num">{n.renews ? <>{cnDate(n.period_end, d.today)}<span className="cx-nlabel">续费</span></> : <span className="t-sub">到期后不再续费</span>}</span>
+            <span className="cx-nleft num" data-soon={left <= 3 || undefined}><span className="cx-nlabel">还有 </span>{left} 天</span>
           </div>
-        ))}
-      </div>
+        );
+      })}
     </section>
   );
 }
@@ -46,9 +56,8 @@ export function CustomerPage() {
   const { token = '' } = useParams();
   const q = usePublicCustomer(token);
   const d = q.data;
-  const title = d ? `${d.team} · 节点到期时间轴` : '节点到期时间轴';
+  const title = d ? `${d.team} · 节点续费情况` : '节点续费情况';
   React.useEffect(() => { document.title = title; }, [title]);
-  const items = React.useMemo<TimelineItem[]>(() => (d?.batches ?? []).map((b) => ({ ...b, key: String(b.seq) })), [d]);
 
   let body: React.ReactNode;
   if (q.isError && !d) {
@@ -62,24 +71,12 @@ export function CustomerPage() {
     body = (
       <>
         <header className="cx-head">
-          <h1 className="cx-title">{d.team} · 节点到期时间轴</h1>
-          <p className="cx-sub">{yearsOf(d)} · 共 {d.batches.length} 批 · 每小格 1 天 · 起点为本期开始日期，终点为到期日期</p>
+          <h1 className="cx-title">{d.team} · 节点续费情况</h1>
+          {d.nodes.length > 0 && <Lead d={d} />}
         </header>
-        {d.batches.length === 0
-          ? <Empty text="当前没有有效的节点" />
-          : (
-            <>
-              <Regions d={d} />
-              <section className="cx-board" aria-label="批次时间轴">
-                <TimelineLegend />
-                <BatchTimeline items={items} today={d.today} />
-              </section>
-              <footer className="cx-foot">
-                <div className="cx-total">总计：<span className="num">{d.node_months}</span> 个节点月</div>
-                <div className="cx-note">按完整服务周期计算，包含已经续期的未来部分。</div>
-              </footer>
-            </>
-          )}
+        {d.nodes.length === 0
+          ? <Empty text="现在没有在用的节点" />
+          : <Nodes d={d} />}
       </>
     );
   }
