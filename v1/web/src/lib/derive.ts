@@ -165,6 +165,8 @@ export const probeFail = (e: EntryView) => (e.lifecycle !== 'active' || !e.appli
 export const probeFailLabel = (e: EntryView) => (probeFail(e) === e.tcp ? 'TCP 不通' : '出口不通');
 /** 同一个端口连续连不上几次才算「中控连不上」：同 relay_unreachable 告警（reach.rs） */
 const REACH_FAILS = 3;
+/** 服务端数连续连不上次数的封顶（views.rs REACH_SEEN）：到了这个数写成「20+」 */
+export const REACH_SEEN = 20;
 const reachOf = (e: EntryView) => (e.lifecycle === 'active' && e.applied && e.reach?.ok === false ? e.reach : null);
 /** 中控连不上这个入口的端口（中控 → 线路机的 TCP 检查连续 3 次失败，与上面「线路机 → 节点」是两段）：返回最近一次检查；通的、没检查过、不在运行中的为 null */
 export const reachFail = (e: EntryView) => { const r = reachOf(e); return r && r.fails >= REACH_FAILS ? r : null; };

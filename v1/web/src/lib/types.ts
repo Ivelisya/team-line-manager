@@ -50,7 +50,7 @@ export interface EntryView {
   lifecycle: EntryLifecycle; applied: boolean; apply_error: string | null;
   tcp: ProbeResult | null; egress: ProbeResult | null;
   /** 中控 → 这个入口端口（线路机上）最近一次 TCP 检查；从没检查过为 null。与 tcp / egress（线路机 → 节点）是两段。
-   *  fails：这个端口到最近一次为止连续连不上几次（通的为 0）；连续 3 次才算连不上（同 relay_unreachable 告警） */
+   *  fails：这个端口到最近一次为止连续连不上几次（通的为 0，最多数到 20）；连续 3 次才算连不上（同 relay_unreachable 告警） */
   reach: { ok: boolean; ts: string; detail: string | null; fails: number } | null;
   traffic: EntryTraffic;
 }
