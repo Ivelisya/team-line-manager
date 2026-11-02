@@ -94,7 +94,6 @@ function Lead({ d }: { d: BillingMonth }) {
   const m = cnMonth(d.month, d.today);
   const unpaid = d.nodes.filter((n) => !n.paid);
   const n = d.nodes.length;
-  const p = d.pending;
   // 还没到的期：起点在今天以后。整月都是这样的月份（下个月）不写「没收」，免得像漏收
   const early = unpaid.filter((x) => x.upcoming).length;
   const allEarly = n > 0 && d.nodes.every((x) => x.upcoming);
@@ -104,7 +103,6 @@ function Lead({ d }: { d: BillingMonth }) {
         : allEarly ? <>{m}：<b>{n} 个节点</b>都还没到收费的日子，可以提前标记已收{n > unpaid.length && <>（已提前收 {n - unpaid.length} 个）</>}。</>
           : unpaid.length === 0 ? <>{m}：{d.team.name} 的 <b>{n} 个节点</b><span className="cx-done">都收齐了 ✓</span></>
             : <>{m}：{d.team.name} 要收 <b>{n} 个节点</b>的钱，已收 <b>{n - unpaid.length} 个</b>，没收 <b>{unpaid.length} 个</b>{early > 0 ? `（其中 ${early} 个还没到）` : unpaid.length <= 5 && <>（{nameList(unpaid)}）</>}。</>}
-      {p.length > 0 && <> 另有 {p.length} 个新节点刚加入（{p.map((x) => x.machine.name).join('、')}），{p.length === 1 ? `${when(p[0].decide_at)} 后` : '满 24 小时后'}确定是补位还是新增 <InfoTip text={'加入满 24 小时后确定：这期间有节点离开，它就补上那个位置，不多收；没有就算新增，从加入那天开始收费'} />。</>}
     </p>
   );
 }
@@ -149,7 +147,7 @@ function Lists({ d, regions }: { d: BillingMonth; regions: string[] }) {
         <DropdownMenuItem onSelect={() => setAct({ kind: 'start', n })}>改开始收费日…</DropdownMenuItem>
         <DropdownMenuItem onSelect={() => setAct({ kind: 'edit', n })}>改地区 / 备注…</DropdownMenuItem>
         {n.manual && n.ended && <DropdownMenuItem disabled={patch.isPending} onSelect={() => reopen(n)}>恢复收费</DropdownMenuItem>}
-        {((n.manual && !n.ended) || n.vacated) && <DropdownMenuItem onSelect={() => setAct({ kind: 'end', n })}>停止收费…</DropdownMenuItem>}
+        {n.manual && !n.ended && <DropdownMenuItem onSelect={() => setAct({ kind: 'end', n })}>停止收费…</DropdownMenuItem>}
         {n.manual && <><DropdownMenuSeparator /><DropdownMenuItem danger onSelect={() => setAct({ kind: 'del', n })}>删除…</DropdownMenuItem></>}
       </DropdownMenuContent>
     </DropdownMenu>
@@ -207,7 +205,6 @@ function Row({ n, today, side }: { n: BillingMonthNode; today: string; side: Rea
         <span className="bm-name">
           {n.holder_id ? <button type="button" className="btn btn-link cxa-node" onClick={() => openDrawer(n.holder_id!)}>{n.name}</button> : n.name}
           {n.manual && <span className="bm-tag" data-tip="不在面板里的节点，不会自动增减，不收钱了要手动停止">手动添加</span>}
-          {n.vacated && <span className="bm-tag" data-tone="warn" data-tip="节点离开了：24 小时内有新节点加入，就由它补上，照常收费；没有的话，之后的月份不再收">已离开，等补位</span>}
           {n.ended && <span className="bm-tag">已停止收费</span>}
           {n.upcoming && <span className="bm-tag">还没到</span>}
         </span>
@@ -255,17 +252,16 @@ const EditSlotDialog = resetOnOpen(function EditSlotDialog({ open, onClose, n, r
   );
 });
 
-/** 停止收费：手动添加的节点（不再收它的钱）或等补位的节点（不等 24 小时，直接算离开）。起点早于这天的期照收 */
+/** 停止收费：手动添加的节点（不再收它的钱；面板里的节点离开团队就自动停止）。起点早于这天的期照收 */
 const EndSlotDialog = resetOnOpen(function EndSlotDialog({ open, onClose, n, today }: { open: boolean; onClose: () => void; n: BillingMonthNode; today: string }) {
   const patch = usePatchBillingSlot();
   const [v, setV] = React.useState(today);
-  const ok = DATE.test(v) && v > n.start_date && (n.manual || v <= today);
+  const ok = DATE.test(v) && v > n.start_date;
   return (
     <ConfirmDialog asForm open={open} onOpenChange={(o) => !o && onClose()} title={`停止收费 · ${n.name}`} confirmLabel="停止收费" confirmDisabled={!ok}
-      description={n.vacated ? '不等 24 小时，现在就算它离开了' : undefined}
       onConfirm={async () => { await patch.mutateAsync({ id: n.slot_id, end_date: v }); toast.ok(`${n.name} 收费到 ${cnDate(billedUntil(n.start_date, v), today)}`); }}>
       <Field label="从哪天起不再收费" info="这天以前已经开始的那一期照收，之后不再收"
-        error={DATE.test(v) && !ok ? (v <= n.start_date ? `要晚于开始收费日（${cnDate(n.start_date, today)}）` : '不能晚于今天') : undefined}
+        error={DATE.test(v) && !ok ? `要晚于开始收费日（${cnDate(n.start_date, today)}）` : undefined}
         hint={ok ? `会收费到 ${cnDate(billedUntil(n.start_date, v), today)}` : undefined}>
         <DateField value={v} onChange={setV} min={F.addDays(n.start_date, 1)} />
       </Field>
@@ -308,7 +304,7 @@ function EventsPanel({ teamId }: { teamId: string }) {
   const q = useBillingEvents(teamId);
   const list = React.useMemo(() => q.data?.pages.flat() ?? [], [q.data]);
   return (
-    <Panel title="增减记录" sub={<InfoTip text="节点加入、离开、补位、标记已收和手动修改，都记在这里" />}>
+    <Panel title="增减记录" sub={<InfoTip text="节点加入、离开、替换补位、标记已收和手动修改，都记在这里" />}>
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       {q.isLoading && <div className="skel" style={{ height: 120 }} />}
       <div data-stale={q.isPlaceholderData} inert={q.isPlaceholderData || undefined}>

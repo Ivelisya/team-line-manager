@@ -209,7 +209,7 @@ enum SubCmd {
 
 #[derive(Subcommand)]
 enum BatchCmd {
-    /// 团队的计费节点（含已停止的）：名额 id 前 8 位、节点、地区、开始收费日、状态，另附收费中的个数、新加入待定的与客户页链接状态。
+    /// 团队的计费节点（含已停止的）：名额 id 前 8 位、节点、地区、开始收费日、状态，另附收费中 / 已停止的个数与客户页链接状态。
     /// --events 再列增减记录。每个月收了没有看 fleetctl billing month
     List {
         team: String,
@@ -232,7 +232,7 @@ enum LedgerCmd {
     Month { team: String, month: Option<String> },
     /// 标记已收 / 改回没收（--unpaid）：节点写名字（可多个）或 --all（这个月所有没收的）；--month 默认本月。还没到的期也能先标（预付）。不加 --yes 只预览
     Paid(batches::PaidOpts),
-    /// 看或改一个计费节点：--start 开始收费日、--region、--note，--end 停止收费（只限手动添加的与已离开等补位的）/ --reopen 恢复（只限手动添加的）。写名额 id 前缀或节点名
+    /// 看或改一个计费节点：--start 开始收费日、--region、--note，--end 停止收费（只限手动添加的；系统节点离开即停止，只能改它的停止日）/ --reopen 恢复（只限手动添加的）。写名额 id 前缀或节点名
     Slot(batches::SlotOpts),
     /// 手动添加计费节点（系统外的节点，如墨西哥家宽）：不会自动停止，用 slot --end 停止
     Add(batches::AddOpts),
@@ -242,7 +242,7 @@ enum LedgerCmd {
         #[arg(long)]
         yes: bool,
     },
-    /// 节点设为不收费（--on）/ 恢复收费（--off）：对账当它离开 / 加入团队，照样走 24 小时补位配对
+    /// 节点设为不收费（--on）/ 恢复收费（--off）：对账当它离开 / 加入团队（今天停止；恢复时这一期没收完的接回，否则按购买日新开始）
     Exempt {
         node: String,
         #[arg(long, conflicts_with = "off", required_unless_present = "off")]
@@ -634,7 +634,7 @@ enum Cmd {
         #[arg(long, value_name = "机器,…", conflicts_with = "entry")]
         machines: Option<String>,
     },
-    /// 计费节点（按节点数向团队收费，由中控自动对账：节点加入 / 离开自动增减，24 小时内一进一出算替换）：batch list <团队>；按月收了没有、标记已收、改计费节点用 fleetctl billing
+    /// 计费节点（按节点数向团队收费，由中控自动对账：节点进团队就计费、离开就停止，替换节点时新节点接过旧节点的）：batch list <团队>；按月收了没有、标记已收、改计费节点用 fleetctl billing
     Batch {
         #[command(subcommand)]
         cmd: BatchCmd,
