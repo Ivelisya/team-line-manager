@@ -134,7 +134,7 @@ export function AreaSpark({ points, pick, tone }: { points: readonly LivePoint[]
   const hx = h != null ? (xy[h][0] / W) * 100 : 0;
   return (
     <div className="spark" data-tone={tone}>
-      <div className="spark-axis" aria-hidden>{[max, max / 2, 0].map((v) => <span key={v}>{v ? F.str(F.rate(v)) : '0'}</span>)}</div>
+      <div className="spark-axis" aria-hidden>{[max, max / 2, 0].map((v) => <span key={v}>{v ? F.str(F.rate(v, true)) : '0'}</span>)}</div>
       <div className="spark-plot" onPointerMove={onMove} onPointerLeave={() => setHover(null)}>
         <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" aria-hidden>
           {[0, H / 2, H].map((y) => <line key={y} className="spark-grid" x1={0} x2={W} y1={y} y2={y} vectorEffect="non-scaling-stroke" />)}

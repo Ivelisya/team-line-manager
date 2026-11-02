@@ -21,14 +21,16 @@ import { useUrlSearch } from '@/lib/urlState';
 const PAGE_SIZES = [25, 50, 100];
 const SOURCE_LABEL: Record<string, string> = { fleet: '本面板', legacy: '旧面板' };
 const SOURCE_OPTS = Object.entries(SOURCE_LABEL).map(([value, label]) => ({ value, label }));
-type ColDef = { id: string; header: string; width: number; r?: boolean; first?: 'asc' | 'desc' };
+type ColDef = { id: string; header: string; width?: number; r?: boolean; first?: 'asc' | 'desc' };
 const COLS: ColDef[] = [
   { id: 'name', header: '名称', width: 160, first: 'asc' }, { id: 'ip', header: 'IP', width: 136 }, { id: 'plan', header: '套餐 · 供应商', width: 140 }, { id: 'price', header: '价格 / 周期', width: 116 },
-  { id: 'recycled', header: '上架 → 退役 → 回收', width: 232, first: 'desc' }, { id: 'reason', header: '原因', width: 150 }, { id: 'traffic', header: '业务流量', width: 96, r: true, first: 'desc' },
+  { id: 'recycled', header: '上架 → 退役 → 回收', width: 164, first: 'desc' }, { id: 'reason', header: '原因' }, { id: 'traffic', header: '业务流量', width: 96, r: true, first: 'desc' },
   { id: 'source', header: '来源', width: 84 }, { id: 'chev', header: '', width: 36 },
 ];
 /** 组织时区的那一天（同一行的原因里的时刻、服务端给的回收日都按组织时区，不用浏览器本机时区） */
 const day = (iso: string | null | undefined) => (iso ? orgFmt().format(new Date(iso)) : '—');
+/** 上架 / 退役日与回收日同一年时去掉年份（09-30 → 10-24），日期列不用 230 宽；回收日那行与悬停提示仍写全 */
+const dayIn = (iso: string | null | undefined, ref: string) => { const s = day(iso); return s.slice(0, 4) === day(ref).slice(0, 4) ? s.slice(5) : s; };
 const traffic = (r: Pick<RecycleItem, 'traffic_up' | 'traffic_down'>) => (r.traffic_up == null && r.traffic_down == null ? null : (r.traffic_up ?? 0) + (r.traffic_down ?? 0));
 const price = (r: Pick<RecycleItem, 'price_cents' | 'currency' | 'cycle'>) => (r.price_cents != null && r.currency ? `${F.money(r.price_cents, r.currency)}${r.cycle ? ` / ${cycleLabel(r.cycle)}` : ''}` : null);
 
@@ -103,7 +105,7 @@ function Row({ r, open, source, span, onToggle }: { r: RecycleItem; open: boolea
         <td><span className="cell-main">{r.ip ?? '—'}</span>{r.host_name && <span className="sub">同机 · {r.host_name}</span>}</td>
         <td>{r.plan ? <Trunc className="cell-main">{r.plan}</Trunc> : <span className="cell-main t-muted">—</span>}<span className="sub">{r.provider ?? '—'}</span></td>
         <td>{price(r) ?? <span className="t-muted">—</span>}</td>
-        <td><span className="cell-main">{day(r.activated_at)} → {day(r.retired_at)}</span><span className="sub">回收 {day(r.recycled_at)}</span></td>
+        <td><span className="cell-main" data-tip={`${day(r.activated_at)} → ${day(r.retired_at)}`}>{dayIn(r.activated_at, r.recycled_at)} → {dayIn(r.retired_at, r.recycled_at)}</span><span className="sub">回收 {day(r.recycled_at)}</span></td>
         <td>{r.reason ? <ReasonCell reason={r.reason} /> : <span className="t-muted">—</span>}</td>
         <td className="r">{t == null || t === 0 ? <span className="t-muted">—</span> : <Num f={F.bytes(t)} />}</td>
         {source && <td><Chip variant="neutral">{SOURCE_LABEL[r.source] ?? r.source}</Chip></td>}

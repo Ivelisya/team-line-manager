@@ -24,13 +24,13 @@ const monthOptions = (cur: string) => Array.from({ length: MONTHS_BACK }, (_, i)
   return { value: d.toISOString().slice(0, 7), label: `${d.getUTCFullYear()} 年 ${d.getUTCMonth() + 1} 月${i === 0 ? '（本月）' : ''}` };
 });
 
-/** 成功率：没有探测写「—」；100 才写 100%，不到 100 的最多写 99.99%（不让 99.996 四舍五入成「100.00%」冒充全程无失败），未满 99.9 起标色 */
+/** 成功率：没有探测写「—」；100 才写 100%，不到 100 的最多写 99.99%（不让 99.996 四舍五入成「100.00%」冒充全程无失败），未满 99.9 标黄、未满 98 标红 */
 function pctText(p: number | null): string {
   if (p == null) return '—';
   if (p >= 100) return '100%';
   return `${Math.min(p, 99.99).toFixed(2)}%`;
 }
-const toneOf = (p: number | null) => (p == null || p >= 99.9 ? undefined : p >= 99 ? 'warn' : 'bad');
+const toneOf = (p: number | null) => (p == null || p >= 99.9 ? undefined : p >= 98 ? 'warn' : 'bad');
 function Pct({ p, tip }: { p: number | null; tip?: string }) {
   return <span className="up-pct num" data-tone={toneOf(p)} data-tip={p == null ? '窗口内没有探测' : tip}>{pctText(p)}</span>;
 }
@@ -58,7 +58,7 @@ export function UptimeTab({ month, onMonth }: { month: string; onMonth: (m: stri
     <>
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       <Panel title="按供应商" count={d ? `${d.providers.length} 家` : undefined} tools={<>{range}{picker}</>}
-        sub={<InfoTip text={'可用率 = 出口探测的成功次数 ÷ 探测次数（TCP 作参考）；平均、最差只看窗口内有探测的节点，没有探测的显示 —；全部 100% 时不列最差的那台\n从差到好排；只列在用的节点（不含线路机和闲置备用）\n最差节点点开看它的连接质量'} />} flush>
+        sub={<InfoTip text={'可用率 = 出口探测的成功次数 ÷ 探测次数（TCP 作参考）；平均、最差只看窗口内有探测的节点，没有探测的显示 —；全部 100% 时不列最差的那台\n未满 99.9% 标黄，未满 98% 标红\n从差到好排；只列在用的节点（不含线路机和闲置备用）\n最差节点点开看它的连接质量'} />} flush>
         {q.isLoading ? <SkeletonRows rows={4} head /> : d && d.providers.length === 0 ? <Empty text="这个月没有在用的节点" /> : d && (
           <TableWrap>
             <table className="dt up-tbl" style={{ minWidth: 860 }}>

@@ -21,7 +21,7 @@ import { copyText } from '@/lib/clipboard';
 import { PageHead, Panel, Pill } from '@/components/app/primitives';
 import { COLS, PASTE_COLS, UNUSED_LABEL, applies, headerCols, ipIssue, isBlank, isIpNode, localErrors, localIssues, newRow, parseTsv, pasteLine, portIssue, serverField, toItem, type Col, type Ctx, type Row } from '@/features/provision-model';
 import { CountrySelect } from '@/components/app/CountrySelect';
-import { scrollBehavior } from '@/lib/utils';
+import { cn, scrollBehavior } from '@/lib/utils';
 
 // 上架页懒加载、在外壳等到 /meta 之后才求值，类型名、默认端口可以在模块里取
 const KIND_OPTS = KIND_ORDER.map((value) => ({ value, label: kindLabel(value) }));
@@ -197,11 +197,12 @@ export function ProvisionPage() {
         <InfoTip text="检查不会改动任何东西；开始时只需确认一次。" />
       </div>
 
-      <div className="row" style={{ gap: 'var(--sp-12)', alignItems: 'center' }}>
+      {/* 单台时与下面的表单卡同宽居中（.prov-form），三条左边线对齐；(i) 跟在标签后，下拉不通栏 */}
+      <div className={cn('row', mode === 'single' && 'prov-form')} style={{ gap: 'var(--sp-8)', alignItems: 'center' }}>
         <span className="t-sub">入口模式</span>
-        <Select sm value={entryMode} onChange={(v) => setEntryMode(v as EntryMode | '')} aria-label="入口模式"
-          allowEmpty={`跟随默认（${modeSetting.data?.label ?? '穿透'}）`} options={[{ value: 'reverse', label: '穿透：节点主动连入口' }, { value: 'normal', label: '普通：线路机连节点' }]} />
         <InfoTip text={'穿透给供应商丢入站连接（SYN）的节点用：节点上装 bridge 主动连线路机入口，线路机不再向节点新建连接\n家宽代理、同机 IP 节点不支持，自动按普通建（检查结果里有提醒）\n默认在「设置 → 入口」里改'} />
+        <Select sm className="w-[260px]" value={entryMode} onChange={(v) => setEntryMode(v as EntryMode | '')} aria-label="入口模式"
+          allowEmpty={`跟随默认（${modeSetting.data?.label ?? '穿透'}）`} options={[{ value: 'reverse', label: '穿透：节点主动连入口' }, { value: 'normal', label: '普通：线路机连节点' }]} />
       </div>
 
       {mode === 'single'
