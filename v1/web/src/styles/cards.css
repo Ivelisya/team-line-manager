@@ -71,7 +71,7 @@
 /* 名称是文字按钮：按下从左端缩（文字不往中间跑），焦点环带小圆角 */
 .nc-name {
   min-width: 0; padding: 0; border: 0; border-radius: var(--r-xs); background: none; cursor: pointer; text-align: left;
-  font: var(--fw-semibold) var(--fs-title) / var(--lh-title) var(--font-sans); letter-spacing: -0.02em;
+  font: var(--fw-semibold) var(--fs-title) / var(--lh-title) var(--font-sans); letter-spacing: var(--tracking-title);
   color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   transform-origin: 0 50%; transition: color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out);
 }

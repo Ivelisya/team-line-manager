@@ -46,7 +46,8 @@
   border: 0; border-radius: var(--r-control); background: none; cursor: pointer; font: inherit; color: inherit;
   transition: color var(--dur-1) var(--ease-std), background-color var(--dur-1) var(--ease-std);
 }
-.dt th.r .th-sort { justify-content: flex-end; }
+/* 右对齐的列：排序图标放在文字左边（row-reverse 下 flex-start 才是右侧），表头文字的右缘才和数字的右缘对在一条线上；未排序时图标透明占位，不挤文字 */
+.dt th.r .th-sort { flex-direction: row-reverse; justify-content: flex-start; }
 @media (hover: hover) { .th-sort:hover { color: var(--fg); } }
 .th-sort .lucide { width: var(--icon-2xs); height: var(--icon-2xs); color: var(--fg-3); transition: opacity var(--dur-1) var(--ease-std); }
 /* 没排序的列平时不露排序图标（占位不变，不跳），悬停该列表头或键盘聚焦时淡入；正在排序的一直显示。触屏没有悬停，常显 */
@@ -77,6 +78,7 @@
 .dt-grid .gcell { width: 100%; height: 100%; box-sizing: border-box; padding: 0 var(--sp-8); border: 0; border-radius: 0; background: transparent; color: var(--fg); font: inherit; text-overflow: ellipsis; }
 .dt-grid .gcell:focus { outline: 2px solid var(--focus); outline-offset: -2px; background: var(--surface); }
 .dt-grid .gcell:disabled { background: var(--sunken); color: var(--fg-3); }
+.dt-grid .gcell::placeholder { color: var(--fg-3); } /* 不写的话是 Tailwind preflight 的冷灰 #9ca3af，深色下像已经填好的值 */
 /* 格子里的原生下拉（类型、团队、线路机…）：去掉系统外观，右侧画一个同全站下拉的细箭头（两道斜渐变拼成），聚焦换底色时箭头留着 */
 .dt-grid select.gcell, .dt-grid select.gcell:focus {
   appearance: none; -webkit-appearance: none; padding-right: 22px; cursor: pointer;

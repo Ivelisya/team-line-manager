@@ -12,7 +12,7 @@ import './styles/overrides.css';
 import './styles/tw-utilities.css';
 import { CustomerPage } from './pages/Customer';
 import { qc } from './queryClient';
-import { TooltipProvider } from './components/ui/overlays';
+import { TooltipProvider } from './components/ui/tip';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

@@ -1,5 +1,6 @@
 /* 全站覆盖：毛玻璃遮罩开着时的降负载、减弱动效、数字等宽补丁。
-   放在所有组件与页面样式之后（main.tsx 的 import 顺序，只在 tw-utilities 之前）：同优先级靠文件顺序胜出，这里的规则要盖过前面所有同名规则 */
+   本文件管 base / components 里的规则（同优先级靠文件顺序胜出）。它被管理端和客户页两个入口共用，构建后落进公共 CSS 块，先于管理端的页面样式（home / cards / table / pages / palette）加载，
+   所以盖不过页面样式里的同优先级规则：页面样式要自己写全（例如 `font:` 简写后补 font-variant-numeric） */
 
 /* ========== 毛玻璃遮罩开着时 ==========
    毛玻璃遮罩（对话框、命令面板）打开期间，下面一层不再每帧变化：backdrop-filter 下面每帧有变化，GPU 就要每帧重做一遍全屏模糊。
@@ -13,8 +14,8 @@ html[data-overlay] :is(.app, .drawer) .progress[data-live="1"] .progress-fill::a
 /* 读数的过渡不播，推送来了直接跳到新值（进度线；格条、圆环、心跳格本来就不过渡，KPI 数字见 useCountUp） */
 html[data-overlay] :is(.app, .drawer) .progress-fill { transition: none; }
 
-/* ========== 吸附条毛玻璃的回退（--glass-bar）：不支持 backdrop-filter 时用实底，免得半透明的条下面字叠字 ========== */
-@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .topbar, .panel.sticky-bar, .tab-sticky, .relay-jump { background: var(--surface); } }
+/* ========== 毛玻璃的回退：不支持 backdrop-filter 时材质令牌（--glass 弹层 / 对话框吸底条，--glass-bar 吸附条）改成实底，免得半透明的面下面字叠字 ========== */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { :root { --glass: var(--raised); --glass-bar: var(--surface); } }
 
 /* ========== 触屏（pointer: coarse）==========
    手指点的地方至少约 40px：控件高度令牌上调一档（按钮、输入、下拉、分段轨道 40；顶栏 / 卡头图标按钮、菜单项 36），分段项随轨道，小号分段项 28；
@@ -42,14 +43,16 @@ html[data-overlay] :is(.app, .drawer) .progress-fill { transition: none; }
   .menu[data-state="closed"], .popover[data-state="closed"], .select-content[data-state="closed"], .tooltip[data-state="closed"], .page-in { animation: none; }
   /* 曲线展开、悬停提示的缩放位移进场：直接出现 */
   .chart-frame .chart-box, .tooltip { animation: none; }
+  /* 空间反馈去掉：按下缩放（令牌取 1 = 不缩）、悬停上浮 2px 不做（边框、阴影的变化还在）。苹果的减弱动效是位移 / 缩放换成淡入淡出，不是把它们变成瞬间跳 */
+  :root { --press-sm: 1; --press-md: 1; --press-lg: 1; }
+  @media (hover: hover) { :is(.ncard, .rcard):hover, .stat.is-link:hover { translate: none; } }
 }
 
 /* ========== 数字等宽恢复 ==========
-   `font:` 简写会把 font-variant-numeric 重置成 normal，body 上设的 tabular-nums 在这些控件里就丢了（数字跳动时会左右抖）。统一在这里补回 */
+   `font:` 简写会把 font-variant-numeric 重置成 normal，body 上设的 tabular-nums 在这些控件里就丢了（数字跳动时会左右抖）。统一在这里补回。
+   只管 base / components 里的控件；home.css、palette.css 等页面样式里写 `font:` 简写的规则要自己补，不能靠这里（见文件头） */
 .btn, .seg-item, .tab, .fchip, .input, .textarea, .select-trigger, .pill, .chip, .mark, .nav-item, .menu-item, .select-item,
-.cmd-item, .cmd-trigger, .cmd-input, .kbd, .toast-action, .label, .sec-head, .brand, .pop-head { font-variant-numeric: tabular-nums; }
-/* 首页读数（集群大数、离线台数、圆环中心、迹线坐标与时间）：同 .num / .stat-value 用 --num-variant（tabular + 斜线零） */
-.cluster-big > .num, .cluster-kv b, .gauge-center b, .spark-axis, .spark-time { font-variant-numeric: var(--num-variant); }
+.cmd-trigger, .kbd, .toast-action, .label, .sec-head, .brand, .pop-head { font-variant-numeric: tabular-nums; }
 
 /* iOS Safari 聚焦字号小于 16px 的输入框会把整页放大、失焦后常不缩回：只在 iOS 上把输入字号提到 16px（不用 maximum-scale，免得禁掉手动缩放） */
 @supports (-webkit-touch-callout: none) {

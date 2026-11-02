@@ -1,6 +1,5 @@
 /* 设置页：页签、API 密钥权限、令牌框、账户安全（两步验证、恢复码）、通知渠道。只用 tokens.css 里的令牌 */
 
-.set-tabs { margin-bottom: var(--section-gap); }
 /* 权限：每项一行（名称 + (i) 说明 + 敏感标），两列排 */
 .scope-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: var(--sp-8); }
 .scope-name { display: inline-flex; align-items: center; gap: var(--sp-4); min-width: 0; }

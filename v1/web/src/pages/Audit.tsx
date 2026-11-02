@@ -59,7 +59,7 @@ export function AuditPage() {
       <Panel>
         <div data-stale={q.isPlaceholderData}>
           {q.isLoading ? <SkeletonRows rows={6} />
-            : rows.length ? byDay(rows).map((g) => <React.Fragment key={g.key}><div className="audit-day">{g.label}</div><AuditList items={g.items} onOpen={open} byDay /></React.Fragment>)
+            : rows.length ? byDay(rows).map((g) => <div key={g.key}><div className="audit-day">{g.label}</div><AuditList items={g.items} onOpen={open} byDay /></div>)
             : !q.isError && <Empty icon={filtered ? <SearchX size={22} /> : <History size={22} />} text={filtered ? '没有符合条件的记录' : '还没有操作记录'} />}
         </div>
         {q.hasNextPage && (

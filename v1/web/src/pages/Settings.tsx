@@ -35,7 +35,7 @@ export function SettingsPage() {
     <div className="stack">
       <PageHead title="设置" />
       <Tabs value={tab} onValueChange={(v) => setSp((p) => { const n = new URLSearchParams(p); n.set('section', v); return n; }, { replace: true })}>
-        <TabsList className="set-tabs">
+        <TabsList>
           <TabsTrigger value="keys" noPanel>API 密钥</TabsTrigger>
           <TabsTrigger value="notify" noPanel>告警通知</TabsTrigger>
           <TabsTrigger value="account" noPanel>账户安全</TabsTrigger>

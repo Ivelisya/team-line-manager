@@ -12,7 +12,7 @@
 .cmd-dialog[data-state="closed"] { animation: panel-out var(--dur-1) var(--ease-std) forwards; }
 .cmd { display: flex; flex-direction: column; min-height: 0; }
 .cmd-input-wrap { display: flex; align-items: center; gap: var(--sp-10); height: 52px; padding: 0 var(--sp-16); border-bottom: 1px solid var(--line); color: var(--fg-3); }
-.cmd-input { flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; outline: none; background: transparent; color: var(--fg); font: var(--fw-regular) var(--fs-emph) / var(--lh-emph) var(--font-sans); }
+.cmd-input { flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; outline: none; background: transparent; color: var(--fg); font: var(--fw-regular) var(--fs-emph) / var(--lh-emph) var(--font-sans); font-variant-numeric: tabular-nums; }
 .cmd-input::placeholder { color: var(--fg-3); }
 /* 高度跟着结果数平滑伸缩：cmdk 把内容高度写在 --cmdk-list-height 上，加上下内边距（border-box）；超过 max-height 时仍被它截住、内部滚动 */
 .cmd-list {
@@ -25,7 +25,7 @@
 .cmd-item {
   display: flex; align-items: center; gap: var(--sp-10); min-height: 36px; box-sizing: border-box; padding: 0 var(--sp-10);
   border-radius: var(--r-control); color: var(--fg); cursor: pointer; user-select: none;
-  font: var(--fw-regular) var(--fs-body) / var(--lh-body) var(--font-sans);
+  font: var(--fw-regular) var(--fs-body) / var(--lh-body) var(--font-sans); font-variant-numeric: tabular-nums;
 }
 .cmd-item > .lucide { width: var(--icon-md); height: var(--icon-md); color: var(--fg-2); }
 .cmd-item[data-selected="true"] { background-color: var(--accent-soft); color: var(--accent-soft-fg); }

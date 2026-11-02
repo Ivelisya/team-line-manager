@@ -20,8 +20,8 @@
 }
 .hsec-badge .lucide { width: var(--icon-xs); height: var(--icon-xs); stroke-width: var(--icon-stroke-strong); }
 .hsec-titles { display: grid; gap: var(--sp-4); min-width: 0; }
-.hsec-title { margin: 0; font: var(--fw-bold) var(--fs-section) / var(--lh-section) var(--font-sans); letter-spacing: -0.015em; color: var(--fg); }
-.hero-greet { margin: 0; font: var(--fw-bold) clamp(21px, 2vw, 26px) / 1.25 var(--font-sans); letter-spacing: -0.025em; color: var(--fg); }
+.hsec-title { margin: 0; font: var(--fw-bold) var(--fs-section) / var(--lh-section) var(--font-sans); letter-spacing: var(--tracking-title); color: var(--fg); }
+.hero-greet { margin: 0; font: var(--fw-bold) clamp(21px, 2vw, 26px) / 1.25 var(--font-sans); letter-spacing: var(--tracking-title); color: var(--fg); }
 .hero-name { background: linear-gradient(90deg, var(--accent), color-mix(in oklab, var(--accent) 50%, var(--m-load))); -webkit-background-clip: text; background-clip: text; color: transparent; }
 .hsec-sub { margin: 0; font-size: var(--fs-body); line-height: 1.5; color: var(--fg-2); text-wrap: pretty; }
 
@@ -95,12 +95,12 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 .cluster-box { display: grid; gap: var(--sp-8); min-width: 0; padding: 11px 13px; border: 1px solid var(--line); border-radius: var(--r-inner); background: color-mix(in srgb, var(--section) 40%, var(--surface)); }
 .cluster-row { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--sp-8); min-width: 0; }
 .cluster-big { display: inline-flex; align-items: baseline; gap: var(--sp-6); min-width: 0; white-space: nowrap; }
-.cluster-big > .num { font: var(--fw-bold) var(--fs-kpi) / 1 var(--font-num); letter-spacing: -0.03em; color: var(--fg); }
+.cluster-big > .num { font: var(--fw-bold) var(--fs-kpi) / 1 var(--font-num); font-variant-numeric: var(--num-variant); letter-spacing: -0.03em; color: var(--fg); }
 /* 单位、读数的名称、在线 / 总计台数都是要读的信息：--fg-2（--fg-3 只给占位、缺测这类不承载信息的字，tokens.css） */
 .cluster-big small { font-size: var(--fs-micro); font-weight: var(--fw-medium); color: var(--fg-2); }
 .cluster-kv { display: grid; justify-items: end; gap: 1px; }
 .cluster-kv small { font-size: var(--fs-micro); line-height: 1.2; color: var(--fg-2); }
-.cluster-kv b { font: var(--fw-bold) var(--fs-label) / 1.2 var(--font-sans); color: var(--fg); }
+.cluster-kv b { font: var(--fw-bold) var(--fs-label) / 1.2 var(--font-sans); font-variant-numeric: var(--num-variant); color: var(--fg); }
 .cluster-kv b[data-bad] { color: var(--bad-text); }
 .cluster-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--sp-2) var(--sp-8); font-size: var(--fs-micro); line-height: var(--lh-micro); color: var(--fg-2); }
 .cluster-foot b { font-weight: var(--fw-semibold); color: var(--fg); }
@@ -118,7 +118,7 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 [data-theme="light"] .cchart-head b { color: color-mix(in oklab, var(--cc) 72%, #000); }
 
 .spark { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: 56px auto; column-gap: var(--sp-6); min-width: 0; }
-.spark-axis { display: flex; flex-direction: column; justify-content: space-between; margin-block: -6px; font: var(--fs-micro) / 12px var(--font-num); color: var(--chart-axis); text-align: right; white-space: nowrap; }
+.spark-axis { display: flex; flex-direction: column; justify-content: space-between; margin-block: -6px; font: var(--fs-micro) / 12px var(--font-num); font-variant-numeric: var(--num-variant); color: var(--chart-axis); text-align: right; white-space: nowrap; }
 .spark-plot { position: relative; min-width: 0; }
 .spark-plot svg { display: block; width: 100%; height: 100%; overflow: visible; }
 .spark-grid { stroke: var(--line); stroke-dasharray: 3 3; }
@@ -139,7 +139,7 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
   .cchart .spark-axis { display: none; }
   .cchart .spark-time { grid-column: 1; }
 }
-.spark-time { grid-column: 2; display: flex; justify-content: space-between; margin-top: var(--sp-4); font: var(--fs-micro) / 12px var(--font-num); color: var(--chart-axis); }
+.spark-time { grid-column: 2; display: flex; justify-content: space-between; margin-top: var(--sp-4); font: var(--fs-micro) / 12px var(--font-num); font-variant-numeric: var(--num-variant); color: var(--chart-axis); }
 
 /* ---------- 分组：整行分段控件 + 仅看异常 ---------- */
 .hgroups { display: flex; align-items: center; gap: var(--sp-10); min-width: 0; }
@@ -228,7 +228,7 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 .gauge-val { fill: none; stroke: var(--mc); stroke-linecap: round; stroke-dashoffset: var(--ring-off); animation: ring-in var(--dur-data) var(--ease-out); }
 @keyframes ring-in { from { stroke-dashoffset: var(--ring-c); } }
 .gauge-center { position: absolute; inset: 0; display: flex; align-items: baseline; justify-content: center; padding-top: 22px; box-sizing: border-box; }
-.gauge-center b { font: var(--fw-bold) var(--fs-body) / 1 var(--font-num); letter-spacing: -0.02em; color: var(--fg); }
+.gauge-center b { font: var(--fw-bold) var(--fs-body) / 1 var(--font-num); font-variant-numeric: var(--num-variant); letter-spacing: -0.02em; color: var(--fg); }
 .gauge-center small { margin-left: 1px; font-size: var(--fs-micro); color: var(--fg-2); }
 .gauge[data-tone="warn"] .gauge-center b { color: var(--warn-text); }
 .gauge[data-tone="bad"] .gauge-center b { color: var(--bad-text); }

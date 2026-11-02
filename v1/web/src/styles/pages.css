@@ -43,9 +43,13 @@
 .audit-meta[data-tone="bad"] { color: var(--bad-text); }
 /* 操作记录页：涉及机器的一行可点（打开抽屉），整行悬停变色；底下「加载更早的记录」居中 */
 .audit-list li.is-link { cursor: pointer; transition: background-color var(--dur-1) var(--ease-std); }
-/* 按天分段：每段一个小标题（今天 / 昨天 / 10月20日 周一），时间线在段内连续 */
-.audit-day { margin: var(--sp-12) 0 var(--sp-2); font: var(--fw-semibold) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2); }
-.audit-day:first-child { margin-top: var(--sp-4); } /* 第一段标题离卡片上沿留一点，不贴着圆角边框 */
+/* 按天分段：每段一个小标题（今天 / 昨天 / 10月20日 周一），时间线在段内连续。标题吸在顶栏下面，翻长日志时看得到现在是哪一天；
+   横向用负外边距抵掉 .panel-body 的内边距让条通栏（超出的被 .panel 的 overflow: clip 裁掉），间距用 padding（sticky 吸住时 margin 会在标题与顶栏之间留缝）；毛玻璃回退见 overrides.css */
+.audit-day {
+  position: sticky; top: var(--topbar-h); z-index: var(--z-sticky); margin: 0 calc(-1 * var(--card-pad)); padding: var(--sp-8) var(--card-pad) var(--sp-4);
+  background: var(--glass-bar); -webkit-backdrop-filter: var(--glass-bar-blur); backdrop-filter: var(--glass-bar-blur);
+  font: var(--fw-semibold) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2);
+}
 @media (hover: hover) { .audit-list li.is-link:hover { background-color: var(--hover); } }
 .audit-more { display: flex; justify-content: center; padding-top: var(--sp-12); }
 .audit-meta[data-tone="warn"] { color: var(--warn-text); }
