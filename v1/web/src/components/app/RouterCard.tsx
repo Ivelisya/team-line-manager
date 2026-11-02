@@ -126,8 +126,8 @@ function WanCol({ dir, bps, values, onOpen }: { dir: 'up' | 'down'; bps: number 
   return (
     <div className="flow-col" data-dir={dir} data-speed={F.speedOf(bps)}>
       <div className="flow-head">
-        <span className="flow-label">{up ? <ArrowUp /> : <ArrowDown />}WAN {up ? '上行' : '下行'}</span>
-        <span className="flow-rate"><Num f={F.rate(bps)} /></span>
+        <span className="flow-label" data-tip={`WAN 口${up ? '上行' : '下行'}`}>{up ? <ArrowUp /> : <ArrowDown />}{up ? '上行' : '下行'}</span>
+        <span className="flow-rate" data-tip={F.str(F.rate(bps))}><Num f={F.rate(bps)} /></span>
       </div>
       <button type="button" className="flow-trend" data-tip="查看曲线" onClick={() => onOpen('charts')} aria-label={`WAN ${up ? '上行' : '下行'}速率：查看曲线`}><DotTrace values={values} /></button>
     </div>

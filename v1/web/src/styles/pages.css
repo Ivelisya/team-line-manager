@@ -202,6 +202,10 @@
 .pm-sug-node { white-space: nowrap; }
 .pm-sug-node + .pm-sug-node::before { content: "、"; }
 .pm-sug .t-sub { color: inherit; opacity: 0.75; }
+/* 线路机多了横向放不下：首列（节点名）吸在左边，滚到右边也知道是哪一行；吸住的格子要不透明（悬停色叠在表面色上） */
+.pm-table :is(th, td):first-child { position: sticky; left: 0; z-index: 1; background-color: var(--surface); }
+.pm-table thead th:first-child { background-color: var(--sunken); z-index: 2; }
+@media (hover: hover) { .pm-table tr.is-link:hover > td:first-child { background-image: linear-gradient(var(--hover), var(--hover)); } }
 .dt td.pm-cell { white-space: nowrap; }
 .dt td.pm-cell.is-current { font-weight: var(--fw-semibold); }
 .dt td.pm-cell.is-best { background: var(--accent-soft); color: var(--accent-soft-fg); }

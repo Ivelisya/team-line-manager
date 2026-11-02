@@ -11,7 +11,7 @@ import { useEndSubjectMaint } from '@/lib/queries';
 import { useHeld } from '@/lib/useHeld';
 import { HEALTH_TONE } from '@/lib/sort';
 import { Button, IconButton } from '@/components/ui/button';
-import { Field, InfoTip, Input, Switch } from '@/components/ui/form';
+import { Field, InfoTip, Input, OptimisticSwitch } from '@/components/ui/form';
 import { Segmented } from '@/components/ui/overlays';
 import { SkeletonRows } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
@@ -75,7 +75,7 @@ export function ProbeTab() {
                 <span className="t-sub">{s.order.length ? '前面的都用不了时代测，只看通不通' : '主来源'}</span>
                 {inUse(null) && <Pill tone="ok">在用</Pill>}
                 <span style={{ marginLeft: 'auto' }}>
-                  <Switch checked={s.central_enabled} disabled={save.isPending || !s.order.length} onCheckedChange={(v) => save.mutate({ central_enabled: v }, { onError: toast.err })} aria-label="中控自己的探测" />
+                  <OptimisticSwitch checked={s.central_enabled} disabled={save.isPending || !s.order.length} onCheckedChange={(v, undo) => save.mutate({ central_enabled: v }, { onError: (e) => { undo(); toast.err(e); } })} aria-label="中控自己的探测" />
                 </span>
               </li>
             </ol>
@@ -118,7 +118,7 @@ export function ProbeTab() {
                     <td>{p.relays.length ? p.relays.map((r) => (
                       <div key={r.relay_id} className="t-sub">{r.name} · <b className="num">{r.avg_ms == null ? '—' : `${Math.round(r.avg_ms)} ms`}</b> · <span data-tip={`${r.ok}/${r.total} 次连上`}>{successPct(r.total ? (100 * r.ok) / r.total : null)}</span></div>
                     )) : '—'}</td>
-                    <td><Switch checked={p.enabled} disabled={patch.isPending || (p.rank != null && p.enabled)} onCheckedChange={(v) => patch.mutate({ id: p.id, enabled: v }, { onError: toast.err })} aria-label="启用" /></td>
+                    <td><OptimisticSwitch checked={p.enabled} disabled={patch.isPending || (p.rank != null && p.enabled)} onCheckedChange={(v, undo) => patch.mutate({ id: p.id, enabled: v }, { onError: (e) => { undo(); toast.err(e); } })} aria-label="启用" /></td>
                     <td className="r"><span className="row" style={{ gap: 4, justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
                       {p.maintenance
                         ? <IconButton label="结束维护" disabled={endMaint.isPending} onClick={() => endMaint.mutate({ kind: 'probe_point', id: p.id }, { onSuccess: () => toast.ok(`${p.label} 已结束维护`), onError: toast.err })}><Wrench size={14} /></IconButton>

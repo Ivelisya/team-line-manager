@@ -7,7 +7,7 @@ import { useMachineBriefs, useTeams } from '@/lib/queries';
 import * as F from '@/lib/format';
 import { useHeld } from '@/lib/useHeld';
 import { Button, IconButton } from '@/components/ui/button';
-import { Checkbox, Field, InfoTip, Input, Switch } from '@/components/ui/form';
+import { Checkbox, Field, InfoTip, Input, OptimisticSwitch, Switch } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { Trunc } from '@/components/ui/overlays';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -51,8 +51,8 @@ export function SubsTab() {
                     <td>{protoLabel(s.protocols)}</td>
                     <td className="r num">{s.items} 个</td>
                     <td>{s.last_fetch_at ? <><span data-tip={F.dt(s.last_fetch_at)}>{F.ago(s.last_fetch_at)}</span><span className="sub mono">{s.last_fetch_ip ?? ''}</span></> : <span className="t-sub">还没拉过</span>}</td>
-                    <td><Switch checked={s.enabled} disabled={patch.isPending && patch.variables?.id === s.id} aria-label={`${s.enabled ? '停用' : '启用'}「${s.name}」`}
-                      onCheckedChange={(v) => patch.mutate({ id: s.id, enabled: v }, { onSuccess: () => toast.ok(v ? '订阅已启用' : '订阅已停用，拉取会失败'), onError: toast.err })} /></td>
+                    <td><OptimisticSwitch checked={s.enabled} disabled={patch.isPending && patch.variables?.id === s.id} aria-label={`${s.enabled ? '停用' : '启用'}「${s.name}」`}
+                      onCheckedChange={(v, undo) => patch.mutate({ id: s.id, enabled: v }, { onSuccess: () => toast.ok(v ? '订阅已启用' : '订阅已停用，拉取会失败'), onError: (e) => { undo(); toast.err(e); } })} /></td>
                     <td className="r"><span className="row" style={{ justifyContent: 'flex-end', flexWrap: 'nowrap', gap: 0 }}>
                       <IconButton label="看条目" size="sm" onClick={() => setView(s)}><List size={14} /></IconButton>
                       <IconButton label="编辑" size="sm" onClick={() => setEdit(s)}><Pencil size={14} /></IconButton>

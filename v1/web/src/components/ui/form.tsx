@@ -72,3 +72,14 @@ export const Switch = React.forwardRef<React.ElementRef<typeof SwitchPrimitive.R
   <SwitchPrimitive.Root ref={ref} className={cn('switch', className)} {...p}><SwitchPrimitive.Thumb asChild><span /></SwitchPrimitive.Thumb></SwitchPrimitive.Root>
 ));
 Switch.displayName = 'Switch';
+
+/** 值由服务端管的开关（点一下要等请求回来、数据重取才变）：点下立刻按新值显示，不等两次往返。
+ *  onCheckedChange 的第二个参数 rollback：请求失败时调它回到服务端的值；成功就不用管——数据一跟上（checked 变了）本地的值自动清掉 */
+export const OptimisticSwitch = React.forwardRef<React.ElementRef<typeof SwitchPrimitive.Root>, Omit<React.ComponentPropsWithoutRef<typeof SwitchPrimitive.Root>, 'checked' | 'onCheckedChange'> & { checked: boolean; onCheckedChange: (v: boolean, rollback: () => void) => void }>(
+  ({ checked, onCheckedChange, ...p }, ref) => {
+    const [opt, setOpt] = React.useState<{ v: boolean; base: boolean } | null>(null);
+    if (opt && checked !== opt.base) setOpt(null);
+    return <Switch ref={ref} checked={opt ? opt.v : checked} onCheckedChange={(v) => { setOpt({ v, base: checked }); onCheckedChange(v, () => setOpt(null)); }} {...p} />;
+  },
+);
+OptimisticSwitch.displayName = 'OptimisticSwitch';

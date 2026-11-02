@@ -15,5 +15,5 @@ export const yMs = (v: number) => (v ? `${v} ms` : '0');
 export const vMs = (_: string, v: number) => `${Math.round(v)} ms`;
 export const yPct = (v: number) => `${Math.round(v)}%`;
 export const vPct = (_: string, v: number) => `${v.toFixed(1)}%`;
-export const yRate = (v: number) => (v ? F.str(F.rate(v)) : '0');
+export const yRate = (v: number) => (v ? F.str(F.rate(v, true)) : '0');
 export const vRate = (_: string, v: number) => F.str(F.rate(v));

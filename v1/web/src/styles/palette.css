@@ -33,6 +33,7 @@
 .cmd-item[data-selected="true"] .cmd-aside { color: var(--accent-soft-fg); }
 .cmd-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--sp-8); }
 .cmd-main > b { font-weight: var(--fw-medium); }
+.cmd-main mark { background: none; color: var(--accent-soft-fg); font-weight: var(--fw-semibold); text-decoration: underline; text-decoration-thickness: 1.5px; text-underline-offset: 3px; text-decoration-color: color-mix(in srgb, var(--accent) 45%, transparent); } /* 输入命中的字：主题色加粗 + 淡下划线（当前项的底也是软主题色，不再叠底色） */
 .cmd-aside { flex: none; font-size: var(--fs-label); color: var(--fg-2); }
 .cmd-empty { padding: var(--sp-24) var(--sp-16); text-align: center; color: var(--fg-2); font-size: var(--fs-body); }
 .cmd-more { padding: var(--sp-6) var(--sp-10) var(--sp-4); font-size: var(--fs-label); color: var(--fg-2); }

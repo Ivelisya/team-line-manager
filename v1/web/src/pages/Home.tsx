@@ -59,10 +59,20 @@ const isIssue = (m: MachineView) => m.lifecycle === 'failed' || (m.health.status
 /** 吸顶条是否正吸在顶栏下面：哨兵放在条的原位（高 0），滚到顶栏线以上就是吸住了（吸住后才铺毛玻璃和底线）。
  *  按滚动事件（每帧一次）量哨兵的位置，不用 IntersectionObserver：一下子滚过很远（锚点、刷新后恢复滚动位置）时哨兵从视口下方直接跳到上方，观察器不会触发。
  *  同时把吸顶部分的高度写成 --hbar-h，表格视图的吸顶表头据此排在它下面（宽屏吸整条；窄屏 .hbar 是 display: contents，只吸团队页签那一行） */
-function useStuckBar() {
+function useStuckBar(listKey: string) {
   const sentinel = React.useRef<HTMLDivElement>(null);
   const bar = React.useRef<HTMLDivElement>(null);
   const [stuck, setStuck] = React.useState(false);
+  // 吸顶时切换分组 / 筛选 / 排序 / 视图：列表长短一变页面就跳位。listKey 一变就滚到列表顶（条刚好留在吸住的原位）
+  const stuckNow = React.useRef(false);
+  stuckNow.current = stuck;
+  const first = React.useRef(true);
+  React.useLayoutEffect(() => {
+    if (first.current) { first.current = false; return; }
+    if (!stuckNow.current) return;
+    const top = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--topbar-h')) || 56;
+    scrollTo(0, sentinel.current!.getBoundingClientRect().top + scrollY - (top - 12)); // 比吸住的阈值（top - 8）多让 4px，滚完仍算吸着
+  }, [listKey]);
   React.useEffect(() => {
     const top = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--topbar-h')) || 56;
     // 条的原位比哨兵低 8px（条上下各伸出 8px 内边距，见 home.css），条的上沿碰到顶栏下沿时才算吸住
@@ -164,7 +174,7 @@ export function HomePage() {
     ...(teams.data ?? []).filter((t) => (counts.byTeam.get(t.id) ?? 0) > 0 || t.id === team).map((t) => ({ value: t.id, label: t.name, count: counts.byTeam.get(t.id) ?? 0 })),
   ], [countSig, teams.data]); // eslint-disable-line react-hooks/exhaustive-deps
   const sortValue = SORTS.some((x) => x.value === rawSort) ? rawSort : 'custom';
-  const sb = useStuckBar();
+  const sb = useStuckBar(`${team}|${onlyIssues}|${rawSort}|${layout}|${view}`);
 
   return (
     <div className="stack home">

@@ -85,6 +85,8 @@ export const DialogFooter = ({ className, ...p }: React.HTMLAttributes<HTMLDivEl
  *  Esc、关闭按钮照旧。打开时把焦点放到抽屉上（不滚动），键盘 Tab 从抽屉里开始；焦点移出不关（模态时焦点困在里面，移不出去）。
  *  代价：焦点不再困在抽屉里，滚轮能滚到后面的页面。抽屉里再开的确认框等仍是模态 */
 const SheetOpen = React.createContext(false);
+// 抽屉是非模态（Radix 不锁滚动）：开着时在 <html> 上挂 data-drawer，base.css 据此不让背后的页面滚（页面滚动条一起藏掉；scrollbar-gutter: stable 在，内容不横移）
+let drawers = 0;
 export function Sheet({ open, onOpenChange, children }: { open: boolean; onOpenChange: (open: boolean) => void; children: React.ReactNode }) {
   return <DialogPrimitive.Root open={open} onOpenChange={onOpenChange} modal={false}><SheetOpen.Provider value={open}>{children}</SheetOpen.Provider></DialogPrimitive.Root>;
 }
@@ -99,6 +101,11 @@ export const SheetContent = React.forwardRef<React.ElementRef<typeof DialogPrimi
     const open = React.useContext(SheetOpen);
     const panel = React.useRef<HTMLDivElement>(null);
     React.useImperativeHandle(ref, () => panel.current!, []);
+    React.useLayoutEffect(() => {
+      if (!open) return;
+      if (drawers++ === 0) document.documentElement.dataset.drawer = '';
+      return () => { if (--drawers === 0) delete document.documentElement.dataset.drawer; };
+    }, [open]);
     return (
       <DialogPrimitive.Portal>
         {/* 退场动画靠 data-state，Portal 里的 Presence 等它播完再卸载 */}

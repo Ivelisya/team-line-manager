@@ -51,11 +51,12 @@ export function mem(n: number | null | undefined): Fmt {
 }
 /** 操作人：用户名原样；API 密钥「名称（API 密钥）」；cli 是中控上的命令行 */
 export const actor = (a: string) => (a === 'cli' ? '中控命令行' : a.startsWith('apikey:') ? `${a.slice(7)}（API 密钥）` : a);
-/** bit/s → Kbps/Mbps/Gbps */
-export function rate(bps: number | null | undefined): Fmt {
+/** bit/s → Kbps/Mbps/Gbps。数值部分三位有效数字、末尾的 0 保留（1.70 / 1.44 / 16.9 / 169），同一列的读数位数一致；
+ *  trim：坐标轴刻度用，去掉末尾的 0（2 Mbps，不写 2.00） */
+export function rate(bps: number | null | undefined, trim = false): Fmt {
   if (bps == null || !isFinite(bps)) return NA;
   const s = rateScale(bps);
-  return { v: inScale(bps, s), u: s.u };
+  return { v: trim ? inScale(bps, s) : inScaleBytes(bps, s), u: s.u };
 }
 export const pct = (n: number | null | undefined, d = 0): Fmt => (n == null ? NA : { v: n.toFixed(d), u: '%' });
 /** 延迟：不到 0.5 ms（同机房、本机）四舍五入成 0，写「<1 ms」，不像是没测到 */

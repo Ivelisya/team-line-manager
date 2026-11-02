@@ -37,6 +37,8 @@ export const DailyBars = memo(function DailyBars({ days, height = 200 }: { days:
     const d = data.find((x) => x.date === l);
     return `${md(String(l))} ${weekday(String(l))}${l === last ? '（今天，到目前为止）' : ''} · 合计 ${d ? F.str(F.bytes(d.sum)) : '—'}`;
   };
+  // 非零的至少画 2px：4 TB 刻度下的 10 GB 不到 1px，整根看不见；0 仍不画
+  const minH = useMemo(() => ({ down: (_: number | null | undefined, i: number) => (data[i]?.down ? 2 : 0), up: (_: number | null | undefined, i: number) => (data[i]?.up ? 2 : 0) }), [data]);
   const long = data.length > 31;
   const fade = (k: string) => data.map((d) => <Cell key={`${k}${d.date}`} fillOpacity={d.date === last ? 0.55 : 1} />);
   return (
@@ -46,8 +48,8 @@ export const DailyBars = memo(function DailyBars({ days, height = 200 }: { days:
         <XAxis dataKey="date" tickFormatter={md} minTickGap={long ? 36 : 24} {...axisProps} />
         <YAxis width={60} tickFormatter={yBytes} ticks={ticks} interval={0} domain={ticks ? [0, ticks[ticks.length - 1]] : [0, 'auto']} {...axisProps} />
         {chartTooltip(CFG, label, vBytes, CURSOR)}
-        <Bar dataKey="down" stackId="a" fill="var(--color-down)" isAnimationActive={false}>{fade('d')}</Bar>
-        <Bar dataKey="up" stackId="a" fill="var(--color-up)" radius={[2, 2, 0, 0]} isAnimationActive={false}>{fade('u')}</Bar>
+        <Bar dataKey="down" stackId="a" fill="var(--color-down)" minPointSize={minH.down} isAnimationActive={false}>{fade('d')}</Bar>
+        <Bar dataKey="up" stackId="a" fill="var(--color-up)" radius={[2, 2, 0, 0]} minPointSize={minH.up} isAnimationActive={false}>{fade('u')}</Bar>
       </BarChart>
     </ChartContainer>
   );
