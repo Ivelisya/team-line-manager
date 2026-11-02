@@ -63,29 +63,47 @@ function useStuckBar(listKey: string) {
   const sentinel = React.useRef<HTMLDivElement>(null);
   const bar = React.useRef<HTMLDivElement>(null);
   const [stuck, setStuck] = React.useState(false);
-  // 吸顶时切换分组 / 筛选 / 排序 / 视图：列表长短一变页面就跳位。listKey 一变就滚到列表顶（条刚好留在吸住的原位）
+  // 条的原位比哨兵低多少：条上沿的 -8px 外边距、网格行间距、哨兵的负外边距加起来不是个整齐的数，实测（没被吸住动过位置时）才准；
+  // 窄屏 .hbar 是 display: contents，量里面吸顶的那一行。吸住时条被钉在顶栏下，量不出原位，沿用上次量到的
+  const delta = React.useRef(24);
+  const stickyEl = () => { const b = bar.current!; return getComputedStyle(b).display === 'contents' ? b.firstElementChild as HTMLElement : b; };
+  const topbar = () => parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--topbar-h')) || 56;
+  const sync = () => {
+    const top = topbar();
+    const st = sentinel.current!.getBoundingClientRect().top;
+    const bt = stickyEl().getBoundingClientRect().top;
+    if (bt > top + 1) delta.current = bt - st;
+    return { top, st };
+  };
+  // 吸顶时切换分组 / 筛选 / 排序 / 视图：列表长短一变页面就跳位。listKey 一变就滚到列表顶（条刚好留在吸住的原位）。
+  // 新列表比一屏矮（如切「仅看异常」）时页面不够长、滚不到位，条会掉下来：先给分区临时垫一个最小高度，滚到位为止（脱离吸住状态后去掉）
   const stuckNow = React.useRef(false);
   stuckNow.current = stuck;
   const first = React.useRef(true);
   React.useLayoutEffect(() => {
     if (first.current) { first.current = false; return; }
-    if (!stuckNow.current) return;
-    const top = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--topbar-h')) || 56;
-    scrollTo(0, sentinel.current!.getBoundingClientRect().top + scrollY - (top - 12)); // 比吸住的阈值（top - 8）多让 4px，滚完仍算吸着
+    const sec = sentinel.current!.parentElement!;
+    if (!stuckNow.current) { sec.style.minHeight = ''; return; }
+    const { top, st } = sync();
+    const goal = top - delta.current - 4; // 哨兵滚到这个位置：条的原位比顶栏线高 4px，滚完仍算吸着
+    sec.style.minHeight = `${st + scrollY - (sec.getBoundingClientRect().top + scrollY) + innerHeight - goal}px`;
+    scrollTo(0, st + scrollY - goal);
   }, [listKey]);
   React.useEffect(() => {
-    const top = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--topbar-h')) || 56;
-    // 条的原位比哨兵低 8px（条上下各伸出 8px 内边距，见 home.css），条的上沿碰到顶栏下沿时才算吸住
+    // 条的上沿碰到顶栏下沿时才算吸住
     let raf = 0;
-    const check = () => { raf = 0; setStuck(sentinel.current!.getBoundingClientRect().top < top - 8); };
+    const check = () => {
+      raf = 0;
+      const { top, st } = sync();
+      const s = st < top - delta.current;
+      if (!s) sentinel.current!.parentElement!.style.minHeight = '';
+      setStuck(s);
+    };
     const onScroll = () => { raf ||= requestAnimationFrame(check); };
     check();
     addEventListener('scroll', onScroll, { passive: true });
     const b = bar.current!;
-    const measure = () => {
-      const el = getComputedStyle(b).display === 'contents' ? b.firstElementChild as HTMLElement : b;
-      b.parentElement!.style.setProperty('--hbar-h', `${el.offsetHeight}px`);
-    };
+    const measure = () => b.parentElement!.style.setProperty('--hbar-h', `${stickyEl().offsetHeight}px`);
     measure();
     const off = [watchSize(b, measure), watchSize(b.firstElementChild!, measure)];
     return () => { removeEventListener('scroll', onScroll); cancelAnimationFrame(raf); off.forEach((f) => f()); };

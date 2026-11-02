@@ -1,13 +1,12 @@
 // 客户到期页 /c/:token：给客户看的只读页面，不登录、不在外壳里（customerEntry.tsx 单独的入口，不带管理端）。
 // 只放有效的批次：标题、各地区有效个数、时间轴、节点月总计。不出现 IP、供应商、价格、节点名，也没有管理端导航。
-// 白底与中性标题由 theme-init.js 首屏就设好（html.is-cx）；深浅色跟随访客系统（theme-init.js 首屏解析，lib/theme 接管之后的系统切换）。
+// 白底与中性标题由 theme-init.js 首屏就设好（html.is-cx）；一律浅色（theme-init.js 在 /c/ 下不读存储的主题，这里也不引 lib/theme）。
 import * as React from 'react';
 import { useParams } from 'react-router-dom';
 import { Link2Off, RotateCw } from 'lucide-react';
 import { ApiError } from '@/lib/api';
 import { usePublicCustomer } from '@/lib/publicCustomer';
 import type { PublicCustomer } from '@/lib/types';
-import '@/lib/theme';
 import { Button } from '@/components/ui/button';
 import { TipHost } from '@/components/ui/overlays';
 import { Empty } from '@/components/app/empty';
@@ -31,9 +30,9 @@ function Regions({ d }: { d: PublicCustomer }) {
             <span className="cx-region-val">{r.total}<small>个</small></span>
             {(r.counts.length > 1 || r.today_count > 0) && (
               <span className="cx-region-calc">
-                {r.counts.length > 1 && <span className="num">{r.counts.join('+')}={r.total}个</span>}
+                {r.counts.length > 1 && <span className="num">{r.counts.join('+')}={r.total} 个</span>}
                 {r.counts.length > 1 && r.today_count > 0 && ' · '}
-                {r.today_count > 0 && <span className="is-today">含今日到期 <span className="num">{r.today_count}</span>个</span>}
+                {r.today_count > 0 && <span className="is-today">含今日到期 <span className="num">{r.today_count}</span> 个</span>}
               </span>
             )}
           </div>
@@ -75,7 +74,7 @@ export function CustomerPage() {
                 <BatchTimeline items={items} today={d.today} />
               </section>
               <footer className="cx-foot">
-                <div className="cx-total">总计：<span className="num">{d.node_months}</span>个节点月</div>
+                <div className="cx-total">总计：<span className="num">{d.node_months}</span> 个节点月</div>
                 <div className="cx-note">按完整服务周期计算，包含已经续期的未来部分。</div>
               </footer>
             </>

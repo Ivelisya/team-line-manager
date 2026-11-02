@@ -15,11 +15,11 @@ function hasWhole(s: string, q: string): boolean {
   }
   return false;
 }
-/** 匹配档位（大的在前，0 = 不匹配）：名称相同 > 名称前缀 > IP 前缀 > 名称包含 > 去前导零后名称包含（编号整段） > IP、团队、别名等包含 > 名称模糊。
+/** 匹配档位（大的在前，0 = 不匹配）：名称相同（编号补零后相同也算） > 名称前缀 > IP 前缀 > 名称包含 > 去前导零后名称包含（编号整段） > IP、团队、别名等包含 > 名称模糊。
  *  模糊（子序列）只对名称、且只在搜的不含中文时：中文按连续子串匹配（搜「团队1」不该命中「模拟团队B-17」）；IP、UUID 里数字多，短数字串做子序列几乎条条命中 */
 export function matchTier(value: string, q: string): number {
   const [name, ip = '', rest = ''] = value.toLowerCase().split('\t');
-  if (name === q) return 8;
+  if (name === q || unpad(name) === unpad(q)) return 8; // 补零后相同也算完全匹配：「团队1-4」时「团队1-04」排在「团队1-40」前面
   if (name.startsWith(q)) return 7;
   if (ip && ip.startsWith(q)) return 6;
   if (name.includes(q)) return 5;

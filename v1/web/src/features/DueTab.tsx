@@ -98,7 +98,7 @@ export function DueTab() {
                     <tr key={`${g.provider.id}|${g.due_date}|${g.billing_tz}`}>
                       <td><ProviderCell p={g.provider} /></td>
                       <td><DueWhen g={g} /></td>
-                      <td data-tip={names.length > 4 ? names.join('、') : undefined}>{names.slice(0, 4).join('、')}{names.length > 4 && <span className="t-muted"> 等 {names.length} 台</span>} <HoldPill ms={g.machines} /> <IdlePill ms={b.idle} /></td>
+                      <td><div className="due-machines"><span className="due-machines-names" data-tip={names.length > 1 ? names.join('、') : undefined}>{names.slice(0, 4).join('、')}{names.length > 4 && <span className="t-muted"> 等 {names.length} 台</span>}</span><HoldPill ms={g.machines} /><IdlePill ms={b.idle} /></div></td>
                       <td className="r num" data-tip={usdTotalTip(g.total)}>{subtotal(g)}</td>
                       <td className="r num">{usdText(g.total)}</td>
                       <td className="r num" data-tip={b.tip}>{F.usdPerGb(b.perGb)}</td>
