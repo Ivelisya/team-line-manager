@@ -1456,10 +1456,10 @@ async fn unreadable_router_config_blocks_change() {
 async fn unreadable_config_on_locked_router_queues() {
     let w = world().await;
     let oe = old_entry(&w).await;
-    router(&w, "路由A", 23231, &[("节点01", "198.51.100.2", 20003, Some(oe))]).await;
-    let b = router(&w, "路由B", 23232, &[]).await;
+    router(&w, "路由A", 23741, &[("节点01", "198.51.100.2", 20003, Some(oe))]).await;
+    let b = router(&w, "路由B", 23742, &[]).await;
     let t = &w.t;
-    std::fs::write(root(23232).join("read-fail"), "").unwrap();
+    std::fs::write(root(23742).join("read-fail"), "").unwrap();
     // 另一个作业正拿着路由B 的锁
     let mut other = t.st.db.acquire().await.unwrap().detach();
     sqlx::query("select pg_advisory_lock(hashtextextended('router:' || $1::text, 0))").bind(b).execute(&mut other).await.unwrap();
@@ -1472,14 +1472,14 @@ async fn unreadable_config_on_locked_router_queues() {
     let p: Value = sqlx::query_scalar("select params from job where id = $1").bind(Uuid::parse_str(&job).unwrap()).fetch_one(&t.st.db).await.unwrap();
     assert_eq!(p["routers_queued_id"], json!(b), "{l}");
     assert!(l.contains("软路由「路由B」正在被别的作业改，排队等它改完") && !l.contains("配置读不了"), "{l}");
-    assert!(applies(23231).is_empty(), "排队时一台都没改");
+    assert!(applies(23741).is_empty(), "排队时一台都没改");
     // 对方放手、路由B 读得到了：接着做完
     sqlx::Connection::close(other).await.unwrap();
-    std::fs::remove_file(root(23232).join("read-fail")).unwrap();
+    std::fs::remove_file(root(23742).join("read-fail")).unwrap();
     rerun(t, Uuid::parse_str(&job).unwrap()).await;
     let j = t.job(&job).await;
     assert_eq!(j["state"], "succeeded", "{j} {}", logs(t, &job).await);
-    assert_eq!(applies(23231).len(), 1);
+    assert_eq!(applies(23741).len(), 1);
 }
 
 /// 改出口指向：直出出口从线路机2 的直出入口换到线路机3 的直出入口，只改选中的路由，两个入口都不动；
@@ -1984,7 +1984,7 @@ async fn protocol_switch_then_replace_keeps_anytls() {
     drive(t).await;
     let j = t.job(&job).await;
     assert_eq!(j["state"], "failed", "{j}");
-    assert!(logs(t, &job).await.contains("是 AnyTLS，新入口（relay.test）所在的线路机没开 AnyTLS"), "{}", logs(t, &job).await);
+    assert!(logs(t, &job).await.contains("是 AnyTLS，新入口所在的线路机 线路机2 只开 Reality"), "{}", logs(t, &job).await);
     assert_eq!(applies(23710).len(), 1, "没有动路由");
     // 开回两种：重试，AnyTLS 出口写新入口的 AnyTLS 端口
     sqlx::query("update relay set protocols = 'both' where machine_id = $1").bind(w.relay).execute(&t.st.db).await.unwrap();
@@ -2025,4 +2025,66 @@ async fn repoint_only_named_exits() {
     let au = t.get(&format!("/api/v1/audit?target_id={}", w.old)).await;
     let rp = au.as_array().unwrap().iter().find(|x| x["action"] == "entry.repoint").unwrap();
     assert_eq!(rp["detail"]["routers"][0]["exits"], json!(["节点20"]), "{rp}");
+}
+
+/// AnyTLS 出口写新入口之前，等新入口所在线路机的 sing-box 就绪（刚加入口时 agent 要重启它）：没在跑时作业等着、软路由不动；
+/// 等满 ANYTLS_WAIT_S 还没好失败并写明原因，重试重新等，就绪后照常写新入口的 AnyTLS 端口
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn anytls_exit_waits_for_singbox() {
+    let w = world().await;
+    let t = &w.t;
+    let oe = old_entry(&w).await;
+    for n in [w.old, w.new] {
+        sqlx::query("insert into node_outbound (machine_id, protocol, host, port, method, secret_enc) values ($1, 'shadowsocks', '203.0.113.5', 8388, 'aes-256-gcm', '\\x00')")
+            .bind(n)
+            .execute(&t.st.db)
+            .await
+            .unwrap();
+    }
+    let singbox = |running: bool| {
+        sqlx::query(
+            "insert into agent_state (machine_id, agent_version, last_report_at, info) values ($1, 'v', now(), jsonb_build_object('singbox', jsonb_build_object('installed', true, 'running', $2::bool)))
+             on conflict (machine_id) do update set info = excluded.info",
+        )
+        .bind(w.relay)
+        .bind(running)
+    };
+    singbox(false).execute(&t.st.db).await.unwrap();
+    let ra = router(&w, "团队2-路由W", 23730, &[]).await;
+    let at = json!({"id": oe, "name": "x", "node_id": w.old, "relay_id": w.relay, "node_name": "", "relay_name": "线路机2", "port": 20003, "lifecycle": "active"});
+    sqlx::query("update router_status set data = $2 where router_id = $1")
+        .bind(ra)
+        .bind(json!({"exits": [{"name": "节点01", "type": "AnyTLS", "proto": "anytls", "server": "relay.test", "port": 40003, "entry": at, "sync": "ok"}]}))
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    std::fs::write(root(23730).join("config.yaml"), "proxies:\n- name: 节点01\n  type: anytls\n  server: relay.test\n  port: 40003\n  password: 11111111-1111-4111-8111-111111111111\n  sni: www.cloudflare.com\n").unwrap();
+    let d = t.post(&format!("/api/v1/machines/{}/replace", w.old), json!({"new_machine_id": w.new})).await;
+    let job = d["job_id"].as_str().unwrap().to_string();
+    let jid = Uuid::parse_str(&job).unwrap();
+    drive(t).await;
+    let j = t.job(&job).await;
+    assert_eq!(j["state"], "waiting", "{j} {}", logs(t, &job).await);
+    assert!(logs(t, &job).await.contains("线路机 线路机2 的 AnyTLS（sing-box）没在跑：等它就绪再改软路由（最多 120 秒）"), "{}", logs(t, &job).await);
+    assert!(applies(23730).is_empty(), "等的时候路由不动");
+    // 等满还没好：失败、写明原因
+    sqlx::query("update job set params = params || jsonb_build_object('anytls_wait_since', extract(epoch from now())::bigint - 121) where id = $1").bind(jid).execute(&t.st.db).await.unwrap();
+    rerun(t, jid).await;
+    let j = t.job(&job).await;
+    assert_eq!(j["state"], "failed", "{j}");
+    assert!(logs(t, &job).await.contains("没在跑，等了 12") && logs(t, &job).await.contains("秒还没好"), "{}", logs(t, &job).await);
+    assert!(applies(23730).is_empty());
+    // 重试重新等；就绪后接着改，写新入口的 AnyTLS 端口
+    t.post(&format!("/api/v1/jobs/{job}/retry"), json!({})).await;
+    drive(t).await;
+    assert_eq!(t.job(&job).await["state"], "waiting");
+    singbox(true).execute(&t.st.db).await.unwrap();
+    rerun(t, jid).await;
+    let j = t.job(&job).await;
+    assert_eq!(j["state"], "succeeded", "{j} {}", logs(t, &job).await);
+    let a = applies(23730);
+    assert_eq!(a.len(), 1);
+    assert!(a[0].contains("OPORT_1='40003'\nSRV_1='relay.test'\nPORT_1='40020'") && a[0].contains("KIND_1='anytls'"), "{}", &a[0][..600]);
+    let p: Value = sqlx::query_scalar("select params from job where id = $1").bind(jid).fetch_one(&t.st.db).await.unwrap();
+    assert!(p["anytls_wait_since"].is_null(), "{p}");
 }

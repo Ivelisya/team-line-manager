@@ -100,6 +100,63 @@ async fn new_entry(db: &sqlx::PgPool, id: Uuid, nodes: Option<&[Uuid]>) -> sqlx:
     .await
 }
 
+/// AnyTLS 出口等新入口所在线路机的 sing-box 听上新端口最多这么久（agent 重启 sing-box 实测 6–14 秒，偶尔绑定失败由 systemd 重试，
+/// sing-box 状态 30 秒才上报一次）
+const ANYTLS_WAIT_S: i64 = 120;
+/// 等的时候多久看一次
+const ANYTLS_POLL_S: u64 = 5;
+
+/// 要写 AnyTLS 的出口，新入口那边好了没有
+#[derive(Debug, PartialEq)]
+enum AnytlsReady {
+    Ready,
+    /// 等也没用（只开 Reality、没装 sing-box、端口和别的撞了）
+    Never(String),
+    /// 线路机还没应用新入口，或 sing-box 没在跑 / 出错：等它
+    Wait(String),
+}
+
+/// 这些出口里写 AnyTLS 的，新入口在线路机上的 AnyTLS 端口有没有就绪：线路机已应用到这个入口、agent 报 sing-box 在跑且没有错误
+/// （同 entries::anytls_live）。agent 只在应用完 sing-box 之后才报新的应用代数，代数跟上了说明它已经按新入口拉起过 sing-box
+async fn anytls_pending<'a>(db: &sqlx::PgPool, exits: impl Iterator<Item = &'a ExitPlan>) -> anyhow::Result<AnytlsReady> {
+    let mut ids: Vec<(Uuid, &str)> = exits.filter(|x| x.anytls).filter_map(|x| Some((x.new_entry_id?, x.exit.as_str()))).collect();
+    ids.dedup_by_key(|x| x.0);
+    let mut waits = vec![];
+    for (id, exit) in ids {
+        // (线路机, 线路机名, 入口协议, 已应用到这个入口, sing-box 装了, 在跑, 错误)
+        type Row = (Uuid, String, String, bool, Option<bool>, Option<bool>, Option<String>);
+        let row: Option<Row> = sqlx::query_as(
+            "select e.relay_id, coalesce(m.label, ''), r.protocols, r.applied_generation >= e.changed_gen,
+                    (a.info->'singbox'->>'installed')::bool, (a.info->'singbox'->>'running')::bool, a.info->'singbox'->>'last_error'
+             from entry e join relay r on r.machine_id = e.relay_id join machine m on m.id = e.relay_id
+             left join agent_state a on a.machine_id = e.relay_id where e.id = $1",
+        )
+        .bind(id)
+        .fetch_optional(db)
+        .await?;
+        let Some((relay, name, protocols, applied, installed, running, err)) = row else { continue };
+        if protocols == crate::entries::REALITY {
+            return Ok(AnytlsReady::Never(format!("出口「{exit}」是 AnyTLS，新入口所在的线路机 {name} 只开 Reality")));
+        }
+        if installed == Some(false) {
+            return Ok(AnytlsReady::Never(format!("出口「{exit}」是 AnyTLS，新入口所在的线路机 {name} 没装 AnyTLS（sing-box）：先升级它的 agent")));
+        }
+        if !crate::entries::anytls_ports_on(db, &[relay], false).await?.contains_key(&id) {
+            return Ok(AnytlsReady::Never(format!("出口「{exit}」是 AnyTLS，新入口在线路机 {name} 上没有 AnyTLS 端口（和别的端口撞了）")));
+        }
+        if !applied {
+            waits.push(format!("线路机 {name} 还没应用新入口"));
+        } else if !crate::entries::anytls_live(db, &[relay]).await?.contains_key(&id) {
+            waits.push(match (running, err) {
+                (_, Some(e)) => format!("线路机 {name} 的 AnyTLS（sing-box）出错：{e}"),
+                _ => format!("线路机 {name} 的 AnyTLS（sing-box）没在跑"),
+            });
+        }
+    }
+    waits.dedup();
+    Ok(if waits.is_empty() { AnytlsReady::Ready } else { AnytlsReady::Wait(waits.join("；")) })
+}
+
 /// 还在用的备份的时间戳：没做完的作业（失败的、在重试的）参数里记着的，改配置时脚本不删它们
 async fn pinned_stamps(db: &sqlx::PgPool) -> sqlx::Result<Vec<String>> {
     sqlx::query_scalar(
@@ -437,7 +494,11 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let resumed = !applied.is_empty();
     if c.first {
         // 重新开始（重试）：上一次带头认领的作废，没确认改回的除外（那几个作业的出口也在 routers_applied 里，接着做完）
-        let reset = if resumed { json!({"routers_queued": null, "routers_queued_id": null}) } else { json!({"routers_queued": null, "routers_queued_id": null, "routers_batch": null}) };
+        let reset = if resumed {
+            json!({"routers_queued": null, "routers_queued_id": null, "anytls_wait_since": null})
+        } else {
+            json!({"routers_queued": null, "routers_queued_id": null, "routers_batch": null, "anytls_wait_since": null})
+        };
         c.set_params(reset).await?;
     }
     // 同批换线路机：一起改（batch.rs）。带头认领过的接着带（排队等锁之后、接着做完）
@@ -568,6 +629,33 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
             if then.is_empty() { "没有".to_string() } else { then.join("；") }
         ))
         .await;
+    }
+    // AnyTLS 出口要写新入口的 AnyTLS 端口：线路机刚加了入口要重启 sing-box 才听上（几秒到十几秒），状态上报跟上之前等一会儿，
+    // 一台都不动；只开 Reality、没装 sing-box、端口算不出的不等。等的起点记在参数里（排队等锁、中控重启都不重算），重试时清掉重新等
+    match anytls_pending(&c.st.db, todo.iter().flat_map(|(_, xs)| xs)).await? {
+        AnytlsReady::Ready => {
+            if c.job.params["anytls_wait_since"].is_number() {
+                c.set_params(json!({"anytls_wait_since": null})).await?;
+            }
+        }
+        AnytlsReady::Never(why) => return give_up(c, &mut locks, &applied, None, why, ErrKind::Remote, kept).await,
+        AnytlsReady::Wait(why) => {
+            let now = OffsetDateTime::now_utc().unix_timestamp();
+            let since = match c.job.params["anytls_wait_since"].as_i64() {
+                Some(t) => t,
+                None => {
+                    c.set_params(json!({"anytls_wait_since": now})).await?;
+                    c.log(format!("{why}：等它就绪再改软路由（最多 {ANYTLS_WAIT_S} 秒）")).await;
+                    now
+                }
+            };
+            if now - since < ANYTLS_WAIT_S {
+                return Ok(Outcome::Wait(ANYTLS_POLL_S));
+            }
+            c.set_params(json!({"anytls_wait_since": null})).await?;
+            let why = format!("{why}，等了 {} 秒还没好（看 fleetctl show <线路机> 的 AnyTLS 一行），软路由一台都没改；好了之后点重试", now - since);
+            return give_up(c, &mut locks, &applied, None, why, ErrKind::Remote, kept).await;
+        }
     }
     // 3. 一台一台改
     let mut applied = applied;
