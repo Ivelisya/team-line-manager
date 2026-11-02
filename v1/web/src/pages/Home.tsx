@@ -80,6 +80,9 @@ function useStuckBar(listKey: string) {
   const stuckNow = React.useRef(false);
   stuckNow.current = stuck;
   const padFrom = React.useRef(0); // 新列表不垫时的页面高度（自然高度）；0 表示没垫
+  // 分区里内容的高度（最后一块的下沿，不受 min-height 影响）：垫着期间实时推送让列表变长 / 变短，自然高度跟着它的变化量修正
+  const content = (sec: HTMLElement) => sec.lastElementChild!.getBoundingClientRect().bottom - sec.getBoundingClientRect().top;
+  const padContent = React.useRef(0);
   const first = React.useRef(true);
   React.useLayoutEffect(() => {
     if (first.current) { first.current = false; return; }
@@ -93,9 +96,10 @@ function useStuckBar(listKey: string) {
     if (stuckNow.current || padFrom.current) {
       const short = y + innerHeight - natural;
       padFrom.current = short > 0 ? natural : 0;
+      padContent.current = content(sec);
       if (short > 0) sec.style.minHeight = `${sec.offsetHeight + short}px`;
     }
-    scrollTo(0, y);
+    if (Math.abs(scrollY - y) > 0.5) scrollTo(0, y); // 位置没变就不滚（不打断正在进行的平滑滚动）
   }, [listKey]);
   React.useEffect(() => {
     // 条的上沿碰到顶栏下沿时才算吸住
@@ -105,8 +109,9 @@ function useStuckBar(listKey: string) {
       const { top, st } = sync();
       const s = st < top - delta.current;
       // 没吸住也不立刻撤垫高：撤了页面变短会把 scrollY 夹回、页面跳走。滚回撤了也不会被夹的位置再撤（整页不足一屏时即滚到顶）
-      if (!s && padFrom.current && scrollY <= Math.max(0, padFrom.current - innerHeight)) {
-        sentinel.current!.parentElement!.style.minHeight = ''; padFrom.current = 0;
+      const sec = sentinel.current!.parentElement!;
+      if (!s && padFrom.current && scrollY <= Math.max(0, padFrom.current + content(sec) - padContent.current - innerHeight)) {
+        sec.style.minHeight = ''; padFrom.current = 0;
       }
       setStuck(s);
     };
