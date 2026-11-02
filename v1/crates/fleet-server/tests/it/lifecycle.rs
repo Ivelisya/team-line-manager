@@ -1010,3 +1010,27 @@ async fn patch_team_moves_ip_nodes_with_the_host() {
     let n: i64 = sqlx::query_scalar("select count(*) from audit_log where action = 'machine.rename' and target_id = any($1)").bind([host, ip1]).fetch_one(&t.st.db).await.unwrap();
     assert_eq!(n, 2);
 }
+
+/// 同团队还有退役中的节点时不压缩编号（否则退役中的那台被改号，回收站的最后名字与退役审计对不上）；手动重新编号也一样 409。
+/// 退役中的那台收尾（retired）之后再压：剩下的节点一次前移
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn compaction_waits_for_retiring_nodes_in_the_team() {
+    let t = setup(false).await;
+    let team = seed_team(&t, "团队1").await;
+    let _gone = common::seed_node(&t, team, 1, "203.0.113.1", "retired").await;
+    let retiring = common::seed_node(&t, team, 2, "203.0.113.2", "retiring").await;
+    let live = common::seed_node(&t, team, 3, "203.0.113.3", "active").await;
+    let number = |id: Uuid| sqlx::query_scalar::<_, i32>("select number from machine where id = $1").bind(id).fetch_one(&t.st.db);
+    let compact = || async {
+        let mut tx = t.st.db.begin().await.unwrap();
+        let (ch, _) = fleet_server::db::compact_team(&mut tx, team, "t", "测试").await.unwrap();
+        tx.commit().await.unwrap();
+        ch
+    };
+    assert!(compact().await.is_empty(), "还有退役中的：不压缩");
+    assert_eq!((number(retiring).await.unwrap(), number(live).await.unwrap()), (2, 3));
+    let (s, v) = t.req("GET", &format!("/api/v1/teams/{team}/renumber"), None, None).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    sqlx::query("update machine set lifecycle = 'retired', retired_at = now() where id = $1").bind(retiring).execute(&t.st.db).await.unwrap();
+    assert_eq!(compact().await, [(live, 3, 1)], "最后一台收尾后一次压好");
+}

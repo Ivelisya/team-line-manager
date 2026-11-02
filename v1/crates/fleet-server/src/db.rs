@@ -608,10 +608,19 @@ pub async fn sync_desired_format(db: &PgPool) -> sqlx::Result<u64> {
     Ok(n)
 }
 
+/// 团队里还有没收尾的退役节点（`retiring`，不含线路机）：此时不压缩编号，否则退役中的节点被改号，回收站的「最后名字」与退役审计里的名字对不上
+pub async fn has_retiring(db: &mut sqlx::PgConnection, team_id: Uuid) -> sqlx::Result<bool> {
+    sqlx::query_scalar("select exists (select 1 from machine where team_id = $1 and kind <> 'relay' and lifecycle = 'retiring')").bind(team_id).fetch_one(db).await
+}
+
 /// 把团队的未退役节点编号压缩成 1..n（锁团队行；新号 ≤ 旧号，按新号升序更新不撞唯一索引）。
+/// 团队里还有退役中的节点（`retiring`）时不压缩、返回空：同团队几台一起退役时，由最后收尾的那台（此时它自己已是 retired）一次压好。
 /// 写审计；返回 (改动列表 (id, 旧号, 新号), 需要刷新的线路机)。
 pub async fn compact_team(tx: &mut Tx<'_>, team_id: Uuid, actor: &str, why: &str) -> sqlx::Result<(Vec<(Uuid, i32, i32)>, Vec<Uuid>)> {
     let (team,): (String,) = sqlx::query_as("select name from team where id = $1 for update").bind(team_id).fetch_one(&mut **tx).await?;
+    if has_retiring(&mut **tx, team_id).await? {
+        return Ok((vec![], vec![]));
+    }
     let nodes: Vec<(Uuid, i32)> = sqlx::query_as(
         "select id, number from machine where team_id = $1 and kind <> 'relay' and lifecycle <> 'retired' order by number",
     )

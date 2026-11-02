@@ -2,6 +2,7 @@
 // 数据来自 GET /reports/uptime：小时汇总里成功次数 ÷ 探测次数，窗口是组织时区的自然日（本月算到今天）。节点行点开机器抽屉的「连接质量」。
 import * as React from 'react';
 import { CalendarDays } from 'lucide-react';
+import * as F from '@/lib/format';
 import { useUptime } from '@/lib/queries';
 import { openDrawer } from '@/lib/drawer';
 import { meta, uptimeTone } from '@/lib/derive';
@@ -121,7 +122,7 @@ function NodeRow({ i }: { i: UptimeItem }) {
       <td className="r"><Pct p={i.egress_pct} tip={countTip(i.egress_ok, i.egress_total)} /></td>
       <td className="r"><Pct p={i.tcp_pct} tip={countTip(i.tcp_ok, i.tcp_total)} /></td>
       <td className="r">{i.outages > 0
-        ? <><span className="num">{i.outages} 次</span><span className="sub" data-tip={'最长一次连着的断线小时数'}>最长 {i.longest_outage_h} 小时</span></>
+        ? <><span className="num">{i.outages} 次</span><span className="sub" data-tip={'最长一次断线，按出口探测失败次数估算'}>最长{F.outageSpan(i.longest_outage_min)}</span></>
         : <span className="t-muted">{i.egress_total > 0 ? '0 次' : '—'}</span>}</td>
       <td className="r">{i.incidents > 0 ? <span className="num">{i.incidents} 次</span> : <span className="t-muted">0 次</span>}</td>
     </tr>

@@ -4,6 +4,7 @@
 // 节点按出口成功率从差到好，供应商按平均从差到好；断线 = 出口失败 3 次以上的小时；告警次数只数窗口内可用性相关规则（含复发）。
 import type { Incident, MachineView, MonthlyReport, NotifyChannel, NotifyLogEntry, UptimeItem, UptimeProvider, UptimeReport } from '@/lib/types';
 import { isIdleSpare, isUnbilledSpare } from '@/lib/derive';
+import { outageSpan } from '@/lib/format';
 import { hashStr, rng } from './fixtures';
 import { META } from './meta';
 import { mockMonthly, mockUsage } from './traffic';
@@ -61,7 +62,7 @@ export function installReportsMock(R: Reg, machines: () => MachineView[], incide
       return {
         id: m.id, name: m.name, team: m.team, provider: m.provider ? { id: m.provider.id, name: m.provider.name } : null,
         egress_total: egTotal, egress_ok: egOk, egress_pct: pct(egOk, egTotal), tcp_total: tcpTotal, tcp_ok: tcpOk, tcp_pct: pct(tcpOk, tcpTotal),
-        outages, longest_outage_h: outages ? (down ? 3 + Math.floor(r() * 9) : 1 + Math.floor(r() * 2)) : 0, incidents: inc,
+        outages, longest_outage_min: outages ? (down ? 180 + Math.floor(r() * 480) : 2 + Math.floor(r() * 38)) : 0, incidents: inc,
       };
     });
     items.sort((a, b) => asc(a.egress_pct, b.egress_pct) || asc(a.tcp_pct, b.tcp_pct));
@@ -102,7 +103,7 @@ export function installReportsMock(R: Reg, machines: () => MachineView[], incide
     const costly = active.filter((x) => x.kind !== 'relay').map((x) => ({ x, usd: mockMonthly(x), g: mockUsage(x).bytes30 / 1e9 }))
       .filter((c) => c.usd != null && c.g >= 1).map((c) => ({ id: c.x.id, name: c.x.name, monthly_usd_cents: c.usd!, gb: c.g, usd_per_gb: c.usd! / 100 / c.g }))
       .sort((a, b) => b.usd_per_gb - a.usd_per_gb).slice(0, 3);
-    const worst = up.items.filter((i) => i.egress_pct != null).slice(0, 3).map((i) => ({ id: i.id, name: i.name, egress_pct: i.egress_pct!, tcp_pct: i.tcp_pct, outages: i.outages, longest_outage_h: i.longest_outage_h }));
+    const worst = up.items.filter((i) => i.egress_pct != null).slice(0, 3).map((i) => ({ id: i.id, name: i.name, egress_pct: i.egress_pct!, tcp_pct: i.tcp_pct, outages: i.outages, longest_outage_min: i.longest_outage_min }));
     const ruleCount = new Map<string, number>();
     for (const i of incidents()) ruleCount.set(i.rule, (ruleCount.get(i.rule) ?? 0) + 1 + (i.reopen_count ?? 0));
     const top_rules = [...ruleCount].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([rule, count]) => ({ rule, name: META.rules[rule] ?? rule, count }));
@@ -118,7 +119,7 @@ export function installReportsMock(R: Reg, machines: () => MachineView[], incide
       `总流量：${gb(r.traffic.total)}（下载 ${gb(r.traffic.down)}，上传 ${gb(r.traffic.up)}）`,
       `月费合计：${money(cents)}（在用 ${r.machines} 台，按当前订阅折成 USD）`,
       ...list('USD/GB 最高的 3 台', costly.map((c) => `${c.name} $${c.usd_per_gb.toFixed(3)}/GB（月费 ${money(c.monthly_usd_cents)}，流量 ${c.gb.toFixed(1)} GB）`)),
-      ...list('可用率最差的 3 台（出口探测成功率）', worst.map((x) => `${x.name} ${pctText(x.egress_pct)}（TCP ${pctText(x.tcp_pct)}）${x.outages ? `，断线 ${x.outages} 次、最长 ${x.longest_outage_h} 小时` : ''}`)),
+      ...list('可用率最差的 3 台（出口探测成功率）', worst.map((x) => `${x.name} ${pctText(x.egress_pct)}（TCP ${pctText(x.tcp_pct)}）${x.outages ? `，断线 ${x.outages} 次、最长${outageSpan(x.longest_outage_min)}` : ''}`)),
       ...list('告警次数前 3 的规则', top_rules.map((x) => `${x.name} ${x.count} 次`)),
       `即将到期：${r.due_soon} 台（已过期 ${r.overdue} 台）`,
     ].join('\n');

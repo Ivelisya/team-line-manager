@@ -845,7 +845,7 @@ pub(super) async fn renumber(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let (old_before, new_before) = (c.job.params["old_name"].as_str().unwrap_or(""), c.job.params["new_name"].as_str().unwrap_or(""));
     sqlx::query("update machine m set lifecycle_reason = $2 from team t where m.id = $1 and t.id = m.team_id and t.spare")
         .bind(old)
-        .bind(format!("替换下来：{new_before} 接替了 {old_before}"))
+        .bind(format!("替换下来：原 {old_before}，由原 {new_before} 接替"))
         .execute(&mut *tx)
         .await?;
     // 来源画像跟着客户走：旧节点见过的运营商 / 城市记到新节点（学习期起点取最早的 first_seen），客户换过来不算「新出现」、

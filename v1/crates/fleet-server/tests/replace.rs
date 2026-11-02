@@ -220,7 +220,7 @@ async fn preview_and_full_run() {
     assert_eq!((name_of(t, w.new).await, name_of(t, w.old).await), ("团队2-01".to_string(), "团队2备用-01".to_string()));
     assert_eq!(t.machine_lifecycle(w.old).await, "active", "旧节点不退役，放在备用团队");
     let ov = t.get(&format!("/api/v1/machines/{}", w.old)).await;
-    assert_eq!((ov["spare_from"].as_str(), ov["lifecycle_reason"].as_str()), (Some("团队2-01"), Some("替换下来：团队2-02 接替了 团队2-01")), "进备用记下原名和原因");
+    assert_eq!((ov["spare_from"].as_str(), ov["lifecycle_reason"].as_str()), (Some("团队2-01"), Some("替换下来：原 团队2-01，由原 团队2-02 接替")), "进备用记下原名和原因");
     let seen: Vec<(String, String, String, i64)> = sqlx::query_as("select dim, value, first_seen::date::text, conns from node_source_seen where node_id = $1 order by dim")
         .bind(w.new)
         .fetch_all(&t.st.db)
@@ -491,7 +491,7 @@ async fn new_node_from_full_spare_team_takes_over_its_slot() {
     }
     let ov = t.get(&format!("/api/v1/machines/{}", w.old)).await;
     assert_eq!((ov["spare"].as_bool(), ov["spare_from"].as_str()), (Some(true), Some("团队2-01")), "进备用记下的原名是团队2 的名字，不是临时号：{ov}");
-    assert_eq!(ov["lifecycle_reason"], "替换下来：团队2备用-01 接替了 团队2-01", "{ov}");
+    assert_eq!(ov["lifecycle_reason"], "替换下来：原 团队2-01，由原 团队2备用-01 接替", "{ov}");
     let nv = t.get(&format!("/api/v1/machines/{}", w.new)).await;
     assert_eq!((nv["spare"].as_bool(), nv["spare_from"].is_null()), (Some(false), true), "新节点出了备用：{nv}");
     // 审计：旧节点先放临时号（备用 08）再改到 01，两条改名都在

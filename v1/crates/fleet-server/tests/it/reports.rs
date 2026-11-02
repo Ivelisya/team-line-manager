@@ -44,7 +44,7 @@ async fn seed(t: &T) -> [Uuid; 4] {
     for (m, p) in [(ids[0], deer), (ids[1], deer), (ids[2], other)] {
         sqlx::query("update machine set provider_id = $2 where id = $1").bind(m).bind(p).execute(&t.st.db).await.unwrap();
     }
-    // 01：出口第 0、1 小时连着失败 4、3 次（断线一次，2 小时）、第 4 小时只失败 2 次（不到 3 次，不算断线）：出口 231/240；
+    // 01：出口第 0、1 小时连着失败 4、3 次（断线一次，共 7 次失败 × 30 秒 = 3.5 分钟，估算 4 分钟）、第 4 小时只失败 2 次（不到 3 次，不算断线）：出口 231/240；
     // TCP 第 0、1、4 小时都有失败：232/240（TCP 的失败不算断线）
     for (h, total, ok) in [(0, 60, 57), (1, 60, 57), (2, 60, 60), (4, 60, 58)] {
         put_hour(t, entries[0], h, "tcp", total, ok).await;
@@ -63,6 +63,33 @@ async fn seed(t: &T) -> [Uuid; 4] {
     put_hour(t, se, 0, "tcp", 10, 0).await;
     put_hour(t, se, 0, "egress", 10, 0).await;
     [ids[0], ids[1], ids[2], ids[3]]
+}
+
+/// 断线时长按失败次数估算，节点有多个入口时同一小时取失败最多的入口、不把各入口加起来：
+/// 04 有两个入口，第 5 小时各失败 5 次、第 6 小时各失败 3 次（连着的一段）：8 次 × 30 秒 = 4 分钟（相加会是 8 分钟）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn uptime_outage_minutes_do_not_double_count_entries() {
+    let t = setup().await;
+    let [_, _, _, n4] = seed(&t).await;
+    let e1: Uuid = sqlx::query_scalar("select id from entry where node_id = $1").bind(n4).fetch_one(&t.st.db).await.unwrap();
+    // 一个节点在同一台线路机上只有一条在用入口：第二个入口开在另一台线路机上
+    let relay = seed_relay(&t, "线路机2", "198.51.100.2", "tok2").await;
+    let e2 = Uuid::now_v7();
+    sqlx::query("insert into entry (id, relay_id, node_id, port, client_uuid, short_id, lifecycle) values ($1, $2, $3, 20104, $4, 'abcd', 'active')")
+        .bind(e2)
+        .bind(relay)
+        .bind(n4)
+        .bind(Uuid::now_v7())
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    for e in [e1, e2] {
+        put_hour(&t, e, 5, "egress", 60, 55).await;
+        put_hour(&t, e, 6, "egress", 60, 57).await;
+    }
+    let v = t.get("/api/v1/reports/uptime?days=7").await;
+    let d = v["items"].as_array().unwrap().iter().find(|i| i["id"] == json!(n4)).unwrap();
+    assert_eq!((d["outages"].as_i64(), d["longest_outage_min"].as_i64()), (Some(1), Some(4)), "{d}");
 }
 
 /// 可用率汇总的口径：同抽屉的 availability（成功次数 ÷ 探测次数），主指标是出口成功率；断线 = 出口失败 3 次以上的整点小时、连着的算一次
@@ -112,7 +139,7 @@ async fn uptime_report_matches_availability_and_sorts_worst_first() {
     assert_eq!(names, ["团队1-01", "团队1-03", "团队1-02", "团队1-04"], "按出口成功率排：02 的 TCP 比 03 差，但出口全通，排在 03 之后：{v}");
     let a = &v["items"][0];
     assert_eq!((a["egress_total"].as_i64(), a["egress_ok"].as_i64(), a["tcp_total"].as_i64(), a["tcp_ok"].as_i64()), (Some(240), Some(231), Some(240), Some(232)), "{a}");
-    assert_eq!((a["outages"].as_i64(), a["longest_outage_h"].as_i64(), a["incidents"].as_i64()), (Some(1), Some(2), Some(7)), "{a}");
+    assert_eq!((a["outages"].as_i64(), a["longest_outage_min"].as_i64(), a["incidents"].as_i64()), (Some(1), Some(4), Some(7)), "{a}");
     assert_eq!((v["items"][1]["outages"].as_i64(), v["items"][2]["outages"].as_i64()), (Some(0), Some(0)), "03 失败 1 次、02 只有 TCP 失败：都不算断线");
     assert_eq!((v["items"][2]["tcp_pct"].as_f64(), v["items"][2]["egress_pct"].as_f64()), (Some(100.0 * 50.0 / 60.0), Some(100.0)));
     assert!(v["items"][3]["egress_pct"].is_null() && v["items"][3]["provider"].is_null(), "没有探测：成功率为 null");
@@ -187,7 +214,7 @@ async fn monthly_report_goes_only_to_channels_with_the_switch() {
         "可用率最差的 3 台",
         "可用率最差的 3 台（出口探测成功率）",
         "团队1-01 96.25%（TCP 96.67%）",
-        "断线 1 次、最长 2 小时",
+        "断线 1 次、最长约 4 分钟",
         "告警次数前 3 的规则",
         "线路机到节点不通 3 次",
         "即将到期",

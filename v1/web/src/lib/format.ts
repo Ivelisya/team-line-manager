@@ -135,6 +135,11 @@ export function span(ms: number): string {
   if (h) return r ? `${h} 小时 ${r} 分钟` : `${h} 小时`;
   return `${r} 分钟`;
 }
+/** 断线时长（服务端按失败次数估算的分钟数）：不满 60 分钟「约 N 分钟」，再长「约 N 小时」（最多一位小数；同月报文字、fleetctl） */
+export function outageSpan(min: number): string {
+  if (min < 60) return `约 ${Math.max(1, Math.round(min))} 分钟`;
+  return `约 ${String(Math.round(min / 6) / 10)} 小时`;
+}
 export function duration(a: string | null, b: string | null, now = Date.now()): string {
   if (!a) return '—';
   const s = Math.max(0, ((b ? new Date(b).getTime() : now) - new Date(a).getTime()) / 1000);

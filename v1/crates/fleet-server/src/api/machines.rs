@@ -1735,6 +1735,10 @@ async fn renumber_plan(db: &mut sqlx::PgConnection, team_id: Uuid) -> ApiResult<
         .fetch_optional(&mut *db)
         .await?
         .ok_or_else(|| ApiError::not_found("没有这个团队"))?;
+    // 同 db::compact_team：有节点还在退役中不压缩（它收尾时自动压好），手动预览 / 应用也不给改
+    if crate::db::has_retiring(&mut *db, team_id).await? {
+        return Err(ApiError::conflict("团队里还有退役中的节点，等它们收尾后再重新编号（收尾时会自动压缩）"));
+    }
     let nodes: Vec<(Uuid, i32)> = sqlx::query_as(
         "select id, number from machine where team_id = $1 and kind <> 'relay' and lifecycle <> 'retired' order by number",
     )

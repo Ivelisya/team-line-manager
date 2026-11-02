@@ -46,7 +46,14 @@ fn pct_cell(v: &Value, k: &str) -> String {
     }
 }
 
-fn hours(h: i64) -> String { if h > 0 { format!("{h} 小时") } else { "-".into() } }
+/// 估算的断线分钟数：没有断线「-」，不满 60 分钟「约 N 分钟」，再长「约 N 小时」（最多一位小数，同月报文字、网页）
+fn outage(min: i64) -> String {
+    match min {
+        ..=0 => "-".into(),
+        1..=59 => format!("约 {min} 分钟"),
+        _ => format!("约 {} 小时", (min as f64 / 6.0).round() / 10.0),
+    }
+}
 
 /// `report uptime`：`--json` 是 /reports/uptime 的 data 原样（`{month, days, from, to, tz, items, providers}`）
 pub fn uptime(ctx: &Ctx, month: Option<&str>, days: Option<i64>) -> anyhow::Result<u8> {
@@ -79,11 +86,11 @@ pub fn uptime(ctx: &Ctx, month: Option<&str>, days: Option<i64>) -> anyhow::Resu
         let rows: Vec<Vec<String>> = items
             .iter()
             .map(|i| {
-                vec![st(i, "/name"), st(i, "/team/name"), st(i, "/provider/name"), pct_cell(i, "egress_pct"), pct_cell(i, "tcp_pct"), st(i, "/outages"), hours(i["longest_outage_h"].as_i64().unwrap_or(0)), st(i, "/incidents")]
+                vec![st(i, "/name"), st(i, "/team/name"), st(i, "/provider/name"), pct_cell(i, "egress_pct"), pct_cell(i, "tcp_pct"), st(i, "/outages"), outage(i["longest_outage_min"].as_i64().unwrap_or(0)), st(i, "/incidents")]
             })
             .collect();
         format!(
-            "{head}\n\n按供应商（从差到好；平均 / 最差只看窗口内有探测的节点；断线次数是各节点之和）\n{}\n\n按节点（出口成功率从差到好，没有探测的在最后；断线 = 出口探测失败 3 次以上的整点小时，连着的算一次；告警 = 窗口内可用性相关的告警次数）\n{}",
+            "{head}\n\n按供应商（从差到好；平均 / 最差只看窗口内有探测的节点；断线次数是各节点之和）\n{}\n\n按节点（出口成功率从差到好，没有探测的在最后；断线 = 出口探测失败 3 次以上的整点小时，连着的算一次，最长断线按失败次数估算；告警 = 窗口内可用性相关的告警次数）\n{}",
             table::render(&["供应商", "节点", "有数据", "平均出口", "最差出口（节点）", "平均 TCP", "最差 TCP", "断线", "告警"], &prov),
             table::render(&["节点", "团队", "供应商", "出口", "TCP", "断线", "最长断线", "告警"], &rows)
         )
