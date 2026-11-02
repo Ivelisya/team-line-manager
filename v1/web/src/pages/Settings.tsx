@@ -351,7 +351,7 @@ function MonthlyReportDialog({ open, onOpenChange, channels }: { open: boolean; 
   const to = channels.filter((c) => c.enabled && c.monthly_report);
   const d = q.data;
   return (
-    <TypedConfirmDialog open={open} onOpenChange={onOpenChange} typed={false} expected="" size="md" title={`发送月报${d ? ` · ${d.month.slice(0, 4)} 年 ${Number(d.month.slice(5))} 月` : ''}`} confirmLabel="立即发送" confirmDisabled={!d}
+    <TypedConfirmDialog open={open} onOpenChange={onOpenChange} typed={false} expected="" size="md" title={`发送月报${d ? ` · ${d.month.slice(0, 4)} 年 ${Number(d.month.slice(5))} 月` : ''}`} confirmLabel="立即发送" confirmDisabled={!d || !to.length}
       description={to.length ? <>将发给 {to.length} 个渠道：{to.map((c) => c.name).join('、')}</> : '现在没有渠道会收到：先在渠道的编辑里打开「月报」，并保持启用，否则发送会被拒绝'}
       onConfirm={async () => { const r = await send.mutateAsync(d?.month); toast.ok(`月报已排进发送队列（${r.channels} 个渠道），结果见下面的发送记录`); }}>
       {q.isError ? <ErrorNote error={q.error} onRetry={() => void q.refetch()} />

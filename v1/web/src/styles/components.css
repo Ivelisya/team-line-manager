@@ -284,7 +284,8 @@ svg.copied-ic { color: var(--ok); animation: copy-pop var(--dur-2) var(--ease-ou
 .empty-page { display: grid; place-content: center; min-height: 60vh; } /* 整页的空状态（404）：在主区里居中，不贴在顶上 */
 .empty-ic { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; background: var(--sunken); box-shadow: inset 0 0 0 1px var(--line); color: var(--fg-3); }
 .empty-text { font-weight: var(--fw-medium); text-wrap: pretty; }
-.skel { display: block; border-radius: var(--r-xs); background: var(--cell-off); animation: skel-pulse var(--dur-loop) var(--ease-std) infinite; } /* 同格条未点亮色：暗色下 --sunken 比卡片还暗，骨架几乎看不见 */
+.skel { --skel-delay: 150ms; display: block; border-radius: var(--r-xs); background: var(--cell-off); animation: skel-show 0s linear var(--skel-delay) backwards, skel-pulse var(--dur-loop) var(--ease-std) var(--skel-delay) infinite; } /* 同格条未点亮色：暗色下 --sunken 比卡片还暗，骨架几乎看不见。
+  挂载后 150 ms 才显示（占位尺寸一直在，布局不跳）：局域网里数据几十毫秒就回来，快的直接出现，不先闪一下灰块；减弱动效下 animation: none，照旧直接显示 */
 .skel.is-float { border-radius: var(--r-float); } /* 占一整块图表 / 面板位置的骨架 */
 .skel-row { display: flex; align-items: center; height: var(--row-2); box-sizing: border-box; padding: 0 var(--cell-edge); border-bottom: 1px solid var(--line); }
 .skel-row.is-one { height: var(--row-1); }

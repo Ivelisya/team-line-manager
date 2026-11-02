@@ -30,9 +30,23 @@ export function TipHost() {
     // 对话框标题下面那行说明里的「(i)」往下弹：往上会盖住标题
     const sideOf = (el: HTMLElement): Side => (el.dataset.tipSide as Side | undefined) ?? (el.closest('.dialog-desc') ? 'bottom' : 'top');
     // instant：刚收起一个又悬停到下一个（扫过一排心跳格），新提示直接出现、不再播一遍缩放淡入（macOS 也是第一次等、之后换项不播）
-    const show = (el: HTMLElement, instant = false) => { shown = true; setTip({ id: ++seq, text: el.dataset.tip ?? '', r: el.getBoundingClientRect(), side: sideOf(el), instant }); setOpen(true); };
+    const show = (el: HTMLElement, instant = false) => {
+      shown = true; watch.disconnect(); size.disconnect(); watch.observe(el, { attributes: true, attributeFilter: ['data-tip'] }); size.observe(el);
+      setTip({ id: ++seq, text: el.dataset.tip ?? '', r: el.getBoundingClientRect(), side: sideOf(el), instant }); setOpen(true);
+    };
+    // 悬停着的元素 data-tip 变了（推送改了读数、说明跟着变）、尺寸变了就按新的文字和位置更新（同一个 id，不重播动画）；元素被移出文档（卡片被换掉、页签内容被换掉）就收起。
+    // 只盯当前这一个元素：属性观察 + ResizeObserver（元素被摘出文档时它也会回调，尺寸变成 0）
+    const watch = new MutationObserver(() => refresh());
+    const size = new ResizeObserver(() => refresh());
+    const refresh = () => {
+      if (!shown || !cur) return;
+      const el = cur as HTMLElement;
+      if (!el.isConnected || !el.matches(TIP_SEL)) { close(); return; }
+      const text = el.dataset.tip ?? '', r = el.getBoundingClientRect();
+      setTip((t) => !t || (t.text === text && t.r.left === r.left && t.r.top === r.top && t.r.width === r.width && t.r.height === r.height) ? t : { ...t, text, r }); // ResizeObserver 挂上时会立刻回调一次，没变就原样返回
+    };
     const close = () => {
-      clearTimeout(timer); cur = null;
+      clearTimeout(timer); cur = null; watch.disconnect(); size.disconnect();
       if (shown) { shown = false; closedAt = performance.now(); setOpen(false); }
     };
     hide.current = close;
@@ -64,7 +78,7 @@ export function TipHost() {
       [document, 'focusin', focus as EventListener, false], [document, 'focusout', close, false], [window, 'scroll', close, true], [window, 'wheel', close, true],
     ];
     on.forEach(([t, n, f, c]) => t.addEventListener(n, f, c));
-    return () => { clearTimeout(timer); on.forEach(([t, n, f, c]) => t.removeEventListener(n, f, c)); };
+    return () => { clearTimeout(timer); watch.disconnect(); size.disconnect(); on.forEach(([t, n, f, c]) => t.removeEventListener(n, f, c)); };
   }, []);
   if (!tip) return null;
   // key：换到另一个元素时重新挂载（同 Tip 之间切换：旧的收起、新的立即出现），不在原地改字挪位置

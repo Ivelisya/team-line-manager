@@ -3,7 +3,7 @@ import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { Command as Cmdk } from 'cmdk';
 import { Search } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { Scrim } from './dialog';
+import { Scrim, useRestoreFocus } from './dialog';
 
 // shadcn 的 Command 写法：cmdk 提供过滤/键盘导航，外观全部走 .cmd-* 类（令牌来自 tokens.css）。
 export const Command = React.forwardRef<React.ElementRef<typeof Cmdk>, React.ComponentPropsWithoutRef<typeof Cmdk>>(({ className, ...p }, ref) => (
@@ -13,11 +13,14 @@ Command.displayName = 'Command';
 
 /** 命令面板对话框：遮罩 + 顶部居中的面板（宽 --palette-w），层级 --z-palette */
 export function CommandDialog({ open, onOpenChange, title, children }: { open: boolean; onOpenChange: (o: boolean) => void; title: string; children: React.ReactNode }) {
+  const panel = React.useRef<HTMLDivElement>(null);
+  const focus = useRestoreFocus(panel);
+  React.useLayoutEffect(() => { if (open) focus.remember(); }, [open]); // 面板内容挂载（输入框 autoFocus）在这之后
   return (
     <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
       <DialogPrimitive.Portal>
         <Scrim className="overlay cmd-overlay" />
-        <DialogPrimitive.Content className="cmd-dialog" aria-describedby={undefined}>
+        <DialogPrimitive.Content ref={panel} className="cmd-dialog" aria-describedby={undefined} onCloseAutoFocus={focus.onCloseAutoFocus}>
           <DialogPrimitive.Title className="sr-only">{title}</DialogPrimitive.Title>
           {children}
           {/* 触屏没有 Esc：输入框右侧给一个「取消」（palette.css，只在 pointer: coarse 时显示） */}

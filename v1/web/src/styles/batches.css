@@ -78,6 +78,7 @@
 
 /* ---------------------------------------------------------------- 客户到期页 /c/:token：白底（html.is-cx 在 base.css），内容居中 */
 .cx-page { max-width: 1080px; margin: 0 auto; padding: clamp(20px, 5vw, 56px) clamp(16px, 4vw, 40px) 48px; display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-24); }
+.cx-state { display: grid; place-items: center; min-height: 60vh; } /* 链接无效 / 打不开：唯一的内容，在可视区里居中，不缩在左上角 */
 .cx-head { display: grid; gap: var(--sp-6); }
 .cx-title { margin: 0; font-size: clamp(22px, 3.2vw, 30px); line-height: 1.2; font-weight: var(--fw-bold); letter-spacing: -0.02em; color: var(--fg); text-wrap: balance; }
 .cx-sub { margin: 0; font-size: var(--fs-body); line-height: var(--lh-body); color: var(--fg-2); }

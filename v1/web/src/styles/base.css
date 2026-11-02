@@ -48,6 +48,7 @@ a { color: inherit; }
 @keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes fade-out { from { opacity: 1; } to { opacity: 0; } }
+@keyframes skel-show { from { visibility: hidden; } to { visibility: visible; } }
 @keyframes skel-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 .spin { animation: spin var(--dur-spin) linear infinite; }
 
