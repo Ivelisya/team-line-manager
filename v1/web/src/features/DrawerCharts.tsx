@@ -104,7 +104,7 @@ const AvailabilitySection = React.memo(function AvailabilitySection({ id, relay 
 const REACH_WINDOWS = [['24h', '近 24 小时'], ['7d', '近 7 天'], ['30d', '近 30 天']] as const;
 const reachCell = (w: ReachWindowStat | null) => (!w || !w.total ? '—'
   : <span data-tip={`${w.ok}/${w.total} 次连上${w.median_ms == null ? '' : ` · 延迟中位 ${Math.round(w.median_ms)} ms`}`}>
-    <b className="num">{successPct((100 * w.ok) / w.total)}</b>{w.avg_ms != null && <span className="t-sub"> · {Math.round(w.avg_ms)} ms</span>}</span>);
+    <b className="up-pct num" data-tone={w.ok / w.total < 0.9 ? 'bad' : undefined}>{successPct((100 * w.ok) / w.total)}</b>{w.avg_ms != null && <span className="t-sub"> · {Math.round(w.avg_ms)} ms</span>}</span>);
 /** 线路机的客户入口连通性：各路来源（中控、各探测点）连它客户入口的成功率与平均建连延迟（中控只判通不通），来自小时汇总。
  *  卡片心跳格只看主来源近 1 小时；这里给长期的、各路并排的（对比香港与中控、事后核对投诉） */
 const ReachQualitySection = React.memo(function ReachQualitySection({ id }: { id: string }) {
@@ -156,8 +156,10 @@ const PingSection = React.memo(function PingSection({ id, range }: { id: string;
   }, [q.data]);
   if (q.data && !q.data.series.length) return null;
   const pq = { ...q, data: q.data && { points } } as UseQueryResult<{ points: SeriesPoint[] }>;
+  // 有目标却一个点都画不成线：两张空图各占 230px，缩成一张只写一句的窄卡
+  if (q.data && points.length < 2) return <Section><ChartCard slim c="var(--chart-1)" icon={<Radar />} title="三网 PING" value="—" caption="这段时间没有数据" /></Section>;
   return (
-    <Section>
+    <Section className="chart-stack">
       <ChartCard c="var(--chart-1)" icon={<Radar />} title="三网 PING 延迟" meta="线路机 → 各目标 · 每分钟 5 次的中位数">
         <ChartFrame q={pq} few="这段时间没有数据"><TimeChart full points={points} range={range} kind="line" lines={ms} yFmt={yMs} valueFmt={vMs} clip /></ChartFrame>
       </ChartCard>
@@ -234,7 +236,7 @@ export function TrafficTab({ m }: { m: MachineView }) {
           <LabelValue label="本月 ↑ 上传"><Num f={F.bytes(t.up)} /></LabelValue>
         </LabelValueGrid>
       </Section>
-      <Section>
+      <Section className="chart-stack">
         <ChartCard c="var(--chart-1)" icon={<Globe />} title="业务流量" meta={<InfoTip text={s.data?.resolution === '1h' ? '每个点是这一小时的流量' : '每个点是这一分钟的流量'} />}>
           <ChartFrame q={s} few={fewText(m, range)}>
             <TimeChart full points={s.data?.points} range={s.data?.range ?? range} lines={L_TRAFFIC} yFmt={yBytes} valueFmt={vBytes} yBase={1000} empty="这段时间没有业务流量" clip />

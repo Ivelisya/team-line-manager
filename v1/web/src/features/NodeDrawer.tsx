@@ -22,7 +22,7 @@ import { useHeld } from '@/lib/useHeld';
 import { useTitleName } from '@/lib/title';
 import * as F from '@/lib/format';
 import { jobKindLabel } from '@/lib/jobs';
-import { errText, kindLabel, linkCounts, meta, probeSummary, reachWho, severityOf } from '@/lib/derive';
+import { errText, kindLabel, linkCounts, meta, probeSummary, reachWho, severityOf, unreachTip } from '@/lib/derive';
 import { useReachLabel } from '@/lib/probePoints';
 import { CopyButton, ErrorNote, ReasonList, HealthPill, Flag, LabelValue, LabelValueGrid, LifecyclePill, LinkCounts, Note, Pill, Section, SectionHeader } from '@/components/app/primitives';
 import { RecentCount, SuggestedCmds } from '@/components/app/IncidentBits';
@@ -185,7 +185,7 @@ function UnreachPill({ m }: { m: MachineView }) {
   const who = reachWho(useReachLabel());
   const ps = probeSummary(m);
   if (m.kind === 'relay' || m.lifecycle !== 'active' || !ps.reachBad) return null;
-  return <Pill tone="warn" tip={`${who}连不上 ${ps.reachBad} 条入口在线路机上的端口，客户经这几条入口连不上\n告警记在线路机上`}>入口可达 {ps.all - ps.reachBad}/{ps.all}</Pill>;
+  return <Pill tone="warn" tip={unreachTip(who, ps.reachBad)}>入口可达 {ps.all - ps.reachBad}/{ps.all}</Pill>;
 }
 
 /** 生命周期旁的原因写成一句话：旧版「恢复已退役机器」存的是「已恢复：原因」；进备用（退役）时填的原因加上「退役原因：」（替换、随宿主机退役的本来就是整句） */

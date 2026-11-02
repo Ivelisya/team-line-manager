@@ -65,7 +65,7 @@
   .table-wrap:not([data-fit]) .dt:not(.dt-grid) thead th:first-child,
   .table-wrap:not([data-fit]) .dt:not(.dt-grid):has(td:last-child > :is(.btn:only-child, .icon-btn), td:last-child > .row > .icon-btn):not(:has(td:last-child > .row > .btn)) thead th:last-child { background: var(--sunken); }
   .table-wrap:not([data-fit]) .dt tr.is-current > td:first-child { background: var(--selected); box-shadow: inset 2px 0 0 var(--accent), 1px 0 0 var(--line); }
-  .table-wrap:not([data-fit]) .dt tr.acc-sub > td:first-child { background: var(--sunken); }
+  .table-wrap:not([data-fit]) .dt tr:is(.acc-sub, .inc-sub) > td:first-child { background: var(--sunken); }
 }
 .dt-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); padding: var(--sp-8) var(--card-pad); border-top: 1px solid var(--line); font-size: var(--fs-label); color: var(--fg-2); }
 
