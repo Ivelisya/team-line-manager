@@ -811,6 +811,10 @@ pub(super) async fn renumber(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let mut teams: Vec<Uuid> = [Some(old_team), Some(to_team), new_team0].into_iter().flatten().collect();
     teams.sort();
     teams.dedup();
+    // 计费锁在团队行锁之前（对账、设不计费都是先取计费锁再写引用团队 / 机器的行）：下面新节点要接过旧节点的计费名额
+    for t in &teams {
+        crate::ledger::lock_team(&mut tx, *t).await?;
+    }
     sqlx::query("select 1 from team where id = any($1) order by id for update").bind(&teams).execute(&mut *tx).await?;
     type Cur = (Uuid, i32, Option<Uuid>, Option<i32>, String);
     let rows: Vec<Cur> = sqlx::query_as("select id, revision, team_id, number, lifecycle::text from machine where id = any($1) order by id for update")
@@ -904,6 +908,8 @@ pub(super) async fn renumber(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         renumbered = ch.len();
         relays.extend(rs);
     }
+    // 计费台账：新节点接过旧节点的名额（开始收费日、地区、已收不变），记「补位接替」；名字用交换前的
+    let billed = crate::ledger::take_over(&mut tx, old_team, old, new, (old_before, new_before), time::OffsetDateTime::now_utc()).await?;
     let names: Vec<(Uuid, String)> = sqlx::query_as(
         "select m.id, display_name(m.kind::text, m.label, t.name, m.number) from machine m left join team t on t.id = m.team_id where m.id = any($1)",
     )
@@ -919,6 +925,9 @@ pub(super) async fn renumber(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     c.st.emit(crate::state::Event::Machines);
     if policy_moved_now {
         c.st.emit(crate::state::Event::Policies);
+    }
+    if billed {
+        c.st.emit(crate::state::Event::Billing { id: old_team });
     }
     let name = |id: Uuid| names.iter().find(|x| x.0 == id).map(|x| x.1.clone()).unwrap_or_default();
     let (on, nn) = (name(old), name(new));
