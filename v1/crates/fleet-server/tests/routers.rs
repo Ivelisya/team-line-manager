@@ -57,7 +57,7 @@ case $script in
   *FLEET_UC*) cat "$R/collect.json"; exit 0 ;;
   *"head -c"*) cat "$R/config.yaml"; exit $? ;;
 esac
-printf '%s\n' "$script" | sed "s#/etc/#$R/etc/#g" | sh -s
+printf '%s\n' "$script" | sed "s#/etc/#$R/etc/#g;s#/proc/net/#$R/proc/net/#g" | sh -s
 "#;
 
 const SSHPASS: &str = r#"#!/bin/sh
@@ -1262,6 +1262,11 @@ fn fake_router(password: &str) -> (std::net::TcpListener, i64, PathBuf) {
     let r = root(port);
     std::fs::create_dir_all(r.join("etc/dropbear")).unwrap();
     std::fs::create_dir_all(r.join("etc/init.d")).unwrap();
+    // dropbear 监听 0.0.0.0:22（删掉这个文件 = 没有监听）
+    std::fs::create_dir_all(r.join("proc/net")).unwrap();
+    std::fs::write(r.join("proc/net/tcp"), "  sl  local_address rem_address   st
+   0: 00000000:0016 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 1 1 0000000000000000 100 0 0 10 0
+").unwrap();
     std::fs::write(r.join("etc/rc.common"), format!("echo \"$2\" >> {}/rc.log\n", r.display())).unwrap();
     std::fs::write(r.join("password"), password).unwrap();
     (l, port, r)
@@ -1323,6 +1328,17 @@ async fn one_click_deploy() {
     assert_eq!(router_row(&t, &id).await, before);
     assert_eq!(read(&t.dir.path().join("tunnel-keys")), format!("{port} {}\n", before.1.clone().unwrap()));
     std::fs::rename(r.join("etc/dropbear.x"), r.join("etc/dropbear")).unwrap();
+    // 重新部署、路由的 dropbear 没在本机 22 端口监听：上传密钥这一步就报明白，路由上还是旧隧道，库里的隧道公钥与端口写回原来的
+    std::fs::rename(r.join("proc/net/tcp"), r.join("proc/net/tcp.x")).unwrap();
+    let before = router_row(&t, &id).await;
+    t.post(&format!("/api/v1/routers/{id}/deploy"), json!({"host": "127.0.0.1", "port": sport, "password": "pw-test-123"})).await;
+    let d = wait_deploy(&t, &id).await;
+    let err = d["deploy"]["error"].as_str().unwrap();
+    assert!(err.starts_with("上传密钥失败：路由的 SSH（dropbear）没在本机 22 端口监听") && err.contains("已改回原来的隧道密钥与端口"), "{err}");
+    assert_eq!(router_row(&t, &id).await, before);
+    assert_eq!(read(&t.dir.path().join("tunnel-keys")), format!("{port} {}
+", before.1.clone().unwrap()));
+    std::fs::rename(r.join("proc/net/tcp.x"), r.join("proc/net/tcp")).unwrap();
     // 主机公钥变了：不登录（不把密码交出去）
     std::fs::write(r.join("hostkey"), "AAAAC3NzaC1lZDI1NTE5AAAAIOtherHostKeyOtherHostKeyOtherHostKeyOtherHo").unwrap();
     t.post(&format!("/api/v1/routers/{id}/deploy"), json!({"host": "127.0.0.1", "port": sport, "password": "pw-test-123"})).await;

@@ -8,13 +8,19 @@
 use crate::jobs::scripts::vars;
 use uuid::Uuid;
 
-/// 先查路由有没有要用的东西：OpenSSH 客户端（隧道要 -R / ExitOnForwardFailure / HostKeyAlias，dropbear 的 dbclient 不行）、dropbear 目录
+/// 先查路由有没有要用的东西：OpenSSH 客户端（隧道要 -R / ExitOnForwardFailure / HostKeyAlias，dropbear 的 dbclient 不行）、dropbear 目录、
+/// dropbear 在本机 22 端口监听
 pub const PRECHECK: &str = r#"
 set -eu
 if ! [ -x /usr/bin/ssh ] || ! /usr/bin/ssh -V 2>&1 | grep -q OpenSSH; then
   echo "fleet：路由上没有 OpenSSH 客户端（/usr/bin/ssh），先装上再接入：opkg update && opkg install openssh-client" >&2; exit 2
 fi
 [ -d /etc/dropbear ] || { echo "fleet：没有 /etc/dropbear：不是用 dropbear 的 OpenWrt？" >&2; exit 2; }
+# 隧道写死转发到路由的 127.0.0.1:22：dropbear 没在那里监听（改了端口、或用 Interface 只绑 LAN 口）的话隧道连得上、转进来的连接却被拒。
+# busybox 不一定有 netstat，读 /proc/net/tcp、tcp6（本地地址:端口 0016 = 22，状态 0A = LISTEN；127.0.0.1 或任意地址，含 IPv6 的映射 / 任意地址）
+if ! cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | grep -qE '^ *[0-9]+: (0100007F|00000000|0000000000000000FFFF00000100007F|00000000000000000000000000000000):0016 [0-9A-F:]+ 0A '; then
+  echo "fleet：路由的 SSH（dropbear）没在本机 22 端口监听：中控的隧道转发到路由的 127.0.0.1:22，现在 dropbear 的 Port=$(uci -q get 'dropbear.@dropbear[0].Port' 2>/dev/null || true) Interface=$(uci -q get 'dropbear.@dropbear[0].Interface' 2>/dev/null || true)；先把 dropbear 改回 22 端口并去掉 Interface 限制，再接入" >&2; exit 2
+fi
 command -v ucode >/dev/null 2>&1 || echo "fleet：注意，路由上没有 ucode，中控采集不了状态（OpenWrt 23.05 以后都有）" >&2
 "#;
 
@@ -114,6 +120,12 @@ impl Bootstrap<'_> {
 mod tests {
     use super::*;
 
+    /// /proc/net/tcp 的样子：dropbear 监听 0.0.0.0:22（状态 0A），另有一个已连接的 22 端口连接（01）
+    const LISTEN_22: &str = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 00000000:0016 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 1 1 0000000000000000 100 0 0 10 0
+   1: 0100007F:0016 0200007F:9C40 01 00000000:00000000 00:00000000 00000000     0        0 2 1 0000000000000000 100 0 0 10 0
+";
+
     fn b() -> Bootstrap<'static> {
         Bootstrap {
             router_id: Uuid::nil(),
@@ -155,14 +167,59 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("fleet-bs-{}", Uuid::new_v4().simple()));
         let root = dir.display().to_string();
         std::fs::create_dir_all(dir.join("etc/dropbear")).unwrap();
+        std::fs::create_dir_all(dir.join("proc/net")).unwrap();
+        std::fs::write(dir.join("proc/net/tcp"), LISTEN_22).unwrap();
         std::fs::create_dir_all(dir.join("etc/fleet-tunnel")).unwrap();
         std::fs::write(dir.join("etc/fleet-tunnel/id_ed25519"), "OLD KEY\n").unwrap();
-        let out = std::process::Command::new("sh").arg("-c").arg(b().keys().replace("/etc/", &format!("{root}/etc/"))).output().unwrap();
+        let out = std::process::Command::new("sh").arg("-c").arg(b().keys().replace("/etc/", &format!("{root}/etc/")).replace("/proc/net/", &format!("{root}/proc/net/"))).output().unwrap();
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         let read = |p: &str| std::fs::read_to_string(dir.join(p)).unwrap();
         assert_eq!(read("etc/fleet-tunnel/id_ed25519"), "OLD KEY\n");
         assert!(read("etc/fleet-tunnel/id_ed25519.new").contains("AAA'B"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// dropbear 没在 127.0.0.1:22 上监听（只绑了 LAN 口、改了端口、只有已连接的而没有 LISTEN）：明确报错退出 2，什么都没写；
+    /// 监听 127.0.0.1 或 IPv6 任意地址（tcp6）的都行
+    #[cfg(unix)]
+    #[test]
+    fn precheck_needs_dropbear_listening_on_22() {
+        let head = "  sl  local_address rem_address   st
+";
+        let tcp = |l: &str| format!("{head}   0: {l} 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 1 1 0000000000000000 100 0 0 10 0
+");
+        let run = |tcp4: &str, tcp6: Option<&str>| {
+            let dir = std::env::temp_dir().join(format!("fleet-bs-{}", Uuid::new_v4().simple()));
+            let root = dir.display().to_string();
+            std::fs::create_dir_all(dir.join("etc/dropbear")).unwrap();
+            std::fs::create_dir_all(dir.join("proc/net")).unwrap();
+            std::fs::write(dir.join("proc/net/tcp"), tcp4).unwrap();
+            if let Some(t6) = tcp6 {
+                std::fs::write(dir.join("proc/net/tcp6"), t6).unwrap();
+            }
+            let script = b().keys().replace("/etc/", &format!("{root}/etc/")).replace("/proc/net/", &format!("{root}/proc/net/"));
+            let out = std::process::Command::new("sh").arg("-c").arg(script).output().unwrap();
+            let wrote = dir.join("etc/fleet-tunnel").exists();
+            let _ = std::fs::remove_dir_all(&dir);
+            (out.status.code(), String::from_utf8_lossy(&out.stderr).into_owned(), wrote)
+        };
+        for (name, tcp4, tcp6) in [
+            ("只绑 LAN 口", tcp("C0A80101:0016"), None),
+            ("改了端口", tcp("00000000:08AE"), None),
+            ("22 端口只有已连接的", LISTEN_22.replace("0A 00000000", "01 00000000"), None),
+            ("没有监听", head.to_string(), None),
+        ] {
+            let (code, err, wrote) = run(&tcp4, tcp6);
+            assert!(code == Some(2) && !wrote && err.contains("fleet：路由的 SSH（dropbear）没在本机 22 端口监听"), "{name}：{code:?} {err}");
+        }
+        for (name, tcp4, tcp6) in [
+            ("127.0.0.1", tcp("0100007F:0016"), None),
+            ("IPv6 任意地址", head.to_string(), Some(tcp("00000000000000000000000000000000:0016"))),
+            ("IPv6 映射的 127.0.0.1", head.to_string(), Some(tcp("0000000000000000FFFF00000100007F:0016"))),
+        ] {
+            let (code, err, wrote) = run(&tcp4, tcp6.as_deref());
+            assert!(code == Some(0) && wrote, "{name}：{code:?} {err}");
+        }
     }
 
     #[cfg(unix)]
@@ -171,12 +228,14 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("fleet-bs-{}", Uuid::new_v4().simple()));
         let root = dir.display().to_string();
         std::fs::create_dir_all(dir.join("etc/dropbear")).unwrap();
+        std::fs::create_dir_all(dir.join("proc/net")).unwrap();
+        std::fs::write(dir.join("proc/net/tcp"), LISTEN_22).unwrap();
         std::fs::create_dir_all(dir.join("etc/init.d")).unwrap();
         std::fs::write(dir.join("etc/dropbear/authorized_keys"), "ssh-rsa EXISTING user@pc").unwrap();
         // rc.common 换成记下调用的桩；/usr/bin/ssh 用本机的（要是 OpenSSH）
         std::fs::write(dir.join("etc/rc.common"), format!("echo \"$2\" >> {root}/rc.log\n")).unwrap();
         let s = b();
-        let script = format!("{}\n{}", s.keys(), s.service()).replace("/etc/", &format!("{root}/etc/"));
+        let script = format!("{}\n{}", s.keys(), s.service()).replace("/etc/", &format!("{root}/etc/")).replace("/proc/net/", &format!("{root}/proc/net/"));
         for _ in 0..2 {
             let out = std::process::Command::new("sh").arg("-c").arg(&script).output().unwrap();
             assert!(out.status.success(), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
