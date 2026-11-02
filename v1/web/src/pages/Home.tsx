@@ -79,13 +79,15 @@ function useStuckBar(listKey: string) {
   // 新列表比一屏矮（如切「仅看异常」）时页面不够长、滚不到位，条会掉下来：先给分区临时垫一个最小高度，滚到位为止（脱离吸住状态后去掉）
   const stuckNow = React.useRef(false);
   stuckNow.current = stuck;
+  const padFrom = React.useRef(0); // 垫高前的 scrollHeight；0 表示没垫
   const first = React.useRef(true);
   React.useLayoutEffect(() => {
     if (first.current) { first.current = false; return; }
     const sec = sentinel.current!.parentElement!;
-    if (!stuckNow.current) { sec.style.minHeight = ''; return; }
+    if (!stuckNow.current) { sec.style.minHeight = ''; padFrom.current = 0; return; }
     const { top, st } = sync();
     const goal = top - delta.current - 4; // 哨兵滚到这个位置：条的原位比顶栏线高 4px，滚完仍算吸着
+    padFrom.current ||= document.documentElement.scrollHeight; // 垫高前的页面高度（连续切换时沿用第一次的）
     sec.style.minHeight = `${st + scrollY - (sec.getBoundingClientRect().top + scrollY) + innerHeight - goal}px`;
     scrollTo(0, st + scrollY - goal);
   }, [listKey]);
@@ -96,7 +98,10 @@ function useStuckBar(listKey: string) {
       raf = 0;
       const { top, st } = sync();
       const s = st < top - delta.current;
-      if (!s) sentinel.current!.parentElement!.style.minHeight = '';
+      // 没吸住也不立刻撤垫高：撤了页面变短会把 scrollY 夹回、页面跳走。等页面自然高度够当前位置，或滚回列表顶部之上再撤
+      if (!s && padFrom.current && (scrollY + innerHeight <= padFrom.current || st > top)) {
+        sentinel.current!.parentElement!.style.minHeight = ''; padFrom.current = 0;
+      }
       setStuck(s);
     };
     const onScroll = () => { raf ||= requestAnimationFrame(check); };

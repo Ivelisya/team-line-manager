@@ -360,7 +360,7 @@ function OverviewTab({ r, detail }: { r: RouterView; detail: RouterDetail | null
         <Section className={staleCls}>
           <SectionHeader title="系统" />
           <LabelValueGrid>
-            <LabelValue label="系统">{sys.os}</LabelValue>
+            <LabelValue label="系统" plain>{sys.os}</LabelValue>
             <LabelValue label="内核"><Trunc className="mono">{sys.kernel}</Trunc></LabelValue>
             <LabelValue label="CPU" wrap>{sys.cpu_model} · {sys.cores} 核</LabelValue>
             {/* 同机器主机页签的负载：百分比一行，三个平均负载放第二行 */}
@@ -458,8 +458,8 @@ function ExitsTab({ r, d }: { r: RouterView; d: RouterDetail }) {
       <Section>
         <SectionHeader title="明细" meta={`${d.exits.length} 个`} />
         <div className="table-wrap">
-          <table className="dt rt-exit-tbl" style={{ minWidth: 746 }}>
-            <colgroup><col style={{ width: 90 }} /><col style={{ width: 150 }} /><col style={{ width: 112 }} /><col style={{ width: 84 }} /><col style={{ width: 90 }} /><col style={{ width: 48 }} /><col style={{ width: 104 }} /><col style={{ width: 68 }} /></colgroup>
+          <table className="dt rt-exit-tbl" style={{ minWidth: 717 }}>
+            <colgroup><col style={{ width: 90 }} /><col style={{ width: 121 }} /><col style={{ width: 112 }} /><col style={{ width: 84 }} /><col style={{ width: 90 }} /><col style={{ width: 48 }} /><col style={{ width: 104 }} /><col style={{ width: 68 }} /></colgroup>
             <thead><tr><th>出口</th><th>对应入口</th><th>参数<InfoTip text={(['drift', 'unmanaged'] as const).map((k) => `${SYNC[k].label}：${SYNC[k].tip}`).join('\n')} /></th><th className="r">延迟</th><th>近 6 小时</th><th className="r">连接</th><th className="r">↓ / ↑ 速率</th><th className="r">客户端</th></tr></thead>
             <tbody>{d.exits.map((e) => <ExitRow key={e.name} e={e} beats={m.get(e.name)} onOpen={openMachine} onSync={r.state === 'online' && syncable(e) ? onSync : undefined} />)}</tbody>
           </table>
@@ -482,7 +482,8 @@ const ExitRow = React.memo(function ExitRow({ e, beats, onOpen, onSync }: { e: R
   return (
     <tr>
       <td><span className="cell-main strong" data-tip={`${e.name}（${protoLabel(e.type)}）→ ${e.server}:${e.port}`}>{e.name}</span><span className="sub">{protoLabel(e.type)}</span></td>
-      <td>{e.entry ? <><button type="button" className="btn btn-link" style={{ height: 'auto', padding: 0, maxWidth: '100%' }} data-tip="打开这个节点的详情" onClick={() => onOpen(e.entry!.node_id)}><span className="ellipsis">{node}</span></button>{via && <span className="sub ellipsis" data-tip={e.entry.name}>{via}</span>}</> : <span className="t-muted">—</span>}</td>
+      <td>{e.entry ? <><button type="button" className="btn btn-link" style={{ height: 'auto', padding: 0, maxWidth: '100%' }} data-tip={`${e.entry.name}
+打开这个节点的详情`} onClick={() => onOpen(e.entry!.node_id)}><span className="ellipsis">{node}</span></button>{via && <span className="sub ellipsis" data-tip={e.entry.name}>{via}</span>}</> : <span className="t-muted">—</span>}</td>
       {/* 一致的不标（一列「一致」只是噪音），只标不一致 / 不受管 */}
       <td>{e.sync !== 'ok' && <Pill tone={s.tone} tip={syncTip(e)}>{s.label}</Pill>}{onSync && <button type="button" className="btn btn-link btn-sm sub" style={{ height: 'auto', padding: 0 }} data-tip="改成入口现在的凭据（会重启 OpenClash）" onClick={() => onSync([e.name])}>同步…</button>}</td>
       <td className="r">
