@@ -8,7 +8,9 @@ import { useAddProbePoint, useDelProbePoint, usePatchProbePoint, useProbePoints,
 import * as F from '@/lib/format';
 import { healthLabel, successPct } from '@/lib/derive';
 import { useEndSubjectMaint } from '@/lib/queries';
-import { useHeld } from '@/lib/useHeld';
+import { resetOnOpen, useHeld } from '@/lib/useHeld';
+import { m as mo } from 'motion/react';
+import { SPRING } from '@/lib/motion';
 import { HEALTH_TONE } from '@/lib/sort';
 import { Button, IconButton } from '@/components/ui/button';
 import { Field, InfoTip, Input, OptimisticSwitch } from '@/components/ui/form';
@@ -40,10 +42,13 @@ export function ProbeTab() {
   const patch = usePatchProbePoint(); const reinstall = useReinstallProbePoint(); const remove = useDelProbePoint(); const endMaint = useEndSubjectMaint();
   const list = q.data ?? [];
   const s = src.data;
+  // 上移 / 下移先按新顺序排（draft），行带着位移动画换位；服务端返回（成败都算）后丢掉 draft，以服务端的为准
+  const [draft, setDraft] = React.useState<string[] | null>(null);
   const setOrder = (order: string[]) =>
-    save.mutate({ order, ...(order.length ? {} : { central_enabled: true }) }, { onSuccess: () => toast.ok('探测顺序已保存'), onError: toast.err });
+    save.mutate({ order, ...(order.length ? {} : { central_enabled: true }) }, { onSuccess: () => toast.ok('探测顺序已保存'), onError: toast.err, onSettled: () => setDraft(null) });
   const ids = s?.order.map((o) => o.id) ?? [];
-  const move = (i: number, d: -1 | 1) => { const n = [...ids]; [n[i], n[i + d]] = [n[i + d], n[i]]; setOrder(n); };
+  const rows = s && draft ? draft.flatMap((id) => s.order.find((o) => o.id === id) ?? []) : s?.order ?? [];
+  const move = (i: number, d: -1 | 1) => { const n = [...ids]; [n[i], n[i + d]] = [n[i + d], n[i]]; setDraft(n); setOrder(n); };
   // 能加进顺序的：启用的、还不在顺序里的
   const addable = list.filter((p) => p.enabled && !ids.includes(p.id));
   // 此刻在用的那一路（null = 中控；标灰时谁都不是）
@@ -56,8 +61,8 @@ export function ProbeTab() {
         {!s ? <SkeletonRows rows={2} /> : (
           <div className="stack" style={{ gap: 'var(--sp-12)' }}>
             <ol className="choice-list probe-order" aria-label="探测顺序">
-              {s.order.map((o, i) => (
-                <li key={o.id} className="choice">
+              {rows.map((o, i) => (
+                <mo.li key={o.id} layout="position" transition={SPRING} className="choice">
                   <span className="probe-order-n num">{i + 1}</span>
                   <span className="cell-main">{o.label}</span>
                   {i === 0 && <span className="t-sub">主来源</span>}
@@ -67,7 +72,7 @@ export function ProbeTab() {
                     <IconButton size="sm" label="往后排" disabled={i === s.order.length - 1 || save.isPending} onClick={() => move(i, 1)}><ArrowDown size={14} /></IconButton>
                     <IconButton size="sm" label="移出顺序" disabled={save.isPending || (s.order.length === 1 && !s.central_enabled)} onClick={() => setOrder(ids.filter((x) => x !== o.id))}><X size={14} /></IconButton>
                   </span>
-                </li>
+                </mo.li>
               ))}
               <li className="choice">
                 <span className="probe-order-n num">{s.order.length + 1}</span>
@@ -123,7 +128,7 @@ export function ProbeTab() {
                       {p.maintenance
                         ? <IconButton label="结束维护" disabled={endMaint.isPending} onClick={() => endMaint.mutate({ kind: 'probe_point', id: p.id }, { onSuccess: () => toast.ok(`${p.label} 已结束维护`), onError: toast.err })}><Wrench size={14} /></IconButton>
                         : <IconButton label="维护窗口" onClick={() => setMaint(p)}><Wrench size={14} /></IconButton>}
-                      <IconButton label="重新生成安装命令" onClick={() => reinstall.mutate(p.id, { onSuccess: (d) => d.bootstrap && setBoot({ name: p.name, b: d.bootstrap }), onError: toast.err })}><RefreshCw size={14} /></IconButton>
+                      <IconButton label="重新生成安装命令" disabled={reinstall.isPending} onClick={() => reinstall.mutate(p.id, { onSuccess: (d) => d.bootstrap && setBoot({ name: p.name, b: d.bootstrap }), onError: toast.err })}><RefreshCw size={14} /></IconButton>
                       <IconButton label={p.rank != null ? '在探测顺序里，先移出再删除' : '删除'} disabled={p.rank != null} onClick={() => setDel(p)}><Trash2 size={14} /></IconButton>
                     </span></td>
                   </tr>
@@ -135,13 +140,13 @@ export function ProbeTab() {
       </Panel>
       {maintHeld && <MaintenanceDialog m={{ id: maintHeld.id, name: maintHeld.label }} kind="probe_point" open={!!maint} onOpenChange={(o) => !o && setMaint(null)} />}
       <AddDialog open={adding} onClose={() => setAdding(false)} onBootstrap={(name, b) => setBoot({ name, b })} />
-      <ConfirmDialog open={!!boot} onOpenChange={(o) => !o && setBoot(null)} title={`用 root 执行 · ${boot?.name ?? ''}`} confirmLabel="知道了" cancelLabel="关闭"
+      <ConfirmDialog open={!!boot} onOpenChange={(o) => !o && setBoot(null)} title={`用 root 执行 · ${boot?.name ?? ''}`} confirmLabel="知道了" hideCancel dirty
         description={<>{boot && F.dt(boot.b.expires_at)} 前有效，只能用一次。执行后约半分钟上线</>} onConfirm={() => undefined}>
         {boot && <div className="row" style={{ gap: 8, alignItems: 'flex-start' }}><code style={{ wordBreak: 'break-all', flex: 1 }}>{boot.b.cmd}</code><CopyButton text={boot.b.cmd} label="安装命令" /></div>}
       </ConfirmDialog>
       <ConfirmDialog open={!!del} onOpenChange={(o) => !o && setDel(null)} danger title={`删除探测点 · ${del?.name ?? ''}`} confirmLabel="删除"
         description="这个探测点会立即失效，它的探测记录也会一起删除" onConfirm={async () => { if (del) { const r = await remove.mutateAsync(del.id); setCleanup(r.cleanup); } }} />
-      <ConfirmDialog open={!!cleanup} onOpenChange={(o) => !o && setCleanup(null)} title="已删除" confirmLabel="知道了" cancelLabel="关闭"
+      <ConfirmDialog open={!!cleanup} onOpenChange={(o) => !o && setCleanup(null)} title="已删除" confirmLabel="知道了" hideCancel dirty
         description="中控没有改动探测点这台机器。不再用它时，用 root 在上面执行：" onConfirm={() => undefined}>
         {cleanup && <div className="row" style={{ gap: 8, alignItems: 'flex-start' }}><code style={{ wordBreak: 'break-all', flex: 1 }}>{cleanup}</code><CopyButton text={cleanup} label="清理命令" /></div>}
       </ConfirmDialog>
@@ -149,10 +154,10 @@ export function ProbeTab() {
   );
 }
 
-function AddDialog({ open, onClose, onBootstrap }: { open: boolean; onClose: () => void; onBootstrap: (name: string, b: Bootstrap) => void }) {
+/** 每次打开重新挂载（resetOnOpen）：名称、备注从空开始 */
+const AddDialog = resetOnOpen(function AddDialog({ open, onClose, onBootstrap }: { open: boolean; onClose: () => void; onBootstrap: (name: string, b: Bootstrap) => void }) {
   const add = useAddProbePoint();
   const [name, setName] = React.useState(''); const [note, setNote] = React.useState('');
-  React.useEffect(() => { if (open) { setName(''); setNote(''); } }, [open]);
   const submit = () => add.mutate({ name: name.trim(), note: note.trim() }, {
     onSuccess: (d) => { onClose(); if (d.bootstrap) onBootstrap(name.trim(), d.bootstrap); },
     onError: toast.err,
@@ -166,4 +171,4 @@ function AddDialog({ open, onClose, onBootstrap }: { open: boolean; onClose: () 
       <Field label="备注"><Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="阿里云香港，Alpine" /></Field>
     </FormDialog>
   );
-}
+});

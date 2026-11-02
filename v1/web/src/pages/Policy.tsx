@@ -13,6 +13,7 @@ import { meta } from '@/lib/derive';
 import { Button } from '@/components/ui/button';
 import { Field, InfoTip, Input, SearchInput, Textarea } from '@/components/ui/form';
 import { Segmented, Tip, Trunc } from '@/components/ui/overlays';
+import { scrollBehavior } from '@/lib/utils';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, DialogHeader } from '@/components/ui/dialog';
 import { SkeletonRows } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
@@ -61,9 +62,18 @@ export function PolicyPage() {
   const dirtyRef = React.useRef(false);
   const onDirty = React.useCallback((d: boolean) => { dirtyRef.current = d; }, []);
   const [pending, setPending] = React.useState<Sel | null>(null);
+  // 点选触发的切换（含「放弃修改并切换」确认后的）：范围真的换了之后把编辑器滚进视野。单栏（窄屏）时编辑器在长长的范围树下面，点了看不到变化；从地址进来不滚
+  const picked = React.useRef(false);
+  const colRef = React.useRef<HTMLDivElement>(null);
+  const applyPicked = (s: Sel) => { picked.current = true; apply(s); };
+  React.useEffect(() => {
+    if (!picked.current) return;
+    picked.current = false;
+    requestAnimationFrame(() => colRef.current?.scrollIntoView({ block: 'nearest', behavior: scrollBehavior() }));
+  }, [sel]);
   const select = (s: Sel) => {
     if (sel && sel.scope === s.scope && sel.id === s.id) return;
-    if (dirtyRef.current) setPending(s); else apply(s);
+    if (dirtyRef.current) setPending(s); else applyPicked(s);
   };
 
   const [openTeams, setOpenTeams] = React.useState<Set<string>>(new Set());
@@ -128,7 +138,7 @@ export function PolicyPage() {
             ))}
           </div>
         </Panel>
-        <div className="pol-col">
+        <div className="pol-col" ref={colRef}>
           {target
             ? <Editor key={`${sel!.scope}:${sel!.id}`} scope={sel!.scope} name={target.name} sp={target.sp} team={target.team} node={target.node} onDirty={onDirty} />
             : <Panel title="编辑"><Empty icon={<ShieldCheck size={22} />} text="在左侧选择团队或节点" /></Panel>}
@@ -140,7 +150,7 @@ export function PolicyPage() {
       <PreviewDialog open={preview} onOpenChange={setPreview} />
       <ConfirmDialog open={pending != null} onOpenChange={(o) => { if (!o) setPending(null); }} danger confirmLabel="放弃修改并切换" title="放弃未保存的修改？"
         description={`「${target?.name ?? '当前范围'}」的修改会丢失`}
-        onConfirm={() => { if (pending) { if (sel) unsaved.delete(`${sel.scope}:${sel.id}`); dirtyRef.current = false; apply(pending); } }} />
+        onConfirm={() => { if (pending) { if (sel) unsaved.delete(`${sel.scope}:${sel.id}`); dirtyRef.current = false; applyPicked(pending); } }} />
       <ConfirmDialog open={askDiscard} onOpenChange={setAskDiscard} danger confirmLabel="丢弃" title={`丢弃全部 ${draftCount} 份草稿？`}
         description="已生效的规则不受影响"
         onConfirm={async () => {
@@ -485,7 +495,7 @@ function VersionsPanel() {
         ) : (
           <div className="table-wrap">
             <table className="dt" style={{ minWidth: 900 }}>
-              <colgroup><col style={{ width: 140 }} /><col style={{ width: 150 }} /><col /><col style={{ width: 240 }} /><col style={{ width: 150 }} /></colgroup>
+              <colgroup><col style={{ width: 116 }} /><col style={{ width: 150 }} /><col /><col style={{ width: 240 }} /><col style={{ width: 110 }} /></colgroup>
               <thead><tr><th>版本</th><th>时间</th><th>变更</th><th>状态</th><th /></tr></thead>
               <tbody>
                 {list.map((v) => (
@@ -495,7 +505,7 @@ function VersionsPanel() {
                     <td data-tip={`${F.dtFull(v.created_at)}\n${F.actor(v.actor)}`}>{F.dt(v.created_at)}<span className="sub ellipsis">{F.actor(v.actor)}</span></td>
                     <td><VersionChanges changes={v.changes} /></td>
                     <td><VersionApply v={v} /></td>
-                    <td className="r">{v.status === 'applied' && v.rollbackable && !v.is_latest && <Button size="sm" onClick={() => setAsk(v)}><Undo2 size={13} />回滚到此版本</Button>}</td>
+                    <td className="r">{v.status === 'applied' && v.rollbackable && !v.is_latest && <Button size="sm" aria-label={`回滚到版本 v${v.seq}`} data-tip={`回滚到版本 v${v.seq}`} onClick={() => setAsk(v)}><Undo2 size={13} />回滚</Button>}</td>
                   </tr>
                 ))}
               </tbody>
@@ -503,7 +513,7 @@ function VersionsPanel() {
           </div>
         )}
       </Panel>
-      <ConfirmDialog open={!!ask} onOpenChange={(o) => !o && setAsk(null)} confirmLabel="回滚" title={`回滚到版本 v${askHeld?.seq ?? ''}？`}
+      <ConfirmDialog open={!!ask} onOpenChange={(o) => !o && setAsk(null)} confirmLabel="回滚" confirmDisabled={!pv.data} title={`回滚到版本 v${askHeld?.seq ?? ''}？`}
         description={<>作为新版本发布，草稿不受影响 <InfoTip text="当前规则会整体换成这个版本的内容，并作为新版本发布" /></>}
         onConfirm={async () => { const v = await rollback.mutateAsync(ask!.id); toast.ok(`已回滚，新版本 v${v.seq}`); }}>
         {/* 回滚实际会改什么（当前 → 这个版本）：「模拟团队A：黑名单 → 仅观察」 */}

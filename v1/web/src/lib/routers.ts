@@ -113,7 +113,7 @@ export const useRegenBootstrap = () => useWrite((id: string) => post<Bootstrap>(
 export const usePatchRouter = () => useWrite(({ id, ...b }: { id: string; name?: string; team_id?: string | null; note?: string }) => patch(`/routers/${id}`, b), K);
 /** 有没做完的作业改过它的出口、没确认改回时 409（错误信息直接给用户看）；force：照删，这些作业不再改回它（返回摘掉了哪些作业） */
 export const useDeleteRouter = () => useWrite(({ id, force }: { id: string; force?: boolean }) => del<{ jobs?: string[] }>(`/routers/${id}${force ? '?force=true' : ''}`), K);
-/** 同步出口参数的预览：要改的出口（from / to 都是 server:port，不变，换的是凭据）、同步不了的（入口不在用）、不能做的原因 */
+/** 同步出口参数的预览（勾选「仍要同步」换了查询键：新结果回来前沿用上一份，调用方按 isPlaceholderData 调淡并禁用确认，对话框内容不卸载）：要改的出口（from / to 都是 server:port，不变，换的是凭据）、同步不了的（入口不在用）、不能做的原因 */
 export interface SyncPreview {
   ok: boolean; blockers: string[]; skipped: string[]; warnings: string[]; routers: { exits: { exit: string; from: string; to: string | null }[] }[];
   /** 从没对上过入口的出口（路由上有人加的？）：不点名时不同步 */
@@ -122,7 +122,7 @@ export interface SyncPreview {
   need_force: { exit: string; entry: string; why: string }[];
 }
 export const useSyncPreview = (id: string | null, exits: string[], force: boolean) =>
-  useQuery({ queryKey: ['router-sync', id, exits.join(','), force], queryFn: ({ signal }) => get<SyncPreview>(`/routers/${id}/sync?exits=${encodeURIComponent(exits.join(','))}${force ? '&force=true' : ''}`, signal), enabled: !!id, staleTime: 0, gcTime: 0 });
+  useQuery({ queryKey: ['router-sync', id, exits.join(','), force], queryFn: ({ signal }) => get<SyncPreview>(`/routers/${id}/sync?exits=${encodeURIComponent(exits.join(','))}${force ? '&force=true' : ''}`, signal), enabled: !!id, staleTime: 0, gcTime: 0, placeholderData: (p) => p });
 /** 发起同步作业（router_sync：备份、改、重启 OpenClash、测延迟，失败自动改回） */
 export const useSyncRouter = () => useWrite(({ id, exits, force }: { id: string; exits: string[]; force?: boolean }) => post<{ job_id: string }>(`/routers/${id}/sync`, { exits, force: !!force }), [...K, ['jobs']]);
 /** 临时切换：back_after_s 不给 = 不自动切回。返回切之前选中的（from）与第一次切之前的（original） */
