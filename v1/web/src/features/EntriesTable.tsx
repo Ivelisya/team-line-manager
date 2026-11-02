@@ -3,7 +3,7 @@
 import * as React from 'react';
 import type { EntryView, MachineView } from '@/lib/types';
 import * as F from '@/lib/format';
-import { REVERSE_TIP, entryBad, isReverse, probeErr, probeFail, probeFailLabel, reachFail, reachFlaky, reachWho, tcpMs } from '@/lib/derive';
+import { REACH_SEEN, REVERSE_TIP, entryBad, isReverse, probeErr, probeFail, probeFailLabel, reachFail, reachFlaky, reachWho, tcpMs } from '@/lib/derive';
 import { useReachLabel } from '@/lib/probePoints';
 import { entryState, Num, Pill } from '@/components/app/primitives';
 import { ShowAll } from '@/components/app/Pagination';
@@ -45,7 +45,7 @@ const reachErr = (detail: string | null) => (detail ? `\n${probeErr(detail.repla
 /** 入口状态列：入口不可达（主探测来源 `who`：中控或探测点，reachWho，连不上端口）> 线路机到节点探测不通 > 刚才连不上 > 配置状态；正常的不写（一整列同一个绿胶囊没有信息，同线路页） */
 export const entryStatus = (e: EntryView, who = '中控') => {
   const reach = reachFail(e); const fail = probeFail(e); const flaky = reachFlaky(e);
-  if (reach) return <Pill tone="bad" tip={`${who}连续 ${reach.fails} 次连不上线路机的 ${e.port} 端口（上次检查 ${F.dt(reach.ts)}）${reachErr(reach.detail)}`}>入口不可达</Pill>;
+  if (reach) return <Pill tone="bad" tip={`${who}连续 ${reach.fails >= REACH_SEEN ? `${REACH_SEEN}+` : reach.fails} 次连不上线路机的 ${e.port} 端口（上次检查 ${F.dt(reach.ts)}）${reachErr(reach.detail)}`}>入口不可达</Pill>;
   if (fail) return <Pill tone="bad" tip={probeErr(fail.detail)}>{probeFailLabel(e)}</Pill>;
   if (flaky) return <Pill tone="warn" tip={`${who}最近 ${flaky.fails} 次没连上线路机的 ${e.port} 端口（上次检查 ${F.dt(flaky.ts)}）\n连续 3 次算连不上，再持续 1 分钟才告警${reachErr(flaky.detail)}`}>刚才连不上 {flaky.fails} 次</Pill>;
   return entryState(e, true);

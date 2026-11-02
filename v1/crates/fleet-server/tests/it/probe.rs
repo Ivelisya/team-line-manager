@@ -477,6 +477,19 @@ async fn entry_reach_ignores_checks_before_entry() {
     sqlx::query("insert into relay_reach (relay_id, ts, ok, detail, port) values ($1, now(), false, '端口 20001：超时', 20001)").bind(relay).execute(&t.st.db).await.unwrap();
     let r = machine(&t, relay).await["entries"][0]["reach"].clone();
     assert_eq!((r["ok"].clone(), r["fails"].clone()), (json!(false), json!(1)), "{r}");
+    // 连续失败次数封顶 20（不往回扫到上一次成功）；中间有一次成功就从它之后重数
+    sqlx::query("insert into relay_reach (relay_id, ts, ok, detail, port) select $1, now() + make_interval(secs => g), false, '端口 20001：超时', 20001 from generate_series(1, 24) g")
+        .bind(relay)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    assert_eq!(machine(&t, relay).await["entries"][0]["reach"]["fails"], json!(20));
+    sqlx::query("insert into relay_reach (relay_id, ts, ok, detail, port) select $1, now() + make_interval(secs => g), g = 100, '端口 20001：超时', 20001 from generate_series(100, 102) g")
+        .bind(relay)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    assert_eq!(machine(&t, relay).await["entries"][0]["reach"]["fails"], json!(2));
 }
 
 /// 探测点上报任意一份（JSON 原样）：同 `report`，先把最近上报往前挪 20 秒

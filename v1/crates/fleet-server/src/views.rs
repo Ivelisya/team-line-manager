@@ -1034,27 +1034,48 @@ async fn probes_of(db: &sqlx::PgPool, eids: &[Uuid]) -> sqlx::Result<HashMap<(Uu
     Ok(out)
 }
 
+/// 入口的连不上次数最多数这么多条（`Reach::fails` 封顶；界面写「20+」）
+pub const REACH_SEEN: i32 = 20;
+
 /// 在用入口各自端口上主探测来源（`src`，中控或探测点，见 probe_points::Effective）最近一次 TCP 检查，
-/// 沿 (relay_id, probe_point_id, port, ts desc) 索引逐个取最新一条，失败的再数连续失败了几次；检查早于入口创建的不算：
+/// 沿 (relay_id, probe_point_id, port, ts desc) 索引每个入口取最新 `REACH_SEEN` 条，数最前面连续失败了几次（封顶 `REACH_SEEN`，不往回扫到上一次成功）；检查早于入口创建的不算：
 /// 现在端口不再复用（entries::create 从 relay.port_next 分），但 0050 之前已经复用过的端口、0050 按标签对不上回收站快照而推算偏低的端口，
 /// 保留期（reach_days）里还留着旧入口的检查
 async fn reach_of(db: &sqlx::PgPool, es: &[(Uuid, Uuid, i32)], src: &crate::probe_points::Effective) -> sqlx::Result<HashMap<Uuid, Reach>> {
-    let (cf, cg, cr) = (src.cond("f"), src.cond("g"), src.cond("rr"));
-    let rs = sqlx::query_as::<_, (Uuid, bool, OffsetDateTime, Option<String>, i32)>(&format!(
-        "select e.id, x.ok, x.ts, x.detail, x.fails from unnest($1::uuid[], $2::uuid[], $3::int[]) e(id, relay, port)
+    let cr = src.cond("rr");
+    let rs = sqlx::query_as::<_, (Uuid, bool, OffsetDateTime, Option<String>)>(&format!(
+        "select e.id, x.ok, x.ts, x.detail from unnest($1::uuid[], $2::uuid[], $3::int[]) e(id, relay, port)
          join entry en on en.id = e.id cross join lateral (
-            select ok, ts, detail, case when ok then 0 else (
-                     select count(*)::int from relay_reach f where f.relay_id = e.relay and {cf} and f.port = e.port and f.ts >= en.created_at and not f.ok
-                       and f.ts > coalesce((select max(g.ts) from relay_reach g where g.relay_id = e.relay and {cg} and g.port = e.port and g.ok), '-infinity')) end fails
-            from relay_reach rr where rr.relay_id = e.relay and {cr} and rr.port = e.port and rr.ts >= en.created_at
-            order by rr.ts desc limit 1) x",
+            select ok, ts, detail from relay_reach rr where rr.relay_id = e.relay and {cr} and rr.port = e.port and rr.ts >= en.created_at
+            order by rr.ts desc limit {REACH_SEEN}) x
+         order by x.ts desc",
     ))
     .bind(es.iter().map(|e| e.0).collect::<Vec<_>>())
     .bind(es.iter().map(|e| e.1).collect::<Vec<_>>())
     .bind(es.iter().map(|e| e.2).collect::<Vec<_>>())
     .fetch_all(db)
     .await?;
-    let mut out: HashMap<Uuid, Reach> = rs.into_iter().map(|(id, ok, ts, detail, fails)| (id, Reach { ok, ts, detail, fails })).collect();
+    // 每个入口按时间倒序：第一条是最新一次，其后接着失败的数进 fails，遇到成功就停
+    let mut out: HashMap<Uuid, Reach> = HashMap::new();
+    let mut counting: HashSet<Uuid> = HashSet::new();
+    for (id, ok, ts, detail) in rs {
+        match out.get_mut(&id) {
+            None => {
+                out.insert(id, Reach { ok, ts, detail, fails: i32::from(!ok) });
+                if !ok {
+                    counting.insert(id);
+                }
+            }
+            Some(r) if counting.contains(&id) => {
+                if ok {
+                    counting.remove(&id);
+                } else {
+                    r.fails += 1;
+                }
+            }
+            Some(_) => {}
+        }
+    }
     // 整台连不上（同告警：最近 3 轮、5 分钟内都失败，不论哪个端口）：这台上的入口都按连不上，次数至少 3，取最近一轮的时间与原因
     let mut relays: Vec<Uuid> = es.iter().map(|e| e.1).collect();
     relays.sort();

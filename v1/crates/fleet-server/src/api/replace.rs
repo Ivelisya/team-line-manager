@@ -313,6 +313,22 @@ impl std::fmt::Display for NumberErr {
     }
 }
 
+/// 目标团队 `to_team` 里已占的编号（不算 `skip` 里的机器）；目标就是旧团队时旧编号要留给新节点，也算占着
+async fn taken_numbers(conn: &mut PgConnection, to_team: Uuid, skip: &[Uuid], (old_team, old_number): (Uuid, i32)) -> sqlx::Result<HashSet<i32>> {
+    let taken: Vec<i32> = sqlx::query_scalar(
+        "select number from machine where team_id = $1 and number is not null and kind <> 'relay' and lifecycle <> 'retired' and id <> all($2)",
+    )
+    .bind(to_team)
+    .bind(skip)
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut taken: HashSet<i32> = taken.into_iter().collect();
+    if to_team == old_team {
+        taken.insert(old_number);
+    }
+    Ok(taken)
+}
+
 /// 旧节点在目标团队 `to_team` 最后拿哪个编号：预览（plan）与作业（jobs/steps/replace.rs `renumber`，锁住团队和两台机器后再算一次）共用这一份，
 /// 不各算各的。`given` 是指定的编号，没给取最小空号。
 /// 算空号时不算旧节点自己（它要挪走），**新节点在目标团队里的编号也算空着**：交换完它就离开了，旧节点正好接它空出来的号——
@@ -328,17 +344,7 @@ pub async fn old_to_number(
     if given.is_some_and(|n| !(1..=999).contains(&n)) {
         return Ok(Err(NumberErr::Range));
     }
-    let taken: Vec<i32> = sqlx::query_scalar(
-        "select number from machine where team_id = $1 and number is not null and kind <> 'relay' and lifecycle <> 'retired' and id <> all($2)",
-    )
-    .bind(to_team)
-    .bind(vec![old, new])
-    .fetch_all(&mut *conn)
-    .await?;
-    let mut taken: HashSet<i32> = taken.into_iter().collect();
-    if to_team == old_team {
-        taken.insert(old_number);
-    }
+    let taken = taken_numbers(conn, to_team, &[old, new], (old_team, old_number)).await?;
     Ok(match given {
         Some(n) if taken.contains(&n) => Err(NumberErr::Taken(n)),
         Some(n) => Ok(n),
@@ -350,16 +356,8 @@ pub async fn old_to_number(
 pub fn swap_slot(new_team: Option<Uuid>, new_number: Option<i32>, to_team: Uuid, to_number: i32) -> bool { new_team == Some(to_team) && new_number == Some(to_number) }
 
 /// `swap_slot` 时旧节点先放的临时号：目标团队里除旧节点外谁都没占的最小号（新节点的号占着）；目标就是旧团队时旧编号要留给新节点，也不能用
-pub async fn temp_number(conn: &mut PgConnection, to_team: Uuid, old: Uuid, (old_team, old_number): (Uuid, i32)) -> sqlx::Result<Option<i32>> {
-    let taken: Vec<i32> = sqlx::query_scalar("select number from machine where team_id = $1 and number is not null and kind <> 'relay' and lifecycle <> 'retired' and id <> $2")
-        .bind(to_team)
-        .bind(old)
-        .fetch_all(&mut *conn)
-        .await?;
-    let mut taken: HashSet<i32> = taken.into_iter().collect();
-    if to_team == old_team {
-        taken.insert(old_number);
-    }
+pub async fn temp_number(conn: &mut PgConnection, to_team: Uuid, old: Uuid, old_at: (Uuid, i32)) -> sqlx::Result<Option<i32>> {
+    let taken = taken_numbers(conn, to_team, &[old], old_at).await?;
     Ok((1..=999).find(|n| !taken.contains(n)))
 }
 

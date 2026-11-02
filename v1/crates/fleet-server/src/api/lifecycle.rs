@@ -159,12 +159,22 @@ async fn plan_move(
     for e in offline.iter_mut().flat_map(|o| &mut o.exits) {
         e.node = name.clone();
     }
+    blockers.extend(anytls_exit_blocker(&mut **tx, to, &rs).await?);
     Ok(Ok(MovePlan { node_name: name, from_relay, from_name, to_name, old_entry, old_port, routers_enabled: routers_on, routers: rs, blockers, offline, warnings }))
 }
 
 /// 线路机的 (IP, public_host)
 pub async fn relay_addr<'e>(db: impl sqlx::PgExecutor<'e>, id: Uuid) -> sqlx::Result<(String, String)> {
     sqlx::query_as("select host(m.primary_ip), r.public_host from relay r join machine m on m.id = r.machine_id where r.machine_id = $1").bind(id).fetch_one(db).await
+}
+
+/// 软路由（OpenClash）出口只用 Reality：有出口要指到目标线路机、而它只开 AnyTLS 时返回不能指过去的原因（换线路机、改出口指向共用）
+pub async fn anytls_exit_blocker(db: impl sqlx::PgExecutor<'_>, to_relay: Uuid, routers: &[RouterPlan]) -> sqlx::Result<Option<String>> {
+    if routers.is_empty() {
+        return Ok(None);
+    }
+    let r = crate::reverse::relay_name_protocols(db, to_relay).await?;
+    Ok(r.filter(|(_, p)| p == crate::entries::ANYTLS).map(|(n, _)| format!("线路机 {n} 只开 AnyTLS，软路由只用 Reality，出口指不过去")))
 }
 
 /// 换线路机：对上旧入口 `old_entry` 的出口（server:port 是 `srv:port`）改成什么，不是旧入口返回 None（预览与执行共用）。

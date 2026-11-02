@@ -4,7 +4,7 @@
 //! 作业只有一步「改软路由出口」，与替换、换线路机共用（jobs/steps/replace.rs：执行时按路由当时的配置重新确定、备份 → 改 → 重启 OpenClash →
 //! 测延迟，任何一台失败全部换回）。出口写的是旧线路机 IP 就换成新线路机的 IP，否则换成新线路机的 public_host（同换线路机）。
 
-use super::lifecycle::{move_exit, relay_addr};
+use super::lifecycle::{anytls_exit_blocker, move_exit, relay_addr};
 use super::ok;
 use super::replace::{routers_view, scan_routers, RouterPlan};
 use crate::auth::Actor;
@@ -113,6 +113,7 @@ async fn plan(st: &AppState, conn: &mut PgConnection, old_id: Uuid, b: &RepointI
     let routers = scan_routers(&rows, old.node_id, None, true, true, ("改", "旧入口"), &mut blockers, &mut warnings, |er, srv, port| {
         move_exit(er, old.id, Some((new.id, new.port as u16)), &from_ip, &to, srv, port).map(Ok)
     });
+    blockers.extend(anytls_exit_blocker(&mut *conn, new.relay_id, &routers).await?);
     if routers.is_empty() && invalid.is_empty() {
         blockers.push(format!("没有{}软路由的出口指向「{}」：没有要改的", if b.router_ids.is_empty() { "" } else { "选中的" }, old.name()));
     }

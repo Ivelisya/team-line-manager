@@ -108,7 +108,7 @@ async fn gates_and_enqueue() {
     assert_eq!(p["ok"], false);
     assert!(blockers(&p).contains("线路机 线路机2 的 agent 版本过旧") && blockers(&p).contains("fleetctl upgrade-agent 线路机2"), "{p}");
     Sim::new(tok).round(&t).await;
-    assert_eq!(sqlx::query_scalar::<_, Value>("select info->'caps' from agent_state where machine_id = $1").bind(relay).fetch_one(&t.st.db).await.unwrap(), json!(["reverse"]));
+    assert_eq!(sqlx::query_scalar::<_, Value>("select info->'caps' from agent_state where machine_id = $1").bind(relay).fetch_one(&t.st.db).await.unwrap(), json!(fleet_proto::CAPS));
     let p = preview(&t, e, true).await;
     assert!(blockers(&p).contains("节点 团队1-01 的 agent 版本过旧"), "{p}");
     set_caps(&t, node, true).await;
@@ -208,6 +208,35 @@ async fn tunnel_down_kicks_node_bridge() {
     // 旧 agent（不报 caps）：能力清空，开关被挡
     report(&t, &rtok, 4, vec![], false).await;
     assert_eq!(sqlx::query_scalar::<_, Value>("select info->'caps' from agent_state where machine_id = $1").bind(relay).fetch_one(&t.st.db).await.unwrap(), json!([]));
+}
+
+/// 线路机只开 AnyTLS（Reality 入站听回环，bridge 连不上）：加入口退回普通并写明原因、上架检查同样、手动开穿透的预览被拒，也核不进 set_mode
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn anytls_only_relay_has_no_reverse() {
+    let t = setup(false).await;
+    let (relay, tok) = seed_relay(&t).await;
+    let team = seed_team(&t, "团队1").await;
+    let node = vps(&t, team, 1, "203.0.113.51", true).await;
+    let e = entry(&t, relay, node, "normal").await;
+    Sim::new(tok).round(&t).await;
+    dist_xray(&t);
+    assert_eq!(preview(&t, e, true).await["ok"], true);
+    sqlx::query("update relay set protocols = 'anytls' where machine_id = $1").bind(relay).execute(&t.st.db).await.unwrap();
+    let p = preview(&t, e, true).await;
+    assert_eq!(p["ok"], false, "{p}");
+    assert!(blockers(&p).contains("线路机 线路机2 只开 AnyTLS，穿透要 Reality"), "{p}");
+    let mut tx = t.st.db.begin().await.unwrap();
+    assert!(fleet_server::reverse::set_mode(&mut tx, e, "reverse").await.is_err());
+    drop(tx);
+    // 加入口不给模式（默认穿透）：退回普通
+    let node2 = vps(&t, team, 2, "203.0.113.52", true).await;
+    let v = t.post(&format!("/api/v1/machines/{node2}/entries"), json!({"relay_id": relay})).await;
+    assert_eq!(v["entry_mode"], "normal", "{v}");
+    assert!(v["note"].as_str().unwrap().contains("只开 AnyTLS"), "{v}");
+    // 上架检查
+    let c = t.post("/api/v1/provision/check", json!({"items": [{"kind": "vps", "ip": "203.0.113.53", "team_id": team, "relay_id": relay}]})).await;
+    assert_eq!(c["items"][0]["entry_mode"], "normal", "{c}");
+    assert!(c["items"][0]["warnings"].to_string().contains("只开 AnyTLS"), "{c}");
 }
 
 /// 新入口默认模式：没设过是穿透；改了写审计；上架家宽代理要穿透时退回普通（检查的提醒、作业参数里写明）；加入口不给模式按默认，

@@ -642,7 +642,7 @@ url = "https://api.frankfurter.dev/v1/latest?base=USD"   # 回包 {base:"USD", d
 - **给客户端**：`fleetctl share <入口>` 第二行是 `anytls://…?sni=…&insecure=1`；订阅 `--protocols both|anytls`（Clash 里是 `type: anytls`，`skip-cert-verify: true`）。只有线路机报了 sing-box 在跑时才给 AnyTLS（没在跑时链接是坏的），sing-box 停了订阅里的 AnyTLS 条目随之消失。
 - **访问监控**：经 AnyTLS 进来的访问照常记到入口，来源 IP 为空（sing-box 从回环转进来，看不到真实来源）。
 - **穿透入口**也有 AnyTLS：经 AnyTLS 进来的连接同样走隧道（`rvs-<入口>`），隧道断了 AnyTLS 和 Reality 一起不通。
-- **按线路机选入口协议**：`fleetctl relay-set <线路机> --protocols anytls|reality|both`（网页线路机抽屉「应用状态 → 入口协议」）。`anytls` = 只留 AnyTLS：Reality 入站改听回环（公网连不上，正在用 Reality 的客户端断开），分享链接、订阅只给 AnyTLS，客户入口探测改连 AnyTLS 端口；要线路机 AnyTLS 在跑且 agent 是新版（否则先 `fleetctl upgrade-agent`）、这台上没有穿透入口、没有软路由出口指着它的入口（软路由只用 Reality），不满足时中控拒绝并写明是哪些。`reality` = 不提供 AnyTLS。`both` 是默认。改完代数 +1，线路机热更新，不重启 Xray；`fleetctl show <线路机>` 的「入口协议」一行看现在是哪种。
+- **按线路机选入口协议**：`fleetctl relay-set <线路机> --protocols anytls|reality|both`（网页线路机抽屉「应用状态 → 入口协议」）。`anytls` = 只留 AnyTLS：Reality 入站改听回环（公网连不上，正在用 Reality 的客户端断开），分享链接、订阅只给 AnyTLS，客户入口探测改连 AnyTLS 端口；要线路机 AnyTLS 在跑且 agent 是新版（否则先 `fleetctl upgrade-agent`）、这台上没有穿透入口、没有软路由出口指着它的入口（软路由只用 Reality），不满足时中控拒绝并写明是哪些。反过来，只 AnyTLS 的线路机上新入口自动按普通模式建，软路由出口也不能换到它上面（改出口指向、换线路机会被拒）。`reality` = 不提供 AnyTLS。`both` 是默认。改完代数 +1，线路机热更新，不重启 Xray；`fleetctl show <线路机>` 的「入口协议」一行看现在是哪种。
 
 ## 22. 计费台账（按节点数向团队收费）
 - 口径：团队里在用、不在备用团队、没标不计费的 VPS / 家宽代理（含同机 IP 节点）每个占一个计费名额，**按加入日滚动计费**——从起算日起每月同日续一期（月底对齐），同一天起算、同地区的是一批。中控每分钟对账：节点离开 → 名额空出待定，节点加入 → 待定；**24 小时内一进一出算替换**（新节点接过名额、起算日不变），超过 24 小时没配上才算新增（起算日 = 加入那天）或减少（离开那天所在的那一期照收，之后不收）。

@@ -1471,6 +1471,13 @@ async fn repoint_direct_exit_to_other_relay() {
     assert_eq!(p["routers"][0]["exits"][0]["to"], "198.51.100.3:20030");
     // 输入不对
     assert_eq!(t.req("POST", &format!("/api/v1/entries/{d1}/repoint"), Some(json!({"to_entry_id": d1})), None).await.0, StatusCode::BAD_REQUEST);
+    // 目标线路机只开 AnyTLS：软路由只用 Reality，出口指不过去
+    sqlx::query("update relay set protocols = 'anytls' where machine_id = $1").bind(relay_b).execute(&t.st.db).await.unwrap();
+    let p = t.get(&format!("/api/v1/entries/{d1}/repoint?to_entry_id={d2}")).await;
+    assert_eq!(p["ok"], false, "{p}");
+    assert!(p["blockers"].to_string().contains("只开 AnyTLS"), "{p}");
+    assert_eq!(t.req("POST", &format!("/api/v1/entries/{d1}/repoint"), Some(json!({"to_entry_id": d2})), None).await.0, StatusCode::CONFLICT);
+    sqlx::query("update relay set protocols = 'both' where machine_id = $1").bind(relay_b).execute(&t.st.db).await.unwrap();
 
     std::fs::write(root(23401).join("mode"), "drop").unwrap();
     std::fs::write(root(23401).join("result"), "backup=/etc/fleet-backup/openclash/c.yaml.x\nchanged=6\ndelay_1=77\nreplace=ok\n").unwrap();
