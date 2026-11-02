@@ -651,4 +651,4 @@ url = "https://api.frankfurter.dev/v1/latest?base=USD"   # 回包 {base:"USD", d
 ## 22. 计费台账（按节点数向团队收费）
 - 口径：团队里在用、不在备用团队、没标不计费的 VPS / 家宽代理（含同机 IP 节点）每个是一个计费节点（名额）。**每个节点从自己的开始收费日起每满一个月收一次（一期，月底对齐）**，每一期只记「已收 / 没收」（默认没收，手动标）；按月看 = 每个节点起点在这个月的那一期。中控每分钟对账：节点离开 → 等补位，节点加入 → 待定；**24 小时内一进一出算替换**（新节点接过位置、开始收费日与收费状态不变），超过 24 小时没配上才算新增（开始收费日 = 加入那天）或减少（离开前已经开始的那一期照收，之后不收）。
 - 首次上线：`fleetctl billing init --since 2026-10-01` 预览、加 `--yes` 执行；初始化之前对账不动（不会把现有节点当成新加入的）。之后个别开始收费日不对的用 `fleetctl billing slot <节点> --start <日期>` 改（改了以后期的起点变，原来标的已收要重新标）；系统外的节点用 `billing add`，不收钱的节点 `billing exempt <节点> --on`。
-- 收钱：`fleetctl billing month <团队> [YYYY-MM]` 看这个月谁没收；收到了 `fleetctl billing paid <团队> <节点…> [--month YYYY-MM] --yes`（`--all` = 这个月所有没收的，`--unpaid` 改回没收；不加 `--yes` 只预览）。网页「团队与套餐 → 计费台账」同一份：按月翻，每行「标记已收」。看增减：`fleetctl batch list <团队> --events`。
+- 收钱：`fleetctl billing month <团队> [YYYY-MM]` 看这个月谁没收；收到了 `fleetctl billing paid <团队> <节点…> [--month YYYY-MM] --yes`（`--all` = 这个月所有没收的，`--unpaid` 改回没收；不加 `--yes` 只预览；节点名重名时报错并列出名额 id，改写 id 前缀）。网页「团队与套餐 → 计费台账」同一份：按月翻，每行「标记已收」。看增减：`fleetctl batch list <团队> --events`。

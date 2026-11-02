@@ -165,6 +165,9 @@ pub fn month(ctx: &Ctx, team: &str, month: Option<&str>) -> anyhow::Result<u8> {
     Ok(0)
 }
 
+/// 月清单一行的名额 id 前 8 位
+fn id8(n: &Value) -> String { st(n, "/slot_id").chars().take(8).collect() }
+
 /// 要标的节点：--all = 这个月所有还不是目标状态的；否则按名字（或名额 id 前缀，≥ 4 位）逐个找，找不到报错并列出这个月有哪些
 fn pick<'a>(nodes: &'a [Value], names: &[String], all: bool, want: bool) -> anyhow::Result<Vec<&'a Value>> {
     if all {
@@ -176,10 +179,11 @@ fn pick<'a>(nodes: &'a [Value], names: &[String], all: bool, want: bool) -> anyh
     let mut out = vec![];
     for q in names {
         let q = q.trim();
-        let hit = nodes.iter().find(|n| st(n, "/name") == q || (q.len() >= 4 && st(n, "/slot_id").starts_with(&q.to_ascii_lowercase())));
-        match hit {
-            Some(n) => out.push(n),
-            None => bail!("这个月没有「{q}」要收费；这个月有：{}", nodes.iter().map(|n| st(n, "/name")).collect::<Vec<_>>().join("、")),
+        let hits: Vec<&Value> = nodes.iter().filter(|n| st(n, "/name") == q || (q.len() >= 4 && st(n, "/slot_id").starts_with(&q.to_ascii_lowercase()))).collect();
+        match hits.as_slice() {
+            [n] => out.push(*n),
+            [] => bail!("这个月没有「{q}」要收费；这个月有：{}", nodes.iter().map(|n| format!("{}（{}）", st(n, "/name"), id8(n))).collect::<Vec<_>>().join("、")),
+            _ => bail!("「{q}」对上了多个节点，用名额 id 前缀指定：\n{}", hits.iter().map(|n| format!("  {}  {}  {} 开始收费  {}", id8(n), st(n, "/name"), st(n, "/start_date"), span(n))).collect::<Vec<_>>().join("\n")),
         }
     }
     Ok(out)
@@ -189,7 +193,7 @@ fn pick<'a>(nodes: &'a [Value], names: &[String], all: bool, want: bool) -> anyh
 pub struct PaidOpts {
     /// 团队
     team: String,
-    /// 节点名（团队1-10；手动添加的写备注），可写多个；或用 --all
+    /// 节点名（团队1-10；手动添加的写备注），可写多个；重名时报错并列出名额 id，改写 id 前缀（≥ 4 位）；或用 --all
     nodes: Vec<String>,
     /// 这个月所有没收的（配合 --unpaid 是所有已收的）
     #[arg(long, conflicts_with = "nodes")]
@@ -274,7 +278,7 @@ fn slot_line(team: &str, s: &Value) -> String {
 pub struct SlotOpts {
     /// 名额：id 前缀，或占用它的节点名（团队1-10）
     slot: String,
-    /// 改开始收费日，如 2026-10-30（以后每期从这天算）
+    /// 改开始收费日，如 2026-10-30（以后每期从这天算；最晚今天加一个月；已收的期按第几期跟着挪到新的期）
     #[arg(long, value_name = "日期")]
     start: Option<String>,
     /// 改地区（美区、墨西哥…）
@@ -454,7 +458,13 @@ mod tests {
         assert_eq!(names(pick(&nodes, &[], true, true).unwrap()), ["团队1-10", "墨西哥家宽"]);
         assert_eq!(names(pick(&nodes, &[], true, false).unwrap()), ["团队1-01"]);
         assert_eq!(names(pick(&nodes, &["墨西哥家宽".into(), "BBBB".into()], false, true).unwrap()), ["墨西哥家宽", "团队1-01"]);
-        assert!(pick(&nodes, &["团队1-99".into()], false, true).unwrap_err().to_string().contains("这个月有：团队1-10、团队1-01、墨西哥家宽"));
+        assert!(pick(&nodes, &["团队1-99".into()], false, true).unwrap_err().to_string().contains("这个月有：团队1-10（aaaa1111）、团队1-01（bbbb2222）、墨西哥家宽（cccc3333）"));
         assert!(pick(&nodes, &[], false, true).is_err());
+        // 重名：报错并列出候选（名额 id、开始收费日），用 id 前缀可以指定
+        let mut dup = vec![n("团队1-05", "dddd4444", false), n("团队1-05", "eeee5555", false)];
+        dup[0]["start_date"] = json!("2026-10-01");
+        let e = pick(&dup, &["团队1-05".into()], false, true).unwrap_err().to_string();
+        assert!(e.contains("dddd4444") && e.contains("eeee5555") && e.contains("2026-10-01 开始收费"), "{e}");
+        assert_eq!(names(pick(&dup, &["EEEE".into()], false, true).unwrap()).len(), 1);
     }
 }
