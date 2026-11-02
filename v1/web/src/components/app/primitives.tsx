@@ -292,9 +292,9 @@ export function TableWrap({ className, children, ...p }: React.HTMLAttributes<HT
 }
 
 /** 页头：全站同一个 */
-export function PageHead({ title, note, tools }: { title: string; note?: React.ReactNode; tools?: React.ReactNode }) {
+export function PageHead({ title, note, tools, className }: { title: string; note?: React.ReactNode; tools?: React.ReactNode; className?: string }) {
   return (
-    <header className="page-head">
+    <header className={cn('page-head', className)}>
       <h1 className="page-title">{title}</h1>
       {note && <span className="page-note">{note}</span>}
       <div className="page-tools">{tools}</div>

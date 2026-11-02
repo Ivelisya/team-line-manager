@@ -86,6 +86,9 @@
   background-position: calc(100% - 13px) 50%, calc(100% - 9px) 50%; background-size: 4px 4px; background-repeat: no-repeat;
 }
 .dt-grid select.gcell:disabled { cursor: default; background-image: none; }
+/* 还没选（选中的是 value 为空的那项「—」）：文字用占位符的灰，不像已经填了值；展开后的选项列表照常用正文色 */
+.dt-grid select.gcell:has(option[value=""]:checked) { color: var(--fg-3); }
+.dt-grid select.gcell option { color: var(--fg); }
 .dt-grid .gcell-date { display: flex; align-items: center; height: 100%; }
 .dt-grid .gcell-date > .gcell { flex: 1 1 auto; min-width: 0; }
 .dt-grid .gcell-date > .icon-btn { flex: none; margin-right: var(--sp-4); }

@@ -425,8 +425,12 @@ export function beatRate(buckets: ProbeBucket[] | undefined): number | null {
   for (const b of buckets ?? []) { n += b[0]; ok += b[1]; }
   return n ? (ok / n) * 100 : null;
 }
-/** 成功率的着色（告警页月度可用率、待付表的出口成功率共用）：没有数据或到 99.9% 不着色，未满 99.9 标黄、未满 98 标红；配 .up-pct[data-tone] */
-export const uptimeTone = (p: number | null) => (p == null || p >= 99.9 ? undefined : p >= 98 ? 'warn' : 'bad');
+/** 成功率的着色（告警页月度可用率、待付表的出口成功率共用）：没有数据或到 99.9% 不着色，未满 99.9 标黄、未满 98 标红；配 .up-pct[data-tone]。
+ *  先舍入到显示的小数位（digits，告警页 2 位、待付表 1 位）再比较：99.86 显示成「99.9%」就不能标黄 */
+export const uptimeTone = (p: number | null, digits = 2) => {
+  const r = p == null ? null : Number(p.toFixed(digits));
+  return r == null || r >= 99.9 ? undefined : r >= 98 ? 'warn' : 'bad';
+};
 /** 成功率的写法（近 30 天可用率）：全部成功才写 100%，否则最多写到 99.99%（1439/1440 不会四舍五入成 100%）；没有探测为「—」 */
 export const successPct = (p: number | null) => (p == null ? '—' : p >= 100 ? '100%' : `${Math.min(p, 99.99).toFixed(2)}%`);
 const WORST_FIRST = ['bad', 'warn', 'ok'] as const;
