@@ -143,17 +143,23 @@ async fn billing_ledger_and_customer_page() {
     let s2 = slot_of(&t.get(&base1).await, "团队1-02").clone();
     // （空出就在刚才，结束日 = 空出那天）
     assert_eq!(s2["end_date"].as_str(), Some(seen_day.as_str()), "{s2}");
+    // 空出原因：被设为不计费、节点还在团队里 = exempt；有占用者 = null
+    assert_eq!((s2["left_reason"].as_str(), slot_of(&t.get(&base1).await, "团队1-04")["left_reason"].is_null()), (Some("exempt"), true), "{s2}");
     // 机器被物理删除：外键置空，对账照常把名额空出（不报错）
     sqlx::query("delete from machine where id = $1").bind(n3).execute(&t.st.db).await.unwrap();
     ledger::reconcile(&t.st, t26 + Duration::hours(52)).await.unwrap();
-    assert_eq!(slot_of(&t.get(&base1).await, "团队1-03")["state"], "vacated");
+    let s3 = slot_of(&t.get(&base1).await, "团队1-03").clone();
+    assert_eq!((s3["state"].as_str(), s3["left_reason"].as_str()), (Some("vacated"), Some("left")), "{s3}");
 
     // 增减记录：一句话、新的在前、可翻页
     let all = texts(&t, team1).await;
-    for want in ["团队1-01 → 团队1-04 替换，计费不变", &format!("团队1-05 加入，新增计费节点（{} 起算）", &seen_day[5..]), "团队1-02 设为不计费", "团队1-01 计入计费（初始化，"] {
+    for want in ["团队1-01 → 团队1-04 替换，计费不变", &format!("团队1-05 加入，新增计费节点（{} 起算）", &seen_day[5..]), "团队1-02 设为不计费", "初始化：3 个节点计入计费（"] {
         assert!(all.iter().any(|x| x.starts_with(want)), "没有「{want}」: {all:?}");
     }
     assert!(all.iter().any(|x| x.starts_with("团队1-02 离开，计费节点减少（算到 ")), "{all:?}");
+    // 初始化每个团队只一条，名单在 detail 里
+    let inits: Vec<Value> = sqlx::query_scalar("select detail from billing_event where team_id = $1 and kind = 'init'").bind(team1).fetch_all(&t.st.db).await.unwrap();
+    assert_eq!((inits.len(), inits[0]["nodes"].as_array().map(|a| a.len())), (1, Some(3)), "{inits:?}");
     let first = t.get(&format!("/api/v1/teams/{team1}/billing-events?limit=2")).await;
     let next = t.get(&format!("/api/v1/teams/{team1}/billing-events?limit=2&before={}", first[1]["id"].as_str().unwrap())).await;
     assert_eq!(next[0]["text"].as_str(), Some(all[2].as_str()));
