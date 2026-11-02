@@ -862,7 +862,7 @@ async fn exits_down_notes_maintenance_and_alerts() {
     alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(30)).await.unwrap();
     let inc = incidents(&t, "firing").await;
     let ex = inc.iter().find(|i| i["rule"] == "router_exits_down").unwrap();
-    assert_eq!(ex["summary"], "团队2-路由M：1 个出口连续两次延迟测试不通：节点03（其中 1 个指向的团队2-03 正在告警）");
+    assert_eq!(ex["summary"], "团队2-路由M：1 个出口连续两次延迟测试不通：节点03（经 线路机2；其中 1 个指向的团队2-03 正在告警）");
     // 又进了维护：开着的保持（不当成恢复），摘要照旧
     sqlx::query("update silence set deleted_at = null where id = $1").bind(maint).execute(&t.st.db).await.unwrap();
     for s in [60, 200] {
