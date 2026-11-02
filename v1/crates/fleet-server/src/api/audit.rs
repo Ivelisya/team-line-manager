@@ -532,6 +532,8 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         a if a.starts_with("customer_batch.") => format!("{} · 第{:02}批 {} · {}", s("team"), d["seq"].as_i64().unwrap_or(0), s("region"), s("what")),
         a if a.starts_with("customer_page.") => s("team"),
         // 「团队1 · 团队1-05 设为不计费」；初始化没有团队，只有 what
+        // 以节点名开头，界面上名字可点（同上架、改套餐）
+        "billing.exempt" if !s("name").is_empty() => format!("{} · {}", s("name"), s("what")),
         a if a.starts_with("billing.") => if s("team").is_empty() { s("what") } else { format!("{} · {}", s("team"), s("what")) },
         // 「香港 · 经 SSH 安装」「香港 · 一次性安装命令」
         "probe_point.create" => format!("{} · {}", s("name"), if d["method"] == "ssh" { "经 SSH 安装" } else { "一次性安装命令" }),

@@ -495,7 +495,7 @@ pub async fn exempt(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<U
         if let Some(t) = team {
             ledger::log(&mut tx, t, None, OffsetDateTime::now_utc(), "exempt", Some(&name), None, json!({"exempt": b.exempt})).await?;
         }
-        audit(&mut tx, &a.name, "billing.exempt", "machine", Some(id), json!({"team": tname.unwrap_or_default(), "what": format!("{name} {}", if b.exempt { "设为不计费" } else { "恢复计费" })}))
+        audit(&mut tx, &a.name, "billing.exempt", "machine", Some(id), json!({"team": tname.unwrap_or_default(), "name": name, "what": if b.exempt { "设为不计费" } else { "恢复计费" }}))
             .await?;
     }
     tx.commit().await?;

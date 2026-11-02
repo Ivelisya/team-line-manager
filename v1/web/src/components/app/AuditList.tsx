@@ -30,11 +30,6 @@ function describe(a: AuditEntry): Desc {
   const base: Desc = name && a.summary === name ? { title: a.title, target: name, rest: '', more: [], machine }
     : name && a.summary.startsWith(`${name} · `) ? { title: a.title, target: name, rest: a.summary.slice(name.length + 3), more: [], machine }
       : { title: a.title, target: name && machine ? name : '', rest: a.summary, more: [], machine };
-  // 设置节点计费：detail 里没有 name，摘要是「团队1 · 团队1-05 设为不计费」（团队可缺）——名字从摘要里取出来，让它也是可点的对象名
-  if (!name && machine && a.action === 'billing.exempt') {
-    const m = /^(?:(.*) · )?(\S+) (设为不计费|恢复计费)$/.exec(a.summary);
-    if (m) return { ...base, target: m[2], rest: [m[1], m[3]].filter(Boolean).join(' · ') };
-  }
   if (a.action !== 'exec') return base;
   // 远程执行：结果自己判断（中控摘要里的「执行中或中断」放久了就是结果未知），命令、结果、耗时进展开的明细
   const cmd = str(d.command);
