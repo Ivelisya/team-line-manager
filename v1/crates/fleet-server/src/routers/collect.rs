@@ -960,46 +960,40 @@ async fn one(st: &AppState, t: &Target, m: &mut Mem, entries: &[Entry], delay: b
         sqlx::query_as("select reachable, error from router_status where router_id = $1").bind(t.id).fetch_optional(&st.db).await?;
     match outcome {
         Outcome::Pending => {
-            let mut tx = crate::db::begin_async(&st.db).await?;
             sqlx::query(
                 "insert into router_status (router_id, ts, reachable, error) values ($1, now(), false, null)
                  on conflict (router_id) do update set ts = now(), reachable = false, error = null",
             )
             .bind(t.id)
-            .execute(&mut *tx)
+            .execute(&st.db)
             .await?;
-            tx.commit().await?;
             Ok(before.is_none_or(|b| b.0 || b.1.is_some()))
         }
         Outcome::Fail(err) => {
-            let mut tx = crate::db::begin_async(&st.db).await?;
             sqlx::query(
                 "insert into router_status (router_id, ts, reachable, error) values ($1, now(), false, $2)
                  on conflict (router_id) do update set ts = now(), reachable = false, error = $2",
             )
             .bind(t.id)
             .bind(&err)
-            .execute(&mut *tx)
+            .execute(&st.db)
             .await?;
-            tx.commit().await?;
             Ok(before.is_none_or(|b| b.0 || b.1.as_deref() != Some(err.as_str())))
         }
         // 连得上：最近一次连上的时间照样更新（不算离线），快照、指标不动
         Outcome::Error(err) => {
-            let mut tx = crate::db::begin_async(&st.db).await?;
             sqlx::query(
                 "insert into router_status (router_id, ts, reachable, error, last_ok_at) values ($1, now(), true, $2, now())
                  on conflict (router_id) do update set ts = now(), reachable = true, error = $2, last_ok_at = now()",
             )
             .bind(t.id)
             .bind(&err)
-            .execute(&mut *tx)
+            .execute(&st.db)
             .await?;
-            tx.commit().await?;
             Ok(before.is_none_or(|b| !b.0 || b.1.as_deref() != Some(err.as_str())))
         }
         Outcome::Ok(mut b, change) => {
-            let mut tx = crate::db::begin_async(&st.db).await?;
+            let mut tx = st.db.begin().await?;
             // 路由刚被删掉：外键挡住，什么都不写
             let exists: Option<i32> = sqlx::query_scalar("select 1 from router where id = $1 for share").bind(t.id).fetch_optional(&mut *tx).await?;
             if exists.is_none() {

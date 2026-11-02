@@ -816,20 +816,25 @@ async fn agent_auth_records_token_use() {
     assert!(token_used_ago(&t, relay).await.is_some_and(|s| s >= 119.0), "撤销的令牌不刷新");
 }
 
-/// AnyTLS（sing-box）状态每份上报都覆盖（同 caps）：旧 agent 不报时，之前记下的 running 不能一直留着
+/// AnyTLS（sing-box）状态由带样本的上报（有 agent_health）覆盖：旧 agent 不报时，之前记下的 running 不能一直留着；
+/// 访问日志积压时追加的只带访问事件的上报（没有 agent_health）不动它
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn singbox_status_is_overwritten_each_report() {
     let t = setup().await;
     let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
-    let mut r = blank_report(1);
+    let samples = |seq| fleet_proto::Report { agent_health: Some(fleet_proto::AgentHealth::default()), ..blank_report(seq) };
+    let mut r = samples(1);
     r.singbox = Some(fleet_proto::SingboxStatus { installed: true, running: true, ..Default::default() });
     assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
     assert_eq!(t.get(&format!("/api/v1/machines/{relay}")).await["agent"]["anytls"]["running"], true);
-    // 不带 singbox 的上报（旧 agent）：摘掉旧值，界面回到「未知」
+    // 追赶上报（只带访问事件）：状态留着
     assert_eq!(t.report("tok1", &blank_report(2)).await.0, StatusCode::OK);
+    assert_eq!(t.get(&format!("/api/v1/machines/{relay}")).await["agent"]["anytls"]["running"], true);
+    // 带样本却不带 singbox（旧 agent）：摘掉旧值，界面回到「未知」
+    assert_eq!(t.report("tok1", &samples(3)).await.0, StatusCode::OK);
     assert!(t.get(&format!("/api/v1/machines/{relay}")).await["agent"]["anytls"].is_null());
     // 再报又有
-    let mut r = blank_report(3);
+    let mut r = samples(4);
     r.singbox = Some(fleet_proto::SingboxStatus { installed: true, running: false, ..Default::default() });
     assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
     assert_eq!(t.get(&format!("/api/v1/machines/{relay}")).await["agent"]["anytls"]["running"], false);

@@ -507,12 +507,8 @@ pub async fn run_once(st: &AppState) -> anyhow::Result<()> {
     send_once(st, &month).await
 }
 
-/// 发某个月的月报，同一个月只发一次。没有开月报的已启用渠道时不占位（不记成已发），等渠道配好之后下一小时再发
+/// 发某个月的月报，同一个月只发一次。没有开月报的已启用渠道时（send 返回 409）撤掉占位、不记成已发，等渠道配好之后下一小时再发
 pub async fn send_once(st: &AppState, month: &str) -> anyhow::Result<()> {
-    let channels: i64 = sqlx::query_scalar("select count(*) from notify_channel where enabled and monthly_report").fetch_one(&st.db).await?;
-    if channels == 0 {
-        return Ok(());
-    }
     let claimed = sqlx::query(
         "insert into app_setting (key, value, updated_by) values ($1, to_jsonb($2::text), $3)
          on conflict (key) do update set value = excluded.value, updated_at = now(), updated_by = excluded.updated_by where app_setting.value is distinct from excluded.value",
@@ -529,7 +525,7 @@ pub async fn send_once(st: &AppState, month: &str) -> anyhow::Result<()> {
     }
     match send(st, ACTOR, Some(month)).await {
         Ok(v) => tracing::info!("月报 {month} 已排进发送队列（{} 个渠道）", v["channels"]),
-        // 占位到发送之间渠道被关掉了：撤掉占位，不记成已发
+        // 没有收月报的渠道（含占位到发送之间被关掉）：撤掉占位，不记成已发
         Err(e) if e.status == axum::http::StatusCode::CONFLICT => {
             sqlx::query("delete from app_setting where key = $1").bind(SENT_KEY).execute(&st.db).await?;
             tracing::debug!("月报 {month} 没有发：{}", e.message);

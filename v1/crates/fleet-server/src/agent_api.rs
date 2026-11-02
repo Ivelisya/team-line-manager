@@ -566,7 +566,8 @@ async fn ingest(st: &AppState, a: AgentId, mut r: Report) -> Result<Json<ReportA
         v
     });
     let agent_health = r.agent_health.as_ref().map(|h| serde_json::to_value(h).unwrap_or_default());
-    // AnyTLS（sing-box）的状态：每份都覆盖（同 caps），旧 agent 不报就先摘掉旧值，info 里就没有（界面显示「未知」，分享与订阅不给 AnyTLS）
+    // AnyTLS（sing-box）的状态：带样本的那份（有 agent_health）覆盖，旧 agent 不报就摘掉旧值（界面显示「未知」，分享与订阅不给 AnyTLS）；
+    // 访问日志积压时追加的只带访问事件的上报（with_samples=false）不带它，不能把它摘掉
     let singbox = r.singbox.as_ref().map(|s| serde_json::to_value(s).unwrap_or_default());
     // 时钟偏差 = 中控收到时刻 − sent_at_ms（正数 = agent 时钟慢）。sent_at_ms 是建报时刻，积压补发、失败重发的报告会偏大，
     // 只认新鲜的：建报时离线队列为空（之前的报告都已确认，建报一定晚于中控收到上一份）且上一份是 30 秒内收到的，误差不超过 30 秒
@@ -580,7 +581,7 @@ async fn ingest(st: &AppState, a: AgentId, mut r: Report) -> Result<Json<ReportA
          values ($1, $2, $3, $4, now(), coalesce($5, '{}'::jsonb) || jsonb_strip_nulls(jsonb_build_object('xray', $6::jsonb, 'agent_health', $7::jsonb, 'clock_skew_ms', $8::bigint)) || jsonb_build_object('caps', to_jsonb($9::text[])) || jsonb_strip_nulls(jsonb_build_object('singbox', $10::jsonb)))
          on conflict (machine_id) do update set agent_version = excluded.agent_version, boot_id = excluded.boot_id,
            last_seq = greatest(agent_state.last_seq, excluded.last_seq), last_report_at = now(),
-           info = (agent_state.info - 'singbox') || coalesce($5, '{}'::jsonb) || jsonb_strip_nulls(jsonb_build_object('xray', $6::jsonb, 'agent_health', $7::jsonb, 'clock_skew_ms', $8::bigint))
+           info = (case when $7::jsonb is null then agent_state.info else agent_state.info - 'singbox' end) || coalesce($5, '{}'::jsonb) || jsonb_strip_nulls(jsonb_build_object('xray', $6::jsonb, 'agent_health', $7::jsonb, 'clock_skew_ms', $8::bigint))
                   || jsonb_build_object('caps', to_jsonb($9::text[])) || jsonb_strip_nulls(jsonb_build_object('singbox', $10::jsonb))",
     )
     .bind(a.machine_id)

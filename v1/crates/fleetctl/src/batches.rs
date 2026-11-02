@@ -211,7 +211,8 @@ pub fn batch(ctx: &Ctx, team: &str, batch: &str, start: &str) -> anyhow::Result<
     let q = batch.trim();
     let b = arr(&d["batches"]).iter().find(|b| st(b, "/key") == q || q.parse::<i64>().is_ok_and(|n| b["seq"].as_i64() == Some(n)));
     let Some(b) = b else { bail!("{} 没有批次「{q}」（fleetctl batch list {} 看编号）", st(&d, "/team/name"), team) };
-    let key = st(b, "/key").replace('|', "%7C");
+    // key 是「起算日|地区」，地区是自由输入的：整段百分号编码成一个路径段
+    let key: String = st(b, "/key").bytes().map(|c| if c.is_ascii_alphanumeric() || b"-._~".contains(&c) { char::from(c).to_string() } else { format!("%{c:02X}") }).collect();
     let r = ctx.c.patch(&format!("/teams/{}/batches/{key}", st(&d, "/team/id")), &json!({"start_date": start}))?;
     ctx.emit(&r, || format!("已改：{} 第{:02}批 · {} 起算 {}（{} 个）", st(&d, "/team/name"), r["seq"].as_i64().unwrap_or(0), st(&r, "/region"), st(&r, "/start_date"), st(&r, "/count")));
     Ok(0)

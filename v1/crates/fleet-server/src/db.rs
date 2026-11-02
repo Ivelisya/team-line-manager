@@ -10,7 +10,7 @@ use uuid::Uuid;
 pub type Tx<'a> = Transaction<'a, Postgres>;
 
 /// 遥测类写入（agent / 探测点上报、各小时汇总）的事务：本事务 `synchronous_commit = off`，提交不等 WAL 落盘。
-/// 虚拟盘偶发 fsync 卡顿时，这类写入不再跟着卡住上报和鉴权；中控崩溃最多丢最后几百毫秒的遥测（agent 会重发 / 汇总会重算）。
+/// 虚拟盘偶发 fsync 卡顿时，这类写入不再跟着卡住上报和鉴权；只有 PostgreSQL 或宿主机崩溃时会丢最后约几百毫秒已确认的写入（agent 不会重发；汇总下一轮重算），中控进程崩溃不丢。
 /// 任务、审计、计费、配置写入不要用它。
 pub async fn begin_async(db: &PgPool) -> sqlx::Result<Tx<'static>> {
     let mut tx = db.begin().await?;
