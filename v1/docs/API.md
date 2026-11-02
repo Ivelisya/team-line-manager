@@ -198,7 +198,7 @@ EntryView = { id, relay:{id,name}, node:{id,name}, direct, port, lifecycle, appl
 | POST | `/renewals/batch` | 批量登记续费：`{items:[{machine_id, amount_cents?}], cycles?(默认 1), ref?(账单号，进备注「账单 xxx」), note?, dry_run?}`。一个事务里逐台按订阅周期顺延（逻辑同单台 `cycles`），金额没给取订阅生效价 × 周期数；有一台不行（没有订阅等，报错带机器名）整批不登记；审计只一条 `renewal.batch`（`detail.machines` 列出每台的新旧到期日与金额）。`dry_run` 照常校验、写，读出结果后整个回滚，不记审计、不广播。→ `{dry_run, items:[{machine_id, name, old_due, new_due, amount_cents, currency, usd_cents}], total}`（`total` 同月费合计的形状：USD 合计 + 各币种 + 未折算）。一次 1–200 台 |
 | GET | `/billing/due` | 待付清单：`?days=30`（未来多少天内到期，含已过期，按各订阅账单时区的今天算；默认 30）或 `?until=YYYY-MM-DD`，`include_spare=true` 带上不续费的备用机（`spare_unbilled`，默认不带；还被软路由出口指着、上面有在用同机 IP 节点（或有开着自动续费的备用同机 IP 节点）、开着自动续费的备用机不自动回收，照常续费，默认也在清单里，机器项 `spare: true` 并在 `spare_hold` 写原因）。只列在用机器；开了自动续费的单列 `auto`、不进待付。→ `{days, until, total, groups:[{provider:{id,name,panel_url}, due_date, billing_tz, machines:[{id,name,kind,due_date,due_days,billing_tz,cycle,price_cents,currency,price_usd_cents,spare,spare_hold}], total}], auto:[{provider, machine}]}`，`groups` 按 供应商 × 到期日 × 账单时区 分组（`due_days` 按各自账单时区的今天算，同一天到期、时区不同的会差一天，所以分开成组），按到期日、供应商排；`total` 是 USD 合计（同月费合计的形状，`by_currency` 是原币种小计）；价格是订阅每期的生效价 |
 | GET | `/teams/{id}/renumber` | 预览：`{data:{changes:[{machine_id,old_name,new_name}],notes:[string],token}}`。notes：各路由快照里指向要改名的节点的出口（出口名是路由上自己起的，不跟着改） |
-| POST | `/teams/{id}/renumber` | `{token}`（预览返回的，防止预览后数据变了）→ 一次生效 |
+| POST | `/teams/{id}/renumber` | `{token}`（预览返回的，防止预览后数据变了）→ 一次生效；团队里还有退役中的节点（`retiring`）时预览和应用都 409（不压缩，它们收尾时自动压好；自动压缩同样：同团队有节点还在退役中就不压，由最后收尾的那台一次压好） |
 
 ## 上架
 | 方法 | 路径 | 说明 |
