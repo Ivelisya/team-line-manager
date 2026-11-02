@@ -46,7 +46,9 @@ pub(crate) fn exit_rows(routers: &[Value], node: Option<&str>) -> Vec<Vec<String
         let state = crate::routers::state_cn(&state);
         for e in r["exits"].as_array().cloned().unwrap_or_default() {
             let to = e["error"].as_str().map_or_else(|| st(&e, "/to"), |x| format!("对不上：{x}"));
-            let mut row = vec![st(r, "/name"), state.to_string(), st(&e, "/exit"), st(&e, "/from"), to];
+            // AnyTLS 出口标出来（换过去还是 AnyTLS，端口是新入口的 AnyTLS 端口）
+            let exit = if e["proto"] == "anytls" { format!("{}（AnyTLS）", st(&e, "/exit")) } else { st(&e, "/exit") };
+            let mut row = vec![st(r, "/name"), state.to_string(), exit, st(&e, "/from"), to];
             if let Some(n) = node {
                 row.insert(0, n.to_string());
             }

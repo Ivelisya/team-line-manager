@@ -43,8 +43,9 @@ export function installRoutersMock(R: Reg, env: Env) {
     const exits: RouterExit[] = Array.from({ length: n }, (_, i) => {
       const f = i < n - (opts.other ?? 0) ? fleet[i] : undefined; // 末尾 other 个是客户自己加的出口（不对应 fleet 入口）
       const dead = i + 1 === opts.dead; const flaky = i + 1 === opts.flaky;
+      const at = !!f && i % 3 === 2; // 每三个 fleet 出口里有一个已切成 AnyTLS（端口是入口端口 + 20000）
       return {
-        name: `节点${String(i + 1).padStart(2, '0')}`, type: 'Vless', server: f?.server ?? `198.51.100.${30 + i}`, port: f?.port ?? 443, entry: f?.entry ?? null,
+        name: `节点${String(i + 1).padStart(2, '0')}`, type: at ? 'AnyTLS' : 'Vless', proto: f ? (at ? 'anytls' : 'reality') : null, server: f?.server ?? `198.51.100.${30 + i}`, port: f ? f.port + (at ? 20000 : 0) : 443, entry: f?.entry ?? null,
         sync: !f ? 'unmanaged' : i + 1 === opts.drift ? 'drift' : 'ok', alive: !dead && !flaky, delay_ms: dead || flaky ? null : Math.round(60 + r() * 140), delay_at: iso(now - Math.floor(r() * 5) * MIN),
         fail_streak: dead ? 3 : flaky ? 1 : 0,
         conns: dead ? 0 : Math.floor(r() * 60), up_bps: dead ? 0 : r() * 3e6, down_bps: dead ? 0 : r() * 2.4e7, clients: dead ? 0 : Math.floor(r() * 6),

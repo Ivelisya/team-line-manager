@@ -22,7 +22,7 @@ pub mod speedtest;
 mod steps;
 pub mod tune;
 
-pub use steps::sync_exit;
+pub use steps::{proto_exit, sync_exit};
 
 use crate::db::Tx;
 use crate::error::ApiResult;
@@ -130,6 +130,8 @@ const REPLACE: &[StepDef] = &[s("routers", "改软路由出口", 1800), s("renum
 const REPOINT: &[StepDef] = &[s("routers", "改软路由出口", 1800)];
 // 同步软路由出口参数（api/router_ops.rs）：参数和对应入口不一致的出口改成入口现在的参数（同一步「改软路由出口」，目标是路由），入口不动
 const ROUTER_SYNC: &[StepDef] = &[s("routers", "改软路由出口", 1800)];
+// 切软路由出口协议（api/router_ops.rs）：指向 fleet 入口的出口整块改写成 AnyTLS / Reality（同一步「改软路由出口」，目标是路由），入口不动
+const ROUTER_PROTOCOL: &[StepDef] = &[s("routers", "改软路由出口", 1800)];
 // 推送时旧程序留成 .prev；起不来、或 2 分钟内等不到新版本上报，就换回去并让作业失败（见 steps::agent / wait_report）。重试从推送重来
 // 线路机升级 agent 时顺带推 sing-box（约 30 MB，推送上限 300 s）
 const UPGRADE_AGENT: &[StepDef] = &[s("agent", "推送并重启 agent", 900), s("wait_report", "等待新版本上报", 180)];
@@ -157,6 +159,7 @@ pub fn defs(kind: &str) -> &'static [StepDef] {
         "replace" => REPLACE,
         "repoint" => REPOINT,
         "router_sync" => ROUTER_SYNC,
+        "router_protocol" => ROUTER_PROTOCOL,
         "tune" => TUNE,
         "ss_refresh" => SS_REFRESH,
         "speedtest" => SPEEDTEST,
@@ -172,10 +175,10 @@ pub fn title_of(kind: &str, key: &str) -> &'static str {
 /// 上架类作业：目标机器处于上架中，失败时机器标为上架失败
 pub fn provisions(kind: &str) -> bool { kind.starts_with("provision_") }
 
-pub fn cancellable(kind: &str) -> bool { provisions(kind) || matches!(kind, "attach_entry" | "move_entry" | "upgrade_agent" | "replace" | "repoint" | "router_sync" | "tune" | "ss_refresh" | "speedtest" | "reverse") }
+pub fn cancellable(kind: &str) -> bool { provisions(kind) || matches!(kind, "attach_entry" | "move_entry" | "upgrade_agent" | "replace" | "repoint" | "router_sync" | "router_protocol" | "tune" | "ss_refresh" | "speedtest" | "reverse") }
 
 /// 停在「改软路由出口」这一步
-fn at_routers(kind: &str, step: i32) -> bool { (matches!(kind, "replace" | "repoint" | "router_sync") && step == 0) || (kind == "move_entry" && step == MOVE_ROUTERS) }
+fn at_routers(kind: &str, step: i32) -> bool { (matches!(kind, "replace" | "repoint" | "router_sync" | "router_protocol") && step == 0) || (kind == "move_entry" && step == MOVE_ROUTERS) }
 
 /// 作业走到第 `step` 步、处于 `state` 时为什么不能取消；能取消返回 None。`params` 是作业参数（「改软路由出口」记的
 /// `routers_queued` / `routers_applied` / `routers_stuck`，见 steps/replace.rs）。
@@ -211,7 +214,7 @@ pub fn cancel_blocker(kind: &str, step: i32, state: &str, params: &Value) -> Opt
     if !matches!(state, "queued" | "running" | "waiting" | "failed") {
         return Some("作业已结束");
     }
-    if matches!(kind, "replace" | "repoint" | "router_sync") && !queued && (step > 0 || !matches!(state, "queued" | "failed")) {
+    if matches!(kind, "replace" | "repoint" | "router_sync" | "router_protocol") && !queued && (step > 0 || !matches!(state, "queued" | "failed")) {
         return Some("软路由已经开始改（或已经改好），不能再取消：失败了点重试到完成");
     }
     if !matches!(kind, "upgrade_agent" | "tune" | "ss_refresh" | "speedtest") || state == "queued" {
@@ -951,6 +954,8 @@ fn view_change(kind: &str) -> ViewChange {
         "speedtest" => ViewChange::Quiet,
         // 只把路由上参数对不上的出口改成入口现在的参数（server:port 不变）：出口 → 入口 → 节点的对应不变，视图里的 router_exits 不变
         "router_sync" => ViewChange::Quiet,
+        // 切出口协议：出口还是对着同一个入口，router_exits 不变
+        "router_protocol" => ViewChange::Quiet,
         // 退役完成：生命周期 → retired（移出列表）、同团队压缩编号；清除数据：机器与入口删除
         "retire" | "purge" => ViewChange::Names,
         // 上架 / 补入口 / 换线路机 / 改出口指向：生命周期、入口增删与归属、备用机器的 router_exits 变；名字、团队、编号不动
@@ -1266,7 +1271,7 @@ mod tests {
     fn view_change_by_kind() {
         use ViewChange::*;
         // 不改视图字段的作业结束只发 Job 事件
-        for k in ["upgrade_agent", "ss_refresh", "tune", "speedtest", "router_sync"] {
+        for k in ["upgrade_agent", "ss_refresh", "tune", "speedtest", "router_sync", "router_protocol"] {
             assert_eq!(view_change(k), Quiet, "{k}");
         }
         for k in ["provision_vps", "provision_proxy", "provision_relay", "provision_ip", "attach_entry", "move_entry", "repoint", "replace", "reverse"] {
@@ -1280,7 +1285,7 @@ mod tests {
     #[test]
     fn outer_timeout_covers_step_timeout() {
         for k in [
-            "provision_vps", "provision_proxy", "provision_relay", "provision_ip", "attach_entry", "retire", "purge", "upgrade_agent", "move_entry", "replace", "repoint", "router_sync", "tune", "ss_refresh", "speedtest", "reverse",
+            "provision_vps", "provision_proxy", "provision_relay", "provision_ip", "attach_entry", "retire", "purge", "upgrade_agent", "move_entry", "replace", "repoint", "router_sync", "router_protocol", "tune", "ss_refresh", "speedtest", "reverse",
         ] {
             for d in defs(k) {
                 assert!(outer_timeout(d).as_secs() as i64 >= d.timeout_s + 120);

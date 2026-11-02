@@ -193,7 +193,7 @@ async fn preview_and_full_run() {
     let rs = p["routers"].as_array().unwrap();
     assert_eq!(rs.len(), 2, "{p}");
     // 出口写的是线路机 IP 就换成 IP，写的是域名就换成 public_host
-    assert_eq!(rs[0]["exits"], json!([{"exit": "节点01", "old_entry_id": oe, "new_entry_id": rs[0]["exits"][0]["new_entry_id"], "from": "198.51.100.2:20003", "to": "198.51.100.2:20020", "error": null}]));
+    assert_eq!(rs[0]["exits"], json!([{"exit": "节点01", "old_entry_id": oe, "new_entry_id": rs[0]["exits"][0]["new_entry_id"], "from": "198.51.100.2:20003", "to": "198.51.100.2:20020", "error": null, "proto": "reality"}]));
     assert_eq!(rs[1]["exits"][0]["to"], "relay.test:20020");
     // 新节点原来的 02 空出来，团队里没有 03 以后的：不用压缩
     assert_eq!(p["renames"], json!([]));
@@ -1914,4 +1914,85 @@ async fn repoint_preview_warns_about_spare_nodes() {
     t.st.live.invalidate();
     let ws = t.get(&url).await["warnings"].to_string();
     assert!(!ws.contains("下一轮维护"), "{ws}");
+}
+
+/// 切出口协议：线路机的 sing-box 没在跑时跳过并写原因；预览列出要切的出口（入口、线路机、改成 AnyTLS 端口）；作业 router_protocol 把出口
+/// 改写成 AnyTLS（KIND_1='anytls'、端口是入口的 AnyTLS 端口），审计看得懂。切过之后替换节点：AnyTLS 出口还写 AnyTLS，端口是新入口的 AnyTLS 端口；
+/// 线路机只开 Reality 时 AnyTLS 出口换不过去
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn protocol_switch_then_replace_keeps_anytls() {
+    let w = world().await;
+    let t = &w.t;
+    let oe = old_entry(&w).await;
+    let ra = router(&w, "团队2-路由P", 23710, &[("节点01", "relay.test", 20003, Some(oe)), ("直连", "203.0.113.99", 8388, None)]).await;
+    // 节点有出站参数（入口进期望状态，才有 AnyTLS 端口）
+    for n in [w.old, w.new] {
+        sqlx::query("insert into node_outbound (machine_id, protocol, host, port, method, secret_enc) values ($1, 'shadowsocks', '203.0.113.5', 8388, 'aes-256-gcm', '\\x00')")
+            .bind(n)
+            .execute(&t.st.db)
+            .await
+            .unwrap();
+    }
+    let p = t.get(&format!("/api/v1/routers/{ra}/protocol?to=anytls")).await;
+    assert_eq!(p["ok"], false, "{p}");
+    assert_eq!((p["skipped"][0]["exit"].as_str(), p["skipped"][0]["why"].as_str()), (Some("节点01"), Some("线路机 线路机2 的 AnyTLS（sing-box）没在跑：先升级它的 agent")), "{p}");
+    sqlx::query(
+        "insert into agent_state (machine_id, agent_version, last_report_at, info) values ($1, 'v', now(), '{\"singbox\": {\"running\": true}}')
+         on conflict (machine_id) do update set info = excluded.info",
+    )
+    .bind(w.relay)
+    .execute(&t.st.db)
+    .await
+    .unwrap();
+    let p = t.get(&format!("/api/v1/routers/{ra}/protocol?to=anytls")).await;
+    assert_eq!(p["ok"], true, "{p}");
+    assert_eq!(
+        p["exits"],
+        json!([{"exit": "节点01", "entry": "x", "relay": "线路机2", "from": "relay.test:20003", "to": "relay.test:40003", "from_proto": "reality", "to_proto": "anytls"}]),
+        "{p}"
+    );
+    assert_eq!(p["routers"][0]["exits"][0]["proto"], "anytls");
+    assert_eq!(t.get(&format!("/api/v1/routers/{ra}/protocol?to=reality")).await["ok"], false, "都是 Reality 了，没有要切的");
+    assert_eq!(t.req("GET", &format!("/api/v1/routers/{ra}/protocol?to=vmess"), None, None).await.0, StatusCode::BAD_REQUEST);
+    let d = t.post(&format!("/api/v1/routers/{ra}/protocol"), json!({"to": "anytls"})).await;
+    let job = d["job_id"].as_str().unwrap().to_string();
+    drive(t).await;
+    let j = t.job(&job).await;
+    assert_eq!((j["state"].as_str(), j["kind"].as_str(), j["target"]["name"].as_str()), (Some("succeeded"), Some("router_protocol"), Some("团队2-路由P")), "{j} {}", logs(t, &job).await);
+    let a = applies(23710);
+    assert_eq!(a.len(), 1, "{}", logs(t, &job).await);
+    assert!(a[0].contains("OSRV_1='relay.test'\nOPORT_1='20003'\nSRV_1='relay.test'\nPORT_1='40003'\nUUID_1='11111111-1111-4111-8111-111111111111'") && a[0].contains("KIND_1='anytls'"), "{}", &a[0][..600]);
+    let au = t.get(&format!("/api/v1/audit?target_id={ra}")).await;
+    assert_eq!((au[0]["title"].as_str(), au[0]["summary"].as_str()), (Some("切软路由出口协议"), Some("团队2-路由P 的 节点01 → AnyTLS")));
+    assert!(logs(t, &job).await.contains("节点01 relay.test:20003 → AnyTLS relay.test:40003"), "{}", logs(t, &job).await);
+
+    // 路由上现在是 AnyTLS 出口（快照、配置同步改成切过之后的样子）
+    let at = json!({"id": oe, "name": "x", "node_id": w.old, "relay_id": w.relay, "node_name": "", "relay_name": "线路机2", "port": 20003, "lifecycle": "active"});
+    sqlx::query("update router_status set data = $2 where router_id = $1")
+        .bind(ra)
+        .bind(json!({"exits": [{"name": "节点01", "type": "AnyTLS", "proto": "anytls", "server": "relay.test", "port": 40003, "entry": at, "sync": "ok"}]}))
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    std::fs::write(root(23710).join("config.yaml"), "proxies:\n- name: 节点01\n  type: anytls\n  server: relay.test\n  port: 40003\n  password: 11111111-1111-4111-8111-111111111111\n  sni: www.cloudflare.com\n").unwrap();
+    // 线路机只开 Reality：AnyTLS 出口换不过去（执行时没有 AnyTLS 端口），作业失败、路由不动
+    sqlx::query("update relay set protocols = 'reality' where machine_id = $1").bind(w.relay).execute(&t.st.db).await.unwrap();
+    let d = t.post(&format!("/api/v1/machines/{}/replace", w.old), json!({"new_machine_id": w.new})).await;
+    let job = d["job_id"].as_str().unwrap().to_string();
+    let rp = &d["routers"][0]["exits"][0];
+    assert_eq!((rp["proto"].as_str(), rp["to"].as_str()), (Some("anytls"), Some("relay.test:新端口")), "{d}");
+    drive(t).await;
+    let j = t.job(&job).await;
+    assert_eq!(j["state"], "failed", "{j}");
+    assert!(logs(t, &job).await.contains("是 AnyTLS，新入口（relay.test）所在的线路机没开 AnyTLS"), "{}", logs(t, &job).await);
+    assert_eq!(applies(23710).len(), 1, "没有动路由");
+    // 开回两种：重试，AnyTLS 出口写新入口的 AnyTLS 端口
+    sqlx::query("update relay set protocols = 'both' where machine_id = $1").bind(w.relay).execute(&t.st.db).await.unwrap();
+    t.post(&format!("/api/v1/jobs/{job}/retry"), json!({})).await;
+    drive(t).await;
+    let j = t.job(&job).await;
+    assert_eq!(j["state"], "succeeded", "{j} {}", logs(t, &job).await);
+    let a = applies(23710);
+    assert_eq!(a.len(), 2);
+    assert!(a[1].contains(&format!("OSRV_1='relay.test'\nOPORT_1='40003'\nSRV_1='relay.test'\nPORT_1='40020'\nUUID_1='{NEW_UUID}'")) && a[1].contains("KIND_1='anytls'"), "{}", &a[1][..600]);
 }

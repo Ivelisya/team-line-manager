@@ -5,6 +5,9 @@
 //! 匹配与换线路机相同；`router_ids` 不空时只改这几台路由。新入口不叫 `entry_id`：取消作业时 compensate 会把 `entry_id` 当成作业建的入口摘掉。
 //! 同步软路由出口（router_sync，计划见 api/router_ops.rs）也只有这一步：目标是路由（`router_ids` 就是它），参数和对上的入口不一致（drift）的出口
 //! 改成这个入口现在的参数（server:port 不变，换 uuid / SNI / 公钥 / short-id），`exits` 不空时只改这几个；入口不在用的同步不了。
+//! 切出口协议（router_protocol，计划见 api/router_ops.rs）也只有这一步：目标是路由，指向 fleet 入口、协议不是 `to`（anytls / reality）的出口
+//! 整块改写成 `to`（同一个入口、同名出口，AnyTLS 的端口是入口的 AnyTLS 端口），`exits` / `pins` 同同步。
+//! 出口的协议跟着出口走：替换、换线路机、改指向、同步时 AnyTLS 出口还写 AnyTLS（server / port / password / sni，端口是新入口的 AnyTLS 端口），Reality 出口还写 Reality。
 //!
 //! 改路由：要改哪些出口按执行时路由的配置重新确定（经隧道读源配置，同一套匹配：api::replace::replace_exit / api::lifecycle::move_exit），
 //! 发起时的计划只作展示。不在线的路由按最近一次采集看，有出口要改就一台都不改。出口对不上新入口（同预览的原因）也一台都不改。
@@ -77,6 +80,7 @@ struct Stuck {
 /// 新入口现在的参数（执行时从库里取）
 #[derive(sqlx::FromRow)]
 struct NewEntry {
+    relay_id: Uuid,
     client_uuid: Uuid,
     short_id: String,
     port: i32,
@@ -87,7 +91,7 @@ struct NewEntry {
 /// 入口的参数：只取属于这几个节点（各作业的新入口所在的节点；同步出口不限，None）、在用的入口
 async fn new_entry(db: &sqlx::PgPool, id: Uuid, nodes: Option<&[Uuid]>) -> sqlx::Result<Option<NewEntry>> {
     sqlx::query_as(
-        "select e.client_uuid, e.short_id, e.port, r.reality_sni, r.reality_public_key from entry e join relay r on r.machine_id = e.relay_id
+        "select e.relay_id, e.client_uuid, e.short_id, e.port, r.reality_sni, r.reality_public_key from entry e join relay r on r.machine_id = e.relay_id
          where e.id = $1 and ($2::uuid[] is null or e.node_id = any($2)) and e.lifecycle = 'active'",
     )
     .bind(id)
@@ -116,14 +120,19 @@ enum Pick {
     /// 同步：参数不一致的出口 → 它对上的入口现在的参数（`exits` 空 = 这台路由上全部不一致的）。
     /// `pins`：发起时核对过的（出口名 → 入口）：执行时出口对上了别的入口就不动它（发起到执行之间路由上又被改过）
     Sync { exits: Vec<String>, pins: HashMap<String, Uuid> },
+    /// 切协议：指向 fleet 入口、协议不是 `anytls`（true = AnyTLS，false = Reality）的出口改写成这个协议，入口不变。`exits` / `pins` 同 Sync
+    Proto { anytls: bool, exits: Vec<String>, pins: HashMap<String, Uuid> },
 }
 
 impl Pick {
     /// `node`：作业的目标（替换是旧节点，换线路机是节点自己）
     async fn load(db: &sqlx::PgPool, job: &JobRow, node: Uuid) -> anyhow::Result<Pick> {
-        if job.kind == "router_sync" {
+        if matches!(job.kind.as_str(), "router_sync" | "router_protocol") {
             let exits = job.params["exits"].as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from).collect();
             let pins = job.params["pins"].as_object().into_iter().flatten().filter_map(|(k, v)| Some((k.clone(), Uuid::try_parse(v.as_str()?).ok()?))).collect();
+            if job.kind == "router_protocol" {
+                return Ok(Pick::Proto { anytls: job.params["to"] == clash::ANYTLS, exits, pins });
+            }
             return Ok(Pick::Sync { exits, pins });
         }
         if job.kind == "replace" {
@@ -147,24 +156,30 @@ impl Pick {
         Ok(Pick::Move { old_entry: uuid_of(&job.params, "old_entry_id")?, new: (eid, port as u16), from_ip, to })
     }
 
-    /// 出口 `name`（同步状态 `sync`，对上入口 `er`，现在指向 `srv:port`）要不要改、改成什么
-    fn exit(&self, name: &str, sync: &str, er: &clash::EntryRef, srv: &str, port: u16) -> Option<Result<ExitPlan, String>> {
-        match self {
+    /// 出口 `name`（同步状态 `sync`，对上入口 `er`，现在指向 `srv:port`，`anytls`：现在是 AnyTLS 出口）要不要改、改成什么。
+    /// 除了切协议，改完还是原来的协议
+    fn exit(&self, name: &str, sync: &str, er: &clash::EntryRef, srv: &str, port: u16, anytls: bool) -> Option<Result<ExitPlan, String>> {
+        let plan = match self {
             Pick::Move { old_entry, new, from_ip, to } => move_exit(er, *old_entry, Some(*new), from_ip, to, srv, port).map(Ok),
             Pick::Replace { old, new } => replace_exit(old, new, er, srv, port),
-            Pick::Sync { pins, .. } if pins.get(name).is_some_and(|id| *id != er.id) => {
-                Some(Err(format!("出口「{name}」现在对上的入口「{}」不是发起同步时核对的那个（路由上又改过），重新发起同步", er.name)))
+            Pick::Sync { pins, .. } | Pick::Proto { pins, .. } if pins.get(name).is_some_and(|id| *id != er.id) => {
+                return Some(Err(format!("出口「{name}」现在对上的入口「{}」不是发起时核对的那个（路由上又改过），重新发起", er.name)));
             }
             Pick::Sync { exits, .. } => sync_exit(exits, name, sync, er, srv, port),
-        }
+            Pick::Proto { anytls: to, exits, .. } => return proto_exit(exits, name, er, srv, port, anytls, *to),
+        };
+        plan.map(|r| r.map(|e| e.keep_proto(anytls)))
     }
+
+    /// 只改点了名的出口、出口对不上别的入口时跳过（同步、切协议），而不是整个作业不做
+    fn lenient(&self) -> bool { matches!(self, Pick::Sync { .. } | Pick::Proto { .. }) }
 
     /// 指向这条旧入口的出口归这个作业改
     fn owns(&self, old_entry: Uuid) -> bool {
         match self {
             Pick::Move { old_entry: o, .. } => *o == old_entry,
             Pick::Replace { old, .. } => old.iter().any(|e| e.id == old_entry),
-            Pick::Sync { .. } => true,
+            Pick::Sync { .. } | Pick::Proto { .. } => true,
         }
     }
 }
@@ -179,7 +194,21 @@ pub fn sync_exit(only: &[String], name: &str, sync: &str, er: &clash::EntryRef, 
         let why = format!("对应的入口「{}」{}，没有可同步的参数：改指向别的入口（fleetctl repoint）", er.name, routers::alerts::drift_why(&er.lifecycle));
         return (!only.is_empty()).then_some(Err(why));
     }
-    Some(Ok(ExitPlan { exit: name.to_string(), old_entry_id: er.id, new_entry_id: Some(er.id), old_server: srv.to_string(), old_port: port, server: srv.to_string(), port: Some(port), error: None }))
+    Some(Ok(ExitPlan { exit: name.to_string(), old_entry_id: er.id, new_entry_id: Some(er.id), old_server: srv.to_string(), old_port: port, server: srv.to_string(), port: Some(port), error: None, anytls: false }))
+}
+
+/// 切协议：出口（现在 `cur` 是不是 AnyTLS）改写成 `to` 协议，入口与 server 不变；已经是 `to` 的不改。`only` 不空时只看这几个出口。
+/// 入口不在用的切不了：点了名的返回原因，没点名的跳过。端口：Reality 是入口端口，AnyTLS 的预览（api/router_ops.rs）另算、执行时从库里取。预览与执行共用
+pub fn proto_exit(only: &[String], name: &str, er: &clash::EntryRef, srv: &str, port: u16, cur: bool, to: bool) -> Option<Result<ExitPlan, String>> {
+    if cur == to || (!only.is_empty() && !only.iter().any(|x| x == name)) {
+        return None;
+    }
+    if er.lifecycle != "active" {
+        let why = format!("对应的入口「{}」现在是「{}」，切不了协议", er.name, crate::entries::state_zh(&er.lifecycle));
+        return (!only.is_empty()).then_some(Err(why));
+    }
+    let new_port = (!to).then_some(er.port as u16);
+    Some(Ok(ExitPlan { exit: name.to_string(), old_entry_id: er.id, new_entry_id: Some(er.id), old_server: srv.to_string(), old_port: port, server: srv.to_string(), port: new_port, error: None, anytls: to }))
 }
 
 fn uuid_of(params: &Value, k: &str) -> anyhow::Result<Uuid> {
@@ -202,14 +231,14 @@ impl Part {
     async fn load(db: &sqlx::PgPool, job: &JobRow) -> anyhow::Result<Part> {
         let node = job.target_id.ok_or_else(|| anyhow!("作业没有目标机器"))?;
         // 同步出口的目标是路由：出口对上的入口属于哪个节点都算（见 covers），新入口就是原来那个
-        let new = if matches!(job.kind.as_str(), "move_entry" | "router_sync") { node } else { uuid_of(&job.params, "new_id")? };
+        let new = if matches!(job.kind.as_str(), "move_entry" | "router_sync" | "router_protocol") { node } else { uuid_of(&job.params, "new_id")? };
         let pick = Pick::load(db, job, node).await?;
         let plan = serde_json::from_value(job.params["plan"]["routers"].clone()).unwrap_or_default();
         Ok(Part { job: job.id, node, new, pick, plan })
     }
 
     /// 对上的入口属于节点 `node` 的出口归不归它看
-    fn covers(&self, node: Uuid) -> bool { matches!(self.pick, Pick::Sync { .. }) || self.node == node }
+    fn covers(&self, node: Uuid) -> bool { self.pick.lenient() || self.node == node }
 }
 
 /// 同一台软路由同时只有一个作业在改：PG 会话级 advisory lock，键由路由 id 算出。第一次拿到锁时把那条连接从连接池拿走（detach），
@@ -341,9 +370,9 @@ fn exits_in(proxies: &[clash::Proxy], entries: &[clash::Entry], parts: &[Part]) 
             continue;
         }
         for part in parts.iter().filter(|x| x.covers(er.node_id)) {
-            match part.pick.exit(&p.name, sync, &er, srv, port) {
+            match part.pick.exit(&p.name, sync, &er, srv, port, p.anytls()) {
                 Some(Ok(e)) => out.push(ExitPlan { exit: p.name.clone(), ..e }),
-                Some(Err(why)) if matches!(part.pick, Pick::Sync { .. }) => skipped.push((p.name.clone(), why)),
+                Some(Err(why)) if part.pick.lenient() => skipped.push((p.name.clone(), why)),
                 Some(Err(why)) => return Err((p.name.clone(), why)),
                 None => {}
             }
@@ -361,7 +390,7 @@ fn snap_uses(r: &routers::Row, parts: &[Part]) -> bool {
             .exits
             .iter()
             .filter_map(|x| x.entry.as_ref().filter(|er| er.lifecycle != "removed" && part.covers(er.node_id)).map(|er| (x, er)))
-            .any(|(x, er)| matches!((x.server.as_deref(), x.port), (Some(s), Some(p)) if part.pick.exit(&x.name, &x.sync, er, s, p).is_some()));
+            .any(|(x, er)| matches!((x.server.as_deref(), x.port), (Some(s), Some(p)) if part.pick.exit(&x.name, &x.sync, er, s, p, x.anytls()).is_some()));
         used
     })
 }
@@ -385,9 +414,11 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         "move_entry" => ("旧入口", "重新发起换线路机", "旧入口没摘"),
         "repoint" => ("旧入口", "重新发起改出口指向", "入口都没动"),
         "router_sync" => ("参数对不上的入口", "重新发起同步", "入口都没动"),
+        "router_protocol" => ("要切协议的入口", "重新发起切协议", "入口都没动"),
         _ => ("旧节点", "重新发起替换", "编号没改"),
     };
-    let syncing = c.job.kind == "router_sync";
+    // 目标是路由（同步、切协议）：出口对上哪个节点的入口都算，新入口就是原来那个
+    let syncing = matches!(c.job.kind.as_str(), "router_sync" | "router_protocol");
     let mut locks = Locks::new(&c.st.db);
     // 排队中：只等那台路由的锁，别的都不做
     let queued_on = if c.first { None } else { c.job.params["routers_queued_id"].as_str().and_then(|s| Uuid::try_parse(s).ok()) };
@@ -434,7 +465,7 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     }
     let owners: Vec<Uuid> = parts.iter().map(|p| p.new).collect();
     let owners = (!syncing).then_some(owners.as_slice());
-    let entries: Vec<clash::Entry> = sqlx::query_as(clash::ENTRIES).fetch_all(&c.st.db).await?;
+    let entries: Vec<clash::Entry> = clash::load_entries(&c.st.db).await?;
     let mut rows = routers::load(&c.st.db, None).await?;
     // 改出口指向可以只改选中的几台路由
     let only: Vec<Uuid> = c.job.params["router_ids"].as_array().into_iter().flatten().filter_map(|x| x.as_str()).filter_map(|s| Uuid::try_parse(s).ok()).collect();
@@ -515,7 +546,9 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     }
     if todo.is_empty() && applied.is_empty() {
         return Ok(Outcome::Skipped(if !skipped.is_empty() {
-            format!("要同步的出口都被跳过了（{}；原因见日志），没有改动", skipped.join("、"))
+            format!("要改的出口都被跳过了（{}；原因见日志），没有改动", skipped.join("、"))
+        } else if c.job.kind == "router_protocol" {
+            "出口都已经是这个协议了，没有要切的".into()
         } else if syncing {
             "出口的参数已经和入口一致，没有要同步的".into()
         } else { format!("没有软路由的出口指向{what}") }));
@@ -547,16 +580,29 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
                 None => None,
             };
             let Some(e) = e else { return give_up(c, &mut locks, &applied, None, format!("新入口（{}）已经不在用了：{redo}", x.to()), ErrKind::Remote, kept).await };
+            // AnyTLS 出口写入口的 AnyTLS 端口：线路机上 sing-box 在跑、端口算得出才有
+            let port = if x.anytls {
+                match crate::entries::anytls_live(&c.st.db, &[e.relay_id]).await?.get(&x.new_entry_id.unwrap_or_default()) {
+                    Some(p) => *p,
+                    None => {
+                        let why = format!("出口「{}」是 AnyTLS，新入口（{}）所在的线路机没开 AnyTLS（只开 Reality，或 sing-box 没在跑）", x.exit, x.server);
+                        return give_up(c, &mut locks, &applied, None, why, ErrKind::Remote, kept).await;
+                    }
+                }
+            } else {
+                e.port as u16
+            };
             ed.push(rr::Edit {
                 exit: x.exit.clone(),
                 old_server: x.old_server.clone(),
                 old_port: x.old_port,
                 server: x.server.clone(),
-                port: e.port as u16,
+                port,
                 uuid: e.client_uuid.to_string(),
                 sni: e.reality_sni,
-                pbk: e.reality_public_key,
-                sid: e.short_id,
+                pbk: if x.anytls { String::new() } else { e.reality_public_key },
+                sid: if x.anytls { String::new() } else { e.short_id },
+                anytls: x.anytls,
             });
         }
         let t = OffsetDateTime::now_utc();
@@ -572,7 +618,7 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
             }
         };
         c.set_params(json!({"routers_applied": applied})).await?;
-        let what: Vec<String> = ed.iter().map(|e| format!("{} {}:{} → {}:{}", e.exit, e.old_server, e.old_port, e.server, e.port)).collect();
+        let what: Vec<String> = ed.iter().map(|e| format!("{} {}:{} → {}{}:{}", e.exit, e.old_server, e.old_port, if e.anytls { "AnyTLS " } else { "" }, e.server, e.port)).collect();
         c.log(format!("软路由「{}」：改出口 {}（先备份，改完重启 OpenClash 并测延迟）", r.name, what.join("，"))).await;
         // 采集发现配置变了时认来源：脚本跑之前先记「在改」，回话后记上改完（或自己改回）的配置 sha（routers/changes.rs）
         c.st.routers_refresh.claims.editing(r.id, c.job.id, &c.job.kind);
@@ -944,10 +990,10 @@ mod tests {
     /// 改回照作业记着的写入参数核对，不碰库；没有记录（旧版本留下的）按出错处理
     #[test]
     fn back_uses_recorded_params() {
-        let x = ExitPlan { exit: "节点01".into(), old_entry_id: Uuid::nil(), new_entry_id: Some(Uuid::nil()), old_server: "a".into(), old_port: 1, server: "b".into(), port: None, error: None };
+        let x = ExitPlan { exit: "节点01".into(), old_entry_id: Uuid::nil(), new_entry_id: Some(Uuid::nil()), old_server: "a".into(), old_port: 1, server: "b".into(), port: None, error: None, anytls: false };
         let mut a = Applied { id: Uuid::nil(), name: "路由A".into(), port: 1, stamp: "S".into(), exits: vec![x], written: vec![], done: None };
         assert!(a.back().unwrap_err().contains("没法核对"));
-        let e = rr::Edit { exit: "节点01".into(), old_server: "a".into(), old_port: 1, server: "b".into(), port: 2, uuid: "U".into(), sni: "s".into(), pbk: "p".into(), sid: "i".into() };
+        let e = rr::Edit { exit: "节点01".into(), old_server: "a".into(), old_port: 1, server: "b".into(), port: 2, uuid: "U".into(), sni: "s".into(), pbk: "p".into(), sid: "i".into(), anytls: false };
         a.written = vec![e];
         let back = a.back().unwrap();
         assert_eq!((back[0].uuid.as_str(), back[0].port), ("U", 2));

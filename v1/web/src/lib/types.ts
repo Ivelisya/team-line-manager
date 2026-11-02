@@ -258,7 +258,7 @@ export interface SpeedtestMeta { sizes_mb: number[]; default_mb: number; targets
 export type UsageMetric = 'cpu' | 'mem' | 'disk' | 'load';
 
 export type JobState = 'queued' | 'running' | 'waiting' | 'cancelling' | 'succeeded' | 'failed' | 'cancelled';
-export type JobKind = 'provision_vps' | 'provision_proxy' | 'provision_relay' | 'provision_ip' | 'attach_entry' | 'move_entry' | 'retire' | 'purge' | 'upgrade_agent' | 'replace' | 'tune' | 'ss_refresh' | 'speedtest' | 'router_sync';
+export type JobKind = 'provision_vps' | 'provision_proxy' | 'provision_relay' | 'provision_ip' | 'attach_entry' | 'move_entry' | 'retire' | 'purge' | 'upgrade_agent' | 'replace' | 'tune' | 'ss_refresh' | 'speedtest' | 'router_sync' | 'router_protocol';
 /** 步骤 state 文档未列全，前端按 pending/running/waiting/succeeded(done)/failed/skipped(cancelled) 宽松处理 */
 export interface JobStep { idx: number; key: string; title: string; state: string; started_at: string | null; finished_at: string | null; output: Record<string, unknown> | null; error: string | null; error_kind?: string | null }
 /** 作业列表（GET /jobs）的一项：不带 steps。step = 当前（或失败的）步骤下标，step_title 为它的标题，做完为 null */
@@ -355,7 +355,7 @@ export interface RenamePreview { name: string; old_name: string; renames: { mach
 /** notes：指向要改名的节点的软路由出口（出口名不跟着改） */
 export interface RenumberPreview { changes: { machine_id: string; old_name: string; new_name: string }[]; notes: string[]; token: string }
 /** 软路由上要改的出口（替换节点、换线路机、搬空同一个格式）；换线路机的 new_entry_id 为 null、to 写「server:新端口」 */
-export interface RouterExitPlan { id: string; name: string; state: 'online' | 'offline' | 'pending' | string; exits: { exit: string; old_entry_id: string; new_entry_id: string | null; from: string; to: string | null; error?: string | null }[] }
+export interface RouterExitPlan { id: string; name: string; state: 'online' | 'offline' | 'pending' | string; exits: { exit: string; old_entry_id: string; new_entry_id: string | null; from: string; to: string | null; error?: string | null; proto?: 'reality' | 'anytls' }[] }
 /** 换线路机 / 搬空线路机（API.md「生命周期操作」）：GET 是预览（没有 job_id），POST 的响应同样的内容加 job_id */
 /** 换走的入口（线路机和端口都会变；新入口的端口作业建好时才分配） */
 export interface OldEntry { id: string; relay: string; port: number }

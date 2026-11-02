@@ -1,5 +1,5 @@
 //! 软路由：routers（列表）、router show / exits（出口历史统计）/ add / bootstrap / deploy / edit / rm，
-//! 以及 router sync（出口参数同步到入口当前参数）/ switch（select 组临时切换出口，可到时自动切回）。
+//! 以及 router sync（出口参数同步到入口当前参数）/ protocol（出口切 AnyTLS / Reality）/ switch（select 组临时切换出口，可到时自动切回）。
 //! 接入有两种：`router add` 不给 --host 打印接入命令（在路由上用 root 执行，路由在 NAT 后面、中控连不到它时用）；
 //! 给 --host 就一键部署（中控能直接连到路由的 SSH 时用：中控登录上去装好隧道；密码只从标准输入读）。
 
@@ -341,6 +341,7 @@ fn human_show_body(d: &Value) -> String {
                 };
                 vec![
                     st(e, "/name"),
+                    proto_cn(e),
                     format!("{}:{}", st(e, "/server"), st(e, "/port")),
                     e["entry"]["name"].as_str().unwrap_or("-").into(),
                     sync_cn(&st(e, "/sync")).into(),
@@ -351,7 +352,7 @@ fn human_show_body(d: &Value) -> String {
                 ]
             })
             .collect();
-        out.push_str(&format!("\n\n出口\n{}", table::render(&["出口", "地址", "对应入口", "参数", "延迟", "连接", "客户端", "速率"], &rows)));
+        out.push_str(&format!("\n\n出口\n{}", table::render(&["出口", "协议", "地址", "对应入口", "参数", "延迟", "连接", "客户端", "速率"], &rows)));
     }
     if let Some(gs) = det["groups"].as_array().filter(|a| !a.is_empty()) {
         let sw = d["switches"].as_array().cloned().unwrap_or_default();
@@ -775,6 +776,77 @@ pub fn sync(ctx: &Ctx, q: &str, exits: &[String], force: bool, yes: bool, follow
     Ok(0)
 }
 
+/// 出口协议一个词：快照的 proto（reality / anytls），旧中控没有时退回 mihomo 报的类型
+fn proto_cn(e: &Value) -> String {
+    match e["proto"].as_str() {
+        Some("anytls") => "AnyTLS".into(),
+        Some("reality") => "Reality".into(),
+        _ => e["type"].as_str().unwrap_or("-").to_string(),
+    }
+}
+
+/// `router protocol` 预览的文字：要切的出口（出口、对应入口、线路机、现在 → 改成），跳过的一行一个写原因
+fn protocol_human(pv: &Value) -> String {
+    let to = if pv["to"] == "anytls" { "AnyTLS" } else { "Reality" };
+    let mut out = vec![];
+    let rows: Vec<Vec<String>> = pv["exits"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|e| {
+            let from = if e["from_proto"] == "anytls" { "AnyTLS" } else { "Reality" };
+            vec![st(e, "/exit"), st(e, "/entry"), st(e, "/relay"), format!("{from} {}", st(e, "/from")), format!("{to} {}", st(e, "/to"))]
+        })
+        .collect();
+    if !rows.is_empty() {
+        out.push(format!(
+            "「{}」要切成 {to} 的出口（名字、分组、规则不变；备份后改，改完重启 OpenClash 并测延迟，任何失败全部改回）：\n{}",
+            st(pv, "/router/name"),
+            table::render(&["出口", "对应入口", "线路机", "现在", "改成"], &rows)
+        ));
+    }
+    for s in pv["skipped"].as_array().into_iter().flatten() {
+        out.push(format!("跳过 {}（{}，线路机 {}）：{}", st(s, "/exit"), st(s, "/entry"), st(s, "/relay"), st(s, "/why")));
+    }
+    for w in pv["warnings"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+        out.push(format!("注意：{w}"));
+    }
+    out.join("\n")
+}
+
+/// `router protocol <路由> --to anytls|reality [--exit <出口>]…`：指向面板入口的出口整块改写成另一种协议（作业 router_protocol：
+/// 备份、改写、重启 OpenClash、测延迟，失败全部改回）。先 GET 预览；不加 --yes 只打印预览
+pub fn protocol(ctx: &Ctx, q: &str, to: &str, exits: &[String], yes: bool, follow: bool) -> anyhow::Result<u8> {
+    let r = find(&ctx.list("/routers")?, q)?;
+    let id = st(&r, "/id");
+    let pv = ctx.c.get_q(&format!("/routers/{id}/protocol"), &[("to", to.to_string()), ("exits", exits.join(","))])?;
+    if !ctx.json || !yes {
+        if ctx.json {
+            ctx.emit(&pv, String::new);
+        } else {
+            let s = protocol_human(&pv);
+            if !s.is_empty() {
+                outln(s);
+            }
+        }
+    }
+    if pv["ok"] != true {
+        bail!("现在不能切：{}", crate::lifecycle::blockers(&pv));
+    }
+    if !yes {
+        if !ctx.json {
+            outln("以上是预览，没有改动。确认无误后加 --yes 执行（--follow 跟进度）");
+        }
+        return Ok(0);
+    }
+    let d = ctx.c.post(&format!("/routers/{id}/protocol"), &json!({"to": to, "exits": exits}))?;
+    ctx.emit(&d, || format!("已提交切协议作业 {}（{}）\n看进度：fleetctl job {} --follow", st(&d, "/job_id"), st(&r, "/name"), st(&d, "/job_id")));
+    if follow {
+        return crate::cmds::follow_job(ctx, &st(&d, "/job_id"));
+    }
+    Ok(0)
+}
+
 /// `router switch <路由> <组> <出口> [--for 4h]` / `router switch <路由> <组> --back`：select 组经 mihomo API 临时切到组里另一个出口
 /// （不重启 OpenClash、不断连接），`--for` 到时自动切回；`--back` 切回第一次切之前的出口
 pub fn switch(ctx: &Ctx, q: &str, group: &str, to: Option<&str>, dur: Option<&str>, back: bool) -> anyhow::Result<u8> {
@@ -873,6 +945,19 @@ mod tests {
 
     fn summary(exits: Value) -> Value {
         json!({"exits": exits, "clients": 7, "cpu_pct": 12.4, "mem_used": 1, "mem_total": 4, "wan": {"up": true, "rx_bps": 1000, "tx_bps": 2000}})
+    }
+
+    /// 切协议预览：要切的出口写对应入口、线路机、现在 → 改成（协议 + 地址）；跳过的写原因；出口表的协议列
+    #[test]
+    fn protocol_preview_text() {
+        let pv = json!({"router": {"name": "团队2-路由A"}, "to": "anytls",
+            "exits": [{"exit": "节点01", "entry": "团队2-01 · 线路机2:20003", "relay": "线路机2", "from": "relay.test:20003", "to": "relay.test:40003", "from_proto": "reality", "to_proto": "anytls"}],
+            "skipped": [{"exit": "节点02", "entry": "团队2-02 · 线路机1:20004", "relay": "线路机1", "why": "线路机 线路机1 只开 Reality"}],
+            "warnings": ["改完要重启 OpenClash：经这台路由的连接会全部断开、马上重连"]});
+        let s = protocol_human(&pv);
+        assert!(s.starts_with("「团队2-路由A」要切成 AnyTLS 的出口") && s.contains("Reality relay.test:20003") && s.contains("AnyTLS relay.test:40003") && s.contains("线路机2"), "{s}");
+        assert!(s.contains("\n跳过 节点02（团队2-02 · 线路机1:20004，线路机 线路机1）：线路机 线路机1 只开 Reality\n注意：改完要重启 OpenClash"), "{s}");
+        assert_eq!((proto_cn(&json!({"proto": "anytls"})), proto_cn(&json!({"proto": "reality", "type": "Vless"})), proto_cn(&json!({"type": "Shadowsocks"}))), ("AnyTLS".into(), "Reality".into(), "Shadowsocks".to_string()));
     }
 
     /// 出口通/总只数 fleet 出口（客户自己加的单列「其他出口」）；旧中控的摘要没有 fleet 字段，退回全部出口

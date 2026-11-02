@@ -253,7 +253,9 @@ async fn relay_protocols_switch() {
     sqlx::query("insert into router_status (router_id, ts, reachable, data, last_ok_at) values ($1, now(), true, $2, now())").bind(rid).bind(snap).execute(&t.st.db).await.unwrap();
     let (s, v) = fail(anytls.clone()).await;
     assert!(s == StatusCode::CONFLICT && v["error"]["message"].as_str().unwrap().contains("团队1-路由A 的 节点01"), "{v}");
-    sqlx::query("delete from router_status").execute(&t.st.db).await.unwrap();
+    // 出口是 AnyTLS 的不挡（下面改成只 AnyTLS 时它还指着），改回只 Reality 时才挡
+    let snap = json!({"exits": [{"name": "节点01", "type": "anytls", "proto": "anytls", "entry": entry, "sync": "ok", "linked": true}]});
+    sqlx::query("update router_status set data = $1").bind(snap).execute(&t.st.db).await.unwrap();
     t.fail("PATCH", &path, Some(json!({"protocols": "vmess"})), StatusCode::BAD_REQUEST).await;
 
     // 改成只 AnyTLS：代数 +1、审计；下发 reality_public=false
@@ -276,7 +278,10 @@ async fn relay_protocols_switch() {
     assert_eq!(pull(&t, &sub_path(&plain["url"])).await.2, "proxies: []\n");
     assert_eq!(plain["items"], 0, "{plain}");
 
-    // 改成只 Reality：不下发 AnyTLS 端口、Reality 对公网开，分享只给 Reality
+    // 改成只 Reality：AnyTLS 出口指着时 409；之后不下发 AnyTLS 端口、Reality 对公网开，分享只给 Reality
+    let (s, v) = fail(json!({"protocols": "reality"})).await;
+    assert!(s == StatusCode::CONFLICT && v["error"]["message"].as_str().unwrap().contains("用 AnyTLS 指着") && v["error"]["message"].as_str().unwrap().contains("团队1-路由A 的 节点01"), "{v}");
+    sqlx::query("delete from router_status").execute(&t.st.db).await.unwrap();
     let (s, _) = fail(json!({"protocols": "reality"})).await;
     assert_eq!(s, StatusCode::OK);
     let (_, d) = t.req("GET", "/agent/v1/desired?after=0", None, Some("tok1")).await;

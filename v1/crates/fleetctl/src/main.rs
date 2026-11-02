@@ -1019,6 +1019,21 @@ enum RouterCmd {
         #[arg(long)]
         follow: bool,
     },
+    /// 切出口协议：把指向面板入口的出口整块改写成 AnyTLS（或 Reality），同一个入口、同名出口，分组和分流规则不变。
+    /// 备份后改，改完重启 OpenClash（断开经它的全部连接）并测延迟，任何失败全部改回。不加 --yes 只打印预览（要切的出口、经哪台线路机、跳过的及原因）
+    Protocol {
+        router: String,
+        /// 切成 anytls 或 reality
+        #[arg(long, value_parser = ["anytls", "reality"])]
+        to: String,
+        /// 只切这个出口（可重复；不给 = 全部指向面板入口、还不是这个协议的）
+        #[arg(long = "exit")]
+        exits: Vec<String>,
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        follow: bool,
+    },
     /// 临时切换出口：把 select 组经 mihomo API 切到组里另一个出口（不改配置、不重启 OpenClash、不断已有连接），
     /// --for 4h 到时自动切回（到时原出口还不通就推迟 1 小时再看）；--back 切回第一次切之前的出口。url-test / fallback 组不能手动切，
     /// 没有规则用的组（router show 里标「未被规则引用」，如 mihomo 自带的 GLOBAL）切了不影响流量，也会被拒绝。组与当前出口见 router show
@@ -1266,6 +1281,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             RouterCmd::Edit { router, name, team, note } => routers::edit(x, &router, name.as_deref(), team.as_deref(), note.as_deref()),
             RouterCmd::Rm { router, yes, force } => routers::rm(x, &router, yes, force),
             RouterCmd::Sync { router, exits, force, yes, follow } => routers::sync(x, &router, &exits, force, yes, follow),
+            RouterCmd::Protocol { router, to, exits, yes, follow } => routers::protocol(x, &router, &to, &exits, yes, follow),
             RouterCmd::Switch { router, group, to, dur, back } => routers::switch(x, &router, &group, to.as_deref(), dur.as_deref(), back),
         },
         Cmd::Probe { cmd } => match cmd {
