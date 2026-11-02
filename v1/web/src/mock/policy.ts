@@ -97,7 +97,8 @@ export function installPolicyMock(R: Reg, env: Env) {
     for (const k of new Set([...before.keys(), ...after.keys()])) {
       const [s, id] = k.split(':') as [Scope, string];
       const a = before.get(k)?.cur ?? defaults(s); const b = after.get(k)?.cur ?? defaults(s);
-      if (!same(a, b)) out.push({ scope: s, id, name: nameOf(s, id), from: { mode: a.mode, domains: a.domains.length }, to: { mode: b.mode, domains: b.domains.length } });
+      if (!same(a, b)) out.push({ scope: s, id, name: nameOf(s, id), from: { mode: a.mode, domains: a.domains.length }, to: { mode: b.mode, domains: b.domains.length },
+        domains_changed: JSON.stringify(a.domains) !== JSON.stringify(b.domains), note_changed: a.note !== b.note });
     }
     return out;
   }

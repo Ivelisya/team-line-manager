@@ -32,13 +32,11 @@ const ERROR_KIND_LABEL: Record<string, string> = {
 /** 同是 remote：升级 agent 换上新版本后的回滚检查（起不来、线路机检查没过）不是远端命令出错，按错误文字区分开 */
 export const errorKindLabel = (k: string, error?: string | null) =>
   k === 'remote' && error && /检查没通过/.test(error) ? '升级后检查未通过'
-  : k === 'remote' && error && /起不来|没有起来/.test(error) ? 'agent 没起来'
+  : k === 'remote' && error && /agent 没有起来|新版本.*起不来/.test(error) ? 'agent 没起来'
   : ERROR_KIND_LABEL[k] ?? k;
 
-/** 服务端作业文字（步骤输出、错误、日志）里的「代数」是内部说法，界面上统一叫「配置版本」（同线路页的配置条）；
- *  旧记录里防火墙名单写成「期望 [a, b]，实际 []」的原始数组：写成「期望 a、b；实际 无」（同现在的服务端） */
-export const jobText = (s: string) => s.replace(/配置应用到代数 (\d+)/g, '配置版本 $1 已应用').replace(/(期望状态|配置)?代数/g, '配置版本')
-  .replace(/(期望|实际) \[([^\]]*)\]/g, (_, k: string, v: string) => `${k} ${v.trim() ? v.split(/,\s*/).join('、') : '无'}`).replace(/(期望 [^，；]*)，实际/g, '$1；实际');
+/** 服务端作业文字（步骤输出、错误、日志）里的「代数」是内部说法，界面上统一叫「配置版本」（同线路页的配置条） */
+export const jobText = (s: string) => s.replace(/配置应用到代数 (\d+)/g, '配置版本 $1 已应用').replace(/(期望状态|配置)?代数/g, '配置版本');
 
 // ── 步骤输出 ──
 // 服务端各步骤 Outcome::Done(json!{..}) 的全部 key（crates/fleet-server/src/jobs/steps.rs、steps/lifecycle.rs），
@@ -77,8 +75,8 @@ const OUTPUT: Record<string, [string, OutFmt] | null> = {
   entry: ['入口状态', (v) => entryLabel(String(v))],
   // verify
   latency_ms: ['出口延迟', (v) => `${Math.round(Number(v))} ms`], egress_ip: ['出口 IP', text],
-  // activate（恢复）/ 跳过
-  restored: null, reason: ['说明', text],
+  // 跳过
+  reason: ['说明', text],
   // detach / cleanup / revoke / finalize / purge / wait_detached_old
   entries: ['入口', unit('个')], ss: ['ssserver', (v) => CLEANUP_SS[String(v)]], revoked: ['作废凭据', unit('个')], renumbered: ['重新编号', unit('台')],
   // renumber（替换节点的交换编号）：交换后两台各自的新名字

@@ -529,14 +529,11 @@ function VersionApply({ v }: { v: PolicyVersion }) {
   );
 }
 
-/** 一处变更的说明（同服务端审计摘要）：模式没变时写域名怎么变、备注改没改；变了写模式（新模式用域名时带上个数）。
- *  旧版本记录没有 domains_changed / note_changed：用域名的模式算换了域名，其余算改了备注 */
+/** 一处变更的说明（同服务端审计摘要）：模式没变时写域名怎么变、备注改没改；变了写模式（新模式用域名时带上个数） */
 function changeText(c: PolicyChange): string {
   const n = (k: number) => `${k} 个域名`;
   if (c.from.mode === c.to.mode) {
-    const dom = c.domains_changed ?? needsDomains(c.to.mode);
-    const note = c.note_changed ?? !needsDomains(c.to.mode);
-    const parts = [dom && (c.from.domains === c.to.domains ? `换了域名（${n(c.to.domains)}）` : `域名 ${c.from.domains} → ${c.to.domains} 个`), note && '改了备注'].filter(Boolean);
+    const parts = [c.domains_changed && (c.from.domains === c.to.domains ? `换了域名（${n(c.to.domains)}）` : `域名 ${c.from.domains} → ${c.to.domains} 个`), c.note_changed && '改了备注'].filter(Boolean);
     return `${c.name}：${modeLabel(c.to.mode)}${parts.length ? ` · ${parts.join('，')}` : ''}`;
   }
   return `${c.name}：${modeLabel(c.from.mode)} → ${modeLabel(c.to.mode)}${needsDomains(c.to.mode) ? `（${n(c.to.domains)}）` : ''}`;

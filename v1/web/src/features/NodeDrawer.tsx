@@ -188,18 +188,16 @@ function UnreachPill({ m }: { m: MachineView }) {
   return <Pill tone="warn" tip={`${who}连不上 ${ps.reachBad} 条入口在线路机上的端口，客户经这几条入口连不上\n告警记在线路机上`}>入口可达 {ps.all - ps.reachBad}/{ps.all}</Pill>;
 }
 
-/** 生命周期旁的原因写成一句话：旧版「恢复已退役机器」存的是「已恢复：原因」；进备用（退役）时填的原因加上「退役原因：」（替换、随宿主机退役的本来就是整句） */
+/** 生命周期旁的原因写成一句话：进备用（退役）时填的原因加上「退役原因：」（替换、随宿主机退役的本来就是整句） */
 function lifecycleWhy(m: MachineView, raw: string) {
   const r = errText(raw);
-  const restored = /^已恢复(?:：(.*))?$/.exec(r);
-  if (restored) return restored[1] ? `曾从已退役恢复，原因：${restored[1]}` : '曾从已退役恢复';
   return m.spare && !/^(替换下来|随宿主机)/.test(r) ? `退役原因：${r}` : r;
 }
 
-/** 向团队收费时算不算这个节点（团队与套餐 → 计费台账）：在用、在团队里（不在备用）的节点才有；旧中控没有 billing_exempt 时不显示 */
+/** 向团队收费时算不算这个节点（团队与套餐 → 计费台账）：在用、在团队里（不在备用）的节点才有 */
 function BillingRow({ m }: { m: MachineView }) {
   const set = useBillingExempt();
-  if (m.kind === 'relay' || !m.team || m.spare_from || m.lifecycle !== 'active' || m.billing_exempt === undefined) return null;
+  if (m.kind === 'relay' || !m.team || m.spare_from || m.lifecycle !== 'active') return null;
   const on = !m.billing_exempt;
   return (
     <LabelValue label="计费" wrap>
@@ -242,7 +240,7 @@ function OverviewTab({ m }: { m: MachineView }) {
           {/* 供应商后台里这台的服务号（DeerVPS 的 SRV-…、ATTVPS 的数字），对账、开工单时用：不是分类，不进标签；搜索照样能搜到 */}
           <LabelValue label="供应商服务编号">{m.service_ref ? <span className="row" style={{ gap: 4, flexWrap: 'nowrap', minWidth: 0 }}><Trunc className="mono">{m.service_ref}</Trunc><CopyButton text={m.service_ref} label="服务编号" size={13} /></span> : null}</LabelValue>
           {/* 已退役、上架失败的原因与时间在顶上的横幅里，这里只放状态（原因放这格会被截断） */}
-          {/* 带原因的占满整行、可换行（半格放不下会被截断成「运行中 已恢复：实验：…」） */}
+          {/* 带原因的占满整行、可换行（半格放不下会被截断成「运行中 退役原因：实验：…」） */}
           {(() => { const why = m.lifecycle_reason && m.lifecycle !== 'retired' && m.lifecycle !== 'failed' ? lifecycleWhy(m, m.lifecycle_reason) : null;
             return <LabelValue label="生命周期" className={why ? 'span-2' : undefined} wrap={!!why}><LifecyclePill lc={m.lifecycle} />{why && <span className="t-sub"> {why}</span>}</LabelValue>; })()}
           <LabelValue label="上架时间">{F.dtFull(m.activated_at)}</LabelValue>
