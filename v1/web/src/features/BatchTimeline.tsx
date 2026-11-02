@@ -19,8 +19,8 @@ export const currentPeriod = (periods: TimelinePeriod[]) => periods.reduce((m, p
 
 const DAY = 86_400_000;
 const dayNum = (s: string) => { const [y, m, d] = s.split('-').map(Number); return Date.UTC(y, m - 1, d) / DAY; };
-/** 2026-10-21 → 10/21 */
-export const mmdd = (s: string) => `${s.slice(5, 7)}/${s.slice(8, 10)}`;
+/** 2026-10-21 → 10-21 */
+export const mmdd = (s: string) => `${s.slice(5, 7)}-${s.slice(8, 10)}`;
 
 const MIN_PPD = 5; // 每天至少几像素：再窄日刻度就糊成一片，改为横向滚动
 const PAD_L = 10; const PAD_R = 12;
@@ -124,7 +124,7 @@ function Axis({ s, today }: { s: Scale; today: string }) {
         return (
           <g key={d}>
             <path className="btl-axis-tick" d={`M${x} ${AXIS_H - 14}V${AXIS_H - 1}`} />
-            <text className="btl-month" x={x + 4} y={AXIS_H - 4}>{y !== year ? `${y}年${Number(m)}月` : `${Number(m)}月`}</text>
+            <text className="btl-month" x={x + 4} y={AXIS_H - 4}>{y !== year ? `${y} 年 ${Number(m)} 月` : `${Number(m)} 月`}</text>
           </g>
         );
       })}
