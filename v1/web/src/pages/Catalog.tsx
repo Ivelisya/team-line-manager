@@ -1,4 +1,4 @@
-// 团队与套餐：团队（改名、排序、重新编号预览→应用）、供应商、套餐、待付、客户到期（按节点数向团队收费：计费节点、批次、应收与客户页链接）。
+// 团队与套餐：团队（改名、排序、重新编号预览→应用）、供应商、套餐、待付、计费台账（按节点数向团队收费：计费节点、批次、应收与客户页链接）。
 import * as React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
@@ -44,14 +44,14 @@ function RowMenu({ label, children }: { label: string; children: React.ReactNode
 }
 
 export function CatalogPage() {
-  // 子页写进 URL 的 section（同设置页），刷新 / 分享链接停在原处；换子页时排序（?sort=）、套餐的「显示已归档」、客户到期的团队、「只看有效」与应收月份不带过去
+  // 子页写进 URL 的 section（同设置页），刷新 / 分享链接停在原处；换子页时排序（?sort=）、套餐的「显示已归档」、计费台账的团队、「只看有效」与应收月份不带过去
   const [sp, setSp] = useSearchParams();
   const tab = SECTIONS.find((s) => s === sp.get('section')) ?? 'teams';
   return (
     <div className="stack">
       <PageHead title="团队与套餐" />
       <Tabs value={tab} onValueChange={(v) => setSp((p) => { const n = new URLSearchParams(p); n.set('section', v); n.delete('sort'); n.delete('archived'); n.delete('team'); n.delete('active'); n.delete('month'); return n; }, { replace: true })}>
-        <TabsList><TabsTrigger value="teams">团队</TabsTrigger><TabsTrigger value="providers">供应商</TabsTrigger><TabsTrigger value="plans">套餐</TabsTrigger><TabsTrigger value="due">待付</TabsTrigger><TabsTrigger value="customer">客户到期</TabsTrigger></TabsList>
+        <TabsList><TabsTrigger value="teams">团队</TabsTrigger><TabsTrigger value="providers">供应商</TabsTrigger><TabsTrigger value="plans">套餐</TabsTrigger><TabsTrigger value="due">待付</TabsTrigger><TabsTrigger value="customer">计费台账</TabsTrigger></TabsList>
         <div style={{ marginTop: 16 }}>
           <TabsContent value="teams"><TeamsTab /></TabsContent>
           <TabsContent value="providers"><ProvidersTab /></TabsContent>

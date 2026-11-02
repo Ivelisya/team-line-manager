@@ -4,13 +4,14 @@
 // 派生（批次的期、start / end / count / months / node_months / renewals / state / summary / title、应收）都在这里按规格算。
 import type { BatchPeriod, BatchState, BillingEvent, BillingEventKind, BillingSlot, CustomerBatch, CustomerPage, MachineView, PublicCustomer, Receivable, Team } from '@/lib/types';
 import { addDays, addMonths } from '@/lib/format';
+const batchName = (b: { seq: number; region: string }) => `第${String(b.seq).padStart(2, '0')}批 · ${b.region}`;
 
 type Reg = (method: string, path: string, h: (c: { params: string[]; query: URLSearchParams; body: any }) => unknown) => void; // eslint-disable-line @typescript-eslint/no-explicit-any
 type Bad = (msg: string, status?: number, code?: string) => Error;
 
 const TODAY = '2026-10-31';
 const GRACE = 86_400_000;
-interface MSlot { id: string; team_id: string; region: string; start_date: string; holder: { id: string; name: string } | null; vacated_at: string | null; end_date: string | null; manual: boolean; note: string }
+interface MSlot { id: string; team_id: string; region: string; start_date: string; holder: { id: string; name: string } | null; last_holder_name: string | null; vacated_at: string | null; end_date: string | null; manual: boolean; note: string }
 interface MPending { team_id: string; machine: { id: string; name: string }; seen_at: string }
 interface MEvent extends BillingEvent { team_id: string }
 interface MPage { token: string; enabled: boolean; created_at: string; token_at: string; last_view_at: string | null }
@@ -37,14 +38,14 @@ const holder = (team: 't1' | 't2', n: number) => ({ id: `m-${team}-${p2(n)}`, na
 for (const [tid, n] of [['t1', 9], ['t2', 19]] as const) {
   for (let i = 1; i <= n; i++) {
     const h = holder(tid, i);
-    const s: MSlot = { id: nid('sl'), team_id: tid, region: '美区', start_date: '2026-10-01', holder: h, vacated_at: null, end_date: null, manual: false, note: '' };
+    const s: MSlot = { id: nid('sl'), team_id: tid, region: '美区', start_date: '2026-10-01', holder: h, last_holder_name: null, vacated_at: null, end_date: null, manual: false, note: '' };
     slots.push(s);
     ev(tid, s.id, '2026-10-01T00:00:00+08:00', 'init', h.name, null, `${h.name} 计入计费节点（10-01 起算）`);
   }
 }
 {
   const h = holder('t1', 10);
-  const s: MSlot = { id: nid('sl'), team_id: 't1', region: '美区', start_date: '2026-10-30', holder: h, vacated_at: null, end_date: null, manual: false, note: '' };
+  const s: MSlot = { id: nid('sl'), team_id: 't1', region: '美区', start_date: '2026-10-30', holder: h, last_holder_name: null, vacated_at: null, end_date: null, manual: false, note: '' };
   slots.push(s);
   ev('t1', s.id, '2026-10-30T14:26:00+08:00', 'add', h.name, null, `${h.name} 加入，新增计费节点（10-30 起算）`);
   // 10-28 团队2 的两次替换：换下来的旧节点进了备用（改名 备用-NN），新节点接过编号，名额与起算日不变
@@ -57,7 +58,7 @@ for (const [tid, n] of [['t1', 9], ['t2', 19]] as const) {
 const pages = new Map<string, MPage>([['t2', { token: 'demo', enabled: true, created_at: '2026-10-20T10:12:00Z', token_at: '2026-10-20T10:12:00Z', last_view_at: '2026-10-31T01:40:00Z' }]]);
 
 // ---------- 派生 ----------
-const slotState = (s: MSlot): BillingSlot['state'] => (s.end_date ? 'ended' : !s.holder && s.vacated_at ? 'vacated' : 'active');
+const slotState = (s: MSlot): BillingSlot['state'] => (s.end_date ? 'ended' : !s.holder && !s.manual ? 'vacated' : 'active');
 /** 名额在「起点为 ps 的那一期」计费 ⇔ ps < end_date（没结束为无穷） */
 const bills = (s: MSlot, ps: string) => !s.end_date || ps < s.end_date;
 /** 「含2次续期」/「初始5个 → 续期4个」（相邻相同的合并）；只有一期为空 */
@@ -104,18 +105,19 @@ function derive(tid: string): Derived {
   return { batches };
 }
 const strip = ({ slots: _s, ...b }: Derived['batches'][number]): CustomerBatch => b; // eslint-disable-line @typescript-eslint/no-unused-vars
-const slotName = (s: MSlot) => s.holder?.name ?? (s.manual ? `手动${s.note ? ` · ${s.note}` : ''}` : '空出的名额');
+const slotName = (s: MSlot) => s.holder?.name ?? (s.manual ? `手动${s.note ? ` · ${s.note}` : ''}` : s.last_holder_name ? `${s.last_holder_name}（已离开）` : '空出的名额');
 function slotView(s: MSlot, d: Derived): BillingSlot {
   const b = d.batches.find((x) => x.slots.includes(s))!;
-  return { id: s.id, batch_seq: b.seq, region: s.region, start_date: s.start_date, state: slotState(s), holder: s.holder, vacated_at: s.vacated_at, end_date: s.end_date, manual: s.manual, note: s.note };
+  return { id: s.id, batch_seq: b.seq, region: s.region, start_date: s.start_date, state: slotState(s), holder: s.holder, last_holder_name: s.manual ? null : s.last_holder_name, vacated_at: s.vacated_at, end_date: s.end_date, manual: s.manual, note: s.note };
 }
 const eventView = ({ team_id: _t, ...e }: MEvent): BillingEvent => e; // eslint-disable-line @typescript-eslint/no-unused-vars
 const teamEvents = (tid: string) => events.filter((e) => e.team_id === tid).sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || cmp(b.id, a.id));
 /** 某天 0 点时有效的名额数 */
 const validAt = (tid: string, day: string) => slots.filter((s) => s.team_id === tid && s.start_date <= day && (!s.end_date || s.end_date > day)).length;
 
-export function installCustomerMock(R: Reg, o: { teams: () => Team[]; machines: () => MachineView[]; bad: Bad }) {
+export function installCustomerMock(R: Reg, o: { teams: () => Team[]; machines: () => MachineView[]; bad: Bad; emit: (e: { type: string; id?: string }) => void }) {
   const { bad } = o;
+  const billing = (tid: string) => o.emit({ type: 'billing', id: tid });
   for (const m of o.machines()) if (m.kind !== 'relay') m.billing_exempt = false;
   const team = (id: string) => { const t = o.teams().find((x) => x.id === id); if (!t) throw bad('团队不存在', 404, 'not_found'); return t; };
   const slot = (id: string) => { const s = slots.find((x) => x.id === id); if (!s) throw bad('计费名额不存在', 404, 'not_found'); return s; };
@@ -170,16 +172,31 @@ export function installCustomerMock(R: Reg, o: { teams: () => Team[]; machines: 
     };
     return out;
   });
+  R('PATCH', '/teams/([^/]+)/batches/([^/]+)', ({ params, body }) => {
+    const t = team(params[0]);
+    const b = derive(t.id).batches.find((x) => x.key === params[1]); if (!b) throw bad('批次不存在', 404, 'not_found');
+    const v = date(body.start_date, '起算日');
+    const bad1 = b.slots.find((s) => s.end_date && s.end_date <= v);
+    if (bad1) throw bad(`起算日 ${v} 要早于已结束名额的结束日 ${bad1.end_date}`);
+    if (v !== b.start_date) {
+      for (const s of b.slots) s.start_date = v;
+      ev(t.id, null, new Date().toISOString(), 'edit', null, null, `${batchName(b)}：起算日 ${md(b.start_date)} → ${md(v)}（整批 ${b.slots.length} 个）`);
+      billing(t.id);
+    }
+    const nb = derive(t.id).batches.find((x) => x.key === `${v}|${b.region}`)!;
+    return strip(nb);
+  });
   R('POST', '/teams/([^/]+)/billing-slots', ({ params, body }) => {
     const t = team(params[0]);
     const start = date(body.start_date, '起算日'); const r = region(body.region); const n = note(body.note);
     const count = body.count == null ? 1 : Number(body.count);
     if (!Number.isInteger(count) || count < 1 || count > 99) throw bad('个数要是 1–99 的整数');
     for (let i = 0; i < count; i++) {
-      const s: MSlot = { id: nid('sl'), team_id: t.id, region: r, start_date: start, holder: null, vacated_at: null, end_date: null, manual: true, note: n };
+      const s: MSlot = { id: nid('sl'), team_id: t.id, region: r, start_date: start, holder: null, last_holder_name: null, vacated_at: null, end_date: null, manual: true, note: n };
       slots.push(s);
       ev(t.id, s.id, new Date().toISOString(), 'manual_add', null, null, `手动添加计费节点${n ? `「${n}」` : ''}（${r}，${md(start)} 起算）`);
     }
+    billing(t.id);
     return { count };
   });
   R('PATCH', '/billing-slots/([^/]+)', ({ params, body }) => {
@@ -196,17 +213,20 @@ export function installCustomerMock(R: Reg, o: { teams: () => Team[]; machines: 
         if (s.holder) throw bad('节点还在团队里；不收这个节点的钱请把节点设为不计费', 409, 'conflict');
         const v = date(body.end_date, '结束日');
         if (v <= s.start_date) throw bad('结束日要晚于起算日');
+        if (!s.manual && v > TODAY) throw bad('空出的计费节点结束日不能晚于今天');
         s.end_date = v;
         ev(s.team_id, s.id, new Date().toISOString(), 'manual_end', null, null, `${name} 结束计费（算到 ${md(v)}）`);
       }
     }
     if (changes.length) ev(s.team_id, s.id, new Date().toISOString(), 'edit', s.holder?.name ?? null, null, `${name} ${changes.join('，')}`);
+    billing(s.team_id);
     return { id: s.id };
   });
   R('DELETE', '/billing-slots/([^/]+)', ({ params }) => {
     const s = slot(params[0]);
     if (!s.manual) throw bad('只有手动添加的计费节点能删除；节点离开团队后会自动结束', 409, 'conflict');
     slots.splice(slots.indexOf(s), 1);
+    billing(s.team_id);
     return { id: s.id };
   });
   R('PUT', '/machines/([^/]+)/billing-exempt', ({ params, body }) => {
@@ -217,11 +237,13 @@ export function installCustomerMock(R: Reg, o: { teams: () => Team[]; machines: 
     const now = new Date().toISOString();
     const held = slots.find((s) => s.holder?.id === m.id && !s.end_date);
     const tid = m.team?.id ?? held?.team_id;
-    if (body.exempt && held) { held.holder = null; held.vacated_at = now; }
+    // 设不计费后服务端马上对账：名额立刻空出（之后照样走 24 小时配对）
+    if (body.exempt && held) { held.last_holder_name = held.holder!.name; held.holder = null; held.vacated_at = now; }
     const pi = pending.findIndex((p) => p.machine.id === m.id);
     if (body.exempt && pi >= 0) pending.splice(pi, 1);
     if (!body.exempt && m.team && !held && pi < 0) pending.push({ team_id: m.team.id, machine: { id: m.id, name: m.name }, seen_at: now });
     if (tid) ev(tid, held?.id ?? null, now, 'exempt', m.name, null, body.exempt ? `${m.name} 设为不计费${held ? '（名额空出，24 小时内有节点加入就算替换）' : ''}` : `${m.name} 恢复计费（24 小时内有名额空出就算替换，否则新增）`);
+    if (tid) billing(tid);
     return { exempt: body.exempt };
   });
 

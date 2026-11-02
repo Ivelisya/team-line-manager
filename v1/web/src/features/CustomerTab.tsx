@@ -1,11 +1,11 @@
-// 团队与套餐 → 客户到期：按节点数向团队收费。批次由「计费名额」自动派生（同一天加入、同地区的算一批，从加入那天起每月同日续一期），
+// 团队与套餐 → 计费台账：按节点数向团队收费。批次由「计费名额」自动派生（同一天加入、同地区的算一批，从加入那天起每月同日续一期），
 // 节点加入 / 离开 / 替换由中控每分钟对账自动记下，这里只看与修正：
 // 选团队 → 客户页链接 → 顶部数字（当前计费节点、本月应收、下次续费）→ 批次时间轴（同客户页的组件，已到期的灰色；行菜单「改起算日」）
 // → 计费节点列表（含待定的；改起算日 / 地区备注 / 结束 / 删除手动名额；添加手动计费节点）→ 月度应收（按月翻）与增减记录。
 // 团队、「只看有效」、应收的月份写进地址（?team= / ?active=1 / ?month=）。
 import * as React from 'react';
 import { ChevronLeft, ChevronRight, ExternalLink, Link2, MoreHorizontal, Plus } from 'lucide-react';
-import { useAddBillingSlot, useBillingEvents, useDelBillingSlot, usePatchBillingSlot, usePatchCustomerPage, useReceivable, useRotateCustomerPage, useTeamBatches, useTeams } from '@/lib/queries';
+import { useAddBillingSlot, useBillingEvents, useDelBillingSlot, usePatchBatch, usePatchBillingSlot, usePatchCustomerPage, useReceivable, useRotateCustomerPage, useTeamBatches, useTeams } from '@/lib/queries';
 import type { BillingSlot, CustomerBatch, CustomerPage, TeamBatches } from '@/lib/types';
 import { useUrlState } from '@/lib/urlState';
 import { openDrawer } from '@/lib/drawer';
@@ -41,18 +41,20 @@ export function CustomerTab() {
   const teamId = options.some((o) => o.value === want) ? want : options[0]?.value ?? '';
   const onTeam = React.useCallback((v: string) => upd({ team: v, month: '' }), [upd]);
   const q = useTeamBatches(teamId);
-  const d = q.data?.team.id === teamId ? q.data : undefined;
+  const d = q.data;
+  // 换团队、新数据未到时先留着上一个团队的（调淡、不可点），不整页塌成骨架
+  const stale = q.isPlaceholderData;
   return (
     <div className="stack">
       <div className="cxa-bar">
         <Select className="cxa-team" value={teamId} onChange={onTeam} options={options} placeholder="选择团队" aria-label="团队" />
-        {d && <PageLink teamId={teamId} teamName={d.team.name} page={d.page} />}
+        {d && <PageLink teamId={d.team.id} teamName={d.team.name} page={d.page} stale={stale} />}
       </div>
       {teams.isError && <ErrorNote error={teams.error} onRetry={() => void teams.refetch()} />}
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       {!teamId && teams.data && <Empty text="还没有团队" />}
       {!d && !q.isError && teamId && <div className="skel is-float" style={{ height: 260 }} />}
-      {d && <Board d={d} teamId={teamId} />}
+      {d && <div className="stack" data-stale={stale} inert={stale || undefined}><Board d={d} teamId={d.team.id} /></div>}
     </div>
   );
 }
@@ -60,14 +62,19 @@ export function CustomerTab() {
 function Board({ d, teamId }: { d: TeamBatches; teamId: string }) {
   const [sp, upd] = useUrlState();
   const month = /^\d{4}-\d{2}$/.test(sp.get('month') ?? '') ? sp.get('month')! : d.today.slice(0, 7);
+  const events = useBillingEvents(teamId);
+  // 批次、名额、待定、增减记录都空 = 这个团队还没初始化计费（接口没有单独的标记）：整页收成一句提示
+  if (events.data && events.data.pages[0].length === 0 && d.slots.length === 0 && d.pending.length === 0) {
+    return <Empty text="计费还没初始化" hint={<>在中控上运行 <code>fleetctl billing init</code></>} />;
+  }
   return (
     <>
       <Figures d={d} teamId={teamId} />
-      <Timeline d={d} />
+      <Timeline d={d} teamId={teamId} />
       <Slots d={d} teamId={teamId} />
       <div className="cols-2">
         <MonthPanel d={d} teamId={teamId} month={month} setMonth={(m) => upd({ month: m === d.today.slice(0, 7) ? '' : m })} />
-        <EventsPanel teamId={teamId} />
+        <EventsPanel q={events} />
       </div>
     </>
   );
@@ -113,7 +120,7 @@ function Figures({ d, teamId }: { d: TeamBatches; teamId: string }) {
 
 /* ---------------------------------------------------------------- 批次时间轴 */
 type SeqSeg = 'all' | 'active';
-function Timeline({ d }: { d: TeamBatches }) {
+function Timeline({ d, teamId }: { d: TeamBatches; teamId: string }) {
   const [sp, upd] = useUrlState();
   const onlyActive = sp.get('active') === '1';
   const live = React.useMemo(() => d.batches.filter((b) => b.state !== 'expired'), [d]);
@@ -122,6 +129,7 @@ function Timeline({ d }: { d: TeamBatches }) {
   const seg = React.useMemo(() => [{ value: 'all' as SeqSeg, label: '全部', count: d.batches.length }, { value: 'active' as SeqSeg, label: '只看有效', count: live.length }], [d.batches.length, live.length]);
   const onSeg = React.useCallback((v: SeqSeg) => upd({ active: v === 'active' ? '1' : '' }), [upd]);
   const [edit, setEdit] = React.useState<CustomerBatch | null>(null);
+  const patchBatch = usePatchBatch();
   const held = useHeld(edit?.key, edit);
   const actions = (it: TimelineItem) => {
     const b = d.batches.find((x) => x.key === it.key);
@@ -146,7 +154,7 @@ function Timeline({ d }: { d: TeamBatches }) {
           <BatchTimeline items={items} today={d.today} actions={actions} />
         </div>
       )}
-      {held && <StartDialog open={!!edit} onClose={() => setEdit(null)} title={`改起算日 · ${nameOf(held)}`} start={held.start_date} ids={slotsOf(held).map((s) => s.id)}
+      {held && <StartDialog open={!!edit} onClose={() => setEdit(null)} title={`改起算日 · ${nameOf(held)}`} start={held.start_date} save={(v) => patchBatch.mutateAsync({ teamId, key: held.key, start_date: v })}
         desc={`这一批的 ${slotsOf(held).length} 个计费节点一起改`} />}
     </Panel>
   );
@@ -221,7 +229,7 @@ function Slots({ d, teamId }: { d: TeamBatches; teamId: string }) {
       </TableWrap>
 
       <AddSlotDialog open={adding} onClose={() => setAdding(false)} teamId={teamId} today={d.today} regions={regions} />
-      {held?.kind === 'start' && <StartDialog open={act?.kind === 'start'} onClose={() => setAct(null)} title={`改起算日 · ${slotName(held.s)}`} start={held.s.start_date} ids={[held.s.id]} />}
+      {held?.kind === 'start' && <StartDialog open={act?.kind === 'start'} onClose={() => setAct(null)} title={`改起算日 · ${slotName(held.s)}`} start={held.s.start_date} save={(v) => patch.mutateAsync({ id: held.s.id, start_date: v })} />}
       {held?.kind === 'edit' && <EditSlotDialog open={act?.kind === 'edit'} onClose={() => setAct(null)} s={held.s} regions={regions} />}
       {held?.kind === 'end' && <EndSlotDialog open={act?.kind === 'end'} onClose={() => setAct(null)} s={held.s} today={d.today} />}
       <ConfirmDialog open={act?.kind === 'del'} onOpenChange={(o) => !o && setAct(null)} danger confirmLabel="删除" title={`删除 · ${held ? slotName(held.s) : ''}`}
@@ -231,15 +239,14 @@ function Slots({ d, teamId }: { d: TeamBatches; teamId: string }) {
   );
 }
 
-/** 改起算日：一个名额，或一批的全部名额（逐个改） */
-const StartDialog = resetOnOpen(function StartDialog({ open, onClose, title, desc, start, ids }: { open: boolean; onClose: () => void; title: string; desc?: string; start: string; ids: string[] }) {
-  const patch = usePatchBillingSlot();
+/** 改起算日：一个名额，或整批（save 由调用方给，整批是服务端一个事务）；失败时显示服务端的原话 */
+const StartDialog = resetOnOpen(function StartDialog({ open, onClose, title, desc, start, save: apply }: { open: boolean; onClose: () => void; title: string; desc?: string; start: string; save: (v: string) => Promise<unknown> }) {
   const [v, setV] = React.useState(start);
   const [busy, setBusy] = React.useState(false);
   const save = async () => {
     setBusy(true);
     try {
-      for (const id of ids) await patch.mutateAsync({ id, start_date: v });
+      await apply(v);
       toast.ok(`起算日已改为 ${v}`); onClose();
     } catch (e) { toast.err(e); } finally { setBusy(false); }
   };
@@ -292,13 +299,13 @@ const AddSlotDialog = resetOnOpen(function AddSlotDialog({ open, onClose, teamId
   const listId = React.useId();
   const r = f.region.trim(); const n = f.note.trim();
   const errs = {
-    region: [...r].length > 20 ? '最多 20 个字' : undefined,
+    region: r === '' ? '必填' : [...r].length > 20 ? '最多 20 个字' : undefined,
     count: f.count !== '' && !(Number(f.count) >= 1 && Number(f.count) <= 99) ? '填 1–99' : undefined,
-    note: [...n].length > 60 ? '最多 60 个字' : undefined,
+    note: n === '' ? '必填' : [...n].length > 60 ? '最多 60 个字' : undefined,
   };
-  const valid = r !== '' && DATE.test(f.start) && f.count !== '' && n !== '' && !Object.values(errs).some(Boolean);
+  const valid = DATE.test(f.start) && f.count !== '' && !Object.values(errs).some(Boolean);
   return (
-    <FormDialog open={open} onOpenChange={(o) => !o && onClose()} title="添加手动计费节点" submitLabel="添加" busy={add.isPending} valid={valid} dirty={!!(f.region || f.note)}
+    <FormDialog open={open} onOpenChange={(o) => !o && onClose()} title="添加手动计费节点" submitLabel="添加" busy={add.isPending} valid={valid} dirty={!!(f.region || f.note) || f.start !== today || f.count !== '1'}
       desc={<>不在面板里的节点 <InfoTip text="系统外的节点（如家宽）：不会随节点增减自动变化，不收钱了要手动结束" /></>}
       onSubmit={() => add.mutate({ teamId, region: r, start_date: f.start, count: Number(f.count), note: n }, { onSuccess: () => { toast.ok(`已添加 ${f.count} 个手动计费节点`); onClose(); }, onError: toast.err })}>
       <div className="form-grid">
@@ -315,7 +322,7 @@ const AddSlotDialog = resetOnOpen(function AddSlotDialog({ open, onClose, teamId
 /* ---------------------------------------------------------------- 月度应收 */
 function MonthPanel({ d, teamId, month, setMonth }: { d: TeamBatches; teamId: string; month: string; setMonth: (m: string) => void }) {
   const q = useReceivable(teamId, month);
-  const r = q.data?.month === month ? q.data : undefined;
+  const r = q.data; // 翻月时 r 是上一个月的（placeholder，调淡），文字都按 r.month
   const first = d.slots.reduce((m, s) => (s.start_date.slice(0, 7) < m ? s.start_date.slice(0, 7) : m), d.today.slice(0, 7));
   const last = shiftMonth(d.today.slice(0, 7), 1);
   return (
@@ -328,12 +335,13 @@ function MonthPanel({ d, teamId, month, setMonth }: { d: TeamBatches; teamId: st
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       {!r && !q.isError && <div className="skel" style={{ height: 120 }} />}
       {r && (
-        <div className="cxa-rcv" data-stale={q.isPlaceholderData || undefined}>
+        <div className="cxa-rcv" data-stale={q.isPlaceholderData}>
           <div className="cxa-rcv-total">
-            <span>{month === d.today.slice(0, 7) ? '本月应收' : `${Number(month.slice(5))}月应收`} <b className="num">{r.total}</b> 个节点月</span>
+            <span>{r.month === d.today.slice(0, 7) ? '本月应收' : `${Number(r.month.slice(5))}月应收`} <b className="num">{r.total}</b> 个节点月</span>
             <InfoTip text={'起点落在这个月的每一期按个数计：1 个节点 1 期 = 1 个节点月\n还没到的月份按现在的节点数预估'} />
           </div>
-          {month <= d.today.slice(0, 7) && r.start_count != null && <div className="t-sub cxa-rcv-sub">月初 <span className="num">{r.start_count}</span> 个 · {month === d.today.slice(0, 7) ? '今天' : '月末'} <span className="num">{r.end_count}</span> 个</div>}
+          {/* 以后的月份没有月初 / 月末个数：行留着占高度，翻月不跳 */}
+          <div className="t-sub cxa-rcv-sub">{r.start_count != null ? <>月初 <span className="num">{r.start_count}</span> 个 · {r.month === d.today.slice(0, 7) ? '今天' : '月末'} <span className="num">{r.end_count}</span> 个</> : ' '}</div>
           {r.lines.length > 0
             ? <ul className="cxa-lines">{r.lines.map((l) => (
               <li key={`${l.batch_seq}-${l.period_start}`}>
@@ -357,12 +365,11 @@ function MonthPanel({ d, teamId, month, setMonth }: { d: TeamBatches; teamId: st
 function EventList({ events }: { events: { id: string; at: string; text: string; kind: string }[] }) {
   return (
     <ul className="cxa-events">
-      {events.map((e) => <li key={e.id} data-kind={e.kind}><span className="num t-sub" data-tip={F.dtFull(e.at)}>{F.dt(e.at)}</span><span>{e.text}</span></li>)}
+      {events.map((e) => <li key={e.id}><span className="num t-sub" data-tip={F.dtFull(e.at)}>{F.dt(e.at)}</span><span>{e.text}</span></li>)}
     </ul>
   );
 }
-function EventsPanel({ teamId }: { teamId: string }) {
-  const q = useBillingEvents(teamId);
+function EventsPanel({ q }: { q: ReturnType<typeof useBillingEvents> }) {
   const list = React.useMemo(() => q.data?.pages.flat() ?? [], [q.data]);
   return (
     <Panel title="增减记录">
@@ -376,13 +383,13 @@ function EventsPanel({ teamId }: { teamId: string }) {
 }
 
 /* ---------------------------------------------------------------- 客户页链接 */
-function PageLink({ teamId, teamName, page }: { teamId: string; teamName: string; page: CustomerPage | null }) {
+function PageLink({ teamId, teamName, page, stale }: { teamId: string; teamName: string; page: CustomerPage | null; stale: boolean }) {
   const rotate = useRotateCustomerPage(); const patch = usePatchCustomerPage();
   const [askRotate, setAskRotate] = React.useState(false);
   const INFO = '给客户看的只读页面：只显示有效批次的到期时间和节点月，不含节点名、IP、供应商、价格\n客户打开不用登录；链接等同凭据，只发给这个团队';
   if (!page) {
     return (
-      <span className="cxa-link">
+      <span className="cxa-link" data-stale={stale} inert={stale || undefined}>
         <Button loading={rotate.isPending} onClick={() => rotate.mutate(teamId, { onSuccess: () => toast.ok('已生成客户页链接'), onError: toast.err })}><Link2 />生成客户页链接</Button>
         <InfoTip text={INFO} />
       </span>
@@ -394,7 +401,7 @@ function PageLink({ teamId, teamName, page }: { teamId: string; teamName: string
       : toast.show({ tone: 'ok', text: '客户页已停用，客户打开会看到「链接无效或已停用」', action: { label: '撤销', onClick: () => patch.mutate({ teamId, enabled: true }, { onSuccess: () => toast.ok('客户页已启用'), onError: toast.err }) } })),
   });
   return (
-    <span className="cxa-link" data-off={page.enabled ? undefined : ''}>
+    <span className="cxa-link" data-off={page.enabled ? undefined : ''} data-stale={stale} inert={stale || undefined}>
       <span className="t-sub">客户页</span>
       <a className="cxa-url ellipsis" href={page.link} target="_blank" rel="noreferrer noopener" data-tip={page.link}>{page.link.replace(/^https?:\/\//, '')}</a>
       {!page.enabled && <Pill tone="neutral">已停用</Pill>}
