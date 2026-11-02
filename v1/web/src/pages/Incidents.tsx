@@ -1,10 +1,10 @@
 // 告警：三个下划线页签（换成另一类数据）——告警事件列表（确认 / 查看机器，服务端分页；下面再用分段控件筛 进行中 / 已恢复 / 全部）、静默与维护窗口（可预约开始时间）、月度可用率。列表都保持服务端顺序（告警严重度优先，静默按开始时间），前端不重排。
 import * as React from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { BellOff, CalendarPlus, Check, CheckCircle2, ChevronDown, ChevronRight, Trash2, Wrench } from 'lucide-react';
 import { RenewDialog } from '@/features/BillingTab';
 import { UptimeTab, orgMonth } from '@/features/UptimeTab';
-import { INCIDENT_PAGE, useAck, useAckMany, useAddSilence, useDelSilence, useIncidents, useMachineBriefs, useSilences } from '@/lib/queries';
+import { INCIDENT_PAGE, useAck, useAckMany, useAddSilence, useDelSilence, useIncidents, useMachineBriefs, useNotifyChannels, useSilences } from '@/lib/queries';
 import { usePage } from '@/lib/usePage';
 import { Pagination } from '@/components/app/Pagination';
 import { useDrawer } from '@/lib/drawer';
@@ -86,6 +86,9 @@ export function IncidentsPage() {
   if (q.data && q.data.total !== total) setTotal(q.data.total);
   const ack = useAck(); const ackMany = useAckMany();
   const silences = useSilences().data;
+  // 没有启用的通知渠道 = 这里的告警不会推给任何人：在看告警的地方就说清（设置页里也有同样的提示）
+  const channels = useNotifyChannels().data;
+  const unsent = !!channels && !channels.some((c) => c.enabled);
   // 静默页签上的数：还没结束的（进行中 + 已预约），同列表
   const silenceN = silences?.filter((s) => Date.parse(s.ends_at) > Date.now()).length;
   // 告警按「条」：已确认的不进主数字，另写「另有 N 条已确认」（同顶栏、标签页标题）
@@ -137,6 +140,7 @@ export function IncidentsPage() {
         <TabsList>{TABS.map((t) => <TabsTrigger key={t} value={t} noPanel>{TAB_LABEL[t]}{t === 'silences' && !!silenceN && <span className="seg-count">{silenceN}</span>}</TabsTrigger>)}</TabsList>
       </Tabs>
       {tab === 'alerts' && q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
+      {tab === 'alerts' && unsent && <Note tone="warn" icon={<BellOff size={14} />}>告警不会推送：还没有启用的通知渠道 · <Link to="/settings?section=notify">去添加</Link></Note>}
       {tab === 'alerts' && <Panel flush title="告警列表" count={alertN != null ? `${alertN.toLocaleString('zh-CN')} 条` : undefined} sub={acked ? `另有 ${acked} 条已确认` : undefined}
         tools={<Segmented sm label="状态" value={state} onChange={setState} items={STATES} />}>
         <TableWrap>
