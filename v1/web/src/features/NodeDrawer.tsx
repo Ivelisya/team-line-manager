@@ -200,12 +200,12 @@ function BillingRow({ m }: { m: MachineView }) {
   if (m.kind === 'relay' || !m.team || m.spare_from || m.lifecycle !== 'active') return null;
   const on = !m.billing_exempt;
   return (
-    <LabelValue label="计费" wrap>
+    <LabelValue label="向团队收费" wrap>
       <span className="row" style={{ gap: 8, flexWrap: 'nowrap' }}>
         <OptimisticSwitch checked={on} disabled={set.isPending} aria-label="向团队收这个节点的钱"
-          onCheckedChange={(v, undo) => set.mutate({ id: m.id, exempt: !v }, { onSuccess: () => toast.ok(v ? `${m.name} 恢复计费` : `${m.name} 设为不计费`), onError: (e) => { undo(); toast.err(e); } })} />
-        <span>{on ? '计费' : '不计费'}</span>
-        <InfoTip text={'按节点数向团队收费时算不算这个节点（团队与套餐 → 计费台账）\n切换后按离开 / 加入处理：24 小时内有节点加入或离开就算替换，计费不变'} />
+          onCheckedChange={(v, undo) => set.mutate({ id: m.id, exempt: !v }, { onSuccess: () => toast.ok(v ? `${m.name} 恢复收费` : `${m.name} 设为不收费`), onError: (e) => { undo(); toast.err(e); } })} />
+        <span>{on ? '收费' : '不收费'}</span>
+        <InfoTip text={'按节点数向团队收费时算不算这个节点（团队与套餐 → 计费台账）\n切换后按离开 / 加入处理：24 小时内有节点加入或离开就算补位，收费不变'} />
       </span>
     </LabelValue>
   );
