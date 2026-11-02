@@ -47,7 +47,7 @@
    横向用负外边距抵掉 .panel-body 的内边距让条通栏（超出的被 .panel 的 overflow: clip 裁掉），间距用 padding（sticky 吸住时 margin 会在标题与顶栏之间留缝）；毛玻璃回退见 overrides.css */
 .audit-day {
   position: sticky; top: var(--topbar-h); z-index: var(--z-sticky); margin: 0 calc(-1 * var(--card-pad)); padding: var(--sp-8) var(--card-pad) var(--sp-4);
-  background: var(--glass-bar); -webkit-backdrop-filter: var(--glass-bar-blur); backdrop-filter: var(--glass-bar-blur);
+  background: color-mix(in srgb, var(--surface) 94%, transparent); -webkit-backdrop-filter: var(--glass-bar-blur); backdrop-filter: var(--glass-bar-blur); /* 窄条紧贴文字行：比通用的吸顶条（--glass-bar，78%）更不透明，否则浅色下底下的行文字清晰透出；不改令牌，首页吸顶条等不受影响 */
   font: var(--fw-semibold) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2);
 }
 @media (hover: hover) { .audit-list li.is-link:hover { background-color: var(--hover); } }
@@ -61,6 +61,12 @@
 .audit-chev { display: inline-flex; width: 14px; height: 1em; vertical-align: -2px; color: var(--fg-3); }
 .audit-chev .lucide { width: var(--icon-2xs); height: var(--icon-2xs); } /* 转动见 components.css「展开箭头」 */
 .audit-list.is-bare .audit-detail { padding-left: 14px; }
+/* 手机上标题让位给右边的操作人 + 时间会只剩「执行命令 …」：操作人 · 时间换到标题下面一行（与明细同缩进）；只管操作记录列表，抽屉「最近告警」不受影响 */
+@media (max-width: 600px) {
+  .audit-list.is-bare .audit-head { flex-wrap: wrap; row-gap: var(--sp-2); }
+  .audit-list.is-bare .audit-what { flex-basis: 100%; }
+  .audit-list.is-bare .audit-meta { padding-left: 14px; }
+}
 .audit-what[data-tone="bad"] b { color: var(--bad-text); }
 .audit-target.btn { display: inline; height: auto; font: inherit; vertical-align: baseline; }
 .audit-res { margin-left: var(--sp-8); font-size: var(--fs-label); color: var(--fg-2); }
@@ -78,6 +84,7 @@
 .dt tr[data-open] .inc-fold .lucide { transform: rotate(90deg); }
 /* 展开的子行：底色下沉（同访问监控 .acc-sub）、对象列缩进一格；底色必须放这个全局文件，access.css 只随访问页的懒加载 chunk 进来 */
 .dt tr.inc-sub td { background: var(--sunken); }
+:root[data-theme="dark"] .dt tr.inc-sub td { background: color-mix(in srgb, var(--sunken) 70%, #000); } /* 暗色的 --sunken 只比面板暗 4 级，子行与父行看不出区别：这里再压深一点（令牌不动，表头带等别处照旧） */
 .dt tr.inc-sub td:nth-child(2) { padding-left: calc(var(--cell-px) + var(--sp-16)); }
 /* 告警表：窄屏收起「规则」「说明」「开始」三列（第 3–5 列宽度归零、内容藏起；不用 display: none，免得后面的格子挪到别的列上），
    内容并进对象格的第二、三行（.inc-narrow 只在窄屏出现）；表不再撑到 820 宽，不用横滑 */

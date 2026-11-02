@@ -212,7 +212,7 @@ const NO_ENTRY_TIP = '探测连的是线路机上客户用的入口端口\n这�
  *  格子：节点是线路机 → 节点的 TCP 建连（线路机的 agent 探）；线路机是主探测来源 → 线路机的连通性（中控，或靠近客户的探测点；
  *  说明文字随来源变，探测点另有建连延迟：标题后面写近 1 小时的中位延迟）。
  *  标题：故障的写第一条健康原因（同状态胶囊的悬停），线路机写「入口可达 x/y」（同抽屉，linkCounts；节点通、出口通不全通时跟在后面），
- *  家宽代理写成功率（延迟已在上面），其余写 TCP 延迟 · 出口通不通（有入口的线路机端口连不上时再跟一段「入口可达 x/y」，否则卡片全绿、看不出客户连不上）。节点自己的 agent 离线不影响它的心跳格：探测不是它自己做的，照常上色 */
+ *  家宽代理写成功率（延迟已在上面），其余写 TCP 延迟 · 出口通不通（有入口的线路机端口连不上时在最前面写一段「入口可达 x/y」：它比延迟更要紧，紧凑密度下一行放不下时被截掉的该是后面的 TCP / 出口，否则卡片全绿、看不出客户连不上）。节点自己的 agent 离线不影响它的心跳格：探测不是它自己做的，照常上色 */
 const BeatSlot = memo(function BeatSlot({ id, kind, lifecycle, reason, reasonKey, onOpen, tcp, tcpTip, egressOk, tcpFail, egressFail, all, off, total, tcpOk, egressBad, reachBad, reverse }: { id: string; kind: MachineView['kind']; lifecycle: MachineView['lifecycle']; reason: string | undefined; reasonKey: string | undefined; onOpen: Open } & ReturnType<typeof probeSummary>) {
   const live = lifecycle === 'active';
   const src = useReachLabel();
@@ -231,9 +231,9 @@ const BeatSlot = memo(function BeatSlot({ id, kind, lifecycle, reason, reasonKey
   const full = extra ? `${(['reach', 'node', 'egress'] as const).filter((k) => links[k].total > 0).map((k) => `${LINK_LABEL[k]} ${links[k].ok}/${links[k].total}`).join(' · ')}\n` : '';
   const relayCounts = <span data-tip={`${full}${reachReason ? `${reasonText(reason!)}\n` : ''}下面的格子是${who}连线路机入口的结果${off ? `\n停用的 ${off} 条入口不计` : ''}${rtt != null && (reason || extra) ? `\n${src?.label ?? '探测点'}连到这台线路机的延迟 ${Math.round(rtt)} ms（近 1 小时中位数）` : ''}`}><LinkCounts c={links} who={who} only={['reach']} /></span>;
   const rttTag = rtt == null || extra ? null : <> · <span data-tip={`${src?.label ?? '探测点'}连到这台线路机的延迟，近 1 小时中位数`}>延迟 <b className="num">{Math.round(rtt)} ms</b></span></>;
-  // 节点自己通、但有入口的线路机端口连不上：卡片是全绿的，客户却连不上，补一段「入口可达 x/y」（同抽屉标题旁的黄胶囊）
+  // 节点自己通、但有入口的线路机端口连不上：卡片是全绿的，客户却连不上，在最前面补一段「入口可达 x/y」（同抽屉标题旁的黄胶囊；放最前是因为紧凑密度下一行放不下，被截掉的该是后面的延迟）
   const unreach = kind !== 'relay' && live && reachBad > 0
-    ? <> · <span data-tip={unreachTip(who, reachBad)}>{LINK_LABEL.reach} <b className="num" style={{ color: 'var(--bad-text)' }}>{all - reachBad}/{all}</b></span></> : null;
+    ? <><span data-tip={unreachTip(who, reachBad)}>{LINK_LABEL.reach} <b className="num" style={{ color: 'var(--bad-text)' }}>{all - reachBad}/{all}</b></span> · </> : null;
   const rate = kind === 'proxy' && live ? beatRate(beats) : null;
   const empty = live && bq.isSuccess && !beats?.some((b) => b[0] > 0); // 整条都没有探测：标题写明、格子画虚线，不是 20 格灰块
   const cap = !live ? <span className="t-muted">{lifecycle === 'retired' ? '已退役' : '还没开始探测'}</span>
@@ -242,10 +242,10 @@ const BeatSlot = memo(function BeatSlot({ id, kind, lifecycle, reason, reasonKey
     : kind === 'relay' && all === 0 ? <span className="t-muted" data-tip={NO_ENTRY_TIP}>还没有入口，不用探测</span>
     : empty ? <span className="t-muted">暂无探测</span>
     : kind === 'relay' ? <>{relayCounts}{rttTag}</>
-    : kind === 'proxy' ? <>探测成功 <b className="num">{rate == null ? '—' : `${Math.round(rate)}%`}</b>{unreach}</>
+    : kind === 'proxy' ? <>{unreach}探测成功 <b className="num">{rate == null ? '—' : `${Math.round(rate)}%`}</b></>
     // 入口全是穿透的节点：没有 TCP 读数，写「穿透」（格子是经入口的出口探测）；混着普通入口的照写 TCP
-    : total === 0 && reverse > 0 ? <><span data-tip={`${REVERSE_TIP}\n下面的格子是经入口的出口探测`}><b>穿透</b></span> · 出口 <b>{egressText(egressOk, egressFail)}</b>{unreach}</>
-    : <><span data-tip={tcpTip}>TCP <b>{probeMs(tcp, tcpFail)}</b></span>{reverse > 0 && <span data-tip={REVERSE_TIP}>（另有 {reverse} 条穿透）</span>} · 出口 <b>{egressText(egressOk, egressFail)}</b>{unreach}</>;
+    : total === 0 && reverse > 0 ? <>{unreach}<span data-tip={`${REVERSE_TIP}\n下面的格子是经入口的出口探测`}><b>穿透</b></span> · 出口 <b>{egressText(egressOk, egressFail)}</b></>
+    : <>{unreach}<span data-tip={tcpTip}>TCP <b>{probeMs(tcp, tcpFail)}</b></span>{reverse > 0 && <span data-tip={REVERSE_TIP}>（另有 {reverse} 条穿透）</span>} · 出口 <b>{egressText(egressOk, egressFail)}</b></>;
   // 时段按这份数据取回的时刻对齐（轮询间隔 2 分钟，用当前时刻在跨格时会错一格）
   const titles = useMemo(() => (live ? beatTitles(beats, bq.dataUpdatedAt) : undefined), [live, beats, bq.dataUpdatedAt]);
   return (

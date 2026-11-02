@@ -189,7 +189,7 @@ export function ProvisionPage() {
 
   return (
     <div className="stack" ref={page}>
-      <PageHead title="上架"
+      <PageHead title="上架" className={mode === 'single' ? 'prov-form' : undefined}
         tools={<Segmented label="模式" value={mode} onChange={switchMode} items={[{ value: 'single', label: '单台' }, { value: 'batch', label: '批量' }]} />} />
       <div className={mode === 'single' ? 'prov-steps is-form' : 'prov-steps'}>
         <span className="s" data-on={passed ? undefined : '1'} data-done={passed ? '1' : undefined}><span className="n">1</span>检查</span><span>→</span>

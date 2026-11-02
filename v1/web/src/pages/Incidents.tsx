@@ -123,7 +123,7 @@ export function IncidentsPage() {
           <td>{sid && isRouterIncident(i) ? <button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => openRouter(sid, routerIncidentTab(i))}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button>
             : sid ? <NodeHover id={sid}><button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => open(sid)}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button></NodeHover> : (i.subject_name ?? '—')}
             {i.ack_at && !i.resolved_at && <Pill tone="neutral" className="pill-sm inc-ack-narrow" tip={`${i.ack_by ? `${F.actor(i.ack_by)} ` : ''}已确认 · ${F.ago(i.ack_at)}`}>已确认</Pill>}
-            <span className="sub inc-narrow">{i.rule_name} · {F.ago(i.opened_at)}</span><span className="sub inc-narrow inc-narrow-sum" data-tip={sum}>{sum}</span><SuggestedCmds i={i} className="inc-narrow" /></td>
+            <span className="sub inc-narrow">{i.rule_name} · <span className="nowrap">{F.ago(i.opened_at)}</span></span><span className="sub inc-narrow inc-narrow-sum" data-tip={sum}>{sum}</span><SuggestedCmds i={i} className="inc-narrow" /></td>
           <td>{i.rule_name}<RecentCount i={i} className="sub" /></td>
           <td><span className="cell-main" data-tip={sum}>{sum}</span><SuggestedCmds i={i} /><IncidentOps i={i} />{(i.resolved_at || i.ack_at) && <span className="sub">{i.resolved_at
             ? <span data-tip={`恢复于 ${F.dtFull(i.resolved_at)}`}>已恢复 · 持续 {F.span(Date.parse(i.resolved_at) - Date.parse(i.opened_at))}</span>
@@ -160,7 +160,7 @@ export function IncidentsPage() {
                   <React.Fragment key={k}>
                     <tr data-open={on ? '' : undefined}>
                       <td>{SEV(r[0])}</td>
-                      <td><button type="button" className="btn btn-link inc-fold" aria-expanded={on} data-tip={on ? '收起' : '展开看每一条'} onClick={() => toggle(k)}>{r.length} 条 · {foldNoun(r)}<ChevronRight /></button><span className="sub inc-narrow">{r[0].rule_name} · {F.ago(r[0].opened_at)}</span></td>
+                      <td><button type="button" className="btn btn-link inc-fold" aria-expanded={on} data-tip={on ? '收起' : '展开看每一条'} onClick={() => toggle(k)}>{r.length} 条 · {foldNoun(r)}<ChevronRight /></button><span className="sub inc-narrow">{r[0].rule_name} · <span className="nowrap">{F.ago(r[0].opened_at)}</span></span></td>
                       <td>{r[0].rule_name}</td>
                       <td>同时出现{r[0].state === 'resolved' && <span className="sub">已恢复</span>}</td>
                       <td>{F.dt(r[0].opened_at)}<span className="sub">{F.ago(r[0].opened_at)}</span></td>
