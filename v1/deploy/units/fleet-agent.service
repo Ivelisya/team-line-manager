@@ -12,11 +12,13 @@ RestartSec=3
 # 关停时 agent 最多等约 35 s 让上报器落盘、进行中的 apply 收尾
 TimeoutStopSec=45
 # v1 选择：以 root 运行（线路机上要 systemctl restart fleet-xray / fleet-singbox、读写 0600 的 xray.json 与 sing-box 配置），
-# 但只留 CAP_DAC_READ_SEARCH + 只读文件系统，只留下面几个可写目录。落地节点同一份单元也能用。
+# 但只留 CAP_DAC_READ_SEARCH、CAP_NET_RAW + 只读文件系统，只留下面几个可写目录。落地节点同一份单元也能用。
 # /etc/fleet-singbox：线路机的 AnyTLS 外壳（sing-box）的配置与自签证书；「-」：节点上没有这个目录，跳过（装 agent 的脚本在线路机上先建好它）
 # CAP_DAC_READ_SEARCH：Xray 以动态用户运行，访问日志是它建的 0600 文件（在 root 的 0700 目录 /var/log/private 下），没有它读不到
+# CAP_NET_RAW：放置矩阵与三网 PING 的 ICMP 跑系统 ping，发行版的 ping 带文件能力 cap_net_raw+ep；单元的能力集里没有它，加上 NoNewPrivileges，
+# execve ping 直接返回 EPERM（Operation not permitted），矩阵永远没有数据
 User=root
-CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_NET_RAW
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/var/lib/fleet-agent /etc/fleet-agent -/etc/fleet-singbox

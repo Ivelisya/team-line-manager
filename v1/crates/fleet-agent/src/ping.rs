@@ -2,8 +2,8 @@
 //!
 //! 每 `interval_s`（60）秒一轮，各目标并发，每个目标发 `count`（5）次：
 //! - tcp（默认）：建连，目标不写端口时连 80（`fleet_proto::PING_TCP_DEFAULT_PORT`）；每次超时 3 秒、间隔 0.2 秒；延迟是内核量的往返时间（同 TCP 探测）。
-//! - icmp：跑系统的 `ping -n -c 5 -i 0.5 -W 2`，从输出里取每次的 time=。agent 的 systemd 单元不给 CAP_NET_RAW、还带 NoNewPrivileges，
-//!   iputils 的 ping 拿不到原始套接字时自己改用 ICMP 数据报套接字（要 `net.ipv4.ping_group_range` 含 root 组，systemd 默认就是全部组）；
+//! - icmp：跑系统的 `ping -n -c 5 -i 0.5 -W 2`，从输出里取每次的 time=。发行版的 ping 带文件能力 cap_net_raw+ep，agent 的 systemd 单元要在 CapabilityBoundingSet 里留 CAP_NET_RAW
+//!   （否则带着 NoNewPrivileges 的 agent 直接 execve 它就是 EPERM，放置矩阵与这里都永远没有数据）；
 //!   系统没有 ping、或它报没权限 / 建不了套接字时，这一轮退回 tcp（样本的 `mode` 写 tcp，界面看得出来），日志 10 分钟最多一条。
 //!
 //! 结果（通了的那几次的延迟中位数、丢了几次）进上报缓冲，随下一份上报带走（`Report::ping`）；离线时同其它样本一起排队补传。
