@@ -130,6 +130,8 @@ sed -e "s|__SITE__|实验室中控 fleet-dev|" \
     "$DEPLOY/central/central-agents.md" > "$t"
 for f in AGENTS.md CLAUDE.md; do install -m 644 "$t" "/root/$f"; done
 rm -f "$t"
+# docker 方式传上来的安装用文件，装完即删（中途失败时 set -e 退出，留着便于排查；lab/cleanup.sh 会兜底清掉）
+[ -z "$PREBUILT" ] || rm -rf "$PREBUILT"
 REMOTE
 # fleet-ops 技能不在 v1 里（sync-server.sh 不带），单独传：SKILL.md 与同目录的 json-fields.md 等 .md
 (cd "$HERE/../../.claude/skills/fleet-ops" && tar -cf - *.md) \
