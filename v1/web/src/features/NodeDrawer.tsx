@@ -234,6 +234,8 @@ function OverviewTab({ m }: { m: MachineView }) {
           {h && <LabelValue label="宿主机"><button type="button" className="btn btn-link" onClick={() => open(h.id)}>{h.name}</button></LabelValue>}
           {/* 1:1 NAT 映射的附加 IP：公网 IP 不在网卡上，ssserver 监听并从这个本地地址出站；线路机连的仍是上面的 IP */}
           {h && m.bind_ip && <LabelValue label="本地地址"><><span className="num">{m.bind_ip}</span> <InfoTip text={`公网 IP 是 1:1 NAT 映射到宿主机这个地址上的：ssserver 监听并从它出站，线路机连的仍是 ${m.ip}`} /></></LabelValue>}
+          {/* 端口转发型 NAT 节点：线路机连上面的 IP（入口），出站是这个 IP */}
+          {m.egress_ip && <LabelValue label="出口 IP"><><span className="num">{m.egress_ip}</span> <InfoTip text={`线路机连的是 ${m.ip}，机器出站的公网 IP 是这个；出口验收看的就是它`} /></></LabelValue>}
           <LabelValue label="SSH 端口">{`${m.ssh_port}${ofHost}`}</LabelValue>
           <LabelValue label="供应商">{m.provider?.name}</LabelValue>
           <LabelValue label="套餐">{m.plan?.name ?? (h ? '不带套餐' : undefined)}</LabelValue>

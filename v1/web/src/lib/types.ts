@@ -102,6 +102,8 @@ export interface MachineView {
   /** 同机 IP 节点的公网 IP 是 1:1 NAT 映射的：它在宿主机网卡上的本地地址（ssserver 监听并从它出站，线路机连的仍是 ip）；
    *  公网 IP 直接配在网卡上的、其它机器为 null */
   bind_ip: string | null;
+  /** 端口转发型 NAT 节点（入口 IP 与出站 IP 不同）：它的出口 IP，ip 是线路机连的入口；null = 出口就是 ip */
+  egress_ip: string | null;
   /** 宿主机：它上面未退役的同机 IP 节点（按团队、编号）；其它机器为 []。宿主机的 quota.used 按网卡算，含它们的流量 */
   ip_nodes: { id: string; name: string }[];
   provider: { id: string; name: string } | null; provider_code: string | null;
