@@ -3,7 +3,7 @@
 //! 改名额（起算日、地区、备注、结束 / 恢复）、手动名额（系统外的节点）、节点设不计费、一次性初始化。读要 read、写要 write（写审计）。
 //! 每个团队一个只读分享链接（令牌 32 字节随机，库里存 sha256 用来查、SecretBox 密文用来随时再复制链接），
 //! 公开接口 `GET /api/v1/public/customer/{令牌}` 不登录（和 client_subs 的 /sub/{令牌} 一样没有 Actor 提取器，登录只在提取器里校验，所以不会被拦）。
-//! 客户页不出现 IP、供应商、价格、节点名。
+//! 客户页不出现 IP、供应商、价格；节点清单（nodes）里有节点名与各自的本期、下次续费日。
 
 use super::ok;
 use crate::auth::{self, Actor, ClientIp};
@@ -668,6 +668,31 @@ pub async fn page_delete(a: Actor, State(st): State<AppState>, ApiPath(team): Ap
 
 // ── 公开（不登录）─────────────────────────────────────────────────────
 
+/// 客户页的节点清单：收费中的名额（没结束，或结束日在今天以后；含空出待定的），各自的本期（含今天的那一期，[period_start, period_end)），
+/// 按下次续费日（period_end）、名字排。名字：占用者现在的名字；空出待定的是原占用者；手动的写备注，没有备注写「手动添加的节点」。
+/// renews：本期结束后还续不续（结束日晚于 period_end 或没结束）。不含 IP、供应商、价格
+fn public_nodes(slots: &[SlotRow], today: Date) -> Vec<Value> {
+    let mut out: Vec<(Date, String, Value)> = slots
+        .iter()
+        .filter(|s| s.state(today) != "ended")
+        .filter_map(|s| {
+            let (ps, pe) = bt::period(s.start_date, bt::last_period(s.start_date, &[None], today)?)?;
+            let name = match (s.manual, s.note.is_empty()) {
+                (true, true) => "手动添加的节点".to_string(),
+                (true, false) => s.note.clone(),
+                _ => s.name(),
+            };
+            let v = json!({
+                "name": name, "region": s.region, "start_date": bt::fmt_date(s.start_date),
+                "period_start": bt::fmt_date(ps), "period_end": bt::fmt_date(pe), "renews": s.end_date.is_none_or(|e| e > pe),
+            });
+            Some((pe, name, v))
+        })
+        .collect();
+    out.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
+    out.into_iter().map(|(_, _, v)| v).collect()
+}
+
 /// `GET /api/v1/public/customer/{令牌}`：令牌不对或已停用一律 404（不区分）。令牌按 sha256 查库；
 /// 和订阅拉取一样，不对的记一次失败、与登录共用按来源的限速（键按令牌哈希分开，别人猜错的不会把对的令牌一起封掉）。
 /// 最近查看时间与来源 10 分钟内只写一次。X-Robots-Tag 由 lib.rs 的响应头中间件统一加
@@ -694,8 +719,10 @@ pub async fn public_view(State(st): State<AppState>, ClientIp(ip): ClientIp, Api
     .execute(&st.db)
     .await?;
     let today = bt::today();
-    let batches = derive_all(&team_slots(&mut *st.db.acquire().await?, team).await?, today);
-    let mut r = ok(bt::public_page(&name, today, &batches)).into_response();
+    let slots = team_slots(&mut *st.db.acquire().await?, team).await?;
+    let mut page = bt::public_page(&name, today, &derive_all(&slots, today));
+    page["nodes"] = Value::Array(public_nodes(&slots, today));
+    let mut r = ok(page).into_response();
     r.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(r)
 }
