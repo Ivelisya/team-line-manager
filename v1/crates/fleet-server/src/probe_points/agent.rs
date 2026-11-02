@@ -114,6 +114,8 @@ async fn report(State(st): State<AppState>, ClientIp(ip): ClientIp, h: HeaderMap
     // 要它升级到的正是它记着的坏版本（换上过、没能上报、自己换回来了）：它不会再换（也不下载），等下载后的失败判定永远等不到，
     // 这里直接记成升级失败、不再下发
     let bad: Option<String> = r.bad_sha256.as_deref().map(|s| s.chars().take(64).collect());
+    // 探测点上报是遥测：写入异步提交（db::begin_async）；先提交再往下，后面读的（reach::record 的判定）看得到
+    let mut tx = crate::db::begin_async(&st.db).await?;
     let prev: Option<(Option<OffsetDateTime>, bool)> = sqlx::query_as(
         "update probe_point p set last_seen_at = now(), last_ip = $2::inet, version = $3, bad_sha256 = $6,
                 upgrade_sha256 = case when p.upgrade_sha256 in ($4, $6) then null else p.upgrade_sha256 end,
@@ -131,8 +133,9 @@ async fn report(State(st): State<AppState>, ClientIp(ip): ClientIp, h: HeaderMap
     .bind(r.sha256.as_deref())
     .bind(MIN_GAP_S)
     .bind(&bad)
-    .fetch_optional(&st.db)
+    .fetch_optional(&mut *tx)
     .await?;
+    tx.commit().await?;
     let Some((prev, bad_hit)) = prev else {
         return Ok((StatusCode::TOO_MANY_REQUESTS, [(header::RETRY_AFTER, "10")], Json(json!({"error": {"code": "too_frequent", "message": "上报太频繁"}}))).into_response());
     };
@@ -149,13 +152,15 @@ async fn report(State(st): State<AppState>, ClientIp(ip): ClientIp, h: HeaderMap
     // 停用的不测，不动它（启用时多半正离线，回来时从那一刻算起）。作废满 3 分钟、又被采纳时实际用的那一路会变，由 run_forever 发事件
     if p.enabled {
         let why: Option<String> = r.discarded.as_deref().map(|w| w.chars().take(200).collect());
+        let mut tx = crate::db::begin_async(&st.db).await?;
         sqlx::query("update probe_point set last_kept_at = case when $2 or $3 or last_kept_at is null then now() else last_kept_at end, discard_reason = $4 where id = $1")
             .bind(p.id)
             .bind(kept)
             .bind(back)
             .bind(&why)
-            .execute(&st.db)
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
     }
     if back {
         super::changed(&st);

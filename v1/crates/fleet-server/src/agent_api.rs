@@ -174,19 +174,32 @@ async fn authenticate(st: &AppState, h: &HeaderMap, ip: Option<IpAddr>) -> Resul
         st.agent_auth.may_try(ip, now).map_err(|wait| too_many(wait, "鉴权失败"))?;
     }
     let gen = st.agent_auth.generation();
-    // 查令牌与刷新最近使用时间一次往返；最近使用时间一分钟内不重复写（缓存过期才来查，没必要每次都改这一行）
-    let row: Option<(Uuid, String)> = sqlx::query_as(
-        "with a as (select m.id, m.kind::text kind from agent_token t join machine m on m.id = t.machine_id
-                    where t.token_hash = $1 and t.revoked_at is null and m.lifecycle <> 'retired'),
-              _u as (update agent_token set last_used_at = now()
-                     where token_hash = $1 and revoked_at is null and (last_used_at is null or last_used_at < now() - interval '1 minute')
-                       and exists (select 1 from a))
-         select id, kind from a",
-    )
-    .bind(&hash)
-    .fetch_optional(&st.db)
-    .await
-    .map_err(|e| {
+    // 先只读查令牌；最近使用时间落后超过 60 秒才写（缓存过期才来查，没必要每次都改这一行），写走异步提交，库盘卡顿时不拖住鉴权
+    let row: sqlx::Result<Option<(Uuid, String)>> = async {
+        let found: Option<(Uuid, String, bool)> = sqlx::query_as(
+            "select m.id, m.kind::text, t.last_used_at is null or t.last_used_at < now() - interval '60 seconds'
+             from agent_token t join machine m on m.id = t.machine_id
+             where t.token_hash = $1 and t.revoked_at is null and m.lifecycle <> 'retired'",
+        )
+        .bind(&hash)
+        .fetch_optional(&st.db)
+        .await?;
+        let Some((id, kind, stale)) = found else { return Ok(None) };
+        if stale {
+            let mut tx = crate::db::begin_async(&st.db).await?;
+            sqlx::query(
+                "update agent_token set last_used_at = now()
+                 where token_hash = $1 and revoked_at is null and (last_used_at is null or last_used_at < now() - interval '60 seconds')",
+            )
+            .bind(&hash)
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+        }
+        Ok(Some((id, kind)))
+    }
+    .await;
+    let row = row.map_err(|e| {
         // 库连不上时最先失败的就是这里：记进中控收不到上报的时段（report_gaps::ReportGaps；只认连接断了，池子被挤满不算）
         if crate::db::connection_lost(&e) {
             st.report_gaps.failed(OffsetDateTime::now_utc());
@@ -523,7 +536,8 @@ async fn ingest(st: &AppState, a: AgentId, mut r: Report) -> Result<Json<ReportA
     let mut tx = st.db.begin().await?;
     // 主连接池不设语句超时：一条卡住的语句（如插分区表时排在建 / 摘分区的父表锁后面）会让这份一直占着处理位置，
     // 这台机器之后的上报就一直 429。10 秒（加上等连接最多 5 秒，在 agent 的 15 秒超时以内）没完就取消、回 503，agent 退避重发
-    sqlx::query("set local statement_timeout = '10s'").execute(&mut *tx).await?;
+    // 上报是遥测：异步提交（见 db::begin_async），库盘 fsync 卡顿时不拖住上报
+    sqlx::query("select set_config('statement_timeout', '10s', true), set_config('synchronous_commit', 'off', true)").execute(&mut *tx).await?;
     let prev: Option<(i64, bool, Option<OffsetDateTime>)> = sqlx::query_as(
         "select last_seq, coalesce(last_report_at > now() - interval '30 seconds', false), last_report_at from agent_state where machine_id = $1 for update",
     )
@@ -552,7 +566,7 @@ async fn ingest(st: &AppState, a: AgentId, mut r: Report) -> Result<Json<ReportA
         v
     });
     let agent_health = r.agent_health.as_ref().map(|h| serde_json::to_value(h).unwrap_or_default());
-    // AnyTLS（sing-box）的状态：每份都带，覆盖旧值；旧 agent 不报，info 里就没有（界面显示「未知」，分享与订阅不给 AnyTLS）
+    // AnyTLS（sing-box）的状态：每份都覆盖（同 caps），旧 agent 不报就先摘掉旧值，info 里就没有（界面显示「未知」，分享与订阅不给 AnyTLS）
     let singbox = r.singbox.as_ref().map(|s| serde_json::to_value(s).unwrap_or_default());
     // 时钟偏差 = 中控收到时刻 − sent_at_ms（正数 = agent 时钟慢）。sent_at_ms 是建报时刻，积压补发、失败重发的报告会偏大，
     // 只认新鲜的：建报时离线队列为空（之前的报告都已确认，建报一定晚于中控收到上一份）且上一份是 30 秒内收到的，误差不超过 30 秒
@@ -563,10 +577,11 @@ async fn ingest(st: &AppState, a: AgentId, mut r: Report) -> Result<Json<ReportA
     // 中控据此判断能不能下发穿透入口（reverse::unsupported）
     sqlx::query(
         "insert into agent_state (machine_id, agent_version, boot_id, last_seq, last_report_at, info)
-         values ($1, $2, $3, $4, now(), coalesce($5, '{}'::jsonb) || jsonb_strip_nulls(jsonb_build_object('xray', $6::jsonb, 'agent_health', $7::jsonb, 'clock_skew_ms', $8::bigint, 'singbox', $10::jsonb)) || jsonb_build_object('caps', to_jsonb($9::text[])))
+         values ($1, $2, $3, $4, now(), coalesce($5, '{}'::jsonb) || jsonb_strip_nulls(jsonb_build_object('xray', $6::jsonb, 'agent_health', $7::jsonb, 'clock_skew_ms', $8::bigint)) || jsonb_build_object('caps', to_jsonb($9::text[])) || jsonb_strip_nulls(jsonb_build_object('singbox', $10::jsonb)))
          on conflict (machine_id) do update set agent_version = excluded.agent_version, boot_id = excluded.boot_id,
            last_seq = greatest(agent_state.last_seq, excluded.last_seq), last_report_at = now(),
-           info = agent_state.info || coalesce($5, '{}'::jsonb) || jsonb_strip_nulls(jsonb_build_object('xray', $6::jsonb, 'agent_health', $7::jsonb, 'clock_skew_ms', $8::bigint, 'singbox', $10::jsonb)) || jsonb_build_object('caps', to_jsonb($9::text[]))",
+           info = (agent_state.info - 'singbox') || coalesce($5, '{}'::jsonb) || jsonb_strip_nulls(jsonb_build_object('xray', $6::jsonb, 'agent_health', $7::jsonb, 'clock_skew_ms', $8::bigint))
+                  || jsonb_build_object('caps', to_jsonb($9::text[])) || jsonb_strip_nulls(jsonb_build_object('singbox', $10::jsonb))",
     )
     .bind(a.machine_id)
     .bind(&r.agent_version)
@@ -728,10 +743,12 @@ async fn kick(st: &AppState, a: &AgentId) -> Option<i64> {
 /// 本进程已入库过的一份又发来（确认在路上丢了、503 后重试）：不查入口、不补建分区、不进去重事务，只刷新最近上报时间（agent 活着），
 /// 确认库里记的最大 seq（不小于这份的）。行一定在：入库提交过才推进内存里的 seq
 async fn resent(st: &AppState, machine: Uuid) -> sqlx::Result<Json<ReportAck>> {
+    let mut tx = crate::db::begin_async(&st.db).await?;
     let last: i64 = sqlx::query_scalar("update agent_state set last_report_at = now() where machine_id = $1 returning last_seq")
         .bind(machine)
-        .fetch_one(&st.db)
+        .fetch_one(&mut *tx)
         .await?;
+    tx.commit().await?;
     Ok(Json(ReportAck { accepted_seq: last as u64, interval_s: fleet_proto::REPORT_INTERVAL_S, bridge_kick: None }))
 }
 

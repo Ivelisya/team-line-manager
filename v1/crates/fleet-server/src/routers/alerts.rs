@@ -5,7 +5,7 @@
 //!
 //! | 规则 | 级别 | 开 |
 //! |---|---|---|
-//! | router_offline | 严重 | 接入过（换了这把隧道密钥之后连上过）、此刻连不上满 1 分钟（中控收不到上报的时段不算，同 agent 离线，见 report_gaps.rs） |
+//! | router_offline | 严重 | 接入过（换了这把隧道密钥之后连上过）、此刻连不上满 3 分钟（中控收不到上报的时段不算，同 agent 离线，见 report_gaps.rs） |
 //! | router_offline | 警告 | 接入过的路由重新接入（重新生成接入命令、重新部署）之后 30 分钟还没连上 |
 //! | router_collect_error | 警告 | 连得上，但采集脚本出错、输出解析不了、超时（满 60 秒） |
 //! | router_openclash_down | 严重 | OpenClash 启用了、核心没在跑（满 60 秒） |
@@ -43,8 +43,8 @@ pub const EXIT_DRIFT: &str = "router_exit_drift";
 const REBOOTSTRAP_S: i64 = super::BOOTSTRAP_MINUTES * 60;
 /// 开（不带时长的条件）、关的去抖
 const DEBOUNCE_S: i64 = 60;
-/// 连不上满这么久开离线告警（扣掉中控收不到上报的时段）：采集每 30 秒一轮，隧道断开时还马上采一次，至少两次没连上
-const OFFLINE_S: i64 = 60;
+/// 连不上满这么久开离线告警（扣掉中控收不到上报的时段），同出口不通的 180 秒：隧道偶尔没连上一两分钟（7 天 8 次、5 次不到 1 分钟）不报
+const OFFLINE_S: i64 = EXITS_DOWN_S;
 /// CPU 持续偏高满这么久
 const CPU_SUSTAIN_S: i64 = 600;
 /// 采集 / 评估的间隔（秒）：路由采集和机器告警评估都是每 30 秒一轮
@@ -104,7 +104,7 @@ pub struct View {
     /// 离线时是连不上的原因；在线时有值 = 连得上但采集出错
     pub error: Option<String>,
     pub last_ok_at: Option<OffsetDateTime>,
-    /// 连不上满 `OFFLINE_S`（1 分钟）了（扣掉中控收不到上报的时段）
+    /// 连不上满 `OFFLINE_S`（3 分钟）了（扣掉中控收不到上报的时段）
     pub offline_held: bool,
     /// 等待接入从什么时候起（重新生成接入命令、取走接入脚本、一键部署的时刻）
     pub pending_since: Option<OffsetDateTime>,
@@ -508,9 +508,15 @@ mod tests {
     }
 
     #[test]
-    fn offline_after_one_minute_only() {
+    fn offline_after_three_minutes_only() {
         let now = OffsetDateTime::now_utc();
-        assert!(problems(&view("offline", None, 40, now), None, &Targets::default(), now).0.is_empty(), "不到 1 分钟");
+        // 同出口不通的 180 秒门槛（含 5 秒余量）：1 到 3 分钟的隧道没连上不报
+        for secs in [40, 90, 170] {
+            assert!(problems(&view("offline", None, secs, now), None, &Targets::default(), now).0.is_empty(), "{secs} 秒不到 3 分钟");
+        }
+        for secs in [175, 180] {
+            assert_eq!(problems(&view("offline", Some(healthy()), secs, now), None, &Targets::default(), now).0.len(), 1, "{secs} 秒该报");
+        }
         let (p, judged) = problems(&view("offline", Some(healthy()), 300, now), None, &Targets::default(), now);
         assert!(!judged, "连不上时其余几条无从判断");
         assert_eq!((p.len(), p[0].rule, p[0].severity), (1, OFFLINE, "critical"));

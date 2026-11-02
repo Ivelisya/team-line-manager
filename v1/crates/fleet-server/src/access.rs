@@ -106,7 +106,7 @@ pub async fn rollup_hour(db: &PgPool, hour: OffsetDateTime) -> anyhow::Result<()
 /// 重算同一天里的几个小时，再重算那一天（一个事务）
 async fn rollup_day_hours(db: &PgPool, hours: &[OffsetDateTime]) -> anyhow::Result<()> {
     let Some(&first) = hours.first() else { return Ok(()) };
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_async(db).await?;
     sqlx::query("select pg_advisory_xact_lock($1)").bind(LOCK_KEY).execute(&mut *tx).await?;
     // 往后多算 10 分钟：接近整点时宁可多记一点差值（用不上的会被同步丢弃），也不能漏
     let closed = floor_hour(OffsetDateTime::now_utc() + Duration::minutes(10)) - Duration::hours(1);

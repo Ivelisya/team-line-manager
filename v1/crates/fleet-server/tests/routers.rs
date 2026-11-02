@@ -572,11 +572,11 @@ async fn alerts_open_notify_and_recover() {
     issue_key(&t, &id).await;
     let mut st = alerts::AlertState::default();
     let t0 = OffsetDateTime::now_utc();
-    // 连不上 40 秒：还不报，到满 1 分钟时再评估一次；5 分钟：报离线（严重），对象是路由
+    // 连不上 40 秒：还不报，到满 3 分钟（含 5 秒余量）时再评估一次；5 分钟：报离线（严重），对象是路由
     status(&t, &id, false, 40, snap(true, [0, 0], true)).await;
     let again = alerts::evaluate(&t.st, &mut st, t0).await.unwrap().map(|d| d.as_secs());
     assert!(incidents(&t, "firing").await.is_empty());
-    assert!(again.is_some_and(|s| (14..=16).contains(&s)), "{again:?}");
+    assert!(again.is_some_and(|s| (134..=136).contains(&s)), "{again:?}");
     status(&t, &id, false, 300, snap(true, [0, 0], true)).await;
     alerts::evaluate(&t.st, &mut st, t0).await.unwrap();
     let inc = incidents(&t, "firing").await;

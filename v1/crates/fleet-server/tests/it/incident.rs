@@ -413,3 +413,32 @@ async fn critical_marker_survives_reopen_and_detail_changes() {
     run(c, "warning", true, at(0)).await;
     assert_eq!(of(c).await.1, json!({"name": "x"}));
 }
+
+/// 没有收通知的渠道（没建 / 都停用）时，入队没插进任何一行：不刷新 notified_at，恢复时也不发「恢复」；
+/// 渠道配好之后仍在触发的告警下一轮补发「触发」，这才记 notified_at
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn no_receiving_channel_does_not_stamp_notified_at() {
+    let t = setup().await;
+    let mock = Mock::start().await;
+    let subject = Uuid::now_v7();
+    let base = OffsetDateTime::now_utc();
+    let at = |s: i64| base + time::Duration::seconds(s);
+    // 0 个渠道：开了告警，但没通知过
+    round(&t, at(0), Some(want(subject, "warning")), resolve).await;
+    assert_eq!(t.count("select count(*) from incident where state = 'firing' and notified_at is null").await, 1);
+    assert_eq!(t.count("select count(*) from notify_outbox").await, 0);
+    // 渠道停用着：同样不算通知过（渠道存在但不收）
+    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "feishu", "config": {"url": mock.url("/hook/a")}, "min_severity": "info", "enabled": false})).await;
+    round(&t, at(30), Some(want(subject, "warning")), resolve).await;
+    assert_eq!(t.count("select count(*) from incident where notified_at is not null").await, 0);
+    // 没通知过「触发」的告警恢复了：不发「恢复」
+    round(&t, at(60), None, resolve).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!((t.count("select count(*) from notify_outbox").await, mock.count("/hook/a")), (0, 0));
+    // 渠道启用后，再次触发的告警下一轮就通知，并记 notified_at
+    t.req("PATCH", &format!("/api/v1/notify-channels/{}", t.get("/api/v1/notify-channels").await[0]["id"].as_str().unwrap()), Some(json!({"enabled": true})), None).await;
+    round(&t, at(90), Some(want(subject, "warning")), resolve).await;
+    round(&t, at(120), Some(want(subject, "warning")), resolve).await;
+    mock.wait("/hook/a", 1).await;
+    assert_eq!(t.count("select count(*) from incident where state = 'firing' and notified_at is not null").await, 1);
+}

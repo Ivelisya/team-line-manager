@@ -215,7 +215,7 @@ function NotifySection() {
         {q.isError && <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div>}
         {q.isLoading ? <SkeletonRows rows={3} head /> : list.length === 0 && !q.isError ? (
           // 没有渠道 = 所有告警都不会推给任何人：用警示色说清后果，不是和「还没有 API 密钥」一样分量的普通空状态（新建在标题栏右边，不重复放按钮）
-          <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><Note tone="warn" icon={<BellOff size={14} />}>还没有通知渠道，告警不会推送给任何人 <InfoTip text="告警照常记在「告警」页，只是不会发出去。用右上角「新建渠道」添加 Telegram、企业微信或 Webhook" /></Note></div>
+          <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><Note tone="warn" icon={<BellOff size={14} />}>还没有通知渠道，告警不会推送给任何人 <InfoTip text="告警照常记在「告警」页，只是不会发出去。用右上角「新建渠道」添加 Telegram 或飞书" /></Note></div>
         ) : (
           <TableWrap>
             <table className="dt" style={{ minWidth: 930 }}>

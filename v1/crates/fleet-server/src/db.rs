@@ -9,6 +9,15 @@ use uuid::Uuid;
 
 pub type Tx<'a> = Transaction<'a, Postgres>;
 
+/// 遥测类写入（agent / 探测点上报、各小时汇总）的事务：本事务 `synchronous_commit = off`，提交不等 WAL 落盘。
+/// 虚拟盘偶发 fsync 卡顿时，这类写入不再跟着卡住上报和鉴权；中控崩溃最多丢最后几百毫秒的遥测（agent 会重发 / 汇总会重算）。
+/// 任务、审计、计费、配置写入不要用它。
+pub async fn begin_async(db: &PgPool) -> sqlx::Result<Tx<'static>> {
+    let mut tx = db.begin().await?;
+    sqlx::query("set local synchronous_commit = off").execute(&mut *tx).await?;
+    Ok(tx)
+}
+
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations");
 
 /// 等空闲连接最多 5 秒（sqlx 默认 30 秒，比 agent 上报的 15 秒超时还长）：池子吃紧时尽快回 503
@@ -328,20 +337,22 @@ where
     }
     // 一次交给 roll（升序）：访问汇总按天分组，同一天只重算一次天汇总
     roll(hours.into_iter().collect()).await?;
+    let mut tx = begin_async(db).await?;
     if !dirty.is_empty() {
         let (hs, ts): (Vec<OffsetDateTime>, Vec<OffsetDateTime>) = dirty.into_iter().unzip();
         sqlx::query(&format!("delete from {table} d using unnest($1::timestamptz[], $2::timestamptz[]) u(h, t) where d.hour = u.h and d.touched_at = u.t"))
             .bind(&hs)
             .bind(&ts)
-            .execute(db)
+            .execute(&mut *tx)
             .await?;
     }
     sqlx::query(&format!(
         "insert into {table} (hour, touched_at) values ($1, clock_timestamp()) on conflict (hour) do update set touched_at = excluded.touched_at"
     ))
     .bind(cur)
-    .execute(db)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -382,31 +393,43 @@ async fn rollup_hour(db: &PgPool, hour: OffsetDateTime) -> anyhow::Result<()> {
          where ts >= $1 group by machine_id
          on conflict (machine_id, hour) do update set cpu_avg = excluded.cpu_avg, cpu_max = excluded.cpu_max,
            mem_used_avg = excluded.mem_used_avg, mem_total_max = excluded.mem_total_max, disk_used_max = excluded.disk_used_max,
-           disk_total_max = excluded.disk_total_max, net_rx = excluded.net_rx, net_tx = excluded.net_tx",
+           disk_total_max = excluded.disk_total_max, net_rx = excluded.net_rx, net_tx = excluded.net_tx
+         where (host_metric_hourly.cpu_avg, host_metric_hourly.cpu_max, host_metric_hourly.mem_used_avg, host_metric_hourly.mem_total_max,
+                host_metric_hourly.disk_used_max, host_metric_hourly.disk_total_max, host_metric_hourly.net_rx, host_metric_hourly.net_tx)
+               is distinct from (excluded.cpu_avg, excluded.cpu_max, excluded.mem_used_avg, excluded.mem_total_max,
+                                 excluded.disk_used_max, excluded.disk_total_max, excluded.net_rx, excluded.net_tx)",
         "insert into entry_traffic_hourly (entry_id, hour, up_bytes, down_bytes, conns_max)
          select entry_id, $1, least(sum(up_bytes), 4.5e12)::bigint, least(sum(down_bytes), 4.5e12)::bigint, max(conns)
          from entry_traffic where ts >= $1 and ts < $1 + interval '1 hour' group by entry_id
-         on conflict (entry_id, hour) do update set up_bytes = excluded.up_bytes, down_bytes = excluded.down_bytes, conns_max = excluded.conns_max",
+         on conflict (entry_id, hour) do update set up_bytes = excluded.up_bytes, down_bytes = excluded.down_bytes, conns_max = excluded.conns_max
+         where (entry_traffic_hourly.up_bytes, entry_traffic_hourly.down_bytes, entry_traffic_hourly.conns_max)
+               is distinct from (excluded.up_bytes, excluded.down_bytes, excluded.conns_max)",
         "insert into probe_hourly (entry_id, hour, kind, total, ok, latency_avg)
          select entry_id, $1, kind, count(*), count(*) filter (where ok), avg(latency_ms) filter (where ok)
          from probe_result where ts >= $1 and ts < $1 + interval '1 hour' group by entry_id, kind
-         on conflict (entry_id, hour, kind) do update set total = excluded.total, ok = excluded.ok, latency_avg = excluded.latency_avg",
+         on conflict (entry_id, hour, kind) do update set total = excluded.total, ok = excluded.ok, latency_avg = excluded.latency_avg
+         where (probe_hourly.total, probe_hourly.ok, probe_hourly.latency_avg) is distinct from (excluded.total, excluded.ok, excluded.latency_avg)",
         // 客户入口连通性（中控与各探测点，见 reach.rs）：原始记录由中控收到时写、时刻就是收到的时刻，不会迟到；这一小时没有原始记录（早过了保留期）时不动已有的汇总
         "insert into relay_reach_hourly (relay_id, probe_point_id, hour, total, ok, rtt_avg, rtt_p50)
          select relay_id, probe_point_id, $1, count(*), count(*) filter (where ok),
                 avg(rtt_ms) filter (where ok), percentile_cont(0.5) within group (order by rtt_ms) filter (where ok)
          from relay_reach where ts >= $1 and ts < $1 + interval '1 hour' group by relay_id, probe_point_id
          on conflict (relay_id, coalesce(probe_point_id, '00000000-0000-0000-0000-000000000000'::uuid), hour) do update
-           set total = excluded.total, ok = excluded.ok, rtt_avg = excluded.rtt_avg, rtt_p50 = excluded.rtt_p50",
+           set total = excluded.total, ok = excluded.ok, rtt_avg = excluded.rtt_avg, rtt_p50 = excluded.rtt_p50
+         where (relay_reach_hourly.total, relay_reach_hourly.ok, relay_reach_hourly.rtt_avg, relay_reach_hourly.rtt_p50)
+               is distinct from (excluded.total, excluded.ok, excluded.rtt_avg, excluded.rtt_p50)",
     ];
+    // 四条一个事务、异步提交：汇总是从原始数据重算的，崩溃丢了下一轮会补
+    let mut tx = begin_async(db).await?;
     for s in q {
-        sqlx::query(s).bind(hour).execute(db).await?;
+        sqlx::query(s).bind(hour).execute(&mut *tx).await?;
     }
+    tx.commit().await?;
     Ok(())
 }
 
 /// 保留期清理（每小时一次）：已恢复超 180 天的告警、过期会话、超 1 天的登录失败记录、超 30 天没再登录成功的登录来源、
-/// 超 90 天的通知记录、结束超 90 天的静默、超 365 天的审计、超 [retention] reach_days（默认 2 天）的客户入口连通性原始记录
+/// 超 90 天的通知记录、结束超 90 天的静默、超 365 天的审计、作废超 30 天的 agent 令牌（没有外键指向它）、超 [retention] reach_days（默认 2 天）的客户入口连通性原始记录
 /// 、超 180 天的探测 / 客户入口连通性 / 软路由指标的小时汇总（读的地方最长看 90 天；entry_traffic_hourly、host_metric_hourly 回收站要算全程流量，一直留着）。访问记录（汇总、来源画像、画像异常告警）按面板里设的保留期删，
 /// 见 `access::prune`；三网 PING 在 ping.rs 自己的循环里按 [retention] ping_days / ping_hourly_days 删
 pub async fn cleanup_retention(db: &PgPool, r: &crate::config::Retention) -> anyhow::Result<()> {
@@ -419,6 +442,7 @@ pub async fn cleanup_retention(db: &PgPool, r: &crate::config::Retention) -> any
         ("通知记录", "delete from notify_log where ts < now() - interval '90 days'"),
         ("静默", "delete from silence where ends_at < now() - interval '90 days'"),
         ("审计", "delete from audit_log where ts < now() - interval '365 days'"),
+        ("作废的 agent 令牌", "delete from agent_token where revoked_at < now() - interval '30 days'"),
         ("客户入口连通性", reach.as_str()),
         ("探测小时汇总", "delete from probe_hourly where hour < now() - interval '180 days'"),
         ("客户入口连通性小时汇总", "delete from relay_reach_hourly where hour < now() - interval '180 days'"),

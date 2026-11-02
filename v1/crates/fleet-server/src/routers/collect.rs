@@ -960,40 +960,46 @@ async fn one(st: &AppState, t: &Target, m: &mut Mem, entries: &[Entry], delay: b
         sqlx::query_as("select reachable, error from router_status where router_id = $1").bind(t.id).fetch_optional(&st.db).await?;
     match outcome {
         Outcome::Pending => {
+            let mut tx = crate::db::begin_async(&st.db).await?;
             sqlx::query(
                 "insert into router_status (router_id, ts, reachable, error) values ($1, now(), false, null)
                  on conflict (router_id) do update set ts = now(), reachable = false, error = null",
             )
             .bind(t.id)
-            .execute(&st.db)
+            .execute(&mut *tx)
             .await?;
+            tx.commit().await?;
             Ok(before.is_none_or(|b| b.0 || b.1.is_some()))
         }
         Outcome::Fail(err) => {
+            let mut tx = crate::db::begin_async(&st.db).await?;
             sqlx::query(
                 "insert into router_status (router_id, ts, reachable, error) values ($1, now(), false, $2)
                  on conflict (router_id) do update set ts = now(), reachable = false, error = $2",
             )
             .bind(t.id)
             .bind(&err)
-            .execute(&st.db)
+            .execute(&mut *tx)
             .await?;
+            tx.commit().await?;
             Ok(before.is_none_or(|b| b.0 || b.1.as_deref() != Some(err.as_str())))
         }
         // 连得上：最近一次连上的时间照样更新（不算离线），快照、指标不动
         Outcome::Error(err) => {
+            let mut tx = crate::db::begin_async(&st.db).await?;
             sqlx::query(
                 "insert into router_status (router_id, ts, reachable, error, last_ok_at) values ($1, now(), true, $2, now())
                  on conflict (router_id) do update set ts = now(), reachable = true, error = $2, last_ok_at = now()",
             )
             .bind(t.id)
             .bind(&err)
-            .execute(&st.db)
+            .execute(&mut *tx)
             .await?;
+            tx.commit().await?;
             Ok(before.is_none_or(|b| !b.0 || b.1.as_deref() != Some(err.as_str())))
         }
         Outcome::Ok(mut b, change) => {
-            let mut tx = st.db.begin().await?;
+            let mut tx = crate::db::begin_async(&st.db).await?;
             // 路由刚被删掉：外键挡住，什么都不写
             let exists: Option<i32> = sqlx::query_scalar("select 1 from router where id = $1 for share").bind(t.id).fetch_optional(&mut *tx).await?;
             if exists.is_none() {
@@ -1309,9 +1315,10 @@ async fn fetch_config(st: &AppState, t: &Target, path: &str) -> Result<(Vec<Prox
 /// 小时汇总（随遥测的小时汇总每 5 分钟一轮）：当前小时与上一小时从原始点重算并覆盖，幂等
 pub async fn rollup(db: &sqlx::PgPool) -> anyhow::Result<()> {
     let cur = crate::db::floor_hour(OffsetDateTime::now_utc());
+    let mut tx = crate::db::begin_async(db).await?;
     for h in [cur - time::Duration::hours(1), cur] {
         sqlx::query(
-            "insert into router_metric_hourly (router_id, hour, samples, cpu_pct, cpu_pct_max, load1, mem_used, mem_total, disk_used, disk_total,
+            "insert into router_metric_hourly as h (router_id, hour, samples, cpu_pct, cpu_pct_max, load1, mem_used, mem_total, disk_used, disk_total,
                 conntrack, conntrack_max, temp_c, wan_rx_bps, wan_rx_bps_max, wan_tx_bps, wan_tx_bps_max, proxy_up_bps, proxy_up_bps_max,
                 proxy_down_bps, proxy_down_bps_max, conns, clients, exits_total, exits_alive,
                 fleet_total, fleet_alive)
@@ -1328,25 +1335,44 @@ pub async fn rollup(db: &sqlx::PgPool) -> anyhow::Result<()> {
                 wan_tx_bps_max = excluded.wan_tx_bps_max, proxy_up_bps = excluded.proxy_up_bps, proxy_up_bps_max = excluded.proxy_up_bps_max,
                 proxy_down_bps = excluded.proxy_down_bps, proxy_down_bps_max = excluded.proxy_down_bps_max, conns = excluded.conns,
                 clients = excluded.clients, exits_total = excluded.exits_total, exits_alive = excluded.exits_alive,
-                fleet_total = excluded.fleet_total, fleet_alive = excluded.fleet_alive",
+                fleet_total = excluded.fleet_total, fleet_alive = excluded.fleet_alive
+                where (
+                   h.samples, h.cpu_pct, h.cpu_pct_max, h.load1, h.mem_used, h.mem_total, h.disk_used, h.disk_total, h.conntrack,
+                   h.conntrack_max, h.temp_c, h.wan_rx_bps, h.wan_rx_bps_max, h.wan_tx_bps, h.wan_tx_bps_max, h.proxy_up_bps,
+                   h.proxy_up_bps_max, h.proxy_down_bps, h.proxy_down_bps_max, h.conns, h.clients, h.exits_total, h.exits_alive,
+                   h.fleet_total, h.fleet_alive
+                ) is distinct from (
+                   excluded.samples, excluded.cpu_pct, excluded.cpu_pct_max, excluded.load1, excluded.mem_used, excluded.mem_total,
+                   excluded.disk_used, excluded.disk_total, excluded.conntrack, excluded.conntrack_max, excluded.temp_c,
+                   excluded.wan_rx_bps, excluded.wan_rx_bps_max, excluded.wan_tx_bps, excluded.wan_tx_bps_max, excluded.proxy_up_bps,
+                   excluded.proxy_up_bps_max, excluded.proxy_down_bps, excluded.proxy_down_bps_max, excluded.conns, excluded.clients,
+                   excluded.exits_total, excluded.exits_alive, excluded.fleet_total, excluded.fleet_alive
+                )",
         )
         .bind(h)
-        .execute(db)
+        .execute(&mut *tx)
         .await?;
         sqlx::query(
-            "insert into router_exit_metric_hourly (router_id, exit, hour, samples, tests, tests_ok, delay_ms, conns, up_bps, up_bps_max,
+            "insert into router_exit_metric_hourly as h (router_id, exit, hour, samples, tests, tests_ok, delay_ms, conns, up_bps, up_bps_max,
                 down_bps, down_bps_max, clients)
              select router_id, exit, $1, count(*), count(alive), count(*) filter (where alive), avg(delay_ms) filter (where alive),
                 avg(conns), avg(up_bps)::bigint, max(up_bps), avg(down_bps)::bigint, max(down_bps), avg(clients)
              from router_exit_metric where ts >= $1 and ts < $1 + interval '1 hour' group by router_id, exit
              on conflict (router_id, exit, hour) do update set samples = excluded.samples, tests = excluded.tests, tests_ok = excluded.tests_ok,
                 delay_ms = excluded.delay_ms, conns = excluded.conns, up_bps = excluded.up_bps, up_bps_max = excluded.up_bps_max,
-                down_bps = excluded.down_bps, down_bps_max = excluded.down_bps_max, clients = excluded.clients",
+                down_bps = excluded.down_bps, down_bps_max = excluded.down_bps_max, clients = excluded.clients
+                where (
+                   h.samples, h.tests, h.tests_ok, h.delay_ms, h.conns, h.up_bps, h.up_bps_max, h.down_bps, h.down_bps_max, h.clients
+                ) is distinct from (
+                   excluded.samples, excluded.tests, excluded.tests_ok, excluded.delay_ms, excluded.conns, excluded.up_bps,
+                   excluded.up_bps_max, excluded.down_bps, excluded.down_bps_max, excluded.clients
+                )",
         )
         .bind(h)
-        .execute(db)
+        .execute(&mut *tx)
         .await?;
     }
+    tx.commit().await?;
     Ok(())
 }
 
