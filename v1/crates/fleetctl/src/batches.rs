@@ -205,6 +205,18 @@ pub fn month(ctx: &Ctx, team: &str, month: Option<&str>) -> anyhow::Result<u8> {
     Ok(0)
 }
 
+/// `billing batch <团队> <批次编号或key> --start 日期`：整批改起算日
+pub fn batch(ctx: &Ctx, team: &str, batch: &str, start: &str) -> anyhow::Result<u8> {
+    let d = load(ctx, team)?;
+    let q = batch.trim();
+    let b = arr(&d["batches"]).iter().find(|b| st(b, "/key") == q || q.parse::<i64>().is_ok_and(|n| b["seq"].as_i64() == Some(n)));
+    let Some(b) = b else { bail!("{} 没有批次「{q}」（fleetctl batch list {} 看编号）", st(&d, "/team/name"), team) };
+    let key = st(b, "/key").replace('|', "%7C");
+    let r = ctx.c.patch(&format!("/teams/{}/batches/{key}", st(&d, "/team/id")), &json!({"start_date": start}))?;
+    ctx.emit(&r, || format!("已改：{} 第{:02}批 · {} 起算 {}（{} 个）", st(&d, "/team/name"), r["seq"].as_i64().unwrap_or(0), st(&r, "/region"), st(&r, "/start_date"), st(&r, "/count")));
+    Ok(0)
+}
+
 /// 找名额：id 前缀（≥ 4 位）或节点名（占用它的，或空出 / 结束前占用它的；有多个时先要没结束的）。返回 (名额, 团队名)
 fn find_slot(ctx: &Ctx, q: &str) -> anyhow::Result<(Value, String)> {
     let q = q.trim();

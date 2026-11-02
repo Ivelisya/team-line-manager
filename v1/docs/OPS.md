@@ -646,4 +646,4 @@ url = "https://api.frankfurter.dev/v1/latest?base=USD"   # 回包 {base:"USD", d
 
 ## 22. 计费台账（按节点数向团队收费）
 - 口径：团队里在用、不在备用团队、没标不计费的 VPS / 家宽代理（含同机 IP 节点）每个占一个计费名额，**按加入日滚动计费**——从起算日起每月同日续一期（月底对齐），同一天起算、同地区的是一批。中控每分钟对账：节点离开 → 名额空出待定，节点加入 → 待定；**24 小时内一进一出算替换**（新节点接过名额、起算日不变），超过 24 小时没配上才算新增（起算日 = 加入那天）或减少（离开那天所在的那一期照收，之后不收）。
-- 首次上线：`fleetctl billing init --since 2026-10-01` 预览、加 `--yes` 执行；初始化之前对账不动（不会把现有节点当成新加入的）。之后个别起算日不对的用 `fleetctl billing slot <节点> --start <日期>` 改；系统外的节点用 `billing add`，不收钱的节点 `billing exempt <节点> --on`。看账：`fleetctl batch list <团队> --slots --events`、`fleetctl billing month <团队>`。
+- 首次上线：`fleetctl billing init --since 2026-10-01` 预览、加 `--yes` 执行；初始化之前对账不动（不会把现有节点当成新加入的）。之后个别起算日不对的用 `fleetctl billing slot <节点> --start <日期>` 改，整批一起改用 `fleetctl billing batch <团队> <批次编号或key> --start <日期>`；系统外的节点用 `billing add`，不收钱的节点 `billing exempt <节点> --on`。看账：`fleetctl batch list <团队> --slots --events`、`fleetctl billing month <团队>`。

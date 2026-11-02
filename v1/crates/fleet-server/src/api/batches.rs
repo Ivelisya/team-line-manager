@@ -57,9 +57,10 @@ impl SlotRow {
     }
 
     fn state(&self, today: Date) -> &'static str {
-        match (self.end_date, self.vacated_at) {
-            (Some(e), _) if e <= today => "ended",
-            (None, Some(_)) => "vacated",
+        match self.end_date {
+            Some(e) if e <= today => "ended",
+            // 系统名额没有占用者就是空出待定（没结束，或结束日还在以后——对账只认没结束的，不会按这个日子结束）
+            _ if !self.manual && self.holder_id.is_none() => "vacated",
             _ => "active",
         }
     }
@@ -301,6 +302,7 @@ pub async fn slot_add(a: Actor, State(st): State<AppState>, ApiPath(team): ApiPa
         out.push(slot_out(&mut tx, *id).await?);
     }
     tx.commit().await?;
+    st.emit(Event::Billing { id: team });
     Ok(ok(out))
 }
 
@@ -343,6 +345,9 @@ pub async fn slot_patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPa
             }
             if e.is_some() && !old.manual && old.vacated_at.is_none() && old.end_date.is_none() {
                 return Err(ApiError::conflict("这个计费节点没有空出，不能手动结束"));
+            }
+            if e.is_some_and(|d| !old.manual && d > bt::today()) {
+                return Err(ApiError::bad_request("空出的计费节点结束日不能晚于今天"));
             }
             e
         }
@@ -390,6 +395,7 @@ pub async fn slot_patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPa
     log_audit(&mut tx, &a, "billing.slot_update", Some(id), &tname, format!("{name}：{}", if all.is_empty() { "没有改动".into() } else { all.join("，") })).await?;
     let out = slot_out(&mut tx, id).await?;
     tx.commit().await?;
+    st.emit(Event::Billing { id: team });
     Ok(ok(out))
 }
 
@@ -408,7 +414,49 @@ pub async fn slot_delete(a: Actor, State(st): State<AppState>, ApiPath(id): ApiP
     ledger::log(&mut tx, team, Some(id), OffsetDateTime::now_utc(), "edit", Some(&s.name()), None, json!({"what": what})).await?;
     log_audit(&mut tx, &a, "billing.slot_delete", Some(id), &tname, format!("{} · {what}", s.name())).await?;
     tx.commit().await?;
+    st.emit(Event::Billing { id: team });
     Ok(ok(json!({"id": id})))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BatchIn {
+    start_date: String,
+}
+
+/// `PATCH /teams/{id}/batches/{key}` `{start_date}`：整批改起算日（key = Batch.key，如 `2026-10-01|美区`，URL 里要转义）；该批全部名额一起改，
+/// 记一条 edit 和一条审计。新起算日要早于该批所有已结束名额的结束日（否则 400）；改到与别的批次同日同地区就并进那一批 → 新的 `Batch`
+pub async fn batch_patch(a: Actor, State(st): State<AppState>, ApiPath((team, key)): ApiPath<(Uuid, String)>, ApiJson(b): ApiJson<BatchIn>) -> ApiResult<Json<Value>> {
+    let new_start = date_in(&b.start_date, "起算日")?;
+    let (old_start, region) = key.split_once('|').and_then(|(d, r)| Some((bt::parse_date(d)?, r.to_string()))).ok_or_else(|| ApiError::bad_request("批次 key 要写成 2026-10-01|美区 这样"))?;
+    let mut tx = st.db.begin().await?;
+    let tname = lock_billing_team(&mut tx, team).await?;
+    let today = bt::today();
+    let before = derive_all(&team_slots(&mut tx, team).await?, today);
+    let seq = before.iter().find(|x| x.key == key).map(|x| x.seq).ok_or_else(|| ApiError::not_found("没有这个批次"))?;
+    let (n, min_end): (i64, Option<Date>) = sqlx::query_as("select count(*), min(end_date) from billing_slot where team_id = $1 and region = $2 and start_date = $3")
+        .bind(team)
+        .bind(&region)
+        .bind(old_start)
+        .fetch_one(&mut *tx)
+        .await?;
+    if let Some(e) = min_end {
+        if new_start >= e {
+            return Err(ApiError::bad_request(format!("起算日 {} 要早于已结束名额的结束日 {}", bt::fmt_date(new_start), bt::fmt_date(e))));
+        }
+    }
+    if new_start != old_start {
+        sqlx::query("update billing_slot set start_date = $4 where team_id = $1 and region = $2 and start_date = $3").bind(team).bind(&region).bind(old_start).bind(new_start).execute(&mut *tx).await?;
+        let label = format!("第{seq:02}批 · {region}");
+        let what = format!("起算日 {} → {}（整批 {n} 个）", bt::fmt_md(old_start), bt::fmt_md(new_start));
+        ledger::log(&mut tx, team, None, OffsetDateTime::now_utc(), "edit", Some(&label), None, json!({"what": what})).await?;
+        log_audit(&mut tx, &a, "billing.batch_update", None, &tname, format!("{label}：{what}")).await?;
+    }
+    let after = derive_all(&team_slots(&mut tx, team).await?, today);
+    let out = after.iter().find(|x| x.key == bt::key(new_start, &region)).and_then(|x| bt::derive(x, today).map(|d| bt::admin_json(x, &d))).ok_or_else(|| ApiError::internal("批次派生失败"))?;
+    tx.commit().await?;
+    st.emit(Event::Billing { id: team });
+    Ok(ok(out))
 }
 
 #[derive(Deserialize)]
@@ -448,6 +496,18 @@ pub async fn exempt(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<U
     tx.commit().await?;
     if changed {
         st.emit(Event::Machine { id });
+        if let Some(t) = team {
+            st.emit(Event::Billing { id: t });
+            // 马上对账一次，设了不计费 / 恢复计费立刻反映在名额上（没初始化过不动）
+            let r = match ledger::initialized(&st.db).await {
+                Ok(true) => ledger::reconcile_team(&st, t, OffsetDateTime::now_utc()).await.map(|_| ()),
+                Ok(false) => Ok(()),
+                Err(e) => Err(e.into()),
+            };
+            if let Err(e) = r {
+                tracing::error!("计费对账（设不计费后）失败：{e:#}");
+            }
+        }
     }
     Ok(ok(json!({"machine_id": id, "exempt": b.exempt})))
 }
@@ -470,6 +530,7 @@ pub async fn init(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Init
     let now = OffsetDateTime::now_utc();
     let mut out = vec![];
     let mut total = 0;
+    let mut touched = vec![];
     for (team, tname) in teams {
         ledger::lock_team(&mut tx, team).await?;
         let existing: i64 = sqlx::query_scalar("select count(*) from billing_slot where team_id = $1").bind(team).fetch_one(&mut *tx).await?;
@@ -477,26 +538,19 @@ pub async fn init(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Init
             out.push(json!({"team": {"id": team, "name": tname}, "skipped": true, "existing": existing, "count": 0, "nodes": []}));
             continue;
         }
-        let nodes = ledger::billable_nodes(&st, &mut tx, team).await?;
+        let nodes = ledger::billable_nodes(&mut tx, team).await?;
+        let regions = ledger::regions(&st, &nodes.iter().collect::<Vec<_>>()).await;
         if !b.dry_run {
             for n in &nodes {
-                let id = new_id();
-                sqlx::query("insert into billing_slot (id, team_id, region, start_date, holder_id, holder_name) values ($1, $2, $3, $4, $5, $6)")
-                    .bind(id)
-                    .bind(team)
-                    .bind(&n.region)
-                    .bind(since)
-                    .bind(n.id)
-                    .bind(&n.name)
-                    .execute(&mut *tx)
-                    .await?;
-                sqlx::query("delete from billing_pending where machine_id = $1").bind(n.id).execute(&mut *tx).await?;
-                ledger::log(&mut tx, team, Some(id), now, "init", Some(&n.name), None, json!({"region": n.region, "start_date": bt::fmt_date(since)})).await?;
+                ledger::insert_slot(&mut tx, team, n, &regions[&n.id], since, "init", now).await?;
+            }
+            if !nodes.is_empty() {
+                touched.push(team);
             }
         }
         total += nodes.len();
         out.push(json!({"team": {"id": team, "name": tname}, "skipped": false, "existing": 0, "count": nodes.len(),
-                        "nodes": nodes.iter().map(|n| json!({"id": n.id, "name": n.name, "region": n.region})).collect::<Vec<_>>()}));
+                        "nodes": nodes.iter().map(|n| json!({"id": n.id, "name": n.name, "region": regions[&n.id]})).collect::<Vec<_>>()}));
     }
     if !b.dry_run {
         sqlx::query("insert into app_setting (key, value, updated_by) values ($1, to_jsonb($2::text), $3) on conflict (key) do nothing")
@@ -507,6 +561,9 @@ pub async fn init(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Init
             .await?;
         audit(&mut tx, &a.name, "billing.init", "billing_slot", None, json!({"team": "", "what": format!("{} 起算，建了 {total} 个计费节点", bt::fmt_date(since))})).await?;
         tx.commit().await?;
+        for team in touched {
+            st.emit(Event::Billing { id: team });
+        }
     }
     Ok(ok(json!({"since": bt::fmt_date(since), "dry_run": b.dry_run, "total": total, "teams": out})))
 }

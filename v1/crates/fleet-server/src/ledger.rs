@@ -18,7 +18,7 @@
 use crate::batches::{self as bt, fmt_md};
 use crate::country;
 use crate::db::new_id;
-use crate::state::AppState;
+use crate::state::{AppState, Event};
 use serde_json::{json, Value};
 use sqlx::{PgConnection, PgPool};
 use std::collections::{HashMap, HashSet};
@@ -50,7 +50,10 @@ pub fn org_date(t: OffsetDateTime, off: UtcOffset) -> Date { t.to_offset(off).da
 pub struct Node {
     pub id: Uuid,
     pub name: String,
-    pub region: String,
+    /// 手动指定的国家（优先）
+    pub country: Option<String>,
+    /// 没指定国家时按它查离线 IP 库
+    pub ip: Option<IpAddr>,
 }
 
 /// 团队里一个没结束的名额（end_date 为 null）
@@ -84,7 +87,7 @@ pub enum Change {
     /// 待定的节点不可计费了：删掉，不记事件
     Unpend { machine: Uuid },
     Swap { slot: Uuid, machine: Uuid, name: String, other: Option<String>, at: OffsetDateTime },
-    Add { machine: Uuid, name: String, region: String, start: Date, at: OffsetDateTime },
+    Add { machine: Uuid, start: Date, at: OffsetDateTime },
     End { slot: Uuid, name: Option<String>, end: Date, at: OffsetDateTime },
 }
 
@@ -166,7 +169,7 @@ pub fn plan(slots: &[OpenSlot], pending: &[Pending], billable: &[Node], held_els
     // 4. 超时：之后再来的都配不上了（严格晚于 GRACE）
     for (k, (n, seen, _)) in free.iter().enumerate() {
         if !paired_f[k] && *seen + GRACE < now {
-            out.push(Change::Add { machine: n.id, name: n.name.clone(), region: n.region.clone(), start: org_date(*seen, off), at: *seen });
+            out.push(Change::Add { machine: n.id, start: org_date(*seen, off), at: *seen });
         }
     }
     for (k, (slot, at, _, name)) in vac.iter().enumerate() {
@@ -231,24 +234,46 @@ struct NodeRow {
     ip: Option<String>,
 }
 
-/// 团队现在的可计费节点（含地区：手动指定的国家优先，否则按地址查离线 IP 库，同名字旁的国旗）
-pub async fn billable_nodes(st: &AppState, c: &mut PgConnection, team: Uuid) -> sqlx::Result<Vec<Node>> {
+/// 团队现在的可计费节点（地区不在这里查：每轮每团队对所有节点查 IP 库太贵，见 `regions`）
+pub async fn billable_nodes(c: &mut PgConnection, team: Uuid) -> sqlx::Result<Vec<Node>> {
     let rows: Vec<NodeRow> = sqlx::query_as(&format!(
         "select m.id, display_name(m.kind::text, m.label, t.name, m.number) name, m.country, host(m.primary_ip) ip
          from machine m join team t on t.id = m.team_id where m.team_id = $1 and {BILLABLE} order by m.number, m.id"
     ))
     .bind(team)
-    .fetch_all(&mut *c)
+    .fetch_all(c)
     .await?;
-    let ips: Vec<IpAddr> = rows.iter().filter(|r| r.country.is_none()).filter_map(|r| r.ip.as_deref()?.parse().ok()).collect();
+    Ok(rows.into_iter().map(|r| Node { id: r.id, name: r.name, country: r.country, ip: r.ip.as_deref().and_then(|ip| ip.parse().ok()) }).collect())
+}
+
+/// 这些节点的地区：手动指定的国家优先，否则按地址查离线 IP 库（只在要建名额时调）
+pub async fn regions(st: &AppState, nodes: &[&Node]) -> HashMap<Uuid, String> {
+    let ips: Vec<IpAddr> = nodes.iter().filter(|n| n.country.is_none()).filter_map(|n| n.ip).collect();
     let intel = if ips.is_empty() { HashMap::new() } else { st.ipintel.enrich(&st.db, &ips, true).await };
-    Ok(rows
-        .into_iter()
-        .map(|r| {
-            let auto = r.ip.as_deref().and_then(|ip| ip.parse::<IpAddr>().ok()).and_then(|ip| intel.get(&ip)).and_then(|b| b.country.clone());
-            Node { id: r.id, name: r.name, region: country::region(r.country.or(auto).as_deref()) }
+    nodes
+        .iter()
+        .map(|n| {
+            let auto = n.ip.and_then(|ip| intel.get(&ip)).and_then(|b| b.country.clone());
+            (n.id, country::region(n.country.clone().or(auto).as_deref()))
         })
-        .collect())
+        .collect()
+}
+
+/// 建一个系统名额（节点占着，从起算日算）：删它的待定行、记一条增减记录（init / add）
+pub async fn insert_slot(c: &mut PgConnection, team: Uuid, node: &Node, region: &str, start: Date, kind: &str, at: OffsetDateTime) -> sqlx::Result<Uuid> {
+    let id = new_id();
+    sqlx::query("insert into billing_slot (id, team_id, region, start_date, holder_id, holder_name) values ($1, $2, $3, $4, $5, $6)")
+        .bind(id)
+        .bind(team)
+        .bind(region)
+        .bind(start)
+        .bind(node.id)
+        .bind(&node.name)
+        .execute(&mut *c)
+        .await?;
+    sqlx::query("delete from billing_pending where machine_id = $1").bind(node.id).execute(&mut *c).await?;
+    log(c, team, Some(id), at, kind, Some(&node.name), None, json!({"region": region, "start_date": bt::fmt_date(start)})).await?;
+    Ok(id)
 }
 
 #[derive(sqlx::FromRow)]
@@ -277,7 +302,7 @@ pub async fn reconcile_team(st: &AppState, team: Uuid, now: OffsetDateTime) -> a
     if spare != Some(false) {
         return Ok(0);
     }
-    let billable = billable_nodes(st, &mut tx, team).await?;
+    let billable = billable_nodes(&mut tx, team).await?;
     let rows: Vec<SlotRow> = sqlx::query_as(
         "select id, holder_id, holder_name, vacated_at, prev_holder_id, manual, start_date, region from billing_slot where team_id = $1 and end_date is null",
     )
@@ -300,6 +325,9 @@ pub async fn reconcile_team(st: &AppState, team: Uuid, now: OffsetDateTime) -> a
         .collect();
     let by_id: HashMap<Uuid, &SlotRow> = rows.iter().map(|r| (r.id, r)).collect();
     let changes = plan(&slots, &pending, &billable, &held_elsewhere, now, off);
+    // 只给要新建名额的节点查地区
+    let adds: Vec<&Node> = changes.iter().filter_map(|c| if let Change::Add { machine, .. } = c { billable.iter().find(|n| n.id == *machine) } else { None }).collect();
+    let regions = regions(st, &adds).await;
     let mut events = 0;
     for ch in &changes {
         match ch {
@@ -341,20 +369,11 @@ pub async fn reconcile_team(st: &AppState, team: Uuid, now: OffsetDateTime) -> a
                 log(&mut tx, team, Some(*slot), *at, "swap", Some(name), other.as_deref(), json!({"region": region, "start_date": start})).await?;
                 events += 1;
             }
-            Change::Add { machine, name, region, start, at } => {
-                let id = new_id();
-                sqlx::query("insert into billing_slot (id, team_id, region, start_date, holder_id, holder_name) values ($1, $2, $3, $4, $5, $6)")
-                    .bind(id)
-                    .bind(team)
-                    .bind(region)
-                    .bind(start)
-                    .bind(machine)
-                    .bind(name)
-                    .execute(&mut *tx)
-                    .await?;
-                sqlx::query("delete from billing_pending where machine_id = $1").bind(machine).execute(&mut *tx).await?;
-                log(&mut tx, team, Some(id), *at, "add", Some(name), None, json!({"region": region, "start_date": bt::fmt_date(*start)})).await?;
-                events += 1;
+            Change::Add { machine, start, at } => {
+                if let Some(n) = billable.iter().find(|n| n.id == *machine) {
+                    insert_slot(&mut tx, team, n, &regions[machine], *start, "add", *at).await?;
+                    events += 1;
+                }
             }
             Change::End { slot, name, end, at } => {
                 sqlx::query("update billing_slot set end_date = $2 where id = $1").bind(slot).bind(end).execute(&mut *tx).await?;
@@ -367,6 +386,9 @@ pub async fn reconcile_team(st: &AppState, team: Uuid, now: OffsetDateTime) -> a
         }
     }
     tx.commit().await?;
+    if !changes.is_empty() {
+        st.emit(Event::Billing { id: team });
+    }
     Ok(events)
 }
 
@@ -409,7 +431,7 @@ mod tests {
 
     fn id(n: u128) -> Uuid { Uuid::from_u128(n) }
 
-    fn node(n: u128, name: &str) -> Node { Node { id: id(n), name: name.into(), region: "美区".into() } }
+    fn node(n: u128, name: &str) -> Node { Node { id: id(n), name: name.into(), country: Some("US".into()), ip: None } }
 
     fn held(slot: u128, holder: u128, name: &str) -> OpenSlot {
         OpenSlot { id: id(slot), holder: Some(id(holder)), holder_name: Some(name.into()), vacated_at: None, prev_holder: None, manual: false }
@@ -465,7 +487,7 @@ mod tests {
         // 待定满 24 小时（严格晚于）没配上 → 新增，起算日 = seen_at 的北京日期（T0 是北京 10-28 10:00）
         assert!(run(&[], &[pend(11, T0)], &[node(11, "团队1-10")], T0 + GRACE).is_empty(), "正好 24 小时还在等");
         let c = run(&[], &[pend(11, T0)], &[node(11, "团队1-10")], T0 + GRACE + Duration::seconds(1));
-        assert_eq!(c, [Change::Add { machine: id(11), name: "团队1-10".into(), region: "美区".into(), start: time::macros::date!(2026 - 10 - 28), at: T0 }]);
+        assert_eq!(c, [Change::Add { machine: id(11), start: time::macros::date!(2026 - 10 - 28), at: T0 }]);
         // 北京时间跨日：UTC 10-27 17:00 = 北京 10-28 01:00
         let late = datetime!(2026-10-27 17:00 UTC);
         let c = run(&[], &[pend(11, late)], &[node(11, "团队1-10")], late + Duration::days(2));

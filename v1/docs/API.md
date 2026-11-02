@@ -268,7 +268,7 @@ ProvisionItem = {
 **拉取**：`GET /sub/{令牌}?format=clash|base64`（挂在根上，不在 `/api/v1` 下，不要登录）。`clash`（默认）是 mihomo 可直接用的 proxy-provider 文件（只有 `proxies:`，字符串都带双引号；AnyTLS 条目是 `type: anytls`，`server`、`port`、`password`（入口 client_uuid）、`sni`（线路机 reality_sni）、`skip-cert-verify: true`、`client-fingerprint: chrome`、`udp: true`）；`base64` 是 vless:// / anytls:// 链接（同分享链接的写法，`#` 后是上面的条目名）一行一条、整体 base64。按请求时的入口现算。响应 `text/plain`、`Cache-Control: no-store`，另带 `Content-Disposition`（订阅名）与 `profile-update-interval: 6`（Clash Verge 每 6 小时更新）。令牌不对或订阅停用 404，并和登录共用按来源的失败限速（`auth::begin_attempt`：同一来源 15 分钟 20 次，含登录失败；限速键按令牌哈希分开）；超了 429（带 `Retry-After`），对的令牌也一样。成功不写审计，`last_fetch_at` / `last_fetch_ip` 10 分钟内只写一次。`format` 不对 400。
 
 ## 计费台账与客户到期页
-按节点数向团队收费（团队1、团队2 用了几个节点、从哪天起算），与供应商订阅（`subscription` / `due_date`）完全无关。迁移 0097 起替换掉原来的手动「客户批次账」（`customer_batch` / `customer_batch_period` 已删）；客户页链接与公开接口形状不变，数据改从计费名额派生。管理接口读要 `read`、写要 `write`，写操作记审计（`billing.init` / `slot_add` / `slot_update` / `slot_delete` / `exempt`，`customer_page.create` / `rotate` / `enable` / `disable` / `delete`）。
+按节点数向团队收费（团队1、团队2 用了几个节点、从哪天起算），与供应商订阅（`subscription` / `due_date`）完全无关。迁移 0097 起替换掉原来的手动「客户批次账」（`customer_batch` / `customer_batch_period` 已删）；客户页链接与公开接口形状不变，数据改从计费名额派生。管理接口读要 `read`、写要 `write`，写操作记审计（`billing.init` / `slot_add` / `slot_update` / `slot_delete` / `batch_update` / `exempt`，`customer_page.create` / `rotate` / `enable` / `disable` / `delete`）。
 
 **计费名额**（`billing_slot`）= 团队里一个按月计费的节点位置：起算日 `start_date`（北京时间日期）、地区、当前占用它的节点。替换节点时名额不变（新节点接过去，起算日不变）；净增一个节点 = 新名额；净减一个 = 名额结束。**可计费节点**：VPS / 家宽代理（同机 IP 节点也算）、`lifecycle = active`、所在团队不是备用团队、没标不计费；线路机不算。地区按节点国家（同名字旁的国旗：手动指定的优先，否则按 IP）：US 写「美区」，其它写中文国名，不知道写「未知」。
 
@@ -277,7 +277,7 @@ ProvisionItem = {
 **派生口径**（服务端算，前端只显示）：「今天」= 组织时区（默认北京时间）的日期。批次 = 同一团队里 (起算日, 地区) 相同的名额，`seq` 按 (起算日, 地区) 排序从 1 起（一期都没计过的不出现、不占编号）。期 k = [起算日加 k 个月, 加 k+1 个月)，月底对齐（1-31 → 2-28 → 3-31）；名额在期 k 计费 ⇔ 期 k 起点 < 结束日（没结束的一直计）。批次的期从第 0 期到最后一期：还有没结束的名额（含空出待定）→ 最后一期 = 含今天的那一期；全部结束 → 含最后结束日前一天的那一期。每期 `count` = 该期计费的名额数，`months` = 1。批次 `end_date` = 最后一期的终点（下次续费日 / 到期日），`count` = 最后一期个数，`months` = 期数，`node_months` = Σcount，`renewals` = 期数 − 1，`state`：`expired`（终点早于今天）/ `today` / `active`；`summary`：一期 → `""`，个数都一样 → `含N次续期`，有变 → `初始10个 → 续期9个`；`title`：`第02批 · 美区 · 当前有效9个` / `第01批 · 美区 · 原4个（已到期）`。
 
 `Batch = {key（"2026-10-01|美区"）, seq, region, summary, title, start_date, end_date, count, months, node_months, renewals, state, periods:[{start_date, end_date, months, count}]}`。
-`Slot = {id, batch_seq（不在任何批次里为 null）, region, start_date, state:'active'|'vacated'|'ended', name（占用者现在的名字 / 手动名额「手动 · 备注」/ 空出或结束的是原占用者的名字）, holder:{id,name}|null, last_holder_name（空出待定 / 已结束的系统名额：最后占用它的节点名快照，其余 null）, vacated_at, end_date, manual, note}`；`state`：结束日不晚于今天 → `ended`，空出待定 → `vacated`，其余 `active`。
+`Slot = {id, batch_seq（不在任何批次里为 null）, region, start_date, state:'active'|'vacated'|'ended', name（占用者现在的名字 / 手动名额「手动 · 备注」/ 空出或结束的是原占用者的名字）, holder:{id,name}|null, last_holder_name（空出待定 / 已结束的系统名额：最后占用它的节点名快照，其余 null）, vacated_at, end_date, manual, note}`；`state`：结束日不晚于今天 → `ended`；系统名额没有占用者 → `vacated`（空出待定，即使被填了以后的结束日；`totals.active` 不算它）；其余 `active`。
 `Event = {id, at, kind:'init'|'add'|'remove'|'swap'|'edit'|'manual_add'|'manual_end'|'exempt', machine_name, other_name（swap 里换下来的节点）, slot_id, text}`，名字是当时的快照，`text` 是中文一句话（「团队1-10 加入，新增计费节点（10-30 起算）」「团队2-07 → 团队2-20 替换，计费不变」「团队2-05 离开，计费节点减少（算到 11-14）」，「算到」= 最后计费那一期的最后一天）。
 `page = null | {enabled, link, created_at, token_at, last_view_at, last_view_ip}`，`link = {public_url}/c/{令牌}`。
 
@@ -287,9 +287,10 @@ ProvisionItem = {
 | GET | `/teams/{id}/billing-events?limit=200&before=<id>` | `[Event]`，新的在前（按 `at`、`id`），`limit` 1–500，`before` = 上一页最后一条的 id |
 | GET | `/teams/{id}/receivable?month=2026-11` | 月度应收（默认本月）：`{month, lines:[{batch_seq, region, period_start, period_end, count, projected}], total（Σcount，节点月）, projected, start_count（月初那天有效名额数）, end_count（月末那天，本月是今天）, events:[Event]（本月的 add / remove / swap / manual_add / manual_end，按时间升序）}`。`lines` = 各批起点落在这个月的期；还没到起点的期 `projected: true`（现在没结束的名额——在用与空出待定——都按续下去算）；以后的月份整月预估，`start_count` / `end_count` 为 null、`events` 为空。月份格式不对 400 |
 | POST | `/teams/{id}/billing-slots` | `{region（1–20 字）, start_date, count?（1–50，默认 1）, note?（≤ 60 字）}` → `[Slot]`：手动名额（系统外的节点，如墨西哥家宽；不自动结束），每个记 `manual_add`。备用团队 400 |
-| PATCH | `/billing-slots/{id}` | `{start_date?, region?, note?, end_date?}` → `Slot`。改起算日 / 地区 / 备注记 `edit`；`end_date` 只能给手动名额或已空出的名额（记 `manual_end`），有节点占着 409「节点还在团队里；不收这个节点的钱请把节点设为不计费」；`end_date: null` = 恢复，只限手动名额（否则 409）；结束日不晚于起算日 400 |
+| PATCH | `/billing-slots/{id}` | `{start_date?, region?, note?, end_date?}` → `Slot`。改起算日 / 地区 / 备注记 `edit`；`end_date` 只能给手动名额或已空出的名额（记 `manual_end`），有节点占着 409「节点还在团队里；不收这个节点的钱请把节点设为不计费」；`end_date: null` = 恢复，只限手动名额（否则 409）；结束日不晚于起算日 400；空出的系统名额结束日晚于今天（组织时区）400「空出的计费节点结束日不能晚于今天」 |
+| PATCH | `/teams/{id}/batches/{key}` | `{start_date}` → 新的 `Batch`：整批改起算日。`key` = `Batch.key`（`2026-10-01|美区`，路径里要转义，`|` 写 `%7C`），该批全部名额一起改，记一条 `edit`（「第02批 · 美区：起算日 10-01 → 10-05（整批 9 个）」）和一条审计 `billing.batch_update`；新起算日要早于该批所有已结束名额的结束日，否则 400「起算日 … 要早于已结束名额的结束日 …」；批次不存在 404、key 格式不对 400、备用团队 400；改到与另一批同日同地区就并进那一批（返回并后的批次）；新起算日与原来相同什么都不记 |
 | DELETE | `/billing-slots/{id}` | 只能删手动名额（录错了），否则 409 → `{id}` |
-| PUT | `/machines/{id}/billing-exempt` | `{exempt}` → `{machine_id, exempt}`：节点不计费 / 恢复计费（记 `exempt`；之后对账把它当离开 / 加入，照样走 24 小时配对）。线路机 400。机器视图（`GET /machines`、`/machines/{id}`）带 `billing_exempt: bool` |
+| PUT | `/machines/{id}/billing-exempt` | `{exempt}` → `{machine_id, exempt}`：节点不计费 / 恢复计费（记 `exempt`；提交后马上对该团队对账一次（初始化过的话），名额立刻空出 / 接回，之后照样走 24 小时配对）。线路机 400。机器视图（`GET /machines`、`/machines/{id}`）带 `billing_exempt: bool` |
 | POST | `/billing/init` | `{since, dry_run?}`：一次性初始化——对**还没有任何名额**的非备用团队，把现在每个可计费节点建一个名额（起算日 = `since`，记 `init`），已有名额的团队跳过；第一次初始化后对账才开始。→ `{since, dry_run, total, teams:[{team:{id,name}, skipped, existing, count, nodes:[{id,name,region}]}]}`；`dry_run: true` 只预览不写 |
 | POST | `/teams/{id}/customer-page` | 没有就建，有就换新令牌（旧链接立即失效、`last_view_*` 清空；启用 / 停用状态不变）→ `page` |
 | PATCH | `/teams/{id}/customer-page` | `{enabled}`；还没有链接 404 → `page` |
@@ -415,7 +416,7 @@ ProvisionItem = {
 - **滞后**：服务端广播缓冲 1024 条，某个连接读得太慢丢了消息时补发 `{type:"resync"}`，客户端应让全部缓存失效重取。
 - **重连**：客户端断线后自己退避重连；连上后应重取一次机器类数据（断开期间错过的 `metrics` 增量不会补发）。
 
-**资源变更通知**（收到后让对应查询失效重取）：`{type:"machine",id}`、`{type:"machines"}`、`{type:"relay",id}`、`{type:"job",id}`（作业推进；目标机器的 `active_job` 走 `metrics`，它变了时客户端可重取这台机器的详情；改生命周期时另发 `machines`）、`{type:"incidents"}`、`{type:"catalog"}`、`{type:"api_keys"}`（密钥增删撤销）、`{type:"policies"}`、`{type:"settings"}`（面板设置变了：访问记录保留期、汇率——汇率变了机器视图里的 USD 折算值跟着变）、`{type:"resync"}`。
+**资源变更通知**（收到后让对应查询失效重取）：`{type:"machine",id}`、`{type:"machines"}`、`{type:"relay",id}`、`{type:"job",id}`（作业推进；目标机器的 `active_job` 走 `metrics`，它变了时客户端可重取这台机器的详情；改生命周期时另发 `machines`）、`{type:"incidents"}`、`{type:"catalog"}`、`{type:"api_keys"}`（密钥增删撤销）、`{type:"policies"}`、`{type:"settings"}`（面板设置变了：访问记录保留期、汇率——汇率变了机器视图里的 USD 折算值跟着变）、`{type:"billing",id}`（`id` = 团队：该团队的计费名额 / 待定 / 增减记录变了——对账有变化、改名额 / 起算日、手动名额、初始化、节点设不计费；前端让 `GET /teams/{id}/batches`、`billing-events`、`receivable` 失效）、`{type:"resync"}`。
 
 **实时指标** `{type:"metrics", machines:{<机器id>:{…}}, entries:{<入口id>:{…}}, overview?}`：在用机器视图（`GET /machines` 的 `MachineView`）里随上报与时间变化的字段，和上一条相比**只带变了的字段**（没变的键不出现），客户端把它们写进本地缓存，不必重取。有新上报或作业推进时最多每 3 s 一条，没有也每 30 s 比对一次（离线、到期天数、维护窗口随时间变）；没有变化不发。
 - `machines[id]` 的键：
