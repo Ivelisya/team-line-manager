@@ -16,7 +16,7 @@ use crate::db::{audit, Tx};
 use crate::error::{ApiError, ApiJson, ApiPath, ApiQuery, ApiResult};
 use crate::jobs;
 use crate::meta;
-use crate::names::{compact_numbers, display_name, node_name};
+use crate::names::{display_name, node_name};
 use crate::routers::clash::{host_eq, EntryRef};
 use crate::state::{AppState, Event};
 use axum::extract::State;
@@ -580,7 +580,7 @@ async fn plan(st: &AppState, conn: &mut PgConnection, old_id: Uuid, b: &ReplaceI
                 members.push((old.id, n));
             }
         }
-        let changes: Vec<(Uuid, String, String)> = compact_numbers(members).into_iter().map(|(id, o, n)| (id, node_name(nn, o), node_name(nn, n))).collect();
+        let changes = crate::db::preview_compaction(&mut *conn, nt, nn, members, &mut warnings).await?;
         renames = changes.iter().map(|(id, o, n)| json!({"machine_id": id, "old_name": o, "new_name": n})).collect();
         // 压缩改名的节点还被出口指着：面板名和出口名会错位。旧节点自己不算（它的出口这次就改到新节点）
         let others: Vec<(Uuid, String, String)> = changes.into_iter().filter(|c| c.0 != old.id).collect();

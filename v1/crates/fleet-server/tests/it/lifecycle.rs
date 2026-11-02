@@ -1031,6 +1031,10 @@ async fn compaction_waits_for_retiring_nodes_in_the_team() {
     assert_eq!((number(retiring).await.unwrap(), number(live).await.unwrap()), (2, 3));
     let (s, v) = t.req("GET", &format!("/api/v1/teams/{team}/renumber"), None, None).await;
     assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    // 预览如实：退役 03 时团队里还有退役中的 02，实际不压缩，所以不出改名列表，只给一句说明
+    let pv = t.get(&format!("/api/v1/machines/{live}/retire")).await;
+    assert_eq!(pv["renames"], json!([]), "{pv}");
+    assert_eq!(pv["warnings"], json!(["团队里有退役中的节点，编号等它收尾时一起压缩"]), "{pv}");
     sqlx::query("update machine set lifecycle = 'retired', retired_at = now() where id = $1").bind(retiring).execute(&t.st.db).await.unwrap();
     assert_eq!(compact().await, [(live, 3, 1)], "最后一台收尾后一次压好");
 }

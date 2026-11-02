@@ -216,13 +216,13 @@ pub async fn uptime(st: &AppState, w: &Window) -> ApiResult<Value> {
            where m.id = any($1) and h.kind = 'egress' and h.hour >= $2 and h.hour < $3 group by m.id, h.hour),
          bad as (
            select id, fails, (extract(epoch from hour) / 3600)::bigint - row_number() over (partition by id order by hour) grp from hrs where fails >= $4)
-         select id, round(sum(fails)::float8 * $5 / 60.0)::bigint from bad group by id, grp",
+         select id, (sum(fails)::bigint * $5 + 30) / 60 from bad group by id, grp",
     )
     .bind(&ids)
     .bind(from)
     .bind(to)
     .bind(OUTAGE_MIN_FAILS)
-    .bind(f64::from(crate::entries::PROBE_INTERVAL_S))
+    .bind(i64::from(crate::entries::PROBE_INTERVAL_S))
     .fetch_all(&st.db)
     .await?;
     let mut outage: HashMap<Uuid, (i64, i64)> = HashMap::new();
@@ -325,7 +325,7 @@ fn fmt_bytes(b: i64) -> String {
 /// 断线时长（估算的分钟数）：不满 60 分钟「约 N 分钟」，再长「约 N 小时」（最多一位小数，同 fleetctl、网页）
 fn outage_text(min: i64) -> String {
     if min < 60 {
-        return format!("约 {} 分钟", min.max(1));
+        return format!("约 {min} 分钟");
     }
     format!("约 {} 小时", (min as f64 / 6.0).round() / 10.0)
 }
@@ -554,7 +554,6 @@ mod tests {
 
     #[test]
     fn outage_text_minutes_then_hours() {
-        assert_eq!(outage_text(0), "约 1 分钟");
         assert_eq!(outage_text(6), "约 6 分钟");
         assert_eq!(outage_text(59), "约 59 分钟");
         assert_eq!(outage_text(60), "约 1 小时");

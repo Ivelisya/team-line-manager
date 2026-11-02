@@ -416,7 +416,7 @@ pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
                         .bind(&leaving)
                         .fetch_all(&mut *conn)
                         .await?;
-                changes.extend(compact_numbers(nodes).into_iter().map(|(mid, o, n)| (mid, node_name(&t_name, o), node_name(&t_name, n))));
+                changes.extend(crate::db::preview_compaction(&mut conn, t, &t_name, nodes, &mut warnings).await?);
             }
             renames = changes.iter().map(|(mid, o, n)| json!({"machine_id": mid, "old_name": o, "new_name": n})).collect();
             // 压缩改名的节点还被出口指着：面板名和出口名会错位（运维约定一一对应），没有确认就执行时最伤人
@@ -1132,6 +1132,7 @@ pub async fn retire_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
     let leaving: Vec<Uuid> = std::iter::once(id).chain(ip_nodes.iter().map(|x| x.0)).collect();
     let blockers = retire_blockers(&mut conn, id, &kind, &lc, &leaving, false).await?;
     let mut changes: Vec<(Uuid, String, String)> = vec![];
+    let mut warnings_top: Vec<String> = vec![];
     let teams: Vec<(Uuid, String)> =
         sqlx::query_as("select id, name from team where id in (select team_id from machine where id = any($1)) order by sort_order, name")
             .bind(&leaving)
@@ -1145,12 +1146,12 @@ pub async fn retire_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
         .bind(&leaving)
         .fetch_all(&mut *conn)
         .await?;
-        changes.extend(compact_numbers(nodes).into_iter().map(|(mid, o, n)| (mid, node_name(&team, o), node_name(&team, n))));
+        changes.extend(crate::db::preview_compaction(&mut conn, team_id, &team, nodes, &mut warnings_top).await?);
     }
     let renames: Vec<Value> = changes.iter().map(|(mid, o, n)| json!({"machine_id": mid, "old_name": o, "new_name": n})).collect();
     // 进备用、立即回收都压缩原团队：改名的节点还被出口指着时，面板名和出口名会错位
     let tail = "要换掉这台又不想错位，先用替换（新节点接它的编号，团队里谁都不改名，它自己进备用）";
-    let warnings_top: Vec<String> = crate::routers::compact_exits_note(&st.db, &changes, tail).await?.into_iter().collect();
+    warnings_top.extend(crate::routers::compact_exits_note(&st.db, &changes, tail).await?);
     // 进备用：编号按 move_to_spare 的分法（宿主机先取最小的空号，同机 IP 节点接着取）
     let (eligible, due) = spare_check(&mut conn, id).await?;
     let (spare_id, spare_name, taken) = spare_team(&mut conn).await?;
