@@ -54,14 +54,15 @@ function skipInfoTip(e: Event) {
 type FocusHandler = (e: Event) => void;
 export function useRestoreFocus(panel: React.RefObject<HTMLElement | null>, onOpen?: FocusHandler, onClose?: FocusHandler) {
   const back = React.useRef<HTMLElement | null>(null);
-  /** 记下当前焦点。命令面板的输入框带 autoFocus，挂载时焦点就已在面板里，Radix 不会触发 onOpenAutoFocus，得自己在打开那一刻调用 */
+  /** 记下当前焦点。不能放在 onOpenAutoFocus 里：内容里有 autoFocus 输入框（命令面板、各种表单对话框）时，挂载那一刻焦点就已在面板里，Radix 不再触发它。
+   *  统一由 RememberFocus 在内容挂载之前调用 */
   const remember = () => {
     const a = document.activeElement as HTMLElement | null;
     back.current = a && a !== document.body && !panel.current?.contains(a) ? a : null;
   };
   return {
     remember,
-    onOpenAutoFocus: (e: Event) => { remember(); onOpen?.(e); },
+    onOpenAutoFocus: (e: Event) => { onOpen?.(e); },
     onCloseAutoFocus: (e: Event) => {
       onClose?.(e);
       if (e.defaultPrevented) return;
@@ -73,6 +74,12 @@ export function useRestoreFocus(panel: React.RefObject<HTMLElement | null>, onOp
   };
 }
 
+/** 放在面板 Content 之前（同一个 Portal 里）：兄弟节点按顺序跑 layout effect，先于 Content 子树里输入框的 autoFocus（React 在提交的 layout 阶段才 focus()），此时焦点还在打开它的元素上 */
+export function RememberFocus({ focus }: { focus: { remember: () => void } }) {
+  React.useLayoutEffect(() => focus.remember(), []);
+  return null;
+}
+
 export const DialogContent = React.forwardRef<React.ElementRef<typeof DialogPrimitive.Content>, React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> & { size?: 'sm' | 'md' | 'lg' }>(
   ({ className, size = 'sm', children, onPointerDownOutside, onInteractOutside, onOpenAutoFocus, onCloseAutoFocus, ...p }, ref) => {
     const panel = React.useRef<HTMLDivElement>(null);
@@ -81,6 +88,7 @@ export const DialogContent = React.forwardRef<React.ElementRef<typeof DialogPrim
     return (
       <DialogPrimitive.Portal>
         <Scrim className="overlay" />
+        <RememberFocus focus={focus} />
         <DialogPrimitive.Content ref={panel} className={cn('dialog', size === 'md' && 'dialog-md', size === 'lg' && 'dialog-lg', className)}
           onPointerDownOutside={keepOnToast(onPointerDownOutside)} onInteractOutside={bounceWhenKept(onInteractOutside, panel)} {...p} onOpenAutoFocus={focus.onOpenAutoFocus} onCloseAutoFocus={focus.onCloseAutoFocus}>
           {children}
@@ -137,6 +145,7 @@ export const SheetContent = React.forwardRef<React.ElementRef<typeof DialogPrimi
       <DialogPrimitive.Portal>
         {/* 退场动画靠 data-state，Portal 里的 Presence 等它播完再卸载 */}
         <div className="drawer-overlay" data-state={open ? 'open' : 'closed'} aria-hidden />
+        <RememberFocus focus={focus} />
         <DialogPrimitive.Content ref={panel} className={cn('drawer', className)}
           onFocusOutside={(e) => e.preventDefault()} onPointerDownOutside={keepOnToast(keepOnRightClick(onPointerDownOutside))} {...p} onOpenAutoFocus={focus.onOpenAutoFocus} onCloseAutoFocus={focus.onCloseAutoFocus}>
           {children}

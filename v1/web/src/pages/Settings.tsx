@@ -344,7 +344,7 @@ const ChannelDialog = resetOnOpen(function ChannelDialog({ target, open, onClose
 });
 
 /** 发送一次月报：先把要发的文字（GET /reports/monthly，默认上个月）给人看，确认后立即发；只发给「开了月报且已启用」的渠道。
- *  没有这样的渠道时服务端回 409，提示（去哪里勾选）留在对话框里显示（TypedConfirmDialog 的失败原因不只是一闪而过的通知） */
+ *  没有这样的渠道时按钮禁用，描述里写去哪里勾选 */
 function MonthlyReportDialog({ open, onOpenChange, channels }: { open: boolean; onOpenChange: (o: boolean) => void; channels: NotifyChannel[] }) {
   const q = useMonthlyPreview(open);
   const send = useSendMonthly();
@@ -352,7 +352,7 @@ function MonthlyReportDialog({ open, onOpenChange, channels }: { open: boolean; 
   const d = q.data;
   return (
     <TypedConfirmDialog open={open} onOpenChange={onOpenChange} typed={false} expected="" size="md" title={`发送月报${d ? ` · ${d.month.slice(0, 4)} 年 ${Number(d.month.slice(5))} 月` : ''}`} confirmLabel="立即发送" confirmDisabled={!d || !to.length}
-      description={to.length ? <>将发给 {to.length} 个渠道：{to.map((c) => c.name).join('、')}</> : '现在没有渠道会收到：先在渠道的编辑里打开「月报」，并保持启用，否则发送会被拒绝'}
+      description={to.length ? <>将发给 {to.length} 个渠道：{to.map((c) => c.name).join('、')}</> : '现在没有渠道会收到：先在渠道的编辑里打开「月报」，并保持启用'}
       onConfirm={async () => { const r = await send.mutateAsync(d?.month); toast.ok(`月报已排进发送队列（${r.channels} 个渠道），结果见下面的发送记录`); }}>
       {q.isError ? <ErrorNote error={q.error} onRetry={() => void q.refetch()} />
         : d ? <pre className="report-text">{d.text}</pre> : <div className="skel" style={{ height: 180 }} />}
