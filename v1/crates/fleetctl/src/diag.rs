@@ -381,12 +381,6 @@ pub fn ping_summary(body: &str) -> Option<(u32, u32, f64, Option<f64>)> {
     Some((sent, recv, loss, avg))
 }
 
-/// mtr 报告最后一跳的丢包 %（「 9.|-- 203.0.113.5  12.0%  100 …」或带 AS 号的写法：第一个以 % 结尾的数）
-pub fn mtr_last_loss(body: &str) -> Option<f64> {
-    let last = body.lines().filter(|l| l.trim_start().split('.').next().is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))).last()?;
-    last.split_whitespace().find_map(|w| w.strip_suffix('%')?.parse().ok())
-}
-
 /// 握手的汇总
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub struct TcpSum {
@@ -817,8 +811,6 @@ mod tests {
     fn parsers() {
         assert_eq!(ping_summary(PING_OK), Some((100, 100, 0.0, Some(152.31))));
         assert_eq!(ping_summary(PING_LOSS).map(|x| x.2), Some(12.0));
-        assert_eq!(mtr_last_loss(MTR), Some(0.0));
-        assert_eq!(mtr_last_loss("  5.|-- 203.0.113.5   12.0%   100  150.1"), Some(12.0));
         let s = tcp_summary(&tcp_out(50, &[7, 30], &[3, 4, 9, 20, 41]));
         assert_eq!((s.n, s.ok, s.timeout, s.syn_lost, s.kernel), (50, 48, 2, 5, true));
         assert_eq!(s.bad_pct(), 14.0);

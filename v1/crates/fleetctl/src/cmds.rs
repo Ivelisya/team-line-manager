@@ -168,6 +168,9 @@ pub fn whoami(ctx: &Ctx) -> anyhow::Result<u8> {
 /// 分页接口（`/jobs`、`/incidents`）返回 `{items, total, next_offset}`：命令只要条目，`--json` 输出仍是数组
 fn items(mut v: Value) -> anyhow::Result<Value> { v.get_mut("items").map(Value::take).ok_or_else(|| anyhow!("分页响应里没有 items")) }
 
+/// `status` 表格里最多列几条进行中的告警
+const STATUS_INCIDENTS: usize = 20;
+
 pub fn status(ctx: &Ctx) -> anyhow::Result<u8> {
     let ov = ctx.c.get("/overview")?;
     let inc = incident_items(ctx, "firing", None)?;
@@ -213,11 +216,18 @@ pub fn status(ctx: &Ctx) -> anyhow::Result<u8> {
             ("本月业务流量", format!("下载 {} / 上传 {}{from}", traffic(num(&ov, "/traffic_month/down").unwrap_or(0.0)), traffic(num(&ov, "/traffic_month/up").unwrap_or(0.0)))),
             ("网卡速率", format!("下行 {} / 上行 {}", bps(num(&ov, "/net_rx_bps").unwrap_or(0.0)), bps(num(&ov, "/net_tx_bps").unwrap_or(0.0)))),
         ]);
-        let list = inc.as_array().cloned().unwrap_or_default();
+        let mut list = inc.as_array().cloned().unwrap_or_default();
         s.push_str(&format!("\n\n告警（进行中 {}）", list.len()));
         if !list.is_empty() {
+            // 表格只列最要紧的 STATUS_INCIDENTS 条（严重的在前、同级新的在前），免得告警成百时一次灌出上百 KB；--json 与 incidents 是全部
+            list.sort_by(|x, y| (y["severity"] == "critical").cmp(&(x["severity"] == "critical")).then_with(|| st(y, "/opened_at").cmp(&st(x, "/opened_at"))));
+            let more = list.len().saturating_sub(STATUS_INCIDENTS);
+            list.truncate(STATUS_INCIDENTS);
             s.push('\n');
             s.push_str(&incident_table(&list, false));
+            if more > 0 {
+                s.push_str(&format!("\n另有 {more} 条，用 fleetctl incidents 看全部"));
+            }
         }
         if !chronic.is_empty() {
             s.push_str("
@@ -303,13 +313,7 @@ fn incident_table(list: &[Value], with_state: bool) -> String {
 }
 
 /// 不续费的备用机（备用团队里等到期放生的；视图 `spare_unbilled`，费用侧口径：出口指着 / 同机 IP 节点在用 / 开着自动续费的不算）。
-/// 旧中控没有这个字段：先看 `idle_spare`（旧中控里它就是这个含义），再没有就是备用团队的机器按不续费算，只有 `recycle_held`（被扣住不回收）为 true 的不算
-fn spare_unbilled(m: &Value) -> bool {
-    match m["spare_unbilled"].as_bool().or_else(|| m["idle_spare"].as_bool()) {
-        Some(b) => b,
-        None => m["spare"] == true && m["recycle_held"] != true,
-    }
-}
+fn spare_unbilled(m: &Value) -> bool { m["spare_unbilled"] == true }
 
 /// `ls --due N`：在用、有订阅、N 天内到期（含已过期）。自动续费的也算（到期列标出来）；不续费的备用机不算（到期了等着自动回收；开着自动续费的备用机照列）
 fn due_within(m: &Value, n: i64) -> bool {
@@ -1317,7 +1321,7 @@ mod tests {
         assert!(due_within(&m("active", 7), 7) && due_within(&m("active", -2), 0));
         // 不在用的、到期还远的、没有订阅的不列
         assert!(!due_within(&m("active", 8), 7) && !due_within(&m("provisioning", 1), 7) && !due_within(&json!({"lifecycle": "active", "subscription": null}), 7));
-        // 不续费的备用机不列（生产里 status 即将到期 0、ls --due 却列了 6 台备用）；被扣住不回收的（含只开着自动续费的）照列；旧中控没有 spare_unbilled 字段先看 idle_spare，再没有按备用团队算
+        // 不续费的备用机不列（生产里 status 即将到期 0、ls --due 却列了 6 台备用）；被扣住不回收的（含只开着自动续费的）照列
         let sp = |extra: Value| {
             let mut v = m("active", -1);
             v["spare"] = json!(true);
@@ -1329,9 +1333,6 @@ mod tests {
         assert!(!due_within(&sp(json!({"spare_unbilled": true, "idle_spare": true})), 7), "不续费的备用机不列");
         assert!(due_within(&sp(json!({"spare_unbilled": false, "idle_spare": true, "recycle_held": true})), 7), "只开着自动续费的闲置备用照列");
         assert!(due_within(&sp(json!({"spare_unbilled": false, "idle_spare": false, "recycle_held": true})), 7), "被扣住的备用照列");
-        assert!(!due_within(&sp(json!({"idle_spare": true})), 7), "旧中控：idle_spare 就是不续费");
-        assert!(!due_within(&sp(json!({})), 7) && !due_within(&sp(json!({"recycle_held": false})), 7), "旧中控：备用团队的按闲置算");
-        assert!(due_within(&sp(json!({"recycle_held": true})), 7), "旧中控：被扣住的照列");
         assert_eq!(due_cell(&ls_item(&m("active", -2), true)), "2026-10-20（已过期 2 天）");
         let auto = ls_item(&json!({"subscription": {"due_date": "2026-10-25", "due_days": 3, "auto_renew": true}}), true);
         assert_eq!(due_cell(&auto), "2026-10-25（3 天后到期，自动续费）");
