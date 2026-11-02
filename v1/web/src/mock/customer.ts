@@ -118,7 +118,6 @@ const validAt = (tid: string, day: string) => slots.filter((s) => s.team_id === 
 export function installCustomerMock(R: Reg, o: { teams: () => Team[]; machines: () => MachineView[]; bad: Bad; emit: (e: { type: string; id?: string }) => void }) {
   const { bad } = o;
   const billing = (tid: string) => o.emit({ type: 'billing', id: tid });
-  for (const m of o.machines()) if (m.kind !== 'relay') m.billing_exempt = false;
   const team = (id: string) => { const t = o.teams().find((x) => x.id === id); if (!t) throw bad('团队不存在', 404, 'not_found'); return t; };
   const slot = (id: string) => { const s = slots.find((x) => x.id === id); if (!s) throw bad('计费名额不存在', 404, 'not_found'); return s; };
   const pageView = (tid: string): CustomerPage | null => {

@@ -44,8 +44,8 @@ export interface EntryView {
   id: string; relay: { id: string; name: string }; node: { id: string; name: string };
   /** 线路机直出：节点就是线路机自己（node.id = relay.id，node.name =「线路机名-直出」），从线路机自己的 IP 出去；没有 TCP 探测，不能换线路机 / 搬空 */
   direct: boolean;
-  /** 穿透（reverse）：节点上的 bridge 主动连这个入口，线路机不连节点——没有 TCP 探测（tcp 恒为 null），只看出口。旧中控没有这个字段，按普通 */
-  mode?: EntryMode;
+  /** 穿透（reverse）：节点上的 bridge 主动连这个入口，线路机不连节点——没有 TCP 探测（tcp 恒为 null），只看出口 */
+  mode: EntryMode;
   port: number;
   lifecycle: EntryLifecycle; applied: boolean; apply_error: string | null;
   tcp: ProbeResult | null; egress: ProbeResult | null;
@@ -75,21 +75,21 @@ export interface MachineView {
   /** 费用侧：备用里在用、还被软路由出口指着（router_exits 非空）、上面还有在用的同机 IP 节点（live_ip_nodes 非空）、上面有开着自动续费的备用同机 IP 节点（renewing_ip_nodes 非空）或开着自动续费（subscription.auto_renew）：
    *  不自动回收，recycle_on 为 null，照常续费（月费、到期、待付清单、续费提醒） */
   recycle_held: boolean;
-  /** 闲置备用（服务端算好，客户侧口径）：备用里在用、没有软路由出口指着、没有在用的同机 IP 节点——不开告警、不算进健康计数与在线 / 离线、可用率不含；不看自动续费。旧中控没有这个字段，按 router_exits / live_ip_nodes 推 */
-  idle_spare?: boolean;
-  /** 不续费的备用机（服务端算好，费用侧口径）：备用里在用、没被扣住不回收（recycle_held 为 false）——不提醒续费、不算到期、月费不进合计。一定是闲置备用，反过来只开着自动续费的闲置备用机不是它。旧中控没有这个字段，按 recycle_held 推 */
-  spare_unbilled?: boolean;
-  /** 备用团队里在用的宿主机：它上面在备用团队里、开着自动续费的同机 IP 节点（显示名）——宿主机回收会连带它们，所以也不自动回收、照常续费；其余为 []。旧中控没有这个字段 */
-  renewing_ip_nodes?: string[];
-  /** 备用团队里在用的宿主机：上面不在备用团队、没退役的同机 IP 节点（显示名）——宿主机退役会连带它们，所以不自动回收，也不是闲置备用；其余为 []。旧中控没有这个字段 */
-  live_ip_nodes?: string[];
+  /** 闲置备用（服务端算好，客户侧口径）：备用里在用、没有软路由出口指着、没有在用的同机 IP 节点——不开告警、不算进健康计数与在线 / 离线、可用率不含；不看自动续费 */
+  idle_spare: boolean;
+  /** 不续费的备用机（服务端算好，费用侧口径）：备用里在用、没被扣住不回收（recycle_held 为 false）——不提醒续费、不算到期、月费不进合计。一定是闲置备用，反过来只开着自动续费的闲置备用机不是它 */
+  spare_unbilled: boolean;
+  /** 备用团队里在用的宿主机：它上面在备用团队里、开着自动续费的同机 IP 节点（显示名）——宿主机回收会连带它们，所以也不自动回收、照常续费；其余为 [] */
+  renewing_ip_nodes: string[];
+  /** 备用团队里在用的宿主机：上面不在备用团队、没退役的同机 IP 节点（显示名）——宿主机退役会连带它们，所以不自动回收，也不是闲置备用；其余为 [] */
+  live_ip_nodes: string[];
   /** 备用团队里在用的机器：还指向它（备用宿主机还含它上面没退役的同机 IP 节点，后缀「（经同机 IP 节点 X）」）的软路由出口（「路由名 · 出口名」）；其余为 []。在用、在备用里、这里和 live_ip_nodes 都为空 = 闲置备用（不开告警、不计健康，见 isIdleSpare；再没开自动续费才是不续费的，见 isUnbilledSpare） */
   router_exits: string[];
-  /** 标了「不计费」（PUT /machines/{id}/billing-exempt）：不算进向团队收费的计费节点。旧中控没有这个字段 */
-  billing_exempt?: boolean;
+  /** 标了「不计费」（PUT /machines/{id}/billing-exempt）：不算进向团队收费的计费节点 */
+  billing_exempt: boolean;
   /** 团队里在用的节点（不在备用）、团队的软路由都看得清出口，却没有任何出口指着它：多半是出口改指向别处后留下的，看着像在用其实没客户（抽屉标一句）。
-   *  团队没有软路由、有路由没采集到 / 配置读不了为 false。旧中控没有这个字段 */
-  no_router_exits?: boolean;
+   *  团队没有软路由、有路由没采集到 / 配置读不了为 false */
+  no_router_exits: boolean;
   ip: string; ssh_port: number;
   /** 国家或地区（ISO 3166-1 两位大写，如 US）：手动设了用手动的，否则中控离线 IP 库按机器自己的 IP 查；
    *  内网、家宽代理填的域名、库没装时为 null */
@@ -153,10 +153,10 @@ export interface TuneParams {
 export interface Team { id: string; name: string; sort_order: number; spare: boolean; node_count: number;
   /** 在用机器的月费合计（USD，同总览） */
   monthly_usd: UsdTotal;
-  /** 备用团队里被扣住不回收（出口还指着 / 同机 IP 节点还在用 / 开着自动续费）的机器的月费与台数：照常续费、计入合计；别的团队为空、0。旧中控没有 */
-  monthly_usd_held?: UsdTotal; held_count?: number;
-  /** 备用团队里被扣住不回收的总台数（不论有没有订阅；held_count 只数有订阅的）。旧中控没有 */
-  held_total?: number }
+  /** 备用团队里被扣住不回收（出口还指着 / 同机 IP 节点还在用 / 开着自动续费）的机器的月费与台数：照常续费、计入合计；别的团队为空、0 */
+  monthly_usd_held: UsdTotal; held_count: number;
+  /** 备用团队里被扣住不回收的总台数（不论有没有订阅；held_count 只数有订阅的） */
+  held_total: number }
 /** 月费合计（USD）：cents 是能折算部分的合计；by_currency 各原币种的金额、折成的 USD 与所用汇率；unconverted 没有汇率、没算进合计的 */
 export interface UsdTotal {
   cents: number;
@@ -168,8 +168,8 @@ export interface DueMachine {
   id: string; name: string; kind: Kind; due_date: string; due_days: number; billing_tz?: string; cycle: Cycle; price_cents: number; currency: string; price_usd_cents: number | null;
   /** 续不续费的依据（近 30 天）：月费（USD 分）、业务流量（字节）、月费 ÷ 流量、TCP 可用率 %（没有探测为 null）、闲置与近 7 天日均业务流量（字节） */
   monthly_usd_cents: number | null; bytes_30d: number; usd_per_gb: number | null; avail_pct: number | null; idle: boolean; avg7: number;
-  /** 备用团队里的机器；spare_hold：还被软路由出口指着 / 上面有在用同机 IP 节点 / 开着自动续费所以不自动回收、照常续费的原因（普通机器与不续费的备用机为 null）。旧中控没有 */
-  spare?: boolean; spare_hold?: string | null;
+  /** 备用团队里的机器；spare_hold：还被软路由出口指着 / 上面有在用同机 IP 节点 / 开着自动续费所以不自动回收、照常续费的原因（普通机器与不续费的备用机为 null） */
+  spare: boolean; spare_hold: string | null;
 }
 export interface DueProvider { id: string | null; name: string | null; panel_url: string | null }
 /** 按 供应商 × 到期日 × 账单时区 分组：剩余天数按账单时区的今天算（同一天到期、时区不同的会差一天） */
@@ -205,22 +205,22 @@ export interface Overview {
   /** 在线/离线按台机器、按 agent 连通（同 isQuiet），与健康无关；同机 IP 节点随宿主机计入（ip_nodes 是其中的台数），
    *  家宽代理不需要 agent，不计入，另数 no_agent */
   online: number; offline: number; no_agent: number; ip_nodes: number;
-  /** 闲置备用（isIdleSpare，客户侧口径：没有出口指着、没有在用 IP 节点）的台数：它们不在 nodes / relays 的 total 与各健康计数里，也不计入 online / offline；速率照算。旧中控没有这个字段 */
-  spare?: number;
-  /** 闲置备用自己的健康计数（同 nodes 的口径）：备用池里有几台此刻能顶替（总数 − 故障 − 未知）。旧中控没有这个字段 */
-  spare_health?: Record<'total' | 'ok' | 'degraded' | 'down' | 'unknown' | 'maintenance', number>;
-  /** 中控刚启动或刚恢复收上报（2 分钟内）：agent 的重发、线路机连通性还在陆续到，健康计数还会变——网页先显示加载态。旧中控没有这个字段 */
-  settling?: boolean;
+  /** 闲置备用（isIdleSpare，客户侧口径：没有出口指着、没有在用 IP 节点）的台数：它们不在 nodes / relays 的 total 与各健康计数里，也不计入 online / offline；速率照算 */
+  spare: number;
+  /** 闲置备用自己的健康计数（同 nodes 的口径）：备用池里有几台此刻能顶替（总数 − 故障 − 未知） */
+  spare_health: Record<'total' | 'ok' | 'degraded' | 'down' | 'unknown' | 'maintenance', number>;
+  /** 中控刚启动或刚恢复收上报（2 分钟内）：agent 的重发、线路机连通性还在陆续到，健康计数还会变——网页先显示加载态 */
+  settling: boolean;
   /** failed：上架失败（lifecycle = failed）的台数 */
   provisioning: number; retiring: number; failed: number;
   /** 在用机器里即将到期（due_state = soon）与已过期（overdue）的台数 */
   due_soon: number; overdue: number;
   /** 月费合计折成 USD（每台的 monthly_usd_cents 相加；没有汇率的单列） */
   monthly_usd: UsdTotal;
-  /** 月费合计里的台数：在用、不在备用团队、有订阅的（正好是 monthly_usd 加起来的那些台）。旧中控没有 */
-  paid_machines?: number;
-  /** 不续费的备用机（isUnbilledSpare）的月费小计（不在 monthly_usd 里）；count = 其中有订阅的台数（备用团队里被出口指着 / 有在用 IP 节点 / 开着自动续费的照常续费，算在 monthly_usd 里）。旧中控没有 */
-  monthly_usd_spare?: UsdTotal & { count: number };
+  /** 月费合计里的台数：在用、不在备用团队、有订阅的（正好是 monthly_usd 加起来的那些台） */
+  paid_machines: number;
+  /** 不续费的备用机（isUnbilledSpare）的月费小计（不在 monthly_usd 里）；count = 其中有订阅的台数（备用团队里被出口指着 / 有在用 IP 节点 / 开着自动续费的照常续费，算在 monthly_usd 里） */
+  monthly_usd_spare: UsdTotal & { count: number };
   /** counted_from：本月数据不完整时的起点（RFC 3339，agent 接入晚于月初），完整则 null */
   traffic_month: { up: number; down: number; counted_from: string | null }; net_rx_bps: number; net_tx_bps: number;
 }
@@ -296,9 +296,9 @@ export interface ProvisionItem {
   host_id?: string;
 }
 /** ss_port：同机 IP 节点暂定的 SS 端口（作业在宿主机上核对时被占用会换），其它为 null */
-/** warnings：不影响通过的提醒（发行版已过标准支持期、用中控密钥试登录没有结果）；旧中控没有这个字段 */
-/** entry_mode：这台新入口的模式（线路机为 null；家宽代理、同机 IP 节点要穿透时已退回普通，warnings 里写明）。旧中控没有这个字段 */
-export interface ProvisionCheckItem { ok: boolean; errors: string[]; warnings: string[]; name: string; number: number | null; ss_port: number | null; entry_mode?: EntryMode | null }
+/** warnings：不影响通过的提醒（发行版已过标准支持期、用中控密钥试登录没有结果） */
+/** entry_mode：这台新入口的模式（线路机为 null；家宽代理、同机 IP 节点要穿透时已退回普通，warnings 里写明） */
+export interface ProvisionCheckItem { ok: boolean; errors: string[]; warnings: string[]; name: string; number: number | null; ss_port: number | null; entry_mode: EntryMode | null }
 
 // ---- 以 API.md「返回形状补充」为准 ----
 /** series：{metric, range, resolution, points}，点里时间字段叫 ts。
@@ -414,16 +414,16 @@ export interface RetirePreview {
   name: string;
   /** notes：进备用的提示（开着的自动续费会关掉、撤销退役回不到原编号）；warnings：还被出口指着的节点进备用后访问策略会变（客户受影响） */
   spare: { ok: boolean; why: string | null; team: { id: string; name: string }; to_name: string; recycle_on: string | null;
-    /** 进备用后不自动回收的原因（软路由出口还指着、同机 IP 节点还在用 / 开着自动续费，多个用「、」连）；null = 没被扣住；旧中控没有这个字段 */
-    held?: string | null;
+    /** 进备用后不自动回收的原因（软路由出口还指着、同机 IP 节点还在用 / 开着自动续费，多个用「、」连）；null = 没被扣住 */
+    held: string | null;
     ip_nodes: { id: string; name: string; to_name: string }[]; notes: string[]; warnings: string[] };
   routers: { id: string; name: string; exits: { exit: string; node: string }[] }[];
   renames: { machine_id: string; old_name: string; new_name: string }[];
   ip_nodes: { id: string; name: string }[];
   /** 现在做不了的原因（如线路机还挂着节点入口，要先搬空）；没有或为空 = 可以退役 */
   blockers?: string[];
-  /** 两种去向都有的提醒：原团队前移改名的节点还被软路由出口指着（面板名和出口名会对不上）。旧中控没有这个字段 */
-  warnings?: string[];
+  /** 两种去向都有的提醒：原团队前移改名的节点还被软路由出口指着（面板名和出口名会对不上） */
+  warnings: string[];
 }
 /** 退役：mode=spare 已移入备用（name 是新名、from 原名、recycle_on 起自动回收）；mode=now 提交了清理作业（宿主机的同机 IP 节点各一个，没有为 []） */
 export type RetireResult =

@@ -99,10 +99,10 @@ function TeamCost({ t, active }: { t: Team; active?: number }) {
   if (!u.by_currency.length && !u.unconverted.length) return <span className="t-muted">—</span>;
   // 备用团队：被扣住不回收的几台（出口还指着 / 同机 IP 节点还在用 / 开着自动续费）照常续费，只显示它们的月费、已算进页头合计；其余不续费的备用机不计
   if (t.spare) {
-    const h = t.monthly_usd_held; const n = t.held_count ?? 0;
-    if (h && n > 0) {
+    const h = t.monthly_usd_held; const n = t.held_count;
+    if (n > 0) {
       // 被扣住的总台数用服务端的 held_total（含没订阅的），在用台数没加载出来时不写后半句
-      const idle = active != null ? active - (t.held_total ?? n) : null;
+      const idle = active != null ? active - t.held_total : null;
       return <span className="num" data-tip={`其中 ${n} 台被扣住不回收（软路由出口还指着 / 同机 IP 节点还在用 / 开着自动续费），照常续费，已算进合计${idle == null ? '' : idle > 0 ? `；其余 ${idle} 台不续费的备用机不计` : '；没有不续费的备用机'}
 ${usdTotalTip(h)}`}>{F.money(h.cents, 'USD')}{h.unconverted.length ? '*' : ''}</span>;
     }
@@ -131,7 +131,7 @@ function TeamsTab() {
   const renumHeld = useHeld(renum?.id, renum);
   const list = sortRows([...(q.data ?? [])].sort((a, b) => a.sort_order - b.sort_order), sort, { ...TEAM_KEY, nodes: (t) => counts?.[t.id]?.active ?? t.node_count });
   // 各团队在用机器的月费合计（USD）；备用团队只算被扣住不回收、照常续费的几台，不续费的备用机不计（同首页）；有团队带没折算的币种时注明
-  const paidTeams = list.filter((t) => !t.spare || (t.held_count ?? 0) > 0);
+  const paidTeams = list.filter((t) => !t.spare || t.held_count > 0);
   const feeOf = (t: Team) => (t.spare ? t.monthly_usd_held : t.monthly_usd);
   const teamsUsd = paidTeams.reduce((s, t) => s + (feeOf(t)?.cents ?? 0), 0);
   // 线路机不归团队：单列一项，合计 = 各团队 + 线路机，同首页「每月费用」
