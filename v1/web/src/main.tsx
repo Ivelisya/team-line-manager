@@ -1,46 +1,5 @@
-import React from 'react';
-import ReactDOM from 'react-dom/client';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { BrowserRouter } from 'react-router-dom';
-import './styles/tw-base.css';
-import './styles/tokens.css';
-import './styles/theme.css';
-import './styles/base.css';
-import './styles/components.css';
-import './styles/home.css';
-import './styles/cards.css';
-import './styles/table.css';
-import './styles/pages.css';
-import './styles/palette.css';
-// 覆盖层放在所有组件与页面样式之后（同优先级靠文件顺序胜出）；按需加载的 policy.css、terminal.css 不写与它同名的规则
-import './styles/overrides.css';
-import './styles/tw-utilities.css';
-import { App } from './App';
-import { ApiError } from './lib/api';
-import { TooltipProvider } from './components/ui/overlays';
-
-const qc = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 10_000,
-      // 4xx 是确定的结果（未登录、不存在、参数不对），重试没有意义；网络错误和 5xx 重试一次
-      retry: (n, err) => !(err instanceof ApiError && err.status >= 400 && err.status < 500) && n < 1,
-      refetchOnWindowFocus: true,
-    },
-  },
-});
-
-// 根滚动条槽宽（覆盖式滚动条为 0），弹层锁滚动时按它补回右边距（base.css）。槽宽只随缩放（devicePixelRatio）变、不随窗口尺寸变：
-// 只在缩放比变化时重量（拖窗口时不再每帧插节点强制布局）
-const measureScrollbar = () => {
-  const d = document.createElement('div');
-  d.style.cssText = 'position:absolute;top:-200px;width:100px;height:100px;overflow:scroll;scrollbar-width:auto;visibility:hidden';
-  document.body.append(d);
-  document.documentElement.style.setProperty('--sbw', `${d.offsetWidth - d.clientWidth}px`);
-  d.remove();
-  matchMedia(`(resolution: ${devicePixelRatio}dppx)`).addEventListener('change', measureScrollbar, { once: true });
-};
-measureScrollbar();
+// 入口只做按路径分流：/c/ 开头是公开的客户页（customerEntry，只带它要用的代码和样式），其余是管理端（adminEntry）。
+// 这样客户打开链接不用下载整个管理端。
 
 // 发版后旧页面去拉已删掉的懒加载块会失败：直接刷新拿新版本（地址栏已是目标页）。10 秒内刷过一次就不再刷，交给 ErrorBoundary 提示
 window.addEventListener('vite:preloadError', () => {
@@ -56,14 +15,6 @@ async function boot() {
     const { installMock } = await import('./mock/server');
     installMock();
   }
-  ReactDOM.createRoot(document.getElementById('root')!).render(
-    <React.StrictMode>
-      <QueryClientProvider client={qc}>
-        <TooltipProvider>
-          <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><App /></BrowserRouter>
-        </TooltipProvider>
-      </QueryClientProvider>
-    </React.StrictMode>,
-  );
+  await (location.pathname.startsWith('/c/') ? import('./customerEntry') : import('./adminEntry'));
 }
 void boot();

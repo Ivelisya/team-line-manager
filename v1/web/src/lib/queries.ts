@@ -6,7 +6,7 @@ import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClie
 import { del, get, patch, post, put } from './api';
 import { collator, makeDefaultCompare } from './sort';
 import { nextDue, offlineNames, quotaTight, setMeta } from './derive';
-import type { BillingEvent, CustomerPage, PublicCustomer, Receivable, RelayProtocols, TeamBatches } from './types';
+import type { BillingEvent, CustomerBatch, CustomerPage, Receivable, RelayProtocols, TeamBatches } from './types';
 import type { ApiKey, Availability, Incident, Job, JobSummary, Paged, JobLog, MachineView, Meta, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenamePreview, RenumberPreview, RetirePreview, RetireResult, DueList, RenewBatchResult, RecycleItem, RecycleDetail, ReplaceBody, ReplacePreview, MovePreview, MoveResult, EvacuateResult, RebalancePlan, PlacementView, ProbeBeats, SeriesResp, Silence, TrafficDaily, SilenceKind, SubField, Team, AuditEntry, NotifyChannel, NotifyLogEntry, UptimeReport, MonthlyReport, MonthlySendResult, SpeedtestStarted, AccountSession, TotpSetup, TotpStatus, MovesResult, EntryMode } from './types';
 
 export const useMe = () => useQuery({ queryKey: ['me'], queryFn: () => get<{ username: string }>('/auth/me'), retry: false, staleTime: 5 * 60_000 });
@@ -197,6 +197,8 @@ export function eventKeys(ev: StreamEvent): unknown[][] {
     case 'policies': return [['policies'], ['machines'], ['relays']];
     // 软路由：增删改与每轮采集（最多一次）都发这一个，列表与各台详情一起重取（曲线另按时间轮询，见 lib/routers）
     case 'routers': return [['routers']];
+    // 计费：对账有变化或计费写操作后推送（id = 团队）：该团队的批次 / 名额、增减记录、各月应收一起重取
+    case 'billing': return [['batches', ev.id], ['billing', 'events', ev.id], ['billing', 'receivable', ev.id]];
     default: return [];
   }
 }
@@ -461,10 +463,12 @@ export const useRecycleBin = (o: { q: string; source: string; offset: number; li
 /** 展开一行才取：快照里的关键字段 */
 export const useRecycleDetail = (id: number | null) => useQuery({ queryKey: ['recycle-bin', 'one', id], enabled: id != null, staleTime: Infinity, queryFn: ({ signal }) => get<RecycleDetail>(`/recycle-bin/${id}`, signal) });
 
-// ---- 按节点数向团队收费（团队与套餐 → 客户到期）与客户页 /c/:token ----
+// ---- 按节点数向团队收费（团队与套餐 → 计费台账）与客户页 /c/:token ----
 /** 一个团队的派生批次（含已到期的，按编号升序）、计费名额、待定节点与客户页链接 */
 export const useTeamBatches = (teamId: string) => useQuery({
   queryKey: ['batches', teamId], enabled: !!teamId, queryFn: ({ signal }) => get<TeamBatches>(`/teams/${teamId}/batches`, signal),
+  // 换团队时先留着上一个团队的（调用方按 isPlaceholderData 调淡、不可操作），不整页塌成骨架
+  placeholderData: keepPreviousData,
 });
 /** 计费相关的写操作：批次、应收、增减记录都跟着变 */
 const B = [['batches'], ['billing'], ['audit']];
@@ -475,11 +479,14 @@ export const useBillingEvents = (teamId: string) => useInfiniteQuery({
   queryFn: ({ pageParam, signal }) => get<BillingEvent[]>(`/teams/${teamId}/billing-events?limit=${EVENT_PAGE}${pageParam ? `&before=${pageParam}` : ''}`, signal),
   getNextPageParam: (last) => (last.length >= EVENT_PAGE ? last[last.length - 1].id : undefined),
 });
-/** 月度应收：month = YYYY-MM */
+/** 月度应收：month = YYYY-MM。翻月时先留着上一个月的（调淡），换了团队不沿用别队的 */
 export const useReceivable = (teamId: string, month: string) => useQuery({
-  queryKey: ['billing', 'receivable', teamId, month], enabled: !!teamId && !!month, placeholderData: keepPreviousData,
+  queryKey: ['billing', 'receivable', teamId, month], enabled: !!teamId && !!month,
   queryFn: ({ signal }) => get<Receivable>(`/teams/${teamId}/receivable?month=${month}`, signal),
+  placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[2] === teamId ? keepPreviousData(prev) : undefined),
 });
+/** 整批改起算日（一个事务，要么全改要么都不改）：key = Batch.key（起算日|地区）；返回新的批次 */
+export const usePatchBatch = () => useWrite(({ teamId, key, start_date }: { teamId: string; key: string; start_date: string }) => patch<CustomerBatch>(`/teams/${teamId}/batches/${encodeURIComponent(key)}`, { start_date }), B);
 /** 添加手动计费节点（系统外的节点，如家宽）：count 个同起算日、同地区的手动名额 */
 export const useAddBillingSlot = () => useWrite(({ teamId, ...b }: { teamId: string; region: string; start_date: string; count?: number; note: string }) => post(`/teams/${teamId}/billing-slots`, b), B);
 /** 改起算日 / 地区 / 备注；end_date 只给手动或空出的名额（结束），null = 恢复（只限手动） */
@@ -491,7 +498,3 @@ export const useBillingExempt = () => useWrite(({ id, exempt }: { id: string; ex
 /** 没有就生成，有就换新令牌（旧链接立即失效） */
 export const useRotateCustomerPage = () => useWrite((teamId: string) => post<CustomerPage>(`/teams/${teamId}/customer-page`), B);
 export const usePatchCustomerPage = () => useWrite(({ teamId, enabled }: { teamId: string; enabled: boolean }) => patch<CustomerPage>(`/teams/${teamId}/customer-page`, { enabled }), B);
-/** 公开页：不登录；令牌不对或已停用 404（不区分） */
-export const usePublicCustomer = (token: string) => useQuery({
-  queryKey: ['public-customer', token], queryFn: ({ signal }) => get<PublicCustomer>(`/public/customer/${encodeURIComponent(token)}`, signal), staleTime: 60_000,
-});

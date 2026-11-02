@@ -12,6 +12,9 @@ html body[data-scroll-locked] { margin-right: var(--sbw, 0px) !important; --remo
 /* 背景光晕：固定在视口的一层 body::before（z-index -1：在根背景 --canvas 之上、所有内容之下）。
    以前写成 body 的背景 + background-attachment: fixed：非根元素上的 fixed 背景会让浏览器放弃合成滚动，每滚一帧都重画整页背景 */
 body::before { content: ""; position: fixed; inset: 0; z-index: -1; background: var(--canvas-glow); pointer-events: none; }
+/* 客户页 /c/（public/theme-init.js 首屏就加上这个类）：整页换成卡片色的白底、去掉管理端画布的光晕 */
+html.is-cx { background: var(--surface); }
+html.is-cx body::before { content: none; }
 body {
   margin: 0;
   color: var(--fg);

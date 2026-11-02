@@ -76,9 +76,7 @@
 .btl-legend > span { display: inline-flex; align-items: center; gap: var(--sp-6); white-space: nowrap; }
 .btl-legend svg { display: block; }
 
-/* ---------------------------------------------------------------- 客户到期页 /c/:token：白底，内容居中 */
-html.is-cx { background: var(--surface); }
-html.is-cx body::before { content: none; }
+/* ---------------------------------------------------------------- 客户到期页 /c/:token：白底（html.is-cx 在 base.css），内容居中 */
 .cx-page { max-width: 1080px; margin: 0 auto; padding: clamp(20px, 5vw, 56px) clamp(16px, 4vw, 40px) 48px; display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-24); }
 .cx-head { display: grid; gap: var(--sp-6); }
 .cx-title { margin: 0; font-size: clamp(22px, 3.2vw, 30px); line-height: 1.2; font-weight: var(--fw-bold); letter-spacing: -0.02em; color: var(--fg); text-wrap: balance; }
@@ -99,7 +97,7 @@ html.is-cx body::before { content: none; }
 .cx-total .num { font-size: 20px; }
 .cx-note { font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); }
 
-/* ---------------------------------------------------------------- 管理端：团队与套餐 → 客户到期 */
+/* ---------------------------------------------------------------- 管理端：团队与套餐 → 计费台账 */
 .cxa-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-8) var(--sp-16); min-width: 0; }
 .cxa-team { width: 180px; }
 .cxa-link { display: inline-flex; align-items: center; gap: var(--sp-6); min-width: 0; flex: 1 1 320px; font-size: var(--fs-body); }
@@ -107,18 +105,6 @@ html.is-cx body::before { content: none; }
 @media (hover: hover) { .cxa-url:hover { text-decoration: underline; text-underline-offset: 3px; } }
 .cxa-link[data-off] .cxa-url { color: var(--fg-3); text-decoration: line-through; }
 .cxa-seen { margin-left: var(--sp-6); white-space: nowrap; font-size: var(--fs-label); }
-.cxa-reset { height: auto; padding: 0; }
-/* 编辑对话框里的各段：一段一行 */
-.cxa-periods { display: grid; gap: var(--sp-8); }
-.cxa-prow { display: grid; grid-template-columns: 44px minmax(0, 1fr) minmax(0, 1fr) 76px 76px 28px; align-items: center; gap: var(--sp-8); }
-.cxa-prow.is-head { font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); }
-.cxa-prow .datefield { width: 100%; }
-@media (max-width: 560px) {
-  .cxa-prow { grid-template-columns: 1fr 1fr 28px; }
-  .cxa-prow.is-head { display: none; }
-  .cxa-prow > :first-child { grid-column: 1 / -1; }
-  .cxa-prow > :nth-child(6) { grid-row: 2; grid-column: 3; }
-}
 
 /* 顶部数字：不套卡片，三组大数字并排，窄屏换行 */
 .cxa-figs { display: flex; flex-wrap: wrap; gap: var(--sp-16) clamp(28px, 6vw, 72px); padding: var(--sp-4) var(--sp-4) 0; }
@@ -133,11 +119,10 @@ html.is-cx body::before { content: none; }
 /* 月度应收 */
 .cxa-mswitch { display: inline-flex; align-items: center; gap: var(--sp-4); }
 .cxa-mlabel { min-width: 7.5em; text-align: center; font-weight: var(--fw-medium); }
-.cxa-rcv { display: grid; gap: var(--sp-8); transition: opacity var(--dur-1) var(--ease-std); }
-.cxa-rcv[data-stale] { opacity: var(--o-stale); }
+.cxa-rcv { display: grid; gap: var(--sp-8); }
 .cxa-rcv-total { display: flex; align-items: center; gap: var(--sp-6); font-size: var(--fs-emph); line-height: var(--lh-emph); }
 .cxa-rcv-total b { font-size: 22px; font-weight: var(--fw-bold); }
-.cxa-rcv-sub { font-size: var(--fs-label); }
+.cxa-rcv-sub { font-size: var(--fs-label); line-height: var(--lh-label); }
 .cxa-lines { display: grid; margin: 0; padding: 0; list-style: none; }
 .cxa-lines li { display: grid; grid-template-columns: minmax(0, 1fr) auto 4.5em; align-items: baseline; gap: var(--sp-12); padding: var(--sp-6) 0; border-top: 1px solid var(--line); font-size: var(--fs-body); }
 .cxa-lines-n { text-align: right; font-weight: var(--fw-semibold); }

@@ -1200,7 +1200,7 @@ installPolicyMock(R, { teams: () => db.teams, machines: () => db.machines, emit,
 const routersMock = installRoutersMock(R, { teams: () => db.teams, machines: () => db.machines, incidents: () => db.incidents, maintenance: inMaint, emit, bad });
 installTerminalMock(R, { machines: () => db.machines, routers: routersMock.routers, bad });
 installClientSubsMock(R, { teams: () => db.teams, machines: () => db.machines, bad });
-installCustomerMock(R, { teams: () => db.teams, machines: () => db.machines, bad });
+installCustomerMock(R, { teams: () => db.teams, machines: () => db.machines, bad, emit });
 // ---------- 升级 agent ----------
 const UPSTEPS: [string, string][] = [['push', '推送 agent'], ['restart', '重启 agent'], ['verify', '确认上报']];
 /** 「全部升级」的编排（同中控作业参数 after）：排队中的作业 → 它要等的作业；halted：因为要等的没成功而取消的 */
