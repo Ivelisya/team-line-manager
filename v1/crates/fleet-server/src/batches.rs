@@ -21,8 +21,6 @@ pub struct Slot {
 pub struct Period {
     pub start: Date,
     pub end: Date,
-    /// 计费月数：节点月 = count × months（派生出来的期都是 1）
-    pub months: i32,
     pub count: i32,
 }
 
@@ -63,8 +61,7 @@ pub struct Derived {
     pub end: Date,
     /// 最后一期的个数
     pub count: i32,
-    /// 各期月数之和
-    pub months: i32,
+    /// 节点月 = Σ 各期个数
     pub node_months: i64,
     pub renewals: usize,
     pub state: State,
@@ -147,7 +144,7 @@ pub fn derive_batches(slots: &[Slot], today: Date) -> Vec<Batch> {
         let periods = (0..=last)
             .filter_map(|k| {
                 let (ps, pe) = period(start, k)?;
-                Some(Period { start: ps, end: pe, months: 1, count: ss.iter().filter(|s| billed(s, k)).count() as i32 })
+                Some(Period { start: ps, end: pe, count: ss.iter().filter(|s| billed(s, k)).count() as i32 })
             })
             .collect();
         out.push(Batch { key: key(start, region), seq: out.len() as i32 + 1, region: region.to_string(), periods });
@@ -223,14 +220,10 @@ pub fn title(seq: i32, region: &str, count: i32, state: State) -> String {
 
 /// 派生：没有期时给 None
 pub fn derive(b: &Batch, today: Date) -> Option<Derived> {
-    let last = b.periods.iter().max_by_key(|p| p.start)?;
-    let start = b.periods.iter().map(|p| p.start).min()?;
-    let end = b.periods.iter().map(|p| p.end).max()?;
-    let counts: Vec<i32> = {
-        let mut ps: Vec<&Period> = b.periods.iter().collect();
-        ps.sort_by_key(|p| p.start);
-        ps.iter().map(|p| p.count).collect()
-    };
+    // 各期已按起点升序
+    let (first, last) = (b.periods.first()?, b.periods.last()?);
+    let (start, end) = (first.start, last.end);
+    let counts: Vec<i32> = b.periods.iter().map(|p| p.count).collect();
     let state = match end.cmp(&today) {
         std::cmp::Ordering::Less => State::Expired,
         std::cmp::Ordering::Equal => State::Today,
@@ -240,8 +233,7 @@ pub fn derive(b: &Batch, today: Date) -> Option<Derived> {
         start,
         end,
         count: last.count,
-        months: b.periods.iter().map(|p| p.months).sum(),
-        node_months: b.periods.iter().map(|p| i64::from(p.count) * i64::from(p.months)).sum(),
+        node_months: b.periods.iter().map(|p| i64::from(p.count)).sum(),
         renewals: b.periods.len() - 1,
         state,
         summary: summary(&counts),
@@ -249,7 +241,7 @@ pub fn derive(b: &Batch, today: Date) -> Option<Derived> {
 }
 
 fn periods_json(b: &Batch) -> Vec<Value> {
-    b.periods.iter().map(|p| json!({"start_date": fmt_date(p.start), "end_date": fmt_date(p.end), "months": p.months, "count": p.count})).collect()
+    b.periods.iter().map(|p| json!({"start_date": fmt_date(p.start), "end_date": fmt_date(p.end), "months": 1, "count": p.count})).collect()
 }
 
 /// 管理端的 Batch（含已到期的）
@@ -258,7 +250,7 @@ pub fn admin_json(b: &Batch, d: &Derived) -> Value {
         "key": b.key, "seq": b.seq, "region": b.region, "summary": d.summary,
         "title": title(b.seq, &b.region, d.count, d.state),
         "start_date": fmt_date(d.start), "end_date": fmt_date(d.end),
-        "count": d.count, "months": d.months, "node_months": d.node_months, "renewals": d.renewals, "state": d.state.as_str(),
+        "count": d.count, "months": b.periods.len(), "node_months": d.node_months, "renewals": d.renewals, "state": d.state.as_str(),
         "periods": periods_json(b),
     })
 }
@@ -268,7 +260,7 @@ pub fn public_json(b: &Batch, d: &Derived) -> Value {
     json!({
         "seq": b.seq, "region": b.region, "title": title(b.seq, &b.region, d.count, d.state), "desc": d.summary,
         "start_date": fmt_date(d.start), "end_date": fmt_date(d.end),
-        "count": d.count, "months": d.months, "node_months": d.node_months, "state": d.state.as_str(),
+        "count": d.count, "months": b.periods.len(), "node_months": d.node_months, "state": d.state.as_str(),
         "periods": periods_json(b),
     })
 }
@@ -342,7 +334,7 @@ mod tests {
         assert_eq!(bs.len(), 1);
         assert_eq!(shape(&bs[0]), [(date!(2026 - 10 - 01), date!(2026 - 11 - 01), 10), (date!(2026 - 11 - 01), date!(2026 - 12 - 01), 8)]);
         let d = derive(&bs[0], date!(2026 - 11 - 15)).unwrap();
-        assert_eq!((d.end, d.count, d.months, d.node_months, d.renewals, d.state), (date!(2026 - 12 - 01), 8, 2, 18, 1, State::Active));
+        assert_eq!((d.end, d.count, bs[0].periods.len(), d.node_months, d.renewals, d.state), (date!(2026 - 12 - 01), 8, 2, 18, 1, State::Active));
         assert_eq!(d.summary, "初始10个 → 续期8个");
         // 今天正好是期起点：属于新的一期
         assert_eq!(derive_batches(&ss, date!(2026 - 12 - 01))[0].periods.len(), 3);

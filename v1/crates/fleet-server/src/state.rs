@@ -34,6 +34,8 @@ pub enum Event {
     Settings,
     /// 软路由：增删改、接入 / 部署进度、状态与摘要变化（采集每轮最多一次）
     Routers,
+    /// 计费台账变化（名额 / 待定 / 增减记录，对账或改名额、起算日、不计费）：id 是团队；前端让该团队的批次与月度应收、增减记录失效
+    Billing { id: Uuid },
     /// 实时指标（`live.rs` 拼好的整条 JSON，前端直接写进缓存；各连接共用同一份字节）；只经 `events.send` 发，不走 `emit`
     #[serde(skip)]
     Metrics(Utf8Bytes),
@@ -172,8 +174,8 @@ impl AppState {
     /// 同 `emit`，但不作废访问监控的查询缓存：调用方保证这次变更不动机器名、团队、编号、机器增删（访问页上显示的那几样）
     pub fn emit_keep_access(&self, e: Event) {
         match e {
-            // 密钥、软路由不在机器视图里
-            Event::ApiKeys | Event::Routers => {}
+            // 密钥、软路由、计费台账不在机器视图里
+            Event::ApiKeys | Event::Routers | Event::Billing { .. } => {}
             // 作业每一步都发（「全部升级」一次上百个作业），只改卡片上的 active_job / failed_job；静默增删、告警开关只改未恢复的告警数、
             // 「维护中」与健康：视图在上一份上补（不整份重算），经实时指标（最多 3 s 一次）送达，前端不为它们整表重取
             Event::Job { .. } | Event::Incidents => {
