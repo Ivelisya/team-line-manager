@@ -321,7 +321,7 @@ impl Drop for BusyGuard {
     }
 }
 
-fn stagger(id: uuid::Uuid, period: Duration) -> Duration {
+pub(crate) fn stagger(id: uuid::Uuid, period: Duration) -> Duration {
     Duration::from_millis((id.as_u128() % (period.as_millis().max(1))) as u64)
 }
 

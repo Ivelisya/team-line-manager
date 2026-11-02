@@ -165,7 +165,7 @@ function BizPair({ m, onOpen, today }: { m: MachineView; onOpen: Open; today?: b
   ]} />;
 }
 const FAIL = <span style={{ color: 'var(--bad-text)' }}>失败</span>;
-/** TCP 延迟读数（线路机 → 节点，近 1 小时中位数）：全部失败显示「失败」（同抽屉入口表），没有探测是「—」 */
+/** TCP 延迟读数（线路机 → 节点，穿透入口是节点 → 线路机，近 1 小时中位数）：全部失败显示「失败」（同抽屉入口表），没有探测是「—」 */
 const probeMs = (ms: number | null, fail: boolean) => (fail ? FAIL : <Num f={F.ms(ms)} />);
 /** 出口：只看通不通（出口验证的耗时是经节点去中控的，不当延迟读数） */
 const egressText = (ok: boolean, fail: boolean) => (fail ? FAIL : ok ? '正常' : '—');
@@ -243,9 +243,9 @@ const BeatSlot = memo(function BeatSlot({ id, kind, lifecycle, reason, reasonKey
     : empty ? <span className="t-muted">暂无探测</span>
     : kind === 'relay' ? <>{relayCounts}{rttTag}</>
     : kind === 'proxy' ? <>{unreach}探测成功 <b className="num">{rate == null ? '—' : `${Math.round(rate)}%`}</b></>
-    // 入口全是穿透的节点：没有 TCP 读数，写「穿透」（格子是经入口的出口探测）；混着普通入口的照写 TCP
-    : total === 0 && reverse > 0 ? <>{unreach}<span data-tip={`${REVERSE_TIP}\n下面的格子是经入口的出口探测`}><b>穿透</b></span> · 出口 <b>{egressText(egressOk, egressFail)}</b></>
-    : <>{unreach}<span data-tip={tcpTip}>TCP <b>{probeMs(tcp, tcpFail)}</b></span>{reverse > 0 && <span data-tip={REVERSE_TIP}>（另有 {reverse} 条穿透）</span>} · 出口 <b>{egressText(egressOk, egressFail)}</b></>;
+    // 入口全是穿透的节点：TCP 是节点 → 线路机的（旧 agent 没有，显示 —），格子是经入口的出口探测；混着普通入口的在后面标出含几条穿透
+    : total === 0 && reverse > 0 ? <>{unreach}<span data-tip={`${tcpTip}\n${REVERSE_TIP}\n下面的格子是经入口的出口探测`}>TCP <b>{probeMs(tcp, tcpFail)}</b>（穿透）</span> · 出口 <b>{egressText(egressOk, egressFail)}</b></>
+    : <>{unreach}<span data-tip={tcpTip}>TCP <b>{probeMs(tcp, tcpFail)}</b></span>{reverse > 0 && <span data-tip={REVERSE_TIP}>（含 {reverse} 条穿透）</span>} · 出口 <b>{egressText(egressOk, egressFail)}</b></>;
   // 时段按这份数据取回的时刻对齐（轮询间隔 2 分钟，用当前时刻在跨格时会错一格）
   const titles = useMemo(() => (live ? beatTitles(beats, bq.dataUpdatedAt) : undefined), [live, beats, bq.dataUpdatedAt]);
   return (

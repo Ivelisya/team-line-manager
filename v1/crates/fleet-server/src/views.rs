@@ -272,7 +272,8 @@ pub struct EntryView {
     pub node: Ref,
     /// 线路机直出：从线路机自己的 IP 出去，没有落地节点，也就没有 TCP 探测（tcp 恒为 null）
     pub direct: bool,
-    /// normal / reverse（穿透：节点主动连这个入口，线路机不连节点，也就没有 TCP 探测，tcp 恒为 null，见 crate::reverse）
+    /// normal / reverse（穿透：节点主动连这个入口，线路机不连节点，见 crate::reverse）。
+    /// tcp 的方向跟着模式：普通 = 线路机 → 节点（线路机 agent 量），穿透 = 节点 → 线路机（节点 agent 量，只画图，不进告警，见 health.rs）
     pub mode: String,
     pub port: i32,
     pub lifecycle: String,
@@ -844,8 +845,9 @@ async fn refresh(st: &AppState, prev: &[MachineView], jobs: bool) -> sqlx::Resul
     .map(|r| (r.machine_id, r.a))
     .collect();
     let cids: Vec<Uuid> = changed.keys().copied().collect();
-    let eids: Vec<Uuid> =
-        prev.iter().flat_map(|m| &m.entries).filter(|e| changed.contains_key(&e.relay.id)).map(|e| e.id).collect::<HashSet<_>>().into_iter().collect();
+    // 探测由线路机上报；穿透入口的 TCP 是节点报的（节点 → 线路机），两边谁上报过都要补
+    let fresh = |e: &EntryView| changed.contains_key(&e.relay.id) || (e.mode == crate::reverse::REVERSE && changed.contains_key(&e.node.id));
+    let eids: Vec<Uuid> = prev.iter().flat_map(|m| &m.entries).filter(|e| fresh(e)).map(|e| e.id).collect::<HashSet<_>>().into_iter().collect();
     let ids: Vec<Uuid> = prev.iter().map(|m| m.id).collect();
     let jobs_q = async {
         if !jobs {
@@ -890,8 +892,8 @@ async fn refresh(st: &AppState, prev: &[MachineView], jobs: bool) -> sqlx::Resul
         .collect();
     for m in &mut out {
         for e in &mut m.entries {
-            if changed.contains_key(&e.relay.id) {
-                e.tcp = if e.mode == crate::reverse::REVERSE { None } else { probes.get(&(e.id, "tcp".into())).cloned() };
+            if fresh(e) {
+                e.tcp = probes.get(&(e.id, "tcp".into())).cloned();
                 e.egress = probes.get(&(e.id, "egress".into())).cloned();
             }
             if let Some(&(d, off)) = xray_down.get(&e.relay.id) {
@@ -1481,8 +1483,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
             relay_xray_down: e.relay_xray_down,
             relay_offline: !e.relay_last.is_some_and(|t| st.report_gaps.online(t, now)),
             relay_maint: silences.maintenance(e.relay_id),
-            // 穿透入口线路机不连节点：切换之前留下的 TCP 探测（15 分钟内的）不算数，不显示也不进告警
-            tcp: if e.mode == crate::reverse::REVERSE { None } else { probes.get(&(e.id, "tcp".into())).cloned() },
+            tcp: probes.get(&(e.id, "tcp".into())).cloned(),
             mode: e.mode,
             egress: probes.get(&(e.id, "egress".into())).cloned(),
             reach: reach.get(&e.id).cloned(),

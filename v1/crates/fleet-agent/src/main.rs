@@ -246,6 +246,9 @@ async fn run(cfg: Config) -> Result<()> {
         spawn_named(&mut set, "singbox_task", collect::singbox_task(sh.clone(), sb.clone(), sd_rx.clone()));
         spawn_named(&mut set, "desired_task", desired::desired_task(sh.clone(), applier.clone(), sb, client.clone(), sd_rx.clone()));
         applier_handle = Some(applier);
+    } else if cfg.role == Role::Node {
+        // 穿透入口：节点 → 线路机的 TCP 建连（没装 bridge 的节点读不到配置，什么都不做）
+        spawn_named(&mut set, "tunnel_probe_task", bridge::tunnel_probe_task(sh.clone(), sd_rx.clone()));
     }
 
     let reporter = reporter::Reporter::new(sh.clone(), client)?;

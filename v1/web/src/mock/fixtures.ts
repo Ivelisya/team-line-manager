@@ -224,7 +224,7 @@ export function buildDb(): Db {
     const status: HealthStatus = d.status ?? 'ok';
     const down = status === 'down'; const offline = down && !d.online; // 故障但 agent 照常上报（如出口不通）
     const lifecycle: Lifecycle = d.lifecycle ?? 'active';
-    // 几台 VPS 节点是穿透入口（节点主动连入口）：没有 TCP 探测
+    // 几台 VPS 节点是穿透入口（节点主动连入口）：TCP 延迟是节点 → 线路机的
     const reverse = d.kind === 'vps' && d.n % 4 === 2 && !offline;
     const entry: EntryView = {
       id: `e${eSeq++}`, relay: { id: relay.id, name: relay.name }, node: { id, name }, direct: false, mode: reverse ? 'reverse' : 'normal', port,
@@ -234,7 +234,6 @@ export function buildDb(): Db {
       traffic: { today_up: Math.round((0.3 + r() * 6) * GiB), today_down: Math.round((0.5 + r() * 14) * GiB), month_up: Math.round((20 + r() * 220) * GiB), month_down: Math.round((60 + r() * 520) * GiB) },
     };
     if (d.kind === 'proxy') entry.egress = { ok: true, latency_ms: 210, detail: null, ts: iso(now() - 30_000) };
-    if (reverse) entry.tcp = null;
     entriesByRelay[d.relay].push(entry);
     const reasons = offline ? [{ key: 'agent_offline', severity: 'critical', text: '14 分钟没有上报' }, { key: 'tcp_fail', severity: 'critical', text: '线路机1 到节点 TCP 不通' }]
       : down ? [{ key: 'egress_fail', severity: 'critical', text: `${relay.name}:${port} 出口不通：timeout` }]

@@ -156,9 +156,15 @@ export function probeErr(detail: string | null | undefined) {
 /** 运行中的入口探测失败（直出入口不做 TCP 探测）：返回失败的那次探测。抽屉入口表、线路机页的状态列写「不通」，悬停看 errText(detail) */
 /** 穿透入口：节点主动连入口，线路机不连节点 */
 export const isReverse = (e: EntryView) => e.mode === 'reverse';
-/** 穿透入口不做 TCP 探测的说明（入口表、卡片共用） */
-export const REVERSE_TIP = '穿透：节点上的 bridge 主动连这个入口，线路机不连节点，没有 TCP 探测\n隧道断了体现为出口探测失败（照常告警）';
-/** 没有线路机 → 节点的 TCP 探测：直出（没有节点）、穿透（线路机不连节点） */
+/** 穿透入口的说明（入口表、卡片共用） */
+export const REVERSE_TIP = '穿透：节点上的 bridge 主动连这个入口，线路机不连节点\nTCP 延迟是节点连线路机入口端口量的（节点 → 线路机），只画图、不告警\n隧道断了体现为出口探测失败（照常告警）';
+/** TCP 延迟的方向：普通入口是线路机 → 节点（线路机量），穿透入口是节点 → 线路机（节点主动连线路机，节点上的 agent 量）；直出入口没有 TCP；
+ *  有穿透也有普通的混着写「↔」。入口表、卡片、图卡共用 */
+export const tcpDir = (es: EntryView[]) => {
+  const t = es.filter((e) => !e.direct); const rv = t.filter(isReverse).length;
+  return rv === 0 ? '线路机 → 节点' : rv === t.length ? '节点 → 线路机' : '线路机 ↔ 节点';
+};
+/** 没有线路机 → 节点的 TCP 探测：直出（没有节点）、穿透（线路机不连节点；它的 TCP 是节点 → 线路机，不进「节点通」连通数与告警） */
 export const noTcp = (e: EntryView) => e.direct || isReverse(e);
 export const probeFail = (e: EntryView) => (e.lifecycle !== 'active' || !e.applied ? null : !noTcp(e) && e.tcp && !e.tcp.ok ? e.tcp : e.egress && !e.egress.ok ? e.egress : null);
 /** 入口状态列的「不通」写明是哪一段：TCP 连不上入口，还是连上了但出口验收失败（抽屉的「入口探测 N/M 连通」只算 TCP） */
@@ -451,11 +457,12 @@ ${what}`;
 const allFailed = (ps: (ProbeResult | null)[]) => ps.some((p) => p && !p.ok) && !ps.some((p) => p?.ok);
 /** TCP 延迟读数：近 1 小时的中位数（中控给的 median_ms），没有时用最近一次 */
 export const tcpMs = (p: ProbeResult | null) => p?.median_ms ?? p?.latency_ms ?? null;
-/** 入口探测摘要：TCP 延迟（线路机 → 节点）与出口通不通，tcpFail / egressFail = 全部失败。
+/** 入口探测摘要：TCP 延迟（线路机 → 节点；穿透入口是节点 → 线路机）与出口通不通，tcpFail / egressFail = 全部失败。
  *  TCP 读数取各入口近 1 小时中位数里最小的那条（挂两台线路机、一条 5 ms 一条 65 ms 时，平均出来的数哪条线都不是），tcpTip 列各条。
  *  出口探测只判通不通、IP 对不对：它的耗时是经节点去中控回显服务（在德国）的，不是线路延迟，不当读数。
  *  只算 active 的入口（同服务端健康规则）：应用中的还没有探测。
- *  直出入口没有节点、穿透入口线路机不连节点，都不做 TCP 探测：TCP 的连通数（total / tcpOk）与延迟只算线路机连节点的入口，出口照算；reverse 是在用的穿透入口条数（卡片上标「穿透」）。
+ *  直出入口没有节点，不做 TCP 探测；穿透入口的 TCP 是节点连线路机量的：延迟读数与「失败」算上它（没有样本的旧 agent 不算），
+ *  但连通数（total / tcpOk）只算线路机连节点的入口（穿透的不进「节点通」，也不告警），出口照算；reverse 是在用的穿透入口条数（卡片上标「穿透」）。
  *  入口可用（线路机卡片）：all = 全部在用入口（含直出），usable = TCP（直出不看）与出口都通的条数；
  *  tcpBad / egressBad 是各自不通（含还没有探测）的条数 */
 export function probeSummary(m: MachineView) {
@@ -463,12 +470,14 @@ export function probeSummary(m: MachineView) {
   const viaNode = es.filter((e) => !noTcp(e));
   const tcpOk = viaNode.filter((e) => e.tcp?.ok).length;
   const egOk = es.filter((e) => e.egress?.ok).length;
-  const lat = viaNode.flatMap((e) => { const ms = tcpMs(e.tcp); return ms == null ? [] : [{ name: `${e.relay.name}:${e.port}`, ms }]; });
-  const each = lat.length > 1 ? lat.map((x) => `\n${x.name} ${Math.round(x.ms)} ms`).join('') : '';
+  const timed = es.filter((e) => !e.direct);
+  const lat = timed.flatMap((e) => { const ms = tcpMs(e.tcp); return ms == null ? [] : [{ name: `${e.relay.name}:${e.port}`, ms, e }]; });
+  const dir = tcpDir(lat.map((x) => x.e));
+  const each = lat.length > 1 ? lat.map((x) => `\n${x.name} ${Math.round(x.ms)} ms${dir === '线路机 ↔ 节点' ? `（${isReverse(x.e) ? '节点 → 线路机' : '线路机 → 节点'}）` : ''}`).join('') : '';
   return {
     total: viaNode.length, tcpOk, tcp: lat.length ? Math.round(Math.min(...lat.map((x) => x.ms))) : null,
-    tcpTip: `线路机到节点的 TCP 延迟，近 1 小时中位数${lat.length > 1 ? '，取最小的一条' : ''}\n曲线是按分钟的平均，数字会略有不同${each}`,
-    tcpFail: allFailed(viaNode.map((e) => e.tcp)), egressFail: allFailed(es.map((e) => e.egress)), egressOk: egOk > 0,
+    tcpTip: `${lat.length ? dir : '线路机 → 节点'}的 TCP 延迟，近 1 小时中位数${lat.length > 1 ? '，取最小的一条' : ''}${dir === '线路机 → 节点' ? '' : '\n穿透入口是节点主动连线路机入口端口量的'}\n曲线是按分钟的平均，数字会略有不同${each}`,
+    tcpFail: allFailed(timed.map((e) => e.tcp)), egressFail: allFailed(es.map((e) => e.egress)), egressOk: egOk > 0,
     off: m.entries.filter((e) => e.lifecycle === 'disabled').length, all: es.length, usable: es.filter((e) => (noTcp(e) || e.tcp?.ok) && e.egress?.ok).length, reverse: es.filter(isReverse).length, tcpBad: viaNode.length - tcpOk, egressBad: es.length - egOk, reachBad: es.filter(reachFail).length,
   };
 }

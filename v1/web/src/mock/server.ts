@@ -902,7 +902,7 @@ R('POST', '/machines/([^/]+)/entries', ({ params, body }) => {
   emit({ type: 'machines' }); return { job_id: job.id, entry_mode: mode, note: why ? `按普通模式建入口：${why}` : null };
 });
 
-// 穿透开关（同服务端 api/reverse.rs）：预览列出会发生什么与不能切的原因；发起建作业（推 bridge → 切换 → 验收），完成后改模式、TCP 一格变成「—」（悬停写明穿透）
+// 穿透开关（同服务端 api/reverse.rs）：预览列出会发生什么与不能切的原因；发起建作业（推 bridge → 切换 → 验收），完成后改模式、TCP 一格改为节点 → 线路机的延迟
 const ENTRY_MODE: { default: EntryMode; set: boolean } = { default: 'reverse', set: false };
 const entryModeView = () => ({ default: ENTRY_MODE.default, label: ENTRY_MODE.default === 'reverse' ? '穿透' : '普通', set: ENTRY_MODE.set, builtin: 'reverse' });
 R('GET', '/settings/entry-mode', () => entryModeView());
@@ -923,7 +923,7 @@ function reversePlan(id: string, on: boolean) {
     ? [`节点「${node.name}」上装 bridge（推 xray 程序、装 fleet-xray-bridge 单元），由它主动连 ${relay.ip}:${e.port}（这个入口自己的端口），客户流量经这条隧道从节点自己的 IP 出去`]
     : [`线路机 ${relay.name} 改回连节点的 ssserver（节点上一直留着，防火墙照旧放行这台线路机），节点入站丢包的问题会回来`, '验收通过后节点上的 bridge 停掉删掉（xray 程序留着）'];
   impacts.push(`线路机 ${relay.name} 不重启 Xray：只换这个入口的入站，这个入口上正在进行的连接断开一次、客户端自动重连；线路机上别的入口不受影响`, '分享链接、客户端订阅、软路由出口都不变（同一个入口端口与凭据）', '验收：线路机应用后经入口的出口探测要看到节点自己的 IP；不通就自动切回原来的模式、作业失败');
-  const warnings = on ? ['之后这个入口没有线路机 → 节点的 TCP 探测（TCP 一格显示「—」）；隧道断了体现为出口探测失败（照常告警），隧道挂不上时中控会叫节点 agent 重启 bridge'] : [];
+  const warnings = on ? ['之后这个入口的 TCP 延迟改由节点量（节点 → 线路机，只画曲线、不告警；节点 agent 版本旧时没有这项数据）；隧道断了体现为出口探测失败（照常告警），隧道挂不上时中控会叫节点 agent 重启 bridge'] : [];
   const mode = e.mode ?? 'normal';
   return { e, node, view: { entry: { id: e.id, name: `${node.name} · ${relay.name}:${e.port}`, node_id: node.id, node: node.name, relay_id: relay.id, relay: relay.name, port: e.port, mode }, on, from: mode, to: on ? 'reverse' : 'normal', ok: !blockers.length, blockers, impacts, warnings } };
 }
@@ -934,7 +934,7 @@ R('POST', '/entries/([^/]+)/reverse', ({ params, body }) => {
   if (!view.ok) throw bad(view.blockers.join('；'), 409, 'conflict');
   const job = newJob('reverse', { id: node.id, name: node.name }, [['bridge_up', '推 bridge 并启动'], ['switch', '切换入口模式并验收出口'], ['bridge_down', '收起 bridge']]);
   node.active_job = { id: job.id, kind: 'reverse', state: 'running' };
-  drive(job, 2000, () => { e.mode = on ? 'reverse' : 'normal'; if (on) e.tcp = null; else e.tcp = { ok: true, latency_ms: 48, detail: null, ts: iso() }; node.active_job = null; });
+  drive(job, 2000, () => { e.mode = on ? 'reverse' : 'normal'; e.tcp = { ok: true, latency_ms: on ? 31 : 48, detail: null, ts: iso() }; node.active_job = null; });
   emit({ type: 'machines' }); return { ...view, job_id: job.id };
 });
 

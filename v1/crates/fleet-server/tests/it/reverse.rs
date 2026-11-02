@@ -66,7 +66,7 @@ async fn preview(t: &T, e: Uuid, on: bool) -> Value { t.get(&format!("/api/v1/en
 fn blockers(v: &Value) -> String { v["blockers"].as_array().unwrap().iter().map(|b| b.as_str().unwrap()).collect::<Vec<_>>().join("｜") }
 
 /// 期望状态：穿透入口下发 `reverse` 出站（带 bridge_uuid，没有线路机 → 节点的地址），出口探测照常期望节点自己的 IP；
-/// 视图里入口带 mode，TCP 探测一格恒为 null（切换前留下的不算），健康只看出口
+/// 视图里入口带 mode；穿透入口的 TCP 是节点 → 线路机的（节点 agent 报），连不上也不开 tcp_fail，健康只看出口
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desired_state_and_view() {
     let t = setup(false).await;
@@ -83,12 +83,12 @@ async fn desired_state_and_view() {
     assert!(get(ea).outbound.addr().is_none(), "线路机不连节点：没有 TCP 探测");
     assert_ne!(get(ea).client_uuid, bridge, "bridge 与客户各用各的 UUID");
     assert!(matches!(get(eb).outbound, Outbound::Shadowsocks { ref host, port: 8388, .. } if host == "203.0.113.12"));
-    // 切换之前留下一条失败的 TCP 探测：穿透入口的视图里不显示、不进健康
+    // 一条失败的 TCP 探测（节点连不上线路机）：视图里显示，但不进健康（隧道没挂上由出口探测说）
     sqlx::query("insert into probe_result (entry_id, ts, kind, ok, detail) values ($1, now(), 'tcp', false, '超时')").bind(ea).execute(&t.st.db).await.unwrap();
     t.st.live.invalidate();
     let m = t.get(&format!("/api/v1/machines/{a}")).await;
     let e = &m["entries"][0];
-    assert_eq!((e["mode"].as_str(), e["tcp"].is_null(), e["egress"]["ok"].as_bool()), (Some("reverse"), true, Some(true)), "{e}");
+    assert_eq!((e["mode"].as_str(), e["tcp"]["ok"].as_bool(), e["egress"]["ok"].as_bool()), (Some("reverse"), Some(false), Some(true)), "{e}");
     let reasons: Vec<&str> = m["health"]["reasons"].as_array().unwrap().iter().filter_map(|r| r["key"].as_str()).collect();
     assert!(!reasons.contains(&"tcp_fail"), "{reasons:?}");
     assert_eq!(t.get(&format!("/api/v1/machines/{b}")).await["entries"][0]["mode"], "normal");
@@ -119,7 +119,7 @@ async fn gates_and_enqueue() {
     assert_eq!((p["ok"].as_bool(), p["from"].as_str(), p["to"].as_str()), (Some(true), Some("normal"), Some("reverse")), "{p}");
     let impacts = p["impacts"].to_string();
     assert!(impacts.contains("不重启 Xray") && impacts.contains("分享链接、客户端订阅、软路由出口都不变") && impacts.contains("198.51.100.2:"), "{impacts}");
-    assert!(p["warnings"].to_string().contains("TCP 一格显示「—」"));
+    assert!(p["warnings"].to_string().contains("节点 → 线路机"));
     // 关闭的预览：已经是普通
     assert!(blockers(&preview(&t, e, false).await).contains("已经是普通模式"));
     // 发起
@@ -285,4 +285,68 @@ async fn default_mode_setting_and_new_entries() {
     let v = t.post(&format!("/api/v1/machines/{relay}/entries"), json!({"relay_id": relay, "mode": "reverse"})).await;
     assert_eq!(v["entry_mode"], "normal");
     assert!(v["note"].as_str().unwrap().contains("直出"));
+}
+
+/// 穿透入口的 TCP 样本由节点 agent 报（节点 → 线路机）：只收节点自己的、现在是在用穿透模式的入口的 tcp；
+/// 别的节点的入口、普通入口、停用的入口、出口样本都丢掉；视图里读数跟着有；连不上也不开 tcp_fail
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn node_reports_tcp_for_reverse_entries() {
+    let t = setup(false).await;
+    let (relay, _) = seed_relay(&t).await;
+    let team = seed_team(&t, "团队1").await;
+    let (a, b) = (vps(&t, team, 1, "203.0.113.61", true).await, vps(&t, team, 2, "203.0.113.62", true).await);
+    let (ea, eb) = (entry(&t, relay, a, "reverse").await, entry(&t, relay, b, "reverse").await);
+    let ec = entry(&t, relay, vps(&t, team, 3, "203.0.113.63", true).await, "normal").await;
+    let ntok = "fa1_test_node_token_tcp";
+    sqlx::query("insert into agent_token (id, machine_id, token_hash) values ($1, $2, $3)")
+        .bind(Uuid::now_v7())
+        .bind(a)
+        .bind(fleet_server::crypto::sha256(ntok.as_bytes()))
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let s = |entry: Uuid, kind: fleet_proto::ProbeKind, ok: bool, ms: Option<f32>| fleet_proto::ProbeSample {
+        entry_id: entry,
+        ts_ms: now_ms() - 1_000,
+        kind,
+        ok,
+        latency_ms: ms,
+        detail: (!ok).then(|| "超时 10 秒".to_string()),
+        retrans: ms.map(|_| 0),
+    };
+    let send = |seq: u64, probes: Vec<fleet_proto::ProbeSample>| {
+        let r = Report { seq, boot_id: "b".into(), agent_version: "v".into(), sent_at_ms: now_ms(), caps: vec!["reverse".into()], probes, ..Default::default() };
+        let t = &t;
+        async move {
+            let (st, v) = t.req("POST", "/agent/v1/report", Some(serde_json::to_value(&r).unwrap()), Some(ntok)).await;
+            assert_eq!(st, StatusCode::OK, "{v}");
+        }
+    };
+    use fleet_proto::ProbeKind::{Egress, Tcp};
+    let rows = |e: Uuid| {
+        let db = t.st.db.clone();
+        async move { sqlx::query_as::<_, (String, bool, Option<f32>)>("select kind, ok, latency_ms from probe_result where entry_id = $1 order by ts").bind(e).fetch_all(&db).await.unwrap() }
+    };
+    // 自己的穿透入口的 tcp 收；别的节点的入口（穿透的、普通的）、不存在的入口、节点报的出口样本都不收
+    send(1, vec![s(ea, Tcp, true, Some(12.5)), s(eb, Tcp, true, Some(9.0)), s(ec, Tcp, true, Some(8.0)), s(Uuid::now_v7(), Tcp, true, Some(7.0)), s(ea, Egress, true, Some(200.0))]).await;
+    assert_eq!(rows(ea).await, vec![("tcp".to_string(), true, Some(12.5))]);
+    assert!(rows(eb).await.is_empty() && rows(ec).await.is_empty());
+    // 视图：读数跟着有；连不上线路机：显示失败，但不开 tcp_fail（隧道没挂上由出口探测说）
+    t.st.live.invalidate();
+    let m = t.get(&format!("/api/v1/machines/{a}")).await;
+    let e = m["entries"].as_array().unwrap().iter().find(|e| e["id"] == json!(ea)).unwrap().clone();
+    assert_eq!((e["mode"].as_str(), e["tcp"]["ok"].as_bool(), e["tcp"]["latency_ms"].as_f64()), (Some("reverse"), Some(true), Some(12.5)), "{e}");
+    send(2, vec![s(ea, Tcp, false, None), s(ea, Tcp, false, None)]).await;
+    t.st.live.invalidate();
+    let m = t.get(&format!("/api/v1/machines/{a}")).await;
+    let reasons: Vec<&str> = m["health"]["reasons"].as_array().unwrap().iter().filter_map(|r| r["key"].as_str()).collect();
+    assert!(!reasons.contains(&"tcp_fail"), "{reasons:?}");
+    let e = m["entries"].as_array().unwrap().iter().find(|e| e["id"] == json!(ea)).unwrap().clone();
+    assert_eq!(e["tcp"]["ok"], false, "{e}");
+    // 入口停用 / 切回普通：节点上的 bridge 配置里还有它，样本不收
+    sqlx::query("update entry set lifecycle = 'disabled' where id = $1").bind(ea).execute(&t.st.db).await.unwrap();
+    send(3, vec![s(ea, Tcp, true, Some(5.0))]).await;
+    sqlx::query("update entry set lifecycle = 'active', mode = 'normal' where id = $1").bind(ea).execute(&t.st.db).await.unwrap();
+    send(4, vec![s(ea, Tcp, true, Some(5.0))]).await;
+    assert_eq!(rows(ea).await.len(), 3, "只有最初那一条成功和两条失败");
 }
