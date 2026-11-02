@@ -14,7 +14,7 @@ import { useAddChannel, useApiKeys, useCreateApiKey, useDelChannel, useMe, useMo
 import type { ApiKey, NotifyChannel, NotifyLogEntry } from '@/lib/types';
 import * as F from '@/lib/format';
 import { Button, IconButton } from '@/components/ui/button';
-import { Checkbox, Field, InfoTip, Input, Switch } from '@/components/ui/form';
+import { Checkbox, Field, InfoTip, Input, OptimisticSwitch, Switch } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { Tabs, TabsList, TabsTrigger, Trunc } from '@/components/ui/overlays';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, DialogHeader } from '@/components/ui/dialog';
@@ -229,8 +229,8 @@ function NotifySection() {
                       <td><div className="row" style={{ flexWrap: 'nowrap', gap: 10 }}><span className="kind-ic" aria-hidden>{k?.icon ?? <Bell />}</span><div style={{ minWidth: 0 }}><Trunc className="cell-main strong">{c.name}</Trunc><span className="sub">{k?.label ?? c.kind} · {c.config_hint}</span></div></div></td>
                       <td>{sevPill(c.min_severity)}</td>
                       <td>{c.monthly_report ? <Pill tone="info" dot="none" tip="每月 1 号收到上月摘要">月报</Pill> : <span className="t-muted">—</span>}</td>
-                      <td><Switch checked={c.enabled} disabled={patch.isPending && patch.variables?.id === c.id} aria-label={`${c.enabled ? '停用' : '启用'}「${c.name}」`}
-                        onCheckedChange={(v) => patch.mutate({ id: c.id, enabled: v }, { onSuccess: () => toast.ok(v ? '渠道已启用' : '渠道已停用'), onError: toast.err })} /></td>
+                      <td><OptimisticSwitch checked={c.enabled} disabled={patch.isPending && patch.variables?.id === c.id} aria-label={`${c.enabled ? '停用' : '启用'}「${c.name}」`}
+                        onCheckedChange={(v, undo) => patch.mutate({ id: c.id, enabled: v }, { onSuccess: () => toast.ok(v ? '渠道已启用' : '渠道已停用'), onError: (e) => { undo(); toast.err(e); } })} /></td>
                       <td>
                         <span className="row" style={{ flexWrap: 'nowrap', gap: 8 }}>
                           <Button size="sm" loading={test.isPending && test.variables === c.id} disabled={test.isPending} onClick={() => runTest(c)}><FlaskConical size={13} />发送测试</Button>
