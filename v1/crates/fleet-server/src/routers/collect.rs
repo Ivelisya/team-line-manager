@@ -797,7 +797,7 @@ pub async fn run_forever(st: AppState) {
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let refresh = &st.routers_refresh;
     refresh.running.store(true, Ordering::Relaxed);
-    // 连不上的路由满 1 分钟的那一刻再评估告警（alerts::evaluate 的返回值）
+    // 连不上的路由满 3 分钟的那一刻再评估告警（alerts::evaluate 的返回值）
     let mut eval_at: Option<tokio::time::Instant> = None;
     loop {
         let due_eval = async move {
@@ -825,10 +825,6 @@ pub async fn run_forever(st: AppState) {
             }
         }
         refresh.served.send_replace(seq);
-        // 到时间的临时切换切回去（每轮整轮采集之后看一次）
-        if full {
-            super::switch::due(&st).await;
-        }
         // 每轮（含马上采的那几台）之后评估告警：隧道连上马上采成功，离线告警当场恢复
         if full || eval_only || !due.is_empty() {
             eval_at = None;
@@ -846,7 +842,7 @@ const WATCH_EVERY: Duration = Duration::from_secs(2);
 /// 盯着本机隧道端口的监听：路由的反向隧道连上（中控 sshd 开始在 127.0.0.1:<端口> 上监听）或断开（监听没了）时马上采一次这几台，
 /// 不等 30 秒一轮——界面上的在线 / 离线随即跟上（采完发 `Event::Routers`），连上了离线告警当场恢复。
 /// 路由断电、断网这类没告别的断开，中控 sshd 要 ClientAlive 约 30 秒才发现（deploy/central/sshd-fleet-tunnel.conf）；
-/// 离线告警本身按「连不上满 1 分钟」开（alerts.rs），不靠它。读不了 /proc/net/tcp（不是 Linux）就不盯，照 30 秒一轮
+/// 离线告警本身按「连不上满 3 分钟」开（alerts.rs），不靠它。读不了 /proc/net/tcp（不是 Linux）就不盯，照 30 秒一轮
 pub async fn watch_tunnels(st: AppState) {
     let (lo, hi) = (crate::config::TUNNEL_PORT_MIN, crate::config::TUNNEL_PORT_MAX);
     let mut prev: Option<HashSet<u16>> = None;

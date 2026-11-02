@@ -17,7 +17,7 @@
 //! 恢复：离线的连上就恢复（隧道一回来中控马上采一次，见 collect.rs `watch_tunnels`）；出口不通的，不通的出口连续两次测通就恢复
 //! （不通、还在确认的出口每轮采集单独重测，不等 5 分钟一轮；确认期间又不通仍算连续不通，告警不关）；其余原因消失满 60 秒。连不上、采集出错的路由其余几条无从判断，保持原状（不开也不关）。
 //! 路由删掉时它的告警直接关掉、不发恢复。
-//! 什么时候评估：每轮采集之后（30 秒一轮，隧道连上 / 断开时马上采的那一轮也算），连不上的路由到满 1 分钟的那一刻再评估一次（`evaluate` 的返回值）。
+//! 什么时候评估：每轮采集之后（30 秒一轮，隧道连上 / 断开时马上采的那一轮也算），连不上的路由到满 3 分钟的那一刻再评估一次（`evaluate` 的返回值）。
 //! 重新接入后（等待接入）开着的离线告警直接关掉、不发恢复（路由还没连上，不能说「已恢复」），30 分钟还没连上再开上面那条警告。
 //! 严重度只升不降（升到严重马上再发一次「触发」），同 alerts.rs。
 
@@ -179,6 +179,12 @@ pub fn drift_why(lifecycle: &str) -> &'static str {
     }
 }
 
+/// 不通的出口都有对应入口、且全经同一台线路机时，这台线路机的名字
+fn common_relay<'a>(down: &[&'a Exit]) -> Option<&'a str> {
+    let first = down.first()?.entry.as_ref()?;
+    down.iter().all(|e| e.entry.as_ref().is_some_and(|er| er.relay_id == first.relay_id)).then_some(first.relay_name.as_str())
+}
+
 /// 此刻成立的一个问题
 #[derive(Debug, PartialEq)]
 pub struct Problem {
@@ -255,6 +261,9 @@ pub fn problems(v: &View, cpu_high_since: Option<OffsetDateTime>, tg: &Targets, 
             .collect();
         if !notes.is_empty() {
             text.push_str(&format!("（其中 {}）", notes.join("，")));
+        } else if let Some(relay) = common_relay(&down) {
+            // 没有机器告警、维护能解释：不通的出口全经同一台线路机时点出来（线路机在国内被挡，它自己的探测不一定看得出），先去查它
+            text.push_str(&format!("（{}经 {relay}）", if down.len() > 1 { "都" } else { "" }));
         }
         // 不通的出口指向的节点 / 线路机都已经在告警（或维护）：机器告警在报原因，这条挂在路由上、不另发通知
         let quiet = down.iter().all(|e| tg.why(e).is_some());
@@ -609,7 +618,20 @@ mod tests {
         s.exits.push(Exit { name: "节点05".into(), sync: "ok".into(), entry: Some(er(Uuid::from_u128(5), "团队2-05")), ..Exit::default() });
         let v = view("online", Some(s.clone()), 0, now);
         let ex = |tg: &Targets| problems(&v, None, tg, now).0.into_iter().find(|p| p.rule == EXITS_DOWN);
-        assert_eq!(ex(&Targets::default()).unwrap().text, "3 个出口连续两次延迟测试不通：节点01、节点02、节点03");
+        // 没有机器告警 / 维护能解释、不通的出口全经同一台线路机：点出线路机名
+        assert_eq!(ex(&Targets::default()).unwrap().text, "3 个出口连续两次延迟测试不通：节点01、节点02、节点03（都经 线路机2）");
+        // 经不同线路机、或有的出口没对上入口：不点
+        let mut other = s.clone();
+        other.exits[2].entry = Some(EntryRef { relay_id: Uuid::from_u128(10), relay_name: "线路机3".into(), ..er(n4, "团队2-04") });
+        let text = |s: &Snapshot| problems(&view("online", Some(s.clone()), 0, now), None, &Targets::default(), now).0.into_iter().find(|p| p.rule == EXITS_DOWN).unwrap().text;
+        assert_eq!(text(&other), "3 个出口连续两次延迟测试不通：节点01、节点02、节点03");
+        other.exits[2].entry = None;
+        assert_eq!(text(&other), "3 个出口连续两次延迟测试不通：节点01、节点02、节点03");
+        // 只有一个出口不通
+        other.exits[0].fail_streak = 0;
+        other.exits[1].fail_streak = 0;
+        other.exits[2].entry = Some(er(n4, "团队2-04"));
+        assert_eq!(text(&other), "1 个出口连续两次延迟测试不通：节点03（经 线路机2）");
         let tg = Targets { maint: [n3].into(), firing: [relay].into(), ..Targets::default() };
         assert_eq!(ex(&tg).unwrap().text, "3 个出口连续两次延迟测试不通：节点01、节点02、节点03（其中 2 个指向的团队2-03 正在维护，1 个指向的线路机2 正在告警）");
         assert!(!exits_paused(&s, &tg, now));

@@ -207,7 +207,18 @@ async fn back_one(st: &AppState, actor: &str, c: &Active, why: &str) -> ApiResul
     Ok(json!({"group": c.grp, "from": from, "to": c.from_exit, "ended": true}))
 }
 
-/// 到时间的切回去（采集循环每轮整轮之后调）。切不了的（路由不在线、mihomo 不通）留着，下一轮再试，失败只记日志；
+/// 每 30 秒看一次到时间的切回去（单独一个任务，路由卡住时每条最多等 [`TIMEOUT`]，不拖慢采集循环）
+pub async fn run_forever(st: AppState) {
+    let every = Duration::from_secs(30);
+    let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        due(&st).await;
+    }
+}
+
+/// 到时间的切回去。切不了的（路由不在线、mihomo 不通）留着，下一轮再试，失败只记日志；
 /// 原出口还没恢复的不切回，推迟 [`DEFER_S`] 再看（见 [`origin_blocker`]）
 pub async fn due(st: &AppState) {
     let rows: Vec<Active> = match sqlx::query_as(&format!("{ACTIVE} and back_at <= now() order by back_at")).fetch_all(&st.db).await {
