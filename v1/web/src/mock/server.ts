@@ -1312,7 +1312,7 @@ R('POST', '/machines/([^/]+)/speedtest', ({ params, body }) => {
     avg_mbps: mbps, avg_mb_s: Math.round(mbps / 8 * 100) / 100, total_s: total, ttfb_s: ttfb, remote_ip: `203.0.113.${10 + Math.floor(r() * 200)}` };
   log(job.id, 'info', `从${target.name}（${out.url}）下载 ${size} MB，走这台机器自己的出站路径，会用掉约 ${size} MB 流量`);
   if (!complete) log(job.id, 'warn', `300 秒内只下载了 ${(bytes / 1e6).toFixed(1)} MB，没下完：速率按已下载的算`);
-  log(job.id, 'info', `平均速率 ${mbps} Mbit/s（${out.avg_mb_s} MB/s），耗时 ${total} 秒，首字节 ${Math.round(ttfb * 1000)} 毫秒，下载 ${(bytes / 1e6).toFixed(1)} MB，对端 ${out.remote_ip}`);
+  log(job.id, 'info', `平均速率 ${mbps} Mbit/s（${out.avg_mb_s} MB/s），耗时 ${total} 秒，首字节 ${Math.round(ttfb * 1000)} ms，下载 ${(bytes / 1e6).toFixed(1)} MB，对端 ${out.remote_ip}`);
   drive(job, 4000, () => { m.active_job = null; }, [out]);
   emit({ type: 'machines' });
   return { machine_id: m.id, name: m.name, job_id: job.id, size_mb: size, target: target.key, target_name: target.name, traffic_mb: size };

@@ -429,8 +429,9 @@ export const useSendMonthly = () => useWrite((month?: string) => post<MonthlySen
 export const useTestChannel = () => useWrite((id: string) => post<{ ok: boolean; error: string | null }>(`/notify-channels/${id}/test`), [['notify-log']]);
 export const useNotifyLog = () => useQuery({ queryKey: ['notify-log'], queryFn: () => get<NotifyLogEntry[]>('/notify-log?limit=100') });
 /** 月度可用率汇总：month = YYYY-MM（空 = 本月，算到今天）。数据来自小时汇总（5 分钟一汇），本月的 5 分钟重取一次；往月不再变，不重取 */
+/** month：YYYY-MM，或 7d / 30d（近 N 天，请求 days=N） */
 export const useUptime = (month: string, current: boolean) => useQuery({
-  queryKey: ['reports', 'uptime', month], queryFn: ({ signal }) => get<UptimeReport>(`/reports/uptime${month ? `?month=${month}` : ''}`, signal),
+  queryKey: ['reports', 'uptime', month], queryFn: ({ signal }) => get<UptimeReport>(`/reports/uptime${month ? (month.endsWith('d') ? `?days=${parseInt(month, 10)}` : `?month=${month}`) : ''}`, signal),
   staleTime: current ? 300_000 : Infinity, refetchInterval: current ? 300_000 : false, refetchOnWindowFocus: false,
 });
 /** 退役预览：进备用的可行性（spare）、同机 IP 节点、还指向它的软路由出口、原团队的改名 */

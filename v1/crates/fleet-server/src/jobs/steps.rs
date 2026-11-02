@@ -607,7 +607,7 @@ async fn speedtest_step(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         c.warn(format!("{} 秒内只下载了 {:.1} MB，没下完：速率按已下载的算", speedtest::MAX_TIME_S, raw.bytes as f64 / 1e6)).await;
     }
     c.log(format!(
-        "平均速率 {} Mbit/s（{} MB/s），耗时 {} 秒，首字节 {} 毫秒，下载 {:.1} MB，对端 {}",
+        "平均速率 {} Mbit/s（{} MB/s），耗时 {} 秒，首字节 {} ms，下载 {:.1} MB，对端 {}",
         v["avg_mbps"], v["avg_mb_s"], v["total_s"], (raw.ttfb_s * 1000.0).round(), raw.bytes as f64 / 1e6, raw.ip
     ))
     .await;

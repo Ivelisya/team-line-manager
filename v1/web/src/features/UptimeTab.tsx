@@ -19,11 +19,13 @@ const NODE_CAP = 30;
 
 /** 组织时区的本月 YYYY-MM（同服务端 org_today） */
 export const orgMonth = () => new Date(Date.now() + meta().org_utc_offset_s * 1000).toISOString().slice(0, 7);
-const monthOptions = (cur: string) => Array.from({ length: MONTHS_BACK }, (_, i) => {
+/** 滚动窗口：地址里写 month=7d / 30d，请求时换成 days=N（月初也能看「这一周」） */
+const DAY_OPTS = [{ value: '7d', label: '近 7 天' }, { value: '30d', label: '近 30 天' }];
+const monthOptions = (cur: string) => [...DAY_OPTS, ...Array.from({ length: MONTHS_BACK }, (_, i) => {
   const [y, m] = cur.split('-').map(Number);
   const d = new Date(Date.UTC(y, m - 1 - i, 1));
   return { value: d.toISOString().slice(0, 7), label: `${d.getUTCFullYear()} 年 ${d.getUTCMonth() + 1} 月${i === 0 ? '（本月）' : ''}` };
-});
+})];
 
 /** 成功率：没有探测写「—」；100 才写 100%，不到 100 的最多写 99.99%（不让 99.996 四舍五入成「100.00%」冒充全程无失败），未满 99.9 标黄、未满 98 标红 */
 function pctText(p: number | null): string {
@@ -45,7 +47,7 @@ export function UptimeTab({ month, onMonth }: { month: string; onMonth: (m: stri
   const cur = React.useMemo(orgMonth, []);
   const opts = React.useMemo(() => monthOptions(cur), [cur]);
   const shown = opts.some((o) => o.value === month) ? month : cur;
-  const q = useUptime(shown, shown === cur);
+  const q = useUptime(shown, shown === cur || shown.endsWith('d'));
   const d = q.data;
   const [allNodes, setAllNodes] = React.useState(false);
   const picker = (

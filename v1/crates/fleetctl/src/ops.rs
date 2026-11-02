@@ -827,7 +827,7 @@ pub fn speedtest(ctx: &Ctx, machine: &str, size: Option<u32>, target: Option<&st
 fn speedtest_line(name: &str, o: &Value) -> String {
     let f = |k: &str| o[k].as_f64().unwrap_or(0.0);
     let done = if o["complete"] == false { format!("没下完（只下了 {:.1} MB，速率按已下载的算）", f("bytes") / 1e6) } else { "已下完".into() };
-    format!("{name} 测速（{}）：平均 {:.1} Mbit/s（{:.2} MB/s），耗时 {} 秒，首字节 {} 毫秒，{done}", st(o, "/target_name"), f("avg_mbps"), f("avg_mb_s"), f("total_s"), (f("ttfb_s") * 1000.0).round())
+    format!("{name} 测速（{}）：平均 {:.1} Mbit/s（{:.2} MB/s），耗时 {} 秒，首字节 {} ms，{done}", st(o, "/target_name"), f("avg_mbps"), f("avg_mb_s"), f("total_s"), (f("ttfb_s") * 1000.0).round())
 }
 
 /// `fleetctl jobs-prune [--before YYYY-MM-DD]`：清理已成功、已取消的作业记录（POST /jobs/prune）。先按同样条件预览数量，确认后删；
@@ -1350,11 +1350,11 @@ pub fn keys_revoke(ctx: &Ctx, a: &KeyAuth, which: &str) -> anyhow::Result<u8> {
 mod tests {
     use super::*;
 
-    /// 测速结果一行：速率、耗时、首字节（毫秒）；没下完时写明只下了多少
+    /// 测速结果一行：速率、耗时、首字节（ms）；没下完时写明只下了多少
     #[test]
     fn speedtest_result_line() {
         let o = json!({"target_name": "圣何塞", "avg_mbps": 80.0, "avg_mb_s": 10.0, "total_s": 10.5, "ttfb_s": 0.5, "complete": true, "bytes": 100_000_000});
-        assert_eq!(speedtest_line("团队1-03", &o), "团队1-03 测速（圣何塞）：平均 80.0 Mbit/s（10.00 MB/s），耗时 10.5 秒，首字节 500 毫秒，已下完");
+        assert_eq!(speedtest_line("团队1-03", &o), "团队1-03 测速（圣何塞）：平均 80.0 Mbit/s（10.00 MB/s），耗时 10.5 秒，首字节 500 ms，已下完");
         let part = json!({"target_name": "洛杉矶", "avg_mbps": 3.2, "avg_mb_s": 0.4, "total_s": 300.0, "ttfb_s": 1.0, "complete": false, "bytes": 50_000_000});
         assert!(speedtest_line("x", &part).ends_with("没下完（只下了 50.0 MB，速率按已下载的算）"));
     }
