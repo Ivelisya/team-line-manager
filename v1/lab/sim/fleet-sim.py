@@ -245,10 +245,10 @@ class Ent:
         self.eg_extra = r.uniform(250, 900)
         self.access_rate = r.uniform(0.15, 1.6)
         self.clients = [rand_ip(r) for _ in range(r.randint(1, 4))]
-        # 偶尔出现的来源：每个入口固定 2 个（不是每次全随机），画像告警偶尔演示得到，但不会无限冒出新运营商 / 城市
-        self.rare = [rand_ip(r) for _ in range(2)]
         self.jit = r.randint(0, 9000)
         self.level = r.gauss(0, 0.3)
+        # 偶尔出现的来源：每个入口固定 2 个（不是每次全随机），画像告警偶尔演示得到，但不会无限冒出新运营商 / 城市。放在最后取：前面各项的随机序列不变
+        self.rare = [rand_ip(r) for _ in range(2)]
         self.down_rate = self.base
         self.up_rate = self.base * self.up_ratio
         self.conns = 3
