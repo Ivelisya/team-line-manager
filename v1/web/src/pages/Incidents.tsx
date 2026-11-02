@@ -140,7 +140,7 @@ export function IncidentsPage() {
         <TabsList>{TABS.map((t) => <TabsTrigger key={t} value={t} noPanel>{TAB_LABEL[t]}{t === 'silences' && !!silenceN && <span className="seg-count">{silenceN}</span>}</TabsTrigger>)}</TabsList>
       </Tabs>
       {tab === 'alerts' && q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
-      {tab === 'alerts' && unsent && <Note tone="warn" icon={<BellOff size={14} />}>告警不会推送：还没有启用的通知渠道 · <Link to="/settings?section=notify">去添加</Link></Note>}
+      {tab === 'alerts' && unsent && <Note tone="warn" icon={<BellOff size={14} />}>告警不会推送：还没有启用的通知渠道 <Link className="btn btn-link btn-sm" to="/settings?section=notify">去添加</Link></Note>}
       {tab === 'alerts' && <Panel flush title="告警列表" count={alertN != null ? `${alertN.toLocaleString('zh-CN')} 条` : undefined} sub={acked ? `另有 ${acked} 条已确认` : undefined}
         tools={<Segmented sm label="状态" value={state} onChange={setState} items={STATES} />}>
         <TableWrap>
