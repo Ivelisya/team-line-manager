@@ -8,7 +8,7 @@ import { createPortal } from 'react-dom';
 import { useHeld } from '@/lib/useHeld';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/components/ui/overlays';
 
-// 菜单项要把焦点交给菜单外的面板（终端的密码框）时，得等菜单完全关掉再动手：菜单退场动画期间面板抢到焦点，会被菜单的焦点圈拉回去，
+// 菜单项要把焦点交给菜单外的面板（终端的密码框）时，得等菜单完全关掉再动手：菜单退场动画期间面板先拿到焦点，可能被菜单拉回菜单容器（指针离开菜单项时 Radix 会 focus 菜单容器；此时焦点圈已解除），
 // 菜单卸载后焦点落在 body、再被下面的 onCloseAutoFocus 回给“⋯”按钮。登记一个回调，菜单关完（onCloseAutoFocus）时执行，且不再把焦点回给按钮
 let afterClose: (() => void) | undefined;
 export const runAfterMenuClosed = (fn: () => void) => { afterClose = fn; };
