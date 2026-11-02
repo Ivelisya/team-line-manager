@@ -45,16 +45,15 @@ async fn rtt_reports_roll_up_and_feed_placement() {
     assert_eq!(t.count("select count(*) from relay_node_rtt_hourly").await, 1);
 
     // 近 7 天的 tcp_fail 告警次数只数严重的（含复发合并的次数）：警告级的（TCP 偶发失败、出口正常）不算；
-    // 出现过严重的（detail 有 critical 标记）复发重开时 severity 被改成本次的警告，照样算；
-    // 有 critical_count 的按它算（严重 2 次，复发重开成警告的 6 次不算），没有的退回标记 + 复发次数
-    sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary, reopen_count, state, resolved_at, detail) values ($1, 'machine', 'tcp_fail', $2, 'warning', 'x', 2, 'resolved', now(), '{\"critical\": true}')")
+    // 出现过严重的（detail 有 critical_count）复发重开时 severity 被改成本次的警告，照样算；按 critical_count 算（严重 2 次，复发重开成警告的 6 次不算）
+    sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary, reopen_count, state, resolved_at, detail) values ($1, 'machine', 'tcp_fail', $2, 'warning', 'x', 2, 'resolved', now(), '{\"critical_count\": 3}')")
         .bind(Uuid::now_v7())
         .bind(node)
         .execute(&t.st.db)
         .await
         .unwrap();
     for (sev, reopen) in [("critical", 1), ("warning", 3)] {
-        sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary, reopen_count, state, resolved_at) values ($1, 'machine', 'tcp_fail', $2, $3::severity, 'x', $4, 'resolved', now())")
+        sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary, reopen_count, state, resolved_at, detail) values ($1, 'machine', 'tcp_fail', $2, $3::severity, 'x', $4, 'resolved', now(), case when $3::severity = 'critical' then jsonb_build_object('critical_count', 1 + $4) else '{}'::jsonb end)")
             .bind(Uuid::now_v7())
             .bind(node)
             .bind(sev)
@@ -64,7 +63,7 @@ async fn rtt_reports_roll_up_and_feed_placement() {
             .unwrap();
     }
 
-    sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary, reopen_count, state, resolved_at, detail) values ($1, 'machine', 'tcp_fail', $2, 'warning', 'x', 6, 'resolved', now(), '{\"critical\": true, \"critical_count\": 2}')")
+    sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary, reopen_count, state, resolved_at, detail) values ($1, 'machine', 'tcp_fail', $2, 'warning', 'x', 6, 'resolved', now(), '{\"critical_count\": 2}')")
         .bind(Uuid::now_v7())
         .bind(node)
         .execute(&t.st.db)
@@ -82,7 +81,7 @@ async fn rtt_reports_roll_up_and_feed_placement() {
     assert_eq!((n["current_relay_id"].clone(), n["best_relay_id"].clone(), n["suggest"].clone(), n["reason"].clone()), (json!(r1), json!(r2), json!(true), json!("当前成功率 80%")), "{p}");
     let c1 = n["cells"].as_array().unwrap().iter().find(|c| c["relay_id"] == json!(r1)).unwrap();
     assert_eq!((c1["samples"].clone(), c1["success_pct"].clone(), c1["p50_ms"].clone()), (json!(5), json!(80.0), json!(115.0)));
-    assert_eq!(n["tcp_fail_7d"], json!(7), "严重的 1 次 + 复发 1 次，加上重开成警告的标记过严重的 1 次 + 复发 2 次（旧数据没有 critical_count），加上 critical_count = 2 的 2 次；没标记的警告级不算：{p}");
+    assert_eq!(n["tcp_fail_7d"], json!(7), "严重的 1 次 + 复发 1 次，加上重开成警告的 critical_count = 3 的 3 次，加上 critical_count = 2 的 2 次；没标记的警告级不算：{p}");
     let sg = &p["suggestions"][0];
     assert_eq!(sg["command"], json!(format!("fleetctl move {} --to 线路机2", n["name"].as_str().unwrap())), "{p}");
     assert_eq!(t.req("GET", "/api/v1/placement?team=没有", None, None).await.0, StatusCode::NOT_FOUND);

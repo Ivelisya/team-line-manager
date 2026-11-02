@@ -530,7 +530,7 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 | GET | `/ipintel/status` | `{enabled, installed, loaded, expected:5, db_dir, version, files:[{id, loaded, bytes, mtime, build, entries}], errors, lists（各清单条目数）, overrides{path,used,error}, cache_rows, hint}`；未安装时 `hint` 提示运行 `lab/install-ipintel.sh` |
 | GET | `/machines/{id}/sources?window=24h\|7d\|30d&limit=50` | `window` 不能比汇总的保留期长（超了 400）。节点的来源画像（线路机：分布与 top 来源只算经它的流量；`known` 基线与 `anomalies` 按节点记，取它名下入口的节点）：`distribution.{isp,city,province,country,conn_type}[{value,label,conns,sources,pct}]`（只统计外部来源；我方机器和非公网地址分别计入 `internal_conns` / `private_conns`）、`top_sources[{src_ip,conns,last_ts,intel}]`、`known.{isp,city,conn_type}[{value,label,first_seen,last_seen,conns,anomaly}]`（已学基线）、`learning{started_at,ends_at,learn_days,done,remaining_hours}`、`anomalies[]`（进行中的 ipintel 告警）、`empty`、`degraded`、`unresolved_sources` |
 
-**异常告警**（warning，进 incident 表并走通知渠道）：节点第一条来源记录起 7 天内只学习；之后某节点出现新的运营商 → `ipintel_new_isp`，新的城市 → `ipintel_new_city`，某 (节点, 来源 IP) 第一次出现且为机房/VPN → `ipintel_datacenter_source`。跳过非公网地址和我方机器。一次性异常最后一次出现 `alert_ttl_hours`（默认 24）小时后自动恢复，不发恢复通知；同一个值恢复后，只要它还在来源画像里就不会再告警。来源画像（运营商、城市、接入方式、机房/VPN 来源 IP，一个值一行）最近一次出现超过 `profile_days`（见「访问记录保留期」）、且不在告警中的由每小时的清理删掉：之后同一个值再出现算「新的」，会再告警一次；一个节点的画像全删光（闲置超过这么久）后再有流量，学习期从头算。后台每 5 分钟从 `access_source_hourly` 增量维护 `node_source_seen`（水位在 `ipintel_state`；水位之前的小时若被补算，连接数差值经 `access_source_late` 补记，首次扫描按 7 天一页）。
+**异常告警**（warning，进 incident 表并走通知渠道）：节点第一条来源记录起 7 天内只学习；之后某节点出现新的运营商 → `ipintel_new_isp`，新的城市 → `ipintel_new_city`，某 (节点, 来源 IP) 第一次出现且为机房/VPN → `ipintel_datacenter_source`。跳过非公网地址和我方机器。一次性异常最后一次出现 `alert_ttl_hours`（默认 24）小时后自动恢复，不发恢复通知；一个值一直在出现的，从首次出现起告警满 2 天也自动恢复（视为新常态，例如团队换了宽带），之后同值不再告警；同一个值恢复后，只要它还在来源画像里就不会再告警。来源画像（运营商、城市、接入方式、机房/VPN 来源 IP，一个值一行）最近一次出现超过 `profile_days`（见「访问记录保留期」）、且不在告警中的由每小时的清理删掉：之后同一个值再出现算「新的」，会再告警一次；一个节点的画像全删光（闲置超过这么久）后再有流量，学习期从头算。后台每 5 分钟从 `access_source_hourly` 增量维护 `node_source_seen`（水位在 `ipintel_state`；水位之前的小时若被补算，连接数差值经 `access_source_late` 补记，首次扫描按 7 天一页）。
 
 ## 退役与回收站
 生命周期只有一条路：`在用 →（退役 = 移进备用团队）→ 订阅过期满 1 天 → 清理 → 回收站`。「立即回收」走同一条路，只是不等到期。回收站是一张审计表（`recycle_bin`），机器进去后从所有视图消失；撤销退役 = 把机器移出备用团队（`PATCH /machines/{id}` 改团队），不用重新上架。「恢复已退役机器」与手动「彻底删除」已删掉。
@@ -692,7 +692,7 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 
 口径：
 - 成功率（`*_pct`，0–100）= 窗口内探测的成功数 ÷ 总数，取自入口探测的小时汇总：`egress` 是经入口走一遍出口（客户流量真正走的路径），是主指标，排序、最差排名、待付清单的 `avail_pct` 都按它；`tcp` 是线路机到节点的 TCP 建连，次要（个别供应商的节点 TCP 每天有 2% 左右偶发失败而出口一直是通的）；窗口内没有探测为 null。展示时不到 100 的最多写 99.99%（不把 99.996 写成 100%）。
-- 断线：出口探测失败 3 次以上（`OUTAGE_MIN_FAILS`，与告警去抖同一量级）的整点小时，连着的小时合成一次；`longest_outage_h` 是最长一次的小时数（没有断线为 0）。`incidents` 是所选窗口（组织时区自然日起止）内这台开出的可用性相关告警次数（规则：`egress_fail`、`tcp_fail`、`agent_offline`、`no_entry`，其中 `tcp_fail` 只数严重的、警告级的不算（按告警 detail 的 `critical_count` 求和：开为严重、警告升到严重、复发重开为严重各一次；旧告警没有这个数，有 `critical` 标记或严重的按 1 + 复发次数算）；续费、额度、流量异常不算），30 分钟内复发合并进原告警的按次数计（同告警页的次数）。月报的「告警次数前 3 的规则」同样按开出的条数加复发次数计，不限规则。
+- 断线：出口探测失败 3 次以上（`OUTAGE_MIN_FAILS`，与告警去抖同一量级）的整点小时，连着的小时合成一次；`longest_outage_h` 是最长一次的小时数（没有断线为 0）。`incidents` 是所选窗口（组织时区自然日起止）内这台开出的可用性相关告警次数（规则：`egress_fail`、`tcp_fail`、`agent_offline`、`no_entry`，其中 `tcp_fail` 只数严重的、警告级的不算（按告警 detail 的 `critical_count` 求和：开为严重、警告升到严重、复发重开为严重各一次；旧告警由迁移 0099 回填成 1 + 复发次数）；续费、额度、流量异常不算），30 分钟内复发合并进原告警的按次数计（同告警页的次数）。月报的「告警次数前 3 的规则」同样按开出的条数加复发次数计，不限规则。
 - 供应商的出口平均、最差只看窗口内有出口探测的节点（`with_data`）；`outages`、`incidents` 是各节点之和。
 - 月报里的月费是此刻在用机器的订阅月费折成 USD（不是当月的历史价格）；USD/GB 只统计当月流量不少于 1 GB 的机器。
 
