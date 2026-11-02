@@ -287,3 +287,27 @@ async fn monthly_costly_counts_retired_ip_node_traffic_on_host() {
     assert_eq!(costly[0]["id"], host.to_string(), "{r}");
     assert!((costly[0]["gb"].as_f64().unwrap() - 6.0).abs() < 1e-6, "{}", costly[0]);
 }
+
+/// 每月自动发月报：没有开了「月报」的已启用渠道时不占位（不记 monthly_report_sent），渠道配好之后才发并记下；同一个月只发一次
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn monthly_auto_send_is_not_marked_sent_without_channel() {
+    let t = setup().await;
+    let mock = Mock::start().await;
+    let sent = || t.count("select count(*) from app_setting where key = 'monthly_report_sent'");
+    // 渠道开着但没勾月报、勾了月报但停用着：都不算
+    t.post("/api/v1/notify-channels", json!({"name": "告警群", "kind": "feishu", "config": {"url": mock.url("/hook/off")}, "min_severity": "info", "enabled": true})).await;
+    let on = t
+        .post("/api/v1/notify-channels", json!({"name": "月报群", "kind": "feishu", "config": {"url": mock.url("/hook/on")}, "min_severity": "info", "enabled": false, "monthly_report": true}))
+        .await;
+    let month = "2026-09";
+    fleet_server::reports::send_once(&t.st, month).await.unwrap();
+    assert_eq!(sent().await, 0, "没有收月报的渠道：不记成已发");
+    t.req("PATCH", &format!("/api/v1/notify-channels/{}", on["id"].as_str().unwrap()), Some(json!({"enabled": true})), None).await;
+    fleet_server::reports::send_once(&t.st, month).await.unwrap();
+    mock.wait("/hook/on", 1).await;
+    assert_eq!(sent().await, 1);
+    // 同一个月不再发
+    fleet_server::reports::send_once(&t.st, month).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    assert_eq!((mock.count("/hook/on"), mock.count("/hook/off")), (1, 0));
+}
