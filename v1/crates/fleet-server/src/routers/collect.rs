@@ -562,8 +562,8 @@ fn exits(oc: &Value, last: Option<&Snapshot>, config: Option<&[Proxy]>, entries:
                         None,
                         Some(now),
                         prev.map_or(1, |p| if p.recovering { 2 } else { p.fail_streak + 1 }),
-                        // 升级前存的快照没有起点：已经在连续不通的保持没有（告警当作满了），否则从这一次算起
-                        prev.and_then(|p| p.fail_since).or_else(|| (!prev.is_some_and(|p| p.fail_streak >= 2 || p.recovering)).then_some(now)),
+                        // 这一串不通的起点：第一次测不通时记下，之后（含确认恢复中又不通）沿用
+                        prev.and_then(|p| p.fail_since).or(Some(now)),
                         false,
                     ),
                 },
@@ -1531,11 +1531,6 @@ mod tests {
         // 还在确认时又不通：仍算连续不通（告警不关、每轮照样重测），不是从 1 重新数
         let b6 = build(&raw(0, 0, 0, tested(json!({"节点01": 90}))), &b5.prev, Some(&b5.snap), Some(&proxies()), &[], t0 + time::Duration::seconds(660));
         assert_eq!((b6.snap.exits[1].fail_streak, b6.snap.exits[1].recovering, b6.snap.exits[1].fail_since), (2, false, Some(t0)), "不是从头算");
-        // 升级前存的快照（连续不通两次以上、没有起点）：保持没有起点（告警当作满了），不从这一次重新算
-        let mut old = b2.snap.clone();
-        old.exits[1].fail_since = None;
-        let b7 = build(&raw(0, 0, 0, tested(json!({}))), &b2.prev, Some(&old), Some(&proxies()), &[], t0 + time::Duration::seconds(330));
-        assert_eq!((b7.snap.exits[1].fail_streak, b7.snap.exits[1].fail_since), (3, None));
     }
 
     /// 摘要里 fleet 出口（对上了面板入口的）与客户自己的出口分开数：告警、卡片只看 fleet 的

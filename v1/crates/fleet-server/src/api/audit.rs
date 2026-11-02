@@ -26,8 +26,8 @@ pub struct AuditQ {
     q: Option<String>,
 }
 
-/// 远程执行类的动作：在机器上跑命令、SSH 登录、网页终端、取日志（restore.probe 是已删掉的恢复预检留下的旧记录）
-const EXEC_ACTIONS: &[&str] = &["exec", "ssh.login", "terminal.open", "terminal.close", "machine.logs", "server.logs", "restore.probe"];
+/// 远程执行类的动作：在机器上跑命令、SSH 登录、网页终端、取日志
+const EXEC_ACTIONS: &[&str] = &["exec", "ssh.login", "terminal.open", "terminal.close", "machine.logs", "server.logs"];
 
 /// 分类条件（操作记录页的分段）：登录与账户（auth.*）、远程执行（`EXEC_ACTIONS`）、
 /// 机器与入口（生命周期、回收站、改名、费用续费、入口、作业、升级 agent），其余是设置与告警（目录、密钥、通知、静默、告警、访问规则）
@@ -139,12 +139,12 @@ pub async fn audit(a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<A
 }
 
 /// 所有写审计的动作（git grep 'audit(' 核对过）；新增动作时补这里和 audit_text。按标题搜索时在这里面找。
-/// machine.restore、restore.probe 是已删掉的「恢复已退役机器」留下的旧记录，标题照样显示
+/// machine.restore 是已删掉的「恢复已退役机器」留下的旧记录，标题照样显示
 const AUDIT_ACTIONS: &[&str] = &[
     "machine.provision", "machine.retire", "machine.recycle", "recycle.import", "machine.purge", "machine.rename", "machine.update", "machine.restore", "machine.replace", "machine.tune", "machine.ss_refresh", "machine.speedtest", "report.send", "subscription.set", "renewal", "renewal.batch",
     "team.create", "team.update", "team.delete", "team.renumber", "provider.create", "provider.update", "provider.delete", "plan.create", "plan.update", "plan.delete", "entry.enable",
     "entry.disable", "entry.rotate", "entry.share", "entry.add", "entry.move", "entry.repoint", "entry.reverse", "relay.evacuate", "job.retry", "job.cancel", "job.prune", "silence.create",
-    "silence.delete", "incident.ack", "restore.probe", "agent.upgrade", "notify.create", "notify.update", "notify.delete", "exec", "machine.logs", "server.logs", "apikey.create",
+    "silence.delete", "incident.ack", "agent.upgrade", "notify.create", "notify.update", "notify.delete", "exec", "machine.logs", "server.logs", "apikey.create",
     "apikey.revoke", "auth.login", "auth.login_failed", "auth.logout", "auth.totp_enabled", "auth.totp_disabled", "auth.totp_recovery_used",
     "auth.totp_recovery_regenerated", "auth.user_removed", "auth.user_disabled", "auth.password_changed", "auth.session_revoked", "auth.verify_failed", "policy.draft", "policy.discard", "policy.publish", "policy.rollback", "policy.replace", "policy.rewrite_history",
     "settings.access_retention", "settings.fx_rate", "terminal.open", "terminal.close", "ssh.login",
@@ -213,7 +213,6 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "silence.create" => "新建静默",
         "silence.delete" => "删除静默",
         "incident.ack" => "确认告警",
-        "restore.probe" => "恢复预检（登录机器）",
         "agent.upgrade" => "升级 agent",
         "notify.create" => "新建通知渠道",
         "notify.update" => "修改通知渠道",
@@ -475,7 +474,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
             };
             format!("{} · {c} · {res}", s("name"))
         }
-        "machine.logs" | "restore.probe" => s("name"),
+        "machine.logs" => s("name"),
         "ssh.login" => format!("{} · {}", s("name"), if d["command"] == true { "带命令（内容不记录）" } else { "交互式" }),
         "incident.ack" => format!("{} · {}", crate::meta::rule_label(d["rule"].as_str().unwrap_or("")), s("summary")),
         "server.logs" => format!("{} 行", d["lines"]),
@@ -645,7 +644,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
     (title, summary)
 }
 
-/// subscription.set 改了的生效值（before / after）；旧记录另写按面板校准的已用流量（接口已不收，0040 之前的审计里还有）
+/// subscription.set 改了的生效值（before / after）
 fn sub_changes(d: &Value) -> String {
     let (b, a) = (&d["before"], &d["after"]);
     if b.is_null() {
@@ -669,7 +668,7 @@ fn sub_changes(d: &Value) -> String {
         ("billing_tz", "账单时区", &val),
         ("auto_renew", "自动续费", &onoff),
     ];
-    let mut out: Vec<String> = fields
+    fields
         .iter()
         .filter(|(k, ..)| b[*k] != a[*k])
         .map(|(k, label, f)| match *k {
@@ -680,18 +679,12 @@ fn sub_changes(d: &Value) -> String {
             },
             _ => format!("{label} {} → {}", f(&b[*k]), f(&a[*k])),
         })
-        .collect();
-    match d.get("traffic_used_gb") {
-        Some(Value::Null) => out.push("清除已用流量校准".into()),
-        Some(v) if v.is_number() => out.push(format!("已用流量校准为 {v} GB")),
-        _ => {}
-    }
-    out.join("，")
+        .collect::<Vec<_>>()
+        .join("，")
 }
 
 /// 访问规则版本里的一处变更（同前端发布记录的写法）：模式变了写「团队1：黑名单 → 仅观察」，没变写域名、备注改了什么：
 /// 「黑名单 · 域名 2 → 3 个」「黑名单 · 换了域名（2 个），改了备注」「黑名单 · 改了备注」。
-/// 没有 domains_changed / note_changed 的旧记录：用域名的模式算改了域名，不用的算改了备注
 fn policy_change(c: &Value) -> String {
     let (f, t) = (&c["from"], &c["to"]);
     let mode = |v: &Value| crate::meta::label(crate::meta::POLICY_MODES, v["mode"].as_str().unwrap_or("")).to_string();
@@ -701,14 +694,14 @@ fn policy_change(c: &Value) -> String {
         format!("{} → {}{n}", mode(f), mode(t))
     } else {
         let mut parts = vec![];
-        if uses(t) && c["domains_changed"].as_bool().unwrap_or(true) {
+        if uses(t) && c["domains_changed"] == true {
             parts.push(if f["domains"] == t["domains"] {
                 format!("换了域名（{} 个）", t["domains"])
             } else {
                 format!("域名 {} → {} 个", f["domains"], t["domains"])
             });
         }
-        if c["note_changed"].as_bool().unwrap_or(!uses(t)) {
+        if c["note_changed"] == true {
             parts.push("改了备注".into());
         }
         format!("{} · {}", mode(t), parts.join("，"))
@@ -865,7 +858,7 @@ mod tests {
         assert_eq!(upd(json!({"country": null, "note": "老机器"}), json!({"country": "JP", "note": ""})), "团队1-03 · 国家 自动 → JP · 备注 「老机器」 → （空）");
         assert_eq!(upd(json!({"country": "JP"}), json!({"country": "JP"})), "团队1-03", "这一版之前的记录没有备注");
         assert_eq!(t("policy.draft", json!({"name": "团队1", "mode": "denylist", "domains": 2, "cleared": false})).1, "团队1 · 黑名单 · 2 个域名");
-        let ch = |name: &str, f: &str, fd: i64, to: &str, td: i64| json!({"name": name, "from": {"mode": f, "domains": fd}, "to": {"mode": to, "domains": td}});
+        let ch = |name: &str, f: &str, fd: i64, to: &str, td: i64| json!({"name": name, "from": {"mode": f, "domains": fd}, "to": {"mode": to, "domains": td}, "domains_changed": fd != td, "note_changed": false});
         let changes = json!([ch("团队1", "denylist", 2, "observe", 0), ch("团队2-03", "allowlist", 2, "allowlist", 3)]);
         assert_eq!(
             t("policy.publish", json!({"seq": 5, "rollback_of_seq": null, "changes": changes, "relays": 6})).1,

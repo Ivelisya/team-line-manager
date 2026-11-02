@@ -92,19 +92,21 @@ type Bucket = (i64, i64, Option<f64>, i64);
 ///
 /// 只看未移除或在窗口内才移除的入口：更早移除的在窗口里不会有探测，不必逐个去探测表里找。
 /// 节点在不在用按入口连（几百行），不按探测行连：当天分区的统计还没跟上「最近一小时」时，探测行数会被估成个位数，
-/// 按探测行连机器表的计划会在 30 ms 与 400+ ms 之间跳
+/// 按探测行连机器表的计划会在 30 ms 与 400+ ms 之间跳；
+/// 所以在用的入口先物化成 ee（机器过滤落在入口这几百行上，不落在 2 万多条探测行上；实验室 72 ms → 47 ms）
 pub async fn probe_beats(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
     const BUCKETS: usize = 20;
     let src = crate::probe_points::effective(&st, &st.db).await?;
     let rows: Vec<(Uuid, i32, i64, i64, Option<f64>, i64)> = sqlx::query_as(&format!(
-        "with w as (select s, s + interval '60 minutes' e from (select date_bin('3 minutes', now(), timestamptz 'epoch') - interval '57 minutes' s) z),
+        "with ee as materialized (select e0.* from entry e0 where e0.node_id in (select id from machine where lifecycle <> 'retired')),
+         w as (select s, s + interval '60 minutes' e from (select date_bin('3 minutes', now(), timestamptz 'epoch') - interval '57 minutes' s) z),
          p as (
            select e.node_id m, floor(extract(epoch from x.ts - w.s) / 180)::int i, x.ok, case when e.mode = 'reverse' then null else x.latency_ms end, x.retrans
-           from w cross join entry e join machine mn on mn.id = e.node_id
+           from w cross join ee e
            cross join lateral (
              select ts, ok, latency_ms, retrans from probe_result
              where entry_id = e.id and kind = case when e.mode = 'reverse' then 'egress' else 'tcp' end and ts >= w.s and ts < w.e) x
-           where mn.lifecycle <> 'retired' and (e.lifecycle <> 'removed' or e.removed_at >= w.s)
+           where e.lifecycle <> 'removed' or e.removed_at >= w.s
            union all
            select r.relay_id, floor(extract(epoch from r.ts - w.s) / 180)::int, r.ok, r.rtt_ms, null::smallint
            from w cross join relay_reach r join machine mr on mr.id = r.relay_id

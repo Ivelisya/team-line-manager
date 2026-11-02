@@ -161,8 +161,8 @@ impl Targets {
 /// 不通的 fleet 出口（连续两次延迟测试不通；客户自己的出口不算）
 fn down_exits(s: &Snapshot) -> impl Iterator<Item = &Exit> { s.exits.iter().filter(|e| e.sync != "unmanaged" && e.fail_streak >= 2) }
 
-/// 不通满 `EXITS_DOWN_S` 的 fleet 出口（第一次不通的测试起算；没有起点的是升级前存的快照，已经连续不通两次以上，当作满了，免得开着的告警被当成恢复）
-fn held_down(s: &Snapshot, now: OffsetDateTime) -> impl Iterator<Item = &Exit> { down_exits(s).filter(move |e| e.fail_since.is_none_or(|t| held(t, now, EXITS_DOWN_S))) }
+/// 不通满 `EXITS_DOWN_S` 的 fleet 出口（第一次不通的测试起算；连续不通两次以上的一定有起点）
+fn held_down(s: &Snapshot, now: OffsetDateTime) -> impl Iterator<Item = &Exit> { down_exits(s).filter(move |e| e.fail_since.is_some_and(|t| held(t, now, EXITS_DOWN_S))) }
 
 /// 不通的出口指向的都在维护中：这一轮 router_exits_down 不开，开着的保持（同机器告警的维护：冻结）
 fn exits_paused(s: &Snapshot, tg: &Targets, now: OffsetDateTime) -> bool {
@@ -560,6 +560,7 @@ mod tests {
         s.openclash.running = false;
         s.interfaces[0].up = false;
         s.exits[1].fail_streak = 2;
+        s.exits[1].fail_since = Some(now - time::Duration::seconds(200));
         s.exits[2].fail_streak = 1;
         // 客户自己的出口不通不算
         s.exits.push(Exit { name: "机场".into(), sync: "unmanaged".into(), fail_streak: 5, ..Exit::default() });
@@ -581,6 +582,7 @@ mod tests {
         // 全部 fleet 出口都不通：严重（客户自己的出口通着也一样）
         for e in &mut s.exits {
             e.fail_streak = if e.sync == "unmanaged" { 0 } else { 3 };
+            e.fail_since = Some(now - time::Duration::seconds(200));
         }
         let (p, _) = problems(&view("online", Some(s.clone()), 0, now), None, &Targets::default(), now);
         let ex = p.iter().find(|p| p.rule == EXITS_DOWN).unwrap();
@@ -602,6 +604,7 @@ mod tests {
         for (i, (node, name)) in [(n3, "团队2-03"), (n3, "团队2-03"), (n4, "团队2-04")].into_iter().enumerate() {
             s.exits[i].entry = Some(er(node, name));
             s.exits[i].fail_streak = 2;
+            s.exits[i].fail_since = Some(now - time::Duration::seconds(200));
         }
         s.exits.push(Exit { name: "节点05".into(), sync: "ok".into(), entry: Some(er(Uuid::from_u128(5), "团队2-05")), ..Exit::default() });
         let v = view("online", Some(s.clone()), 0, now);
@@ -634,13 +637,10 @@ mod tests {
         // 时间够了，但连续不通还不到两次：不开
         s.exits[1].fail_streak = 1;
         assert!(ex(&s).is_none());
-        // 升级前存的快照没有起点：已经连续不通两次的当作满了（免得开着的告警被当成恢复）
-        s.exits[1].fail_streak = 2;
-        s.exits[1].fail_since = None;
-        assert!(ex(&s).is_some());
         // 满与不满的混在一起：只算满的（摘要、「全部」都按满的数）
         s.exits[0].fail_streak = 2;
         s.exits[0].fail_since = Some(now - time::Duration::seconds(40));
+        s.exits[1].fail_streak = 2;
         s.exits[1].fail_since = Some(now - time::Duration::seconds(200));
         assert_eq!(ex(&s).unwrap().text, "1 个出口连续两次延迟测试不通：节点02");
     }
