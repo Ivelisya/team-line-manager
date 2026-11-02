@@ -214,7 +214,7 @@ pub async fn desired_state(db: &PgPool, secrets: &SecretBox, relay_id: Uuid, ech
             min_client_ver: mcv,
             echo_url: echo_url.to_string(),
             probe_interval_s: PROBE_INTERVAL_S,
-            // 只留 AnyTLS：Reality 入站改听回环（中控改协议时已核对过 agent 认这个字段，见 api::relays::patch）
+            // 只留 AnyTLS：Reality 入站改听回环、穿透入口的照旧听公网只放行节点（中控改协议时已核对过 agent 认这些，见 api::relays::patch）
             reality_public: protocols != ANYTLS,
         },
         entries,

@@ -170,7 +170,8 @@ pub struct RelayPatchIn {
 /// 改线路机的入口协议（`PATCH /relays/{id}`，`{protocols: both|reality|anytls}`）：代数 +1、记审计 `relay.protocols`。
 /// 改成只 AnyTLS（Reality 入站改听回环、公网只剩 AnyTLS）要先满足三条，否则 409：
 /// ①线路机 agent 报了 sing-box 在跑、且认 `reality_public`（caps 有 reality_private），不然公网一个协议都没有或 Reality 照样开着；
-/// ②这台线路机上没有穿透入口：节点的 bridge 连的是入口的公网 REALITY 端口；
+/// ②有穿透入口时 agent 还要认 `reality_guard`（caps）：穿透入口的 Reality 入站照旧听公网、nft 只放行它的节点（bridge 连的就是这个端口），
+/// 旧 agent 会把它也改听回环、穿透断掉；
 /// ③没有 Reality 软路由出口指着这台线路机上的入口（AnyTLS 出口不挡；先用 `router protocol --to anytls` 切过去）。
 /// 改成只 Reality 时同样挡住指着这台的 AnyTLS 软路由出口
 pub async fn patch_relay(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<RelayPatchIn>) -> ApiResult<Json<Value>> {
@@ -208,10 +209,14 @@ pub async fn patch_relay(a: Actor, State(st): State<AppState>, ApiPath(id): ApiP
         .bind(crate::reverse::REVERSE)
         .fetch_all(&mut *tx)
         .await?;
-        if !rev.is_empty() {
+        let guard = caps.as_ref().and_then(Value::as_array).is_some_and(|c| c.iter().any(|x| x == fleet_proto::CAP_REALITY_GUARD));
+        if !rev.is_empty() && !guard {
             let names: Vec<String> = rev.iter().map(|(k, l, t, n, port)| format!("{}（{port}）", crate::names::entry_name(false, k, l.as_deref(), t.as_deref(), *n))).collect();
-            return Err(ApiError::conflict(format!("这台线路机上有穿透入口：{}。穿透的 bridge 连的是入口的公网 Reality 端口，先关掉穿透", names.join("、")))
-                .with_detail(json!({"reverse_entries": names})));
+            return Err(ApiError::conflict(format!(
+                "这台线路机上有穿透入口：{}。线路机的 agent 版本旧，只留 AnyTLS 后会把穿透入口的 Reality 端口也关掉（bridge 连的就是它，穿透会断），先 fleetctl upgrade-agent {name}",
+                names.join("、")
+            ))
+            .with_detail(json!({"reverse_entries": names})));
         }
     }
     // 软路由出口指着这台线路机上的入口、而要关掉它用的协议：Reality 出口挡「只 AnyTLS」，AnyTLS 出口挡「只 Reality」

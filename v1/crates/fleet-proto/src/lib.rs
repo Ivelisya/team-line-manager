@@ -71,8 +71,12 @@ pub const CAP_REVERSE: &str = "reverse";
 /// agent 认 `RelayParams::reality_public`（线路机只留 AnyTLS 时把 Reality 入站改听回环）。旧 agent 忽略这个字段、Reality 照样对公网开着：
 /// 中控只在线路机 agent 报了它时才允许把线路机的入口协议改成只 AnyTLS
 pub const CAP_REALITY_PRIVATE: &str = "reality_private";
+/// agent 在只留 AnyTLS 的线路机上让穿透入口的 Reality 入站照旧听公网、并用 nft 表 `inet fleet_reality_guard` 只放行这条入口的节点出站 IP
+/// （`DesiredEntry::expect_egress_ip`，bridge 从它连过来）。旧 agent 把穿透入口也改听回环、bridge 连不上：中控只在线路机 agent 报了它时
+/// 才允许有穿透入口的线路机改成只 AnyTLS、或在只 AnyTLS 的线路机上开穿透
+pub const CAP_REALITY_GUARD: &str = "reality_guard";
 /// 本 agent 的全部能力（随每份上报带上）
-pub const CAPS: &[&str] = &[CAP_REVERSE, CAP_REALITY_PRIVATE];
+pub const CAPS: &[&str] = &[CAP_REVERSE, CAP_REALITY_PRIVATE, CAP_REALITY_GUARD];
 /// 穿透入口的隧道在线路机 Xray 里缺席这么久才报 `tunnels_down`：bridge 断线重连约 2 秒，正常切换、重启都到不了这么久
 pub const TUNNEL_DOWN_AFTER_S: u64 = 30;
 
@@ -381,7 +385,8 @@ pub struct RelayParams {
     pub echo_url: String,
     pub probe_interval_s: u32,
     /// 入口的 VLESS REALITY 入站对公网开着（默认）。false = 线路机只留 AnyTLS：Reality 入站改听 127.0.0.1，别的都不变
-    /// （tag、统计、策略规则、AnyTLS 桥接与探测入站照旧）。为 true 时不序列化：旧 agent 收到的期望状态和以前一样
+    /// （tag、统计、策略规则、AnyTLS 桥接与探测入站照旧）；穿透入口例外，照旧听公网、只放行它的节点（见 [`CAP_REALITY_GUARD`]）。
+    /// 为 true 时不序列化：旧 agent 收到的期望状态和以前一样
     #[serde(default = "yes", skip_serializing_if = "is_true")]
     pub reality_public: bool,
 }

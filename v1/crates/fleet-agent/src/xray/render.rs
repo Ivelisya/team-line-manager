@@ -168,7 +168,8 @@ pub fn route_tag(e: &DesiredEntry) -> String {
 /// - 分享链接里 `fp=chrome`、`flow=xtls-rprx-vision`、`type=tcp`
 ///
 /// 线路机只留 AnyTLS（`RelayParams::reality_public` 为 false）时只把监听地址改成 127.0.0.1：入站本身、tag、客户端、
-/// 统计与规则全都照旧，只是公网连不上 Reality。改监听走差异应用（同一个 tag 内容变了：rmi + adi，不重启 Xray）
+/// 统计与规则全都照旧，只是公网连不上 Reality。改监听走差异应用（同一个 tag 内容变了：rmi + adi，不重启 Xray）。
+/// 穿透入口例外：节点的 bridge 连的就是这个公网端口，照旧听 0.0.0.0，由 nft 表只放行它的节点（见 reality_guard.rs）
 fn inbound_json(e: &DesiredEntry, rp: &RelayParams, min_ver: &str) -> Value {
     let mut clients = vec![json!({"id": e.client_uuid.to_string(), "email": tags::email(e.id), "flow": "xtls-rprx-vision"})];
     // 穿透：入站里多一个 bridge 专用的客户端（Xray 26 的 VLESS 反向代理）。它连上来时 Xray 建出站 `rvs-<入口>`、
@@ -179,7 +180,7 @@ fn inbound_json(e: &DesiredEntry, rp: &RelayParams, min_ver: &str) -> Value {
         clients.push(json!({"id": bridge_uuid.to_string(), "email": tags::bridge_email(e.id), "reverse": {"tag": tags::reverse(e.id)}}));
     }
     json!({
-        "listen": if rp.reality_public { "0.0.0.0" } else { "127.0.0.1" },
+        "listen": if rp.reality_public || matches!(e.outbound, Outbound::Reverse { .. }) { "0.0.0.0" } else { "127.0.0.1" },
         "port": e.port,
         "protocol": "vless",
         "tag": tags::inbound(e.id),
@@ -934,6 +935,16 @@ x"]));
             format!("rmi in-{id}"), format!("adi in-{id}"),
             format!("rmi in-{}", Uuid::from_u128(2).simple()), format!("adi in-{}", Uuid::from_u128(2).simple()),
         ]);
+    }
+
+    /// 只留 AnyTLS 时穿透入口的 Reality 入站照旧听公网（bridge 连它；来源由 nft 表限定），同一台上的普通入口照样改听回环
+    #[test]
+    fn reality_private_keeps_reverse_public() {
+        let mut d = desired(vec![with_anytls(entry(1, 20001, true)), with_anytls(reverse(2, 20002))]);
+        d.relay.reality_public = false;
+        let r = render(&d, &ctx()).unwrap();
+        let listen = |n: u128| r.inbounds.iter().find(|i| tag_of(i) == format!("in-{}", Uuid::from_u128(n).simple())).unwrap()["listen"].clone();
+        assert_eq!((listen(1), listen(2)), (json!("127.0.0.1"), json!("0.0.0.0")));
     }
 
     #[test]

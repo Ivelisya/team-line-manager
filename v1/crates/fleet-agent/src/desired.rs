@@ -1,6 +1,7 @@
 //! 线路机：长轮询期望状态 → 应用 → 回报。
 
 use crate::server::{Desired, Outcome, ServerClient, REVOKED_SLEEP};
+use crate::reality_guard::RealityGuard;
 use crate::singbox::Singbox;
 use crate::state::{load_applied, pending_ack_path, save_applied, Shared};
 use crate::util::{backoff, load_json, save_json};
@@ -74,16 +75,28 @@ fn note_apply(sh: &Shared, rep: &ApplyReport, note: Option<String>) {
     };
 }
 
+/// Xray 应用成功后写穿透入口的 Reality 放行规则（见 reality_guard.rs）；写不进就把这次当失败回报（不当重启路径的失败）：
+/// Reality 端口这时对谁都开着或谁都连不上，要让中控看到、过一会儿整份重试
+async fn apply_guard(guard: &mut RealityGuard, d: &fleet_proto::DesiredState, rep: &mut ApplyReport) {
+    if rep.ok {
+        if let Err(e) = guard.apply(d, false).await {
+            rep.ok = false;
+            rep.error = Some(e);
+        }
+    }
+}
+
 fn paused_note(gen: u64, fails: u32, wait: Duration) -> String {
     format!("代数 {gen} 需要重启 Xray，已失败 {fails} 次，暂停重试约 {} 分钟（期间新代数的 Xray 骨架配置若相同也不重试）", wait.as_secs().div_ceil(60))
 }
 
 /// 启动对齐：applied.json 说"已应用"，但 xray.json 可能缺失（只写了空骨架）或 Xray 是新起的 ——
 /// 把上次成功应用的期望状态幂等地再应用一遍，确保磁盘与运行态都对得上，之后才敢报告这个代数。
-async fn startup_align(sh: &Shared, applier: &Applier, sb: &Singbox) {
+async fn startup_align(sh: &Shared, applier: &Applier, sb: &Singbox, guard: &mut RealityGuard) {
     let Some(a) = load_applied(&sh.cfg) else { return };
     tracing::info!(generation = a.generation, "启动对齐：幂等应用上次的期望状态");
-    let rep = applier.apply(&a.desired).await;
+    let mut rep = applier.apply(&a.desired).await;
+    apply_guard(guard, &a.desired, &mut rep).await;
     note_apply(sh, &rep, None);
     if rep.ok {
         sb.apply(&a.desired).await;
@@ -96,12 +109,16 @@ async fn startup_align(sh: &Shared, applier: &Applier, sb: &Singbox) {
 }
 
 /// 周期对齐：轻量检查（不跑 xray -test），不一致才完整应用一次修复，并记日志。
-/// AnyTLS（sing-box）每次都按已应用的那份对一遍：配置一样、单元在跑就什么都不做；它只跟着 Xray 已应用的状态走，不受 Xray 这次修没修好影响
+/// AnyTLS（sing-box）每次都按已应用的那份对一遍：配置一样、单元在跑就什么都不做；它只跟着 Xray 已应用的状态走，不受 Xray 这次修没修好影响。
+/// 穿透入口的 Reality 放行规则同样每次按已应用的那份重写一遍（有要守的端口时；表可能被别人清掉），写不进只记日志
 /// `written`：上一次对齐修复失败时写进 last_apply_error 的那条。之后检查通过（比如那次只是 Xray API 偶发查询失败）就把它清掉；
 /// 只在 last_apply_error 还是这一条时才清，期间长轮询应用写了别的（真实的应用失败）就留着
-async fn periodic_align(sh: &Shared, applier: &Applier, sb: &Singbox, gate: &mut RestartGate, written: &mut Option<String>) {
+async fn periodic_align(sh: &Shared, applier: &Applier, sb: &Singbox, guard: &mut RealityGuard, gate: &mut RestartGate, written: &mut Option<String>) {
     let Some(d) = sh.applied.read().unwrap().clone() else { return };
     sb.apply(&d).await;
+    if let Err(e) = guard.apply(&d, true).await {
+        tracing::error!(generation = d.generation, "{e}");
+    }
     let Err(why) = applier.check_aligned(&d).await else {
         if let Some(w) = written.take() {
             let mut cur = sh.health.last_apply_error.lock().unwrap();
@@ -183,6 +200,7 @@ pub async fn desired_task(sh: Arc<Shared>, applier: Arc<Applier>, sb: Arc<Singbo
     let mut fails = 0u32;
     let mut gate = RestartGate::default();
     let mut align_err = None;
+    let mut guard = RealityGuard::default();
     // 本版本解析不了的最新代数：已回报"版本过旧"，之后带着它去长轮询，直到中控出了更新的一代。
     // 应用成功就清零：中控代数回退（比它小）后不能再带着它去轮询，否则每次都立刻拿回同一代、无间隔空转
     let mut unreadable = 0u64;
@@ -192,7 +210,7 @@ pub async fn desired_task(sh: Arc<Shared>, applier: Arc<Applier>, sb: Arc<Singbo
     if refetch {
         tracing::info!("期望状态是别的 agent 版本存下的（刚升级过），向中控重新要一份完整的");
     }
-    startup_align(&sh, &applier, &sb).await;
+    startup_align(&sh, &applier, &sb, &mut guard).await;
     let mut last_align = Instant::now();
     loop {
         if *sd.borrow() {
@@ -200,7 +218,7 @@ pub async fn desired_task(sh: Arc<Shared>, applier: Arc<Applier>, sb: Arc<Singbo
         }
         if last_align.elapsed() >= REALIGN_EVERY {
             last_align = Instant::now();
-            periodic_align(&sh, &applier, &sb, &mut gate, &mut align_err).await;
+            periodic_align(&sh, &applier, &sb, &mut guard, &mut gate, &mut align_err).await;
         }
         // 先补发上次没送达的回报
         let path = pending_ack_path(&sh.cfg);
@@ -244,7 +262,10 @@ pub async fn desired_task(sh: Arc<Shared>, applier: Arc<Applier>, sb: Arc<Singbo
             Outcome::Ok(Desired::State(d)) => {
                 tracing::info!(generation = d.generation, entries = d.entries.len(), "收到期望状态");
                 let res = applier.apply_detailed(&d).await;
-                let rep = res.report;
+                // 重启路径失败只看 Xray 这一步：它成功了、只是放行规则没写进，不拉长重试间隔
+                let restart_failed = res.disruptive_restart && !res.report.ok;
+                let mut rep = res.report;
+                apply_guard(&mut guard, &d, &mut rep).await;
                 let mut pause = None;
                 if rep.ok {
                     refetch = false;
@@ -263,7 +284,7 @@ pub async fn desired_task(sh: Arc<Shared>, applier: Arc<Applier>, sb: Arc<Singbo
                     fails = 0;
                 } else {
                     tracing::error!(generation = d.generation, "应用失败：{}", rep.error.as_deref().unwrap_or(""));
-                    if res.disruptive_restart {
+                    if restart_failed {
                         // 重启路径失败：拉长重试间隔，错误状态留在 agent_health.last_apply_error 里让中控可见
                         let wait = gate.record_failure(d.generation, applier.static_part(&d).await);
                         tracing::warn!(generation = d.generation, fails = gate.fails, wait_s = wait.as_secs(), "重启路径失败，暂停重试这一代");

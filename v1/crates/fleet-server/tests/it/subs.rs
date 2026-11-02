@@ -210,7 +210,7 @@ async fn anytls_in_desired_subs_and_share() {
     assert!(!pull(&t, &bp).await.2.contains("anytls"));
 }
 
-/// 线路机的入口协议（PATCH /relays/{id}）：改成只 AnyTLS 的三条 409（AnyTLS 没在跑 / agent 不认、有穿透入口、有软路由出口指着），
+/// 线路机的入口协议（PATCH /relays/{id}）：改成只 AnyTLS 的三条 409（AnyTLS 没在跑 / agent 不认、有穿透入口而 agent 不认 reality_guard、有软路由出口指着），
 /// 改成后下发 reality_public=false、分享与订阅只给 AnyTLS；改成只 Reality 后不再下发、不再给 AnyTLS
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn relay_protocols_switch() {
@@ -238,12 +238,14 @@ async fn relay_protocols_switch() {
     assert_eq!(t.req("POST", "/agent/v1/report", Some(report(1, vec!["reverse"])), Some("tok1")).await.0, StatusCode::OK);
     let (s, v) = fail(anytls.clone()).await;
     assert!(s == StatusCode::CONFLICT && v["error"]["message"].as_str().unwrap().contains("版本旧"), "{v}");
-    assert_eq!(t.req("POST", "/agent/v1/report", Some(report(2, fleet_proto::CAPS.to_vec())), Some("tok1")).await.0, StatusCode::OK);
-    // 有穿透入口
+    // 有穿透入口、agent 认只留 AnyTLS 但不认穿透放行：409 叫先升级
+    assert_eq!(t.req("POST", "/agent/v1/report", Some(report(2, vec!["reverse", "reality_private"])), Some("tok1")).await.0, StatusCode::OK);
     sqlx::query("update entry set mode = 'reverse' where port = 20000").execute(&t.st.db).await.unwrap();
     let (s, v) = fail(anytls.clone()).await;
-    assert!(s == StatusCode::CONFLICT && v["error"]["message"].as_str().unwrap().contains("穿透入口：团队1-01（20000）"), "{v}");
-    sqlx::query("update entry set mode = 'normal' where port = 20000").execute(&t.st.db).await.unwrap();
+    let m = v["error"]["message"].as_str().unwrap();
+    assert!(s == StatusCode::CONFLICT && m.contains("穿透入口：团队1-01（20000）") && m.contains("fleetctl upgrade-agent 线路机1"), "{v}");
+    // 认了就不再因穿透入口挡（下面挡的是软路由出口；穿透入口一直留到改成只 AnyTLS）
+    assert_eq!(t.req("POST", "/agent/v1/report", Some(report(3, fleet_proto::CAPS.to_vec())), Some("tok1")).await.0, StatusCode::OK);
     // 有软路由出口指着这台线路机上的入口
     let (eid, nid): (Uuid, Uuid) = sqlx::query_as("select id, node_id from entry where port = 20000").fetch_one(&t.st.db).await.unwrap();
     let rid = Uuid::now_v7();
@@ -267,6 +269,7 @@ async fn relay_protocols_switch() {
     assert_eq!(t.get(&format!("/api/v1/machines/{relay}")).await["relay"]["protocols"], "anytls");
     let (_, d) = t.req("GET", "/agent/v1/desired?after=0", None, Some("tok1")).await;
     assert_eq!(d["relay"]["reality_public"], false, "{d}");
+    assert!(d["entries"].as_array().unwrap().iter().any(|e| e["outbound"]["protocol"] == "reverse"), "{d}");
     assert!(d["entries"].as_array().unwrap().iter().all(|e| e["anytls_port"].is_u64()), "{d}");
     // 分享只给 AnyTLS；订阅：both 只出 AnyTLS，只要 Reality 的整条不出
     let sh = t.get(&format!("/api/v1/entries/{eid}/share")).await;

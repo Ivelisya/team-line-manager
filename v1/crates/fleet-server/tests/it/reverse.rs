@@ -210,21 +210,25 @@ async fn tunnel_down_kicks_node_bridge() {
     assert_eq!(sqlx::query_scalar::<_, Value>("select info->'caps' from agent_state where machine_id = $1").bind(relay).fetch_one(&t.st.db).await.unwrap(), json!([]));
 }
 
-/// 线路机只开 AnyTLS（Reality 入站听回环，bridge 连不上）：加入口退回普通并写明原因、上架检查同样、手动开穿透的预览被拒，也核不进 set_mode
+/// 线路机只开 AnyTLS、agent 不认 reality_guard（会把穿透入口的 Reality 也改听回环，bridge 连不上）：加入口退回普通并写明原因、
+/// 上架检查同样、手动开穿透的预览被拒，也核不进 set_mode；agent 认了之后这些都放行（穿透入口的 Reality 只对节点开放）
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn anytls_only_relay_has_no_reverse() {
+async fn anytls_only_relay_reverse_needs_guard_agent() {
     let t = setup(false).await;
     let (relay, tok) = seed_relay(&t).await;
     let team = seed_team(&t, "团队1").await;
     let node = vps(&t, team, 1, "203.0.113.51", true).await;
     let e = entry(&t, relay, node, "normal").await;
-    Sim::new(tok).round(&t).await;
+    let mut sim = Sim::new(tok);
+    sim.round(&t).await;
     dist_xray(&t);
     assert_eq!(preview(&t, e, true).await["ok"], true);
     sqlx::query("update relay set protocols = 'anytls' where machine_id = $1").bind(relay).execute(&t.st.db).await.unwrap();
+    // 线路机 agent 认穿透、认只留 AnyTLS，不认 reality_guard
+    sqlx::query("update agent_state set info = info || '{\"caps\": [\"reverse\", \"reality_private\"]}' where machine_id = $1").bind(relay).execute(&t.st.db).await.unwrap();
     let p = preview(&t, e, true).await;
     assert_eq!(p["ok"], false, "{p}");
-    assert!(blockers(&p).contains("线路机 线路机2 只开 AnyTLS，穿透要 Reality"), "{p}");
+    assert!(blockers(&p).contains("线路机 线路机2 只开 AnyTLS，它的 agent 版本旧、穿透入口的 Reality 端口开不出来：先 fleetctl upgrade-agent 线路机2"), "{p}");
     let mut tx = t.st.db.begin().await.unwrap();
     assert!(fleet_server::reverse::set_mode(&mut tx, e, "reverse").await.is_err());
     drop(tx);
@@ -237,6 +241,18 @@ async fn anytls_only_relay_has_no_reverse() {
     let c = t.post("/api/v1/provision/check", json!({"items": [{"kind": "vps", "ip": "203.0.113.53", "team_id": team, "relay_id": relay}]})).await;
     assert_eq!(c["items"][0]["entry_mode"], "normal", "{c}");
     assert!(c["items"][0]["warnings"].to_string().contains("只开 AnyTLS"), "{c}");
+
+    // 线路机 agent 升级后（报全部能力）：预览通过、set_mode 能开、加入口与上架检查按穿透
+    sim.round(&t).await;
+    assert_eq!(preview(&t, e, true).await["ok"], true);
+    let mut tx = t.st.db.begin().await.unwrap();
+    assert!(fleet_server::reverse::set_mode(&mut tx, e, "reverse").await.is_ok());
+    drop(tx);
+    let node3 = vps(&t, team, 3, "203.0.113.54", true).await;
+    let v = t.post(&format!("/api/v1/machines/{node3}/entries"), json!({"relay_id": relay})).await;
+    assert_eq!(v["entry_mode"], "reverse", "{v}");
+    let c = t.post("/api/v1/provision/check", json!({"items": [{"kind": "vps", "ip": "203.0.113.55", "team_id": team, "relay_id": relay}]})).await;
+    assert_eq!(c["items"][0]["entry_mode"], "reverse", "{c}");
 }
 
 /// 新入口默认模式：没设过是穿透；改了写审计；上架家宽代理要穿透时退回普通（检查的提醒、作业参数里写明）；加入口不给模式按默认，
