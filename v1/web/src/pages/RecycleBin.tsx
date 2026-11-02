@@ -157,7 +157,7 @@ export function RecycleBin({ sp, upd, tools }: { sp: URLSearchParams; upd: (patc
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       <Panel flush>
         <TableWrap>
-          <table className="dt" style={{ minWidth: 1150 }}>
+          <table className="dt" style={{ minWidth: 1040 }}>
             <colgroup>{cols.map((c) => <col key={c.id} style={{ width: c.width }} />)}</colgroup>
             <SortHead cols={cols.map((c) => ({ id: c.id, header: c.header, r: c.r, first: sortable ? c.first : undefined }))} sort={sort} onSort={setSort} />
             <tbody>{rows.map((r) => <Row key={r.id} r={r} open={r.id === openId} source={showSource} span={cols.length} onToggle={setOpenId} />)}</tbody>

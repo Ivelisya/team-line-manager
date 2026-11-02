@@ -88,7 +88,7 @@
 .cx-region { display: grid; gap: var(--sp-2); min-width: 0; }
 .cx-region-name { font-size: var(--fs-body); color: var(--fg-2); }
 .cx-region-val { font: var(--fw-bold) 28px / 34px var(--font-num); font-variant-numeric: var(--num-variant); color: var(--fg); letter-spacing: -0.01em; }
-.cx-region-val small { margin-left: 2px; font-size: var(--fs-body); font-weight: var(--fw-medium); color: var(--fg-2); letter-spacing: 0; }
+.cx-region-val small { margin-left: 4px; font-size: var(--fs-body); font-weight: var(--fw-medium); color: var(--fg-2); letter-spacing: 0; }
 .cx-region-calc { font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); }
 .cx-region-calc .is-today { color: var(--warn-text); }
 .cx-board { display: grid; gap: var(--sp-12); }

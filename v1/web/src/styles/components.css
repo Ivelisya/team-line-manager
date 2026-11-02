@@ -384,8 +384,8 @@
 .dialog-desc { margin: 0; color: var(--fg-2); font-size: var(--fs-body); line-height: var(--lh-body); text-wrap: pretty; }
 .dialog-head { display: grid; gap: var(--sp-6); }
 .dialog-foot { display: flex; justify-content: flex-end; gap: var(--control-gap); flex-wrap: wrap; }
-/* 吸底按钮条：毛玻璃底，通栏（抵消弹层的内边距），内容滚到下面时顶上出一条细线；不滚时与原来的位置、间距一致 */
-.dialog .dialog-foot { position: sticky; bottom: 0; z-index: 1; margin: calc(-1 * var(--sp-8)) calc(-1 * var(--sp-20)) calc(-1 * var(--dlg-pb)); padding: var(--sp-12) var(--sp-20) var(--dlg-pb); background: var(--glass); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); }
+/* 吸底按钮条（sticky 的 bottom 按滚动容器内边距内缩，取负的下内边距才贴到弹层底边）：毛玻璃底，通栏（抵消弹层的内边距），内容滚到下面时顶上出一条细线；不滚时与原来的位置、间距一致 */
+.dialog .dialog-foot { position: sticky; bottom: calc(-1 * var(--dlg-pb)); z-index: 1; margin: calc(-1 * var(--sp-8)) calc(-1 * var(--sp-20)) calc(-1 * var(--dlg-pb)); padding: var(--sp-12) var(--sp-20) var(--dlg-pb); background: var(--glass); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); }
 .dialog .dialog-foot::before { content: ""; position: absolute; inset: 0 0 auto; height: 1px; background: var(--line); opacity: 0; pointer-events: none; }
 @supports (animation-timeline: scroll()) {
   .dialog .dialog-foot::before { animation: foot-edge linear both; animation-timeline: scroll(nearest block); }

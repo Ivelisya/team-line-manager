@@ -478,12 +478,14 @@ export const useBillingEvents = (teamId: string) => useInfiniteQuery({
   queryKey: ['billing', 'events', teamId], enabled: !!teamId, initialPageParam: '',
   queryFn: ({ pageParam, signal }) => get<BillingEvent[]>(`/teams/${teamId}/billing-events?limit=${EVENT_PAGE}${pageParam ? `&before=${pageParam}` : ''}`, signal),
   getNextPageParam: (last) => (last.length >= EVENT_PAGE ? last[last.length - 1].id : undefined),
+  // 换团队时先留着上一个团队的（调用方按 isPlaceholderData 调淡、不可操作），不塌成骨架
+  placeholderData: keepPreviousData,
 });
-/** 月度应收：month = YYYY-MM。翻月时先留着上一个月的（调淡），换了团队不沿用别队的 */
+/** 月度应收：month = YYYY-MM。翻月、换团队时先留着上一份（调用方按 isPlaceholderData 调淡），不塌成骨架 */
 export const useReceivable = (teamId: string, month: string) => useQuery({
   queryKey: ['billing', 'receivable', teamId, month], enabled: !!teamId && !!month,
   queryFn: ({ signal }) => get<Receivable>(`/teams/${teamId}/receivable?month=${month}`, signal),
-  placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[2] === teamId ? keepPreviousData(prev) : undefined),
+  placeholderData: keepPreviousData,
 });
 /** 整批改起算日（一个事务，要么全改要么都不改）：key = Batch.key（起算日|地区）；返回新的批次 */
 export const usePatchBatch = () => useWrite(({ teamId, key, start_date }: { teamId: string; key: string; start_date: string }) => patch<CustomerBatch>(`/teams/${teamId}/batches/${encodeURIComponent(key)}`, { start_date }), B);

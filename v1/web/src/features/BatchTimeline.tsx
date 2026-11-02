@@ -66,7 +66,7 @@ function ticksPath(s: Scale): string {
 }
 
 const periodTip = (p: TimelinePeriod, i: number, n: number) =>
-  `${n > 1 ? (i === 0 ? '首购' : `第${i}次续期`) + ' · ' : ''}${mmdd(p.start_date)} → ${mmdd(p.end_date)} · ${p.months}个月 · ${p.count}个节点`;
+  `${n > 1 ? (i === 0 ? '首购' : `第${i}次续期`) + ' · ' : ''}${mmdd(p.start_date)} → ${mmdd(p.end_date)} · ${p.months} 个月 · ${p.count} 个节点`;
 
 function Track({ b, s, today, ticks }: { b: TimelineItem; s: Scale; today: string; ticks: string }) {
   const t = s.x(today);
@@ -178,8 +178,8 @@ export function BatchTimeline({ items, today, actions }: { items: TimelineItem[]
               <div className="btl-head">
                 <div className={cn('btl-line', actions && 'has-act')}>
                   <span className="btl-title">{b.title}{b.state === 'today' && <span className="btl-flag">今日到期</span>}</span>
-                  <span className="btl-dur"><span className="t-sub">有效时长</span> <b className="num">{b.months}</b>个月</span>
-                  <span className="btl-nm"><b className="num">{b.node_months}</b>个节点月</span>
+                  <span className="btl-dur"><span className="t-sub">有效时长</span> <b className="num">{b.months}</b> 个月</span>
+                  <span className="btl-nm"><b className="num">{b.node_months}</b> 个节点月</span>
                   {actions && <span className="btl-act">{actions(b)}</span>}
                 </div>
                 {b.desc && <div className="btl-desc">{b.desc}</div>}

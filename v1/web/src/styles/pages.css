@@ -248,6 +248,10 @@
 .due-item { display: grid; gap: var(--sp-4); padding: var(--sp-12) var(--card-pad); border-top: 1px solid var(--line); }
 .due-item:first-child { border-top: 0; }
 .due-item-top, .due-item-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); flex-wrap: wrap; }
+/* 待付表机器格：名字部分省略号，备用 / 闲置胶囊不被挤掉 */
+.due-machines { display: flex; align-items: center; gap: var(--sp-6); min-width: 0; }
+.due-machines-names { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.due-machines > .pill { flex: none; }
 .due-item-machines { color: var(--fg-2); overflow-wrap: anywhere; }
 @media (max-width: 600px) { .due-table { display: none; } .due-list { display: block; } }
 /* 告警页「月度可用率」：成功率数字（未满 99.9% 标色）、最差节点链接、窗口说明 */
