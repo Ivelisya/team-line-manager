@@ -241,16 +241,13 @@ pub struct SingboxStatus {
     pub last_error: Option<String>,
 }
 
-/// Agent 的上报间隔（秒）。固定值：新 agent 不再读 `ReportAck.interval_s`，中控回的也是它
+/// Agent 的上报间隔（秒）。固定值，回执里不带（旧回执里的 `interval_s` 字段解析时忽略）
 pub const REPORT_INTERVAL_S: u32 = 10;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReportAck {
     /// 服务端已持久化的最大 seq；agent 据此丢弃本地缓冲
     pub accepted_seq: u64,
-    /// 上报间隔（秒），恒为 `REPORT_INTERVAL_S`；agent 不再读它，下一版删掉
-    #[serde(default)]
-    pub interval_s: u32,
     /// 节点：要它重启穿透的 bridge（fleet-xray-bridge）。值是中控决定重启的时刻（Unix 毫秒），同一个值只重启一次
     /// （agent 记在 data_dir）；没有要重启的为 None。旧 agent 不认识，忽略
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -634,9 +631,12 @@ mod tests {
         // 旧 agent 的上报没有 caps / tunnels_down；旧中控的回执没有 bridge_kick
         let r: Report = serde_json::from_str(r#"{"seq":1,"boot_id":"b","agent_version":"v","sent_at_ms":0}"#).unwrap();
         assert!(r.caps.is_empty() && r.tunnels_down.is_empty());
-        let a: ReportAck = serde_json::from_str(r#"{"accepted_seq":3,"interval_s":10}"#).unwrap();
+        let a: ReportAck = serde_json::from_str(r#"{"accepted_seq":3}"#).unwrap();
         assert_eq!(a.bridge_kick, None);
-        let s = serde_json::to_string(&ReportAck { accepted_seq: 1, interval_s: 10, bridge_kick: None }).unwrap();
+        // 旧中控的回执还带 interval_s：忽略
+        let a: ReportAck = serde_json::from_str(r#"{"accepted_seq":3,"interval_s":10}"#).unwrap();
+        assert_eq!(a.accepted_seq, 3);
+        let s = serde_json::to_string(&ReportAck { accepted_seq: 1, bridge_kick: None }).unwrap();
         assert!(!s.contains("bridge_kick"), "{s}");
     }
 }

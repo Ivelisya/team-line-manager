@@ -121,7 +121,7 @@ pub struct Reporter {
     kicker: Option<crate::bridge::Kicker>,
 }
 
-/// 失败期间建报的间隔：正常 `fleet_proto::REPORT_INTERVAL_S`（常量，不听服务端的 `ReportAck.interval_s`），连续失败时至少 OFFLINE_BUILD_INTERVAL
+/// 失败期间建报的间隔：正常 `fleet_proto::REPORT_INTERVAL_S`（常量，回执里不带间隔），连续失败时至少 OFFLINE_BUILD_INTERVAL
 fn build_interval(fails: u32) -> Duration {
     let normal = Duration::from_secs(fleet_proto::REPORT_INTERVAL_S as u64);
     if fails > 0 {

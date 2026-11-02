@@ -238,7 +238,7 @@ pub mod tests {
     /// 请求记录：(是否带 content-encoding: gzip, 解压后的正文)
     pub type Seen = Arc<Mutex<Vec<(bool, Vec<u8>)>>>;
 
-    /// 最小 HTTP 服务端：每个连接一个请求，一律回 200 和 `{"accepted_seq":9,"interval_s":10}`。
+    /// 最小 HTTP 服务端：每个连接一个请求，一律回 200 和 `{"accepted_seq":9}`。
     pub async fn mock_server() -> (String, Seen) {
         mock_server_busy(0).await
     }
@@ -282,7 +282,7 @@ pub mod tests {
                         body
                     };
                     seen.lock().unwrap().push((gz, plain));
-                    let ack = r#"{"accepted_seq":9,"interval_s":10}"#;
+                    let ack = r#"{"accepted_seq":9}"#;
                     let resp = if busy_now {
                         "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 1\r\nContent-Length: 4\r\nConnection: close\r\n\r\nbusy".to_string()
                     } else {

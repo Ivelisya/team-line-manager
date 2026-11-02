@@ -65,7 +65,7 @@ class H(BaseHTTPRequestHandler):
                     "access": r.get("access", []), "xray": r.get("xray"),
                     "last_host": (r.get("host") or [None])[-1],
                 })
-            return self.reply(200, {"accepted_seq": acc, "interval_s": 10})
+            return self.reply(200, {"accepted_seq": acc})
         if path == "/agent/v1/applied":
             append("applied.jsonl", json.loads(raw))
             return self.reply(200, {})
