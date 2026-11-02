@@ -18,6 +18,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { toast } from '@/components/ui/toast';
 import { CopyButton, Empty, ErrorNote, Panel, Pill } from '@/components/app/primitives';
 import { ConfirmDialog, FormDialog } from '@/components/app/dialogs';
+import { flushAfterMenuClosed, runAfterMenuClosed } from '@/components/app/AnchoredDropdown';
 import { MonthSwitch, cnDate, cnMonth, cnSpan, regionLabel } from './billing';
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -76,7 +77,8 @@ function Board({ d }: { d: BillingMonth }) {
         <MonthSwitch month={d.month} months={d.months} onChange={(m) => upd({ month: m === thisMonth ? '' : m })} />
         <DropdownMenu>
           <DropdownMenuTrigger asChild><IconButton size="sm" label="更多" tip={false}><MoreHorizontal size={16} /></IconButton></DropdownMenuTrigger>
-          <DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => setAdding(true)}>手动添加节点…</DropdownMenuItem></DropdownMenuContent>
+          {/* 菜单完全关上再开对话框：关菜单时焦点会先回到「⋯」，对话框里自动聚焦的名字框被它抢走一次，会被当成「离开过」而提前标红「必填」 */}
+          <DropdownMenuContent align="end" onCloseAutoFocus={(e) => { if (flushAfterMenuClosed()) e.preventDefault(); }}><DropdownMenuItem onSelect={() => runAfterMenuClosed(() => setAdding(true))}>手动添加节点…</DropdownMenuItem></DropdownMenuContent>
         </DropdownMenu>
       </div>
       <Lead d={d} />

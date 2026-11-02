@@ -206,7 +206,7 @@ pub fn event_text(kind: &str, machine: Option<&str>, other: Option<&str>, d: &Va
         "init" => format!("开始记账：{} 个节点从 {}开始收费", d["count"].as_i64().unwrap_or(0), cn(&d["start_date"])),
         "add" => format!("{m} 加入，从 {}开始收费", cn(&d["start_date"])),
         "remove" => format!("{m} 离开，{}", until(d)),
-        "swap" => format!("{} → {m} 替换，收费不变", other.unwrap_or("（已删除的节点）")),
+        "swap" => format!("{m} 补位接替 {}，收费不变", other.unwrap_or("（已删除的节点）")),
         "edit" => format!("{m}：{}", d["what"].as_str().unwrap_or("修改")),
         "manual_add" => format!("手动添加 {m}（{}），从 {}开始收费", d["region"].as_str().unwrap_or(""), cn(&d["start_date"])),
         "manual_end" => format!("{m} 停止收费，{}", until(d)),
@@ -598,7 +598,7 @@ mod tests {
     #[test]
     fn texts() {
         assert_eq!(event_text("add", Some("团队1-10"), None, &json!({"start_date": "2026-10-30"})), "团队1-10 加入，从 10 月 30 日开始收费");
-        assert_eq!(event_text("swap", Some("团队2-20"), Some("团队2-07"), &json!({})), "团队2-07 → 团队2-20 替换，收费不变");
+        assert_eq!(event_text("swap", Some("团队2-20"), Some("团队2-07"), &json!({})), "团队2-20 补位接替 团队2-07，收费不变");
         assert_eq!(event_text("remove", Some("团队2-05"), None, &json!({"end_date": "2026-11-20", "billed_until": "2026-11-29"})), "团队2-05 离开，收费到 11 月 29 日");
         assert_eq!(event_text("remove", Some("团队2-05"), None, &json!({"end_date": "2026-11-14", "billed_until": null})), "团队2-05 离开，没收过费");
         assert_eq!(event_text("init", None, None, &json!({"start_date": "2026-10-01", "count": 52})), "开始记账：52 个节点从 10 月 1 日开始收费");

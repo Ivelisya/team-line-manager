@@ -218,7 +218,7 @@ async fn billing_ledger_and_customer_page() {
     let m0 = format!("{} 月", u8::from(s.month()));
     let m2 = format!("{} 月", u8::from(meta::add_months(s, 2).unwrap().month()));
     for want in [
-        "团队1-01 → 团队1-04 替换，收费不变".to_string(),
+        "团队1-04 补位接替 团队1-01，收费不变".to_string(),
         format!("团队1-05 加入，从 {}开始收费", fmt_cn(seen)),
         "团队1-02 设为不收费".into(),
         "团队1-02 离开，收费到 ".into(),
