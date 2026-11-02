@@ -48,6 +48,8 @@ export interface RouterIface { name: string; device: string; up: boolean; proto:
 export type ExitSync = 'ok' | 'drift' | 'unmanaged';
 export interface RouterExit {
   name: string; type: string; server: string; port: number;
+  /** 协议一个词：reality（VLESS Reality）/ anytls，配置里读到的 fleet 协议才有；别的协议、旧中控为空。AnyTLS 出口的 port 是入口的 AnyTLS 端口 */
+  proto?: 'reality' | 'anytls' | null;
   /** lifecycle：对上的入口现在的状态（已停用、已删除的对不上，sync 为 drift） */
   entry: { id: string; name: string; node_id: string; relay_id: string; lifecycle: EntryLifecycle } | null; sync: ExitSync;
   /** alive / delay_ms 来自每 5 分钟一次的延迟测试（delay_at 是测试时刻）；还没测过为 null。fail_streak：连续几次测不通。conns 等是 mihomo 连接的汇总 */

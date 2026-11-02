@@ -230,6 +230,7 @@ pub const JOB_KINDS: Labels = &[
     ("speedtest", "测速"),
     ("repoint", "改出口指向"),
     ("router_sync", "同步软路由出口"),
+    ("router_protocol", "切软路由出口协议"),
     ("reverse", "切换穿透"),
 ];
 

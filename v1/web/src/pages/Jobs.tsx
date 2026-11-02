@@ -127,7 +127,7 @@ export function JobsPage() {
             <div key={j.id} data-id={j.id} className="job-item" role="button" tabIndex={0} aria-current={j.id === shown} onClick={() => go(j.id)}
               onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(j.id); } }}>
               <span className="l1">
-                <b className="ellipsis">{jobKindLabel(j.kind)} · {j.target ? <NodeHover id={j.kind === 'router_sync' ? null : j.target.id} noFocus><span>{j.target.name}</span></NodeHover> : '—'}{/* 退役进备用后机器改了名：带上原名（服务端给的 target.origin） */}{j.target?.origin && j.target.origin !== j.target.name && <span className="t-sub">（原 {j.target.origin}）</span>}</b>
+                <b className="ellipsis">{jobKindLabel(j.kind)} · {j.target ? <NodeHover id={j.kind === 'router_sync' || j.kind === 'router_protocol' ? null : j.target.id} noFocus><span>{j.target.name}</span></NodeHover> : '—'}{/* 退役进备用后机器改了名：带上原名（服务端给的 target.origin） */}{j.target?.origin && j.target.origin !== j.target.name && <span className="t-sub">（原 {j.target.origin}）</span>}</b>
                 <span style={{ marginLeft: 'auto' }}><JobPill state={j.state} manual={j.manual} /></span>
               </span>
               {jobLive(j.state) && <span className="l-prog"><Progress value={jobProgress(j).pct} live label="总进度" /><span className="num">{jobProgress(j).done}/{jobProgress(j).total}</span></span>}
@@ -174,7 +174,7 @@ function JobDetail({ id }: { id: string }) {
   if (!j) return <Panel><div className="skel" style={{ height: 160, margin: 16 }} /></Panel>;
   return (
     <div className="stack">
-      <Panel title={<span className="row" style={{ gap: 8 }}><Link to={{ pathname: '/jobs', search }} className="icon-btn icon-btn-sm job-back" aria-label="返回列表"><ArrowLeft size={16} /></Link><span>{jobKindLabel(j.kind)} · {j.target ? <NodeHover id={j.kind === 'router_sync' ? null : j.target.id}><span>{j.target.name}</span></NodeHover> : '—'}</span></span>} tools={<>
+      <Panel title={<span className="row" style={{ gap: 8 }}><Link to={{ pathname: '/jobs', search }} className="icon-btn icon-btn-sm job-back" aria-label="返回列表"><ArrowLeft size={16} /></Link><span>{jobKindLabel(j.kind)} · {j.target ? <NodeHover id={j.kind === 'router_sync' || j.kind === 'router_protocol' ? null : j.target.id}><span>{j.target.name}</span></NodeHover> : '—'}</span></span>} tools={<>
         <JobPill state={j.state} manual={j.manual} />
         {j.manual && <span className="t-sub">先手动处理再重试</span>}
         {j.state === 'failed' && <RetryButton j={j} />}

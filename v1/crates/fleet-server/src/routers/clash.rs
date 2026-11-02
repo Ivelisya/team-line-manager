@@ -1,10 +1,11 @@
 //! OpenClash（mihomo）配置里的出口，和 fleet 入口对上号。
 //!
 //! 配置文件 sha256 变了才经隧道取回来（顶层 `secret:` 行在路由上先删掉），只在内存里解析 `proxies`：留 name / type / server / port；
-//! uuid、flow、servername、reality-opts（public-key、short-id）只用来和入口当前的参数比对、算出 sync，不落库、不输出。
-//! server:port 对上「线路机的 public_host 或公网 IP + 入口端口」就是这个入口（端口永不复用，含已删除的入口）：
-//! - ok：参数和入口一致；
-//! - drift：对上了入口，但入口已删除 / 正在删除 / 已停用，或 uuid / SNI / 公钥 / short-id / flow 和入口现在的不一样（凭据轮换、换线路机之后没同步）；
+//! uuid、password、flow、servername / sni、reality-opts（public-key、short-id）只用来和入口当前的参数比对、算出 sync，不落库、不输出。
+//! 出口有两种协议：VLESS Reality（`type: vless`）对「线路机的 public_host 或公网 IP + 入口端口」，
+//! AnyTLS（`type: anytls`）对「同一线路机 + 入口的 AnyTLS 端口」（`fleet_proto::anytls_ports`，默认入口端口 + 20000），对上了就是这个入口（端口永不复用，含已删除的入口）：
+//! - ok：参数和入口一致（Reality：uuid / SNI / 公钥 / short-id / flow；AnyTLS：password = 入口的 uuid、sni，且线路机上这个入口真有 AnyTLS）；
+//! - drift：对上了入口，但入口已删除 / 正在删除 / 已停用，或参数和入口现在的不一样（凭据轮换、换线路机之后没同步；AnyTLS 出口的线路机只开 Reality）；
 //! - unmanaged：不是 fleet 的入口（或配置里没有它）。
 
 use serde::{Deserialize, Serialize};
@@ -58,6 +59,7 @@ struct P {
     server: Option<String>,
     port: Option<String>,
     uuid: Option<String>,
+    password: Option<String>,
     flow: Option<String>,
     servername: Option<String>,
     sni: Option<String>,
@@ -79,6 +81,7 @@ struct Reality {
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct Creds {
     uuid: Option<String>,
+    password: Option<String>,
     flow: Option<String>,
     sni: Option<String>,
     public_key: Option<String>,
@@ -97,6 +100,26 @@ pub struct Proxy {
     pub server: Option<String>,
     pub port: Option<u16>,
     pub creds: Creds,
+}
+
+pub const ANYTLS: &str = "anytls";
+pub const REALITY: &str = "reality";
+
+/// 类型是不是 AnyTLS（配置里写 anytls，mihomo 的 API 报 AnyTLS）
+pub fn is_anytls(kind: Option<&str>) -> bool { kind.is_some_and(|k| k.eq_ignore_ascii_case(ANYTLS)) }
+
+impl Proxy {
+    /// AnyTLS 出口（`type: anytls`）
+    pub fn anytls(&self) -> bool { is_anytls(self.kind.as_deref()) }
+
+    /// 出口协议的一个词（快照的 `proto`，界面、`router show` 显示）：anytls / reality（vless 带 reality-opts）；别的协议为 None
+    pub fn proto(&self) -> Option<&'static str> {
+        match self.kind.as_deref() {
+            k if is_anytls(k) => Some(ANYTLS),
+            Some(k) if k.eq_ignore_ascii_case("vless") && self.creds.public_key.is_some() => Some(REALITY),
+            _ => None,
+        }
+    }
 }
 
 /// 解析配置里的 `proxies`。没有名字的条目跳过；整份不是合法 YAML、或超出资源上限（别名爆炸之类）时报错
@@ -131,7 +154,7 @@ pub fn parse_all(text: &str) -> Result<(Vec<Proxy>, Vec<String>), String> {
                 kind: t(p.kind),
                 server: t(p.server),
                 port: p.port.and_then(|s| s.trim().parse().ok()),
-                creds: Creds { uuid: t(p.uuid), flow: t(p.flow), sni: t(p.servername).or(t(p.sni)), public_key, short_id },
+                creds: Creds { uuid: t(p.uuid), password: t(p.password), flow: t(p.flow), sni: t(p.servername).or(t(p.sni)), public_key, short_id },
             })
         })
         .collect();
@@ -154,6 +177,25 @@ pub struct Entry {
     pub pbk: String,
     pub relay_name: String,
     pub node_name: String,
+    /// AnyTLS 出口按它对：线路机上真在听的 AnyTLS 端口（[`load_entries`] 按 `entries::anytls_ports_on` 算）；没有的（入口不在用、
+    /// 线路机只开 Reality、端口冲突）记成入口端口 + ANYTLS_PORT_OFFSET，仍认得出指向它的出口（drift）
+    #[sqlx(default)]
+    pub anytls_port: Option<i32>,
+    /// 线路机上这个入口真有 AnyTLS（`anytls_port` 是算出来的，不是兜底）：没有的 AnyTLS 出口不算 ok
+    #[sqlx(default)]
+    pub anytls_live: bool,
+}
+
+/// 全部入口（含已删除的）与各自的 AnyTLS 端口：采集、作业执行时对出口用
+pub async fn load_entries(db: &sqlx::PgPool) -> sqlx::Result<Vec<Entry>> {
+    let mut es: Vec<Entry> = sqlx::query_as(ENTRIES).fetch_all(db).await?;
+    let live = crate::entries::anytls_ports_on(db, &[], false).await?;
+    for e in &mut es {
+        let p = live.get(&e.id).copied();
+        e.anytls_live = p.is_some();
+        e.anytls_port = p.or_else(|| (e.port as u16).checked_add(fleet_proto::ANYTLS_PORT_OFFSET)).map(i32::from);
+    }
+    Ok(es)
 }
 
 pub const ENTRIES: &str = "select e.id, e.port, e.lifecycle::text lifecycle, e.client_uuid, e.short_id, e.node_id, e.relay_id,
@@ -182,10 +224,13 @@ pub fn host_eq(a: &str, b: &str) -> bool {
     n(a) == n(b)
 }
 
-/// 这个出口对上的入口与同步状态（ok / drift / unmanaged）。同一 server:port 有在用的入口就用它，否则用已删除的
+/// 这个出口对上的入口与同步状态（ok / drift / unmanaged）。同一 server:port 有在用的入口就用它，否则用已删除的。
+/// AnyTLS 出口按入口的 AnyTLS 端口对，别的按入口端口对
 pub fn match_entry(p: &Proxy, entries: &[Entry]) -> (Option<EntryRef>, &'static str) {
     let (Some(server), Some(port)) = (p.server.as_deref(), p.port) else { return (None, "unmanaged") };
-    let hits = entries.iter().filter(|e| e.port == port as i32 && (host_eq(server, &e.public_host) || host_eq(server, &e.relay_ip)));
+    let at = p.anytls();
+    let on = |e: &Entry| if at { e.anytls_port == Some(port as i32) } else { e.port == port as i32 };
+    let hits = entries.iter().filter(|e| on(e) && (host_eq(server, &e.public_host) || host_eq(server, &e.relay_ip)));
     let mut best: Option<&Entry> = None;
     for e in hits {
         if best.is_none_or(|b| b.lifecycle == "removed" && e.lifecycle != "removed") {
@@ -195,13 +240,17 @@ pub fn match_entry(p: &Proxy, entries: &[Entry]) -> (Option<EntryRef>, &'static 
     let Some(e) = best else { return (None, "unmanaged") };
     let same = |a: &Option<String>, b: &str| a.as_deref().is_some_and(|a| a.eq_ignore_ascii_case(b));
     let c = &p.creds;
-    let ok = !matches!(e.lifecycle.as_str(), "removed" | "removing" | "disabled")
-        && p.kind.as_deref().is_some_and(|k| k.eq_ignore_ascii_case("vless"))
-        && same(&c.uuid, &e.client_uuid.to_string())
-        && same(&c.sni, &e.sni)
-        && c.public_key.as_deref() == Some(e.pbk.as_str())
-        && same(&c.short_id, &e.short_id)
-        && same(&c.flow, "xtls-rprx-vision");
+    let creds = if at {
+        e.anytls_live && same(&c.password, &e.client_uuid.to_string()) && same(&c.sni, &e.sni)
+    } else {
+        p.kind.as_deref().is_some_and(|k| k.eq_ignore_ascii_case("vless"))
+            && same(&c.uuid, &e.client_uuid.to_string())
+            && same(&c.sni, &e.sni)
+            && c.public_key.as_deref() == Some(e.pbk.as_str())
+            && same(&c.short_id, &e.short_id)
+            && same(&c.flow, "xtls-rprx-vision")
+    };
+    let ok = !matches!(e.lifecycle.as_str(), "removed" | "removing" | "disabled") && creds;
     let r = EntryRef {
         id: e.id,
         name: format!("{} · {}:{}", e.node_name, e.relay_name, e.port),
@@ -328,6 +377,8 @@ rules:
             pbk: "PBK_ABC".into(),
             relay_name: "线路机2".into(),
             node_name: "团队2-03".into(),
+            anytls_port: Some(port + 20000),
+            anytls_live: true,
         }
     }
 
@@ -376,6 +427,45 @@ rules:
         // 不是 fleet 的入口
         assert_eq!(match_entry(&ps[2], std::slice::from_ref(&live)), (None, "unmanaged"));
         assert_eq!(match_entry(&ps[0], &[entry(20005, "active", "01234567")]), (None, "unmanaged"));
+    }
+
+    /// AnyTLS 出口：块格式与流式写法都认，按 (线路机, AnyTLS 端口) + password 对上入口；端口写成入口端口的对不上，
+    /// password / sni 不对、线路机上没有 AnyTLS（只开 Reality）都是 drift；协议记成一个词
+    #[test]
+    fn anytls_exits() {
+        let ps = parse(&format!(
+            r#"
+proxies:
+  - name: 节点01
+    type: anytls
+    server: 198.51.100.2
+    port: 40003
+    password: {UUID1}
+    sni: www.cloudflare.com
+    skip-cert-verify: true
+    client-fingerprint: chrome
+    udp: true
+  - {{name: 节点02, type: anytls, server: relay.test, port: "40003", password: x, sni: www.cloudflare.com}}
+  - {{name: 节点03, type: AnyTLS, server: relay.test, port: 20003, password: {UUID1}, sni: www.cloudflare.com}}
+"#
+        ))
+        .unwrap();
+        assert_eq!((ps[0].anytls(), ps[0].proto(), ps[0].port), (true, Some("anytls"), Some(40003)));
+        assert_eq!((ps[1].anytls(), ps[1].port, ps[2].anytls()), (true, Some(40003), true), "流式写法、字符串端口、大小写");
+        let reality = parse(YAML).unwrap();
+        assert_eq!((reality[0].proto(), reality[2].proto()), (Some("reality"), None), "ss 不是 fleet 的协议");
+        let live = entry(20003, "active", "01234567");
+        let (e, sync) = match_entry(&ps[0], std::slice::from_ref(&live));
+        assert_eq!((e.map(|e| e.id), sync), (Some(live.id), "ok"));
+        assert_eq!(match_entry(&ps[1], std::slice::from_ref(&live)).1, "drift", "password 不对");
+        assert_eq!(match_entry(&ps[2], std::slice::from_ref(&live)), (None, "unmanaged"), "AnyTLS 出口按 AnyTLS 端口对，不按入口端口");
+        assert_eq!(match_entry(&ps[0], &[Entry { anytls_live: false, ..live.clone() }]).1, "drift", "线路机上没有 AnyTLS");
+        assert_eq!(match_entry(&ps[0], &[Entry { sni: "www.apple.com".into(), ..live.clone() }]).1, "drift");
+        assert_eq!(match_entry(&ps[0], &[entry(20003, "removed", "01234567")]).1, "drift", "入口删了");
+        // Reality 出口不会被 AnyTLS 端口对上
+        let vl = parse("proxies:\n  - {name: a, type: vless, server: relay.test, port: 40003}\n").unwrap();
+        assert_eq!(match_entry(&vl[0], &[live]), (None, "unmanaged"));
+        assert!(!format!("{:?}", ps[0]).contains(UUID1));
     }
 
     #[test]

@@ -224,6 +224,8 @@ pub struct Exit {
     pub name: String,
     #[serde(rename = "type")]
     pub kind: Option<String>,
+    /// 协议一个词（配置里读的，clash::Proxy::proto）：reality / anytls；别的协议、配置里没有的为 None
+    pub proto: Option<String>,
     pub server: Option<String>,
     pub port: Option<u16>,
     pub entry: Option<EntryRef>,
@@ -271,6 +273,11 @@ pub struct ClientExit {
 
 /// 出口算不算可用：没测过、测通，或只测不通 1 次（同告警，连续两次不通才算不可用，见 routers/alerts.rs）
 pub fn usable(e: &Exit) -> bool { e.alive != Some(false) || e.fail_streak < 2 }
+
+impl Exit {
+    /// AnyTLS 出口（旧快照没有 proto，看 mihomo 报的类型）
+    pub fn anytls(&self) -> bool { self.proto.as_deref() == Some(clash::ANYTLS) || clash::is_anytls(self.kind.as_deref()) }
+}
 
 /// 列表里的摘要（由快照算，不另存）
 pub fn summary(s: &Snapshot) -> Value {
@@ -583,6 +590,7 @@ fn exits(oc: &Value, last: Option<&Snapshot>, config: Option<&[Proxy]>, entries:
             let bps = |k: &str| dt.and_then(|dt| f(&st, k).map(|b| (b * 8.0 / dt).round() as i64));
             Exit {
                 kind: api.and_then(|a| s(a, "type")).or_else(|| cfg.and_then(|c| c.kind.clone())),
+                proto: cfg.and_then(|c| c.proto()).map(String::from),
                 server: cfg.and_then(|c| c.server.clone()),
                 port: cfg.and_then(|c| c.port),
                 entry,
@@ -905,7 +913,7 @@ async fn round_of(st: &AppState, mem: &mut HashMap<Uuid, Mem>, only: Option<&[Uu
     if targets.is_empty() {
         return Ok(());
     }
-    let entries: Arc<Vec<Entry>> = Arc::new(sqlx::query_as(clash::ENTRIES).fetch_all(&st.db).await?);
+    let entries: Arc<Vec<Entry>> = Arc::new(clash::load_entries(&st.db).await?);
     let jobs: Vec<_> = targets
         .into_iter()
         .map(|t| {

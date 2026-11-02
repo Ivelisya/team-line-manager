@@ -428,6 +428,8 @@ const PROTO: Record<string, string> = {
   hysteria: 'Hysteria', hysteria2: 'Hysteria2', tuic: 'TUIC', wireguard: 'WireGuard', socks5: 'SOCKS5', http: 'HTTP', snell: 'Snell', ssh: 'SSH', anytls: 'AnyTLS', mieru: 'Mieru',
 };
 const protoLabel = (t: string) => PROTO[t.toLowerCase()] ?? t;
+/** 出口协议：fleet 的两种写 Reality / AnyTLS，别的按 mihomo 报的类型 */
+const exitProto = (e: RouterExit) => (e.proto === 'reality' ? 'Reality' : e.proto === 'anytls' ? 'AnyTLS' : protoLabel(e.type));
 const SYNC: Record<RouterExit['sync'], { tone: 'ok' | 'warn' | 'neutral'; label: string; tip: string }> = {
   ok: { tone: 'ok', label: '一致', tip: '凭据和入口一致' },
   drift: { tone: 'warn', label: '不一致', tip: '地址和端口对得上入口，但凭据变了。入口换过凭据或线路机，这个出口可能连不上' },
@@ -439,7 +441,7 @@ const syncTip = (e: RouterExit) => (e.sync === 'drift' && e.entry?.lifecycle ===
 const syncable = (e: RouterExit) => e.sync === 'drift' && e.entry?.lifecycle === 'active';
 /** 只测不通 1 次的不算不可用（同告警，连续两次才算）：标黄 */
 const exitTone = (e: RouterExit) => (!exitUsable(e) ? 'bad' : e.alive === false || e.sync === 'drift' ? 'warn' : e.sync === 'unmanaged' ? 'neutral' : 'ok');
-const exitTip = (e: RouterExit) => [`${e.name}（${protoLabel(e.type)}）→ ${e.server}:${e.port}`, e.alive === false ? `连续 ${e.fail_streak} 次延迟测试不通` : e.delay_ms != null ? `延迟 ${e.delay_ms} ms` : '还没测过延迟', e.sync !== 'ok' && syncTip(e)].filter(Boolean).join('\n');
+const exitTip = (e: RouterExit) => [`${e.name}（${exitProto(e)}）→ ${e.server}:${e.port}`, e.alive === false ? `连续 ${e.fail_streak} 次延迟测试不通` : e.delay_ms != null ? `延迟 ${e.delay_ms} ms` : '还没测过延迟', e.sync !== 'ok' && syncTip(e)].filter(Boolean).join('\n');
 /** 入口名「团队1-02 · 实验线路机:20000」拆成节点与线路机:端口两行 */
 const splitEntry = (name: string) => { const i = name.indexOf(' · '); return i < 0 ? [name, ''] : [name.slice(0, i), name.slice(i + 3)]; };
 const BEAT_RANGE = '6h';
@@ -487,7 +489,7 @@ const ExitRow = React.memo(function ExitRow({ e, beats, onOpen, onSync }: { e: R
   const [node, via] = e.entry ? splitEntry(e.entry.name) : ['', ''];
   return (
     <tr>
-      <td><span className="cell-main strong" data-tip={`${e.name}（${protoLabel(e.type)}）→ ${e.server}:${e.port}`}>{e.name}</span><span className="sub">{protoLabel(e.type)}</span></td>
+      <td><span className="cell-main strong" data-tip={`${e.name}（${exitProto(e)}）→ ${e.server}:${e.port}`}>{e.name}</span><span className="sub">{exitProto(e)}</span></td>
       <td>{e.entry ? <><button type="button" className="btn btn-link" style={{ height: 'auto', padding: 0, maxWidth: '100%' }} data-tip={`${e.entry.name}
 打开这个节点的详情`} onClick={() => onOpen(e.entry!.node_id)}><span className="ellipsis">{node}</span></button>{via && <span className="sub ellipsis" data-tip={e.entry.name}>{via}</span>}</> : <span className="t-muted">—</span>}</td>
       {/* 一致的不标（一列「一致」只是噪音），只标不一致 / 不受管 */}

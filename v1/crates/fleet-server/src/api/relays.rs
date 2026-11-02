@@ -171,7 +171,8 @@ pub struct RelayPatchIn {
 /// 改成只 AnyTLS（Reality 入站改听回环、公网只剩 AnyTLS）要先满足三条，否则 409：
 /// ①线路机 agent 报了 sing-box 在跑、且认 `reality_public`（caps 有 reality_private），不然公网一个协议都没有或 Reality 照样开着；
 /// ②这台线路机上没有穿透入口：节点的 bridge 连的是入口的公网 REALITY 端口；
-/// ③没有软路由出口指着这台线路机上的入口：软路由（OpenClash）只用 Reality
+/// ③没有 Reality 软路由出口指着这台线路机上的入口（AnyTLS 出口不挡；先用 `router protocol --to anytls` 切过去）。
+/// 改成只 Reality 时同样挡住指着这台的 AnyTLS 软路由出口
 pub async fn patch_relay(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<RelayPatchIn>) -> ApiResult<Json<Value>> {
     let p = b.protocols.trim();
     if ![entries::BOTH, entries::REALITY, entries::ANYTLS].contains(&p) {
@@ -212,11 +213,19 @@ pub async fn patch_relay(a: Actor, State(st): State<AppState>, ApiPath(id): ApiP
             return Err(ApiError::conflict(format!("这台线路机上有穿透入口：{}。穿透的 bridge 连的是入口的公网 Reality 端口，先关掉穿透", names.join("、")))
                 .with_detail(json!({"reverse_entries": names})));
         }
+    }
+    // 软路由出口指着这台线路机上的入口、而要关掉它用的协议：Reality 出口挡「只 AnyTLS」，AnyTLS 出口挡「只 Reality」
+    if p != entries::BOTH && p != from {
+        let anytls_off = p == entries::REALITY;
         let ids: Vec<Uuid> = sqlx::query_scalar("select id from entry where relay_id = $1 and lifecycle <> 'removed'").bind(id).fetch_all(&mut *tx).await?;
-        let rs = crate::routers::exits_on_entries(&st.db, &ids).await?;
+        let rs = crate::routers::exits_on_entries_by(&st.db, &ids, Some(anytls_off)).await?;
         if !rs.is_empty() {
-            return Err(ApiError::conflict(format!("软路由只用 Reality，这些出口指着这台线路机上的入口：{}。先把它们改指到别的线路机", crate::routers::exits_text(&rs)))
-                .with_detail(json!({"router_exits": rs})));
+            let msg = if anytls_off {
+                format!("这些软路由出口用 AnyTLS 指着这台线路机上的入口：{}。先把它们切回 Reality（fleetctl router protocol <路由> --to reality）或改指到别的线路机", crate::routers::exits_text(&rs))
+            } else {
+                format!("这些软路由出口用 Reality 指着这台线路机上的入口：{}。先把它们切成 AnyTLS（fleetctl router protocol <路由> --to anytls）或改指到别的线路机", crate::routers::exits_text(&rs))
+            };
+            return Err(ApiError::conflict(msg).with_detail(json!({"router_exits": rs})));
         }
     }
     if p == from {

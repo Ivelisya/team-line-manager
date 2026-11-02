@@ -422,15 +422,23 @@ pub async fn exits_using_with_ip_nodes(db: &sqlx::PgPool, hosts: &[Uuid]) -> sql
 /// 各路由最近一次采集的快照里对上这个入口的出口（轮换凭据、停用入口的确认里列出）：`[{id, name, state, exits: [出口名]}]`，路由按列表的顺序
 pub async fn exits_on_entry(db: &sqlx::PgPool, entry: Uuid) -> sqlx::Result<Vec<Value>> { exits_on_entries(db, &[entry]).await }
 
-/// 同 `exits_on_entry`，指向这几条入口里任一条的出口（线路机改成只 AnyTLS 前核对用）
-pub async fn exits_on_entries(db: &sqlx::PgPool, entries: &[Uuid]) -> sqlx::Result<Vec<Value>> {
+/// 同 `exits_on_entry`，指向这几条入口里任一条的出口
+pub async fn exits_on_entries(db: &sqlx::PgPool, entries: &[Uuid]) -> sqlx::Result<Vec<Value>> { exits_on_entries_by(db, entries, None).await }
+
+/// 同 `exits_on_entries`，`anytls` 给了时只算这种协议的出口（true = AnyTLS，false = Reality 等别的）：线路机改入口协议前核对
+pub async fn exits_on_entries_by(db: &sqlx::PgPool, entries: &[Uuid], anytls: Option<bool>) -> sqlx::Result<Vec<Value>> {
     let mut out = vec![];
     if entries.is_empty() {
         return Ok(out);
     }
     for r in load(db, None).await? {
         let Some(snap) = r.snapshot() else { continue };
-        let exits: Vec<&str> = snap.exits.iter().filter(|x| x.entry.as_ref().is_some_and(|e| entries.contains(&e.id))).map(|x| x.name.as_str()).collect();
+        let exits: Vec<&str> = snap
+            .exits
+            .iter()
+            .filter(|x| x.entry.as_ref().is_some_and(|e| entries.contains(&e.id)) && anytls.is_none_or(|a| x.anytls() == a))
+            .map(|x| x.name.as_str())
+            .collect();
         if !exits.is_empty() {
             out.push(json!({"id": r.id, "name": r.name, "state": r.state(), "exits": exits}));
         }

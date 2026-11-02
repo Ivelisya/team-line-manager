@@ -1,4 +1,5 @@
-//! 替换节点时改软路由：把 OpenClash 源配置里指向旧节点入口的出口（vless 代理块）改成新节点入口的参数，名字、分组、规则都不动。
+//! 替换节点时改软路由：把 OpenClash 源配置里指向旧节点入口的出口（vless / anytls 代理块）改成新节点入口的参数，名字、分组、规则都不动。
+//! 换线路机、改出口指向、同步出口参数、切出口协议（router_protocol）都用这里的脚本。
 //! 作业步骤在 jobs/steps/replace.rs，这里是路由上执行的脚本（POSIX sh + awk：OpenWrt 是 busybox ash，awk 也是 busybox 的）。
 //!
 //! - 参数经脚本开头的 `K='v'` 赋值（`vars`，单引号转义）随 stdin 交给 `sh -s`，不上命令行；凭据（uuid、公钥、short-id）只在中控与路由之间，
@@ -13,19 +14,23 @@
 //!   上一个进程起的那份可能还在后台跑：两份同时改，先跑完的那份测不通改回时会把后一份写好的换掉。
 //! - 改的是源配置（`uci get openclash.config.config_path`，OpenClash 重启时由它生成运行配置）。
 //!   团队1 旁路由（team2 那台）上的看门服务会用模板重新生成配置，但它以当前配置为准、会自动写回模板，不用特殊处理。
-//! - 只改「- name: 出口名」（名字带不带引号都认；name 不在第一行也认）这个列表项里、字段那一层的 server / port / uuid / servername（或 sni），
-//!   和 reality-opts 下的 public-key / short-id，一共 6 行；每个出口恰好找到一处、6 个字段各一行，且它现在指向旧入口（或已经是新入口：重跑），
-//!   改动行数对得上才写，否则一行不写。流式写法（`- {name: …}`）认不出，按「写法认不出」拒绝。
+//! - 只改「- name: 出口名」（名字带不带引号都认；name 不在第一行也认）这个列表项里、字段那一层的几行。出口有两种协议（`KIND_<i>`）：
+//!   VLESS Reality 改 server / port / uuid / servername（或 sni）和 reality-opts 下的 public-key / short-id 共 6 行；
+//!   AnyTLS（`type: anytls`）改 server / port / password / sni 共 4 行。每个出口恰好找到一处、那几个字段各一行，且它现在指向旧入口（或已经是新入口：重跑），
+//!   改好的出口数对得上才写，否则一行不写。流式写法（`- {name: …}`）认不出，按「写法认不出」拒绝。
+//! - 切协议（出口现在的 type 不是要写的协议，只认 vless ↔ anytls）：整个列表项按新协议重写——`- name:` 原样放第一行，接着新协议的那组字段
+//!   （同订阅的写法：AnyTLS 带 skip-cert-verify、client-fingerprint、udp；Reality 带 network、tls、udp、flow、client-fingerprint、reality-opts），
+//!   协议无关的字段（dialer-proxy 之类）与注释原样留在后面；名字不变，所在分组、分流规则也就不变。
 //! - 写之前备份到 /etc/fleet-backup/openclash/<文件名>.<时间>（时间由中控给，回滚按它找；按文件名里的时间删：早于 KEEP_DAYS 天的、
 //!   超出最近 MAX_BACKUPS 份的删，但中控给的 PIN（还在用的作业引用的备份）一份不删）；
 //!   写完重启 OpenClash，等 API 起来后经 mihomo 逐个测改过的出口（同采集的 generate_204，各试 3 次）。重启失败、API 不起来、测不通：
 //!   脚本自己改回再重启，输出 rolled_back=1 并以非 0 退出。中控对之前已改好的路由按时间戳跑回滚（MODE=rollback）。
-//! - 改回只动这次改过的出口：现在还是这次写入的那组参数（server、port、uuid、servername、public-key、short-id 全部对上）的，
-//!   那 6 行换回备份里的原值（原样照抄）；既不是这次写的、也不是原值的（被别人改走的）不动，说明写到 stderr；其中还指向这次的新地址、只是凭据不是这次写的，另输出 skipped_<i>=1（<i> 是第几个出口，中控据此判定这台没改回、要人工处理；已指向别的地址的算改回；
+//! - 改回只动这次改过的出口：现在还是这次写入的那组参数（协议、server、port 与凭据全部对上）的，
+//!   那几行换回备份里的原值（原样照抄；这次切了协议的，整个列表项换回备份里的原样）；既不是这次写的、也不是原值的（被别人改走的）不动，说明写到 stderr；其中还指向这次的新地址、只是凭据不是这次写的，另输出 skipped_<i>=1（<i> 是第几个出口，中控据此判定这台没改回、要人工处理；已指向别的地址的算改回；
 //!   已经是原值的不输出）。不整份换回：同一台路由上别的作业（或人）之后改的出口不会被抹掉。备份不在了时，没有出口指向这次改成的地址
 //!   就是没什么可改回（rollback=none），有的话报错。
 //!
-//! 输出（`key=value` 行）：backup=<备份路径>、changed=<改了几行>、delay_<i>=<毫秒>、sha=<改完 / 改回后配置的 sha256>、replace=ok；回滚：sha=…、skipped_<i>=1（没改回的出口）、rollback=ok | none。
+//! 输出（`key=value` 行）：backup=<备份路径>、changed=<改了几行（切协议的按新写的整块算）>、delay_<i>=<毫秒>、sha=<改完 / 改回后配置的 sha256>、replace=ok；回滚：sha=…、skipped_<i>=1（没改回的出口）、rollback=ok | none。
 //! 退出码：2 = 没有动配置（认不出、找不到、指向别处、备份失败）；3 = 写了但重启 / API 不行；4 = 测不通；[`BUSY`] = 等不到锁，没有动配置。
 //! 3、4 都已经尝试改回。
 
@@ -61,12 +66,20 @@ pub struct Edit {
     pub sni: String,
     pub pbk: String,
     pub sid: String,
+    /// 写成 AnyTLS（`type: anytls`，password = `uuid`，没有公钥 / short-id）；false = VLESS Reality。
+    /// 出口现在就是这个协议的只改那几行，不是的整块换成这个协议（切协议）
+    #[serde(default)]
+    pub anytls: bool,
+}
+
+impl Edit {
+    fn kind(&self) -> &'static str { if self.anytls { "anytls" } else { "vless" } }
 }
 
 /// 凭据不打印
 impl std::fmt::Debug for Edit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Edit({} {}:{} → {}:{}，凭据…)", self.exit, self.old_server, self.old_port, self.server, self.port)
+        write!(f, "Edit({} {}:{} → {} {}:{}，凭据…)", self.exit, self.old_server, self.old_port, self.kind(), self.server, self.port)
     }
 }
 
@@ -108,6 +121,7 @@ pub fn apply_script(edits: &[Edit], now: time::OffsetDateTime, pins: &[String]) 
             ("SNI", e.sni.clone()),
             ("PBK", e.pbk.clone()),
             ("SID", e.sid.clone()),
+            ("KIND", e.kind().to_string()),
         ] {
             kv.push((format!("{k}_{i}"), v));
         }
@@ -130,6 +144,7 @@ pub fn rollback_script(stamp: &str, exits: &[Edit]) -> String {
             (format!("SNI_{i}"), e.sni.clone()),
             (format!("PBK_{i}"), e.pbk.clone()),
             (format!("SID_{i}"), e.sid.clone()),
+            (format!("KIND_{i}"), e.kind().to_string()),
         ]);
     }
     let kv: Vec<(&str, &str)> = kv.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
@@ -177,7 +192,7 @@ oc_restart() { /etc/init.d/openclash restart >/dev/null 2>&1; }
 emit_sha() { _h=$(sha256sum "$CFG" 2>/dev/null | awk '{print $1}'); [ -z "$_h" ] || echo "sha=$_h"; }
 i=1
 while [ "$i" -le "$N" ]; do
-  export "NAME_$i" "OSRV_$i" "OPORT_$i" "SRV_$i" "PORT_$i" "UUID_$i" "SNI_$i" "PBK_$i" "SID_$i"
+  export "NAME_$i" "OSRV_$i" "OPORT_$i" "SRV_$i" "PORT_$i" "UUID_$i" "SNI_$i" "PBK_$i" "SID_$i" "KIND_$i"
   i=$((i + 1))
 done
 export N
@@ -212,17 +227,23 @@ function field(k,   L, j, rest) {
 }
 function bad(m) { errs = errs "fleet：" m "\n" }
 function note(m) { notes = notes "fleet：" m "\n" }
-# 改回时出口的 6 个字段按这些名字记（servername 与 sni 记成 sni）
+# 出口 i 要写成的协议（KIND_i）：anytls / vless（旧作业的参数里没有，算 vless）
+function kd(i) { return ENVIRON["KIND_" i] == "anytls" ? "anytls" : "vless" }
+# 改回时出口的字段按这些名字记（servername 与 sni 记成 sni）
 function fkey(k) { return (k == "servername") ? "sni" : k }
-function isf(k) { return k == "server" || k == "port" || k == "uuid" || k == "sni" }
+function isf(k) { return k == "server" || k == "port" || k == "uuid" || k == "password" || k == "sni" }
 function isro(k) { return k == "public-key" || k == "short-id" }
-# 备份里出口 i 的 6 个字段：值原样记下（含引号、注释），改回时照抄
+# 换协议时去掉的字段（协议相关的，新协议的那几行另写）；别的（dialer-proxy 之类）原样留着
+function isproto(k) { return k ~ /^(type|server|port|uuid|password|flow|network|tls|udp|servername|sni|reality-opts|client-fingerprint|fingerprint|skip-cert-verify|alpn|packet-encoding|encryption|xudp|idle-session-check-interval|idle-session-timeout|min-idle-session)$/ }
+# 备份里出口 i 的字段：值原样记下（含引号、注释），改回时照抄；另记它的类型与整个列表项（切过协议的整块换回）
 function grab(i,   k, L, d, ro, rest, j, key, v) {
-  ro = 0
+  ro = 0; obn[i] = cnt; ot[i] = ""
   for (k = 1; k <= cnt; k++) {
+    ob[i, k] = buf[k]
     L = buf[k]; sub(/\r$/, "", L)
     if (field(k)) {
       ro = (FK == "reality-opts" && unq(FV) == "")
+      if (FK == "type") ot[i] = low(unq(FV))
       v = FV; sub(/\r$/, "", v); key = fkey(FK)
       if (isf(key)) { ov[i, key] = v; og[i, key]++ }
       continue
@@ -234,97 +255,165 @@ function grab(i,   k, L, d, ro, rest, j, key, v) {
     }
   }
 }
-# 配置里出口 i 现在还是这次改成的（SRV_i:PORT_i）：6 行换回备份里的值。已经是原值的不动；被别人改走的不动，记一条说明
-function restore(i,   k, L, d, ro, rest, j, key, cr, cs, cp, cu, cn, cb, ci, nl, mine, n, K, keep, ch) {
-  cs = ""; cp = ""; cu = ""; cn = ""; cb = ""; ci = ""; ro = 0
+# 列表项现在的 type、server、port、uuid、password、sni（或 servername）、public-key、short-id（去掉引号）：CT、CS、CP、CU、CW、CN、CB、CI
+function scan(   k, L, d, ro, rest, j, key) {
+  CT = ""; CS = ""; CP = ""; CU = ""; CW = ""; CN = ""; CB = ""; CI = ""; ro = 0
   for (k = 1; k <= cnt; k++) {
     L = buf[k]
     if (field(k)) {
       ro = (FK == "reality-opts" && unq(FV) == "")
-      if (FK == "server") cs = unq(FV)
-      else if (FK == "port") cp = unq(FV)
-      else if (FK == "uuid") cu = unq(FV)
-      else if (FK == "servername" || FK == "sni") cn = unq(FV)
+      if (FK == "type") CT = low(unq(FV))
+      else if (FK == "server") CS = unq(FV)
+      else if (FK == "port") CP = unq(FV)
+      else if (FK == "uuid") CU = unq(FV)
+      else if (FK == "password") CW = unq(FV)
+      else if (FK == "servername" || FK == "sni") CN = unq(FV)
       continue
     }
     d = ind(L)
     if (ro && d > F && L !~ /^[ ]*#/) {
       rest = substr(L, d + 1); j = index(rest, ":"); key = j ? substr(rest, 1, j - 1) : ""
-      if (key == "public-key") cb = unq(substr(rest, j + 1))
-      else if (key == "short-id") ci = unq(substr(rest, j + 1))
+      if (key == "public-key") CB = unq(substr(rest, j + 1))
+      else if (key == "short-id") CI = unq(substr(rest, j + 1))
     }
   }
+}
+# 配置里出口 i 现在还是这次改成的（SRV_i:PORT_i）：那几行换回备份里的值（这次切了协议的整个列表项换回备份里的原样）。
+# 已经是原值的不动；被别人改走的不动，记一条说明
+function restore(i,   k, L, d, ro, rest, j, key, cr, nl, mine, n, nk, K, inK, keep, ch, t) {
+  scan(); t = kd(i)
   # 「现在仍是这次写的」：写入的整组参数都对得上（只比 server:port 的话，别的作业之后把同一个地址配上别的凭据也会被换回）
-  mine = (low(cs) == low(ENVIRON["SRV_" i]) && cp == ENVIRON["PORT_" i] && low(cu) == low(ENVIRON["UUID_" i]) && cn == ENVIRON["SNI_" i] && cb == ENVIRON["PBK_" i] && ci == ENVIRON["SID_" i])
+  if (t == "anytls") mine = (CT == t && low(CS) == low(ENVIRON["SRV_" i]) && CP == ENVIRON["PORT_" i] && low(CW) == low(ENVIRON["UUID_" i]) && CN == ENVIRON["SNI_" i])
+  else mine = (CT == t && low(CS) == low(ENVIRON["SRV_" i]) && CP == ENVIRON["PORT_" i] && low(CU) == low(ENVIRON["UUID_" i]) && CN == ENVIRON["SNI_" i] && CB == ENVIRON["PBK_" i] && CI == ENVIRON["SID_" i])
   if (NOBK) {
-    if (mine) bad("改之前的备份不在了，出口「" nm[i] "」现在指向这次改成的 " cs ":" cp "，换不回")
+    if (mine) bad("改之前的备份不在了，出口「" nm[i] "」现在指向这次改成的 " CS ":" CP "，换不回")
     return
   }
   if (bhits[i] != 1) { bad("改之前的备份里" (bhits[i] ? "有 " bhits[i] " 个" : "没有") "名为「" nm[i] "」的出口，换不回"); return }
-  if (low(cs) == low(unq(ov[i, "server"])) && cp == unq(ov[i, "port"])) return
+  if (low(CS) == low(unq(ov[i, "server"])) && CP == unq(ov[i, "port"])) return
   if (!mine) {
     # 还指向这次的新入口、只是凭据变了：路由停在本作业的入口上（轮换过就不通），算没改回（skipped_<i>）；
     # 已经指向别处（别的作业 / 人有意改走的）：那是别人的决定，记一句、算改回，不让本作业卡在需人工处理
-    if (low(cs) == low(ENVIRON["SRV_" i]) && cp == ENVIRON["PORT_" i]) { sk[i] = 1; note("出口「" nm[i] "」还指向这次改成的 " cs ":" cp "，但 uuid、servername、public-key 或 short-id 已经不是这次写的（之后又被改过），没有改回") }
-    else note("出口「" nm[i] "」现在指向 " cs ":" cp "，不是这次改成的 " ENVIRON["SRV_" i] ":" ENVIRON["PORT_" i] "（之后又被改过），没有改回")
+    if (low(CS) == low(ENVIRON["SRV_" i]) && CP == ENVIRON["PORT_" i]) { sk[i] = 1; note("出口「" nm[i] "」还指向这次改成的 " CS ":" CP "，但" (t == "anytls" ? " 类型、password 或 sni" : " uuid、servername、public-key 或 short-id") " 已经不是这次写的（之后又被改过），没有改回") }
+    else note("出口「" nm[i] "」现在指向 " CS ":" CP "，不是这次改成的 " ENVIRON["SRV_" i] ":" ENVIRON["PORT_" i] "（之后又被改过），没有改回")
     return
   }
-  split("server port uuid sni public-key short-id", K, " ")
-  for (n = 1; n <= 6; n++) if (og[i, K[n]] != 1) { bad("改之前的备份里出口「" nm[i] "」的写法认不出（" K[n] " 有 " (og[i, K[n]] + 0) " 行），换不回"); return }
+  # 改之前是另一种协议（这次切了协议）：整个列表项换回备份里的原样
+  if (ot[i] != CT) {
+    for (k = 1; k <= obn[i]; k++) buf[k] = ob[i, k]
+    cnt = obn[i]; diff += cnt
+    return
+  }
+  nk = split(KS[t], K, " ")
+  for (n = 1; n <= nk; n++) { inK[K[n]] = 1; if (og[i, K[n]] != 1) { bad("改之前的备份里出口「" nm[i] "」的写法认不出（" K[n] " 有 " (og[i, K[n]] + 0) " 行），换不回"); return } }
   ro = 0; ch = 0; split("", seen)
   for (k = 1; k <= cnt; k++) keep[k] = buf[k]
   for (k = 1; k <= cnt; k++) {
     L = buf[k]; cr = (L ~ /\r$/) ? "\r" : ""; nl = ""
     if (field(k)) {
       ro = (FK == "reality-opts" && unq(FV) == ""); key = fkey(FK)
-      if (isf(key)) nl = FP FK ":" ov[i, key] cr
+      if (inK[key]) nl = FP FK ":" ov[i, key] cr
     } else {
       d = ind(L)
       if (ro && d > F && L !~ /^[ ]*#/) {
         rest = substr(L, d + 1); j = index(rest, ":"); key = j ? substr(rest, 1, j - 1) : ""
-        if (isro(key)) nl = substr(L, 1, d) key ":" ov[i, key] cr
+        if (inK[key]) nl = substr(L, 1, d) key ":" ov[i, key] cr
       }
     }
     if (nl == "") continue
     seen[key]++
     if (nl != buf[k]) { buf[k] = nl; ch++ }
   }
-  for (n = 1; n <= 6; n++) if (seen[K[n]] != 1) {
+  for (n = 1; n <= nk; n++) if (seen[K[n]] != 1) {
     for (k = 1; k <= cnt; k++) buf[k] = keep[k]
     bad("出口「" nm[i] "」现在的写法认不出（" K[n] " 有 " (seen[K[n]] + 0) " 行），没有改回")
     return
   }
   diff += ch
 }
-function edit(i,   k, L, d, ro, rest, j, key, cr, cs, cp) {
-  ro = 0; cs = ""; cp = ""; split("", seen)
+# 切协议：整个列表项按协议 t 重写。名字原样，协议无关的字段（dialer-proxy 之类）与注释原样留在后面，协议相关的换成 t 的那组
+function swap(i, t,   k, L, cr, sp, nb, n, drop, d, nv) {
+  cr = (buf[1] ~ /\r$/) ? "\r" : ""
+  sp = sprintf("%" F "s", "")
+  nv = ""
+  for (k = 1; k <= cnt; k++) if (field(k) && FK == "name") { nv = FV; sub(/\r$/, "", nv) }
+  n = 0
+  if (field(1)) nb[++n] = FP "name:" nv cr
+  else { nb[++n] = buf[1]; nb[++n] = sp "name:" nv cr }
+  nb[++n] = sp "type: " t cr
+  nb[++n] = sp "server: " q(ENVIRON["SRV_" i], 0) cr
+  nb[++n] = sp "port: " (ENVIRON["PORT_" i] + 0) cr
+  if (t == "anytls") {
+    nb[++n] = sp "password: " q(ENVIRON["UUID_" i], 0) cr
+    nb[++n] = sp "sni: " q(ENVIRON["SNI_" i], 0) cr
+    nb[++n] = sp "skip-cert-verify: true" cr
+    nb[++n] = sp "client-fingerprint: chrome" cr
+    nb[++n] = sp "udp: true" cr
+  } else {
+    nb[++n] = sp "uuid: " q(ENVIRON["UUID_" i], 0) cr
+    nb[++n] = sp "network: tcp" cr
+    nb[++n] = sp "tls: true" cr
+    nb[++n] = sp "udp: true" cr
+    nb[++n] = sp "flow: xtls-rprx-vision" cr
+    nb[++n] = sp "servername: " q(ENVIRON["SNI_" i], 0) cr
+    nb[++n] = sp "client-fingerprint: chrome" cr
+    nb[++n] = sp "reality-opts:" cr
+    nb[++n] = sp "  public-key: " q(ENVIRON["PBK_" i], 0) cr
+    nb[++n] = sp "  short-id: " q(ENVIRON["SID_" i], 1) cr
+  }
+  drop = 0
+  for (k = 1; k <= cnt; k++) {
+    L = buf[k]
+    if (field(k)) {
+      drop = (FK == "name" || isproto(FK))
+      if (!drop) nb[++n] = (k == 1) ? sp substr(L, F + 1) : L
+      continue
+    }
+    if (k == 1) continue
+    # 字段那一层及更外层的注释、空行留着；协议相关字段下面的（reality-opts 的两行）跟着去掉
+    d = ind(L)
+    if (d <= F || !drop) nb[++n] = L
+  }
+  for (k = 1; k <= n; k++) buf[k] = nb[k]
+  cnt = n; changed += n; done++
+}
+function edit(i,   k, L, d, ro, rest, j, key, cr, t, nk, K, n, got) {
+  scan(); t = kd(i)
+  if (!((low(CS) == low(ENVIRON["OSRV_" i]) && CP == ENVIRON["OPORT_" i]) || (CT == t && low(CS) == low(ENVIRON["SRV_" i]) && CP == ENVIRON["PORT_" i]))) {
+    bad("出口「" nm[i] "」现在指向 " CS ":" CP "，不是旧节点的入口（" ENVIRON["OSRV_" i] ":" ENVIRON["OPORT_" i] "），不改")
+    return
+  }
+  if (CT != t) {
+    if (CT != "vless" && CT != "anytls") { bad("出口「" nm[i] "」的类型是「" CT "」，只认 vless 与 anytls，不改"); return }
+    swap(i, t)
+    return
+  }
+  ro = 0; split("", seen)
   for (k = 1; k <= cnt; k++) {
     L = buf[k]; cr = (L ~ /\r$/) ? "\r" : ""
     if (field(k)) {
       ro = (FK == "reality-opts" && unq(FV) == "")
-      if (FK == "server") { cs = unq(FV); buf[k] = FP "server: " q(ENVIRON["SRV_" i], 0) cr; seen["server"]++ }
-      else if (FK == "port") { cp = unq(FV); buf[k] = FP "port: " (ENVIRON["PORT_" i] + 0) cr; seen["port"]++ }
-      else if (FK == "uuid") { buf[k] = FP "uuid: " q(ENVIRON["UUID_" i], 0) cr; seen["uuid"]++ }
+      if (FK == "server") { buf[k] = FP "server: " q(ENVIRON["SRV_" i], 0) cr; seen["server"]++ }
+      else if (FK == "port") { buf[k] = FP "port: " (ENVIRON["PORT_" i] + 0) cr; seen["port"]++ }
+      else if (FK == "uuid" && t == "vless") { buf[k] = FP "uuid: " q(ENVIRON["UUID_" i], 0) cr; seen["uuid"]++ }
+      else if (FK == "password" && t == "anytls") { buf[k] = FP "password: " q(ENVIRON["UUID_" i], 0) cr; seen["password"]++ }
       else if (FK == "servername" || FK == "sni") { buf[k] = FP FK ": " q(ENVIRON["SNI_" i], 0) cr; seen["sni"]++ }
       continue
     }
     d = ind(L)
-    if (ro && d > F && L !~ /^[ ]*#/) {
+    if (t == "vless" && ro && d > F && L !~ /^[ ]*#/) {
       rest = substr(L, d + 1); j = index(rest, ":"); key = j ? substr(rest, 1, j - 1) : ""
-      if (key == "public-key") { buf[k] = substr(L, 1, d) "public-key: " q(ENVIRON["PBK_" i], 0) cr; seen["pbk"]++ }
-      else if (key == "short-id") { buf[k] = substr(L, 1, d) "short-id: " q(ENVIRON["SID_" i], 1) cr; seen["sid"]++ }
+      if (key == "public-key") { buf[k] = substr(L, 1, d) "public-key: " q(ENVIRON["PBK_" i], 0) cr; seen["public-key"]++ }
+      else if (key == "short-id") { buf[k] = substr(L, 1, d) "short-id: " q(ENVIRON["SID_" i], 1) cr; seen["short-id"]++ }
     }
   }
-  if (seen["server"] != 1 || seen["port"] != 1 || seen["uuid"] != 1 || seen["sni"] != 1 || seen["pbk"] != 1 || seen["sid"] != 1) {
-    bad("出口「" nm[i] "」的写法认不出：server、port、uuid、servername、reality-opts 的 public-key 与 short-id 应各有一行，实际 " \
-      (seen["server"] + 0) "、" (seen["port"] + 0) "、" (seen["uuid"] + 0) "、" (seen["sni"] + 0) "、" (seen["pbk"] + 0) "、" (seen["sid"] + 0))
+  nk = split(KS[t], K, " "); got = ""
+  for (n = 1; n <= nk; n++) got = got (n > 1 ? "、" : "") (seen[K[n]] + 0)
+  for (n = 1; n <= nk; n++) if (seen[K[n]] != 1) {
+    bad("出口「" nm[i] "」的写法认不出：" (t == "anytls" ? "server、port、password、sni" : "server、port、uuid、servername、reality-opts 的 public-key 与 short-id") " 应各有一行，实际 " got)
     return
   }
-  if (!((low(cs) == low(ENVIRON["OSRV_" i]) && cp == ENVIRON["OPORT_" i]) || (low(cs) == low(ENVIRON["SRV_" i]) && cp == ENVIRON["PORT_" i]))) {
-    bad("出口「" nm[i] "」现在指向 " cs ":" cp "，不是旧节点的入口（" ENVIRON["OSRV_" i] ":" ENVIRON["OPORT_" i] "），不改")
-    return
-  }
-  changed += 6
+  changed += nk; done++
 }
 # 一个列表项读完：是要改的出口就改，原样（或改后）输出
 function item(   k, d, d2, j, v, i, who) {
@@ -343,7 +432,9 @@ function item(   k, d, d2, j, v, i, who) {
 BEGIN {
   n = ENVIRON["N"] + 0; for (i = 1; i <= n; i++) { nm[i] = ENVIRON["NAME_" i]; hits[i] = 0; bhits[i] = 0 }
   REV = (ENVIRON["REV"] == "1"); NOBK = REV && ARGV[1] == "/dev/null"; pass = REV ? 1 : 2
-  sec = 0; I = -1; cnt = 0; changed = 0; diff = 0; errs = ""; notes = ""
+  sec = 0; I = -1; cnt = 0; changed = 0; done = 0; diff = 0; errs = ""; notes = ""
+  # 一种协议改的那几个字段：vless 6 个，anytls 4 个
+  KS["vless"] = "server port uuid sni public-key short-id"; KS["anytls"] = "server port password sni"
 }
 {
   np = (!REV || FILENAME == ARGV[ARGC - 1]) ? 2 : 1
@@ -367,7 +458,7 @@ END {
     else if (hits[i] == 0) bad("配置的 proxies 里没有出口「" nm[i] "」（或它是流式写法 {name: …}，认不出）")
     else if (hits[i] > 1) bad("配置里有 " hits[i] " 个名为「" nm[i] "」的出口，不知道" (REV ? "改回" : "改") "哪个")
   }
-  printf("%d", REV ? diff : changed) > ENVIRON["STATF"]
+  if (REV) { printf("%d", diff) > ENVIRON["STATF"] } else { printf("%d %d", done, changed) > ENVIRON["STATF"] }
   if (REV) printf("%s", notes) > ENVIRON["NOTEF"]
   if (REV) for (i = 1; i <= n; i++) if (sk[i]) printf("skipped_%d=1\n", i) > ENVIRON["SKIPF"]
   if (errs != "") { printf("%s", errs) > ENVIRON["ERRF"]; exit 2 }
@@ -402,8 +493,10 @@ mktmp || { say "在 $(dirname "$CFG") 里建临时文件失败，没有改动"; 
 if ! ERRF="$W/err" STATF="$W/stat" awk -f "$W/edit.awk" "$CFG" > "$TMP"; then
   rm -f "$TMP"; cat "$W/err" >&2 2>/dev/null; say "配置没有改动"; exit 2
 fi
-changed=$(cat "$W/stat" 2>/dev/null || true)
-if [ "$changed" != "$((N * 6))" ]; then rm -f "$TMP"; say "改动的行数不对（应为 $((N * 6))，实际 ${changed:-0}），配置没有改动"; exit 2; fi
+# stat：改好的出口数、改了几行（切协议的按新写的整块算）
+set -- $(cat "$W/stat" 2>/dev/null || true)
+changed=${2:-0}
+if [ "${1:-0}" != "$N" ]; then rm -f "$TMP"; say "改好的出口数不对（应为 $N，实际 ${1:-0}），配置没有改动"; exit 2; fi
 if ! { mkdir -p "$BKDIR" && cp -p "$CFG" "$BK"; }; then rm -f "$TMP"; say "备份 $CFG 失败，配置没有改动"; exit 2; fi
 echo "backup=$BK"
 # 按文件名里的时间删（cp -p 保留了配置的修改时间，文件时间不能用）：早于 KEEP 的，和超出最近 MAXBK 份的；PIN 里的时间戳一份不删
@@ -530,6 +623,7 @@ mod tests {
             sni: "www.apple.com".into(),
             pbk: "NEW_PBK-abc_123".into(),
             sid: "01234567".into(),
+            anytls: false,
         }
     }
 
@@ -817,6 +911,95 @@ rules:\n- MATCH,节点01组\n";
                 assert!(!f.path("etc/fleet-backup").exists() && f.read("restart.log").is_empty());
                 f.assert_no_leftovers();
             }
+        }
+    }
+
+    /// 改成 AnyTLS 的出口：`old` 是它现在指向的端口，写成 AnyTLS 端口 `port`
+    fn at_edit(exit: &str, srv: &str, old: u16, port: u16) -> Edit {
+        Edit { exit: exit.into(), old_server: srv.into(), old_port: old, server: srv.into(), port, pbk: String::new(), sid: String::new(), anytls: true, ..edit(exit) }
+    }
+
+    /// 这几个出口的 sync（按改好的配置对：入口端口 20003 / 20004，AnyTLS 端口 40003 / 40004，凭据是这次写的）
+    fn syncs(cfg: &str) -> Vec<(String, Option<&'static str>, &'static str)> {
+        use super::super::clash;
+        let entry = |port: i32, host: &str| clash::Entry {
+            id: uuid::Uuid::now_v7(),
+            port,
+            lifecycle: "active".into(),
+            client_uuid: UUID_NEW.parse().unwrap(),
+            short_id: "01234567".into(),
+            node_id: uuid::Uuid::now_v7(),
+            relay_id: uuid::Uuid::now_v7(),
+            public_host: host.into(),
+            relay_ip: "198.51.100.2".into(),
+            sni: "www.apple.com".into(),
+            pbk: "NEW_PBK-abc_123".into(),
+            relay_name: "线路机2".into(),
+            node_name: "团队2-03".into(),
+            anytls_port: Some(port + 20000),
+            anytls_live: true,
+        };
+        let es = [entry(20003, "relay.test"), entry(20004, "relay.test")];
+        clash::parse(cfg).unwrap().into_iter().filter(|p| p.name.starts_with('节')).map(|p| (p.name.clone(), p.proto(), clash::match_entry(&p, &es).1)).collect()
+    }
+
+    /// 切协议：Reality → AnyTLS 整块换成 AnyTLS 的写法（名字、引号、协议无关的字段、注释、别的出口都不动），改完解析回来对上同一个入口；
+    /// 重跑只改那 4 行；AnyTLS 出口的替换只改 server / port / password / sni；改回整块换回原样；AnyTLS → Reality 同样
+    #[cfg(unix)]
+    #[test]
+    fn anytls_line_edit_and_protocol_swap() {
+        let cfg = CONFIG.replace("  port: 20004\n", "  port: 20004\n  dialer-proxy: 跳板\n");
+        let n1_at = format!("- name: 节点01\n  type: anytls\n  server: 198.51.100.2\n  port: 40003\n  password: {UUID_NEW}\n  sni: www.apple.com\n  skip-cert-verify: true\n  client-fingerprint: chrome\n  udp: true\n");
+        let n2_at = format!("- name: \"节点02\"\n  type: anytls\n  server: relay.test\n  port: 40004\n  password: {UUID_NEW}\n  sni: www.apple.com\n  skip-cert-verify: true\n  client-fingerprint: chrome\n  udp: true\n  dialer-proxy: 跳板\n");
+        let i1 = cfg.find("- name: 节点01\n").unwrap();
+        let c1 = cfg.find("# 第二个").unwrap();
+        let i2 = cfg.find("- type: vless\n  name: \"节点02\"").unwrap();
+        let o2 = cfg.find("- name: 别人的").unwrap();
+        let switched = format!("{}{n1_at}{}{n2_at}{}", &cfg[..i1], &cfg[c1..i2], &cfg[o2..]);
+        let to_at = [at_edit("节点01", "198.51.100.2", 20003, 40003), at_edit("节点02", "relay.test", 20004, 40004)];
+        for bb in shells() {
+            let f = Fake::new(&cfg, bb);
+            let o = f.run(&apply_script(&to_at, at(S), &[]), &[("节点01", 60), ("节点02", 61)]);
+            assert_eq!((o.code, o.kv("replace"), o.kv("changed")), (0, Some("ok"), Some("20")), "busybox={bb} {o:?}");
+            assert_eq!(f.read("etc/openclash/config/c.yaml"), switched, "busybox={bb}");
+            assert_eq!(syncs(&switched), [("节点01".to_string(), Some("anytls"), "ok"), ("节点02".to_string(), Some("anytls"), "ok")]);
+            assert!(!o.stdout.contains(UUID_NEW) && !o.stderr.contains(UUID_NEW));
+            // 重跑：已经是 AnyTLS 且指向新端口，只改 4 行，内容不变
+            let o = f.run(&apply_script(&to_at[..1], at("20261023-020000Z"), &[]), &[("节点01", 60)]);
+            assert_eq!((o.code, o.kv("changed")), (0, Some("4")), "busybox={bb} {o:?}");
+            assert_eq!(f.read("etc/openclash/config/c.yaml"), switched);
+            // AnyTLS 出口的替换（换线路机、替换节点）：保持 AnyTLS，只改 server / port / password / sni 四行
+            let mv = Edit { server: "203.0.113.7".into(), port: 40020, uuid: "33333333-3333-4333-8333-333333333333".into(), ..at_edit("节点01", "198.51.100.2", 40003, 40003) };
+            let o = f.run(&apply_script(std::slice::from_ref(&mv), at("20261023-030000Z"), &[]), &[("节点01", 60)]);
+            assert_eq!((o.code, o.kv("changed")), (0, Some("4")), "busybox={bb} {o:?}");
+            let moved = switched.replacen(&format!("  server: 198.51.100.2\n  port: 40003\n  password: {UUID_NEW}\n"), "  server: 203.0.113.7\n  port: 40020\n  password: 33333333-3333-4333-8333-333333333333\n", 1);
+            assert_eq!(f.read("etc/openclash/config/c.yaml"), moved, "busybox={bb}");
+            let o = f.run(&rollback_script("20261023-030000Z", &[mv]), &[]);
+            assert_eq!((o.code, o.kv("rollback")), (0, Some("ok")), "busybox={bb} {o:?}");
+            assert_eq!(f.read("etc/openclash/config/c.yaml"), switched, "AnyTLS 出口按 4 行改回");
+            // 改回第一次切之前：两个出口整块换回 Reality 的原样
+            let o = f.run(&rollback_script(S, &to_at), &[]);
+            assert_eq!((o.code, o.kv("rollback")), (0, Some("ok")), "busybox={bb} {o:?}");
+            assert_eq!(f.read("etc/openclash/config/c.yaml"), cfg, "busybox={bb}");
+            // AnyTLS → Reality：整块换成 Reality 的写法，改完解析回来对上同一个入口；改回换回 AnyTLS 原样
+            let f = Fake::new(&switched, bb);
+            let back = [Edit { old_server: "198.51.100.2".into(), old_port: 40003, port: 20003, ..edit("节点01") }, Edit { old_port: 40004, port: 20004, ..edit2() }];
+            let o = f.run(&apply_script(&back, at(S), &[]), &[("节点01", 60), ("节点02", 61)]);
+            assert_eq!((o.code, o.kv("replace")), (0, Some("ok")), "busybox={bb} {o:?}");
+            let now = f.read("etc/openclash/config/c.yaml");
+            let n1_vl = format!("- name: 节点01\n  type: vless\n  server: 198.51.100.2\n  port: 20003\n  uuid: {UUID_NEW}\n  network: tcp\n  tls: true\n  udp: true\n  flow: xtls-rprx-vision\n  servername: www.apple.com\n  client-fingerprint: chrome\n  reality-opts:\n    public-key: NEW_PBK-abc_123\n    short-id: '01234567'\n");
+            assert!(now.contains(&format!("{n1_vl}# 第二个")), "busybox={bb}\n{now}");
+            assert!(now.contains("- name: \"节点02\"\n  type: vless\n  server: relay.test\n  port: 20004\n") && now.contains("    short-id: '01234567'\n  dialer-proxy: 跳板\n- name: 别人的"), "{now}");
+            assert_eq!(syncs(&now), [("节点01".to_string(), Some("reality"), "ok"), ("节点02".to_string(), Some("reality"), "ok")]);
+            let o = f.run(&rollback_script(S, &back), &[]);
+            assert_eq!((o.code, o.kv("rollback")), (0, Some("ok")), "busybox={bb} {o:?}");
+            assert_eq!(f.read("etc/openclash/config/c.yaml"), switched, "busybox={bb}");
+            // 别的类型不切；指向别处的不切
+            let f = Fake::new(&cfg.replace("  type: ss\n", "  type: trojan\n"), bb);
+            let o = f.run(&apply_script(&[at_edit("别人的", "203.0.113.9", 8388, 28388)], at(S), &[]), &[]);
+            assert!(o.code == 2 && o.stderr.contains("类型是「trojan」，只认 vless 与 anytls"), "busybox={bb} {o:?}");
+            let o = f.run(&apply_script(&[at_edit("节点01", "198.51.100.2", 20009, 40003)], at(S), &[]), &[]);
+            assert!(o.code == 2 && o.stderr.contains("现在指向 198.51.100.2:20003"), "busybox={bb} {o:?}");
         }
     }
 

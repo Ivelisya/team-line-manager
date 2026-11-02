@@ -44,11 +44,23 @@ pub struct ExitPlan {
     /// 改不了的原因（替换时新节点上对不上入口）：预览照样列出这个出口，同时是 blocker
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// 写成 AnyTLS（端口是新入口的 AnyTLS 端口，执行时从库里算）；false = VLESS Reality。出口原来是什么协议就还是什么，切协议（router_protocol）时是目标协议
+    #[serde(default)]
+    pub anytls: bool,
 }
 
 impl ExitPlan {
     /// 预览里的「改成」：换线路机的新端口建好才知道
     pub fn to(&self) -> String { format!("{}:{}", self.server, self.port.map_or("新端口".to_string(), |p| p.to_string())) }
+
+    /// 协议一个词：anytls / reality
+    pub fn proto(&self) -> &'static str { if self.anytls { crate::routers::clash::ANYTLS } else { crate::routers::clash::REALITY } }
+
+    /// 出口是 AnyTLS 时：协议跟着出口，换了入口的端口要等执行时按新入口的 AnyTLS 端口算（预览写「新端口」）
+    pub fn keep_proto(self, anytls: bool) -> ExitPlan {
+        let port = if anytls && self.new_entry_id != Some(self.old_entry_id) { None } else { self.port };
+        ExitPlan { anytls, port, ..self }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -155,6 +167,7 @@ pub fn replace_exit(old_es: &[Ent], new_es: &[Ent], er: &EntryRef, srv: &str, po
         server: new_server(srv, &oe.relay_ip, &ne.relay_ip, &ne.public_host),
         port: Some(ne.port as u16),
         error: None,
+        anytls: false,
     }))
 }
 
@@ -236,7 +249,7 @@ pub fn scan_routers_offline(
         for (x, er) in crate::routers::exits_to(&snap, node) {
             let (Some(srv), Some(port)) = (x.server.as_deref(), x.port) else { continue };
             match pick(er, srv, port) {
-                Some(Ok(e)) => exits.push(ExitPlan { exit: x.name.clone(), ..e }),
+                Some(Ok(e)) => exits.push(ExitPlan { exit: x.name.clone(), ..e }.keep_proto(x.anytls())),
                 Some(Err(why)) => {
                     if blocking {
                         blockers.push(format!("软路由「{}」的出口「{}」：{why}", r.name, x.name));
@@ -250,6 +263,7 @@ pub fn scan_routers_offline(
                         server: String::new(),
                         port: None,
                         error: Some(why),
+                        anytls: x.anytls(),
                     });
                 }
                 None => {}
@@ -281,7 +295,7 @@ pub fn routers_view(rs: &[RouterPlan]) -> Value {
             "id": r.id, "name": r.name, "state": r.state,
             "exits": r.exits.iter().map(|e| json!({
                 "exit": e.exit, "old_entry_id": e.old_entry_id, "new_entry_id": e.new_entry_id,
-                "from": format!("{}:{}", e.old_server, e.old_port), "to": if e.error.is_some() { Value::Null } else { json!(e.to()) }, "error": e.error,
+                "from": format!("{}:{}", e.old_server, e.old_port), "to": if e.error.is_some() { Value::Null } else { json!(e.to()) }, "error": e.error, "proto": e.proto(),
             })).collect::<Vec<_>>(),
         }))
         .collect::<Vec<_>>())

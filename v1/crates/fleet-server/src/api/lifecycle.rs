@@ -168,13 +168,31 @@ pub async fn relay_addr<'e>(db: impl sqlx::PgExecutor<'e>, id: Uuid) -> sqlx::Re
     sqlx::query_as("select host(m.primary_ip), r.public_host from relay r join machine m on m.id = r.machine_id where r.machine_id = $1").bind(id).fetch_one(db).await
 }
 
-/// 软路由（OpenClash）出口只用 Reality：有出口要指到目标线路机、而它只开 AnyTLS 时返回不能指过去的原因（换线路机、改出口指向共用）
+/// 出口要指到目标线路机、而它没开出口用的协议时返回不能指过去的原因（换线路机、改出口指向共用）：
+/// Reality 出口指不到只开 AnyTLS 的线路机；AnyTLS 出口指不到只开 Reality、或 sing-box 没在跑的线路机
 pub async fn anytls_exit_blocker(db: impl sqlx::PgExecutor<'_>, to_relay: Uuid, routers: &[RouterPlan]) -> sqlx::Result<Option<String>> {
-    if routers.is_empty() {
+    let exits: Vec<&ExitPlan> = routers.iter().flat_map(|r| &r.exits).collect();
+    if exits.is_empty() {
         return Ok(None);
     }
-    let r = crate::reverse::relay_name_protocols(db, to_relay).await?;
-    Ok(r.filter(|(_, p)| p == crate::entries::ANYTLS).map(|(n, _)| format!("线路机 {n} 只开 AnyTLS，软路由只用 Reality，出口指不过去")))
+    let (name, protocols, singbox): (String, String, bool) = sqlx::query_as(
+        "select coalesce(m.label, ''), r.protocols, coalesce((a.info->'singbox'->>'running')::bool, false)
+         from relay r join machine m on m.id = r.machine_id left join agent_state a on a.machine_id = r.machine_id where r.machine_id = $1",
+    )
+    .bind(to_relay)
+    .fetch_one(db)
+    .await?;
+    let list = |at: bool| exits.iter().filter(|e| e.anytls == at).map(|e| e.exit.as_str()).collect::<Vec<_>>().join("、");
+    let (reality, anytls) = (list(false), list(true));
+    Ok(if !reality.is_empty() && protocols == crate::entries::ANYTLS {
+        Some(format!("线路机 {name} 只开 AnyTLS，Reality 出口 {reality} 指不过去（先切成 AnyTLS：fleetctl router protocol <路由> --to anytls）"))
+    } else if !anytls.is_empty() && protocols == crate::entries::REALITY {
+        Some(format!("线路机 {name} 只开 Reality，AnyTLS 出口 {anytls} 指不过去"))
+    } else if !anytls.is_empty() && !singbox {
+        Some(format!("线路机 {name} 的 AnyTLS（sing-box）没在跑，AnyTLS 出口 {anytls} 指不过去：先升级它的 agent"))
+    } else {
+        None
+    })
 }
 
 /// 换线路机：对上旧入口 `old_entry` 的出口（server:port 是 `srv:port`）改成什么，不是旧入口返回 None（预览与执行共用）。
@@ -189,6 +207,7 @@ pub fn move_exit(er: &EntryRef, old_entry: Uuid, new: Option<(Uuid, u16)>, from_
         server: new_server(srv, from_ip, &to.0, &to.1),
         port: new.map(|n| n.1),
         error: None,
+        anytls: false,
     })
 }
 

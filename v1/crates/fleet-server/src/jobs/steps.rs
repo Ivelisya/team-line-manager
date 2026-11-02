@@ -5,7 +5,7 @@ mod bridge;
 mod lifecycle;
 mod replace;
 
-pub use replace::sync_exit;
+pub use replace::{proto_exit, sync_exit};
 
 use super::scripts::{self, vars, SsInst};
 use super::{clip, log, speedtest, tune, JobRow, Outcome};

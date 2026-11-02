@@ -818,6 +818,9 @@ enum Cmd {
         /// 只改这台软路由（可重复；不给 = 所有指向旧入口的）
         #[arg(long = "router")]
         routers: Vec<String>,
+        /// 只改这个出口（出口名，可重复；不给 = 指向旧入口的全部）。点名的出口不指向旧入口时报错
+        #[arg(long = "exit")]
+        exits: Vec<String>,
         #[arg(long)]
         yes: bool,
         #[arg(long)]
@@ -1017,6 +1020,21 @@ enum RouterCmd {
         /// 点名的出口从没对上过入口、而且入口是直出 / 备用团队 / 别的团队的：确认是自己的，仍要同步
         #[arg(long)]
         force: bool,
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        follow: bool,
+    },
+    /// 切出口协议：把指向面板入口的出口整块改写成 AnyTLS（或 Reality），同一个入口、同名出口，分组和分流规则不变。
+    /// 备份后改，改完重启 OpenClash（断开经它的全部连接）并测延迟，任何失败全部改回。不加 --yes 只打印预览（要切的出口、经哪台线路机、跳过的及原因）
+    Protocol {
+        router: String,
+        /// 切成 anytls 或 reality
+        #[arg(long, value_parser = ["anytls", "reality"])]
+        to: String,
+        /// 只切这个出口（可重复；不给 = 全部指向面板入口、还不是这个协议的）
+        #[arg(long = "exit")]
+        exits: Vec<String>,
         #[arg(long)]
         yes: bool,
         #[arg(long)]
@@ -1257,7 +1275,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Move { node, to, from, no_routers, yes, follow } => lifecycle::mv(x, &node, &to, from.as_deref(), no_routers, yes, follow),
         Cmd::Evacuate { relay, to, no_routers, yes, follow } => lifecycle::evacuate(x, &relay, &to, no_routers, yes, follow),
         Cmd::Replace(o) => lifecycle::replace(x, o),
-        Cmd::Repoint { from, to, routers, yes, follow } => lifecycle::repoint(x, &from, &to, &routers, yes, follow),
+        Cmd::Repoint { from, to, routers, exits, yes, follow } => lifecycle::repoint(x, &from, &to, &routers, &exits, yes, follow),
         Cmd::Routers { team } => routers::ls(x, team.as_deref()),
         Cmd::Router { cmd } => match cmd {
             RouterCmd::Show { router } => routers::show(x, &router),
@@ -1269,6 +1287,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             RouterCmd::Edit { router, name, team, note } => routers::edit(x, &router, name.as_deref(), team.as_deref(), note.as_deref()),
             RouterCmd::Rm { router, yes, force } => routers::rm(x, &router, yes, force),
             RouterCmd::Sync { router, exits, force, yes, follow } => routers::sync(x, &router, &exits, force, yes, follow),
+            RouterCmd::Protocol { router, to, exits, yes, follow } => routers::protocol(x, &router, &to, &exits, yes, follow),
             RouterCmd::Switch { router, group, to, dur, back } => routers::switch(x, &router, &group, to.as_deref(), dur.as_deref(), back),
         },
         Cmd::Probe { cmd } => match cmd {
