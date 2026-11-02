@@ -108,7 +108,7 @@ async fn gates_and_enqueue() {
     assert_eq!(p["ok"], false);
     assert!(blockers(&p).contains("线路机 线路机2 的 agent 版本过旧") && blockers(&p).contains("fleetctl upgrade-agent 线路机2"), "{p}");
     Sim::new(tok).round(&t).await;
-    assert_eq!(sqlx::query_scalar::<_, Value>("select info->'caps' from agent_state where machine_id = $1").bind(relay).fetch_one(&t.st.db).await.unwrap(), json!(["reverse"]));
+    assert_eq!(sqlx::query_scalar::<_, Value>("select info->'caps' from agent_state where machine_id = $1").bind(relay).fetch_one(&t.st.db).await.unwrap(), json!(fleet_proto::CAPS));
     let p = preview(&t, e, true).await;
     assert!(blockers(&p).contains("节点 团队1-01 的 agent 版本过旧"), "{p}");
     set_caps(&t, node, true).await;
