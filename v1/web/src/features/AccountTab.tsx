@@ -51,8 +51,8 @@ function TotpPanel() {
     <>
       <Panel title="两步验证" sub={<InfoTip text="登录时除了密码，还要输入手机认证器 App 上的 6 位验证码" />}
         tools={s && (s.enabled
-          ? <><Button onClick={() => setDlg('regen')}><RefreshCw />重新生成恢复码</Button><Button onClick={() => setDlg('disable')}><ShieldOff />停用</Button></>
-          : <Button variant="primary" onClick={() => setDlg('enable')}><ShieldCheck />开启两步验证</Button>)}>
+          ? <><Button size="sm" onClick={() => setDlg('regen')}><RefreshCw />重新生成恢复码</Button><Button size="sm" onClick={() => setDlg('disable')}><ShieldOff />停用</Button></>
+          : <Button size="sm" variant="primary" onClick={() => setDlg('enable')}><ShieldCheck />开启两步验证</Button>)}>
         {q.isError ? <ErrorNote error={q.error} onRetry={() => void q.refetch()} /> : !s ? <SkeletonRows rows={1} one /> : s.enabled ? (
           <div style={{ display: 'grid', gap: 'var(--sp-12)' }}>
             <div className="row" style={{ gap: 10 }}>
@@ -212,7 +212,7 @@ function PasswordPanel() {
         </div>
         <div className="row" style={{ gap: 4 }}><label className="check-row"><Checkbox checked={keys} onCheckedChange={(v) => setKeys(v === true)} /><span>同时撤销所有 API 密钥</span></label><InfoTip text="怀疑密码或登录会话泄露时勾上：拿到会话的人可能已经建了密钥" /></div>
         {err && <Note tone="bad">{err}</Note>}
-        <div className="row" style={{ justifyContent: 'flex-end' }}><Button type="submit" variant="primary" loading={change.isPending} disabled={!valid}>修改密码</Button></div>
+        <div className="row account-foot" style={{ justifyContent: 'flex-end' }}><Button type="submit" variant="primary" loading={change.isPending} disabled={!valid}>修改密码</Button></div>
       </form>
     </Panel>
   );
@@ -241,7 +241,7 @@ function SessionsPanel() {
   return (
     <>
       <Panel title="登录会话" count={list.length} flush
-        tools={<Button disabled={nOthers === 0} onClick={() => setOthers(true)}><LogOut />退出其他设备</Button>}>
+        tools={<Button size="sm" disabled={nOthers === 0} onClick={() => setOthers(true)}><LogOut />退出其他设备</Button>}>
         {q.isError && <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div>}
         {q.isLoading ? <SkeletonRows rows={2} head /> : q.isError && !q.data ? null : list.length === 0 ? <Empty icon={<MonitorSmartphone size={22} />} text="没有登录会话" /> : (
           <div className="table-wrap">

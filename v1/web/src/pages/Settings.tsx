@@ -99,7 +99,7 @@ function ApiKeysSection() {
   return (
     <>
       <Panel title="API 密钥" count={list.length} sub={<InfoTip text="给脚本和命令行调用中控用。只有登录后才能管理密钥" />} flush
-        tools={<Button variant="primary" onClick={openNew}><Plus />新建密钥</Button>}>
+        tools={<Button variant="primary" size="sm" onClick={openNew}><Plus />新建密钥</Button>}>
         {q.isError && <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div>}
         {q.isLoading ? <SkeletonRows rows={3} head /> : list.length === 0 && !q.isError ? (
           <Empty icon={<KeyRound size={22} />} text="还没有 API 密钥"><Button variant="primary" onClick={openNew}><Plus />新建密钥</Button></Empty>
@@ -209,8 +209,8 @@ function NotifySection() {
     <>
       <Panel title="告警通知渠道" count={list.length} sub={<InfoTip text="告警达到「最低级别」时，会推送到这些渠道" />} flush
         tools={<>
-          <Button onClick={() => setReport(true)} data-tip="先看要发的内容，确认后立即发一次（只发给开了「月报」的渠道）"><Send size={14} />发送一次月报…</Button>
-          <Button variant="primary" onClick={() => setEdit('new')}><Plus />新建渠道</Button>
+          <Button size="sm" onClick={() => setReport(true)} data-tip="先看要发的内容，确认后立即发一次（只发给开了「月报」的渠道）"><Send size={14} />发送一次月报…</Button>
+          <Button size="sm" variant="primary" onClick={() => setEdit('new')}><Plus />新建渠道</Button>
         </>}>
         {q.isError && <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div>}
         {q.isLoading ? <SkeletonRows rows={3} head /> : list.length === 0 && !q.isError ? (

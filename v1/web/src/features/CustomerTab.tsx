@@ -179,7 +179,7 @@ function Slots({ d, teamId }: { d: TeamBatches; teamId: string }) {
   return (
     <Panel title="计费节点" count={d.totals.active} flush
       sub={ended > 0 ? <CheckRow className="is-label" checked={showEnded} onChange={setShowEnded}>显示已结束（{ended}）</CheckRow> : undefined}
-      tools={<Button onClick={() => setAdding(true)}><Plus />添加手动计费节点</Button>}>
+      tools={<Button size="sm" onClick={() => setAdding(true)}><Plus />添加手动计费节点</Button>}>
       <TableWrap>
         <table className="dt" style={{ minWidth: 640 }}>
           <colgroup><col /><col style={{ width: 100 }} /><col style={{ width: 132 }} /><col style={{ width: 84 }} /><col style={{ width: 200 }} /><col style={{ width: 52 }} /></colgroup>
@@ -389,7 +389,7 @@ function PageLink({ teamId, teamName, page, stale }: { teamId: string; teamName:
   if (!page) {
     return (
       <span className="cxa-link" data-stale={stale} inert={stale || undefined}>
-        <Button loading={rotate.isPending} onClick={() => rotate.mutate(teamId, { onSuccess: () => toast.ok('已生成客户页链接'), onError: toast.err })}><Link2 />生成客户页链接</Button>
+        <Button size="lg" loading={rotate.isPending} onClick={() => rotate.mutate(teamId, { onSuccess: () => toast.ok('已生成客户页链接'), onError: toast.err })}><Link2 />生成客户页链接</Button>
         <InfoTip text={INFO} />
       </span>
     );

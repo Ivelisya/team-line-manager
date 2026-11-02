@@ -226,9 +226,9 @@ export function HomePage() {
             <FilterChip pressed={onlyIssues} onClick={toggleIssues} count={issueCount} tip={issueTip}><AlertTriangle size={13} />仅看异常</FilterChip>
           </div>
           <div className="hctrls">
-            <Select sm value={sortValue} onChange={pickSort} options={sortValue === 'custom' ? SORTS_CUSTOM : SORTS} className="w-[150px]" aria-label="排序" />
-            {layout === 'cards' && <Segmented sm label="卡片密度" value={view} onChange={setV} items={DENSITY_ITEMS} />}
-            <Segmented sm label="视图" value={layout} onChange={setL} items={LAYOUT_ITEMS} />
+            <Select value={sortValue} onChange={pickSort} options={sortValue === 'custom' ? SORTS_CUSTOM : SORTS} className="w-[150px]" aria-label="排序" />
+            {layout === 'cards' && <Segmented label="卡片密度" value={view} onChange={setV} items={DENSITY_ITEMS} />}
+            <Segmented label="视图" value={layout} onChange={setL} items={LAYOUT_ITEMS} />
           </div>
         </div>
 
