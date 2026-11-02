@@ -9,7 +9,7 @@ import type { UseQueryResult } from '@tanstack/react-query';
 import { useAvailability, useSeries, useTrafficDaily } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
-import { AVAIL_LEGEND, availCells, availTitles, fromLabel, hasHost, meta, monthFlowTip, monthTraffic, resourceMeters, successPct, trafficRuleTag } from '@/lib/derive';
+import { AVAIL_LEGEND, availCells, availTitles, fromLabel, hasHost, meta, monthFlowTip, monthTraffic, resourceMeters, successPct, tcpDir, trafficRuleTag } from '@/lib/derive';
 import { Segmented } from '@/components/ui/overlays';
 import { Skeleton } from '@/components/ui/skeleton';
 import { InfoTip } from '@/components/ui/form';
@@ -26,6 +26,7 @@ import { Button } from '@/components/ui/button';
 // CPU / 内存用首页节点卡的指标色（CPU 蓝、内存紫），上下行与对照序列沿用 --chart-1 / --chart-2
 // 只画 TCP：出口验证的耗时是经节点去中控回显服务的完整 HTTPS 往返，不是线路延迟（出口只判通不通，见可用率与入口表）
 const L_PROBE = [{ key: 'tcp_ms', label: 'TCP 延迟', color: 'var(--chart-1)' }];
+const DIR_TIP = '穿透入口的 TCP 延迟是节点主动连线路机入口端口量的（节点 → 线路机），普通入口是线路机连节点\n只画图，不告警';
 const L_TRAFFIC = [{ key: 'down', label: '↓ 下载', color: 'var(--chart-1)' }, { key: 'up', label: '↑ 上传', color: 'var(--chart-2)' }];
 const L_CPU = [{ key: 'cpu_pct', label: 'CPU', color: 'var(--m-cpu)' }];
 // 按小时的点（7 天 / 30 天）是一小时的平均，短时冲高被摊平：同画每小时的峰值，色取 CPU 蓝的浅色
@@ -85,7 +86,7 @@ export function ChartCard({ c, icon, title, meta, value, caption, tools, slim, c
 }
 
 const AVAIL_DAYS = 30;
-const AVAIL_TIP = `近 ${AVAIL_DAYS} 天全部探测的成功率：节点通是线路机到节点的 TCP 握手，出口通是经入口访问外网的验证`;
+const AVAIL_TIP = `近 ${AVAIL_DAYS} 天全部探测的成功率：节点通是线路机到节点的 TCP 握手（穿透入口是节点连线路机），出口通是经入口访问外网的验证`;
 /** 近 30 天可用率：每天一格（旧→新，最后一格是今天），按 TCP 与出口里较差的一种定色，悬停看当天的成功率与次数；
  *  格条上方左边是整段的成功率、右边是时间窗（同卡片心跳条「近 1 小时」的写法）。
  *  线路机这里是名下所有入口（TCP 与出口）的合计，标题写明；卡片心跳格是中控 → 线路机，口径不同。
@@ -179,16 +180,19 @@ const PingSection = React.memo(function PingSection({ id, range, after }: { id: 
 export function QualityTab({ m }: { m: MachineView }) {
   const { range, setRange } = useDrawer();
   const s = useSeries(m.id, 'probe', range, true, chartPoll(range));
+  // 穿透入口的 TCP 是节点连线路机量的：方向跟着入口当前的模式写（切换模式前后的样本在曲线上方向不同，切换那一刻前后是两种口径）
+  const dir = tcpDir(m.entries.filter((e) => e.lifecycle === 'active'));
   // 多条入口时曲线是各入口的平均（序列接口不分入口），写明几条、是哪几台线路机
   // 做成稳定的元素：PingSection 是 memo，每次新建的 JSX 会让它每次推送都白比对一遍
   const tcp = React.useMemo(() => (
     <ChartCard c="var(--chart-1)" icon={<Radar />} title="TCP 延迟" meta={m.kind !== 'relay' && m.entries.length > 1
-      ? <span data-tip={`${m.entries.map((e) => e.relay.name).join('、')} 的平均`}>线路机 → 节点 · {m.entries.length} 条入口平均</span> : '线路机 → 节点'}>
+      ? <span data-tip={`${m.entries.map((e) => e.relay.name).join('、')} 的平均${dir === '线路机 → 节点' ? '' : `\n${DIR_TIP}`}`}>{dir} · {m.entries.length} 条入口平均</span>
+      : dir === '线路机 → 节点' ? dir : <span data-tip={DIR_TIP}>{dir}</span>}>
       <ChartFrame q={s} few={fewText(m, range)}>
         <TimeChart full points={s.data?.points} range={s.data?.range ?? range} kind="line" lines={L_PROBE} yFmt={yMs} valueFmt={vMs} clip />
       </ChartFrame>
     </ChartCard>
-  ), [s, range, m.kind, m.entries, m.lifecycle, m.activated_at]);
+  ), [s, range, m.kind, m.entries, m.lifecycle, m.activated_at, dir]);
   return (
     <>
       {/* 可用率（近 30 天）与入口连通性（24 小时 / 7 天 / 30 天）是固定时间段，不跟时间范围走：放在时间范围条上面，下面的曲线才归它管 */}

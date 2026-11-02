@@ -29,14 +29,14 @@ const failCell = (p: NonNullable<EntryView['tcp']>) => <span style={{ color: 'va
 export const probeCell = (p: EntryView['egress']) => (p == null ? <span className="t-muted">—</span> : p.ok
   ? <span data-tip={`${p.detail ? `出口 IP ${p.detail}\n` : ''}验证耗时 ${p.latency_ms == null ? '—' : F.str(F.ms(p.latency_ms))}`}>正常</span>
   : failCell(p));
-/** TCP 单元格：线路机 → 节点的建连延迟，近 1 小时中位数（悬停给最近一次）；直出入口没有节点、穿透入口线路机不连节点，都不做 TCP 探测 */
+/** TCP 单元格：线路机 → 节点的建连延迟，近 1 小时中位数（悬停给最近一次）；穿透入口是节点 → 线路机（节点主动连线路机量的，悬停写明；节点 agent 版本旧时没有数据，显示 —）；直出入口没有节点，不做 TCP 探测 */
 export const tcpCell = (e: EntryView) => {
   const p = e.tcp;
   if (e.direct) return <span className="t-muted" data-tip="直出入口不经节点，不做 TCP 探测">—</span>;
-  if (isReverse(e)) return <span className="t-muted" data-tip={REVERSE_TIP}>—</span>;
-  if (p == null) return <span className="t-muted">—</span>;
+  if (p == null) return isReverse(e) ? <span className="t-muted" data-tip={REVERSE_TIP}>—</span> : <span className="t-muted">—</span>;
   if (!p.ok) return failCell(p);
-  return <span data-tip={`近 1 小时中位数；最近一次 ${p.latency_ms == null ? '—' : F.str(F.ms(p.latency_ms))}`}><Num f={F.ms(tcpMs(p))} /></span>;
+  const rev = isReverse(e) ? '穿透：节点 → 线路机（节点主动连线路机入口端口）\n' : '';
+  return <span data-tip={`${rev}近 1 小时中位数；最近一次 ${p.latency_ms == null ? '—' : F.str(F.ms(p.latency_ms))}`}><Num f={F.ms(tcpMs(p))} /></span>;
 };
 
 /** 检查失败的原因：reach.rs 记的是「端口 N：原因」，提示第一行已经写了端口 */

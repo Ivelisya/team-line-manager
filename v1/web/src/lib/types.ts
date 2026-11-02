@@ -44,7 +44,7 @@ export interface EntryView {
   id: string; relay: { id: string; name: string }; node: { id: string; name: string };
   /** 线路机直出：节点就是线路机自己（node.id = relay.id，node.name =「线路机名-直出」），从线路机自己的 IP 出去；没有 TCP 探测，不能换线路机 / 搬空 */
   direct: boolean;
-  /** 穿透（reverse）：节点上的 bridge 主动连这个入口，线路机不连节点——没有 TCP 探测（tcp 恒为 null），只看出口 */
+  /** 穿透（reverse）：节点上的 bridge 主动连这个入口，线路机不连节点——tcp 是节点 → 线路机的建连（节点 agent 量，只画图、不告警；agent 版本旧时为 null），健康只看出口 */
   mode: EntryMode;
   port: number;
   lifecycle: EntryLifecycle; applied: boolean; apply_error: string | null;
@@ -306,7 +306,7 @@ export interface ProvisionCheckItem { ok: boolean; errors: string[]; warnings: s
  *  probe: tcp_ok tcp_ms egress_ok egress_ms（失败时 *_ms 为 null） */
 export interface SeriesPoint { ts: string; [k: string]: number | boolean | string | null }
 /** 心跳格：每台机器近 60 分钟、20 个 3 分钟桶（旧→新），每桶 [次数, 成功次数, 成功的延迟中位数 ms, SYN 重发过的次数]；[0,0,null,0] = 这段没有数据。
- *  节点是线路机 → 节点的 TCP 探测；线路机是主探测来源（中控或探测点）→ 线路机的连通性（中控只判通不通、延迟为 null；探测点带建连延迟） */
+ *  节点是线路机 → 节点的 TCP 探测（穿透入口用经入口的出口探测，延迟为 null）；线路机是主探测来源（中控或探测点）→ 线路机的连通性（中控只判通不通、延迟为 null；探测点带建连延迟） */
 export type ProbeBucket = [number, number, number | null, number?];
 export type ProbeBeats = Record<string, ProbeBucket[]>;
 /** 全站网卡速率的历史：每分钟一个点（旧→新），首页集群状态折线开场用 */
