@@ -1,12 +1,13 @@
 //! 改出口指向：软路由上指向入口 A 的出口改成入口 B（名字、分组、规则不动），两个入口本身都不动（不建、不摘、不改编号）。
 //! 用途：直出出口换一台线路机（线路机1-直出 → 线路机3-直出）、节点出问题时临时把客户的出口指到备用节点、再指回来。
-//! 只改指定的路由（`router_ids`，空 = 所有指向入口 A 的路由）。这里只做校验、预览、建作业和写审计；
+//! 只改指定的路由（`router_ids`，空 = 所有指向入口 A 的路由）、指定的出口（`exits`，按出口名，空 = 指向入口 A 的全部；
+//! 点名的出口在选中的路由上没有一个指向入口 A 时报错）。这里只做校验、预览、建作业和写审计；
 //! 作业只有一步「改软路由出口」，与替换、换线路机共用（jobs/steps/replace.rs：执行时按路由当时的配置重新确定、备份 → 改 → 重启 OpenClash →
 //! 测延迟，任何一台失败全部换回）。出口写的是旧线路机 IP 就换成新线路机的 IP，否则换成新线路机的 public_host（同换线路机）。
 
 use super::lifecycle::{anytls_exit_blocker, move_exit, relay_addr};
 use super::ok;
-use super::replace::{routers_view, scan_routers, RouterPlan};
+use super::replace::{routers_view, scan_routers_offline, RouterPlan};
 use crate::auth::Actor;
 use crate::db::{audit, Tx};
 use crate::error::{ApiError, ApiJson, ApiPath, ApiQuery, ApiResult};
@@ -45,6 +46,9 @@ pub struct RepointIn {
     /// 只改这几台路由（空 = 所有指向旧入口的）
     #[serde(default)]
     router_ids: Vec<Uuid>,
+    /// 只改这几个出口（出口名；空 = 指向旧入口的全部）
+    #[serde(default)]
+    exits: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -52,12 +56,15 @@ pub struct PreviewQ {
     to_entry_id: Uuid,
     /// 逗号分隔的路由 id
     routers: Option<String>,
+    /// 逗号分隔的出口名
+    exits: Option<String>,
 }
 
 struct Plan {
     old: Ent,
     new: Ent,
     router_ids: Vec<Uuid>,
+    exits: Vec<String>,
     routers: Vec<RouterPlan>,
     blockers: Vec<String>,
     invalid: Vec<String>,
@@ -110,9 +117,29 @@ async fn plan(st: &AppState, conn: &mut PgConnection, old_id: Uuid, b: &RepointI
     }
     let from_ip = relay_addr(&mut *conn, old.relay_id).await?.0;
     let to = relay_addr(&mut *conn, new.relay_id).await?;
-    let routers = scan_routers(&rows, old.node_id, None, true, true, ("改", "旧入口"), &mut blockers, &mut warnings, |er, srv, port| {
+    let mut offline = vec![];
+    let mut routers = scan_routers_offline(&rows, old.node_id, None, true, true, "旧入口", &mut blockers, &mut warnings, &mut offline, |er, srv, port| {
         move_exit(er, old.id, Some((new.id, new.port as u16)), &from_ip, &to, srv, port).map(Ok)
     });
+    // 只改点名的出口：没点到的不改，不在线的路由上只有没点到的出口也不挡
+    if !b.exits.is_empty() {
+        for x in &b.exits {
+            if !routers.iter().any(|r| r.exits.iter().any(|e| &e.exit == x)) {
+                let why = format!("出口「{x}」不指向旧入口「{}」（按最近一次采集{}）", old.name(), if b.router_ids.is_empty() { "" } else { "，只看选中的软路由" });
+                blockers.push(why.clone());
+                invalid.push(why);
+            }
+        }
+        for r in &mut routers {
+            r.exits.retain(|e| b.exits.contains(&e.exit));
+        }
+        routers.retain(|r| !r.exits.is_empty());
+        for o in &mut offline {
+            o.exits.retain(|e| b.exits.contains(&e.exit));
+        }
+        offline.retain(|o| !o.exits.is_empty());
+    }
+    blockers.extend(offline.iter().map(|o| o.text(("改", "旧入口"))));
     blockers.extend(anytls_exit_blocker(&mut *conn, new.relay_id, &routers).await?);
     if routers.is_empty() && invalid.is_empty() {
         blockers.push(format!("没有{}软路由的出口指向「{}」：没有要改的", if b.router_ids.is_empty() { "" } else { "选中的" }, old.name()));
@@ -153,7 +180,7 @@ async fn plan(st: &AppState, conn: &mut PgConnection, old_id: Uuid, b: &RepointI
             warnings.push(w);
         }
     }
-    Ok(Plan { old, new, router_ids: b.router_ids.clone(), routers, blockers, invalid, warnings })
+    Ok(Plan { old, new, router_ids: b.router_ids.clone(), exits: b.exits.clone(), routers, blockers, invalid, warnings })
 }
 
 /// 客户实际受的是入口所在节点的访问策略（节点单独设的 > 团队的 > 默认）：新旧入口所在节点的生效策略不同时说一声。
@@ -187,6 +214,7 @@ impl Plan {
             "old": side(&self.old),
             "new": side(&self.new),
             "router_ids": self.router_ids,
+            "exits": self.exits,
             "routers": routers_view(&self.routers),
             "ok": self.blockers.is_empty(),
             "blockers": self.blockers,
@@ -206,7 +234,8 @@ fn parse_ids(s: Option<&str>) -> ApiResult<Vec<Uuid>> {
 
 /// 预览：会改哪些路由的哪些出口，以及不能改的原因
 pub async fn preview(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<PreviewQ>) -> ApiResult<Json<Value>> {
-    let b = RepointIn { to_entry_id: q.to_entry_id, router_ids: parse_ids(q.routers.as_deref())? };
+    let exits = q.exits.as_deref().unwrap_or("").split(',').map(str::trim).filter(|x| !x.is_empty()).map(String::from).collect();
+    let b = RepointIn { to_entry_id: q.to_entry_id, router_ids: parse_ids(q.routers.as_deref())?, exits };
     let mut conn = st.db.acquire().await?;
     let p = plan(&st, &mut conn, id, &b, false).await?;
     Ok(ok(p.view()))
@@ -239,6 +268,7 @@ async fn enqueue(tx: &mut Tx<'_>, actor: &str, p: &Plan) -> ApiResult<Uuid> {
         "from_relay_id": p.old.relay_id,
         "to_relay_id": p.new.relay_id,
         "router_ids": p.router_ids,
+        "exits": p.exits,
         "routers": true,
         "plan": {"routers": serde_json::to_value(&p.routers).unwrap_or_default()},
         "old_name": p.old.name(),

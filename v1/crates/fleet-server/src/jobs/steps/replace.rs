@@ -2,7 +2,7 @@
 //! 见 api/replace.rs；路由上的脚本见 routers/replace.rs。
 //! 换线路机（move_entry）在验收新入口之后、摘旧入口之前也走这里的「改软路由出口」（计划见 api/lifecycle.rs，新入口取参数 `entry_id`）。
 //! 改出口指向（repoint）只有这一步（计划见 api/repoint.rs）：出口从 `old_entry_id` 改成 `new_entry_id`（属于 `new_id` 那台），
-//! 匹配与换线路机相同；`router_ids` 不空时只改这几台路由。新入口不叫 `entry_id`：取消作业时 compensate 会把 `entry_id` 当成作业建的入口摘掉。
+//! 匹配与换线路机相同；`router_ids` 不空时只改这几台路由，`exits` 不空时只改这几个出口（按出口名）。新入口不叫 `entry_id`：取消作业时 compensate 会把 `entry_id` 当成作业建的入口摘掉。
 //! 同步软路由出口（router_sync，计划见 api/router_ops.rs）也只有这一步：目标是路由（`router_ids` 就是它），参数和对上的入口不一致（drift）的出口
 //! 改成这个入口现在的参数（server:port 不变，换 uuid / SNI / 公钥 / short-id），`exits` 不空时只改这几个；入口不在用的同步不了。
 //! 切出口协议（router_protocol，计划见 api/router_ops.rs）也只有这一步：目标是路由，指向 fleet 入口、协议不是 `to`（anytls / reality）的出口
@@ -113,8 +113,8 @@ async fn pinned_stamps(db: &sqlx::PgPool) -> sqlx::Result<Vec<String>> {
 
 /// 出口要不要改、改成什么：按库里现在的入口算，同预览
 enum Pick {
-    /// 换线路机：旧入口 → 新入口 (id, 端口)；旧线路机的 IP，新线路机的 (IP, public_host)
-    Move { old_entry: Uuid, new: (Uuid, u16), from_ip: String, to: (String, String) },
+    /// 换线路机：旧入口 → 新入口 (id, 端口)；旧线路机的 IP，新线路机的 (IP, public_host)。`only`：改出口指向点了名的出口（空 = 全部）
+    Move { old_entry: Uuid, new: (Uuid, u16), from_ip: String, to: (String, String), only: Vec<String> },
     /// 替换：旧节点没删除的入口 → 新节点在用的入口
     Replace { old: Vec<Ent>, new: Vec<Ent> },
     /// 同步：参数不一致的出口 → 它对上的入口现在的参数（`exits` 空 = 这台路由上全部不一致的）。
@@ -153,14 +153,16 @@ impl Pick {
         let Some(port) = port else { bail!("新入口已经不在用了：{redo}") };
         let (from_ip, _) = relay_addr(db, uuid_of(&job.params, "from_relay_id")?).await?;
         let to = relay_addr(db, uuid_of(&job.params, "to_relay_id")?).await?;
-        Ok(Pick::Move { old_entry: uuid_of(&job.params, "old_entry_id")?, new: (eid, port as u16), from_ip, to })
+        let only = job.params["exits"].as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from).collect();
+        Ok(Pick::Move { old_entry: uuid_of(&job.params, "old_entry_id")?, new: (eid, port as u16), from_ip, to, only })
     }
 
     /// 出口 `name`（同步状态 `sync`，对上入口 `er`，现在指向 `srv:port`，`anytls`：现在是 AnyTLS 出口）要不要改、改成什么。
     /// 除了切协议，改完还是原来的协议
     fn exit(&self, name: &str, sync: &str, er: &clash::EntryRef, srv: &str, port: u16, anytls: bool) -> Option<Result<ExitPlan, String>> {
         let plan = match self {
-            Pick::Move { old_entry, new, from_ip, to } => move_exit(er, *old_entry, Some(*new), from_ip, to, srv, port).map(Ok),
+            Pick::Move { only, .. } if !only.is_empty() && !only.iter().any(|x| x == name) => None,
+            Pick::Move { old_entry, new, from_ip, to, .. } => move_exit(er, *old_entry, Some(*new), from_ip, to, srv, port).map(Ok),
             Pick::Replace { old, new } => replace_exit(old, new, er, srv, port),
             Pick::Sync { pins, .. } | Pick::Proto { pins, .. } if pins.get(name).is_some_and(|id| *id != er.id) => {
                 return Some(Err(format!("出口「{name}」现在对上的入口「{}」不是发起时核对的那个（路由上又改过），重新发起", er.name)));

@@ -585,9 +585,10 @@ pub fn replace(ctx: &Ctx, o: ReplaceOpts) -> anyhow::Result<u8> {
     Ok(0)
 }
 
-/// `fleetctl repoint <旧入口> --to <新入口> [--router <路由>]…`：软路由上指向旧入口的出口改成新入口，入口都不动。
+/// `fleetctl repoint <旧入口> --to <新入口> [--router <路由>]… [--exit <出口>]…`：软路由上指向旧入口的出口改成新入口，入口都不动。
+/// `--exit` 只改点名的出口（同一个入口被几个出口指着、只挪其中一个时）。
 /// 先 GET 预览（改哪些路由的哪些出口、不能改的原因）；不加 --yes 只打印预览，加了才提交作业
-pub fn repoint(ctx: &Ctx, from: &str, to: &str, routers: &[String], yes: bool, follow: bool) -> anyhow::Result<u8> {
+pub fn repoint(ctx: &Ctx, from: &str, to: &str, routers: &[String], exits: &[String], yes: bool, follow: bool) -> anyhow::Result<u8> {
     let es = cmds::all_entries(ctx)?;
     let old = crate::resolve::entry(&es, from).map_err(|e| anyhow::anyhow!(e))?;
     let new = crate::resolve::entry(&es, to).map_err(|e| anyhow::anyhow!(e))?;
@@ -602,6 +603,9 @@ pub fn repoint(ctx: &Ctx, from: &str, to: &str, routers: &[String], yes: bool, f
     let mut q: Vec<(&str, String)> = vec![("to_entry_id", st(new, "/id"))];
     if !rids.is_empty() {
         q.push(("routers", rids.join(",")));
+    }
+    if !exits.is_empty() {
+        q.push(("exits", exits.join(",")));
     }
     let pv = ctx.c.get_q(&format!("/entries/{id}/repoint"), &q)?;
     if !ctx.json || !yes {
@@ -627,7 +631,7 @@ pub fn repoint(ctx: &Ctx, from: &str, to: &str, routers: &[String], yes: bool, f
         }
         return Ok(0);
     }
-    let d = ctx.c.post(&format!("/entries/{id}/repoint"), &json!({"to_entry_id": new["id"], "router_ids": rids}))?;
+    let d = ctx.c.post(&format!("/entries/{id}/repoint"), &json!({"to_entry_id": new["id"], "router_ids": rids, "exits": exits}))?;
     ctx.emit(&d, || format!("已提交改出口指向作业 {}（{} → {}）\n看进度：fleetctl job {} --follow", st(&d, "/job_id"), st(&d, "/old/name"), st(&d, "/new/name"), st(&d, "/job_id")));
     if follow {
         return cmds::follow_job(ctx, &st(&d, "/job_id"));

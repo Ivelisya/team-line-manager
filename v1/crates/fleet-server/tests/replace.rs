@@ -1996,3 +1996,33 @@ async fn protocol_switch_then_replace_keeps_anytls() {
     assert_eq!(a.len(), 2);
     assert!(a[1].contains(&format!("OSRV_1='relay.test'\nOPORT_1='40003'\nSRV_1='relay.test'\nPORT_1='40020'\nUUID_1='{NEW_UUID}'")) && a[1].contains("KIND_1='anytls'"), "{}", &a[1][..600]);
 }
+
+/// 改出口指向只改点名的出口：同一个入口被 节点07、节点20 两个出口指着，只把 节点20 改到新入口、节点07 不动；
+/// 点名的出口不指向旧入口时报错（预览 blocker、提交 400）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repoint_only_named_exits() {
+    let w = world().await;
+    let t = &w.t;
+    let oe = old_entry(&w).await;
+    let ne: Uuid = sqlx::query_scalar("select id from entry where node_id = $1").bind(w.new).fetch_one(&t.st.db).await.unwrap();
+    router(&w, "团队2-路由E", 23720, &[("节点07", "relay.test", 20003, Some(oe)), ("节点20", "relay.test", 20003, Some(oe))]).await;
+    let p = t.get(&format!("/api/v1/entries/{oe}/repoint?to_entry_id={ne}&exits=节点20")).await;
+    assert_eq!((p["ok"].as_bool(), &p["exits"]), (Some(true), &json!(["节点20"])), "{p}");
+    let xs: Vec<&str> = p["routers"][0]["exits"].as_array().unwrap().iter().map(|e| e["exit"].as_str().unwrap()).collect();
+    assert_eq!((xs, &p["routers"][0]["exits"][0]["to"]), (vec!["节点20"], &json!("relay.test:20020")), "{p}");
+    let n = t.get(&format!("/api/v1/entries/{oe}/repoint?to_entry_id={ne}&exits=节点99")).await;
+    assert_eq!(n["ok"], false, "{n}");
+    assert!(n["blockers"][0].as_str().unwrap().starts_with("出口「节点99」不指向旧入口「团队2-01 · 线路机"), "{n}");
+    assert_eq!(t.req("POST", &format!("/api/v1/entries/{oe}/repoint"), Some(json!({"to_entry_id": ne, "exits": ["节点20", "节点99"]})), None).await.0, StatusCode::BAD_REQUEST);
+    let d = t.post(&format!("/api/v1/entries/{oe}/repoint"), json!({"to_entry_id": ne, "exits": ["节点20"]})).await;
+    let job = d["job_id"].as_str().unwrap().to_string();
+    drive(t).await;
+    let j = t.job(&job).await;
+    assert_eq!(j["state"], "succeeded", "{j} {}", logs(t, &job).await);
+    let a = applies(23720);
+    assert_eq!(a.len(), 1);
+    assert!(a[0].contains("N='1'\n") && a[0].contains("NAME_1='节点20'\nOSRV_1='relay.test'\nOPORT_1='20003'\nSRV_1='relay.test'\nPORT_1='20020'") && !a[0].contains("节点07"), "{}", &a[0][..500]);
+    let au = t.get(&format!("/api/v1/audit?target_id={}", w.old)).await;
+    let rp = au.as_array().unwrap().iter().find(|x| x["action"] == "entry.repoint").unwrap();
+    assert_eq!(rp["detail"]["routers"][0]["exits"], json!(["节点20"]), "{rp}");
+}
