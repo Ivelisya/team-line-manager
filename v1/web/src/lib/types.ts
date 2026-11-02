@@ -584,9 +584,13 @@ export interface PublicBatch {
   count: number; months: number; node_months: number; state: BatchState;
   periods: BatchPeriod[];
 }
-/** GET /public/customer/{token}：只含有效批次；regions 按批次首次出现的顺序，counts 是各有效批次的个数 */
+/** 客户页的节点清单：收费中的节点各自的本期 [period_start, period_end)；period_end 就是下次续费日。
+ *  name：节点名，空出待定的是原节点名，手动的是备注（没有备注「手动添加的节点」）；renews：本期结束后还续不续 */
+export interface PublicNode { name: string; region: string; start_date: string; period_start: string; period_end: string; renews: boolean }
+/** GET /public/customer/{token}：只含有效批次；regions 按批次首次出现的顺序，counts 是各有效批次的个数；nodes 按下次续费日、名字排 */
 export interface PublicCustomer {
   team: string; today: string; node_months: number;
   regions: { region: string; counts: number[]; total: number; today_count: number }[];
   batches: PublicBatch[];
+  nodes: PublicNode[];
 }
