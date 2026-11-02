@@ -1,6 +1,6 @@
 // 客户页 /c/:token：给客户看的只读页面，不登录、不在外壳里（customerEntry.tsx 单独的入口，不带管理端）。
 // 读者是客户、不懂技术：一句话总结（几个节点在用、哪天续几个）→ 逐个节点的清单（节点 · 地区 · 本期 · 下次续费 · 还有几天，按下次续费日排；
-// 手机上每个节点两行，不横向滚动）→ 按续费日分组的时间轴（次要，看「这一期过了多少」）。
+// 手机上每个节点两行，不横向滚动）。时间轴只在管理端：客户要知道的是哪个节点哪天续费，清单已经说清楚了。
 // 不写「批次 / 节点月」；服务端给的 node_months（各组从开始到本期的累计）对不上任何一笔账，不显示。不出现 IP、供应商、价格。
 // 白底与中性标题由 theme-init.js 首屏就设好（html.is-cx）；一律浅色（theme-init.js 在 /c/ 下不读存储的主题，这里也不引 lib/theme）。
 import * as React from 'react';
@@ -12,7 +12,7 @@ import type { PublicCustomer } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { TipHost } from '@/components/ui/tip';
 import { Empty } from '@/components/app/empty';
-import { BatchTimeline, TimelineLegend, cnDate, cnSpan, daysBetween, regionLabel, type TimelineItem } from '@/features/BatchTimeline';
+import { cnDate, cnSpan, daysBetween, regionLabel } from '@/features/BatchTimeline';
 
 /** 一句话总结：「你们现在有 10 个节点在用（美区 9 个，墨西哥 1 个）。下次续费：11 月 30 日（1 个），12 月 1 日（9 个）。」 */
 function Lead({ d }: { d: PublicCustomer }) {
@@ -58,7 +58,6 @@ export function CustomerPage() {
   const d = q.data;
   const title = d ? `${d.team} · 节点续费情况` : '节点续费情况';
   React.useEffect(() => { document.title = title; }, [title]);
-  const items = React.useMemo<TimelineItem[]>(() => (d?.batches ?? []).map((b) => ({ ...b, key: String(b.seq) })), [d]);
 
   let body: React.ReactNode;
   if (q.isError && !d) {
@@ -77,21 +76,7 @@ export function CustomerPage() {
         </header>
         {d.nodes.length === 0
           ? <Empty text="现在没有在用的节点" />
-          : (
-            <>
-              <Nodes d={d} />
-              {items.length > 0 && (
-                <section className="cx-board" aria-label="按续费日分组">
-                  <div className="cx-board-head">
-                    <h2 className="cx-h2">按续费日分组</h2>
-                    <p className="cx-sub">每一小格是一天；每条线从这一期开始的日子，画到下次续费的日子</p>
-                  </div>
-                  <TimelineLegend />
-                  <BatchTimeline items={items} today={d.today} />
-                </section>
-              )}
-            </>
-          )}
+          : <Nodes d={d} />}
       </>
     );
   }

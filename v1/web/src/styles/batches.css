@@ -85,7 +85,6 @@
 .cx-state { display: grid; place-items: center; min-height: 60vh; } /* 链接无效 / 打不开：唯一的内容，在可视区里居中，不缩在左上角 */
 .cx-head { display: grid; gap: var(--sp-6); }
 .cx-title { margin: 0; font-size: clamp(22px, 3.2vw, 30px); line-height: 1.2; font-weight: var(--fw-bold); letter-spacing: -0.02em; color: var(--fg); text-wrap: balance; }
-.cx-sub { margin: 0; font-size: var(--fs-body); line-height: var(--lh-body); color: var(--fg-2); }
 /* 一句话总结：几个节点在用、哪天续几个 */
 .cx-lead { margin: 0; max-width: 58em; font-size: var(--fs-title); line-height: 26px; color: var(--fg); text-wrap: pretty; }
 .cx-lead b { font-weight: var(--fw-semibold); font-variant-numeric: var(--num-variant); }
@@ -116,8 +115,6 @@
   .cx-nlabel { display: inline; }
   .cx-nnext .cx-nlabel { margin-right: var(--sp-8); }
 }
-.cx-board-head { display: grid; gap: var(--sp-2); }
-.cx-h2 { margin: 0; font-size: var(--fs-title); line-height: var(--lh-title); font-weight: var(--fw-semibold); color: var(--fg); }
 .cx-board { display: grid; gap: var(--sp-12); }
 
 /* ---------------------------------------------------------------- 管理端：团队与套餐 → 计费台账 */
