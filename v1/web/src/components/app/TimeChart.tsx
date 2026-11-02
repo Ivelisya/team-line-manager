@@ -91,9 +91,9 @@ const ACTIVE_DOT = { r: 3.5, strokeWidth: 2, stroke: 'var(--surface)' };
  *  范围里更早的那一段压成左边一条窄窄的斜纹（暂无数据），不把两天的数据挤在 30 天的右边一小条。
  *  数据中间或末尾的空档（离线、停止上报）同样画斜纹，holeLabel 写那是什么（默认「暂无数据」，主机页签是「agent 离线」）。
  *  clip：纵轴按 p99（至少让最大的一个点可截）截断——少数尖峰不再把整张图压扁；超出的点画在顶边并标小三角（悬停仍是真实值） */
-export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 'area', yFmt, valueFmt, domain, yBase, pct, height = 180, empty, full, clip, holeLabel = '暂无数据' }: {
+export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 'area', yFmt, valueFmt, domain, yBase, pct, height = 180, yWidth = 60, empty, full, clip, holeLabel = '暂无数据' }: {
   points: SeriesPoint[] | undefined; lines: Line[]; range: string; kind?: 'area' | 'line'; yFmt: (v: number) => string; valueFmt?: (k: string, v: number) => string;
-  domain?: [number | 'auto', number | 'auto']; yBase?: 1000 | 1024; pct?: boolean; height?: number; empty?: string; full?: boolean; clip?: boolean; holeLabel?: string;
+  domain?: [number | 'auto', number | 'auto']; yBase?: 1000 | 1024; pct?: boolean; height?: number; yWidth?: number; empty?: string; full?: boolean; clip?: boolean; holeLabel?: string;
 }) {
   const config = useMemo<ChartConfig>(() => Object.fromEntries(lines.map((l) => [l.key, { label: l.label, color: l.color }])), [lines]);
   const hatch = useId().replace(/:/g, '');
@@ -158,7 +158,7 @@ export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 
       <CartesianGrid vertical={false} stroke="var(--chart-grid)" />
       {holes.map((h) => <ReferenceArea key={h.a} x1={h.a} x2={h.b} fill={`url(#${hatch})`} fillOpacity={1} stroke="none" ifOverflow="hidden" label={wide(h.a, h.b) ? { value: h.label, position: 'center', fill: 'var(--chart-axis)', fontSize: 11 } : undefined} />)}
       <XAxis dataKey="t" type="number" scale="time" domain={span ?? ['dataMin', 'dataMax']} allowDataOverflow ticks={xTicks} tickFormatter={xFmt(xRange)} {...axisProps} minTickGap={32} />
-      <YAxis width={60} tickFormatter={yFmt} {...axisProps} interval={0} ticks={y.ticks} allowDataOverflow={y.out.length > 0} domain={y.ceil != null ? [0, y.ceil] : domain ?? [0, 'auto']} />
+      <YAxis width={yWidth} tickFormatter={yFmt} {...axisProps} interval={0} ticks={y.ticks} allowDataOverflow={y.out.length > 0} domain={y.ceil != null ? [0, y.ceil] : domain ?? [0, 'auto']} />
       {chartTooltip(config, (l) => dt(Number(l)), valueFmt)}
       {y.out.map((o) => <ReferenceDot key={`${o.key}${o.t}`} x={o.t} y={y.ceil!} r={0} shape={OUT_TRI(`var(--color-${o.key})`)} ifOverflow="visible" />)}
     </>

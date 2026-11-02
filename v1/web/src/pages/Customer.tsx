@@ -55,6 +55,7 @@ export function CustomerPage() {
     body = q.error instanceof ApiError && q.error.status === 404
       ? <Empty icon={<Link2Off size={22} />} text="链接无效或已停用" hint="请联系对接人获取新链接" />
       : <Empty text="暂时打不开，请稍后再试"><Button loading={q.isFetching} onClick={() => void q.refetch()}><RotateCw />重试</Button></Empty>;
+    body = <div className="cx-state">{body}</div>;
   } else if (!d) {
     body = <div className="cx-head" aria-busy><span className="skel" style={{ width: 260, height: 30 }} /><span className="skel" style={{ width: 360, height: 16 }} /><span className="skel" style={{ height: 240, marginTop: 24 }} /></div>;
   } else {

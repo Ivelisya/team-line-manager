@@ -38,6 +38,10 @@ const L_NET = [{ key: 'net_rx_bps', label: '↓ 下行', color: 'var(--chart-1)'
 const PCT_DOMAIN: [number, number] = [0, 100];
 // 坐标轴刻度是整齐的数（2、4、6 GB），不用固定小数位
 const yBytes = (v: number) => { if (!v) return '0'; const s = F.bytesScale(v); return `${F.inScale(v, s)} ${s.u}`; };
+// 业务流量的纵轴是「这一分钟 / 这一小时」的量，带上「/分」「/时」，不然 40 MB 像累计量，和上面的今日、本月合计对不上
+const yBytesPer = (per: string) => (v: number) => (v ? `${yBytes(v)}/${per}` : '0');
+const YW_TRAFFIC = 76; // 「800 MB/分」放得下（默认 60 会折成两行）；和下面的每日图同宽，两张图的绘图区左边对齐
+const yBytesMin = yBytesPer('分'), yBytesHour = yBytesPer('时');
 const vBytes = (_: string, v: number) => { const b = F.bytes(v); return `${b.v} ${b.u}`; };
 
 export function RangeBar({ range, setRange }: { range: string; setRange: (r: string) => void }) {
@@ -138,7 +142,8 @@ const ReachQualitySection = React.memo(function ReachQualitySection({ id }: { id
 const PING_COLORS = ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)', 'var(--m-cpu)', 'var(--m-mem)', 'var(--m-disk)', 'var(--m-load)', 'var(--fg-3)'];
 /** 线路机的三网 PING 曲线：延迟（各目标一条线，1h–24h 每分钟的中位数，7d / 30d 每小时平均）与丢包率。
  *  同一轮各目标的时刻相同，按时刻合成一组点（s<槽位> 延迟、l<槽位> 丢包） */
-const PingSection = React.memo(function PingSection({ id, range }: { id: string; range: string }) {
+/** after：同一组图卡里排在后面的卡（线路机的 TCP 延迟），让三张同类卡之间间距一致 */
+const PingSection = React.memo(function PingSection({ id, range, after }: { id: string; range: string; after: React.ReactNode }) {
   const q = usePingSeries(id, range, chartPoll(range));
   const { points, ms, loss } = React.useMemo(() => {
     const by = new Map<string, SeriesPoint>();
@@ -154,10 +159,10 @@ const PingSection = React.memo(function PingSection({ id, range }: { id: string;
       loss: ser.map((s) => ({ key: `l${s.slot}`, label: s.name, color: PING_COLORS[s.slot % PING_COLORS.length] })),
     };
   }, [q.data]);
-  if (q.data && !q.data.series.length) return null;
+  if (q.data && !q.data.series.length) return <Section>{after}</Section>;
   const pq = { ...q, data: q.data && { points } } as UseQueryResult<{ points: SeriesPoint[] }>;
   // 有目标却一个点都画不成线：两张空图各占 230px，缩成一张只写一句的窄卡
-  if (q.data && points.length < 2) return <Section><ChartCard slim c="var(--chart-1)" icon={<Radar />} title="三网 PING" value="—" caption="这段时间没有数据" /></Section>;
+  if (q.data && points.length < 2) return <Section className="chart-stack"><ChartCard slim c="var(--chart-1)" icon={<Radar />} title="三网 PING" value="—" caption="这段时间没有数据" />{after}</Section>;
   return (
     <Section className="chart-stack">
       <ChartCard c="var(--chart-1)" icon={<Radar />} title="三网 PING 延迟" meta="线路机 → 各目标 · 每分钟 5 次的中位数">
@@ -166,6 +171,7 @@ const PingSection = React.memo(function PingSection({ id, range }: { id: string;
       <ChartCard c="var(--chart-2)" icon={<Radar />} title="三网 PING 丢包" meta="每分钟 5 次里没通的比例">
         <ChartFrame q={pq} few="这段时间没有数据"><TimeChart full points={points} range={range} kind="line" lines={loss} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} clip /></ChartFrame>
       </ChartCard>
+      {after}
     </Section>
   );
 });
@@ -173,22 +179,22 @@ const PingSection = React.memo(function PingSection({ id, range }: { id: string;
 export function QualityTab({ m }: { m: MachineView }) {
   const { range, setRange } = useDrawer();
   const s = useSeries(m.id, 'probe', range, true, chartPoll(range));
+  // 多条入口时曲线是各入口的平均（序列接口不分入口），写明几条、是哪几台线路机
+  const tcp = (
+    <ChartCard c="var(--chart-1)" icon={<Radar />} title="TCP 延迟" meta={m.kind !== 'relay' && m.entries.length > 1
+      ? <span data-tip={`${m.entries.map((e) => e.relay.name).join('、')} 的平均`}>线路机 → 节点 · {m.entries.length} 条入口平均</span> : '线路机 → 节点'}>
+      <ChartFrame q={s} few={fewText(m, range)}>
+        <TimeChart full points={s.data?.points} range={s.data?.range ?? range} kind="line" lines={L_PROBE} yFmt={yMs} valueFmt={vMs} clip />
+      </ChartFrame>
+    </ChartCard>
+  );
   return (
     <>
       {/* 可用率（近 30 天）与入口连通性（24 小时 / 7 天 / 30 天）是固定时间段，不跟时间范围走：放在时间范围条上面，下面的曲线才归它管 */}
       <AvailabilitySection id={m.id} relay={m.kind === 'relay'} />
       {m.kind === 'relay' && <ReachQualitySection id={m.id} />}
       <RangeSticky range={range} setRange={setRange} />
-      {m.kind === 'relay' && <PingSection id={m.id} range={range} />}
-      <Section>
-        {/* 多条入口时曲线是各入口的平均（序列接口不分入口），写明几条、是哪几台线路机 */}
-        <ChartCard c="var(--chart-1)" icon={<Radar />} title="TCP 延迟" meta={m.kind !== 'relay' && m.entries.length > 1
-          ? <span data-tip={`${m.entries.map((e) => e.relay.name).join('、')} 的平均`}>线路机 → 节点 · {m.entries.length} 条入口平均</span> : '线路机 → 节点'}>
-          <ChartFrame q={s} few={fewText(m, range)}>
-            <TimeChart full points={s.data?.points} range={s.data?.range ?? range} kind="line" lines={L_PROBE} yFmt={yMs} valueFmt={vMs} clip />
-          </ChartFrame>
-        </ChartCard>
-      </Section>
+      {m.kind === 'relay' ? <PingSection id={m.id} range={range} after={tcp} /> : <Section>{tcp}</Section>}
       <EntriesLink m={m} />
     </>
   );
@@ -239,7 +245,7 @@ export function TrafficTab({ m }: { m: MachineView }) {
       <Section className="chart-stack">
         <ChartCard c="var(--chart-1)" icon={<Globe />} title="业务流量" meta={<InfoTip text={s.data?.resolution === '1h' ? '每个点是这一小时的流量' : '每个点是这一分钟的流量'} />}>
           <ChartFrame q={s} few={fewText(m, range)}>
-            <TimeChart full points={s.data?.points} range={s.data?.range ?? range} lines={L_TRAFFIC} yFmt={yBytes} valueFmt={vBytes} yBase={1000} empty="这段时间没有业务流量" clip />
+            <TimeChart full points={s.data?.points} range={s.data?.range ?? range} lines={L_TRAFFIC} yFmt={s.data?.resolution === '1h' ? yBytesHour : yBytesMin} valueFmt={vBytes} yBase={1000} yWidth={YW_TRAFFIC} empty="这段时间没有业务流量" clip />
           </ChartFrame>
         </ChartCard>
         <DailyCard m={m} />
@@ -262,7 +268,7 @@ const DailyCard = React.memo(function DailyCard({ m }: { m: MachineView }) {
       {q.isError && !q.data ? <ErrorNote error={q.error} onRetry={() => void q.refetch()}>每日流量加载失败：</ErrorNote>
         : !days ? <Skeleton h={180} className="is-float" />
         : !sum ? <div className="chart-empty" style={{ height: 180 }}>近 {DAILY_DAYS} 天没有业务流量</div>
-        : <DailyBars days={days} height={180} />}
+        : <DailyBars days={days} height={180} yWidth={YW_TRAFFIC} />}
     </ChartCard>
   );
 });

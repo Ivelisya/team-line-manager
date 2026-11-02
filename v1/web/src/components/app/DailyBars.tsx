@@ -29,7 +29,7 @@ export function DailyLegend() {
   );
 }
 
-export const DailyBars = memo(function DailyBars({ days, height = 200 }: { days: DailyBiz[]; height?: number }) {
+export const DailyBars = memo(function DailyBars({ days, height = 200, yWidth = 60 }: { days: DailyBiz[]; height?: number; yWidth?: number }) {
   const data = useMemo(() => days.map((d) => ({ ...d, sum: d.down + d.up })), [days]);
   const ticks = useMemo(() => valueTicks(Math.max(0, ...data.map((d) => d.sum)), 1000), [data]);
   const last = days[days.length - 1]?.date;
@@ -46,7 +46,7 @@ export const DailyBars = memo(function DailyBars({ days, height = 200 }: { days:
       <BarChart data={data} margin={{ top: 6, right: 8, bottom: 0, left: 0 }} barCategoryGap={long ? 1 : '18%'}>
         <CartesianGrid vertical={false} stroke="var(--chart-grid)" />
         <XAxis dataKey="date" tickFormatter={md} minTickGap={long ? 36 : 24} {...axisProps} />
-        <YAxis width={60} tickFormatter={yBytes} ticks={ticks} interval={0} domain={ticks ? [0, ticks[ticks.length - 1]] : [0, 'auto']} {...axisProps} />
+        <YAxis width={yWidth} tickFormatter={yBytes} ticks={ticks} interval={0} domain={ticks ? [0, ticks[ticks.length - 1]] : [0, 'auto']} {...axisProps} />
         {chartTooltip(CFG, label, vBytes, CURSOR)}
         <Bar dataKey="down" stackId="a" fill="var(--color-down)" minPointSize={minH.down} isAnimationActive={false}>{fade('d')}</Bar>
         <Bar dataKey="up" stackId="a" fill="var(--color-up)" radius={[2, 2, 0, 0]} minPointSize={minH.up} isAnimationActive={false}>{fade('u')}</Bar>
