@@ -209,7 +209,7 @@ export function ProvisionPage() {
         ? <SingleForm key={rows[0].id} row={rows[0]} onChange={(p) => setRow(0, p)} ctx={ctx} result={resOf(rows[0].id)} errors={errOf(rows[0].id)} stale={stale} />
         : <BatchGrid rows={rows} setRows={setRows} ctx={ctx} resOf={resOf} errOf={errOf} checkedAny={results != null} stale={stale} />}
 
-      <StickyBar>
+      <StickyBar narrow={single}>
         <div className="row row-between">
           <div className="row">{summary}{!single && filledN > 0 && <span className="t-sub">共 {filledN} 台</span>}</div>
           <div className="row">
@@ -236,11 +236,11 @@ export function ProvisionPage() {
   );
 }
 
-/** 底部吸附条（检查 / 开始上架）：挂着时通知抬高让开它 */
-function StickyBar({ children }: { children: React.ReactNode }) {
+/** 底部吸附条（检查 / 开始上架）：挂着时通知抬高让开它。narrow：单台时与收窄居中的表单同宽，主按钮不离表单右缘太远 */
+function StickyBar({ narrow, children }: { narrow?: boolean; children: React.ReactNode }) {
   const ref = React.useRef<HTMLDivElement>(null);
   useToastLift(ref);
-  return <div ref={ref} className="panel sticky-bar" style={{ padding: '10px 16px' }}>{children}</div>;
+  return <div ref={ref} className={cn('panel sticky-bar', narrow && 'prov-form')} style={{ padding: '10px 16px' }}>{children}</div>;
 }
 
 /** 宿主机搜索：名称或 IP 以输入开头的排最前，其次是名称 / IP 里连着出现的，其余不列（lib/match） */

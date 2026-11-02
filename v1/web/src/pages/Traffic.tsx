@@ -246,7 +246,7 @@ const TeamsTable = React.memo(function TeamsTable({ teams, picked, stale, onPick
                 <td className="r" data-tip={t.spare && t.nodes > t.held ? `另 ${t.nodes - t.held} 台不续费的备用机不计` : undefined}>{t.spare ? t.held : t.nodes} 台</td>
                 <td className="r">{t.idle && !t.spare ? `${t.idle} 台` : '—'}</td>
                 <td className={t.spare && !t.held ? 'r t-muted' : 'r'} data-tip={t.spare ? (t.held ? `其中 ${t.held} 台被扣住不回收（软路由出口还指着 / 同机 IP 节点还在用 / 开着自动续费），照常续费，已算进合计；${t.nodes > t.held ? `其余 ${t.nodes - t.held} 台不续费的备用机不计` : '没有不续费的备用机'}` : '不续费的备用机，不计入合计') : undefined}>{t.spare && !t.held ? '—' : fee(t.monthly_usd_cents, t.unpriced)}</td>
-                <td className="r">{cell(t.bytes_30d)}</td>
+                <td className={t.spare && !t.held ? 'r t-muted' : 'r'} data-tip={t.spare && !t.held ? '不续费的备用机，流量不计入合计' : undefined}>{cell(t.bytes_30d)}</td>
                 <td className={t.spare && !t.held ? 'r t-muted' : 'r strong'} data-tip={t.spare ? (t.held ? `只按被扣住不回收的 ${t.held} 台算（月费 ÷ 它们近 30 天的业务流量）` : '不续费的备用机，不算每 GB 成本') : undefined}>{t.spare && !t.held ? '—' : F.usdPerGb(t.usd_per_gb)}</td>
               </tr>
             ))}

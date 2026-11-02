@@ -111,12 +111,13 @@ export function IncidentsPage() {
     const kinds = new Set(r.map((i) => machines?.find((m) => m.id === (i.subject?.id ?? i.subject_id))?.kind));
     return kinds.size === 1 ? (kinds.has('relay') ? '线路机' : kinds.has(undefined) ? '机器' : '节点') : '机器';
   };
-  const row = (i: Incident) => {
+  // sub：「N 条 · 机器」展开后的子行（底色下沉、对象列缩进）
+  const row = (i: Incident, sub?: boolean) => {
       const sid = i.subject?.id ?? i.subject_id;
       const canRenew = i.state === 'firing' && i.rule.startsWith('renewal_') && !!machines?.find((m) => m.id === sid)?.subscription;
       const sum = summaryText(i);
       return (
-        <tr key={i.id}>
+        <tr key={i.id} className={sub ? 'inc-sub' : undefined}>
           <td>{SEV(i)}</td>
           {/* 中控自身的告警（central_ 开头）没有机器可点开：只写对象名「中控」；软路由的（router_ 开头）打开路由抽屉 */}
           <td>{sid && isRouterIncident(i) ? <button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => openRouter(sid, routerIncidentTab(i))}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button>
@@ -166,7 +167,7 @@ export function IncidentsPage() {
                       <td className="r">{todo.length > 0 && <Button size="sm" loading={busy} disabled={ackMany.isPending} data-tip={`确认这一批未确认的 ${todo.length} 条`}
                         onClick={() => ackMany.mutate(todo, { onSuccess: () => toast.ok(`已确认 ${todo.length} 条`), onError: toast.err })}><Check size={13} />全部确认</Button>}</td>
                     </tr>
-                    {on && r.map(row)}
+                    {on && r.map((i) => row(i, true))}
                   </React.Fragment>
                 );
               })}

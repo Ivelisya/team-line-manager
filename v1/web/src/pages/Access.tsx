@@ -395,7 +395,7 @@ const EventsView = React.memo(function EventsView({ f, filtered, onClear, open }
                 <td>{e.src_ip ?? '—'}</td>
                 <td data-tip={e.dest_host}><span className="strong">{e.dest_host}</span>{e.dest_port != null && <span className="t-sub">:{e.dest_port}</span>}</td>
                 <td>{e.network?.toUpperCase() ?? '—'}</td>
-                <td>{e.blocked ? <Pill tone="bad">已阻止</Pill> : <Pill tone="ok">已转发</Pill>}</td>
+                <td><ResultPill conns={1} blocked={e.blocked ? 1 : 0} /></td>
               </tr>
             ))}
           </tbody>

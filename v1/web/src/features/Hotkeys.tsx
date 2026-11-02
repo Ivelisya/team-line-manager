@@ -82,7 +82,8 @@ const KEYS: { keys: string[][]; text: string; tip?: string }[] = [
 function ShortcutsHelp({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent aria-describedby={undefined}>
+      {/* 键盘按 ? 打开时初始焦点不落到右上角的 ×（会画一圈焦点环），落在对话框容器上；Esc、Tab 照常 */}
+      <DialogContent aria-describedby={undefined} onOpenAutoFocus={(e) => { e.preventDefault(); (e.currentTarget as HTMLElement).focus({ preventScroll: true }); }}>
         <DialogHeader className="hk-head"><DialogTitle>键盘快捷键</DialogTitle>
           <IconButton label="关闭" tip={false} onClick={() => onOpenChange(false)}><X size={16} /></IconButton></DialogHeader>
         <ul className="hk-list">

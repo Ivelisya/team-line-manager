@@ -4,7 +4,7 @@ import * as React from 'react';
 import { CalendarDays } from 'lucide-react';
 import { useUptime } from '@/lib/queries';
 import { openDrawer } from '@/lib/drawer';
-import { meta } from '@/lib/derive';
+import { meta, uptimeTone } from '@/lib/derive';
 import type { UptimeItem, UptimeProvider } from '@/lib/types';
 import { InfoTip } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
@@ -30,9 +30,8 @@ function pctText(p: number | null): string {
   if (p >= 100) return '100%';
   return `${Math.min(p, 99.99).toFixed(2)}%`;
 }
-const toneOf = (p: number | null) => (p == null || p >= 99.9 ? undefined : p >= 98 ? 'warn' : 'bad');
 function Pct({ p, tip }: { p: number | null; tip?: string }) {
-  return <span className="up-pct num" data-tone={toneOf(p)} data-tip={p == null ? '窗口内没有探测' : tip}>{pctText(p)}</span>;
+  return <span className="up-pct num" data-tone={uptimeTone(p)} data-tip={p == null ? '窗口内没有探测' : tip}>{pctText(p)}</span>;
 }
 const countTip = (ok: number, total: number) => `成功 ${ok.toLocaleString('zh-CN')} / 探测 ${total.toLocaleString('zh-CN')} 次`;
 

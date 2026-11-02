@@ -76,6 +76,9 @@
 .inc-fold { gap: var(--sp-4); }
 .inc-fold .lucide { width: var(--icon-xs); height: var(--icon-xs); flex: none; transition: transform var(--dur-2) var(--ease-out); }
 .dt tr[data-open] .inc-fold .lucide { transform: rotate(90deg); }
+/* 展开的子行：底色下沉（同访问监控 .acc-sub）、对象列缩进一格；底色必须放这个全局文件，access.css 只随访问页的懒加载 chunk 进来 */
+.dt tr.inc-sub td { background: var(--sunken); }
+.dt tr.inc-sub td:nth-child(2) { padding-left: calc(var(--cell-px) + var(--sp-16)); }
 /* 告警表：窄屏收起「规则」「说明」「开始」三列（第 3–5 列宽度归零、内容藏起；不用 display: none，免得后面的格子挪到别的列上），
    内容并进对象格的第二、三行（.inc-narrow 只在窄屏出现）；表不再撑到 820 宽，不用横滑 */
 /* 告警的建议命令（IncidentBits）：等宽小字一行一条，放不下省略（悬停看全），后面跟复制按钮 */

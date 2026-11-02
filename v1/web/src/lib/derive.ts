@@ -427,6 +427,8 @@ export function beatRate(buckets: ProbeBucket[] | undefined): number | null {
   for (const b of buckets ?? []) { n += b[0]; ok += b[1]; }
   return n ? (ok / n) * 100 : null;
 }
+/** 成功率的着色（告警页月度可用率、待付表的出口成功率共用）：没有数据或到 99.9% 不着色，未满 99.9 标黄、未满 98 标红；配 .up-pct[data-tone] */
+export const uptimeTone = (p: number | null) => (p == null || p >= 99.9 ? undefined : p >= 98 ? 'warn' : 'bad');
 /** 成功率的写法（近 30 天可用率）：全部成功才写 100%，否则最多写到 99.99%（1439/1440 不会四舍五入成 100%）；没有探测为「—」 */
 export const successPct = (p: number | null) => (p == null ? '—' : p >= 100 ? '100%' : `${Math.min(p, 99.99).toFixed(2)}%`);
 const WORST_FIRST = ['bad', 'warn', 'ok'] as const;
@@ -438,7 +440,7 @@ export const availCells = (days: AvailabilityDay[]): BeatCell[] =>
 export function availTitles(days: AvailabilityDay[]): string[] {
   const part = (label: string, ok: number, total: number) => (total ? `${label} ${successPct((ok / total) * 100)}（${ok}/${total}）` : '');
   return days.map((d, i) => {
-    const what = [part('节点通', d.tcp_ok, d.tcp_total), part('出口通', d.egress_ok, d.egress_total)].filter(Boolean).join(' · ') || '没有探测';
+    const what = [part('节点通', d.tcp_ok, d.tcp_total), part('出口通', d.egress_ok, d.egress_total)].filter(Boolean).join('\n') || '没有探测';
     return `${d.date.slice(5)}${i === days.length - 1 ? '（今天）' : ''} · ${what}`;
   });
 }
@@ -481,6 +483,8 @@ export const linkTip = (k: LinkKey, who: string) => ({
   node: '线路机到节点的 TCP 建连（直出入口不经节点，不算）',
   egress: '经入口访问外网的出口验证',
 })[k];
+/** 节点有几条入口的线路机端口连不上（节点自己没问题，告警记在线路机上）：抽屉抬头的胶囊与节点卡片心跳行共用 */
+export const unreachTip = (who: string, n: number) => `${who}连不上 ${n} 条入口在线路机上的端口，客户经这几条入口连不上\n告警记在线路机上`;
 /** 备用团队里在用、有订阅的机器：从哪天起自动回收（MM-DD，到期旁标出来）；不在备用里、没有订阅为 null */
 export const recycleOn = (m: Pick<MachineView, 'lifecycle' | 'recycle_on'>) => (m.lifecycle === 'active' ? m.recycle_on?.slice(5) ?? null : null);
 /**

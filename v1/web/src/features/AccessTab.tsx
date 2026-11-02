@@ -8,8 +8,8 @@ import { Segmented } from '@/components/ui/overlays';
 import { Button } from '@/components/ui/button';
 import { InfoTip } from '@/components/ui/form';
 import { ChartContainer, chartTooltip, Recharts, axisProps, type ChartConfig } from '@/components/ui/chart';
-import { Empty, ErrorNote, Pill, Section, SectionHeader } from '@/components/app/primitives';
-import { fmtN } from '@/features/AccessBits';
+import { Empty, ErrorNote, Section, SectionHeader } from '@/components/app/primitives';
+import { ResultPill, fmtN } from '@/features/AccessBits';
 import { ConnCell, IspPlace, SourceProfile } from '@/features/IpIntelBits';
 import type { ProfileWindow } from '@/lib/ipintel';
 import '@/styles/access.css';
@@ -82,7 +82,7 @@ function RecentTable({ items }: { items: AccessEvent[] }) {
               <td>{e.src_ip ?? '—'}</td>
               <td data-tip={e.dest_host}><span className="strong">{e.dest_host}</span>{e.dest_port != null && <span className="t-sub">:{e.dest_port}</span>}</td>
               {/* 胶囊比单元格宽一点点时 .dt 的省略号会接在后面：这一格不省略 */}
-              <td style={{ textOverflow: 'clip' }}>{e.blocked ? <Pill tone="bad">已阻止</Pill> : <Pill tone="ok">已转发</Pill>}</td>
+              <td style={{ textOverflow: 'clip' }}><ResultPill conns={1} blocked={e.blocked ? 1 : 0} /></td>
             </tr>
           ))}
         </tbody>

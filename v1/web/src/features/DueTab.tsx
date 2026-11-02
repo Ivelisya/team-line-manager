@@ -6,7 +6,7 @@ import { useQuery } from '@tanstack/react-query';
 import { ArrowRight, ExternalLink } from 'lucide-react';
 import { renewBatchPreview, useDue, useRenewBatch } from '@/lib/queries';
 import type { DueGroup, DueMachine, DueProvider } from '@/lib/types';
-import { meta, usdTotalTip } from '@/lib/derive';
+import { meta, uptimeTone, usdTotalTip } from '@/lib/derive';
 import { useUsdPreview } from '@/lib/fx';
 import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
@@ -103,7 +103,7 @@ export function DueTab() {
                       <td className="r num" data-tip={usdTotalTip(g.total)}>{subtotal(g)}</td>
                       <td className="r num">{usdText(g.total)}</td>
                       <td className="r num" data-tip={b.tip}>{F.usdPerGb(b.perGb)}</td>
-                      <td className="r num" data-tip={b.tip}>{F.str(F.pct(b.avail, 1))}</td>
+                      <td className="r num" data-tip={b.tip}><span className="up-pct" data-tone={uptimeTone(b.avail)}>{F.str(F.pct(b.avail, 1))}</span></td>
                       <td className="c"><Button size="sm" onClick={() => setPay(g)}>登记续费…</Button></td>
                     </tr>
                   );
@@ -121,7 +121,7 @@ export function DueTab() {
                   <li key={`${g.provider.id}|${g.due_date}|${g.billing_tz}`} className="due-item">
                     <div className="due-item-top"><ProviderCell p={g.provider} /><DueWhen g={g} short /></div>
                     <div className="due-item-machines">{names.slice(0, 4).join('、')}{names.length > 4 && <span className="t-muted"> 等 {names.length} 台</span>} <HoldPill ms={g.machines} /></div>
-                    <div className="due-item-machines t-sub" data-tip={b.tip}>近 30 天 {F.usdPerGb(b.perGb)}/GB · 出口成功率 {F.str(F.pct(b.avail, 1))} <IdlePill ms={b.idle} /></div>
+                    <div className="due-item-machines t-sub" data-tip={b.tip}>近 30 天 {F.usdPerGb(b.perGb)}/GB · 出口成功率 <span className="up-pct" data-tone={uptimeTone(b.avail)}>{F.str(F.pct(b.avail, 1))}</span> <IdlePill ms={b.idle} /></div>
                     <div className="due-item-foot"><span className="num" data-tip={usdTotalTip(g.total)}>{subtotal(g)}{onlyUsd(g.total) ? null : <span className="t-muted"> ≈ {usdText(g.total)}</span>}</span><Button size="sm" onClick={() => setPay(g)}>登记续费…</Button></div>
                   </li>
                 );

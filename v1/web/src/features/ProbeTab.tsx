@@ -74,7 +74,7 @@ export function ProbeTab() {
                 <span className="cell-main">中控（德国）</span>
                 <span className="t-sub">{s.order.length ? '前面的都用不了时代测，只看通不通' : '主来源'}</span>
                 {inUse(null) && <Pill tone="ok">在用</Pill>}
-                <span style={{ marginLeft: 'auto' }}>
+                <span style={{ marginLeft: 'auto' }} data-tip={s.order.length ? undefined : '只有中控一个来源时不能关'}>
                   <OptimisticSwitch checked={s.central_enabled} disabled={save.isPending || !s.order.length} onCheckedChange={(v, undo) => save.mutate({ central_enabled: v }, { onError: (e) => { undo(); toast.err(e); } })} aria-label="中控自己的探测" />
                 </span>
               </li>
@@ -92,7 +92,7 @@ export function ProbeTab() {
         )}
       </Panel>
       <Panel title={<>探测点<InfoTip text="放在离客户近的地方（比如香港）的小机器，定时连各线路机的入口，记录通不通和延迟" /></>}
-        tools={<><Segmented sm label="时间范围" value={win} onChange={setWin} items={WINDOWS} /><Button variant="primary" size="sm" onClick={() => setAdding(true)}><Plus />新增探测点</Button></>}>
+        tools={<>{list.length > 0 && <Segmented sm label="时间范围" value={win} onChange={setWin} items={WINDOWS} />}<Button variant="primary" size="sm" onClick={() => setAdding(true)}><Plus />新增探测点</Button></>}>
         {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
         {q.isLoading ? <SkeletonRows rows={2} /> : !list.length ? <Empty icon={<Radar size={22} />} text="还没有探测点" hint={<>新增后在探测点上执行安装命令 <InfoTip text="中控能 SSH 到它的话，也可以用 fleetctl probe add <名称> --host <IP> 直接装" /></>} /> : (
           <TableWrap data-stale={q.isPlaceholderData}>

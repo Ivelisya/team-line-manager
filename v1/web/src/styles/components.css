@@ -338,7 +338,7 @@
 .input-unit-u { position: absolute; right: var(--sp-10); color: var(--fg-2); font-size: var(--fs-body); pointer-events: none; }
 
 .checkbox { width: 16px; height: 16px; flex: none; border: 1px solid var(--line-strong); border-radius: var(--r-xs); background: var(--surface); display: inline-grid; place-items: center; cursor: pointer; color: var(--on-accent); transition: background-color var(--dur-1) var(--ease-std), border-color var(--dur-1) var(--ease-std); }
-.checkbox[data-state="checked"] { background: var(--accent-solid); border-color: var(--accent-solid); }
+.checkbox:is([data-state="checked"], [data-state="indeterminate"]) { background: var(--accent-solid); border-color: var(--accent-solid); }
 .checkbox .lucide { width: var(--icon-2xs); height: var(--icon-2xs); stroke-width: var(--icon-stroke-strong); }
 .check-row.is-label { font-size: var(--fs-label); }
 .check-row { display: flex; align-items: center; gap: var(--sp-8); font-size: var(--fs-body); cursor: pointer; }
