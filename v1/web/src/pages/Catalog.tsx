@@ -423,6 +423,8 @@ const PlanDialog = resetOnOpen(function PlanDialog({ plan, open, onClose }: { pl
   const badNum = (s: string) => s.trim() !== '' && !(isFinite(Number(s)) && Number(s) >= 0);
   const priceErr = f.price.trim() === '' ? '必填，免费填 0' : badNum(f.price) ? '应为 0 或正数' : undefined;
   const numErr = (k: keyof PlanForm) => (k === 'price' ? priceErr : badNum(f[k]) ? '应为 0 或正数' : undefined);
+  // 价格「必填」的红字等碰过价格框再显示（同 BillingTab），空价格照样不能保存
+  const [priceTouched, setPriceTouched] = React.useState(false);
   const numKeys: (keyof PlanForm)[] = ['cpu_cores', 'mem_gb', 'disk_gb', 'bandwidth_mbps', 'traffic_gb', 'price'];
   const mem = n(f.mem_gb);
   const body = () => ({ name: f.name.trim(), provider_id: f.provider_id, cpu_cores: n(f.cpu_cores), mem_mb: mem == null ? null : Math.round(mem * 1024), disk_gb: n(f.disk_gb), bandwidth_mbps: n(f.bandwidth_mbps), traffic_gb: n(f.traffic_gb) || null, price_cents: Math.round(Number(f.price) * 100), currency: f.currency, cycle: f.cycle, notes: f.notes.trim() });
@@ -434,7 +436,7 @@ const PlanDialog = resetOnOpen(function PlanDialog({ plan, open, onClose }: { pl
   // 单位写在输入框后缀（同其它对话框）
   // 价格按供应商收的币种录入，下面提示折合多少美元（按设置里的汇率）
   const usdHint = useUsdPreview(f.price.trim() === '' || !isFinite(Number(f.price)) ? null : Math.round(Number(f.price) * 100), f.currency);
-  const num = (k: keyof PlanForm, label: string, unit: string, ph?: string, info?: string, hint?: string | null) => <Field label={label} info={info} hint={hint ?? undefined} error={numErr(k)}><UnitInput unit={unit} width="full" inputMode="decimal" placeholder={ph} value={f[k]} onChange={(e) => setF({ ...f, [k]: e.target.value.replace(/[^\d.]/g, '') })} /></Field>;
+  const num = (k: keyof PlanForm, label: string, unit: string, ph?: string, info?: string, hint?: string | null) => <Field label={label} info={info} hint={hint ?? undefined} error={k === 'price' && f.price.trim() === '' && !priceTouched ? undefined : numErr(k)}><UnitInput unit={unit} onBlur={() => k === 'price' && setPriceTouched(true)} width="full" inputMode="decimal" placeholder={ph} value={f[k]} onChange={(e) => setF({ ...f, [k]: e.target.value.replace(/[^\d.]/g, '') })} /></Field>;
   return (
     <FormDialog size="md" dirty={dirty} open={open} onOpenChange={(o) => !o && onClose()} title={plan === 'new' ? '新建套餐' : '编辑套餐'} submitLabel="保存" busy={add.isPending || patch.isPending} valid={f.name.trim() !== '' && f.provider_id !== '' && numKeys.every((k) => !numErr(k))} error={add.error ?? patch.error} onSubmit={save}
       desc={plan !== 'new' && <>{plan.machine_count ? `${plan.machine_count} 台在用，` : ''}改了立即生效 <InfoTip text="同一套餐的机器共用这里的额度、价格和周期；在「费用」页单独设置过的除外" /></>}>
