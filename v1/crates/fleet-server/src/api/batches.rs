@@ -409,7 +409,7 @@ pub async fn slot_add(a: Actor, State(st): State<AppState>, ApiPath(team): ApiPa
         ledger::log(&mut tx, team, Some(id), now, "manual_add", Some(&manual_name(&note)), None, json!({"region": region, "start_date": bt::fmt_date(start)})).await?;
         ids.push(id);
     }
-    log_audit(&mut tx, &a, "billing.slot_add", ids.first().copied(), &tname, format!("{} × {count}，{} 开始收费{}", region, bt::fmt_date(start), if note.is_empty() { String::new() } else { format!("（{note}）") }))
+    log_audit(&mut tx, &a, "billing.slot_add", ids.first().copied(), &tname, format!("{region} {count} 个，{}开始收费{}", bt::fmt_cn(start), if note.is_empty() { String::new() } else { format!("（{note}）") }))
         .await?;
     let mut out = vec![];
     for id in &ids {
@@ -656,7 +656,7 @@ pub async fn init(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Init
             .bind(&a.name)
             .execute(&mut *tx)
             .await?;
-        audit(&mut tx, &a.name, "billing.init", "billing_slot", None, json!({"team": "", "what": format!("{} 开始收费，建了 {total} 个计费节点", bt::fmt_date(since))})).await?;
+        audit(&mut tx, &a.name, "billing.init", "billing_slot", None, json!({"team": "", "what": format!("{}开始收费，建了 {total} 个计费节点", bt::fmt_cn(since))})).await?;
         tx.commit().await?;
         for team in touched {
             st.emit(Event::Billing { id: team });
@@ -763,7 +763,8 @@ pub async fn page_delete(a: Actor, State(st): State<AppState>, ApiPath(team): Ap
 /// 和订阅拉取一样，不对的记一次失败、与登录共用按来源的限速（键按令牌哈希分开，别人猜错的不会把对的令牌一起封掉）。
 /// 最近查看时间与来源 10 分钟内只写一次。X-Robots-Tag 由 lib.rs 的响应头中间件统一加
 pub async fn public_view(State(st): State<AppState>, ClientIp(ip): ClientIp, ApiPath(token): ApiPath<String>, ApiQuery(q): ApiQuery<MonthQ>) -> ApiResult<Response> {
-    let month = month_in(q.month.as_deref())?;
+    // 客户只看到本月为止：?month= 晚于本月的当本月
+    let month = month_in(q.month.as_deref())?.min(bt::this_month());
     let hash = sha256(token.as_bytes());
     let key = format!("cust:{}", &hex::encode(&hash)[..16]);
     let attempt = auth::begin_attempt(&st, &key, ip.map(auth::ip_group)).await.map_err(|e| {
@@ -790,8 +791,9 @@ pub async fn public_view(State(st): State<AppState>, ClientIp(ip): ClientIp, Api
         .iter()
         .map(|r| json!({"name": r.s.name(), "region": r.s.region, "period_start": bt::fmt_date(r.ps), "period_end": bt::fmt_date(r.pe), "paid": r.paid_at.is_some()}))
         .collect();
+    let this = bt::this_month();
     let page = json!({
-        "team": name, "today": bt::fmt_date(bt::today()), "month": bt::fmt_month(month), "months": months.into_iter().map(bt::fmt_month).collect::<Vec<_>>(),
+        "team": name, "today": bt::fmt_date(bt::today()), "month": bt::fmt_month(month), "months": months.into_iter().filter(|m| *m <= this).map(bt::fmt_month).collect::<Vec<_>>(),
         "nodes": nodes,
     });
     let mut r = ok(page).into_response();
