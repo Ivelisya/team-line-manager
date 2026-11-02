@@ -280,8 +280,8 @@ async fn meta_and_due_state() {
     let t = setup(false).await;
     let m = t.get("/api/v1/meta").await;
     assert_eq!(
-        (m["org_timezone"].as_str(), m["kinds"]["vps"].as_str(), m["job_kinds"]["restore_vps"].as_str(), m["healths"]["maintenance"].as_str()),
-        (Some("Asia/Shanghai"), Some("VPS 节点"), Some("恢复 VPS 节点"), Some("维护"))
+        (m["org_timezone"].as_str(), m["kinds"]["vps"].as_str(), m["job_kinds"]["move_entry"].as_str(), m["healths"]["maintenance"].as_str()),
+        (Some("Asia/Shanghai"), Some("VPS 节点"), Some("换线路机"), Some("维护"))
     );
     assert_eq!((m["cycles"].as_array().map(Vec::len), m["thresholds"]["traffic_quota_warn_pct"].as_f64()), (Some(4), Some(90.0)));
     assert_eq!((m["rules"]["renewal_due"].as_str(), m["severities"]["critical"]["label"].as_str()), (Some("即将到期"), Some("严重")));

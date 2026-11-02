@@ -221,11 +221,6 @@ pub const JOB_KINDS: Labels = &[
     ("provision_ip", "上架同机 IP 节点"),
     ("attach_entry", "添加入口"),
     ("move_entry", "换线路机"),
-    // 恢复已退役机器已删掉：留着名字，旧作业记录照样显示
-    ("restore_vps", "恢复 VPS 节点"),
-    ("restore_proxy", "恢复家宽代理"),
-    ("restore_relay", "恢复线路机"),
-    ("restore_ip", "恢复同机 IP 节点"),
     ("retire", "退役"),
     ("purge", "彻底删除"),
     ("upgrade_agent", "升级 agent"),
@@ -435,7 +430,7 @@ mod tests {
 
     #[test]
     fn labels_and_meta_shape() {
-        assert_eq!((job_kind_label("restore_vps"), rule_label("new_rule")), ("恢复 VPS 节点", "new_rule"));
+        assert_eq!((job_kind_label("move_entry"), rule_label("new_rule")), ("换线路机", "new_rule"));
         assert_eq!((rule_label_of("renewal_due", "warning"), rule_label_of("renewal_due", "critical")), ("即将到期", "已过期"));
         assert_eq!((severity_label("critical"), severity_label("x")), ("严重", "提示"));
         let m = to_json();
