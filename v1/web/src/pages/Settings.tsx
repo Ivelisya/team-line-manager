@@ -21,9 +21,8 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, Di
 import { SkeletonRows } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
 import { ConfirmDialog, FormDialog, TypedConfirmDialog } from '@/components/app/dialogs';
-import { Chip, CopyButton, Empty, ErrorNote, Note, PageHead, Panel, Pill, TableWrap } from '@/components/app/primitives';
+import { Chip, CopyButton, CopyIcon, Empty, ErrorNote, Note, PageHead, Panel, Pill, TableWrap, useCopied } from '@/components/app/primitives';
 import { ShowAll } from '@/components/app/Pagination';
-import { copyText } from '@/lib/clipboard';
 import { resetOnOpen, useHeld } from '@/lib/useHeld';
 import '@/styles/settings.css';
 
@@ -83,6 +82,7 @@ function ApiKeysSection() {
   const askHeld = useHeld(ask?.id, ask);
   const tokenHeld = useHeld(token, token);
   const copyRef = React.useRef<HTMLButtonElement>(null);
+  const cp = useCopied();
   const list = q.data ?? [];
   const [err, setErr] = React.useState<string | null>(null);
   const openNew = () => { setName(''); setScopes(['read']); setExp('90'); setPw(''); setCode(''); setErr(null); setOpen(true); };
@@ -159,7 +159,7 @@ function ApiKeysSection() {
           <Note tone="warn" icon={<ShieldAlert size={14} />}><b>只显示这一次</b> <InfoTip text="关掉后就看不到了。丢了只能撤销，再新建一个" /></Note>
           <div className="token-box"><code>{tokenHeld}</code><CopyButton text={tokenHeld ?? ''} label="密钥" size={15} /></div>
           <DialogFooter>
-            <Button ref={copyRef} onClick={() => void copyText(token ?? '', '密钥')}>复制密钥</Button>
+            <Button ref={copyRef} onClick={() => void cp.copy(token ?? '', '密钥')}><CopyIcon done={cp.done} />复制密钥</Button>
             <Button variant="primary" onClick={() => setToken(null)}>我已保存</Button>
           </DialogFooter>
         </DialogContent>

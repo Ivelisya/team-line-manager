@@ -319,14 +319,23 @@ export function ErrorNote({ error, onRetry, children }: { error: unknown; onRetr
   );
 }
 
-/** 复制按钮：点击复制 text，图标短暂变成对勾作为反馈；show：提示里写出复制的值（IP、编号这类短的） */
-export function CopyButton({ text, label = '内容', className, size = 14, show }: { text: string; label?: string; className?: string; size?: number; show?: boolean }) {
+/** 复制反馈：copy 复制成功（并弹通知）后 done 为 true，约 1.4 秒后复原；图标型 CopyButton 与文字型复制按钮共用 */
+export function useCopied() {
   const [done, setDone] = React.useState(false);
   React.useEffect(() => { if (!done) return; const h = setTimeout(() => setDone(false), 1400); return () => clearTimeout(h); }, [done]);
+  const copy = async (text: string, label?: string, show?: boolean) => { if (await copyText(text, label, show)) setDone(true); };
+  return { done, copy };
+}
+/** 文字型复制按钮的前置图标：复制成功后换成绿色对勾（文字与通知不变） */
+export const CopyIcon = ({ done, icon = <Copy /> }: { done: boolean; icon?: React.ReactNode }) => (done ? <Check className="copied-ic" /> : icon);
+
+/** 复制按钮：点击复制 text，图标短暂变成对勾作为反馈；show：提示里写出复制的值（IP、编号这类短的） */
+export function CopyButton({ text, label = '内容', className, size = 14, show }: { text: string; label?: string; className?: string; size?: number; show?: boolean }) {
+  const { done, copy } = useCopied();
   return (
     <Tip text={done ? '已复制' : `复制${label}`}>
       <button type="button" className={cn('icon-btn icon-btn-xs copy-btn', done && 'is-done', className)} aria-label={`复制${label}`}
-        onClick={async (e) => { e.stopPropagation(); if (await copyText(text, label, show)) setDone(true); }}>
+        onClick={(e) => { e.stopPropagation(); void copy(text, label, show); }}>
         {done ? <Check size={size} /> : <Copy size={size} />}
       </button>
     </Tip>

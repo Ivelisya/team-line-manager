@@ -30,6 +30,12 @@ html[data-overlay] :is(.app, .drawer) .progress-fill { transition: none; }
   .checkbox::after { inset: -12px; }
   .tab::after { content: ""; position: absolute; inset: 0 -10px; }
   .icon-btn-xs::after { inset: -9px; }
+  /* 文字链接类：外观是一行字，同样用 ::after 外扩；.flow-trend 上下紧挨别的读数，只外扩一点 */
+  :is(.btn-link, .num-link, .audit-target, .flow-trend) { position: relative; }
+  :is(.btn-link, .num-link, .audit-target)::after { content: ""; position: absolute; inset: -10px -6px; }
+  .flow-trend::after { content: ""; position: absolute; inset: -4px; }
+  /* 带 overflow:hidden 的（::after 会被裁掉）：改用上下内边距加等量负外边距，版面高度不变 */
+  button:is(.nc-name, .host-pick), .audit-what { padding-block: 6px; margin-block: -6px; } /* button：比 cards.css / access.css 的 padding:0 高一级（它们的打包顺序在 overrides 之后）；.audit-what 是操作记录里 .audit-target 的裁切容器 */
 }
 
 /* ========== 减弱动效 ========== */

@@ -4,7 +4,6 @@ import * as React from 'react';
 import { CircleCheck, Loader2, RefreshCw, Terminal } from 'lucide-react';
 import { useTeams } from '@/lib/queries';
 import { closeBootstrap, closeDeploy, closeRemoved, showBootstrap, TUNNEL_CLEANUP, useAddRouter, useBootTarget, useDeployRouter, useDeployTarget, useRemoved, useRouters, type SshLogin } from '@/lib/routers';
-import { copyText } from '@/lib/clipboard';
 import { resetOnOpen, useHeld } from '@/lib/useHeld';
 import { useNow } from '@/lib/useNow';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -14,7 +13,7 @@ import { Select } from '@/components/ui/select';
 import { Segmented } from '@/components/ui/overlays';
 import { toast } from '@/components/ui/toast';
 import { FormDialog } from '@/components/app/dialogs';
-import { CopyButton, Note } from '@/components/app/primitives';
+import { CopyButton, CopyIcon, Note, useCopied } from '@/components/app/primitives';
 import { useShowBootstrap } from '@/components/app/RouterCard';
 import { prefs } from '@/lib/prefs';
 import { RouterOpsHost } from './RouterOps';
@@ -124,6 +123,7 @@ function BootstrapDialog() {
   const r = useRouters().data?.find((x) => x.id === b?.id);
   const boot = useShowBootstrap();
   const now = useNow(!!t, 1000);
+  const cp = useCopied();
   if (!b) return null;
   const left = Date.parse(b.expires_at) - now;
   const done = r?.state === 'online' && r.last_seen_at != null && Date.parse(r.last_seen_at) > Date.parse(b.issued_at);
@@ -141,7 +141,7 @@ function BootstrapDialog() {
           : left > 0 ? <div className="row hint" style={{ gap: 6 }}><Loader2 size={13} className="spin" />等路由连上 · <b className="num">{mmss(left)}</b> 后失效<InfoTip text="执行后约半分钟上线，这个窗口会自动刷新" /></div>
           : <Note tone="bad">命令已失效。<button type="button" className="btn btn-link btn-sm" style={{ height: 'auto', padding: 0 }} disabled={boot.pending} onClick={() => void boot.run({ id: b.id, name: b.name, last_seen_at: r?.last_seen_at ?? null })}><RefreshCw size={12} />重新生成</button></Note>}
         <DialogFooter>
-          <Button onClick={() => void copyText(b.cmd, '接入命令')}>复制命令</Button>
+          <Button onClick={() => void cp.copy(b.cmd, '接入命令')}><CopyIcon done={cp.done} />复制命令</Button>
           <Button variant="primary" onClick={closeBootstrap}>{done ? '完成' : '关闭'}</Button>
         </DialogFooter>
       </DialogContent>

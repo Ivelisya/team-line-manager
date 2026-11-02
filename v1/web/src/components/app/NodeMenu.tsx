@@ -15,7 +15,7 @@ import { useHeld } from '@/lib/useHeld';
 import { toast } from '@/components/ui/toast';
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuSub, ContextMenuSubContent, ContextMenuSubTrigger, ContextMenuTrigger } from '@/components/ui/context-menu';
 import { DropdownMenuItem, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger } from '@/components/ui/overlays';
-import { useAnchoredDropdown } from './AnchoredDropdown';
+import { flushAfterMenuClosed, runAfterMenuClosed, useAnchoredDropdown } from './AnchoredDropdown';
 
 export type MenuEntry =
   | { key: string; sep: true }
@@ -59,7 +59,7 @@ function useNodeMenu(m: MachineView): MenuEntry[] {
   items.push(
     // 家宽代理没有主机可登录；同机 IP 节点没有自己的 SSH，中控连到它的宿主机
     ...(m.kind !== 'proxy' && m.lifecycle === 'active'
-      ? [{ key: 'term', label: m.host_machine ? '打开终端（宿主机）' : '打开终端', icon: <SquareTerminal />, onSelect: () => openTerminal({ kind: 'machine', id: m.id, name: m.name }) } as MenuEntry] : []),
+      ? [{ key: 'term', label: m.host_machine ? '打开终端（宿主机）' : '打开终端', icon: <SquareTerminal />, onSelect: () => runAfterMenuClosed(() => openTerminal({ kind: 'machine', id: m.id, name: m.name })) } as MenuEntry] : []),
     // 同机 IP 节点没有自己的 agent（用宿主机的），不给升级
     // 升级会重启 agent、作业开始后不能取消：先弹确认（外壳里的 UpgradeDialog）。中控不报「当前 agent 版本」，判断不了是否已是最新
     ...(m.host_machine ? [] : [{ key: 'upgrade', label: '升级 agent…', icon: <ArrowUpCircle />, disabled: !m.agent || m.lifecycle !== 'active' || !!m.active_job,
@@ -185,7 +185,7 @@ export function NodeMenus({ rows, children }: { rows: MachineView[]; children: R
     <>
       <ContextMenu onOpenChange={onCtx}>
         <ContextMenuTrigger asChild onContextMenu={pick} onPointerDown={pick} onClick={dd.onClick}>{children}</ContextMenuTrigger>
-        <ContextMenuContent>{ctxM && <NodeContextItems m={ctxM} />}</ContextMenuContent>
+        <ContextMenuContent onCloseAutoFocus={(e) => { if (flushAfterMenuClosed()) e.preventDefault(); }}>{ctxM && <NodeContextItems m={ctxM} />}</ContextMenuContent>
       </ContextMenu>
       {dd.menu('更多操作', dd.cur && <NodeDropdownItems m={dd.cur} />)}
     </>

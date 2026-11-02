@@ -11,7 +11,6 @@ import { errorKindLabel, jobKindLabel, jobLive, jobProgress, jobText, outputLine
 import { jobStateLabel } from '@/lib/derive';
 import { CheckRow, Field, InfoTip, Input } from '@/components/ui/form';
 import { useNow } from '@/lib/useNow';
-import { copyText } from '@/lib/clipboard';
 import * as F from '@/lib/format';
 import { Button, IconButton } from '@/components/ui/button';
 import { Segmented } from '@/components/ui/overlays';
@@ -29,7 +28,7 @@ import { toast } from '@/components/ui/toast';
 import { copyNewShareLink } from '@/lib/moveShare';
 import { Pagination } from '@/components/app/Pagination';
 import { usePage } from '@/lib/usePage';
-import { Empty, ErrorNote, LabelValue, LabelValueGrid, Note, PageHead, Panel, Pill, type Tone } from '@/components/app/primitives';
+import { Empty, ErrorNote, LabelValue, LabelValueGrid, Note, PageHead, Panel, Pill, useCopied, type Tone } from '@/components/app/primitives';
 import '@/styles/jobs.css';
 
 /** 作业状态的色调（界面样式）；中文名在 /meta（jobStateLabel） */
@@ -369,7 +368,8 @@ const LogPanel = React.memo(function LogPanel({ jobId, state }: { jobId: string;
   const view = shown.length > SHOW_MAX ? shown.slice(-SHOW_MAX) : shown;
   React.useEffect(() => { const el = box.current; if (el && stuck && frozen == null) el.scrollTop = el.scrollHeight; }, [view.length, stuck, frozen]);
   const jump = () => { const el = box.current; if (el) { el.scrollTop = el.scrollHeight; setStuck(true); } };
-  const copy = () => void copyText(logs.map((l) => `${F.clock(l.ts)} ${LEVEL[l.level] ?? l.level} ${l.msg}`).join('\n'), '日志');
+  const cp = useCopied();
+  const copy = () => void cp.copy(logs.map((l) => `${F.clock(l.ts)} ${LEVEL[l.level] ?? l.level} ${l.msg}`).join('\n'), '日志');
 
   return (
     <Panel title="日志" sub={frozen != null ? `已暂停 · 另有 ${logs.length - shown.length} 行新日志` : live ? '实时' : `${logs.length + dropped} 行`}
@@ -380,7 +380,7 @@ const LogPanel = React.memo(function LogPanel({ jobId, state }: { jobId: string;
         {(live || frozen != null) && <Button size="sm" variant="secondary" aria-pressed={frozen != null} onClick={() => { if (frozen == null) setFrozen(logs.length ? logs[logs.length - 1].id : 0); else { setFrozen(null); setStuck(true); } }}>
           {frozen == null ? <><Pause />暂停滚动</> : <><Play />继续</>}
         </Button>}
-        <IconButton label="复制全部日志" size="sm" onClick={copy} disabled={!logs.length}><Copy size={14} /></IconButton>
+        <IconButton label="复制全部日志" size="sm" onClick={copy} disabled={!logs.length}>{cp.done ? <Check size={14} className="copied-ic" /> : <Copy size={14} />}</IconButton>
       </>}>
       {err != null && logs.length === 0 && <div style={{ marginBottom: 8 }}><ErrorNote error={err} onRetry={() => { setErr(null); setLoaded(false); setNonce((n) => n + 1); }} /></div>}
       <div className="logbox" ref={box} role="log" aria-live="off" tabIndex={0} aria-label="作业日志"
