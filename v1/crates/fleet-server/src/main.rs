@@ -171,6 +171,8 @@ async fn main() -> anyhow::Result<()> {
             if left > 0 {
                 tracing::warn!("{left} 个作业的这一步没做完：重启后从这一步重做");
             }
+            // 先通知长连接（线路机的期望状态长轮询、实时流 WebSocket）收尾，再停止接新连接：客户端马上重连到新进程，不用干等下面的 10 秒
+            st.shutdown.send_replace(true);
             let _ = stop.send(());
             if tokio::time::timeout(Duration::from_secs(10), http).await.is_err() {
                 tracing::warn!("还有请求没处理完（如线路机的长轮询），不再等");

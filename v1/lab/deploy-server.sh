@@ -79,6 +79,10 @@ Group=fleet
 ExecStart=/opt/fleet/fleet-server serve -c /etc/fleet/fleet.toml
 Restart=always
 RestartSec=3
+# 停止时 SIGTERM 只发给主进程：fleet-server 收到后等进行中的作业步骤做完（最多 60 秒）再退；默认的 control-group 会把 SIGTERM
+# 同时发给 cgroup 里所有 ssh 子进程，进行中的步骤当场失败。主进程退出后 systemd 对残留的 ssh 子进程补 SIGKILL。90 秒 > 60 秒等步骤 + 10 秒等请求
+KillMode=mixed
+TimeoutStopSec=90
 Environment=RUST_LOG=info,sqlx=warn,tower_http=warn
 # 沙箱与 deploy/central/install.sh 里生产的单元逐行一致，实验室先跑一遍
 NoNewPrivileges=yes

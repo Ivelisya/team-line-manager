@@ -6,7 +6,7 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::{Executor, PgPool};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use tokio::sync::{broadcast, Notify};
+use tokio::sync::{broadcast, watch, Notify};
 use uuid::Uuid;
 
 /// 推给浏览器（WebSocket）的消息。除 `Metrics` 外都是资源变更通知，前端收到后让对应查询失效重取。
@@ -105,6 +105,14 @@ pub struct Inner {
     pub routers_refresh: crate::routers::collect::Refresh,
     /// 软路由隧道回连主机不是中控时的告警摘要（routers::selfcheck 定期查，selfmon 照它开 central_tunnel_host）
     pub tunnel_host: std::sync::Mutex<Option<String>>,
+    /// 进程要退出了（main 收到退出信号、作业 drain 之后、停止接新连接之前置 true）：线路机的期望状态长轮询、实时流 WebSocket 订阅它，
+    /// 收到就马上结束（长轮询回 204、WebSocket 以 1012 关闭），让客户端重连到新进程，不用等优雅退出的 10 秒到点
+    pub shutdown: watch::Sender<bool>,
+}
+
+/// 等到进程要退出（`Inner::shutdown` 置位；已经置位立刻返回）。不把 `watch::Ref` 带出去：它不是 Send，不能活过 select! 的 await
+pub async fn shutting_down(rx: &mut watch::Receiver<bool>) {
+    let _ = rx.wait_for(|v| *v).await;
 }
 
 impl std::ops::Deref for AppState {
@@ -159,6 +167,7 @@ impl AppState {
             terminals: Default::default(),
             routers_refresh: Default::default(),
             tunnel_host: Default::default(),
+            shutdown: watch::channel(false).0,
         }))
     }
 

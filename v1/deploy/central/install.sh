@@ -5,7 +5,8 @@
 # 顺序：会失败的预检（软路由隧道的端口与 sshd -t）最先做；要换的文件先放成 .new，紧挨着重启前才换上：中途失败时线上的版本原样不动。
 # 每次还装 /usr/local/bin/fleetctl，健康检查过后建或修复它的全权密钥 central-local（仍有效不换），写给 agent 的 /root/AGENTS.md、
 # /root/CLAUDE.md 与 fleet-ops 技能（docs/OPS.md §14：用 agent 从中控全量运维）。
-# 换下来的旧 fleet-server 留在 /opt/fleet/fleet-server.prev（回滚见 docs/OPS.md §9）；重启后未登录访问 /api/v1/auth/me 不是 401
+# 换上新版之前先同步做一份备份（上线前的回滚点；首次安装跳过，装完后再做第一份）。
+# 换下来的旧 fleet-server 留在 /opt/fleet/fleet-server.prev，旧前端 /opt/fleet/web.prev，旧 fleet-agent /opt/fleet/dist/fleet-agent.prev（回滚见 docs/OPS.md §9）；重启后未登录访问 /api/v1/auth/me 不是 401
 # 就打出最近日志、退出码 1；首页 / 不是 200 text/html（前端没挂上）同样退出码 1。
 # /etc/fleet/secret.key 丢了，库里所有 SS 密码、REALITY 私钥、通知渠道配置都解不开：每天的备份连它一起打包（/var/backups/fleet），
 # 家里 PVE 每天取走一份，见 docs/OPS.md §10。
@@ -128,6 +129,10 @@ Group=fleet
 ExecStart=/opt/fleet/fleet-server serve -c /etc/fleet/fleet.toml
 Restart=always
 RestartSec=3
+# 停止时 SIGTERM 只发给主进程：fleet-server 收到后等进行中的作业步骤做完（最多 60 秒）再退；默认的 control-group 会把 SIGTERM
+# 同时发给 cgroup 里所有 ssh 子进程，进行中的步骤当场失败。主进程退出后 systemd 对残留的 ssh 子进程补 SIGKILL。90 秒 > 60 秒等步骤 + 10 秒等请求
+KillMode=mixed
+TimeoutStopSec=90
 Environment=RUST_LOG=info,sqlx=warn,tower_http=warn
 # 沙箱（子进程 ssh、sshpass、ssh-keyscan、ssh-keygen、journalctl 同样受限）：只写 /var/lib/fleet，不要任何特权。
 # PrivateDevices 仍留着 /dev/ptmx 与 /dev/pts（sshpass 要 pty）；journal 靠 systemd-journal 组读 /var/log/journal，不受 ProtectProc、ProtectKernelLogs 影响。
@@ -165,7 +170,7 @@ install -m 644 "$PKG/fetch-dbs.sh" /opt/fleet/ipintel/fetch-dbs.sh
 runuser -u fleet -- install -d -m 750 /var/lib/fleet/ipintel
 install -m 644 "$PKG/fleet-ipintel-fetch.service" "$PKG/fleet-ipintel-fetch.timer" /etc/systemd/system/
 
-# 每天备份（docs/OPS.md §10）：北京时间 03:30 把库与密钥打包到 /var/backups/fleet，留 14 份。
+# 每天备份（docs/OPS.md §10）：北京时间 03:30 把库与密钥打包到 /var/backups/fleet，留最近 14 天（每天最后一份）。
 # 家里 PVE 用 fleet-backup 用户取最新一份：/etc/fleet/backup.pub（PVE 的公钥）存在才写进它的 authorized_keys，
 # 登录后只能执行 forced command（把最新一份 cat 出来）；文件由 root 持有，这个用户自己改不了。
 # /etc/fleet/backup-age.recipients（age 公钥，一行一个）存在时备份用 age 加密成 .tar.age（上面装了 age 包）
@@ -185,16 +190,32 @@ systemctl daemon-reload
 systemctl enable -q fleet-server fleet-ipintel-fetch.timer fleet-backup.timer
 systemctl start fleet-ipintel-fetch.timer fleet-backup.timer
 [ -n "$(ls -A /var/lib/fleet/ipintel)" ] || systemctl start --no-block fleet-ipintel-fetch.service
-# 换上新版（紧挨着重启）：dist 与二进制各自原子 mv，前端整个目录换。换下来的旧版留作 fleet-server.prev
-# （同一个二进制重复部署时不覆盖它），回滚见 docs/OPS.md §9
-for f in $NEW_DIST; do mv -f "/opt/fleet/dist/$f.new" "/opt/fleet/dist/$f"; done
+# 上线前的回滚点：换上新版之前同步做一份备份（新版启动会自动跑迁移，旧库只能靠它回去，docs/OPS.md §9）。放在这里：备份脚本与单元
+# 上面刚装好并 daemon-reload，库此时还是旧版的；失败（set -e）就停在这里，线上的版本原样不动。
+# 首次安装（还没有 fleet-server，库是空的）跳过：装完后面会再做第一份
+if [ -f /opt/fleet/fleet-server ] && ! systemctl start fleet-backup.service; then
+  echo "上线前的备份没做成，未换任何文件、线上的版本原样不动。日志："
+  journalctl -u fleet-backup -n 20 --no-pager || true
+  exit 1
+fi
+# 换上新版（紧挨着重启）：dist 与二进制各自原子 mv，前端整个目录换。换下来的旧版留作 .prev：fleet-server.prev、fleet-agent.prev、web.prev
+# （同一个文件 / 前端重复部署时不覆盖它），回滚见 docs/OPS.md §9
+for f in $NEW_DIST; do
+  if [ "$f" = fleet-agent ] && [ -f /opt/fleet/dist/fleet-agent ] && ! cmp -s /opt/fleet/dist/fleet-agent.new /opt/fleet/dist/fleet-agent; then
+    cp -p /opt/fleet/dist/fleet-agent /opt/fleet/dist/fleet-agent.prev
+  fi
+  mv -f "/opt/fleet/dist/$f.new" "/opt/fleet/dist/$f"
+done
 if [ -f /opt/fleet/fleet-server ] && ! cmp -s /opt/fleet/fleet-server.new /opt/fleet/fleet-server; then
   cp -p /opt/fleet/fleet-server /opt/fleet/fleet-server.prev
 fi
 mv -f /opt/fleet/fleet-server.new /opt/fleet/fleet-server
 mv -f /usr/local/bin/fleetctl.new /usr/local/bin/fleetctl
 [ ! -d /opt/fleet/web ] || mv /opt/fleet/web /opt/fleet/web.old
-mv /opt/fleet/web.new /opt/fleet/web && rm -rf /opt/fleet/web.old
+mv /opt/fleet/web.new /opt/fleet/web
+if [ -d /opt/fleet/web.old ]; then
+  if diff -rq /opt/fleet/web.old /opt/fleet/web >/dev/null; then rm -rf /opt/fleet/web.old; else rm -rf /opt/fleet/web.prev; mv /opt/fleet/web.old /opt/fleet/web.prev; fi
+fi
 systemctl restart fleet-server
 
 # Caddy 终止 TLS（Let's Encrypt 自动签发续期），整站反代到本机 fleet-server；长轮询、WebSocket、gzip 上报都不用额外配置
@@ -259,7 +280,7 @@ done
 if [ "$code" != 401 ]; then
   echo "fleet-server 没有正常启动（$(systemctl is-active fleet-server)）：未登录访问 /api/v1/auth/me 应回 401，实际 $code。最近日志："
   journalctl -u fleet-server -n 60 --no-pager || true
-  echo "旧版本在 /opt/fleet/fleet-server.prev，回滚见 docs/OPS.md §9"
+  echo "旧版本在 /opt/fleet/fleet-server.prev（前端 web.prev、agent dist/fleet-agent.prev），回滚见 docs/OPS.md §9"
   exit 1
 fi
 # 前端也要在：/api/v1/auth/me 回 401 只说明后端起来了；/opt/fleet/web 对 fleet 用户不可读时 fleet-server 不挂前端，首页回 404

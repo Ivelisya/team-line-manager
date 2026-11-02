@@ -769,6 +769,7 @@ async fn desired(State(st): State<AppState>, ClientIp(ip): ClientIp, h: HeaderMa
     let after = q.after.unwrap_or(0) as i64;
     // 先订阅再查，避免漏掉查完之后、订阅之前的变化
     let mut rx = st.relay_changed.subscribe();
+    let mut down = st.shutdown.subscribe();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     loop {
         let (g,): (i64,) = sqlx::query_as("select generation from relay where machine_id = $1").bind(a.machine_id).fetch_one(&st.db).await?;
@@ -779,7 +780,12 @@ async fn desired(State(st): State<AppState>, ClientIp(ip): ClientIp, h: HeaderMa
             return Ok(Json(ds).into_response());
         }
         loop {
-            match tokio::time::timeout_at(deadline, rx.recv()).await {
+            let r = tokio::select! {
+                r = tokio::time::timeout_at(deadline, rx.recv()) => r,
+                // 中控要退出了：回 204，agent 2 秒后重连新进程（不等优雅退出的 10 秒到点）
+                _ = crate::state::shutting_down(&mut down) => return Ok(StatusCode::NO_CONTENT.into_response()),
+            };
+            match r {
                 Err(_) => return Ok(StatusCode::NO_CONTENT.into_response()),
                 Ok(Ok(id)) if id == a.machine_id => break,
                 Ok(Ok(_)) => continue,

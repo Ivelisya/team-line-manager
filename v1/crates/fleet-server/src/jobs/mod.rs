@@ -29,9 +29,11 @@ use crate::error::ApiResult;
 use crate::notify::{Kind, Notice};
 use crate::ssh::{kind_of, ErrKind, StepError};
 use crate::state::{AppState, Event};
+use futures::FutureExt;
 use serde_json::{json, Value};
 use sqlx::PgPool;
 use std::collections::HashSet;
+use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -456,8 +458,11 @@ pub async fn run_forever(st: AppState) {
                 tokio::spawn(async move {
                     let (_p, _e) = (permit, entered);
                     let id = job.id;
-                    if let Err(e) = advance(&st, job, &owner).await {
-                        retry_later(&st, id, &owner, &e).await;
+                    let row = job.clone();
+                    match AssertUnwindSafe(advance(&st, job, &owner)).catch_unwind().await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => retry_later(&st, id, &owner, &e).await,
+                        Err(p) => panicked(&st, &row, &owner, p).await,
                     }
                     // 推进告一段落（结束、等待、放手）：等它结束的作业（`after`）可能能领了
                     st.wake_jobs();
@@ -487,6 +492,41 @@ pub async fn run_forever(st: AppState) {
                 tokio::time::sleep(Duration::from_secs(3)).await;
             }
         }
+    }
+}
+
+/// 推进时 panic（bug）：作业置失败并清租约。不处理的话租约留在库里，到期后被重新领取、再 panic，作业永远「运行中」。
+/// 只在租约仍归本执行者时写（`fail_job` 按 owner 过滤）；`Running` 里的记录由外层的 `Entered` 在处理完后移出
+async fn panicked(st: &AppState, job: &JobRow, owner: &str, p: Box<dyn std::any::Any + Send>) {
+    let msg = p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_else(|| "未知".into());
+    let msg: String = msg.chars().take(200).collect();
+    tracing::error!(job = %job.id, "作业推进时 panic：{msg}");
+    let err = format!("中控内部错误（panic）：{msg}");
+    // 领取时就是 cancelling：补偿本身 panic。`fail_job` 对 cancelling 保持原状、让下一轮去补偿，会马上重领再 panic，成热循环；
+    // 这里直接置失败，等人工处理。其它状态走 `fail_job`（推进中被取消的转入 cancelling 补偿一次，补偿再 panic 就落到这里）
+    let res = if job.state == "cancelling" {
+        let r = sqlx::query(
+            "update job set state = 'failed', error = $2, finished_at = now(), lease_until = null, lease_owner = null where id = $1 and lease_owner = $3",
+        )
+        .bind(job.id)
+        .bind(&err)
+        .bind(owner)
+        .execute(&st.db)
+        .await;
+        match r {
+            Ok(r) if r.rows_affected() == 0 => lost(st, job).await,
+            Ok(_) => {
+                log(st, job.id, "error", format!("补偿时 panic，作业置失败，需要人工处理：{msg}")).await;
+                notify(st, job);
+                Ok(())
+            }
+            Err(e) => Err(e.into()),
+        }
+    } else {
+        fail_job(st, job, owner, &err).await
+    };
+    if let Err(e) = res {
+        retry_later(st, job.id, owner, &e).await;
     }
 }
 
