@@ -20,7 +20,7 @@
    ```
    公网地址用明文 `http://` 时会警告（密钥明文传输）。配置也可用环境变量 `FLEET_URL`、`FLEET_TOKEN`；文件位置（unix 上 0600）：Linux/macOS `~/.config/fleetctl/config.toml`，Windows `%APPDATA%\fleetctl\config.toml`。
 
-约定：脚本和 AI 都加 `--json`（一行 JSON：`ls` / `entries` / `incidents` / `policy ls` / `silence` 是与表格同列的精简对象，单台完整视图用 `show`、`policy show`；`billing` 是订阅、流量额度与最近续费记录合成的对象；其余是 API `data` 原样）；错误走 stderr、退出码非 0（没拿到中控响应时 code 为 `unreachable` 或 `timeout`，后者说明操作可能已执行，先查 `jobs` / `audit` 再决定重试）；人看的输出时间一律是北京时间；`<机器>` 可写 id、显示名（团队1-06）、线路机名、IP，歧义时命令会列出候选。
+约定：脚本和 AI 都加 `--json`（一行 JSON：`ls` / `entries` / `incidents` / `policy ls` / `silence` 是与表格同列的精简对象，单台完整视图用 `show`、`policy show`；`billing` 是订阅、流量额度与最近续费记录合成的对象；其余是 API `data` 原样）；错误走 stderr、退出码非 0（没拿到中控响应时 code 为 `unreachable` 或 `timeout`，后者说明操作可能已执行，先查 `jobs` / `audit` 再决定重试；没加 `--yes` 的危险操作被拒是 `confirm_required`；401 / 403 的 message 末尾另有一行下一步；参数写错由 clap 报，退出码 2、stderr 是纯文本用法提示）；会确认的换线 / 搬空 / 退役，不加 `--yes` 时预览（`--json` 也一样）打在 stdout、确认错误在 stderr；人看的输出时间一律是北京时间；`<机器>` 可写 id、显示名（团队1-06）、线路机名、IP，歧义时命令会列出候选。
 
 ## 2. 常见任务 → 命令
 
@@ -28,7 +28,7 @@
 |---|---|
 | 今天有没有问题 | `fleetctl status` |
 | 哪些机器不正常 | `fleetctl ls --status down`、`fleetctl ls --status degraded` |
-| 某团队全部节点 | `fleetctl ls --team 团队1` |
+| 某团队全部节点 | `fleetctl ls --team 团队1`（团队名或 id；`--kind`、`--status` 只认固定取值，写错报错） |
 | 一台机器详情、为什么不健康 | `fleetctl show 团队1-06`（看「健康原因」） |
 | 最近一天的 CPU/内存/磁盘/网速 | `fleetctl series 团队1-06 --range 24h` |
 | 入口的流量与探测 | `fleetctl series 团队1-06 --metric traffic` / `--metric probe` |
@@ -48,7 +48,7 @@
 | 供应商与套餐（上架前先确认存在，没有就建） | `fleetctl provider ls`、`fleetctl plan ls [--provider ATTVPS] [--all]`；新建 `fleetctl provider add ATTVPS --code ATT [--tz America/Los_Angeles] [--traffic-rule min] [--traffic-reset billing] [--remind-days 7]`、`fleetctl plan add 基础版 --provider ATTVPS --price 299.99 --currency CNY --cycle monthly [--cpu 2 --mem-mb 2048 --disk-gb 40 --bandwidth-mbps 1000 --traffic-gb 2000]`；改 `fleetctl provider set <供应商> … --yes`、`fleetctl plan set <套餐> --price 309.99 --yes`（只改给了的项，`--tz none` / 规格 `none` 清空；改价、改额度、改时区立即对没单独设置的机器生效）；不再上架 `fleetctl plan set <套餐> --archive --yes`；删 `provider rm` / `plan rm --yes`（还有套餐 / 机器用着时中控拒绝）。套餐重名写 `供应商/套餐` |
 | 上架 | `fleetctl provision --file batch.json --dry-run`，确认后 `fleetctl provision --file batch.json --yes --follow` |
 | 已有 VPS 节点上多了一个 IP，加成一台节点（同机 IP 节点，见 §6） | `fleetctl provision --kind vps --host 团队1-03 --ip 203.0.113.7 --team 团队1 --relay 线路机2 --yes --follow` |
-| 看作业进度、失败原因 | `fleetctl jobs --active`、`fleetctl jobs --failed`（`--kind upgrade_agent` 等只看一类；系统发起的作业或停在「需要人工处理」的作业失败时，通知渠道会发「作业失败」，写明重试命令）、`fleetctl job <id> --follow`；失败后 `fleetctl retry <id>` |
+| 看作业进度、失败原因 | `fleetctl jobs --active`、`fleetctl jobs --failed`（默认只取最近 30 个，`--limit` 最大 500，文字版尾注写总数；`--kind upgrade_agent` 等只看一类；系统发起的作业或停在「需要人工处理」的作业失败时，通知渠道会发「作业失败」，写明重试命令）、`fleetctl job <id> --follow`；失败后 `fleetctl retry <id>` |
 | 清理作业记录（上架、测试攒下的已结束作业） | `fleetctl jobs-prune [--before 2026-10-25] --yes`：删已成功、已取消的（连同步骤与日志），失败的、进行中的不动，先报数量；网页作业页「清理记录…」。不清也会每小时自动删 90 天前的 |
 | 退役（默认进备用，到期满 1 天自动回收） | `fleetctl retire 团队1-06 --reason 换新机 --yes`：先打印预览——去向（→ 备用-03，哪天起自动回收）、一起进备用的同机 IP 节点、还指向它的软路由出口（不会自动改，要换掉先 `replace`）、原团队的改名。机器照常运行（入口、端口、软路由出口都还在），不建作业。撤销 = 移出备用：`fleetctl rename 备用-03 --team 团队1`。进不了备用的（线路机、没有订阅、已过期满 1 天、上架中 / 上架失败、本来就在备用里）报原因，只能立即回收 |
 | 立即回收（不等到期） | `fleetctl retire 团队1-06 --now --reason 到期不续 --yes --follow`：退役作业摘入口、停服务（`--no-cleanup` 不登录清理）、撤令牌，完成时移进回收站；宿主机上的同机 IP 节点一并回收（命令先列出来）。之后机器从面板消失，数据约 93 天内由中控自动清除（入口流量还计入线路机统计的等满 93 天），不需要也没有手动「彻底删除」 |
@@ -60,7 +60,7 @@
 | 节点卡、丢包，要找供应商（要 ping / mtr 原始数据） | `fleetctl diag 团队1-01`（要 exec 权限，每台记审计；只读，不用 `--yes`）：在每台在用线路机上 ping / mtr 节点、它所挂的线路机另测 TCP 握手连 SS 端口（节点 nft 只放行自己的线路机，别的线路机连不上是正常的，不测），在节点上 ping / mtr / 握手到每台在用线路机与对照 1.1.1.1；每段原样输出（源 → 目的、UTC 时间、命令行），最后「判断」一段写入站过滤 / 入方向链路 / 双向 / 出方向。`--out diag.txt` 另存文件直接发给供应商；`--quick` 少测（20 个包、20 次握手，半分钟）；`--count 300 --tcp 200 --interval 0.5` 测久一点。机器上没有 mtr 的只给 ping（上架基线会装 mtr-tiny，老机器 `--install-mtr --yes` 现装一次）；家宽代理没有 SSH，只测线路机 → 它；同机 IP 节点在宿主机上跑、绑它自己的地址 |
 | 告警「持续握手丢包」（`tcp_loss_high`） | 先 `fleetctl diag <节点>` 拿原始数据；判断是入站过滤（入站握手丢、出站与 ICMP 正常）就把输出发给供应商，客户受影响时开穿透绕开入站 `fleetctl entry reverse <入口> --on`（见下一行），或换备用 `fleetctl replace <节点> --with <备用>`；摘要带「同供应商 X 共 N 台同时」时先找供应商，不要逐台换。见 §3 |
 | 节点放在哪台线路机最好 / 节点连线路机老断 / 换线前 | `fleetctl placement [--team 团队2] [--node 团队2-04]`：各节点到每台线路机近 24 小时的往返中位数与成功率（`*` 当前，`→` 建议换到），近 7 天 TCP 不通告警次数，末尾每台目标线路机一条批量 `fleetctl move A,B --to X`（只是建议，照它执行时先看预览）。网页：「线路」页顶部「节点放置」，建议条上「换 N 个节点…」打开批量换线。不要再到线路机上手写 ping / mtr 脚本逐个测（见 §18 放置矩阵） |
-| 每天跑了多少流量（全部 / 各节点 / 线路机计费量） | `fleetctl traffic [--days 30] [--team 团队1] [--node 团队1-06] [--json]`：先列每天的下载、上传、合计（按组织时区的自然日，今天算到目前为止），再列按区间合计排序的节点前 20（带日均）和各线路机的网卡计费量（区间合计先加总下行、上行再按供应商规则算，和额度已用同口径）；`--node` 看一台的每日明细（线路机另列每天的网卡下行 / 上行 / 计费量）。网页：侧栏「流量」，节点抽屉「流量」页签底部「每日流量」。口径见 API.md「每日流量」：换线前的量算这个节点、留在旧线路机上，直出单列，同机 IP 节点各算各的 |
+| 每天跑了多少流量（全部 / 各节点 / 线路机计费量） | `fleetctl traffic [--days 30] [--team 团队1] [--node 团队1-06] [--json]`：先列每天的下载、上传、合计（按组织时区的自然日，今天算到目前为止），再列按区间合计排序的节点前 20（带日均）和各线路机的网卡计费量（区间合计先加总下行、上行再按供应商规则算，和额度已用同口径）；`--node` 看一台的每日明细（线路机另列每天的网卡下行 / 上行 / 计费量；`--json` 不加 `--node` 时 `nodes[]` 不带逐日明细 `daily` / `nic_daily`，几十个节点 × 30 天会有几十 KB）。网页：侧栏「流量」，节点抽屉「流量」页签底部「每日流量」。口径见 API.md「每日流量」：换线前的量算这个节点、留在旧线路机上，直出单列，同机 IP 节点各算各的 |
 | 线路机流量额度快用完，要搬走一部分入口 | `fleetctl rebalance 线路机1 [--target 线路机3] [--exclude 团队2-07,团队2-08]`：按近 7 天的速度算重置前会不会用满，挑出搬走后能撑到重置日的最少入口和目标线路机（已经超出额度的：挑出搬走后日均降到原来 20% 以下的最少入口，到重置日前不再大量增长）（默认额度放得下的里面，被搬节点到它的往返最小的；没有往返数据按额度余量最多的），只打印建议和一条可直接执行的批量 `fleetctl move A,B,C --to X` 命令，不执行；`--exclude` 的节点（如分享给别人的）不动。网页：线路机抽屉「费用」→「搬迁建议」，「全部搬过去」一次提交（每行「搬过去」只换那一个） |
 | 改名 / 换团队 / 改编号 | `fleetctl rename 团队1-06 --team 团队2 --number 3`：换团队（或预览里有别的机器要连带改名）时先打印预览——谁 → 谁、原团队连带改号的节点（原团队剩下的自动压缩成 01..N）、一起走的同机 IP 节点、还指着它的软路由出口、进备用后不自动回收的原因、提醒（压缩改名的节点还被出口指着时列出「团队2-09（路由 · 节点09）→ 团队2-08」：出口名不跟着改，面板名和出口名会错位），不加 `--yes` 不执行；看过加 `--yes`。只改 `--label` / `--note` / `--country`、团队内改到空号的直接执行。要换掉一台机器别用改团队挪走它，用 `replace`（新节点接它的编号，团队里谁都不改名） |
 | 编号压缩成连续 | `fleetctl renumber 团队1`（预览），`--yes` 执行 |
@@ -323,7 +323,7 @@ FLEET_BUILD=docker FLEET_BUILD_HOST=10.172.17.213 lab/sync-server.sh 'cargo test
 
 
 - `Cargo.toml`、`Cargo.lock`、`crates`、`migrations`、`deploy`、`web`、fleet-ops 技能（仓库 `.claude/skills/fleet-ops`）有未提交的改动时拒绝部署。
-- 每次还装中控本机的 `/usr/local/bin/fleetctl`，健康检查通过后跑 `fleet-server local-admin`（建或修复全权密钥 central-local，仍有效不换），写 `/root/AGENTS.md`、`/root/CLAUDE.md` 与 `/root/.claude/skills/fleet-ops/SKILL.md`（§14）。部署最后一行写「本机 fleetctl apikey:central-local」说明能用。
+- 每次还装中控本机的 `/usr/local/bin/fleetctl`，健康检查通过后跑 `fleet-server local-admin`（建或修复全权密钥 central-local，仍有效不换），写 `/root/AGENTS.md`、`/root/CLAUDE.md` 与 `/root/.claude/skills/fleet-ops/` 下的 `SKILL.md`、`json-fields.md`（§14）。部署最后一行写「本机 fleetctl apikey:central-local」说明能用。
 - 版本号 `0.1.0+<哈希>` 里的哈希是最后一次改动 `Cargo.toml`、`Cargo.lock`、`crates`、`migrations`、`deploy` 的提交：只改前端或文档的提交不换哈希，编译主机上不重编 server 和 agent。
 - xray、ssserver、geoip.dat 先和中控 `/opt/fleet/dist` 比 sha256，相同的不上传，中控上的保持原样（docker 编译主机上没有 dist 来源时整个不带，见上）。
 - 编译失败、或 install.sh 重启后等 60 秒未登录访问 `/api/v1/auth/me` 仍不是 401、或首页 `/` 不是 200 text/html（前端没挂上，多半是 `/opt/fleet/web` 对 fleet 用户不可读），部署以非 0 退出，前者会打出 fleet-server 最近 60 行日志。中控上的安装包无论成败都删掉。
@@ -499,7 +499,7 @@ heartbeat_url = "https://hc-ping.com/<检查的 uuid>"
 1. `ssh root@<中控>`（生产：本机别名 `debian13`，没配这个别名的机器上写地址 `185.13.159.131`）。
 2. agent 两种跑法，令牌都不出中控：在中控的 `/root` 下起 agent（如 `claude`，Claude Code 要自己在中控上装好、登录）；或者 agent 留在手边的设备上，每条命令经 ssh 在中控上执行（`ssh debian13 'fleetctl --json status'`），这时先让它 `ssh debian13 cat /root/AGENTS.md` 读一遍中控上的说明。部署已经放好：
    - `/root/AGENTS.md` 与 `/root/CLAUDE.md`（同一份，模板 `deploy/central/central-agents.md`，每次部署覆盖）：这台机器是什么、规矩（改动前想清楚影响；删除、退役、全局维护、全部升级等先向用户确认）、常用命令、日志与备份在哪、出问题先看什么。
-   - `/root/.claude/skills/fleet-ops/SKILL.md`：fleet-ops 技能（Claude Code 自动加载，别的 agent 按 AGENTS.md 的指引去读）。
+   - `/root/.claude/skills/fleet-ops/SKILL.md`：fleet-ops 技能（Claude Code 自动加载，别的 agent 按 AGENTS.md 的指引去读）；同目录的 `json-fields.md` 是 `--json` 字段速查（SKILL.md 里指明要解析字段时先读它）。
    - `/usr/local/bin/fleetctl` 与它的配置 `/root/.config/fleetctl/config.toml`（0600，地址是本机回环 + `fleet.toml` 的 listen 端口）。`fleetctl whoami` 应显示 `apikey:central-local` 与四个权限。
 3. 登录机器：`fleetctl ssh 团队1-03`（交互式）、`fleetctl ssh 团队1-03 -- 'df -h'`（执行完退出，退出码同远端）；软路由 `fleetctl ssh router <名称>`。用中控的密钥、只认中控记下的主机指纹（机器 `/var/lib/fleet/known_hosts`；软路由 `/var/lib/fleet/router_known_hosts`，按别名 `router-<id>`，经它的反向隧道 `127.0.0.1:<隧道端口>`）；同机 IP 节点登录的是宿主机。只在中控上能用：读不到 `/etc/fleet/ssh/id_ed25519` 时报「先 ssh 进中控」。带命令时标准输入照样转给远端（同 ssh），在脚本循环里调用要加 `</dev/null`。
 
