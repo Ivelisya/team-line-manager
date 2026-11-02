@@ -304,13 +304,14 @@ pub const ANYTLS: &str = "anytls";
 /// 和下发给 agent 的一致。`relays` 为空 = 全部线路机
 pub async fn anytls_live(db: &PgPool, relays: &[Uuid]) -> sqlx::Result<HashMap<Uuid, u16>> { anytls_ports_on(db, relays, true).await }
 
-/// 同 `anytls_live`；`running` 为 false 时不看 sing-box 在不在跑（探测只留 AnyTLS 的线路机：sing-box 没在跑就该测出连不上）
+/// 同 `anytls_live`；`running` 为 true 时要 sing-box 在跑且没有应用错误（新配置 check 没过时旧进程照跑、running 仍为 true，
+/// 但端口与期望状态对不上，agent 把错误记在 last_error）；为 false 时不看 sing-box 在不在跑（探测只留 AnyTLS 的线路机：sing-box 没在跑就该测出连不上）
 pub async fn anytls_ports_on(db: &PgPool, relays: &[Uuid], running: bool) -> sqlx::Result<HashMap<Uuid, u16>> {
     let rows: Vec<(Uuid, Uuid, i32)> = sqlx::query_as(
         "select e.relay_id, e.id, e.port from entry e left join agent_state a on a.machine_id = e.relay_id
          left join node_outbound o on o.machine_id = e.node_id
          where (cardinality($1::uuid[]) = 0 or e.relay_id = any($1)) and e.lifecycle in ('pending', 'active')
-           and (e.node_id = e.relay_id or o.secret_enc is not null) and (not $2 or coalesce((a.info->'singbox'->>'running')::bool, false))
+           and (e.node_id = e.relay_id or o.secret_enc is not null) and (not $2 or (coalesce((a.info->'singbox'->>'running')::bool, false) and a.info->'singbox'->>'last_error' is null))
            and exists (select 1 from relay r where r.machine_id = e.relay_id and r.protocols <> 'reality')",
     )
     .bind(relays)

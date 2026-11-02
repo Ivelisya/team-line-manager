@@ -36,16 +36,11 @@ pub fn parse_mode(s: &str) -> Result<&'static str, String> {
     }
 }
 
-/// 新入口的默认模式与是否设过（没设过时按 `DEFAULT_MODE`）
+/// 新入口的默认模式与是否设过（没设过时按 `DEFAULT_MODE`）。值只经 `save_default` / `parse_mode` 写入
 pub async fn default_mode(db: &PgPool) -> sqlx::Result<(&'static str, bool)> {
     let v: Option<Value> = sqlx::query_scalar("select value from app_setting where key = $1").bind(SETTING_KEY).fetch_optional(db).await?;
-    Ok(match v.as_ref().and_then(Value::as_str).map(parse_mode) {
-        Some(Ok(m)) => (m, true),
-        // 手工改坏了：按没设过处理，日志里提醒
-        Some(Err(e)) => {
-            tracing::warn!("app_setting 里的 {SETTING_KEY} 不对（{e}），按默认的「{}」", mode_zh(DEFAULT_MODE));
-            (DEFAULT_MODE, false)
-        }
+    Ok(match v.as_ref().and_then(Value::as_str) {
+        Some(m) => (if m == REVERSE { REVERSE } else { NORMAL }, true),
         None => (DEFAULT_MODE, false),
     })
 }
@@ -81,9 +76,25 @@ async fn agent_can(conn: &mut PgConnection, machine: Uuid) -> sqlx::Result<bool>
     Ok(v.unwrap_or(false))
 }
 
+/// 线路机的 (名称, 入口协议)；不是线路机返回 None
+pub async fn relay_name_protocols(db: impl sqlx::PgExecutor<'_>, relay: Uuid) -> sqlx::Result<Option<(String, String)>> {
+    sqlx::query_as("select coalesce(m.label, ''), r.protocols from machine m join relay r on r.machine_id = m.id where m.id = $1").bind(relay).fetch_optional(db).await
+}
+
+/// 线路机只开 AnyTLS 时 Reality 入站听回环，bridge 连的是 线路机公网 IP:入口端口 的 Reality，必然连不上
+fn anytls_only_why(relay_name: &str, protocols: &str) -> Option<String> {
+    (protocols == crate::entries::ANYTLS).then(|| format!("线路机 {relay_name} 只开 AnyTLS，穿透要 Reality"))
+}
+
+/// 线路机的入口协议挡不挡穿透（上架预览、加入口在作业建立时的判断）；不挡返回 None
+pub async fn relay_unsupported(db: impl sqlx::PgExecutor<'_>, relay: Uuid) -> sqlx::Result<Option<String>> {
+    Ok(relay_name_protocols(db, relay).await?.and_then(|(name, protocols)| anytls_only_why(&name, &protocols)))
+}
+
 /// 节点挂在这台线路机上的入口能不能用穿透；不能时返回原因（中文，带下一步怎么办）。
 /// - 家宽代理没有 SSH 和 agent，装不了 bridge；直出入口没有节点；
 /// - 同机 IP 节点：bridge 要从它自己的 IP 出站（Xray 的 sendThrough），第一版没做；
+/// - 线路机只开 AnyTLS：Reality 入站听回环，bridge 连不上（软路由出口同理，见 `anytls_only_why`）；
 /// - 线路机 agent 太旧：不认识期望状态里的穿透出站，整份解析失败（整台线路机的配置停在旧代数）；
 /// - 节点 agent 太旧：不会按中控的要求重启 bridge（隧道挂不上时没法自动恢复，见 `kick_for`）
 pub async fn unsupported(conn: &mut PgConnection, node: Uuid, relay: Uuid) -> sqlx::Result<Option<String>> {
@@ -94,15 +105,16 @@ pub async fn unsupported(conn: &mut PgConnection, node: Uuid, relay: Uuid) -> sq
     .fetch_optional(&mut *conn)
     .await?;
     let Some((kind, host, name)) = n else { return Ok(Some("节点不存在".into())) };
-    match kind.as_str() {
-        "proxy" => return Ok(Some("家宽代理没有 SSH 和 agent，装不了穿透要的 bridge".into())),
-        "relay" => return Ok(Some("线路机直出入口没有落地节点，用不着穿透".into())),
-        _ => {}
+    if kind == "relay" {
+        return Ok(Some("线路机直出入口没有落地节点，用不着穿透".into()));
     }
-    if host.is_some() {
-        return Ok(Some("同机 IP 节点暂不支持穿透（bridge 要从它自己的 IP 出站，第一版没做）".into()));
+    if let Some(why) = kind_unsupported(&kind, host) {
+        return Ok(Some(why.into()));
     }
-    let relay_name: String = sqlx::query_scalar("select coalesce(label, '') from machine where id = $1").bind(relay).fetch_one(&mut *conn).await?;
+    let (relay_name, protocols) = relay_name_protocols(&mut *conn, relay).await?.ok_or(sqlx::Error::RowNotFound)?;
+    if let Some(why) = anytls_only_why(&relay_name, &protocols) {
+        return Ok(Some(why));
+    }
     if !agent_can(conn, relay).await? {
         return Ok(Some(format!("线路机 {relay_name} 的 agent 版本过旧，不认识穿透入口（下发了会整份配置解析失败）：先 fleetctl upgrade-agent {relay_name}")));
     }
@@ -275,7 +287,11 @@ pub async fn kick_for(db: &PgPool, node: Uuid) -> sqlx::Result<Option<i64>> {
 pub async fn set_mode(tx: &mut Tx<'_>, entry: Uuid, mode: &str) -> ApiResult<(Uuid, i64)> {
     let relay: Uuid = sqlx::query_scalar("select relay_id from entry where id = $1").bind(entry).fetch_optional(&mut **tx).await?.ok_or_else(|| ApiError::not_found("没有这个入口"))?;
     // 先锁线路机再锁入口（同 entries::transition、on_applied）
-    sqlx::query("select 1 from relay where machine_id = $1 for update").bind(relay).execute(&mut **tx).await?;
+    let protocols: String = sqlx::query_scalar("select protocols from relay where machine_id = $1 for update").bind(relay).fetch_one(&mut **tx).await?;
+    // 与改线路机协议（api/relays.rs patch_relay）排队后再核一次：只 AnyTLS 的线路机上不能开穿透
+    if mode == REVERSE && protocols == crate::entries::ANYTLS {
+        return Err(ApiError::conflict("线路机只开 AnyTLS，穿透要 Reality"));
+    }
     let lc: String = sqlx::query_scalar("select lifecycle::text from entry where id = $1 for update").bind(entry).fetch_one(&mut **tx).await?;
     if !matches!(lc.as_str(), "pending" | "active" | "disabled") {
         return Err(ApiError::conflict(format!("入口现在是「{}」，不能切换模式", crate::entries::state_zh(&lc))));

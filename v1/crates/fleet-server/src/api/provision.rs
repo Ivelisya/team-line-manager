@@ -126,7 +126,15 @@ async fn entry_modes(st: &AppState, v: &mut [Checked]) -> ApiResult<()> {
             },
             None => default,
         };
-        let why = (want == crate::reverse::REVERSE).then(|| crate::reverse::kind_unsupported(&c.item.kind, c.item.host_id)).flatten();
+        let mut why: Option<String> = None;
+        if want == crate::reverse::REVERSE {
+            why = crate::reverse::kind_unsupported(&c.item.kind, c.item.host_id).map(String::from);
+            if why.is_none() {
+                if let Some(relay) = c.item.relay_id {
+                    why = crate::reverse::relay_unsupported(&st.db, relay).await?;
+                }
+            }
+        }
         c.entry_mode = Some(if why.is_some() { crate::reverse::NORMAL } else { want });
         c.entry_mode_note = why.map(|w| format!("按普通模式建入口：{w}"));
     }

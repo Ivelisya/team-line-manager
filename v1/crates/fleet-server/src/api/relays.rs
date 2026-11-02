@@ -177,14 +177,16 @@ pub async fn patch_relay(a: Actor, State(st): State<AppState>, ApiPath(id): ApiP
     if ![entries::BOTH, entries::REALITY, entries::ANYTLS].contains(&p) {
         return Err(ApiError::bad_request("protocols 只能是 both、reality、anytls"));
     }
+    // 先锁线路机那一行再查再改：开穿透（reverse::set_mode）、加入口等同样先锁它，三项检查与改动之间不会插进别的变更
+    let mut tx = st.db.begin().await?;
     // (名称, 现在的协议, sing-box 在跑, agent 的 caps)
     type Cur = (Option<String>, String, Option<bool>, Option<Value>);
     let cur: Option<Cur> = sqlx::query_as(
         "select m.label, r.protocols, (a.info->'singbox'->>'running')::bool, a.info->'caps'
-         from relay r join machine m on m.id = r.machine_id left join agent_state a on a.machine_id = r.machine_id where r.machine_id = $1",
+         from relay r join machine m on m.id = r.machine_id left join agent_state a on a.machine_id = r.machine_id where r.machine_id = $1 for update of r",
     )
     .bind(id)
-    .fetch_optional(&st.db)
+    .fetch_optional(&mut *tx)
     .await?;
     let (label, from, singbox, caps) = cur.ok_or_else(|| ApiError::not_found("没有这台线路机"))?;
     let name = label.unwrap_or_default();
@@ -203,14 +205,14 @@ pub async fn patch_relay(a: Actor, State(st): State<AppState>, ApiPath(id): ApiP
         )
         .bind(id)
         .bind(crate::reverse::REVERSE)
-        .fetch_all(&st.db)
+        .fetch_all(&mut *tx)
         .await?;
         if !rev.is_empty() {
             let names: Vec<String> = rev.iter().map(|(k, l, t, n, port)| format!("{}（{port}）", crate::names::entry_name(false, k, l.as_deref(), t.as_deref(), *n))).collect();
             return Err(ApiError::conflict(format!("这台线路机上有穿透入口：{}。穿透的 bridge 连的是入口的公网 Reality 端口，先关掉穿透", names.join("、")))
                 .with_detail(json!({"reverse_entries": names})));
         }
-        let ids: Vec<Uuid> = sqlx::query_scalar("select id from entry where relay_id = $1 and lifecycle <> 'removed'").bind(id).fetch_all(&st.db).await?;
+        let ids: Vec<Uuid> = sqlx::query_scalar("select id from entry where relay_id = $1 and lifecycle <> 'removed'").bind(id).fetch_all(&mut *tx).await?;
         let rs = crate::routers::exits_on_entries(&st.db, &ids).await?;
         if !rs.is_empty() {
             return Err(ApiError::conflict(format!("软路由只用 Reality，这些出口指着这台线路机上的入口：{}。先把它们改指到别的线路机", crate::routers::exits_text(&rs)))
@@ -218,10 +220,9 @@ pub async fn patch_relay(a: Actor, State(st): State<AppState>, ApiPath(id): ApiP
         }
     }
     if p == from {
-        let g: i64 = sqlx::query_scalar("select generation from relay where machine_id = $1").bind(id).fetch_one(&st.db).await?;
+        let g: i64 = sqlx::query_scalar("select generation from relay where machine_id = $1").bind(id).fetch_one(&mut *tx).await?;
         return Ok(ok(json!({"relay_id": id, "name": name, "protocols": p, "generation": g, "changed": false})));
     }
-    let mut tx = st.db.begin().await?;
     sqlx::query("update relay set protocols = $2 where machine_id = $1").bind(id).bind(p).execute(&mut *tx).await?;
     let gen = crate::db::bump_relay(&mut tx, id).await?;
     audit(&mut tx, &a.name, "relay.protocols", "machine", Some(id), json!({"relay": name, "from": from, "to": p, "generation": gen})).await?;
@@ -280,10 +281,13 @@ pub async fn add_entry(a: Actor, State(st): State<AppState>, ApiPath(node_id): A
         None => crate::reverse::default_mode(&st.db).await?.0,
     };
     let host_id: Option<Uuid> = sqlx::query_scalar("select host_id from machine where id = $1").bind(node_id).fetch_one(&st.db).await?;
-    let why = match (want == crate::reverse::REVERSE, direct) {
+    let why: Option<String> = match (want == crate::reverse::REVERSE, direct) {
         (false, _) => None,
-        (true, true) => Some("线路机直出入口没有落地节点，用不着穿透"),
-        (true, false) => crate::reverse::kind_unsupported(&kind, host_id),
+        (true, true) => Some("线路机直出入口没有落地节点，用不着穿透".into()),
+        (true, false) => match crate::reverse::kind_unsupported(&kind, host_id) {
+            Some(w) => Some(w.into()),
+            None => crate::reverse::relay_unsupported(&st.db, b.relay_id).await?,
+        },
     };
     let mode = if why.is_some() { crate::reverse::NORMAL } else { want };
     let note = why.map(|w| format!("按普通模式建入口：{w}"));
