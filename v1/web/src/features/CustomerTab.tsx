@@ -32,6 +32,8 @@ function billedUntil(start: string, end: string) {
 }
 /** 「团队1-01、团队1-02」，多于 n 个只列前 n 个再写「等」 */
 const nameList = (ns: BillingMonthNode[], n = 5) => `${ns.slice(0, n).map((x) => x.name).join('、')}${ns.length > n ? ' 等' : ''}`;
+/** 地区输入框里的值 → 存进库的值：留空或写「未标地区」都存「未知」（库里的口径不变，只是给人看的写法统一） */
+const storedRegion = (r: string) => (r === '' || r === '未标地区' ? '未知' : r);
 
 export function CustomerTab() {
   const teams = useTeams();
@@ -67,7 +69,7 @@ function Board({ d }: { d: BillingMonth }) {
   // 还没开始记账：整页收成一句提示
   if (!d.initialized) return <Empty text="还没开始记账" hint={<>在中控上运行 <code>fleetctl billing init</code></>} />;
   const thisMonth = d.today.slice(0, 7);
-  const regions = [...new Set(d.nodes.map((n) => n.region))];
+  const regions = [...new Set(d.nodes.map((n) => regionLabel(n.region)))];
   return (
     <>
       <div className="cxa-month">
@@ -91,17 +93,23 @@ function Lead({ d }: { d: BillingMonth }) {
   const unpaid = d.nodes.filter((n) => !n.paid);
   const n = d.nodes.length;
   const p = d.pending;
+  // 还没到的期：起点在今天以后。整月都是这样的月份（下个月）不写「没收」，免得像漏收
+  const early = unpaid.filter((x) => x.upcoming).length;
+  const allEarly = n > 0 && d.nodes.every((x) => x.upcoming);
   return (
     <p className="cxa-lead">
       {n === 0 ? <>{m}：{d.team.name} 没有要收钱的节点。</>
-        : unpaid.length === 0 ? <>{m}：{d.team.name} 的 <b>{n} 个节点</b><span className="cx-done">都收齐了 ✓</span></>
-          : <>{m}：{d.team.name} 要收 <b>{n} 个节点</b>的钱，已收 <b>{n - unpaid.length} 个</b>，没收 <b>{unpaid.length} 个</b>{unpaid.length <= 5 && <>（{nameList(unpaid)}）</>}。</>}
+        : allEarly ? <>{m}：<b>{n} 个节点</b>都还没到收费的日子，可以提前标记已收{n > unpaid.length && <>（已提前收 {n - unpaid.length} 个）</>}。</>
+          : unpaid.length === 0 ? <>{m}：{d.team.name} 的 <b>{n} 个节点</b><span className="cx-done">都收齐了 ✓</span></>
+            : <>{m}：{d.team.name} 要收 <b>{n} 个节点</b>的钱，已收 <b>{n - unpaid.length} 个</b>，没收 <b>{unpaid.length} 个</b>{early > 0 ? `（其中 ${early} 个还没到）` : unpaid.length <= 5 && <>（{nameList(unpaid)}）</>}。</>}
       {p.length > 0 && <> 另有 {p.length} 个新节点刚加入（{p.map((x) => x.machine.name).join('、')}），{p.length === 1 ? `${when(p[0].decide_at)} 后` : '满 24 小时后'}确定是补位还是新增 <InfoTip text={'加入满 24 小时后确定：这期间有节点离开，它就补上那个位置，不多收；没有就算新增，从加入那天开始收费'} />。</>}
     </p>
   );
 }
 
 /* ---------------------------------------------------------------- 没收 / 已收 两块清单 */
+/** 全部标记已收的确认框里最多列几个名字，其余悬停看 */
+const ALL_NAMES = 6;
 type Act = { kind: 'start' | 'edit' | 'end' | 'del'; n: BillingMonthNode };
 
 function Lists({ d, regions }: { d: BillingMonth; regions: string[] }) {
@@ -171,8 +179,14 @@ function Lists({ d, regions }: { d: BillingMonth; regions: string[] }) {
       )}
 
       <ConfirmDialog open={!!askAll} onOpenChange={(o) => !o && setAskAll(null)} title={`全部标记已收 · ${m}`} confirmLabel="标记已收"
-        description={heldAll ? `${heldAll.map((n) => n.name).join('、')}（共 ${heldAll.length} 个）` : undefined}
-        onConfirm={async () => { const ns = heldAll!; await set(ns, true); toast.ok(`${m}的 ${ns.length} 个节点已标记已收`); }} />
+        description={heldAll ? <>把 {m}没收的 {heldAll.length} 个节点都记为已收：<span data-tip={heldAll.length > ALL_NAMES ? heldAll.map((n) => n.name).join('、') : undefined}>{heldAll.slice(0, ALL_NAMES).map((n, i) => <React.Fragment key={n.slot_id}>{i > 0 && '、'}<span className="cxa-nm">{n.name}</span></React.Fragment>)}{heldAll.length > ALL_NAMES && ` 等 ${heldAll.length} 个`}</span>。</> : undefined}
+        onConfirm={async () => {
+          const ns = heldAll!;
+          // 撤销只撤这次由没收变成已收的（打开框之后别人已经标了的不动）
+          const flipped = ns.filter((x) => d.nodes.find((y) => y.slot_id === x.slot_id)?.paid === false);
+          await set(ns, true);
+          toast.show({ tone: 'ok', text: `${m}的 ${ns.length} 个节点已标记已收`, action: flipped.length ? { label: '撤销', onClick: () => void set(flipped, false).catch(toast.err) } : undefined });
+        }} />
       {held?.kind === 'start' && <StartDialog open={act?.kind === 'start'} onClose={() => setAct(null)} n={held.n} today={d.today} />}
       {held?.kind === 'edit' && <EditSlotDialog open={act?.kind === 'edit'} onClose={() => setAct(null)} n={held.n} regions={regions} />}
       {held?.kind === 'end' && <EndSlotDialog open={act?.kind === 'end'} onClose={() => setAct(null)} n={held.n} today={d.today} />}
@@ -221,17 +235,18 @@ const StartDialog = resetOnOpen(function StartDialog({ open, onClose, n, today }
 
 const EditSlotDialog = resetOnOpen(function EditSlotDialog({ open, onClose, n, regions }: { open: boolean; onClose: () => void; n: BillingMonthNode; regions: string[] }) {
   const patch = usePatchBillingSlot();
-  const [region, setRegion] = React.useState(n.region);
+  const [region, setRegion] = React.useState(n.region === '未知' ? '' : n.region);
   const [note, setNote] = React.useState(n.note);
   const listId = React.useId();
   const r = region.trim(); const t = note.trim();
-  const dirty = r !== n.region || t !== n.note;
-  const errR = r === '' ? '必填' : [...r].length > 20 ? '最多 20 个字' : undefined;
+  const stored = storedRegion(r);
+  const dirty = stored !== n.region || t !== n.note;
+  const errR = [...r].length > 20 ? '最多 20 个字' : undefined;
   const errN = [...t].length > 60 ? '最多 60 个字' : undefined;
   return (
     <FormDialog open={open} onOpenChange={(o) => !o && onClose()} title={`改地区 / 备注 · ${n.name}`} submitLabel="保存" busy={patch.isPending} valid={dirty && !errR && !errN} dirty={dirty}
-      onSubmit={() => patch.mutate({ id: n.slot_id, region: r !== n.region ? r : undefined, note: t !== n.note ? t : undefined }, { onSuccess: () => { toast.ok('已保存'); onClose(); }, onError: toast.err })}>
-      <Field label="地区" error={errR} info="默认按节点所在的国家，不知道国家的显示「未标地区」"><Input list={listId} value={region} onChange={(e) => setRegion(e.target.value)} autoFocus /></Field>
+      onSubmit={() => patch.mutate({ id: n.slot_id, region: stored !== n.region ? stored : undefined, note: t !== n.note ? t : undefined }, { onSuccess: () => { toast.ok('已保存'); onClose(); }, onError: toast.err })}>
+      <Field label="地区" error={errR} info="默认按节点所在的国家，不知道国家的留空，显示「未标地区」"><Input list={listId} value={region} onChange={(e) => setRegion(e.target.value)} placeholder="未标地区" autoFocus /></Field>
       <Field label="备注（选填）" error={errN} hint={n.manual ? '客户页会显示这个名字' : undefined}><Input value={note} onChange={(e) => setNote(e.target.value)} placeholder={n.manual ? '如 墨西哥家宽' : '只在这里看，客户看不到'} /></Field>
       <datalist id={listId}>{regions.map((x) => <option key={x} value={x} />)}</datalist>
     </FormDialog>
@@ -261,6 +276,8 @@ const AddSlotDialog = resetOnOpen(function AddSlotDialog({ open, onClose, teamId
   const add = useAddBillingSlot();
   const [f, setF] = React.useState({ region: '', start: today, count: '1', note: '' });
   const listId = React.useId();
+  // 必填的提示等离开那一项再出现（一打开就满屏红字像是已经出错了）；超长的照旧立即显示
+  const [seen, setSeen] = React.useState({ region: false, note: false });
   const r = f.region.trim(); const t = f.note.trim();
   const errs = {
     region: r === '' ? '必填' : [...r].length > 20 ? '最多 20 个字' : undefined,
@@ -268,13 +285,14 @@ const AddSlotDialog = resetOnOpen(function AddSlotDialog({ open, onClose, teamId
     note: t === '' ? '必填' : [...t].length > 60 ? '最多 60 个字' : undefined,
   };
   const valid = DATE.test(f.start) && f.start <= F.addMonths(today, 1) && f.count !== '' && !Object.values(errs).some(Boolean);
+  const shown = (k: 'region' | 'note') => (errs[k] === '必填' && !seen[k] ? undefined : errs[k]);
   return (
     <FormDialog open={open} onOpenChange={(o) => !o && onClose()} title="手动添加节点" submitLabel="添加" busy={add.isPending} valid={valid} dirty={!!(f.region || f.note) || f.start !== today || f.count !== '1'}
       desc={<>不在面板里、但要收钱的节点 <InfoTip text="比如家宽。不会随节点增减自动变化，不收钱了要手动停止收费" /></>}
-      onSubmit={() => add.mutate({ teamId, region: r, start_date: f.start, count: Number(f.count), note: t }, { onSuccess: () => { toast.ok(`已添加 ${f.count} 个节点`); onClose(); }, onError: toast.err })}>
+      onSubmit={() => add.mutate({ teamId, region: storedRegion(r), start_date: f.start, count: Number(f.count), note: t }, { onSuccess: () => { toast.ok(`已添加 ${f.count} 个节点`); onClose(); }, onError: toast.err })}>
       <div className="form-grid">
-        <Field label="名字" error={errs.note} hint="客户页会显示这个名字"><Input value={f.note} onChange={(e) => setF({ ...f, note: e.target.value })} placeholder="如 墨西哥家宽" autoFocus /></Field>
-        <Field label="地区" error={errs.region}><Input list={listId} value={f.region} onChange={(e) => setF({ ...f, region: e.target.value })} placeholder="如 墨西哥" /></Field>
+        <Field label="名字" error={shown('note')} hint="客户页会显示这个名字"><Input value={f.note} onChange={(e) => setF({ ...f, note: e.target.value })} onBlur={() => setSeen((s) => ({ ...s, note: true }))} placeholder="如 墨西哥家宽" autoFocus /></Field>
+        <Field label="地区" error={shown('region')}><Input list={listId} value={f.region} onChange={(e) => setF({ ...f, region: e.target.value })} onBlur={() => setSeen((s) => ({ ...s, region: true }))} placeholder="如 墨西哥" /></Field>
         <Field label="开始收费日" hint={DATE.test(f.start) ? firstSpan(f.start, today) : undefined}><DateField value={f.start} onChange={(v) => setF({ ...f, start: v })} max={F.addMonths(today, 1)} /></Field>
         <Field label="个数" error={errs.count}><UnitInput unit="个节点" width="full" inputMode="numeric" value={f.count} onChange={(e) => setF({ ...f, count: digits(e.target.value) })} /></Field>
       </div>
