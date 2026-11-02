@@ -3,7 +3,7 @@
 export interface Fmt { v: string; u: string }
 export const NA: Fmt = { v: '—', u: '' };
 /** 纯文本（title、提示里用）：“值 单位” */
-export const str = (f: Fmt) => (f.u ? `${f.v} ${f.u}` : f.v);
+export const str = (f: Fmt) => (f.u ? `${f.v}${f.u === '%' ? '' : ' '}${f.u}` : f.v); // % 紧贴数字（98%），其余单位隔一个空格
 
 const num = (n: number, digits = 1) => {
   const s = n >= 100 ? n.toFixed(0) : n >= 10 ? n.toFixed(1) : n.toFixed(digits === 1 ? 2 : digits);

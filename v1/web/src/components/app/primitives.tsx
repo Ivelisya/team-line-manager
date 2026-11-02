@@ -28,7 +28,7 @@ export function LinkCounts({ c, who, only }: { c: ReturnType<typeof linkCounts>;
 
 /** 数值 + 灰色小单位 */
 export function Num({ f }: { f: Fmt }) {
-  return <span className="num">{f.v}{f.u && <> <span className="unit">{f.u}</span></>}</span>;
+  return <span className="num">{f.v}{f.u && <>{f.u === '%' ? '' : ' '}<span className="unit">{f.u}</span></>}</span>;
 }
 
 /** 数据不完整时，数字后面的灰字「10-22 起」（全句说明放悬停 tip / 费用页签）。dateOnly：只写日期、不带时分（表格副行放不下） */
