@@ -1,6 +1,7 @@
-// 客户批次时间轴（客户到期页与管理端「团队与套餐 → 客户到期」共用）：每个批次一行——标题行（批次名 · 有效时长 · 节点月）、
-// 灰色说明、时间条；所有行共用一条横轴（每天一个小刻度、月初写月份）和一条「今天」竖线。
-// 时间条：每段一块，相邻段深浅交替（区分续期）；今天以前实心，今天以后同色虚线；起点实心圆、终点空心圆；起止日期写在条的左上 / 右下。
+// 客户批次时间轴（客户到期页与管理端「团队与套餐 → 计费台账」共用）：每个批次一行——标题行（批次名 · 本期起止 · 还剩几天）、时间条；
+// 所有行共用一条横轴（每天一个小刻度、月初写月份）和一条「今天」竖线。
+// 只画本期（实际生效的这一期：有效批次是含今天的那一期，已到期的是最后计费的那一期），起点就是现在生效的起始日；
+// 首次起算日、续过几次放在时间条的悬停说明里。今天以前实心，今天以后同色虚线；起点实心圆、终点空心圆；起止日期写在条的左上 / 右下。
 // 已到期的批次（只在管理端出现）整条灰色。
 // 宽度：放得下就铺满，每天至少 MIN_PPD 像素，放不下时整块横向滚动；标题行用 sticky 留在原位不跟着滚（手机上标题照常换行）。
 import * as React from 'react';
@@ -11,11 +12,10 @@ import type { BatchState } from '@/lib/types';
 import '@/styles/batches.css';
 
 export interface TimelinePeriod { start_date: string; end_date: string; months: number; count: number }
-export interface TimelineItem {
-  key: string; title: string; desc: string; state: BatchState;
-  start_date: string; end_date: string; months: number; node_months: number;
-  periods: TimelinePeriod[];
-}
+export interface TimelineItem { key: string; title: string; state: BatchState; periods: TimelinePeriod[] }
+
+/** 本期：起点最晚的一期（服务端给的各期截止到含今天的那一期 / 最后计费的那一期） */
+export const currentPeriod = (periods: TimelinePeriod[]) => periods.reduce((m, p) => (p.start_date > m.start_date ? p : m));
 
 const DAY = 86_400_000;
 const dayNum = (s: string) => { const [y, m, d] = s.split('-').map(Number); return Date.UTC(y, m - 1, d) / DAY; };
@@ -30,11 +30,11 @@ const BAR_Y = 23; const BAR_H = 8; const TICK_Y = 33;
 
 interface Scale { start: string; days: number; ppd: number; W: number; x: (d: string) => number }
 
-/** 横轴范围：最早起点所在月的 1 日 → 最晚终点（今天更晚就到今天）后 5 天 */
+/** 横轴范围：各批本期最早的起点（今天更早就从今天）前 2 天 → 最晚的终点（今天更晚就到今天）后 5 天 */
 function rangeOf(items: TimelineItem[], today: string) {
   let lo = today; let hi = today;
-  for (const b of items) { if (b.start_date < lo) lo = b.start_date; if (b.end_date > hi) hi = b.end_date; }
-  const start = `${lo.slice(0, 7)}-01`;
+  for (const b of items) { const p = currentPeriod(b.periods); if (p.start_date < lo) lo = p.start_date; if (p.end_date > hi) hi = p.end_date; }
+  const start = addDays(lo, -2);
   return { start, days: dayNum(addDays(hi, 5)) - dayNum(start) };
 }
 
@@ -46,7 +46,7 @@ function monthStarts(start: string, days: number): string[] {
   for (;;) {
     const d = `${y}-${String(m).padStart(2, '0')}-01`;
     if (d > end) break;
-    out.push(d);
+    if (d >= start) out.push(d);
     m += 1; if (m > 12) { m = 1; y += 1; }
   }
   return out;
@@ -65,36 +65,47 @@ function ticksPath(s: Scale): string {
   return d;
 }
 
-const periodTip = (p: TimelinePeriod, i: number, n: number) =>
-  `${n > 1 ? (i === 0 ? '首购' : `第${i}次续期`) + ' · ' : ''}${mmdd(p.start_date)} → ${mmdd(p.end_date)} · ${p.months} 个月 · ${p.count} 个节点`;
+/** 本期的悬停说明：起止 · 个数；续过的再写首次起算日与续了几次（个数变过的按期列出） */
+function periodTip(b: TimelineItem, p: TimelinePeriod) {
+  const ps = [...b.periods].sort((x, y) => (x.start_date < y.start_date ? -1 : 1));
+  const head = `本期 ${mmdd(p.start_date)} → ${mmdd(p.end_date)} · ${p.count} 个节点`;
+  if (ps.length < 2) return head;
+  const counts = ps.map((x) => x.count);
+  const changed = counts.some((c) => c !== counts[0]) ? `
+各期个数：${counts.join(' → ')}` : '';
+  return `${head}
+${mmdd(ps[0].start_date)} 首次起算，已续 ${ps.length - 1} 次${changed}`;
+}
 
 function Track({ b, s, today, ticks }: { b: TimelineItem; s: Scale; today: string; ticks: string }) {
   const t = s.x(today);
-  const ps = [...b.periods].sort((p, q) => (p.start_date < q.start_date ? -1 : 1));
-  const a0 = s.x(b.start_date); const z0 = s.x(b.end_date);
-  const tone = (i: number) => (i % 2 ? 'is-b' : 'is-a');
+  const p = currentPeriod(b.periods);
+  const a = s.x(p.start_date); const z = s.x(p.end_date);
+  const solid = Math.min(z, t); const dash = Math.max(a, t);
   return (
-    <svg className="btl-track" width={s.W} height={ROW_H} role="img" aria-label={`${b.title}：${b.start_date} 起，${b.end_date} 到期`}>
+    <svg className="btl-track" width={s.W} height={ROW_H} role="img" aria-label={`${b.title}：本期 ${p.start_date} 起，${p.end_date} 到期`}>
       <path d={ticks} className="btl-ticks" />
-      {/* 今天竖线只画在时间条这一段：贯穿整列会从标题、时长文字上穿过 */}
+      {/* 今天竖线只画在时间条这一段：贯穿整列会从标题文字上穿过 */}
       <line className="btl-today" x1={t} x2={t} y1={0} y2={ROW_H} />
-      {ps.map((p, i) => {
-        const a = s.x(p.start_date); const z = s.x(p.end_date);
-        const solid = Math.min(z, t); const dash = Math.max(a, t);
-        return (
-          <g key={`${p.start_date}-${i}`} className={tone(i)} data-tip={periodTip(p, i, ps.length)}>
-            <rect className="btl-hit" x={a} y={BAR_Y - 9} width={Math.max(0, z - a)} height={18} />
-            {solid > a && <rect className="btl-solid" x={a} y={BAR_Y - BAR_H / 2} width={solid - a} height={BAR_H} />}
-            {z > dash && <line className="btl-future" x1={dash} x2={z} y1={BAR_Y} y2={BAR_Y} />}
-          </g>
-        );
-      })}
-      <circle className={cn('btl-start', tone(0))} cx={a0} cy={BAR_Y} r={5} />
-      <circle className={cn('btl-end', tone(ps.length - 1))} cx={z0} cy={BAR_Y} r={4.5} />
-      <text className="btl-date" x={Math.max(2, a0 - 4)} y={11}>{mmdd(b.start_date)}</text>
-      <text className="btl-date" x={Math.min(s.W - 2, z0 + 4)} y={ROW_H - 3} textAnchor="end">{mmdd(b.end_date)}</text>
+      <g className="is-a" data-tip={periodTip(b, p)}>
+        <rect className="btl-hit" x={a} y={BAR_Y - 9} width={Math.max(0, z - a)} height={18} />
+        {solid > a && <rect className="btl-solid" x={a} y={BAR_Y - BAR_H / 2} width={solid - a} height={BAR_H} />}
+        {z > dash && <line className="btl-future" x1={dash} x2={z} y1={BAR_Y} y2={BAR_Y} />}
+      </g>
+      <circle className="btl-start is-a" cx={a} cy={BAR_Y} r={5} />
+      <circle className="btl-end is-a" cx={z} cy={BAR_Y} r={4.5} />
+      <text className="btl-date" x={Math.max(2, a - 4)} y={11}>{mmdd(p.start_date)}</text>
+      <text className="btl-date" x={Math.min(s.W - 2, z + 4)} y={ROW_H - 3} textAnchor="end">{mmdd(p.end_date)}</text>
     </svg>
   );
+}
+
+/** 本期还剩几天：终点（下次续费 / 到期日）减今天；今天到期另写 */
+function Left({ b, today }: { b: TimelineItem; today: string }) {
+  if (b.state === 'expired') return null; // 标题里已写「（已到期）」
+  if (b.state === 'today') return <span className="btl-flag">今日到期</span>;
+  const n = dayNum(currentPeriod(b.periods).end_date) - dayNum(today);
+  return <><span className="t-sub">还剩</span> <b className="num">{n}</b> 天</>;
 }
 
 function Axis({ s, today }: { s: Scale; today: string }) {
@@ -135,6 +146,8 @@ export function TimelineLegend({ expired, className }: { expired?: boolean; clas
     </div>
   );
 }
+
+const period = (b: TimelineItem) => { const p = currentPeriod(b.periods); return `${mmdd(p.start_date)} → ${mmdd(p.end_date)}`; };
 
 /** 时间轴本体。actions：管理端每行末尾的操作（「⋯」菜单） */
 export function BatchTimeline({ items, today, actions }: { items: TimelineItem[]; today: string; actions?: (b: TimelineItem) => React.ReactNode }) {
@@ -177,12 +190,11 @@ export function BatchTimeline({ items, today, actions }: { items: TimelineItem[]
             <div key={b.key} className="btl-row" data-state={b.state}>
               <div className="btl-head">
                 <div className={cn('btl-line', actions && 'has-act')}>
-                  <span className="btl-title">{b.title}{b.state === 'today' && <span className="btl-flag">今日到期</span>}</span>
-                  <span className="btl-dur"><span className="t-sub">有效时长</span> <b className="num">{b.months}</b> 个月</span>
-                  <span className="btl-nm"><b className="num">{b.node_months}</b> 个节点月</span>
+                  <span className="btl-title">{b.title}</span>
+                  <span className="btl-dur"><span className="t-sub">本期</span> <b className="num">{period(b)}</b></span>
+                  <span className="btl-nm"><Left b={b} today={today} /></span>
                   {actions && <span className="btl-act">{actions(b)}</span>}
                 </div>
-                {b.desc && <div className="btl-desc">{b.desc}</div>}
               </div>
               <Track b={b} s={s} today={today} ticks={ticks} />
             </div>

@@ -23,24 +23,23 @@
 /* 今天竖线：每行时间条里各画一段（Track） */
 .btl-today { stroke: color-mix(in srgb, var(--btl-now) 55%, transparent); stroke-width: 1; shape-rendering: crispEdges; pointer-events: none; }
 
-/* 一行：标题行 + 说明 sticky 在左边不跟着横滑，宽度等于可见宽度 */
+/* 一行：标题行 sticky 在左边不跟着横滑，宽度等于可见宽度 */
 .btl-row { position: relative; padding-top: var(--sp-14); }
 .btl-row + .btl-row { border-top: 1px solid var(--line); }
 .btl-axis + .btl-row { margin-top: var(--sp-4); }
 .btl-head { position: sticky; left: 0; z-index: 1; width: var(--btl-vw); padding-inline: var(--sp-4); box-sizing: border-box; display: grid; gap: var(--sp-2); }
 .btl-line {
-  display: grid; grid-template-columns: minmax(0, 1fr) 9.5em 7.5em; align-items: baseline; column-gap: var(--sp-16);
+  display: grid; grid-template-columns: minmax(0, 1fr) 11em 6.5em; align-items: baseline; column-gap: var(--sp-16);
   font-size: var(--fs-body); line-height: var(--lh-body);
 }
-.btl-line.has-act { grid-template-columns: minmax(0, 1fr) 9.5em 7.5em 28px; }
+.btl-line.has-act { grid-template-columns: minmax(0, 1fr) 11em 6.5em 28px; }
 .btl-title { font-weight: var(--fw-semibold); color: var(--fg); min-width: 0; text-wrap: pretty; }
-.btl-flag { margin-left: var(--sp-8); font-size: var(--fs-label); font-weight: var(--fw-medium); color: var(--warn-text); white-space: nowrap; }
+.btl-flag { font-size: var(--fs-label); font-weight: var(--fw-medium); color: var(--warn-text); white-space: nowrap; }
 .btl-dur { white-space: nowrap; color: var(--fg); }
 .btl-nm { white-space: nowrap; text-align: right; color: var(--fg); }
 .btl-line b { font-weight: var(--fw-semibold); }
 .btl-act { align-self: center; display: flex; justify-content: flex-end; }
-.btl-desc { font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); text-wrap: pretty; }
-/* 窄：标题独占一行，时长与节点月排在下一行 */
+/* 窄：标题独占一行，本期与剩余天数排在下一行 */
 @container btl (max-width: 520px) {
   .btl-line, .btl-line.has-act { grid-template-columns: auto minmax(0, 1fr); row-gap: var(--sp-2); }
   .btl-title { grid-column: 1 / -1; }
