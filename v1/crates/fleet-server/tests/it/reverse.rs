@@ -119,7 +119,7 @@ async fn gates_and_enqueue() {
     assert_eq!((p["ok"].as_bool(), p["from"].as_str(), p["to"].as_str()), (Some(true), Some("normal"), Some("reverse")), "{p}");
     let impacts = p["impacts"].to_string();
     assert!(impacts.contains("不重启 Xray") && impacts.contains("分享链接、客户端订阅、软路由出口都不变") && impacts.contains("198.51.100.2:"), "{impacts}");
-    assert!(p["warnings"].to_string().contains("-（穿透）"));
+    assert!(p["warnings"].to_string().contains("TCP 一格显示「—」"));
     // 关闭的预览：已经是普通
     assert!(blockers(&preview(&t, e, false).await).contains("已经是普通模式"));
     // 发起

@@ -113,7 +113,7 @@ async fn plan(st: &AppState, conn: &mut PgConnection, id: Uuid, on: bool, lock: 
     impacts.push("分享链接、客户端订阅、软路由出口都不变（同一个入口端口与凭据）".into());
     impacts.push("验收：线路机应用后经入口的出口探测要看到节点自己的 IP；不通就自动切回原来的模式、作业失败".into());
     if on {
-        warnings.push("之后这个入口没有线路机 → 节点的 TCP 探测（显示「-（穿透）」）；隧道断了体现为出口探测失败（照常告警），隧道挂不上时中控会叫节点 agent 重启 bridge".into());
+        warnings.push("之后这个入口没有线路机 → 节点的 TCP 探测（TCP 一格显示「—」）；隧道断了体现为出口探测失败（照常告警），隧道挂不上时中控会叫节点 agent 重启 bridge".into());
     }
     Ok(Plan { e, on, blockers, impacts, warnings })
 }

@@ -85,7 +85,7 @@ function ExitDelays({ r, range, few }: { r: RouterView; range: string; few: stri
         : !exits?.length ? <div className="chart-empty" style={{ height: 120 }}>{few}</div> : (
           <div className="chart-frame stack-sm" data-stale={q.isPlaceholderData}>
             <div className="rt-exit-beats">
-              {beats.map((b) => <Beat key={b.name} n={bins} cells={b.cells} titles={b.titles} caption={<b>{b.name}</b>} win={b.rate != null ? (b.rate >= 1 ? '100%' : `${(Math.floor(b.rate * 1000) / 10).toFixed(1)}%`) : undefined} winTone={b.rate == null ? undefined : b.rate >= 1 ? 'ok' : b.rate < 0.5 ? 'bad' : 'warn'} />)}
+              {beats.map((b) => <Beat key={b.name} n={bins} cells={b.cells} titles={b.titles} caption={<b>{b.name}</b>} win={b.rate != null ? (b.rate >= 1 ? '100%' : `${(Math.floor(b.rate * 1000 + 1e-9) / 10).toFixed(1)}%`) : undefined} winTone={b.rate == null ? undefined : b.rate >= 1 ? 'ok' : b.rate < 0.5 ? 'bad' : 'warn'} />)}
             </div>
             <ChartCard c="var(--chart-1)" icon={<Radar />} title="延迟曲线" tools={<Select sm value={cur?.name ?? ''} onChange={setPick} options={opts} aria-label="出口" className="w-[160px]" />}>
               {cur && cur.points.length > 1 ? <TimeChart points={cur.points} range={range} kind="line" lines={L_DELAY} yFmt={yMs} valueFmt={vMs} height={160} /> : <div className="chart-empty" style={{ height: 160 }}>{few}</div>}

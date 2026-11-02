@@ -15,7 +15,7 @@ import { useHeld } from '@/lib/useHeld';
 import { toast } from '@/components/ui/toast';
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuSub, ContextMenuSubContent, ContextMenuSubTrigger, ContextMenuTrigger } from '@/components/ui/context-menu';
 import { DropdownMenuItem, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger } from '@/components/ui/overlays';
-import { flushAfterMenuClosed, runAfterMenuClosed, useAnchoredDropdown } from './AnchoredDropdown';
+import { dropAfterMenuClosed, flushAfterMenuClosed, runAfterMenuClosed, useAnchoredDropdown } from './AnchoredDropdown';
 
 export type MenuEntry =
   | { key: string; sep: true }
@@ -178,6 +178,7 @@ export function NodeMenus({ rows, children }: { rows: MachineView[]; children: R
   // 打开期间给那张卡 / 那一行写 data-menu（高亮，见 cards.css、table.css）
   const onCtx = (open: boolean) => {
     const el = picked.current;
+    if (open) dropAfterMenuClosed();
     el?.toggleAttribute('data-menu', open);
     setCtxId(open && el ? el.dataset.id! : null);
   };

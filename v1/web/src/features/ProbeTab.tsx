@@ -53,6 +53,7 @@ export function ProbeTab() {
   const addable = list.filter((p) => p.enabled && !ids.includes(p.id));
   // 此刻在用的那一路（null = 中控；标灰时谁都不是）
   const used = !s || s.effective.state === 'none' ? undefined : s.effective.probe_point_id;
+  const order = rows.map((o) => o.id).join();
   const inUse = (id: string | null) => used === id;
   return (
     <div className="stack">
@@ -62,7 +63,8 @@ export function ProbeTab() {
           <div className="stack" style={{ gap: 'var(--sp-12)' }}>
             <ol className="choice-list probe-order" aria-label="探测顺序">
               {rows.map((o, i) => (
-                <mo.li key={o.id} layout="position" transition={SPRING} className="choice">
+                // 位置动画只在换序时做：跟着推送重渲染、上方内容变高时不滑（同 NodeCard 的 layoutDependency）
+                <mo.li key={o.id} layout="position" layoutDependency={order} transition={SPRING} className="choice">
                   <span className="probe-order-n num">{i + 1}</span>
                   <span className="cell-main">{o.label}</span>
                   {i === 0 && <span className="t-sub">主来源</span>}

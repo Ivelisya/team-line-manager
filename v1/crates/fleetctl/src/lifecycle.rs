@@ -192,7 +192,7 @@ fn mv_many(ctx: &Ctx, names: &[&str], to: &str, from: Option<&str>, no_routers: 
         ctx.emit(&pv, String::new);
     }
     if pv["ok"] != true {
-        // 非 json 模式离线软路由上面已逐条打印过，这里只放 blockers，不再重复；json 模式什么都没打印，原因要自己带全
+        // 非 json 模式离线软路由上面已逐条打印过，这里只放 blockers，不再重复；json 模式加了 --yes 时没打印预览，原因要自己带全
         bail!("现在不能换线路机（一个都没提交）：{}", moves_why(&pv, ctx.json));
     }
     confirm(&format!("确认把这 {} 个节点换到 {tname}？", names.len()), yes)?;

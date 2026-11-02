@@ -9,7 +9,7 @@
 //! | router_offline | 警告 | 接入过的路由重新接入（重新生成接入命令、重新部署）之后 30 分钟还没连上 |
 //! | router_collect_error | 警告 | 连得上，但采集脚本出错、输出解析不了、超时（满 60 秒） |
 //! | router_openclash_down | 严重 | OpenClash 启用了、核心没在跑（满 60 秒） |
-//! | router_exits_down | 警告；全部 fleet 出口都不通升严重 | 有 fleet 出口（对上了 fleet 入口的）连续两次延迟测试不通（每 5 分钟测一次），且从第一次不通起满 180 秒（同机器 egress_fail 的 150 秒再多一轮，让机器告警先开，几十秒到几分钟的出口抖动不报）；客户自己的出口不算。摘要附上不通的出口指向的节点 / 线路机此刻在维护或严重告警中的（「其中 2 个指向的团队2-03 正在告警」）；不通的出口指向的都在维护中时不开（维护期间预期不通，开着的保持）；不通的出口指向的都已有机器的严重告警（出口不通、TCP 不通、agent 离线）在报时，告警照开、挂在路由上，但不单独通知（一个节点挂了不再每台路由各报一条），原因单独留下来时补发；节点 / 线路机的维护刚结束（不满 180 秒）也按这样处理——维护期间机器告警的计时被清，结束后要重攒 150 秒才会开，这段时间不抢先通知 |
+//! | router_exits_down | 警告；全部 fleet 出口都不通升严重 | 有 fleet 出口（对上了 fleet 入口的）连续两次延迟测试不通（每 5 分钟测一次），且从第一次不通起满 180 秒（同机器 egress_fail 的 150 秒再多一轮，让机器告警先开，几十秒到几分钟的出口抖动不报）；客户自己的出口不算。摘要附上不通的出口指向的节点 / 线路机此刻在维护或严重告警中的（「其中 2 个指向的团队2-03 正在告警」）；不通的出口全经同一台线路机、它自己没在维护 / 告警时点出它（「都经 线路机2」）；不通的出口指向的都在维护中时不开（维护期间预期不通，开着的保持）；不通的出口指向的都已有机器的严重告警（出口不通、TCP 不通、agent 离线）在报时，告警照开、挂在路由上，但不单独通知（一个节点挂了不再每台路由各报一条），原因单独留下来时补发；节点 / 线路机的维护刚结束（不满 180 秒）也按这样处理——维护期间机器告警的计时被清，结束后要重攒 150 秒才会开，这段时间不抢先通知 |
 //! | router_wan_down | 严重 | WAN 口（逻辑接口 wan）断开（满 60 秒） |
 //! | router_resource_high | 警告 | CPU > 90% 持续 10 分钟、内存 > 90%、存储 > 90%、连接表 > 80%（后三项满 60 秒） |
 //! | router_exit_drift | 警告 | 有出口对上了 fleet 入口、但参数和入口现在的不一致（凭据轮换后没同步、入口已删除 / 停用，见 clash.rs），持续两轮采集（满 30 秒）。抽屉与告警里可以一键同步（作业 router_sync） |
@@ -259,11 +259,15 @@ pub fn problems(v: &View, cpu_high_since: Option<OffsetDateTime>, tg: &Targets, 
             .iter()
             .map(|((name, w), n)| format!("{n} 个指向的{name} {}", match w { Why::Maint => "正在维护", Why::Alert => "正在告警", Why::Settled => "刚结束维护" }))
             .collect();
-        if !notes.is_empty() {
-            text.push_str(&format!("（其中 {}）", notes.join("，")));
-        } else if let Some(relay) = common_relay(&down) {
-            // 没有机器告警、维护能解释：不通的出口全经同一台线路机时点出来（线路机在国内被挡，它自己的探测不一定看得出），先去查它
-            text.push_str(&format!("（{}经 {relay}）", if down.len() > 1 { "都" } else { "" }));
+        // 不通的出口全经同一台线路机、而这台线路机自己没在维护 / 告警（线路机在国内被挡，它自己的探测不一定看得出）：点出来，先去查它
+        let via = common_relay(&down)
+            .filter(|r| !r.is_empty() && !why.iter().any(|((name, _), _)| name == r))
+            .map(|r| format!("{}经 {r}", if down.len() > 1 { "都" } else { "" }));
+        match (via, notes.is_empty()) {
+            (Some(v), true) => text.push_str(&format!("（{v}）")),
+            (Some(v), false) => text.push_str(&format!("（{v}；其中 {}）", notes.join("，"))),
+            (None, false) => text.push_str(&format!("（其中 {}）", notes.join("，"))),
+            (None, true) => {}
         }
         // 不通的出口指向的节点 / 线路机都已经在告警（或维护）：机器告警在报原因，这条挂在路由上、不另发通知
         let quiet = down.iter().all(|e| tg.why(e).is_some());
@@ -634,6 +638,9 @@ mod tests {
         assert_eq!(text(&other), "1 个出口连续两次延迟测试不通：节点03（经 线路机2）");
         let tg = Targets { maint: [n3].into(), firing: [relay].into(), ..Targets::default() };
         assert_eq!(ex(&tg).unwrap().text, "3 个出口连续两次延迟测试不通：节点01、节点02、节点03（其中 2 个指向的团队2-03 正在维护，1 个指向的线路机2 正在告警）");
+        // 只有部分节点在维护、线路机自己没事：照样点出线路机
+        let tg2 = Targets { maint: [n3].into(), ..Targets::default() };
+        assert_eq!(ex(&tg2).unwrap().text, "3 个出口连续两次延迟测试不通：节点01、节点02、节点03（都经 线路机2；其中 2 个指向的团队2-03 正在维护）");
         assert!(!exits_paused(&s, &tg, now));
         // 不通的都指向维护中的（线路机在维护）：不开，评估时开着的保持
         let tg = Targets { maint: [relay].into(), firing: HashSet::new(), ..Targets::default() };

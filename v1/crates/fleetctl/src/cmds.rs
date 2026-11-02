@@ -690,7 +690,7 @@ fn entry_table(items: &[Value]) -> String {
                 entry_state_cn(e).into(),
                 if reverse { "穿透" } else { "普通" }.into(),
                 // 穿透入口没有线路机 → 节点的 TCP 探测：写明原因，不是「不通」
-                if reverse { "-（穿透）".into() } else { probe("tcp_ok") },
+                if reverse { "—".into() } else { probe("tcp_ok") },
                 probe("egress_ok"),
                 format!("下载 {} / 上传 {}", traffic(num(e, "/today_down").unwrap_or(0.0)), traffic(num(e, "/today_up").unwrap_or(0.0))),
                 e["apply_error"].as_str().unwrap_or("").to_string(),
@@ -1266,7 +1266,7 @@ mod tests {
         let t = entry_table(&[e(Some("reverse"), Value::Null), e(Some("normal"), json!({"ok": false})), e(None, json!({"ok": true}))]);
         let lines: Vec<&str> = t.lines().collect();
         assert!(lines[0].contains("模式") && lines[0].contains("TCP"), "{t}");
-        assert!(lines[1].contains("穿透") && lines[1].contains("-（穿透）") && !lines[1].contains("不通"), "{t}");
+        assert!(lines[1].contains("穿透") && lines[1].contains("—") && !lines[1].contains("不通"), "{t}");
         assert!(lines[2].contains("普通") && lines[2].contains("不通"), "{t}");
         assert!(lines[3].contains("普通"), "旧中控没有 mode 字段：按普通：{t}");
     }

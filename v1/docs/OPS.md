@@ -217,7 +217,7 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 3. 作业三步：推 bridge 并启动 → 切换并经入口验收出口 IP → （开启时跳过）收起 bridge。验收不过中控**自动切回普通模式**、作业失败，错误写明原因；查清后 `fleetctl retry <作业>` 从切换那一步重来，或 `fleetctl cancel <作业>`（补偿收起 bridge）。
 4. 这个入口上正在进行的连接会断开一次（客户端自动重连），线路机上别的入口不受影响；分享链接、订阅、软路由出口都不变。
 
-**验证**：`fleetctl entries <节点>` 的「模式」是「穿透」、TCP 一格「-（穿透）」、出口「通」；`fleetctl exec <节点> -- 'systemctl is-active fleet-xray-bridge; journalctl -u fleet-xray-bridge -n 20 --no-pager'`；`fleetctl exec <线路机> -- '/usr/local/bin/xray api lso --server=127.0.0.1:62789 | grep rvs-'`（有 `rvs-<入口>` = 隧道挂上了）。客户那边新连接不再转圈。
+**验证**：`fleetctl entries <节点>` 的「模式」是「穿透」、TCP 一格「—」、出口「通」；`fleetctl exec <节点> -- 'systemctl is-active fleet-xray-bridge; journalctl -u fleet-xray-bridge -n 20 --no-pager'`；`fleetctl exec <线路机> -- '/usr/local/bin/xray api lso --server=127.0.0.1:62789 | grep rvs-'`（有 `rvs-<入口>` = 隧道挂上了）。客户那边新连接不再转圈。
 
 **切回普通**：`fleetctl entry reverse <入口> --off --yes --follow`：线路机改回连节点的 ssserver（一直留着，防火墙照旧放行），验收通过后节点上没有别的穿透入口就停掉删掉 bridge（xray 程序留着）。入站丢包的问题会回来。
 

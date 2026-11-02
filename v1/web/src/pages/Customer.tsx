@@ -26,7 +26,7 @@ function Regions({ d }: { d: PublicCustomer }) {
       <div className="cx-regions">
         {d.regions.map((r) => (
           <div key={r.region} className="cx-region">
-            <span className="cx-region-name">{r.region === '未知' ? '当前' : r.region}有效</span>
+            <span className="cx-region-name">{r.region === '未知' ? (d.regions.length > 1 ? '其他' : '当前') : r.region}有效</span>
             <span className="cx-region-val">{r.total}<small>个</small></span>
             {(r.counts.length > 1 || r.today_count > 0) && (
               <span className="cx-region-calc">

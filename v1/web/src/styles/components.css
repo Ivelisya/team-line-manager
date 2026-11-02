@@ -58,6 +58,7 @@
 .icon-btn-xs::after { content: ""; position: absolute; inset: -5px; }
 .icon-btn.copy-btn.is-done { color: var(--ok); animation: copy-pop var(--dur-2) var(--ease-out); } /* 复制成功：变绿弹一下，悬停也不变回灰 */
 svg.copied-ic { color: var(--ok); animation: copy-pop var(--dur-2) var(--ease-out); } /* 文字型复制按钮复制成功后的前置对勾 */
+.btn-primary svg.copied-ic { color: currentColor; } /* 强调色底上绿色看不清：跟随按钮文字色，只保留弹一下 */
 @keyframes copy-pop { 0% { transform: scale(.8); } 60% { transform: scale(1.15); } }
 
 /* ========== 分段控件 ========== */

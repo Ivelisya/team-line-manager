@@ -16,7 +16,7 @@ fleetctl --json <命令>      # AI 一律加 --json，输出一行 JSON
 
 - 配置：在中控上已经配好（见下文「在中控上运维」）。别处用环境变量 `FLEET_URL`、`FLEET_TOKEN`，或 `fleetctl login --url <地址>`（密钥从标准输入读一行，如 `< 密钥文件`；`--token <密钥>` 仍可用，但会留在 shell 历史与进程列表里）。实验室中控是 `http://192.168.31.60:8080`。
 - `--json` 的 `ls` / `entries` / `incidents` / `policy ls` / `silence` 是与表格同列的精简对象（字段见同目录的 json-fields.md，要解析 `--json` 字段时先读它），一台机器的完整视图用 `show`、一个团队或节点的完整策略用 `policy show`；`billing` 是订阅、流量额度与最近续费记录合成的对象；`router exits` 是按出口算好的统计；`provider` / `plan` 的 `add`、`set` 是改完后的那一项；其余命令是 API 的 data 原样。机器上百台时 `ls` 仍有几万字符，先用 `--team` / `--kind` / `--status` 缩小。 fleetctl 和中控的版本（`0.1.0+<提交哈希>`）不一致时会在 stderr 提示一行（每次运行至多一次，不影响 stdout 与 `--json`）：用中控上的 fleetctl 或重新编译。
-- 成功退出码 0；失败退出码 1，错误 JSON 在 stderr（`{"error":{"code","message","status"}}`）；没加 `--yes` 的危险操作被拒时 `code` 是 `confirm_required`（要先向用户确认，别当成失败去重试）；401 / 403 的 message 末尾另有一行下一步。参数写错（clap）是退出码 2，stderr 是纯文本用法提示，不是 JSON。`exec` 单台时退出码等于远端命令的退出码。`job` / `job --follow`（以及各命令的 `--follow`）遇到作业失败或取消也退出 1，stderr 给 `{"error":{"code":"job_failed"|"job_cancelled","message",…}}`。
+- 成功退出码 0；失败退出码 1，错误 JSON 在 stderr（`{"error":{"code","message","status"}}`）；没加 `--yes` 的危险操作被拒时 `code` 是 `confirm_required`（要先向用户确认，别当成失败去重试）；需要登录（`unauthorized`）/ 没有权限（`forbidden`）时 message 末尾另有一行下一步。参数写错（clap）是退出码 2，stderr 是纯文本用法提示，不是 JSON。`exec` 单台时退出码等于远端命令的退出码。`job` / `job --follow`（以及各命令的 `--follow`）遇到作业失败或取消也退出 1，stderr 给 `{"error":{"code":"job_failed"|"job_cancelled","message",…}}`。
 - 没拿到中控响应时 `status` 为 null、`code` 是 `unreachable`（连不上，请求没发出去，可直接重试；`message` 带最底层原因）或 `timeout`（请求已发出、等响应超时）。`timeout` 时操作可能已在中控执行：先 `fleetctl --json jobs --active` / `fleetctl --json audit --limit 10` 核对，再决定是否重试，尤其是上架、退役、换线路机这类会建作业的命令。
 - `<机器>` 写机器 id、显示名（`团队1-06`）、线路机名（`线路机2`）或 IP。歧义时命令报错并列出候选，照候选里的 id 重试。
 

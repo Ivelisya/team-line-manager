@@ -14,6 +14,8 @@ let afterClose: (() => void) | undefined;
 export const runAfterMenuClosed = (fn: () => void) => { afterClose = fn; };
 /** 菜单关完时调用（下拉和右键菜单各一处）：有登记的回调就执行并返回 true */
 export const flushAfterMenuClosed = () => { const run = afterClose; afterClose = undefined; run?.(); return !!run; };
+/** 菜单打开时调用：丢掉上一次没执行掉的回调（菜单没关完整个容器就卸载了，onCloseAutoFocus 不会触发），免得它在之后别的菜单关闭时打开旧对象的面板 */
+export const dropAfterMenuClosed = () => { afterClose = undefined; };
 
 /** btn：“⋯”按钮的选择器；idOf：按钮 → 对象 id；find：按 id 取容器里当前的对象（找不到 = 已不在容器里）。
  *  返回 onClick（挂在容器上，点击从按钮冒泡上来）、cur（打开的那个对象，关闭动画期间是最近的那个）、menu（渲染下拉，菜单项按 cur 给） */
@@ -29,6 +31,7 @@ export function useAnchoredDropdown<T>(btn: string, idOf: (el: HTMLElement) => s
     const id = el ? idOf(el) : undefined;
     if (!el || !find(id)) return;
     el.setAttribute('aria-expanded', 'true');
+    dropAfterMenuClosed();
     setAt({ id: id!, el }); setOpen(true);
   };
   const close = () => { at?.el.setAttribute('aria-expanded', 'false'); setOpen(false); };
