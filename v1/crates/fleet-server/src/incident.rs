@@ -138,12 +138,12 @@ pub struct Tally {
     pub resolved: usize,
 }
 
-/// 触发通知的摘要：近 24 小时同对象同规则出现过不止一次（开过的条数 + 30 分钟内复发合并进去的次数，同告警页的次数）时末尾加「（近 24 小时第 N 次）」；提醒和恢复不加
+/// 触发通知的摘要：近 24 小时同对象同规则出现过不止一次（开过的条数 + 30 分钟内复发合并进去的次数，按 `occurrences_sql` 数：tcp_fail 只数严重的）时末尾加「（近 24 小时第 N 次）」；提醒和恢复不加
 async fn chronic(st: &AppState, engine: Engine, rule: &str, subject: Uuid, kind: Kind, text: &str) -> String {
     if kind != Kind::Firing {
         return text.to_string();
     }
-    let n: i64 = sqlx::query_scalar("select count(*) + coalesce(sum(reopen_count), 0) from incident where engine = $1 and rule = $2 and subject_id = $3 and opened_at > now() - interval '24 hours'")
+    let n: i64 = sqlx::query_scalar(&format!("select coalesce(sum({})::bigint, 0) from incident where engine = $1 and rule = $2 and subject_id = $3 and opened_at > now() - interval '24 hours'", occurrences_sql()))
         .bind(engine.as_str())
         .bind(rule)
         .bind(subject)

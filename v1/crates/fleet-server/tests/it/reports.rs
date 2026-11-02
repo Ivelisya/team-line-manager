@@ -85,11 +85,12 @@ async fn uptime_outage_minutes_do_not_double_count_entries() {
         .unwrap();
     for e in [e1, e2] {
         put_hour(&t, e, 5, "egress", 60, 55).await;
-        put_hour(&t, e, 6, "egress", 60, 57).await;
+        put_hour(&t, e, 6, "egress", 60, 56).await;
     }
     let v = t.get("/api/v1/reports/uptime?days=7").await;
     let d = v["items"].as_array().unwrap().iter().find(|i| i["id"] == json!(n4)).unwrap();
-    assert_eq!((d["outages"].as_i64(), d["longest_outage_min"].as_i64()), (Some(1), Some(4)), "{d}");
+    // 失败 5 + 4 = 9 次 × 30 秒 = 4.5 分钟：四舍五入是 5（银行家舍入会得 4）；两个入口相加会是 9
+    assert_eq!((d["outages"].as_i64(), d["longest_outage_min"].as_i64()), (Some(1), Some(5)), "{d}");
 }
 
 /// 可用率汇总的口径：同抽屉的 availability（成功次数 ÷ 探测次数），主指标是出口成功率；断线 = 出口失败 3 次以上的整点小时、连着的算一次

@@ -164,10 +164,14 @@ UMask=0077
 WantedBy=multi-user.target
 UNIT
 chmod 644 /etc/systemd/system/fleet-server.service.new   # 不依赖调用方的 umask（077 下 systemd 会警告配置文件 world-inaccessible）
-# 单元与线上逐字节相同就不换，并记下来：二进制与单元都没变（纯前端发版）时下面不重启 fleet-server
+# 单元与线上逐字节相同就不换；不同时和二进制一样先留成 .new，到下面「换上新版」那段才换上并 daemon-reload（中途失败重跑时 .new 仍与线上不同，
+# 仍会判定要重启；若在这里就换上，重跑时已相同，纯单元改动的发版就不重启了）。首次安装（还没有正式单元）马上装好，后面要 enable。
+# 二进制与单元都没变（纯前端发版）时下面不重启 fleet-server
 unit_changed=0
-if ! cmp -s /etc/systemd/system/fleet-server.service.new /etc/systemd/system/fleet-server.service; then
+if [ ! -f /etc/systemd/system/fleet-server.service ]; then
   mv -f /etc/systemd/system/fleet-server.service.new /etc/systemd/system/fleet-server.service
+  unit_changed=1
+elif ! cmp -s /etc/systemd/system/fleet-server.service.new /etc/systemd/system/fleet-server.service; then
   unit_changed=1
 else
   rm -f /etc/systemd/system/fleet-server.service.new
@@ -224,6 +228,10 @@ if [ -f /opt/fleet/fleet-server ] && [ "$srv_changed" = 1 ]; then
   cp -p /opt/fleet/fleet-server /opt/fleet/fleet-server.prev
 fi
 mv -f /opt/fleet/fleet-server.new /opt/fleet/fleet-server
+if [ -f /etc/systemd/system/fleet-server.service.new ]; then
+  mv -f /etc/systemd/system/fleet-server.service.new /etc/systemd/system/fleet-server.service
+  systemctl daemon-reload
+fi
 mv -f /usr/local/bin/fleetctl.new /usr/local/bin/fleetctl
 [ ! -d /opt/fleet/web ] || mv /opt/fleet/web /opt/fleet/web.old
 mv /opt/fleet/web.new /opt/fleet/web

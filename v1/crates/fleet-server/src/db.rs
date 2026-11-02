@@ -613,6 +613,28 @@ pub async fn has_retiring(db: &mut sqlx::PgConnection, team_id: Uuid) -> sqlx::R
     sqlx::query_scalar("select exists (select 1 from machine where team_id = $1 and kind <> 'relay' and lifecycle = 'retiring')").bind(team_id).fetch_one(db).await
 }
 
+/// 预览用：`members`（团队里压缩时仍占号的节点）压缩后的改名 (id, 旧名, 新名)。
+/// 团队里有退役中的节点时实际不压缩（`compact_team`），如实给空列表，并往 `notes` 补一句说明（同一句不重复）
+pub async fn preview_compaction(
+    db: &mut sqlx::PgConnection,
+    team_id: Uuid,
+    team_name: &str,
+    members: Vec<(Uuid, i32)>,
+    notes: &mut Vec<String>,
+) -> sqlx::Result<Vec<(Uuid, String, String)>> {
+    if has_retiring(db, team_id).await? {
+        let note = "团队里有退役中的节点，编号等它收尾时一起压缩".to_string();
+        if !notes.contains(&note) {
+            notes.push(note);
+        }
+        return Ok(vec![]);
+    }
+    Ok(crate::names::compact_numbers(members)
+        .into_iter()
+        .map(|(id, o, n)| (id, crate::names::node_name(team_name, o), crate::names::node_name(team_name, n)))
+        .collect())
+}
+
 /// 把团队的未退役节点编号压缩成 1..n（锁团队行；新号 ≤ 旧号，按新号升序更新不撞唯一索引）。
 /// 团队里还有退役中的节点（`retiring`）时不压缩、返回空：同团队几台一起退役时，由最后收尾的那台（此时它自己已是 retired）一次压好。
 /// 写审计；返回 (改动列表 (id, 旧号, 新号), 需要刷新的线路机)。
