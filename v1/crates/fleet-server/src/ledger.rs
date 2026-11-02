@@ -1,33 +1,33 @@
-//! 计费台账的对账（迁移 0097）：每 60 秒（中控启动时先跑一次）把每个非备用团队的「可计费节点」与计费名额对一遍。
+//! 计费台账的对账（迁移 0097；0104 去掉了「待定」）：每 60 秒（中控启动时先跑一次）把每个非备用团队的「可计费节点」与计费名额对一遍。
 //!
 //! 可计费节点：VPS / 家宽代理（同机 IP 节点也算）、在用、所在团队不是备用团队、没被标不计费（`BILLABLE`）。线路机不算。
 //! 对一个团队（一个事务，按团队取 advisory 锁，两个中控实例同时跑也只是排队，结果一样）：
-//! 1. 名额的占用者不在可计费集合里（离开团队、退役、进备用、标了不计费、机器被删）→ 名额空出待定（holder 置空，vacated_at = 现在）。
-//! 2. 可计费、不占名额的节点 → 待定（billing_pending，seen_at = 现在）；待定的节点又不可计费了（加入后 24 小时内又走了）→ 直接删掉，不计费、不记事件。
-//!    空出名额的原占用者 24 小时内回来（撤销退役、取消不计费）→ 原样接回，不记事件。
-//! 3. 配对：空出待定的名额与待定节点按时间先后一一配对，两边时刻相差不超过 24 小时（含正好 24 小时）就是替换——
-//!    新节点接过名额，开始收费日、地区不变，记 swap（不分先加新后走旧还是先走旧后加新）。
-//! 4. 超时：待定节点 seen_at 之后满 24 小时（严格晚于）还没配上 → 新名额，开始收费日 = seen_at 的北京日期，地区按节点国家，记 add；
-//!    空出名额 vacated_at 之后满 24 小时还没配上 → 结束日 = vacated_at 的北京日期，记 remove。事件时间用 seen_at / vacated_at（真实时刻）。
+//! 1. 加入即计费：可计费、没有名额的节点这一轮就建名额，记 add。开始收费日 = 购买日：有订阅的是订阅到期日往前推一个订阅周期
+//!    （周期跟随套餐的取套餐的；同机 IP 节点没有自己的订阅看宿主机的；与每一期同一套 add_months，月底对齐），推出来晚于今天的取今天；
+//!    没有订阅的是加入那天（组织时区）。地区按节点国家。
+//! 2. 离开即结束：名额的占用者不再可计费（离开团队、退役进备用、标了不计费、机器被删）→ 名额结束，结束日 = 今天，记 remove；
+//!    已经开始的那一期照收（batches::billed_until）。
+//! 3. 回来的节点（撤销退役、取消不计费）：它在这个团队最近结束的名额还在收费期内（billed_until ≥ 今天）就原样接回，不记事件；否则按 1 新建。
+//!
+//! 补位只认明确的替换：替换节点作业交换编号时在同一个事务里调 `take_over`，新节点接过旧节点的名额（开始收费日、地区、已收都不变），记 swap。
+//! 对账不猜哪个新节点顶了哪个旧节点：同一轮一个走、一个来，就是一条 remove、一条 add。
 //!
 //! 手动名额（系统外的节点）不参与对账。还没初始化过（app_setting 里没有 billing_since，见 POST /billing/init）时对账什么都不做：
 //! 部署后、初始化前不会把现有节点都当成新加入的。
 //!
-//! 决定怎么变的是纯函数 `plan`（传入「现在」，测试不用等 24 小时），`reconcile_team` 只负责读库、写库。
+//! 决定怎么变的是纯函数 `plan`（传入「现在」），`reconcile_team` 只负责读库、写库。
 
 use crate::batches::{self as bt, fmt_cn};
 use crate::country;
 use crate::db::new_id;
+use crate::meta;
 use crate::state::{AppState, Event};
 use serde_json::{json, Value};
 use sqlx::{PgConnection, PgPool};
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
-use time::{Date, Duration, OffsetDateTime, UtcOffset};
+use time::{Date, OffsetDateTime, UtcOffset};
 use uuid::Uuid;
-
-/// 替换的配对窗口
-pub const GRACE: Duration = Duration::hours(24);
 
 /// 可计费节点的条件（m = machine，t = 它所在的 team，内连接）
 pub const BILLABLE: &str = "m.kind in ('vps', 'proxy') and m.lifecycle = 'active' and not t.spare and not exists (select 1 from billing_exempt x where x.machine_id = m.id)";
@@ -35,13 +35,18 @@ pub const BILLABLE: &str = "m.kind in ('vps', 'proxy') and m.lifecycle = 'active
 /// 初始化过的标记（app_setting 的 key，值是开始收费日）
 pub const SINCE_KEY: &str = "billing_since";
 
-/// 团队计费的 advisory 锁（事务级）：对账、改名额、初始化同一团队互相排队
+/// 团队计费的 advisory 锁（事务级）：对账、改名额、初始化、替换节点接名额同一团队互相排队
 pub async fn lock_team(c: &mut PgConnection, team: Uuid) -> sqlx::Result<()> {
     sqlx::query("select pg_advisory_xact_lock(hashtextextended('billing:' || $1::text, 0))").bind(team).execute(c).await?;
     Ok(())
 }
 
 pub fn org_date(t: OffsetDateTime, off: UtcOffset) -> Date { t.to_offset(off).date() }
+
+/// 购买日（新名额的开始收费日）：订阅 (到期日, 周期月数) 的到期日往前推一个周期，晚于今天的取今天；没有订阅的是今天（加入那天）
+pub fn purchase_date(sub: Option<(Date, u32)>, today: Date) -> Date {
+    sub.and_then(|(due, months)| meta::add_months(due, -i64::from(months))).map_or(today, |d| d.min(today))
+}
 
 // ── 纯函数：决定怎么变 ───────────────────────────────────────────────
 
@@ -54,6 +59,8 @@ pub struct Node {
     pub country: Option<String>,
     /// 没指定国家时按它查离线 IP 库
     pub ip: Option<IpAddr>,
+    /// 订阅 (到期日, 周期月数)：自己的，没有就宿主机的（同机 IP 节点）；都没有为 None
+    pub sub: Option<(Date, u32)>,
 }
 
 /// 团队里一个没结束的名额（end_date 为 null）
@@ -61,120 +68,54 @@ pub struct Node {
 pub struct OpenSlot {
     pub id: Uuid,
     pub holder: Option<Uuid>,
-    /// 占用者（或空出前的占用者）最近的显示名
+    /// 占用者最近的显示名
     pub holder_name: Option<String>,
-    pub vacated_at: Option<OffsetDateTime>,
-    pub prev_holder: Option<Uuid>,
     pub manual: bool,
 }
 
+/// 可计费节点在这个团队最近结束的系统名额
 #[derive(Debug, Clone)]
-pub struct Pending {
+pub struct Ended {
+    pub slot: Uuid,
     pub machine: Uuid,
-    pub seen_at: OffsetDateTime,
+    /// 最后收费的那一期的最后一天；一期都没收为 None
+    pub billed_until: Option<Date>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Change {
     /// 占用者还在，显示名变了（改编号、团队改名）：刷新快照
     Rename { slot: Uuid, name: String },
-    /// 占用者离开（机器被删的 prev 为 None），vacated_at = 现在
-    Vacate { slot: Uuid, prev: Option<Uuid> },
-    /// 原占用者 24 小时内回来：原样接回，不记事件
-    Restore { slot: Uuid, machine: Uuid },
-    /// 新的待定节点，seen_at = 现在
-    Pend { machine: Uuid },
-    /// 待定的节点不可计费了：删掉，不记事件
-    Unpend { machine: Uuid },
-    Swap { slot: Uuid, machine: Uuid, name: String, other: Option<String>, at: OffsetDateTime },
-    Add { machine: Uuid, start: Date, at: OffsetDateTime },
-    End { slot: Uuid, name: Option<String>, end: Date, at: OffsetDateTime },
+    /// 占用者不再可计费（机器被删的 prev 为 None）：名额在 end（今天）结束，记 remove
+    End { slot: Uuid, prev: Option<Uuid>, name: Option<String>, end: Date },
+    /// 回来的节点：最近结束的名额还在收费期内，原样接回，不记事件
+    Restore { slot: Uuid, machine: Uuid, name: String },
+    /// 新加入：建名额，开始收费日 = 购买日，记 add
+    Add { machine: Uuid, start: Date },
 }
 
-/// 一个团队这一轮怎么变。`held_elsewhere`：可计费、却还占着别的团队没结束的名额的节点（刚换团队、那边还没对账），这一轮先不动它
-pub fn plan(slots: &[OpenSlot], pending: &[Pending], billable: &[Node], held_elsewhere: &HashSet<Uuid>, now: OffsetDateTime, off: UtcOffset) -> Vec<Change> {
+/// 一个团队这一轮怎么变。`ended`：可计费节点在这个团队最近结束的名额（每个节点最多一个）；
+/// `held_elsewhere`：可计费、却还占着别的团队没结束的名额的节点（刚换团队、那边还没对账），这一轮先不动它
+pub fn plan(slots: &[OpenSlot], ended: &[Ended], billable: &[Node], held_elsewhere: &HashSet<Uuid>, now: OffsetDateTime, off: UtcOffset) -> Vec<Change> {
+    let today = org_date(now, off);
     let nodes: HashMap<Uuid, &Node> = billable.iter().map(|n| (n.id, n)).collect();
     let mut out = vec![];
-    // 1. 占用者还在的刷新名字，不在的空出；已空出的进待配对列表 (名额, 空出时刻, 原占用者, 名字)
     let mut holding: HashSet<Uuid> = HashSet::new();
-    let mut vac: Vec<(Uuid, OffsetDateTime, Option<Uuid>, Option<String>)> = vec![];
     for s in slots.iter().filter(|s| !s.manual) {
-        match (s.holder, s.vacated_at) {
-            (Some(h), _) if nodes.contains_key(&h) => {
-                holding.insert(h);
-                let name = &nodes[&h].name;
-                if s.holder_name.as_deref() != Some(name) {
-                    out.push(Change::Rename { slot: s.id, name: name.clone() });
+        match s.holder.and_then(|h| nodes.get(&h)) {
+            Some(n) => {
+                holding.insert(n.id);
+                if s.holder_name.as_deref() != Some(n.name.as_str()) {
+                    out.push(Change::Rename { slot: s.id, name: n.name.clone() });
                 }
             }
-            (Some(h), _) => {
-                out.push(Change::Vacate { slot: s.id, prev: Some(h) });
-                vac.push((s.id, now, Some(h), s.holder_name.clone()));
-            }
-            // 机器被物理删除（外键置空）却没空出过：现在空出
-            (None, None) => {
-                out.push(Change::Vacate { slot: s.id, prev: s.prev_holder });
-                vac.push((s.id, now, s.prev_holder, s.holder_name.clone()));
-            }
-            (None, Some(at)) => vac.push((s.id, at, s.prev_holder, s.holder_name.clone())),
+            None => out.push(Change::End { slot: s.id, prev: s.holder, name: s.holder_name.clone(), end: today }),
         }
     }
-    // 2. 待定：已有的（不可计费了的删掉）+ 新来的
-    let known: HashMap<Uuid, OffsetDateTime> = pending.iter().map(|p| (p.machine, p.seen_at)).collect();
-    for p in pending {
-        if !nodes.contains_key(&p.machine) || holding.contains(&p.machine) || held_elsewhere.contains(&p.machine) {
-            out.push(Change::Unpend { machine: p.machine });
-        }
-    }
-    let mut free: Vec<(&Node, OffsetDateTime, bool)> = billable
-        .iter()
-        .filter(|n| !holding.contains(&n.id) && !held_elsewhere.contains(&n.id))
-        .map(|n| match known.get(&n.id) {
-            Some(&t) => (n, t, true),
-            None => (n, now, false),
-        })
-        .collect();
-    free.sort_by(|a, b| (a.1, &a.0.name).cmp(&(b.1, &b.0.name)));
-    // 原占用者回来（窗口内）：原样接回
-    vac.retain(|(slot, at, prev, _)| {
-        let Some(i) = free.iter().position(|(n, seen, _)| Some(n.id) == *prev && *seen <= *at + GRACE) else { return true };
-        out.push(Change::Restore { slot: *slot, machine: free[i].0.id });
-        free.remove(i);
-        false
-    });
-    for (n, _, was) in &free {
-        if !was {
-            out.push(Change::Pend { machine: n.id });
-        }
-    }
-    // 3. 按时间先后配对：两边时刻相差不超过 GRACE
-    vac.sort_by_key(|v| (v.1, v.0));
-    let (mut i, mut j) = (0, 0);
-    let mut paired_v = vec![false; vac.len()];
-    let mut paired_f = vec![false; free.len()];
-    while i < vac.len() && j < free.len() {
-        let (slot, vat, _, ref other) = vac[i];
-        let (n, seen, _) = free[j];
-        if seen > vat + GRACE {
-            i += 1;
-        } else if vat > seen + GRACE {
-            j += 1;
-        } else {
-            out.push(Change::Swap { slot, machine: n.id, name: n.name.clone(), other: other.clone(), at: vat.max(seen) });
-            (paired_v[i], paired_f[j]) = (true, true);
-            i += 1;
-            j += 1;
-        }
-    }
-    // 4. 超时：之后再来的都配不上了（严格晚于 GRACE）
-    for (k, (n, seen, _)) in free.iter().enumerate() {
-        if !paired_f[k] && *seen + GRACE < now {
-            out.push(Change::Add { machine: n.id, start: org_date(*seen, off), at: *seen });
-        }
-    }
-    for (k, (slot, at, _, name)) in vac.iter().enumerate() {
-        if !paired_v[k] && *at + GRACE < now {
-            out.push(Change::End { slot: *slot, name: name.clone(), end: org_date(*at, off), at: *at });
+    for n in billable.iter().filter(|n| !holding.contains(&n.id) && !held_elsewhere.contains(&n.id)) {
+        match ended.iter().find(|e| e.machine == n.id && e.billed_until.is_some_and(|d| d >= today)) {
+            Some(e) => out.push(Change::Restore { slot: e.slot, machine: n.id, name: n.name.clone() }),
+            None => out.push(Change::Add { machine: n.id, start: purchase_date(n.sub, today) }),
         }
     }
     out
@@ -243,18 +184,33 @@ struct NodeRow {
     name: String,
     country: Option<String>,
     ip: Option<String>,
+    due_date: Option<Date>,
+    cycle: Option<String>,
 }
 
-/// 团队现在的可计费节点（地区不在这里查：每轮每团队对所有节点查 IP 库太贵，见 `regions`）
+/// 团队现在的可计费节点，带订阅（自己的，没有就宿主机的；周期跟随套餐时是套餐的，见 subscription_eff）。
+/// 地区不在这里查：每轮每团队对所有节点查 IP 库太贵，见 `regions`
 pub async fn billable_nodes(c: &mut PgConnection, team: Uuid) -> sqlx::Result<Vec<Node>> {
     let rows: Vec<NodeRow> = sqlx::query_as(&format!(
-        "select m.id, display_name(m.kind::text, m.label, t.name, m.number) name, m.country, host(m.primary_ip) ip
-         from machine m join team t on t.id = m.team_id where m.team_id = $1 and {BILLABLE} order by m.number, m.id"
+        "select m.id, display_name(m.kind::text, m.label, t.name, m.number) name, m.country, host(m.primary_ip) ip, sub.due_date, sub.cycle
+         from machine m join team t on t.id = m.team_id
+         left join lateral (select s.due_date, s.cycle::text cycle from subscription_eff s where s.machine_id in (m.id, m.host_id)
+                            order by s.machine_id = m.id desc limit 1) sub on true
+         where m.team_id = $1 and {BILLABLE} order by m.number, m.id"
     ))
     .bind(team)
     .fetch_all(c)
     .await?;
-    Ok(rows.into_iter().map(|r| Node { id: r.id, name: r.name, country: r.country, ip: r.ip.as_deref().and_then(|ip| ip.parse().ok()) }).collect())
+    Ok(rows
+        .into_iter()
+        .map(|r| Node {
+            id: r.id,
+            name: r.name,
+            country: r.country,
+            ip: r.ip.as_deref().and_then(|ip| ip.parse().ok()),
+            sub: r.due_date.zip(r.cycle.as_deref().and_then(meta::cycle_months)),
+        })
+        .collect())
 }
 
 /// 这些节点的地区：手动指定的国家优先，否则按地址查离线 IP 库（只在要建名额时调）
@@ -270,7 +226,7 @@ pub async fn regions(st: &AppState, nodes: &[&Node]) -> HashMap<Uuid, String> {
         .collect()
 }
 
-/// 建一个系统名额（节点占着，从开始收费日算）：删它的待定行，不记事件（初始化一个团队只记一条合并的 init，见 `log_init`）
+/// 建一个系统名额（节点占着，从开始收费日算），不记事件（初始化一个团队只记一条合并的 init，见 `log_init`）
 pub async fn create_slot(c: &mut PgConnection, team: Uuid, node: &Node, region: &str, start: Date) -> sqlx::Result<Uuid> {
     let id = new_id();
     sqlx::query("insert into billing_slot (id, team_id, region, start_date, holder_id, holder_name) values ($1, $2, $3, $4, $5, $6)")
@@ -282,7 +238,6 @@ pub async fn create_slot(c: &mut PgConnection, team: Uuid, node: &Node, region: 
         .bind(&node.name)
         .execute(&mut *c)
         .await?;
-    sqlx::query("delete from billing_pending where machine_id = $1").bind(node.id).execute(&mut *c).await?;
     Ok(id)
 }
 
@@ -293,10 +248,69 @@ pub async fn insert_slot(c: &mut PgConnection, team: Uuid, node: &Node, region: 
     Ok(id)
 }
 
+/// 名额结束（占用者离开）：结束日 = end，离开原因按这台机器此刻是否标了不计费落库（exempt = 节点还在团队里只是不计费；
+/// left = 离开团队、退役、进备用或被删），记 remove（收费到哪天）
+pub async fn end_slot(c: &mut PgConnection, team: Uuid, slot: Uuid, prev: Option<Uuid>, name: Option<&str>, end: Date, at: OffsetDateTime) -> sqlx::Result<()> {
+    let (start, region): (Date, String) = sqlx::query_as(
+        "update billing_slot set holder_id = null, prev_holder_id = coalesce($3, prev_holder_id), vacated_at = $4, end_date = $2,
+             vacate_reason = case when exists (select 1 from billing_exempt x where x.machine_id = coalesce($3, prev_holder_id)) then 'exempt' else 'left' end
+         where id = $1 returning start_date, region",
+    )
+    .bind(slot)
+    .bind(end)
+    .bind(prev)
+    .bind(at)
+    .fetch_one(&mut *c)
+    .await?;
+    let until = bt::billed_until(start, end).map(bt::fmt_date);
+    log(c, team, Some(slot), at, "remove", name, None, json!({"region": region, "end_date": bt::fmt_date(end), "billed_until": until})).await
+}
+
 /// 初始化一个团队只记一条：节点名单（名字与地区）放在 detail.nodes，不显示在文案里
 pub async fn log_init(c: &mut PgConnection, team: Uuid, start: Date, nodes: &[(&Node, &str)], at: OffsetDateTime) -> sqlx::Result<()> {
     let list: Vec<Value> = nodes.iter().map(|(n, r)| json!({"name": n.name, "region": r})).collect();
     log(c, team, None, at, "init", None, None, json!({"start_date": bt::fmt_date(start), "count": nodes.len(), "nodes": list})).await
+}
+
+/// 替换节点（jobs/steps/replace.rs 交换编号的那一步，同一个事务里调；调用方已按团队取了计费锁）：新节点 `new` 接过旧节点 `old` 在团队 `team`
+/// 里的名额，开始收费日、地区、已收标记都不变，记 swap（「新节点原名 补位接替 旧节点原名，收费不变」，名字是交换编号前的）。
+/// 新节点自己的名额：同一个团队的（上架进团队后对账建的）删掉，连同它那条 add，它已收的期挪到接过的名额同一个月的那一期上；
+/// 别的团队的（从别的团队调过来）那边按离开结束。旧节点之后去备用就不再占名额，不另记 remove。
+/// 旧节点在这个团队没有名额（还没初始化、标了不计费）什么都不做。返回接过没有
+pub async fn take_over(c: &mut PgConnection, team: Uuid, old: Uuid, new: Uuid, (old_name, new_name): (&str, &str), now: OffsetDateTime) -> sqlx::Result<bool> {
+    let slot: Option<(Uuid, Date, String)> = sqlx::query_as("select id, start_date, region from billing_slot where team_id = $1 and holder_id = $2 and end_date is null")
+        .bind(team)
+        .bind(old)
+        .fetch_optional(&mut *c)
+        .await?;
+    let Some((slot, start, region)) = slot else { return Ok(false) };
+    let mine: Option<(Uuid, Uuid, Option<String>)> =
+        sqlx::query_as("select id, team_id, holder_name from billing_slot where holder_id = $1 and end_date is null").bind(new).fetch_optional(&mut *c).await?;
+    if let Some((id, t, name)) = mine {
+        if t == team {
+            let paid: Vec<(Date, OffsetDateTime)> = sqlx::query_as("select period_start, paid_at from billing_paid where slot_id = $1").bind(id).fetch_all(&mut *c).await?;
+            for (ps, at) in paid {
+                if let Some((to, _)) = bt::period_in(start, None, bt::month_of(ps)) {
+                    sqlx::query("insert into billing_paid (slot_id, period_start, paid_at) values ($1, $2, $3) on conflict do nothing").bind(slot).bind(to).bind(at).execute(&mut *c).await?;
+                }
+            }
+            sqlx::query("delete from billing_event where slot_id = $1 and kind = 'add'").bind(id).execute(&mut *c).await?;
+            sqlx::query("delete from billing_slot where id = $1").bind(id).execute(&mut *c).await?;
+        } else {
+            end_slot(c, t, id, Some(new), name.as_deref(), org_date(now, meta::org_offset()), now).await?;
+        }
+    }
+    sqlx::query(
+        "update billing_slot set holder_id = $2,
+             holder_name = (select display_name(m.kind::text, m.label, t.name, m.number) from machine m left join team t on t.id = m.team_id where m.id = $2)
+         where id = $1",
+    )
+    .bind(slot)
+    .bind(new)
+    .execute(&mut *c)
+    .await?;
+    log(c, team, Some(slot), now, "swap", Some(new_name), Some(old_name), json!({"region": region, "start_date": bt::fmt_date(start)})).await?;
+    Ok(true)
 }
 
 #[derive(sqlx::FromRow)]
@@ -304,11 +318,7 @@ struct SlotRow {
     id: Uuid,
     holder_id: Option<Uuid>,
     holder_name: Option<String>,
-    vacated_at: Option<OffsetDateTime>,
-    prev_holder_id: Option<Uuid>,
     manual: bool,
-    start_date: Date,
-    region: String,
 }
 
 /// 初始化过没有（没有就不对账）
@@ -318,7 +328,7 @@ pub async fn initialized(db: &PgPool) -> sqlx::Result<bool> {
 
 /// 对一个团队（一个事务）。返回记了几条增减记录
 pub async fn reconcile_team(st: &AppState, team: Uuid, now: OffsetDateTime) -> anyhow::Result<usize> {
-    let off = crate::meta::org_offset();
+    let off = meta::org_offset();
     let mut tx = st.db.begin().await?;
     lock_team(&mut tx, team).await?;
     let spare: Option<bool> = sqlx::query_scalar("select spare from team where id = $1").bind(team).fetch_optional(&mut *tx).await?;
@@ -326,28 +336,24 @@ pub async fn reconcile_team(st: &AppState, team: Uuid, now: OffsetDateTime) -> a
         return Ok(0);
     }
     let billable = billable_nodes(&mut tx, team).await?;
-    let rows: Vec<SlotRow> = sqlx::query_as(
-        "select id, holder_id, holder_name, vacated_at, prev_holder_id, manual, start_date, region from billing_slot where team_id = $1 and end_date is null",
-    )
-    .bind(team)
-    .fetch_all(&mut *tx)
-    .await?;
-    let pending: Vec<Pending> = sqlx::query_as::<_, (Uuid, OffsetDateTime)>("select machine_id, seen_at from billing_pending where team_id = $1")
-        .bind(team)
-        .fetch_all(&mut *tx)
-        .await?
-        .into_iter()
-        .map(|(machine, seen_at)| Pending { machine, seen_at })
-        .collect();
+    let rows: Vec<SlotRow> = sqlx::query_as("select id, holder_id, holder_name, manual from billing_slot where team_id = $1 and end_date is null").bind(team).fetch_all(&mut *tx).await?;
     let ids: Vec<Uuid> = billable.iter().map(|n| n.id).collect();
     let held_elsewhere: HashSet<Uuid> =
         sqlx::query_scalar("select holder_id from billing_slot where end_date is null and team_id <> $1 and holder_id = any($2)").bind(team).bind(&ids).fetch_all(&mut *tx).await?.into_iter().collect();
-    let slots: Vec<OpenSlot> = rows
-        .iter()
-        .map(|r| OpenSlot { id: r.id, holder: r.holder_id, holder_name: r.holder_name.clone(), vacated_at: r.vacated_at, prev_holder: r.prev_holder_id, manual: r.manual })
-        .collect();
-    let by_id: HashMap<Uuid, &SlotRow> = rows.iter().map(|r| (r.id, r)).collect();
-    let changes = plan(&slots, &pending, &billable, &held_elsewhere, now, off);
+    let ended: Vec<Ended> = sqlx::query_as::<_, (Uuid, Uuid, Date, Date)>(
+        "select distinct on (prev_holder_id) id, prev_holder_id, start_date, end_date from billing_slot
+         where team_id = $1 and not manual and end_date is not null and prev_holder_id = any($2)
+         order by prev_holder_id, end_date desc, created_at desc",
+    )
+    .bind(team)
+    .bind(&ids)
+    .fetch_all(&mut *tx)
+    .await?
+    .into_iter()
+    .map(|(slot, machine, start, end)| Ended { slot, machine, billed_until: bt::billed_until(start, end) })
+    .collect();
+    let slots: Vec<OpenSlot> = rows.iter().map(|r| OpenSlot { id: r.id, holder: r.holder_id, holder_name: r.holder_name.clone(), manual: r.manual }).collect();
+    let changes = plan(&slots, &ended, &billable, &held_elsewhere, now, off);
     // 只给要新建名额的节点查地区
     let adds: Vec<&Node> = changes.iter().filter_map(|c| if let Change::Add { machine, .. } = c { billable.iter().find(|n| n.id == *machine) } else { None }).collect();
     let regions = regions(st, &adds).await;
@@ -357,64 +363,23 @@ pub async fn reconcile_team(st: &AppState, team: Uuid, now: OffsetDateTime) -> a
             Change::Rename { slot, name } => {
                 sqlx::query("update billing_slot set holder_name = $2 where id = $1").bind(slot).bind(name).execute(&mut *tx).await?;
             }
-            Change::Vacate { slot, prev } => {
-                // 空出原因按这台机器此刻是否标了不计费落库：exempt = 节点还在团队里只是不计费；left = 离开团队、退役、进备用或被删
-                sqlx::query(
-                    "update billing_slot set holder_id = null, vacated_at = $2, prev_holder_id = $3,
-                         vacate_reason = case when exists (select 1 from billing_exempt x where x.machine_id = $3) then 'exempt' else 'left' end
-                     where id = $1",
-                )
-                .bind(slot)
-                .bind(now)
-                .bind(prev)
-                .execute(&mut *tx)
-                .await?;
+            Change::End { slot, prev, name, end } => {
+                end_slot(&mut tx, team, *slot, *prev, name.as_deref(), *end, now).await?;
+                events += 1;
             }
-            Change::Restore { slot, machine } => {
-                sqlx::query("update billing_slot set holder_id = $2, vacated_at = null, prev_holder_id = null, vacate_reason = null where id = $1").bind(slot).bind(machine).execute(&mut *tx).await?;
-                sqlx::query("delete from billing_pending where machine_id = $1").bind(machine).execute(&mut *tx).await?;
-            }
-            Change::Pend { machine } => {
-                // 别的团队还留着它的待定行（刚换团队、那边还没对账）：改成这个团队、从现在算
-                sqlx::query(
-                    "insert into billing_pending (machine_id, team_id, seen_at) values ($1, $2, $3)
-                     on conflict (machine_id) do update set team_id = excluded.team_id, seen_at = excluded.seen_at where billing_pending.team_id <> excluded.team_id",
-                )
-                .bind(machine)
-                .bind(team)
-                .bind(now)
-                .execute(&mut *tx)
-                .await?;
-            }
-            Change::Unpend { machine } => {
-                sqlx::query("delete from billing_pending where machine_id = $1 and team_id = $2").bind(machine).bind(team).execute(&mut *tx).await?;
-            }
-            Change::Swap { slot, machine, name, other, at } => {
-                sqlx::query("update billing_slot set holder_id = $2, holder_name = $3, vacated_at = null, prev_holder_id = null, vacate_reason = null where id = $1")
+            Change::Restore { slot, machine, name } => {
+                sqlx::query("update billing_slot set holder_id = $2, holder_name = $3, end_date = null, vacated_at = null, prev_holder_id = null, vacate_reason = null where id = $1")
                     .bind(slot)
                     .bind(machine)
                     .bind(name)
                     .execute(&mut *tx)
                     .await?;
-                sqlx::query("delete from billing_pending where machine_id = $1").bind(machine).execute(&mut *tx).await?;
-                let region = by_id.get(slot).map(|r| r.region.as_str()).unwrap_or("");
-                let start = by_id.get(slot).map(|r| bt::fmt_date(r.start_date));
-                log(&mut tx, team, Some(*slot), *at, "swap", Some(name), other.as_deref(), json!({"region": region, "start_date": start})).await?;
-                events += 1;
             }
-            Change::Add { machine, start, at } => {
+            Change::Add { machine, start } => {
                 if let Some(n) = billable.iter().find(|n| n.id == *machine) {
-                    insert_slot(&mut tx, team, n, &regions[machine], *start, *at).await?;
+                    insert_slot(&mut tx, team, n, &regions[machine], *start, now).await?;
                     events += 1;
                 }
-            }
-            Change::End { slot, name, end, at } => {
-                sqlx::query("update billing_slot set end_date = $2 where id = $1").bind(slot).bind(end).execute(&mut *tx).await?;
-                let r = by_id.get(slot);
-                let until = r.and_then(|r| bt::billed_until(r.start_date, *end)).map(bt::fmt_date);
-                log(&mut tx, team, Some(*slot), *at, "remove", name.as_deref(), None, json!({"region": r.map(|r| r.region.clone()), "end_date": bt::fmt_date(*end), "billed_until": until}))
-                    .await?;
-                events += 1;
             }
         }
     }
@@ -458,27 +423,21 @@ pub async fn run_forever(st: AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use time::macros::{datetime, offset};
+    use time::macros::{date, datetime, offset};
+    use time::Duration;
 
     const OFF: UtcOffset = offset!(+8);
 
     fn id(n: u128) -> Uuid { Uuid::from_u128(n) }
 
-    fn node(n: u128, name: &str) -> Node { Node { id: id(n), name: name.into(), country: Some("US".into()), ip: None } }
+    fn node(n: u128, name: &str) -> Node { Node { id: id(n), name: name.into(), country: Some("US".into()), ip: None, sub: None } }
 
-    fn held(slot: u128, holder: u128, name: &str) -> OpenSlot {
-        OpenSlot { id: id(slot), holder: Some(id(holder)), holder_name: Some(name.into()), vacated_at: None, prev_holder: None, manual: false }
-    }
+    fn held(slot: u128, holder: u128, name: &str) -> OpenSlot { OpenSlot { id: id(slot), holder: Some(id(holder)), holder_name: Some(name.into()), manual: false } }
 
-    fn vacated(slot: u128, prev: u128, name: &str, at: OffsetDateTime) -> OpenSlot {
-        OpenSlot { id: id(slot), holder: None, holder_name: Some(name.into()), vacated_at: Some(at), prev_holder: Some(id(prev)), manual: false }
-    }
+    fn run(slots: &[OpenSlot], ended: &[Ended], nodes: &[Node], now: OffsetDateTime) -> Vec<Change> { plan(slots, ended, nodes, &HashSet::new(), now, OFF) }
 
-    fn pend(m: u128, at: OffsetDateTime) -> Pending { Pending { machine: id(m), seen_at: at } }
-
-    fn run(slots: &[OpenSlot], pending: &[Pending], nodes: &[Node], now: OffsetDateTime) -> Vec<Change> { plan(slots, pending, nodes, &HashSet::new(), now, OFF) }
-
-    const T0: OffsetDateTime = datetime!(2026-10-28 02:00 UTC);
+    /// 北京时间 2026-11-03 10:00
+    const T0: OffsetDateTime = datetime!(2026-11-03 02:00 UTC);
 
     #[test]
     fn steady_state_changes_nothing() {
@@ -488,111 +447,74 @@ mod tests {
     }
 
     #[test]
-    fn replace_new_first_then_old_leaves() {
-        // 先加新：待定
-        let c = run(&[held(1, 10, "团队2-07")], &[], &[node(10, "团队2-07"), node(11, "团队2-20")], T0);
-        assert_eq!(c, [Change::Pend { machine: id(11) }]);
-        // 3 小时后旧的走了：同一轮空出并配上，替换时刻取两边较晚的（空出 = 现在）
-        let now = T0 + Duration::hours(3);
-        let c = run(&[held(1, 10, "团队2-07")], &[pend(11, T0)], &[node(11, "团队2-20")], now);
+    fn purchase_date_from_subscription() {
+        let today = date!(2026 - 11 - 03);
+        // 到期日往前推一个周期（月底对齐，同每一期的 add_months）
+        assert_eq!(purchase_date(Some((date!(2026 - 11 - 20), 1)), today), date!(2026 - 10 - 20));
+        assert_eq!(purchase_date(Some((date!(2026 - 11 - 30), 3)), today), date!(2026 - 08 - 30));
+        assert_eq!(purchase_date(Some((date!(2027 - 05 - 01), 6)), today), date!(2026 - 11 - 01));
+        assert_eq!(purchase_date(Some((date!(2027 - 10 - 15), 12)), today), date!(2026 - 10 - 15));
+        assert_eq!(purchase_date(Some((date!(2026 - 03 - 31), 1)), today), date!(2026 - 02 - 28));
+        // 推出来晚于今天（到期日在一个周期以后）取今天；没有订阅的是今天（加入那天）
+        assert_eq!(purchase_date(Some((date!(2026 - 12 - 20), 1)), today), today);
+        assert_eq!(purchase_date(None, today), today);
+    }
+
+    #[test]
+    fn joining_bills_at_once() {
+        // 规则 1：新节点这一轮就建名额，不等；有订阅的从购买日，没有的从今天（北京日期：UTC 11-02 17:00 = 北京 11-03 01:00）
+        let mut a = node(11, "团队1-10");
+        a.sub = Some((date!(2026 - 11 - 25), 1));
+        let c = run(&[held(1, 10, "团队1-01")], &[], &[node(10, "团队1-01"), a, node(12, "团队1-11")], datetime!(2026-11-02 17:00 UTC));
+        assert_eq!(c, [Change::Add { machine: id(11), start: date!(2026 - 10 - 25) }, Change::Add { machine: id(12), start: date!(2026 - 11 - 03) }]);
+    }
+
+    #[test]
+    fn leaving_ends_at_once() {
+        // 规则 2：进备用、退役、标不计费、改去别的团队：都只是不在这个团队的可计费集合里 → 今天结束
+        let c = run(&[held(1, 10, "团队1-03"), held(2, 11, "团队1-04")], &[], &[node(11, "团队1-04")], T0);
+        assert_eq!(c, [Change::End { slot: id(1), prev: Some(id(10)), name: Some("团队1-03".into()), end: date!(2026 - 11 - 03) }]);
+        // 机器被物理删除（外键置空）：一样结束，原占用者不知道
+        let gone = OpenSlot { id: id(2), holder: None, holder_name: Some("团队1-05".into()), manual: false };
+        assert_eq!(run(&[gone], &[], &[], T0), [Change::End { slot: id(2), prev: None, name: Some("团队1-05".into()), end: date!(2026 - 11 - 03) }]);
+        // 手动名额不动
+        let manual = OpenSlot { id: id(3), holder: None, holder_name: None, manual: true };
+        assert!(run(&[manual], &[], &[], T0).is_empty());
+    }
+
+    #[test]
+    fn no_guessed_pairing() {
+        // 规则 3：同一轮一个走、一个来，不猜是补位：一条结束、一条新增（补位只认替换作业的 take_over）
+        let c = run(&[held(1, 10, "团队2-07")], &[], &[node(11, "团队2-20")], T0);
         assert_eq!(
             c,
-            [Change::Vacate { slot: id(1), prev: Some(id(10)) }, Change::Swap { slot: id(1), machine: id(11), name: "团队2-20".into(), other: Some("团队2-07".into()), at: now }]
+            [Change::End { slot: id(1), prev: Some(id(10)), name: Some("团队2-07".into()), end: date!(2026 - 11 - 03) }, Change::Add { machine: id(11), start: date!(2026 - 11 - 03) }]
         );
+        // 替换作业接过名额之后（新节点占着旧名额、旧节点进了备用）：什么都不变
+        assert!(run(&[held(1, 11, "团队2-07")], &[], &[node(11, "团队2-07")], T0).is_empty());
     }
 
     #[test]
-    fn replace_old_leaves_then_new_joins() {
-        // 先走旧：空出待定，什么都不记
-        let c = run(&[held(1, 10, "团队2-07")], &[], &[], T0);
-        assert_eq!(c, [Change::Vacate { slot: id(1), prev: Some(id(10)) }]);
-        // 23 小时后新的来了：配上
-        let now = T0 + Duration::hours(23);
-        let c = run(&[vacated(1, 10, "团队2-07", T0)], &[], &[node(11, "团队2-20")], now);
-        assert_eq!(c, [Change::Pend { machine: id(11) }, Change::Swap { slot: id(1), machine: id(11), name: "团队2-20".into(), other: Some("团队2-07".into()), at: now }]);
-        // 正好 24 小时也算替换
-        let c = run(&[vacated(1, 10, "团队2-07", T0)], &[], &[node(11, "团队2-20")], T0 + GRACE);
-        assert!(matches!(c.last(), Some(Change::Swap { .. })), "{c:?}");
+    fn returning_node_restored_within_paid_period() {
+        // 规则 4：最近结束的名额收费到今天或以后 → 原样接回，不记事件
+        let back = |until: Option<Date>| run(&[], &[Ended { slot: id(1), machine: id(10), billed_until: until }], &[node(10, "团队1-03")], T0);
+        let restore = [Change::Restore { slot: id(1), machine: id(10), name: "团队1-03".into() }];
+        assert_eq!(back(Some(date!(2026 - 11 - 03))), restore);
+        assert_eq!(back(Some(date!(2026 - 11 - 29))), restore);
+        // 收费期已经过了 / 一期都没收：按新加入建名额
+        assert_eq!(back(Some(date!(2026 - 11 - 02))), [Change::Add { machine: id(10), start: date!(2026 - 11 - 03) }]);
+        assert_eq!(back(None), [Change::Add { machine: id(10), start: date!(2026 - 11 - 03) }]);
+        // 别的节点结束的名额不接
+        let c = run(&[], &[Ended { slot: id(1), machine: id(10), billed_until: Some(date!(2026 - 11 - 29)) }], &[node(11, "团队1-04")], T0);
+        assert!(matches!(c.as_slice(), [Change::Add { .. }]), "{c:?}");
     }
 
     #[test]
-    fn timeouts_add_and_remove_at_real_time() {
-        // 待定满 24 小时（严格晚于）没配上 → 新增，开始收费日 = seen_at 的北京日期（T0 是北京 10-28 10:00）
-        assert!(run(&[], &[pend(11, T0)], &[node(11, "团队1-10")], T0 + GRACE).is_empty(), "正好 24 小时还在等");
-        let c = run(&[], &[pend(11, T0)], &[node(11, "团队1-10")], T0 + GRACE + Duration::seconds(1));
-        assert_eq!(c, [Change::Add { machine: id(11), start: time::macros::date!(2026 - 10 - 28), at: T0 }]);
-        // 北京时间跨日：UTC 10-27 17:00 = 北京 10-28 01:00
-        let late = datetime!(2026-10-27 17:00 UTC);
-        let c = run(&[], &[pend(11, late)], &[node(11, "团队1-10")], late + Duration::days(2));
-        assert!(matches!(&c[0], Change::Add { start, .. } if *start == time::macros::date!(2026 - 10 - 28)), "{c:?}");
-        // 空出满 24 小时没配上 → 减少，结束日 = 空出那天
-        let c = run(&[vacated(1, 10, "团队2-05", T0)], &[], &[], T0 + Duration::hours(25));
-        assert_eq!(c, [Change::End { slot: id(1), name: Some("团队2-05".into()), end: time::macros::date!(2026 - 10 - 28), at: T0 }]);
-    }
-
-    #[test]
-    fn far_apart_do_not_pair() {
-        // 空出 30 小时后才有节点加入（中控停过）：不配对，空出的结束，新来的待定
-        let now = T0 + Duration::hours(30);
-        let c = run(&[vacated(1, 10, "团队2-05", T0)], &[], &[node(11, "团队2-21")], now);
-        assert_eq!(c, [Change::Pend { machine: id(11) }, Change::End { slot: id(1), name: Some("团队2-05".into()), end: time::macros::date!(2026 - 10 - 28), at: T0 }]);
-    }
-
-    #[test]
-    fn joined_then_left_within_grace_is_dropped() {
-        let c = run(&[], &[pend(11, T0)], &[], T0 + Duration::hours(5));
-        assert_eq!(c, [Change::Unpend { machine: id(11) }]);
-    }
-
-    #[test]
-    fn spare_exempt_or_team_change_count_as_leaving() {
-        // 进备用、标不计费、改去别的团队：都只是不在这个团队的可计费集合里 → 空出
-        let c = run(&[held(1, 10, "团队1-03"), held(2, 11, "团队1-04")], &[], &[node(11, "团队1-04")], T0);
-        assert_eq!(c, [Change::Vacate { slot: id(1), prev: Some(id(10)) }]);
-        // 新团队这边：还占着原团队的名额（那边这一轮还没对账）先不动，下一轮再待定
+    fn moved_team_waits_for_old_team() {
+        // 新团队这边：还占着原团队的名额（那边这一轮还没对账）先不动，下一轮再建
         let elsewhere: HashSet<Uuid> = [id(10)].into();
         assert!(plan(&[], &[], &[node(10, "团队2-30")], &elsewhere, T0, OFF).is_empty());
-        assert_eq!(plan(&[], &[pend(10, T0)], &[node(10, "团队2-30")], &elsewhere, T0, OFF), [Change::Unpend { machine: id(10) }]);
-    }
-
-    #[test]
-    fn swap_in_from_spare() {
-        // 备用机换入：它进团队就是一个新的待定节点，旧的空出后配上（与普通替换一样）
-        let c = run(&[vacated(1, 10, "团队2-07", T0)], &[], &[node(20, "团队2-07")], T0 + Duration::minutes(10));
-        assert!(matches!(c.as_slice(), [Change::Pend { .. }, Change::Swap { machine, other: Some(o), .. }] if *machine == id(20) && o == "团队2-07"), "{c:?}");
-    }
-
-    #[test]
-    fn former_holder_back_within_grace_is_restored() {
-        // 撤销退役 / 取消不计费：原节点 24 小时内回来，原样接回，不记事件；其它待定节点不抢它
-        let c = run(&[vacated(1, 10, "团队1-03", T0)], &[pend(11, T0 - Duration::hours(1))], &[node(10, "团队1-03"), node(11, "团队1-11")], T0 + Duration::hours(2));
-        assert_eq!(c[0], Change::Restore { slot: id(1), machine: id(10) });
-        assert_eq!(c.len(), 1, "{c:?}");
-    }
-
-    #[test]
-    fn pairs_in_time_order_and_leftovers_wait() {
-        // 两个空出、三个待定：先空出的配先来的，多的一个继续等
-        let a = T0;
-        let b = T0 + Duration::hours(1);
-        let now = T0 + Duration::hours(2);
-        let c = run(
-            &[vacated(1, 10, "团队2-01", b), vacated(2, 11, "团队2-02", a)],
-            &[pend(21, a), pend(22, b), pend(23, now)],
-            &[node(21, "团队2-21"), node(22, "团队2-22"), node(23, "团队2-23")],
-            now,
-        );
-        let swaps: Vec<(Uuid, Uuid)> = c.iter().filter_map(|x| if let Change::Swap { slot, machine, .. } = x { Some((*slot, *machine)) } else { None }).collect();
-        assert_eq!(swaps, [(id(2), id(21)), (id(1), id(22))]);
-        assert_eq!(c.len(), 2, "第三个在等，不新增: {c:?}");
-    }
-
-    #[test]
-    fn manual_slots_are_left_alone_and_deleted_holder_vacates() {
-        let manual = OpenSlot { id: id(1), holder: None, holder_name: None, vacated_at: None, prev_holder: None, manual: true };
-        assert!(run(&[manual], &[], &[], T0).is_empty());
-        let gone = OpenSlot { id: id(2), holder: None, holder_name: Some("团队1-05".into()), vacated_at: None, prev_holder: None, manual: false };
-        assert_eq!(run(&[gone], &[], &[], T0), [Change::Vacate { slot: id(2), prev: None }]);
+        assert_eq!(plan(&[], &[], &[node(10, "团队2-30")], &HashSet::new(), T0 + Duration::minutes(1), OFF).len(), 1);
     }
 
     #[test]

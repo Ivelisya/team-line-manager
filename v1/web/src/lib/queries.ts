@@ -465,7 +465,7 @@ export const useRecycleBin = (o: { q: string; source: string; offset: number; li
 export const useRecycleDetail = (id: number | null) => useQuery({ queryKey: ['recycle-bin', 'one', id], enabled: id != null, staleTime: Infinity, queryFn: ({ signal }) => get<RecycleDetail>(`/recycle-bin/${id}`, signal) });
 
 // ---- 按节点数向团队收费（团队与套餐 → 计费台账）与客户页 /c/:token ----
-/** 一个团队某月的清单（month = YYYY-MM，空 = 本月）：每个节点起点在这个月的那一期、已收 / 没收，另带客户页链接与待定节点。
+/** 一个团队某月的清单（month = YYYY-MM，空 = 本月）：每个节点起点在这个月的那一期、已收 / 没收，另带客户页链接。
  *  换团队、翻月时先留着上一份（调用方按 isPlaceholderData 调淡、不可操作），不整页塌成骨架 */
 export const useBillingMonth = (teamId: string, month: string) => useQuery({
   queryKey: ['billing', 'month', teamId, month], enabled: !!teamId,
@@ -487,7 +487,7 @@ export const useBillingEvents = (teamId: string) => useInfiniteQuery({
 export const useMarkPaid = () => useWrite(({ teamId, ...b }: { teamId: string; month: string; slot_ids: string[]; paid: boolean }) => post<BillingMonth>(`/teams/${teamId}/billing/paid`, b), B);
 /** 添加手动计费节点（系统外的节点，如家宽）：count 个同开始收费日、同地区的 */
 export const useAddBillingSlot = () => useWrite(({ teamId, ...b }: { teamId: string; region: string; start_date: string; count?: number; note: string }) => post(`/teams/${teamId}/billing-slots`, b), B);
-/** 改开始收费日 / 地区 / 备注；end_date（停止收费日）只给手动添加的或等补位的，null = 恢复（只限手动） */
+/** 改开始收费日 / 地区 / 备注；end_date（停止收费日）只给手动添加的（系统节点已停止的只能改日子），null = 恢复（只限手动） */
 export const usePatchBillingSlot = () => useWrite(({ id, ...b }: { id: string; start_date?: string; region?: string; note?: string; end_date?: string | null }) => patch(`/billing-slots/${id}`, b), B);
 /** 删除：只限手动名额（录错了删） */
 export const useDelBillingSlot = () => useWrite((id: string) => del(`/billing-slots/${id}`), B);

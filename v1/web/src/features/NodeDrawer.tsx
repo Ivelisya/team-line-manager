@@ -205,7 +205,7 @@ function BillingRow({ m }: { m: MachineView }) {
         <OptimisticSwitch checked={on} disabled={set.isPending} aria-label="向团队收这个节点的钱"
           onCheckedChange={(v, undo) => set.mutate({ id: m.id, exempt: !v }, { onSuccess: () => toast.ok(v ? `${m.name} 恢复收费` : `${m.name} 设为不收费`), onError: (e) => { undo(); toast.err(e); } })} />
         <span>{on ? '收费' : '不收费'}</span>
-        <InfoTip text={'按节点数向团队收费时算不算这个节点（团队与套餐 → 计费台账）\n切换后按离开 / 加入处理：24 小时内有节点加入或离开就算补位，收费不变'} />
+        <InfoTip text={'按节点数向团队收费时算不算这个节点（团队与套餐 → 计费台账）\n设为不收费：今天停止收费，这一期照收；恢复：这一期还没收完的接着收，否则从购买日新开始'} />
       </span>
     </LabelValue>
   );

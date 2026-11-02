@@ -1,5 +1,5 @@
 //! 计费台账（按节点数向团队收费）与客户页：batch list，billing init / month / paid / slot / add / rm / exempt，customer-page。
-//! 每个节点（计费名额，由中控每分钟对账自动增减：节点加入 / 离开，24 小时内一进一出算替换）从开始收费日起每满一个月收一次（一期），
+//! 每个节点（计费名额，由中控每分钟对账自动增减：节点进团队就计费、离开就停止，替换节点时新节点接过旧节点的）从开始收费日起每满一个月收一次（一期），
 //! 每一期只有已收 / 没收两种状态；按月看 = 每个节点起点落在这个月的那一期。名额用 id 前缀（batch list <团队> 能看到）或占用它的节点名指定。
 //! 客户页链接是只读分享链接，客户不登录，页面只有每个节点的名字、地区、这一期的区间、已付 / 待付，不出现 IP、供应商、价格
 
@@ -12,7 +12,6 @@ use serde_json::{json, Value};
 
 fn slot_state_cn(s: &Value) -> String {
     match s["state"].as_str() {
-        Some("vacated") => format!("已离开，等补位（{} 起）", table::ts(&st(s, "/vacated_at")).chars().take(16).collect::<String>()),
         Some("ended") => format!("已停止收费（{} 停）", st(s, "/end_date")),
         _ if s["end_date"].is_string() => format!("收费中（{} 停）", st(s, "/end_date")),
         _ => "收费中".into(),
@@ -43,7 +42,7 @@ fn events_table(evs: &[Value]) -> String {
     table::render(&["时间", "记录"], &rows)
 }
 
-/// `batch list <团队> [--events]`：计费节点（含已停止的）、新加入待定的、客户页链接
+/// `batch list <团队> [--events]`：计费节点（含已停止的）、客户页链接
 pub fn list(ctx: &Ctx, team: &str, events: bool) -> anyhow::Result<u8> {
     let d = load(ctx, team)?;
     let evs = if events { Some(ctx.c.get_q(&format!("/teams/{}/billing-events", st(&d, "/team/id")), &[("limit", "200".into())])?.as_array().cloned().unwrap_or_default()) } else { None };
@@ -58,18 +57,11 @@ pub fn list(ctx: &Ctx, team: &str, events: bool) -> anyhow::Result<u8> {
     ctx.emit(&data, || {
         let name = st(&d, "/team/name");
         let t = &d["totals"];
-        let mut out = format!("{name} · 今天 {} · 收费中的节点 {} 个（新加入待定 {}、等补位 {}）\n", st(&d, "/today"), st(t, "/active"), st(t, "/pending"), st(t, "/vacated"));
+        let mut out = format!("{name} · 今天 {} · 收费中的节点 {} 个（已停止的 {} 个）\n", st(&d, "/today"), st(t, "/active"), st(t, "/ended"));
         if arr(&d["slots"]).is_empty() {
             out.push_str("还没有计费节点（还没开始记账：fleetctl billing init --since 2026-10-01）");
         } else {
             out.push_str(&slots_table(&d));
-        }
-        let pending = arr(&d["pending"]);
-        if !pending.is_empty() {
-            out.push_str("\n\n新加入待定（24 小时内有节点离开就算补位，否则到点算新增）：\n");
-            let rows: Vec<Vec<String>> =
-                pending.iter().map(|p| vec![st(p, "/machine/name"), table::ts(&st(p, "/seen_at")).chars().take(16).collect(), table::ts(&st(p, "/decide_at")).chars().take(16).collect()]).collect();
-            out.push_str(&table::render(&["节点", "加入", "到点"], &rows));
         }
         if let Some(e) = &evs {
             out.push_str(&format!("\n\n增减记录（新的在前）：\n{}", if e.is_empty() { "（没有）".into() } else { events_table(e) }));
@@ -113,7 +105,7 @@ fn span(n: &Value) -> String {
     format!("{} → {} 到期", st(n, "/period_start"), end.get(5..).unwrap_or(&end))
 }
 
-/// 某月清单的文字（GET /teams/{id}/billing/month 的 data）：一句话 + 每个节点一行（没收在前）+ 本月新加入待定的
+/// 某月清单的文字（GET /teams/{id}/billing/month 的 data）：一句话 + 每个节点一行（没收在前）
 fn month_text(d: &Value) -> String {
     let nodes = arr(&d["nodes"]);
     let unpaid: Vec<String> = nodes.iter().filter(|n| n["paid"] != true).map(|n| st(n, "/name")).collect();
@@ -134,9 +126,7 @@ fn month_text(d: &Value) -> String {
                 if n["manual"] == true {
                     tags.push("手动添加");
                 }
-                if n["vacated"] == true {
-                    tags.push("已离开，等补位");
-                } else if n["ended"] == true {
+                if n["ended"] == true {
                     tags.push("已停止收费");
                 }
                 if n["upcoming"] == true {
@@ -147,10 +137,6 @@ fn month_text(d: &Value) -> String {
             .collect();
         out.push('\n');
         out.push_str(&table::render(&["节点", "地区", "这一期", "收费", "备注"], &rows));
-    }
-    let pending: Vec<String> = arr(&d["pending"]).iter().map(|p| st(p, "/machine/name")).collect();
-    if !pending.is_empty() {
-        out.push_str(&format!("\n另有 {} 个新加入的节点（{}），满 24 小时后确定是补位还是新增，之后才进清单", pending.len(), pending.join("、")));
     }
     out
 }
@@ -233,7 +219,7 @@ pub fn paid(ctx: &Ctx, o: &PaidOpts) -> anyhow::Result<u8> {
     Ok(0)
 }
 
-/// 找名额：id 前缀（≥ 4 位）或节点名（占用它的，或空出 / 停止前占用它的；有多个时先要没停止的）。返回 (名额, 团队名)
+/// 找名额：id 前缀（≥ 4 位）或节点名（占用它的，或停止前占用它的；有多个时先要没停止的）。返回 (名额, 团队名)
 fn find_slot(ctx: &Ctx, q: &str) -> anyhow::Result<(Value, String)> {
     let q = q.trim();
     let mut hits: Vec<(Value, String)> = vec![];
@@ -286,7 +272,7 @@ pub struct SlotOpts {
     /// 改备注（≤ 60 字；空字符串清掉）
     #[arg(long)]
     note: Option<String>,
-    /// 停止收费（只限手动添加的与已离开等补位的）：起点早于这天的期照收
+    /// 停止收费（只限手动添加的；系统节点离开团队即停止，这里只能改它的停止日，不晚于今天）：起点早于这天的期照收
     #[arg(long, value_name = "日期", conflicts_with = "reopen")]
     end: Option<String>,
     /// 恢复收费（只限手动添加的）
@@ -360,9 +346,9 @@ pub fn exempt(ctx: &Ctx, node: &str, on: bool) -> anyhow::Result<u8> {
     let d = ctx.c.put(&format!("/machines/{id}/billing-exempt"), &json!({"exempt": on}))?;
     ctx.emit(&d, || {
         if on {
-            format!("{name} 已设为不收费：中控对账时当它离开团队（24 小时内有新节点加入算补位，否则计费节点减少）")
+            format!("{name} 已设为不收费：当它离开团队，计费节点今天停止收费（已经开始的这一期照收）")
         } else {
-            format!("{name} 已恢复收费：中控对账时当它加入团队（24 小时内有节点离开算补位，否则新增）")
+            format!("{name} 已恢复收费：当它加入团队，这一期还没收完的原样接回，否则按购买日新开始收费")
         }
     });
     Ok(0)
@@ -433,19 +419,18 @@ mod tests {
     use super::*;
 
     fn n(name: &str, id: &str, paid: bool) -> Value {
-        json!({"slot_id": id, "name": name, "region": "美区", "period_start": "2026-10-30", "period_end": "2026-11-30", "paid": paid, "manual": false, "vacated": false, "ended": false, "upcoming": false})
+        json!({"slot_id": id, "name": name, "region": "美区", "period_start": "2026-10-30", "period_end": "2026-11-30", "paid": paid, "manual": false, "ended": false, "upcoming": false})
     }
 
     #[test]
     fn billing_month_text_reads_plainly() {
-        let mut d = json!({"team": {"name": "团队1"}, "month": "2026-10", "nodes": [n("团队1-10", "aaaa1111", false), n("团队1-01", "bbbb2222", true)], "pending": []});
+        let mut d = json!({"team": {"name": "团队1"}, "month": "2026-10", "nodes": [n("团队1-10", "aaaa1111", false), n("团队1-01", "bbbb2222", true)]});
         let t = month_text(&d);
         assert!(t.starts_with("团队1 · 2026 年 10 月：要收 2 个节点的钱，已收 1 个，没收 1 个（团队1-10）\n"), "{t}");
         assert!(t.contains("2026-10-30 → 11-30 到期") && t.contains("没收") && t.contains("已收"), "{t}");
         d["nodes"][0]["paid"] = json!(true);
-        d["pending"] = json!([{"machine": {"name": "团队1-11"}}]);
         let t = month_text(&d);
-        assert!(t.starts_with("团队1 · 2026 年 10 月：要收 2 个节点的钱，都收齐了") && t.ends_with("另有 1 个新加入的节点（团队1-11），满 24 小时后确定是补位还是新增，之后才进清单"), "{t}");
+        assert!(t.starts_with("团队1 · 2026 年 10 月：要收 2 个节点的钱，都收齐了"), "{t}");
         d["nodes"] = json!([]);
         assert!(month_text(&d).starts_with("团队1 · 2026 年 10 月：没有要收钱的节点"));
     }
