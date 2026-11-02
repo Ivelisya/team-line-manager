@@ -36,7 +36,7 @@ pub fn out_raw(s: &str) {
 }
 
 /// `--json` 下的错误对象 `{"code","message","status"}`：stderr 的 `{"error": …}` 与 exec 多台时每台的 error 共用。
-/// 没拿到中控响应时 code 是 `unreachable` / `timeout`（见 `NetError`），status 为 null
+/// 没拿到中控响应时 code 是 `unreachable` / `timeout`，没加 --yes 被拒是 `confirm_required`（见 `NetError`），status 为 null
 pub fn error_json(e: &anyhow::Error) -> Value {
     if let Some(a) = e.downcast_ref::<ApiError>() {
         let msg = if e.to_string().contains('\n') { format!("{e:#}") } else { a.message.clone() };
@@ -168,6 +168,17 @@ pub fn whoami(ctx: &Ctx) -> anyhow::Result<u8> {
 /// 分页接口（`/jobs`、`/incidents`）返回 `{items, total, next_offset}`：命令只要条目，`--json` 输出仍是数组
 fn items(mut v: Value) -> anyhow::Result<Value> { v.get_mut("items").map(Value::take).ok_or_else(|| anyhow!("分页响应里没有 items")) }
 
+/// 列表尾注：没被 --limit / 服务端上限截断是「共 N 条」；截断了写明只列了多少、总数（分页接口给了 total 时）和怎么多看。
+/// `cap` 是这次请求实际能取到的最大条数（--limit 与服务端上限 500 里小的）；没有 total 时取到 cap 条就当可能还有
+pub(crate) fn count_note(shown: usize, total: Option<i64>, cap: i64, unit: &str, adjust: &str) -> String {
+    let capped = total.map_or(shown as i64 >= cap, |t| t > shown as i64);
+    match (capped, total) {
+        (false, _) => format!("共 {shown} {unit}"),
+        (true, Some(t)) => format!("只列 {shown} {unit}（共 {t} {unit}，{adjust}）"),
+        (true, None) => format!("只列 {shown} {unit}，后面可能还有（{adjust}）"),
+    }
+}
+
 /// `status` 表格里最多列几条进行中的告警
 const STATUS_INCIDENTS: usize = 20;
 
@@ -257,13 +268,18 @@ fn spare_line(ov: &Value) -> String {
 }
 
 /// 告警列表（state = firing | all | chronic，最多 500 条；`subject` 是机器 id 时只看这台），每条是 `incident_item`
-fn incident_items(ctx: &Ctx, state: &str, subject: Option<&str>) -> anyhow::Result<Value> {
+fn incident_items(ctx: &Ctx, state: &str, subject: Option<&str>) -> anyhow::Result<Value> { Ok(incident_page(ctx, state, subject)?.0) }
+
+/// 同 `incident_items`，另带服务端的总条数（超过 500 条时只取前 500）
+fn incident_page(ctx: &Ctx, state: &str, subject: Option<&str>) -> anyhow::Result<(Value, Option<i64>)> {
     let mut q = vec![("state", state.to_string()), ("limit", "500".to_string())];
     if let Some(id) = subject {
         q.push(("subject_id", id.to_string()));
     }
-    let d = items(ctx.c.get_q("/incidents", &q)?)?;
-    Ok(Value::Array(d.as_array().map(Vec::as_slice).unwrap_or_default().iter().map(incident_item).collect()))
+    let page = ctx.c.get_q("/incidents", &q)?;
+    let total = page["total"].as_i64();
+    let d = items(page)?;
+    Ok((Value::Array(d.as_array().map(Vec::as_slice).unwrap_or_default().iter().map(incident_item).collect()), total))
 }
 
 /// `incidents` / `status` 的一条告警：与表格同列（另带规则 key、对象 id、状态与恢复时间），`--json` 输出这些而不是完整的告警对象。
@@ -328,13 +344,14 @@ fn due_cell(i: &Value) -> String {
 
 /// 机器列表（未退役的；退役完的在回收站，看 fleetctl recycle ls）
 pub fn ls(ctx: &Ctx, team: Option<&str>, kind: Option<&str>, status: Option<&str>, due: Option<i64>) -> anyhow::Result<u8> {
+    let team_id = team.map(|t| ctx.team_id(t)).transpose()?;
     let all = ctx.c.get("/machines")?;
     let mut list: Vec<Value> = all
         .as_array()
         .cloned()
         .unwrap_or_default()
         .into_iter()
-        .filter(|m| team.is_none_or(|t| st(m, "/team/name") == t))
+        .filter(|m| team_id.as_deref().is_none_or(|t| st(m, "/team/id") == t))
         .filter(|m| kind.is_none_or(|k| st(m, "/kind") == k))
         .filter(|m| status.is_none_or(|s| st(m, "/health/status") == s || st(m, "/lifecycle") == s))
         .filter(|m| due.is_none_or(|n| due_within(m, n)))
@@ -806,13 +823,13 @@ pub fn uptime(ctx: &Ctx, machine: &str, days: i64) -> anyhow::Result<u8> {
 pub fn incidents(ctx: &Ctx, all: bool, machine: Option<&str>) -> anyhow::Result<u8> {
     // 告警历史也要看已退役的机器
     let id = machine.map(|m| ctx.find_id(m, Want::Any)).transpose()?.map(|(id, _)| id);
-    let d = incident_items(ctx, if all { "all" } else { "firing" }, id.as_deref())?;
+    let (d, total) = incident_page(ctx, if all { "all" } else { "firing" }, id.as_deref())?;
     ctx.emit(&d, || {
         let list = d.as_array().cloned().unwrap_or_default();
         if list.is_empty() {
             return "没有告警".to_string();
         }
-        let mut s = format!("{}\n共 {} 条", incident_table(&list, all), list.len());
+        let mut s = format!("{}\n{}", incident_table(&list, all), count_note(list.len(), total, 500, "条", "最多取 500 条，用 --machine 缩小"));
         let tips = suggested_lines(&list);
         if !tips.is_empty() {
             s.push_str(&format!("\n\n建议操作（可以直接执行；--json 里每条告警的 suggested）：\n{}", tips.join("\n")));
@@ -854,14 +871,16 @@ pub fn jobs(ctx: &Ctx, active: bool, failed: bool, kind: Option<&str>, limit: i6
     if let Some(k) = kind {
         q.push(("kind", k.to_string()));
     }
-    let d = items(ctx.c.get_q("/jobs", &q)?)?;
+    let page = ctx.c.get_q("/jobs", &q)?;
+    let total = page["total"].as_i64();
+    let d = items(page)?;
     ctx.emit(&d, || {
         let list = d.as_array().cloned().unwrap_or_default();
         if list.is_empty() {
             return "没有作业".to_string();
         }
         let rows: Vec<Vec<String>> = list.iter().map(job_row).collect();
-        format!("{}\n共 {} 个", table::render(&["id", "种类", "目标", "状态", "步骤", "创建者", "创建", "错误"], &rows), rows.len())
+        format!("{}\n{}", table::render(&["id", "种类", "目标", "状态", "步骤", "创建者", "创建", "错误"], &rows), count_note(rows.len(), total, limit.clamp(1, 500), "个", "--limit 调整，最大 500"))
     });
     Ok(0)
 }
@@ -1294,6 +1313,18 @@ mod tests {
         let m = json!({"message": "软路由「路由A」的出口 节点01（原来指向 1.2.3.4:20003）可能停在改了一半", "routers": [{"id": "r1", "name": "路由A", "exits": ["节点01", "节点02"]}]});
         assert_eq!(manual_text(&m).unwrap(), "!!! 需要人工处理 !!!\n软路由「路由A」的出口 节点01（原来指向 1.2.3.4:20003）可能停在改了一半\n  软路由 路由A（r1）：出口 节点01、节点02");
         assert!(manual_text(&Value::Null).is_none());
+    }
+
+    #[test]
+    fn count_note_marks_capped_lists() {
+        // 有 total：没截断是「共 N」，截断了写总数
+        assert_eq!(count_note(30, Some(30), 30, "个", "x"), "共 30 个");
+        assert_eq!(count_note(30, Some(307), 30, "个", "--limit 调整"), "只列 30 个（共 307 个，--limit 调整）");
+        // 没有 total：取满上限才提示「可能还有」；没取满就是全部
+        assert_eq!(count_note(12, None, 50, "条", "x"), "共 12 条");
+        assert_eq!(count_note(50, None, 50, "条", "--limit 调整"), "只列 50 条，后面可能还有（--limit 调整）");
+        // --limit 1000 实际最多取 500：上限按 500 算
+        assert_eq!(count_note(500, None, 1000_i64.clamp(1, 500), "条", "y"), "只列 500 条，后面可能还有（y）");
     }
 
     #[test]

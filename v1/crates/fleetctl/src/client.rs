@@ -25,13 +25,27 @@ pub struct ApiError {
     pub message: String,
 }
 
+impl ApiError {
+    /// 「消息（错误码，HTTP 状态）」，不带下一步提示
+    pub fn summary(&self) -> String { format!("{}（{}，HTTP {}）", self.message, self.code, self.status) }
+}
+
+/// 没登录 / 没权限时 Display 多一行下一步（`--json` 的 message 也带上，因为有换行时 error_json 用完整文字）
 impl fmt::Display for ApiError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "{}（{}，HTTP {}）", self.message, self.code, self.status) }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.summary())?;
+        match (self.status, self.code.as_str()) {
+            (401, "unauthorized") => f.write_str("\n检查 FLEET_TOKEN / FLEET_URL 对不对，或让用户重新登录"),
+            (403, "forbidden") => f.write_str("\n让用户在网页「设置 → API 密钥」里给这把密钥加权限（fleetctl whoami 可看当前权限）"),
+            _ => Ok(()),
+        }
+    }
 }
 impl std::error::Error for ApiError {}
 
 /// 没拿到中控响应的网络错误。`code`：`unreachable` = 连不上（请求没发出去，可以直接重试）；
-/// `timeout` = 请求已发出、等响应超时（操作可能已在中控执行）
+/// `timeout` = 请求已发出、等响应超时（操作可能已在中控执行）。
+/// 另外 `confirm_required`（ops::confirm 拒绝没加 --yes 的危险操作）也借这个类型带稳定的 code
 #[derive(Debug)]
 pub struct NetError {
     pub code: &'static str,
@@ -235,7 +249,12 @@ mod tests {
     fn parses_error_body() {
         let e = api_error(403, r#"{"error":{"code":"forbidden","message":"这个 API 密钥没有 write 权限","detail":null}}"#);
         assert_eq!((e.status, e.code.as_str()), (403, "forbidden"));
-        assert!(e.to_string().contains("没有 write 权限") && e.to_string().contains("403"));
+        assert!(e.to_string().contains("没有 write 权限") && e.to_string().contains("403") && e.to_string().contains("加权限"));
+        let e = api_error(401, r#"{"error":{"code":"unauthorized","message":"需要登录","detail":null}}"#);
+        assert!(e.to_string().contains("FLEET_TOKEN"));
+        // 登录失败等别的 401 不带令牌提示
+        let e = api_error(401, r#"{"error":{"code":"bad_credentials","message":"用户名或密码不对","detail":null}}"#);
+        assert!(!e.to_string().contains("FLEET_TOKEN") && !e.to_string().contains('\n'));
         let e = api_error(502, "<html>bad gateway</html>");
         assert_eq!(e.code, "http");
         assert!(e.message.contains("502") && e.message.contains("bad gateway"));

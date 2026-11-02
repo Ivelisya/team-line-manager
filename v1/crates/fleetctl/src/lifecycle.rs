@@ -116,6 +116,9 @@ pub fn mv(ctx: &Ctx, node: &str, to: &str, from: Option<&str>, no_routers: bool,
             outln(format!("注意：{}", w.as_str().unwrap_or("")));
         }
         outln(SHARE_HINT);
+    } else if !yes {
+        // --json 不加 --yes：预览打到 stdout，确认错误在 stderr
+        ctx.emit(&pv, String::new);
     }
     if pv["ok"] != true {
         bail!("现在不能换线路机：{}", blockers(&pv));
@@ -185,6 +188,8 @@ fn mv_many(ctx: &Ctx, names: &[&str], to: &str, from: Option<&str>, no_routers: 
             outln(format!("注意：{}", w.as_str().unwrap_or("")));
         }
         outln(SHARE_HINT);
+    } else if !yes {
+        ctx.emit(&pv, String::new);
     }
     if pv["ok"] != true {
         // 非 json 模式离线软路由上面已逐条打印过，这里只放 blockers，不再重复；json 模式什么都没打印，原因要自己带全
@@ -263,13 +268,18 @@ pub fn evacuate(ctx: &Ctx, relay: &str, to: &str, no_routers: bool, yes: bool, f
     }
     // 将被搬走的节点：线路机完整视图里的入口列表（find 取的是精简列表，没有入口）
     let moving = moving_entries(&ctx.c.get(&format!("/machines/{sid}"))?);
-    if !ctx.json {
+    // 预览：--json 不加 --yes 时原样打到 stdout（确认错误在 stderr）；加了 --yes 直接提交，不多请求一次
+    let pv = if moving.is_empty() || (ctx.json && yes) { Value::Null } else { ctx.c.get_q(&format!("/relays/{sid}/evacuate"), &q)? };
+    if ctx.json {
+        if !pv.is_null() {
+            ctx.emit(&pv, String::new);
+        }
+    } else {
         if moving.is_empty() {
             outln(format!("{sname} 上没有在用的入口，无需搬空。"));
         } else {
             let rows: Vec<Vec<String>> = moving.iter().map(|e| vec![st(e, "/node/name"), st(e, "/port"), cmds::entry_state_cn(e).to_string()]).collect();
             outln(format!("将把 {sname} 上的 {} 个节点换到 {dname}：\n{}", moving.len(), table::render(&["节点", "端口", "入口状态"], &rows)));
-            let pv = ctx.c.get_q(&format!("/relays/{sid}/evacuate"), &q)?;
             let mut ex = vec![];
             for j in pv["jobs"].as_array().cloned().unwrap_or_default() {
                 ex.extend(exit_rows(j["routers"].as_array().map(Vec::as_slice).unwrap_or_default(), Some(&st(&j, "/name"))));

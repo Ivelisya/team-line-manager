@@ -1,6 +1,6 @@
 //! 访问监控：哪个节点访问了哪些域名 / IP、来源地址、新出现的目标、原始记录。
 
-use crate::cmds::{st, Ctx};
+use crate::cmds::{count_note, st, Ctx};
 use crate::resolve::Want;
 use crate::table;
 
@@ -8,7 +8,7 @@ use crate::table;
 #[derive(clap::Args)]
 pub struct AccessOpts {
     /// summary（按节点汇总）| targets（域名与 IP）| new（新出现的目标）| sources（来源地址）| events（原始记录）
-    #[arg(default_value = "targets")]
+    #[arg(default_value = "targets", value_parser = ["summary", "targets", "new", "sources", "events"])]
     pub view: String,
     /// 只看某台机器（id / 显示名 / IP）
     #[arg(long)]
@@ -27,6 +27,7 @@ pub struct AccessOpts {
     /// domain | ip
     #[arg(long)]
     pub kind: Option<String>,
+    /// 每个视图最多列几条（默认 50，服务端上限 500）；summary 是列几个节点
     #[arg(long, default_value_t = 50)]
     pub limit: i64,
 }
@@ -84,6 +85,7 @@ pub fn access(ctx: &Ctx, o: AccessOpts) -> anyhow::Result<u8> {
             let new = o.view == "new";
             let d = ctx.c.get_q(if new { "/access/new-targets" } else { "/access/targets" }, &q)?;
             let items = d["items"].clone();
+            let total = d["total"].as_i64();
             ctx.emit(&d, || {
                 let list = items.as_array().cloned().unwrap_or_default();
                 if list.is_empty() {
@@ -96,7 +98,7 @@ pub fn access(ctx: &Ctx, o: AccessOpts) -> anyhow::Result<u8> {
                         vec![st(t, "/dest_host"), st(t, "/kind"), st(t, "/name"), total, st(t, "/sources"), st(t, "/blocked"), table::ts(&st(t, "/first_seen")), table::ts(&st(t, "/last_seen"))]
                     })
                     .collect();
-                format!("{}\n共 {} 条", table::render(&["目标", "类型", "节点", "连接", "来源", "阻止", "首次", "最近"], &rows), rows.len())
+                format!("{}\n{}", table::render(&["目标", "类型", "节点", "连接", "来源", "阻止", "首次", "最近"], &rows), count_note(rows.len(), total, o.limit.clamp(1, 500), "条", "--limit 调整，最大 500"))
             });
         }
         "sources" => {
@@ -106,10 +108,10 @@ pub fn access(ctx: &Ctx, o: AccessOpts) -> anyhow::Result<u8> {
             ctx.emit(&d, || {
                 let list = d["items"].as_array().cloned().unwrap_or_default();
                 let rows: Vec<Vec<String>> = list.iter().map(|s| vec![st(s, "/src_ip"), st(s, "/name"), st(s, "/conns"), table::ts(&st(s, "/last_ts"))]).collect();
-                format!("{}\n共 {} 条", table::render(&["来源 IP", "节点", "连接", "最近"], &rows), rows.len())
+                format!("{}\n{}", table::render(&["来源 IP", "节点", "连接", "最近"], &rows), count_note(rows.len(), None, o.limit.clamp(1, 500), "条", "--limit 调整，最大 500"))
             });
         }
-        _ => {
+        "events" => {
             q.push(lim);
             let d = ctx.c.get_q("/access/events", &q)?;
             ctx.emit(&d, || {
@@ -122,9 +124,10 @@ pub fn access(ctx: &Ctx, o: AccessOpts) -> anyhow::Result<u8> {
                         vec![table::ts(&st(e, "/ts")), st(e, "/name"), st(e, "/src_ip"), format!("{}:{port}", st(e, "/dest_host")), st(e, "/network"), res.into()]
                     })
                     .collect();
-                format!("{}\n共 {} 条", table::render(&["时间", "节点", "来源", "目标", "协议", "结果"], &rows), rows.len())
+                format!("{}\n{}", table::render(&["时间", "节点", "来源", "目标", "协议", "结果"], &rows), count_note(rows.len(), None, o.limit.clamp(1, 500), "条", "--limit 调整，最大 500"))
             });
         }
+        _ => unreachable!("clap 限定了视图名"),
     }
     Ok(0)
 }

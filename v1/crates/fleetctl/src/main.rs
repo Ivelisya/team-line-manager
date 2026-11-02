@@ -384,13 +384,13 @@ enum Cmd {
     Status,
     /// 机器列表
     Ls {
+        /// 团队名或 id（找不到报错）
         #[arg(long)]
         team: Option<String>,
-        /// relay | vps | proxy
-        #[arg(long)]
+        #[arg(long, value_parser = ["relay", "vps", "proxy"])]
         kind: Option<String>,
-        /// 健康状态（ok/degraded/down/unknown/maintenance）或生命周期（active/provisioning/…）
-        #[arg(long)]
+        /// 健康状态（ok/degraded/down/unknown/maintenance/inactive）或生命周期（draft/provisioning/active/retiring/failed；已退役的不在这个列表里）
+        #[arg(long, value_parser = ["ok", "degraded", "down", "unknown", "maintenance", "inactive", "draft", "provisioning", "active", "retiring", "failed"])]
         status: Option<String>,
         /// 只列 N 天内到期（含已过期）的在用机器，按到期日排，表格加「到期」列（自动续费的也列出并标明；不续费的备用机不列（等到期回收），被出口指着 / 开着自动续费等不自动回收的备用机照列）
         #[arg(long, value_name = "DAYS")]
@@ -467,6 +467,7 @@ enum Cmd {
         /// 只看这类作业：provision（各类上架）| attach_entry | move_entry | replace | repoint | router_sync | upgrade_agent | tune | ss_refresh | speedtest | retire | purge
         #[arg(long)]
         kind: Option<String>,
+        /// 最多列几个（服务端上限 500）
         #[arg(long, default_value_t = 30)]
         limit: i64,
     },
@@ -1330,6 +1331,16 @@ mod tests {
         assert_eq!(parse(&["ssh", "router", "团队2-路由A", "--", "logread | tail"]), Ok((vec!["router".into(), "团队2-路由A".into()], vec!["logread | tail".into()])));
         assert!(parse(&["ssh"]).is_err());
         assert!(parse(&["ssh", "router", "a", "b"]).is_err(), "目标最多两个参数");
+    }
+
+    /// `ls` 的 --kind / --status、`access` 的视图名只认固定取值：写错报错，不静默返回空表或别的视图
+    #[test]
+    fn closed_value_args() {
+        let ok = |a: &[&str]| Cli::try_parse_from(["fleetctl"].iter().chain(a)).is_ok();
+        assert!(ok(&["ls", "--kind", "relay", "--status", "down"]) && ok(&["ls", "--status", "provisioning"]));
+        assert!(!ok(&["ls", "--kind", "server"]) && !ok(&["ls", "--status", "foo"]) && !ok(&["ls", "--status", "retired"]));
+        assert!(ok(&["access"]) && ok(&["access", "events"]) && ok(&["access", "new", "--limit", "10"]));
+        assert!(!ok(&["access", "foo"]));
     }
 
     /// `diag` 的命令行：默认值在 run 里按 --quick 定，这里只解析

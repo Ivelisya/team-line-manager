@@ -14,7 +14,7 @@ pub struct TrafficOpts {
     /// 只看这个团队的节点（团队名或 id）
     #[arg(long)]
     pub team: Option<String>,
-    /// 只看这台机器的每日明细（id / 显示名 / IP）；线路机是经过它的全部业务流量，另列网卡
+    /// 只看这台机器的每日明细（id / 显示名 / IP）；线路机是经过它的全部业务流量，另列网卡。不加时 --json 的 nodes 不带逐日明细（daily / nic_daily）
     #[arg(long)]
     pub node: Option<String>,
 }
@@ -37,7 +37,14 @@ pub fn traffic(ctx: &Ctx, o: TrafficOpts) -> anyhow::Result<u8> {
     if let Some(m) = &node {
         q.push(("machine", st(m, "/id")));
     }
-    let d = ctx.c.get_q("/traffic/daily", &q)?;
+    let mut d = ctx.c.get_q("/traffic/daily", &q)?;
+    // 不指定节点时不带各节点的逐日明细（几十个节点 × 30 天，--json 能到几十 KB；总览用不上），要看哪台的每日用 --node
+    if node.is_none() {
+        for x in d["nodes"].as_array_mut().into_iter().flatten().filter_map(Value::as_object_mut) {
+            x.remove("daily");
+            x.remove("nic_daily");
+        }
+    }
     ctx.emit(&d, || {
         let arr = |k: &str| d[k].as_array().cloned().unwrap_or_default();
         let (total, nodes, relays) = (arr("total"), arr("nodes"), arr("relays"));

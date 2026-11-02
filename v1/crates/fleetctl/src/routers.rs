@@ -173,7 +173,7 @@ pub fn show(ctx: &Ctx, q: &str) -> anyhow::Result<u8> {
             s.push_str(&format!("
 
 最近配置变更（fleetctl router changes {} 看全部）
-{}", st(&d, "/name"), changes_human(list)));
+{}", crate::ops::shell_quote(&st(&d, "/name")), changes_human(list)));
         }
         s
     });
@@ -796,7 +796,7 @@ pub fn switch(ctx: &Ctx, q: &str, group: &str, to: Option<&str>, dur: Option<&st
         } else if let Some(t) = d["back_at"].as_str() {
             s.push_str(&format!("，{} 自动切回 {}", table::ts(t), st(&d, "/original")));
         } else {
-            s.push_str(&format!("。不会自动切回：要切回时 fleetctl router switch {name} {group} --back"));
+            s.push_str(&format!("。不会自动切回：要切回时 fleetctl router switch {} {} --back", crate::ops::shell_quote(&name), crate::ops::shell_quote(&group)));
         }
         s.push_str("。已有的连接不受影响，新连接走新出口；OpenClash 重启后一般保留当前选择，到时仍由中控切回");
         s

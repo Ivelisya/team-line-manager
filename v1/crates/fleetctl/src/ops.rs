@@ -1,7 +1,7 @@
 //! 会改动状态的命令：上架、退役、改名、升级、入口操作、远程执行、密钥管理。
 //! 危险操作默认要确认：交互终端里问 y/N，非交互环境必须显式 --yes。
 
-use crate::client::{ApiError, Client, Cred};
+use crate::client::{ApiError, Client, Cred, NetError};
 use crate::cmds::{self, outln, out_raw, st, Ctx};
 use crate::resolve::{self, Want};
 use crate::table;
@@ -13,13 +13,16 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
-/// 确认：--yes 直接过；交互终端问一句；非交互且没 --yes 就拒绝（防止脚本/AI 误触）
+/// 确认：--yes 直接过；交互终端问一句；非交互且没 --yes 就拒绝（防止脚本/AI 误触）。
+/// 拒绝时 `--json` 的错误 code 固定是 `confirm_required`（要先向用户确认，别当成失败重试）
 pub fn confirm(prompt: &str, yes: bool) -> anyhow::Result<()> {
     if yes {
         return Ok(());
     }
     if !std::io::stdin().is_terminal() {
-        bail!("这是危险操作，需要确认：{prompt}。请先向用户确认，再加 --yes 重试");
+        // 提示多半以「？」结尾，不再补句号
+        let sep = if prompt.ends_with(['？', '?', '。']) { "" } else { "。" };
+        return Err(NetError { code: "confirm_required", message: format!("这是危险操作，需要确认：{prompt}{sep}请先向用户确认，再加 --yes 重试") }.into());
     }
     eprint!("{prompt} [y/N] ");
     let _ = std::io::stderr().flush();
@@ -426,6 +429,9 @@ pub fn retire(ctx: &Ctx, machine: &str, now: bool, reason: Option<&str>, no_clea
         for w in pre["warnings"].as_array().into_iter().flatten().filter_map(Value::as_str) {
             outln(format!("注意：{w}"));
         }
+    } else if !yes {
+        // --json 不加 --yes：预览（GET /machines/{id}/retire 原样）打到 stdout，确认错误在 stderr
+        ctx.emit(&pre, String::new);
     }
     let also = if ip_nodes.is_empty() { String::new() } else { "（连同同机 IP 节点）".into() };
     let what = if now { "立即回收" } else { "退役（移进备用）" };
@@ -1268,7 +1274,7 @@ fn keys_client(ctx: &Ctx, a: &KeyAuth) -> anyhow::Result<Option<(Client, String)
 
 fn hint_403(e: anyhow::Error) -> anyhow::Error {
     match e.downcast_ref::<ApiError>() {
-        Some(a) if a.status == 403 => anyhow!("{a}\n密钥管理只能由登录用户操作：加 --user <用户名>（密码用环境变量 FLEET_PASSWORD），或到网页「设置 → API 密钥」里操作"),
+        Some(a) if a.status == 403 => anyhow!("{}\n密钥管理只能由登录用户操作：加 --user <用户名>（密码用环境变量 FLEET_PASSWORD），或到网页「设置 → API 密钥」里操作", a.summary()),
         _ => e,
     }
 }
