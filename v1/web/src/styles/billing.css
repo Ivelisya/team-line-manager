@@ -50,6 +50,7 @@
 .cxa-lead { margin: 0; max-width: 60em; font-size: var(--fs-title); line-height: 26px; color: var(--fg); text-wrap: pretty; }
 .cxa-lead b { font-weight: var(--fw-semibold); font-variant-numeric: var(--num-variant); }
 .cxa-lead span { white-space: nowrap; }
+.cxa-nm { white-space: nowrap; }
 .cxa-node { height: auto; padding: 0; font: inherit; color: inherit; }
 @media (hover: hover) { .cxa-node:hover { color: var(--accent); } }
 /* 「没收」那一块的标题数字用提示色 */

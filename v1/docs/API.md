@@ -298,7 +298,7 @@ ProvisionItem = {
 
 令牌 32 字节随机（base64url）：库里存 sha256（`token_hash`，用来查）和 SecretBox 密文（`token_enc`，管理端随时能再复制链接）。
 
-**公开接口**（不登录，没有 Actor 提取器，登录只在提取器里校验，所以不会被拦）：`GET /api/v1/public/customer/{令牌}?month=2026-11`（默认本月）→ `{team:"团队2", today, month, months, nodes:[{name, region, period_start, period_end, paid}]}`：同管理端的按月看（每个节点起点在这个月的那一期，待付在前、再按名字），每个节点只有这几项；`name` 是占用者现在的名字，空出待定的是原占用者，手动名额写备注（没有备注写「手动添加的节点」）。不含 IP、供应商、价格。月份格式不对 400。令牌不对或已停用一律 404（不区分），并和登录、订阅拉取共用按来源的失败限速（`auth::begin_attempt`，键 `cust:` + 令牌哈希前缀），超了 429。`last_view_at` / `last_view_ip` 10 分钟内只写一次，成功不写审计。响应 `Cache-Control: no-store`；`/c/` 开头的页面与 `/api/v1/public/` 都带 `X-Robots-Tag: noindex`（`lib.rs` 的响应头中间件）。前端页面是 `/c/:token`（不在 Shell 里，不要求登录）。
+**公开接口**（不登录，没有 Actor 提取器，登录只在提取器里校验，所以不会被拦）：`GET /api/v1/public/customer/{令牌}?month=2026-11`（默认本月）→ `{team:"团队2", today, month, months, nodes:[{name, region, period_start, period_end, paid}]}`：同管理端的按月看（每个节点起点在这个月的那一期，待付在前、再按名字），每个节点只有这几项；`name` 是占用者现在的名字，空出待定的是原占用者，手动名额写备注（没有备注写「手动添加的节点」）。不含 IP、供应商、价格。客户只看到本月为止：`months` 截到本月（管理端可以多翻到下个月），`?month=` 晚于本月的当本月返回。月份格式不对 400。令牌不对或已停用一律 404（不区分），并和登录、订阅拉取共用按来源的失败限速（`auth::begin_attempt`，键 `cust:` + 令牌哈希前缀），超了 429。`last_view_at` / `last_view_ip` 10 分钟内只写一次，成功不写审计。响应 `Cache-Control: no-store`；`/c/` 开头的页面与 `/api/v1/public/` 都带 `X-Robots-Tag: noindex`（`lib.rs` 的响应头中间件）。前端页面是 `/c/:token`（不在 Shell 里，不要求登录）。
 
 ## 作业
 `Job = {id,kind,target:{id,name}|null,state,step,step_count,step_title,error,manual,created_by,created_at,started_at,finished_at,steps:[{idx,key,title,state,started_at,finished_at,output,error}]}`（`step_count` = 该种作业的步骤数，`step_title` = 第 `step` 步的标题，做完为 null）

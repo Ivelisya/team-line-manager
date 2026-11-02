@@ -155,7 +155,7 @@ async fn billing_ledger_and_customer_page() {
     assert_eq!(st, StatusCode::OK, "{pv}");
     let d = &pv["data"];
     assert_eq!(listed(d), named(&[("团队1-02", false), ("团队1-03", false), ("墨西哥家宽", false), ("团队1-01", true)]), "{pv}");
-    assert_eq!((d["team"].as_str(), d["months"].as_array().map(|a| a.len())), (Some("团队1"), Some(6)), "{pv}");
+    assert_eq!((d["team"].as_str(), d["months"].as_array().map(|a| a.len())), (Some("团队1"), Some(5)), "{pv}"); // 客户只能翻到本月：没有下个月
     let h = d["nodes"].as_array().unwrap().iter().find(|n| n["name"] == "墨西哥家宽").unwrap();
     let pe = fmt_date(meta::add_months(s + Duration::days(14), 1).unwrap());
     assert_eq!(h, &json!({"name": "墨西哥家宽", "region": "墨西哥", "period_start": day(14), "period_end": pe, "paid": false}), "{pv}");
@@ -163,6 +163,8 @@ async fn billing_ledger_and_customer_page() {
     assert!(!body.contains("203.0.113") && !body.contains("provider") && !body.contains("price") && !body.contains("slot_id") && !body.contains("菲律宾"), "{pv}");
     // 默认本月；月份写错 400
     assert_eq!(public(&t, link).await.1["data"]["month"], month(1));
+    // 晚于本月的 ?month= 当本月
+    assert_eq!(public(&t, &format!("{link}?month={}", month(2))).await.1["data"]["month"], month(1));
     assert_eq!(public(&t, &format!("{link}?month=abc")).await.0, StatusCode::BAD_REQUEST);
 
     // ── 对账（传入的「现在」）──

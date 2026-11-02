@@ -247,14 +247,16 @@ export function installCustomerMock(R: Reg, o: { teams: () => Team[]; machines: 
   R('DELETE', '/teams/([^/]+)/customer-page', ({ params }) => { const t = team(params[0]); pages.delete(t.id); return { team_id: t.id }; });
 
   R('GET', '/public/customer/([^/]+)', ({ params, query }) => {
-    const month = monthQ(query.get('month'));
+    const thisMonth = TODAY.slice(0, 7);
+    const asked = monthQ(query.get('month'));
+    const month = asked > thisMonth ? thisMonth : asked; // 客户只看到本月为止
     const hit = [...pages.entries()].find(([, p]) => p.token === params[0] && p.enabled);
     if (!hit) throw bad('链接不对或已停用', 404, 'not_found');
     const [tid, p] = hit;
     if (!p.last_view_at || Date.now() - Date.parse(p.last_view_at) > 600_000) p.last_view_at = new Date().toISOString();
     const nodes = rows(tid, month);
     const out: PublicCustomer = {
-      team: team(tid).name, today: TODAY, month, months: monthsOf(tid),
+      team: team(tid).name, today: TODAY, month, months: monthsOf(tid).filter((m) => m <= thisMonth),
       nodes: nodes.map((n) => ({ name: n.name, region: n.region, period_start: n.period_start, period_end: n.period_end, paid: n.paid })),
     };
     return out;
