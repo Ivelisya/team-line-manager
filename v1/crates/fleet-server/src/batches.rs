@@ -188,33 +188,33 @@ pub fn receivable(slots: &[Slot], batches: &[Batch], month: Date) -> Vec<Line> {
 /// 某天有效的名额数：已起算（起算日 ≤ 这天）且没结束（结束日晚于这天）
 pub fn active_on(slots: &[Slot], d: Date) -> usize { slots.iter().filter(|s| s.start <= d && s.end.is_none_or(|e| d < e)).count() }
 
-/// 自动说明：只有一期 → ""；多期个数都一样 → 「含N次续期」；个数有变 → 「初始5个 → 续期4个」，
-/// 多次变化按顺序串起来、相邻相同的合并（5、5、4 是「初始5个 → 续期4个」）
+/// 自动说明：只有一期 → ""；多期个数都一样 → 「含 N 次续期」；个数有变 → 「初始 5 个 → 续期 4 个」，
+/// 多次变化按顺序串起来、相邻相同的合并（5、5、4 是「初始 5 个 → 续期 4 个」）
 pub fn summary(counts: &[i32]) -> String {
     let Some(&first) = counts.first() else { return String::new() };
     if counts.len() == 1 {
         return String::new();
     }
     if counts.iter().all(|&c| c == first) {
-        return format!("含{}次续期", counts.len() - 1);
+        return format!("含 {} 次续期", counts.len() - 1);
     }
-    let mut out = vec![format!("初始{first}个")];
+    let mut out = vec![format!("初始 {first} 个")];
     let mut prev = first;
     for &c in &counts[1..] {
         if c != prev {
-            out.push(format!("续期{c}个"));
+            out.push(format!("续期 {c} 个"));
             prev = c;
         }
     }
     out.join(" → ")
 }
 
-/// 标题：有效的「第05批 · 美区 · 当前有效4个」，已到期的「第01批 · 美区 · 原4个（已到期）」
+/// 标题：有效的「第05批 · 美区 · 当前有效 4 个」，已到期的「第01批 · 美区 · 原 4 个（已到期）」
 pub fn title(seq: i32, region: &str, count: i32, state: State) -> String {
     if state == State::Expired {
-        format!("第{seq:02}批 · {region} · 原{count}个（已到期）")
+        format!("第{seq:02}批 · {region} · 原 {count} 个（已到期）")
     } else {
-        format!("第{seq:02}批 · {region} · 当前有效{count}个")
+        format!("第{seq:02}批 · {region} · 当前有效 {count} 个")
     }
 }
 
@@ -303,17 +303,17 @@ mod tests {
     #[test]
     fn summary_wording() {
         assert_eq!(summary(&[5]), "");
-        assert_eq!(summary(&[5, 5]), "含1次续期");
-        assert_eq!(summary(&[6, 6, 6]), "含2次续期");
-        assert_eq!(summary(&[5, 4]), "初始5个 → 续期4个");
-        assert_eq!(summary(&[6, 5, 4]), "初始6个 → 续期5个 → 续期4个");
-        assert_eq!(summary(&[5, 5, 4, 4]), "初始5个 → 续期4个");
+        assert_eq!(summary(&[5, 5]), "含 1 次续期");
+        assert_eq!(summary(&[6, 6, 6]), "含 2 次续期");
+        assert_eq!(summary(&[5, 4]), "初始 5 个 → 续期 4 个");
+        assert_eq!(summary(&[6, 5, 4]), "初始 6 个 → 续期 5 个 → 续期 4 个");
+        assert_eq!(summary(&[5, 5, 4, 4]), "初始 5 个 → 续期 4 个");
     }
 
     #[test]
     fn titles_pad_seq_and_mark_expired() {
-        assert_eq!(title(5, "美区", 4, State::Active), "第05批 · 美区 · 当前有效4个");
-        assert_eq!(title(1, "美区", 4, State::Expired), "第01批 · 美区 · 原4个（已到期）");
+        assert_eq!(title(5, "美区", 4, State::Active), "第05批 · 美区 · 当前有效 4 个");
+        assert_eq!(title(1, "美区", 4, State::Expired), "第01批 · 美区 · 原 4 个（已到期）");
     }
 
     #[test]
@@ -335,7 +335,7 @@ mod tests {
         assert_eq!(shape(&bs[0]), [(date!(2026 - 10 - 01), date!(2026 - 11 - 01), 10), (date!(2026 - 11 - 01), date!(2026 - 12 - 01), 8)]);
         let d = derive(&bs[0], date!(2026 - 11 - 15)).unwrap();
         assert_eq!((d.end, d.count, bs[0].periods.len(), d.node_months, d.renewals, d.state), (date!(2026 - 12 - 01), 8, 2, 18, 1, State::Active));
-        assert_eq!(d.summary, "初始10个 → 续期8个");
+        assert_eq!(d.summary, "初始 10 个 → 续期 8 个");
         // 今天正好是期起点：属于新的一期
         assert_eq!(derive_batches(&ss, date!(2026 - 12 - 01))[0].periods.len(), 3);
         // 今天在起算日之前（手动名额填了以后的日子）：只有第 0 期
@@ -413,7 +413,7 @@ mod tests {
         assert_eq!(seqs, [2, 3], "第01批已到期不出现");
         assert_eq!(v["regions"], json!([{"region": "美区", "counts": [2], "total": 2, "today_count": 0}, {"region": "墨西哥", "counts": [1], "total": 1, "today_count": 0}]));
         assert_eq!(v["node_months"], 3);
-        assert_eq!(v["batches"][0]["title"], "第02批 · 美区 · 当前有效2个");
+        assert_eq!(v["batches"][0]["title"], "第02批 · 美区 · 当前有效 2 个");
         assert_eq!(v["batches"][0]["end_date"], "2026-11-01");
         assert!(v["batches"][0].get("key").is_none() && v["batches"][0].get("note").is_none());
     }

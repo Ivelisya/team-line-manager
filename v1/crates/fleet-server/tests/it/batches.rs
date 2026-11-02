@@ -213,5 +213,110 @@ async fn batch_start_and_vacated_end() {
     let (st, v) = t.req("PATCH", &format!("/api/v1/billing-slots/{sid}"), Some(json!({"end_date": tomorrow})), None).await;
     assert_eq!((st, v["error"]["message"].as_str()), (StatusCode::BAD_REQUEST, Some("空出的计费节点结束日不能晚于今天")), "{v}");
     let (st, v) = t.req("PATCH", &format!("/api/v1/billing-slots/{sid}"), Some(json!({"end_date": fmt_date(today())})), None).await;
-    assert_eq!((st, v["data"]["state"].as_str()), (StatusCode::OK, Some("ended")), "{v}");
+    assert_eq!((st, v["data"]["state"].as_str(), v["data"]["left_reason"].as_str()), (StatusCode::OK, Some("ended"), Some("exempt")), "手动结束保留空出原因：{v}");
+}
+
+/// 空出原因落库：对账空出时按当时是否不计费写 exempt / left，接回清空，之后节点状态变了也不跟着变
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn vacate_reason_is_stored() {
+    let t = common::boot(false, "").await;
+    let team = common::seed_team(&t, "团队1").await;
+    let n1 = node(&t, team, 1, "US").await;
+    let n2 = node(&t, team, 2, "US").await;
+    let s = meta::add_months(today().replace_day(1).unwrap(), -1).unwrap();
+    t.post("/api/v1/billing/init", json!({"since": fmt_date(s)})).await;
+    let base = format!("/api/v1/teams/{team}/batches");
+    async fn reason(t: &T, team: Uuid, name: &str) -> Value { slot_of(&t.get(&format!("/api/v1/teams/{team}/batches")).await, name)["left_reason"].clone() }
+    // 设不计费空出 → exempt；恢复计费接回 → null（手动名额与有占用者的也是 null）
+    t.req("PUT", &format!("/api/v1/machines/{n1}/billing-exempt"), Some(json!({"exempt": true})), None).await;
+    assert_eq!(reason(&t, team, "团队1-01").await, "exempt");
+    t.req("PUT", &format!("/api/v1/machines/{n1}/billing-exempt"), Some(json!({"exempt": false})), None).await;
+    let v = t.get(&base).await;
+    assert_eq!((slot_of(&v, "团队1-01")["state"].as_str(), slot_of(&v, "团队1-01")["left_reason"].is_null()), (Some("active"), true), "{v}");
+    // 退役离开 → left；之后又被标成不计费，原因不变（落库的，不按现在的状态推断）
+    sqlx::query("update machine set lifecycle = 'retired', retired_at = now() where id = $1").bind(n2).execute(&t.st.db).await.unwrap();
+    ledger::reconcile(&t.st, OffsetDateTime::now_utc()).await.unwrap();
+    assert_eq!(reason(&t, team, "团队1-02").await, "left");
+    t.req("PUT", &format!("/api/v1/machines/{n2}/billing-exempt"), Some(json!({"exempt": true})), None).await;
+    assert_eq!(reason(&t, team, "团队1-02").await, "left");
+    // 回到团队并恢复计费：接回，清空
+    t.req("PUT", &format!("/api/v1/machines/{n2}/billing-exempt"), Some(json!({"exempt": false})), None).await;
+    sqlx::query("update machine set lifecycle = 'active', retired_at = null where id = $1").bind(n2).execute(&t.st.db).await.unwrap();
+    ledger::reconcile(&t.st, OffsetDateTime::now_utc()).await.unwrap();
+    assert!(reason(&t, team, "团队1-02").await.is_null());
+    // 手动名额恒为 null
+    let m = t.post(&format!("/api/v1/teams/{team}/billing-slots"), json!({"region": "墨西哥", "start_date": fmt_date(s), "note": "家宽"})).await;
+    assert!(m[0]["left_reason"].is_null(), "{m}");
+}
+
+/// 迁移 0098：旧的逐节点 init 按 (团队, 起算日) 合并成一条新格式，可重复执行；回填空出名额的原因
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn migration_0098_merges_old_init_events() {
+    let (pool, _schema) = common::db_until(97).await;
+    let (a, b) = (Uuid::now_v7(), Uuid::now_v7());
+    for (id, name) in [(a, "团队A"), (b, "团队B")] {
+        sqlx::query("insert into team (id, name) values ($1, $2)").bind(id).bind(name).execute(&pool).await.unwrap();
+    }
+    // 旧格式：A 有两个起算日（10-01 两个节点、10-05 一个），B 一个；A 另有一条已经是新格式的 init 与一条别的事件
+    let old = [(a, "团队A-01", "美区", "2026-10-01", 10), (a, "团队A-02", "墨西哥", "2026-10-01", 11), (a, "团队A-03", "美区", "2026-10-05", 12), (b, "团队B-01", "美区", "2026-10-01", 13)];
+    for (team, name, region, start, min) in old {
+        sqlx::query("insert into billing_event (id, team_id, at, kind, machine_name, detail) values ($1, $2, $3, 'init', $4, $5)")
+            .bind(Uuid::now_v7())
+            .bind(team)
+            .bind(OffsetDateTime::UNIX_EPOCH + Duration::minutes(min))
+            .bind(name)
+            .bind(json!({"region": region, "start_date": start}))
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    sqlx::query("insert into billing_event (id, team_id, at, kind, detail) values ($1, $2, now(), 'init', $3), ($4, $2, now(), 'add', '{}')")
+        .bind(Uuid::now_v7())
+        .bind(b)
+        .bind(json!({"start_date": "2026-10-02", "count": 1, "nodes": [{"name": "团队B-09", "region": "美区"}]}))
+        .bind(Uuid::now_v7())
+        .execute(&pool)
+        .await
+        .unwrap();
+    // 存量名额：一个空出的系统名额（回填成 left，exempt 的回填走同一条 SQL，要机器行才能标不计费，这里不造）、一个手动的（保持 null）
+    for manual in [false, true] {
+        sqlx::query("insert into billing_slot (id, team_id, region, start_date, vacated_at, prev_holder_id, manual) values ($1, $2, '美区', '2026-10-01', $3, $4, $5)")
+            .bind(Uuid::now_v7())
+            .bind(a)
+            .bind((!manual).then(OffsetDateTime::now_utc))
+            .bind((!manual).then(Uuid::now_v7))
+            .bind(manual)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    common::migrator(None).run(&pool).await.unwrap();
+    let merged = |team: Uuid| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_as::<_, (OffsetDateTime, Value)>("select at, detail from billing_event where team_id = $1 and kind = 'init' order by detail ->> 'start_date', at")
+                .bind(team)
+                .fetch_all(&pool)
+                .await
+                .unwrap()
+        }
+    };
+    for _ in 0..2 {
+        let ra = merged(a).await;
+        assert_eq!(ra.len(), 2, "{ra:?}");
+        assert_eq!(ra[0].0, OffsetDateTime::UNIX_EPOCH + Duration::minutes(10));
+        assert_eq!(ra[0].1, json!({"start_date": "2026-10-01", "count": 2, "nodes": [{"name": "团队A-01", "region": "美区"}, {"name": "团队A-02", "region": "墨西哥"}]}));
+        assert_eq!(ra[1].1, json!({"start_date": "2026-10-05", "count": 1, "nodes": [{"name": "团队A-03", "region": "美区"}]}));
+        // B：旧的合成一条，原本就是新格式的不动，别的 kind 不动
+        let rb = merged(b).await;
+        assert_eq!(rb.iter().map(|r| r.1["count"].as_i64()).collect::<Vec<_>>(), [Some(1), Some(1)], "{rb:?}");
+        assert_eq!(rb[0].1["nodes"][0]["name"], "团队B-01");
+        assert_eq!(rb[1].1["nodes"][0]["name"], "团队B-09");
+        let adds: i64 = sqlx::query_scalar("select count(*) from billing_event where kind = 'add'").fetch_one(&pool).await.unwrap();
+        assert_eq!(adds, 1);
+        let reasons: Vec<(bool, Option<String>)> = sqlx::query_as("select manual, vacate_reason from billing_slot order by manual").fetch_all(&pool).await.unwrap();
+        assert_eq!(reasons, [(false, Some("left".to_string())), (true, None)]);
+        // 再执行一遍：没有旧行，无操作
+        sqlx::raw_sql(include_str!("../../../../migrations/0098_billing_vacate_reason.sql")).execute(&pool).await.unwrap();
+    }
 }

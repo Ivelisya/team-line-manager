@@ -61,12 +61,12 @@ const pages = new Map<string, MPage>([['t2', { token: 'demo', enabled: true, cre
 const slotState = (s: MSlot): BillingSlot['state'] => (s.end_date ? 'ended' : !s.holder && !s.manual ? 'vacated' : 'active');
 /** 名额在「起点为 ps 的那一期」计费 ⇔ ps < end_date（没结束为无穷） */
 const bills = (s: MSlot, ps: string) => !s.end_date || ps < s.end_date;
-/** 「含2次续期」/「初始5个 → 续期4个」（相邻相同的合并）；只有一期为空 */
+/** 「含 2 次续期」/「初始 5 个 → 续期 4 个」（相邻相同的合并）；只有一期为空 */
 function summaryOf(ps: BatchPeriod[]): string {
   if (ps.length < 2) return '';
   const counts = ps.map((p) => p.count);
-  if (counts.every((c) => c === counts[0])) return `含${ps.length - 1}次续期`;
-  return counts.filter((c, i) => i === 0 || c !== counts[i - 1]).map((c, i) => `${i === 0 ? '初始' : '续期'}${c}个`).join(' → ');
+  if (counts.every((c) => c === counts[0])) return `含 ${ps.length - 1} 次续期`;
+  return counts.filter((c, i) => i === 0 || c !== counts[i - 1]).map((c, i) => `${i === 0 ? '初始' : '续期'} ${c} 个`).join(' → ');
 }
 interface Derived { batches: (CustomerBatch & { slots: MSlot[] })[] }
 function derive(tid: string): Derived {
@@ -97,7 +97,7 @@ function derive(tid: string): Derived {
     const head = `第${p2(i + 1)}批 · ${region}`;
     return {
       key, seq: i + 1, region, summary: summaryOf(periods),
-      title: state === 'expired' ? `${head} · 原${count}个（已到期）` : `${head} · 当前有效${count}个`,
+      title: state === 'expired' ? `${head} · 原 ${count} 个（已到期）` : `${head} · 当前有效 ${count} 个`,
       start_date: start, end_date: end, count, months: periods.length, node_months: periods.reduce((a, p) => a + p.count, 0),
       renewals: periods.length - 1, state, periods, slots: ss,
     };

@@ -26,7 +26,6 @@ const nameOf = (b: Pick<CustomerBatch, 'seq' | 'region'>) => `第${F.pad2(b.seq)
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const digits = (s: string) => s.replace(/\D/g, '');
 const md = (d: string) => d.slice(5, 10);
-/** 名额带 left_reason（后端给：exempt = 节点标了不计费而离开名额，left = 节点离开）；types.ts 补上字段后这里的扩展类型可以去掉 */
 /** 名额在列表里的名字：节点名；手动名额「手动 · 备注」；空出 / 已结束的「节点名（已离开）」或「节点名（不计费）」；都没有的「空出的名额」 */
 const slotName = (s: BillingSlot) => s.holder?.name ?? (s.manual ? `手动${s.note ? ` · ${s.note}` : ''}` : s.last_holder_name ? `${s.last_holder_name}（${s.left_reason === 'exempt' ? '不计费' : '已离开'}）` : '空出的名额');
 const monthLabel = (m: string) => `${m.slice(0, 4)}年${Number(m.slice(5, 7))}月`;

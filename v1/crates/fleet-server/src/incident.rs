@@ -191,18 +191,19 @@ pub async fn reconcile<'n>(
         if let Some(inc) = open.remove(&(w.rule.to_string(), w.subject)) {
             let escalated = rank(w.severity) > rank(&inc.severity);
             let sev = if escalated { w.severity } else { inc.severity.as_str() };
+            let mut opened_at = inc.opened_at;
             if escalated || !same_summary(&inc.summary, &summary) || w.detail.as_ref().is_some_and(|d| *d != detail_of(&inc.detail)) {
                 // 升级时清掉之前的确认（同机器的告警）：确认的是警告，严重是新情况。
                 // 续费提醒从「即将到期」升到「已过期」是两个状态（名字都换了），开始时间重置为升级时刻（刚过期），不沿用提前提醒那天；别的规则升级沿用首次出现
                 // detail 里的 critical 标记（开、升级、重开为严重时并入，只增不减）在换 detail 时保留
-                sqlx::query(&format!(
+                opened_at = sqlx::query_scalar(&format!(
                     "update incident set summary = $2, severity = $3::severity, last_seen_at = now(),
                          detail = coalesce($4, detail)
                              || case when $6 or detail ? 'critical' or severity = 'critical' then jsonb_build_object('critical', true) else jsonb_build_object() end
                              || case when {CRIT_COUNT_SQL} + $7 > 0 then jsonb_build_object('critical_count', {CRIT_COUNT_SQL} + $7) else jsonb_build_object() end,
                          ack_at = case when $5 then null else ack_at end, ack_by = case when $5 then null else ack_by end,
                          opened_at = case when $5 and rule = 'renewal_due' then now() else opened_at end
-                     where id = $1"
+                     where id = $1 returning opened_at"
                 ))
                 .bind(inc.id)
                 .bind(&summary)
@@ -211,7 +212,7 @@ pub async fn reconcile<'n>(
                 .bind(escalated)
                 .bind(w.severity == "critical")
                 .bind(i64::from(escalated && w.severity == "critical"))
-                .execute(&st.db)
+                .fetch_one(&st.db)
                 .await?;
                 t.updated += 1;
             } else {
@@ -221,7 +222,7 @@ pub async fn reconcile<'n>(
             let kind = if escalated { Some(Kind::Firing) } else { due(w.rule, sev, inc.notified_at, inc.told_resolved_at, inc.ack_at.is_some(), now) };
             if let Some(kind) = kind.filter(|_| !silenced && !w.quiet) {
                 let text = chronic(st, engine, w.rule, w.subject, kind, &w.text).await;
-                notify::enqueue(st, notice(kind, inc.id, w.rule, sev, w.name, &text, inc.opened_at)).await;
+                notify::enqueue(st, notice(kind, inc.id, w.rule, sev, w.name, &text, opened_at)).await;
             }
             continue;
         }

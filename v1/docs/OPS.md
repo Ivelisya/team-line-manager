@@ -332,6 +332,7 @@ FLEET_BUILD=docker FLEET_BUILD_HOST=10.172.17.213 lab/sync-server.sh 'cargo test
 - 换下来的旧 fleet-server 留在中控 `/opt/fleet/fleet-server.prev`（同一个二进制重复部署时不覆盖它）。
 - 迁移 0029 先把币种去空白转大写，再给套餐 / 订阅 / 续费记录的币种（3 个大写字母）和通知渠道种类（当时是 telegram / wecom / webhook）加约束；存量里还有不合规的不让迁移失败，日志里有「0029：… 暂不验证」的警告。看到时查出那几行（如 `select id, currency from plan where currency !~ '^[A-Z]{3}$'`）改成正确的币种，再 `alter table plan validate constraint plan_currency_iso`（订阅 / 续费记录 / 渠道同理：`subscription_currency_iso`、`renewal_currency_iso`、`notify_channel_kind_check`）。
 - 迁移 0093（穿透入口）只给 `entry` 加三列（`mode` 默认 normal、`bridge_uuid` 随机生成、`reverse_kick_at`），存量入口一律普通模式，不改任何行为。新迁移照 §9 回滚的规矩：上线前先 `systemctl start fleet-backup`。
+- 迁移 0098 把旧的逐节点 `init` 增减记录（每个节点一条）按团队合并成一条（节点名单进 `detail.nodes`），并给 `billing_slot` 加 `vacate_reason`（空出原因）：现有空出 / 已结束的系统名额按「现在」的不计费状态回填一次（近似），之后由对账在空出时落库。上线前照旧先做备份。
 - 迁移 0081 把通知渠道种类约束改成只允许 telegram / feishu，并删掉库里已有的企业微信、webhook 渠道（它们排着的待发通知一并删，发送记录里的渠道名置空）；之后在设置页新建飞书渠道。
 - 重启时 fleet-server 优雅退出：不再领新作业，正在跑的步骤做完就停在两步之间（最多等 60 秒，没做完的重启后从这一步重做），这期间接口照常；之后停止接新连接，进行中的请求最多再等 10 秒。有作业在跑时一次重启最多约 70 秒才换上新版本。
 - fleet-server 启动时先占端口再碰库：手动再起一个 `fleet-server serve` 会因端口被占直接退出，不会动在跑实例的作业。
