@@ -217,11 +217,12 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 3. 作业三步：推 bridge 并启动 → 切换并经入口验收出口 IP → （开启时跳过）收起 bridge。验收不过中控**自动切回普通模式**、作业失败，错误写明原因；查清后 `fleetctl retry <作业>` 从切换那一步重来，或 `fleetctl cancel <作业>`（补偿收起 bridge）。
 4. 这个入口上正在进行的连接会断开一次（客户端自动重连），线路机上别的入口不受影响；分享链接、订阅、软路由出口都不变。
 
-**验证**：`fleetctl entries <节点>` 的「模式」是「穿透」、TCP 一格「—」、出口「通」；`fleetctl exec <节点> -- 'systemctl is-active fleet-xray-bridge; journalctl -u fleet-xray-bridge -n 20 --no-pager'`；`fleetctl exec <线路机> -- '/usr/local/bin/xray api lso --server=127.0.0.1:62789 | grep rvs-'`（有 `rvs-<入口>` = 隧道挂上了）。客户那边新连接不再转圈。
+**验证**：`fleetctl entries <节点>` 的「模式」是「穿透」、TCP 一格是节点 → 线路机的建连延迟（节点 agent 升级后才有，旧版本显示「-」）、出口「通」；`fleetctl exec <节点> -- 'systemctl is-active fleet-xray-bridge; journalctl -u fleet-xray-bridge -n 20 --no-pager'`；`fleetctl exec <线路机> -- '/usr/local/bin/xray api lso --server=127.0.0.1:62789 | grep rvs-'`（有 `rvs-<入口>` = 隧道挂上了）。客户那边新连接不再转圈。
 
 **切回普通**：`fleetctl entry reverse <入口> --off --yes --follow`：线路机改回连节点的 ssserver（一直留着，防火墙照旧放行），验收通过后节点上没有别的穿透入口就停掉删掉 bridge（xray 程序留着）。入站丢包的问题会回来。
 
 **出问题时**：
+- 穿透入口的 TCP（`fleetctl entries` 的 TCP 列、抽屉「TCP 延迟」图卡写「节点 → 线路机」）是节点 agent 主动连线路机入口端口量的（读 /etc/fleet-bridge/xray.json，每 30 秒），只画图、不告警：它不通 = 节点连不上线路机入口（线路机入口端口被挡、节点出站被挡），隧道也就挂不上，同时会有 `egress_fail`。切换模式前后同一条曲线口径不同（前普通 = 线路机 → 节点）。
 - 穿透入口告警 `egress_fail`：隧道断了或节点出不去。线路机报隧道缺席满 30 秒时中控会自动叫节点 agent 重启 bridge（节点 agent 日志「中控发现穿透隧道没挂上，已重启 fleet-xray-bridge」），一般 1 分钟内恢复；没恢复看 bridge 日志（连不上线路机入口？节点出站被挡？）。轮换凭据、停用后再启用的穿透入口也会这样断约 1 分钟，等它自动恢复。
 - 手动重启 bridge（修改状态，先确认）：`fleetctl exec <节点> -- 'systemctl restart fleet-xray-bridge'`——断开这台节点上全部经隧道的连接约 2 秒。
 - 改过线路机的 REALITY 参数或 IP（手工改库）后，对其上的穿透入口 `--off` 再 `--on`（bridge 的配置要重推）。

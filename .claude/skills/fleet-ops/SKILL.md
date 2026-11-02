@@ -116,7 +116,7 @@ fleetctl exec --team 团队1 --timeout 30 -- uptime           # 多台并发 4�
   - 中控连不到路由（路由在 NAT 后面，三台现场路由都是）：`fleetctl router add <名称> [--team 团队2]` 打印接入命令（30 分钟、只能用一次），让用户在路由上用 root 执行；过期了 `fleetctl router bootstrap <路由> --yes` 重新生成（现在的隧道密钥立刻作废，在线的路由马上掉线）。
   - 中控能直接连到路由的 SSH（公网映射、同一网段）：一键部署 `fleetctl router add <名称> --host <IP> [--port 22] [--user root] --password-stdin --yes --follow`（密码从标准输入读一行，不要写在参数里）；路由上已经授权过中控公钥时不用密码。已有的路由重新部署用 `router deploy`；上传密钥、启动隧道这两步失败时中控把原来的隧道密钥与端口写回，在线的路由不掉线（错误里写「已改回原来的隧道密钥与端口」）。失败原因原样转告用户；中控连不到它就改用接入命令。
 - 删路由（`router rm --yes`）只撤销中控这边（隧道公钥、状态与指标）；输出里的 `cleanup` 是要在路由上执行的清理命令，转给用户。还有没做完的作业改过它的出口、没确认改回（「需要人工处理」）时删不了，报错里有作业 id：先把作业处理完；路由确实回不来了（扔了、刷机）才用 `router rm <路由> --force --yes`（先向用户确认：作业不再改回它，它上面被改过的出口要自己处理），之后作业能重试收尾或取消。
-- 穿透入口（`entries --json` 的 `mode` 是 `reverse`，文字表的「模式」列是「穿透」）：线路机不连节点，没有 TCP 探测（`tcp_ok` 为 null，不是不通），看出口探测。用户说「这台节点入站丢包 / 新连接老转圈 / 供应商说只能出站」时先看预览 `fleetctl entry reverse <入口> --on`（不带 --yes），告诉用户影响，同意后 `--yes --follow`；切回用 `--off`。家宽代理、同机 IP 节点不支持；线路机或节点 agent 太旧时预览会说先 `upgrade-agent`。存量入口不会自动切换，新上架按「新入口默认模式」（`settings entry-mode`）。
+- 穿透入口（`entries --json` 的 `mode` 是 `reverse`，文字表的「模式」列是「穿透」）：线路机不连节点，它的 TCP 是节点主动连线路机入口端口量的（节点 → 线路机，节点 agent 每 30 秒一次，只画曲线、不告警；`tcp_ok` 为 null 是节点 agent 还没升级，不是不通），告警与健康只看出口探测。用户说「这台节点入站丢包 / 新连接老转圈 / 供应商说只能出站」时先看预览 `fleetctl entry reverse <入口> --on`（不带 --yes），告诉用户影响，同意后 `--yes --follow`；切回用 `--off`。家宽代理、同机 IP 节点不支持；线路机或节点 agent 太旧时预览会说先 `upgrade-agent`。存量入口不会自动切换，新上架按「新入口默认模式」（`settings entry-mode`）。
 - 轮换入口凭据、停用入口不会改软路由：`entry rotate` / `entry disable` 的确认语会列出指向这个入口的软路由出口（之后它们就连不上了），先告诉用户。要换节点让路由跟着改用 `replace` / `move`，只改路由出口指向别的入口用 `repoint`。
 
 ## 探测点

@@ -176,7 +176,7 @@ fn probes_recovered(m: &MachineView, rule: &str, was: Option<&Vec<Uuid>>) -> boo
     let mut es = m
         .entries
         .iter()
-        .filter(|e| e.lifecycle == "active" && (m.kind != "relay" || e.direct) && !(tcp && e.direct) && was.is_none_or(|w| w.contains(&e.relay.id)))
+        .filter(|e| e.lifecycle == "active" && (m.kind != "relay" || e.direct) && !(tcp && (e.direct || e.mode == crate::reverse::REVERSE)) && was.is_none_or(|w| w.contains(&e.relay.id)))
         .peekable();
     es.peek().is_some() && es.all(|e| (if tcp { &e.tcp } else { &e.egress }).as_ref().is_some_and(|p| p.ok && p.streak >= PROBE_OK_TO_RESOLVE))
 }

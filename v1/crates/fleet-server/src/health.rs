@@ -194,7 +194,7 @@ fn probe_reasons(live: &[&EntryView], now: OffsetDateTime, rs: &mut Vec<Reason>,
             continue;
         }
         // 15 分钟内没有探测结果（视图只取这么久的）：这条入口通不通不知道。直出入口本来就没有 TCP 探测
-        // 直出、穿透入口没有 TCP 探测（线路机不连节点）：只看出口
+        // 直出入口没有 TCP 探测；穿透入口的 TCP 是节点连线路机量的，只画图不告警（见下）：这两种只看出口
         if e.egress.is_none() || (e.tcp.is_none() && !e.direct && e.mode != crate::reverse::REVERSE) {
             undecided.push(e.relay.id);
         }
@@ -212,7 +212,9 @@ fn probe_reasons(live: &[&EntryView], now: OffsetDateTime, rs: &mut Vec<Reason>,
             None => *unknown = true,
             _ => {}
         }
-        if let Some(p) = e.tcp.as_ref().filter(|p| !p.ok) {
+        // 穿透入口的 TCP（节点 → 线路机）不进告警：连不上线路机就是隧道没挂上，出口探测（经隧道）同时失败、会报 egress_fail，
+        // 线路机也会报 tunnels_down 叫节点重启 bridge；再开一条「到节点 TCP 不通」既重复又把方向说反了
+        if let Some(p) = e.tcp.as_ref().filter(|p| !p.ok && e.mode != crate::reverse::REVERSE) {
             failing.push(("tcp_fail", e.relay.id));
             if e.egress.as_ref().is_some_and(|g| g.ok && (now - g.ts).whole_seconds() <= EGRESS_FRESH_S) {
                 flaky.push(e.relay.name.clone());
@@ -755,7 +757,7 @@ pub(crate) mod tests {
 
     #[test]
     fn reverse_entry_judged_by_egress_only() {
-        // 穿透入口没有 TCP 探测（视图里 tcp 恒为 null）：出口通就是好的，不当成「判不出」；出口不通照常报 egress_fail，不报 tcp_fail
+        // 穿透入口的 TCP 是节点 → 线路机，只画图不告警：没有这项探测（旧 agent）时出口通就是好的，不当成「判不出」；出口不通照常报 egress_fail，不报 tcp_fail
         let now = OffsetDateTime::now_utc();
         let mut n = base("vps");
         n.entries = vec![entry(false, true)];
@@ -764,6 +766,14 @@ pub(crate) mod tests {
         assert!(h.reasons.is_empty() && !h.undecided("tcp_fail") && !h.undecided("egress_fail") && h.status != Status::Unknown, "{:?}", keys(&h));
         n.entries = vec![entry(false, false)];
         (n.entries[0].mode, n.entries[0].tcp) = ("reverse".into(), None);
+        assert_eq!(keys(&evaluate(&n, now)), ["egress_fail"]);
+        // 有节点 → 线路机的 TCP 样本、且连不上：出口通时不报，出口也不通时只报 egress_fail（隧道没挂上由出口告警说，不再多一条方向说反的 tcp_fail）
+        n.entries = vec![entry(false, true)];
+        n.entries[0].mode = "reverse".into();
+        n.entries[0].tcp = Some(Probe { ok: false, latency_ms: None, detail: Some("超时 10 秒".into()), ts: now, median_ms: None, streak: 3 });
+        let h = evaluate(&n, now);
+        assert!(h.reasons.is_empty() && !h.undecided("tcp_fail"), "{:?}", keys(&h));
+        n.entries[0].egress = Some(Probe { ok: false, latency_ms: None, detail: None, ts: now, median_ms: None, streak: 3 });
         assert_eq!(keys(&evaluate(&n, now)), ["egress_fail"]);
     }
 

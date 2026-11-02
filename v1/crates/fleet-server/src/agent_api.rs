@@ -515,6 +515,17 @@ async fn ingest(st: &AppState, a: AgentId, mut r: Report) -> Result<Json<ReportA
         ps = with_partitions(st, "probe_result", ps, today, &mut dropped).await;
         ac = windowed(r.access.iter().filter(|x| mine.contains(&x.entry_id)), |x| x.ts_ms, acc_lo, hi, &mut dropped);
         ac = with_partitions(st, "access_event", ac, today, &mut dropped).await;
+    } else if a.kind == "vps" && !r.probes.is_empty() {
+        // 节点只报穿透入口的 TCP（节点 → 线路机，fleet-agent bridge.rs）：入口现在是在用的穿透模式才收。
+        // 停用 / 待应用的入口 bridge 配置里还有、线路机上的端口却是关的；刚切回普通的入口，节点上的 bridge 要到作业末尾才收起来：这些样本都不能当线路数据
+        let mine: Vec<(Uuid,)> = sqlx::query_as("select id from entry where node_id = $1 and relay_id <> node_id and mode = $2 and lifecycle = 'active'")
+            .bind(a.machine_id)
+            .bind(crate::reverse::REVERSE)
+            .fetch_all(&st.db)
+            .await?;
+        let mine: std::collections::HashSet<Uuid> = mine.into_iter().map(|(e,)| e).collect();
+        ps = windowed(r.probes.iter().filter(|p| p.kind == fleet_proto::ProbeKind::Tcp && mine.contains(&p.entry_id)), |p| p.ts_ms, raw_lo, hi, &mut dropped);
+        ps = with_partitions(st, "probe_result", ps, today, &mut dropped).await;
     }
     warn_dropped(a.machine_id, dropped, r.seq);
 
