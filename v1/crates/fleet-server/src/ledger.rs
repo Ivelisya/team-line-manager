@@ -347,10 +347,20 @@ pub async fn reconcile_team(st: &AppState, team: Uuid, now: OffsetDateTime) -> a
                 sqlx::query("update billing_slot set holder_name = $2 where id = $1").bind(slot).bind(name).execute(&mut *tx).await?;
             }
             Change::Vacate { slot, prev } => {
-                sqlx::query("update billing_slot set holder_id = null, vacated_at = $2, prev_holder_id = $3 where id = $1").bind(slot).bind(now).bind(prev).execute(&mut *tx).await?;
+                // 空出原因按这台机器此刻是否标了不计费落库：exempt = 节点还在团队里只是不计费；left = 离开团队、退役、进备用或被删
+                sqlx::query(
+                    "update billing_slot set holder_id = null, vacated_at = $2, prev_holder_id = $3,
+                         vacate_reason = case when exists (select 1 from billing_exempt x where x.machine_id = $3) then 'exempt' else 'left' end
+                     where id = $1",
+                )
+                .bind(slot)
+                .bind(now)
+                .bind(prev)
+                .execute(&mut *tx)
+                .await?;
             }
             Change::Restore { slot, machine } => {
-                sqlx::query("update billing_slot set holder_id = $2, vacated_at = null, prev_holder_id = null where id = $1").bind(slot).bind(machine).execute(&mut *tx).await?;
+                sqlx::query("update billing_slot set holder_id = $2, vacated_at = null, prev_holder_id = null, vacate_reason = null where id = $1").bind(slot).bind(machine).execute(&mut *tx).await?;
                 sqlx::query("delete from billing_pending where machine_id = $1").bind(machine).execute(&mut *tx).await?;
             }
             Change::Pend { machine } => {
@@ -369,7 +379,7 @@ pub async fn reconcile_team(st: &AppState, team: Uuid, now: OffsetDateTime) -> a
                 sqlx::query("delete from billing_pending where machine_id = $1 and team_id = $2").bind(machine).bind(team).execute(&mut *tx).await?;
             }
             Change::Swap { slot, machine, name, other, at } => {
-                sqlx::query("update billing_slot set holder_id = $2, holder_name = $3, vacated_at = null, prev_holder_id = null where id = $1")
+                sqlx::query("update billing_slot set holder_id = $2, holder_name = $3, vacated_at = null, prev_holder_id = null, vacate_reason = null where id = $1")
                     .bind(slot)
                     .bind(machine)
                     .bind(name)

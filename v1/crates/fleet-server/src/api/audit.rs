@@ -531,7 +531,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         // 「团队2 · 第05批 美区 · 续期 1 月，2026-10-15 至 2026-11-14，4 个」
         a if a.starts_with("customer_batch.") => format!("{} · 第{:02}批 {} · {}", s("team"), d["seq"].as_i64().unwrap_or(0), s("region"), s("what")),
         a if a.starts_with("customer_page.") => s("team"),
-        // 「团队1 · 团队1-05 设为不计费」；初始化没有团队，只有 what
+        // 「团队1-05 · 设为不计费」（团队名在 target 里不显示）；初始化没有团队，只有 what
         // 以节点名开头，界面上名字可点（同上架、改套餐）
         "billing.exempt" if !s("name").is_empty() => format!("{} · {}", s("name"), s("what")),
         a if a.starts_with("billing.") => if s("team").is_empty() { s("what") } else { format!("{} · {}", s("team"), s("what")) },

@@ -27,7 +27,7 @@ use uuid::Uuid;
 // ── 读取 ──────────────────────────────────────────────────────────────
 
 const SLOT_COLS: &str = "s.id, s.team_id, s.region, s.start_date, s.end_date, s.holder_id, display_name(hm.kind::text, hm.label, ht.name, hm.number) holder_now,
-                         s.holder_name, s.vacated_at, s.manual, s.note, exists (select 1 from billing_exempt bx where bx.machine_id = s.prev_holder_id) prev_exempt";
+                         s.holder_name, s.vacated_at, s.manual, s.note, s.vacate_reason";
 const SLOT_FROM: &str = "billing_slot s left join machine hm on hm.id = s.holder_id left join team ht on ht.id = hm.team_id";
 
 #[derive(sqlx::FromRow, Clone)]
@@ -45,8 +45,8 @@ struct SlotRow {
     vacated_at: Option<OffsetDateTime>,
     manual: bool,
     note: String,
-    /// 空出前的占用者现在还标着不计费（节点其实还在团队里）
-    prev_exempt: bool,
+    /// 空出 / 已结束的系统名额为什么没有占用者（对账空出时落库）：exempt = 原占用者被设为不计费，left = 离开团队等；其余 null
+    vacate_reason: Option<String>,
 }
 
 impl SlotRow {
@@ -89,8 +89,8 @@ fn slot_json(s: &SlotRow, batches: &[Batch], today: Date) -> Value {
         "state": s.state(today), "name": s.name(),
         "holder": s.holder_id.map(|id| json!({"id": id, "name": s.holder_now.clone().unwrap_or_default()})),
         "last_holder_name": if s.holder_id.is_none() && !s.manual { s.holder_name.clone() } else { None },
-        // 系统名额没有占用者（空出 / 已结束）的原因：exempt = 原占用者被设为不计费（节点还在团队里）；left = 离开团队、退役、进备用或被删；其余 null
-        "left_reason": (s.holder_id.is_none() && !s.manual).then(|| if s.prev_exempt { "exempt" } else { "left" }),
+        // 系统名额没有占用者（空出 / 已结束）的原因，对账空出时落库：exempt = 原占用者被设为不计费（节点还在团队里）；left = 离开团队、退役、进备用或被删；其余 null
+        "left_reason": s.vacate_reason,
         "vacated_at": s.vacated_at.map(meta::fmt_ts), "end_date": s.end_date.map(bt::fmt_date), "manual": s.manual, "note": s.note,
     })
 }

@@ -62,7 +62,7 @@ export function CustomerPage() {
       <>
         <header className="cx-head">
           <h1 className="cx-title">{d.team} · 节点到期时间轴</h1>
-          <p className="cx-sub">{yearsOf(d)} · 共{d.batches.length}批 · 每小格1天 · 起点为开始日期，终点为到期日期</p>
+          <p className="cx-sub">{yearsOf(d)} · 共 {d.batches.length} 批 · 每小格 1 天 · 起点为开始日期，终点为到期日期</p>
         </header>
         {d.batches.length === 0
           ? <Empty text="当前没有有效的节点" />
