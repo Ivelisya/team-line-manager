@@ -442,3 +442,24 @@ async fn no_receiving_channel_does_not_stamp_notified_at() {
     mock.wait("/hook/a", 1).await;
     assert_eq!(t.count("select count(*) from incident where state = 'firing' and notified_at is not null").await, 1);
 }
+
+/// 续费提醒从「即将到期」升到「已过期」：开始时间重置为升级时刻；别的规则升级沿用首次出现的时间
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn renewal_due_escalation_restarts_opened_at() {
+    let t = setup().await;
+    let (subject, base) = (Uuid::now_v7(), OffsetDateTime::now_utc());
+    for rule in ["renewal_due", RULE] {
+        let go = |severity: &'static str, at: OffsetDateTime| {
+            let (t, w) = (&t, Want { rule, subject, name: "测试对象", severity, text: "到期".into(), detail: None, ready: true, quiet: false });
+            async move {
+                let open = incident::firing(&t.st.db, Engine::Central).await.unwrap();
+                incident::reconcile(&t.st, Engine::Central, open, vec![w], "true", at, |_| resolve()).await.unwrap();
+            }
+        };
+        go("warning", base).await;
+        sqlx::query("update incident set opened_at = now() - interval '3 days' where rule = $1").bind(rule).execute(&t.st.db).await.unwrap();
+        go("critical", base + time::Duration::seconds(60)).await;
+        let age_s: f64 = sqlx::query_scalar("select extract(epoch from now() - opened_at)::float8 from incident where rule = $1").bind(rule).fetch_one(&t.st.db).await.unwrap();
+        assert_eq!(age_s < 3600.0, rule == "renewal_due", "{rule}: 开始时间距今 {age_s} 秒");
+    }
+}

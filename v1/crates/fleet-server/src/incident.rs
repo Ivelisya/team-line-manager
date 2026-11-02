@@ -193,13 +193,15 @@ pub async fn reconcile<'n>(
             let sev = if escalated { w.severity } else { inc.severity.as_str() };
             if escalated || !same_summary(&inc.summary, &summary) || w.detail.as_ref().is_some_and(|d| *d != detail_of(&inc.detail)) {
                 // 升级时清掉之前的确认（同机器的告警）：确认的是警告，严重是新情况。
+                // 续费提醒从「即将到期」升到「已过期」是两个状态（名字都换了），开始时间重置为升级时刻（刚过期），不沿用提前提醒那天；别的规则升级沿用首次出现
                 // detail 里的 critical 标记（开、升级、重开为严重时并入，只增不减）在换 detail 时保留
                 sqlx::query(&format!(
                     "update incident set summary = $2, severity = $3::severity, last_seen_at = now(),
                          detail = coalesce($4, detail)
                              || case when $6 or detail ? 'critical' or severity = 'critical' then jsonb_build_object('critical', true) else jsonb_build_object() end
                              || case when {CRIT_COUNT_SQL} + $7 > 0 then jsonb_build_object('critical_count', {CRIT_COUNT_SQL} + $7) else jsonb_build_object() end,
-                         ack_at = case when $5 then null else ack_at end, ack_by = case when $5 then null else ack_by end
+                         ack_at = case when $5 then null else ack_at end, ack_by = case when $5 then null else ack_by end,
+                         opened_at = case when $5 and rule = 'renewal_due' then now() else opened_at end
                      where id = $1"
                 ))
                 .bind(inc.id)

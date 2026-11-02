@@ -194,7 +194,7 @@ fn until(v: &Value) -> String { if v.is_null() { "不计费".into() } else { for
 pub fn event_text(kind: &str, machine: Option<&str>, other: Option<&str>, d: &Value) -> String {
     let m = machine.unwrap_or("（已删除的节点）");
     match kind {
-        "init" => format!("{m} 计入计费（初始化，{} 起算）", md(&d["start_date"])),
+        "init" => format!("初始化：{} 个节点计入计费（{} 起算）", d["count"].as_i64().unwrap_or(0), md(&d["start_date"])),
         "add" => format!("{m} 加入，新增计费节点（{} 起算）", md(&d["start_date"])),
         "remove" => format!("{m} 离开，计费节点减少（{}）", until(&d["billed_until"])),
         "swap" => format!("{} → {m} 替换，计费不变", other.unwrap_or("（已删除的节点）")),
@@ -259,8 +259,8 @@ pub async fn regions(st: &AppState, nodes: &[&Node]) -> HashMap<Uuid, String> {
         .collect()
 }
 
-/// 建一个系统名额（节点占着，从起算日算）：删它的待定行、记一条增减记录（init / add）
-pub async fn insert_slot(c: &mut PgConnection, team: Uuid, node: &Node, region: &str, start: Date, kind: &str, at: OffsetDateTime) -> sqlx::Result<Uuid> {
+/// 建一个系统名额（节点占着，从起算日算）：删它的待定行，不记事件（初始化一个团队只记一条合并的 init，见 `log_init`）
+pub async fn create_slot(c: &mut PgConnection, team: Uuid, node: &Node, region: &str, start: Date) -> sqlx::Result<Uuid> {
     let id = new_id();
     sqlx::query("insert into billing_slot (id, team_id, region, start_date, holder_id, holder_name) values ($1, $2, $3, $4, $5, $6)")
         .bind(id)
@@ -272,8 +272,20 @@ pub async fn insert_slot(c: &mut PgConnection, team: Uuid, node: &Node, region: 
         .execute(&mut *c)
         .await?;
     sqlx::query("delete from billing_pending where machine_id = $1").bind(node.id).execute(&mut *c).await?;
-    log(c, team, Some(id), at, kind, Some(&node.name), None, json!({"region": region, "start_date": bt::fmt_date(start)})).await?;
     Ok(id)
+}
+
+/// 对账新增的名额：建名额并记一条 add
+pub async fn insert_slot(c: &mut PgConnection, team: Uuid, node: &Node, region: &str, start: Date, at: OffsetDateTime) -> sqlx::Result<Uuid> {
+    let id = create_slot(c, team, node, region, start).await?;
+    log(c, team, Some(id), at, "add", Some(&node.name), None, json!({"region": region, "start_date": bt::fmt_date(start)})).await?;
+    Ok(id)
+}
+
+/// 初始化一个团队只记一条：节点名单（名字与地区）放在 detail.nodes，不显示在文案里
+pub async fn log_init(c: &mut PgConnection, team: Uuid, start: Date, nodes: &[(&Node, &str)], at: OffsetDateTime) -> sqlx::Result<()> {
+    let list: Vec<Value> = nodes.iter().map(|(n, r)| json!({"name": n.name, "region": r})).collect();
+    log(c, team, None, at, "init", None, None, json!({"start_date": bt::fmt_date(start), "count": nodes.len(), "nodes": list})).await
 }
 
 #[derive(sqlx::FromRow)]
@@ -371,7 +383,7 @@ pub async fn reconcile_team(st: &AppState, team: Uuid, now: OffsetDateTime) -> a
             }
             Change::Add { machine, start, at } => {
                 if let Some(n) = billable.iter().find(|n| n.id == *machine) {
-                    insert_slot(&mut tx, team, n, &regions[machine], *start, "add", *at).await?;
+                    insert_slot(&mut tx, team, n, &regions[machine], *start, *at).await?;
                     events += 1;
                 }
             }
@@ -568,7 +580,7 @@ mod tests {
         assert_eq!(event_text("swap", Some("团队2-20"), Some("团队2-07"), &json!({})), "团队2-07 → 团队2-20 替换，计费不变");
         assert_eq!(event_text("remove", Some("团队2-05"), None, &json!({"billed_until": "2026-11-14"})), "团队2-05 离开，计费节点减少（算到 11-14）");
         assert_eq!(event_text("remove", Some("团队2-05"), None, &json!({"billed_until": null})), "团队2-05 离开，计费节点减少（不计费）");
-        assert_eq!(event_text("init", Some("团队1-01"), None, &json!({"start_date": "2026-10-01"})), "团队1-01 计入计费（初始化，10-01 起算）");
+        assert_eq!(event_text("init", None, None, &json!({"start_date": "2026-10-01", "count": 52})), "初始化：52 个节点计入计费（10-01 起算）");
         assert_eq!(event_text("exempt", Some("团队1-05"), None, &json!({"exempt": true})), "团队1-05 设为不计费");
         assert_eq!(manual_name("墨西哥家宽"), "手动 · 墨西哥家宽");
     }

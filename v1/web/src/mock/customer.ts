@@ -11,7 +11,7 @@ type Bad = (msg: string, status?: number, code?: string) => Error;
 
 const TODAY = '2026-10-31';
 const GRACE = 86_400_000;
-interface MSlot { id: string; team_id: string; region: string; start_date: string; holder: { id: string; name: string } | null; last_holder_name: string | null; vacated_at: string | null; end_date: string | null; manual: boolean; note: string }
+interface MSlot { id: string; team_id: string; region: string; start_date: string; holder: { id: string; name: string } | null; last_holder_name: string | null; left_reason?: 'exempt' | 'left'; vacated_at: string | null; end_date: string | null; manual: boolean; note: string }
 interface MPending { team_id: string; machine: { id: string; name: string }; seen_at: string }
 interface MEvent extends BillingEvent { team_id: string }
 interface MPage { token: string; enabled: boolean; created_at: string; token_at: string; last_view_at: string | null }
@@ -40,8 +40,8 @@ for (const [tid, n] of [['t1', 9], ['t2', 19]] as const) {
     const h = holder(tid, i);
     const s: MSlot = { id: nid('sl'), team_id: tid, region: '美区', start_date: '2026-10-01', holder: h, last_holder_name: null, vacated_at: null, end_date: null, manual: false, note: '' };
     slots.push(s);
-    ev(tid, s.id, '2026-10-01T00:00:00+08:00', 'init', h.name, null, `${h.name} 计入计费节点（10-01 起算）`);
   }
+  ev(tid, null, '2026-10-01T00:00:00+08:00', 'init', null, null, `初始化：${n} 个节点计入计费（10-01 起算）`);
 }
 {
   const h = holder('t1', 10);
@@ -108,7 +108,7 @@ const strip = ({ slots: _s, ...b }: Derived['batches'][number]): CustomerBatch =
 const slotName = (s: MSlot) => s.holder?.name ?? (s.manual ? `手动${s.note ? ` · ${s.note}` : ''}` : s.last_holder_name ? `${s.last_holder_name}（已离开）` : '空出的名额');
 function slotView(s: MSlot, d: Derived): BillingSlot {
   const b = d.batches.find((x) => x.slots.includes(s))!;
-  return { id: s.id, batch_seq: b.seq, region: s.region, start_date: s.start_date, state: slotState(s), holder: s.holder, last_holder_name: s.manual ? null : s.last_holder_name, vacated_at: s.vacated_at, end_date: s.end_date, manual: s.manual, note: s.note };
+  return { id: s.id, batch_seq: b.seq, region: s.region, start_date: s.start_date, state: slotState(s), holder: s.holder, last_holder_name: s.manual ? null : s.last_holder_name, left_reason: s.manual || s.holder ? null : s.left_reason ?? 'left', vacated_at: s.vacated_at, end_date: s.end_date, manual: s.manual, note: s.note };
 }
 const eventView = ({ team_id: _t, ...e }: MEvent): BillingEvent => e; // eslint-disable-line @typescript-eslint/no-unused-vars
 const teamEvents = (tid: string) => events.filter((e) => e.team_id === tid).sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || cmp(b.id, a.id));
@@ -238,7 +238,7 @@ export function installCustomerMock(R: Reg, o: { teams: () => Team[]; machines: 
     const held = slots.find((s) => s.holder?.id === m.id && !s.end_date);
     const tid = m.team?.id ?? held?.team_id;
     // 设不计费后服务端马上对账：名额立刻空出（之后照样走 24 小时配对）
-    if (body.exempt && held) { held.last_holder_name = held.holder!.name; held.holder = null; held.vacated_at = now; }
+    if (body.exempt && held) { held.last_holder_name = held.holder!.name; held.left_reason = 'exempt'; held.holder = null; held.vacated_at = now; }
     const pi = pending.findIndex((p) => p.machine.id === m.id);
     if (body.exempt && pi >= 0) pending.splice(pi, 1);
     if (!body.exempt && m.team && !held && pi < 0) pending.push({ team_id: m.team.id, machine: { id: m.id, name: m.name }, seen_at: now });

@@ -554,6 +554,8 @@ export interface BillingSlot {
   holder: { id: string; name: string } | null; vacated_at: string | null; end_date: string | null; manual: boolean; note: string;
   /** 空出待定 / 已结束的名额最后占用它的节点名（当时的快照） */
   last_holder_name?: string | null;
+  /** 没有占用者的系统名额为什么空着：exempt 原节点被设为不计费（还在团队里）；left 离开团队 / 退役 / 进备用 / 被删；有占用者与手动名额为 null */
+  left_reason?: 'exempt' | 'left' | null;
 }
 /** 新加入、还没定是替换还是新增的节点：decide_at（= seen_at + 24 小时）前有名额空出就接过去，否则算新增 */
 export interface BillingPending { machine: { id: string; name: string }; seen_at: string; decide_at: string }
