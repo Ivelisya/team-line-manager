@@ -63,8 +63,8 @@ function Board({ d, teamId }: { d: TeamBatches; teamId: string }) {
   const [sp, upd] = useUrlState();
   const month = /^\d{4}-\d{2}$/.test(sp.get('month') ?? '') ? sp.get('month')! : d.today.slice(0, 7);
   const events = useBillingEvents(teamId);
-  // 批次、名额、待定、增减记录都空 = 这个团队还没初始化计费（接口没有单独的标记）：整页收成一句提示
-  if (events.data && events.data.pages[0].length === 0 && d.slots.length === 0 && d.pending.length === 0) {
+  // 还没初始化计费：整页收成一句提示
+  if (!d.initialized) {
     return <Empty text="计费还没初始化" hint={<>在中控上运行 <code>fleetctl billing init</code></>} />;
   }
   return (

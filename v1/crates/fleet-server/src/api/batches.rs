@@ -141,8 +141,9 @@ pub async fn list(_a: Actor, State(st): State<AppState>, ApiPath(team): ApiPath<
     .await?;
     let count = |st: &str| slots.iter().filter(|s| s.state(today) == st).count();
     let page = page_json(&st, &mut conn, team).await?;
+    let initialized = ledger::initialized(&st.db).await?;
     Ok(ok(json!({
-        "team": {"id": team, "name": name}, "today": bt::fmt_date(today), "page": page, "batches": batches,
+        "team": {"id": team, "name": name}, "today": bt::fmt_date(today), "initialized": initialized, "page": page, "batches": batches,
         "slots": slots.iter().map(|s| slot_json(s, &derived, today)).collect::<Vec<_>>(),
         "pending": pending.iter().map(|(id, n, at)| json!({"machine": {"id": id, "name": n}, "seen_at": meta::fmt_ts(*at), "decide_at": meta::fmt_ts(*at + ledger::GRACE)})).collect::<Vec<_>>(),
         "totals": {"active": count("active"), "pending": pending.len(), "vacated": count("vacated")},

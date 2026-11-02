@@ -571,9 +571,9 @@ export interface Receivable {
 }
 /** 团队的客户页链接：link = {public_url}/c/{token}，管理端随时能再复制 */
 export interface CustomerPage { enabled: boolean; link: string; created_at: string; token_at: string; last_view_at: string | null }
-/** totals：active 在用的名额（含手动）、pending 待定的节点、vacated 空出待定的名额 */
+/** initialized：计费初始化过没有（fleetctl billing init，全局）；totals：active 在用的名额（含手动）、pending 待定的节点、vacated 空出待定的名额 */
 export interface TeamBatches {
-  team: { id: string; name: string }; today: string; page: CustomerPage | null; batches: CustomerBatch[];
+  team: { id: string; name: string }; today: string; initialized: boolean; page: CustomerPage | null; batches: CustomerBatch[];
   slots: BillingSlot[]; pending: BillingPending[]; totals: { active: number; pending: number; vacated: number };
 }
 /** 公开页的批次：desc 是标题下一行的说明（即 summary）；不出现节点名 */

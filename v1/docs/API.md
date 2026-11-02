@@ -283,7 +283,7 @@ ProvisionItem = {
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/teams/{id}/batches` | `{team:{id,name}, today, page, batches:[Batch], slots:[Slot], pending:[{machine:{id,name}, seen_at, decide_at（seen_at + 24 小时）}], totals:{active, pending, vacated}}`；批次按 `seq` 升序含已到期的，名额按起算日、名字排含已结束的；团队不存在 404 |
+| GET | `/teams/{id}/batches` | `{team:{id,name}, today, initialized（计费初始化过没有，全局）, page, batches:[Batch], slots:[Slot], pending:[{machine:{id,name}, seen_at, decide_at（seen_at + 24 小时）}], totals:{active, pending, vacated}}`；批次按 `seq` 升序含已到期的，名额按起算日、名字排含已结束的；团队不存在 404 |
 | GET | `/teams/{id}/billing-events?limit=200&before=<id>` | `[Event]`，新的在前（按 `at`、`id`），`limit` 1–500，`before` = 上一页最后一条的 id |
 | GET | `/teams/{id}/receivable?month=2026-11` | 月度应收（默认本月）：`{month, lines:[{batch_seq, region, period_start, period_end, count, projected}], total（Σcount，节点月）, projected, start_count（月初那天有效名额数）, end_count（月末那天，本月是今天）, events:[Event]（本月的 add / remove / swap / manual_add / manual_end，按时间升序）}`。`lines` = 各批起点落在这个月的期；还没到起点的期 `projected: true`（现在没结束的名额——在用与空出待定——都按续下去算）；以后的月份整月预估，`start_count` / `end_count` 为 null、`events` 为空。月份格式不对 400 |
 | POST | `/teams/{id}/billing-slots` | `{region（1–20 字）, start_date, count?（1–50，默认 1）, note?（≤ 60 字）}` → `[Slot]`：手动名额（系统外的节点，如墨西哥家宽；不自动结束），每个记 `manual_add`。备用团队 400 |

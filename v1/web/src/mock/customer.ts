@@ -135,7 +135,7 @@ export function installCustomerMock(R: Reg, o: { teams: () => Team[]; machines: 
     const ss = slots.filter((s) => s.team_id === t.id).sort((a, b) => cmp(a.start_date, b.start_date) || cmp(slotName(a), slotName(b)));
     const pend = pending.filter((p) => p.team_id === t.id);
     return {
-      team: { id: t.id, name: t.name }, today: TODAY, page: pageView(t.id), batches: d.batches.map(strip),
+      team: { id: t.id, name: t.name }, today: TODAY, initialized: true, page: pageView(t.id), batches: d.batches.map(strip),
       slots: ss.map((s) => slotView(s, d)),
       pending: pend.map((p) => ({ machine: p.machine, seen_at: p.seen_at, decide_at: new Date(Date.parse(p.seen_at) + GRACE).toISOString() })),
       totals: { active: ss.filter((s) => slotState(s) === 'active').length, pending: pend.length, vacated: ss.filter((s) => slotState(s) === 'vacated').length },
