@@ -742,11 +742,12 @@ pub fn start(st: &AppState) {
 /// 静默 / 维护变更、自动回收发给所有已启用的渠道，不看级别。告警对象就是某个渠道时（渠道连续失败的告警）不发给它自己。
 /// 触发 / 持续提醒在同一事务里刷新 `incident.notified_at`：持续提醒从这时起计时，恢复时据此判断报过触发没有（见 alerts.rs）。
 /// 写进去了才算通知过：入队失败（库出错）、或没有一个渠道收（没有启用的渠道 / 级别都不够）时不刷新，下一轮评估再试，
-/// 渠道配好之后仍在触发的告警会补发「触发」；恢复时也不会给没通知过的告警发「恢复」
+/// 渠道配好之后仍在触发的告警会补发「触发」；恢复时也不会给没通知过的告警发「恢复」。一行都没写进去时不唤醒发送循环（没有东西可发）
 pub async fn enqueue(st: &AppState, n: Notice) {
     start(st);
     match enqueue_tx(st, &n).await {
-        Ok(()) => {
+        Ok(0) => {}
+        Ok(_) => {
             st.notify_wake.notify_one();
             st.notify_queued.notify_waiters();
         }
@@ -754,7 +755,8 @@ pub async fn enqueue(st: &AppState, n: Notice) {
     }
 }
 
-async fn enqueue_tx(st: &AppState, n: &Notice) -> sqlx::Result<()> {
+/// 返回写进发送队列的行数（收这条通知的渠道数）
+async fn enqueue_tx(st: &AppState, n: &Notice) -> sqlx::Result<u64> {
     let mut tx = st.db.begin().await?;
     let queued = sqlx::query(
         "insert into notify_outbox (channel_id, incident_id, notice)
@@ -773,7 +775,8 @@ async fn enqueue_tx(st: &AppState, n: &Notice) -> sqlx::Result<()> {
     if let (Kind::Firing | Kind::Repeat, Some(id), true) = (n.kind, n.incident_id, queued > 0) {
         sqlx::query("update incident set notified_at = now() where id = $1").bind(id).execute(&mut *tx).await?;
     }
-    tx.commit().await
+    tx.commit().await?;
+    Ok(queued)
 }
 
 /// 渠道测试：发一条测试消息（只发一次、不排队，让用户马上看到结果），记入 `notify_log`（kind = test），返回发送结果
