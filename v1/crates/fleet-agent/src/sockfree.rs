@@ -5,7 +5,9 @@
 //! 非监听套接字用 SOCK_DESTROY（`ss -K`）关掉，被关的连接由各自的程序自己重连。
 //!
 //! - 需要单元的能力集里有 CAP_NET_ADMIN 和内核的 CONFIG_INET_DIAG_DESTROY；缺了就关不掉，如实记日志，启动照常试；
-//! - TIME-WAIT 不算占用（Go 的监听带 SO_REUSEADDR）；端口上有别的程序在监听的，不动它，也不动它的客户连接，让启动照常报错。
+//! - TIME-WAIT 也要关：本机出站连接（客户端侧、没带 SO_REUSEADDR）先关的连接会留 60 秒 TIME-WAIT，内核对它照样判 bind 冲突，
+//!   Go 的监听带 SO_REUSEADDR 也一样（2026-11-03 实验线路机2 实测）；`ss -K` 能直接销毁 TIME-WAIT 套接字；
+//! - 端口上有别的程序在监听的，不动它，也不动它的客户连接，让启动照常报错。
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
@@ -32,9 +34,9 @@ pub fn parse_ss(out: &str) -> Vec<Sock> {
         .collect()
 }
 
-/// 占着端口、要关的连接：非监听、非 TIME-WAIT，且该端口上没有别的程序在监听
+/// 占着端口、要关的连接：非监听（含 TIME-WAIT），且该端口上没有别的程序在监听
 pub fn blockers<'a>(conns: &'a [Sock], listening: &[u16]) -> Vec<&'a Sock> {
-    conns.iter().filter(|c| !c.state.eq_ignore_ascii_case("TIME-WAIT") && !c.state.eq_ignore_ascii_case("LISTEN") && !listening.contains(&c.port)).collect()
+    conns.iter().filter(|c| !c.state.eq_ignore_ascii_case("LISTEN") && !listening.contains(&c.port)).collect()
 }
 
 /// `( sport = :40010 or sport = :40011 )`
@@ -129,14 +131,14 @@ garbage line
     }
 
     #[test]
-    fn blockers_skip_time_wait_and_ports_with_a_listener() {
+    fn blockers_include_time_wait_but_skip_ports_with_a_listener() {
         let v = parse_ss(OUT);
         let b: Vec<u16> = blockers(&v, &[40020]).iter().map(|c| c.port).collect();
-        // TIME-WAIT（40010）不算；40020 有人在监听，它的客户连接和监听本身都不动
-        assert_eq!(b, vec![40000, 40002, 40011]);
+        // TIME-WAIT（40010）也算占着；40020 有人在监听，它的客户连接和监听本身都不动
+        assert_eq!(b, vec![40000, 40002, 40010, 40011]);
         // 没有监听者时 40020 上那条已建立的连接要关，监听行本身仍不算
         let b: Vec<u16> = blockers(&v, &[]).iter().map(|c| c.port).collect();
-        assert_eq!(b, vec![40000, 40002, 40011, 40020]);
+        assert_eq!(b, vec![40000, 40002, 40010, 40011, 40020]);
     }
 
     #[test]
