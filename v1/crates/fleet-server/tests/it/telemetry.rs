@@ -261,6 +261,38 @@ async fn relay_probe_series_covers_its_entries() {
     }
 }
 
+/// 7 天 / 30 天的曲线读小时汇总表：线路机与节点都按入口汇总；别的入口的行不混进来
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hourly_series_covers_its_entries() {
+    let t = setup().await;
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let team = seed_team(&t, "团队1").await;
+    let (node, entry) = seed_node(&t, relay, team, 1, "203.0.113.5", 20000).await;
+    let relay2 = seed_relay(&t, "线路机2", "198.51.100.2", "tok2").await;
+    let (_, other) = seed_node(&t, relay2, team, 2, "203.0.113.6", 20001).await;
+    for e in [entry, other] {
+        sqlx::query("insert into entry_traffic_hourly (entry_id, hour, up_bytes, down_bytes, conns_max) values ($1, date_trunc('hour', now()) - interval '2 hours', 100, 200, 3)")
+            .bind(e)
+            .execute(&t.st.db)
+            .await
+            .unwrap();
+        sqlx::query("insert into probe_hourly (entry_id, hour, kind, total, ok) values ($1, date_trunc('hour', now()) - interval '2 hours', 'tcp', 10, 9)")
+            .bind(e)
+            .execute(&t.st.db)
+            .await
+            .unwrap();
+    }
+    for id in [relay, node] {
+        let v = t.get(&format!("/api/v1/machines/{id}/series?metric=traffic&range=30d")).await;
+        assert_eq!(v["resolution"], "1h");
+        assert_eq!(v["points"].as_array().unwrap().len(), 1, "{v}");
+        assert_eq!((v["points"][0]["up"].as_i64(), v["points"][0]["down"].as_i64(), v["points"][0]["conns"].as_i64()), (Some(100), Some(200), Some(3)), "只有自己入口的行：{v}");
+        let v = t.get(&format!("/api/v1/machines/{id}/series?metric=probe&range=7d")).await;
+        assert_eq!(v["points"].as_array().unwrap().len(), 1, "{v}");
+        assert_eq!(v["points"][0]["tcp_success_pct"].as_f64(), Some(90.0), "{v}");
+    }
+}
+
 /// 写一行探测小时汇总：时区 `tz` 里「今天往前 back 天」零点之后第 h 小时的那一桶（h = -1 是前一天的最后一桶）
 async fn put_probe_hour(t: &T, entry: Uuid, tz: &str, (back, h): (i32, i32), (kind, total, ok): (&str, i32, i32)) {
     sqlx::query("insert into probe_hourly (entry_id, hour, kind, total, ok) values ($1, ((local_date($2) - $3)::timestamp at time zone $2) + make_interval(hours => $4), $5, $6, $7)")

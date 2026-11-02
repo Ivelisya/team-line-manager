@@ -608,9 +608,10 @@ const TRAFFIC_RAW: &str = "select coalesce(json_agg(json_build_object('ts', t, '
     select date_trunc('minute', x.ts) t, sum(up_bytes) up, sum(down_bytes) down, max(conns) conns
     from entry_traffic x join entry e on e.id = x.entry_id where (e.node_id = $1 or e.relay_id = $1) and x.ts >= $2 group by 1) a";
 
+// 小时表不按保留期删，数据越多越慢：入口 id 先按 node_id / relay_id 取出再走主键索引，不用 `or` 连接（同 AVAILABILITY 的说明；实验室 30 天 9 ms → 2 ms）
 const TRAFFIC_HOURLY: &str = "select coalesce(json_agg(json_build_object('ts', t, 'up', up, 'down', down, 'conns', conns) order by t), '[]') from (
     select h.hour t, sum(up_bytes) up, sum(down_bytes) down, max(conns_max) conns
-    from entry_traffic_hourly h join entry e on e.id = h.entry_id where (e.node_id = $1 or e.relay_id = $1) and h.hour >= $2 group by 1) a";
+    from entry_traffic_hourly h where h.entry_id = any(array(select id from entry where node_id = $1 union select id from entry where relay_id = $1)) and h.hour >= $2 group by 1) a";
 
 const PROBE_RAW: &str = "select coalesce(json_agg(json_build_object('ts', t, 'tcp_ok', tcp_ok, 'tcp_ms', tcp_ms, 'egress_ok', eg_ok, 'egress_ms', eg_ms,
     'tcp_n', tcp_n, 'tcp_ok_n', tcp_ok_n) order by t), '[]') from (
@@ -629,7 +630,7 @@ const PROBE_HOURLY: &str = "select coalesce(json_agg(json_build_object('ts', t, 
       sum(h.ok) filter (where h.kind = 'egress') = sum(h.total) filter (where h.kind = 'egress') eg_ok,
       avg(h.latency_avg) filter (where h.kind = 'egress') eg_ms,
       100.0 * sum(h.ok) filter (where h.kind = 'egress') / nullif(sum(h.total) filter (where h.kind = 'egress'), 0) eg_pct
-    from probe_hourly h join entry e on e.id = h.entry_id where (e.node_id = $1 or e.relay_id = $1) and h.hour >= $2 group by 1) a";
+    from probe_hourly h where h.entry_id = any(array(select id from entry where node_id = $1 union select id from entry where relay_id = $1)) and h.hour >= $2 group by 1) a";
 
 #[derive(Deserialize)]
 pub struct AvailabilityQ {
