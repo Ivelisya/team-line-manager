@@ -701,11 +701,11 @@ mod tests {
         assert_eq!(quiet(&tg), Some(false));
         let tg = Targets { maint: HashSet::new(), firing: [host].into(), hosts, host_down: [host].into(), ..Targets::default() };
         assert_eq!(quiet(&tg), Some(true));
-        assert_eq!(problems(&v, None, &tg, now).0.into_iter().find(|p| p.rule == EXITS_DOWN).unwrap().text, "2 个出口连续两次延迟测试不通：节点01、节点02（其中 2 个指向的团队2-07 正在告警）");
+        assert_eq!(problems(&v, None, &tg, now).0.into_iter().find(|p| p.rule == EXITS_DOWN).unwrap().text, "2 个出口连续两次延迟测试不通：节点01、节点02（都经 线路机2；其中 2 个指向的团队2-07 正在告警）");
         // 维护刚结束、机器告警还没来得及开：也算有人在报（quiet），摘要写明；机器告警开了之后以告警为准
         let tg = Targets { settled: [n3, n4].into(), ..Targets::default() };
         assert_eq!(quiet(&tg), Some(true));
-        assert_eq!(problems(&v, None, &tg, now).0.into_iter().find(|p| p.rule == EXITS_DOWN).unwrap().text, "2 个出口连续两次延迟测试不通：节点01、节点02（其中 1 个指向的团队2-03 刚结束维护，1 个指向的团队2-04 刚结束维护）");
+        assert_eq!(problems(&v, None, &tg, now).0.into_iter().find(|p| p.rule == EXITS_DOWN).unwrap().text, "2 个出口连续两次延迟测试不通：节点01、节点02（都经 线路机2；其中 1 个指向的团队2-03 刚结束维护，1 个指向的团队2-04 刚结束维护）");
         assert_eq!(quiet(&Targets { settled: [n3].into(), ..Targets::default() }), Some(false), "只有一个出口的节点刚结束维护：另一个原因不明，照常通知");
         assert!(!exits_paused(v.snap.as_ref().unwrap(), &tg, now), "维护已经结束：不再冻结");
         let tg = Targets { settled: [n3, n4].into(), firing: [n3].into(), ..Targets::default() };
