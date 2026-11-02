@@ -14,7 +14,7 @@ export const META: Meta = {
   healths: { ok: '正常', degraded: '降级', down: '故障', unknown: '未知', maintenance: '维护', inactive: '未启用' },
   job_kinds: {
     provision_vps: '上架 VPS 节点', provision_proxy: '上架家宽代理', provision_relay: '上架线路机', provision_ip: '上架同机 IP 节点',
-    attach_entry: '添加入口', move_entry: '换线路机', restore_vps: '恢复 VPS 节点', restore_proxy: '恢复家宽代理', restore_relay: '恢复线路机', restore_ip: '恢复同机 IP 节点',
+    attach_entry: '添加入口', move_entry: '换线路机',
     retire: '退役', purge: '彻底删除', upgrade_agent: '升级 agent', replace: '替换节点', tune: '系统调优', ss_refresh: '重新下发 SS 配置', speedtest: '测速', router_sync: '同步软路由出口',
   },
   job_states: { queued: '排队中', running: '进行中', waiting: '等待中', cancelling: '取消中', succeeded: '已完成', failed: '失败', cancelled: '已取消' },

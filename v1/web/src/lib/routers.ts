@@ -22,8 +22,8 @@ export interface RouterSummary {
   wan: { up: boolean; ip: string | null; rx_bps: number; tx_bps: number };
   openclash: { enabled: boolean; running: boolean; version: string | null; mode: string | null; conns: number; up_bps: number; down_bps: number };
   /** total / alive / dead 含客户自己加的出口；managed：server:port 对上了 fleet 入口的出口；drift：其中参数与入口当前参数不一致的；dead：不通（连续两次以上测不通，同 exitUsable）的出口名。
-   *  fleet：只数 managed 的那些（告警、卡片、降级看它），other：客户自己加的出口个数；旧中控的摘要没有这两项，用 `fleetExits` 读 */
-  exits: { total: number; alive: number; dead: string[]; managed: number; drift: number; fleet?: { total: number; alive: number; dead: string[] }; other?: number };
+   *  fleet：只数 managed 的那些（告警、卡片、降级看它），other：客户自己加的出口个数 */
+  exits: { total: number; alive: number; dead: string[]; managed: number; drift: number; fleet: { total: number; alive: number; dead: string[] }; other: number };
   clients: number;
 }
 /** 一键部署（中控 SSH 到路由上替你执行接入）的进度：最近一次的，从没部署过为 null。step 是当前步骤（中文） */
@@ -235,11 +235,8 @@ export function routerMeters(s: RouterSummary) {
 export const uptimeFmt = (s: number | null | undefined): F.Fmt => (s == null ? F.NA : s < 3600 ? { v: String(Math.max(1, Math.floor(s / 60))), u: '分钟' } : s < 86400 ? { v: String(Math.floor(s / 3600)), u: '小时' } : { v: String(Math.floor(s / 86400)), u: '天' });
 export const tempTone = (t: number | null | undefined) => (t == null ? undefined : t >= 85 ? 'bad' : t >= 70 ? 'warn' : undefined);
 /** 出口的可用 / 总数与不通名单：只看 fleet 出口（对应面板入口的，同告警 router_exits_down），客户自己加的出口单列 other，不通也不算降级。
- *  旧中控的摘要没有 fleet 字段，退回全部出口（other 为 0） */
-export const fleetExits = (s: RouterSummary) => {
-  const f = s.exits.fleet;
-  return f ? { total: f.total, alive: f.alive, dead: f.dead, other: s.exits.other ?? 0 } : { total: s.exits.total, alive: s.exits.alive, dead: s.exits.dead, other: 0 };
-};
+ */
+export const fleetExits = (s: RouterSummary) => ({ ...s.exits.fleet, other: s.exits.other });
 /** 在线但有毛病（卡片描边变黄，状态叫「降级」）：OpenClash 启用却没在跑、WAN 断了、有 fleet 出口测试不通（客户自己的出口不算）。不通的多于 3 个只列前 3 个 */
 export const routerIssues = (s: RouterSummary | null): string[] => {
   if (!s) return [];

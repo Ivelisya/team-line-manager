@@ -47,9 +47,9 @@ const normal = (c: Counts) => c.total - c.down - c.unknown;
 const IDLE_SPARE_TIP = '闲置备用：备用团队里没有软路由出口指向、上面也没有在用同机 IP 节点的机器。不算在节点总数和故障里，也不开告警；没开自动续费的等到期回收，开着自动续费的（或宿主机上有开着自动续费的备用同机 IP 节点的）照常计费、不自动回收。备用团队里还被出口指着、或有在用 IP 节点的机器不算闲置，照常告警和续费';
 const SPARE_COST_TIP = '不续费的备用机（备用团队里没有软路由出口指向、没有在用同机 IP 节点、也没开自动续费、宿主机上也没有开着自动续费的备用同机 IP 节点的机器）里有订阅的，等到期放生，不再续费，不在左边的合计里，单独列在这里。备用团队里还被出口指着、有在用 IP 节点、或开着自动续费（含它上面的备用同机 IP 节点开着）的机器照常续费，已算在左边的合计里';
 const NORMAL_INFO = '正常 = 总数 − 故障 − 未知。降级与维护的机器照常服务，都算正常';
-/** 闲置备用的健康（服务端 spare_health）：「（能顶替 3 台：正常 2 · 降级 1；故障 4）」，挑替换用的新节点时一眼看出备用池里几台能用；旧中控没有这个字段为空串 */
+/** 闲置备用的健康（服务端 spare_health）：「（能顶替 3 台：正常 2 · 降级 1；故障 4）」，挑替换用的新节点时一眼看出备用池里几台能用 */
 const spareHealth = (c: Overview['spare_health']) => {
-  if (!c?.total) return '';
+  if (!c.total) return '';
   const part = (n: number, label: string) => (n ? [`${label} ${n}`] : []);
   const good = [...part(c.ok, '正常'), ...part(c.degraded, '降级'), ...part(c.maintenance, '维护')].join(' · ');
   const bad = [...part(c.down, '故障'), ...part(c.unknown, '未知')].join(' · ');
@@ -124,7 +124,7 @@ export const OverviewSection = React.memo(function OverviewSection({ o, loading 
             value={!usd || usdEmpty ? '—' : <span data-tip={foreign.length || usd.unconverted.length ? `${F.money(usd.cents, 'USD')}；${usdTotalTip(usd)}` : usd.cents >= 100000 ? F.money(usd.cents, 'USD') : undefined}>{usd.cents >= 100000 ? `$${Math.round(usd.cents / 100).toLocaleString('en-US')}` : F.money(usd.cents, 'USD')}</span>}
             caption={usd && <>{(usd.unconverted.length ? <span style={{ color: 'var(--warn-text)' }} data-tip="没有这些币种的汇率，未计入合计">未折算 {usd.unconverted.map((c) => F.money(c.cents, c.currency)).join(' + ')}</span>
               : foreign.length ? <span data-tip={usdTotalTip(usd)}>含 {foreign.map((p) => `${F.money(p.cents, p.currency)} ≈ ${F.money(p.usd_cents, 'USD')}`).join(' · ')}</span>
-              : <span>{o!.paid_machines != null && <>在用 <b className="num">{o!.paid_machines}</b> 台 · </>}按月折算</span>)}
+              : <span>在用 <b className="num">{o!.paid_machines}</b> 台 · 按月折算</span>)}
               {/* 说明行默认不换行；这一句放不下时在空格处折行，不被卡片边缘切掉（完整含义在悬停里） */}
               {!!sp?.count && <span style={{ whiteSpace: 'normal' }} data-tip={`${SPARE_COST_TIP}\n${usdTotalTip(sp)}`}>备用 <b className="num">{sp.count}</b> 台 {F.money(sp.cents, 'USD')} 另计</span>}</>} />
           {/* 每条推送都在涨，不滚数（滚到的位数也显示不出来，白白逐帧重画）：同网卡速率，直接到位 */}

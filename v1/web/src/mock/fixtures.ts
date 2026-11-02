@@ -129,9 +129,9 @@ export interface Db {
 export function buildDb(): Db {
   const r = rng(20261020);
   const teams: Team[] = [
-    { id: 't1', name: '团队1', sort_order: 1, spare: false, node_count: 0, monthly_usd: NO_USD },
-    { id: 't2', name: '团队2', sort_order: 2, spare: false, node_count: 0, monthly_usd: NO_USD },
-    { id: 'ts', name: '备用', sort_order: 999, spare: true, node_count: 0, monthly_usd: NO_USD },
+    { id: 't1', name: '团队1', sort_order: 1, spare: false, node_count: 0, monthly_usd: NO_USD, monthly_usd_held: NO_USD, held_count: 0, held_total: 0 },
+    { id: 't2', name: '团队2', sort_order: 2, spare: false, node_count: 0, monthly_usd: NO_USD, monthly_usd_held: NO_USD, held_count: 0, held_total: 0 },
+    { id: 'ts', name: '备用', sort_order: 999, spare: true, node_count: 0, monthly_usd: NO_USD, monthly_usd_held: NO_USD, held_count: 0, held_total: 0 },
   ];
   const providers: Provider[] = [
     { id: 'p1', name: '搬瓦工', code: 'BWH', panel_url: 'https://panel.example.com/bwh', timezone: 'America/Los_Angeles', traffic_rule: 'min', traffic_reset: 'rolling30', remind_days: 7 },
@@ -170,7 +170,7 @@ export function buildDb(): Db {
   };
   const base = (o: Partial<MachineView> & Pick<MachineView, 'id' | 'kind' | 'name' | 'ip'>): MachineView => ({
     team: null, spare: false, number: null, label: null, ssh_port: 22, country: countryOf(o.ip), country_set: null, host_machine: null, bind_ip: null, ip_nodes: [], provider: null, provider_code: null, plan: null, service_ref: null,
-    lifecycle: 'active', lifecycle_reason: null, note: '', revision: 1, created_at: iso(now() - 120 * DAY), activated_at: iso(now() - 100 * DAY), retired_at: null, spare_from: null, spare_since: null, recycle_on: null, recycle_held: false, idle_spare: false, spare_unbilled: false, live_ip_nodes: [], renewing_ip_nodes: [], router_exits: [],
+    lifecycle: 'active', lifecycle_reason: null, note: '', revision: 1, created_at: iso(now() - 120 * DAY), activated_at: iso(now() - 100 * DAY), retired_at: null, spare_from: null, spare_since: null, recycle_on: null, recycle_held: false, idle_spare: false, spare_unbilled: false, live_ip_nodes: [], renewing_ip_nodes: [], router_exits: [], billing_exempt: false, no_router_exits: false,
     subscription: null, sub_template: templateOf(undefined, undefined), agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, nic: null, month_counted_from: null, quota: { used: 0, period_start: '', period_end: null, mode: 'monthly', counted_from: null, rule: null, base: null, limit_gb: null, limit_source: 'none', daily_avg: null, forecast_full_at: null }, health: { status: 'ok', reasons: [] },
     active_job: null, failed_job: null, open_incidents: 0, maintenance: false, relay: null,
     tune: o.kind === 'proxy' || o.host_machine ? null : { profile: 'tune-v2', at: iso(now() - 3 * DAY), current: true, params: o.kind === 'relay'
@@ -260,7 +260,7 @@ export function buildDb(): Db {
   {
     const p = plan('pl1'); const team = teams[0];
     const id = 'm-t1-13p';
-    const e: EntryView = { id: `e${eSeq++}`, relay: { id: 'r1', name: '线路机1' }, node: { id, name: displayName(team.name, 13) }, direct: false, port: 20000 + entriesByRelay.r1.length + 1, lifecycle: 'pending', applied: false, apply_error: null, tcp: null, egress: null, reach: null, traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 } };
+    const e: EntryView = { id: `e${eSeq++}`, relay: { id: 'r1', name: '线路机1' }, node: { id, name: displayName(team.name, 13) }, direct: false, mode: 'normal', port: 20000 + entriesByRelay.r1.length + 1, lifecycle: 'pending', applied: false, apply_error: null, tcp: null, egress: null, reach: null, traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 } };
     entriesByRelay.r1.push(e);
     machines.push(base({
       id, kind: 'vps', name: displayName(team.name, 13), team: { id: team.id, name: team.name }, number: 13, ip: '198.51.100.77', lifecycle: 'provisioning', activated_at: null, created_at: iso(now() - 6 * 60_000),
@@ -283,7 +283,7 @@ export function buildDb(): Db {
     const team = teams.find((t) => t.id === tid)!; const spare = teams.find((t) => t.spare)!; const p = plan('pl2'); const rid = tid === 't1' ? 'r1' : 'r2'; const relay = machines.find((x) => x.id === rid)!;
     const id = `m-ts-${i + 1}`; const name = displayName(spare.name, i + 1); const sb = sub('pl2', due as number, p.traffic_gb || null);
     const e: EntryView = {
-      id: `e${eSeq++}`, relay: { id: relay.id, name: relay.name }, node: { id, name }, direct: false, port: 20000 + entriesByRelay[rid].length + 1, lifecycle: 'active', applied: true, apply_error: null, reach: REACH_OK(),
+      id: `e${eSeq++}`, relay: { id: relay.id, name: relay.name }, node: { id, name }, direct: false, mode: 'normal', port: 20000 + entriesByRelay[rid].length + 1, lifecycle: 'active', applied: true, apply_error: null, reach: REACH_OK(),
       tcp: { ok: true, latency_ms: Math.round(30 + r() * 120), detail: null, ts: iso(now() - 20_000) }, egress: { ok: true, latency_ms: Math.round(120 + r() * 200), detail: null, ts: iso(now() - 40_000) },
       traffic: { today_up: Math.round(r() * GiB), today_down: Math.round(r() * 3 * GiB), month_up: Math.round(r() * 30 * GiB), month_down: Math.round(r() * 90 * GiB) },
     };
@@ -303,7 +303,7 @@ export function buildDb(): Db {
     const h = machines.find((m) => m.id === 'm-t1-03')!; const team = teams[0];
     const id = 'm-t1-14'; const name = displayName(team.name, 14);
     const e: EntryView = {
-      id: `e${eSeq++}`, relay: { id: 'r1', name: '线路机1' }, node: { id, name }, direct: false, port: 20000 + entriesByRelay.r1.length + 1, lifecycle: 'active', applied: true, apply_error: null, reach: REACH_OK(),
+      id: `e${eSeq++}`, relay: { id: 'r1', name: '线路机1' }, node: { id, name }, direct: false, mode: 'normal', port: 20000 + entriesByRelay.r1.length + 1, lifecycle: 'active', applied: true, apply_error: null, reach: REACH_OK(),
       tcp: { ok: true, latency_ms: 47, detail: null, ts: iso(now() - 20_000) }, egress: { ok: true, latency_ms: 214, detail: null, ts: iso(now() - 40_000) },
       traffic: { today_up: Math.round(1.1 * GiB), today_down: Math.round(3.6 * GiB), month_up: Math.round(46 * GiB), month_down: Math.round(128 * GiB) },
     };
@@ -346,9 +346,6 @@ export function buildDb(): Db {
   // 团队2 的 05 号：出口已改指向别处，团队的软路由都没有出口指着它（抽屉标一句，同服务端 no_router_exits）
   const unpointed = machines.find((x) => x.team?.id === 't2' && x.number === 5 && x.kind !== 'relay');
   if (unpointed) unpointed.no_router_exits = true;
-  // 早先「恢复已退役机器」留下的原因（旧版写成「已恢复：原因」）
-  const restored = machines.find((x) => x.id === 'm-t1-03');
-  if (restored) restored.lifecycle_reason = '已恢复：实验：恢复';
   // 统计
   for (const t of teams) t.node_count = machines.filter((m) => m.team?.id === t.id && m.lifecycle !== 'retired').length;
   for (const p of plans) p.machine_count = machines.filter((m) => m.plan?.id === p.id && m.lifecycle !== 'retired').length;

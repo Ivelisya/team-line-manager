@@ -33,10 +33,10 @@ export interface PolicyNode {
 export interface PolicyTeam { id: string; name: string; policy: ScopePolicy; nodes: PolicyNode[] }
 export interface PolicyList { draft_hash: string | null; draft_count: number; teams: PolicyTeam[] }
 
-/** domains_changed / note_changed：服务端判的「域名换了」「备注改了」；旧版本记录没有这两项 */
+/** domains_changed / note_changed：服务端判的「域名换了」「备注改了」 */
 export interface PolicyChange {
   scope: 'team' | 'node'; id: string; name: string; from: { mode: PolicyMode; domains: number }; to: { mode: PolicyMode; domains: number };
-  domains_changed?: boolean; note_changed?: boolean;
+  domains_changed: boolean; note_changed: boolean;
 }
 export interface PreviewNode {
   node_id: string; name: string; team: string | null; mode: EffectiveMode; source: 'node' | 'team' | 'default'; changed: boolean;

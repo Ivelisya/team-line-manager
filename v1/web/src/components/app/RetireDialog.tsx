@@ -46,8 +46,8 @@ export const RetireDialog = resetOnOpen(function RetireDialog({ m, open, onOpenC
   const xs: { id: string; name: string; to?: string }[] = (mode === 'spare' ? p?.spare.ip_nodes.map((x) => ({ id: x.id, name: x.name, to: x.to_name })) : p?.ip_nodes) ?? [];
   const due = m.subscription?.due_date.slice(5);
   const recycle = p?.spare.recycle_on?.slice(5);
-  // 进备用后不自动回收的原因（服务端 spare.held）；旧中控没有这个字段：出口还指着，或没有回收日而有到期日（原因不明，只说不自动回收）
-  const held = !p ? null : p.spare.held !== undefined ? p.spare.held : p.routers.length > 0 ? '软路由出口还指着' : !recycle && due ? '' : null;
+  // 进备用后不自动回收的原因（服务端 spare.held）
+  const held = p?.spare.held ?? null;
   const heldText = held === null ? null : held ? `不自动回收：${held}` : '不自动回收';
   const go = mode === 'spare' ? '一起移入备用' : inSpare ? '一起回收' : '一起清理并回收';
   return (
