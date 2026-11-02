@@ -483,7 +483,7 @@ const ExitRow = React.memo(function ExitRow({ e, beats, onOpen, onSync }: { e: R
     <tr>
       <td><span className="cell-main strong" data-tip={`${e.name}（${protoLabel(e.type)}）→ ${e.server}:${e.port}`}>{e.name}</span><span className="sub">{protoLabel(e.type)}</span></td>
       <td>{e.entry ? <><button type="button" className="btn btn-link" style={{ height: 'auto', padding: 0, maxWidth: '100%' }} data-tip={`${e.entry.name}
-打开这个节点的详情`} onClick={() => onOpen(e.entry!.node_id)}><span className="ellipsis">{node}</span></button>{via && <span className="sub ellipsis" data-tip={e.entry.name}>{via}</span>}</> : <span className="t-muted">—</span>}</td>
+打开这个节点的详情`} onClick={() => onOpen(e.entry!.node_id)}><span className="ellipsis">{node}</span></button>{via && <span className="sub ellipsis">{via}</span>}</> : <span className="t-muted">—</span>}</td>
       {/* 一致的不标（一列「一致」只是噪音），只标不一致 / 不受管 */}
       <td>{e.sync !== 'ok' && <Pill tone={s.tone} tip={syncTip(e)}>{s.label}</Pill>}{onSync && <button type="button" className="btn btn-link btn-sm sub" style={{ height: 'auto', padding: 0 }} data-tip="改成入口现在的凭据（会重启 OpenClash）" onClick={() => onSync([e.name])}>同步…</button>}</td>
       <td className="r">

@@ -79,17 +79,23 @@ function useStuckBar(listKey: string) {
   // 新列表比一屏矮（如切「仅看异常」）时页面不够长、滚不到位，条会掉下来：先给分区临时垫一个最小高度，滚到位为止（脱离吸住状态后去掉）
   const stuckNow = React.useRef(false);
   stuckNow.current = stuck;
-  const padFrom = React.useRef(0); // 垫高前的 scrollHeight；0 表示没垫
+  const padFrom = React.useRef(0); // 新列表不垫时的页面高度（自然高度）；0 表示没垫
   const first = React.useRef(true);
   React.useLayoutEffect(() => {
     if (first.current) { first.current = false; return; }
     const sec = sentinel.current!.parentElement!;
-    if (!stuckNow.current) { sec.style.minHeight = ''; padFrom.current = 0; return; }
+    // 位置都按绝对坐标先算好：下面先撤垫高再量自然高度，量的那一下 scrollY 可能被夹，最后再滚回去
     const { top, st } = sync();
-    const goal = top - delta.current - 4; // 哨兵滚到这个位置：条的原位比顶栏线高 4px，滚完仍算吸着
-    padFrom.current ||= document.documentElement.scrollHeight; // 垫高前的页面高度（连续切换时沿用第一次的）
-    sec.style.minHeight = `${st + scrollY - (sec.getBoundingClientRect().top + scrollY) + innerHeight - goal}px`;
-    scrollTo(0, st + scrollY - goal);
+    const y = stuckNow.current ? st + scrollY - (top - delta.current - 4) : scrollY; // 吸着：哨兵滚到条原位比顶栏线高 4px 处，滚完仍算吸着；没吸着：留在原处
+    sec.style.minHeight = '';
+    const natural = document.documentElement.scrollHeight;
+    // 新列表撑不到要停的位置（如切「仅看异常」）：给分区垫高到够停为止，等滚回不会被夹的位置再撤（见 check）
+    if (stuckNow.current || padFrom.current) {
+      const short = y + innerHeight - natural;
+      padFrom.current = short > 0 ? natural : 0;
+      if (short > 0) sec.style.minHeight = `${sec.offsetHeight + short}px`;
+    }
+    scrollTo(0, y);
   }, [listKey]);
   React.useEffect(() => {
     // 条的上沿碰到顶栏下沿时才算吸住
@@ -98,8 +104,8 @@ function useStuckBar(listKey: string) {
       raf = 0;
       const { top, st } = sync();
       const s = st < top - delta.current;
-      // 没吸住也不立刻撤垫高：撤了页面变短会把 scrollY 夹回、页面跳走。等页面自然高度够当前位置，或滚回列表顶部之上再撤
-      if (!s && padFrom.current && (scrollY + innerHeight <= padFrom.current || st > top)) {
+      // 没吸住也不立刻撤垫高：撤了页面变短会把 scrollY 夹回、页面跳走。滚回撤了也不会被夹的位置再撤（整页不足一屏时即滚到顶）
+      if (!s && padFrom.current && scrollY <= Math.max(0, padFrom.current - innerHeight)) {
         sentinel.current!.parentElement!.style.minHeight = ''; padFrom.current = 0;
       }
       setStuck(s);
