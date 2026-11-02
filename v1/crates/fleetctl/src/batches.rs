@@ -107,11 +107,10 @@ pub fn init(ctx: &Ctx, since: &str, yes: bool) -> anyhow::Result<u8> {
 /// `2026-11` → 「2026 年 11 月」
 fn month_cn(m: &str) -> String { format!("{} 年 {} 月", &m[..m.len().min(4)], m.get(5..7).and_then(|x| x.parse::<u8>().ok()).unwrap_or(0)) }
 
-/// 一期 [起点, 终点) 写成「2026-10-30 → 11-29」（终点前一天）
+/// 一期写成「2026-10-30 → 11-30 到期」：起点是购买（开始收费）那天，终点是到期日（同供应商写的到期日，下一期从这天起）
 fn span(n: &Value) -> String {
     let end = st(n, "/period_end");
-    let last = time::Date::parse(&end, time::macros::format_description!("[year]-[month]-[day]")).ok().and_then(|d| d.previous_day()).map(|d| format!("{:02}-{:02}", u8::from(d.month()), d.day()));
-    format!("{} → {}", st(n, "/period_start"), last.unwrap_or(end))
+    format!("{} → {} 到期", st(n, "/period_start"), end.get(5..).unwrap_or(&end))
 }
 
 /// 某月清单的文字（GET /teams/{id}/billing/month 的 data）：一句话 + 每个节点一行（没收在前）+ 本月新加入待定的
@@ -442,7 +441,7 @@ mod tests {
         let mut d = json!({"team": {"name": "团队1"}, "month": "2026-10", "nodes": [n("团队1-10", "aaaa1111", false), n("团队1-01", "bbbb2222", true)], "pending": []});
         let t = month_text(&d);
         assert!(t.starts_with("团队1 · 2026 年 10 月：要收 2 个节点的钱，已收 1 个，没收 1 个（团队1-10）\n"), "{t}");
-        assert!(t.contains("2026-10-30 → 11-29") && t.contains("没收") && t.contains("已收"), "{t}");
+        assert!(t.contains("2026-10-30 → 11-30 到期") && t.contains("没收") && t.contains("已收"), "{t}");
         d["nodes"][0]["paid"] = json!(true);
         d["pending"] = json!([{"machine": {"name": "团队1-11"}}]);
         let t = month_text(&d);
