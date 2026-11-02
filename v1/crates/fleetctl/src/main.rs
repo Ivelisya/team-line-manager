@@ -848,7 +848,8 @@ enum Cmd {
         cmd: Option<PingTargetsCmd>,
     },
     /// 改线路机的参数。--protocols：入口协议，both（Reality + AnyTLS，默认）/ reality（不给 AnyTLS）/ anytls（只留 AnyTLS：
-    /// Reality 入站改听回环，分享链接、订阅只给 AnyTLS；要线路机 AnyTLS 在跑、没有穿透入口、没有软路由出口指着它的入口，否则中控拒绝并写明原因）
+    /// Reality 入站改听回环，分享链接、订阅只给 AnyTLS；穿透入口的 Reality 端口照旧对公网开着、只放行它的节点。要线路机 AnyTLS 在跑、
+    /// agent 认「只留 AnyTLS」（有穿透入口时还要认穿透放行）、没有软路由出口用 Reality 指着它的入口，否则中控拒绝并写明原因）
     RelaySet {
         /// 线路机（id / 名称 / IP）
         relay: String,

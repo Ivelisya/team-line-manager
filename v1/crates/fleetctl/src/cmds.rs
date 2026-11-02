@@ -580,7 +580,12 @@ pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
             rows.push(("agent 自报", agent_health_cn(h)));
         }
         if let Some(p) = m.pointer("/relay/protocols").and_then(Value::as_str) {
-            rows.push(("入口协议", crate::lifecycle::protocols_cn(p).to_string()));
+            let mut s = crate::lifecycle::protocols_cn(p).to_string();
+            // 只留 AnyTLS 时穿透入口的 Reality 端口照旧对公网开着，但只放行它的节点（线路机 agent 的 nft 表）
+            if p == "anytls" && m["entries"].as_array().is_some_and(|es| es.iter().any(|e| e["mode"] == "reverse" && e["lifecycle"] != "removed")) {
+                s.push_str("；穿透入口的 Reality 端口只对它的节点开放");
+            }
+            rows.push(("入口协议", s));
         }
         if st(&m, "/kind") == "relay" && !m["agent"].is_null() {
             rows.push(("AnyTLS", anytls_cn(&m["agent"]["anytls"])));

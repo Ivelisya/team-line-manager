@@ -1,5 +1,5 @@
 // 线路机的入口协议（PATCH /relays/{id}）：Reality + AnyTLS / 仅 Reality / 仅 AnyTLS。改动都先确认；中控拒绝（409：AnyTLS 没在跑、
-// 有穿透入口、有软路由出口指着）时原因写在对话框里
+// agent 太旧、有软路由出口指着）时原因写在对话框里
 import * as React from 'react';
 import type { MachineView, RelayProtocols } from '@/lib/types';
 import { useRelayProtocols } from '@/lib/queries';
@@ -17,7 +17,7 @@ const label = (p: RelayProtocols) => OPTS.find((o) => o.value === p)?.label ?? p
 const IMPACT: Record<RelayProtocols, string> = {
   both: 'Reality 与 AnyTLS 都对外开放',
   reality: '不再提供 AnyTLS：分享链接、订阅里的 AnyTLS 条目随之消失，正在用 AnyTLS 的客户端会断开',
-  anytls: 'Reality 对公网关闭，只留 AnyTLS：正在用 Reality 的客户端会断开，分享链接、订阅只给 AnyTLS',
+  anytls: 'Reality 对公网关闭（穿透入口的只对它的节点开放），只留 AnyTLS：正在用 Reality 的客户端会断开，分享链接、订阅只给 AnyTLS',
 };
 
 export function RelayProtocolsField({ m }: { m: MachineView }) {

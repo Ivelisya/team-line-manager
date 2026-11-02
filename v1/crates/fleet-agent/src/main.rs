@@ -13,6 +13,7 @@ mod host;
 mod probe;
 mod probe_point;
 mod queue;
+mod reality_guard;
 mod reporter;
 mod server;
 mod singbox;
@@ -157,7 +158,14 @@ async fn real_main() -> Result<()> {
             let d = read_desired(&a)?;
             std::fs::create_dir_all(&cfg.data_dir)?;
             let ap = xray::apply::Applier::new(cfg.clone());
-            let rep = ap.apply(&d).await;
+            let mut rep = ap.apply(&d).await;
+            if rep.ok {
+                // 穿透入口的 Reality 放行规则（只留 AnyTLS 时）
+                if let Err(e) = reality_guard::RealityGuard::default().apply(&d, false).await {
+                    rep.ok = false;
+                    rep.error = Some(e);
+                }
+            }
             if rep.ok {
                 state::save_applied(&cfg, &d);
                 // AnyTLS 外壳跟着换（没装 sing-box 时什么都不做）
