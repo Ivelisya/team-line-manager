@@ -6,8 +6,8 @@
 //! 2. 可计费、不占名额的节点 → 待定（billing_pending，seen_at = 现在）；待定的节点又不可计费了（加入后 24 小时内又走了）→ 直接删掉，不计费、不记事件。
 //!    空出名额的原占用者 24 小时内回来（撤销退役、取消不计费）→ 原样接回，不记事件。
 //! 3. 配对：空出待定的名额与待定节点按时间先后一一配对，两边时刻相差不超过 24 小时（含正好 24 小时）就是替换——
-//!    新节点接过名额，起算日、地区不变，记 swap（不分先加新后走旧还是先走旧后加新）。
-//! 4. 超时：待定节点 seen_at 之后满 24 小时（严格晚于）还没配上 → 新名额，起算日 = seen_at 的北京日期，地区按节点国家，记 add；
+//!    新节点接过名额，开始收费日、地区不变，记 swap（不分先加新后走旧还是先走旧后加新）。
+//! 4. 超时：待定节点 seen_at 之后满 24 小时（严格晚于）还没配上 → 新名额，开始收费日 = seen_at 的北京日期，地区按节点国家，记 add；
 //!    空出名额 vacated_at 之后满 24 小时还没配上 → 结束日 = vacated_at 的北京日期，记 remove。事件时间用 seen_at / vacated_at（真实时刻）。
 //!
 //! 手动名额（系统外的节点）不参与对账。还没初始化过（app_setting 里没有 billing_since，见 POST /billing/init）时对账什么都不做：
@@ -32,7 +32,7 @@ pub const GRACE: Duration = Duration::hours(24);
 /// 可计费节点的条件（m = machine，t = 它所在的 team，内连接）
 pub const BILLABLE: &str = "m.kind in ('vps', 'proxy') and m.lifecycle = 'active' and not t.spare and not exists (select 1 from billing_exempt x where x.machine_id = m.id)";
 
-/// 初始化过的标记（app_setting 的 key，值是起算日）
+/// 初始化过的标记（app_setting 的 key，值是开始收费日）
 pub const SINCE_KEY: &str = "billing_since";
 
 /// 团队计费的 advisory 锁（事务级）：对账、改名额、初始化同一团队互相排队
@@ -270,7 +270,7 @@ pub async fn regions(st: &AppState, nodes: &[&Node]) -> HashMap<Uuid, String> {
         .collect()
 }
 
-/// 建一个系统名额（节点占着，从起算日算）：删它的待定行，不记事件（初始化一个团队只记一条合并的 init，见 `log_init`）
+/// 建一个系统名额（节点占着，从开始收费日算）：删它的待定行，不记事件（初始化一个团队只记一条合并的 init，见 `log_init`）
 pub async fn create_slot(c: &mut PgConnection, team: Uuid, node: &Node, region: &str, start: Date) -> sqlx::Result<Uuid> {
     let id = new_id();
     sqlx::query("insert into billing_slot (id, team_id, region, start_date, holder_id, holder_name) values ($1, $2, $3, $4, $5, $6)")
@@ -517,7 +517,7 @@ mod tests {
 
     #[test]
     fn timeouts_add_and_remove_at_real_time() {
-        // 待定满 24 小时（严格晚于）没配上 → 新增，起算日 = seen_at 的北京日期（T0 是北京 10-28 10:00）
+        // 待定满 24 小时（严格晚于）没配上 → 新增，开始收费日 = seen_at 的北京日期（T0 是北京 10-28 10:00）
         assert!(run(&[], &[pend(11, T0)], &[node(11, "团队1-10")], T0 + GRACE).is_empty(), "正好 24 小时还在等");
         let c = run(&[], &[pend(11, T0)], &[node(11, "团队1-10")], T0 + GRACE + Duration::seconds(1));
         assert_eq!(c, [Change::Add { machine: id(11), start: time::macros::date!(2026 - 10 - 28), at: T0 }]);

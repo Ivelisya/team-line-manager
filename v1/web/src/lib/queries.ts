@@ -197,7 +197,7 @@ export function eventKeys(ev: StreamEvent): unknown[][] {
     case 'policies': return [['policies'], ['machines'], ['relays']];
     // 软路由：增删改与每轮采集（最多一次）都发这一个，列表与各台详情一起重取（曲线另按时间轮询，见 lib/routers）
     case 'routers': return [['routers']];
-    // 计费：对账有变化或计费写操作后推送（id = 团队）：该团队的批次 / 名额、增减记录、各月应收一起重取
+    // 计费：对账有变化或计费写操作后推送（id = 团队）：该团队的月份清单、增减记录一起重取
     case 'billing': return [['billing', 'month', ev.id], ['billing', 'events', ev.id]];
     default: return [];
   }

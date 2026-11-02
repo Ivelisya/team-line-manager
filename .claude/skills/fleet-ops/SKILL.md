@@ -197,7 +197,7 @@ fleetctl silence rm <id 前缀>                                                 
 
 ```
 fleetctl billing month <团队> [2026-11]           # 只读：这个月要收几个、已收几个、没收哪些 + 每个节点一行（这一期的区间、已收 / 没收）；以后的月份标「还没到」
-fleetctl billing paid <团队> <节点…> [--month 2026-10] [--yes]   # 标记已收（节点写名字，可多个；--all = 这个月所有没收的）；不加 --yes 只预览
+fleetctl billing paid <团队> <节点…> [--month 2026-10] [--yes]   # 标记已收（节点写名字，可多个，重名时报错并列出名额 id、改写 id 前缀；--all = 这个月所有没收的）；不加 --yes 只预览
 fleetctl billing paid <团队> <节点…> --unpaid [--yes]            # 改回没收
 fleetctl batch list <团队> [--events]              # 只读：计费节点表（开始收费日、状态）+ 新加入待定的 + 客户页链接；--events 列增减记录
 fleetctl billing init --since 2026-10-01 [--yes]  # 一次性开始记账（只给还没有计费节点的团队建）；不加 --yes 只预览。之前中控不对账

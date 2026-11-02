@@ -1,4 +1,4 @@
-// 团队与套餐：团队（改名、排序、重新编号预览→应用）、供应商、套餐、待付、计费台账（按节点数向团队收费：计费节点、批次、应收与客户页链接）。
+// 团队与套餐：团队（改名、排序、重新编号预览→应用）、供应商、套餐、待付、计费台账（按节点数向团队收费：月份清单已收 / 没收与客户页链接）。
 import * as React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';

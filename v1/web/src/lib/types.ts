@@ -545,18 +545,17 @@ export interface CustomerPage { enabled: boolean; link: string; created_at: stri
  *  name：节点名，等补位的是原节点名，手动添加的是备注（没有备注「手动添加的节点」）；upcoming：这一期还没开始；
  *  vacated：节点离开了、24 小时内等新节点补位；ended：已停止收费（这一期照收）；holder_id：现在占着它的节点（点名字打开抽屉） */
 export interface BillingMonthNode {
-  slot_id: string; name: string; region: string; start_date: string; end_date: string | null; period_start: string; period_end: string; upcoming: boolean;
+  slot_id: string; name: string; region: string; start_date: string; period_start: string; period_end: string; upcoming: boolean;
   manual: boolean; note: string; holder_id: string | null; vacated: boolean; ended: boolean; paid: boolean; paid_at: string | null;
 }
-/** GET /teams/{id}/billing/month?month=YYYY-MM（默认本月）：nodes 没收在前、再按名字；months 可以翻看的月份（最早的开始收费月 → 下个月）；
+/** GET /teams/{id}/billing/month?month=YYYY-MM（默认本月）：nodes 没收在前、再按名字；months 可以翻看的月份（最早的开始收费月或本月 → 下个月）；
  *  pending 只在本月给；initialized：开始记账了没有（fleetctl billing init，全局） */
 export interface BillingMonth {
   team: { id: string; name: string }; today: string; initialized: boolean; page: CustomerPage | null;
-  month: string; months: string[]; nodes: BillingMonthNode[]; paid_count: number; unpaid_count: number; pending: BillingPending[];
+  month: string; months: string[]; nodes: BillingMonthNode[]; pending: BillingPending[];
 }
 /** GET /public/customer/{token}?month=YYYY-MM：同管理端的按月看，每个节点只有名字、地区、这一期、已付 / 待付（待付在前、再按名字） */
 export interface PublicCustomer {
   team: string; today: string; month: string; months: string[];
   nodes: { name: string; region: string; period_start: string; period_end: string; paid: boolean }[];
-  paid_count: number; unpaid_count: number;
 }
