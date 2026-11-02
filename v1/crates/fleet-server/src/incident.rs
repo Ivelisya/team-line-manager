@@ -77,6 +77,10 @@ const CRITICAL_COUNT_KEY: &str = "critical_count";
 /// 一条告警严重的次数（SQL 表达式，行上有 detail）：没有 `critical_count` 的算 0
 pub const CRIT_COUNT_SQL: &str = "coalesce((detail->>'critical_count')::bigint, 0)";
 
+/// 一条告警算几次（SQL 表达式，行上有 rule、reopen_count、detail）：1 + 复发次数；tcp_fail 只数严重的（`CRIT_COUNT_SQL`，警告级的是 TCP 偶发失败、出口正常，算噪声）。
+/// 可用率、月报、告警页的「近 7 天反复」都按它数，口径只在这里定义
+pub fn occurrences_sql() -> String { format!("case when rule <> 'tcp_fail' then 1 + reopen_count else {CRIT_COUNT_SQL} end") }
+
 fn detail_of(d: &Value) -> Value {
     let mut d = d.clone();
     if let Some(o) = d.as_object_mut() {

@@ -503,3 +503,44 @@ async fn renewal_due_escalation_restarts_opened_at() {
         assert_eq!(age_s < 3600.0, rule == "renewal_due", "{rule}: 开始时间距今 {age_s} 秒");
     }
 }
+
+/// 「近 7 天反复」的口径同可用率页：警告级的 tcp_fail（TCP 偶发失败、出口正常）不计，只数严重的（detail.critical_count）；别的规则照旧 1 + 复发次数。
+/// 01 有 3 条警告级 tcp_fail（其中一条复发 5 次）：不算反复；它的 egress_fail 一条加 2 次复发 = 3 次，算。02 有 1 条严重的 tcp_fail 加 2 次复发（critical_count 3）：算
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn chronic_count_ignores_warning_tcp_fail() {
+    let t = setup().await;
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let team = seed_team(&t, "团队1").await;
+    let (n1, _) = seed_node(&t, relay, team, 1, "203.0.113.1", 20001).await;
+    let (n2, _) = seed_node(&t, relay, team, 2, "203.0.113.2", 20002).await;
+    for (node, rule, sev, reopen, days, crit) in [
+        (n1, "tcp_fail", "warning", 0, 1, 0),
+        (n1, "tcp_fail", "warning", 5, 2, 0),
+        (n1, "tcp_fail", "warning", 0, 3, 0),
+        (n1, "egress_fail", "warning", 2, 1, 0),
+        (n2, "tcp_fail", "critical", 2, 1, 3),
+    ] {
+        sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary, reopen_count, opened_at, state, detail) values ($1, 'machine', $2, $3, $4::severity, 'x', $5, now() - make_interval(days => $6), 'resolved', case when $7 > 0 then jsonb_build_object('critical_count', $7) else '{}'::jsonb end)")
+            .bind(Uuid::now_v7())
+            .bind(rule)
+            .bind(node)
+            .bind(sev)
+            .bind(reopen)
+            .bind(days)
+            .bind(crit)
+            .execute(&t.st.db)
+            .await
+            .unwrap();
+    }
+    let all = t.get("/api/v1/incidents?state=all").await["items"].as_array().unwrap().clone();
+    let of = |node: Uuid, rule: &str| all.iter().filter(|i| i["subject_id"] == json!(node) && i["rule"] == rule).map(|i| (i["recent_count"].as_i64().unwrap(), i["chronic"].as_bool().unwrap())).collect::<Vec<_>>();
+    assert_eq!(of(n1, "tcp_fail"), [(1, false); 3], "警告级 tcp_fail 不计（至少算 1 次）：{all:?}");
+    assert_eq!(of(n1, "egress_fail"), [(3, true)], "{all:?}");
+    assert_eq!(of(n2, "tcp_fail"), [(3, true)], "{all:?}");
+    let chronic: Vec<(String, String)> = t.get("/api/v1/incidents?state=chronic").await["items"].as_array().unwrap().iter().map(|i| (i["subject_id"].as_str().unwrap().to_string(), i["rule"].as_str().unwrap().to_string())).collect();
+    let mut want = vec![(n1.to_string(), "egress_fail".to_string()), (n2.to_string(), "tcp_fail".to_string())];
+    want.sort();
+    let mut got = chronic;
+    got.sort();
+    assert_eq!(got, want);
+}

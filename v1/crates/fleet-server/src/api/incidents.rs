@@ -57,12 +57,13 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQu
     let f = match q.state.as_deref() {
         Some("resolved") => "i.state = 'resolved'".to_string(),
         Some("all") => "true".to_string(),
-        // 组 = 引擎 + 规则 + 对象，近 7 天出现过 CHRONIC_MIN 次以上的（开过的条数 + 30 分钟内复发合并进去的次数），每组只取最近一条
+        // 组 = 引擎 + 规则 + 对象，近 7 天出现过 CHRONIC_MIN 次以上的（开过的条数 + 30 分钟内复发合并进去的次数，tcp_fail 只数严重的：incident::occurrences_sql），每组只取最近一条
         Some("chronic") => format!(
             "i.id in (select id from (select id, row_number() over (partition by engine, rule, subject_id order by opened_at desc, id desc) rn,
-                                                     count(*) over (partition by engine, rule, subject_id) + sum(reopen_count) over (partition by engine, rule, subject_id) c
+                                                     sum({}) over (partition by engine, rule, subject_id) c
                                       from incident where opened_at > now() - interval '7 days') x
-                      where rn = 1 and c >= {CHRONIC_MIN})"
+                      where rn = 1 and c >= {CHRONIC_MIN})",
+            crate::incident::occurrences_sql()
         ),
         _ => "i.state = 'firing'".to_string(),
     };
@@ -101,12 +102,13 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQu
     } else {
         vec![]
     };
-    // 近 7 天同对象同规则出现过几次（含这次）：开过的条数 + 恢复后 30 分钟内复发合并进这些条的次数。一条分组查询，不逐条查
+    // 近 7 天同对象同规则出现过几次（含这次）：开过的条数 + 恢复后 30 分钟内复发合并进这些条的次数，tcp_fail 只数严重的（同可用率页、月报）。一条分组查询，不逐条查
     let subjects: Vec<Uuid> = v.iter().map(|i| i.subject_id).collect();
-    let recent: std::collections::HashMap<(String, String, Uuid), i64> = sqlx::query_as::<_, (String, String, Uuid, i64)>(
-        "select engine, rule, subject_id, count(*) + sum(reopen_count) from incident
+    let recent: std::collections::HashMap<(String, String, Uuid), i64> = sqlx::query_as::<_, (String, String, Uuid, i64)>(&format!(
+        "select engine, rule, subject_id, sum({})::bigint from incident
          where subject_id = any($1) and opened_at > now() - interval '7 days' group by engine, rule, subject_id",
-    )
+        crate::incident::occurrences_sql()
+    ))
     .bind(&subjects)
     .fetch_all(&st.db)
     .await?

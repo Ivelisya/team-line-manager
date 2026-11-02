@@ -233,9 +233,9 @@ pub async fn uptime(st: &AppState, w: &Window) -> ApiResult<Value> {
     }
     let incidents: HashMap<Uuid, i64> = sqlx::query_as::<_, (Uuid, i64)>(
         &format!(
-            "select subject_id, sum(case when rule <> 'tcp_fail' then 1 + reopen_count else {} end)::bigint from incident
+            "select subject_id, sum({})::bigint from incident
              where engine = 'machine' and subject_id = any($1) and rule = any($4) and opened_at >= $2 and opened_at < $3 group by 1",
-            crate::incident::CRIT_COUNT_SQL
+            crate::incident::occurrences_sql()
         ),
     )
     .bind(&ids)
@@ -397,12 +397,11 @@ pub async fn monthly(st: &AppState, month: Option<&str>) -> ApiResult<Value> {
         .collect();
 
     // 次数口径同可用率里的告警次数：tcp_fail 只数严重的（警告级是 TCP 偶发失败、出口正常），其余规则 1 + 复发次数
+    let occ = crate::incident::occurrences_sql();
     let rules: Vec<(String, i64)> = sqlx::query_as(&format!(
-        "select rule, sum(case when rule <> 'tcp_fail' then 1 + reopen_count else {} end)::bigint c from incident
+        "select rule, sum({occ})::bigint c from incident
          where opened_at >= $1::date::timestamp at time zone $3 and opened_at < $2::date::timestamp at time zone $3
-         group by rule having sum(case when rule <> 'tcp_fail' then 1 + reopen_count else {} end) > 0 order by c desc, rule limit 3",
-        crate::incident::CRIT_COUNT_SQL,
-        crate::incident::CRIT_COUNT_SQL
+         group by rule having sum({occ}) > 0 order by c desc, rule limit 3"
     ))
     .bind(w.from)
     .bind(w.to + Duration::days(1))
