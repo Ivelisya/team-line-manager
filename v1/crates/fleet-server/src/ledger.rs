@@ -15,7 +15,7 @@
 //!
 //! 决定怎么变的是纯函数 `plan`（传入「现在」，测试不用等 24 小时），`reconcile_team` 只负责读库、写库。
 
-use crate::batches::{self as bt, fmt_md};
+use crate::batches::{self as bt, fmt_cn};
 use crate::country;
 use crate::db::new_id;
 use crate::state::{AppState, Event};
@@ -182,27 +182,38 @@ pub fn plan(slots: &[OpenSlot], pending: &[Pending], billable: &[Node], held_els
 
 // ── 增减记录的一句话 ─────────────────────────────────────────────────
 
-/// 手动名额在记录与列表里的名字：「手动 · 墨西哥家宽」
-pub fn manual_name(note: &str) -> String { if note.is_empty() { "手动".into() } else { format!("手动 · {note}") } }
+/// 手动名额在记录与列表里的名字：备注（墨西哥家宽），没有备注的「手动添加的节点」
+pub fn manual_name(note: &str) -> String { if note.is_empty() { "手动添加的节点".into() } else { note.to_string() } }
 
-fn md(v: &Value) -> String { v.as_str().and_then(bt::parse_date).map(fmt_md).unwrap_or_else(|| "?".into()) }
+/// 「10 月 30 日」
+fn cn(v: &Value) -> String { v.as_str().and_then(bt::parse_date).map(fmt_cn).unwrap_or_else(|| "?".into()) }
 
-/// 「算到 11-14」；一期都没计的写「不计费」
-fn until(v: &Value) -> String { if v.is_null() { "不计费".into() } else { format!("算到 {}", md(v)) } }
+/// 停止收费的节点最后一期收到哪天：「收费到 11 月 29 日」；一期都没收（billed_until 为 null）的「没收过费」
+fn until(d: &Value) -> String { if d["billed_until"].is_null() { "没收过费".into() } else { format!("收费到 {}", cn(&d["billed_until"])) } }
+
+/// 「11 月已收：团队1-01、团队1-02（共 2 个）」：名字最多列 10 个
+fn paid_text(head: &str, d: &Value) -> String {
+    let month = d["month"].as_str().and_then(bt::parse_month).map(|m| format!("{} 月", u8::from(m.month()))).unwrap_or_default();
+    let names: Vec<&str> = d["names"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+    let more = if names.len() > 10 { " 等" } else { "" };
+    format!("{month}{head}：{}{more}（共 {} 个）", names.iter().take(10).copied().collect::<Vec<_>>().join("、"), names.len())
+}
 
 /// 事件的中文一句话（读取时拼，名字是当时的快照）
 pub fn event_text(kind: &str, machine: Option<&str>, other: Option<&str>, d: &Value) -> String {
     let m = machine.unwrap_or("（已删除的节点）");
     match kind {
-        "init" => format!("初始化：{} 个节点计入计费（{} 起算）", d["count"].as_i64().unwrap_or(0), md(&d["start_date"])),
-        "add" => format!("{m} 加入，新增计费节点（{} 起算）", md(&d["start_date"])),
-        "remove" => format!("{m} 离开，计费节点减少（{}）", until(&d["billed_until"])),
-        "swap" => format!("{} → {m} 替换，计费不变", other.unwrap_or("（已删除的节点）")),
+        "init" => format!("开始记账：{} 个节点从 {}开始收费", d["count"].as_i64().unwrap_or(0), cn(&d["start_date"])),
+        "add" => format!("{m} 加入，从 {}开始收费", cn(&d["start_date"])),
+        "remove" => format!("{m} 离开，{}", until(d)),
+        "swap" => format!("{} → {m} 替换，收费不变", other.unwrap_or("（已删除的节点）")),
         "edit" => format!("{m}：{}", d["what"].as_str().unwrap_or("修改")),
-        "manual_add" => format!("添加手动计费节点 {m}（{}，{} 起算）", d["region"].as_str().unwrap_or(""), md(&d["start_date"])),
-        "manual_end" => format!("{m} 结束计费（{}）", until(&d["billed_until"])),
-        "exempt" if d["exempt"] == true => format!("{m} 设为不计费"),
-        "exempt" => format!("{m} 恢复计费"),
+        "manual_add" => format!("手动添加 {m}（{}），从 {}开始收费", d["region"].as_str().unwrap_or(""), cn(&d["start_date"])),
+        "manual_end" => format!("{m} 停止收费，{}", until(d)),
+        "exempt" if d["exempt"] == true => format!("{m} 设为不收费"),
+        "exempt" => format!("{m} 恢复收费"),
+        "paid" => paid_text("已收", d),
+        "unpaid" => paid_text("改回没收", d),
         k => format!("{m} {k}"),
     }
 }
@@ -586,12 +597,16 @@ mod tests {
 
     #[test]
     fn texts() {
-        assert_eq!(event_text("add", Some("团队1-10"), None, &json!({"start_date": "2026-10-30"})), "团队1-10 加入，新增计费节点（10-30 起算）");
-        assert_eq!(event_text("swap", Some("团队2-20"), Some("团队2-07"), &json!({})), "团队2-07 → 团队2-20 替换，计费不变");
-        assert_eq!(event_text("remove", Some("团队2-05"), None, &json!({"billed_until": "2026-11-14"})), "团队2-05 离开，计费节点减少（算到 11-14）");
-        assert_eq!(event_text("remove", Some("团队2-05"), None, &json!({"billed_until": null})), "团队2-05 离开，计费节点减少（不计费）");
-        assert_eq!(event_text("init", None, None, &json!({"start_date": "2026-10-01", "count": 52})), "初始化：52 个节点计入计费（10-01 起算）");
-        assert_eq!(event_text("exempt", Some("团队1-05"), None, &json!({"exempt": true})), "团队1-05 设为不计费");
-        assert_eq!(manual_name("墨西哥家宽"), "手动 · 墨西哥家宽");
+        assert_eq!(event_text("add", Some("团队1-10"), None, &json!({"start_date": "2026-10-30"})), "团队1-10 加入，从 10 月 30 日开始收费");
+        assert_eq!(event_text("swap", Some("团队2-20"), Some("团队2-07"), &json!({})), "团队2-07 → 团队2-20 替换，收费不变");
+        assert_eq!(event_text("remove", Some("团队2-05"), None, &json!({"end_date": "2026-11-20", "billed_until": "2026-11-29"})), "团队2-05 离开，收费到 11 月 29 日");
+        assert_eq!(event_text("remove", Some("团队2-05"), None, &json!({"end_date": "2026-11-14", "billed_until": null})), "团队2-05 离开，没收过费");
+        assert_eq!(event_text("init", None, None, &json!({"start_date": "2026-10-01", "count": 52})), "开始记账：52 个节点从 10 月 1 日开始收费");
+        assert_eq!(event_text("exempt", Some("团队1-05"), None, &json!({"exempt": true})), "团队1-05 设为不收费");
+        let names: Vec<String> = (1..=12).map(|i| format!("团队1-{i:02}")).collect();
+        assert_eq!(event_text("paid", None, None, &json!({"month": "2026-11", "names": ["团队1-01", "团队1-02"]})), "11 月已收：团队1-01、团队1-02（共 2 个）");
+        assert!(event_text("unpaid", None, None, &json!({"month": "2026-11", "names": names})).ends_with("团队1-10 等（共 12 个）"));
+        assert_eq!(manual_name("墨西哥家宽"), "墨西哥家宽");
+        assert_eq!(manual_name(""), "手动添加的节点");
     }
 }
