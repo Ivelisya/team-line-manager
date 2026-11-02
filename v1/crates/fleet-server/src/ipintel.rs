@@ -4,7 +4,7 @@
 //! 2. 节点来源画像：每 5 分钟从 `access_source_hourly`（访问监控的汇总表）增量维护 `node_source_seen`。
 //! 3. 异常：学习期（节点第一条访问记录起 `LEARN_DAYS` 天）之后出现新的运营商 / 新的城市 / 机房或 VPN 来源 IP，
 //!    写进 incident 表（规则 ipintel_new_isp / ipintel_new_city / ipintel_datacenter_source，warning）并走 notify。
-//!    一次性异常最后一次出现 `ALERT_TTL_HOURS` 小时之后自动恢复，不发恢复通知；alerts.rs 的恢复逻辑不碰 ipintel_ 开头的规则。
+//!    一次性异常最后一次出现 `ALERT_TTL_HOURS` 小时之后自动恢复，一直在出现的也只告警 `ALERT_MAX_DAYS` 天（之后视为新常态），都不发恢复通知；alerts.rs 的恢复逻辑不碰 ipintel_ 开头的规则。
 //!    来源画像、画像缓存与恢复了的画像异常按访问记录保留期删（来源画像不短于学习期，见 `access::prune`、`settings`）：
 //!    「新运营商 / 新城市 / 首次出现的机房来源」= 这段时间内没见过。
 //!
@@ -38,6 +38,9 @@ pub const RULE_DC_SOURCE: &str = "ipintel_datacenter_source";
 pub const LEARN_DAYS: u32 = 7;
 /// 一次性异常（新运营商 / 新城市 / 机房来源）最后一次出现后多少小时自动恢复
 const ALERT_TTL_HOURS: i64 = 24;
+/// 一个新值从首次出现起持续出现超过这么多天，视为新常态（并入基线、告警恢复）：
+/// 否则「团队换了宽带」这类长期新值会因为一直在出现而永远不恢复
+const ALERT_MAX_DAYS: i64 = 2;
 
 /// 节点来源汇总的水位 key
 const WM_KEY: &str = "sources_wm";
@@ -570,12 +573,16 @@ fn join_values(items: &[String], total: usize) -> String {
     }
 }
 
-/// 把 flag = open 的值对齐到 incident 表：有就开 / 更新，没有了（最近一次出现已超过 ttl）就恢复。
+/// 把 flag = open 的值对齐到 incident 表：有就开 / 更新，没有了（最近一次出现已超过 ttl，或首次出现已超过 `ALERT_MAX_DAYS` 天）就恢复。
 pub async fn reconcile_incidents(st: &AppState, now: OffsetDateTime, rep: &mut SyncReport) -> anyhow::Result<()> {
     let db = &st.db;
     let svc = &st.ipintel;
-    // 最近一次出现已超过 ttl 的，一次性异常结束
-    sqlx::query("update node_source_seen set flag = 'done' where flag = 'open' and last_seen < $1").bind(now - svc.ttl).execute(db).await?;
+    // 最近一次出现已超过 ttl 的，一次性异常结束；一直在出现但首次出现已超过 ALERT_MAX_DAYS 天的，视为新常态也结束
+    sqlx::query("update node_source_seen set flag = 'done' where flag = 'open' and (last_seen < $1 or first_seen < $2)")
+        .bind(now - svc.ttl)
+        .bind(now - Duration::days(ALERT_MAX_DAYS))
+        .execute(db)
+        .await?;
 
     let rows: Vec<(Uuid, String, String, i64)> = sqlx::query_as(
         "select n.node_id, n.dim, n.value, n.conns from node_source_seen n join machine m on m.id = n.node_id

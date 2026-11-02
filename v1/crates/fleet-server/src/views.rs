@@ -459,7 +459,7 @@ pub struct RelayInfo {
     pub port_max: i32,
     /// 入口协议：both（Reality 与 AnyTLS）/ reality / anytls（只留 AnyTLS，Reality 入站听回环），见 `PATCH /relays/{id}`
     pub protocols: String,
-    /// 主探测来源（中控或探测点，reach.rs）最近 3 轮（5 分钟内）都连不上，或某个在用入口端口最近 3 次（30 分钟、至少 3 遍轮换内）都连不上：
+    /// 主探测来源（中控或探测点，reach.rs）最近 3 轮（5 分钟内）都连不上，或某个在用入口端口最近 3 次（30 分钟、至少 4 遍轮换内）都连不上：
     /// 告警摘要（写明哪一路测的，括号里是失败原因：去重，带端口；单个端口的取它最近一次）；否则为 None（`reach::unreachable_sql`）。
     /// 健康判定据此报 relay_unreachable；它变了 reach.rs 发 `Event::Machine`（视图完整重算），不对外输出
     #[serde(skip)]

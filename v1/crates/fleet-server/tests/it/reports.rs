@@ -72,14 +72,14 @@ async fn uptime_report_matches_availability_and_sorts_worst_first() {
     let t = setup().await;
     let [n1, n2, n3, _] = seed(&t).await;
     // 01 的告警：严重的 tcp_fail 开过一次、30 分钟内复发 2 次合并进去（算 3 次）；警告级的 tcp_fail（TCP 偶发失败、出口正常）不算；续费提醒不算；40 天前的不在窗口内；
-    // 出现过严重的（detail 有 critical 标记）复发重开成警告的照样算（1 次 + 复发 1 次）
+    // 出现过严重的（detail 有 critical_count）复发重开成警告的照样算（critical_count = 2）
     for (rule, sev, reopen, ago, state) in [
         ("tcp_fail", "critical", 2, 0, "firing"),
         ("tcp_fail", "warning", 4, 1, "resolved"),
         ("renewal_due", "warning", 0, 0, "firing"),
         ("egress_fail", "warning", 0, 40, "firing"),
     ] {
-        sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary, reopen_count, opened_at, state) values ($1, 'machine', $2, $3, $4::severity, 'x', $5, now() - make_interval(days => $6), $7::incident_state)")
+        sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary, reopen_count, opened_at, state, detail) values ($1, 'machine', $2, $3, $4::severity, 'x', $5, now() - make_interval(days => $6), $7::incident_state, case when $4::severity = 'critical' then jsonb_build_object('critical_count', 1 + $5) else '{}'::jsonb end)")
             .bind(Uuid::now_v7())
             .bind(rule)
             .bind(n1)
@@ -92,7 +92,7 @@ async fn uptime_report_matches_availability_and_sorts_worst_first() {
             .unwrap();
     }
 
-    sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary, reopen_count, state, detail) values ($1, 'machine', 'tcp_fail', $2, 'warning', 'x', 1, 'resolved', '{\"critical\": true}')")
+    sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary, reopen_count, state, detail) values ($1, 'machine', 'tcp_fail', $2, 'warning', 'x', 1, 'resolved', '{\"critical_count\": 2}')")
         .bind(Uuid::now_v7())
         .bind(n1)
         .execute(&t.st.db)
@@ -100,7 +100,7 @@ async fn uptime_report_matches_availability_and_sorts_worst_first() {
         .unwrap();
 
     // 有 critical_count 的按它算（严重 2 次，复发重开成警告的 5 次不算）
-    sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary, reopen_count, state, detail) values ($1, 'machine', 'tcp_fail', $2, 'warning', 'x', 5, 'resolved', '{\"critical\": true, \"critical_count\": 2}')")
+    sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary, reopen_count, state, detail) values ($1, 'machine', 'tcp_fail', $2, 'warning', 'x', 5, 'resolved', '{\"critical_count\": 2}')")
         .bind(Uuid::now_v7())
         .bind(n1)
         .execute(&t.st.db)
@@ -153,7 +153,7 @@ async fn monthly_report_goes_only_to_channels_with_the_switch() {
         .unwrap();
     // 本月开过一条严重的线路机到节点不通、30 分钟内复发 2 次合并进去：月报里算 3 次；警告级的 tcp_fail（复发 6 次）不算，出口失败的那条算 1 次
     for (rule, sev, reopen, state) in [("tcp_fail", "critical", 2, "firing"), ("tcp_fail", "warning", 6, "resolved"), ("egress_fail", "warning", 0, "firing")] {
-        sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary, reopen_count, state) values ($1, 'machine', $2, $3, $4::severity, 'x', $5, $6::incident_state)")
+        sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary, reopen_count, state, detail) values ($1, 'machine', $2, $3, $4::severity, 'x', $5, $6::incident_state, case when $4::severity = 'critical' then jsonb_build_object('critical_count', 1 + $5) else '{}'::jsonb end)")
             .bind(Uuid::now_v7())
             .bind(rule)
             .bind(n1)

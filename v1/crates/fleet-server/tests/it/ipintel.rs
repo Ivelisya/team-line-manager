@@ -301,6 +301,40 @@ async fn idle_spare_gets_no_source_profile_alert_and_open_ones_close_quietly() {
     assert_eq!((r.opened, r.resolved), (0, 0), "{r:?}");
 }
 
+/// 新值一直在出现：首次出现满 2 天后视为新常态，告警静默恢复（closed_by = ipintel_ttl），之后同值不再告警
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn persistent_new_value_is_absorbed_after_max_days() {
+    let t = setup(true).await;
+    let fx = seed(&t).await;
+    let now = OffsetDateTime::now_utc();
+    let (d, h) = (Duration::days, Duration::hours);
+    t.put_cache("202.102.224.68", "中国联通", "CN", Some("河南省"), Some("郑州市"), "residential").await;
+    t.put_cache("111.1.1.1", "中国移动", "CN", Some("北京市"), Some("北京市"), "residential").await;
+    let n = fx.n[0];
+    t.put_hourly(n, now - d(10), "202.102.224.68", 100).await;
+    t.put_hourly(n, now - h(2), "111.1.1.1", 7).await;
+    let r = ipintel::maintain_once(&t.st, now).await.unwrap();
+    assert!(r.opened > 0, "{r:?}");
+    assert!(!rules(&t.incidents(n).await, "firing").is_empty());
+    // 同一个值在 3 天前就出现、刚刚还在出现
+    sqlx::query("update node_source_seen set first_seen = $2, last_seen = $3 where node_id = $1 and flag = 'open'")
+        .bind(n)
+        .bind(now - d(3))
+        .bind(now - h(1))
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let r = ipintel::maintain_once(&t.st, now + Duration::minutes(5)).await.unwrap();
+    assert!(r.resolved > 0 && r.opened == 0, "{r:?}");
+    let inc = t.incidents(n).await;
+    assert!(rules(&inc, "firing").is_empty() && !rules(&inc, "resolved").is_empty(), "{inc:?}");
+    let closed: Vec<Value> = sqlx::query_scalar("select detail from incident where subject_id = $1 and engine = 'ipintel'").bind(n).fetch_all(&t.st.db).await.unwrap();
+    assert!(closed.iter().all(|x| x["closed_by"] == "ipintel_ttl"), "{closed:?}");
+    // 再跑一轮不重开
+    let r = ipintel::maintain_once(&t.st, now + Duration::minutes(10)).await.unwrap();
+    assert_eq!((r.opened, r.resolved), (0, 0), "{r:?}");
+}
+
 /// 首次扫描分页（30 天前的数据要被扫到）；水位之前的小时被补算后，差值只累加一次；水位之后的差值丢弃（扫描本来就会覆盖）
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn late_hours_are_added_once_and_scan_is_paged() {

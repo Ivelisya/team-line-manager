@@ -69,7 +69,8 @@ pub async fn run_forever(st: AppState) {
 /// 线路机 `relay`（SQL 表达式）按 `src` 那一路（主探测来源）连不上时的告警摘要「香港探测点连续 3 次以上连不上客户入口（端口 443：超时 10 秒）」，否则 null。
 /// 括号里是失败原因（去重，带端口）：
 /// - 整台不通：最近 3 轮（5 分钟内）都连不上，取这 3 次的原因；
-/// - 单个口坏了：某个在用入口端口最近 3 次都连不上（轮流连，N 个口每 N 轮才轮到一次：看 30 分钟与 3 遍轮换里取长的），取它最近一次的原因。
+/// - 单个口坏了：某个在用入口端口最近 3 次都连不上（轮流连，N 个口每 N 轮才轮到一次：看 30 分钟与 4 遍轮换（每轮 30 秒，N × 120 秒）里取长的，
+///   多留一遍是给 3 次采样的跨度留余量，否则最老的一次在下次采样前滑出窗口，这个口退出又回来，摘要的段数来回抖，每轮都发 Machine 事件），取它最近一次的原因。
 ///
 /// 用到的检查里有全部线路机同时连不上的轮次（all_down）时，后面加「；所有线路机同时连不上，可能是供应商整体故障」；
 /// 这一路是探测点、顺序里的下一路最近 2 分钟连得上某台在用线路机时，改写成 [`all_down_reachable`] 那句。
@@ -92,7 +93,7 @@ pub(crate) fn unreachable_sql(relay: &str, src: &Effective) -> String {
         "(with x as (select rr.port, rr.ok, coalesce(rr.detail, '-') detail, rr.all_down, rr.ts > now() - interval '5 minutes' fresh,
                             row_number() over (order by rr.ts desc) n, row_number() over (partition by rr.port order by rr.ts desc) np
                      from relay_reach rr where rr.relay_id = {relay} and {cond} and rr.ts > now() - greatest(interval '30 minutes',
-                       interval '90 seconds' * (select count(*) from entry e where e.relay_id = {relay} and e.lifecycle = 'active'))),
+                       interval '120 seconds' * (select count(*) from entry e where e.relay_id = {relay} and e.lifecycle = 'active'))),
                whole as (select count(*) = 3 and not bool_or(ok) down from x where n <= 3 and fresh),
                bad as (select port from x where np <= 3 and port in (select e.port from entry e where e.relay_id = {relay} and e.lifecycle = 'active')
                        group by port having count(*) = 3 and not bool_or(ok))
