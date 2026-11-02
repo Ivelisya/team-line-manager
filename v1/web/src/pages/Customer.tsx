@@ -1,63 +1,42 @@
 // 客户页 /c/:token：给客户看的只读页面，不登录、不在外壳里（customerEntry.tsx 单独的入口，不带管理端）。
-// 读者是客户、不懂技术：一句话总结（几个节点在用、哪天续几个）→ 逐个节点的清单（节点 · 地区 · 本期 · 下次续费 · 还有几天，按下次续费日排；
-// 手机上每个节点两行，不横向滚动）。时间轴只在管理端：客户要知道的是哪个节点哪天续费，清单已经说清楚了。
-// 不写「批次 / 节点月」；服务端给的 node_months（各组从开始到本期的累计）对不上任何一笔账，不显示。不出现 IP、供应商、价格。
-// 白底与中性标题由 theme-init.js 首屏就设好（html.is-cx）；一律浅色（theme-init.js 在 /c/ 下不读存储的主题，这里也不引 lib/theme）。
+// 读者是客户、不懂技术，只回答一件事：这个月哪些节点付了、哪些还没付。月份切换（?month=，默认本月）→ 一句话 → 逐个节点
+// （节点 · 地区 · 这一期的起止 · 已付 / 待付；手机上不横向滚动）。口径同管理端：每个节点从开始收费日起每满一个月收一次，这个月列的是起点在这个月的那一期。
+// 不出现 IP、供应商、价格。白底与中性标题由 theme-init.js 首屏就设好（html.is-cx）；一律浅色（theme-init.js 在 /c/ 下不读存储的主题，这里也不引 lib/theme）。
 import * as React from 'react';
-import { useParams } from 'react-router-dom';
-import { Link2Off, RotateCw } from 'lucide-react';
+import { useParams, useSearchParams } from 'react-router-dom';
+import { Check, Link2Off, RotateCw } from 'lucide-react';
 import { ApiError } from '@/lib/api';
 import { usePublicCustomer } from '@/lib/publicCustomer';
 import type { PublicCustomer } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { TipHost } from '@/components/ui/tip';
 import { Empty } from '@/components/app/empty';
-import { cnDate, cnSpan, daysBetween, regionLabel } from '@/features/BatchTimeline';
+import { MonthSwitch, cnMonth, cnSpan, regionLabel } from '@/features/billing';
 
-/** 一句话总结：「你们现在有 10 个节点在用（美区 9 个，墨西哥 1 个）。下次续费：11 月 30 日（1 个），12 月 1 日（9 个）。」 */
+/** 一句话：「11 月：你们有 10 个节点，已付 9 个，待付 1 个：团队1-10。」/「11 月的 10 个节点都已付清 ✓」 */
 function Lead({ d }: { d: PublicCustomer }) {
-  const regions = new Map<string, number>();
-  const due = new Map<string, number>();
-  for (const n of d.nodes) {
-    regions.set(n.region, (regions.get(n.region) ?? 0) + 1);
-    if (n.renews) due.set(n.period_end, (due.get(n.period_end) ?? 0) + 1);
-  }
-  const next = [...due.entries()].sort(([a], [b]) => (a < b ? -1 : 1)).slice(0, 2);
+  const m = cnMonth(d.month, d.today);
+  const due = d.nodes.filter((n) => !n.paid);
+  const n = d.nodes.length;
+  if (n === 0) return <p className="cx-lead">{m}没有要付费的节点。</p>;
+  if (due.length === 0) return <p className="cx-lead">{m}的 <b>{n} 个节点</b><span className="cx-done">都已付清 ✓</span></p>;
   return (
     <p className="cx-lead">
-      你们现在有 <b>{d.nodes.length} 个节点</b>在用{regions.size > 1 && <>（{[...regions].map(([r, n], i) => <React.Fragment key={r}>{i > 0 && '，'}<span>{regionLabel(r)} {n} 个</span></React.Fragment>)}）</>}。
-      {next.length > 0 && <>下次续费：{next.map(([s, n], i) => <React.Fragment key={s}>{i > 0 && '，'}<span><b>{cnDate(s, d.today)}</b>（{n} 个）</span></React.Fragment>)}。</>}
+      {m}：你们有 <b>{n} 个节点</b>，已付 <b>{n - due.length} 个</b>，待付 <b>{due.length} 个</b>
+      {due.length <= 5 ? <>：{due.map((x, i) => <React.Fragment key={i}>{i > 0 && '、'}<span>{x.name}</span></React.Fragment>)}。</> : '。'}
     </p>
-  );
-}
-
-/** 逐个节点：宽屏是一张表，窄屏每个节点两行（名字 · 地区 · 还有几天 / 本期 · 下次续费） */
-function Nodes({ d }: { d: PublicCustomer }) {
-  return (
-    <section className="cx-nodes" aria-label="每个节点的续费时间">
-      <div className="cx-nrow cx-nhead" aria-hidden><span>节点</span><span>地区</span><span>本期</span><span>下次续费</span><span className="cx-nleft">还有几天</span></div>
-      {d.nodes.map((n) => {
-        const left = daysBetween(d.today, n.period_end);
-        return (
-          <div key={`${n.name}|${n.period_start}`} className="cx-nrow">
-            <span className="cx-nname">{n.name}</span>
-            <span className="cx-nregion">{regionLabel(n.region)}</span>
-            <span className="cx-nspan"><span className="cx-nlabel">本期 </span><span className="num">{cnSpan(n.period_start, n.period_end, d.today)}</span></span>
-            <span className="cx-nnext num">{n.renews ? <>{cnDate(n.period_end, d.today)}<span className="cx-nlabel">续费</span></> : <span className="t-sub">到期后不再续费</span>}</span>
-            <span className="cx-nleft num" data-soon={left <= 3 || undefined}><span className="cx-nlabel">还有 </span>{left} 天</span>
-          </div>
-        );
-      })}
-    </section>
   );
 }
 
 export function CustomerPage() {
   const { token = '' } = useParams();
-  const q = usePublicCustomer(token);
+  const [sp, setSp] = useSearchParams();
+  const want = /^\d{4}-\d{2}$/.test(sp.get('month') ?? '') ? sp.get('month')! : '';
+  const q = usePublicCustomer(token, want);
   const d = q.data;
-  const title = d ? `${d.team} · 节点续费情况` : '节点续费情况';
+  const title = d ? `${d.team} · 节点付费情况` : '节点付费情况';
   React.useEffect(() => { document.title = title; }, [title]);
+  const onMonth = (m: string) => setSp(m === d?.today.slice(0, 7) ? {} : { month: m }, { replace: true });
 
   let body: React.ReactNode;
   if (q.isError && !d) {
@@ -69,15 +48,26 @@ export function CustomerPage() {
     body = <div className="cx-head" aria-busy><span className="skel" style={{ width: 260, height: 30 }} /><span className="skel" style={{ width: 360, height: 16 }} /><span className="skel" style={{ height: 240, marginTop: 24 }} /></div>;
   } else {
     body = (
-      <>
+      <div className="cx-body" data-stale={q.isPlaceholderData}>
         <header className="cx-head">
-          <h1 className="cx-title">{d.team} · 节点续费情况</h1>
-          {d.nodes.length > 0 && <Lead d={d} />}
+          <h1 className="cx-title">{d.team} · 节点付费情况</h1>
+          <MonthSwitch month={d.month} months={d.months} onChange={onMonth} />
+          <Lead d={d} />
         </header>
-        {d.nodes.length === 0
-          ? <Empty text="现在没有在用的节点" />
-          : <Nodes d={d} />}
-      </>
+        {d.nodes.length > 0 && (
+          <ul className="bm-list" aria-label={`${cnMonth(d.month, d.today)}每个节点的付费情况`}>
+            {d.nodes.map((n, i) => (
+              <li key={`${n.name}|${i}`} className="bm-row">
+                <div className="bm-main">
+                  <span className="bm-name">{n.name}</span>
+                  <span className="bm-sub">{regionLabel(n.region)} · <span className="num">{cnSpan(n.period_start, n.period_end, d.today)}</span></span>
+                </div>
+                <span className="bm-side">{n.paid ? <span className="bm-paid"><Check />已付</span> : <span className="bm-due">待付</span>}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     );
   }
   return (
