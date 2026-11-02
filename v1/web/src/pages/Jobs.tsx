@@ -325,6 +325,8 @@ const LogPanel = React.memo(function LogPanel({ jobId, state }: { jobId: string;
   const [frozen, setFrozen] = React.useState<number | null>(null); // 暂停时冻结到的最后一条日志 id（按 id 而不是行数：头部被丢弃时位置不会错）
   const [stuck, setStuck] = React.useState(true);
   const [err, setErr] = React.useState<unknown>(null);
+  const [loaded, setLoaded] = React.useState(false); // 首次拉取结束（成败都算）：之前不写「暂无日志」
+  const [nonce, setNonce] = React.useState(0); // 点「重试」加一，重跑拉取
   const last = React.useRef(0);
   const all = React.useRef<JobLog[]>([]); // 已保留的日志（真值在这里，state 只用来触发渲染）
   const box = React.useRef<HTMLDivElement>(null);
@@ -342,7 +344,7 @@ const LogPanel = React.memo(function LogPanel({ jobId, state }: { jobId: string;
           ? await fetchTailLogs(jobId, KEEP_MAX, ac.signal)
           : { logs: await fetchAllLogs(jobId, last.current, ac.signal), skipped: 0 };
         if (stop) return;
-        setErr(null);
+        setErr(null); setLoaded(true);
         if (more.length) {
           last.current = more[more.length - 1].id;
           const merged = all.current.concat(more);
@@ -351,12 +353,12 @@ const LogPanel = React.memo(function LogPanel({ jobId, state }: { jobId: string;
           if (over + skipped) setDropped((d) => d + over + skipped);
           setLogs(all.current);
         }
-      } catch (e) { if (!stop) setErr(e); /* 下一轮重试 */ }
+      } catch (e) { if (!stop) { setErr(e); setLoaded(true); } /* 进行中的下一轮重试；已结束的点「重试」 */ }
       if (!stop && live) timer = setTimeout(pull, 1500);
     };
     void pull();
     return () => { stop = true; clearTimeout(timer); ac.abort(); };
-  }, [jobId, live]);
+  }, [jobId, live, nonce]);
 
   const shown = React.useMemo(() => {
     if (frozen == null) return logs;
@@ -380,10 +382,10 @@ const LogPanel = React.memo(function LogPanel({ jobId, state }: { jobId: string;
         </Button>}
         <IconButton label="复制全部日志" size="sm" onClick={copy} disabled={!logs.length}><Copy size={14} /></IconButton>
       </>}>
-      {err != null && logs.length === 0 && <div style={{ marginBottom: 8 }}><ErrorNote error={err} /></div>}
+      {err != null && logs.length === 0 && <div style={{ marginBottom: 8 }}><ErrorNote error={err} onRetry={() => { setErr(null); setLoaded(false); setNonce((n) => n + 1); }} /></div>}
       <div className="logbox" ref={box} role="log" aria-live="off" tabIndex={0} aria-label="作业日志"
         onScroll={(e) => { const el = e.currentTarget; setStuck(el.scrollHeight - el.scrollTop - el.clientHeight < 24); }}>
-        {logs.length === 0 && <span className="t-muted">暂无日志</span>}
+        {logs.length === 0 && (!loaded ? <div className="skel" style={{ height: 16 }} /> : err == null && <span className="t-muted">暂无日志</span>)}
         {(dropped > 0 || shown.length > SHOW_MAX) && <div className="logline logline-note"><span /><span /><span className="msg t-sub">仅显示最近 {Math.min(SHOW_MAX, shown.length)} 行，共 {shown.length + dropped} 行</span></div>}
         {view.map((l) => <LogLine key={l.id} l={l} />)}
       </div>

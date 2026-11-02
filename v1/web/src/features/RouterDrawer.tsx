@@ -267,10 +267,16 @@ function DeleteSection({ r, onClosed }: { r: RouterView; onClosed: () => void })
   const [ask, setAsk] = React.useState(false);
   // 删除被 409 拦下（有作业改过它的出口、没确认改回）：对话框里留着原因，确认按钮换成强制删除，已输入的名称清空、要重新输入
   const [force, setForce] = React.useState(false);
-  // 只有会影响客户的才要输名称：路由还在线、或还有客户端连着；离线又没人连的，红色确认按钮就够
+  // 只有会影响客户的才要输名称：路由还在线、或还有客户端连着；离线又没人连的，红色确认按钮就够。
+  // 按点「删除…」那一刻的状态定（快照）：对话框开着时路由上线 / 掉线，不在两种确认框之间切换、也不把要输名称的悄悄降成一键确认
   const clients = r.summary?.clients ?? 0;
-  const typed = r.state === 'online' || clients > 0 || force;
-  const why = r.state === 'online' ? '路由还在线。' : clients > 0 ? `最近一次读到还有 ${clients} 台客户端连着。` : '';
+  const [snap, setSnap] = React.useState({ typed: false, why: '' });
+  const typed = snap.typed || force;
+  const why = snap.why;
+  const openAsk = () => {
+    setSnap({ typed: r.state === 'online' || clients > 0, why: r.state === 'online' ? '路由还在线。' : clients > 0 ? `最近一次读到还有 ${clients} 台客户端连着。` : '' });
+    setAsk(true);
+  };
   const onOpenChange = (o: boolean) => { setAsk(o); if (!o) setForce(false); };
   const onConfirm = async () => {
     let jobs: string[] = [];
@@ -286,7 +292,7 @@ function DeleteSection({ r, onClosed }: { r: RouterView; onClosed: () => void })
       <div className="mgroup is-danger">
         <div className="manage-row">
           <div><div className="t">删除</div><div className="hint">只删面板里的记录，路由本身不受影响 <InfoTip text={'会撤销隧道授权并删除历史数据\n删除后会给出一条在路由上执行的清理命令'} /></div></div>
-          <Button variant="outline-danger" onClick={() => setAsk(true)}>删除…</Button>
+          <Button variant="outline-danger" onClick={openAsk}>删除…</Button>
         </div>
       </div>
       {typed

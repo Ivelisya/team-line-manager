@@ -79,11 +79,11 @@ const SyncDialog = resetOnOpen(function SyncDialog({ open, t }: { open: boolean;
   // 需要勾选确认的那几条不重复写成错误
   const blockers = (p?.blockers ?? []).filter((b) => !needForce.some((u) => b.includes(`「${u.exit}」从没对上过`)));
   return (
-    <ConfirmDialog open={open} onOpenChange={(o) => !o && showSync(null)} title={`同步出口参数 · ${t.name}`} confirmLabel="同步" confirmDisabled={!p?.ok}
+    <ConfirmDialog open={open} onOpenChange={(o) => !o && showSync(null)} title={`同步出口参数 · ${t.name}`} confirmLabel="同步" confirmDisabled={!p?.ok || pv.isPlaceholderData}
       description={<>改成对应入口现在的凭据，地址和端口不变<InfoTip text={'先备份配置，改完重启 OpenClash 并测延迟，测不通自动改回\n重启时经这台路由的连接会全部断开、马上重连'} /></>}
       onConfirm={async () => { await run.mutateAsync({ id: t.id, exits: t.exits, force }); toast.ok(`已提交「${t.name}」的出口同步作业`); }}>
       {pv.isLoading ? <Skeleton h={48} /> : pv.isError ? <ErrorNote error={pv.error} onRetry={() => void pv.refetch()} /> : p && (
-        <>
+        <div className="stack-sm" style={{ gap: 'var(--sp-16)' }} data-stale={pv.isPlaceholderData}>
           {exits.length > 0 && <p style={{ margin: 0 }}>{exits.map((e) => e.exit).join('、')} <span className="t-sub mono">（{[...new Set(exits.map((e) => e.from))].join('、')}）</span></p>}
           {p.skipped.length > 0 && <Note tone="warn">入口已不在用，同步不了：{p.skipped.join('、')}<InfoTip text="要换成别的入口，用「改出口指向」" /></Note>}
           {p.untrusted.length > 0 && <Note tone="warn">从没对上过对应的入口，可能是路由上有人加的，没有同步：{p.untrusted.map((u) => u.exit).join('、')}<InfoTip text="确认是自己的，在出口页签里单独选它同步" /></Note>}
@@ -92,7 +92,7 @@ const SyncDialog = resetOnOpen(function SyncDialog({ open, t }: { open: boolean;
               <span>{needForce.map((u) => `${u.exit}（${u.entry}，${u.why}）`).join('、')} 从没对上过这个入口，可能是路由上有人加的；确认是自己的，仍要同步</span></label>
           )}
           {!p.ok && blockers.length > 0 && <Note tone="bad">{blockers.join('；')}</Note>}
-        </>
+        </div>
       )}
     </ConfirmDialog>
   );
@@ -138,7 +138,7 @@ const SwitchDialog = resetOnOpen(function SwitchDialog({ open, t }: { open: bool
   return (
     <FormDialog open={open} onOpenChange={(o) => !o && showSwitch(null)} title={`临时切换出口 · ${t.name}`} submitLabel="切换" busy={run.isPending} valid={valid} onSubmit={submit}
       desc={<>不重启 OpenClash，已有连接不断，新连接走新出口<InfoTip text="OpenClash 重启后一般保留当前选择；组的选择被别人改掉时，待切回随之取消" /></>}>
-      {q.isLoading ? <Skeleton h={96} /> : !groups.length ? <Note tone="warn">这台路由没有可以手动切换的 select 组</Note> : (
+      {q.isLoading ? <Skeleton h={96} /> : q.isError && !q.data ? <ErrorNote error={q.error} onRetry={() => void q.refetch()} /> : !groups.length ? <Note tone="warn">这台路由没有可以手动切换的 select 组</Note> : (
         <div className="form-grid">
           <Field label="策略组" className="span-2"><Select value={g?.name ?? ''} onChange={(v) => { setGroup(v); setTo(''); }} options={groups.map((x) => ({ value: x.name, label: x.name }))} /></Field>
           <Field label="切到" hint={g?.now ? `现在是 ${g.now}` : undefined}><Select value={to} onChange={setTo} options={opts} placeholder="选组里的出口" /></Field>

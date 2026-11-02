@@ -96,8 +96,16 @@ const RateDialog = resetOnOpen(function RateDialog({ target, data, open, onClose
   const set = useSetFxRate();
   const [cur, setCur] = React.useState(target === 'new' ? '' : target.currency);
   const row = data?.rates.find((r) => r.currency === cur.trim().toUpperCase());
-  const [mode, setMode] = React.useState<'per_usd' | 'usd_per_unit'>('per_usd');
+  type Mode = 'per_usd' | 'usd_per_unit';
+  const [mode, setMode] = React.useState<Mode>('per_usd');
   const [v, setV] = React.useState(() => (row?.per_usd != null ? n4(row.per_usd) : ''));
+  // 用户亲手填的那个值与当时的写法：切写法时从它换算（来回切不累积误差），切回原写法就恢复原值
+  const typed = React.useRef({ mode, v });
+  const switchMode = (m: Mode) => {
+    const o = typed.current; const on = Number(o.v);
+    if (m !== mode && o.v.trim() !== '' && isFinite(on) && on > 0) setV(m === o.mode ? o.v : String(Number((1 / on).toPrecision(6))));
+    setMode(m);
+  };
   const c = cur.trim().toUpperCase();
   const num = Number(v);
   const curOk = /^[A-Z]{3}$/.test(c) && c !== 'USD';
@@ -110,10 +118,10 @@ const RateDialog = resetOnOpen(function RateDialog({ target, data, open, onClose
       <div className="form-grid">
         {target === 'new' && <Field label="币种" error={cur.trim() && !curOk ? (c === 'USD' ? 'USD 恒为 1' : '3 个字母的代码，如 SGD') : undefined}>
           <Input value={cur} onChange={(e) => setCur(e.target.value.toUpperCase())} maxLength={3} placeholder="如 SGD" className="mono" autoFocus /></Field>}
-        <Field label="写法"><Segmented value={mode} onChange={(m) => setMode(m)} label="汇率的写法" items={[{ value: 'per_usd', label: `1 USD = ? ${c || '币种'}` }, { value: 'usd_per_unit', label: `1 ${c || '币种'} = ? USD` }]} /></Field>
+        <Field label="写法"><Segmented value={mode} onChange={switchMode} label="汇率的写法" items={[{ value: 'per_usd', label: `1 USD = ? ${c || '币种'}` }, { value: 'usd_per_unit', label: `1 ${c || '币种'} = ? USD` }]} /></Field>
         <Field label="汇率" error={v.trim() && !valOk ? '填一个正数' : undefined}
           hint={usd != null && curOk ? `约合 ${F.fxRate(c, usd)}${row?.auto_per_usd != null ? `；自动汇率是 1 USD = ${n4(row.auto_per_usd)} ${c}` : ''}` : row?.auto_per_usd != null ? `自动汇率是 1 USD = ${n4(row.auto_per_usd)} ${c}` : undefined}>
-          <Input inputMode="decimal" value={v} onChange={(e) => setV(e.target.value.replace(/[^\d.]/g, ''))} placeholder={mode === 'per_usd' ? '7.12' : '0.1404'} /></Field>
+          <Input inputMode="decimal" value={v} onChange={(e) => { const nv = e.target.value.replace(/[^\d.]/g, ''); setV(nv); typed.current = { mode, v: nv }; }} placeholder={mode === 'per_usd' ? '7.12' : '0.1404'} /></Field>
       </div>
     </FormDialog>
   );

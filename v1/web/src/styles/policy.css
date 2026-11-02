@@ -10,6 +10,8 @@
 .pol-col { min-width: 0; }
 @container content (min-width: 901px) {
   .pol-col { position: sticky; top: calc(var(--topbar-h) + var(--sp-16)); max-height: calc(100dvh - var(--topbar-h) - 2 * var(--sp-16)); overflow-y: auto; overscroll-behavior: contain; }
+  /* 编辑器比栏高要在栏内滚时，「保存草稿 / 还原 / 放弃」一排吸在栏底：不用先滚到最下面才点得到。通栏（抵消表单的内边距），下边距取负让它贴到面板底边 */
+  .pol-col .pol-actions { position: sticky; bottom: 0; z-index: var(--z-sticky); margin: 0 calc(-1 * var(--card-pad)) calc(-1 * var(--card-pad)); padding: var(--sp-12) var(--card-pad); background: var(--surface); border-top: 1px solid var(--line); }
 }
 /* 模式四段在手机上放不下（「暂停新连接」被截）：排成 2×2，撑满整行 */
 @container content (max-width: 520px) {

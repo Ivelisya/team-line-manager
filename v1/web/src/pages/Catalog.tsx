@@ -180,17 +180,17 @@ const TeamDialog = resetOnOpen(function TeamDialog({ team, open, onClose }: { te
   const [name, setName] = React.useState(team === 'new' ? '' : team.name);
   const [order, setOrder] = React.useState(team === 'new' ? '' : String(team.sort_order));
   const save = () => {
-    const sort_order = order.trim() === '' ? undefined : Number(order);
+    const sort_order = Number(order);
     const ok = () => { toast.ok(team === 'new' ? '团队已创建' : '团队已保存'); onClose(); };
-    if (team === 'new') add.mutate({ name: name.trim(), sort_order }, { onSuccess: ok, onError: toast.err });
-    else patch.mutate({ id: team.id, name: name.trim() !== team.name ? name.trim() : undefined, sort_order }, { onSuccess: ok, onError: toast.err });
+    if (team === 'new') add.mutate({ name: name.trim(), sort_order }, { onSuccess: ok });
+    else patch.mutate({ id: team.id, name: name.trim() !== team.name ? name.trim() : undefined, sort_order }, { onSuccess: ok });
   };
   return (
-    <FormDialog open={open} onOpenChange={(o) => !o && onClose()} title={team === 'new' ? '新建团队' : `修改团队 · ${team.name}`} submitLabel="保存" busy={add.isPending || patch.isPending} valid={name.trim().length > 0}
+    <FormDialog open={open} onOpenChange={(o) => !o && onClose()} title={team === 'new' ? '新建团队' : `修改团队 · ${team.name}`} submitLabel="保存" busy={add.isPending || patch.isPending} valid={name.trim().length > 0 && order !== ''} error={add.error ?? patch.error}
       dirty={team === 'new' ? !!(name.trim() || order) : name !== team.name || order !== String(team.sort_order)}
       desc={team !== 'new' && <>所有节点的显示名会一起变 <InfoTip text="线路机上的备注会自动同步，不影响现有连接" /></>} onSubmit={save}>
       <Field label="团队名"><Input value={name} onChange={(e) => setName(e.target.value)} autoFocus /></Field>
-      <Field label="排序"><Input inputMode="numeric" placeholder="越小越靠前，留空放最后" value={order} onChange={(e) => setOrder(e.target.value.replace(/\D/g, ''))} /></Field>
+      <Field label="排序"><Input inputMode="numeric" placeholder="越小越靠前" value={order} onChange={(e) => setOrder(e.target.value.replace(/\D/g, ''))} /></Field>
     </FormDialog>
   );
 });
@@ -208,7 +208,7 @@ const RenumberDialog = resetOnOpen(function RenumberDialog({ team, open, onClose
         <DialogHeader><DialogTitle>重新编号 · {team.name}</DialogTitle>
           <DialogDescription>去掉空号，按原顺序排成 01、02、03… <InfoTip text="退役时会自动补齐空号。这里用于手动指定过跳号的情况" /></DialogDescription></DialogHeader>
         {!pv.isFetchedAfterMount && <div className="skel" style={{ height: 80 }} />}
-        {pv.isFetchedAfterMount && pv.isError && <Note tone="bad">{(pv.error as Error).message}</Note>}
+        {pv.isFetchedAfterMount && pv.isError && <ErrorNote error={pv.error} onRetry={() => void pv.refetch()} />}
         {d && (n === 0
           ? <Note tone="ok">编号已经连续</Note>
           : <div className="table-wrap is-boxed is-capped">
@@ -310,11 +310,11 @@ const ProviderDialog = resetOnOpen(function ProviderDialog({ provider, open, onC
   const save = () => {
     const body = { name: f.name.trim(), code: f.code.trim().toUpperCase(), panel_url: f.panel_url.trim() || null, timezone: f.timezone.trim() || null, traffic_rule: f.traffic_rule, traffic_reset: f.traffic_reset, remind_days: Number(f.remind_days) };
     const ok = () => { toast.ok(provider === 'new' ? '供应商已创建' : '供应商已保存'); onClose(); };
-    if (provider === 'new') add.mutate(body, { onSuccess: ok, onError: toast.err });
-    else patch.mutate({ id: provider.id, ...body }, { onSuccess: ok, onError: toast.err });
+    if (provider === 'new') add.mutate(body, { onSuccess: ok });
+    else patch.mutate({ id: provider.id, ...body }, { onSuccess: ok });
   };
   return (
-    <FormDialog dirty={dirty} open={open} onOpenChange={(o) => !o && onClose()} title={provider === 'new' ? '新建供应商' : '编辑供应商'} submitLabel="保存" busy={add.isPending || patch.isPending} valid={f.name.trim() !== '' && f.code.trim() !== '' && !remindBad}
+    <FormDialog dirty={dirty} open={open} onOpenChange={(o) => !o && onClose()} title={provider === 'new' ? '新建供应商' : '编辑供应商'} submitLabel="保存" busy={add.isPending || patch.isPending} valid={f.name.trim() !== '' && f.code.trim() !== '' && !remindBad} error={add.error ?? patch.error}
       desc={provider !== 'new' && <>改了立即对名下机器生效 <InfoTip text="账单时区、流量重置、到期提醒会同步到名下机器；在「费用」页单独设置过的除外" /></>} onSubmit={save}>
       <div className="form-grid">
         <Field label="名称"><Input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} autoFocus /></Field>
@@ -418,21 +418,27 @@ const PlanDialog = resetOnOpen(function PlanDialog({ plan, open, onClose }: { pl
   });
   const [f, setF] = React.useState(f0);
   const dirty = (Object.keys(f) as (keyof PlanForm)[]).some((k) => f[k] !== f0[k]);
-  // 留空 = 不填（null）；PATCH 里 null 会清掉原值
-  const n = (s: string) => (s.trim() === '' ? null : Number(s) || 0);
+  // 留空 = 不填（null）；PATCH 里 null 会清掉原值。填了的必须是 0 或正数（"9..9" 这类不是数字，校验拦下，不静默存成 0）
+  const n = (s: string) => (s.trim() === '' ? null : Number(s));
+  const badNum = (s: string) => s.trim() !== '' && !(isFinite(Number(s)) && Number(s) >= 0);
+  const priceErr = f.price.trim() === '' ? '必填，免费填 0' : badNum(f.price) ? '应为 0 或正数' : undefined;
+  const numErr = (k: keyof PlanForm) => (k === 'price' ? priceErr : badNum(f[k]) ? '应为 0 或正数' : undefined);
+  // 价格「必填」的红字等碰过价格框再显示（同 BillingTab），空价格照样不能保存
+  const [priceTouched, setPriceTouched] = React.useState(false);
+  const numKeys: (keyof PlanForm)[] = ['cpu_cores', 'mem_gb', 'disk_gb', 'bandwidth_mbps', 'traffic_gb', 'price'];
   const mem = n(f.mem_gb);
-  const body = () => ({ name: f.name.trim(), provider_id: f.provider_id, cpu_cores: n(f.cpu_cores), mem_mb: mem == null ? null : Math.round(mem * 1024), disk_gb: n(f.disk_gb), bandwidth_mbps: n(f.bandwidth_mbps), traffic_gb: n(f.traffic_gb) || null, price_cents: Math.round((n(f.price) ?? 0) * 100), currency: f.currency, cycle: f.cycle, notes: f.notes.trim() });
+  const body = () => ({ name: f.name.trim(), provider_id: f.provider_id, cpu_cores: n(f.cpu_cores), mem_mb: mem == null ? null : Math.round(mem * 1024), disk_gb: n(f.disk_gb), bandwidth_mbps: n(f.bandwidth_mbps), traffic_gb: n(f.traffic_gb) || null, price_cents: Math.round(Number(f.price) * 100), currency: f.currency, cycle: f.cycle, notes: f.notes.trim() });
   const save = () => {
     const ok = () => { toast.ok(plan === 'new' ? '套餐已创建' : '套餐已保存'); onClose(); };
-    if (plan === 'new') add.mutate(body(), { onSuccess: ok, onError: toast.err });
-    else patch.mutate({ id: plan.id, ...body() }, { onSuccess: ok, onError: toast.err });
+    if (plan === 'new') add.mutate(body(), { onSuccess: ok });
+    else patch.mutate({ id: plan.id, ...body() }, { onSuccess: ok });
   };
   // 单位写在输入框后缀（同其它对话框）
   // 价格按供应商收的币种录入，下面提示折合多少美元（按设置里的汇率）
   const usdHint = useUsdPreview(f.price.trim() === '' || !isFinite(Number(f.price)) ? null : Math.round(Number(f.price) * 100), f.currency);
-  const num = (k: keyof PlanForm, label: string, unit: string, ph?: string, info?: string, hint?: string | null) => <Field label={label} info={info} hint={hint ?? undefined}><UnitInput unit={unit} width="full" inputMode="decimal" placeholder={ph} value={f[k]} onChange={(e) => setF({ ...f, [k]: e.target.value.replace(/[^\d.]/g, '') })} /></Field>;
+  const num = (k: keyof PlanForm, label: string, unit: string, ph?: string, info?: string, hint?: string | null) => <Field label={label} info={info} hint={hint ?? undefined} error={k === 'price' && f.price.trim() === '' && !priceTouched ? undefined : numErr(k)}><UnitInput unit={unit} onBlur={() => k === 'price' && setPriceTouched(true)} width="full" inputMode="decimal" placeholder={ph} value={f[k]} onChange={(e) => setF({ ...f, [k]: e.target.value.replace(/[^\d.]/g, '') })} /></Field>;
   return (
-    <FormDialog size="md" dirty={dirty} open={open} onOpenChange={(o) => !o && onClose()} title={plan === 'new' ? '新建套餐' : '编辑套餐'} submitLabel="保存" busy={add.isPending || patch.isPending} valid={f.name.trim() !== '' && f.provider_id !== ''} onSubmit={save}
+    <FormDialog size="md" dirty={dirty} open={open} onOpenChange={(o) => !o && onClose()} title={plan === 'new' ? '新建套餐' : '编辑套餐'} submitLabel="保存" busy={add.isPending || patch.isPending} valid={f.name.trim() !== '' && f.provider_id !== '' && numKeys.every((k) => !numErr(k))} error={add.error ?? patch.error} onSubmit={save}
       desc={plan !== 'new' && <>{plan.machine_count ? `${plan.machine_count} 台在用，` : ''}改了立即生效 <InfoTip text="同一套餐的机器共用这里的额度、价格和周期；在「费用」页单独设置过的除外" /></>}>
       <div className="form-grid">
         <Field label="套餐名"><Input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} autoFocus /></Field>

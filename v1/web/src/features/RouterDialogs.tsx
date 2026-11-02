@@ -72,11 +72,10 @@ export const AddRouterDialog = resetOnOpen(function AddRouterDialog({ open, onOp
         if (r.bootstrap) showBootstrap({ id: r.id, name: base.name, ...r.bootstrap, issued_at: new Date().toISOString(), replaced: false });
         else { rememberSsh(r.id, { host: ssh.host.trim(), port: +ssh.port, user: ssh.user.trim() }); toast.ok(`已开始部署「${base.name}」，进度在卡片上`); }
       },
-      onError: toast.err,
     });
   };
   return (
-    <FormDialog size="md" open={open} onOpenChange={onOpenChange} title="接入软路由" submitLabel={method === 'ssh' ? '开始部署' : '生成接入命令'} busy={add.isPending} valid={valid} onSubmit={submit}
+    <FormDialog size="md" open={open} onOpenChange={onOpenChange} title="接入软路由" submitLabel={method === 'ssh' ? '开始部署' : '生成接入命令'} busy={add.isPending} valid={valid} error={add.error} onSubmit={submit}
       dirty={!!name.trim() || !!note.trim() || !!ssh.host.trim() || !!ssh.password}>
       <div className="form-grid">
         <Field label="名称" error={dup ? '已有同名的软路由' : undefined}><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如 团队2-路由A" autoFocus autoComplete="off" data-1p-ignore data-lpignore="true" aria-invalid={dup} /></Field>
@@ -104,11 +103,10 @@ const DeployDialog = resetOnOpen(function DeployDialog({ open, id, name }: { ope
     setSsh({ password: '' });
     deploy.mutate({ id, ...body }, {
       onSuccess: () => { rememberSsh(id, { host: body.host, port: body.port, user: body.user }); closeDeploy(); toast.ok(`已开始重新部署「${name}」`); },
-      onError: toast.err, // 已有一次部署在跑时 409，原样给出原因
-    });
+    }); // 已有一次部署在跑时 409：原因由对话框里的 error 显示
   };
   return (
-    <FormDialog size="md" open={open} onOpenChange={(o) => !o && closeDeploy()} title={`重新部署 · ${name}`} submitLabel="开始部署" busy={deploy.isPending} valid={sshValid(ssh)} dirty={!!ssh.password} onSubmit={submit}>
+    <FormDialog size="md" open={open} onOpenChange={(o) => !o && closeDeploy()} title={`重新部署 · ${name}`} submitLabel="开始部署" busy={deploy.isPending} valid={sshValid(ssh)} error={deploy.error} dirty={!!ssh.password} onSubmit={submit}>
       {r?.state === 'online' && <Note tone="warn">部署时短暂离线<InfoTip text="会更换隧道密钥并重启隧道服务，不影响客户端上网" /></Note>}
       <SshFields d={ssh} set={setSsh} autoFocus />
       <div className="hint">中控连不上？<button type="button" className="btn btn-link btn-sm" style={{ height: 'auto', padding: 0 }} disabled={boot.pending}

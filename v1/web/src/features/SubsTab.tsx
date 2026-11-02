@@ -5,7 +5,7 @@ import { List, Pencil, Plus, RefreshCw, Rss, ShieldAlert, Trash2, X } from 'luci
 import { DEFAULT_RULE, useClientSub, useClientSubs, useCreateClientSub, useDelClientSub, usePatchClientSub, useRotateClientSub, type ClientSub, type ClientSubWithUrl, type SubProtocols, type SubRule } from '@/lib/clientSubs';
 import { useMachineBriefs, useTeams } from '@/lib/queries';
 import * as F from '@/lib/format';
-import { useHeld } from '@/lib/useHeld';
+import { resetOnOpen, useHeld } from '@/lib/useHeld';
 import { Button, IconButton } from '@/components/ui/button';
 import { Checkbox, Field, InfoTip, Input, OptimisticSwitch, Switch } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
@@ -141,13 +141,13 @@ function MachinePicks({ label, info, ids, onChange, options }: { label: string; 
   );
 }
 
-function SubDialog({ target, open, onClose, onCreated }: { target: ClientSub | 'new'; open: boolean; onClose: () => void; onCreated: (s: ClientSubWithUrl) => void }) {
+/** 新建 / 编辑订阅。每次打开重新挂载（resetOnOpen）：字段直接按这次的订阅初始化 */
+const SubDialog = resetOnOpen(function SubDialog({ target, open, onClose, onCreated }: { target: ClientSub | 'new'; open: boolean; onClose: () => void; onCreated: (s: ClientSubWithUrl) => void }) {
   const create = useCreateClientSub(); const patch = usePatchClientSub();
   const teams = useTeams().data ?? []; const machines = useMachineBriefs().data ?? [];
   const cur = target === 'new' ? null : target;
-  const [name, setName] = React.useState(''); const [rule, setRule] = React.useState<SubRule>(DEFAULT_RULE);
-  const [protocols, setProtocols] = React.useState<SubProtocols>('reality');
-  React.useEffect(() => { if (open) { setName(cur?.name ?? ''); setRule(cur?.rule ?? DEFAULT_RULE); setProtocols(cur?.protocols ?? 'reality'); } }, [open, cur]);
+  const [name, setName] = React.useState(cur?.name ?? ''); const [rule, setRule] = React.useState<SubRule>(cur?.rule ?? DEFAULT_RULE);
+  const [protocols, setProtocols] = React.useState<SubProtocols>(cur?.protocols ?? 'reality');
   const set = (p: Partial<SubRule>) => setRule((r) => ({ ...r, ...p }));
   const mOpts = React.useMemo(() => machines.map((m) => ({ value: m.id, label: m.kind === 'relay' ? `${m.name}（直出）` : m.name })), [machines]);
   const setInc = React.useCallback((ids: string[]) => setRule((r) => ({ ...r, include_ids: ids })), []);
@@ -181,4 +181,4 @@ function SubDialog({ target, open, onClose, onCreated }: { target: ClientSub | '
       <MachinePicks label="一律不带" info="优先于上面所有规则" ids={rule.exclude_ids} onChange={setExc} options={mOpts} />
     </FormDialog>
   );
-}
+});

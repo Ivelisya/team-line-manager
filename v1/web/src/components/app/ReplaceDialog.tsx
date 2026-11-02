@@ -135,7 +135,8 @@ export function RenameNote({ renames, tip, bare }: { renames: { machine_id: stri
   return (
     <Wrap style={bare ? { flex: 1, minWidth: 0 } : undefined}>
       <div className="row row-between" style={{ gap: 8 }}>
-        <span>补号：{renames.length} 台节点前移（{renames.length > 1 ? `${first.old_name} … ${last.old_name}` : `${first.old_name} → ${first.new_name}`}） <InfoTip text={tip} /></span>
+        {/* 一行说完：只写台数（一台时写 旧名 → 新名），改了哪几个名放进 (i) */}
+        <span>补号：{renames.length > 1 ? `${renames.length} 台节点前移` : `${first.old_name} → ${first.new_name}`} <InfoTip text={renames.length > 1 ? `${tip}\n${first.old_name} … ${last.old_name}` : tip} /></span>
         {renames.length > 1 && <button type="button" className="btn btn-link btn-sm" style={{ height: 'auto', padding: 0 }} aria-expanded={open} onClick={() => setOpen((v) => !v)}>{open ? '收起' : '展开'}</button>}
       </div>
       {open && (
