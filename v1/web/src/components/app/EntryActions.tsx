@@ -11,7 +11,7 @@ import { DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/overlay
 import { IconButton, Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, DialogHeader } from '@/components/ui/dialog';
 import { Field, InfoTip, Textarea } from '@/components/ui/form';
-import { Note } from './primitives';
+import { CopyIcon, Note, useCopied } from './primitives';
 import { toast } from '@/components/ui/toast';
 import { copyText } from '@/lib/clipboard';
 import { ConfirmDialog, TypedConfirmDialog } from './dialogs';
@@ -70,6 +70,8 @@ export function EntryMenus({ entries, children }: { entries: EntryView[]; childr
   const act = useEntryAction();
   const find = (id: string | undefined) => (id ? entries.find((e) => e.id === id) : undefined);
   const dd = useAnchoredDropdown('[data-entry-menu]', (el) => el.dataset.entryMenu, find);
+  const cpAt = useCopied();
+  const cpUrl = useCopied();
   const cur = dd.cur;
   // 对话框第一次打开后才挂载，关闭后保留（关闭动画不被截断）；dlg.e 是打开时的那条入口
   const [dlg, setDlg] = React.useState<Dlg | null>(null);
@@ -128,8 +130,8 @@ export function EntryMenus({ entries, children }: { entries: EntryView[]; childr
           </> : <Textarea readOnly value={dlg.url || dlg.at || ''} rows={4} className="mono" onFocus={(ev) => ev.currentTarget.select()} />}
           <DialogFooter>
             <Button onClick={() => hide(false)}>关闭</Button>
-            {dlg.at && dlg.url && <Button onClick={() => void copyText(dlg.at ?? '', 'AnyTLS 链接')}>复制 AnyTLS</Button>}
-            <Button variant="primary" onClick={() => void copyText(dlg.url || dlg.at || '', '链接')}>{dlg.at && dlg.url ? '复制 Reality' : '复制链接'}</Button>
+            {dlg.at && dlg.url && <Button onClick={() => void cpAt.copy(dlg.at ?? '', 'AnyTLS 链接')}><CopyIcon done={cpAt.done} />复制 AnyTLS</Button>}
+            <Button variant="primary" onClick={() => void cpUrl.copy(dlg.url || dlg.at || '', '链接')}><CopyIcon done={cpUrl.done} />{dlg.at && dlg.url ? '复制 Reality' : '复制链接'}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>}

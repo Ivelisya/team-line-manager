@@ -2,7 +2,7 @@
 // 开启两步验证、退出其他设备都要再输当前密码：拿到会话 Cookie 的人不能借它绑自己的认证器、把本人踢下线。
 // 输错当前密码 / 验证码时服务端回 401（code 不是 unauthorized，不会跳登录页），错误留在对话框或表单里显示。
 import * as React from 'react';
-import { Copy, LogOut, MonitorSmartphone, RefreshCw, ShieldAlert, ShieldCheck, ShieldOff } from 'lucide-react';
+import { LogOut, MonitorSmartphone, RefreshCw, ShieldAlert, ShieldCheck, ShieldOff } from 'lucide-react';
 import { useChangePassword, useMe, useRegenRecovery, useRevokeOtherSessions, useRevokeSession, useSessions, useTotpDisable, useTotpEnable, useTotpSetup, useTotpStatus } from '@/lib/queries';
 import type { AccountSession } from '@/lib/types';
 import * as F from '@/lib/format';
@@ -13,8 +13,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { SkeletonRows } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
 import { ConfirmDialog, FormDialog } from '@/components/app/dialogs';
-import { Chip, CopyButton, Empty, ErrorNote, Note, Panel, Pill } from '@/components/app/primitives';
-import { copyText } from '@/lib/clipboard';
+import { Chip, CopyButton, CopyIcon, Empty, ErrorNote, Note, Panel, Pill, useCopied } from '@/components/app/primitives';
 import { resetOnOpen, useHeld } from '@/lib/useHeld';
 import { ShowAll } from '@/components/app/Pagination';
 
@@ -159,6 +158,7 @@ const RegenDialog = resetOnOpen(function RegenDialog({ open, onClose, onDone }: 
 function RecoveryCodesDialog({ codes, onClose }: { codes: string[] | null; onClose: () => void }) {
   const held = useHeld(codes ? 'codes' : null, codes) ?? [];
   const copyRef = React.useRef<HTMLButtonElement>(null);
+  const cp = useCopied();
   return (
     <Dialog open={codes != null} onOpenChange={(o) => !o && onClose()}>
       <DialogContent size="md" onInteractOutside={(e) => e.preventDefault()} onEscapeKeyDown={(e) => e.preventDefault()} onOpenAutoFocus={(e) => { e.preventDefault(); copyRef.current?.focus(); }}>
@@ -166,7 +166,7 @@ function RecoveryCodesDialog({ codes, onClose }: { codes: string[] | null; onClo
         <Note tone="warn" icon={<ShieldAlert size={14} />}><b>只显示这一次。</b>每个只能用一次 <InfoTip text="请存进密码管理器或打印出来，和手机分开保管。" /></Note>
         <div className="recovery-grid">{held.map((c) => <code key={c}>{c}</code>)}</div>
         <DialogFooter>
-          <Button ref={copyRef} onClick={() => void copyText(held.join('\n'), '恢复码')}><Copy />复制全部</Button>
+          <Button ref={copyRef} onClick={() => void cp.copy(held.join('\n'), '恢复码')}><CopyIcon done={cp.done} />复制全部</Button>
           <Button variant="primary" onClick={onClose}>我已保存</Button>
         </DialogFooter>
       </DialogContent>

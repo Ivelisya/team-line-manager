@@ -17,8 +17,7 @@ import { Popover, PopoverContent, PopoverTrigger, Segmented } from '@/components
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { ConfirmDialog } from '@/components/app/dialogs';
 import { errMessage, toast, useToastLift, type ToastTone } from '@/components/ui/toast';
-import { copyText } from '@/lib/clipboard';
-import { PageHead, Panel, Pill } from '@/components/app/primitives';
+import { CopyIcon, PageHead, Panel, Pill, useCopied } from '@/components/app/primitives';
 import { COLS, PASTE_COLS, UNUSED_LABEL, applies, headerCols, ipIssue, isBlank, isIpNode, localErrors, localIssues, newRow, parseTsv, pasteLine, portIssue, serverField, toItem, type Col, type Ctx, type Row } from '@/features/provision-model';
 import { CountrySelect } from '@/components/app/CountrySelect';
 import { cn, scrollBehavior } from '@/lib/utils';
@@ -36,9 +35,9 @@ const NONE_RELAYS: { id: string; name: string }[] = [];
 const NONE_HOSTS: HostChoice[] = [];
 /** 「复制中控公钥」：供应商面板（或机器 root 的 authorized_keys）录入它之后，上架不用填 root 密码。中控读不到公钥时不显示入口 */
 const PUBKEY_TIP = '在供应商面板里添加这把公钥，就不用填密码了';
-const copyPubkey = () => { const k = meta().ssh_public_key; if (k) void copyText(k, '中控公钥'); };
 function PubkeyButton() {
-  return <Button variant="link" onClick={copyPubkey}><KeyRound size={13} />复制中控公钥</Button>;
+  const cp = useCopied();
+  return <Button variant="link" onClick={() => void cp.copy(meta().ssh_public_key ?? '', '中控公钥')}><CopyIcon done={cp.done} icon={<KeyRound size={13} />} />复制中控公钥</Button>;
 }
 /** 检查结果里的提醒条数（不影响通过） */
 const warnCount = (rs: ProvisionCheckItem[]) => rs.reduce((n, r) => n + r.warnings.length, 0);
@@ -453,12 +452,14 @@ function BatchGrid({ rows, setRows, ctx, resOf, errOf, checkedAny, stale }: { ro
       return next;
     });
   }, [setRows, ctx]);
-  const copyHeader = () => void copyText(PASTE_COLS.map((c) => c?.label ?? UNUSED_LABEL).join('\t'), '表头（可粘贴到表格软件当模板）');
+  const cpKey = useCopied();
+  const cpHead = useCopied();
+  const copyHeader = () => void cpHead.copy(PASTE_COLS.map((c) => c?.label ?? UNUSED_LABEL).join('\t'), '表头（可粘贴到表格软件当模板）');
 
   return (
     <div className="stack">
       <Panel title="批量上架" sub={<InfoTip text={BATCH_TIP} />} flush
-        tools={<>{meta().ssh_public_key && <Button size="sm" title={PUBKEY_TIP} onClick={copyPubkey}><KeyRound />复制中控公钥</Button>}<Button size="sm" onClick={copyHeader}><ClipboardPaste />复制表头</Button><Button size="sm" onClick={() => addRows(1)}><Plus />加一行</Button><Button size="sm" onClick={() => addRows(5)}>加 5 行</Button><Button size="sm" variant="quiet" onClick={() => (rows.length > 1 ? setAskClear(true) : setRows([newRow()]))}>清空</Button></>}>
+        tools={<>{meta().ssh_public_key && <Button size="sm" title={PUBKEY_TIP} onClick={() => void cpKey.copy(meta().ssh_public_key ?? '', '中控公钥')}><CopyIcon done={cpKey.done} icon={<KeyRound />} />复制中控公钥</Button>}<Button size="sm" onClick={copyHeader}><CopyIcon done={cpHead.done} icon={<ClipboardPaste />} />复制表头</Button><Button size="sm" onClick={() => addRows(1)}><Plus />加一行</Button><Button size="sm" onClick={() => addRows(5)}>加 5 行</Button><Button size="sm" variant="quiet" onClick={() => (rows.length > 1 ? setAskClear(true) : setRows([newRow()]))}>清空</Button></>}>
         <div className="table-wrap">
           <table className="dt dt-grid" style={{ minWidth: total }}>
             <colgroup><col style={{ width: 40 }} />{COLS.map((c) => <col key={c.key} style={{ width: c.w }} />)}<col style={{ width: 220 }} /><col style={{ width: 56 }} /></colgroup>
