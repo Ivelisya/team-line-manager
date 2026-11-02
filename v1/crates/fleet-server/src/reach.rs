@@ -180,6 +180,8 @@ pub(crate) async fn record(st: &AppState, src: Option<Uuid>, ts: OffsetDateTime,
     let judge = eff.uses(src) && !ids.is_empty();
     let unreach = format!("select {}, {} from unnest($1::uuid[]) with ordinality u(id, i) order by i", unreachable_sql("u.id", &eff), unknown_sql("u.id", &eff));
     let before: Vec<(Option<String>, bool)> = if judge { sqlx::query_as(&unreach).bind(&ids).fetch_all(db).await? } else { vec![] };
+    // 异步提交（遥测，见 db::begin_async）；提交后再读 after，判定看得到这一轮
+    let mut tx = crate::db::begin_async(db).await?;
     sqlx::query(
         "insert into relay_reach (relay_id, ts, ok, detail, port, probe_point_id, rtt_ms, all_down)
          select u.id, $2, u.ok, u.detail, u.port, $6, u.rtt, $8 from unnest($1::uuid[], $3::bool[], $4::text[], $5::int[], $7::real[]) u(id, ok, detail, port, rtt)",
@@ -192,8 +194,9 @@ pub(crate) async fn record(st: &AppState, src: Option<Uuid>, ts: OffsetDateTime,
     .bind(src)
     .bind(samples.iter().map(|s| s.rtt_ms).collect::<Vec<_>>())
     .bind(all_down)
-    .execute(db)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     if judge {
         let after: Vec<(Option<String>, bool)> = sqlx::query_as(&unreach).bind(&ids).fetch_all(db).await?;
         let mut changed = false;

@@ -21,7 +21,9 @@ const USAGE: &str = "用法：
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // 输出到终端才带颜色码；journald 等重定向下不带（否则日志里满是转义序列）
     tracing_subscriber::fmt()
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,sqlx=warn,tower_http=warn".into()))
         .init();
     let mut args: Vec<String> = std::env::args().skip(1).collect();

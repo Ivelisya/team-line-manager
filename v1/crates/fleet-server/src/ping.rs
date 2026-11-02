@@ -306,18 +306,23 @@ pub async fn run_forever(st: AppState) {
 
 /// 重算最近 `back_hours` 个整点小时（含当前）的小时汇总，同一小时从原始行重算并覆盖，幂等
 pub async fn rollup(db: &sqlx::PgPool, back_hours: i32) -> sqlx::Result<u64> {
-    Ok(sqlx::query(
+    let mut tx = crate::db::begin_async(db).await?;
+    let n = sqlx::query(
         "insert into ping_hourly (relay_id, slot, hour, target, sent, lost, rtt_avg, rtt_max)
          select relay_id, slot, date_trunc('hour', ts), (array_agg(target order by ts desc))[1], sum(sent), sum(lost), avg(rtt_ms), max(rtt_ms)
          from ping_result where ts >= date_trunc('hour', now()) - make_interval(hours => $1)
          group by relay_id, slot, date_trunc('hour', ts)
          on conflict (relay_id, slot, hour) do update set target = excluded.target, sent = excluded.sent, lost = excluded.lost,
-           rtt_avg = excluded.rtt_avg, rtt_max = excluded.rtt_max",
+           rtt_avg = excluded.rtt_avg, rtt_max = excluded.rtt_max
+         where (ping_hourly.target, ping_hourly.sent, ping_hourly.lost, ping_hourly.rtt_avg, ping_hourly.rtt_max)
+               is distinct from (excluded.target, excluded.sent, excluded.lost, excluded.rtt_avg, excluded.rtt_max)",
     )
     .bind(back_hours)
-    .execute(db)
+    .execute(&mut *tx)
     .await?
-    .rows_affected())
+    .rows_affected();
+    tx.commit().await?;
+    Ok(n)
 }
 
 pub async fn cleanup(db: &sqlx::PgPool, r: &crate::config::Retention) -> sqlx::Result<()> {

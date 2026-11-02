@@ -784,7 +784,7 @@ async fn token_used_ago(t: &T, machine: Uuid) -> Option<f64> {
     sqlx::query_scalar("select extract(epoch from now() - last_used_at)::float8 from agent_token where machine_id = $1").bind(machine).fetch_one(&t.st.db).await.unwrap()
 }
 
-/// agent 鉴权同一条语句里记下令牌最近使用时间（一分钟内不重复写）；撤销的令牌 401，也不再刷新
+/// agent 鉴权记下令牌最近使用时间（落后不到 60 秒不重复写）；撤销的令牌 401，也不再刷新
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn agent_auth_records_token_use() {
     let t = setup().await;
@@ -814,6 +814,25 @@ async fn agent_auth_records_token_use() {
     t.st.agent_auth.forget(relay);
     assert_eq!(t.report("tok1", &blank_report(5)).await.0, StatusCode::UNAUTHORIZED);
     assert!(token_used_ago(&t, relay).await.is_some_and(|s| s >= 119.0), "撤销的令牌不刷新");
+}
+
+/// AnyTLS（sing-box）状态每份上报都覆盖（同 caps）：旧 agent 不报时，之前记下的 running 不能一直留着
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn singbox_status_is_overwritten_each_report() {
+    let t = setup().await;
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let mut r = blank_report(1);
+    r.singbox = Some(fleet_proto::SingboxStatus { installed: true, running: true, ..Default::default() });
+    assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
+    assert_eq!(t.get(&format!("/api/v1/machines/{relay}")).await["agent"]["anytls"]["running"], true);
+    // 不带 singbox 的上报（旧 agent）：摘掉旧值，界面回到「未知」
+    assert_eq!(t.report("tok1", &blank_report(2)).await.0, StatusCode::OK);
+    assert!(t.get(&format!("/api/v1/machines/{relay}")).await["agent"]["anytls"].is_null());
+    // 再报又有
+    let mut r = blank_report(3);
+    r.singbox = Some(fleet_proto::SingboxStatus { installed: true, running: false, ..Default::default() });
+    assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
+    assert_eq!(t.get(&format!("/api/v1/machines/{relay}")).await["agent"]["anytls"]["running"], false);
 }
 
 /// agent 自报的健康数据出现在机器视图的 agent.health；之后不带它的上报不把它冲掉
@@ -2670,6 +2689,19 @@ async fn retention_cleanup_removes_only_expired_rows() {
     for days in [200, 10] {
         sqlx::query(&format!("insert into probe_hourly (entry_id, hour, kind, total, ok) values ($1, now() - interval '{days} days', 'tcp', 1, 1)")).bind(Uuid::now_v7()).execute(db).await.unwrap();
     }
+    // 作废超 30 天的 agent 令牌删掉；没作废的、作废不满 30 天的留着
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    for (days, tok) in [(Some(40), "old"), (Some(5), "new"), (None, "live")] {
+        sqlx::query("insert into agent_token (id, machine_id, token_hash, revoked_at) values ($1, $2, $3, case when $4::int is null then null else now() - make_interval(days => $4) end)")
+            .bind(Uuid::now_v7())
+            .bind(relay)
+            .bind(tok.as_bytes())
+            .bind(days)
+            .execute(db)
+            .await
+            .unwrap();
+    }
+    let tokens_before = t.count("select count(*) from agent_token").await;
     // 访问记录（汇总、来源画像）按面板里设的保留期删，见 tests/it/retention.rs
     let sessions_before = t.count("select count(*) from session").await;
     db::cleanup_retention(db, &t.st.cfg.retention).await.unwrap();
@@ -2681,6 +2713,7 @@ async fn retention_cleanup_removes_only_expired_rows() {
     assert_eq!(t.count("select count(*) from notify_log").await, 1);
     assert_eq!(t.count("select count(*) from audit_log where actor = 'a'").await, 1);
     assert_eq!(t.count("select count(*) from probe_hourly").await, 1, "超 180 天的探测小时汇总删掉");
+    assert_eq!(t.count("select count(*) from agent_token").await, tokens_before - 1, "作废超 30 天的 agent 令牌删掉");
 }
 
 // ── 告警列表分页：limit / offset + total，顺序稳定（同一时刻开始的也不重不漏） ──────
