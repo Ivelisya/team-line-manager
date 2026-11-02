@@ -2,7 +2,7 @@
 // 整个文件按需加载（首次打开时才下载 cmdk）。
 import * as React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowUpCircle, BellOff, CalendarPlus, Clipboard, CloudUpload, Moon, PackageOpen, ShieldCheck, SquareTerminal, Sun, Users, type LucideIcon } from 'lucide-react';
+import { ArrowUpCircle, BellOff, BellRing, Briefcase, CalendarPlus, Clipboard, CloudUpload, Moon, PackageOpen, ShieldCheck, Settings, SquareTerminal, Sun, Users, Waypoints, type LucideIcon } from 'lucide-react';
 import { NAV, type NavItem } from '@/lib/nav';
 import { useMachineLabels, useTeams, useUpgradeAllAgents } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
@@ -19,9 +19,26 @@ import { InfoTip } from '@/components/ui/form';
 import { ConfirmDialog } from '@/components/app/dialogs';
 import { Flag, HealthPill } from '@/components/app/primitives';
 
-// 与侧栏同一份导航，在「访问监控」后加上「访问规则」（侧栏里它是访问监控页头的视图切换，名字写全路径）
-const POLICY: NavItem = { to: '/access/policy', label: '访问监控 › 访问规则', icon: ShieldCheck, kw: 'policy access 访问规则 策略 白名单 黑名单 阻止 域名 allowlist denylist' };
-const PAGES = NAV.flatMap((n) => (n.to === '/access' ? [n, POLICY] : [n]));
+// 与侧栏同一份导航；页面里的页签 / 视图单列一条，名字写全路径「页面 › 页签」，关键词加常见叫法（侧栏里没有它们，只有页面）
+const SUBS: Record<string, NavItem[]> = {
+  '/relays': [{ to: '/relays', label: '线路 › 节点放置', icon: Waypoints, kw: 'placement 放置 矩阵 往返 延迟 换线 建议 换线路机' }],
+  '/access': [{ to: '/access/policy', label: '访问监控 › 访问规则', icon: ShieldCheck, kw: 'policy access 访问规则 策略 白名单 黑名单 阻止 域名 allowlist denylist' }],
+  '/catalog': [
+    { to: '/catalog?section=providers', label: '团队与套餐 › 供应商', icon: Briefcase, kw: 'providers 供应商 厂商' },
+    { to: '/catalog?section=plans', label: '团队与套餐 › 套餐', icon: Briefcase, kw: 'plans 套餐 价格' },
+    { to: '/catalog?section=due', label: '团队与套餐 › 待付', icon: Briefcase, kw: 'due 待付 续费 到期 付款 未来待付 账单' },
+    { to: '/catalog?section=customer', label: '团队与套餐 › 计费台账', icon: Briefcase, kw: 'billing 计费台账 台账 收费 应收 客户到期 客户页 按节点数收费 手动计费' },
+  ],
+  '/incidents': [{ to: '/incidents?tab=uptime', label: '告警 › 月度可用率', icon: BellRing, kw: 'uptime 月度可用率 可用率 断线 成功率 稳定 最不稳定' }],
+  '/settings': [
+    { to: '/settings?section=retention', label: '设置 › 数据保留', icon: Settings, kw: 'retention 数据保留 保留 清理 磁盘' },
+    { to: '/settings?section=fx', label: '设置 › 汇率', icon: Settings, kw: 'fx 汇率 币种 人民币 美元 换算' },
+    { to: '/settings?section=probes', label: '设置 › 探测点', icon: Settings, kw: 'probes probe 探测点 探测 香港 主探测来源' },
+    { to: '/settings?section=ping', label: '设置 › 三网 PING', icon: Settings, kw: 'ping 三网 三网PING 电信 联通 移动 延迟 丢包' },
+    { to: '/settings?section=subs', label: '设置 › 客户端订阅', icon: Settings, kw: 'subs subscription 订阅 客户端订阅 clash openclash v2rayn 链接' },
+  ],
+};
+const PAGES = NAV.flatMap((n) => [n, ...(SUBS[n.to] ?? [])]);
 const LIMIT = 8; // 不输入时只列前几台，输入后在全部机器里搜
 
 
@@ -111,7 +128,7 @@ function PaletteBody({ theme, askUpgrade }: { theme: Theme; askUpgrade: () => vo
           <>
             <CommandGroup heading="跳转页面">
               {PAGES.map((p) => (
-                <CommandItem key={p.to} value={sv(p.label, '', p.kw)} onSelect={() => go(p.to)}><p.icon /><span className="cmd-main"><Hl text={p.label} q={q} /></span></CommandItem>
+                <CommandItem key={p.label} value={sv(p.label, '', p.kw)} onSelect={() => go(p.to)}><p.icon /><span className="cmd-main"><Hl text={p.label} q={q} /></span></CommandItem>
               ))}
             </CommandGroup>
             <CommandGroup heading="动作">

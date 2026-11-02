@@ -220,8 +220,8 @@ function EntrySection({ m }: { m: MachineView }) {
               <div className="t">加入口 <InfoTip text="挂到另一台线路机，多一条入口和分享链接，原有的不受影响" /></div>
               <span className="row" style={{ gap: 8, flexWrap: 'nowrap' }}>
                 <div style={{ flex: '0 1 160px', minWidth: 0 }}><Select value={relay} onChange={setRelay} options={opts} placeholder="选择线路机" aria-label="要挂到的线路机" /></div>
-                {/* 模式按「设置 → 入口」的默认；不支持穿透的（家宽代理、同机 IP 节点）中控自动按普通建，结果里写明 */}
-                <Button disabled={!relay || add.isPending} loading={add.isPending} onClick={() => add.mutate({ id: m.id, relay_id: relay }, { onSuccess: (r) => { toast.ok(`已提交，新入口（${r.entry_mode === 'reverse' ? '穿透' : '普通'}模式）正在应用${r.note ? `：${r.note}` : ''}`); setRelay(''); }, onError: toast.err })}>添加入口</Button>
+                {/* 模式按「设置 → 入口」的默认；不支持穿透的（家宽代理、同机 IP 节点）中控自动按普通建，结果里写明。按钮与下拉同为 36 */}
+                <Button size="lg" disabled={!relay || add.isPending} loading={add.isPending} onClick={() => add.mutate({ id: m.id, relay_id: relay }, { onSuccess: (r) => { toast.ok(`已提交，新入口（${r.entry_mode === 'reverse' ? '穿透' : '普通'}模式）正在应用${r.note ? `：${r.note}` : ''}`); setRelay(''); }, onError: toast.err })}>添加入口</Button>
               </span>
             </div>
           )}
