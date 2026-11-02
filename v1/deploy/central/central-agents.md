@@ -14,7 +14,7 @@
 
 ## fleetctl：已经配好
 
-本机 fleetctl 用全权密钥 central-local（部署时生成），直接用，不用 login。完整用法在 fleet-ops 技能 /root/.claude/skills/fleet-ops/SKILL.md（Claude Code 自动加载；别的 agent 先读它）。一律加 `--json`；失败退出码 1，错误 JSON 在 stderr。`<机器>` 写显示名（团队1-03）、线路机名、IP 或 id。
+本机 fleetctl 用全权密钥 central-local（部署时生成），直接用，不用 login。完整用法在 fleet-ops 技能 /root/.claude/skills/fleet-ops/SKILL.md（Claude Code 自动加载；别的 agent 先读它；要解析 `--json` 字段时再读同目录的 json-fields.md）。一律加 `--json`；失败退出码 1，错误 JSON 在 stderr。`<机器>` 写显示名（团队1-03）、线路机名、IP 或 id。
 
 | 要做什么 | 命令 |
 |---|---|

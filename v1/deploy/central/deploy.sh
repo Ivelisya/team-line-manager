@@ -19,8 +19,8 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 . "$ROOT/lab/build-lib.sh"
 # 进包的都要已提交：deploy/ 下的单元与 logrotate 由 scripts.rs 编进 fleet-server，web 下 src 以外的文件也影响前端构建；
-# fleet-ops 技能装到中控 /root/.claude/skills（docs/OPS.md §14）
-SKILL="$ROOT/../.claude/skills/fleet-ops/SKILL.md"
+# fleet-ops 技能（SKILL.md 与同目录的 json-fields.md 等 .md）装到中控 /root/.claude/skills（docs/OPS.md §14）
+SKILL_DIR="$ROOT/../.claude/skills/fleet-ops"
 [ -z "$(git -C "$ROOT" status --porcelain -- Cargo.toml Cargo.lock crates migrations deploy web ../.claude/skills/fleet-ops)" ] \
   || { echo "Cargo.toml / Cargo.lock / crates / migrations / deploy / web / fleet-ops 技能有未提交的改动，先提交再部署"; exit 1; }
 # 版本号取最后一次改动编译输入的提交：纯前端、纯文档的提交不换哈希，编译主机上不用全量重编
@@ -65,7 +65,7 @@ cp "$HERE/install.sh" "$HERE/central-agents.md" "$ROOT/deploy/ipintel/fetch-dbs.
   "$ROOT/deploy/ipintel/fleet-ipintel-fetch.timer" "$ROOT/deploy/backup/fleet-backup.sh" "$ROOT/deploy/backup/fleet-backup-latest.sh" \
   "$ROOT/deploy/backup/fleet-backup.service" "$ROOT/deploy/backup/fleet-backup.timer" \
   "$HERE/tunnel-setup.sh" "$HERE/tunnel-keys" "$HERE/sshd-fleet-tunnel.conf" "$STAGE/pkg/"
-cp "$SKILL" "$STAGE/pkg/fleet-ops-SKILL.md"
+mkdir "$STAGE/pkg/fleet-ops" && cp "$SKILL_DIR"/*.md "$STAGE/pkg/fleet-ops/"
 
 if [ -n "$DRY" ]; then
   OUT=$(mktemp -d)

@@ -301,7 +301,8 @@ ls /var/backups/fleet/fleet-*.tar* >/dev/null 2>&1 || systemctl start --no-block
 /opt/fleet/fleet-server local-admin -c /etc/fleet/fleet.toml
 sed -e "s|__SITE__|生产中控 $DOMAIN|" -e "s|__NOTE__|这是生产中控（$DOMAIN）：线上全部客户的线路都由它管。|" "$PKG/central-agents.md" > "$PKG/AGENTS.md"
 for f in AGENTS.md CLAUDE.md; do install -m 644 "$PKG/AGENTS.md" "/root/$f"; done
-install -D -m 644 "$PKG/fleet-ops-SKILL.md" /root/.claude/skills/fleet-ops/SKILL.md
+install -d -m 755 /root/.claude/skills/fleet-ops
+install -m 644 "$PKG"/fleet-ops/*.md /root/.claude/skills/fleet-ops/
 fc=$(HOME=/root fleetctl --json whoami 2>/dev/null | jq -r '.username // empty' || true)
 sv=$(/opt/fleet/fleet-server version 2>/dev/null | awk '{print $2}' || true)   # 0.1.0+<提交哈希>，核对装上的是哪次提交
 echo "fleet-server ${sv:-版本未知} $(systemctl is-active fleet-server)，api=$code，agent $(/opt/fleet/dist/fleet-agent version 2>/dev/null | head -1)，本机 fleetctl ${fc:-不可用（见上面 local-admin 的输出）}"

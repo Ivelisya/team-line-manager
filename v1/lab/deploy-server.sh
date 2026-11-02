@@ -131,6 +131,6 @@ sed -e "s|__SITE__|实验室中控 fleet-dev|" \
 for f in AGENTS.md CLAUDE.md; do install -m 644 "$t" "/root/$f"; done
 rm -f "$t"
 REMOTE
-# fleet-ops 技能不在 v1 里（sync-server.sh 不带），单独传
-$LAB 'install -d -m 755 /root/.claude/skills/fleet-ops && cat > /root/.claude/skills/fleet-ops/SKILL.md && chmod 644 /root/.claude/skills/fleet-ops/SKILL.md' \
-  < "$HERE/../../.claude/skills/fleet-ops/SKILL.md"
+# fleet-ops 技能不在 v1 里（sync-server.sh 不带），单独传：SKILL.md 与同目录的 json-fields.md 等 .md
+(cd "$HERE/../../.claude/skills/fleet-ops" && tar -cf - *.md) \
+  | $LAB 'install -d -m 755 /root/.claude/skills/fleet-ops && tar -xf - --no-same-owner -C /root/.claude/skills/fleet-ops && chmod 644 /root/.claude/skills/fleet-ops/*.md'
