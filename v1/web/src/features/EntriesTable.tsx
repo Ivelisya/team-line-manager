@@ -33,7 +33,7 @@ export const probeCell = (p: EntryView['egress']) => (p == null ? <span classNam
 export const tcpCell = (e: EntryView) => {
   const p = e.tcp;
   if (e.direct) return <span className="t-muted" data-tip="直出入口不经节点，不做 TCP 探测">—</span>;
-  if (isReverse(e)) return <span className="t-muted" data-tip={REVERSE_TIP}>-（穿透）</span>;
+  if (isReverse(e)) return <span className="t-muted" data-tip={REVERSE_TIP}>—</span>;
   if (p == null) return <span className="t-muted">—</span>;
   if (!p.ok) return failCell(p);
   return <span data-tip={`近 1 小时中位数；最近一次 ${p.latency_ms == null ? '—' : F.str(F.ms(p.latency_ms))}`}><Num f={F.ms(tcpMs(p))} /></span>;
@@ -75,7 +75,7 @@ export function EntriesTable({ m, traffic, onlyBad, pick }: { m: MachineView; tr
     <>
     <div className="table-wrap is-boxed">
       <table className="dt is-one" style={{ minWidth: 520 }}>
-        <colgroup>{picking && <col style={{ width: 44 }} />}<col style={{ width: 210 }} /><col style={{ width: 132 }} /><col style={{ width: 72 }} /><col style={{ width: 72 }} />{traffic && <col style={{ width: 112 }} />}</colgroup>
+        <colgroup>{picking && <col style={{ width: 44 }} />}<col style={{ width: 220 }} /><col style={{ width: 132 }} /><col style={{ width: 72 }} /><col style={{ width: 72 }} />{traffic && <col style={{ width: 112 }} />}</colgroup>
         {/* 勾选后表头换成操作栏（同一行、同样高），表格不往下挪 */}
         <thead><tr>{picking && <th className="dt-pick">{movable.length > 0 && <Checkbox aria-label="全选可换线的入口" checked={allOn ? true : picked.length > 0 ? 'indeterminate' : false} onCheckedChange={(v) => setSel(v === true ? movable.map((e) => e.id) : [])} />}</th>}
           {picked.length > 0 ? (

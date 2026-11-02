@@ -104,7 +104,7 @@ const AvailabilitySection = React.memo(function AvailabilitySection({ id, relay 
 const REACH_WINDOWS = [['24h', '近 24 小时'], ['7d', '近 7 天'], ['30d', '近 30 天']] as const;
 const reachCell = (w: ReachWindowStat | null) => (!w || !w.total ? '—'
   : <span data-tip={`${w.ok}/${w.total} 次连上${w.median_ms == null ? '' : ` · 延迟中位 ${Math.round(w.median_ms)} ms`}`}>
-    <b className="up-pct num" data-tone={w.ok / w.total < 0.9 ? 'bad' : undefined}>{successPct((100 * w.ok) / w.total)}</b>{w.avg_ms != null && <span className="t-sub"> · {Math.round(w.avg_ms)} ms</span>}</span>);
+    <b className="up-pct num" data-tone={w.ok / w.total < 0.9 ? 'bad' : undefined}>{successPct((100 * w.ok) / w.total)}</b>{w.avg_ms != null && <span className="sub">{Math.round(w.avg_ms)} ms</span>}</span>);
 /** 线路机的客户入口连通性：各路来源（中控、各探测点）连它客户入口的成功率与平均建连延迟（中控只判通不通），来自小时汇总。
  *  卡片心跳格只看主来源近 1 小时；这里给长期的、各路并排的（对比香港与中控、事后核对投诉） */
 const ReachQualitySection = React.memo(function ReachQualitySection({ id }: { id: string }) {
@@ -118,7 +118,7 @@ const ReachQualitySection = React.memo(function ReachQualitySection({ id }: { id
         : !s.length ? <div className="hint">还没有探测记录</div>
         : (
           <div className="table-wrap">
-            <table className="dt is-one" style={{ minWidth: 440 }}>
+            <table className="dt is-one" style={{ minWidth: 332 }}>
               <thead><tr><th>来源</th>{REACH_WINDOWS.map(([k, l]) => <th key={k}>{l}</th>)}</tr></thead>
               <tbody>
                 {s.map((x) => (

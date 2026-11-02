@@ -129,10 +129,10 @@ function LiveNodes({ sp, upd, tools }: { sp: URLSearchParams; upd: (patch: Recor
       { id: 'entry', header: '入口', size: 184, cell: (m) => <EntryCell m={m} /> },
       { id: 'plan', header: '套餐 · 供应商', size: 176, drop: 3,
         cell: (m) => <>{m.plan ? <Trunc className="cell-main">{m.plan.name}</Trunc> : <span className="cell-main t-muted">{m.host_machine ? '不带套餐' : '未设置'}</span>}<span className="sub" data-tip={m.provider?.name}>{m.provider?.name ?? '—'}</span></> },
-      { id: 'traffic', header: '本月流量', size: 144, r: true, ...byNum(trafficTotal),
+      { id: 'traffic', header: '本月流量', size: 152, r: true, ...byNum(trafficTotal),
         cell: (m) => <MonthFlowCell m={m} /> },
       // 没有订阅的（无值）不论升降序都排在最后
-      { id: 'due', header: '到期', size: 140, r: true, ...byNum((m) => m.subscription?.due_days ?? null, 'asc'),
+      { id: 'due', header: '到期', size: 124, r: true, ...byNum((m) => m.subscription?.due_days ?? null, 'asc'),
         cell: (m) => (m.subscription ? <><Due days={m.subscription.due_days} state={m.subscription.due_state} /><span className="sub"><DueDate sub={m.subscription} /></span></> : <span className="t-muted">—</span>) },
       // 计费统一按 USD（feeView）：排序按服务端折好的月费；原币种不是 USD 或不是按月付的，副行写原价（悬停有汇率）。
       // 没有汇率的写原币种月费、副行标未折算，排在最后

@@ -88,6 +88,7 @@
 /* ========== 下划线页签 ========== */
 .tabs-list { display: flex; align-items: stretch; gap: var(--sp-20); border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
 .tabs-list::-webkit-scrollbar { display: none; }
+@media (max-width: 420px) { .drawer-tabs .tabs-list { gap: var(--sp-16); } } /* 手机上抽屉 7 个页签差 7px 放不下（「管理」被切一半）：间距收到 16 整排放下；别处的页签间距不动 */
 /* 不支持滚动驱动动画的浏览器（Firefox）靠 TabsList 的滚动监听写 data-fade，宽度同 base.css 的 20px；支持的浏览器由 base.css 的通用规则给，监听不挂 */
 .tabs-list[data-fade="r"] { mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent); }
 .tabs-list[data-fade="l"] { mask-image: linear-gradient(to left, #000 calc(100% - 20px), transparent); }
@@ -174,7 +175,7 @@
 .due[data-tone="warn"] { color: var(--warn-text); }
 .due[data-tone="bad"] { color: var(--bad-text); }
 .due-t { font-size: 0.86em; font-weight: var(--fw-medium); } /* 到期里的文字（今天 / 已过期 / 后 / 到期）：不按数字排版 */
-.num + .due-t { font-size: var(--fs-micro); color: var(--fg-2); } /* 数字后面的「后」「后到期」同「天」这类单位：一样小、一样灰（否则后缀比单位还显眼）；数字前的「已过期」「今天」不动 */
+.due .unit, .num + .due-t { font-size: var(--fs-micro); font-weight: var(--fw-medium); color: var(--fg-2); } /* 数字后面的「天」（.unit）与「后」「后到期」：一样小、一样灰、同粗细，各处（卡片、表格、抽屉、机器页）一致，否则表格里「天」12px、「后」11px；数字前的「已过期」「今天」不动 */
 /* 计数徽标（侧栏告警数、顶栏进行中作业数）：实底胶囊，默认故障红，data-tone="accent" 为强调色；位置由所在处给（base.css） */
 .count-badge { --cb-bg: var(--bad-solid); --cb-fg: var(--on-solid); display: inline-grid; place-items: center; flex: none; min-width: var(--h-chip-sm); height: var(--h-chip-sm); box-sizing: border-box; padding: 0 5px; border-radius: var(--r-pill); background: var(--cb-bg); color: var(--cb-fg); font: var(--fw-medium) var(--fs-micro) / 1 var(--font-num); font-variant-numeric: tabular-nums; }
 .count-badge[data-tone="accent"] { --cb-bg: var(--accent-solid); --cb-fg: var(--on-accent); }

@@ -101,8 +101,8 @@ function RelayCard({ m, open, routers }: { m: MachineView; open: Open; routers: 
       {/* 入口的“⋯”菜单与对话框整张卡共用一份 */}
       {/* TableWrap：放得下时表头吸顶，长卡往下滚列名一直在 */}
       <EntryMenus entries={m.entries}><div><TableWrap>
-        <table className="dt is-one" style={{ minWidth: 700 }}>
-          <colgroup><col style={{ width: 84 }} /><col style={{ width: 160 }} /><col style={{ width: 104 }} /><col style={{ width: 96 }} /><col style={{ width: 96 }} /><col style={{ width: 120 }} /><col style={{ width: 52 }} /></colgroup>
+        <table className="dt is-one" style={{ minWidth: 716 }}>
+          <colgroup><col style={{ width: 76 }} /><col style={{ width: 196 }} /><col style={{ width: 132 }} /><col style={{ width: 84 }} /><col style={{ width: 64 }} /><col style={{ width: 112 }} /><col style={{ width: 52 }} /></colgroup>
           <thead><tr><th>端口</th><th>节点</th><th>状态</th><th className="r">TCP 延迟</th><th className="r">出口</th><th className="r">本月业务流量</th><th /></tr></thead>
           <tbody>
             {entries.map((e) => <EntryRow key={e.id} e={e} open={open} routers={routers.get(e.id)} />)}

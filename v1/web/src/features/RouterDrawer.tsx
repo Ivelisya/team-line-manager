@@ -3,7 +3,7 @@
 // 总览数字不带框，出口关系画成「出口 → 线路机 → 节点」，部署进度是时间线。
 import * as React from 'react';
 import { Link } from 'react-router-dom';
-import { ChevronLeft, ChevronRight, CircleX, Router as RouterIcon, TriangleAlert, XCircle } from 'lucide-react';
+import { ChevronLeft, ChevronRight, CircleX, Router as RouterIcon, TriangleAlert, Users, Waypoints, XCircle } from 'lucide-react';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/dialog';
 import { Tabs, TabsList, TabsTrigger, Trunc } from '@/components/ui/overlays';
 import { Button, IconButton } from '@/components/ui/button';
@@ -14,7 +14,7 @@ import { toast } from '@/components/ui/toast';
 import { ErrorBoundary } from '@/components/app/ErrorBoundary';
 import { Gone, isGone } from '@/components/app/Gone';
 import { ConfirmDialog, TypedConfirmDialog } from '@/components/app/dialogs';
-import { CopyButton, ErrorNote, LabelValue, LabelValueGrid, Note, Num, Pill, Section, SectionHeader, SeverityMark } from '@/components/app/primitives';
+import { CopyButton, Empty, ErrorNote, LabelValue, LabelValueGrid, Note, Num, Pill, Section, SectionHeader, SeverityMark } from '@/components/app/primitives';
 import { Tag } from '@/components/app/viz';
 import { DeployTimeline, MiniBeat, RouterMeters, RouterStatePill, Seen, useShowBootstrap } from '@/components/app/RouterCard';
 import { useEndSubjectMaint, useMachineBriefs, useTeams } from '@/lib/queries';
@@ -450,21 +450,21 @@ function ExitsTab({ r, d }: { r: RouterView; d: RouterDetail }) {
   return (
     <>
       <p className="rt-lead">{d.exits.length} 个出口 · <b>{alive}</b> 个可用 · {managed} 个对应入口{drift > 0 && <> · <span className="rt-warn">{drift} 个不一致</span>{canSync && <> <button type="button" className="btn btn-link btn-sm" style={{ height: 'auto', padding: 0 }} onClick={() => onSync([])}>全部同步…</button></>}</>}<InfoTip text="定期测一次延迟。连续两轮不通才算不可用，只不通一次不告警" /></p>
-      <Section>
+      {d.exits.length === 0 ? <Empty icon={<Waypoints size={22} />} text="没有读到出口" /> : <Section>
         <SectionHeader title="出口 → 节点" />
         <Topology exits={d.exits} onOpen={openMachine} />
-      </Section>
+      </Section>}
       <GroupsSection r={r} groups={d.groups ?? []} />
-      <Section>
+      {d.exits.length > 0 && <Section>
         <SectionHeader title="明细" meta={`${d.exits.length} 个`} />
         <div className="table-wrap">
-          <table className="dt rt-exit-tbl" style={{ minWidth: 728 }}>
-            <colgroup><col style={{ width: 90 }} /><col style={{ width: 132 }} /><col style={{ width: 112 }} /><col style={{ width: 84 }} /><col style={{ width: 90 }} /><col style={{ width: 48 }} /><col style={{ width: 104 }} /><col style={{ width: 68 }} /></colgroup>
+          <table className="dt rt-exit-tbl" style={{ minWidth: 717 }}>
+            <colgroup><col style={{ width: 90 }} /><col style={{ width: 132 }} /><col style={{ width: 101 }} /><col style={{ width: 84 }} /><col style={{ width: 90 }} /><col style={{ width: 48 }} /><col style={{ width: 104 }} /><col style={{ width: 68 }} /></colgroup>
             <thead><tr><th>出口</th><th>对应入口</th><th>参数<InfoTip text={(['drift', 'unmanaged'] as const).map((k) => `${SYNC[k].label}：${SYNC[k].tip}`).join('\n')} /></th><th className="r">延迟</th><th>近 6 小时</th><th className="r">连接</th><th className="r">↓ / ↑ 速率</th><th className="r">客户端</th></tr></thead>
             <tbody>{d.exits.map((e) => <ExitRow key={e.name} e={e} beats={m.get(e.name)} onOpen={openMachine} onSync={r.state === 'online' && syncable(e) ? onSync : undefined} />)}</tbody>
           </table>
         </div>
-      </Section>
+      </Section>}
     </>
   );
 }
@@ -549,13 +549,13 @@ function ClientsTab({ d }: { d: RouterDetail }) {
   return (
     <>
       <p className="rt-lead"><b>{online}</b> 台在线 · 共 {list.length} 台<InfoTip text="包括 DHCP 分配的设备，以及经过 OpenClash 的设备（旁路由下的设备只能认出 IP）" /></p>
-      <div className="table-wrap">
+      {list.length === 0 ? <Empty icon={<Users size={22} />} text="现在没有客户端" /> : <div className="table-wrap">
         <table className="dt" style={{ minWidth: offline ? 700 : 630 }}>
           <colgroup><col style={{ width: 230 }} />{offline && <col style={{ width: 70 }} />}<col style={{ width: 70 }} /><col style={{ width: 104 }} /><col /></colgroup>
           <thead><tr><th>设备</th>{offline && <th>状态</th>}<th className="r">连接</th><th className="r">↓ / ↑ 速率</th><th>经过的出口（连接数）</th></tr></thead>
           <tbody>{list.map((c) => <ClientRow key={c.ip} c={c} offline={offline} />)}</tbody>
         </table>
-      </div>
+      </div>}
     </>
   );
 }
