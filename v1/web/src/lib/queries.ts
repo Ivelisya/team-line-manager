@@ -180,12 +180,12 @@ export interface StreamEvent { type: string; id?: string }
  *  incidents：机器的健康与总览不看告警表，不重取整表；静默带来的「维护中」由服务端随后的 metrics 推送送达
  *  audit：抽屉里机器的操作记录，随改名、续费、退役等机器变更增加；['policies', 'list'] / ['policies', 'versions']：策略页的范围树列着各团队的节点、发布记录列着线路机名（名字、有没有入口），
  *  机器增减、改名换团队、团队改名都会改它（只有挂着的查询会重取，策略页没开时只是标成过期；不带发布确认框里的预览，免得框开着时内容在眼前变）；
- *  machine：这台的详情与机器列表里的这一台由 stream.ts 单独取回拼上（live.ts refreshMachine），这里不带；拼不上（改名、换团队、生命周期变了等）
+ *  machine：这台的详情与机器列表里的这一台由 stream.ts 单独取回拼上（live.ts refreshMachine），这里不带；线路页的 ['relays'] 里入口可达数、状态（reach、applied）不在 refreshMachine 拼的推送字段里，所以带上整表重取；拼不上（改名、换团队、生命周期变了等）
  *  或页面在后台、机器列表和这台的详情都没人看时才按 MACHINE_LIST_KEYS 整表失效——incidents / jobs 列表里带机器名，跟着重取让名字立刻跟上；
  *  availability：近 N 天可用率按账单时区分天，改订阅（machine 事件）可能换了时区；traffic-daily：流量页的计费量按生效的计费方式算，改订阅（machine）、改供应商（catalog）都会变；teams：团队页的月费合计随改订阅 / 续费变 */
 export function eventKeys(ev: StreamEvent): unknown[][] {
   switch (ev.type) {
-    case 'machine': return [['billing-due'], ['teams'], ['traffic-daily'], ['machine-ping', ev.id], ['recycle-bin'], ['overview'], ['audit'], ['policies', 'list'], ['policies', 'versions'], ['availability', ev.id]];
+    case 'machine': return [['billing-due'], ['teams'], ['traffic-daily'], ['machine-ping', ev.id], ['recycle-bin'], ['relays'], ['overview'], ['audit'], ['policies', 'list'], ['policies', 'versions'], ['availability', ev.id]];
     case 'machines': return [['billing-due'], ['machine'], ['machines'], ['recycle-bin'], ['relays'], ['overview'], ['audit'], ['policies', 'list'], ['policies', 'versions']];
     case 'relay': return [['relays'], ['machines']];
     case 'job': return [['jobs'], ['job', ev.id]];
