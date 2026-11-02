@@ -101,7 +101,7 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 
 按这个顺序，前一步解释不了再进下一步：
 
-1. **看全局**：`fleetctl status`。告警里的「规则」决定走向：
+1. **看全局**：`fleetctl status`（告警表格最多列 20 条，严重的在前、同级新的在前，多的写「另有 N 条」，全部用 `fleetctl incidents`；`--json` 不截断）。告警里的「规则」决定走向：
    - `agent_offline`：到 2。
    - `no_entry`：节点没有入口；`fleetctl entries <机器>` 确认，缺就 `POST /machines/{id}/entries`（网页「新增入口」）。
    - `egress_fail` / `tcp_fail`：入口到出口不通，到 3。作业「出口验收」一直报「超时 12 秒」、或报「线路机 X 连不上节点 SS 端口」时先查节点的主机防火墙：供应商镜像自带的 ufw / firewalld 常只放行旧线路机（实际发生过：换线路机后验收卡了 7 分钟，节点上 ufw 的 8388 只放行旧线路机）。收敛脚本（上架、`ss_refresh`、换线路机的防火墙步骤）会在 ufw / firewalld 运行时给放行名单里的线路机 IP 加 SS 端口的放行规则（ufw 规则注释 `fleet-ss`，名单里已没有的旧线路机规则同时删掉；不关用户的防火墙，不重启 ssserver），作业日志写「主机防火墙：…」；规则没改成、或只有 iptables 且 INPUT 默认丢弃时日志里有 warn，需要到节点上手动放行线路机 IP；云厂商安全组中控管不到，只能到供应商面板放行 SS 端口（tcp、udp）。
@@ -597,7 +597,7 @@ url = "https://api.frankfurter.dev/v1/latest?base=USD"   # 回包 {base:"USD", d
 - 改全局目标：网页 设置 → 三网 PING，或 `fleetctl ping-targets set <槽位 1–8> --name 武汉电信 --target hb-ct-v4.ip.zstaticcdn.com`（`--target ""` 清空 = 不测）、`fleetctl ping-targets mode tcp|icmp`。保存后全部线路机代数 +1，一分钟内按新目标测。某台线路机正处在「重启 Xray 失败、暂停重试」时，改 PING 目标不会触发再次重启（新版 agent），但这台的新目标要等闸门期满、重试应用成功后才生效。
 - 单台覆盖：抽屉「管理」→ 三网 PING，或 `fleetctl ping <线路机> set <槽位> --name … --target …`、`fleetctl ping <线路机> mode icmp|tcp|global`、`fleetctl ping <线路机> reset [<槽位>]`。看读数：`fleetctl ping <线路机>` 或 `fleetctl show <线路机>`。
 - 要新版 agent：旧 agent 照常应用期望状态、只是不测（卡片上没有三网一块）。中控部署后升级线路机 agent（§7）。
-- 某个目标一直 100% 丢包：先看是不是目标不开那个口（TCP 不写端口连 80）——换成 `host:443` 或改 ICMP 试；ICMP 时卡片悬停写的实际方式是 TCP，说明线路机上的系统 ping 用不了（没装 iputils-ping，或 `sysctl net.ipv4.ping_group_range` 不含 0），agent 日志里 10 分钟一条「ICMP 用不了」。
+- 某个目标一直 100% 丢包：先看是不是目标不开那个口（TCP 不写端口连 80）——换成 `host:443` 或改 ICMP 试；ICMP 时卡片悬停写的实际方式是 TCP，说明线路机上的系统 ping 用不了（没装 iputils-ping，或 agent 单元的 `CapabilityBoundingSet` 里没有 `CAP_NET_RAW`——旧单元缺它，`upgrade-agent` 补上；ping 走数据报套接字的系统还要 `sysctl net.ipv4.ping_group_range` 含 0），agent 日志里 10 分钟一条「ICMP 用不了」。
 
 ### 放置矩阵（节点放在哪台线路机）
 

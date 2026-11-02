@@ -97,10 +97,20 @@ async fn startup_align(sh: &Shared, applier: &Applier, sb: &Singbox) {
 
 /// 周期对齐：轻量检查（不跑 xray -test），不一致才完整应用一次修复，并记日志。
 /// AnyTLS（sing-box）每次都按已应用的那份对一遍：配置一样、单元在跑就什么都不做；它只跟着 Xray 已应用的状态走，不受 Xray 这次修没修好影响
-async fn periodic_align(sh: &Shared, applier: &Applier, sb: &Singbox, gate: &mut RestartGate) {
+/// `written`：上一次对齐修复失败时写进 last_apply_error 的那条。之后检查通过（比如那次只是 Xray API 偶发查询失败）就把它清掉；
+/// 只在 last_apply_error 还是这一条时才清，期间长轮询应用写了别的（真实的应用失败）就留着
+async fn periodic_align(sh: &Shared, applier: &Applier, sb: &Singbox, gate: &mut RestartGate, written: &mut Option<String>) {
     let Some(d) = sh.applied.read().unwrap().clone() else { return };
     sb.apply(&d).await;
-    let Err(why) = applier.check_aligned(&d).await else { return };
+    let Err(why) = applier.check_aligned(&d).await else {
+        if let Some(w) = written.take() {
+            let mut cur = sh.health.last_apply_error.lock().unwrap();
+            if cur.as_deref() == Some(w.as_str()) {
+                *cur = None;
+            }
+        }
+        return;
+    };
     // 闸门只为不反复断开客户连接：Xray 确实没在跑（崩了 / 被停了）就没有客户可断，照常应用把它拉起来
     if gate.remaining().is_some() && !applier.is_down().await {
         tracing::warn!(generation = d.generation, "对齐检查发现不一致，但重启路径刚失败过，暂不重试：{why}");
@@ -113,6 +123,7 @@ async fn periodic_align(sh: &Shared, applier: &Applier, sb: &Singbox, gate: &mut
     if rep.ok {
         gate.clear();
         note_apply(sh, &rep, None);
+        *written = None;
         tracing::info!(generation = d.generation, "已修复到与期望状态一致");
     } else {
         let note = res.disruptive_restart.then(|| {
@@ -120,6 +131,7 @@ async fn periodic_align(sh: &Shared, applier: &Applier, sb: &Singbox, gate: &mut
             paused_note(d.generation, gate.fails, wait)
         });
         note_apply(sh, &rep, note);
+        *written = sh.health.last_apply_error.lock().unwrap().clone();
         tracing::error!(generation = d.generation, "对齐修复失败：{}", rep.error.as_deref().unwrap_or(""));
     }
 }
@@ -170,6 +182,7 @@ async fn report_applied(sh: &Shared, client: &ServerClient, rep: &ApplyReport, s
 pub async fn desired_task(sh: Arc<Shared>, applier: Arc<Applier>, sb: Arc<Singbox>, client: Arc<ServerClient>, mut sd: watch::Receiver<bool>) {
     let mut fails = 0u32;
     let mut gate = RestartGate::default();
+    let mut align_err = None;
     // 本版本解析不了的最新代数：已回报"版本过旧"，之后带着它去长轮询，直到中控出了更新的一代。
     // 应用成功就清零：中控代数回退（比它小）后不能再带着它去轮询，否则每次都立刻拿回同一代、无间隔空转
     let mut unreadable = 0u64;
@@ -187,7 +200,7 @@ pub async fn desired_task(sh: Arc<Shared>, applier: Arc<Applier>, sb: Arc<Singbo
         }
         if last_align.elapsed() >= REALIGN_EVERY {
             last_align = Instant::now();
-            periodic_align(&sh, &applier, &sb, &mut gate).await;
+            periodic_align(&sh, &applier, &sb, &mut gate, &mut align_err).await;
         }
         // 先补发上次没送达的回报
         let path = pending_ack_path(&sh.cfg);
