@@ -19,9 +19,9 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { toast } from '@/components/ui/toast';
 import { CopyButton, Empty, ErrorNote, Panel, Pill, Stat, TableWrap } from '@/components/app/primitives';
 import { ConfirmDialog, FormDialog } from '@/components/app/dialogs';
-import { BatchTimeline, TimelineLegend, type TimelineItem } from './BatchTimeline';
+import { BatchTimeline, TimelineLegend, currentPeriod, type TimelineItem } from './BatchTimeline';
 
-const toItem = (b: CustomerBatch): TimelineItem => ({ ...b, desc: b.summary });
+const toItem = (b: CustomerBatch): TimelineItem => b;
 const nameOf = (b: Pick<CustomerBatch, 'seq' | 'region'>) => `第${F.pad2(b.seq)}批 · ${b.region}`;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const digits = (s: string) => s.replace(/\D/g, '');
@@ -150,6 +150,14 @@ function Timeline({ d, teamId }: { d: TeamBatches; teamId: string }) {
 }
 
 /* ---------------------------------------------------------------- 计费节点 */
+/** 名额的本期（同批次的名额各期相同）：在用 / 空出待定的是批次的本期；已结束的是它最后计费的那一期（起点早于结束日的最后一期）。悬停写首次起算日 */
+function SlotPeriod({ s, batches }: { s: BillingSlot; batches: CustomerBatch[] }) {
+  const ps = batches.find((b) => b.seq === s.batch_seq)?.periods.filter((p) => !s.end_date || p.start_date < s.end_date) ?? [];
+  if (!ps.length) return <span className="t-muted">—</span>;
+  const p = currentPeriod(ps);
+  return <span data-tip={`${s.start_date} 首次起算，每月同日续一期`}>{p.start_date.slice(5)} → {p.end_date.slice(5)}</span>;
+}
+
 function SlotStateText({ s }: { s: BillingSlot }) {
   if (s.state === 'ended') return <span className="t-muted">已结束 <span className="num">{s.end_date ? md(s.end_date) : ''}</span></span>;
   if (s.state === 'vacated') {
@@ -174,14 +182,14 @@ function Slots({ d, teamId }: { d: TeamBatches; teamId: string }) {
       tools={<Button onClick={() => setAdding(true)}><Plus />添加手动计费节点</Button>}>
       <TableWrap>
         <table className="dt" style={{ minWidth: 640 }}>
-          <colgroup><col /><col style={{ width: 100 }} /><col style={{ width: 96 }} /><col style={{ width: 84 }} /><col style={{ width: 200 }} /><col style={{ width: 52 }} /></colgroup>
-          <thead><tr><th>节点</th><th>地区</th><th>起算日</th><th>批次</th><th>状态</th><th /></tr></thead>
+          <colgroup><col /><col style={{ width: 100 }} /><col style={{ width: 132 }} /><col style={{ width: 84 }} /><col style={{ width: 200 }} /><col style={{ width: 52 }} /></colgroup>
+          <thead><tr><th>节点</th><th>地区</th><th>本期</th><th>批次</th><th>状态</th><th /></tr></thead>
           <tbody>
             {list.map((s) => (
               <tr key={s.id} className={s.state === 'ended' ? 'is-retired' : undefined}>
                 <td className="strong">{s.holder ? <button type="button" className="btn btn-link cxa-node" onClick={() => openDrawer(s.holder!.id)}>{s.holder.name}</button> : <span className={s.manual ? undefined : 't-sub'}>{slotName(s)}</span>}</td>
                 <td>{s.region}</td>
-                <td className="num">{s.start_date.slice(5)}</td>
+                <td className="num"><SlotPeriod s={s} batches={d.batches} /></td>
                 <td className="num">第{F.pad2(s.batch_seq)}批</td>
                 <td><SlotStateText s={s} /></td>
                 <td className="c">
