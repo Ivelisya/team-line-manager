@@ -329,29 +329,30 @@ FLEET_BUILD=docker FLEET_BUILD_HOST=10.172.17.213 lab/sync-server.sh 'cargo test
 - 编译失败、或 install.sh 重启后等 60 秒未登录访问 `/api/v1/auth/me` 仍不是 401、或首页 `/` 不是 200 text/html（前端没挂上，多半是 `/opt/fleet/web` 对 fleet 用户不可读），部署以非 0 退出，前者会打出 fleet-server 最近 60 行日志。中控上的安装包无论成败都删掉。
 - 安装顺序：会失败的预检（软路由隧道的 23000–23999 端口与 `sshd -t`）最先做，要换的 fleet-server、fleetctl、dist、前端先放成 `.new`，紧挨着重启 fleet-server 之前才一起换上：预检或中间任何一步失败，线上的二进制、前端、dist 原样不动（不会出现旧进程配新前端，也不会让磁盘上的新二进制在之后一次崩溃重启时无人值守地升级、跑迁移）。重启之后的步骤（Caddy、健康检查）失败时新版已经在跑，回滚见 §9。
 - install.sh 在中控的临时 systemd 单元 `fleet-install` 里跑（`systemd-run --wait --pipe --collect`）：本机 ssh 断了或 Ctrl-C，安装继续跑完；输出同时写 `/root/fleet-install.log`（断线后 `tail -f` 看进度，成功时最后一行是「fleet-server … api=401 …」，否则是失败原因）。上一次的安装还没结束时再部署会直接报错退出，不会另起一个。
-- 换下来的旧 fleet-server 留在中控 `/opt/fleet/fleet-server.prev`（同一个二进制重复部署时不覆盖它）。
+- 换下来的旧版本留在中控：fleet-server 在 `/opt/fleet/fleet-server.prev`，前端在 `/opt/fleet/web.prev`，agent 在 `/opt/fleet/dist/fleet-agent.prev`（各自内容相同的重复部署不覆盖它们；只留上一版，geoip.dat、xray、ssserver、sing-box 不留）。
+- 换上新版之前，install.sh 先同步做一份备份（`systemctl start fleet-backup`，等它做完；备份失败部署就停在这里，线上的版本、前端、dist 原样不动）：这是上线前的回滚点，不用再手动 `systemctl start fleet-backup`，也不用手工在 `/root/pre-deploy-*` 里存。首次安装（中控上还没有 fleet-server、库是空的）跳过这一步，装完后照旧再做第一份。每天一份的备份目录里同一个北京日期只留最后一份（见 §10），所以当天部署前的这份会顶掉当天 03:30 那份，不会挤掉更早日期的。已有的 `/root/pre-deploy-*` 是历史回滚点，不动。
 - 迁移 0029 先把币种去空白转大写，再给套餐 / 订阅 / 续费记录的币种（3 个大写字母）和通知渠道种类（当时是 telegram / wecom / webhook）加约束；存量里还有不合规的不让迁移失败，日志里有「0029：… 暂不验证」的警告。看到时查出那几行（如 `select id, currency from plan where currency !~ '^[A-Z]{3}$'`）改成正确的币种，再 `alter table plan validate constraint plan_currency_iso`（订阅 / 续费记录 / 渠道同理：`subscription_currency_iso`、`renewal_currency_iso`、`notify_channel_kind_check`）。
-- 迁移 0093（穿透入口）只给 `entry` 加三列（`mode` 默认 normal、`bridge_uuid` 随机生成、`reverse_kick_at`），存量入口一律普通模式，不改任何行为。新迁移照 §9 回滚的规矩：上线前先 `systemctl start fleet-backup`。
-- 迁移 0098 把旧的逐节点 `init` 增减记录（每个节点一条）按团队合并成一条（节点名单进 `detail.nodes`），并给 `billing_slot` 加 `vacate_reason`（空出原因）：现有空出 / 已结束的系统名额按「现在」的不计费状态回填一次（近似），之后由对账在空出时落库。上线前照旧先做备份。
+- 迁移 0093（穿透入口）只给 `entry` 加三列（`mode` 默认 normal、`bridge_uuid` 随机生成、`reverse_kick_at`），存量入口一律普通模式，不改任何行为。新迁移照 §9 回滚的规矩：上线前要有备份（install.sh 换版前自动做）。
+- 迁移 0098 把旧的逐节点 `init` 增减记录（每个节点一条）按团队合并成一条（节点名单进 `detail.nodes`），并给 `billing_slot` 加 `vacate_reason`（空出原因）：现有空出 / 已结束的系统名额按「现在」的不计费状态回填一次（近似），之后由对账在空出时落库。上线前的备份由 install.sh 自动做。
 - 迁移 0081 把通知渠道种类约束改成只允许 telegram / feishu，并删掉库里已有的企业微信、webhook 渠道（它们排着的待发通知一并删，发送记录里的渠道名置空）；之后在设置页新建飞书渠道。
-- 重启时 fleet-server 优雅退出：不再领新作业，正在跑的步骤做完就停在两步之间（最多等 60 秒，没做完的重启后从这一步重做），这期间接口照常；之后停止接新连接，进行中的请求最多再等 10 秒。有作业在跑时一次重启最多约 70 秒才换上新版本。
+- 重启时 fleet-server 优雅退出：不再领新作业，正在跑的步骤做完就停在两步之间（最多等 60 秒，没做完的重启后从这一步重做），这期间接口照常；之后先通知线路机的期望状态长轮询（回 204）和实时流 WebSocket（以 1012 关闭）收尾，客户端立刻重连到新进程，再停止接新连接，进行中的请求最多再等 10 秒。有作业在跑时一次重启最多约 70 秒才换上新版本。systemd 单元是 `KillMode=mixed`、`TimeoutStopSec=90`：停止时 SIGTERM 只发给 fleet-server 主进程（不是同时发给它正在用的 ssh 子进程，否则进行中的步骤当场失败），主进程退出或 90 秒到点后才对残留的子进程发 SIGKILL。步骤里 ssh 超过 60 秒没做完的照旧被打断、重启后重做。
 - fleet-server 启动时先占端口再碰库：手动再起一个 `fleet-server serve` 会因端口被占直接退出，不会动在跑实例的作业。
 - 启动时（之后每小时）删过期分区前核对本机时钟：任何一张分区表最近一天里有数据（agent 每 30 秒报主机读数）就按本机时钟删，某张表（如访问记录）空闲多久都照期限删；所有表都没有最近一天的数据（开机时钟大幅超前，或整个中控很久没收到上报）时，按各表自己最新的数据减保留期删（以数据为锚，时钟超前也不会把保留期内的整批删掉），日志里是 warn「分区表最近一天都没有新数据…」；表里没有数据的不删。
 
 回滚（新版起不来，或上线后有严重问题）：
 
 1. 先确认这次部署**没有新迁移**：`git diff --name-only <旧哈希> <新哈希> -- migrations` 为空（新旧哈希见中控 `journalctl -u fleet-server | grep 监听 | tail -2`；当前与换下来的二进制也可直接 `/opt/fleet/fleet-server version`、`/opt/fleet/fleet-server.prev version` 看，早于这个子命令的旧版本会打用法）。fleet-server 启动时自动跑迁移；新迁移一旦执行过，旧版本发现库里有它不认识的迁移会拒绝启动，这时不能直接换回，只能修好再发新版本（或按 §10 从备份恢复，丢失备份之后的数据）。
-   - **迁移 0055（`incident.engine`）之后**回退到更早的版本（如 627d929），必须连库一起恢复成部署之前的备份，不能只换二进制：0055 给告警表加了不能为空、没有默认值的 `engine` 列，「开着的只有一条」的唯一索引也换成了带 `engine` 的。旧版本本来就会因为不认识的迁移拒绝启动；就算手工删掉 `_sqlx_migrations` 里的记录让它起来，它写告警不带 `engine`、按旧的唯一索引去冲突，**所有告警都写不进去**（机器、软路由、探测点、中控自身的都开不出来、不发通知，只有日志里报错，面板上看不出来）。所以含 0055 的版本上线前先在中控 `systemctl start fleet-backup` 做一份（`journalctl -u fleet-backup -n 5` 确认），要回退就按 §10「从备份恢复」用这一份恢复库、再换回旧版本，备份之后的数据（上报、作业、审计）会丢。之后带新迁移的版本同理：上线前先做一份备份。
+   - **迁移 0055（`incident.engine`）之后**回退到更早的版本（如 627d929），必须连库一起恢复成部署之前的备份，不能只换二进制：0055 给告警表加了不能为空、没有默认值的 `engine` 列，「开着的只有一条」的唯一索引也换成了带 `engine` 的。旧版本本来就会因为不认识的迁移拒绝启动；就算手工删掉 `_sqlx_migrations` 里的记录让它起来，它写告警不带 `engine`、按旧的唯一索引去冲突，**所有告警都写不进去**（机器、软路由、探测点、中控自身的都开不出来、不发通知，只有日志里报错，面板上看不出来）。所以含 0055 的版本上线前要有一份备份（install.sh 换版前自动同步做，`journalctl -u fleet-backup -n 5` 确认），要回退就按 §10「从备份恢复」用这一份恢复库、再换回旧版本，备份之后的数据（上报、作业、审计）会丢。之后带新迁移的版本同理：上线前先做一份备份。
 2. 没有新迁移时，在中控上换回旧版（先复制再改名：正在运行的可执行文件不能直接覆盖）：
    ```
    cp -p /opt/fleet/fleet-server.prev /opt/fleet/fleet-server.new && mv -f /opt/fleet/fleet-server.new /opt/fleet/fleet-server && systemctl restart fleet-server
    curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/api/v1/auth/me     # 应为 401
    ```
-3. 这样只换回了 fleet-server：前端 `/opt/fleet/web` 和 dist 里的 fleet-agent 还是新的，换回后先别上架、别 `upgrade-agent`（新 agent 的上报旧中控可能拒收，见 §7）。要整体回到旧版本：本机 `git checkout <旧提交>` 后再跑一次 deploy.sh（同样要求没有新迁移）。
+3. 这样只换回了 fleet-server：前端 `/opt/fleet/web` 和 dist 里的 fleet-agent 还是新的，换回后先别上架、别 `upgrade-agent`（新 agent 的上报旧中控可能拒收，见 §7）。前端和 agent 也要回去时用换下来的 `.prev`（权限与属主随文件保留）：前端 `cd /opt/fleet && rm -rf web && mv web.prev web`；agent `cd /opt/fleet/dist && cp -p fleet-agent.prev fleet-agent.new && mv -f fleet-agent.new fleet-agent`（已经 `upgrade-agent` 推给机器的不受影响，机器上的回滚见 §7）。`.prev` 只留上一版；要回到更早的版本：本机 `git checkout <旧提交>` 后再跑一次 deploy.sh（同样要求没有新迁移）。
 
 ## 10. 备份与恢复
 
-中控每天北京时间 03:30 做一份备份（`fleet-backup.timer` → `/opt/fleet/backup/fleet-backup.sh`），放在中控 `/var/backups/fleet/fleet-<北京时间>.tar`（开了加密是 `.tar.age`，见下文「加密备份」），留 14 份；第一次装上时 install.sh 立即做一份。手动做一份：`systemctl start fleet-backup`，`journalctl -u fleet-backup -n 5` 看结果。一份 tar 里有：
+中控每天北京时间 03:30 做一份备份（`fleet-backup.timer` → `/opt/fleet/backup/fleet-backup.sh`），放在中控 `/var/backups/fleet/fleet-<北京时间>.tar`（开了加密是 `.tar.age`，见下文「加密备份」），留最近 14 个北京日期、每个日期只留最后一份（同一天里部署前的同步备份、手动备份不会多占名额）；第一次装上时 install.sh 立即做一份，之后每次部署换版前也同步做一份（§9）。手动做一份：`systemctl start fleet-backup`，`journalctl -u fleet-backup -n 5` 看结果。一份 tar 里有：
 
 - `fleet.dump`：`pg_dump -Fc` 整库。`host_metric`、`entry_traffic`、`probe_result`、`access_event` 四张原始时序表（按天分区，只保留几天，量最大）只备结构不备数据，其余表（机器、入口、订阅、作业、审计、告警、小时汇总等）全量。恢复后最近几天的 10 秒粒度曲线和访问明细是空的，小时汇总都在。
 - `etc/fleet/`：`secret.key`（库里 SS 密码、REALITY 私钥、通知渠道配置的加密密钥，丢了这些就解不开）、`fleet.toml`、`ssh/id_ed25519`（中控登录所有机器的密钥）。
@@ -363,13 +364,13 @@ FLEET_BUILD=docker FLEET_BUILD_HOST=10.172.17.213 lab/sync-server.sh 'cargo test
 
 ### 加密备份（可选，推荐）
 
-不加密时中控 14 份、PVE 30 份，每一份都是库 + `secret.key` + 中控 SSH 私钥的明文：任一边被拿到就等于拿到全部。用 [age](https://age-encryption.org) 加密后，两边存的都是密文，私钥只在离线的地方：
+不加密时中控 14 天（每天一份）、PVE 30 份，每一份都是库 + `secret.key` + 中控 SSH 私钥的明文：任一边被拿到就等于拿到全部。用 [age](https://age-encryption.org) 加密后，两边存的都是密文，私钥只在离线的地方：
 
 1. 在**离线**的电脑上（不是中控、也不是 PVE）生成身份：`age-keygen -o fleet-backup-key.txt`，屏幕上打印的 `Public key: age1…` 是公钥。`fleet-backup-key.txt` 是唯一能解开备份的东西：存进密码管理器 / 打印出来放好，再备一份到别的地方；丢了备份就废了。
 2. 把公钥写进中控 `/etc/fleet/backup-age.recipients`（一行一个，可以写多个，如再加一个备用身份；`#` 开头是注释）：`echo 'age1…' > /etc/fleet/backup-age.recipients`。
 3. 中控要有 `age` 包：install.sh 已经装（没有才装），老中控跑一次 deploy.sh 或 `apt-get install age`。之后的备份（下次定时或 `systemctl start fleet-backup`）就是 `/var/backups/fleet/fleet-<时间>.tar.age`：tar 经管道直接加密，明文不落盘。PVE 的拉取认得两种格式，加密的存成 `fleet-prod-<时间>.tar.age`（只查 age 文件头和大小，PVE 上没有私钥、解不开）。
 4. 确认能解开：把一份 `.tar.age` 拷到离线电脑，`age -d -i fleet-backup-key.txt fleet-<时间>.tar.age | tar -tv` 能列出 `fleet.dump`、`etc/fleet/secret.key`。
-5. **开启之前的明文备份还在**：轮换只按份数删最旧的，中控上要再过 14 天、PVE 上 30 天，明文 `.tar`（含 `secret.key` 与中控 SSH 私钥）才会全部轮换掉。确认第 4 步能解开后马上删掉两边的明文：
+5. **开启之前的明文备份还在**：轮换只删最旧的，中控上要再过 14 天、PVE 上 30 天，明文 `.tar`（含 `secret.key` 与中控 SSH 私钥）才会全部轮换掉。确认第 4 步能解开后马上删掉两边的明文：
    ```
    # 中控
    rm -f /var/backups/fleet/fleet-*.tar /var/backups/fleet/fleet-*.tar.sha256
@@ -484,7 +485,7 @@ heartbeat_url = "https://hc-ping.com/<检查的 uuid>"
 - **多久生效**：保存后立即在后台按新期限清一次，一般几秒，要删的多（比如汇总从 90 天改成 7 天）时几分钟；之后每小时按当前期限清一次。原始记录按天删整天的分区，最多多留不到一天；汇总按小时删。
 - **调短会删数据**：超出新期限的访问记录、汇总与来源画像都删掉，找不回来；调长只影响之后的，已经删掉的不会回来。改动写审计（「操作记录」里「修改访问记录保留期 · 原始记录 7 → 3 天，汇总 31 天」），只读的 API 密钥改不了。
 - **「新」的含义**：「新目标」「来源出现新运营商 / 新城市」「机房 / VPN 来源」都是「保留期内没见过」：一个值超过期限没再出现、记录删了，之后再出现就算新的（画像异常会再告警一次）。来源画像一直保留到学习期结束，学完不会因为学习期里见过的值被删掉而误报；一个节点闲置超过来源画像的保留期，画像全删光，之后再有流量学习期从头算。
-- **备份**：每日备份（§10）不含原始记录，但含小时汇总和来源画像，删掉的这些在备份里留到备份轮换掉（中控 14 份、PVE 30 份）。要立刻不留，删掉旧备份。
+- **备份**：每日备份（§10）不含原始记录，但含小时汇总和来源画像，删掉的这些在备份里留到备份轮换掉（中控 14 天、PVE 30 份）。要立刻不留，删掉旧备份。
 - 直接改库里的 `app_setting` 要重启 fleet-server 才生效（进程里缓存了一份），请只用网页或 fleetctl 改。
 
 其它几个保留期写在 `fleet.toml` 的 `[retention]`（不写照默认，改了重启 fleet-server 生效、下一次每小时的清理按新值删）：`raw_days`（原始时序：主机指标、入口流量、探测、软路由指标，默认 3）、`reach_days`（客户入口连通性原始记录，默认 2；小时汇总一直留着）、`ping_days` / `ping_hourly_days`（三网 PING 原始记录 / 小时汇总，默认 7 / 90）。

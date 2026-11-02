@@ -45,7 +45,7 @@
 - 中控：日志 `journalctl -u fleet-server`；配置 /etc/fleet/fleet.toml；程序 /opt/fleet/fleet-server（上一版 fleet-server.prev），前端 /opt/fleet/web，推给机器的程序 /opt/fleet/dist。
 - HTTPS 反代 Caddy：`journalctl -u caddy`。/etc/caddy/Caddyfile 每次部署重写，别改它：边缘机 PROXY 配置在 /etc/caddy/global.d/，别的站点块放 /etc/caddy/sites.d/（docs/OPS.md §11）。
 - 主机指纹：/var/lib/fleet/known_hosts（机器）、/var/lib/fleet/router_known_hosts（软路由，按 router-<id> 记）。
-- 备份：每天 03:30（北京时间）/var/backups/fleet/fleet-<时间>.tar（加密的是 .tar.age），留 14 份；`journalctl -u fleet-backup`，手动做一份 `systemctl start fleet-backup`。从备份恢复要用户在场（仓库 v1/docs/OPS.md §10）。
+- 备份：每天 03:30（北京时间）/var/backups/fleet/fleet-<时间>.tar（加密的是 .tar.age），留最近 14 天（每天最后一份）；部署换版前 install.sh 自动同步做一份；`journalctl -u fleet-backup`，手动做一份 `systemctl start fleet-backup`。从备份恢复要用户在场（仓库 v1/docs/OPS.md §10）。
 
 ## central-local 密钥
 
