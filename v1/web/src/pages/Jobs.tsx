@@ -188,7 +188,7 @@ function JobDetail({ id }: { id: string }) {
           <LabelValueGrid>
             <LabelValue label="创建人">{F.actor(j.created_by)}</LabelValue>
             <LabelValue label="创建时间">{F.dtFull(j.created_at)}</LabelValue>
-            <LabelValue label="作业 ID"><span className="mono">{j.id}</span></LabelValue>
+            <LabelValue label="作业 ID"><span className="mono" data-tip={j.id}>{j.id}</span></LabelValue>
           </LabelValueGrid>
         </div>
         {/* 取消（含「全部升级」里前一台失败后跟着取消的）不是出错：原因用中性色 */}

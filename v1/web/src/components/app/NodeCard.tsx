@@ -10,7 +10,7 @@ import { SPRING } from '@/lib/motion';
 import { ArrowDown, ArrowDownUp, ArrowUp, Calendar, CircleDollarSign, Cpu, Database, Gauge, Globe, HardDrive, MemoryStick, MoreHorizontal, Radar, RefreshCw, Settings2, PanelRightOpen, ServerOff, Wallet } from 'lucide-react';
 import type { DueState, MachineView, ProbeBeats, Subscription } from '@/lib/types';
 import * as F from '@/lib/format';
-import { BEAT_LEGEND, REVERSE_TIP, beatCells, beatRate, beatTitles, dueTone, entryText, errText, hasHost, hostRel, isQuiet, limitGb, liveRate, monthFlow, monthFlowTip, monthTraffic, priceHint, probeSummary, quota, quotaForecast, quotaGb, quotaTip, quotaUsedLabel, remainingValue, resourceMeters, subLabel, trafficTotal, beatLegendRelay, linkCounts, reachWho, reachWin, relayRttMs } from '@/lib/derive';
+import { BEAT_LEGEND, REVERSE_TIP, beatCells, beatRate, beatTitles, dueTone, entryText, errText, hasHost, hostRel, isQuiet, limitGb, liveRate, monthFlow, monthFlowTip, monthTraffic, priceHint, probeSummary, quota, quotaForecast, quotaGb, quotaTip, quotaUsedLabel, remainingValue, resourceMeters, subLabel, trafficTotal, beatLegendRelay, linkCounts, reachWho, reachWin, relayRttMs, reasonText, LINK_LABEL } from '@/lib/derive';
 import { useProbeBeats } from '@/lib/queries';
 import { useReachLabel } from '@/lib/probePoints';
 import { useLiveSeries } from '@/lib/live';
@@ -227,7 +227,9 @@ const BeatSlot = memo(function BeatSlot({ id, kind, lifecycle, reason, reasonKey
   // 节点通 / 出口通不是全通时才跟在「入口可达」后面（LinkCounts only），这时一行放不下延迟：延迟只进悬停；三段都写时连时间窗前面的来源也让给它（来源在悬停里），只剩「近 1 小时」
   const bad = (['node', 'egress'] as const).filter((k) => links[k].total > 0 && links[k].ok < links[k].total).length;
   const extra = bad > 0;
-  const relayCounts = <span data-tip={`${reachReason ? `${reason}\n` : ''}下面的格子是${who}连线路机入口的结果${off ? `\n停用的 ${off} 条入口不计` : ''}${rtt != null && (reason || extra) ? `\n${src?.label ?? '探测点'}连到这台线路机的延迟 ${Math.round(rtt)} ms（近 1 小时中位数）` : ''}`}><LinkCounts c={links} who={who} only={['reach']} /></span>;
+  // 三段都写时标题可能放不下（紧凑密度会截掉节点通 / 出口通）：悬停第一行写全三段；原因里的逐端口错误合并成「N 个端口…」
+  const full = extra ? `${(['reach', 'node', 'egress'] as const).filter((k) => links[k].total > 0).map((k) => `${LINK_LABEL[k]} ${links[k].ok}/${links[k].total}`).join(' · ')}\n` : '';
+  const relayCounts = <span data-tip={`${full}${reachReason ? `${reasonText(reason!)}\n` : ''}下面的格子是${who}连线路机入口的结果${off ? `\n停用的 ${off} 条入口不计` : ''}${rtt != null && (reason || extra) ? `\n${src?.label ?? '探测点'}连到这台线路机的延迟 ${Math.round(rtt)} ms（近 1 小时中位数）` : ''}`}><LinkCounts c={links} who={who} only={['reach']} /></span>;
   const rttTag = rtt == null || extra ? null : <> · <span data-tip={`${src?.label ?? '探测点'}连到这台线路机的延迟，近 1 小时中位数`}>延迟 <b className="num">{Math.round(rtt)} ms</b></span></>;
   const rate = kind === 'proxy' && live ? beatRate(beats) : null;
   const empty = live && bq.isSuccess && !beats?.some((b) => b[0] > 0); // 整条都没有探测：标题写明、格子画虚线，不是 20 格灰块

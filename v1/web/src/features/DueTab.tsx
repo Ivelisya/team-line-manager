@@ -86,7 +86,7 @@ export function DueTab() {
         <TableWrap>
           {d && d.groups.length > 0 && (
             <table className="dt is-one due-table" style={{ minWidth: 1000 }}>
-              <colgroup><col style={{ width: 160 }} /><col style={{ width: 170 }} /><col /><col style={{ width: 150 }} /><col style={{ width: 110 }} /><col style={{ width: 90 }} /><col style={{ width: 104 }} /><col style={{ width: 120 }} /></colgroup>
+              <colgroup><col style={{ width: 160 }} /><col style={{ width: 188 }} /><col /><col style={{ width: 150 }} /><col style={{ width: 110 }} /><col style={{ width: 90 }} /><col style={{ width: 104 }} /><col style={{ width: 120 }} /></colgroup>
               <thead><tr><th>供应商</th><th>到期日</th><th>机器</th><th className="r">小计</th><th className="r">折合 USD</th>
                 <th className="r" data-tip={'近 30 天：月费 ÷ 业务流量（有月费的几台合起来算）\n悬停逐台看'}>USD/GB</th>
                 <th className="r" data-tip={'近 30 天经入口的出口探测成功率，取组内最低\n悬停逐台看'}>出口成功率</th><th /></tr></thead>
