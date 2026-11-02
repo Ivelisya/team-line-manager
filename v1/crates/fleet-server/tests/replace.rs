@@ -1450,6 +1450,38 @@ async fn unreadable_router_config_blocks_change() {
     assert!(logs(t, &job).await.contains("软路由「别队路由」：OpenClash 的源配置（uci openclash.config.config_path）不存在：没有设置，没有出口要改"));
 }
 
+/// 快照里看不出有出口要改、又被别的作业占着锁的路由，读配置失败（对方重启 OpenClash 掐断了隧道）：不算读不了，排队等对方放手，
+/// 不失败、不改别的路由；锁放开后读得到就接着做完
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unreadable_config_on_locked_router_queues() {
+    let w = world().await;
+    let oe = old_entry(&w).await;
+    router(&w, "路由A", 23231, &[("节点01", "198.51.100.2", 20003, Some(oe))]).await;
+    let b = router(&w, "路由B", 23232, &[]).await;
+    let t = &w.t;
+    std::fs::write(root(23232).join("read-fail"), "").unwrap();
+    // 另一个作业正拿着路由B 的锁
+    let mut other = t.st.db.acquire().await.unwrap().detach();
+    sqlx::query("select pg_advisory_lock(hashtextextended('router:' || $1::text, 0))").bind(b).execute(&mut other).await.unwrap();
+    let d = t.post(&format!("/api/v1/machines/{}/replace", w.old), json!({"new_machine_id": w.new})).await;
+    let job = d["job_id"].as_str().unwrap().to_string();
+    drive(t).await;
+    let j = t.job(&job).await;
+    let l = logs(t, &job).await;
+    assert_eq!(j["state"], "waiting", "{j} {l}");
+    let p: Value = sqlx::query_scalar("select params from job where id = $1").bind(Uuid::parse_str(&job).unwrap()).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(p["routers_queued_id"], json!(b), "{l}");
+    assert!(l.contains("软路由「路由B」正在被别的作业改，排队等它改完") && !l.contains("配置读不了"), "{l}");
+    assert!(applies(23231).is_empty(), "排队时一台都没改");
+    // 对方放手、路由B 读得到了：接着做完
+    sqlx::Connection::close(other).await.unwrap();
+    std::fs::remove_file(root(23232).join("read-fail")).unwrap();
+    rerun(t, Uuid::parse_str(&job).unwrap()).await;
+    let j = t.job(&job).await;
+    assert_eq!(j["state"], "succeeded", "{j} {}", logs(t, &job).await);
+    assert_eq!(applies(23231).len(), 1);
+}
+
 /// 改出口指向：直出出口从线路机2 的直出入口换到线路机3 的直出入口，只改选中的路由，两个入口都不动；
 /// 改的时候连接断了（重启 OpenClash 掐断了隧道）：等回连后取回路由上的结果，照常算改好了
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

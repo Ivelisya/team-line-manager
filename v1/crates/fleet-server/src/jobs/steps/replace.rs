@@ -8,7 +8,7 @@
 //!
 //! 改路由：要改哪些出口按执行时路由的配置重新确定（经隧道读源配置，同一套匹配：api::replace::replace_exit / api::lifecycle::move_exit），
 //! 发起时的计划只作展示。不在线的路由按最近一次采集看，有出口要改就一台都不改。出口对不上新入口（同预览的原因）也一台都不改。
-//! 在线的路由配置读不了（读失败、解析不了），哪怕快照里看不出它有出口要改，也一台都不改、作业失败：看不出就不能当成没有
+//! 在线的路由配置读不了（读失败、解析不了；别的作业正拿着它的锁时读不了不算，那多半是对方在重启 OpenClash，排队等对方放手再读），哪怕快照里看不出它有出口要改，也一台都不改、作业失败：看不出就不能当成没有
 //! （旧节点进备用、到期回收后客户的出口就断了）；确认它没用的，重新发起时选不改软路由。路由上根本没有源配置（OpenClash 没配）的算没有出口。
 //! 同一台路由同时只有一个作业在改（替换、换线路机、重试都一样，见 `Locks`）：别的作业在改就排队（Outcome::Queue），作业的其余步骤照常并行。
 //! 排队时只等那台路由的锁（`routers_queued_id`），不读配置、不占连接。
@@ -366,6 +366,16 @@ fn snap_uses(r: &routers::Row, parts: &[Part]) -> bool {
     })
 }
 
+/// 别的作业在改这台路由：已经拿到的全部放开（连接关掉），记下排队等它，十秒后再来
+async fn queue_on(c: &Ctx<'_>, locks: Locks<'_>, r: &routers::Row, queued_on: Option<Uuid>) -> anyhow::Result<Outcome> {
+    drop(locks);
+    if queued_on != Some(r.id) {
+        c.log(format!("软路由「{}」正在被别的作业改，排队等它改完", r.name)).await;
+    }
+    c.set_params(json!({"routers_queued": r.name, "routers_queued_id": r.id})).await?;
+    Ok(Outcome::Queue(10))
+}
+
 pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     if c.job.params["routers"] == false {
         return Ok(Outcome::Skipped("选择了不改软路由".into()));
@@ -473,6 +483,8 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
                             vec![]
                         }
                     },
+                    // 别的作业正拿着这台路由的锁，读不了多半是它在重启 OpenClash 掐断了隧道：排队等它改完、拿到锁再读，不算读不了
+                    Err(_) if !got => return queue_on(c, locks, r, queued_on).await,
                     Err(e) if known => {
                         blocked.push(format!("软路由「{}」的配置读不了：{e}", r.name));
                         vec![]
@@ -492,14 +504,7 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
             Some(x) if x.is_empty() => locks.release(r.id).await?,
             Some(x) if got => todo.push((r, x)),
             // 别的作业在改这台路由：已经拿到的全部放开（连接关掉），排队等它改完
-            _ => {
-                drop(locks);
-                if queued_on != Some(r.id) {
-                    c.log(format!("软路由「{}」正在被别的作业改，排队等它改完", r.name)).await;
-                }
-                c.set_params(json!({"routers_queued": r.name, "routers_queued_id": r.id})).await?;
-                return Ok(Outcome::Queue(10));
-            }
+            _ => return queue_on(c, locks, r, queued_on).await,
         }
     }
     if queued_on.is_some() {
