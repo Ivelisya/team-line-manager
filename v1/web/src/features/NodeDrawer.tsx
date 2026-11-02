@@ -318,7 +318,7 @@ function RecentIncidents({ m }: { m: MachineView }) {
                   </div>
                   <div className="audit-detail hint">
                     {incidentSpan(i)}
-                    {(i.chronic || i.reopen_count > 0) && <> · <RecentCount i={i} /></>}
+                    {i.chronic && <> · <RecentCount i={i} /></>}
                   </div>
                   {firing && <SuggestedCmds i={i} />}
                 </div>

@@ -180,14 +180,15 @@ export function QualityTab({ m }: { m: MachineView }) {
   const { range, setRange } = useDrawer();
   const s = useSeries(m.id, 'probe', range, true, chartPoll(range));
   // 多条入口时曲线是各入口的平均（序列接口不分入口），写明几条、是哪几台线路机
-  const tcp = (
+  // 做成稳定的元素：PingSection 是 memo，每次新建的 JSX 会让它每次推送都白比对一遍
+  const tcp = React.useMemo(() => (
     <ChartCard c="var(--chart-1)" icon={<Radar />} title="TCP 延迟" meta={m.kind !== 'relay' && m.entries.length > 1
       ? <span data-tip={`${m.entries.map((e) => e.relay.name).join('、')} 的平均`}>线路机 → 节点 · {m.entries.length} 条入口平均</span> : '线路机 → 节点'}>
       <ChartFrame q={s} few={fewText(m, range)}>
         <TimeChart full points={s.data?.points} range={s.data?.range ?? range} kind="line" lines={L_PROBE} yFmt={yMs} valueFmt={vMs} clip />
       </ChartFrame>
     </ChartCard>
-  );
+  ), [s, range, m.kind, m.entries, m.lifecycle, m.activated_at]);
   return (
     <>
       {/* 可用率（近 30 天）与入口连通性（24 小时 / 7 天 / 30 天）是固定时间段，不跟时间范围走：放在时间范围条上面，下面的曲线才归它管 */}
