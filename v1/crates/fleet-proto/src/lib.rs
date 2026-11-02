@@ -388,6 +388,7 @@ pub struct RelayParams {
 
 fn yes() -> bool { true }
 fn is_true(b: &bool) -> bool { *b }
+fn is_false(b: &bool) -> bool { !*b }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DesiredEntry {
@@ -402,6 +403,10 @@ pub struct DesiredEntry {
     pub outbound: Outbound,
     /// egress 探测期望看到的出口 IP
     pub expect_egress_ip: IpAddr,
+    /// 出口 IP 动态（供应商的共享 / 轮换出口）：egress 探测回显到任何公网 IP 都算成功，不比对 `expect_egress_ip`。
+    /// `expect_egress_ip` 照旧下发（旧 agent 只认它，行为不变）；为 false 时不序列化
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub egress_any: bool,
     /// 访问策略（按域名黑白名单/暂停）。`None` = observe，不产生任何路由规则。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy: Option<EntryPolicy>,
@@ -624,6 +629,21 @@ mod tests {
         assert!(o.addr().is_none());
         assert_eq!(tags::reverse(Uuid::from_u128(7)), format!("rvs-{}", Uuid::from_u128(7).simple()));
         assert!(tags::reverse(Uuid::nil()).starts_with(tags::REVERSE_PREFIX) && !tags::bridge_email(Uuid::nil()).starts_with("e-"));
+    }
+
+    #[test]
+    fn egress_any_defaults_false_and_is_omitted_when_false() {
+        let mut e = serde_json::json!({"id": Uuid::from_u128(1), "port": 20001, "enabled": true, "remark": "r", "client_uuid": Uuid::from_u128(2), "short_id": "ab",
+            "outbound": {"protocol": "direct"}, "expect_egress_ip": "203.0.113.9"});
+        // 旧中控的期望状态没有 egress_any：解析为 false
+        let d: DesiredEntry = serde_json::from_value(e.clone()).unwrap();
+        assert!(!d.egress_any);
+        assert!(!serde_json::to_string(&d).unwrap().contains("egress_any"));
+        // 动态出口：带上 egress_any，expect_egress_ip 仍在（旧 agent 照旧比对）
+        e["egress_any"] = true.into();
+        let d: DesiredEntry = serde_json::from_value(e).unwrap();
+        let v = serde_json::to_value(&d).unwrap();
+        assert!(d.egress_any && v["egress_any"] == true && v["expect_egress_ip"] == "203.0.113.9");
     }
 
     #[test]

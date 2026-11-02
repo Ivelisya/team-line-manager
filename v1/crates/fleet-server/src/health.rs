@@ -402,6 +402,8 @@ pub(crate) mod tests {
             host_machine: None,
             bind_ip: None,
             egress_ip: None,
+            egress_dynamic: false,
+            egress_seen: None,
             ip_nodes: vec![],
             provider: None,
             provider_code: None,

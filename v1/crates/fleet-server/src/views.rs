@@ -360,6 +360,10 @@ pub struct MachineView {
     pub bind_ip: Option<String>,
     /// 端口转发型 NAT 节点（入口 IP 与出站 IP 不同）：它的出口 IP；`ip` 是线路机连的入口。null = 出口就是 `ip`
     pub egress_ip: Option<String>,
+    /// 出口 IP 动态（供应商的出口会变，只验收能出网；此时 egress_ip 为 null）
+    pub egress_dynamic: bool,
+    /// 动态出口节点：最近一次成功出口探测看到的 IP（入口上有成功的出口探测样本才有）；其它机器为 null
+    pub egress_seen: Option<String>,
     /// 宿主机：它上面未退役的同机 IP 节点
     pub ip_nodes: Vec<Ref>,
     pub provider: Option<Ref>,
@@ -490,6 +494,7 @@ struct MRow {
     host_name: Option<String>,
     bind_ip: Option<String>,
     egress_ip: Option<String>,
+    egress_dynamic: bool,
     provider_id: Option<Uuid>,
     provider_name: Option<String>,
     provider_code: Option<String>,
@@ -901,9 +906,17 @@ async fn refresh(st: &AppState, prev: &[MachineView], jobs: bool) -> sqlx::Resul
             }
             e.relay_maint = silences.maintenance(e.relay.id);
         }
+        if m.egress_dynamic {
+            m.egress_seen = seen_egress(&m.entries);
+        }
         m.health = health::evaluate(m, now);
     }
     Ok(out)
+}
+
+/// 动态出口节点最近一次成功出口探测看到的 IP（各入口的最新出口探测里取最近成功的那条，detail 就是回显的 IP）
+fn seen_egress(entries: &[EntryView]) -> Option<String> {
+    entries.iter().filter_map(|e| e.egress.as_ref()).filter(|p| p.ok).max_by_key(|p| p.ts).and_then(|p| p.detail.clone())
 }
 
 /// 每台机器 15 分钟内最近两条样本 → 当前值与网卡速率：逐台走 (machine_id, ts desc) 索引取两条（带上界，预建的未来空分区被剪掉；
@@ -1285,7 +1298,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
     // 同机 IP 节点没有自己的 agent：agent 状态取宿主机的
     let sql = format!(
         "select m.id, m.kind::text kind, m.team_id, t.name team_name, t.spare team_spare, m.spare_from, m.spare_since, m.number, m.label, host(m.primary_ip) ip, coalesce(hm.ssh_port, m.ssh_port) ssh_port,
-                m.host_id, display_name(hm.kind::text, hm.label, ht.name, hm.number) host_name, host(m.bind_ip) bind_ip, host(m.egress_ip) egress_ip,
+                m.host_id, display_name(hm.kind::text, hm.label, ht.name, hm.number) host_name, host(m.bind_ip) bind_ip, host(m.egress_ip) egress_ip, m.egress_dynamic,
                 p.id provider_id, p.name provider_name, p.code provider_code, m.plan_id, pl.name plan_name,
                 pl.bandwidth_mbps plan_bw, pl.traffic_gb plan_traffic, m.service_ref, m.country, exists (select 1 from billing_exempt be where be.machine_id = m.id) billing_exempt, m.lifecycle::text lifecycle,
                 m.lifecycle_reason, m.note, m.revision, m.created_at, m.activated_at, m.retired_at,
@@ -1661,6 +1674,8 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 host_machine: r.host_id.map(|id| Ref { id, name: r.host_name.clone().unwrap_or_default() }),
                 bind_ip: r.bind_ip,
                 egress_ip: r.egress_ip,
+                egress_dynamic: r.egress_dynamic,
+                egress_seen: r.egress_dynamic.then(|| seen_egress(&entries)).flatten(),
                 ip_nodes: ip_nodes.remove(&r.id).unwrap_or_default(),
                 provider: r.provider_id.map(|id| Ref { id, name: r.provider_name.clone().unwrap_or_default() }),
                 provider_code: r.provider_code,

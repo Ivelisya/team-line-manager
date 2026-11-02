@@ -319,7 +319,8 @@ async fn desired(t: &T, tok: &str) -> DesiredState {
 }
 
 /// 端口转发型 NAT 节点：入口 IP（线路机连、SSH）与出口 IP 不同。上架可填 egress_ip（只 VPS 节点、非同机 IP 节点、要 IPv4、和 IP 相同按没填）；
-/// 出口验收期望 coalesce(egress_ip, primary_ip)；之后能 PATCH 改 / 清，变了要刷新入口所在线路机；审计带前后值
+/// 出口验收期望 coalesce(egress_ip, primary_ip)；之后能 PATCH 改 / 清，变了要刷新入口所在线路机；审计带前后值。
+/// egress_ip = "auto" 标出口动态（共享 / 轮换出口）：期望状态带 egress_any，expect_egress_ip 照旧下发（旧 agent 照旧比对）
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn egress_ip_of_port_forward_nat_node() {
     let t = setup(false).await;
@@ -351,7 +352,7 @@ async fn egress_ip_of_port_forward_nat_node() {
     let created = t
         .post(
             "/api/v1/provision",
-            json!({"items": [vps(json!({"egress_ip": " 133.106.194.112 "})), vps(json!({"ip": "203.0.113.41", "egress_ip": "203.0.113.41"})), vps(json!({"ip": "203.0.113.42", "egress_ip": ""}))]}),
+            json!({"items": [vps(json!({"egress_ip": " 133.106.194.112 "})), vps(json!({"ip": "203.0.113.41", "egress_ip": "203.0.113.41"})), vps(json!({"ip": "203.0.113.42", "egress_ip": ""})), vps(json!({"ip": "203.0.113.43", "egress_ip": "Auto"}))]}),
         )
         .await;
     let ids: Vec<Uuid> = created["jobs"].as_array().unwrap().iter().map(|j| j["machine_id"].as_str().unwrap().parse().unwrap()).collect();
@@ -362,7 +363,11 @@ async fn egress_ip_of_port_forward_nat_node() {
         }
         v
     };
-    assert_eq!(stored, [Some("133.106.194.112".to_string()), None, None]);
+    assert_eq!(stored, [Some("133.106.194.112".to_string()), None, None, None]);
+    let dynamic: Vec<bool> = sqlx::query_scalar("select egress_dynamic from machine where id = any($1) order by host(primary_ip)").bind(&ids).fetch_all(&t.st.db).await.unwrap();
+    assert_eq!(dynamic, [false, false, false, true], "上架填 auto = 动态");
+    let v = t.get(&format!("/api/v1/machines/{}", ids[3])).await;
+    assert_eq!((v["egress_dynamic"].clone(), v["egress_ip"].clone(), v["egress_seen"].clone()), (json!(true), Value::Null, Value::Null), "{v}");
     let a = t.get("/api/v1/audit?limit=20").await;
     assert!(a.as_array().unwrap().iter().any(|x| x["action"] == "machine.provision" && x["detail"]["egress_ip"] == "133.106.194.112"), "{a}");
     let v = t.get(&format!("/api/v1/machines/{}", ids[0])).await;
@@ -426,5 +431,34 @@ async fn egress_ip_of_port_forward_nat_node() {
         assert_eq!(s, StatusCode::OK);
         assert_eq!(t.get(&path).await["egress_ip"], Value::Null);
     }
-    assert_eq!(desired(&t, &tok).await.entries[0].expect_egress_ip.to_string(), "125.103.212.101", "清掉后跟随 IP");
+    let ds2 = desired(&t, &tok).await;
+    assert_eq!(ds2.entries[0].expect_egress_ip.to_string(), "125.103.212.101", "清掉后跟随 IP");
+    assert!(!ds2.entries[0].egress_any);
+    assert!(!serde_json::to_string(&ds2.entries[0]).unwrap().contains("egress_any"), "不动态时不序列化，旧 agent 收到的和以前一样");
+
+    // 动态：PATCH auto。egress_ip 清空、egress_dynamic = true；期望状态 egress_any = true，expect_egress_ip 仍是入口 IP；刷新线路机；审计 after 写 auto
+    let m = t.get(&path).await;
+    let (s, b) = t.req("PATCH", &path, Some(patch(m["revision"].clone(), json!("auto"))), None).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    let ds3 = desired(&t, &tok).await;
+    assert!(ds3.entries[0].egress_any && ds3.generation > ds2.generation);
+    assert_eq!(ds3.entries[0].expect_egress_ip.to_string(), "125.103.212.101");
+    let m = t.get(&path).await;
+    assert_eq!((m["egress_dynamic"].clone(), m["egress_ip"].clone(), m["egress_seen"].clone()), (json!(true), Value::Null, Value::Null), "{m}");
+    let a = t.get("/api/v1/audit?limit=5").await;
+    let au = a.as_array().unwrap().iter().find(|x| x["action"] == "machine.update" && x["target_id"] == n.to_string()).unwrap_or_else(|| panic!("{a}"));
+    assert_eq!((au["detail"]["before"]["egress_ip"].clone(), au["detail"]["after"]["egress_ip"].clone()), (Value::Null, json!("auto")));
+    // 最近一次成功出口探测看到的 IP（取入口最新的出口探测样本）
+    sqlx::query("insert into probe_result (entry_id, kind, ts, ok, latency_ms, detail) values ($1, 'egress', now(), true, 120, '211.7.96.248')").bind(e).execute(&t.st.db).await.unwrap();
+    assert_eq!(t.get(&path).await["egress_seen"], "211.7.96.248");
+    // 重复设 auto 不变；改成固定 IP 时动态标记清掉；线路机 / 同机 IP 节点不能设 auto
+    let (s, b) = t.req("PATCH", &path, Some(patch(t.get(&path).await["revision"].clone(), json!("133.106.194.112"))), None).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    let m = t.get(&path).await;
+    assert_eq!((m["egress_dynamic"].clone(), m["egress_ip"].clone()), (json!(false), json!("133.106.194.112")));
+    assert!(!desired(&t, &tok).await.entries[0].egress_any);
+    let (s, _) = t.req("PATCH", &format!("/api/v1/machines/{relay}"), Some(patch(t.get(&format!("/api/v1/machines/{relay}")).await["revision"].clone(), json!("auto"))), None).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, _) = t.req("PATCH", &format!("/api/v1/machines/{ipn}"), Some(patch(t.get(&format!("/api/v1/machines/{ipn}")).await["revision"].clone(), json!("auto"))), None).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
 }

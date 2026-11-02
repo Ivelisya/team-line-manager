@@ -536,7 +536,7 @@ enum Cmd {
         /// ISO 3166-1 两位代码（如 US、JP）；auto = 改回按 IP 自动
         #[arg(long)]
         country: Option<String>,
-        /// 出口 IP（端口转发型 NAT 节点：入站 IP 与出站公网 IP 不同）；none = 清掉，出口跟随 IP。只用于 VPS 节点
+        /// 出口 IP（端口转发型 NAT 节点：入站 IP 与出站公网 IP 不同）；auto = 动态（供应商的出口会变，只验收能出网）；none = 清掉，出口跟随 IP。只用于 VPS 节点
         #[arg(long)]
         egress_ip: Option<String>,
         /// 换团队等会连带别的机器改名的改动：看过预览后加它执行

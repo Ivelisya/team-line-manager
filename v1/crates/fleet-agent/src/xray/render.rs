@@ -497,6 +497,7 @@ pub mod tests {
             short_id: "0123abcd".into(),
             outbound: Outbound::Shadowsocks { host: "10.0.0.9".into(), port: 8388, method: "aes-256-gcm".into(), password: "pw".into() },
             expect_egress_ip: "203.0.113.9".parse::<IpAddr>().unwrap(),
+            egress_any: false,
             policy: None,
             anytls_port: None,
         }

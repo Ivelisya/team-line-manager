@@ -77,7 +77,7 @@ pub struct ProvisionOpts {
     /// 同号映射（公网 P → 机器 P）的也填 P，节点上会多一条把 P 转到 8388 的 nft 规则。非 NAT 机不要填
     #[arg(long)]
     pub ss_port: Option<u16>,
-    /// vps 的出口 IP：端口转发型 NAT 节点的入站 IP（--ip，线路机连它）和机器出站的公网 IP 不同时填；不填 = 出口就是 --ip。不用于同机 IP 节点
+    /// vps 的出口 IP：端口转发型 NAT 节点的入站 IP（--ip，线路机连它）和机器出站的公网 IP 不同时填；不填 = 出口就是 --ip；auto = 动态（共享 / 轮换出口的供应商，出口 IP 会变，只验收能出网）。不用于同机 IP 节点
     #[arg(long)]
     pub egress_ip: Option<String>,
     /// 家宽代理（proxy）的上游：socks5://用户:密码@主机:端口
@@ -533,7 +533,7 @@ pub fn rename(ctx: &Ctx, machine: &str, o: RenameOpts) -> anyhow::Result<u8> {
     if let Some(c) = o.country {
         body["country"] = if c.eq_ignore_ascii_case("auto") { Value::Null } else { json!(c) };
     }
-    // 出口 IP：none = 清掉（出口跟随 IP）；格式与适用范围由中控校验
+    // 出口 IP：none = 清掉（出口跟随 IP）；auto 原样交给中控（动态）；格式与适用范围由中控校验
     if let Some(e) = o.egress_ip {
         body["egress_ip"] = if e.eq_ignore_ascii_case("none") { Value::Null } else { json!(e) };
     }
@@ -553,7 +553,12 @@ pub fn rename(ctx: &Ctx, machine: &str, o: RenameOpts) -> anyhow::Result<u8> {
     if let Some(h) = pv["held"].as_str() {
         d["held"] = json!(h);
     }
-    let egress = if o.egress_ip.is_some() { format!("\n出口 IP：{}", d["egress_ip"].as_str().unwrap_or("无（跟随 IP）")) } else { String::new() };
+    let egress = if o.egress_ip.is_some() {
+        let now = if d["egress_dynamic"] == true { "动态" } else { d["egress_ip"].as_str().unwrap_or("无（跟随 IP）") };
+        format!("\n出口 IP：{now}")
+    } else {
+        String::new()
+    };
     ctx.emit(&d, || format!("{} → {}{}{egress}", st(&cur, "/name"), st(&d, "/name"), rename_details(&pv, to_spare, false)));
     Ok(0)
 }

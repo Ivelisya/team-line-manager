@@ -458,7 +458,7 @@ pub async fn probe_task(sh: Arc<Shared>, direct: reqwest::Client, mut sd: watch:
                         continue;
                     }
                     let busy = BusyGuard(s.egress_busy.clone());
-                    let (sh2, sem2, id, url, ip, client, direct) = (sh.clone(), sem.clone(), e.id, d.relay.echo_url.clone(), e.expect_egress_ip, client.clone(), direct.clone());
+                    let (sh2, sem2, id, url, ip, client, direct) = (sh.clone(), sem.clone(), e.id, d.relay.echo_url.clone(), (!e.egress_any).then_some(e.expect_egress_ip), client.clone(), direct.clone());
                     let (last_ok, flipped, confirm) = (s.egress_ok.clone(), s.egress_flipped.clone(), s.egress_confirm.swap(false, Ordering::AcqRel));
                     let confirm_flag = s.egress_confirm.clone();
                     tokio::spawn(async move {

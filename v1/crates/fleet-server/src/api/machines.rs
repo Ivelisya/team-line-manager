@@ -98,7 +98,8 @@ pub struct PatchIn {
     /// 国家（ISO 3166-1 两位代码）；null 或空串 = 改回按 IP 自动
     #[serde(default, deserialize_with = "super::some")]
     country: Option<Option<String>>,
-    /// 出口 IP（端口转发型 NAT 节点：入口 IP 与出站 IP 不同）；null 或空串 = 清掉，出口跟随 IP。只有 VPS 节点、非同机 IP 节点能设
+    /// 出口 IP（端口转发型 NAT 节点：入口 IP 与出站 IP 不同）；null 或空串 = 清掉，出口跟随 IP；"auto" = 动态（供应商的出口会变，只验收能出网）。
+    /// 只有 VPS 节点、非同机 IP 节点能设
     #[serde(default, deserialize_with = "super::some")]
     egress_ip: Option<Option<String>>,
 }
@@ -110,18 +111,60 @@ impl PatchIn {
     }
 }
 
-/// 出口 IP 的取值（上架、PATCH 共用）：空 = 没有；要是 IPv4；和入口 IP 相同等于没设
-pub fn parse_egress_ip(raw: &str, primary: &str) -> Result<Option<std::net::Ipv4Addr>, String> {
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return Ok(None);
-    }
-    let ip: std::net::Ipv4Addr = raw.parse().map_err(|_| format!("出口 IP「{raw}」不合法：要填 IPv4 地址"))?;
-    Ok(Some(ip).filter(|ip| ip.to_string() != primary))
+/// 机器的出口 IP 设置：没设（出口跟随入口 IP）/ 动态（machine.egress_dynamic）/ 固定 IP（machine.egress_ip）。三者互斥
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Egress {
+    Follow,
+    Auto,
+    Ip(std::net::Ipv4Addr),
 }
 
-/// PATCH 前锁住的当前值：(revision, kind, team_id, number, label, lifecycle, country, note, 入口 IP, 出口 IP, 宿主机)
-type PatchCur = (i32, String, Option<Uuid>, Option<i32>, Option<String>, String, Option<String>, Option<String>, String, Option<String>, Option<Uuid>);
+impl Egress {
+    pub fn ip(self) -> Option<std::net::Ipv4Addr> {
+        match self {
+            Egress::Ip(ip) => Some(ip),
+            _ => None,
+        }
+    }
+
+    pub fn is_auto(self) -> bool {
+        self == Egress::Auto
+    }
+
+    /// 库里的当前值
+    fn of(ip: Option<&str>, dynamic: bool) -> Egress {
+        match (ip.and_then(|s| s.parse().ok()), dynamic) {
+            (Some(ip), false) => Egress::Ip(ip),
+            (_, true) => Egress::Auto,
+            _ => Egress::Follow,
+        }
+    }
+
+    /// 审计 / 界面上的写法：IP、"auto" 或 null
+    pub fn label(self) -> Option<String> {
+        match self {
+            Egress::Follow => None,
+            Egress::Auto => Some("auto".into()),
+            Egress::Ip(ip) => Some(ip.to_string()),
+        }
+    }
+}
+
+/// 出口 IP 的取值（上架、PATCH 共用）：空 = 没有；"auto" = 动态；其余要是 IPv4，和入口 IP 相同等于没设
+pub fn parse_egress(raw: &str, primary: &str) -> Result<Egress, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(Egress::Follow);
+    }
+    if raw.eq_ignore_ascii_case("auto") {
+        return Ok(Egress::Auto);
+    }
+    let ip: std::net::Ipv4Addr = raw.parse().map_err(|_| format!("出口 IP「{raw}」不合法：要填 IPv4 地址，或 auto（出口会变的供应商）"))?;
+    Ok(if ip.to_string() == primary { Egress::Follow } else { Egress::Ip(ip) })
+}
+
+/// PATCH 前锁住的当前值：(revision, kind, team_id, number, label, lifecycle, country, note, 入口 IP, 出口 IP, 宿主机, 出口动态)
+type PatchCur = (i32, String, Option<Uuid>, Option<i32>, Option<String>, String, Option<String>, Option<String>, String, Option<String>, Option<Uuid>, bool);
 
 /// 改团队时原团队少了这台：按编号连续压缩（同退役完成）。先锁团队（原团队、新团队，按 id 排）再锁机器，和 move_to_spare、退役收尾同一个顺序（团队 → 机器）
 pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<PatchIn>) -> ApiResult<Json<Value>> {
@@ -458,7 +501,7 @@ pub async fn patch_nobump(tx: &mut crate::db::Tx<'_>, actor: &str, id: Uuid, b: 
         None => None,
     };
     let cur: PatchCur = sqlx::query_as(
-        "select revision, kind::text, team_id, number, label, lifecycle::text, country, note, host(primary_ip), host(egress_ip), host_id from machine where id = $1 for update",
+        "select revision, kind::text, team_id, number, label, lifecycle::text, country, note, host(primary_ip), host(egress_ip), host_id, egress_dynamic from machine where id = $1 for update",
     )
     .bind(id)
     .fetch_optional(&mut **tx)
@@ -470,18 +513,19 @@ pub async fn patch_nobump(tx: &mut crate::db::Tx<'_>, actor: &str, id: Uuid, b: 
     if cur.5 == "retired" {
         return Err(ApiError::conflict("已退役的机器不能修改"));
     }
-    // 出口 IP：Some(None) = 清掉；只有 VPS 节点、非同机 IP 节点能设
-    let egress: Option<Option<std::net::Ipv4Addr>> = match &b.egress_ip {
+    // 出口 IP：Some(Follow) = 清掉；只有 VPS 节点、非同机 IP 节点能设
+    let cur_egress = Egress::of(cur.9.as_deref(), cur.11);
+    let egress: Option<Egress> = match &b.egress_ip {
         None => None,
         Some(v) => {
-            let ip = parse_egress_ip(v.as_deref().unwrap_or(""), &cur.8).map_err(ApiError::bad_request)?;
-            if ip.is_some() && (cur.1 != "vps" || cur.10.is_some()) {
+            let e = parse_egress(v.as_deref().unwrap_or(""), &cur.8).map_err(ApiError::bad_request)?;
+            if e != Egress::Follow && (cur.1 != "vps" || cur.10.is_some()) {
                 return Err(ApiError::bad_request("只有 VPS 节点能设出口 IP（线路机、家宽代理、同机 IP 节点不用）"));
             }
-            Some(ip)
+            Some(e)
         }
     };
-    let egress_changed = egress.is_some_and(|ip| ip.map(|i| i.to_string()) != cur.9);
+    let egress_changed = egress.is_some_and(|e| e != cur_egress);
     let is_relay = cur.1 == "relay";
     let team_id = if is_relay { None } else { b.team_id.or(cur.2) };
     let number = if is_relay {
@@ -516,6 +560,7 @@ pub async fn patch_nobump(tx: &mut crate::db::Tx<'_>, actor: &str, id: Uuid, b: 
             service_ref = case when $10 then $11 else service_ref end,
             country = case when $12 then $13 else country end,
             egress_ip = case when $14 then $15 else egress_ip end,
+            egress_dynamic = case when $14 then $16 else egress_dynamic end,
             revision = revision + 1, updated_at = now()
          where id = $1",
     )
@@ -533,7 +578,8 @@ pub async fn patch_nobump(tx: &mut crate::db::Tx<'_>, actor: &str, id: Uuid, b: 
     .bind(country.is_some())
     .bind(country.clone().flatten())
     .bind(egress.is_some())
-    .bind(egress.flatten().map(|ip| ipnetwork::IpNetwork::from(std::net::IpAddr::V4(ip))))
+    .bind(egress.and_then(Egress::ip).map(|ip| ipnetwork::IpNetwork::from(std::net::IpAddr::V4(ip))))
+    .bind(egress.is_some_and(Egress::is_auto))
     .execute(&mut **tx)
     .await?;
     // 有套餐时供应商就是套餐的：只换了套餐的跟着换供应商，明确给了另一个供应商的报错
@@ -571,9 +617,9 @@ pub async fn patch_nobump(tx: &mut crate::db::Tx<'_>, actor: &str, id: Uuid, b: 
         sqlx::query("update machine set spare_since = null, spare_from = null, spare_from_team_id = null, lifecycle_reason = null where id = $1").bind(id).execute(&mut **tx).await?;
     }
     let mut detail = json!({"name": name, "old_name": old_name,
-           "before": {"team_id": cur.2, "number": cur.3, "label": cur.4, "country": cur.6, "note": cur.7, "egress_ip": cur.9},
+           "before": {"team_id": cur.2, "number": cur.3, "label": cur.4, "country": cur.6, "note": cur.7, "egress_ip": cur_egress.label()},
            "after": {"team_id": team_id, "number": number, "label": label, "country": country.clone().unwrap_or(cur.6.clone()), "note": b.note.clone().or(cur.7.clone()),
-                     "egress_ip": egress.map_or(cur.9.clone(), |ip| ip.map(|i| i.to_string()))}});
+                     "egress_ip": egress.unwrap_or(cur_egress).label()}});
     if auto_renew_off {
         detail["auto_renew_off"] = json!(true);
     }

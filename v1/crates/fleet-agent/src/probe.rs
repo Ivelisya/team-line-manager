@@ -191,13 +191,25 @@ struct Egress {
     answered: bool,
 }
 
-async fn egress_try(entry_id: Uuid, client: &reqwest::Client, echo_url: &str, expect: IpAddr, timeout: Duration, ts_ms: i64) -> Egress {
+/// 回显到的 IP 能算「出网成功」：公网地址（动态出口只验收这一条）
+fn is_public(ip: IpAddr) -> bool {
+    match normalize(ip) {
+        IpAddr::V4(v4) => !(v4.is_private() || v4.is_loopback() || v4.is_link_local() || v4.is_unspecified() || v4.is_broadcast() || v4.is_multicast()),
+        IpAddr::V6(v6) => !(v6.is_loopback() || v6.is_unspecified() || v6.is_multicast()),
+    }
+}
+
+/// `expect`：期望的出口 IP；`None` = 动态出口（供应商出口会变），回显到任何公网 IP 都算成功
+async fn egress_try(entry_id: Uuid, client: &reqwest::Client, echo_url: &str, expect: Option<IpAddr>, timeout: Duration, ts_ms: i64) -> Egress {
     let t = Instant::now();
     let (ok, answered, detail) = match http_get(client, echo_url, timeout).await {
         Ok(body) => match body.trim().parse::<IpAddr>() {
             Ok(seen) => {
-                let ok = normalize(seen) == normalize(expect);
-                (ok, true, Some(if ok { seen.to_string() } else { format!("出口 IP {seen}，期望 {expect}") }))
+                let (ok, why) = match expect {
+                    Some(expect) => (normalize(seen) == normalize(expect), format!("出口 IP {seen}，期望 {expect}")),
+                    None => (is_public(seen), format!("出口 IP {seen} 不是公网地址")),
+                };
+                (ok, true, Some(if ok { seen.to_string() } else { why }))
             }
             // 去掉控制字符：detail 进中控的 PG text 列，一个 NUL 就让整份报告被拒
             Err(_) => (false, false, Some(format!("回显内容不是 IP：{}", body.trim().chars().filter(|c| !c.is_control()).take(80).collect::<String>()))),
@@ -211,7 +223,7 @@ async fn egress_try(entry_id: Uuid, client: &reqwest::Client, echo_url: &str, ex
 /// `client` 来自 `socks_client`（该入口的探测入站端口）。只有测试直接用；探测任务走 `egress_probe_checked`
 #[cfg(test)]
 pub async fn egress_probe(entry_id: Uuid, client: &reqwest::Client, echo_url: &str, expect: IpAddr, timeout: Duration, ts_ms: i64) -> ProbeSample {
-    egress_try(entry_id, client, echo_url, expect, timeout, ts_ms).await.sample
+    egress_try(entry_id, client, echo_url, Some(expect), timeout, ts_ms).await.sample
 }
 
 /// 经入口访问的备用目标：回显服务经入口不通时，用它判断是入口的出口坏了还是只有回显服务这条路不通。
@@ -228,7 +240,7 @@ const ALT_CHECK_TIMEOUT: Duration = Duration::from_secs(8);
 ///
 /// 回了 IP 但不是期望的（出口错了）不核对，照常上报失败
 #[allow(clippy::too_many_arguments)]
-pub async fn egress_probe_checked(entry_id: Uuid, client: &reqwest::Client, direct: &reqwest::Client, echo_url: &str, alt_url: &str, expect: IpAddr, timeout: Duration, ts_ms: i64) -> Option<ProbeSample> {
+pub async fn egress_probe_checked(entry_id: Uuid, client: &reqwest::Client, direct: &reqwest::Client, echo_url: &str, alt_url: &str, expect: Option<IpAddr>, timeout: Duration, ts_ms: i64) -> Option<ProbeSample> {
     let Egress { sample: s, answered } = egress_try(entry_id, client, echo_url, expect, timeout, ts_ms).await;
     if s.ok || answered {
         return Some(s);
@@ -312,6 +324,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn egress_any_accepts_any_public_ip() {
+        let t = |body: &'static str| async move {
+            let (addr, _h) = fake_socks(true, body).await;
+            egress_try(Uuid::nil(), &socks_client(addr.port()).unwrap(), "http://echo.test/ip", None, Duration::from_secs(3), 1).await.sample
+        };
+        // 任何公网 IP 都算成功，detail 写看到的 IP；IPv4 映射的 IPv6 写法同样算
+        let s = t("211.7.96.248").await;
+        assert!(s.ok && s.latency_ms.is_some() && s.detail.as_deref() == Some("211.7.96.248"), "{s:?}");
+        assert!(t("::ffff:133.106.194.112").await.ok);
+        // 回的不是公网地址（内网 / 回环）：还是失败
+        for bad in ["10.0.0.5", "127.0.0.1", "192.168.1.1"] {
+            let s = t(bad).await;
+            assert!(!s.ok && s.detail.unwrap().contains("不是公网地址"), "{bad}");
+        }
+    }
+
+    #[tokio::test]
     async fn egress_mismatch_and_refused() {
         let (addr, _h) = fake_socks(true, "198.51.100.1").await;
         let s = egress_probe(Uuid::nil(), &socks_client(addr.port()).unwrap(), "http://echo.test/ip", "203.0.113.9".parse().unwrap(), Duration::from_secs(3), 1).await;
@@ -342,7 +371,7 @@ mod tests {
     #[tokio::test]
     async fn egress_failure_counts_only_when_echo_reachable_directly() {
         let direct = direct_client().unwrap();
-        let expect: IpAddr = "203.0.113.9".parse().unwrap();
+        let expect: Option<IpAddr> = Some("203.0.113.9".parse().unwrap());
         let check = |url: String| {
             let direct = direct.clone();
             async move {
@@ -386,7 +415,7 @@ mod tests {
     #[tokio::test]
     async fn egress_failure_not_counted_when_alt_target_reachable_via_entry() {
         let direct = direct_client().unwrap();
-        let expect: IpAddr = "203.0.113.9".parse().unwrap();
+        let expect: Option<IpAddr> = Some("203.0.113.9".parse().unwrap());
         let echo = format!("http://{}/ip", fake_echo("198.51.100.7").await);
         let bad = "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n".to_string();
         let no_content = "HTTP/1.1 204 No Content\r\n\r\n".to_string();

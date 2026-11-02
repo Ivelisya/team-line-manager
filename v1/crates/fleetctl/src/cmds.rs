@@ -556,6 +556,10 @@ pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
         if let Some(e) = m["egress_ip"].as_str() {
             rows.push(("出口 IP", format!("{e}（出站公网 IP；线路机连的是上面的 IP）")));
         }
+        // 出口 IP 动态（供应商的出口会变，只验收能出网）：括号里是最近一次成功的出口探测看到的 IP
+        if m["egress_dynamic"] == true {
+            rows.push(("出口 IP", format!("动态（{}）", m["egress_seen"].as_str().map_or("暂无成功的出口探测".to_string(), |s| format!("最近 {s}")))));
+        }
         // 同机关系：同机 IP 节点的 SSH、agent、主机读数都是宿主机的；宿主机列出它上面的同机 IP 节点
         if !m["host_machine"].is_null() {
             rows.push(("宿主机", format!("{}（SSH、agent、主机读数都用它的）", st(&m, "/host_machine/name"))));

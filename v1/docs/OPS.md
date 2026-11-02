@@ -92,7 +92,8 @@
 
 端口转发型 NAT 节点（供应商给一个公网入口 IP 加几个同号映射端口，机器出站的公网 IP 和入口 IP 不同，来源 IP 保留）：`--ip` 填入口 IP，`--ssh-port` 填映射到 22 的公网端口，
 `--ss-port` 填映射给 SS 的公网端口，`--egress-ip` 填机器出站的公网 IP，例如 `fleetctl provision --kind vps --ip 125.103.212.100 --ssh-port 16350 --ss-port 16351 --egress-ip 133.106.194.112 …`
-（批量文件条目写 `"egress_ip"`）。线路机连入口 IP:ss_port，出口验收 / 出口探测期望看到出口 IP；之后改或清用 `fleetctl rename <机器> --egress-ip <IP|none>`（none = 出口跟随 IP）。
+（批量文件条目写 `"egress_ip"`）。线路机连入口 IP:ss_port，出口验收 / 出口探测期望看到出口 IP；之后改或清用 `fleetctl rename <机器> --egress-ip <IP|auto|none>`（none = 出口跟随 IP）。
+供应商的出口 IP 本身会变（共享 / 轮换出口，例如日本 Radonet「Rakuten Shared」NAT 上架一小时后出口就换了）的，`--egress-ip auto`（批量文件 `"egress_ip": "auto"`）标成动态：出口探测只验收「经节点能出网」，回显到任何公网 IP 都算成功，`show` / 网页写「动态（最近 X.X.X.X）」。动态标记靠新版线路机 agent 生效，旧 agent 仍按入口 IP 比对（会一直报出口不通），先 `upgrade-agent` 该线路机再标。
 
 同机 IP 节点在条目里写 `"host": "团队1-03"`（宿主机的名字），不写 `ssh_port`、`login`、`ss_port`、`provider`、`plan`。
 

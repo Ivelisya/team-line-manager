@@ -146,6 +146,7 @@ pub async fn desired_state(db: &PgPool, secrets: &SecretBox, relay_id: Uuid, ech
         number: Option<i32>,
         label: Option<String>,
         ip: String,
+        egress_dynamic: bool,
         direct: bool,
         protocol: Option<String>,
         host: Option<String>,
@@ -156,11 +157,12 @@ pub async fn desired_state(db: &PgPool, secrets: &SecretBox, relay_id: Uuid, ech
         mode: String,
         bridge_uuid: Uuid,
     }
-    // 期望出口 IP = 机器的出口 IP（端口转发型 NAT 节点入口与出站 IP 不同，见 machine.egress_ip），没填就是 primary_ip
+    // 期望出口 IP = 机器的出口 IP（端口转发型 NAT 节点入口与出站 IP 不同，见 machine.egress_ip），没填就是 primary_ip；
+    // 出口动态（machine.egress_dynamic，供应商的出口会变）的照旧下发 primary_ip / egress_ip，另带 egress_any，新 agent 不比对 IP，旧 agent 行为不变
     // 直出入口没有 node_outbound 行（节点就是线路机自己）；节点入口缺出站参数（或秘密已在退役时清掉）的照旧不下发
     let rows: Vec<Row> = sqlx::query_as(
         "select e.id, e.node_id, m.team_id, e.port, e.lifecycle::text lifecycle, e.client_uuid, e.short_id, m.kind::text kind, t.name team, m.number,
-                m.label, host(coalesce(m.egress_ip, m.primary_ip)) ip, e.node_id = e.relay_id direct, o.protocol, o.host, o.port oport, o.method, o.username, o.secret_enc,
+                m.label, host(coalesce(m.egress_ip, m.primary_ip)) ip, m.egress_dynamic, e.node_id = e.relay_id direct, o.protocol, o.host, o.port oport, o.method, o.username, o.secret_enc,
                 e.mode, e.bridge_uuid
          from entry e join machine m on m.id = e.node_id left join team t on t.id = m.team_id
          left join node_outbound o on o.machine_id = e.node_id
@@ -198,6 +200,7 @@ pub async fn desired_state(db: &PgPool, secrets: &SecretBox, relay_id: Uuid, ech
             short_id: r.short_id,
             outbound,
             expect_egress_ip: r.ip.parse::<IpAddr>()?,
+            egress_any: r.egress_dynamic,
             policy: crate::policy::compile(&policies.effective(r.node_id, r.team_id).0),
             anytls_port: at.get(&r.id).copied(),
         });
