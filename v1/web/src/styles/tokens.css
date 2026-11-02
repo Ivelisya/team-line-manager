@@ -18,10 +18,10 @@
   --selected: color-mix(in srgb, var(--accent) 6%, var(--surface)); /* O 表格选中行 accent 6% */
   --scrim: rgba(0, 0, 0, 0.4);          /* O 遮罩 rgba(0,0,0,.4)；精修后盖住整个视口（修 dna-ops M1） */
   /* 弹层材质（菜单、右键、下拉、悬浮卡、作业弹层、日历、图表提示、toast）：浮层底 84% + 背后内容模糊提饱和，
-     不支持 backdrop-filter 时回退实底 --raised（components.css）。对话框、抽屉、提示框保持实底 */
+     不支持 backdrop-filter 时回退实底 --raised（overrides.css 里改令牌）。对话框、抽屉、提示框保持实底 */
   --glass: color-mix(in srgb, var(--raised) 84%, transparent);
   --glass-blur: saturate(180%) blur(20px);
-  /* 吸附条材质（顶栏、上架页底部操作条、抽屉页签里的吸顶条）：表面 78% + 模糊提饱和，不支持 backdrop-filter 时回退实底 --surface（overrides.css） */
+  /* 吸附条材质（顶栏、上架页底部操作条、抽屉页签里的吸顶条）：表面 78% + 模糊提饱和，不支持 backdrop-filter 时回退实底 --surface（同上） */
   --glass-bar: color-mix(in srgb, var(--surface) 78%, transparent);
   --glass-bar-blur: saturate(180%) blur(12px);
   --scrim-stacked: rgb(0 0 0 / 0.12);   /* 抽屉上再叠对话框 / 命令面板时的第二层遮罩：抽屉的遮罩已压暗，这层只轻压（components.css） */
@@ -76,7 +76,7 @@
   --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC", "Hiragino Sans GB",
     "Microsoft YaHei", system-ui, sans-serif;                  /* H refined.css:3 body / O style.css:127 */
   --font-num: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif; /* H --font-numeric：系统字体 + --num-variant 等宽数字。原先首选的 Inter 没打包、用户机器上也没装，等于没写 */
-  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace; /* 只给 UUID 前缀、令牌、指纹、日志正文 */
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", monospace; /* 只给 UUID 前缀、令牌、指纹、日志正文；等宽字体没有汉字，中文回退到和 --font-sans 一样的中文字体，不掉到宋体 */
   --num-variant: tabular-nums slashed-zero;                     /* H 全部数字 */
 
   /* 字阶：正文 7 档（O 17 种、N 8 种、H 8 种收拢）+ 首页分区标题 + 大读数 4 档（--fs-display ＞ --fs-kpi ＞ --fs-metric ＞ --fs-metric-sm） */
@@ -217,7 +217,7 @@
   --dur-press: 80ms;                    /* 按下缩放：快按，松开按元素自己的 --dur-2 慢回 */
   --dur-1: 140ms;                       /* 悬停与颜色等原地变化；锚定弹层、顶部面板的退场 */
   --dur-2: 220ms;                       /* 浮层与面板进场、松开回弹、悬停上浮、页签内容；抽屉与 toast 的退场 */
-  --dur-3: 340ms;                       /* 边缘抽屉滑入（节点抽屉、窄屏侧栏） */
+  --dur-3: 340ms;                       /* 边缘抽屉滑入（节点抽屉、窄屏侧栏、手机上的对话框底部面板） */
   --dur-data: 450ms;                    /* 数据图形：格条首次扫亮、圆环进场、进度线、曲线展开、KPI 滚数（lib/useCountUp 读它）。格条、圆环、心跳格之后的读数变化不过渡 */
   --dur-spin: 0.9s;                     /* 转圈一周：按钮加载、进行中胶囊、状态标、进度细纹；减弱动效时放慢到 2s（overrides.css），不停——停住的转圈像坏了的图标 */
   --dur-loop: 2s;                       /* 循环的统一节拍：卡片流量标签（.flow-live）的呼吸、作业徽标、骨架、步骤环（转圈另用 --dur-spin） */

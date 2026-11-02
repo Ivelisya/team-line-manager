@@ -67,13 +67,7 @@
   overflow-x: auto; scrollbar-width: none;
 }
 .seg::-webkit-scrollbar { display: none; }
-/* 放不下时横向滚动、滚动条又是藏起来的：往还能滑的那一侧渐隐一小段，提示可以接着滑（随滚动位置变；不支持滚动驱动动画的浏览器没有渐隐，照常滚） */
-@property --seg-fade-l { syntax: "<length>"; inherits: false; initial-value: 0px; }
-@property --seg-fade-r { syntax: "<length>"; inherits: false; initial-value: 0px; }
-@keyframes seg-fade { 0% { --seg-fade-l: 0px; --seg-fade-r: 20px; } 10%, 90% { --seg-fade-l: 20px; --seg-fade-r: 20px; } 100% { --seg-fade-l: 20px; --seg-fade-r: 0px; } }
-@supports (animation-timeline: scroll(self inline)) {
-  .seg { animation: seg-fade linear both; animation-timeline: scroll(self inline); mask-image: linear-gradient(to right, transparent, #000 var(--seg-fade-l), #000 calc(100% - var(--seg-fade-r)), transparent); }
-}
+/* 放不下时横向滚动、滚动条又是藏起来的：边缘渐隐提示还能接着滑，由 base.css 的通用规则（edge-fade）给 */
 .seg-item {
   position: relative; flex: none; display: inline-flex; align-items: center; gap: var(--sp-6);
   height: var(--seg-item); padding: 0 var(--sp-14); box-sizing: border-box;
@@ -94,9 +88,10 @@
 /* ========== 下划线页签 ========== */
 .tabs-list { display: flex; align-items: stretch; gap: var(--sp-20); border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
 .tabs-list::-webkit-scrollbar { display: none; }
-.tabs-list[data-fade="r"] { mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent); }
-.tabs-list[data-fade="l"] { mask-image: linear-gradient(to left, #000 calc(100% - 40px), transparent); }
-.tabs-list[data-fade="lr"] { mask-image: linear-gradient(to right, transparent, #000 40px, #000 calc(100% - 40px), transparent); }
+/* 不支持滚动驱动动画的浏览器（Firefox）靠 TabsList 的滚动监听写 data-fade，宽度同 base.css 的 20px；支持的浏览器由 base.css 的通用规则给，监听不挂 */
+.tabs-list[data-fade="r"] { mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent); }
+.tabs-list[data-fade="l"] { mask-image: linear-gradient(to left, #000 calc(100% - 20px), transparent); }
+.tabs-list[data-fade="lr"] { mask-image: linear-gradient(to right, transparent, #000 20px, #000 calc(100% - 20px), transparent); }
 .tab {
   position: relative; flex: none; display: inline-flex; align-items: center; gap: var(--sp-6);
   height: 41px; padding: 0 0 1px; box-sizing: border-box; border: 0; background: transparent; cursor: pointer; white-space: nowrap; /* 41 = 40 + 列表 1px 底线，底部 1px 内边距让文字位置不变，下划线盖在底线上 */
@@ -179,6 +174,7 @@
 .due[data-tone="warn"] { color: var(--warn-text); }
 .due[data-tone="bad"] { color: var(--bad-text); }
 .due-t { font-size: 0.86em; font-weight: var(--fw-medium); } /* 到期里的文字（今天 / 已过期 / 后 / 到期）：不按数字排版 */
+.num + .due-t { font-size: var(--fs-micro); color: var(--fg-2); } /* 数字后面的「后」「后到期」同「天」这类单位：一样小、一样灰（否则后缀比单位还显眼）；数字前的「已过期」「今天」不动 */
 /* 计数徽标（侧栏告警数、顶栏进行中作业数）：实底胶囊，默认故障红，data-tone="accent" 为强调色；位置由所在处给（base.css） */
 .count-badge { --cb-bg: var(--bad-solid); --cb-fg: var(--on-solid); display: inline-grid; place-items: center; flex: none; min-width: var(--h-chip-sm); height: var(--h-chip-sm); box-sizing: border-box; padding: 0 5px; border-radius: var(--r-pill); background: var(--cb-bg); color: var(--cb-fg); font: var(--fw-medium) var(--fs-micro) / 1 var(--font-num); font-variant-numeric: tabular-nums; }
 .count-badge[data-tone="accent"] { --cb-bg: var(--accent-solid); --cb-fg: var(--on-accent); }
@@ -282,6 +278,7 @@
 .note-title { margin-bottom: var(--sp-4); font-weight: var(--fw-medium); } /* 提示条里列表上方的一行小标题 */
 
 .empty { display: grid; justify-items: center; gap: var(--sp-8); padding: var(--sp-24) var(--sp-16); color: var(--fg-2); text-align: center; }
+.empty-page { display: grid; place-content: center; min-height: 60vh; } /* 整页的空状态（404）：在主区里居中，不贴在顶上 */
 .empty-ic { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; background: var(--sunken); box-shadow: inset 0 0 0 1px var(--line); color: var(--fg-3); }
 .empty-text { font-weight: var(--fw-medium); text-wrap: pretty; }
 .skel { display: block; border-radius: var(--r-xs); background: var(--cell-off); animation: skel-pulse var(--dur-loop) var(--ease-std) infinite; } /* 同格条未点亮色：暗色下 --sunken 比卡片还暗，骨架几乎看不见 */
@@ -330,6 +327,12 @@
 .search { position: relative; display: inline-flex; align-items: center; min-width: 0; }
 .search > .lucide { position: absolute; left: var(--sp-10); color: var(--fg-3); pointer-events: none; width: var(--icon-sm); height: var(--icon-sm); }
 .search > .input { padding-left: 30px; }
+/* 搜索框的清除键：Chromium / Safari 原生的是粗体蓝 ✕，换成同全站线条图标的 ✕（mask 取令牌色，深浅主题自动适配）；点击清空、触发 onChange、Esc 清空都还是原生行为 */
+.search > .input::-webkit-search-cancel-button {
+  -webkit-appearance: none; appearance: none; width: var(--icon-sm); height: var(--icon-sm); margin: 0; cursor: pointer; background: var(--fg-3);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M18 6 6 18'/%3E%3Cpath d='m6 6 12 12'/%3E%3C/svg%3E") center / 100% no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M18 6 6 18'/%3E%3Cpath d='m6 6 12 12'/%3E%3C/svg%3E") center / 100% no-repeat;
+}
+@media (hover: hover) { .search > .input::-webkit-search-cancel-button:hover { background: var(--fg-2); } }
 .input-unit { position: relative; display: inline-flex; align-items: center; min-width: 0; max-width: 100%; }
 .input-unit > .input { padding-right: calc(var(--sp-10) + 2.5em); font-variant-numeric: tabular-nums; }
 .input-unit-u { position: absolute; right: var(--sp-10); color: var(--fg-2); font-size: var(--fs-body); pointer-events: none; }
@@ -357,7 +360,7 @@
    进出场三类（关键帧只写起点或终点，另一端取元素自身的样式）：
    1 锚定弹层（下拉、右键、选择、日期、作业弹层、悬浮卡、提示、图表提示）：float-in / float-out
    2 顶部锚定面板（对话框、命令面板）：panel-in / panel-out
-   3 边缘抽屉（节点抽屉；窄屏侧栏走 base.css 的过渡）：drawer-in / drawer-out，遮罩同步淡入淡出
+   3 边缘抽屉（节点抽屉；窄屏侧栏走 base.css 的过渡；手机上的对话框 sheet 也算，sheet-in / sheet-out）：drawer-in / drawer-out，遮罩同步淡入淡出
    关闭动画：Radix Presence 会等 [data-state=closed] 上的动画播完再卸载；减弱动效时在 overrides.css 置 none */
 /* 退场动画期间不再拦截点击：用户已经可以点下面的东西。Radix 在遮罩（及模态层里的浮层）上内联了 pointer-events: auto，要 !important 才盖得住 */
 .overlay[data-state="closed"], .drawer-overlay[data-state="closed"], .dialog[data-state="closed"], .drawer[data-state="closed"], .cmd-dialog[data-state="closed"],
@@ -394,15 +397,18 @@
 .dialog[data-state="closed"] { animation: panel-out var(--dur-1) var(--ease-std) forwards; }
 @keyframes panel-in { from { opacity: 0; transform: translateY(-6px) scale(.98); } }
 @keyframes panel-out { to { opacity: 0; transform: translateY(-4px); } }
-/* 手机（≤600px）：对话框改成从底部升起的面板（同 iOS 的 sheet）——通栏、上圆角、底部让出安全区，按钮通栏高 44；右上角补一个关闭键（宽屏不显示，靠取消按钮与 Esc） */
+/* 手机（≤600px）：对话框改成从底部升起的面板（同 iOS 的 sheet，进出场用边缘滑入档 --dur-3 / --dur-2）——通栏、上圆角、底部让出安全区，按钮通栏高 44；右上角补一个关闭键（宽屏不显示，靠取消按钮与 Esc） */
 .dialog-x { display: none; }
 @media (max-width: 600px) {
   .dialog {
     top: auto; bottom: 0; left: 0; translate: none; width: 100vw; max-height: calc(100dvh - var(--topbar-h));
     border-width: 1px 0 0; border-radius: var(--r-card) var(--r-card) 0 0; --dlg-pb: calc(var(--sp-20) + env(safe-area-inset-bottom, 0px));
-    transform-origin: 50% 100%; animation-name: sheet-in;
+    transform-origin: 50% 100%; animation: sheet-in var(--dur-3) var(--ease-out);
   }
-  .dialog[data-state="closed"] { animation-name: sheet-out; }
+  .dialog[data-state="closed"] { animation: sheet-out var(--dur-2) var(--ease-std) forwards; }
+  /* 整块面板从屏幕底边升起、收回，走边缘滑入档（同节点抽屉），遮罩跟着；命令面板不是 sheet，不改 */
+  .overlay:not(.cmd-overlay) { animation-duration: var(--dur-3); }
+  .overlay:not(.cmd-overlay)[data-state="closed"] { animation-duration: var(--dur-2); }
   .dialog-x { display: inline-grid; position: absolute; top: var(--sp-12); right: var(--sp-12); }
   .dialog:has(.hk-head) .dialog-x { display: none; } /* 快捷键帮助自带关闭键 */
   .dialog-head { padding-right: calc(var(--h-md) + var(--sp-4)); }
@@ -470,11 +476,11 @@
 :is(.menu, .popover, .select-content, .tooltip)[data-side="left"] { --pop-x: 4px; }
 :is(.menu, .popover, .select-content, .tooltip)[data-side="right"] { --pop-x: -4px; }
 :is(.menu, .popover, .select-content, .tooltip)[data-state="closed"] { animation: float-out var(--dur-1) var(--ease-std) forwards; }
+.tooltip[data-instant]:not([data-state="closed"]) { animation: none; } /* TipHost 在相邻元素间换项：直接出现；收起时（closed）退场动画照旧 */
 @keyframes float-in { from { opacity: 0; transform: translate(var(--pop-x), var(--pop-y)) scale(.96); } }
 @keyframes float-out { to { opacity: 0; transform: translate(var(--pop-x), var(--pop-y)) scale(.96); } }
 .menu, .popover, .select-content, .toast, .chart-tip { border: 1px solid var(--line-float); box-shadow: var(--shadow-pop); }
 .menu, .popover, .toast, .chart-tip { background: var(--glass); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); }
-@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .menu, .popover, .toast, .chart-tip { background: var(--raised); } }
 .menu, .popover, .select-content { z-index: var(--z-popover); border-radius: var(--r-float); padding: var(--sp-4); min-width: var(--pop-w-sm); }
 /* 菜单高度只受视口约束（不读 Radix 的可用高度，也没有固定上限）：下方放不下时 Radix 整体翻到上方、不把菜单压矮出滚动条；
    内容比视口还高的（线路机「复制分享链接」子菜单可有几十条入口）才在菜单里滚动 */

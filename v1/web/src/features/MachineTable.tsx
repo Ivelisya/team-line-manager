@@ -32,7 +32,7 @@ const cols: Col[] = [
     cell: (m) => { const r = liveRate(m); const v = r && (k === 'up' ? r.tx : r.rx); return <span className="trate" data-speed={r && v != null ? F.speedOf(v, m.plan?.bandwidth_mbps) : undefined}><Num f={F.rate(v)} /></span>; } })),
   { id: 'traffic', header: '本月流量', size: 176, r: true, ...byNum(trafficTotal), cell: (m) => <MonthFlowCell m={m} /> },
   // 不限额度、与宿主机共用的没有「剩余」可比，排在最后
-  { id: 'quota', header: '剩余流量', size: 106, ...byNum((m) => quota(m).rem),
+  { id: 'quota', header: '剩余流量', size: 106, r: true, ...byNum((m) => quota(m).rem),
     cell: (m) => {
       const q = quota(m);
       const body = <>{q.rem != null && <Cells pct={q.pct} n={8} colors={Q8} />}{q.rem == null ? <span className="t-sub">{q.shared ? '与宿主机共用' : q.unset ? '未设置' : '不限'}</span> : q.rem > 0 ? <Num f={quotaGb(q.rem)} /> : <span className="due" data-tone="bad">已超限</span>}</>;

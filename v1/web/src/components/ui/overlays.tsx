@@ -33,6 +33,7 @@ export const TabsList = React.forwardRef<React.ElementRef<typeof TabsPrimitive.L
   const setRef = React.useCallback((n: HTMLDivElement | null) => { el.current = n; if (typeof ref === 'function') ref(n); else if (ref) (ref as React.MutableRefObject<HTMLDivElement | null>).current = n; }, [ref]);
   React.useLayoutEffect(() => {
     const n = el.current; if (!n) return;
+    if (CSS.supports('animation-timeline: scroll()')) return; // 渐隐由 base.css 的滚动驱动动画给；这里只给不支持的浏览器兜底
     const update = () => { const l = n.scrollLeft > 1; const r = n.scrollLeft + n.clientWidth < n.scrollWidth - 1; setFade(l && r ? 'lr' : l ? 'l' : r ? 'r' : ''); };
     update();
     n.addEventListener('scroll', update, { passive: true });
@@ -111,7 +112,7 @@ export function Tip({ text, children, side = 'top' }: { text: React.ReactNode; c
  *  空的 data-tip 当作没有（拼出来的说明可能为空，调用方不用再判）；data-tip-side 指定弹出方向（默认在上方） */
 const TIP_SEL = '[data-tip]:not([data-tip=""])';
 export function TipHost() {
-  const [tip, setTip] = React.useState<{ id: number; text: string; r: DOMRect; side: Side } | null>(null);
+  const [tip, setTip] = React.useState<{ id: number; text: string; r: DOMRect; side: Side; instant: boolean } | null>(null);
   const [open, setOpen] = React.useState(false);
   const hide = React.useRef(() => {});
   React.useEffect(() => {
@@ -120,7 +121,8 @@ export function TipHost() {
     let touch = false; // 最近一次按下是手指
     // 对话框标题下面那行说明里的「(i)」往下弹：往上会盖住标题
     const sideOf = (el: HTMLElement): Side => (el.dataset.tipSide as Side | undefined) ?? (el.closest('.dialog-desc') ? 'bottom' : 'top');
-    const show = (el: HTMLElement) => { shown = true; setTip({ id: ++seq, text: el.dataset.tip ?? '', r: el.getBoundingClientRect(), side: sideOf(el) }); setOpen(true); };
+    // instant：刚收起一个又悬停到下一个（扫过一排心跳格），新提示直接出现、不再播一遍缩放淡入（macOS 也是第一次等、之后换项不播）
+    const show = (el: HTMLElement, instant = false) => { shown = true; setTip({ id: ++seq, text: el.dataset.tip ?? '', r: el.getBoundingClientRect(), side: sideOf(el), instant }); setOpen(true); };
     const close = () => {
       clearTimeout(timer); cur = null;
       if (shown) { shown = false; closedAt = performance.now(); setOpen(false); }
@@ -133,7 +135,7 @@ export function TipHost() {
       close();
       if (!el) return;
       cur = el;
-      if (performance.now() - closedAt < 300) show(el); else timer = window.setTimeout(() => show(el), 250);
+      if (performance.now() - closedAt < 300) show(el, true); else timer = window.setTimeout(() => show(el), 250);
     };
     // 键盘聚焦才弹；鼠标按下得到的焦点不算（同 Radix）
     const focus = (e: FocusEvent) => { const el = (e.target as Element).closest<HTMLElement>(TIP_SEL); if (el?.matches(':focus-visible')) { close(); cur = el; show(el); } };
@@ -161,7 +163,7 @@ export function TipHost() {
   return (
     <TooltipPrimitive.Root key={tip.id} open={open} onOpenChange={(o) => { if (!o) hide.current(); }}>
       <TooltipPrimitive.Trigger asChild><span className="float-anchor" style={{ left: tip.r.left, top: tip.r.top, width: tip.r.width, height: tip.r.height }} /></TooltipPrimitive.Trigger>
-      <TooltipPrimitive.Portal><TooltipPrimitive.Content side={tip.side} sideOffset={6} collisionPadding={8} className="tooltip">{tip.text}</TooltipPrimitive.Content></TooltipPrimitive.Portal>
+      <TooltipPrimitive.Portal><TooltipPrimitive.Content side={tip.side} sideOffset={6} collisionPadding={8} className="tooltip" data-instant={tip.instant || undefined}>{tip.text}</TooltipPrimitive.Content></TooltipPrimitive.Portal>
     </TooltipPrimitive.Root>
   );
 }

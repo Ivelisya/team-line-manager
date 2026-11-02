@@ -21,6 +21,7 @@ body {
   font: var(--fw-regular) var(--fs-body) / var(--lh-body) var(--font-sans);
   font-variant-numeric: tabular-nums;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   font-synthesis: none;
   text-autospace: no-autospace; /* “团队1-01”不要在中文与数字间自动加空隙 */
 }
