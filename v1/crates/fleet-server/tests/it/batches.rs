@@ -6,6 +6,7 @@ use crate::common::{self, seed_node, T};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use fleet_server::batches::{fmt_date, today};
+use fleet_server::state::Event;
 use fleet_server::{ledger, meta};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
@@ -128,19 +129,20 @@ async fn billing_ledger_and_customer_page() {
     let v = t.get(&base1).await;
     let seen_day = fmt_date(now0.to_offset(meta::org_offset()).date());
     assert_eq!((slot_of(&v, "团队1-05")["start_date"].as_str(), v["totals"]["pending"].as_i64()), (Some(seen_day.as_str()), Some(0)), "{v}");
-    // 团队1-02 设为不计费：机器视图带上；空出待定，满 24 小时没人接 → 结束
+    // 团队1-02 设为不计费：机器视图带上；设完马上对账一次，名额立刻空出待定，满 24 小时没人接 → 结束
+    let mut ev = t.st.events.subscribe();
     let r = t.req("PUT", &format!("/api/v1/machines/{n2}/billing-exempt"), Some(json!({"exempt": true})), None).await;
     assert_eq!(r.0, StatusCode::OK, "{r:?}");
     assert_eq!(t.get(&format!("/api/v1/machines/{n2}")).await["billing_exempt"], true);
-    let t26 = now0 + Duration::hours(26);
-    ledger::reconcile(&t.st, t26).await.unwrap();
+    assert!(std::iter::from_fn(|| ev.try_recv().ok()).any(|e| matches!(e, Event::Billing { id } if id == team1)), "设不计费要发 billing 事件");
     let v = t.get(&base1).await;
     let s2 = slot_of(&v, "团队1-02");
     assert_eq!((s2["state"].as_str(), s2["last_holder_name"].as_str(), v["totals"]["vacated"].as_i64()), (Some("vacated"), Some("团队1-02"), Some(1)), "{v}");
-    ledger::reconcile(&t.st, t26 + Duration::hours(25)).await.unwrap();
+    let t26 = now0 + Duration::hours(26);
+    ledger::reconcile(&t.st, t26).await.unwrap();
     let s2 = slot_of(&t.get(&base1).await, "团队1-02").clone();
-    // （「现在」是往后推的，结束日可能还在真实的今天之后，状态按真实今天算，所以只看结束日）
-    assert_eq!(s2["end_date"].as_str(), Some(fmt_date(t26.to_offset(meta::org_offset()).date()).as_str()), "{s2}");
+    // （空出就在刚才，结束日 = 空出那天）
+    assert_eq!(s2["end_date"].as_str(), Some(seen_day.as_str()), "{s2}");
     // 机器被物理删除：外键置空，对账照常把名额空出（不报错）
     sqlx::query("delete from machine where id = $1").bind(n3).execute(&t.st.db).await.unwrap();
     ledger::reconcile(&t.st, t26 + Duration::hours(52)).await.unwrap();
@@ -158,4 +160,52 @@ async fn billing_ledger_and_customer_page() {
 
     let acts: Vec<String> = sqlx::query_scalar("select action from audit_log where action like 'billing.%' order by id").fetch_all(&t.st.db).await.unwrap();
     assert_eq!(acts, ["billing.init", "billing.init", "billing.slot_update", "billing.slot_add", "billing.slot_add", "billing.slot_update", "billing.exempt"]);
+}
+
+/// 整批改起算日；空出的系统名额填结束日
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn batch_start_and_vacated_end() {
+    let t = common::boot(false, "").await;
+    let team = common::seed_team(&t, "团队1").await;
+    let n1 = node(&t, team, 1, "US").await;
+    node(&t, team, 2, "US").await;
+    let s = meta::add_months(today().replace_day(1).unwrap(), -1).unwrap();
+    let day = |n: i64| fmt_date(s + Duration::days(n));
+    t.post("/api/v1/billing/init", json!({"since": day(0)})).await;
+    // 一个手动名额在 day(20) 结束，同一批（同起算日、同地区）
+    let m = t.post(&format!("/api/v1/teams/{team}/billing-slots"), json!({"region": "美区", "start_date": day(0)})).await;
+    let m_id = m[0]["id"].as_str().unwrap().to_string();
+    let r = t.req("PATCH", &format!("/api/v1/billing-slots/{m_id}"), Some(json!({"end_date": day(20)})), None).await;
+    assert_eq!(r.0, StatusCode::OK, "{r:?}");
+    let path = format!("/api/v1/teams/{team}/batches/{}%7C%E7%BE%8E%E5%8C%BA", day(0));
+    // 新起算日不早于已结束名额的结束日：拒绝，什么都不改
+    let (st, v) = t.req("PATCH", &path, Some(json!({"start_date": day(20)})), None).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().contains("要早于已结束名额的结束日"), "{v}");
+    assert_eq!(t.get(&format!("/api/v1/teams/{team}/batches")).await["batches"][0]["start_date"], day(0));
+    // 不存在的批次
+    let (st, _) = t.req("PATCH", &format!("/api/v1/teams/{team}/batches/{}%7C%E5%A2%A8", day(0)), Some(json!({"start_date": day(5)})), None).await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    // 早于结束日：整批一起改
+    let mut ev = t.st.events.subscribe();
+    let (st, v) = t.req("PATCH", &path, Some(json!({"start_date": day(5)})), None).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!((v["data"]["key"].as_str(), v["data"]["start_date"].as_str()), (Some(format!("{}|美区", day(5)).as_str()), Some(day(5).as_str())), "{v}");
+    assert!(std::iter::from_fn(|| ev.try_recv().ok()).any(|e| matches!(e, Event::Billing { id } if id == team)));
+    let d = t.get(&format!("/api/v1/teams/{team}/batches")).await;
+    assert!(d["slots"].as_array().unwrap().iter().all(|x| x["start_date"] == day(5)), "{d}");
+    assert!(texts(&t, team).await.iter().any(|x| x.contains("起算日") && x.contains("（整批 3 个）")), "{:?}", texts(&t, team).await);
+    let acts: Vec<String> = sqlx::query_scalar("select action from audit_log where action = 'billing.batch_update'").fetch_all(&t.st.db).await.unwrap();
+    assert_eq!(acts.len(), 1);
+
+    // 节点设不计费：马上空出待定；给空出的系统名额填以后的结束日被拒，填今天结束
+    t.req("PUT", &format!("/api/v1/machines/{n1}/billing-exempt"), Some(json!({"exempt": true})), None).await;
+    let d = t.get(&format!("/api/v1/teams/{team}/batches")).await;
+    let sid = slot_of(&d, "团队1-01")["id"].as_str().unwrap().to_string();
+    assert_eq!((slot_of(&d, "团队1-01")["state"].as_str(), d["totals"]["vacated"].as_i64(), d["totals"]["active"].as_i64()), (Some("vacated"), Some(1), Some(1)), "{d}");
+    let tomorrow = fmt_date(today() + Duration::days(1));
+    let (st, v) = t.req("PATCH", &format!("/api/v1/billing-slots/{sid}"), Some(json!({"end_date": tomorrow})), None).await;
+    assert_eq!((st, v["error"]["message"].as_str()), (StatusCode::BAD_REQUEST, Some("空出的计费节点结束日不能晚于今天")), "{v}");
+    let (st, v) = t.req("PATCH", &format!("/api/v1/billing-slots/{sid}"), Some(json!({"end_date": fmt_date(today())})), None).await;
+    assert_eq!((st, v["data"]["state"].as_str()), (StatusCode::OK, Some("ended")), "{v}");
 }

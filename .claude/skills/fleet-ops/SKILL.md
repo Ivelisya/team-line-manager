@@ -200,6 +200,7 @@ fleetctl batch list <团队> [--slots] [--events]   # 只读：批次表 + 当�
 fleetctl billing month <团队> [2026-11]           # 只读：月度应收（每批本月那一期、合计节点月、月初 / 月末个数、本月增减；以后的月份是预估）
 fleetctl billing init --since 2026-10-01 [--yes]  # 一次性初始化（只给还没有名额的团队建）；不加 --yes 只预览。初始化之前中控不对账
 fleetctl billing slot <名额> [--start 2026-10-30] [--region …] [--note …] [--end 日期 | --reopen]   # 不带改动 = 显示；--end 只限手动名额与已空出的，--reopen 只限手动名额
+fleetctl billing batch <团队> <批次编号或key> --start 2026-10-05   # 整批改起算日（批次编号见 batch list；新起算日要早于该批已结束名额的结束日）
 fleetctl billing add <团队> --start 2026-10-15 --region 墨西哥 [--count N] [--note 墨西哥家宽]   # 手动名额
 fleetctl billing rm <名额> --yes                  # 只能删手动名额（录错了）
 fleetctl billing exempt <节点> --on|--off         # 不计费 / 恢复计费（照样走 24 小时配对）

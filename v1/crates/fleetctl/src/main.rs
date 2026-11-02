@@ -233,6 +233,8 @@ enum LedgerCmd {
     Month { team: String, month: Option<String> },
     /// 看或改一个计费名额：--start 起算日、--region、--note，--end 结束（只限手动名额与已空出的）/ --reopen 恢复（只限手动名额）。名额写 id 前缀或节点名
     Slot(batches::SlotOpts),
+    /// 整批改起算日：批次写编号（2）或 key（2026-10-01|美区，batch list 能看到编号）；该批全部名额一起改，新起算日要早于已结束名额的结束日
+    Batch { team: String, batch: String, #[arg(long, value_name = "日期")] start: String },
     /// 添加手动计费节点（系统外的节点，如墨西哥家宽）：不会自动结束，用 slot --end 结束
     Add(batches::AddOpts),
     /// 删除手动计费节点（录错了）；系统节点的名额由对账自动结束
@@ -1129,6 +1131,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Billing { cmd: Some(c), .. } => match c {
             LedgerCmd::Init { since, yes } => batches::init(x, &since, yes),
             LedgerCmd::Month { team, month } => batches::month(x, &team, month.as_deref()),
+            LedgerCmd::Batch { team, batch, start } => batches::batch(x, &team, &batch, &start),
             LedgerCmd::Slot(o) => batches::slot(x, &o),
             LedgerCmd::Add(o) => batches::add(x, &o),
             LedgerCmd::Rm { slot, yes } => batches::rm(x, &slot, yes),
