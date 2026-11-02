@@ -1,11 +1,11 @@
 #!/bin/bash
 # 在生产中控机（Debian 13，root）上安装 / 升级 fleet-server。由 deploy.sh 连同安装包传上来执行，包就在本脚本所在目录。
 # 第一次：装系统包，建 PostgreSQL 库与角色、fleet 用户、密钥（secret.key、中控 SSH 密钥）、fleet.toml、Caddy。
-# 之后每次：只替换 fleet-server、dist、前端、ipintel 与备份脚本并重启 fleet-server；已有的配置和密钥不动。
+# 之后每次：只替换 fleet-server、dist、前端、ipintel 与备份脚本；fleet-server 的二进制或单元变了才重启（都没变就只换前端）；已有的配置和密钥不动。
 # 顺序：会失败的预检（软路由隧道的端口与 sshd -t）最先做；要换的文件先放成 .new，紧挨着重启前才换上：中途失败时线上的版本原样不动。
 # 每次还装 /usr/local/bin/fleetctl，健康检查过后建或修复它的全权密钥 central-local（仍有效不换），写给 agent 的 /root/AGENTS.md、
 # /root/CLAUDE.md 与 fleet-ops 技能（docs/OPS.md §14：用 agent 从中控全量运维）。
-# 换上新版之前先同步做一份备份（上线前的回滚点；首次安装跳过，装完后再做第一份）。
+# 换上新版之前先同步做一份备份（上线前的回滚点；首次安装与二进制没变时跳过，首次安装装完后再做第一份）。
 # 换下来的旧 fleet-server 留在 /opt/fleet/fleet-server.prev，旧前端 /opt/fleet/web.prev，旧 fleet-agent /opt/fleet/dist/fleet-agent.prev（回滚见 docs/OPS.md §9）；重启后未登录访问 /api/v1/auth/me 不是 401
 # 就打出最近日志、退出码 1；首页 / 不是 200 text/html（前端没挂上）同样退出码 1。
 # /etc/fleet/secret.key 丢了，库里所有 SS 密码、REALITY 私钥、通知渠道配置都解不开：每天的备份连它一起打包（/var/backups/fleet），
@@ -118,7 +118,7 @@ cp -r "$PKG/web" /opt/fleet/web.new
 # fleet-server（User=fleet）从这里读前端，index.html 读不到整站就没有前端：不依赖调用方的 umask（077 下 cp 出来是 700/600 root）
 chmod -R a+rX /opt/fleet/web.new
 
-cat > /etc/systemd/system/fleet-server.service <<'UNIT'
+cat > /etc/systemd/system/fleet-server.service.new <<'UNIT'
 [Unit]
 Description=fleet-server（团队线路管理 v1）
 After=network-online.target postgresql.service
@@ -163,7 +163,18 @@ UMask=0077
 [Install]
 WantedBy=multi-user.target
 UNIT
-chmod 644 /etc/systemd/system/fleet-server.service   # 不依赖调用方的 umask（077 下 systemd 会警告配置文件 world-inaccessible）
+chmod 644 /etc/systemd/system/fleet-server.service.new   # 不依赖调用方的 umask（077 下 systemd 会警告配置文件 world-inaccessible）
+# 单元与线上逐字节相同就不换，并记下来：二进制与单元都没变（纯前端发版）时下面不重启 fleet-server
+unit_changed=0
+if ! cmp -s /etc/systemd/system/fleet-server.service.new /etc/systemd/system/fleet-server.service; then
+  mv -f /etc/systemd/system/fleet-server.service.new /etc/systemd/system/fleet-server.service
+  unit_changed=1
+else
+  rm -f /etc/systemd/system/fleet-server.service.new
+fi
+# 二进制是否变了：没有旧二进制（首次安装）也算变了
+srv_changed=1
+if [ -f /opt/fleet/fleet-server ] && cmp -s /opt/fleet/fleet-server.new /opt/fleet/fleet-server; then srv_changed=0; fi
 
 # IP 情报离线库：每月更新；首次下载约 190 MB，后台进行，fleet-server 5 分钟内自动加载
 install -m 644 "$PKG/fetch-dbs.sh" /opt/fleet/ipintel/fetch-dbs.sh
@@ -192,8 +203,8 @@ systemctl start fleet-ipintel-fetch.timer fleet-backup.timer
 [ -n "$(ls -A /var/lib/fleet/ipintel)" ] || systemctl start --no-block fleet-ipintel-fetch.service
 # 上线前的回滚点：换上新版之前同步做一份备份（新版启动会自动跑迁移，旧库只能靠它回去，docs/OPS.md §9）。放在这里：备份脚本与单元
 # 上面刚装好并 daemon-reload，库此时还是旧版的；失败就 exit 1 停在换版之前（fleet-server、前端、dist 不动）。
-# 首次安装（还没有 fleet-server，库是空的）跳过：装完后面会再做第一份
-if [ -f /opt/fleet/fleet-server ]; then
+# 首次安装（还没有 fleet-server，库是空的）跳过：装完后面会再做第一份；二进制没变就没有新迁移，也跳过
+if [ -f /opt/fleet/fleet-server ] && [ "$srv_changed" = 1 ]; then
   if ! systemctl start fleet-backup.service; then
     echo "上线前的备份没做成，部署停在换版之前：fleet-server、前端、dist 还是原来的（单元与备份脚本已更新）。日志："
     journalctl -u fleet-backup -n 20 --no-pager || true
@@ -209,7 +220,7 @@ for f in $NEW_DIST; do
   fi
   mv -f "/opt/fleet/dist/$f.new" "/opt/fleet/dist/$f"
 done
-if [ -f /opt/fleet/fleet-server ] && ! cmp -s /opt/fleet/fleet-server.new /opt/fleet/fleet-server; then
+if [ -f /opt/fleet/fleet-server ] && [ "$srv_changed" = 1 ]; then
   cp -p /opt/fleet/fleet-server /opt/fleet/fleet-server.prev
 fi
 mv -f /opt/fleet/fleet-server.new /opt/fleet/fleet-server
@@ -219,7 +230,12 @@ mv /opt/fleet/web.new /opt/fleet/web
 if [ -d /opt/fleet/web.old ]; then
   if diff -rq /opt/fleet/web.old /opt/fleet/web >/dev/null; then rm -rf /opt/fleet/web.old; else rm -rf /opt/fleet/web.prev; mv /opt/fleet/web.old /opt/fleet/web.prev; fi
 fi
-systemctl restart fleet-server
+# 二进制与单元都没变、服务也在跑（纯前端发版：前端按请求从 web_dir 读，换目录即生效）就不重启，省掉约 10 秒的中控不可用
+if [ "$srv_changed$unit_changed" != 00 ] || ! systemctl is-active -q fleet-server; then
+  systemctl restart fleet-server
+else
+  echo "fleet-server 二进制与单元都没变，不重启（前端已换上）"
+fi
 
 # Caddy 终止 TLS（Let's Encrypt 自动签发续期），整站反代到本机 fleet-server；长轮询、WebSocket、gzip 上报都不用额外配置
 # 管理接口默认是 localhost:2019、不鉴权，本机任何用户（包括 fleet）都能改写 Caddy 配置：改成 /run/caddy 下的 unix socket，
