@@ -553,12 +553,15 @@ async fn status(t: &T, id: &str, reachable: bool, ok_ago: i64, data: Value) {
     .unwrap();
 }
 
+/// 连续不通的出口带上起点（够老，告警当作早已满了）；通着的没有
+fn since(streak: u32) -> Value { if streak >= 2 { json!("2000-01-01T00:00:00Z") } else { Value::Null } }
+
 fn snap(running: bool, streaks: [u32; 2], wan_up: bool) -> Value {
     json!({
         "system": {"cpu_pct": 10.0, "mem_used": 1, "mem_total": 4},
         "interfaces": [{"name": "wan", "device": "eth0", "up": wan_up}],
         "openclash": {"enabled": true, "running": running},
-        "exits": [{"name": "节点01", "fail_streak": streaks[0], "sync": "ok"}, {"name": "节点02", "fail_streak": streaks[1], "sync": "ok"},
+        "exits": [{"name": "节点01", "fail_streak": streaks[0], "fail_since": since(streaks[0]), "sync": "ok"}, {"name": "节点02", "fail_streak": streaks[1], "fail_since": since(streaks[1]), "sync": "ok"},
                   {"name": "别人的", "fail_streak": 9, "sync": "unmanaged"}],
     })
 }
@@ -798,7 +801,7 @@ async fn exits_down_notes_maintenance_and_alerts() {
         "system": {"cpu_pct": 10.0, "mem_used": 1, "mem_total": 4},
         "interfaces": [{"name": "wan", "device": "eth0", "up": true}],
         "openclash": {"enabled": true, "running": true},
-        "exits": [{"name": "节点03", "fail_streak": 2, "sync": "ok", "entry": er}, {"name": "节点04", "fail_streak": 0, "sync": "ok"}],
+        "exits": [{"name": "节点03", "fail_streak": 2, "fail_since": since(2), "sync": "ok", "entry": er}, {"name": "节点04", "fail_streak": 0, "sync": "ok"}],
     });
     status(&t, &id, true, 0, data).await;
     let maint = Uuid::now_v7();
@@ -853,7 +856,7 @@ async fn exits_down_quiet_right_after_maintenance_ends() {
             "system": {"cpu_pct": 10.0, "mem_used": 1, "mem_total": 4},
             "interfaces": [{"name": "wan", "device": "eth0", "up": true}],
             "openclash": {"enabled": true, "running": true},
-            "exits": [{"name": "节点03", "fail_streak": 2, "sync": "ok", "entry": er}, {"name": "节点04", "fail_streak": 0, "sync": "ok"}],
+            "exits": [{"name": "节点03", "fail_streak": 2, "fail_since": since(2), "sync": "ok", "entry": er}, {"name": "节点04", "fail_streak": 0, "sync": "ok"}],
             "collected_at": collected,
         })
     };
@@ -909,7 +912,7 @@ async fn quiet_exits_down_waits_for_fresh_snapshot_after_machine_alert_resolves(
                 "system": {"cpu_pct": 10.0, "mem_used": 1, "mem_total": 4},
                 "interfaces": [{"name": "wan", "device": "eth0", "up": true}],
                 "openclash": {"enabled": true, "running": true},
-                "exits": [{"name": "节点01", "fail_streak": streak, "sync": "ok", "entry": er}, {"name": "节点02", "fail_streak": 0, "sync": "ok"}],
+                "exits": [{"name": "节点01", "fail_streak": streak, "fail_since": since(streak), "sync": "ok", "entry": er}, {"name": "节点02", "fail_streak": 0, "sync": "ok"}],
                 "collected_at": collected,
             })
         };
