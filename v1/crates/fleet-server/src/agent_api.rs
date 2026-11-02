@@ -554,7 +554,7 @@ async fn ingest(st: &AppState, a: AgentId, mut r: Report) -> Result<Json<ReportA
                 .execute(&mut *tx)
                 .await?;
             tx.commit().await?;
-            return Ok(Json(ReportAck { accepted_seq: *seq as u64, interval_s: fleet_proto::REPORT_INTERVAL_S, bridge_kick: kick(st, &a).await }));
+            return Ok(Json(ReportAck { accepted_seq: *seq as u64, bridge_kick: kick(st, &a).await }));
         }
     }
     let info = r.info.as_ref().map(|i| serde_json::to_value(i).unwrap_or_default());
@@ -727,7 +727,7 @@ async fn ingest(st: &AppState, a: AgentId, mut r: Report) -> Result<Json<ReportA
             tracing::warn!(relay = %a.machine_id, "记下穿透隧道重启请求失败：{e}");
         }
     }
-    Ok(Json(ReportAck { accepted_seq: r.seq, interval_s: fleet_proto::REPORT_INTERVAL_S, bridge_kick: kick(st, &a).await }))
+    Ok(Json(ReportAck { accepted_seq: r.seq, bridge_kick: kick(st, &a).await }))
 }
 
 /// 节点回执里的 bridge 重启请求（reverse::kick_for）；只有 VPS 节点装 bridge。查不到不挡回执
@@ -750,7 +750,7 @@ async fn resent(st: &AppState, machine: Uuid) -> sqlx::Result<Json<ReportAck>> {
         .fetch_one(&mut *tx)
         .await?;
     tx.commit().await?;
-    Ok(Json(ReportAck { accepted_seq: last as u64, interval_s: fleet_proto::REPORT_INTERVAL_S, bridge_kick: None }))
+    Ok(Json(ReportAck { accepted_seq: last as u64, bridge_kick: None }))
 }
 
 #[derive(Deserialize)]

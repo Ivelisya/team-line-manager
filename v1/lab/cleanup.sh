@@ -18,6 +18,7 @@ fi
 df -h / | awk 'NR == 2 {print "清理前：已用 " $3 "，可用 " $4}'
 # 调试 / 测试构建产物（下次测试重新编）、install-ipintel 传上来的文件
 rm -rf /root/src/target/debug /root/ipintel-install
+[ "$FB_MODE" = docker ] && rm -rf /root/fleet-prebuilt   # deploy-server.sh 的 docker 方式传上来的安装用文件，装完本该已删；中途失败的遗留
 [ "$FB_MODE" = docker ] && rm -rf /root/src/target && echo "已删 /root/src/target（编译在 docker 编译主机上，fleet-dev 不再编）"
 # worktree 副本与它的测试库
 if [ $# -gt 0 ]; then names="$*"
