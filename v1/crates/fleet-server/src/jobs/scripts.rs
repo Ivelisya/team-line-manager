@@ -1081,7 +1081,7 @@ ACL
         assert!(body.contains("InaccessiblePaths=-/etc/fleet-agent -/var/lib/fleet-agent -/etc/ssh\n"), "{body}");
         assert!(!body.contains("\nUser=") && !body.contains("\nTemporaryFileSystem="));
         // agent 要读动态用户写的 0600 访问日志、要执行带 cap_net_raw 文件能力的系统 ping（放置矩阵、三网 PING）
-        assert!(super::AGENT_UNIT.contains("\nCapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_NET_RAW\n"));
+        assert!(super::AGENT_UNIT.contains("\nCapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_NET_RAW CAP_NET_ADMIN\n"));
         // 写、换都查结果：包在 `( … ) || echo` 里 set -e 不起作用，写失败的空文件不能被当成新单元换上
         assert!(body.contains("cat > $U.tmp <<'UNIT' || exit 1\n"));
         assert!(body.contains("cmp -s $U.tmp $U && rm -f $U.tmp || { mv $U.tmp $U || exit 1; systemctl daemon-reload; }\n"));
