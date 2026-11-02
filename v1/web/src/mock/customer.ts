@@ -98,7 +98,7 @@ function rows(tid: string, month: string): BillingMonthNode[] {
     if (!p) return [];
     const at = paid.get(`${s.id}|${p[0]}`) ?? null;
     return [{
-      slot_id: s.id, name: slotName(s), region: s.region, start_date: s.start_date, end_date: s.end_date, period_start: p[0], period_end: p[1], upcoming: p[0] > TODAY,
+      slot_id: s.id, name: slotName(s), region: s.region, start_date: s.start_date, period_start: p[0], period_end: p[1], upcoming: p[0] > TODAY,
       manual: s.manual, note: s.note, holder_id: s.holder?.id ?? null, vacated: vacated(s), ended: ended(s), paid: !!at, paid_at: at,
     }];
   }).sort((a, b) => Number(a.paid) - Number(b.paid) || a.name.localeCompare(b.name, 'zh-CN', { numeric: true }));
@@ -118,6 +118,8 @@ export function installCustomerMock(R: Reg, o: { teams: () => Team[]; machines: 
   const region = (v: unknown) => { const s = String(v ?? '').trim(); if (!s || [...s].length > 20) throw bad('地区要 1–20 个字，如 美区、墨西哥'); return s; };
   const note = (v: unknown) => { const s = String(v ?? '').trim(); if ([...s].length > 60) throw bad('备注最多 60 个字'); return s; };
   const date = (v: unknown, what: string) => { if (!validDate(v)) throw bad(`${what}要写成 2026-10-31 这样的日期`); return v; };
+  /** 开始收费日最晚今天加一个月（同服务端 check_start） */
+  const startDate = (v: unknown) => { const d = date(v, '开始收费日'); const max = addMonths(TODAY, 1); if (d > max) throw bad(`开始收费日最晚填到 ${max}（今天起一个月内）`); return d; };
   const monthQ = (v: string | null) => { if (v == null || v === '') return TODAY.slice(0, 7); if (!MONTH.test(v)) throw bad('月份要写成 2026-11 这样'); return v; };
   const view = (tid: string, month: string): BillingMonth => {
     const t = team(tid);
@@ -125,7 +127,6 @@ export function installCustomerMock(R: Reg, o: { teams: () => Team[]; machines: 
     const pend = month === TODAY.slice(0, 7) ? pending.filter((p) => p.team_id === tid) : [];
     return {
       team: { id: t.id, name: t.name }, today: TODAY, initialized: true, page: pageView(tid), month, months: monthsOf(tid), nodes,
-      paid_count: nodes.filter((n) => n.paid).length, unpaid_count: nodes.filter((n) => !n.paid).length,
       pending: pend.map((p) => ({ machine: p.machine, seen_at: p.seen_at, decide_at: new Date(Date.parse(p.seen_at) + GRACE).toISOString() })),
     };
   };
@@ -161,7 +162,7 @@ export function installCustomerMock(R: Reg, o: { teams: () => Team[]; machines: 
   });
   R('POST', '/teams/([^/]+)/billing-slots', ({ params, body }) => {
     const t = team(params[0]);
-    const start = date(body.start_date, '开始收费日'); const r = region(body.region); const n = note(body.note);
+    const start = startDate(body.start_date); const r = region(body.region); const n = note(body.note);
     const count = body.count == null ? 1 : Number(body.count);
     if (!Number.isInteger(count) || count < 1 || count > 50) throw bad('一次添加 1–50 个');
     for (let i = 0; i < count; i++) {
@@ -175,7 +176,19 @@ export function installCustomerMock(R: Reg, o: { teams: () => Team[]; machines: 
   R('PATCH', '/billing-slots/([^/]+)', ({ params, body }) => {
     const s = slot(params[0]); const name = slotName(s);
     const changes: string[] = [];
-    if (body.start_date !== undefined) { const v = date(body.start_date, '开始收费日'); if (v !== s.start_date) { changes.push(`开始收费日 ${cn(s.start_date)} → ${cn(v)}`); s.start_date = v; } }
+    if (body.start_date !== undefined) {
+      const v = startDate(body.start_date);
+      if (v !== s.start_date) {
+        // 已收的期按期序号 k 挪到新开始日的第 k 期，对不上旧期序列的丢掉（同服务端 shift_paid）
+        for (const [key, at] of [...paid]) {
+          if (!key.startsWith(`${s.id}|`)) continue;
+          paid.delete(key);
+          const ps = key.slice(s.id.length + 1); const k = monthNo(ps) - monthNo(s.start_date);
+          if (k >= 0 && addMonths(s.start_date, k) === ps) paid.set(`${s.id}|${addMonths(v, k)}`, at);
+        }
+        changes.push(`开始收费日 ${cn(s.start_date)} → ${cn(v)}`); s.start_date = v;
+      }
+    }
     if (body.region !== undefined) { const v = region(body.region); if (v !== s.region) { changes.push(`地区 ${s.region} → ${v}`); s.region = v; } }
     if (body.note !== undefined) { const v = note(body.note); if (v !== s.note) { changes.push('改了备注'); s.note = v; } }
     if (body.end_date !== undefined) {
@@ -243,7 +256,6 @@ export function installCustomerMock(R: Reg, o: { teams: () => Team[]; machines: 
     const out: PublicCustomer = {
       team: team(tid).name, today: TODAY, month, months: monthsOf(tid),
       nodes: nodes.map((n) => ({ name: n.name, region: n.region, period_start: n.period_start, period_end: n.period_end, paid: n.paid })),
-      paid_count: nodes.filter((n) => n.paid).length, unpaid_count: nodes.filter((n) => !n.paid).length,
     };
     return out;
   });

@@ -21,8 +21,8 @@ function monthGrid(month: string) {
   return Array.from({ length: 42 }, (_, i) => addDays(start, i));
 }
 
-export function DateField({ value, onChange, min, id, placeholder = '选择日期', className, iconOnly, disabled, 'aria-label': aria }: {
-  value: string; onChange: (v: string) => void; min?: string; id?: string; placeholder?: string; className?: string; iconOnly?: boolean; disabled?: boolean; 'aria-label'?: string;
+export function DateField({ value, onChange, min, max, id, placeholder = '选择日期', className, iconOnly, disabled, 'aria-label': aria }: {
+  value: string; onChange: (v: string) => void; min?: string; max?: string; id?: string; placeholder?: string; className?: string; iconOnly?: boolean; disabled?: boolean; 'aria-label'?: string;
 }) {
   const [open, setOpen] = React.useState(false);
   const [focus, setFocus] = React.useState(() => (ISO.test(value) ? value : today()));
@@ -31,14 +31,14 @@ export function DateField({ value, onChange, min, id, placeholder = '选择日�
   const days = React.useMemo(() => monthGrid(month), [month]);
   const t = today();
 
-  // 键盘、换月、打开时的落点夹到 min：焦点落在禁用的格子上会卡住（禁用按钮拿不到焦点）
-  const clamp = (d: string) => (min && d < min ? min : d);
+  // 键盘、换月、打开时的落点夹到 [min, max]：焦点落在禁用的格子上会卡住（禁用按钮拿不到焦点）
+  const clamp = (d: string) => (min && d < min ? min : max && d > max ? max : d);
   const start = clamp(ISO.test(value) ? value : t);
   const focusDay = (d: string) => grid.current?.querySelector<HTMLButtonElement>(`[data-day="${d}"]`)?.focus();
   // 键盘移动、换月之后焦点跟着 focus 走（刚打开时由 onOpenAutoFocus 聚焦：那时弹层内容才挂进 Portal）
   React.useEffect(() => { if (open) focusDay(focus); }, [open, focus]);
 
-  const pick = (d: string) => { if (min && d < min) return; onChange(d); setOpen(false); };
+  const pick = (d: string) => { if ((min && d < min) || (max && d > max)) return; onChange(d); setOpen(false); };
   const onKey = (e: React.KeyboardEvent) => {
     const step: Record<string, () => string> = {
       ArrowLeft: () => addDays(focus, -1), ArrowRight: () => addDays(focus, 1), ArrowUp: () => addDays(focus, -7), ArrowDown: () => addDays(focus, 7),
@@ -60,12 +60,12 @@ export function DateField({ value, onChange, min, id, placeholder = '选择日�
           <div className="cal-head">
             <button type="button" className="icon-btn icon-btn-sm" aria-label="上个月" onClick={() => setFocus(clamp(addMonths(focus, -1)))}><ChevronLeft size={16} /></button>
             <span className="cal-title" aria-live="polite">{y} 年 {m} 月</span>
-            <button type="button" className="icon-btn icon-btn-sm" aria-label="下个月" onClick={() => setFocus(addMonths(focus, 1))}><ChevronRight size={16} /></button>
+            <button type="button" className="icon-btn icon-btn-sm" aria-label="下个月" onClick={() => setFocus(clamp(addMonths(focus, 1)))}><ChevronRight size={16} /></button>
           </div>
           <div className="cal-grid" role="grid" aria-label={`${y} 年 ${m} 月`} ref={grid} onKeyDown={onKey}>
             {WEEK.map((w) => <span key={w} className="cal-wd" role="columnheader">{w}</span>)}
             {days.map((d) => {
-              const off = d.slice(0, 7) !== month; const dis = !!min && d < min;
+              const off = d.slice(0, 7) !== month; const dis = (!!min && d < min) || (!!max && d > max);
               return (
                 <button key={d} type="button" role="gridcell" data-day={d} tabIndex={d === focus ? 0 : -1} disabled={dis}
                   className={cn('cal-day', off && 'is-off', d === t && 'is-today')} aria-selected={d === value} aria-label={d}
@@ -78,7 +78,7 @@ export function DateField({ value, onChange, min, id, placeholder = '选择日�
             })}
           </div>
           <div className="cal-foot">
-            <button type="button" className="btn btn-link btn-sm" disabled={!!min && t < min} onClick={() => pick(t)}>今天 {t}</button>
+            <button type="button" className="btn btn-link btn-sm" disabled={(!!min && t < min) || (!!max && t > max)} onClick={() => pick(t)}>今天 {t}</button>
             {value && <span className="cal-cur num">已选 {value}</span>}
           </div>
         </PopoverPrimitive.Content>
