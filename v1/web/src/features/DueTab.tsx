@@ -6,7 +6,7 @@ import { useQuery } from '@tanstack/react-query';
 import { ArrowRight, ExternalLink } from 'lucide-react';
 import { renewBatchPreview, useDue, useRenewBatch } from '@/lib/queries';
 import type { DueGroup, DueMachine, DueProvider } from '@/lib/types';
-import { usdTotalTip } from '@/lib/derive';
+import { meta, usdTotalTip } from '@/lib/derive';
 import { useUsdPreview } from '@/lib/fx';
 import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
@@ -15,6 +15,7 @@ import { SkeletonRows } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
 import { resetOnOpen, useHeld } from '@/lib/useHeld';
 import { Due, Empty, ErrorNote, Note, Panel, Pill, TableWrap, dueTzTip } from '@/components/app/primitives';
+import { tzCity } from '@/lib/tz';
 import { FormDialog } from '@/components/app/dialogs';
 
 /** 看未来多少天 */
@@ -56,7 +57,7 @@ const IdlePill = ({ ms }: { ms: DueMachine[] }) => (ms.length ? <Pill className=
 function DueWhen({ g, short }: { g: DueGroup; short?: boolean }) {
   return (
     <span data-tip={dueTzTip(g.billing_tz)}>
-      <span className="num">{short ? g.due_date.slice(5) : g.due_date}</span> <Due days={g.machines[0].due_days} state={dueState(g.machines[0].due_days)} />
+      <span className="num">{short ? g.due_date.slice(5) : g.due_date}</span>{g.billing_tz && g.billing_tz !== meta().org_timezone && <span className="t-muted"> {tzCity(g.billing_tz)}</span>} <Due days={g.machines[0].due_days} state={dueState(g.machines[0].due_days)} />
     </span>
   );
 }

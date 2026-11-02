@@ -34,7 +34,7 @@ export const inScale = (n: number, s: Scale): string => (s.div === 1 ? String(Ma
 export const inScaleBytes = (n: number, s: Scale): string => {
   if (s.div === 1) return String(Math.round(Math.abs(n)));
   const x = Math.abs(n) / s.div;
-  return x >= 100 ? x.toFixed(0) : x >= 10 ? x.toFixed(1) : x.toFixed(2);
+  return x >= 99.5 ? x.toFixed(0) : x >= 9.995 ? x.toFixed(1) : x.toFixed(2);
 };
 
 /** 流量字节 → B/KB/MB/GB/TB（十进制），小数位固定（inScaleBytes） */

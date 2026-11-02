@@ -7,7 +7,7 @@
 /* ---------- 分区 ---------- */
 .hsec {
   --hsec-pad: clamp(14px, 1.6vw, 20px);
-  display: grid; gap: var(--sp-16); min-width: 0;
+  display: grid; gap: var(--sp-16); min-width: 0; align-content: start; /* 吸顶切换时临时垫的 min-height 留在底部，不摊给各行 */
   padding: var(--hsec-pad); /* 1440 宽（侧栏 240）下内宽 ≥ 3 张大卡片 */
   background: var(--section); border: 1px solid var(--section-line); border-radius: var(--r-section);
 }
