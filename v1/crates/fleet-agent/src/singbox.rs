@@ -31,7 +31,10 @@ const CERT_MONTHS: &str = "120";
 const SETTLE: Duration = Duration::from_secs(2);
 
 /// 重启后等单元起来、端口都听上的最长时间（在 SETTLE 之后再等）
-const LISTEN_WAIT: Duration = Duration::from_secs(3);
+const LISTEN_WAIT: Duration = Duration::from_secs(15);
+/// 单元活过这么久才算「在跑」：绑端口失败的 sing-box 会在一两秒内退出再被 systemd 拉起，刚拉起那一瞬 active，
+/// 要监听的端口又恰好被别的程序监听着，不能当成在跑
+const MIN_UPTIME_S: u64 = 3;
 
 pub fn inbound_tag(id: uuid::Uuid) -> String { format!("at-in-{}", id.simple()) }
 pub fn outbound_tag(id: uuid::Uuid) -> String { format!("at-out-{}", id.simple()) }
@@ -89,6 +92,18 @@ fn parse_version(out: &str) -> Option<String> {
     out.lines().next()?.split_whitespace().nth(2).map(String::from)
 }
 
+/// 进程已经活了多少秒（/proc/<pid>/stat 的 starttime 是自开机的时钟数，和 CLOCK_BOOTTIME 同一把尺；不用 /proc/uptime：
+/// 容器里它被虚拟成容器自己的开机时间，对不上）。时钟频率按 Linux 通用的 100；读不到返回 None
+fn unit_age_s(pid: u32) -> Option<u64> {
+    let start = ctl::proc_start_ticks(pid)? / 100;
+    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: ts 是本地变量，clock_gettime 只写它
+    if unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut ts) } != 0 {
+        return None;
+    }
+    Some((ts.tv_sec as u64).saturating_sub(start))
+}
+
 pub struct Singbox {
     cfg: Arc<Config>,
     lock: tokio::sync::Mutex<()>,
@@ -97,13 +112,15 @@ pub struct Singbox {
     last_error: Mutex<Option<(String, bool)>>,
     /// 最近一次应用的期望状态里 sing-box 要监听的端口：单元 active 之外，这些端口都在听才算「在跑」
     ports: Mutex<Vec<u16>>,
+    /// 最近一次 `apply` 收到的期望状态，`retry` 用
+    desired: Mutex<Option<DesiredState>>,
     /// (程序的修改时间, 版本)：换了程序才重新问
     version: Mutex<Option<(std::time::SystemTime, String)>>,
 }
 
 impl Singbox {
     pub fn new(cfg: Arc<Config>) -> Self {
-        Self { cfg, lock: tokio::sync::Mutex::new(()), last_error: Mutex::new(None), ports: Mutex::new(vec![]), version: Mutex::new(None) }
+        Self { cfg, lock: tokio::sync::Mutex::new(()), last_error: Mutex::new(None), ports: Mutex::new(vec![]), desired: Mutex::new(None), version: Mutex::new(None) }
     }
 
     fn dir(&self) -> &Path { &self.cfg.singbox_dir }
@@ -129,6 +146,21 @@ impl Singbox {
     /// 应用期望状态（Xray 那一侧应用成功之后、周期对齐时、sing-box 没在跑时调）。结果记进 `last_error`，随状态上报；不影响 Xray 的回报
     pub async fn apply(&self, d: &DesiredState) {
         let _g = self.lock.lock().await;
+        *self.desired.lock().unwrap() = Some(d.clone());
+        self.apply_locked(d).await;
+    }
+
+    /// sing-box 没在跑时重新拉起：按最近一次 `apply` 收到的那份期望状态（持锁后才取：别的应用还在进行时，
+    /// 取到的是它刚存下的新的，不会拿旧的把新配置换回去）。还没应用过就什么都不做
+    pub async fn retry(&self) {
+        let _g = self.lock.lock().await;
+        let d = self.desired.lock().unwrap().clone();
+        if let Some(d) = d {
+            self.apply_locked(&d).await;
+        }
+    }
+
+    async fn apply_locked(&self, d: &DesiredState) {
         if !self.installed() {
             *self.last_error.lock().unwrap() = None;
             return;
@@ -179,17 +211,23 @@ impl Singbox {
         sockfree::free_ports(ports).await;
         ctl::systemctl(&["restart", &svc]).await?;
         tokio::time::sleep(SETTLE).await;
+        // 等到起来为止，不一次失败就报错：这期间 systemd 自己会重试（RestartSec），每一轮再清一次占端口的连接（比如刚冒出来的 TIME-WAIT），
+        // 下一次重试就能绑上；等满 LISTEN_WAIT 还没起来才算失败，之后由 singbox_task 每分钟再来
         let deadline = tokio::time::Instant::now() + LISTEN_WAIT;
         while !self.is_running().await {
             ensure!(tokio::time::Instant::now() < deadline, "{svc} 重启后没在跑或端口没都听上（journalctl -u {svc} 看原因）");
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            sockfree::free_ports(ports).await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
         }
         Ok(())
     }
 
-    /// 单元 active，且最近一次应用要监听的端口都在听（`ss` 用不了时只看单元）
+    /// 单元 active 且活过 MIN_UPTIME_S，最近一次应用要监听的端口都在听（`ss` 用不了时不看端口）
     async fn is_running(&self) -> bool {
         if !self.is_active().await {
+            return false;
+        }
+        if ctl::main_pid(&self.cfg.singbox_service).await.and_then(unit_age_s).is_some_and(|a| a < MIN_UPTIME_S) {
             return false;
         }
         let ports = self.ports.lock().unwrap().clone();
