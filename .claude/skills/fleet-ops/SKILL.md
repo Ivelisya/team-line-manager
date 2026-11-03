@@ -117,7 +117,7 @@ fleetctl exec --team 团队1 --timeout 30 -- uptime           # 多台并发 4�
   - 中控连不到路由（路由在 NAT 后面，三台现场路由都是）：`fleetctl router add <名称> [--team 团队2]` 打印接入命令（30 分钟、只能用一次），让用户在路由上用 root 执行；过期了 `fleetctl router bootstrap <路由> --yes` 重新生成（现在的隧道密钥立刻作废，在线的路由马上掉线）。
   - 中控能直接连到路由的 SSH（公网映射、同一网段）：一键部署 `fleetctl router add <名称> --host <IP> [--port 22] [--user root] --password-stdin --yes --follow`（密码从标准输入读一行，不要写在参数里）；路由上已经授权过中控公钥时不用密码。已有的路由重新部署用 `router deploy`；上传密钥、启动隧道这两步失败时中控把原来的隧道密钥与端口写回，在线的路由不掉线（错误里写「已改回原来的隧道密钥与端口」）。失败原因原样转告用户；中控连不到它就改用接入命令。
 - 删路由（`router rm --yes`）只撤销中控这边（隧道公钥、状态与指标）；输出里的 `cleanup` 是要在路由上执行的清理命令，转给用户。还有没做完的作业改过它的出口、没确认改回（「需要人工处理」）时删不了，报错里有作业 id：先把作业处理完；路由确实回不来了（扔了、刷机）才用 `router rm <路由> --force --yes`（先向用户确认：作业不再改回它，它上面被改过的出口要自己处理），之后作业能重试收尾或取消。
-- 穿透入口（`entries --json` 的 `mode` 是 `reverse`，文字表的「模式」列是「穿透」）：线路机不连节点，它的 TCP 是节点主动连线路机入口端口量的（节点 → 线路机，节点 agent 每 30 秒一次，只画曲线、不告警；`tcp_ok` 为 null 是节点 agent 还没升级，不是不通），告警与健康只看出口探测。用户说「这台节点入站丢包 / 新连接老转圈 / 供应商说只能出站」时先看预览 `fleetctl entry reverse <入口> --on`（不带 --yes），告诉用户影响，同意后 `--yes --follow`；切回用 `--off`。家宽代理、同机 IP 节点不支持；线路机或节点 agent 太旧时预览会说先 `upgrade-agent`。出口动态的节点（`--egress-ip auto`）也能穿透：只留 AnyTLS 的线路机放行的是中控最近收到该节点 agent 的来源 IP，IP 变了自动跟着改（约 10–20 秒）。存量入口不会自动切换，新上架按「新入口默认模式」（`settings entry-mode`）。
+- 穿透入口（`entries --json` 的 `mode` 是 `reverse`，文字表的「模式」列是「穿透」）：线路机不连节点，它的 TCP 是节点主动连线路机入口端口量的（节点 → 线路机，节点 agent 每 30 秒一次，只画曲线、不告警；`tcp_ok` 为 null 是节点 agent 还没升级，不是不通），告警与健康只看出口探测。用户说「这台节点入站丢包 / 新连接老转圈 / 供应商说只能出站」时先看预览 `fleetctl entry reverse <入口> --on`（不带 --yes），告诉用户影响，同意后 `--yes --follow`；切回用 `--off`。家宽代理、同机 IP 节点不支持；线路机或节点 agent 太旧时预览会说先 `upgrade-agent`。出口动态的节点（`--egress-ip auto`）也能穿透：只留 AnyTLS 的线路机放行的是中控最近收到该节点 agent 的来源 IP，IP 变了自动跟着改（约 10–20 秒）。节点出站只开少数端口（用 tcpdump 看，只有 53 80 443 853 2096 8080 8443 到得了线路机）的，开穿透加 `--bridge-port 8443`（1–10239，线路机 agent 要先升级到认 `bridge_port`；`entries` 的模式列写「穿透（桥 8443）」；`--off` 自动清掉）。存量入口不会自动切换，新上架按「新入口默认模式」（`settings entry-mode`）。
 - 轮换入口凭据、停用入口不会改软路由：`entry rotate` / `entry disable` 的确认语会列出指向这个入口的软路由出口（之后它们就连不上了），先告诉用户。要换节点让路由跟着改用 `replace` / `move`，只改路由出口指向别的入口用 `repoint`。
 
 ## 探测点
@@ -228,7 +228,7 @@ fleetctl recycle import --file legacy.json [--yes]         # 旧面板的退役�
 fleetctl entry rotate <入口> --yes                         # 旧分享链接立即失效
 fleetctl entry disable <入口> --yes
 fleetctl entry add-direct <线路机> --yes [--follow]          # 线路机直出入口：从线路机自己的 IP 出去（旧系统的「节点00-默认」），每台至多一条；链接 fleetctl share <线路机>-直出
-fleetctl entry reverse <入口> --on|--off [--yes] [--follow]  # 穿透开关：节点上的 bridge 主动连这个入口（供应商丢入站 SYN 的节点用），分享链接、订阅、软路由都不变。不加 --yes 只预览；验收不过中控自动切回原模式
+fleetctl entry reverse <入口> --on|--off [--bridge-port N] [--yes] [--follow]  # 穿透开关：节点上的 bridge 主动连这个入口（供应商丢入站 SYN 的节点用），分享链接、订阅、软路由都不变。不加 --yes 只预览；验收不过中控自动切回原模式。节点出站只放行少数端口（连不上入口端口，开穿透探测一直 TLS 握手失败）时 --on 加 --bridge-port 8443：节点 bridge 连线路机的这个端口，线路机上入口同时听两个端口
 fleetctl upgrade-agent <机器> | --all --yes                # 重启 agent；--all 先升一台金丝雀，成功后线路机逐台、VPS 节点并发；排队中的可 fleetctl cancel <作业>
 fleetctl tune <机器>[,<机器>…] | --team <团队> | --all [--yes] [--follow]   # 重做系统调优（上架时已自动做；档 tune-v3：TCP 缓冲上限按套餐带宽、客户连接 RTT、内存推导，任何参数不往小改；线路机保留入口、探测、AnyTLS 端口段）：内核网络参数、BBR、日志体积上限、时间同步，不重启 ss/Xray、不断连接；--team/--all 先做一台（线路机优先）并跟到结束，成功后其余逐台提交，有进行中作业的跳过并列出；--all 要 --yes；同机 IP 节点、家宽代理 409；`ls` 的「调优」列看谁是旧档 / 未调优，`show` 的「调优推导」看缓冲上限怎么来的
 fleetctl tune <机器>[,<机器>…] --rollback --yes [--follow]   # 撤销调优：按机器上第一次调优前记的原值写回、删掉调优的 sysctl 配置（没有原值快照的机器作业失败，什么都不改）；先向用户确认

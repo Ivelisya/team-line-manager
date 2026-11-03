@@ -223,6 +223,7 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 2. `fleetctl entry reverse <入口或节点> --on` 看预览（会在节点上装 bridge 连哪个地址、线路机不重启 Xray、节点上别的穿透入口要不要跟着重启 bridge）；确认后加 `--yes --follow`。网页：入口的「⋯」→「开启穿透…」。
 3. 作业三步：推 bridge 并启动 → 切换并经入口验收出口 IP → （开启时跳过）收起 bridge。验收不过中控**自动切回普通模式**、作业失败，错误写明原因；查清后 `fleetctl retry <作业>` 从切换那一步重来，或 `fleetctl cancel <作业>`（补偿收起 bridge）。
 4. 这个入口上正在进行的连接会断开一次（客户端自动重连），线路机上别的入口不受影响；分享链接、订阅、软路由出口都不变。
+5. **节点出站只放行少数端口**（供应商只让节点往外连 53 80 443 853 2096 8080 8443 这类，连不上入口端口，开穿透的出口探测一直「TLS 握手失败」被自动切回）：`fleetctl entry reverse <入口> --on --bridge-port 8443`（预览会写「节点出站只开少数端口时用」）。节点上的 bridge 连 线路机IP:8443，线路机上这个入口的 Reality 入站**同一个入站同时听入口端口和 8443**（Xray 端口列表 `"20002,8443"`；不另起入站：tag、bridge 客户端、`rvs-<入口>`、路由与访问策略规则都不变），分享链接、订阅仍是入口端口。线路机只开 AnyTLS 时 nft 表 `inet fleet_reality_guard` 两个端口都只放行节点 IP。要线路机 agent 是带 `bridge_port` 能力的版本（预览说「不认 bridge 端口」时先 `fleetctl upgrade-agent <线路机>`）。端口限 1–10239（线路机临时端口从 10240 起），不能是 22、Xray API 62789、这台线路机上任何入口的入口 / 探测 / AnyTLS 端口，也不能是同一台线路机上另一个入口的 bridge 端口；线路机上别的程序占着的端口（如 443）Xray 绑不上，开启会失败并自动切回。想换 bridge 端口：`--off` 再 `--on --bridge-port`。`--off` 验收通过后端口清掉。换线路机建的新入口沿用穿透但**不沿用 bridge 端口**（新线路机上要重新 `--off` / `--on --bridge-port`）。`fleetctl entries` 的「模式」列写「穿透（桥 8443）」。
 
 **验证**：`fleetctl entries <节点>` 的「模式」是「穿透」、TCP 一格是节点 → 线路机的建连延迟（节点 agent 升级后才有，旧版本显示「-」）、出口「通」；`fleetctl exec <节点> -- 'systemctl is-active fleet-xray-bridge; journalctl -u fleet-xray-bridge -n 20 --no-pager'`；`fleetctl exec <线路机> -- '/usr/local/bin/xray api lso --server=127.0.0.1:62789 | grep rvs-'`（有 `rvs-<入口>` = 隧道挂上了）。客户那边新连接不再转圈。
 

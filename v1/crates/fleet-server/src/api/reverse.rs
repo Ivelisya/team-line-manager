@@ -29,6 +29,7 @@ struct Ent {
     relay_ip: String,
     direct: bool,
     egress_dynamic: bool,
+    bridge_port: Option<i32>,
 }
 
 impl Ent {
@@ -38,16 +39,21 @@ impl Ent {
 struct Plan {
     e: Ent,
     on: bool,
+    /// 开启时指定的 bridge 端口（None = 节点 bridge 连入口端口）
+    bridge_port: Option<i64>,
     blockers: Vec<String>,
     /// 会发生什么（确认对话框、fleetctl 预览里逐条列出）
     impacts: Vec<String>,
     warnings: Vec<String>,
 }
 
-async fn plan(st: &AppState, conn: &mut PgConnection, id: Uuid, on: bool, lock: bool) -> ApiResult<Plan> {
+async fn plan(st: &AppState, conn: &mut PgConnection, id: Uuid, on: bool, bridge_port: Option<i64>, lock: bool) -> ApiResult<Plan> {
+    if bridge_port.is_some() && !on {
+        return Err(ApiError::bad_request("bridge 端口只在开启穿透时指定（关闭穿透会清掉它）"));
+    }
     let e: Option<Ent> = sqlx::query_as(
         "select e.id, e.node_id, e.relay_id, e.port, e.lifecycle::text lifecycle, e.mode, e.node_id = e.relay_id direct,
-                display_name(n.kind::text, n.label, t.name, n.number) node_name, n.lifecycle::text node_lifecycle, n.egress_dynamic,
+                display_name(n.kind::text, n.label, t.name, n.number) node_name, n.lifecycle::text node_lifecycle, n.egress_dynamic, e.bridge_port,
                 coalesce(rm.label, '') relay_name, host(rm.primary_ip) relay_ip
          from entry e join machine n on n.id = e.node_id join machine rm on rm.id = e.relay_id left join team t on t.id = n.team_id
          where e.id = $1",
@@ -81,6 +87,11 @@ async fn plan(st: &AppState, conn: &mut PgConnection, id: Uuid, on: bool, lock: 
         if !st.cfg.dist_dir.join("xray").exists() {
             blockers.push("中控 dist 里没有 xray（/opt/fleet/dist/xray），装不了 bridge".into());
         }
+        if let Some(bp) = bridge_port {
+            if let Some(why) = reverse::bridge_port_why(&mut *conn, e.id, e.relay_id, &e.relay_name, bp).await? {
+                blockers.push(why);
+            }
+        }
     }
     // 节点上还有动入口的作业：换线路机、加入口、退役、替换、另一个穿透开关、上架
     let busy: Option<(String,)> = sqlx::query_as(
@@ -102,12 +113,21 @@ async fn plan(st: &AppState, conn: &mut PgConnection, id: Uuid, on: bool, lock: 
     .fetch_one(&mut *conn)
     .await?;
     if on {
-        impacts.push(format!("节点「{}」上装 bridge（推 xray 程序、装 fleet-xray-bridge 单元），由它主动连 {}:{}（这个入口自己的端口），客户流量经这条隧道从节点自己的 IP 出去", e.node_name, e.relay_ip, e.port));
+        match bridge_port {
+            Some(bp) => {
+                impacts.push(format!("节点「{}」上装 bridge（推 xray 程序、装 fleet-xray-bridge 单元），由它主动连 {}:{bp}（节点出站只开少数端口时用），客户流量经这条隧道从节点自己的 IP 出去", e.node_name, e.relay_ip));
+                impacts.push(format!("线路机 {} 上这个入口的 Reality 入站同时听 {} 和 {bp}（线路机只开 AnyTLS 时防火墙对这两个端口都只放行节点的出站 IP）；入口端口 {} 的分享链接、订阅照旧", e.relay_name, e.port, e.port));
+            }
+            None => impacts.push(format!("节点「{}」上装 bridge（推 xray 程序、装 fleet-xray-bridge 单元），由它主动连 {}:{}（这个入口自己的端口），客户流量经这条隧道从节点自己的 IP 出去", e.node_name, e.relay_ip, e.port)),
+        }
         if others > 0 {
             impacts.push(format!("节点上的 bridge 要重启：经它的另外 {others} 个穿透入口的连接断开几秒、客户端自动重连"));
         }
     } else {
         impacts.push(format!("线路机 {} 改回连节点的 ssserver（节点上一直留着，防火墙照旧放行这台线路机），节点入站丢包的问题会回来", e.relay_name));
+        if let Some(bp) = e.bridge_port {
+            impacts.push(format!("这个入口的 bridge 端口 {bp} 随之清掉（线路机不再听它）"));
+        }
         impacts.push(if others > 0 { format!("bridge 只去掉这条隧道、不重启（节点上还有 {others} 个穿透入口）") } else { "验收通过后节点上的 bridge 停掉删掉（xray 程序留着）".into() });
     }
     impacts.push(format!("线路机 {} 不重启 Xray：只换这个入口的入站，这个入口上正在进行的连接断开一次、客户端自动重连；线路机上别的入口不受影响", e.relay_name));
@@ -120,15 +140,16 @@ async fn plan(st: &AppState, conn: &mut PgConnection, id: Uuid, on: bool, lock: 
     if on {
         warnings.push("之后这个入口的 TCP 延迟改由节点量（节点 → 线路机，只画曲线、不告警；节点 agent 版本旧时没有这项数据）；隧道断了体现为出口探测失败（照常告警），隧道挂不上时中控会叫节点 agent 重启 bridge".into());
     }
-    Ok(Plan { e, on, blockers, impacts, warnings })
+    Ok(Plan { e, on, bridge_port, blockers, impacts, warnings })
 }
 
 impl Plan {
     fn view(&self) -> Value {
         let e = &self.e;
         json!({
-            "entry": {"id": e.id, "name": e.name(), "node_id": e.node_id, "node": e.node_name, "relay_id": e.relay_id, "relay": e.relay_name, "port": e.port, "mode": e.mode},
+            "entry": {"id": e.id, "name": e.name(), "node_id": e.node_id, "node": e.node_name, "relay_id": e.relay_id, "relay": e.relay_name, "port": e.port, "mode": e.mode, "bridge_port": e.bridge_port},
             "on": self.on,
+            "bridge_port": self.bridge_port,
             "from": e.mode,
             "to": if self.on { REVERSE } else { NORMAL },
             "ok": self.blockers.is_empty(),
@@ -142,28 +163,43 @@ impl Plan {
 #[derive(Deserialize)]
 pub struct PreviewQ {
     on: bool,
+    bridge_port: Option<i64>,
 }
 
 #[derive(Deserialize)]
 pub struct ReverseIn {
     on: bool,
+    /// 开启时可选：节点 bridge 连线路机的这个端口（节点出站只开少数端口时用）；不填 = 连入口端口
+    #[serde(default)]
+    bridge_port: Option<i64>,
 }
 
 /// 预览：会发生什么、不能切换的原因
 pub async fn preview(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<PreviewQ>) -> ApiResult<Json<Value>> {
     let mut conn = st.db.acquire().await?;
-    Ok(ok(plan(&st, &mut conn, id, q.on, false).await?.view()))
+    Ok(ok(plan(&st, &mut conn, id, q.on, q.bridge_port, false).await?.view()))
 }
 
 /// 发起：建 reverse 作业（目标是节点）
 pub async fn reverse(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<ReverseIn>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
-    let p = plan(&st, &mut tx, id, b.on, true).await?;
+    let p = plan(&st, &mut tx, id, b.on, b.bridge_port, true).await?;
     if !p.blockers.is_empty() {
         return Err(ApiError::conflict(p.blockers.join("；")).with_detail(json!({"blockers": p.blockers})));
     }
     let e = &p.e;
-    let params = json!({"entry_id": e.id, "on": p.on, "from": e.mode, "relay_id": e.relay_id, "name": e.name()});
+    // 开启时把 bridge 端口记在入口上（推 bridge 的那一步读它；入口还是普通模式，线路机期望状态里没有它）。关闭时由作业验收通过后清掉
+    if p.on {
+        let w = sqlx::query("update entry set bridge_port = $2 where id = $1").bind(e.id).bind(p.bridge_port.map(|x| x as i32)).execute(&mut *tx).await;
+        if let Err(err) = w {
+            return Err(if err.as_database_error().is_some_and(|d| d.is_unique_violation()) {
+                ApiError::conflict("这台线路机上已有另一个入口用这个 bridge 端口")
+            } else {
+                err.into()
+            });
+        }
+    }
+    let params = json!({"entry_id": e.id, "on": p.on, "from": e.mode, "relay_id": e.relay_id, "name": e.name(), "bridge_port": p.bridge_port});
     let job = jobs::enqueue(&mut tx, "reverse", Some(e.node_id), params, &a.name).await?;
     audit(
         &mut tx,
@@ -171,7 +207,7 @@ pub async fn reverse(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<
         "entry.reverse",
         "entry",
         Some(e.id),
-        json!({"relay": e.relay_name, "port": e.port, "entry": e.node_name, "on": p.on, "job_id": job}),
+        json!({"relay": e.relay_name, "port": e.port, "entry": e.node_name, "on": p.on, "bridge_port": p.bridge_port, "job_id": job}),
     )
     .await?;
     tx.commit().await?;

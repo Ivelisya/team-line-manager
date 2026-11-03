@@ -156,6 +156,7 @@ pub async fn desired_state(db: &PgPool, secrets: &SecretBox, relay_id: Uuid, ech
         secret_enc: Option<Vec<u8>>,
         mode: String,
         bridge_uuid: Uuid,
+        bridge_port: Option<i32>,
     }
     // 期望出口 IP = 机器的出口 IP（端口转发型 NAT 节点入口与出站 IP 不同，见 machine.egress_ip），没填就是 primary_ip；
     // 出口动态（machine.egress_dynamic，供应商的出口会变）的取 agent 最近上报的来源 IP（machine.agent_seen_ip，变了会刷新线路机代数），没有再退到 egress_ip / primary_ip，
@@ -164,7 +165,7 @@ pub async fn desired_state(db: &PgPool, secrets: &SecretBox, relay_id: Uuid, ech
     let rows: Vec<Row> = sqlx::query_as(
         "select e.id, e.node_id, m.team_id, e.port, e.lifecycle::text lifecycle, e.client_uuid, e.short_id, m.kind::text kind, t.name team, m.number,
                 m.label, host(case when m.egress_dynamic then coalesce(m.agent_seen_ip, m.egress_ip, m.primary_ip) else coalesce(m.egress_ip, m.primary_ip) end) ip, m.egress_dynamic, e.node_id = e.relay_id direct, o.protocol, o.host, o.port oport, o.method, o.username, o.secret_enc,
-                e.mode, e.bridge_uuid
+                e.mode, e.bridge_uuid, e.bridge_port
          from entry e join machine m on m.id = e.node_id left join team t on t.id = m.team_id
          left join node_outbound o on o.machine_id = e.node_id
          where e.relay_id = $1 and e.lifecycle in ('pending', 'active', 'disabled') and (e.node_id = e.relay_id or o.secret_enc is not null)
@@ -204,6 +205,8 @@ pub async fn desired_state(db: &PgPool, secrets: &SecretBox, relay_id: Uuid, ech
             egress_any: r.egress_dynamic,
             policy: crate::policy::compile(&policies.effective(r.node_id, r.team_id).0),
             anytls_port: at.get(&r.id).copied(),
+            // 只有穿透入口带（普通入口上残留的值不下发）
+            bridge_port: r.bridge_port.filter(|_| r.mode == crate::reverse::REVERSE).map(|p| p as u16),
         });
     }
     Ok(DesiredState {

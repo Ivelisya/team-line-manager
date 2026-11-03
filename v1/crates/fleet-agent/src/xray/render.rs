@@ -179,9 +179,15 @@ fn inbound_json(e: &DesiredEntry, rp: &RelayParams, min_ver: &str) -> Value {
     if let Outbound::Reverse { bridge_uuid } = e.outbound {
         clients.push(json!({"id": bridge_uuid.to_string(), "email": tags::bridge_email(e.id), "reverse": {"tag": tags::reverse(e.id)}}));
     }
+    // 穿透入口指定了 bridge 端口：同一个入站听两个端口（Xray 的端口列表 "20000,8443"），不另起入站——tag、客户端、
+    // `rvs-<入口>` 反向出站、路由与访问策略规则的 inboundTag 全都不变，bridge 从哪个端口连进来都落在同一个入站的同一个 bridge 客户端上
+    let port = match e.extra_bridge_port() {
+        Some(bp) => json!(format!("{},{bp}", e.port)),
+        None => json!(e.port),
+    };
     json!({
         "listen": if rp.reality_public || matches!(e.outbound, Outbound::Reverse { .. }) { "0.0.0.0" } else { "127.0.0.1" },
-        "port": e.port,
+        "port": port,
         "protocol": "vless",
         "tag": tags::inbound(e.id),
         "settings": {
@@ -366,6 +372,14 @@ fn validate(d: &DesiredState) -> Result<String> {
         ensure!(ids.insert(e.id), "入口 id 重复：{}", e.id);
         ensure!(e.port != 0 && e.port != API_PORT, "入口 {} 端口 {} 不可用", e.id, e.port);
         ensure!(ports.insert(e.port), "入口端口重复：{}", e.port);
+        if let Some(bp) = e.bridge_port {
+            ensure!(matches!(e.outbound, Outbound::Reverse { .. }), "入口 {} 不是穿透入口，不能有 bridge 端口", e.id);
+            // 与入口端口相同等于没指定；其余不得为 0、Xray API 端口，也不得和别的入口端口、别的 bridge 端口重复
+            if bp != e.port {
+                ensure!(bp != 0 && bp != API_PORT, "入口 {} 的 bridge 端口 {bp} 不可用", e.id);
+                ensure!(ports.insert(bp), "入口 {} 的 bridge 端口 {bp} 与别的入口端口重复", e.id);
+            }
+        }
         let sid = &e.short_id;
         ensure!(
             sid.len() <= 16 && sid.len() % 2 == 0 && sid.bytes().all(|b| b.is_ascii_hexdigit()),
@@ -501,6 +515,7 @@ pub mod tests {
             egress_any: false,
             policy: None,
             anytls_port: None,
+            bridge_port: None,
         }
     }
 
@@ -766,6 +781,45 @@ x"]));
         let mut e = reverse(2, 20002);
         e.enabled = false;
         assert_eq!(render(&desired(vec![entry(1, 20001, true), e]), &ctx()).unwrap().full, render(&desired(vec![entry(1, 20001, true)]), &ctx()).unwrap().full);
+    }
+
+    /// 穿透入口指定 bridge 端口：同一个入站听两个端口（端口列表串），tag、客户端、路由都不变；不指定 / 与入口端口相同：同现在（数字）
+    #[test]
+    fn reverse_bridge_port_listens_on_both_ports_in_one_inbound() {
+        let id = Uuid::from_u128(2).simple().to_string();
+        let mut e = reverse(2, 20002);
+        e.bridge_port = Some(8443);
+        let r = render(&desired(vec![entry(1, 20001, true), e]), &ctx()).unwrap();
+        let plain = render(&desired(vec![entry(1, 20001, true), reverse(2, 20002)]), &ctx()).unwrap();
+        let inb = r.inbounds.iter().find(|i| tag_of(i) == format!("in-{id}")).unwrap();
+        let base = plain.inbounds.iter().find(|i| tag_of(i) == format!("in-{id}")).unwrap();
+        assert_eq!(inb["port"], "20002,8443");
+        assert_eq!(base["port"], 20002);
+        // 除端口外和不带 bridge 端口的完全一样（客户端、REALITY 参数、tag），入站数量、路由规则、出站也一样
+        let (mut a, mut b) = (inb.clone(), base.clone());
+        a["port"] = json!(0);
+        b["port"] = json!(0);
+        assert_eq!(a, b);
+        assert_eq!((&r.rules, &r.outbounds, r.inbounds.len()), (&plain.rules, &plain.outbounds, plain.inbounds.len()));
+        // 与入口端口相同等于没指定
+        let mut same = reverse(2, 20002);
+        same.bridge_port = Some(20002);
+        let r = render(&desired(vec![entry(1, 20001, true), same]), &ctx()).unwrap();
+        assert_eq!(r.inbounds.iter().find(|i| tag_of(i) == format!("in-{id}")).unwrap()["port"], 20002);
+        // 普通入口带 bridge 端口、与别的入口端口 / 别的 bridge 端口重复、0、Xray API 端口：拒绝
+        let with = |n: u128, port: u16, bp: u16| {
+            let mut e = reverse(n, port);
+            e.bridge_port = Some(bp);
+            e
+        };
+        let mut normal = entry(3, 20003, true);
+        normal.bridge_port = Some(8443);
+        assert!(render(&desired(vec![normal]), &ctx()).is_err());
+        assert!(render(&desired(vec![entry(1, 20001, true), with(2, 20002, 20001)]), &ctx()).is_err());
+        assert!(render(&desired(vec![with(2, 20002, 8443), with(3, 20003, 8443)]), &ctx()).is_err());
+        assert!(render(&desired(vec![with(2, 20002, 0)]), &ctx()).is_err());
+        assert!(render(&desired(vec![with(2, 20002, API_PORT)]), &ctx()).is_err());
+        assert!(render(&desired(vec![with(2, 20002, 8443), with(3, 20003, 8080)]), &ctx()).is_ok());
     }
 
     #[test]

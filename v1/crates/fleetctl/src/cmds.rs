@@ -680,6 +680,8 @@ fn entry_item(e: &Value) -> Value {
         "lifecycle": e["lifecycle"], "applied": e["applied"], "apply_error": e["apply_error"],
         // 穿透（reverse）：节点主动连入口，线路机不连节点，TCP 是节点 → 线路机的建连（节点 agent 量，旧版本没有为 null）；旧中控没有这个字段，按普通
         "mode": e.get("mode").and_then(Value::as_str).unwrap_or("normal"),
+        // 穿透入口的 bridge 端口（节点连线路机的这个端口；没指定为 null = 连入口端口）
+        "bridge_port": e.get("bridge_port").cloned().unwrap_or(Value::Null),
         "tcp_ok": e.pointer("/tcp/ok"), "egress_ok": e.pointer("/egress/ok"),
         "today_down": e.pointer("/traffic/today_down"), "today_up": e.pointer("/traffic/today_up"),
     })
@@ -700,7 +702,11 @@ fn entry_table(items: &[Value]) -> String {
                 format!("{}:{}", st(e, "/relay"), st(e, "/port")),
                 st(e, "/node"),
                 entry_state_cn(e).into(),
-                if e["mode"] == "reverse" { "穿透" } else { "普通" }.into(),
+                match (e["mode"] == "reverse", e["bridge_port"].as_u64()) {
+                    (true, Some(p)) => format!("穿透（桥 {p}）"),
+                    (true, None) => "穿透".into(),
+                    _ => "普通".into(),
+                },
                 // 普通 = 线路机 → 节点；穿透 = 节点 → 线路机（旧版本节点 agent 没有，显示 -）
                 probe("tcp_ok"),
                 probe("egress_ok"),
@@ -1282,6 +1288,11 @@ mod tests {
         assert!(lines[2].contains("普通") && lines[2].contains("不通"), "{t}");
         assert!(lines[3].contains("普通"), "旧中控没有 mode 字段：按普通：{t}");
         assert!(lines[4].contains("穿透") && !lines[4].contains("不通"), "旧节点 agent 没有样本：不写不通：{t}");
+        // 指定了 bridge 端口的穿透入口把端口写在模式里
+        let mut v = e(Some("reverse"), json!({"ok": true}));
+        assert_eq!(v["bridge_port"], Value::Null);
+        v["bridge_port"] = json!(8443);
+        assert!(entry_table(&[v]).contains("穿透（桥 8443）"));
     }
     use crate::client::ApiError;
 

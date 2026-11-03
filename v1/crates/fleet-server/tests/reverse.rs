@@ -283,3 +283,70 @@ async fn failed_verify_reverts_then_retry_and_cancel() {
     assert!(!root.join("etc/fleet-bridge/xray.json").exists(), "取消后 bridge 收起");
     assert_eq!(mode_of(&t, e).await, "normal");
 }
+
+/// 带 bridge 端口开穿透：线路机 agent 不认 bridge_port（旧）/ 端口不可用 / 被另一个入口占着 都被拒；
+/// 成功后节点 bridge 配置连 bridge 端口、线路机期望状态里带 bridge_port（普通入口不带）、entries 视图有它；关掉后清掉
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bridge_port_on_then_off() {
+    let t = setup(false).await;
+    let (ra, ta) = seed_relay(&t).await;
+    let mut a = Sim::new(ta);
+    let (n, root) = node(&t, "203.0.113.53").await;
+    let e = entry(&t, ra, n, "normal").await;
+    a.round(&t).await;
+    let url = format!("/api/v1/entries/{e}/reverse");
+    let bp_of = |t: &T| {
+        let db = t.st.db.clone();
+        async move { sqlx::query_scalar::<_, Option<i32>>("select bridge_port from entry where id = $1").bind(e).fetch_one(&db).await.unwrap() }
+    };
+    // 线路机 agent 旧（只报 reverse）：拒绝并提示升级；不带 bridge 端口照旧能开（预览）
+    sqlx::query("update agent_state set info = info || jsonb_build_object('caps', $2::jsonb) where machine_id = $1").bind(ra).bind(json!(["reverse"])).execute(&t.st.db).await.unwrap();
+    let (s, v) = t.req("POST", &url, Some(json!({"on": true, "bridge_port": 8443})), None).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v.to_string().contains("不认 bridge 端口") && v.to_string().contains("upgrade-agent"), "{v}");
+    assert_eq!(bp_of(&t).await, None, "被拒不写库");
+    assert_eq!(t.get(&format!("{url}?on=true")).await["ok"], true);
+    a.round(&t).await; // 回报新能力
+    // 端口不可用：0、22、超出临时端口以下的范围、Xray API 端口；别的入口占着
+    for bad in [0, 22, 10240, 65535, 62789] {
+        let (s, v) = t.req("POST", &url, Some(json!({"on": true, "bridge_port": bad})), None).await;
+        assert_eq!(s, StatusCode::CONFLICT, "{bad}: {v}");
+        assert!(v.to_string().contains("不可用"), "{bad}: {v}");
+    }
+    let team: Uuid = sqlx::query_scalar("select team_id from machine where id = $1").bind(n).fetch_one(&t.st.db).await.unwrap();
+    let other = common::seed_node(&t, team, 2, "203.0.113.54", "active").await;
+    let e2 = entry(&t, ra, other, "normal").await;
+    sqlx::query("update entry set bridge_port = 8443 where id = $1").bind(e2).execute(&t.st.db).await.unwrap();
+    let (s, v) = t.req("POST", &url, Some(json!({"on": true, "bridge_port": 8443})), None).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v.to_string().contains("另一个入口"), "{v}");
+    sqlx::query("update entry set bridge_port = null where id = $1").bind(e2).execute(&t.st.db).await.unwrap();
+    // 关闭时不能带 bridge 端口
+    assert_eq!(t.req("POST", &url, Some(json!({"on": false, "bridge_port": 8443})), None).await.0, StatusCode::BAD_REQUEST);
+
+    // 成功
+    let pv = t.get(&format!("{url}?on=true&bridge_port=8443")).await;
+    assert_eq!(pv["ok"], true, "{pv}");
+    assert!(pv["impacts"].to_string().contains("198.51.100.2:8443") && pv["impacts"].to_string().contains("节点出站只开少数端口"), "{pv}");
+    let d = t.post(&url, json!({"on": true, "bridge_port": 8443})).await;
+    let job = d["job_id"].as_str().unwrap().to_string();
+    let j = drive(&t, &mut [&mut a], &job).await;
+    assert_eq!(j["state"], "succeeded", "{j}");
+    assert_eq!(bp_of(&t).await, Some(8443));
+    // 节点 bridge 连线路机 IP:8443，不是入口端口
+    let cfg: Value = serde_json::from_str(&read(&root.join("etc/fleet-bridge/xray.json"))).unwrap();
+    let tunnel = cfg["outbounds"].as_array().unwrap().iter().find(|o| o["protocol"] == "vless").unwrap();
+    assert_eq!((tunnel["settings"]["address"].as_str(), tunnel["settings"]["port"].as_i64()), (Some("198.51.100.2"), Some(8443)));
+    // 线路机期望状态：穿透入口带 bridge_port；视图里也有
+    let ds = a.round(&t).await;
+    assert_eq!(ds.entries.iter().find(|x| x.id == e).unwrap().bridge_port, Some(8443));
+    let view = t.get(&format!("/api/v1/machines/{ra}")).await;
+    assert_eq!(view["entries"].as_array().unwrap().iter().find(|x| x["id"] == json!(e)).unwrap()["bridge_port"], 8443, "{view}");
+
+    // 关掉：切回普通，bridge 端口清掉，期望状态里没有
+    let off = switch(&t, e, false).await;
+    let j = drive(&t, &mut [&mut a], &off).await;
+    assert_eq!(j["state"], "succeeded", "{j}");
+    assert_eq!(bp_of(&t).await, None);
+    assert_eq!(a.round(&t).await.entries.iter().find(|x| x.id == e).unwrap().bridge_port, None);
+}
