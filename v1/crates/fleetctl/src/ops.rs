@@ -1004,14 +1004,19 @@ pub fn entry_action(ctx: &Ctx, action: EntryAction, entry: &str, yes: bool, foll
 
 /// `entry reverse <入口> --on|--off`：先打预览（会发生什么、不能切的原因），加 --yes 才建作业（推 bridge → 切换 → 经入口验收出口；
 /// 关闭反过来）。验收不过中控自动切回原来的模式
-pub fn reverse(ctx: &Ctx, entry: &str, on: bool, off: bool, yes: bool, follow: bool) -> anyhow::Result<u8> {
+pub fn reverse(ctx: &Ctx, entry: &str, on: bool, off: bool, bridge_port: Option<u16>, yes: bool, follow: bool) -> anyhow::Result<u8> {
     if on == off {
         bail!("要写 --on（开启穿透）或 --off（关闭穿透）");
+    }
+    if bridge_port.is_some() && !on {
+        bail!("--bridge-port 只在 --on 时用（关闭穿透会自动清掉 bridge 端口）");
     }
     let es = cmds::all_entries(ctx)?;
     let e = resolve::entry(&es, entry).map_err(|e| anyhow!(e))?;
     let id = st(e, "/id");
-    let pv = ctx.c.get_q(&format!("/entries/{id}/reverse"), &[("on", on.to_string())])?;
+    let mut q = vec![("on", on.to_string())];
+    q.extend(bridge_port.map(|p| ("bridge_port", p.to_string())));
+    let pv = ctx.c.get_q(&format!("/entries/{id}/reverse"), &q)?;
     if !ctx.json || !yes {
         if ctx.json {
             ctx.emit(&pv, String::new);
@@ -1029,7 +1034,7 @@ pub fn reverse(ctx: &Ctx, entry: &str, on: bool, off: bool, yes: bool, follow: b
         }
         return Ok(0);
     }
-    let d = ctx.c.post(&format!("/entries/{id}/reverse"), &json!({"on": on}))?;
+    let d = ctx.c.post(&format!("/entries/{id}/reverse"), &json!({"on": on, "bridge_port": bridge_port}))?;
     let what = if on { "开启穿透" } else { "关闭穿透" };
     ctx.emit(&d, || format!("已提交{what}作业 {}（{}）
 看进度：fleetctl job {} --follow", st(&d, "/job_id"), st(&d, "/entry/name"), st(&d, "/job_id")));

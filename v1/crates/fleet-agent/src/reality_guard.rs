@@ -16,13 +16,18 @@ use tokio::process::Command;
 
 pub const TABLE: &str = "fleet_reality_guard";
 
-/// 要守的 (入口端口, 放行的来源)：只留 AnyTLS 时启用着的穿透入口，按端口排序（同样的入口渲染出同样的规则）
+/// 要守的 (端口, 放行的来源)：只留 AnyTLS 时启用着的穿透入口的入口端口，指定了 bridge 端口的再加上它（Xray 入站同时听两个，
+/// 两个都只放行节点），按端口排序（同样的入口渲染出同样的规则）
 pub fn guarded(d: &DesiredState) -> Vec<(u16, IpAddr)> {
     if d.relay.reality_public {
         return vec![];
     }
-    let mut v: Vec<(u16, IpAddr)> =
-        d.entries.iter().filter(|e| e.enabled && matches!(e.outbound, Outbound::Reverse { .. })).map(|e| (e.port, e.expect_egress_ip)).collect();
+    let mut v: Vec<(u16, IpAddr)> = d
+        .entries
+        .iter()
+        .filter(|e| e.enabled && matches!(e.outbound, Outbound::Reverse { .. }))
+        .flat_map(|e| [Some(e.port), e.extra_bridge_port()].into_iter().flatten().map(|p| (p, e.expect_egress_ip)))
+        .collect();
     v.sort();
     v
 }
@@ -127,6 +132,35 @@ table inet fleet_reality_guard {
 \t\ttcp dport 20002 drop
 \t\ttcp dport 20004 ip6 saddr 2001:db8::4 accept
 \t\ttcp dport 20004 drop
+\t}
+}
+"
+        );
+    }
+
+    /// 带 bridge 端口的穿透入口：入口端口和 bridge 端口各一对规则，都只放行节点 IP；不带的同上一个用例
+    #[test]
+    fn bridge_port_is_guarded_too() {
+        let mut e = reverse(2, 20002);
+        e.bridge_port = Some(8443);
+        let mut same = reverse(3, 20003);
+        same.bridge_port = Some(20003);
+        let mut plain = entry(1, 20001, true);
+        plain.bridge_port = Some(8080);
+        let g = guarded(&anytls_only(vec![e, same, plain]));
+        let ip: IpAddr = "203.0.113.9".parse().unwrap();
+        assert_eq!(g, vec![(8443, ip), (20002, ip), (20003, ip)], "普通入口的 bridge 端口不算；与入口端口相同的不重复");
+        assert_eq!(
+            script(&g[..2]),
+            "table inet fleet_reality_guard
+delete table inet fleet_reality_guard
+table inet fleet_reality_guard {
+\tchain input {
+\t\ttype filter hook input priority filter - 10; policy accept;
+\t\ttcp dport 8443 ip saddr 203.0.113.9 accept
+\t\ttcp dport 8443 drop
+\t\ttcp dport 20002 ip saddr 203.0.113.9 accept
+\t\ttcp dport 20002 drop
 \t}
 }
 "

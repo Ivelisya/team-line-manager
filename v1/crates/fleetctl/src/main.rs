@@ -647,7 +647,8 @@ enum Cmd {
         cmd: SubCmd,
     },
     /// 入口启用/停用/轮换凭据；add-direct 给线路机加直出入口（从线路机自己的 IP 出去，每台至多一条）；
-    /// reverse --on / --off 开关穿透（节点主动连入口，供应商丢入站 SYN 的节点用；不加 --yes 只打印预览）
+    /// reverse --on / --off 开关穿透（节点主动连入口，供应商丢入站 SYN 的节点用；不加 --yes 只打印预览）；
+    /// 节点出站只放行少数端口（连不上入口端口）时 --on 加 --bridge-port N，让节点连线路机的 N 端口（线路机上入口同时听两个端口）
     Entry {
         #[arg(value_enum)]
         action: ops::EntryAction,
@@ -659,6 +660,9 @@ enum Cmd {
         /// reverse：关闭穿透（切回线路机连节点 ssserver）
         #[arg(long)]
         off: bool,
+        /// reverse --on：节点 bridge 连线路机的这个端口（1–10239；节点出站只开少数端口时用，如 8443）；不填连入口端口。关闭穿透时自动清掉
+        #[arg(long, value_name = "PORT")]
+        bridge_port: Option<u16>,
         #[arg(long)]
         yes: bool,
         /// add-direct、reverse：提交后跟随作业直到结束
@@ -1228,10 +1232,10 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             SubCmd::Rm { sub, yes } => subs::rm(x, &sub, yes),
             SubCmd::Show { sub } => subs::show(x, &sub),
         },
-        Cmd::Entry { action: ops::EntryAction::Reverse, entry, on, off, yes, follow } => ops::reverse(x, &entry, on, off, yes, follow),
-        Cmd::Entry { action, entry, on, off, yes, follow } => {
-            if on || off {
-                anyhow::bail!("--on / --off 只给 entry reverse 用");
+        Cmd::Entry { action: ops::EntryAction::Reverse, entry, on, off, bridge_port, yes, follow } => ops::reverse(x, &entry, on, off, bridge_port, yes, follow),
+        Cmd::Entry { action, entry, on, off, bridge_port, yes, follow } => {
+            if on || off || bridge_port.is_some() {
+                anyhow::bail!("--on / --off / --bridge-port 只给 entry reverse 用");
             }
             ops::entry_action(x, action, &entry, yes, follow)
         }

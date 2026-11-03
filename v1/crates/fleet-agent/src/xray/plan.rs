@@ -85,10 +85,21 @@ pub fn plan(rt: &Runtime, prev: &Rendered, cand: &Rendered) -> Vec<Step> {
         .partition(|v| rt_i.contains(tag_of(v)));
     // 变化的入站彼此没有端口冲突时，同一入站删、加相邻：每个入口只断开一步（整体替换时不必让第一个入口等 N 步）。
     // 某个入站的新端口正被另一个待替换的入站占着（端口互换），或另一个的旧内容未知（不知道它占着哪个端口），就先全部删再全部加
-    let port_of = |v: &Value| v.get("port").and_then(Value::as_u64);
+    // 入站的端口是数字，或穿透入口带 bridge 端口时的列表串 "20000,8443"：两个入站有一个端口相同就算冲突
+    let ports_of = |v: &Value| -> Vec<u64> {
+        match v.get("port") {
+            Some(Value::String(s)) => s.split(',').filter_map(|p| p.trim().parse().ok()).collect(),
+            Some(p) => p.as_u64().into_iter().collect(),
+            None => vec![],
+        }
+    };
+    let overlap = |a: &Value, b: &Value| {
+        let (pa, pb) = (ports_of(a), ports_of(b));
+        pa.is_empty() || pa.iter().any(|p| pb.contains(p))
+    };
     let conflict = changed
         .iter()
-        .any(|&v| changed.iter().any(|&u| tag_of(u) != tag_of(v) && prev_i.get(tag_of(u)).is_none_or(|&o| port_of(o) == port_of(v))));
+        .any(|&v| changed.iter().any(|&u| tag_of(u) != tag_of(v) && prev_i.get(tag_of(u)).is_none_or(|&o| overlap(o, v))));
     if conflict {
         steps.extend(changed.iter().map(|&v| rmi(tag_of(v))));
         steps.extend(changed.iter().copied().map(adi));
@@ -424,6 +435,13 @@ mod tests {
         let mut rt = rt_of(&normal);
         rt.outbounds.push(tags::reverse(Uuid::from_u128(9)));
         assert!(plan(&rt, &normal, &normal).is_empty() && verify(&rt, &normal).is_ok());
+        // 穿透入口加 / 改 bridge 端口：只是入站的端口变成列表串，同样热换这一个入站（不重启、规则不动）
+        let mut e = reverse(2, 20002);
+        e.bridge_port = Some(8443);
+        let bp = render(&desired(vec![entry(1, 20001, true), e]), &ctx()).unwrap();
+        let steps = plan(&rt_of(&rev), &rev, &bp);
+        assert_eq!(kinds(&steps), vec![format!("rmi {inb}"), format!("adi {inb}")]);
+        assert_reaches(&rev, &steps, &bp);
     }
 
     #[test]

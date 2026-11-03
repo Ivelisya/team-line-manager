@@ -275,6 +275,8 @@ pub struct EntryView {
     /// normal / reverse（穿透：节点主动连这个入口，线路机不连节点，见 crate::reverse）。
     /// tcp 的方向跟着模式：普通 = 线路机 → 节点（线路机 agent 量），穿透 = 节点 → 线路机（节点 agent 量，只画图，不进告警，见 health.rs）
     pub mode: String,
+    /// 穿透入口的 bridge 端口（节点连线路机的这个端口；None = 连入口端口）。普通入口恒为 None
+    pub bridge_port: Option<i32>,
     pub port: i32,
     pub lifecycle: String,
     /// 线路机已应用到这条入口的最近一次改动
@@ -1374,6 +1376,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
         relay_xray_down: bool,
         relay_last: Option<OffsetDateTime>,
         mode: String,
+        bridge_port: Option<i32>,
     }
     // 下面这些查询互不依赖（探测要等入口列表），并发跑
     let entries_q = async {
@@ -1381,7 +1384,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
             "select e.id, e.relay_id, rm.label relay_label, e.node_id, nm.label node_label, t.name node_team, nm.number node_number, e.port,
                     e.lifecycle::text lifecycle, r.applied_generation >= e.changed_gen applied, e.apply_error,
                     coalesce((ra.info->'xray'->>'running')::bool = false and ra.last_report_at > now() - make_interval(secs => $2), false) relay_xray_down,
-                    ra.last_report_at relay_last, e.mode
+                    ra.last_report_at relay_last, e.mode, case when e.mode = 'reverse' then e.bridge_port end bridge_port
              from entry e join machine rm on rm.id = e.relay_id join relay r on r.machine_id = e.relay_id
              left join agent_state ra on ra.machine_id = e.relay_id
              join machine nm on nm.id = e.node_id left join team t on t.id = nm.team_id
@@ -1498,6 +1501,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
             relay_maint: silences.maintenance(e.relay_id),
             tcp: probes.get(&(e.id, "tcp".into())).cloned(),
             mode: e.mode,
+            bridge_port: e.bridge_port,
             egress: probes.get(&(e.id, "egress".into())).cloned(),
             reach: reach.get(&e.id).cloned(),
             traffic: traffic.get(&e.id).cloned().unwrap_or_default(),

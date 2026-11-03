@@ -517,6 +517,7 @@ pub(crate) mod tests {
             node: Ref { id: Uuid::now_v7(), name: "n".into() },
             direct: false,
             mode: "normal".into(),
+            bridge_port: None,
             port: 20000,
             lifecycle: "active".into(),
             applied: true,

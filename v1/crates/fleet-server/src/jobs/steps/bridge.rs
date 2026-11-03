@@ -187,6 +187,10 @@ pub(super) async fn switch(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     match row {
         Some((true, ip)) => {
             c.log(format!("出口验收通过：经入口出去的是 {}（{}模式）", ip.as_deref().unwrap_or("?"), reverse::mode_zh(to))).await;
+            // 关穿透验收通过：bridge 端口不再有用（线路机的入站已只听入口端口），清掉让出这个端口
+            if to == reverse::NORMAL {
+                sqlx::query("update entry set bridge_port = null where id = $1 and mode = 'normal'").bind(eid).execute(&c.st.db).await?;
+            }
             c.st.emit(Event::Machines);
             Ok(Outcome::Done(json!({"mode": to, "egress_ip": ip})))
         }
@@ -261,6 +265,10 @@ pub(super) async fn compensate(c: &Ctx<'_>) {
                 Err(e) => log(st, job, "warn", format!("切回原来的模式：{}", e.message)).await,
             }
         }
+    }
+    // 取消的是开启穿透：入口回到普通模式，开启时记下的 bridge 端口作废（取消的是关闭穿透则入口回到穿透，端口留着）
+    if want_on(c) {
+        note(st, job, "清 bridge 端口", sqlx::query("update entry set bridge_port = null where id = $1 and mode = 'normal'").bind(eid).execute(&st.db).await).await;
     }
     // 动过 bridge 的（开启时推过、关闭时收到一半）：按库里此刻的穿透入口重推（没有了就停掉删掉）
     let pushed: bool = note(

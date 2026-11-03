@@ -75,8 +75,11 @@ pub const CAP_REALITY_PRIVATE: &str = "reality_private";
 /// （`DesiredEntry::expect_egress_ip`，bridge 从它连过来）。旧 agent 把穿透入口也改听回环、bridge 连不上：中控只在线路机 agent 报了它时
 /// 才允许有穿透入口的线路机改成只 AnyTLS、或在只 AnyTLS 的线路机上开穿透
 pub const CAP_REALITY_GUARD: &str = "reality_guard";
+/// agent 认 `DesiredEntry::bridge_port`：穿透入口的 Reality 入站多听这个端口，只留 AnyTLS 时 nft 表也守它。旧 agent 忽略这个字段、只听入口端口：
+/// 中控只在线路机 agent 报了它时才允许带 bridge 端口开穿透
+pub const CAP_BRIDGE_PORT: &str = "bridge_port";
 /// 本 agent 的全部能力（随每份上报带上）
-pub const CAPS: &[&str] = &[CAP_REVERSE, CAP_REALITY_PRIVATE, CAP_REALITY_GUARD];
+pub const CAPS: &[&str] = &[CAP_REVERSE, CAP_REALITY_PRIVATE, CAP_REALITY_GUARD, CAP_BRIDGE_PORT];
 /// 穿透入口的隧道在线路机 Xray 里缺席这么久才报 `tunnels_down`：bridge 断线重连约 2 秒，正常切换、重启都到不了这么久
 pub const TUNNEL_DOWN_AFTER_S: u64 = 30;
 
@@ -418,6 +421,18 @@ pub struct DesiredEntry {
     /// AnyTLS 公网端口（中控按 [`anytls_ports`] 算好下发；None = 这个入口没有 AnyTLS）。旧 agent 忽略，只有 Reality
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anytls_port: Option<u16>,
+    /// 穿透入口的 bridge 端口：节点上的 bridge 连线路机这个端口（节点出站只放行少数端口时用），入口的 Reality 入站同时听它和 `port`
+    /// （同一个入站、同一组客户端，Xray 的端口列表 "port,bridge_port"）。None = bridge 连 `port`。只对穿透入口有意义。
+    /// 旧 agent 忽略（只听 `port`，bridge 连不上）：中控只在线路机 agent 报了 [`CAP_BRIDGE_PORT`] 时才下发
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bridge_port: Option<u16>,
+}
+
+impl DesiredEntry {
+    /// 穿透入口的 Reality 入站在入口端口之外多听的 bridge 端口；普通入口、没指定、与入口端口相同的为 None
+    pub fn extra_bridge_port(&self) -> Option<u16> {
+        self.bridge_port.filter(|p| *p != self.port && matches!(self.outbound, Outbound::Reverse { .. }))
+    }
 }
 
 /// 入口的访问策略（中控已按「节点策略 > 团队策略 > observe」算出的有效值）。

@@ -11,7 +11,7 @@
 use crate::db::{audit, Tx};
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
-use fleet_proto::{CAP_REALITY_GUARD, CAP_REVERSE};
+use fleet_proto::{CAP_BRIDGE_PORT, CAP_REALITY_GUARD, CAP_REVERSE};
 use serde_json::{json, Value};
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
@@ -66,14 +66,47 @@ pub async fn save_default(st: &AppState, actor: &str, mode: &'static str) -> Api
     Ok(old)
 }
 
-/// agent 报过的能力里有没有穿透（`Report.caps`，中控存在 agent_state.info.caps；旧 agent 是空数组或没有）
-async fn agent_can(conn: &mut PgConnection, machine: Uuid) -> sqlx::Result<bool> {
+/// agent 报过的能力里有没有 `cap`（`Report.caps`，中控存在 agent_state.info.caps；旧 agent 是空数组或没有）
+async fn agent_has(conn: &mut PgConnection, machine: Uuid, cap: &str) -> sqlx::Result<bool> {
     let v: Option<bool> = sqlx::query_scalar("select coalesce(info->'caps' ? $2, false) from agent_state where machine_id = $1")
         .bind(machine)
-        .bind(CAP_REVERSE)
+        .bind(cap)
         .fetch_optional(&mut *conn)
         .await?;
     Ok(v.unwrap_or(false))
+}
+
+async fn agent_can(conn: &mut PgConnection, machine: Uuid) -> sqlx::Result<bool> { agent_has(conn, machine, CAP_REVERSE).await }
+
+/// bridge 端口能取的最大值：线路机调优档（jobs/tune.rs）的临时端口范围是 10240–65535，更大的端口会被本机出站连接随机占去，Xray 重启绑不上。
+/// 节点出站放行的少数端口（53 80 443 853 2096 8080 8443）都在这以内
+pub const BRIDGE_PORT_MAX: i64 = 10239;
+
+/// 开穿透时指定的 bridge 端口（节点上的 bridge 连线路机的这个端口）能不能用；不能时返回原因。
+/// 除端口范围外：不能是 22（SSH）、Xray API 端口，不能是这台线路机上任何入口的入口端口 / 探测端口 / AnyTLS 公网与桥接端口，
+/// 也不能是这台线路机上别的入口的 bridge 端口（同一端口两个入口会分不清 bridge 是谁的）；还要线路机 agent 认 `bridge_port`（否则只听入口端口）
+pub async fn bridge_port_why(conn: &mut PgConnection, entry: Uuid, relay: Uuid, relay_name: &str, port: i64) -> sqlx::Result<Option<String>> {
+    if !(1..=BRIDGE_PORT_MAX).contains(&port) {
+        return Ok(Some(format!("bridge 端口 {port} 不可用：要在 1–{BRIDGE_PORT_MAX}（线路机的临时端口从 10240 起，更大的端口会被本机出站连接占去）")));
+    }
+    if port == 22 || port == i64::from(fleet_proto::XRAY_API_PORT) {
+        return Ok(Some(format!("bridge 端口 {port} 不可用：{}", if port == 22 { "22 是 SSH" } else { "是线路机上 Xray API 的端口" })));
+    }
+    let rows: Vec<(Uuid, i32, Option<i32>)> =
+        sqlx::query_as("select id, port, bridge_port from entry where relay_id = $1 and lifecycle <> 'removed'").bind(relay).fetch_all(&mut *conn).await?;
+    for (id, p, bp) in rows {
+        let derived = [p, p + i32::from(fleet_proto::PROBE_PORT_OFFSET), p + i32::from(fleet_proto::ANYTLS_PORT_OFFSET), p + i32::from(fleet_proto::ANYTLS_BRIDGE_OFFSET)];
+        if derived.contains(&(port as i32)) {
+            return Ok(Some(format!("bridge 端口 {port} 不可用：线路机 {relay_name} 上入口端口 {p} 的入口 / 探测 / AnyTLS 要用它")));
+        }
+        if id != entry && bp == Some(port as i32) {
+            return Ok(Some(format!("bridge 端口 {port} 已经是线路机 {relay_name} 上另一个入口的 bridge 端口")));
+        }
+    }
+    if !agent_has(conn, relay, CAP_BRIDGE_PORT).await? {
+        return Ok(Some(format!("线路机 {relay_name} 的 agent 版本旧，不认 bridge 端口（下发了也只听入口端口，bridge 连不上）：先 fleetctl upgrade-agent {relay_name}")));
+    }
+    Ok(None)
 }
 
 /// 线路机的 (名称, 入口协议, agent 认不认 `reality_guard`)；不是线路机返回 None
@@ -155,7 +188,8 @@ pub fn kind_unsupported(kind: &str, host_id: Option<Uuid>) -> Option<&'static st
 
 // ── 节点上的 bridge ─────────────────────────────────────────────────────────
 
-/// bridge 的一条隧道：连哪个入口（线路机 IP + 入口端口 + 该入口的 REALITY 参数），用哪个客户端
+/// bridge 的一条隧道：连哪个入口（线路机 IP + 连接端口 + 该入口的 REALITY 参数），用哪个客户端。
+/// 连接端口是入口的 bridge 端口，没指定就是入口端口
 #[derive(Debug, Clone, PartialEq, sqlx::FromRow)]
 pub struct Tunnel {
     pub entry_id: Uuid,
@@ -237,7 +271,7 @@ pub fn only_removed(old: &Value, new: &Value) -> bool {
 /// 外加 `include`（开启穿透作业：先推 bridge、再切期望状态），去掉 `exclude`
 pub async fn tunnels(db: &PgPool, node: Uuid, include: Option<Uuid>, exclude: Option<Uuid>) -> sqlx::Result<Vec<Tunnel>> {
     sqlx::query_as(
-        "select e.id entry_id, host(rm.primary_ip) relay_ip, e.port, e.bridge_uuid, r.reality_sni sni, r.reality_public_key public_key, e.short_id
+        "select e.id entry_id, host(rm.primary_ip) relay_ip, coalesce(e.bridge_port, e.port) port, e.bridge_uuid, r.reality_sni sni, r.reality_public_key public_key, e.short_id
          from entry e join relay r on r.machine_id = e.relay_id join machine rm on rm.id = e.relay_id
          where e.node_id = $1 and e.node_id <> e.relay_id and e.lifecycle in ('pending', 'active', 'disabled')
            and (e.mode = 'reverse' or e.id = $2) and e.id is distinct from $3
