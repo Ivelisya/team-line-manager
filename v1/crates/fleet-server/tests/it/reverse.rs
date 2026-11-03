@@ -366,3 +366,77 @@ async fn node_reports_tcp_for_reverse_entries() {
     send(4, vec![s(ea, Tcp, true, Some(5.0))]).await;
     assert_eq!(rows(ea).await.len(), 3, "只有最初那一条成功和两条失败");
 }
+
+/// 出口动态的节点（machine.egress_dynamic）：期望出口 IP 取它 agent 上报时中控看到的来源 IP（线路机只留 AnyTLS 时据此放行穿透 bridge），
+/// 来源 IP 变了线路机代数 +1、新 IP 随期望状态下发；没变、非动态的节点不动代数（非动态的期望出口 IP 照旧）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dynamic_node_seen_ip_feeds_reverse_guard() {
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+    let t = common::boot(false, "trust_forwarded_for = true").await;
+    let (relay, rtok) = seed_relay(&t).await;
+    let team = seed_team(&t, "团队1").await;
+    sqlx::query("update relay set protocols = 'anytls' where machine_id = $1").bind(relay).execute(&t.st.db).await.unwrap();
+    let (dynamic, fixed) = (vps(&t, team, 1, "203.0.113.71", true).await, vps(&t, team, 2, "203.0.113.72", true).await);
+    sqlx::query("update machine set egress_dynamic = true where id = $1").bind(dynamic).execute(&t.st.db).await.unwrap();
+    entry(&t, relay, dynamic, "reverse").await;
+    entry(&t, relay, fixed, "reverse").await;
+    let mut toks = std::collections::HashMap::new();
+    for (m, tok) in [(dynamic, "fa1_test_node_dyn"), (fixed, "fa1_test_node_fix")] {
+        sqlx::query("insert into agent_token (id, machine_id, token_hash) values ($1, $2, $3)")
+            .bind(Uuid::now_v7())
+            .bind(m)
+            .bind(fleet_server::crypto::sha256(tok.as_bytes()))
+            .execute(&t.st.db)
+            .await
+            .unwrap();
+        toks.insert(m, tok);
+    }
+    // 节点 agent 上报，中控看到的来源 IP 由 X-Forwarded-For 给（同 /echo）
+    let rep = |m: Uuid, seq: u64, from: &str| {
+        let r = Report { seq, boot_id: "b".into(), agent_version: "v".into(), sent_at_ms: now_ms(), caps: vec!["reverse".into()], ..Default::default() };
+        let req = Request::builder()
+            .method("POST")
+            .uri("/agent/v1/report")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {}", toks[&m]))
+            .header("x-forwarded-for", from)
+            .body(Body::from(serde_json::to_string(&r).unwrap()))
+            .unwrap();
+        let app = t.app.clone();
+        async move { assert_eq!(app.oneshot(req).await.unwrap().status(), StatusCode::OK) }
+    };
+    let desired = || async {
+        let (s, v) = t.req("GET", "/agent/v1/desired?after=0", None, Some(&rtok)).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        let ds: fleet_proto::DesiredState = serde_json::from_value(v).unwrap();
+        // 入口按端口排，动态节点的入口先建、端口在前
+        let of = |i: usize| (ds.entries[i].expect_egress_ip.to_string(), ds.entries[i].egress_any);
+        (ds.generation, of(0), of(1))
+    };
+    let (g0, d0, f0) = desired().await;
+    assert_eq!((d0.0.as_str(), d0.1, f0.0.as_str(), f0.1), ("203.0.113.71", true, "203.0.113.72", false), "还没有上报过：退到入口 IP");
+
+    // 动态节点第一次上报：记下来源 IP，线路机代数 +1，期望出口 IP 是它
+    rep(dynamic, 1, "211.7.96.248").await;
+    let (g1, d1, f1) = desired().await;
+    assert_eq!((g1, d1.0.as_str(), d1.1), (g0 + 1, "211.7.96.248", true));
+    assert_eq!(f1, f0, "非动态节点的期望出口 IP 不变");
+    // 同一个 IP 再报：不动代数
+    rep(dynamic, 2, "211.7.96.248").await;
+    assert_eq!(desired().await.0, g1);
+    // 非动态节点上报：只记来源 IP，不动代数、不改期望
+    rep(fixed, 1, "198.51.100.77").await;
+    let (g2, _, f2) = desired().await;
+    assert_eq!((g2, f2), (g1, f0));
+    let seen: Option<String> = sqlx::query_scalar("select host(agent_seen_ip) from machine where id = $1").bind(fixed).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(seen.as_deref(), Some("198.51.100.77"));
+    // 出口换了：代数再 +1，新 IP 下发
+    rep(dynamic, 3, "211.7.97.1").await;
+    let (g3, d3, _) = desired().await;
+    assert_eq!((g3, d3.0.as_str()), (g1 + 1, "211.7.97.1"));
+    // 改成固定出口 IP（PATCH 会刷新线路机）后不再取来源 IP
+    sqlx::query("update machine set egress_dynamic = false where id = $1").bind(dynamic).execute(&t.st.db).await.unwrap();
+    let (_, d4, _) = desired().await;
+    assert_eq!((d4.0.as_str(), d4.1), ("203.0.113.71", false));
+}

@@ -453,7 +453,7 @@ async fn report(State(st): State<AppState>, ClientIp(ip): ClientIp, req: Request
         Err(resp) => return Ok(resp),
     };
     let ApiJson(r) = ApiJson::<Report>::from_request(req, &st).await?;
-    let res = ingest(&st, a, r).await;
+    let res = ingest(&st, a, ip, r).await;
     // 中控收不到上报的时段（report_gaps::ReportGaps）：入库了、库不可用没入成
     match &res {
         Ok(_) => {
@@ -478,7 +478,7 @@ async fn report(State(st): State<AppState>, ClientIp(ip): ClientIp, req: Request
     }
 }
 
-async fn ingest(st: &AppState, a: AgentId, mut r: Report) -> Result<Json<ReportAck>, IngestErr> {
+async fn ingest(st: &AppState, a: AgentId, ip: Option<std::net::IpAddr>, mut r: Report) -> Result<Json<ReportAck>, IngestErr> {
     // 到 charge 为止都占着：同一台机器的下一份等这一份扣完令牌再看余额
     let _busy = InFlight::begin(a.machine_id).ok_or(IngestErr::Limited(1))?;
     sanitize(&mut r);
@@ -607,6 +607,19 @@ async fn ingest(st: &AppState, a: AgentId, mut r: Report) -> Result<Json<ReportA
     .bind(singbox)
     .execute(&mut *tx)
     .await?;
+    // 来源 IP（machine.agent_seen_ip）变了才写。出口动态的节点出站 IP 会变，线路机（只留 AnyTLS 时）要按它放行穿透 bridge 的来源，
+    // 所以同事务里刷新它入口所在线路机的代数，线路机随之重取期望状态、重写放行规则
+    let mut bumped = vec![];
+    if let Some(ip) = ip {
+        let dynamic: Option<bool> = sqlx::query_scalar("update machine set agent_seen_ip = $2 where id = $1 and agent_seen_ip is distinct from $2 returning egress_dynamic")
+            .bind(a.machine_id)
+            .bind(ip)
+            .fetch_optional(&mut *tx)
+            .await?;
+        if dynamic == Some(true) {
+            bumped = crate::db::bump_relays_of_nodes(&mut tx, &[a.machine_id]).await?;
+        }
+    }
 
     if !host.is_empty() {
         let n = host.len();
@@ -717,6 +730,9 @@ async fn ingest(st: &AppState, a: AgentId, mut r: Report) -> Result<Json<ReportA
         .await?;
     }
     tx.commit().await?;
+    for relay in bumped {
+        st.relay_bumped(relay);
+    }
     charge(&mut lock(&BUCKETS), a.machine_id, r.seq, host.len());
     if last.is_none() {
         st.emit_keep_access(Event::Machine { id: a.machine_id });

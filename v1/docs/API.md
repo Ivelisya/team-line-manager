@@ -92,7 +92,7 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
   host_machine:{id,name}|null,  // 同机 IP 节点（kind 仍是 vps）：它所在的宿主机；它没有自己的 agent 和 SSH，下面的 agent、host 就是宿主机的，
                                 // ssh_port 是宿主机的（只展示），provider 取宿主机的、plan 为 null；其它机器为 null
   egress_ip|null,               // 端口转发型 NAT 节点（入口 IP 与出站 IP 不同）：它的出口 IP；ip 是线路机连的入口（SSH 也走它）。出口探测 / 出口验收期望的是 coalesce(egress_ip, ip)；null = 出口就是 ip（或 egress_dynamic = true）
-  egress_dynamic,               // 出口 IP 动态（共享 / 轮换出口的供应商，出口会变）：true 时 egress_ip 为 null，出口探测只验收能经节点出网（回显到任何公网 IP 都算成功）
+  egress_dynamic,               // 出口 IP 动态（共享 / 轮换出口的供应商，出口会变）：true 时 egress_ip 为 null，出口探测只验收能经节点出网（回显到任何公网 IP 都算成功）；下发给线路机的期望出口 IP（穿透入口在只留 AnyTLS 的线路机上的放行来源）取中控最近收到该机 agent 上报的来源 IP（machine.agent_seen_ip，不外露），变了同事务刷新入口所在线路机的代数
   egress_seen|null,             // 仅 egress_dynamic：最近一次成功出口探测看到的 IP（取自入口的出口探测样本）；没有成功样本 / 非动态为 null
   ip_nodes:[{id,name}],         // 宿主机：它上面未退役的同机 IP 节点（按团队、编号）；其它机器为 []
   tune:{profile|null, at|null, current, params|null}|null,   // 系统调优记录：profile = 最近一次成功应用的调优档（tune-v2；null = 没调优过或已撤销），at = 那次的完成时间，

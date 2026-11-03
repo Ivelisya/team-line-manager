@@ -28,6 +28,7 @@ struct Ent {
     relay_name: String,
     relay_ip: String,
     direct: bool,
+    egress_dynamic: bool,
 }
 
 impl Ent {
@@ -46,7 +47,7 @@ struct Plan {
 async fn plan(st: &AppState, conn: &mut PgConnection, id: Uuid, on: bool, lock: bool) -> ApiResult<Plan> {
     let e: Option<Ent> = sqlx::query_as(
         "select e.id, e.node_id, e.relay_id, e.port, e.lifecycle::text lifecycle, e.mode, e.node_id = e.relay_id direct,
-                display_name(n.kind::text, n.label, t.name, n.number) node_name, n.lifecycle::text node_lifecycle,
+                display_name(n.kind::text, n.label, t.name, n.number) node_name, n.lifecycle::text node_lifecycle, n.egress_dynamic,
                 coalesce(rm.label, '') relay_name, host(rm.primary_ip) relay_ip
          from entry e join machine n on n.id = e.node_id join machine rm on rm.id = e.relay_id left join team t on t.id = n.team_id
          where e.id = $1",
@@ -111,7 +112,11 @@ async fn plan(st: &AppState, conn: &mut PgConnection, id: Uuid, on: bool, lock: 
     }
     impacts.push(format!("线路机 {} 不重启 Xray：只换这个入口的入站，这个入口上正在进行的连接断开一次、客户端自动重连；线路机上别的入口不受影响", e.relay_name));
     impacts.push("分享链接、客户端订阅、软路由出口都不变（同一个入口端口与凭据）".into());
-    impacts.push("验收：线路机应用后经入口的出口探测要看到节点自己的 IP；不通就自动切回原来的模式、作业失败".into());
+    if e.egress_dynamic {
+        impacts.push("验收：线路机应用后经入口的出口探测能出网即可（出口动态）；线路机只留 AnyTLS 时放行节点最近上报的出站 IP，IP 变了自动跟着改；不通就自动切回原来的模式、作业失败".into());
+    } else {
+        impacts.push("验收：线路机应用后经入口的出口探测要看到节点自己的 IP；不通就自动切回原来的模式、作业失败".into());
+    }
     if on {
         warnings.push("之后这个入口的 TCP 延迟改由节点量（节点 → 线路机，只画曲线、不告警；节点 agent 版本旧时没有这项数据）；隧道断了体现为出口探测失败（照常告警），隧道挂不上时中控会叫节点 agent 重启 bridge".into());
     }

@@ -233,7 +233,7 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 - 穿透入口告警 `egress_fail`：隧道断了或节点出不去。线路机报隧道缺席满 30 秒时中控会自动叫节点 agent 重启 bridge（节点 agent 日志「中控发现穿透隧道没挂上，已重启 fleet-xray-bridge」），一般 1 分钟内恢复；没恢复看 bridge 日志（连不上线路机入口？节点出站被挡？）。轮换凭据、停用后再启用的穿透入口也会这样断约 1 分钟，等它自动恢复。
 - 手动重启 bridge（修改状态，先确认）：`fleetctl exec <节点> -- 'systemctl restart fleet-xray-bridge'`——断开这台节点上全部经隧道的连接约 2 秒。
 - 改过线路机的 REALITY 参数或 IP（手工改库）后，对其上的穿透入口 `--off` 再 `--on`（bridge 的配置要重推）。
-- 线路机只开 AnyTLS（§21）时穿透照样能开：穿透入口的 Reality 端口仍对公网开着，但线路机 agent 用 nft 表 `inet fleet_reality_guard` 只放行这条入口的节点出站 IP（机器的出口 IP，没填就是主 IP），别的来源直接丢（不回应、不握手）。节点出站 IP 变了（NAT 机器换了出口）而面板没改时 bridge 会被挡、隧道挂不上：改对机器的出口 IP。查规则：`fleetctl exec <线路机> -- 'nft list table inet fleet_reality_guard'`。
+- 线路机只开 AnyTLS（§21）时穿透照样能开：穿透入口的 Reality 端口仍对公网开着，但线路机 agent 用 nft 表 `inet fleet_reality_guard` 只放行这条入口的节点出站 IP（机器的出口 IP，没填就是主 IP），别的来源直接丢（不回应、不握手）。节点出站 IP 变了（NAT 机器换了出口）而面板没改时 bridge 会被挡、隧道挂不上：改对机器的出口 IP。**出口动态**（`rename --egress-ip auto`，共享 / 轮换出口的 NAT 节点）的不用管：放行的是中控最近收到该节点 agent 上报的来源 IP（`machine.agent_seen_ip`，迁移 0106，节点 agent 与 bridge 同机同出口），IP 变了中控同事务把它所在线路机的代数 +1、线路机立即重取期望状态重写规则，大约要一个上报间隔（10 秒）加几秒应用；这段时间 bridge 连不上，隧道自动重连，期间客户转圈。查规则：`fleetctl exec <线路机> -- 'nft list table inet fleet_reality_guard'`。
 - 同机 IP 节点、家宽代理不支持穿透（预览里写明；上架、加入口时自动按普通建）。
 
 ### 同机 IP 节点（一台 VPS 节点上的多个 IP）
