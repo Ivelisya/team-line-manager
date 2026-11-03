@@ -406,10 +406,10 @@ pub struct DesiredEntry {
     pub client_uuid: Uuid,
     pub short_id: String,
     pub outbound: Outbound,
-    /// egress 探测期望看到的出口 IP
+    /// egress 探测期望看到的出口 IP；也是只留 AnyTLS 的线路机放行穿透入口节点的来源 IP（出口动态的节点取 agent 最近上报的来源 IP）
     pub expect_egress_ip: IpAddr,
     /// 出口 IP 动态（供应商的共享 / 轮换出口）：egress 探测回显到任何公网 IP 都算成功，不比对 `expect_egress_ip`。
-    /// `expect_egress_ip` 照旧下发（旧 agent 只认它，行为不变）；为 false 时不序列化
+    /// `expect_egress_ip` 照旧下发（旧 agent 只认它，行为不变；出口动态时它是节点最近上报的出站 IP）；为 false 时不序列化
     #[serde(default, skip_serializing_if = "is_false")]
     pub egress_any: bool,
     /// 访问策略（按域名黑白名单/暂停）。`None` = observe，不产生任何路由规则。

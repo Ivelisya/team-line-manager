@@ -158,11 +158,12 @@ pub async fn desired_state(db: &PgPool, secrets: &SecretBox, relay_id: Uuid, ech
         bridge_uuid: Uuid,
     }
     // 期望出口 IP = 机器的出口 IP（端口转发型 NAT 节点入口与出站 IP 不同，见 machine.egress_ip），没填就是 primary_ip；
-    // 出口动态（machine.egress_dynamic，供应商的出口会变）的照旧下发 primary_ip / egress_ip，另带 egress_any，新 agent 不比对 IP，旧 agent 行为不变
+    // 出口动态（machine.egress_dynamic，供应商的出口会变）的取 agent 最近上报的来源 IP（machine.agent_seen_ip，变了会刷新线路机代数），没有再退到 egress_ip / primary_ip，
+    // 另带 egress_any，新 agent 的出口探测不比对 IP，旧 agent 照旧比对；这个 IP 用来给只留 AnyTLS 的线路机放行穿透入口的节点（见 fleet-agent reality_guard）
     // 直出入口没有 node_outbound 行（节点就是线路机自己）；节点入口缺出站参数（或秘密已在退役时清掉）的照旧不下发
     let rows: Vec<Row> = sqlx::query_as(
         "select e.id, e.node_id, m.team_id, e.port, e.lifecycle::text lifecycle, e.client_uuid, e.short_id, m.kind::text kind, t.name team, m.number,
-                m.label, host(coalesce(m.egress_ip, m.primary_ip)) ip, m.egress_dynamic, e.node_id = e.relay_id direct, o.protocol, o.host, o.port oport, o.method, o.username, o.secret_enc,
+                m.label, host(case when m.egress_dynamic then coalesce(m.agent_seen_ip, m.egress_ip, m.primary_ip) else coalesce(m.egress_ip, m.primary_ip) end) ip, m.egress_dynamic, e.node_id = e.relay_id direct, o.protocol, o.host, o.port oport, o.method, o.username, o.secret_enc,
                 e.mode, e.bridge_uuid
          from entry e join machine m on m.id = e.node_id left join team t on t.id = m.team_id
          left join node_outbound o on o.machine_id = e.node_id

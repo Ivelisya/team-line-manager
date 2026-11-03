@@ -2,7 +2,7 @@
 //!
 //! 只留 AnyTLS（`RelayParams::reality_public` 为 false）时普通入口的 Reality 入站听回环；穿透入口不能：节点上的 bridge 连的就是
 //! 入口的公网 Reality 端口（美国节点 → 美国线路机，不经过 GFW），所以它照旧听 0.0.0.0（见 xray/render.rs），由这张表在 input 钩子上
-//! 只放行这条入口的节点出站 IP（`DesiredEntry::expect_egress_ip` = 机器的 egress_ip，没填就是 primary_ip：bridge 从它连过来），
+//! 只放行这条入口的节点出站 IP（`DesiredEntry::expect_egress_ip` = 机器的 egress_ip，没填就是 primary_ip；出口动态的节点是中控最近收到它 agent 上报的来源 IP，变了线路机代数 +1、这里随之重写：bridge 从它连过来），
 //! 别的来源直接丢：不回 RST、不完成握手（Reality 对探测会完成 TLS 握手，只靠 Xray 的路由规则挡不住探测）。
 //!
 //! 整表随期望状态重写：同一个 nft 事务里先建再删再按新内容建（原子、幂等，表不在也不报错）；没有要守的端口时只删表。
