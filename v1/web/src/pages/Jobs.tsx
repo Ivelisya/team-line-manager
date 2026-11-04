@@ -176,9 +176,10 @@ function JobDetail({ id }: { id: string }) {
   if (q.isError && !j && isGone(q.error)) return <Panel><Gone text="这个作业已不存在（可能已被清理）"><Button variant="outline" size="sm" render={<Link to={{ pathname: '/jobs', search }} />}>回到列表</Button></Gone></Panel>;
   if (q.isError && !j) return <Panel><div style={{ padding: 'var(--sp-12)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div></Panel>;
   if (!j) return <Panel><Skeleton className="h-[160px]" style={{ margin: 16 }} /></Panel>;
+  // 「返回列表」只在单栏时出现：与 jobs.css 的 @container content (max-width: 720px) 同一个断点。Tailwind 的 @max-[N] 是严格小于，所以写 721
   return (
     <div className="stack">
-      <Panel title={<span className="row" style={{ gap: 8 }}><Button variant="ghost" size="icon-sm" className="job-back hidden @max-[720px]/content:inline-flex" aria-label="返回列表" render={<Link to={{ pathname: '/jobs', search }} />}><ArrowLeft size={16} /></Button><span>{jobKindLabel(j.kind)} · {j.target ? <NodeHover id={j.kind === 'router_sync' || j.kind === 'router_protocol' ? null : j.target.id}><span>{j.target.name}</span></NodeHover> : '—'}</span></span>} tools={<>
+      <Panel title={<span className="row" style={{ gap: 8 }}><Button variant="ghost" size="icon-sm" className="hidden @max-[721px]/content:inline-flex" aria-label="返回列表" render={<Link to={{ pathname: '/jobs', search }} />}><ArrowLeft size={16} /></Button><span>{jobKindLabel(j.kind)} · {j.target ? <NodeHover id={j.kind === 'router_sync' || j.kind === 'router_protocol' ? null : j.target.id}><span>{j.target.name}</span></NodeHover> : '—'}</span></span>} tools={<>
         <JobPill state={j.state} manual={j.manual} />
         {j.manual && <span className="t-sub">先手动处理再重试</span>}
         {j.state === 'failed' && <RetryButton j={j} />}

@@ -6,13 +6,14 @@
    毛玻璃遮罩（对话框、命令面板）打开期间，下面一层不再每帧变化：backdrop-filter 下面每帧有变化，GPU 就要每帧重做一遍全屏模糊。
    开关是 <html data-overlay>（dialog.tsx 的 Scrim 挂着时写上）。节点抽屉的遮罩只压暗不模糊，自己不挂开关；它开着时上面再叠对话框，抽屉也算下面一层。
    浮层都 Portal 到 body、不在 .app 里，自己的动画照常。骨架屏不管。
-   无限循环的动画暂停： */
+   无限循环的动画暂停（!important：Spinner 的动画、进度条的过渡是组件上的工具类，在更高的 utilities 层，animation / transition 简写会把这里的值盖回去；
+   components 层的 important 高于 utilities 层的普通声明）： */
 html[data-overlay] :is(.app, .drawer) :is([data-slot="spinner"], .top-btn.jobs-ind > .lucide),
 html[data-overlay] :is(.app, .drawer) .pill[data-dot="pulse"]::before,
 html[data-overlay] :is(.app, .drawer) .smark[data-spin],
-html[data-overlay] :is(.app, .drawer) [data-slot="progress"][data-live] [data-slot="progress-indicator"]::after { animation-play-state: paused; }
+html[data-overlay] :is(.app, .drawer) [data-slot="progress"][data-live] [data-slot="progress-indicator"]::after { animation-play-state: paused !important; }
 /* 读数的过渡不播，推送来了直接跳到新值（进度线；格条、圆环、心跳格本来就不过渡，KPI 数字见 useCountUp） */
-html[data-overlay] :is(.app, .drawer) [data-slot="progress-indicator"] { transition: none; }
+html[data-overlay] :is(.app, .drawer) [data-slot="progress-indicator"] { transition: none !important; }
 
 /* ========== 毛玻璃的回退：不支持 backdrop-filter 时材质令牌（--glass 弹层 / 对话框吸底条，--glass-bar 吸附条）改成实底，免得半透明的面下面字叠字 ========== */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { :root { --glass: var(--raised); --glass-bar: var(--surface); } }
@@ -44,8 +45,8 @@ html[data-overlay] :is(.app, .drawer) [data-slot="progress-indicator"] { transit
 @media (prefers-reduced-motion: reduce) {
   /* 一次性的过渡与进场时长归零（tokens.css 的动效令牌）；循环动画（--dur-loop）不靠归零，下面显式 animation: none */
   :root { --dur-press: 0ms; --dur-1: 0ms; --dur-2: 0ms; --dur-3: 0ms; --dur-data: 0ms; --cell-stagger: 0ms; --dur-spin: 2s; }
-  /* 无限循环的细纹、呼吸、脉冲停掉（骨架静止显示）；转圈（Spinner、进行中胶囊、状态标）不停，按上面的 --dur-spin 慢转 */
-  [data-slot="progress"][data-live] [data-slot="progress-indicator"]::after, .top-btn.jobs-ind > .lucide, .toast-timer, [data-slot="skeleton"] { animation: none; }
+  /* 无限循环的细纹、呼吸、脉冲停掉；转圈（Spinner、进行中胶囊、状态标）不停，按上面的 --dur-spin 慢转。骨架的脉动由组件自己的 motion-reduce:animate-none 停 */
+  [data-slot="progress"][data-live] [data-slot="progress-indicator"]::after, .top-btn.jobs-ind > .lucide, .toast-timer { animation: none; }
   /* 浮层关闭：不播退出动画，Radix 立即卸载（抽屉的投影层一起；悬浮卡、日历、作业弹层都是 .popover） */
   .overlay[data-state="closed"], .drawer-overlay[data-state="closed"], .dialog[data-state="closed"], .cmd-dialog[data-state="closed"], .drawer[data-state="closed"], .drawer[data-state="closed"]::before,
   .menu[data-state="closed"], .popover[data-state="closed"], .select-content[data-state="closed"], .page-in { animation: none; }

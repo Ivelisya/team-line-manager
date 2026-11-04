@@ -37,7 +37,9 @@ if (process.argv.includes('--check')) {
   const css = fs.readFileSync(path.join(src, 'styles/customer.css'), 'utf8');
   const have = css.split('\n').filter((l) => l.startsWith('@source "') && l.includes('.ts')).sort();
   const same = have.length === lines.length && have.every((l, i) => l === lines[i]);
-  console.log(same ? 'customer.css @source 清单与 import 图一致' : '不一致：重新跑 node tools/customer-sources.mjs 并替换 customer.css 里的 @source 行');
+  // 不一致的说明写到 stderr：部署脚本跑 pnpm build 时把 stdout 丢掉了（>/dev/null），只剩 stderr 能看到为什么失败
+  if (same) console.log('customer.css @source 清单与 import 图一致');
+  else console.error('customer.css 的 @source 清单与客户页的 import 图不一致：在 v1/web 下重跑 node tools/customer-sources.mjs，把输出替换进 src/styles/customer.css 的 @source 行');
   process.exit(same ? 0 : 1);
 }
 console.log(lines.join('\n'));

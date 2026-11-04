@@ -18,7 +18,8 @@ function Switch({ className, ...props }: SwitchPrimitive.Root.Props) {
     >
       <SwitchPrimitive.Thumb
         data-slot="switch-thumb"
-        className="pointer-events-none block size-4 rounded-pill bg-(--on-solid) shadow-(--shadow-btn) ring-0 [transition:transform_var(--dur-2)_var(--ease-out),width_var(--dur-2)_var(--ease-out)] data-checked:translate-x-3.5 group-active/switch:w-5 group-active/switch:[transition-duration:var(--dur-press)] group-active/switch:data-checked:translate-x-2.5"
+        // 按住才拉长，禁用的不响应（根节点是 span，:disabled 不匹配，认 data-disabled）
+        className="pointer-events-none block size-4 rounded-pill bg-(--on-solid) shadow-(--shadow-btn) ring-0 [transition:transform_var(--dur-2)_var(--ease-out),width_var(--dur-2)_var(--ease-out)] data-checked:translate-x-3.5 group-[:active:not([data-disabled])]/switch:w-5 group-[:active:not([data-disabled])]/switch:[transition-duration:var(--dur-press)] group-[:active:not([data-disabled])]/switch:data-checked:translate-x-2.5"
       />
     </SwitchPrimitive.Root>
   )

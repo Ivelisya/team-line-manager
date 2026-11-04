@@ -27,7 +27,7 @@ export function LabelRow({ htmlFor, info, children, className }: { htmlFor?: str
 export function FormField({ label, info, hint, error, children, className }: { label?: React.ReactNode; info?: string; hint?: React.ReactNode; error?: React.ReactNode; children: React.ReactNode; className?: string }) {
   const id = React.useId();
   return (
-    <Field className={cn('grid min-w-0 content-start', className)}>
+    <Field className={className}>
       {label && <LabelRow htmlFor={id} info={info}>{label}</LabelRow>}
       {React.isValidElement(children) ? React.cloneElement(children as React.ReactElement<{ id?: string }>, { id }) : children}
       {error ? <FieldError>{error}</FieldError> : hint ? <FieldDescription>{hint}</FieldDescription> : null}

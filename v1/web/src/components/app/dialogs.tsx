@@ -96,7 +96,7 @@ export const TypedConfirmDialog = resetOnOpen(function TypedConfirmDialog({ expe
         {base.children}
         {!blocked && typed && (
           <Field>
-            <Label htmlFor="typed-confirm">{prompt ?? '请输入'} <b className="mono" style={{ color: 'var(--fg)' }}>{expected}</b> 以确认</Label>
+            <Label htmlFor="typed-confirm" className="block">{prompt ?? '请输入'} <b className="mono" style={{ color: 'var(--fg)' }}>{expected}</b> 以确认</Label>
             <Input ref={input} id="typed-confirm" value={text} onChange={(e) => setText(e.target.value)} autoComplete="off" spellCheck={false} placeholder={expected}
               onKeyDown={(e) => { if (e.key === 'Enter' && ok && !busy) void run(); }} />
           </Field>

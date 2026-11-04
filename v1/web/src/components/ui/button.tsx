@@ -25,20 +25,21 @@ const buttonVariants = cva(
       variant: {
         // 主按钮；禁用时不留实色（暗底上像被按住的暗紫色按钮），改轨道底 + 三级字
         default:
-          "bg-primary text-primary-foreground shadow-(--shadow-btn) hover:not-disabled:bg-(--accent-strong) disabled:bg-track disabled:text-fg-3 disabled:shadow-none disabled:opacity-100 disabled:saturate-100 aria-disabled:bg-track aria-disabled:text-fg-3 aria-disabled:shadow-none aria-disabled:opacity-100 aria-disabled:saturate-100 aria-busy:disabled:bg-primary aria-busy:disabled:text-primary-foreground aria-busy:disabled:shadow-(--shadow-btn)",
+          "bg-primary text-primary-foreground shadow-(--shadow-btn) hover:not-disabled:not-aria-disabled:bg-(--accent-strong) disabled:bg-track disabled:text-fg-3 disabled:shadow-none disabled:opacity-100 disabled:saturate-100 aria-disabled:bg-track aria-disabled:text-fg-3 aria-disabled:shadow-none aria-disabled:opacity-100 aria-disabled:saturate-100 aria-busy:disabled:bg-primary aria-busy:disabled:text-primary-foreground aria-busy:disabled:shadow-(--shadow-btn)",
         // 次按钮（描边）；展开着的下拉触发按钮同悬停底
         outline:
           "border-input bg-surface text-foreground hover:not-disabled:not-aria-disabled:bg-(image:--state-press) aria-expanded:bg-(image:--state-press)",
         secondary:
           "bg-secondary text-secondary-foreground hover:not-disabled:bg-[color-mix(in_srgb,var(--secondary),var(--foreground)_5%)] aria-expanded:bg-secondary",
+        // 展开 / 按下态的底色只给图标按钮（下拉的「⋯」、显示密码）：同改前 .icon-btn；文字的「展开全部」「收起」展开后不该一直亮着
         ghost:
-          "text-fg-2 hover:not-disabled:bg-accent hover:not-disabled:text-foreground aria-expanded:bg-accent aria-expanded:text-foreground aria-pressed:bg-accent aria-pressed:text-foreground",
+          "text-fg-2 hover:not-disabled:not-aria-disabled:bg-accent hover:not-disabled:not-aria-disabled:text-foreground",
         // 危险操作两档（名字同 coss ui）：destructive = 实心红（对话框里的危险确认：清理并回收、删除…），禁用时同主按钮改轨道底 + 三级字；
         // destructive-outline = 红字红描边（入口按钮：「退役…」「删除…」，点开还有确认）
         destructive:
-          "bg-destructive text-(--on-solid) hover:not-disabled:bg-(--bad-solid-strong) disabled:bg-track disabled:text-fg-3 disabled:opacity-100 disabled:saturate-100 aria-disabled:bg-track aria-disabled:text-fg-3 aria-disabled:opacity-100 aria-disabled:saturate-100 aria-busy:disabled:bg-destructive aria-busy:disabled:text-(--on-solid)",
+          "bg-destructive text-(--on-solid) hover:not-disabled:not-aria-disabled:bg-(--bad-solid-strong) disabled:bg-track disabled:text-fg-3 disabled:opacity-100 disabled:saturate-100 aria-disabled:bg-track aria-disabled:text-fg-3 aria-disabled:opacity-100 aria-disabled:saturate-100 aria-busy:disabled:bg-destructive aria-busy:disabled:text-(--on-solid)",
         "destructive-outline":
-          "border-[color-mix(in_srgb,var(--bad)_35%,var(--line))] bg-surface text-bad-text hover:not-disabled:border-[color-mix(in_srgb,var(--bad)_50%,var(--line))] hover:not-disabled:bg-bad-bg",
+          "border-[color-mix(in_srgb,var(--bad)_35%,var(--line))] bg-surface text-bad-text hover:not-disabled:not-aria-disabled:border-[color-mix(in_srgb,var(--bad)_50%,var(--line))] hover:not-disabled:not-aria-disabled:bg-bad-bg",
         link: "text-brand underline-offset-3 hover:underline",
       },
       size: {
@@ -59,6 +60,11 @@ const buttonVariants = cva(
     // 对话框底部的类名随 B2a 换成 shadcn 的 data-slot 后，两个选择器都认
     compoundVariants: [
       {
+        variant: "ghost",
+        size: ["icon", "icon-xs", "icon-sm", "icon-lg"],
+        className: "aria-expanded:bg-accent aria-expanded:text-foreground aria-pressed:bg-accent aria-pressed:text-foreground",
+      },
+      {
         size: "default",
         className:
           "in-[.page-tools,.dialog-foot,[data-slot=dialog-footer]]:h-(--h-lg) in-[.page-tools,.dialog-foot,[data-slot=dialog-footer]]:px-3.5 max-[600px]:in-[.dialog-foot,[data-slot=dialog-footer]]:h-11 max-[600px]:in-[.dialog-foot,[data-slot=dialog-footer]]:flex-1",
@@ -77,7 +83,7 @@ type ButtonProps = ButtonPrimitive.Props &
     loading?: boolean
   }
 
-/** render（Link、<a>）：自动按非原生按钮处理（nativeButton=false），role 保持 link */
+/** render={<Link … />} / <a>：样式是按钮，元素仍是链接 */
 function Button({
   className,
   variant = "default",
@@ -89,17 +95,28 @@ function Button({
   nativeButton,
   ...props
 }: ButtonProps) {
+  const cls = cn(buttonVariants({ variant, size, className }))
+  // 链接：直接把按钮的样式交给链接元素，不经 Base UI Button——它把非原生元素当按钮处理（补 role="button"、空格键触发点击），
+  // 链接要保持原生的语义和键盘行为（Enter 打开、空格滚动页面）。外层（如 TooltipTrigger）合并进来的属性照样落在链接上
+  if (React.isValidElement<{ className?: string }>(render)) {
+    return React.cloneElement(render, {
+      ...props,
+      className: cn(cls, render.props.className),
+      children,
+      "data-slot": "button",
+      "data-variant": variant,
+      "data-size": size,
+    } as React.ComponentProps<"a">)
+  }
   return (
     <ButtonPrimitive
       data-variant={variant}
       data-size={size}
-      className={cn(buttonVariants({ variant, size, className }))}
+      className={cls}
       disabled={disabled || loading}
       aria-busy={loading || undefined}
       render={render}
-      nativeButton={nativeButton ?? (render ? false : undefined)}
-      // Base UI 给非原生按钮补 role="button"；render 的都是链接（<a> / Link），保持链接的语义
-      role={render ? "link" : undefined}
+      nativeButton={nativeButton}
       {...props}
       // 放在展开的 props 之后：做 TooltipTrigger 等的 render 时，外层合并进来的 data-slot（如 "tooltip-trigger"）不能盖掉它，
       // 全站按 [data-slot="button"][data-size=…] 写的热区外扩、窄屏吸附列都认它

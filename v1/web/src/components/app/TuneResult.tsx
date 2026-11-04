@@ -71,7 +71,7 @@ export function TuneResult({ out }: { out: Record<string, unknown> }) {
           <tbody>{rows.map((r) => <tr key={r.key}><td className="mono">{r.key}</td><td>{r.result}</td><td>{r.note}</td></tr>)}</tbody>
         </table>
       )}
-      {ok.length > 0 && <Button variant="link" size="inline-sm" className="tune-more justify-self-start" aria-expanded={more} onClick={() => setMore((v) => !v)}>{more ? '收起' : `另 ${ok.length} 项${okLabel}，展开`}</Button>}
+      {ok.length > 0 && <Button variant="link" size="inline-sm" className="justify-self-start" aria-expanded={more} onClick={() => setMore((v) => !v)}>{more ? '收起' : `另 ${ok.length} 项${okLabel}，展开`}</Button>}
       {warnings.map((w) => <div key={w} className="tune-sum tune-warn">{w}</div>)}
       {extra.length > 0 && <div className="tune-sum">{extra.join(' · ')}</div>}
     </div>

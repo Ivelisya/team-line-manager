@@ -18,7 +18,8 @@ function Progress({
   const v = Math.max(0, Math.min(100, Number.isFinite(value) ? (value as number) : 0))
   return (
     <ProgressPrimitive.Root
-      value={v}
+      // 读屏的 aria-valuenow 取整数（同改前），填充条的位置仍用精确值
+      value={Math.round(v)}
       data-slot="progress"
       data-tone={tone}
       data-live={live ? "" : undefined}

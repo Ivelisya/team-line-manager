@@ -53,15 +53,15 @@ export function DateField({ value, onChange, min, max, id, placeholder = '选择
 
   return (
     <PopoverPrimitive.Root open={open} onOpenChange={(o) => { if (o) setFocus(start); setOpen(o); }}>
-      <PopoverPrimitive.Trigger id={id} aria-label={aria} disabled={disabled} className={cn(iconOnly ? cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }), 'date-pick') : 'select-trigger datefield', !iconOnly && !value && 'is-empty', className)}>
+      <PopoverPrimitive.Trigger id={id} aria-label={aria} disabled={disabled} data-slot={iconOnly ? 'button' : undefined} data-size={iconOnly ? 'icon-sm' : undefined} className={cn(iconOnly ? cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }), 'date-pick') : 'select-trigger datefield', !iconOnly && !value && 'is-empty', className)}>
         {iconOnly ? <Calendar size={14} /> : <><span className="num">{value || placeholder}</span><Calendar /></>}
       </PopoverPrimitive.Trigger>
       <PopoverPrimitive.Portal>
         <PopoverPrimitive.Content className="popover cal" align="start" sideOffset={6} collisionPadding={8} onOpenAutoFocus={(e) => { e.preventDefault(); focusDay(start); }}>
           <div className="cal-head">
-            <button type="button" className={buttonVariants({ variant: 'ghost', size: 'icon-sm' })} aria-label="上个月" onClick={() => setFocus(clamp(addMonths(focus, -1)))}><ChevronLeft size={16} /></button>
+            <button type="button" data-slot="button" data-size="icon-sm" className={buttonVariants({ variant: 'ghost', size: 'icon-sm' })} aria-label="上个月" onClick={() => setFocus(clamp(addMonths(focus, -1)))}><ChevronLeft size={16} /></button>
             <span className="cal-title" aria-live="polite">{y} 年 {m} 月</span>
-            <button type="button" className={buttonVariants({ variant: 'ghost', size: 'icon-sm' })} aria-label="下个月" onClick={() => setFocus(clamp(addMonths(focus, 1)))}><ChevronRight size={16} /></button>
+            <button type="button" data-slot="button" data-size="icon-sm" className={buttonVariants({ variant: 'ghost', size: 'icon-sm' })} aria-label="下个月" onClick={() => setFocus(clamp(addMonths(focus, 1)))}><ChevronRight size={16} /></button>
           </div>
           <div className="cal-grid" role="grid" aria-label={`${y} 年 ${m} 月`} ref={grid} onKeyDown={onKey}>
             {WEEK.map((w) => <span key={w} className="cal-wd" role="columnheader">{w}</span>)}
@@ -79,7 +79,7 @@ export function DateField({ value, onChange, min, max, id, placeholder = '选择
             })}
           </div>
           <div className="cal-foot">
-            <button type="button" className={buttonVariants({ variant: 'link', size: 'inline-sm' })} disabled={(!!min && t < min) || (!!max && t > max)} onClick={() => pick(t)}>今天 {t}</button>
+            <button type="button" data-slot="button" data-size="inline-sm" className={buttonVariants({ variant: 'link', size: 'inline-sm' })} disabled={(!!min && t < min) || (!!max && t > max)} onClick={() => pick(t)}>今天 {t}</button>
             {value && <span className="cal-cur num">已选 {value}</span>}
           </div>
         </PopoverPrimitive.Content>

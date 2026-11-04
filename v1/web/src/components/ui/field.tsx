@@ -75,9 +75,9 @@ function Field({
   orientation = "vertical",
   ...props
 }: React.ComponentProps<"div"> & VariantProps<typeof fieldVariants>) {
+  // 不带 shadcn 原版的 role="group"：每个表单项都会在无障碍树里多一个没有名字的分组（改前是普通 div）
   return (
     <div
-      role="group"
       data-slot="field"
       data-orientation={orientation}
       className={cn(fieldVariants({ orientation }), className)}
@@ -213,9 +213,10 @@ function FieldError({
     return null
   }
 
+  // 不带 shadcn 原版的 role="alert"：这里的错误多是边输边算的（两次密码不一致、金额格式），每按一个键出现 / 消失一次，
+  // alert 会一次次打断读屏；同改前的 .hint.is-error 不播报，提交失败的错误另有 Note / toast
   return (
     <div
-      role="alert"
       data-slot="field-error"
       className={cn("text-label font-normal text-bad-text", className)}
       {...props}
