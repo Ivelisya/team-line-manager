@@ -13,6 +13,12 @@ const BASE = process.env.BASE ?? 'http://127.0.0.1:5173';
 const EXE = process.env.CHROME ?? ['C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'].find((p) => fs.existsSync(p));
 const filter = process.argv[2];
 
+// FREEZE_TIME=<毫秒时间戳>：把页面里的「现在」固定住（Date.now / new Date()），截图里的时间戳、「N 分钟前」不随运行时刻变，前后两次截图才好逐像素比
+const freezeDate = (t0) => {
+  const RD = Date;
+  class FD extends RD { constructor(...a) { if (a.length) super(...a); else super(t0); } static now() { return t0; } }
+  window.Date = FD;
+};
 // layout：首页视图（cards / table / ring）；view：卡片密度。wait：多等几轮 mock 的 15 秒抖动，让实时迹线攒出几个点
 const TRACE = Number(process.env.TRACE_WAIT ?? 0);
 const scenes = [
@@ -105,6 +111,7 @@ for (const s0 of run) {
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
   await page.setViewport({ width: s.w, height: 1000, deviceScaleFactor: 1 });
   if (SESSION) await page.setCookie({ name: 'fleet_session', value: SESSION, url: BASE });
+  if (process.env.FREEZE_TIME) await page.evaluateOnNewDocument(freezeDate, Number(process.env.FREEZE_TIME));
   await page.evaluateOnNewDocument((view, theme, layout) => {
     try { localStorage.setItem('fleet:view', view ?? 'large'); localStorage.setItem('fleet:theme', theme ?? 'light'); localStorage.setItem('fleet:layout', layout ?? 'cards'); } catch { /* 忽略 */ }
   }, s.view, s.theme, s.layout);
@@ -112,9 +119,9 @@ for (const s0 of run) {
   if (SESSION) await new Promise((r) => setTimeout(r, 1500));
   if (s.wait) await new Promise((r) => setTimeout(r, s.wait));
   await new Promise((r) => setTimeout(r, 700));
-  if (s.retired) { await page.evaluate(() => { [...document.querySelectorAll('.seg-item')].find((b) => b.textContent?.includes('已退役'))?.click(); }); await new Promise((r) => setTimeout(r, 500)); }
+  if (s.retired) { await page.evaluate(() => { [...document.querySelectorAll('[role="radio"], [role="tab"], button')].find((b) => b.textContent?.includes('已退役'))?.click(); }); await new Promise((r) => setTimeout(r, 500)); }
   if (s.batch) {
-    await page.evaluate(() => { [...document.querySelectorAll('.seg-item')].find((b) => b.textContent?.includes('批量'))?.click(); });
+    await page.evaluate(() => { [...document.querySelectorAll('[role="radio"], [role="tab"], button')].find((b) => b.textContent?.includes('批量'))?.click(); });
     await new Promise((r) => setTimeout(r, 400));
   }
   // 撑高视口让懒加载的心跳条都进入视口，再截全页

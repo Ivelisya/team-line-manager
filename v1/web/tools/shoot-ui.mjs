@@ -13,6 +13,13 @@ const EXE = process.env.CHROME ?? ['C:/Program Files/Google/Chrome/Application/c
 const filter = process.argv[2];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// FREEZE_TIME=<毫秒时间戳>：把页面里的「现在」固定住（Date.now / new Date()），截图里的时间戳、「N 分钟前」不随运行时刻变，前后两次截图才好逐像素比
+const freezeDate = (t0) => {
+  const RD = Date;
+  class FD extends RD { constructor(...a) { if (a.length) super(...a); else super(t0); } static now() { return t0; } }
+  window.Date = FD;
+};
+
 const browser = await puppeteer.launch({ executablePath: EXE, headless: true, args: ['--no-sandbox', '--hide-scrollbars'] });
 const report = [];
 
@@ -22,6 +29,7 @@ async function open(url, { w = 1440, h = 900, theme = 'light', view = 'large' } 
   page.on('pageerror', (e) => errors.push(String(e)));
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
   await page.setViewport({ width: w, height: h, deviceScaleFactor: 1 });
+  if (process.env.FREEZE_TIME) await page.evaluateOnNewDocument(freezeDate, Number(process.env.FREEZE_TIME));
   await page.evaluateOnNewDocument((t, v) => { try { localStorage.setItem('fleet:theme', t); localStorage.setItem('fleet:view', v); } catch { /* 忽略 */ } }, theme, view);
   await page.goto(BASE + url, { waitUntil: 'networkidle0', timeout: 30000 });
   await sleep(700);
