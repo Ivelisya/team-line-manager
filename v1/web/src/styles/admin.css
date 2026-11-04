@@ -1,0 +1,29 @@
+@layer theme, base, components, utilities;
+/* 管理端样式入口（adminEntry.tsx 只 import 这一个文件）。
+   层：Tailwind 的 theme / preflight / 工具类各进 theme / base / utilities 层，手写样式全部进 components 层（同层里后面的盖前面的），
+   所以工具类（Tailwind 类名）能盖过手写组件类，手写类又能盖过 preflight。theme.css 只定义变量 / 变体 / 映射，不分层。
+   tokens.css 也只定义变量，但放进 base 层，不能不分层：components 层里有对令牌的覆盖（base.css 的 `@media (max-width: 820px) { :root { --gutter: 16px } }`、overrides.css 的触屏 / 减弱动效 / 无毛玻璃回退），
+   不分层的 :root 变量会压过任何层里的同名变量，这些覆盖就全失效了（窄屏内边距、触屏控件高度、减弱动效时长）。放进 base 层仍高于 Tailwind 的 theme 层默认值（--font-sans、--ease-out 等），所以令牌照旧盖过它们。
+   手写样式的先后 = 生产构建里实际的加载顺序，而不是 adminEntry 原来 import 的顺序：以前 overrides.css 与 base / components 同在两个入口共用的公共 CSS 块里，先于只属于管理端的 home / cards / table / pages / palette 加载
+   （overrides.css 的注释、里面的写法都是按这个顺序写的：页面样式自己写全，同优先级的规则页面样式胜出）；现在合成一份，仍保持这个先后。
+   不要把 base.css 放进 base 层：`.topbar .btn` 这类比组件类更具体的规则会被 components 层反压。
+   按需加载的页面样式（routers、access、settings、billing、jobs、policy、traffic、terminal）自己包了 @layer components，晚加载 = 同层里排后面。
+   首行的层声明在 index.html 的 <head> 里还内联了一份：构建后 CSS 块的加载顺序不等于源码顺序，先声明层序就不怕。 */
+@import "tailwindcss" source(none);
+@import "tw-animate-css";
+@import "./tokens.css" layer(base);
+@import "./theme.css";
+@import "./shadcn.css";
+@import "./compat.css";
+@import "./base.css" layer(components);
+@import "./components.css" layer(components);
+@import "./overrides.css" layer(components);
+@import "./home.css" layer(components);
+@import "./cards.css" layer(components);
+@import "./table.css" layer(components);
+@import "./pages.css" layer(components);
+@import "./palette.css" layer(components);
+
+/* 源文件扫描：source(none) 关掉默认的「从项目根递归扫描所有未被忽略的文件」（本机并发枚举目录会内核崩溃），只认 src 下的 ts / tsx 与 index.html。路径相对本文件 */
+@source "../**/*.{ts,tsx}";
+@source "../../index.html";

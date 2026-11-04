@@ -1,9 +1,17 @@
-/* shadcn/ui 主题契约：标准变量名一律指向 tokens.css 的设计 token，不引入新颜色（外观不变）。
-   只写在 :root：var() 在 <html> 上解析，亮/暗 × plum/indigo 四套主题都落在 <html data-theme data-palette> 上，自动跟随，不用逐套重写。
-   例外一处：--accent 已是 tokens.css 的强调色（品牌色），不能覆盖；shadcn 的 accent 角色（菜单项高亮、ghost 按钮悬停底）
-   在 Tailwind 里取 --ui-accent / --accent-foreground（见 tailwind.config.ts）。
-   新加 shadcn 组件直接用 bg-background、text-muted-foreground、bg-primary/90 这类类名即可。 */
+/* shadcn/ui + Tailwind 4 主题契约：标准变量名一律指向 tokens.css 的设计 token，不引入新颜色（外观不变）。
+   本文件只放三类东西，都不分层（只有变量、变体、映射，没有会被层覆盖的普通样式规则）：
+   1. 暗色变体（@custom-variant dark）：主题落在 <html data-theme="dark">；
+   2. :root 里的 shadcn 角色变量、图表（bklit）变量、legend 变量：只写在 :root，var() 在 <html> 上解析，
+      亮 / 暗 × plum / indigo 四套主题都落在 <html data-theme data-palette> 上，自动跟随令牌，不用写 .dark；
+   3. @theme inline：把令牌映射成 Tailwind 类名（原 tailwind.config.ts 的 theme.extend）。inline = 类名直接引用 var(--令牌)，不再多绕一层 --color-*。
+      不在 @theme 里写 --x: var(--x) 一类自引用：tokens.css 已有的 --font-sans / --font-mono / --radius / --ease-out / --chart-* 等直接沿用。
+   例外：--accent 已是 tokens.css 的强调色（品牌色），不能覆盖；shadcn 的 accent 角色（菜单项高亮、ghost 按钮悬停底）取 --ui-accent，
+   Tailwind 里 bg-accent / text-accent-foreground 指向它，我们自己的强调色叫 brand（bg-brand）。
+   本文件由迁移 B0 一次定稿，后续批次不再改；缺变量报主会话。 */
+@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
+
 :root {
+  /* ---------- shadcn 角色色 ---------- */
   --background: var(--canvas);
   --foreground: var(--fg);
   --card: var(--surface);
@@ -20,11 +28,133 @@
   --ui-accent: var(--hover);            /* = shadcn 的 --accent（见上） */
   --accent-foreground: var(--fg);
   --destructive: var(--bad-solid);
-  --destructive-foreground: var(--on-solid); /* 同 .btn-danger */
+  --destructive-foreground: var(--bad-text); /* coss 菜单的危险项把它当红色文字用（亮 red-700 / 暗 red-400，正是 --bad-text）；base-mira 不用它 */
   --input: var(--line-strong);
   --ring: var(--focus);
-  --radius: var(--r-float);             /* lg 10 = 浮层，md 8 = 控件（--r-control），sm 6 */
-  /* 图表：1–3 在 tokens.css；4、5 只为 shadcn 图表凑满五色，借状态色（超过 3 个序列按 tokens 约定拆小图） */
+  --radius: var(--r-float);             /* lg 10 = 浮层，md 8 = 控件（--r-control），sm 6，xl 14 = 卡片（--r-card） */
+
+  /* ---------- 图表 1–5 ---------- */
+  /* 1–3 在 tokens.css（随主题与配色变）：bklit 自带的 oklch 值不能盖过来。4、5 只为凑满五色，借状态色（超过 3 个序列按 tokens 约定拆小图） */
   --chart-4: var(--warn);
   --chart-5: var(--neutral);
+
+  /* ---------- bklit 图表（chart-context）：35 个变量里 chart-1..5 / chart-grid 已在上面或 tokens.css，其余在此指向令牌 ---------- */
+  --chart-positive: var(--ok);          /* 涨 / 正向 */
+  --chart-negative: var(--bad);         /* 跌 / 负向 */
+  --chart-background: var(--surface);   /* 图表底 = 卡片面 */
+  --chart-foreground: var(--fg);
+  --chart-foreground-muted: var(--chart-axis); /* = --fg-2：坐标轴 / 次要文字（tokens.css 的 --chart-axis） */
+  --chart-line-primary: var(--chart-1);
+  --chart-line-secondary: var(--chart-2);
+  --chart-crosshair: var(--line-strong); /* 十字线：同 components 里 recharts 的 cursor 描边 */
+  --chart-brush-border: var(--chart-grid); /* --chart-grid 在 tokens.css（= --line），不重写 */
+  --chart-tooltip-background: var(--popover);
+  --chart-tooltip-foreground: var(--popover-foreground);
+  --chart-tooltip-muted: var(--muted-foreground);
+  --chart-marker-background: var(--sunken);
+  --chart-marker-border: var(--line-strong);
+  --chart-marker-foreground: var(--fg);
+  --chart-label: var(--fg-2);
+  --chart-scale-mix: var(--surface);    /* 色阶向「底」混：亮色白、暗色卡片黑 */
+  --chart-scale-01: var(--cell-off);    /* 最低一级 = 格条 / 点阵的未点亮色 */
+  --chart-scale-02: color-mix(in oklab, var(--chart-1) 35%, var(--chart-scale-mix));
+  --chart-scale-03: color-mix(in oklab, var(--chart-1) 55%, var(--chart-scale-mix));
+  --chart-scale-04: color-mix(in oklab, var(--chart-1) 78%, var(--chart-scale-mix));
+  --chart-scale-05: var(--chart-1);
+  --chart-scale-pattern-color: var(--surface);
+  --chart-indicator-color: var(--fg);   /* 亮色近黑、暗色近白 */
+  --chart-indicator-secondary-color: var(--sunken);
+  --chart-marker-badge-background: var(--fg);   /* 反色徽标：同 --tip-bg / --tip-fg 的做法 */
+  --chart-marker-badge-foreground: var(--canvas);
+  --chart-segment-background: var(--track);
+  --chart-segment-line: var(--line-strong);
+
+  /* ---------- bklit legend ---------- */
+  --legend: var(--surface);
+  --legend-foreground: var(--fg);
+  --legend-muted: var(--hover);         /* 悬停 / 激活底：半透明，亮色略暗、暗色略亮 */
+  --legend-muted-foreground: var(--fg-2);
+  --legend-track: var(--track);
+}
+
+@theme inline {
+  /* ---------- 颜色：我们的令牌 ---------- */
+  --color-canvas: var(--canvas); --color-surface: var(--surface); --color-raised: var(--raised); --color-sunken: var(--sunken);
+  --color-hover: var(--hover); --color-track: var(--track);
+  --color-line: var(--line); --color-line-strong: var(--line-strong);
+  --color-fg: var(--fg); --color-fg-2: var(--fg-2); --color-fg-3: var(--fg-3);
+  /* 强调色（--accent）叫 brand：Tailwind 的 accent 留给 shadcn 角色 */
+  --color-brand: var(--accent); --color-accent-solid: var(--accent-solid); --color-accent-soft: var(--accent-soft);
+  --color-accent-soft-fg: var(--accent-soft-fg); --color-on-accent: var(--on-accent);
+  --color-ok: var(--ok); --color-ok-text: var(--ok-text); --color-ok-bg: var(--ok-bg);
+  --color-warn: var(--warn); --color-warn-text: var(--warn-text); --color-warn-bg: var(--warn-bg);
+  --color-bad: var(--bad); --color-bad-text: var(--bad-text); --color-bad-bg: var(--bad-bg);
+  --color-info: var(--info); --color-info-text: var(--info-text); --color-info-bg: var(--info-bg);
+  --color-neutral: var(--neutral); --color-neutral-text: var(--neutral-text); --color-neutral-bg: var(--neutral-bg);
+
+  /* ---------- 颜色：shadcn 约定名（bg-primary/90 这类透明度修饰由 Tailwind 4 对 var() 自动用 color-mix 处理） ---------- */
+  --color-background: var(--background); --color-foreground: var(--foreground);
+  --color-border: var(--border); --color-input: var(--input); --color-ring: var(--ring);
+  --color-card: var(--card); --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover); --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary); --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary); --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted); --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--ui-accent); --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive); --color-destructive-foreground: var(--destructive-foreground);
+
+  /* ---------- 颜色：图表 ---------- */
+  --color-chart-1: var(--chart-1); --color-chart-2: var(--chart-2); --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4); --color-chart-5: var(--chart-5);
+  /* bklit chart-context 的 theme 段 10 个 */
+  --color-chart-line-primary: var(--chart-line-primary);
+  --color-chart-line-secondary: var(--chart-line-secondary);
+  --color-chart-brush-border: var(--chart-brush-border);
+  --color-chart-tooltip-background: var(--chart-tooltip-background);
+  --color-chart-tooltip-foreground: var(--chart-tooltip-foreground);
+  --color-chart-tooltip-muted: var(--chart-tooltip-muted);
+  --color-chart-scale-02: var(--chart-scale-02);
+  --color-chart-scale-03: var(--chart-scale-03);
+  --color-chart-scale-04: var(--chart-scale-04);
+  --color-chart-scale-05: var(--chart-scale-05);
+  /* bklit 源码里还写了 text-chart-label、bg-legend-*、text-legend-*（上面的 theme 段没列）：这里补上，类名才有样式 */
+  --color-chart-label: var(--chart-label);
+  --color-legend: var(--legend); --color-legend-foreground: var(--legend-foreground);
+  --color-legend-muted: var(--legend-muted); --color-legend-muted-foreground: var(--legend-muted-foreground);
+  --color-legend-track: var(--legend-track);
+
+  /* ---------- 圆角：shadcn 约定 sm / md / lg / xl = radius −4 / −2 / 0 / +4，--radius 指向 --r-float（10）：6 / 8 / 10 / 14 ---------- */
+  --radius-xs: var(--r-xs);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+  --radius-4xl: calc(var(--radius) + 16px);
+  /* 我们的命名：14 / 10 / 8 / 药丸 / 22 / 12 / 6 */
+  --radius-card: var(--r-card); --radius-float: var(--r-float); --radius-control: var(--r-control); --radius-pill: var(--r-pill);
+  --radius-section: var(--r-section); --radius-inner: var(--r-inner); --radius-tag: var(--r-tag);
+
+  /* ---------- 字体：font-sans / font-mono 直接用令牌（tokens.css 的同名变量未分层，盖过 Tailwind 默认栈）；font-num 见文件末尾的 @utility ---------- */
+  --font-heading: var(--font-sans);     /* shadcn 新版标题类 font-heading */
+
+  /* ---------- 字号（= 令牌字阶，含行高） ---------- */
+  --text-micro: var(--fs-micro);     --text-micro--line-height: var(--lh-micro);
+  --text-label: var(--fs-label);     --text-label--line-height: var(--lh-label);
+  --text-body: var(--fs-body);       --text-body--line-height: var(--lh-body);
+  --text-emph: var(--fs-emph);       --text-emph--line-height: var(--lh-emph);
+  --text-title: var(--fs-title);     --text-title--line-height: var(--lh-title);
+  --text-section: var(--fs-section); --text-section--line-height: var(--lh-section);
+  --text-page: var(--fs-page);       --text-page--line-height: var(--lh-page);
+  --text-kpi: var(--fs-kpi);         --text-kpi--line-height: var(--lh-kpi);
+
+  /* ---------- 间距（p-card-pad、gap-gutter）与高度（h-sm = 28、h-md = 32、h-lg = 36…；触屏时令牌上调一档，类名跟着变） ---------- */
+  --spacing-card-pad: var(--card-pad); --spacing-gutter: var(--gutter);
+  --height-chip: var(--h-chip); --height-sm: var(--h-sm); --height-md: var(--h-md); --height-lg: var(--h-lg); --height-bar: var(--h-bar);
+}
+
+/* 数字字体：--font-num 在 tokens.css，不在 @theme（名字相同会自引用），所以单独登记成工具类 */
+@utility font-num {
+  font-family: var(--font-num);
 }

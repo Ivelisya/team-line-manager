@@ -8,7 +8,8 @@ html:has(> body[data-scroll-locked]) { scrollbar-gutter: auto; }
 /* 节点抽屉（非模态）开着：背后的页面不滚、滚动条藏起来；槽位仍在（scrollbar-gutter: stable），内容不横移 */
 html[data-drawer] { overflow: hidden; }
 /* 页面不够长时 Chrome 的 clientWidth 不扣常驻槽位，库算出的补偿是 0、内容右移半个槽宽：按 main.tsx 量出的真实槽宽（--sbw）补 */
-html body[data-scroll-locked] { margin-right: var(--sbw, 0px) !important; --removed-body-scroll-bar-size: var(--sbw, 0px); }
+/* 库注入的 <style> 是不分层的：同名普通声明会压过 components 层里的（以前靠选择器更具体），所以 --removed-body-scroll-bar-size 也要 !important（layer 里的 important 高于不分层的普通声明，也高于库自己的 important） */
+html body[data-scroll-locked] { margin-right: var(--sbw, 0px) !important; --removed-body-scroll-bar-size: var(--sbw, 0px) !important; }
 /* 背景光晕：固定在视口的一层 body::before（z-index -1：在根背景 --canvas 之上、所有内容之下）。
    以前写成 body 的背景 + background-attachment: fixed：非根元素上的 fixed 背景会让浏览器放弃合成滚动，每滚一帧都重画整页背景 */
 body::before { content: ""; position: fixed; inset: 0; z-index: -1; background: var(--canvas-glow); pointer-events: none; }
@@ -203,7 +204,8 @@ a { color: inherit; }
 /* 页面顶上的搜索 + 筛选一行（机器、访问监控、操作记录）：手机上各下拉宽度参差、右边空一截——搜索占整行，下拉两两一排等宽 */
 @media (max-width: 600px) {
   .row[role="search"] { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .row[role="search"] > * { width: auto; min-width: 0; }
+  /* 要盖过调用处的 w-[140px] 这类宽度工具类：以前靠选择器更具体（0,2,0 对 0,1,0）；Tailwind 4 的工具类在 utilities 层，层序高于 components，更具体也盖不过，所以这里用 !important（components 层的 important 高于 utilities 层的普通声明） */
+  .row[role="search"] > * { width: auto !important; min-width: 0; }
   .row[role="search"] > .search { grid-column: 1 / -1; }
 } /* 窄屏时它占满一行，空着也会留出一行高 */
 .stack > .page-head { margin-bottom: 0; } /* 在 .stack 里时与下面的间距由 gap 给，不再叠一份外边距 */
