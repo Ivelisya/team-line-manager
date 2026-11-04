@@ -17,8 +17,12 @@ page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
 await page.setViewport({ width: 1440, height: 1000 });
 // 选择器按角色 / 标签写，不依赖 .dialog、.seg-item 这类样式类名（组件换底层后类名会变）
 const clickText = (sel, text) => page.evaluate((s, t) => { const el = [...document.querySelectorAll(s)].find((e) => e.textContent?.trim().includes(t)); if (!el) throw new Error('找不到 ' + t); el.click(); }, sel, text);
-// 最上层的对话框（页面上可能还有一个非模态的抽屉也是 role=dialog，后挂载的在最上面）
-const inDialog = (fn, ...args) => page.evaluate((src, ...a) => { const ds = document.querySelectorAll('[role="dialog"]'); const d = ds[ds.length - 1]; if (!d) throw new Error('没有对话框'); return new Function('d', 'a', 'return (' + src + ')(d, ...a)')(d, a); }, fn.toString(), ...args);
+// 最上层的对话框（页面上可能还有一个非模态的抽屉也是 role=dialog，后挂载的在最上面）：取到元素句柄，fn(对话框, ...args) 在页面里执行
+const inDialog = async (fn, ...args) => {
+  const d = (await page.evaluateHandle(() => { const ds = document.querySelectorAll('[role="dialog"]'); return ds[ds.length - 1] ?? null; })).asElement();
+  if (!d) throw new Error('没有对话框');
+  return d.evaluate(fn, ...args);
+};
 const clickInDialog = (sel, text) => inDialog((d, s, t) => { const el = [...d.querySelectorAll(s)].find((e) => e.textContent?.trim().includes(t)); if (!el) throw new Error('对话框里找不到 ' + t); el.click(); }, sel, text);
 // 某一步结果是 false、或页面有报错，进程以非 0 退出（方便脚本里串联）
 const step = (m) => { console.log('·', m); if (m.endsWith('false')) process.exitCode = 1; };

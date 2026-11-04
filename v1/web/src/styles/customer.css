@@ -1,4 +1,4 @@
-@layer theme, base, components, utilities;
+@layer properties, theme, base, components, utilities;
 /* 客户页样式入口（customerEntry.tsx）：只带原来那几份（tokens / theme / base / components / overrides）+ Tailwind；层的安排见 admin.css */
 @import "tailwindcss" source(none);
 @import "tw-animate-css";

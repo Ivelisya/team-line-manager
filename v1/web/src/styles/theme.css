@@ -6,8 +6,7 @@
    3. @theme inline：把令牌映射成 Tailwind 类名（原 tailwind.config.ts 的 theme.extend）。inline = 类名直接引用 var(--令牌)，不再多绕一层 --color-*。
       不在 @theme 里写 --x: var(--x) 一类自引用：tokens.css 已有的 --font-sans / --font-mono / --radius / --ease-out / --chart-* 等直接沿用。
    例外：--accent 已是 tokens.css 的强调色（品牌色），不能覆盖；shadcn 的 accent 角色（菜单项高亮、ghost 按钮悬停底）取 --ui-accent，
-   Tailwind 里 bg-accent / text-accent-foreground 指向它，我们自己的强调色叫 brand（bg-brand）。
-   本文件由迁移 B0 一次定稿，后续批次不再改；缺变量报主会话。 */
+   Tailwind 里 bg-accent / text-accent-foreground 指向它，我们自己的强调色叫 brand（bg-brand）。 */
 @custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
 
 :root {
@@ -28,7 +27,7 @@
   --ui-accent: var(--hover);            /* = shadcn 的 --accent（见上） */
   --accent-foreground: var(--fg);
   --destructive: var(--bad-solid);
-  --destructive-foreground: var(--bad-text); /* coss 菜单的危险项把它当红色文字用（亮 red-700 / 暗 red-400，正是 --bad-text）；base-mira 不用它 */
+  --destructive-foreground: var(--bad-text); /* 红色文字，不是红底上的白字：reui（red-800 / red-600）与 coss（red-700 / red-400，菜单危险项）都按这个语义用，base-mira 不用它。红底白字写 bg-destructive text-(--on-solid)，不要配 text-destructive-foreground */
   --input: var(--line-strong);
   --ring: var(--focus);
   --radius: var(--r-float);             /* lg 10 = 浮层，md 8 = 控件（--r-control），sm 6，xl 14 = 卡片（--r-card） */
@@ -136,7 +135,7 @@
   --radius-card: var(--r-card); --radius-float: var(--r-float); --radius-control: var(--r-control); --radius-pill: var(--r-pill);
   --radius-section: var(--r-section); --radius-inner: var(--r-inner); --radius-tag: var(--r-tag);
 
-  /* ---------- 字体：font-sans / font-mono 直接用令牌（tokens.css 的同名变量未分层，盖过 Tailwind 默认栈）；font-num 见文件末尾的 @utility ---------- */
+  /* ---------- 字体：font-sans / font-mono 直接用令牌（tokens.css 在 base 层，高于 Tailwind 默认值所在的 theme 层，同名变量盖过默认栈）；font-num 见文件末尾的 @utility ---------- */
   --font-heading: var(--font-sans);     /* shadcn 新版标题类 font-heading */
 
   /* ---------- 字号（= 令牌字阶，含行高） ---------- */

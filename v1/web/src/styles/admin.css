@@ -1,4 +1,4 @@
-@layer theme, base, components, utilities;
+@layer properties, theme, base, components, utilities;
 /* 管理端样式入口（adminEntry.tsx 只 import 这一个文件）。
    层：Tailwind 的 theme / preflight / 工具类各进 theme / base / utilities 层，手写样式全部进 components 层（同层里后面的盖前面的），
    所以工具类（Tailwind 类名）能盖过手写组件类，手写类又能盖过 preflight。theme.css 只定义变量 / 变体 / 映射，不分层。
@@ -8,7 +8,9 @@
    （overrides.css 的注释、里面的写法都是按这个顺序写的：页面样式自己写全，同优先级的规则页面样式胜出）；现在合成一份，仍保持这个先后。
    不要把 base.css 放进 base 层：`.topbar .btn` 这类比组件类更具体的规则会被 components 层反压。
    按需加载的页面样式（routers、access、settings、billing、jobs、policy、traffic、terminal）自己包了 @layer components，晚加载 = 同层里排后面。
-   首行的层声明在 index.html 的 <head> 里还内联了一份：构建后 CSS 块的加载顺序不等于源码顺序，先声明层序就不怕。 */
+   层序以 index.html <head> 里内联的声明为准（首行这份与它相同）：层序按首次出现算，而动态加载入口时页面样式块可能先插进文档
+   （客户页的预加载清单里 billing 样式排在入口样式前面），只有先声明才不会把 components 排到最低。
+   properties 层是 Tailwind 给不支持 @property 的旧浏览器（Safari 16.3 及以前、Firefox 128 以前）兜底的 --tw-* 初值，必须最低，否则会盖掉阴影、ring、变换等工具类。 */
 @import "tailwindcss" source(none);
 @import "tw-animate-css";
 @import "./tokens.css" layer(base);

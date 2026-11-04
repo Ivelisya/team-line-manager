@@ -47,7 +47,6 @@ const scenes = [
   { name: 'nodes-due-1440', url: '/nodes?sort=due', w: 1440 },
   { name: 'nodes-drawer-host-lxc-1440', url: '/nodes?m=m-t2-06&tab=host', w: 1440 },
   { name: 'nodes-390', url: '/nodes', w: 390 },
-  { name: 'nodes-retired-1440', url: '/nodes?scope=retired', w: 1440, retired: true },
   { name: 'nodes-drawer-retired-1440', url: '/nodes?m=m-t1-3r', w: 1440 },
   { name: 'jobs-done-1440', url: '/jobs/j-done2', w: 1440 },
   { name: 'nodes-drawer-390', url: '/nodes?m=m-t1-05', w: 390 },
@@ -83,7 +82,7 @@ const liveScenes = [
   { name: 'live-home-large-1440-dark', url: '/', w: 1440, view: 'large', theme: 'dark', align: true },
   { name: 'live-home-large-390', url: '/', w: 390, view: 'large', align: true },
   { name: 'live-nodes-1440', url: '/nodes', w: 1440 },
-  { name: 'live-nodes-retired-1440', url: '/nodes?scope=retired', w: 1440 },
+  { name: 'live-nodes-recycle-1440', url: '/nodes?scope=recycle', w: 1440 },
   { name: 'live-drawer-1440', url: '/nodes?m=__FIRST__', w: 1440 },
   { name: 'live-drawer-manage-1440', url: '/nodes?m=__FIRST__&tab=manage', w: 1440 },
   { name: 'live-relays-1440', url: '/relays', w: 1440 },
@@ -119,9 +118,10 @@ for (const s0 of run) {
   if (SESSION) await new Promise((r) => setTimeout(r, 1500));
   if (s.wait) await new Promise((r) => setTimeout(r, s.wait));
   await new Promise((r) => setTimeout(r, 700));
-  if (s.retired) { await page.evaluate(() => { [...document.querySelectorAll('[role="radio"], [role="tab"], button')].find((b) => b.textContent?.includes('已退役'))?.click(); }); await new Promise((r) => setTimeout(r, 500)); }
   if (s.batch) {
-    await page.evaluate(() => { [...document.querySelectorAll('[role="radio"], [role="tab"], button')].find((b) => b.textContent?.includes('批量'))?.click(); });
+    // 上架页的「单台 / 批量」切换：点不到就记成这一场景的错误（不然截到的是单台视图，名字却叫 batch）
+    const hit = await page.evaluate(() => { const el = [...document.querySelectorAll('[role="radio"], [role="tab"], button')].find((b) => b.textContent?.trim() === '批量'); el?.click(); return !!el; });
+    if (!hit) errors.push('找不到「批量」切换');
     await new Promise((r) => setTimeout(r, 400));
   }
   // 撑高视口让懒加载的心跳条都进入视口，再截全页

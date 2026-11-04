@@ -1,7 +1,7 @@
 /* Tailwind 4 preflight 与 3 的差异补回（只补会影响外观的几项）。放在 base 层，所有手写样式（components 层）和工具类都能盖过它。 */
 @layer base {
-  /* v4 默认边框色是 currentColor（v3 是 #e5e7eb）；改成主题边线令牌，shadcn 组件里写了 border 不带色时也是这条线 */
-  *, ::after, ::before, ::backdrop, ::file-selector-button { border-color: var(--color-border, currentColor); }
+  /* v4 默认边框色是 currentColor（v3 是 #e5e7eb）；改成主题边线（--border = --line，见 theme.css），shadcn 组件里写了 border 不带色时也是这条线 */
+  *, ::after, ::before, ::backdrop, ::file-selector-button { border-color: var(--border); }
   /* v4 不再给按钮 cursor: pointer（v3 preflight 有这两条） */
   button, [role="button"] { cursor: pointer; }
   :disabled { cursor: default; }
