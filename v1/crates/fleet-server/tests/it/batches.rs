@@ -222,23 +222,26 @@ async fn billing_ledger_and_customer_page() {
     assert_eq!(public(&t, &format!("{link}?month={}", month(2)), password).await.1["data"]["month"], month(2));
     assert_eq!(public(&t, &format!("{link}?month=abc"), password).await.0, StatusCode::BAD_REQUEST);
 
-    sqlx::query("update customer_page set token_at = now() - interval '1 hour' where team_id = $1")
+    sqlx::query("update customer_page set token_at = now() - interval '365 days' where team_id = $1")
         .bind(team1).execute(&t.st.db).await.unwrap();
-    assert_eq!(public(&t, link, password).await.0, StatusCode::NOT_FOUND);
-    fleet_server::api::batches::refresh_customer_pages(&t.st).await.unwrap();
+    // 固定链接与密码：一年后仍可访问，对账与管理端读取都不会自动换新。
+    assert_eq!(public(&t, link, password).await.0, StatusCode::OK);
+    fleet_server::api::batches::ensure_customer_pages(&t.st).await.unwrap();
     let automatic = t.get(&base1).await["page"].clone();
     assert_eq!(automatic["enabled"], true);
-    assert_ne!(automatic["link"], page["link"]);
-    assert_ne!(automatic["password"], page["password"]);
+    assert_eq!(automatic["link"], page["link"]);
+    assert_eq!(automatic["password"], page["password"]);
+    assert!(automatic.get("expires_at").is_none());
     let once = automatic.clone();
-    fleet_server::api::batches::refresh_customer_pages(&t.st).await.unwrap();
+    fleet_server::api::batches::ensure_customer_pages(&t.st).await.unwrap();
     assert_eq!(t.get(&base1).await["page"], once);
-    assert_eq!(public(&t, link, password).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(public(&t, link, password).await.0, StatusCode::OK);
     assert_eq!(public(&t, automatic["link"].as_str().unwrap(), automatic["password"].as_str().unwrap()).await.0, StatusCode::OK);
     sqlx::query("update customer_page set enabled = false, token_at = now() - interval '2 hours' where team_id = $1")
         .bind(team1).execute(&t.st.db).await.unwrap();
-    fleet_server::api::batches::refresh_customer_pages(&t.st).await.unwrap();
+    fleet_server::api::batches::ensure_customer_pages(&t.st).await.unwrap();
     assert_eq!(t.get(&base1).await["page"]["link"], automatic["link"]);
+    assert_eq!(public(&t, link, password).await.0, StatusCode::NOT_FOUND);
     sqlx::query("update customer_page set enabled = true where team_id = $1").bind(team1).execute(&t.st.db).await.unwrap();
 
     let fresh = t.post(&format!("/api/v1/teams/{team1}/customer-page"), json!({})).await;
@@ -246,6 +249,14 @@ async fn billing_ledger_and_customer_page() {
     let new_link = fresh["link"].as_str().unwrap();
     assert_eq!(public(&t, new_link, password).await.0, StatusCode::FORBIDDEN);
     assert_eq!(public(&t, new_link, fresh["password"].as_str().unwrap()).await.0, StatusCode::OK);
+    // 无密码的旧分享只补齐一次，之后保持固定。
+    sqlx::query("update customer_page set password_enc = null where team_id = $1").bind(team1).execute(&t.st.db).await.unwrap();
+    fleet_server::api::batches::ensure_customer_pages(&t.st).await.unwrap();
+    let upgraded = t.get(&base1).await["page"].clone();
+    assert_ne!(upgraded["link"], fresh["link"]);
+    assert!(upgraded["password"].is_string());
+    fleet_server::api::batches::ensure_customer_pages(&t.st).await.unwrap();
+    assert_eq!(t.get(&base1).await["page"], upgraded);
 
     // ── 对账（传入的「现在」）──
     let today_s = fmt_date(today());

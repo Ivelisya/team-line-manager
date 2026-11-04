@@ -687,14 +687,13 @@ fn page_of(st: &AppState, r: &PageRow) -> Value {
     let token = st.secrets.open_str(&r.token_enc).map_err(|e| tracing::warn!("客户页令牌解密失败：{e:#}")).ok();
     json!({
         "password": r.password_enc.as_deref().and_then(|p| st.secrets.open_str(p).ok()),
-        "expires_at": meta::fmt_ts(r.token_at + time::Duration::hours(1)),
         "enabled": r.enabled, "link": token.map(|t| link(st, &t)),
         "created_at": meta::fmt_ts(r.created_at), "token_at": meta::fmt_ts(r.token_at),
         "last_view_at": r.last_view_at.map(meta::fmt_ts), "last_view_ip": r.last_view_ip,
     })
 }
 
-/// 自动轮换只处理已启用且过期（或尚无密码）的分享，条件更新避免多实例重复轮换。
+/// 自动初始化只补齐尚无密码的旧分享，已有链接和密码保持不变。
 async fn rotate_page(st: &AppState, db: &mut PgConnection, team: Uuid, automatic: bool) -> ApiResult<bool> {
     let token = random_token(32);
     let result = sqlx::query(
@@ -702,21 +701,19 @@ async fn rotate_page(st: &AppState, db: &mut PgConnection, team: Uuid, automatic
          select id, $2, $3, $4 from team where id = $1 and (not $5 or not spare)
          on conflict (team_id) do update set token_hash = excluded.token_hash, token_enc = excluded.token_enc,
              password_enc = excluded.password_enc, token_at = now(), last_view_at = null, last_view_ip = null
-         where not $5 or (customer_page.enabled and
-             (customer_page.password_enc is null or customer_page.token_at + interval '1 hour' <= now()))",
+         where not $5 or (customer_page.enabled and customer_page.password_enc is null)",
     ).bind(team).bind(sha256(token.as_bytes())).bind(st.secrets.seal_str(&token))
         .bind(st.secrets.seal_str(&random_token(12))).bind(automatic).execute(db).await?;
     Ok(result.rows_affected() > 0)
 }
 
-/// 启动和每轮对账自动为团队建立分享，并在到期后更新。
-pub async fn refresh_customer_pages(st: &AppState) -> ApiResult<()> {
+/// 为团队建立固定密码分享，并补齐旧分享的密码。
+pub async fn ensure_customer_pages(st: &AppState) -> ApiResult<()> {
     if !ledger::initialized(&st.db).await? { return Ok(()); }
     let mut db = st.db.acquire().await?;
     let teams: Vec<Uuid> = sqlx::query_scalar(
         "select t.id from team t left join customer_page p on p.team_id = t.id
-         where not t.spare and (p.team_id is null or (p.enabled and
-             (p.password_enc is null or p.token_at + interval '1 hour' <= now())))",
+         where not t.spare and (p.team_id is null or (p.enabled and p.password_enc is null))",
     ).fetch_all(&mut *db).await?;
     for team in teams {
         if rotate_page(st, &mut db, team, true).await? {
@@ -805,12 +802,12 @@ pub async fn public_view(State(st): State<AppState>, ClientIp(ip): ClientIp, Api
             e
         }
     })?;
-    let row: Option<(Uuid, String, Vec<u8>, OffsetDateTime)> = sqlx::query_as(
-        "select p.team_id, t.name, p.password_enc, p.token_at + interval '1 hour'
+    let row: Option<(Uuid, String, Vec<u8>)> = sqlx::query_as(
+        "select p.team_id, t.name, p.password_enc
          from customer_page p join team t on t.id = p.team_id
-         where p.token_hash = $1 and p.enabled and p.password_enc is not null and p.token_at + interval '1 hour' > now()",
+         where p.token_hash = $1 and p.enabled and p.password_enc is not null",
     ).bind(&hash).fetch_optional(&st.db).await?;
-    let (team, name, sealed, expires_at) = row.ok_or_else(|| ApiError::not_found("链接无效、已过期或已停用"))?;
+    let (team, name, sealed) = row.ok_or_else(|| ApiError::not_found("链接无效或已停用"))?;
     let password = st.secrets.open(&sealed).map_err(|_| ApiError::not_found("请重新生成分享链接"))?;
     if sha256(&password) != sha256(access.password.as_bytes()) {
         return Err(ApiError::forbidden("查看密码不正确"));
@@ -838,7 +835,7 @@ pub async fn public_view(State(st): State<AppState>, ClientIp(ip): ClientIp, Api
         "paid": r.paid_at.is_some(), "manual": r.s.manual, "ended": r.s.state(today) == "ended",
     })).collect();
     let page = json!({
-        "expires_at": meta::fmt_ts(expires_at), "team": name, "today": bt::fmt_date(today),
+        "team": name, "today": bt::fmt_date(today),
         "month": bt::fmt_month(month), "months": months.into_iter().map(bt::fmt_month).collect::<Vec<_>>(),
         "outstanding": outstanding, "nodes": nodes,
     });

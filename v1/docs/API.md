@@ -290,7 +290,7 @@ ProvisionItem = {
 `Slot = {id, region, start_date, state:'active'|'ended', name（占用者现在的名字 / 手动名额写备注、没有备注「手动添加的节点」/ 停止的是原占用者的名字）, holder:{id,name}|null, last_holder_name（已停止的系统名额：最后占用它的节点名快照，其余 null）, left_reason（系统名额停止的原因，对账结束时落库：`'exempt'` 原节点被设为不计费、节点还在团队里；`'left'` 离开团队 / 退役 / 进备用 / 被删；被接回后与手动名额为 null）, vacated_at（离开时刻）, end_date, manual, note}`；`state`：结束日不晚于今天 → `ended`，其余 `active`。
 `MonthNode = {slot_id, name, region, start_date, period_start, period_end（这一期 [period_start, period_end)，显示为到期日）, upcoming（这一期还没开始：period_start 晚于今天）, manual, note, holder_id, ended（已停止收费）, paid, paid_at}`。
 `Event = {id, at, kind:'init'|'add'|'remove'|'swap'|'edit'|'manual_add'|'manual_end'|'exempt'|'paid'|'unpaid', machine_name, other_name（swap 里换下来的节点）, slot_id, text}`，名字是当时的快照，`text` 是中文一句话（「团队1-10 加入，从 10 月 30 日开始收费」「团队2-20 补位接替 团队2-07，收费不变」（替换节点）「团队2-05 离开，收费到 11 月 29 日」（最后一期的最后一天；没有产生收费期次的「没有产生收费期次」）「开始记账：52 个节点从 10 月 1 日开始收费」（`init` 每个团队只记一条，没有 `machine_name` / `slot_id`，节点名单只存在库里 `detail.nodes`、接口不返回）「11 月已支付：团队1-01、团队1-02（共 2 个）」「11 月改回待支付：团队1-10（共 1 个）」（`paid` / `unpaid` 的名字最多列 10 个，多的写「等」））。
-`page = null | {enabled, link, password, expires_at, created_at, token_at, last_view_at, last_view_ip}`，`link = {public_url}/c/{令牌}`。
+`page = null | {enabled, link, password, created_at, token_at, last_view_at, last_view_ip}`，`link = {public_url}/c/{令牌}`。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -310,7 +310,7 @@ ProvisionItem = {
 
 令牌 32 字节随机（base64url）：库里存 sha256（`token_hash`，用来查）和 SecretBox 密文（`token_enc`，管理端随时能再复制链接）。
 
-**公开接口**（不登录，没有 Actor 提取器，登录只在提取器里校验，所以不会被拦）：`POST /api/v1/public/customer/{令牌}?month=2026-11`，请求体 `{"password":"查看密码"}`（默认本月）→ `{team:"团队2", expires_at, today, month, months, nodes:[{name, region, period_start, period_end, paid}]}`：同管理端的按月看（每个节点起点在这个月的那一期，按本期生效日期从早到晚，同日按节点名，支付状态不影响顺序），每个节点只有这几项；`name` 是占用者现在的名字，已停止的是原占用者，手动名额写备注（没有备注写「手动添加的节点」）。不含 IP、供应商、价格。客户页月份范围与管理端一致，可查看下个月的期次。返回 `outstanding:[{month,count}]`，统计全部已开始且待支付的期次。节点另带 `manual` 和 `ended` 标记。月份格式不对 400。团队客户页默认启用，管理端读取时自动生成，后台每分钟检查并在满 1 小时后轮换链接和密码，手动停用后暂停自动轮换。链接自生成起 1 小时有效，到期、无效、已停用或旧链接未设密码均返回 404；密码错误返回 403。换新同时更换链接和密码，并和登录、订阅拉取共用按来源的失败限速（`auth::begin_attempt`，键 `cust:` + 令牌哈希前缀），超了 429。`last_view_at` / `last_view_ip` 10 分钟内只写一次，成功不写审计。响应 `Cache-Control: no-store`；`/c/` 开头的页面与 `/api/v1/public/` 都带 `X-Robots-Tag: noindex`（`lib.rs` 的响应头中间件）。前端页面是 `/c/:token`（不在 Shell 里，不要求登录）。
+**公开接口**（不登录，没有 Actor 提取器，登录只在提取器里校验，所以不会被拦）：`POST /api/v1/public/customer/{令牌}?month=2026-11`，请求体 `{"password":"查看密码"}`（默认本月）→ `{team:"团队2", today, month, months, nodes:[{name, region, period_start, period_end, paid}]}`：同管理端的按月看（每个节点起点在这个月的那一期，按本期生效日期从早到晚，同日按节点名，支付状态不影响顺序），每个节点只有这几项；`name` 是占用者现在的名字，已停止的是原占用者，手动名额写备注（没有备注写「手动添加的节点」）。不含 IP、供应商、价格。客户页月份范围与管理端一致，可查看下个月的期次。返回 `outstanding:[{month,count}]`，统计全部已开始且待支付的期次。节点另带 `manual` 和 `ended` 标记。月份格式不对 400。团队客户页默认启用，首次读取或后台检查时为尚未建立的团队生成分享，并为已启用的无密码旧链接补齐密码。已有链接和密码固定有效，不按时间过期或自动轮换；手动换新同时更换链接和密码，旧链接立即失效。无效、已停用或旧链接未设密码均返回 404；密码错误返回 403。访问与登录、订阅拉取共用按来源的失败限速（`auth::begin_attempt`，键 `cust:` + 令牌哈希前缀），超了 429。`last_view_at` / `last_view_ip` 10 分钟内只写一次，成功不写审计。响应 `Cache-Control: no-store`；`/c/` 开头的页面与 `/api/v1/public/` 都带 `X-Robots-Tag: noindex`（`lib.rs` 的响应头中间件）。前端页面是 `/c/:token`（不在 Shell 里，不要求登录）。
 
 ## 作业
 `Job = {id,kind,target:{id,name}|null,state,step,step_count,step_title,error,manual,created_by,created_at,started_at,finished_at,steps:[{idx,key,title,state,started_at,finished_at,output,error}]}`（`step_count` = 该种作业的步骤数，`step_title` = 第 `step` 步的标题，做完为 null）

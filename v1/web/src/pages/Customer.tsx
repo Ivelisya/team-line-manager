@@ -6,7 +6,7 @@ import * as React from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { ArrowRight, Check, Eye, EyeOff, Link2Off, LockKeyhole, RotateCw } from 'lucide-react';
 import { ApiError } from '@/lib/api';
-import { useExpired, usePublicCustomer } from '@/lib/publicCustomer';
+import { usePublicCustomer } from '@/lib/publicCustomer';
 import { Button } from '@/components/ui/button';
 import { TipHost } from '@/components/ui/tip';
 import { compareBillingEffectiveDate } from '@/lib/sort';
@@ -27,14 +27,13 @@ function CustomerView({ token }: { token: string }) {
   const [sp, setSp] = useSearchParams();
   const want = /^\d{4}-\d{2}$/.test(sp.get('month') ?? '') ? sp.get('month')! : '';
   const q = usePublicCustomer(token, want, access);
-  const expired = useExpired(q.data?.expires_at);
   React.useEffect(() => { if (q.data) setVerified(true); }, [q.data]);
   // 与管理台账统一按本期生效日排列，支付状态改变时保持节点位置。
   const d = React.useMemo(() => q.data && ({
     ...q.data,
     nodes: [...q.data.nodes].sort(compareBillingEffectiveDate),
   }), [q.data]);
-  const title = d && !expired && !q.isError ? `${d.team} · 节点付费情况` : '节点付费情况';
+  const title = d && !q.isError ? `${d.team} · 节点付费情况` : '节点付费情况';
   React.useEffect(() => { document.title = title; }, [title]);
   const onMonth = (m: string) => setSp(m === d?.today.slice(0, 7) ? {} : { month: m }, { replace: true });
 
@@ -63,11 +62,11 @@ function CustomerView({ token }: { token: string }) {
       <Button variant="primary" type="submit" loading={q.isFetching} disabled={!input.trim()} className="cx-access-submit">
         {q.isFetching ? '正在验证…' : <>查看台账<ArrowRight size={16} /></>}
       </Button>
-      <p className="cx-access-note">分享链接自生成起 1 小时内有效</p>
+      <p className="cx-access-note">链接和密码长期有效，换新或停用后旧链接失效</p>
     </form>;
-  } else if (expired || q.isError) {
-    body = expired || (q.error instanceof ApiError && q.error.status === 404)
-      ? <Empty icon={<Link2Off size={22} />} text="链接无效、已过期或已停用" hint="请联系对接人获取新链接" />
+  } else if (q.isError) {
+    body = q.error instanceof ApiError && q.error.status === 404
+      ? <Empty icon={<Link2Off size={22} />} text="链接无效或已停用" hint="请联系对接人获取新链接" />
       : <Empty text="暂时打不开，请稍后再试"><Button loading={q.isFetching} onClick={() => void q.refetch()}><RotateCw />重试</Button></Empty>;
     body = <div className="cx-state">{body}</div>;
   } else if (!d) {

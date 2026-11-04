@@ -412,8 +412,8 @@ pub async fn run_forever(st: AppState) {
     t.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         t.tick().await;
-        if let Err(e) = crate::api::batches::refresh_customer_pages(&st).await {
-            tracing::error!("客户页自动更新失败：{e:?}");
+        if let Err(e) = crate::api::batches::ensure_customer_pages(&st).await {
+            tracing::error!("客户页初始化失败：{e:?}");
         }
         match reconcile(&st, OffsetDateTime::now_utc()).await {
             Ok(n) if n > 0 => tracing::info!("计费对账：记了 {n} 条增减"),

@@ -364,7 +364,7 @@ fn page_text(team: &str, p: &Value) -> String {
         None => "还没人看过".into(),
     };
     let state = if p["enabled"] == true { "启用" } else { "已停用（打开回 404）" };
-    format!("客户页链接：{}\n  状态 {state}；查看密码 {}；到期 {}；{viewed}", p["link"].as_str().unwrap_or("（解不开，--rotate 换新链接）"), p["password"].as_str().unwrap_or("请换新链接"), table::ts(&st(p, "/expires_at")))
+    format!("客户页链接：{}\n  状态 {state}；查看密码 {}；固定有效；{viewed}", p["link"].as_str().unwrap_or("（解不开，--rotate 换新链接）"), p["password"].as_str().unwrap_or("请换新链接"))
 }
 
 #[derive(clap::Args)]

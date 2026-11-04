@@ -1,11 +1,9 @@
 // 团队台账：按月汇总待支付节点；选中月份的全部期次在同一张清单中维护。
 // 改开始收费日、地区备注、停止收费、删除收在每行的「⋯」里，手动添加节点在月份旁的「⋯」里。团队、月份写进地址（?team= / ?month=）。
 import * as React from 'react';
-import { useQueryClient } from '@tanstack/react-query';
 import { Check, ExternalLink, Link2, MoreHorizontal } from 'lucide-react';
 import { BILLING_EVENT_PAGE_SIZE, useAddBillingSlot, useBillingEvents, useBillingMonth, useDelBillingSlot, useMarkPaid, useOutstanding, usePatchBillingSlot, usePatchCustomerPage, useRotateCustomerPage, useTeams } from '@/lib/queries';
 import type { BillingMonth, BillingMonthNode, CustomerPage } from '@/lib/types';
-import { useExpired } from '@/lib/publicCustomer';
 import { useUrlState } from '@/lib/urlState';
 import { compareBillingEffectiveDate } from '@/lib/sort';
 import { openDrawer } from '@/lib/drawer';
@@ -321,19 +319,12 @@ function EventsPanel({ teamId }: { teamId: string }) {
 function PageLink({ teamId, teamName, page, stale }: { teamId: string; teamName: string; page: CustomerPage | null; stale: boolean }) {
   const rotate = useRotateCustomerPage(); const patch = usePatchCustomerPage();
   const [askRotate, setAskRotate] = React.useState(false);
-  const expired = useExpired(page?.expires_at);
-  const queryClient = useQueryClient();
-  React.useEffect(() => {
-    if (expired && page?.enabled) {
-      void queryClient.invalidateQueries({ queryKey: ['billing', 'month', teamId] });
-    }
-  }, [expired, page?.enabled, teamId, queryClient]);
-  const INFO = '给客户看的页面：按月列出这个团队每个节点（名字、地区、这一期的起止）已付还是待付，不含 IP、供应商、价格\n客户需输入查看密码。链接自生成起 1 小时内有效，到期自动更新链接和密码。';
+  const INFO = '给客户看的页面：按月列出这个团队每个节点（名字、地区、这一期的起止）已付还是待付，不含 IP、供应商、价格\n客户需输入固定查看密码。链接和密码长期有效，可手动换新或停用。';
   if (!page?.link || !page.password) {
     return (
       <span className="cxa-link" data-stale={stale} inert={stale || undefined}>
         <Button size="lg" loading={rotate.isPending} onClick={() => rotate.mutate(teamId, { onSuccess: () => toast.ok('已生成客户页链接'), onError: toast.err })}><Link2 />{page ? '重新生成客户页链接' : '生成客户页链接'}</Button>
-        {page && <span className="t-sub">{!page.password ? '旧链接需换新' : '链接已过期'}</span>}
+        {page && <span className="t-sub">{!page.password ? '旧链接需换新' : '链接无法读取'}</span>}
         <InfoTip text={INFO} />
       </span>
     );
@@ -347,7 +338,7 @@ function PageLink({ teamId, teamName, page, stale }: { teamId: string; teamName:
     <section className="panel bm-share-card" aria-label="客户页分享" data-stale={stale} inert={stale || undefined}>
       <header className="bm-share-header">
         <span className="bm-share-title"><Link2 size={16} />客户页分享</span>
-        <Pill tone={page.enabled ? 'ok' : 'neutral'}>{page.enabled ? '每小时自动更新' : '已停用'}</Pill>
+        <Pill tone={page.enabled ? 'ok' : 'neutral'}>{page.enabled ? '已启用' : '已停用'}</Pill>
         <div className="bm-share-actions">
           <Tip text="打开客户页"><a className="icon-btn icon-btn-xs" href={page.link} target="_blank" rel="noreferrer noopener" aria-label="打开客户页"><ExternalLink size={14} /></a></Tip>
           <DropdownMenu>
@@ -368,11 +359,11 @@ function PageLink({ teamId, teamName, page, stale }: { teamId: string; teamName:
         </div>
       </div>
       <footer className="bm-share-footer">
-        <span>{page.enabled ? (expired ? '正在自动更新…' : `${F.dtFull(page.expires_at)} 自动更新`) : '启用后继续自动更新'}</span>
+        <span>{page.enabled ? '链接和密码固定有效，可手动换新' : '启用后沿用当前链接和密码'}</span>
         <span data-tip={page.last_view_at ? F.dtFull(page.last_view_at) : undefined}>{page.last_view_at ? `客户 ${F.ago(page.last_view_at)}查看过` : '客户尚未查看'}</span>
       </footer>
       <ConfirmDialog open={askRotate} onOpenChange={setAskRotate} title={`换新链接 · ${teamName}`} confirmLabel="换新链接"
-        description="旧链接马上失效，请把新链接和新密码发给客户。新链接有效期为 1 小时。"
+        description="旧链接马上失效，请把新链接和新密码发给客户。链接和密码会保持有效，直到再次换新或停用。"
         onConfirm={async () => { await rotate.mutateAsync(teamId); toast.ok('已换新链接，旧链接已失效'); }} />
     </section>
   );

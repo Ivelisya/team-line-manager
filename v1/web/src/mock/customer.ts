@@ -153,13 +153,13 @@ export function installCustomerMock(register: Reg, o: { teams: () => Team[]; mac
   const slot = (id: string) => { const s = slots.find((x) => x.id === id); if (!s) throw bad('没有这个计费节点', 404, 'not_found'); return s; };
   const pageView = (tid: string): CustomerPage | null => {
     let p = pages.get(tid);
-    if (!team(tid).spare && (!p || (p.enabled && (!p.password || Date.now() >= Date.parse(p.token_at) + 3600000)))) {
+    if (!team(tid).spare && (!p || (p.enabled && !p.password))) {
       const now = new Date().toISOString();
       p = { token: token32(), password: token32().slice(0, 16), enabled: true,
         created_at: p?.created_at ?? now, token_at: now, last_view_at: null };
       pages.set(tid, p);
     }
-    return p ? { password: p.password ?? null, expires_at: new Date(Date.parse(p.token_at) + 3600000).toISOString(), enabled: p.enabled, link: `${location.origin}/c/${p.token}`, created_at: p.created_at, token_at: p.token_at, last_view_at: p.last_view_at } : null;
+    return p ? { password: p.password ?? null, enabled: p.enabled, link: `${location.origin}/c/${p.token}`, created_at: p.created_at, token_at: p.token_at, last_view_at: p.last_view_at } : null;
   };
   const region = (v: unknown) => { const s = String(v ?? '').trim(); if (!s || [...s].length > 20) throw bad('地区要 1–20 个字，如 美区、墨西哥'); return s; };
   const note = (v: unknown) => { const s = String(v ?? '').trim(); if ([...s].length > 60) throw bad('备注最多 60 个字'); return s; };
@@ -306,14 +306,14 @@ export function installCustomerMock(register: Reg, o: { teams: () => Team[]; mac
   R('POST', '/public/customer/([^/]+)', ({ params, query, body }) => {
     const asked = monthQ(query.get('month'));
     const month = asked;
-    const hit = [...pages.entries()].find(([, p]) => p.token === params[0] && p.enabled && p.password && Date.now() < Date.parse(p.token_at) + 3600000);
+    const hit = [...pages.entries()].find(([, p]) => p.token === params[0] && p.enabled && p.password);
     if (!hit) throw bad('链接不对或已停用', 404, 'not_found');
     const [tid, p] = hit;
     if (body.password !== p.password) throw bad('查看密码不正确', 403, 'forbidden');
     if (!p.last_view_at || Date.now() - Date.parse(p.last_view_at) > 600_000) p.last_view_at = new Date().toISOString();
     const nodes = rows(tid, month);
     const out: PublicCustomer = {
-      expires_at: new Date(Date.parse(p.token_at) + 3600000).toISOString(), team: team(tid).name, today: TODAY, month, months: monthsOf(tid),
+      team: team(tid).name, today: TODAY, month, months: monthsOf(tid),
       outstanding: monthsOf(tid).map(month => ({ month, count: rows(tid, month).filter(n => !n.paid && !n.upcoming).length })).filter(m => m.count > 0),
       nodes: nodes.map((n) => ({ name: n.name, region: n.region, period_start: n.period_start, period_end: n.period_end, paid: n.paid, manual: n.manual, ended: n.ended })),
     };

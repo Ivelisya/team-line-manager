@@ -544,7 +544,7 @@ export type BillingEventKind = 'init' | 'add' | 'remove' | 'swap' | 'edit' | 'ma
 /** 增减记录：text 是服务端拼好的一句话；swap（替换节点）时 machine_name 是新节点、other_name 是换下来的（名字是替换前的快照） */
 export interface BillingEvent { id: string; at: string; kind: BillingEventKind; machine_name: string | null; other_name: string | null; slot_id: string | null; text: string }
 /** 团队的客户页链接：link = {public_url}/c/{token}，管理端随时能再复制 */
-export interface CustomerPage { enabled: boolean; link: string | null; password: string | null; expires_at: string; created_at: string; token_at: string; last_view_at: string | null }
+export interface CustomerPage { enabled: boolean; link: string | null; password: string | null; created_at: string; token_at: string; last_view_at: string | null }
 /** 某月清单的一行：一个节点起点在这个月的那一期 [period_start, period_end)，period_end 显示为到期日。
  *  name：节点名，停止收费的是原节点名，手动添加的是备注（没有备注「手动添加的节点」）；upcoming：这一期还没开始；
  *  ended：已停止收费（这一期照收）；holder_id：现在占着它的节点（点名字打开抽屉） */
@@ -561,7 +561,6 @@ export interface BillingMonth {
 /** POST /public/customer/{token}?month=YYYY-MM：同管理端的按月看，每个节点只有名字、地区、这一期、已付 / 待付（按本期生效日期、节点名排列） */
 export interface PublicCustomer {
   outstanding: { month: string; count: number }[];
-  expires_at: string;
   team: string; today: string; month: string; months: string[];
   nodes: { name: string; region: string; period_start: string; period_end: string; paid: boolean; manual: boolean; ended: boolean }[];
 }

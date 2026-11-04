@@ -8,8 +8,8 @@ import '@/styles/billing.css';
 
 /** 2026-11-30 →「11 月 30 日」；不在 today 那一年的写「2027 年 1 月 1 日」 */
 export const cnDate = (s: string, today: string) => `${s.slice(0, 4) !== today.slice(0, 4) ? `${s.slice(0, 4)} 年 ` : ''}${Number(s.slice(5, 7))} 月 ${Number(s.slice(8, 10))} 日`;
-/** 一期写成「10 月 30 日 – 11 月 30 日到期」：起点是购买（开始收费）那天，终点是到期日（同供应商写的到期日，下一期从这天起） */
-export const cnSpan = (start: string, end: string, today: string) => `${cnDate(start, today)} – ${cnDate(end, today)}到期`;
+/** 一期的日期区间：终点是到期日，下一期从这天起。 */
+export const cnSpan = (start: string, end: string, today: string) => `${cnDate(start, today)} – ${cnDate(end, today)}`;
 /** 2026-11 →「11 月」；不在 today 那一年的写「2027 年 1 月」 */
 export const cnMonth = (m: string, today: string) => `${m.slice(0, 4) !== today.slice(0, 4) ? `${m.slice(0, 4)} 年 ` : ''}${Number(m.slice(5, 7))} 月`;
 /** 地区：服务端不知道国家时是「未知」，写成「未标地区」，免得像出错 */
@@ -62,6 +62,7 @@ export function BillingNodeRow({ n, today, side, nameContent }: {
 }) {
   const period = n.period_start > today ? 'upcoming' : today >= n.period_end ? 'expired' : 'active';
   const label = PERIOD_LABEL[period];
+  const remaining = period === 'active' ? Math.round((Date.parse(n.period_end) - Date.parse(today)) / 86_400_000) : null;
   return <li className="bm-row">
     <div className="bm-main">
       <span className="bm-name">
@@ -70,7 +71,7 @@ export function BillingNodeRow({ n, today, side, nameContent }: {
         {n.manual && <span className="bm-tag">手动添加</span>}
         {n.ended && <span className="bm-tag">已停止收费</span>}
       </span>
-      <span className="bm-sub">{regionLabel(n.region)} · <span className="num">{cnSpan(n.period_start, n.period_end, today)}</span></span>
+      <span className="bm-sub">{regionLabel(n.region)} · <span className="num">{cnSpan(n.period_start, n.period_end, today)}</span>{remaining !== null && <> · <span className="num">还有 {remaining} 天到期</span></>}</span>
     </div>
     <span className="bm-side">{side}</span>
   </li>;
