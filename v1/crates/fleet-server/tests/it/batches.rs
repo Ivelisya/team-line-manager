@@ -109,6 +109,41 @@ async fn customer_hides_unstarted_periods_and_early_payment_is_rejected() {
     }
 }
 
+#[tokio::test]
+async fn customer_default_month_uses_latest_started_period_without_moving_explicit_choices() {
+    let t = common::boot(false, "trust_forwarded_for = true").await;
+    let team = common::seed_team(&t, "默认月份测试").await;
+    let now = today();
+    let this = now.replace_day(1).unwrap();
+    let previous = meta::add_months(this, -1).unwrap();
+    let old = meta::add_months(this, -2).unwrap();
+    t.post("/api/v1/billing/init", json!({"since": fmt_date(old)})).await;
+    let slot = t.post(&format!("/api/v1/teams/{team}/billing-slots"), json!({"region":"美区", "start_date":fmt_date(old), "note":"历史节点"})).await;
+    let id = slot[0]["id"].as_str().unwrap();
+    assert_eq!(t.req("PATCH", &format!("/api/v1/billing-slots/{id}"), Some(json!({"end_date":fmt_date(previous + Duration::days(1))})), None).await.0, StatusCode::OK);
+    let page = t.post(&format!("/api/v1/teams/{team}/customer-page"), json!({})).await;
+    let (link, password) = (page["link"].as_str().unwrap(), page["password"].as_str().unwrap());
+    let response = public(&t, link, password).await.1;
+    assert_eq!(response["data"]["month"], fmt_month(previous));
+    assert_eq!(response["data"]["nodes"].as_array().unwrap().len(), 1);
+    t.post(&format!("/api/v1/teams/{team}/billing/paid"), json!({"month":fmt_month(previous), "slot_ids":[id], "paid":true})).await;
+    assert_eq!(public(&t, link, password).await.1["data"]["month"], fmt_month(previous), "付款不改变默认月份");
+    let explicit = format!("{link}?month={}", fmt_month(this));
+    let response = public(&t, &explicit, password).await.1;
+    assert_eq!(response["data"]["month"], fmt_month(this));
+    assert!(response["data"]["nodes"].as_array().unwrap().is_empty(), "手动选择的空月份不回跳");
+    t.post(&format!("/api/v1/teams/{team}/billing-slots"), json!({"region":"美区", "start_date":fmt_date(this), "note":"本月节点"})).await;
+    assert_eq!(public(&t, link, password).await.1["data"]["month"], fmt_month(this), "本月有数据时优先本月");
+    let explicit = format!("{link}?month={}", fmt_month(previous));
+    assert_eq!(public(&t, &explicit, password).await.1["data"]["month"], fmt_month(previous));
+    let future_team = common::seed_team(&t, "未开始团队").await;
+    t.post(&format!("/api/v1/teams/{future_team}/billing-slots"), json!({"region":"美区", "start_date":fmt_date(fleet_server::batches::latest_start(now)), "note":"未来节点"})).await;
+    let page = t.post(&format!("/api/v1/teams/{future_team}/customer-page"), json!({})).await;
+    let response = public(&t, page["link"].as_str().unwrap(), page["password"].as_str().unwrap()).await.1;
+    assert_eq!(response["data"]["month"], fmt_month(this));
+    assert!(response["data"]["nodes"].as_array().unwrap().is_empty(), "没有已开始账期时保留空状态");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn billing_ledger_and_customer_page() {
     let t = common::boot(false, "trust_forwarded_for = true").await;

@@ -785,7 +785,7 @@ pub async fn page_delete(a: Actor, State(st): State<AppState>, ApiPath(team): Ap
 
 // ── 公开（不登录）─────────────────────────────────────────────────────
 
-/// `POST /api/v1/public/customer/{令牌}?month=2026-11`（默认本月）：每个节点起点落在这个月的那一期，已付 / 待付（按本期生效日、节点名排列）。
+/// `POST /api/v1/public/customer/{令牌}?month=2026-11`：未指定月份时定位到最近有已生效账期的月份。
 /// 每个节点只有名字（手动的写备注）、地区、这一期 [period_start, period_end)、paid，不含 IP、供应商、价格。令牌不对或已停用一律 404（不区分）。令牌按 sha256 查库；
 /// 和订阅拉取一样，不对的记一次失败、与登录共用按来源的限速（键按令牌哈希分开，别人猜错的不会把对的令牌一起封掉）。
 /// 最近查看时间与来源 10 分钟内只写一次。X-Robots-Tag 由 lib.rs 的响应头中间件统一加
@@ -798,7 +798,8 @@ pub async fn public_view(State(st): State<AppState>, ClientIp(ip): ClientIp, Api
     // 账期口径与管理端一致，但客户不展示尚未生效的期次或未来月份。
     let today = bt::today();
     let this_month = bt::month_of(today);
-    let month = month_in(q.month.as_deref())?.min(this_month);
+    let requested_month = q.month.as_deref().filter(|month| !month.is_empty());
+    let mut month = month_in(requested_month)?.min(this_month);
     let hash = sha256(token.as_bytes());
     let key = format!("cust:{}", &hex::encode(&hash)[..16]);
     let attempt = auth::begin_attempt(&st, &key, ip.map(auth::ip_group)).await.map_err(|e| {
@@ -829,6 +830,11 @@ pub async fn public_view(State(st): State<AppState>, ClientIp(ip): ClientIp, Api
     .execute(&st.db)
     .await?;
     let mut db = st.db.acquire().await?;
+    if requested_month.is_none() {
+        let slots: Vec<(Date, Option<Date>)> = sqlx::query_as("select start_date, end_date from billing_slot where team_id = $1")
+            .bind(team).fetch_all(&mut *db).await?;
+        month = slots.into_iter().filter_map(|(start, end)| bt::latest_started_month(start, end, today)).max().unwrap_or(this_month);
+    }
     let (months, rows) = month_rows(&mut db, team, month).await?;
     let mut counts = std::collections::BTreeMap::<String, usize>::new();
     for row in outstanding_rows(&mut db, team, today).await? {
