@@ -1,6 +1,5 @@
 // 上架：单台表单 + 批量可编辑网格（可从表格软件粘贴）。两步：1 检查（不落库，显示每行错误与分配到的名称/端口）→ 2 开始（唯一一次确认）。
 // VPS 节点可以「在已有机器上添加 IP」：同机 IP 节点（host_id），SSH、agent、供应商沿用宿主机的；抽屉里宿主机的「添加 IP 节点」跳来时带 ?host=<id> 预填。
-import { Label } from '@/components/ui/label';
 import * as React from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Check, CheckCircle2, ChevronDown, ClipboardPaste, Info, KeyRound, ListChecks, Plus, Trash2, TriangleAlert } from 'lucide-react';
@@ -11,10 +10,9 @@ import { prefixScore } from '@/lib/match';
 import { inheritSummary, kindLabel, meta } from '@/lib/derive';
 import * as F from '@/lib/format';
 import { Button, IconButton } from '@/components/ui/button';
-import { FormField } from '@/components/ui/form';
+import { CheckRow, FormField } from '@/components/ui/form';
 import { InfoTip } from '@/components/ui/info-tip';
 import { Input } from '@/components/ui/input';
-import { Switch } from '@/components/ui/switch';
 import { Select } from '@/components/ui/select';
 import { DateField } from '@/components/ui/date-field';
 import { Popover, PopoverContent, PopoverTrigger, Segmented } from '@/components/ui/overlays';
@@ -344,10 +342,7 @@ function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; o
           <Segmented label="类型" value={k} onChange={(v) => onChange({ kind: v })} items={KIND_OPTS} />
           {k === 'vps' && (
             <div className="row" style={{ gap: 4 }}>
-              <Label className="cursor-pointer gap-2 text-body font-normal text-fg has-data-disabled:cursor-default gap-2.5">
-                <Switch checked={row.add_ip} onCheckedChange={(v) => onChange(v ? { add_ip: true } : { add_ip: false, host_id: '' })} />
-                <span className="peer-data-disabled:opacity-(--o-disabled)">在已有机器上添加 IP</span>
-              </Label>
+              <CheckRow switch checked={row.add_ip} onChange={(v) => onChange(v ? { add_ip: true } : { add_ip: false, host_id: '' })}>在已有机器上添加 IP</CheckRow>
               <InfoTip text="VPS 节点上另配的公网 IP，每个都可以上架成独立节点" />
             </div>
           )}

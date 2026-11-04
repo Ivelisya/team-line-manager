@@ -1,16 +1,14 @@
 // 设置 · 账户安全：两步验证（开启 / 停用 / 重新生成恢复码，恢复码只显示一次）、修改密码（可同时撤销全部 API 密钥）、登录会话（撤销、退出其他设备）。
 // 开启两步验证、退出其他设备都要再输当前密码：拿到会话 Cookie 的人不能借它绑自己的认证器、把本人踢下线。
 // 输错当前密码 / 验证码时服务端回 401（code 不是 unauthorized，不会跳登录页），错误留在对话框或表单里显示。
-import { Label } from '@/components/ui/label';
 import * as React from 'react';
 import { LogOut, MonitorSmartphone, RefreshCw, ShieldAlert, ShieldCheck, ShieldOff } from 'lucide-react';
 import { useChangePassword, useMe, useRegenRecovery, useRevokeOtherSessions, useRevokeSession, useSessions, useTotpDisable, useTotpEnable, useTotpSetup, useTotpStatus } from '@/lib/queries';
 import type { AccountSession } from '@/lib/types';
 import * as F from '@/lib/format';
 import { Button, IconButton } from '@/components/ui/button';
-import { FormField } from '@/components/ui/form';
+import { CheckRow, FormField } from '@/components/ui/form';
 import { InfoTip } from '@/components/ui/info-tip';
-import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Trunc } from '@/components/ui/tooltip';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -214,7 +212,7 @@ function PasswordPanel() {
           <FormField label="新密码" error={newErr} info="建议用密码管理器生成"><Input type="password" value={nw} onChange={(e) => setNw(e.target.value)} autoComplete="new-password" placeholder={`至少 ${MIN_PASSWORD} 个字符`} /></FormField>
           <FormField label="再输一次新密码" error={nw2 && nw !== nw2 ? '两次输入的不一样' : undefined}><Input type="password" value={nw2} onChange={(e) => setNw2(e.target.value)} autoComplete="new-password" /></FormField>
         </div>
-        <div className="row" style={{ gap: 4 }}><Label className="cursor-pointer gap-2 text-body font-normal text-fg has-data-disabled:cursor-default"><Checkbox checked={keys} onCheckedChange={(v) => setKeys(v === true)} /><span className="peer-data-disabled:opacity-(--o-disabled)">同时撤销所有 API 密钥</span></Label><InfoTip text="怀疑密码或登录会话泄露时勾上：拿到会话的人可能已经建了密钥" /></div>
+        <div className="row" style={{ gap: 4 }}><CheckRow checked={keys} onChange={setKeys}>同时撤销所有 API 密钥</CheckRow><InfoTip text="怀疑密码或登录会话泄露时勾上：拿到会话的人可能已经建了密钥" /></div>
         {err && <Note tone="bad">{err}</Note>}
         <div className="row account-foot" style={{ justifyContent: 'flex-end' }}><Button type="submit" loading={change.isPending} disabled={!valid}>修改密码</Button></div>
       </form>

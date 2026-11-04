@@ -435,7 +435,7 @@ function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }
               <div className="hint">{m.kind === 'relay' ? '线路机只能立即回收。请先搬空节点，直出入口会一起移除' : m.host_machine ? `宿主机「${m.host_machine.name}」不受影响` : n > 0 ? `${n} 个同机 IP 节点会一起退役` : `移入备用${pointed ? ` · ${HELD_TEXT}` : m.subscription ? ` · ${F.addDays(m.subscription.due_date, 2).slice(5)} 起自动回收` : ''}`}</div>
             </div>
           )}
-          <Button variant="destructive" disabled={busyJob || m.lifecycle === 'retiring'} onClick={() => setOpen(true)}>{inSpare ? '立即回收…' : '退役…'}</Button>
+          <Button variant="destructive-outline" disabled={busyJob || m.lifecycle === 'retiring'} onClick={() => setOpen(true)}>{inSpare ? '立即回收…' : '退役…'}</Button>
         </div>
         {busyJob && m.active_job && <Note tone="info">作业进行中，暂不能操作。<Button variant="link" size="inline" render={<Link to={`/jobs/${m.active_job.id}`} onClick={onClosed} />}>查看作业</Button></Note>}
         {/* 退役作业失败：机器仍是退役中，不能再发起退役，只能重试那个作业 */}

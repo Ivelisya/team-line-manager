@@ -17,11 +17,10 @@ import { useAddChannel, useApiKeys, useCreateApiKey, useDelChannel, useMe, useMo
 import type { ApiKey, NotifyChannel, NotifyLogEntry } from '@/lib/types';
 import * as F from '@/lib/format';
 import { Button, IconButton } from '@/components/ui/button';
-import { FormField, OptimisticSwitch } from '@/components/ui/form';
+import { CheckRow, FormField, OptimisticSwitch } from '@/components/ui/form';
 import { InfoTip } from '@/components/ui/info-tip';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
-import { Switch } from '@/components/ui/switch';
 import { Select } from '@/components/ui/select';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/overlays';
 import { Trunc } from '@/components/ui/tooltip';
@@ -338,13 +337,13 @@ const ChannelDialog = resetOnOpen(function ChannelDialog({ target, open, onClose
           </FormField>
         ))}
       </div>
-      {canClear && <Label className="cursor-pointer gap-2 text-body font-normal text-fg has-data-disabled:cursor-default"><Checkbox checked={clearSecret} onCheckedChange={(v) => setClearSecret(v === true)} /><span className="peer-data-disabled:opacity-(--o-disabled)">清除签名密钥（机器人关了签名校验时勾选）</span></Label>}
+      {canClear && <CheckRow checked={clearSecret} onChange={setClearSecret}>清除签名密钥（机器人关了签名校验时勾选）</CheckRow>}
       {!cfgOk && touched && <div className="hint is-error">{isNew ? '请把配置填写完整' : '要改配置，请把必填字段重新填上'}</div>}
       <div className="form-grid">
         <FormField label="最低级别"><Select value={sev} onChange={setSev} options={SEVERITIES} /></FormField>
-        <FormField label="状态"><Label className="cursor-pointer gap-2 text-body font-normal text-fg has-data-disabled:cursor-default gap-2.5 h-(--h-lg)"><Switch checked={enabled} onCheckedChange={setEnabled} /><span className="peer-data-disabled:opacity-(--o-disabled)">{enabled ? '启用' : '已停用'}</span></Label></FormField>
+        <FormField label="状态"><CheckRow switch className="h-(--h-lg)" checked={enabled} onChange={setEnabled}>{enabled ? '启用' : '已停用'}</CheckRow></FormField>
         <FormField label="月报" className="span-2" info="每月 1 号发上月摘要（总流量、月费、可用率最差的几台等），不看最低级别；渠道要处于启用状态才会收到">
-          <Label className="cursor-pointer gap-2 text-body font-normal text-fg has-data-disabled:cursor-default gap-2.5 h-(--h-lg)"><Switch checked={monthly} onCheckedChange={setMonthly} aria-label="接收月报" /><span className="peer-data-disabled:opacity-(--o-disabled)">{monthly ? '接收月报' : '不接收'}</span></Label>
+          <CheckRow switch className="h-(--h-lg)" checked={monthly} onChange={setMonthly} aria-label="接收月报">{monthly ? '接收月报' : '不接收'}</CheckRow>
         </FormField>
       </div>
     </FormDialog>

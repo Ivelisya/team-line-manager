@@ -320,7 +320,7 @@ function Editor({ scope, name, sp, team, node, onDirty }: { scope: 'team' | 'nod
         <div className="pol-actions">
           <Button disabled={!canSave} aria-disabled={!!blocked || undefined} data-tip={blocked} loading={save.isPending} onClick={() => { if (!blocked) onSave(); }}><Save />保存草稿</Button>
           <Button variant="ghost" disabled={!dirty || save.isPending} onClick={() => load(sp)}><Undo2 />还原编辑</Button>
-          {sp.draft && <Button variant="destructive" disabled={save.isPending} onClick={() => setAskDrop(true)}><Trash2 />放弃这份草稿</Button>}
+          {sp.draft && <Button variant="destructive-outline" disabled={save.isPending} onClick={() => setAskDrop(true)}><Trash2 />放弃这份草稿</Button>}
           <span className="pol-meta t-sub">{dirty ? <span className="pol-dirty">有未保存的修改</span> : sp.updated_at ? <span data-tip={F.dtFull(sp.updated_at)}>最近修改 {F.dt(sp.updated_at)}{sp.updated_by ? ` · ${F.actor(sp.updated_by)}` : ''}</span> : '还没有修改过'}</span>
         </div>
       </div>

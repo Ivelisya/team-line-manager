@@ -387,7 +387,7 @@ function PlansTab() {
   return (
     <>
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
-      <Panel title="套餐" count={list.length} sub={<InfoTip text="同一套餐的机器，共用这里的流量额度、价格和周期" />} tools={<><CheckRow className="is-label" checked={showArchived} onChange={setShowArchived}>显示已归档</CheckRow><Button size="sm" onClick={() => setEdit('new')}><Plus />新建套餐</Button></>} flush>
+      <Panel title="套餐" count={list.length} sub={<InfoTip text="同一套餐的机器，共用这里的流量额度、价格和周期" />} tools={<><CheckRow className="text-label" checked={showArchived} onChange={setShowArchived}>显示已归档</CheckRow><Button size="sm" onClick={() => setEdit('new')}><Plus />新建套餐</Button></>} flush>
         <TableWrap>
           <table className="dt" style={{ minWidth: 860 }}>
             <colgroup><col /><col style={{ width: 130 }} /><col style={{ width: 120 }} /><col style={{ width: 96 }} /><col style={{ width: 96 }} /><col style={{ width: 110 }} /><col style={{ width: 76 }} /><col style={{ width: 52 }} /></colgroup>

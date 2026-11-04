@@ -2,14 +2,12 @@
 // - 同步出口参数：参数和对应入口不一致的出口改成入口现在的凭据（作业 router_sync，会重启 OpenClash）；
 // - 临时切换：select 组经 mihomo API 切到组里另一个出口（不重启、不断已有连接），可到时自动切回。
 // 抽屉里的「策略组」一段（GroupsSection）也在这里：组 → 当前出口，select 组每组一个「临时切换…」，切换中的可以切回。
-import { Label } from '@/components/ui/label';
 import * as React from 'react';
 import { ConfirmDialog, FormDialog } from '@/components/app/dialogs';
 import { ErrorNote, Note, Section, SectionHeader } from '@/components/app/primitives';
 import { Button } from '@/components/ui/button';
-import { FormField } from '@/components/ui/form';
+import { CheckRow, FormField } from '@/components/ui/form';
 import { InfoTip } from '@/components/ui/info-tip';
-import { Checkbox } from '@/components/ui/checkbox';
 import { Select } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
@@ -91,8 +89,8 @@ const SyncDialog = resetOnOpen(function SyncDialog({ open, t }: { open: boolean;
           {p.skipped.length > 0 && <Note tone="warn">入口已不在用，同步不了：{p.skipped.join('、')}<InfoTip text="要换成别的入口，用「改出口指向」" /></Note>}
           {p.untrusted.length > 0 && <Note tone="warn">从没对上过对应的入口，可能是路由上有人加的，没有同步：{p.untrusted.map((u) => u.exit).join('、')}<InfoTip text="确认是自己的，在出口页签里单独选它同步" /></Note>}
           {needForce.length > 0 && (
-            <Label className="cursor-pointer gap-2 text-body font-normal text-fg has-data-disabled:cursor-default"><Checkbox checked={force} onCheckedChange={(v) => setForce(v === true)} />
-              <span className="peer-data-disabled:opacity-(--o-disabled)">{needForce.map((u) => `${u.exit}（${u.entry}，${u.why}）`).join('、')} 从没对上过这个入口，可能是路由上有人加的；确认是自己的，仍要同步</span></Label>
+            <CheckRow checked={force} onChange={setForce}>
+              {needForce.map((u) => `${u.exit}（${u.entry}，${u.why}）`).join('、')} 从没对上过这个入口，可能是路由上有人加的；确认是自己的，仍要同步</CheckRow>
           )}
           {!p.ok && blockers.length > 0 && <Note tone="bad">{blockers.join('；')}</Note>}
         </div>

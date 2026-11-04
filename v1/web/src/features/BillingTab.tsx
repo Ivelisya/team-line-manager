@@ -6,11 +6,10 @@ import type { MachineView, SubField, Subscription } from '@/lib/types';
 import { useRenew, useRenewals, useSaveSubscription, type SubscriptionBody } from '@/lib/queries';
 import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
-import { FormField, UnitInput } from '@/components/ui/form';
+import { CheckRow, FormField, UnitInput } from '@/components/ui/form';
 import { InfoTip } from '@/components/ui/info-tip';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Switch } from '@/components/ui/switch';
 import { Segmented } from '@/components/ui/overlays';
 import { DateField } from '@/components/ui/date-field';
 import { useUsdPreview } from '@/lib/fx';
@@ -208,7 +207,7 @@ function SubForm({ m }: { m: MachineView }) {
       {o('traffic_reset_day', '流量重置日', <Input inputMode="numeric" maxLength={2} value={resetDay} onChange={(e) => setResetDay(e.target.value.replace(/\D/g, ''))} placeholder="1–31" />, resetBad ? '填 1–31' : undefined, '每月几号重置，按账单时区；月份没有这一天按月末')}
       {/* 只有按网卡计量的机器（quota.rule 非空）才用得上；家宽代理、同机 IP 节点按业务流量，不显示 */}
       {m.quota.rule && o('traffic_rule', '流量计费', <Select value={rule} onChange={setRule} options={trafficRuleOptions()} />, undefined, '双向是下行加上行；单向只记其中一个。以供应商面板的计费口径为准')}
-      <div className="row span-2" style={{ gap: 4 }}><Label className="cursor-pointer gap-2 text-body font-normal text-fg has-data-disabled:cursor-default gap-2.5"><Switch checked={auto} onCheckedChange={setAuto} /><span className="peer-data-disabled:opacity-(--o-disabled)">到期自动续费</span></Label><InfoTip text="只用于提醒口径，不会真的扣款" /></div>
+      <div className="row span-2" style={{ gap: 4 }}><CheckRow switch checked={auto} onChange={setAuto}>到期自动续费</CheckRow><InfoTip text="只用于提醒口径，不会真的扣款" /></div>
       <div className="span-2 row" style={{ justifyContent: 'flex-end' }}><Button disabled={!valid || sig === saved.current || save.isPending} loading={save.isPending} onClick={submit}>保存订阅</Button></div>
     </div>
   );

@@ -51,11 +51,13 @@ export function SearchInput({ className, ref, ...p }: React.ComponentProps<'inpu
   );
 }
 
-/** 整行可点的复选行：点文字也能勾；disabled 时文字一起调淡 */
-export function CheckRow({ checked, onChange, children, disabled, className }: { checked: boolean; onChange: (v: boolean) => void; children: React.ReactNode; disabled?: boolean; className?: string }) {
+/** 整行可点的复选行 / 开关行：点文字也能切换；disabled 时文字一起调淡。switch = 前面是开关（间距略大）；aria-label 给控件一个固定的名字（文字会随状态变时用） */
+export function CheckRow({ checked, onChange, children, disabled, className, switch: asSwitch, 'aria-label': ariaLabel }: { checked: boolean; onChange: (v: boolean) => void; children: React.ReactNode; disabled?: boolean; className?: string; switch?: boolean; 'aria-label'?: string }) {
   return (
-    <Label className={cn('cursor-pointer gap-2 text-body font-normal text-fg has-data-disabled:cursor-default', className)}>
-      <Checkbox checked={checked} disabled={disabled} onCheckedChange={(v) => onChange(v)} />
+    <Label className={cn('cursor-pointer gap-2 text-body font-normal text-fg has-data-disabled:cursor-default', asSwitch && 'gap-2.5', className)}>
+      {asSwitch
+        ? <Switch checked={checked} disabled={disabled} onCheckedChange={(v) => onChange(v)} aria-label={ariaLabel} />
+        : <Checkbox checked={checked} disabled={disabled} onCheckedChange={(v) => onChange(v)} aria-label={ariaLabel} />}
       <span className="peer-data-disabled:opacity-(--o-disabled)">{children}</span>
     </Label>
   );

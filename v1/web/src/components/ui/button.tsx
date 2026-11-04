@@ -33,9 +33,12 @@ const buttonVariants = cva(
           "bg-secondary text-secondary-foreground hover:not-disabled:bg-[color-mix(in_srgb,var(--secondary),var(--foreground)_5%)] aria-expanded:bg-secondary",
         ghost:
           "text-fg-2 hover:not-disabled:bg-accent hover:not-disabled:text-foreground aria-expanded:bg-accent aria-expanded:text-foreground aria-pressed:bg-accent aria-pressed:text-foreground",
-        // 危险操作：柔和的红底红字（不用实心红）
+        // 危险操作两档（名字同 coss ui）：destructive = 实心红（对话框里的危险确认：清理并回收、删除…），禁用时同主按钮改轨道底 + 三级字；
+        // destructive-outline = 红字红描边（入口按钮：「退役…」「删除…」，点开还有确认）
         destructive:
-          "bg-bad-bg text-bad-text hover:not-disabled:bg-(--bad-bg-strong)",
+          "bg-destructive text-(--on-solid) hover:not-disabled:bg-(--bad-solid-strong) disabled:bg-track disabled:text-fg-3 disabled:opacity-100 disabled:saturate-100 aria-disabled:bg-track aria-disabled:text-fg-3 aria-disabled:opacity-100 aria-disabled:saturate-100 aria-busy:disabled:bg-destructive aria-busy:disabled:text-(--on-solid)",
+        "destructive-outline":
+          "border-[color-mix(in_srgb,var(--bad)_35%,var(--line))] bg-surface text-bad-text hover:not-disabled:border-[color-mix(in_srgb,var(--bad)_50%,var(--line))] hover:not-disabled:bg-bad-bg",
         link: "text-brand underline-offset-3 hover:underline",
       },
       size: {

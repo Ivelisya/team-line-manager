@@ -11,7 +11,7 @@
 @import "./overrides.css" layer(components);
 
 /* 源文件扫描：只认客户页真正用到的文件（customerEntry.tsx 的 import 图），管理端页面里的工具类不进客户页 CSS。
-   清单由 node tools/customer-sources.mjs 生成（改了客户页的 import 后重跑；node tools/customer-sources.mjs --check 核对）。 */
+   清单由 node tools/customer-sources.mjs 生成（改了客户页的 import 后重跑）；pnpm build 先跑 --check 核对，清单过期就构建失败，不会悄悄漏掉客户页要用的工具类。 */
 @source "../components/app/empty.tsx";
 @source "../components/app/primitives.tsx";
 @source "../components/ui/button.tsx";

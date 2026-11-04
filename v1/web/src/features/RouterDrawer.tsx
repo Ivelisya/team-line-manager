@@ -296,7 +296,7 @@ function DeleteSection({ r, onClosed }: { r: RouterView; onClosed: () => void })
       <div className="mgroup is-danger">
         <div className="manage-row">
           <div><div className="t">删除</div><div className="hint">只删面板里的记录，路由本身不受影响 <InfoTip text={'会撤销隧道授权并删除历史数据\n删除后会给出一条在路由上执行的清理命令'} /></div></div>
-          <Button variant="destructive" onClick={openAsk}>删除…</Button>
+          <Button variant="destructive-outline" onClick={openAsk}>删除…</Button>
         </div>
       </div>
       {typed

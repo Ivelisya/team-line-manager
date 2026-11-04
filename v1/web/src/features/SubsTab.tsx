@@ -1,6 +1,5 @@
 // 设置「客户端订阅」：给自己的客户端（Windows 上的 Clash Verge、OpenClash 的 proxy-provider、v2rayN / Shadowrocket）一个链接，
 // 按规则（团队、指定机器）在拉取时现算在用的入口。列表（规则、条目数、最近拉取）、新建（链接只显示一次）、改规则、启用 / 停用、轮换链接、删除、看条目。
-import { Label } from '@/components/ui/label';
 import * as React from 'react';
 import { List, Pencil, Plus, RefreshCw, Rss, ShieldAlert, Trash2, X } from 'lucide-react';
 import { DEFAULT_RULE, useClientSub, useClientSubs, useCreateClientSub, useDelClientSub, usePatchClientSub, useRotateClientSub, type ClientSub, type ClientSubWithUrl, type SubProtocols, type SubRule } from '@/lib/clientSubs';
@@ -8,11 +7,10 @@ import { useMachineBriefs, useTeams } from '@/lib/queries';
 import * as F from '@/lib/format';
 import { resetOnOpen, useHeld } from '@/lib/useHeld';
 import { Button, IconButton } from '@/components/ui/button';
-import { FormField, OptimisticSwitch } from '@/components/ui/form';
+import { CheckRow, FormField, OptimisticSwitch } from '@/components/ui/form';
 import { InfoTip } from '@/components/ui/info-tip';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
-import { Switch } from '@/components/ui/switch';
 import { Select } from '@/components/ui/select';
 import { Trunc } from '@/components/ui/tooltip';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -181,7 +179,7 @@ const SubDialog = resetOnOpen(function SubDialog({ target, open, onClose, onCrea
         </div>
       )}
       {rule.team_mode === 'only' && !rule.team_ids.length && <div className="hint is-error">至少选一个团队</div>}
-      <Label className="cursor-pointer gap-2 text-body font-normal text-fg has-data-disabled:cursor-default gap-2.5"><Switch checked={rule.direct} onCheckedChange={(v) => set({ direct: v })} /><span className="peer-data-disabled:opacity-(--o-disabled)">含线路机直出入口</span></Label>
+      <CheckRow switch checked={rule.direct} onChange={(v) => set({ direct: v })}>含线路机直出入口</CheckRow>
       <MachinePicks label="另外带上" info="不看团队和直出开关，比如备用团队里的某台" ids={rule.include_ids} onChange={setInc} options={mOpts} />
       <MachinePicks label="一律不带" info="优先于上面所有规则" ids={rule.exclude_ids} onChange={setExc} options={mOpts} />
     </FormDialog>
