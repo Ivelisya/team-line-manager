@@ -75,6 +75,7 @@ pub fn router() -> Router<AppState> {
         // 计费台账与客户到期页：管理接口要登录；公开接口按令牌取（不登录，没有 Actor 提取器），见 batches.rs
         .route("/teams/{id}/batches", get(batches::list))
         .route("/teams/{id}/billing-events", get(batches::events))
+        .route("/teams/{id}/billing/outstanding", get(batches::outstanding))
         .route("/teams/{id}/billing/month", get(batches::month))
         .route("/teams/{id}/billing/paid", post(batches::paid))
         .route("/teams/{id}/billing-slots", post(batches::slot_add))
@@ -82,7 +83,7 @@ pub fn router() -> Router<AppState> {
         .route("/billing/init", post(batches::init))
         .route("/machines/{id}/billing-exempt", axum::routing::put(batches::exempt))
         .route("/teams/{id}/customer-page", post(batches::page_create).patch(batches::page_patch).delete(batches::page_delete))
-        .route("/public/customer/{token}", get(batches::public_view))
+        .route("/public/customer/{token}", post(batches::public_view))
         .route("/providers", get(catalog::list_providers).post(catalog::create_provider))
         .route("/providers/{id}", patch(catalog::patch_provider).delete(catalog::delete_provider))
         .route("/plans", get(catalog::list_plans).post(catalog::create_plan))

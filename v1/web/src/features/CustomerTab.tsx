@@ -1,25 +1,26 @@
-// 团队与套餐 → 计费台账：按节点数向团队收费。读者是不懂技术的人，只回答一件事——这个月哪些节点收了、哪些没收。
-// 口径（服务端 batches.rs）：每个节点从开始收费日起每满一个月收一次（一期），按月看 = 每个节点起点在这个月的那一期；每一期只有已收 / 没收，手动标。
-// 选团队 → 客户页链接 → 月份切换 + 一句话 → 「没收」「已收」两块清单（每行 节点 · 地区 · 这一期的区间 · 标记已收）→ 增减记录。
+// 团队台账：按月汇总待支付节点；选中月份的全部期次在同一张清单中维护。
 // 改开始收费日、地区备注、停止收费、删除收在每行的「⋯」里，手动添加节点在月份旁的「⋯」里。团队、月份写进地址（?team= / ?month=）。
 import * as React from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { Check, ExternalLink, Link2, MoreHorizontal } from 'lucide-react';
-import { useAddBillingSlot, useBillingEvents, useBillingMonth, useDelBillingSlot, useMarkPaid, usePatchBillingSlot, usePatchCustomerPage, useRotateCustomerPage, useTeams } from '@/lib/queries';
+import { BILLING_EVENT_PAGE_SIZE, useAddBillingSlot, useBillingEvents, useBillingMonth, useDelBillingSlot, useMarkPaid, useOutstanding, usePatchBillingSlot, usePatchCustomerPage, useRotateCustomerPage, useTeams } from '@/lib/queries';
 import type { BillingMonth, BillingMonthNode, CustomerPage } from '@/lib/types';
+import { useExpired } from '@/lib/publicCustomer';
 import { useUrlState } from '@/lib/urlState';
+import { compareBillingEffectiveDate } from '@/lib/sort';
 import { openDrawer } from '@/lib/drawer';
 import { resetOnOpen, useHeld } from '@/lib/useHeld';
 import * as F from '@/lib/format';
 import { Button, IconButton } from '@/components/ui/button';
 import { Field, InfoTip, Input, UnitInput } from '@/components/ui/form';
 import { DateField } from '@/components/ui/date-field';
-import { Select } from '@/components/ui/select';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, Tip } from '@/components/ui/overlays';
 import { toast } from '@/components/ui/toast';
 import { CopyButton, Empty, ErrorNote, Panel, Pill } from '@/components/app/primitives';
+import { CursorPager } from '@/components/app/Pagination';
 import { ConfirmDialog, FormDialog } from '@/components/app/dialogs';
 import { flushAfterMenuClosed, runAfterMenuClosed } from '@/components/app/AnchoredDropdown';
-import { MonthSwitch, cnDate, cnMonth, cnSpan, regionLabel } from './billing';
+import { BillingNodeRow, MonthSummary, MonthSwitch, OutstandingHeading, PeriodLegend, cnDate, cnMonth, cnSpan, regionLabel } from './billing';
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const digits = (s: string) => s.replace(/\D/g, '');
@@ -31,8 +32,6 @@ function billedUntil(start: string, end: string) {
   while (F.addMonths(start, k + 1) < end) k++;
   return F.addDays(F.addMonths(start, k + 1), -1);
 }
-/** 「团队1-01、团队1-02」，多于 n 个只列前 n 个再写「等」 */
-const nameList = (ns: BillingMonthNode[], n = 5) => `${ns.slice(0, n).map((x) => x.name).join('、')}${ns.length > n ? ' 等' : ''}`;
 /** 地区输入框里的值 → 存进库的值：留空或写「未标地区」都存「未知」（库里的口径不变，只是给人看的写法统一） */
 const storedRegion = (r: string) => (r === '' || r === '未标地区' ? '未知' : r);
 
@@ -49,73 +48,66 @@ export function CustomerTab() {
   const d = q.data;
   // 换团队、翻月、新数据未到时先留着上一份（调淡、不可点），不整页塌成骨架
   const stale = q.isPlaceholderData;
+  const selectMonth = (target: string) => {
+    upd({ month: target === d?.today.slice(0, 7) ? '' : target });
+  };
   return (
-    <div className="stack">
-      <div className="cxa-bar">
-        <Select className="cxa-team" value={teamId} onChange={onTeam} options={options} placeholder="选择团队" aria-label="团队" />
-        {d && <PageLink teamId={d.team.id} teamName={d.team.name} page={d.page} stale={stale} />}
+    <div className="stack billing-ledger">
+      <div className="bm-team-choices" role="group" aria-label="选择团队">
+        {options.map(team => <button key={team.value} type="button" className="bm-team-choice"
+          aria-pressed={team.value === teamId} onClick={() => onTeam(team.value)}>{team.label}</button>)}
       </div>
+      {d && <div className="cxa-share"><PageLink teamId={d.team.id} teamName={d.team.name} page={d.page} stale={stale} /></div>}
       {teams.isError && <ErrorNote error={teams.error} onRetry={() => void teams.refetch()} />}
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       {!teamId && teams.data && <Empty text="还没有团队" />}
       {!d && !q.isError && teamId && <div className="skel is-float" style={{ height: 260 }} />}
-      {d && <div className="stack" data-stale={stale} inert={stale || undefined}><Board d={d} /></div>}
+      {teamId && d?.initialized && <OutstandingPanel key={teamId} teamId={teamId} month={month} onSelect={selectMonth} />}
+      {d && <div role="region" aria-label="月份明细" className="stack" data-stale={stale} inert={stale || undefined}><Board key={d.team.id} d={d} /></div>}
     </div>
   );
 }
 
+function OutstandingPanel({ teamId, month, onSelect }: { teamId: string; month: string; onSelect: (month: string) => void }) {
+  const q = useOutstanding(teamId);
+  const counts = new Map<string, number>();
+  for (const node of q.data?.nodes ?? []) {
+    const month = node.period_start.slice(0, 7);
+    counts.set(month, (counts.get(month) ?? 0) + 1);
+  }
+  const selected = month || q.data?.today.slice(0, 7);
+  return <section className="panel bm-outstanding" aria-label="待支付">
+    <OutstandingHeading />
+    {q.isLoading && <div className="skel" style={{ height: 56 }} />}
+    {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
+    {q.data && (counts.size > 0
+      ? <MonthSummary counts={counts} selected={selected} today={q.data.today} onSelect={onSelect} />
+      : <Empty text="暂无待支付节点" />)}
+  </section>;
+}
+
 function Board({ d }: { d: BillingMonth }) {
-  const [, upd] = useUrlState();
-  const [adding, setAdding] = React.useState(false);
   // 还没开始记账：整页收成一句提示
   if (!d.initialized) return <Empty text="还没开始记账" hint={<>在中控上运行 <code>fleetctl billing init</code></>} />;
-  const thisMonth = d.today.slice(0, 7);
-  const regions = [...new Set(d.nodes.map((n) => regionLabel(n.region)))];
   return (
     <>
-      <div className="cxa-month">
-        <MonthSwitch month={d.month} months={d.months} onChange={(m) => upd({ month: m === thisMonth ? '' : m })} />
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild><IconButton size="sm" label="更多" tip={false}><MoreHorizontal size={16} /></IconButton></DropdownMenuTrigger>
-          {/* 菜单完全关上再开对话框：关菜单时焦点会先回到「⋯」，对话框里自动聚焦的名字框被它抢走一次，会被当成「离开过」而提前标红「必填」 */}
-          <DropdownMenuContent align="end" onCloseAutoFocus={(e) => { if (flushAfterMenuClosed()) e.preventDefault(); }}><DropdownMenuItem onSelect={() => runAfterMenuClosed(() => setAdding(true))}>手动添加节点…</DropdownMenuItem></DropdownMenuContent>
-        </DropdownMenu>
-      </div>
-      <Lead d={d} />
-      <Lists d={d} regions={regions} />
+      <MonthList key={d.month} d={d} />
       <EventsPanel teamId={d.team.id} />
-      <AddSlotDialog open={adding} onClose={() => setAdding(false)} teamId={d.team.id} today={d.today} regions={regions} />
     </>
   );
 }
 
-/* ---------------------------------------------------------------- 一句话 */
-function Lead({ d }: { d: BillingMonth }) {
-  const m = cnMonth(d.month, d.today);
-  const unpaid = d.nodes.filter((n) => !n.paid);
-  const n = d.nodes.length;
-  // 还没到的期：起点在今天以后。整月都是这样的月份（下个月）不写「没收」，免得像漏收
-  const early = unpaid.filter((x) => x.upcoming).length;
-  const allEarly = n > 0 && d.nodes.every((x) => x.upcoming);
-  return (
-    <p className="cxa-lead">
-      {n === 0 ? <>{m}：{d.team.name} 没有要收钱的节点。</>
-        : allEarly ? <>{m}：<b>{n} 个节点</b>都还没到收费的日子，可以提前标记已收{n > unpaid.length && <>（已提前收 {n - unpaid.length} 个）</>}。</>
-          : unpaid.length === 0 ? <>{m}：{d.team.name} 的 <b>{n} 个节点</b><span className="cx-done">都收齐了 ✓</span></>
-            : <>{m}：{d.team.name} 要收 <b>{n} 个节点</b>的钱，已收 <b>{n - unpaid.length} 个</b>，没收 <b>{unpaid.length} 个</b>{early > 0 ? `（其中 ${early} 个还没到）` : unpaid.length <= 5 && <>（{nameList(unpaid)}）</>}。</>}
-    </p>
-  );
-}
-
-/* ---------------------------------------------------------------- 没收 / 已收 两块清单 */
-/** 全部标记已收的确认框里最多列几个名字，其余悬停看 */
+/** 全部标记已支付的确认框里最多列几个名字，其余悬停看 */
 const ALL_NAMES = 6;
 type Act = { kind: 'start' | 'edit' | 'end' | 'del'; n: BillingMonthNode };
 
-function Lists({ d, regions }: { d: BillingMonth; regions: string[] }) {
+function MonthList({ d }: { d: BillingMonth }) {
+  const [, upd] = useUrlState();
+  const [adding, setAdding] = React.useState(false);
+  const regions = [...new Set(d.nodes.map(n => regionLabel(n.region)))];
   const mark = useMarkPaid();
   const patch = usePatchBillingSlot(); const delSlot = useDelBillingSlot();
-  // 全部标记已收：打开确认框时的名单（确认的就是框里列出的这些，中途刷新进来的新节点不会被一起标）
+  // 全部标记已支付：打开确认框时的名单（确认的就是框里列出的这些，中途刷新进来的新节点不会被一起标）
   const [askAll, setAskAll] = React.useState<BillingMonthNode[] | null>(null);
   const heldAll = useHeld(askAll ? 'all' : null, askAll);
   // 正在提交的节点（按 slot 记：连点两行时前一行的加载状态不会被后一次覆盖）
@@ -123,8 +115,9 @@ function Lists({ d, regions }: { d: BillingMonth; regions: string[] }) {
   const [act, setAct] = React.useState<Act | null>(null);
   const held = useHeld(act ? `${act.kind}:${act.n.slot_id}` : null, act);
   const m = cnMonth(d.month, d.today);
-  const unpaid = d.nodes.filter((n) => !n.paid);
-  const paid = d.nodes.filter((n) => n.paid);
+  const due = d.nodes.filter((n) => !n.paid && !n.upcoming);
+  const upcoming = d.nodes.filter((n) => !n.paid && n.upcoming);
+  const rows = [...d.nodes].sort(compareBillingEffectiveDate);
   const teamId = d.team.id;
   const set = async (ns: BillingMonthNode[], on: boolean) => {
     const ids = ns.map((n) => n.slot_id);
@@ -133,7 +126,7 @@ function Lists({ d, regions }: { d: BillingMonth; regions: string[] }) {
   };
   // 撤销只撤自己这次改的：点的时候这个节点本来就是目标状态（别人刚标过）就是空操作，不给撤销，免得把别人标的改回去
   const one = (n: BillingMonthNode, on: boolean) => set([n], on).then(
-    () => toast.show({ tone: 'ok', text: `${n.name} ${m}${on ? '已收' : '改回没收'}`, action: n.paid !== on ? { label: '撤销', onClick: () => void set([n], !on).catch(toast.err) } : undefined }),
+    () => toast.show({ tone: 'ok', text: `${n.name} ${m}${on ? '已支付' : '改回待支付'}`, action: n.paid !== on ? { label: '撤销', onClick: () => void set([n], !on).catch(toast.err) } : undefined }),
     toast.err,
   );
   const busy = (n: BillingMonthNode) => loading.includes(n.slot_id);
@@ -143,7 +136,7 @@ function Lists({ d, regions }: { d: BillingMonth; regions: string[] }) {
     <DropdownMenu>
       <DropdownMenuTrigger asChild><IconButton size="sm" label={`${n.name}的更多操作`} tip={false}><MoreHorizontal size={16} /></IconButton></DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        {n.paid && <><DropdownMenuItem disabled={mark.isPending} onSelect={() => void one(n, false)}>改回没收</DropdownMenuItem><DropdownMenuSeparator /></>}
+        {n.paid && <><DropdownMenuItem disabled={mark.isPending} onSelect={() => void one(n, false)}>改回待支付</DropdownMenuItem><DropdownMenuSeparator /></>}
         <DropdownMenuItem onSelect={() => setAct({ kind: 'start', n })}>改开始收费日…</DropdownMenuItem>
         <DropdownMenuItem onSelect={() => setAct({ kind: 'edit', n })}>改地区 / 备注…</DropdownMenuItem>
         {n.manual && n.ended && <DropdownMenuItem disabled={patch.isPending} onSelect={() => reopen(n)}>恢复收费</DropdownMenuItem>}
@@ -155,37 +148,41 @@ function Lists({ d, regions }: { d: BillingMonth; regions: string[] }) {
 
   return (
     <>
-      {d.nodes.length === 0 && <Panel><Empty text={`${m}没有要收钱的节点`} /></Panel>}
-      {unpaid.length > 0 && (
-        <Panel title="没收" count={<span className="cxa-due-count">{unpaid.length}</span>} flush
-          tools={unpaid.length > 1 ? <Button size="sm" onClick={() => setAskAll(unpaid)}>全部标记已收</Button> : undefined}>
-          <ul className="bm-list">
-            {unpaid.map((n) => <Row key={n.slot_id} n={n} today={d.today} side={<>
-              <Button size="sm" loading={busy(n)} onClick={() => void one(n, true)}>标记已收</Button>
+      <Panel className="bm-month-panel" flush
+        title={<MonthSwitch month={d.month} months={d.months} onChange={month => upd({ month: month === d.today.slice(0, 7) ? '' : month })} />}
+        tools={<DropdownMenu>
+          <DropdownMenuTrigger asChild><IconButton size="sm" label="月份操作"><MoreHorizontal size={16} /></IconButton></DropdownMenuTrigger>
+          <DropdownMenuContent align="end" onCloseAutoFocus={e => { if (flushAfterMenuClosed()) e.preventDefault(); }}>
+            <DropdownMenuItem onSelect={() => runAfterMenuClosed(() => setAdding(true))}>手动添加节点…</DropdownMenuItem>
+            {due.length > 1 && <DropdownMenuItem onSelect={() => runAfterMenuClosed(() => setAskAll(due))}>待支付节点全部标记已支付…</DropdownMenuItem>}
+            {upcoming.length > 1 && <DropdownMenuItem onSelect={() => runAfterMenuClosed(() => setAskAll(upcoming))}>未开始期次全部标记预收…</DropdownMenuItem>}
+          </DropdownMenuContent>
+        </DropdownMenu>}>
+        {rows.length ? <>
+          <PeriodLegend />
+          <ul className="bm-list" aria-label={`${m}节点清单`}>
+            {rows.map(n => <Row key={n.slot_id} n={n} today={d.today} side={<>
+              <Button size="sm" className="bm-pay-toggle" aria-pressed={n.paid} loading={busy(n)}
+                aria-label={`${n.name}，${n.paid ? '已支付，点击改回待支付' : '标记已支付'}`}
+                data-tip={n.paid ? [n.paid_at && `${F.dtFull(n.paid_at)} 标记已支付`, '点击改回待支付'].filter(Boolean).join(' · ') : undefined}
+                onClick={() => void one(n, !n.paid)}>
+                {n.paid ? <><Check size={14} />已支付</> : '标记已支付'}
+              </Button>
               {menu(n)}
             </>} />)}
           </ul>
-        </Panel>
-      )}
-      {paid.length > 0 && (
-        <Panel title="已收" count={paid.length} flush>
-          <ul className="bm-list">
-            {paid.map((n) => <Row key={n.slot_id} n={n} today={d.today} side={<>
-              <span className="bm-paid" data-tip={n.paid_at ? `${F.dtFull(n.paid_at)} 标的` : undefined}><Check />已收</span>
-              {menu(n)}
-            </>} />)}
-          </ul>
-        </Panel>
-      )}
+        </> : <Empty text={`${m}没有要收钱的节点`} />}
+      </Panel>
+      <AddSlotDialog open={adding} onClose={() => setAdding(false)} teamId={teamId} today={d.today} regions={regions} />
 
-      <ConfirmDialog open={!!askAll} onOpenChange={(o) => !o && setAskAll(null)} title={`全部标记已收 · ${m}`} confirmLabel="标记已收"
-        description={heldAll ? <>把 {m}没收的 {heldAll.length} 个节点都记为已收：<span data-tip={heldAll.length > ALL_NAMES ? heldAll.map((n) => n.name).join('、') : undefined}>{heldAll.slice(0, ALL_NAMES).map((n, i) => <React.Fragment key={n.slot_id}>{i > 0 && '、'}<span className="cxa-nm">{n.name}</span></React.Fragment>)}{heldAll.length > ALL_NAMES && ` 等 ${heldAll.length} 个`}</span>。</> : undefined}
+      <ConfirmDialog open={!!askAll} onOpenChange={(o) => !o && setAskAll(null)} title={`全部标记已支付 · ${m}`} confirmLabel="标记已支付"
+        description={heldAll ? <>把 {m}选中的 {heldAll.length} 个节点都记为已支付：<span data-tip={heldAll.length > ALL_NAMES ? heldAll.map((n) => n.name).join('、') : undefined}>{heldAll.slice(0, ALL_NAMES).map((n, i) => <React.Fragment key={n.slot_id}>{i > 0 && '、'}<span className="cxa-nm">{n.name}</span></React.Fragment>)}{heldAll.length > ALL_NAMES && ` 等 ${heldAll.length} 个`}</span>。</> : undefined}
         onConfirm={async () => {
           const ns = heldAll!;
-          // 撤销只撤这次由没收变成已收的（打开框之后别人已经标了的不动）
+          // 撤销只撤这次由待支付变成已支付的（打开框之后别人已经标了的不动）
           const flipped = ns.filter((x) => d.nodes.find((y) => y.slot_id === x.slot_id)?.paid === false);
           await set(ns, true);
-          toast.show({ tone: 'ok', text: `${m}的 ${ns.length} 个节点已标记已收`, action: flipped.length ? { label: '撤销', onClick: () => void set(flipped, false).catch(toast.err) } : undefined });
+          toast.show({ tone: 'ok', text: `${m}的 ${ns.length} 个节点已标记已支付`, action: flipped.length ? { label: '撤销', onClick: () => void set(flipped, false).catch(toast.err) } : undefined });
         }} />
       {held?.kind === 'start' && <StartDialog open={act?.kind === 'start'} onClose={() => setAct(null)} n={held.n} today={d.today} />}
       {held?.kind === 'edit' && <EditSlotDialog open={act?.kind === 'edit'} onClose={() => setAct(null)} n={held.n} regions={regions} />}
@@ -197,22 +194,10 @@ function Lists({ d, regions }: { d: BillingMonth; regions: string[] }) {
   );
 }
 
-/** 一行：节点名（点开节点抽屉）与标签；小字 地区 · 这一期的区间；右边收了没有 */
 function Row({ n, today, side }: { n: BillingMonthNode; today: string; side: React.ReactNode }) {
-  return (
-    <li className="bm-row">
-      <div className="bm-main">
-        <span className="bm-name">
-          {n.holder_id ? <button type="button" className="btn btn-link cxa-node" onClick={() => openDrawer(n.holder_id!)}>{n.name}</button> : n.name}
-          {n.manual && <span className="bm-tag" data-tip="不在面板里的节点，不会自动增减，不收钱了要手动停止">手动添加</span>}
-          {n.ended && <span className="bm-tag">已停止收费</span>}
-          {n.upcoming && <span className="bm-tag">还没到</span>}
-        </span>
-        <span className="bm-sub">{regionLabel(n.region)} · <span className="num">{cnSpan(n.period_start, n.period_end, today)}</span></span>
-      </div>
-      <span className="bm-side">{side}</span>
-    </li>
-  );
+  return <BillingNodeRow n={n} today={today} side={side} nameContent={n.holder_id
+    ? <button type="button" className="btn btn-link cxa-node" onClick={() => openDrawer(n.holder_id!)}>{n.name}</button>
+    : n.name} />;
 }
 
 /* ---------------------------------------------------------------- 维护：改开始收费日、地区备注、停止收费、手动添加 */
@@ -225,7 +210,7 @@ const StartDialog = resetOnOpen(function StartDialog({ open, onClose, n, today }
   return (
     <FormDialog open={open} onOpenChange={(o) => !o && onClose()} title={`改开始收费日 · ${n.name}`} submitLabel="保存" busy={patch.isPending} valid={DATE.test(v) && v !== n.start_date && v <= F.addMonths(today, 1)} dirty={v !== n.start_date}
       onSubmit={() => patch.mutate({ id: n.slot_id, start_date: v }, { onSuccess: () => { toast.ok(`开始收费日已改为 ${cnDate(v, today)}`); onClose(); }, onError: toast.err })}>
-      <Field label="开始收费日" info="改了以后每一期的起止都跟着变；原来标的「已收」按第几期跟着挪到新的期" hint={DATE.test(v) ? firstSpan(v, today) : undefined}>
+      <Field label="开始收费日" info="改了以后每一期的起止都跟着变；原来标的「已支付」按第几期跟着挪到新的期" hint={DATE.test(v) ? firstSpan(v, today) : undefined}>
         <DateField value={v} onChange={setV} max={F.addMonths(today, 1)} />
       </Field>
     </FormDialog>
@@ -299,13 +284,23 @@ const AddSlotDialog = resetOnOpen(function AddSlotDialog({ open, onClose, teamId
   );
 });
 
-/* ---------------------------------------------------------------- 增减记录 */
+/* ---------------------------------------------------------------- 操作记录 */
 function EventsPanel({ teamId }: { teamId: string }) {
   const q = useBillingEvents(teamId);
-  const list = React.useMemo(() => q.data?.pages.flat() ?? [], [q.data]);
+  const [selectedPage, setPage] = React.useState(0);
+  const pages = q.data?.pages ?? [];
+  const page = Math.min(selectedPage, Math.max(0, pages.length - 1));
+  const list = pages[page]?.items ?? [];
+  const hasOlder = page < pages.length - 1 || q.hasNextPage;
+  const older = async () => {
+    if (q.isFetchingNextPage) return;
+    if (page < pages.length - 1) { setPage(page + 1); return; }
+    const next = await q.fetchNextPage();
+    if (!next.isError && next.data && next.data.pages.length > page + 1) setPage(page + 1);
+  };
   return (
-    <Panel title="增减记录" sub={<InfoTip text="节点加入、离开、替换补位、标记已收和手动修改，都记在这里" />}>
-      {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
+    <Panel title="操作记录" sub={<InfoTip text="节点加入、离开、替换补位、标记已支付和手动修改，都记在这里" />}>
+      {q.isError && <ErrorNote error={q.error} onRetry={() => void (q.isFetchNextPageError ? q.fetchNextPage() : q.refetch())} />}
       {q.isLoading && <div className="skel" style={{ height: 120 }} />}
       <div data-stale={q.isPlaceholderData} inert={q.isPlaceholderData || undefined}>
         {q.data && list.length === 0 && <Empty text="还没有记录" />}
@@ -314,7 +309,9 @@ function EventsPanel({ teamId }: { teamId: string }) {
             {list.map((e) => <li key={e.id}><span className="num t-sub" data-tip={F.dtFull(e.at)}>{when(e.at)}</span><span>{e.text}</span></li>)}
           </ul>
         )}
-        {q.hasNextPage && <div className="audit-more"><Button size="sm" loading={q.isFetchingNextPage} onClick={() => void q.fetchNextPage()}>加载更早的</Button></div>}
+        <CursorPager page={page + 1} size={BILLING_EVENT_PAGE_SIZE} loading={q.isFetchingNextPage}
+          onNewer={page > 0 ? () => setPage(page - 1) : undefined}
+          onOlder={hasOlder ? () => void older() : undefined} />
       </div>
     </Panel>
   );
@@ -324,11 +321,19 @@ function EventsPanel({ teamId }: { teamId: string }) {
 function PageLink({ teamId, teamName, page, stale }: { teamId: string; teamName: string; page: CustomerPage | null; stale: boolean }) {
   const rotate = useRotateCustomerPage(); const patch = usePatchCustomerPage();
   const [askRotate, setAskRotate] = React.useState(false);
-  const INFO = '给客户看的页面：按月列出这个团队每个节点（名字、地区、这一期的起止）已付还是待付，不含 IP、供应商、价格\n客户打开不用登录；拿到链接的人都能看，只发给这个团队';
-  if (!page) {
+  const expired = useExpired(page?.expires_at);
+  const queryClient = useQueryClient();
+  React.useEffect(() => {
+    if (expired && page?.enabled) {
+      void queryClient.invalidateQueries({ queryKey: ['billing', 'month', teamId] });
+    }
+  }, [expired, page?.enabled, teamId, queryClient]);
+  const INFO = '给客户看的页面：按月列出这个团队每个节点（名字、地区、这一期的起止）已付还是待付，不含 IP、供应商、价格\n客户需输入查看密码。链接自生成起 1 小时内有效，到期自动更新链接和密码。';
+  if (!page?.link || !page.password) {
     return (
       <span className="cxa-link" data-stale={stale} inert={stale || undefined}>
-        <Button size="lg" loading={rotate.isPending} onClick={() => rotate.mutate(teamId, { onSuccess: () => toast.ok('已生成客户页链接'), onError: toast.err })}><Link2 />生成客户页链接</Button>
+        <Button size="lg" loading={rotate.isPending} onClick={() => rotate.mutate(teamId, { onSuccess: () => toast.ok('已生成客户页链接'), onError: toast.err })}><Link2 />{page ? '重新生成客户页链接' : '生成客户页链接'}</Button>
+        {page && <span className="t-sub">{!page.password ? '旧链接需换新' : '链接已过期'}</span>}
         <InfoTip text={INFO} />
       </span>
     );
@@ -339,24 +344,36 @@ function PageLink({ teamId, teamName, page, stale }: { teamId: string; teamName:
       : toast.show({ tone: 'ok', text: '客户页已停用，客户打开会看到「链接无效或已停用」', action: { label: '撤销', onClick: () => patch.mutate({ teamId, enabled: true }, { onSuccess: () => toast.ok('客户页已启用'), onError: toast.err }) } })),
   });
   return (
-    <span className="cxa-link" data-off={page.enabled ? undefined : ''} data-stale={stale} inert={stale || undefined}>
-      <span className="t-sub">客户页</span>
-      <a className="cxa-url ellipsis" href={page.link} target="_blank" rel="noreferrer noopener" data-tip={page.link}>{page.link.replace(/^https?:\/\//, '')}</a>
-      {!page.enabled && <Pill tone="neutral">已停用</Pill>}
-      <CopyButton text={page.link} label="客户页链接" />
-      <Tip text="打开客户页"><a className="icon-btn icon-btn-xs" href={page.link} target="_blank" rel="noreferrer noopener" aria-label="打开客户页"><ExternalLink size={14} /></a></Tip>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild><IconButton size="sm" label="客户页链接的操作" tip={false}><MoreHorizontal size={16} /></IconButton></DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          <DropdownMenuItem onSelect={() => setAskRotate(true)}>换新链接…</DropdownMenuItem>
-          <DropdownMenuItem disabled={patch.isPending} onSelect={() => setEnabled(!page.enabled)}>{page.enabled ? '停用' : '启用'}</DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
-      <span className="t-sub cxa-seen" data-tip={page.last_view_at ? `客户上次打开：${F.dtFull(page.last_view_at)}` : undefined}>{page.last_view_at ? `客户 ${F.ago(page.last_view_at)}打开过` : '客户还没打开过'}</span>
-      <InfoTip text={INFO} />
+    <section className="panel bm-share-card" aria-label="客户页分享" data-stale={stale} inert={stale || undefined}>
+      <header className="bm-share-header">
+        <span className="bm-share-title"><Link2 size={16} />客户页分享</span>
+        <Pill tone={page.enabled ? 'ok' : 'neutral'}>{page.enabled ? '每小时自动更新' : '已停用'}</Pill>
+        <div className="bm-share-actions">
+          <Tip text="打开客户页"><a className="icon-btn icon-btn-xs" href={page.link} target="_blank" rel="noreferrer noopener" aria-label="打开客户页"><ExternalLink size={14} /></a></Tip>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild><IconButton size="sm" label="客户页链接的操作" tip={false}><MoreHorizontal size={16} /></IconButton></DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onSelect={() => setAskRotate(true)}>换新链接…</DropdownMenuItem>
+              <DropdownMenuItem disabled={patch.isPending} onSelect={() => setEnabled(!page.enabled)}>{page.enabled ? '停用' : '启用'}</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </header>
+      <div className="bm-share-fields">
+        <div className="bm-share-field"><span className="t-sub">分享链接</span>
+          <div className="bm-share-value"><a className="ellipsis" href={page.link} target="_blank" rel="noreferrer noopener">{page.link.replace(/^https?:\/\//, '')}</a><CopyButton text={page.link} label="客户页链接" /></div>
+        </div>
+        <div className="bm-share-field"><span className="t-sub">查看密码</span>
+          <div className="bm-share-value"><code>{page.password}</code><CopyButton text={page.password} label="查看密码" /></div>
+        </div>
+      </div>
+      <footer className="bm-share-footer">
+        <span>{page.enabled ? (expired ? '正在自动更新…' : `${F.dtFull(page.expires_at)} 自动更新`) : '启用后继续自动更新'}</span>
+        <span data-tip={page.last_view_at ? F.dtFull(page.last_view_at) : undefined}>{page.last_view_at ? `客户 ${F.ago(page.last_view_at)}查看过` : '客户尚未查看'}</span>
+      </footer>
       <ConfirmDialog open={askRotate} onOpenChange={setAskRotate} title={`换新链接 · ${teamName}`} confirmLabel="换新链接"
-        description="旧链接马上失效，要把新链接重新发给客户"
+        description="旧链接马上失效，请把新链接和新密码发给客户。新链接有效期为 1 小时。"
         onConfirm={async () => { await rotate.mutateAsync(teamId); toast.ok('已换新链接，旧链接已失效'); }} />
-    </span>
+    </section>
   );
 }

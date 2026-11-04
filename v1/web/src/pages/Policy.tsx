@@ -127,7 +127,7 @@ export function PolicyPage() {
       <div className="pol-layout">
         <Panel title="范围" count={q.data ? `${teams.length} 个团队` : undefined} className="pol-scope" flush>
           {q.isLoading && <SkeletonRows rows={6} list />}
-          {q.data && teams.length === 0 && <Empty text="还没有团队" hint="先去「团队与套餐」添加" />}
+          {q.data && teams.length === 0 && <Empty text="还没有团队" hint="先去「团队」添加" />}
           {nodeCount > 20 && <div className="pol-find"><SearchInput value={find} onChange={(e) => setFind(e.target.value)} placeholder="搜索团队或节点…" aria-label="搜索团队或节点" /></div>}
           {needle && shown.length === 0 && <div className="pol-none t-muted" style={{ padding: 'var(--sp-8) var(--card-pad)' }}>没有符合的团队或节点</div>}
           <div className="pol-tree" role="tree" aria-label="团队与节点">

@@ -45,14 +45,14 @@ export const Pagination = memo(function Pagination({ pg, unit = '项', compact, 
 });
 
 /** 时间游标翻页：没有总数，只能往前（较新）/ 往后（较早）走；按钮写法同分页器（上一页 = 较新） */
-export function CursorPager({ page, size, unit = '条', onNewer, onOlder }: { page: number; size: number; unit?: string; onNewer?: () => void; onOlder?: () => void }) {
+export function CursorPager({ page, size, unit = '条', loading = false, onNewer, onOlder }: { page: number; size: number; unit?: string; loading?: boolean; onNewer?: () => void; onOlder?: () => void }) {
   if (!onNewer && !onOlder) return null;
   return (
     <nav className="pager" aria-label="分页">
       <span className="pager-range">第 <span className="num">{n(page)}</span> 页 · 每页 <span className="num">{size}</span> {unit}</span>
       <span className="pager-nav">
-        <Button size="sm" className="pager-btn" disabled={!onNewer} onClick={onNewer}><ChevronLeft />上一页</Button>
-        <Button size="sm" className="pager-btn" disabled={!onOlder} onClick={onOlder}>下一页<ChevronRight /></Button>
+        <Button size="sm" className="pager-btn" disabled={!onNewer || loading} onClick={onNewer}><ChevronLeft />上一页</Button>
+        <Button size="sm" className="pager-btn" disabled={!onOlder || loading} loading={loading} onClick={onOlder}>下一页<ChevronRight /></Button>
       </span>
     </nav>
   );

@@ -23,11 +23,12 @@ import { Flag, HealthPill } from '@/components/app/primitives';
 const SUBS: Record<string, NavItem[]> = {
   '/relays': [{ to: '/relays', label: '线路 › 节点放置', icon: Waypoints, kw: 'placement 放置 矩阵 往返 延迟 换线 建议 换线路机' }],
   '/access': [{ to: '/access/policy', label: '访问监控 › 访问规则', icon: ShieldCheck, kw: 'policy access 访问规则 策略 白名单 黑名单 阻止 域名 allowlist denylist' }],
-  '/catalog': [
-    { to: '/catalog?section=providers', label: '团队与套餐 › 供应商', icon: Briefcase, kw: 'providers 供应商 厂商' },
-    { to: '/catalog?section=plans', label: '团队与套餐 › 套餐', icon: Briefcase, kw: 'plans 套餐 价格' },
-    { to: '/catalog?section=due', label: '团队与套餐 › 待付', icon: Briefcase, kw: 'due 待付 续费 到期 付款 未来待付 账单' },
-    { to: '/catalog?section=customer', label: '团队与套餐 › 计费台账', icon: Briefcase, kw: 'billing 计费台账 台账 收费 已收 没收 收钱 客户页 按节点数收费 手动计费' },
+  '/teams': [
+    { to: '/teams?section=customer', label: '团队 › 台账', icon: Users, kw: 'billing 计费台账 台账 收费 已支付 待支付 收钱 客户页 按节点数收费 手动计费' },
+  ],
+  '/providers': [
+    { to: '/providers?section=plans', label: '供应商 › 套餐', icon: Briefcase, kw: 'plans 套餐 价格' },
+    { to: '/providers?section=due', label: '供应商 › 待付', icon: Briefcase, kw: 'due 待付 续费 到期 付款 未来待付 账单' },
   ],
   '/incidents': [{ to: '/incidents?tab=uptime', label: '告警 › 月度可用率', icon: BellRing, kw: 'uptime 月度可用率 可用率 断线 成功率 稳定 最不稳定' }],
   '/settings': [

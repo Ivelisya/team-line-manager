@@ -539,27 +539,29 @@ export interface SpeedtestStarted { machine_id: string; name: string; job_id: st
 /** 测速作业步骤的输出（jobs/speedtest.rs summarize）：avg_mbps 只算收到第一个字节之后的；complete = false 时 300 秒内没下完，速率按已下载的算 */
 export interface SpeedtestOutput { target: string; target_name: string; url: string; size_mb: number; bytes: number; complete: boolean; avg_mbps: number; avg_mb_s: number; total_s: number; ttfb_s: number; remote_ip: string }
 
-// ---- 按节点数向团队收费（计费台账）与客户页：每个节点从开始收费日起每满一个月收一次（一期），每一期只有已收 / 没收；按月看 = 每个节点起点在这个月的那一期 ----
+// ---- 按节点数向团队收费（计费台账）与客户页：每个节点从开始收费日起每满一个月收一次（一期），每一期只有已支付 / 待支付；按月看 = 每个节点起点在这个月的那一期 ----
 export type BillingEventKind = 'init' | 'add' | 'remove' | 'swap' | 'edit' | 'manual_add' | 'manual_end' | 'exempt' | 'paid' | 'unpaid';
 /** 增减记录：text 是服务端拼好的一句话；swap（替换节点）时 machine_name 是新节点、other_name 是换下来的（名字是替换前的快照） */
 export interface BillingEvent { id: string; at: string; kind: BillingEventKind; machine_name: string | null; other_name: string | null; slot_id: string | null; text: string }
 /** 团队的客户页链接：link = {public_url}/c/{token}，管理端随时能再复制 */
-export interface CustomerPage { enabled: boolean; link: string; created_at: string; token_at: string; last_view_at: string | null }
-/** 某月清单的一行：一个节点起点在这个月的那一期 [period_start, period_end)（显示到 period_end 前一天）。
+export interface CustomerPage { enabled: boolean; link: string | null; password: string | null; expires_at: string; created_at: string; token_at: string; last_view_at: string | null }
+/** 某月清单的一行：一个节点起点在这个月的那一期 [period_start, period_end)，period_end 显示为到期日。
  *  name：节点名，停止收费的是原节点名，手动添加的是备注（没有备注「手动添加的节点」）；upcoming：这一期还没开始；
  *  ended：已停止收费（这一期照收）；holder_id：现在占着它的节点（点名字打开抽屉） */
 export interface BillingMonthNode {
   slot_id: string; name: string; region: string; start_date: string; period_start: string; period_end: string; upcoming: boolean;
   manual: boolean; note: string; holder_id: string | null; ended: boolean; paid: boolean; paid_at: string | null;
 }
-/** GET /teams/{id}/billing/month?month=YYYY-MM（默认本月）：nodes 没收在前、再按名字；months 可以翻看的月份（最早的开始收费月或本月 → 下个月）；
+/** GET /teams/{id}/billing/month?month=YYYY-MM（默认本月）：nodes 按本期生效日期、节点名排列；months 可以翻看的月份（最早的开始收费月或本月 → 下个月）；
  *  initialized：开始记账了没有（fleetctl billing init，全局） */
 export interface BillingMonth {
   team: { id: string; name: string }; today: string; initialized: boolean; page: CustomerPage | null;
   month: string; months: string[]; nodes: BillingMonthNode[];
 }
-/** GET /public/customer/{token}?month=YYYY-MM：同管理端的按月看，每个节点只有名字、地区、这一期、已付 / 待付（待付在前、再按名字） */
+/** POST /public/customer/{token}?month=YYYY-MM：同管理端的按月看，每个节点只有名字、地区、这一期、已付 / 待付（按本期生效日期、节点名排列） */
 export interface PublicCustomer {
+  outstanding: { month: string; count: number }[];
+  expires_at: string;
   team: string; today: string; month: string; months: string[];
-  nodes: { name: string; region: string; period_start: string; period_end: string; paid: boolean }[];
+  nodes: { name: string; region: string; period_start: string; period_end: string; paid: boolean; manual: boolean; ended: boolean }[];
 }

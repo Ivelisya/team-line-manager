@@ -194,7 +194,7 @@ function lifecycleWhy(m: MachineView, raw: string) {
   return m.spare && !/^(替换下来|随宿主机)/.test(r) ? `退役原因：${r}` : r;
 }
 
-/** 向团队收费时算不算这个节点（团队与套餐 → 计费台账）：在用、在团队里（不在备用）的节点才有 */
+/** 向团队收费时算不算这个节点（团队 → 台账）：在用、在团队里（不在备用）的节点才有 */
 function BillingRow({ m }: { m: MachineView }) {
   const set = useBillingExempt();
   if (m.kind === 'relay' || !m.team || m.spare_from || m.lifecycle !== 'active') return null;
@@ -205,7 +205,7 @@ function BillingRow({ m }: { m: MachineView }) {
         <OptimisticSwitch checked={on} disabled={set.isPending} aria-label="向团队收这个节点的钱"
           onCheckedChange={(v, undo) => set.mutate({ id: m.id, exempt: !v }, { onSuccess: () => toast.ok(v ? `${m.name} 恢复收费` : `${m.name} 设为不收费`), onError: (e) => { undo(); toast.err(e); } })} />
         <span>{on ? '收费' : '不收费'}</span>
-        <InfoTip text={'按节点数向团队收费时算不算这个节点（团队与套餐 → 计费台账）\n设为不收费：今天停止收费，这一期照收；恢复：这一期还没收完的接着收，否则从购买日新开始'} />
+        <InfoTip text={'按节点数向团队收费时算不算这个节点（团队 → 台账）\n设为不收费：今天停止收费，这一期照收；恢复：这一期有效期尚未结束的接着计费，否则从购买日新开始'} />
       </span>
     </LabelValue>
   );

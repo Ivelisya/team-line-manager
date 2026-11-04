@@ -1,4 +1,4 @@
-//! 计费台账的口径：每个节点（计费名额 billing_slot，迁移 0097）从开始收费日起每满一个月是一期，每一期收一次钱，只有已收 / 没收两种状态（billing_paid，迁移 0100）。
+//! 计费台账的口径：每个节点（计费名额 billing_slot，迁移 0097）从开始收费日起每满一个月是一期，每一期收一次钱，只有已支付 / 待支付两种状态（billing_paid，迁移 0100）。
 //! 第 k 期 = [开始收费日加 k 个月, 加 k+1 个月)（meta::add_months，月底对齐：1-31 开始的是 2-28、3-31…）；停止收费的名额只收起点早于结束日的期。
 //! 按月看 = 起点落在这个月的那一期：每个节点每个月正好一期（月底对齐也不会一个月两期）。
 //! 「今天」按组织时区（默认北京时间）的日期。收钱与供应商订阅无关；只有新节点的开始收费日取订阅推出的购买日（ledger::purchase_date）。
@@ -47,7 +47,7 @@ pub fn period_in(start: Date, end: Option<Date>, month: Date) -> Option<(Date, D
     end.is_none_or(|e| ps < e).then_some((ps, pe))
 }
 
-/// 停止收费的名额最后收费的那一期的最后一天（「收费到 11 月 29 日」）；结束日不晚于开始收费日（一期都没收）为 None
+/// 停止收费的名额最后收费的那一期的最后一天（「收费到 11 月 29 日」）；结束日不晚于开始收费日（没有产生收费期次）为 None
 pub fn billed_until(start: Date, end: Date) -> Option<Date> {
     if end <= start {
         return None;

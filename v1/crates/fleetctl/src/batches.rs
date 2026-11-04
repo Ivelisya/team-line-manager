@@ -1,6 +1,6 @@
 //! 计费台账（按节点数向团队收费）与客户页：batch list，billing init / month / paid / slot / add / rm / exempt，customer-page。
 //! 每个节点（计费名额，由中控每分钟对账自动增减：节点进团队就计费、离开就停止，替换节点时新节点接过旧节点的）从开始收费日起每满一个月收一次（一期），
-//! 每一期只有已收 / 没收两种状态；按月看 = 每个节点起点落在这个月的那一期。名额用 id 前缀（batch list <团队> 能看到）或占用它的节点名指定。
+//! 每一期只有已支付 / 待支付两种状态；按月看 = 每个节点起点落在这个月的那一期。名额用 id 前缀（batch list <团队> 能看到）或占用它的节点名指定。
 //! 客户页链接是只读分享链接，客户不登录，页面只有每个节点的名字、地区、这一期的区间、已付 / 待付，不出现 IP、供应商、价格
 
 use crate::cmds::{st, Ctx};
@@ -105,7 +105,7 @@ fn span(n: &Value) -> String {
     format!("{} → {} 到期", st(n, "/period_start"), end.get(5..).unwrap_or(&end))
 }
 
-/// 某月清单的文字（GET /teams/{id}/billing/month 的 data）：一句话 + 每个节点一行（没收在前）
+/// 某月清单的文字（GET /teams/{id}/billing/month 的 data）：一句话 + 每个节点一行（按本期生效日排列）
 fn month_text(d: &Value) -> String {
     let nodes = arr(&d["nodes"]);
     let unpaid: Vec<String> = nodes.iter().filter(|n| n["paid"] != true).map(|n| st(n, "/name")).collect();
@@ -116,7 +116,7 @@ fn month_text(d: &Value) -> String {
         format!("{head}：要收 {} 个节点的钱，都收齐了", nodes.len())
     } else {
         let names = if unpaid.len() <= 5 { format!("（{}）", unpaid.join("、")) } else { String::new() };
-        format!("{head}：要收 {} 个节点的钱，已收 {} 个，没收 {} 个{names}", nodes.len(), nodes.len() - unpaid.len(), unpaid.len())
+        format!("{head}：要收 {} 个节点的钱，已支付 {} 个，待支付 {} 个{names}", nodes.len(), nodes.len() - unpaid.len(), unpaid.len())
     };
     if !nodes.is_empty() {
         let rows: Vec<Vec<String>> = nodes
@@ -130,9 +130,9 @@ fn month_text(d: &Value) -> String {
                     tags.push("已停止收费");
                 }
                 if n["upcoming"] == true {
-                    tags.push("还没到");
+                    tags.push("待续期");
                 }
-                vec![st(n, "/name"), st(n, "/region"), span(n), if n["paid"] == true { "已收".into() } else { "没收".into() }, tags.join("、")]
+                vec![st(n, "/name"), st(n, "/region"), span(n), if n["paid"] == true { "已支付".into() } else { "待支付".into() }, tags.join("、")]
             })
             .collect();
         out.push('\n');
@@ -141,7 +141,7 @@ fn month_text(d: &Value) -> String {
     out
 }
 
-/// `billing month <团队> [2026-11]`：这个月每个节点的那一期，已收 / 没收（月份默认本月）
+/// `billing month <团队> [2026-11]`：这个月每个节点的那一期，已支付 / 待支付（月份默认本月）
 pub fn month(ctx: &Ctx, team: &str, month: Option<&str>) -> anyhow::Result<u8> {
     let id = ctx.team_id(team)?;
     let q: Vec<(&str, String)> = month.map(|m| vec![("month", m.to_string())]).unwrap_or_default();
@@ -180,13 +180,13 @@ pub struct PaidOpts {
     team: String,
     /// 节点名（团队1-10；手动添加的写备注），可写多个；重名时报错并列出名额 id，改写 id 前缀（≥ 4 位）；或用 --all
     nodes: Vec<String>,
-    /// 这个月所有没收的（配合 --unpaid 是所有已收的）
+    /// 这个月所有待支付的（配合 --unpaid 是所有已支付的）
     #[arg(long, conflicts_with = "nodes")]
     all: bool,
     /// 月份，如 2026-11（默认本月）：标的是每个节点起点在这个月的那一期
     #[arg(long, value_name = "YYYY-MM")]
     month: Option<String>,
-    /// 改回没收
+    /// 改回待支付
     #[arg(long)]
     unpaid: bool,
     /// 不加只预览
@@ -194,14 +194,14 @@ pub struct PaidOpts {
     yes: bool,
 }
 
-/// `billing paid <团队> [节点…] [--all] [--month] [--unpaid] [--yes]`：标记已收 / 改回没收；不加 --yes 只预览
+/// `billing paid <团队> [节点…] [--all] [--month] [--unpaid] [--yes]`：标记已支付 / 改回待支付；不加 --yes 只预览
 pub fn paid(ctx: &Ctx, o: &PaidOpts) -> anyhow::Result<u8> {
     let id = ctx.team_id(&o.team)?;
     let q: Vec<(&str, String)> = o.month.as_ref().map(|m| vec![("month", m.clone())]).unwrap_or_default();
     let d = ctx.c.get_q(&format!("/teams/{id}/billing/month"), &q)?;
     let want = !o.unpaid;
     let picked = pick(arr(&d["nodes"]), &o.nodes, o.all, want)?;
-    let what = if want { "标为已收" } else { "改回没收" };
+    let what = if want { "标为已支付" } else { "改回待支付" };
     let mon = month_cn(&st(&d, "/month"));
     if picked.is_empty() {
         ctx.emit(&json!({"changed": 0, "month": d["month"]}), || format!("{mon}没有要{what}的节点"));
@@ -263,7 +263,7 @@ fn slot_line(team: &str, s: &Value) -> String {
 pub struct SlotOpts {
     /// 名额：id 前缀，或占用它的节点名（团队1-10）
     slot: String,
-    /// 改开始收费日，如 2026-10-30（以后每期从这天算；最晚今天加一个月；已收的期按第几期跟着挪到新的期）
+    /// 改开始收费日，如 2026-10-30（以后每期从这天算；最晚今天加一个月；已支付的期按第几期跟着挪到新的期）
     #[arg(long, value_name = "日期")]
     start: Option<String>,
     /// 改地区（美区、墨西哥…）
@@ -348,7 +348,7 @@ pub fn exempt(ctx: &Ctx, node: &str, on: bool) -> anyhow::Result<u8> {
         if on {
             format!("{name} 已设为不收费：当它离开团队，计费节点今天停止收费（已经开始的这一期照收）")
         } else {
-            format!("{name} 已恢复收费：当它加入团队，这一期还没收完的原样接回，否则按购买日新开始收费")
+            format!("{name} 已恢复收费：当它加入团队，这一期有效期尚未结束的原样接回，否则按购买日新开始收费")
         }
     });
     Ok(0)
@@ -364,7 +364,7 @@ fn page_text(team: &str, p: &Value) -> String {
         None => "还没人看过".into(),
     };
     let state = if p["enabled"] == true { "启用" } else { "已停用（打开回 404）" };
-    format!("客户页链接：{}\n  状态 {state}；链接生成于 {}；{viewed}", p["link"].as_str().unwrap_or("（解不开，--rotate 换新链接）"), table::ts(&st(p, "/token_at")))
+    format!("客户页链接：{}\n  状态 {state}；查看密码 {}；到期 {}；{viewed}", p["link"].as_str().unwrap_or("（解不开，--rotate 换新链接）"), p["password"].as_str().unwrap_or("请换新链接"), table::ts(&st(p, "/expires_at")))
 }
 
 #[derive(clap::Args)]
@@ -426,8 +426,8 @@ mod tests {
     fn billing_month_text_reads_plainly() {
         let mut d = json!({"team": {"name": "团队1"}, "month": "2026-10", "nodes": [n("团队1-10", "aaaa1111", false), n("团队1-01", "bbbb2222", true)]});
         let t = month_text(&d);
-        assert!(t.starts_with("团队1 · 2026 年 10 月：要收 2 个节点的钱，已收 1 个，没收 1 个（团队1-10）\n"), "{t}");
-        assert!(t.contains("2026-10-30 → 11-30 到期") && t.contains("没收") && t.contains("已收"), "{t}");
+        assert!(t.starts_with("团队1 · 2026 年 10 月：要收 2 个节点的钱，已支付 1 个，待支付 1 个（团队1-10）\n"), "{t}");
+        assert!(t.contains("2026-10-30 → 11-30 到期") && t.contains("待支付") && t.contains("已支付"), "{t}");
         d["nodes"][0]["paid"] = json!(true);
         let t = month_text(&d);
         assert!(t.starts_with("团队1 · 2026 年 10 月：要收 2 个节点的钱，都收齐了"), "{t}");
