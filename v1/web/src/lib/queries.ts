@@ -198,7 +198,7 @@ export function eventKeys(ev: StreamEvent): unknown[][] {
     // 软路由：增删改与每轮采集（最多一次）都发这一个，列表与各台详情一起重取（曲线另按时间轮询，见 lib/routers）
     case 'routers': return [['routers']];
     // 计费：对账有变化或计费写操作后推送（id = 团队）：该团队的月份清单、增减记录一起重取
-    case 'billing': return [['billing', 'month', ev.id], ['billing', 'events', ev.id]];
+    case 'billing': return [['billing', 'outstanding', ev.id], ['billing', 'month', ev.id], ['billing', 'events', ev.id]];
     default: return [];
   }
 }
@@ -465,25 +465,33 @@ export const useRecycleBin = (o: { q: string; source: string; offset: number; li
 export const useRecycleDetail = (id: number | null) => useQuery({ queryKey: ['recycle-bin', 'one', id], enabled: id != null, staleTime: Infinity, queryFn: ({ signal }) => get<RecycleDetail>(`/recycle-bin/${id}`, signal) });
 
 // ---- 按节点数向团队收费（团队与套餐 → 计费台账）与客户页 /c/:token ----
-/** 一个团队某月的清单（month = YYYY-MM，空 = 本月）：每个节点起点在这个月的那一期、已收 / 没收，另带客户页链接。
+/** 一个团队某月的清单（month = YYYY-MM，空 = 本月）：每个节点起点在这个月的那一期、已支付 / 待支付，另带客户页链接。
  *  换团队、翻月时先留着上一份（调用方按 isPlaceholderData 调淡、不可操作），不整页塌成骨架 */
 export const useBillingMonth = (teamId: string, month: string) => useQuery({
-  queryKey: ['billing', 'month', teamId, month], enabled: !!teamId,
+  queryKey: ['billing', 'month', teamId, month], enabled: !!teamId, refetchInterval: 60_000,
   queryFn: ({ signal }) => get<BillingMonth>(`/teams/${teamId}/billing/month${month ? `?month=${month}` : ''}`, signal),
   placeholderData: keepPreviousData,
 });
 /** 计费相关的写操作：清单、增减记录都跟着变 */
 const B = [['billing'], ['audit']];
-const EVENT_PAGE = 50;
-/** 增减记录（按时间倒序）：一页 EVENT_PAGE 条，满页就能再往前翻（before = 上一页最后一条的 id） */
+export const useOutstanding = (teamId: string) => useQuery({
+  queryKey: ['billing', 'outstanding', teamId],
+  queryFn: ({ signal }) => get<Pick<BillingMonth, 'team' | 'today' | 'nodes'>>(`/teams/${teamId}/billing/outstanding`, signal),
+});
+export const BILLING_EVENT_PAGE_SIZE = 10;
+/** 操作记录按时间倒序分页；before = 上一页最后一条的 id。 */
 export const useBillingEvents = (teamId: string) => useInfiniteQuery({
   queryKey: ['billing', 'events', teamId], enabled: !!teamId, initialPageParam: '',
-  queryFn: ({ pageParam, signal }) => get<BillingEvent[]>(`/teams/${teamId}/billing-events?limit=${EVENT_PAGE}${pageParam ? `&before=${pageParam}` : ''}`, signal),
-  getNextPageParam: (last) => (last.length >= EVENT_PAGE ? last[last.length - 1].id : undefined),
+  queryFn: async ({ pageParam, signal }) => {
+    // 多取一条判断是否还有下一页，避免记录数刚好是 10 的倍数时翻到空白页。
+    const rows = await get<BillingEvent[]>(`/teams/${teamId}/billing-events?limit=${BILLING_EVENT_PAGE_SIZE + 1}${pageParam ? `&before=${pageParam}` : ''}`, signal);
+    return { items: rows.slice(0, BILLING_EVENT_PAGE_SIZE), next: rows.length > BILLING_EVENT_PAGE_SIZE ? rows[BILLING_EVENT_PAGE_SIZE - 1].id : undefined };
+  },
+  getNextPageParam: (last) => last.next,
   // 换团队时先留着上一个团队的（调用方按 isPlaceholderData 调淡、不可操作），不塌成骨架
   placeholderData: keepPreviousData,
 });
-/** 标记已收 / 改回没收：这些节点起点在 month 这个月的那一期；返回该月清单 */
+/** 标记已支付 / 改回待支付：这些节点起点在 month 这个月的那一期；返回该月清单 */
 export const useMarkPaid = () => useWrite(({ teamId, ...b }: { teamId: string; month: string; slot_ids: string[]; paid: boolean }) => post<BillingMonth>(`/teams/${teamId}/billing/paid`, b), B);
 /** 添加手动计费节点（系统外的节点，如家宽）：count 个同开始收费日、同地区的 */
 export const useAddBillingSlot = () => useWrite(({ teamId, ...b }: { teamId: string; region: string; start_date: string; count?: number; note: string }) => post(`/teams/${teamId}/billing-slots`, b), B);

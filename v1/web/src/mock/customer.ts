@@ -1,10 +1,10 @@
-// mock 的计费台账（同服务端规格：计费名额、增减记录、每一期已收 / 没收）与客户页（公开 /public/customer/{token}）。
-// 口径同 batches.rs：每个节点从开始收费日起每满一个月收一次（一期，月底对齐）；按月看 = 每个节点起点在这个月的那一期；已收按 (名额, 期起点) 记。
-// 静态数据 + 写操作改内存，不模拟每分钟的对账。数据是生产的真实形状：团队1 九个 10-01 开始（团队1-01..09）+ 团队1-10 10-30 开始；
-// 团队2 十九个 10-01 开始，10-28 有两次替换，另有一个今天刚加入、今天开始收费的节点。10 月除团队1-10 外都已收，11 月团队2 收了 5 个。
-// 「今天」固定 2026-11-03；公开页的演示令牌是 demo。
+// mock 的计费台账（同服务端规格：计费名额、增减记录、每一期已支付 / 待支付）与客户页（公开 /public/customer/{token}）。
+// 口径同 batches.rs：每个节点从开始收费日起每满一个月收一次（一期，月底对齐）；按月看 = 每个节点起点在这个月的那一期；已支付按 (名额, 期起点) 记。
+// 模拟数据覆盖同日起算、月末起算、替换和新增节点等场景，不模拟每分钟的对账。
+// 「今天」固定为 2026-11-03；分享链接与密码按需随机生成。
 import type { BillingEvent, BillingEventKind, BillingMonth, BillingMonthNode, CustomerPage, MachineView, PublicCustomer, Team } from '@/lib/types';
 import { addDays, addMonths } from '@/lib/format';
+import { compareBillingEffectiveDate } from '@/lib/sort';
 
 type Reg = (method: string, path: string, h: (c: { params: string[]; query: URLSearchParams; body: any }) => unknown) => void; // eslint-disable-line @typescript-eslint/no-explicit-any
 type Bad = (msg: string, status?: number, code?: string) => Error;
@@ -12,7 +12,7 @@ type Bad = (msg: string, status?: number, code?: string) => Error;
 const TODAY = '2026-11-03';
 interface MSlot { id: string; team_id: string; region: string; start_date: string; holder: { id: string; name: string } | null; last_holder_name: string | null; end_date: string | null; manual: boolean; note: string }
 interface MEvent extends BillingEvent { team_id: string }
-interface MPage { token: string; enabled: boolean; created_at: string; token_at: string; last_view_at: string | null }
+interface MPage { token: string; password?: string; enabled: boolean; created_at: string; token_at: string; last_view_at: string | null }
 
 let seq = 0;
 const nid = (p: string) => `${p}${(++seq).toString(16).padStart(8, '0')}`;
@@ -29,7 +29,7 @@ const monthNo = (s: string) => Number(s.slice(0, 4)) * 12 + Number(s.slice(5, 7)
 // ---------- 初始数据 ----------
 const slots: MSlot[] = [];
 const events: MEvent[] = [];
-/** 已收：`名额 id|期起点` → 标记时刻 */
+/** 已支付：`名额 id|期起点` → 标记时刻 */
 const paid = new Map<string, string>();
 const ev = (team_id: string, slot_id: string | null, at: string, kind: BillingEventKind, machine_name: string | null, other_name: string | null, text: string) => {
   events.push({ id: nid('ev'), team_id, slot_id, at, kind, machine_name, other_name, text });
@@ -64,13 +64,46 @@ for (const [tid, n] of [['t1', 9], ['t2', 19]] as const) {
   add('t2', '未知', '2026-10-12', { holder: { id: 'm-t2-21', name: '团队2-21' } });
   add('t2', '美区', '2026-08-31', { holder: { id: 'm-t2-22', name: '团队2-22' } });
 }
-// 10 月：除团队1-10 外都已收；11 月：团队2 收了前 5 个
+// 10 月：除团队1-10 外都已支付；11 月：团队2 收了前 5 个
 for (const s of slots) {
   const p = periodIn(s, '2026-10');
   if (p && s.holder?.name !== '团队1-10') paid.set(`${s.id}|${p[0]}`, '2026-10-31T12:00:00+08:00');
 }
 for (const s of slots.filter((x) => x.team_id === 't2').slice(0, 5)) paid.set(`${s.id}|${periodIn(s, '2026-11')![0]}`, '2026-11-02T10:30:00+08:00');
-const pages = new Map<string, MPage>([['t2', { token: 'demo', enabled: true, created_at: '2026-10-20T10:12:00Z', token_at: '2026-10-20T10:12:00Z', last_view_at: '2026-11-02T01:40:00Z' }]]);
+const pages = new Map<string, MPage>();
+
+// 客户页通过 noopener 新标签页打开，不能共享管理端的模块内存。
+// 仅将这组模拟台账持久化；每次请求先读再写，让新链接、换链、停用和付款状态跨页一致。
+const STORAGE_KEY = 'fleet:mock:customer:v1';
+interface StoredCustomer {
+  seq: number;
+  slots: MSlot[];
+  events: MEvent[];
+  paid: [string, string][];
+  pages: [string, MPage][];
+}
+function readCustomerState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return;
+    const state: StoredCustomer = JSON.parse(raw);
+    if (!Number.isSafeInteger(state.seq) || state.seq < 0 || !Array.isArray(state.slots)
+      || !Array.isArray(state.events) || !Array.isArray(state.paid) || !Array.isArray(state.pages)) return;
+    const savedPaid = new Map(state.paid), savedPages = new Map(state.pages);
+    seq = state.seq;
+    slots.splice(0, slots.length, ...state.slots);
+    events.splice(0, events.length, ...state.events);
+    paid.clear(); savedPaid.forEach((value, key) => paid.set(key, value));
+    pages.clear(); savedPages.forEach((value, key) => pages.set(key, value));
+  } catch { /* 浏览器禁用存储或旧数据损坏时，仍可用内存中的演示数据 */ }
+}
+function writeCustomerState() {
+  try {
+    const state: StoredCustomer = { seq, slots, events, paid: [...paid], pages: [...pages] };
+    const raw = JSON.stringify(state);
+    if (localStorage.getItem(STORAGE_KEY) !== raw) localStorage.setItem(STORAGE_KEY, raw);
+  } catch { /* 存储不可用时继续使用当前标签页的模拟数据 */ }
+}
 
 // ---------- 口径 ----------
 /** 起点落在 month（YYYY-MM）那个月、要收费的那一期 [起点, 终点)；没有为 null */
@@ -92,7 +125,7 @@ function monthsOf(tid: string) {
   while (m <= last) { out.push(m); m = addMonths(`${m}-01`, 1).slice(0, 7); }
   return out;
 }
-/** 某月清单：没收在前、再按名字 */
+/** 某月清单：按本期生效日期、节点编号排列，支付状态不影响顺序。 */
 function rows(tid: string, month: string): BillingMonthNode[] {
   return slots.filter((s) => s.team_id === tid).flatMap((s) => {
     const p = periodIn(s, month);
@@ -102,19 +135,31 @@ function rows(tid: string, month: string): BillingMonthNode[] {
       slot_id: s.id, name: slotName(s), region: s.region, start_date: s.start_date, period_start: p[0], period_end: p[1], upcoming: p[0] > TODAY,
       manual: s.manual, note: s.note, holder_id: s.holder?.id ?? null, ended: ended(s), paid: !!at, paid_at: at,
     }];
-  }).sort((a, b) => Number(a.paid) - Number(b.paid) || a.name.localeCompare(b.name, 'zh-CN', { numeric: true }));
+  }).sort(compareBillingEffectiveDate);
 }
 const eventView = ({ team_id: _t, ...e }: MEvent): BillingEvent => e; // eslint-disable-line @typescript-eslint/no-unused-vars
 const teamEvents = (tid: string) => events.filter((e) => e.team_id === tid).sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || cmp(b.id, a.id));
 
-export function installCustomerMock(R: Reg, o: { teams: () => Team[]; machines: () => MachineView[]; bad: Bad; emit: (e: { type: string; id?: string }) => void }) {
+export function installCustomerMock(register: Reg, o: { teams: () => Team[]; machines: () => MachineView[]; bad: Bad; emit: (e: { type: string; id?: string }) => void }) {
+  const R: Reg = (method, path, handler) => register(method, path, (context) => {
+    readCustomerState();
+    const result = handler(context);
+    writeCustomerState();
+    return result;
+  });
   const { bad } = o;
   const billing = (tid: string) => o.emit({ type: 'billing', id: tid });
   const team = (id: string) => { const t = o.teams().find((x) => x.id === id); if (!t) throw bad('没有这个团队', 404, 'not_found'); return t; };
   const slot = (id: string) => { const s = slots.find((x) => x.id === id); if (!s) throw bad('没有这个计费节点', 404, 'not_found'); return s; };
   const pageView = (tid: string): CustomerPage | null => {
-    const p = pages.get(tid);
-    return p ? { enabled: p.enabled, link: `${location.origin}/c/${p.token}`, created_at: p.created_at, token_at: p.token_at, last_view_at: p.last_view_at } : null;
+    let p = pages.get(tid);
+    if (!team(tid).spare && (!p || (p.enabled && !p.password))) {
+      const now = new Date().toISOString();
+      p = { token: token32(), password: token32().slice(0, 16), enabled: true,
+        created_at: p?.created_at ?? now, token_at: now, last_view_at: null };
+      pages.set(tid, p);
+    }
+    return p ? { password: p.password ?? null, enabled: p.enabled, link: `${location.origin}/c/${p.token}`, created_at: p.created_at, token_at: p.token_at, last_view_at: p.last_view_at } : null;
   };
   const region = (v: unknown) => { const s = String(v ?? '').trim(); if (!s || [...s].length > 20) throw bad('地区要 1–20 个字，如 美区、墨西哥'); return s; };
   const note = (v: unknown) => { const s = String(v ?? '').trim(); if ([...s].length > 60) throw bad('备注最多 60 个字'); return s; };
@@ -128,6 +173,12 @@ export function installCustomerMock(R: Reg, o: { teams: () => Team[]; machines: 
     return { team: { id: t.id, name: t.name }, today: TODAY, initialized: true, page: pageView(tid), month, months: monthsOf(tid), nodes };
   };
 
+  R('GET', '/teams/([^/]+)/billing/outstanding', ({ params }) => {
+    const t = team(params[0]);
+    const nodes = monthsOf(t.id).flatMap(month => rows(t.id, month).filter(n => !n.paid && !n.upcoming));
+    nodes.sort(compareBillingEffectiveDate);
+    return { team: { id: t.id, name: t.name }, today: TODAY, nodes };
+  });
   R('GET', '/teams/([^/]+)/billing/month', ({ params, query }) => view(team(params[0]).id, monthQ(query.get('month'))));
   R('POST', '/teams/([^/]+)/billing/paid', ({ params, body }) => {
     const t = team(params[0]);
@@ -144,7 +195,7 @@ export function installCustomerMock(R: Reg, o: { teams: () => Team[]; machines: 
     }
     if (changed.length) {
       const names = changed.map((n) => n.name);
-      ev(t.id, null, new Date().toISOString(), body.paid ? 'paid' : 'unpaid', null, null, `${Number(body.month.slice(5))} 月${body.paid ? '已收' : '改回没收'}：${names.slice(0, 10).join('、')}${names.length > 10 ? ' 等' : ''}（共 ${names.length} 个）`);
+      ev(t.id, null, new Date().toISOString(), body.paid ? 'paid' : 'unpaid', null, null, `${Number(body.month.slice(5))} 月${body.paid ? '已支付' : '改回待支付'}：${names.slice(0, 10).join('、')}${names.length > 10 ? ' 等' : ''}（共 ${names.length} 个）`);
       billing(t.id);
     }
     return view(t.id, body.month);
@@ -176,7 +227,7 @@ export function installCustomerMock(R: Reg, o: { teams: () => Team[]; machines: 
     if (body.start_date !== undefined) {
       const v = startDate(body.start_date);
       if (v !== s.start_date) {
-        // 已收的期按期序号 k 挪到新开始日的第 k 期，对不上旧期序列的丢掉（同服务端 shift_paid）
+        // 已支付的期按期序号 k 挪到新开始日的第 k 期，对不上旧期序列的丢掉（同服务端 shift_paid）
         for (const [key, at] of [...paid]) {
           if (!key.startsWith(`${s.id}|`)) continue;
           paid.delete(key);
@@ -221,10 +272,10 @@ export function installCustomerMock(R: Reg, o: { teams: () => Team[]; machines: 
     const held = slots.find((s) => s.holder?.id === m.id && !s.end_date);
     const tid = m.team?.id ?? held?.team_id;
     if (tid) ev(tid, held?.id ?? null, now, 'exempt', m.name, null, `${m.name} ${body.exempt ? '设为不收费' : '恢复收费'}`);
-    // 设完服务端马上对账：不计费的名额今天结束（本期照收）；恢复的在本期还没收完时接回原名额，否则今天新开始收费（mock 没有订阅）
+    // 设完服务端马上对账：不计费的名额今天结束（本期照收）；恢复的在本期有效期尚未结束时接回原名额，否则今天新开始收费（mock 没有订阅）
     if (body.exempt && held) {
       held.last_holder_name = held.holder!.name; held.holder = null; held.end_date = TODAY;
-      ev(held.team_id, held.id, now, 'remove', m.name, null, `${m.name} 离开，${TODAY > held.start_date ? `收费到 ${cn(addDays(paidTo(held.start_date, TODAY), -1))}` : '没收过费'}`);
+      ev(held.team_id, held.id, now, 'remove', m.name, null, `${m.name} 离开，${TODAY > held.start_date ? `收费到 ${cn(addDays(paidTo(held.start_date, TODAY), -1))}` : '没有产生收费期次'}`);
     }
     if (!body.exempt && m.team && !held) {
       const back = slots.find((s) => s.team_id === m.team!.id && !s.manual && !s.holder && s.last_holder_name === m.name && s.end_date && s.end_date > s.start_date && paidTo(s.start_date, s.end_date) > TODAY);
@@ -241,7 +292,7 @@ export function installCustomerMock(R: Reg, o: { teams: () => Team[]; machines: 
   R('POST', '/teams/([^/]+)/customer-page', ({ params }) => {
     const t = team(params[0]); const now = new Date().toISOString();
     const old = pages.get(t.id);
-    pages.set(t.id, { token: token32(), enabled: old?.enabled ?? true, created_at: old?.created_at ?? now, token_at: now, last_view_at: null });
+    pages.set(t.id, { token: token32(), password: token32().slice(0, 16), enabled: old?.enabled ?? true, created_at: old?.created_at ?? now, token_at: now, last_view_at: null });
     return pageView(t.id);
   });
   R('PATCH', '/teams/([^/]+)/customer-page', ({ params, body }) => {
@@ -252,18 +303,19 @@ export function installCustomerMock(R: Reg, o: { teams: () => Team[]; machines: 
   });
   R('DELETE', '/teams/([^/]+)/customer-page', ({ params }) => { const t = team(params[0]); pages.delete(t.id); return { team_id: t.id }; });
 
-  R('GET', '/public/customer/([^/]+)', ({ params, query }) => {
-    const thisMonth = TODAY.slice(0, 7);
+  R('POST', '/public/customer/([^/]+)', ({ params, query, body }) => {
     const asked = monthQ(query.get('month'));
-    const month = asked > thisMonth ? thisMonth : asked; // 客户只看到本月为止
-    const hit = [...pages.entries()].find(([, p]) => p.token === params[0] && p.enabled);
+    const month = asked;
+    const hit = [...pages.entries()].find(([, p]) => p.token === params[0] && p.enabled && p.password);
     if (!hit) throw bad('链接不对或已停用', 404, 'not_found');
     const [tid, p] = hit;
+    if (body.password !== p.password) throw bad('查看密码不正确', 403, 'forbidden');
     if (!p.last_view_at || Date.now() - Date.parse(p.last_view_at) > 600_000) p.last_view_at = new Date().toISOString();
     const nodes = rows(tid, month);
     const out: PublicCustomer = {
-      team: team(tid).name, today: TODAY, month, months: monthsOf(tid).filter((m) => m <= thisMonth),
-      nodes: nodes.map((n) => ({ name: n.name, region: n.region, period_start: n.period_start, period_end: n.period_end, paid: n.paid })),
+      team: team(tid).name, today: TODAY, month, months: monthsOf(tid),
+      outstanding: monthsOf(tid).map(month => ({ month, count: rows(tid, month).filter(n => !n.paid && !n.upcoming).length })).filter(m => m.count > 0),
+      nodes: nodes.map((n) => ({ name: n.name, region: n.region, period_start: n.period_start, period_end: n.period_end, paid: n.paid, manual: n.manual, ended: n.ended })),
     };
     return out;
   });

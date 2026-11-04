@@ -1,7 +1,7 @@
-// 团队与套餐：团队（改名、排序、重新编号预览→应用）、供应商、套餐、待付、计费台账（按节点数向团队收费：月份清单已收 / 没收与客户页链接）。
+// 团队：团队管理与台账；供应商：供应商、套餐与待付。保留 /catalog 旧链接的分流。
 import * as React from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, Navigate, useLocation, useSearchParams } from 'react-router-dom';
 import { ArrowRight, ExternalLink, MoreHorizontal, Plus } from 'lucide-react';
 import { fetchRenumber, type TeamNodeCounts, useAddPlan, useAddProvider, useAddTeam, useDelPlan, useDelProvider, useDelTeam, usePatchPlan, usePatchProvider, usePatchTeam, usePlans, useProviders, useRelaysMonthlyUsd, useRenumber, useTeamNodeCounts, useTeams, useTeamsCompact } from '@/lib/queries';
 import type { Plan, Provider, Team, TrafficReset, TrafficRule } from '@/lib/types';
@@ -25,7 +25,17 @@ import { TzInput } from '@/components/app/TzInput';
 import { DueTab } from '@/features/DueTab';
 import { CustomerTab } from '@/features/CustomerTab';
 
-const SECTIONS = ['teams', 'providers', 'plans', 'due', 'customer'];
+const GROUPS = {
+  teams: { title: '团队', sections: [
+    { value: 'teams', label: '团队', Content: TeamsTab },
+    { value: 'customer', label: '台账', Content: CustomerTab },
+  ] },
+  providers: { title: '供应商', sections: [
+    { value: 'providers', label: '供应商', Content: ProvidersTab },
+    { value: 'plans', label: '套餐', Content: PlansTab },
+    { value: 'due', label: '待付', Content: DueTab },
+  ] },
+};
 
 /** 三张表的行：点行打开编辑（同机器列表点行开抽屉），行尾常驻一个「⋯」收其余操作（重新编号、归档、删除），不靠悬停才出现。
  *  点到行里的链接（台数）、按钮时不算点行 */
@@ -44,20 +54,27 @@ function RowMenu({ label, children }: { label: string; children: React.ReactNode
 }
 
 export function CatalogPage() {
-  // 子页写进 URL 的 section（同设置页），刷新 / 分享链接停在原处；换子页时排序（?sort=）、套餐的「显示已归档」、计费台账的团队、「只看有效」与应收月份不带过去
+  const [sp] = useSearchParams();
+  const { hash } = useLocation();
+  const group = GROUPS.providers.sections.some((s) => s.value === sp.get('section')) ? 'providers' : 'teams';
+  return <Navigate replace to={{ pathname: `/${group}`, search: sp.toString(), hash }} />;
+}
+
+export function TeamsPage() { return <CatalogGroupPage group="teams" />; }
+export function ProvidersPage() { return <CatalogGroupPage group="providers" />; }
+
+function CatalogGroupPage({ group }: { group: keyof typeof GROUPS }) {
+  // 页签保留在地址中；换页签时清掉上一页的排序、归档筛选、台账团队与月份。
   const [sp, setSp] = useSearchParams();
-  const tab = SECTIONS.find((s) => s === sp.get('section')) ?? 'teams';
+  const { title, sections } = GROUPS[group];
+  const tab = sections.find((s) => s.value === sp.get('section'))?.value ?? sections[0].value;
   return (
     <div className="stack">
-      <PageHead title="团队与套餐" />
+      <PageHead title={title} />
       <Tabs value={tab} onValueChange={(v) => setSp((p) => { const n = new URLSearchParams(p); n.set('section', v); n.delete('sort'); n.delete('archived'); n.delete('team'); n.delete('active'); n.delete('month'); return n; }, { replace: true })}>
-        <TabsList><TabsTrigger value="teams">团队</TabsTrigger><TabsTrigger value="providers">供应商</TabsTrigger><TabsTrigger value="plans">套餐</TabsTrigger><TabsTrigger value="due">待付</TabsTrigger><TabsTrigger value="customer">计费台账</TabsTrigger></TabsList>
+        <TabsList>{sections.map((s) => <TabsTrigger key={s.value} value={s.value}>{s.label}</TabsTrigger>)}</TabsList>
         <div style={{ marginTop: 16 }}>
-          <TabsContent value="teams"><TeamsTab /></TabsContent>
-          <TabsContent value="providers"><ProvidersTab /></TabsContent>
-          <TabsContent value="plans"><PlansTab /></TabsContent>
-          <TabsContent value="due"><DueTab /></TabsContent>
-          <TabsContent value="customer"><CustomerTab /></TabsContent>
+          {sections.map(({ value, Content }) => <TabsContent key={value} value={value}><Content /></TabsContent>)}
         </div>
       </Tabs>
     </div>

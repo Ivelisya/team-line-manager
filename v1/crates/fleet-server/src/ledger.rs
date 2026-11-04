@@ -9,7 +9,7 @@
 //!    已经开始的那一期照收（batches::billed_until）。
 //! 3. 回来的节点（撤销退役、取消不计费）：它在这个团队最近结束的名额还在收费期内（billed_until ≥ 今天）就原样接回，不记事件；否则按 1 新建。
 //!
-//! 补位只认明确的替换：替换节点作业交换编号时在同一个事务里调 `take_over`，新节点接过旧节点的名额（开始收费日、地区、已收都不变），记 swap。
+//! 补位只认明确的替换：替换节点作业交换编号时在同一个事务里调 `take_over`，新节点接过旧节点的名额（开始收费日、地区、已支付都不变），记 swap。
 //! 对账不猜哪个新节点顶了哪个旧节点：同一轮一个走、一个来，就是一条 remove、一条 add。
 //!
 //! 手动名额（系统外的节点）不参与对账。还没初始化过（app_setting 里没有 billing_since，见 POST /billing/init）时对账什么都不做：
@@ -78,7 +78,7 @@ pub struct OpenSlot {
 pub struct Ended {
     pub slot: Uuid,
     pub machine: Uuid,
-    /// 最后收费的那一期的最后一天；一期都没收为 None
+    /// 最后收费的那一期的最后一天；没有产生收费期次为 None
     pub billed_until: Option<Date>,
 }
 
@@ -129,10 +129,10 @@ pub fn manual_name(note: &str) -> String { if note.is_empty() { "手动添加的
 /// 「10 月 30 日」
 fn cn(v: &Value) -> String { v.as_str().and_then(bt::parse_date).map(fmt_cn).unwrap_or_else(|| "?".into()) }
 
-/// 停止收费的节点最后一期收到哪天：「收费到 11 月 29 日」；一期都没收（billed_until 为 null）的「没收过费」
-fn until(d: &Value) -> String { if d["billed_until"].is_null() { "没收过费".into() } else { format!("收费到 {}", cn(&d["billed_until"])) } }
+/// 停止收费的节点最后一期收到哪天：「收费到 11 月 29 日」；没有产生收费期次（billed_until 为 null）的「没有产生收费期次」
+fn until(d: &Value) -> String { if d["billed_until"].is_null() { "没有产生收费期次".into() } else { format!("收费到 {}", cn(&d["billed_until"])) } }
 
-/// 「11 月已收：团队1-01、团队1-02（共 2 个）」：名字最多列 10 个
+/// 「11 月已支付：团队1-01、团队1-02（共 2 个）」：名字最多列 10 个
 fn paid_text(head: &str, d: &Value) -> String {
     let month = d["month"].as_str().and_then(bt::parse_month).map(|m| format!("{} 月", u8::from(m.month()))).unwrap_or_default();
     let names: Vec<&str> = d["names"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
@@ -153,8 +153,8 @@ pub fn event_text(kind: &str, machine: Option<&str>, other: Option<&str>, d: &Va
         "manual_end" => format!("{m} 停止收费，{}", until(d)),
         "exempt" if d["exempt"] == true => format!("{m} 设为不收费"),
         "exempt" => format!("{m} 恢复收费"),
-        "paid" => paid_text("已收", d),
-        "unpaid" => paid_text("改回没收", d),
+        "paid" => paid_text("已支付", d),
+        "unpaid" => paid_text("改回待支付", d),
         k => format!("{m} {k}"),
     }
 }
@@ -273,8 +273,8 @@ pub async fn log_init(c: &mut PgConnection, team: Uuid, start: Date, nodes: &[(&
 }
 
 /// 替换节点（jobs/steps/replace.rs 交换编号的那一步，同一个事务里调；调用方已按团队取了计费锁）：新节点 `new` 接过旧节点 `old` 在团队 `team`
-/// 里的名额，开始收费日、地区、已收标记都不变，记 swap（「新节点原名 补位接替 旧节点原名，收费不变」，名字是交换编号前的）。
-/// 新节点自己的名额：同一个团队的（上架进团队后对账建的）删掉，连同它那条 add，它已收的期挪到接过的名额同一个月的那一期上；
+/// 里的名额，开始收费日、地区、已支付标记都不变，记 swap（「新节点原名 补位接替 旧节点原名，收费不变」，名字是交换编号前的）。
+/// 新节点自己的名额：同一个团队的（上架进团队后对账建的）删掉，连同它那条 add，它已支付的期挪到接过的名额同一个月的那一期上；
 /// 别的团队的（从别的团队调过来）那边按离开结束。旧节点之后去备用就不再占名额，不另记 remove。
 /// 旧节点在这个团队没有名额（还没初始化、标了不计费）什么都不做。返回接过没有
 pub async fn take_over(c: &mut PgConnection, team: Uuid, old: Uuid, new: Uuid, (old_name, new_name): (&str, &str), now: OffsetDateTime) -> sqlx::Result<bool> {
@@ -412,6 +412,9 @@ pub async fn run_forever(st: AppState) {
     t.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         t.tick().await;
+        if let Err(e) = crate::api::batches::ensure_customer_pages(&st).await {
+            tracing::error!("客户页初始化失败：{e:?}");
+        }
         match reconcile(&st, OffsetDateTime::now_utc()).await {
             Ok(n) if n > 0 => tracing::info!("计费对账：记了 {n} 条增减"),
             Ok(_) => {}
@@ -501,7 +504,7 @@ mod tests {
         let restore = [Change::Restore { slot: id(1), machine: id(10), name: "团队1-03".into() }];
         assert_eq!(back(Some(date!(2026 - 11 - 03))), restore);
         assert_eq!(back(Some(date!(2026 - 11 - 29))), restore);
-        // 收费期已经过了 / 一期都没收：按新加入建名额
+        // 收费期已经过了 / 没有产生收费期次：按新加入建名额
         assert_eq!(back(Some(date!(2026 - 11 - 02))), [Change::Add { machine: id(10), start: date!(2026 - 11 - 03) }]);
         assert_eq!(back(None), [Change::Add { machine: id(10), start: date!(2026 - 11 - 03) }]);
         // 别的节点结束的名额不接
@@ -522,11 +525,11 @@ mod tests {
         assert_eq!(event_text("add", Some("团队1-10"), None, &json!({"start_date": "2026-10-30"})), "团队1-10 加入，从 10 月 30 日开始收费");
         assert_eq!(event_text("swap", Some("团队2-20"), Some("团队2-07"), &json!({})), "团队2-20 补位接替 团队2-07，收费不变");
         assert_eq!(event_text("remove", Some("团队2-05"), None, &json!({"end_date": "2026-11-20", "billed_until": "2026-11-29"})), "团队2-05 离开，收费到 11 月 29 日");
-        assert_eq!(event_text("remove", Some("团队2-05"), None, &json!({"end_date": "2026-11-14", "billed_until": null})), "团队2-05 离开，没收过费");
+        assert_eq!(event_text("remove", Some("团队2-05"), None, &json!({"end_date": "2026-11-14", "billed_until": null})), "团队2-05 离开，没有产生收费期次");
         assert_eq!(event_text("init", None, None, &json!({"start_date": "2026-10-01", "count": 52})), "开始记账：52 个节点从 10 月 1 日开始收费");
         assert_eq!(event_text("exempt", Some("团队1-05"), None, &json!({"exempt": true})), "团队1-05 设为不收费");
         let names: Vec<String> = (1..=12).map(|i| format!("团队1-{i:02}")).collect();
-        assert_eq!(event_text("paid", None, None, &json!({"month": "2026-11", "names": ["团队1-01", "团队1-02"]})), "11 月已收：团队1-01、团队1-02（共 2 个）");
+        assert_eq!(event_text("paid", None, None, &json!({"month": "2026-11", "names": ["团队1-01", "团队1-02"]})), "11 月已支付：团队1-01、团队1-02（共 2 个）");
         assert!(event_text("unpaid", None, None, &json!({"month": "2026-11", "names": names})).ends_with("团队1-10 等（共 12 个）"));
         assert_eq!(manual_name("墨西哥家宽"), "墨西哥家宽");
         assert_eq!(manual_name(""), "手动添加的节点");

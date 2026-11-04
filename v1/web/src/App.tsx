@@ -16,6 +16,8 @@ const RoutersPage = lazyPage(() => import('./pages/Routers'), 'RoutersPage');
 const ProvisionPage = lazyPage(() => import('./pages/Provision'), 'ProvisionPage');
 const JobsPage = lazyPage(() => import('./pages/Jobs'), 'JobsPage');
 const CatalogPage = lazyPage(() => import('./pages/Catalog'), 'CatalogPage');
+const TeamsPage = lazyPage(() => import('./pages/Catalog'), 'TeamsPage');
+const ProvidersPage = lazyPage(() => import('./pages/Catalog'), 'ProvidersPage');
 const IncidentsPage = lazyPage(() => import('./pages/Incidents'), 'IncidentsPage');
 const SettingsPage = lazyPage(() => import('./pages/Settings'), 'SettingsPage');
 const TrafficPage = lazyPage(() => import('./pages/Traffic'), 'TrafficPage');
@@ -44,6 +46,8 @@ export function App() {
         <Route path="access" element={<AccessPage />} />
         <Route path="access/policy" element={<PolicyPage />} />
         <Route path="catalog" element={<CatalogPage />} />
+        <Route path="teams" element={<TeamsPage />} />
+        <Route path="providers" element={<ProvidersPage />} />
         <Route path="incidents" element={<IncidentsPage />} />
         <Route path="audit" element={<AuditPage />} />
         <Route path="settings" element={<SettingsPage />} />

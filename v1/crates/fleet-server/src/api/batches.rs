@@ -1,9 +1,9 @@
-//! 计费台账（名额：迁移 0097，对账在 ledger.rs；每一期已收 / 没收：迁移 0100，口径在 batches.rs）与客户页。
-//! 计费名额 = 团队里一个按月计费的节点位置，由对账自动增减。每个节点从开始收费日起每满一个月收一次（一期），每一期只有已收 / 没收（默认没收，手动标记）；
-//! 按月看 = 每个节点起点落在这个月的那一期。这里有：看（名额、增减记录、某月清单）、标记已收 / 改回没收、改名额（开始收费日、地区、备注、停止 / 恢复）、
+//! 计费台账（名额：迁移 0097，对账在 ledger.rs；每一期已支付 / 待支付：迁移 0100，口径在 batches.rs）与客户页。
+//! 计费名额 = 团队里一个按月计费的节点位置，由对账自动增减。每个节点从开始收费日起每满一个月收一次（一期），每一期只有已支付 / 待支付（默认待支付，手动标记）；
+//! 按月看 = 每个节点起点落在这个月的那一期。这里有：看（名额、增减记录、某月清单）、标记已支付 / 改回待支付、改名额（开始收费日、地区、备注、停止 / 恢复）、
 //! 手动名额（系统外的节点）、节点设不收费、一次性初始化。读要 read、写要 write（写审计）。
 //! 每个团队一个只读分享链接（令牌 32 字节随机，库里存 sha256 用来查、SecretBox 密文用来随时再复制链接），
-//! 公开接口 `GET /api/v1/public/customer/{令牌}?month=` 不登录（和 client_subs 的 /sub/{令牌} 一样没有 Actor 提取器，登录只在提取器里校验，所以不会被拦）。
+//! 公开接口 `POST /api/v1/public/customer/{令牌}?month=` 不登录（和 client_subs 的 /sub/{令牌} 一样没有 Actor 提取器，登录只在提取器里校验，所以不会被拦）。
 //! 客户页只有某月每个节点的名字、地区、这一期的区间、已付 / 待付，不出现 IP、供应商、价格。
 
 use super::ok;
@@ -128,7 +128,7 @@ pub async fn list(_a: Actor, State(st): State<AppState>, ApiPath(team): ApiPath<
     })))
 }
 
-// ── 按月看：每个节点起点落在这个月的那一期，已收 / 没收 ──────────────────
+// ── 按月看：每个节点起点落在这个月的那一期，已支付 / 待支付 ──────────────────
 
 #[derive(Deserialize)]
 pub struct MonthQ {
@@ -143,7 +143,7 @@ fn month_in(m: Option<&str>) -> ApiResult<Date> {
     }
 }
 
-/// 某月清单的一行：名额、起点落在这个月的那一期 [ps, pe)、已收时刻（没收为 None）
+/// 某月清单的一行：名额、起点落在这个月的那一期 [ps, pe)、已支付时刻（待支付为 None）
 struct MonthRow {
     s: SlotRow,
     ps: Date,
@@ -151,7 +151,7 @@ struct MonthRow {
     paid_at: Option<OffsetDateTime>,
 }
 
-/// 某月的清单（没收在前、再按名字）与可以翻看的月份（最早的开始收费月或本月 → 下个月）
+/// 某月的清单（按本期生效日、节点名排列，收款状态不影响顺序）与可以翻看的月份
 async fn month_rows(db: &mut PgConnection, team: Uuid, month: Date) -> ApiResult<(Vec<Date>, Vec<MonthRow>)> {
     let next = meta::add_months(month, 1).ok_or_else(|| ApiError::bad_request("日期超出范围"))?;
     let slots = team_slots(db, team).await?;
@@ -176,8 +176,46 @@ async fn month_rows(db: &mut PgConnection, team: Uuid, month: Date) -> ApiResult
             Some(MonthRow { s, ps, pe, paid_at })
         })
         .collect();
-    rows.sort_by_cached_key(|r| (r.paid_at.is_some(), r.s.name()));
+    rows.sort_by_cached_key(|r| (r.ps, r.s.name(), r.s.id));
     Ok((months, rows))
+}
+
+fn admin_node(s: &SlotRow, ps: Date, pe: Date, paid_at: Option<OffsetDateTime>, today: Date) -> Value {
+    json!({
+        "slot_id": s.id, "name": s.name(), "region": s.region, "start_date": bt::fmt_date(s.start_date),
+        "period_start": bt::fmt_date(ps), "period_end": bt::fmt_date(pe), "upcoming": ps > today,
+        "manual": s.manual, "note": s.note, "holder_id": s.holder_id, "ended": s.state(today) == "ended",
+        "paid": paid_at.is_some(), "paid_at": paid_at.map(meta::fmt_ts),
+    })
+}
+
+/// 所有已开始且待支付的期次，管理端与客户页共用。
+async fn outstanding_rows(db: &mut PgConnection, team: Uuid, today: Date) -> ApiResult<Vec<MonthRow>> {
+    let slots = team_slots(db, team).await?;
+    let paid: std::collections::HashSet<(Uuid, Date)> = sqlx::query_as(
+        "select p.slot_id, p.period_start from billing_paid p join billing_slot s on s.id = p.slot_id where s.team_id = $1",
+    ).bind(team).fetch_all(&mut *db).await?.into_iter().collect();
+    let mut rows = Vec::new();
+    for slot in slots {
+        for k in 0.. {
+            let Some((ps, pe)) = bt::period(slot.start_date, k) else { break };
+            if ps > today || slot.end_date.is_some_and(|end| ps >= end) { break; }
+            if !paid.contains(&(slot.id, ps)) {
+                rows.push(MonthRow { s: slot.clone(), ps, pe, paid_at: None });
+            }
+        }
+    }
+    rows.sort_by_cached_key(|r| (r.ps, r.s.name(), r.s.id));
+    Ok(rows)
+}
+
+pub async fn outstanding(_a: Actor, State(st): State<AppState>, ApiPath(team): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
+    let mut db = st.db.acquire().await?;
+    let name = team_name(&mut db, team).await?;
+    let today = bt::today();
+    let rows = outstanding_rows(&mut db, team, today).await?;
+    let nodes: Vec<_> = rows.iter().map(|r| admin_node(&r.s, r.ps, r.pe, None, today)).collect();
+    Ok(ok(json!({"team": {"id": team, "name": name}, "today": bt::fmt_date(today), "nodes": nodes})))
 }
 
 /// 管理端的月份清单（GET 与标记后都回它）
@@ -187,18 +225,7 @@ async fn month_view(st: &AppState, db: &mut PgConnection, team: Uuid, month: Dat
     let (months, rows) = month_rows(db, team, month).await?;
     let page = page_json(st, db, team).await?;
     let initialized = ledger::initialized(&st.db).await?;
-    let nodes: Vec<Value> = rows
-        .iter()
-        .map(|r| {
-            let s = &r.s;
-            json!({
-                "slot_id": s.id, "name": s.name(), "region": s.region, "start_date": bt::fmt_date(s.start_date),
-                "period_start": bt::fmt_date(r.ps), "period_end": bt::fmt_date(r.pe), "upcoming": r.ps > today,
-                "manual": s.manual, "note": s.note, "holder_id": s.holder_id, "ended": s.state(today) == "ended",
-                "paid": r.paid_at.is_some(), "paid_at": r.paid_at.map(meta::fmt_ts),
-            })
-        })
-        .collect();
+    let nodes: Vec<_> = rows.iter().map(|r| admin_node(&r.s, r.ps, r.pe, r.paid_at, today)).collect();
     Ok(json!({
         "team": {"id": team, "name": name}, "today": bt::fmt_date(today), "initialized": initialized, "page": page,
         "month": bt::fmt_month(month), "months": months.into_iter().map(bt::fmt_month).collect::<Vec<_>>(),
@@ -206,7 +233,7 @@ async fn month_view(st: &AppState, db: &mut PgConnection, team: Uuid, month: Dat
     }))
 }
 
-/// `GET /teams/{id}/billing/month?month=2026-11`（默认本月）：每个节点起点落在这个月的那一期（区间、已收 / 没收；没收在前、再按名字）、个数、
+/// `GET /teams/{id}/billing/month?month=2026-11`（默认本月）：每个节点起点落在这个月的那一期（区间、已支付 / 待支付；按本期生效日、节点名排列）、个数、
 /// 可以翻看的月份（最早的开始收费月或本月 → 下个月）、客户页链接状态
 pub async fn month(_a: Actor, State(st): State<AppState>, ApiPath(team): ApiPath<Uuid>, ApiQuery(q): ApiQuery<MonthQ>) -> ApiResult<Json<Value>> {
     let month = month_in(q.month.as_deref())?;
@@ -222,7 +249,7 @@ pub struct PaidIn {
     paid: bool,
 }
 
-/// `POST /teams/{id}/billing/paid` `{month, slot_ids, paid}`：把这些节点起点落在这个月的那一期标为已收 / 改回没收（还没到的期也能先标，客户可能预付）。
+/// `POST /teams/{id}/billing/paid` `{month, slot_ids, paid}`：把这些节点起点落在这个月的那一期标为已支付 / 改回待支付（还没到的期也能先标，客户可能预付）。
 /// 节点这个月没有要收费的期（不是这个团队的、还没开始、已停止）→ 400，什么都不改。真有变化的记一条 paid / unpaid 增减记录和一条审计 → 该月清单（同 GET）
 pub async fn paid(a: Actor, State(st): State<AppState>, ApiPath(team): ApiPath<Uuid>, ApiJson(b): ApiJson<PaidIn>) -> ApiResult<Json<Value>> {
     let month = bt::parse_month(&b.month).ok_or_else(|| ApiError::bad_request("月份要写成 2026-11 这样"))?;
@@ -407,7 +434,7 @@ pub struct PatchIn {
     end_date: Option<Option<String>>,
 }
 
-/// 开始收费日改了：这个名额已收的期按期序号 k 平移到新开始日的第 k 期（保留已收时刻）；不在旧开始日期序列上、或新的期超出日期范围的删掉。返回 (挪了几条, 删了几条)
+/// 开始收费日改了：这个名额已支付的期按期序号 k 平移到新开始日的第 k 期（保留已支付时刻）；不在旧开始日期序列上、或新的期超出日期范围的删掉。返回 (挪了几条, 删了几条)
 async fn shift_paid(tx: &mut Tx<'_>, id: Uuid, old: Date, new: Date) -> ApiResult<(usize, usize)> {
     let rows: Vec<(Date, OffsetDateTime)> = sqlx::query_as("delete from billing_paid where slot_id = $1 returning period_start, paid_at").bind(id).fetch_all(&mut **tx).await?;
     let mut moved = 0;
@@ -419,7 +446,7 @@ async fn shift_paid(tx: &mut Tx<'_>, id: Uuid, old: Date, new: Date) -> ApiResul
     Ok((moved, rows.len() - moved))
 }
 
-/// `PATCH /billing-slots/{id}` `{start_date?, region?, note?, end_date?}`：改开始收费日（最晚今天加一个月；已收的期按期序号跟着挪到新的期）/ 地区 / 备注（记 edit）；
+/// `PATCH /billing-slots/{id}` `{start_date?, region?, note?, end_date?}`：改开始收费日（最晚今天加一个月；已支付的期按期序号跟着挪到新的期）/ 地区 / 备注（记 edit）；
 /// end_date 只能给手动名额（记 manual_end）或改已结束的系统名额的结束日，有节点占着的 409；end_date: null = 恢复，只限手动名额 → `Slot`
 pub async fn slot_patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<PatchIn>) -> ApiResult<Json<Value>> {
     let start = b.start_date.as_deref().map(|s| date_in(s, "开始收费日").and_then(check_start)).transpose()?;
@@ -470,10 +497,10 @@ pub async fn slot_patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPa
         let mut w = format!("开始收费日 {} → {}", bt::fmt_cn(old.start_date), bt::fmt_cn(now_row.start_date));
         if let Some((moved, dropped)) = shifted {
             if moved > 0 {
-                w.push_str(&format!("（{moved} 期的已收按期序号挪到了新的期）"));
+                w.push_str(&format!("（{moved} 期的已支付按期序号挪到了新的期）"));
             }
             if dropped > 0 {
-                w.push_str(&format!("（{dropped} 条对不上期的已收记录已清掉）"));
+                w.push_str(&format!("（{dropped} 条对不上期的已支付记录已清掉）"));
             }
         }
         what.push(w);
@@ -643,6 +670,7 @@ pub async fn init(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Init
 #[derive(sqlx::FromRow)]
 struct PageRow {
     token_enc: Vec<u8>,
+    password_enc: Option<Vec<u8>>,
     enabled: bool,
     created_at: OffsetDateTime,
     token_at: OffsetDateTime,
@@ -650,7 +678,7 @@ struct PageRow {
     last_view_ip: Option<String>,
 }
 
-const PAGE_COLS: &str = "token_enc, enabled, created_at, token_at, last_view_at, host(last_view_ip) last_view_ip";
+const PAGE_COLS: &str = "token_enc, password_enc, enabled, created_at, token_at, last_view_at, host(last_view_ip) last_view_ip";
 
 fn link(st: &AppState, token: &str) -> String { format!("{}/c/{token}", st.cfg.public_url.trim_end_matches('/')) }
 
@@ -658,21 +686,52 @@ fn page_of(st: &AppState, r: &PageRow) -> Value {
     // 密钥换了解不开时不报错（月份清单照常能看），链接给 null，换新链接即可
     let token = st.secrets.open_str(&r.token_enc).map_err(|e| tracing::warn!("客户页令牌解密失败：{e:#}")).ok();
     json!({
+        "password": r.password_enc.as_deref().and_then(|p| st.secrets.open_str(p).ok()),
         "enabled": r.enabled, "link": token.map(|t| link(st, &t)),
         "created_at": meta::fmt_ts(r.created_at), "token_at": meta::fmt_ts(r.token_at),
         "last_view_at": r.last_view_at.map(meta::fmt_ts), "last_view_ip": r.last_view_ip,
     })
 }
 
+/// 自动初始化只补齐尚无密码的旧分享，已有链接和密码保持不变。
+async fn rotate_page(st: &AppState, db: &mut PgConnection, team: Uuid, automatic: bool) -> ApiResult<bool> {
+    let token = random_token(32);
+    let result = sqlx::query(
+        "insert into customer_page (team_id, token_hash, token_enc, password_enc)
+         select id, $2, $3, $4 from team where id = $1 and (not $5 or not spare)
+         on conflict (team_id) do update set token_hash = excluded.token_hash, token_enc = excluded.token_enc,
+             password_enc = excluded.password_enc, token_at = now(), last_view_at = null, last_view_ip = null
+         where not $5 or (customer_page.enabled and customer_page.password_enc is null)",
+    ).bind(team).bind(sha256(token.as_bytes())).bind(st.secrets.seal_str(&token))
+        .bind(st.secrets.seal_str(&random_token(12))).bind(automatic).execute(db).await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// 为团队建立固定密码分享，并补齐旧分享的密码。
+pub async fn ensure_customer_pages(st: &AppState) -> ApiResult<()> {
+    if !ledger::initialized(&st.db).await? { return Ok(()); }
+    let mut db = st.db.acquire().await?;
+    let teams: Vec<Uuid> = sqlx::query_scalar(
+        "select t.id from team t left join customer_page p on p.team_id = t.id
+         where not t.spare and (p.team_id is null or (p.enabled and p.password_enc is null))",
+    ).fetch_all(&mut *db).await?;
+    for team in teams {
+        if rotate_page(st, &mut db, team, true).await? {
+            st.emit(Event::Billing { id: team });
+        }
+    }
+    Ok(())
+}
+
 /// 团队的客户页链接状态；还没建过是 null
 async fn page_json(st: &AppState, db: &mut PgConnection, team: Uuid) -> ApiResult<Value> {
+    rotate_page(st, db, team, true).await?;
     let r: Option<PageRow> = sqlx::query_as(&format!("select {PAGE_COLS} from customer_page where team_id = $1")).bind(team).fetch_optional(&mut *db).await?;
     Ok(r.map(|r| page_of(st, &r)).unwrap_or(Value::Null))
 }
 
 /// `POST /teams/{id}/customer-page`：没有就建，有就换新令牌（旧链接立即失效；启用 / 停用状态不变）
 pub async fn page_create(a: Actor, State(st): State<AppState>, ApiPath(team): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
-    let token = random_token(32);
     let mut tx = st.db.begin().await?;
     let tname: String = sqlx::query_scalar("select name from team where id = $1 for no key update")
         .bind(team)
@@ -680,16 +739,7 @@ pub async fn page_create(a: Actor, State(st): State<AppState>, ApiPath(team): Ap
         .await?
         .ok_or_else(|| ApiError::not_found("没有这个团队"))?;
     let had: bool = sqlx::query_scalar("select exists (select 1 from customer_page where team_id = $1)").bind(team).fetch_one(&mut *tx).await?;
-    // 换新令牌时最近查看清空：看得出客户有没有换上新链接（同客户端订阅的轮换）
-    sqlx::query(
-        "insert into customer_page (team_id, token_hash, token_enc) values ($1, $2, $3)
-         on conflict (team_id) do update set token_hash = excluded.token_hash, token_enc = excluded.token_enc, token_at = now(), last_view_at = null, last_view_ip = null",
-    )
-    .bind(team)
-    .bind(sha256(token.as_bytes()))
-    .bind(st.secrets.seal_str(&token))
-    .execute(&mut *tx)
-    .await?;
+    rotate_page(&st, &mut tx, team, false).await?;
     audit(&mut tx, &a.name, if had { "customer_page.rotate" } else { "customer_page.create" }, "team", Some(team), json!({"team": tname})).await?;
     let page = page_json(&st, &mut tx, team).await?;
     tx.commit().await?;
@@ -731,13 +781,18 @@ pub async fn page_delete(a: Actor, State(st): State<AppState>, ApiPath(team): Ap
 
 // ── 公开（不登录）─────────────────────────────────────────────────────
 
-/// `GET /api/v1/public/customer/{令牌}?month=2026-11`（默认本月）：每个节点起点落在这个月的那一期，已付 / 待付（待付在前、再按名字）。
+/// `POST /api/v1/public/customer/{令牌}?month=2026-11`（默认本月）：每个节点起点落在这个月的那一期，已付 / 待付（按本期生效日、节点名排列）。
 /// 每个节点只有名字（手动的写备注）、地区、这一期 [period_start, period_end)、paid，不含 IP、供应商、价格。令牌不对或已停用一律 404（不区分）。令牌按 sha256 查库；
 /// 和订阅拉取一样，不对的记一次失败、与登录共用按来源的限速（键按令牌哈希分开，别人猜错的不会把对的令牌一起封掉）。
 /// 最近查看时间与来源 10 分钟内只写一次。X-Robots-Tag 由 lib.rs 的响应头中间件统一加
-pub async fn public_view(State(st): State<AppState>, ClientIp(ip): ClientIp, ApiPath(token): ApiPath<String>, ApiQuery(q): ApiQuery<MonthQ>) -> ApiResult<Response> {
-    // 客户只看到本月为止：?month= 晚于本月的当本月
-    let month = month_in(q.month.as_deref())?.min(bt::this_month());
+#[derive(Deserialize)]
+pub struct CustomerAccess {
+    password: String,
+}
+
+pub async fn public_view(State(st): State<AppState>, ClientIp(ip): ClientIp, ApiPath(token): ApiPath<String>, ApiQuery(q): ApiQuery<MonthQ>, ApiJson(access): ApiJson<CustomerAccess>) -> ApiResult<Response> {
+    // 月份口径与管理端保持一致。
+    let month = month_in(q.month.as_deref())?;
     let hash = sha256(token.as_bytes());
     let key = format!("cust:{}", &hex::encode(&hash)[..16]);
     let attempt = auth::begin_attempt(&st, &key, ip.map(auth::ip_group)).await.map_err(|e| {
@@ -747,27 +802,42 @@ pub async fn public_view(State(st): State<AppState>, ClientIp(ip): ClientIp, Api
             e
         }
     })?;
-    let team: Option<(Uuid, String)> =
-        sqlx::query_as("select p.team_id, t.name from customer_page p join team t on t.id = p.team_id where p.token_hash = $1 and p.enabled").bind(&hash).fetch_optional(&st.db).await?;
-    let (team, name) = team.ok_or_else(|| ApiError::not_found("链接不对或已停用"))?;
+    let row: Option<(Uuid, String, Vec<u8>)> = sqlx::query_as(
+        "select p.team_id, t.name, p.password_enc
+         from customer_page p join team t on t.id = p.team_id
+         where p.token_hash = $1 and p.enabled and p.password_enc is not null",
+    ).bind(&hash).fetch_optional(&st.db).await?;
+    let (team, name, sealed) = row.ok_or_else(|| ApiError::not_found("链接无效或已停用"))?;
+    let password = st.secrets.open(&sealed).map_err(|_| ApiError::not_found("请重新生成分享链接"))?;
+    if sha256(&password) != sha256(access.password.as_bytes()) {
+        return Err(ApiError::forbidden("查看密码不正确"));
+    }
     auth::forget_attempt(&st, attempt).await?;
     sqlx::query(
         "update customer_page set last_view_at = now(), last_view_ip = $2
-         where team_id = $1 and (last_view_at is null or last_view_at < now() - interval '10 minutes')",
+         where team_id = $1 and token_hash = $3 and (last_view_at is null or last_view_at < now() - interval '10 minutes')",
     )
     .bind(team)
     .bind(ip.map(ipnetwork::IpNetwork::from))
+    .bind(&hash)
     .execute(&st.db)
     .await?;
-    let (months, rows) = month_rows(&mut *st.db.acquire().await?, team, month).await?;
-    let nodes: Vec<Value> = rows
-        .iter()
-        .map(|r| json!({"name": r.s.name(), "region": r.s.region, "period_start": bt::fmt_date(r.ps), "period_end": bt::fmt_date(r.pe), "paid": r.paid_at.is_some()}))
-        .collect();
-    let this = bt::this_month();
+    let mut db = st.db.acquire().await?;
+    let (months, rows) = month_rows(&mut db, team, month).await?;
+    let today = bt::today();
+    let mut counts = std::collections::BTreeMap::<String, usize>::new();
+    for row in outstanding_rows(&mut db, team, today).await? {
+        *counts.entry(bt::fmt_month(row.ps)).or_default() += 1;
+    }
+    let outstanding: Vec<_> = counts.into_iter().map(|(month, count)| json!({"month": month, "count": count})).collect();
+    let nodes: Vec<Value> = rows.iter().map(|r| json!({
+        "name": r.s.name(), "region": r.s.region, "period_start": bt::fmt_date(r.ps), "period_end": bt::fmt_date(r.pe),
+        "paid": r.paid_at.is_some(), "manual": r.s.manual, "ended": r.s.state(today) == "ended",
+    })).collect();
     let page = json!({
-        "team": name, "today": bt::fmt_date(bt::today()), "month": bt::fmt_month(month), "months": months.into_iter().filter(|m| *m <= this).map(bt::fmt_month).collect::<Vec<_>>(),
-        "nodes": nodes,
+        "team": name, "today": bt::fmt_date(today),
+        "month": bt::fmt_month(month), "months": months.into_iter().map(bt::fmt_month).collect::<Vec<_>>(),
+        "outstanding": outstanding, "nodes": nodes,
     });
     let mut r = ok(page).into_response();
     r.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));

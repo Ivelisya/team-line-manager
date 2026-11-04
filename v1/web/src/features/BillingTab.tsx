@@ -78,7 +78,7 @@ export function BillingTab({ m }: { m: MachineView }) {
       )}
       {(!s || editing) && (
         <section className="sec" ref={formRef}>
-          <SectionHeader title={<>{s ? '修改订阅' : '设置订阅'} <InfoTip text={`选「跟随」的项跟随${m.plan ? `套餐「${m.plan.name}」` : '默认值'}${m.provider ? `与供应商「${m.provider.name}」` : ''}：在「团队与套餐」里改了，这里立即跟着变。`} /></>}>
+          <SectionHeader title={<>{s ? '修改订阅' : '设置订阅'} <InfoTip text={`选「跟随」的项跟随${m.plan ? `套餐「${m.plan.name}」` : '默认值'}${m.provider ? `与供应商「${m.provider.name}」` : ''}：在「供应商」里改了，这里立即跟着变。`} /></>}>
             {s && <Button variant="quiet" size="sm" onClick={() => setEditing(false)}>收起</Button>}
           </SectionHeader>
           {!s && !h && <div style={{ marginBottom: 12 }}><Note>还没有订阅信息 <InfoTip text={`填写后会参与到期提醒与费用统计。${m.plan ? '有套餐时只需填到期日。' : ''}`} /></Note></div>}

@@ -15,6 +15,7 @@ id_rsa*
 *token*.txt
 
 # 本地数据快照（含真实 IP），不进仓库
+/.local/
 /v1/lab/seed/*.json
 
 # Claude Code 子 agent 的临时 worktree

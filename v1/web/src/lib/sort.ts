@@ -4,6 +4,15 @@ import type { Kind, MachineView, Team } from './types';
 /** 中文名称比较（编号按数值：团队1-2 排在 团队1-10 前面）；全站共用一个 */
 export const collator = new Intl.Collator('zh-Hans-CN', { numeric: true });
 
+/** 台账与客户页按本期生效日从早到晚，同日按节点编号；收款状态不参与排序。 */
+export function compareBillingEffectiveDate(
+  a: { period_start: string; name: string; slot_id?: string },
+  b: { period_start: string; name: string; slot_id?: string },
+) {
+  return a.period_start.localeCompare(b.period_start) || collator.compare(a.name, b.name)
+    || (a.slot_id ?? '').localeCompare(b.slot_id ?? '');
+}
+
 /**
  * 默认排序：线路机在前 → 团队（sort_order，再名称）→ 编号升序。全站唯一的默认顺序定义（服务端 ORDER BY 与它不完全一致，前端不依赖服务端顺序）。
  * 故障/离线的节点不下沉；其他排序是用户的显式选择。
