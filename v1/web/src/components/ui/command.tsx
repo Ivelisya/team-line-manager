@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { buttonVariants } from './button';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { Command as Cmdk } from 'cmdk';
 import { Search } from 'lucide-react';
@@ -24,7 +25,7 @@ export function CommandDialog({ open, onOpenChange, title, children }: { open: b
           <DialogPrimitive.Title className="sr-only">{title}</DialogPrimitive.Title>
           {children}
           {/* 触屏没有 Esc：输入框右侧给一个「取消」（palette.css，只在 pointer: coarse 时显示） */}
-          <DialogPrimitive.Close className="btn btn-text cmd-cancel">取消</DialogPrimitive.Close>
+          <DialogPrimitive.Close className={cn(buttonVariants({ variant: 'ghost', size: 'sm' }), 'hidden pointer-coarse:absolute pointer-coarse:top-[calc((52px-var(--h-sm))/2)] pointer-coarse:right-2.5 pointer-coarse:inline-flex pointer-coarse:text-brand')}>取消</DialogPrimitive.Close>
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>
     </DialogPrimitive.Root>
