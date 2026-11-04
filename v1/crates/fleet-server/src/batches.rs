@@ -47,6 +47,23 @@ pub fn period_in(start: Date, end: Option<Date>, month: Date) -> Option<(Date, D
     end.is_none_or(|e| ps < e).then_some((ps, pe))
 }
 
+/// 最近一个已经开始且仍属于收费范围的账期所在月份，不受支付状态影响。
+pub fn latest_started_month(start: Date, end: Option<Date>, today: Date) -> Option<Date> {
+    let latest = match end {
+        Some(end) => today.min(end.previous_day()?),
+        None => today,
+    };
+    let mut k = month_no(latest) - month_no(start);
+    if k < 0 { return None; }
+    let mut ps = period(start, k)?.0;
+    if ps > latest {
+        k -= 1;
+        if k < 0 { return None; }
+        ps = period(start, k)?.0;
+    }
+    Some(month_of(ps))
+}
+
 /// 停止收费的名额最后收费的那一期的最后一天（「收费到 11 月 29 日」）；结束日不晚于开始收费日（没有产生收费期次）为 None
 pub fn billed_until(start: Date, end: Date) -> Option<Date> {
     if end <= start {
@@ -88,6 +105,18 @@ pub fn months(starts: impl IntoIterator<Item = Date>, this: Date) -> Vec<Date> {
 mod tests {
     use super::*;
     use time::macros::date;
+
+    #[test]
+    fn latest_started_month_handles_future_and_ended_periods() {
+        let start = date!(2026 - 10 - 08);
+        assert_eq!(latest_started_month(start, None, date!(2026 - 11 - 04)), Some(date!(2026 - 10 - 01)));
+        assert_eq!(latest_started_month(start, None, date!(2026 - 11 - 08)), Some(date!(2026 - 11 - 01)));
+        assert_eq!(latest_started_month(date!(2026 - 11 - 08), None, date!(2026 - 11 - 04)), None);
+        assert_eq!(latest_started_month(date!(2026 - 01 - 31), None, date!(2026 - 03 - 01)), Some(date!(2026 - 02 - 01)));
+        assert_eq!(latest_started_month(date!(2026 - 12 - 15), None, date!(2027 - 01 - 04)), Some(date!(2026 - 12 - 01)));
+        assert_eq!(latest_started_month(date!(2026 - 07 - 01), Some(date!(2026 - 09 - 01)), date!(2026 - 11 - 04)), Some(date!(2026 - 08 - 01)));
+        assert_eq!(latest_started_month(start, Some(start), date!(2026 - 11 - 04)), None);
+    }
 
     #[test]
     fn period_starting_in_month() {

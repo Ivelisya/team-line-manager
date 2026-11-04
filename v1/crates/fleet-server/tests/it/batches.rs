@@ -1,5 +1,5 @@
 //! 计费台账与客户页：初始化（预览、只建没有名额的团队）→ 改开始收费日 → 手动名额 → 按月看每个节点起点在这个月的那一期（标记已支付 / 改回待支付、
-//! 提前标、没有这一期的报 400）→ 客户页（只有名字、地区、这一期的区间、已付 / 待付）；对账（传入「现在」）：加入即建名额（开始收费日 = 购买日）、
+//! 未生效或没有这一期的报 400）→ 客户页（只有名字、地区、这一期的区间、已付 / 待付）；对账（传入「现在」）：加入即建名额（开始收费日 = 购买日）、
 //! 离开即结束、不猜补位、回来的节点接回、机器被物理删除；替换节点接名额（take_over）；增减记录与审计；迁移 0104。规则的各种边界在 ledger.rs 的单测里（纯函数）。
 
 use crate::common::{self, seed_node, T};
@@ -47,7 +47,7 @@ async fn month_order_uses_effective_date_and_survives_payment_changes() {
     let t = common::boot(false, "trust_forwarded_for = true").await;
     let team = common::seed_team(&t, "排序测试").await;
     for number in 1..=3 { node(&t, team, number, "US").await; }
-    let month = today().replace_day(1).unwrap();
+    let month = meta::add_months(today().replace_day(1).unwrap(), -1).unwrap();
     let start = meta::add_months(month, -3).unwrap().replace_day(5).unwrap();
     t.post("/api/v1/billing/init", json!({"since": fmt_date(start)})).await;
     let slots = t.get(&format!("/api/v1/teams/{team}/batches")).await;
@@ -73,6 +73,75 @@ async fn month_order_uses_effective_date_and_survives_payment_changes() {
     let (status, customer) = public(&t, &link, page["password"].as_str().unwrap()).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(listed(&customer["data"]), expected, "客户页与管理端的顺序必须一致");
+}
+
+#[tokio::test]
+async fn customer_hides_unstarted_periods_and_early_payment_is_rejected() {
+    let t = common::boot(false, "trust_forwarded_for = true").await;
+    let team = common::seed_team(&t, "展示测试").await;
+    for number in 1..=3 { node(&t, team, number, "US").await; }
+    let now = today();
+    let tomorrow = now + Duration::days(1);
+    t.post("/api/v1/billing/init", json!({"since": fmt_date(now)})).await;
+    let slots = t.get(&format!("/api/v1/teams/{team}/batches")).await;
+    let mut ids = Vec::new();
+    for name in ["展示测试-02", "展示测试-03"] {
+        let id = slot_of(&slots, name)["id"].as_str().unwrap().to_string();
+        sqlx::query("update billing_slot set start_date=$2 where id=$1").bind(Uuid::parse_str(&id).unwrap()).bind(tomorrow).execute(&t.st.db).await.unwrap();
+        ids.push(id);
+    }
+    let future_month = fmt_month(tomorrow);
+    let active = slot_of(&slots, "展示测试-01")["id"].as_str().unwrap();
+    let (status, error) = t.req("POST", &format!("/api/v1/teams/{team}/billing/paid"), Some(json!({"month": future_month, "slot_ids": [active, &ids[1]], "paid": true})), None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(error["error"]["message"], "账期尚未生效，暂不能标记支付");
+    let recorded: i64 = sqlx::query_scalar("select count(*) from billing_paid").fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(recorded, 0);
+    let page = t.post(&format!("/api/v1/teams/{team}/customer-page"), json!({})).await;
+    let next_month = fmt_month(meta::add_months(now.replace_day(1).unwrap(), 1).unwrap());
+    for month in [fmt_month(now), next_month] {
+        let link = format!("{}?month={month}", page["link"].as_str().unwrap());
+        let (status, response) = public(&t, &link, page["password"].as_str().unwrap()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(listed(&response["data"]), named(&[("展示测试-01", false)]));
+        assert_eq!(response["data"]["month"], fmt_month(now));
+        assert!(response["data"]["months"].as_array().unwrap().iter().all(|m| m.as_str().unwrap() <= fmt_month(now).as_str()));
+    }
+}
+
+#[tokio::test]
+async fn customer_default_month_uses_latest_started_period_without_moving_explicit_choices() {
+    let t = common::boot(false, "trust_forwarded_for = true").await;
+    let team = common::seed_team(&t, "默认月份测试").await;
+    let now = today();
+    let this = now.replace_day(1).unwrap();
+    let previous = meta::add_months(this, -1).unwrap();
+    let old = meta::add_months(this, -2).unwrap();
+    t.post("/api/v1/billing/init", json!({"since": fmt_date(old)})).await;
+    let slot = t.post(&format!("/api/v1/teams/{team}/billing-slots"), json!({"region":"美区", "start_date":fmt_date(old), "note":"历史节点"})).await;
+    let id = slot[0]["id"].as_str().unwrap();
+    assert_eq!(t.req("PATCH", &format!("/api/v1/billing-slots/{id}"), Some(json!({"end_date":fmt_date(previous + Duration::days(1))})), None).await.0, StatusCode::OK);
+    let page = t.post(&format!("/api/v1/teams/{team}/customer-page"), json!({})).await;
+    let (link, password) = (page["link"].as_str().unwrap(), page["password"].as_str().unwrap());
+    let response = public(&t, link, password).await.1;
+    assert_eq!(response["data"]["month"], fmt_month(previous));
+    assert_eq!(response["data"]["nodes"].as_array().unwrap().len(), 1);
+    t.post(&format!("/api/v1/teams/{team}/billing/paid"), json!({"month":fmt_month(previous), "slot_ids":[id], "paid":true})).await;
+    assert_eq!(public(&t, link, password).await.1["data"]["month"], fmt_month(previous), "付款不改变默认月份");
+    let explicit = format!("{link}?month={}", fmt_month(this));
+    let response = public(&t, &explicit, password).await.1;
+    assert_eq!(response["data"]["month"], fmt_month(this));
+    assert!(response["data"]["nodes"].as_array().unwrap().is_empty(), "手动选择的空月份不回跳");
+    t.post(&format!("/api/v1/teams/{team}/billing-slots"), json!({"region":"美区", "start_date":fmt_date(this), "note":"本月节点"})).await;
+    assert_eq!(public(&t, link, password).await.1["data"]["month"], fmt_month(this), "本月有数据时优先本月");
+    let explicit = format!("{link}?month={}", fmt_month(previous));
+    assert_eq!(public(&t, &explicit, password).await.1["data"]["month"], fmt_month(previous));
+    let future_team = common::seed_team(&t, "未开始团队").await;
+    t.post(&format!("/api/v1/teams/{future_team}/billing-slots"), json!({"region":"美区", "start_date":fmt_date(fleet_server::batches::latest_start(now)), "note":"未来节点"})).await;
+    let page = t.post(&format!("/api/v1/teams/{future_team}/customer-page"), json!({})).await;
+    let response = public(&t, page["link"].as_str().unwrap(), page["password"].as_str().unwrap()).await.1;
+    assert_eq!(response["data"]["month"], fmt_month(this));
+    assert!(response["data"]["nodes"].as_array().unwrap().is_empty(), "没有已开始账期时保留空状态");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -165,10 +234,10 @@ async fn billing_ledger_and_customer_page() {
     // 改回待支付
     let (_, v) = paid(vec![&s2], month(0), false).await;
     assert_eq!(listed(&v["data"]), named(&[("团队1-01", true), ("团队1-02", false), ("团队1-03", false), ("墨西哥家宽", false)]), "{v}");
-    // 还没到的期也能先标（客户预付）
+    // 未生效的账期不能提前标记支付。
     let (st, v) = paid(vec![&s1], month(2), true).await;
-    let row = v["data"]["nodes"].as_array().unwrap().iter().find(|n| n["slot_id"] == s1.as_str()).cloned().unwrap();
-    assert_eq!((st, row["paid"].as_bool(), row["upcoming"].as_bool()), (StatusCode::OK, Some(true), Some(true)), "{v}");
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{v}");
+    assert_eq!(v["error"]["message"], "账期尚未生效，暂不能标记支付");
     // 不该收的月份 / 不是这个团队的节点：400，什么都不改
     let (st, v) = paid(vec![&old_id], month(0), true).await;
     assert_eq!(st, StatusCode::BAD_REQUEST, "{v}");
@@ -207,7 +276,7 @@ async fn billing_ledger_and_customer_page() {
     assert_eq!(st, StatusCode::OK, "{pv}");
     let d = &pv["data"];
     assert_eq!(listed(d), named(&[("团队1-01", true), ("团队1-02", false), ("团队1-03", false), ("墨西哥家宽", false)]), "{pv}");
-    assert_eq!((d["team"].as_str(), d["months"].as_array().map(|a| a.len())), (Some("团队1"), Some(6)), "{pv}"); // 与管理端一致，可以翻到下个月
+    assert_eq!((d["team"].as_str(), d["months"].as_array().map(|a| a.len())), (Some("团队1"), Some(5)), "{pv}"); // 客户只看到本月为止
     let h = d["nodes"].as_array().unwrap().iter().find(|n| n["name"] == "墨西哥家宽").unwrap();
     let pe = fmt_date(meta::add_months(s + Duration::days(14), 1).unwrap());
     assert_eq!(h, &json!({"name": "墨西哥家宽", "region": "墨西哥", "period_start": day(14), "period_end": pe, "paid": false, "manual": true, "ended": false}), "{pv}");
@@ -218,8 +287,10 @@ async fn billing_ledger_and_customer_page() {
     assert!(!body.contains("203.0.113") && !body.contains("provider") && !body.contains("price") && !body.contains("slot_id") && !body.contains("菲律宾"), "{pv}");
     // 默认本月；月份写错 400
     assert_eq!(public(&t, link, password).await.1["data"]["month"], month(1));
-    // 与管理端一样查看未来期次
-    assert_eq!(public(&t, &format!("{link}?month={}", month(2)), password).await.1["data"]["month"], month(2));
+    // 指向未来月份的客户链接回到本月，不展示尚未生效的期次。
+    let future = public(&t, &format!("{link}?month={}", month(2)), password).await.1;
+    assert_eq!(future["data"]["month"], month(1));
+    assert!(future["data"]["nodes"].as_array().unwrap().iter().all(|n| n["period_start"].as_str().unwrap() <= fmt_date(today()).as_str()));
     assert_eq!(public(&t, &format!("{link}?month=abc"), password).await.0, StatusCode::BAD_REQUEST);
 
     sqlx::query("update customer_page set token_at = now() - interval '365 days' where team_id = $1")
@@ -316,10 +387,10 @@ async fn billing_ledger_and_customer_page() {
         "开始记账：3 个节点从 ".into(),
         format!("{m0}已支付：团队1-01、团队1-02（共 2 个）"),
         format!("{m0}改回待支付：团队1-02（共 1 个）"),
-        format!("{}已支付：团队1-01（共 1 个）", m2),
     ] {
         assert!(all.iter().any(|x| x.starts_with(&want)), "没有「{want}」: {all:?}");
     }
+    assert!(!all.iter().any(|x| x.starts_with(&format!("{m2}已支付"))), "未生效账期的拒绝操作不应留下支付记录：{all:?}");
     assert!(!all.iter().any(|x| x.contains("补位")), "对账不猜补位：{all:?}");
     // 初始化每个团队只一条，名单在 detail 里
     let inits: Vec<Value> = sqlx::query_scalar("select detail from billing_event where team_id = $1 and kind = 'init'").bind(team1).fetch_all(&t.st.db).await.unwrap();
@@ -329,7 +400,7 @@ async fn billing_ledger_and_customer_page() {
     assert_eq!(next[0]["text"].as_str(), Some(all[2].as_str()));
 
     let acts: Vec<String> = sqlx::query_scalar("select action from audit_log where action like 'billing.%' order by id").fetch_all(&t.st.db).await.unwrap();
-    assert_eq!(acts, ["billing.init", "billing.init", "billing.slot_update", "billing.slot_add", "billing.slot_add", "billing.slot_update", "billing.paid", "billing.unpaid", "billing.paid", "billing.exempt"]);
+    assert_eq!(acts, ["billing.init", "billing.init", "billing.slot_update", "billing.slot_add", "billing.slot_add", "billing.slot_update", "billing.paid", "billing.unpaid", "billing.exempt"]);
 }
 
 /// 改开始收费日：这个名额已支付的期按期序号挪到新开始日的第 k 期（保留已支付时刻、旧开始日期序列上没有的删掉）；开始收费日最晚今天加一个月

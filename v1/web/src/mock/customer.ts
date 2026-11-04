@@ -188,6 +188,7 @@ export function installCustomerMock(register: Reg, o: { teams: () => Team[]; mac
     const list = rows(t.id, body.month);
     const wrong = ids.filter((id) => !list.some((n) => n.slot_id === id));
     if (wrong.length) throw bad(`${Number(body.month.slice(5))} 月没有要收这些节点的钱（不是这个团队的，或这个月不收费）：${wrong.map((x) => x.slice(0, 8)).join('、')}`);
+    if (body.paid && list.some(n => ids.includes(n.slot_id) && n.upcoming)) throw bad('账期尚未生效，暂不能标记支付');
     const changed = list.filter((n) => ids.includes(n.slot_id) && n.paid !== !!body.paid);
     for (const n of changed) {
       const k = `${n.slot_id}|${n.period_start}`;
@@ -304,16 +305,18 @@ export function installCustomerMock(register: Reg, o: { teams: () => Team[]; mac
   R('DELETE', '/teams/([^/]+)/customer-page', ({ params }) => { const t = team(params[0]); pages.delete(t.id); return { team_id: t.id }; });
 
   R('POST', '/public/customer/([^/]+)', ({ params, query, body }) => {
-    const asked = monthQ(query.get('month'));
-    const month = asked;
+    const requested = query.get('month');
+    const asked = monthQ(requested);
+    let month = asked > TODAY.slice(0, 7) ? TODAY.slice(0, 7) : asked;
     const hit = [...pages.entries()].find(([, p]) => p.token === params[0] && p.enabled && p.password);
     if (!hit) throw bad('链接不对或已停用', 404, 'not_found');
     const [tid, p] = hit;
     if (body.password !== p.password) throw bad('查看密码不正确', 403, 'forbidden');
+    if (!requested) month = monthsOf(tid).reverse().find(m => m <= TODAY.slice(0, 7) && rows(tid, m).some(n => n.period_start <= TODAY)) ?? TODAY.slice(0, 7);
     if (!p.last_view_at || Date.now() - Date.parse(p.last_view_at) > 600_000) p.last_view_at = new Date().toISOString();
-    const nodes = rows(tid, month);
+    const nodes = rows(tid, month).filter(n => n.period_start <= TODAY);
     const out: PublicCustomer = {
-      team: team(tid).name, today: TODAY, month, months: monthsOf(tid),
+      team: team(tid).name, today: TODAY, month, months: monthsOf(tid).filter(m => m <= TODAY.slice(0, 7)),
       outstanding: monthsOf(tid).map(month => ({ month, count: rows(tid, month).filter(n => !n.paid && !n.upcoming).length })).filter(m => m.count > 0),
       nodes: nodes.map((n) => ({ name: n.name, region: n.region, period_start: n.period_start, period_end: n.period_end, paid: n.paid, manual: n.manual, ended: n.ended })),
     };

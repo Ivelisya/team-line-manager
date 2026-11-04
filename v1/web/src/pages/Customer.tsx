@@ -28,14 +28,25 @@ function CustomerView({ token }: { token: string }) {
   const want = /^\d{4}-\d{2}$/.test(sp.get('month') ?? '') ? sp.get('month')! : '';
   const q = usePublicCustomer(token, want, access);
   React.useEffect(() => { if (q.data) setVerified(true); }, [q.data]);
-  // 与管理台账统一按本期生效日排列，支付状态改变时保持节点位置。
-  const d = React.useMemo(() => q.data && ({
-    ...q.data,
-    nodes: [...q.data.nodes].sort(compareBillingEffectiveDate),
-  }), [q.data]);
+  const resolvedMonth = q.data?.month;
+  React.useEffect(() => {
+    if (!want && resolvedMonth && !q.isPlaceholderData) {
+      setSp(previous => { const next = new URLSearchParams(previous); next.set('month', resolvedMonth); return next; }, { replace: true });
+    }
+  }, [want, resolvedMonth, q.isPlaceholderData, setSp]);
+  // 客户只看已经开始的账期；与管理台账统一按生效日期排列。
+  const d = React.useMemo(() => {
+    const data = q.data;
+    if (!data) return undefined;
+    return {
+      ...data,
+      months: data.months.filter(month => month <= data.today.slice(0, 7)),
+      nodes: data.nodes.filter(n => n.period_start <= data.today).sort(compareBillingEffectiveDate),
+    };
+  }, [q.data]);
   const title = d && !q.isError ? `${d.team} · 节点付费情况` : '节点付费情况';
   React.useEffect(() => { document.title = title; }, [title]);
-  const onMonth = (m: string) => setSp(m === d?.today.slice(0, 7) ? {} : { month: m }, { replace: true });
+  const onMonth = (month: string) => setSp({ month }, { replace: true });
 
   const locked = !access || (q.error instanceof ApiError && q.error.status === 403) || (q.isFetching && !verified && !q.error);
   let body: React.ReactNode;
@@ -86,13 +97,13 @@ function CustomerView({ token }: { token: string }) {
       </section>
       <Panel className="bm-month-panel" flush title={<MonthSwitch month={d.month} months={d.months} onChange={onMonth} />}>
         {d.nodes.length > 0 ? <>
-          <PeriodLegend />
+          <PeriodLegend includeUpcoming={false} />
           <ul className="bm-list" aria-label={`${cnMonth(d.month, d.today)}节点清单`}>
             {d.nodes.map((n, i) => <BillingNodeRow key={`${n.name}|${i}`} n={n} today={d.today} side={
               <span className={n.paid ? 'bm-paid' : 'bm-due'}>{n.paid ? <><Check />已支付</> : '待支付'}</span>
             } />)}
           </ul>
-        </> : <Empty text={`${cnMonth(d.month, d.today)}没有要支付的节点`} />}
+        </> : <Empty text={`${cnMonth(d.month, d.today)}暂无待支付节点`} />}
       </Panel>
     </div>;
   }
