@@ -2,6 +2,8 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
+    <!-- CSS 层序先在这里定下：动态加载入口时，页面样式块可能先于入口样式插进文档（如客户页的 billing 样式），层序按首次出现算，不先声明就会排乱。properties 是 Tailwind 给不支持 @property 的浏览器的兜底变量，必须最低 -->
+    <style>@layer properties, theme, base, components, utilities;</style>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>团队线路管理</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%238e3bb0'/%3E%3Cpath d='M8 21l5-6 4 3 7-9' stroke='white' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />

@@ -13,6 +13,13 @@ const EXE = process.env.CHROME ?? ['C:/Program Files/Google/Chrome/Application/c
 const filter = process.argv[2];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// FREEZE_TIME=<毫秒时间戳>：把页面里的「现在」固定住（Date.now / new Date()），截图里的时间戳、「N 分钟前」不随运行时刻变，前后两次截图才好逐像素比
+const freezeDate = (t0) => {
+  const RD = Date;
+  class FD extends RD { constructor(...a) { if (a.length) super(...a); else super(t0); } static now() { return t0; } }
+  window.Date = FD;
+};
+
 const browser = await puppeteer.launch({ executablePath: EXE, headless: true, args: ['--no-sandbox', '--hide-scrollbars'] });
 const report = [];
 
@@ -22,12 +29,27 @@ async function open(url, { w = 1440, h = 900, theme = 'light', view = 'large' } 
   page.on('pageerror', (e) => errors.push(String(e)));
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
   await page.setViewport({ width: w, height: h, deviceScaleFactor: 1 });
+  if (process.env.FREEZE_TIME) await page.evaluateOnNewDocument(freezeDate, Number(process.env.FREEZE_TIME));
   await page.evaluateOnNewDocument((t, v) => { try { localStorage.setItem('fleet:theme', t); localStorage.setItem('fleet:view', v); } catch { /* 忽略 */ } }, theme, view);
   await page.goto(BASE + url, { waitUntil: 'networkidle0', timeout: 30000 });
   await sleep(700);
   return { page, errors };
 }
 const clickText = (page, sel, text) => page.evaluate((s, t) => { const el = [...document.querySelectorAll(s)].find((e) => e.textContent?.trim().includes(t)); if (!el) throw new Error('找不到 ' + t); el.click(); }, sel, text);
+// 选择器按角色 / 文字写，不依赖 .dialog、.menu-item 这类样式类名（组件换底层后类名会变）。
+// 最上层的对话框 = 最后一个 role=dialog（页面上可能还有非模态的抽屉也是 role=dialog，后挂载的在最上面）
+const dq = async (page, sel) => {
+  const h = (await page.evaluateHandle((s) => { const ds = document.querySelectorAll('[role="dialog"]'); return ds.length ? ds[ds.length - 1].querySelector(s) : null; }, sel)).asElement();
+  if (!h) throw new Error('对话框里找不到 ' + sel);
+  return h;
+};
+const clickInDialog = (page, sel, text) => page.evaluate((s, t) => {
+  const ds = document.querySelectorAll('[role="dialog"]'); const d = ds[ds.length - 1];
+  const el = d && [...d.querySelectorAll(s)].find((e) => e.textContent?.trim().includes(t));
+  if (!el) throw new Error('对话框里找不到 ' + t); el.click();
+}, sel, text);
+// 菜单项按文字全等点（「复制」子菜单与「复制分享链接」要分开）；子菜单触发项点一下就展开
+const menuItem = (page, text) => page.evaluate((t) => { const el = [...document.querySelectorAll('[role="menuitem"]')].find((e) => e.textContent?.trim() === t); if (!el) throw new Error('找不到菜单项 ' + t); el.click(); }, text);
 const shot = (page, name, clip) => page.screenshot({ path: path.join(out, `${name}.png`), clip });
 
 const scenes = {
@@ -103,7 +125,7 @@ const scenes = {
     const { page, errors } = await open('/jobs/j-fail', { h: 1000 });
     await clickText(page, 'button', '重试'); await sleep(600);
     await shot(page, 'ui-jobs-retry-dialog');
-    await clickText(page, '.dialog button', '重试'); await sleep(1500);
+    await clickInDialog(page, 'button', '重试'); await sleep(1500);
     await shot(page, 'ui-jobs-retried');
     return { page, errors };
   },
@@ -130,10 +152,10 @@ const scenes = {
   async 'settings-key-create'() {
     const { page, errors } = await open('/settings', { h: 900 });
     await clickText(page, 'button', '新建密钥'); await sleep(500);
-    await page.type('.dialog input', '部署脚本');
+    await (await dq(page, 'input')).type('部署脚本');
     await clickText(page, '.scope-row', '远程执行'); await sleep(300);
     await shot(page, 'ui-settings-key-create');
-    await clickText(page, '.dialog button[type="submit"]', '创建密钥'); await sleep(900);
+    await clickInDialog(page, 'button[type="submit"]', '创建密钥'); await sleep(900);
     await shot(page, 'ui-settings-key-token');
     return { page, errors };
   },
@@ -153,12 +175,13 @@ const scenes = {
   async 'settings-dark'() { const { page, errors } = await open('/settings?section=notify', { h: 1000, theme: 'dark' }); await shot(page, 'ui-settings-notify-dark'); return { page, errors }; },
   async 'toast'() {
     const { page, errors } = await open('/', { h: 900 });
-    for (let i = 0; i < 2; i++) {
-      await page.click(`.ncard:nth-child(${i + 2}) .nc-actions button[aria-label="更多操作"]`); await sleep(300);
-      await clickText(page, '[role="menuitem"]', '复制 IP'); await sleep(300);
+    // 复制在「复制」子菜单里：两张卡各复制一次 IP，再复制一次名称，叠出三条通知
+    for (const [nth, what] of [[2, 'IP'], [3, 'IP'], [4, '名称']]) {
+      await page.click(`.ncard:nth-child(${nth}) .nc-actions button[aria-label="更多操作"]`); await sleep(300);
+      await menuItem(page, '复制'); await sleep(300);
+      await menuItem(page, what); await sleep(400);
     }
-    await page.click('.ncard:nth-child(4) .nc-actions button[aria-label="更多操作"]'); await sleep(300);
-    await clickText(page, '[role="menuitem"]', '升级 agent'); await sleep(600);
+    await sleep(300);
     await shot(page, 'ui-toasts');
     return { page, errors };
   },
@@ -189,7 +212,7 @@ const scenes = {
   async 'move-dialog'() {
     const { page, errors } = await open('/?m=m-t1-02&tab=manage', { h: 1000 });
     await clickText(page, 'button', '换线路机'); await sleep(700);
-    await page.click('.dialog .select-trigger'); await sleep(300);
+    await (await dq(page, '[role="combobox"]')).click(); await sleep(300);
     await clickText(page, '[role="option"]', '线路机2'); await sleep(400);
     await shot(page, 'ui-move-dialog');
     return { page, errors };
@@ -197,29 +220,25 @@ const scenes = {
   async 'evacuate-dialog'() {
     const { page, errors } = await open('/relays', { h: 1000 });
     await clickText(page, 'button', '搬空到'); await sleep(700);
-    await page.click('.dialog .select-trigger'); await sleep(300);
+    await (await dq(page, '[role="combobox"]')).click(); await sleep(300);
     await clickText(page, '[role="option"]', '线路机2'); await sleep(400);
     await shot(page, 'ui-evacuate-dialog');
     return { page, errors };
   },
-  async 'restore-dialog'() {
-    const { page, errors } = await open('/?m=m-t2-5r&tab=manage', { h: 1100 });
-    await shot(page, 'ui-restore-drawer');
-    await clickText(page, 'button', '恢复…'); await sleep(1500);
-    await shot(page, 'ui-restore-dialog');
-    return { page, errors };
-  },
-  async 'restore-dialog-password'() {
-    const { page, errors } = await open('/?m=m-t1-3r&tab=manage', { h: 1100 });
-    await clickText(page, 'button', '恢复…'); await sleep(1500);
-    await page.type('.dialog input[type="password"]', 'secret'); await sleep(300);
-    await shot(page, 'ui-restore-dialog-password');
+  // 「恢复已退役机器」的界面已经删掉（退役改为进备用，到期自动回收）；回收站只读，点一行展开详情
+  async 'recycle-bin'() {
+    const { page, errors } = await open('/nodes?scope=recycle', { h: 1100 });
+    await shot(page, 'ui-recycle-bin');
+    await page.click('tbody tr[aria-expanded]'); await sleep(500);
+    await shot(page, 'ui-recycle-bin-detail');
     return { page, errors };
   },
   async 'move-menu'() {
     const { page, errors } = await open('/', { h: 1000 });
     await page.click('.ncard:nth-child(3) .nc-actions button[aria-label="更多操作"]'); await sleep(500);
+    await menuItem(page, '更换'); await sleep(500); // 「更换」子菜单：换线路机、替换为
     await shot(page, 'ui-move-menu');
+    return { page, errors };
   },
   async 'policy-light'() { const { page, errors } = await open('/access/policy', { h: 1500 }); await shot(page, 'ui-policy-light'); return { page, errors }; },
   async 'policy-dark'() { const { page, errors } = await open('/access/policy', { h: 1500, theme: 'dark' }); await shot(page, 'ui-policy-dark'); return { page, errors }; },
@@ -235,7 +254,7 @@ const scenes = {
     const { page, errors } = await open('/access/policy', { h: 1000 });
     await clickText(page, 'button', '预览并发布'); await sleep(1200);
     await shot(page, 'ui-policy-preview');
-    await clickText(page, '.dialog button', '发布…'); await sleep(600);
+    await clickInDialog(page, 'button', '发布…'); await sleep(600);
     await shot(page, 'ui-policy-publish-confirm');
     return { page, errors };
   },
@@ -248,12 +267,12 @@ const scenes = {
     await page.keyboard.type('\nnew.example.com');
     await clickText(page, 'button', '保存草稿'); await expect('草稿已保存');
     await clickText(page, 'button', '预览并发布'); await expect('预览：发布后会怎样'); await sleep(600);
-    await clickText(page, '.dialog button', '发布…'); await expect('发布 2 份草稿？');
-    await clickText(page, '.dialog button', '确认发布'); await expect('已发布为版本 4');
+    await clickInDialog(page, 'button', '发布…'); await expect('发布 2 份草稿？');
+    await clickInDialog(page, 'button', '确认发布'); await expect('已发布为版本 4');
     await sleep(500); await shot(page, 'ui-policy-published');
     await expect('进行中'); await expect('已应用');
-    await clickText(page, 'tbody button', '回滚到此版本'); await expect('回滚到版本');
-    await clickText(page, '.dialog button', '回滚'); await expect('已回滚，新版本 v5');
+    await clickText(page, 'tbody button', '回滚'); await expect('回滚到版本'); await sleep(800); // 确认按钮要等「正在比较…」出了结果才可点
+    await clickInDialog(page, 'button', '回滚'); await expect('已回滚，新版本 v5');
     await sleep(500); await shot(page, 'ui-policy-rolledback');
     return { page, errors };
   },

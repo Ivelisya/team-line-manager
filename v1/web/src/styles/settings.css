@@ -1,3 +1,5 @@
+/* 按需加载的页面样式：整份包进 components 层（晚加载 = 同层里排后面，等价于原来「后加载的覆盖先加载的」）。层序见 admin.css */
+@layer components {
 /* 设置页：页签、API 密钥权限、令牌框、账户安全（两步验证、恢复码）、通知渠道。只用 tokens.css 里的令牌 */
 
 /* 权限：每项一行（名称 + (i) 说明 + 敏感标），两列排 */
@@ -36,3 +38,4 @@
 .probe-order-n { display: inline-grid; place-items: center; flex: none; width: 20px; height: 20px; border-radius: 50%; background: var(--sunken); box-shadow: inset 0 0 0 1px var(--line); color: var(--fg-2); font-size: var(--fs-micro); }
 /* 月报预览：要发出去的整段文字（中文为主，用界面字体）、保留换行 */
 .report-text { margin: 0; padding: var(--sp-12) var(--sp-16); max-height: min(320px, 42dvh); overflow: auto; border: 1px solid var(--line); border-radius: var(--r-float); background: var(--sunken); font: var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+}

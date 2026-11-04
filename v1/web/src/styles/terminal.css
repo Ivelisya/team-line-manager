@@ -1,3 +1,5 @@
+/* 按需加载的页面样式：整份包进 components 层（晚加载 = 同层里排后面，等价于原来「后加载的覆盖先加载的」）。层序见 admin.css */
+@layer components {
 /* 网页终端窗口（features/Terminal.tsx，随它按需加载）。
    右侧浮起的宽面板，不带遮罩、不拦页面：开着终端也能照常点侧栏、翻页面。顶栏露在外面（命令面板、告警照常用）。
    层级在顶栏之上、节点抽屉的遮罩之下：临时打开的抽屉、对话框、菜单都盖在它上面，关掉后终端还在原处 */
@@ -31,4 +33,5 @@
 
 @media (max-width: 600px) {
   .term { top: var(--topbar-h); right: 0; bottom: 0; width: 100vw; border-radius: var(--r-card) var(--r-card) 0 0; border-width: 1px 0 0; }
+}
 }

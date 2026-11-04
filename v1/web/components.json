@@ -1,8 +1,14 @@
 {
   "$schema": "https://ui.shadcn.com/schema.json",
-  "style": "default",
+  "style": "base-mira",
   "rsc": false,
   "tsx": true,
-  "tailwind": { "config": "tailwind.config.ts", "css": "src/styles/theme.css", "baseColor": "neutral", "cssVariables": true },
-  "aliases": { "components": "@/components", "utils": "@/lib/utils", "ui": "@/components/ui", "lib": "@/lib", "hooks": "@/lib" }
+  "tailwind": { "config": "", "css": "src/styles/theme.css", "baseColor": "neutral", "cssVariables": true },
+  "iconLibrary": "lucide",
+  "aliases": { "components": "@/components", "utils": "@/lib/utils", "ui": "@/components/ui", "lib": "@/lib", "hooks": "@/lib" },
+  "registries": {
+    "@reui": "https://reui.io/r/{style}/{name}.json",
+    "@coss": "https://coss.com/ui/r/{name}.json",
+    "@bklit": "https://ui.bklit.com/r/{name}.json"
+  }
 }

@@ -1,3 +1,5 @@
+/* 按需加载的页面样式：整份包进 components 层（晚加载 = 同层里排后面，等价于原来「后加载的覆盖先加载的」）。层序见 admin.css */
+@layer components {
 /* 流量页：「节点 × 日期」明细。节点列吸在左边、合计列吸在右边，中间的日期横滑；格子底色是热度（行内 style） */
 .dt-heat { width: max-content; min-width: 100%; }
 .dt-heat .col-node { width: 184px; }
@@ -53,4 +55,5 @@
   .dt-cost { --aux-w: 76px; }
   .dt-cost :is(th, td):nth-last-child(-n+4) { position: static; box-shadow: none; }
   .tr-node .nc-flag { display: none; }
+}
 }

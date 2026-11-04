@@ -1,3 +1,5 @@
+/* 按需加载的页面样式：整份包进 components 层（晚加载 = 同层里排后面，等价于原来「后加载的覆盖先加载的」）。层序见 admin.css */
+@layer components {
 /* 软路由：页头总览、卡片（外壳同节点卡 .ncard，见 cards.css）的几处专用样式、抽屉头部 / 出口关系图 / 部署时间线 / 行内迷你折线、接入对话框。
    容器按信息的性质选（用户：不要每块都是格子）：总览数字不带框，基本信息同机器抽屉的网格，关系是连线图，进度是时间线。只用现有的令牌 */
 
@@ -132,3 +134,4 @@ button.rt-topo-pill { cursor: pointer; transition: background-color var(--dur-1)
 .rx-tbl .rx-to b { font-weight: var(--fw-medium); color: var(--fg); }
 .rx-tbl .rx-addr { white-space: nowrap; }
 .opt-relay.is-down { color: var(--fg-3); }
+}

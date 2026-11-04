@@ -3,19 +3,8 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { BrowserRouter } from 'react-router-dom';
-import './styles/tw-base.css';
-import './styles/tokens.css';
-import './styles/theme.css';
-import './styles/base.css';
-import './styles/components.css';
-import './styles/home.css';
-import './styles/cards.css';
-import './styles/table.css';
-import './styles/pages.css';
-import './styles/palette.css';
-// 覆盖层管 base / components 的规则；构建后它在公共块里先于上面几个页面样式加载，页面样式里的规则要自己写全；按需加载的 policy.css、terminal.css 不写与它同名的规则
-import './styles/overrides.css';
-import './styles/tw-utilities.css';
+// 样式入口：层的安排、各份样式的先后都在 styles/admin.css 里（覆盖层 overrides.css 的说明也在那里）
+import './styles/admin.css';
 import { App } from './App';
 import { qc } from './queryClient';
 import { TooltipProvider } from './components/ui/overlays';
