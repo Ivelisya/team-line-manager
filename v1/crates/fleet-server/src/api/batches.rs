@@ -249,7 +249,7 @@ pub struct PaidIn {
     paid: bool,
 }
 
-/// `POST /teams/{id}/billing/paid` `{month, slot_ids, paid}`：把这些节点起点落在这个月的那一期标为已支付 / 改回待支付（还没到的期也能先标，客户可能预付）。
+/// `POST /teams/{id}/billing/paid` `{month, slot_ids, paid}`：把已经生效的期次标为已支付，或撤销支付标记。
 /// 节点这个月没有要收费的期（不是这个团队的、还没开始、已停止）→ 400，什么都不改。真有变化的记一条 paid / unpaid 增减记录和一条审计 → 该月清单（同 GET）
 pub async fn paid(a: Actor, State(st): State<AppState>, ApiPath(team): ApiPath<Uuid>, ApiJson(b): ApiJson<PaidIn>) -> ApiResult<Json<Value>> {
     let month = bt::parse_month(&b.month).ok_or_else(|| ApiError::bad_request("月份要写成 2026-11 这样"))?;
@@ -273,6 +273,10 @@ pub async fn paid(a: Actor, State(st): State<AppState>, ApiPath(team): ApiPath<U
     }
     if !wrong.is_empty() {
         return Err(ApiError::bad_request(format!("{} 月没有要收这些节点的钱（不是这个团队的，或这个月不收费）：{}", u8::from(month.month()), wrong.join("、"))));
+    }
+    let today = bt::today();
+    if b.paid && starts.iter().any(|start| *start > today) {
+        return Err(ApiError::bad_request("账期尚未生效，暂不能标记支付"));
     }
     let changed: Vec<Uuid> = if b.paid {
         sqlx::query_scalar("insert into billing_paid (slot_id, period_start) select * from unnest($1::uuid[], $2::date[]) on conflict do nothing returning slot_id")
@@ -791,8 +795,10 @@ pub struct CustomerAccess {
 }
 
 pub async fn public_view(State(st): State<AppState>, ClientIp(ip): ClientIp, ApiPath(token): ApiPath<String>, ApiQuery(q): ApiQuery<MonthQ>, ApiJson(access): ApiJson<CustomerAccess>) -> ApiResult<Response> {
-    // 月份口径与管理端保持一致。
-    let month = month_in(q.month.as_deref())?;
+    // 账期口径与管理端一致，但客户不展示尚未生效的期次或未来月份。
+    let today = bt::today();
+    let this_month = bt::month_of(today);
+    let month = month_in(q.month.as_deref())?.min(this_month);
     let hash = sha256(token.as_bytes());
     let key = format!("cust:{}", &hex::encode(&hash)[..16]);
     let attempt = auth::begin_attempt(&st, &key, ip.map(auth::ip_group)).await.map_err(|e| {
@@ -824,19 +830,18 @@ pub async fn public_view(State(st): State<AppState>, ClientIp(ip): ClientIp, Api
     .await?;
     let mut db = st.db.acquire().await?;
     let (months, rows) = month_rows(&mut db, team, month).await?;
-    let today = bt::today();
     let mut counts = std::collections::BTreeMap::<String, usize>::new();
     for row in outstanding_rows(&mut db, team, today).await? {
         *counts.entry(bt::fmt_month(row.ps)).or_default() += 1;
     }
     let outstanding: Vec<_> = counts.into_iter().map(|(month, count)| json!({"month": month, "count": count})).collect();
-    let nodes: Vec<Value> = rows.iter().map(|r| json!({
+    let nodes: Vec<Value> = rows.iter().filter(|r| r.ps <= today).map(|r| json!({
         "name": r.s.name(), "region": r.s.region, "period_start": bt::fmt_date(r.ps), "period_end": bt::fmt_date(r.pe),
         "paid": r.paid_at.is_some(), "manual": r.s.manual, "ended": r.s.state(today) == "ended",
     })).collect();
     let page = json!({
         "team": name, "today": bt::fmt_date(today),
-        "month": bt::fmt_month(month), "months": months.into_iter().map(bt::fmt_month).collect::<Vec<_>>(),
+        "month": bt::fmt_month(month), "months": months.into_iter().filter(|m| *m <= this_month).map(bt::fmt_month).collect::<Vec<_>>(),
         "outstanding": outstanding, "nodes": nodes,
     });
     let mut r = ok(page).into_response();

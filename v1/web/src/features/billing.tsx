@@ -47,11 +47,11 @@ export function MonthSummary({ counts, selected, today, onSelect }: {
   </ul>;
 }
 
-const PERIOD_LABEL = { active: '生效中', expired: '已过期', upcoming: '待续期' };
+const PERIOD_LABEL = { active: '生效中', expired: '已到期', upcoming: '待续费' };
 
-export function PeriodLegend() {
+export function PeriodLegend({ includeUpcoming = true }: { includeUpcoming?: boolean }) {
   return <div className="bm-legend" aria-label="本期状态">
-    {Object.entries(PERIOD_LABEL).map(([state, label]) => <span key={state}><i className="bm-dot" data-period={state} aria-hidden="true" />{label}</span>)}
+    {Object.entries(PERIOD_LABEL).filter(([state]) => includeUpcoming || state !== 'upcoming').map(([state, label]) => <span key={state}><i className="bm-dot" data-period={state} aria-hidden="true" />{label}</span>)}
   </div>;
 }
 
@@ -73,6 +73,6 @@ export function BillingNodeRow({ n, today, side, nameContent }: {
       </span>
       <span className="bm-sub">{regionLabel(n.region)} · <span className="num">{cnSpan(n.period_start, n.period_end, today)}</span>{remaining !== null && <> · <span className="num">还有 {remaining} 天到期</span></>}</span>
     </div>
-    <span className="bm-side">{side}</span>
+    {side != null && <span className="bm-side">{side}</span>}
   </li>;
 }

@@ -558,7 +558,7 @@ export interface BillingMonth {
   team: { id: string; name: string }; today: string; initialized: boolean; page: CustomerPage | null;
   month: string; months: string[]; nodes: BillingMonthNode[];
 }
-/** POST /public/customer/{token}?month=YYYY-MM：同管理端的按月看，每个节点只有名字、地区、这一期、已付 / 待付（按本期生效日期、节点名排列） */
+/** POST /public/customer/{token}?month=YYYY-MM：仅展示已经开始的期次，月份截至本月；节点按本期生效日期、节点名排列。 */
 export interface PublicCustomer {
   outstanding: { month: string; count: number }[];
   team: string; today: string; month: string; months: string[];

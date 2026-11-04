@@ -153,10 +153,10 @@ pub fn month(ctx: &Ctx, team: &str, month: Option<&str>) -> anyhow::Result<u8> {
 /// 月清单一行的名额 id 前 8 位
 fn id8(n: &Value) -> String { st(n, "/slot_id").chars().take(8).collect() }
 
-/// 要标的节点：--all = 这个月所有还不是目标状态的；否则按名字（或名额 id 前缀，≥ 4 位）逐个找，找不到报错并列出这个月有哪些
+/// 要标的节点：支付只选已生效账期；按名字或名额 id 前缀查找，--all 跳过未生效的。
 fn pick<'a>(nodes: &'a [Value], names: &[String], all: bool, want: bool) -> anyhow::Result<Vec<&'a Value>> {
     if all {
-        return Ok(nodes.iter().filter(|n| (n["paid"] == true) != want).collect());
+        return Ok(nodes.iter().filter(|n| (n["paid"] == true) != want && (!want || n["upcoming"] != true)).collect());
     }
     if names.is_empty() {
         bail!("要写节点名，或加 --all");
@@ -166,6 +166,7 @@ fn pick<'a>(nodes: &'a [Value], names: &[String], all: bool, want: bool) -> anyh
         let q = q.trim();
         let hits: Vec<&Value> = nodes.iter().filter(|n| st(n, "/name") == q || (q.len() >= 4 && st(n, "/slot_id").starts_with(&q.to_ascii_lowercase()))).collect();
         match hits.as_slice() {
+            [n] if want && n["upcoming"] == true => bail!("账期尚未生效，暂不能标记支付：{q}"),
             [n] => out.push(*n),
             [] => bail!("这个月没有「{q}」要收费；这个月有：{}", nodes.iter().map(|n| format!("{}（{}）", st(n, "/name"), id8(n))).collect::<Vec<_>>().join("、")),
             _ => bail!("「{q}」对上了多个节点，用名额 id 前缀指定：\n{}", hits.iter().map(|n| format!("  {}  {}  {} 开始收费  {}", id8(n), st(n, "/name"), st(n, "/start_date"), span(n))).collect::<Vec<_>>().join("\n")),
@@ -180,7 +181,7 @@ pub struct PaidOpts {
     team: String,
     /// 节点名（团队1-10；手动添加的写备注），可写多个；重名时报错并列出名额 id，改写 id 前缀（≥ 4 位）；或用 --all
     nodes: Vec<String>,
-    /// 这个月所有待支付的（配合 --unpaid 是所有已支付的）
+    /// 这个月已生效且待支付的（配合 --unpaid 是所有已支付的）
     #[arg(long, conflicts_with = "nodes")]
     all: bool,
     /// 月份，如 2026-11（默认本月）：标的是每个节点起点在这个月的那一期
@@ -444,6 +445,10 @@ mod tests {
         assert_eq!(names(pick(&nodes, &["墨西哥家宽".into(), "BBBB".into()], false, true).unwrap()), ["墨西哥家宽", "团队1-01"]);
         assert!(pick(&nodes, &["团队1-99".into()], false, true).unwrap_err().to_string().contains("这个月有：团队1-10（aaaa1111）、团队1-01（bbbb2222）、墨西哥家宽（cccc3333）"));
         assert!(pick(&nodes, &[], false, true).is_err());
+        let mut future = n("下期节点", "ffff6666", false);
+        future["upcoming"] = json!(true);
+        assert!(pick(&[future.clone()], &[], true, true).unwrap().is_empty());
+        assert!(pick(&[future], &["下期节点".into()], false, true).unwrap_err().to_string().contains("账期尚未生效"));
         // 重名：报错并列出候选（名额 id、开始收费日），用 id 前缀可以指定
         let mut dup = vec![n("团队1-05", "dddd4444", false), n("团队1-05", "eeee5555", false)];
         dup[0]["start_date"] = json!("2026-10-01");

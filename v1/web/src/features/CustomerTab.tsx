@@ -114,7 +114,6 @@ function MonthList({ d }: { d: BillingMonth }) {
   const held = useHeld(act ? `${act.kind}:${act.n.slot_id}` : null, act);
   const m = cnMonth(d.month, d.today);
   const due = d.nodes.filter((n) => !n.paid && !n.upcoming);
-  const upcoming = d.nodes.filter((n) => !n.paid && n.upcoming);
   const rows = [...d.nodes].sort(compareBillingEffectiveDate);
   const teamId = d.team.id;
   const set = async (ns: BillingMonthNode[], on: boolean) => {
@@ -153,19 +152,18 @@ function MonthList({ d }: { d: BillingMonth }) {
           <DropdownMenuContent align="end" onCloseAutoFocus={e => { if (flushAfterMenuClosed()) e.preventDefault(); }}>
             <DropdownMenuItem onSelect={() => runAfterMenuClosed(() => setAdding(true))}>手动添加节点…</DropdownMenuItem>
             {due.length > 1 && <DropdownMenuItem onSelect={() => runAfterMenuClosed(() => setAskAll(due))}>待支付节点全部标记已支付…</DropdownMenuItem>}
-            {upcoming.length > 1 && <DropdownMenuItem onSelect={() => runAfterMenuClosed(() => setAskAll(upcoming))}>未开始期次全部标记预收…</DropdownMenuItem>}
           </DropdownMenuContent>
         </DropdownMenu>}>
         {rows.length ? <>
           <PeriodLegend />
           <ul className="bm-list" aria-label={`${m}节点清单`}>
             {rows.map(n => <Row key={n.slot_id} n={n} today={d.today} side={<>
-              <Button size="sm" className="bm-pay-toggle" aria-pressed={n.paid} loading={busy(n)}
+              {!n.upcoming && <Button size="sm" className="bm-pay-toggle" aria-pressed={n.paid} loading={busy(n)}
                 aria-label={`${n.name}，${n.paid ? '已支付，点击改回待支付' : '标记已支付'}`}
                 data-tip={n.paid ? [n.paid_at && `${F.dtFull(n.paid_at)} 标记已支付`, '点击改回待支付'].filter(Boolean).join(' · ') : undefined}
                 onClick={() => void one(n, !n.paid)}>
                 {n.paid ? <><Check size={14} />已支付</> : '标记已支付'}
-              </Button>
+              </Button>}
               {menu(n)}
             </>} />)}
           </ul>
