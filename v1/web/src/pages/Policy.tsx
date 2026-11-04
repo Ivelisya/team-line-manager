@@ -1,6 +1,5 @@
 // 访问规则（策略）：按团队 / 节点设置域名白名单、黑名单或暂停新连接。
 // 流程：编辑只存草稿 → 预览（最近 24 小时每个节点会被阻止多少连接）→ 发布（所有草稿一起生效，线路机热加载路由规则）→ 发布记录里可回滚。
-import { Label } from '@/components/ui/label';
 import { Field } from '@/components/ui/field';
 import * as React from 'react';
 import { useSearchParams } from 'react-router-dom';
@@ -13,7 +12,7 @@ import { MAX_NOTE, diffDomains, domainsToText, parseDomainText, toUnicode } from
 import * as F from '@/lib/format';
 import { meta } from '@/lib/derive';
 import { Button } from '@/components/ui/button';
-import { FormField, SearchInput } from '@/components/ui/form';
+import { FormField, LabelRow, SearchInput } from '@/components/ui/form';
 import { InfoTip } from '@/components/ui/info-tip';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -286,14 +285,14 @@ function Editor({ scope, name, sp, team, node, onDirty }: { scope: 'team' | 'nod
         )}
 
         <Field>
-          <span data-slot="field-label" className="inline-flex min-w-0 items-center gap-1"><Label>模式</Label><InfoTip text={MODE_INFO[mode]} /></span>
+          <LabelRow info={MODE_INFO[mode]}>模式</LabelRow>
           <Segmented label="模式" value={mode} onChange={setMode} items={modes.map((m) => ({ value: m, label: modeLabel(m) }))} />
           {mode === 'inherit' && <div className="hint">团队现在是「{modeLabel(teamCur.mode)}」{needsDomains(teamCur.mode) ? `（${teamCur.domains.length} 个域名）` : ''}</div>}
         </Field>
 
         {/* 只有白名单 / 黑名单用域名列表：别的模式不显示（已填的内容留着，切回来仍在） */}
         {uses && <Field>
-          <span data-slot="field-label" className="inline-flex min-w-0 items-center gap-1"><Label>域名<span className="pol-count"> · {fmtN(parsed.domains.length)} 个有效</span></Label><InfoTip text={"用逗号、空格或换行分隔\nexample.com 会连同所有子域名一起匹配，=example.com 只匹配它自己"} /></span>
+          <LabelRow info={"用逗号、空格或换行分隔\nexample.com 会连同所有子域名一起匹配，=example.com 只匹配它自己"}>域名<span className="pol-count"> · {fmtN(parsed.domains.length)} 个有效</span></LabelRow>
           <div className="pol-ed" data-bad={showIssues.length > 0 || (noDomains && touched) ? '1' : undefined}>
             <Gutter lines={lines.length} bad={badLines} />
             <Textarea className="pol-ta h-[260px] min-h-[260px] min-w-0 flex-1 resize-none overflow-auto rounded-none border-0 bg-transparent px-2.5 py-2 font-mono text-label leading-5 whitespace-pre shadow-none focus-visible:border-0 focus-visible:ring-0" value={text} wrap="off" spellCheck={false} autoComplete="off" aria-label="域名列表" aria-invalid={showIssues.length > 0 ? true : undefined}

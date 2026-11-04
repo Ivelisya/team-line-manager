@@ -6,10 +6,9 @@ import type { MachineView, SubField, Subscription } from '@/lib/types';
 import { useRenew, useRenewals, useSaveSubscription, type SubscriptionBody } from '@/lib/queries';
 import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
-import { CheckRow, FormField, UnitInput } from '@/components/ui/form';
+import { CheckRow, FormField, LabelRow, UnitInput } from '@/components/ui/form';
 import { InfoTip } from '@/components/ui/info-tip';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Segmented } from '@/components/ui/overlays';
 import { DateField } from '@/components/ui/date-field';
 import { useUsdPreview } from '@/lib/fx';
@@ -129,7 +128,7 @@ function OvField({ m, k, label, info, on, setOn, due, error, hint, locked, onTou
   return (
     <Field onBlur={onTouch}>
       <div className="ov-head">
-        <span data-slot="field-label" className="inline-flex min-w-0 items-center gap-1"><Label htmlFor={id}>{label}</Label>{info && <InfoTip text={info} />}</span>
+        <LabelRow htmlFor={id} info={info}>{label}</LabelRow>
         {toggle}
       </div>
       {on ? React.cloneElement(children as React.ReactElement<{ id?: string }>, { id }) : <div id={id} className="ov-follow">{shared ? follow : inheritValueText(m, k, due)}</div>}
@@ -198,7 +197,7 @@ function SubForm({ m }: { m: MachineView }) {
   return (
     <div className="form-grid sub-form" onBlur={(e) => { if (!(e.target as HTMLElement).closest('[data-due]')) touch('due')(); }}>
       <FormField label="到期日" hint={touched.due && dueDate === '' ? '必填' : undefined} error={dueBad ? '格式应为 YYYY-MM-DD' : undefined}><div data-due><DateField value={dueDate} onChange={setDueDate} /></div></FormField>
-      {o('price_cents', '费用', <UnitInput width="full" unit={priceUnit} style={{ paddingRight: `calc(var(--sp-10) + ${priceUnit.length * 0.62 + 0.4}em)` }} inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="68" aria-invalid={(touched.price_cents && priceBad) || undefined} />, priceBad ? (price.trim() === '' ? '必填，免费填 0' : '应为 0 或正数') : undefined)}
+      {o('price_cents', '费用', <UnitInput width="full" unit={priceUnit} inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="68" aria-invalid={(touched.price_cents && priceBad) || undefined} />, priceBad ? (price.trim() === '' ? '必填，免费填 0' : '应为 0 或正数') : undefined)}
       {o('currency', '币种', <Select value={currency} onChange={setCurrency} options={F.withCurrent(currencyOptions(), currency)} />)}
       {o('cycle', '计费周期', <Select value={cycle} onChange={setCycle} options={cycleOptions()} />)}
       {o('billing_tz', '账单时区', <TzInput value={tz} onChange={setTz} aria-label="账单时区" />, tzBad ? '填 IANA 时区名，如 Asia/Shanghai' : undefined, '到期日按这个时区的日期算')}

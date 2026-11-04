@@ -1,6 +1,5 @@
 // 设置：API 密钥（创建时 token 只显示一次）、告警通知渠道（Telegram / 飞书，可发测试、看最近发送记录）、
 // 账户安全（两步验证、修改密码、登录会话，见 features/AccountTab）、新入口默认模式（普通 / 穿透，features/EntryModeTab）、数据保留（features/RetentionTab）、汇率（计费折成美元，见 features/FxTab）、探测点与主探测来源（features/ProbeTab）、三网 PING 的全局目标（features/PingTab）、客户端订阅（features/SubsTab）。
-import { Label } from '@/components/ui/label';
 import { Field } from '@/components/ui/field';
 import { Skeleton } from '@/components/ui/skeleton';
 import * as React from 'react';
@@ -17,7 +16,7 @@ import { useAddChannel, useApiKeys, useCreateApiKey, useDelChannel, useMe, useMo
 import type { ApiKey, NotifyChannel, NotifyLogEntry } from '@/lib/types';
 import * as F from '@/lib/format';
 import { Button, IconButton } from '@/components/ui/button';
-import { CheckRow, FormField, OptimisticSwitch } from '@/components/ui/form';
+import { CheckRow, FormField, LabelRow, OptimisticSwitch } from '@/components/ui/form';
 import { InfoTip } from '@/components/ui/info-tip';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
@@ -139,7 +138,7 @@ function ApiKeysSection() {
           <FormField label="有效期"><Select value={exp} onChange={setExp} options={EXPIRES} /></FormField>
         </div>
         <Field>
-          <Label>权限</Label>
+          <LabelRow>权限</LabelRow>
           {/* 四项权限排成 2×2（自适应列宽在对话框里会排成 3+1） */}
           <div className="scope-list" style={{ gridTemplateColumns: 'repeat(2, minmax(0, 1fr))' }}>
             {SCOPES.map((s) => (

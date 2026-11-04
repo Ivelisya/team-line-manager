@@ -138,8 +138,9 @@ export function TipHost() {
     on.forEach(([t, n, f, c]) => t.addEventListener(n, f, c))
     return () => { clearTimeout(timer); watch.disconnect(); unwatchSize?.(); on.forEach(([t, n, f, c]) => t.removeEventListener(n, f, c)) }
   }, [])
-  // 虚拟锚点：有 getBoundingClientRect 的对象；矩形变了才换一个
-  const anchor = React.useMemo(() => (tip ? { getBoundingClientRect: () => tip.r } : undefined), [tip?.r.left, tip?.r.top, tip?.r.width, tip?.r.height]) // eslint-disable-line react-hooks/exhaustive-deps
+  // 虚拟锚点：有 getBoundingClientRect 的对象；矩形变了才换一个（refresh 在文字、位置都没变时原样返回同一个 tip，r 的引用不变）
+  const r = tip?.r
+  const anchor = React.useMemo(() => (r ? { getBoundingClientRect: () => r } : undefined), [r])
   if (!tip) return null
   // key：换到另一个元素时重新挂载（旧的收起、新的立即出现），不在原地改字挪位置
   return (
@@ -152,7 +153,8 @@ export function TipHost() {
 /* ---------- Trunc：单行省略文本 ---------- */
 
 /** 单行省略文本：只有真的被截断时悬停才出现完整内容的提示。不再每个单元格一个 Tooltip 根（表格里几百个）：被截断时给自己写上 data-tip，提示交给 TipHost
- *  （触屏轻触也由它弹）；被截断、又不在按钮 / 链接里时才加入 Tab 顺序（在按钮里的由按钮自己承担焦点）。直接改 DOM 属性，不走 React 状态，也就不会因为量一次尺寸重渲染一个单元格。共用 lib/sharedObserver 的 ResizeObserver */
+ *  （触屏轻触也由它弹）；被截断、又不在按钮 / 链接里时才加入 Tab 顺序（在按钮里的由按钮自己承担焦点）。直接改 DOM 属性，不走 React 状态，也就不会因为量一次尺寸重渲染一个单元格。共用 lib/sharedObserver 的 ResizeObserver。
+ *  指针移上来时再量一次（盒子没变、内容变宽时 ResizeObserver 不回调）：监听在元素自己身上，先于 TipHost 挂在 document 上的 pointerover 执行，data-tip 来得及写上 */
 export function Trunc({ children, text, className }: { children: React.ReactNode; text?: string; className?: string }) {
   const ref = React.useRef<HTMLSpanElement>(null)
   const full = text ?? (typeof children === "string" ? children : "")
@@ -166,7 +168,9 @@ export function Trunc({ children, text, className }: { children: React.ReactNode
     }
     measure()
     const stop = watchSize(el, measure)
-    return () => { stop(); delete el.dataset.tip; el.removeAttribute("tabindex") }
+    el.addEventListener("pointerover", measure)
+    // 清理时不摘 data-tip：文字变了（推送）时下一轮 measure 直接改写，先摘掉会让 TipHost 以为元素不再有提示、把正开着的提示收起
+    return () => { stop(); el.removeEventListener("pointerover", measure) }
   }, [full])
   return <span ref={ref} className={cn("ellipsis block", className)}>{children}</span>
 }

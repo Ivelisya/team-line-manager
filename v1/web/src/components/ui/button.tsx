@@ -91,7 +91,6 @@ function Button({
 }: ButtonProps) {
   return (
     <ButtonPrimitive
-      data-slot="button"
       data-variant={variant}
       data-size={size}
       className={cn(buttonVariants({ variant, size, className }))}
@@ -102,6 +101,9 @@ function Button({
       // Base UI 给非原生按钮补 role="button"；render 的都是链接（<a> / Link），保持链接的语义
       role={render ? "link" : undefined}
       {...props}
+      // 放在展开的 props 之后：做 TooltipTrigger 等的 render 时，外层合并进来的 data-slot（如 "tooltip-trigger"）不能盖掉它，
+      // 全站按 [data-slot="button"][data-size=…] 写的热区外扩、窄屏吸附列都认它
+      data-slot="button"
     >
       {loading && <Spinner />}
       {children}

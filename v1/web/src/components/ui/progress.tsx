@@ -22,7 +22,7 @@ function Progress({
       data-slot="progress"
       data-tone={tone}
       data-live={live ? "" : undefined}
-      className={cn("flex flex-wrap gap-3", className)}
+      className={cn("group/progress flex flex-wrap gap-3", className)}
       {...props}
     >
       {children}
@@ -52,7 +52,8 @@ function ProgressIndicator({
       data-slot="progress-indicator"
       className={cn(
         "absolute inset-y-0 left-0 overflow-hidden rounded-pill bg-brand transition-[transform,background-color] duration-(--dur-data) ease-(--ease-out)",
-        "in-data-[tone=ok]:bg-ok in-data-[tone=warn]:bg-warn in-data-[tone=bad]:bg-bad",
+        // 只认本进度条根节点上的 data-tone（group/progress），不被外层带 data-tone 的提示条、卡片染色
+        "group-data-[tone=ok]/progress:bg-ok group-data-[tone=warn]/progress:bg-warn group-data-[tone=bad]/progress:bg-bad",
         className
       )}
       {...props}

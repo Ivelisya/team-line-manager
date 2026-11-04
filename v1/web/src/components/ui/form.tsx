@@ -11,11 +11,15 @@ import { InputGroup, InputGroupAddon, InputGroupInput, InputGroupText } from '@/
 // 表单里 shadcn 没有的组合件（基础件各自在 input / textarea / label / field / checkbox / switch / input-group）：
 // FormField（标签 + 控件 + 提示 / 错误，id 自动关联）、UnitInput、SearchInput、CheckRow、OptimisticSwitch。
 
-/** 标签 + 可选「(i)」补充说明 */
+/** 标签 + 可选「(i)」补充说明。
+ *  htmlFor 指向一个控件时是 <label>；只给一组控件（分段、单选组、列表）起个标题时不传 htmlFor，渲染成同样外观的 span，不留指不到控件的 label。
+ *  「(i)」在这一行里不要自带的左外边距（间距由 gap 给），同改前的 .field-label > .info-tip */
 export function LabelRow({ htmlFor, info, children, className }: { htmlFor?: string; info?: string; children: React.ReactNode; className?: string }) {
-  return info
-    ? <span data-slot="field-label" className={cn('inline-flex min-w-0 items-center gap-1', className)}><Label htmlFor={htmlFor}>{children}</Label><InfoTip text={info} /></span>
-    : <Label htmlFor={htmlFor} className={className}>{children}</Label>;
+  const text = htmlFor
+    ? <Label htmlFor={htmlFor} className={info ? undefined : className}>{children}</Label>
+    : <span className={cn('inline-flex items-center gap-1 text-label font-medium text-fg-2 select-none', !info && className)}>{children}</span>;
+  if (!info) return text;
+  return <span data-slot="field-label" className={cn('inline-flex min-w-0 items-center gap-1 [&>.info-tip]:m-0', className)}>{text}<InfoTip text={info} /></span>;
 }
 
 /** 表单项：标签（可带「(i)」补充说明）+ 控件 + 短提示 / 错误。hint 只放一句十来个字的必要提示，长的解释写进 info。

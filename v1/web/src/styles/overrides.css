@@ -63,9 +63,10 @@ html[data-overlay] :is(.app, .drawer) [data-slot="progress-indicator"] { transit
 .cmd-trigger, .toast-action, .sec-head, .brand, .pop-head { font-variant-numeric: tabular-nums; }
 /* 按钮、输入框、标签、键帽等 Tailwind 写的组件不用 `font:` 简写，body 上的 tabular-nums 照常继承（表单控件靠 preflight 的 font: inherit），不用在这里补 */
 
-/* iOS Safari 聚焦字号小于 16px 的输入框会把整页放大、失焦后常不缩回：只在 iOS 上把输入字号提到 16px（不用 maximum-scale，免得禁掉手动缩放） */
+/* iOS Safari 聚焦字号小于 16px 的输入框会把整页放大、失焦后常不缩回：只在 iOS 上把输入字号提到 16px（不用 maximum-scale，免得禁掉手动缩放）。
+   !important：Input / Textarea 的字号是 text-body / text-label 工具类，在更高的 utilities 层，普通声明压不住（components 层的 important 高于 utilities 层的普通声明） */
 @supports (-webkit-touch-callout: none) {
-  :is(input:not([type="checkbox"], [type="radio"]), textarea) { font-size: 16px; }
+  :is(input:not([type="checkbox"], [type="radio"]), textarea) { font-size: 16px !important; }
 }
 /* 手机上对话框是底部面板，确认 / 取消在最下面：通知改从顶栏下方落下，不盖住面板的按钮（宽屏仍在右下） */
 @media (max-width: 600px) {

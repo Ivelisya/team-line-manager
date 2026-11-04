@@ -41,6 +41,9 @@ const filterOpts = () => (opts ??= {
 });
 const SCOPES: { value: Scope; label: string }[] = [{ value: 'live', label: '在用' }, { value: 'recycle', label: '回收站' }];
 const entryOf = (e: MachineView['entries'][number]) => `${e.relay.name}:${e.port}`;
+/** 「清除筛选」「恢复默认顺序」占位按钮：用不上的那个淡出隐藏（data-off）但仍占位，点掉一个时另一个不平移到鼠标下面。
+ *  transition 要写全：按钮自带的 transition 工具类同层，这里整串替换，多加 opacity 与延后的 visibility */
+const SLOT_BTN = 'data-off:invisible data-off:opacity-0 [transition:background-color_var(--dur-1)_var(--ease-std),color_var(--dur-1)_var(--ease-std),border-color_var(--dur-1)_var(--ease-std),scale_var(--dur-2)_var(--ease-out),opacity_var(--dur-2)_var(--ease-std),visibility_0s_linear_var(--dur-2)]';
 /** 行签名：这页的列只显示资产信息（流量按显示精度），不显示实时读数，推送只改读数时行不重渲染（MachineGrid sig）。
  *  列里显示的东西都要在这里——每加一列、列里多显示一个字段，都要同步改这里；悬浮卡不传 m，打开时自己取这台的最新数据 */
 const rowSig = (m: MachineView) => {
@@ -169,8 +172,8 @@ function LiveNodes({ sp, upd, tools }: { sp: URLSearchParams; upd: (patch: Recor
         {plan && <button type="button" className="fchip" aria-pressed="true" aria-label="取消套餐筛选" onClick={() => upd({ plan: '' })}>套餐{planName && ` ${planName}`}<X size={14} /></button>}
         {/* 两个按钮只要有一个在就都占着位置（另一个淡出隐藏）：点掉一个时另一个不平移到鼠标下面 */}
         {(filtered || urlSort) && <>
-          <Button variant="ghost" className="data-off:invisible data-off:opacity-0 [transition:background-color_var(--dur-1)_var(--ease-std),color_var(--dur-1)_var(--ease-std),border-color_var(--dur-1)_var(--ease-std),scale_var(--dur-2)_var(--ease-out),opacity_var(--dur-2)_var(--ease-std),visibility_0s_linear_var(--dur-2)]" data-off={filtered ? undefined : ''} onClick={clearFilters}><X />清除筛选</Button>
-          <Button variant="ghost" className="data-off:invisible data-off:opacity-0 [transition:background-color_var(--dur-1)_var(--ease-std),color_var(--dur-1)_var(--ease-std),border-color_var(--dur-1)_var(--ease-std),scale_var(--dur-2)_var(--ease-out),opacity_var(--dur-2)_var(--ease-std),visibility_0s_linear_var(--dur-2)]" data-off={urlSort ? undefined : ''} onClick={() => setSort(null)}><RotateCcw />恢复默认顺序</Button>
+          <Button variant="ghost" className={SLOT_BTN} data-off={filtered ? undefined : ''} onClick={clearFilters}><X />清除筛选</Button>
+          <Button variant="ghost" className={SLOT_BTN} data-off={urlSort ? undefined : ''} onClick={() => setSort(null)}><RotateCcw />恢复默认顺序</Button>
         </>}
       </div>
 

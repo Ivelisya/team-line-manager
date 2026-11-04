@@ -170,7 +170,7 @@ const TargetsView = React.memo(function TargetsView({ open, f, sort, onSort, fil
       <TableWrap data-stale={q.isPlaceholderData}>
         <table className="dt" style={{ minWidth: 900 }}>
           <colgroup><col style={{ width: 380 }} /><col style={{ width: 170 }} /><col style={{ width: 96 }} /><col style={{ width: 150 }} /><col style={{ width: 120 }} /><col style={{ width: 104 }} /></colgroup>
-          <thead><tr><th>目标</th><th>节点</th><th className="r">连接数</th><th>处理结果</th><th><span data-slot="field-label" className="inline-flex min-w-0 items-center gap-1">首次出现<InfoTip text={FIRST_SEEN_TIP} /></span></th><th>最近</th></tr></thead>
+          <thead><tr><th>目标</th><th>节点</th><th className="r">连接数</th><th>处理结果</th><th><span className="inline-flex items-center gap-1 [&>.info-tip]:m-0">首次出现<InfoTip text={FIRST_SEEN_TIP} /></span></th><th>最近</th></tr></thead>
           <tbody>
             {rows.map((t) => {
               const on = ex.open.has(t.dest_host);

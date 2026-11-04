@@ -62,7 +62,7 @@ const fewText = (m: MachineView, range: string) =>
 export function ChartFrame<T extends { points: readonly unknown[] }>({ q, few, height = 180, children }: { q: UseQueryResult<T>; few: string; height?: number; children: React.ReactNode }) {
   // 轮询中偶尔一次取不到：留着上一份曲线（下一轮会再取），只有一份都没有时才显示错误
   if (q.isError && !q.data) return <ErrorNote error={q.error} onRetry={() => void q.refetch()}>曲线加载失败：</ErrorNote>;
-  if (q.isLoading) return <Skeleton className="rounded-float" style={{ height: height }} />;
+  if (q.isLoading) return <Skeleton className="rounded-float" style={{ height }} />;
   return (
     <div className="chart-frame" data-stale={q.isPlaceholderData} aria-busy={q.isPlaceholderData || undefined}>
       {(q.data?.points.length ?? 0) < 2 ? <div className="chart-empty" style={{ height }}>{few}</div> : children}

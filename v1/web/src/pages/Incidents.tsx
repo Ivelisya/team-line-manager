@@ -1,5 +1,4 @@
 // 告警：三个下划线页签（换成另一类数据）——告警事件列表（确认 / 查看机器，服务端分页；下面再用分段控件筛 进行中 / 已恢复 / 全部）、静默与维护窗口（可预约开始时间）、月度可用率。列表都保持服务端顺序（告警严重度优先，静默按开始时间），前端不重排。
-import { Label } from '@/components/ui/label';
 import { Field } from '@/components/ui/field';
 import * as React from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
@@ -18,7 +17,7 @@ import type { Incident, Silence, SilenceKind } from '@/lib/types';
 import { resetOnOpen, useHeld } from '@/lib/useHeld';
 import { useNow } from '@/lib/useNow';
 import { Button, IconButton } from '@/components/ui/button';
-import { CheckRow, FormField } from '@/components/ui/form';
+import { CheckRow, FormField, LabelRow } from '@/components/ui/form';
 import { InfoTip } from '@/components/ui/info-tip';
 import { Input } from '@/components/ui/input';
 import { Popover, PopoverContent, PopoverTrigger, Segmented, Tabs, TabsList, TabsTrigger } from '@/components/ui/overlays';
@@ -300,7 +299,7 @@ const SilenceDialog = resetOnOpen(function SilenceDialog({ open, onOpenChange, p
         <FormField label="对象"><SubjectSelect value={subject} onChange={(v, k) => { setSubject(v); setKind(k); }} /></FormField>
         {subject === ALL && <Note tone="warn">全部机器（含软路由、探测点）不发告警</Note>}
         <Field>
-          <Label>开始</Label>
+          <LabelRow>开始</LabelRow>
           <div className="row">
             <Segmented label="开始" value={mode} onChange={setMode} items={START_ITEMS} />
             {mode === 'at' && <Input type="datetime-local" aria-label="开始时间" value={start} min={localInput(now)} max={localInput(now + AHEAD_DAYS * 1440 * MIN)} onChange={(e) => setStart(e.target.value)} aria-invalid={!!startErr} style={{ flex: '1 1 200px', width: 'auto' }} />}

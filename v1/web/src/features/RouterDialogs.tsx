@@ -1,6 +1,5 @@
 // 软路由的对话框：接入（两种方式：填账号密码一键部署 / 在路由上执行命令）、重新部署、接入命令、删除后的清理说明。
 // 接入命令、重新部署、删除说明从卡片、抽屉、页面都能弹（lib/routers 的小仓库），由外壳里那一份 RouterDialogsHost 渲染。
-import { Label } from '@/components/ui/label';
 import { Field } from '@/components/ui/field';
 import { Spinner } from '@/components/ui/spinner';
 import * as React from 'react';
@@ -11,7 +10,7 @@ import { resetOnOpen, useHeld } from '@/lib/useHeld';
 import { useNow } from '@/lib/useNow';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { FormField } from '@/components/ui/form';
+import { FormField, LabelRow } from '@/components/ui/form';
 import { InfoTip } from '@/components/ui/info-tip';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -88,7 +87,7 @@ export const AddRouterDialog = resetOnOpen(function AddRouterDialog({ open, onOp
         <FormField label="备注" className="span-2"><Textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="例如：客户机房 2 楼弱电箱，旁路由" /></FormField>
       </div>
       <Field>
-        <span data-slot="field-label" className="inline-flex min-w-0 items-center gap-1"><Label>接入方式</Label><InfoTip text={METHOD_INFO} /></span>
+        <LabelRow info={METHOD_INFO}>接入方式</LabelRow>
         <Segmented label="接入方式" value={method} onChange={setMethod} items={METHODS} className="seg-fill" />
       </Field>
       {/* 换方式时账号密码这块平滑收起 / 展开（高度过渡），对话框不跳；收起时不可聚焦 */}

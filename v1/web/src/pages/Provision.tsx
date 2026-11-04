@@ -116,7 +116,7 @@ export function ProvisionPage() {
   const [jump, setJump] = React.useState(0);
   React.useEffect(() => {
     if (!jump) return;
-    const el = page.current?.querySelector<HTMLElement>('.field:has(.hint.is-error), tr.is-row-bad');
+    const el = page.current?.querySelector<HTMLElement>('[data-slot="field"]:has([data-slot="field-error"], .hint.is-error), tr.is-row-bad');
     if (!el) return;
     el.scrollIntoView({ block: 'center', behavior: scrollBehavior() });
     el.querySelector<HTMLElement>('td.is-bad .gcell, input:not(:disabled), button:not(:disabled), .gcell:not(:disabled)')?.focus({ preventScroll: true });
