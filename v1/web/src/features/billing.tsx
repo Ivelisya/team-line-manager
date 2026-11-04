@@ -6,8 +6,8 @@ import { ArrowDownRight, ChevronLeft, ChevronRight } from 'lucide-react';
 import { IconButton } from '@/components/ui/button';
 import '@/styles/billing.css';
 
-/** 2026-11-30 →「11 月 30 日」；不在 today 那一年的写「2027 年 1 月 1 日」 */
-export const cnDate = (s: string, today: string) => `${s.slice(0, 4) !== today.slice(0, 4) ? `${s.slice(0, 4)} 年 ` : ''}${Number(s.slice(5, 7))} 月 ${Number(s.slice(8, 10))} 日`;
+/** 2026-11-02 →「11 月 02 日」；跨年写「2027 年 01 月 01 日」，月份与日期均补齐两位。 */
+export const cnDate = (s: string, today: string) => `${s.slice(0, 4) !== today.slice(0, 4) ? `${s.slice(0, 4)} 年 ` : ''}${s.slice(5, 7)} 月 ${s.slice(8, 10)} 日`;
 /** 一期的日期区间：终点是到期日，下一期从这天起。 */
 export const cnSpan = (start: string, end: string, today: string) => `${cnDate(start, today)} – ${cnDate(end, today)}`;
 /** 2026-11 →「11 月」；不在 today 那一年的写「2027 年 1 月」 */
