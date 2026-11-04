@@ -38,12 +38,11 @@
 .cmd-empty { padding: var(--sp-24) var(--sp-16); text-align: center; color: var(--fg-2); font-size: var(--fs-body); }
 .cmd-more { padding: var(--sp-6) var(--sp-10) var(--sp-4); font-size: var(--fs-label); color: var(--fg-2); }
 .cmd-foot { display: flex; align-items: center; gap: var(--sp-14); padding: var(--sp-8) var(--sp-16); border-top: 1px solid var(--line); background: var(--sunken); font-size: var(--fs-micro); line-height: var(--lh-micro); color: var(--fg-2); }
-.cmd-foot .kbd { margin-right: var(--sp-4); }
+.cmd-foot [data-slot="kbd"] { margin-right: var(--sp-4); }
 /* 触屏：底部的键盘提示（↑↓ 选择 / ↵ 打开 / esc 关闭）没有意义，收起；输入框右侧出一个「取消」 */
-.cmd-cancel { display: none; }
+
 @media (pointer: coarse) {
   .cmd-foot { display: none; }
-  .cmd-cancel { display: inline-flex; position: absolute; top: calc((52px - var(--h-sm)) / 2); right: var(--sp-10); color: var(--accent); }
   .cmd-dialog > .cmd .cmd-input-wrap { padding-right: 64px; }
 }
 

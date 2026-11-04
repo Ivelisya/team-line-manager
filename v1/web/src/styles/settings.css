@@ -17,7 +17,6 @@
 /* 账户安全：开启两步验证（二维码 + 步骤）、恢复码 */
 .totp-setup { display: flex; align-items: flex-start; gap: var(--sp-16); }
 .totp-qr { flex: none; width: 168px; height: 168px; padding: var(--sp-6); border: 1px solid var(--line); border-radius: var(--r-float); background: #fff; } /* 二维码要白底才扫得出，不随主题 */
-.totp-qr.skel { background: var(--sunken); }
 .totp-steps { flex: 1; min-width: 0; display: grid; gap: var(--sp-8); font-size: var(--fs-label); color: var(--fg-2); }
 .totp-steps b { color: var(--fg); font-weight: var(--fw-medium); }
 .recovery-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-6) var(--sp-16); padding: var(--sp-12) var(--sp-16); border: 1px solid var(--line-strong); border-radius: var(--r-float); background: var(--sunken); }

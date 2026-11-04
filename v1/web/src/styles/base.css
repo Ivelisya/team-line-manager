@@ -51,7 +51,6 @@ a { color: inherit; }
 @keyframes fade-out { from { opacity: 1; } to { opacity: 0; } }
 @keyframes skel-show { from { visibility: hidden; } to { visibility: visible; } }
 @keyframes skel-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-.spin { animation: spin var(--dur-spin) linear infinite; }
 
 /* ---------- 外壳 ---------- */
 .app { min-height: 100vh; }
@@ -206,7 +205,7 @@ a { color: inherit; }
   .row[role="search"] { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   /* 要盖过调用处的 w-[140px] 这类宽度工具类：以前靠选择器更具体（0,2,0 对 0,1,0）；Tailwind 4 的工具类在 utilities 层，层序高于 components，更具体也盖不过，所以这里用 !important（components 层的 important 高于 utilities 层的普通声明） */
   .row[role="search"] > * { width: auto !important; min-width: 0; }
-  .row[role="search"] > .search { grid-column: 1 / -1; }
+  .row[role="search"] > [data-slot="input-group"] { grid-column: 1 / -1; }
 } /* 窄屏时它占满一行，空着也会留出一行高 */
 .stack > .page-head { margin-bottom: 0; } /* 在 .stack 里时与下面的间距由 gap 给，不再叠一份外边距 */
 @media (max-width: 600px) {

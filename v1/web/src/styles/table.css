@@ -62,9 +62,9 @@
 @media (max-width: 600px) {
   .table-wrap:not([data-fit]) { mask-image: none; animation: none; } /* 两侧吸住了，不再用边缘渐隐（会把吸住的列一起淡掉） */
   .table-wrap:not([data-fit]) .dt:not(.dt-grid) :is(th, td):first-child { position: sticky; left: 0; z-index: 1; background: var(--surface); box-shadow: 1px 0 0 var(--line); }
-  .table-wrap:not([data-fit]) .dt:not(.dt-grid):has(td:last-child > :is(.btn:only-child, .icon-btn), td:last-child > .row > .icon-btn):not(:has(td:last-child > .row > .btn)) :is(th, td):last-child { position: sticky; right: 0; z-index: 1; background: var(--surface); box-shadow: -1px 0 0 var(--line), var(--shadow-edge-l); }
+  .table-wrap:not([data-fit]) .dt:not(.dt-grid):has(td:last-child > :is([data-slot="button"]:not([data-size^="icon"]):only-child, [data-slot="button"][data-size^="icon"]), td:last-child > .row > [data-slot="button"][data-size^="icon"]):not(:has(td:last-child > .row > [data-slot="button"]:not([data-size^="icon"]))) :is(th, td):last-child { position: sticky; right: 0; z-index: 1; background: var(--surface); box-shadow: -1px 0 0 var(--line), var(--shadow-edge-l); }
   .table-wrap:not([data-fit]) .dt:not(.dt-grid) thead th:first-child,
-  .table-wrap:not([data-fit]) .dt:not(.dt-grid):has(td:last-child > :is(.btn:only-child, .icon-btn), td:last-child > .row > .icon-btn):not(:has(td:last-child > .row > .btn)) thead th:last-child { background: var(--sunken); }
+  .table-wrap:not([data-fit]) .dt:not(.dt-grid):has(td:last-child > :is([data-slot="button"]:not([data-size^="icon"]):only-child, [data-slot="button"][data-size^="icon"]), td:last-child > .row > [data-slot="button"][data-size^="icon"]):not(:has(td:last-child > .row > [data-slot="button"]:not([data-size^="icon"]))) thead th:last-child { background: var(--sunken); }
   .table-wrap:not([data-fit]) .dt tr.is-current > td:first-child { background: var(--selected); box-shadow: inset 2px 0 0 var(--accent), 1px 0 0 var(--line); }
   .table-wrap:not([data-fit]) .dt tr:is(.acc-sub, .inc-sub) > td:first-child { background: var(--sunken); }
 }
@@ -91,7 +91,7 @@
 .dt-grid select.gcell option { color: var(--fg); }
 .dt-grid .gcell-date { display: flex; align-items: center; height: 100%; }
 .dt-grid .gcell-date > .gcell { flex: 1 1 auto; min-width: 0; }
-.dt-grid .gcell-date > .icon-btn { flex: none; margin-right: var(--sp-4); }
+.dt-grid .gcell-date > .date-pick { flex: none; margin-right: var(--sp-4); }
 .dt-grid td.is-bad { box-shadow: inset 0 0 0 1px var(--bad); background: var(--bad-bg); }
 .dt-grid td.is-na { background: var(--sunken); }
 .dt-grid tr.is-row-bad td.idx { color: var(--bad-text); }

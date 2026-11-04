@@ -5,6 +5,6 @@
   /* v4 不再给按钮 cursor: pointer（v3 preflight 有这两条） */
   button, [role="button"] { cursor: pointer; }
   :disabled { cursor: default; }
-  /* 占位符保持 --fg-3：v3 是固定灰 #9ca3af，v4 是文字色 50% 混合；手写的 .input / .textarea 等另有各自的规则，这里兜住没写的原生输入框 */
+  /* 占位符保持 --fg-3：v3 是固定灰 #9ca3af，v4 是文字色 50% 混合；Input / Textarea 组件自带 placeholder:text-fg-3，这里兜住没写的原生输入框 */
   input::placeholder, textarea::placeholder { color: var(--fg-3); opacity: 1; }
 }

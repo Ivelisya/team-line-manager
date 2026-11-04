@@ -28,9 +28,7 @@
 .job-item .l2 > span { flex: none; white-space: nowrap; } /* 时间、创建人不折行；失败原因占剩下的宽度并省略 */
 .job-item .l2 > .ellipsis { flex: 1 1 0; min-width: 0; }
 .job-item .l-prog { display: flex; align-items: center; gap: var(--sp-8); margin: var(--sp-4) 0 var(--sp-2); font-size: var(--fs-micro); color: var(--fg-2); }
-.job-item .l-prog .progress { flex: 1; height: 4px; }
-.job-back { display: none; }
-@container content (max-width: 720px) { .job-back { display: inline-grid; } } /* 与上面变单栏同一个断点：双栏时列表就在旁边，不需要「返回列表」 */
+
 
 /* ========== 总进度 ========== */
 .job-prog { display: grid; gap: var(--sp-6); }
@@ -60,7 +58,6 @@
 /* 系统调优的结果块：摘要一行、参数表、其余几项一行 */
 .tune-res { display: grid; gap: var(--sp-6); margin-top: var(--sp-4); min-width: 0; }
 .tune-sum { font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); }
-.tune-more { justify-self: start; height: auto; padding: 0; font-size: var(--fs-label); }
 .tune-sum b { color: var(--fg); font-weight: var(--fw-semibold); }
 .tune-sum.tune-warn { color: var(--warn-text); }
 .tune-tbl { justify-self: start; border-collapse: collapse; font-size: var(--fs-label); line-height: var(--lh-label); max-width: 100%; }

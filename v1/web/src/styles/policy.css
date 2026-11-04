@@ -25,7 +25,6 @@
 /* 不设内层滚动：团队默认折叠，节点多时有搜索框，列表跟着页面滚 */
 .pol-tree { display: grid; padding: var(--sp-4) var(--sp-8) var(--sp-8); }
 .pol-find { padding: 0 var(--card-pad) var(--sp-8); }
-.pol-find .search { width: 100%; }
 .pol-row { display: flex; align-items: stretch; min-width: 0; }
 /* 展开箭头与节点行：按下反馈、焦点环内收（树的滚动容器会裁外圈）写在 components.css「交互状态」 */
 .pol-chev { flex: none; width: 28px; display: grid; place-items: center; border: 0; background: transparent; color: var(--fg-2); cursor: pointer; border-radius: var(--r-control); transition: background-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out); }
@@ -51,8 +50,7 @@
 .pol-gutter { flex: none; width: 40px; padding: var(--sp-8) 0 calc(var(--sp-8) + 20px); overflow: hidden; background: var(--sunken); border-right: 1px solid var(--line); color: var(--fg-3); font: var(--fs-label) / 20px var(--font-mono); text-align: right; user-select: none; height: 260px; box-sizing: border-box; }
 .pol-gutter > div { height: 20px; padding-right: var(--sp-8); }
 .pol-gutter > div[data-bad="1"] { background: var(--bad-bg); color: var(--bad-text); font-weight: var(--fw-semibold); box-shadow: inset 2px 0 0 var(--bad); }
-.pol-ta.textarea { flex: 1 1 auto; min-width: 0; height: 260px; min-height: 260px; resize: none; border: 0; border-radius: 0; box-shadow: none; background: transparent; padding: var(--sp-8) var(--sp-10); font: var(--fs-label) / 20px var(--font-mono); white-space: pre; overflow: auto; }
-.pol-ta.textarea:focus { box-shadow: none; }
+
 .pol-issues { margin: 0; padding: 0; list-style: none; display: grid; gap: var(--sp-4); }
 .pol-issues li { display: flex; gap: var(--sp-8); font-size: var(--fs-label); line-height: var(--lh-label); color: var(--bad-text); overflow-wrap: anywhere; }
 .pol-issues b { flex: none; font-weight: var(--fw-semibold); }

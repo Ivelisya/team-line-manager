@@ -95,7 +95,6 @@
 .rt-topo { display: grid; gap: var(--sp-14); min-width: 360px; }
 .rt-topo-group { display: grid; grid-template-columns: minmax(0, 180px) 28px minmax(0, 1fr); /* 左列定宽：各组的出口胶囊一样宽，连线与右侧节点名才对得齐 */ grid-auto-rows: 28px; align-items: center; }
 .rt-topo-title { grid-column: 1 / -1; display: flex; align-items: baseline; gap: var(--sp-8); height: auto; padding-bottom: var(--sp-4); font: var(--fw-medium) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2); }
-.rt-topo-title .btn-link { font: inherit; font-weight: var(--fw-medium); color: var(--fg); }
 .rt-topo-title small { font-size: var(--fs-micro); font-weight: var(--fw-regular); color: var(--fg-2); }
 .rt-topo-pill {
   display: inline-flex; align-items: center; gap: var(--sp-6); min-width: 0; max-width: 100%; height: var(--h-chip-lg); box-sizing: border-box; padding: 0 var(--sp-10);
