@@ -1,6 +1,7 @@
 // 访问监控：哪个节点访问了哪些域名 / IP。筛选条（团队 / 节点 / 时间范围 / 搜索 / 目标类型 / 处理结果）即时生效，状态进 URL。
 // 页签：域名与 IP / 新出现的目标 / 来源地址 / 节点概览 / 原始记录。数据 30 秒轮询（切走页面暂停）。
 // 分页：目标与新目标按 offset 翻页（服务端），来源与节点概览是已取回的列表（前端切页），原始记录按时间游标翻页；每页条数各页签相同。
+import { Skeleton } from '@/components/ui/skeleton';
 import * as React from 'react';
 import { Activity, ChevronRight, Radar, Server, ShieldX, Target } from 'lucide-react';
 import {
@@ -12,7 +13,8 @@ import { useDrawer } from '@/lib/drawer';
 import { collator } from '@/lib/sort';
 import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
-import { InfoTip, SearchInput } from '@/components/ui/form';
+import { SearchInput } from '@/components/ui/form';
+import { InfoTip } from '@/components/ui/info-tip';
 import { Select } from '@/components/ui/select';
 import { Segmented, Tabs, TabsList, TabsTrigger } from '@/components/ui/overlays';
 import { Empty, ErrorNote, PageHead, Panel, Pill, SortHead, Stat, TableWrap } from '@/components/app/primitives';
@@ -106,7 +108,7 @@ export function AccessPage() {
         <div className="w-[150px]"><Select value={f.node} onChange={onNode} allowEmpty="全部节点" placeholder="节点" options={nodeOpts} aria-label="节点" /></div>
         <div className="w-[130px]"><Select value={f.kind} onChange={onKind} allowEmpty="全部类型" placeholder="目标类型" options={KIND_OPTS} aria-label="目标类型" /></div>
         <div className="w-[130px]"><Select value={f.action} onChange={onAct} allowEmpty="全部结果" placeholder="处理结果" options={ACT_OPTS} aria-label="处理结果" /></div>
-        {filtered && <Button variant="quiet" size="md" onClick={clear}>清除筛选</Button>}
+        {filtered && <Button variant="ghost" onClick={clear}>清除筛选</Button>}
         <span className="access-range"><Segmented label="时间范围" value={f.window} onChange={onWindow} items={windowItems} /></span>
       </div>
 
@@ -135,17 +137,17 @@ export function AccessPage() {
 /** 空状态：筛选后没有的给「清除筛选」 */
 function None({ f, filtered, onClear, what = '访问记录' }: { f: AccessFilter; filtered: boolean; onClear: () => void; what?: string }) {
   return filtered
-    ? <Empty icon={<Radar size={22} />} text={`没有符合筛选条件的${what}`}><Button size="sm" variant="quiet" onClick={onClear}>清除筛选</Button></Empty>
+    ? <Empty icon={<Radar size={22} />} text={`没有符合筛选条件的${what}`}><Button size="sm" variant="ghost" onClick={onClear}>清除筛选</Button></Empty>
     : <Empty icon={<Radar size={22} />} text={`最近 ${winLabel(f.window)}没有${what}`} />;
 }
-const Loading = () => <div style={{ padding: 16 }}><span className="skel" style={{ width: '60%', height: 14 }} /></div>;
+const Loading = () => <div style={{ padding: 16 }}><Skeleton className="w-[60%] h-[14px]" /></div>;
 /** 取数出错：带「重试」（同全站的 ErrorNote） */
 const ErrNote = ({ q }: { q: { error: unknown; refetch: () => unknown } }) => <ErrorNote error={q.error} onRetry={() => void q.refetch()} />;
 
 /** 节点名：点开抽屉的「访问记录」页签 */
 type Open = ReturnType<typeof useDrawer>['open'];
 function NodeLink({ id, name, open }: { id: string; name: string; open: Open }) {
-  return <button type="button" className="btn btn-link" style={{ maxWidth: '100%' }} onClick={(e) => { e.stopPropagation(); open(id, 'access'); }}><span className="ellipsis">{name}</span></button>;
+  return <Button variant="link" size="inline" className="max-w-full" onClick={(e) => { e.stopPropagation(); open(id, 'access'); }}><span className="ellipsis">{name}</span></Button>;
 }
 
 /** 按目标合并各节点，一个目标一行；点行（或「N 个节点」）展开看各节点。换筛选、排序、翻页后展开的收起。
@@ -168,7 +170,7 @@ const TargetsView = React.memo(function TargetsView({ open, f, sort, onSort, fil
       <TableWrap data-stale={q.isPlaceholderData}>
         <table className="dt" style={{ minWidth: 900 }}>
           <colgroup><col style={{ width: 380 }} /><col style={{ width: 170 }} /><col style={{ width: 96 }} /><col style={{ width: 150 }} /><col style={{ width: 120 }} /><col style={{ width: 104 }} /></colgroup>
-          <thead><tr><th>目标</th><th>节点</th><th className="r">连接数</th><th>处理结果</th><th><span className="field-label">首次出现<InfoTip text={FIRST_SEEN_TIP} /></span></th><th>最近</th></tr></thead>
+          <thead><tr><th>目标</th><th>节点</th><th className="r">连接数</th><th>处理结果</th><th><span data-slot="field-label" className="inline-flex min-w-0 items-center gap-1">首次出现<InfoTip text={FIRST_SEEN_TIP} /></span></th><th>最近</th></tr></thead>
           <tbody>
             {rows.map((t) => {
               const on = ex.open.has(t.dest_host);
@@ -205,7 +207,7 @@ function TargetNodes({ f, host, open }: { f: AccessFilter; host: string; open: O
   const q = useAccessTargetNodes(f, host);
   const [all, setAll] = React.useState(false);
   if (!q.data) {
-    return <tr className="acc-sub"><td /><td colSpan={5}>{q.isError ? <ErrNote q={q} /> : <span className="skel" style={{ width: '40%', height: 12 }} />}</td></tr>;
+    return <tr className="acc-sub"><td /><td colSpan={5}>{q.isError ? <ErrNote q={q} /> : <Skeleton className="w-[40%] h-[12px]" />}</td></tr>;
   }
   const items = q.data.items;
   return <>{(all ? items : items.slice(0, NODES_SHOWN)).map((n) => (
@@ -219,7 +221,7 @@ function TargetNodes({ f, host, open }: { f: AccessFilter; host: string; open: O
     </tr>
   ))}
   {items.length > NODES_SHOWN && (
-    <tr className="acc-sub"><td /><td colSpan={5}><Button size="sm" variant="quiet" aria-expanded={all} onClick={(e) => { e.stopPropagation(); setAll((v) => !v); }}>{all ? '收起' : `显示全部 ${fmtN(items.length)} 个节点`}</Button></td></tr>
+    <tr className="acc-sub"><td /><td colSpan={5}><Button size="sm" variant="ghost" aria-expanded={all} onClick={(e) => { e.stopPropagation(); setAll((v) => !v); }}>{all ? '收起' : `显示全部 ${fmtN(items.length)} 个节点`}</Button></td></tr>
   )}</>;
 }
 
@@ -307,7 +309,7 @@ const SourcesView = React.memo(function SourcesView({ f, filtered, onClear, conn
         {q.isLoading && <Loading />}
         {q.data && rows.length === 0 && (
           // 来源按小时汇总时只记了来源 IP，不分目标：搜域名在这里搜不到
-          f.search && !/^[\d.]+$|:/.test(f.search) ? <Empty icon={<Radar size={22} />} text="来源地址只能按 IP 搜索"><Button size="sm" variant="quiet" onClick={onClear}>清除筛选</Button></Empty>
+          f.search && !/^[\d.]+$|:/.test(f.search) ? <Empty icon={<Radar size={22} />} text="来源地址只能按 IP 搜索"><Button size="sm" variant="ghost" onClick={onClear}>清除筛选</Button></Empty>
             : <None f={f} filtered={filtered} onClear={onClear} what="来源地址" />)}
         <Pagination pg={pg} unit="个" />
       </Panel>

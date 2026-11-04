@@ -1,5 +1,6 @@
 // 设置「客户端订阅」：给自己的客户端（Windows 上的 Clash Verge、OpenClash 的 proxy-provider、v2rayN / Shadowrocket）一个链接，
 // 按规则（团队、指定机器）在拉取时现算在用的入口。列表（规则、条目数、最近拉取）、新建（链接只显示一次）、改规则、启用 / 停用、轮换链接、删除、看条目。
+import { Label } from '@/components/ui/label';
 import * as React from 'react';
 import { List, Pencil, Plus, RefreshCw, Rss, ShieldAlert, Trash2, X } from 'lucide-react';
 import { DEFAULT_RULE, useClientSub, useClientSubs, useCreateClientSub, useDelClientSub, usePatchClientSub, useRotateClientSub, type ClientSub, type ClientSubWithUrl, type SubProtocols, type SubRule } from '@/lib/clientSubs';
@@ -7,11 +8,15 @@ import { useMachineBriefs, useTeams } from '@/lib/queries';
 import * as F from '@/lib/format';
 import { resetOnOpen, useHeld } from '@/lib/useHeld';
 import { Button, IconButton } from '@/components/ui/button';
-import { Checkbox, Field, InfoTip, Input, OptimisticSwitch, Switch } from '@/components/ui/form';
+import { FormField, OptimisticSwitch } from '@/components/ui/form';
+import { InfoTip } from '@/components/ui/info-tip';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Input } from '@/components/ui/input';
+import { Switch } from '@/components/ui/switch';
 import { Select } from '@/components/ui/select';
-import { Trunc } from '@/components/ui/overlays';
+import { Trunc } from '@/components/ui/tooltip';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { SkeletonRows } from '@/components/ui/skeleton';
+import { SkeletonRows } from '@/components/app/SkeletonRows';
 import { toast } from '@/components/ui/toast';
 import { ConfirmDialog, FormDialog } from '@/components/app/dialogs';
 import { Chip, CopyButton, Empty, ErrorNote, Note, Panel, TableWrap } from '@/components/app/primitives';
@@ -31,7 +36,7 @@ export function SubsTab() {
   const askHeld = useHeld(ask?.s.id, ask);
   const [view, setView] = React.useState<ClientSub | null>(null);
   const list = q.data ?? [];
-  const newBtn = <Button size="sm" variant="primary" onClick={() => setEdit('new')}><Plus />新建订阅</Button>;
+  const newBtn = <Button size="sm" onClick={() => setEdit('new')}><Plus />新建订阅</Button>;
   const isEmpty = !q.isLoading && !q.isError && list.length === 0; // 空态里已有一个「新建订阅」，标题旁不再放第二个
   return (
     <>
@@ -54,10 +59,10 @@ export function SubsTab() {
                     <td><OptimisticSwitch checked={s.enabled} disabled={patch.isPending && patch.variables?.id === s.id} aria-label={`${s.enabled ? '停用' : '启用'}「${s.name}」`}
                       onCheckedChange={(v, undo) => patch.mutate({ id: s.id, enabled: v }, { onSuccess: () => toast.ok(v ? '订阅已启用' : '订阅已停用，拉取会失败'), onError: (e) => { undo(); toast.err(e); } })} /></td>
                     <td className="r"><span className="row" style={{ justifyContent: 'flex-end', flexWrap: 'nowrap', gap: 0 }}>
-                      <IconButton label="看条目" size="sm" onClick={() => setView(s)}><List size={14} /></IconButton>
-                      <IconButton label="编辑" size="sm" onClick={() => setEdit(s)}><Pencil size={14} /></IconButton>
-                      <IconButton label="轮换链接" size="sm" onClick={() => setAsk({ s, what: 'rotate' })}><RefreshCw size={14} /></IconButton>
-                      <IconButton label="删除" size="sm" onClick={() => setAsk({ s, what: 'delete' })}><Trash2 size={14} /></IconButton>
+                      <IconButton label="看条目" size="icon-sm" onClick={() => setView(s)}><List size={14} /></IconButton>
+                      <IconButton label="编辑" size="icon-sm" onClick={() => setEdit(s)}><Pencil size={14} /></IconButton>
+                      <IconButton label="轮换链接" size="icon-sm" onClick={() => setAsk({ s, what: 'rotate' })}><RefreshCw size={14} /></IconButton>
+                      <IconButton label="删除" size="icon-sm" onClick={() => setAsk({ s, what: 'delete' })}><Trash2 size={14} /></IconButton>
                     </span></td>
                   </tr>
                 ))}
@@ -91,9 +96,9 @@ function LinkDialog({ sub, onClose }: { sub: ClientSubWithUrl | null; onClose: (
       <DialogContent size="md" onInteractOutside={(e) => e.preventDefault()} onEscapeKeyDown={(e) => e.preventDefault()}>
         <DialogHeader><DialogTitle>订阅链接 · {held?.name}</DialogTitle><DialogDescription className="sr-only">复制并保存订阅链接</DialogDescription></DialogHeader>
         <Note tone="warn" icon={<ShieldAlert size={14} />}><b>只显示这一次</b> <InfoTip text={'链接就是凭据，拿到的人能连上这些入口\n丢了只能轮换，换成新链接'} /></Note>
-        <Field label="Clash Verge / OpenClash"><div className="token-box"><code>{held?.url}</code><CopyButton text={held?.url ?? ''} label="链接" size={15} /></div></Field>
-        <Field label="v2rayN / Shadowrocket"><div className="token-box"><code>{b64}</code><CopyButton text={b64} label="链接" size={15} /></div></Field>
-        <DialogFooter><Button variant="primary" onClick={onClose}>我已保存</Button></DialogFooter>
+        <FormField label="Clash Verge / OpenClash"><div className="token-box"><code>{held?.url}</code><CopyButton text={held?.url ?? ''} label="链接" size={15} /></div></FormField>
+        <FormField label="v2rayN / Shadowrocket"><div className="token-box"><code>{b64}</code><CopyButton text={b64} label="链接" size={15} /></div></FormField>
+        <DialogFooter><Button onClick={onClose}>我已保存</Button></DialogFooter>
       </DialogContent>
     </Dialog>
   );
@@ -118,7 +123,7 @@ function EntriesDialog({ sub, onClose }: { sub: ClientSub | null; onClose: () =>
             </table>
           </TableWrap>
         )}
-        <DialogFooter><Button onClick={onClose}>关闭</Button></DialogFooter>
+        <DialogFooter><Button variant="outline" onClick={onClose}>关闭</Button></DialogFooter>
       </DialogContent>
     </Dialog>
   );
@@ -130,14 +135,14 @@ function MachinePicks({ label, info, ids, onChange, options }: { label: string; 
   const rest = React.useMemo(() => options.filter((o) => !ids.includes(o.value)), [options, ids]);
   const add = React.useCallback((v: string) => v && onChange([...ids, v]), [ids, onChange]);
   return (
-    <Field label={label} info={info}>
+    <FormField label={label} info={info}>
       <div className="row" style={{ gap: 'var(--sp-6)', flexWrap: 'wrap' }}>
         {ids.map((id) => (
-          <Chip key={id}>{name(id)}<IconButton label={`去掉 ${name(id)}`} size="sm" onClick={() => onChange(ids.filter((x) => x !== id))}><X size={12} /></IconButton></Chip>
+          <Chip key={id}>{name(id)}<IconButton label={`去掉 ${name(id)}`} size="icon-sm" onClick={() => onChange(ids.filter((x) => x !== id))}><X size={12} /></IconButton></Chip>
         ))}
         <Select sm value="" onChange={add} options={rest} placeholder="加一台…" aria-label={label} />
       </div>
-    </Field>
+    </FormField>
   );
 }
 
@@ -162,9 +167,9 @@ const SubDialog = resetOnOpen(function SubDialog({ target, open, onClose, onCrea
   return (
     <FormDialog size="md" open={open} onOpenChange={(o) => !o && onClose()} title={cur ? `编辑订阅 · ${cur.name}` : '新建客户端订阅'} desc={cur ? '改规则不换链接' : '创建后链接只显示一次'}
       submitLabel={cur ? '保存' : '创建'} busy={create.isPending || patch.isPending} valid={valid} dirty={dirty} onSubmit={submit}>
-      <Field label="名称"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：家里 OpenClash" maxLength={40} autoFocus autoComplete="off" /></Field>
-      <Field label="协议" info="AnyTLS 只出在 AnyTLS 在跑的线路机上的入口"><Select value={protocols} onChange={(v) => setProtocols(v as SubProtocols)} options={PROTOS} /></Field>
-      <Field label="团队"><Select value={rule.team_mode} onChange={(v) => set({ team_mode: v as SubRule['team_mode'] })} options={MODES} /></Field>
+      <FormField label="名称"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：家里 OpenClash" maxLength={40} autoFocus autoComplete="off" /></FormField>
+      <FormField label="协议" info="AnyTLS 只出在 AnyTLS 在跑的线路机上的入口"><Select value={protocols} onChange={(v) => setProtocols(v as SubProtocols)} options={PROTOS} /></FormField>
+      <FormField label="团队"><Select value={rule.team_mode} onChange={(v) => set({ team_mode: v as SubRule['team_mode'] })} options={MODES} /></FormField>
       {rule.team_mode !== 'all' && (
         <div className="scope-list">
           {teams.filter((t) => rule.team_mode === 'only' || !t.spare).map((t) => (
@@ -176,7 +181,7 @@ const SubDialog = resetOnOpen(function SubDialog({ target, open, onClose, onCrea
         </div>
       )}
       {rule.team_mode === 'only' && !rule.team_ids.length && <div className="hint is-error">至少选一个团队</div>}
-      <label className="check-row" style={{ gap: 10 }}><Switch checked={rule.direct} onCheckedChange={(v) => set({ direct: v })} /><span>含线路机直出入口</span></label>
+      <Label className="cursor-pointer gap-2 text-body font-normal text-fg has-data-disabled:cursor-default gap-2.5"><Switch checked={rule.direct} onCheckedChange={(v) => set({ direct: v })} /><span className="peer-data-disabled:opacity-(--o-disabled)">含线路机直出入口</span></Label>
       <MachinePicks label="另外带上" info="不看团队和直出开关，比如备用团队里的某台" ids={rule.include_ids} onChange={setInc} options={mOpts} />
       <MachinePicks label="一律不带" info="优先于上面所有规则" ids={rule.exclude_ids} onChange={setExc} options={mOpts} />
     </FormDialog>

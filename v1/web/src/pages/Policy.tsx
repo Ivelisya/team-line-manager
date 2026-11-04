@@ -1,5 +1,7 @@
 // 访问规则（策略）：按团队 / 节点设置域名白名单、黑名单或暂停新连接。
 // 流程：编辑只存草稿 → 预览（最近 24 小时每个节点会被阻止多少连接）→ 发布（所有草稿一起生效，线路机热加载路由规则）→ 发布记录里可回滚。
+import { Label } from '@/components/ui/label';
+import { Field } from '@/components/ui/field';
 import * as React from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { ChevronRight, Eye, Save, ShieldBan, ShieldCheck, Trash2, Undo2 } from 'lucide-react';
@@ -11,11 +13,15 @@ import { MAX_NOTE, diffDomains, domainsToText, parseDomainText, toUnicode } from
 import * as F from '@/lib/format';
 import { meta } from '@/lib/derive';
 import { Button } from '@/components/ui/button';
-import { Field, InfoTip, Input, SearchInput, Textarea } from '@/components/ui/form';
-import { Segmented, Tip, Trunc } from '@/components/ui/overlays';
+import { FormField, SearchInput } from '@/components/ui/form';
+import { InfoTip } from '@/components/ui/info-tip';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import { Segmented } from '@/components/ui/overlays';
+import { Trunc, Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { scrollBehavior } from '@/lib/utils';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, DialogHeader } from '@/components/ui/dialog';
-import { SkeletonRows } from '@/components/ui/skeleton';
+import { SkeletonRows } from '@/components/app/SkeletonRows';
 import { toast } from '@/components/ui/toast';
 import { ConfirmDialog } from '@/components/app/dialogs';
 import { resetOnOpen, useHeld } from '@/lib/useHeld';
@@ -118,8 +124,8 @@ export function PolicyPage() {
             : <span className="t-sub row" style={{ gap: 6, flexWrap: 'nowrap' }}><ShieldCheck size={14} />没有未发布的草稿</span>}
         </div>
         <div className="row">
-          <Button variant="quiet" disabled={draftCount === 0} onClick={() => setAskDiscard(true)}><Trash2 />丢弃全部草稿</Button>
-          <Button variant="primary" disabled={draftCount === 0} onClick={() => setPreview(true)}><Eye />预览并发布</Button>
+          <Button variant="ghost" disabled={draftCount === 0} onClick={() => setAskDiscard(true)}><Trash2 />丢弃全部草稿</Button>
+          <Button disabled={draftCount === 0} onClick={() => setPreview(true)}><Eye />预览并发布</Button>
         </div>
       </div>
 
@@ -175,7 +181,7 @@ function TeamRows({ t, nodes, sel, open, toggle, pick }: { t: PolicyTeam; nodes:
         <button type="button" className="pol-chev" aria-label={`${open ? '收起' : '展开'}${t.name}`} data-open={open ? '1' : undefined} onClick={toggle}><ChevronRight size={14} /></button>
         <button type="button" className="pol-item" aria-current={here} onClick={() => pick({ scope: 'team', id: t.id })}>
           <span className="pol-name"><Trunc className="strong">{t.name}</Trunc><span className="pol-sub">{t.nodes.length} 个节点{!open && own > 0 ? ` · ${own} 个例外` : ''}{drafts > 0 && !t.policy.draft ? ` · ${drafts} 份草稿` : ''}</span></span>
-          {t.policy.draft && <Tip text={`草稿：${modeLabel(t.policy.draft.mode)}`}><span><Chip variant="warn">草稿</Chip></span></Tip>}
+          {t.policy.draft && <Tooltip><TooltipTrigger render={<span />}><Chip variant="warn">草稿</Chip></TooltipTrigger><TooltipContent>{`草稿：${modeLabel(t.policy.draft.mode)}`}</TooltipContent></Tooltip>}
           <ModePill mode={t.policy.mode} />
         </button>
       </div>
@@ -189,7 +195,7 @@ function NodeRow({ n, here, pick }: { n: PolicyNode; here: boolean; pick: (s: Se
     <div className="pol-row pol-row-node" role="treeitem" aria-selected={here}>
       <button type="button" className="pol-item" aria-current={here} onClick={() => pick({ scope: 'node', id: n.id })}>
         <span className="pol-name"><Trunc className="strong">{n.name}</Trunc>{!n.has_entry && <span className="pol-sub">还没有入口</span>}</span>
-        {n.policy.draft && <Tip text={`草稿：${modeLabel(n.policy.draft.mode)}`}><span><Chip variant="warn">草稿</Chip></span></Tip>}
+        {n.policy.draft && <Tooltip><TooltipTrigger render={<span />}><Chip variant="warn">草稿</Chip></TooltipTrigger><TooltipContent>{`草稿：${modeLabel(n.policy.draft.mode)}`}</TooltipContent></Tooltip>}
         {/* 跟随团队的不挂胶囊（团队行上有）：只标和团队设置不同的节点 */}
         {n.effective.source === 'node' && <ModePill mode={n.effective.mode} />}
       </button>
@@ -275,22 +281,22 @@ function Editor({ scope, name, sp, team, node, onDirty }: { scope: 'team' | 'nod
         {stale && (
           <Note tone="warn">
             草稿已被别人改过 <InfoTip text="直接保存会提示冲突。载入最新的，会丢掉你正在改的内容" />
-            <Button size="sm" variant="secondary" style={{ marginLeft: 8 }} onClick={() => load(sp)}>载入最新</Button>
+            <Button size="sm" variant="outline" style={{ marginLeft: 8 }} onClick={() => load(sp)}>载入最新</Button>
           </Note>
         )}
 
-        <div className="field">
-          <span className="field-label"><span className="label">模式</span><InfoTip text={MODE_INFO[mode]} /></span>
+        <Field>
+          <span data-slot="field-label" className="inline-flex min-w-0 items-center gap-1"><Label>模式</Label><InfoTip text={MODE_INFO[mode]} /></span>
           <Segmented label="模式" value={mode} onChange={setMode} items={modes.map((m) => ({ value: m, label: modeLabel(m) }))} />
           {mode === 'inherit' && <div className="hint">团队现在是「{modeLabel(teamCur.mode)}」{needsDomains(teamCur.mode) ? `（${teamCur.domains.length} 个域名）` : ''}</div>}
-        </div>
+        </Field>
 
         {/* 只有白名单 / 黑名单用域名列表：别的模式不显示（已填的内容留着，切回来仍在） */}
-        {uses && <div className="field">
-          <span className="field-label"><span className="label">域名<span className="pol-count"> · {fmtN(parsed.domains.length)} 个有效</span></span><InfoTip text={"用逗号、空格或换行分隔\nexample.com 会连同所有子域名一起匹配，=example.com 只匹配它自己"} /></span>
+        {uses && <Field>
+          <span data-slot="field-label" className="inline-flex min-w-0 items-center gap-1"><Label>域名<span className="pol-count"> · {fmtN(parsed.domains.length)} 个有效</span></Label><InfoTip text={"用逗号、空格或换行分隔\nexample.com 会连同所有子域名一起匹配，=example.com 只匹配它自己"} /></span>
           <div className="pol-ed" data-bad={showIssues.length > 0 || (noDomains && touched) ? '1' : undefined}>
             <Gutter lines={lines.length} bad={badLines} />
-            <Textarea className="pol-ta" value={text} wrap="off" spellCheck={false} autoComplete="off" aria-label="域名列表" aria-invalid={showIssues.length > 0 ? true : undefined}
+            <Textarea className="pol-ta h-[260px] min-h-[260px] min-w-0 flex-1 resize-none overflow-auto rounded-none border-0 bg-transparent px-2.5 py-2 font-mono text-label leading-5 whitespace-pre shadow-none focus-visible:border-0 focus-visible:ring-0" value={text} wrap="off" spellCheck={false} autoComplete="off" aria-label="域名列表" aria-invalid={showIssues.length > 0 ? true : undefined}
               placeholder={'example.com\n=exact.example.org'} onBlur={() => { setTouched(true); setCaret(null); }}
               onSelect={(e) => trackCaret(e.currentTarget)}
               onChange={(e) => { setText(e.target.value); trackCaret(e.currentTarget); }} onScroll={(e) => { const g = e.currentTarget.previousElementSibling as HTMLElement | null; if (g) g.scrollTop = e.currentTarget.scrollTop; }} />
@@ -303,18 +309,18 @@ function Editor({ scope, name, sp, team, node, onDirty }: { scope: 'team' | 'nod
               {showIssues.length > 6 && <li className="t-sub">还有 {showIssues.length - 6} 处问题</li>}
             </ul>
           )}
-        </div>}
+        </Field>}
 
-        <Field label="备注" hint={`${note.length}/${MAX_NOTE}`} error={note.length > MAX_NOTE ? `备注最多 ${MAX_NOTE} 个字符` : undefined}>
+        <FormField label="备注" hint={`${note.length}/${MAX_NOTE}`} error={note.length > MAX_NOTE ? `备注最多 ${MAX_NOTE} 个字符` : undefined}>
           <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="为什么这样设置（选填）" autoComplete="off" />
-        </Field>
+        </FormField>
 
         <Compare cur={cur} next={form} scope={scope} teamCur={teamCur} teamName={team.name} />
 
         <div className="pol-actions">
-          <Button variant="primary" disabled={!canSave} aria-disabled={!!blocked || undefined} data-tip={blocked} loading={save.isPending} onClick={() => { if (!blocked) onSave(); }}><Save />保存草稿</Button>
-          <Button variant="quiet" disabled={!dirty || save.isPending} onClick={() => load(sp)}><Undo2 />还原编辑</Button>
-          {sp.draft && <Button variant="outline-danger" disabled={save.isPending} onClick={() => setAskDrop(true)}><Trash2 />放弃这份草稿</Button>}
+          <Button disabled={!canSave} aria-disabled={!!blocked || undefined} data-tip={blocked} loading={save.isPending} onClick={() => { if (!blocked) onSave(); }}><Save />保存草稿</Button>
+          <Button variant="ghost" disabled={!dirty || save.isPending} onClick={() => load(sp)}><Undo2 />还原编辑</Button>
+          {sp.draft && <Button variant="destructive" disabled={save.isPending} onClick={() => setAskDrop(true)}><Trash2 />放弃这份草稿</Button>}
           <span className="pol-meta t-sub">{dirty ? <span className="pol-dirty">有未保存的修改</span> : sp.updated_at ? <span data-tip={F.dtFull(sp.updated_at)}>最近修改 {F.dt(sp.updated_at)}{sp.updated_by ? ` · ${F.actor(sp.updated_by)}` : ''}</span> : '还没有修改过'}</span>
         </div>
       </div>
@@ -427,12 +433,13 @@ const PreviewDialog = resetOnOpen(function PreviewDialog({ open, onOpenChange }:
                             <td className="r">{n.would_block > 0 ? <><b className="strong">{fmtN(n.would_block)}</b><span className="sub">{n.total_conns > 0 ? pctText(n.would_block, n.total_conns) : ''}</span></> : <span className="t-muted">0</span>}</td>
                             <td>
                               {n.domains.length === 0 ? <span className="t-muted">—</span> : (
-                                <Tip text={<div className="pol-tip">{n.domains.map((x) => <div key={x.host}><span className="mono">{x.host}</span> <b>{fmtN(x.conns)}</b></div>)}</div>} side="left">
-                                  <span className="pol-hosts" tabIndex={0}>
+                                <Tooltip>
+                                  <TooltipTrigger render={<span className="pol-hosts" tabIndex={0} />}>
                                     {n.domains.slice(0, 1).map((x) => <span key={x.host} className="pol-tag">{x.host}<small>{fmtN(x.conns)}</small></span>)}
                                     {n.domains.length > 1 && <span className="pol-more">+{n.domains.length - 1}</span>}
-                                  </span>
-                                </Tip>
+                                  </TooltipTrigger>
+                                  <TooltipContent side="left"><div className="pol-tip">{n.domains.map((x) => <div key={x.host}><span className="mono">{x.host}</span> <b>{fmtN(x.conns)}</b></div>)}</div></TooltipContent>
+                                </Tooltip>
                               )}
                             </td>
                           </tr>
@@ -445,8 +452,8 @@ const PreviewDialog = resetOnOpen(function PreviewDialog({ open, onOpenChange }:
             </div>
           )}
           <DialogFooter>
-            <Button onClick={() => onOpenChange(false)}>关闭</Button>
-            <Button variant="primary" disabled={!d || empty || q.isFetching} onClick={() => setAsk(true)}>发布…</Button>
+            <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
+            <Button disabled={!d || empty || q.isFetching} onClick={() => setAsk(true)}>发布…</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -505,7 +512,7 @@ function VersionsPanel() {
                     <td data-tip={`${F.dtFull(v.created_at)}\n${F.actor(v.actor)}`}>{F.dt(v.created_at)}<span className="sub ellipsis">{F.actor(v.actor)}</span></td>
                     <td><VersionChanges changes={v.changes} /></td>
                     <td><VersionApply v={v} /></td>
-                    <td className="r">{v.status === 'applied' && v.rollbackable && !v.is_latest && <Button size="sm" aria-label={`回滚到版本 v${v.seq}`} data-tip={`回滚到版本 v${v.seq}`} onClick={() => setAsk(v)}><Undo2 size={13} />回滚</Button>}</td>
+                    <td className="r">{v.status === 'applied' && v.rollbackable && !v.is_latest && <Button variant="outline" size="sm" aria-label={`回滚到版本 v${v.seq}`} data-tip={`回滚到版本 v${v.seq}`} onClick={() => setAsk(v)}><Undo2 size={13} />回滚</Button>}</td>
                   </tr>
                 ))}
               </tbody>
@@ -553,13 +560,18 @@ function VersionChanges({ changes }: { changes: PolicyChange[] }) {
   if (!changes.length) return <span className="t-sub">只改了备注</span>;
   const one = changeText;
   const full = changes.map(one).join('\n');
+  // 完整内容只给一个提示：两项以内悬停整格看全文（data-tip，换行分项），多于两项用 Tooltip 里的列表；每行自己只省略、不再各挂截断提示
+  const cell = (
+    <div className="pol-vchg" data-tip={changes.length > 2 ? undefined : full}>
+      {changes.slice(0, 2).map((c) => <span key={`${c.scope}:${c.id}`} className="cell-main">{one(c)}</span>)}
+      {changes.length > 2 && <span className="sub">还有 {changes.length - 2} 项</span>}
+    </div>
+  );
+  if (changes.length <= 2) return cell;
   return (
-    <Tip text={changes.length > 2 ? <div className="pol-tip">{changes.map((c) => <div key={`${c.scope}:${c.id}`}>{one(c)}</div>)}</div> : null}>
-      {/* 完整内容只给一个提示：两项以内悬停整格看全文（data-tip，换行分项），多于两项用上面的列表；每行自己只省略、不再各挂截断提示 */}
-      <div className="pol-vchg" data-tip={changes.length > 2 ? undefined : full}>
-        {changes.slice(0, 2).map((c) => <span key={`${c.scope}:${c.id}`} className="cell-main">{one(c)}</span>)}
-        {changes.length > 2 && <span className="sub">还有 {changes.length - 2} 项</span>}
-      </div>
-    </Tip>
+    <Tooltip>
+      <TooltipTrigger render={cell} />
+      <TooltipContent><div className="pol-tip">{changes.map((c) => <div key={`${c.scope}:${c.id}`}>{one(c)}</div>)}</div></TooltipContent>
+    </Tooltip>
   );
 }

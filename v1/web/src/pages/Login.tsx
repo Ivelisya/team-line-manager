@@ -4,9 +4,10 @@ import { Boxes } from 'lucide-react';
 import { useMe, useLogin } from '@/lib/queries';
 import { ApiError } from '@/lib/api';
 import { Button } from '@/components/ui/button';
-import { Field, Input } from '@/components/ui/form';
+import { FormField } from '@/components/ui/form';
+import { Input } from '@/components/ui/input';
 import { Note } from '@/components/app/primitives';
-import { TipHost } from '@/components/ui/overlays';
+import { TipHost } from '@/components/ui/tooltip';
 
 export function LoginPage() {
   const me = useMe();
@@ -41,14 +42,14 @@ export function LoginPage() {
         <div className="login-brand"><span className="brand-mark"><Boxes size={14} /></span>团队线路管理</div>
         <div><h1 className="dialog-title">登录</h1></div>
         {err && <Note tone="bad">{err.message}</Note>}
-        <Field label="用户名"><Input value={u} onChange={(e) => { setU(e.target.value); setNeedCode(false); setCode(''); }} autoComplete="username" autoFocus /></Field>
-        <Field label="密码"><Input type="password" value={p} onChange={(e) => setP(e.target.value)} autoComplete="current-password" /></Field>
+        <FormField label="用户名"><Input value={u} onChange={(e) => { setU(e.target.value); setNeedCode(false); setCode(''); }} autoComplete="username" autoFocus /></FormField>
+        <FormField label="密码"><Input type="password" value={p} onChange={(e) => setP(e.target.value)} autoComplete="current-password" /></FormField>
         {needCode && (
-          <Field label="两步验证码" info="认证器用不了时，输入保存的恢复码（形如 abcd-efgh-jkmn），每个只能用一次">
+          <FormField label="两步验证码" info="认证器用不了时，输入保存的恢复码（形如 abcd-efgh-jkmn），每个只能用一次">
             <Input ref={codeRef} value={code} onChange={(e) => setCode(e.target.value)} autoComplete="one-time-code" spellCheck={false} placeholder="6 位验证码或恢复码" maxLength={20} className="mono" />
-          </Field>
+          </FormField>
         )}
-        <Button variant="primary" size="lg" className="btn-block" type="submit" loading={login.isPending} disabled={!u.trim() || !p || (needCode && !code.trim())}>登录</Button>
+        <Button size="lg" className="w-full" type="submit" loading={login.isPending} disabled={!u.trim() || !p || (needCode && !code.trim())}>登录</Button>
       </form>
     </div>
   );

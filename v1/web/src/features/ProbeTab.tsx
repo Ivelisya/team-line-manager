@@ -13,9 +13,11 @@ import { m as mo } from 'motion/react';
 import { SPRING } from '@/lib/motion';
 import { HEALTH_TONE } from '@/lib/sort';
 import { Button, IconButton } from '@/components/ui/button';
-import { Field, InfoTip, Input, OptimisticSwitch } from '@/components/ui/form';
+import { FormField, OptimisticSwitch } from '@/components/ui/form';
+import { InfoTip } from '@/components/ui/info-tip';
+import { Input } from '@/components/ui/input';
 import { Segmented } from '@/components/ui/overlays';
-import { SkeletonRows } from '@/components/ui/skeleton';
+import { SkeletonRows } from '@/components/app/SkeletonRows';
 import { toast } from '@/components/ui/toast';
 import { ConfirmDialog, FormDialog } from '@/components/app/dialogs';
 import { MaintenanceDialog } from '@/components/app/MaintenanceDialog';
@@ -70,9 +72,9 @@ export function ProbeTab() {
                   {i === 0 && <span className="t-sub">主来源</span>}
                   {inUse(o.id) && <Pill tone="ok">在用</Pill>}
                   <span className="row" style={{ gap: 2, marginLeft: 'auto', flexWrap: 'nowrap' }}>
-                    <IconButton size="sm" label="往前排" disabled={i === 0 || save.isPending} onClick={() => move(i, -1)}><ArrowUp size={14} /></IconButton>
-                    <IconButton size="sm" label="往后排" disabled={i === s.order.length - 1 || save.isPending} onClick={() => move(i, 1)}><ArrowDown size={14} /></IconButton>
-                    <IconButton size="sm" label="移出顺序" disabled={save.isPending || (s.order.length === 1 && !s.central_enabled)} onClick={() => setOrder(ids.filter((x) => x !== o.id))}><X size={14} /></IconButton>
+                    <IconButton size="icon-sm" label="往前排" disabled={i === 0 || save.isPending} onClick={() => move(i, -1)}><ArrowUp size={14} /></IconButton>
+                    <IconButton size="icon-sm" label="往后排" disabled={i === s.order.length - 1 || save.isPending} onClick={() => move(i, 1)}><ArrowDown size={14} /></IconButton>
+                    <IconButton size="icon-sm" label="移出顺序" disabled={save.isPending || (s.order.length === 1 && !s.central_enabled)} onClick={() => setOrder(ids.filter((x) => x !== o.id))}><X size={14} /></IconButton>
                   </span>
                 </mo.li>
               ))}
@@ -89,7 +91,7 @@ export function ProbeTab() {
             {addable.length > 0 && (
               <div className="row" style={{ gap: 'var(--sp-8)', flexWrap: 'wrap' }}>
                 <span className="t-sub">加入顺序：</span>
-                {addable.map((p) => <Button key={p.id} size="sm" disabled={save.isPending} onClick={() => setOrder([...ids, p.id])}><Plus />{p.label}</Button>)}
+                {addable.map((p) => <Button variant="outline" key={p.id} size="sm" disabled={save.isPending} onClick={() => setOrder([...ids, p.id])}><Plus />{p.label}</Button>)}
               </div>
             )}
             {/* 主探测点为什么用不了按服务端给的原因说（离线、探测无效、已停用…），不一律写成离线 */}
@@ -99,7 +101,7 @@ export function ProbeTab() {
         )}
       </Panel>
       <Panel title={<>探测点<InfoTip text="放在离客户近的地方（比如香港）的小机器，定时连各线路机的入口，记录通不通和延迟" /></>}
-        tools={<>{(q.isLoading || list.length > 0) && <Segmented sm label="时间范围" value={win} onChange={setWin} items={WINDOWS} />}<Button variant="primary" size="sm" onClick={() => setAdding(true)}><Plus />新建探测点</Button></>}>
+        tools={<>{(q.isLoading || list.length > 0) && <Segmented sm label="时间范围" value={win} onChange={setWin} items={WINDOWS} />}<Button size="sm" onClick={() => setAdding(true)}><Plus />新建探测点</Button></>}>
         {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
         {q.isLoading ? <SkeletonRows rows={2} /> : !list.length ? <Empty icon={<Radar size={22} />} text="还没有探测点" hint={<>新建后在探测点上执行安装命令 <InfoTip text="中控能 SSH 到它的话，也可以用 fleetctl probe add <名称> --host <IP> 直接装" /></>} /> : (
           <TableWrap data-stale={q.isPlaceholderData}>
@@ -167,10 +169,10 @@ const AddDialog = resetOnOpen(function AddDialog({ open, onClose, onBootstrap }:
   return (
     <FormDialog open={open} onOpenChange={(o) => !o && onClose()} title="新建探测点" onSubmit={submit} submitLabel="生成安装命令" busy={add.isPending} valid={!!name.trim()} dirty={!!name}
       desc={"生成一条安装命令（30 分钟内有效，只能用一次），用 root 在探测点上执行。中控能 SSH 到它时，也可以用 fleetctl probe add <名称> --host <IP> 代为安装"}>
-      <Field label="名称" info="名称填「香港」，卡片上显示为「香港探测点」">
+      <FormField label="名称" info="名称填「香港」，卡片上显示为「香港探测点」">
         <Input autoFocus maxLength={40} value={name} onChange={(e) => setName(e.target.value)} placeholder="香港" />
-      </Field>
-      <Field label="备注"><Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="阿里云香港，Alpine" /></Field>
+      </FormField>
+      <FormField label="备注"><Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="阿里云香港，Alpine" /></FormField>
     </FormDialog>
   );
 });

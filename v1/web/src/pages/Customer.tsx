@@ -2,13 +2,15 @@
 // 读者是客户、不懂技术，只回答一件事：这个月哪些节点付了、哪些还没付。月份切换（?month=，默认本月）→ 一句话 → 逐个节点
 // （节点 · 地区 · 这一期的起止 · 已支付 / 待支付；手机上不横向滚动）。口径同管理端：每个节点从开始收费日起每满一个月收一次，这个月列的是起点在这个月的那一期。
 // 不出现 IP、供应商、价格。白底与中性标题由 theme-init.js 首屏就设好（html.is-cx）；一律浅色（theme-init.js 在 /c/ 下不读存储的主题，这里也不引 lib/theme）。
+import { Input } from '@/components/ui/input';
+import { Skeleton } from '@/components/ui/skeleton';
 import * as React from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { ArrowRight, Check, Eye, EyeOff, Link2Off, LockKeyhole, RotateCw } from 'lucide-react';
 import { ApiError } from '@/lib/api';
 import { usePublicCustomer } from '@/lib/publicCustomer';
 import { Button } from '@/components/ui/button';
-import { TipHost } from '@/components/ui/tip';
+import { TipHost } from '@/components/ui/tooltip';
 import { compareBillingEffectiveDate } from '@/lib/sort';
 import { Panel } from '@/components/app/primitives';
 import { Empty } from '@/components/app/empty';
@@ -62,7 +64,7 @@ function CustomerView({ token }: { token: string }) {
       <p className="cx-access-intro">输入对接人提供的密码，查看节点与付费情况。</p>
       <label className="cx-access-label" htmlFor="customer-password">查看密码</label>
       <div className="cx-access-input">
-        <input id="customer-password" className="input" type={visible ? 'text' : 'password'} autoComplete="current-password"
+        <Input id="customer-password" className="h-11 pr-11 text-[16px]" type={visible ? 'text' : 'password'} autoComplete="current-password"
           placeholder="输入查看密码" required value={input} onChange={e => setInput(e.target.value)}
           aria-invalid={q.error instanceof ApiError && q.error.status === 403 || undefined}
           aria-describedby="customer-password-error" disabled={q.isFetching} />
@@ -70,7 +72,7 @@ function CustomerView({ token }: { token: string }) {
           aria-pressed={visible} onClick={() => setVisible(v => !v)}>{visible ? <EyeOff size={18} /> : <Eye size={18} />}</button>
       </div>
       <div id="customer-password-error" className="cx-access-error" role={q.isError ? 'alert' : undefined}>{q.isError && q.error.message}</div>
-      <Button variant="primary" type="submit" loading={q.isFetching} disabled={!input.trim()} className="cx-access-submit">
+      <Button type="submit" loading={q.isFetching} disabled={!input.trim()} className="h-11 w-full gap-2">
         {q.isFetching ? '正在验证…' : <>查看台账<ArrowRight size={16} /></>}
       </Button>
       <p className="cx-access-note">链接和密码长期有效，换新或停用后旧链接失效</p>
@@ -78,10 +80,10 @@ function CustomerView({ token }: { token: string }) {
   } else if (q.isError) {
     body = q.error instanceof ApiError && q.error.status === 404
       ? <Empty icon={<Link2Off size={22} />} text="链接无效或已停用" hint="请联系对接人获取新链接" />
-      : <Empty text="暂时打不开，请稍后再试"><Button loading={q.isFetching} onClick={() => void q.refetch()}><RotateCw />重试</Button></Empty>;
+      : <Empty text="暂时打不开，请稍后再试"><Button variant="outline" loading={q.isFetching} onClick={() => void q.refetch()}><RotateCw />重试</Button></Empty>;
     body = <div className="cx-state">{body}</div>;
   } else if (!d) {
-    body = <div className="cx-head" aria-busy><span className="skel" style={{ width: 260, height: 30 }} /><span className="skel" style={{ width: 360, height: 16 }} /><span className="skel" style={{ height: 240, marginTop: 24 }} /></div>;
+    body = <div className="cx-head" aria-busy><Skeleton className="w-[260px] h-[30px]" /><Skeleton className="w-[360px] h-[16px]" /><Skeleton className="h-[240px]" style={{ marginTop: 24 }} /></div>;
   } else {
     const counts = new Map(d.outstanding.map(item => [item.month, item.count]));
     body = <div className="cx-body" data-stale={q.isPlaceholderData} inert={q.isPlaceholderData || undefined}>

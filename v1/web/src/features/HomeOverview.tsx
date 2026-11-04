@@ -14,7 +14,7 @@ import { cn } from '@/lib/utils';
 import { meta, usdTotalTip } from '@/lib/derive';
 import { CountUp, DotCount, FromTag, Num, Stat } from '@/components/app/primitives';
 import { AreaSpark, Cells } from '@/components/app/viz';
-import { InfoTip } from '@/components/ui/form';
+import { InfoTip } from '@/components/ui/info-tip';
 
 /** 分区：浅灰大圆角容器，左上小胶囊标签（图标 + 文字）、标题、一行说明 */
 export function HomeSection({ icon, label, title, sub, children, className, headRef }: {

@@ -10,7 +10,7 @@ import { meta, nicBilled, trafficRuleLabel, trafficRuleShort } from '@/lib/deriv
 import { collator } from '@/lib/sort';
 import { parseSort, useUrlState } from '@/lib/urlState';
 import * as F from '@/lib/format';
-import { InfoTip } from '@/components/ui/form';
+import { InfoTip } from '@/components/ui/info-tip';
 import { Select } from '@/components/ui/select';
 import { Segmented } from '@/components/ui/overlays';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -70,7 +70,7 @@ export function TrafficPage() {
       </div>
 
       <Panel title="每日总量" sub={d ? `近 ${days} 天 · 合计 ${F.str(F.bytes(total(sumOf(shown))))} · 日均 ${F.str(F.bytes(total(sumOf(shown)) / days))}` : undefined} tools={d && total(sumOf(shown)) > 0 ? <DailyLegend /> : undefined}>
-        {!d ? (q.isError ? <div className="chart-empty" style={{ height: 220 }}>加载失败，暂无数据</div> : <Skeleton h={220} />) : total(sumOf(shown)) === 0 ? <div className="chart-empty" style={{ height: 220 }}>近 {days} 天没有业务流量</div>
+        {!d ? (q.isError ? <div className="chart-empty" style={{ height: 220 }}>加载失败，暂无数据</div> : <Skeleton className="h-[220px]" />) : total(sumOf(shown)) === 0 ? <div className="chart-empty" style={{ height: 220 }}>近 {days} 天没有业务流量</div>
           : <div data-stale={q.isPlaceholderData}><DailyBars days={shown} height={220} /></div>}
       </Panel>
 
@@ -222,7 +222,7 @@ ${days} 天 ↓ 下行 ${F.str(F.bytes(nic.rx))} · ↑ 上行 ${F.str(F.bytes(n
           </table>
         </TableWrap>
       </div>
-      {loading && <div style={{ padding: 12 }}><Skeleton h={160} /></div>}
+      {loading && <div style={{ padding: 12 }}><Skeleton className="h-[160px]" /></div>}
       {failed && <Empty icon={<ChartColumnStacked size={22} />} text="加载失败，暂无数据" />}
       {nodes && rows.length === 0 && <Empty icon={<ChartColumnStacked size={22} />} text={filtered ? '这个团队没有节点' : '还没有节点'} />}
     </Panel>

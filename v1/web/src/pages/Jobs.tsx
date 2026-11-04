@@ -1,22 +1,26 @@
 // 作业：列表 + 详情（总进度 + 步骤时间线 + 实时日志，进行中每 1.5s 轮询 /jobs/{id}/logs?after=）。
 // 步骤状态只在步骤时间线里讲一遍（带错误详情）：详情顶部不再放横向步骤条和「失败于」横幅，左侧列表项留一句失败原因。
+import { Skeleton } from '@/components/ui/skeleton';
+import { Spinner } from '@/components/ui/spinner';
 import * as React from 'react';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, ArrowDownToLine, Check, CircleDashed, Copy, ListChecks, Loader2, Minus, Pause, Play, RotateCw, CircleStop, TriangleAlert, Undo2, X } from 'lucide-react';
+import { ArrowLeft, ArrowDownToLine, Check, CircleDashed, Copy, ListChecks, Minus, Pause, Play, RotateCw, CircleStop, TriangleAlert, Undo2, X } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { fetchAllLogs, fetchTailLogs, pruneJobsPreview, useCancelJob, useJob, useJobs, useMachine, usePruneJobs, useRetryJob } from '@/lib/queries';
 import type { Job, JobLog, JobManual } from '@/lib/types';
 import { useRouterDrawer } from '@/lib/routers';
 import { errorKindLabel, jobKindLabel, jobLive, jobProgress, jobText, outputLines, stepKind, type StepKind } from '@/lib/jobs';
 import { jobStateLabel } from '@/lib/derive';
-import { CheckRow, Field, InfoTip, Input } from '@/components/ui/form';
+import { CheckRow, FormField } from '@/components/ui/form';
+import { InfoTip } from '@/components/ui/info-tip';
+import { Input } from '@/components/ui/input';
 import { useNow } from '@/lib/useNow';
 import * as F from '@/lib/format';
 import { Button, IconButton } from '@/components/ui/button';
 import { Segmented } from '@/components/ui/overlays';
 import { Select } from '@/components/ui/select';
 import { Progress } from '@/components/ui/progress';
-import { SkeletonRows } from '@/components/ui/skeleton';
+import { SkeletonRows } from '@/components/app/SkeletonRows';
 import { ConfirmDialog } from '@/components/app/dialogs';
 import { JobProgressBar } from '@/components/app/JobProgress';
 import { Gone, isGone } from '@/components/app/Gone';
@@ -116,7 +120,7 @@ export function JobsPage() {
         tools={<>
           <div className="w-[140px]"><Select value={kind} onChange={(v) => setParam('kind', v)} allowEmpty="全部类型" placeholder="作业类型" options={kindOpts} aria-label="作业类型" /></div>
           <Segmented label="筛选" value={view} onChange={setView} items={VIEWS} />
-          <Button onClick={() => setPrune(true)}>清理记录…</Button>
+          <Button variant="outline" onClick={() => setPrune(true)}>清理记录…</Button>
         </>} />
       <PruneDialog open={prune} onOpenChange={setPrune} />
       <div className="jobs-layout" data-detail={selected ? '1' : '0'} data-empty={none ? '' : undefined}>
@@ -130,12 +134,12 @@ export function JobsPage() {
                 <b className="ellipsis">{jobKindLabel(j.kind)} · {j.target ? <NodeHover id={j.kind === 'router_sync' || j.kind === 'router_protocol' ? null : j.target.id} noFocus><span>{j.target.name}</span></NodeHover> : '—'}{/* 退役进备用后机器改了名：带上原名（服务端给的 target.origin） */}{j.target?.origin && j.target.origin !== j.target.name && <span className="t-sub">（原 {j.target.origin}）</span>}</b>
                 <span style={{ marginLeft: 'auto' }}><JobPill state={j.state} manual={j.manual} /></span>
               </span>
-              {jobLive(j.state) && <span className="l-prog"><Progress value={jobProgress(j).pct} live label="总进度" /><span className="num">{jobProgress(j).done}/{jobProgress(j).total}</span></span>}
+              {jobLive(j.state) && <span className="l-prog"><Progress value={jobProgress(j).pct} live aria-label="总进度" className="flex-1 [&_[data-slot=progress-track]]:h-1" /><span className="num">{jobProgress(j).done}/{jobProgress(j).total}</span></span>}
               <span className="l2"><span>{F.dt(j.created_at)}</span><span>{F.actor(j.created_by)}</span>{j.error && <span className="ellipsis" style={{ color: j.state === 'cancelled' ? 'var(--fg-2)' : 'var(--bad-text)' }} data-tip={jobText(j.error)}>{jobText(j.error)}</span>}</span>
             </div>
           ))}
           {jobs.data && list.length === 0 && <div className={none ? 'jobs-empty' : undefined}><Empty icon={<ListChecks size={22} />} text={noneText}>
-            {(view !== 'all' || kind) && <Button size="sm" variant="quiet" onClick={() => nav({ pathname: '/jobs' }, { replace: true })}>清除筛选</Button>}
+            {(view !== 'all' || kind) && <Button size="sm" variant="ghost" onClick={() => nav({ pathname: '/jobs' }, { replace: true })}>清除筛选</Button>}
           </Empty></div>}
           <Pagination pg={pg} unit="个" compact />
         </Panel>
@@ -147,7 +151,7 @@ export function JobsPage() {
   );
 }
 
-const STEP_ICON: Record<StepKind, React.ReactNode> = { done: <Check />, running: <Loader2 className="spin" />, failed: <X />, skipped: <Minus />, compensated: <Undo2 />, pending: <CircleDashed /> };
+const STEP_ICON: Record<StepKind, React.ReactNode> = { done: <Check />, running: <Spinner className="size-(--icon-2xs) stroke-[var(--icon-stroke-strong)]" />, failed: <X />, skipped: <Minus />, compensated: <Undo2 />, pending: <CircleDashed /> };
 
 /** 走表的“用时”：useNow 放在这个小组件里，每秒只重渲它自己，不拖着整个详情页（含日志）一起刷 */
 function Dur({ a, b, live }: { a: string | null; b: string | null; live: boolean }) {
@@ -169,16 +173,16 @@ function JobDetail({ id }: { id: string }) {
   const live = !!j && jobLive(j.state);
   // 失败原因下面的步骤里已经写了（标红、带错误详情）：顶部不再重复；只有对不到哪一步的原因（取消、作业级错误）才写在顶部
   const failedStep = j?.state === 'failed' ? j.steps.find((s) => stepKind(s) === 'failed' && s.error) : undefined;
-  if (q.isError && !j && isGone(q.error)) return <Panel><Gone text="这个作业已不存在（可能已被清理）"><Button asChild size="sm"><Link to={{ pathname: '/jobs', search }}>回到列表</Link></Button></Gone></Panel>;
+  if (q.isError && !j && isGone(q.error)) return <Panel><Gone text="这个作业已不存在（可能已被清理）"><Button variant="outline" size="sm" render={<Link to={{ pathname: '/jobs', search }} />}>回到列表</Button></Gone></Panel>;
   if (q.isError && !j) return <Panel><div style={{ padding: 'var(--sp-12)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div></Panel>;
-  if (!j) return <Panel><div className="skel" style={{ height: 160, margin: 16 }} /></Panel>;
+  if (!j) return <Panel><Skeleton className="h-[160px]" style={{ margin: 16 }} /></Panel>;
   return (
     <div className="stack">
-      <Panel title={<span className="row" style={{ gap: 8 }}><Link to={{ pathname: '/jobs', search }} className="icon-btn icon-btn-sm job-back" aria-label="返回列表"><ArrowLeft size={16} /></Link><span>{jobKindLabel(j.kind)} · {j.target ? <NodeHover id={j.kind === 'router_sync' || j.kind === 'router_protocol' ? null : j.target.id}><span>{j.target.name}</span></NodeHover> : '—'}</span></span>} tools={<>
+      <Panel title={<span className="row" style={{ gap: 8 }}><Button variant="ghost" size="icon-sm" className="job-back hidden @max-[720px]/content:inline-flex" aria-label="返回列表" render={<Link to={{ pathname: '/jobs', search }} />}><ArrowLeft size={16} /></Button><span>{jobKindLabel(j.kind)} · {j.target ? <NodeHover id={j.kind === 'router_sync' || j.kind === 'router_protocol' ? null : j.target.id}><span>{j.target.name}</span></NodeHover> : '—'}</span></span>} tools={<>
         <JobPill state={j.state} manual={j.manual} />
         {j.manual && <span className="t-sub">先手动处理再重试</span>}
         {j.state === 'failed' && <RetryButton j={j} />}
-        {j.cancellable && <Button size="sm" onClick={() => setCancelAsk(true)}><CircleStop />取消</Button>}
+        {j.cancellable && <Button variant="outline" size="sm" onClick={() => setCancelAsk(true)}><CircleStop />取消</Button>}
       </>}>
         {j.manual && <ManualNote m={j.manual} />}
         <div className="stack">
@@ -198,7 +202,7 @@ function JobDetail({ id }: { id: string }) {
             <Note tone="warn">
               <span className="row row-between" style={{ gap: 12 }}>
                 <span>分享链接已更新 <InfoTip text="旧链接已失效，客户端要换成新链接" /></span>
-                {j.result?.new_entry_id && <Button size="sm" onClick={() => void copyNewShareLink(j.id)}><Copy size={14} />复制新分享链接</Button>}
+                {j.result?.new_entry_id && <Button variant="outline" size="sm" onClick={() => void copyNewShareLink(j.id)}><Copy size={14} />复制新分享链接</Button>}
               </span>
             </Note>
           </div>
@@ -247,7 +251,7 @@ function ManualNote({ m }: { m: JobManual }) {
         <ul className="job-manual-list">
           {m.routers.map((r) => (
             <li key={r.id}>
-              <button type="button" className="btn btn-link" style={{ height: 'auto', padding: 0 }} data-tip="打开软路由详情" onClick={() => open(r.id, 'exits')}>{r.name}</button>
+              <Button variant="link" size="inline" data-tip="打开软路由详情" onClick={() => open(r.id, 'exits')}>{r.name}</Button>
               {r.exits.length > 0 && <span className="t-sub mono">{r.exits.join('、')}</span>}
             </li>
           ))}
@@ -295,16 +299,16 @@ function RetryButton({ j }: { j: Job }) {
   };
   return (
     <>
-      <Button size="sm" variant="primary" loading={retry.isPending && !open} onClick={click}><RotateCw />重试</Button>
+      <Button size="sm" loading={retry.isPending && !open} onClick={click}><RotateCw />重试</Button>
       {ask && (
         <ConfirmDialog open={open} onOpenChange={setOpen} title="重试作业" confirmLabel="重试" description={desc}
           onConfirm={async () => { await retry.mutateAsync({ id: j.id, ...(canReset && reset ? { reset_host_key: true } : {}), ...(pw ? { ssh_password: pw } : {}) }); ok(); }}>
           <div className="stack-sm">
             {canReset && <CheckRow checked={reset} onChange={setReset}>重置主机指纹</CheckRow>}
             {!ip && (
-              <Field label={kind === 'auth' ? 'SSH 密码' : 'SSH 密码（选填）'}>
+              <FormField label={kind === 'auth' ? 'SSH 密码' : 'SSH 密码（选填）'}>
                 <Input type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="new-password" placeholder="留空用中控密钥" />
-              </Field>
+              </FormField>
             )}
           </div>
         </ConfirmDialog>
@@ -375,17 +379,17 @@ const LogPanel = React.memo(function LogPanel({ jobId, state }: { jobId: string;
     <Panel title="日志" sub={frozen != null ? `已暂停 · 另有 ${logs.length - shown.length} 行新日志` : live ? '实时' : `${logs.length + dropped} 行`}
       tools={<>
         {live && frozen == null && <Pill tone="info" dot="pulse">实时</Pill>}
-        {!stuck && frozen == null && <Button size="sm" variant="quiet" onClick={jump}><ArrowDownToLine />跳到最新</Button>}
+        {!stuck && frozen == null && <Button size="sm" variant="ghost" onClick={jump}><ArrowDownToLine />跳到最新</Button>}
         {/* 已结束的作业不会再有新日志，不给暂停；结束前暂停着的仍可点“继续”看到最后几行 */}
-        {(live || frozen != null) && <Button size="sm" variant="secondary" aria-pressed={frozen != null} onClick={() => { if (frozen == null) setFrozen(logs.length ? logs[logs.length - 1].id : 0); else { setFrozen(null); setStuck(true); } }}>
+        {(live || frozen != null) && <Button size="sm" variant="outline" aria-pressed={frozen != null} onClick={() => { if (frozen == null) setFrozen(logs.length ? logs[logs.length - 1].id : 0); else { setFrozen(null); setStuck(true); } }}>
           {frozen == null ? <><Pause />暂停滚动</> : <><Play />继续</>}
         </Button>}
-        <IconButton label="复制全部日志" size="sm" onClick={copy} disabled={!logs.length}>{cp.done ? <Check size={14} className="copied-ic" /> : <Copy size={14} />}</IconButton>
+        <IconButton label="复制全部日志" size="icon-sm" onClick={copy} disabled={!logs.length}>{cp.done ? <Check size={14} className="copied-ic" /> : <Copy size={14} />}</IconButton>
       </>}>
       {err != null && logs.length === 0 && <div style={{ marginBottom: 8 }}><ErrorNote error={err} onRetry={() => { setErr(null); setLoaded(false); setNonce((n) => n + 1); }} /></div>}
       <div className="logbox" ref={box} role="log" aria-live="off" tabIndex={0} aria-label="作业日志"
         onScroll={(e) => { const el = e.currentTarget; setStuck(el.scrollHeight - el.scrollTop - el.clientHeight < 24); }}>
-        {logs.length === 0 && (!loaded ? <div className="skel" style={{ height: 16 }} /> : err == null && <span className="t-muted">暂无日志</span>)}
+        {logs.length === 0 && (!loaded ? <Skeleton className="h-[16px]" /> : err == null && <span className="t-muted">暂无日志</span>)}
         {(dropped > 0 || shown.length > SHOW_MAX) && <div className="logline logline-note"><span /><span /><span className="msg t-sub">仅显示最近 {Math.min(SHOW_MAX, shown.length)} 行，共 {shown.length + dropped} 行</span></div>}
         {view.map((l) => <LogLine key={l.id} l={l} />)}
       </div>

@@ -7,7 +7,7 @@ import { BrowserRouter } from 'react-router-dom';
 import './styles/admin.css';
 import { App } from './App';
 import { qc } from './queryClient';
-import { TooltipProvider } from './components/ui/overlays';
+import { TooltipProvider } from './components/ui/tooltip';
 
 // 根滚动条槽宽（覆盖式滚动条为 0），弹层锁滚动时按它补回右边距（base.css）。槽宽只随缩放（devicePixelRatio）变、不随窗口尺寸变：
 // 只在缩放比变化时重量（拖窗口时不再每帧插节点强制布局）

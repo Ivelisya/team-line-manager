@@ -1,5 +1,6 @@
 // 生命周期对话框：换线路机（节点，单个或几个一起）、搬空线路机（线路机）。
 // 抽屉“管理”页、线路页、卡片/表格的右键菜单、命令面板共用；菜单触发的（连同退役）走 LifecycleDialogsHost（外壳里只渲染一份）。
+import { FieldTitle } from '@/components/ui/field';
 import * as React from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { MachineView, PlacementCell, PlacementNode, PlacementView } from '@/lib/types';
@@ -11,7 +12,8 @@ import { RenewDialog } from '@/features/BillingTab';
 import { useDrawer } from '@/lib/drawer';
 import { errText, healthLabel } from '@/lib/derive';
 import * as F from '@/lib/format';
-import { CheckRow, Field, InfoTip } from '@/components/ui/form';
+import { CheckRow, FormField } from '@/components/ui/form';
+import { InfoTip } from '@/components/ui/info-tip';
 import { Select, type Option } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
 import { resetOnOpen, useHeld } from '@/lib/useHeld';
@@ -105,10 +107,10 @@ export const MoveDialog = resetOnOpen(function MoveDialog({ m, open, onOpenChang
       {cur.length > 0 && (
         <div className="stack-sm">
           <div className="hint">当前入口：{cur.map((e) => `${e.relay.name}:${e.port}`).join('、')}</div>
-          {multi && <Field label="换掉哪条线路机上的入口"><Select value={from} onChange={setFrom} options={cur.map((e) => ({ value: e.relay.id, label: `${e.relay.name}:${e.port}` }))} placeholder="选择要换掉的入口" /></Field>}
-          <Field label="目标线路机" info="必须是在用的线路机，且这个节点在上面还没有入口" hint={opts.length === 0 ? '没有可选的线路机' : undefined}>
+          {multi && <FormField label="换掉哪条线路机上的入口"><Select value={from} onChange={setFrom} options={cur.map((e) => ({ value: e.relay.id, label: `${e.relay.name}:${e.port}` }))} placeholder="选择要换掉的入口" /></FormField>}
+          <FormField label="目标线路机" info="必须是在用的线路机，且这个节点在上面还没有入口" hint={opts.length === 0 ? '没有可选的线路机' : undefined}>
             <Select value={to} onChange={setTo} options={opts} placeholder="选择线路机" />
-          </Field>
+          </FormField>
           <RoutersCheck checked={routers} onChange={setRouters} none={!!pv && pv.ok && pv.routers.length === 0 && pv.warnings.length === 0} failed={!!pv && !pv.ok && pv.routers.length === 0} />
         </div>
       )}
@@ -161,10 +163,10 @@ export const MovesDialog = resetOnOpen(function MovesDialog({ nodes, from, open,
         onDone?.();
         nav(jobsTarget(r.jobs));
       }}>
-      <Field label="目标线路机"><Select value={to} onChange={setTo} options={opts} placeholder="选择目标线路机" /></Field>
+      <FormField label="目标线路机"><Select value={to} onChange={setTo} options={opts} placeholder="选择目标线路机" /></FormField>
       <RoutersCheck checked={routers} onChange={setRouters} />
       <div>
-        <div className="label" style={{ marginBottom: 6 }}>要换走的入口（{nodes.length}）</div>
+        <FieldTitle className="mb-1.5">要换走的入口（{nodes.length}）</FieldTitle>
         <ul className="reason-list" style={{ maxHeight: 220, overflow: 'auto' }}>
           {nodes.map((n) => <li key={n.id}><span className="num">{n.name}</span> <span className="t-sub">{(n.from ?? from)?.name}:{n.port}</span></li>)}
         </ul>
@@ -212,10 +214,10 @@ export const EvacuateDialog = resetOnOpen(function EvacuateDialog({ relay, open,
         onDone?.();
         nav(jobsTarget(r.jobs));
       }}>
-      <Field label="搬到哪台线路机"><Select value={to} onChange={setTo} options={opts} placeholder="选择目标线路机" /></Field>
+      <FormField label="搬到哪台线路机"><Select value={to} onChange={setTo} options={opts} placeholder="选择目标线路机" /></FormField>
       <RoutersCheck checked={routers} onChange={setRouters} />
       <div>
-        <div className="label" style={{ marginBottom: 6 }}>将被搬走的节点（{n}）</div>
+        <FieldTitle className="mb-1.5">将被搬走的节点（{n}）</FieldTitle>
         {list.length === 0 ? <div className="hint">没有节点入口</div> : (
           <ul className="reason-list" style={{ maxHeight: 220, overflow: 'auto' }}>
             {list.map((e) => (

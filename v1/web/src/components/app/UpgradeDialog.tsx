@@ -4,7 +4,7 @@ import { useMachine, useUpgradeAgent } from '@/lib/queries';
 import { closeUpgrade, useUpgradeTarget } from '@/lib/nodeActions';
 import { useHeld } from '@/lib/useHeld';
 import type { MachineView } from '@/lib/types';
-import { InfoTip } from '@/components/ui/form';
+import { InfoTip } from '@/components/ui/info-tip';
 import { toast } from '@/components/ui/toast';
 import { ConfirmDialog } from './dialogs';
 import { Note } from './primitives';

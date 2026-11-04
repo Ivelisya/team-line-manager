@@ -1,6 +1,6 @@
 // 线路机的 AnyTLS（sing-box 外壳）状态：在跑 / 没在跑 / 出错 / 未安装；旧 agent 没报过为「未知」。线路机抽屉与线路页共用
 import type { AnytlsStatus } from '@/lib/types';
-import { InfoTip } from '@/components/ui/form';
+import { InfoTip } from '@/components/ui/info-tip';
 import { errText } from '@/lib/derive';
 
 export function AnytlsState({ a }: { a: AnytlsStatus | null | undefined }) {

@@ -6,7 +6,7 @@ import { BrowserRouter, Route, Routes } from 'react-router-dom';
 import './styles/customer.css';
 import { CustomerPage } from './pages/Customer';
 import { qc } from './queryClient';
-import { TooltipProvider } from './components/ui/tip';
+import { TooltipProvider } from './components/ui/tooltip';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

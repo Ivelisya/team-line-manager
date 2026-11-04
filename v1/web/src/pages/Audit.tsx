@@ -10,7 +10,7 @@ import type { AuditEntry } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { SearchInput } from '@/components/ui/form';
 import { Segmented } from '@/components/ui/overlays';
-import { SkeletonRows } from '@/components/ui/skeleton';
+import { SkeletonRows } from '@/components/app/SkeletonRows';
 import { Empty, ErrorNote, PageHead, Panel } from '@/components/app/primitives';
 import { AuditList } from '@/components/app/AuditList';
 
@@ -63,7 +63,7 @@ export function AuditPage() {
             : !q.isError && <Empty icon={filtered ? <SearchX size={22} /> : <History size={22} />} text={filtered ? '没有符合条件的记录' : '还没有操作记录'} />}
         </div>
         {q.hasNextPage && (
-          <div className="audit-more"><Button variant="quiet" size="md" loading={q.isFetchingNextPage} onClick={() => void q.fetchNextPage()}>加载更早的记录</Button></div>
+          <div className="audit-more"><Button variant="ghost" loading={q.isFetchingNextPage} onClick={() => void q.fetchNextPage()}>加载更早的记录</Button></div>
         )}
       </Panel>
     </div>

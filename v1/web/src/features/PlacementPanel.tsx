@@ -8,7 +8,7 @@ import { openDrawer } from '@/lib/drawer';
 import { cn } from '@/lib/utils';
 import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
-import { InfoTip } from '@/components/ui/form';
+import { InfoTip } from '@/components/ui/info-tip';
 import { CopyButton, ErrorNote, FilterChip, Panel, TableWrap } from '@/components/app/primitives';
 import { ShowAll } from '@/components/app/Pagination';
 import { MovesDialog, type MoveNode } from '@/components/app/LifecycleDialogs';
@@ -86,7 +86,7 @@ export const PlacementPanel = React.memo(function PlacementPanel() {
                 <span className="pm-sug-text">换到 <b>{g.to.name}</b>：{g.nodes.map((n) => <span key={n.id} className="pm-sug-node">{n.name}<span className="t-sub">（{n.reason}）</span></span>)}</span>
                 <span className="row" style={{ flexWrap: 'nowrap' }}>
                   <CopyButton text={cmd} label="命令" />
-                  <Button size="sm" onClick={() => setMoving(g)} data-tip="一起换，每台软路由只改一次、OpenClash 只重启一次；先预览再确认">换 {g.nodes.length} 个节点…</Button>
+                  <Button variant="outline" size="sm" onClick={() => setMoving(g)} data-tip="一起换，每台软路由只改一次、OpenClash 只重启一次；先预览再确认">换 {g.nodes.length} 个节点…</Button>
                 </span>
               </div>
             );

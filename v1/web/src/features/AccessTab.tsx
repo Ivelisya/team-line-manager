@@ -1,12 +1,13 @@
 // 节点抽屉「访问记录」页签：常访问的目标（横条）、来源 top、每小时连接数（柱状）、最近记录。
 // 线路机的抽屉汇总它名下所有节点。数据来自 GET /machines/{id}/access，30 秒轮询。
+import { Skeleton } from '@/components/ui/skeleton';
 import * as React from 'react';
 import { Radar } from 'lucide-react';
 import { ACCESS_WINDOWS, WINDOW_DAYS, useAccessRetention, useMachineAccess, type AccessEvent, type AccessWindow, type MachineAccess } from '@/lib/access';
 import * as F from '@/lib/format';
 import { Segmented } from '@/components/ui/overlays';
 import { Button } from '@/components/ui/button';
-import { InfoTip } from '@/components/ui/form';
+import { InfoTip } from '@/components/ui/info-tip';
 import { ChartContainer, chartTooltip, Recharts, axisProps, type ChartConfig } from '@/components/ui/chart';
 import { Empty, ErrorNote, Section, SectionHeader } from '@/components/app/primitives';
 import { ResultPill, fmtN } from '@/features/AccessBits';
@@ -107,7 +108,7 @@ export const AccessTab = React.memo(function AccessTab({ id, relay }: { id: stri
   const bar = <div className="tab-sticky"><span>时间范围</span><Segmented sm label="时间范围" value={w} onChange={setW} items={items} /></div>;
   const head = <SectionHeader title="常访问的目标" meta={relay ? `汇总名下所有节点 · 最近 ${long}` : `最近 ${long}`} />;
   if (q.isError && !d) return <>{bar}<Section>{head}<ErrorNote error={q.error} onRetry={() => void q.refetch()} /></Section></>;
-  if (!d) return <>{bar}<div className="skel" style={{ height: 160 }} /></>;
+  if (!d) return <>{bar}<Skeleton className="h-[160px]" /></>;
   const total = d.top_domains.reduce((s, x) => s + x.conns, 0);
   // 来源按连接数，同次数按 IP 数值
   const sources = [...d.top_sources].sort((a, b) => b.conns - a.conns || byIp(a.src_ip, b.src_ip));
@@ -131,7 +132,7 @@ export const AccessTab = React.memo(function AccessTab({ id, relay }: { id: stri
               <HostBars items={d.top_domains} limit={all ? undefined : 10} />
               <div className="row row-between" style={{ marginTop: 6 }}>
                 <span className="hint">共 {fmtN(total)} 次连接（前 {d.top_domains.length} 个目标）</span>
-                {d.top_domains.length > 10 && <Button size="sm" variant="quiet" onClick={() => setAll((v) => !v)}>{all ? '收起' : `展开全部 ${d.top_domains.length} 个`}</Button>}
+                {d.top_domains.length > 10 && <Button size="sm" variant="ghost" onClick={() => setAll((v) => !v)}>{all ? '收起' : `展开全部 ${d.top_domains.length} 个`}</Button>}
               </div>
             </>
           )}

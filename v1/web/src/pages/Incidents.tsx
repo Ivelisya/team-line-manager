@@ -1,4 +1,6 @@
 // 告警：三个下划线页签（换成另一类数据）——告警事件列表（确认 / 查看机器，服务端分页；下面再用分段控件筛 进行中 / 已恢复 / 全部）、静默与维护窗口（可预约开始时间）、月度可用率。列表都保持服务端顺序（告警严重度优先，静默按开始时间），前端不重排。
+import { Label } from '@/components/ui/label';
+import { Field } from '@/components/ui/field';
 import * as React from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { BellOff, CalendarPlus, Check, CheckCircle2, ChevronDown, ChevronRight, Trash2, Wrench } from 'lucide-react';
@@ -16,13 +18,16 @@ import type { Incident, Silence, SilenceKind } from '@/lib/types';
 import { resetOnOpen, useHeld } from '@/lib/useHeld';
 import { useNow } from '@/lib/useNow';
 import { Button, IconButton } from '@/components/ui/button';
-import { CheckRow, Field, InfoTip, Input } from '@/components/ui/form';
-import { Popover, PopoverContent, PopoverTrigger, Segmented, Tabs, TabsList, TabsTrigger, Trunc } from '@/components/ui/overlays';
+import { CheckRow, FormField } from '@/components/ui/form';
+import { InfoTip } from '@/components/ui/info-tip';
+import { Input } from '@/components/ui/input';
+import { Popover, PopoverContent, PopoverTrigger, Segmented, Tabs, TabsList, TabsTrigger } from '@/components/ui/overlays';
+import { Trunc } from '@/components/ui/tooltip';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { collator } from '@/lib/sort';
 import { matchTier, sv } from '@/lib/match';
 import { DEFAULT_DURATION_MIN, DurationField, SILENCE_MAX_MIN, useDuration } from '@/components/app/DurationField';
-import { SkeletonRows } from '@/components/ui/skeleton';
+import { SkeletonRows } from '@/components/app/SkeletonRows';
 import { toast } from '@/components/ui/toast';
 import { ConfirmDialog, FormDialog } from '@/components/app/dialogs';
 import { NodeHover } from '@/components/app/NodeHover';
@@ -44,7 +49,7 @@ function IncidentOps({ i }: { i: Incident }) {
   if (i.state !== 'firing') return null;
   const sid = i.subject?.id ?? i.subject_id;
   const sw = i.quick_switch?.[0];
-  const link = (label: string, tip: string, on: () => void) => <span className="sub"><button type="button" className="btn btn-link btn-sm" style={{ height: 'auto', padding: 0 }} data-tip={tip} onClick={on}>{label}</button></span>;
+  const link = (label: string, tip: string, on: () => void) => <span className="sub"><Button variant="link" size="inline-sm" data-tip={tip} onClick={on}>{label}</Button></span>;
   if (i.rule === 'router_exit_drift' && sid) return link('同步出口参数…', '改成入口现在的凭据（会重启 OpenClash）', () => showSync({ id: sid, name: i.subject?.name ?? i.subject_name ?? '', exits: [] }));
   if (sw) return link(`临时切到 ${sw.to}…`, `${sw.router} 的「${sw.group}」现在用 ${sw.from}，切到组里的 ${sw.to}，不重启 OpenClash`, () => showSwitch({ id: sw.router_id, name: sw.router, group: sw.group, to: sw.to }));
   return null;
@@ -120,8 +125,8 @@ export function IncidentsPage() {
         <tr key={i.id} className={sub ? 'inc-sub' : undefined}>
           <td>{SEV(i)}</td>
           {/* 中控自身的告警（central_ 开头）没有机器可点开：只写对象名「中控」；软路由的（router_ 开头）打开路由抽屉 */}
-          <td>{sid && isRouterIncident(i) ? <button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => openRouter(sid, routerIncidentTab(i))}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button>
-            : sid ? <NodeHover id={sid}><button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => open(sid)}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button></NodeHover> : (i.subject_name ?? '—')}
+          <td>{sid && isRouterIncident(i) ? <Button variant="link" size="inline" className="max-w-full" onClick={() => openRouter(sid, routerIncidentTab(i))}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></Button>
+            : sid ? <NodeHover id={sid}><Button variant="link" size="inline" className="max-w-full" onClick={() => open(sid)}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></Button></NodeHover> : (i.subject_name ?? '—')}
             {i.ack_at && !i.resolved_at && <Pill tone="neutral" className="pill-sm inc-ack-narrow" tip={`${i.ack_by ? `${F.actor(i.ack_by)} ` : ''}已确认 · ${F.ago(i.ack_at)}`}>已确认</Pill>}
             <span className="sub inc-narrow">{i.rule_name} · <span className="nowrap">{F.ago(i.opened_at)}</span></span><span className="sub inc-narrow inc-narrow-sum" data-tip={sum}>{sum}</span><SuggestedCmds i={i} className="inc-narrow" /></td>
           <td>{i.rule_name}<RecentCount i={i} className="sub" /></td>
@@ -129,19 +134,19 @@ export function IncidentsPage() {
             ? <span data-tip={`恢复于 ${F.dtFull(i.resolved_at)}`}>已恢复 · 持续 {F.span(Date.parse(i.resolved_at) - Date.parse(i.opened_at))}</span>
             : `${i.ack_by ? F.actor(i.ack_by) : ''} 已确认 · ${F.ago(i.ack_at!)}`}</span>}</td>
           <td>{F.dt(i.opened_at)}<span className="sub">{F.ago(i.opened_at)}</span></td>
-          <td className="r">{canRenew && <Button size="sm" onClick={() => setRenewId(sid)}><CalendarPlus size={13} />登记续费</Button>}{!canRenew && i.state === 'firing' && !i.ack_at && <Button size="sm" loading={ack.isPending && ack.variables === i.id} disabled={ack.isPending} onClick={() => ack.mutate(i.id, { onSuccess: () => toast.ok('已确认'), onError: toast.err })}><Check size={13} />确认</Button>}</td>
+          <td className="r">{canRenew && <Button variant="outline" size="sm" onClick={() => setRenewId(sid)}><CalendarPlus size={13} />登记续费</Button>}{!canRenew && i.state === 'firing' && !i.ack_at && <Button variant="outline" size="sm" loading={ack.isPending && ack.variables === i.id} disabled={ack.isPending} onClick={() => ack.mutate(i.id, { onSuccess: () => toast.ok('已确认'), onError: toast.err })}><Check size={13} />确认</Button>}</td>
         </tr>
       );
   };
   return (
     <div className="stack" ref={pg.anchor}>
       {/* 新建入口放在页头（走 ?silence=new，同命令面板），哪个页签都能建 */}
-      <PageHead title="告警" tools={<Button onClick={() => setSp((p) => { const n = new URLSearchParams(p); n.set('silence', 'new'); return n; }, { replace: true })}><BellOff />新建静默</Button>} />
+      <PageHead title="告警" tools={<Button variant="outline" onClick={() => setSp((p) => { const n = new URLSearchParams(p); n.set('silence', 'new'); return n; }, { replace: true })}><BellOff />新建静默</Button>} />
       <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>
         <TabsList>{TABS.map((t) => <TabsTrigger key={t} value={t} noPanel>{TAB_LABEL[t]}{t === 'silences' && !!silenceN && <span className="seg-count">{silenceN}</span>}</TabsTrigger>)}</TabsList>
       </Tabs>
       {tab === 'alerts' && q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
-      {tab === 'alerts' && unsent && <Note tone="warn" icon={<BellOff size={14} />}>告警不会推送：还没有启用的通知渠道 <Link className="btn btn-link btn-sm" to="/settings?section=notify">去添加</Link></Note>}
+      {tab === 'alerts' && unsent && <Note tone="warn" icon={<BellOff size={14} />}>告警不会推送：还没有启用的通知渠道 <Button variant="link" size="inline-sm" render={<Link to="/settings?section=notify" />}>去添加</Button></Note>}
       {tab === 'alerts' && <Panel flush title="告警列表" count={alertN != null ? `${alertN.toLocaleString('zh-CN')} 条` : undefined} sub={acked ? `另有 ${acked} 条已确认` : undefined}
         tools={<Segmented sm label="状态" value={state} onChange={setState} items={STATES} />}>
         <TableWrap>
@@ -160,11 +165,11 @@ export function IncidentsPage() {
                   <React.Fragment key={k}>
                     <tr data-open={on ? '' : undefined}>
                       <td>{SEV(r[0])}</td>
-                      <td><button type="button" className="btn btn-link inc-fold" aria-expanded={on} data-tip={on ? '收起' : '展开看每一条'} onClick={() => toggle(k)}>{r.length} 条 · {foldNoun(r)}<ChevronRight /></button><span className="sub inc-narrow">{r[0].rule_name} · <span className="nowrap">{F.ago(r[0].opened_at)}</span></span></td>
+                      <td><Button variant="link" size="inline" className="inc-fold" aria-expanded={on} data-tip={on ? '收起' : '展开看每一条'} onClick={() => toggle(k)}>{r.length} 条 · {foldNoun(r)}<ChevronRight className="size-(--icon-xs) flex-none" /></Button><span className="sub inc-narrow">{r[0].rule_name} · <span className="nowrap">{F.ago(r[0].opened_at)}</span></span></td>
                       <td>{r[0].rule_name}</td>
                       <td>同时出现{r[0].state === 'resolved' && <span className="sub">已恢复</span>}</td>
                       <td>{F.dt(r[0].opened_at)}<span className="sub">{F.ago(r[0].opened_at)}</span></td>
-                      <td className="r">{todo.length > 0 && <Button size="sm" loading={busy} disabled={ackMany.isPending} data-tip={`确认这一批未确认的 ${todo.length} 条`}
+                      <td className="r">{todo.length > 0 && <Button variant="outline" size="sm" loading={busy} disabled={ackMany.isPending} data-tip={`确认这一批未确认的 ${todo.length} 条`}
                         onClick={() => ackMany.mutate(todo, { onSuccess: () => toast.ok(`已确认 ${todo.length} 条`), onError: toast.err })}><Check size={13} />全部确认</Button>}</td>
                     </tr>
                     {on && r.map((i) => row(i, true))}
@@ -241,7 +246,7 @@ function Silences({ show }: { show: boolean }) {
                     <td>{on ? <Pill tone="ok">进行中</Pill> : <Pill>已预约</Pill>}</td>
                     <td>{F.dt(s.starts_at)} → {F.dt(s.ends_at)}<span className="sub">{on ? `还剩 ${F.span(Date.parse(s.ends_at) - now)}` : `${F.span(start - now)}后开始`}</span></td>
                     <td><Trunc className="cell-main">{s.comment}</Trunc></td>
-                    <td className="c"><IconButton label={s.is_maintenance ? '删除维护窗口' : '删除静默'} size="sm" onClick={() => setAskDel(s)}><Trash2 size={14} /></IconButton></td>
+                    <td className="c"><IconButton label={s.is_maintenance ? '删除维护窗口' : '删除静默'} size="icon-sm" onClick={() => setAskDel(s)}><Trash2 size={14} /></IconButton></td>
                   </tr>
                 );
               })}</tbody>
@@ -292,19 +297,19 @@ const SilenceDialog = resetOnOpen(function SilenceDialog({ open, onOpenChange, p
       <FormDialog open={open} onOpenChange={onOpenChange} title={`新建${what}`} desc={desc} submitLabel="创建" busy={add.isPending} valid={valid}
         dirty={subject !== preset || mode !== 'now' || d.dur !== DEFAULT_DURATION_MIN || maint || !!comment.trim()}
         onSubmit={() => (subject === ALL ? setAskAll(true) : submit())}>
-        <Field label="对象"><SubjectSelect value={subject} onChange={(v, k) => { setSubject(v); setKind(k); }} /></Field>
+        <FormField label="对象"><SubjectSelect value={subject} onChange={(v, k) => { setSubject(v); setKind(k); }} /></FormField>
         {subject === ALL && <Note tone="warn">全部机器（含软路由、探测点）不发告警</Note>}
-        <div className="field">
-          <span className="label">开始</span>
+        <Field>
+          <Label>开始</Label>
           <div className="row">
             <Segmented label="开始" value={mode} onChange={setMode} items={START_ITEMS} />
             {mode === 'at' && <Input type="datetime-local" aria-label="开始时间" value={start} min={localInput(now)} max={localInput(now + AHEAD_DAYS * 1440 * MIN)} onChange={(e) => setStart(e.target.value)} aria-invalid={!!startErr} style={{ flex: '1 1 200px', width: 'auto' }} />}
           </div>
           {startErr ? <div className="hint is-error">{startErr}</div> : mode === 'at' && <div className="hint">最多提前 {AHEAD_DAYS} 天 <InfoTip text="按这台电脑的本地时间" /></div>}
-        </div>
+        </Field>
         <DurationField d={d} />
         <div className="row" style={{ gap: 4 }}><CheckRow checked={maint} onChange={setMaint}>标记为维护</CheckRow><InfoTip text="期间不发告警，卡片上显示「维护」" /></div>
-        <Field label="备注"><Input value={comment} onChange={(e) => setComment(e.target.value)} placeholder="例如：换内核" /></Field>
+        <FormField label="备注"><Input value={comment} onChange={(e) => setComment(e.target.value)} placeholder="例如：换内核" /></FormField>
       </FormDialog>
       <ConfirmDialog open={askAll} onOpenChange={setAskAll} title="静默全部机器？" confirmLabel="静默全部机器" danger
         description={`从${mode === 'now' ? '现在' : ` ${dtMs(startMs)} `}到 ${dtMs(startAt() + minutes * MIN)}，所有机器（含软路由、探测点）都不发告警`}

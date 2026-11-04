@@ -24,9 +24,9 @@ export function MonthSwitch({ month, months, onChange }: { month: string; months
   const i = months.indexOf(month);
   return (
     <span className="bm-switch">
-      <IconButton size="sm" label="上个月" disabled={i <= 0} onClick={() => onChange(months[i - 1])}><ChevronLeft size={16} /></IconButton>
+      <IconButton size="icon-sm" label="上个月" disabled={i <= 0} onClick={() => onChange(months[i - 1])}><ChevronLeft size={16} /></IconButton>
       <span className="num bm-switch-label" aria-live="polite">{`${month.slice(0, 4)} 年 ${Number(month.slice(5, 7))} 月`}</span>
-      <IconButton size="sm" label="下个月" disabled={i < 0 || i >= months.length - 1} onClick={() => onChange(months[i + 1])}><ChevronRight size={16} /></IconButton>
+      <IconButton size="icon-sm" label="下个月" disabled={i < 0 || i >= months.length - 1} onClick={() => onChange(months[i + 1])}><ChevronRight size={16} /></IconButton>
     </span>
   );
 }

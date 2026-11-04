@@ -1,16 +1,20 @@
 // 设置 · 账户安全：两步验证（开启 / 停用 / 重新生成恢复码，恢复码只显示一次）、修改密码（可同时撤销全部 API 密钥）、登录会话（撤销、退出其他设备）。
 // 开启两步验证、退出其他设备都要再输当前密码：拿到会话 Cookie 的人不能借它绑自己的认证器、把本人踢下线。
 // 输错当前密码 / 验证码时服务端回 401（code 不是 unauthorized，不会跳登录页），错误留在对话框或表单里显示。
+import { Label } from '@/components/ui/label';
 import * as React from 'react';
 import { LogOut, MonitorSmartphone, RefreshCw, ShieldAlert, ShieldCheck, ShieldOff } from 'lucide-react';
 import { useChangePassword, useMe, useRegenRecovery, useRevokeOtherSessions, useRevokeSession, useSessions, useTotpDisable, useTotpEnable, useTotpSetup, useTotpStatus } from '@/lib/queries';
 import type { AccountSession } from '@/lib/types';
 import * as F from '@/lib/format';
 import { Button, IconButton } from '@/components/ui/button';
-import { Checkbox, Field, InfoTip, Input } from '@/components/ui/form';
-import { Trunc } from '@/components/ui/overlays';
+import { FormField } from '@/components/ui/form';
+import { InfoTip } from '@/components/ui/info-tip';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Input } from '@/components/ui/input';
+import { Trunc } from '@/components/ui/tooltip';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { SkeletonRows } from '@/components/ui/skeleton';
+import { SkeletonRows } from '@/components/app/SkeletonRows';
 import { toast } from '@/components/ui/toast';
 import { ConfirmDialog, FormDialog } from '@/components/app/dialogs';
 import { Chip, CopyButton, CopyIcon, Empty, ErrorNote, Note, Panel, Pill, useCopied } from '@/components/app/primitives';
@@ -51,8 +55,8 @@ function TotpPanel() {
     <>
       <Panel title="两步验证" sub={<InfoTip text="登录时除了密码，还要输入手机认证器 App 上的 6 位验证码" />}
         tools={s && (s.enabled
-          ? <><Button size="sm" onClick={() => setDlg('regen')}><RefreshCw />重新生成恢复码</Button><Button size="sm" onClick={() => setDlg('disable')}><ShieldOff />停用</Button></>
-          : <Button size="sm" variant="primary" onClick={() => setDlg('enable')}><ShieldCheck />开启两步验证</Button>)}>
+          ? <><Button variant="outline" size="sm" onClick={() => setDlg('regen')}><RefreshCw />重新生成恢复码</Button><Button variant="outline" size="sm" onClick={() => setDlg('disable')}><ShieldOff />停用</Button></>
+          : <Button size="sm" onClick={() => setDlg('enable')}><ShieldCheck />开启两步验证</Button>)}>
         {q.isError ? <ErrorNote error={q.error} onRetry={() => void q.refetch()} /> : !s ? <SkeletonRows rows={1} one /> : s.enabled ? (
           <div style={{ display: 'grid', gap: 'var(--sp-12)' }}>
             <div className="row" style={{ gap: 10 }}>
@@ -97,7 +101,7 @@ const EnableTotpDialog = resetOnOpen(function EnableTotpDialog({ open, onClose, 
       {!d ? (
         <>
           <input type="text" autoComplete="username" value={me.data?.username ?? ''} readOnly hidden />
-          <Field label="当前密码"><Input type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="current-password" autoFocus /></Field>
+          <FormField label="当前密码"><Input type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="current-password" autoFocus /></FormField>
         </>
       ) : (
         <>
@@ -108,7 +112,7 @@ const EnableTotpDialog = resetOnOpen(function EnableTotpDialog({ open, onClose, 
               <div className="token-box"><code>{d.secret.replace(/(.{4})/g, '$1 ').trim()}</code><CopyButton text={d.secret} label="密钥" /></div>
             </div>
           </div>
-          <Field label="验证码"><CodeInput value={code} onChange={setCode} autoFocus /></Field>
+          <FormField label="验证码"><CodeInput value={code} onChange={setCode} autoFocus /></FormField>
         </>
       )}
       {err && <Note tone="bad">{err}</Note>}
@@ -129,8 +133,8 @@ const DisableTotpDialog = resetOnOpen(function DisableTotpDialog({ open, onClose
     <FormDialog size="sm" open={open} onOpenChange={(o) => !o && onClose()} title="停用两步验证？" desc={<>恢复码会全部作废 <InfoTip text="停用后只凭密码就能登录。" /></>}
       submitLabel="停用" onSubmit={submit} busy={disable.isPending} valid={!!pw && !!code.trim()} dirty={!!pw || !!code}>
       <input type="text" autoComplete="username" value={me.data?.username ?? ''} readOnly hidden />
-      <Field label="当前密码"><Input type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="current-password" autoFocus /></Field>
-      <Field label="两步验证码"><CodeInput value={code} onChange={setCode} recovery /></Field>
+      <FormField label="当前密码"><Input type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="current-password" autoFocus /></FormField>
+      <FormField label="两步验证码"><CodeInput value={code} onChange={setCode} recovery /></FormField>
       {err && <Note tone="bad">{err}</Note>}
     </FormDialog>
   );
@@ -148,7 +152,7 @@ const RegenDialog = resetOnOpen(function RegenDialog({ open, onClose, onDone }: 
   return (
     <FormDialog size="sm" open={open} onOpenChange={(o) => !o && onClose()} title="重新生成恢复码？" desc="旧的恢复码会立即作废"
       submitLabel="重新生成" onSubmit={submit} busy={regen.isPending} valid={!!code.trim()} dirty={!!code}>
-      <Field label="两步验证码"><CodeInput value={code} onChange={setCode} recovery autoFocus /></Field>
+      <FormField label="两步验证码"><CodeInput value={code} onChange={setCode} recovery autoFocus /></FormField>
       {err && <Note tone="bad">{err}</Note>}
     </FormDialog>
   );
@@ -166,8 +170,8 @@ function RecoveryCodesDialog({ codes, onClose }: { codes: string[] | null; onClo
         <Note tone="warn" icon={<ShieldAlert size={14} />}><b>只显示这一次。</b>每个只能用一次 <InfoTip text="请存进密码管理器或打印出来，和手机分开保管。" /></Note>
         <div className="recovery-grid">{held.map((c) => <code key={c}>{c}</code>)}</div>
         <DialogFooter>
-          <Button ref={copyRef} onClick={() => void cp.copy(held.join('\n'), '恢复码')}><CopyIcon done={cp.done} />复制全部</Button>
-          <Button variant="primary" onClick={onClose}>我已保存</Button>
+          <Button variant="outline" ref={copyRef} onClick={() => void cp.copy(held.join('\n'), '恢复码')}><CopyIcon done={cp.done} />复制全部</Button>
+          <Button onClick={onClose}>我已保存</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -203,16 +207,16 @@ function PasswordPanel() {
       <form className="account-form" onSubmit={submit}>
         <input type="text" autoComplete="username" value={me.data?.username ?? ''} readOnly hidden />
         <div className="form-grid">
-          <Field label="当前密码"><Input type="password" value={cur} onChange={(e) => setCur(e.target.value)} autoComplete="current-password" /></Field>
-          {totp && <Field label="两步验证码"><CodeInput value={code} onChange={setCode} recovery /></Field>}
+          <FormField label="当前密码"><Input type="password" value={cur} onChange={(e) => setCur(e.target.value)} autoComplete="current-password" /></FormField>
+          {totp && <FormField label="两步验证码"><CodeInput value={code} onChange={setCode} recovery /></FormField>}
         </div>
         <div className="form-grid">
-          <Field label="新密码" error={newErr} info="建议用密码管理器生成"><Input type="password" value={nw} onChange={(e) => setNw(e.target.value)} autoComplete="new-password" placeholder={`至少 ${MIN_PASSWORD} 个字符`} /></Field>
-          <Field label="再输一次新密码" error={nw2 && nw !== nw2 ? '两次输入的不一样' : undefined}><Input type="password" value={nw2} onChange={(e) => setNw2(e.target.value)} autoComplete="new-password" /></Field>
+          <FormField label="新密码" error={newErr} info="建议用密码管理器生成"><Input type="password" value={nw} onChange={(e) => setNw(e.target.value)} autoComplete="new-password" placeholder={`至少 ${MIN_PASSWORD} 个字符`} /></FormField>
+          <FormField label="再输一次新密码" error={nw2 && nw !== nw2 ? '两次输入的不一样' : undefined}><Input type="password" value={nw2} onChange={(e) => setNw2(e.target.value)} autoComplete="new-password" /></FormField>
         </div>
-        <div className="row" style={{ gap: 4 }}><label className="check-row"><Checkbox checked={keys} onCheckedChange={(v) => setKeys(v === true)} /><span>同时撤销所有 API 密钥</span></label><InfoTip text="怀疑密码或登录会话泄露时勾上：拿到会话的人可能已经建了密钥" /></div>
+        <div className="row" style={{ gap: 4 }}><Label className="cursor-pointer gap-2 text-body font-normal text-fg has-data-disabled:cursor-default"><Checkbox checked={keys} onCheckedChange={(v) => setKeys(v === true)} /><span className="peer-data-disabled:opacity-(--o-disabled)">同时撤销所有 API 密钥</span></Label><InfoTip text="怀疑密码或登录会话泄露时勾上：拿到会话的人可能已经建了密钥" /></div>
         {err && <Note tone="bad">{err}</Note>}
-        <div className="row account-foot" style={{ justifyContent: 'flex-end' }}><Button type="submit" variant="primary" loading={change.isPending} disabled={!valid}>修改密码</Button></div>
+        <div className="row account-foot" style={{ justifyContent: 'flex-end' }}><Button type="submit" loading={change.isPending} disabled={!valid}>修改密码</Button></div>
       </form>
     </Panel>
   );
@@ -241,7 +245,7 @@ function SessionsPanel() {
   return (
     <>
       <Panel title="登录会话" count={list.length} flush
-        tools={<Button size="sm" disabled={nOthers === 0} onClick={() => setOthers(true)}><LogOut />退出其他设备</Button>}>
+        tools={<Button variant="outline" size="sm" disabled={nOthers === 0} onClick={() => setOthers(true)}><LogOut />退出其他设备</Button>}>
         {q.isError && <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div>}
         {q.isLoading ? <SkeletonRows rows={2} head /> : q.isError && !q.data ? null : list.length === 0 ? <Empty icon={<MonitorSmartphone size={22} />} text="没有登录会话" /> : (
           <div className="table-wrap">
@@ -259,7 +263,7 @@ function SessionsPanel() {
                     <td>{F.dt(s.created_at)}</td>
                     <td>{F.dt(s.last_seen_at)}<span className="sub">{F.ago(s.last_seen_at)}</span></td>
                     <td>{F.dt(s.expires_at)}</td>
-                    <td className="c">{!s.current && <IconButton label="撤销会话" size="sm" onClick={() => setAsk(s)}><LogOut size={14} /></IconButton>}</td>
+                    <td className="c">{!s.current && <IconButton label="撤销会话" size="icon-sm" onClick={() => setAsk(s)}><LogOut size={14} /></IconButton>}</td>
                   </tr>
                 ))}
               </tbody>
@@ -293,8 +297,8 @@ const RevokeOthersDialog = resetOnOpen(function RevokeOthersDialog({ open, n, on
     <FormDialog size="sm" open={open} onOpenChange={(o) => !o && onClose()} title={`退出其他 ${n} 个设备？`} desc="那些设备需要重新登录"
       submitLabel="全部退出" onSubmit={submit} busy={others.isPending} valid={!!pw && (!totp || !!code.trim())} dirty={!!pw || !!code}>
       <input type="text" autoComplete="username" value={me.data?.username ?? ''} readOnly hidden />
-      <Field label="当前密码"><Input type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="current-password" autoFocus /></Field>
-      {totp && <Field label="两步验证码"><CodeInput value={code} onChange={setCode} recovery /></Field>}
+      <FormField label="当前密码"><Input type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="current-password" autoFocus /></FormField>
+      {totp && <FormField label="两步验证码"><CodeInput value={code} onChange={setCode} recovery /></FormField>}
       {err && <Note tone="bad">{err}</Note>}
     </FormDialog>
   );

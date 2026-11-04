@@ -1,5 +1,6 @@
 // ⌘K / Ctrl+K 命令面板：跳转页面、搜索机器（名称 / IP / 团队，回车打开抽屉）、团队（跳到机器页的团队筛选）、常用动作。
 // 整个文件按需加载（首次打开时才下载 cmdk）。
+import { Kbd } from '@/components/ui/kbd';
 import * as React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowUpCircle, BellOff, BellRing, Briefcase, CalendarPlus, Clipboard, CloudUpload, Moon, PackageOpen, ShieldCheck, Settings, SquareTerminal, Sun, Users, Waypoints, type LucideIcon } from 'lucide-react';
@@ -15,7 +16,7 @@ import { openTerminal } from '@/lib/terminal';
 import type { ThemePref } from '@/lib/theme';
 import { Command, CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { toast } from '@/components/ui/toast';
-import { InfoTip } from '@/components/ui/form';
+import { InfoTip } from '@/components/ui/info-tip';
 import { ConfirmDialog } from '@/components/app/dialogs';
 import { Flag, HealthPill } from '@/components/app/primitives';
 
@@ -157,10 +158,10 @@ function PaletteBody({ theme, askUpgrade }: { theme: Theme; askUpgrade: () => vo
         )}
       </CommandList>
       <div className="cmd-foot">
-        <span><kbd className="kbd">↑</kbd><kbd className="kbd">↓</kbd>选择</span>
-        <span><kbd className="kbd">↵</kbd>{mode === 'copy-ip' ? '复制' : mode === 'evacuate' ? '搬空' : mode === 'renew' ? '登记续费' : mode === 'terminal' ? '打开终端' : '打开'}</span>
-        {mode !== 'root' && <span><kbd className="kbd">⌫</kbd>返回</span>}
-        <span style={{ marginLeft: 'auto' }}><kbd className="kbd">esc</kbd>关闭</span>
+        <span><Kbd>↑</Kbd><Kbd>↓</Kbd>选择</span>
+        <span><Kbd>↵</Kbd>{mode === 'copy-ip' ? '复制' : mode === 'evacuate' ? '搬空' : mode === 'renew' ? '登记续费' : mode === 'terminal' ? '打开终端' : '打开'}</span>
+        {mode !== 'root' && <span><Kbd>⌫</Kbd>返回</span>}
+        <span style={{ marginLeft: 'auto' }}><Kbd>esc</Kbd>关闭</span>
       </div>
     </Command>
   );

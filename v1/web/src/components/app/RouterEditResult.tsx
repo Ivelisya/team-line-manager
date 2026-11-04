@@ -1,5 +1,6 @@
 // 「改软路由出口」步骤的结果（替换节点、换线路机、搬空）：每个出口一行「软路由 · 出口 → 改成哪台线路机:端口 · 改后测速」，
 // 不再原样输出 JSON。软路由名点开它的抽屉；备份文件的路径放在软路由名的悬停里。样式同调优结果。
+import { Button } from '@/components/ui/button';
 import { useAddrName, useRouterDrawer } from '@/lib/routers';
 import { ms, str } from '@/lib/format';
 
@@ -23,7 +24,7 @@ export function RouterEditResult({ out }: { out: { routers: Edited[] } }) {
             const to = addr(e.to);
             return (
               <tr key={`${r.id}-${e.exit}`}>
-                <td><button type="button" className="btn btn-link btn-sm" style={{ height: 'auto', padding: 0 }} data-tip={`打开软路由详情${r.backup ? `\n备份文件：${r.backup}` : ''}`} onClick={() => open(r.id, 'exits')}>{r.name}</button></td>
+                <td><Button variant="link" size="inline-sm" data-tip={`打开软路由详情${r.backup ? `\n备份文件：${r.backup}` : ''}`} onClick={() => open(r.id, 'exits')}>{r.name}</Button></td>
                 <td className="mono">{e.exit}</td>
                 <td className="num" data-tip={to.tip}>{to.text}</td>
                 <td className="num">{delay != null ? str(ms(delay)) : <span className="t-muted">没测到</span>}</td>

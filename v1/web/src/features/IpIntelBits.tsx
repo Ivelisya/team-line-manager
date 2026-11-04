@@ -1,10 +1,11 @@
 // 来源 IP 画像的小部件：接入方式徽标、运营商·城市单元格、IP 库状态、节点抽屉里的「来源画像」卡。
 // 数据来自 /machines/{id}/sources 与 /ipintel/status（见 lib/ipintel.ts）；来源行上的 intel 字段来自 /access/sources。
+import { Skeleton } from '@/components/ui/skeleton';
 import { ShieldQuestion } from 'lucide-react';
 import { useIpIntelStatus, useSourcesProfile, type ConnType, type DistItem, type IpIntel, type IpIntelFile, type ProfileWindow, type SourcesProfile } from '@/lib/ipintel';
 import { countryName } from '@/lib/flags';
 import * as F from '@/lib/format';
-import { InfoTip } from '@/components/ui/form';
+import { InfoTip } from '@/components/ui/info-tip';
 import { Chip, ErrorNote, Note, Pill, Section, SectionHeader, type Tone } from '@/components/app/primitives';
 import '@/styles/access.css';
 
@@ -110,7 +111,7 @@ export function SourceProfile({ id, window, relay }: { id: string; window: Profi
   const q = useSourcesProfile(id, window);
   const d = q.data;
   if (q.isError && !d) return <Section><SectionHeader title="来源画像" /><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></Section>;
-  if (!d) return <Section><SectionHeader title="来源画像" /><div className="skel" style={{ height: 96 }} /></Section>;
+  if (!d) return <Section><SectionHeader title="来源画像" /><Skeleton className="h-[96px]" /></Section>;
   const known = d.known.isp.length + d.known.city.length;
   const outside = d.internal_conns + d.private_conns;
   // 学习期说明、已学基线、没计入的我方 / 内网连接都放进同一个 (i)

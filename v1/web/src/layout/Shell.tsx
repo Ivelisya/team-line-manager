@@ -1,4 +1,5 @@
 // 外壳：56px 顶栏 + 240px 侧栏 + 内容区。选中项是软色胶囊。≤1023px 侧栏收成抽屉。
+import { Kbd } from '@/components/ui/kbd';
 import * as React from 'react';
 import { NavLink, Navigate, Outlet, useLocation, useNavigationType } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
@@ -12,7 +13,8 @@ import { useTheme, type Palette, type ThemePref } from '@/lib/theme';
 import { useTitleAlerts } from '@/lib/title';
 import { closeEvacuate, closeMaint, closeMove, closeRenew, closeRetire, closeUpgrade, useEvacuateTarget, useMaintTarget, useMoveTarget, useRenewTarget, useRetireTarget, useUpgradeTarget } from '@/lib/nodeActions';
 import { resetTerminal, useTerminalTarget } from '@/lib/terminal';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger, Tip, TipHost } from '@/components/ui/overlays';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/overlays';
+import { TipHost, Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Toaster } from '@/components/ui/toast';
@@ -53,7 +55,7 @@ function useEver(v: boolean) {
 
 /** 懒加载页面下载期间的占位：页头骨架，外壳不闪 */
 function PageFallback() {
-  return <div className="stack" role="status" aria-label="加载中"><Skeleton w={160} h={28} /><Skeleton h={96} /><Skeleton h={220} /></div>;
+  return <div className="stack" role="status" aria-label="加载中"><Skeleton className="w-[160px] h-[28px]" /><Skeleton className="h-[96px]" /><Skeleton className="h-[220px]" /></div>;
 }
 
 const closeLifecycle = () => { closeMove(); closeEvacuate(); closeRetire(); closeRenew(); };
@@ -161,12 +163,12 @@ export function Shell() {
         <div className="login-card" role="alert">
           <div className="login-brand"><span className="brand-mark"><Boxes size={14} /></span>团队线路管理</div>
           <Note tone="bad">{failed.error instanceof Error ? failed.error.message : '无法连接到中控'}</Note>
-          <Button variant="primary" loading={failed.isFetching} onClick={() => void failed.refetch()}><RotateCw />重试</Button>
+          <Button loading={failed.isFetching} onClick={() => void failed.refetch()}><RotateCw />重试</Button>
         </div>
       </div>
     );
   }
-  if (!me.data || !meta.data) return <div className="login-screen"><span className="skel" style={{ width: 160, height: 16 }} /></div>;
+  if (!me.data || !meta.data) return <div className="login-screen"><Skeleton className="w-[160px] h-[16px]" /></div>;
 
   const ThemeIcon = theme.pref === 'dark' ? Moon : theme.pref === 'light' ? Sun : Monitor;
   const logout = async () => { try { await post('/auth/logout'); } finally { qc.clear(); window.location.assign('/login'); } };
@@ -200,9 +202,10 @@ export function Shell() {
                 </DropdownMenuRadioGroup>
               </DropdownMenuContent>
             </DropdownMenu>
-            <Tip text={`${me.data.username} · 退出登录`} side="bottom">
-              <button className="top-btn" aria-label={`退出登录（${me.data.username}）`} onClick={logout}><LogOut size={16} /></button>
-            </Tip>
+            <Tooltip>
+              <TooltipTrigger render={<button className="top-btn" aria-label={`退出登录（${me.data.username}）`} onClick={logout}><LogOut size={16} /></button>} />
+              <TooltipContent side="bottom">{`${me.data.username} · 退出登录`}</TooltipContent>
+            </Tooltip>
           </div>
         </header>
   
@@ -219,7 +222,7 @@ export function Shell() {
               </li>
             ))}
           </ul></nav>
-          <button type="button" className="nav-foot" onClick={() => setOverlay('help')}><kbd className="kbd">?</kbd>快捷键</button>
+          <button type="button" className="nav-foot" onClick={() => setOverlay('help')}><Kbd>?</Kbd>快捷键</button>
         </aside>
         <div className="nav-scrim" onClick={() => setNavOpen(false)} />
   

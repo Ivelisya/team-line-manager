@@ -1,10 +1,12 @@
 // 通用对话框：ConfirmDialog（一次确认）、TypedConfirmDialog（输入指定文字才可确认，用于退役、彻底删除、轮换凭据）、
 // FormDialog（表单：标题 + 字段 + 取消 / 提交，Enter 提交）。
 // TypedConfirmDialog 的失败原因（如「还不能彻底删除」）留在对话框里显示，不只是一闪而过的通知。
+import { Label } from '@/components/ui/label';
+import { Field } from '@/components/ui/field';
 import * as React from 'react';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, DialogHeader } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/form';
+import { Input } from '@/components/ui/input';
 import { errMessage, toast } from '@/components/ui/toast';
 import { resetOnOpen } from '@/lib/useHeld';
 import { Note } from './primitives';
@@ -33,8 +35,8 @@ export function ConfirmDialog({ open, onOpenChange, title, description, confirmL
       <DialogHeader><DialogTitle>{title}</DialogTitle>{description && <DialogDescription>{description}</DialogDescription>}</DialogHeader>
       {scroll ? <div style={SCROLL_BODY}>{children}</div> : children}
       <DialogFooter>
-        {!hideCancel && <Button onClick={() => onOpenChange(false)} disabled={busy}>{cancelLabel ?? '取消'}</Button>}
-        <Button type={asForm ? 'submit' : 'button'} variant={danger ? 'danger' : 'primary'} loading={busy} disabled={confirmDisabled} onClick={asForm ? undefined : run}>{confirmLabel}</Button>
+        {!hideCancel && <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>{cancelLabel ?? '取消'}</Button>}
+        <Button type={asForm ? 'submit' : 'button'} variant={danger ? 'destructive' : 'default'} loading={busy} disabled={confirmDisabled} onClick={asForm ? undefined : run}>{confirmLabel}</Button>
       </DialogFooter>
     </>
   );
@@ -61,7 +63,7 @@ export function FormDialog({ open, onOpenChange, title, desc, children, onSubmit
           <DialogHeader><DialogTitle>{title}</DialogTitle>{desc && <DialogDescription>{desc}</DialogDescription>}</DialogHeader>
           {children}
           {error != null && <Note tone="bad">{errMessage(error)}</Note>}
-          <DialogFooter><Button type="button" onClick={() => onOpenChange(false)} disabled={busy}>取消</Button><Button type="submit" variant="primary" loading={busy} disabled={!valid}>{submitLabel}</Button></DialogFooter>
+          <DialogFooter><Button variant="outline" type="button" onClick={() => onOpenChange(false)} disabled={busy}>取消</Button><Button type="submit" loading={busy} disabled={!valid}>{submitLabel}</Button></DialogFooter>
         </form>
       </DialogContent>
     </Dialog>
@@ -93,16 +95,16 @@ export const TypedConfirmDialog = resetOnOpen(function TypedConfirmDialog({ expe
         <DialogHeader><DialogTitle>{base.title}</DialogTitle>{base.description && <DialogDescription>{base.description}</DialogDescription>}</DialogHeader>
         {base.children}
         {!blocked && typed && (
-          <div className="field">
-            <label className="label" htmlFor="typed-confirm">{prompt ?? '请输入'} <b className="mono" style={{ color: 'var(--fg)' }}>{expected}</b> 以确认</label>
+          <Field>
+            <Label htmlFor="typed-confirm">{prompt ?? '请输入'} <b className="mono" style={{ color: 'var(--fg)' }}>{expected}</b> 以确认</Label>
             <Input ref={input} id="typed-confirm" value={text} onChange={(e) => setText(e.target.value)} autoComplete="off" spellCheck={false} placeholder={expected}
               onKeyDown={(e) => { if (e.key === 'Enter' && ok && !busy) void run(); }} />
-          </div>
+          </Field>
         )}
         {err && <Note tone="bad">{err}</Note>}
         <DialogFooter>
-          <Button onClick={() => base.onOpenChange(false)} disabled={busy}>{base.cancelLabel ?? (blocked ? '关闭' : '取消')}</Button>
-          {!blocked && <Button variant={base.danger ? 'danger' : 'primary'} disabled={!ok} loading={busy} onClick={run}>{base.confirmLabel}</Button>}
+          <Button variant="outline" onClick={() => base.onOpenChange(false)} disabled={busy}>{base.cancelLabel ?? (blocked ? '关闭' : '取消')}</Button>
+          {!blocked && <Button variant={base.danger ? 'destructive' : 'default'} disabled={!ok} loading={busy} onClick={run}>{base.confirmLabel}</Button>}
         </DialogFooter>
       </DialogContent>
     </Dialog>

@@ -14,8 +14,9 @@ import type { MachineView } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { SearchInput } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
-import { Segmented, Trunc } from '@/components/ui/overlays';
-import { SkeletonRows } from '@/components/ui/skeleton';
+import { Segmented } from '@/components/ui/overlays';
+import { Trunc } from '@/components/ui/tooltip';
+import { SkeletonRows } from '@/components/app/SkeletonRows';
 import { Due, DueDate, Empty, ErrorNote, Flag, HealthPill, HostTag, MonthFlowCell, Num, PageHead, Panel } from '@/components/app/primitives';
 import { NodeHover } from '@/components/app/NodeHover';
 import { MachineGrid, byNum, byStr, sortByCol, type Col } from '@/components/app/MachineGrid';
@@ -168,8 +169,8 @@ function LiveNodes({ sp, upd, tools }: { sp: URLSearchParams; upd: (patch: Recor
         {plan && <button type="button" className="fchip" aria-pressed="true" aria-label="取消套餐筛选" onClick={() => upd({ plan: '' })}>套餐{planName && ` ${planName}`}<X size={14} /></button>}
         {/* 两个按钮只要有一个在就都占着位置（另一个淡出隐藏）：点掉一个时另一个不平移到鼠标下面 */}
         {(filtered || urlSort) && <>
-          <Button variant="quiet" size="md" className="btn-slot" data-off={filtered ? undefined : ''} onClick={clearFilters}><X />清除筛选</Button>
-          <Button variant="quiet" size="md" className="btn-slot" data-off={urlSort ? undefined : ''} onClick={() => setSort(null)}><RotateCcw />恢复默认顺序</Button>
+          <Button variant="ghost" className="data-off:invisible data-off:opacity-0 [transition:background-color_var(--dur-1)_var(--ease-std),color_var(--dur-1)_var(--ease-std),border-color_var(--dur-1)_var(--ease-std),scale_var(--dur-2)_var(--ease-out),opacity_var(--dur-2)_var(--ease-std),visibility_0s_linear_var(--dur-2)]" data-off={filtered ? undefined : ''} onClick={clearFilters}><X />清除筛选</Button>
+          <Button variant="ghost" className="data-off:invisible data-off:opacity-0 [transition:background-color_var(--dur-1)_var(--ease-std),color_var(--dur-1)_var(--ease-std),border-color_var(--dur-1)_var(--ease-std),scale_var(--dur-2)_var(--ease-out),opacity_var(--dur-2)_var(--ease-std),visibility_0s_linear_var(--dur-2)]" data-off={urlSort ? undefined : ''} onClick={() => setSort(null)}><RotateCcw />恢复默认顺序</Button>
         </>}
       </div>
 
@@ -178,7 +179,7 @@ function LiveNodes({ sp, upd, tools }: { sp: URLSearchParams; upd: (patch: Recor
         <MachineGrid cols={columns} rows={pageRows} sort={sort} onSort={setSort} openId={openId} onOpen={open} dim={never} sig={rowSig} />
         {!q.isLoading && !q.isError && rows.length === 0 && (
           <Empty icon={<SearchX size={22} />} text="没有符合条件的机器">
-            {filtered && all.length > 0 && <Button size="sm" onClick={clearFilters}>清除筛选</Button>}
+            {filtered && all.length > 0 && <Button variant="outline" size="sm" onClick={clearFilters}>清除筛选</Button>}
           </Empty>
         )}
         {q.isLoading && <SkeletonRows rows={6} />}

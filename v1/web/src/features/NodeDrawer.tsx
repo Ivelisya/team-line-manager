@@ -4,8 +4,10 @@ import { Link } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/dialog';
-import { Tabs, TabsList, TabsTrigger, Trunc } from '@/components/ui/overlays';
-import { InfoTip, OptimisticSwitch } from '@/components/ui/form';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/overlays';
+import { Trunc } from '@/components/ui/tooltip';
+import { OptimisticSwitch } from '@/components/ui/form';
+import { InfoTip } from '@/components/ui/info-tip';
 import { toast } from '@/components/ui/toast';
 import { IconButton } from '@/components/ui/button';
 import { ErrorBoundary } from '@/components/app/ErrorBoundary';
@@ -72,7 +74,7 @@ export function NodeDrawer() {
         {!m ? (
           <>
             <div className="drawer-head"><SheetTitle className="drawer-title">{q.isError ? (isGone(q.error) ? '机器不存在' : '无法加载机器') : '加载中…'}</SheetTitle></div>
-            <div className="drawer-body">{q.isError ? (isGone(q.error) ? <Gone text="这台机器已不存在"><Button size="sm" onClick={close}>关闭</Button></Gone> : <ErrorNote error={q.error} onRetry={() => void q.refetch()} />) : <Skeleton h={120} />}</div>
+            <div className="drawer-body">{q.isError ? (isGone(q.error) ? <Gone text="这台机器已不存在"><Button variant="outline" size="sm" onClick={close}>关闭</Button></Gone> : <ErrorNote error={q.error} onRetry={() => void q.refetch()} />) : <Skeleton className="h-[120px]" />}</div>
           </>
         ) : (
           <>
@@ -99,12 +101,12 @@ export function NodeDrawer() {
               )}
               {m.lifecycle === 'failed' && (
                 <Note tone="bad">
-                  上架失败{m.lifecycle_reason && <>：{errText(m.lifecycle_reason)}</>}。{m.failed_job && <Link to={`/jobs/${m.failed_job.id}`} className="btn btn-link" onClick={close}>查看作业</Link>} <InfoTip text="可在作业页重试；也可以在「管理」里退役，释放 IP 与编号。" />
+                  上架失败{m.lifecycle_reason && <>：{errText(m.lifecycle_reason)}</>}。{m.failed_job && <Button variant="link" size="inline" render={<Link to={`/jobs/${m.failed_job.id}`} onClick={close} />}>查看作业</Button>} <InfoTip text="可在作业页重试；也可以在「管理」里退役，释放 IP 与编号。" />
                 </Note>
               )}
               {m.lifecycle === 'retiring' && m.failed_job && !m.active_job && (
                 <Note tone="bad">
-                  退役失败 · <Link to={`/jobs/${m.failed_job.id}`} className="btn btn-link" onClick={close}>查看作业</Link> <InfoTip text="机器停在「退役中」，在作业页从失败的步骤重试即可完成退役。" />
+                  退役失败 · <Button variant="link" size="inline" render={<Link to={`/jobs/${m.failed_job.id}`} onClick={close} />}>查看作业</Button> <InfoTip text="机器停在「退役中」，在作业页从失败的步骤重试即可完成退役。" />
                 </Note>
               )}
               {/* 团队的软路由都看得清出口、却没有一个指着这台（服务端 no_router_exits）：卡片看着像在用，其实没有客户 */}
@@ -113,11 +115,11 @@ export function NodeDrawer() {
               )}
               {m.active_job && (
                 <Note tone="info">
-                  {jobKindLabel(m.active_job.kind)}进行中。<Link to={`/jobs/${m.active_job.id}`} className="btn btn-link" onClick={close}>查看作业</Link>
+                  {jobKindLabel(m.active_job.kind)}进行中。<Button variant="link" size="inline" render={<Link to={`/jobs/${m.active_job.id}`} onClick={close} />}>查看作业</Button>
                 </Note>
               )}
               <div key={tab} className="tab-pane">
-                <React.Suspense fallback={<Skeleton h={180} className="is-float" />}>
+                <React.Suspense fallback={<Skeleton className="rounded-float h-[180px]" />}>
                   {tab === 'overview' && <OverviewTab m={m} />}
                   {tab === 'quality' && <QualityTab m={m} />}
                   {tab === 'traffic' && <TrafficTab m={m} />}
@@ -166,7 +168,7 @@ function IpNodeLine({ id, name, onOpen }: { id: string; name: string; onOpen: (i
   const n = useMachine(id).data;
   return (
     <div className="row" style={{ gap: 8, flexWrap: 'nowrap' }}>
-      <button type="button" className="btn btn-link" onClick={() => onOpen(id)}>{name}</button>
+      <Button variant="link" size="inline" onClick={() => onOpen(id)}>{name}</Button>
       {n && <><span className="t-sub num">{n.ip}</span><HealthPill m={n} /></>}
     </div>
   );
@@ -231,7 +233,7 @@ function OverviewTab({ m }: { m: MachineView }) {
           <LabelValue label="类型">{`${kindLabel(m.kind)}${h ? ` · ${meta().ip_node_label}` : ''}`}</LabelValue>
           {m.kind !== 'relay' && <LabelValue label="团队 / 编号">{m.team ? `${m.team.name} / ${m.number != null ? F.pad2(m.number) : '—'}` : '—'}</LabelValue>}
           <LabelValue label="IP"><span className="row" style={{ gap: 4, flexWrap: 'nowrap', minWidth: 0 }}><Trunc className="num">{m.ip}</Trunc><CopyButton text={m.ip} label=" IP" size={13} show /></span></LabelValue>
-          {h && <LabelValue label="宿主机"><button type="button" className="btn btn-link" onClick={() => open(h.id)}>{h.name}</button></LabelValue>}
+          {h && <LabelValue label="宿主机"><Button variant="link" size="inline" onClick={() => open(h.id)}>{h.name}</Button></LabelValue>}
           {/* 1:1 NAT 映射的附加 IP：公网 IP 不在网卡上，ssserver 监听并从这个本地地址出站；线路机连的仍是上面的 IP */}
           {h && m.bind_ip && <LabelValue label="本地地址"><><span className="num">{m.bind_ip}</span> <InfoTip text={`公网 IP 是 1:1 NAT 映射到宿主机这个地址上的：ssserver 监听并从它出站，线路机连的仍是 ${m.ip}`} /></></LabelValue>}
           {/* 端口转发型 NAT 节点：线路机连上面的 IP（入口），出站是这个 IP */}

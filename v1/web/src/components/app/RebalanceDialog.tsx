@@ -9,7 +9,7 @@ import { mmdd, quotaGb } from '@/lib/derive';
 import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { InfoTip } from '@/components/ui/form';
+import { InfoTip } from '@/components/ui/info-tip';
 import { resetOnOpen } from '@/lib/useHeld';
 import { ErrorNote, Note } from './primitives';
 import { MoveDialog, MovesDialog } from './LifecycleDialogs';
@@ -56,24 +56,24 @@ export const RebalanceDialog = resetOnOpen(function RebalanceDialog({ relay, ope
                 <div key={m.entry_id} className="row row-between">
                   <span><b>{m.node.name}</b> <span className="t-sub">· 端口 {m.port} · 本周期 {gb(m.period_bytes)} · 日均 {gb(m.daily_bytes)}</span></span>
                   <span className="row">
-                    <Button size="sm" variant="quiet" onClick={() => setSkip((s) => [...s, m.node])} data-tip="这个节点不动，换别的入口凑"><X />不动</Button>
-                    <Button size="sm" onClick={() => start(m.node.id, m.needs_from)} disabled={!machines.some((x) => x.id === m.node.id)}>搬过去</Button>
+                    <Button size="sm" variant="ghost" onClick={() => setSkip((s) => [...s, m.node])} data-tip="这个节点不动，换别的入口凑"><X />不动</Button>
+                    <Button variant="outline" size="sm" onClick={() => start(m.node.id, m.needs_from)} disabled={!machines.some((x) => x.id === m.node.id)}>搬过去</Button>
                   </span>
                 </div>
               ))}
               <div className="row row-between">
                 <span className="hint">搬走后入口地址会变：用订阅链接的自动更新，用分享链接的要换新链接</span>
-                {p.moves.length > 1 && <Button size="sm" onClick={() => setAll(true)} data-tip="一起换，每台软路由只改一次、OpenClash 只重启一次">全部搬过去</Button>}
+                {p.moves.length > 1 && <Button variant="outline" size="sm" onClick={() => setAll(true)} data-tip="一起换，每台软路由只改一次、OpenClash 只重启一次">全部搬过去</Button>}
               </div>
             </div>
           )}
           {skip.length > 0 && (
             <div className="row">
               <span className="t-sub">不动：</span>
-              {skip.map((x) => <Button key={x.id} size="sm" variant="quiet" onClick={() => setSkip((s) => s.filter((y) => y.id !== x.id))} data-tip="点一下恢复"><X />{x.name}</Button>)}
+              {skip.map((x) => <Button key={x.id} size="sm" variant="ghost" onClick={() => setSkip((s) => s.filter((y) => y.id !== x.id))} data-tip="点一下恢复"><X />{x.name}</Button>)}
             </div>
           )}
-          <DialogFooter><Button onClick={() => onOpenChange(false)}>关闭</Button></DialogFooter>
+          <DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button></DialogFooter>
         </DialogContent>
       </Dialog>
       {all && p?.target && <MovesDialog nodes={p.moves.map((m) => ({ id: m.node.id, name: m.node.name, port: m.port }))} from={relay} open onOpenChange={(o) => { if (!o) setAll(false); }} onDone={() => { setAll(false); onOpenChange(false); }} initialTo={p.target.id} />}

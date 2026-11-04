@@ -1,4 +1,6 @@
 // 时长选择：常用时长胶囊 + 「自定义」分钟数（只收整数分钟、去掉前导 0）。告警页「新建静默」与卡片菜单的「维护窗口…」共用
+import { Label } from '@/components/ui/label';
+import { Field } from '@/components/ui/field';
 import * as React from 'react';
 import * as F from '@/lib/format';
 import { UnitInput } from '@/components/ui/form';
@@ -42,8 +44,8 @@ export function DurationField({ d, items = DURATIONS }: { d: ReturnType<typeof u
     <button key={v} type="button" role="radio" aria-checked={d.dur === v} tabIndex={d.dur === v ? 0 : -1} className="fchip" onClick={() => pick(v)}>{label}</button>
   );
   return (
-    <div className="field">
-      <span className="label">时长</span>
+    <Field>
+      <Label>时长</Label>
       <div className="row" role="radiogroup" aria-label="时长" onKeyDown={onKey}>
         {items.map((x) => chip(x.min, x.label))}
         {chip('custom', '自定义')}
@@ -53,6 +55,6 @@ export function DurationField({ d, items = DURATIONS }: { d: ReturnType<typeof u
           onChange={(e) => d.setMins(e.target.value.replace(/\D/g, '').replace(/^0+/, ''))} />
       )}
       {bad && <div className="hint is-error">填 1–{d.max} 分钟（最长 {F.span(d.max * 60_000)}）</div>}
-    </div>
+    </Field>
   );
 }

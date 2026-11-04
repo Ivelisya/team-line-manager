@@ -1,8 +1,9 @@
 // 线路：每台线路机一张卡——应用状态（配置版本 vs 已生效）+ 入口表（端口、节点、状态、TCP/出口探测、流量）。
 // 入口多的线路机（几十条）只先露前 ENTRY_CAP 条，表尾「显示全部 N 条」展开：线路机只有几台，一页里放几个分页器反而难用。
 // 有问题的入口（探测不通、应用失败）排在最前、一直露着，不被折叠。点行打开节点抽屉（同机器页），点线路机名打开线路机抽屉。
+import { Spinner } from '@/components/ui/spinner';
 import * as React from 'react';
-import { CheckCircle2, ChevronRight, CircleAlert, Loader2, PackageOpen } from 'lucide-react';
+import { CheckCircle2, ChevronRight, CircleAlert, PackageOpen } from 'lucide-react';
 import { useRelays } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import { entryBad, healthLabel, isReverse, linkCounts, probeSummary, reachWho } from '@/lib/derive';
@@ -10,7 +11,7 @@ import { useReachLabel } from '@/lib/probePoints';
 import * as F from '@/lib/format';
 import type { EntryView, MachineView } from '@/lib/types';
 import { Button } from '@/components/ui/button';
-import { Tip } from '@/components/ui/overlays';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Chip, Due, Empty, ErrorNote, Flag, HealthPill, LinkCounts, Num, PageHead, Pill, TableWrap } from '@/components/app/primitives';
 import { NodeHover } from '@/components/app/NodeHover';
 import { Waypoints } from 'lucide-react';
@@ -62,9 +63,9 @@ function ApplyStatus({ m }: { m: MachineView }) {
     <div className="apply-box">
       {/* 带图标的不再画圆点：「配置未应用」原先呼吸点加转圈，两样一起动 */}
       {r.apply_error ? <Pill tone="bad" dot="none"><CircleAlert size={12} />应用失败</Pill>
-        : pending ? <Pill tone="info" dot="none"><Loader2 size={12} className="spin" />配置未应用</Pill>
+        : pending ? <Pill tone="info" dot="none"><Spinner className="size-3" />配置未应用</Pill>
         : <Pill tone="ok" dot="none"><CheckCircle2 size={12} />已应用</Pill>}
-      <Tip text="两个数相等表示线路机已同步"><span tabIndex={0}>配置版本 <b className="num" style={{ color: 'var(--fg)' }}>{r.generation}</b> · 已生效 <b className="num" style={{ color: 'var(--fg)' }}>{r.applied_generation}</b></span></Tip>
+      <Tooltip><TooltipTrigger render={<span tabIndex={0} />}>配置版本 <b className="num" style={{ color: 'var(--fg)' }}>{r.generation}</b> · 已生效 <b className="num" style={{ color: 'var(--fg)' }}>{r.applied_generation}</b></TooltipTrigger><TooltipContent>两个数相等表示线路机已同步</TooltipContent></Tooltip>
       {pending && pendingEntries > 0 && <span>{pendingEntries} 条入口应用中</span>}
       {/* 旧 agent 没报过 AnyTLS 状态时不显示（抽屉里写「未知」） */}
       {m.agent?.anytls && <span>AnyTLS <AnytlsState a={m.agent.anytls} /></span>}
@@ -95,7 +96,7 @@ function RelayCard({ m, open, routers }: { m: MachineView; open: Open; routers: 
         {links.reach.total > 0 && <span className="t-sub"><LinkCounts c={links} who={who} /></span>}
         <span className="t-sub">{r?.public_host && r.public_host !== m.ip ? `${r.public_host} · ${m.ip}` : m.ip}</span>
         {m.subscription && <Chip variant={dueWarn ? 'warn' : undefined}><Due days={m.subscription.due_days} state={m.subscription.due_state} tail /></Chip>}
-        {m.lifecycle === 'active' && movableEntries(m).length > 0 && <Button size="sm" style={{ marginLeft: 'auto' }} onClick={() => openEvacuate(m.id)}><PackageOpen size={14} />搬空到…</Button>}
+        {m.lifecycle === 'active' && movableEntries(m).length > 0 && <Button variant="outline" size="sm" style={{ marginLeft: 'auto' }} onClick={() => openEvacuate(m.id)}><PackageOpen size={14} />搬空到…</Button>}
       </header>
       <ApplyStatus m={m} />
       {/* 入口的“⋯”菜单与对话框整张卡共用一份 */}
@@ -148,7 +149,7 @@ export function RelaysPage() {
     <div className="stack">
       <PageHead title="线路" note={q.data ? <span data-tip={'入口可达、出口通只数在用的入口，停用和待应用的不计；节点通再去掉直出入口（不经节点）'}>{`${list.length} 台线路机 · ${list.reduce((s, m) => s + m.entries.length, 0)} 条入口 · ${list.reduce((s, m) => s + activeEntries(m.entries), 0)} 条在用`}</span> : undefined} />
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
-      {q.isLoading && <Skeleton h={220} />}
+      {q.isLoading && <Skeleton className="h-[220px]" />}
       {/* 节点放在哪台线路机最好：换线前先看这里 */}
       {list.length > 1 && <PlacementPanel />}
       {/* 线路机多了竖着排很长：吸顶的一行名字，点一下跳到那张卡；只有故障的写状态 */}

@@ -5,9 +5,13 @@ import * as React from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronLeft, ChevronRight, CircleX, Router as RouterIcon, TriangleAlert, Users, Waypoints, XCircle } from 'lucide-react';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/dialog';
-import { Tabs, TabsList, TabsTrigger, Trunc } from '@/components/ui/overlays';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/overlays';
+import { Trunc } from '@/components/ui/tooltip';
 import { Button, IconButton } from '@/components/ui/button';
-import { Field, InfoTip, Input, Textarea } from '@/components/ui/form';
+import { FormField } from '@/components/ui/form';
+import { InfoTip } from '@/components/ui/info-tip';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { Select } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
@@ -56,7 +60,7 @@ export function RouterDrawer() {
           {!r ? (
             <>
               <div className="drawer-head"><SheetTitle className="drawer-title">{q.isError ? (isGone(q.error) ? '软路由不存在' : '无法加载软路由') : '加载中…'}</SheetTitle></div>
-              <div className="drawer-body">{q.isError ? (isGone(q.error) ? <Gone text="这台软路由已不存在"><Button size="sm" onClick={close}>关闭</Button></Gone> : <ErrorNote error={q.error} onRetry={() => void q.refetch()} />) : <Skeleton h={120} />}</div>
+              <div className="drawer-body">{q.isError ? (isGone(q.error) ? <Gone text="这台软路由已不存在"><Button variant="outline" size="sm" onClick={close}>关闭</Button></Gone> : <ErrorNote error={q.error} onRetry={() => void q.refetch()} />) : <Skeleton className="h-[120px]" />}</div>
             </>
           ) : (
             <>
@@ -67,7 +71,7 @@ export function RouterDrawer() {
               <div className="drawer-body" ref={bodyRef}>
                 {q.isError && !q.data && <ErrorNote error={q.error} onRetry={() => void q.refetch()}>详情加载失败：</ErrorNote>}
                 <div key={tab} className="tab-pane">
-                  <React.Suspense fallback={<Skeleton h={180} className="is-float" />}>
+                  <React.Suspense fallback={<Skeleton className="rounded-float h-[180px]" />}>
                     {tab === 'overview' && <OverviewTab r={r} detail={detail} />}
                     {tab === 'exits' && <Needs r={r} detail={detail}>{(d) => <ExitsTab r={r} d={d} />}</Needs>}
                     {tab === 'clients' && <Needs r={r} detail={detail}>{(d) => <ClientsTab d={d} />}</Needs>}
@@ -87,7 +91,7 @@ export function RouterDrawer() {
 
 /** 出口、客户端只在采集成功过之后才有 */
 function Needs({ r, detail, children }: { r: RouterView; detail: RouterDetail | null | undefined; children: (d: RouterDetail) => React.ReactNode }) {
-  if (detail === undefined) return <Skeleton h={180} className="is-float" />;
+  if (detail === undefined) return <Skeleton className="rounded-float h-[180px]" />;
   if (!detail) return <div className="hint">{r.state === 'pending' ? '接入后才有数据' : '还没有数据'}</div>;
   return <>{children(detail)}</>;
 }
@@ -132,7 +136,7 @@ function Head({ r, detail }: { r: RouterView; detail: RouterDetail | null | unde
 /** 变更页签：OpenClash 配置每变一次一条（采集发现配置文件变了才记），时间线形式——时间、来源（中控作业可点开 / 路由上改的）、改了哪些出口。只看，不回滚 */
 function ChangesTab({ r, onClosed }: { r: RouterView; onClosed: () => void }) {
   const q = useRouterChanges(r.id);
-  if (q.isPending) return <Skeleton h={120} className="is-float" />;
+  if (q.isPending) return <Skeleton className="rounded-float h-[120px]" />;
   if (q.isError) return <ErrorNote error={q.error} onRetry={() => void q.refetch()} />;
   if (!q.data.length) return <div className="hint">还没有记录到配置变更</div>;
   return (
@@ -144,7 +148,7 @@ function ChangesTab({ r, onClosed }: { r: RouterView; onClosed: () => void }) {
             <i className="rt-tl-dot" aria-hidden />
             <div className="rt-tl-body">
               <span className="rt-tl-text">
-                {c.source === 'job' && c.job_id ? <Link to={`/jobs/${c.job_id}`} className="btn btn-link" onClick={onClosed}>{jobKindLabel(c.job_kind ?? '')}</Link> : '路由上改的'}
+                {c.source === 'job' && c.job_id ? <Button variant="link" size="inline" render={<Link to={`/jobs/${c.job_id}`} onClick={onClosed} />}>{jobKindLabel(c.job_kind ?? '')}</Button> : '路由上改的'}
               </span>
               <span className="rt-tl-at">{F.dt(c.at)}</span>
               <div className="rt-chg">
@@ -199,11 +203,11 @@ function RenameSection({ r }: { r: RouterView }) {
     <Section>
       <SectionHeader title={<>改名 / 团队 / 备注 <InfoTip text="只改面板里的显示，不影响路由和客户端上网" /></>} />
       <form className="form-grid" onSubmit={(e) => { e.preventDefault(); if (valid && !patch.isPending) save(); }}>
-        <Field label="名称" error={!name.trim() ? '名称不能为空' : undefined}><Input value={name} onChange={(e) => setName(e.target.value)} autoComplete="off" aria-invalid={!name.trim()} /></Field>
-        <Field label="团队"><Select value={team} onChange={setTeam} options={opts} allowEmpty="未分团队" placeholder="未分团队" /></Field>
-        <Field label="备注" className="span-2"><Textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} /></Field>
+        <FormField label="名称" error={!name.trim() ? '名称不能为空' : undefined}><Input value={name} onChange={(e) => setName(e.target.value)} autoComplete="off" aria-invalid={!name.trim()} /></FormField>
+        <FormField label="团队"><Select value={team} onChange={setTeam} options={opts} allowEmpty="未分团队" placeholder="未分团队" /></FormField>
+        <FormField label="备注" className="span-2"><Textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} /></FormField>
         <div className="span-2 row" style={{ justifyContent: 'flex-end' }}>
-          <Button type="submit" variant="primary" disabled={!valid || patch.isPending} loading={patch.isPending}>保存</Button>
+          <Button type="submit" disabled={!valid || patch.isPending} loading={patch.isPending}>保存</Button>
         </div>
       </form>
     </Section>
@@ -222,17 +226,17 @@ function AccessSection({ r, onClosed }: { r: RouterView; onClosed: () => void })
         <div className="manage-row">
           <div><div className="t">接入命令</div><div className="hint">{pending ? '在路由上执行接入命令，约半分钟后上线' : '中控连不上路由时，到路由上执行命令重新接入'}</div></div>
           {/* 还没连上过的没有隧道可断，直接生成；连上过的先确认（旧隧道立刻失效） */}
-          <Button variant="secondary" loading={boot.pending} onClick={() => (r.last_seen_at ? setAskRegen(true) : void boot.run(r))}>{pending ? '查看接入命令' : '重新生成…'}</Button>
+          <Button variant="outline" loading={boot.pending} onClick={() => (r.last_seen_at ? setAskRegen(true) : void boot.run(r))}>{pending ? '查看接入命令' : '重新生成…'}</Button>
         </div>
         <div className="manage-row">
           <div><div className="t">一键部署</div><div className="hint">中控通过 SSH 登录路由重新安装，需要账号密码</div></div>
-          <Button variant="secondary" onClick={() => showDeploy({ id: r.id, name: r.name })}>重新部署…</Button>
+          <Button variant="outline" onClick={() => showDeploy({ id: r.id, name: r.name })}>重新部署…</Button>
         </div>
         {!pending && (
           <div className="manage-row">
             <div><div className="t">终端</div><div className="hint">经隧道登录路由</div></div>
             {/* 打开终端先收起抽屉：终端窗口的层级在抽屉遮罩之下，开着抽屉会被盖住；关掉终端回到这一页 */}
-            <Button variant="secondary" onClick={() => { onClosed(); openTerminal({ kind: 'router', id: r.id, name: r.name }, () => open(r.id, 'manage')); }}>打开终端</Button>
+            <Button variant="outline" onClick={() => { onClosed(); openTerminal({ kind: 'router', id: r.id, name: r.name }, () => open(r.id, 'manage')); }}>打开终端</Button>
           </div>
         )}
       </div>
@@ -253,8 +257,8 @@ function MaintSection({ r }: { r: RouterView }) {
         <div className="manage-row">
           <div><div className="t">维护窗口 <InfoTip text={'客户现场断电、换宽带前开\n期间不发告警，开着的告警保持到维护结束，卡片上显示「维护」'} /></div>{r.maintenance && <div className="hint">维护中</div>}</div>
           {r.maintenance
-            ? <Button variant="secondary" loading={end.isPending} onClick={() => end.mutate({ kind: 'router', id: r.id }, { onSuccess: () => toast.ok(`${r.name} 已结束维护`), onError: toast.err })}>结束维护</Button>
-            : <Button variant="secondary" onClick={() => setOpen(true)}>维护窗口…</Button>}
+            ? <Button variant="outline" loading={end.isPending} onClick={() => end.mutate({ kind: 'router', id: r.id }, { onSuccess: () => toast.ok(`${r.name} 已结束维护`), onError: toast.err })}>结束维护</Button>
+            : <Button variant="outline" onClick={() => setOpen(true)}>维护窗口…</Button>}
         </div>
       </div>
       <MaintenanceDialog m={r} kind="router" open={open} onOpenChange={setOpen} />
@@ -292,7 +296,7 @@ function DeleteSection({ r, onClosed }: { r: RouterView; onClosed: () => void })
       <div className="mgroup is-danger">
         <div className="manage-row">
           <div><div className="t">删除</div><div className="hint">只删面板里的记录，路由本身不受影响 <InfoTip text={'会撤销隧道授权并删除历史数据\n删除后会给出一条在路由上执行的清理命令'} /></div></div>
-          <Button variant="outline-danger" onClick={openAsk}>删除…</Button>
+          <Button variant="destructive" onClick={openAsk}>删除…</Button>
         </div>
       </div>
       {typed
@@ -342,7 +346,7 @@ function OverviewTab({ r, detail }: { r: RouterView; detail: RouterDetail | null
               <ul className="reason-list">
                 {issues.map((text) => (
                   <li key={text}><SeverityMark severity="warning" />{text}
-                    {text.includes('延迟测试不通') && <> <button type="button" className="btn btn-link btn-sm" style={{ height: 'auto', padding: 0 }} onClick={() => setTab('exits')}>查看出口</button></>}
+                    {text.includes('延迟测试不通') && <> <Button variant="link" size="inline-sm" onClick={() => setTab('exits')}>查看出口</Button></>}
                   </li>
                 ))}
               </ul>
@@ -457,7 +461,7 @@ function ExitsTab({ r, d }: { r: RouterView; d: RouterDetail }) {
   const canSync = r.state === 'online' && d.exits.some(syncable);
   return (
     <>
-      <p className="rt-lead">{d.exits.length} 个出口 · <b>{alive}</b> 个可用 · {managed} 个对应入口{drift > 0 && <> · <span className="rt-warn">{drift} 个不一致</span>{canSync && <> <button type="button" className="btn btn-link btn-sm" style={{ height: 'auto', padding: 0 }} onClick={() => onSync([])}>全部同步…</button></>}</>}<InfoTip text="定期测一次延迟。连续两轮不通才算不可用，只不通一次不告警" /></p>
+      <p className="rt-lead">{d.exits.length} 个出口 · <b>{alive}</b> 个可用 · {managed} 个对应入口{drift > 0 && <> · <span className="rt-warn">{drift} 个不一致</span>{canSync && <> <Button variant="link" size="inline-sm" onClick={() => onSync([])}>全部同步…</Button></>}</>}<InfoTip text="定期测一次延迟。连续两轮不通才算不可用，只不通一次不告警" /></p>
       {d.exits.length === 0 ? <Empty icon={<Waypoints size={22} />} text="没有读到出口" /> : <Section>
         <SectionHeader title="出口 → 节点" />
         <Topology exits={d.exits} onOpen={openMachine} />
@@ -490,10 +494,10 @@ const ExitRow = React.memo(function ExitRow({ e, beats, onOpen, onSync }: { e: R
   return (
     <tr>
       <td><span className="cell-main strong" data-tip={`${e.name}（${exitProto(e)}）→ ${e.server}:${e.port}`}>{e.name}</span><span className="sub">{exitProto(e)}</span></td>
-      <td>{e.entry ? <><button type="button" className="btn btn-link" style={{ height: 'auto', padding: 0, maxWidth: '100%' }} data-tip={`${e.entry.name}
-打开这个节点的详情`} onClick={() => onOpen(e.entry!.node_id)}><span className="ellipsis">{node}</span></button>{via && <span className="sub ellipsis" data-tip={e.entry.name}>{via}</span>}</> : <span className="t-muted">—</span>}</td>
+      <td>{e.entry ? <><Button variant="link" size="inline" className="max-w-full" data-tip={`${e.entry.name}
+打开这个节点的详情`} onClick={() => onOpen(e.entry!.node_id)}><span className="ellipsis">{node}</span></Button>{via && <span className="sub ellipsis" data-tip={e.entry.name}>{via}</span>}</> : <span className="t-muted">—</span>}</td>
       {/* 一致的不标（一列「一致」只是噪音），只标不一致 / 不受管 */}
-      <td>{e.sync !== 'ok' && <Pill tone={s.tone} tip={syncTip(e)}>{s.label}</Pill>}{onSync && <button type="button" className="btn btn-link btn-sm sub" style={{ height: 'auto', padding: 0 }} data-tip="改成入口现在的凭据（会重启 OpenClash）" onClick={() => onSync([e.name])}>同步…</button>}</td>
+      <td>{e.sync !== 'ok' && <Pill tone={s.tone} tip={syncTip(e)}>{s.label}</Pill>}{onSync && <Button variant="link" size="inline-sm" className="sub" data-tip="改成入口现在的凭据（会重启 OpenClash）" onClick={() => onSync([e.name])}>同步…</Button>}</td>
       <td className="r">
         {e.alive === false && exitUsable(e) ? <span className="rt-alive rt-warn" data-tip="只不通 1 次，还算可用；连续两次不通才告警">不通 1 次</span>
           : e.alive === false ? <span className="rt-alive" data-tone="bad"><XCircle />不通</span>
@@ -524,7 +528,7 @@ function Topology({ exits, onOpen }: { exits: RouterExit[]; onOpen: (id: string)
         {groups.map(([relay, list]) => (
           <div key={relay || 'none'} className="rt-topo-group">
             <div className="rt-topo-title">
-              {relay ? <><button type="button" className="btn btn-link" style={{ height: 'auto', padding: 0 }} data-tip="打开这台线路机的详情" onClick={() => onOpen(relay)}>{name.get(relay) ?? '线路机'}</button><small>{list.length} 个出口</small></>
+              {relay ? <><Button variant="link" size="inline-sm" className="font-medium text-fg" data-tip="打开这台线路机的详情" onClick={() => onOpen(relay)}>{name.get(relay) ?? '线路机'}</Button><small>{list.length} 个出口</small></>
                 : <>不受管（路由自配）<small>{list.length} 个出口</small></>}
             </div>
             {list.map((e) => (

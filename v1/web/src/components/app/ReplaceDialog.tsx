@@ -1,5 +1,7 @@
 // 替换节点：新节点接替旧节点——软路由上指向旧节点的出口改成新节点的入口，编号交换（新节点接旧编号，旧节点去备用团队）。
 // 抽屉「管理」页与卡片菜单（经 LifecycleDialogsHost）共用；选了新节点就拉预览（只读库），确认后建 replace 作业并跳到作业详情。
+import { FieldTitle } from '@/components/ui/field';
+import { Button } from '@/components/ui/button';
 import * as React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowRight, Check, ChevronDown } from 'lucide-react';
@@ -9,7 +11,9 @@ import { useAddrName } from '@/lib/routers';
 import { errText } from '@/lib/derive';
 import '@/styles/routers.css';
 import { prefixScore } from '@/lib/match';
-import { CheckRow, Field, InfoTip, Input } from '@/components/ui/form';
+import { CheckRow, FormField } from '@/components/ui/form';
+import { InfoTip } from '@/components/ui/info-tip';
+import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
@@ -103,10 +107,10 @@ export function RouterExitList({ routers, title }: { routers: { node?: string; p
   const shown = (a: string) => { const x = addr(a); return <span className="rx-addr" data-tip={x.tip}>{x.text}</span>; };
   return (
     <div>
-      <div className="label" style={{ marginBottom: 6 }}>
+      <FieldTitle className="mb-1.5">
         {title ?? (ok.length ? <>改 {new Set(ok.map((r) => r.plan.id)).size} 台软路由的 {ok.length} 个出口</> : '软路由出口')}
         {bad > 0 && <>{' · '}<span className="rt-bad">{bad} 个对不上新入口</span></>}
-      </div>
+      </FieldTitle>
       <div style={{ maxHeight: 200, overflow: 'auto' }}>
         <table className="rx-tbl">
           <thead><tr>{withNode && <th>节点</th>}<th>软路由 · 出口</th><th>改成</th></tr></thead>
@@ -137,7 +141,7 @@ export function RenameNote({ renames, tip, bare }: { renames: { machine_id: stri
       <div className="row row-between" style={{ gap: 8 }}>
         {/* 一行说完：只写台数（一台时写 旧名 → 新名），改了哪几个名放进 (i) */}
         <span>补号：{renames.length > 1 ? `${renames.length} 台节点前移` : `${first.old_name} → ${first.new_name}`} <InfoTip text={renames.length > 1 ? `${tip}\n${first.old_name} … ${last.old_name}` : tip} /></span>
-        {renames.length > 1 && <button type="button" className="btn btn-link btn-sm" style={{ height: 'auto', padding: 0 }} aria-expanded={open} onClick={() => setOpen((v) => !v)}>{open ? '收起' : '展开'}</button>}
+        {renames.length > 1 && <Button variant="link" size="inline-sm" aria-expanded={open} onClick={() => setOpen((v) => !v)}>{open ? '收起' : '展开'}</Button>}
       </div>
       {open && (
         <div style={{ maxHeight: 200, overflow: 'auto', marginTop: 6 }}>
@@ -181,11 +185,11 @@ export const ReplaceDialog = resetOnOpen(function ReplaceDialog({ m, open, onOpe
       description={<>新节点接旧编号，旧节点去备用 <InfoTip text={'先把软路由上指向旧节点的出口改成新节点（每台先备份，改完重启 OpenClash 并测延迟，失败会自动换回），再交换编号\n旧节点放进备用团队，到期满 1 天后自动回收。开始改路由后不能取消'} /></>}
       onConfirm={submit}>
       <div className="form-grid">
-        <Field label="接替的节点" className="span-2"><NodePicker m={m} value={pick} onChange={setPick} /></Field>
-        <Field label="旧节点去哪" info="留空则放进同团队的备用团队（名字以团队名开头；只有一个备用团队时就是它）">
+        <FormField label="接替的节点" className="span-2"><NodePicker m={m} value={pick} onChange={setPick} /></FormField>
+        <FormField label="旧节点去哪" info="留空则放进同团队的备用团队（名字以团队名开头；只有一个备用团队时就是它）">
           <Select value={team} onChange={setTeam} options={teamOpts} allowEmpty="自动（备用团队）" />
-        </Field>
-        <Field label="编号"><Input inputMode="numeric" value={num} onChange={(e) => setNum(e.target.value.replace(/\D/g, ''))} placeholder={pv?.old_to.number != null && !number ? `自动：${pv.old_to.number}` : '自动'} /></Field>
+        </FormField>
+        <FormField label="编号"><Input inputMode="numeric" value={num} onChange={(e) => setNum(e.target.value.replace(/\D/g, ''))} placeholder={pv?.old_to.number != null && !number ? `自动：${pv.old_to.number}` : '自动'} /></FormField>
         <div className="span-2"><CheckRow checked={routers} onChange={setRouters}>同时改软路由 <InfoTip text="不改的话只交换编号，软路由上的出口仍指向旧节点。" /></CheckRow></div>
       </div>
 
