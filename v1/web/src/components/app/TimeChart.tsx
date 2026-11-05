@@ -150,7 +150,7 @@ export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 
     const cut = !!clip && p99 > 0 && max > p99 * 1.3;
     const top = cut ? p99 : max;
     // clip 且有数据时按数据取整数刻度（连接质量的丢包图同时有 domain 与 clip：有丢包时缩到 0…4%，全为 0 才落回固定的 0–100）
-    let ticks = yBase ? valueTicks(top, yBase) : pct && top > 0 ? pctTicks(top) : clip && top > 0 ? intTicks(top) : undefined;
+    let ticks = yBase ? valueTicks(top, yBase) : pct ? pctTicks(top) : clip && top > 0 ? intTicks(top) : undefined;
     let ceil = ticks ? ticks[ticks.length - 1] : undefined;
     // 固定范围（百分比 0–100）：上下限就是范围，刻度均分 4 段；超过上限的点压到上限、标小三角（同截顶）
     let fixed = false;
@@ -196,7 +196,7 @@ export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 
     <Grid key="grid" horizontal vertical={false} strokeDasharray="0" rowTickValues={y.ticks} numTicksRows={4} />,
     ...holes.map((h, i) => (
       <ReferenceArea key={`hole${i}`} x1={h.a} x2={h.b} pattern="diagonal" patternColor="color-mix(in oklab, var(--chart-axis) 30%, transparent)" patternScale={1.2} patternStrokeWidth={1.5}
-        stroke="transparent" fadeEdgesLength={14} label={h.label} labelColor="var(--chart-axis)" />
+        stroke="transparent" fadeEdgesPx={8} label={h.label} labelColor="var(--chart-axis)" />
     )),
     ...shown.map((l) => kind === 'area'
       ? <Area key={l.key} dataKey={l.key} fill={l.color} stroke={l.color} strokeWidth={1.5} fillOpacity={FILL_TOP[Math.min(lines.indexOf(l), 1)]} curve={curveMonotoneX} showHighlight={false} />

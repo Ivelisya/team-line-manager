@@ -52,6 +52,8 @@ export interface ReferenceAreaProps {
   fadeEdges?: boolean;
   /** Horizontal fade zone as % of plot width per edge. Default: 10 */
   fadeEdgesLength?: number;
+  /** Fade only THIS band's own left / right edges, over this many px (at most 15% of the band width), body at full opacity. Overrides `fadeEdgesLength`. */
+  fadeEdgesPx?: number;
   /** Y-axis tick label color for values inside this band. */
   axisLabelColor?: string;
   /** Inward bracket markers at the horizontal center of the band. */
@@ -107,6 +109,7 @@ export function ReferenceArea({
   strokeDasharray = "4,4",
   fadeEdges = true,
   fadeEdgesLength = 10,
+  fadeEdgesPx,
   axisLabelColor,
   showMarkers = false,
   markerColor = "var(--chart-1)",
@@ -184,7 +187,7 @@ export function ReferenceArea({
     patternTileBackground,
   ]);
 
-  const fadeEdge = clampFadeLength(fadeEdgesLength);
+  let fadeEdge = clampFadeLength(fadeEdgesLength);
   const edgeMask = fadeEdges ? `url(#${hMaskId})` : undefined;
   const lineDash = strokeStyle === "dashed" ? strokeDasharray : undefined;
 
@@ -193,6 +196,11 @@ export function ReferenceArea({
   }
 
   const { x, y, width, height } = rect;
+  // Own-edge mode: the mask spans this band only (the default mask spans the whole plot, which fades a band at the plot edge to nothing).
+  const ownEdges = fadeEdgesPx != null;
+  if (ownEdges) {
+    fadeEdge = (Math.min(fadeEdgesPx, width * 0.15) / Math.max(1, width)) * 100;
+  }
   const topEdgeY = y;
   const bottomEdgeY = y + height;
   const centerX = x + width / 2;
@@ -232,10 +240,10 @@ export function ReferenceArea({
           <mask id={hMaskId}>
             <rect
               fill={`url(#${hGradientId})`}
-              height={innerHeight}
-              width={innerWidth}
-              x={0}
-              y={0}
+              height={ownEdges ? height : innerHeight}
+              width={ownEdges ? width : innerWidth}
+              x={ownEdges ? x : 0}
+              y={ownEdges ? y : 0}
             />
           </mask>
         </defs>

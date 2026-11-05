@@ -2,6 +2,3 @@ allowBuilds:
   esbuild: true
 # 供应链：只装发布满 7 天的版本（分钟）。新依赖都用 pnpm add -E 精确锁定
 minimumReleaseAge: 10080
-# recharts 2 自带 react-is 18，与 React 19 不配套（shadcn 图表文档的做法：钉到同版本）
-overrides:
-  recharts>react-is: 19.3.0

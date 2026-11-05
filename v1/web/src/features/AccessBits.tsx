@@ -1,5 +1,5 @@
 // 访问记录的小部件（数字格式、处理结果标、目标名）。单独成文件：访问监控页只要这几样，
-// 不能连带把 AccessTab 顶层引入的 Recharts（约 110KB gzip）一起拉下来。
+// 不能连带把 AccessTab 顶层引入的图表库（bklit，约 60–90KB gzip）一起拉下来。
 import { Chip, Pill } from '@/components/app/primitives';
 import '@/styles/access.css';
 

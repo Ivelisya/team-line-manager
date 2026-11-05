@@ -33,7 +33,7 @@ import { ManageTab } from './ManageTab';
 import { BillingTab } from './BillingTab';
 import { EntriesTable, entriesMeta } from './EntriesTable';
 
-// 带图表的页签（recharts）按需加载
+// 带图表的页签（图表库 bklit）按需加载
 const QualityTab = React.lazy(() => import('./DrawerCharts').then((m) => ({ default: m.QualityTab })));
 const TrafficTab = React.lazy(() => import('./DrawerCharts').then((m) => ({ default: m.TrafficTab })));
 const HostTab = React.lazy(() => import('./DrawerCharts').then((m) => ({ default: m.HostTab })));
@@ -42,7 +42,7 @@ const AccessTab = React.lazy(() => import('./AccessTab').then((m) => ({ default:
 export function NodeDrawer() {
   const { id, tab: liveTab, setTab, switchTo, close } = useDrawer();
   const qc = useQueryClient();
-  // 首次挂载后空闲时预取图表块（recharts），第一次点图表页签不用等下载
+  // 首次挂载后空闲时预取图表块（bklit 图表块），第一次点图表页签不用等下载
   React.useEffect(() => {
     const t = setTimeout(() => { import('./DrawerCharts').catch(() => { /* 预取失败不要紧，真用到时会再试 */ }); }, 1500);
     return () => clearTimeout(t);

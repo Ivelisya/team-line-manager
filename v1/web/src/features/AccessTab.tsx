@@ -73,14 +73,14 @@ const hourSpan = (l: string | number) => { const d = new Date(Number(l)); const 
 function HourlyBars({ points, height = 160 }: { points: MachineAccess['hourly']; height?: number }) {
   const long = points.length > 30;
   const data = React.useMemo(() => points.map((p) => ({ t: new Date(p.hour).getTime(), routed: Math.max(0, p.conns - p.blocked), blocked: p.blocked, total: p.conns })), [points]);
-  const ticks = React.useMemo(() => intTicks(Math.max(0, ...data.map((d) => d.total))), [data]);
+  const ticks = React.useMemo(() => intTicks(Math.max(0, ...data.map((d) => d.routed + d.blocked))), [data]);
   const leftW = Math.max(64, ...ticks.map((t) => Math.ceil(textWidth(yTimes(t), 11)) + 14)); // 「120,000 次」放得下
   const tick = React.useCallback((l: string) => { const d = new Date(Number(l)); return long ? `${p2(d.getMonth() + 1)}-${p2(d.getDate())}` : `${p2(d.getHours())}:00`; }, [long]);
   return (
     <BarChart data={data} xDataKey="t" stacked aspectRatio="" style={{ height }} margin={{ top: 8, right: 10, bottom: 26, left: leftW }} barGap={long ? 0 : 0.1} yDomain={[0, ticks[ticks.length - 1]]} animationDuration={0}>
       <Grid horizontal vertical={false} strokeDasharray="0" rowTickValues={ticks} numTicksRows={4} />
-      <Bar dataKey="routed" fill={ROUTED.color} animate={false} lineCap={long ? 0 : 2} roundEnd fadedOpacity={0.45} />
-      <Bar dataKey="blocked" fill={BLOCKED.color} animate={false} lineCap={long ? 0 : 2} roundEnd fadedOpacity={0.45} />
+      <Bar dataKey="routed" fill={ROUTED.color} animate={false} lineCap={long ? 1 : 2} roundEnd fadedOpacity={0.45} />
+      <Bar dataKey="blocked" fill={BLOCKED.color} animate={false} lineCap={long ? 1 : 2} roundEnd fadedOpacity={0.45} />
       <BarXAxis formatLabel={tick} minLabelGap={long ? 44 : 40} fadeOnHover={false} />
       <YAxis ticks={ticks} formatValue={yTimes} animate={false} />
       <ChartTooltip showDatePill={false} showDots={false} showCrosshair={false} damping={0} rows={tipRows} title={(p) => hourSpan(Number(p.t))} />

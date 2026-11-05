@@ -273,7 +273,10 @@ function topNonZeroIndex(
 /**
  * Drawn heights (px) of a vertical stack: each positive segment at least
  * `minHeight`; the extra pixels are taken out of the tallest segment so the
- * stack's total stays what the scale says it is.
+ * stack's total stays what the scale says it is. When every segment is below
+ * `minHeight` there is nothing to take from (the tallest can not shrink below
+ * `minHeight`), so the stack is drawn taller than its true total: harmless, it
+ * only happens near zero.
  */
 function drawnStackHeights(
   d: Record<string, unknown>,

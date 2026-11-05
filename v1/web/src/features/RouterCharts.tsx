@@ -29,6 +29,13 @@ const vInt = (_: string, v: number) => String(Math.round(v));
 const yTemp = (v: number) => `${Math.round(v)}°`;
 const vTemp = (_: string, v: number) => `${v.toFixed(1)} °C`;
 
+/** 换时间范围时先沿用旧曲线（placeholder）：图表的 range 也要沿用旧的，新数据到了才换，这样出场动画只在新数据落下时播一次（接口没有带 range 字段，用 isPlaceholderData 判断） */
+function useSettledRange(range: string, stale: boolean) {
+  const settled = React.useRef(range);
+  if (!stale) settled.current = range;
+  return settled.current;
+}
+
 /** 点不到两个时的说明：所选范围内才接入的是数据还在积累，其余（离线）是这段时间没有数据 */
 const fewText = (r: RouterView, range: string) => (Date.now() - Date.parse(r.created_at) < (RANGE_MS[range] ?? 0) ? '刚接入，数据还在积累' : '这段时间没有数据');
 
@@ -40,13 +47,14 @@ export function RouterChartsTab({ r }: { r: RouterView }) {
 function Charts({ r }: { r: RouterView }) {
   const { range, setRange } = useDrawer(); // 同机器抽屉：?range=，默认 24 小时
   const q = useRouterMetrics(r.id, range);
+  const shownRange = useSettledRange(range, q.isPlaceholderData);
   const few = fewText(r, range);
   const s = r.state === 'online' ? r.summary : null;
   const mt = s ? routerMeters(s) : null;
   const pts = q.data?.points;
   const hasTemp = React.useMemo(() => pts?.some((p) => typeof p.temp_c === 'number'), [pts]);
   const chart = (lines: typeof L_CPU, yFmt: (v: number) => string, valueFmt: (k: string, v: number) => string, o: { domain?: [number, number]; yBase?: 1000; kind?: 'line' } = {}) => (
-    <ChartFrame q={q} few={few} height={140}><TimeChart points={pts} range={range} lines={lines} yFmt={yFmt} valueFmt={valueFmt} height={140} yWidth={YW_ROUTER} {...o} /></ChartFrame>
+    <ChartFrame q={q} few={few} height={140}><TimeChart points={pts} range={shownRange} lines={lines} yFmt={yFmt} valueFmt={valueFmt} height={140} yWidth={YW_ROUTER} {...o} /></ChartFrame>
   );
   return (
     <>
@@ -69,6 +77,7 @@ function Charts({ r }: { r: RouterView }) {
 /** 各出口的延迟测试：每个出口一条格子（一眼看出哪个、什么时候不通；格子按所选范围从现在往前等分），下面选一个看延迟曲线 */
 function ExitDelays({ r, range, few }: { r: RouterView; range: string; few: string }) {
   const q = useRouterExitMetrics(r.id, range);
+  const shownRange = useSettledRange(range, q.isPlaceholderData);
   const exits = q.data?.exits;
   const [pick, setPick] = React.useState('');
   const cur = exits?.find((x) => x.name === pick) ?? exits?.[0];
@@ -89,7 +98,7 @@ function ExitDelays({ r, range, few }: { r: RouterView; range: string; few: stri
               {beats.map((b) => <Beat key={b.name} n={bins} cells={b.cells} titles={b.titles} caption={<b>{b.name}</b>} win={b.rate != null ? (b.rate >= 1 ? '100%' : `${(Math.floor(b.rate * 1000 + 1e-9) / 10).toFixed(1)}%`) : undefined} winTone={b.rate == null ? undefined : b.rate >= 1 ? 'ok' : b.rate < 0.5 ? 'bad' : 'warn'} />)}
             </div>
             <ChartCard c="var(--chart-1)" icon={<Radar />} title="延迟曲线" tools={<Select sm value={cur?.name ?? ''} onChange={setPick} options={opts} aria-label="出口" className="w-[160px]" />}>
-              {cur && cur.points.length > 1 ? <TimeChart points={cur.points} range={range} kind="line" lines={L_DELAY} yFmt={yMs} valueFmt={vMs} height={160} yWidth={YW_ROUTER} /> : <div className="chart-empty" style={{ height: 160 }}>{few}</div>}
+              {cur && cur.points.length > 1 ? <TimeChart points={cur.points} range={shownRange} kind="line" lines={L_DELAY} yFmt={yMs} valueFmt={vMs} height={160} yWidth={YW_ROUTER} /> : <div className="chart-empty" style={{ height: 160 }}>{few}</div>}
             </ChartCard>
           </div>
         )}
