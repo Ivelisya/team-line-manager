@@ -195,19 +195,21 @@ export function FilterChip({ pressed, onClick, children, count, tip }: { pressed
 
 type StatTone = 'ok' | 'teal' | 'bad' | 'amber' | 'gold' | 'sky' | 'violet' | 'blue';
 /** KPI 卡（唯一实现）：彩色图标 + 标签，大号读数 + 小单位，一行灰色说明；三行固定，同一排等高。
- *  可点的（to 跳页面，onClick 做别的，如打开抽屉）标题行最右多一个小箭头。info：口径说明，标签旁的「(i)」悬停看 */
-export function Stat({ icon, tone, label, info, value, unit, caption, to, onClick, loading }: { icon: React.ReactNode; tone: StatTone; label: string; info?: string; value: React.ReactNode; unit?: string; caption?: React.ReactNode; to?: string; onClick?: () => void; loading?: boolean }) {
+ *  可点的（to 跳页面，onClick 做别的，如打开抽屉）标题行最右多一个小箭头。info：口径说明，标签旁的「(i)」悬停看。
+ *  alert：这张卡的读数本身就是要处理的事（故障 > 0、即将到期 > 0），卡片带一层很淡的状态底（home.css），只表达状态 */
+export function Stat({ icon, tone, label, info, value, unit, caption, to, onClick, loading, alert }: { icon: React.ReactNode; tone: StatTone; label: string; info?: string; value: React.ReactNode; unit?: string; caption?: React.ReactNode; to?: string; onClick?: () => void; loading?: boolean; alert?: 'bad' | 'warn' | false }) {
   const inner = (
     <>
       <span className="stat-label"><span className="stat-ic" data-tone={tone}>{icon}</span>{label}{info && <InfoTip text={info} />}{(to || onClick) && <ChevronRight className="stat-go" aria-hidden />}</span>
-      <span className="stat-value">{loading ? <Skeleton className="w-[64px] h-[20px]" /> : <>{value}{unit && <small>{unit}</small>}</>}</span>
+      <span className="stat-value">{loading ? <Skeleton className="w-[72px] h-[26px]" /> : <>{value}{unit && <small>{unit}</small>}</>}</span>
       <span className="stat-cap">{loading ? '' : caption ?? ' '}</span>
     </>
   );
   // 整卡可点用铺满的透明链接（不是外层 <a>）：说明行里还有自己的链接（「故障 N」），<a> 不能嵌套
-  if (to) return <div className="stat is-link"><Link className="stat-hit" to={to} aria-label={label} />{inner}</div>;
-  if (onClick) return <button type="button" className="stat is-link" onClick={onClick}>{inner}</button>;
-  return <div className="stat">{inner}</div>;
+  const da = !loading && alert ? alert : undefined;
+  if (to) return <div className="stat is-link" data-alert={da}><Link className="stat-hit" to={to} aria-label={label} />{inner}</div>;
+  if (onClick) return <button type="button" className="stat is-link" data-alert={da} onClick={onClick}>{inner}</button>;
+  return <div className="stat" data-alert={da}>{inner}</div>;
 }
 /** 数字平滑过渡：值变了从旧值滚到新值。format 决定怎么显示（默认取整） */
 export function CountUp({ value, format }: { value: number | null | undefined; format?: (n: number) => string }) {

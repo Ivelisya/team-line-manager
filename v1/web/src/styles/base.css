@@ -23,9 +23,16 @@ html[data-drawer] { overflow: hidden; }
 /* 背景光晕：固定在视口的一层 body::before（z-index -1：在根背景 --canvas 之上、所有内容之下）。
    以前写成 body 的背景 + background-attachment: fixed：非根元素上的 fixed 背景会让浏览器放弃合成滚动，每滚一帧都重画整页背景 */
 body::before { content: ""; position: fixed; inset: 0; z-index: -1; background: var(--canvas-glow); background-color: var(--canvas); pointer-events: none; } /* 底色 --canvas：遮罩开着时 html 的背景色被压暗（上面，为了槽位），这一层把页面区域的底色原样盖回去，不被双重压暗 */
+/* 环境光（设计语言 v1 招牌的另一半）：画布顶部两团静止的极淡柔光（--aurora-a / -b），在 body::before 的暮霞光晕之上再添一点层次。
+   各自一层固定定位的伪元素（body::after、.app::before，都在 z-index -1：上面 body::before 的画布之上、所有内容之下）。
+   不做漂移：一直在动的全视口层会让合成器每帧出图，正好在毛玻璃顶栏下面，顶栏的模糊每帧都要重算（页面放着不动也一直耗 GPU）。
+   暗色只留 accent 5% 的一团（--aurora-b 为 none），几乎只是一点温度 */
+body::after, .app::before { content: ""; position: fixed; z-index: -1; pointer-events: none; top: -38vh; height: 92vh; }
+body::after { left: 8vw; width: 70vw; background: var(--aurora-a); }
+.app::before { left: 52vw; width: 56vw; background: var(--aurora-b); }
 /* 客户页 /c/（public/theme-init.js 首屏就加上这个类）：整页换成卡片色的白底、去掉管理端画布的光晕 */
 html.is-cx { background: var(--surface); }
-html.is-cx body::before { content: none; }
+html.is-cx body::before, html.is-cx body::after { content: none; }
 body {
   margin: 0;
   color: var(--fg);
@@ -75,18 +82,27 @@ a { color: inherit; }
   height: var(--topbar-h); box-sizing: border-box;
   display: flex; align-items: center; gap: var(--sp-4);
   padding: 0 var(--sp-16) 0 var(--sp-10);
-  background: var(--glass-bar); border-bottom: 1px solid var(--line);
+  /* 毛玻璃更通透（--glass-topbar：表面 62%，通用吸附条是 72%；不支持 backdrop-filter 时回退实底，overrides.css），底边线下面再垫一道极淡的长投影，滚动时顶栏像一片浮着的玻璃 */
+  background: var(--glass-topbar); border-bottom: 1px solid var(--line);
+  box-shadow: 0 10px 24px -22px rgb(var(--shadow-rgb) / 0.35);
   -webkit-backdrop-filter: var(--glass-bar-blur); backdrop-filter: var(--glass-bar-blur); /* 毛玻璃：内容从顶栏下滚过时隐约透出（半径 12：滚动时每帧都要重做，20 的采样开销大、观感差别很小） */
 }
+:root[data-theme="dark"] .topbar { box-shadow: 0 10px 24px -20px rgb(0 0 0 / 0.8); }
 .brand {
-  display: inline-flex; align-items: center; gap: var(--sp-8);
-  font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-sans);
-  color: var(--fg); text-decoration: none; white-space: nowrap; padding: 0 var(--sp-4); border-radius: var(--r-control);
+  display: inline-flex; align-items: center; gap: var(--sp-10);
+  font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-sans); letter-spacing: var(--tracking-title);
+  color: var(--fg); text-decoration: none; white-space: nowrap; padding: 0 var(--sp-6) 0 var(--sp-4); border-radius: var(--r-control);
 }
-.brand-mark { width: 22px; height: 22px; border-radius: var(--r-tag); background: var(--accent-solid); color: var(--on-accent); display: inline-grid; place-items: center; }
+/* 品牌标：实色小方块 + 顶边一道内高光与贴近的接触影（同卡片的光源），像一枚压出来的徽章 */
+.brand-mark {
+  width: 26px; height: 26px; border-radius: var(--r-control); background: var(--accent-solid); color: var(--on-accent); display: inline-grid; place-items: center;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.22), inset 0 -1px 0 rgb(0 0 0 / 0.18), 0 1px 2px rgb(var(--shadow-rgb) / 0.22), 0 4px 10px -4px rgb(var(--shadow-rgb) / 0.35);
+}
+:root[data-theme="dark"] .brand-mark { box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.22), 0 1px 2px rgb(0 0 0 / 0.5); }
 .topbar-right { margin-left: auto; display: flex; align-items: center; gap: var(--control-gap); }
+/* 顶栏图标按钮：统一 --h-top 见方（32，触屏 36；同搜索胶囊），软色底 */
 .top-btn {
-  width: var(--h-md); height: var(--h-md); padding: 0; border: 0; border-radius: var(--r-control);
+  width: var(--h-top); height: var(--h-top); padding: 0; border: 0; border-radius: var(--r-control);
   display: inline-grid; place-items: center; cursor: pointer;
   background: var(--accent-soft); color: var(--accent-soft-fg);
   transition: background-color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out);
@@ -105,16 +121,17 @@ a { color: inherit; }
 /* 顶栏：搜索入口（打开命令面板） */
 .cmd-trigger {
   display: inline-flex; align-items: center; gap: var(--sp-8); flex: none; margin-left: var(--sp-16);
-  width: min(264px, 26vw); height: var(--h-md); box-sizing: border-box; padding: 0 var(--sp-8) 0 var(--sp-10);
-  border: 1px solid var(--line); border-radius: var(--r-control); background: var(--sunken); color: var(--fg-2); cursor: pointer;
+  width: min(280px, 26vw); height: var(--h-top); box-sizing: border-box; padding: 0 var(--sp-6) 0 var(--sp-12);
+  /* 搜索胶囊：轨道色的半透明底（毛玻璃顶栏上透出一点底色）+ 发丝线，键帽是浮起的小白块（Hotkeys.tsx 的 Kbd 类名） */
+  border: 1px solid var(--line); border-radius: var(--r-pill); background: var(--track); color: var(--fg-2); cursor: pointer;
   font: var(--fw-regular) var(--fs-body) / var(--lh-body) var(--font-sans);
-  transition: border-color var(--dur-1) var(--ease-std), background-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out);
+  transition: border-color var(--dur-1) var(--ease-std), background-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std), box-shadow var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out);
 }
-@media (hover: hover) { .cmd-trigger:hover { border-color: var(--line-strong); color: var(--fg); } }
+@media (hover: hover) { .cmd-trigger:hover { border-color: var(--line-strong); background: var(--surface); color: var(--fg); box-shadow: var(--shadow-card); } }
 .cmd-trigger-t { flex: 1; min-width: 0; text-align: left; white-space: nowrap; }
 .cmd-trigger-k { display: inline-flex; gap: var(--sp-2); }
 @media (max-width: 760px) {
-  .cmd-trigger { width: var(--h-md); padding: 0; justify-content: center; margin-left: auto; margin-right: var(--control-gap); }
+  .cmd-trigger { width: var(--h-top); padding: 0; justify-content: center; margin-left: auto; margin-right: var(--control-gap); }
   .topbar-right { margin-left: 0; } /* 搜索按钮已靠右：右侧按钮组紧跟着它，不再各占一半空白、把搜索孤零零挤在中间 */
   .cmd-trigger-t, .cmd-trigger-k { display: none; }
 }
@@ -143,23 +160,30 @@ a { color: inherit; }
 
 .sidebar {
   position: fixed; top: var(--topbar-h); bottom: 0; left: 0; z-index: var(--z-topbar);
-  width: var(--sidebar-w); box-sizing: border-box; padding: var(--sp-8);
-  background: var(--surface); border-right: 1px solid var(--line);
+  width: var(--sidebar-w); box-sizing: border-box; padding: var(--sp-12) var(--sp-10);
+  /* 侧栏是一片半透明的表面：下面只有画布和环境光（内容不从它下面滚过），不用模糊，透出一点顶部的暮霞就够 */
+  background: color-mix(in srgb, var(--surface) 78%, transparent); border-right: 1px solid var(--line);
   overflow-y: auto; overscroll-behavior: contain; display: flex; flex-direction: column;
 }
-.nav-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--sp-2); }
+.nav-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--sp-4); }
 .nav-item {
-  display: flex; align-items: center; gap: var(--sp-10); width: 100%;
-  height: var(--nav-item-h); box-sizing: border-box; padding: 0 var(--sp-10);
+  position: relative; display: flex; align-items: center; gap: var(--sp-12); width: 100%;
+  height: var(--nav-item-h); box-sizing: border-box; padding: 0 var(--sp-12);
   border: 0; border-radius: var(--r-control); background: transparent;
   color: var(--fg); text-decoration: none; cursor: pointer; text-align: left;
   font: var(--fw-medium) var(--fs-body) / var(--lh-body) var(--font-sans);
   transition: background-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std);
 }
 .nav-item .lucide { flex: none; color: var(--fg-2); transition: color var(--dur-1) var(--ease-std); }
-@media (hover: hover) { .nav-item:hover { background: var(--hover); } }
+@media (hover: hover) { .nav-item:hover { background: var(--hover); } .nav-item:hover .lucide { color: var(--fg); } }
+/* 当前项：柔和的品牌底 + 强调色图标，左侧一道 3px 的细竖线（设计语言「选中」：底 + 左侧竖线）；竖线随当前项淡入 */
 .nav-item[aria-current="page"] { background: var(--grad-soft); color: var(--accent-soft-fg); font-weight: var(--fw-semibold); }
-.nav-item[aria-current="page"] .lucide { color: var(--accent-soft-fg); }
+.nav-item[aria-current="page"] .lucide { color: var(--accent); }
+.nav-item::before {
+  content: ""; position: absolute; left: 0; top: 10px; bottom: 10px; width: 3px; border-radius: 0 3px 3px 0;
+  background: var(--accent); opacity: 0; transition: opacity var(--dur-2) var(--ease-std);
+}
+.nav-item[aria-current="page"]::before { opacity: 1; }
 .nav-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .nav-item > .count-badge { margin-left: auto; }
 /* 侧栏底部的「? 快捷键」：点开快捷键帮助；--fg-2（原来 --fg-3 太淡，看不出能点） */
@@ -183,7 +207,7 @@ a { color: inherit; }
    过渡写在目标状态上（打开取开态这条，关上取关态那条）；关上时 visibility 等滑出播完再隐藏，遮罩淡出期间已不拦点击 */
 @media (max-width: 1023px) {
   .nav-toggle { display: inline-grid; }
-  .sidebar { width: 280px; z-index: var(--z-nav); box-shadow: var(--shadow-modal); transition: transform var(--dur-3) var(--ease-out), visibility 0s; }
+  .sidebar { width: 280px; z-index: var(--z-nav); background: var(--surface); box-shadow: var(--shadow-modal); transition: transform var(--dur-3) var(--ease-out), visibility 0s; } /* 抽屉式侧栏盖在页面上：实底 */
   .main { margin-left: 0; }
   .app:not([data-nav="open"]) .sidebar { transform: translateX(-100%); visibility: hidden; transition: transform var(--dur-2) var(--ease-std), visibility 0s var(--dur-2); }
   .nav-scrim {
@@ -205,8 +229,11 @@ a { color: inherit; }
   display: flex; align-items: center; gap: var(--control-gap); flex-wrap: wrap;
   min-height: var(--h-bar); margin: 0 0 var(--section-gap); padding: var(--sp-4) 0;
 }
-.page-title { margin: 0; font: var(--fw-semibold) var(--fs-page) / var(--lh-page) var(--font-sans); letter-spacing: var(--tracking-title); color: var(--fg); white-space: nowrap; }
-.page-note { font-size: var(--fs-body); color: var(--fg-2); text-wrap: balance; }
+.page-title { margin: 0; font: var(--fw-semibold) var(--fs-page) / var(--lh-page) var(--font-sans); letter-spacing: var(--tracking-page); color: var(--fg); white-space: nowrap; }
+/* 标题旁的计数（「机器 31 台」）：淡一级的读数——读数字体、等宽数字，和标题按基线对齐（标题与它组成基线组，右侧工具仍居中） */
+.page-note { font: var(--fw-regular) var(--fs-emph) / var(--lh-emph) "Inter Num", "Inter Num Fallback", var(--font-sans); font-variant-numeric: var(--num-variant); color: var(--fg-2); text-wrap: balance; } /* 数字与拉丁字母走读数字体，汉字明确落到 --font-sans 的中文字体（同正文），不靠系统回退 */
+.page-title, .page-note { align-self: baseline; }
+.page-title + .page-note { margin-left: var(--sp-2); }
 .page-tools { margin-left: auto; display: flex; align-items: center; gap: var(--control-gap); flex-wrap: wrap; min-width: 0; }
 .page-tools:empty { display: none; }
 /* 页面顶上的搜索 + 筛选一行（机器、访问监控、操作记录）：手机上各下拉宽度参差、右边空一截——搜索占整行，下拉两两一排等宽 */
@@ -225,6 +252,9 @@ a { color: inherit; }
 /* 路由切换（Shell，key=路由段）与首页翻页、切换卡片 / 环形 / 表格（Home 的网格容器，key 只含页码，换卡片密度不重挂）：
    整块只淡入一次（不位移，避免和卡片布局动画叠加）；卡片自己不再各起一条淡入 */
 .page-in { animation: fade-in var(--dur-2) var(--ease-out); }
+
+/* 进场编排：本会话第一次进入某个页面时，主要区块依次淡入上移（Shell.tsx choreograph，Web Animations），路由容器自己不再整块淡入 */
+.page-in[data-enter] { animation: none; }
 
 /* 切换深浅色 / 配色（lib/theme.ts）：切换那一帧关掉全部过渡与动画，整页颜色同时换完，不再按各自的过渡时长一块一块地变；
    支持 View Transitions 时外面再包一层整页交叉淡入 */

@@ -63,7 +63,7 @@
 
 /* ---- 抽屉 ---- */
 /* 头部的类型图标：同机器抽屉的国旗，对齐标题那一行（窄屏状态、团队折到第二行时不落到两行中间） */
-.m-drawer-head > .nc-kind { flex: none; align-self: flex-start; display: grid; place-items: center; height: max(var(--lh-title), var(--h-xs)); color: var(--fg-2); }
+.m-drawer-head > .nc-kind { flex: none; align-self: flex-start; display: grid; place-items: center; height: max(var(--lh-section), var(--h-xs)); color: var(--fg-2); } /* 抽屉标题是 19px（--fs-section，行高 26） */
 .m-drawer-head > .nc-kind > .lucide { width: var(--icon-md); height: var(--icon-md); }
 /* 概览：总览数字下面接资源四项 */
 .rt-hero-meters { margin-top: var(--sp-12); }

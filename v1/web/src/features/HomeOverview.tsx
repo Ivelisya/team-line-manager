@@ -71,6 +71,13 @@ function statusLine(o: Overview | undefined, down: number): string {
   return unknown ? `${unknown} 台状态未知` : '全部正常';
 }
 
+/** 状态句分两级：「有 4 件事要处理」是结论（正文色、加重），冒号后的分项是细节（次要色）；没有冒号的整句（全部正常）按结论写 */
+function leadLine(s: string): React.ReactNode {
+  if (!s) return ' '; // 加载中也占住这一行（不间断空格）：数据到了问候下面不多出一行、下面整块不往下跳（首页 CLS）
+  const i = s.indexOf('：');
+  return i < 0 ? <b className="hsec-lead">{s}</b> : <><b className="hsec-lead">{s.slice(0, i)}</b>：{s.slice(i + 1)}</>;
+}
+
 /** 「正常」卡的说明行：算在正常里的（降级、维护）与另外的（故障、未知）分两组写，每组为 0 的项省略；加起来对得上大数字与总数 */
 function HealthCaption({ c, to }: { c: Counts; to: string }) {
   return (
@@ -110,7 +117,7 @@ export const OverviewSection = React.memo(function OverviewSection({ o, loading 
   const usdEmpty = !!usd && !usd.by_currency.length && !usd.unconverted.length;
   return (
     <HomeSection className="hsec-hero" icon={<LayoutDashboard />} label="监控总览"
-      title={<h1 className="hero-greet">{F.greeting()}，<span className="hero-name">{me?.username ?? ''}</span></h1>} sub={statusLine(o, down) || undefined}>
+      title={<h1 className="hero-greet">{F.greeting()}，<span className="hero-name">{me?.username ?? ''}</span></h1>} sub={leadLine(statusLine(o, down))}>
       <div className="hero-grid">
         <div className="stat-grid">
           {/* 说明行用全站同一套状态名（降级 / 维护 / 故障 / 未知）；「正常」包括降级与维护（照常服务）这一点放在大数字的悬停说明里 */}
@@ -118,8 +125,8 @@ export const OverviewSection = React.memo(function OverviewSection({ o, loading 
             caption={nodes && <HealthCaption c={nodes} to={DOWN_LINK} />} />
           <Stat loading={health} tone="teal" icon={<Waypoints />} label="线路机正常" info={NORMAL_INFO} to={RELAYS_LINK} value={<span data-tip="降级和维护的机器照常服务，也算正常"><CountUp value={relays && normal(relays)} /></span>} unit={relays ? `/ ${relays.total}` : undefined}
             caption={relays && <HealthCaption c={relays} to={`${DOWN_LINK}&kind=relay`} />} />
-          <Stat loading={health} tone="bad" icon={<AlertTriangle />} label="故障" value={<CountUp value={o ? down : undefined} />} unit="台" to={DOWN_LINK} caption={o && <><DotCount tone="bad" n={o.nodes.down} label="节点" /><DotCount tone="bad" n={o.relays.down} label="线路机" /></>} />
-          <Stat loading={loading} tone="amber" icon={<CalendarClock />} label="即将到期" value={<CountUp value={o?.due_soon} />} unit="台" to="/nodes?due=soon&sort=due" caption={o && nd !== undefined && <>{nd ? <span className="stat-who">最近<span className="ellipsis" data-tip={nd.name}>{nd.name}</span>{nd.days <= 1 ? <b>{nd.days === 0 ? '今天' : '明天'}</b> : <><b className="num">{nd.days}</b>天后</>}</span> : <span>近期没有到期</span>}{o.overdue > 0 && <DotCount tone="bad" n={o.overdue} label="已过期" />}</>} />
+          <Stat loading={health} tone="bad" icon={<AlertTriangle />} alert={down > 0 && 'bad'} label="故障" value={<CountUp value={o ? down : undefined} />} unit="台" to={DOWN_LINK} caption={o && <><DotCount tone="bad" n={o.nodes.down} label="节点" /><DotCount tone="bad" n={o.relays.down} label="线路机" /></>} />
+          <Stat loading={loading} tone="amber" icon={<CalendarClock />} alert={!!o?.due_soon && 'warn'} label="即将到期" value={<CountUp value={o?.due_soon} />} unit="台" to="/nodes?due=soon&sort=due" caption={o && nd !== undefined && <>{nd ? <span className="stat-who">最近<span className="ellipsis" data-tip={nd.name}>{nd.name}</span>{nd.days <= 1 ? <b>{nd.days === 0 ? '今天' : '明天'}</b> : <><b className="num">{nd.days}</b>天后</>}</span> : <span>近期没有到期</span>}{o.overdue > 0 && <DotCount tone="bad" n={o.overdue} label="已过期" />}</>} />
           <Stat loading={loading} tone="gold" icon={<CircleDollarSign />} label="每月费用" to={COST_LINK} info={`在用的节点和线路机的月费，统一折成美元；不含不续费的备用机（另列在说明行；备用团队里还被出口指着、有在用 IP 节点、开着自动续费的机器照常续费，已算在内）。汇率在「设置 → 汇率」${usd ? `\n${usdTotalTip(usd)}` : ''}`}
             value={!usd || usdEmpty ? '—' : <span data-tip={foreign.length || usd.unconverted.length ? `${F.money(usd.cents, 'USD')}；${usdTotalTip(usd)}` : usd.cents >= 100000 ? F.money(usd.cents, 'USD') : undefined}>{usd.cents >= 100000 ? `$${Math.round(usd.cents / 100).toLocaleString('en-US')}` : F.money(usd.cents, 'USD')}</span>}
             caption={usd && <>{(usd.unconverted.length ? <span style={{ color: 'var(--warn-text)' }} data-tip="没有这些币种的汇率，未计入合计">未折算 {usd.unconverted.map((c) => F.money(c.cents, c.currency)).join(' + ')}</span>
@@ -145,7 +152,9 @@ const ONLINE_N = 24;
 const OFFLINE_TIP = 'agent 不再上报的机器，一定算故障。点开会看到全部故障，包括入口不通等其他原因';
 /** 软路由一行（集群状态底部，点进软路由页）：在线台数、出口可用、客户端。离线的读数是旧的，不算；一台软路由都没有就不出现 */
 function RoutersLink() {
-  const list = useRouters().data;
+  const q = useRouters(); const list = q.data;
+  // 还在加载：先占住这一行的高度（不可见；放上「软路由」三个字，行高同真实行的文字），列表到了集群状态面板不长高、旁边的 KPI 卡不跟着被拉高（首页 CLS）
+  if (!list && q.isPending) return <div className="cluster-routers invisible" aria-hidden><span className="cluster-routers-label"><RouterIcon />软路由</span></div>;
   if (!list?.length) return null;
   const on = list.filter((r) => r.state === 'online');
   const ex = on.reduce((a, r) => { const f = r.summary && fleetExits(r.summary); return { alive: a.alive + (f?.alive ?? 0), total: a.total + (f?.total ?? 0) }; }, { alive: 0, total: 0 });
