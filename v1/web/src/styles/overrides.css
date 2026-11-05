@@ -66,7 +66,7 @@ html[data-overlay] :is(.app, .drawer) [data-slot="progress-indicator"] { transit
 
 /* iOS Safari 聚焦字号小于 16px 的输入框会把整页放大、失焦后常不缩回：只在 iOS 上把输入字号提到 16px（不用 maximum-scale，免得禁掉手动缩放）。
    Input / Textarea 组件的字号是 text-body / text-label 工具类，在更高的 utilities 层，普通声明压不住，单独加 !important（components 层的 important 高于 utilities 层的普通声明）；
-   其余手写的输入（批量网格的格子、策略编辑器）照旧：它们自己的字号选择器更具体、胜过这条（改前就是这样，策略编辑器行高固定 20px 与行号对齐） */
+   策略编辑器的文本域也是 Textarea 组件，iOS 上同样是 16px（行高仍固定 20px，与行号对齐）；其余手写的输入（批量网格的格子等）照旧：它们自己的字号选择器更具体、胜过第一条 */
 @supports (-webkit-touch-callout: none) {
   :is(input:not([type="checkbox"], [type="radio"]), textarea) { font-size: 16px; }
   :is([data-slot="input"], [data-slot="input-group-control"], [data-slot="textarea"]) { font-size: 16px !important; }
