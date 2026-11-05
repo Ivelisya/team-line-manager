@@ -94,7 +94,7 @@ const XAxisLabel = memo(function XAxisLabel({
       className="absolute"
       style={{
         left: x,
-        bottom: 12,
+        bottom: 0, // 绘图区下沿的「0」刻度是半个字高，横轴标签贴底、不和它重叠
         width: 0,
         display: "flex",
         justifyContent: "center",

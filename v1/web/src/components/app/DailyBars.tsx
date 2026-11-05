@@ -55,10 +55,10 @@ export const DailyBars = memo(function DailyBars({ days, height = 200, yWidth = 
     <div className="tc-bars" ref={box}>
       <BarChart data={data} xDataKey="date" aspectRatio="" style={{ height }} margin={{ top: 8, right: 10, bottom: 26, left: yWidth }} stacked barGap={long ? 0.08 : 0.18}
         yDomain={ticks ? [0, ticks[ticks.length - 1]] : undefined} animationDuration={0}>
-        <Grid horizontal vertical={false} fadeHorizontal={false} strokeDasharray="0" rowTickValues={ticks} numTicksRows={4} />
-        <Bar dataKey="down" fill={DOWN.color} lineCap={2} animate={false} minBarHeight={2} pointOpacity={dim} fadedOpacity={0.4} />
-        <Bar dataKey="up" fill={UP.color} lineCap={2} roundEnd animate={false} minBarHeight={2} pointOpacity={dim} fadedOpacity={0.4} />
-        <BarXAxis formatLabel={md} minLabelGap={long ? 44 : 40} fadeOnHover={false} />
+        <Grid horizontal vertical={false} strokeDasharray="0" rowTickValues={ticks} numTicksRows={4} />
+        <Bar dataKey="down" fill={DOWN.color} lineCap={3} animate={false} minBarHeight={2} pointOpacity={dim} fadedOpacity={0.4} />
+        <Bar dataKey="up" fill={UP.color} lineCap={3} roundEnd animate={false} minBarHeight={2} pointOpacity={dim} fadedOpacity={0.4} />
+        <BarXAxis formatLabel={md} minLabelGap={long ? 46 : 52} fadeOnHover={false} />
         <YAxis ticks={ticks} formatValue={yBytes} animate={false} />
         <ChartTooltip showDatePill={false} showDots={false} showCrosshair={false} damping={0} rows={rows} title={title} />
       </BarChart>

@@ -220,8 +220,18 @@ export interface TimeSeriesChartInnerProps {
  * the first component below the public chart that receives `data` (in dev,
  * React diffs the props of every component that re-renders).
  */
-export function timeSeriesChartHasRoom(width: number, height: number) {
-  return width >= 10 && height >= 10;
+export function timeSeriesChartHasRoom(
+  width: number,
+  height: number,
+  margin?: Margin
+) {
+  // The plot area (box minus margins) must have room too: a drawer sliding in
+  // is narrower than the y-axis margin for a few frames, and a negative plot
+  // width makes every <rect> / <clipPath> sized from it invalid.
+  return (
+    width - (margin ? margin.left + margin.right : 0) >= 10 &&
+    height - (margin ? margin.top + margin.bottom : 0) >= 10
+  );
 }
 
 export const TimeSeriesChartInner = memo(function TimeSeriesChartCore({

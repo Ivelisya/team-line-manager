@@ -158,7 +158,7 @@ export function AreaChart({
       >
         <ParentSize debounceTime={10}>
           {({ width, height }) =>
-            timeSeriesChartHasRoom(width, height) ? (
+            timeSeriesChartHasRoom(width, height, margin) ? (
               <TimeSeriesChartInner
                 animationDuration={animationDuration}
                 animationEasing={animationEasing}

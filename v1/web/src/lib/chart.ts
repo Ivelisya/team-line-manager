@@ -1,5 +1,5 @@
-// 曲线共用的常量与坐标轴 / 悬浮格式化。不依赖 recharts：lib/routers.ts 等首屏代码也要用，不要在这里（或 lib 下）导入 TimeChart，
-// 否则 recharts 会被拖进首屏代码块。
+// 曲线共用的常量、坐标轴刻度与悬浮格式化。不依赖图表库（bklit / d3）：lib/routers.ts 等首屏代码也要用，不要在这里（或 lib 下）导入 TimeChart，
+// 否则图表代码会被拖进首屏代码块。
 import * as F from './format';
 
 /** 各时间范围的毫秒数 */

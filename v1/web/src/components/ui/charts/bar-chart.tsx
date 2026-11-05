@@ -193,8 +193,11 @@ interface ChartInnerProps {
 }
 
 function ChartInner(props: ChartInnerProps) {
-  const { width, height } = props;
-  if (width < 10 || height < 10) {
+  const { width, height, margin } = props;
+  if (
+    width - margin.left - margin.right < 10 ||
+    height - margin.top - margin.bottom < 10
+  ) {
     return null;
   }
   return <ChartCore {...props} />;

@@ -82,7 +82,7 @@ function HourlyBars({ points, height = 160 }: { points: MachineAccess['hourly'];
   return (
     <div className="tc-bars" ref={box}>
       <BarChart data={data} xDataKey="t" stacked aspectRatio="" style={{ height }} margin={{ top: 8, right: 10, bottom: 26, left: 64 }} barGap={long ? 0 : 0.1} yDomain={[0, ticks[ticks.length - 1]]} animationDuration={0}>
-        <Grid horizontal vertical={false} fadeHorizontal={false} strokeDasharray="0" rowTickValues={ticks} numTicksRows={4} />
+        <Grid horizontal vertical={false} strokeDasharray="0" rowTickValues={ticks} numTicksRows={4} />
         <Bar dataKey="routed" fill={ROUTED.color} animate={false} lineCap={long ? 0 : 2} fadedOpacity={0.45} />
         <Bar dataKey="blocked" fill={BLOCKED.color} animate={false} lineCap={long ? 0 : 2} roundEnd fadedOpacity={0.45} />
         <BarXAxis formatLabel={tick} minLabelGap={long ? 44 : 40} fadeOnHover={false} />

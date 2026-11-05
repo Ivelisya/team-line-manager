@@ -69,7 +69,7 @@ const quantile = (sorted: number[], q: number) => sorted[Math.min(sorted.length 
 const MAX_OUT = 40;
 export interface Line { key: string; label: string; color: string }
 /** 面积填充的顶端不透明度：第一条 0.1 左右的观感（带向下渐隐，顶端取高一点），其余更淡 */
-const FILL_TOP = [0.16, 0.07];
+const FILL_TOP = [0.22, 0.09];
 /** 截顶的点另存真实值，悬停读它 */
 const rawKey = (k: string) => `${k}$raw`;
 const REVEAL_MS = 600; // 首次显示 / 换时间范围时从左往右展开一次；同范围的刷新不播
@@ -178,10 +178,10 @@ export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 
   const xDomain = span ? ([new Date(span[0]), new Date(span[1])] as [Date, Date]) : undefined;
   // 数组而不是 <>…</>：AreaChart 只在直接子元素里找 Area 来登记序列（纵轴取值、提示）
   const children = [
-    <Grid key="grid" horizontal vertical={false} fadeHorizontal={false} strokeDasharray="0" rowTickValues={y.ticks} numTicksRows={4} />,
+    <Grid key="grid" horizontal vertical={false} strokeDasharray="0" rowTickValues={y.ticks} numTicksRows={4} />,
     ...holes.map((h, i) => (
       <ReferenceArea key={`hole${i}`} x1={h.a} x2={h.b} pattern="diagonal" patternColor="color-mix(in oklab, var(--chart-axis) 30%, transparent)" patternScale={1.2} patternStrokeWidth={1.5}
-        stroke="transparent" fadeEdges={false} label={h.label} labelColor="var(--chart-axis)" />
+        stroke="transparent" fadeEdgesLength={14} label={h.label} labelColor="var(--chart-axis)" />
     )),
     ...shown.map((l, i) => kind === 'area'
       ? <Area key={l.key} dataKey={l.key} fill={l.color} stroke={l.color} strokeWidth={1.5} fillOpacity={FILL_TOP[Math.min(i, 1)]} curve={curveMonotoneX} showHighlight={false} />
@@ -189,7 +189,7 @@ export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 
     out.length > 0 && <OutMarks key="out" marks={out} />,
     <XAxis key="x" tickMode="domain" ticks={xTicks} formatTick={xFormat} animate={false} />,
     <YAxis key="y" ticks={y.ticks} formatValue={yFmt} animate={false} />,
-    <ChartTooltip key="tip" showDatePill={false} showDots dotSize={4} damping={0} springConfig={TIP_SPRING} indicatorFadeEdges="none" rows={tipRows} title={tipTitle} />,
+    <ChartTooltip key="tip" showDatePill={false} showDots dotSize={4} dotHaloScale={2} dotHaloOpacity={0.2} damping={0} springConfig={TIP_SPRING}  rows={tipRows} title={tipTitle} />,
   ];
   const common = {
     data: rows, xDataKey: 't', margin, aspectRatio: '', style: { height }, xDomain, yDomain: y.ceil != null ? ([y.floor, y.ceil] as [number, number]) : undefined,
