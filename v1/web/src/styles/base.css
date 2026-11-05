@@ -23,18 +23,13 @@ html[data-drawer] { overflow: hidden; }
 /* 背景光晕：固定在视口的一层 body::before（z-index -1：在根背景 --canvas 之上、所有内容之下）。
    以前写成 body 的背景 + background-attachment: fixed：非根元素上的 fixed 背景会让浏览器放弃合成滚动，每滚一帧都重画整页背景 */
 body::before { content: ""; position: fixed; inset: 0; z-index: -1; background: var(--canvas-glow); background-color: var(--canvas); pointer-events: none; } /* 底色 --canvas：遮罩开着时 html 的背景色被压暗（上面，为了槽位），这一层把页面区域的底色原样盖回去，不被双重压暗 */
-/* 环境光（设计语言 v1 招牌的另一半）：画布顶部两团极淡的柔光，几十秒漂一个来回，几乎察觉不到。
-   各自一层固定定位的伪元素（body::after、.app::before，都在 z-index -1：上面 body::before 的画布之上、所有内容之下），
-   只动 transform（合成器上平移 / 缩放已经栅格化好的一层，不重绘）；渐变本身不变。减弱动效时停住（base.css 末尾）。
+/* 环境光（设计语言 v1 招牌的另一半）：画布顶部两团静止的极淡柔光（--aurora-a / -b），在 body::before 的暮霞光晕之上再添一点层次。
+   各自一层固定定位的伪元素（body::after、.app::before，都在 z-index -1：上面 body::before 的画布之上、所有内容之下）。
+   不做漂移：一直在动的全视口层会让合成器每帧出图，正好在毛玻璃顶栏下面，顶栏的模糊每帧都要重算（页面放着不动也一直耗 GPU）。
    暗色只留 accent 5% 的一团（--aurora-b 为 none），几乎只是一点温度 */
-body::after, .app::before {
-  content: ""; position: fixed; z-index: -1; pointer-events: none; will-change: transform;
-  top: -38vh; height: 92vh; animation: aurora var(--dur-ambient) ease-in-out infinite alternate;
-}
+body::after, .app::before { content: ""; position: fixed; z-index: -1; pointer-events: none; top: -38vh; height: 92vh; }
 body::after { left: 8vw; width: 70vw; background: var(--aurora-a); }
-.app::before { left: 52vw; width: 56vw; background: var(--aurora-b); animation-name: aurora-2; animation-duration: calc(var(--dur-ambient) * 0.8); }
-@keyframes aurora { from { transform: translate3d(-4vw, 0, 0) scale(1); } to { transform: translate3d(5vw, 3vh, 0) scale(1.08); } }
-@keyframes aurora-2 { from { transform: translate3d(3vw, 2vh, 0) scale(1.06); } to { transform: translate3d(-5vw, 0, 0) scale(1); } }
+.app::before { left: 52vw; width: 56vw; background: var(--aurora-b); }
 /* 客户页 /c/（public/theme-init.js 首屏就加上这个类）：整页换成卡片色的白底、去掉管理端画布的光晕 */
 html.is-cx { background: var(--surface); }
 html.is-cx body::before, html.is-cx body::after { content: none; }
@@ -87,12 +82,11 @@ a { color: inherit; }
   height: var(--topbar-h); box-sizing: border-box;
   display: flex; align-items: center; gap: var(--sp-4);
   padding: 0 var(--sp-16) 0 var(--sp-10);
-  background: var(--glass-bar); border-bottom: 1px solid var(--line);
-  /* 毛玻璃更通透（表面 72% → 62%），底边线下面再垫一道极淡的长投影，滚动时顶栏像一片浮着的玻璃 */
+  /* 毛玻璃更通透（--glass-topbar：表面 62%，通用吸附条是 72%；不支持 backdrop-filter 时回退实底，overrides.css），底边线下面再垫一道极淡的长投影，滚动时顶栏像一片浮着的玻璃 */
+  background: var(--glass-topbar); border-bottom: 1px solid var(--line);
   box-shadow: 0 10px 24px -22px rgb(var(--shadow-rgb) / 0.35);
   -webkit-backdrop-filter: var(--glass-bar-blur); backdrop-filter: var(--glass-bar-blur); /* 毛玻璃：内容从顶栏下滚过时隐约透出（半径 12：滚动时每帧都要重做，20 的采样开销大、观感差别很小） */
 }
-@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) { .topbar { background: color-mix(in srgb, var(--surface) 62%, transparent); } } /* 不支持毛玻璃时仍是 --glass-bar 的实底回退（overrides.css） */
 :root[data-theme="dark"] .topbar { box-shadow: 0 10px 24px -20px rgb(0 0 0 / 0.8); }
 .brand {
   display: inline-flex; align-items: center; gap: var(--sp-10);
@@ -101,14 +95,14 @@ a { color: inherit; }
 }
 /* 品牌标：实色小方块 + 顶边一道内高光与贴近的接触影（同卡片的光源），像一枚压出来的徽章 */
 .brand-mark {
-  width: 26px; height: 26px; border-radius: 8px; background: var(--accent-solid); color: var(--on-accent); display: inline-grid; place-items: center;
+  width: 26px; height: 26px; border-radius: var(--r-control); background: var(--accent-solid); color: var(--on-accent); display: inline-grid; place-items: center;
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.22), inset 0 -1px 0 rgb(0 0 0 / 0.18), 0 1px 2px rgb(var(--shadow-rgb) / 0.22), 0 4px 10px -4px rgb(var(--shadow-rgb) / 0.35);
 }
 :root[data-theme="dark"] .brand-mark { box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.22), 0 1px 2px rgb(0 0 0 / 0.5); }
 .topbar-right { margin-left: auto; display: flex; align-items: center; gap: var(--control-gap); }
-/* 顶栏图标按钮：统一 32 见方（同搜索胶囊、告警胶囊所在的行高），软色底 */
+/* 顶栏图标按钮：统一 --h-top 见方（32，触屏 36；同搜索胶囊），软色底 */
 .top-btn {
-  width: var(--h-lg); height: var(--h-lg); padding: 0; border: 0; border-radius: var(--r-control);
+  width: var(--h-top); height: var(--h-top); padding: 0; border: 0; border-radius: var(--r-control);
   display: inline-grid; place-items: center; cursor: pointer;
   background: var(--accent-soft); color: var(--accent-soft-fg);
   transition: background-color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out);
@@ -127,7 +121,7 @@ a { color: inherit; }
 /* 顶栏：搜索入口（打开命令面板） */
 .cmd-trigger {
   display: inline-flex; align-items: center; gap: var(--sp-8); flex: none; margin-left: var(--sp-16);
-  width: min(280px, 26vw); height: var(--h-lg); box-sizing: border-box; padding: 0 var(--sp-6) 0 var(--sp-12);
+  width: min(280px, 26vw); height: var(--h-top); box-sizing: border-box; padding: 0 var(--sp-6) 0 var(--sp-12);
   /* 搜索胶囊：轨道色的半透明底（毛玻璃顶栏上透出一点底色）+ 发丝线，键帽是浮起的小白块（Hotkeys.tsx 的 Kbd 类名） */
   border: 1px solid var(--line); border-radius: var(--r-pill); background: var(--track); color: var(--fg-2); cursor: pointer;
   font: var(--fw-regular) var(--fs-body) / var(--lh-body) var(--font-sans);
@@ -137,7 +131,7 @@ a { color: inherit; }
 .cmd-trigger-t { flex: 1; min-width: 0; text-align: left; white-space: nowrap; }
 .cmd-trigger-k { display: inline-flex; gap: var(--sp-2); }
 @media (max-width: 760px) {
-  .cmd-trigger { width: var(--h-lg); padding: 0; justify-content: center; margin-left: auto; margin-right: var(--control-gap); }
+  .cmd-trigger { width: var(--h-top); padding: 0; justify-content: center; margin-left: auto; margin-right: var(--control-gap); }
   .topbar-right { margin-left: 0; } /* 搜索按钮已靠右：右侧按钮组紧跟着它，不再各占一半空白、把搜索孤零零挤在中间 */
   .cmd-trigger-t, .cmd-trigger-k { display: none; }
 }
@@ -237,7 +231,7 @@ a { color: inherit; }
 }
 .page-title { margin: 0; font: var(--fw-semibold) var(--fs-page) / var(--lh-page) var(--font-sans); letter-spacing: var(--tracking-page); color: var(--fg); white-space: nowrap; }
 /* 标题旁的计数（「机器 31 台」）：淡一级的读数——读数字体、等宽数字，和标题按基线对齐（标题与它组成基线组，右侧工具仍居中） */
-.page-note { font: var(--fw-regular) var(--fs-emph) / var(--lh-emph) var(--font-num); font-variant-numeric: var(--num-variant); color: var(--fg-2); text-wrap: balance; }
+.page-note { font: var(--fw-regular) var(--fs-emph) / var(--lh-emph) var(--font-num); font-family: "Inter Num", "Inter Num Fallback", var(--font-sans); font-variant-numeric: var(--num-variant); color: var(--fg-2); text-wrap: balance; } /* 数字与拉丁字母走读数字体，汉字明确落到 --font-sans 的中文字体（同正文），不靠系统回退 */
 .page-title, .page-note { align-self: baseline; }
 .page-title + .page-note { margin-left: var(--sp-2); }
 .page-tools { margin-left: auto; display: flex; align-items: center; gap: var(--control-gap); flex-wrap: wrap; min-width: 0; }
@@ -261,8 +255,6 @@ a { color: inherit; }
 
 /* 进场编排：本会话第一次进入某个页面时，主要区块依次淡入上移（Shell.tsx choreograph，Web Animations），路由容器自己不再整块淡入 */
 .page-in[data-enter] { animation: none; }
-/* 环境光：减弱动效时停住（停在初始位置，光照仍在） */
-@media (prefers-reduced-motion: reduce) { body::after, .app::before { animation: none; } }
 
 /* 切换深浅色 / 配色（lib/theme.ts）：切换那一帧关掉全部过渡与动画，整页颜色同时换完，不再按各自的过渡时长一块一块地变；
    支持 View Transitions 时外面再包一层整页交叉淡入 */

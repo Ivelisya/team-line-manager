@@ -121,7 +121,7 @@ function Head({ r, detail }: { r: RouterView; detail: RouterDetail | null | unde
     <header className="drawer-head m-drawer-head" style={{ paddingRight: 56 }}>
       <span className="nc-kind" role="img" aria-label="软路由"><RouterIcon /></span>
       <div className="m-head" style={{ flex: 1 }}>
-        <div className="m-head-row"><SheetTitle className="ellipsis">{r.name}</SheetTitle><RouterStatePill r={r} />{r.team && <Tag c={tagColor(r.team.name)} tip="团队">{r.team.name}</Tag>}</div>
+        <div className="m-head-row"><SheetTitle className="ellipsis text-section tracking-(--tracking-page)">{r.name}</SheetTitle><RouterStatePill r={r} />{r.team && <Tag c={tagColor(r.team.name)} tip="团队">{r.team.name}</Tag>}</div>
         <SheetDescription className="text-label ellipsis">{sub}</SheetDescription>
       </div>
       {sib && (

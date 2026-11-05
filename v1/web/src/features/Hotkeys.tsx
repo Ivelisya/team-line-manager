@@ -16,10 +16,10 @@ const typing = (t: EventTarget | null) => {
   return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable);
 };
 
-/** 顶栏的搜索入口：“搜索…  ⌘K” */
 /** 搜索胶囊里的键帽：浮起的小白块（表面色底 + 底边 1px 深一级的线，像真的键帽） */
 const KEYCAP = 'bg-surface shadow-[0_1px_0_var(--line-strong)]';
 
+/** 顶栏的搜索入口：“搜索…  ⌘K” */
 export function PaletteTrigger() {
   // 鼠标移上来就预热面板代码，点开时不用等
   const warm = () => { void import('./CommandPalette'); };

@@ -11,11 +11,12 @@
   --hsec-pad: clamp(14px, 1.9vw, 28px);
   display: grid; gap: var(--sp-16); min-width: 0; align-content: start; /* 吸顶切换时临时垫的 min-height 留在底部，不摊给各行 */
   padding: var(--hsec-pad);
-  background: linear-gradient(180deg, color-mix(in srgb, var(--section) 58%, var(--surface)), var(--section) 220px) var(--section);
+  --hsec-bg: linear-gradient(180deg, color-mix(in srgb, var(--section) 58%, var(--surface)), var(--section) 220px) var(--section);
+  background: var(--hsec-bg);
   border: 1px solid var(--section-line); border-radius: var(--r-section);
   box-shadow: var(--sheen);
 }
-:root[data-theme="dark"] .hsec { background: linear-gradient(180deg, color-mix(in srgb, var(--section) 70%, var(--surface)), var(--section) 240px) var(--section); }
+:root[data-theme="dark"] .hsec { --hsec-bg: linear-gradient(180deg, color-mix(in srgb, var(--section) 70%, var(--surface)), var(--section) 240px) var(--section); } /* 暗色只改底的令牌：手机规则（下面）的 background: none 照样盖得住 */
 .hsec-head { display: grid; gap: var(--sp-12); min-width: 0; }
 .hsec-top { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-12); flex-wrap: wrap; min-width: 0; }
 .hsec-badge {
@@ -39,7 +40,7 @@
 
 .hero-grid { display: grid; gap: var(--sp-16); min-width: 0; }
 /* 手机：分区底与它里面的白卡是两层边框两层内边距，屏幕本来就窄——去掉分区的底、边框与内边距，卡片直接排在页面上 */
-@media (max-width: 600px) { .hsec { --hsec-pad: 0px; border: 0; background: none; } }
+@media (max-width: 600px) { .hsec { --hsec-pad: 0px; border: 0; background: none; box-shadow: none; } } /* 顶边内高光一起去掉：没有底的分区顶上不留一道线 */
 /* 宽屏 KPI 与集群状态并排：KPI 占 1.7 份（原 1.48）——1440 宽时每张 KPI 内宽 116 → 约 128，读数接近满 34px、标签放得下；集群状态约 400 宽，两张小图仍各有约 165 */
 @container content (min-width: 1100px) { .hero-grid { grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); } }
 
@@ -48,12 +49,12 @@
 .stat-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-auto-rows: 1fr; gap: var(--grid-gap); min-width: 0; }
 @container content (max-width: 760px) { .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-8); } }
 /* 招牌「仪表读数」：标签行安静（12 / 500 / 次要色），主值大而轻（34 / --fw-num / Inter Display / 收紧字距），单位小一级淡一级，说明行细。
-   卡片是尺寸容器：主值按卡宽收（min(34px, 26cqi)），窄卡里「$455.55」也不截断；行高固定 40，加载占位与数据态同高 */
+   卡片是尺寸容器：主值按卡宽收（min(34px, 25cqi)），窄卡里「$455.55」也不截断；行高固定 40，加载占位与数据态同高 */
 .stat {
   container-type: inline-size;
   display: flex; flex-direction: column; gap: var(--sp-8); min-width: 0; min-height: 100px; box-sizing: border-box;
   padding: 15px 16px 14px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card);
-  box-shadow: var(--shadow-card); text-decoration: none; color: inherit;
+  box-shadow: var(--shadow-card-lit); text-decoration: none; color: inherit;
   transition: border-color var(--dur-1) var(--ease-std), box-shadow var(--dur-2) var(--ease-out), translate var(--dur-2) var(--ease-out), scale var(--dur-2) var(--ease-out), background-color var(--dur-1) var(--ease-std);
 }
 /* 状态底：故障 > 0、即将到期 > 0 时整张卡带一层很淡的状态色（5–6%），边线跟着染一点，主值换状态字色；不加光晕 */
@@ -90,19 +91,18 @@
 /* 读数行、说明行给出正常时的高度（40 = 读数行高、16 = 说明行高）：加载中是骨架、说明为空，数据到了卡片不长高 */
 .stat-value {
   display: flex; align-items: baseline; gap: 0.15em; min-width: 0; min-height: var(--lh-kpi-hero); overflow: hidden; white-space: nowrap;
-  font: var(--fw-num) min(var(--fs-kpi-hero), 26cqi) / var(--lh-kpi-hero) var(--font-num); font-variant-numeric: var(--num-variant); letter-spacing: var(--tracking-num); color: var(--fg);
+  font: var(--fw-num) min(var(--fs-kpi-hero), 25cqi) / var(--lh-kpi-hero) var(--font-num); font-variant-numeric: var(--num-variant); letter-spacing: var(--tracking-num); color: var(--fg);
 }
 .stat-value small { font: var(--fw-regular) var(--fs-emph) / var(--lh-emph) var(--font-num); letter-spacing: 0; color: var(--fg-2); }
 .stat-value > [data-slot="skeleton"] { align-self: center; } /* 加载占位垂直居中在 40 的读数行里 */
 /* 读数紧跟标题、说明行贴底（margin-top: auto）：同一排卡片说明行有一行有两行时，大数字仍在同一高度（space-between 会让读数随说明行高低上下错开） */
 .stat-cap { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-8); min-width: 0; min-height: 16px; margin-top: auto; font-size: var(--fs-micro); line-height: var(--lh-micro); color: var(--fg-2); }
 .stat-cap > * { white-space: nowrap; }
-/* 首页 KPI：说明行最少两行高（16 × 2 + 行间距 2），内容贴底。加载中说明为空、数据到了多数卡是两行：卡片不长高（首页 CLS） */
 /* 宽屏 KPI 被集群状态拉高时（1440：卡高约 190），读数落在标签与说明行之间的正中（像表盘的读数窗），不再贴着标签、中间空一大段；
    卡片按内容高（1280 以下）时没有富余空间，这条不起作用。说明行都占两行高（下一条），同一排的读数仍在同一高度 */
 .hsec-hero .stat-value { margin-block: auto; }
-.hsec-hero .stat-cap { margin-top: 0; }
-.hsec-hero .stat-cap { align-items: flex-end; align-content: flex-end; min-height: calc(2 * var(--lh-micro) + var(--sp-2)); }
+/* 首页 KPI：说明行最少两行高（16 × 2 + 行间距 2），内容贴底（上沿不再 margin-top: auto，留白交给读数的 margin-block）。加载中说明为空、数据到了多数卡是两行：卡片不长高（首页 CLS） */
+.hsec-hero .stat-cap { margin-top: 0; align-items: flex-end; align-content: flex-end; min-height: calc(2 * var(--lh-micro) + var(--sp-2)); }
 /* 说明行里的数字（下载 1.2 TB、降级 3）：数字 --fg 加粗，单位跟着数字、不再比数字大一号（.unit 默认 12px 灰，比 11px 的数字还显眼） */
 .stat-cap .num { color: var(--fg); font-weight: var(--fw-medium); }
 .stat-cap .unit { font-size: inherit; color: inherit; }
@@ -124,7 +124,7 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 /* ---------- 集群状态 ---------- */
 .cluster {
   container-type: inline-size; display: flex; flex-direction: column; gap: var(--sp-12); min-width: 0; box-sizing: border-box;
-  padding: clamp(14px, 1.8vw, 18px); background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); box-shadow: var(--shadow-card);
+  padding: clamp(14px, 1.8vw, 18px); background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); box-shadow: var(--shadow-card-lit);
 }
 .cluster-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-10); }
 .cluster-title { display: flex; align-items: center; gap: 7px; margin: 0; font: var(--fw-bold) var(--fs-emph) / 1.2 var(--font-sans); letter-spacing: var(--tracking-title); color: var(--fg); }

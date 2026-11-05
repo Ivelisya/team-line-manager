@@ -18,17 +18,14 @@
   grid-row: span var(--rows); grid-template-rows: subgrid;
   margin-bottom: var(--grid-gap);
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); overflow: hidden;
-  box-shadow: var(--shadow-card);
+  box-shadow: var(--shadow-card-lit);
   transition: border-color var(--dur-1) var(--ease-std), box-shadow var(--dur-2) var(--ease-out), translate var(--dur-2) var(--ease-out);
 }
 /* 外壳精修（卡内 probe 的格条、点阵、心跳格不动）：悬停在上浮 2px、阴影加深之外，加一圈极淡的强调色（同首页 KPI）；
-   故障红边、当前卡、菜单开着的卡不换边色。暗色：卡片顶边的内高光比令牌再亮一点（光从上方来），卡片从分区底上分出来 */
+   故障红边、当前卡、菜单开着的卡不换边色。静止阴影用 --shadow-card-lit：暗色顶边的内高光比 --shadow-card 再亮一点（光从上方来），卡片从分区底上分出来 */
 @media (hover: hover) {
   .ncard:hover, .rcard:hover { box-shadow: var(--shadow-card-hover), 0 0 0 3px color-mix(in srgb, var(--accent) 6%, transparent); }
   :is(.ncard, .rcard):not([data-health="down"], .is-current, [data-menu]):hover { border-color: color-mix(in srgb, var(--accent) 24%, var(--line)); }
-}
-:root[data-theme="dark"] :is(.ncard, .rcard, .stat, .cluster) {
-  --shadow-card: inset 0 1px 0 rgb(255 255 255 / 0.07), 0 1px 2px rgb(0 0 0 / 0.3), 0 4px 10px -2px rgb(0 0 0 / 0.28), 0 16px 32px -12px rgb(0 0 0 / 0.5);
 }
 .ncard[data-view="small"] { --rows: 7; }
 .ncard[data-view="compact"] { --rows: 6; }
@@ -220,7 +217,7 @@
 .rings { display: grid; gap: var(--grid-gap); grid-template-columns: repeat(auto-fill, minmax(min(100%, 248px), 1fr)); }
 .rcard {
   display: grid; gap: var(--sp-10); min-width: 0; padding: var(--sp-14) var(--card-pad) var(--sp-12);
-  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); box-shadow: var(--shadow-card);
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); box-shadow: var(--shadow-card-lit);
   transition: border-color var(--dur-1) var(--ease-std), box-shadow var(--dur-2) var(--ease-out), translate var(--dur-2) var(--ease-out);
 }
 /* 视口外的环形卡跳过排版与绘制（一页最多 96 张）；占位高度按实际卡高，滚动条不跳。
