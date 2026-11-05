@@ -30,7 +30,7 @@ export function TooltipHeader({ children, className }: TooltipHeaderProps) {
   return (
     <div
       className={cn(
-        "border-b px-3.5 py-2.5 text-left font-medium text-chart-tooltip-foreground text-sm",
+        "px-2.5 pt-2 pb-1 text-left text-chart-tooltip-muted text-label",
         className
       )}
     >
@@ -47,24 +47,24 @@ export function TooltipContent({ title, rows, children }: TooltipContentProps) {
     <div>
       {title && <TooltipHeader>{title}</TooltipHeader>}
       {hasBody && (
-        <div className="px-3.5 py-3">
+        <div className="px-2.5 pt-0.5 pb-2">
           {rows.length > 0 && (
-            <div className="space-y-2">
+            <div className="space-y-1">
               {rows.map((row) => (
                 <div
-                  className="flex items-center justify-between gap-6"
+                  className="flex items-center justify-between gap-(--sp-12)"
                   key={`${row.label}-${row.color}`}
                 >
                   <div className="flex min-w-0 items-center gap-2">
                     <span
-                      className="size-2 shrink-0 rounded-full"
+                      className="size-2 shrink-0 rounded-[2px]"
                       style={{ backgroundColor: row.color }}
                     />
-                    <span className="truncate text-chart-tooltip-muted text-sm">
+                    <span className="truncate text-chart-tooltip-foreground text-label">
                       {row.label}
                     </span>
                   </div>
-                  <span className="text-right font-medium text-chart-tooltip-foreground text-sm tabular-nums">
+                  <span className="font-num text-right font-semibold text-chart-tooltip-foreground text-label">
                     {typeof row.value === "number"
                       ? intFmt(row.value)
                       : row.value}

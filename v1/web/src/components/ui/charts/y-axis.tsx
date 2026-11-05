@@ -72,6 +72,10 @@ export interface YAxisProps {
   formatLargeNumbers?: boolean;
   /** Custom formatter for tick labels (e.g. USD). Overrides formatLargeNumbers when set. */
   formatValue?: (value: number) => string;
+  /** Explicit tick values (overrides `numTicks`). */
+  ticks?: number[];
+  /** Fade / drift labels when the tick set changes. Default: true. */
+  animate?: boolean;
 }
 
 function formatLabel(
@@ -135,6 +139,8 @@ const YAxisInner = memo(function YAxisInner({
   numTicks = Y_AXIS_DEFAULT_TICK_COUNT,
   formatLargeNumbers = true,
   formatValue,
+  ticks: ticksProp,
+  animate = true,
   container,
 }: YAxisProps & { container: HTMLDivElement }) {
   const { margin, referenceAreas } = useChartStable();
@@ -143,7 +149,7 @@ const YAxisInner = memo(function YAxisInner({
   // swaps one label set for the next once, instead of churning through every
   // intermediate tick set; positions still follow the live scale each frame.
   const settledYScale = useSettledYScale(yAxisId);
-  const reducedMotion = useReducedMotion() ?? false;
+  const reducedMotion = (useReducedMotion() ?? false) || !animate;
   const isLeft = orientation === "left";
   const axisId = normalizeYAxisId(yAxisId);
 
@@ -157,8 +163,8 @@ const YAxisInner = memo(function YAxisInner({
   }
 
   const tickValues = useMemo(
-    () => settledYScale.ticks(resolveYAxisTickCount(numTicks)),
-    [settledYScale, numTicks]
+    () => ticksProp ?? settledYScale.ticks(resolveYAxisTickCount(numTicks)),
+    [settledYScale, numTicks, ticksProp]
   );
 
   const ticks = useMemo(() => {
@@ -214,7 +220,7 @@ const YAxisInner = memo(function YAxisInner({
                 className="absolute flex h-0 items-center"
                 custom={{ drift, reducedMotion } satisfies LabelMotion}
                 exit="exit"
-                initial="hidden"
+                initial={animate ? "hidden" : false}
                 key={tick.value}
                 style={{
                   top: tick.y + Y_AXIS_LABEL_CLIP_BLEED_PX,
@@ -238,7 +244,7 @@ const YAxisInner = memo(function YAxisInner({
                 variants={labelVariants}
               >
                 <span
-                  className="whitespace-nowrap text-chart-label text-xs"
+                  className="whitespace-nowrap font-num text-chart-label text-micro"
                   style={
                     tick.labelColor ? { color: tick.labelColor } : undefined
                   }

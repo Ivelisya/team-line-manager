@@ -94,6 +94,8 @@ export interface ChartTooltipProps {
     | ((point: Record<string, unknown>, line: LineConfig) => string);
   /** Additional content to show below rows (e.g., markers) */
   children?: React.ReactNode;
+  /** Custom title for the default tooltip content (default: weekday + date). */
+  title?: (point: Record<string, unknown>) => string;
   /** Custom class name */
   className?: string;
   /** Optional labels aligned with chart data for the x-axis ticker. */
@@ -247,6 +249,7 @@ const ChartTooltipInner = memo(function ChartTooltipInner({
   indicatorEnd = "plot",
   content,
   rows: rowsRenderer,
+  title: titleRenderer,
   dotColor: dotColorProp,
   children,
   className = "",
@@ -448,13 +451,16 @@ const ChartTooltipInner = memo(function ChartTooltipInner({
     if (!tooltipData) {
       return undefined;
     }
+    if (titleRenderer) {
+      return titleRenderer(tooltipData.point);
+    }
     // For bar charts (horizontal or vertical), use the category name
     if (barXAccessor) {
       return barXAccessor(tooltipData.point);
     }
     // For line/area charts, use the date
     return weekdayDateFmt.format(xAccessor(tooltipData.point));
-  }, [tooltipData, barXAccessor, xAccessor]);
+  }, [tooltipData, barXAccessor, xAccessor, titleRenderer]);
 
   const tooltipContent = (
     <>
@@ -523,7 +529,8 @@ const ChartTooltipInner = memo(function ChartTooltipInner({
                     y={activePoint.y}
                   />
                 )
-              : lines.map((line, index) => (
+              : lines.map((line, index) =>
+                  tooltipData?.yPositions[line.dataKey] === undefined ? null : (
                   <TooltipDot
                     animate={!discreteInteraction}
                     color={resolveDotColor(line, index)}
@@ -541,9 +548,10 @@ const ChartTooltipInner = memo(function ChartTooltipInner({
                     variant={dotVariant}
                     visible={visible}
                     x={tooltipData?.xPositions?.[line.dataKey] ?? x}
-                    y={tooltipData?.yPositions[line.dataKey] ?? 0}
+                    y={tooltipData.yPositions[line.dataKey] ?? 0}
                   />
-                ))}
+                  )
+                )}
             {bandDots.map((dot) => {
               const y = tooltipData?.yPositions[dot.key];
               if (y == null) {

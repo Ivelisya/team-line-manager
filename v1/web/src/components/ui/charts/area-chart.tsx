@@ -7,23 +7,19 @@ import {
   type CSSProperties,
   isValidElement,
   type ReactNode,
-  useCallback,
   useMemo,
   useRef,
-  useState,
 } from "react";
 import { cn } from "@/lib/utils";
 import { Area, type AreaProps } from "./area";
 import { AreaValueLabels } from "./area-value-labels";
 import { type LineConfig, type Margin, useStableMargin } from "./chart-context";
-import { ChartLoadingLabel } from "./chart-loading-label";
 import { ParentSize } from "./chart-parent-size";
 import {
   type ChartPhase,
   type ChartStatus,
   DEFAULT_CHART_STATUS,
   DEFAULT_Y_DOMAIN_TWEEN_MS,
-  resolveRestingChartPhase,
 } from "./chart-phase";
 import { PatternArea } from "./pattern-area";
 import {
@@ -64,6 +60,10 @@ export interface AreaChartProps {
   xDomainSlotCount?: number;
   /** Tween y-domain when brush changes the visible x-range. Default: false */
   tweenYDomainOnXDomainChange?: boolean;
+  /** Exact y-domain (no headroom, no nice()). */
+  yDomain?: [number, number];
+  /** Thin the series to ~1.5 points per pixel. Default: true */
+  decimate?: boolean;
   /** Inline container styles (e.g. fixed height for brush strip). */
   style?: CSSProperties;
   /** Fires when the internal chart phase changes (e.g. OG capture readiness). */
@@ -139,6 +139,8 @@ export function AreaChart({
   xDomain,
   xDomainSlotCount,
   tweenYDomainOnXDomainChange = false,
+  yDomain,
+  decimate = true,
   style,
   onPhaseChange,
   children,
@@ -146,31 +148,13 @@ export function AreaChart({
   const containerRef = useRef<HTMLDivElement>(null);
   const margin = useStableMargin({ ...DEFAULT_MARGIN, ...marginProp });
   const lines = useMemo(() => extractAreaConfigs(children), [children]);
-  const [chartPhase, setChartPhase] = useState<ChartPhase>(() =>
-    resolveRestingChartPhase(status)
-  );
-  const handlePhaseChange = useCallback(
-    (phase: ChartPhase) => {
-      setChartPhase(phase);
-      onPhaseChange?.(phase);
-    },
-    [onPhaseChange]
-  );
-
-  const showLoadingLabel = Boolean(
-    loadingLabel?.trim() &&
-      (chartPhase === "loading" ||
-        chartPhase === "exiting" ||
-        chartPhase === "gridTweenReady" ||
-        chartPhase === "revealingLoading")
-  );
 
   return (
     <LazyMotion features={domAnimation}>
       <div
         className={cn("relative w-full", className)}
         ref={containerRef}
-        style={{ aspectRatio, touchAction: "none", ...style }}
+        style={{ aspectRatio, touchAction: "pan-y", ...style }}
       >
         <ParentSize debounceTime={10}>
           {({ width, height }) =>
@@ -187,13 +171,15 @@ export function AreaChart({
                 lines={lines}
                 loadingLabel={loadingLabel}
                 margin={margin}
-                onPhaseChange={handlePhaseChange}
+                onPhaseChange={onPhaseChange}
                 revealSignature={revealSignature}
                 tweenYDomainOnXDomainChange={tweenYDomainOnXDomainChange}
                 width={width}
                 xDataKey={xDataKey}
                 xDomain={xDomain}
                 xDomainSlotCount={xDomainSlotCount}
+                yDomain={yDomain}
+                decimate={decimate}
                 yDomainTween={yDomainTween}
                 yDomainTweenDuration={yDomainTweenDuration}
               >
@@ -204,12 +190,6 @@ export function AreaChart({
             ) : null
           }
         </ParentSize>
-        {showLoadingLabel ? (
-          <ChartLoadingLabel
-            exiting={chartPhase !== "loading"}
-            text={loadingLabel}
-          />
-        ) : null}
       </div>
     </LazyMotion>
   );

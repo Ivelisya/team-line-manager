@@ -59,9 +59,21 @@ export interface ReferenceAreaProps {
   markerSize?: number;
   ifOverflow?: ReferenceAreaIfOverflow;
   className?: string;
+  /** Text centred in the band (skipped when the band is narrower than the text). */
+  label?: string;
+  labelColor?: string;
 }
 
 const ENTER_FADE_MS = 420;
+
+/** Width of an 11px label: CJK glyphs 11px, everything else ~6px. */
+function labelTextWidth(label: string): number {
+  let w = 0;
+  for (const ch of label) {
+    w += (ch.codePointAt(0) ?? 0) > 255 ? 11 : 6;
+  }
+  return w;
+}
 
 function clampFadeLength(length: number): number {
   return Math.min(45, Math.max(0, length));
@@ -109,6 +121,8 @@ export function ReferenceArea({
   markerSize = 6,
   ifOverflow = "hidden",
   className,
+  label,
+  labelColor = chartCssVars.label,
 }: ReferenceAreaProps) {
   const { innerWidth, innerHeight, xScale, chartPhase, enterTransition } =
     useChartStable();
@@ -264,6 +278,18 @@ export function ReferenceArea({
           y2={bottomEdgeY}
         />
       </g>
+      {label && width > labelTextWidth(label) + 16 ? (
+        <text
+          dominantBaseline="central"
+          fill={labelColor}
+          fontSize={11}
+          textAnchor="middle"
+          x={centerX}
+          y={y + height / 2}
+        >
+          {label}
+        </text>
+      ) : null}
       {showMarkers ? (
         <>
           <path

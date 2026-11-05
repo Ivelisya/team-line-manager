@@ -4,6 +4,7 @@ import { type ScaleTime, scaleBand, scaleLinear } from "d3-scale";
 import type { Transition } from "motion/react";
 import { domAnimation, LazyMotion } from "motion/react";
 import {
+  type CSSProperties,
   memo,
   type ReactElement,
   type ReactNode,
@@ -89,8 +90,12 @@ export interface BarChartProps {
   stacked?: boolean;
   /** Gap between stacked bar segments in pixels. Default: 0 */
   stackGap?: number;
+  /** Exact value-axis domain (no headroom, no nice()). */
+  yDomain?: [number, number];
   /** When set, tooltip Y positions snap to the top square center (shape variant). */
   squareSnap?: { squareGap: number; groupGap?: number; fit?: boolean };
+  /** Inline container styles (e.g. a fixed height). */
+  style?: CSSProperties;
   /** Child components (Bar, Grid, ChartTooltip, etc.). Optional — omit for a
    * pure `status="loading"` skeleton. */
   children?: ReactNode;
@@ -178,6 +183,7 @@ interface ChartInnerProps {
   orientation: BarOrientation;
   stacked: boolean;
   stackGap: number;
+  yDomain?: [number, number];
   squareSnap?: { squareGap: number; groupGap?: number; fit?: boolean };
   children: ReactNode;
   containerRef: React.RefObject<HTMLDivElement | null>;
@@ -209,6 +215,7 @@ const ChartCore = memo(function ChartCore({
   orientation,
   stacked,
   stackGap,
+  yDomain,
   squareSnap,
   children,
   containerRef,
@@ -286,14 +293,17 @@ const ChartCore = memo(function ChartCore({
   // grow from the zero line in either direction.
   const valueScale = useMemo(() => {
     const range = isHorizontal ? [0, innerWidth] : [innerHeight, 0];
+    if (yDomain) {
+      return scaleLinear().domain(yDomain).range(range);
+    }
     return scaleLinear()
       .domain(resolveBarValueDomain(valueExtents))
       .nice()
       .range(range);
-  }, [innerWidth, innerHeight, valueExtents, isHorizontal]);
+  }, [innerWidth, innerHeight, valueExtents, isHorizontal, yDomain]);
 
   const yScales = useMemo(() => {
-    if (isHorizontal) {
+    if (isHorizontal || yDomain) {
       return wrapSingleYScale(valueScale);
     }
     return buildYScalesForLines({
@@ -303,7 +313,7 @@ const ChartCore = memo(function ChartCore({
       resolveDomain: (dataKeys) =>
         resolveBarValueDomain(collectBarValueExtents(data, dataKeys, stacked)),
     });
-  }, [data, innerHeight, isHorizontal, lines, stacked, valueScale]);
+  }, [data, innerHeight, isHorizontal, lines, stacked, valueScale, yDomain]);
 
   const primaryYScale = getPrimaryYScale(yScales, valueScale);
 
@@ -691,11 +701,13 @@ export function BarChart({
   revealSignature,
   aspectRatio = "2 / 1",
   className = "",
+  style,
   barGap = 0.2,
   barWidth,
   orientation = "vertical",
   stacked = false,
   stackGap = 0,
+  yDomain,
   squareSnap,
   children,
   onPhaseChange,
@@ -710,7 +722,7 @@ export function BarChart({
       <div
         className={cn("relative w-full overflow-visible", className)}
         ref={containerRef}
-        style={{ aspectRatio }}
+        style={{ aspectRatio, ...style }}
       >
         <ParentSize debounceTime={10}>
           {({ width, height }) => (
@@ -731,6 +743,7 @@ export function BarChart({
               squareSnap={squareSnap}
               stacked={stacked}
               stackGap={stackGap}
+              yDomain={yDomain}
               status={status}
               width={width}
               xDataKey={xDataKey}

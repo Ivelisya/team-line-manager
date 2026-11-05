@@ -6,6 +6,8 @@ export interface SeriesPathPoint {
   x: number;
   y: number;
   key: string;
+  /** false = no value here (gap): the line breaks instead of drawing to y = 0. */
+  defined?: boolean;
 }
 
 export function computeSeriesPathPoints(
@@ -22,6 +24,7 @@ export function computeSeriesPathPoints(
       x: xScale(xValue) ?? 0,
       y: typeof yValue === "number" ? (yScale(yValue) ?? 0) : 0,
       key: String(xValue.getTime?.() ?? index),
+      defined: typeof yValue === "number",
     };
   });
 }
@@ -77,6 +80,7 @@ export function seriesPathFromPoints(
   const generator = d3Line<SeriesPathPoint>()
     .x((point) => point.x)
     .y((point) => point.y)
+    .defined((point) => point.defined !== false)
     .curve(curve);
 
   return fastShapePath(generator, points);

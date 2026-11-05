@@ -83,10 +83,16 @@ export interface BarProps {
    * front face). Pass `true` whenever the chart also renders the bar-depth 3D
    * surfaces. Default: false */
   perspective?: boolean;
-  /** Minimum rendered bar height in px (non-stacked, vertical). Floors short or
-   * zero-value bars so they stay visible. Pair with the same value on
-   * `<BarDepthProvider minBarHeight>` when using the 3D surfaces. Default: 0 */
+  /** Minimum rendered bar height in px (vertical). Floors short bars so they
+   * stay visible; a stacked series floors only its non-zero segments (0 stays
+   * 0). Pair with the same value on `<BarDepthProvider minBarHeight>` when using
+   * the 3D surfaces. Default: 0 */
   minBarHeight?: number;
+  /** Round only the free end of the bar (top; right on horizontal bars) with
+   * `lineCap` as the radius. Static bars only. Default: false */
+  roundEnd?: boolean;
+  /** Per-row opacity multiplier (e.g. a dimmed "today" bar). Static bars only. */
+  pointOpacity?: (datum: Record<string, unknown>) => number;
   /** Show the formatted value inside each bar when it fits. Default: false. */
   showValue?: boolean;
   /** Format values displayed inside bars. Defaults to English integers. */
@@ -238,11 +244,26 @@ interface BarGeometry {
   width: number;
   height: number;
   rx: number;
+  /** Opacity from `pointOpacity` (1 when unset). */
+  opacity: number;
+  /** Round only the free end (see `roundEnd`). */
+  roundEnd?: boolean;
+  horizontal?: boolean;
   growOrigin: number;
   valueLabel?: string;
   labelX: number;
   labelY: number;
   labelTransform?: string;
+}
+
+/** Rect path with only the free end rounded: top corners, or right corners on horizontal bars. */
+function endRoundedRectPath(g: BarGeometry): string {
+  const { x, y, width: w, height: h } = g;
+  const r = Math.min(g.rx, w / 2, h / 2);
+  if (g.horizontal) {
+    return `M${x} ${y}H${x + w - r}Q${x + w} ${y} ${x + w} ${y + r}V${y + h - r}Q${x + w} ${y + h} ${x + w - r} ${y + h}H${x}Z`;
+  }
+  return `M${x} ${y + h}V${y + r}Q${x} ${y} ${x + r} ${y}H${x + w - r}Q${x + w} ${y} ${x + w} ${y + r}V${y + h}Z`;
 }
 
 const STATIC_BAR_STYLE = {
@@ -273,17 +294,26 @@ const StaticBar = memo(function StaticBar({
 }: StaticBarProps) {
   return (
     <g>
-      <rect
-        fill={fill}
-        height={geometry.height}
-        opacity={opacity}
-        rx={geometry.rx}
-        ry={geometry.rx}
-        style={STATIC_BAR_STYLE}
-        width={geometry.width}
-        x={geometry.x}
-        y={geometry.y}
-      />
+      {geometry.roundEnd && geometry.rx > 0 ? (
+        <path
+          d={endRoundedRectPath(geometry)}
+          fill={fill}
+          opacity={opacity}
+          style={STATIC_BAR_STYLE}
+        />
+      ) : (
+        <rect
+          fill={fill}
+          height={geometry.height}
+          opacity={opacity}
+          rx={geometry.rx}
+          ry={geometry.rx}
+          style={STATIC_BAR_STYLE}
+          width={geometry.width}
+          x={geometry.x}
+          y={geometry.y}
+        />
+      )}
       {geometry.valueLabel ? (
         <text
           className={valueLabelClassName}
@@ -318,6 +348,8 @@ const BarInner = memo(function BarInner({
   groupGap = 4,
   perspective = false,
   minBarHeight = 0,
+  roundEnd = false,
+  pointOpacity,
   showValue = false,
   valueLabelFormatter = valueLabelFmt,
   valueLabelColor = "white",
@@ -470,6 +502,10 @@ const BarInner = memo(function BarInner({
           const offsetY = scale(offset) ?? innerHeight;
           // Apply stack gap: shift up and reduce height
           const gapOffset = seriesIndex * stackGap;
+          // A non-zero stacked segment is at least `minBarHeight` tall.
+          if (minBarHeight > 0 && value > 0 && barHeight < minBarHeight) {
+            barHeight = minBarHeight;
+          }
           y = offsetY - barHeight - gapOffset;
           // Reduce height slightly for non-last bars to create visual gap
           if (!isLastSeries && stackGap > 0) {
@@ -564,6 +600,9 @@ const BarInner = memo(function BarInner({
         width: barW,
         height: barHeight,
         rx: effectiveRx,
+        opacity: pointOpacity ? pointOpacity(d) : 1,
+        roundEnd,
+        horizontal: isHorizontal,
         growOrigin,
         valueLabel,
         labelX,
@@ -588,6 +627,8 @@ const BarInner = memo(function BarInner({
     isLastSeries,
     minBarHeight,
     perspective,
+    pointOpacity,
+    roundEnd,
     seriesCount,
     seriesIndex,
     showValue,
@@ -645,7 +686,7 @@ const BarInner = memo(function BarInner({
             fill={fill}
             geometry={bar}
             key={bar.key}
-            opacity={isFaded ? fadedOpacity : 1}
+            opacity={bar.opacity * (isFaded ? fadedOpacity : 1)}
             valueLabelClassName={valueLabelClassName}
             valueLabelColor={valueLabelColor}
           />

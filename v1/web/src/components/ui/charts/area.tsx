@@ -259,6 +259,12 @@ export function Area({
   const shouldMeasurePath = showLine && (showSeriesContent || showLoadingPulse);
   const showFill = showSeriesContent && showAreaFill;
 
+  // Rows without a number (gaps) break the fill and stroke instead of dropping to 0.
+  const hasValue = useCallback(
+    (d: Record<string, unknown>) => typeof d[dataKey] === "number",
+    [dataKey]
+  );
+
   // Fill and stroke `d` only change with their inputs, so re-renders for
   // other reasons reuse them. Hidden layers skip the work, as before.
   const getX = useCallback(
@@ -268,16 +274,16 @@ export function Area({
   const areaPathD = useMemo(
     () =>
       showFill
-        ? areaClosedD(renderData, { curve, x: getX, y: getY, yScale })
+        ? areaClosedD(renderData, { curve, defined: hasValue, x: getX, y: getY, yScale })
         : "",
-    [curve, getX, getY, renderData, showFill, yScale]
+    [curve, getX, getY, hasValue, renderData, showFill, yScale]
   );
   const strokePathD = useMemo(
     () =>
       shouldMeasurePath
-        ? linePathD(renderData, { curve, x: getX, y: getY })
+        ? linePathD(renderData, { curve, defined: hasValue, x: getX, y: getY })
         : "",
-    [curve, getX, getY, renderData, shouldMeasurePath]
+    [curve, getX, getY, hasValue, renderData, shouldMeasurePath]
   );
 
   const seriesLayers = (

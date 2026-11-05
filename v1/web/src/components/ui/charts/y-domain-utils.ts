@@ -183,7 +183,10 @@ export function computeYDomainsByAxis({
   lines,
   resolveDomain,
   extraKeysByAxis,
+  exact = false,
 }: {
+  /** Use the resolved domain as is (no `nice()`), e.g. an explicit `yDomain`. */
+  exact?: boolean;
   lines: LineConfig[];
   resolveDomain: (dataKeys: string[]) => YDomain;
   /**
@@ -211,7 +214,8 @@ export function computeYDomainsByAxis({
 
   const domains: Record<string, YDomain> = {};
   for (const [axisId, dataKeys] of keysByAxis) {
-    domains[axisId] = niceYDomain(resolveDomain(dataKeys));
+    const resolved = resolveDomain(dataKeys);
+    domains[axisId] = exact ? resolved : niceYDomain(resolved);
   }
 
   if (!domains.left) {

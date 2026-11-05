@@ -21,6 +21,12 @@ export interface BarXAxisProps {
   showAllLabels?: boolean;
   /** Maximum number of labels to show. Supports responsive breakpoints. */
   maxLabels?: ChartLabelCount;
+  /** Text for a category label (default: the category itself). */
+  formatLabel?: (label: string) => string;
+  /** Thin the labels so neighbours are at least this many px apart (replaces `maxLabels`). */
+  minLabelGap?: number;
+  /** Fade labels near the hovered bar (for the date ticker). Default: true */
+  fadeOnHover?: boolean;
 }
 
 interface BarXAxisLabelProps {
@@ -65,7 +71,7 @@ function BarXAxisLabel({
     >
       <m.span
         animate={{ opacity }}
-        className={cn("whitespace-nowrap text-chart-label text-xs")}
+        className={cn("whitespace-nowrap font-num text-chart-label text-micro")}
         initial={{ opacity: 1 }}
         transition={{ duration: 0.4, ease: "easeInOut" }}
       >
@@ -93,6 +99,9 @@ const BarXAxisInner = memo(function BarXAxisInner({
   tickerHalfWidth = 50,
   showAllLabels = false,
   maxLabels = 12,
+  formatLabel,
+  minLabelGap,
+  fadeOnHover = true,
   container,
 }: BarXAxisProps & { container: HTMLDivElement }) {
   const {
@@ -121,8 +130,16 @@ const BarXAxisInner = memo(function BarXAxisInner({
       const bandX = barScale(label) ?? 0;
       // Center the label under the bar group
       const x = bandX + bandWidth / 2 + margin.left;
-      return { label, x };
+      return { label: formatLabel ? formatLabel(label) : label, x };
     });
+
+    // Neighbours at least `minLabelGap` px apart: keep every `step`-th band.
+    if (minLabelGap) {
+      const pitch =
+        (barScale as unknown as { step?: () => number }).step?.() ?? bandWidth;
+      const gapStep = Math.max(1, Math.ceil(minLabelGap / Math.max(1, pitch)));
+      return allLabels.filter((_, i) => i % gapStep === 0);
+    }
 
     // If showAllLabels is true or we have fewer than maxLabels, show all
     if (showAllLabels || allLabels.length <= resolvedMaxLabels) {
@@ -140,9 +157,11 @@ const BarXAxisInner = memo(function BarXAxisInner({
     margin.left,
     showAllLabels,
     resolvedMaxLabels,
+    formatLabel,
+    minLabelGap,
   ]);
 
-  const isHovering = tooltipData !== null;
+  const isHovering = fadeOnHover && tooltipData !== null;
   const crosshairX = tooltipData ? tooltipData.x + margin.left : null;
 
   return createPortal(

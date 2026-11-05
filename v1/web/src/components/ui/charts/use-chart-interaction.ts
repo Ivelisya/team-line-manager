@@ -60,6 +60,7 @@ interface ChartInteractionResult {
     onTouchStart?: (event: React.TouchEvent<SVGGElement>) => void;
     onTouchMove?: (event: React.TouchEvent<SVGGElement>) => void;
     onTouchEnd?: () => void;
+    onTouchCancel?: () => void;
   };
   interactionStyle: React.CSSProperties;
 }
@@ -134,6 +135,14 @@ export function useChartInteraction({
           d = d1;
           finalIndex = index;
         }
+      }
+
+      // A row without any series value (a gap): no tooltip, and nothing to snap to.
+      if (
+        lines.length > 0 &&
+        !lines.some((line) => typeof d[line.dataKey] === "number")
+      ) {
+        return null;
       }
 
       return {
@@ -220,6 +229,8 @@ export function useChartInteraction({
       const tooltip = resolveTooltipFromX(chartX);
       if (tooltip) {
         scheduleTooltip(tooltip);
+      } else {
+        clearTooltip();
       }
     },
     [
@@ -227,6 +238,7 @@ export function useChartInteraction({
       resolveTooltipFromX,
       resolveIndexFromX,
       scheduleTooltip,
+      clearTooltip,
       setSelection,
     ]
   );
@@ -372,12 +384,14 @@ export function useChartInteraction({
         onTouchStart: handleTouchStart,
         onTouchMove: handleTouchMove,
         onTouchEnd: handleTouchEnd,
+        onTouchCancel: handleTouchEnd,
       }
     : {};
 
   const interactionStyle: React.CSSProperties = {
     cursor: canInteract ? "crosshair" : "default",
-    touchAction: "none",
+    // pan-y: vertical swipes still scroll the page / drawer; horizontal drags scrub the tooltip.
+    touchAction: "pan-y",
   };
 
   return {

@@ -195,6 +195,10 @@ export interface TimeSeriesChartInnerProps {
   composedStackGap?: number;
   /** When set, drives the y-axis max instead of scanning `lines` (e.g. stacked bar totals). */
   yScaleDomainMax?: number;
+  /** Exact y-domain for the default axis: no 1.1 headroom, no `nice()`. */
+  yDomain?: [number, number];
+  /** LTTB-thin the series to ~1.5 points per pixel. Default: true. */
+  decimate?: boolean;
   /** Loading vs ready — drives chart phase until transition orchestration lands. */
   chartStatus?: ChartStatus;
   loadingLabel?: string;
@@ -242,6 +246,8 @@ export const TimeSeriesChartInner = memo(function TimeSeriesChartCore({
   composedStackOffsets,
   composedStackGap,
   yScaleDomainMax,
+  yDomain,
+  decimate = true,
   chartStatus = DEFAULT_CHART_STATUS,
   loadingLabel,
   yDomainTween = true,
@@ -262,13 +268,16 @@ export const TimeSeriesChartInner = memo(function TimeSeriesChartCore({
       const axisGroups = groupLinesByYAxisId(lines);
       const usesDefaultOnly =
         axisGroups.size === 1 && axisGroups.has(DEFAULT_Y_AXIS_ID);
+      if (usesDefaultOnly && yDomain) {
+        return yDomain;
+      }
       const domainMax =
         usesDefaultOnly && yScaleDomainMax != null
           ? yScaleDomainMax
           : undefined;
       return resolveTimeSeriesYDomain(sourceData, dataKeys, domainMax);
     },
-    [lines, yScaleDomainMax]
+    [lines, yScaleDomainMax, yDomain]
   );
 
   const skeletonData = useMemo(() => {
@@ -375,12 +384,15 @@ export const TimeSeriesChartInner = memo(function TimeSeriesChartCore({
         }
       }
     }
+    if (!decimate) {
+      return seriesSourceData;
+    }
     return decimateTimeSeries(
       seriesSourceData,
       maxRenderPointsForWidth(innerWidth),
       valueKeys
     );
-  }, [seriesSourceData, innerWidth, lines, bandKeysByAxisId]);
+  }, [seriesSourceData, innerWidth, lines, bandKeysByAxisId, decimate]);
 
   const columnWidth = useMemo(() => {
     const slotCount =
@@ -408,6 +420,7 @@ export const TimeSeriesChartInner = memo(function TimeSeriesChartCore({
       lines,
       resolveDomain: (dataKeys) =>
         resolveYDomain(xDomain ? visiblePlotData : data, dataKeys),
+      exact: yDomain != null,
     });
     if (projectionConfigs.length === 0) {
       return base;
@@ -438,6 +451,7 @@ export const TimeSeriesChartInner = memo(function TimeSeriesChartCore({
     resolveYDomain,
     visiblePlotData,
     xDomain,
+    yDomain,
   ]);
 
   const animatedYDomainsByAxis = useAnimatedYDomains({

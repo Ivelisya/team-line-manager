@@ -30,6 +30,12 @@ export interface XAxisProps {
   tickMode?: "domain" | "data";
   /** Optional labels aligned with data rows for the displayed ticks. */
   labels?: string[];
+  /** Explicit tick times (ms). Used as is, thinned so labels do not overlap. */
+  ticks?: number[];
+  /** Label for an explicit tick. */
+  formatTick?: (time: number) => string;
+  /** Slide labels when the domain moves and fade them near the crosshair. Default: true. */
+  animate?: boolean;
 }
 
 interface AxisTick {
@@ -98,7 +104,7 @@ const XAxisLabel = memo(function XAxisLabel({
       }}
     >
       <span
-        className="whitespace-nowrap text-chart-label text-xs"
+        className="whitespace-nowrap font-num text-chart-label text-micro"
         style={{
           opacity,
           transition: "opacity 0.4s ease-in-out",
@@ -451,6 +457,33 @@ function buildDataAlignedTicks({
   return ticks;
 }
 
+/** Caller-supplied tick times: drop the ones outside the domain and any that would overlap the previous label. */
+function buildExplicitTicks(
+  times: number[],
+  formatTick: ((time: number) => string) | undefined,
+  marginLeft: number,
+  xScale: { domain: () => Date[]; (date: Date): number | undefined }
+): AxisTick[] {
+  const [start, end] = xScale.domain();
+  const ticks: AxisTick[] = [];
+  let lastRight = Number.NEGATIVE_INFINITY;
+  for (const time of times) {
+    if (!(start && end) || time < start.getTime() || time > end.getTime()) {
+      continue;
+    }
+    const date = new Date(time);
+    const label = formatTick ? formatTick(time) : shortDateFmt.format(date);
+    const x = (xScale(date) ?? 0) + marginLeft;
+    const half = (label.length * 6.5) / 2; // text-xs digits, tabular enough
+    if (x - half < lastRight + 8) {
+      continue;
+    }
+    lastRight = x + half;
+    ticks.push({ date, label, x });
+  }
+  return ticks;
+}
+
 function buildDomainTicks({
   marginLeft,
   numTicks,
@@ -593,6 +626,9 @@ const XAxisInner = memo(function XAxisInner({
   tickerHalfWidth = 50,
   tickMode = "data",
   labels: labelsProp,
+  ticks: ticksProp,
+  formatTick,
+  animate = true,
   container,
 }: XAxisProps & { container: HTMLDivElement }) {
   const {
@@ -612,6 +648,9 @@ const XAxisInner = memo(function XAxisInner({
   );
 
   const labelsToShow = useMemo(() => {
+    if (ticksProp) {
+      return buildExplicitTicks(ticksProp, formatTick, margin.left, xScale);
+    }
     const projectionExtendsScale =
       tickMode === "data" && domainExtendsPastData(data, xAccessor, xScale);
 
@@ -656,6 +695,8 @@ const XAxisInner = memo(function XAxisInner({
     return dataTicks;
   }, [
     tickMode,
+    ticksProp,
+    formatTick,
     xDomain,
     data,
     dateLabels,
@@ -665,7 +706,7 @@ const XAxisInner = memo(function XAxisInner({
     resolvedNumTicks,
   ]);
 
-  const crosshairX = tooltipData ? tooltipData.x + margin.left : null;
+  const crosshairX = tooltipData && animate ? tooltipData.x + margin.left : null;
   const hoveredLabel = tooltipData
     ? (dateLabels[tooltipData.index] ??
       shortDateFmt.format(xAccessor(tooltipData.point)))
@@ -675,7 +716,7 @@ const XAxisInner = memo(function XAxisInner({
     <div className="pointer-events-none absolute inset-0">
       {labelsToShow.map((item) => (
         <XAxisLabel
-          animatePosition={xDomain == null}
+          animatePosition={animate && xDomain == null}
           key={`${item.date.getTime()}-${item.x}`}
           label={item.label}
           opacity={xAxisLabelOpacity(

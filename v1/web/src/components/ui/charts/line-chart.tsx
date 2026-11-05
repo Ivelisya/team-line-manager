@@ -8,21 +8,17 @@ import {
   isValidElement,
   type ReactElement,
   type ReactNode,
-  useCallback,
   useMemo,
   useRef,
-  useState,
 } from "react";
 import { cn } from "@/lib/utils";
 import { type LineConfig, type Margin, useStableMargin } from "./chart-context";
-import { ChartLoadingLabel } from "./chart-loading-label";
 import { ParentSize } from "./chart-parent-size";
 import {
   type ChartPhase,
   type ChartStatus,
   DEFAULT_CHART_STATUS,
   DEFAULT_Y_DOMAIN_TWEEN_MS,
-  resolveRestingChartPhase,
 } from "./chart-phase";
 import { Line, type LineProps } from "./line";
 import {
@@ -67,6 +63,10 @@ export interface LineChartProps {
    * leave headroom above the series. Default: data max.
    */
   yScaleDomainMax?: number;
+  /** Exact y-domain (no headroom, no nice()). */
+  yDomain?: [number, number];
+  /** Thin the series to ~1.5 points per pixel. Default: true */
+  decimate?: boolean;
   /** Inline container styles (e.g. fixed height for brush strip). */
   style?: CSSProperties;
   /** Fires when the internal chart phase changes (e.g. OG capture readiness). */
@@ -167,6 +167,8 @@ export function LineChart({
   xDomain,
   xDomainSlotCount,
   tweenYDomainOnXDomainChange = false,
+  yDomain,
+  decimate = true,
   yScaleDomainMax,
   style,
   onPhaseChange,
@@ -175,24 +177,6 @@ export function LineChart({
   const containerRef = useRef<HTMLDivElement>(null);
   const margin = useStableMargin({ ...DEFAULT_MARGIN, ...marginProp });
   const lines = useMemo(() => extractLineConfigs(children), [children]);
-  const [chartPhase, setChartPhase] = useState<ChartPhase>(() =>
-    resolveRestingChartPhase(status)
-  );
-  const handlePhaseChange = useCallback(
-    (phase: ChartPhase) => {
-      setChartPhase(phase);
-      onPhaseChange?.(phase);
-    },
-    [onPhaseChange]
-  );
-
-  const showLoadingLabel = Boolean(
-    loadingLabel?.trim() &&
-      (chartPhase === "loading" ||
-        chartPhase === "exiting" ||
-        chartPhase === "gridTweenReady" ||
-        chartPhase === "revealingLoading")
-  );
 
   return (
     <LazyMotion features={domAnimation}>
@@ -201,7 +185,7 @@ export function LineChart({
         ref={containerRef}
         style={{
           ...(aspectRatio ? { aspectRatio } : undefined),
-          touchAction: "none",
+          touchAction: "pan-y",
           ...style,
         }}
       >
@@ -220,13 +204,15 @@ export function LineChart({
                 lines={lines}
                 loadingLabel={loadingLabel}
                 margin={margin}
-                onPhaseChange={handlePhaseChange}
+                onPhaseChange={onPhaseChange}
                 revealSignature={revealSignature}
                 tweenYDomainOnXDomainChange={tweenYDomainOnXDomainChange}
                 width={width}
                 xDataKey={xDataKey}
                 xDomain={xDomain}
                 xDomainSlotCount={xDomainSlotCount}
+                yDomain={yDomain}
+                decimate={decimate}
                 yDomainTween={yDomainTween}
                 yDomainTweenDuration={yDomainTweenDuration}
                 yScaleDomainMax={yScaleDomainMax}
@@ -236,12 +222,6 @@ export function LineChart({
             ) : null
           }
         </ParentSize>
-        {showLoadingLabel ? (
-          <ChartLoadingLabel
-            exiting={chartPhase !== "loading"}
-            text={loadingLabel}
-          />
-        ) : null}
       </div>
     </LazyMotion>
   );
