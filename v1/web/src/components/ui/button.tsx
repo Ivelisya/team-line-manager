@@ -20,6 +20,8 @@ const buttonVariants = cva(
     "disabled:cursor-default disabled:opacity-(--o-disabled) disabled:saturate-40 aria-disabled:opacity-(--o-disabled) aria-disabled:saturate-40",
     "aria-busy:disabled:cursor-progress aria-busy:disabled:opacity-100 aria-busy:disabled:saturate-100 aria-busy:[&>svg:not([data-slot=spinner])]:hidden",
     "[&_svg]:pointer-events-none [&_svg]:shrink-0",
+    // 手机上对话框底部面板的按钮条：直接子按钮（任何尺寸）44px 高、等分（同改前 .dialog-foot > .btn）
+    "max-[601px]:[[data-slot=dialog-footer]>&]:h-11 max-[601px]:[[data-slot=dialog-footer]>&]:flex-1",
   ],
   {
     variants: {
@@ -55,8 +57,8 @@ const buttonVariants = cva(
         "icon-lg": "size-(--h-lg) active:not-disabled:scale-(--press-sm)",
       },
     },
-    // 页面工具条与对话框底部：默认尺寸的按钮和同行的输入、下拉、分段控件一样高（--h-lg）；手机上的对话框底部面板按钮条 44px 等分。
-    // 对话框底部的类名随 B2a 换成 shadcn 的 data-slot 后，两个选择器都认
+    // 页面工具条与对话框底部：默认尺寸的按钮和同行的输入、下拉、分段控件一样高（--h-lg）；手机上的对话框底部面板按钮条 44px 等分
+    // （只认底部按钮条的直接子按钮，任何尺寸；断点同对话框的底部面板：宽度 ≤ 600，所以是 max-[601px]）
     compoundVariants: [
       {
         variant: "ghost",
@@ -66,7 +68,7 @@ const buttonVariants = cva(
       {
         size: "default",
         className:
-          "in-[.page-tools,.dialog-foot,[data-slot=dialog-footer]]:h-(--h-lg) in-[.page-tools,.dialog-foot,[data-slot=dialog-footer]]:px-3.5 max-[600px]:in-[.dialog-foot,[data-slot=dialog-footer]]:h-11 max-[600px]:in-[.dialog-foot,[data-slot=dialog-footer]]:flex-1",
+          "in-[.page-tools]:h-(--h-lg) in-[.page-tools]:px-3.5 [[data-slot=dialog-footer]>&]:h-(--h-lg) [[data-slot=dialog-footer]>&]:px-3.5",
       },
     ],
     defaultVariants: {

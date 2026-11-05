@@ -267,64 +267,43 @@ svg.copied-ic { color: var(--ok); animation: copy-pop var(--dur-2) var(--ease-ou
 .choice:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 /* ========== 浮层：对话框、抽屉、菜单、提示、toast ==========
-   进出场三类（关键帧只写起点或终点，另一端取元素自身的样式）：
-   1 锚定弹层（下拉、右键、选择、日期、作业弹层、悬浮卡、提示、图表提示）：float-in / float-out
-   2 顶部锚定面板（对话框、命令面板）：panel-in / panel-out
-   3 边缘抽屉（节点抽屉；窄屏侧栏走 base.css 的过渡；手机上的对话框 sheet 也算，sheet-in / sheet-out）：drawer-in / drawer-out，遮罩同步淡入淡出
-   关闭动画：Radix Presence 会等 [data-state=closed] 上的动画播完再卸载；减弱动效时在 overrides.css 置 none */
+   进出场三类：
+   1 锚定弹层（下拉、右键、选择、日期、作业弹层、悬浮卡、提示、图表提示）：float-in / float-out（关键帧只写起点或终点，另一端取元素自身的样式）
+   2 顶部锚定面板（对话框、命令面板）：淡入 + 从上方 8px、.97 落到位（--dur-2 / --ease-out），退场往上 4px、.985 淡出（--dur-1 / --ease-std）；手机上是底部面板，整块从屏幕底边滑入、收回
+   3 边缘抽屉（节点抽屉）：整幅从右侧滑入（--dur-3 / --ease-out），收起走更短的 --dur-2 / --ease-std；遮罩同步淡入淡出
+   2、3 是 Base UI 的 Popup / Backdrop：挂载那一帧带 data-starting-style、开始关闭时带 data-ending-style，用 CSS 过渡（transition）从起点走到自身的样式，过渡播完 Base UI 才卸载；
+   过渡可以被打断（退场中又打开，从当前位置折返，不跳）；减弱动效时 --dur-* 为 0，过渡即刻完成、立即卸载（Radix 的弹层仍是 [data-state=closed] 上的动画，B2b 换完后并入） */
 /* 退场动画期间不再拦截点击：用户已经可以点下面的东西。Radix 在遮罩（及模态层里的浮层）上内联了 pointer-events: auto，要 !important 才盖得住 */
-.overlay[data-state="closed"], .drawer-overlay[data-state="closed"], .dialog[data-state="closed"], .drawer[data-state="closed"], .cmd-dialog[data-state="closed"],
+[data-slot="dialog-overlay"][data-ending-style], [data-slot="sheet-overlay"][data-ending-style], [data-slot="dialog-content"][data-ending-style], [data-slot="sheet-content"][data-ending-style], [data-slot="command-dialog"][data-ending-style] { pointer-events: none; }
 .menu[data-state="closed"], .popover[data-state="closed"], .select-content[data-state="closed"] { pointer-events: none !important; }
 
 /* ---- 2 顶部锚定面板 ----
-   从上方 6px、.98 落到位（--dur-2 / --ease-out），退场往上 4px 淡出（--dur-1 / --ease-std）；遮罩同步。
-   水平居中用独立的 translate 属性：关键帧只写自己的 transform，点遮罩被拦下时的回弹（dialog.tsx，独立 scale）也不用管居中 */
-.overlay { position: fixed; inset: 0; z-index: var(--z-dialog); background: var(--scrim); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); animation: fade-in var(--dur-2) var(--ease-out); }
-.overlay[data-state="closed"] { animation: fade-out var(--dur-1) var(--ease-std) forwards; }
-/* 顶部锚定（同命令面板）：内容异步变多时只往下长，不上下跳；矮屏时整块滚动，底部按钮条吸底（下面的 .dialog-foot），不会被截掉 */
-.dialog {
-  position: fixed; z-index: var(--z-dialog); left: 50%; top: min(10vh, 96px); translate: -50% 0; transform-origin: 50% 0;
-  width: min(var(--dialog-sm), calc(100vw - 32px)); max-height: calc(100dvh - min(10vh, 96px) - 16px); overflow: auto;
-  background: var(--raised); border: 1px solid var(--line-float); border-radius: var(--r-card); box-shadow: var(--shadow-modal);
-  --dlg-pb: var(--sp-20); padding: var(--sp-20) var(--sp-20) var(--dlg-pb); display: flex; flex-direction: column; gap: var(--sp-16); animation: panel-in var(--dur-2) var(--ease-out);
-}
-/* 直接子元素按内容高度排（同原来的网格行）；form 只是提交的壳，让里面的块直接成为弹层的子元素，按钮条才吸得住（吸附不跨网格行） */
-.dialog > * { flex: none; }
-.dialog-form { display: contents; }
-.dialog-md { width: min(var(--dialog-md), calc(100vw - 32px)); }
-.dialog-lg { width: min(var(--dialog-lg), calc(100vw - 32px)); }
-.dialog-title { margin: 0; font: var(--fw-semibold) var(--fs-title) / var(--lh-title) var(--font-sans); letter-spacing: var(--tracking-title); text-wrap: balance; }
-.dialog-desc { margin: 0; color: var(--fg-2); font-size: var(--fs-body); line-height: var(--lh-body); text-wrap: pretty; }
-.dialog-head { display: grid; gap: var(--sp-6); }
-.dialog-foot { display: flex; justify-content: flex-end; gap: var(--control-gap); flex-wrap: wrap; }
-/* 吸底按钮条（sticky 的 bottom 按滚动容器内边距内缩，取负的下内边距才贴到弹层底边）：毛玻璃底，通栏（抵消弹层的内边距），内容滚到下面时顶上出一条细线；不滚时与原来的位置、间距一致 */
-.dialog .dialog-foot { position: sticky; bottom: calc(-1 * var(--dlg-pb)); z-index: 1; margin: calc(-1 * var(--sp-8)) calc(-1 * var(--sp-20)) calc(-1 * var(--dlg-pb)); padding: var(--sp-12) var(--sp-20) var(--dlg-pb); background: var(--glass); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); }
-.dialog .dialog-foot::before { content: ""; position: absolute; inset: 0 0 auto; height: 1px; background: var(--line); opacity: 0; pointer-events: none; }
+   外观（位置、宽度、内边距、毛玻璃底、底部吸底按钮条）在 ui/dialog.tsx、ui/command.tsx 的类名里；
+   水平居中用独立的 translate 属性：过渡只写自己的 transform，点遮罩被拦下时的回弹（dialog.tsx，独立 scale）也不用管居中 */
+[data-slot="dialog-overlay"] { position: fixed; inset: 0; z-index: var(--z-dialog); background: var(--scrim); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); transition: opacity var(--dur-2) var(--ease-out); }
+[data-slot="dialog-overlay"][data-starting-style] { opacity: 0; }
+[data-slot="dialog-overlay"][data-ending-style] { opacity: 0; transition-duration: var(--dur-1); transition-timing-function: var(--ease-std); }
+/* 对话框 / 命令面板叠在抽屉上：抽屉的遮罩已经把页面压暗，上面这层只轻压一点（两层 .4 叠起来抽屉左侧近 64% 黑），主要靠模糊把抽屉推到后面。
+   抽屉开着（<html data-drawer>，sheet.tsx 挂的）时打开的遮罩都算第二层 */
+html[data-drawer] [data-slot="dialog-overlay"] { background: var(--scrim-stacked); }
+[data-slot="dialog-content"], [data-slot="command-dialog"] { transition: opacity var(--dur-2) var(--ease-out), transform var(--dur-2) var(--ease-out); }
+[data-slot="dialog-content"][data-starting-style], [data-slot="command-dialog"][data-starting-style] { opacity: 0; transform: translateY(-8px) scale(.97); }
+[data-slot="dialog-content"][data-ending-style], [data-slot="command-dialog"][data-ending-style] { opacity: 0; transform: translateY(-4px) scale(.985); transition-duration: var(--dur-1); transition-timing-function: var(--ease-std); }
+/* 底部按钮条：内容滚到下面时顶上出一条细线（滚动驱动，不支持的浏览器就没有这条线） */
+[data-slot="dialog-footer"]::before { content: ""; position: absolute; inset: 0 0 auto; height: 1px; background: var(--line); opacity: 0; pointer-events: none; }
 @supports (animation-timeline: scroll()) {
-  .dialog .dialog-foot::before { animation: foot-edge linear both; animation-timeline: scroll(nearest block); }
+  [data-slot="dialog-footer"]::before { animation: foot-edge linear both; animation-timeline: scroll(nearest block); }
 }
 @keyframes foot-edge { 0%, 94% { opacity: 1; } 100% { opacity: 0; } }
-.dialog[data-state="closed"] { animation: panel-out var(--dur-1) var(--ease-std) forwards; }
-@keyframes panel-in { from { opacity: 0; transform: translateY(-6px) scale(.98); } }
-@keyframes panel-out { to { opacity: 0; transform: translateY(-4px); } }
-/* 手机（≤600px）：对话框改成从底部升起的面板（同 iOS 的 sheet，进出场用边缘滑入档 --dur-3 / --dur-2）——通栏、上圆角、底部让出安全区，按钮通栏高 44；右上角补一个关闭键（宽屏不显示，靠取消按钮与 Esc） */
+/* 手机（≤600px，与类名里的 max-[601px] 同一个断点）：对话框改成从底部升起的面板（同 iOS 的 sheet，进出场用边缘滑入档 --dur-3 / --dur-2），遮罩跟着；命令面板不是 sheet，不改 */
 @media (max-width: 600px) {
-  .dialog {
-    top: auto; bottom: 0; left: 0; translate: none; width: 100vw; max-height: calc(100dvh - var(--topbar-h));
-    border-width: 1px 0 0; border-radius: var(--r-card) var(--r-card) 0 0; --dlg-pb: calc(var(--sp-20) + env(safe-area-inset-bottom, 0px));
-    transform-origin: 50% 100%; animation: sheet-in var(--dur-3) var(--ease-out);
-  }
-  .dialog[data-state="closed"] { animation: sheet-out var(--dur-2) var(--ease-std) forwards; }
-  /* 整块面板从屏幕底边升起、收回，走边缘滑入档（同节点抽屉），遮罩跟着；命令面板不是 sheet，不改 */
-  .overlay:not(.cmd-overlay) { animation-duration: var(--dur-3); }
-  .overlay:not(.cmd-overlay)[data-state="closed"] { animation-duration: var(--dur-2); }
-  .dialog:has(.hk-head) .dialog-x { display: none !important; } /* 快捷键帮助自带关闭键。!important：关闭键的 inline-flex 是 Tailwind 类，在更高的层，普通规则压不住 */
-  .dialog-head { padding-right: calc(var(--h-md) + var(--sp-4)); }
+  [data-slot="dialog-content"] { transition: transform var(--dur-3) var(--ease-out); }
+  [data-slot="dialog-content"][data-starting-style] { opacity: 1; transform: translateY(100%); }
+  [data-slot="dialog-content"][data-ending-style] { opacity: 1; transform: translateY(100%); transition-duration: var(--dur-2); transition-timing-function: var(--ease-std); }
+  [data-slot="dialog-overlay"]:not([data-palette]) { transition-duration: var(--dur-3); }
+  [data-slot="dialog-overlay"]:not([data-palette])[data-ending-style] { transition-duration: var(--dur-2); }
 }
-@keyframes sheet-in { from { transform: translateY(100%); } }
-@keyframes sheet-out { to { transform: translateY(100%); } }
 /* 快捷键帮助：标题右边的关闭按钮、按键列表 */
-.dialog-head.hk-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); margin: calc(-1 * var(--sp-6)) calc(-1 * var(--sp-8)) 0 0; }
 .hk-list { margin: 0; padding: 0; list-style: none; }
 .hk-list li { display: flex; align-items: center; gap: var(--sp-16); padding: var(--sp-8) 0; border-top: 1px solid var(--line); font-size: var(--fs-body); }
 .hk-list li:first-child { border-top: 0; }
@@ -336,28 +315,16 @@ svg.copied-ic { color: var(--ok); animation: copy-pop var(--dur-2) var(--ease-ou
 /* ---- 3 边缘抽屉 ----
    苹果式面板：整幅从右侧滑入（--dur-3 / --ease-out 先快后缓），收起走更短的 --dur-2 / --ease-std；阴影随位移淡入，避免屏幕外的投影在右缘露一条暗边。
    位移只动 transform、阴影放在 ::before 上只动 opacity：两者都能交给合成器，滑入这段正是抽屉挂载、下载懒块的时候，不能回落主线程逐帧重绘阴影。
-   遮罩只压暗、不模糊：抽屉开着时用户常对照下面的卡片看，模糊还要 GPU 每帧重做（对话框、命令面板的遮罩才模糊） */
-.drawer {
-  position: fixed; z-index: var(--z-drawer); top: 0; right: 0; bottom: 0;
-  /* 抽屉里打开下拉 / 对话框时 Radix 锁滚动、视口让出页面滚动条变宽：抽屉同宽加宽、右侧垫上，内容原地不动（同顶栏） */
-  width: calc(var(--drawer-w) + var(--removed-body-scroll-bar-size, 0px)); padding-right: var(--removed-body-scroll-bar-size, 0px);
-  display: flex; flex-direction: column; max-width: 100vw; background: var(--surface); border-left: 1px solid var(--line-float);
-  animation: drawer-in var(--dur-3) var(--ease-out);
-}
-.drawer-overlay { position: fixed; inset: 0; z-index: var(--z-drawer-scrim); background: var(--scrim); animation: fade-in var(--dur-3) var(--ease-out); }
-.drawer-overlay[data-state="closed"] { animation: fade-out var(--dur-2) var(--ease-std) forwards; }
-/* 对话框 / 命令面板叠在抽屉上：抽屉的遮罩已经把页面压暗，上面这层只轻压一点（两层 .4 叠起来抽屉左侧近 64% 黑），
-   主要靠模糊把抽屉推到后面。Radix 把遮罩和面板直接挂在 body 下，后打开的排在后面，用兄弟选择器就够 */
-.drawer-overlay ~ .overlay { background: var(--scrim-stacked); }
-.drawer[data-state="closed"] { animation: drawer-out var(--dur-2) var(--ease-std) forwards; }
-@keyframes drawer-in { from { transform: translateX(100%); } }
-@keyframes drawer-out { to { transform: translateX(100%); } }
-/* 左边多出 1px 盖住左边框，投影与原先挂在边框盒上一致；z-index -1 只在抽屉自身的层叠上下文里垫在内容下面 */
-.drawer::before { content: ""; position: absolute; inset: 0 0 0 -1px; z-index: -1; pointer-events: none; box-shadow: var(--shadow-modal); animation: fade-in var(--dur-3) var(--ease-out); }
-.drawer[data-state="closed"]::before { animation: fade-out var(--dur-2) var(--ease-std) forwards; }
+   遮罩只压暗、不模糊：抽屉开着时用户常对照下面的卡片看，模糊还要 GPU 每帧重做（对话框、命令面板的遮罩才模糊）；抽屉本身是实底（大面积的毛玻璃每帧都要重做）。外观（位置、宽度、阴影层）在 ui/sheet.tsx 的类名里 */
+[data-slot="sheet-overlay"] { position: fixed; inset: 0; z-index: var(--z-drawer-scrim); background: var(--scrim); transition: opacity var(--dur-3) var(--ease-out); }
+[data-slot="sheet-content"] { transition: transform var(--dur-3) var(--ease-out); }
+[data-slot="sheet-content"]::before { transition: opacity var(--dur-3) var(--ease-out); }
+[data-slot="sheet-overlay"][data-starting-style], [data-slot="sheet-content"][data-starting-style]::before { opacity: 0; }
+[data-slot="sheet-content"][data-starting-style] { transform: translateX(100%); }
+[data-slot="sheet-overlay"][data-ending-style], [data-slot="sheet-content"][data-ending-style], [data-slot="sheet-content"][data-ending-style]::before { transition-duration: var(--dur-2); transition-timing-function: var(--ease-std); }
+[data-slot="sheet-overlay"][data-ending-style], [data-slot="sheet-content"][data-ending-style]::before { opacity: 0; }
+[data-slot="sheet-content"][data-ending-style] { transform: translateX(100%); }
 .drawer-head { flex: none; display: flex; align-items: center; gap: var(--sp-8); padding: var(--sp-12) var(--sp-16); border-bottom: 0; min-width: 0; }
-.drawer-title { margin: 0; min-width: 0; font: var(--fw-semibold) var(--fs-title) / var(--lh-title) var(--font-sans); letter-spacing: var(--tracking-title); }
-.drawer-sub { font-size: var(--fs-label); } /* 标题下一行（IP · 同机 / 套餐）：其余同 .dialog-desc */
 .drawer-tabs { flex: none; padding: 0 var(--sp-16); overflow: hidden; scrollbar-gutter: stable; } /* 同正文留出滚动条槽：页签下的线与正文右缘对齐 */
 .drawer-body { flex: 1 1 auto; overflow-y: auto; scrollbar-gutter: stable; padding: var(--sp-16); display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-16); align-content: start; } /* 滚动条槽位常驻：切页签、内容长短变化时正文不左右横跳 */
 /* 窄屏占满：用 100% 不用 100vw（100vw 含常驻的滚动条槽，抽屉左边会被多出的那一截裁掉） */
@@ -385,8 +352,8 @@ svg.copied-ic { color: var(--ok); animation: copy-pop var(--dur-2) var(--ease-ou
 :is(.menu, .popover, .select-content)[data-state="closed"] { animation: float-out var(--dur-1) var(--ease-std) forwards; }
 @keyframes float-in { from { opacity: 0; transform: translate(var(--pop-x), var(--pop-y)) scale(.96); } }
 @keyframes float-out { to { opacity: 0; transform: translate(var(--pop-x), var(--pop-y)) scale(.96); } }
-.menu, .popover, .select-content, .toast, .chart-tip { border: 1px solid var(--line-float); box-shadow: var(--shadow-pop); }
-.menu, .popover, .toast, .chart-tip { background: var(--glass); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); }
+.menu, .popover, .select-content, .chart-tip { border: 1px solid var(--line-float); box-shadow: var(--shadow-pop); }
+.menu, .popover, .chart-tip { background: var(--glass); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); }
 .menu, .popover, .select-content { z-index: var(--z-popover); border-radius: var(--r-float); padding: var(--sp-4); min-width: var(--pop-w-sm); }
 /* 菜单高度只受视口约束（不读 Radix 的可用高度，也没有固定上限）：下方放不下时 Radix 整体翻到上方、不把菜单压矮出滚动条；
    内容比视口还高的（线路机「复制分享链接」子菜单可有几十条入口）才在菜单里滚动 */
@@ -438,35 +405,20 @@ svg.copied-ic { color: var(--ok); animation: copy-pop var(--dur-2) var(--ease-ou
 .hc-bar { display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: center; gap: var(--sp-8); font-size: var(--fs-label); }
 .hc-bar-l { color: var(--fg-2); }
 
-/* 堆叠式通知：新的在最下面，旧的往上排；相同消息合并计数；底部细线是剩余时间，鼠标停上去暂停。
-   从下方升起（--dur-2 / --ease-out），关闭、超时、超过上限被挤掉都向右滑出淡去（--dur-2 / --ease-std，toast.tsx 按 --dur-2 等它播完再卸载） */
-.toasts { position: fixed; z-index: var(--z-toast); right: calc(var(--sp-16) + var(--removed-body-scroll-bar-size, 0px)); bottom: calc(var(--sp-16) + var(--toast-lift, 0px)); display: flex; flex-direction: column; gap: var(--sp-8); width: min(380px, calc(100vw - 32px)); pointer-events: none; transition: bottom var(--dur-2) var(--ease-out); } /* right 同顶栏：锁滚动时补回让出的槽位；bottom 让开页面底部的吸附条（--toast-lift，见 toast.tsx） */
-/* 抽屉开着：通知挪到抽屉左侧，不盖住抽屉底部的保存 / 操作按钮；抽屉左边放不下通知（抽屉 + 通知 + 两侧间距 > 视口）时改底部居中；手机上抽屉全宽，通知本来就从顶栏下方落下（overrides.css），不在这里动 */
-@media (min-width: 601px) { :root:has(.drawer:not([data-state="closed"])) .toasts { right: calc(var(--drawer-w) + var(--sp-16) + var(--removed-body-scroll-bar-size, 0px)); } }
-@media (min-width: 601px) and (max-width: 1180px) { :root:has(.drawer:not([data-state="closed"])) .toasts { right: auto; left: 50%; translate: -50% 0; } }
-.toast {
-  position: relative; display: flex; gap: var(--sp-10); align-items: flex-start; padding: var(--sp-10) var(--sp-12); overflow: hidden; pointer-events: auto;
-  border-radius: var(--r-float); /* 材质、边线、投影同锚定弹层（上面） */
-  font-size: var(--fs-body); line-height: var(--lh-body); animation: toast-in var(--dur-2) var(--ease-out);
-  transition: opacity var(--dur-2) var(--ease-std), transform var(--dur-2) var(--ease-std);
-}
-.toast[data-leaving="1"] { opacity: 0; transform: translateX(16px); }
-.toast > .lucide { margin-top: 2px; }
-.toast[data-tone="ok"] > .lucide { color: var(--ok); }
-.toast[data-tone="bad"] > .lucide { color: var(--bad); }
-.toast[data-tone="info"] > .lucide { color: var(--info); }
-.toast .toast-body { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.toast-title { font-weight: var(--fw-semibold); }
-.toast-text { color: var(--fg-2); font-size: var(--fs-label); line-height: var(--lh-label); }
-.toast-action { margin-top: var(--sp-4); padding: 0; border: 0; background: none; cursor: pointer; font: var(--fw-medium) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--accent); }
-@media (hover: hover) { .toast-action:hover { text-decoration: underline; text-underline-offset: 3px; } }
-.toast-count { flex: none; align-self: center; padding: 0 var(--sp-6); border-radius: var(--r-pill); background: var(--sunken); color: var(--fg-2); font-size: var(--fs-micro); line-height: var(--h-chip-sm); }
-.toast-timer { position: absolute; left: 0; bottom: 0; height: 2px; width: 100%; background: var(--fg-3); opacity: 0.45; transform-origin: left; animation: toast-timer linear forwards; }
-.toast[data-tone="ok"] .toast-timer { background: var(--ok); }
-.toast[data-tone="bad"] .toast-timer { background: var(--bad); }
-.toast[data-tone="info"] .toast-timer { background: var(--info); }
-@keyframes toast-in { from { opacity: 0; transform: translateY(8px) scale(.98); } }
+/* 通知（ui/toast.tsx，Base UI Toast）：新的在最下面，旧的往上排；相同消息合并计数；底部细线是剩余时间，鼠标停上去暂停。
+   从下方升起（--dur-2 / --ease-out），关闭、超时、超过上限被挤掉都向右滑出淡去（--dur-2 / --ease-std，Base UI 等过渡播完再卸载；减弱动效时 --dur-2 为 0）。
+   外观（边线、材质、投影、内边距、图标色、×N、剩余时间条）在 toast.tsx 的类名里。
+   right 同顶栏：Radix 的菜单 / 下拉锁滚动时补回让出的槽位（B2b 换完后去掉 --removed-body-scroll-bar-size）；bottom 让开页面底部的吸附条（--toast-lift，见 toast.tsx） */
+[data-slot="toast-viewport"] { position: fixed; z-index: var(--z-toast); right: calc(var(--sp-16) + var(--removed-body-scroll-bar-size, 0px)); bottom: calc(var(--sp-16) + var(--toast-lift, 0px)); display: flex; flex-direction: column; gap: var(--sp-8); width: min(380px, calc(100vw - 32px)); pointer-events: none; transition: bottom var(--dur-2) var(--ease-out); }
+/* 抽屉开着（<html data-drawer>）：通知挪到抽屉左侧，不盖住抽屉底部的保存 / 操作按钮；抽屉左边放不下通知（抽屉 + 通知 + 两侧间距 > 视口）时改底部居中；手机上抽屉全宽，通知本来就从顶栏下方落下（overrides.css），不在这里动 */
+@media (min-width: 601px) { html[data-drawer] [data-slot="toast-viewport"] { right: calc(var(--drawer-w) + var(--sp-8) + var(--sp-16) + var(--removed-body-scroll-bar-size, 0px)); } }
+@media (min-width: 601px) and (max-width: 1180px) { html[data-drawer] [data-slot="toast-viewport"] { right: auto; left: 50%; translate: -50% 0; } }
+[data-slot="toast"] { transition: opacity var(--dur-2) var(--ease-out), transform var(--dur-2) var(--ease-out); }
+[data-slot="toast"][data-starting-style] { opacity: 0; transform: translateY(8px) scale(.98); }
+[data-slot="toast"][data-ending-style] { opacity: 0; transform: translateX(16px); transition-timing-function: var(--ease-std); }
 @keyframes toast-timer { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+/* ×N 的数字又涨一次：角标弹一下（key 跟着计数，重新播） */
+@keyframes count-pop { 0% { transform: scale(.7); opacity: .4; } 60% { transform: scale(1.14); } 100% { transform: scale(1); opacity: 1; } }
 
 /* ========== 分页器（Pagination / CursorPager） ========== */
 /* 参照 brocade 目录分页：一条底栏，左侧范围读数（等宽数字），右侧页码下拉 + 上一页 / 下一页。

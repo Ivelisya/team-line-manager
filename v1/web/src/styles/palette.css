@@ -1,15 +1,7 @@
 /* 命令面板（⌘K）与可搜索的下拉（国家、时区、静默对象、上架页的宿主机，同一套 cmdk 列表）。只用 tokens.css 里的令牌 */
 
 /* ========== 命令面板 ========== */
-.overlay.cmd-overlay { z-index: var(--z-palette-scrim); }
-/* 顶部锚定面板：进出场同对话框（components.css 的 panel-in / panel-out） */
-.cmd-dialog {
-  position: fixed; z-index: var(--z-palette); left: 50%; top: min(14vh, 120px); translate: -50% 0; transform-origin: 50% 0;
-  width: min(var(--palette-w), calc(100vw - 24px)); display: flex; flex-direction: column; overflow: hidden;
-  background: var(--raised); border: 1px solid var(--line-float); border-radius: var(--r-card); box-shadow: var(--shadow-modal);
-  animation: panel-in var(--dur-2) var(--ease-out);
-}
-.cmd-dialog[data-state="closed"] { animation: panel-out var(--dur-1) var(--ease-std) forwards; }
+/* 面板本身（位置、宽度、层级、进出场）在 ui/command.tsx 的类名与 components.css 的 [data-slot=command-dialog]；这里是里面的列表 */
 .cmd { display: flex; flex-direction: column; min-height: 0; }
 .cmd-input-wrap { display: flex; align-items: center; gap: var(--sp-10); height: 52px; padding: 0 var(--sp-16); border-bottom: 1px solid var(--line); color: var(--fg-3); }
 .cmd-input { flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; outline: none; background: transparent; color: var(--fg); font: var(--fw-regular) var(--fs-emph) / var(--lh-emph) var(--font-sans); font-variant-numeric: tabular-nums; }
@@ -43,7 +35,7 @@
 
 @media (pointer: coarse) {
   .cmd-foot { display: none; }
-  .cmd-dialog > .cmd .cmd-input-wrap { padding-right: 64px; }
+  [data-slot="command-dialog"] > .cmd .cmd-input-wrap { padding-right: 64px; }
 }
 
 /* ========== 国家选择器（CountrySelect）：触发器里国旗 + 名称；弹层是一个可搜索的短列表 ========== */

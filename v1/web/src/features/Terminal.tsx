@@ -192,7 +192,7 @@ function CredForm({ need, err, busy, onSubmit }: { need: Need; err?: string; bus
             ? <Input value={v} onChange={(e) => setV(e.target.value)} autoFocus autoComplete="one-time-code" autoCapitalize="off" spellCheck={false} placeholder="6 位验证码，或一个恢复码" />
             : <Input type="password" value={v} onChange={(e) => setV(e.target.value)} autoFocus autoComplete="current-password" />}
         </FormField>
-        <div className="dialog-foot">
+        <div className="flex flex-wrap justify-end gap-(--control-gap) *:h-(--h-lg) *:px-3.5 max-[601px]:*:h-11 max-[601px]:*:flex-1">
           <Button variant="outline" onClick={closeTerminal}>取消</Button>
           <Button type="submit" loading={busy} disabled={!v.trim()}>验证并连接</Button>
         </div>

@@ -13,7 +13,8 @@ import { watchSize } from "@/lib/sharedObserver"
 /** 全站提示延迟 250 ms（Mira 默认 0）；刚收起一个又悬停到下一个，Base UI 的 timeout 内直接出现。
  *  提示开着时按 Esc，这一下只收起提示，对话框、抽屉、菜单留着（同改前：Radix 的提示和它们在同一个层栈里，开着的提示在最上层）。
  *  Radix 的层在 document 的捕获阶段收 Esc，事件已被 preventDefault 就不关；这里在更早的 window 捕获阶段先标上，
- *  Base UI 的提示在冒泡阶段照常收起（它不看 defaultPrevented）。B2a / B2b 把这些层换成 Base UI 时要重新处理（Base UI 的层也不看 defaultPrevented） */
+ *  Base UI 的提示在冒泡阶段照常收起（它不看 defaultPrevented）。Base UI 的对话框 / 抽屉也不看 defaultPrevented：它们在 onOpenChange 里按 reason 自己拦（dialog.tsx 的 escapeIsTaken）；
+ *  这里的监听留给还没换成 Base UI 的层（Radix 的菜单、下拉等，B2b 换完后删掉） */
 function TooltipProvider({ delay = 250, ...props }: TooltipPrimitive.Provider.Props) {
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -96,7 +97,7 @@ export function TipHost() {
     let tapClosed: Element | null = null // 按下时收起的是哪个（再点同一个「(i)」= 收起，不再打开）
     let touch = false // 最近一次按下是手指
     // 对话框标题下面那行说明里的「(i)」往下弹：往上会盖住标题
-    const sideOf = (el: HTMLElement): Side => (el.dataset.tipSide as Side | undefined) ?? (el.closest(".dialog-desc, [data-slot=dialog-description]") ? "bottom" : "top")
+    const sideOf = (el: HTMLElement): Side => (el.dataset.tipSide as Side | undefined) ?? (el.closest("[data-slot=dialog-description]") ? "bottom" : "top")
     // instant：刚收起一个又悬停到下一个（扫过一排心跳格），新提示直接出现、不再播一遍缩放淡入（macOS 也是第一次等、之后换项不播）
     const show = (el: HTMLElement, instant = false) => {
       shown = true; watch.disconnect(); unwatchSize?.(); watch.observe(el, { attributes: true, attributeFilter: ["data-tip"] }); unwatchSize = watchSize(el, refresh)

@@ -162,8 +162,8 @@ function RecoveryCodesDialog({ codes, onClose }: { codes: string[] | null; onClo
   const copyRef = React.useRef<HTMLButtonElement>(null);
   const cp = useCopied();
   return (
-    <Dialog open={codes != null} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent size="md" onInteractOutside={(e) => e.preventDefault()} onEscapeKeyDown={(e) => e.preventDefault()} onOpenAutoFocus={(e) => { e.preventDefault(); copyRef.current?.focus(); }}>
+    <Dialog open={codes != null} onOpenChange={(o) => !o && onClose()} blockDismiss>
+      <DialogContent size="md" initialFocus={copyRef}>
         <DialogHeader><DialogTitle>保存恢复码</DialogTitle><DialogDescription>登录时可代替验证码 <InfoTip text="手机丢了或认证器不能用时，在登录页的验证码框里输入一个恢复码代替验证码。" /></DialogDescription></DialogHeader>
         <Note tone="warn" icon={<ShieldAlert size={14} />}><b>只显示这一次。</b>每个只能用一次 <InfoTip text="请存进密码管理器或打印出来，和手机分开保管。" /></Note>
         <div className="recovery-grid">{held.map((c) => <code key={c}>{c}</code>)}</div>

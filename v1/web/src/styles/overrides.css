@@ -4,16 +4,16 @@
 
 /* ========== 毛玻璃遮罩开着时 ==========
    毛玻璃遮罩（对话框、命令面板）打开期间，下面一层不再每帧变化：backdrop-filter 下面每帧有变化，GPU 就要每帧重做一遍全屏模糊。
-   开关是 <html data-overlay>（dialog.tsx 的 Scrim 挂着时写上）。节点抽屉的遮罩只压暗不模糊，自己不挂开关；它开着时上面再叠对话框，抽屉也算下面一层。
+   开关是 <html data-overlay>（dialog.tsx 的 DialogOverlay 挂着时写上）。节点抽屉的遮罩只压暗不模糊，自己不挂开关；它开着时上面再叠对话框，抽屉也算下面一层。
    浮层都 Portal 到 body、不在 .app 里，自己的动画照常。骨架屏不管。
    无限循环的动画暂停（!important：Spinner 的动画、进度条的过渡是组件上的工具类，在更高的 utilities 层，animation / transition 简写会把这里的值盖回去；
    components 层的 important 高于 utilities 层的普通声明）： */
-html[data-overlay] :is(.app, .drawer) :is([data-slot="spinner"], .top-btn.jobs-ind > .lucide),
-html[data-overlay] :is(.app, .drawer) .pill[data-dot="pulse"]::before,
-html[data-overlay] :is(.app, .drawer) .smark[data-spin],
-html[data-overlay] :is(.app, .drawer) [data-slot="progress"][data-live] [data-slot="progress-indicator"]::after { animation-play-state: paused !important; }
+html[data-overlay] :is(.app, [data-slot="sheet-content"]) :is([data-slot="spinner"], .top-btn.jobs-ind > .lucide),
+html[data-overlay] :is(.app, [data-slot="sheet-content"]) .pill[data-dot="pulse"]::before,
+html[data-overlay] :is(.app, [data-slot="sheet-content"]) .smark[data-spin],
+html[data-overlay] :is(.app, [data-slot="sheet-content"]) [data-slot="progress"][data-live] [data-slot="progress-indicator"]::after { animation-play-state: paused !important; }
 /* 读数的过渡不播，推送来了直接跳到新值（进度线；格条、圆环、心跳格本来就不过渡，KPI 数字见 useCountUp） */
-html[data-overlay] :is(.app, .drawer) [data-slot="progress-indicator"] { transition: none !important; }
+html[data-overlay] :is(.app, [data-slot="sheet-content"]) [data-slot="progress-indicator"] { transition: none !important; }
 
 /* ========== 毛玻璃的回退：不支持 backdrop-filter 时材质令牌（--glass 弹层 / 对话框吸底条，--glass-bar 吸附条）改成实底，免得半透明的面下面字叠字 ========== */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { :root { --glass: var(--raised); --glass-bar: var(--surface); } }
@@ -25,8 +25,8 @@ html[data-overlay] :is(.app, .drawer) [data-slot="progress-indicator"] { transit
   :root { --h-xs: 22px; --h-sm: 28px; --h-md: 36px; --h-lg: 40px; --seg-item-sm: 28px; } /* 触屏的控件高度照旧（按钮 / 输入 / 下拉 / 分段轨道 40，顶栏 / 图标按钮 36，小号 28，极小 22）；--seg-item 是 --h-lg 的 calc，跟着变（34） */
   .seg-sm { height: calc(var(--seg-item-sm) + 2 * var(--seg-pad)); }
   /* 按钮已是 position: relative（button.tsx）；复选框、开关的热区外扩自带 ::after（absolute，同样靠 relative），这里只把触屏的范围加大 */
-  :is(.top-alert, .info-tip, .rt-mark, .toast-action) { position: relative; }
-  :is(.rt-mark, .toast-action)::after { content: ""; position: absolute; inset: -10px -6px; }
+  :is(.top-alert, .info-tip, .rt-mark) { position: relative; }
+  .rt-mark::after { content: ""; position: absolute; inset: -10px -6px; }
   [data-slot="switch"]::after { content: ""; position: absolute; inset: -10px -6px; }
   :is([data-slot="button"][data-size="sm"], [data-slot="button"][data-size="icon-sm"])::after { content: ""; position: absolute; inset: -6px; }
   :is(.top-alert, .info-tip)::after { content: ""; position: absolute; inset: -10px -4px; }
@@ -46,9 +46,8 @@ html[data-overlay] :is(.app, .drawer) [data-slot="progress-indicator"] { transit
   /* 一次性的过渡与进场时长归零（tokens.css 的动效令牌）；循环动画（--dur-loop）不靠归零，下面显式 animation: none */
   :root { --dur-press: 0ms; --dur-1: 0ms; --dur-2: 0ms; --dur-3: 0ms; --dur-data: 0ms; --cell-stagger: 0ms; --dur-spin: 2s; }
   /* 无限循环的细纹、呼吸、脉冲停掉；转圈（Spinner、进行中胶囊、状态标）不停，按上面的 --dur-spin 慢转。骨架的脉动由组件自己的 motion-reduce:animate-none 停 */
-  [data-slot="progress"][data-live] [data-slot="progress-indicator"]::after, .top-btn.jobs-ind > .lucide, .toast-timer { animation: none; }
-  /* 浮层关闭：不播退出动画，Radix 立即卸载（抽屉的投影层一起；悬浮卡、日历、作业弹层都是 .popover） */
-  .overlay[data-state="closed"], .drawer-overlay[data-state="closed"], .dialog[data-state="closed"], .cmd-dialog[data-state="closed"], .drawer[data-state="closed"], .drawer[data-state="closed"]::before,
+  [data-slot="progress"][data-live] [data-slot="progress-indicator"]::after, .top-btn.jobs-ind > .lucide { animation: none; }
+  /* 浮层关闭：不播退出动画，立即卸载（悬浮卡、日历、作业弹层都是 .popover）。Base UI 的对话框 / 抽屉 / 通知用过渡，时长令牌归零就即刻完成，不用在这里列 */
   .menu[data-state="closed"], .popover[data-state="closed"], .select-content[data-state="closed"], .page-in { animation: none; }
   /* 曲线展开、悬停提示的缩放位移进场：直接出现 */
   .chart-frame .chart-box { animation: none; }
@@ -61,7 +60,7 @@ html[data-overlay] :is(.app, .drawer) [data-slot="progress-indicator"] { transit
    `font:` 简写会把 font-variant-numeric 重置成 normal，body 上设的 tabular-nums 在这些控件里就丢了（数字跳动时会左右抖）。统一在这里补回。
    只管 base / components 里的控件；home.css、palette.css 等页面样式里写 `font:` 简写的规则要自己补，不能靠这里（见文件头） */
 .seg-item, .tab, .fchip, .select-trigger, .pill, .chip, .mark, .nav-item, .menu-item, .select-item,
-.cmd-trigger, .toast-action, .sec-head, .brand, .pop-head { font-variant-numeric: tabular-nums; }
+.cmd-trigger, .sec-head, .brand, .pop-head { font-variant-numeric: tabular-nums; }
 /* 按钮、输入框、标签、键帽等 Tailwind 写的组件不用 `font:` 简写，body 上的 tabular-nums 照常继承（表单控件靠 preflight 的 font: inherit），不用在这里补 */
 
 /* iOS Safari 聚焦字号小于 16px 的输入框会把整页放大、失焦后常不缩回：只在 iOS 上把输入字号提到 16px（不用 maximum-scale，免得禁掉手动缩放）。
@@ -73,7 +72,6 @@ html[data-overlay] :is(.app, .drawer) [data-slot="progress-indicator"] { transit
 }
 /* 手机上对话框是底部面板，确认 / 取消在最下面：通知改从顶栏下方落下，不盖住面板的按钮（宽屏仍在右下） */
 @media (max-width: 600px) {
-  .toasts { top: calc(var(--topbar-h) + env(safe-area-inset-top, 0px) + var(--sp-8)); bottom: auto; }
-  .toast { animation-name: toast-drop; }
+  [data-slot="toast-viewport"] { top: calc(var(--topbar-h) + env(safe-area-inset-top, 0px) + var(--sp-8)); bottom: auto; }
+  [data-slot="toast"][data-starting-style] { transform: translateY(-8px) scale(.98); }
 }
-@keyframes toast-drop { from { opacity: 0; transform: translateY(-8px) scale(.98); } }

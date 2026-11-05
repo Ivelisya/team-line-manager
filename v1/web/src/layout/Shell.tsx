@@ -122,7 +122,7 @@ export function Shell() {
   React.useEffect(() => {
     if (!navOpen) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape' || document.querySelector('.dialog, .cmd-dialog, .drawer')) return;
+      if (e.key !== 'Escape' || document.querySelector('[data-slot="dialog-content"], [data-slot="command-dialog"], [data-slot="sheet-content"]')) return;
       setNavOpen(false); navBtn.current?.focus();
     };
     window.addEventListener('keydown', onKey);
