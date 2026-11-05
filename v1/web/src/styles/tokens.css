@@ -93,7 +93,7 @@
   --fs-section: 19px; --lh-section: 26px; /* 首页大分区标题（监控总览、服务器集群）；设计语言 v1：18 → 19 */
   --fs-page: 26px;   --lh-page: 32px;   /* 页面标题（H/O 24，设计语言 v1 提到 26；N 22/17 统一到它），字距见 --tracking-page */
   --fs-display: 38px;                   /* 不带框的总览大数（软路由页头），行高 1；设计语言 v1：34 → 38 */
-  --fs-kpi: 28px;    --lh-kpi: 34px;    /* KPI 主值：首页 KPI 卡、集群在线率、访问规则预览的汇总（原 27 / 26 / 24 三种统一；设计语言 v1：24 → 28） */
+  --fs-kpi: 28px;    --lh-kpi: 30px;    /* KPI 主值：首页 KPI 卡、集群在线率、访问规则预览的汇总（原 27 / 26 / 24 三种统一；设计语言 v1：24 → 28；行高仍是 30：home.css 的 .stat-value 给加载中占位 30px，数据到了卡片不长高，28px 单行数字放得下） */
   --fs-metric: 21px;                    /* 卡内主读数：节点卡实时速率、窄屏 KPI、页头大数的分母；设计语言 v1：20 → 21 */
   --fs-metric-sm: 17px;                 /* 小卡片 / 紧凑卡的实时速率 */
 
@@ -101,20 +101,20 @@
   --fw-medium: 500;
   --fw-semibold: 600;
   --fw-bold: 700;                       /* 只给首页：分区标题、问候语、KPI 与集群读数、小图标题 */
-  --fw-num: 560;                        /* 读数（KPI、速率、大数、金额）的字重：Inter 可变字体的 wght 轴取 560，不用 600 / 700 的粗黑。打包的字体 wght 轴上限 600，
+  --fw-num: 560;                        /* 读数（KPI、速率、大数、金额）的字重：Inter 可变字体的 wght 轴取 560，不用 600 / 700 的粗黑。令牌已定义，各处读数样式（home.css、cards.css、pages.css 等）仍写 --fw-semibold / --fw-bold，由之后的页面精修批改用它。打包的字体 wght 轴上限 600，
                                            仍写 600 / 700 的读数最粗也只到 600（不会被合成粗体） */
 
   --tracking-title: -0.01em;            /* H 页面标题、卡片标题（O −0.6px、N 品牌 +.015em 统一到它） */
-  --tracking-page: -0.02em;             /* 页面标题 26px：字大了收紧一点（base.css 的 .page-title 改用它） */
+  --tracking-page: -0.02em;             /* 页面标题 26px：字大了收紧一点。令牌已定义；base.css 的 .page-title 还在用 --tracking-title，由之后的页面精修批改用它 */
 
   /* ---------- 8. 圆角：4 档 + 1 个限定用途的小圆角（O/N/H 共 11 种以上收拢） ---------- */
   /* 设计语言 v1：整体放大一档（卡 14→16、浮层 10→12、控件 8→9、首页分区 22→24），新增 --r-modal；标签 6、极小 4、胶囊不变 */
-  --r-card: 16px;                       /* H/O 卡、面板、KPI（N 12、O 对话框 16、H 详情 20/16 统一到它；对话框、命令面板、抽屉改用 --r-modal） */
+  --r-card: 16px;                       /* H/O 卡、面板、KPI（N 12、O 对话框 16、H 详情 20/16 统一到它；对话框、命令面板、抽屉现在仍用它，之后的页面精修批改用 --r-modal） */
   --r-float: 12px;                      /* H 条带与浮层：筛选条、弹层、菜单、toast、图表提示、卡内信息格、提示条、日志块、带框小表 */
   --r-control: 9px;                     /* H/O 按钮、输入、下拉、图标按钮、侧栏项、提示框与迹线读数（N 9 / 4.4、H 9 统一到它）；菜单项是 --r-float 减菜单内边距 */
   --r-pill: 999px;                      /* H 分段控件、chip、状态 pill、额度轨道、计数徽标 */
   --r-section: 24px;                    /* 首页大分区底（.hsec），比卡片大一级，卡片浮在里面 */
-  --r-modal: 22px;                      /* 模态：对话框、抽屉、命令面板共用，比卡片大、比首页分区小（组件之后改用它） */
+  --r-modal: 22px;                      /* 模态：对话框、抽屉、命令面板共用，比卡片大、比首页分区小。令牌已定义；dialog.tsx / command.tsx / sheet.tsx 由之后的页面精修批切换过来 */
   --r-inner: 12px;                      /* 卡里再套一层的块：集群状态的在线率框与小图 */
   --r-tag: 6px;                         /* 小方块：彩色标签、品牌标、22px 极小按钮（复制、通知关闭） */
   --r-xs: 4px;                          /* 复选框、键帽、子菜单筛选框、可点的读数与文字按钮的焦点 / 悬停底 */
@@ -129,10 +129,10 @@
   /* 浮层两级（原来一份 --shadow-float 通用，菜单和对话框一样深，层次分不出来）：比卡片深一级 / 最深一级 */
   --shadow-pop: 0 1px 2px rgb(var(--shadow-rgb) / 0.06), 0 4px 10px -2px rgb(var(--shadow-rgb) / 0.08), 0 16px 36px -8px rgb(var(--shadow-rgb) / 0.18);      /* 锚定弹层：菜单、右键、下拉、悬浮卡、日历、作业弹层、toast、图表提示、提示框 */
   --shadow-modal: 0 2px 4px rgb(var(--shadow-rgb) / 0.06), 0 12px 24px -6px rgb(var(--shadow-rgb) / 0.1), 0 36px 80px -16px rgb(var(--shadow-rgb) / 0.3); /* 模态面板：对话框、命令面板、节点抽屉、窄屏侧栏 */
-  --shadow-thumb: 0 1px 4px rgba(0, 0, 0, 0.12);    /* H --segment-shadow：分段选中项（O 用线色当阴影，看不见） */
+  --shadow-thumb: 0 1px 4px rgb(var(--shadow-rgb) / 0.12);    /* H --segment-shadow：分段选中项（O 用线色当阴影，看不见） */
   --shadow-btn: 0 1px 2px rgba(0, 0, 0, 0.08);      /* O 主按钮 */
-  --shadow-bar-up: 0 -8px 24px -12px rgb(17 24 39 / 0.14);   /* 吸底条（上架页底部操作条）：阴影朝上 */
-  --shadow-edge-l: -8px 0 12px -10px rgb(17 24 39 / 0.25);   /* 右吸附列的左缘（批量网格「检查结果」列）：和滑到下面的格子分开 */
+  --shadow-bar-up: 0 -8px 24px -12px rgb(var(--shadow-rgb) / 0.14);   /* 吸底条（上架页底部操作条）：阴影朝上 */
+  --shadow-edge-l: -8px 0 12px -10px rgb(var(--shadow-rgb) / 0.25);   /* 右吸附列的左缘（批量网格「检查结果」列）：和滑到下面的格子分开 */
   /* 提示框（Tooltip 与首页迹线的悬停读数）：亮色反色实底；暗色反色会是一块近白的亮斑，改比浮层再亮一级的深灰底 + 正文色，0.5px 内描边收边 */
   --tip-bg: var(--fg); --tip-fg: var(--canvas); --tip-ring: transparent;
 
@@ -344,10 +344,7 @@
   --focus-halo: color-mix(in srgb, var(--accent) 20%, transparent);
   --chart-1: #8e3bb0;
   --grad-soft: linear-gradient(90deg, #f3e6f5 0%, #fbe1f2 100%);
-  --shadow-thumb: 0 1px 4px rgba(42, 11, 61, 0.14);
   --shadow-rgb: 42 11 61;               /* 粉紫：卡片、浮层、模态的阴影带一点紫调（墨紫 #2a0b3d）；暗色块里的阴影是纯黑，不用它 */
-  --shadow-bar-up: 0 -8px 24px -12px rgb(42 11 61 / 0.15);
-  --shadow-edge-l: -8px 0 12px -10px rgb(42 11 61 / 0.25);
 }
 :root:not([data-palette="indigo"])[data-theme="dark"] {
   /* 表面、线、文字与上面的炭黑暗色相同（这里要重写一遍，否则粉紫亮色块的同级选择器会盖住它们）；只保留粉紫的强调色 */
@@ -363,24 +360,23 @@
   --focus-halo: color-mix(in srgb, var(--accent) 28%, transparent);
   --chart-1: #d9a6ea;
   --grad-soft: linear-gradient(90deg, #3a2445 0%, #4a2447 100%);
-  --shadow-thumb: 0 1px 3px rgba(0, 0, 0, 0.5);
-  --shadow-bar-up: 0 -8px 24px -12px rgb(0 0 0 / 0.6);
-  --shadow-edge-l: -8px 0 12px -10px rgb(0 0 0 / 0.7);
 }
 
 /* ---------- 读数字体 ----------
    Inter 4.1（rsms/inter，SIL OFL 1.1，许可证 public/fonts/Inter-OFL.txt）可变字体的子集：保留 opsz（14–32）与 wght（400–600）两个轴，只含数字、拉丁字母、标点与读数符号（% $ ¥ . , : ; - + × · / ( ) ↑ ↓ → − 等 95 个字符），
-   保留 tnum / zero / kern / calt；0–9 在字体里已固定为等宽数字 + 斜杠零（不依赖 font-variant-numeric，漏写 --num-variant 的地方也不会数字乱跳）。wght 上限 600：写 600 / 700 的读数最粗到 600，不出粗黑，也不会触发合成粗体。
-   文件名带版本号（public 下的文件不带内容哈希，换字体时改文件名；服务器对非 /assets/ 的文件每次重新验证）。CSP 的 font-src 为 'self'，同源字体可用。
-   font-display: swap：先用系统字，字体到了换；Windows 上先用度量对齐过的 Segoe UI（Inter Num Fallback：size-adjust 96.5% 使读数宽度与 Inter 相差在 ±2.5% 内，ascent / descent 与 Inter 一致，换字不上下跳），
-   三档字重分别对应 Segoe UI 的 Regular / Semibold / Bold；没有 Segoe UI 的平台（macOS 等）这一层不可用，直接走系统栈。 */
+   保留 tnum / zero / kern / calt（tnum 只作用于数字，不动标点和空格）；0–9 在字体里已固定为等宽数字 + 斜杠零（不依赖 font-variant-numeric，漏写 --num-variant 的地方也不会数字乱跳）。
+   wght 上限 600：写 600 / 700 的读数最粗到 600，不出粗黑，也不会触发合成粗体。
+   字体文件在 src/assets/fonts/，由 Vite 当资源处理（相对路径 url()）：构建后是 /assets/inter-num-4.1-<内容哈希>.woff2，服务器对 /assets/ 带 immutable 长缓存，第二次起不再请求。
+   换字体：替换文件，并把 index.html 里 preload 的 href（也是 /src/assets/fonts/ 下的同一个文件，Vite 会把它和这里的 url() 一起改写成同一个哈希名）和这里的文件名一并改。
+   font-display: swap：先用系统字，字体到了换；Windows 上先用度量对齐过的 Segoe UI（Inter Num Fallback：size-adjust 96.5% 使读数宽度与 Inter 相差在 ±2.5%（38px 处最多 +4.6%）内，ascent / descent 与上面 Inter Num 的覆盖值一致，换字不上下跳）。
+   Segoe UI 的 Regular 对 400–500、Semibold 对 600 和 700（Inter 最粗只到 600，Bold 会在换字时变细）；没有 Segoe UI 的平台（macOS 等）这一层不可用，直接走系统栈。 */
 @font-face {
   font-family: "Inter Num";
-  src: url("/fonts/inter-num-4.1.woff2") format("woff2");
+  src: url("../assets/fonts/inter-num-4.1.woff2") format("woff2");
   font-weight: 400 600;
   font-style: normal;
   font-display: swap;
+  ascent-override: 95.2%; descent-override: 24.1%; line-gap-override: 0%; /* 行盒高度按 Segoe UI 的度量（1950 / 494，upem 2048）：Inter 自带的 ascent 略高，读数和正文字体同在一行时行盒会比以前高 1–2px（首页 KPI 说明行两行时 34 → 35 / 36） */
 }
-@font-face { font-family: "Inter Num Fallback"; src: local("Segoe UI"); font-weight: 400 500; size-adjust: 96.5%; ascent-override: 100.39%; descent-override: 25%; line-gap-override: 0%; }
-@font-face { font-family: "Inter Num Fallback"; src: local("Segoe UI Semibold"); font-weight: 600; size-adjust: 96.5%; ascent-override: 100.39%; descent-override: 25%; line-gap-override: 0%; }
-@font-face { font-family: "Inter Num Fallback"; src: local("Segoe UI Bold"); font-weight: 700; size-adjust: 96.5%; ascent-override: 100.39%; descent-override: 25%; line-gap-override: 0%; }
+@font-face { font-family: "Inter Num Fallback"; src: local("Segoe UI"); font-weight: 400 500; size-adjust: 96.5%; ascent-override: 98.66%; descent-override: 25%; line-gap-override: 0%; }
+@font-face { font-family: "Inter Num Fallback"; src: local("Segoe UI Semibold"); font-weight: 600 700; size-adjust: 96.5%; ascent-override: 98.66%; descent-override: 25%; line-gap-override: 0%; }
