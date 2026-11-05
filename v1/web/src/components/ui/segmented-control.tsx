@@ -29,7 +29,7 @@ export const segmentedControlIndicatorSurfaceClassName =
 const segmentedControlRootSize: Record<SegmentedControlSize, string> = {
   default: "h-(--h-lg)",
   lg: "h-(--h-lg)",
-  sm: "h-(--h-sm)",
+  sm: "h-[calc(var(--seg-item-sm)+2*var(--seg-pad))]", // = --h-sm（触屏 --seg-item-sm 上调到 28，轨道随项变高）
 };
 
 const SegmentedControlContext: React.Context<SegmentedControlSize> =
