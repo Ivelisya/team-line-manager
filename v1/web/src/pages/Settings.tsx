@@ -20,8 +20,8 @@ import { CheckRow, FormField, LabelRow, OptimisticSwitch } from '@/components/ui
 import { InfoTip } from '@/components/ui/info-tip';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
-import { Select } from '@/components/ui/select';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/overlays';
+import { OptionSelect } from '@/components/ui/option-select';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Trunc } from '@/components/ui/tooltip';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, DialogHeader } from '@/components/ui/dialog';
 import { SkeletonRows } from '@/components/app/SkeletonRows';
@@ -135,7 +135,7 @@ function ApiKeysSection() {
       <FormDialog size="md" dirty={!!name.trim() || scopes.join() !== 'read' || exp !== '90' || !!pw} open={open} onOpenChange={setOpen} title="新建 API 密钥" desc="创建后密钥只显示一次" submitLabel="创建密钥" busy={create.isPending} valid={valid} onSubmit={submit}>
         <div className="form-grid">
           <FormField label="名称"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：备份脚本" autoFocus autoComplete="off" /></FormField>
-          <FormField label="有效期"><Select value={exp} onChange={setExp} options={EXPIRES} /></FormField>
+          <FormField label="有效期"><OptionSelect value={exp} onChange={setExp} options={EXPIRES} /></FormField>
         </div>
         <Field>
           <LabelRow>权限</LabelRow>
@@ -323,7 +323,7 @@ const ChannelDialog = resetOnOpen(function ChannelDialog({ target, open, onClose
       submitLabel={ch ? '保存' : '创建'} busy={busy} valid={valid} onSubmit={submit}>
       <div className="form-grid">
         <FormField label="名称"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：运维群" autoFocus autoComplete="off" /></FormField>
-        <FormField label="类型" hint={ch ? '类型创建后不能改' : undefined}><Select value={kind} onChange={(v) => { setKind(v); setCfg({}); }} disabled={!!ch} options={Object.entries(KINDS).map(([value, x]) => ({ value, label: x.label }))} /></FormField>
+        <FormField label="类型" hint={ch ? '类型创建后不能改' : undefined}><OptionSelect value={kind} onChange={(v) => { setKind(v); setCfg({}); }} disabled={!!ch} options={Object.entries(KINDS).map(([value, x]) => ({ value, label: x.label }))} /></FormField>
       </div>
       <div className="form-grid">
         {k.fields.map((f) => (
@@ -339,7 +339,7 @@ const ChannelDialog = resetOnOpen(function ChannelDialog({ target, open, onClose
       {canClear && <CheckRow checked={clearSecret} onChange={setClearSecret}>清除签名密钥（机器人关了签名校验时勾选）</CheckRow>}
       {!cfgOk && touched && <div className="hint is-error">{isNew ? '请把配置填写完整' : '要改配置，请把必填字段重新填上'}</div>}
       <div className="form-grid">
-        <FormField label="最低级别"><Select value={sev} onChange={setSev} options={SEVERITIES} /></FormField>
+        <FormField label="最低级别"><OptionSelect value={sev} onChange={setSev} options={SEVERITIES} /></FormField>
         <FormField label="状态"><CheckRow switch className="h-(--h-lg)" checked={enabled} onChange={setEnabled}>{enabled ? '启用' : '已停用'}</CheckRow></FormField>
         <FormField label="月报" className="span-2" info="每月 1 号发上月摘要（总流量、月费、可用率最差的几台等），不看最低级别；渠道要处于启用状态才会收到">
           <CheckRow switch className="h-(--h-lg)" checked={monthly} onChange={setMonthly} aria-label="接收月报">{monthly ? '接收月报' : '不接收'}</CheckRow>

@@ -16,7 +16,7 @@ import { FormField } from '@/components/ui/form';
 import { InfoTip } from '@/components/ui/info-tip';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { Select } from '@/components/ui/select';
+import { OptionSelect } from '@/components/ui/option-select';
 import { toast } from '@/components/ui/toast';
 import { HELD_TEXT, heldNote, Note, Section, SectionHeader } from '@/components/app/primitives';
 import { ShowAll } from '@/components/app/Pagination';
@@ -136,7 +136,7 @@ function RenameSection({ m }: { m: MachineView }) {
           <FormField label="线路机名称" className="span-2"><Input value={label} onChange={(e) => setLabel(e.target.value)} /></FormField>
         ) : (
           <>
-            <FormField label="团队"><Select value={team} onChange={changeTeam} options={teamOpts} /></FormField>
+            <FormField label="团队"><OptionSelect value={team} onChange={changeTeam} options={teamOpts} /></FormField>
             <FormField label="编号" error={num && !numOk ? '编号应为 1–999 的整数' : taken ? `${F.displayName(teamName!, n)} 已被占用` : undefined}>
               <Input inputMode="numeric" value={num} onChange={(e) => setNum(e.target.value.replace(/\D/g, ''))} placeholder={teamMoved ? (autoNum ? `自动：${autoNum}` : '自动') : undefined} aria-invalid={(!!num && !numOk) || taken} />
             </FormField>
@@ -222,7 +222,7 @@ function EntrySection({ m }: { m: MachineView }) {
             <div className="manage-row is-ctl">
               <div className="t">加入口 <InfoTip text="挂到另一台线路机，多一条入口和分享链接，原有的不受影响" /></div>
               <span className="row" style={{ gap: 8, flexWrap: 'nowrap' }}>
-                <div style={{ flex: '0 1 160px', minWidth: 0 }}><Select value={relay} onChange={setRelay} options={opts} placeholder="选择线路机" aria-label="要挂到的线路机" /></div>
+                <div style={{ flex: '0 1 160px', minWidth: 0 }}><OptionSelect value={relay} onChange={setRelay} options={opts} placeholder="选择线路机" aria-label="要挂到的线路机" /></div>
                 {/* 模式按「设置 → 入口」的默认；不支持穿透的（家宽代理、同机 IP 节点）中控自动按普通建，结果里写明。按钮与下拉同为 36 */}
                 <Button variant="outline" size="lg" disabled={!relay || add.isPending} loading={add.isPending} onClick={() => add.mutate({ id: m.id, relay_id: relay }, { onSuccess: (r) => { toast.ok(`已提交，新入口（${r.entry_mode === 'reverse' ? '穿透' : '普通'}模式）正在应用${r.note ? `：${r.note}` : ''}`); setRelay(''); }, onError: toast.err })}>添加入口</Button>
               </span>
@@ -372,8 +372,8 @@ function SpeedtestOwnRow({ m }: { m: MachineView }) {
         description={<>这台机器会自己下载一个测速文件，<b>会用掉约 {size} MB 流量</b>，计入它的流量额度</>}
         onConfirm={async () => { const r = await run.mutateAsync({ id: m.id, size_mb: Number(size), target }); toast.ok(`已提交「${m.name}」的测速作业（${r.target_name} ${r.size_mb} MB）`); }}>
         <div className="form-grid">
-          <FormField label="下载量" info="越大越能测出跑满的带宽；慢线路 300 秒内下不完的，按已下载的算"><Select value={size} onChange={setSize} options={sizeOpts} /></FormField>
-          <FormField label="测速目标" info="北美的测速主机"><Select value={target} onChange={setTarget} options={targetOpts} /></FormField>
+          <FormField label="下载量" info="越大越能测出跑满的带宽；慢线路 300 秒内下不完的，按已下载的算"><OptionSelect value={size} onChange={setSize} options={sizeOpts} /></FormField>
+          <FormField label="测速目标" info="北美的测速主机"><OptionSelect value={target} onChange={setTarget} options={targetOpts} /></FormField>
         </div>
       </ConfirmDialog>
     </>

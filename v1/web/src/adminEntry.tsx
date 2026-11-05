@@ -9,18 +9,6 @@ import { App } from './App';
 import { qc } from './queryClient';
 import { TooltipProvider } from './components/ui/tooltip';
 
-// 根滚动条槽宽（覆盖式滚动条为 0），弹层锁滚动时按它补回右边距（base.css）。槽宽只随缩放（devicePixelRatio）变、不随窗口尺寸变：
-// 只在缩放比变化时重量（拖窗口时不再每帧插节点强制布局）
-const measureScrollbar = () => {
-  const d = document.createElement('div');
-  d.style.cssText = 'position:absolute;top:-200px;width:100px;height:100px;overflow:scroll;scrollbar-width:auto;visibility:hidden';
-  document.body.append(d);
-  document.documentElement.style.setProperty('--sbw', `${d.offsetWidth - d.clientWidth}px`);
-  d.remove();
-  matchMedia(`(resolution: ${devicePixelRatio}dppx)`).addEventListener('change', measureScrollbar, { once: true });
-};
-measureScrollbar();
-
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <QueryClientProvider client={qc}>

@@ -10,19 +10,12 @@ import { watchSize } from "@/lib/sharedObserver"
    提示框外观：反色实底（--tip-*，暗色见 tokens.css）、--shadow-pop + 内描边；进场 --dur-2 / --ease-out（淡入 + 从 .96 放大，朝远离触发元素的方向走 4px），退场 --dur-1 / --ease-std；
    pre-line 让 data-tip 里的换行生效（心跳格说明分行） */
 
+/** 此刻有没有提示或悬浮卡开着：菜单 / 下拉 / 弹层 / 对话框 / 抽屉按 Esc 想关时先看它——有就让这下 Esc 只用来收起它们（悬浮卡也是「悬着的说明」，先收） */
+export const hintOpen = (tooltipOnly = false) => !!document.querySelector(tooltipOnly ? '[data-slot="tooltip-content"][data-open]' : '[data-slot="tooltip-content"][data-open], [data-slot="hover-card-content"][data-open]')
+
 /** 全站提示延迟 250 ms（Mira 默认 0）；刚收起一个又悬停到下一个，Base UI 的 timeout 内直接出现。
- *  提示开着时按 Esc，这一下只收起提示，对话框、抽屉、菜单留着（同改前：Radix 的提示和它们在同一个层栈里，开着的提示在最上层）。
- *  Radix 的层在 document 的捕获阶段收 Esc，事件已被 preventDefault 就不关；这里在更早的 window 捕获阶段先标上，
- *  Base UI 的提示在冒泡阶段照常收起（它不看 defaultPrevented）。Base UI 的对话框 / 抽屉也不看 defaultPrevented：它们在 onOpenChange 里按 reason 自己拦（dialog.tsx 的 escapeIsTaken）；
- *  这里的监听留给还没换成 Base UI 的层（Radix 的菜单、下拉等，B2b 换完后删掉） */
+ *  提示开着时按 Esc，这一下只收起提示，对话框、抽屉、菜单留着：Base UI 的提示收起时停止这下 Esc 的传播；提示还没收起时，上面的层在自己的 onOpenChange 里看到有开着的提示就拦下（float.ts 的 guardEscape、dialog.tsx、sheet.tsx 都用上面的 hintOpen） */
 function TooltipProvider({ delay = 250, ...props }: TooltipPrimitive.Provider.Props) {
-  React.useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && document.querySelector('[data-slot="tooltip-content"][data-open]')) e.preventDefault()
-    }
-    window.addEventListener("keydown", onKey, true)
-    return () => window.removeEventListener("keydown", onKey, true)
-  }, [])
   return <TooltipPrimitive.Provider data-slot="tooltip-provider" delay={delay} {...props} />
 }
 

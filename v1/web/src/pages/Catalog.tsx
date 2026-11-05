@@ -16,8 +16,9 @@ import { Button, IconButton } from '@/components/ui/button';
 import { CheckRow, FormField, UnitInput } from '@/components/ui/form';
 import { InfoTip } from '@/components/ui/info-tip';
 import { Input } from '@/components/ui/input';
-import { Select } from '@/components/ui/select';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/overlays';
+import { OptionSelect } from '@/components/ui/option-select';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, DialogHeader } from '@/components/ui/dialog';
 import { SkeletonRows } from '@/components/app/SkeletonRows';
 import { toast } from '@/components/ui/toast';
@@ -50,7 +51,7 @@ const rowProps = (onOpen: () => void) => ({
 function RowMenu({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild><IconButton size="icon-sm" label={label} tip={false}><MoreHorizontal size={16} /></IconButton></DropdownMenuTrigger>
+      <DropdownMenuTrigger render={<IconButton size="icon-sm" label={label} tip={false}><MoreHorizontal size={16} /></IconButton>} />
       <DropdownMenuContent align="end">{children}</DropdownMenuContent>
     </DropdownMenu>
   );
@@ -173,10 +174,10 @@ function TeamsTab() {
                 return (
                   <tr key={t.id} {...rowProps(() => setEdit(t))}><td className="strong">{t.name}{t.spare && <> <InfoTip text={SPARE_TIP} /></>}</td><td className="r num">{t.spare ? <span className="t-muted">最后</span> : t.sort_order}</td><td className="r num"><TeamNodes t={t} counts={counts?.[t.id]} /></td><td className="r"><TeamCost t={t} active={counts?.[t.id]?.active} /></td>
                     <td className="c"><RowMenu label={`团队「${t.name}」的操作`}>
-                      <DropdownMenuItem onSelect={() => setEdit(t)}>改名 / 排序…</DropdownMenuItem>
-                      <DropdownMenuItem disabled={done} onSelect={() => setRenum(t)}>{done ? '重新编号（编号已连续）' : '重新编号…'}</DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setEdit(t)}>改名 / 排序…</DropdownMenuItem>
+                      <DropdownMenuItem disabled={done} onClick={() => setRenum(t)}>{done ? '重新编号（编号已连续）' : '重新编号…'}</DropdownMenuItem>
                       <DropdownMenuSeparator />
-                      <DropdownMenuItem danger disabled={t.spare} onSelect={() => setAskDel(t)}>{t.spare ? '删除（备用团队不能删除）' : '删除…'}</DropdownMenuItem>
+                      <DropdownMenuItem danger disabled={t.spare} onClick={() => setAskDel(t)}>{t.spare ? '删除（备用团队不能删除）' : '删除…'}</DropdownMenuItem>
                     </RowMenu></td></tr>
                 );
               })}
@@ -300,9 +301,9 @@ function ProvidersTab() {
                 <td className="r num">{planCount.get(p.id) ?? <span className="t-muted">0</span>}</td>
                 {panel && <td>{p.panel_url && /^https?:\/\//i.test(p.panel_url) ? <Button variant="link" size="inline" className="max-w-full" render={<a href={p.panel_url} target="_blank" rel="noreferrer noopener" data-tip={p.panel_url} />}><span className="ellipsis">{p.panel_url.replace(/^https?:\/\//, '')}</span><ExternalLink size={12} /></Button> : (p.panel_url || <span className="t-muted">—</span>)}</td>}
                 <td className="c"><RowMenu label={`供应商「${p.name}」的操作`}>
-                  <DropdownMenuItem onSelect={() => setEdit(p)}>编辑…</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setEdit(p)}>编辑…</DropdownMenuItem>
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem danger onSelect={() => setAskDel(p)}>删除…</DropdownMenuItem>
+                  <DropdownMenuItem danger onClick={() => setAskDel(p)}>删除…</DropdownMenuItem>
                 </RowMenu></td></tr>
             ))}</tbody>
           </table>
@@ -341,8 +342,8 @@ const ProviderDialog = resetOnOpen(function ProviderDialog({ provider, open, onC
         <FormField label="代码" info="卡片上显示的缩写"><Input value={f.code} onChange={(e) => setF({ ...f, code: e.target.value })} placeholder="如 BWH" /></FormField>
         <FormField label="面板地址（选填）" className="span-2"><Input value={f.panel_url} onChange={(e) => setF({ ...f, panel_url: e.target.value })} placeholder="https://" /></FormField>
         <FormField label="账单时区" info="到期日、流量周期按这个时区的日期算" className="span-2"><TzInput value={f.timezone} onChange={(v) => setF({ ...f, timezone: v })} emptyLabel={orgTz()} aria-label="账单时区" /></FormField>
-        <FormField label="流量计量" info="供应商面板怎么统计本周期用量：双向是下行加上行，单向只记其中一个（比如 GOMAMI 取较小值）。不确定就选取较大的，不会少算。单台机器可在费用页签单独设置" className="span-2"><Select value={f.traffic_rule} onChange={(v) => setF({ ...f, traffic_rule: v as TrafficRule })} options={trafficRuleOptions()} /></FormField>
-        <FormField label="流量重置" info={"流量周期从哪天开始（按账单时区）\n按账单日：每台机器的到期日是几号，就几号重置；没有这一天的月份，月底重置\n滚动 30 天：算最近 30 天，没有固定的重置日"}><Select value={f.traffic_reset} onChange={(v) => setF({ ...f, traffic_reset: v as TrafficReset })} options={resetOptions()} /></FormField>
+        <FormField label="流量计量" info="供应商面板怎么统计本周期用量：双向是下行加上行，单向只记其中一个（比如 GOMAMI 取较小值）。不确定就选取较大的，不会少算。单台机器可在费用页签单独设置" className="span-2"><OptionSelect value={f.traffic_rule} onChange={(v) => setF({ ...f, traffic_rule: v as TrafficRule })} options={trafficRuleOptions()} /></FormField>
+        <FormField label="流量重置" info={"流量周期从哪天开始（按账单时区）\n按账单日：每台机器的到期日是几号，就几号重置；没有这一天的月份，月底重置\n滚动 30 天：算最近 30 天，没有固定的重置日"}><OptionSelect value={f.traffic_reset} onChange={(v) => setF({ ...f, traffic_reset: v as TrafficReset })} options={resetOptions()} /></FormField>
         <FormField label="到期提醒" info="到期前多少天开始提醒" error={remindBad ? '填 0–60' : undefined}><UnitInput unit="天前" width={120} inputMode="numeric" value={f.remind_days} onChange={(e) => setF({ ...f, remind_days: e.target.value.replace(/\D/g, '') })} /></FormField>
       </div>
     </FormDialog>
@@ -403,12 +404,12 @@ function PlansTab() {
                   <td className="r">{(() => { const v = feeView(p); return <><span className="num">{v.main}</span> <span className="t-sub">{v.unit}</span>{v.sub && <span className="sub" data-tip={v.tip ?? undefined}>{v.sub}</span>}</>; })()}</td>
                   <td className="r num"><CountLink n={p.machine_count} to={`/nodes?plan=${p.id}`} /></td>
                   <td className="c"><RowMenu label={`套餐「${p.name}」的操作`}>
-                    <DropdownMenuItem onSelect={() => setEdit(p)}>编辑…</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => setEdit(p)}>编辑…</DropdownMenuItem>
                     {p.archived_at
-                      ? <DropdownMenuItem disabled={patch.isPending} onSelect={() => void setArchived(p, false).catch(toast.err)}>取消归档</DropdownMenuItem>
-                      : <DropdownMenuItem disabled={patch.isPending} onSelect={() => (p.machine_count > 0 ? setAskArchive(p) : void setArchived(p, true).catch(toast.err))}>{p.machine_count > 0 ? '归档…' : '归档'}</DropdownMenuItem>}
+                      ? <DropdownMenuItem disabled={patch.isPending} onClick={() => void setArchived(p, false).catch(toast.err)}>取消归档</DropdownMenuItem>
+                      : <DropdownMenuItem disabled={patch.isPending} onClick={() => (p.machine_count > 0 ? setAskArchive(p) : void setArchived(p, true).catch(toast.err))}>{p.machine_count > 0 ? '归档…' : '归档'}</DropdownMenuItem>}
                     <DropdownMenuSeparator />
-                    <DropdownMenuItem danger onSelect={() => setAskDel(p)}>删除…</DropdownMenuItem>
+                    <DropdownMenuItem danger onClick={() => setAskDel(p)}>删除…</DropdownMenuItem>
                   </RowMenu></td>
                 </tr>
               ))}
@@ -464,11 +465,11 @@ const PlanDialog = resetOnOpen(function PlanDialog({ plan, open, onClose }: { pl
         <FormField label="套餐名"><Input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} autoFocus /></FormField>
         {/* 机器的供应商就是套餐的：有机器用着时不能换（服务端也拦） */}
         <FormField label="供应商" hint={plan !== 'new' && plan.machine_count ? '有机器在用，不能换' : undefined} info={plan !== 'new' && plan.machine_count ? '要换供应商就给别的供应商另建套餐' : undefined}>
-          <Select value={f.provider_id} onChange={(v) => setF({ ...f, provider_id: v })} disabled={plan !== 'new' && plan.machine_count > 0} options={providers.map((p) => ({ value: p.id, label: p.name }))} /></FormField>
+          <OptionSelect value={f.provider_id} onChange={(v) => setF({ ...f, provider_id: v })} disabled={plan !== 'new' && plan.machine_count > 0} options={providers.map((p) => ({ value: p.id, label: p.name }))} /></FormField>
         {num('cpu_cores', 'CPU', '核')}{num('mem_gb', '内存', 'GiB')}{num('disk_gb', '磁盘', 'GiB')}{num('bandwidth_mbps', '带宽', 'Mbps')}
         {num('traffic_gb', '流量', 'GB', '留空或 0 = 不限', '每个流量周期的额度。周期按供应商的「流量重置」来')}{num('price', '价格', f.currency, undefined, '每个计费周期', usdHint)}
-        <FormField label="币种"><Select value={f.currency} onChange={(v) => setF({ ...f, currency: v })} options={F.withCurrent(currencyOptions(), f.currency)} /></FormField>
-        <FormField label="计费周期"><Select value={f.cycle} onChange={(v) => setF({ ...f, cycle: v })} options={cycleOptions()} /></FormField>
+        <FormField label="币种"><OptionSelect value={f.currency} onChange={(v) => setF({ ...f, currency: v })} options={F.withCurrent(currencyOptions(), f.currency)} /></FormField>
+        <FormField label="计费周期"><OptionSelect value={f.cycle} onChange={(v) => setF({ ...f, cycle: v })} options={cycleOptions()} /></FormField>
         <FormField label="备注" className="span-2"><Input value={f.notes} onChange={(e) => setF({ ...f, notes: e.target.value })} /></FormField>
       </div>
     </FormDialog>

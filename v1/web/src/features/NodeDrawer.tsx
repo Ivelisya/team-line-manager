@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/sheet';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/overlays';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Trunc } from '@/components/ui/tooltip';
 import { OptimisticSwitch } from '@/components/ui/form';
 import { InfoTip } from '@/components/ui/info-tip';
@@ -60,7 +60,7 @@ export function NodeDrawer() {
   const shownId = m ? heldId.current : null;
   React.useLayoutEffect(() => {
     if (bodyRef.current) bodyRef.current.scrollTop = 0;
-    tabsRef.current?.querySelector('[data-state="active"]')?.scrollIntoView({ inline: 'nearest', block: 'nearest' });
+    tabsRef.current?.querySelector('[data-active]')?.scrollIntoView({ inline: 'nearest', block: 'nearest' });
   }, [shownId, tab]);
   // 标签页标题带上这台机器的名字（关闭动画期间已经去掉），拼接见 lib/title
   useTitleName(id ? m?.name : undefined);
@@ -93,7 +93,7 @@ export function NodeDrawer() {
               )}
             </header>
             <Tabs value={tab} onValueChange={(v) => setTab(v as DrawerTab)} className="drawer-tabs">
-              <TabsList ref={tabsRef}>{DRAWER_TABS.map((t) => <TabsTrigger key={t.value} value={t.value} noPanel>{t.label}</TabsTrigger>)}</TabsList>
+              <TabsList ref={tabsRef} className="max-[421px]:gap-4">{DRAWER_TABS.map((t) => <TabsTrigger key={t.value} value={t.value} noPanel>{t.label}</TabsTrigger>)}</TabsList>
             </Tabs>
             <div className="drawer-body" ref={bodyRef}>
               {m.lifecycle === 'retired' && (

@@ -13,9 +13,11 @@ import { Button, IconButton } from '@/components/ui/button';
 import { CheckRow, FormField } from '@/components/ui/form';
 import { InfoTip } from '@/components/ui/info-tip';
 import { Input } from '@/components/ui/input';
-import { Select } from '@/components/ui/select';
+import { OptionSelect } from '@/components/ui/option-select';
 import { DateField } from '@/components/ui/date-field';
-import { Popover, PopoverContent, PopoverTrigger, Segmented } from '@/components/ui/overlays';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { selectTrigger } from '@/components/ui/select';
+import { Segmented } from '@/components/ui/segmented';
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { ConfirmDialog } from '@/components/app/dialogs';
 import { errMessage, toast, useToastLift, type ToastTone } from '@/components/ui/toast';
@@ -202,7 +204,7 @@ export function ProvisionPage() {
       <div className={cn('row', mode === 'single' && 'prov-form')} style={{ gap: 'var(--sp-8)', alignItems: 'center' }}>
         <span className="t-sub">入口模式</span>
         <InfoTip text={'穿透给供应商丢入站连接（SYN）的节点用：节点上装 bridge 主动连线路机入口，线路机不再向节点新建连接\n家宽代理、同机 IP 节点不支持，自动按普通建（检查结果里有提醒）\n默认在「设置 → 入口」里改'} />
-        <Select sm className="w-[260px]" value={entryMode} onChange={(v) => setEntryMode(v as EntryMode | '')} aria-label="入口模式"
+        <OptionSelect sm className="w-[260px]" value={entryMode} onChange={(v) => setEntryMode(v as EntryMode | '')} aria-label="入口模式"
           allowEmpty={`跟随默认（${modeSetting.data?.label ?? '穿透'}）`} options={[{ value: 'reverse', label: '穿透：节点主动连入口' }, { value: 'normal', label: '普通：线路机连节点' }]} />
       </div>
 
@@ -253,13 +255,11 @@ function HostSelect({ id, value, onChange, hosts }: { id?: string; value: string
   const cur = hosts.find((h) => h.id === value);
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button type="button" id={id} className="select-trigger cs-trigger">
-          <span className={cur ? undefined : 't-muted'}>{cur ? <>{cur.name} <span className="t-sub">{cur.ip}</span></> : '选择 VPS 节点'}</span>
-          <ChevronDown />
-        </button>
+      <PopoverTrigger id={id} data-slot="select-trigger" className={cn(selectTrigger, 'cs-trigger')}>
+        <span className={cur ? undefined : 't-muted'}>{cur ? <>{cur.name} <span className="t-sub">{cur.ip}</span></> : '选择 VPS 节点'}</span>
+        <ChevronDown />
       </PopoverTrigger>
-      <PopoverContent className="cs-pop hs-pop" align="start">
+      <PopoverContent solid className="cs-pop p-0 w-[max(var(--pop-w-md),var(--anchor-width))]" align="start">
         {open && (
           <Command loop filter={hostFilter}>
             <CommandInput placeholder="搜索名称或 IP" />
@@ -353,9 +353,9 @@ function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; o
             {k === 'proxy' ? country : ip ? Fixed('SSH 端口', '经宿主机登录，用宿主机的 SSH 端口', host ? String(host.ssh_port) : '') : T('ssh_port', 'SSH 端口', { ph: '22', num: true, check: true })}
             {k === 'relay' ? <div className="span-2">{T('label', '线路机名', { ph: '线路机3' })}</div> : (
               <>
-                <FormField label="团队" error={fe.team_id}><Select value={row.team_id} onChange={(v) => onChange({ team_id: v })} options={o.team} aria-label="团队" /></FormField>
+                <FormField label="团队" error={fe.team_id}><OptionSelect value={row.team_id} onChange={(v) => onChange({ team_id: v })} options={o.team} aria-label="团队" /></FormField>
                 <FormField label="编号" error={fe.number}><Input inputMode="numeric" placeholder="自动（接在末尾）" value={row.number} onChange={(e) => onChange({ number: e.target.value.replace(/\D/g, '') })} /></FormField>
-                <FormField label="挂在线路机" error={fe.relay_id}><Select value={row.relay_id} onChange={(v) => onChange({ relay_id: v })} options={o.relay} aria-label="挂在线路机" /></FormField>
+                <FormField label="挂在线路机" error={fe.relay_id}><OptionSelect value={row.relay_id} onChange={(v) => onChange({ relay_id: v })} options={o.relay} aria-label="挂在线路机" /></FormField>
               </>
             )}
             {k !== 'proxy' && country}
@@ -375,7 +375,7 @@ function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; o
       {k === 'proxy' && (
         <Panel title="上游代理">
           <div className="form-grid">
-            <FormField label="协议"><Select value={row.up_protocol} onChange={(v) => onChange({ up_protocol: v })} options={[{ value: 'socks5', label: 'SOCKS5' }, { value: 'http', label: 'HTTP' }]} /></FormField>
+            <FormField label="协议"><OptionSelect value={row.up_protocol} onChange={(v) => onChange({ up_protocol: v })} options={[{ value: 'socks5', label: 'SOCKS5' }, { value: 'http', label: 'HTTP' }]} /></FormField>
             {T('up_host', '主机', { ph: 'proxy.example.net' })}
             {T('up_port', '端口', { num: true, ph: '1080', check: true })}
             {T('up_user', '用户名', { ph: '选填' })}
@@ -386,8 +386,8 @@ function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; o
 
       <Panel title="来源与订阅" sub={<InfoTip text={ip ? '默认不单独记费用：供应商对附加 IP 另收费时再填到期日与费用' : '选了套餐只需填到期日，其余跟随套餐与供应商'} />}>
         <div className="form-grid">
-          {ip ? Fixed('供应商', '沿用宿主机的供应商', host?.provider ?? '', '—') : <FormField label="供应商" error={fe.provider_id}><Select value={row.provider_id} onChange={(v) => onChange({ provider_id: v, plan_id: '' })} options={o.provider} allowEmpty="不设置" /></FormField>}
-          {ip ? Fixed('套餐', '同机 IP 节点不带套餐，附加 IP 另收费时填到期日与费用', '', '不带套餐') : <FormField label="套餐" error={fe.plan_id}><Select value={row.plan_id} onChange={(v) => onChange({ plan_id: v })} options={o.planFor(row.provider_id)} allowEmpty="不设置" /></FormField>}
+          {ip ? Fixed('供应商', '沿用宿主机的供应商', host?.provider ?? '', '—') : <FormField label="供应商" error={fe.provider_id}><OptionSelect value={row.provider_id} onChange={(v) => onChange({ provider_id: v, plan_id: '' })} options={o.provider} allowEmpty="不设置" /></FormField>}
+          {ip ? Fixed('套餐', '同机 IP 节点不带套餐，附加 IP 另收费时填到期日与费用', '', '不带套餐') : <FormField label="套餐" error={fe.plan_id}><OptionSelect value={row.plan_id} onChange={(v) => onChange({ plan_id: v })} options={o.planFor(row.provider_id)} allowEmpty="不设置" /></FormField>}
           {plan && (() => { const s = inheritSummary(plan, ctx.providers.find((p) => p.id === plan.provider_id)); return <div className="span-2 hint">{s.text} <InfoTip text={s.tip} /></div>; })()}
           {T('service_ref', '服务编号', { ph: 'SVC-1042' })}
           <FormField label={<>到期日{plan && <span className="ms-1.5 text-micro font-normal text-fg-2">必填</span>}</>} info={plan ? undefined : '填了才有费用统计和到期提醒'} error={fe.due_date}><DateField value={row.due_date} onChange={(v) => onChange({ due_date: v })} /></FormField>

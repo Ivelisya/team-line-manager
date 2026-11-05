@@ -1,6 +1,6 @@
 /* 首页的结构与新件（参照 CFSM-SAO 主题，用本项目的强调色与字体）：
    大圆角浅灰分区 .hsec（胶囊标签 + 标题 + 一行说明）、KPI 卡 .stat、集群状态 .cluster（状态胶囊是 .pill.is-outlined）、
-   分段格条 .cells、资源格条 .cmeter、圆环 .gauge、点阵 .dots、面积折线 .spark、彩色标签 .tag、分组分段控件 .seg-fill、日期选择 .cal。 */
+   分段格条 .cells、资源格条 .cmeter、圆环 .gauge、点阵 .dots、面积折线 .spark、彩色标签 .tag、分组分段控件的外层 .seg-ovf。 */
 
 .stack.home { gap: var(--sp-24); }
 
@@ -143,10 +143,8 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 
 /* ---------- 分组：整行分段控件 + 仅看异常 ---------- */
 .hgroups { display: flex; align-items: center; gap: var(--sp-10); min-width: 0; }
-.seg.seg-fill { flex: 1 1 auto; display: flex; min-width: 0; }
-.seg-fill .seg-item { flex: 1 0 auto; justify-content: center; }
 .hgroups .fchip { height: var(--h-lg); }
-@media (max-width: 600px) { .hgroups { flex-wrap: wrap; } .seg.seg-fill { flex-basis: 100%; } }
+@media (max-width: 600px) { .hgroups { flex-wrap: wrap; } }
 
 /* 首页「机器矩阵」的吸顶条：平时透明、融在分区底上；滚过去吸在顶栏下面，铺毛玻璃（同顶栏）并加底线。
    条向两边伸出分区的内边距、上下各让 8px 内边距，吸住时才盖满整行，没吸住时版面位置不变。哨兵是条的原位（高 0，抵掉一格间距） */
@@ -176,7 +174,7 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
   .hctrls { margin-left: 0; }
 }
 /* 手机：团队页签与「仅看异常」排在一行（页签自己横滑），吸住时只占一行高 */
-@media (max-width: 600px) { .hbar > .hgroups { flex-wrap: nowrap; } .hbar > .hgroups > .seg.seg-fill { flex: 1 1 0; } .hbar > .hgroups > .fchip { flex: none; } }
+@media (max-width: 600px) { .hbar > .hgroups { flex-wrap: nowrap; } .hbar > .hgroups > .fchip { flex: none; } }
 
 /* ---------- 分段格条 / 资源读数 ---------- */
 /* 一条格条只有一个元素：mask 按 --tile（一格加一道缝）横向平铺，切出 n 个圆角格（缝是精确的 px，圆角半径 --r）；
@@ -259,25 +257,6 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 button.tag { border: 0; cursor: pointer; transition: background-color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out); }
 @media (hover: hover) { button.tag:hover { background: color-mix(in srgb, var(--tag-fg) 22%, transparent); } }
 
-/* ---------- 日期选择（components/ui/date-field） ---------- */
-.datefield { width: 100%; }
-.datefield.is-empty > span { color: var(--fg-3); }
-.popover.cal { padding: var(--sp-10); }
-.cal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--sp-6); }
-.cal-title { font: var(--fw-semibold) var(--fs-body) / var(--lh-body) var(--font-sans); font-variant-numeric: var(--num-variant); }
-.cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 2px; }
-.cal-wd { display: grid; place-items: center; height: 26px; font-size: var(--fs-micro); color: var(--fg-2); }
-.cal-day {
-  height: 32px; padding: 0; border: 0; border-radius: var(--r-control); background: none; cursor: pointer;
-  font: var(--fw-medium) var(--fs-body) / 1 var(--font-num); font-variant-numeric: var(--num-variant); color: var(--fg);
-  transition: background-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out);
-}
-@media (hover: hover) { .cal-day:hover:not(:disabled) { background: var(--hover); } }
-.cal-day.is-off { color: var(--fg-3); }
-.cal-day.is-today { box-shadow: inset 0 0 0 1px var(--line-strong); }
-.cal-day[aria-selected="true"] { background: var(--accent-solid); color: var(--on-accent); }
-.cal-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); margin-top: var(--sp-8); padding-top: var(--sp-8); border-top: 1px solid var(--line); }
-.cal-cur { font-size: var(--fs-label); color: var(--fg-2); }
 /* 集群状态底部的软路由一行 */
 .cluster-routers { display: flex; align-items: center; gap: var(--sp-8); margin-top: calc(-1 * var(--sp-4)); padding: var(--sp-6) var(--sp-4) 0; font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); text-decoration: none; }
 .cluster-routers-label { display: inline-flex; align-items: center; gap: var(--sp-6); margin-right: auto; font-weight: var(--fw-medium); color: var(--fg); }
@@ -289,12 +268,7 @@ button.tag { border: 0; cursor: pointer; transition: background-color var(--dur-
 @media (hover: hover) { .cluster-routers:hover .cluster-routers-go { color: var(--fg-2); } .cluster-routers:hover .cluster-routers-label { color: var(--accent); } }
 
 /* 团队分组放不下时：轨道撑满可用宽度（基准 0，宽度不随内容变，才量得出放得下几项），其余收进最右的「更多 ▾」。
-   量宽用的隐藏副本叠在原位、不占位、不可见；.seg-ovf 裁掉它超出的部分，否则窄屏下它的宽度会撑出整页横向滚动 */
+   量宽用的隐藏副本叠在原位、不占位、不可见；.seg-ovf 裁掉它超出的部分（副本和轨道的类名在 ui/segmented.tsx），否则窄屏下它的宽度会撑出整页横向滚动 */
 /* overflow: hidden 给不认 clip 的旧 Safari（< 16）兜底，认的浏览器被下一行覆盖。里面的选中胶囊阴影在 .seg 自己的内边距里（.seg 本身 overflow-x: auto 就裁在它的
-   内边距框上）、焦点环向里收 2px（components.css 的 .seg-item:focus-visible），都不会被这一层多裁；overflow-clip-margin 只在认它的浏览器里多留 4px */
+   内边距框上）、焦点环向里收 2px（segmented-control.tsx 的 focus-visible:-outline-offset-2），都不会被这一层多裁；overflow-clip-margin 只在认它的浏览器里多留 4px */
 .seg-ovf { position: relative; flex: 1 1 0; min-width: 0; display: flex; overflow: hidden; overflow: clip; overflow-clip-margin: 4px; }
-.seg-ovf > .seg.seg-fill { flex: 1 1 0; max-width: none; }
-.seg-ovf > .seg-measure { position: absolute; left: 0; top: 0; visibility: hidden; pointer-events: none; max-width: none; width: max-content; overflow: visible; animation: none; mask-image: none; }
-.seg-more { flex: none !important; gap: var(--sp-2); }
-.seg-more > svg { color: var(--fg-3); }
-.seg-more[data-state="open"] { color: var(--fg); background: var(--hover); }

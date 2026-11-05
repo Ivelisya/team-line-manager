@@ -42,8 +42,6 @@
 .cs-value { display: inline-flex; align-items: center; gap: var(--sp-8); min-width: 0; }
 .cs-trigger .nc-flag .lucide { width: var(--icon-3xs); height: var(--icon-3xs); }
 /* 可搜索的下拉（国家、时区、静默对象、上架页的宿主机）同下拉选择用实底：常开在对话框里，玻璃会透出底下的表单字 */
-.popover.cs-pop { padding: 0; background: var(--raised); -webkit-backdrop-filter: none; backdrop-filter: none; }
-.popover.cs-pop:is(.is-wide, .hs-pop) { width: max(var(--pop-w-md), var(--radix-popover-trigger-width)); } /* 时区、静默对象、宿主机：和输入框一样宽 */
 .cs-pop .cmd-input-wrap { height: 40px; padding: 0 var(--sp-12); gap: var(--sp-8); }
 .cs-pop .cmd-input { font-size: var(--fs-body); }
 .cs-pop .cmd-list { max-height: 300px; }

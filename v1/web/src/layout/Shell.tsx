@@ -13,8 +13,9 @@ import { useTheme, type Palette, type ThemePref } from '@/lib/theme';
 import { useTitleAlerts } from '@/lib/title';
 import { closeEvacuate, closeMaint, closeMove, closeRenew, closeRetire, closeUpgrade, useEvacuateTarget, useMaintTarget, useMoveTarget, useRenewTarget, useRetireTarget, useUpgradeTarget } from '@/lib/nodeActions';
 import { resetTerminal, useTerminalTarget } from '@/lib/terminal';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/overlays';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { TipHost, Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { dialogOpen } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Toaster } from '@/components/ui/toast';
@@ -122,7 +123,7 @@ export function Shell() {
   React.useEffect(() => {
     if (!navOpen) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape' || document.querySelector('[data-slot="dialog-content"], [data-slot="command-dialog"], [data-slot="sheet-content"]')) return;
+      if (e.key !== 'Escape' || dialogOpen({ drawer: true })) return;
       setNavOpen(false); navBtn.current?.focus();
     };
     window.addEventListener('keydown', onKey);
@@ -189,17 +190,21 @@ export function Shell() {
             {stream === 'error' && <Pill tone="warn" role="status" tabIndex={0} tip="页面数据暂停更新，连上后自动补齐">{online ? '重连中…' : '已断开'}</Pill>}
             {/* 深浅色与配色在同一个菜单里（原来配色是单独一个盲切的按钮，窄屏还被藏起来）；色块就是该配色的强调色 */}
             <DropdownMenu>
-              <DropdownMenuTrigger asChild><button className="top-btn" aria-label="外观：深浅色与配色" data-tip="外观"><ThemeIcon size={16} /></button></DropdownMenuTrigger>
+              <DropdownMenuTrigger render={<button className="top-btn" aria-label="外观：深浅色与配色" data-tip="外观"><ThemeIcon size={16} /></button>} />
               <DropdownMenuContent align="end">
-                <DropdownMenuLabel>外观</DropdownMenuLabel>
-                <DropdownMenuRadioGroup value={theme.pref} onValueChange={(v) => theme.setPref(v as ThemePref)}>
-                  {THEMES.map(([v, l, I]) => <DropdownMenuRadioItem key={v} value={v}><I />{l}</DropdownMenuRadioItem>)}
-                </DropdownMenuRadioGroup>
+                <DropdownMenuGroup>
+                  <DropdownMenuLabel>外观</DropdownMenuLabel>
+                  <DropdownMenuRadioGroup value={theme.pref} onValueChange={(v) => theme.setPref(v as ThemePref)}>
+                    {THEMES.map(([v, l, I]) => <DropdownMenuRadioItem key={v} value={v}><I />{l}</DropdownMenuRadioItem>)}
+                  </DropdownMenuRadioGroup>
+                </DropdownMenuGroup>
                 <DropdownMenuSeparator />
-                <DropdownMenuLabel>配色</DropdownMenuLabel>
-                <DropdownMenuRadioGroup value={theme.palette} onValueChange={(v) => theme.setPalette(v as Palette)}>
-                  {PALETTES.map(([v, l]) => <DropdownMenuRadioItem key={v} value={v}><i className="swatch" data-palette={v} />{l}</DropdownMenuRadioItem>)}
-                </DropdownMenuRadioGroup>
+                <DropdownMenuGroup>
+                  <DropdownMenuLabel>配色</DropdownMenuLabel>
+                  <DropdownMenuRadioGroup value={theme.palette} onValueChange={(v) => theme.setPalette(v as Palette)}>
+                    {PALETTES.map(([v, l]) => <DropdownMenuRadioItem key={v} value={v}><i className="swatch" data-palette={v} />{l}</DropdownMenuRadioItem>)}
+                  </DropdownMenuRadioGroup>
+                </DropdownMenuGroup>
               </DropdownMenuContent>
             </DropdownMenu>
             <Tooltip>

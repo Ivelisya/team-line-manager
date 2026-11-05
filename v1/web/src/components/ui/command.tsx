@@ -27,7 +27,7 @@ function CommandDialog({ open, onOpenChange, title, children }: { open: boolean;
           ref={panel}
           data-slot="command-dialog"
           finalFocus={focus.finalFocus}
-          className="fixed top-[min(14vh,120px)] left-1/2 z-(--z-palette) flex w-[min(var(--palette-w),calc(100vw-24px))] origin-top flex-col overflow-hidden rounded-section border border-(--line-float) bg-raised shadow-(--shadow-modal) [translate:-50%_0]"
+          className="fixed top-[min(14vh,120px)] left-1/2 z-(--z-palette) flex w-[min(var(--palette-w),calc(100vw-24px))] origin-top flex-col overflow-hidden rounded-modal border border-(--line-float) bg-raised shadow-(--shadow-modal) [translate:-50%_0]"
         >
           <DialogTitle className="sr-only">{title}</DialogTitle>
           {children}

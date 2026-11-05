@@ -20,7 +20,11 @@ import { Button, IconButton } from '@/components/ui/button';
 import { CheckRow, FormField, LabelRow } from '@/components/ui/form';
 import { InfoTip } from '@/components/ui/info-tip';
 import { Input } from '@/components/ui/input';
-import { Popover, PopoverContent, PopoverTrigger, Segmented, Tabs, TabsList, TabsTrigger } from '@/components/ui/overlays';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { selectTrigger } from '@/components/ui/select';
+import { cn } from '@/lib/utils';
+import { Segmented } from '@/components/ui/segmented';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Trunc } from '@/components/ui/tooltip';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { collator } from '@/lib/sort';
@@ -142,7 +146,7 @@ export function IncidentsPage() {
       {/* 新建入口放在页头（走 ?silence=new，同命令面板），哪个页签都能建 */}
       <PageHead title="告警" tools={<Button variant="outline" onClick={() => setSp((p) => { const n = new URLSearchParams(p); n.set('silence', 'new'); return n; }, { replace: true })}><BellOff />新建静默</Button>} />
       <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>
-        <TabsList>{TABS.map((t) => <TabsTrigger key={t} value={t} noPanel>{TAB_LABEL[t]}{t === 'silences' && !!silenceN && <span className="seg-count">{silenceN}</span>}</TabsTrigger>)}</TabsList>
+        <TabsList>{TABS.map((t) => <TabsTrigger key={t} value={t} noPanel>{TAB_LABEL[t]}{t === 'silences' && !!silenceN && <span className="font-normal text-fg-2">{silenceN}</span>}</TabsTrigger>)}</TabsList>
       </Tabs>
       {tab === 'alerts' && q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       {tab === 'alerts' && unsent && <Note tone="warn" icon={<BellOff size={14} />}>告警不会推送：还没有启用的通知渠道 <Button variant="link" size="inline-sm" render={<Link to="/settings?section=notify" />}>去添加</Button></Note>}
@@ -343,12 +347,10 @@ function SubjectSelect({ value, onChange }: { value: string; onChange: (v: strin
   const pick = (v: string) => { setOpen(false); onChange(v, items.get(v)?.kind ?? null); };
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button type="button" className="select-trigger cs-trigger" aria-label="对象">
-          <span className={name ? undefined : 't-muted'}>{name ?? '选择对象'}</span><ChevronDown />
-        </button>
+      <PopoverTrigger data-slot="select-trigger" className={cn(selectTrigger, 'cs-trigger')} aria-label="对象">
+        <span className={name ? undefined : 't-muted'}>{name ?? '选择对象'}</span><ChevronDown />
       </PopoverTrigger>
-      <PopoverContent className="cs-pop is-wide" align="start">
+      <PopoverContent solid className="cs-pop p-0 w-[max(var(--pop-w-md),var(--anchor-width))]" align="start">
         {/* 列表只在打开时建（一两百台），关着不占渲染 */}
         {open && (
           <Command loop filter={subjectFilter}>

@@ -6,7 +6,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { drawerSiblings, useDrawer } from '@/lib/drawer';
 import { modKey, setOverlay, useOverlay } from '@/lib/palette';
 import type { ThemePref } from '@/lib/theme';
-import { Dialog, DialogContent, DialogTitle, DialogHeader } from '@/components/ui/dialog';
+import { Dialog, DialogContent, dialogOpen, DialogTitle, DialogHeader } from '@/components/ui/dialog';
 import { IconButton } from '@/components/ui/button';
 
 const CommandPalette = React.lazy(() => import('./CommandPalette'));
@@ -43,7 +43,7 @@ export function Hotkeys({ theme }: { theme: { pref: ThemePref; setPref: (p: Them
       const c = ref.current;
       if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'k') { e.preventDefault(); setOverlay(c.overlay === 'palette' ? null : 'palette'); return; }
       if (e.metaKey || e.ctrlKey || e.altKey || typing(e.target) || c.overlay) return;
-      if (document.querySelector('[data-slot="dialog-content"], [data-slot="command-dialog"]')) return; // 有对话框开着时不抢键
+      if (dialogOpen()) return; // 有对话框开着时不抢键
       if (e.key === '/' ) { e.preventDefault(); setOverlay('palette'); }
       else if (e.key === '?') { e.preventDefault(); setOverlay('help'); }
       else if ((e.key === '[' || e.key === ']') && c.id) {

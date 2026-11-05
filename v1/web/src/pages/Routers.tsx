@@ -6,7 +6,7 @@ import * as F from '@/lib/format';
 import { useTeams } from '@/lib/queries';
 import { fleetExits, setRouterOrder, useRouterDrawer, useRouters, type RouterView } from '@/lib/routers';
 import { Button } from '@/components/ui/button';
-import { Segmented } from '@/components/ui/overlays';
+import { Segmented } from '@/components/ui/segmented';
 import { Skeleton } from '@/components/ui/skeleton';
 import { DotCount, Empty, ErrorNote, Num, PageHead, Panel, Stat } from '@/components/app/primitives';
 import { RouterCard } from '@/components/app/RouterCard';

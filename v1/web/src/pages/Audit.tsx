@@ -9,7 +9,7 @@ import { useUrlSearch, useUrlState } from '@/lib/urlState';
 import type { AuditEntry } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { SearchInput } from '@/components/ui/form';
-import { Segmented } from '@/components/ui/overlays';
+import { Segmented } from '@/components/ui/segmented';
 import { SkeletonRows } from '@/components/app/SkeletonRows';
 import { Empty, ErrorNote, PageHead, Panel } from '@/components/app/primitives';
 import { AuditList } from '@/components/app/AuditList';

@@ -7,7 +7,7 @@ import { RANGE_MS, vMs, vPct, vRate, yMs, yPct, yRate } from '@/lib/chart';
 import { useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
 import { InfoTip } from '@/components/ui/info-tip';
-import { Select } from '@/components/ui/select';
+import { OptionSelect } from '@/components/ui/option-select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Beat, Empty, ErrorNote, Num, Section, SectionHeader } from '@/components/app/primitives';
 import { TimeChart } from '@/components/app/TimeChart';
@@ -88,7 +88,7 @@ function ExitDelays({ r, range, few }: { r: RouterView; range: string; few: stri
             <div className="rt-exit-beats">
               {beats.map((b) => <Beat key={b.name} n={bins} cells={b.cells} titles={b.titles} caption={<b>{b.name}</b>} win={b.rate != null ? (b.rate >= 1 ? '100%' : `${(Math.floor(b.rate * 1000 + 1e-9) / 10).toFixed(1)}%`) : undefined} winTone={b.rate == null ? undefined : b.rate >= 1 ? 'ok' : b.rate < 0.5 ? 'bad' : 'warn'} />)}
             </div>
-            <ChartCard c="var(--chart-1)" icon={<Radar />} title="延迟曲线" tools={<Select sm value={cur?.name ?? ''} onChange={setPick} options={opts} aria-label="出口" className="w-[160px]" />}>
+            <ChartCard c="var(--chart-1)" icon={<Radar />} title="延迟曲线" tools={<OptionSelect sm value={cur?.name ?? ''} onChange={setPick} options={opts} aria-label="出口" className="w-[160px]" />}>
               {cur && cur.points.length > 1 ? <TimeChart points={cur.points} range={q.data?.range ?? range} kind="line" lines={L_DELAY} yFmt={yMs} valueFmt={vMs} height={160} yWidth={YW_ROUTER} /> : <div className="chart-empty" style={{ height: 160 }}>{few}</div>}
             </ChartCard>
           </div>

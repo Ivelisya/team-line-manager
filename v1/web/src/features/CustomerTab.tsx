@@ -15,12 +15,12 @@ import { FormField, UnitInput } from '@/components/ui/form';
 import { InfoTip } from '@/components/ui/info-tip';
 import { Input } from '@/components/ui/input';
 import { DateField } from '@/components/ui/date-field';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/overlays';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { toast } from '@/components/ui/toast';
 import { CopyButton, Empty, ErrorNote, Panel, Pill } from '@/components/app/primitives';
 import { CursorPager } from '@/components/app/Pagination';
 import { ConfirmDialog, FormDialog } from '@/components/app/dialogs';
-import { flushAfterMenuClosed, runAfterMenuClosed } from '@/components/app/AnchoredDropdown';
+import { runAfterMenuClosed, useMenuHandoff } from '@/components/app/AnchoredDropdown';
 import { BillingNodeRow, MonthSummary, MonthSwitch, OutstandingHeading, PeriodLegend, cnDate, cnMonth, cnSpan, regionLabel } from './billing';
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -117,6 +117,7 @@ function MonthList({ d }: { d: BillingMonth }) {
   const held = useHeld(act ? `${act.kind}:${act.n.slot_id}` : null, act);
   const m = cnMonth(d.month, d.today);
   const due = d.nodes.filter((n) => !n.paid && !n.upcoming);
+  const handoff = useMenuHandoff();
   const rows = [...d.nodes].sort(compareBillingEffectiveDate);
   const teamId = d.team.id;
   const set = async (ns: BillingMonthNode[], on: boolean) => {
@@ -134,14 +135,14 @@ function MonthList({ d }: { d: BillingMonth }) {
 
   const menu = (n: BillingMonthNode) => (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild><IconButton size="icon-sm" label={`${n.name}的更多操作`} tip={false}><MoreHorizontal size={16} /></IconButton></DropdownMenuTrigger>
+      <DropdownMenuTrigger render={<IconButton size="icon-sm" label={`${n.name}的更多操作`} tip={false}><MoreHorizontal size={16} /></IconButton>} />
       <DropdownMenuContent align="end">
-        {n.paid && <><DropdownMenuItem disabled={mark.isPending} onSelect={() => void one(n, false)}>改回待支付</DropdownMenuItem><DropdownMenuSeparator /></>}
-        <DropdownMenuItem onSelect={() => setAct({ kind: 'start', n })}>改开始收费日…</DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => setAct({ kind: 'edit', n })}>改地区 / 备注…</DropdownMenuItem>
-        {n.manual && n.ended && <DropdownMenuItem disabled={patch.isPending} onSelect={() => reopen(n)}>恢复收费</DropdownMenuItem>}
-        {n.manual && !n.ended && <DropdownMenuItem onSelect={() => setAct({ kind: 'end', n })}>停止收费…</DropdownMenuItem>}
-        {n.manual && <><DropdownMenuSeparator /><DropdownMenuItem danger onSelect={() => setAct({ kind: 'del', n })}>删除…</DropdownMenuItem></>}
+        {n.paid && <><DropdownMenuItem disabled={mark.isPending} onClick={() => void one(n, false)}>改回待支付</DropdownMenuItem><DropdownMenuSeparator /></>}
+        <DropdownMenuItem onClick={() => setAct({ kind: 'start', n })}>改开始收费日…</DropdownMenuItem>
+        <DropdownMenuItem onClick={() => setAct({ kind: 'edit', n })}>改地区 / 备注…</DropdownMenuItem>
+        {n.manual && n.ended && <DropdownMenuItem disabled={patch.isPending} onClick={() => reopen(n)}>恢复收费</DropdownMenuItem>}
+        {n.manual && !n.ended && <DropdownMenuItem onClick={() => setAct({ kind: 'end', n })}>停止收费…</DropdownMenuItem>}
+        {n.manual && <><DropdownMenuSeparator /><DropdownMenuItem danger onClick={() => setAct({ kind: 'del', n })}>删除…</DropdownMenuItem></>}
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -150,11 +151,11 @@ function MonthList({ d }: { d: BillingMonth }) {
     <>
       <Panel className="bm-month-panel" flush
         title={<MonthSwitch month={d.month} months={d.months} onChange={month => upd({ month: month === d.today.slice(0, 7) ? '' : month })} />}
-        tools={<DropdownMenu>
-          <DropdownMenuTrigger asChild><IconButton size="icon-sm" label="月份操作"><MoreHorizontal size={16} /></IconButton></DropdownMenuTrigger>
-          <DropdownMenuContent align="end" onCloseAutoFocus={e => { if (flushAfterMenuClosed()) e.preventDefault(); }}>
-            <DropdownMenuItem onSelect={() => runAfterMenuClosed(() => setAdding(true))}>手动添加节点…</DropdownMenuItem>
-            {due.length > 1 && <DropdownMenuItem onSelect={() => runAfterMenuClosed(() => setAskAll(due))}>待支付节点全部标记已支付…</DropdownMenuItem>}
+        tools={<DropdownMenu {...handoff.rootProps}>
+          <DropdownMenuTrigger render={<IconButton size="icon-sm" label="月份操作"><MoreHorizontal size={16} /></IconButton>} />
+          <DropdownMenuContent {...handoff.popupProps} align="end">
+            <DropdownMenuItem onClick={() => runAfterMenuClosed(() => setAdding(true))}>手动添加节点…</DropdownMenuItem>
+            {due.length > 1 && <DropdownMenuItem onClick={() => runAfterMenuClosed(() => setAskAll(due))}>待支付节点全部标记已支付…</DropdownMenuItem>}
           </DropdownMenuContent>
         </DropdownMenu>}>
         {rows.length ? <>
@@ -343,10 +344,10 @@ function PageLink({ teamId, teamName, page, stale }: { teamId: string; teamName:
         <div className="bm-share-actions">
           <IconButton label="打开客户页" size="icon-xs" render={<a href={page.link} target="_blank" rel="noreferrer noopener" />}><ExternalLink size={14} /></IconButton>
           <DropdownMenu>
-            <DropdownMenuTrigger asChild><IconButton size="icon-sm" label="客户页链接的操作" tip={false}><MoreHorizontal size={16} /></IconButton></DropdownMenuTrigger>
+            <DropdownMenuTrigger render={<IconButton size="icon-sm" label="客户页链接的操作" tip={false}><MoreHorizontal size={16} /></IconButton>} />
             <DropdownMenuContent align="end">
-              <DropdownMenuItem onSelect={() => setAskRotate(true)}>换新链接…</DropdownMenuItem>
-              <DropdownMenuItem disabled={patch.isPending} onSelect={() => setEnabled(!page.enabled)}>{page.enabled ? '停用' : '启用'}</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setAskRotate(true)}>换新链接…</DropdownMenuItem>
+              <DropdownMenuItem disabled={patch.isPending} onClick={() => setEnabled(!page.enabled)}>{page.enabled ? '停用' : '启用'}</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>

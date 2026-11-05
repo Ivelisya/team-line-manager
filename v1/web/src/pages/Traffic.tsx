@@ -11,8 +11,8 @@ import { collator } from '@/lib/sort';
 import { parseSort, useUrlState } from '@/lib/urlState';
 import * as F from '@/lib/format';
 import { InfoTip } from '@/components/ui/info-tip';
-import { Select } from '@/components/ui/select';
-import { Segmented } from '@/components/ui/overlays';
+import { OptionSelect } from '@/components/ui/option-select';
+import { Segmented } from '@/components/ui/segmented';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Empty, ErrorNote, Flag, PageHead, Panel, Pill, Stat, TableWrap, type SortState } from '@/components/app/primitives';
 import { DailyBars, DailyLegend, md, weekday } from '@/components/app/DailyBars';
@@ -57,7 +57,7 @@ export function TrafficPage() {
     <div className="stack">
       <PageHead title="流量" note={<>按{tz}的自然日 <InfoTip text={'业务流量：各节点全部入口的下载加上传，换线前在旧线路机上的那段也算这个节点；直出单列一行\n每个字节只算一次，全部合计 = 各行之和\n今天算到目前为止，每 5 分钟更新'} /></>}
         tools={<>
-          <div className="w-[140px]"><Select value={team} onChange={onTeam} allowEmpty="全部团队" placeholder="团队" options={teamOpts} aria-label="团队" /></div>
+          <div className="w-[140px]"><OptionSelect value={team} onChange={onTeam} allowEmpty="全部团队" placeholder="团队" options={teamOpts} aria-label="团队" /></div>
           <Segmented label="区间" value={range} onChange={onRange} items={RANGES} />
         </>} />
 

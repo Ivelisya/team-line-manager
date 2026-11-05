@@ -9,7 +9,7 @@ import { openDrawer } from '@/lib/drawer';
 import { meta, uptimeTone } from '@/lib/derive';
 import type { UptimeItem, UptimeProvider } from '@/lib/types';
 import { InfoTip } from '@/components/ui/info-tip';
-import { Select } from '@/components/ui/select';
+import { OptionSelect } from '@/components/ui/option-select';
 import { SkeletonRows } from '@/components/app/SkeletonRows';
 import { ShowAll } from '@/components/app/Pagination';
 import { Empty, ErrorNote, Panel, TableWrap } from '@/components/app/primitives';
@@ -52,7 +52,7 @@ export function UptimeTab({ month, onMonth }: { month: string; onMonth: (m: stri
   const d = q.data;
   const [allNodes, setAllNodes] = React.useState(false);
   const picker = (
-    <div className="w-[210px]"><Select sm value={shown} onChange={onMonth} options={opts} aria-label="月份" /></div>
+    <div className="w-[210px]"><OptionSelect sm value={shown} onChange={onMonth} options={opts} aria-label="月份" /></div>
   );
   const range = d && (
     <span className="t-sub up-range"><CalendarDays size={13} />{d.from.slice(5)} 至 {d.to.slice(5)} · {d.days} 天 · {meta().org_timezone_label}{shown === cur && '（本月算到今天）'}</span>

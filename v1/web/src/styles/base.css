@@ -18,17 +18,8 @@ html[data-theme="dark"][data-overlay="2"] { --scrim-keep: 16%; }
 html[data-drawer][data-overlay="2"] { --scrim-keep: 46.5%; }
 html[data-theme="dark"][data-drawer][data-overlay="2"] { --scrim-keep: 23.1%; }
 html:is([data-overlay], [data-drawer]) { background-color: color-mix(in srgb, var(--canvas) var(--scrim-keep), black); transition: background-color var(--dur-2) var(--ease-out); }
-/* Radix 的弹层（菜单、下拉、日期，B2b 换成 Base UI 后这两条和 --sbw 的量取一起删）锁滚动时让出槽位：遮罩才盖满全宽（否则右侧留一条不变暗的边）；库会给 body 补同宽的右外边距，内容不动。
-   Base UI 的对话框开着（data-overlay）时页面已经锁住、槽位留着，不能再补（会让内容左移），所以排除 */
-html:not([data-overlay]):has(> body[data-scroll-locked]) { scrollbar-gutter: auto; }
 /* 节点抽屉（非模态）开着：背后的页面不滚、滚动条藏起来；槽位仍在（scrollbar-gutter: stable），内容不横移 */
 html[data-drawer] { overflow: hidden; }
-/* 页面不够长时 Chrome 的 clientWidth 不扣常驻槽位，库算出的补偿是 0、内容右移半个槽宽：按 main.tsx 量出的真实槽宽（--sbw）补 */
-/* 库注入的 <style> 是不分层的：同名普通声明会压过 components 层里的（以前靠选择器更具体），所以 --removed-body-scroll-bar-size 也要 !important（layer 里的 important 高于不分层的普通声明，也高于库自己的 important） */
-html:not([data-overlay]) body[data-scroll-locked] { margin-right: var(--sbw, 0px) !important; --removed-body-scroll-bar-size: var(--sbw, 0px) !important; }
-/* B2b 换完后删：Base UI 的对话框锁住页面后槽位已留着。Chrome 的 clientWidth 含这个槽位，Radix 量出的补偿是 0；clientWidth 扣掉槽位的引擎（如 Firefox）会量出槽宽，给 body 补 margin-right，
-   对话框里开 Radix 的下拉 / 选择时背后的页面、抽屉宽度、通知视口、顶栏右内边距就跟着跳。这里清零（Chrome 里这条不改变任何东西） */
-html[data-overlay] body[data-scroll-locked] { margin-right: 0 !important; --removed-body-scroll-bar-size: 0px !important; }
 /* 背景光晕：固定在视口的一层 body::before（z-index -1：在根背景 --canvas 之上、所有内容之下）。
    以前写成 body 的背景 + background-attachment: fixed：非根元素上的 fixed 背景会让浏览器放弃合成滚动，每滚一帧都重画整页背景 */
 body::before { content: ""; position: fixed; inset: 0; z-index: -1; background: var(--canvas-glow); background-color: var(--canvas); pointer-events: none; } /* 底色 --canvas：遮罩开着时 html 的背景色被压暗（上面，为了槽位），这一层把页面区域的底色原样盖回去，不被双重压暗 */
@@ -47,7 +38,7 @@ body {
 }
 :focus { outline: none; }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-/* 对话框 / 抽屉 / 弹层容器本身拿到焦点（键盘打开时 Radix 先聚焦容器）不画焦点环：环只给里面的控件 */
+/* 对话框 / 抽屉 / 弹层容器本身拿到焦点（键盘打开时 Base UI 先聚焦容器）不画焦点环：环只给里面的控件 */
 [role="dialog"]:focus-visible, [role="alertdialog"]:focus-visible { outline: none; }
 ::selection { background: color-mix(in srgb, var(--accent) 22%, transparent); }
 svg.lucide { stroke-width: var(--icon-stroke); flex: none; }
@@ -83,7 +74,7 @@ a { color: inherit; }
   position: fixed; inset: 0 0 auto 0; z-index: var(--z-topbar);
   height: var(--topbar-h); box-sizing: border-box;
   display: flex; align-items: center; gap: var(--sp-4);
-  padding: 0 calc(var(--sp-16) + var(--removed-body-scroll-bar-size, 0px)) 0 var(--sp-10); /* 锁滚动期间视口变宽，右侧按钮补回让出的槽位，位置不动 */
+  padding: 0 var(--sp-16) 0 var(--sp-10);
   background: var(--glass-bar); border-bottom: 1px solid var(--line);
   -webkit-backdrop-filter: var(--glass-bar-blur); backdrop-filter: var(--glass-bar-blur); /* 毛玻璃：内容从顶栏下滚过时隐约透出（半径 12：滚动时每帧都要重做，20 的采样开销大、观感差别很小） */
 }
@@ -106,7 +97,7 @@ a { color: inherit; }
    悬停预览开着时（含键盘聚焦打开的）底色同悬停，同作业徽标开着弹层时 */
 .top-alert { display: inline-flex; flex: none; border-radius: var(--r-pill); text-decoration: none; transition: scale var(--dur-2) var(--ease-out); }
 .top-alert > .pill { transition: background-color var(--dur-1) var(--ease-std); }
-.top-alert[data-state="open"] > .pill { --pill-bg: var(--bad-bg-strong); }
+.top-alert[data-popup-open] > .pill { --pill-bg: var(--bad-bg-strong); }
 @media (hover: hover) { .top-alert:hover > .pill { --pill-bg: var(--bad-bg-strong); } }
 .nav-toggle { display: none; background: transparent; color: var(--fg-2); } /* 汉堡按钮不带软色底，悬停才给浅底 */
 @media (hover: hover) { .nav-toggle:hover { background: var(--hover); color: var(--fg); } }
@@ -132,7 +123,7 @@ a { color: inherit; }
 .top-btn.jobs-ind > .lucide { animation: breathe var(--dur-loop) var(--ease-std) infinite; }
 .top-btn.jobs-ind > .count-badge { position: absolute; top: -5px; right: -5px; box-shadow: 0 0 0 2px var(--surface); } /* 右上角，一圈表面色把它和按钮分开 */
 /* 顶栏的列表弹层（进行中的作业、告警预览）：标题行 + 列表（每项可点，悬停浅底）+ 底部「查看全部」。告警预览是悬浮卡（.hover-card），这里盖掉它的宽度与内边距 */
-.popover:is(.jobs-pop, .alerts-pop) { width: var(--pop-w-lg); padding: 0; }
+/* （宽度、内边距在 JobsIndicator / AlertsIndicator 的 className 里：Tailwind 工具类在更高的层，这里的普通声明压不住） */
 .pop-head { display: flex; align-items: center; justify-content: space-between; padding: var(--sp-10) var(--sp-12); font: var(--fw-semibold) var(--fs-body) / var(--lh-body) var(--font-sans); border-bottom: 1px solid var(--line); }
 .pop-list { margin: 0; padding: var(--sp-4); list-style: none; display: grid; max-height: 320px; overflow: auto; }
 .pop-item {
@@ -243,9 +234,9 @@ a { color: inherit; }
 /* 页面里的滚动区（抽屉正文、对话框里的列表、表格横向滚动…）一律细滚动条、跟随主题线色；页面本身的滚动条保持系统样式 */
 body * { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
 /* 独立滚动的面板：滚到头不把滚动链到页面 */
-.drawer-body, .sidebar, .logbox, .cmd-list, .pop-list, .menu, .pol-tree, .table-wrap.is-capped, .pol-chips, .reason-list, .select-content [data-radix-select-viewport] { overscroll-behavior: contain; }
+.drawer-body, .sidebar, .logbox, .cmd-list, .pop-list, .pol-tree, .table-wrap.is-capped, .pol-chips, .reason-list { overscroll-behavior: contain; }
 /* 横向滚动区（表格、分段、页签、步骤条、规则编辑器）：触控板横扫到头不触发浏览器的前进 / 后退手势 */
-.table-wrap, .seg, .tabs-list, .pol-ta { overscroll-behavior-x: contain; }
+.table-wrap, [data-slot="segmented-control"], [data-slot="tabs-list"], .pol-ta { overscroll-behavior-x: contain; }
 
 /* 放不下而在滚动的区域，边缘渐隐提示“那边还有”：还有内容藏着的一侧淡出 20px，滚到头的一侧不淡（首页分组分段控件窄屏时团队藏在右边，过去看不出来）。
    纯 CSS：滚动驱动动画按滚动位置推 --fs / --fe（开头 / 末尾的渐隐宽度）；不能滚动时滚动时间线不生效，两个值停在初始 0，外观不变；
@@ -255,7 +246,7 @@ body * { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent;
 @property --fe { syntax: "<length>"; inherits: false; initial-value: 0px; }
 @keyframes edge-fade { 0% { --fs: 0px; --fe: 20px; } 6%, 94% { --fs: 20px; --fe: 20px; } 100% { --fs: 20px; --fe: 0px; } }
 @supports (animation-timeline: scroll()) {
-  .seg, .tabs-list, .table-wrap:not([data-fit]) {
+  [data-slot="segmented-control"], [data-slot="tabs-list"], .table-wrap:not([data-fit]) {
     mask-image: linear-gradient(to right, transparent, #000 var(--fs), #000 calc(100% - var(--fe)), transparent);
     animation: edge-fade linear both; animation-timeline: scroll(self inline);
   }

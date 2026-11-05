@@ -8,7 +8,7 @@ import { ErrorNote, Note, Section, SectionHeader } from '@/components/app/primit
 import { Button } from '@/components/ui/button';
 import { CheckRow, FormField } from '@/components/ui/form';
 import { InfoTip } from '@/components/ui/info-tip';
-import { Select } from '@/components/ui/select';
+import { OptionSelect } from '@/components/ui/option-select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
 import { useHeld, resetOnOpen } from '@/lib/useHeld';
@@ -141,9 +141,9 @@ const SwitchDialog = resetOnOpen(function SwitchDialog({ open, t }: { open: bool
       desc={<>不重启 OpenClash，已有连接不断，新连接走新出口<InfoTip text="OpenClash 重启后一般保留当前选择；组的选择被别人改掉时，待切回随之取消" /></>}>
       {q.isLoading ? <Skeleton className="h-[96px]" /> : q.isError && !q.data ? <ErrorNote error={q.error} onRetry={() => void q.refetch()} /> : !groups.length ? <Note tone="warn">这台路由没有可以手动切换的 select 组</Note> : (
         <div className="form-grid">
-          <FormField label="策略组" className="span-2"><Select value={g?.name ?? ''} onChange={(v) => { setGroup(v); setTo(''); }} options={groups.map((x) => ({ value: x.name, label: x.name }))} /></FormField>
-          <FormField label="切到" hint={g?.now ? `现在是 ${g.now}` : undefined}><Select value={to} onChange={setTo} options={opts} placeholder="选组里的出口" /></FormField>
-          <FormField label="自动切回"><Select value={back} onChange={setBack} options={BACK} /></FormField>
+          <FormField label="策略组" className="span-2"><OptionSelect value={g?.name ?? ''} onChange={(v) => { setGroup(v); setTo(''); }} options={groups.map((x) => ({ value: x.name, label: x.name }))} /></FormField>
+          <FormField label="切到" hint={g?.now ? `现在是 ${g.now}` : undefined}><OptionSelect value={to} onChange={setTo} options={opts} placeholder="选组里的出口" /></FormField>
+          <FormField label="自动切回"><OptionSelect value={back} onChange={setBack} options={BACK} /></FormField>
         </div>
       )}
     </FormDialog>

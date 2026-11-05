@@ -11,7 +11,7 @@ import { CheckRow, FormField, OptimisticSwitch } from '@/components/ui/form';
 import { InfoTip } from '@/components/ui/info-tip';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
-import { Select } from '@/components/ui/select';
+import { OptionSelect } from '@/components/ui/option-select';
 import { Trunc } from '@/components/ui/tooltip';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { SkeletonRows } from '@/components/app/SkeletonRows';
@@ -138,7 +138,7 @@ function MachinePicks({ label, info, ids, onChange, options }: { label: string; 
         {ids.map((id) => (
           <Chip key={id}>{name(id)}<IconButton label={`去掉 ${name(id)}`} size="icon-sm" onClick={() => onChange(ids.filter((x) => x !== id))}><X size={12} /></IconButton></Chip>
         ))}
-        <Select sm value="" onChange={add} options={rest} placeholder="加一台…" aria-label={label} />
+        <OptionSelect sm value="" onChange={add} options={rest} placeholder="加一台…" aria-label={label} />
       </div>
     </FormField>
   );
@@ -166,8 +166,8 @@ const SubDialog = resetOnOpen(function SubDialog({ target, open, onClose, onCrea
     <FormDialog size="md" open={open} onOpenChange={(o) => !o && onClose()} title={cur ? `编辑订阅 · ${cur.name}` : '新建客户端订阅'} desc={cur ? '改规则不换链接' : '创建后链接只显示一次'}
       submitLabel={cur ? '保存' : '创建'} busy={create.isPending || patch.isPending} valid={valid} dirty={dirty} onSubmit={submit}>
       <FormField label="名称"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：家里 OpenClash" maxLength={40} autoFocus autoComplete="off" /></FormField>
-      <FormField label="协议" info="AnyTLS 只出在 AnyTLS 在跑的线路机上的入口"><Select value={protocols} onChange={(v) => setProtocols(v as SubProtocols)} options={PROTOS} /></FormField>
-      <FormField label="团队"><Select value={rule.team_mode} onChange={(v) => set({ team_mode: v as SubRule['team_mode'] })} options={MODES} /></FormField>
+      <FormField label="协议" info="AnyTLS 只出在 AnyTLS 在跑的线路机上的入口"><OptionSelect value={protocols} onChange={(v) => setProtocols(v as SubProtocols)} options={PROTOS} /></FormField>
+      <FormField label="团队"><OptionSelect value={rule.team_mode} onChange={(v) => set({ team_mode: v as SubRule['team_mode'] })} options={MODES} /></FormField>
       {rule.team_mode !== 'all' && (
         <div className="scope-list">
           {teams.filter((t) => rule.team_mode === 'only' || !t.spare).map((t) => (

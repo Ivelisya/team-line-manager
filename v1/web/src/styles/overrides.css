@@ -23,7 +23,6 @@ html[data-overlay] :is(.app, [data-slot="sheet-content"]) [data-slot="progress-i
    外观上更小、不便放大的（表格里的小按钮——列宽是定死的、告警胶囊、复选框、(i)、页签、22px 小按钮）用 ::after 把可点范围往外扩，看起来不变 */
 @media (pointer: coarse) {
   :root { --h-xs: 22px; --h-sm: 28px; --h-md: 36px; --h-lg: 40px; --seg-item-sm: 28px; } /* 触屏的控件高度照旧（按钮 / 输入 / 下拉 / 分段轨道 40，顶栏 / 图标按钮 36，小号 28，极小 22）；--seg-item 是 --h-lg 的 calc，跟着变（34） */
-  .seg-sm { height: calc(var(--seg-item-sm) + 2 * var(--seg-pad)); }
   /* 按钮已是 position: relative（button.tsx）；复选框、开关的热区外扩自带 ::after（absolute，同样靠 relative），这里只把触屏的范围加大 */
   :is(.top-alert, .info-tip, .rt-mark) { position: relative; }
   .rt-mark::after { content: ""; position: absolute; inset: -10px -6px; }
@@ -31,7 +30,7 @@ html[data-overlay] :is(.app, [data-slot="sheet-content"]) [data-slot="progress-i
   :is([data-slot="button"][data-size="sm"], [data-slot="button"][data-size="icon-sm"])::after { content: ""; position: absolute; inset: -6px; }
   :is(.top-alert, .info-tip)::after { content: ""; position: absolute; inset: -10px -4px; }
   [data-slot="checkbox"]::after { content: ""; position: absolute; inset: -12px; }
-  .tab::after { content: ""; position: absolute; inset: 0 -10px; }
+  [data-slot="tabs-trigger"]::after { content: ""; position: absolute; inset: 0 -10px; }
   [data-slot="button"][data-size="icon-xs"]::after { inset: -9px; }
   /* 文字链接类：外观是一行字，同样用 ::after 外扩；.flow-trend 上下紧挨别的读数，只外扩一点 */
   :is(.num-link, .flow-trend) { position: relative; }
@@ -47,8 +46,8 @@ html[data-overlay] :is(.app, [data-slot="sheet-content"]) [data-slot="progress-i
   :root { --dur-press: 0ms; --dur-1: 0ms; --dur-2: 0ms; --dur-3: 0ms; --dur-data: 0ms; --cell-stagger: 0ms; --dur-spin: 2s; }
   /* 无限循环的细纹、呼吸、脉冲停掉；转圈（Spinner、进行中胶囊、状态标）不停，按上面的 --dur-spin 慢转。骨架的脉动由组件自己的 motion-reduce:animate-none 停 */
   [data-slot="progress"][data-live] [data-slot="progress-indicator"]::after, .top-btn.jobs-ind > .lucide { animation: none; }
-  /* 浮层关闭：不播退出动画，立即卸载（悬浮卡、日历、作业弹层都是 .popover）。Base UI 的对话框 / 抽屉 / 通知用过渡，时长令牌归零就即刻完成，不用在这里列 */
-  .menu[data-state="closed"], .popover[data-state="closed"], .select-content[data-state="closed"], .page-in { animation: none; }
+  /* Base UI 的弹层（对话框 / 抽屉 / 通知 / 菜单 / 下拉 / 悬浮卡…）用过渡，时长令牌归零就即刻完成、立即卸载，不用在这里列 */
+  .page-in { animation: none; }
   /* 空间反馈去掉：按下缩放（令牌取 1 = 不缩）、悬停上浮 2px 不做（边框、阴影的变化还在）。苹果的减弱动效是位移 / 缩放换成淡入淡出，不是把它们变成瞬间跳 */
   :root { --press-sm: 1; --press-md: 1; --press-lg: 1; }
   @media (hover: hover) { :is(.ncard, .rcard):hover, .stat.is-link:hover { translate: none; } }
@@ -57,7 +56,7 @@ html[data-overlay] :is(.app, [data-slot="sheet-content"]) [data-slot="progress-i
 /* ========== 数字等宽恢复 ==========
    `font:` 简写会把 font-variant-numeric 重置成 normal，body 上设的 tabular-nums 在这些控件里就丢了（数字跳动时会左右抖）。统一在这里补回。
    只管 base / components 里的控件；home.css、palette.css 等页面样式里写 `font:` 简写的规则要自己补，不能靠这里（见文件头） */
-.seg-item, .tab, .fchip, .select-trigger, .pill, .chip, .mark, .nav-item, .menu-item, .select-item,
+.fchip, .pill, .chip, .mark, .nav-item,
 .cmd-trigger, .sec-head, .brand, .pop-head { font-variant-numeric: tabular-nums; }
 /* 按钮、输入框、标签、键帽等 Tailwind 写的组件不用 `font:` 简写，body 上的 tabular-nums 照常继承（表单控件靠 preflight 的 font: inherit），不用在这里补 */
 

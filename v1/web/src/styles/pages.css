@@ -151,7 +151,6 @@
 /* 订阅表单：没有「跟随 / 单独」切换的项（到期日）标签行也占切换的高度，同一行左右两个输入框上沿对齐 */
 .sub-form > [data-slot="field"] > :is([data-slot="label"], [data-slot="field-label"]):first-child { display: flex; align-items: center; min-height: calc(var(--seg-item-sm) + 2 * var(--seg-pad)); }
 /* 三网 PING 的槽位表：格子里是标准尺寸的输入框（撑满列宽）；方式下拉限宽 */
-.ping-mode { width: 240px; max-width: 100%; }
 /* 左边文字、右边操作：窄屏只让左侧文字折行，按钮不换行、不掉到下一行；右边是下拉 + 按钮的（is-ctl）让右边收缩 */
 .manage-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--sp-12); }
 .manage-row > :first-child { min-width: 0; }

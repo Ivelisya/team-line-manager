@@ -9,7 +9,7 @@ import { cycleLabel, kindLabel, orgFmt } from '@/lib/derive';
 import type { RecycleDetail, RecycleItem } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { SearchInput } from '@/components/ui/form';
-import { Select } from '@/components/ui/select';
+import { OptionSelect } from '@/components/ui/option-select';
 import { Trunc } from '@/components/ui/tooltip';
 import { SkeletonRows } from '@/components/app/SkeletonRows';
 import { Chip, CopyButton, Empty, ErrorNote, LabelValue, LabelValueGrid, Num, PageHead, Panel, SortHead, TableWrap, type SortState } from '@/components/app/primitives';
@@ -150,7 +150,7 @@ export function RecycleBin({ sp, upd, tools }: { sp: URLSearchParams; upd: (patc
 
       <div className="row" role="search" ref={pg.anchor}>
         <SearchInput value={input} onChange={(e) => setInput(e.target.value)} placeholder="搜索名称、IP、团队、供应商…" aria-label="搜索" className="w-full sm:w-[260px]" />
-        <div className="w-[130px]"><Select value={source} onChange={setSource} allowEmpty="全部来源" placeholder="来源" options={SOURCE_OPTS} aria-label="来源" /></div>
+        <div className="w-[130px]"><OptionSelect value={source} onChange={setSource} allowEmpty="全部来源" placeholder="来源" options={SOURCE_OPTS} aria-label="来源" /></div>
         {filtered && <Button variant="ghost" onClick={clear}><X />清除筛选</Button>}
       </div>
 

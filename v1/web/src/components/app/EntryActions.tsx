@@ -1,6 +1,6 @@
 // 入口操作：停用/启用、开关穿透（确认对话框列出预览）、轮换凭据（输入 线路机名:端口 确认）、分享链接。节点抽屉的“管理”页与线路页共用。
 // 菜单、对话框与 mutation 按容器挂一份（EntryMenus：一张线路机卡、抽屉管理页的入口区），行里只放 EntryMenuButton——
-// 不要每行挂一个 Radix DropdownMenu 根（各给 document 加一个 keydown 捕获监听）和一个 mutation 观察者：入口几十条的卡随推送重渲染时会一起重画。
+// 不要每行挂一个 Base UI 下拉根（各给 document 加一个 keydown 捕获监听）和一个 mutation 观察者：入口几十条的卡随推送重渲染时会一起重画。
 import { Spinner } from '@/components/ui/spinner';
 import * as React from 'react';
 import { mergeProps } from '@base-ui/react/merge-props';
@@ -8,7 +8,7 @@ import { ArrowLeftRight, KeyRound, Link2, MoreHorizontal, Power, PowerOff } from
 import type { EntryView } from '@/lib/types';
 import { fetchShare, mainShare, useEntryAction, useEntryRouterExits, useReverse, useReversePreview } from '@/lib/queries';
 import { isReverse } from '@/lib/derive';
-import { DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/overlays';
+import { DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu';
 import { IconButton, Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, DialogHeader } from '@/components/ui/dialog';
 import { FormField } from '@/components/ui/form';
@@ -93,15 +93,15 @@ export function EntryMenus({ entries, children }: { entries: EntryView[]; childr
       {React.cloneElement(children as React.ReactElement<React.ComponentProps<'div'>>, mergeProps<'div'>({ onClick: dd.onClick }, (children as React.ReactElement<React.ComponentProps<'div'>>).props))}
       {/* 打开对话框的项带「…」；启用不用确认，直接执行：菜单留着、这一项转圈，成功后收起菜单并提示 */}
       {dd.menu('入口操作', cur && <>
-        <DropdownMenuItem onSelect={() => void share(cur)} disabled={!canAct}><Link2 />分享链接…</DropdownMenuItem>
+        <DropdownMenuItem onClick={() => void share(cur)} disabled={!canAct}><Link2 />分享链接…</DropdownMenuItem>
         {off
-          ? <DropdownMenuItem disabled={enabling} onSelect={(ev) => { ev.preventDefault(); act.mutate({ id: cur.id, action: 'enable' }, { onSuccess: () => { dd.close(); toast.ok(`入口 ${entryLabel(cur)} 已启用`); }, onError: toast.err }); }}>
+          ? <DropdownMenuItem disabled={enabling} closeOnClick={false} onClick={() => { act.mutate({ id: cur.id, action: 'enable' }, { onSuccess: () => { dd.close(); toast.ok(`入口 ${entryLabel(cur)} 已启用`); }, onError: toast.err }); }}>
             {enabling ? <Spinner /> : <Power />}{enabling ? '正在启用…' : '启用入口'}</DropdownMenuItem>
-          : <DropdownMenuItem onSelect={() => show('disable', cur)} disabled={!canAct}><PowerOff />停用入口…</DropdownMenuItem>}
+          : <DropdownMenuItem onClick={() => show('disable', cur)} disabled={!canAct}><PowerOff />停用入口…</DropdownMenuItem>}
         {/* 穿透：只有节点入口（直出没有节点），停用的先启用 */}
-        {!cur.direct && <DropdownMenuItem onSelect={() => show('reverse', cur)} disabled={cur.lifecycle !== 'active'}><ArrowLeftRight />{isReverse(cur) ? '关闭穿透…' : '开启穿透…'}</DropdownMenuItem>}
+        {!cur.direct && <DropdownMenuItem onClick={() => show('reverse', cur)} disabled={cur.lifecycle !== 'active'}><ArrowLeftRight />{isReverse(cur) ? '关闭穿透…' : '开启穿透…'}</DropdownMenuItem>}
         <DropdownMenuSeparator />
-        <DropdownMenuItem danger onSelect={() => show('rotate', cur)} disabled={!canAct}><KeyRound />轮换凭据…</DropdownMenuItem>
+        <DropdownMenuItem danger onClick={() => show('rotate', cur)} disabled={!canAct}><KeyRound />轮换凭据…</DropdownMenuItem>
       </>)}
 
       {dlg?.k === 'reverse' && <ReverseDialog e={dlg.e} open={dlg.open} onOpenChange={hide} />}

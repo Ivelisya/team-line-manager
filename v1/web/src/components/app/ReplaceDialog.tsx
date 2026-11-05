@@ -14,10 +14,12 @@ import { prefixScore } from '@/lib/match';
 import { CheckRow, FormField } from '@/components/ui/form';
 import { InfoTip } from '@/components/ui/info-tip';
 import { Input } from '@/components/ui/input';
-import { Select } from '@/components/ui/select';
+import { OptionSelect } from '@/components/ui/option-select';
 import { toast } from '@/components/ui/toast';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/overlays';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { selectTrigger } from '@/components/ui/select';
+import { cn } from '@/lib/utils';
 import { resetOnOpen } from '@/lib/useHeld';
 import { ErrorNote, Note, Pill } from './primitives';
 import { ConfirmDialog } from './dialogs';
@@ -44,13 +46,11 @@ function NodePicker({ m, value, onChange }: { m: MachineView; value: string; onC
   }
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button type="button" className="select-trigger cs-trigger" aria-label="新节点">
-          <span className={cur ? undefined : 't-muted'}>{cur ? <>{cur.name} <span className="t-sub">{cur.ip}</span></> : '选择接替的节点'}</span>
-          <ChevronDown />
-        </button>
+      <PopoverTrigger data-slot="select-trigger" className={cn(selectTrigger, 'cs-trigger')} aria-label="新节点">
+        <span className={cur ? undefined : 't-muted'}>{cur ? <>{cur.name} <span className="t-sub">{cur.ip}</span></> : '选择接替的节点'}</span>
+        <ChevronDown />
       </PopoverTrigger>
-      <PopoverContent className="cs-pop hs-pop" align="start">
+      <PopoverContent solid className="cs-pop p-0 w-[max(var(--pop-w-md),var(--anchor-width))]" align="start">
         {open && (
           <Command loop filter={nodeFilter}>
             <CommandInput placeholder="搜索名称、IP 或团队" />
@@ -187,7 +187,7 @@ export const ReplaceDialog = resetOnOpen(function ReplaceDialog({ m, open, onOpe
       <div className="form-grid">
         <FormField label="接替的节点" className="span-2"><NodePicker m={m} value={pick} onChange={setPick} /></FormField>
         <FormField label="旧节点去哪" info="留空则放进同团队的备用团队（名字以团队名开头；只有一个备用团队时就是它）">
-          <Select value={team} onChange={setTeam} options={teamOpts} allowEmpty="自动（备用团队）" />
+          <OptionSelect value={team} onChange={setTeam} options={teamOpts} allowEmpty="自动（备用团队）" />
         </FormField>
         <FormField label="编号"><Input inputMode="numeric" value={num} onChange={(e) => setNum(e.target.value.replace(/\D/g, ''))} placeholder={pv?.old_to.number != null && !number ? `自动：${pv.old_to.number}` : '自动'} /></FormField>
         <div className="span-2"><CheckRow checked={routers} onChange={setRouters}>同时改软路由 <InfoTip text="不改的话只交换编号，软路由上的出口仍指向旧节点。" /></CheckRow></div>

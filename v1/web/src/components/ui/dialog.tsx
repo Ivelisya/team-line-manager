@@ -5,7 +5,8 @@ import { X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { durMs } from "@/lib/motion"
 import { IconButton } from "@/components/ui/button"
-import { radixModalOpen } from "@/lib/baseLayers"
+import { hintOpen } from "@/components/ui/tooltip"
+import { floatOpenAtPress, useFloatPressGuard } from "@/components/ui/float"
 
 /* shadcn base-mira 的 Dialog（Base UI），外观走令牌；进出场动画在 components.css（[data-slot=dialog-*] 的 [data-open] / [data-closed]）。
    和 shadcn 原版的差别（都是为了守住改前的行为）：
@@ -105,15 +106,18 @@ export function bounce(panel: HTMLElement | null) {
   if (ms > 0) panel?.animate([{ scale: "1" }, { scale: "1.02" }, { scale: "1" }], { duration: ms, easing: getComputedStyle(document.documentElement).getPropertyValue("--ease-out").trim() })
 }
 
-/** 提示（悬停卡 / (i) / data-tip）开着时，这下 Esc 只用来收起提示，不关对话框 / 抽屉（同改前 Radix 层栈的先后）：
- *  Base UI 的层不看 defaultPrevented，所以在 onOpenChange 里按 reason 拦。tooltip.tsx 的 TooltipProvider 在 window 捕获阶段会把这下 Esc 标成 defaultPrevented
- *  （提示自己的收起与对话框的关闭在同一次按键里先后发生，到这里时提示可能已经收起了，所以两个条件都看）；Radix 的层（菜单、下拉）收起时也会 preventDefault，一并认 */
-export const escapeIsTaken = (e: Event) => e.defaultPrevented || !!document.querySelector('[data-slot="tooltip-content"][data-open]')
-
-// Radix 的模态层（下拉选择、菜单；B2b 换成 Base UI 后可删）开着时，它给 body 加 pointer-events: none，点对话框里任何地方都落到 html 上，Base UI 当成「点了外面」而关掉对话框。
-// 在 pointerdown 的捕获阶段（Radix 还没来得及卸载）记下当时有没有 Radix 层，outside-press 时若有就取消：这一下只用来收起 Radix 的层
-let radixAtPress = false
-if (typeof window !== "undefined") window.addEventListener("pointerdown", () => { radixAtPress = radixModalOpen() }, true)
+/** 提示（悬停卡 / (i) / data-tip）开着时，这下 Esc 只用来收起提示，不关对话框 / 抽屉 / 菜单：Base UI 的层不看 defaultPrevented，所以在 onOpenChange 里按 reason 拦（allowPropagation 让 Esc 继续传给提示，由它自己收起）；
+ *  提示自己若先收起，会停止这下 Esc 的传播，层根本收不到，也就不会关。
+ *  只认「有提示开着」，不看 event.defaultPrevented：Radix 的层没了以后它没有正当来源，反而会被 Base UI 自己的禁用菜单项（Esc 上 preventDefault）、输入框等误触发，让 Esc 关不掉层。
+ *  终端（xterm）里的 Esc 本来就在它自己的元素上 stopPropagation（Terminal.tsx），到不了这里。菜单 / 下拉 / 弹层 / 悬浮卡同样处理（float.ts 的 guardEscape） */
+/** 此刻有没有对话框 / 命令面板开着（全站只留这一份判断，原来在 Hotkeys、RouterDrawer、Shell、sheet 各抄了一份）。
+ *  exiting：退场动画中的算不算（默认算：刚点了关闭、动画还没播完，这一刻按键仍不该落到下面的页面上；抽屉的 Esc 守卫传 false——退场中的对话框已经关了，这下 Esc 该关抽屉）；
+ *  drawer：抽屉（sheet）也算一层（Shell 的 Esc 回到上一级时，抽屉开着就不处理）。
+ *  Base UI 嵌套在同一棵 React 树里的层（抽屉里的菜单 / 下拉 / 弹层）自己只关最上层，不用查 DOM */
+export const dialogOpen = ({ exiting = true, drawer = false }: { exiting?: boolean; drawer?: boolean } = {}) => {
+  const sel = ['dialog-content', 'command-dialog', ...(drawer ? ['sheet-content'] : [])].map((n) => `[data-slot="${n}"]${exiting ? '' : ':not([data-ending-style])'}`).join(', ')
+  return !!document.querySelector(sel)
+}
 
 function Dialog({
   open,
@@ -126,16 +130,17 @@ function Dialog({
   blockDismiss?: boolean | ((reason: DismissReason) => boolean)
 }) {
   const panel = React.useRef<HTMLDivElement>(null)
+  useFloatPressGuard(!!open) // 对话框里开着下拉 / 菜单 / 弹层时点遮罩只收起它们（float.ts）
   const handle = (next: boolean, details: DialogPrimitive.Root.ChangeEventDetails) => {
     if (!next && (details.reason === "escape-key" || details.reason === "outside-press")) {
       const reason: DismissReason = details.reason
       if (reason === "outside-press") {
-        if (radixAtPress || radixModalOpen()) { details.cancel(); return }
+        if (floatOpenAtPress()) { details.cancel(); return }
         // Ctrl+左键点遮罩不关（mac 上是右键；改前 Radix 同样当右键处理），不回弹
         const e = details.event as MouseEvent
         if (e.button === 0 && e.ctrlKey) { details.cancel(); return }
       }
-      if (reason === "escape-key" && escapeIsTaken(details.event)) { details.cancel(); details.allowPropagation(); return } // allowPropagation：Esc 继续传给提示，由它自己收起
+      if (reason === "escape-key" && hintOpen()) { details.cancel(); details.allowPropagation(); return } // allowPropagation：Esc 继续传给提示，由它自己收起
       if (typeof blockDismiss === "function" ? blockDismiss(reason) : blockDismiss) { details.cancel(); bounce(panel.current); return }
     }
     onOpenChange?.(next, details)
@@ -199,7 +204,7 @@ function DialogContent({
         className={cn(
           // 顶部锚定（同命令面板）：内容异步变多时只往下长；矮屏时整块滚动，底部按钮条吸底（DialogFooter），不会被截掉。
           // 水平居中用独立的 translate 属性：进出场动画只写自己的 transform，点遮罩被拦下时的回弹（独立 scale）也不用管居中
-          "fixed top-[min(10vh,96px)] left-1/2 z-(--z-dialog) flex max-h-[calc(100dvh-min(10vh,96px)-16px)] origin-top flex-col gap-5 overflow-auto rounded-section border border-(--line-float) bg-raised px-6 pt-6 pb-(--dlg-pb) shadow-(--shadow-modal) [--dlg-pb:var(--sp-24)] [translate:-50%_0] *:flex-none",
+          "fixed top-[min(10vh,96px)] left-1/2 z-(--z-dialog) flex max-h-[calc(100dvh-min(10vh,96px)-16px)] origin-top flex-col gap-5 overflow-auto rounded-modal border border-(--line-float) bg-raised px-6 pt-6 pb-(--dlg-pb) shadow-(--shadow-modal) [--dlg-pb:var(--sp-24)] [translate:-50%_0] *:flex-none",
           SIZE[size],
           // 手机（≤600px）：从底部升起的面板（同 iOS 的 sheet）——通栏、上圆角、底部让出安全区。max-[601px] = 宽度 ≤ 600
           "max-[601px]:top-auto max-[601px]:bottom-0 max-[601px]:left-0 max-[601px]:max-h-[calc(100dvh-var(--topbar-h))] max-[601px]:w-screen max-[601px]:origin-bottom max-[601px]:rounded-b-none max-[601px]:border-x-0 max-[601px]:border-b-0 max-[601px]:[--dlg-pb:calc(var(--sp-24)+env(safe-area-inset-bottom,0px))] max-[601px]:[translate:none]",

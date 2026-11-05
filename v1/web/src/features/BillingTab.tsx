@@ -9,11 +9,11 @@ import { Button } from '@/components/ui/button';
 import { CheckRow, FormField, LabelRow, UnitInput } from '@/components/ui/form';
 import { InfoTip } from '@/components/ui/info-tip';
 import { Input } from '@/components/ui/input';
-import { Segmented } from '@/components/ui/overlays';
+import { Segmented } from '@/components/ui/segmented';
 import { DateField } from '@/components/ui/date-field';
 import { useUsdPreview } from '@/lib/fx';
 import { inheritedValue, inheritSource, inheritText, inheritValueText, isOverridden, limitGb, monthFlow, monthFlowTip, quota, quotaCycleText, quotaForecast, quotaGb, quotaNotes, quotaRuleText, quotaUsedLabel, recycleOn, remainingValue, cycleLabel, feeView, priceHint, currencyOptions, cycleOptions, meta, trafficRuleOptions, trafficRuleTag } from '@/lib/derive';
-import { Select } from '@/components/ui/select';
+import { OptionSelect } from '@/components/ui/option-select';
 import { toast } from '@/components/ui/toast';
 import { resetOnOpen } from '@/lib/useHeld';
 import { Due, DueDate, ErrorNote, FromTag, LabelValue, LabelValueGrid, Note, Num, Section, SectionHeader, SpareDue } from '@/components/app/primitives';
@@ -198,14 +198,14 @@ function SubForm({ m }: { m: MachineView }) {
     <div className="form-grid sub-form" onBlur={(e) => { if (!(e.target as HTMLElement).closest('[data-due]')) touch('due')(); }}>
       <FormField label="到期日" hint={touched.due && dueDate === '' ? '必填' : undefined} error={dueBad ? '格式应为 YYYY-MM-DD' : undefined}><div data-due><DateField value={dueDate} onChange={setDueDate} /></div></FormField>
       {o('price_cents', '费用', <UnitInput width="full" unit={priceUnit} inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="68" aria-invalid={(touched.price_cents && priceBad) || undefined} />, priceBad ? (price.trim() === '' ? '必填，免费填 0' : '应为 0 或正数') : undefined)}
-      {o('currency', '币种', <Select value={currency} onChange={setCurrency} options={F.withCurrent(currencyOptions(), currency)} />)}
-      {o('cycle', '计费周期', <Select value={cycle} onChange={setCycle} options={cycleOptions()} />)}
+      {o('currency', '币种', <OptionSelect value={currency} onChange={setCurrency} options={F.withCurrent(currencyOptions(), currency)} />)}
+      {o('cycle', '计费周期', <OptionSelect value={cycle} onChange={setCycle} options={cycleOptions()} />)}
       {o('billing_tz', '账单时区', <TzInput value={tz} onChange={setTz} aria-label="账单时区" />, tzBad ? '填 IANA 时区名，如 Asia/Shanghai' : undefined, '到期日按这个时区的日期算')}
       {o('remind_days', '提前提醒（天）', <Input inputMode="numeric" value={remind} onChange={(e) => setRemind(e.target.value.replace(/\D/g, ''))} />, remindBad ? '填 0–60' : undefined)}
       {o('traffic_gb', '流量上限（GB）', <Input inputMode="numeric" value={traffic} onChange={(e) => setTraffic(e.target.value.replace(/\D/g, ''))} placeholder="0 = 不限" />, trafficBad ? '填 GB 数，0 = 不限' : undefined)}
       {o('traffic_reset_day', '流量重置日', <Input inputMode="numeric" maxLength={2} value={resetDay} onChange={(e) => setResetDay(e.target.value.replace(/\D/g, ''))} placeholder="1–31" />, resetBad ? '填 1–31' : undefined, '每月几号重置，按账单时区；月份没有这一天按月末')}
       {/* 只有按网卡计量的机器（quota.rule 非空）才用得上；家宽代理、同机 IP 节点按业务流量，不显示 */}
-      {m.quota.rule && o('traffic_rule', '流量计费', <Select value={rule} onChange={setRule} options={trafficRuleOptions()} />, undefined, '双向是下行加上行；单向只记其中一个。以供应商面板的计费口径为准')}
+      {m.quota.rule && o('traffic_rule', '流量计费', <OptionSelect value={rule} onChange={setRule} options={trafficRuleOptions()} />, undefined, '双向是下行加上行；单向只记其中一个。以供应商面板的计费口径为准')}
       <div className="row span-2" style={{ gap: 4 }}><CheckRow switch checked={auto} onChange={setAuto}>到期自动续费</CheckRow><InfoTip text="只用于提醒口径，不会真的扣款" /></div>
       <div className="span-2 row" style={{ justifyContent: 'flex-end' }}><Button disabled={!valid || sig === saved.current || save.isPending} loading={save.isPending} onClick={submit}>保存订阅</Button></div>
     </div>

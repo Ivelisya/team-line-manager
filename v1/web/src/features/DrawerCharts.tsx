@@ -10,7 +10,7 @@ import { useAvailability, useSeries, useTrafficDaily } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
 import { AVAIL_LEGEND, availCells, availTitles, fromLabel, hasHost, meta, monthFlowTip, monthTraffic, resourceMeters, successPct, tcpDir, trafficRuleTag } from '@/lib/derive';
-import { Segmented } from '@/components/ui/overlays';
+import { Segmented } from '@/components/ui/segmented';
 import { Skeleton } from '@/components/ui/skeleton';
 import { InfoTip } from '@/components/ui/info-tip';
 import { Beat, Empty, ErrorNote, LabelValue, LabelValueGrid, Note, Num, Section, SectionHeader } from '@/components/app/primitives';
