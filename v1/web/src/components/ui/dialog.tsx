@@ -22,8 +22,9 @@ import { radixModalOpen } from "@/lib/baseLayers"
 let shown = 0
 function useOverlayFlag() {
   React.useLayoutEffect(() => {
-    if (shown++ === 0) document.documentElement.dataset.overlay = ""
-    return () => { if (--shown === 0) delete document.documentElement.dataset.overlay }
+    // 值是挂着的遮罩层数（"1"、"2"…）：[data-overlay] 选择器照常匹配，base.css 按层数算槽位压暗的深浅
+    document.documentElement.dataset.overlay = String(++shown)
+    return () => { if (--shown === 0) delete document.documentElement.dataset.overlay; else document.documentElement.dataset.overlay = String(shown) }
   }, [])
 }
 
@@ -84,6 +85,9 @@ function TouchBlur({ panel, enabled }: { panel: React.RefObject<HTMLElement | nu
  *  （单选组里不在 Tab 顺序的按钮不算，焦点落在已选的那颗）。Base UI 的复选框 / 开关旁边各有一个隐藏的原生 input（tabindex=-1、aria-hidden）：
  *  不算，焦点要落在看得见的那个控件（role=checkbox / switch 的 span）上。找不到时返回 true，走 Base UI 的默认（第一个可聚焦的，没有就是面板自己） */
 const FIRST_FOCUSABLE = 'input:not([disabled]):not([type="hidden"]):not([tabindex="-1"]):not([aria-hidden="true"]), textarea:not([disabled]):not([tabindex="-1"]), select:not([disabled]):not([tabindex="-1"]), button:not([disabled]):not([tabindex="-1"]), [href], [tabindex]:not([tabindex="-1"]):not(.info-tip)'
+
+/** 渲染出来的才算（display: none 的没有盒子）：宽屏下手机才显示的关闭键、全部禁用的按钮条等不会被选为初始焦点。getClientRects 各浏览器都支持（checkVisibility 要 Safari 17.4） */
+const visible = (el: HTMLElement) => el.getClientRects().length > 0
 
 /* ---------- Dialog（根）：拦下关闭 + 回弹 ---------- */
 type DismissReason = "outside-press" | "escape-key"
@@ -190,7 +194,7 @@ function DialogContent({
         ref={merged}
         data-slot="dialog-content"
         // 触屏打开时焦点放在面板上（聚焦输入框会弹出软键盘，盖住底部面板的按钮）：受控打开没有触发事件，Base UI 给的 openType 常是空，所以再认「主要指针是粗的（pointer: coarse）」；其余跳过 (i)
-        initialFocus={initialFocus ?? ((openType) => (openType === "touch" || matchMedia("(pointer: coarse)").matches ? panel.current : panel.current?.querySelector<HTMLElement>(FIRST_FOCUSABLE) ?? true))}
+        initialFocus={initialFocus ?? ((openType) => (openType === "touch" || matchMedia("(pointer: coarse)").matches ? panel.current : [...(panel.current?.querySelectorAll<HTMLElement>(FIRST_FOCUSABLE) ?? [])].find(visible) ?? true))}
         finalFocus={finalFocus ?? focus.finalFocus}
         className={cn(
           // 顶部锚定（同命令面板）：内容异步变多时只往下长；矮屏时整块滚动，底部按钮条吸底（DialogFooter），不会被截掉。

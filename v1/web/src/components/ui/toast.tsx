@@ -125,7 +125,7 @@ function ToastItem({ t, top }: { t: Item; top: boolean }) {
         <Toast.Close render={<Button variant="ghost" size="icon-xs" className="-mt-0.5 -mr-1 flex-none text-fg-3" aria-label="关闭通知" />}><XIcon size={14} /></Toast.Close>
         {/* 剩余时间细条：key 跟着 updateKey，相同消息又来一条时重新走；整组悬停 / 聚焦暂停时（Root 带 data-expanded）一起暂停 */}
         <span key={t.updateKey} aria-hidden style={{ animationDuration: `${t.data?.life ?? t.timeout}ms` }}
-          className={cn("absolute inset-x-3.5 bottom-1.5 h-0.5 origin-left rounded-full opacity-40 animate-[toast-timer_linear_forwards] in-data-expanded:[animation-play-state:paused] motion-reduce:animate-none", BAR[tone])} />
+          className={cn("absolute inset-x-3.5 bottom-1.5 h-0.5 origin-left rounded-full opacity-40 animate-[toast-timer_linear_forwards] in-data-expanded:[animation-play-state:paused] in-data-window-blurred:[animation-play-state:paused] motion-reduce:animate-none", BAR[tone])} />
       </Toast.Content>
     </Toast.Root>
   )
@@ -134,11 +134,21 @@ function ToastItem({ t, top }: { t: Item; top: boolean }) {
 function ToastList() {
   const { toasts, close } = Toast.useToastManager<ToastData>()
   const phone = usePhone()
+  // Base UI 在窗口失焦（window blur）时暂停全部计时、获焦（window focus）时恢复，悬停 / 键盘聚焦时也暂停（Root 的 data-expanded）。
+  // 剩余时间细条要同步：悬停 / 聚焦靠 data-expanded，窗口失焦在视口上写 data-window-blurred，CSS 一并暂停
+  const [blurred, setBlurred] = React.useState(false) // 同 Base UI：初始当作窗口有焦点
+  React.useEffect(() => {
+    const off = (e: Event) => { if (e.target === window) setBlurred(true) }
+    const on = (e: Event) => { if (e.target === window) setBlurred(false) }
+    window.addEventListener("blur", off, true)
+    window.addEventListener("focus", on, true)
+    return () => { window.removeEventListener("blur", off, true); window.removeEventListener("focus", on, true) }
+  }, [])
   // 超过上限（Base UI 只给最旧的打上 limited、不移除）：最旧的一条走正常的退场，不瞬间消失
   React.useEffect(() => { for (const t of toasts) if (t.limited && t.transitionStatus !== "ending") close(t.id) }, [toasts, close])
   return (
     <Toast.Portal data-slot="toast-portal">
-      <Toast.Viewport data-slot="toast-viewport" data-position={phone ? "top" : "bottom"} aria-label="通知">
+      <Toast.Viewport data-slot="toast-viewport" data-position={phone ? "top" : "bottom"} data-window-blurred={blurred ? "" : undefined} aria-label="通知">
         {toasts.map((t) => <ToastItem key={t.id} t={t} top={phone} />)}
       </Toast.Viewport>
     </Toast.Portal>

@@ -68,7 +68,7 @@ export function NodeDrawer() {
   const sib = drawerSiblings(qc, shownId);
   return (
     <Sheet open={!!id} onOpenChange={(o) => !o && close()}>
-      <SheetContent aria-describedby={undefined}>
+      <SheetContent>
         {/* 抽屉里图表/懒加载块出错只让抽屉显示错误，换机器或页签后自动恢复 */}
         <ErrorBoundary compact resetKey={`${heldId.current}:${tab}`}>
         {!m ? (

@@ -55,7 +55,7 @@ export function RouterDrawer() {
   useTitleName(id ? r?.name : undefined);
   return (
     <Sheet open={!!id} onOpenChange={(o) => !o && close()}>
-      <SheetContent aria-describedby={undefined}>
+      <SheetContent>
         <ErrorBoundary compact resetKey={`${r?.id}:${tab}`}>
           {!r ? (
             <>
