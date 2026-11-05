@@ -16,15 +16,18 @@
   --track: rgba(17, 24, 39, 0.05);      /* ≈ 分段轨道：H #f9fafb / O #f0f2f7；半透明后在画布和白卡上都看得见 */
   --thumb: #ffffff;                     /* H 分段选中项 */
   --selected: color-mix(in srgb, var(--accent) 6%, var(--surface)); /* O 表格选中行 accent 6% */
-  --scrim: rgba(0, 0, 0, 0.4);          /* O 遮罩 rgba(0,0,0,.4)；精修后盖住整个视口（修 dna-ops M1） */
-  /* 弹层材质（菜单、右键、下拉、悬浮卡、作业弹层、日历、图表提示、toast）：浮层底 84% + 背后内容模糊提饱和，
+  /* 遮罩：透明度单独成令牌（亮 .4 / 暗 .6），--scrim 由它拼出；base.css 的 --scrim-keep（滚动条槽位的压暗）要和它保持互补，改这里的数值时一并改 */
+  --scrim-a: 0.4;                       /* O 遮罩 rgba(0,0,0,.4)；精修后盖住整个视口（修 dna-ops M1） */
+  --scrim: rgb(0 0 0 / var(--scrim-a));
+  /* 弹层材质（菜单、右键、下拉、悬浮卡、作业弹层、日历、图表提示、toast）：浮层底 76% + 背后内容模糊（24px）提饱和，更通透；
      不支持 backdrop-filter 时回退实底 --raised（overrides.css 里改令牌）。对话框、抽屉、提示框保持实底 */
-  --glass: color-mix(in srgb, var(--raised) 84%, transparent);
-  --glass-blur: saturate(180%) blur(20px);
-  /* 吸附条材质（顶栏、上架页底部操作条、抽屉页签里的吸顶条）：表面 78% + 模糊提饱和，不支持 backdrop-filter 时回退实底 --surface（同上） */
-  --glass-bar: color-mix(in srgb, var(--surface) 78%, transparent);
-  --glass-bar-blur: saturate(180%) blur(12px);
-  --scrim-stacked: rgb(0 0 0 / 0.12);   /* 抽屉上再叠对话框 / 命令面板时的第二层遮罩：抽屉的遮罩已压暗，这层只轻压（components.css） */
+  --glass: color-mix(in srgb, var(--raised) 76%, transparent);
+  --glass-blur: saturate(180%) blur(24px);
+  /* 吸附条材质（顶栏、上架页底部操作条、抽屉页签里的吸顶条）：表面 72% + 模糊（16px）提饱和，不支持 backdrop-filter 时回退实底 --surface（同上） */
+  --glass-bar: color-mix(in srgb, var(--surface) 72%, transparent);
+  --glass-bar-blur: saturate(180%) blur(16px);
+  --scrim-stacked-a: 0.12;              /* 抽屉上再叠对话框 / 命令面板时的第二层遮罩：抽屉的遮罩已压暗，这层只轻压（components.css） */
+  --scrim-stacked: rgb(0 0 0 / var(--scrim-stacked-a));
 
   /* ---------- 2. 线（2 级 + 浮层边线） ---------- */
   --line: rgba(17, 24, 39, 0.08);       /* H --line（O #e3e6ef、N rgba(57,65,90,.12) 统一到它） */
@@ -75,7 +78,9 @@
   /* ---------- 7. 字体 ---------- */
   --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC", "Hiragino Sans GB",
     "Microsoft YaHei", system-ui, sans-serif;                  /* H refined.css:3 body / O style.css:127 */
-  --font-num: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif; /* H --font-numeric：系统字体 + --num-variant 等宽数字。原先首选的 Inter 没打包、用户机器上也没装，等于没写 */
+  /* 读数字体：打包的 Inter 子集（见文件末尾 @font-face），加载前先用度量对齐过的 Segoe UI 顶着（Windows），其余平台直接走系统栈。
+     中文不在子集里，照旧落到系统中文字体。大字号自动走 Display 光学尺寸（font-optical-sizing 默认 auto，opsz 轴 = 字号 px） */
+  --font-num: "Inter Num", "Inter Num Fallback", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
   --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", monospace; /* 只给 UUID 前缀、令牌、指纹、日志正文；等宽字体没有汉字，中文回退到和 --font-sans 一样的中文字体，不掉到宋体 */
   --num-variant: tabular-nums slashed-zero;                     /* H 全部数字 */
 
@@ -85,37 +90,45 @@
   --fs-body: 13px;   --lh-body: 20px;   /* H/O/N 13：正文、字段值、表格、按钮、输入（H 19.5 取 20） */
   --fs-emph: 15px;   --lh-emph: 22px;   /* H 15：卡内大读数（持续运行/到期）、小卡片与紧凑卡标题、面板标题（O 15） */
   --fs-title: 16px;  --lh-title: 22px;  /* H 16：大卡片标题；抽屉标题（O 17）、对话框标题（O 19、N 18）统一到它 */
-  --fs-section: 18px; --lh-section: 26px; /* 首页大分区标题（监控总览、服务器集群） */
-  --fs-page: 24px;   --lh-page: 32px;   /* H/O 24：页面标题（N 22/17 统一到它） */
-  --fs-display: 34px;                   /* 不带框的总览大数（软路由页头），行高 1 */
-  --fs-kpi: 24px;    --lh-kpi: 30px;    /* KPI 主值：首页 KPI 卡、集群在线率、访问规则预览的汇总（原 27 / 26 / 24 三种统一） */
-  --fs-metric: 20px;                    /* 卡内主读数：节点卡实时速率、窄屏 KPI、页头大数的分母 */
+  --fs-section: 19px; --lh-section: 26px; /* 首页大分区标题（监控总览、服务器集群）；设计语言 v1：18 → 19 */
+  --fs-page: 26px;   --lh-page: 32px;   /* 页面标题（H/O 24，设计语言 v1 提到 26；N 22/17 统一到它），字距见 --tracking-page */
+  --fs-display: 38px;                   /* 不带框的总览大数（软路由页头），行高 1；设计语言 v1：34 → 38 */
+  --fs-kpi: 28px;    --lh-kpi: 34px;    /* KPI 主值：首页 KPI 卡、集群在线率、访问规则预览的汇总（原 27 / 26 / 24 三种统一；设计语言 v1：24 → 28） */
+  --fs-metric: 21px;                    /* 卡内主读数：节点卡实时速率、窄屏 KPI、页头大数的分母；设计语言 v1：20 → 21 */
   --fs-metric-sm: 17px;                 /* 小卡片 / 紧凑卡的实时速率 */
 
   --fw-regular: 400;                    /* 字重 4 档（H 11 档：400…720）：正文 / 控件 / 标题与读数 / 首页大标题与 KPI 数字 */
   --fw-medium: 500;
   --fw-semibold: 600;
   --fw-bold: 700;                       /* 只给首页：分区标题、问候语、KPI 与集群读数、小图标题 */
+  --fw-num: 560;                        /* 读数（KPI、速率、大数、金额）的字重：Inter 可变字体的 wght 轴取 560，不用 600 / 700 的粗黑。打包的字体 wght 轴上限 600，
+                                           仍写 600 / 700 的读数最粗也只到 600（不会被合成粗体） */
 
   --tracking-title: -0.01em;            /* H 页面标题、卡片标题（O −0.6px、N 品牌 +.015em 统一到它） */
+  --tracking-page: -0.02em;             /* 页面标题 26px：字大了收紧一点（base.css 的 .page-title 改用它） */
 
   /* ---------- 8. 圆角：4 档 + 1 个限定用途的小圆角（O/N/H 共 11 种以上收拢） ---------- */
-  --r-card: 14px;                       /* H/O 卡、面板、KPI、对话框、命令面板（N 12、O 对话框 16、H 详情 20/16 统一到它） */
-  --r-float: 10px;                      /* H 条带与浮层：筛选条、弹层、菜单、toast、图表提示、卡内信息格、提示条、日志块、带框小表 */
-  --r-control: 8px;                     /* H/O 按钮、输入、下拉、图标按钮、侧栏项、提示框与迹线读数（N 9 / 4.4、H 9 统一到它）；菜单项是 --r-float 减菜单内边距 */
+  /* 设计语言 v1：整体放大一档（卡 14→16、浮层 10→12、控件 8→9、首页分区 22→24），新增 --r-modal；标签 6、极小 4、胶囊不变 */
+  --r-card: 16px;                       /* H/O 卡、面板、KPI（N 12、O 对话框 16、H 详情 20/16 统一到它；对话框、命令面板、抽屉改用 --r-modal） */
+  --r-float: 12px;                      /* H 条带与浮层：筛选条、弹层、菜单、toast、图表提示、卡内信息格、提示条、日志块、带框小表 */
+  --r-control: 9px;                     /* H/O 按钮、输入、下拉、图标按钮、侧栏项、提示框与迹线读数（N 9 / 4.4、H 9 统一到它）；菜单项是 --r-float 减菜单内边距 */
   --r-pill: 999px;                      /* H 分段控件、chip、状态 pill、额度轨道、计数徽标 */
-  --r-section: 22px;                    /* 首页大分区底（.hsec），比卡片大一级，卡片浮在里面 */
+  --r-section: 24px;                    /* 首页大分区底（.hsec），比卡片大一级，卡片浮在里面 */
+  --r-modal: 22px;                      /* 模态：对话框、抽屉、命令面板共用，比卡片大、比首页分区小（组件之后改用它） */
   --r-inner: 12px;                      /* 卡里再套一层的块：集群状态的在线率框与小图 */
   --r-tag: 6px;                         /* 小方块：彩色标签、品牌标、22px 极小按钮（复制、通知关闭） */
   --r-xs: 4px;                          /* 复选框、键帽、子菜单筛选框、可点的读数与文字按钮的焦点 / 悬停底 */
   /* 只留字面量的极小圆角：心跳格 2px、图例色块 2px、国旗 3px、日志行 3px、页签下划线与时间线连线 1px；资源进度线、表格直角（H 原样） */
 
   /* ---------- 9. 阴影：卡片、KPI、面板有一层很轻的静止抬升（owner 2026-10-21 放开，原“卡片与面板无阴影”作废）；浮层分两级 ---------- */
-  --shadow-card: 0 1px 2px rgba(17, 24, 39, 0.04), 0 4px 16px rgba(17, 24, 39, 0.04);        /* 卡片/KPI/面板静止态 */
-  --shadow-card-hover: 0 1px 2px rgba(17, 24, 39, 0.05), 0 10px 24px -6px rgba(17, 24, 39, 0.1); /* 可点击卡片悬停：更深一点，落在下方配合上浮（参照 CFSM-SAO 0 10px 24px -6px） */
-  /* 浮层两级（原来一份 --shadow-float 通用，菜单和对话框一样深，层次分不出来）：近处一层收边 + 远处一层落影 */
-  --shadow-pop: 0 2px 6px rgb(17 24 39 / 0.06), 0 12px 28px -6px rgb(17 24 39 / 0.16);      /* 锚定弹层：菜单、右键、下拉、悬浮卡、日历、作业弹层、toast、图表提示、提示框 */
-  --shadow-modal: 0 8px 20px rgb(17 24 39 / 0.08), 0 28px 64px -12px rgb(17 24 39 / 0.28); /* 模态面板：对话框、命令面板、节点抽屉、窄屏侧栏 */
+  /* 设计语言 v1：光从上方来（黄昏的天光），阴影三层——贴近的 1px 收边、2–6px 的接触影、远处很淡的环境影；全站同一个光源。
+     阴影色取 --shadow-rgb：粉紫亮色带紫调（和墨紫同族），靛蓝亮色是中性冷调；暗色另写（纯黑 + 顶部 1px 内高光），不用它 */
+  --shadow-rgb: 17 24 39;
+  --shadow-card: 0 1px 1px rgb(var(--shadow-rgb) / 0.04), 0 3px 6px -2px rgb(var(--shadow-rgb) / 0.05), 0 12px 28px -12px rgb(var(--shadow-rgb) / 0.08);        /* 卡片/KPI/面板静止态 */
+  --shadow-card-hover: 0 1px 1px rgb(var(--shadow-rgb) / 0.05), 0 6px 12px -4px rgb(var(--shadow-rgb) / 0.08), 0 18px 36px -10px rgb(var(--shadow-rgb) / 0.14); /* 可点击卡片悬停：更深一点，落在下方配合上浮 2px */
+  /* 浮层两级（原来一份 --shadow-float 通用，菜单和对话框一样深，层次分不出来）：比卡片深一级 / 最深一级 */
+  --shadow-pop: 0 1px 2px rgb(var(--shadow-rgb) / 0.06), 0 4px 10px -2px rgb(var(--shadow-rgb) / 0.08), 0 16px 36px -8px rgb(var(--shadow-rgb) / 0.18);      /* 锚定弹层：菜单、右键、下拉、悬浮卡、日历、作业弹层、toast、图表提示、提示框 */
+  --shadow-modal: 0 2px 4px rgb(var(--shadow-rgb) / 0.06), 0 12px 24px -6px rgb(var(--shadow-rgb) / 0.1), 0 36px 80px -16px rgb(var(--shadow-rgb) / 0.3); /* 模态面板：对话框、命令面板、节点抽屉、窄屏侧栏 */
   --shadow-thumb: 0 1px 4px rgba(0, 0, 0, 0.12);    /* H --segment-shadow：分段选中项（O 用线色当阴影，看不见） */
   --shadow-btn: 0 1px 2px rgba(0, 0, 0, 0.08);      /* O 主按钮 */
   --shadow-bar-up: 0 -8px 24px -12px rgb(17 24 39 / 0.14);   /* 吸底条（上架页底部操作条）：阴影朝上 */
@@ -266,7 +279,7 @@
   --track: rgba(255, 255, 255, 0.07);
   --thumb: #2e2e33;
   --selected: color-mix(in srgb, var(--accent) 10%, var(--surface));
-  --scrim: rgba(0, 0, 0, 0.6);
+  --scrim-a: 0.6;
   --line: rgba(255, 255, 255, 0.08);
   --line-strong: rgba(255, 255, 255, 0.15);
   --fg: #f4f4f5;
@@ -302,24 +315,25 @@
   --chart-1: #7c7cf0;
   --chart-2: #d9692f;
   --chart-3: #199e70;
-  /* 浮层：暗底上投影看不太出来，靠提亮的边线和顶部 1px 内高光把它从下面一层分出来（粉紫暗色不覆盖这几项，沿用这里） */
+  /* 暗色：投影本身更深更柔（纯黑，不带色），卡片和浮层顶边加一道 1px 内高光（光从上方来），靠它加提亮的边线把面从下面一层分出来。
+     粉紫暗色不覆盖这几项（粉紫亮色块没有再定义阴影，沿用这里） */
   --line-float: rgba(255, 255, 255, 0.1);
-  --shadow-pop: inset 0 1px 0 rgb(255 255 255 / 0.06), 0 12px 28px -6px rgb(0 0 0 / 0.6);
-  --shadow-modal: inset 0 1px 0 rgb(255 255 255 / 0.06), 0 28px 64px -12px rgb(0 0 0 / 0.7);
+  --shadow-card: inset 0 1px 0 rgb(255 255 255 / 0.04), 0 1px 2px rgb(0 0 0 / 0.3), 0 4px 10px -2px rgb(0 0 0 / 0.28), 0 16px 32px -12px rgb(0 0 0 / 0.5);
+  --shadow-card-hover: inset 0 1px 0 rgb(255 255 255 / 0.06), 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 16px -4px rgb(0 0 0 / 0.4), 0 24px 44px -10px rgb(0 0 0 / 0.65);
+  --shadow-pop: inset 0 1px 0 rgb(255 255 255 / 0.07), 0 1px 2px rgb(0 0 0 / 0.4), 0 6px 14px -2px rgb(0 0 0 / 0.45), 0 20px 40px -8px rgb(0 0 0 / 0.65);
+  --shadow-modal: inset 0 1px 0 rgb(255 255 255 / 0.07), 0 2px 4px rgb(0 0 0 / 0.4), 0 14px 28px -6px rgb(0 0 0 / 0.5), 0 40px 80px -16px rgb(0 0 0 / 0.75);
   --shadow-thumb: 0 1px 3px rgba(0, 0, 0, 0.5);
   --shadow-btn: none;
-  --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.25);                 /* 暗色：近乎不可见，靠 1px 边线分层 */
-  --shadow-card-hover: 0 12px 28px -6px rgba(0, 0, 0, 0.6);
   --shadow-bar-up: 0 -8px 24px -12px rgb(0 0 0 / 0.6);
   --shadow-edge-l: -8px 0 12px -10px rgb(0 0 0 / 0.7);
   --tip-bg: #3a3a3f; --tip-fg: var(--fg); --tip-ring: rgb(255 255 255 / 0.1);
-  --scrim-stacked: rgb(0 0 0 / 0.24);   /* 暗底上同样的压暗看不出来，加一档 */
+  --scrim-stacked-a: 0.24;              /* 暗底上同样的压暗看不出来，加一档 */
 }
 
 :root:not([data-palette="indigo"]) {
-  --canvas: #f7f7f7;
+  --canvas: #f6f5f8;                    /* 雾：带一丝紫，和墨紫同族（原 #f7f7f7）；分区底同步调，仍比画布深一级 */
   --canvas-glow: radial-gradient(1100px 560px at 50% -8%, color-mix(in srgb, #f7c6ea 26%, transparent), transparent 62%);
-  --surface: #ffffff; --raised: #ffffff; --sunken: #f7f2f8; --thumb: #ffffff; --section: #efedf0;
+  --surface: #ffffff; --raised: #ffffff; --sunken: #f7f2f8; --thumb: #ffffff; --section: #eeecf1;
   --hover: rgba(42, 11, 61, 0.04); --track: rgba(42, 11, 61, 0.05);
   --selected: color-mix(in srgb, var(--accent) 6%, var(--surface));
   --line: rgba(122, 40, 130, 0.12); --line-strong: rgba(90, 30, 100, 0.2);
@@ -331,8 +345,7 @@
   --chart-1: #8e3bb0;
   --grad-soft: linear-gradient(90deg, #f3e6f5 0%, #fbe1f2 100%);
   --shadow-thumb: 0 1px 4px rgba(42, 11, 61, 0.14);
-  --shadow-card: 0 1px 2px rgba(42, 11, 61, 0.04), 0 4px 16px rgba(42, 11, 61, 0.05);        /* 粉紫：阴影带一点紫调 */
-  --shadow-card-hover: 0 1px 2px rgba(42, 11, 61, 0.05), 0 10px 24px -6px rgba(42, 11, 61, 0.11);
+  --shadow-rgb: 42 11 61;               /* 粉紫：卡片、浮层、模态的阴影带一点紫调（墨紫 #2a0b3d）；暗色块里的阴影是纯黑，不用它 */
   --shadow-bar-up: 0 -8px 24px -12px rgb(42 11 61 / 0.15);
   --shadow-edge-l: -8px 0 12px -10px rgb(42 11 61 / 0.25);
 }
@@ -351,8 +364,23 @@
   --chart-1: #d9a6ea;
   --grad-soft: linear-gradient(90deg, #3a2445 0%, #4a2447 100%);
   --shadow-thumb: 0 1px 3px rgba(0, 0, 0, 0.5);
-  --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.25);
-  --shadow-card-hover: 0 12px 28px -6px rgba(0, 0, 0, 0.6);
   --shadow-bar-up: 0 -8px 24px -12px rgb(0 0 0 / 0.6);
   --shadow-edge-l: -8px 0 12px -10px rgb(0 0 0 / 0.7);
 }
+
+/* ---------- 读数字体 ----------
+   Inter 4.1（rsms/inter，SIL OFL 1.1，许可证 public/fonts/Inter-OFL.txt）可变字体的子集：保留 opsz（14–32）与 wght（400–600）两个轴，只含数字、拉丁字母、标点与读数符号（% $ ¥ . , : ; - + × · / ( ) ↑ ↓ → − 等 95 个字符），
+   保留 tnum / zero / kern / calt；0–9 在字体里已固定为等宽数字 + 斜杠零（不依赖 font-variant-numeric，漏写 --num-variant 的地方也不会数字乱跳）。wght 上限 600：写 600 / 700 的读数最粗到 600，不出粗黑，也不会触发合成粗体。
+   文件名带版本号（public 下的文件不带内容哈希，换字体时改文件名；服务器对非 /assets/ 的文件每次重新验证）。CSP 的 font-src 为 'self'，同源字体可用。
+   font-display: swap：先用系统字，字体到了换；Windows 上先用度量对齐过的 Segoe UI（Inter Num Fallback：size-adjust 96.5% 使读数宽度与 Inter 相差在 ±2.5% 内，ascent / descent 与 Inter 一致，换字不上下跳），
+   三档字重分别对应 Segoe UI 的 Regular / Semibold / Bold；没有 Segoe UI 的平台（macOS 等）这一层不可用，直接走系统栈。 */
+@font-face {
+  font-family: "Inter Num";
+  src: url("/fonts/inter-num-4.1.woff2") format("woff2");
+  font-weight: 400 600;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face { font-family: "Inter Num Fallback"; src: local("Segoe UI"); font-weight: 400 500; size-adjust: 96.5%; ascent-override: 100.39%; descent-override: 25%; line-gap-override: 0%; }
+@font-face { font-family: "Inter Num Fallback"; src: local("Segoe UI Semibold"); font-weight: 600; size-adjust: 96.5%; ascent-override: 100.39%; descent-override: 25%; line-gap-override: 0%; }
+@font-face { font-family: "Inter Num Fallback"; src: local("Segoe UI Bold"); font-weight: 700; size-adjust: 96.5%; ascent-override: 100.39%; descent-override: 25%; line-gap-override: 0%; }
