@@ -2,7 +2,7 @@ import * as React from "react"
 import { Select as SelectPrimitive } from "@base-ui/react/select"
 import { cn } from "@/lib/utils"
 import { ChevronDownIcon, CheckIcon, ChevronUpIcon } from "lucide-react"
-import { floatCheck, floatItem, floatLabel, floatPositioner, floatSep, floatSolid } from "@/components/ui/float"
+import { floatCheck, floatItem, floatLabel, floatPositioner, floatSep, floatSolid, guardEscape } from "@/components/ui/float"
 
 /* shadcn base-mira 的 Select（Base UI），复合导出保持原名（reui 的 data-grid 会用）；页面里的「options 数组」写法见 option-select.tsx。
    和 shadcn 原版的差别（都是为了守住改前的行为）：
@@ -11,7 +11,10 @@ import { floatCheck, floatItem, floatLabel, floatPositioner, floatSep, floatSoli
    - 弹层是实底（常开在对话框里、伸出对话框下沿，毛玻璃会透出上下两截颜色）；
    - 不画滚动箭头（原生滚动 + 触控板 / 滚轮已够）。 */
 
-const Select = SelectPrimitive.Root
+/** 根：Esc 先收起开着的提示（guardEscape，同菜单 / 弹层） */
+function Select<Value, Multiple extends boolean | undefined = false>({ onOpenChange, ...props }: SelectPrimitive.Root.Props<Value, Multiple>) {
+  return <SelectPrimitive.Root onOpenChange={guardEscape(onOpenChange)} {...props} />
+}
 
 function SelectGroup({ className, ...props }: SelectPrimitive.Group.Props) {
   return (

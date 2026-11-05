@@ -4,7 +4,7 @@ import { X } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 import { IconButton } from "@/components/ui/button"
-import { tooltipOpen } from "@/components/ui/tooltip"
+import { hintOpen } from "@/components/ui/tooltip"
 import { floatOpenAtPress, useFloatPressGuard } from "@/components/ui/float"
 import { RememberFocus, dialogOpen, mergeRefs, useRestoreFocus } from "@/components/ui/dialog"
 
@@ -27,9 +27,9 @@ let drawers = 0
 
 function Sheet({ open, onOpenChange, children }: { open: boolean; onOpenChange: (open: boolean) => void; children: React.ReactNode }) {
   const panel = React.useRef<HTMLDivElement>(null)
-  useFloatPressGuard()
+  useFloatPressGuard(open)
   const handle = (next: boolean, details: SheetPrimitive.Root.ChangeEventDetails) => {
-    if (!next && details.reason === "escape-key" && (tooltipOpen() || dialogOpen({ exiting: false }))) { details.cancel(); details.allowPropagation(); return }
+    if (!next && details.reason === "escape-key" && (hintOpen() || dialogOpen({ exiting: false }))) { details.cancel(); details.allowPropagation(); return }
     onOpenChange(next)
   }
   return (
@@ -86,7 +86,7 @@ function SheetContent({
         finalFocus={finalFocus ?? focus.finalFocus}
         className={cn(
           // 阴影放在 ::before 上、只动 opacity（components.css）：位移只动 transform，两者都能交给合成器，滑入这段正是抽屉挂载、下载懒块的时候。
-          "fixed top-2 right-2 bottom-2 z-(--z-drawer) flex w-(--drawer-w) max-w-[calc(100vw-16px)] flex-col overflow-hidden rounded-section border border-(--line-float) bg-surface before:pointer-events-none before:absolute before:inset-0 before:-z-1 before:rounded-[inherit] before:shadow-(--shadow-modal) before:content-[''] max-[601px]:inset-0 max-[601px]:max-w-screen max-[601px]:rounded-none max-[601px]:border-0",
+          "fixed top-2 right-2 bottom-2 z-(--z-drawer) flex w-(--drawer-w) max-w-[calc(100vw-16px)] flex-col overflow-hidden rounded-modal border border-(--line-float) bg-surface before:pointer-events-none before:absolute before:inset-0 before:-z-1 before:rounded-[inherit] before:shadow-(--shadow-modal) before:content-[''] max-[601px]:inset-0 max-[601px]:max-w-screen max-[601px]:rounded-none max-[601px]:border-0",
           className
         )}
         {...props}

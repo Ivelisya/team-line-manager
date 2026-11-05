@@ -15,7 +15,7 @@ function HoverCard({ openDelay = 350, closeDelay = 120, onOpenChange, ...props }
   const delays = React.useMemo(() => ({ openDelay, closeDelay }), [openDelay, closeDelay])
   return (
     <DelayContext.Provider value={delays}>
-      <PreviewCardPrimitive.Root data-slot="hover-card" onOpenChange={guardEscape(onOpenChange)} {...props} />
+      <PreviewCardPrimitive.Root data-slot="hover-card" onOpenChange={guardEscape(onOpenChange, true)} {...props} />
     </DelayContext.Provider>
   )
 }

@@ -5,7 +5,7 @@ import { X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { durMs } from "@/lib/motion"
 import { IconButton } from "@/components/ui/button"
-import { tooltipOpen } from "@/components/ui/tooltip"
+import { hintOpen } from "@/components/ui/tooltip"
 import { floatOpenAtPress, useFloatPressGuard } from "@/components/ui/float"
 
 /* shadcn base-mira 的 Dialog（Base UI），外观走令牌；进出场动画在 components.css（[data-slot=dialog-*] 的 [data-open] / [data-closed]）。
@@ -130,7 +130,7 @@ function Dialog({
   blockDismiss?: boolean | ((reason: DismissReason) => boolean)
 }) {
   const panel = React.useRef<HTMLDivElement>(null)
-  useFloatPressGuard() // 对话框里开着下拉 / 菜单 / 弹层时点遮罩只收起它们（float.ts）
+  useFloatPressGuard(!!open) // 对话框里开着下拉 / 菜单 / 弹层时点遮罩只收起它们（float.ts）
   const handle = (next: boolean, details: DialogPrimitive.Root.ChangeEventDetails) => {
     if (!next && (details.reason === "escape-key" || details.reason === "outside-press")) {
       const reason: DismissReason = details.reason
@@ -140,7 +140,7 @@ function Dialog({
         const e = details.event as MouseEvent
         if (e.button === 0 && e.ctrlKey) { details.cancel(); return }
       }
-      if (reason === "escape-key" && tooltipOpen()) { details.cancel(); details.allowPropagation(); return } // allowPropagation：Esc 继续传给提示，由它自己收起
+      if (reason === "escape-key" && hintOpen()) { details.cancel(); details.allowPropagation(); return } // allowPropagation：Esc 继续传给提示，由它自己收起
       if (typeof blockDismiss === "function" ? blockDismiss(reason) : blockDismiss) { details.cancel(); bounce(panel.current); return }
     }
     onOpenChange?.(next, details)
@@ -204,7 +204,7 @@ function DialogContent({
         className={cn(
           // 顶部锚定（同命令面板）：内容异步变多时只往下长；矮屏时整块滚动，底部按钮条吸底（DialogFooter），不会被截掉。
           // 水平居中用独立的 translate 属性：进出场动画只写自己的 transform，点遮罩被拦下时的回弹（独立 scale）也不用管居中
-          "fixed top-[min(10vh,96px)] left-1/2 z-(--z-dialog) flex max-h-[calc(100dvh-min(10vh,96px)-16px)] origin-top flex-col gap-5 overflow-auto rounded-section border border-(--line-float) bg-raised px-6 pt-6 pb-(--dlg-pb) shadow-(--shadow-modal) [--dlg-pb:var(--sp-24)] [translate:-50%_0] *:flex-none",
+          "fixed top-[min(10vh,96px)] left-1/2 z-(--z-dialog) flex max-h-[calc(100dvh-min(10vh,96px)-16px)] origin-top flex-col gap-5 overflow-auto rounded-modal border border-(--line-float) bg-raised px-6 pt-6 pb-(--dlg-pb) shadow-(--shadow-modal) [--dlg-pb:var(--sp-24)] [translate:-50%_0] *:flex-none",
           SIZE[size],
           // 手机（≤600px）：从底部升起的面板（同 iOS 的 sheet）——通栏、上圆角、底部让出安全区。max-[601px] = 宽度 ≤ 600
           "max-[601px]:top-auto max-[601px]:bottom-0 max-[601px]:left-0 max-[601px]:max-h-[calc(100dvh-var(--topbar-h))] max-[601px]:w-screen max-[601px]:origin-bottom max-[601px]:rounded-b-none max-[601px]:border-x-0 max-[601px]:border-b-0 max-[601px]:[--dlg-pb:calc(var(--sp-24)+env(safe-area-inset-bottom,0px))] max-[601px]:[translate:none]",

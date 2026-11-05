@@ -10,11 +10,11 @@ import { watchSize } from "@/lib/sharedObserver"
    提示框外观：反色实底（--tip-*，暗色见 tokens.css）、--shadow-pop + 内描边；进场 --dur-2 / --ease-out（淡入 + 从 .96 放大，朝远离触发元素的方向走 4px），退场 --dur-1 / --ease-std；
    pre-line 让 data-tip 里的换行生效（心跳格说明分行） */
 
-/** 此刻有没有提示开着：菜单 / 下拉 / 弹层 / 对话框 / 抽屉按 Esc 想关时先看它——有就让这下 Esc 只用来收起提示 */
-export const tooltipOpen = () => !!document.querySelector('[data-slot="tooltip-content"][data-open]')
+/** 此刻有没有提示或悬浮卡开着：菜单 / 下拉 / 弹层 / 对话框 / 抽屉按 Esc 想关时先看它——有就让这下 Esc 只用来收起它们（悬浮卡也是「悬着的说明」，先收） */
+export const hintOpen = (tooltipOnly = false) => !!document.querySelector(tooltipOnly ? '[data-slot="tooltip-content"][data-open]' : '[data-slot="tooltip-content"][data-open], [data-slot="hover-card-content"][data-open]')
 
 /** 全站提示延迟 250 ms（Mira 默认 0）；刚收起一个又悬停到下一个，Base UI 的 timeout 内直接出现。
- *  提示开着时按 Esc，这一下只收起提示，对话框、抽屉、菜单留着：Base UI 的提示收起时停止这下 Esc 的传播；提示还没收起时，上面的层在自己的 onOpenChange 里看到有开着的提示就拦下（float.ts 的 guardEscape、dialog.tsx、sheet.tsx 都用上面的 tooltipOpen） */
+ *  提示开着时按 Esc，这一下只收起提示，对话框、抽屉、菜单留着：Base UI 的提示收起时停止这下 Esc 的传播；提示还没收起时，上面的层在自己的 onOpenChange 里看到有开着的提示就拦下（float.ts 的 guardEscape、dialog.tsx、sheet.tsx 都用上面的 hintOpen） */
 function TooltipProvider({ delay = 250, ...props }: TooltipPrimitive.Provider.Props) {
   return <TooltipPrimitive.Provider data-slot="tooltip-provider" delay={delay} {...props} />
 }

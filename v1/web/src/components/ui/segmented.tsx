@@ -60,8 +60,8 @@ export const SegmentedOverflow = React.memo(function SegmentedOverflow<T extends
       setDim((o) => (o && o.avail === avail && o.more === more && o.widths.join() === widths.join() ? o : { avail, widths, more, gap }));
     };
     measure();
-    // 轨道和副本（及副本里每一项）任何一个变了尺寸都重量：副本是 max-content 宽，字体 / 样式晚到时它先变
-    const offs = [watchSize(r, measure), watchSize(ms, measure), ...([...ms.children] as HTMLElement[]).map((e) => watchSize(e, measure))];
+    // 只盯轨道和副本：副本是 w-max，任何一项变宽变窄它整体就跟着变（字体 / 样式晚到时尤其）
+    const offs = [watchSize(r, measure), watchSize(ms, measure)];
     document.fonts?.ready.then(measure);
     document.fonts?.addEventListener('loadingdone', measure);
     return () => { offs.forEach((f) => f()); document.fonts?.removeEventListener('loadingdone', measure); };
@@ -73,9 +73,9 @@ export const SegmentedOverflow = React.memo(function SegmentedOverflow<T extends
     const sum = (ix: number[]) => ix.reduce((a, i) => a + dim.widths[i], 0) + dim.gap * Math.max(0, ix.length - 1);
     if (sum(shown) > dim.avail + 0.5) {
       let k = items.length - 1;
-      const pick = (k: number) => { const ix = shown.slice(0, k); return sel >= k && sel >= 0 ? [...ix.slice(0, Math.max(0, k - 1)), sel] : ix; };
-      while (k > 1 && sum(pick(k)) + dim.gap + dim.more > dim.avail) k--;
-      shown = pick(k);
+      const pickShown = (k: number) => { const ix = shown.slice(0, k); return sel >= k && sel >= 0 ? [...ix.slice(0, Math.max(0, k - 1)), sel] : ix; };
+      while (k > 1 && sum(pickShown(k)) + dim.gap + dim.more > dim.avail) k--;
+      shown = pickShown(k);
     }
   }
   const hidden = items.filter((_, i) => !shown.includes(i));
