@@ -9,6 +9,9 @@ html { background: var(--canvas); scroll-padding-top: var(--topbar-h); scrollbar
    macOS 等覆盖式滚动条没有槽位，这层看不出来 */
 html { --scrim-keep: 60%; } /* = 1 − --scrim 的透明度（亮色 .4、暗色 .6；tokens.css 是多批共用的，这个换算值放在这里） */
 html[data-theme="dark"] { --scrim-keep: 40%; }
+/* 抽屉上再开对话框 / 命令面板：两层遮罩（抽屉的 --scrim 和上面轻压的 --scrim-stacked，亮 .4 / .12、暗 .6 / .24）叠起来，槽位留下的底色比例是两层相乘：亮 .6 × .88、暗 .4 × .76 */
+html[data-drawer][data-overlay] { --scrim-keep: 52.8%; }
+html[data-theme="dark"][data-drawer][data-overlay] { --scrim-keep: 30.4%; }
 html:is([data-overlay], [data-drawer]) { background-color: color-mix(in srgb, var(--canvas) var(--scrim-keep), black); transition: background-color var(--dur-2) var(--ease-out); }
 /* Radix 的弹层（菜单、下拉、日期，B2b 换成 Base UI 后这两条和 --sbw 的量取一起删）锁滚动时让出槽位：遮罩才盖满全宽（否则右侧留一条不变暗的边）；库会给 body 补同宽的右外边距，内容不动。
    Base UI 的对话框开着（data-overlay）时页面已经锁住、槽位留着，不能再补（会让内容左移），所以排除 */

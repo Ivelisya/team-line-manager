@@ -19,7 +19,7 @@ await page.setViewport({ width: 1440, height: 1000 });
 const clickText = (sel, text) => page.evaluate((s, t) => { const el = [...document.querySelectorAll(s)].find((e) => e.textContent?.trim().includes(t)); if (!el) throw new Error('找不到 ' + t); el.click(); }, sel, text);
 // 最上层的对话框（页面上可能还有一个非模态的抽屉也是 role=dialog，后挂载的在最上面）：取到元素句柄，fn(对话框, ...args) 在页面里执行
 const inDialog = async (fn, ...args) => {
-  const d = (await page.evaluateHandle(() => { const ds = document.querySelectorAll('[role="dialog"]'); return ds[ds.length - 1] ?? null; })).asElement();
+  const d = (await page.evaluateHandle(() => { const ds = document.querySelectorAll('[role="dialog"]:not([data-slot="toast"])'); return ds[ds.length - 1] ?? null; })).asElement();
   if (!d) throw new Error('没有对话框');
   return d.evaluate(fn, ...args);
 };
@@ -68,7 +68,7 @@ await clickText('button', '接入软路由'); await sleep(500);
 await page.keyboard.type('smoke-esc');
 await inDialog((d) => d.querySelector('[role="img"][tabindex="0"]')?.focus()); await sleep(600);
 const tipOpen = () => page.evaluate(() => !!document.querySelector('[data-slot="tooltip-content"][data-open]'));
-const dialogs = () => page.evaluate(() => document.querySelectorAll('[role="dialog"]').length);
+const dialogs = () => page.evaluate(() => document.querySelectorAll('[role="dialog"]:not([data-slot="toast"])').length);
 step('键盘聚焦「(i)」出现提示：' + (await tipOpen()));
 await page.keyboard.press('Escape'); await sleep(500);
 step('第一下 Esc 只收起提示：' + (!(await tipOpen()) && (await dialogs()) === 1 && (await inDialog((d) => d.querySelector('input')?.value)) === 'smoke-esc'));

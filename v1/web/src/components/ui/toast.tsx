@@ -68,8 +68,8 @@ const BAR = { ok: "bg-ok", bad: "bg-bad", info: "bg-info" } as const
 // 每种语气给玻璃底一层很淡的同色晕（左上角起，到 60% 处散尽）
 const WASH = { ok: "from-ok/12", bad: "from-bad/12", info: "from-info/12" } as const
 
-/** 手机（≤600px）通知从顶栏下方落下，宽屏在右下角 */
-const phoneQuery = typeof matchMedia === "function" ? matchMedia("(max-width: 600px)") : null
+/** 手机（宽度 < 601px，与类名里的 max-[601px] 同一种写法）通知从顶栏下方落下，宽屏在右下角 */
+const phoneQuery = typeof matchMedia === "function" ? matchMedia("(width < 601px)") : null
 function usePhone() {
   return React.useSyncExternalStore(
     (cb) => { phoneQuery?.addEventListener("change", cb); return () => phoneQuery?.removeEventListener("change", cb) },

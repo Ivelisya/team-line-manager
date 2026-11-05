@@ -295,8 +295,8 @@ html[data-drawer] [data-slot="dialog-overlay"] { background: var(--scrim-stacked
   [data-slot="dialog-footer"]::before { animation: foot-edge linear both; animation-timeline: scroll(nearest block); }
 }
 @keyframes foot-edge { 0%, 94% { opacity: 1; } 100% { opacity: 0; } }
-/* 手机（≤600px，与类名里的 max-[601px] 同一个断点）：对话框改成从底部升起的面板（同 iOS 的 sheet，进出场用边缘滑入档 --dur-3 / --dur-2），遮罩跟着；命令面板不是 sheet，不改 */
-@media (max-width: 600px) {
+/* 手机（宽度 < 601px，与类名里的 max-[601px] 同一种写法：小数宽度、浏览器缩放下也一致）：对话框改成从底部升起的面板（同 iOS 的 sheet，进出场用边缘滑入档 --dur-3 / --dur-2），遮罩跟着；命令面板不是 sheet，不改 */
+@media (width < 601px) {
   [data-slot="dialog-content"] { transition: transform var(--dur-3) var(--ease-out); }
   [data-slot="dialog-content"][data-starting-style] { opacity: 1; transform: translateY(100%); }
   [data-slot="dialog-content"][data-ending-style] { opacity: 1; transform: translateY(100%); transition-duration: var(--dur-2); transition-timing-function: var(--ease-std); }
@@ -328,7 +328,7 @@ html[data-drawer] [data-slot="dialog-overlay"] { background: var(--scrim-stacked
 .drawer-tabs { flex: none; padding: 0 var(--sp-16); overflow: hidden; scrollbar-gutter: stable; } /* 同正文留出滚动条槽：页签下的线与正文右缘对齐 */
 .drawer-body { flex: 1 1 auto; overflow-y: auto; scrollbar-gutter: stable; padding: var(--sp-16); display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-16); align-content: start; } /* 滚动条槽位常驻：切页签、内容长短变化时正文不左右横跳 */
 /* 窄屏占满：用 100% 不用 100vw（100vw 含常驻的滚动条槽，抽屉左边会被多出的那一截裁掉） */
-@media (max-width: 600px) { :root { --drawer-w: 100%; } }
+@media (width < 601px) { :root { --drawer-w: 100%; } }
 /* 页签里吸顶的一条（主机页签的时间范围）：贴在抽屉正文滚动区的顶边（抵掉正文的上内边距），毛玻璃底，滚过去的曲线从下面淡淡透出 */
 .tab-sticky {
   position: sticky; top: calc(-1 * var(--sp-16)); z-index: 3; display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8);
@@ -413,8 +413,8 @@ html[data-drawer] [data-slot="dialog-overlay"] { background: var(--scrim-stacked
 /* 手机：通知从顶栏下方落下，不盖住对话框底部面板的按钮；抽屉全宽，不用让位 */
 [data-slot="toast-viewport"][data-position="top"] { left: 50%; translate: -50% 0; top: calc(var(--topbar-h) + env(safe-area-inset-top, 0px) + var(--sp-8)); }
 /* 抽屉开着（<html data-drawer>）：通知挪到抽屉左侧，不盖住抽屉底部的保存 / 操作按钮；抽屉左边放不下通知（抽屉 + 通知 + 两侧间距 > 视口）时改底部居中 */
-@media (min-width: 601px) { html[data-drawer] [data-slot="toast-viewport"][data-position="bottom"] { right: calc(var(--drawer-w) + var(--sp-8) + var(--sp-16) + var(--removed-body-scroll-bar-size, 0px)); } }
-@media (min-width: 601px) and (max-width: 1180px) { html[data-drawer] [data-slot="toast-viewport"][data-position="bottom"] { right: auto; left: 50%; translate: -50% 0; } }
+@media (width >= 601px) { html[data-drawer] [data-slot="toast-viewport"][data-position="bottom"] { right: calc(var(--drawer-w) + var(--sp-8) + var(--sp-16) + var(--removed-body-scroll-bar-size, 0px)); } }
+@media (width >= 601px) and (width <= 1180px) { html[data-drawer] [data-slot="toast-viewport"][data-position="bottom"] { right: auto; left: 50%; translate: -50% 0; } }
 @keyframes toast-timer { from { transform: scaleX(1); } to { transform: scaleX(0); } }
 /* ×N 的数字又涨一次：角标弹一下（key 跟着计数，重新播） */
 @keyframes count-pop { 0% { transform: scale(.7); opacity: .4; } 60% { transform: scale(1.14); } 100% { transform: scale(1); opacity: 1; } }

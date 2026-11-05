@@ -5,6 +5,7 @@ import { X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { durMs } from "@/lib/motion"
 import { IconButton } from "@/components/ui/button"
+import { radixModalOpen } from "@/lib/baseLayers"
 
 /* shadcn base-mira 的 Dialog（Base UI），外观走令牌；进出场动画在 components.css（[data-slot=dialog-*] 的 [data-open] / [data-closed]）。
    和 shadcn 原版的差别（都是为了守住改前的行为）：
@@ -47,10 +48,10 @@ export function useRestoreFocus(panel: React.RefObject<HTMLElement | null>) {
       const a = document.activeElement as HTMLElement | null
       back.current = a && a !== document.body && !panel.current?.contains(a) ? a : null
     },
-    /** 给 Popup 的 finalFocus：返回要还焦点的元素，或 false（不还） */
+    /** 给 Popup 的 finalFocus：返回要还焦点的元素，或 false（不还）。没有副作用（不清 back）：Base UI 在 effect 清理时调它，同一次提交里 effect 若又重跑
+     *  （严格模式、开着时依赖变了），清掉了就真正关闭时还不了；下次打开 RememberFocus 会重新记 */
     finalFocus: () => {
       const el = back.current
-      back.current = null
       const a = document.activeElement
       return el?.isConnected && (!a || a === document.body || !!panel.current?.contains(a)) ? el : false
     },
@@ -105,6 +106,11 @@ export function bounce(panel: HTMLElement | null) {
  *  （提示自己的收起与对话框的关闭在同一次按键里先后发生，到这里时提示可能已经收起了，所以两个条件都看）；Radix 的层（菜单、下拉）收起时也会 preventDefault，一并认 */
 export const escapeIsTaken = (e: Event) => e.defaultPrevented || !!document.querySelector('[data-slot="tooltip-content"][data-open]')
 
+// Radix 的模态层（下拉选择、菜单；B2b 换成 Base UI 后可删）开着时，它给 body 加 pointer-events: none，点对话框里任何地方都落到 html 上，Base UI 当成「点了外面」而关掉对话框。
+// 在 pointerdown 的捕获阶段（Radix 还没来得及卸载）记下当时有没有 Radix 层，outside-press 时若有就取消：这一下只用来收起 Radix 的层
+let radixAtPress = false
+if (typeof window !== "undefined") window.addEventListener("pointerdown", () => { radixAtPress = radixModalOpen() }, true)
+
 function Dialog({
   open,
   onOpenChange,
@@ -119,6 +125,12 @@ function Dialog({
   const handle = (next: boolean, details: DialogPrimitive.Root.ChangeEventDetails) => {
     if (!next && (details.reason === "escape-key" || details.reason === "outside-press")) {
       const reason: DismissReason = details.reason
+      if (reason === "outside-press") {
+        if (radixAtPress || radixModalOpen()) { details.cancel(); return }
+        // Ctrl+左键点遮罩不关（mac 上是右键；改前 Radix 同样当右键处理），不回弹
+        const e = details.event as MouseEvent
+        if (e.button === 0 && e.ctrlKey) { details.cancel(); return }
+      }
       if (reason === "escape-key" && escapeIsTaken(details.event)) { details.cancel(); details.allowPropagation(); return } // allowPropagation：Esc 继续传给提示，由它自己收起
       if (typeof blockDismiss === "function" ? blockDismiss(reason) : blockDismiss) { details.cancel(); bounce(panel.current); return }
     }
