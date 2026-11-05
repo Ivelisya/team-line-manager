@@ -1,5 +1,5 @@
-// 曲线共用的常量与坐标轴 / 悬浮格式化。不依赖 recharts：lib/routers.ts 等首屏代码也要用，不要在这里（或 lib 下）导入 TimeChart，
-// 否则 recharts 会被拖进首屏代码块。
+// 曲线共用的常量、坐标轴刻度与悬浮格式化。不依赖图表库（bklit / d3）：lib/routers.ts 等首屏代码也要用，不要在这里（或 lib 下）导入 TimeChart，
+// 否则图表代码会被拖进首屏代码块。
 import * as F from './format';
 
 /** 各时间范围的毫秒数 */
@@ -17,3 +17,27 @@ export const yPct = (v: number) => `${Math.round(v)}%`;
 export const vPct = (_: string, v: number) => `${v.toFixed(1)}%`;
 export const yRate = (v: number) => (v ? F.str(F.rate(v, true)) : '0');
 export const vRate = (_: string, v: number) => F.str(F.rate(v));
+
+/** 纵轴刻度：从 0 起 4 段。速率（1000 进位）每段取 1/2/2.5/5×10^k，字节（1024 进位）每段取 2 的幂，
+ *  读出来是 250 Mbps、256 MiB 这样的整数，不会出现按十进制取整再换算成 MiB 的 143M、286M */
+export function valueTicks(max: number, base: 1000 | 1024): number[] {
+  if (!(max > 0)) return [0, 1, 2, 3, 4].map((i) => (i * base) / 4); // 没有数据：到 1 KB / 1 KiB 4 等分（250 / 256 …）
+  const unit = base ** Math.max(0, Math.floor(Math.log(max) / Math.log(base)));
+  const raw = max / unit / 4;
+  let step: number;
+  if (base === 1024) step = 2 ** Math.ceil(Math.log2(raw));
+  else { const e = 10 ** Math.floor(Math.log10(raw)); step = ([1, 2, 2.5, 5, 10].find((n) => n * e >= raw) ?? 10) * e; }
+  if (unit === 1) step = Math.max(1, step); // 最小单位（B / bps）不分小数格，否则标签取整后重复
+  return [0, 1, 2, 3, 4].map((i) => i * step * unit);
+}
+
+/** 整数步长：{1, 1.5, 2, 2.5, 3, 4, 5, 6, 8} × 10^k 里取不小于 raw 的最小整数（k=0 → 1 2 3 4 5 6 8；k=1 → 10 15 20 25 30 40 50 60 80 …），raw < 1 按 1 */
+const intStep = (raw: number) => {
+  const r = Math.max(1, raw); const e = 10 ** Math.floor(Math.log10(r));
+  return [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10].map((n) => n * e).find((x) => Number.isInteger(x) && x >= r) ?? 10 * e;
+};
+/** 整数刻度（延迟 ms、次数、连接数、温度）：从 0 起 4 段，步长是整数（max = 41 → 0 / 15 / 30 / 45 / 60；max = 5 → 0 / 2 / 4 / 6 / 8；max = 0 → 0…4） */
+export const intTicks = (max: number) => { const step = intStep(max / 4); return [0, 1, 2, 3, 4].map((i) => i * step); };
+
+/** 百分比刻度（没有固定上限的百分比，如负载）：从 0 起 4 段，每段取 5 / 10 / 20 / 25 / 50 / 100 … 这样的整档，不出现 7% / 14% / 21% */
+export const pctTicks = (max: number) => { const step = [5, 10, 20, 25, 50, 100, 200, 500, 1000, 2000, 5000].find((s) => s * 4 >= max) ?? Math.ceil(max / 4); return [0, 1, 2, 3, 4].map((i) => i * step); };

@@ -49,8 +49,6 @@ html[data-overlay] :is(.app, [data-slot="sheet-content"]) [data-slot="progress-i
   [data-slot="progress"][data-live] [data-slot="progress-indicator"]::after, .top-btn.jobs-ind > .lucide { animation: none; }
   /* 浮层关闭：不播退出动画，立即卸载（悬浮卡、日历、作业弹层都是 .popover）。Base UI 的对话框 / 抽屉 / 通知用过渡，时长令牌归零就即刻完成，不用在这里列 */
   .menu[data-state="closed"], .popover[data-state="closed"], .select-content[data-state="closed"], .page-in { animation: none; }
-  /* 曲线展开、悬停提示的缩放位移进场：直接出现 */
-  .chart-frame .chart-box { animation: none; }
   /* 空间反馈去掉：按下缩放（令牌取 1 = 不缩）、悬停上浮 2px 不做（边框、阴影的变化还在）。苹果的减弱动效是位移 / 缩放换成淡入淡出，不是把它们变成瞬间跳 */
   :root { --press-sm: 1; --press-md: 1; --press-lg: 1; }
   @media (hover: hover) { :is(.ncard, .rcard):hover, .stat.is-link:hover { translate: none; } }

@@ -8,39 +8,58 @@ import * as F from '@/lib/format';
 import { Segmented } from '@/components/ui/overlays';
 import { Button } from '@/components/ui/button';
 import { InfoTip } from '@/components/ui/info-tip';
-import { ChartContainer, chartTooltip, Recharts, axisProps, type ChartConfig } from '@/components/ui/chart';
+import { BarChart } from '@/components/ui/charts/bar-chart';
+import { Bar } from '@/components/ui/charts/bar';
+import { BarXAxis } from '@/components/ui/charts/bar-x-axis';
+import { BarYAxis } from '@/components/ui/charts/bar-y-axis';
+import { Grid } from '@/components/ui/charts/grid';
+import { YAxis } from '@/components/ui/charts/y-axis';
+import { ChartTooltip } from '@/components/ui/charts/tooltip';
+import { useChartStable } from '@/components/ui/charts/chart-context';
+import { axisLabelWidth } from '@/components/ui/charts/text-width';
+import { intTicks } from '@/lib/chart';
 import { Empty, ErrorNote, Section, SectionHeader } from '@/components/app/primitives';
 import { ResultPill, fmtN } from '@/features/AccessBits';
 import { ConnCell, IspPlace, SourceProfile } from '@/features/IpIntelBits';
 import type { ProfileWindow } from '@/lib/ipintel';
 import '@/styles/access.css';
 
-const { BarChart, Bar, XAxis, YAxis, CartesianGrid, LabelList } = Recharts;
-
 const cut = (s: string, n = 24) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 // 已转发用主色（条形是「访问了多少次」，不是「成功」的意思），已阻止红
-const BAR_CFG: ChartConfig = { routed: { label: '已转发', color: 'var(--chart-1)' }, blocked: { label: '已阻止', color: 'var(--bad)' } };
-// 柱状图悬停时整列铺一层浅底（recharts 默认是 #ccc 实心块，暗色下刺眼；--hover 在浅色下太淡看不见）
-const BAR_CURSOR = { fill: 'var(--line)' };
+const ROUTED = { label: '已转发', color: 'var(--chart-1)' };
+const BLOCKED = { label: '已阻止', color: 'var(--bad)' };
 /** 提示框、纵轴刻度、条尾的连接数带单位 */
-const times = (_: string, v: number) => `${fmtN(v)} 次`;
+const times = (v: number) => `${fmtN(v)} 次`;
 const yTimes = (v: number) => (v ? `${fmtN(v)} 次` : '0');
+const tipRows = (p: Record<string, unknown>) => [{ ...ROUTED, value: times(Number(p.routed)) }, { ...BLOCKED, value: times(Number(p.blocked)) }];
+
+/** 条尾的总次数（每行一个，紧跟在最右一段后面：位置按画出来的长度 routed + blocked，文字写总数） */
+function TailLabels() {
+  const { data, barScale, bandWidth, yScale } = useChartStable();
+  if (!barScale || !bandWidth) return null;
+  return (
+    <g aria-hidden="true">
+      {data.map((d) => {
+        const y = barScale(String(d.host));
+        return y == null ? null : <text key={String(d.host)} className="bar-count" x={(yScale(Number(d.routed) + Number(d.blocked)) ?? 0) + 6} y={y + bandWidth / 2} dominantBaseline="central">{times(Number(d.total))}</text>;
+      })}
+    </g>
+  );
+}
 
 /** 横向条形图：每行一个目标，已转发 + 已阻止叠在一起，条尾直接标总次数。limit：只画前几个（截取放在这里，轮询数据没变时 data 引用不变） */
 function HostBars({ items, limit }: { items: MachineAccess['top_domains']; limit?: number }) {
   const data = React.useMemo(() => items.slice(0, limit).map((d) => ({ host: d.dest_host, routed: Math.max(0, d.conns - d.blocked), blocked: d.blocked, total: d.conns })), [items, limit]);
+  // 右边留给条尾的「N 次」：按最长的那条算宽度（六位数、带千分位也放得下），至少 72
+  const tailW = Math.max(72, Math.ceil(axisLabelWidth(data.map((d) => times(d.total)), 11)));
   return (
-    <ChartContainer config={BAR_CFG} height={Math.max(64, data.length * 26 + 8)}>
-      <BarChart data={data} layout="vertical" margin={{ top: 0, right: 72, bottom: 0, left: 0 }} barCategoryGap={5}>
-        <XAxis type="number" hide />
-        <YAxis type="category" dataKey="host" width={176} tickFormatter={(v: string) => cut(v, 26)} interval={0} {...axisProps} />
-        {chartTooltip(BAR_CFG, String, times, BAR_CURSOR)}
-        <Bar dataKey="routed" stackId="a" fill="var(--color-routed)" isAnimationActive={false} />
-        <Bar dataKey="blocked" stackId="a" fill="var(--color-blocked)" radius={[0, 3, 3, 0]} isAnimationActive={false}>
-          <LabelList dataKey="total" position="right" offset={6} formatter={(v: number) => `${fmtN(v)} 次`} className="bar-count" />
-        </Bar>
-      </BarChart>
-    </ChartContainer>
+    <BarChart data={data} xDataKey="host" orientation="horizontal" stacked aspectRatio="" style={{ height: Math.max(64, data.length * 26 + 8) }} margin={{ top: 0, right: tailW, bottom: 0, left: 176 }} barGap={0.2} animationDuration={0}>
+      <Bar dataKey="routed" fill={ROUTED.color} lineCap={3} roundEnd animate={false} fadedOpacity={0.45} />
+      <Bar dataKey="blocked" fill={BLOCKED.color} lineCap={3} roundEnd animate={false} fadedOpacity={0.45} />
+      <BarYAxis formatLabel={(v) => cut(v, 26)} />
+      <TailLabels />
+      <ChartTooltip showDatePill={false} showDots={false} showCrosshair={false} damping={0} rows={tipRows} />
+    </BarChart>
   );
 }
 /** IPv4 按数值比（10.0.0.9 在 10.0.0.10 前面），其余（IPv6）按字面 */
@@ -53,19 +72,21 @@ const hourSpan = (l: string | number) => { const d = new Date(Number(l)); const 
 /** 每小时连接数柱状图 */
 function HourlyBars({ points, height = 160 }: { points: MachineAccess['hourly']; height?: number }) {
   const long = points.length > 30;
-  const data = React.useMemo(() => points.map((p) => ({ t: new Date(p.hour).getTime(), routed: Math.max(0, p.conns - p.blocked), blocked: p.blocked })), [points]);
-  const tick = (t: number) => { const d = new Date(t); return long ? `${p2(d.getMonth() + 1)}-${p2(d.getDate())}` : `${p2(d.getHours())}:00`; };
+  const data = React.useMemo(() => points.map((p) => ({ t: new Date(p.hour).getTime(), routed: Math.max(0, p.conns - p.blocked), blocked: p.blocked, total: p.conns })), [points]);
+  const ticks = React.useMemo(() => intTicks(Math.max(0, ...data.map((d) => d.routed + d.blocked))), [data]);
+  const leftW = Math.max(64, Math.ceil(axisLabelWidth(ticks.map(yTimes), 11)));
+  const yDomain = React.useMemo(() => [0, ticks[ticks.length - 1]] as [number, number], [ticks]);
+  const title = React.useCallback((p: Record<string, unknown>) => hourSpan(Number(p.t)), []); // 「120,000 次」放得下
+  const tick = React.useCallback((l: string) => { const d = new Date(Number(l)); return long ? `${p2(d.getMonth() + 1)}-${p2(d.getDate())}` : `${p2(d.getHours())}:00`; }, [long]);
   return (
-    <ChartContainer config={BAR_CFG} height={height}>
-      <BarChart data={data} margin={{ top: 6, right: 8, bottom: 0, left: 0 }} barCategoryGap={long ? 0 : 2}>
-        <CartesianGrid vertical={false} stroke="var(--chart-grid)" />
-        <XAxis dataKey="t" tickFormatter={tick} minTickGap={long ? 40 : 28} {...axisProps} />
-        <YAxis width={64} allowDecimals={false} tickFormatter={yTimes} {...axisProps} />
-        {chartTooltip(BAR_CFG, hourSpan, times, BAR_CURSOR)}
-        <Bar dataKey="routed" stackId="a" fill="var(--color-routed)" isAnimationActive={false} />
-        <Bar dataKey="blocked" stackId="a" fill="var(--color-blocked)" isAnimationActive={false} />
-      </BarChart>
-    </ChartContainer>
+    <BarChart data={data} xDataKey="t" stacked aspectRatio="" style={{ height }} margin={{ top: 8, right: 10, bottom: 26, left: leftW }} barGap={long ? 0 : 0.1} yDomain={yDomain} animationDuration={0}>
+      <Grid horizontal vertical={false} strokeDasharray="0" rowTickValues={ticks} numTicksRows={4} />
+      <Bar dataKey="routed" fill={ROUTED.color} animate={false} lineCap={long ? 1 : 2} roundEnd fadedOpacity={0.45} />
+      <Bar dataKey="blocked" fill={BLOCKED.color} animate={false} lineCap={long ? 1 : 2} roundEnd fadedOpacity={0.45} />
+      <BarXAxis formatLabel={tick} minLabelGap={long ? 44 : 40} fadeOnHover={false} />
+      <YAxis ticks={ticks} formatValue={yTimes} animate={false} />
+      <ChartTooltip showDatePill={false} showDots={false} showCrosshair={false} damping={0} rows={tipRows} title={title} />
+    </BarChart>
   );
 }
 

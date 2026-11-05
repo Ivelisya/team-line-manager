@@ -1,6 +1,6 @@
 # 团队线路管理 v1 · Web 前端
 
-Vite + React 19 + TypeScript（strict）+ Tailwind CSS 4（迁移中：shadcn/ui base-mira + Base UI，组件在 `src/components/ui`，目前仍有部分 Radix 原语；主题映射见 `styles/theme.css`，样式入口见 `styles/admin.css`）+ TanStack Query / Table + React Router 6 + Recharts + lucide-react。依赖版本全部精确锁定。
+Vite + React 19 + TypeScript（strict）+ Tailwind CSS 4（迁移中：shadcn/ui base-mira + Base UI，组件在 `src/components/ui`，目前仍有部分 Radix 原语；主题映射见 `styles/theme.css`，样式入口见 `styles/admin.css`）+ TanStack Query / Table + React Router 6 + bklit 图表（d3，源码在 src/components/ui/charts）+ lucide-react。依赖版本全部精确锁定。
 
 视觉沿用原版精修稿：token 移植自 `main:frontend/prototype/original/tokens.css`（默认粉紫，顶栏“配色”按钮可切回原版靛蓝；浅色 / 深色 / 跟随系统）。
 
