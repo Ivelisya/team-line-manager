@@ -27,13 +27,13 @@ export const floatSolid = "rounded-float border border-(--line-float) bg-raised 
  *  写了 data-tip 的禁用项：不能点，但悬停能看到为什么（pointer-events 放开，点击由 Base UI 的 disabled 挡住）。
  *  图标统一 14px、二级字色（--item-ic），危险项 / 选中项改写这个变量 */
 export const floatItem =
-  "relative flex min-h-(--h-md) w-full cursor-default items-center gap-2 rounded-[calc(var(--r-float)-var(--sp-4))] px-2.5 text-body text-fg outline-hidden select-none [--item-ic:var(--fg-2)] " +
-  "transition-[background-color] duration-(--dur-1) ease-(--ease-std) data-highlighted:bg-(--row-highlight) active:[background-image:var(--state-press)] " +
+  "relative flex min-h-(--h-md) w-full cursor-default items-center gap-2 rounded-[calc(var(--r-float)-var(--sp-4))] px-2.5 text-body text-fg outline-hidden select-none [--item-ic:var(--fg-2)] [--hl:color-mix(in_srgb,var(--accent)_9%,transparent)] " +
+  "transition-[background-color] duration-(--dur-1) ease-(--ease-std) data-highlighted:bg-(--hl) data-popup-open:bg-(--hl) active:[background-image:var(--state-press)] " +
   "data-disabled:pointer-events-none data-disabled:text-fg-3 data-disabled:data-tip:pointer-events-auto " +
   "[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-(--icon-sm) [&_svg:not([class*='text-'])]:text-(--item-ic)"
 
 /** 危险项（删除、退役、轮换凭据）：文字和图标红色 */
-export const floatItemDanger = "text-bad-text [--item-ic:var(--bad-text)]"
+export const floatItemDanger = "text-bad-text [--item-ic:var(--bad-text)] [--hl:var(--bad-bg)]"
 
 /** 菜单标签 / 分组名 */
 export const floatLabel = "px-2.5 pt-1.5 pb-0.5 text-micro font-medium text-fg-2"

@@ -105,7 +105,7 @@ function DropdownMenuSubTrigger({
   return (
     <MenuPrimitive.SubmenuTrigger
       data-slot="dropdown-menu-sub-trigger"
-      className={cn(floatItem, "data-popup-open:bg-(--row-highlight)", className)}
+      className={cn(floatItem, className)}
       {...props}
     >
       {children}

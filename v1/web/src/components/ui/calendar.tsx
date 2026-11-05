@@ -193,9 +193,9 @@ function CalendarDayButton({
       className={cn(
         // 数字用等宽数字字体；今天 = 1px 线描边；选中 = 强调色实底（描边让位）；焦点环贴在格子边上（格子之间只有 2px 缝）
         "relative isolate size-auto h-full w-full min-w-0 rounded-(--cell-radius) border-0 font-num font-medium text-fg [font-variant-numeric:var(--num-variant)] focus-visible:outline-offset-0 group-data-[outside=true]/day:text-fg-3 disabled:opacity-(--o-disabled) " +
-          "data-[today]:shadow-[inset_0_0_0_1px_var(--line-strong)] " +
+          "data-[today]:font-semibold data-[today]:text-brand data-[today]:shadow-[inset_0_0_0_1px_var(--line-strong)] " +
           "data-[range-end=true]:rounded-(--cell-radius) data-[range-end=true]:bg-primary data-[range-end=true]:text-primary-foreground data-[range-middle=true]:rounded-none data-[range-middle=true]:bg-muted data-[range-middle=true]:text-fg data-[range-start=true]:rounded-(--cell-radius) data-[range-start=true]:bg-primary data-[range-start=true]:text-primary-foreground " +
-          "data-[selected-single=true]:bg-primary data-[selected-single=true]:text-primary-foreground data-[selected-single=true]:shadow-none data-[selected-single=true]:focus-visible:outline-fg data-[selected-single=true]:hover:not-disabled:bg-primary",
+          "data-[selected-single=true]:bg-primary data-[selected-single=true]:text-primary-foreground data-[selected-single=true]:shadow-(--shadow-btn) data-[selected-single=true]:focus-visible:outline-fg data-[selected-single=true]:hover:not-disabled:bg-primary",
         defaultClassNames.day,
         className
       )}

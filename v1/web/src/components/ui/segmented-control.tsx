@@ -24,7 +24,7 @@ export const segmentedControlItemLayoutClassName =
   "gap-1.5 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-(--icon-sm)";
 
 export const segmentedControlIndicatorSurfaceClassName =
-  "rounded-pill bg-(--thumb) shadow-(--shadow-thumb)";
+  "rounded-pill bg-(--thumb) [box-shadow:var(--shadow-thumb),inset_0_1px_0_color-mix(in_srgb,white_35%,transparent)]";
 
 const segmentedControlRootSize: Record<SegmentedControlSize, string> = {
   default: "h-(--h-lg)",
@@ -231,7 +231,7 @@ function SegmentedControlIndicator(): React.ReactElement {
     <span
       aria-hidden="true"
       className={cn(
-        "pointer-events-none absolute top-0 left-0 -z-1 h-(--active-item-height) w-(--active-item-width) translate-x-(--active-item-left) translate-y-(--active-item-top) [transition:width_var(--dur-2)_var(--ease-out),height_var(--dur-2)_var(--ease-out),translate_var(--dur-2)_var(--ease-out)]",
+        "pointer-events-none absolute top-0 left-0 -z-1 h-(--active-item-height) w-(--active-item-width) translate-x-(--active-item-left) translate-y-(--active-item-top) [--ease-spring:cubic-bezier(.34,1.32,.5,1)] [transition:width_var(--dur-3)_var(--ease-spring),height_var(--dur-3)_var(--ease-spring),translate_var(--dur-3)_var(--ease-spring)]",
         segmentedControlIndicatorSurfaceClassName,
       )}
       data-slot="segmented-control-indicator"

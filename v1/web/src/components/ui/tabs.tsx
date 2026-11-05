@@ -33,7 +33,7 @@ function Tabs({
         value={value}
         defaultValue={defaultValue}
         onValueChange={(v, d) => { setInner(v); onValueChange?.(v, d) }}
-        className={cn("group/tabs flex gap-2 data-horizontal:flex-col", className)}
+        className={className}
         {...props}
       />
     </TabsCtx.Provider>
@@ -83,7 +83,7 @@ function TabsList({ className, children, ref, activateOnFocus = true, ...props }
       {children}
       <TabsPrimitive.Indicator
         data-slot="tabs-indicator"
-        className="pointer-events-none absolute bottom-0 left-(--active-tab-left) h-0.5 w-(--active-tab-width) rounded-t-[1px] bg-brand [transition:left_var(--dur-2)_var(--ease-out),width_var(--dur-2)_var(--ease-out)]"
+        className="pointer-events-none absolute bottom-0 left-(--active-tab-left) h-0.5 w-(--active-tab-width) rounded-t-[1px] bg-brand [transition:left_var(--dur-3)_var(--ease-out),width_var(--dur-3)_var(--ease-out)]"
       />
     </TabsPrimitive.List>
   )

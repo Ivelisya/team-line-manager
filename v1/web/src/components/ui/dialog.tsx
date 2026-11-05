@@ -118,6 +118,12 @@ export const dialogOpen = ({ exiting = true, drawer = false }: { exiting?: boole
   return !!document.querySelector(sel)
 }
 
+// 对话框里开着下拉选择 / 下拉菜单 / 弹层时点遮罩：这一下只用来收起它们（同改前 Radix 层栈：只有最上层响应外部点击）。Base UI 里这些层的外部点击和对话框的外部点击是各自独立判断的，
+// 点遮罩会两个一起关。在 pointerdown 的捕获阶段（各层的关闭还没执行）记下当时有没有这样的层开着，outside-press 时若有就取消对话框这一次的关闭。悬浮卡不算（非模态、不抢点击）
+const FLOAT_OPEN = ["select", "dropdown-menu", "dropdown-menu-sub", "context-menu", "context-menu-sub", "popover"].map((n) => `[data-slot="${n}-content"][data-open]`).join(", ")
+let floatAtPress = false
+if (typeof window !== "undefined") window.addEventListener("pointerdown", () => { floatAtPress = !!document.querySelector(FLOAT_OPEN) }, true)
+
 function Dialog({
   open,
   onOpenChange,
@@ -133,6 +139,7 @@ function Dialog({
     if (!next && (details.reason === "escape-key" || details.reason === "outside-press")) {
       const reason: DismissReason = details.reason
       if (reason === "outside-press") {
+        if (floatAtPress) { details.cancel(); return }
         // Ctrl+左键点遮罩不关（mac 上是右键；改前 Radix 同样当右键处理），不回弹
         const e = details.event as MouseEvent
         if (e.button === 0 && e.ctrlKey) { details.cancel(); return }

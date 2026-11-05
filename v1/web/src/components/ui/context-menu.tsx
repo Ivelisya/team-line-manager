@@ -115,7 +115,7 @@ function ContextMenuSubTrigger({
   return (
     <ContextMenuPrimitive.SubmenuTrigger
       data-slot="context-menu-sub-trigger"
-      className={cn(floatItem, "data-popup-open:bg-(--row-highlight)", className)}
+      className={cn(floatItem, className)}
       {...props}
     >
       {children}
