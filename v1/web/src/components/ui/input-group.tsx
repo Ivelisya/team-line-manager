@@ -1,21 +1,18 @@
-"use client"
-
 import * as React from "react"
 import { cva, type VariantProps } from "class-variance-authority"
 
 import { cn } from "@/lib/utils"
-import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Textarea } from "@/components/ui/textarea"
 
-/* 输入组：外框管边线 / 底 / 聚焦光环（和 Input 同一套），里面的 input 无边框；左右的 Addon 放图标、单位、按钮。高度 --h-lg */
+/* 输入组：外框管边线 / 底 / 聚焦光环（和 Input 同一套），里面的 input 无边框；左右的 Addon 放图标、单位。高度 --h-lg。
+   只留用得上的（UnitInput 的单位后缀、SearchInput 的放大镜）：shadcn 原版的 InputGroupButton / InputGroupTextarea、上下排的 block-* 对齐没有调用处，没留。
+   不带原版的 role="group"：每个带单位 / 搜索的输入框都会在无障碍树里多出没有名字的分组 */
 function InputGroup({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="input-group"
-      role="group"
       className={cn(
-        "group/input-group relative flex h-(--h-lg) w-full min-w-0 items-center rounded-control border border-input bg-surface [transition:border-color_var(--dur-1)_var(--ease-std),box-shadow_var(--dur-1)_var(--ease-std)] outline-none has-[[data-slot=input-group-control]:focus-visible]:border-brand has-[[data-slot=input-group-control]:focus-visible]:ring-[3px] has-[[data-slot=input-group-control]:focus-visible]:ring-(--focus-halo) has-[[data-slot][aria-invalid=true]]:border-bad has-disabled:bg-sunken has-disabled:text-fg-3 has-[>[data-align=block-end]]:h-auto has-[>[data-align=block-end]]:flex-col has-[>[data-align=block-start]]:h-auto has-[>[data-align=block-start]]:flex-col has-[>textarea]:h-auto has-[>[data-align=block-end]]:[&>input]:pt-3 has-[>[data-align=block-start]]:[&>input]:pb-3 has-[>[data-align=inline-end]]:[&>input]:pr-1.5 has-[>[data-align=inline-start]]:[&>input]:pl-1.5",
+        "group/input-group relative flex h-(--h-lg) w-full min-w-0 items-center rounded-control border border-input bg-surface [transition:border-color_var(--dur-1)_var(--ease-std),box-shadow_var(--dur-1)_var(--ease-std)] outline-none has-[[data-slot=input-group-control]:focus-visible]:border-brand has-[[data-slot=input-group-control]:focus-visible]:ring-[3px] has-[[data-slot=input-group-control]:focus-visible]:ring-(--focus-halo) has-[[data-slot][aria-invalid=true]]:border-bad has-disabled:bg-sunken has-disabled:text-fg-3 has-[>[data-align=inline-end]]:[&>input]:pr-1.5 has-[>[data-align=inline-start]]:[&>input]:pl-1.5",
         className
       )}
       {...props}
@@ -28,14 +25,8 @@ const inputGroupAddonVariants = cva(
   {
     variants: {
       align: {
-        "inline-start":
-          "order-first pl-2.5 has-[>button]:ml-[-0.275rem] has-[>kbd]:ml-[-0.275rem]",
-        "inline-end":
-          "order-last pr-2.5 has-[>button]:mr-[-0.275rem] has-[>kbd]:mr-[-0.275rem]",
-        "block-start":
-          "order-first w-full justify-start px-2 pt-2 group-has-[>input]/input-group:pt-2 [.border-b]:pb-2",
-        "block-end":
-          "order-last w-full justify-start px-2 pb-2 group-has-[>input]/input-group:pb-2 [.border-t]:pt-2",
+        "inline-start": "order-first pl-2.5",
+        "inline-end": "order-last pr-2.5",
       },
     },
     defaultVariants: {
@@ -44,6 +35,7 @@ const inputGroupAddonVariants = cva(
   }
 )
 
+/** 点在图标 / 单位上也聚焦到输入框 */
 function InputGroupAddon({
   className,
   align = "inline-start",
@@ -51,7 +43,6 @@ function InputGroupAddon({
 }: React.ComponentProps<"div"> & VariantProps<typeof inputGroupAddonVariants>) {
   return (
     <div
-      role="group"
       data-slot="input-group-addon"
       data-align={align}
       className={cn(inputGroupAddonVariants({ align }), className)}
@@ -61,44 +52,6 @@ function InputGroupAddon({
         }
         e.currentTarget.parentElement?.querySelector("input")?.focus()
       }}
-      {...props}
-    />
-  )
-}
-
-const inputGroupButtonVariants = cva(
-  "flex items-center gap-2 rounded-control text-label shadow-none",
-  {
-    variants: {
-      size: {
-        xs: "h-5 gap-1 rounded-tag px-1 [&>svg:not([class*='size-'])]:size-3",
-        sm: "gap-1",
-        "icon-xs": "size-6 p-0 has-[>svg]:p-0",
-        "icon-sm": "size-7 p-0 has-[>svg]:p-0",
-      },
-    },
-    defaultVariants: {
-      size: "xs",
-    },
-  }
-)
-
-function InputGroupButton({
-  className,
-  type = "button",
-  variant = "ghost",
-  size = "xs",
-  ...props
-}: Omit<React.ComponentProps<typeof Button>, "size" | "type"> &
-  VariantProps<typeof inputGroupButtonVariants> & {
-    type?: "button" | "submit" | "reset"
-  }) {
-  return (
-    <Button
-      type={type}
-      data-size={size}
-      variant={variant}
-      className={cn(inputGroupButtonVariants({ size }), className)}
       {...props}
     />
   )
@@ -132,27 +85,9 @@ function InputGroupInput({
   )
 }
 
-function InputGroupTextarea({
-  className,
-  ...props
-}: React.ComponentProps<"textarea">) {
-  return (
-    <Textarea
-      data-slot="input-group-control"
-      className={cn(
-        "flex-1 resize-none rounded-none border-0 bg-transparent py-2 shadow-none ring-0 focus-visible:ring-0 aria-invalid:ring-0 disabled:bg-transparent",
-        className
-      )}
-      {...props}
-    />
-  )
-}
-
 export {
   InputGroup,
   InputGroupAddon,
-  InputGroupButton,
   InputGroupText,
   InputGroupInput,
-  InputGroupTextarea,
 }

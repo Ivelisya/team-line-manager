@@ -246,6 +246,7 @@ svg.copied-ic { color: var(--ok); animation: copy-pop var(--dur-2) var(--ease-ou
 }
 @media (hover: hover) { .select-trigger:hover:not(:disabled, :focus-visible, [data-state="open"]) { border-color: color-mix(in srgb, var(--line-strong), var(--fg) 12%); } }
 .select-trigger:focus-visible, .select-trigger[data-state="open"] { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus-halo); }
+.select-trigger:disabled { background: var(--sunken); color: var(--fg-3); cursor: default; } /* 同禁用的输入框（Input 的 disabled:bg-sunken disabled:text-fg-3）：沉底、三级字 */
 .select-trigger.input-sm { height: var(--h-sm); font-size: var(--fs-label); padding: 0 var(--sp-8); }
 .select-trigger { display: inline-flex; align-items: center; justify-content: space-between; gap: var(--sp-8); cursor: pointer; text-align: left; }
 .select-trigger > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -3,6 +3,7 @@
 // 不要每行挂一个 Radix DropdownMenu 根（各给 document 加一个 keydown 捕获监听）和一个 mutation 观察者：入口几十条的卡随推送重渲染时会一起重画。
 import { Spinner } from '@/components/ui/spinner';
 import * as React from 'react';
+import { mergeProps } from '@base-ui/react/merge-props';
 import { ArrowLeftRight, KeyRound, Link2, MoreHorizontal, Power, PowerOff } from 'lucide-react';
 import type { EntryView } from '@/lib/types';
 import { fetchShare, mainShare, useEntryAction, useEntryRouterExits, useReverse, useReversePreview } from '@/lib/queries';
@@ -88,7 +89,8 @@ export function EntryMenus({ entries, children }: { entries: EntryView[]; childr
 
   return (
     <>
-      {React.cloneElement(children as React.ReactElement<{ onClick?: (e: React.MouseEvent) => void }>, { onClick: (e: React.MouseEvent) => { (children.props as { onClick?: (e: React.MouseEvent) => void }).onClick?.(e); dd.onClick(e); } })}
+      {/* 点击在容器上委托接住（行里「⋯」带 data-entry-menu）：mergeProps 把容器自己的 onClick 和这里的串起来（容器的先跑），不互相顶掉 */}
+      {React.cloneElement(children as React.ReactElement<React.ComponentProps<'div'>>, mergeProps<'div'>({ onClick: dd.onClick }, (children as React.ReactElement<React.ComponentProps<'div'>>).props))}
       {/* 打开对话框的项带「…」；启用不用确认，直接执行：菜单留着、这一项转圈，成功后收起菜单并提示 */}
       {dd.menu('入口操作', cur && <>
         <DropdownMenuItem onSelect={() => void share(cur)} disabled={!canAct}><Link2 />分享链接…</DropdownMenuItem>

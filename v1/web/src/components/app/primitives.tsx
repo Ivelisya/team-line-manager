@@ -339,7 +339,7 @@ export function CopyButton({ text, label = '内容', className, size = 14, show 
       <TooltipTrigger render={
         // 复制成功：变绿弹一下，悬停也不变回灰
         <Button variant="ghost" size="icon-xs" aria-label={`复制${label}`} data-done={done ? '' : undefined}
-          className={cn('data-done:text-ok data-done:hover:text-ok data-done:[animation:copy-pop_var(--dur-2)_var(--ease-out)]', className)}
+          className={cn('data-done:text-ok data-done:hover:not-disabled:not-aria-disabled:text-ok data-done:[animation:copy-pop_var(--dur-2)_var(--ease-out)]', className)}
           onClick={(e) => { e.stopPropagation(); void copy(text, label, show); }} />
       }>
         {done ? <Check size={size} /> : <Copy size={size} />}

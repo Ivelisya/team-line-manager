@@ -1,5 +1,6 @@
 import * as React from "react"
 import { Button as ButtonPrimitive } from "@base-ui/react/button"
+import { mergeProps } from "@base-ui/react/merge-props"
 import { cva, type VariantProps } from "class-variance-authority"
 
 import { cn } from "@/lib/utils"
@@ -29,8 +30,6 @@ const buttonVariants = cva(
         // 次按钮（描边）；展开着的下拉触发按钮同悬停底
         outline:
           "border-input bg-surface text-foreground hover:not-disabled:not-aria-disabled:bg-(image:--state-press) aria-expanded:bg-(image:--state-press)",
-        secondary:
-          "bg-secondary text-secondary-foreground hover:not-disabled:bg-[color-mix(in_srgb,var(--secondary),var(--foreground)_5%)] aria-expanded:bg-secondary",
         // 展开 / 按下态的底色只给图标按钮（下拉的「⋯」、显示密码）：同改前 .icon-btn；文字的「展开全部」「收起」展开后不该一直亮着
         ghost:
           "text-fg-2 hover:not-disabled:not-aria-disabled:bg-accent hover:not-disabled:not-aria-disabled:text-foreground",
@@ -47,9 +46,9 @@ const buttonVariants = cva(
         xs: "h-(--h-xs) gap-1 rounded-tag px-1.5 text-label [&_svg:not([class*='size-'])]:size-(--icon-2xs)",
         sm: "h-(--h-sm) gap-1 px-2 text-label [&_svg:not([class*='size-'])]:size-(--icon-sm)",
         lg: "h-(--h-lg) gap-1.5 px-3 text-body [&_svg:not([class*='size-'])]:size-(--icon-sm)",
-        // 行内文字链接（正文里的「查看作业」「展开」）：不占固定高度、没有内边距
-        inline: "h-auto gap-1 rounded-xs p-0 text-body [&_svg:not([class*='size-'])]:size-(--icon-sm)",
-        "inline-sm": "h-auto gap-1 rounded-xs p-0 text-label [&_svg:not([class*='size-'])]:size-(--icon-xs)",
+        // 行内文字链接（正文里的「查看作业」「展开」）：不占固定高度、没有内边距和边框（同改前 .btn-link，和前后的字对齐、不撑高行）
+        inline: "h-auto gap-1 rounded-xs border-0 p-0 text-body [&_svg:not([class*='size-'])]:size-(--icon-sm)",
+        "inline-sm": "h-auto gap-1 rounded-xs border-0 p-0 text-label [&_svg:not([class*='size-'])]:size-(--icon-xs)",
         icon: "size-(--h-md) active:not-disabled:scale-(--press-sm)",
         "icon-xs": "size-(--h-xs) rounded-tag active:not-disabled:scale-(--press-sm)",
         "icon-sm": "size-(--h-sm) active:not-disabled:scale-(--press-sm)",
@@ -83,7 +82,7 @@ type ButtonProps = ButtonPrimitive.Props &
     loading?: boolean
   }
 
-/** render={<Link … />} / <a>：样式是按钮，元素仍是链接 */
+/** render={<Link … />} / <a>：样式是按钮，元素仍是链接（链接不支持 disabled / loading） */
 function Button({
   className,
   variant = "default",
@@ -97,10 +96,11 @@ function Button({
 }: ButtonProps) {
   const cls = cn(buttonVariants({ variant, size, className }))
   // 链接：直接把按钮的样式交给链接元素，不经 Base UI Button——它把非原生元素当按钮处理（补 role="button"、空格键触发点击），
-  // 链接要保持原生的语义和键盘行为（Enter 打开、空格滚动页面）。外层（如 TooltipTrigger）合并进来的属性照样落在链接上
-  if (React.isValidElement<{ className?: string }>(render)) {
+  // 链接要保持原生的语义和键盘行为（Enter 打开、空格滚动页面）。外层（如 TooltipTrigger）传进来的属性用 mergeProps 与链接自己的合并：
+  // 事件处理串起来、不互相顶掉（<Link onClick={close}> 照常关抽屉），style 合并
+  if (React.isValidElement<React.ComponentProps<"a">>(render)) {
     return React.cloneElement(render, {
-      ...props,
+      ...mergeProps<"a">(render.props, props as React.ComponentProps<"a">),
       className: cn(cls, render.props.className),
       children,
       "data-slot": "button",
