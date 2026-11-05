@@ -1,4 +1,4 @@
-// 交互冒烟：退役确认流程（默认「移入备用」预览改名，再切到「立即清理」输入显示名）与批量上架（粘贴 → 检查 → 唯一确认 → 作业）。需先 VITE_MOCK=1 pnpm dev
+// 交互冒烟：退役确认流程（默认「移入备用」预览改名，再切到「立即清理」输入显示名）、批量上架（粘贴 → 检查 → 唯一确认 → 作业）、对话框里提示开着时 Esc 的先后。需先 VITE_MOCK=1 pnpm dev
 import puppeteer from 'puppeteer-core';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -61,6 +61,19 @@ await page.screenshot({ path: path.join(out, 'smoke-provision-confirm.png') });
 await clickInDialog('button', '确认上架'); await sleep(900);
 await page.screenshot({ path: path.join(out, 'smoke-provision-created.png') });
 step('已创建作业：' + (await page.evaluate(() => document.body.innerText.includes('已开始上架'))));
+
+// 3. 对话框里提示开着时按 Esc：第一下只收起提示，对话框和已填的内容还在；第二下才关对话框
+await page.goto(`${BASE}/routers`, { waitUntil: 'networkidle0' });
+await clickText('button', '接入软路由'); await sleep(500);
+await page.keyboard.type('smoke-esc');
+await inDialog((d) => d.querySelector('[role="img"][tabindex="0"]')?.focus()); await sleep(600);
+const tipOpen = () => page.evaluate(() => !!document.querySelector('[data-slot="tooltip-content"][data-open]'));
+const dialogs = () => page.evaluate(() => document.querySelectorAll('[role="dialog"]').length);
+step('键盘聚焦「(i)」出现提示：' + (await tipOpen()));
+await page.keyboard.press('Escape'); await sleep(500);
+step('第一下 Esc 只收起提示：' + (!(await tipOpen()) && (await dialogs()) === 1 && (await inDialog((d) => d.querySelector('input')?.value)) === 'smoke-esc'));
+await page.keyboard.press('Escape'); await sleep(500);
+step('第二下 Esc 关掉对话框：' + ((await dialogs()) === 0));
 console.log('页面错误：', errors.length ? errors : '无');
 if (errors.length) process.exitCode = 1;
 await browser.close();
