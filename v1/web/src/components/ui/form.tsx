@@ -1,85 +1,76 @@
 import * as React from 'react';
-import * as LabelPrimitive from '@radix-ui/react-label';
-import * as CheckboxPrimitive from '@radix-ui/react-checkbox';
-import * as SwitchPrimitive from '@radix-ui/react-switch';
-import { Check, Info, Minus, Search } from 'lucide-react';
+import { Search } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { Label } from '@/components/ui/label';
+import { InfoTip } from '@/components/ui/info-tip';
+import { Field, FieldDescription, FieldError } from '@/components/ui/field';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Switch } from '@/components/ui/switch';
+import { InputGroup, InputGroupAddon, InputGroupInput, InputGroupText } from '@/components/ui/input-group';
 
-/** 登录用的输入：密码框，或 autoComplete 写明是用户名 / 密码 / 验证码的。其余文本框（团队名、套餐名、搜索…）不让密码管理器挂图标 */
-const CREDENTIAL = new Set(['username', 'current-password', 'new-password', 'one-time-code']);
-export const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement> & { sm?: boolean }>(({ className, sm, ...p }, ref) => (
-  <input ref={ref} className={cn('input', sm && 'input-sm', className)} {...(p.type !== 'password' && !CREDENTIAL.has(p.autoComplete ?? '') ? { 'data-1p-ignore': '', 'data-lpignore': 'true' } : null)} {...p} />
-));
-Input.displayName = 'Input';
+// 表单里 shadcn 没有的组合件（基础件各自在 input / textarea / label / field / checkbox / switch / input-group）：
+// FormField（标签 + 控件 + 提示 / 错误，id 自动关联）、UnitInput、SearchInput、CheckRow、OptimisticSwitch。
 
-/** 带单位后缀的短输入框（「7 天」「4 小时」）：width 是整个框的宽度，只填一两位数的不用撑满一行。id 等属性落在里面的 input 上（Field 的标签对得上） */
-/** 带单位后缀的输入框；width 是像素宽，'full' 占满一格（表单网格里与下拉框等宽） */
-export const UnitInput = React.forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement> & { unit: string; width?: number | 'full' }>(({ unit, width, ...p }, ref) => (
-  <span className="input-unit" style={width ? { width: width === 'full' ? '100%' : width } : undefined}><Input ref={ref} {...p} /><span className="input-unit-u" aria-hidden>{unit}</span></span>
-));
-UnitInput.displayName = 'UnitInput';
-
-export const Textarea = React.forwardRef<HTMLTextAreaElement, React.TextareaHTMLAttributes<HTMLTextAreaElement>>(({ className, ...p }, ref) => (
-  <textarea ref={ref} className={cn('textarea', className)} {...p} />
-));
-Textarea.displayName = 'Textarea';
-
-export const Label = React.forwardRef<React.ElementRef<typeof LabelPrimitive.Root>, React.ComponentPropsWithoutRef<typeof LabelPrimitive.Root>>(({ className, ...p }, ref) => (
-  <LabelPrimitive.Root ref={ref} className={cn('label', className)} {...p} />
-));
-Label.displayName = 'Label';
-
-/** 「(i)」：悬停 / 聚焦时显示的补充说明。界面上只留必须知道的短字，解释放这里（用户：说明性的小字太多） */
-export function InfoTip({ text, className }: { text: string; className?: string }) {
-  return <span className={cn('info-tip', className)} tabIndex={0} role="img" aria-label={text} data-tip={text}><Info /></span>;
+/** 标签 + 可选「(i)」补充说明。
+ *  htmlFor 指向一个控件时是 <label>；只给一组控件（分段、单选组、列表）起个标题时不传 htmlFor，渲染成同样外观的 span，不留指不到控件的 label。
+ *  「(i)」在这一行里不要自带的左外边距（间距由 gap 给），同改前的 .field-label > .info-tip */
+export function LabelRow({ htmlFor, info, children, className }: { htmlFor?: string; info?: string; children: React.ReactNode; className?: string }) {
+  const text = htmlFor
+    ? <Label htmlFor={htmlFor} className={info ? undefined : className}>{children}</Label>
+    : <span data-slot={info ? undefined : 'field-label'} className={cn('inline-flex items-center gap-1 text-label font-medium text-fg-2', !info && className)}>{children}</span>;
+  if (!info) return text;
+  return <span data-slot="field-label" className={cn('inline-flex min-w-0 items-center gap-1 [&>.info-tip]:m-0', className)}>{text}<InfoTip text={info} /></span>;
 }
 
-/** 表单项：标签（可带「(i)」补充说明）+ 控件 + 短提示 / 错误。hint 只放一句十来个字的必要提示，长的解释写进 info */
-export function Field({ label, info, hint, error, children, className }: { label?: React.ReactNode; info?: string; hint?: React.ReactNode; error?: React.ReactNode; children: React.ReactNode; className?: string }) {
+/** 表单项：标签（可带「(i)」补充说明）+ 控件 + 短提示 / 错误。hint 只放一句十来个字的必要提示，长的解释写进 info。
+ *  控件（children 是单个元素时）自动拿到 id，标签 htmlFor 指向它。网格布局（grid + 标签 / 控件 / 提示三行）沿用原样：表单页按它对齐同一行的字段 */
+export function FormField({ label, info, hint, error, children, className }: { label?: React.ReactNode; info?: string; hint?: React.ReactNode; error?: React.ReactNode; children: React.ReactNode; className?: string }) {
   const id = React.useId();
   return (
-    <div className={cn('field', className)}>
-      {label && (info ? <span className="field-label"><Label htmlFor={id}>{label}</Label><InfoTip text={info} /></span> : <Label htmlFor={id}>{label}</Label>)}
+    <Field className={className}>
+      {label && <LabelRow htmlFor={id} info={info}>{label}</LabelRow>}
       {React.isValidElement(children) ? React.cloneElement(children as React.ReactElement<{ id?: string }>, { id }) : children}
-      {error ? <div className="hint is-error">{error}</div> : hint ? <div className="hint">{hint}</div> : null}
-    </div>
+      {error ? <FieldError>{error}</FieldError> : hint ? <FieldDescription>{hint}</FieldDescription> : null}
+    </Field>
   );
 }
 
-export const SearchInput = React.forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement>>(({ className, ...p }, ref) => (
-  <span className={cn('search', className)}><Search /><Input ref={ref} type="search" {...p} /></span>
-));
-SearchInput.displayName = 'SearchInput';
-
-export const Checkbox = React.forwardRef<React.ElementRef<typeof CheckboxPrimitive.Root>, React.ComponentPropsWithoutRef<typeof CheckboxPrimitive.Root>>(({ className, ...p }, ref) => (
-  <CheckboxPrimitive.Root ref={ref} className={cn('checkbox', className)} {...p}>
-    <CheckboxPrimitive.Indicator>{p.checked === 'indeterminate' ? <Minus /> : <Check />}</CheckboxPrimitive.Indicator>
-  </CheckboxPrimitive.Root>
-));
-Checkbox.displayName = 'Checkbox';
-
-export function CheckRow({ checked, onChange, children, disabled, className }: { checked: boolean; onChange: (v: boolean) => void; children: React.ReactNode; disabled?: boolean; className?: string }) {
-  const id = React.useId();
+/** 带单位后缀的输入框（「7 天」「4 小时」）：width 是像素宽，'full' 占满一格（表单网格里与下拉框等宽）；id 等属性落在里面的 input 上（标签对得上） */
+export function UnitInput({ unit, width, className, style, ref, ...p }: React.ComponentProps<'input'> & { unit: string; width?: number | 'full' }) {
   return (
-    <label htmlFor={id} className={cn('check-row', className)}>
-      <Checkbox id={id} checked={checked} disabled={disabled} onCheckedChange={(v) => onChange(v === true)} />
-      <span>{children}</span>
-    </label>
+    <InputGroup className={cn('max-w-full', className)} style={width ? { width: width === 'full' ? '100%' : width } : undefined}>
+      <InputGroupInput ref={ref} className="tabular-nums" style={style} {...p} />
+      <InputGroupAddon align="inline-end"><InputGroupText aria-hidden>{unit}</InputGroupText></InputGroupAddon>
+    </InputGroup>
   );
 }
 
-export const Switch = React.forwardRef<React.ElementRef<typeof SwitchPrimitive.Root>, React.ComponentPropsWithoutRef<typeof SwitchPrimitive.Root>>(({ className, ...p }, ref) => (
-  <SwitchPrimitive.Root ref={ref} className={cn('switch', className)} {...p}><SwitchPrimitive.Thumb asChild><span /></SwitchPrimitive.Thumb></SwitchPrimitive.Root>
-));
-Switch.displayName = 'Switch';
+/** 搜索框：左边放大镜，type=search（原生清除键，样式见 components.css） */
+export function SearchInput({ className, ref, ...p }: React.ComponentProps<'input'>) {
+  return (
+    <InputGroup className={className}>
+      <InputGroupAddon><Search /></InputGroupAddon>
+      <InputGroupInput ref={ref} type="search" {...p} />
+    </InputGroup>
+  );
+}
+
+/** 整行可点的复选行 / 开关行：点文字也能切换；disabled 时文字一起调淡。switch = 前面是开关（间距略大）；aria-label 给控件一个固定的名字（文字会随状态变时用） */
+export function CheckRow({ checked, onChange, children, disabled, className, switch: asSwitch, 'aria-label': ariaLabel }: { checked: boolean; onChange: (v: boolean) => void; children: React.ReactNode; disabled?: boolean; className?: string; switch?: boolean; 'aria-label'?: string }) {
+  return (
+    <Label className={cn('cursor-pointer gap-2 text-body font-normal text-fg has-data-disabled:cursor-default', asSwitch && 'gap-2.5', className)}>
+      {asSwitch
+        ? <Switch checked={checked} disabled={disabled} onCheckedChange={(v) => onChange(v)} aria-label={ariaLabel} />
+        : <Checkbox checked={checked} disabled={disabled} onCheckedChange={(v) => onChange(v)} aria-label={ariaLabel} />}
+      <span className="peer-data-disabled:opacity-(--o-disabled)">{children}</span>
+    </Label>
+  );
+}
 
 /** 值由服务端管的开关（点一下要等请求回来、数据重取才变）：点下立刻按新值显示，不等两次往返。
  *  onCheckedChange 的第二个参数 rollback：请求失败时调它回到服务端的值；成功就不用管——数据一跟上（checked 变了）本地的值自动清掉 */
-export const OptimisticSwitch = React.forwardRef<React.ElementRef<typeof SwitchPrimitive.Root>, Omit<React.ComponentPropsWithoutRef<typeof SwitchPrimitive.Root>, 'checked' | 'onCheckedChange'> & { checked: boolean; onCheckedChange: (v: boolean, rollback: () => void) => void }>(
-  ({ checked, onCheckedChange, ...p }, ref) => {
-    const [opt, setOpt] = React.useState<{ v: boolean; base: boolean } | null>(null);
-    if (opt && checked !== opt.base) setOpt(null);
-    return <Switch ref={ref} checked={opt ? opt.v : checked} onCheckedChange={(v) => { setOpt({ v, base: checked }); onCheckedChange(v, () => setOpt(null)); }} {...p} />;
-  },
-);
-OptimisticSwitch.displayName = 'OptimisticSwitch';
+export function OptimisticSwitch({ checked, onCheckedChange, ...p }: Omit<React.ComponentProps<typeof Switch>, 'checked' | 'onCheckedChange'> & { checked: boolean; onCheckedChange: (v: boolean, rollback: () => void) => void }) {
+  const [opt, setOpt] = React.useState<{ v: boolean; base: boolean } | null>(null);
+  if (opt && checked !== opt.base) setOpt(null);
+  return <Switch checked={opt ? opt.v : checked} onCheckedChange={(v) => { setOpt({ v, base: checked }); onCheckedChange(v, () => setOpt(null)); }} {...p} />;
+}

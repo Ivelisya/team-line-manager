@@ -1,11 +1,14 @@
 // 抽屉“费用”页：订阅信息编辑 + 登记续费 + 续费记录。
+import { Field } from '@/components/ui/field';
 import * as React from 'react';
 import { CalendarPlus, Pencil, Scale } from 'lucide-react';
 import type { MachineView, SubField, Subscription } from '@/lib/types';
 import { useRenew, useRenewals, useSaveSubscription, type SubscriptionBody } from '@/lib/queries';
 import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
-import { Field, InfoTip, Input, Label, Switch, UnitInput } from '@/components/ui/form';
+import { CheckRow, FormField, LabelRow, UnitInput } from '@/components/ui/form';
+import { InfoTip } from '@/components/ui/info-tip';
+import { Input } from '@/components/ui/input';
 import { Segmented } from '@/components/ui/overlays';
 import { DateField } from '@/components/ui/date-field';
 import { useUsdPreview } from '@/lib/fx';
@@ -69,9 +72,9 @@ export function BillingTab({ m }: { m: MachineView }) {
             )}
           </LabelValueGrid>
           <div className="row" style={{ marginTop: 12, gap: 8 }}>
-            <Button onClick={() => setRenew(true)}><CalendarPlus />登记续费</Button>
-            {!editing && <Button onClick={() => setEditing(true)}><Pencil />修改订阅</Button>}
-            {m.kind === 'relay' && q.limit > 0 && !q.rolling && <Button onClick={() => setRebalance(true)}><Scale />搬迁建议</Button>}
+            <Button variant="outline" onClick={() => setRenew(true)}><CalendarPlus />登记续费</Button>
+            {!editing && <Button variant="outline" onClick={() => setEditing(true)}><Pencil />修改订阅</Button>}
+            {m.kind === 'relay' && q.limit > 0 && !q.rolling && <Button variant="outline" onClick={() => setRebalance(true)}><Scale />搬迁建议</Button>}
           </div>
           {m.kind === 'relay' && <RebalanceDialog relay={m} open={rebalance} onOpenChange={setRebalance} />}
         </Section>
@@ -79,7 +82,7 @@ export function BillingTab({ m }: { m: MachineView }) {
       {(!s || editing) && (
         <section className="sec" ref={formRef}>
           <SectionHeader title={<>{s ? '修改订阅' : '设置订阅'} <InfoTip text={`选「跟随」的项跟随${m.plan ? `套餐「${m.plan.name}」` : '默认值'}${m.provider ? `与供应商「${m.provider.name}」` : ''}：在「供应商」里改了，这里立即跟着变。`} /></>}>
-            {s && <Button variant="quiet" size="sm" onClick={() => setEditing(false)}>收起</Button>}
+            {s && <Button variant="ghost" size="sm" onClick={() => setEditing(false)}>收起</Button>}
           </SectionHeader>
           {!s && !h && <div style={{ marginBottom: 12 }}><Note>还没有订阅信息 <InfoTip text={`填写后会参与到期提醒与费用统计。${m.plan ? '有套餐时只需填到期日。' : ''}`} /></Note></div>}
           <SubForm key={m.id + (s?.due_date ?? '')} m={m} />
@@ -123,15 +126,15 @@ function OvField({ m, k, label, info, on, setOn, due, error, hint, locked, onTou
     <span data-tip={follow}><Segmented sm label={`${label}：跟随或单独设置`} value={on ? 'own' : 'follow'} onChange={(v) => setOn(v === 'own')} items={OV_ITEMS} /></span>
   );
   return (
-    <div className="field" onBlur={onTouch}>
+    <Field onBlur={onTouch}>
       <div className="ov-head">
-        <span className="field-label"><Label htmlFor={id}>{label}</Label>{info && <InfoTip text={info} />}</span>
+        <LabelRow htmlFor={id} info={info}>{label}</LabelRow>
         {toggle}
       </div>
       {on ? React.cloneElement(children as React.ReactElement<{ id?: string }>, { id }) : <div id={id} className="ov-follow">{shared ? follow : inheritValueText(m, k, due)}</div>}
       {on && error && <div className="hint is-error">{error}</div>}
       {on && !error && hint && <div className="hint">{hint}</div>}
-    </div>
+    </Field>
   );
 }
 
@@ -193,8 +196,8 @@ function SubForm({ m }: { m: MachineView }) {
   );
   return (
     <div className="form-grid sub-form" onBlur={(e) => { if (!(e.target as HTMLElement).closest('[data-due]')) touch('due')(); }}>
-      <Field label="到期日" hint={touched.due && dueDate === '' ? '必填' : undefined} error={dueBad ? '格式应为 YYYY-MM-DD' : undefined}><div data-due><DateField value={dueDate} onChange={setDueDate} /></div></Field>
-      {o('price_cents', '费用', <UnitInput width="full" unit={priceUnit} style={{ paddingRight: `calc(var(--sp-10) + ${priceUnit.length * 0.62 + 0.4}em)` }} inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="68" aria-invalid={(touched.price_cents && priceBad) || undefined} />, priceBad ? (price.trim() === '' ? '必填，免费填 0' : '应为 0 或正数') : undefined)}
+      <FormField label="到期日" hint={touched.due && dueDate === '' ? '必填' : undefined} error={dueBad ? '格式应为 YYYY-MM-DD' : undefined}><div data-due><DateField value={dueDate} onChange={setDueDate} /></div></FormField>
+      {o('price_cents', '费用', <UnitInput width="full" unit={priceUnit} inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="68" aria-invalid={(touched.price_cents && priceBad) || undefined} />, priceBad ? (price.trim() === '' ? '必填，免费填 0' : '应为 0 或正数') : undefined)}
       {o('currency', '币种', <Select value={currency} onChange={setCurrency} options={F.withCurrent(currencyOptions(), currency)} />)}
       {o('cycle', '计费周期', <Select value={cycle} onChange={setCycle} options={cycleOptions()} />)}
       {o('billing_tz', '账单时区', <TzInput value={tz} onChange={setTz} aria-label="账单时区" />, tzBad ? '填 IANA 时区名，如 Asia/Shanghai' : undefined, '到期日按这个时区的日期算')}
@@ -203,8 +206,8 @@ function SubForm({ m }: { m: MachineView }) {
       {o('traffic_reset_day', '流量重置日', <Input inputMode="numeric" maxLength={2} value={resetDay} onChange={(e) => setResetDay(e.target.value.replace(/\D/g, ''))} placeholder="1–31" />, resetBad ? '填 1–31' : undefined, '每月几号重置，按账单时区；月份没有这一天按月末')}
       {/* 只有按网卡计量的机器（quota.rule 非空）才用得上；家宽代理、同机 IP 节点按业务流量，不显示 */}
       {m.quota.rule && o('traffic_rule', '流量计费', <Select value={rule} onChange={setRule} options={trafficRuleOptions()} />, undefined, '双向是下行加上行；单向只记其中一个。以供应商面板的计费口径为准')}
-      <div className="row span-2" style={{ gap: 4 }}><label className="check-row" style={{ gap: 10 }}><Switch checked={auto} onCheckedChange={setAuto} /><span>到期自动续费</span></label><InfoTip text="只用于提醒口径，不会真的扣款" /></div>
-      <div className="span-2 row" style={{ justifyContent: 'flex-end' }}><Button variant="primary" disabled={!valid || sig === saved.current || save.isPending} loading={save.isPending} onClick={submit}>保存订阅</Button></div>
+      <div className="row span-2" style={{ gap: 4 }}><CheckRow switch checked={auto} onChange={setAuto}>到期自动续费</CheckRow><InfoTip text="只用于提醒口径，不会真的扣款" /></div>
+      <div className="span-2 row" style={{ justifyContent: 'flex-end' }}><Button disabled={!valid || sig === saved.current || save.isPending} loading={save.isPending} onClick={submit}>保存订阅</Button></div>
     </div>
   );
 }
@@ -224,9 +227,9 @@ export const RenewDialog = resetOnOpen(function RenewDialog({ m, s, open, onOpen
     <FormDialog open={open} onOpenChange={onOpenChange} dirty={!!note.trim() || amount !== String(s.price_cents / 100) || newDue !== s.next_due} title={`登记续费 · ${m.name}`} desc={<>当前到期日 {s.due_date} <InfoTip text="只记录「已续费」，到期日顺延；不会向供应商付款。" /></>}
       submitLabel="登记续费" busy={renew.isPending} valid={ok} onSubmit={submit}>
       <div className="form-grid">
-        <Field label="新到期日" error={newDue && newDue <= s.due_date ? '应晚于当前到期日' : undefined}><DateField value={newDue} onChange={setNewDue} min={F.addDays(s.due_date, 1)} /></Field>
-        <Field label={`实付金额（${s.currency}）`} error={amountBad ? '应为 0 或正数' : amount.trim() === '' ? '请填写金额，免费填 0' : undefined}><Input inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} aria-invalid={amountBad || undefined} />{usdHint && <div className="hint">{usdHint}</div>}</Field>
-        <Field label="账单号 / 备注（选填）" className="span-2"><Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="例如：账单 #2041" /></Field>
+        <FormField label="新到期日" error={newDue && newDue <= s.due_date ? '应晚于当前到期日' : undefined}><DateField value={newDue} onChange={setNewDue} min={F.addDays(s.due_date, 1)} /></FormField>
+        <FormField label={`实付金额（${s.currency}）`} error={amountBad ? '应为 0 或正数' : amount.trim() === '' ? '请填写金额，免费填 0' : undefined}><Input inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} aria-invalid={amountBad || undefined} />{usdHint && <div className="hint">{usdHint}</div>}</FormField>
+        <FormField label="账单号 / 备注（选填）" className="span-2"><Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="例如：账单 #2041" /></FormField>
       </div>
     </FormDialog>
   );

@@ -1,24 +1,21 @@
-import { cn } from '@/lib/utils';
+import { cn } from "@/lib/utils"
 
-/** 骨架占位：统一的脉动块（.skel）。w/h 可以是数字（px）或任意 CSS 长度 */
-export function Skeleton({ w = '100%', h = 14, className, style }: { w?: number | string; h?: number | string; className?: string; style?: React.CSSProperties }) {
-  return <span className={cn('skel', className)} aria-hidden="true" style={{ width: w, height: h, ...style }} />;
-}
-
-/** 列表/表格加载中的几行骨架：每行与表格行同高、带底线（one = 单行表 --row-1，默认 --row-2），数据到了不跳。
- *  head：骨架替换整张表时（表头也还没渲染）先占一条表头；list：非表格处（树、卡片列表、对话框）用的紧凑样式，不画行线 */
-export function SkeletonRows({ rows = 4, one, head, list }: { rows?: number; one?: boolean; head?: boolean; list?: boolean }) {
-  if (list) {
-    return (
-      <div role="status" aria-label="加载中" style={{ display: 'grid', gap: 12, padding: 16 }}>
-        {Array.from({ length: rows }, (_, i) => <Skeleton key={i} w={`${88 - ((i * 17) % 40)}%`} h={14} />)}
-      </div>
-    );
-  }
+/* 骨架占位：挂载后 150 ms 才显示（占位尺寸一直在，布局不跳）：局域网里数据几十毫秒就回来，快的直接出现，不先闪一下灰块；
+   底色同格条未点亮色（--cell-off）：暗色下 --sunken 比卡片还暗，骨架几乎看不见；减弱动效下不播脉动，照旧直接显示。
+   keyframes skel-show / skel-pulse 在 base.css。宽高用 className 写（w-16 h-5），占一整块图表 / 面板位置的加 rounded-float。
+   纯装饰，对读屏隐藏（「加载中」由外层的 role=status 说）。用 span（display: block）：常放在 KPI 读数、按钮这类只能放行内元素的地方 */
+function Skeleton({ className, ...props }: React.ComponentProps<"span">) {
   return (
-    <div role="status" aria-label="加载中">
-      {head && <div className="skel-head" />}
-      {Array.from({ length: rows }, (_, i) => <div key={i} className={cn('skel-row', one && 'is-one')}><Skeleton w={`${88 - ((i * 17) % 40)}%`} h={14} /></div>)}
-    </div>
-  );
+    <span
+      aria-hidden
+      data-slot="skeleton"
+      className={cn(
+        "block rounded-xs bg-(--cell-off) [animation:skel-show_0s_linear_150ms_backwards,skel-pulse_var(--dur-loop)_var(--ease-std)_150ms_infinite] motion-reduce:animate-none",
+        className
+      )}
+      {...props}
+    />
+  )
 }
+
+export { Skeleton }

@@ -12,7 +12,7 @@ import * as F from '@/lib/format';
 import { AVAIL_LEGEND, availCells, availTitles, fromLabel, hasHost, meta, monthFlowTip, monthTraffic, resourceMeters, successPct, tcpDir, trafficRuleTag } from '@/lib/derive';
 import { Segmented } from '@/components/ui/overlays';
 import { Skeleton } from '@/components/ui/skeleton';
-import { InfoTip } from '@/components/ui/form';
+import { InfoTip } from '@/components/ui/info-tip';
 import { Beat, Empty, ErrorNote, LabelValue, LabelValueGrid, Note, Num, Section, SectionHeader } from '@/components/app/primitives';
 import { RANGES, TimeChart } from '@/components/app/TimeChart';
 import { DailyBars, DailyLegend } from '@/components/app/DailyBars';
@@ -62,7 +62,7 @@ const fewText = (m: MachineView, range: string) =>
 export function ChartFrame<T extends { points: readonly unknown[] }>({ q, few, height = 180, children }: { q: UseQueryResult<T>; few: string; height?: number; children: React.ReactNode }) {
   // 轮询中偶尔一次取不到：留着上一份曲线（下一轮会再取），只有一份都没有时才显示错误
   if (q.isError && !q.data) return <ErrorNote error={q.error} onRetry={() => void q.refetch()}>曲线加载失败：</ErrorNote>;
-  if (q.isLoading) return <Skeleton h={height} className="is-float" />;
+  if (q.isLoading) return <Skeleton className="rounded-float" style={{ height }} />;
   return (
     <div className="chart-frame" data-stale={q.isPlaceholderData} aria-busy={q.isPlaceholderData || undefined}>
       {(q.data?.points.length ?? 0) < 2 ? <div className="chart-empty" style={{ height }}>{few}</div> : children}
@@ -119,7 +119,7 @@ const ReachQualitySection = React.memo(function ReachQualitySection({ id }: { id
     <Section>
       <SectionHeader title={<>入口连通性<InfoTip text={'中控和各探测点连这台线路机入口的成功率和平均延迟\n探测点自己网络不通的那段不算；中控只看通不通，没有延迟'} /></>} />
       {q.isError && !q.data ? <ErrorNote error={q.error} onRetry={() => void q.refetch()}>连通性加载失败：</ErrorNote>
-        : q.isLoading ? <Skeleton h={72} />
+        : q.isLoading ? <Skeleton className="h-[72px]" />
         : !s.length ? <div className="hint">还没有探测记录</div>
         : (
           <div className="table-wrap">
@@ -211,7 +211,7 @@ function EntriesLink({ m }: { m: MachineView }) {
   if (!m.entries.length) return null;
   return (
     <Section>
-      <SectionHeader title="入口" meta={entriesMeta(m)}><Button variant="quiet" size="sm" onClick={() => setTab('overview')}>查看<ChevronRight size={14} /></Button></SectionHeader>
+      <SectionHeader title="入口" meta={entriesMeta(m)}><Button variant="ghost" size="sm" onClick={() => setTab('overview')}>查看<ChevronRight size={14} /></Button></SectionHeader>
     </Section>
   );
 }
@@ -271,7 +271,7 @@ const DailyCard = React.memo(function DailyCard({ m }: { m: MachineView }) {
     <ChartCard c="var(--chart-1)" icon={<CalendarDays />} title="每日业务流量" meta={<>近 {DAILY_DAYS} 天 <InfoTip text={tip} /></>}
       value={sum ? <Num f={F.bytes(sum)} /> : undefined} caption={sum ? `日均 ${F.str(F.bytes(sum / DAILY_DAYS))}` : undefined} tools={sum ? <DailyLegend /> : undefined}>
       {q.isError && !q.data ? <ErrorNote error={q.error} onRetry={() => void q.refetch()}>每日流量加载失败：</ErrorNote>
-        : !days ? <Skeleton h={180} className="is-float" />
+        : !days ? <Skeleton className="rounded-float h-[180px]" />
         : !sum ? <div className="chart-empty" style={{ height: 180 }}>近 {DAILY_DAYS} 天没有业务流量</div>
         : <DailyBars days={days} height={180} yWidth={YW_TRAFFIC} />}
     </ChartCard>

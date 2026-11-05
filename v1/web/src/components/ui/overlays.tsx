@@ -1,7 +1,6 @@
 import * as React from 'react';
 import * as TabsPrimitive from '@radix-ui/react-tabs';
 import * as DropdownPrimitive from '@radix-ui/react-dropdown-menu';
-import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import * as PopoverPrimitive from '@radix-ui/react-popover';
 import * as ToggleGroup from '@radix-ui/react-toggle-group';
 import { Check, ChevronDown, ChevronRight } from 'lucide-react';
@@ -93,41 +92,6 @@ export const DropdownMenuSubContent = React.forwardRef<React.ElementRef<typeof D
   <DropdownPrimitive.Portal><DropdownPrimitive.SubContent ref={ref} collisionPadding={8} className={cn('menu', className)} {...p} /></DropdownPrimitive.Portal>
 ));
 DropdownMenuSubContent.displayName = 'DropdownMenuSubContent';
-
-/* ---- Tooltip：TooltipProvider、Tip、TipHost 在 tip.tsx（客户页只要它们），这里重新导出 ---- */
-export { TooltipProvider, Tip, TipHost } from './tip';
-
-/** 单行省略文本：只有真的被截断时悬停才出现完整内容的提示（表格里每个单元格一个，共用一个 ResizeObserver） */
-export function Trunc({ children, text, className }: { children: React.ReactNode; text?: string; className?: string }) {
-  const ref = React.useRef<HTMLSpanElement>(null);
-  const [cut, setCut] = React.useState(false);
-  const [open, setOpen] = React.useState(false);
-  const [focusable, setFocusable] = React.useState(false);
-  const full = text ?? (typeof children === 'string' ? children : '');
-  const measure = React.useCallback(() => {
-    const el = ref.current;
-    const isCut = !!el && el.scrollWidth > el.clientWidth + 1;
-    setCut(isCut);
-    // 被截断、又不在按钮/链接里时才加入 Tab 顺序；在按钮里的由按钮自己承担焦点
-    setFocusable(isCut && !!el && !el.parentElement?.closest('a, button, [tabindex]'));
-  }, []);
-  React.useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    measure();
-    return watchSize(el, measure);
-  }, [measure, full]);
-  return (
-    <TooltipPrimitive.Root open={open && cut && !!full} onOpenChange={(o) => { if (o) measure(); setOpen(o); }}>
-      <TooltipPrimitive.Trigger asChild>
-        <span ref={ref} className={cn('ellipsis block', className)} tabIndex={focusable && full ? 0 : undefined} onPointerEnter={measure} onFocus={measure}
-          // 触屏没有悬停：轻触被截断的文字显示全文（Radix 的触发器在 click 里会收起，等它收完再开）
-          onClick={() => { if (cut && full && !matchMedia('(hover: hover)').matches) setTimeout(() => setOpen(true)); }}>{children}</span>
-      </TooltipPrimitive.Trigger>
-      <TooltipPrimitive.Portal><TooltipPrimitive.Content sideOffset={6} collisionPadding={8} className="tooltip">{full}</TooltipPrimitive.Content></TooltipPrimitive.Portal>
-    </TooltipPrimitive.Root>
-  );
-}
 
 /* ---- Popover ---- */
 export const Popover = PopoverPrimitive.Root;

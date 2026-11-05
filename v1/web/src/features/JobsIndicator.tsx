@@ -7,7 +7,7 @@ import { currentStepTitle, jobKindLabel, jobProgress } from '@/lib/jobs';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/overlays';
 import { Progress } from '@/components/ui/progress';
 import { toast } from '@/components/ui/toast';
-import { Tip } from '@/components/ui/overlays';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { copyNewShareLink } from '@/lib/moveShare';
 import type { JobSummary, Paged } from '@/lib/types';
 
@@ -61,14 +61,17 @@ export function JobsIndicator() {
   if (!n) { if (open) setOpen(false); return null; }
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <Tip text={`${n} 个作业进行中`}>
-        <PopoverTrigger asChild>
-          <button type="button" className="top-btn jobs-ind" aria-label={`${n} 个作业进行中`}>
-            <ListChecks size={16} />
-            <span className="count-badge" data-tone="accent">{n}</span>
-          </button>
-        </PopoverTrigger>
-      </Tip>
+      <Tooltip>
+        <TooltipTrigger render={
+          <PopoverTrigger asChild>
+            <button type="button" className="top-btn jobs-ind" aria-label={`${n} 个作业进行中`}>
+              <ListChecks size={16} />
+              <span className="count-badge" data-tone="accent">{n}</span>
+            </button>
+          </PopoverTrigger>
+        } />
+        <TooltipContent>{`${n} 个作业进行中`}</TooltipContent>
+      </Tooltip>
       <PopoverContent align="end" className="jobs-pop">
         <div className="pop-head">进行中的作业<span className="t-sub">{n}</span></div>
         <ul className="pop-list">
@@ -78,7 +81,7 @@ export function JobsIndicator() {
               <li key={j.id}>
                 <Link to={`/jobs/${j.id}`} onClick={() => setOpen(false)} className="pop-item">
                   <span className="pop-t"><b className="ellipsis">{jobKindLabel(j.kind)} · {j.target?.name ?? '—'}</b><span className="num t-sub">{p.done}/{p.total}</span></span>
-                  <Progress value={p.pct} live label={`${jobKindLabel(j.kind)}进度`} />
+                  <Progress value={p.pct} live aria-label={`${jobKindLabel(j.kind)}进度`} />
                   <span className="hint ellipsis">{currentStepTitle(j) ?? '排队中'}</span>
                 </Link>
               </li>

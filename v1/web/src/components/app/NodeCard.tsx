@@ -3,6 +3,7 @@
 // 视觉语言：资源用分段格条（每个指标一个颜色），实时速率是大号读数 + 点阵迹线（实时流喂的环形缓冲，见 lib/live），
 // 剩余流量也是格条（绿→黄→红），心跳条同属“格子”语言。读数、迹线、流量、心跳条都可点，直接打开抽屉对应的页签看历史曲线。
 // 家宽代理没有主机：资源格条的位置放本月业务流量，速率的位置放探测延迟。
+import { Skeleton } from '@/components/ui/skeleton';
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { m as mo } from 'motion/react'; // 别名：组件里的 props 叫 m（机器）
@@ -334,8 +335,8 @@ const Foot = memo(function Foot({ health, lifecycle, maintenance, recovered, sho
     <footer className="nc-foot">
       <span className="nc-foot-left"><HealthPill m={{ health, lifecycle, maintenance }} />{recovered && <Pill tone="neutral" dot="none" tip={RECOVERED_TIP}>已恢复</Pill>}{show && <span className="nc-show" data-tone={showTone || undefined} data-tip={showTip}>{show}</span>}</span>
       <div className="nc-foot-right">
-        <Button variant="text" size="sm" onClick={() => onOpen()}><PanelRightOpen size={14} /><span>详情</span></Button>
-        <Button variant="text" size="sm" onClick={() => onOpen('manage')}><Settings2 size={14} /><span>管理</span></Button>
+        <Button variant="ghost" size="sm" onClick={() => onOpen()}><PanelRightOpen size={14} /><span>详情</span></Button>
+        <Button variant="ghost" size="sm" onClick={() => onOpen('manage')}><Settings2 size={14} /><span>管理</span></Button>
       </div>
     </footer>
   );
@@ -426,7 +427,7 @@ export function SkeletonCard({ view }: { view: CardView }) {
   return (
     <article className="ncard is-skel" data-view={view} aria-hidden="true">
       {Array.from({ length: rows }, (_, i) => (
-        <div key={i} className={i === 0 ? 'nc-head' : 'slot-seg'} style={{ minHeight: i === rows - 1 ? 44 : 40 }}><span className="skel" style={{ width: `${40 + ((i * 17) % 40)}%`, height: 12 }} /></div>
+        <div key={i} className={i === 0 ? 'nc-head' : 'slot-seg'} style={{ minHeight: i === rows - 1 ? 44 : 40 }}><Skeleton className="h-[12px]" style={{ width: `${40 + ((i * 17) % 40)}%` }} /></div>
       ))}
     </article>
   );

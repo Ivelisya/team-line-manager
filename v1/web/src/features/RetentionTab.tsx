@@ -3,11 +3,12 @@
 import * as React from 'react';
 import { useAccessRetention, useSaveRetention, type AccessRetention } from '@/lib/access';
 import { Button } from '@/components/ui/button';
-import { Field, InfoTip, UnitInput } from '@/components/ui/form';
+import { FormField, UnitInput } from '@/components/ui/form';
+import { InfoTip } from '@/components/ui/info-tip';
 import { toast } from '@/components/ui/toast';
 import { ConfirmDialog } from '@/components/app/dialogs';
 import { ErrorNote, Panel } from '@/components/app/primitives';
-import { SkeletonRows } from '@/components/ui/skeleton';
+import { SkeletonRows } from '@/components/app/SkeletonRows';
 
 export function RetentionTab() {
   const q = useAccessRetention();
@@ -37,15 +38,15 @@ function RetentionForm({ r }: { r: AccessRetention }) {
     <>
       {/* 保存在右下：卡片里的表单统一同对话框的「取消 / 确认」，提交放右边、不配图标 */}
       <div className="row" style={{ gap: 'var(--sp-24)', alignItems: 'flex-start' }}>
-        <Field label="原始记录" info="每一条连接的记录，「原始记录」页签查的就是它" error={raw !== '' ? rawErr : undefined}>
+        <FormField label="原始记录" info="每一条连接的记录，「原始记录」页签查的就是它" error={raw !== '' ? rawErr : undefined}>
           <UnitInput unit="天" width={120} inputMode="numeric" maxLength={3} value={raw} onChange={(e) => setRaw(e.target.value.replace(/\D/g, ''))} />
-        </Field>
-        <Field label="小时汇总" info={"按小时汇总的统计，用于域名、来源、节点概览和曲线\n要看「30 天」范围，至少要保留 30 天；不能比原始记录短"} hint={r.profile_days > r.hourly_days ? `来源画像按学习期留 ${r.profile_days} 天` : undefined} error={hourly !== '' ? hourlyErr : undefined}>
+        </FormField>
+        <FormField label="小时汇总" info={"按小时汇总的统计，用于域名、来源、节点概览和曲线\n要看「30 天」范围，至少要保留 30 天；不能比原始记录短"} hint={r.profile_days > r.hourly_days ? `来源画像按学习期留 ${r.profile_days} 天` : undefined} error={hourly !== '' ? hourlyErr : undefined}>
           <UnitInput unit="天" width={120} inputMode="numeric" maxLength={3} value={hourly} onChange={(e) => setHourly(e.target.value.replace(/\D/g, ''))} />
-        </Field>
+        </FormField>
       </div>
       <div className="row" style={{ marginTop: 'var(--sp-12)', justifyContent: 'flex-end' }}>
-        <Button variant="primary" disabled={!dirty || !!rawErr || !!hourlyErr} loading={save.isPending} onClick={() => (lowering ? setAsk(true) : submit())}>保存</Button>
+        <Button disabled={!dirty || !!rawErr || !!hourlyErr} loading={save.isPending} onClick={() => (lowering ? setAsk(true) : submit())}>保存</Button>
       </div>
       <ConfirmDialog open={ask} onOpenChange={setAsk} danger confirmLabel="调低并删除" title="调低保留期？"
         description={<>{lowered}；超出的数据马上删除，不能恢复 <InfoTip text={[

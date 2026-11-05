@@ -43,9 +43,10 @@ export const Scrim = React.forwardRef<HTMLDivElement, { className: string }>(({ 
 Scrim.displayName = 'Scrim';
 
 /** 对话框：size sm 440 / md 660 / lg 760（原版对话框三档） */
-/** 打开时的初始焦点跳过说明里的「(i)」：不然键盘打开对话框时提示气泡立刻盖在内容上、按 Enter 也没反应。落到第一个输入框或按钮上（单选组里不在 Tab 顺序的按钮不算，焦点落在已选的那颗） */
+/** 打开时的初始焦点跳过说明里的「(i)」：不然键盘打开对话框时提示气泡立刻盖在内容上、按 Enter 也没反应。落到第一个输入框或按钮上（单选组里不在 Tab 顺序的按钮不算，焦点落在已选的那颗）。
+ *  Base UI 的复选框 / 开关旁边各有一个隐藏的原生 input（tabindex=-1、aria-hidden）：不算，焦点要落在看得见的那个控件（role=checkbox / switch 的 span）上 */
 function skipInfoTip(e: Event) {
-  const el = (e.currentTarget as HTMLElement).querySelector<HTMLElement>('input:not([disabled]), textarea:not([disabled]), select:not([disabled]), button:not([disabled]):not([tabindex="-1"]), [href], [tabindex]:not([tabindex="-1"]):not(.info-tip)');
+  const el = (e.currentTarget as HTMLElement).querySelector<HTMLElement>('input:not([disabled]):not([type="hidden"]):not([tabindex="-1"]):not([aria-hidden="true"]), textarea:not([disabled]):not([tabindex="-1"]), select:not([disabled]):not([tabindex="-1"]), button:not([disabled]):not([tabindex="-1"]), [href], [tabindex]:not([tabindex="-1"]):not(.info-tip)');
   if (el) { e.preventDefault(); el.focus(); }
 }
 /** 打开时记下焦点在谁身上（Radix 的 Trigger 在全站都没用上：对话框、抽屉都是受控打开，triggerRef 为空，模态 Content 自己的还焦点又 preventDefault 掉了 FocusScope 的兜底），
@@ -92,8 +93,8 @@ export const DialogContent = React.forwardRef<React.ElementRef<typeof DialogPrim
         <DialogPrimitive.Content ref={panel} className={cn('dialog', size === 'md' && 'dialog-md', size === 'lg' && 'dialog-lg', className)}
           onPointerDownOutside={keepOnToast(onPointerDownOutside)} onInteractOutside={bounceWhenKept(onInteractOutside, panel)} {...p} onOpenAutoFocus={focus.onOpenAutoFocus} onCloseAutoFocus={focus.onCloseAutoFocus}>
           {children}
-          {/* 手机上对话框是底部面板，右上角补关闭键；宽屏 display: none（components.css .dialog-x） */}
-          <DialogPrimitive.Close asChild><IconButton label="关闭" className="dialog-x"><X size={16} /></IconButton></DialogPrimitive.Close>
+          {/* 手机上对话框是底部面板，右上角补关闭键；宽屏不显示（hidden）；快捷键帮助自带关闭键，见 components.css .dialog-x */}
+          <DialogPrimitive.Close asChild><IconButton label="关闭" className="dialog-x hidden max-[600px]:absolute max-[600px]:top-3 max-[600px]:right-3 max-[600px]:inline-flex"><X size={16} /></IconButton></DialogPrimitive.Close>
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>
     );

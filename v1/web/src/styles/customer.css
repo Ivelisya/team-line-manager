@@ -10,5 +10,36 @@
 @import "./components.css" layer(components);
 @import "./overrides.css" layer(components);
 
-@source "../**/*.{ts,tsx}";
+/* 源文件扫描：只认客户页真正用到的文件（customerEntry.tsx 的 import 图），管理端页面里的工具类不进客户页 CSS。
+   清单由 node tools/customer-sources.mjs 生成（改了客户页的 import 后重跑）；pnpm build 先跑 --check 核对，清单过期就构建失败，不会悄悄漏掉客户页要用的工具类。 */
+@source "../components/app/empty.tsx";
+@source "../components/app/primitives.tsx";
+@source "../components/ui/button.tsx";
+@source "../components/ui/empty.tsx";
+@source "../components/ui/info-tip.tsx";
+@source "../components/ui/input.tsx";
+@source "../components/ui/skeleton.tsx";
+@source "../components/ui/spinner.tsx";
+@source "../components/ui/toast.tsx";
+@source "../components/ui/tooltip.tsx";
+@source "../customerEntry.tsx";
+@source "../features/billing.tsx";
+@source "../lib/api.ts";
+@source "../lib/clipboard.ts";
+@source "../lib/derive.ts";
+@source "../lib/drawer.ts";
+@source "../lib/flags.ts";
+@source "../lib/format.ts";
+@source "../lib/motion.tsx";
+@source "../lib/motionFeatures.ts";
+@source "../lib/probePoints.ts";
+@source "../lib/publicCustomer.ts";
+@source "../lib/queries.ts";
+@source "../lib/sharedObserver.ts";
+@source "../lib/sort.ts";
+@source "../lib/tz.ts";
+@source "../lib/useCountUp.ts";
+@source "../lib/utils.ts";
+@source "../pages/Customer.tsx";
+@source "../queryClient.ts";
 @source "../../index.html";

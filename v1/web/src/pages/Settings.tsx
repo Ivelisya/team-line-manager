@@ -1,5 +1,7 @@
 // 设置：API 密钥（创建时 token 只显示一次）、告警通知渠道（Telegram / 飞书，可发测试、看最近发送记录）、
 // 账户安全（两步验证、修改密码、登录会话，见 features/AccountTab）、新入口默认模式（普通 / 穿透，features/EntryModeTab）、数据保留（features/RetentionTab）、汇率（计费折成美元，见 features/FxTab）、探测点与主探测来源（features/ProbeTab）、三网 PING 的全局目标（features/PingTab）、客户端订阅（features/SubsTab）。
+import { Field } from '@/components/ui/field';
+import { Skeleton } from '@/components/ui/skeleton';
 import * as React from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Ban, Bell, BellOff, Eye, EyeOff, Feather, FlaskConical, KeyRound, Pencil, Plus, Send, ShieldAlert, Trash2 } from 'lucide-react';
@@ -14,11 +16,15 @@ import { useAddChannel, useApiKeys, useCreateApiKey, useDelChannel, useMe, useMo
 import type { ApiKey, NotifyChannel, NotifyLogEntry } from '@/lib/types';
 import * as F from '@/lib/format';
 import { Button, IconButton } from '@/components/ui/button';
-import { Checkbox, Field, InfoTip, Input, OptimisticSwitch, Switch } from '@/components/ui/form';
+import { CheckRow, FormField, LabelRow, OptimisticSwitch } from '@/components/ui/form';
+import { InfoTip } from '@/components/ui/info-tip';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
-import { Tabs, TabsList, TabsTrigger, Trunc } from '@/components/ui/overlays';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/overlays';
+import { Trunc } from '@/components/ui/tooltip';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, DialogHeader } from '@/components/ui/dialog';
-import { SkeletonRows } from '@/components/ui/skeleton';
+import { SkeletonRows } from '@/components/app/SkeletonRows';
 import { toast } from '@/components/ui/toast';
 import { ConfirmDialog, FormDialog, TypedConfirmDialog } from '@/components/app/dialogs';
 import { Chip, CopyButton, CopyIcon, Empty, ErrorNote, Note, PageHead, Panel, Pill, TableWrap, useCopied } from '@/components/app/primitives';
@@ -99,10 +105,10 @@ function ApiKeysSection() {
   return (
     <>
       <Panel title="API 密钥" count={list.length} sub={<InfoTip text="给脚本和命令行调用中控用。只有登录后才能管理密钥" />} flush
-        tools={<Button variant="primary" size="sm" onClick={openNew}><Plus />新建密钥</Button>}>
+        tools={<Button size="sm" onClick={openNew}><Plus />新建密钥</Button>}>
         {q.isError && <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div>}
         {q.isLoading ? <SkeletonRows rows={3} head /> : list.length === 0 && !q.isError ? (
-          <Empty icon={<KeyRound size={22} />} text="还没有 API 密钥"><Button variant="primary" onClick={openNew}><Plus />新建密钥</Button></Empty>
+          <Empty icon={<KeyRound size={22} />} text="还没有 API 密钥"><Button onClick={openNew}><Plus />新建密钥</Button></Empty>
         ) : (
           <TableWrap>
             <table className="dt" style={{ minWidth: 860 }}>
@@ -117,7 +123,7 @@ function ApiKeysSection() {
                     <td>{k.last_used_at ? <>{F.dt(k.last_used_at)}<span className="sub">{F.ago(k.last_used_at)}</span></> : <span className="t-sub">从未使用</span>}</td>
                     <td>{k.expires_at ? F.dt(k.expires_at) : <span className="t-sub">{NEVER}</span>}</td>
                     <td>{keyStatus(k)}</td>
-                    <td className="c">{!k.revoked_at && <IconButton label="撤销密钥" size="sm" onClick={() => setAsk(k)}><Ban size={14} /></IconButton>}</td>
+                    <td className="c">{!k.revoked_at && <IconButton label="撤销密钥" size="icon-sm" onClick={() => setAsk(k)}><Ban size={14} /></IconButton>}</td>
                   </tr>
                 ))}
               </tbody>
@@ -128,11 +134,11 @@ function ApiKeysSection() {
 
       <FormDialog size="md" dirty={!!name.trim() || scopes.join() !== 'read' || exp !== '90' || !!pw} open={open} onOpenChange={setOpen} title="新建 API 密钥" desc="创建后密钥只显示一次" submitLabel="创建密钥" busy={create.isPending} valid={valid} onSubmit={submit}>
         <div className="form-grid">
-          <Field label="名称"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：备份脚本" autoFocus autoComplete="off" /></Field>
-          <Field label="有效期"><Select value={exp} onChange={setExp} options={EXPIRES} /></Field>
+          <FormField label="名称"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：备份脚本" autoFocus autoComplete="off" /></FormField>
+          <FormField label="有效期"><Select value={exp} onChange={setExp} options={EXPIRES} /></FormField>
         </div>
-        <div className="field">
-          <span className="label">权限</span>
+        <Field>
+          <LabelRow>权限</LabelRow>
           {/* 四项权限排成 2×2（自适应列宽在对话框里会排成 3+1） */}
           <div className="scope-list" style={{ gridTemplateColumns: 'repeat(2, minmax(0, 1fr))' }}>
             {SCOPES.map((s) => (
@@ -143,12 +149,12 @@ function ApiKeysSection() {
             ))}
           </div>
           {scopes.length === 0 && <div className="hint is-error">至少选择一项权限</div>}
-        </div>
+        </Field>
         {(scopes.includes('exec') || scopes.includes('secrets')) && <Note tone="warn" icon={<ShieldAlert size={14} />}>高权限密钥，请设有效期 <InfoTip text={`这个密钥可以${[scopes.includes('exec') && '在机器上执行命令', scopes.includes('secrets') && '读取分享链接等凭据'].filter(Boolean).join('、')}，泄露的风险很高，请只放在可信的环境里`} /></Note>}
         <input type="text" autoComplete="username" value={me.data?.username ?? ''} readOnly hidden />
         <div className="form-grid">
-          <Field label="当前密码"><Input type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="current-password" /></Field>
-          {totp && <Field label="两步验证码"><Input value={code} onChange={(e) => setCode(e.target.value)} autoComplete="one-time-code" spellCheck={false} className="mono" maxLength={20} placeholder="6 位验证码或恢复码" data-1p-ignore data-lpignore="true" /></Field>}
+          <FormField label="当前密码"><Input type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="current-password" /></FormField>
+          {totp && <FormField label="两步验证码"><Input value={code} onChange={(e) => setCode(e.target.value)} autoComplete="one-time-code" spellCheck={false} className="mono" maxLength={20} placeholder="6 位验证码或恢复码" data-1p-ignore data-lpignore="true" /></FormField>}
         </div>
         {err && <Note tone="bad">{err}</Note>}
       </FormDialog>
@@ -159,8 +165,8 @@ function ApiKeysSection() {
           <Note tone="warn" icon={<ShieldAlert size={14} />}><b>只显示这一次</b> <InfoTip text="关掉后就看不到了。丢了只能撤销，再新建一个" /></Note>
           <div className="token-box"><code>{tokenHeld}</code><CopyButton text={tokenHeld ?? ''} label="密钥" size={15} /></div>
           <DialogFooter>
-            <Button ref={copyRef} onClick={() => void cp.copy(token ?? '', '密钥')}><CopyIcon done={cp.done} />复制密钥</Button>
-            <Button variant="primary" onClick={() => setToken(null)}>我已保存</Button>
+            <Button variant="outline" ref={copyRef} onClick={() => void cp.copy(token ?? '', '密钥')}><CopyIcon done={cp.done} />复制密钥</Button>
+            <Button onClick={() => setToken(null)}>我已保存</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -209,8 +215,8 @@ function NotifySection() {
     <>
       <Panel title="告警通知渠道" count={list.length} sub={<InfoTip text="告警达到「最低级别」时，会推送到这些渠道" />} flush
         tools={<>
-          <Button size="sm" onClick={() => setReport(true)} data-tip="先看要发的内容，确认后立即发一次（只发给开了「月报」的渠道）"><Send size={14} />发送一次月报…</Button>
-          <Button size="sm" variant="primary" onClick={() => setEdit('new')}><Plus />新建渠道</Button>
+          <Button variant="outline" size="sm" onClick={() => setReport(true)} data-tip="先看要发的内容，确认后立即发一次（只发给开了「月报」的渠道）"><Send size={14} />发送一次月报…</Button>
+          <Button size="sm" onClick={() => setEdit('new')}><Plus />新建渠道</Button>
         </>}>
         {q.isError && <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div>}
         {q.isLoading ? <SkeletonRows rows={3} head /> : list.length === 0 && !q.isError ? (
@@ -233,15 +239,15 @@ function NotifySection() {
                         onCheckedChange={(v, undo) => patch.mutate({ id: c.id, enabled: v }, { onSuccess: () => toast.ok(v ? '渠道已启用' : '渠道已停用'), onError: (e) => { undo(); toast.err(e); } })} /></td>
                       <td>
                         <span className="row" style={{ flexWrap: 'nowrap', gap: 8 }}>
-                          <Button size="sm" loading={test.isPending && test.variables === c.id} disabled={test.isPending} onClick={() => runTest(c)}><FlaskConical size={13} />发送测试</Button>
+                          <Button variant="outline" size="sm" loading={test.isPending && test.variables === c.id} disabled={test.isPending} onClick={() => runTest(c)}><FlaskConical size={13} />发送测试</Button>
                           {r && (r.ok
                             ? <span className="test-result" style={{ color: 'var(--ok-text)' }} role="status">✓ 已送达</span>
                             : <span className="test-result" style={{ color: 'var(--bad-text)', minWidth: 0 }} role="alert"><Trunc text={`失败：${r.error ?? '未知错误'}`}>✗ 失败：{r.error ?? '未知错误'}</Trunc></span>)}
                         </span>
                       </td>
                       <td className="r"><span className="row" style={{ justifyContent: 'flex-end', flexWrap: 'nowrap', gap: 0 }}>
-                        <IconButton label="编辑渠道" size="sm" onClick={() => setEdit(c)}><Pencil size={14} /></IconButton>
-                        <IconButton label="删除渠道" size="sm" onClick={() => setAsk(c)}><Trash2 size={14} /></IconButton>
+                        <IconButton label="编辑渠道" size="icon-sm" onClick={() => setEdit(c)}><Pencil size={14} /></IconButton>
+                        <IconButton label="删除渠道" size="icon-sm" onClick={() => setAsk(c)}><Trash2 size={14} /></IconButton>
                       </span></td>
                     </tr>
                   );
@@ -316,28 +322,28 @@ const ChannelDialog = resetOnOpen(function ChannelDialog({ target, open, onClose
     <FormDialog size="md" dirty={dirty} open={open} onOpenChange={(o) => !o && onClose()} title={ch ? `编辑渠道 · ${ch.name}` : '新建通知渠道'} desc={<>配置会加密保存 <InfoTip text="保存后，页面上不再显示原文" /></>}
       submitLabel={ch ? '保存' : '创建'} busy={busy} valid={valid} onSubmit={submit}>
       <div className="form-grid">
-        <Field label="名称"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：运维群" autoFocus autoComplete="off" /></Field>
-        <Field label="类型" hint={ch ? '类型创建后不能改' : undefined}><Select value={kind} onChange={(v) => { setKind(v); setCfg({}); }} disabled={!!ch} options={Object.entries(KINDS).map(([value, x]) => ({ value, label: x.label }))} /></Field>
+        <FormField label="名称"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：运维群" autoFocus autoComplete="off" /></FormField>
+        <FormField label="类型" hint={ch ? '类型创建后不能改' : undefined}><Select value={kind} onChange={(v) => { setKind(v); setCfg({}); }} disabled={!!ch} options={Object.entries(KINDS).map(([value, x]) => ({ value, label: x.label }))} /></FormField>
       </div>
       <div className="form-grid">
         {k.fields.map((f) => (
-          <Field key={f.key} label={f.label} className={f.wide || k.fields.length === 1 ? 'span-2' : undefined} >
+          <FormField key={f.key} label={f.label} className={f.wide || k.fields.length === 1 ? 'span-2' : undefined} >
             {/* 密钥类字段默认遮住，旁边可切换显示（核对粘贴进来的地址、token） */}
             <div className="row" style={{ flexWrap: 'nowrap', gap: 'var(--sp-6)' }}>
               <Input type={f.secret && !reveal ? 'password' : 'text'} value={cfg[f.key] ?? ''} onChange={(e) => { setCfg((c) => ({ ...c, [f.key]: e.target.value })); setTouched(true); }} placeholder={ch ? (f.optional ? '留空不改' : `留空不改（当前：${ch.config_hint}）`) : f.ph} autoComplete="off" spellCheck={false} data-1p-ignore data-lpignore="true" />
               {f.secret && <IconButton label={reveal ? '隐藏' : '显示'} aria-pressed={reveal} onClick={() => setReveal((v) => !v)}>{reveal ? <EyeOff size={15} /> : <Eye size={15} />}</IconButton>}
             </div>
-          </Field>
+          </FormField>
         ))}
       </div>
-      {canClear && <label className="check-row"><Checkbox checked={clearSecret} onCheckedChange={(v) => setClearSecret(v === true)} /><span>清除签名密钥（机器人关了签名校验时勾选）</span></label>}
+      {canClear && <CheckRow checked={clearSecret} onChange={setClearSecret}>清除签名密钥（机器人关了签名校验时勾选）</CheckRow>}
       {!cfgOk && touched && <div className="hint is-error">{isNew ? '请把配置填写完整' : '要改配置，请把必填字段重新填上'}</div>}
       <div className="form-grid">
-        <Field label="最低级别"><Select value={sev} onChange={setSev} options={SEVERITIES} /></Field>
-        <Field label="状态"><label className="check-row" style={{ gap: 10, height: 'var(--h-lg)' }}><Switch checked={enabled} onCheckedChange={setEnabled} /><span>{enabled ? '启用' : '已停用'}</span></label></Field>
-        <Field label="月报" className="span-2" info="每月 1 号发上月摘要（总流量、月费、可用率最差的几台等），不看最低级别；渠道要处于启用状态才会收到">
-          <label className="check-row" style={{ gap: 10, height: 'var(--h-lg)' }}><Switch checked={monthly} onCheckedChange={setMonthly} aria-label="接收月报" /><span>{monthly ? '接收月报' : '不接收'}</span></label>
-        </Field>
+        <FormField label="最低级别"><Select value={sev} onChange={setSev} options={SEVERITIES} /></FormField>
+        <FormField label="状态"><CheckRow switch className="h-(--h-lg)" checked={enabled} onChange={setEnabled}>{enabled ? '启用' : '已停用'}</CheckRow></FormField>
+        <FormField label="月报" className="span-2" info="每月 1 号发上月摘要（总流量、月费、可用率最差的几台等），不看最低级别；渠道要处于启用状态才会收到">
+          <CheckRow switch className="h-(--h-lg)" checked={monthly} onChange={setMonthly} aria-label="接收月报">{monthly ? '接收月报' : '不接收'}</CheckRow>
+        </FormField>
       </div>
     </FormDialog>
   );
@@ -355,7 +361,7 @@ function MonthlyReportDialog({ open, onOpenChange, channels }: { open: boolean; 
       description={to.length ? <>将发给 {to.length} 个渠道：{to.map((c) => c.name).join('、')}</> : '现在没有渠道会收到：先在渠道的编辑里打开「月报」，并保持启用'}
       onConfirm={async () => { const r = await send.mutateAsync(d?.month); toast.ok(`月报已排进发送队列（${r.channels} 个渠道），结果见下面的发送记录`); }}>
       {q.isError ? <ErrorNote error={q.error} onRetry={() => void q.refetch()} />
-        : d ? <pre className="report-text">{d.text}</pre> : <div className="skel" style={{ height: 180 }} />}
+        : d ? <pre className="report-text">{d.text}</pre> : <Skeleton className="h-[180px]" />}
     </TypedConfirmDialog>
   );
 }

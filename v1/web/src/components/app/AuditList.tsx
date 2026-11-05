@@ -1,5 +1,6 @@
 // 操作记录列表（抽屉「最近操作」与「操作记录」页共用）：动作 + 对象，右边是谁、什么时候；下一行是改了什么（标题、摘要由中控按 detail 拼好）。
 // 远程执行点一下原地展开命令、结果、耗时；对象名单独是链接，点了打开那台机器的抽屉。
+import { Button } from '@/components/ui/button';
 import * as React from 'react';
 import { ChevronRight } from 'lucide-react';
 import type { AuditEntry } from '@/lib/types';
@@ -67,7 +68,7 @@ export function AuditList({ items, onOpen, byDay }: { items: AuditEntry[]; onOpe
                   {/* 展开箭头的位置每行都留着：可展开、不可展开的行文字对齐 */}
                   <span className="audit-chev" aria-hidden>{can && <ChevronRight />}</span>
                   <b>{p.title}</b>
-                  {p.target && <> {link ? <button type="button" className="btn btn-link audit-target" onClick={(e) => { e.stopPropagation(); onOpen!(link); }}>{p.target}</button> : p.target}</>}
+                  {p.target && <> {link ? <Button variant="link" size="inline" className="audit-target inline align-baseline [font:inherit]!" onClick={(e) => { e.stopPropagation(); onOpen!(link); }}>{p.target}</Button> : p.target}</>}
                   {p.res && (p.res.tone === 'info' ? <> <Pill tone="info" dot="pulse">{p.res.text}</Pill></> : <span className="audit-res" data-tone={p.res.tone}>{p.res.text}</span>)}
                 </span>
                 <span className="audit-meta">{F.actor(a.actor)} · <span data-tip={F.dtFull(a.ts)}>{when}</span></span>

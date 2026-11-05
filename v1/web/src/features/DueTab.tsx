@@ -10,8 +10,10 @@ import { meta, uptimeTone, usdTotalTip } from '@/lib/derive';
 import { useUsdPreview } from '@/lib/fx';
 import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
-import { Field, InfoTip, Input, UnitInput } from '@/components/ui/form';
-import { SkeletonRows } from '@/components/ui/skeleton';
+import { FormField, UnitInput } from '@/components/ui/form';
+import { InfoTip } from '@/components/ui/info-tip';
+import { Input } from '@/components/ui/input';
+import { SkeletonRows } from '@/components/app/SkeletonRows';
 import { toast } from '@/components/ui/toast';
 import { resetOnOpen, useHeld } from '@/lib/useHeld';
 import { Due, Empty, ErrorNote, Note, Panel, Pill, TableWrap, dueTzTip } from '@/components/app/primitives';
@@ -68,7 +70,7 @@ function ProviderCell({ p }: { p: DueProvider }) {
   return (
     <span className="row" style={{ gap: 6, flexWrap: 'nowrap' }}>
       <span className="strong">{p.name ?? NO_PROVIDER}</span>
-      {link && <a href={link} target="_blank" rel="noreferrer noopener" className="btn btn-link" style={{ gap: 4 }} data-tip={`打开 ${p.name ?? ''} 控制台`}><ExternalLink size={12} /><span className="sr-only">供应商控制台</span></a>}
+      {link && <Button variant="link" size="inline" render={<a href={link} target="_blank" rel="noreferrer noopener" data-tip={`打开 ${p.name ?? ''} 控制台`} />}><ExternalLink size={12} /><span className="sr-only">供应商控制台</span></Button>}
     </span>
   );
 }
@@ -104,7 +106,7 @@ export function DueTab() {
                       <td className="r num">{usdText(g.total)}</td>
                       <td className="r num" data-tip={b.tip}>{F.usdPerGb(b.perGb)}</td>
                       <td className="r num" data-tip={b.tip}><span className="up-pct" data-tone={uptimeTone(b.avail, 1)}>{F.str(F.pct(b.avail, 1))}</span></td>
-                      <td className="c"><Button size="sm" onClick={() => setPay(g)}>登记续费…</Button></td>
+                      <td className="c"><Button variant="outline" size="sm" onClick={() => setPay(g)}>登记续费…</Button></td>
                     </tr>
                   );
                 })}
@@ -122,7 +124,7 @@ export function DueTab() {
                     <div className="due-item-top"><ProviderCell p={g.provider} /><DueWhen g={g} short /></div>
                     <div className="due-item-machines">{names.slice(0, 4).join('、')}{names.length > 4 && <span className="t-muted"> 等 {names.length} 台</span>} <HoldPill ms={g.machines} /></div>
                     <div className="due-item-machines t-sub" data-tip={b.tip}>近 30 天 {F.usdPerGb(b.perGb)}/GB · 出口成功率 <span className="up-pct" data-tone={uptimeTone(b.avail, 1)}>{F.str(F.pct(b.avail, 1))}</span> <IdlePill ms={b.idle} /></div>
-                    <div className="due-item-foot"><span className="num" data-tip={usdTotalTip(g.total)}>{subtotal(g)}{onlyUsd(g.total) ? null : <span className="t-muted"> ≈ {usdText(g.total)}</span>}</span><Button size="sm" onClick={() => setPay(g)}>登记续费…</Button></div>
+                    <div className="due-item-foot"><span className="num" data-tip={usdTotalTip(g.total)}>{subtotal(g)}{onlyUsd(g.total) ? null : <span className="t-muted"> ≈ {usdText(g.total)}</span>}</span><Button variant="outline" size="sm" onClick={() => setPay(g)}>登记续费…</Button></div>
                   </li>
                 );
               })}
@@ -182,7 +184,7 @@ const PayForm = resetOnOpen(function PayForm({ g, open, onClose }: { g: DueGroup
               <td><AmountCell currency={m.currency} value={amounts[m.id]} onChange={(v) => setAmounts((a) => ({ ...a, [m.id]: v }))} /></td></tr>
           ))}</tbody></table>
       </div>
-      <Field label="账单号 / 备注（选填）"><Input value={ref} onChange={(e) => setRef(e.target.value)} placeholder="例如：账单 #2041" maxLength={64} /></Field>
+      <FormField label="账单号 / 备注（选填）"><Input value={ref} onChange={(e) => setRef(e.target.value)} placeholder="例如：账单 #2041" maxLength={64} /></FormField>
     </FormDialog>
   );
 });

@@ -12,7 +12,10 @@ import { jobLive } from '@/lib/jobs';
 import { useReachLabel } from '@/lib/probePoints';
 import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
-import { Field, InfoTip, Input, Textarea } from '@/components/ui/form';
+import { FormField } from '@/components/ui/form';
+import { InfoTip } from '@/components/ui/info-tip';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
 import { HELD_TEXT, heldNote, Note, Section, SectionHeader } from '@/components/app/primitives';
@@ -130,17 +133,17 @@ function RenameSection({ m }: { m: MachineView }) {
       <SectionHeader title={<>{isRelay ? '改名 / 国家 / 备注' : '改名 / 改编号 / 国家 / 备注'} <InfoTip text="不影响现有连接。只改显示名和线路机上的备注" /></>} />
       <form className="form-grid" onSubmit={(e) => { e.preventDefault(); if (changed && valid && !patch.isPending) save(); }}>
         {isRelay ? (
-          <Field label="线路机名称" className="span-2"><Input value={label} onChange={(e) => setLabel(e.target.value)} /></Field>
+          <FormField label="线路机名称" className="span-2"><Input value={label} onChange={(e) => setLabel(e.target.value)} /></FormField>
         ) : (
           <>
-            <Field label="团队"><Select value={team} onChange={changeTeam} options={teamOpts} /></Field>
-            <Field label="编号" error={num && !numOk ? '编号应为 1–999 的整数' : taken ? `${F.displayName(teamName!, n)} 已被占用` : undefined}>
+            <FormField label="团队"><Select value={team} onChange={changeTeam} options={teamOpts} /></FormField>
+            <FormField label="编号" error={num && !numOk ? '编号应为 1–999 的整数' : taken ? `${F.displayName(teamName!, n)} 已被占用` : undefined}>
               <Input inputMode="numeric" value={num} onChange={(e) => setNum(e.target.value.replace(/\D/g, ''))} placeholder={teamMoved ? (autoNum ? `自动：${autoNum}` : '自动') : undefined} aria-invalid={(!!num && !numOk) || taken} />
-            </Field>
+            </FormField>
           </>
         )}
-        <Field label="国家" className="span-2" info="显示在名字前的国旗。默认按 IP 判断，不准可以手动选"><CountrySelect value={country} onChange={setCountry} autoLabel={autoCountry} disabled={patch.isPending} aria-label="国家或地区" /></Field>
-        <Field label="备注" className="span-2" error={note.length > NOTE_MAX ? `备注最多 ${NOTE_MAX} 个字符` : undefined}><Textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="例如：客户专用、合同到 2027 年" disabled={patch.isPending} /></Field>
+        <FormField label="国家" className="span-2" info="显示在名字前的国旗。默认按 IP 判断，不准可以手动选"><CountrySelect value={country} onChange={setCountry} autoLabel={autoCountry} disabled={patch.isPending} aria-label="国家或地区" /></FormField>
+        <FormField label="备注" className="span-2" error={note.length > NOTE_MAX ? `备注最多 ${NOTE_MAX} 个字符` : undefined}><Textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="例如：客户专用、合同到 2027 年" disabled={patch.isPending} /></FormField>
         {!!alsoIps?.length && <div className="span-2"><Note>同机 IP 节点一起移{toSpare && '入备用'}：{alsoIps.map((x, i) => <React.Fragment key={x.machine_id}>{i > 0 && '、'}<span className="num">{x.old_name} → <b>{x.new_name}</b></span></React.Fragment>)}</Note></div>}
         {!!also?.length && <div className="span-2"><RenameNote renames={also} tip="原团队少了这几台，后面的节点前移补号，编号保持连续" /></div>}
         {spareBlocked && <div className="span-2"><Note tone="bad">不能改到备用团队：{spareBlocked}。要进备用请用「退役」</Note></div>}
@@ -151,7 +154,7 @@ function RenameSection({ m }: { m: MachineView }) {
           <span className="row" style={{ gap: 8 }}>
             {nameChanged && <><span className="t-sub">新显示名</span><span className="preview-name">{m.name}<ArrowRight size={14} style={{ color: 'var(--fg-3)' }} />{preview || '—'}</span></>}
           </span>
-          <Button type="submit" variant="primary" disabled={!changed || !valid || !!spareBlocked || note.length > NOTE_MAX || patch.isPending} loading={patch.isPending}>保存</Button>
+          <Button type="submit" disabled={!changed || !valid || !!spareBlocked || note.length > NOTE_MAX || patch.isPending} loading={patch.isPending}>保存</Button>
         </div>
       </form>
     </Section>
@@ -199,19 +202,19 @@ function EntrySection({ m }: { m: MachineView }) {
           {canMove && m.kind !== 'relay' && (
             <div className="manage-row">
               <div className="t">换线路机 <InfoTip text={'换的过程中不断网，完成后分享链接会变\n新入口验证通过后，才会移除旧的'} /></div>
-              <Button variant="secondary" disabled={!!m.active_job} onClick={() => setDlg('move')}>换线路机…</Button>
+              <Button variant="outline" disabled={!!m.active_job} onClick={() => setDlg('move')}>换线路机…</Button>
             </div>
           )}
           {canMove && m.kind === 'relay' && (
             <div className="manage-row">
               <div className="t">搬空线路机 <InfoTip text={'把上面的节点都换到另一台线路机，之后就可以放心退役这台\n这些节点的分享链接会变'} /></div>
-              <Button variant="secondary" onClick={() => setDlg('evacuate')}>搬空到…</Button>
+              <Button variant="outline" onClick={() => setDlg('evacuate')}>搬空到…</Button>
             </div>
           )}
           {canAddDirect && (
             <div className="manage-row">
               <div><div className="t">直出入口</div><div className="hint">从 {m.ip} 直接出去 <InfoTip text={`不经过节点。每台线路机只能有一条，分享链接叫「${m.name}-直出」`} /></div></div>
-              <Button variant="secondary" disabled={add.isPending || !!m.active_job} loading={add.isPending}
+              <Button variant="outline" disabled={add.isPending || !!m.active_job} loading={add.isPending}
                 onClick={() => add.mutate({ id: m.id, relay_id: m.id, mode: 'normal' }, { onSuccess: () => toast.ok('已提交，直出入口正在应用'), onError: toast.err })}>添加直出入口</Button>
             </div>
           )}
@@ -221,7 +224,7 @@ function EntrySection({ m }: { m: MachineView }) {
               <span className="row" style={{ gap: 8, flexWrap: 'nowrap' }}>
                 <div style={{ flex: '0 1 160px', minWidth: 0 }}><Select value={relay} onChange={setRelay} options={opts} placeholder="选择线路机" aria-label="要挂到的线路机" /></div>
                 {/* 模式按「设置 → 入口」的默认；不支持穿透的（家宽代理、同机 IP 节点）中控自动按普通建，结果里写明。按钮与下拉同为 36 */}
-                <Button size="lg" disabled={!relay || add.isPending} loading={add.isPending} onClick={() => add.mutate({ id: m.id, relay_id: relay }, { onSuccess: (r) => { toast.ok(`已提交，新入口（${r.entry_mode === 'reverse' ? '穿透' : '普通'}模式）正在应用${r.note ? `：${r.note}` : ''}`); setRelay(''); }, onError: toast.err })}>添加入口</Button>
+                <Button variant="outline" size="lg" disabled={!relay || add.isPending} loading={add.isPending} onClick={() => add.mutate({ id: m.id, relay_id: relay }, { onSuccess: (r) => { toast.ok(`已提交，新入口（${r.entry_mode === 'reverse' ? '穿透' : '普通'}模式）正在应用${r.note ? `：${r.note}` : ''}`); setRelay(''); }, onError: toast.err })}>添加入口</Button>
               </span>
             </div>
           )}
@@ -240,7 +243,7 @@ function ReplaceRow({ m }: { m: MachineView }) {
     <>
       <div className="manage-row">
         <div className="t">替换为另一台节点 <InfoTip text={'新节点沿用这台的编号，软路由上指向这台的出口也会改成新节点\n这台移到备用团队，到期满 1 天后自动回收'} /></div>
-        <Button variant="secondary" disabled={!!m.active_job} onClick={() => setOpen(true)}>替换为…</Button>
+        <Button variant="outline" disabled={!!m.active_job} onClick={() => setOpen(true)}>替换为…</Button>
       </div>
       <ReplaceDialog m={m} open={open} onOpenChange={setOpen} onDone={() => setOpen(false)} />
     </>
@@ -255,7 +258,7 @@ function IpNodesRow({ m }: { m: MachineView }) {
         <div className="t">添加 IP 节点 <InfoTip text={"机器上另配了公网 IP 时，每个 IP 可以上架成一个独立节点，有自己的编号、入口和分享链接\nSSH、agent 和主机读数仍用这台的"} /></div>
         {m.ip_nodes.length > 0 && <div className="hint">已有 {m.ip_nodes.length} 个同机 IP 节点</div>}
       </div>
-      <Button asChild variant="secondary"><Link to={`/provision?host=${m.id}`}>添加 IP 节点…</Link></Button>
+      <Button variant="outline" render={<Link to={`/provision?host=${m.id}`} />}>添加 IP 节点…</Button>
     </div>
   );
 }
@@ -272,8 +275,8 @@ function AgentRow({ m }: { m: MachineView }) {
         <div className="t">agent 版本 {a.version ?? '未知'}</div>
         <div className="hint">{a.online ? '在线' : '离线'} · {h ? `读数来自宿主机「${h.name}」 · ${seen}` : seen} {h && <InfoTip text="同机 IP 节点没有自己的 agent，要升级请升级宿主机" />}</div>
       </div>
-      {h ? <Button variant="secondary" onClick={() => open(h.id, 'manage')}>打开宿主机</Button> : (
-        <Button variant="secondary" disabled={!!m.active_job} onClick={() => openUpgrade(m.id)}>升级 agent…</Button>
+      {h ? <Button variant="outline" onClick={() => open(h.id, 'manage')}>打开宿主机</Button> : (
+        <Button variant="outline" disabled={!!m.active_job} onClick={() => openUpgrade(m.id)}>升级 agent…</Button>
       )}
     </div>
   );
@@ -294,7 +297,7 @@ function TuneRow({ m }: { m: MachineView }) {
           {/* 同别的行：标题 + 灰色副行（状态 · 推导参数），不写成「系统调优：未调优」 */}
           <div className="hint">{state}{t.params && <> · {tuneBufText(t.params)} <InfoTip text={tuneParamsText(t.params)} /></>}</div>
         </div>
-        <Button variant="secondary" disabled={!!m.active_job} onClick={() => setAsk(true)}>{t.profile ? '重新调优…' : '调优…'}</Button>
+        <Button variant="outline" disabled={!!m.active_job} onClick={() => setAsk(true)}>{t.profile ? '重新调优…' : '调优…'}</Button>
       </div>
       <ConfirmDialog open={ask} onOpenChange={setAsk} title={`${t.profile ? '重新调优' : '调优'} · ${m.name}`} confirmLabel="开始调优" confirmDisabled={!!m.active_job}
         description="不会重启代理服务，也不会断开客户连接。可能重启一次系统日志服务"
@@ -313,7 +316,7 @@ function SsRefreshRow({ m }: { m: MachineView }) {
         <div>
           <div className="t">SS 配置 <InfoTip text={`重新下发中控当前的 ssserver 配置（含出站目标黑名单）\n配置没有变化就不重启${m.ip_nodes.length > 0 ? '\n同机 IP 节点的 ssserver 一起刷' : ''}\n完成后经入口验收出口`} /></div>
         </div>
-        <Button variant="secondary" disabled={!!m.active_job} onClick={() => setAsk(true)}>重新下发…</Button>
+        <Button variant="outline" disabled={!!m.active_job} onClick={() => setAsk(true)}>重新下发…</Button>
       </div>
       <ConfirmDialog open={ask} onOpenChange={setAsk} title={`重新下发 SS 配置 · ${m.name}`} confirmLabel="开始下发" confirmDisabled={!!m.active_job}
         description="配置有变化时会重启 ssserver，该节点的连接会断开几秒"
@@ -331,7 +334,7 @@ function SpeedtestRow({ m }: { m: MachineView }) {
     return (
       <div className="manage-row">
         <div><div className="t">测速</div><div className="hint">同机 IP 节点和宿主机共用网络，请对宿主机「{h.name}」测速</div></div>
-        <Button variant="secondary" onClick={() => open(h.id, 'manage')}>打开宿主机</Button>
+        <Button variant="outline" onClick={() => open(h.id, 'manage')}>打开宿主机</Button>
       </div>
     );
   }
@@ -349,7 +352,7 @@ function SpeedtestOwnRow({ m }: { m: MachineView }) {
   const [target, setTarget] = React.useState(st.targets[0]?.key ?? '');
   const sizeOpts = React.useMemo(() => st.sizes_mb.map((n) => ({ value: String(n), label: `${n} MB` })), [st]);
   const targetOpts = React.useMemo(() => st.targets.map((t) => ({ value: t.key, label: t.name })), [st]);
-  const link = last && <Link to={`/jobs/${last.id}`} className="btn btn-link btn-sm" style={{ height: 'auto', padding: 0 }}>作业详情</Link>;
+  const link = last && <Button variant="link" size="inline-sm" render={<Link to={`/jobs/${last.id}`} />}>作业详情</Button>;
   const hint = !last ? '还没测过'
     : jobLive(last.state) ? <>测速进行中… {link}</>
     : last.state === 'succeeded' ? (out && isSpeedtestOutput(out)
@@ -363,14 +366,14 @@ function SpeedtestOwnRow({ m }: { m: MachineView }) {
           <div className="t">测速 <InfoTip text={`这台机器自己从北美的测速主机下载一个文件，量它出站的平均速率（线路机量的是它本机，不是经入口到节点的链路）\n下载的流量计入这台机器的流量额度\n300 秒内没下完的，速率按已下载的算并标明`} /></div>
           <div className="hint">{hint}</div>
         </div>
-        <Button variant="secondary" disabled={!!m.active_job} onClick={() => setAsk(true)}>测速…</Button>
+        <Button variant="outline" disabled={!!m.active_job} onClick={() => setAsk(true)}>测速…</Button>
       </div>
       <ConfirmDialog open={ask} onOpenChange={setAsk} title={`测速 · ${m.name}`} confirmLabel="开始测速" confirmDisabled={!!m.active_job || !target}
         description={<>这台机器会自己下载一个测速文件，<b>会用掉约 {size} MB 流量</b>，计入它的流量额度</>}
         onConfirm={async () => { const r = await run.mutateAsync({ id: m.id, size_mb: Number(size), target }); toast.ok(`已提交「${m.name}」的测速作业（${r.target_name} ${r.size_mb} MB）`); }}>
         <div className="form-grid">
-          <Field label="下载量" info="越大越能测出跑满的带宽；慢线路 300 秒内下不完的，按已下载的算"><Select value={size} onChange={setSize} options={sizeOpts} /></Field>
-          <Field label="测速目标" info="北美的测速主机"><Select value={target} onChange={setTarget} options={targetOpts} /></Field>
+          <FormField label="下载量" info="越大越能测出跑满的带宽；慢线路 300 秒内下不完的，按已下载的算"><Select value={size} onChange={setSize} options={sizeOpts} /></FormField>
+          <FormField label="测速目标" info="北美的测速主机"><Select value={target} onChange={setTarget} options={targetOpts} /></FormField>
         </div>
       </ConfirmDialog>
     </>
@@ -387,8 +390,8 @@ function MaintRow({ m }: { m: MachineView }) {
     <div className="manage-row">
         <div><div className="t">维护窗口 <InfoTip text="期间不发告警，卡片上显示「维护」" /></div>{m.maintenance && <div className="hint">{onHost ? `宿主机「${m.host_machine!.name}」在维护中` : '维护中'}</div>}</div>
         {m.maintenance
-          ? <Button variant="secondary" loading={end.isPending} onClick={() => end.mutate(m, { onSuccess: (o) => toast.ok(`${o.name} 已结束维护`), onError: toast.err })}>{onHost ? '结束宿主机维护' : '结束维护'}</Button>
-          : <Button variant="secondary" onClick={() => openMaint(m.id)}>维护窗口…</Button>}
+          ? <Button variant="outline" loading={end.isPending} onClick={() => end.mutate(m, { onSuccess: (o) => toast.ok(`${o.name} 已结束维护`), onError: toast.err })}>{onHost ? '结束宿主机维护' : '结束维护'}</Button>
+          : <Button variant="outline" onClick={() => openMaint(m.id)}>维护窗口…</Button>}
     </div>
   );
 }
@@ -432,12 +435,12 @@ function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }
               <div className="hint">{m.kind === 'relay' ? '线路机只能立即回收。请先搬空节点，直出入口会一起移除' : m.host_machine ? `宿主机「${m.host_machine.name}」不受影响` : n > 0 ? `${n} 个同机 IP 节点会一起退役` : `移入备用${pointed ? ` · ${HELD_TEXT}` : m.subscription ? ` · ${F.addDays(m.subscription.due_date, 2).slice(5)} 起自动回收` : ''}`}</div>
             </div>
           )}
-          <Button variant="outline-danger" disabled={busyJob || m.lifecycle === 'retiring'} onClick={() => setOpen(true)}>{inSpare ? '立即回收…' : '退役…'}</Button>
+          <Button variant="destructive-outline" disabled={busyJob || m.lifecycle === 'retiring'} onClick={() => setOpen(true)}>{inSpare ? '立即回收…' : '退役…'}</Button>
         </div>
-        {busyJob && m.active_job && <Note tone="info">作业进行中，暂不能操作。<Link to={`/jobs/${m.active_job.id}`} className="btn btn-link" onClick={onClosed}>查看作业</Link></Note>}
+        {busyJob && m.active_job && <Note tone="info">作业进行中，暂不能操作。<Button variant="link" size="inline" render={<Link to={`/jobs/${m.active_job.id}`} onClick={onClosed} />}>查看作业</Button></Note>}
         {/* 退役作业失败：机器仍是退役中，不能再发起退役，只能重试那个作业 */}
         {m.lifecycle === 'retiring' && m.failed_job && !m.active_job && (
-          <Note tone="bad">退役作业失败：<Link to={`/jobs/${m.failed_job.id}`} className="btn btn-link" onClick={onClosed}>到作业页重试</Link></Note>
+          <Note tone="bad">退役作业失败：<Button variant="link" size="inline" render={<Link to={`/jobs/${m.failed_job.id}`} onClick={onClosed} />}>到作业页重试</Button></Note>
         )}
       </div>
 

@@ -37,8 +37,8 @@ export const Pagination = memo(function Pagination({ pg, unit = '项', compact, 
             / <span className="num">{n(pageCount)}</span> 页
           </span>
         )}
-        <Button size="sm" className="pager-btn" disabled={page <= 1} onClick={() => setPage(page - 1)}><ChevronLeft />上一页</Button>
-        <Button size="sm" className="pager-btn" disabled={page >= pageCount} onClick={() => setPage(page + 1)}>下一页<ChevronRight /></Button>
+        <Button variant="outline" size="sm" className="min-w-18" disabled={page <= 1} onClick={() => setPage(page - 1)}><ChevronLeft />上一页</Button>
+        <Button variant="outline" size="sm" className="min-w-18" disabled={page >= pageCount} onClick={() => setPage(page + 1)}>下一页<ChevronRight /></Button>
       </span>
     </nav>
   );
@@ -51,8 +51,8 @@ export function CursorPager({ page, size, unit = '条', loading = false, onNewer
     <nav className="pager" aria-label="分页">
       <span className="pager-range">第 <span className="num">{n(page)}</span> 页 · 每页 <span className="num">{size}</span> {unit}</span>
       <span className="pager-nav">
-        <Button size="sm" className="pager-btn" disabled={!onNewer || loading} onClick={onNewer}><ChevronLeft />上一页</Button>
-        <Button size="sm" className="pager-btn" disabled={!onOlder || loading} loading={loading} onClick={onOlder}>下一页<ChevronRight /></Button>
+        <Button variant="outline" size="sm" className="min-w-18" disabled={!onNewer || loading} onClick={onNewer}><ChevronLeft />上一页</Button>
+        <Button variant="outline" size="sm" className="min-w-18" disabled={!onOlder || loading} loading={loading} onClick={onOlder}>下一页<ChevronRight /></Button>
       </span>
     </nav>
   );
@@ -63,7 +63,7 @@ export function ShowAll({ total, cap, open, onToggle, unit = '条' }: { total: n
   if (total <= cap) return null;
   return (
     <div className="dt-foot is-center">
-      <Button size="sm" variant="quiet" aria-expanded={open} onClick={onToggle}>{open ? '收起' : `显示全部 ${total} ${unit}`}</Button>
+      <Button size="sm" variant="ghost" aria-expanded={open} onClick={onToggle}>{open ? '收起' : `显示全部 ${total} ${unit}`}</Button>
     </div>
   );
 }

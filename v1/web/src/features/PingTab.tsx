@@ -4,9 +4,12 @@ import * as React from 'react';
 
 import { PING_PLACEHOLDER, useMachinePing, usePingTargets, useSaveMachinePing, useSavePingTargets, type PingOverride, type PingSlot } from '@/lib/ping';
 import { Button } from '@/components/ui/button';
-import { Checkbox, Field, InfoTip, Input } from '@/components/ui/form';
+import { FormField } from '@/components/ui/form';
+import { InfoTip } from '@/components/ui/info-tip';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
-import { SkeletonRows } from '@/components/ui/skeleton';
+import { SkeletonRows } from '@/components/app/SkeletonRows';
 import { toast } from '@/components/ui/toast';
 import { ErrorNote, Panel } from '@/components/app/primitives';
 
@@ -32,7 +35,7 @@ function GlobalForm({ mode: m0, slots: s0 }: { mode: string; slots: PingSlot[] }
   const set = (i: number, k: keyof PingSlot, v: string) => setSlots((l) => l.map((s, j) => (j === i ? { ...s, [k]: v } : s)));
   return (
     <div className="stack" style={{ gap: 'var(--sp-12)' }}>
-      <Field label="方式" info={MODE_TIP}><Select aria-label="方式" value={mode} onChange={setMode} options={MODE_ITEMS} className="ping-mode" /></Field>
+      <FormField label="方式" info={MODE_TIP}><Select aria-label="方式" value={mode} onChange={setMode} options={MODE_ITEMS} className="ping-mode" /></FormField>
       {/* 名称定宽、目标撑满（目标是长域名）；输入框用标准尺寸，同别处表单 */}
       <div className="table-wrap is-boxed">
         <table className="dt is-one ping-tbl">
@@ -50,7 +53,7 @@ function GlobalForm({ mode: m0, slots: s0 }: { mode: string; slots: PingSlot[] }
         </table>
       </div>
       <div className="row" style={{ justifyContent: 'flex-end' }}>
-        <Button variant="primary" disabled={!dirty} loading={save.isPending} onClick={() => save.mutate({ mode, slots }, { onSuccess: () => toast.ok('已保存，线路机很快会按新目标测'), onError: toast.err })}>保存</Button>
+        <Button disabled={!dirty} loading={save.isPending} onClick={() => save.mutate({ mode, slots }, { onSuccess: () => toast.ok('已保存，线路机很快会按新目标测'), onError: toast.err })}>保存</Button>
       </div>
     </div>
   );
@@ -79,9 +82,9 @@ function OverrideForm({ id, global, over }: { id: string; global: { mode: string
   };
   return (
     <div className="stack" style={{ gap: 'var(--sp-12)' }}>
-      <Field label="方式" info={MODE_TIP}>
+      <FormField label="方式" info={MODE_TIP}>
         <Select aria-label="方式" value={mode} onChange={setMode} className="ping-mode" options={[{ value: 'global', label: `跟随全局（${global.mode === 'icmp' ? 'ICMP' : 'TCP'}）` }, ...MODE_ITEMS]} />
-      </Field>
+      </FormField>
       <div className="table-wrap is-boxed">
         <table className="dt is-one ping-tbl" style={{ minWidth: 520 }}>
           <colgroup><col style={{ width: 64 }} /><col style={{ width: 88 }} /><col style={{ width: 150 }} /><col /></colgroup>
@@ -105,8 +108,8 @@ function OverrideForm({ id, global, over }: { id: string; global: { mode: string
       </div>
       {/* 保存在右下（同对话框的确认）；次要的「全部跟随全局」在它左边 */}
       <div className="row" style={{ gap: 8, justifyContent: 'flex-end' }}>
-        {(over != null) && <Button onClick={() => save.mutate(null, { onSuccess: () => toast.ok('已全部改回跟随全局'), onError: toast.err })}>全部跟随全局</Button>}
-        <Button variant="primary" disabled={!dirty} loading={save.isPending} onClick={submit}>保存</Button>
+        {(over != null) && <Button variant="outline" onClick={() => save.mutate(null, { onSuccess: () => toast.ok('已全部改回跟随全局'), onError: toast.err })}>全部跟随全局</Button>}
+        <Button disabled={!dirty} loading={save.isPending} onClick={submit}>保存</Button>
       </div>
     </div>
   );

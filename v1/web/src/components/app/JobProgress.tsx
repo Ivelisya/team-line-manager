@@ -17,7 +17,7 @@ export function JobProgressBar({ job, now }: { job: JobSummary; now?: number }) 
         {/* 用时从开始执行算：进行中写「已用时」，结束了写「用时」；排队时、排队中就被取消的没有用时 */}
         <span className="t-sub ellipsis">{cur ? `${cur} · ` : ''}{job.started_at ? `${live ? '已用时' : '用时'} ${F.duration(job.started_at, job.finished_at, now)}` : live ? '排队中' : '未执行'}</span>
       </div>
-      <Progress value={p.pct} tone={tone} live={live} label="作业总进度" />
+      <Progress value={p.pct} tone={tone} live={live} aria-label="作业总进度" />
     </div>
   );
 }

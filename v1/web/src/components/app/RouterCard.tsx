@@ -1,8 +1,9 @@
 // 软路由卡片：外壳与槽位同节点卡（cards.css 的 .ncard + subgrid，大卡片密度），固定 8 个槽位，在线 / 部署中 / 等待接入 / 离线都占同样的行，
 // 同一排的卡片分段对齐。还有路由状态 pill、资源格条、部署时间线、行内迷你折线与「查看接入命令」，抽屉也用。
 // 卡片随 routers 事件（每轮采集最多一次）重渲染：列表做结构共享，没变的路由引用不变，memo 挡住。
+import { Spinner } from '@/components/ui/spinner';
 import { memo, useCallback, useMemo, type CSSProperties, type ReactNode } from 'react';
-import { ArrowDown, ArrowUp, Cable, Clock, Cpu, Gauge, HardDrive, Loader2, MemoryStick, PanelRightOpen, RefreshCw, Router as RouterIcon, Shuffle, Terminal, Thermometer, Unplug, Users, Waypoints } from 'lucide-react';
+import { ArrowDown, ArrowUp, Cable, Clock, Cpu, Gauge, HardDrive, MemoryStick, PanelRightOpen, RefreshCw, Router as RouterIcon, Shuffle, Terminal, Thermometer, Unplug, Users, Waypoints } from 'lucide-react';
 import * as F from '@/lib/format';
 import { healthLabel, tagColor } from '@/lib/derive';
 import { HEALTH_TONE } from '@/lib/sort';
@@ -11,7 +12,7 @@ import { cn } from '@/lib/utils';
 import { deploySteps, fleetExits, routerIssues, routerMeters, showBootstrap, showDeploy, tempTone, uptimeFmt, useRegenBootstrap, useRouterMetrics, type RouterSummary, type RouterTab, type RouterView } from '@/lib/routers';
 import type { BeatCell } from '@/lib/derive';
 import { Button } from '@/components/ui/button';
-import { InfoTip } from '@/components/ui/form';
+import { InfoTip } from '@/components/ui/info-tip';
 import { toast } from '@/components/ui/toast';
 import { Num, Pill } from './primitives';
 import { CellMeter, Cells, DotTrace, Tag } from './viz';
@@ -75,8 +76,8 @@ export function DeployTimeline({ r, max }: { r: RouterView; max?: number }) {
     items[items.length - 1].extra = <>
       {d.error && <span className="rt-tl-err" data-tip={d.error}>{d.error}</span>}
       <span className="row rt-tl-acts">
-        <Button size="sm" loading={boot.pending} onClick={() => void boot.run(r)} data-tip="中控连不上路由时用。生成一条命令，到路由的 SSH 里执行"><Terminal size={13} />改用在路由上执行命令</Button>
-        <Button size="sm" variant="text" onClick={() => showDeploy({ id: r.id, name: r.name })}><RefreshCw size={13} />重新部署</Button>
+        <Button variant="outline" size="sm" loading={boot.pending} onClick={() => void boot.run(r)} data-tip="中控连不上路由时用。生成一条命令，到路由的 SSH 里执行"><Terminal size={13} />改用在路由上执行命令</Button>
+        <Button size="sm" variant="ghost" onClick={() => showDeploy({ id: r.id, name: r.name })}><RefreshCw size={13} />重新部署</Button>
       </span>
     </>;
   }
@@ -85,7 +86,7 @@ export function DeployTimeline({ r, max }: { r: RouterView; max?: number }) {
     <ol className="rt-tl" aria-label="部署进度">
       {(max ? items.slice(-max) : items).map((it) => (
         <li key={it.key} data-tone={it.tone}>
-          <i className="rt-tl-dot" aria-hidden>{it.tone === 'run' && <Loader2 className="spin" />}</i>
+          <i className="rt-tl-dot" aria-hidden>{it.tone === 'run' && <Spinner className="size-(--icon-md)" />}</i>
           <div className="rt-tl-body"><span className="rt-tl-text">{it.text}{it.tone === 'bad' && ' · 失败'}</span>{it.at != null && <span className="rt-tl-at">{atClock(it.at)}</span>}{it.extra}</div>
         </li>
       ))}
@@ -107,7 +108,7 @@ function Hold({ r }: { r: RouterView }) {
     return (
       <div className="nc-res rt-span"><div className="nc-hold rt-hold">
         <span className="rt-hold-main"><Clock />等路由执行接入命令<InfoTip text="在路由上执行接入命令，约半分钟后上线" /></span>
-        <Button size="sm" loading={boot.pending} onClick={() => void boot.run(r)} data-tip="命令只显示一次。这里会生成新的，旧的作废"><Terminal size={13} />查看接入命令</Button>
+        <Button variant="outline" size="sm" loading={boot.pending} onClick={() => void boot.run(r)} data-tip="命令只显示一次。这里会生成新的，旧的作废"><Terminal size={13} />查看接入命令</Button>
       </div></div>
     );
   }
@@ -221,8 +222,8 @@ function RouterCardImpl({ r, current, onOpen: open }: { r: RouterView; current?:
       <footer className="nc-foot">
         <RouterStatePill r={r} />
         <div className="nc-foot-right">
-          <Button variant="text" size="sm" onClick={() => onOpen()}><PanelRightOpen size={14} /><span>详情</span></Button>
-          <Button variant="text" size="sm" onClick={() => onOpen('exits')}><Waypoints size={14} /><span>出口</span></Button>
+          <Button variant="ghost" size="sm" onClick={() => onOpen()}><PanelRightOpen size={14} /><span>详情</span></Button>
+          <Button variant="ghost" size="sm" onClick={() => onOpen('exits')}><Waypoints size={14} /><span>出口</span></Button>
         </div>
       </footer>
     </article>

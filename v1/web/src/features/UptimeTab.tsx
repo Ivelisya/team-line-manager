@@ -1,5 +1,6 @@
 // 告警页的「月度可用率」页签：按供应商汇总（平均 / 最差的出口与 TCP 成功率，出口为主、断线次数、告警次数）+ 每个在用节点一行，都从差到好（服务端的顺序，前端不重排）。
 // 数据来自 GET /reports/uptime：小时汇总里成功次数 ÷ 探测次数，窗口是组织时区的自然日（本月算到今天）。节点行点开机器抽屉的「连接质量」。
+import { Button } from '@/components/ui/button';
 import * as React from 'react';
 import { CalendarDays } from 'lucide-react';
 import * as F from '@/lib/format';
@@ -7,9 +8,9 @@ import { useUptime } from '@/lib/queries';
 import { openDrawer } from '@/lib/drawer';
 import { meta, uptimeTone } from '@/lib/derive';
 import type { UptimeItem, UptimeProvider } from '@/lib/types';
-import { InfoTip } from '@/components/ui/form';
+import { InfoTip } from '@/components/ui/info-tip';
 import { Select } from '@/components/ui/select';
-import { SkeletonRows } from '@/components/ui/skeleton';
+import { SkeletonRows } from '@/components/app/SkeletonRows';
 import { ShowAll } from '@/components/app/Pagination';
 import { Empty, ErrorNote, Panel, TableWrap } from '@/components/app/primitives';
 
@@ -108,7 +109,7 @@ function ProviderRow({ p }: { p: UptimeProvider }) {
       <td><span className="cell-main strong">{p.name}</span></td>
       <td className="r">{p.nodes} 台{p.with_data < p.nodes && <span className="sub" data-tip="窗口内有探测的节点才计入平均和最差">{p.with_data} 台有探测</span>}</td>
       <td className="r"><Pct p={p.avg_egress_pct} tip={`${p.with_data} 台有探测的节点的平均`} /></td>
-      <td className="r"><Pct p={p.worst_egress_pct} />{p.worst && p.worst_egress_pct != null && p.worst_egress_pct < 100 && <button type="button" className="btn btn-link up-worst" onClick={() => open(p.worst!.id)} data-tip="打开这台的连接质量">{p.worst.name}</button>}</td>
+      <td className="r"><Pct p={p.worst_egress_pct} />{p.worst && p.worst_egress_pct != null && p.worst_egress_pct < 100 && <Button variant="link" size="inline" className="up-worst ml-auto block max-w-full text-label font-normal" onClick={() => open(p.worst!.id)} data-tip="打开这台的连接质量">{p.worst.name}</Button>}</td>
       <td className="r"><Pct p={p.avg_tcp_pct} tip="有 TCP 探测的节点的平均" /></td>
       <td className="r"><Pct p={p.worst_tcp_pct} /></td>
       <td className="r">{p.outages > 0 ? <span className="num">{p.outages} 次</span> : <span className="t-muted">{p.with_data > 0 ? '0 次' : '—'}</span>}</td>

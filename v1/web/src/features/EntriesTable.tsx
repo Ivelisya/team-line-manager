@@ -8,9 +8,9 @@ import { useReachLabel } from '@/lib/probePoints';
 import { entryState, Num, Pill } from '@/components/app/primitives';
 import { ShowAll } from '@/components/app/Pagination';
 import { openRouterDrawer, useEntryRouters } from '@/lib/routers';
-import { Checkbox } from '@/components/ui/form';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Button } from '@/components/ui/button';
-import { Trunc } from '@/components/ui/overlays';
+import { Trunc } from '@/components/ui/tooltip';
 import { MovesDialog, movableEntries } from '@/components/app/LifecycleDialogs';
 
 /** 入口表先露的条数（抽屉入口表、线路机页共用） */
@@ -77,14 +77,14 @@ export function EntriesTable({ m, traffic, onlyBad, pick }: { m: MachineView; tr
       <table className="dt is-one" style={{ minWidth: 520 }}>
         <colgroup>{picking && <col style={{ width: 44 }} />}<col style={{ width: 220 }} /><col style={{ width: 132 }} /><col style={{ width: 72 }} /><col style={{ width: 72 }} />{traffic && <col style={{ width: 112 }} />}</colgroup>
         {/* 勾选后表头换成操作栏（同一行、同样高），表格不往下挪 */}
-        <thead><tr>{picking && <th className="dt-pick">{movable.length > 0 && <Checkbox aria-label="全选可换线的入口" checked={allOn ? true : picked.length > 0 ? 'indeterminate' : false} onCheckedChange={(v) => setSel(v === true ? movable.map((e) => e.id) : [])} />}</th>}
+        <thead><tr>{picking && <th className="dt-pick">{movable.length > 0 && <Checkbox aria-label="全选可换线的入口" checked={allOn} indeterminate={!allOn && picked.length > 0} onCheckedChange={(v) => setSel(v === true ? movable.map((e) => e.id) : [])} />}</th>}
           {picked.length > 0 ? (
             <th colSpan={traffic ? 5 : 4} className="dt-pickbar">
               <span className="row row-between" style={{ flexWrap: 'nowrap' }}>
                 <span>已选 <b className="num">{picked.length}</b> 个节点</span>
                 <span className="row" style={{ flexWrap: 'nowrap' }}>
-                  <Button size="sm" variant="quiet" onClick={() => setSel([])}>取消</Button>
-                  <Button size="sm" onClick={() => setMoving(true)} data-tip="一起换到另一台线路机，每台软路由只改一次、OpenClash 只重启一次">换到…</Button>
+                  <Button size="sm" variant="ghost" onClick={() => setSel([])}>取消</Button>
+                  <Button variant="outline" size="sm" onClick={() => setMoving(true)} data-tip="一起换到另一台线路机，每台软路由只改一次、OpenClash 只重启一次">换到…</Button>
                 </span>
               </span>
             </th>

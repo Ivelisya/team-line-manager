@@ -20,7 +20,6 @@
 .reason-list li { display: flex; align-items: flex-start; gap: var(--sp-8); font-size: var(--fs-body); }
 .reason-list .smark { margin-top: 4px; }
 .reason-list .reason-body { min-width: 0; }
-.reason-list .reason-more { height: auto; padding: 0; vertical-align: baseline; }
 .reason-list .reason-parts { display: block; margin-top: var(--sp-4); white-space: pre-line; font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); }
 .note-list .dot { margin-top: calc((1lh - var(--dot)) / 2); } /* 提示条里合并的几条说明：圆点对齐第一行文字 */
 /* 抽屉「最近操作」：第一行动作 + 对象，右边谁 · 多久前（悬停看具体时间）；第二行命令 / 详情，等宽浅色单行省略（悬停看全文） */
@@ -68,7 +67,6 @@
   .audit-list.is-bare .audit-meta { padding-left: 14px; }
 }
 .audit-what[data-tone="bad"] b { color: var(--bad-text); }
-.audit-target.btn { display: inline; height: auto; font: inherit; vertical-align: baseline; }
 .audit-res { margin-left: var(--sp-8); font-size: var(--fs-label); color: var(--fg-2); }
 .audit-res[data-tone="warn"] { color: var(--warn-text); font-weight: var(--fw-medium); }
 .audit-res[data-tone="bad"] { color: var(--bad-text); font-weight: var(--fw-medium); }
@@ -92,7 +90,6 @@
 .inc-cmds { display: flex; flex-direction: column; gap: 2px; min-width: 0; margin-top: 2px; }
 .inc-cmd { display: flex; align-items: center; gap: var(--sp-4); min-width: 0; }
 .inc-cmd code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-micro); line-height: var(--lh-micro); color: var(--fg-2); }
-.inc-cmd .copy-btn { flex: none; }
 .alerts-pop-cmds { padding: 0 var(--sp-10) var(--sp-6) calc(var(--sp-10) + 14px); }
 .inc-narrow, .inc-ack-narrow { display: none !important; }
 @media (max-width: 600px) {
@@ -103,7 +100,7 @@
   .inc-tbl col:first-child { width: 80px !important; }
   .inc-tbl col:nth-child(2) { width: auto !important; }
   .inc-tbl col:last-child { width: 104px !important; }
-  .inc-tbl td:last-child .btn .lucide:not(.spin) { display: none; } /* 末列只有 104：「全部确认」「登记续费」带图标会顶出单元格，窄屏只留字（对象列让不出更多） */
+  .inc-tbl td:last-child [data-slot="button"] svg:not([data-slot="spinner"]) { display: none; } /* 末列只有 104：「全部确认」「登记续费」带图标会顶出单元格，窄屏只留字（对象列让不出更多） */
   .inc-tbl :is(th, td):first-child { padding-right: var(--sp-4); }
   .inc-tbl .inc-narrow { display: block !important; }
   .inc-tbl .inc-narrow.sub:not(.inc-narrow-sum) { white-space: normal; overflow-wrap: anywhere; } /* 第二行「规则 · 时间」放不下就折行，不截掉时间 */
@@ -177,14 +174,12 @@
 .ov-follow { display: flex; align-items: center; min-height: var(--h-md); padding: 0 var(--sp-12); color: var(--fg-2); }
 .ov-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); min-height: calc(var(--seg-item-sm) + 2 * var(--seg-pad)); min-width: 0; }
 /* 订阅表单：没有「跟随 / 单独」切换的项（到期日）标签行也占切换的高度，同一行左右两个输入框上沿对齐 */
-.sub-form > .field > :is(.label, .field-label):first-child { display: flex; align-items: center; min-height: calc(var(--seg-item-sm) + 2 * var(--seg-pad)); }
+.sub-form > [data-slot="field"] > :is([data-slot="label"], [data-slot="field-label"]):first-child { display: flex; align-items: center; min-height: calc(var(--seg-item-sm) + 2 * var(--seg-pad)); }
 /* 三网 PING 的槽位表：格子里是标准尺寸的输入框（撑满列宽）；方式下拉限宽 */
-.ping-tbl td > .input { width: 100%; }
 .ping-mode { width: 240px; max-width: 100%; }
 /* 左边文字、右边操作：窄屏只让左侧文字折行，按钮不换行、不掉到下一行；右边是下拉 + 按钮的（is-ctl）让右边收缩 */
 .manage-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--sp-12); }
 .manage-row > :first-child { min-width: 0; }
-.manage-row .btn { white-space: nowrap; }
 .manage-row.is-ctl { grid-template-columns: auto minmax(0, 1fr); }
 .manage-row.is-ctl > :last-child { justify-self: end; min-width: 0; max-width: 100%; }
 .manage-row .t { font-weight: var(--fw-medium); }
@@ -198,8 +193,6 @@
   .dt tr .row-acts { opacity: 0; transition: opacity var(--dur-2) var(--ease-std); }
   .dt tr:hover .row-acts, .dt tr:focus-within .row-acts { opacity: 1; }
 }
-.btn.btn-slot { transition: background-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std), border-color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out), opacity var(--dur-2) var(--ease-std), visibility 0s linear var(--dur-2); }
-.btn-slot[data-off] { opacity: 0; visibility: hidden; }
 .relay-card { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; scroll-margin-top: calc(var(--h-md) + var(--sp-16)); } /* 跳转时让出上面吸顶的那一行 */
 .relay-jump {
   position: sticky; top: var(--topbar-h); z-index: var(--z-sticky); display: flex; gap: var(--sp-8); padding: var(--sp-8) 4px;
@@ -247,7 +240,7 @@
 .prov-steps.is-form { width: 100%; max-width: 760px; margin-inline: auto; } /* 单台：步骤条与下面收窄居中的表单同宽，左缘对齐 */
 .prov-form { width: 100%; max-width: 760px; margin-inline: auto; } /* 两列表单铺满 1100px 太散：收到 760 并居中 */
 .prov-form .form-grid { row-gap: 0; }
-.prov-form .field { grid-template-rows: auto auto minmax(var(--lh-label), auto); padding-bottom: var(--sp-8); } /* 提示 / 错误行与下一行的标签隔开，不贴在一起 */
+.prov-form [data-slot="field"] { grid-template-rows: auto auto minmax(var(--lh-label), auto); padding-bottom: var(--sp-8); } /* 提示 / 错误行与下一行的标签隔开，不贴在一起 */
 .sticky-bar { position: sticky; bottom: 0; z-index: var(--z-sticky); }
 /* 上架页底部操作条：与顶栏同一种毛玻璃，阴影朝上（顶边的线由面板自己的边框给）——表单从它下面滚过时隐约透出、分得清层次 */
 .panel.sticky-bar {
@@ -255,7 +248,6 @@
   -webkit-backdrop-filter: var(--glass-bar-blur); backdrop-filter: var(--glass-bar-blur);
 }
 .lv.span-2 { grid-column: 1 / -1; }
-.check-row.span-2 { grid-column: 1 / -1; }
 
 /* 待付：窄屏一组一张小卡，宽屏用表 */
 .due-list { display: none; margin: 0; padding: 0; list-style: none; }
@@ -271,7 +263,6 @@
 /* 告警页「月度可用率」：成功率数字（未满 99.9% 标色）、最差节点链接、窗口说明 */
 .up-pct[data-tone="warn"] { color: var(--warn-text); }
 .up-pct[data-tone="bad"] { color: var(--bad-text); }
-.up-tbl td.r .up-worst { display: block; max-width: 100%; height: auto; padding: 0; margin-left: auto; font-size: var(--fs-label); line-height: var(--lh-label); font-weight: var(--fw-regular); }
 .up-range { display: inline-flex; align-items: center; gap: var(--sp-4); white-space: nowrap; }
 @media (max-width: 600px) { .up-range { display: none; } }
 /* 供应商表的两行表头：分组行（出口成功率 / TCP 成功率）居中、不画底线，下一行是平均 / 最差；两行各半高，合起来和单行表头一样高 */

@@ -1,7 +1,8 @@
 // 系统调优作业的步骤结果：摘要 + 推导参数一行 + 「参数 / 结果 / 说明」表（只列写入的、跳过的、保留现值的；已是推荐值的收成一行，点开才列）
 // + 第三方调优残留 + 其余几项写成一行中文（不再把 JSON 原样输出）。撤销调优（rollback）的结果同一个组件，用词换成「写回原值」。
+import { Button } from '@/components/ui/button';
 import * as React from 'react';
-import { InfoTip } from '@/components/ui/form';
+import { InfoTip } from '@/components/ui/info-tip';
 import { mem, str } from '@/lib/format';
 import type { TuneParams } from '@/lib/types';
 
@@ -70,7 +71,7 @@ export function TuneResult({ out }: { out: Record<string, unknown> }) {
           <tbody>{rows.map((r) => <tr key={r.key}><td className="mono">{r.key}</td><td>{r.result}</td><td>{r.note}</td></tr>)}</tbody>
         </table>
       )}
-      {ok.length > 0 && <button type="button" className="btn btn-link btn-sm tune-more" aria-expanded={more} onClick={() => setMore((v) => !v)}>{more ? '收起' : `另 ${ok.length} 项${okLabel}，展开`}</button>}
+      {ok.length > 0 && <Button variant="link" size="inline-sm" className="justify-self-start" aria-expanded={more} onClick={() => setMore((v) => !v)}>{more ? '收起' : `另 ${ok.length} 项${okLabel}，展开`}</Button>}
       {warnings.map((w) => <div key={w} className="tune-sum tune-warn">{w}</div>)}
       {extra.length > 0 && <div className="tune-sum">{extra.join(' · ')}</div>}
     </div>

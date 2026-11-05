@@ -198,7 +198,7 @@
 .nc-show { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--fw-semibold) var(--fs-label) / var(--lh-label) var(--font-sans); font-variant-numeric: var(--num-variant); color: var(--fg-2); }
 .nc-show[data-tone="warn"] { color: var(--warn-text); }
 .nc-show[data-tone="bad"] { color: var(--bad-text); }
-.ncard[data-view="compact"] .nc-foot-right .btn > span { display: none; } /* 紧凑卡的 footer 窄：详情 / 管理只留图标（按钮自带 aria） */
+.ncard[data-view="compact"] .nc-foot-right [data-slot="button"] > span { display: none; } /* 紧凑卡的 footer 窄：详情 / 管理只留图标（按钮自带 aria） */
 /* 故障卡心跳条的标题：第一条健康原因，故障色 */
 .nc-reason { color: var(--bad-text); font-weight: var(--fw-medium); }
 

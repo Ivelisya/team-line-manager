@@ -6,7 +6,7 @@ import { beatBins, exitBeats, fleetExits, routerMeters, useRouterExitMetrics, us
 import { RANGE_MS, vMs, vPct, vRate, yMs, yPct, yRate } from '@/lib/chart';
 import { useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
-import { InfoTip } from '@/components/ui/form';
+import { InfoTip } from '@/components/ui/info-tip';
 import { Select } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Beat, Empty, ErrorNote, Num, Section, SectionHeader } from '@/components/app/primitives';
@@ -81,7 +81,7 @@ function ExitDelays({ r, range, few }: { r: RouterView; range: string; few: stri
     <Section>
       <SectionHeader meta={late ? `数据从 ${F.dt(new Date(since).toISOString())} 起` : undefined} title={<>各出口延迟<InfoTip text={'每格是一段时间：全部成功是绿，有失败是黄，失败过半是红，斜纹是没有数据\n右边是整段时间的成功率\n延迟高低看下面的曲线，曲线断开表示那次没测通'} /></>} />
       {q.isError && !q.data ? <ErrorNote error={q.error} onRetry={() => void q.refetch()}>出口曲线加载失败：</ErrorNote>
-        : q.isLoading ? <Skeleton h={180} className="is-float" />
+        : q.isLoading ? <Skeleton className="rounded-float h-[180px]" />
         : !exits?.length ? <div className="chart-empty" style={{ height: 120 }}>{few}</div> : (
           <div className="chart-frame stack-sm" data-stale={q.isPlaceholderData}>
             <div className="rt-exit-beats">

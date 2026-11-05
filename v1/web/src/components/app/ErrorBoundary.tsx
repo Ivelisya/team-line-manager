@@ -35,8 +35,8 @@ export class ErrorBoundary extends React.Component<Props, State> {
         <div className="err-card-t">{stale ? '有新版本' : this.props.compact ? '这部分内容出错了' : '这个页面出错了'}</div>
         <div className="hint" style={{ maxWidth: 520, overflowWrap: 'anywhere' }}>{stale ? '刷新页面就能用上新版' : error.message || '未知错误'}</div>
         <div className="row" style={{ justifyContent: 'center' }}>
-          {!stale && <Button variant="primary" onClick={() => this.setState({ error: null })}>重试</Button>}
-          <Button variant={stale ? 'primary' : undefined} onClick={() => window.location.reload()}>刷新页面</Button>
+          {!stale && <Button onClick={() => this.setState({ error: null })}>重试</Button>}
+          <Button variant={stale ? 'default' : 'outline'} onClick={() => window.location.reload()}>刷新页面</Button>
         </div>
       </div>
     );

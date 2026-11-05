@@ -13,7 +13,9 @@ import { meta } from '@/lib/derive';
 import { useHeld } from '@/lib/useHeld';
 import { cancelTerminalAsk, closeTerminal, confirmTerminalAsk, requestTicket, setTerminalLive, terminalUrl, useTerminalAsk, useTerminalTarget, type TermTarget } from '@/lib/terminal';
 import { Button, IconButton } from '@/components/ui/button';
-import { Field, InfoTip, Input } from '@/components/ui/form';
+import { FormField } from '@/components/ui/form';
+import { InfoTip } from '@/components/ui/info-tip';
+import { Input } from '@/components/ui/input';
 import { ConfirmDialog } from '@/components/app/dialogs';
 import { Pill, type Tone } from '@/components/app/primitives';
 
@@ -160,7 +162,7 @@ export function Terminal({ kind, id, name }: TermTarget) {
         <Pill tone={tone} dot={phase.s === 'auth' || phase.s === 'connecting' ? 'pulse' : undefined}
           tip={phase.s === 'closed' ? label : undefined} role="status"><span className="ellipsis">{label}</span></Pill>
         <div className="term-tools">
-          {phase.s === 'closed' && <Button size="sm" onClick={() => void connect()}><RotateCw />重新连接</Button>}
+          {phase.s === 'closed' && <Button variant="outline" size="sm" onClick={() => void connect()}><RotateCw />重新连接</Button>}
           <IconButton label="关闭" onClick={closeTerminal}><X size={16} /></IconButton>
         </div>
       </header>
@@ -183,16 +185,16 @@ function CredForm({ need, err, busy, onSubmit }: { need: Need; err?: string; bus
     <div className="term-cover">
       <form className="term-card" onSubmit={(e) => { e.preventDefault(); if (!v.trim() || busy) return; onSubmit(totp ? { code: v.trim() } : { password: v }); setV(''); }}>
         <div className="term-card-title">{totp ? '输入两步验证码' : '输入当前登录密码'}</div>
-        <Field label={totp ? '验证码或恢复码' : '登录密码'} error={err}
+        <FormField label={totp ? '验证码或恢复码' : '登录密码'} error={err}
           info={`${totp ? '打开终端前要再验证一次：输入认证器里的 6 位验证码，或一个恢复码（用过即作废）' : '打开终端前，请再输入一次登录密码，确认是你本人'}\n${limitInfo()}`}>
           {/* 恢复码带字母，不能限成纯数字键盘 */}
           {totp
             ? <Input value={v} onChange={(e) => setV(e.target.value)} autoFocus autoComplete="one-time-code" autoCapitalize="off" spellCheck={false} placeholder="6 位验证码，或一个恢复码" />
             : <Input type="password" value={v} onChange={(e) => setV(e.target.value)} autoFocus autoComplete="current-password" />}
-        </Field>
+        </FormField>
         <div className="dialog-foot">
-          <Button onClick={closeTerminal}>取消</Button>
-          <Button type="submit" variant="primary" loading={busy} disabled={!v.trim()}>验证并连接</Button>
+          <Button variant="outline" onClick={closeTerminal}>取消</Button>
+          <Button type="submit" loading={busy} disabled={!v.trim()}>验证并连接</Button>
         </div>
       </form>
     </div>

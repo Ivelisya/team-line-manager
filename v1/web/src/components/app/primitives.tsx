@@ -1,4 +1,5 @@
 // 通用展示原件：每种只有一份实现（状态 pill / 圆点、KPI 卡、到期读数、表头排序、标签/值、段标题、面板、页头…）。
+import { Skeleton } from '@/components/ui/skeleton';
 import * as React from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowDownUp, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Copy, Globe, RotateCw } from 'lucide-react';
@@ -7,8 +8,9 @@ import { bytes, dueFmt, str, type Fmt } from '@/lib/format';
 import type { DueState, EntryView, HealthReason, Lifecycle, MachineView } from '@/lib/types';
 import { HEALTH_TONE } from '@/lib/sort';
 import { countryName, flagUrl } from '@/lib/flags';
-import { Tip, Trunc } from '@/components/ui/overlays';
-import { InfoTip } from '@/components/ui/form';
+import { Trunc, Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { Button } from '@/components/ui/button';
+import { InfoTip } from '@/components/ui/info-tip';
 import { useCountUp } from '@/lib/useCountUp';
 import { tzCity } from '@/lib/tz';
 import { compactPorts, dueTone, meta, entryLabel, errText, reasonText, healthLabel, fromLabel, hostRel, LINK_LABEL, linkTip, lifecycleLabel, monthFlow, monthFlowTip, severityOf, type BeatCell, type linkCounts, type LinkKey } from '@/lib/derive';
@@ -81,7 +83,7 @@ function ReasonItem({ r }: { r: HealthReason }) {
   return (
     <li><SeverityMark severity={r.severity} />
       <span className="reason-body">{c.text}
-        {c.parts && <> <button type="button" className="btn btn-link btn-sm reason-more" aria-expanded={open} onClick={() => setOpen((v) => !v)}>{open ? '收起' : '明细'}</button></>}
+        {c.parts && <> <Button variant="link" size="inline-sm" className="reason-more align-baseline" aria-expanded={open} onClick={() => setOpen((v) => !v)}>{open ? '收起' : '明细'}</Button></>}
         {open && c.parts && <span className="reason-parts">{c.parts.join('\n')}</span>}
       </span>
     </li>
@@ -198,7 +200,7 @@ export function Stat({ icon, tone, label, info, value, unit, caption, to, onClic
   const inner = (
     <>
       <span className="stat-label"><span className="stat-ic" data-tone={tone}>{icon}</span>{label}{info && <InfoTip text={info} />}{(to || onClick) && <ChevronRight className="stat-go" aria-hidden />}</span>
-      <span className="stat-value">{loading ? <span className="skel" style={{ width: 64, height: 20 }} /> : <>{value}{unit && <small>{unit}</small>}</>}</span>
+      <span className="stat-value">{loading ? <Skeleton className="w-[64px] h-[20px]" /> : <>{value}{unit && <small>{unit}</small>}</>}</span>
       <span className="stat-cap">{loading ? '' : caption ?? ' '}</span>
     </>
   );
@@ -313,7 +315,7 @@ export function ErrorNote({ error, onRetry, children }: { error: unknown; onRetr
     <Note tone="bad" icon={<CircleAlert size={14} />}>
       <div className="row" style={{ gap: 8, flexWrap: 'nowrap', alignItems: 'baseline' }}>
         <span style={{ minWidth: 0, overflowWrap: 'anywhere' }}>{children}{error instanceof Error ? error.message : String(error)}</span>
-        {onRetry && <button type="button" className="btn btn-link btn-sm" style={{ flex: 'none', height: 'auto' }} onClick={onRetry}><RotateCw size={12} />重试</button>}
+        {onRetry && <Button variant="link" size="inline-sm" className="flex-none" onClick={onRetry}><RotateCw size={12} />重试</Button>}
       </div>
     </Note>
   );
@@ -333,12 +335,17 @@ export const CopyIcon = ({ done, icon = <Copy /> }: { done: boolean; icon?: Reac
 export function CopyButton({ text, label = '内容', className, size = 14, show }: { text: string; label?: string; className?: string; size?: number; show?: boolean }) {
   const { done, copy } = useCopied();
   return (
-    <Tip text={done ? '已复制' : `复制${label}`}>
-      <button type="button" className={cn('icon-btn icon-btn-xs copy-btn', done && 'is-done', className)} aria-label={`复制${label}`}
-        onClick={(e) => { e.stopPropagation(); void copy(text, label, show); }}>
+    <Tooltip>
+      <TooltipTrigger render={
+        // 复制成功：变绿弹一下，悬停也不变回灰
+        <Button variant="ghost" size="icon-xs" aria-label={`复制${label}`} data-done={done ? '' : undefined}
+          className={cn('data-done:text-ok data-done:hover:not-disabled:not-aria-disabled:text-ok data-done:[animation:copy-pop_var(--dur-2)_var(--ease-out)]', className)}
+          onClick={(e) => { e.stopPropagation(); void copy(text, label, show); }} />
+      }>
         {done ? <Check size={size} /> : <Copy size={size} />}
-      </button>
-    </Tip>
+      </TooltipTrigger>
+      <TooltipContent>{done ? '已复制' : `复制${label}`}</TooltipContent>
+    </Tooltip>
   );
 }
 

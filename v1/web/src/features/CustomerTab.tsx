@@ -1,5 +1,6 @@
 // 团队台账：按月汇总待支付节点；选中月份的全部期次在同一张清单中维护。
 // 改开始收费日、地区备注、停止收费、删除收在每行的「⋯」里，手动添加节点在月份旁的「⋯」里。团队、月份写进地址（?team= / ?month=）。
+import { Skeleton } from '@/components/ui/skeleton';
 import * as React from 'react';
 import { Check, ExternalLink, Link2, MoreHorizontal } from 'lucide-react';
 import { BILLING_EVENT_PAGE_SIZE, useAddBillingSlot, useBillingEvents, useBillingMonth, useDelBillingSlot, useMarkPaid, useOutstanding, usePatchBillingSlot, usePatchCustomerPage, useRotateCustomerPage, useTeams } from '@/lib/queries';
@@ -10,9 +11,11 @@ import { openDrawer } from '@/lib/drawer';
 import { resetOnOpen, useHeld } from '@/lib/useHeld';
 import * as F from '@/lib/format';
 import { Button, IconButton } from '@/components/ui/button';
-import { Field, InfoTip, Input, UnitInput } from '@/components/ui/form';
+import { FormField, UnitInput } from '@/components/ui/form';
+import { InfoTip } from '@/components/ui/info-tip';
+import { Input } from '@/components/ui/input';
 import { DateField } from '@/components/ui/date-field';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, Tip } from '@/components/ui/overlays';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/overlays';
 import { toast } from '@/components/ui/toast';
 import { CopyButton, Empty, ErrorNote, Panel, Pill } from '@/components/app/primitives';
 import { CursorPager } from '@/components/app/Pagination';
@@ -59,7 +62,7 @@ export function CustomerTab() {
       {teams.isError && <ErrorNote error={teams.error} onRetry={() => void teams.refetch()} />}
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       {!teamId && teams.data && <Empty text="还没有团队" />}
-      {!d && !q.isError && teamId && <div className="skel is-float" style={{ height: 260 }} />}
+      {!d && !q.isError && teamId && <Skeleton className="rounded-float h-[260px]" />}
       {teamId && d?.initialized && <OutstandingPanel key={teamId} teamId={teamId} month={month} onSelect={selectMonth} />}
       {d && <div role="region" aria-label="月份明细" className="stack" data-stale={stale} inert={stale || undefined}><Board key={d.team.id} d={d} /></div>}
     </div>
@@ -76,7 +79,7 @@ function OutstandingPanel({ teamId, month, onSelect }: { teamId: string; month: 
   const selected = month || q.data?.today.slice(0, 7);
   return <section className="panel bm-outstanding" aria-label="待支付">
     <OutstandingHeading />
-    {q.isLoading && <div className="skel" style={{ height: 56 }} />}
+    {q.isLoading && <Skeleton className="h-[56px]" />}
     {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
     {q.data && (counts.size > 0
       ? <MonthSummary counts={counts} selected={selected} today={q.data.today} onSelect={onSelect} />
@@ -131,7 +134,7 @@ function MonthList({ d }: { d: BillingMonth }) {
 
   const menu = (n: BillingMonthNode) => (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild><IconButton size="sm" label={`${n.name}的更多操作`} tip={false}><MoreHorizontal size={16} /></IconButton></DropdownMenuTrigger>
+      <DropdownMenuTrigger asChild><IconButton size="icon-sm" label={`${n.name}的更多操作`} tip={false}><MoreHorizontal size={16} /></IconButton></DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         {n.paid && <><DropdownMenuItem disabled={mark.isPending} onSelect={() => void one(n, false)}>改回待支付</DropdownMenuItem><DropdownMenuSeparator /></>}
         <DropdownMenuItem onSelect={() => setAct({ kind: 'start', n })}>改开始收费日…</DropdownMenuItem>
@@ -148,7 +151,7 @@ function MonthList({ d }: { d: BillingMonth }) {
       <Panel className="bm-month-panel" flush
         title={<MonthSwitch month={d.month} months={d.months} onChange={month => upd({ month: month === d.today.slice(0, 7) ? '' : month })} />}
         tools={<DropdownMenu>
-          <DropdownMenuTrigger asChild><IconButton size="sm" label="月份操作"><MoreHorizontal size={16} /></IconButton></DropdownMenuTrigger>
+          <DropdownMenuTrigger asChild><IconButton size="icon-sm" label="月份操作"><MoreHorizontal size={16} /></IconButton></DropdownMenuTrigger>
           <DropdownMenuContent align="end" onCloseAutoFocus={e => { if (flushAfterMenuClosed()) e.preventDefault(); }}>
             <DropdownMenuItem onSelect={() => runAfterMenuClosed(() => setAdding(true))}>手动添加节点…</DropdownMenuItem>
             {due.length > 1 && <DropdownMenuItem onSelect={() => runAfterMenuClosed(() => setAskAll(due))}>待支付节点全部标记已支付…</DropdownMenuItem>}
@@ -158,7 +161,7 @@ function MonthList({ d }: { d: BillingMonth }) {
           <PeriodLegend />
           <ul className="bm-list" aria-label={`${m}节点清单`}>
             {rows.map(n => <Row key={n.slot_id} n={n} today={d.today} side={<>
-              {!n.upcoming && <Button size="sm" className="bm-pay-toggle" aria-pressed={n.paid} loading={busy(n)}
+              {!n.upcoming && <Button variant="outline" size="sm" className="min-w-[6em] aria-pressed:bg-ok-bg aria-pressed:text-ok-text" aria-pressed={n.paid} loading={busy(n)}
                 aria-label={`${n.name}，${n.paid ? '已支付，点击改回待支付' : '标记已支付'}`}
                 data-tip={n.paid ? [n.paid_at && `${F.dtFull(n.paid_at)} 标记已支付`, '点击改回待支付'].filter(Boolean).join(' · ') : undefined}
                 onClick={() => void one(n, !n.paid)}>
@@ -192,7 +195,7 @@ function MonthList({ d }: { d: BillingMonth }) {
 
 function Row({ n, today, side }: { n: BillingMonthNode; today: string; side: React.ReactNode }) {
   return <BillingNodeRow n={n} today={today} side={side} nameContent={n.holder_id
-    ? <button type="button" className="btn btn-link cxa-node" onClick={() => openDrawer(n.holder_id!)}>{n.name}</button>
+    ? <Button variant="link" size="inline" className="font-normal text-inherit hover:text-brand hover:no-underline" onClick={() => openDrawer(n.holder_id!)}>{n.name}</Button>
     : n.name} />;
 }
 
@@ -206,9 +209,9 @@ const StartDialog = resetOnOpen(function StartDialog({ open, onClose, n, today }
   return (
     <FormDialog open={open} onOpenChange={(o) => !o && onClose()} title={`改开始收费日 · ${n.name}`} submitLabel="保存" busy={patch.isPending} valid={DATE.test(v) && v !== n.start_date && v <= F.addMonths(today, 1)} dirty={v !== n.start_date}
       onSubmit={() => patch.mutate({ id: n.slot_id, start_date: v }, { onSuccess: () => { toast.ok(`开始收费日已改为 ${cnDate(v, today)}`); onClose(); }, onError: toast.err })}>
-      <Field label="开始收费日" info="改了以后每一期的起止都跟着变；原来标的「已支付」按第几期跟着挪到新的期" hint={DATE.test(v) ? firstSpan(v, today) : undefined}>
+      <FormField label="开始收费日" info="改了以后每一期的起止都跟着变；原来标的「已支付」按第几期跟着挪到新的期" hint={DATE.test(v) ? firstSpan(v, today) : undefined}>
         <DateField value={v} onChange={setV} max={F.addMonths(today, 1)} />
-      </Field>
+      </FormField>
     </FormDialog>
   );
 });
@@ -226,8 +229,8 @@ const EditSlotDialog = resetOnOpen(function EditSlotDialog({ open, onClose, n, r
   return (
     <FormDialog open={open} onOpenChange={(o) => !o && onClose()} title={`改地区 / 备注 · ${n.name}`} submitLabel="保存" busy={patch.isPending} valid={dirty && !errR && !errN} dirty={dirty}
       onSubmit={() => patch.mutate({ id: n.slot_id, region: stored !== n.region ? stored : undefined, note: t !== n.note ? t : undefined }, { onSuccess: () => { toast.ok('已保存'); onClose(); }, onError: toast.err })}>
-      <Field label="地区" error={errR} info="默认按节点所在的国家，不知道国家的留空，显示「未标地区」"><Input list={listId} value={region} onChange={(e) => setRegion(e.target.value)} placeholder="未标地区" autoFocus /></Field>
-      <Field label="备注（选填）" error={errN} hint={n.manual ? '客户页会显示这个名字' : undefined}><Input value={note} onChange={(e) => setNote(e.target.value)} placeholder={n.manual ? '如 墨西哥家宽' : '只在这里看，客户看不到'} /></Field>
+      <FormField label="地区" error={errR} info="默认按节点所在的国家，不知道国家的留空，显示「未标地区」"><Input list={listId} value={region} onChange={(e) => setRegion(e.target.value)} placeholder="未标地区" autoFocus /></FormField>
+      <FormField label="备注（选填）" error={errN} hint={n.manual ? '客户页会显示这个名字' : undefined}><Input value={note} onChange={(e) => setNote(e.target.value)} placeholder={n.manual ? '如 墨西哥家宽' : '只在这里看，客户看不到'} /></FormField>
       <datalist id={listId}>{regions.map((x) => <option key={x} value={x} />)}</datalist>
     </FormDialog>
   );
@@ -241,11 +244,11 @@ const EndSlotDialog = resetOnOpen(function EndSlotDialog({ open, onClose, n, tod
   return (
     <ConfirmDialog asForm open={open} onOpenChange={(o) => !o && onClose()} title={`停止收费 · ${n.name}`} confirmLabel="停止收费" confirmDisabled={!ok}
       onConfirm={async () => { await patch.mutateAsync({ id: n.slot_id, end_date: v }); toast.ok(`${n.name} 收费到 ${cnDate(billedUntil(n.start_date, v), today)}`); }}>
-      <Field label="从哪天起不再收费" info="这天以前已经开始的那一期照收，之后不再收"
+      <FormField label="从哪天起不再收费" info="这天以前已经开始的那一期照收，之后不再收"
         error={DATE.test(v) && !ok ? `要晚于开始收费日（${cnDate(n.start_date, today)}）` : undefined}
         hint={ok ? `会收费到 ${cnDate(billedUntil(n.start_date, v), today)}` : undefined}>
         <DateField value={v} onChange={setV} min={F.addDays(n.start_date, 1)} />
-      </Field>
+      </FormField>
     </ConfirmDialog>
   );
 });
@@ -270,10 +273,10 @@ const AddSlotDialog = resetOnOpen(function AddSlotDialog({ open, onClose, teamId
       desc={<>不在面板里、但要收钱的节点 <InfoTip text="比如家宽。不会随节点增减自动变化，不收钱了要手动停止收费" /></>}
       onSubmit={() => add.mutate({ teamId, region: storedRegion(r), start_date: f.start, count: Number(f.count), note: t }, { onSuccess: () => { toast.ok(`已添加 ${f.count} 个节点`); onClose(); }, onError: toast.err })}>
       <div className="form-grid">
-        <Field label="名字" error={shown('note')} hint="客户页会显示这个名字"><Input value={f.note} onChange={(e) => setF({ ...f, note: e.target.value })} onBlur={() => setSeen((s) => ({ ...s, note: true }))} placeholder="如 墨西哥家宽" autoFocus /></Field>
-        <Field label="地区" error={shown('region')}><Input list={listId} value={f.region} onChange={(e) => setF({ ...f, region: e.target.value })} onBlur={() => setSeen((s) => ({ ...s, region: true }))} placeholder="如 墨西哥" /></Field>
-        <Field label="开始收费日" hint={DATE.test(f.start) ? firstSpan(f.start, today) : undefined}><DateField value={f.start} onChange={(v) => setF({ ...f, start: v })} max={F.addMonths(today, 1)} /></Field>
-        <Field label="个数" error={errs.count}><UnitInput unit="个节点" width="full" inputMode="numeric" value={f.count} onChange={(e) => setF({ ...f, count: digits(e.target.value) })} /></Field>
+        <FormField label="名字" error={shown('note')} hint="客户页会显示这个名字"><Input value={f.note} onChange={(e) => setF({ ...f, note: e.target.value })} onBlur={() => setSeen((s) => ({ ...s, note: true }))} placeholder="如 墨西哥家宽" autoFocus /></FormField>
+        <FormField label="地区" error={shown('region')}><Input list={listId} value={f.region} onChange={(e) => setF({ ...f, region: e.target.value })} onBlur={() => setSeen((s) => ({ ...s, region: true }))} placeholder="如 墨西哥" /></FormField>
+        <FormField label="开始收费日" hint={DATE.test(f.start) ? firstSpan(f.start, today) : undefined}><DateField value={f.start} onChange={(v) => setF({ ...f, start: v })} max={F.addMonths(today, 1)} /></FormField>
+        <FormField label="个数" error={errs.count}><UnitInput unit="个节点" width="full" inputMode="numeric" value={f.count} onChange={(e) => setF({ ...f, count: digits(e.target.value) })} /></FormField>
       </div>
       <datalist id={listId}>{regions.map((x) => <option key={x} value={x} />)}</datalist>
     </FormDialog>
@@ -297,7 +300,7 @@ function EventsPanel({ teamId }: { teamId: string }) {
   return (
     <Panel title="操作记录" sub={<InfoTip text="节点加入、离开、替换补位、标记已支付和手动修改，都记在这里" />}>
       {q.isError && <ErrorNote error={q.error} onRetry={() => void (q.isFetchNextPageError ? q.fetchNextPage() : q.refetch())} />}
-      {q.isLoading && <div className="skel" style={{ height: 120 }} />}
+      {q.isLoading && <Skeleton className="h-[120px]" />}
       <div data-stale={q.isPlaceholderData} inert={q.isPlaceholderData || undefined}>
         {q.data && list.length === 0 && <Empty text="还没有记录" />}
         {list.length > 0 && (
@@ -321,7 +324,7 @@ function PageLink({ teamId, teamName, page, stale }: { teamId: string; teamName:
   if (!page?.link || !page.password) {
     return (
       <span className="cxa-link" data-stale={stale} inert={stale || undefined}>
-        <Button size="lg" loading={rotate.isPending} onClick={() => rotate.mutate(teamId, { onSuccess: () => toast.ok('已生成客户页链接'), onError: toast.err })}><Link2 />{page ? '重新生成客户页链接' : '生成客户页链接'}</Button>
+        <Button variant="outline" size="lg" loading={rotate.isPending} onClick={() => rotate.mutate(teamId, { onSuccess: () => toast.ok('已生成客户页链接'), onError: toast.err })}><Link2 />{page ? '重新生成客户页链接' : '生成客户页链接'}</Button>
         {page && <span className="t-sub">{!page.password ? '旧链接需换新' : '链接无法读取'}</span>}
         <InfoTip text={INFO} />
       </span>
@@ -338,9 +341,9 @@ function PageLink({ teamId, teamName, page, stale }: { teamId: string; teamName:
         <span className="bm-share-title"><Link2 size={16} />客户页分享</span>
         <Pill tone={page.enabled ? 'ok' : 'neutral'}>{page.enabled ? '已启用' : '已停用'}</Pill>
         <div className="bm-share-actions">
-          <Tip text="打开客户页"><a className="icon-btn icon-btn-xs" href={page.link} target="_blank" rel="noreferrer noopener" aria-label="打开客户页"><ExternalLink size={14} /></a></Tip>
+          <IconButton label="打开客户页" size="icon-xs" render={<a href={page.link} target="_blank" rel="noreferrer noopener" />}><ExternalLink size={14} /></IconButton>
           <DropdownMenu>
-            <DropdownMenuTrigger asChild><IconButton size="sm" label="客户页链接的操作" tip={false}><MoreHorizontal size={16} /></IconButton></DropdownMenuTrigger>
+            <DropdownMenuTrigger asChild><IconButton size="icon-sm" label="客户页链接的操作" tip={false}><MoreHorizontal size={16} /></IconButton></DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               <DropdownMenuItem onSelect={() => setAskRotate(true)}>换新链接…</DropdownMenuItem>
               <DropdownMenuItem disabled={patch.isPending} onSelect={() => setEnabled(!page.enabled)}>{page.enabled ? '停用' : '启用'}</DropdownMenuItem>

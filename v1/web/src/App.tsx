@@ -27,7 +27,7 @@ const AuditPage = lazyPage(() => import('./pages/Audit'), 'AuditPage');
 
 /** 没有这个页面（手输错的地址、旧书签）：说清楚，给一个回首页的按钮，不静默跳回首页 */
 function NotFound() {
-  return <div className="empty-page"><Empty icon={<Compass size={28} />} text="没有这个页面"><Button asChild variant="primary"><Link to="/"><House />回到首页</Link></Button></Empty></div>;
+  return <div className="grid min-h-[60vh] place-content-center"><Empty icon={<Compass size={28} />} text="没有这个页面"><Button render={<Link to="/" />}><House />回到首页</Button></Empty></div>;
 }
 
 export function App() {

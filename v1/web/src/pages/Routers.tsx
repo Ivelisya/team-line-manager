@@ -48,7 +48,7 @@ export function RoutersPage() {
   const order = shown.map((r) => r.id).join();
   React.useEffect(() => { setRouterOrder(order ? order.split(',') : null); }, [order]);
   React.useEffect(() => () => setRouterOrder(null), []);
-  const add = <Button variant="primary" onClick={() => setAdding(true)}><Plus />接入软路由</Button>;
+  const add = <Button onClick={() => setAdding(true)}><Plus />接入软路由</Button>;
   return (
     <div className="stack">
       <PageHead title="软路由" tools={all.length > 0 && add} />
@@ -67,7 +67,7 @@ export function RoutersPage() {
       )}
       {/* 团队分段按内容宽、靠左（同机器页的分段），不拉满整行 */}
       {groups.length > 2 && <div className="hgroups" role="group" aria-label="筛选"><Segmented label="团队" value={cur} onChange={setTeam} items={groups} /></div>}
-      {q.isLoading && <div className="cards" data-view="large">{Array.from({ length: 3 }, (_, i) => <Skeleton key={i} h={520} style={{ borderRadius: 'var(--r-card)', marginBottom: 'var(--grid-gap)' }} />)}</div>}
+      {q.isLoading && <div className="cards" data-view="large">{Array.from({ length: 3 }, (_, i) => <Skeleton className="h-[520px]" style={{ borderRadius: 'var(--r-card)', marginBottom: 'var(--grid-gap)' }} key={i} />)}</div>}
       {q.data && all.length === 0 && (
         // 空状态放在卡片底板上（同作业页）
         <Panel><Empty icon={<RouterIcon size={22} />} text="还没有接入软路由">{add}</Empty></Panel>

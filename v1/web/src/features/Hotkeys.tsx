@@ -1,4 +1,5 @@
 // 全局快捷键：⌘K / Ctrl+K（或 /）命令面板，[ ] 在抽屉里切上一台/下一台，? 快捷键帮助。输入框里不触发。
+import { Kbd } from '@/components/ui/kbd';
 import * as React from 'react';
 import { Search, X } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
@@ -21,7 +22,7 @@ export function PaletteTrigger() {
   const warm = () => { void import('./CommandPalette'); };
   return (
     <button type="button" className="cmd-trigger" aria-label="打开命令面板" aria-keyshortcuts="Control+K Meta+K" onClick={() => setOverlay('palette')} onPointerEnter={warm} onFocus={warm}>
-      <Search size={14} /><span className="cmd-trigger-t">搜索…</span><span className="cmd-trigger-k"><kbd className="kbd">{modKey()}</kbd><kbd className="kbd">K</kbd></span>
+      <Search size={14} /><span className="cmd-trigger-t">搜索…</span><span className="cmd-trigger-k"><Kbd>{modKey()}</Kbd><Kbd>K</Kbd></span>
     </button>
   );
 }
@@ -92,7 +93,7 @@ function ShortcutsHelp({ open, onOpenChange }: { open: boolean; onOpenChange: (o
               <span className="hk-keys">{k.keys.map((combo, n) => (
                 <React.Fragment key={combo.join()}>
                   {n > 0 && <span className="t-muted">或</span>}
-                  {combo.map((x, i) => <React.Fragment key={x}>{i > 0 && <span className="t-muted">+</span>}<kbd className="kbd">{x}</kbd></React.Fragment>)}
+                  {combo.map((x, i) => <React.Fragment key={x}>{i > 0 && <span className="t-muted">+</span>}<Kbd>{x}</Kbd></React.Fragment>)}
                 </React.Fragment>
               ))}</span><span>{k.text}</span>
             </li>

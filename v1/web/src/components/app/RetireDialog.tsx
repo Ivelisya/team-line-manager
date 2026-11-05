@@ -6,7 +6,9 @@ import { ArrowRight } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
 import { useMachine, useRetire, useRetirePreview } from '@/lib/queries';
 import { openEvacuate, openReplace } from '@/lib/nodeActions';
-import { CheckRow, Field, Input, InfoTip } from '@/components/ui/form';
+import { CheckRow, FormField } from '@/components/ui/form';
+import { InfoTip } from '@/components/ui/info-tip';
+import { Input } from '@/components/ui/input';
 import { toast } from '@/components/ui/toast';
 import { Button } from '@/components/ui/button';
 import { ErrorNote, Note } from './primitives';
@@ -70,7 +72,7 @@ export const RetireDialog = resetOnOpen(function RetireDialog({ m, open, onOpenC
         <Note tone="bad">
           <div className="row row-between" style={{ gap: 8, flexWrap: 'nowrap' }}>
             <span style={{ minWidth: 0 }}>{p!.blockers!.map((b) => <div key={b}>{b}</div>)}</span>
-            {m.kind === 'relay' && movableEntries(m).length > 0 && <Button size="sm" style={{ flex: 'none' }} onClick={() => { onOpenChange(false); openEvacuate(m.id); }}>搬空到…</Button>}
+            {m.kind === 'relay' && movableEntries(m).length > 0 && <Button variant="outline" size="sm" style={{ flex: 'none' }} onClick={() => { onOpenChange(false); openEvacuate(m.id); }}>搬空到…</Button>}
           </div>
         </Note>
       )}
@@ -100,7 +102,7 @@ export const RetireDialog = resetOnOpen(function RetireDialog({ m, open, onOpenC
       {p && p.routers.length > 0 && (
         <Note tone="warn">
           <div className="note-title">这些软路由的出口还指向它 <InfoTip text={mode === 'spare' ? '移入备用期间出口照常可用；回收之后就不通了。' : '回收之后这些出口就不通了。'} />
-            {canReplace(m) && <> <button type="button" className="btn btn-link btn-sm" style={{ height: 'auto', padding: 0 }} onClick={() => { onOpenChange(false); openReplace(m.id); }}>替换为…</button></>}
+            {canReplace(m) && <> <Button variant="link" size="inline-sm" onClick={() => { onOpenChange(false); openReplace(m.id); }}>替换为…</Button></>}
           </div>
           <ul className="reason-list" style={{ maxHeight: 160, overflow: 'auto' }}>
             {p.routers.map((r) => <li key={r.id}><span className="num">{r.name}</span><span className="t-sub">{r.exits.map((e) => `${e.exit}（${e.node}）`).join('、')}</span></li>)}
@@ -137,7 +139,7 @@ export const RetireDialog = resetOnOpen(function RetireDialog({ m, open, onOpenC
           <InfoTip text={h ? '停掉它在宿主机上的 SS 实例、删掉它的防火墙规则' : xs.length ? '卸载 agent 和代理服务，同机 IP 节点的实例一起清理' : '卸载 agent 与代理服务'} />
         </div>
       )}
-      {!blocked && <Field label="原因（选填）"><Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="例如：供应商到期不续" /></Field>}
+      {!blocked && <FormField label="原因（选填）"><Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="例如：供应商到期不续" /></FormField>}
     </TypedConfirmDialog>
   );
 });

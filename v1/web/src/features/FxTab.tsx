@@ -7,9 +7,11 @@ import { useClearFxRate, useFxRates, useRefreshFx, useSetFxRate } from '@/lib/fx
 import type { FxRates } from '@/lib/types';
 import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
-import { Field, InfoTip, Input } from '@/components/ui/form';
+import { FormField } from '@/components/ui/form';
+import { InfoTip } from '@/components/ui/info-tip';
+import { Input } from '@/components/ui/input';
 import { Segmented } from '@/components/ui/overlays';
-import { SkeletonRows } from '@/components/ui/skeleton';
+import { SkeletonRows } from '@/components/app/SkeletonRows';
 import { toast } from '@/components/ui/toast';
 import { ConfirmDialog, FormDialog } from '@/components/app/dialogs';
 import { ErrorNote, Note, Panel, Pill, TableWrap } from '@/components/app/primitives';
@@ -45,8 +47,8 @@ export function FxTab() {
   return (
     <>
       <Panel flush title={<>汇率<InfoTip text={'价格按供应商的币种录入，月费和合计按这里的汇率折成美元\n汇率每天自动更新（来自欧洲央行）。手动设置的不会被覆盖，随时可以改回自动\n没有汇率的币种不折算，各处显示「未折算」'} /></>}
-        tools={<><Button size="sm" onClick={() => setEdit('new')}><Plus />手动设置其他币种</Button>
-          <Button size="sm" variant="primary" loading={refresh.isPending} onClick={() => refresh.mutate(undefined, { onSuccess: () => toast.ok('汇率已更新'), onError: toast.err })}><RefreshCw />立即更新</Button></>}>
+        tools={<><Button variant="outline" size="sm" onClick={() => setEdit('new')}><Plus />手动设置其他币种</Button>
+          <Button size="sm" loading={refresh.isPending} onClick={() => refresh.mutate(undefined, { onSuccess: () => toast.ok('汇率已更新'), onError: toast.err })}><RefreshCw />立即更新</Button></>}>
         {q.isError && <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div>}
         {q.isLoading ? <SkeletonRows rows={3} head /> : d && (
           <>
@@ -71,8 +73,8 @@ export function FxTab() {
                       <td><SourcePill r={r} date={d.rates_date} /></td>
                       <td>{r.in_use ? <span className="t-muted">—</span> : <span className="t-muted">未在用</span>}</td>
                       <td className="r">{r.source !== 'base' && <span className="row row-acts" style={{ justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
-                        <Button size="sm" variant="quiet" onClick={() => setEdit({ currency: r.currency })}><Pencil size={13} />手动设置</Button>
-                        {r.source === 'manual' && <Button size="sm" variant="quiet" onClick={() => setAsk(r.currency)}><RotateCcw size={13} />改回自动</Button>}
+                        <Button size="sm" variant="ghost" onClick={() => setEdit({ currency: r.currency })}><Pencil size={13} />手动设置</Button>
+                        {r.source === 'manual' && <Button size="sm" variant="ghost" onClick={() => setAsk(r.currency)}><RotateCcw size={13} />改回自动</Button>}
                       </span>}</td>
                     </tr>
                   ))}
@@ -116,12 +118,12 @@ const RateDialog = resetOnOpen(function RateDialog({ target, data, open, onClose
     <FormDialog size="md" open={open} onOpenChange={(o) => !o && onClose()} title={target === 'new' ? '手动设置汇率' : `手动设置汇率 · ${c}`} dirty={v.trim() !== ''}
       desc={<>设置后不再被自动更新覆盖 <InfoTip text="想用回自动汇率，在表里点「改回自动」" /></>} submitLabel="保存" busy={set.isPending} valid={curOk && valOk} onSubmit={submit}>
       <div className="form-grid">
-        {target === 'new' && <Field label="币种" error={cur.trim() && !curOk ? (c === 'USD' ? 'USD 恒为 1' : '3 个字母的代码，如 SGD') : undefined}>
-          <Input value={cur} onChange={(e) => setCur(e.target.value.toUpperCase())} maxLength={3} placeholder="如 SGD" className="mono" autoFocus /></Field>}
-        <Field label="写法"><Segmented value={mode} onChange={switchMode} label="汇率的写法" items={[{ value: 'per_usd', label: `1 USD = ? ${c || '币种'}` }, { value: 'usd_per_unit', label: `1 ${c || '币种'} = ? USD` }]} /></Field>
-        <Field label="汇率" error={v.trim() && !valOk ? '填一个正数' : undefined}
+        {target === 'new' && <FormField label="币种" error={cur.trim() && !curOk ? (c === 'USD' ? 'USD 恒为 1' : '3 个字母的代码，如 SGD') : undefined}>
+          <Input value={cur} onChange={(e) => setCur(e.target.value.toUpperCase())} maxLength={3} placeholder="如 SGD" className="mono" autoFocus /></FormField>}
+        <FormField label="写法"><Segmented value={mode} onChange={switchMode} label="汇率的写法" items={[{ value: 'per_usd', label: `1 USD = ? ${c || '币种'}` }, { value: 'usd_per_unit', label: `1 ${c || '币种'} = ? USD` }]} /></FormField>
+        <FormField label="汇率" error={v.trim() && !valOk ? '填一个正数' : undefined}
           hint={usd != null && curOk ? `约合 ${F.fxRate(c, usd)}${row?.auto_per_usd != null ? `；自动汇率是 1 USD = ${n4(row.auto_per_usd)} ${c}` : ''}` : row?.auto_per_usd != null ? `自动汇率是 1 USD = ${n4(row.auto_per_usd)} ${c}` : undefined}>
-          <Input inputMode="decimal" value={v} onChange={(e) => { const nv = e.target.value.replace(/[^\d.]/g, ''); setV(nv); typed.current = { mode, v: nv }; }} placeholder={mode === 'per_usd' ? '7.12' : '0.1404'} /></Field>
+          <Input inputMode="decimal" value={v} onChange={(e) => { const nv = e.target.value.replace(/[^\d.]/g, ''); setV(nv); typed.current = { mode, v: nv }; }} placeholder={mode === 'per_usd' ? '7.12' : '0.1404'} /></FormField>
       </div>
     </FormDialog>
   );
