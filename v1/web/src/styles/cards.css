@@ -161,6 +161,8 @@
 .nc-qlabel b.is-bad { color: var(--bad-text); }
 .nc-qfc { font-size: var(--fs-label); line-height: var(--lh-label); color: var(--warn-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } /* 预计用满：有预测才有这一行 */
 .nc-quse { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--fg-2); } /* 本周期已用 / 上限：要读的信息，不用 --fg-3；窄卡放不下时先省略它 */
+.nc-quse .unit { font-size: var(--fs-micro); } /* 「2345 GB / 20000 GB」里的 GB 退一档（和卡内其它读数的单位同为 11px）：Inter 读数比旧字体略宽，12px 的单位让这一行在 1440 大卡里被省略号吃掉末尾 */
+@media (width < 601px) { .nc-quse { font-size: var(--fs-micro); line-height: var(--lh-label); } } /* 手机上单列卡只有 343px 宽：本来「2345 GB / 20000 GB」就会被截掉末尾（改字体前也是），整行退到 11px 才放得下；行高仍占 12px 那一档，卡内槽位不变 */
 
 /* 备用机器：到期值下面单独一行写哪天自动回收（短句，不截断，全文含日期在悬停里） */
 .nc-run-note { min-width: 0; overflow-wrap: anywhere; font: var(--fw-regular) var(--fs-micro) / var(--lh-micro) var(--font-sans); color: var(--fg-2); }
