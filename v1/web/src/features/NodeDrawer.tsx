@@ -60,7 +60,7 @@ export function NodeDrawer() {
   const shownId = m ? heldId.current : null;
   React.useLayoutEffect(() => {
     if (bodyRef.current) bodyRef.current.scrollTop = 0;
-    tabsRef.current?.querySelector('[data-state="active"]')?.scrollIntoView({ inline: 'nearest', block: 'nearest' });
+    tabsRef.current?.querySelector('[data-active]')?.scrollIntoView({ inline: 'nearest', block: 'nearest' });
   }, [shownId, tab]);
   // 标签页标题带上这台机器的名字（关闭动画期间已经去掉），拼接见 lib/title
   useTitleName(id ? m?.name : undefined);

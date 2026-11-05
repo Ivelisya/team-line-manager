@@ -14,22 +14,48 @@ import { ChevronLeftIcon, ChevronRightIcon, ChevronDownIcon } from "lucide-react
    格子高 --cell-size（= --h-lg，触屏随令牌上调），选中日是强调色实底（bg-primary），今天是 1px 线描边，上 / 下月补位的日期三级字；
    上个月 / 下个月是 <Button>（带 data-slot，触屏热区外扩）。日期的显示格式、星期与月份文字、「今天」按钮由 date-field.tsx 给。 */
 
+const CalendarLocale = React.createContext<Partial<Locale> | undefined>(undefined)
+
+/* 传给 DayPicker 的 components 必须引用稳定：写在 Calendar 里面的内联函数每次渲染都是新组件，react-day-picker 会把整张月历卸载重挂（父组件随实时推送重渲染时尤其明显） */
+const navButton = "select-none aria-disabled:opacity-(--o-disabled)"
+const BASE_COMPONENTS: NonNullable<React.ComponentProps<typeof DayPicker>["components"]> = {
+  Root: ({ className, rootRef, ...props }) => (
+    <div data-slot="calendar" ref={rootRef} className={cn(className)} {...props} />
+  ),
+  Chevron: ({ className, orientation, ...props }) => {
+    if (orientation === "left") return <ChevronLeftIcon className={cn("size-(--icon-md)", className)} {...props} />
+    if (orientation === "right") return <ChevronRightIcon className={cn("size-(--icon-md)", className)} {...props} />
+    return <ChevronDownIcon className={cn("size-(--icon-md)", className)} {...props} />
+  },
+  PreviousMonthButton: ({ className, ...p }) => (
+    <Button variant="ghost" size="icon-sm" className={cn(navButton, className)} {...(p as React.ComponentProps<typeof Button>)} />
+  ),
+  NextMonthButton: ({ className, ...p }) => (
+    <Button variant="ghost" size="icon-sm" className={cn(navButton, className)} {...(p as React.ComponentProps<typeof Button>)} />
+  ),
+  DayButton: (props) => <CalendarDayButton locale={React.useContext(CalendarLocale)} {...props} />,
+  WeekNumber: ({ children, ...props }) => (
+    <td {...props}>
+      <div className="flex size-(--cell-size) items-center justify-center text-center">{children}</div>
+    </td>
+  ),
+}
+
 function Calendar({
   className,
   classNames,
   showOutsideDays = true,
   captionLayout = "label",
-  buttonVariant = "ghost",
   locale,
   formatters,
   components,
   ...props
-}: React.ComponentProps<typeof DayPicker> & {
-  buttonVariant?: React.ComponentProps<typeof Button>["variant"]
-}) {
+}: React.ComponentProps<typeof DayPicker>) {
   const defaultClassNames = getDefaultClassNames()
+  const merged = React.useMemo(() => (components ? { ...BASE_COMPONENTS, ...components } : BASE_COMPONENTS), [components])
 
   return (
+    <CalendarLocale.Provider value={locale}>
     <DayPicker
       showOutsideDays={showOutsideDays}
       className={cn(
@@ -107,56 +133,10 @@ function Calendar({
         hidden: cn("invisible", defaultClassNames.hidden),
         ...classNames,
       }}
-      components={{
-        Root: ({ className, rootRef, ...props }) => {
-          return (
-            <div
-              data-slot="calendar"
-              ref={rootRef}
-              className={cn(className)}
-              {...props}
-            />
-          )
-        },
-        Chevron: ({ className, orientation, ...props }) => {
-          if (orientation === "left") {
-            return (
-              <ChevronLeftIcon className={cn("size-(--icon-md)", className)} {...props} />
-            )
-          }
-
-          if (orientation === "right") {
-            return (
-              <ChevronRightIcon className={cn("size-(--icon-md)", className)} {...props} />
-            )
-          }
-
-          return (
-            <ChevronDownIcon className={cn("size-(--icon-md)", className)} {...props} />
-          )
-        },
-        PreviousMonthButton: ({ className, ...p }) => (
-          <Button variant={buttonVariant} size="icon-sm" className={cn("select-none aria-disabled:opacity-(--o-disabled)", className)} {...(p as React.ComponentProps<typeof Button>)} />
-        ),
-        NextMonthButton: ({ className, ...p }) => (
-          <Button variant={buttonVariant} size="icon-sm" className={cn("select-none aria-disabled:opacity-(--o-disabled)", className)} {...(p as React.ComponentProps<typeof Button>)} />
-        ),
-        DayButton: ({ ...props }) => (
-          <CalendarDayButton locale={locale} {...props} />
-        ),
-        WeekNumber: ({ children, ...props }) => {
-          return (
-            <td {...props}>
-              <div className="flex size-(--cell-size) items-center justify-center text-center">
-                {children}
-              </div>
-            </td>
-          )
-        },
-        ...components,
-      }}
+      components={merged}
       {...props}
     />
+    </CalendarLocale.Provider>
   )
 }
 

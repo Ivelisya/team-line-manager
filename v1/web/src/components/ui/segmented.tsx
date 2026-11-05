@@ -1,6 +1,6 @@
 import * as React from 'react';
-import { RadioGroup } from '@base-ui/react/radio-group';
-import { Radio } from '@base-ui/react/radio';
+import { ToggleGroup } from '@base-ui/react/toggle-group';
+import { Toggle } from '@base-ui/react/toggle';
 import { ChevronDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { watchSize } from '@/lib/sharedObserver';
@@ -8,7 +8,8 @@ import { SegmentedControl, SegmentedControlItem } from '@/components/ui/segmente
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 
 /* 分段控件（单选）：大卡片 / 小卡片 / 紧凑、团队筛选等。底座是 coss ui 的 segmented-control（带滑块的轨道 + 项，见 segmented-control.tsx），
-   单选语义用 Base UI 的 RadioGroup / Radio（role=radiogroup / radio，aria-checked，Tab 进组、方向键在项之间移动并选中，同原生单选）。
+   单选用 Base UI 的 ToggleGroup（单值，role=group + aria-label，项 aria-pressed）：Tab 进组、方向键只移动焦点、Enter / 空格才选中——手动激活，同改前的 Radix ToggleGroup，也是 macOS 的习惯；
+   不用 RadioGroup：它方向键一按就选中，首页的视图 / 密度、时间范围会随方向键反复重排 / 重取数，访问页的视图切换按一下 → 就跳走了，键盘过不去。再按一下已选中的项不取消（始终选着一项）。
    选中块是轨道里的一个滑块，换项时 width / translate 过渡滑过去（--dur-2 + --ease-out）。 */
 export interface SegItem<T extends string> { value: T; label: React.ReactNode; count?: number }
 /** memo：父页面随实时推送重渲染时，items / onChange 稳定（模块常量、useMemo、useCallback）的分段控件不跟着重画 */
@@ -17,19 +18,22 @@ type SegProps<T extends string> = { value: T; onChange: (v: T) => void; items: r
 
 const Count = ({ n }: { n: number }) => <span className="font-normal text-fg-2 [font-variant-numeric:tabular-nums]">{n}</span>;
 
+/** 单值：再按一下已选中的项会得到空数组，忽略（始终选着一项） */
+const pick = <T extends string>(onChange: (v: T) => void) => (v: string[]) => { if (v.length) onChange(v[0] as T); };
+
 function Item<T extends string>({ it }: { it: SegItem<T> }) {
   return (
-    <Radio.Root value={it.value} nativeButton render={<SegmentedControlItem />}>
+    <Toggle value={it.value} render={<SegmentedControlItem />}>
       {it.label}{it.count != null && <Count n={it.count} />}
-    </Radio.Root>
+    </Toggle>
   );
 }
 
 export const Segmented = React.memo(function Segmented<T extends string>({ value, onChange, items, label, sm, disabled, className }: SegProps<T>) {
   return (
-    <RadioGroup value={value} onValueChange={(v) => onChange(v as T)} aria-label={label} disabled={disabled} render={<SegmentedControl size={sm ? 'sm' : 'default'} className={className} />}>
+    <ToggleGroup value={[value]} onValueChange={pick(onChange)} aria-label={label} disabled={disabled} render={<SegmentedControl size={sm ? 'sm' : 'default'} className={className} />}>
       {items.map((it) => <Item key={it.value} it={it} />)}
-    </RadioGroup>
+    </ToggleGroup>
   );
 }) as <T extends string>(p: SegProps<T>) => React.ReactElement;
 
@@ -77,7 +81,7 @@ export const SegmentedOverflow = React.memo(function SegmentedOverflow<T extends
   const hidden = items.filter((_, i) => !shown.includes(i));
   return (
     <div className={cn('seg-ovf', className)}>
-      <RadioGroup ref={root} value={value} onValueChange={(v) => onChange(v as T)} aria-label={label} data-fill render={<SegmentedControl className="min-w-0 flex-1 basis-0 max-w-none [&>[data-slot=segmented-control-item]]:grow" />}>
+      <ToggleGroup ref={root} value={[value]} onValueChange={pick(onChange)} aria-label={label} render={<SegmentedControl className="min-w-0 flex-1 basis-0 max-w-none [&>[data-slot=segmented-control-item]]:grow" />}>
         {shown.map((i) => <Item key={items[i].value} it={items[i]} />)}
         {hidden.length > 0 && (
           <DropdownMenu>
@@ -91,7 +95,7 @@ export const SegmentedOverflow = React.memo(function SegmentedOverflow<T extends
             </DropdownMenuContent>
           </DropdownMenu>
         )}
-      </RadioGroup>
+      </ToggleGroup>
       {/* 量宽用的隐藏副本：叠在原位、不占位、不可见、不接指针，样式同轨道里的项（SegmentedControlItem），所以量出来的就是项的自然宽度 */}
       <div ref={meas} aria-hidden className="pointer-events-none invisible absolute top-0 left-0 flex w-max max-w-none gap-0.5 p-(--seg-pad)">
         {items.map((it) => <SegmentedControlItem key={it.value} render={<span />}>{it.label}{it.count != null && <Count n={it.count} />}</SegmentedControlItem>)}

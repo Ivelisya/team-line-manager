@@ -1,4 +1,5 @@
-import { escapeIsTaken } from "@/components/ui/dialog"
+import * as React from "react"
+import { tooltipOpen } from "@/components/ui/tooltip"
 
 /* 锚定弹层（下拉 / 右键 / 选择 / 弹层 / 日历 / 悬浮卡）共用的外观类名，各 ui 文件按需取用。
    不是组件：registry 里的 Tailwind 类名改成令牌写法后，五种浮层都要同一套材质和进出场，写五份会漂移。
@@ -47,7 +48,24 @@ export const floatCheck = "ml-auto inline-flex text-brand"
 /** 提示开着时按 Esc：这一下只用来收起提示，菜单 / 下拉 / 弹层留着（Base UI 的层不看 defaultPrevented，只能在 onOpenChange 里按 reason 拦；allowPropagation 让 Esc 继续传给提示，由它自己收起） */
 export function guardEscape<D extends { reason: string; event: Event; cancel(): void; allowPropagation(): void }>(onOpenChange?: (open: boolean, details: D) => void) {
   return (open: boolean, details: D) => {
-    if (!open && details.reason === "escape-key" && escapeIsTaken(details.event)) { details.cancel(); details.allowPropagation(); return }
+    if (!open && details.reason === "escape-key" && tooltipOpen()) { details.cancel(); details.allowPropagation(); return }
     onOpenChange?.(open, details)
   }
 }
+
+/* ---- 浮层开着时点对话框 / 抽屉的遮罩：这一下只用来收起浮层 ----
+   同改前 Radix 层栈（只有最上层响应外部点击）。Base UI 里下拉选择 / 菜单 / 弹层的外部点击和对话框、抽屉的外部点击是各自独立判断的，点遮罩会两个一起关。
+   在 pointerdown 的捕获阶段（各层的关闭还没执行）记下当时有没有这样的层开着；对话框 / 抽屉在 outside-press / 遮罩点击时看 floatOpenAtPress()，有就这一下不关。悬浮卡不算（非模态、不抢点击）。
+   监听只在有对话框 / 抽屉挂着时才注册（useFloatPressGuard，计数） */
+const FLOAT_OPEN = ["select", "dropdown-menu", "dropdown-menu-sub", "context-menu", "context-menu-sub", "popover"].map((n) => '[data-slot="' + n + '-content"][data-open]').join(", ")
+let floatAtPress = false
+let guards = 0
+const onPress = () => { floatAtPress = !!document.querySelector(FLOAT_OPEN) }
+export function useFloatPressGuard() {
+  React.useEffect(() => {
+    if (guards++ === 0) window.addEventListener("pointerdown", onPress, true)
+    return () => { if (--guards === 0) { window.removeEventListener("pointerdown", onPress, true); floatAtPress = false } }
+  }, [])
+}
+/** 最近一次按下时，有没有下拉选择 / 菜单 / 弹层开着 */
+export const floatOpenAtPress = () => floatAtPress

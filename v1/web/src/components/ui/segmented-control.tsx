@@ -4,6 +4,7 @@ import { mergeProps } from "@base-ui/react/merge-props";
 import { useRender } from "@base-ui/react/use-render";
 import * as React from "react";
 import { cn } from "@/lib/utils";
+import { watchSize } from "@/lib/sharedObserver";
 
 export type SegmentedControlSize = "default" | "lg" | "sm";
 
@@ -200,7 +201,8 @@ function SegmentedControlIndicator(): React.ReactElement {
 
     update();
 
-    const resizeObserver = new ResizeObserver(update);
+    // 尺寸观察走全站共用的 ResizeObserver（lib/sharedObserver），不每个实例各建一个；MutationObserver 没有共用版本，照旧每实例一个
+    let stopSize: (() => void)[] = [];
     const mutationObserver = new MutationObserver((records) => {
       if (records.some((record) => record.type === "childList")) {
         observeItems();
@@ -208,10 +210,10 @@ function SegmentedControlIndicator(): React.ReactElement {
       update();
     });
     const observeItems = (): void => {
-      resizeObserver.disconnect();
-      resizeObserver.observe(root);
+      stopSize.forEach((f) => f());
+      stopSize = [watchSize(root, update)];
       for (const child of root.children) {
-        resizeObserver.observe(child);
+        stopSize.push(watchSize(child, update));
         mutationObserver.observe(child, {
           attributeFilter: observedAttributes,
           attributes: true,
@@ -222,7 +224,7 @@ function SegmentedControlIndicator(): React.ReactElement {
     observeItems();
 
     return () => {
-      resizeObserver.disconnect();
+      stopSize.forEach((f) => f());
       mutationObserver.disconnect();
     };
   }, []);

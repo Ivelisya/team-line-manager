@@ -15,7 +15,7 @@ import { useHeld } from '@/lib/useHeld';
 import { toast } from '@/components/ui/toast';
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuSub, ContextMenuSubContent, ContextMenuSubTrigger, ContextMenuTrigger } from '@/components/ui/context-menu';
 import { DropdownMenuItem, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger } from '@/components/ui/dropdown-menu';
-import { dropAfterMenuClosed, flushAfterMenuClosed, runAfterMenuClosed, useAnchoredDropdown } from './AnchoredDropdown';
+import { dropAfterMenuClosed, menuClosed, menuReturnFocus, runAfterMenuClosed, useAnchoredDropdown } from './AnchoredDropdown';
 
 export type MenuEntry =
   | { key: string; sep: true }
@@ -165,6 +165,7 @@ function NodeDropdownItems({ m }: { m: MachineView }) {
 export function NodeMenus({ rows, children }: { rows: MachineView[]; children: React.ReactElement }) {
   const find = (id: string | null | undefined) => (id ? rows.find((m) => m.id === id) : undefined);
   const picked = React.useRef<HTMLElement | null>(null);
+  const ctxPopup = React.useRef<HTMLDivElement | null>(null);
   const [ctxId, setCtxId] = React.useState<string | null>(null);
   // 关闭动画期间继续用最近的那台渲染菜单
   const ctxM = useHeld(ctxId, find(ctxId));
@@ -185,9 +186,9 @@ export function NodeMenus({ rows, children }: { rows: MachineView[]; children: R
   };
   return (
     <>
-      <ContextMenu onOpenChange={onCtx}>
+      <ContextMenu onOpenChange={onCtx} onOpenChangeComplete={menuClosed}>
         <ContextMenuTrigger render={children} onContextMenu={pick} onTouchStart={pick} onClick={dd.onClick} />
-        <ContextMenuContent finalFocus={() => !flushAfterMenuClosed()}>{ctxM && <NodeContextItems m={ctxM} />}</ContextMenuContent>
+        <ContextMenuContent ref={ctxPopup} finalFocus={() => menuReturnFocus(ctxPopup)}>{ctxM && <NodeContextItems m={ctxM} />}</ContextMenuContent>
       </ContextMenu>
       {dd.menu('更多操作', dd.cur && <NodeDropdownItems m={dd.cur} />)}
     </>

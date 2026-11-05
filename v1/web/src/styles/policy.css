@@ -15,11 +15,6 @@
   /* 编辑器比栏高要在栏内滚时，「保存草稿 / 还原 / 放弃」一排吸在栏底：不用先滚到最下面才点得到。通栏（抵消表单的内边距），下边距取负让它贴到面板底边 */
   .pol-col .pol-actions { position: sticky; bottom: 0; z-index: var(--z-sticky); margin: 0 calc(-1 * var(--card-pad)) calc(-1 * var(--card-pad)); padding: var(--sp-12) var(--card-pad); background: var(--surface); border-top: 1px solid var(--line); }
 }
-/* 模式四段在手机上放不下（「暂停新连接」被截）：排成 2×2，撑满整行 */
-@container content (max-width: 520px) {
-  /* （分段控件的 2×2 排法写在 Policy.tsx 的 className 里：工具类在更高的层，这里压不住） */
-}
-
 /* 范围树 */
 /* 不设内层滚动：团队默认折叠，节点多时有搜索框，列表跟着页面滚 */
 .pol-tree { display: grid; padding: var(--sp-4) var(--sp-8) var(--sp-8); }

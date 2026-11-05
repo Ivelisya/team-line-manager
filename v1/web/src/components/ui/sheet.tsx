@@ -4,7 +4,9 @@ import { X } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 import { IconButton } from "@/components/ui/button"
-import { RememberFocus, dialogOpen, escapeIsTaken, mergeRefs, useRestoreFocus } from "@/components/ui/dialog"
+import { tooltipOpen } from "@/components/ui/tooltip"
+import { floatOpenAtPress, useFloatPressGuard } from "@/components/ui/float"
+import { RememberFocus, dialogOpen, mergeRefs, useRestoreFocus } from "@/components/ui/dialog"
 
 /* 右侧抽屉（shadcn Sheet 的写法：Dialog + 右侧定位）。非模态（modal={false}）：模态时 Base UI 会锁 body 滚动、给页面加 inert / pointer-events 的遮挡，
    一开一关整页上万个元素重算样式（改前 Radix 同理，实测紧凑卡片开约 330 ms、关约 250 ms）；非模态时一帧都不卡。
@@ -25,8 +27,9 @@ let drawers = 0
 
 function Sheet({ open, onOpenChange, children }: { open: boolean; onOpenChange: (open: boolean) => void; children: React.ReactNode }) {
   const panel = React.useRef<HTMLDivElement>(null)
+  useFloatPressGuard()
   const handle = (next: boolean, details: SheetPrimitive.Root.ChangeEventDetails) => {
-    if (!next && details.reason === "escape-key" && (escapeIsTaken(details.event) || dialogOpen({ exiting: false }))) { details.cancel(); details.allowPropagation(); return }
+    if (!next && details.reason === "escape-key" && (tooltipOpen() || dialogOpen({ exiting: false }))) { details.cancel(); details.allowPropagation(); return }
     onOpenChange(next)
   }
   return (
@@ -45,7 +48,7 @@ function SheetOverlay({ className, onClick, ...props }: SheetPrimitive.Backdrop.
       className={className}
       onClick={(e) => {
         onClick?.(e)
-        if (e.target === e.currentTarget && e.button === 0 && !e.ctrlKey) close()
+        if (e.target === e.currentTarget && e.button === 0 && !e.ctrlKey && !floatOpenAtPress()) close() // 抽屉里开着下拉 / 菜单 / 弹层：这一下只收起它们
       }}
       {...props}
     />

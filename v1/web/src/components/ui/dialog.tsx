@@ -5,6 +5,8 @@ import { X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { durMs } from "@/lib/motion"
 import { IconButton } from "@/components/ui/button"
+import { tooltipOpen } from "@/components/ui/tooltip"
+import { floatOpenAtPress, useFloatPressGuard } from "@/components/ui/float"
 
 /* shadcn base-mira 的 Dialog（Base UI），外观走令牌；进出场动画在 components.css（[data-slot=dialog-*] 的 [data-open] / [data-closed]）。
    和 shadcn 原版的差别（都是为了守住改前的行为）：
@@ -104,11 +106,10 @@ export function bounce(panel: HTMLElement | null) {
   if (ms > 0) panel?.animate([{ scale: "1" }, { scale: "1.02" }, { scale: "1" }], { duration: ms, easing: getComputedStyle(document.documentElement).getPropertyValue("--ease-out").trim() })
 }
 
-/** 提示（悬停卡 / (i) / data-tip）开着时，这下 Esc 只用来收起提示，不关对话框 / 抽屉 / 菜单：
- *  Base UI 的层不看 defaultPrevented，所以在 onOpenChange 里按 reason 拦（allowPropagation 让 Esc 继续传给提示，由它自己收起）；提示自己若先收起，会停止这下 Esc 的传播，层根本收不到，也就不会关。
- *  菜单 / 下拉 / 弹层 / 悬浮卡同样处理（float.ts 的 guardEscape） */
-export const escapeIsTaken = (e: Event) => e.defaultPrevented || !!document.querySelector('[data-slot="tooltip-content"][data-open]')
-
+/** 提示（悬停卡 / (i) / data-tip）开着时，这下 Esc 只用来收起提示，不关对话框 / 抽屉 / 菜单：Base UI 的层不看 defaultPrevented，所以在 onOpenChange 里按 reason 拦（allowPropagation 让 Esc 继续传给提示，由它自己收起）；
+ *  提示自己若先收起，会停止这下 Esc 的传播，层根本收不到，也就不会关。
+ *  只认「有提示开着」，不看 event.defaultPrevented：Radix 的层没了以后它没有正当来源，反而会被 Base UI 自己的禁用菜单项（Esc 上 preventDefault）、输入框等误触发，让 Esc 关不掉层。
+ *  终端（xterm）里的 Esc 本来就在它自己的元素上 stopPropagation（Terminal.tsx），到不了这里。菜单 / 下拉 / 弹层 / 悬浮卡同样处理（float.ts 的 guardEscape） */
 /** 此刻有没有对话框 / 命令面板开着（全站只留这一份判断，原来在 Hotkeys、RouterDrawer、Shell、sheet 各抄了一份）。
  *  exiting：退场动画中的算不算（默认算：刚点了关闭、动画还没播完，这一刻按键仍不该落到下面的页面上；抽屉的 Esc 守卫传 false——退场中的对话框已经关了，这下 Esc 该关抽屉）；
  *  drawer：抽屉（sheet）也算一层（Shell 的 Esc 回到上一级时，抽屉开着就不处理）。
@@ -117,12 +118,6 @@ export const dialogOpen = ({ exiting = true, drawer = false }: { exiting?: boole
   const sel = ['dialog-content', 'command-dialog', ...(drawer ? ['sheet-content'] : [])].map((n) => `[data-slot="${n}"]${exiting ? '' : ':not([data-ending-style])'}`).join(', ')
   return !!document.querySelector(sel)
 }
-
-// 对话框里开着下拉选择 / 下拉菜单 / 弹层时点遮罩：这一下只用来收起它们（同改前 Radix 层栈：只有最上层响应外部点击）。Base UI 里这些层的外部点击和对话框的外部点击是各自独立判断的，
-// 点遮罩会两个一起关。在 pointerdown 的捕获阶段（各层的关闭还没执行）记下当时有没有这样的层开着，outside-press 时若有就取消对话框这一次的关闭。悬浮卡不算（非模态、不抢点击）
-const FLOAT_OPEN = ["select", "dropdown-menu", "dropdown-menu-sub", "context-menu", "context-menu-sub", "popover"].map((n) => `[data-slot="${n}-content"][data-open]`).join(", ")
-let floatAtPress = false
-if (typeof window !== "undefined") window.addEventListener("pointerdown", () => { floatAtPress = !!document.querySelector(FLOAT_OPEN) }, true)
 
 function Dialog({
   open,
@@ -135,16 +130,17 @@ function Dialog({
   blockDismiss?: boolean | ((reason: DismissReason) => boolean)
 }) {
   const panel = React.useRef<HTMLDivElement>(null)
+  useFloatPressGuard() // 对话框里开着下拉 / 菜单 / 弹层时点遮罩只收起它们（float.ts）
   const handle = (next: boolean, details: DialogPrimitive.Root.ChangeEventDetails) => {
     if (!next && (details.reason === "escape-key" || details.reason === "outside-press")) {
       const reason: DismissReason = details.reason
       if (reason === "outside-press") {
-        if (floatAtPress) { details.cancel(); return }
+        if (floatOpenAtPress()) { details.cancel(); return }
         // Ctrl+左键点遮罩不关（mac 上是右键；改前 Radix 同样当右键处理），不回弹
         const e = details.event as MouseEvent
         if (e.button === 0 && e.ctrlKey) { details.cancel(); return }
       }
-      if (reason === "escape-key" && escapeIsTaken(details.event)) { details.cancel(); details.allowPropagation(); return } // allowPropagation：Esc 继续传给提示，由它自己收起
+      if (reason === "escape-key" && tooltipOpen()) { details.cancel(); details.allowPropagation(); return } // allowPropagation：Esc 继续传给提示，由它自己收起
       if (typeof blockDismiss === "function" ? blockDismiss(reason) : blockDismiss) { details.cancel(); bounce(panel.current); return }
     }
     onOpenChange?.(next, details)

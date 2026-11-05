@@ -315,7 +315,7 @@ html[data-drawer] [data-slot="dialog-overlay"] { background: var(--scrim-stacked
    每条是绝对定位的（贴着视口的下缘 / 手机上的上缘），堆叠、进出场的位移都在 toast.tsx 的类名里（时长走动效令牌，减弱动效时即刻完成）；这里只管视口放哪。
    bottom 让开页面底部的吸附条（--toast-lift，见 toast.tsx） */
 [data-slot="toast-viewport"] { position: fixed; z-index: var(--z-toast); width: min(380px, calc(100vw - 32px)); }
-[data-slot="toast-viewport"][data-position="bottom"] { right: calc(var(--sp-16)); bottom: calc(var(--sp-16) + var(--toast-lift, 0px)); transition: bottom var(--dur-2) var(--ease-out); }
+[data-slot="toast-viewport"][data-position="bottom"] { right: var(--sp-16); bottom: calc(var(--sp-16) + var(--toast-lift, 0px)); transition: bottom var(--dur-2) var(--ease-out); }
 /* 手机：通知从顶栏下方落下，不盖住对话框底部面板的按钮；抽屉全宽，不用让位 */
 [data-slot="toast-viewport"][data-position="top"] { left: 50%; translate: -50% 0; top: calc(var(--topbar-h) + env(safe-area-inset-top, 0px) + var(--sp-8)); }
 /* 抽屉开着（<html data-drawer>）：通知挪到抽屉左侧，不盖住抽屉底部的保存 / 操作按钮；抽屉左边放不下通知（抽屉 + 通知 + 两侧间距 > 视口）时改底部居中 */

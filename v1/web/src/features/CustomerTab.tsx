@@ -20,7 +20,7 @@ import { toast } from '@/components/ui/toast';
 import { CopyButton, Empty, ErrorNote, Panel, Pill } from '@/components/app/primitives';
 import { CursorPager } from '@/components/app/Pagination';
 import { ConfirmDialog, FormDialog } from '@/components/app/dialogs';
-import { flushAfterMenuClosed, runAfterMenuClosed } from '@/components/app/AnchoredDropdown';
+import { dropAfterMenuClosed, menuClosed, menuReturnFocus, runAfterMenuClosed } from '@/components/app/AnchoredDropdown';
 import { BillingNodeRow, MonthSummary, MonthSwitch, OutstandingHeading, PeriodLegend, cnDate, cnMonth, cnSpan, regionLabel } from './billing';
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -117,6 +117,7 @@ function MonthList({ d }: { d: BillingMonth }) {
   const held = useHeld(act ? `${act.kind}:${act.n.slot_id}` : null, act);
   const m = cnMonth(d.month, d.today);
   const due = d.nodes.filter((n) => !n.paid && !n.upcoming);
+  const monthPopup = React.useRef<HTMLDivElement | null>(null);
   const rows = [...d.nodes].sort(compareBillingEffectiveDate);
   const teamId = d.team.id;
   const set = async (ns: BillingMonthNode[], on: boolean) => {
@@ -150,9 +151,9 @@ function MonthList({ d }: { d: BillingMonth }) {
     <>
       <Panel className="bm-month-panel" flush
         title={<MonthSwitch month={d.month} months={d.months} onChange={month => upd({ month: month === d.today.slice(0, 7) ? '' : month })} />}
-        tools={<DropdownMenu>
+        tools={<DropdownMenu onOpenChange={(o) => { if (o) dropAfterMenuClosed(); }} onOpenChangeComplete={menuClosed}>
           <DropdownMenuTrigger render={<IconButton size="icon-sm" label="月份操作"><MoreHorizontal size={16} /></IconButton>} />
-          <DropdownMenuContent align="end" finalFocus={() => !flushAfterMenuClosed()}>
+          <DropdownMenuContent ref={monthPopup} align="end" finalFocus={() => menuReturnFocus(monthPopup)}>
             <DropdownMenuItem onClick={() => runAfterMenuClosed(() => setAdding(true))}>手动添加节点…</DropdownMenuItem>
             {due.length > 1 && <DropdownMenuItem onClick={() => runAfterMenuClosed(() => setAskAll(due))}>待支付节点全部标记已支付…</DropdownMenuItem>}
           </DropdownMenuContent>

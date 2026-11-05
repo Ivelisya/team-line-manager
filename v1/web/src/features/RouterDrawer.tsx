@@ -51,7 +51,7 @@ export function RouterDrawer() {
   const tabsRef = React.useRef<HTMLDivElement>(null);
   React.useLayoutEffect(() => {
     if (bodyRef.current) bodyRef.current.scrollTop = 0;
-    tabsRef.current?.querySelector('[data-state="active"]')?.scrollIntoView({ inline: 'nearest', block: 'nearest' });
+    tabsRef.current?.querySelector('[data-active]')?.scrollIntoView({ inline: 'nearest', block: 'nearest' });
   }, [r?.id, tab]);
   useTitleName(id ? r?.name : undefined);
   return (
