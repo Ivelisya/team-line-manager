@@ -380,3 +380,38 @@
 }
 @font-face { font-family: "Inter Num Fallback"; src: local("Segoe UI"); font-weight: 400 500; size-adjust: 98.5%; ascent-override: 96.66%; descent-override: 24.49%; line-gap-override: 0%; }
 @font-face { font-family: "Inter Num Fallback"; src: local("Segoe UI Semibold"); font-weight: 600 700; size-adjust: 98.5%; ascent-override: 96.66%; descent-override: 24.49%; line-gap-override: 0%; }
+
+/* ---------- B6b 页面精修：看得见的那一层（只新增，不改上面的值） ----------
+   招牌「仪表读数」：KPI 主值比 --fs-kpi 再大一级，行高固定 40（加载占位与数据态同高）；卡片窄时由 home.css 按卡宽收（不截断）。
+   问候语：首页唯一的大标题。--hero-ink 是全站唯一的渐变文字（只给问候里的用户名）：墨紫 → 李紫 → 暮霞一侧。
+   尾端不用纯暮霞 #f7c6ea：它在分区底上只有约 1.2:1，取暮霞与李紫的混色，大字对比度 ≥ 3:1。
+   环境光（--aurora-*）：画布顶部的两团柔光，base.css 的 body::after 让它们极慢地漂（transform，只合成不重绘）。 */
+:root {
+  --fs-kpi-hero: 34px;  --lh-kpi-hero: 40px;
+  --fs-greet: 32px;     --lh-greet: 40px;
+  --tracking-num: -0.03em;              /* 大读数的字距：Display 字形本来就收，再紧一点像仪表刻字 */
+  --enter-rise: 8px;                    /* 首次进入页面：区块上移量 */
+  --enter-step: 30ms;                   /* 首次进入页面：相邻区块的间隔 */
+  --dur-fade: 220ms;                    /* 减弱动效时首次进入页面只淡入：这个时长不随 --dur-* 归零（overrides.css 只归零 --dur-1/2/3） */
+  --dur-ambient: 56s;                   /* 环境光漂一个来回 */
+  --hero-ink: linear-gradient(100deg, color-mix(in oklab, var(--accent) 50%, var(--fg)) 0%, var(--accent) 52%, color-mix(in oklab, var(--accent) 62%, var(--m-load)) 100%);
+  --aurora-a: radial-gradient(closest-side, color-mix(in srgb, var(--accent) 9%, transparent), transparent);
+  --aurora-b: radial-gradient(closest-side, color-mix(in srgb, var(--chart-1) 6%, transparent), transparent);
+  --sheen: inset 0 1px 0 rgb(255 255 255 / 0.7); /* 分区、卡片顶边的内高光：光从上方来（亮色白，暗色见下） */
+}
+:root:not([data-palette="indigo"]) {
+  --hero-ink: linear-gradient(100deg, #2a0b3d 0%, #8e3bb0 55%, color-mix(in oklab, #f7c6ea 32%, #a0369a) 100%);
+  --aurora-a: radial-gradient(closest-side, color-mix(in srgb, #f7c6ea 46%, transparent), transparent);
+  --aurora-b: radial-gradient(closest-side, color-mix(in srgb, #8e3bb0 7%, transparent), transparent);
+}
+:root[data-theme="dark"] {
+  --hero-ink: linear-gradient(100deg, var(--fg) 0%, color-mix(in oklab, var(--accent) 80%, var(--fg)) 50%, var(--accent) 100%);
+  --aurora-a: radial-gradient(closest-side, color-mix(in srgb, var(--accent) 5%, transparent), transparent);
+  --aurora-b: none;
+  --sheen: inset 0 1px 0 rgb(255 255 255 / 0.045);
+}
+:root:not([data-palette="indigo"])[data-theme="dark"] {
+  --hero-ink: linear-gradient(100deg, #f7e9f8 0%, #f3c8f6 45%, #d9a6ea 100%);
+  --aurora-a: radial-gradient(closest-side, color-mix(in srgb, #d9a6ea 5%, transparent), transparent);
+  --aurora-b: none;
+}

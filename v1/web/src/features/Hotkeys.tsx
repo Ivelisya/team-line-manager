@@ -17,12 +17,15 @@ const typing = (t: EventTarget | null) => {
 };
 
 /** 顶栏的搜索入口：“搜索…  ⌘K” */
+/** 搜索胶囊里的键帽：浮起的小白块（表面色底 + 底边 1px 深一级的线，像真的键帽） */
+const KEYCAP = 'bg-surface shadow-[0_1px_0_var(--line-strong)]';
+
 export function PaletteTrigger() {
   // 鼠标移上来就预热面板代码，点开时不用等
   const warm = () => { void import('./CommandPalette'); };
   return (
     <button type="button" className="cmd-trigger" aria-label="打开命令面板" aria-keyshortcuts="Control+K Meta+K" onClick={() => setOverlay('palette')} onPointerEnter={warm} onFocus={warm}>
-      <Search size={14} /><span className="cmd-trigger-t">搜索…</span><span className="cmd-trigger-k"><Kbd>{modKey()}</Kbd><Kbd>K</Kbd></span>
+      <Search size={14} /><span className="cmd-trigger-t">搜索…</span><span className="cmd-trigger-k"><Kbd className={KEYCAP}>{modKey()}</Kbd><Kbd className={KEYCAP}>K</Kbd></span>
     </button>
   );
 }

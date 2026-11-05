@@ -15,7 +15,7 @@
 .m-head { display: grid; gap: var(--sp-4); min-width: 0; }
 .m-head-row { display: flex; align-items: center; gap: var(--sp-8); flex-wrap: wrap; min-width: 0; }
 .drawer-nav { flex: none; align-self: flex-start; display: flex; gap: var(--sp-2); }
-.m-drawer-head > .nc-flag { align-self: flex-start; margin-top: calc((max(var(--lh-title), var(--h-xs)) - var(--flag-h)) / 2); }
+.m-drawer-head > .nc-flag { align-self: flex-start; margin-top: calc((max(var(--lh-section), var(--h-xs)) - var(--flag-h)) / 2); } /* 节点抽屉的标题是 19px（--fs-section，行高 26）：国旗对齐标题那一行 */
 .reason-list { display: grid; gap: var(--sp-6); margin: 0; padding: 0; list-style: none; }
 .reason-list li { display: flex; align-items: flex-start; gap: var(--sp-8); font-size: var(--fs-body); }
 .reason-list .smark { margin-top: 4px; }

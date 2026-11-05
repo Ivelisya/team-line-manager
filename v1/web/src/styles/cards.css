@@ -21,6 +21,15 @@
   box-shadow: var(--shadow-card);
   transition: border-color var(--dur-1) var(--ease-std), box-shadow var(--dur-2) var(--ease-out), translate var(--dur-2) var(--ease-out);
 }
+/* 外壳精修（卡内 probe 的格条、点阵、心跳格不动）：悬停在上浮 2px、阴影加深之外，加一圈极淡的强调色（同首页 KPI）；
+   故障红边、当前卡、菜单开着的卡不换边色。暗色：卡片顶边的内高光比令牌再亮一点（光从上方来），卡片从分区底上分出来 */
+@media (hover: hover) {
+  .ncard:hover, .rcard:hover { box-shadow: var(--shadow-card-hover), 0 0 0 3px color-mix(in srgb, var(--accent) 6%, transparent); }
+  :is(.ncard, .rcard):not([data-health="down"], .is-current, [data-menu]):hover { border-color: color-mix(in srgb, var(--accent) 24%, var(--line)); }
+}
+:root[data-theme="dark"] :is(.ncard, .rcard, .stat, .cluster) {
+  --shadow-card: inset 0 1px 0 rgb(255 255 255 / 0.07), 0 1px 2px rgb(0 0 0 / 0.3), 0 4px 10px -2px rgb(0 0 0 / 0.28), 0 16px 32px -12px rgb(0 0 0 / 0.5);
+}
 .ncard[data-view="small"] { --rows: 7; }
 .ncard[data-view="compact"] { --rows: 6; }
 /* 悬停上浮 2px 写在 components.css「交互状态」。卡片本身不可点（点里面的读数、按钮），不做按下缩放。
@@ -71,7 +80,7 @@
 /* 名称是文字按钮：按下从左端缩（文字不往中间跑），焦点环带小圆角 */
 .nc-name {
   min-width: 0; padding: 0; border: 0; border-radius: var(--r-xs); background: none; cursor: pointer; text-align: left;
-  font: var(--fw-semibold) var(--fs-title) / var(--lh-title) var(--font-sans); letter-spacing: var(--tracking-title);
+  font: var(--fw-semibold) var(--fs-title) / var(--lh-title) var(--font-sans); letter-spacing: -0.015em;
   color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   transform-origin: 0 50%; transition: color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out);
 }
@@ -127,7 +136,7 @@
 .flow-label .lucide { width: var(--icon-sm); height: var(--icon-sm); stroke-width: var(--icon-stroke-strong); color: var(--dir-c); }
 .flow-col[data-dir="up"] { --dir-c: var(--chart-2); }
 .flow-col[data-dir="down"] { --dir-c: var(--chart-1); }
-.flow-rate { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--fw-semibold) var(--fs-metric) / 24px var(--font-num); font-variant-numeric: var(--num-variant); letter-spacing: -0.03em; color: var(--num-c, var(--fg)); }
+.flow-rate { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--fw-num) var(--fs-metric) / 24px var(--font-num); font-variant-numeric: var(--num-variant); letter-spacing: -0.03em; color: var(--num-c, var(--fg)); }
 .flow-rate .unit { margin-left: 1px; font-size: var(--fs-micro); font-weight: var(--fw-medium); letter-spacing: 0; color: var(--fg-2); }
 .ncard[data-view="small"] .flow-rate, .ncard[data-view="compact"] .flow-rate { font-size: var(--fs-metric-sm); line-height: 22px; }
 /* 速率读数用正文色、迹线用主题色；空闲（< 100 Kbps）读数退成次要色、迹线退成灰；只有接近套餐带宽（≥ 80%）才换提示色。颜色不表示状态 */
@@ -171,7 +180,7 @@
 .nc-run-item { display: grid; gap: var(--sp-2); min-width: 0; }
 .nc-run-label { display: inline-flex; align-items: center; gap: var(--sp-4); font: var(--fw-semibold) var(--fs-micro) / var(--lh-micro) var(--font-sans); color: var(--fg-2); white-space: nowrap; min-width: 0; max-width: 100%; }
 .nc-run-label .lucide { width: var(--icon-2xs); height: var(--icon-2xs); }
-.nc-run-val { display: inline-flex; align-items: baseline; gap: var(--sp-4); font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-num); font-variant-numeric: var(--num-variant); letter-spacing: -0.02em; color: var(--fg); white-space: nowrap; min-width: 0; overflow: hidden; }
+.nc-run-val { display: inline-flex; align-items: baseline; gap: var(--sp-4); font: var(--fw-num) var(--fs-emph) / var(--lh-emph) var(--font-num); font-variant-numeric: var(--num-variant); letter-spacing: -0.02em; color: var(--fg); white-space: nowrap; min-width: 0; overflow: hidden; }
 .nc-run-val .unit { font-size: var(--fs-micro); font-weight: var(--fw-medium); letter-spacing: 0; color: var(--fg-2); }
 .nc-run-val[data-c="up"] { color: var(--m-cpu-text); }
 
@@ -241,7 +250,7 @@
 .rc-pair .lucide { width: var(--icon-xs); height: var(--icon-xs); flex: none; color: var(--fg-3); }
 .rc-pair b { margin-left: auto; font: var(--fw-semibold) var(--fs-body) / var(--lh-body) var(--font-num); font-variant-numeric: var(--num-variant); color: var(--fg); overflow: hidden; text-overflow: ellipsis; }
 .rc-pair b .unit { font-weight: var(--fw-regular); }
-.rc-rate { display: inline-flex; align-items: center; gap: var(--sp-4); font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-num); letter-spacing: -0.02em; color: var(--num-c, var(--fg-3)); white-space: nowrap; }
+.rc-rate { display: inline-flex; align-items: center; gap: var(--sp-4); font: var(--fw-num) var(--fs-emph) / var(--lh-emph) var(--font-num); letter-spacing: -0.02em; color: var(--num-c, var(--fg-3)); white-space: nowrap; }
 .rc-rate .lucide { width: var(--icon-sm); height: var(--icon-sm); stroke-width: var(--icon-stroke-strong); color: var(--fg-2); }
 .rc-rate .unit { font-size: var(--fs-micro); letter-spacing: 0; color: var(--fg-2); }
 

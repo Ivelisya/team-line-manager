@@ -54,6 +54,51 @@ function useEver(v: boolean) {
   return r.current;
 }
 
+/** 本会话里进入过的页面（路由第一段）。第一次进入时主要区块依次淡入上移，再进来只整块淡入（base.css .page-in） */
+const enteredSections = new Set<string>();
+const ms = (v: string) => (v.trim().endsWith('ms') ? parseFloat(v) : parseFloat(v) * 1000) || 0;
+
+/** 进场编排（设计语言 v1「动效」）：区块 = 页面根（.stack）的直接子项；首页拆细一级——问候、8 张 KPI（逐张，两行斜着错开）、集群状态、服务器集群分区。
+ *  每块淡入并上移 --enter-rise（8px），相邻间隔 --enter-step（30ms），--dur-3 / --ease-out；减弱动效时只淡入（--dur-fade，不位移、不错开）。
+ *  用 Web Animations 直接挂在这十几个元素上、只动 opacity 与 translate（合成器完成，不触发布局、不计入 CLS），播完自己撤掉。
+ *  不写成 CSS 规则：「.page-in[data-enter] … > *」这类以通配 / nth-child 结尾的选择器，每次样式计算都要拿全页每个元素去试，实测首屏样式计算多约 30ms */
+function choreograph(root: HTMLElement) {
+  const page = root.firstElementChild;
+  if (!page || typeof page.animate !== 'function') return;
+  const blocks: [Element | null, number][] = [];
+  if (page.classList.contains('home')) {
+    const hero = page.querySelector(':scope > .hsec-hero');
+    if (hero) {
+      blocks.push([hero.querySelector(':scope > .hsec-head'), 0]);
+      hero.querySelectorAll('.stat-grid > *').forEach((el, i) => blocks.push([el, i < 4 ? i + 1 : i - 2]));
+      blocks.push([hero.querySelector('.cluster'), 5]);
+    }
+    page.querySelectorAll(':scope > .hsec:not(.hsec-hero)').forEach((el) => blocks.push([el, 7]));
+  } else {
+    Array.from(page.children).forEach((el, i) => blocks.push([el, Math.min(i, 4)]));
+  }
+  const cs = getComputedStyle(document.documentElement);
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const rise = cs.getPropertyValue('--enter-rise').trim() || '8px';
+  const step = ms(cs.getPropertyValue('--enter-step'));
+  const opts: KeyframeAnimationOptions = reduce
+    ? { duration: ms(cs.getPropertyValue('--dur-fade')), easing: cs.getPropertyValue('--ease-std').trim() || 'ease', fill: 'backwards' }
+    : { duration: ms(cs.getPropertyValue('--dur-3')), easing: cs.getPropertyValue('--ease-out').trim() || 'ease-out', fill: 'backwards' };
+  const frames: Keyframe[] = reduce ? [{ opacity: 0 }, { opacity: 1 }] : [{ opacity: 0, translate: `0 ${rise}` }, { opacity: 1, translate: '0 0' }];
+  for (const [el, i] of blocks) if (el) el.animate(frames, { ...opts, delay: reduce ? 0 : i * step });
+}
+
+/** 路由容器（key = 路由段，换页时重挂）：不是第一次进入就整块淡入一次（.page-in）；第一次进入改由 choreograph 逐块进场，容器自己不淡入（data-enter） */
+function PageIn({ section, children }: { section: string; children: React.ReactNode }) {
+  const [first] = React.useState(() => !enteredSections.has(section));
+  const ref = React.useRef<HTMLDivElement>(null);
+  React.useLayoutEffect(() => {
+    enteredSections.add(section);
+    if (first && ref.current) choreograph(ref.current);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  return <div ref={ref} className="page-in" data-enter={first ? '' : undefined}>{children}</div>;
+}
+
 /** 懒加载页面下载期间的占位：页头骨架，外壳不闪 */
 function PageFallback() {
   return <div className="stack" role="status" aria-label="加载中"><Skeleton className="w-[160px] h-[28px]" /><Skeleton className="h-[96px]" /><Skeleton className="h-[220px]" /></div>;
@@ -232,7 +277,7 @@ export function Shell() {
         <div className="nav-scrim" onClick={() => setNavOpen(false)} />
   
         <main className="main" id="main" tabIndex={-1}>
-          <div className="content"><ErrorBoundary resetKey={loc.pathname}><React.Suspense fallback={<PageFallback />}><div key={section} className="page-in"><Outlet /></div></React.Suspense></ErrorBoundary></div>
+          <div className="content"><ErrorBoundary resetKey={loc.pathname}><React.Suspense fallback={<PageFallback />}><PageIn key={section} section={section}><Outlet /></PageIn></React.Suspense></ErrorBoundary></div>
         </main>
         {/* 浮层宿主各包一层边界：它们出错（图表、懒加载块失败等）只收起自己，不拖垮整页 */}
         {/* 路由抽屉排在机器抽屉前面：从路由的出口换到机器抽屉时，标签页标题由后提交的机器抽屉写（lib/title 只有一格） */}
