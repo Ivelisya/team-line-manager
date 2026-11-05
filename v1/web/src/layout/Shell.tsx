@@ -11,7 +11,7 @@ import { useReachLabel } from '@/lib/probePoints';
 import { useStream } from '@/lib/stream';
 import { useTheme, type Palette, type ThemePref } from '@/lib/theme';
 import { useTitleAlerts } from '@/lib/title';
-import { closeEvacuate, closeMaint, closeMove, closeRenew, closeRetire, closeUpgrade, useEvacuateTarget, useMaintTarget, useMoveTarget, useRenewTarget, useRetireTarget, useUpgradeTarget } from '@/lib/nodeActions';
+import { closeEvacuate, closeMaint, closeMove, closeRenew, closeReplace, closeRetire, closeUpgrade, useEvacuateTarget, useMaintTarget, useMoveTarget, useRenewTarget, useReplaceTarget, useRetireTarget, useUpgradeTarget } from '@/lib/nodeActions';
 import { resetTerminal, useTerminalTarget } from '@/lib/terminal';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { TipHost, Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -59,7 +59,7 @@ function PageFallback() {
   return <div className="stack" role="status" aria-label="加载中"><Skeleton className="w-[160px] h-[28px]" /><Skeleton className="h-[96px]" /><Skeleton className="h-[220px]" /></div>;
 }
 
-const closeLifecycle = () => { closeMove(); closeEvacuate(); closeRetire(); closeRenew(); };
+const closeLifecycle = () => { closeMove(); closeEvacuate(); closeRetire(); closeRenew(); closeReplace(); };
 
 const THEMES: [ThemePref, string, typeof Sun][] = [['light', '浅色', Sun], ['dark', '深色', Moon], ['system', '跟随系统', Monitor]];
 const PALETTES: [Palette, string][] = [['plum', '粉紫'], ['indigo', '靛蓝']];
@@ -79,9 +79,9 @@ function RouterHost() {
 }
 
 function LifecycleHost() {
-  // 四个 hook 都要无条件调用：写成 a() || b() 会短路，hook 数量随渲染变化，React 报错
-  const move = useMoveTarget(), evacuate = useEvacuateTarget(), retire = useRetireTarget(), renew = useRenewTarget();
-  const ever = useEver(!!(move || evacuate || retire || renew));
+  // 五个 hook 都要无条件调用：写成 a() || b() 会短路，hook 数量随渲染变化，React 报错
+  const move = useMoveTarget(), evacuate = useEvacuateTarget(), retire = useRetireTarget(), renew = useRenewTarget(), replace = useReplaceTarget();
+  const ever = useEver(!!(move || evacuate || retire || renew || replace));
   return ever ? <React.Suspense fallback={null}><LifecycleDialogsHost /></React.Suspense> : null;
 }
 
