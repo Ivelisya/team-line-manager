@@ -4,7 +4,7 @@
 import * as React from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronLeft, ChevronRight, CircleX, Router as RouterIcon, TriangleAlert, Users, Waypoints, XCircle } from 'lucide-react';
-import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/dialog';
+import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/sheet';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/overlays';
 import { Trunc } from '@/components/ui/tooltip';
 import { Button, IconButton } from '@/components/ui/button';
@@ -55,11 +55,11 @@ export function RouterDrawer() {
   useTitleName(id ? r?.name : undefined);
   return (
     <Sheet open={!!id} onOpenChange={(o) => !o && close()}>
-      <SheetContent aria-describedby={undefined}>
+      <SheetContent>
         <ErrorBoundary compact resetKey={`${r?.id}:${tab}`}>
           {!r ? (
             <>
-              <div className="drawer-head"><SheetTitle className="drawer-title">{q.isError ? (isGone(q.error) ? '软路由不存在' : '无法加载软路由') : '加载中…'}</SheetTitle></div>
+              <div className="drawer-head"><SheetTitle>{q.isError ? (isGone(q.error) ? '软路由不存在' : '无法加载软路由') : '加载中…'}</SheetTitle></div>
               <div className="drawer-body">{q.isError ? (isGone(q.error) ? <Gone text="这台软路由已不存在"><Button variant="outline" size="sm" onClick={close}>关闭</Button></Gone> : <ErrorNote error={q.error} onRetry={() => void q.refetch()} />) : <Skeleton className="h-[120px]" />}</div>
             </>
           ) : (
@@ -106,7 +106,7 @@ function Head({ r, detail }: { r: RouterView; detail: RouterDetail | null | unde
   const ref = React.useRef(sib); ref.current = sib;
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.key !== '[' && e.key !== ']') || e.metaKey || e.ctrlKey || e.altKey || typingIn(e.target) || document.querySelector('.dialog, .cmd-dialog')) return;
+      if ((e.key !== '[' && e.key !== ']') || e.metaKey || e.ctrlKey || e.altKey || typingIn(e.target) || document.querySelector('[data-slot="dialog-content"], [data-slot="command-dialog"]')) return;
       const to = ref.current && (e.key === ']' ? ref.current.next : ref.current.prev);
       if (!to) return;
       e.preventDefault();
@@ -120,8 +120,8 @@ function Head({ r, detail }: { r: RouterView; detail: RouterDetail | null | unde
     <header className="drawer-head m-drawer-head" style={{ paddingRight: 56 }}>
       <span className="nc-kind" role="img" aria-label="软路由"><RouterIcon /></span>
       <div className="m-head" style={{ flex: 1 }}>
-        <div className="m-head-row"><SheetTitle className="drawer-title ellipsis">{r.name}</SheetTitle><RouterStatePill r={r} />{r.team && <Tag c={tagColor(r.team.name)} tip="团队">{r.team.name}</Tag>}</div>
-        <SheetDescription className="drawer-sub ellipsis">{sub}</SheetDescription>
+        <div className="m-head-row"><SheetTitle className="ellipsis">{r.name}</SheetTitle><RouterStatePill r={r} />{r.team && <Tag c={tagColor(r.team.name)} tip="团队">{r.team.name}</Tag>}</div>
+        <SheetDescription className="text-label ellipsis">{sub}</SheetDescription>
       </div>
       {sib && (
         <div className="drawer-nav">

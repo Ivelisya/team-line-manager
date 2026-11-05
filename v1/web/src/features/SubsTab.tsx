@@ -90,8 +90,8 @@ function LinkDialog({ sub, onClose }: { sub: ClientSubWithUrl | null; onClose: (
   const held = useHeld(sub?.url, sub);
   const b64 = held ? `${held.url}?format=base64` : '';
   return (
-    <Dialog open={!!sub} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent size="md" onInteractOutside={(e) => e.preventDefault()} onEscapeKeyDown={(e) => e.preventDefault()}>
+    <Dialog open={!!sub} onOpenChange={(o) => !o && onClose()} blockDismiss>
+      <DialogContent size="md">
         <DialogHeader><DialogTitle>订阅链接 · {held?.name}</DialogTitle><DialogDescription className="sr-only">复制并保存订阅链接</DialogDescription></DialogHeader>
         <Note tone="warn" icon={<ShieldAlert size={14} />}><b>只显示这一次</b> <InfoTip text={'链接就是凭据，拿到的人能连上这些入口\n丢了只能轮换，换成新链接'} /></Note>
         <FormField label="Clash Verge / OpenClash"><div className="token-box"><code>{held?.url}</code><CopyButton text={held?.url ?? ''} label="链接" size={15} /></div></FormField>

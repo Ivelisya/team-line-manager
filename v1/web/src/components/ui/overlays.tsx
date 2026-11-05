@@ -8,6 +8,7 @@ import { m } from 'motion/react';
 import { cn, scrollBehavior } from '@/lib/utils';
 import { SPRING } from '@/lib/motion';
 import { watchSize } from '@/lib/sharedObserver';
+import { keepFocusInDialog } from '@/lib/baseLayers';
 
 /* ---- Tabs（下划线页签）：当前页签底下的 2px 下划线是一个共享 layoutId 的 motion 元素，切换时在页签之间滑动 ---- */
 const TabsCtx = React.createContext<{ id: string; value: string | undefined } | null>(null);
@@ -67,8 +68,8 @@ export const TabsContent = TabsPrimitive.Content;
 export const DropdownMenu = DropdownPrimitive.Root;
 export const DropdownMenuTrigger = DropdownPrimitive.Trigger;
 // 菜单离视口边至少 8px（collisionPadding）：贴边翻转、可用高度（.menu 的 max-height 读它）都按留白后的视口算
-export const DropdownMenuContent = React.forwardRef<React.ElementRef<typeof DropdownPrimitive.Content>, React.ComponentPropsWithoutRef<typeof DropdownPrimitive.Content>>(({ className, sideOffset = 4, ...p }, ref) => (
-  <DropdownPrimitive.Portal><DropdownPrimitive.Content ref={ref} sideOffset={sideOffset} collisionPadding={8} className={cn('menu', className)} {...p} /></DropdownPrimitive.Portal>
+export const DropdownMenuContent = React.forwardRef<React.ElementRef<typeof DropdownPrimitive.Content>, React.ComponentPropsWithoutRef<typeof DropdownPrimitive.Content>>(({ className, sideOffset = 4, onCloseAutoFocus, ...p }, ref) => (
+  <DropdownPrimitive.Portal><DropdownPrimitive.Content ref={ref} sideOffset={sideOffset} collisionPadding={8} className={cn('menu', className)} onCloseAutoFocus={keepFocusInDialog(onCloseAutoFocus)} {...p} /></DropdownPrimitive.Portal>
 ));
 DropdownMenuContent.displayName = 'DropdownMenuContent';
 export const DropdownMenuItem = React.forwardRef<React.ElementRef<typeof DropdownPrimitive.Item>, React.ComponentPropsWithoutRef<typeof DropdownPrimitive.Item> & { danger?: boolean }>(({ className, danger, ...p }, ref) => (

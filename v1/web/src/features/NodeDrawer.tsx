@@ -3,7 +3,7 @@ import * as React from 'react';
 import { Link } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
-import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/dialog';
+import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/sheet';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/overlays';
 import { Trunc } from '@/components/ui/tooltip';
 import { OptimisticSwitch } from '@/components/ui/form';
@@ -68,12 +68,12 @@ export function NodeDrawer() {
   const sib = drawerSiblings(qc, shownId);
   return (
     <Sheet open={!!id} onOpenChange={(o) => !o && close()}>
-      <SheetContent aria-describedby={undefined}>
+      <SheetContent>
         {/* 抽屉里图表/懒加载块出错只让抽屉显示错误，换机器或页签后自动恢复 */}
         <ErrorBoundary compact resetKey={`${heldId.current}:${tab}`}>
         {!m ? (
           <>
-            <div className="drawer-head"><SheetTitle className="drawer-title">{q.isError ? (isGone(q.error) ? '机器不存在' : '无法加载机器') : '加载中…'}</SheetTitle></div>
+            <div className="drawer-head"><SheetTitle>{q.isError ? (isGone(q.error) ? '机器不存在' : '无法加载机器') : '加载中…'}</SheetTitle></div>
             <div className="drawer-body">{q.isError ? (isGone(q.error) ? <Gone text="这台机器已不存在"><Button variant="outline" size="sm" onClick={close}>关闭</Button></Gone> : <ErrorNote error={q.error} onRetry={() => void q.refetch()} />) : <Skeleton className="h-[120px]" />}</div>
           </>
         ) : (
@@ -82,8 +82,8 @@ export function NodeDrawer() {
             <header className="drawer-head m-drawer-head" style={{ paddingRight: 56 }}>
               <Flag country={m.country} manual={!!m.country_set} ip={m.ip} />
               <div className="m-head" style={{ flex: 1 }}>
-                <div className="m-head-row"><SheetTitle className="drawer-title ellipsis">{m.name}</SheetTitle><HealthPill m={m} /><UnreachPill m={m} />{/* 维护中已由状态胶囊写了，标签里不再重复 */}<MachineTags m={m.maintenance ? { ...m, maintenance: false } : m} /></div>
-                <SheetDescription className="drawer-sub ellipsis">{m.ip} · {m.host_machine ? `同机 · ${m.host_machine.name}` : m.plan?.name ?? '未设套餐'}{!m.provider && ' · 未设供应商'}{m.spare_from && ` · 原 ${m.spare_from}`}</SheetDescription>
+                <div className="m-head-row"><SheetTitle className="ellipsis">{m.name}</SheetTitle><HealthPill m={m} /><UnreachPill m={m} />{/* 维护中已由状态胶囊写了，标签里不再重复 */}<MachineTags m={m.maintenance ? { ...m, maintenance: false } : m} /></div>
+                <SheetDescription className="text-label ellipsis">{m.ip} · {m.host_machine ? `同机 · ${m.host_machine.name}` : m.plan?.name ?? '未设套餐'}{!m.provider && ' · 未设供应商'}{m.spare_from && ` · 原 ${m.spare_from}`}</SheetDescription>
               </div>
               {sib && (
                 <div className="drawer-nav">

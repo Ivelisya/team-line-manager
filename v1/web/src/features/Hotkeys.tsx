@@ -43,7 +43,7 @@ export function Hotkeys({ theme }: { theme: { pref: ThemePref; setPref: (p: Them
       const c = ref.current;
       if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'k') { e.preventDefault(); setOverlay(c.overlay === 'palette' ? null : 'palette'); return; }
       if (e.metaKey || e.ctrlKey || e.altKey || typing(e.target) || c.overlay) return;
-      if (document.querySelector('.dialog, .cmd-dialog')) return; // 有对话框开着时不抢键
+      if (document.querySelector('[data-slot="dialog-content"], [data-slot="command-dialog"]')) return; // 有对话框开着时不抢键
       if (e.key === '/' ) { e.preventDefault(); setOverlay('palette'); }
       else if (e.key === '?') { e.preventDefault(); setOverlay('help'); }
       else if ((e.key === '[' || e.key === ']') && c.id) {
@@ -81,11 +81,12 @@ const KEYS: { keys: string[][]; text: string; tip?: string }[] = [
 ];
 
 function ShortcutsHelp({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
+  const panel = React.useRef<HTMLDivElement>(null);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       {/* 键盘按 ? 打开时初始焦点不落到右上角的 ×（会画一圈焦点环），落在对话框容器上；Esc、Tab 照常 */}
-      <DialogContent aria-describedby={undefined} onOpenAutoFocus={(e) => { e.preventDefault(); (e.currentTarget as HTMLElement).focus({ preventScroll: true }); }}>
-        <DialogHeader className="hk-head"><DialogTitle>键盘快捷键</DialogTitle>
+      <DialogContent aria-describedby={undefined} showCloseButton={false} ref={panel} initialFocus={() => panel.current}>
+        <DialogHeader className="-mt-1.5 -mr-2 flex items-center justify-between gap-2"><DialogTitle>键盘快捷键</DialogTitle>
           <IconButton label="关闭" tip={false} onClick={() => onOpenChange(false)}><X size={16} /></IconButton></DialogHeader>
         <ul className="hk-list">
           {KEYS.map((k) => (

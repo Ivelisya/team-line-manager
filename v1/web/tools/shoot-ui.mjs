@@ -39,12 +39,12 @@ const clickText = (page, sel, text) => page.evaluate((s, t) => { const el = [...
 // 选择器按角色 / 文字写，不依赖 .dialog、.menu-item 这类样式类名（组件换底层后类名会变）。
 // 最上层的对话框 = 最后一个 role=dialog（页面上可能还有非模态的抽屉也是 role=dialog，后挂载的在最上面）
 const dq = async (page, sel) => {
-  const h = (await page.evaluateHandle((s) => { const ds = document.querySelectorAll('[role="dialog"]'); return ds.length ? ds[ds.length - 1].querySelector(s) : null; }, sel)).asElement();
+  const h = (await page.evaluateHandle((s) => { const ds = document.querySelectorAll('[role="dialog"]:not([data-slot="toast"])'); return ds.length ? ds[ds.length - 1].querySelector(s) : null; }, sel)).asElement();
   if (!h) throw new Error('对话框里找不到 ' + sel);
   return h;
 };
 const clickInDialog = (page, sel, text) => page.evaluate((s, t) => {
-  const ds = document.querySelectorAll('[role="dialog"]'); const d = ds[ds.length - 1];
+  const ds = document.querySelectorAll('[role="dialog"]:not([data-slot="toast"])'); const d = ds[ds.length - 1];
   const el = d && [...d.querySelectorAll(s)].find((e) => e.textContent?.trim().includes(t));
   if (!el) throw new Error('对话框里找不到 ' + t); el.click();
 }, sel, text);

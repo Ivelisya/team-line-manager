@@ -3,16 +3,35 @@
 html { background: var(--canvas); scroll-padding-top: var(--topbar-h); scrollbar-gutter: stable; } /* 锚点/焦点滚动不被固定顶栏遮住；滚动条槽位常驻，长短页面切换时内容与顶栏不横移 */
 /* 触屏：点按的系统灰块已由 Tailwind preflight 在 html 上关掉（-webkit-tap-highlight-color: transparent，按下有缩放 / 底色反馈）；
    悬停样式一律包在 @media (hover: hover) 里：触屏没有悬停，点过的卡片、名称、按钮会一直停在悬停态 */
-/* Radix 弹层锁滚动时让出槽位：遮罩才盖满全宽（否则右侧留一条不变暗的边）；库会给 body 补同宽的右外边距，内容不动 */
-html:has(> body[data-scroll-locked]) { scrollbar-gutter: auto; }
+/* 对话框 / 命令面板（Base UI，ui/dialog.tsx）开着时页面被锁住（滚动条消失）：scrollbar-gutter: stable 把滚动条原来的槽位留着，内容、顶栏、通知都不横移，不用补偿；
+   但遮罩（fixed、inset: 0）只盖到槽位左缘，槽位里只有 html 自己的背景色（背景图不画进槽位），要把这个底色同步压暗到和遮罩一样（--scrim-keep），不然右侧留一条没变暗的竖条。
+   进场时和遮罩一起淡入（--dur-2），撤掉时（遮罩播完退场动画、卸载）直接还原。抽屉（非模态，开着时 <html data-drawer>，ui/sheet.tsx）同理。
+   macOS 等覆盖式滚动条没有槽位，这层看不出来 */
+html { --scrim-keep: 60%; } /* = 1 − --scrim 的透明度（亮色 .4、暗色 .6；tokens.css 是多批共用的，这个换算值放在这里） */
+html[data-theme="dark"] { --scrim-keep: 40%; }
+/* 抽屉上再开对话框 / 命令面板：两层遮罩（抽屉的 --scrim 和上面轻压的 --scrim-stacked，亮 .4 / .12、暗 .6 / .24）叠起来，槽位留下的底色比例是两层相乘：亮 .6 × .88、暗 .4 × .76 */
+html[data-drawer][data-overlay] { --scrim-keep: 52.8%; }
+html[data-theme="dark"][data-drawer][data-overlay] { --scrim-keep: 30.4%; }
+/* 两层都是整幅遮罩（对话框上再开对话框 / 命令面板；data-overlay 的值是挂着的遮罩层数）：两层相乘，亮 .6 × .6、暗 .4 × .4；抽屉上叠两层对话框（上面两层都是 --scrim-stacked）：亮 .6 × .88²、暗 .4 × .76² */
+html[data-overlay="2"] { --scrim-keep: 36%; }
+html[data-theme="dark"][data-overlay="2"] { --scrim-keep: 16%; }
+html[data-drawer][data-overlay="2"] { --scrim-keep: 46.5%; }
+html[data-theme="dark"][data-drawer][data-overlay="2"] { --scrim-keep: 23.1%; }
+html:is([data-overlay], [data-drawer]) { background-color: color-mix(in srgb, var(--canvas) var(--scrim-keep), black); transition: background-color var(--dur-2) var(--ease-out); }
+/* Radix 的弹层（菜单、下拉、日期，B2b 换成 Base UI 后这两条和 --sbw 的量取一起删）锁滚动时让出槽位：遮罩才盖满全宽（否则右侧留一条不变暗的边）；库会给 body 补同宽的右外边距，内容不动。
+   Base UI 的对话框开着（data-overlay）时页面已经锁住、槽位留着，不能再补（会让内容左移），所以排除 */
+html:not([data-overlay]):has(> body[data-scroll-locked]) { scrollbar-gutter: auto; }
 /* 节点抽屉（非模态）开着：背后的页面不滚、滚动条藏起来；槽位仍在（scrollbar-gutter: stable），内容不横移 */
 html[data-drawer] { overflow: hidden; }
 /* 页面不够长时 Chrome 的 clientWidth 不扣常驻槽位，库算出的补偿是 0、内容右移半个槽宽：按 main.tsx 量出的真实槽宽（--sbw）补 */
 /* 库注入的 <style> 是不分层的：同名普通声明会压过 components 层里的（以前靠选择器更具体），所以 --removed-body-scroll-bar-size 也要 !important（layer 里的 important 高于不分层的普通声明，也高于库自己的 important） */
-html body[data-scroll-locked] { margin-right: var(--sbw, 0px) !important; --removed-body-scroll-bar-size: var(--sbw, 0px) !important; }
+html:not([data-overlay]) body[data-scroll-locked] { margin-right: var(--sbw, 0px) !important; --removed-body-scroll-bar-size: var(--sbw, 0px) !important; }
+/* B2b 换完后删：Base UI 的对话框锁住页面后槽位已留着。Chrome 的 clientWidth 含这个槽位，Radix 量出的补偿是 0；clientWidth 扣掉槽位的引擎（如 Firefox）会量出槽宽，给 body 补 margin-right，
+   对话框里开 Radix 的下拉 / 选择时背后的页面、抽屉宽度、通知视口、顶栏右内边距就跟着跳。这里清零（Chrome 里这条不改变任何东西） */
+html[data-overlay] body[data-scroll-locked] { margin-right: 0 !important; --removed-body-scroll-bar-size: 0px !important; }
 /* 背景光晕：固定在视口的一层 body::before（z-index -1：在根背景 --canvas 之上、所有内容之下）。
    以前写成 body 的背景 + background-attachment: fixed：非根元素上的 fixed 背景会让浏览器放弃合成滚动，每滚一帧都重画整页背景 */
-body::before { content: ""; position: fixed; inset: 0; z-index: -1; background: var(--canvas-glow); pointer-events: none; }
+body::before { content: ""; position: fixed; inset: 0; z-index: -1; background: var(--canvas-glow); background-color: var(--canvas); pointer-events: none; } /* 底色 --canvas：遮罩开着时 html 的背景色被压暗（上面，为了槽位），这一层把页面区域的底色原样盖回去，不被双重压暗 */
 /* 客户页 /c/（public/theme-init.js 首屏就加上这个类）：整页换成卡片色的白底、去掉管理端画布的光晕 */
 html.is-cx { background: var(--surface); }
 html.is-cx body::before { content: none; }
@@ -48,7 +67,6 @@ a { color: inherit; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
-@keyframes fade-out { from { opacity: 1; } to { opacity: 0; } }
 @keyframes skel-show { from { visibility: hidden; } to { visibility: visible; } }
 @keyframes skel-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 
