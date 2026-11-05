@@ -159,8 +159,8 @@ function ApiKeysSection() {
         {err && <Note tone="bad">{err}</Note>}
       </FormDialog>
 
-      <Dialog open={token != null} onOpenChange={(o) => !o && setToken(null)}>
-        <DialogContent size="md" onInteractOutside={(e) => e.preventDefault()} onEscapeKeyDown={(e) => e.preventDefault()} onOpenAutoFocus={(e) => { e.preventDefault(); copyRef.current?.focus(); }}>
+      <Dialog open={token != null} onOpenChange={(o) => !o && setToken(null)} blockDismiss>
+        <DialogContent size="md" initialFocus={copyRef}>
           <DialogHeader><DialogTitle>密钥已创建</DialogTitle><DialogDescription className="sr-only">复制并保存这个密钥</DialogDescription></DialogHeader>
           <Note tone="warn" icon={<ShieldAlert size={14} />}><b>只显示这一次</b> <InfoTip text="关掉后就看不到了。丢了只能撤销，再新建一个" /></Note>
           <div className="token-box"><code>{tokenHeld}</code><CopyButton text={tokenHeld ?? ''} label="密钥" size={15} /></div>

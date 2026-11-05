@@ -40,7 +40,7 @@ export function LoginPage() {
       <TipHost /> {/* 登录页在外壳外面：「(i)」的提示要自己的一份 */}
       <form className="login-card" onSubmit={submit}>
         <div className="login-brand"><span className="brand-mark"><Boxes size={14} /></span>团队线路管理</div>
-        <div><h1 className="dialog-title">登录</h1></div>
+        <div><h1 className="m-0 text-title font-semibold tracking-(--tracking-title) text-balance">登录</h1></div>
         {err && <Note tone="bad">{err.message}</Note>}
         <FormField label="用户名"><Input value={u} onChange={(e) => { setU(e.target.value); setNeedCode(false); setCode(''); }} autoComplete="username" autoFocus /></FormField>
         <FormField label="密码"><Input type="password" value={p} onChange={(e) => setP(e.target.value)} autoComplete="current-password" /></FormField>

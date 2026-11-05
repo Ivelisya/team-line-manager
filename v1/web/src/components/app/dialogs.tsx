@@ -41,10 +41,10 @@ export function ConfirmDialog({ open, onOpenChange, title, description, confirmL
     </>
   );
   return (
-    <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
-      <DialogContent size={size} onInteractOutside={(e) => { if (dirty) e.preventDefault(); }}>
+    <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)} blockDismiss={(r) => r === 'outside-press' && !!dirty}>
+      <DialogContent size={size}>
         {asForm
-          ? <form className="dialog-form" onSubmit={(e) => { e.preventDefault(); e.stopPropagation(); if (!confirmDisabled && !busy) void run(); }}>{body}</form>
+          ? <form className="contents" onSubmit={(e) => { e.preventDefault(); e.stopPropagation(); if (!confirmDisabled && !busy) void run(); }}>{body}</form>
           : body}
       </DialogContent>
     </Dialog>
@@ -57,9 +57,9 @@ export function FormDialog({ open, onOpenChange, title, desc, children, onSubmit
   open: boolean; onOpenChange: (o: boolean) => void; title: string; desc?: React.ReactNode; children: React.ReactNode; onSubmit: () => void; submitLabel: string; busy?: boolean; valid?: boolean; size?: 'sm' | 'md'; dirty?: boolean; error?: unknown;
 }) {
   return (
-    <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
-      <DialogContent size={size} onInteractOutside={(e) => { if (dirty) e.preventDefault(); }}>
-        <form className="dialog-form" onSubmit={(e) => { e.preventDefault(); if (valid && !busy) onSubmit(); }}>
+    <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)} blockDismiss={(r) => r === 'outside-press' && !!dirty}>
+      <DialogContent size={size}>
+        <form className="contents" onSubmit={(e) => { e.preventDefault(); if (valid && !busy) onSubmit(); }}>
           <DialogHeader><DialogTitle>{title}</DialogTitle>{desc && <DialogDescription>{desc}</DialogDescription>}</DialogHeader>
           {children}
           {error != null && <Note tone="bad">{errMessage(error)}</Note>}
@@ -91,7 +91,7 @@ export const TypedConfirmDialog = resetOnOpen(function TypedConfirmDialog({ expe
   return (
     <Dialog open={base.open} onOpenChange={(o) => !busy && base.onOpenChange(o)}>
       {/* 焦点直接落在确认输入框（默认会落到前面的复选框等控件上） */}
-      <DialogContent size={base.size} onOpenAutoFocus={(e) => { if (input.current) { e.preventDefault(); input.current.focus(); } }}>
+      <DialogContent size={base.size} initialFocus={input}>
         <DialogHeader><DialogTitle>{base.title}</DialogTitle>{base.description && <DialogDescription>{base.description}</DialogDescription>}</DialogHeader>
         {base.children}
         {!blocked && typed && (

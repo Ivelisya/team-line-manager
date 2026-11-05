@@ -132,8 +132,8 @@ function BootstrapDialog() {
   const left = Date.parse(b.expires_at) - now;
   const done = r?.state === 'online' && r.last_seen_at != null && Date.parse(r.last_seen_at) > Date.parse(b.issued_at);
   return (
-    <Dialog open={!!t} onOpenChange={(o) => !o && closeBootstrap()}>
-      <DialogContent size="md" onInteractOutside={(e) => e.preventDefault()}>
+    <Dialog open={!!t} onOpenChange={(o) => !o && closeBootstrap()} blockDismiss={(r) => r === 'outside-press'}>
+      <DialogContent size="md">
         <DialogHeader>
           <DialogTitle>{done ? `已接入 · ${b.name}` : `接入软路由 · ${b.name}`}</DialogTitle>
           <DialogDescription>在路由的 SSH 里粘贴执行<InfoTip text={`30 分钟内有效、只能用一次。\n${ONLY_ADDS}`} /></DialogDescription>

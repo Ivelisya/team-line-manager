@@ -69,7 +69,7 @@ export function MachineGrid({ cols, rows, sort, onSort, openId, onOpen, dim = is
     const prev = lastOpen.current; lastOpen.current = openId;
     if (!prev || openId) return;
     const a = document.activeElement;
-    if (a && a !== document.body && !a.closest('.drawer')) return;
+    if (a && a !== document.body && !a.closest('[data-slot="sheet-content"]')) return;
     wrap.current?.querySelector<HTMLElement>(`tr[data-id="${CSS.escape(prev)}"]`)?.focus({ preventScroll: true });
   }, [openId]);
   return (
