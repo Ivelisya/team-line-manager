@@ -21,20 +21,25 @@ const LIFE = { ok: 3600, info: 5000, bad: 7000 } as const
 const manager = Toast.createToastManager()
 let live = false // Toaster 挂着才收通知（同改前：还没挂载时的通知直接丢）
 let seq = 0
-const counts = new Map<string, number>() // 显示中的「相同消息」→ 已叠几次；通知开始收起时清掉
+const merged = new Map<string, { id: string; count: number }>() // 显示中的「相同消息」→ 当前那条的 id 与已叠几次；通知开始收起时清掉
 
 export const errMessage = (e: unknown) => (e instanceof Error ? e.message : String(e))
 function show(t: ToastInput) {
   if (!live) return
   // 带 key 的、带操作按钮的不叠计数（每条都是独立的一条 / 只留最新一条）
   const merge = !t.key && !t.action
-  const id = t.key ? `k:${t.key}` : t.action ? `a:${++seq}` : `m:${t.tone}|${t.title ?? ""}|${t.text}`
-  const count = merge ? (counts.get(id) ?? 0) + 1 : 1
-  if (merge) counts.set(id, count)
+  const sig = `m:${t.tone}|${t.title ?? ""}|${t.text}`
+  // 相同消息再来一次：关掉旧的、以新 id 加一条（计数 +1）——Base UI 按 id 原位更新，旧的若已被叠到后面，内容是藏起来的，用户看不到；新的永远在最前面
+  const prev = merge ? merged.get(sig) : undefined
+  const count = prev ? prev.count + 1 : 1
+  const id = t.key ? `k:${t.key}` : t.action ? `a:${++seq}` : `${sig}#${++seq}`
+  if (merge) { if (prev) manager.close(prev.id); merged.set(sig, { id, count }) }
   const life = t.duration ?? (t.action ? 9000 : LIFE[t.tone])
   manager.add({
     id, type: t.tone, title: t.title, description: t.text, timeout: life, data: { count, life } satisfies ToastData,
-    onClose: () => { counts.delete(id) },
+    // 错误用 Base UI 的 high：读屏走 assertive 的通告，其余 polite（Viewport 自带 aria-live，不在 Root 上另写 role）
+    priority: t.tone === "bad" ? "high" : "low",
+    onClose: () => { if (merged.get(sig)?.id === id) merged.delete(sig) },
     // 点了执行并关闭
     actionProps: t.action ? { children: t.action.label, onClick: () => { t.action!.onClick(); manager.close(id) } } : undefined,
   })
@@ -64,10 +69,11 @@ const BAR = { ok: "bg-ok", bad: "bg-bad", info: "bg-info" } as const
 const WASH = { ok: "from-ok/12", bad: "from-bad/12", info: "from-info/12" } as const
 
 /** 手机（≤600px）通知从顶栏下方落下，宽屏在右下角 */
+const phoneQuery = typeof matchMedia === "function" ? matchMedia("(max-width: 600px)") : null
 function usePhone() {
   return React.useSyncExternalStore(
-    (cb) => { const m = matchMedia("(max-width: 600px)"); m.addEventListener("change", cb); return () => m.removeEventListener("change", cb) },
-    () => matchMedia("(max-width: 600px)").matches,
+    (cb) => { phoneQuery?.addEventListener("change", cb); return () => phoneQuery?.removeEventListener("change", cb) },
+    () => phoneQuery?.matches ?? false,
     () => false,
   )
 }
@@ -85,8 +91,6 @@ function ToastItem({ t, top }: { t: Item; top: boolean }) {
       data-slot="toast"
       data-tone={tone}
       data-position={dir}
-      role={tone === "bad" ? "alert" : "status"}
-      tabIndex={-1}
       swipeDirection={[]}
       className={cn(
         // 堆叠：--toast-index 是第几条（0 = 最前），折叠时按序号缩小、往后叠（--toast-peek 露出的边），展开（悬停 / 聚焦，data-expanded）时按各自高度排开
@@ -142,6 +146,6 @@ function ToastList() {
 }
 
 export function Toaster() {
-  React.useEffect(() => { live = true; return () => { live = false; counts.clear() } }, [])
+  React.useEffect(() => { live = true; return () => { live = false; merged.clear() } }, [])
   return <Toast.Provider toastManager={manager} limit={MAX}><ToastList /></Toast.Provider>
 }

@@ -4,7 +4,7 @@ import { X } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 import { IconButton } from "@/components/ui/button"
-import { RememberFocus, escapeIsTaken, useRestoreFocus } from "@/components/ui/dialog"
+import { RememberFocus, escapeIsTaken, mergeRefs, useRestoreFocus } from "@/components/ui/dialog"
 
 /* 右侧抽屉（shadcn Sheet 的写法：Dialog + 右侧定位）。非模态（modal={false}）：模态时 Base UI 会锁 body 滚动、给页面加 inert / pointer-events 的遮挡，
    一开一关整页上万个元素重算样式（改前 Radix 同理，实测紧凑卡片开约 330 ms、关约 250 ms）；非模态时一帧都不卡。
@@ -58,6 +58,7 @@ function SheetContent({
   showCloseButton = true,
   initialFocus,
   finalFocus,
+  ref,
   ...props
 }: SheetPrimitive.Popup.Props & {
   /** 右上角关闭键（贴着右缘，宽度不受页面滚动条影响） */
@@ -65,6 +66,7 @@ function SheetContent({
 }) {
   const { open, panel } = useSheetContext()
   const focus = useRestoreFocus(panel)
+  const merged = React.useMemo(() => mergeRefs(panel, ref), [panel, ref])
   React.useLayoutEffect(() => {
     if (!open) return
     if (drawers++ === 0) document.documentElement.dataset.drawer = ""
@@ -75,7 +77,7 @@ function SheetContent({
       <SheetOverlay />
       <RememberFocus focus={focus} />
       <SheetPrimitive.Popup
-        ref={panel}
+        ref={merged}
         data-slot="sheet-content"
         initialFocus={initialFocus ?? (() => panel.current)}
         finalFocus={finalFocus ?? focus.finalFocus}

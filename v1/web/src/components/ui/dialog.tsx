@@ -26,6 +26,16 @@ function useOverlayFlag() {
   }, [])
 }
 
+/** 把调用方传的 ref 与内部的面板 ref 合在一起（React 19 里 ref 是普通 prop，直接 {...props} 会盖掉内部的） */
+export function mergeRefs<T>(...refs: Array<React.Ref<T> | undefined>): React.RefCallback<T> {
+  return (node) => {
+    for (const r of refs) {
+      if (typeof r === "function") r(node)
+      else if (r) (r as React.MutableRefObject<T | null>).current = node
+    }
+  }
+}
+
 /* ---------- 打开前的焦点 ---------- */
 /** 打开时记下焦点在谁身上，关闭后还给它：调用方没自己指定 finalFocus；那个元素还在文档里；焦点此刻在 body 或刚关掉的面板里
  *  （已被别处接走的，如 MachineGrid 还给表格行、AnchoredDropdown 交给回调的，不抢）。从菜单项打开的，记下的菜单项已卸载，什么都不做。
@@ -49,7 +59,23 @@ export function useRestoreFocus(panel: React.RefObject<HTMLElement | null>) {
 
 /** 放在面板 Popup 之前（同一个 Portal 里）：兄弟节点按顺序跑 layout effect，先于 Popup 子树里输入框的 autoFocus（React 在提交的 layout 阶段才 focus()），此时焦点还在打开它的元素上 */
 export function RememberFocus({ focus }: { focus: { remember: () => void } }) {
-  React.useLayoutEffect(() => focus.remember(), [])
+  // 只记一次：开发模式的严格模式会把 effect 跑两遍，第二遍时输入框已被 autoFocus 抢到焦点，会把「打开前的元素」盖成面板自己的输入框
+  const done = React.useRef(false)
+  React.useLayoutEffect(() => { if (!done.current) { done.current = true; focus.remember() } }, [])
+  return null
+}
+
+/** 触屏（pointer: coarse）：内容里有 autoFocus 的输入框时，React 在挂载那一刻就聚焦了它，软键盘会弹出来盖住底部面板的按钮。放在面板内容的最后（它的 layout effect 在前面的 autoFocus 之后跑，面板的 ref 此时还没挂上，所以晚一个微任务），
+ *  发现焦点落在输入框上就挪到面板自己身上；调用方自己指定了 initialFocus 的不动 */
+function TouchBlur({ panel, enabled }: { panel: React.RefObject<HTMLElement | null>; enabled: boolean }) {
+  React.useLayoutEffect(() => {
+    if (!enabled || !matchMedia("(pointer: coarse)").matches) return
+    // 面板的 ref 在子级的 layout effect 之后才挂上，晚一个微任务再看
+    queueMicrotask(() => {
+      const a = document.activeElement as HTMLElement | null
+      if (a && panel.current?.contains(a) && a.matches("input, textarea")) panel.current.focus({ preventScroll: true })
+    })
+  }, [])
   return null
 }
 
@@ -133,6 +159,7 @@ function DialogContent({
   showCloseButton = true,
   initialFocus,
   finalFocus,
+  ref,
   ...props
 }: DialogPrimitive.Popup.Props & {
   /** sm 440 / md 660 / lg 760 */
@@ -142,14 +169,16 @@ function DialogContent({
 }) {
   const { panel } = useDialogContext()
   const focus = useRestoreFocus(panel)
+  const merged = React.useMemo(() => mergeRefs(panel, ref), [panel, ref])
   return (
     <DialogPortal>
       <DialogOverlay />
       <RememberFocus focus={focus} />
       <DialogPrimitive.Popup
-        ref={panel}
+        ref={merged}
         data-slot="dialog-content"
-        initialFocus={initialFocus ?? (() => panel.current?.querySelector<HTMLElement>(FIRST_FOCUSABLE) ?? true)}
+        // 触屏打开时焦点放在面板上（聚焦输入框会弹出软键盘，盖住底部面板的按钮）：受控打开没有触发事件，Base UI 给的 openType 常是空，所以再认「主要指针是粗的（pointer: coarse）」；其余跳过 (i)
+        initialFocus={initialFocus ?? ((openType) => (openType === "touch" || matchMedia("(pointer: coarse)").matches ? panel.current : panel.current?.querySelector<HTMLElement>(FIRST_FOCUSABLE) ?? true))}
         finalFocus={finalFocus ?? focus.finalFocus}
         className={cn(
           // 顶部锚定（同命令面板）：内容异步变多时只往下长；矮屏时整块滚动，底部按钮条吸底（DialogFooter），不会被截掉。
@@ -163,6 +192,7 @@ function DialogContent({
         {...props}
       >
         {children}
+        <TouchBlur panel={panel} enabled={initialFocus === undefined} />
         {showCloseButton && (
           <DialogPrimitive.Close
             data-slot="dialog-close"

@@ -109,7 +109,7 @@ function EntriesDialog({ sub, onClose }: { sub: ClientSub | null; onClose: () =>
   const es = q.data?.entries ?? [];
   const at = !!q.data && q.data.protocols !== 'reality';
   return (
-    <Dialog open={!!sub} onOpenChange={(o) => !o && onClose()} blockDismiss>
+    <Dialog open={!!sub} onOpenChange={(o) => !o && onClose()}>
       <DialogContent size="lg">
         <DialogHeader><DialogTitle>条目 · {held?.name}</DialogTitle><DialogDescription>{held?.rule_text}</DialogDescription></DialogHeader>
         {q.isError ? <ErrorNote error={q.error} onRetry={() => void q.refetch()} /> : q.isLoading ? <SkeletonRows rows={3} /> : !es.length ? <Empty text="现在没有条目" /> : (
