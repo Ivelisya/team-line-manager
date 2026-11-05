@@ -116,7 +116,7 @@
   --r-section: 24px;                    /* 首页大分区底（.hsec），比卡片大一级，卡片浮在里面 */
   --r-modal: 22px;                      /* 模态：对话框、抽屉、命令面板共用，比卡片大、比首页分区小。dialog.tsx / command.tsx / sheet.tsx 用它（rounded-modal） */
   --r-inner: 12px;                      /* 卡里再套一层的块：集群状态的在线率框与小图 */
-  --r-tag: 6px;                         /* 小方块：彩色标签、品牌标、22px 极小按钮（复制、通知关闭） */
+  --r-tag: 6px;                         /* 小方块：彩色标签、22px 极小按钮（复制、通知关闭）；品牌标用 --r-control */
   --r-xs: 4px;                          /* 复选框、键帽、子菜单筛选框、可点的读数与文字按钮的焦点 / 悬停底 */
   /* 只留字面量的极小圆角：心跳格 2px、图例色块 2px、国旗 3px、日志行 3px、页签下划线与时间线连线 1px；资源进度线、表格直角（H 原样） */
 
@@ -383,12 +383,12 @@
 
 /* ---------- B6b 页面精修：看得见的那一层（只新增，不改上面的值） ----------
    招牌「仪表读数」：KPI 主值比 --fs-kpi 再大一级，行高固定 40（加载占位与数据态同高）；卡片窄时由 home.css 按卡宽收（不截断）。
-   问候语：首页唯一的大标题。--hero-ink 是全站唯一的渐变文字（只给问候里的用户名）：墨紫 → 李紫 → 暮霞一侧。
+   问候语：首页唯一的大标题（--fs-greet）。--hero-ink 是全站唯一的渐变文字（只给问候里的用户名）：墨紫 → 李紫 → 暮霞一侧。
    尾端不用纯暮霞 #f7c6ea：它在分区底上只有约 1.2:1，取暮霞与李紫的混色，大字对比度 ≥ 3:1。
    环境光（--aurora-*）：画布顶部两团静止的柔光（base.css 的 body::after、.app::before）。不做漂移：一直在动的全视口层会让合成器每帧出图，毛玻璃顶栏每帧重算模糊。 */
 :root {
   --fs-kpi-hero: 34px;  --lh-kpi-hero: 40px;
-  --fs-greet: 32px;     --lh-greet: 40px;
+  --fs-greet: 32px;                     /* 问候语的上限（窄屏按视口收到 24）；行高是 1.25，随字号走，不设固定行高令牌 */
   --tracking-num: -0.03em;              /* 大读数的字距：Display 字形本来就收，再紧一点像仪表刻字 */
   --enter-rise: 8px;                    /* 首次进入页面：区块上移量 */
   --enter-step: 30ms;                   /* 首次进入页面：相邻区块的间隔 */
@@ -396,7 +396,7 @@
   --hero-ink: linear-gradient(100deg, color-mix(in oklab, var(--accent) 50%, var(--fg)) 0%, var(--accent) 52%, color-mix(in oklab, var(--accent) 62%, var(--m-load)) 100%);
   --aurora-a: radial-gradient(closest-side, color-mix(in srgb, var(--accent) 9%, transparent), transparent);
   --aurora-b: radial-gradient(closest-side, color-mix(in srgb, var(--chart-1) 6%, transparent), transparent);
-  --sheen: inset 0 1px 0 rgb(255 255 255 / 0.7); /* 分区、卡片顶边的内高光：光从上方来（亮色白，暗色见下） */
+  --sheen: inset 0 1px 0 rgb(255 255 255 / 0.7); /* 首页分区（.hsec）顶边的内高光：光从上方来（亮色白，暗色见下）；卡片的顶边高光在 --shadow-card / --shadow-card-lit 里 */
   --h-top: 32px;                        /* 顶栏图标按钮与搜索胶囊的高度（触屏 36，overrides.css）；不跟 --h-lg 走，调页头控件不连带顶栏 */
   --glass-topbar: color-mix(in srgb, var(--surface) 62%, transparent); /* 顶栏的毛玻璃底：比通用吸附条（--glass-bar 72%）更通透；不支持 backdrop-filter 时回退实底（overrides.css） */
   --shadow-card-lit: var(--shadow-card); /* 节点卡、环形卡、KPI、集群状态的静止阴影：亮色同 --shadow-card；暗色顶边内高光比 --shadow-card 再亮一点（见下） */
@@ -416,5 +416,4 @@
 :root:not([data-palette="indigo"])[data-theme="dark"] {
   --hero-ink: linear-gradient(100deg, #f7e9f8 0%, #f3c8f6 45%, #d9a6ea 100%);
   --aurora-a: radial-gradient(closest-side, color-mix(in srgb, #d9a6ea 5%, transparent), transparent);
-  --aurora-b: none;
 }

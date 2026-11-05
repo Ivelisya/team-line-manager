@@ -70,7 +70,10 @@ function choreograph(root: HTMLElement) {
     const hero = page.querySelector(':scope > .hsec-hero');
     if (hero) {
       blocks.push([hero.querySelector(':scope > .hsec-head'), 0]);
-      hero.querySelectorAll('.stat-grid > *').forEach((el, i) => blocks.push([el, i < 4 ? i + 1 : i - 2]));
+      // KPI 按实际列数斜着错开（第 r 行第 c 列的序号 = r + c + 1）：宽屏 4 列、手机 2 列都是一行比一行晚、左比右早；数不出列数时按 4 列
+      const grid = hero.querySelector('.stat-grid');
+      const cols = (grid && getComputedStyle(grid).gridTemplateColumns.split(' ').filter(Boolean).length) || 4;
+      hero.querySelectorAll('.stat-grid > *').forEach((el, i) => blocks.push([el, Math.floor(i / cols) + (i % cols) + 1]));
       blocks.push([hero.querySelector('.cluster'), 5]);
     }
     page.querySelectorAll(':scope > .hsec:not(.hsec-hero)').forEach((el) => blocks.push([el, 7]));
@@ -92,9 +95,12 @@ function choreograph(root: HTMLElement) {
 function PageIn({ section, children }: { section: string; children: React.ReactNode }) {
   const [first] = React.useState(() => !enteredSections.has(section));
   const ref = React.useRef<HTMLDivElement>(null);
+  // 每次挂载最多播一次：开发态 StrictMode 会把 layout effect 跑两遍，懒加载路由下载时 Suspense 藏起再显示旧页面也会重跑 effect——不然同一块会叠两条动画。
+  // 不加取消动画的 cleanup：开发态第一遍被取消、第二遍又被 played 跳过，就没有进场了
+  const played = React.useRef(false);
   React.useLayoutEffect(() => {
     enteredSections.add(section);
-    if (first && ref.current) choreograph(ref.current);
+    if (first && !played.current && ref.current) { played.current = true; choreograph(ref.current); }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   return <div ref={ref} className="page-in" data-enter={first ? '' : undefined}>{children}</div>;
 }

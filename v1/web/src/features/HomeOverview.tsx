@@ -153,8 +153,8 @@ const OFFLINE_TIP = 'agent 不再上报的机器，一定算故障。点开会�
 /** 软路由一行（集群状态底部，点进软路由页）：在线台数、出口可用、客户端。离线的读数是旧的，不算；一台软路由都没有就不出现 */
 function RoutersLink() {
   const q = useRouters(); const list = q.data;
-  // 还在加载：先占住这一行的高度（不可见），列表到了集群状态面板不长高、旁边的 KPI 卡不跟着被拉高（首页 CLS）
-  if (!list && q.isPending) return <div className="cluster-routers invisible" aria-hidden><span className="cluster-routers-label"><RouterIcon /></span></div>;
+  // 还在加载：先占住这一行的高度（不可见；放上「软路由」三个字，行高同真实行的文字），列表到了集群状态面板不长高、旁边的 KPI 卡不跟着被拉高（首页 CLS）
+  if (!list && q.isPending) return <div className="cluster-routers invisible" aria-hidden><span className="cluster-routers-label"><RouterIcon />软路由</span></div>;
   if (!list?.length) return null;
   const on = list.filter((r) => r.state === 'online');
   const ex = on.reduce((a, r) => { const f = r.summary && fleetExits(r.summary); return { alive: a.alive + (f?.alive ?? 0), total: a.total + (f?.total ?? 0) }; }, { alive: 0, total: 0 });
