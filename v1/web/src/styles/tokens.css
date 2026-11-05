@@ -363,12 +363,12 @@
 }
 
 /* ---------- 读数字体 ----------
-   Inter 4.1（rsms/inter，SIL OFL 1.1，许可证 public/fonts/Inter-OFL.txt）可变字体的子集：保留 opsz（14–32）与 wght（400–600）两个轴，只含数字、拉丁字母、标点与读数符号（% $ ¥ . , : ; - + × · / ( ) ↑ ↓ → − 等 95 个字符），
+   Inter 4.1（rsms/inter，SIL OFL 1.1，许可证 public/fonts/Inter-OFL.txt）可变字体的子集：保留 opsz（14–32）与 wght（400–600）两个轴，含全部可打印 ASCII（U+0020–U+007E）和读数符号（¥ × · ° µ – — … ↑ ↓ → − ≈ ≤ ≥，共 110 个字符，28.0 KB），
    保留 tnum / zero / kern / calt（tnum 只作用于数字，不动标点和空格）；0–9 在字体里已固定为等宽数字 + 斜杠零（不依赖 font-variant-numeric，漏写 --num-variant 的地方也不会数字乱跳）。
    wght 上限 600：写 600 / 700 的读数最粗到 600，不出粗黑，也不会触发合成粗体。
    字体文件在 src/assets/fonts/，由 Vite 当资源处理（相对路径 url()）：构建后是 /assets/inter-num-4.1-<内容哈希>.woff2，服务器对 /assets/ 带 immutable 长缓存，第二次起不再请求。
    换字体：替换文件，并把 index.html 里 preload 的 href（也是 /src/assets/fonts/ 下的同一个文件，Vite 会把它和这里的 url() 一起改写成同一个哈希名）和这里的文件名一并改。
-   font-display: swap：先用系统字，字体到了换；Windows 上先用度量对齐过的 Segoe UI（Inter Num Fallback：size-adjust 96.5% 使读数宽度与 Inter 相差在 ±2.5%（38px 处最多 +4.6%）内，ascent / descent 与上面 Inter Num 的覆盖值一致，换字不上下跳）。
+   font-display: swap：先用系统字，字体到了换；Windows 上先用度量对齐过的 Segoe UI（Inter Num Fallback：size-adjust 98.5%，是 20 种读数 × 8 档字号字重共 160 组实测里让平均绝对偏差最小的值：Inter 与回退字体的宽度差平均 −0.27%、平均绝对偏差 2.30%、最大 6.7%（38px 的「¥ 3,600」）；≤15px 的小字平均 −1.95%（回退略窄，不会多换行），≥21px 的大字平均 +2.5%。原来的 96.5% 是 −2.30% / 2.99% / 6.6%。ascent / descent 与上面 Inter Num 的覆盖值一致（95.2% / 24.1%，已除以 size-adjust），换字不上下跳）。
    Segoe UI 的 Regular 对 400–500、Semibold 对 600 和 700（Inter 最粗只到 600，Bold 会在换字时变细）；没有 Segoe UI 的平台（macOS 等）这一层不可用，直接走系统栈。 */
 @font-face {
   font-family: "Inter Num";
@@ -378,5 +378,5 @@
   font-display: swap;
   ascent-override: 95.2%; descent-override: 24.1%; line-gap-override: 0%; /* 行盒高度按 Segoe UI 的度量（1950 / 494，upem 2048）：Inter 自带的 ascent 略高，读数和正文字体同在一行时行盒会比以前高 1–2px（首页 KPI 说明行两行时 34 → 35 / 36） */
 }
-@font-face { font-family: "Inter Num Fallback"; src: local("Segoe UI"); font-weight: 400 500; size-adjust: 96.5%; ascent-override: 98.66%; descent-override: 25%; line-gap-override: 0%; }
-@font-face { font-family: "Inter Num Fallback"; src: local("Segoe UI Semibold"); font-weight: 600 700; size-adjust: 96.5%; ascent-override: 98.66%; descent-override: 25%; line-gap-override: 0%; }
+@font-face { font-family: "Inter Num Fallback"; src: local("Segoe UI"); font-weight: 400 500; size-adjust: 98.5%; ascent-override: 96.66%; descent-override: 24.49%; line-gap-override: 0%; }
+@font-face { font-family: "Inter Num Fallback"; src: local("Segoe UI Semibold"); font-weight: 600 700; size-adjust: 98.5%; ascent-override: 96.66%; descent-override: 24.49%; line-gap-override: 0%; }
