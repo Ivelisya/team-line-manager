@@ -98,6 +98,10 @@
 .stat-cap { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-8); min-width: 0; min-height: 16px; margin-top: auto; font-size: var(--fs-micro); line-height: var(--lh-micro); color: var(--fg-2); }
 .stat-cap > * { white-space: nowrap; }
 /* 首页 KPI：说明行最少两行高（16 × 2 + 行间距 2），内容贴底。加载中说明为空、数据到了多数卡是两行：卡片不长高（首页 CLS） */
+/* 宽屏 KPI 被集群状态拉高时（1440：卡高约 190），读数落在标签与说明行之间的正中（像表盘的读数窗），不再贴着标签、中间空一大段；
+   卡片按内容高（1280 以下）时没有富余空间，这条不起作用。说明行都占两行高（下一条），同一排的读数仍在同一高度 */
+.hsec-hero .stat-value { margin-block: auto; }
+.hsec-hero .stat-cap { margin-top: 0; }
 .hsec-hero .stat-cap { align-items: flex-end; align-content: flex-end; min-height: calc(2 * var(--lh-micro) + var(--sp-2)); }
 /* 说明行里的数字（下载 1.2 TB、降级 3）：数字 --fg 加粗，单位跟着数字、不再比数字大一号（.unit 默认 12px 灰，比 11px 的数字还显眼） */
 .stat-cap .num { color: var(--fg); font-weight: var(--fw-medium); }
