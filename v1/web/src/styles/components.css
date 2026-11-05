@@ -374,7 +374,7 @@ svg.copied-ic { color: var(--ok); animation: copy-pop var(--dur-2) var(--ease-ou
    进场 --dur-2 / --ease-out：淡入、从 .96 放大，同时朝远离触发元素的方向走 4px（Radix 写 data-side：在上方的往上、在下方的往下）；
    退场 --dur-1 / --ease-std 原路收回。缩放原点是触发元素那一侧（--radix-popper-transform-origin；图表提示没有，取中心）。
    材质：--shadow-pop + 毛玻璃（--glass）；提示框是反色实底，下拉选择是实底（常开在对话框里、伸出对话框下沿，玻璃会透出上下两截颜色） */
-.menu, .popover, .select-content, .chart-tip {
+.menu, .popover, .select-content {
   --pop-x: 0px; --pop-y: 0px;
   transform-origin: var(--radix-popper-transform-origin); animation: float-in var(--dur-2) var(--ease-out);
 }
@@ -385,8 +385,8 @@ svg.copied-ic { color: var(--ok); animation: copy-pop var(--dur-2) var(--ease-ou
 :is(.menu, .popover, .select-content)[data-state="closed"] { animation: float-out var(--dur-1) var(--ease-std) forwards; }
 @keyframes float-in { from { opacity: 0; transform: translate(var(--pop-x), var(--pop-y)) scale(.96); } }
 @keyframes float-out { to { opacity: 0; transform: translate(var(--pop-x), var(--pop-y)) scale(.96); } }
-.menu, .popover, .select-content, .toast, .chart-tip { border: 1px solid var(--line-float); box-shadow: var(--shadow-pop); }
-.menu, .popover, .toast, .chart-tip { background: var(--glass); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); }
+.menu, .popover, .select-content, .toast { border: 1px solid var(--line-float); box-shadow: var(--shadow-pop); }
+.menu, .popover, .toast { background: var(--glass); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); }
 .menu, .popover, .select-content { z-index: var(--z-popover); border-radius: var(--r-float); padding: var(--sp-4); min-width: var(--pop-w-sm); }
 /* 菜单高度只受视口约束（不读 Radix 的可用高度，也没有固定上限）：下方放不下时 Radix 整体翻到上方、不把菜单压矮出滚动条；
    内容比视口还高的（线路机「复制分享链接」子菜单可有几十条入口）才在菜单里滚动 */
@@ -497,7 +497,7 @@ svg.copied-ic { color: var(--ok); animation: copy-pop var(--dur-2) var(--ease-ou
    行（菜单项、下拉项、命令项、表格行、导航项、作业项、树节点、权限行、操作记录行、表头排序、侧栏底部快捷键）不缩放：悬停底上叠一层 --state-press。
    禁用的按钮不响应（:not(:disabled)）；禁用的菜单项是 pointer-events: none，不会按下。导航当前项的底是渐变（粉紫），不叠 */
 :is(.top-btn, .pol-chev, .cal-day):active:not(:disabled) { scale: var(--press-sm); transition-duration: var(--dur-press); }
-:is(.fchip, .seg-item, .tab, .chart-legend-item, .cmd-trigger, .top-alert, .nc-name, .relay-name, .host-pick, button.rt-topo-pill):active:not(:disabled) { scale: var(--press-md); transition-duration: var(--dur-press); }
+:is(.fchip, .seg-item, .tab, .tc-legend-item, .cmd-trigger, .top-alert, .nc-name, .relay-name, .host-pick, button.rt-topo-pill):active:not(:disabled) { scale: var(--press-md); transition-duration: var(--dur-press); }
 .select-trigger:active:not(:disabled, [data-state="open"]) { scale: var(--press-md); transition-duration: var(--dur-press); } /* 展开后不再缩：Radix 在按下那一刻按触发器的框量下拉宽度，缩着量会窄几像素 */
 button.tag:active { scale: var(--press-md); transition-duration: var(--dur-press); } /* 可点的标签（同机关系标）；只认按钮，纯展示的 span 标签按下不缩 */
 .tab:active:not(:disabled) .tab-ind { scale: calc(1 / var(--press-md)) 1; transition-duration: var(--dur-press); }

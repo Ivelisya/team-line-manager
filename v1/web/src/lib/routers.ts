@@ -71,9 +71,9 @@ export interface RouterDetail {
 export type RouterFull = RouterView & { detail: RouterDetail | null };
 export interface Bootstrap { cmd: string; expires_at: string }
 /** 曲线：点里的字段 cpu_pct load1 mem_pct disk_pct conntrack_pct temp_c wan_rx_bps wan_tx_bps proxy_up_bps proxy_down_bps conns clients exits_alive fleet_alive（fleet 出口里可用的，曲线画它；旧点退回 exits_alive） */
-export interface RouterMetrics { step_s: number; points: SeriesPoint[] }
+export interface RouterMetrics { step_s: number; points: SeriesPoint[]; /** 本地加的：这份数据取的是哪个时间范围（换范围时旧数据作 placeholder 仍带旧 range） */ range?: string }
 /** 各出口的曲线：点里 delay_ms（测试失败为 null）alive conns up_bps down_bps */
-export interface RouterExitMetrics { step_s: number; exits: { name: string; points: SeriesPoint[] }[] }
+export interface RouterExitMetrics { step_s: number; exits: { name: string; points: SeriesPoint[] }[]; range?: string }
 
 // ---- 查询 ----
 /** 团队顺序（同机器的默认顺序），再按名称；没分团队的排最后 */
@@ -90,7 +90,7 @@ export const useRouter = (id: string | null) =>
   useQuery({ queryKey: ['routers', id], queryFn: ({ signal }) => get<RouterFull>(`/routers/${id}`, signal), enabled: !!id, staleTime: Infinity });
 /** 曲线的轮询间隔随范围放大（`chartPoll`，同机器抽屉）；换范围时先留着上一段（调用方按 isPlaceholderData 调淡），换了路由不沿用 */
 export const useRouterMetrics = (id: string, range: string) =>
-  useQuery({ queryKey: ['router-metrics', id, range], queryFn: ({ signal }) => get<RouterMetrics>(`/routers/${id}/metrics?range=${range}`, signal), staleTime: chartPoll(range), refetchInterval: chartPoll(range), refetchOnWindowFocus: false, placeholderData: (prev, pq) => (pq?.queryKey[1] === id ? keepPreviousData(prev) : undefined) });
+  useQuery({ queryKey: ['router-metrics', id, range], queryFn: ({ signal }) => get<RouterMetrics>(`/routers/${id}/metrics?range=${range}`, signal).then((d) => ({ ...d, range })), staleTime: chartPoll(range), refetchInterval: chartPoll(range), refetchOnWindowFocus: false, placeholderData: (prev, pq) => (pq?.queryKey[1] === id ? keepPreviousData(prev) : undefined) });
 /** 配置变更（GET /routers/{id}/changes，新的在前，最多 200 条）：source = job 是中控作业改的（job_id / job_kind），router 是路由上改的；
  *  diff 是出口的增删改（changed 在 server:port 变了时带 from / to，凭据变了 creds = true，凭据本身不出）；note 是比不出差异的原因 */
 export interface RouterChangeItem { exit: string; op: 'added' | 'removed' | 'changed'; from?: string; to?: string; creds?: boolean }
@@ -99,7 +99,7 @@ export interface RouterChange { id: string; at: string; old_sha: string; new_sha
 export const useRouterChanges = (id: string) =>
   useQuery({ queryKey: ['routers', id, 'changes'], queryFn: ({ signal }) => get<RouterChange[]>(`/routers/${id}/changes`, signal), staleTime: Infinity });
 export const useRouterExitMetrics = (id: string, range: string) =>
-  useQuery({ queryKey: ['router-exit-metrics', id, range], queryFn: ({ signal }) => get<RouterExitMetrics>(`/routers/${id}/exits/metrics?range=${range}`, signal), staleTime: chartPoll(range), refetchInterval: chartPoll(range), refetchOnWindowFocus: false, placeholderData: (prev, pq) => (pq?.queryKey[1] === id ? keepPreviousData(prev) : undefined) });
+  useQuery({ queryKey: ['router-exit-metrics', id, range], queryFn: ({ signal }) => get<RouterExitMetrics>(`/routers/${id}/exits/metrics?range=${range}`, signal).then((d) => ({ ...d, range })), staleTime: chartPoll(range), refetchInterval: chartPoll(range), refetchOnWindowFocus: false, placeholderData: (prev, pq) => (pq?.queryKey[1] === id ? keepPreviousData(prev) : undefined) });
 
 // ---- 写操作（全部写审计） ----
 const K = [['routers'], ['audit']];

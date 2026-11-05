@@ -8,3 +8,8 @@ export function textWidth(text: string, px: number): number {
   }
   return em * px;
 }
+
+/** 纵轴 / 条尾标签需要的宽度：最长一条的文字宽度 + 14px 留白（到绘图区与到图边） */
+export function axisLabelWidth(labels: string[], px: number): number {
+  return Math.max(0, ...labels.map((l) => textWidth(l, px))) + 14;
+}

@@ -138,9 +138,12 @@ export function useChartInteraction({
         }
       }
 
-      // A row without any series value (a gap): no tooltip, and nothing to snap to.
+      // A padded row without any series value (a gap): no tooltip, and nothing
+      // to snap to. Rows flagged `$real` are real samples (possibly with a null
+      // value, e.g. a failed probe): they keep their tooltip.
       if (
         lines.length > 0 &&
+        !d.$real &&
         !lines.some((line) => typeof d[line.dataKey] === "number")
       ) {
         return null;

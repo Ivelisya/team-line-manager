@@ -530,7 +530,7 @@ const ChartTooltipInner = memo(function ChartTooltipInner({
                   />
                 )
               : lines.map((line, index) =>
-                  tooltipData?.yPositions[line.dataKey] === undefined ? null : (
+                  tooltipData && tooltipData.yPositions[line.dataKey] === undefined ? null : (
                   <TooltipDot
                     animate={!discreteInteraction}
                     color={resolveDotColor(line, index)}
@@ -548,7 +548,7 @@ const ChartTooltipInner = memo(function ChartTooltipInner({
                     variant={dotVariant}
                     visible={visible}
                     x={tooltipData?.xPositions?.[line.dataKey] ?? x}
-                    y={tooltipData.yPositions[line.dataKey] ?? 0}
+                    y={tooltipData?.yPositions[line.dataKey] ?? 0}
                   />
                   )
                 )}

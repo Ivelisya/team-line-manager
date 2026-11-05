@@ -1,5 +1,5 @@
 /* 图表（bklit，src/components/ui/charts）的样式。由图表 TSX 自己 import，随图表一起按需加载；整份包 @layer components。
-   旧 recharts 时代的 .chart-box / .chart-tip* / .chart-legend*（pages.css、components.css、overrides.css）已无人引用，留给 B5 删。 */
+   图例胶囊的按下缩放（--press-md）声明在 components.css「交互状态」那一行（:is(… .tc-legend-item …):active）。 */
 @layer components {
   /* 一张曲线 = 图例（多于一条时）+ 图；间距同旧版的 gap 6 */
   .tc { display: grid; gap: var(--sp-6); min-width: 0; }
@@ -13,7 +13,6 @@
     font: var(--fw-medium) var(--fs-label) / 1 var(--font-sans); color: var(--fg-2);
     transition: background-color var(--dur-1) var(--ease-std), border-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out);
   }
-  .tc-legend-item:active:not(:disabled) { scale: var(--press-md); }
   @media (hover: hover) { .tc-legend-item:hover { color: var(--fg); border-color: color-mix(in srgb, var(--lc) 60%, var(--line)); } }
   .tc-legend-item i { width: 8px; height: 8px; border-radius: 2px; background: var(--lc); box-shadow: inset 0 0 0 1.5px var(--lc); transition: background-color var(--dur-1) var(--ease-std); }
   .tc-legend-item[aria-pressed="false"] { background: transparent; border-color: var(--line); color: var(--fg-3); }

@@ -15,7 +15,7 @@ import { YAxis } from '@/components/ui/charts/y-axis';
 import { ReferenceArea } from '@/components/ui/charts/reference-area';
 import { ChartTooltip } from '@/components/ui/charts/tooltip';
 import { useChartStable } from '@/components/ui/charts/chart-context';
-import { textWidth } from '@/components/ui/charts/text-width';
+import { axisLabelWidth } from '@/components/ui/charts/text-width';
 import { ChartLegend } from '@/components/ui/charts/legend-toggle';
 import '@/styles/charts.css';
 
@@ -78,12 +78,13 @@ const TIP_SPRING = { stiffness: 1500, damping: 90 }; // 十字线、悬停点几
 
 /** 超出纵轴上限的点：画在顶边，用小三角标出（悬停仍是真实值） */
 function OutMarks({ marks }: { marks: { t: number; color: string }[] }) {
-  const { xScale } = useChartStable();
+  const { xScale, innerWidth } = useChartStable();
   return (
     <g aria-hidden="true">
       {marks.map((o, i) => {
         const x = xScale(new Date(o.t));
-        return x == null ? null : <path key={i} d={`M${x - 4} 6L${x + 4} 6L${x} 0Z`} fill={o.color} />;
+        // 7 天 / 30 天的小时数据，第一格可能在横轴起点之前：不画在绘图区外（会落到纵轴标签上）
+        return x == null || x < 0 || x > innerWidth ? null : <path key={i} d={`M${x - 4} 6L${x + 4} 6L${x} 0Z`} fill={o.color} />;
       })}
     </g>
   );
@@ -168,6 +169,7 @@ export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 
     const out: { t: number; color: string }[] = [];
     const rows = data.map((d) => {
       const src = d as Record<string, unknown>; const row: Record<string, unknown> = { t: (d as { t: number }).t };
+      if ('ts' in src) row.$real = 1; // 真实采样行（值可能是 null，如探测失败）：悬停仍出提示、值写「—」；垫的空档行没有 ts
       for (const l of shown) {
         const v = src[l.key];
         if (typeof v !== 'number') continue;
@@ -189,7 +191,7 @@ export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 
   const xDomain = useMemo(() => (s0 != null && s1 != null ? ([new Date(s0), new Date(s1)] as [Date, Date]) : undefined), [s0, s1]);
   const yDomain = useMemo(() => ([y.floor, y.ceil] as [number, number]), [y.floor, y.ceil]);
   if (none) return <div className="chart-empty" style={{ height }}>{empty}</div>;
-  const labelW = Math.max(0, ...(y.ticks ?? []).map((v) => textWidth(yFmt(v), 11))) + 14; // 刻度文字 11px
+  const labelW = axisLabelWidth((y.ticks ?? []).map(yFmt), 11); // 刻度文字 11px
   const margin = { top: 8, right: 10, bottom: 26, left: Math.max(yWidth, Math.ceil(labelW)) };
   // 数组而不是 <>…</>：AreaChart 只在直接子元素里找 Area 来登记序列（纵轴取值、提示）
   const children = [

@@ -16,7 +16,7 @@ import { Grid } from '@/components/ui/charts/grid';
 import { YAxis } from '@/components/ui/charts/y-axis';
 import { ChartTooltip } from '@/components/ui/charts/tooltip';
 import { useChartStable } from '@/components/ui/charts/chart-context';
-import { textWidth } from '@/components/ui/charts/text-width';
+import { axisLabelWidth } from '@/components/ui/charts/text-width';
 import { intTicks } from '@/lib/chart';
 import { Empty, ErrorNote, Section, SectionHeader } from '@/components/app/primitives';
 import { ResultPill, fmtN } from '@/features/AccessBits';
@@ -33,7 +33,7 @@ const times = (v: number) => `${fmtN(v)} 次`;
 const yTimes = (v: number) => (v ? `${fmtN(v)} 次` : '0');
 const tipRows = (p: Record<string, unknown>) => [{ ...ROUTED, value: times(Number(p.routed)) }, { ...BLOCKED, value: times(Number(p.blocked)) }];
 
-/** 条尾的总次数（每行一个，紧跟在最右一段后面） */
+/** 条尾的总次数（每行一个，紧跟在最右一段后面：位置按画出来的长度 routed + blocked，文字写总数） */
 function TailLabels() {
   const { data, barScale, bandWidth, yScale } = useChartStable();
   if (!barScale || !bandWidth) return null;
@@ -41,7 +41,7 @@ function TailLabels() {
     <g aria-hidden="true">
       {data.map((d) => {
         const y = barScale(String(d.host));
-        return y == null ? null : <text key={String(d.host)} className="bar-count" x={(yScale(Number(d.total)) ?? 0) + 6} y={y + bandWidth / 2} dominantBaseline="central">{times(Number(d.total))}</text>;
+        return y == null ? null : <text key={String(d.host)} className="bar-count" x={(yScale(Number(d.routed) + Number(d.blocked)) ?? 0) + 6} y={y + bandWidth / 2} dominantBaseline="central">{times(Number(d.total))}</text>;
       })}
     </g>
   );
@@ -51,7 +51,7 @@ function TailLabels() {
 function HostBars({ items, limit }: { items: MachineAccess['top_domains']; limit?: number }) {
   const data = React.useMemo(() => items.slice(0, limit).map((d) => ({ host: d.dest_host, routed: Math.max(0, d.conns - d.blocked), blocked: d.blocked, total: d.conns })), [items, limit]);
   // 右边留给条尾的「N 次」：按最长的那条算宽度（六位数、带千分位也放得下），至少 72
-  const tailW = Math.max(72, ...data.map((d) => Math.ceil(textWidth(times(d.total), 11)) + 14));
+  const tailW = Math.max(72, Math.ceil(axisLabelWidth(data.map((d) => times(d.total)), 11)));
   return (
     <BarChart data={data} xDataKey="host" orientation="horizontal" stacked aspectRatio="" style={{ height: Math.max(64, data.length * 26 + 8) }} margin={{ top: 0, right: tailW, bottom: 0, left: 176 }} barGap={0.2} animationDuration={0}>
       <Bar dataKey="routed" fill={ROUTED.color} lineCap={3} roundEnd animate={false} fadedOpacity={0.45} />
@@ -74,16 +74,18 @@ function HourlyBars({ points, height = 160 }: { points: MachineAccess['hourly'];
   const long = points.length > 30;
   const data = React.useMemo(() => points.map((p) => ({ t: new Date(p.hour).getTime(), routed: Math.max(0, p.conns - p.blocked), blocked: p.blocked, total: p.conns })), [points]);
   const ticks = React.useMemo(() => intTicks(Math.max(0, ...data.map((d) => d.routed + d.blocked))), [data]);
-  const leftW = Math.max(64, ...ticks.map((t) => Math.ceil(textWidth(yTimes(t), 11)) + 14)); // 「120,000 次」放得下
+  const leftW = Math.max(64, Math.ceil(axisLabelWidth(ticks.map(yTimes), 11)));
+  const yDomain = React.useMemo(() => [0, ticks[ticks.length - 1]] as [number, number], [ticks]);
+  const title = React.useCallback((p: Record<string, unknown>) => hourSpan(Number(p.t)), []); // 「120,000 次」放得下
   const tick = React.useCallback((l: string) => { const d = new Date(Number(l)); return long ? `${p2(d.getMonth() + 1)}-${p2(d.getDate())}` : `${p2(d.getHours())}:00`; }, [long]);
   return (
-    <BarChart data={data} xDataKey="t" stacked aspectRatio="" style={{ height }} margin={{ top: 8, right: 10, bottom: 26, left: leftW }} barGap={long ? 0 : 0.1} yDomain={[0, ticks[ticks.length - 1]]} animationDuration={0}>
+    <BarChart data={data} xDataKey="t" stacked aspectRatio="" style={{ height }} margin={{ top: 8, right: 10, bottom: 26, left: leftW }} barGap={long ? 0 : 0.1} yDomain={yDomain} animationDuration={0}>
       <Grid horizontal vertical={false} strokeDasharray="0" rowTickValues={ticks} numTicksRows={4} />
       <Bar dataKey="routed" fill={ROUTED.color} animate={false} lineCap={long ? 1 : 2} roundEnd fadedOpacity={0.45} />
       <Bar dataKey="blocked" fill={BLOCKED.color} animate={false} lineCap={long ? 1 : 2} roundEnd fadedOpacity={0.45} />
       <BarXAxis formatLabel={tick} minLabelGap={long ? 44 : 40} fadeOnHover={false} />
       <YAxis ticks={ticks} formatValue={yTimes} animate={false} />
-      <ChartTooltip showDatePill={false} showDots={false} showCrosshair={false} damping={0} rows={tipRows} title={(p) => hourSpan(Number(p.t))} />
+      <ChartTooltip showDatePill={false} showDots={false} showCrosshair={false} damping={0} rows={tipRows} title={title} />
     </BarChart>
   );
 }

@@ -110,27 +110,8 @@
   .inc-tbl .inc-narrow.inc-narrow-sum { display: -webkit-box !important; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; white-space: normal; overflow-wrap: anywhere; }
   .inc-tbl td { height: auto; }
 }
-.chart-box { height: 180px; min-width: 0; }
-/* 曲线第一次有数据时从左往右展开一次：.chart-frame 在数据到了才挂载（之前是骨架），之后的轮询刷新、换时间范围（沿用旧曲线调淡）都不重新挂载，不会再播 */
-.chart-frame .chart-box { animation: chart-reveal var(--dur-data) var(--ease-out); }
-@keyframes chart-reveal { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0); } }
 /* 曲线全为 0 时的空状态：占住图的高度（换时间范围时卡片不跳），一句浅色说明居中 */
 .chart-empty { display: grid; place-items: center; min-width: 0; font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); text-align: center; }
-.chart-legend { display: flex; flex-wrap: wrap; gap: var(--sp-6); align-items: center; }
-/* 只读图例（每日总量柱状图）：不响应点按，去掉可点图例的胶囊边框与底色，只留色块 + 文字（不让它看起来能点）；今天那项的色块是下载 / 上传两色叠成的淡色，同那根柱子 */
-.chart-legend-item.is-static { pointer-events: none; cursor: default; border-color: transparent; background: none; padding: 0 var(--sp-4); }
-.chart-legend-item.is-today i { background: linear-gradient(var(--chart-1) 50%, var(--chart-2) 50%); opacity: 0.55; box-shadow: none; }
-/* 图例胶囊（--lc 是曲线色）：点掉后色块变空心、文字变淡；按下同其它文字控件微缩（components.css「交互状态」） */
-.chart-legend-item {
-  display: inline-flex; align-items: center; gap: var(--sp-6); height: var(--h-chip-lg); padding: 0 var(--sp-8); cursor: pointer;
-  border: 1px solid color-mix(in srgb, var(--lc) 35%, var(--line)); border-radius: var(--r-pill); background: color-mix(in srgb, var(--lc) 8%, var(--surface));
-  font: var(--fw-medium) var(--fs-label) / 1 var(--font-sans); color: var(--fg-2);
-  transition: background-color var(--dur-1) var(--ease-std), border-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out);
-}
-@media (hover: hover) { .chart-legend-item:hover { color: var(--fg); border-color: color-mix(in srgb, var(--lc) 60%, var(--line)); } }
-.chart-legend-item i { width: 8px; height: 8px; border-radius: 2px; background: var(--lc); box-shadow: inset 0 0 0 1.5px var(--lc); transition: background-color var(--dur-1) var(--ease-std); }
-.chart-legend-item[aria-pressed="false"] { background: transparent; border-color: var(--line); color: var(--fg-3); }
-.chart-legend-item[aria-pressed="false"] i { background: transparent; }
 /* 图表卡（抽屉曲线，参照 CFSM-SAO 详情图）：--cc 是这张图的指标色，由组件写入。边框取指标色 30%；背景三层，自上而下是
    顶部 2px 指标色→透明的色条（75%）、内侧 1px 顶部高光（浮层底：亮色白、暗色比卡片亮一级，不会发白）、极淡的指标色竖向渐变。
    色条画成背景而不是 ::before：圆角自动裁掉，卡片不用 overflow 裁切，曲线提示框的投影不会被卡边切断 */
@@ -156,12 +137,6 @@
 .chart-card-val b { font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-num); font-variant-numeric: var(--num-variant); letter-spacing: -0.02em; color: var(--fg); white-space: nowrap; }
 .chart-card-val small { font-size: var(--fs-micro); line-height: var(--lh-micro); color: var(--fg-2); }
 .sec.chart-stack { display: grid; gap: var(--sp-12); }
-/* 图表提示框：第一行时间，下面每行 色块 + 名称 + 加粗数值。材质（毛玻璃）、边线、投影、进场同锚定弹层（components.css） */
-.chart-tip { min-width: 140px; padding: var(--sp-8) var(--sp-10); border-radius: var(--r-float); font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg); }
-.chart-tip-t { margin-bottom: var(--sp-4); color: var(--fg-2); }
-.chart-tip-row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-12); }
-.chart-tip-row i { display: inline-block; width: 8px; height: 8px; margin-right: var(--sp-6); border-radius: 2px; }
-.chart-tip-row b { font-weight: var(--fw-semibold); }
 /* 苹果设置页式的分组列表：一组一个圆角容器，行之间细线分隔，行（.manage-row）自带内边距；危险操作（退役）的容器描淡红边 */
 .mgroup { display: grid; min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: var(--r-float); background: color-mix(in srgb, var(--section) 40%, var(--surface)); }
 .mgroup > * { min-width: 0; padding: var(--sp-10) var(--sp-14); }

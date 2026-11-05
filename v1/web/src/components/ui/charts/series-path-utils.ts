@@ -50,6 +50,7 @@ export function interpolateSeriesPathPoints(
         key: target.key,
         x: source.x + (target.x - source.x) * progress,
         y: source.y + (target.y - source.y) * progress,
+        defined: target.defined,
       };
     }
 
@@ -65,6 +66,7 @@ export function interpolateSeriesPathPoints(
       key: target.key,
       x: anchor.x + (target.x - anchor.x) * progress,
       y: anchor.y + (target.y - anchor.y) * progress,
+      defined: target.defined,
     };
   });
 }
