@@ -37,7 +37,6 @@
 @source "../lib/queries.ts";
 @source "../lib/sharedObserver.ts";
 @source "../lib/sort.ts";
-@source "../lib/types.ts";
 @source "../lib/tz.ts";
 @source "../lib/useCountUp.ts";
 @source "../lib/utils.ts";

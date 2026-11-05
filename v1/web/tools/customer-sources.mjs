@@ -1,13 +1,16 @@
 // 客户页样式的 @source 清单：从 customerEntry.tsx 起静态追 import（静态 + 动态、相对路径 + @/ 别名），打印客户页真正会打进包里的 ts / tsx 文件。
-// 用法（cwd = v1/web）：node tools/customer-sources.mjs          打印 @source 行（粘进 src/styles/customer.css）
-//                       node tools/customer-sources.mjs --check  与 customer.css 里现有的清单比对，不一致就退出码 1
+// 用法：node tools/customer-sources.mjs          打印 @source 行（粘进 src/styles/customer.css）
+//       node tools/customer-sources.mjs --check  与 customer.css 里现有的清单比对，不一致就退出码 1（pnpm build 先跑它）
 // 管理端页面里的工具类不该进客户页 CSS：customer.css 不再 @source 整个 src，只认这份清单。
+// 只导入类型的 import type / export type 不跟（不进包，也就不带样式）。路径按本脚本的位置算，在哪个目录下跑都一样。
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-const require = createRequire(path.join(process.cwd(), 'package.json'));
+import { fileURLToPath } from 'node:url';
+const web = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+const require = createRequire(path.join(web, 'package.json'));
 const ts = require('typescript');
-const src = path.resolve('src');
+const src = path.join(web, 'src');
 const exts = ['.ts', '.tsx', '/index.ts', '/index.tsx'];
 const resolve = (from, spec) => {
   let base;
@@ -24,7 +27,8 @@ const walk = (file) => {
   const sf = ts.createSourceFile(file, fs.readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true, file.endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
   const visit = (n) => {
     let spec = null;
-    if ((ts.isImportDeclaration(n) || ts.isExportDeclaration(n)) && n.moduleSpecifier && ts.isStringLiteral(n.moduleSpecifier)) spec = n.moduleSpecifier.text;
+    const typeOnly = (ts.isImportDeclaration(n) && n.importClause?.isTypeOnly) || (ts.isExportDeclaration(n) && n.isTypeOnly);
+    if ((ts.isImportDeclaration(n) || ts.isExportDeclaration(n)) && !typeOnly && n.moduleSpecifier && ts.isStringLiteral(n.moduleSpecifier)) spec = n.moduleSpecifier.text;
     else if (ts.isCallExpression(n) && n.expression.kind === ts.SyntaxKind.ImportKeyword && n.arguments[0] && ts.isStringLiteral(n.arguments[0])) spec = n.arguments[0].text;
     if (spec) { const r = resolve(file, spec); if (r) walk(r); }
     ts.forEachChild(n, visit);

@@ -32,7 +32,8 @@ const emptyMediaVariants = cva(
     variants: {
       variant: {
         default: "bg-transparent",
-        icon: "size-11 rounded-full bg-sunken text-fg-3 shadow-[inset_0_0_0_1px_var(--line)] [&_svg:not([class*='size-'])]:size-[22px]",
+        // 图标尺寸由调用处给（默认 22，404 页、空首页用 28），这里不再统一压成 22
+        icon: "size-11 rounded-full bg-sunken text-fg-3 shadow-[inset_0_0_0_1px_var(--line)]",
       },
     },
     defaultVariants: {

@@ -151,7 +151,7 @@ export function JobsPage() {
   );
 }
 
-const STEP_ICON: Record<StepKind, React.ReactNode> = { done: <Check />, running: <Spinner className="size-(--icon-2xs) stroke-[var(--icon-stroke-strong)]" />, failed: <X />, skipped: <Minus />, compensated: <Undo2 />, pending: <CircleDashed /> };
+const STEP_ICON: Record<StepKind, React.ReactNode> = { done: <Check />, running: <Spinner className="size-(--icon-2xs)" />, failed: <X />, skipped: <Minus />, compensated: <Undo2 />, pending: <CircleDashed /> };
 
 /** 走表的“用时”：useNow 放在这个小组件里，每秒只重渲它自己，不拖着整个详情页（含日志）一起刷 */
 function Dur({ a, b, live }: { a: string | null; b: string | null; live: boolean }) {

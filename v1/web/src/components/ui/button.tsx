@@ -98,7 +98,8 @@ function Button({
   // 链接：直接把按钮的样式交给链接元素，不经 Base UI Button——它把非原生元素当按钮处理（补 role="button"、空格键触发点击），
   // 链接要保持原生的语义和键盘行为（Enter 打开、空格滚动页面）。外层（如 TooltipTrigger）传进来的属性用 mergeProps 与链接自己的合并：
   // 事件处理串起来、不互相顶掉（<Link onClick={close}> 照常关抽屉），style 合并
-  if (React.isValidElement<React.ComponentProps<"a">>(render)) {
+  // 只认真正的链接（<a href> / react-router 的 <Link to>）；别的元素（span、label…）仍走 Base UI，按非原生按钮处理（role=button、键盘触发）
+  if (React.isValidElement<React.ComponentProps<"a"> & { to?: unknown }>(render) && (render.props.href != null || render.props.to != null)) {
     return React.cloneElement(render, {
       ...mergeProps<"a">(render.props, props as React.ComponentProps<"a">),
       className: cn(cls, render.props.className),
@@ -116,7 +117,8 @@ function Button({
       disabled={disabled || loading}
       aria-busy={loading || undefined}
       render={render}
-      nativeButton={nativeButton}
+      // 渲染成别的元素（非链接的 render）时按非原生按钮处理
+      nativeButton={nativeButton ?? (render ? false : undefined)}
       {...props}
       // 放在展开的 props 之后：做 TooltipTrigger 等的 render 时，外层合并进来的 data-slot（如 "tooltip-trigger"）不能盖掉它，
       // 全站按 [data-slot="button"][data-size=…] 写的热区外扩、窄屏吸附列都认它
