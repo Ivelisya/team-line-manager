@@ -1,4 +1,4 @@
-// 交互冒烟：退役确认流程（默认「移入备用」预览改名，再切到「立即清理」输入显示名）、批量上架（粘贴 → 检查 → 唯一确认 → 作业）、对话框里提示开着时 Esc 的先后。需先 VITE_MOCK=1 pnpm dev
+// 交互冒烟：退役确认流程（默认「移入备用」预览改名，再切到「立即清理」输入显示名）、批量上架（粘贴 → 检查 → 唯一确认 → 作业）、对话框里提示开着时 Esc 的先后、数据保留页的并排表单项。需先 VITE_MOCK=1 pnpm dev
 import puppeteer from 'puppeteer-core';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -74,6 +74,11 @@ await page.keyboard.press('Escape'); await sleep(500);
 step('第一下 Esc 只收起提示：' + (!(await tipOpen()) && (await dialogs()) === 1 && (await inDialog((d) => d.querySelector('input')?.value)) === 'smoke-esc'));
 await page.keyboard.press('Escape'); await sleep(500);
 step('第二下 Esc 关掉对话框：' + ((await dialogs()) === 0));
+
+// 4. 数据保留：两个天数字段在同一行（表单项不撑满整行）
+await page.goto(`${BASE}/settings?section=retention`, { waitUntil: 'networkidle0' });
+const tops = await page.evaluate(() => [...document.querySelectorAll('[data-slot="field"]')].slice(0, 2).map((f) => Math.round(f.getBoundingClientRect().top)));
+step('数据保留的两个天数字段并排：' + (tops.length === 2 && tops[0] === tops[1]));
 console.log('页面错误：', errors.length ? errors : '无');
 if (errors.length) process.exitCode = 1;
 await browser.close();

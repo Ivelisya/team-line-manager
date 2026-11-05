@@ -155,4 +155,3 @@ function IconButton({
 }
 
 export { Button, IconButton, buttonVariants }
-export type { ButtonProps }

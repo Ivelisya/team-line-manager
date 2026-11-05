@@ -171,10 +171,12 @@ export function Trunc({ children, text, className }: { children: React.ReactNode
   React.useEffect(() => {
     const el = ref.current
     if (!el) return
+    // 只在变了时写：指针每移进来一次就量一次，写一样的值也会给 TipHost 的 MutationObserver 记一条、让 [data-tip] 的样式重新匹配
     const measure = () => {
       const cut = !!full && el.scrollWidth > el.clientWidth + 1
-      if (cut) el.dataset.tip = full; else delete el.dataset.tip
-      if (cut && !el.parentElement?.closest("a, button, [tabindex]")) el.tabIndex = 0; else el.removeAttribute("tabindex")
+      if (cut ? el.dataset.tip !== full : el.dataset.tip != null) { if (cut) el.dataset.tip = full; else delete el.dataset.tip }
+      const tab = cut && !el.parentElement?.closest("a, button, [tabindex]")
+      if (tab !== el.hasAttribute("tabindex")) { if (tab) el.tabIndex = 0; else el.removeAttribute("tabindex") }
     }
     measure()
     const stop = watchSize(el, measure)
