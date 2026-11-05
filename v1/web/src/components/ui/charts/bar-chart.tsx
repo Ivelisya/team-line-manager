@@ -15,6 +15,7 @@ import {
   useState,
 } from "react";
 import { cn } from "@/lib/utils";
+import { useHideTooltipOnScroll } from "./use-hide-on-scroll";
 import { DEFAULT_ANIMATION_EASING } from "./animation";
 import type { BarProps } from "./bar";
 import { topSquareCenterY } from "./bar-squares-layout";
@@ -718,6 +719,7 @@ export function BarChart({
   loadingFill,
 }: BarChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  useHideTooltipOnScroll(containerRef);
   const margin = { ...DEFAULT_MARGIN, ...marginProp };
 
   return (

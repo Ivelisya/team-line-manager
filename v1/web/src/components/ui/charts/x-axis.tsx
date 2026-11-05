@@ -474,7 +474,7 @@ function buildExplicitTicks(
     const date = new Date(time);
     const label = formatTick ? formatTick(time) : shortDateFmt.format(date);
     const x = (xScale(date) ?? 0) + marginLeft;
-    const half = (label.length * 6.5) / 2; // text-xs digits, tabular enough
+    const half = (label.length * 6.5) / 2; // 11px digits, tabular enough
     if (x - half < lastRight + 8) {
       continue;
     }
@@ -647,7 +647,7 @@ const XAxisInner = memo(function XAxisInner({
     [numTicks, width]
   );
 
-  const labelsToShow = useMemo(() => {
+  const baseLabels = useMemo(() => {
     if (ticksProp) {
       return buildExplicitTicks(ticksProp, formatTick, margin.left, xScale);
     }
@@ -705,6 +705,14 @@ const XAxisInner = memo(function XAxisInner({
     margin.left,
     resolvedNumTicks,
   ]);
+
+  // 调用方给了 formatTick：不传 ticks 时的默认刻度也用它，不落到 en-US 的「Nov 5」
+  const labelsToShow = useMemo(() => {
+    if (!(formatTick && !ticksProp)) {
+      return baseLabels;
+    }
+    return baseLabels.map((t) => ({ ...t, label: formatTick(t.date.getTime()) }));
+  }, [baseLabels, formatTick, ticksProp]);
 
   const crosshairX = tooltipData && animate ? tooltipData.x + margin.left : null;
   const hoveredLabel = tooltipData

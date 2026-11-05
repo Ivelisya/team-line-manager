@@ -12,6 +12,7 @@ import {
   useRef,
 } from "react";
 import { cn } from "@/lib/utils";
+import { useHideTooltipOnScroll } from "./use-hide-on-scroll";
 import { type LineConfig, type Margin, useStableMargin } from "./chart-context";
 import { ParentSize } from "./chart-parent-size";
 import {
@@ -175,6 +176,7 @@ export function LineChart({
   children,
 }: LineChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  useHideTooltipOnScroll(containerRef);
   const margin = useStableMargin({ ...DEFAULT_MARGIN, ...marginProp });
   const lines = useMemo(() => extractLineConfigs(children), [children]);
 

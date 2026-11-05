@@ -36,8 +36,15 @@ export function niceCeil(v: number): number {
   const e = 10 ** Math.floor(Math.log10(v));
   return ([1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10].find((n) => n * e >= v) ?? 10) * e;
 }
-/** 整数刻度（延迟 ms）：从 0 起 4 段，每段取整档的整数（不出现 0.85 / 1.7 / 2.55 ms） */
-export const intTicks = (max: number) => { const step = Math.max(1, niceCeil(max / 4)); return [0, 1, 2, 3, 4].map((i) => i * step); };
+/** 整数步长：只取 1 / 2 / 5（以及 25 / 250 …）× 10^k，且 ≥ 1，不出现 1.5、2.5 这样的小数档 */
+const intStep = (raw: number) => {
+  const r = Math.max(1, raw); const e = 10 ** Math.floor(Math.log10(r));
+  return ([1, 2, 2.5, 5, 10].map((n) => n * e).find((s) => Number.isInteger(s) && s >= r)) ?? 10 * e;
+};
+/** 整数刻度（延迟 ms、次数）：从 0 起 4 段，步长是整数（max = 6 → 0 / 2 / 4 / 6 / 8；max = 10 → 0 / 5 / 10 / 15 / 20；max = 0 → 0…4） */
+export const intTicks = (max: number) => { const step = intStep(max / 4); return [0, 1, 2, 3, 4].map((i) => i * step); };
+/** 没有指定进位 / 范围的图：数据全是整数用整数刻度，否则按 niceCeil 的步长；从 0 起 4 段；全为 0 时 0 与 1 */
+export const autoTicks = (max: number, integers: boolean) => (max > 0 ? (integers ? intTicks(max) : [0, 1, 2, 3, 4].map((i) => i * niceCeil(max / 4))) : [0, 1]);
 
 /** 百分比刻度（没有固定上限的百分比，如负载）：从 0 起 4 段，每段取 5 / 10 / 20 / 25 / 50 / 100 … 这样的整档，不出现 7% / 14% / 21% */
 export const pctTicks = (max: number) => { const step = [5, 10, 20, 25, 50, 100, 200, 500, 1000, 2000, 5000].find((s) => s * 4 >= max) ?? Math.ceil(max / 4); return [0, 1, 2, 3, 4].map((i) => i * step); };

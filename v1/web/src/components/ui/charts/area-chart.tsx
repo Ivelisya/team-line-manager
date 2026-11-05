@@ -11,6 +11,7 @@ import {
   useRef,
 } from "react";
 import { cn } from "@/lib/utils";
+import { useHideTooltipOnScroll } from "./use-hide-on-scroll";
 import { Area, type AreaProps } from "./area";
 import { AreaValueLabels } from "./area-value-labels";
 import { type LineConfig, type Margin, useStableMargin } from "./chart-context";
@@ -146,6 +147,7 @@ export function AreaChart({
   children,
 }: AreaChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  useHideTooltipOnScroll(containerRef);
   const margin = useStableMargin({ ...DEFAULT_MARGIN, ...marginProp });
   const lines = useMemo(() => extractAreaConfigs(children), [children]);
 

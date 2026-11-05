@@ -1,5 +1,5 @@
 // 软路由抽屉的「曲线」页签：资源、温度、WAN 与代理速率、连接与客户端、可用出口，以及各出口的延迟。
-// 单独成文件按需加载（recharts）；图表卡、加载框、时间范围与机器抽屉共用（DrawerCharts）。
+// 单独成文件按需加载（图表库 bklit 只在打开曲线页签时才下载）；图表卡、加载框、时间范围与机器抽屉共用（DrawerCharts）。
 import * as React from 'react';
 import { Activity, Cable, Cpu, Network, Radar, Shuffle, Thermometer, Users } from 'lucide-react';
 import { beatBins, exitBeats, fleetExits, routerMeters, useRouterExitMetrics, useRouterMetrics, type RouterView } from '@/lib/routers';

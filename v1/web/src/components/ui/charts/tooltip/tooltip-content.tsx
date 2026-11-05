@@ -30,7 +30,7 @@ export function TooltipHeader({ children, className }: TooltipHeaderProps) {
   return (
     <div
       className={cn(
-        "px-2.5 pt-2 pb-1 text-left text-chart-tooltip-muted text-label",
+        "whitespace-nowrap px-2.5 pt-2 pb-1 text-left text-chart-tooltip-muted text-label",
         className
       )}
     >
@@ -56,11 +56,18 @@ export function TooltipContent({ title, rows, children }: TooltipContentProps) {
                   key={`${row.label}-${row.color}`}
                 >
                   <div className="flex min-w-0 items-center gap-2">
+                    {row.color ? (
+                      <span
+                        className="size-2 shrink-0 rounded-[2px]"
+                        style={{ backgroundColor: row.color }}
+                      />
+                    ) : null}
                     <span
-                      className="size-2 shrink-0 rounded-[2px]"
-                      style={{ backgroundColor: row.color }}
-                    />
-                    <span className="truncate text-chart-tooltip-foreground text-label">
+                      className={cn(
+                        "truncate text-chart-tooltip-foreground text-label",
+                        !row.color && "pl-4"
+                      )}
+                    >
                       {row.label}
                     </span>
                   </div>

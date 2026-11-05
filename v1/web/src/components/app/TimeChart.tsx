@@ -1,10 +1,11 @@
 // 时序小图：细线 + 淡填充（原版详情图的语言），画法用 bklit（src/components/ui/charts）。颜色由调用方给：图表 token --chart-1 / --chart-2 / --chart-3，或首页的指标色 --m-cpu / --m-mem。
 // memo：抽屉随实时推送重渲染时，曲线点没变（lines / 格式化函数由调用方放在模块常量里）就不重画
-import { memo, useCallback, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useMemo, useState } from 'react';
 import { curveMonotoneX } from 'd3-shape';
+import { scaleTime } from 'd3-scale';
 import { useReducedMotion } from 'motion/react';
 import type { SeriesPoint } from '@/lib/types';
-import { RANGE_MS, intTicks, niceCeil, pctTicks, valueTicks } from '@/lib/chart';
+import { RANGE_MS, autoTicks, intTicks, niceCeil, pctTicks, valueTicks } from '@/lib/chart';
 import { dt, hm } from '@/lib/format';
 import { Area, AreaChart } from '@/components/ui/charts/area-chart';
 import { Line, LineChart } from '@/components/ui/charts/line-chart';
@@ -14,7 +15,6 @@ import { YAxis } from '@/components/ui/charts/y-axis';
 import { ReferenceArea } from '@/components/ui/charts/reference-area';
 import { ChartTooltip } from '@/components/ui/charts/tooltip';
 import { useChartStable } from '@/components/ui/charts/chart-context';
-import { useHideTooltipOnScroll } from '@/components/ui/charts/use-hide-on-scroll';
 import { ChartLegend } from '@/components/ui/charts/legend-toggle';
 import '@/styles/charts.css';
 
@@ -30,18 +30,18 @@ const MIN = 60_000; const HOUR = 60 * MIN; const DAY = 24 * HOUR;
 const TICK_STEP: Record<string, number> = { '1h': 10 * MIN, '6h': HOUR, '24h': 3 * HOUR, '7d': DAY, '30d': 5 * DAY };
 /** 刻度步长与格式按数据实际跨度取，不按所选范围：刚上架或早已离线的机器看「7 天」，数据只有一天多，按 7 天只标日期会标出一排相同的 10-20 */
 const spanRange = (span: number) => (span <= HOUR ? '1h' : span <= 6 * HOUR ? '6h' : span <= 2 * DAY ? '24h' : span <= 7 * DAY ? '7d' : '30d');
-/** 横轴刻度落在本地时间的整十分 / 整点 / 零点上（recharts 自己取的是 13:46、16:40 这种） */
+/** 横轴刻度落在本地时间的整十分 / 整点 / 零点上（图表库自己取的会是 13:46、16:40 这种） */
 function timeTicks(min: number, max: number, range: string): number[] | undefined {
   const step = TICK_STEP[range];
   if (!step || !(max > min)) return undefined;
   const d = new Date(min); d.setHours(0, 0, 0, 0);
   const out: number[] = [];
   for (let t = d.getTime() + Math.ceil((min - d.getTime()) / step) * step; t <= max; t += step) out.push(t);
-  return out.length >= 2 ? out : undefined; // 数据比一个步长还短（刚上架的机器看 7 天）：交给 recharts 自己取
+  return out.length >= 2 ? out : undefined; // 数据比一个步长还短（刚上架的机器看 7 天）：由调用处改用 d3 的时间刻度兜底
 }
 
 /** 没有数据的时段（所选范围左边还没上架、中间离线、右边停了上报）每隔一段垫一个空点（只有时间）：悬停那里时没有提示
- *  （recharts 滤掉空值后提示是空的），不会吸到很远的那个真实点上；曲线也在空段断开，不把两头连成一条斜线。
+ *  （这一行没有任何序列值，提示不出来），不会吸到很远的那个真实点上；曲线也在空段断开，不把两头连成一条斜线。
  *  「空段」= 比常见点距的 3 倍还长；垫点的间隔不小于常见点距、整个范围最多约 240 个 */
 function withGaps<T extends { t: number }>(pts: T[], span: [number, number] | null): (T | { t: number })[] {
   if (pts.length < 2 || !span) return pts;
@@ -130,7 +130,14 @@ export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 
     return out;
   }, [span, lead, first, typical, real, full, holeLabel]);
   const xRange = full && !lead ? range : span ? spanRange(span[1] - span[0] - lead) : range;
-  const xTicks = useMemo(() => (span ? timeTicks(span[0] + lead, span[1], xRange) : undefined), [span, lead, xRange]);
+  // 数据很短（刚上架）时 timeTicks 给不出刻度：用 d3 的本地时间刻度取 3–5 个，仍走 xFmt（不落到图表库默认的 en-US「Nov 5」）；只有一个点时标它自己
+  const xTicks = useMemo(() => {
+    if (!span) return real.length ? [real[0].t] : undefined;
+    const t = timeTicks(span[0] + lead, span[1], xRange);
+    if (t) return t;
+    const d = scaleTime().domain([new Date(span[0] + lead), new Date(span[1])]).ticks(4).map((x) => x.getTime());
+    return d.length ? d : [span[0] + lead, span[1]];
+  }, [span, lead, xRange, real]);
   const xFormat = useMemo(() => xFmt(xRange), [xRange]);
   // 纵轴：clip 时按 p99 截断（最大值不到 p99 的 1.3 倍，没有值得截的尖峰，照常按最大值）
   const y = useMemo(() => {
@@ -146,6 +153,10 @@ export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 
     // 固定范围（百分比 0–100）：上下限就是范围，刻度均分 4 段
     if (ceil == null && typeof domain?.[0] === 'number' && typeof domain[1] === 'number') {
       const [lo, hi] = domain; ceil = hi; ticks = [0, 1, 2, 3, 4].map((i) => lo + ((hi - lo) * i) / 4);
+    }
+    // 没给进位 / 范围的图（连接数、温度、出口延迟 …）：自己算 4 段刻度，同一份交给 Grid 与 YAxis，上限就是最后一个刻度；全为 0 时 0 与 1
+    if (ceil == null) {
+      ticks = autoTicks(top, vals.every(Number.isInteger)); ceil = ticks[ticks.length - 1];
     }
     return { ticks, ceil, floor: typeof domain?.[0] === 'number' ? domain[0] : 0, cut };
   }, [data, shown, yBase, pct, clip, domain]);
@@ -165,8 +176,6 @@ export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 
   }, [data, shown, y]);
   const none = useMemo(() => !!empty && data.every((d) => lines.every((l) => !(d as Record<string, unknown>)[l.key])), [data, lines, empty]);
   const reduce = useReducedMotion();
-  const box = useRef<HTMLDivElement>(null);
-  useHideTooltipOnScroll(box);
   const tipRows = useCallback((p: Record<string, unknown>) => shown.map((l) => {
     const v = (p[rawKey(l.key)] ?? p[l.key]) as number | undefined;
     return { color: l.color, label: l.label, value: typeof v !== 'number' ? '—' : valueFmt ? valueFmt(l.key, v) : String(v) };
@@ -183,8 +192,8 @@ export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 
       <ReferenceArea key={`hole${i}`} x1={h.a} x2={h.b} pattern="diagonal" patternColor="color-mix(in oklab, var(--chart-axis) 30%, transparent)" patternScale={1.2} patternStrokeWidth={1.5}
         stroke="transparent" fadeEdgesLength={14} label={h.label} labelColor="var(--chart-axis)" />
     )),
-    ...shown.map((l, i) => kind === 'area'
-      ? <Area key={l.key} dataKey={l.key} fill={l.color} stroke={l.color} strokeWidth={1.5} fillOpacity={FILL_TOP[Math.min(i, 1)]} curve={curveMonotoneX} showHighlight={false} />
+    ...shown.map((l) => kind === 'area'
+      ? <Area key={l.key} dataKey={l.key} fill={l.color} stroke={l.color} strokeWidth={1.5} fillOpacity={FILL_TOP[Math.min(lines.indexOf(l), 1)]} curve={curveMonotoneX} showHighlight={false} />
       : <Line key={l.key} dataKey={l.key} stroke={l.color} strokeWidth={1.5} curve={curveMonotoneX} animate={false} fadeEdges={false} showHighlight={false} />),
     out.length > 0 && <OutMarks key="out" marks={out} />,
     <XAxis key="x" tickMode="domain" ticks={xTicks} formatTick={xFormat} animate={false} />,
@@ -196,7 +205,7 @@ export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 
     decimate: false, yDomainTween: false, animationDuration: reduce ? 0 : REVEAL_MS, revealSignature: range,
   };
   return (
-    <div className="tc" ref={box}>
+    <div className="tc">
       {lines.length > 1 && <ChartLegend lines={lines} hidden={hidden} onToggle={toggle} />}
       {kind === 'area' ? <AreaChart {...common}>{children}</AreaChart> : <LineChart {...common}>{children}</LineChart>}
     </div>

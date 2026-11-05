@@ -16,7 +16,6 @@ import { Grid } from '@/components/ui/charts/grid';
 import { YAxis } from '@/components/ui/charts/y-axis';
 import { ChartTooltip } from '@/components/ui/charts/tooltip';
 import { useChartStable } from '@/components/ui/charts/chart-context';
-import { useHideTooltipOnScroll } from '@/components/ui/charts/use-hide-on-scroll';
 import { intTicks } from '@/lib/chart';
 import { Empty, ErrorNote, Section, SectionHeader } from '@/components/app/primitives';
 import { ResultPill, fmtN } from '@/features/AccessBits';
@@ -32,6 +31,9 @@ const BLOCKED = { label: '已阻止', color: 'var(--bad)' };
 const times = (v: number) => `${fmtN(v)} 次`;
 const yTimes = (v: number) => (v ? `${fmtN(v)} 次` : '0');
 const tipRows = (p: Record<string, unknown>) => [{ ...ROUTED, value: times(Number(p.routed)) }, { ...BLOCKED, value: times(Number(p.blocked)) }];
+
+/** 估算 11px 半粗体文字宽度：数字 / 逗号 ≈ 6.6px，汉字 11px */
+const textW = (s: string) => [...s].reduce((w, c) => w + ((c.codePointAt(0) ?? 0) > 255 ? 11 : 6.6), 0);
 
 /** 条尾的总次数（每行一个，紧跟在最右一段后面） */
 function TailLabels() {
@@ -50,18 +52,16 @@ function TailLabels() {
 /** 横向条形图：每行一个目标，已转发 + 已阻止叠在一起，条尾直接标总次数。limit：只画前几个（截取放在这里，轮询数据没变时 data 引用不变） */
 function HostBars({ items, limit }: { items: MachineAccess['top_domains']; limit?: number }) {
   const data = React.useMemo(() => items.slice(0, limit).map((d) => ({ host: d.dest_host, routed: Math.max(0, d.conns - d.blocked), blocked: d.blocked, total: d.conns })), [items, limit]);
-  const box = React.useRef<HTMLDivElement>(null);
-  useHideTooltipOnScroll(box);
+  // 右边留给条尾的「N 次」：按最长的那条算宽度（六位数、带千分位也放得下），至少 72
+  const tailW = Math.max(72, ...data.map((d) => Math.ceil(textW(times(d.total))) + 14));
   return (
-    <div className="tc-bars" ref={box}>
-      <BarChart data={data} xDataKey="host" orientation="horizontal" stacked aspectRatio="" style={{ height: Math.max(64, data.length * 26 + 8) }} margin={{ top: 0, right: 72, bottom: 0, left: 176 }} barGap={0.2} animationDuration={0}>
-        <Bar dataKey="routed" fill={ROUTED.color} lineCap={3} animate={false} fadedOpacity={0.45} />
-        <Bar dataKey="blocked" fill={BLOCKED.color} lineCap={3} roundEnd animate={false} fadedOpacity={0.45} />
-        <BarYAxis formatLabel={(v) => cut(v, 26)} />
-        <TailLabels />
-        <ChartTooltip showDatePill={false} showDots={false} showCrosshair={false} damping={0} rows={tipRows} />
-      </BarChart>
-    </div>
+    <BarChart data={data} xDataKey="host" orientation="horizontal" stacked aspectRatio="" style={{ height: Math.max(64, data.length * 26 + 8) }} margin={{ top: 0, right: tailW, bottom: 0, left: 176 }} barGap={0.2} animationDuration={0}>
+      <Bar dataKey="routed" fill={ROUTED.color} lineCap={3} animate={false} fadedOpacity={0.45} />
+      <Bar dataKey="blocked" fill={BLOCKED.color} lineCap={3} roundEnd animate={false} fadedOpacity={0.45} />
+      <BarYAxis formatLabel={(v) => cut(v, 26)} />
+      <TailLabels />
+      <ChartTooltip showDatePill={false} showDots={false} showCrosshair={false} damping={0} rows={tipRows} />
+    </BarChart>
   );
 }
 /** IPv4 按数值比（10.0.0.9 在 10.0.0.10 前面），其余（IPv6）按字面 */
@@ -77,19 +77,15 @@ function HourlyBars({ points, height = 160 }: { points: MachineAccess['hourly'];
   const data = React.useMemo(() => points.map((p) => ({ t: new Date(p.hour).getTime(), routed: Math.max(0, p.conns - p.blocked), blocked: p.blocked, total: p.conns })), [points]);
   const ticks = React.useMemo(() => intTicks(Math.max(0, ...data.map((d) => d.total))), [data]);
   const tick = React.useCallback((l: string) => { const d = new Date(Number(l)); return long ? `${p2(d.getMonth() + 1)}-${p2(d.getDate())}` : `${p2(d.getHours())}:00`; }, [long]);
-  const box = React.useRef<HTMLDivElement>(null);
-  useHideTooltipOnScroll(box);
   return (
-    <div className="tc-bars" ref={box}>
-      <BarChart data={data} xDataKey="t" stacked aspectRatio="" style={{ height }} margin={{ top: 8, right: 10, bottom: 26, left: 64 }} barGap={long ? 0 : 0.1} yDomain={[0, ticks[ticks.length - 1]]} animationDuration={0}>
-        <Grid horizontal vertical={false} strokeDasharray="0" rowTickValues={ticks} numTicksRows={4} />
-        <Bar dataKey="routed" fill={ROUTED.color} animate={false} lineCap={long ? 0 : 2} fadedOpacity={0.45} />
-        <Bar dataKey="blocked" fill={BLOCKED.color} animate={false} lineCap={long ? 0 : 2} roundEnd fadedOpacity={0.45} />
-        <BarXAxis formatLabel={tick} minLabelGap={long ? 44 : 40} fadeOnHover={false} />
-        <YAxis ticks={ticks} formatValue={yTimes} animate={false} />
-        <ChartTooltip showDatePill={false} showDots={false} showCrosshair={false} damping={0} rows={tipRows} title={(p) => hourSpan(Number(p.t))} />
-      </BarChart>
-    </div>
+    <BarChart data={data} xDataKey="t" stacked aspectRatio="" style={{ height }} margin={{ top: 8, right: 10, bottom: 26, left: 64 }} barGap={long ? 0 : 0.1} yDomain={[0, ticks[ticks.length - 1]]} animationDuration={0}>
+      <Grid horizontal vertical={false} strokeDasharray="0" rowTickValues={ticks} numTicksRows={4} />
+      <Bar dataKey="routed" fill={ROUTED.color} animate={false} lineCap={long ? 0 : 2} fadedOpacity={0.45} />
+      <Bar dataKey="blocked" fill={BLOCKED.color} animate={false} lineCap={long ? 0 : 2} roundEnd fadedOpacity={0.45} />
+      <BarXAxis formatLabel={tick} minLabelGap={long ? 44 : 40} fadeOnHover={false} />
+      <YAxis ticks={ticks} formatValue={yTimes} animate={false} />
+      <ChartTooltip showDatePill={false} showDots={false} showCrosshair={false} damping={0} rows={tipRows} title={(p) => hourSpan(Number(p.t))} />
+    </BarChart>
   );
 }
 
