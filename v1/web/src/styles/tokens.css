@@ -150,7 +150,7 @@
   --h-bar: 40px;                        /* H 页头条最小高度 */
   --seg-pad: 3px;                       /* O 分段轨道内边距 3（H 4） */
   --seg-item: calc(var(--h-lg) - 2 * var(--seg-pad)); /* = --h-lg − 2 × --seg-pad（32 → 26；触屏 40 → 34） */
-  --seg-item-sm: 22px;                  /* 小号分段（面板头里的时间范围）：轨道 28 */
+  --seg-item-sm: calc(var(--h-sm) - 2 * var(--seg-pad)); /* 小号分段（面板头里的时间范围）：轨道 = --h-sm（24，与同行的 sm 按钮同高），项 18；触屏另设（overrides.css） */
   /* 图标 5 档：写在 .xxx .lucide 上的尺寸一律用它们 */
   --icon-3xs: 11px;                     /* 国旗位置的小地球、状态胶囊前的图标 */
   --icon-2xs: 12px;                     /* chip、复选框、表头排序、步骤节点、展开箭头、卡内运行读数的标签 */

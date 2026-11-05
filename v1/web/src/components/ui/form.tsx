@@ -17,7 +17,7 @@ import { InputGroup, InputGroupAddon, InputGroupInput, InputGroupText } from '@/
 export function LabelRow({ htmlFor, info, children, className }: { htmlFor?: string; info?: string; children: React.ReactNode; className?: string }) {
   const text = htmlFor
     ? <Label htmlFor={htmlFor} className={info ? undefined : className}>{children}</Label>
-    : <span className={cn('inline-flex items-center gap-1 text-label font-medium text-fg-2 select-none', !info && className)}>{children}</span>;
+    : <span data-slot={info ? undefined : 'field-label'} className={cn('inline-flex items-center gap-1 text-label font-medium text-fg-2', !info && className)}>{children}</span>;
   if (!info) return text;
   return <span data-slot="field-label" className={cn('inline-flex min-w-0 items-center gap-1 [&>.info-tip]:m-0', className)}>{text}<InfoTip text={info} /></span>;
 }
