@@ -5,7 +5,7 @@
 import { memo, useCallback, useMemo } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import type { PageState } from '@/lib/usePage';
-import { Select } from '@/components/ui/select';
+import { OptionSelect } from '@/components/ui/option-select';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 
@@ -27,13 +27,13 @@ export const Pagination = memo(function Pagination({ pg, unit = '项', compact, 
       </span>
       {!compact && sizes.length > 1 && (
         <span className="pager-field">每页
-          <Select sm value={String(size)} onChange={onSize} options={sizeOpts} aria-label="每页条数" className="pager-select" />
+          <OptionSelect sm value={String(size)} onChange={onSize} options={sizeOpts} aria-label="每页条数" className="w-16 font-num" />
         </span>
       )}
       <span className="pager-nav">
         {!compact && pageCount > 1 && (
           <span className="pager-field">第
-            <Select sm value={String(page)} onChange={onPage} options={pages} aria-label="页码" className="pager-select" />
+            <OptionSelect sm value={String(page)} onChange={onPage} options={pages} aria-label="页码" className="w-16 font-num" />
             / <span className="num">{n(pageCount)}</span> 页
           </span>
         )}

@@ -4,7 +4,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { ListChecks } from 'lucide-react';
 import { useJobs } from '@/lib/queries';
 import { currentStepTitle, jobKindLabel, jobProgress } from '@/lib/jobs';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/overlays';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Progress } from '@/components/ui/progress';
 import { toast } from '@/components/ui/toast';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -63,16 +63,14 @@ export function JobsIndicator() {
     <Popover open={open} onOpenChange={setOpen}>
       <Tooltip>
         <TooltipTrigger render={
-          <PopoverTrigger asChild>
-            <button type="button" className="top-btn jobs-ind" aria-label={`${n} 个作业进行中`}>
-              <ListChecks size={16} />
-              <span className="count-badge" data-tone="accent">{n}</span>
-            </button>
+          <PopoverTrigger className="top-btn jobs-ind" aria-label={`${n} 个作业进行中`}>
+            <ListChecks size={16} />
+            <span className="count-badge" data-tone="accent">{n}</span>
           </PopoverTrigger>
         } />
         <TooltipContent>{`${n} 个作业进行中`}</TooltipContent>
       </Tooltip>
-      <PopoverContent align="end" className="jobs-pop">
+      <PopoverContent align="end" className="jobs-pop w-(--pop-w-lg) p-0">
         <div className="pop-head">进行中的作业<span className="t-sub">{n}</span></div>
         <ul className="pop-list">
           {live.map((j) => {

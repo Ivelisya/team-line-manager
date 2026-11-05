@@ -13,8 +13,8 @@ import { HEALTH_TONE, KIND_ORDER, useStableOrder } from '@/lib/sort';
 import type { MachineView } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { SearchInput } from '@/components/ui/form';
-import { Select } from '@/components/ui/select';
-import { Segmented } from '@/components/ui/overlays';
+import { OptionSelect } from '@/components/ui/option-select';
+import { Segmented } from '@/components/ui/segmented';
 import { Trunc } from '@/components/ui/tooltip';
 import { SkeletonRows } from '@/components/app/SkeletonRows';
 import { Due, DueDate, Empty, ErrorNote, Flag, HealthPill, HostTag, MonthFlowCell, Num, PageHead, Panel } from '@/components/app/primitives';
@@ -164,10 +164,10 @@ function LiveNodes({ sp, upd, tools }: { sp: URLSearchParams; upd: (patch: Recor
 
       <div className="row" role="search" ref={pg.anchor}>
         <SearchInput value={input} onChange={(e) => setInput(e.target.value)} placeholder="搜索名称、IP、套餐、服务编号…" aria-label="搜索" className="w-full sm:w-[260px]" />
-        <div className="w-[140px]"><Select value={team} onChange={setTeam} allowEmpty="全部团队" placeholder="团队" options={teamOpts} aria-label="团队" /></div>
-        <div className="w-[130px]"><Select value={kind} onChange={setKind} allowEmpty="全部类型" placeholder="类型" options={filterOpts().kind} aria-label="类型" /></div>
-        <div className="w-[140px]"><Select value={relay} onChange={setRelay} allowEmpty="全部线路机" placeholder="线路机" options={relayOpts} aria-label="线路机" /></div>
-        <div className="w-[130px]"><Select value={status} onChange={setStatus} allowEmpty="全部状态" placeholder="状态" options={filterOpts().status} aria-label="状态" /></div>
+        <div className="w-[140px]"><OptionSelect value={team} onChange={setTeam} allowEmpty="全部团队" placeholder="团队" options={teamOpts} aria-label="团队" /></div>
+        <div className="w-[130px]"><OptionSelect value={kind} onChange={setKind} allowEmpty="全部类型" placeholder="类型" options={filterOpts().kind} aria-label="类型" /></div>
+        <div className="w-[140px]"><OptionSelect value={relay} onChange={setRelay} allowEmpty="全部线路机" placeholder="线路机" options={relayOpts} aria-label="线路机" /></div>
+        <div className="w-[130px]"><OptionSelect value={status} onChange={setStatus} allowEmpty="全部状态" placeholder="状态" options={filterOpts().status} aria-label="状态" /></div>
         {dueSoon && <button type="button" className="fchip" aria-pressed="true" aria-label="取消「即将到期」筛选" onClick={() => upd({ due: '' })}>即将到期<X size={14} /></button>}
         {plan && <button type="button" className="fchip" aria-pressed="true" aria-label="取消套餐筛选" onClick={() => upd({ plan: '' })}>套餐{planName && ` ${planName}`}<X size={14} /></button>}
         {/* 两个按钮只要有一个在就都占着位置（另一个淡出隐藏）：点掉一个时另一个不平移到鼠标下面 */}

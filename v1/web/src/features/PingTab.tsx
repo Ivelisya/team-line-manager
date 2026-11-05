@@ -8,7 +8,7 @@ import { FormField } from '@/components/ui/form';
 import { InfoTip } from '@/components/ui/info-tip';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
-import { Select } from '@/components/ui/select';
+import { OptionSelect } from '@/components/ui/option-select';
 import { SkeletonRows } from '@/components/app/SkeletonRows';
 import { toast } from '@/components/ui/toast';
 import { ErrorNote, Panel } from '@/components/app/primitives';
@@ -35,7 +35,7 @@ function GlobalForm({ mode: m0, slots: s0 }: { mode: string; slots: PingSlot[] }
   const set = (i: number, k: keyof PingSlot, v: string) => setSlots((l) => l.map((s, j) => (j === i ? { ...s, [k]: v } : s)));
   return (
     <div className="stack" style={{ gap: 'var(--sp-12)' }}>
-      <FormField label="方式" info={MODE_TIP}><Select aria-label="方式" value={mode} onChange={setMode} options={MODE_ITEMS} className="ping-mode" /></FormField>
+      <FormField label="方式" info={MODE_TIP}><OptionSelect aria-label="方式" value={mode} onChange={setMode} options={MODE_ITEMS} className="w-60 max-w-full" /></FormField>
       {/* 名称定宽、目标撑满（目标是长域名）；输入框用标准尺寸，同别处表单 */}
       <div className="table-wrap is-boxed">
         <table className="dt is-one ping-tbl">
@@ -83,7 +83,7 @@ function OverrideForm({ id, global, over }: { id: string; global: { mode: string
   return (
     <div className="stack" style={{ gap: 'var(--sp-12)' }}>
       <FormField label="方式" info={MODE_TIP}>
-        <Select aria-label="方式" value={mode} onChange={setMode} className="ping-mode" options={[{ value: 'global', label: `跟随全局（${global.mode === 'icmp' ? 'ICMP' : 'TCP'}）` }, ...MODE_ITEMS]} />
+        <OptionSelect aria-label="方式" value={mode} onChange={setMode} className="w-60 max-w-full" options={[{ value: 'global', label: `跟随全局（${global.mode === 'icmp' ? 'ICMP' : 'TCP'}）` }, ...MODE_ITEMS]} />
       </FormField>
       <div className="table-wrap is-boxed">
         <table className="dt is-one ping-tbl" style={{ minWidth: 520 }}>

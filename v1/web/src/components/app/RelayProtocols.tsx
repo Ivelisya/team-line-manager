@@ -3,7 +3,7 @@
 import * as React from 'react';
 import type { MachineView, RelayProtocols } from '@/lib/types';
 import { useRelayProtocols } from '@/lib/queries';
-import { Select } from '@/components/ui/select';
+import { OptionSelect } from '@/components/ui/option-select';
 import { toast } from '@/components/ui/toast';
 import { ConfirmDialog } from './dialogs';
 import { Note } from './primitives';
@@ -29,7 +29,7 @@ export function RelayProtocolsField({ m }: { m: MachineView }) {
   if (want) held.current = want;
   return (
     <>
-      <Select sm value={cur} options={OPTS} aria-label="入口协议" disabled={m.lifecycle !== 'active'} onChange={(v) => { if (v !== cur) { setErr(null); setWant(v as RelayProtocols); } }} />
+      <OptionSelect sm value={cur} options={OPTS} aria-label="入口协议" disabled={m.lifecycle !== 'active'} onChange={(v) => { if (v !== cur) { setErr(null); setWant(v as RelayProtocols); } }} />
       <ConfirmDialog open={!!want} onOpenChange={(o) => { if (!o) setWant(null); }} title={`入口协议改成 ${label(held.current)} · ${m.name}`}
         description={IMPACT[held.current]} confirmLabel="改协议" danger={held.current !== 'both'}
         onConfirm={async () => {

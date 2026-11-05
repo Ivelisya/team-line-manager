@@ -1,29 +1,44 @@
 "use client"
 
+import * as React from "react"
 import { PreviewCard as PreviewCardPrimitive } from "@base-ui/react/preview-card"
 import { cn } from "@/lib/utils"
+import { floatGlass, floatPositioner, guardEscape } from "@/components/ui/float"
 
-function HoverCard({ ...props }: PreviewCardPrimitive.Root.Props) {
-  return <PreviewCardPrimitive.Root data-slot="hover-card" {...props} />
+/* shadcn base-mira 的 HoverCard（Base UI PreviewCard），外观同 Popover（float.ts）。
+   延迟在 Base UI 里是触发元素的属性，这里保持改前的写法——写在 HoverCard 根上（openDelay 默认 350 ms 出现，closeDelay 默认 120 ms 收起），经 context 交给触发元素；
+   弹层默认 sideOffset 8、align start、离视口边 12px，宽 --pop-w-md。 */
+
+const DelayContext = React.createContext<{ openDelay: number; closeDelay: number }>({ openDelay: 350, closeDelay: 120 })
+
+function HoverCard({ openDelay = 350, closeDelay = 120, onOpenChange, ...props }: PreviewCardPrimitive.Root.Props & { openDelay?: number; closeDelay?: number }) {
+  const delays = React.useMemo(() => ({ openDelay, closeDelay }), [openDelay, closeDelay])
+  return (
+    <DelayContext.Provider value={delays}>
+      <PreviewCardPrimitive.Root data-slot="hover-card" onOpenChange={guardEscape(onOpenChange)} {...props} />
+    </DelayContext.Provider>
+  )
 }
 
-function HoverCardTrigger({ ...props }: PreviewCardPrimitive.Trigger.Props) {
+function HoverCardTrigger({ delay, closeDelay, ...props }: PreviewCardPrimitive.Trigger.Props) {
+  const d = React.useContext(DelayContext)
   return (
-    <PreviewCardPrimitive.Trigger data-slot="hover-card-trigger" {...props} />
+    <PreviewCardPrimitive.Trigger data-slot="hover-card-trigger" delay={delay ?? d.openDelay} closeDelay={closeDelay ?? d.closeDelay} {...props} />
   )
 }
 
 function HoverCardContent({
   className,
   side = "bottom",
-  sideOffset = 4,
-  align = "center",
-  alignOffset = 4,
+  sideOffset = 8,
+  align = "start",
+  alignOffset = 0,
+  collisionPadding = 12,
   ...props
 }: PreviewCardPrimitive.Popup.Props &
   Pick<
     PreviewCardPrimitive.Positioner.Props,
-    "align" | "alignOffset" | "side" | "sideOffset"
+    "align" | "alignOffset" | "side" | "sideOffset" | "collisionPadding"
   >) {
   return (
     <PreviewCardPrimitive.Portal data-slot="hover-card-portal">
@@ -32,14 +47,12 @@ function HoverCardContent({
         alignOffset={alignOffset}
         side={side}
         sideOffset={sideOffset}
-        className="isolate z-50"
+        collisionPadding={collisionPadding}
+        className={floatPositioner}
       >
         <PreviewCardPrimitive.Popup
           data-slot="hover-card-content"
-          className={cn(
-            "z-50 w-72 origin-(--transform-origin) rounded-lg bg-popover p-2.5 text-xs/relaxed text-popover-foreground shadow-md ring-1 ring-foreground/10 outline-hidden duration-100 data-[side=bottom]:slide-in-from-top-2 data-[side=inline-end]:slide-in-from-left-2 data-[side=inline-start]:slide-in-from-right-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
-            className
-          )}
+          className={cn("w-(--pop-w-md) max-w-[calc(100vw-24px)] p-3", floatGlass, className)}
           {...props}
         />
       </PreviewCardPrimitive.Positioner>

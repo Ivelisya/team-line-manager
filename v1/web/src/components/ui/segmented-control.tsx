@@ -7,20 +7,30 @@ import { cn } from "@/lib/utils";
 
 export type SegmentedControlSize = "default" | "lg" | "sm";
 
+/* coss ui 的 segmented-control（Base UI 生态，shadcn 没有带滑块的分段控件），尺寸 / 颜色 / 圆角走令牌：
+   轨道 --h-lg（sm 是 --h-sm）、内边距 --seg-pad、底色 --track、药丸形；项高 --seg-item（sm 是 --seg-item-sm），触屏随令牌上调；
+   选中块是 --thumb + --shadow-thumb 的药丸，换项时 width / translate 用 --dur-2 + --ease-out 滑过去；按下缩放在 components.css「交互状态」。
+   选中判定沿用 coss 的三个属性：data-checked（Radio）、data-pressed（Toggle）、aria-current=page。 */
 export const segmentedControlItemSizeClassNames: Record<
   SegmentedControlSize,
   string
 > = {
-  default: "h-8.5 px-[calc(--spacing(2.5)-1px)] sm:h-7.5",
-  lg: "h-9.5 px-[calc(--spacing(3)-1px)] sm:h-8.5",
-  sm: "h-7.5 px-[calc(--spacing(2)-1px)] sm:h-6.5",
+  default: "h-(--seg-item) px-3.5 text-body",
+  lg: "h-(--seg-item) px-3.5 text-body",
+  sm: "h-(--seg-item-sm) px-2.5 text-label",
 };
 
 export const segmentedControlItemLayoutClassName =
-  "gap-1.5 [&_svg:not([class*='opacity-'])]:opacity-80 [&_svg:not([class*='size-'])]:size-4.5 sm:[&_svg:not([class*='size-'])]:size-4 [&_svg]:pointer-events-none [&_svg]:-mx-0.5 [&_svg]:shrink-0";
+  "gap-1.5 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-(--icon-sm)";
 
 export const segmentedControlIndicatorSurfaceClassName =
-  "rounded-md bg-background shadow-sm/5 dark:bg-input";
+  "rounded-pill bg-(--thumb) shadow-(--shadow-thumb)";
+
+const segmentedControlRootSize: Record<SegmentedControlSize, string> = {
+  default: "h-(--h-lg)",
+  lg: "h-(--h-lg)",
+  sm: "h-(--h-sm)",
+};
 
 const SegmentedControlContext: React.Context<SegmentedControlSize> =
   React.createContext<SegmentedControlSize>("default");
@@ -42,7 +52,9 @@ export function SegmentedControl({
       </>
     ),
     className: cn(
-      "relative z-0 flex w-fit items-center justify-center gap-0.5 rounded-lg bg-muted p-0.5",
+      // 放在表单网格里时不被拉满整行（justify-self-start）；放不下时横向滚动、滚动条藏起来（边缘渐隐见 base.css）
+      "relative z-0 box-border flex w-fit max-w-full flex-none items-center gap-0.5 overflow-x-auto overscroll-x-contain rounded-pill bg-track p-(--seg-pad) [scrollbar-width:none] justify-self-start [&::-webkit-scrollbar]:hidden",
+      segmentedControlRootSize[size],
       className,
     ),
     "data-size": size,
@@ -75,10 +87,14 @@ export function SegmentedControlItem({
 
   const defaultProps = {
     className: cn(
-      "relative inline-flex shrink-0 cursor-pointer select-none items-center justify-center whitespace-nowrap rounded-md border border-transparent font-medium text-base text-muted-foreground/72 outline-2 outline-transparent transition-[color,outline-color] hover:bg-transparent hover:text-muted-foreground focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-64 data-disabled:pointer-events-none data-disabled:opacity-64 sm:text-sm",
-      "data-checked:bg-background data-checked:text-foreground data-checked:shadow-sm/5 dark:data-checked:bg-input",
-      "aria-[current=page]:bg-background aria-[current=page]:text-foreground aria-[current=page]:shadow-sm/5 dark:aria-[current=page]:bg-input",
-      "data-pressed:bg-background data-pressed:text-foreground data-pressed:shadow-sm/5 dark:data-pressed:bg-input",
+      // 项：药丸、二级字，悬停浅底 + 一级字（选中的不叠），选中一级字；焦点环收进轨道里面（轨道会裁掉外圈）；禁用整组置灰仍占位
+      "relative isolate inline-flex shrink-0 cursor-pointer select-none items-center justify-center rounded-pill border-0 bg-transparent font-medium whitespace-nowrap text-fg-2 [font-variant-numeric:tabular-nums] focus-visible:-outline-offset-2",
+      "[transition:color_var(--dur-1)_var(--ease-std),background-color_var(--dur-1)_var(--ease-std),scale_var(--dur-2)_var(--ease-out)]",
+      "hover:not-data-checked:not-data-pressed:not-disabled:not-data-disabled:bg-hover hover:not-data-checked:not-data-pressed:not-disabled:not-data-disabled:text-fg",
+      "disabled:pointer-events-none disabled:opacity-(--o-disabled) disabled:saturate-40 data-disabled:pointer-events-none data-disabled:opacity-(--o-disabled) data-disabled:saturate-40",
+      "data-checked:text-fg aria-[current=page]:text-fg data-pressed:text-fg",
+      // 滑块还没量出来的那一刻（首帧）：选中项自己垫一块底，量出来以后由滑块接手
+      "data-checked:bg-(--thumb) data-checked:shadow-(--shadow-thumb) aria-[current=page]:bg-(--thumb) aria-[current=page]:shadow-(--shadow-thumb) data-pressed:bg-(--thumb) data-pressed:shadow-(--shadow-thumb)",
       "[:has(>[data-slot=segmented-control-indicator]:not([hidden]))>&]:bg-transparent! [:has(>[data-slot=segmented-control-indicator]:not([hidden]))>&]:shadow-none!",
       segmentedControlItemLayoutClassName,
       segmentedControlItemSizeClassNames[resolvedSize],
@@ -215,7 +231,7 @@ function SegmentedControlIndicator(): React.ReactElement {
     <span
       aria-hidden="true"
       className={cn(
-        "pointer-events-none absolute top-0 left-0 -z-1 h-(--active-item-height) w-(--active-item-width) translate-x-(--active-item-left) translate-y-(--active-item-top) transition-[width,height,translate] duration-200 ease-in-out motion-reduce:transition-none",
+        "pointer-events-none absolute top-0 left-0 -z-1 h-(--active-item-height) w-(--active-item-width) translate-x-(--active-item-left) translate-y-(--active-item-top) [transition:width_var(--dur-2)_var(--ease-out),height_var(--dur-2)_var(--ease-out),translate_var(--dur-2)_var(--ease-out)]",
         segmentedControlIndicatorSurfaceClassName,
       )}
       data-slot="segmented-control-indicator"

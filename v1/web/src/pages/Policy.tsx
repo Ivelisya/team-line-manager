@@ -16,7 +16,7 @@ import { FormField, LabelRow, SearchInput } from '@/components/ui/form';
 import { InfoTip } from '@/components/ui/info-tip';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { Segmented } from '@/components/ui/overlays';
+import { Segmented } from '@/components/ui/segmented';
 import { Trunc, Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { scrollBehavior } from '@/lib/utils';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, DialogHeader } from '@/components/ui/dialog';
@@ -286,7 +286,7 @@ function Editor({ scope, name, sp, team, node, onDirty }: { scope: 'team' | 'nod
 
         <Field>
           <LabelRow info={MODE_INFO[mode]}>模式</LabelRow>
-          <Segmented label="模式" value={mode} onChange={setMode} items={modes.map((m) => ({ value: m, label: modeLabel(m) }))} />
+          <Segmented label="模式" value={mode} onChange={setMode} className="@max-[521px]/content:grid @max-[521px]/content:h-auto @max-[521px]/content:w-full @max-[521px]/content:grid-cols-2 @max-[521px]/content:rounded-float" items={modes.map((m) => ({ value: m, label: modeLabel(m) }))} />
           {mode === 'inherit' && <div className="hint">团队现在是「{modeLabel(teamCur.mode)}」{needsDomains(teamCur.mode) ? `（${teamCur.domains.length} 个域名）` : ''}</div>}
         </Field>
 

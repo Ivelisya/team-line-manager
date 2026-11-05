@@ -5,7 +5,7 @@ import * as React from 'react';
 import { Radar } from 'lucide-react';
 import { ACCESS_WINDOWS, WINDOW_DAYS, useAccessRetention, useMachineAccess, type AccessEvent, type AccessWindow, type MachineAccess } from '@/lib/access';
 import * as F from '@/lib/format';
-import { Segmented } from '@/components/ui/overlays';
+import { Segmented } from '@/components/ui/segmented';
 import { Button } from '@/components/ui/button';
 import { InfoTip } from '@/components/ui/info-tip';
 import { BarChart } from '@/components/ui/charts/bar-chart';

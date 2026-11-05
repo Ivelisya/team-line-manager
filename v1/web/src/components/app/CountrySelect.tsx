@@ -5,7 +5,8 @@ import { Check, ChevronDown, Globe } from 'lucide-react';
 import { COMMON_COUNTRIES, countries, countryName, flagUrl } from '@/lib/flags';
 import { cn } from '@/lib/utils';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/overlays';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { selectTrigger } from '@/components/ui/select';
 
 const FlagImg = ({ cc }: { cc: string }) => {
   const url = flagUrl(cc);
@@ -25,13 +26,11 @@ export function CountrySelect({ id, value, onChange, autoLabel, className, disab
   );
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild disabled={disabled}>
-        <button type="button" id={id} className={cn('select-trigger cs-trigger', className)} aria-label={aria} onPaste={onPaste}>
-          <span className="cs-value">{value ? <><FlagImg cc={value} />{countryName(value)}</> : <><span className="nc-flag is-none"><Globe /></span>{autoLabel}</>}</span>
-          <ChevronDown />
-        </button>
+      <PopoverTrigger disabled={disabled} id={id} data-slot="select-trigger" className={cn(selectTrigger, 'cs-trigger', className)} aria-label={aria} onPaste={onPaste}>
+        <span className="cs-value">{value ? <><FlagImg cc={value} />{countryName(value)}</> : <><span className="nc-flag is-none"><Globe /></span>{autoLabel}</>}</span>
+        <ChevronDown />
       </PopoverTrigger>
-      <PopoverContent className="cs-pop" align="start">
+      <PopoverContent solid className="cs-pop p-0" align="start">
         {/* 列表只在打开时建（两百多项），关着不占渲染 */}
         {open && (
           <Command loop>

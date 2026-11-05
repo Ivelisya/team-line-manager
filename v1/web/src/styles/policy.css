@@ -17,8 +17,7 @@
 }
 /* 模式四段在手机上放不下（「暂停新连接」被截）：排成 2×2，撑满整行 */
 @container content (max-width: 520px) {
-  .pol-form .seg { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); justify-self: stretch; height: auto; border-radius: var(--r-float); }
-  .pol-form .seg-item { justify-content: center; }
+  /* （分段控件的 2×2 排法写在 Policy.tsx 的 className 里：工具类在更高的层，这里压不住） */
 }
 
 /* 范围树 */

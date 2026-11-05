@@ -14,8 +14,8 @@ import { FormField, LabelRow } from '@/components/ui/form';
 import { InfoTip } from '@/components/ui/info-tip';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { Select } from '@/components/ui/select';
-import { Segmented } from '@/components/ui/overlays';
+import { OptionSelect } from '@/components/ui/option-select';
+import { Segmented } from '@/components/ui/segmented';
 import { toast } from '@/components/ui/toast';
 import { FormDialog } from '@/components/app/dialogs';
 import { CopyButton, CopyIcon, Note, useCopied } from '@/components/app/primitives';
@@ -83,12 +83,12 @@ export const AddRouterDialog = resetOnOpen(function AddRouterDialog({ open, onOp
       dirty={!!name.trim() || !!note.trim() || !!ssh.host.trim() || !!ssh.password}>
       <div className="form-grid">
         <FormField label="名称" error={dup ? '已有同名的软路由' : undefined}><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如 团队2-路由A" autoFocus autoComplete="off" data-1p-ignore data-lpignore="true" aria-invalid={dup} /></FormField>
-        <FormField label="团队"><Select value={team} onChange={setTeam} options={teamOpts} allowEmpty="未分团队" placeholder="未分团队" /></FormField>
+        <FormField label="团队"><OptionSelect value={team} onChange={setTeam} options={teamOpts} allowEmpty="未分团队" placeholder="未分团队" /></FormField>
         <FormField label="备注" className="span-2"><Textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="例如：客户机房 2 楼弱电箱，旁路由" /></FormField>
       </div>
       <Field>
         <LabelRow info={METHOD_INFO}>接入方式</LabelRow>
-        <Segmented label="接入方式" value={method} onChange={setMethod} items={METHODS} className="seg-fill" />
+        <Segmented label="接入方式" value={method} onChange={setMethod} items={METHODS} className="w-full [&>[data-slot=segmented-control-item]]:grow" />
       </Field>
       {/* 换方式时账号密码这块平滑收起 / 展开（高度过渡），对话框不跳；收起时不可聚焦 */}
       <div className="rt-collapse" data-open={method === 'ssh' ? '' : undefined} inert={method !== 'ssh'}><div><SshFields d={ssh} set={setSsh} /></div></div>

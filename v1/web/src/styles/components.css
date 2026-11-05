@@ -13,50 +13,13 @@ svg.copied-ic { color: var(--ok); animation: copy-pop var(--dur-2) var(--ease-ou
 @media (hover: hover) { .num-link:hover { text-decoration: underline; } }
 
 /* ========== 分段控件 ========== */
-.seg {
-  position: relative; display: inline-flex; align-items: center; gap: var(--sp-2); flex: none;
-  height: var(--h-lg); box-sizing: border-box; padding: var(--seg-pad);
-  border-radius: var(--r-pill); background: var(--track); max-width: 100%; justify-self: start; /* 放在表单网格里时不被拉满整行（底槽拉满、选项靠左） */
-  overflow-x: auto; scrollbar-width: none;
-}
-.seg::-webkit-scrollbar { display: none; }
-/* 放不下时横向滚动、滚动条又是藏起来的：边缘渐隐提示还能接着滑，由 base.css 的通用规则（edge-fade）给 */
-.seg-item {
-  position: relative; flex: none; display: inline-flex; align-items: center; gap: var(--sp-6);
-  height: var(--seg-item); padding: 0 var(--sp-14); box-sizing: border-box;
-  border: 0; border-radius: var(--r-pill); background: transparent; cursor: pointer; white-space: nowrap; isolation: isolate;
-  font: var(--fw-medium) var(--fs-body) / var(--lh-body) var(--font-sans); color: var(--fg-2);
-  transition: color var(--dur-1) var(--ease-std), background-color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out);
-}
-@media (hover: hover) { .seg-item:hover:not([data-state="on"], :disabled, [data-disabled]) { color: var(--fg); background: var(--hover); } }
-.seg-item[data-state="on"] { color: var(--fg); }
-/* 选中胶囊：Segmented 在当前项里放一个共享 layoutId 的元素，motion 让它在项之间滑动；z-index:-1 配 isolation 让它垫在文字下面。
-   按下时胶囊在项里面，跟着一起缩 */
-.seg-ind { position: absolute; inset: 0; z-index: -1; border-radius: var(--r-pill); background: var(--thumb); box-shadow: var(--shadow-thumb); pointer-events: none; }
-.seg-count { font-weight: var(--fw-regular); color: var(--fg-2); font-variant-numeric: tabular-nums; }
-.seg-sm { height: var(--h-sm); }
-.seg-sm .seg-item { height: var(--seg-item-sm); padding: 0 var(--sp-10); font-size: var(--fs-label); line-height: var(--lh-label); }
-/* 置灰的分段项（首页卡片密度在表格 / 环形视图下）：照常占位，工具栏不跳；样式同其它禁用控件（上面「按钮」） */
+/* 本体在 ui/segmented-control.tsx（coss ui 的 segmented-control，Tailwind 类 + 令牌）、ui/segmented.tsx（单选与「更多」溢出）；按下缩放见下面「交互状态」，放不下时的边缘渐隐见 base.css */
 
 /* ========== 下划线页签 ========== */
-.tabs-list { display: flex; align-items: stretch; gap: var(--sp-20); border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
-.tabs-list::-webkit-scrollbar { display: none; }
-@media (max-width: 420px) { .drawer-tabs .tabs-list { gap: var(--sp-16); } } /* 手机上抽屉 7 个页签差 7px 放不下（「管理」被切一半）：间距收到 16 整排放下；别处的页签间距不动 */
-/* 不支持滚动驱动动画的浏览器（Firefox）靠 TabsList 的滚动监听写 data-fade，宽度同 base.css 的 20px；支持的浏览器由 base.css 的通用规则给，监听不挂 */
-.tabs-list[data-fade="r"] { mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent); }
-.tabs-list[data-fade="l"] { mask-image: linear-gradient(to left, #000 calc(100% - 20px), transparent); }
-.tabs-list[data-fade="lr"] { mask-image: linear-gradient(to right, transparent, #000 20px, #000 calc(100% - 20px), transparent); }
-.tab {
-  position: relative; flex: none; display: inline-flex; align-items: center; gap: var(--sp-6);
-  height: 41px; padding: 0 0 1px; box-sizing: border-box; border: 0; background: transparent; cursor: pointer; white-space: nowrap; /* 41 = 40 + 列表 1px 底线，底部 1px 内边距让文字位置不变，下划线盖在底线上 */
-  font: var(--fw-medium) var(--fs-body) / var(--lh-body) var(--font-sans); color: var(--fg-2);
-  transform-origin: 50% 100%; transition: color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out);
-}
-@media (hover: hover) { .tab:hover { color: var(--fg); } }
-.tab[data-state="active"] { color: var(--fg); } /* 不再随选中加粗：加粗会让页签变宽、把后面的页签顶开 */
-/* 下划线不跟着缩：页签以底边中点为原点缩放（下划线不上移），按下时下划线横向放回原宽（文末「交互状态」）。
-   用独立的 scale 属性，motion 滑动下划线写的是 transform，互不覆盖 */
-.tab-ind { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; border-radius: 1px 1px 0 0; background: var(--accent); pointer-events: none; transition: scale var(--dur-2) var(--ease-out); }
+/* 页签本体在 ui/tabs.tsx（Tailwind 类 + 令牌）。不支持滚动驱动动画的浏览器（Firefox）靠 TabsList 的滚动监听写 data-fade，宽度同 base.css 的 20px；支持的浏览器由 base.css 的通用规则给，监听不挂 */
+[data-slot="tabs-list"][data-fade="r"] { mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent); }
+[data-slot="tabs-list"][data-fade="l"] { mask-image: linear-gradient(to left, #000 calc(100% - 20px), transparent); }
+[data-slot="tabs-list"][data-fade="lr"] { mask-image: linear-gradient(to right, transparent, #000 20px, #000 calc(100% - 20px), transparent); }
 /* 页签内容（抽屉各页签）：切换时淡入上移 4px */
 .tab-pane { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-16); align-content: start; animation: tab-in var(--dur-2) var(--ease-out); }
 @keyframes tab-in { from { opacity: 0; transform: translateY(4px); } }
@@ -238,20 +201,7 @@ svg.copied-ic { color: var(--ok); animation: copy-pop var(--dur-2) var(--ease-ou
 .info-tip .lucide { width: var(--icon-xs); height: var(--icon-xs); }
 .info-tip:focus-visible { color: var(--fg-2); }
 @media (hover: hover) { .info-tip:hover { color: var(--fg-2); } }
-.select-trigger {
-  width: 100%; min-width: 0; box-sizing: border-box; height: var(--h-lg); padding: 0 var(--sp-10);
-  border: 1px solid var(--line-strong); border-radius: var(--r-control); background: var(--surface); color: var(--fg);
-  font: var(--fw-regular) var(--fs-body) / var(--lh-body) var(--font-sans);
-  transition: border-color var(--dur-1) var(--ease-std), box-shadow var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out);
-}
-@media (hover: hover) { .select-trigger:hover:not(:disabled, :focus-visible, [data-state="open"]) { border-color: color-mix(in srgb, var(--line-strong), var(--fg) 12%); } }
-.select-trigger:focus-visible, .select-trigger[data-state="open"] { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus-halo); }
-.select-trigger:disabled { background: var(--sunken); color: var(--fg-3); cursor: default; } /* 同禁用的输入框（Input 的 disabled:bg-sunken disabled:text-fg-3）：沉底、三级字 */
-.select-trigger.input-sm { height: var(--h-sm); font-size: var(--fs-label); padding: 0 var(--sp-8); }
-.select-trigger { display: inline-flex; align-items: center; justify-content: space-between; gap: var(--sp-8); cursor: pointer; text-align: left; }
-.select-trigger > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.select-trigger[data-placeholder] { color: var(--fg-3); }
-.select-trigger .lucide { color: var(--fg-2); width: var(--icon-sm); height: var(--icon-sm); }
+/* 下拉选择的触发器在 ui/select.tsx（selectTrigger 类名，日期选择器共用）；按下缩放见下面「交互状态」 */
 /* 搜索框的清除键：Chromium / Safari 原生的是粗体蓝 ✕，换成同全站线条图标的 ✕（mask 取令牌色，深浅主题自动适配）；点击清空、触发 onChange、Esc 清空都还是原生行为 */
 [data-slot="input-group-control"][type="search"]::-webkit-search-cancel-button {
   -webkit-appearance: none; appearance: none; width: var(--icon-sm); height: var(--icon-sm); margin: 0; cursor: pointer; background: var(--fg-3);
@@ -268,14 +218,13 @@ svg.copied-ic { color: var(--ok); animation: copy-pop var(--dur-2) var(--ease-ou
 
 /* ========== 浮层：对话框、抽屉、菜单、提示、toast ==========
    进出场三类：
-   1 锚定弹层（下拉、右键、选择、日期、作业弹层、悬浮卡、提示、图表提示）：float-in / float-out（关键帧只写起点或终点，另一端取元素自身的样式）
+   1 锚定弹层（下拉、右键、选择、日期、作业弹层、悬浮卡、提示）：Base UI 的 data-starting-style / data-ending-style + 过渡（ui/float.ts）
    2 顶部锚定面板（对话框、命令面板）：淡入 + 从上方 8px、.97 落到位（--dur-2 / --ease-out），退场往上 4px、.985 淡出（--dur-1 / --ease-std）；手机上是底部面板，整块从屏幕底边滑入、收回
    3 边缘抽屉（节点抽屉）：整幅从右侧滑入（--dur-3 / --ease-out），收起走更短的 --dur-2 / --ease-std；遮罩同步淡入淡出
    2、3 是 Base UI 的 Popup / Backdrop：挂载那一帧带 data-starting-style、开始关闭时带 data-ending-style，用 CSS 过渡（transition）从起点走到自身的样式，过渡播完 Base UI 才卸载；
-   过渡可以被打断（退场中又打开，从当前位置折返，不跳）；减弱动效时 --dur-* 为 0，过渡即刻完成、立即卸载（Radix 的弹层仍是 [data-state=closed] 上的动画，B2b 换完后并入） */
-/* 退场动画期间不再拦截点击：用户已经可以点下面的东西。Radix 在遮罩（及模态层里的浮层）上内联了 pointer-events: auto，要 !important 才盖得住 */
+   过渡可以被打断（退场中又打开，从当前位置折返，不跳）；减弱动效时 --dur-* 为 0，过渡即刻完成、立即卸载 */
+/* 退场动画期间不再拦截点击：用户已经可以点下面的东西 */
 [data-slot="dialog-overlay"][data-ending-style], [data-slot="sheet-overlay"][data-ending-style], [data-slot="dialog-content"][data-ending-style], [data-slot="sheet-content"][data-ending-style], [data-slot="command-dialog"][data-ending-style] { pointer-events: none; }
-.menu[data-state="closed"], .popover[data-state="closed"], .select-content[data-state="closed"] { pointer-events: none !important; }
 
 /* ---- 2 顶部锚定面板 ----
    外观（位置、宽度、内边距、毛玻璃底、底部吸底按钮条）在 ui/dialog.tsx、ui/command.tsx 的类名里；
@@ -338,61 +287,18 @@ html[data-drawer] [data-slot="dialog-overlay"] { background: var(--scrim-stacked
 }
 
 /* ---- 1 锚定弹层 ----
-   进场 --dur-2 / --ease-out：淡入、从 .96 放大，同时朝远离触发元素的方向走 4px（Radix 写 data-side：在上方的往上、在下方的往下）；
-   退场 --dur-1 / --ease-std 原路收回。缩放原点是触发元素那一侧（--radix-popper-transform-origin；图表提示没有，取中心）。
-   材质：--shadow-pop + 毛玻璃（--glass）；提示框是反色实底，下拉选择是实底（常开在对话框里、伸出对话框下沿，玻璃会透出上下两截颜色） */
-.menu, .popover, .select-content {
-  --pop-x: 0px; --pop-y: 0px;
-  transform-origin: var(--radix-popper-transform-origin); animation: float-in var(--dur-2) var(--ease-out);
-}
-:is(.menu, .popover, .select-content)[data-side="top"] { --pop-y: 4px; }
-:is(.menu, .popover, .select-content)[data-side="bottom"] { --pop-y: -4px; }
-:is(.menu, .popover, .select-content)[data-side="left"] { --pop-x: 4px; }
-:is(.menu, .popover, .select-content)[data-side="right"] { --pop-x: -4px; }
-:is(.menu, .popover, .select-content)[data-state="closed"] { animation: float-out var(--dur-1) var(--ease-std) forwards; }
-@keyframes float-in { from { opacity: 0; transform: translate(var(--pop-x), var(--pop-y)) scale(.96); } }
-@keyframes float-out { to { opacity: 0; transform: translate(var(--pop-x), var(--pop-y)) scale(.96); } }
-.menu, .popover, .select-content { border: 1px solid var(--line-float); box-shadow: var(--shadow-pop); }
-.menu, .popover { background: var(--glass); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); }
-.menu, .popover, .select-content { z-index: var(--z-popover); border-radius: var(--r-float); padding: var(--sp-4); min-width: var(--pop-w-sm); }
-/* 菜单高度只受视口约束（不读 Radix 的可用高度，也没有固定上限）：下方放不下时 Radix 整体翻到上方、不把菜单压矮出滚动条；
-   内容比视口还高的（线路机「复制分享链接」子菜单可有几十条入口）才在菜单里滚动 */
-.menu { max-height: calc(100dvh - 16px); overflow-y: auto; }
-.select-content { min-width: var(--radix-select-trigger-width); max-height: 320px; overflow: hidden; background: var(--raised); }
-.popover { padding: var(--sp-12); width: var(--pop-w-md); max-width: calc(100vw - 24px); }
-.menu-item, .select-item {
-  display: flex; align-items: center; gap: var(--sp-8); width: 100%; min-height: var(--h-md); box-sizing: border-box; padding: 0 var(--sp-10);
-  border: 0; border-radius: calc(var(--r-float) - var(--sp-4)); /* 同心圆角：外圈 --r-float 减去菜单内边距 */ background: transparent; cursor: pointer; text-align: left;
-  font: var(--fw-regular) var(--fs-body) / var(--lh-body) var(--font-sans); color: var(--fg); user-select: none; outline: none;
-}
-.menu-item .lucide { color: var(--fg-2); width: var(--icon-sm); height: var(--icon-sm); }
-.menu-item[data-highlighted], .select-item[data-highlighted] { background: var(--row-highlight); }
-.menu-item[data-disabled], .select-item[data-disabled] { color: var(--fg-3); pointer-events: none; }
-.menu-item[data-disabled][data-tip] { pointer-events: auto; cursor: default; } /* 写了原因的禁用项：不能点，但悬停能看到为什么 */
-.menu-item.is-danger { color: var(--bad-text); }
-.menu-item.is-danger .lucide { color: var(--bad-text); }
-/* 子菜单：打开着的触发项、右侧箭头 */
-.menu-item[data-state="open"] { background: var(--row-highlight); }
-.menu-chev { margin-left: auto; width: var(--icon-sm); height: var(--icon-sm); color: var(--fg-3); }
-.menu-sep { height: 1px; margin: var(--sp-4) 0; background: var(--line); }
-.menu-label { padding: var(--sp-6) var(--sp-10) var(--sp-2); font: var(--fw-medium) var(--fs-micro) / var(--lh-micro) var(--font-sans); color: var(--fg-2); }
-.menu-check { display: inline-flex; margin-left: auto; }
+   下拉、右键、选择、日期、作业弹层、悬浮卡的外观与进出场在 ui/float.ts（Tailwind 类 + 令牌，Base UI 的 data-starting-style / data-ending-style + 过渡）；
+   菜单项、标签、分隔线、选中勾同在 float.ts。这里只留 Tailwind 类写不下的：子菜单顶上的筛选框、配色色块 */
 /* 子菜单顶上的筛选框（线路机的分享链接）：吸顶，滚长列表时一直在；底色不透明，滚过去的项不从下面透出来 */
 .menu-filter { position: sticky; top: calc(-1 * var(--sp-4)); z-index: 1; margin: calc(-1 * var(--sp-4)) calc(-1 * var(--sp-4)) var(--sp-4); padding: var(--sp-6); background: var(--raised); border-bottom: 1px solid var(--line); border-radius: var(--r-float) var(--r-float) 0 0; }
 .menu-filter input { width: 100%; box-sizing: border-box; height: 28px; padding: 0 var(--sp-8); border: 1px solid var(--line-strong); border-radius: var(--r-xs); background: var(--surface); color: var(--fg); font: var(--fs-label) / 1 var(--font-sans); outline: none; }
 .menu-filter input:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus-halo); } /* 同输入框的聚焦光环 */
-.menu-item .menu-check .lucide { color: var(--accent); }
 /* 配色色块：各配色亮色下的强调色（与当前深浅色无关，一眼认出是哪套） */
 .swatch { flex: none; width: 14px; height: 14px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.1); }
 .swatch[data-palette="plum"] { background: linear-gradient(135deg, #f7c6ea, #8e3bb0); }
 .swatch[data-palette="indigo"] { background: linear-gradient(135deg, #c7c9f7, #5b5bd6); }
-.select-item { justify-content: space-between; }
-.select-item .lucide { width: var(--icon-sm); height: var(--icon-sm); color: var(--accent); }
-/* 共用“⋯”下拉的定位锚：插在被点的按钮里、盖满它（随按钮移动）；共用悬停提示的定位锚：固定定位框，出现时盖在悬停 / 聚焦的元素上。都看不见、不接指针 */
-[data-node-menu], [data-entry-menu] { position: relative; }
-.menu-anchor { position: absolute; inset: 0; visibility: hidden; pointer-events: none; }
 
-/* 悬浮卡片（.popover.hover-card，宽度、内边距、进出场同其它弹层） */
+/* 悬浮卡片里的内容（卡片本身是 ui/hover-card.tsx，宽度、内边距、进出场同其它弹层） */
 .hc { display: grid; gap: var(--sp-10); min-width: 0; }
 .hc-head { display: flex; align-items: center; gap: var(--sp-8); min-width: 0; }
 .hc-name { flex: 1; font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-sans); letter-spacing: var(--tracking-title); }
@@ -407,13 +313,13 @@ html[data-drawer] [data-slot="dialog-overlay"] { background: var(--scrim-stacked
 
 /* 通知（ui/toast.tsx，coss ui 的 toast 为底、Base UI Toast）：新的在最前，旧的往后叠、只露一道边；悬停 / 聚焦时整组展开并暂停计时。
    每条是绝对定位的（贴着视口的下缘 / 手机上的上缘），堆叠、进出场的位移都在 toast.tsx 的类名里（时长走动效令牌，减弱动效时即刻完成）；这里只管视口放哪。
-   right 同顶栏：Radix 的菜单 / 下拉锁滚动时补回让出的槽位（B2b 换完后去掉 --removed-body-scroll-bar-size）；bottom 让开页面底部的吸附条（--toast-lift，见 toast.tsx） */
+   bottom 让开页面底部的吸附条（--toast-lift，见 toast.tsx） */
 [data-slot="toast-viewport"] { position: fixed; z-index: var(--z-toast); width: min(380px, calc(100vw - 32px)); }
-[data-slot="toast-viewport"][data-position="bottom"] { right: calc(var(--sp-16) + var(--removed-body-scroll-bar-size, 0px)); bottom: calc(var(--sp-16) + var(--toast-lift, 0px)); transition: bottom var(--dur-2) var(--ease-out); }
+[data-slot="toast-viewport"][data-position="bottom"] { right: calc(var(--sp-16)); bottom: calc(var(--sp-16) + var(--toast-lift, 0px)); transition: bottom var(--dur-2) var(--ease-out); }
 /* 手机：通知从顶栏下方落下，不盖住对话框底部面板的按钮；抽屉全宽，不用让位 */
 [data-slot="toast-viewport"][data-position="top"] { left: 50%; translate: -50% 0; top: calc(var(--topbar-h) + env(safe-area-inset-top, 0px) + var(--sp-8)); }
 /* 抽屉开着（<html data-drawer>）：通知挪到抽屉左侧，不盖住抽屉底部的保存 / 操作按钮；抽屉左边放不下通知（抽屉 + 通知 + 两侧间距 > 视口）时改底部居中 */
-@media (width >= 601px) { html[data-drawer] [data-slot="toast-viewport"][data-position="bottom"] { right: calc(var(--drawer-w) + var(--sp-8) + var(--sp-16) + var(--removed-body-scroll-bar-size, 0px)); } }
+@media (width >= 601px) { html[data-drawer] [data-slot="toast-viewport"][data-position="bottom"] { right: calc(var(--drawer-w) + var(--sp-8) + var(--sp-16)); } }
 @media (width >= 601px) and (width <= 1180px) { html[data-drawer] [data-slot="toast-viewport"][data-position="bottom"] { right: auto; left: 50%; translate: -50% 0; } }
 @keyframes toast-timer { from { transform: scaleX(1); } to { transform: scaleX(0); } }
 /* ×N 的数字又涨一次：角标弹一下（key 跟着计数，重新播） */
@@ -434,12 +340,11 @@ html[data-drawer] [data-slot="dialog-overlay"] { background: var(--scrim-stacked
 .pager-of { color: var(--fg-2); }
 .pager-range small { margin-left: var(--sp-4); font-size: var(--fs-micro); color: var(--fg-2); }
 .pager-field { display: inline-flex; align-items: center; gap: var(--sp-6); white-space: nowrap; }
-.pager-select { width: 64px; font-family: var(--font-num); font-variant-numeric: var(--num-variant); }
 .pager-nav { margin-left: auto; display: inline-flex; align-items: center; gap: var(--sp-6); }
 .dt-foot.is-center { justify-content: center; }
 
 /* 禁用（旧的手写控件共用一条；按钮、复选框、开关已在各自的组件里写）：半透明之外再去饱和 */
-:is(.top-btn, .fchip, .seg-item, .cal-day):is(:disabled, [aria-disabled="true"]), .seg-item[data-disabled] { opacity: var(--o-disabled); filter: saturate(0.4); cursor: default; }
+:is(.top-btn, .fchip):is(:disabled, [aria-disabled="true"]) { opacity: var(--o-disabled); filter: saturate(0.4); cursor: default; }
 
 /* ========== 交互状态（全站只在这里写）：按下 / 悬停上浮 / 焦点 ==========
    按下「快按慢回」：各元素自己的 transition 里带 scale var(--dur-2) var(--ease-out)，按下时这里把时长换成 --dur-press，立刻跟手缩小；
@@ -447,13 +352,12 @@ html[data-drawer] [data-slot="dialog-overlay"] { background: var(--scrim-stacked
    控件 --press-sm .94｜文字控件 --press-md .97｜块 --press-lg .98。
    行（菜单项、下拉项、命令项、表格行、导航项、作业项、树节点、权限行、操作记录行、表头排序、侧栏底部快捷键）不缩放：悬停底上叠一层 --state-press。
    禁用的按钮不响应（:not(:disabled)）；禁用的菜单项是 pointer-events: none，不会按下。导航当前项的底是渐变（粉紫），不叠 */
-:is(.top-btn, .pol-chev, .cal-day):active:not(:disabled) { scale: var(--press-sm); transition-duration: var(--dur-press); }
-:is(.fchip, .seg-item, .tab, .tc-legend-item, .cmd-trigger, .top-alert, .nc-name, .relay-name, .host-pick, button.rt-topo-pill):active:not(:disabled) { scale: var(--press-md); transition-duration: var(--dur-press); }
-.select-trigger:active:not(:disabled, [data-state="open"]) { scale: var(--press-md); transition-duration: var(--dur-press); } /* 展开后不再缩：Radix 在按下那一刻按触发器的框量下拉宽度，缩着量会窄几像素 */
+:is(.top-btn, .pol-chev):active:not(:disabled) { scale: var(--press-sm); transition-duration: var(--dur-press); }
+:is(.fchip, .tc-legend-item, .cmd-trigger, .top-alert, .nc-name, .relay-name, .host-pick, button.rt-topo-pill):active:not(:disabled), [data-slot="segmented-control-item"]:active:not(:disabled, [data-disabled]), [data-slot="tabs-trigger"]:active:not(:disabled) { scale: var(--press-md); transition-duration: var(--dur-press); }
+[data-slot="select-trigger"]:active:not(:disabled, [data-popup-open]) { scale: var(--press-md); transition-duration: var(--dur-press); } /* 展开后不再缩：按下那一刻按触发器的框量下拉宽度（--anchor-width），缩着量会窄几像素 */
 button.tag:active { scale: var(--press-md); transition-duration: var(--dur-press); } /* 可点的标签（同机关系标）；只认按钮，纯展示的 span 标签按下不缩 */
-.tab:active:not(:disabled) .tab-ind { scale: calc(1 / var(--press-md)) 1; transition-duration: var(--dur-press); }
 :is(.flow-trend, .flow-foot, .nc-quota, .nc-click, .rc-rings, .stat.is-link):active:not(:disabled) { scale: var(--press-lg); transition-duration: var(--dur-press); }
-:is(.menu-item, .select-item, .cmd-item, .job-item, .pop-item, .pol-item, .scope-row, .th-sort, .nav-foot):active, .nav-item:active:not([aria-current="page"]), :is(.dt tr, .audit-list li).is-link:active { background-image: var(--state-press); }
+:is(.cmd-item, .job-item, .pop-item, .pol-item, .scope-row, .th-sort, .nav-foot):active, .nav-item:active:not([aria-current="page"]), :is(.dt tr, .audit-list li).is-link:active { background-image: var(--state-press); }
 
 /* 悬停上浮 2px + 加深阴影：只给卡片类（节点卡、环形卡、可点的 KPI 卡），只在真有悬停的设备上（触屏点一下不会卡在上浮态）。
    位移用独立的 translate 属性：卡片的 transform 归 motion 的布局动画管。:is() 不带 .stat.is-link，保持 (0,2,0)，卡片的健康色边框、当前卡边框照样盖过悬停边 */
@@ -466,11 +370,9 @@ button.tag:active { scale: var(--press-md); transition-duration: var(--dur-press
 :is(.audit-chev, .pol-chev, .acc-nodes) .lucide { transition: transform var(--dur-2) var(--ease-out); }
 :is(.audit-list li[data-open] .audit-chev, .pol-chev[data-open="1"], .dt tr[data-open] .acc-nodes) .lucide { transform: rotate(90deg); }
 
-/* 焦点环：全站 2px 环、2px 间隙（base.css :focus-visible）。会被滚动容器或单元格裁掉的收进元素里面；日历格之间只有 2px 缝，贴边画 */
-:is(.seg-item, .tab, .th-sort, .pol-chev, .pol-item, .job-item, .pop-item, .logbox):focus-visible, .dt tr.is-link:focus-visible { outline-offset: -2px; }
+/* 焦点环：全站 2px 环、2px 间隙（base.css :focus-visible）。会被滚动容器或单元格裁掉的收进元素里面（分段项、页签在各自组件的类名里写了） */
+:is(.th-sort, .pol-chev, .pol-item, .job-item, .pop-item, .logbox):focus-visible, .dt tr.is-link:focus-visible { outline-offset: -2px; }
 button.tag:focus-visible { outline-offset: -2px; } /* 标签行、表格单元格都会裁掉外圈 */
-.cal-day:focus-visible { outline-offset: 0; }
-.cal-day[aria-selected="true"]:focus-visible { outline-color: var(--fg); } /* 选中格是强调色实底，强调色的环贴在上面看不出来 */
 
 /* 流量已超出额度（本周期已用 ≥ 上限）：「1129 GB / 1000 GB」整段标红（费用页、卡片） */
 [data-over], [data-over] :is(.num, .unit) { color: var(--bad-text); }

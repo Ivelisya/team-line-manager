@@ -63,7 +63,7 @@ export function MachineGrid({ cols, rows, sort, onSort, openId, onOpen, dim = is
     return cols.filter((c) => !gone.has(c.id));
   }, [cols, order, dropped]);
   const minWidth = shown.reduce((s, c) => s + c.size, 0);
-  // 抽屉关上后焦点回到打开它的那一行（抽屉是非模态的，Radix 不还焦点）；焦点已被放到抽屉外别处的不抢
+  // 抽屉关上后焦点回到打开它的那一行（抽屉是非模态的，Base UI 不还焦点）；焦点已被放到抽屉外别处的不抢
   const lastOpen = React.useRef(openId);
   React.useEffect(() => {
     const prev = lastOpen.current; lastOpen.current = openId;

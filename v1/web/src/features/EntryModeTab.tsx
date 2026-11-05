@@ -6,7 +6,7 @@ import type { EntryMode } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { FormField } from '@/components/ui/form';
 import { InfoTip } from '@/components/ui/info-tip';
-import { Select } from '@/components/ui/select';
+import { OptionSelect } from '@/components/ui/option-select';
 import { toast } from '@/components/ui/toast';
 import { ConfirmDialog } from '@/components/app/dialogs';
 import { ErrorNote, Note, Panel } from '@/components/app/primitives';
@@ -30,7 +30,7 @@ export function EntryModeTab() {
       {q.isLoading ? <SkeletonRows rows={2} /> : q.data && <>
         <FormField label="默认模式" hint={q.data.set ? undefined : '没设过：按内置默认（穿透）'}
           info={"穿透：节点上的 bridge 主动连线路机入口，客户流量经隧道从节点自己的 IP 出去，线路机不再向节点新建连接——给供应商丢入站连接（SYN）的节点用\n家宽代理、同机 IP 节点不支持，自动按普通建；线路机或节点的 agent 太旧时也按普通建（作业日志写明）"}>
-          <Select value={pick} onChange={(v) => setMode(v as EntryMode)} options={ENTRY_MODE_OPTIONS} aria-label="新入口默认模式" />
+          <OptionSelect value={pick} onChange={(v) => setMode(v as EntryMode)} options={ENTRY_MODE_OPTIONS} aria-label="新入口默认模式" />
         </FormField>
         <Note>穿透适合入站质量差的节点；家宽代理、同机 IP 节点按普通建。</Note>
         <div className="row" style={{ marginTop: 'var(--sp-12)', justifyContent: 'flex-end' }}>

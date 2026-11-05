@@ -5,14 +5,15 @@ import * as React from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronLeft, ChevronRight, CircleX, Router as RouterIcon, TriangleAlert, Users, Waypoints, XCircle } from 'lucide-react';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/sheet';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/overlays';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Trunc } from '@/components/ui/tooltip';
+import { dialogOpen } from '@/components/ui/dialog';
 import { Button, IconButton } from '@/components/ui/button';
 import { FormField } from '@/components/ui/form';
 import { InfoTip } from '@/components/ui/info-tip';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { Select } from '@/components/ui/select';
+import { OptionSelect } from '@/components/ui/option-select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
 import { ErrorBoundary } from '@/components/app/ErrorBoundary';
@@ -66,7 +67,7 @@ export function RouterDrawer() {
             <>
               <Head r={r} detail={detail} />
               <Tabs value={tab} onValueChange={(v) => setTab(v as RouterTab)} className="drawer-tabs">
-                <TabsList ref={tabsRef}>{ROUTER_TABS.map((t) => <TabsTrigger key={t.value} value={t.value} noPanel>{t.label}</TabsTrigger>)}</TabsList>
+                <TabsList ref={tabsRef} className="max-[421px]:gap-4">{ROUTER_TABS.map((t) => <TabsTrigger key={t.value} value={t.value} noPanel>{t.label}</TabsTrigger>)}</TabsList>
               </Tabs>
               <div className="drawer-body" ref={bodyRef}>
                 {q.isError && !q.data && <ErrorNote error={q.error} onRetry={() => void q.refetch()}>详情加载失败：</ErrorNote>}
@@ -106,7 +107,7 @@ function Head({ r, detail }: { r: RouterView; detail: RouterDetail | null | unde
   const ref = React.useRef(sib); ref.current = sib;
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.key !== '[' && e.key !== ']') || e.metaKey || e.ctrlKey || e.altKey || typingIn(e.target) || document.querySelector('[data-slot="dialog-content"], [data-slot="command-dialog"]')) return;
+      if ((e.key !== '[' && e.key !== ']') || e.metaKey || e.ctrlKey || e.altKey || typingIn(e.target) || dialogOpen()) return;
       const to = ref.current && (e.key === ']' ? ref.current.next : ref.current.prev);
       if (!to) return;
       e.preventDefault();
@@ -204,7 +205,7 @@ function RenameSection({ r }: { r: RouterView }) {
       <SectionHeader title={<>改名 / 团队 / 备注 <InfoTip text="只改面板里的显示，不影响路由和客户端上网" /></>} />
       <form className="form-grid" onSubmit={(e) => { e.preventDefault(); if (valid && !patch.isPending) save(); }}>
         <FormField label="名称" error={!name.trim() ? '名称不能为空' : undefined}><Input value={name} onChange={(e) => setName(e.target.value)} autoComplete="off" aria-invalid={!name.trim()} /></FormField>
-        <FormField label="团队"><Select value={team} onChange={setTeam} options={opts} allowEmpty="未分团队" placeholder="未分团队" /></FormField>
+        <FormField label="团队"><OptionSelect value={team} onChange={setTeam} options={opts} allowEmpty="未分团队" placeholder="未分团队" /></FormField>
         <FormField label="备注" className="span-2"><Textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} /></FormField>
         <div className="span-2 row" style={{ justifyContent: 'flex-end' }}>
           <Button type="submit" disabled={!valid || patch.isPending} loading={patch.isPending}>保存</Button>

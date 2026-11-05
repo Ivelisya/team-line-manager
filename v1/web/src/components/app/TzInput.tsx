@@ -6,7 +6,8 @@ import { prefixScore } from '@/lib/match';
 import { tzLabel, tzOptions, type TzOption } from '@/lib/tz';
 import { cn } from '@/lib/utils';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/overlays';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { selectTrigger } from '@/components/ui/select';
 
 /** 搜索打分：城市名 / 时区名里某个词以它开头的在前，其次是连续子串（lib/match）；搜的空格当下划线（「los an」→ Los_Angeles） */
 const tzFilter = (v: string, s: string, kw?: string[]) => prefixScore([v, ...(kw ?? [])], s.trim().toLowerCase().replace(/\s+/g, '_'));
@@ -25,13 +26,11 @@ export function TzInput({ id, value, onChange, emptyLabel, placeholder = '选择
   const opts = open ? tzOptions(value || undefined) : null;
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button type="button" id={id} className="select-trigger cs-trigger" aria-label={ariaLabel}>
-          <span className={cn('cs-value ellipsis', !value && !emptyLabel && 't-muted')}>{value ? tzLabel(value) : emptyLabel ?? placeholder}</span>
-          <ChevronDown />
-        </button>
+      <PopoverTrigger id={id} data-slot="select-trigger" className={cn(selectTrigger, 'cs-trigger')} aria-label={ariaLabel}>
+        <span className={cn('cs-value ellipsis', !value && !emptyLabel && 't-muted')}>{value ? tzLabel(value) : emptyLabel ?? placeholder}</span>
+        <ChevronDown />
       </PopoverTrigger>
-      <PopoverContent className="cs-pop is-wide" align="start">
+      <PopoverContent solid className="cs-pop p-0 w-[max(var(--pop-w-md),var(--anchor-width))]" align="start">
         {opts && (
           <Command loop filter={tzFilter}>
             <CommandInput placeholder="搜索：城市、时区名或 UTC+8" />

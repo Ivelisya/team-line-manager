@@ -15,8 +15,9 @@ import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
 import { SearchInput } from '@/components/ui/form';
 import { InfoTip } from '@/components/ui/info-tip';
-import { Select } from '@/components/ui/select';
-import { Segmented, Tabs, TabsList, TabsTrigger } from '@/components/ui/overlays';
+import { OptionSelect } from '@/components/ui/option-select';
+import { Segmented } from '@/components/ui/segmented';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Empty, ErrorNote, PageHead, Panel, Pill, SortHead, Stat, TableWrap } from '@/components/app/primitives';
 import { AccessViewSwitch } from '@/components/app/AccessViewSwitch';
 import { HostCell, ResultPill, fmtN } from '@/features/AccessBits';
@@ -104,10 +105,10 @@ export function AccessPage() {
 
       <div className="row" role="search">
         <SearchInput value={text} onChange={(e) => setText(e.target.value)} placeholder="搜索域名或来源 IP…" aria-label="搜索域名或来源 IP" className="w-full sm:w-[260px]" />
-        <div className="w-[140px]"><Select value={f.team} onChange={onTeam} allowEmpty="全部团队" placeholder="团队" options={teamOpts} aria-label="团队" /></div>
-        <div className="w-[150px]"><Select value={f.node} onChange={onNode} allowEmpty="全部节点" placeholder="节点" options={nodeOpts} aria-label="节点" /></div>
-        <div className="w-[130px]"><Select value={f.kind} onChange={onKind} allowEmpty="全部类型" placeholder="目标类型" options={KIND_OPTS} aria-label="目标类型" /></div>
-        <div className="w-[130px]"><Select value={f.action} onChange={onAct} allowEmpty="全部结果" placeholder="处理结果" options={ACT_OPTS} aria-label="处理结果" /></div>
+        <div className="w-[140px]"><OptionSelect value={f.team} onChange={onTeam} allowEmpty="全部团队" placeholder="团队" options={teamOpts} aria-label="团队" /></div>
+        <div className="w-[150px]"><OptionSelect value={f.node} onChange={onNode} allowEmpty="全部节点" placeholder="节点" options={nodeOpts} aria-label="节点" /></div>
+        <div className="w-[130px]"><OptionSelect value={f.kind} onChange={onKind} allowEmpty="全部类型" placeholder="目标类型" options={KIND_OPTS} aria-label="目标类型" /></div>
+        <div className="w-[130px]"><OptionSelect value={f.action} onChange={onAct} allowEmpty="全部结果" placeholder="处理结果" options={ACT_OPTS} aria-label="处理结果" /></div>
         {filtered && <Button variant="ghost" onClick={clear}>清除筛选</Button>}
         <span className="access-range"><Segmented label="时间范围" value={f.window} onChange={onWindow} items={windowItems} /></span>
       </div>
@@ -288,7 +289,7 @@ const SourcesView = React.memo(function SourcesView({ f, filtered, onClear, conn
             <thead>
               <tr>
                 <th>来源 IP</th><th>运营商 · 城市</th>
-                <th><Select sm value={ct} onChange={(v) => upd({ conn: v })} allowEmpty="全部接入方式" placeholder="接入方式" options={CONN_FILTER_OPTIONS} aria-label="按接入方式筛选" /></th>
+                <th><OptionSelect sm value={ct} onChange={(v) => upd({ conn: v })} allowEmpty="全部接入方式" placeholder="接入方式" options={CONN_FILTER_OPTIONS} aria-label="按接入方式筛选" /></th>
                 <th>节点</th><th className="r">连接数</th><th>最近</th>
               </tr>
             </thead>

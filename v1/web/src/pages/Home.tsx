@@ -16,8 +16,8 @@ import { Empty, ErrorNote, FilterChip, type SortState } from '@/components/app/p
 import { NodeCard, SkeletonCard, type CardShow, type CardView } from '@/components/app/NodeCard';
 import { NodeMenus } from '@/components/app/NodeMenu';
 import { RingCard } from '@/components/app/RingCard';
-import { Segmented, SegmentedOverflow } from '@/components/ui/overlays';
-import { Select } from '@/components/ui/select';
+import { Segmented, SegmentedOverflow } from '@/components/ui/segmented';
+import { OptionSelect } from '@/components/ui/option-select';
 import { Button } from '@/components/ui/button';
 import { Pagination } from '@/components/app/Pagination';
 import { HomeSection, OverviewSection } from '@/features/HomeOverview';
@@ -226,7 +226,7 @@ export function HomePage() {
             <FilterChip pressed={onlyIssues} onClick={toggleIssues} count={issueCount} tip={issueTip}><AlertTriangle size={13} />仅看异常</FilterChip>
           </div>
           <div className="hctrls">
-            <Select value={sortValue} onChange={pickSort} options={sortValue === 'custom' ? SORTS_CUSTOM : SORTS} className="w-[150px]" aria-label="排序" />
+            <OptionSelect value={sortValue} onChange={pickSort} options={sortValue === 'custom' ? SORTS_CUSTOM : SORTS} className="w-[150px]" aria-label="排序" />
             {layout === 'cards' && <Segmented label="卡片密度" value={view} onChange={setV} items={DENSITY_ITEMS} />}
             <Segmented label="视图" value={layout} onChange={setL} items={LAYOUT_ITEMS} />
           </div>

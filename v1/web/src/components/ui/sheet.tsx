@@ -4,7 +4,7 @@ import { X } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 import { IconButton } from "@/components/ui/button"
-import { RememberFocus, escapeIsTaken, mergeRefs, useRestoreFocus } from "@/components/ui/dialog"
+import { RememberFocus, dialogOpen, escapeIsTaken, mergeRefs, useRestoreFocus } from "@/components/ui/dialog"
 
 /* 右侧抽屉（shadcn Sheet 的写法：Dialog + 右侧定位）。非模态（modal={false}）：模态时 Base UI 会锁 body 滚动、给页面加 inert / pointer-events 的遮挡，
    一开一关整页上万个元素重算样式（改前 Radix 同理，实测紧凑卡片开约 330 ms、关约 250 ms）；非模态时一帧都不卡。
@@ -26,7 +26,7 @@ let drawers = 0
 function Sheet({ open, onOpenChange, children }: { open: boolean; onOpenChange: (open: boolean) => void; children: React.ReactNode }) {
   const panel = React.useRef<HTMLDivElement>(null)
   const handle = (next: boolean, details: SheetPrimitive.Root.ChangeEventDetails) => {
-    if (!next && details.reason === "escape-key" && (escapeIsTaken(details.event) || document.querySelector('[data-slot="dialog-content"][data-open], [data-slot="command-dialog"][data-open]'))) { details.cancel(); details.allowPropagation(); return }
+    if (!next && details.reason === "escape-key" && (escapeIsTaken(details.event) || dialogOpen({ exiting: false }))) { details.cancel(); details.allowPropagation(); return }
     onOpenChange(next)
   }
   return (
@@ -83,15 +83,14 @@ function SheetContent({
         finalFocus={finalFocus ?? focus.finalFocus}
         className={cn(
           // 阴影放在 ::before 上、只动 opacity（components.css）：位移只动 transform，两者都能交给合成器，滑入这段正是抽屉挂载、下载懒块的时候。
-          // --removed-body-scroll-bar-size：抽屉里打开 Radix 的菜单 / 下拉（锁滚动、视口让出页面滚动条变宽）时，抽屉同宽加宽、右侧垫上，内容原地不动（B2b 换完后去掉）
-          "fixed top-2 right-2 bottom-2 z-(--z-drawer) flex w-[calc(var(--drawer-w)+var(--removed-body-scroll-bar-size,0px))] max-w-[calc(100vw-16px)] flex-col overflow-hidden rounded-section border border-(--line-float) bg-surface pr-(--removed-body-scroll-bar-size,0px) before:pointer-events-none before:absolute before:inset-0 before:-z-1 before:rounded-[inherit] before:shadow-(--shadow-modal) before:content-[''] max-[601px]:inset-0 max-[601px]:max-w-screen max-[601px]:rounded-none max-[601px]:border-0",
+          "fixed top-2 right-2 bottom-2 z-(--z-drawer) flex w-(--drawer-w) max-w-[calc(100vw-16px)] flex-col overflow-hidden rounded-section border border-(--line-float) bg-surface before:pointer-events-none before:absolute before:inset-0 before:-z-1 before:rounded-[inherit] before:shadow-(--shadow-modal) before:content-[''] max-[601px]:inset-0 max-[601px]:max-w-screen max-[601px]:rounded-none max-[601px]:border-0",
           className
         )}
         {...props}
       >
         {children}
         {showCloseButton && (
-          <SheetPrimitive.Close data-slot="sheet-close" render={(p) => <IconButton {...(p as object)} label="关闭" className="absolute top-3 right-[calc(12px+var(--removed-body-scroll-bar-size,0px))]" />}>
+          <SheetPrimitive.Close data-slot="sheet-close" render={(p) => <IconButton {...(p as object)} label="关闭" className="absolute top-3 right-3" />}>
             <X size={16} />
           </SheetPrimitive.Close>
         )}

@@ -17,8 +17,8 @@ import { Input } from '@/components/ui/input';
 import { useNow } from '@/lib/useNow';
 import * as F from '@/lib/format';
 import { Button, IconButton } from '@/components/ui/button';
-import { Segmented } from '@/components/ui/overlays';
-import { Select } from '@/components/ui/select';
+import { Segmented } from '@/components/ui/segmented';
+import { OptionSelect } from '@/components/ui/option-select';
 import { Progress } from '@/components/ui/progress';
 import { SkeletonRows } from '@/components/app/SkeletonRows';
 import { ConfirmDialog } from '@/components/app/dialogs';
@@ -118,7 +118,7 @@ export function JobsPage() {
     <div className="stack">
       <PageHead title="作业" note={jobs.data ? `${jobs.data.total} 个` : undefined}
         tools={<>
-          <div className="w-[140px]"><Select value={kind} onChange={(v) => setParam('kind', v)} allowEmpty="全部类型" placeholder="作业类型" options={kindOpts} aria-label="作业类型" /></div>
+          <div className="w-[140px]"><OptionSelect value={kind} onChange={(v) => setParam('kind', v)} allowEmpty="全部类型" placeholder="作业类型" options={kindOpts} aria-label="作业类型" /></div>
           <Segmented label="筛选" value={view} onChange={setView} items={VIEWS} />
           <Button variant="outline" onClick={() => setPrune(true)}>清理记录…</Button>
         </>} />

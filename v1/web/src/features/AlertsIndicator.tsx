@@ -28,12 +28,11 @@ export function AlertsIndicator() {
   const now = Date.now();
   return (
     <HoverCard open={open} onOpenChange={setOpen}>
-      <HoverCardTrigger asChild>
-        <NavLink to="/incidents" className="top-alert" aria-label={n ? `${n} 条告警` : `${acked} 条已确认的告警`} onClick={() => setOpen(false)}>
-          {/* 全都确认了：胶囊转灰，写已确认的条数 */}
-          {n ? <Pill tone="bad">{n}<span className="hide-sm"> 条告警</span></Pill> : <Pill tone="neutral">{acked}<span className="hide-sm"> 条已确认</span></Pill>}</NavLink>
+      <HoverCardTrigger render={<NavLink to="/incidents" className="top-alert" aria-label={n ? `${n} 条告警` : `${acked} 条已确认的告警`} onClick={() => setOpen(false)} />}>
+        {/* 全都确认了：胶囊转灰，写已确认的条数 */}
+        {n ? <Pill tone="bad">{n}<span className="hide-sm"> 条告警</span></Pill> : <Pill tone="neutral">{acked}<span className="hide-sm"> 条已确认</span></Pill>}
       </HoverCardTrigger>
-      <HoverCardContent align="end" className="alerts-pop">
+      <HoverCardContent align="end" className="alerts-pop w-(--pop-w-lg) p-0">
         {/* 确认不关闭告警：已确认的不进胶囊上的数，这里另写 */}
         <div className="pop-head">进行中的告警<span className="t-sub">{n} 条{acked > 0 ? ` · 另有 ${acked} 条已确认` : ''}</span></div>
         <ul className="pop-list">
