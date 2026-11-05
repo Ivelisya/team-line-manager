@@ -20,8 +20,8 @@ export const vRate = (_: string, v: number) => F.str(F.rate(v));
 
 /** 纵轴刻度：从 0 起 4 段。速率（1000 进位）每段取 1/2/2.5/5×10^k，字节（1024 进位）每段取 2 的幂，
  *  读出来是 250 Mbps、256 MiB 这样的整数，不会出现按十进制取整再换算成 MiB 的 143M、286M */
-export function valueTicks(max: number, base: 1000 | 1024): number[] | undefined {
-  if (!(max > 0)) return undefined;
+export function valueTicks(max: number, base: 1000 | 1024): number[] {
+  if (!(max > 0)) return [0, 1, 2, 3, 4].map((i) => (i * base) / 4); // 没有数据：到 1 KB / 1 KiB 4 等分（250 / 256 …）
   const unit = base ** Math.max(0, Math.floor(Math.log(max) / Math.log(base)));
   const raw = max / unit / 4;
   let step: number;
@@ -36,15 +36,15 @@ export function niceCeil(v: number): number {
   const e = 10 ** Math.floor(Math.log10(v));
   return ([1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10].find((n) => n * e >= v) ?? 10) * e;
 }
-/** 整数步长：只取 1 / 2 / 5（以及 25 / 250 …）× 10^k，且 ≥ 1，不出现 1.5、2.5 这样的小数档 */
+/** 整数步长：{1, 1.5, 2, 2.5, 3, 4, 5, 6, 8} × 10^k 里取不小于 raw 的最小整数（k=0 → 1 2 3 4 5 6 8；k=1 → 10 15 20 25 30 40 50 60 80 …），raw < 1 按 1 */
 const intStep = (raw: number) => {
   const r = Math.max(1, raw); const e = 10 ** Math.floor(Math.log10(r));
-  return ([1, 2, 2.5, 5, 10].map((n) => n * e).find((s) => Number.isInteger(s) && s >= r)) ?? 10 * e;
+  return [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10].map((n) => n * e).find((x) => Number.isInteger(x) && x >= r) ?? 10 * e;
 };
-/** 整数刻度（延迟 ms、次数）：从 0 起 4 段，步长是整数（max = 6 → 0 / 2 / 4 / 6 / 8；max = 10 → 0 / 5 / 10 / 15 / 20；max = 0 → 0…4） */
+/** 整数刻度（延迟 ms、次数、连接数、温度）：从 0 起 4 段，步长是整数（max = 41 → 0 / 15 / 30 / 45 / 60；max = 5 → 0 / 2 / 4 / 6 / 8；max = 0 → 0…4） */
 export const intTicks = (max: number) => { const step = intStep(max / 4); return [0, 1, 2, 3, 4].map((i) => i * step); };
-/** 没有指定进位 / 范围的图：数据全是整数用整数刻度，否则按 niceCeil 的步长；从 0 起 4 段；全为 0 时 0 与 1 */
-export const autoTicks = (max: number, integers: boolean) => (max > 0 ? (integers ? intTicks(max) : [0, 1, 2, 3, 4].map((i) => i * niceCeil(max / 4))) : [0, 1]);
+/** 没有指定进位 / 范围的图（连接数、客户端 / 可用出口、温度、出口延迟 ms，都是整数读数）：同 intTicks，全为 0 时 0…4 */
+export const autoTicks = (max: number) => intTicks(max > 0 ? max : 0);
 
 /** 百分比刻度（没有固定上限的百分比，如负载）：从 0 起 4 段，每段取 5 / 10 / 20 / 25 / 50 / 100 … 这样的整档，不出现 7% / 14% / 21% */
 export const pctTicks = (max: number) => { const step = [5, 10, 20, 25, 50, 100, 200, 500, 1000, 2000, 5000].find((s) => s * 4 >= max) ?? Math.ceil(max / 4); return [0, 1, 2, 3, 4].map((i) => i * step); };

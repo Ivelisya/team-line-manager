@@ -9,6 +9,7 @@ import {
   useChartStable,
 } from "./chart-context";
 import { shortDateFmt } from "./chart-formatters";
+import { textWidth } from "./text-width";
 import { DEFAULT_Y_DOMAIN_TWEEN_MS } from "./chart-phase";
 import { LINE_LOADING_PULSE_EASE } from "./line-loading-timing";
 import {
@@ -474,7 +475,7 @@ function buildExplicitTicks(
     const date = new Date(time);
     const label = formatTick ? formatTick(time) : shortDateFmt.format(date);
     const x = (xScale(date) ?? 0) + marginLeft;
-    const half = (label.length * 6.5) / 2; // 11px digits, tabular enough
+    const half = textWidth(label, 11) / 2;
     if (x - half < lastRight + 8) {
       continue;
     }

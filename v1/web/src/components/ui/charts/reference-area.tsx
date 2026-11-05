@@ -8,6 +8,7 @@ import {
   computeReferenceAreaRect,
   type ReferenceAreaIfOverflow,
 } from "./reference-area-geometry";
+import { textWidth } from "./text-width";
 import { useReferenceAreaRegistration } from "./reference-area-registration-context";
 import { normalizeYAxisId } from "./y-axis-scales";
 import { isReferenceAreaVisiblePhase } from "./y-domain-utils";
@@ -65,15 +66,6 @@ export interface ReferenceAreaProps {
 }
 
 const ENTER_FADE_MS = 420;
-
-/** Width of an 11px label: CJK glyphs 11px, everything else ~6px. */
-function labelTextWidth(label: string): number {
-  let w = 0;
-  for (const ch of label) {
-    w += (ch.codePointAt(0) ?? 0) > 255 ? 11 : 6;
-  }
-  return w;
-}
 
 function clampFadeLength(length: number): number {
   return Math.min(45, Math.max(0, length));
@@ -278,7 +270,7 @@ export function ReferenceArea({
           y2={bottomEdgeY}
         />
       </g>
-      {label && width > labelTextWidth(label) + 16 ? (
+      {label && width > textWidth(label, 11) + 16 ? (
         <text
           dominantBaseline="central"
           fill={labelColor}

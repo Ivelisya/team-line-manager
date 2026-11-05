@@ -15,6 +15,7 @@ import { YAxis } from '@/components/ui/charts/y-axis';
 import { ReferenceArea } from '@/components/ui/charts/reference-area';
 import { ChartTooltip } from '@/components/ui/charts/tooltip';
 import { useChartStable } from '@/components/ui/charts/chart-context';
+import { textWidth } from '@/components/ui/charts/text-width';
 import { ChartLegend } from '@/components/ui/charts/legend-toggle';
 import '@/styles/charts.css';
 
@@ -150,15 +151,16 @@ export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 
     const top = cut ? p99 : max;
     let ticks = yBase ? valueTicks(top, yBase) : pct && top > 0 ? pctTicks(top) : clip && top > 0 ? intTicks(top) : undefined;
     let ceil = ticks ? ticks[ticks.length - 1] : cut ? niceCeil(top) : undefined;
-    // 固定范围（百分比 0–100）：上下限就是范围，刻度均分 4 段
+    // 固定范围（百分比 0–100）：上下限就是范围，刻度均分 4 段；超过上限的点压到上限、标小三角（同截顶）
+    let fixed = false;
     if (ceil == null && typeof domain?.[0] === 'number' && typeof domain[1] === 'number') {
-      const [lo, hi] = domain; ceil = hi; ticks = [0, 1, 2, 3, 4].map((i) => lo + ((hi - lo) * i) / 4);
+      const [lo, hi] = domain; ceil = hi; fixed = true; ticks = [0, 1, 2, 3, 4].map((i) => lo + ((hi - lo) * i) / 4);
     }
-    // 没给进位 / 范围的图（连接数、温度、出口延迟 …）：自己算 4 段刻度，同一份交给 Grid 与 YAxis，上限就是最后一个刻度；全为 0 时 0 与 1
+    // 没给进位 / 范围的图（连接数、温度、出口延迟 …）：自己算 4 段整数刻度，同一份交给 Grid 与 YAxis，上限就是最后一个刻度；全为 0 时 0…4
     if (ceil == null) {
-      ticks = autoTicks(top, vals.every(Number.isInteger)); ceil = ticks[ticks.length - 1];
+      ticks = autoTicks(top); ceil = ticks[ticks.length - 1];
     }
-    return { ticks, ceil, floor: typeof domain?.[0] === 'number' ? domain[0] : 0, cut };
+    return { ticks, ceil, floor: typeof domain?.[0] === 'number' ? domain[0] : 0, cut: cut || fixed };
   }, [data, shown, yBase, pct, clip, domain]);
   // 画的行：每行只带 t 和还显示的曲线值（没有值的键不写，bklit 据此断线）；超出上限的值压到上限，真实值另存，悬停读真实值
   const { rows, out } = useMemo(() => {
@@ -182,7 +184,7 @@ export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 
   }), [shown, valueFmt]);
   const tipTitle = useCallback((p: Record<string, unknown>) => dt(p.t as number), []);
   if (none) return <div className="chart-empty" style={{ height }}>{empty}</div>;
-  const labelW = Math.max(0, ...(y.ticks ?? []).map((v) => yFmt(v).length)) * 6.4 + 14; // 刻度文字 11px：数字 / 字母 ≈ 6.4px 一个
+  const labelW = Math.max(0, ...(y.ticks ?? []).map((v) => textWidth(yFmt(v), 11))) + 14; // 刻度文字 11px
   const margin = { top: 8, right: 10, bottom: 26, left: Math.max(yWidth, Math.ceil(labelW)) };
   const xDomain = span ? ([new Date(span[0]), new Date(span[1])] as [Date, Date]) : undefined;
   // 数组而不是 <>…</>：AreaChart 只在直接子元素里找 Area 来登记序列（纵轴取值、提示）

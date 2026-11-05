@@ -36,17 +36,16 @@ export function DailyLegend() {
 
 export const DailyBars = memo(function DailyBars({ days, height = 200, yWidth = 60 }: { days: DailyBiz[]; height?: number; yWidth?: number }) {
   const data = useMemo(() => days.map((d) => ({ ...d, sum: d.down + d.up })), [days]);
-  const ticks = useMemo(() => valueTicks(Math.max(0, ...data.map((d) => d.sum)), 1000) ?? [0, 1000], [data]); // 全为 0 时也给确定的刻度（0 与 1 KB），网格与纵轴标签对得上
+  const ticks = useMemo(() => valueTicks(Math.max(0, ...data.map((d) => d.sum)), 1000), [data]); // 全为 0 时 valueTicks 给 0 / 250 / … / 1000，网格与纵轴标签对得上
   const last = days[days.length - 1]?.date;
   const long = data.length > 31;
   const title = useCallback((p: Record<string, unknown>) => {
     const date = String(p.date);
-    return `${md(date)} ${weekday(date)}${date === last ? '（今天，到目前为止）' : ''}`;
+    return `${md(date)} ${weekday(date)}${date === last ? '（今天，到目前为止）' : ''} · 合计 ${F.str(F.bytes(Number(p.sum)))}`;
   }, [last]);
   const rows = useCallback((p: Record<string, unknown>) => [
     { ...DOWN, value: F.str(F.bytes(Number(p.down))) },
     { ...UP, value: F.str(F.bytes(Number(p.up))) },
-    { label: '合计', color: '', value: F.str(F.bytes(Number(p.sum))) },
   ], []);
   const dim = useCallback((p: Record<string, unknown>) => (p.date === last ? TODAY_OPACITY : 1), [last]);
   return (

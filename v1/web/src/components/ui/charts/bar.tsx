@@ -499,7 +499,19 @@ const BarInner = memo(function BarInner({
 
         if (stacked && stackOffsets) {
           const offset = stackOffsets.get(i)?.get(dataKey) ?? 0;
-          const offsetY = scale(offset) ?? innerHeight;
+          let offsetY = scale(offset) ?? innerHeight;
+          // Start on top of the lower segments as DRAWN (each raised to
+          // `minBarHeight`), not at their raw value.
+          if (minBarHeight > 0) {
+            let drawn = 0;
+            for (let k = 0; k < seriesIndex; k++) {
+              const lower = d[lines[k]?.dataKey ?? ""];
+              if (typeof lower === "number" && lower > 0) {
+                drawn += Math.max(zeroY - (scale(lower) ?? zeroY), minBarHeight);
+              }
+            }
+            offsetY = zeroY - drawn;
+          }
           // Apply stack gap: shift up and reduce height
           const gapOffset = seriesIndex * stackGap;
           // A non-zero stacked segment is at least `minBarHeight` tall.
