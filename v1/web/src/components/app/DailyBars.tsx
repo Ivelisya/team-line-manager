@@ -52,7 +52,7 @@ export const DailyBars = memo(function DailyBars({ days, height = 200, yWidth = 
     <BarChart data={data} xDataKey="date" aspectRatio="" style={{ height }} margin={{ top: 8, right: 10, bottom: 26, left: yWidth }} stacked barGap={long ? 0.08 : 0.18}
       yDomain={[0, ticks[ticks.length - 1]]} animationDuration={0}>
       <Grid horizontal vertical={false} strokeDasharray="0" rowTickValues={ticks} numTicksRows={4} />
-      <Bar dataKey="down" fill={DOWN.color} lineCap={3} animate={false} minBarHeight={2} pointOpacity={dim} fadedOpacity={0.4} />
+      <Bar dataKey="down" fill={DOWN.color} lineCap={3} roundEnd animate={false} minBarHeight={2} pointOpacity={dim} fadedOpacity={0.4} />
       <Bar dataKey="up" fill={UP.color} lineCap={3} roundEnd animate={false} minBarHeight={2} pointOpacity={dim} fadedOpacity={0.4} />
       <BarXAxis formatLabel={md} minLabelGap={long ? 46 : 52} fadeOnHover={false} />
       <YAxis ticks={ticks} formatValue={yBytes} animate={false} />

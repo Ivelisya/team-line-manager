@@ -256,6 +256,53 @@ interface BarGeometry {
   labelTransform?: string;
 }
 
+/** Index (in `lines`) of the last series with a positive value in this row, -1 when none. */
+function topNonZeroIndex(
+  d: Record<string, unknown>,
+  lines: { dataKey: string }[]
+): number {
+  for (let k = lines.length - 1; k >= 0; k--) {
+    const v = d[lines[k]?.dataKey ?? ""];
+    if (typeof v === "number" && v > 0) {
+      return k;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Drawn heights (px) of a vertical stack: each positive segment at least
+ * `minHeight`; the extra pixels are taken out of the tallest segment so the
+ * stack's total stays what the scale says it is.
+ */
+function drawnStackHeights(
+  d: Record<string, unknown>,
+  lines: { dataKey: string }[],
+  scale: (v: number) => number | undefined,
+  zeroY: number,
+  minHeight: number
+): number[] {
+  const raw = lines.map((line) => {
+    const v = d[line.dataKey];
+    return typeof v === "number" && v > 0 ? zeroY - (scale(v) ?? zeroY) : 0;
+  });
+  const drawn = raw.map((h, k) => {
+    const v = d[lines[k]?.dataKey ?? ""];
+    return typeof v === "number" && v > 0 ? Math.max(h, minHeight) : 0;
+  });
+  const extra = drawn.reduce((a, h) => a + h, 0) - raw.reduce((a, h) => a + h, 0);
+  if (extra > 0) {
+    let tallest = 0;
+    for (let k = 1; k < raw.length; k++) {
+      if ((raw[k] ?? 0) > (raw[tallest] ?? 0)) {
+        tallest = k;
+      }
+    }
+    drawn[tallest] = Math.max(minHeight, (drawn[tallest] ?? 0) - extra);
+  }
+  return drawn;
+}
+
 /** Rect path with only the free end rounded: top corners, or right corners on horizontal bars. */
 function endRoundedRectPath(g: BarGeometry): string {
   const { x, y, width: w, height: h } = g;
@@ -500,24 +547,21 @@ const BarInner = memo(function BarInner({
         if (stacked && stackOffsets) {
           const offset = stackOffsets.get(i)?.get(dataKey) ?? 0;
           let offsetY = scale(offset) ?? innerHeight;
-          // Start on top of the lower segments as DRAWN (each raised to
-          // `minBarHeight`), not at their raw value.
           if (minBarHeight > 0) {
-            let drawn = 0;
+            // Every non-zero segment is drawn at least `minBarHeight` tall, and
+            // each segment starts on top of the lower ones AS DRAWN. The extra
+            // pixels come out of the tallest segment of the same stack, so the
+            // stack never rises above its true total (or the axis top).
+            const drawn = drawnStackHeights(d, lines, scale, zeroY, minBarHeight);
+            let below = 0;
             for (let k = 0; k < seriesIndex; k++) {
-              const lower = d[lines[k]?.dataKey ?? ""];
-              if (typeof lower === "number" && lower > 0) {
-                drawn += Math.max(zeroY - (scale(lower) ?? zeroY), minBarHeight);
-              }
+              below += drawn[k] ?? 0;
             }
-            offsetY = zeroY - drawn;
+            offsetY = zeroY - below;
+            barHeight = drawn[seriesIndex] ?? barHeight;
           }
           // Apply stack gap: shift up and reduce height
           const gapOffset = seriesIndex * stackGap;
-          // A non-zero stacked segment is at least `minBarHeight` tall.
-          if (minBarHeight > 0 && value > 0 && barHeight < minBarHeight) {
-            barHeight = minBarHeight;
-          }
           y = offsetY - barHeight - gapOffset;
           // Reduce height slightly for non-last bars to create visual gap
           if (!isLastSeries && stackGap > 0) {
@@ -603,6 +647,15 @@ const BarInner = memo(function BarInner({
         growOrigin = stacked ? x : zeroX;
       }
 
+      // `roundEnd` on a stack: round the topmost NON-ZERO segment of this
+      // stack (a day with no upload rounds its download segment instead).
+      let rowRx = effectiveRx;
+      let rowRoundEnd = roundEnd;
+      if (roundEnd && stacked) {
+        rowRoundEnd = topNonZeroIndex(d, lines) === seriesIndex;
+        rowRx = rowRoundEnd ? cornerRadius : 0;
+      }
+
       result.push({
         // Use categoryValue as key since it's the unique identifier from data
         key: `bar-${dataKey}-${categoryValue}`,
@@ -611,9 +664,9 @@ const BarInner = memo(function BarInner({
         y,
         width: barW,
         height: barHeight,
-        rx: effectiveRx,
+        rx: rowRx,
         opacity: pointOpacity ? pointOpacity(d) : 1,
-        roundEnd,
+        roundEnd: rowRoundEnd,
         horizontal: isHorizontal,
         growOrigin,
         valueLabel,

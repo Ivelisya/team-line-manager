@@ -23,6 +23,7 @@ const L_CONNS = [{ key: 'conns', label: '代理连接', color: 'var(--chart-1)' 
 const L_PEOPLE = [{ key: 'clients', label: '在线客户端', color: 'var(--chart-1)' }, { key: 'fleet_alive', label: '可用出口', color: 'var(--chart-2)' }];
 const L_DELAY = [{ key: 'delay_ms', label: '延迟', color: 'var(--chart-1)' }];
 const PCT: [number, number] = [0, 100];
+const YW_ROUTER = 68; // 八张图同宽（「OpenClash 代理速率」的刻度「400 Mbps」放得下），绘图区左边对齐
 const yInt = (v: number) => String(Math.round(v));
 const vInt = (_: string, v: number) => String(Math.round(v));
 const yTemp = (v: number) => `${Math.round(v)}°`;
@@ -45,7 +46,7 @@ function Charts({ r }: { r: RouterView }) {
   const pts = q.data?.points;
   const hasTemp = React.useMemo(() => pts?.some((p) => typeof p.temp_c === 'number'), [pts]);
   const chart = (lines: typeof L_CPU, yFmt: (v: number) => string, valueFmt: (k: string, v: number) => string, o: { domain?: [number, number]; yBase?: 1000; kind?: 'line' } = {}) => (
-    <ChartFrame q={q} few={few} height={140}><TimeChart points={pts} range={range} lines={lines} yFmt={yFmt} valueFmt={valueFmt} height={140} {...o} /></ChartFrame>
+    <ChartFrame q={q} few={few} height={140}><TimeChart points={pts} range={range} lines={lines} yFmt={yFmt} valueFmt={valueFmt} height={140} yWidth={YW_ROUTER} {...o} /></ChartFrame>
   );
   return (
     <>
@@ -88,7 +89,7 @@ function ExitDelays({ r, range, few }: { r: RouterView; range: string; few: stri
               {beats.map((b) => <Beat key={b.name} n={bins} cells={b.cells} titles={b.titles} caption={<b>{b.name}</b>} win={b.rate != null ? (b.rate >= 1 ? '100%' : `${(Math.floor(b.rate * 1000 + 1e-9) / 10).toFixed(1)}%`) : undefined} winTone={b.rate == null ? undefined : b.rate >= 1 ? 'ok' : b.rate < 0.5 ? 'bad' : 'warn'} />)}
             </div>
             <ChartCard c="var(--chart-1)" icon={<Radar />} title="延迟曲线" tools={<Select sm value={cur?.name ?? ''} onChange={setPick} options={opts} aria-label="出口" className="w-[160px]" />}>
-              {cur && cur.points.length > 1 ? <TimeChart points={cur.points} range={range} kind="line" lines={L_DELAY} yFmt={yMs} valueFmt={vMs} height={160} /> : <div className="chart-empty" style={{ height: 160 }}>{few}</div>}
+              {cur && cur.points.length > 1 ? <TimeChart points={cur.points} range={range} kind="line" lines={L_DELAY} yFmt={yMs} valueFmt={vMs} height={160} yWidth={YW_ROUTER} /> : <div className="chart-empty" style={{ height: 160 }}>{few}</div>}
             </ChartCard>
           </div>
         )}

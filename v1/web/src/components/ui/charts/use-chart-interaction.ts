@@ -14,6 +14,7 @@ import {
   type TooltipData,
 } from "./chart-context";
 import { localPoint } from "./local-point";
+import { useClearTooltipOnScroll } from "./use-hide-on-scroll";
 import { useScheduledTooltip } from "./use-scheduled-tooltip";
 import { normalizeYAxisId } from "./y-axis-scales";
 
@@ -243,7 +244,9 @@ export function useChartInteraction({
     ]
   );
 
-  const handleMouseLeave = useCallback(() => {
+  // Hide the tooltip AND forget the hover position, so the re-anchor effect below
+  // cannot bring it back on the next re-render (live refresh, legend toggle, new xDomain).
+  const clearHover = useCallback(() => {
     lastHoveredXRef.current = null;
     clearTooltip();
     if (isDraggingRef.current) {
@@ -251,6 +254,8 @@ export function useChartInteraction({
     }
     setSelection(null);
   }, [clearTooltip, setSelection]);
+  const handleMouseLeave = clearHover;
+  useClearTooltipOnScroll(clearHover);
 
   const handleMouseDown = useCallback(
     (event: React.MouseEvent<SVGGElement>) => {
@@ -284,6 +289,8 @@ export function useChartInteraction({
         const tooltip = resolveTooltipFromX(chartX);
         if (tooltip) {
           scheduleTooltip(tooltip);
+        } else {
+          clearTooltip();
         }
       } else if (event.touches.length === 2) {
         resetTooltipDedupe();
@@ -326,6 +333,8 @@ export function useChartInteraction({
         const tooltip = resolveTooltipFromX(chartX);
         if (tooltip) {
           scheduleTooltip(tooltip);
+        } else {
+          clearTooltip();
         }
       } else if (event.touches.length === 2) {
         const x0 = getChartX(event, 0);
@@ -349,14 +358,12 @@ export function useChartInteraction({
       resolveTooltipFromX,
       resolveIndexFromX,
       scheduleTooltip,
+      clearTooltip,
       setSelection,
     ]
   );
 
-  const handleTouchEnd = useCallback(() => {
-    clearTooltip();
-    setSelection(null);
-  }, [clearTooltip, setSelection]);
+  const handleTouchEnd = clearHover;
 
   // Re-anchor tooltip/crosshair when x-scale or visible data changes (e.g. brush zoom commit).
   useEffect(() => {

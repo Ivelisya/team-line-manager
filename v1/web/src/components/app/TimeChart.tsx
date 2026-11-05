@@ -5,7 +5,7 @@ import { curveMonotoneX } from 'd3-shape';
 import { scaleTime } from 'd3-scale';
 import { useReducedMotion } from 'motion/react';
 import type { SeriesPoint } from '@/lib/types';
-import { RANGE_MS, autoTicks, intTicks, niceCeil, pctTicks, valueTicks } from '@/lib/chart';
+import { RANGE_MS, intTicks, pctTicks, valueTicks } from '@/lib/chart';
 import { dt, hm } from '@/lib/format';
 import { Area, AreaChart } from '@/components/ui/charts/area-chart';
 import { Line, LineChart } from '@/components/ui/charts/line-chart';
@@ -149,8 +149,9 @@ export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 
     const p99 = vals.length > 1 ? quantile([...vals].sort((a, b) => a - b).slice(0, -1), 0.99) : vals[0] ?? 0;
     const cut = !!clip && p99 > 0 && max > p99 * 1.3;
     const top = cut ? p99 : max;
+    // clip 且有数据时按数据取整数刻度（连接质量的丢包图同时有 domain 与 clip：有丢包时缩到 0…4%，全为 0 才落回固定的 0–100）
     let ticks = yBase ? valueTicks(top, yBase) : pct && top > 0 ? pctTicks(top) : clip && top > 0 ? intTicks(top) : undefined;
-    let ceil = ticks ? ticks[ticks.length - 1] : cut ? niceCeil(top) : undefined;
+    let ceil = ticks ? ticks[ticks.length - 1] : undefined;
     // 固定范围（百分比 0–100）：上下限就是范围，刻度均分 4 段；超过上限的点压到上限、标小三角（同截顶）
     let fixed = false;
     if (ceil == null && typeof domain?.[0] === 'number' && typeof domain[1] === 'number') {
@@ -158,7 +159,7 @@ export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 
     }
     // 没给进位 / 范围的图（连接数、温度、出口延迟 …）：自己算 4 段整数刻度，同一份交给 Grid 与 YAxis，上限就是最后一个刻度；全为 0 时 0…4
     if (ceil == null) {
-      ticks = autoTicks(top); ceil = ticks[ticks.length - 1];
+      ticks = intTicks(top); ceil = ticks[ticks.length - 1];
     }
     return { ticks, ceil, floor: typeof domain?.[0] === 'number' ? domain[0] : 0, cut: cut || fixed };
   }, [data, shown, yBase, pct, clip, domain]);
@@ -183,10 +184,13 @@ export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 
     return { color: l.color, label: l.label, value: typeof v !== 'number' ? '—' : valueFmt ? valueFmt(l.key, v) : String(v) };
   }), [shown, valueFmt]);
   const tipTitle = useCallback((p: Record<string, unknown>) => dt(p.t as number), []);
+  // 引用稳定：数据没变（只是父组件重渲染）时不给图表新的数组，免得它重算比例尺
+  const s0 = span?.[0]; const s1 = span?.[1];
+  const xDomain = useMemo(() => (s0 != null && s1 != null ? ([new Date(s0), new Date(s1)] as [Date, Date]) : undefined), [s0, s1]);
+  const yDomain = useMemo(() => ([y.floor, y.ceil] as [number, number]), [y.floor, y.ceil]);
   if (none) return <div className="chart-empty" style={{ height }}>{empty}</div>;
   const labelW = Math.max(0, ...(y.ticks ?? []).map((v) => textWidth(yFmt(v), 11))) + 14; // 刻度文字 11px
   const margin = { top: 8, right: 10, bottom: 26, left: Math.max(yWidth, Math.ceil(labelW)) };
-  const xDomain = span ? ([new Date(span[0]), new Date(span[1])] as [Date, Date]) : undefined;
   // 数组而不是 <>…</>：AreaChart 只在直接子元素里找 Area 来登记序列（纵轴取值、提示）
   const children = [
     <Grid key="grid" horizontal vertical={false} strokeDasharray="0" rowTickValues={y.ticks} numTicksRows={4} />,
@@ -203,7 +207,7 @@ export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 
     <ChartTooltip key="tip" showDatePill={false} showDots dotSize={4} dotHaloScale={2} dotHaloOpacity={0.2} damping={0} springConfig={TIP_SPRING}  rows={tipRows} title={tipTitle} />,
   ];
   const common = {
-    data: rows, xDataKey: 't', margin, aspectRatio: '', style: { height }, xDomain, yDomain: y.ceil != null ? ([y.floor, y.ceil] as [number, number]) : undefined,
+    data: rows, xDataKey: 't', margin, aspectRatio: '', style: { height }, xDomain, yDomain,
     decimate: false, yDomainTween: false, animationDuration: reduce ? 0 : REVEAL_MS, revealSignature: range,
   };
   return (

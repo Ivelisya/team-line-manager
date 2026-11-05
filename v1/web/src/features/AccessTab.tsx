@@ -54,7 +54,7 @@ function HostBars({ items, limit }: { items: MachineAccess['top_domains']; limit
   const tailW = Math.max(72, ...data.map((d) => Math.ceil(textWidth(times(d.total), 11)) + 14));
   return (
     <BarChart data={data} xDataKey="host" orientation="horizontal" stacked aspectRatio="" style={{ height: Math.max(64, data.length * 26 + 8) }} margin={{ top: 0, right: tailW, bottom: 0, left: 176 }} barGap={0.2} animationDuration={0}>
-      <Bar dataKey="routed" fill={ROUTED.color} lineCap={3} animate={false} fadedOpacity={0.45} />
+      <Bar dataKey="routed" fill={ROUTED.color} lineCap={3} roundEnd animate={false} fadedOpacity={0.45} />
       <Bar dataKey="blocked" fill={BLOCKED.color} lineCap={3} roundEnd animate={false} fadedOpacity={0.45} />
       <BarYAxis formatLabel={(v) => cut(v, 26)} />
       <TailLabels />
@@ -79,7 +79,7 @@ function HourlyBars({ points, height = 160 }: { points: MachineAccess['hourly'];
   return (
     <BarChart data={data} xDataKey="t" stacked aspectRatio="" style={{ height }} margin={{ top: 8, right: 10, bottom: 26, left: leftW }} barGap={long ? 0 : 0.1} yDomain={[0, ticks[ticks.length - 1]]} animationDuration={0}>
       <Grid horizontal vertical={false} strokeDasharray="0" rowTickValues={ticks} numTicksRows={4} />
-      <Bar dataKey="routed" fill={ROUTED.color} animate={false} lineCap={long ? 0 : 2} fadedOpacity={0.45} />
+      <Bar dataKey="routed" fill={ROUTED.color} animate={false} lineCap={long ? 0 : 2} roundEnd fadedOpacity={0.45} />
       <Bar dataKey="blocked" fill={BLOCKED.color} animate={false} lineCap={long ? 0 : 2} roundEnd fadedOpacity={0.45} />
       <BarXAxis formatLabel={tick} minLabelGap={long ? 44 : 40} fadeOnHover={false} />
       <YAxis ticks={ticks} formatValue={yTimes} animate={false} />

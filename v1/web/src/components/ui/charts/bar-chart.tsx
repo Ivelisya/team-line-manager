@@ -15,7 +15,7 @@ import {
   useState,
 } from "react";
 import { cn } from "@/lib/utils";
-import { useHideTooltipOnScroll } from "./use-hide-on-scroll";
+import { useClearTooltipOnScroll } from "./use-hide-on-scroll";
 import { DEFAULT_ANIMATION_EASING } from "./animation";
 import type { BarProps } from "./bar";
 import { topSquareCenterY } from "./bar-squares-layout";
@@ -567,6 +567,8 @@ const ChartCore = memo(function ChartCore({
   const handleMouseLeave = useCallback(() => {
     clearTooltip();
   }, [clearTooltip]);
+  // A tap shows the tooltip (emulated mousemove) and keeps it until a tap elsewhere or a scroll.
+  useClearTooltipOnScroll(clearTooltip);
 
   const canInteract = isLoaded;
 
@@ -719,7 +721,6 @@ export function BarChart({
   loadingFill,
 }: BarChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  useHideTooltipOnScroll(containerRef);
   const margin = { ...DEFAULT_MARGIN, ...marginProp };
 
   return (

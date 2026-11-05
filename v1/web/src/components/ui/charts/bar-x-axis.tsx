@@ -95,6 +95,11 @@ export function BarXAxis(props: BarXAxisProps) {
   return <BarXAxisInner {...props} container={container} />;
 }
 
+/** Every step-th item counted back from the LAST one, so the newest label (today / the current hour) is always kept. */
+function everyNthFromEnd<T>(items: T[], step: number): T[] {
+  return items.filter((_, i) => (items.length - 1 - i) % step === 0);
+}
+
 const BarXAxisInner = memo(function BarXAxisInner({
   tickerHalfWidth = 50,
   showAllLabels = false,
@@ -138,7 +143,7 @@ const BarXAxisInner = memo(function BarXAxisInner({
       const pitch =
         (barScale as unknown as { step?: () => number }).step?.() ?? bandWidth;
       const gapStep = Math.max(1, Math.ceil(minLabelGap / Math.max(1, pitch)));
-      return allLabels.filter((_, i) => i % gapStep === 0);
+      return everyNthFromEnd(allLabels, gapStep);
     }
 
     // If showAllLabels is true or we have fewer than maxLabels, show all
@@ -148,7 +153,7 @@ const BarXAxisInner = memo(function BarXAxisInner({
 
     // Otherwise, skip some labels to avoid crowding
     const step = Math.ceil(allLabels.length / Math.max(1, resolvedMaxLabels));
-    return allLabels.filter((_, i) => i % step === 0);
+    return everyNthFromEnd(allLabels, step);
   }, [
     barScale,
     bandWidth,
