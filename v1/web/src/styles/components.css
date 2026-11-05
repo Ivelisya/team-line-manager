@@ -405,17 +405,16 @@ html[data-drawer] [data-slot="dialog-overlay"] { background: var(--scrim-stacked
 .hc-bar { display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: center; gap: var(--sp-8); font-size: var(--fs-label); }
 .hc-bar-l { color: var(--fg-2); }
 
-/* 通知（ui/toast.tsx，Base UI Toast）：新的在最下面，旧的往上排；相同消息合并计数；底部细线是剩余时间，鼠标停上去暂停。
-   从下方升起（--dur-2 / --ease-out），关闭、超时、超过上限被挤掉都向右滑出淡去（--dur-2 / --ease-std，Base UI 等过渡播完再卸载；减弱动效时 --dur-2 为 0）。
-   外观（边线、材质、投影、内边距、图标色、×N、剩余时间条）在 toast.tsx 的类名里。
+/* 通知（ui/toast.tsx，coss ui 的 toast 为底、Base UI Toast）：新的在最前，旧的往后叠、只露一道边；悬停 / 聚焦时整组展开并暂停计时。
+   每条是绝对定位的（贴着视口的下缘 / 手机上的上缘），堆叠、进出场的位移都在 toast.tsx 的类名里（时长走动效令牌，减弱动效时即刻完成）；这里只管视口放哪。
    right 同顶栏：Radix 的菜单 / 下拉锁滚动时补回让出的槽位（B2b 换完后去掉 --removed-body-scroll-bar-size）；bottom 让开页面底部的吸附条（--toast-lift，见 toast.tsx） */
-[data-slot="toast-viewport"] { position: fixed; z-index: var(--z-toast); right: calc(var(--sp-16) + var(--removed-body-scroll-bar-size, 0px)); bottom: calc(var(--sp-16) + var(--toast-lift, 0px)); display: flex; flex-direction: column; gap: var(--sp-8); width: min(380px, calc(100vw - 32px)); pointer-events: none; transition: bottom var(--dur-2) var(--ease-out); }
-/* 抽屉开着（<html data-drawer>）：通知挪到抽屉左侧，不盖住抽屉底部的保存 / 操作按钮；抽屉左边放不下通知（抽屉 + 通知 + 两侧间距 > 视口）时改底部居中；手机上抽屉全宽，通知本来就从顶栏下方落下（overrides.css），不在这里动 */
-@media (min-width: 601px) { html[data-drawer] [data-slot="toast-viewport"] { right: calc(var(--drawer-w) + var(--sp-8) + var(--sp-16) + var(--removed-body-scroll-bar-size, 0px)); } }
-@media (min-width: 601px) and (max-width: 1180px) { html[data-drawer] [data-slot="toast-viewport"] { right: auto; left: 50%; translate: -50% 0; } }
-[data-slot="toast"] { transition: opacity var(--dur-2) var(--ease-out), transform var(--dur-2) var(--ease-out); }
-[data-slot="toast"][data-starting-style] { opacity: 0; transform: translateY(8px) scale(.98); }
-[data-slot="toast"][data-ending-style] { opacity: 0; transform: translateX(16px); transition-timing-function: var(--ease-std); }
+[data-slot="toast-viewport"] { position: fixed; z-index: var(--z-toast); width: min(380px, calc(100vw - 32px)); }
+[data-slot="toast-viewport"][data-position="bottom"] { right: calc(var(--sp-16) + var(--removed-body-scroll-bar-size, 0px)); bottom: calc(var(--sp-16) + var(--toast-lift, 0px)); transition: bottom var(--dur-2) var(--ease-out); }
+/* 手机：通知从顶栏下方落下，不盖住对话框底部面板的按钮；抽屉全宽，不用让位 */
+[data-slot="toast-viewport"][data-position="top"] { left: 50%; translate: -50% 0; top: calc(var(--topbar-h) + env(safe-area-inset-top, 0px) + var(--sp-8)); }
+/* 抽屉开着（<html data-drawer>）：通知挪到抽屉左侧，不盖住抽屉底部的保存 / 操作按钮；抽屉左边放不下通知（抽屉 + 通知 + 两侧间距 > 视口）时改底部居中 */
+@media (min-width: 601px) { html[data-drawer] [data-slot="toast-viewport"][data-position="bottom"] { right: calc(var(--drawer-w) + var(--sp-8) + var(--sp-16) + var(--removed-body-scroll-bar-size, 0px)); } }
+@media (min-width: 601px) and (max-width: 1180px) { html[data-drawer] [data-slot="toast-viewport"][data-position="bottom"] { right: auto; left: 50%; translate: -50% 0; } }
 @keyframes toast-timer { from { transform: scaleX(1); } to { transform: scaleX(0); } }
 /* ×N 的数字又涨一次：角标弹一下（key 跟着计数，重新播） */
 @keyframes count-pop { 0% { transform: scale(.7); opacity: .4; } 60% { transform: scale(1.14); } 100% { transform: scale(1); opacity: 1; } }

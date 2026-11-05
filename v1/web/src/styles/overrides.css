@@ -70,8 +70,3 @@ html[data-overlay] :is(.app, [data-slot="sheet-content"]) [data-slot="progress-i
   :is(input:not([type="checkbox"], [type="radio"]), textarea) { font-size: 16px; }
   :is([data-slot="input"], [data-slot="input-group-control"], [data-slot="textarea"]) { font-size: 16px !important; }
 }
-/* 手机上对话框是底部面板，确认 / 取消在最下面：通知改从顶栏下方落下，不盖住面板的按钮（宽屏仍在右下） */
-@media (max-width: 600px) {
-  [data-slot="toast-viewport"] { top: calc(var(--topbar-h) + env(safe-area-inset-top, 0px) + var(--sp-8)); bottom: auto; }
-  [data-slot="toast"][data-starting-style] { transform: translateY(-8px) scale(.98); }
-}

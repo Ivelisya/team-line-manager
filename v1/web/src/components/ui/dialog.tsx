@@ -189,7 +189,7 @@ function DialogFooter({ className, ...props }: React.ComponentProps<"div">) {
     <div
       data-slot="dialog-footer"
       className={cn(
-        "sticky bottom-[calc(-1*var(--dlg-pb))] z-1 -mx-6 -mt-2 -mb-(--dlg-pb) flex flex-wrap justify-end gap-(--control-gap) bg-(--glass) px-6 pt-3 pb-(--dlg-pb) [backdrop-filter:var(--glass-blur)]",
+        "sticky bottom-[calc(-1*var(--dlg-pb))] z-1 -mx-6 -mt-2 -mb-(--dlg-pb) flex flex-wrap justify-end gap-(--control-gap) bg-(--glass) px-6 pt-3 pb-(--dlg-pb) [-webkit-backdrop-filter:var(--glass-blur)] [backdrop-filter:var(--glass-blur)]",
         className
       )}
       {...props}
