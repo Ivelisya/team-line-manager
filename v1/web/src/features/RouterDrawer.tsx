@@ -3,8 +3,9 @@
 // 总览数字不带框，出口关系画成「出口 → 线路机 → 节点」，部署进度是时间线。
 import * as React from 'react';
 import { Link } from 'react-router-dom';
-import { ChevronLeft, ChevronRight, CircleX, Router as RouterIcon, TriangleAlert, Users, Waypoints, XCircle } from 'lucide-react';
+import { ChevronLeft, ChevronRight, CircleX, MoreHorizontal, Router as RouterIcon, TriangleAlert, Users, Waypoints, XCircle } from 'lucide-react';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/sheet';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Trunc } from '@/components/ui/tooltip';
 import { dialogOpen } from '@/components/ui/dialog';
@@ -23,9 +24,10 @@ import { CopyButton, Empty, ErrorNote, LabelValue, LabelValueGrid, Note, Num, Pi
 import { Tag } from '@/components/app/viz';
 import { DeployTimeline, MiniBeat, RouterMeters, RouterStatePill, Seen, useShowBootstrap } from '@/components/app/RouterCard';
 import { useEndSubjectMaint, useMachineBriefs, useTeams } from '@/lib/queries';
+import { runAfterMenuClosed, useMenuHandoff } from '@/components/app/AnchoredDropdown';
 import { MaintenanceDialog } from '@/components/app/MaintenanceDialog';
 import { GroupsSection } from './RouterOps';
-import { exitBeats, showSync, exitUsable, fleetExits, ROUTER_TABS, routerIssues, routerSiblings, showDeploy, showRemoved, tempTone, uptimeFmt, useDeleteRouter, usePatchRouter, useRouter, useRouterDrawer, useRouterChanges, useRouterExitMetrics, useRouters, type RouterClient, type RouterDetail, type RouterExit, type RouterTab, type RouterView } from '@/lib/routers';
+import { exitBeats, showRemoveExits, showSync, exitUsable, fleetExits, ROUTER_TABS, routerIssues, routerSiblings, showDeploy, showRemoved, tempTone, uptimeFmt, useDeleteRouter, usePatchRouter, useRouter, useRouterDrawer, useRouterChanges, useRouterExitMetrics, useRouters, type RouterClient, type RouterDetail, type RouterExit, type RouterTab, type RouterView } from '@/lib/routers';
 import { jobKindLabel, tagColor } from '@/lib/derive';
 import { useHeld } from '@/lib/useHeld';
 import { openTerminal } from '@/lib/terminal';
@@ -459,6 +461,7 @@ function ExitsTab({ r, d }: { r: RouterView; d: RouterDetail }) {
   const drift = d.exits.filter((e) => e.sync === 'drift').length;
   // 参数不一致、对上的入口还在用的出口能同步（入口已删除 / 停用的要改指向别的入口）
   const onSync = React.useCallback((names: string[]) => showSync({ id: r.id, name: r.name, exits: names }), [r.id, r.name]);
+  const onRemove = React.useCallback((name: string) => showRemoveExits({ id: r.id, name: r.name, exits: [name] }), [r.id, r.name]);
   const canSync = r.state === 'online' && d.exits.some(syncable);
   return (
     <>
@@ -471,10 +474,10 @@ function ExitsTab({ r, d }: { r: RouterView; d: RouterDetail }) {
       {d.exits.length > 0 && <Section>
         <SectionHeader title="明细" meta={`${d.exits.length} 个`} />
         <div className="table-wrap">
-          <table className="dt rt-exit-tbl" style={{ minWidth: 717 }}>
-            <colgroup><col style={{ width: 90 }} /><col style={{ width: 132 }} /><col style={{ width: 101 }} /><col style={{ width: 84 }} /><col style={{ width: 90 }} /><col style={{ width: 48 }} /><col style={{ width: 104 }} /><col style={{ width: 68 }} /></colgroup>
-            <thead><tr><th>出口</th><th>对应入口</th><th>参数<InfoTip text={(['drift', 'unmanaged'] as const).map((k) => `${SYNC[k].label}：${SYNC[k].tip}`).join('\n')} /></th><th className="r">延迟</th><th>近 6 小时</th><th className="r">连接</th><th className="r">↓ / ↑ 速率</th><th className="r">客户端</th></tr></thead>
-            <tbody>{d.exits.map((e) => <ExitRow key={e.name} e={e} beats={m.get(e.name)} onOpen={openMachine} onSync={r.state === 'online' && syncable(e) ? onSync : undefined} />)}</tbody>
+          <table className="dt rt-exit-tbl" style={{ minWidth: 757 }}>
+            <colgroup><col style={{ width: 90 }} /><col style={{ width: 132 }} /><col style={{ width: 101 }} /><col style={{ width: 84 }} /><col style={{ width: 90 }} /><col style={{ width: 48 }} /><col style={{ width: 104 }} /><col style={{ width: 68 }} /><col style={{ width: 40 }} /></colgroup>
+            <thead><tr><th>出口</th><th>对应入口</th><th>参数<InfoTip text={(['drift', 'unmanaged'] as const).map((k) => `${SYNC[k].label}：${SYNC[k].tip}`).join('\n')} /></th><th className="r">延迟</th><th>近 6 小时</th><th className="r">连接</th><th className="r">↓ / ↑ 速率</th><th className="r">客户端</th><th><span className="sr-only">操作</span></th></tr></thead>
+            <tbody>{d.exits.map((e) => <ExitRow key={e.name} e={e} beats={m.get(e.name)} onOpen={openMachine} onSync={r.state === 'online' && syncable(e) ? onSync : undefined} onRemove={r.state === 'online' ? onRemove : undefined} />)}</tbody>
           </table>
         </div>
       </Section>}
@@ -489,7 +492,8 @@ function useExitBeats(id: string) {
 }
 
 /** 一行。memo：routers 事件重取详情后，没变的出口结构共享、引用不变（延迟格子另由曲线轮询换） */
-const ExitRow = React.memo(function ExitRow({ e, beats, onOpen, onSync }: { e: RouterExit; beats: ReturnType<typeof exitBeats> | undefined; onOpen: (id: string) => void; onSync?: (names: string[]) => void }) {
+const ExitRow = React.memo(function ExitRow({ e, beats, onOpen, onSync, onRemove }: { e: RouterExit; beats: ReturnType<typeof exitBeats> | undefined; onOpen: (id: string) => void; onSync?: (names: string[]) => void; onRemove?: (name: string) => void }) {
+  const handoff = useMenuHandoff();
   const s = SYNC[e.sync];
   const [node, via] = e.entry ? splitEntry(e.entry.name) : ['', ''];
   return (
@@ -509,6 +513,14 @@ const ExitRow = React.memo(function ExitRow({ e, beats, onOpen, onSync }: { e: R
       <td className="r num">{e.conns}</td>
       <td className="r"><span className="num">↓ {F.str(F.rate(e.down_bps))}</span><span className="sub">↑ {F.str(F.rate(e.up_bps))}</span></td>
       <td className="r num">{e.clients}</td>
+      <td className="r">{onRemove && (
+        <DropdownMenu {...handoff.rootProps}>
+          <DropdownMenuTrigger render={<IconButton size="icon-sm" label={`出口「${e.name}」的更多操作`} tip={false}><MoreHorizontal size={16} /></IconButton>} />
+          <DropdownMenuContent {...handoff.popupProps} align="end">
+            <DropdownMenuItem danger onClick={() => runAfterMenuClosed(() => onRemove(e.name))}>删除出口…</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}</td>
     </tr>
   );
 });

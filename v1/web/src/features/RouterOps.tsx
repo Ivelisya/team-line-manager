@@ -1,8 +1,10 @@
-// 软路由出口的两个操作，抽屉的出口页签与告警页都能弹（lib/routers 的小仓库 showSync / showSwitch），由外壳里的 RouterDialogsHost 渲染：
+// 软路由出口的三个操作，抽屉的出口页签与告警页都能弹（lib/routers 的小仓库 showSync / showSwitch / showRemoveExits），由外壳里的 RouterDialogsHost 渲染：
 // - 同步出口参数：参数和对应入口不一致的出口改成入口现在的凭据（作业 router_sync，会重启 OpenClash）；
-// - 临时切换：select 组经 mihomo API 切到组里另一个出口（不重启、不断已有连接），可到时自动切回。
+// - 临时切换：select 组经 mihomo API 切到组里另一个出口（不重启、不断已有连接），可到时自动切回；
+// - 删除出口：连同指向它的规则和策略组成员一起删（作业 router_exit_rm，会重启 OpenClash）。
 // 抽屉里的「策略组」一段（GroupsSection）也在这里：组 → 当前出口，select 组每组一个「临时切换…」，切换中的可以切回。
 import * as React from 'react';
+import { useNavigate } from 'react-router-dom';
 import { ConfirmDialog, FormDialog } from '@/components/app/dialogs';
 import { ErrorNote, Note, Section, SectionHeader } from '@/components/app/primitives';
 import { Button } from '@/components/ui/button';
@@ -12,7 +14,7 @@ import { OptionSelect } from '@/components/ui/option-select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
 import { useHeld, resetOnOpen } from '@/lib/useHeld';
-import { showSwitch, showSync, useRouter, useSwitchBack, useSwitchGroup, useSwitchTarget, useSyncPreview, useSyncRouter, useSyncTarget, type RouterGroup, type RouterSwitch, type RouterView, type SwitchTarget, type SyncTarget } from '@/lib/routers';
+import { showRemoveExits, showSwitch, showSync, useRemoveExits, useRemoveExitsPreview, useRemoveExitsTarget, useRouter, useSwitchBack, useSwitchGroup, useSwitchTarget, useSyncPreview, useSyncRouter, useSyncTarget, type RemoveExitsTarget, type RouterGroup, type RouterSwitch, type RouterView, type SwitchTarget, type SyncTarget } from '@/lib/routers';
 import * as F from '@/lib/format';
 
 const KIND: Record<string, string> = { URLTest: 'url-test', Fallback: 'fallback', LoadBalance: 'load-balance', Relay: 'relay', Smart: 'smart' };
@@ -105,6 +107,64 @@ function SyncHost() {
   return held ? <SyncDialog open={!!t} t={held} /> : null;
 }
 
+/** 删出口：勾要删的出口（抽屉里点的那个预选），先取预览（对应入口、地址、客户端数、不能删的原因），确认后建作业。
+ *  对不上面板入口的出口（路由上自己加的）要额外勾「仍要删除」才放行 */
+const RemoveExitsDialog = resetOnOpen(function RemoveExitsDialog({ open, t }: { open: boolean; t: RemoveExitsTarget }) {
+  const q = useRouter(t.id);
+  const all = q.data?.detail?.exits ?? [];
+  const [sel, setSel] = React.useState<string[]>(t.exits);
+  const [force, setForce] = React.useState(false);
+  const pv = useRemoveExitsPreview(open ? t.id : null, sel, force);
+  const run = useRemoveExits();
+  const nav = useNavigate();
+  const p = sel.length ? pv.data : undefined;
+  const loose = !!p && (p.exits.some((e) => !e.entry) || p.blockers.some((b) => b.includes('不是面板的入口')));
+  // 要勾「仍要删除」的那条不重复写成错误
+  const blockers = (p?.blockers ?? []).filter((b) => !b.includes('不是面板的入口'));
+  const toggle = (n: string, on: boolean) => setSel((s) => (on ? [...s, n] : s.filter((x) => x !== n)));
+  return (
+    <ConfirmDialog open={open} onOpenChange={(o) => !o && showRemoveExits(null)} title={`删除出口 · ${t.name}`} confirmLabel="删除" danger confirmDisabled={!p?.ok || pv.isPlaceholderData}
+      description={<>连同指向它的规则、策略组里的成员一起删<InfoTip text={'先备份配置，改完重启 OpenClash，起不来自动改回\n重启时经这台路由的连接会全部断开、马上重连'} /></>}
+      onConfirm={async () => { const d = await run.mutateAsync({ id: t.id, exits: sel, force }); toast.show({ tone: 'ok', text: `已提交「${t.name}」的删出口作业`, action: { label: '查看作业', onClick: () => nav(`/jobs/${d.job_id}`) } }); }}>
+      <div className="stack-sm" style={{ gap: 'var(--sp-16)' }}>
+        {q.isLoading ? <Skeleton className="h-[48px]" /> : q.isError && !q.data ? <ErrorNote error={q.error} onRetry={() => void q.refetch()} /> : (
+          <div className="stack-sm" style={{ gap: 'var(--sp-8)', maxHeight: 168, overflowY: 'auto' }}>
+            {all.map((e) => <CheckRow key={e.name} checked={sel.includes(e.name)} onChange={(v) => toggle(e.name, v)}>{e.name} <span className="t-sub mono">{e.server}:{e.port}</span></CheckRow>)}
+          </div>
+        )}
+        {sel.length > 0 && (pv.isLoading ? <Skeleton className="h-[48px]" /> : pv.isError ? <ErrorNote error={pv.error} onRetry={() => void pv.refetch()} /> : p && (
+          <div className="stack-sm" style={{ gap: 'var(--sp-16)' }} data-stale={pv.isPlaceholderData}>
+            {p.exits.length > 0 && (
+              <div className="table-wrap">
+                <table className="dt">
+                  <thead><tr><th>出口</th><th>对应入口</th><th>地址</th><th className="r">客户端</th></tr></thead>
+                  <tbody>{p.exits.map((e) => (
+                    <tr key={e.exit}>
+                      <td>{e.exit}</td>
+                      <td>{e.entry ?? <span className="t-muted">不是面板的入口</span>}</td>
+                      <td className="mono">{e.server ? `${e.server}:${e.port ?? ''}` : '—'}</td>
+                      <td className="r num">{e.clients}</td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              </div>
+            )}
+            {p.warnings.map((w) => <Note key={w} tone="warn">{w}</Note>)}
+            {loose && <CheckRow checked={force} onChange={setForce}>仍要删除（不是面板的入口）<InfoTip text="对不上任何入口，可能是路由上自己加的；确认是自己的再勾" /></CheckRow>}
+            {!p.ok && blockers.length > 0 && <Note tone="bad">{blockers.join('；')}</Note>}
+          </div>
+        ))}
+      </div>
+    </ConfirmDialog>
+  );
+});
+
+function RemoveExitsHost() {
+  const t = useRemoveExitsTarget();
+  const held = useHeld(t?.id, t);
+  return held ? <RemoveExitsDialog open={!!t} t={held} /> : null;
+}
+
 const BACK = [
   { value: '3600', label: '1 小时后' }, { value: '14400', label: '4 小时后' }, { value: '43200', label: '12 小时后' }, { value: '86400', label: '1 天后' }, { value: 'never', label: '不自动切回' },
 ];
@@ -157,5 +217,5 @@ function SwitchHost() {
 }
 
 export function RouterOpsHost() {
-  return <><SyncHost /><SwitchHost /></>;
+  return <><SyncHost /><SwitchHost /><RemoveExitsHost /></>;
 }

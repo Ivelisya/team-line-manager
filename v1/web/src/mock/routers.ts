@@ -236,6 +236,31 @@ export function installRoutersMock(R: Reg, env: Env) {
     changed(); return { from, to: g.now };
   });
 
+  // 删出口：预览（没采到的名字 / 不是面板入口的出口各一条 blocker，force 放行后者）与提交（有 blocker 时 409）
+  const rmPreview = (rt: Rt, names: string[], force: boolean) => {
+    const ex = rt.d?.exits ?? [];
+    const blockers: string[] = [], warnings: string[] = [];
+    if (!names.length) blockers.push('没有点名要删的出口');
+    if (rt.v.state !== 'online') blockers.push(`软路由「${rt.v.name}」现在不在线：等它在线再删`);
+    const exits = names.flatMap((n) => {
+      const e = ex.find((x) => x.name === n);
+      if (!e) { blockers.push(`最近一次采集里没有出口「${n}」`); return []; }
+      if (!e.entry && !force) blockers.push(`出口「${n}」不是面板的入口（对不上任何入口，可能是路由上自己加的）：确认要删的话加 --force`);
+      return [{ exit: e.name, entry: e.entry?.name ?? null, server: e.server, port: e.port, clients: e.clients, conns: e.conns }];
+    });
+    warnings.push('删完要重启 OpenClash：经这台路由的连接会全部断开、马上重连');
+    const cl = exits.reduce((a, e) => a + e.clients, 0);
+    if (cl > 0) warnings.push(`${cl} 个客户端现在走着要删的出口，删完它们的流量会落到组里别的出口（或被规则拒绝）`);
+    return { router: { id: rt.v.id, name: rt.v.name }, exits, ok: !blockers.length, blockers, warnings };
+  };
+  const names = (s: string | null) => (s ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+  R('GET', '/routers/([^/]+)/exits/remove', ({ params, query }) => rmPreview(find(params[0]), names(query.get('exits')), query.get('force') === 'true'));
+  R('POST', '/routers/([^/]+)/exits/remove', ({ params, body }) => {
+    const p = rmPreview(find(params[0]), Array.isArray(body.exits) ? body.exits.map(String) : [], !!body.force);
+    if (!p.ok) throw env.bad(p.blockers.join('；'), 409, 'conflict');
+    return { ...p, job_id: `mock-job-rm-${Date.now().toString(36)}` };
+  });
+
   // 配置变更：在线的路由有几条固定的（一条作业改的、一条路由上改的、一条只改了出口以外的部分），别的没有
   R('GET', '/routers/([^/]+)/changes', ({ params, query }) => {
     const rt = find(params[0]);
