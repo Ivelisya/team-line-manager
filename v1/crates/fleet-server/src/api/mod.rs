@@ -216,6 +216,7 @@ pub fn router() -> Router<AppState> {
         .route("/routers/{id}/deploy", post(routers::deploy_one))
         .route("/routers/{id}/sync", get(router_ops::sync_preview).post(router_ops::sync))
         .route("/routers/{id}/protocol", get(router_ops::protocol_preview).post(router_ops::protocol))
+        .route("/routers/{id}/exits/remove", get(router_ops::remove_preview).post(router_ops::remove))
         .route("/routers/{id}/switch", post(router_ops::switch_to))
         .route("/routers/{id}/switch/back", post(router_ops::switch_back))
         .route("/router-bootstrap/{token}", get(routers::bootstrap_script))

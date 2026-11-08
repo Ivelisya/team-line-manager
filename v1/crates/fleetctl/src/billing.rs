@@ -192,7 +192,7 @@ pub(crate) fn spare_cn(m: &Value) -> Option<String> {
         let (mut why, mut todo) = (vec![], vec![]);
         if (ips.is_empty() && renewing.is_empty() && !auto) || m["router_exits"].as_array().is_some_and(|a| !a.is_empty()) {
             why.push("软路由出口还指着".to_string());
-            todo.push("改指向（fleetctl repoint）");
+            todo.push("改指向（fleetctl repoint）或删出口（fleetctl router remove-exits）");
         }
         if !ips.is_empty() {
             why.push(format!("同机 IP 节点 {} 还在用", ips.join("、")));
@@ -698,7 +698,7 @@ mod tests {
         held["recycle_held"] = json!(true);
         assert_eq!(
             spare_cn(&held).as_deref(),
-            Some("已于 2026-10-22 退役（原 团队2-07），软路由出口还指着，不自动回收：先改指向（fleetctl repoint），或确认后 fleetctl retire --now")
+            Some("已于 2026-10-22 退役（原 团队2-07），软路由出口还指着，不自动回收：先改指向（fleetctl repoint）或删出口（fleetctl router remove-exits），或确认后 fleetctl retire --now")
         );
         // 上面还有在用的同机 IP 节点：写明是哪些；出口也指着时两样都写
         held["live_ip_nodes"] = json!(["团队1-01", "团队1-03"]);
@@ -709,7 +709,7 @@ mod tests {
         held["router_exits"] = json!(["办公室 · 节点01"]);
         assert_eq!(
             spare_cn(&held).as_deref(),
-            Some("已于 2026-10-22 退役（原 团队2-07），软路由出口还指着、同机 IP 节点 团队1-01、团队1-03 还在用，不自动回收：先改指向（fleetctl repoint）、退役或换走这些 IP 节点，或确认后 fleetctl retire --now")
+            Some("已于 2026-10-22 退役（原 团队2-07），软路由出口还指着、同机 IP 节点 团队1-01、团队1-03 还在用，不自动回收：先改指向（fleetctl repoint）或删出口（fleetctl router remove-exits）、退役或换走这些 IP 节点，或确认后 fleetctl retire --now")
         );
         // 开着自动续费：一直续下去、不给回收日（订阅在 subscription.auto_renew）
         let mut auto = m(true, "active", Value::Null);

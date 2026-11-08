@@ -127,6 +127,16 @@ export const useSyncPreview = (id: string | null, exits: string[], force: boolea
   useQuery({ queryKey: ['router-sync', id, exits.join(','), force], queryFn: ({ signal }) => get<SyncPreview>(`/routers/${id}/sync?exits=${encodeURIComponent(exits.join(','))}${force ? '&force=true' : ''}`, signal), enabled: !!id, staleTime: 0, gcTime: 0, placeholderData: (p) => p });
 /** 发起同步作业（router_sync：备份、改、重启 OpenClash、测延迟，失败自动改回） */
 export const useSyncRouter = () => useWrite(({ id, exits, force }: { id: string; exits: string[]; force?: boolean }) => post<{ job_id: string }>(`/routers/${id}/sync`, { exits, force: !!force }), [...K, ['jobs']]);
+/** 删出口的预览（同 SyncPreview 的用法：勾选「仍要删除」换了查询键，新结果回来前沿用上一份）：每个出口对应的入口（null = 不是面板的入口，要 force）与地址、经它的客户端 / 连接数；blockers 不空 ok 为 false */
+export interface RemoveExitsPreview {
+  router: { id: string; name: string };
+  exits: { exit: string; entry: string | null; server: string | null; port: number | null; clients: number; conns: number }[];
+  ok: boolean; blockers: string[]; warnings: string[];
+}
+export const useRemoveExitsPreview = (id: string | null, exits: string[], force: boolean) =>
+  useQuery({ queryKey: ['router-exits-remove', id, exits.join(','), force], queryFn: ({ signal }) => get<RemoveExitsPreview>(`/routers/${id}/exits/remove?exits=${encodeURIComponent(exits.join(','))}${force ? '&force=true' : ''}`, signal), enabled: !!id && exits.length > 0, staleTime: 0, gcTime: 0, placeholderData: (p) => p });
+/** 发起删出口作业（router_exit_rm：备份、连同指向它的规则和组成员一起删、重启 OpenClash，失败自动改回） */
+export const useRemoveExits = () => useWrite(({ id, exits, force }: { id: string; exits: string[]; force?: boolean }) => post<{ job_id: string }>(`/routers/${id}/exits/remove`, { exits, force: !!force }), [...K, ['jobs']]);
 /** 临时切换：back_after_s 不给 = 不自动切回。返回切之前选中的（from）与第一次切之前的（original） */
 export const useSwitchGroup = () => useWrite(({ id, ...b }: { id: string; group: string; to: string; back_after_s?: number }) => post<{ from: string; to: string; original: string; back_at: string | null; ended: boolean }>(`/routers/${id}/switch`, b), K);
 export const useSwitchBack = () => useWrite(({ id, group }: { id: string; group: string }) => post<{ from: string; to: string }>(`/routers/${id}/switch/back`, { group }), K);
@@ -181,6 +191,11 @@ export interface SyncTarget { id: string; name: string; exits: string[] }
 const syncT = createStore<SyncTarget | null>(null);
 export const showSync = syncT.set;
 export const useSyncTarget = syncT.use;
+/** 删出口：exits 是预选的（抽屉里点的那个），对话框里还能再勾 */
+export interface RemoveExitsTarget { id: string; name: string; exits: string[] }
+const rmT = createStore<RemoveExitsTarget | null>(null);
+export const showRemoveExits = rmT.set;
+export const useRemoveExitsTarget = rmT.use;
 /** group / to 给了就预选（告警的「临时切到…」） */
 export interface SwitchTarget { id: string; name: string; group?: string; to?: string }
 const switchT = createStore<SwitchTarget | null>(null);

@@ -158,7 +158,7 @@ async fn anytls_pending<'a>(db: &sqlx::PgPool, exits: impl Iterator<Item = &'a E
 }
 
 /// 还在用的备份的时间戳：没做完的作业（失败的、在重试的）参数里记着的，改配置时脚本不删它们
-async fn pinned_stamps(db: &sqlx::PgPool) -> sqlx::Result<Vec<String>> {
+pub(super) async fn pinned_stamps(db: &sqlx::PgPool) -> sqlx::Result<Vec<String>> {
     sqlx::query_scalar(
         "select distinct a->>'stamp' from job j,
              jsonb_array_elements(case when jsonb_typeof(j.params->'routers_applied') = 'array' then j.params->'routers_applied' else '[]'::jsonb end) a
@@ -305,7 +305,7 @@ impl Part {
 /// 拿不到时用的是池里的连接，什么都不占（排队时每次轮询不新建连接）。往前改都只试一次（try），拿不到就全部放开去排队，不会互相等死；
 /// 只有改回（give_up）等锁：那时手里的锁都是要改回的路由。
 /// 中控（或 PG）重启后这把锁就没了，上一个进程起的脚本可能还在路由上跑：路由上另有一把（routers::replace 的 SCRIPT 外层），等它跑完才动手
-struct Locks<'a> {
+pub(super) struct Locks<'a> {
     db: &'a sqlx::PgPool,
     conn: Option<sqlx::PgConnection>,
     held: HashSet<Uuid>,
@@ -314,10 +314,10 @@ struct Locks<'a> {
 const TRY_LOCK: &str = "select pg_try_advisory_lock(hashtextextended('router:' || $1::text, 0))";
 
 impl<'a> Locks<'a> {
-    fn new(db: &'a sqlx::PgPool) -> Self { Locks { db, conn: None, held: HashSet::new() } }
+    pub(super) fn new(db: &'a sqlx::PgPool) -> Self { Locks { db, conn: None, held: HashSet::new() } }
 
     /// 试一次，拿不到返回 false
-    async fn take(&mut self, id: Uuid) -> anyhow::Result<bool> {
+    pub(super) async fn take(&mut self, id: Uuid) -> anyhow::Result<bool> {
         if self.held.contains(&id) {
             return Ok(true);
         }
@@ -361,7 +361,7 @@ impl<'a> Locks<'a> {
 }
 
 /// 脚本自己说的原因（`fleet：` 开头的行），没有就用 stderr 的最后几行
-fn reason(o: &Output) -> String {
+pub(super) fn reason(o: &Output) -> String {
     let own = own_lines(o);
     if !own.is_empty() {
         return own.join("；");
@@ -388,7 +388,7 @@ fn never_ran(o: &Output) -> bool {
 }
 
 /// ssh 自己失败（255）的说法，原始输出另记一行日志
-async fn ssh_failed(c: &Ctx<'_>, name: &str, o: &Output) -> String {
+pub(super) async fn ssh_failed(c: &Ctx<'_>, name: &str, o: &Output) -> String {
     let raw = raw_tail(o);
     if !raw.is_empty() {
         c.warn(format!("软路由「{name}」ssh 的原始输出：{raw}")).await;
@@ -807,13 +807,13 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
 const RECONNECT: Duration = Duration::from_secs(180);
 
 /// 路由上等不到上一份脚本的锁（rr::BUSY）后隔多久从这一步再来（路由上每次还会再等 rr::LOCK_WAIT）
-const BUSY_RETRY: u64 = 60;
+pub(super) const BUSY_RETRY: u64 = 60;
 
 /// 在路由上跑改配置 / 改回的脚本（`mode`、`stamp` 同脚本的 MODE、STAMP）。连上之后断了（路由自身流量走 OpenClash 时，
 /// 脚本里重启 OpenClash 会掐断隧道和这条 ssh）：脚本在路由上照样跑完、结果留在文件里（routers::replace 的 SCRIPT），
 /// 等隧道回连后取回它的结果，按正常跑完处理。取不到（RECONNECT 内连不回来、路由上没有结果）就返回断掉的那次
 #[allow(clippy::too_many_arguments)]
-async fn run_script(c: &Ctx<'_>, id: Uuid, name: &str, port: i32, script: &str, mode: &str, stamp: &str, timeout: Duration) -> anyhow::Result<ssh::Output> {
+pub(super) async fn run_script(c: &Ctx<'_>, id: Uuid, name: &str, port: i32, script: &str, mode: &str, stamp: &str, timeout: Duration) -> anyhow::Result<ssh::Output> {
     let o = ssh::exec(tunnel::via_tunnel(&c.st.cfg, id, port), script, timeout).await?;
     if o.code != 255 || never_ran(&o) || o.ssh_kind() == Some(ErrKind::HostKey) {
         return Ok(o);

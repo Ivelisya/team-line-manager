@@ -422,7 +422,7 @@ pub fn retire(ctx: &Ctx, machine: &str, now: bool, reason: Option<&str>, no_clea
             .flat_map(|r| r["exits"].as_array().cloned().unwrap_or_default().into_iter().map(move |e| format!("{} · {}（{}）", st(r, "/name"), st(&e, "/exit"), st(&e, "/node"))))
             .collect();
         if !exits.is_empty() {
-            outln(format!("还有软路由出口指向它（不会自动改；要换掉先 fleetctl replace）：{}", exits.join("、")));
+            outln(format!("还有软路由出口指向它（不会自动改；要换掉先 fleetctl replace，客户不要了就 fleetctl router remove-exits <路由> --exit <出口> 删掉）：{}", exits.join("、")));
         }
         if let Some(rs) = pre["renames"].as_array().filter(|r| !r.is_empty()) {
             outln("原团队编号会前移：");

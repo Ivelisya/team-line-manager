@@ -776,6 +776,64 @@ pub fn sync(ctx: &Ctx, q: &str, exits: &[String], force: bool, yes: bool, follow
     Ok(0)
 }
 
+/// `router remove-exits <路由> --exit <出口>…`：出口连同指向它的分流规则、策略组里的引用一起从配置里删掉（作业 router_exit_rm：
+/// 备份、删、重启 OpenClash、确认生效，失败整份换回）。先 GET 预览；不加 --yes 只打印预览
+pub fn remove_exits(ctx: &Ctx, q: &str, exits: &[String], force: bool, yes: bool, follow: bool) -> anyhow::Result<u8> {
+    let r = find(&ctx.list("/routers")?, q)?;
+    let id = st(&r, "/id");
+    let exits: Vec<String> = exits.iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    let mut query = vec![("exits", exits.join(","))];
+    if force {
+        query.push(("force", "true".into()));
+    }
+    let pv = ctx.c.get_q(&format!("/routers/{id}/exits/remove"), &query)?;
+    if !ctx.json || !yes {
+        if ctx.json {
+            ctx.emit(&pv, String::new);
+        } else {
+            let rows: Vec<Vec<String>> = pv["exits"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|e| {
+                    let addr = match (e["server"].as_str(), e["port"].as_u64()) {
+                        (Some(s), Some(p)) => format!("{s}:{p}"),
+                        _ => "-".into(),
+                    };
+                    vec![st(e, "/exit"), e["entry"].as_str().unwrap_or("（不是面板的入口）").to_string(), addr, e["clients"].as_i64().unwrap_or(0).to_string()]
+                })
+                .collect();
+            if !rows.is_empty() {
+                outln(format!(
+                    "「{}」要删的出口（连同指向它们的分流规则和策略组里的引用；备份后删，删完重启 OpenClash，失败整份换回）：
+{}",
+                    st(&pv, "/router/name"),
+                    table::render(&["出口", "对应入口", "地址", "客户端"], &rows)
+                ));
+            }
+            for w in pv["warnings"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+                outln(format!("注意：{w}"));
+            }
+        }
+    }
+    if pv["ok"] != true {
+        bail!("现在不能删：{}", crate::lifecycle::blockers(&pv));
+    }
+    if !yes {
+        if !ctx.json {
+            outln("以上是预览，没有改动。确认无误后加 --yes 执行（--follow 跟进度）");
+        }
+        return Ok(0);
+    }
+    let d = ctx.c.post(&format!("/routers/{id}/exits/remove"), &json!({"exits": exits, "force": force}))?;
+    ctx.emit(&d, || format!("已提交删出口作业 {}（{}）
+看进度：fleetctl job {} --follow", st(&d, "/job_id"), st(&r, "/name"), st(&d, "/job_id")));
+    if follow {
+        return crate::cmds::follow_job(ctx, &st(&d, "/job_id"));
+    }
+    Ok(0)
+}
+
 /// 出口协议一个词：快照的 proto（reality / anytls），旧中控没有时退回 mihomo 报的类型
 fn proto_cn(e: &Value) -> String {
     match e["proto"].as_str() {

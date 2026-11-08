@@ -169,8 +169,60 @@ pub fn read_script() -> String {
         )
 }
 
+/// 每份改配置的脚本共用的外层（改出口 SCRIPT、删出口 REMOVE_SCRIPT）：前面是各自的 `main()`，这里拿路由上的锁、在后台跑 main、
+/// 输出写进结果文件（中控连接断了用 [`fetch_script`] 取回）。宏只为了在编译期把两段拼成一个 &str（concat!）
+macro_rules! wrapper {
+    () => {
+        r#"# 路由自身流量走 OpenClash（router_self_proxy）时，重启 OpenClash 会掐断隧道和这条 ssh：main 在后台跑、不理 HUP / PIPE，
+# 输出写进 $RES.*，这边等它跑完原样转出；这条连接断了，中控等隧道回连后用 fetch_script 取结果。
+# 连接断了这边的 shell 不一定被杀（dropbear 不发 HUP），转出失败也照样走到最后：结果文件这里不删（不然中控取不到），
+# 由 fetch_script 取走时删，没人取的下一次开跑前删。
+# 同一台路由上同一时刻只跑一份（改配置、改回都算）：锁是目录 $LOCK（mkdir 是原子的；busybox 不一定有 flock），里面的 pid 是持锁的进程，
+# 后台那份跑完才放开。中控重启后接着做时，上一个进程起的那份可能还在后台跑（中控这边的锁随进程没了）：先等它跑完，最多 LOCK_SECS 秒，
+# 等不到以 BUSY 退出、一行不动。持锁的进程已经不在（被杀，或建锁那一下就没了、连着两次读不到 pid）的是陈旧的锁，接管；
+# pid 文件里是「pid 建锁时刻」，锁龄超过 LOCK_AGE 秒的也接管（pid 可能被别的进程复用了，kill -0 会成功）。没有时刻的（旧脚本留下的）只看 pid
+umask 077
+RES="/tmp/fleet-replace.res.$MODE.$STAMP"
+LOCK=/tmp/fleet-replace.lock
+# 先建这次的结果文件：等锁时连接断了（上一份重启 OpenClash 也会掐断隧道），中控来取时知道这次已经开始、等它跑完
+: > "$RES.out"; : > "$RES.err"
+t=0; e=0
+while ! mkdir "$LOCK" 2>/dev/null; do
+  c=$(cat "$LOCK/pid" 2>/dev/null || true)
+  p=${c%% *}; s=
+  case "$c" in *" "*) s=${c#* } ;; esac
+  case "$s" in *[!0-9]*) s= ;; esac
+  if [ -n "$p" ]; then e=0; else e=$((e + 1)); fi
+  old=0
+  if [ -n "$s" ] && [ "$(( $(date +%s) - s ))" -gt "$LOCK_AGE" ]; then old=1; fi
+  if { [ -n "$p" ] && { [ "$old" = 1 ] || ! kill -0 "$p" 2>/dev/null; }; } || [ "$e" -ge 2 ]; then
+    if [ "$(cat "$LOCK/pid" 2>/dev/null || true)" = "$c" ]; then rm -rf "$LOCK"; fi
+    continue
+  fi
+  if [ "$t" -ge "$LOCK_SECS" ]; then
+    echo "fleet：路由上上一次改出口的脚本（pid $p）$LOCK_SECS 秒内还没跑完，这次没有动配置" > "$RES.err"
+    echo "$BUSY" > "$RES.rc"
+    cat "$RES.err" >&2
+    exit "$BUSY"
+  fi
+  sleep 2; t=$((t + 2))
+done
+echo "$$ $(date +%s)" > "$LOCK/pid"
+# 没人取的结果持锁之后再删（之前删会删掉还在跑的那份的）：只留这次刚建的 out / err（同一个时间戳再改回一次时，上一次留下的 rc 也删）
+for f in /tmp/fleet-replace.res.*; do case "$f" in "$RES.out" | "$RES.err") ;; *) rm -f "$f" ;; esac; done
+( trap '' HUP PIPE; ( main ) >"$RES.out" 2>"$RES.err"; echo "$?" > "$RES.rc.tmp" && mv -f "$RES.rc.tmp" "$RES.rc"; rm -rf "$LOCK" ) </dev/null >/dev/null 2>&1 &
+# 锁交给后台那份（这边的 shell 可能先没了）
+echo "$! $(date +%s)" > "$LOCK/pid.tmp" && mv -f "$LOCK/pid.tmp" "$LOCK/pid"
+wait $!
+cat "$RES.out"; cat "$RES.err" >&2
+exit "$(cat "$RES.rc" 2>/dev/null || echo 1)"
+"#
+    };
+}
+
 /// 路由上的脚本。整段包在函数里（sh 读完整个函数才执行，里面的命令读 stdin 吃不到后面的脚本），见 collect.rs 的 WRAPPER
-pub const SCRIPT: &str = r#"
+pub const SCRIPT: &str = concat!(
+    r#"
 main() {
 set -u
 umask 077
@@ -535,50 +587,241 @@ done
 emit_sha
 echo replace=ok
 }
-# 路由自身流量走 OpenClash（router_self_proxy）时，重启 OpenClash 会掐断隧道和这条 ssh：main 在后台跑、不理 HUP / PIPE，
-# 输出写进 $RES.*，这边等它跑完原样转出；这条连接断了，中控等隧道回连后用 fetch_script 取结果。
-# 连接断了这边的 shell 不一定被杀（dropbear 不发 HUP），转出失败也照样走到最后：结果文件这里不删（不然中控取不到），
-# 由 fetch_script 取走时删，没人取的下一次开跑前删。
-# 同一台路由上同一时刻只跑一份（改配置、改回都算）：锁是目录 $LOCK（mkdir 是原子的；busybox 不一定有 flock），里面的 pid 是持锁的进程，
-# 后台那份跑完才放开。中控重启后接着做时，上一个进程起的那份可能还在后台跑（中控这边的锁随进程没了）：先等它跑完，最多 LOCK_SECS 秒，
-# 等不到以 BUSY 退出、一行不动。持锁的进程已经不在（被杀，或建锁那一下就没了、连着两次读不到 pid）的是陈旧的锁，接管；
-# pid 文件里是「pid 建锁时刻」，锁龄超过 LOCK_AGE 秒的也接管（pid 可能被别的进程复用了，kill -0 会成功）。没有时刻的（旧脚本留下的）只看 pid
+"#,
+    wrapper!()
+);
+
+/// 删出口的脚本（作业 router_exit_rm，见 jobs/steps/router_exits.rs）：`names` 是要删的出口名。备份的命名、清理同 [`apply_script`]
+pub fn remove_script(names: &[String], now: time::OffsetDateTime, pins: &[String]) -> String {
+    let mut kv: Vec<(String, String)> = vec![
+        ("MODE".into(), "remove".into()),
+        ("STAMP".into(), stamp(now)),
+        ("KEEP".into(), stamp(now - time::Duration::days(KEEP_DAYS))),
+        ("MAXBK".into(), MAX_BACKUPS.to_string()),
+        ("PIN".into(), pins.join(" ")),
+        ("N".into(), names.len().to_string()),
+        ("WAIT_API".into(), "120".into()),
+    ];
+    kv.extend(names.iter().enumerate().map(|(i, n)| (format!("NAME_{}", i + 1), n.clone())));
+    let kv: Vec<(&str, &str)> = kv.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    vars(&kv) + &lock_vars() + REMOVE_SCRIPT
+}
+
+/// 删出口：源配置里 `proxies` 下名为 NAME_i 的列表项整项删掉，`rules` 里目标是它的规则删掉，`proxy-groups` 里各组 `proxies` 列表中的它删掉。
+/// 认不出、删了会出问题的一行不写（退出码 2）：同名出口不止一个、流式写法（`- {name: …}`、`proxies: [a, b]`）提到它、兜底规则 MATCH 指向它、
+/// 某个组删完就没有成员了（又没有 `use:`），或删完配置里别处还引用它（如 dns 的 `…#出口名`、别的出口的 dialer-proxy）。
+/// 配置里已经没有的出口记一句、不算错（重试时前一次已经删了）；什么都不用删时不写、不重启，输出 remove=none。
+/// 写之前备份（同改出口），写完重启 OpenClash、等 API 起来，再确认删掉的出口真的不在了（新配置生效）；任何一步不行整份换回备份并重启（rolled_back=1）：
+/// 持着路由上的锁（外层 wrapper），这几秒里没有别的作业写它。
+/// 输出：backup=…、removed=<删掉的出口数>、rules=<删掉的规则数>、members=<从策略组里去掉的次数>、sha=…、remove=ok | none。退出码同 SCRIPT（2 没动、3 重启 / API 不行、4 没生效，3、4 已换回）
+pub const REMOVE_SCRIPT: &str = concat!(
+    r#"
+main() {
+set -u
 umask 077
-RES="/tmp/fleet-replace.res.$MODE.$STAMP"
-LOCK=/tmp/fleet-replace.lock
-# 先建这次的结果文件：等锁时连接断了（上一份重启 OpenClash 也会掐断隧道），中控来取时知道这次已经开始、等它跑完
-: > "$RES.out"; : > "$RES.err"
-t=0; e=0
-while ! mkdir "$LOCK" 2>/dev/null; do
-  c=$(cat "$LOCK/pid" 2>/dev/null || true)
-  p=${c%% *}; s=
-  case "$c" in *" "*) s=${c#* } ;; esac
-  case "$s" in *[!0-9]*) s= ;; esac
-  if [ -n "$p" ]; then e=0; else e=$((e + 1)); fi
-  old=0
-  if [ -n "$s" ] && [ "$(( $(date +%s) - s ))" -gt "$LOCK_AGE" ]; then old=1; fi
-  if { [ -n "$p" ] && { [ "$old" = 1 ] || ! kill -0 "$p" 2>/dev/null; }; } || [ "$e" -ge 2 ]; then
-    if [ "$(cat "$LOCK/pid" 2>/dev/null || true)" = "$c" ]; then rm -rf "$LOCK"; fi
-    continue
-  fi
-  if [ "$t" -ge "$LOCK_SECS" ]; then
-    echo "fleet：路由上上一次改出口的脚本（pid $p）$LOCK_SECS 秒内还没跑完，这次没有动配置" > "$RES.err"
-    echo "$BUSY" > "$RES.rc"
-    cat "$RES.err" >&2
-    exit "$BUSY"
-  fi
+W=$(mktemp -d /tmp/fleet-replace.XXXXXX) || exit 2
+TMP=
+cleanup() { rm -rf "$W"; if [ -n "$TMP" ]; then rm -f "$TMP"; fi; }
+trap cleanup EXIT
+trap 'exit 1' INT TERM
+say(){ echo "fleet：$*" >&2; }
+CFG=$(uci -q get openclash.config.config_path 2>/dev/null || true)
+if [ -z "$CFG" ] || [ ! -f "$CFG" ]; then say "OpenClash 的源配置（uci openclash.config.config_path）不存在：${CFG:-没有设置}"; exit 2; fi
+BKDIR=/etc/fleet-backup/openclash
+BASE=$(basename "$CFG")
+BK="$BKDIR/$BASE.$STAMP"
+oc_restart() { /etc/init.d/openclash restart >/dev/null 2>&1; }
+emit_sha() { _h=$(sha256sum "$CFG" 2>/dev/null | awk '{print $1}'); [ -z "$_h" ] || echo "sha=$_h"; }
+i=1
+while [ "$i" -le "$N" ]; do export "NAME_$i"; i=$((i + 1)); done
+export N
+cat > "$W/rm.awk" <<'FLEET_AWK'
+function ind(s,   i) { i = match(s, /[^ ]/); return i ? i - 1 : -1 }
+function unq(v,   c, i) {
+  sub(/\r$/, "", v); sub(/^[ \t]+/, "", v)
+  c = substr(v, 1, 1)
+  if (c == "\"" || c == "'") { v = substr(v, 2); i = index(v, c); return i ? substr(v, 1, i - 1) : v }
+  sub(/[ \t]+#.*$/, "", v); sub(/[ \t]+$/, "", v)
+  return v
+}
+function isdash(s, d) { return substr(s, d + 1, 1) == "-" && (length(s) == d + 1 || substr(s, d + 2, 1) == " ") }
+function bad(m) { errs = errs "fleet：" m "\n" }
+function note(m) { notes = notes "fleet：" m "\n" }
+function which(v,   i) { for (i = 1; i <= n; i++) if (v == nm[i]) return i; return 0 }
+# 键从第几列开始（0 起）：列表项「- 键: 值」的键在短横后面
+function kcol(s, d,   j) { if (!isdash(s, d)) return d; j = match(substr(s, d + 2), /[^ ]/); return j ? d + j : -1 }
+# 名字 w 作为一个完整的词出现在 s 里（前后不是字母、数字、_ . -）
+function refers(s, w,   p, b, a, pre) {
+  pre = ""
+  while ((p = index(s, w)) > 0) {
+    b = (p == 1) ? pre : substr(s, p - 1, 1); a = substr(s, p + length(w), 1)
+    if (b !~ /[A-Za-z0-9_.-]/ && a !~ /[A-Za-z0-9_.-]/) return 1
+    pre = substr(s, p, 1); s = substr(s, p + 1)
+  }
+  return 0
+}
+function mentions(s,   i) { for (i = 1; i <= n; i++) if (refers(s, nm[i])) return i; return 0 }
+# proxies 的一个列表项读完：名字是要删的就整项丢掉（连同它后面、下一项之前的注释与空行），否则原样输出
+function pitem(   k, d, F, j, L, rest, v, who, d2) {
+  if (cnt == 0) return
+  d = ind(pb[1]); F = -1; who = 0
+  if (isdash(pb[1], d)) { j = match(substr(pb[1], d + 2), /[^ ]/); if (j) F = d + j }
+  if (F < 0) for (k = 2; k <= cnt; k++) { d2 = ind(pb[k]); if (d2 > d && pb[k] !~ /^[ ]*#/) { F = d2; break } }
+  for (k = 1; k <= cnt && F >= 0; k++) {
+    L = pb[k]; sub(/\r$/, "", L)
+    if (L ~ /^[ ]*#/ || length(L) <= F || (k > 1 && ind(L) != F)) continue
+    rest = substr(L, F + 1)
+    if (k == 1 && substr(rest, 1, 1) == "{") { if (mentions(rest)) bad("proxies 里有流式写法（- {name: …}）的出口提到要删的名字，认不出"); continue }
+    if (rest ~ /^name[ \t]*:/) { v = rest; sub(/^name[ \t]*:/, "", v); who = which(unq(v)) }
+  }
+  if (who) { hits[who]++ } else for (k = 1; k <= cnt; k++) print pb[k]
+  cnt = 0
+}
+# 一个策略组读完：成员只剩要删的出口（又没有 use: 引用的 provider）的，删完就空了
+function gend() {
+  if (grem > 0 && gkept == 0 && !guse) bad("策略组「" gname "」的成员全是要删的出口，删完它就空了：先在路由上改这个组")
+  grem = 0; gkept = 0; guse = 0; gname = ""; PL = -1
+}
+# 规则的目标：最后一项（去掉 no-resolve、src 这类选项）
+function rtarget(v,   a, m, t) {
+  m = split(v, a, ",")
+  while (m > 1) { t = a[m]; gsub(/^[ \t]+|[ \t]+$/, "", t); if (t != "no-resolve" && t != "src") break; m-- }
+  t = a[m]; gsub(/^[ \t]+|[ \t]+$/, "", t)
+  return t
+}
+BEGIN {
+  n = ENVIRON["N"] + 0; for (i = 1; i <= n; i++) { nm[i] = ENVIRON["NAME_" i]; hits[i] = 0 }
+  sec = ""; cnt = 0; I = -1; GI = -1; PL = -1; rules = 0; mrem = 0; errs = ""; notes = ""
+}
+{
+  L = $0; bare = L; sub(/\r$/, "", bare); d = ind(bare)
+  # 顶层的键：换段
+  if (d == 0 && bare !~ /^#/ && !isdash(bare, 0)) {
+    if (sec == "p") pitem(); else if (sec == "g") gend()
+    sec = ""
+    if (bare ~ /^proxies[ \t]*:/) sec = "p"; else if (bare ~ /^proxy-groups[ \t]*:/) sec = "g"; else if (bare ~ /^rules[ \t]*:/) sec = "r"
+    if (sec != "") {
+      v = bare; sub(/^[a-z-]+[ \t]*:/, "", v); v = unq(v)
+      if (v != "") { if (mentions(v)) bad("顶层的 " substr(bare, 1, index(bare, ":") - 1) " 是流式写法，认不出"); sec = "" }
+    }
+    print L; next
+  }
+  if (sec == "p") {
+    if (cnt == 0 && (d < 0 || bare ~ /^[ ]*#/)) { print L; next }
+    if (d >= 0 && bare !~ /^[ ]*#/) { if (I < 0 && isdash(bare, d)) I = d; if (d == I && isdash(bare, d)) pitem() }
+    pb[++cnt] = L; next
+  }
+  if (sec == "g") {
+    if (d < 0 || bare ~ /^[ ]*#/) { print L; next }
+    if (GI < 0 && isdash(bare, d)) GI = d
+    if (d == GI && isdash(bare, d)) gend()
+    if (PL >= 0 && isdash(bare, d) && d >= PL) {
+      if (which(unq(substr(bare, d + 2)))) { grem++; mrem++; next }
+      gkept++; print L; next
+    }
+    if (PL >= 0 && d <= PL) PL = -1
+    k = kcol(bare, d)
+    if (k >= 0) {
+      rest = substr(bare, k + 1)
+      if (rest ~ /^name[ \t]*:/) { v = rest; sub(/^name[ \t]*:/, "", v); gname = unq(v) }
+      else if (rest ~ /^use[ \t]*:/) guse = 1
+      else if (rest ~ /^proxies[ \t]*:/) {
+        v = rest; sub(/^proxies[ \t]*:/, "", v); v = unq(v)
+        if (v == "") PL = k
+        else if (mentions(v)) bad("策略组「" gname "」的 proxies 是流式写法（[a, b]），认不出")
+      }
+    }
+    print L; next
+  }
+  if (sec == "r" && d >= 0 && bare !~ /^[ ]*#/ && isdash(bare, d)) {
+    v = unq(substr(bare, d + 2)); i = which(rtarget(v))
+    if (i) {
+      t = v; sub(/,.*/, "", t); gsub(/[ \t]/, "", t)
+      if (toupper(t) == "MATCH") bad("兜底规则「" v "」指向出口「" nm[i] "」：删了就没有兜底规则，先在路由上改它")
+      else { rules++; next }
+    }
+  }
+  print L
+}
+END {
+  if (sec == "p") pitem(); else if (sec == "g") gend()
+  found = 0
+  for (i = 1; i <= n; i++) {
+    if (hits[i] > 1) bad("配置里有 " hits[i] " 个名为「" nm[i] "」的出口，不知道删哪个")
+    else if (hits[i] == 1) { found++; printf("%d\n", i) > ENVIRON["FOUNDF"] }
+    else note("配置的 proxies 里已经没有出口「" nm[i] "」")
+  }
+  printf("%d %d %d", found, rules, mrem) > ENVIRON["STATF"]
+  printf("%s", notes) > ENVIRON["NOTEF"]
+  if (errs != "") { printf("%s", errs) > ENVIRON["ERRF"]; exit 2 }
+}
+FLEET_AWK
+# 删完的配置里别处还引用删掉的出口（dns 的 #出口名、dialer-proxy…）：认不出怎么删，不写
+cat > "$W/chk.awk" <<'FLEET_AWK'
+function refers(s, w,   p, b, a, pre) {
+  pre = ""
+  while ((p = index(s, w)) > 0) {
+    b = (p == 1) ? pre : substr(s, p - 1, 1); a = substr(s, p + length(w), 1)
+    if (b !~ /[A-Za-z0-9_.-]/ && a !~ /[A-Za-z0-9_.-]/) return 1
+    pre = substr(s, p, 1); s = substr(s, p + 1)
+  }
+  return 0
+}
+BEGIN { m = 0; while ((getline x < ENVIRON["FOUNDF"]) > 0) { m++; nm[m] = ENVIRON["NAME_" x] }; top = ""; bad = 0 }
+{
+  L = $0; sub(/\r$/, "", L)
+  if (L ~ /^[ \t]*#/) next
+  if (L ~ /^[A-Za-z0-9_-]+[ \t]*:/) { top = L; sub(/[ \t]*:.*/, "", top) }
+  for (i = 1; i <= m; i++) if (refers(L, nm[i])) { printf("fleet：删完后第 %d 行（%s 下）还引用出口「%s」，认不出怎么删：先在路由上改掉这处引用\n", NR, top, nm[i]) > ENVIRON["ERRF"]; bad = 1 }
+}
+END { exit bad ? 2 : 0 }
+FLEET_AWK
+TMP=$(mktemp "$CFG.fleet-tmp.XXXXXX") && cp -p "$CFG" "$TMP" || { say "在 $(dirname "$CFG") 里建临时文件失败，配置没有改动"; exit 2; }
+: > "$W/found"
+if ! ERRF="$W/err" STATF="$W/stat" NOTEF="$W/note" FOUNDF="$W/found" awk -f "$W/rm.awk" "$CFG" > "$TMP"; then
+  rm -f "$TMP"; cat "$W/err" >&2 2>/dev/null; say "配置没有改动"; exit 2
+fi
+cat "$W/note" >&2 2>/dev/null
+set -- $(cat "$W/stat" 2>/dev/null || true)
+found=${1:-0}; rules=${2:-0}; members=${3:-0}
+if [ $((found + rules + members)) -eq 0 ]; then rm -f "$TMP"; emit_sha; echo remove=none; exit 0; fi
+if ! ERRF="$W/err2" FOUNDF="$W/found" awk -f "$W/chk.awk" "$TMP"; then
+  rm -f "$TMP"; cat "$W/err2" >&2 2>/dev/null; say "配置没有改动"; exit 2
+fi
+if ! { mkdir -p "$BKDIR" && cp -p "$CFG" "$BK"; }; then rm -f "$TMP"; say "备份 $CFG 失败，配置没有改动"; exit 2; fi
+echo "backup=$BK"
+ls "$BKDIR" 2>/dev/null | awk -v b="$BASE." -v k="$KEEP" -v max="$MAXBK" -v pin=" $PIN " '
+  index($0, b) == 1 { n++; f[n] = $0 }
+  END { for (i = 1; i <= n; i++) { s = substr(f[i], length(b) + 1); if (!index(pin, " " s " ") && (s < k || i <= n - max)) print f[i] } }
+' | while read -r f; do rm -f "$BKDIR/$f"; done
+mv -f "$TMP" "$CFG" || { rm -f "$TMP"; say "写入 $CFG 失败，配置没有改动"; exit 2; }
+TMP=
+echo "removed=$found"
+echo "rules=$rules"
+echo "members=$members"
+undo() { if cp -p "$BK" "$CFG" && oc_restart; then echo rolled_back=1; else say "换回原配置也失败了：备份在 $BK，需要人工处理"; fi; emit_sha; }
+if ! oc_restart; then say "删好后重启 OpenClash 失败"; undo; exit 3; fi
+PORT=$(uci -q get openclash.config.cn_port 2>/dev/null || true)
+SECRET=$(uci -q get openclash.config.dashboard_password 2>/dev/null || true)
+if [ -n "$SECRET" ]; then printf 'Authorization: Bearer %s\n' "$SECRET" > "$W/auth"; else : > "$W/auth"; fi
+api() { curl -sS -m "$1" -H @"$W/auth" "http://127.0.0.1:$PORT$2" 2>&1; }
+enc() { printf '%s' "$1" | LC_ALL=C awk 'BEGIN { for (i = 1; i < 256; i++) ord[sprintf("%c", i)] = i } { for (j = 1; j <= length($0); j++) printf "%%%02X", ord[substr($0, j, 1)] }'; }
+t=0; up=0
+while [ "$t" -lt "$WAIT_API" ]; do
+  if api 3 /version | grep -q '"version"'; then up=1; break; fi
   sleep 2; t=$((t + 2))
 done
-echo "$$ $(date +%s)" > "$LOCK/pid"
-# 没人取的结果持锁之后再删（之前删会删掉还在跑的那份的）：只留这次刚建的 out / err（同一个时间戳再改回一次时，上一次留下的 rc 也删）
-for f in /tmp/fleet-replace.res.*; do case "$f" in "$RES.out" | "$RES.err") ;; *) rm -f "$f" ;; esac; done
-( trap '' HUP PIPE; ( main ) >"$RES.out" 2>"$RES.err"; echo "$?" > "$RES.rc.tmp" && mv -f "$RES.rc.tmp" "$RES.rc"; rm -rf "$LOCK" ) </dev/null >/dev/null 2>&1 &
-# 锁交给后台那份（这边的 shell 可能先没了）
-echo "$! $(date +%s)" > "$LOCK/pid.tmp" && mv -f "$LOCK/pid.tmp" "$LOCK/pid"
-wait $!
-cat "$RES.out"; cat "$RES.err" >&2
-exit "$(cat "$RES.rc" 2>/dev/null || echo 1)"
-"#;
+if [ "$up" != 1 ]; then say "OpenClash 重启后 $WAIT_API 秒内 API（127.0.0.1:${PORT:-?}）没有起来"; undo; exit 3; fi
+while read -r i; do
+  eval "name=\$NAME_$i"
+  if api 5 "/proxies/$(enc "$name")" | grep -q '"name"'; then say "重启后 OpenClash 里还有出口「$name」（新配置没有生效）"; undo; exit 4; fi
+done < "$W/found"
+emit_sha
+echo remove=ok
+}
+"#,
+    wrapper!()
+);
 
 /// 结果文件不在（脚本没开始跑，或结果已经取走）的退出码
 pub const NO_RESULT: i32 = 5;
@@ -1105,6 +1348,55 @@ rules:\n- MATCH,节点01组\n";
             assert_eq!((o.code, o.kv("rollback")), (0, Some("ok")), "busybox={bb} {o:?}");
             assert!(!lock.exists());
             assert_eq!(f.read("etc/openclash/config/c.yaml"), CONFIG);
+            f.assert_no_leftovers();
+        }
+    }
+
+    /// 删出口：出口块、指向它的规则、策略组里的它一起删，别的原样；重跑什么都不用删（不写、不重启）。
+    /// 删了会出问题的（别处还引用它、兜底规则指向它、组删完就空了）一行不写
+    #[cfg(unix)]
+    #[test]
+    fn remove_drops_exit_rules_and_group_members() {
+        const CFG: &str = "dns:\n  nameserver:\n  - https://1.1.1.1/dns-query#EXIT_1\n\
+proxies:\n- name: EXIT_1\n  type: anytls\n  server: 1.1.1.1\n  port: 1\n  password: p\n\
+- name: EXIT_5\n  type: anytls\n  server: 1.1.1.1\n  port: 5\n  password: p\n# 注释\n\
+- type: anytls\n  name: \"EXIT_10\"\n  server: 1.1.1.1\n  port: 10\n\
+proxy-groups:\n- name: G\n  type: select\n  proxies:\n  - EXIT_1\n  - EXIT_5\n  - DIRECT\n\
+- name: G2\n  type: select\n  proxies:\n    - EXIT_10\n    - DIRECT\n\
+rules:\n- SRC-IP-CIDR,10.31.1.1/32,EXIT_1\n- SRC-IP-CIDR,10.31.3.1/32,EXIT_5\n- 'SRC-IP-CIDR,10.31.5.101/32,EXIT_10,no-resolve'\n- MATCH,REJECT\n";
+        const WANT: &str = "dns:\n  nameserver:\n  - https://1.1.1.1/dns-query#EXIT_1\n\
+proxies:\n- name: EXIT_1\n  type: anytls\n  server: 1.1.1.1\n  port: 1\n  password: p\n\
+proxy-groups:\n- name: G\n  type: select\n  proxies:\n  - EXIT_1\n  - DIRECT\n\
+- name: G2\n  type: select\n  proxies:\n    - DIRECT\n\
+rules:\n- SRC-IP-CIDR,10.31.1.1/32,EXIT_1\n- MATCH,REJECT\n";
+        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        for bb in shells() {
+            let f = Fake::new(CFG, bb);
+            let o = f.run(&remove_script(&names(&["EXIT_5", "EXIT_10"]), at(S), &[]), &[]);
+            assert_eq!((o.code, o.kv("remove"), o.kv("removed"), o.kv("rules"), o.kv("members")), (0, Some("ok"), Some("2"), Some("2"), Some("2")), "busybox={bb} {o:?}");
+            assert_eq!(f.read("etc/openclash/config/c.yaml"), WANT, "busybox={bb}");
+            assert_eq!(std::fs::read_to_string(f.path(&format!("etc/fleet-backup/openclash/c.yaml.{S}"))).unwrap(), CFG, "备份是删之前的");
+            assert_eq!(o.kv("sha").map(String::from), Some(hex::encode(<sha2::Sha256 as sha2::Digest>::digest(WANT.as_bytes()))));
+            assert_eq!(f.read("restart.log").lines().count(), 1);
+            // 确认删掉的不在了（经 mihomo 的 /proxies/<名字>）
+            assert!(f.read("curl.log").contains("/proxies/%45%58%49%54%5F%35\n"), "{}", f.read("curl.log"));
+            // 重跑：都已经没有了，不写、不重启
+            let o = f.run(&remove_script(&names(&["EXIT_5", "EXIT_10"]), at("20261023-020000Z"), &[]), &[]);
+            assert_eq!((o.code, o.kv("remove")), (0, Some("none")), "{o:?}");
+            assert!(o.stderr.contains("已经没有出口「EXIT_10」"), "{}", o.stderr);
+            assert_eq!(f.read("restart.log").lines().count(), 1);
+            f.assert_no_leftovers();
+            // dns 还引用它：不写
+            let o = f.run(&remove_script(&names(&["EXIT_1"]), at("20261023-030000Z"), &[]), &[]);
+            assert_eq!(o.code, 2, "{o:?}");
+            assert!(o.stderr.contains("（dns 下）还引用出口「EXIT_1」"), "{}", o.stderr);
+            assert_eq!(f.read("etc/openclash/config/c.yaml"), WANT);
+            // 兜底规则指向它、组删完就空了：不写
+            let f = Fake::new("proxies:\n- name: A\n  server: x\n- name: B\n  server: y\nproxy-groups:\n- name: G\n  proxies:\n  - A\nrules:\n- MATCH,B\n", bb);
+            let o = f.run(&remove_script(&names(&["A", "B"]), at(S), &[]), &[]);
+            assert_eq!(o.code, 2, "{o:?}");
+            assert!(o.stderr.contains("策略组「G」的成员全是要删的出口") && o.stderr.contains("兜底规则「MATCH,B」"), "{}", o.stderr);
+            assert_eq!(f.read("restart.log"), "");
             f.assert_no_leftovers();
         }
     }
