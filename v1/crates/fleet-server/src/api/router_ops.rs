@@ -7,6 +7,8 @@
 //! - 切出口协议（`GET` 预览 / `POST /routers/{id}/protocol`，`to` = anytls | reality）：指向 fleet 入口的出口整块改写成另一种协议（同一个入口、同名出口，
 //!   名字、分组、规则不变），作业 router_protocol，同样走「改软路由出口」那一步。线路机没开目标协议（AnyTLS 还要 sing-box 在跑、端口算得出）、
 //!   从没对上过入口的出口跳过并写原因。
+//! - 删出口（`GET` 预览 / `POST /routers/{id}/exits/remove`，`exits` 点名）：客户不要了的出口连同指向它的分流规则、策略组里的引用一起从配置里删掉，
+//!   作业 router_exit_rm（jobs/steps/router_exits.rs）。对不上面板入口的出口要 `force`；指着的备用机器删完不再被扣住，到期后自动回收。
 //! - 临时切换（`POST /routers/{id}/switch`、`POST /routers/{id}/switch/back`）：select 组经 mihomo API 切到组里另一个出口，不重启，可到时自动切回（routers/switch.rs）。
 
 use super::ok;
@@ -355,6 +357,145 @@ pub async fn protocol(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath
     });
     let job = jobs::enqueue(&mut tx, "router_protocol", Some(id), params, &a.name).await?;
     audit(&mut tx, &a.name, "router.protocol", "router", Some(id), json!({"name": r.name, "to": to, "exits": exits, "job_id": job})).await?;
+    tx.commit().await?;
+    st.wake_jobs();
+    st.emit(Event::Job { id: job, target: Some(id) });
+    let mut v = p.view();
+    v["job_id"] = json!(job);
+    Ok(ok(v))
+}
+
+#[derive(Deserialize)]
+pub struct RemoveIn {
+    /// 要删的出口名
+    #[serde(default)]
+    exits: Vec<String>,
+    /// 出口不是面板的入口（对不上任何入口：客户自己加的，或对应的节点早已删除）也删
+    #[serde(default)]
+    force: bool,
+}
+
+#[derive(Deserialize)]
+pub struct RemoveQ {
+    /// 逗号分隔的出口名
+    exits: Option<String>,
+    force: Option<bool>,
+}
+
+struct RemovePlan {
+    router: RouterPlan,
+    /// 要删的出口：出口名、对上的入口、此刻的客户端数与连接数
+    rows: Vec<Value>,
+    blockers: Vec<String>,
+    warnings: Vec<String>,
+}
+
+impl RemovePlan {
+    fn view(&self) -> Value {
+        json!({
+            "router": {"id": self.router.id, "name": self.router.name},
+            "exits": self.rows,
+            "ok": self.blockers.is_empty(),
+            "blockers": self.blockers,
+            "warnings": self.warnings,
+        })
+    }
+}
+
+/// 按最近一次采集算：删这几个出口会怎样（客户端、策略组、之后不再被出口指着的备用机器）、不能删的原因。
+/// 真正删什么由路由上的脚本按当时的配置定（同名出口、流式写法、兜底规则指向它、别处还引用它都会拒绝，一行不写）
+async fn remove_plan(st: &AppState, r: &routers::Row, only: &[String], force: bool) -> ApiResult<RemovePlan> {
+    let snap = r.snapshot().unwrap_or_default();
+    let (mut blockers, mut warnings, mut rows) = (vec![], vec![], vec![]);
+    let mut names: Vec<String> = vec![];
+    for n in only {
+        if !names.contains(n) {
+            names.push(n.clone());
+        }
+    }
+    if names.is_empty() {
+        blockers.push("没有点名要删的出口".to_string());
+    }
+    let mut entries = vec![];
+    for name in &names {
+        let Some(x) = snap.exits.iter().find(|x| &x.name == name) else {
+            blockers.push(format!("最近一次采集里没有出口「{name}」"));
+            continue;
+        };
+        match &x.entry {
+            Some(er) => entries.push(er.node_id),
+            None if force => {}
+            None => blockers.push(format!("出口「{name}」不是面板的入口（对不上任何入口，可能是路由上自己加的）：确认要删的话加 --force")),
+        }
+        if x.clients > 0 {
+            warnings.push(format!("出口「{name}」上现在有 {} 个客户端：删掉后这些设备按后面的规则走（兜底规则多半是拒绝，就上不了网了）", x.clients));
+        }
+        rows.push(json!({"exit": x.name, "entry": x.entry.as_ref().map(|e| e.name.clone()), "server": x.server, "port": x.port, "clients": x.clients, "conns": x.conns}));
+    }
+    // 策略组（GLOBAL 是 mihomo 自带的，不在配置里）：去掉这些出口；删完就空了的路由上的脚本也会拒绝，这里先说
+    for g in snap.groups.iter().filter(|g| g.name != "GLOBAL") {
+        let gone: Vec<&str> = g.all.iter().filter(|m| names.contains(m)).map(String::as_str).collect();
+        if gone.is_empty() {
+            continue;
+        }
+        if gone.len() == g.all.len() {
+            blockers.push(format!("策略组「{}」的成员全是要删的出口，删完它就空了：先在路由上改这个组", g.name));
+        } else {
+            warnings.push(format!("策略组「{}」里去掉 {}", g.name, gone.join("、")));
+        }
+    }
+    let left = snap.exits.iter().filter(|x| x.entry.is_some() && !names.contains(&x.name)).count();
+    if left == 0 && !names.is_empty() {
+        warnings.push(format!("删完软路由「{}」就没有对应面板入口的出口了", r.name));
+    }
+    // 指着的节点：备用里的删完不再被出口指着，到期满 1 天后中控自动回收；在用的说一声（团队里它就没有客户了）
+    let live = crate::views::live(st).await?;
+    let mut seen = vec![];
+    for id in entries {
+        if seen.contains(&id) {
+            continue;
+        }
+        seen.push(id);
+        let Some(m) = live.iter().find(|m| m.id == id) else { continue };
+        let mine = |l: &String| names.iter().any(|n| l == &format!("{} · {n}", r.name) || l.starts_with(&format!("{} · {n}（", r.name)));
+        let rest: Vec<&String> = m.router_exits.iter().filter(|l| !mine(l)).collect();
+        if m.spare && rest.is_empty() && m.live_ip_nodes.is_empty() {
+            let when = m.recycle_on.map(|d| format!("{d} 起")).unwrap_or_else(|| "到期满 1 天后".into());
+            warnings.push(format!("「{}」删完就没有出口指着了：{when}中控自动回收（要马上回收用 fleetctl retire {} --now）", m.name, m.name));
+        } else if !m.spare && m.kind != "relay" && rest.is_empty() {
+            warnings.push(format!("「{}」是在用的节点：删完软路由「{}」就不再经它出去（不用了的话退役：fleetctl retire {}）", m.name, r.name, m.name));
+        }
+    }
+    if r.state() != "online" {
+        blockers.push(format!("软路由「{}」现在不在线：等它在线再删", r.name));
+    }
+    warnings.push("删完要重启 OpenClash：经这台路由的连接会全部断开、马上重连".into());
+    let router = RouterPlan { id: r.id, name: r.name.clone(), state: r.state().to_string(), exits: vec![] };
+    Ok(RemovePlan { router, rows, blockers, warnings })
+}
+
+/// 预览：删哪些出口、客户端与策略组会怎样、不能删的原因
+pub async fn remove_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<RemoveQ>) -> ApiResult<Json<Value>> {
+    let r = row(&st, id).await?;
+    Ok(ok(remove_plan(&st, &r, &names(q.exits.as_deref()), q.force.unwrap_or(false)).await?.view()))
+}
+
+/// 发起：建 router_exit_rm 作业（备份 → 删出口、规则、组里的引用 → 重启 OpenClash → 确认删掉了，不行整份换回）
+pub async fn remove(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<RemoveIn>) -> ApiResult<Json<Value>> {
+    let r = row(&st, id).await?;
+    let p = remove_plan(&st, &r, &b.exits, b.force).await?;
+    if !p.blockers.is_empty() {
+        return Err(ApiError::conflict(p.blockers.join("；")).with_detail(json!({"blockers": p.blockers})));
+    }
+    let mut tx = st.db.begin().await?;
+    let busy: Option<Uuid> = sqlx::query_scalar("select id from job where target_id = $1 and state in ('queued', 'running', 'waiting', 'cancelling')").bind(id).fetch_optional(&mut *tx).await?;
+    if let Some(j) = busy {
+        return Err(ApiError::conflict(format!("这台软路由已经有一个改出口的作业没做完（{j}）")).with_detail(json!({"job_id": j})));
+    }
+    let exits: Vec<&str> = p.rows.iter().filter_map(|x| x["exit"].as_str()).collect();
+    let params = json!({"exits": exits, "force": b.force, "router_name": r.name});
+    let job = jobs::enqueue(&mut tx, "router_exit_rm", Some(id), params, &a.name).await?;
+    audit(&mut tx, &a.name, "router.exits_remove", "router", Some(id), json!({"name": r.name, "exits": exits, "force": b.force, "job_id": job})).await?;
     tx.commit().await?;
     st.wake_jobs();
     st.emit(Event::Job { id: job, target: Some(id) });

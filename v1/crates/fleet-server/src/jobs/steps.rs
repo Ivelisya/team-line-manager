@@ -4,6 +4,7 @@ mod batch;
 mod bridge;
 mod lifecycle;
 mod replace;
+mod router_exits;
 
 pub use replace::{proto_exit, sync_exit};
 
@@ -170,6 +171,8 @@ pub async fn run(c: &Ctx<'_>, key: &str) -> anyhow::Result<Outcome> {
         // 替换节点
         "routers" => replace::routers(c).await,
         "renumber" => replace::renumber(c).await,
+        // 删软路由出口（steps/router_exits.rs）
+        "remove_exits" => router_exits::remove_exits(c).await,
         // 穿透（steps/bridge.rs）
         "bridge" => bridge::bridge_for_new(c).await,
         "bridge_up" => bridge::bridge_up(c).await,

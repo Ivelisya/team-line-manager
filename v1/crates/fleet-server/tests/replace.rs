@@ -41,6 +41,13 @@ case $script in
     [ -e "$R/result" ] && { cat "$R/result"; exit 0; }
     echo "fleet：路由上没有这次的结果" >&2; exit 5 ;;
   *"MODE='apply'"*) [ -e "$R/down-apply" ] && { echo "Connection timed out during banner exchange" >&2; exit 255; } ;;
+  # 删出口（routers::replace::REMOVE_SCRIPT）：存成 remove-<n>.sh；refuse = 认不出、一行没写
+  *"MODE='remove'"*)
+    n=$(ls "$R" | grep -c '^remove-' || true)
+    printf '%s
+' "$script" > "$R/remove-$((n + 1)).sh"
+    [ "$(cat "$R/mode" 2>/dev/null)" = refuse ] && { echo "fleet：删完后第 3 行（dns 下）还引用出口「节点01」，认不出怎么删" >&2; echo "fleet：配置没有改动" >&2; exit 2; }
+    echo "backup=/etc/fleet-backup/openclash/c.yaml.x"; echo removed=1; echo rules=9; echo members=0; echo sha=abc; echo remove=ok; exit 0 ;;
   *"MODE='rollback'"*)
     [ -e "$R/rollback-fail" ] && { echo "fleet：写回备份失败" >&2; exit 3; }
     printf '%s\n' "$script" | sed -n "s/^STAMP='\(.*\)'$/\1/p;s/^NAME_1='\(.*\)'$/\1/p;s/^SRV_1='\(.*\)'$/\1/p;s/^PORT_1='\(.*\)'$/\1/p" | paste -sd' ' >> "$R/rollback.log"
@@ -2087,4 +2094,55 @@ async fn anytls_exit_waits_for_singbox() {
     assert!(a[0].contains("OPORT_1='40003'\nSRV_1='relay.test'\nPORT_1='40020'") && a[0].contains("KIND_1='anytls'"), "{}", &a[0][..600]);
     let p: Value = sqlx::query_scalar("select params from job where id = $1").bind(jid).fetch_one(&t.st.db).await.unwrap();
     assert!(p["anytls_wait_since"].is_null(), "{p}");
+}
+
+/// 删出口：预览（不认识的出口、对不上面板入口的要 force、指着的备用节点删完会自动回收）；作业 router_exit_rm 把点名的出口交给路由上的脚本，
+/// 删完清掉这些出口的已建立对应；脚本认不出时作业失败、写明原因
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remove_exits_preview_and_job() {
+    let w = world().await;
+    let t = &w.t;
+    let db = &t.st.db;
+    let oe = old_entry(&w).await;
+    let ra = router(&w, "团队2-路由R", 23720, &[("节点01", "relay.test", 20003, Some(oe)), ("直连", "203.0.113.99", 8388, None)]).await;
+    // 旧节点已退进备用：删完出口就不再被指着
+    sqlx::query("update machine set team_id = $2, number = 1 where id = $1").bind(w.old).bind(w.spare).execute(db).await.unwrap();
+    sqlx::query("insert into router_exit_link (router_id, exit, entry_id, source) values ($1, '节点01', $2, 'repoint')").bind(ra).bind(oe).execute(db).await.unwrap();
+    t.st.live.invalidate();
+    let url = |q: &str| format!("/api/v1/routers/{ra}/exits/remove?{q}");
+    let p = t.get(&url("exits=没有这个")).await;
+    assert_eq!(p["ok"], false);
+    assert!(p["blockers"].to_string().contains("最近一次采集里没有出口「没有这个」"), "{p}");
+    let p = t.get(&url("exits=直连")).await;
+    assert!(p["ok"] == false && p["blockers"].to_string().contains("不是面板的入口"), "{p}");
+    assert_eq!(t.get(&url("exits=直连&force=true")).await["ok"], true);
+    let p = t.get(&url("exits=节点01")).await;
+    assert_eq!(p["ok"], true, "{p}");
+    assert_eq!((p["exits"][0]["exit"].as_str(), p["exits"][0]["entry"].as_str()), (Some("节点01"), Some("x")), "{p}");
+    assert!(p["warnings"].to_string().contains("删完就没有出口指着了"), "{p}");
+    let d = t.post(&format!("/api/v1/routers/{ra}/exits/remove"), json!({"exits": ["节点01"]})).await;
+    let job = d["job_id"].as_str().unwrap().to_string();
+    // 同一台路由上一个没做完时不能再发起
+    assert_eq!(t.req("POST", &format!("/api/v1/routers/{ra}/exits/remove"), Some(json!({"exits": ["节点01"]})), None).await.0, StatusCode::CONFLICT);
+    drive(t).await;
+    let j = t.job(&job).await;
+    assert_eq!((j["state"].as_str(), j["kind"].as_str(), j["target"]["name"].as_str()), (Some("succeeded"), Some("router_exit_rm"), Some("团队2-路由R")), "{j} {}", logs(t, &job).await);
+    let s = read(root(23720).join("remove-1.sh"));
+    assert!(s.starts_with("MODE='remove'
+") && s.contains("N='1'
+") && s.contains("NAME_1='节点01'
+"), "{}", &s[..300]);
+    assert!(logs(t, &job).await.contains("删好了：出口 1 个、分流规则 9 条"));
+    let links: i64 = sqlx::query_scalar("select count(*) from router_exit_link where router_id = $1").bind(ra).fetch_one(db).await.unwrap();
+    assert_eq!(links, 0);
+    let au = t.get(&format!("/api/v1/audit?target_id={ra}")).await.to_string();
+    assert!(au.contains("router.exits_remove"), "{au}");
+    // 脚本认不出：作业失败，原因原样
+    std::fs::write(root(23720).join("mode"), "refuse").unwrap();
+    let d = t.post(&format!("/api/v1/routers/{ra}/exits/remove"), json!({"exits": ["节点01"]})).await;
+    let job = d["job_id"].as_str().unwrap().to_string();
+    drive(t).await;
+    let j = t.job(&job).await;
+    assert_eq!(j["state"].as_str(), Some("failed"), "{j}");
+    assert!(j.to_string().contains("还引用出口「节点01」"), "{j}");
 }

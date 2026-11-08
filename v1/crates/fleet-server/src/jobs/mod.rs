@@ -132,6 +132,8 @@ const REPOINT: &[StepDef] = &[s("routers", "改软路由出口", 1800)];
 const ROUTER_SYNC: &[StepDef] = &[s("routers", "改软路由出口", 1800)];
 // 切软路由出口协议（api/router_ops.rs）：指向 fleet 入口的出口整块改写成 AnyTLS / Reality（同一步「改软路由出口」，目标是路由），入口不动
 const ROUTER_PROTOCOL: &[StepDef] = &[s("routers", "改软路由出口", 1800)];
+// 删软路由出口（api/router_ops.rs、steps/router_exits.rs）：出口连同指向它的规则、策略组里的引用一起删，入口不动；一台路由，脚本最多约 7 分钟
+const ROUTER_EXIT_RM: &[StepDef] = &[s("remove_exits", "删软路由出口", 900)];
 // 推送时旧程序留成 .prev；起不来、或 2 分钟内等不到新版本上报，就换回去并让作业失败（见 steps::agent / wait_report）。重试从推送重来
 // 线路机升级 agent 时顺带推 sing-box（约 30 MB，推送上限 300 s）
 const UPGRADE_AGENT: &[StepDef] = &[s("agent", "推送并重启 agent", 900), s("wait_report", "等待新版本上报", 180)];
@@ -160,6 +162,7 @@ pub fn defs(kind: &str) -> &'static [StepDef] {
         "repoint" => REPOINT,
         "router_sync" => ROUTER_SYNC,
         "router_protocol" => ROUTER_PROTOCOL,
+        "router_exit_rm" => ROUTER_EXIT_RM,
         "tune" => TUNE,
         "ss_refresh" => SS_REFRESH,
         "speedtest" => SPEEDTEST,
@@ -175,7 +178,7 @@ pub fn title_of(kind: &str, key: &str) -> &'static str {
 /// 上架类作业：目标机器处于上架中，失败时机器标为上架失败
 pub fn provisions(kind: &str) -> bool { kind.starts_with("provision_") }
 
-pub fn cancellable(kind: &str) -> bool { provisions(kind) || matches!(kind, "attach_entry" | "move_entry" | "upgrade_agent" | "replace" | "repoint" | "router_sync" | "router_protocol" | "tune" | "ss_refresh" | "speedtest" | "reverse") }
+pub fn cancellable(kind: &str) -> bool { provisions(kind) || matches!(kind, "attach_entry" | "move_entry" | "upgrade_agent" | "replace" | "repoint" | "router_sync" | "router_protocol" | "router_exit_rm" | "tune" | "ss_refresh" | "speedtest" | "reverse") }
 
 /// 停在「改软路由出口」这一步
 fn at_routers(kind: &str, step: i32) -> bool { (matches!(kind, "replace" | "repoint" | "router_sync" | "router_protocol") && step == 0) || (kind == "move_entry" && step == MOVE_ROUTERS) }
@@ -216,6 +219,10 @@ pub fn cancel_blocker(kind: &str, step: i32, state: &str, params: &Value) -> Opt
     }
     if matches!(kind, "replace" | "repoint" | "router_sync" | "router_protocol") && !queued && (step > 0 || !matches!(state, "queued" | "failed")) {
         return Some("软路由已经开始改（或已经改好），不能再取消：失败了点重试到完成");
+    }
+    // 删软路由出口：脚本在路由上跑的时候不能取消（删到一半会自己换回，等它结束）；排队、等锁、失败停着的可以
+    if kind == "router_exit_rm" && state == "running" {
+        return Some("正在改软路由，不能取消：等它结束（没删成会自己换回原配置）");
     }
     if !matches!(kind, "upgrade_agent" | "tune" | "ss_refresh" | "speedtest") || state == "queued" {
         return None;
@@ -956,6 +963,8 @@ fn view_change(kind: &str) -> ViewChange {
         "router_sync" => ViewChange::Quiet,
         // 切出口协议：出口还是对着同一个入口，router_exits 不变
         "router_protocol" => ViewChange::Quiet,
+        // 删软路由出口：指着的机器不再被出口指着（备用机器的 router_exits / idle_spare、在用节点的 no_router_exits 变）
+        "router_exit_rm" => ViewChange::View,
         // 退役完成：生命周期 → retired（移出列表）、同团队压缩编号；清除数据：机器与入口删除
         "retire" | "purge" => ViewChange::Names,
         // 上架 / 补入口 / 换线路机 / 改出口指向：生命周期、入口增删与归属、备用机器的 router_exits 变；名字、团队、编号不动
@@ -1274,7 +1283,7 @@ mod tests {
         for k in ["upgrade_agent", "ss_refresh", "tune", "speedtest", "router_sync", "router_protocol"] {
             assert_eq!(view_change(k), Quiet, "{k}");
         }
-        for k in ["provision_vps", "provision_proxy", "provision_relay", "provision_ip", "attach_entry", "move_entry", "repoint", "replace", "reverse"] {
+        for k in ["provision_vps", "provision_proxy", "provision_relay", "provision_ip", "attach_entry", "move_entry", "repoint", "replace", "reverse", "router_exit_rm"] {
             assert_eq!(view_change(k), View, "{k}");
         }
         for k in ["retire", "purge", "不认识的类型"] {
@@ -1285,7 +1294,7 @@ mod tests {
     #[test]
     fn outer_timeout_covers_step_timeout() {
         for k in [
-            "provision_vps", "provision_proxy", "provision_relay", "provision_ip", "attach_entry", "retire", "purge", "upgrade_agent", "move_entry", "replace", "repoint", "router_sync", "router_protocol", "tune", "ss_refresh", "speedtest", "reverse",
+            "provision_vps", "provision_proxy", "provision_relay", "provision_ip", "attach_entry", "retire", "purge", "upgrade_agent", "move_entry", "replace", "repoint", "router_sync", "router_protocol", "router_exit_rm", "tune", "ss_refresh", "speedtest", "reverse",
         ] {
             for d in defs(k) {
                 assert!(outer_timeout(d).as_secs() as i64 >= d.timeout_s + 120);

@@ -463,7 +463,7 @@ enum Cmd {
         /// 只看失败的作业（和 --active 二选一）
         #[arg(long, conflicts_with = "active")]
         failed: bool,
-        /// 只看这类作业：provision（各类上架）| attach_entry | move_entry | replace | repoint | router_sync | upgrade_agent | tune | ss_refresh | speedtest | retire | purge
+        /// 只看这类作业：provision（各类上架）| attach_entry | move_entry | replace | repoint | router_sync | router_protocol | router_exit_rm | upgrade_agent | tune | ss_refresh | speedtest | retire | purge
         #[arg(long)]
         kind: Option<String>,
         /// 最多列几个（服务端上限 500）
@@ -1045,6 +1045,22 @@ enum RouterCmd {
         #[arg(long)]
         follow: bool,
     },
+    /// 删出口：客户不要的出口从路由的 OpenClash 配置里删掉，连同指向它的分流规则（这些来源 IP 的设备之后按兜底规则走）和策略组里对它的引用。
+    /// 备份后删，删完重启 OpenClash（断开经它的全部连接）并确认生效，失败整份换回。不加 --yes 只打印预览（客户端、策略组、之后自动回收的备用机器）。
+    /// 指着的备用机器删完就不再被扣住，到期满 1 天后自动回收
+    RemoveExits {
+        router: String,
+        /// 要删的出口（可重复，也可逗号分隔：--exit EXIT_5,EXIT_6）
+        #[arg(long = "exit", required = true, value_delimiter = ',')]
+        exits: Vec<String>,
+        /// 出口对不上面板的入口（路由上自己加的，或对应的节点早删了）也删
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        follow: bool,
+    },
     /// 临时切换出口：把 select 组经 mihomo API 切到组里另一个出口（不改配置、不重启 OpenClash、不断已有连接），
     /// --for 4h 到时自动切回（到时原出口还不通就推迟 1 小时再看）；--back 切回第一次切之前的出口。url-test / fallback 组不能手动切，
     /// 没有规则用的组（router show 里标「未被规则引用」，如 mihomo 自带的 GLOBAL）切了不影响流量，也会被拒绝。组与当前出口见 router show
@@ -1293,6 +1309,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             RouterCmd::Rm { router, yes, force } => routers::rm(x, &router, yes, force),
             RouterCmd::Sync { router, exits, force, yes, follow } => routers::sync(x, &router, &exits, force, yes, follow),
             RouterCmd::Protocol { router, to, exits, yes, follow } => routers::protocol(x, &router, &to, &exits, yes, follow),
+            RouterCmd::RemoveExits { router, exits, force, yes, follow } => routers::remove_exits(x, &router, &exits, force, yes, follow),
             RouterCmd::Switch { router, group, to, dur, back } => routers::switch(x, &router, &group, to.as_deref(), dur.as_deref(), back),
         },
         Cmd::Probe { cmd } => match cmd {
