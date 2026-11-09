@@ -6,12 +6,12 @@ import { Link } from 'react-router-dom';
 import { Activity, AlertTriangle, ArrowDown, ArrowUp, CalendarClock, ChevronRight, CircleDollarSign, CloudUpload, Database, LayoutDashboard, Router as RouterIcon, Server, TrendingUp, Waypoints } from 'lucide-react';
 import type { Overview } from '@/lib/types';
 import * as F from '@/lib/format';
-import { useMe, useNextDue, useOfflineNames, useQuotaTight } from '@/lib/queries';
+import { useMe, useNextDue, useNodeKpiWho, useOfflineNames, useQuotaTight } from '@/lib/queries';
 import { openDrawer } from '@/lib/drawer';
 import { fleetExits, useRouters } from '@/lib/routers';
 import { useFleetSeries } from '@/lib/live';
 import { cn } from '@/lib/utils';
-import { meta, usdTotalTip } from '@/lib/derive';
+import { heldWhy, meta, usdTotalTip, type NodeKpiWho } from '@/lib/derive';
 import { CountUp, DotCount, FromTag, Num, Stat } from '@/components/app/primitives';
 import { AreaSpark, Cells } from '@/components/app/viz';
 import { InfoTip } from '@/components/ui/info-tip';
@@ -56,12 +56,18 @@ const spareHealth = (c: Overview['spare_health']) => {
   return `（能顶替 ${normal(c)} 台${good ? `：${good}` : ''}${bad ? `；${bad}` : ''}）`;
 };
 
-/** 问候语下的一行状态：只说有几类事要处理、是哪几类（具体台数在下面的 KPI 卡里，这里不再重复一遍数字）；没有就是「全部正常」 */
-function statusLine(o: Overview | undefined, down: number): string {
+/** 节点卡 (i) 里的一句：节点总数含几台备用机、为什么（备用团队里还被出口指着 / 有在用 IP 节点的，客户可能还在用，照常算健康和告警）；没有为空 */
+const heldInfo = (held: NodeKpiWho['held'] | undefined) =>
+  held?.length ? `\n节点总数含 ${held.length} 台备用机：${held.map((x) => `${x.name}（${heldWhy(x)}）`).join('；')}。客户可能还在用，照常算健康和告警；客户不要了就到软路由删掉这些出口，它们就成了闲置备用、到期自动回收` : '';
+
+/** 问候语下的一行状态：只说有几类事要处理、是哪几类（具体台数在下面的 KPI 卡里，这里不再重复一遍数字）；没有就是「全部正常」。
+ *  故障只有一两台节点时直接写名字（「故障（备用-06）」），线路机故障不点名（看线路机卡） */
+function statusLine(o: Overview | undefined, down: number, who?: NodeKpiWho): string {
   if (!o) return '';
   if (o.settling) return '中控刚启动，各台状态还在汇总…';
+  const names = who && o.relays.down === 0 && who.down.length > 0 && who.down.length <= 2 ? `（${who.down.map((x) => x.name).join('、')}）` : '';
   const todo = [
-    down && '故障',
+    down && `故障${names}`,
     o.failed && '上架失败',
     o.overdue && '已过期',
     o.due_soon && '即将到期',
@@ -78,12 +84,23 @@ function leadLine(s: string): React.ReactNode {
   return i < 0 ? <b className="hsec-lead">{s}</b> : <><b className="hsec-lead">{s.slice(0, i)}</b>：{s.slice(i + 1)}</>;
 }
 
-/** 「正常」卡的说明行：算在正常里的（降级、维护）与另外的（故障、未知）分两组写，每组为 0 的项省略；加起来对得上大数字与总数 */
-function HealthCaption({ c, to }: { c: Counts; to: string }) {
+/** 故障的那台的悬停：备用机写清它为什么还算节点、怎么让它不再算（删掉指着它的出口，它就成了闲置备用、到期自动回收） */
+const whoTip = (x: NodeKpiWho['down'][number]) =>
+  x.spare ? `${x.name} 在备用团队里，但${heldWhy(x)}（客户可能还在用），所以照常算节点、照常告警。\n客户不要了：到软路由的「出口」里删掉它，这台就成了闲置备用，到期自动回收` : `${x.name}：点开看故障原因`;
+
+/** 「正常」卡的说明行：算在正常里的（降级、维护）与另外的（故障、未知）分两组写，每组为 0 的项省略；加起来对得上大数字与总数。
+ *  `down` 给了时（节点卡）故障后面直接写是哪台（多台写第一台「等 N 台」），点名字开抽屉，悬停说明（备用机为什么还算节点） */
+function HealthCaption({ c, to, down }: { c: Counts; to: string; down?: NodeKpiWho['down'] }) {
+  const first = c.down > 0 ? down?.[0] : undefined;
   return (
     <>
       {(c.degraded > 0 || c.maintenance > 0) && <span className="stat-grp">含{c.degraded > 0 && <DotCount tone="warn" n={c.degraded} label="降级" />}{c.maintenance > 0 && <DotCount tone="neutral" n={c.maintenance} label="维护" />}</span>}
       {(c.down > 0 || c.unknown > 0) && <span className="stat-grp">另{c.down > 0 && <DotCount tone="bad" n={c.down} label="故障" to={to} />}{c.unknown > 0 && <DotCount tone="neutral" n={c.unknown} label="未知" />}</span>}
+      {first && (
+        <button type="button" className="stat-who who-link" data-tip={down!.length > 1 ? `${down!.map((x) => x.spare ? `${x.name}（备用：${heldWhy(x)}）` : x.name).join('\n')}` : whoTip(first)} onClick={() => openDrawer(first.id)}>
+          <span className="ellipsis">{first.name}</span>{down!.length > 1 && <span>等 <b className="num">{down!.length}</b> 台</span>}
+        </button>
+      )}
     </>
   );
 }
@@ -104,6 +121,7 @@ export const OverviewSection = React.memo(function OverviewSection({ o, loading 
   const me = useMe().data;
   const qt = useQuotaTight().data; const top = qt?.top;
   const nd = useNextDue().data;
+  const who = useNodeKpiWho().data;
   const nodes = o?.nodes; const relays = o?.relays;
   // 中控刚启动：健康计数还在变（先出的不准），这三张卡先显示加载态，数据到齐（settling 变 false，随实时推送到）再出数
   const health = loading || !!o?.settling;
@@ -117,12 +135,12 @@ export const OverviewSection = React.memo(function OverviewSection({ o, loading 
   const usdEmpty = !!usd && !usd.by_currency.length && !usd.unconverted.length;
   return (
     <HomeSection className="hsec-hero" icon={<LayoutDashboard />} label="监控总览"
-      title={<h1 className="hero-greet">{F.greeting()}，<span className="hero-name">{me?.username ?? ''}</span></h1>} sub={leadLine(statusLine(o, down))}>
+      title={<h1 className="hero-greet">{F.greeting()}，<span className="hero-name">{me?.username ?? ''}</span></h1>} sub={leadLine(statusLine(o, down, who))}>
       <div className="hero-grid">
         <div className="stat-grid">
           {/* 说明行用全站同一套状态名（降级 / 维护 / 故障 / 未知）；「正常」包括降级与维护（照常服务）这一点放在大数字的悬停说明里 */}
-          <Stat loading={health} tone="ok" icon={<Server />} label="节点正常" info={`${NORMAL_INFO}${o?.spare ? `\n另有闲置备用 ${o.spare} 台${spareHealth(o.spare_health)}，不计在内：${IDLE_SPARE_TIP}` : ''}`} to={NODES_LINK} value={<span data-tip="降级和维护的机器照常服务，也算正常"><CountUp value={nodes && normal(nodes)} /></span>} unit={nodes ? `/ ${nodes.total}` : undefined}
-            caption={nodes && <HealthCaption c={nodes} to={DOWN_LINK} />} />
+          <Stat loading={health} tone="ok" icon={<Server />} label="节点正常" info={`${NORMAL_INFO}${heldInfo(who?.held)}${o?.spare ? `\n另有闲置备用 ${o.spare} 台${spareHealth(o.spare_health)}，不计在内：${IDLE_SPARE_TIP}` : ''}`} to={NODES_LINK} value={<span data-tip="降级和维护的机器照常服务，也算正常"><CountUp value={nodes && normal(nodes)} /></span>} unit={nodes ? `/ ${nodes.total}` : undefined}
+            caption={nodes && <HealthCaption c={nodes} to={DOWN_LINK} down={who?.down} />} />
           <Stat loading={health} tone="teal" icon={<Waypoints />} label="线路机正常" info={NORMAL_INFO} to={RELAYS_LINK} value={<span data-tip="降级和维护的机器照常服务，也算正常"><CountUp value={relays && normal(relays)} /></span>} unit={relays ? `/ ${relays.total}` : undefined}
             caption={relays && <HealthCaption c={relays} to={`${DOWN_LINK}&kind=relay`} />} />
           <Stat loading={health} tone="bad" icon={<AlertTriangle />} alert={down > 0 && 'bad'} label="故障" value={<CountUp value={o ? down : undefined} />} unit="台" to={DOWN_LINK} caption={o && <><DotCount tone="bad" n={o.nodes.down} label="节点" /><DotCount tone="bad" n={o.relays.down} label="线路机" /></>} />

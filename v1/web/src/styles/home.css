@@ -123,6 +123,10 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 @media (hover: hover) { a.dotline:hover { text-decoration: underline; text-underline-offset: 2px; } }
 .stat-cap .stat-who { display: inline-flex; align-items: center; gap: var(--sp-4); min-width: 0; }
 .stat-cap .stat-who > .ellipsis { min-width: 4em; } /* 流量额度「最紧 某台 已用 93%」：名称放不下时省略，百分比留着 */
+/* 节点卡「另 故障 1 · 备用-06」：点名字开那台的抽屉（按钮抬到铺满的链接上面，同 .stat-cap a）；同说明行的字，悬停下划线 */
+.stat-cap .who-link { position: relative; z-index: 1; padding: 0; border: 0; background: none; font: inherit; color: inherit; cursor: pointer; border-radius: var(--r-xs); }
+.stat-cap .who-link > .ellipsis { min-width: 3em; color: var(--bad-text); }
+@media (hover: hover) { .stat-cap .who-link:hover > .ellipsis { text-decoration: underline; text-underline-offset: 2px; } }
 /* 窄屏两列：读数 28（--fs-kpi）、行高 34，仍按卡宽收 */
 @media (max-width: 760px) { .stat { padding: var(--sp-12) var(--sp-12) var(--sp-10); min-height: 92px; gap: var(--sp-6); } .stat-value { font-size: min(var(--fs-kpi), 24cqi); line-height: 34px; min-height: 34px; } }
 
