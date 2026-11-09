@@ -340,6 +340,17 @@ export function quotaTight(list: MachineView[]) {
 }
 /** 集群状态在线率格条的悬停：离线（agent 不再上报）的机器名，同 overview.offline 的口径（同机 IP 节点随宿主机的 agent，宿主机离线它们也各计一台） */
 export const offlineNames = (list: MachineView[]) => list.filter((m) => m.agent && !m.agent.online).map((m) => m.name);
+/** 首页「节点正常」卡说的是谁（同 overview.nodes 的口径：在用、不是线路机、不是闲置备用）：
+ *  down = 故障的节点；held = 算在节点里的备用机（备用团队里还被软路由出口指着、或上面有在用同机 IP 节点的，客户可能还在用，照常告警）。
+ *  备用机带上指着它的出口（「路由 · 出口」），说明它为什么还算节点 */
+export function nodeKpiWho(list: MachineView[]) {
+  const pick = (m: MachineView) => ({ id: m.id, name: m.name, spare: m.spare, exits: m.spare ? m.router_exits : [] });
+  const nodes = list.filter((m) => m.lifecycle === 'active' && m.kind !== 'relay' && !m.idle_spare);
+  return { down: nodes.filter((m) => m.health.status === 'down').map(pick), held: nodes.filter((m) => m.spare).map(pick) };
+}
+export type NodeKpiWho = ReturnType<typeof nodeKpiWho>;
+/** 备用机为什么还算节点：「YANG 旁路由 · EXIT_5 还指着它」；没有出口（上面有在用的同机 IP 节点）时写这个 */
+export const heldWhy = (x: { exits: string[] }) => (x.exits.length ? `${x.exits.join('、')} 还指着它` : '上面还有在用的同机 IP 节点');
 /** 即将到期（due_state = soon，不含不续费的备用机；备用团队里被出口指着、有在用 IP 节点、开着自动续费的照常续费）里最近的一台（首页 KPI「即将到期」的说明行）；没有为 null */
 export function nextDue(list: MachineView[]) {
   let top: { id: string; name: string; days: number } | null = null;

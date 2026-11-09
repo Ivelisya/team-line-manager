@@ -2146,3 +2146,20 @@ async fn remove_exits_preview_and_job() {
     assert_eq!(j["state"].as_str(), Some("failed"), "{j}");
     assert!(j.to_string().contains("还引用出口「节点01」"), "{j}");
 }
+
+/// 删出口预览：在用节点还有这台路由的别的出口指着时，不说「不再经它出去」（视图的 router_exits 只给备用机算，不能拿它判断在用节点）；
+/// 指着它的出口全删时才说
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remove_exits_preview_live_node_still_pointed() {
+    let w = world().await;
+    let t = &w.t;
+    let oe = old_entry(&w).await;
+    let ra = router(&w, "团队2-路由R", 23721, &[("节点01", "relay.test", 20003, Some(oe)), ("节点06", "relay.test", 20003, Some(oe))]).await;
+    t.st.live.invalidate();
+    let url = |q: &str| format!("/api/v1/routers/{ra}/exits/remove?{q}");
+    let p = t.get(&url("exits=节点06")).await;
+    assert_eq!(p["ok"], true, "{p}");
+    assert!(!p["warnings"].to_string().contains("不再经它出去"), "{p}");
+    let p = t.get(&url("exits=节点01,节点06")).await;
+    assert!(p["warnings"].to_string().contains("不再经它出去"), "{p}");
+}
