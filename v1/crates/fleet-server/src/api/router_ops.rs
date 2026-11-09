@@ -448,21 +448,29 @@ async fn remove_plan(st: &AppState, r: &routers::Row, only: &[String], force: bo
     if left == 0 && !names.is_empty() {
         warnings.push(format!("删完软路由「{}」就没有对应面板入口的出口了", r.name));
     }
-    // 指着的节点：备用里的删完不再被出口指着，到期满 1 天后中控自动回收；在用的说一声（团队里它就没有客户了）
+    // 指着的节点：备用里的删完不再被出口指着，到期满 1 天后中控自动回收；在用的说一声（团队里它就没有客户了）。
+    // 删完还剩几个出口指着它：备用机看视图的 router_exits（含经同机 IP 节点的）；在用节点视图里不算 router_exits（永远是空的），
+    // 按各路由的快照现算（routers::exits_using），否则「这台路由别的出口还指着它」的在用节点也会被说成「不再经它出去」
     let live = crate::views::live(st).await?;
     let mut seen = vec![];
-    for id in entries {
-        if seen.contains(&id) {
-            continue;
+    for id in &entries {
+        if !seen.contains(id) {
+            seen.push(*id);
         }
-        seen.push(id);
+    }
+    let using = crate::routers::exits_using(&st.db, &seen).await?;
+    for id in seen {
         let Some(m) = live.iter().find(|m| m.id == id) else { continue };
-        let mine = |l: &String| names.iter().any(|n| l == &format!("{} · {n}", r.name) || l.starts_with(&format!("{} · {n}（", r.name)));
-        let rest: Vec<&String> = m.router_exits.iter().filter(|l| !mine(l)).collect();
-        if m.spare && rest.is_empty() && m.live_ip_nodes.is_empty() {
+        let rest = if m.spare {
+            let mine = |l: &String| names.iter().any(|n| l == &format!("{} · {n}", r.name) || l.starts_with(&format!("{} · {n}（", r.name)));
+            m.router_exits.iter().filter(|l| !mine(l)).count()
+        } else {
+            using.get(&id).into_iter().flatten().filter(|(rid, _, exit)| !(*rid == r.id && names.contains(exit))).count()
+        };
+        if m.spare && rest == 0 && m.live_ip_nodes.is_empty() {
             let when = m.recycle_on.map(|d| format!("{d} 起")).unwrap_or_else(|| "到期满 1 天后".into());
             warnings.push(format!("「{}」删完就没有出口指着了：{when}中控自动回收（要马上回收用 fleetctl retire {} --now）", m.name, m.name));
-        } else if !m.spare && m.kind != "relay" && rest.is_empty() {
+        } else if !m.spare && m.kind != "relay" && rest == 0 {
             warnings.push(format!("「{}」是在用的节点：删完软路由「{}」就不再经它出去（不用了的话退役：fleetctl retire {}）", m.name, r.name, m.name));
         }
     }
