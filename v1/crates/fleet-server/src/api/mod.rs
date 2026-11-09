@@ -97,6 +97,8 @@ pub fn router() -> Router<AppState> {
         .route("/machines/{id}/reach-quality", get(probe_points::relay_quality))
         // 退役：默认移进备用团队，now = 立即回收（作业）；回收站只读，旧面板的退役机器从这里导入
         .route("/machines/{id}/retire", get(machines::retire_preview).post(machines::retire))
+        // 批量退役（只移进备用）：同一团队的几台一起退，原名不被中途的编号前移冲掉，原团队只压缩一次
+        .route("/machines/retire-batch", get(machines::retire_batch_preview).post(machines::retire_batch))
         .route("/recycle-bin", get(recycle::list))
         .route("/recycle-bin/import", post(recycle::import))
         .route("/recycle-bin/{id}", get(recycle::get_one))

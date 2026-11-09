@@ -370,6 +370,24 @@ fn held_reason(v: &Value) -> Option<String> { v["held"].as_str().map(String::fro
 /// `--now` 立即回收（退役作业：摘入口、清理、撤令牌、移进回收站）。先打印预览：去向与自动回收的日子、一起走的同机 IP 节点、
 /// 还指向它的软路由出口（不会自动改）、原团队的改名；进不了备用的说明原因（只能 --now），--now 会被拒绝的列出阻断原因。`--follow` 只对 --now 有用
 pub fn retire(ctx: &Ctx, machine: &str, now: bool, reason: Option<&str>, no_cleanup: bool, yes: bool, follow: bool) -> anyhow::Result<u8> {
+    // 逗号分隔多台：一起进备用（retire_batch）；只有一台（含重复写同一台）照旧走单台
+    let parts: Vec<&str> = machine.split(',').map(str::trim).filter(|q| !q.is_empty()).collect();
+    let mut found: Vec<(String, String)> = vec![];
+    if parts.len() > 1 {
+        for q in &parts {
+            let (id, name) = ctx.find_id(q, Want::Live)?;
+            if !found.iter().any(|f| f.0 == id) {
+                found.push((id, name));
+            }
+        }
+        if found.len() > 1 {
+            if now {
+                bail!("--now 不能一次回收多台：逐台 fleetctl retire <机器> --now 退（立即回收要各自看作业进度）；要一起进备用就去掉 --now");
+            }
+            return retire_batch(ctx, &found, reason, yes);
+        }
+    }
+    let machine = parts.first().copied().unwrap_or(machine);
     let m = ctx.find(machine, Want::Live)?;
     let (id, name) = (st(&m, "/id"), st(&m, "/name"));
     let pre = ctx.c.get(&format!("/machines/{id}/retire"))?;
@@ -472,6 +490,83 @@ pub fn retire(ctx: &Ctx, machine: &str, now: bool, reason: Option<&str>, no_clea
         s
     });
     if follow { cmds::follow_jobs(ctx, std::iter::once(&d).chain(&ip_jobs)) } else { Ok(0) }
+}
+
+/// `fleetctl retire A,B,C`：几台一起移进备用（一个事务）。原名都取动手之前的显示名，原团队的编号最后只前移一次——
+/// 一台台退的话每退一台后面的就前移，下一台再写「团队1-01」已经是另一台了，备用机器的 spare_from、回收站里的名字全成了同一个。
+/// 先打印预览（每台的去向与自动回收的日子、一起进的同机 IP 节点、还指着它们的软路由出口、原团队的改名与出口错位提醒）；
+/// 有一台进不了备用就整批不动。`--json` 不加 --yes 只把预览（GET /machines/retire-batch）打到 stdout，确认错误在 stderr
+fn retire_batch(ctx: &Ctx, ms: &[(String, String)], reason: Option<&str>, yes: bool) -> anyhow::Result<u8> {
+    let ids: Vec<String> = ms.iter().map(|m| m.0.clone()).collect();
+    let pre = ctx.c.get_q("/machines/retire-batch", &[("ids", ids.join(","))])?;
+    let items = pre["items"].as_array().cloned().unwrap_or_default();
+    let bad: Vec<String> = items.iter().filter(|i| i["ok"] != true).map(|i| format!("{}（{}）", st(i, "/name"), st(i, "/why"))).collect();
+    if !bad.is_empty() {
+        bail!("这几台不能一起移进备用，整批都没动：{}。把它们从列表里去掉再退；不能进备用的要现在就清理并移进回收站，单独 fleetctl retire <机器> --now", bad.join("；"));
+    }
+    if !ctx.json {
+        outln(format!("将把 {} 台一起移进备用（一个事务，要么都进要么都不动），机器照常运行；原团队的编号最后统一前移一次。移出备用（fleetctl rename <备用名> --team <团队>）就是撤销退役。", items.len()));
+        for i in &items {
+            let name = st(i, "/name");
+            let when = match i["recycle_on"].as_str() {
+                Some(on) => format!("{on} 起自动回收（账单时区）"),
+                None => no_recycle(held_reason(i).as_deref(), true),
+            };
+            outln(format!("  {name} → {}，{when}", st(i, "/to_name")));
+            for x in i["ip_nodes"].as_array().into_iter().flatten() {
+                outln(format!("    同机 IP 节点一起进备用：{} → {}", st(x, "/name"), st(x, "/to_name")));
+            }
+            for n in i["notes"].as_array().into_iter().flatten().chain(i["warnings"].as_array().into_iter().flatten()) {
+                outln(format!("    注意（{name}）：{}", n.as_str().unwrap_or("")));
+            }
+        }
+        let exits: Vec<String> = pre["routers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|r| r["exits"].as_array().cloned().unwrap_or_default().into_iter().map(move |e| format!("{} · {}（{}）", st(r, "/name"), st(&e, "/exit"), st(&e, "/node"))))
+            .collect();
+        if !exits.is_empty() {
+            outln(format!("还有软路由出口指向它们（不会自动改；要换掉先 fleetctl replace，客户不要了就 fleetctl router remove-exits <路由> --exit <出口> 删掉）：{}", exits.join("、")));
+        }
+        if let Some(rs) = pre["renames"].as_array().filter(|r| !r.is_empty()) {
+            outln("原团队编号会前移（这几台全走之后一次压缩）：");
+            for r in rs {
+                outln(format!("  {} → {}", st(r, "/old_name"), st(r, "/new_name")));
+            }
+        }
+        for w in pre["warnings"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+            outln(format!("注意：{w}"));
+        }
+    } else if !yes {
+        ctx.emit(&pre, String::new);
+    }
+    let confirm_text = st(&pre, "/confirm");
+    confirm(&format!("确认退役（移进备用）{} 台：{confirm_text}？", items.len()), yes)?;
+    let mut body = json!({"ids": ids, "confirm": confirm_text});
+    if let Some(r) = reason {
+        body["reason"] = json!(r);
+    }
+    let d = ctx.c.post("/machines/retire-batch", &body)?;
+    ctx.emit(&d, || {
+        let mut lines = vec![];
+        for x in d["items"].as_array().into_iter().flatten() {
+            let when = match x["recycle_on"].as_str() {
+                Some(on) => format!("{on} 起自动回收"),
+                None => no_recycle(held_reason(x).as_deref(), true),
+            };
+            let mut s = format!("{} → {}，{when}", st(x, "/from"), st(x, "/name"));
+            for ip in x["ip_nodes"].as_array().into_iter().flatten() {
+                s += &format!("\n  一起进备用：{} → {}", st(ip, "/from"), st(ip, "/name"));
+            }
+            for n in x["notes"].as_array().into_iter().flatten() {
+                s += &format!("\n  {}", n.as_str().unwrap_or(""));
+            }
+            lines.push(s);
+        }
+        lines.join("\n")
+    });
+    Ok(0)
 }
 
 /// `fleetctl rename` 的参数

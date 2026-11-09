@@ -814,6 +814,182 @@ pub async fn retire(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<U
     Ok(ok(move_to_spare(&st, &a.name, id, b.reason.as_deref()).await?))
 }
 
+#[derive(Deserialize)]
+pub struct RetireBatchIn {
+    ids: Vec<Uuid>,
+    /// 确认文字：这几台的显示名按 `ids` 的顺序用「、」连起来
+    confirm: String,
+    reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct RetireBatchQ {
+    /// 逗号分隔的机器 id
+    ids: String,
+}
+
+/// 批量退役的机器 id：去重（保序）、不能为空、不超上限
+fn retire_batch_ids(ids: Vec<Uuid>) -> ApiResult<Vec<Uuid>> {
+    let mut seen = HashSet::new();
+    let ids: Vec<Uuid> = ids.into_iter().filter(|i| seen.insert(*i)).collect();
+    if ids.is_empty() {
+        return Err(ApiError::bad_request("没有指定要退役的机器"));
+    }
+    if ids.len() > RETIRE_BATCH_MAX {
+        return Err(ApiError::bad_request(format!("一次最多退役 {RETIRE_BATCH_MAX} 台")));
+    }
+    Ok(ids)
+}
+
+/// 批量退役（只有移进备用，立即回收要逐台）：同一团队的几台一起退，名字不会在中间前移——每台的原名取动手之前的显示名，原团队只压缩一次。
+/// 一个事务，任何一台不能进整批 409（什么都不改）。`confirm` = 这几台的显示名按 `ids` 的顺序用「、」连起来。
+/// 返回 `{mode:"spare", count, items:[单台退役的结果…]}`，`items` 按 `ids` 的顺序
+pub async fn retire_batch(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<RetireBatchIn>) -> ApiResult<Json<Value>> {
+    let ids = retire_batch_ids(b.ids)?;
+    let mut names = vec![];
+    for id in &ids {
+        names.push(display_name_of(&st.db, *id).await?.0);
+    }
+    let want = names.join("、");
+    if b.confirm.trim() != want {
+        return Err(ApiError::bad_request(format!("确认文字不对：请输入「{want}」")));
+    }
+    check_text(None, b.reason.as_deref()).map_err(|_| ApiError::bad_request(format!("退役原因最多 {MAX_NOTE_CHARS} 个字符")))?;
+    let items = move_to_spare_many(&st, &a.name, &ids, b.reason.as_deref()).await?;
+    Ok(ok(json!({"mode": "spare", "count": items.len(), "items": items})))
+}
+
+/// 批量退役预览（`ids` 逗号分隔）：`{confirm, ok, spare:{team}, items, renames, routers, warnings}`。
+/// `items` 每台一项 `{id, name, ok, why, to_name, recycle_on, held, ip_nodes:[{id,name,to_name}], notes, warnings}`（`ok` = 能不能进备用，
+/// `why` = 不能的原因：资格不够或有进行中的作业；备用编号按提交时的分法，每台宿主机先取最小的空号、它的同机 IP 节点接着取，依次往下）；
+/// `ok` = 每台都能进（提交是整批的）；`renames`：把所有要走的机器一次排除后，原团队剩下的节点压缩编号的改名（提交只压缩这一次）；
+/// `routers`：还指向其中任何一台（和它们的同机 IP 节点）的软路由出口，只提示；
+/// `warnings`：团队里有退役中的节点不压缩的说明，和 `renames` 里有软路由出口指着的节点一句列出「旧名（路由 · 出口）→ 新名」（压缩改名后面板名和出口名会对不上）
+pub async fn retire_batch_preview(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<RetireBatchQ>) -> ApiResult<Json<Value>> {
+    let parsed: Result<Vec<Uuid>, _> = q.ids.split(',').map(str::trim).filter(|s| !s.is_empty()).map(Uuid::try_parse).collect();
+    let ids = retire_batch_ids(parsed.map_err(|_| ApiError::bad_request("ids 要是逗号分隔的机器 id"))?)?;
+    let mut conn = st.db.acquire().await?;
+    let mut names: HashMap<Uuid, String> = HashMap::new();
+    for id in &ids {
+        names.insert(*id, display_name_of(&st.db, *id).await?.0);
+    }
+    let nested: Option<(Uuid, Uuid)> = sqlx::query_as("select id, host_id from machine where id = any($1) and host_id = any($1) limit 1").bind(&ids).fetch_optional(&mut *conn).await?;
+    if let Some((x, h)) = nested {
+        return Err(ApiError::bad_request(format!("{} 是 {} 的同机 IP 节点，会随宿主机一起进备用，不用单独列出", names[&x], names[&h])));
+    }
+    /// 一台宿主机的预览：能不能进、去向、一起进的同机 IP 节点、涉及的原团队
+    struct Pv {
+        id: Uuid,
+        why: Option<String>,
+        to_name: Option<String>,
+        due: Option<Date>,
+        held: Option<String>,
+        ips: Vec<Value>,
+        auto_renew: Vec<String>,
+        teams: Vec<Uuid>,
+    }
+    let pointed = crate::routers::exits_using_with_ip_nodes(&st.db, &ids).await?;
+    let (spare_id, spare_name, taken) = spare_team(&mut conn).await?;
+    let mut free = (1..=999).filter(|n| !taken.contains(n));
+    // 进备用的所有机器（宿主机 + 随行 IP 节点）；单台预览口径的「要走的」：宿主机 + 所有没退役的同机 IP 节点（出口指着哪台都算）
+    let (mut going_all, mut leaving_all): (Vec<Uuid>, Vec<Uuid>) = (vec![], vec![]);
+    let mut node_names = names.clone();
+    let mut pvs: Vec<Pv> = vec![];
+    for id in &ids {
+        let ip_nodes = ip_nodes_of(&mut conn, *id, false).await?;
+        let going: Vec<&(Uuid, String, String, bool)> = ip_nodes.iter().filter(|x| !x.3).collect();
+        let all: Vec<Uuid> = std::iter::once(*id).chain(going.iter().map(|x| x.0)).collect();
+        let (eligible, due) = spare_check(&mut conn, *id).await?;
+        let busy: Option<String> = sqlx::query_scalar("select kind from job where target_id = any($1) and state in ('queued', 'running', 'waiting', 'cancelling') limit 1")
+            .bind(&all)
+            .fetch_optional(&mut *conn)
+            .await?;
+        let why = eligible.err().map(String::from).or_else(|| busy.map(|k| format!("有进行中的作业（{}），等它结束再退役", meta::job_kind_label(&k))));
+        let renewing = renewing_spare_ip_nodes(&mut conn, *id).await?;
+        let held = spare_held_reason(pointed.contains_key(id), false, renewing);
+        let to_name = free.next().map(|n| node_name(&spare_name, n));
+        let ips: Vec<Value> = going.iter().map(|(i, n, _, _)| json!({"id": i, "name": n, "to_name": free.next().map(|k| node_name(&spare_name, k))})).collect();
+        let on: Vec<Uuid> = sqlx::query_scalar("select machine_id from subscription where machine_id = any($1) and auto_renew").bind(&all).fetch_all(&mut *conn).await?;
+        // 开着自动续费的：宿主机在前，IP 节点接着
+        let auto_renew: Vec<String> = std::iter::once((*id, names[id].clone())).chain(going.iter().map(|x| (x.0, x.1.clone()))).filter(|x| on.contains(&x.0)).map(|x| x.1).collect();
+        let teams: Vec<Uuid> = sqlx::query_scalar("select distinct team_id from machine where id = any($1) and team_id is not null").bind(&all).fetch_all(&mut *conn).await?;
+        leaving_all.push(*id);
+        leaving_all.extend(ip_nodes.iter().map(|x| x.0));
+        for x in &ip_nodes {
+            node_names.insert(x.0, x.1.clone());
+        }
+        going_all.extend(all);
+        pvs.push(Pv { id: *id, why, to_name, due, held, ips, auto_renew, teams });
+    }
+    // 把所有要走的一次排除后，各原团队剩下的节点压缩编号（提交时压缩一次）；备用团队不压缩
+    let teams: Vec<(Uuid, String)> = sqlx::query_as(
+        "select id, name from team where id in (select team_id from machine where id = any($1)) and not spare order by sort_order, name",
+    )
+    .bind(&going_all)
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut changes: Vec<(Uuid, String, String)> = vec![];
+    let mut changed: HashSet<Uuid> = HashSet::new();
+    let mut warnings_top: Vec<String> = vec![];
+    for (team_id, team) in teams {
+        let nodes: Vec<(Uuid, i32)> = sqlx::query_as(
+            "select id, number from machine where team_id = $1 and kind <> 'relay' and lifecycle <> 'retired' and id <> all($2) order by number",
+        )
+        .bind(team_id)
+        .bind(&going_all)
+        .fetch_all(&mut *conn)
+        .await?;
+        let ch = crate::db::preview_compaction(&mut conn, team_id, &team, nodes, &mut warnings_top).await?;
+        if !ch.is_empty() {
+            changed.insert(team_id);
+        }
+        changes.extend(ch);
+    }
+    let renames: Vec<Value> = changes.iter().map(|(mid, o, n)| json!({"machine_id": mid, "old_name": o, "new_name": n})).collect();
+    let tail = "要换掉这几台又不想错位，先用替换（新节点接它的编号，团队里谁都不改名，它自己进备用）";
+    warnings_top.extend(crate::routers::compact_exits_note(&st.db, &changes, tail).await?);
+    // 软路由出口：按路由归在一起，写明指向的是哪台
+    let exits = crate::routers::exits_using(&st.db, &leaving_all).await?;
+    let mut routers: Vec<(Uuid, String, Vec<Value>)> = vec![];
+    for node in &leaving_all {
+        for (rid, rname, exit) in exits.get(node).into_iter().flatten() {
+            let e = json!({"exit": exit, "node": node_names[node]});
+            match routers.iter_mut().find(|r| r.0 == *rid) {
+                Some(r) => r.2.push(e),
+                None => routers.push((*rid, rname.clone(), vec![e])),
+            }
+        }
+    }
+    let routers: Vec<Value> = routers.into_iter().map(|(i, n, e)| json!({"id": i, "name": n, "exits": e})).collect();
+    // 进备用后生效的访问策略（团队策略）会变：还被出口指着的节点，客户受影响
+    let pol = crate::policy::load_current(&st.db).await?;
+    let mut items: Vec<Value> = vec![];
+    for p in pvs {
+        let name = &names[&p.id];
+        let mut warnings: Vec<String> = vec![];
+        if p.why.is_none() {
+            let mine: Vec<Uuid> = std::iter::once(p.id).chain(p.ips.iter().filter_map(|x| x["id"].as_str().and_then(|s| Uuid::try_parse(s).ok()))).filter(|n| exits.contains_key(n)).collect();
+            if !mine.is_empty() {
+                let from: Vec<(Uuid, Option<Uuid>, Option<String>)> =
+                    sqlx::query_as("select m.id, m.team_id, t.name from machine m left join team t on t.id = m.team_id where m.id = any($1)").bind(&mine).fetch_all(&mut *conn).await?;
+                for (node, team_id, team) in &from {
+                    warnings.extend(crate::policy::team_change_note(&pol, *node, &node_names[node], team_id.zip(team.as_deref()), Some((spare_id, spare_name.as_str()))));
+                }
+            }
+        }
+        let renumbered = p.teams.iter().any(|t| changed.contains(t));
+        let notes = spare_notes(&p.auto_renew, name, renumbered.then_some(name.as_str()), false, p.held.as_deref());
+        items.push(json!({
+            "id": p.id, "name": name, "ok": p.why.is_none(), "why": p.why, "to_name": p.to_name,
+            "recycle_on": p.due.filter(|_| p.held.is_none()).map(crate::spare::recycle_on), "held": p.held, "ip_nodes": p.ips,
+            "notes": notes, "warnings": warnings,
+        }));
+    }
+    let all_ok = items.iter().all(|i| i["ok"] == true);
+    let confirm = ids.iter().map(|i| names[i].as_str()).collect::<Vec<_>>().join("、");
+    Ok(ok(json!({"confirm": confirm, "ok": all_ok, "spare": {"team": {"id": spare_id, "name": spare_name}}, "items": items, "renames": renames, "routers": routers, "warnings": warnings_top})))
+}
+
 /// 能不能移进备用（spare::spare_eligible），以及订阅的到期日（算自动回收的日子）
 async fn spare_check(conn: &mut sqlx::PgConnection, id: Uuid) -> ApiResult<(Result<(), &'static str>, Option<Date>)> {
     let (kind, lc, in_spare, due, today): (String, String, bool, Option<Date>, Option<Date>) = sqlx::query_as(
@@ -858,90 +1034,174 @@ async fn spare_team(conn: &mut sqlx::PgConnection) -> sqlx::Result<(Uuid, String
     Ok((id, name, taken.into_iter().collect()))
 }
 
-/// 移进备用团队（退役的默认去向）：一个事务里改到备用团队的最小空号（patch_tx：同改名的校验与审计，顺带记下 spare_since / spare_from、
-/// 刷新线路机备注），退役原因记进 lifecycle_reason。宿主机上还没退役、不在备用团队的同机 IP 节点一起进（编号挨着，到期随宿主机回收）。
-/// 原团队压缩编号（同退役完成）。入口、端口、软路由出口都不动。返回 `{mode:"spare", name, from, recycle_on, ip_nodes}`
+/// 移进备用团队（退役的默认去向），单台：`move_to_spare_many` 只给一台。返回 `{mode:"spare", name, from, recycle_on, held, ip_nodes, auto_renew_off, notes}`
 pub async fn move_to_spare(st: &AppState, actor: &str, id: Uuid, reason: Option<&str>) -> ApiResult<Value> {
+    let mut v = move_to_spare_many(st, actor, &[id], reason).await?;
+    Ok(v.remove(0))
+}
+
+/// 批量退役的台数上限（一个事务里锁的团队、机器都不少）
+const RETIRE_BATCH_MAX: usize = 50;
+
+/// 移进备用团队（退役的默认去向）：一个事务里把 `ids`（宿主机 / 单台节点）依次改到备用团队的最小空号（patch_tx：同改名的校验与审计，顺带记下 spare_since / spare_from、
+/// 刷新线路机备注），退役原因记进 lifecycle_reason。宿主机上还没退役、不在备用团队的同机 IP 节点一起进（编号挨着，到期随宿主机回收）。
+/// 同一团队的几台一起退时：原名（spare_from、审计的 name）都取这一批动手之前的显示名，原团队的编号最后只压缩一次（一台台退的话，
+/// 每退一台后面的就前移，第二台退的「团队1-01」已经是另一台了，原名全丢）。任何一台不能进（资格、进行中的作业）整批 409 列出哪台为什么，什么都不改。
+/// 入口、端口、软路由出口都不动。每台一个结果 `{mode:"spare", name, from, recycle_on, held, ip_nodes, auto_renew_off, notes}`，按 `ids` 的顺序
+pub async fn move_to_spare_many(st: &AppState, actor: &str, ids: &[Uuid], reason: Option<&str>) -> ApiResult<Vec<Value>> {
+    let single = ids.len() == 1;
     let mut tx = st.db.begin().await?;
     // 先锁团队（原团队、同机 IP 节点的团队、备用团队，按 id 排）再锁机器：和退役收尾、压缩编号同一个顺序（团队 → 机器）
     let mut teams: Vec<Uuid> = sqlx::query_scalar(
-        "select distinct team_id from machine where team_id is not null and (id = $1 or host_id = $1) union select id from team where spare order by 1",
+        "select distinct team_id from machine where team_id is not null and (id = any($1) or host_id = any($1)) union select id from team where spare order by 1",
     )
-    .bind(id)
+    .bind(ids)
     .fetch_all(&mut *tx)
     .await?;
     sqlx::query("select 1 from team where id = any($1) order by id for update").bind(&teams).execute(&mut *tx).await?;
-    sqlx::query("select 1 from machine where id = $1 for update").bind(id).execute(&mut *tx).await?;
-    let (eligible, due) = spare_check(&mut tx, id).await?;
-    eligible.map_err(|why| ApiError::conflict(format!("不能移进备用：{why}。要现在就清理并移进回收站，选「立即回收」（now: true）")))?;
-    let ip_nodes: Vec<(Uuid, String, String, bool)> = ip_nodes_of(&mut tx, id, true).await?.into_iter().filter(|x| !x.3).collect();
-    let all: Vec<Uuid> = std::iter::once(id).chain(ip_nodes.iter().map(|x| x.0)).collect();
-    let busy: Option<String> = sqlx::query_scalar("select kind from job where target_id = any($1) and state in ('queued', 'running', 'waiting', 'cancelling') limit 1")
-        .bind(&all)
-        .fetch_optional(&mut *tx)
-        .await?;
-    if let Some(k) = busy {
-        return Err(ApiError::conflict(format!("有进行中的作业（{}）：等它结束再退役", meta::job_kind_label(&k))));
+    sqlx::query("select 1 from machine where id = any($1) order by id for update").bind(ids).execute(&mut *tx).await?;
+    // 动手之前的显示名（整批的原名都取这里）
+    let pre: HashMap<Uuid, String> = sqlx::query_as::<_, (Uuid, String)>(
+        "select m.id, display_name(m.kind::text, m.label, t.name, m.number) from machine m left join team t on t.id = m.team_id where m.id = any($1)",
+    )
+    .bind(ids)
+    .fetch_all(&mut *tx)
+    .await?
+    .into_iter()
+    .collect();
+    let who = |x: &Uuid| pre.get(x).cloned().unwrap_or_default();
+    // 一批里不能同时列宿主机和它上面的同机 IP 节点（IP 节点随宿主机一起进，列了会进两次）
+    let nested: Option<(Uuid, Uuid)> = sqlx::query_as("select id, host_id from machine where id = any($1) and host_id = any($1) limit 1").bind(ids).fetch_optional(&mut *tx).await?;
+    if let Some((x, h)) = nested {
+        return Err(ApiError::bad_request(format!("{} 是 {} 的同机 IP 节点，会随宿主机一起进备用，不用单独列出", who(&x), who(&h))));
+    }
+    // 逐台核对：(宿主机, 订阅到期日, 一起进的同机 IP 节点)。批量时不能进的先攒着，最后一起报
+    let mut plan: Vec<(Uuid, Option<Date>, Vec<Uuid>)> = vec![];
+    let mut blocked: Vec<String> = vec![];
+    for &id in ids {
+        let (eligible, due) = spare_check(&mut tx, id).await?;
+        if let Err(why) = eligible {
+            if single {
+                return Err(ApiError::conflict(format!("不能移进备用：{why}。要现在就清理并移进回收站，选「立即回收」（now: true）")));
+            }
+            blocked.push(format!("{}：{why}", who(&id)));
+            continue;
+        }
+        let ips: Vec<Uuid> = ip_nodes_of(&mut tx, id, true).await?.into_iter().filter(|x| !x.3).map(|x| x.0).collect();
+        let all: Vec<Uuid> = std::iter::once(id).chain(ips.iter().copied()).collect();
+        let busy: Option<String> = sqlx::query_scalar("select kind from job where target_id = any($1) and state in ('queued', 'running', 'waiting', 'cancelling') limit 1")
+            .bind(&all)
+            .fetch_optional(&mut *tx)
+            .await?;
+        if let Some(k) = busy {
+            let msg = format!("有进行中的作业（{}）", meta::job_kind_label(&k));
+            if single {
+                return Err(ApiError::conflict(format!("{msg}：等它结束再退役")));
+            }
+            blocked.push(format!("{}：{msg}", who(&id)));
+            continue;
+        }
+        plan.push((id, due, ips));
+    }
+    if !blocked.is_empty() {
+        return Err(ApiError::conflict(format!(
+            "这批 {} 台里有 {} 台不能移进备用，整批都没动：{}。要现在就清理并移进回收站，改成逐台「立即回收」（now: true）",
+            ids.len(),
+            blocked.len(),
+            blocked.join("；")
+        )));
     }
     // 进备用后不自动回收的原因：出口还指着它或它的同机 IP 节点（上面没退役的同机 IP 节点都一起进备用，没有留在外面在用的）；
     // 上面原本就在备用里、开着自动续费的同机 IP 节点（没随这次进备用、自动续费没被关）同样扣住宿主机（视图 renewing_ip_nodes）
-    let renewing = renewing_spare_ip_nodes(&mut tx, id).await?;
-    let held = spare_held_reason(crate::routers::exits_using_with_ip_nodes(&st.db, &[id]).await?.contains_key(&id), false, renewing);
+    let pointed = crate::routers::exits_using_with_ip_nodes(&st.db, ids).await?;
+    let mut held_of: HashMap<Uuid, Option<String>> = HashMap::new();
+    for (id, _, _) in &plan {
+        let renewing = renewing_spare_ip_nodes(&mut tx, *id).await?;
+        held_of.insert(*id, spare_held_reason(pointed.contains_key(id), false, renewing));
+    }
     let (spare_id, spare_name, taken) = spare_team(&mut tx).await?;
     let mut free = (1..=999).filter(|n| !taken.contains(n));
-    let mut revs: Vec<(Uuid, i32, Option<Uuid>, String)> = sqlx::query_as(
+    let all_ids: Vec<Uuid> = plan.iter().flat_map(|(id, _, ips)| std::iter::once(*id).chain(ips.iter().copied())).collect();
+    let revs: HashMap<Uuid, (i32, Option<Uuid>, String)> = sqlx::query_as::<_, (Uuid, i32, Option<Uuid>, String)>(
         "select m.id, m.revision, m.team_id, display_name(m.kind::text, m.label, t.name, m.number) from machine m left join team t on t.id = m.team_id
          where m.id = any($1)",
     )
-    .bind(&all)
+    .bind(&all_ids)
     .fetch_all(&mut *tx)
-    .await?;
-    // 按 all 的顺序：宿主机在前
-    revs.sort_by_key(|r| all.iter().position(|x| *x == r.0));
-    let ip_reason = revs.iter().find(|r| r.0 == id).map(|r| format!("随宿主机「{}」退役", r.3)).unwrap_or_default();
-    // (id, 原名, 新名)，宿主机在前
-    let mut moved: Vec<(Uuid, String, String)> = vec![];
-    // patch_tx 进备用时关掉了自动续费的（原名），结果里写明
-    let mut renew_off = vec![];
-    for (mid, rev, _, from) in &revs {
-        let n = free.next().ok_or_else(|| ApiError::conflict(format!("备用团队「{spare_name}」的编号用完了")))?;
-        // 线路机的代数不在这里每台各刷一次，下面对所有改名的节点统一刷（按线路机 id 排序）
-        let p = patch_nobump(&mut tx, actor, *mid, PatchIn::rename(*rev, spare_id, n)).await?;
-        if p.auto_renew_off {
-            renew_off.push(from.clone());
-        }
-        sqlx::query("update machine set lifecycle_reason = $2 where id = $1")
-            .bind(mid)
-            .bind(if *mid == id { reason } else { Some(ip_reason.as_str()) })
-            .execute(&mut *tx)
-            .await?;
-        moved.push((*mid, from.clone(), node_name(&spare_name, n)));
+    .await?
+    .into_iter()
+    .map(|(i, r, t, n)| (i, (r, t, n)))
+    .collect();
+    /// 一台宿主机移完的结果：(id, 原名, 新名)、随行 IP 节点、patch_tx 进备用时关掉了自动续费的（原名）、涉及的原团队
+    struct Moved {
+        host: (Uuid, String, String),
+        ips: Vec<(Uuid, String, String)>,
+        renew_off: Vec<String>,
+        teams: Vec<Uuid>,
     }
-    let mut relays = bump_relays_of_nodes(&mut tx, &all).await?;
-    // 原团队少了这几台：压缩编号（同退役完成时）
-    teams.retain(|t| *t != spare_id && revs.iter().any(|r| r.2 == Some(*t)));
-    let mut compacted = false;
+    let mut moved: Vec<Moved> = vec![];
+    // 按 ids 的顺序：每台宿主机先取最小的空号，它的同机 IP 节点接着取
+    for (id, _, ips) in &plan {
+        let ip_reason = format!("随宿主机「{}」退役", revs[id].2);
+        let mut m = Moved { host: (*id, String::new(), String::new()), ips: vec![], renew_off: vec![], teams: vec![] };
+        for mid in std::iter::once(*id).chain(ips.iter().copied()) {
+            let (rev, team, from) = revs[&mid].clone();
+            let n = free.next().ok_or_else(|| ApiError::conflict(format!("备用团队「{spare_name}」的编号用完了")))?;
+            // 线路机的代数不在这里每台各刷一次，下面对所有改名的节点统一刷（按线路机 id 排序）
+            let p = patch_nobump(&mut tx, actor, mid, PatchIn::rename(rev, spare_id, n)).await?;
+            if p.auto_renew_off {
+                m.renew_off.push(from.clone());
+            }
+            sqlx::query("update machine set lifecycle_reason = $2 where id = $1")
+                .bind(mid)
+                .bind(if mid == *id { reason } else { Some(ip_reason.as_str()) })
+                .execute(&mut *tx)
+                .await?;
+            let to = node_name(&spare_name, n);
+            m.teams.extend(team);
+            if mid == *id {
+                m.host = (mid, from, to);
+            } else {
+                m.ips.push((mid, from, to));
+            }
+        }
+        moved.push(m);
+    }
+    let mut relays = bump_relays_of_nodes(&mut tx, &all_ids).await?;
+    // 原团队少了这几台：只压缩一次（同退役完成时）
+    teams.retain(|t| *t != spare_id && moved.iter().any(|m| m.teams.contains(t)));
+    let mut changed: HashSet<Uuid> = HashSet::new();
     for t in &teams {
         let (ch, rs) = crate::db::compact_team(&mut tx, *t, actor, "节点退役后自动压缩").await?;
-        compacted |= !ch.is_empty();
+        if !ch.is_empty() {
+            changed.insert(*t);
+        }
         relays.extend(rs);
     }
-    // 被扣住的不自动回收，没有回收日（视图 recycle_on 也是 null）；进备用时自动续费已关掉，不算在原因里
-    let recycle_on = due.filter(|_| held.is_none()).map(crate::spare::recycle_on);
-    let (host_from, host_to) = (moved[0].1.clone(), moved[0].2.clone());
-    let ip_out: Vec<Value> = moved[1..].iter().map(|(x, f, t)| json!({"id": x, "name": t, "from": f})).collect();
-    audit(
-        &mut tx,
-        actor,
-        "machine.retire",
-        "machine",
-        Some(id),
-        json!({"mode": "spare", "name": host_from, "to": host_to, "reason": reason, "recycle_on": recycle_on,
-               "ip_nodes": moved[1..].iter().map(|x| &x.1).collect::<Vec<_>>()}),
-    )
-    .await?;
-    for (x, f, t) in &moved[1..] {
-        audit(&mut tx, actor, "machine.retire", "machine", Some(*x), json!({"mode": "spare", "name": f, "to": t, "reason": ip_reason, "host": host_from})).await?;
+    let mut out = vec![];
+    for (m, (id, due, _)) in moved.iter().zip(&plan) {
+        let held = &held_of[id];
+        // 被扣住的不自动回收，没有回收日（视图 recycle_on 也是 null）；进备用时自动续费已关掉，不算在原因里
+        let recycle_on = due.filter(|_| held.is_none()).map(crate::spare::recycle_on);
+        let (host_from, host_to) = (m.host.1.clone(), m.host.2.clone());
+        let ip_reason = format!("随宿主机「{host_from}」退役");
+        audit(
+            &mut tx,
+            actor,
+            "machine.retire",
+            "machine",
+            Some(*id),
+            json!({"mode": "spare", "name": host_from, "to": host_to, "reason": reason, "recycle_on": recycle_on,
+                   "ip_nodes": m.ips.iter().map(|x| &x.1).collect::<Vec<_>>()}),
+        )
+        .await?;
+        for (x, f, t) in &m.ips {
+            audit(&mut tx, actor, "machine.retire", "machine", Some(*x), json!({"mode": "spare", "name": f, "to": t, "reason": ip_reason, "host": host_from})).await?;
+        }
+        let compacted = m.teams.iter().any(|t| changed.contains(t));
+        let ip_out: Vec<Value> = m.ips.iter().map(|(x, f, t)| json!({"id": x, "name": t, "from": f})).collect();
+        let notes = spare_notes(&m.renew_off, &host_from, compacted.then_some(host_from.as_str()), true, held.as_deref());
+        out.push(json!({"mode": "spare", "name": host_to, "from": host_from, "recycle_on": recycle_on, "held": held, "ip_nodes": ip_out, "auto_renew_off": !m.renew_off.is_empty(), "notes": notes}));
     }
     tx.commit().await?;
     relays.sort();
@@ -950,8 +1210,7 @@ pub async fn move_to_spare(st: &AppState, actor: &str, id: Uuid, reason: Option<
         st.relay_bumped(r);
     }
     st.emit(Event::Machines);
-    let notes = spare_notes(&renew_off, &host_from, compacted.then_some(host_from.as_str()), true, held.as_deref());
-    Ok(json!({"mode": "spare", "name": host_to, "from": host_from, "recycle_on": recycle_on, "held": held, "ip_nodes": ip_out, "auto_renew_off": !renew_off.is_empty(), "notes": notes}))
+    Ok(out)
 }
 
 /// 宿主机上有没有已经在备用里、开着自动续费的同机 IP 节点（同视图 renewing_ip_nodes、spare.rs keeps_live）：有的话宿主机进备用后也不自动回收

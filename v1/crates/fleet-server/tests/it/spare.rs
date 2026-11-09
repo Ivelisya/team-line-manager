@@ -1311,3 +1311,108 @@ async fn view_marks_nodes_no_router_exit_points_to() {
         assert_eq!(flag(&v), Some(want), "{} {v}", v["name"]);
     }
 }
+
+/// 批量退役：团队里的 01、02、03（03 是带同机 IP 节点的宿主机）一个事务进备用——spare_from / 审计的 name 都是动手之前的原名
+/// （一台台退的话每退一台后面就前移，第二台起全成了「团队1-01」），备用编号依次取（宿主机后接着它的 IP 节点），原团队只压缩一次（04→01、05→02）；
+/// 预览按整批排除后算改名，软路由出口指着的 05 会被改名的提醒要在，还指着 01 的出口列在 routers、01 因此被扣住不自动回收
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retire_batch_keeps_original_names_and_compacts_once() {
+    let t = setup(false).await;
+    let sp = spare_team(&t).await;
+    let team = seed_team(&t, "团队1").await;
+    seed_node(&t, sp, 1, "203.0.113.150", "active").await;
+    let n1 = seed_node(&t, team, 1, "203.0.113.151", "active").await;
+    let n2 = seed_node(&t, team, 2, "203.0.113.152", "active").await;
+    let n3 = seed_vps(&t, team, 3, "203.0.113.153", None).await;
+    let n4 = seed_node(&t, team, 4, "203.0.113.154", "active").await;
+    let n5 = seed_node(&t, team, 5, "203.0.113.155", "active").await;
+    let x = seed_vps(&t, team, 6, "203.0.113.156", Some(n3)).await;
+    for m in [n1, n2, n3] {
+        sub(&t, m, "2030-01-01", "UTC").await;
+    }
+    snap_router(&t, "团队1 路由", Some(team), 23501, &[("节点01", n1), ("节点05", n5)]).await;
+    let ids = [n1, n2, n3].map(|m| m.to_string()).join(",");
+
+    let pv = t.get(&format!("/api/v1/machines/retire-batch?ids={ids}")).await;
+    assert_eq!((pv["ok"].clone(), pv["confirm"].as_str()), (json!(true), Some("团队1-01、团队1-02、团队1-03")), "{pv}");
+    let items = pv["items"].as_array().unwrap();
+    let got: Vec<(&str, &str)> = items.iter().map(|i| (i["name"].as_str().unwrap(), i["to_name"].as_str().unwrap())).collect();
+    assert_eq!(got, vec![("团队1-01", "备用-02"), ("团队1-02", "备用-03"), ("团队1-03", "备用-04")], "{pv}");
+    assert_eq!(items[2]["ip_nodes"], json!([{"id": x, "name": "团队1-06", "to_name": "备用-05"}]), "{pv}");
+    assert_eq!((items[0]["held"].as_str(), items[0]["recycle_on"].is_null(), items[1]["recycle_on"].as_str()), (Some("软路由出口还指着它"), true, Some("2030-01-03")), "{pv}");
+    assert_eq!(pv["renames"], json!([{"machine_id": n4, "old_name": "团队1-04", "new_name": "团队1-01"}, {"machine_id": n5, "old_name": "团队1-05", "new_name": "团队1-02"}]), "{pv}");
+    assert_eq!(pv["routers"][0]["exits"], json!([{"exit": "节点01", "node": "团队1-01"}]), "{pv}");
+    let ws: Vec<&str> = pv["warnings"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+    assert!(ws.len() == 1 && ws[0].contains("团队1-05（团队1 路由 · 节点05）→ 团队1-02"), "{pv}");
+
+    // 确认文字要是这几台的名字按顺序用「、」连起来
+    let (s, _) = t.req("POST", "/api/v1/machines/retire-batch", Some(json!({"ids": [n1, n2, n3], "confirm": "团队1-01"})), None).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let r = t.post("/api/v1/machines/retire-batch", json!({"ids": [n1, n2, n3], "confirm": "团队1-01、团队1-02、团队1-03", "reason": "客户不要了"})).await;
+    assert_eq!((r["mode"].as_str(), r["count"].clone()), (Some("spare"), json!(3)), "{r}");
+    let res: Vec<(&str, &str)> = r["items"].as_array().unwrap().iter().map(|i| (i["from"].as_str().unwrap(), i["name"].as_str().unwrap())).collect();
+    assert_eq!(res, vec![("团队1-01", "备用-02"), ("团队1-02", "备用-03"), ("团队1-03", "备用-04")], "{r}");
+    assert_eq!(r["items"][2]["ip_nodes"], json!([{"id": x, "name": "备用-05", "from": "团队1-06"}]), "{r}");
+
+    for (m, from, to) in [(n1, "团队1-01", "备用-02"), (n2, "团队1-02", "备用-03"), (n3, "团队1-03", "备用-04"), (x, "团队1-06", "备用-05")] {
+        let v = t.get(&format!("/api/v1/machines/{m}")).await;
+        assert_eq!((v["name"].as_str(), v["spare_from"].as_str()), (Some(to), Some(from)), "{v}");
+        // 每台一条退役审计：name 是动手之前的原名
+        let rows: Vec<Value> = sqlx::query_scalar("select detail from audit_log where action = 'machine.retire' and target_id = $1").bind(m).fetch_all(&t.st.db).await.unwrap();
+        assert_eq!(rows.len(), 1, "{from}：{rows:?}");
+        assert_eq!((rows[0]["name"].as_str(), rows[0]["to"].as_str(), rows[0]["mode"].as_str()), (Some(from), Some(to), Some("spare")), "{:?}", rows[0]);
+    }
+    let hostrow: Value = sqlx::query_scalar("select detail from audit_log where action = 'machine.retire' and target_id = $1").bind(x).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!((hostrow["host"].as_str(), hostrow["reason"].as_str()), (Some("团队1-03"), Some("随宿主机「团队1-03」退役")), "{hostrow}");
+    let v = t.get(&format!("/api/v1/machines/{n1}")).await;
+    assert_eq!(v["lifecycle_reason"].as_str(), Some("客户不要了"), "{v}");
+    let total: i64 = sqlx::query_scalar("select count(*) from audit_log where action = 'machine.retire'").fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(total, 4);
+    // 原团队只压缩一次
+    assert_eq!(t.get(&format!("/api/v1/machines/{n4}")).await["name"], "团队1-01");
+    assert_eq!(t.get(&format!("/api/v1/machines/{n5}")).await["name"], "团队1-02");
+    let renum: Vec<Value> = sqlx::query_scalar("select detail from audit_log where action = 'team.renumber'").fetch_all(&t.st.db).await.unwrap();
+    assert!(renum.len() == 1 && renum[0]["changes"].as_array().unwrap().len() == 2, "{renum:?}");
+    // 不建作业
+    assert!(last_job(&t, n1, "retire").await.is_none());
+}
+
+/// 批量退役里只要有一台进不了备用（这里 03 没有订阅），整批 409、说明是哪台为什么，什么都不改；预览也标出来
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retire_batch_with_an_ineligible_machine_changes_nothing() {
+    let t = setup(false).await;
+    let sp = spare_team(&t).await;
+    let team = seed_team(&t, "团队1").await;
+    let n1 = seed_node(&t, team, 1, "203.0.113.161", "active").await;
+    let n2 = seed_node(&t, team, 2, "203.0.113.162", "active").await;
+    let n3 = seed_node(&t, team, 3, "203.0.113.163", "active").await;
+    let n4 = seed_node(&t, team, 4, "203.0.113.164", "active").await;
+    for m in [n1, n2] {
+        sub(&t, m, "2030-01-01", "UTC").await;
+    }
+    let ids = [n1, n2, n3].map(|m| m.to_string()).join(",");
+    let pv = t.get(&format!("/api/v1/machines/retire-batch?ids={ids}")).await;
+    assert_eq!(pv["ok"], false, "{pv}");
+    assert!(pv["items"][2]["ok"] == false && pv["items"][2]["why"].as_str().unwrap().contains("没有订阅"), "{pv}");
+    assert_eq!(pv["items"][0]["ok"], true, "{pv}");
+
+    let (s, v) = t.req("POST", "/api/v1/machines/retire-batch", Some(json!({"ids": [n1, n2, n3], "confirm": "团队1-01、团队1-02、团队1-03"})), None).await;
+    let msg = v.to_string();
+    assert!(s == StatusCode::CONFLICT && msg.contains("团队1-03") && msg.contains("没有订阅") && !msg.contains("团队1-01：") && msg.contains("整批都没动"), "{s} {v}");
+    // 什么都没动：名字、备用团队、审计都照旧
+    for (m, name) in [(n1, "团队1-01"), (n2, "团队1-02"), (n3, "团队1-03"), (n4, "团队1-04")] {
+        let v = t.get(&format!("/api/v1/machines/{m}")).await;
+        assert_eq!((v["name"].as_str(), v["spare"].as_bool(), v["spare_from"].is_null()), (Some(name), Some(false), true), "{v}");
+    }
+    let in_spare: i64 = sqlx::query_scalar("select count(*) from machine where team_id = $1").bind(sp).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(in_spare, 0);
+    let audits: i64 = sqlx::query_scalar("select count(*) from audit_log where action in ('machine.retire', 'team.renumber')").fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(audits, 0);
+
+    // 同机 IP 节点不能和它的宿主机一起列
+    let host = seed_vps(&t, team, 7, "203.0.113.165", None).await;
+    let x = seed_vps(&t, team, 8, "203.0.113.166", Some(host)).await;
+    sub(&t, host, "2030-01-01", "UTC").await;
+    let (s, v) = t.req("POST", "/api/v1/machines/retire-batch", Some(json!({"ids": [host, x], "confirm": "团队1-07、团队1-08"})), None).await;
+    assert!(s == StatusCode::BAD_REQUEST && v.to_string().contains("同机 IP 节点"), "{s} {v}");
+}
