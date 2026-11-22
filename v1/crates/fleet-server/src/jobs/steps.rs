@@ -5,6 +5,7 @@ mod bridge;
 mod lifecycle;
 mod replace;
 mod router_exits;
+mod router_ops;
 
 pub use replace::{proto_exit, sync_exit};
 
@@ -173,6 +174,9 @@ pub async fn run(c: &Ctx<'_>, key: &str) -> anyhow::Result<Outcome> {
         "renumber" => replace::renumber(c).await,
         // 删软路由出口（steps/router_exits.rs）
         "remove_exits" => router_exits::remove_exits(c).await,
+        // 重启 OpenClash、改配置行（出口改名、来源 IP 分流规则），steps/router_ops.rs
+        "restart_openclash" => router_ops::restart(c).await,
+        "patch_config" => router_ops::patch(c).await,
         // 穿透（steps/bridge.rs）
         "bridge" => bridge::bridge_for_new(c).await,
         "bridge_up" => bridge::bridge_up(c).await,

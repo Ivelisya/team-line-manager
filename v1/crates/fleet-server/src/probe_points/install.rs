@@ -166,7 +166,7 @@ async fn login_help(st: &AppState, host: &str, port: u16, name: &str, err: &str)
 
 /// 开始经 SSH 安装（接口调）：已有安装在跑 409；作废没用的安装命令；写「已开始」的审计；后台去跑
 pub async fn start_ssh(st: &AppState, id: Uuid, host: String, port: u16, reset_host_key: bool, actor: &str) -> ApiResult<()> {
-    if crate::jobs::dist_agent_sha256(st).await.is_err() {
+    if crate::dist_agent::get(&st.cfg.dist_dir).await.is_err() {
         return Err(ApiError::conflict(format!("中控上没有可推送的 fleet-agent（{}）", st.cfg.dist_dir.join("fleet-agent").display())));
     }
     let mut tx = st.db.begin().await?;
@@ -215,7 +215,10 @@ pub async fn start_ssh(st: &AppState, id: Uuid, host: String, port: u16, reset_h
 }
 
 async fn step(st: &AppState, id: Uuid, s: &str) {
-    let _ = sqlx::query("update probe_point set install_step = $2 where id = $1 and install_state = 'running'").bind(id).bind(s).execute(&st.db).await;
+    if let Err(e) = sqlx::query("update probe_point set install_step = $2 where id = $1 and install_state = 'running'").bind(id).bind(s).execute(&st.db).await {
+        // 当前步骤只给页面看进度，写不进不影响安装本身
+        tracing::warn!(probe_point = %id, "记录安装步骤「{s}」失败：{e:#}");
+    }
     st.emit(crate::state::Event::Settings);
 }
 

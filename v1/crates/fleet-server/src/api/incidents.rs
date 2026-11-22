@@ -13,8 +13,8 @@ use serde_json::{json, Value};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-#[derive(Serialize, sqlx::FromRow)]
-struct IncidentOut {
+#[derive(Serialize, sqlx::FromRow, ts_rs::TS)]
+pub struct IncidentOut {
     id: Uuid,
     /// 写这条告警的引擎（incident::Engine：machine / ipintel / central / router / probe）：前端按它决定点对象时开什么
     engine: String,
@@ -25,12 +25,16 @@ struct IncidentOut {
     state: String,
     summary: String,
     #[serde(with = "time::serde::rfc3339")]
+    #[ts(type = "string")]
     opened_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
+    #[ts(type = "string")]
     last_seen_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339::option")]
+    #[ts(type = "string | null")]
     resolved_at: Option<OffsetDateTime>,
     #[serde(with = "time::serde::rfc3339::option")]
+    #[ts(type = "string | null")]
     ack_at: Option<OffsetDateTime>,
     ack_by: Option<String>,
     /// 恢复后又在重开窗口内复发的次数
@@ -232,7 +236,7 @@ pub async fn ack_incident(a: Actor, State(st): State<AppState>, ApiPath(id): Api
     Ok(ok(json!({"ok": true})))
 }
 
-#[derive(Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Serialize, Deserialize, sqlx::FromRow, ts_rs::TS)]
 pub struct Silence {
     #[serde(default)]
     id: Option<Uuid>,
@@ -242,8 +246,10 @@ pub struct Silence {
     subject_id: Option<Uuid>,
     rule: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
+    #[ts(type = "string")]
     starts_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
+    #[ts(type = "string")]
     ends_at: OffsetDateTime,
     #[serde(default)]
     is_maintenance: bool,

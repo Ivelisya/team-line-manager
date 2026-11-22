@@ -77,9 +77,31 @@ const SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
 const DIM_MAX: i64 = 500;
 
 /// 网页要知道的上限（`GET /meta` 的 terminal）：粘贴按 max_message 切开发，提示文案里的数字也取这里
-pub fn meta() -> Value {
-    json!({"per_user": PER_USER, "global": GLOBAL, "idle_s": IDLE.as_secs(), "max_age_s": MAX_AGE.as_secs(),
-           "max_message": MAX_MESSAGE, "max_dim": DIM_MAX, "ticket_ttl_s": TICKET_TTL.as_secs(), "verify_ttl_s": VERIFY_TTL.as_secs()})
+pub fn meta() -> Meta {
+    Meta {
+        per_user: PER_USER,
+        global: GLOBAL,
+        idle_s: IDLE.as_secs(),
+        max_age_s: MAX_AGE.as_secs(),
+        max_message: MAX_MESSAGE,
+        max_dim: DIM_MAX,
+        ticket_ttl_s: TICKET_TTL.as_secs(),
+        verify_ttl_s: VERIFY_TTL.as_secs(),
+    }
+}
+
+/// `GET /meta` 的 `terminal`
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+#[ts(rename = "TerminalMeta")]
+pub struct Meta {
+    pub per_user: usize,
+    pub global: usize,
+    pub idle_s: u64,
+    pub max_age_s: u64,
+    pub max_message: usize,
+    pub max_dim: i64,
+    pub ticket_ttl_s: u64,
+    pub verify_ttl_s: u64,
 }
 
 /// 本站的 Origin（public_url 的协议 + 主机 + 端口）。不是 http(s) 这类有主机的地址时为 None：不透明的 origin 序列化出来是

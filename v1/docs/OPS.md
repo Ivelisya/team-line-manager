@@ -20,7 +20,7 @@
    ```
    公网地址用明文 `http://` 时会警告（密钥明文传输）。配置也可用环境变量 `FLEET_URL`、`FLEET_TOKEN`；文件位置（unix 上 0600）：Linux/macOS `~/.config/fleetctl/config.toml`，Windows `%APPDATA%\fleetctl\config.toml`。
 
-约定：脚本和 AI 都加 `--json`（一行 JSON：`ls` / `entries` / `incidents` / `policy ls` / `silence` 是与表格同列的精简对象，单台完整视图用 `show`、`policy show`；`billing` 是订阅、流量额度与最近续费记录合成的对象；其余是 API `data` 原样）；错误走 stderr、退出码非 0（没拿到中控响应时 code 为 `unreachable` 或 `timeout`，后者说明操作可能已执行，先查 `jobs` / `audit` 再决定重试；没加 `--yes` 的危险操作被拒是 `confirm_required`；401 / 403 的 message 末尾另有一行下一步；参数写错由 clap 报，退出码 2、stderr 是纯文本用法提示）；会确认的换线 / 搬空 / 退役，不加 `--yes` 时预览（`--json` 也一样）打在 stdout、确认错误在 stderr；人看的输出时间一律是北京时间；`<机器>` 可写 id、显示名（团队1-06）、线路机名、IP，歧义时命令会列出候选。
+约定：脚本和 AI 都加 `--json`（一行 JSON：`ls` / `entries` / `incidents` / `policy ls` / `silence` 是与表格同列的精简对象，单台完整视图用 `show`、`policy show`；`billing` 是订阅、流量额度与最近续费记录合成的对象；其余是 API `data` 原样）；错误走 stderr、退出码非 0（没拿到中控响应时 code 为 `unreachable` 或 `timeout`，后者说明操作可能已执行，先查 `jobs` / `audit` 再决定重试；没加 `--yes` 的危险操作被拒是 `confirm_required`；401 / 403 的 message 末尾另有一行下一步；参数写错由 clap 报，退出码 2，stderr 是纯文本用法提示，加了 `--json` 则是 `code` 为 `usage` 的错误 JSON；全部命令与参数一次列出：`fleetctl help --all [--json] [命令…]`，由命令行定义生成）；会确认的换线 / 搬空 / 退役，不加 `--yes` 时预览（`--json` 也一样）打在 stdout、确认错误在 stderr；人看的输出时间一律是北京时间；`<机器>` 可写 id、显示名（团队1-06）、线路机名、IP，歧义时命令会列出候选。
 
 ## 2. 常见任务 → 命令
 
@@ -38,18 +38,23 @@
 | 费用统一按美元：看汇率、汇率不对或缺币种时手动设置 | `fleetctl settings fx`（各币种的汇率、来源、上次更新时间；在用但没有汇率的会列出来）；手动设置 `fleetctl settings fx CNY --per-usd 7.12 --yes`（或 `--usd 0.1404`），改回自动 `fleetctl settings fx CNY --auto --yes`，立即更新 `fleetctl settings fx --refresh`。月费、合计都按它折成 USD（见 §16） |
 | 服务日志 | `fleetctl logs 团队1-06 --unit fleet-agent --lines 300`（unit：fleet-agent / fleet-xray / fleet-singbox（线路机的 AnyTLS） / ssserver） |
 | 中控自己的日志 | `fleetctl server-logs --lines 300` |
+| 中控慢不慢、慢在哪（面板卡、agent 报「等待响应超时」） | `fleetctl server-stats`（各连接池占用与取连接耗时、最近 15 分钟最占时间的接口及 p50 / p90 / p99、慢的与 5xx 次数；`--all` 列全部接口，`--json` 原样）。慢请求的明细在 `fleetctl server-logs` 里找「慢请求」「请求出错」（见 §12） |
 | 在一台机器上执行命令 | `fleetctl exec 团队1-06 -- systemctl status fleet-agent` |
 | 对一个团队的全部节点执行 | `fleetctl exec --team 团队1 -- uptime`（并发 4，汇总退出码） |
 | 软路由出口时好时坏：每个出口的测试次数、失败次数、成功率、连续两轮失败几次、延迟中位 / 最大、当前连接 | `fleetctl router exits 团队2-路由A --range 24h`（1h 按每轮测试数；6h / 24h 按 5 分钟一点；7d / 30d 是小时汇总，次数准、看不出连续失败；延迟只算通了的）；当前状态 `fleetctl router show 团队2-路由A` |
 | 软路由的配置被谁改了、什么时候改的、改了哪些出口 | `fleetctl router changes 团队2-路由A [--limit 20]`（`--json` 给机器读；每次采集发现配置文件变了记一条：时间、来源——中控作业（替换 / 换线路机 / 改出口指向 / 同步出口，带作业 id）或「路由上改的」（手改、旁路由上的看门服务重新生成）、出口的增删改，凭据只记「变了」；每台留最近 200 条）；`fleetctl router show` 末尾也带最近 5 条。网页：软路由抽屉的「变更」页签。只记录，不提供回滚 |
 | 节点被打，软路由的客户临时走备用出口、过几小时切回（不重启 OpenClash、不断连接） | `fleetctl router show 团队2-路由A` 看「策略组」（哪个 select 组选着它）→ `fleetctl router switch 团队2-路由A <组> <备用出口> --for 4h`（到时自动切回；不确定多久就不带 `--for`，之后 `fleetctl router switch 团队2-路由A <组> --back`）。告警 `fleetctl incidents` 末尾的「建议操作」已经算好了切到哪个出口 |
 | 软路由出口参数和入口不一致（告警「软路由出口参数不一致」：轮换凭据后没同步） | `fleetctl router sync 团队2-路由A` 看预览，确认后加 `--yes --follow`（改成入口现在的凭据，地址端口不变；会重启 OpenClash，断开经它的连接）；入口已删除 / 停用的同步不了，用 `fleetctl repoint` 换入口；预览里「未自动同步」的是从没对上过入口的出口（路由上有人加的？），确认是自己的再 `--exit` 点名 |
+| 软路由只重启 OpenClash（不改配置；以前在路由上手敲 `nohup … restart`、轮询几分钟） | `fleetctl router restart 团队2-路由A` 看预览（要测的出口、此刻的连接数），告诉用户会断开经它的全部连接，同意后 `--yes --wait`：作业 `router_restart` 在路由上后台重启（隧道断了也照样跑完）、等 API、测面板出口，中控等隧道回连后取结果，写明哪些出口回来了；重启前通、重启后不通的有就失败（退出码 1）。见 §21 |
+| 看软路由现在的配置（规则 → 出口、策略组）、路由上的备份、和备份比较 | `fleetctl router config 团队2-路由A`（出口、策略组、规则按目标汇总、来源 IP 分流）、`--backups`（/etc/fleet-backup/openclash/ 里的备份）、`--diff 20261023-073012Z`（现在 vs 那份备份，在中控逐行比较，凭据隐去）。只读，记审计；不要 `fleetctl ssh router` 去 cat / diff |
+| 编号压缩后软路由出口名和面板名对不上了（节点07–12 该叫 04–09） | `fleetctl router rename-exits 团队2-路由A --follow-fleet` 看预览（改哪些、要改的行、不改的及原因），同意后 `--yes --follow`（作业 `router_rename`；会重启 OpenClash）。退役、改团队、替换的预览里提醒「出口名不跟着改」时末尾就是这条命令。不要手改路由配置 |
+| 软路由按来源 IP 分流（某段设备走某个出口） | `fleetctl router rules 团队2-路由A` 列出现有的 SRC-IP-CIDR 规则；`fleetctl router rules 团队2-路由A --assign 10.31.5.0/24=节点04 --assign 10.31.6.101-10.31.6.200=节点05` 看预览，同意后 `--yes --follow`（作业 `router_rules`；会重启 OpenClash）。设备编号段（B001–B100）面板里没有到地址的对应，先问现场要 IP 段 |
 | 软路由出口从 Reality 换成 AnyTLS（Reality 被识别），或换回来（见 §21） | `fleetctl router protocol 团队2-路由A --to anytls` 看预览（要切哪些出口、经哪台线路机、跳过的及原因），确认后加 `--yes --follow`；只切几个用 `--exit 节点01`（可重复）；换回 `--to reality`。会重启 OpenClash、断开经它的连接，失败全部改回 |
 | 登录机器或软路由（在中控上，见 §14） | `fleetctl ssh 团队1-06`（交互式）、`fleetctl ssh 团队1-06 -- 'df -h'`（退出码同远端）、`fleetctl ssh router <名称>` |
 | 供应商与套餐（上架前先确认存在，没有就建） | `fleetctl provider ls`、`fleetctl plan ls [--provider ATTVPS] [--all]`；新建 `fleetctl provider add ATTVPS --code ATT [--tz America/Los_Angeles] [--traffic-rule min] [--traffic-reset billing] [--remind-days 7]`、`fleetctl plan add 基础版 --provider ATTVPS --price 299.99 --currency CNY --cycle monthly [--cpu 2 --mem-mb 2048 --disk-gb 40 --bandwidth-mbps 1000 --traffic-gb 2000]`；改 `fleetctl provider set <供应商> … --yes`、`fleetctl plan set <套餐> --price 309.99 --yes`（只改给了的项，`--tz none` / 规格 `none` 清空；改价、改额度、改时区立即对没单独设置的机器生效）；不再上架 `fleetctl plan set <套餐> --archive --yes`；删 `provider rm` / `plan rm --yes`（还有套餐 / 机器用着时中控拒绝）。套餐重名写 `供应商/套餐` |
 | 上架 | `fleetctl provision --file batch.json --dry-run`，确认后 `fleetctl provision --file batch.json --yes --follow` |
 | 已有 VPS 节点上多了一个 IP，加成一台节点（同机 IP 节点，见 §6） | `fleetctl provision --kind vps --host 团队1-03 --ip 203.0.113.7 --team 团队1 --relay 线路机2 --yes --follow` |
-| 看作业进度、失败原因 | `fleetctl jobs --active`、`fleetctl jobs --failed`（默认只取最近 30 个，`--limit` 最大 500，文字版尾注写总数；`--kind upgrade_agent` 等只看一类；系统发起的作业或停在「需要人工处理」的作业失败时，通知渠道会发「作业失败」，写明重试命令）、`fleetctl job <id> --follow`；失败后 `fleetctl retry <id>` |
+| 看作业进度、失败原因 | `fleetctl jobs --active`、`fleetctl jobs --failed`（默认只取最近 30 个，`--limit` 最大 500，文字版尾注写总数；`--kind upgrade_agent` 等只看一类；系统发起的作业或停在「需要人工处理」的作业失败时，通知渠道会发「作业失败」，写明重试命令）、`fleetctl job <id> --follow`（以及各命令的 `--follow`：经实时流 `/stream` 等这个作业的变化再取进度，另外每 3 秒补取一次步骤中间的日志；流连不上或断开改回每秒轮询，输出与退出码不变）；失败后 `fleetctl retry <id>` |
 | 清理作业记录（上架、测试攒下的已结束作业） | `fleetctl jobs-prune [--before 2026-10-25] --yes`：删已成功、已取消的（连同步骤与日志），失败的、进行中的不动，先报数量；网页作业页「清理记录…」。不清也会每小时自动删 90 天前的 |
 | 退役（默认进备用，到期满 1 天自动回收） | `fleetctl retire 团队1-06 --reason 换新机 --yes`：先打印预览——去向（→ 备用-03，哪天起自动回收）、一起进备用的同机 IP 节点、还指向它的软路由出口（不会自动改，要换掉先 `replace`）、原团队的改名。机器照常运行（入口、端口、软路由出口都还在），不建作业。撤销 = 移出备用：`fleetctl rename 备用-03 --team 团队1`。进不了备用的（线路机、没有订阅、已过期满 1 天、上架中 / 上架失败、本来就在备用里）报原因，只能立即回收 |
 | 立即回收（不等到期） | `fleetctl retire 团队1-06 --now --reason 到期不续 --yes --follow`：退役作业摘入口、停服务（`--no-cleanup` 不登录清理）、撤令牌，完成时移进回收站；宿主机上的同机 IP 节点一并回收（命令先列出来）。之后机器从面板消失，数据约 93 天内由中控自动清除（入口流量还计入线路机统计的等满 93 天），不需要也没有手动「彻底删除」 |
@@ -342,6 +347,7 @@ FLEET_BUILD=docker FLEET_BUILD_HOST=10.172.17.213 lab/sync-server.sh 'cargo test
 - 换下来的旧版本留在中控：fleet-server 在 `/opt/fleet/fleet-server.prev`，前端在 `/opt/fleet/web.prev`，agent 在 `/opt/fleet/dist/fleet-agent.prev`（各自内容相同的重复部署不覆盖它们；只留上一版，geoip.dat、xray、ssserver、sing-box 不留）。
 - fleet-server 的二进制与 systemd 单元都和线上逐字节相同时（纯前端发版：前端按请求从 `/opt/fleet/web` 读，换目录即生效）install.sh 不重启 fleet-server，不做上线前备份，其余照常（换前端并留 `web.prev`、健康检查）；二进制或单元变了、首次安装、或 fleet-server 没在跑时照常重启。
 - 换上新版之前，install.sh 先同步做一份备份（`systemctl start fleet-backup`，等它做完；备份失败部署就停在这里，线上的版本、前端、dist 原样不动）：这是上线前的回滚点，不用再手动 `systemctl start fleet-backup`，也不用手工在 `/root/pre-deploy-*` 里存。首次安装（中控上还没有 fleet-server、库是空的）跳过这一步，装完后照旧再做第一份；fleet-server 二进制没变（没有新迁移）时也跳过。备份目录按「每个北京日期最后一份 + 最新 3 份」轮换（见 §10），所以部署前这份至少会保留到之后又有 3 份新备份；要长期留着的回滚点另存。已有的 `/root/pre-deploy-*` 是历史回滚点，不动。
+- IP 情报离线库（来源画像，API.md「来源 IP 画像」）：`fleet-ipintel-fetch.timer` 每月 3 日 04:20 左右跑 `fleet-server ipintel-fetch -c /etc/fleet/fleet.toml /var/lib/fleet/ipintel`（User=fleet；取代 `deploy/ipintel/fetch-dbs.sh`，来源、文件名、`MANIFEST` 相同）。首次安装时库目录是空的，install.sh 换上新版后在后台下载第一份（约 190 MB）。每个库先下到库目录里的 `.fetch.*`，校验和对上（ip2region：GitHub contents API 公布的 size 与 git blob sha1；DB-IP：db-ip.com 下载页公布的 SHA1）再用 fleet-ipintel 的加载器真正打开、抽查一个已知地址，才 rename 换上：正在被 fleet-server mmap 的旧文件不被改写或截断，fleet-server 每 5 分钟比对库文件的大小与 mtime 自动重新打开，不用重启。比脚本严：GitHub API 限流拿不到哈希、下载页解析不到 SHA1 或已不是这个月的文件时**不换**（脚本会只查大小就换上），旧文件保留、服务以失败退出，下个月或手动 `systemctl start fleet-ipintel-fetch` 再试。iptoasn.com **不公布校验和**：只能核对 Content-Length、gzip CRC、行数（≥ 30 万）与首行格式，日志里写明。哈希没变的 ip2region、这个月已有的 DB-IP 不重下。不要以 root 手动跑（换上的文件会归 root、fleet-server 读不了，命令会拒绝）。回退到脚本：单元的 `ExecStart` 改回 `/bin/sh /opt/fleet/ipintel/fetch-dbs.sh /var/lib/fleet/ipintel`（install.sh 仍装着它）再 `systemctl daemon-reload`。
 - 迁移 0029 先把币种去空白转大写，再给套餐 / 订阅 / 续费记录的币种（3 个大写字母）和通知渠道种类（当时是 telegram / wecom / webhook）加约束；存量里还有不合规的不让迁移失败，日志里有「0029：… 暂不验证」的警告。看到时查出那几行（如 `select id, currency from plan where currency !~ '^[A-Z]{3}$'`）改成正确的币种，再 `alter table plan validate constraint plan_currency_iso`（订阅 / 续费记录 / 渠道同理：`subscription_currency_iso`、`renewal_currency_iso`、`notify_channel_kind_check`）。
 - 迁移 0093（穿透入口）只给 `entry` 加三列（`mode` 默认 normal、`bridge_uuid` 随机生成、`reverse_kick_at`），存量入口一律普通模式，不改任何行为。新迁移照 §9 回滚的规矩：上线前要有备份（install.sh 换版前自动做）。
 - 迁移 0098 把旧的逐节点 `init` 增减记录（每个节点一条）按团队合并成一条（节点名单进 `detail.nodes`），并给 `billing_slot` 加 `vacate_reason`（空出原因）：现有空出 / 已结束的系统名额按「现在」的不计费状态回填一次（近似），之后由对账在空出时落库。上线前的备份由 install.sh 自动做。
@@ -363,7 +369,7 @@ FLEET_BUILD=docker FLEET_BUILD_HOST=10.172.17.213 lab/sync-server.sh 'cargo test
 
 ## 10. 备份与恢复
 
-中控每天北京时间 03:30 做一份备份（`fleet-backup.timer` → `/opt/fleet/backup/fleet-backup.sh`），放在中控 `/var/backups/fleet/fleet-<北京时间>.tar`（开了加密是 `.tar.age`，见下文「加密备份」），留最近 14 个北京日期、每个日期只留最后一份，另外总是保留最新 3 份（同一天里部署前的同步备份、手动备份不会多占 14 天的名额，也不会被当天后来的备份马上顶掉）；第一次装上时 install.sh 立即做一份，之后每次部署换版前也同步做一份（§9）。手动做一份：`systemctl start fleet-backup`，`journalctl -u fleet-backup -n 5` 看结果。一份 tar 里有：
+中控每天北京时间 03:30 做一份备份（`fleet-backup.timer` → `fleet-server backup -c /etc/fleet/fleet.toml`，执行的是 install.sh 放在 `/opt/fleet/backup/fleet-server` 的那份新版二进制：上线前备份在换上新版之前做），放在中控 `/var/backups/fleet/fleet-<北京时间>.tar`（开了加密是 `.tar.age`，见下文「加密备份」），留最近 14 个北京日期、每个日期只留最后一份，另外总是保留最新 3 份（同一天里部署前的同步备份、手动备份不会多占 14 天的名额，也不会被当天后来的备份马上顶掉）；第一次装上时 install.sh 立即做一份，之后每次部署换版前也同步做一份（§9）。手动做一份：`systemctl start fleet-backup`，`journalctl -u fleet-backup -n 5` 看结果。一份 tar 里有：
 
 - `fleet.dump`：`pg_dump -Fc` 整库。`host_metric`、`entry_traffic`、`probe_result`、`access_event` 四张原始时序表（按天分区，只保留几天，量最大）只备结构不备数据，其余表（机器、入口、订阅、作业、审计、告警、小时汇总等）全量。恢复后最近几天的 10 秒粒度曲线和访问明细是空的，小时汇总都在。
 - `etc/fleet/`：`secret.key`（库里 SS 密码、REALITY 私钥、通知渠道配置的加密密钥，丢了这些就解不开）、`fleet.toml`、`ssh/id_ed25519`（中控登录所有机器的密钥）。
@@ -372,6 +378,8 @@ FLEET_BUILD=docker FLEET_BUILD_HOST=10.172.17.213 lab/sync-server.sh 'cargo test
 - `etc/caddy/global.d/`、`etc/caddy/sites.d/`：Caddy 的带外配置（如 `edge-proxy.caddy` 的 PROXY 协议、`http-redirect.caddy`，见 §11）。Caddyfile 本身由 install.sh 重写，不在包里；上面这几样中控上不存在的就不打（备份不会因此失败）。
 
 整个包都是敏感数据：中控上 0640 root:fleet-backup（只有拉取用户能读），PVE 上 0600 root。备份目录本身是 0755：fleet-server 要看得到最新一份的时间，超过 26 小时没有新的就开告警 `central_backup_stale`（§12）。每份旁边有一个 `<备份名>.sha256`（`sha256sum` 格式，备份时算的；明文和加密的都有），随备份一起轮换；PVE 拉取时按它核对。
+
+`fleet-server backup` 取代了原来的 `deploy/backup/fleet-backup.sh`，包的内容、成员顺序（照旧由 GNU tar 打）、文件名、校验和、属组权限、轮换规则都相同（`crates/fleet-server/src/ops/backup.rs`，有单元测试与真库往返测试）。先在备份目录里的 `.work-XXXXXX` 做好，校验和先就位、备份后就位；任何一步失败（pg_dump、tar、age、改属组）都以非 0 退出、删掉 `.work-*`，备份目录里已有的不动、不轮换。成功时最后一行同脚本：`已备份 /var/backups/fleet/fleet-<时间>.tar（大小），共 N 份`。回退到脚本：`fleet-backup.service` 的 `ExecStart` 改回 `/bin/bash /opt/fleet/backup/fleet-backup.sh`（install.sh 仍装着它）再 `systemctl daemon-reload`。
 
 ### 加密备份（可选，推荐）
 
@@ -413,35 +421,31 @@ FLEET_BUILD=docker FLEET_BUILD_HOST=10.172.17.213 lab/sync-server.sh 'cargo test
 在新装（或重装）的中控机上按顺序做：
 
 1. 正常部署一次：`deploy/central/deploy.sh <主机> <域名>`。装好 PostgreSQL、Caddy、fleet 用户、服务与定时器；这时库是空的，密钥是新生成的。
-2. 把备份拷到中控并解开：`mkdir -p /root/restore && tar -xf fleet-<时间>.tar -C /root/restore`。加密的 `.tar.age` 在离线电脑上先解成 tar（`age -d -i fleet-backup-key.txt -o fleet-<时间>.tar fleet-<时间>.tar.age`）再拷过去，或把私钥临时拷到中控 `age -d -i /root/key.txt fleet-<时间>.tar.age | tar -xf - -C /root/restore`，用完立刻删掉私钥（`shred -u /root/key.txt`）
-3. 停服务、换库（`pg_restore` 以 postgres 执行，从标准输入读，对象属主恢复为 fleet）：
+2. 把备份**连同旁边的 `.sha256`** 拷到中控（如 `/root/`；从 PVE 拷的是 `fleet-prod-<时间>.tar` 与 `fleet-prod-<时间>.tar.sha256`）。加密的 `.tar.age` 要私钥：临时拷到中控（如 `/root/key.txt`），恢复完立刻 `shred -u /root/key.txt`；或在离线电脑上先解成 tar（`age -d -i fleet-backup-key.txt -o fleet-<时间>.tar fleet-<时间>.tar.age`）、`sha256sum fleet-<时间>.tar > fleet-<时间>.tar.sha256` 再一起拷过去。
+3. 先演练（服务不用停，什么都不改）：
+   ```
+   /opt/fleet/fleet-server restore -c /etc/fleet/fleet.toml /root/fleet-<时间>.tar --dry-run          # 加密的加 --identity /root/key.txt
+   ```
+   它把备份拷进 0700 的 `/root/fleet-restore-XXXXXX`（边拷边算 sha256，和 `.sha256` 核对；对不上、没有 `.sha256` 都拒绝，校验和确实丢了才加 `--skip-sha256`），解密，检查 tar 的每个成员（只许普通文件和目录、只许备份打的那几条路径），`pg_restore -l` 读一遍，把 `_sqlx_migrations` 和本程序的迁移逐个核对（备份来自更新的版本、迁移校验和不同、有没跑成功的都拒绝；本程序多出来的迁移恢复时补跑），然后打出将要做的：库改名、每个要放回的文件（新建 / 替换 / 不变、权限属主）、fleet.toml 里和备份不同的键、不放回的成员。暂存目录做完就删。`restore` 要在 `/opt/fleet/fleet-server`（之后要跑这个库的那个版本）上执行，不用 `/opt/fleet/backup/` 那份。
+4. 停服务、恢复：
    ```
    systemctl stop fleet-server
-   runuser -u postgres -- psql -c 'drop database fleet' -c 'create database fleet owner fleet'
-   runuser -u postgres -- pg_restore -d fleet --exit-on-error < /root/restore/fleet.dump
+   /opt/fleet/fleet-server restore -c /etc/fleet/fleet.toml /root/fleet-<时间>.tar --yes               # 加密的加 --identity /root/key.txt
    ```
-4. 放回密钥与主机指纹。fleet.toml 用新装的那份（里面的库密码是第 1 步新生成的），备份里 fleet.toml 改过的其它设置（retention 等）对照着抄过来；备份里有 `etc/fleet/ipintel-overrides.toml`、`etc/fleet/backup.pub`、`etc/fleet/backup-age.recipients` 也照样放回：
+   不加 `--yes` 只打出将要做的；fleet-server 还在监听（`listen` 被占）、还有连接连着库时拒绝。按顺序：先做一份安全备份（恢复前的库与密钥，存进 `/var/backups/fleet`，不轮换）→ 备份恢复进新库 `fleet_restore_<时间>`（`pg_restore --exit-on-error` 以 postgres 执行、从标准输入读，对象属主恢复为 fleet）并以 fleet.toml 的账号跑迁移 → 放回密钥与主机指纹（`secret.key`、`ssh/id_ed25519` 0600 fleet:fleet，`id_ed25519.pub` 0644 fleet:fleet，`known_hosts` 0640 fleet:fleet；有的话 `ipintel-overrides.toml`、`backup.pub`、`backup-age.recipients` 0640 root:fleet，`etc/ssh/ssh_host_ed25519_key`（`.pub`）0600 / 0644 root:root，`etc/caddy/global.d`、`sites.d` 里的文件按原权限覆盖、本机多出来的不删）→ 一个事务里换库：`fleet` 改名 `fleet_pre_restore_<时间>` 留着、新库改名 `fleet`。被替换的旧文件以硬链接留成 `<文件>.pre-restore-<时间>`；fleet.toml 不换（库密码是第 1 步新生成的），备份里那份存成 `/etc/fleet/fleet.toml.from-backup-<时间>`。中途任何一步失败（含 Ctrl-C）：放回的文件换回、新库删掉，库与文件都是恢复之前的（安全备份留着），以非 0 退出。成功后打出剩下要人做的步骤（下面 5–10 里适用的那些）。
+   以下要 systemctl 或要服务在跑，`restore` 不做，照它打出的做：放回了 sshd 主机密钥或 Caddy 配置的，重启 ssh 与 caddy（不重启，软路由隧道按旧公钥核对全断、经边缘机的连接缺 PROXY 协议配置全断）：
    ```
-   install -m 600 -o fleet -g fleet /root/restore/etc/fleet/secret.key /etc/fleet/secret.key
-   install -m 600 -o fleet -g fleet /root/restore/etc/fleet/ssh/id_ed25519 /etc/fleet/ssh/id_ed25519
-   install -m 644 -o fleet -g fleet /root/restore/etc/fleet/ssh/id_ed25519.pub /etc/fleet/ssh/id_ed25519.pub
-   install -m 640 -o fleet -g fleet /root/restore/var/lib/fleet/known_hosts /var/lib/fleet/known_hosts
-   diff /root/restore/etc/fleet/fleet.toml /etc/fleet/fleet.toml
-   ```
-   备份里有 `etc/ssh/ssh_host_ed25519_key`（以及 `.pub`）、`etc/caddy/global.d`、`etc/caddy/sites.d` 的，也放回去，再重启 ssh 与 caddy（不放回，软路由隧道因主机公钥对不上全断；经边缘机的连接因缺 PROXY 协议配置全断）：
-   ```
-   install -m 600 -o root -g root /root/restore/etc/ssh/ssh_host_ed25519_key /etc/ssh/ssh_host_ed25519_key
-   install -m 644 -o root -g root /root/restore/etc/ssh/ssh_host_ed25519_key.pub /etc/ssh/ssh_host_ed25519_key.pub
-   cp -a /root/restore/etc/caddy/global.d/. /etc/caddy/global.d/ && cp -a /root/restore/etc/caddy/sites.d/. /etc/caddy/sites.d/
    sshd -t && systemctl restart ssh && caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null && systemctl restart caddy
    ```
-   换 sshd 主机密钥后，人用 ssh 连这台机器会报主机指纹变了（放回备份里的这把就和以前一致，PVE 拉取的第 9 步也就不用做）。
+   换 sshd 主机密钥后，人用 ssh 连这台机器会报主机指纹变了（放回备份里的这把就和以前一致，PVE 拉取的第 9 步也就不用做）。fleet.toml 里和备份不同的键（retention 等）对照 `fleet.toml.from-backup-<时间>` 抄过来，`database_url` 用新装的。
 5. 启动并确认：`systemctl start fleet-server`（启动时跑迁移：备份来自旧版本时补上新迁移）；`curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/api/v1/auth/me` 应为 401。恢复的库里是备份时的 central-local，和第 1 步写进 `/root/.config/fleetctl/config.toml` 的令牌对不上：`/opt/fleet/fleet-server local-admin -c /etc/fleet/fleet.toml` 重建一把（§14），再 `fleetctl status` 看机器。
 6. 中控 IP 变了：把域名解析改到新机器。agent 按域名上报，解析生效后自动恢复；Caddy 自动签证书。
 7. 放回了 `etc/fleet/backup.pub` 的，再跑一次第 1 步的 deploy.sh：install.sh 看到这个文件才写拉取用户的 authorized_keys，不重跑 PVE 就一直拉不到。
 8. agent 令牌：每次装 / 升级 agent 都会换令牌、撤销旧的。备份之后升级过 agent 的机器，机器上的令牌在恢复的库里不存在，上报一律 401（线路照常通，但上报、配置下发都停了）。解析生效几分钟后 `fleetctl ls` 里 agent 一直离线的那些，逐台 `fleetctl upgrade-agent <机器> --yes` 重发令牌（中控用恢复的 SSH 密钥登录）；不确定就 `fleetctl upgrade-agent --all --yes`。
 9. 新机器的 SSH 主机指纹变了（第 4 步没放回 sshd 主机密钥才会；放回了就和以前一致）：PVE 的拉取按 accept-new 只认第一次记下的指纹，会拒绝连接（`systemctl --failed` 里 fleet-backup-pull 失败）。在 PVE 上 `ssh-keygen -R <中控主机>`（拉取用的主机名或 IP），再手动跑一次 `systemctl start fleet-backup-pull` 记下新指纹。
-10. 删掉 `/root/restore`（里面有密钥）。
+10. 都正常后清理（里面有旧密钥）：`runuser -u postgres -- psql -c 'drop database fleet_pre_restore_<时间>'`，删掉各 `*.pre-restore-<时间>`、`/etc/fleet/fleet.toml.from-backup-<时间>`、拷来的备份与私钥（`restore` 最后一步打出的清理命令里有完整路径）。暂存目录 `/root/fleet-restore-*` 由 `restore` 自己删；`restore` 被 kill -9 才会留下，手工删掉。
+
+`restore` 只认 `fleet-server backup` / `fleet-backup.sh` 打的包。`fleet-server restore` 不可用时（如二进制本身坏了）照旧可以手工做：`tar -xf` 解到 `/root/restore`，`runuser -u postgres -- psql -c 'drop database fleet' -c 'create database fleet owner fleet'`、`runuser -u postgres -- pg_restore -d fleet --exit-on-error < /root/restore/fleet.dump`，再按第 4 步列的权限属主 `install` 各文件，最后删掉 `/root/restore`。
 
 ## 11. 访问入口
 
@@ -481,6 +485,16 @@ heartbeat_url = "https://hc-ping.com/<检查的 uuid>"
 - `central_ingress`（严重）：有自己 agent 的在用机器里同时离线的超过一半、且至少 3 台。中控和库都好着，是 agent 到不了中控：查边缘机反代、Caddy、域名解析（从别的机器 `curl -sI https://<中控域名>` 试）。期间不再按台开「agent 离线」；这条恢复后仍没回来的再按台报。
 - `central_tunnel_host`（警告）：软路由隧道回连的主机（`[routers] ssh_host`，没配时 `public_url` 的主机名）不是中控：解析不了，或解析到的地址里没有中控本机网卡上的，也没有连它的 SSH 口拿到的主机公钥是中控 sshd 的（`[routers] sshd_host_key`；中控在 NAT 后时靠这一步认出自己），而且至少有一个地址连上了、公钥是别人的（多半是 CDN / 边缘机）。A 与 AAAA 并存时任一个地址对上就算中控；SSH 口连不上（超时、拒绝，可能只是中控连不回自己的公网地址）只算判断不了，不开告警、中控日志里写一行。摘要写解析到哪、哪个地址怎么不对。现有隧道断线后才会受影响：按 §11 把 `ssh_host` 配成源站 IP 或单独的灰云域名，重启中控后给路由重新接入 / 重新部署。只在有软路由时检查，启动时与每 10 分钟查一次，对了就恢复。
 - `central_view_stuck`（严重）：机器视图（列表、总览、实时推送、告警评估共用的那一份）连续 2 分钟算不出来。视图查询每条 15 秒超时，重算一次最多 20 秒（排队等别人算完另算 20 秒），失败时先用上一份顶 1 分钟（这期间有过资源变更——改名、退役、改订阅等——就不顶，接口回 503 让页面重试，免得一直显示改动之前的），再久告警评估就跟着失败、死人开关停止 ping。多半是有查询被锁住（迁移、建分区排在父表锁后面）：`select pid, wait_event_type, state, now() - query_start, left(query, 80) from pg_stat_activity where datname = 'fleet' and state <> 'idle' order by 4 desc`，看是谁拿着锁。算成一次就恢复。
+
+**接口耗时**：每个请求按路由模板（`/api/v1/machines/{id}`，不记原始路径里的 id 与令牌）记耗时；慢的（接口超过 500 ms、agent 的上报与应用回报超过 2 秒、期望状态长轮询超过 32 秒）和 5xx 在 `journalctl -u fleet-server` 里各记一条 INFO：`慢请求 method=POST route=/agent/v1/report status=200 ms=2310 machine=<机器 id>`，其余只在 DEBUG 级别（平常的日志量不变）。门槛在 `[selfmon]` 里改（重启生效）：
+
+```
+[selfmon]
+slow_request_ms = 500   # 面板 / fleetctl 的接口
+slow_agent_ms = 2000    # agent 的上报、应用回报；长轮询是 30 秒 + 它
+```
+
+`fleetctl server-stats` 不用登录中控就能看「慢在哪」：连接池（主池、机器视图池、访问监控池）此刻的占用、最近 15 分钟占满过几次、每 5 秒一次「取连接」的耗时（请求在池子前排队时它跟着变长；取不到计入「取不到」），各接口最近 15 分钟与启动以来的次数、慢的、5xx、p50 / p90 / p99 / 最大。读法：「取连接」很慢、占满次数多 = 库忙或有长事务占着连接（查 `pg_stat_activity`，§12 `central_view_stuck` 那条的语句）；池子不紧、只有个别接口 p99 高 = 那个接口自己的查询慢；都正常而 agent 仍报超时 = 慢在中控之外（边缘机、Caddy、网络）。进程重启后从零开始。
 
 **后台任务监督**：中控里的后台循环（作业引擎、告警、实时指标、访问汇总、来源画像、通知发送、分区与保留期维护、小时汇总）panic 或意外退出时，`journalctl -u fleet-server` 记一条 error（「后台任务「…」…，10 秒后重启」），10 秒后原地重启，其余照常。作业引擎也一样（清旧租约只在中控启动时做一次，正在推进的作业不会被再领）。告警循环一直起不来时死人开关会报。
 
@@ -660,6 +674,10 @@ url = "https://api.frankfurter.dev/v1/latest?base=USD"   # 回包 {base:"USD", d
 - **穿透入口**也有 AnyTLS：经 AnyTLS 进来的连接同样走隧道（`rvs-<入口>`），隧道断了 AnyTLS 和 Reality 一起不通。
 - **软路由出口切 AnyTLS**：`fleetctl router protocol <路由> --to anytls [--exit <出口>]…` 先看预览：要切的出口（对应入口、经哪台线路机、现在 → 改成 AnyTLS 的地址端口）和跳过的（线路机只开 Reality、sing-box 没在跑、入口没有 AnyTLS 端口、从没对上过入口的出口）及原因；告诉用户、同意后加 `--yes --follow`（作业 `router_protocol`，网页作业页「切软路由出口协议」）。执行同替换的改软路由出口：读路由当时的配置 → 备份 → 把每个出口整块改写成 AnyTLS（`- name:` 原样、`type: anytls` + server / port / password / sni / `skip-cert-verify: true` / `client-fingerprint: chrome` / `udp: true`，dialer-proxy 之类协议无关的字段与注释留着；同名，所在分组、分流规则不变）→ 重启 OpenClash 一次 → 逐个测延迟，任何一个不通全部改回、作业失败。`--to reality` 反过来（同一套代码，Reality 的整组字段同订阅的写法）。审计 `router.protocol`，配置变更时间线记在这个作业名下。全部切完后线路机就能 `relay-set --protocols anytls` 只留 AnyTLS。要路由的 mihomo 内核支持 `type: anytls`（三台生产路由的 alpha 内核都支持）；不支持的内核重启后 API 起不来或出口测不通，作业自动改回。
 - **删软路由出口**（客户不要的出口，如客户退掉几个节点、只留一部分设备）：`fleetctl router remove-exits <路由> --exit EXIT_5 --exit EXIT_6`（也可 `--exit EXIT_5,EXIT_6`）先看预览：要删的出口（对应入口、地址、此刻的客户端数）、策略组里会去掉谁、删完不再被出口指着的备用机器（之后到期满 1 天自动回收）、删完就不再经它出去的在用节点；告诉用户、同意后加 `--yes --follow`（作业 `router_exit_rm`，网页抽屉出口页「删除出口…」、作业页「删软路由出口」）。路由上的脚本按当时的配置：`proxies` 里这个出口整项删掉，`rules` 里目标是它的规则删掉（这些来源 IP 的设备之后按后面的规则走，兜底规则多半是拒绝，就上不了网了），`proxy-groups` 各组 `proxies` 列表里的它删掉；同名出口不止一个、流式写法提到它、兜底规则 `MATCH` 指向它、某个组删完就空了、删完配置里别处还引用它（dns 的 `…#出口名`、别的出口的 dialer-proxy）时一行不写、作业失败并写明是哪一处（在路由上改掉那处再重试）。写之前备份到 /etc/fleet-backup/openclash（同改出口），删完重启 OpenClash 一次（断开经它的全部连接）、等 API 起来、确认删掉的出口不在了，任何一步不行整份换回备份。配置里已经没有的出口不算错：中途断了点重试即可。对不上面板入口的出口（路由上自己加的、或对应节点早删了）要 `--force`。删完清掉这些出口的「已建立对应」（router_exit_link），审计 `router.exits_remove`，配置变更时间线记在这个作业名下。不要手改路由的配置去删出口。
+- **只重启 OpenClash**（`fleetctl router restart <路由>`，作业 `router_restart`）：配置一行不动。先看预览（要测的面板出口与现在通不通、此刻的连接数与在线客户端），告诉用户会断开经这台路由的全部连接，同意后 `--yes --wait`（`--wait` 同 `--follow`）。路由上的脚本和改出口的同一个外层：在后台跑、不理 HUP（busybox ash 没有 nohup，不要在路由上手敲），重启会掐断隧道的路由照样跑完，中控等隧道回连（最多 3 分钟）后取回结果；重启、等 API（最多 120 秒）、逐个测面板出口（每个最多 3 次）。作业输出写明哪些出口回来了（延迟），重启前就不通的另列；重启前通、重启后不通的让作业失败（配置没动，不改回）；重启命令失败或 API 没起来作业失败并提醒 OpenClash 可能停着（马上 `router show`）。和改出口的作业同一把路由锁，排队；审计 `router.restart`。
+- **看配置**（只读，`fleetctl router config <路由> [--backups | --diff <备份>]`）：中控经隧道读源配置（顶层 `secret:` 在路由上先删掉），列出口（对应入口、参数一致与否）、策略组（成员、现在选的）、规则按目标汇总（来源 IP 全列，兜底 MATCH 是谁）；`--backups` 列路由上 /etc/fleet-backup/openclash/ 的备份（中控作业改配置前留的，7 天、最多 30 份）；`--diff` 现在 vs 那份备份逐行比较，在中控算（路由上没有 diff），凭据隐去：uuid、password、flow、servername / sni、public-key、short-id（同变更时间线算凭据的字段），以及名字像密码 / 令牌 / 私钥的、username、订阅地址的路径与查询串、URL 里的用户名密码，换成 `<已隐去·标记>`（同一次比较里同值同标记，值变了标记不同）。会登录路由读东西，审计 `router.config_read`（`router show` 只读中控里的快照，不记）。
+- **出口名跟上面板**（`fleetctl router rename-exits <路由> --follow-fleet [--exit <出口>]… [--force]`，作业 `router_rename`）：编号压缩（退役、改团队、替换让后面的前移补号）之后，出口名末尾的编号改成它指向的节点现在的编号（位数不少于原来的），几个名字互换（07→04、10→07）一次改完；`proxies` 里的名字、别的出口的 `dialer-proxy`、策略组成员、分流规则的目标一起改。只动「已建立对应」的面板出口（同 `router sync`）；从没对上过入口的、指向别的团队 / 直出 / 备用团队节点的不点名不改，点名要 `--force`；名字末尾没有编号、节点没有编号的不改。中控按路由此刻的配置算出要改的行（预览里列出），配置里别处还提到这些名字（dns 的 `#名字`、流式写法、一行提到两个）、同名出口不止一个、新名字已经有出口或策略组在用、对应的 select 组正在临时切换（先切回）都拒绝。执行时再读一次配置、重算，路由上的脚本只在配置的 sha256 还是中控读到的那份时逐行替换，备份后写、重启 OpenClash，核对新名字都在、旧名字都没了，select 组改之前选着改名的出口的按新名字选回去（OpenClash 记住的选择按名字，不选回去可能落到别的出口上）；不行整份换回、再重启、把组的选择选回。改好后「已建立的对应」和出口的历史指标改记到新名字下。改名不会自动发生：退役 / 改团队 / 替换的预览提醒「出口名不跟着改」时末尾给出这条命令。审计 `router.rename_exits`。
+- **来源 IP 分流规则**（`fleetctl router rules <路由> [--assign <来源>=<出口>]… `，作业 `router_rules`）：不给 `--assign` 列出现有的 SRC-IP-CIDR 规则；`--assign` 的来源是 CIDR、单个 IP 或 IPv4 段（`10.31.5.101-10.31.5.200`，拆成最少的几段 CIDR，最多 16 条）。同一个网段已有一条的改目标（位置不动），没有的加在最后一条 SRC-IP-CIDR 规则后面（写法照它）；和现有规则重叠的、几条之间重叠的、目标不是配置里的出口或策略组的、目标出口现在不通的拒绝；配置里还没有 SRC-IP-CIDR 规则、或现有的不连在一起 / 在兜底 MATCH 后面时不知道新规则该插在哪，拒绝（要先定位置）。设备编号（B001…）面板里没有对应的地址：拿到 IP 段再做。同改名：中控算行、路由上按 sha256 核对后替换、备份、重启 OpenClash，目标出口测得通且 `/rules` 里有这些网段才算，不行整份换回。审计 `router.rules`。
 - **按线路机选入口协议**：`fleetctl relay-set <线路机> --protocols anytls|reality|both`（网页线路机抽屉「应用状态 → 入口协议」）。`anytls` = 只留 AnyTLS：Reality 入站改听回环（公网连不上，正在用 Reality 的客户端断开），分享链接、订阅只给 AnyTLS，客户入口探测改连 AnyTLS 端口；要线路机 AnyTLS 在跑且 agent 是新版（否则先 `fleetctl upgrade-agent`；有穿透入口时 agent 还要认穿透放行，旧的同样先升级）、没有 **Reality** 软路由出口指着它的入口（AnyTLS 出口不挡：先 `router protocol --to anytls` 切过去），不满足时中控拒绝并写明是哪些。**穿透入口**的 Reality 入站不改听回环（节点的 bridge 连的就是它，美国节点 → 美国线路机、不经 GFW），由线路机 agent 的 nft 表 `inet fleet_reality_guard` 只放行这条入口的节点出站 IP，别的来源（大陆客户、主动探测）一律丢弃、不完成握手；只开 AnyTLS 的线路机上照样能开穿透、新入口照样能按穿透建。`fleetctl show <线路机>` 的「入口协议」此时写「穿透入口的 Reality 端口只对它的节点开放」。改回 `both`、入口切回普通或删掉时规则跟着去掉；`both` / `reality` 的线路机不建这张表。Reality 软路由出口不能换到只 AnyTLS 的线路机上（改出口指向、换线路机会被拒）。`reality` = 不提供 AnyTLS；有 AnyTLS 软路由出口指着这台时同样被拒（先切回 Reality 或改指向）。`both` 是默认。改完代数 +1，线路机热更新，不重启 Xray；`fleetctl show <线路机>` 的「入口协议」一行看现在是哪种。
 
 ## 22. 计费台账（按节点数向团队收费）

@@ -1,6 +1,6 @@
 ---
 name: fleet-ops
-description: 团队线路管理（fleet）的运维入口。查节点或线路机状态、排查告警、处理到期与续费提醒（看订阅、未来待付清单、登记续费含批量、改订阅）、维护前开维护窗口或静默告警（可预约）、看服务日志、在节点上执行命令、登录机器或软路由、上架新机器、管理供应商与套餐（新建、改价、归档、删除）、替换节点（新机器接替旧节点、软路由跟着换、旧的放备用）、看节点放在哪台线路机最好（放置矩阵：各线路机到节点的往返与换线建议）、退役（进备用、立即回收）与回收站（含旧面板导入）、改名与编号、升级 agent、取入口分享链接、管理客户端订阅（自己的 Clash Verge / OpenClash / v2rayN 按一个链接拉全部入口）、看计费台账与客户页（按节点数向团队收费：每个节点从开始收费日起每月一期，按月看谁已收 / 没收、标记已收、增减记录、手动计费节点、设节点不计费、客户页只读链接）、查看与接入软路由（OpenWrt + OpenClash：状态、出口、出口历史成功率与延迟、客户端、接入命令、一键部署）、管理探测点（从靠近客户的地方如香港测线路机入口：安装、主探测来源、升级）、查看或设置三网 PING（线路机到电信 / 联通 / 移动的延迟丢包）时使用，在中控上运维也用它；一律先用 fleetctl（登录用 fleetctl ssh），不要直接 ssh、psql 或手拼 curl。
+description: 团队线路管理（fleet）的运维入口。查节点或线路机状态、排查告警、处理到期与续费提醒（看订阅、未来待付清单、登记续费含批量、改订阅）、维护前开维护窗口或静默告警（可预约）、看服务日志、在节点上执行命令、登录机器或软路由、上架新机器、管理供应商与套餐（新建、改价、归档、删除）、替换节点（新机器接替旧节点、软路由跟着换、旧的放备用）、看节点放在哪台线路机最好（放置矩阵：各线路机到节点的往返与换线建议）、退役（进备用、立即回收）与回收站（含旧面板导入）、改名与编号、升级 agent、取入口分享链接、管理客户端订阅（自己的 Clash Verge / OpenClash / v2rayN 按一个链接拉全部入口）、看计费台账与客户页（按节点数向团队收费：每个节点从开始收费日起每月一期，按月看谁已收 / 没收、标记已收、增减记录、手动计费节点、设节点不计费、客户页只读链接）、查看与接入软路由（OpenWrt + OpenClash：状态、出口、出口历史成功率与延迟、客户端、接入命令、一键部署、只重启 OpenClash、看配置与备份、出口名跟上面板编号、来源 IP 分流规则）、管理探测点（从靠近客户的地方如香港测线路机入口：安装、主探测来源、升级）、查看或设置三网 PING（线路机到电信 / 联通 / 移动的延迟丢包）时使用，在中控上运维也用它；一律先用 fleetctl（登录用 fleetctl ssh），不要直接 ssh、psql 或手拼 curl。
 ---
 
 # fleet-ops
@@ -12,11 +12,12 @@ description: 团队线路管理（fleet）的运维入口。查节点或线路�
 ```
 fleetctl whoami            # 确认连得上，并看本密钥的 scopes
 fleetctl --json <命令>      # AI 一律加 --json，输出一行 JSON
+fleetctl --json help --all  # 全部命令与子命令的说明、参数、选项（一行 JSON，从命令行定义生成）；只看一组：help --all router
 ```
 
 - 配置：在中控上已经配好（见下文「在中控上运维」）。别处用环境变量 `FLEET_URL`、`FLEET_TOKEN`，或 `fleetctl login --url <地址>`（密钥从标准输入读一行，如 `< 密钥文件`；`--token <密钥>` 仍可用，但会留在 shell 历史与进程列表里）。实验室中控是 `http://192.168.31.60:8080`。
 - `--json` 的 `ls` / `entries` / `incidents` / `policy ls` / `silence` 是与表格同列的精简对象（字段见同目录的 json-fields.md，要解析 `--json` 字段时先读它），一台机器的完整视图用 `show`、一个团队或节点的完整策略用 `policy show`；`billing` 是订阅、流量额度与最近续费记录合成的对象；`router exits` 是按出口算好的统计；`provider` / `plan` 的 `add`、`set` 是改完后的那一项；其余命令是 API 的 data 原样。机器上百台时 `ls` 仍有几万字符，先用 `--team` / `--kind` / `--status` 缩小。 fleetctl 和中控的版本（`0.1.0+<提交哈希>`）不一致时会在 stderr 提示一行（每次运行至多一次，不影响 stdout 与 `--json`）：用中控上的 fleetctl 或重新编译。
-- 成功退出码 0；失败退出码 1，错误 JSON 在 stderr（`{"error":{"code","message","status"}}`）；没加 `--yes` 的危险操作被拒时 `code` 是 `confirm_required`（要先向用户确认，别当成失败去重试）；需要登录（`unauthorized`）/ 没有权限（`forbidden`）时 message 末尾另有一行下一步。参数写错（clap）是退出码 2，stderr 是纯文本用法提示，不是 JSON。`exec` 单台时退出码等于远端命令的退出码。`job` / `job --follow`（以及各命令的 `--follow`）遇到作业失败或取消也退出 1，stderr 给 `{"error":{"code":"job_failed"|"job_cancelled","message",…}}`。
+- 成功退出码 0；失败退出码 1，错误 JSON 在 stderr（`{"error":{"code","message","status"}}`）；没加 `--yes` 的危险操作被拒时 `code` 是 `confirm_required`（要先向用户确认，别当成失败去重试）；需要登录（`unauthorized`）/ 没有权限（`forbidden`）时 message 末尾另有一行下一步。参数写错（clap）是退出码 2；带了 `--json` 时 stderr 也是错误 JSON，`code` 为 `usage`、`message` 是 clap 的提示（不带 `--json` 是纯文本）。不确定参数时先查 `fleetctl --json help --all`（或 `help --all <命令>`），不要逐个 `--help`。`exec` 单台时退出码等于远端命令的退出码。`job` / `job --follow`（以及各命令的 `--follow`）遇到作业失败或取消也退出 1，stderr 给 `{"error":{"code":"job_failed"|"job_cancelled","message",…}}`。
 - 没拿到中控响应时 `status` 为 null、`code` 是 `unreachable`（连不上，请求没发出去，可直接重试；`message` 带最底层原因）或 `timeout`（请求已发出、等响应超时）。`timeout` 时操作可能已在中控执行：先 `fleetctl --json jobs --active` / `fleetctl --json audit --limit 10` 核对，再决定是否重试，尤其是上架、退役、换线路机这类会建作业的命令。
 - `<机器>` 写机器 id、显示名（`团队1-06`）、线路机名（`线路机2`）或 IP。歧义时命令报错并列出候选，照候选里的 id 重试。
 
@@ -53,7 +54,7 @@ fleetctl ssh router <名称> [-- 'logread | tail -50']        # 软路由（Open
 | 快到期的机器、一台机器的费用与续费记录 | `fleetctl --json ls --due 7`（7 天内到期、含已过期的在用机器，按到期排；`status` 的 `overview.due_soon` / `overdue` 是按各台提前提醒天数算的即将到期 / 已过期台数）、`fleetctl --json billing <机器>`、未来待付清单 `fleetctl --json billing --due 30d --by-provider`（登记续费、改订阅见下文「到期与续费」） |
 | 静默与维护窗口（进行中 / 已预约） | `fleetctl --json silence ls`（开、删见下文「维护窗口与静默」） |
 | 入口列表 | `fleetctl --json entries [<机器>]` |
-| 作业 | `fleetctl --json jobs [--active | --failed] [--kind 类型] [--limit 30]`（默认只取最近 30 个，`--limit` 最大 500；`--json` 是数组、不带总数，取满了就可能还有，文字版尾注会写总数；系统发起的作业失败，如备用到期自动回收中途失败，会收到「作业失败」通知，按里面的 `fleetctl retry <id>` 处理）、`fleetctl job <id>`、`fleetctl job <id> --follow` |
+| 作业 | `fleetctl --json jobs [--active | --failed] [--kind 类型] [--limit 30]`（默认只取最近 30 个，`--limit` 最大 500；`--json` 是数组、不带总数，取满了就可能还有，文字版尾注会写总数；系统发起的作业失败，如备用到期自动回收中途失败，会收到「作业失败」通知，按里面的 `fleetctl retry <id>` 处理）、`fleetctl job <id>`、`fleetctl job <id> --follow`（经实时流等作业变化，连不上或断开时自动改回每秒轮询，输出一样） |
 | 清理作业记录（用户说清掉旧作业 / 测试留下的作业） | `fleetctl jobs-prune [--before YYYY-MM-DD]` 先报数量，用户同意后加 `--yes`：只删已成功、已取消的（连同步骤与日志），失败的、进行中的不动；不要直接改库 |
 | 审计 | `fleetctl --json audit [--target <机器>] [--limit 50] [--before <上一页最后一条的 id>]` |
 | 实时事件 | `fleetctl watch --count 20` |
@@ -64,7 +65,7 @@ fleetctl ssh router <名称> [-- 'logread | tail -50']        # 软路由（Open
 | 访问监控：节点访问了哪些域名/IP | `fleetctl --json access [targets\|summary\|new\|sources\|events] [--node <机器>] [--team 团队1] [--window 1h\|24h\|7d\|30d] [--search 域名] [--blocked] [--kind domain\|ip] [--limit 50]`（视图名写错会报错；`--limit` 最大 500，多于它时文字版尾注会提示） |
 | 来源 IP 画像：某 IP 的运营商/城市/接入方式 | `fleetctl --json ip <ip> [<ip>...]`（只查中控本地离线库，不外发） |
 | 节点来源画像分布（运营商/城市/接入方式、top 来源、学习期） | `fleetctl --json sources <机器> [--window 24h\|7d\|30d] [--limit 20]` |
-| IP 库状态（加载了几个、缺什么） | `fleetctl --json ipintel-status`（`loaded` 应为 5；未安装时在中控跑 `lab/install-ipintel.sh`） |
+| IP 库状态（加载了几个、缺什么） | `fleetctl --json ipintel-status`（`loaded` 应为 5；不全时在中控 `systemctl start fleet-ipintel-fetch`、`journalctl -u fleet-ipintel-fetch -n 30` 看哪个库没更新（校验和拿不到就不换、保留旧库）；实验室未安装时跑 `lab/install-ipintel.sh`） |
 | 访问记录保留期（原始记录、汇总各留几天） | `fleetctl --json settings retention`（改见下文「会改变状态的操作」） |
 | 汇率（费用统一折成美元用的）：各币种的汇率、来源、上次更新、在用但没有汇率的 | `fleetctl --json settings fx`（手动设置、改回自动、立即更新见下文「会改变状态的操作」） |
 | 访问规则（域名黑白名单，按团队/节点） | `fleetctl policy ls`、`policy show <团队\|节点>`；`policy set <团队\|节点> --mode observe\|allowlist\|denylist\|blocked\|inherit --domains a.com,=exact.org [--note …]`（只存草稿，不生效）；`policy preview`（最近 24h 每节点会阻止多少）→ `policy publish --yes`；`policy discard --yes`；`policy versions`；`policy rollback <版本> --yes`。`=` 开头是精确匹配，否则含子域。发布 / 回滚会立即改写线路机路由规则，先向用户确认 |
@@ -72,6 +73,7 @@ fleetctl ssh router <名称> [-- 'logread | tail -50']        # 软路由（Open
 | 一台软路由的详情：系统、接口、OpenClash、每个出口对应的 fleet 入口与参数是否一致、延迟、连接、客户端 | `fleetctl --json router show <路由>`（`<路由>` 写 id、id 前缀或名称） |
 | 软路由出口历史：每个出口测了几次、失败几次、成功率、连续两轮失败几次、延迟中位 / 最大、当前连接 | `fleetctl --json router exits <路由> [--range 1h\|6h\|24h\|7d]`（默认 24h；口径见 json-fields.md。客户说「某个出口时好时坏」先看它，不要去路由上翻日志） |
 | 软路由的配置被谁改了、什么时候改的（排查「路由配置被谁改了」「出口怎么突然变了」先看它，不要去路由上翻备份） | `fleetctl --json router changes <路由> [--limit N]`（新的在前；每条 `source` 为 `job` 的带 `job_id` / `job_kind`，用 `fleetctl job <id>` 看那次作业；`router` = 路由上改的：手改，或旁路由上的看门服务重新生成）；文字版的 `router show` 末尾带最近 5 条（`--json` 不带，要变更用 `router changes`） |
+| 软路由现在的配置：规则 → 出口（哪些来源 IP 走哪个出口、兜底是谁）、策略组成员、路由上的备份、和某份备份比较（排查「客户的设备走哪个出口」「配置和改之前比变了什么」用它，不要 `fleetctl ssh router` 去 cat / diff 配置） | `fleetctl --json router config <路由>`（`proxies[]` `groups[]` `rule_targets[]` `src_rules[]` `match`，凭据不在里面）、`router config <路由> --backups`、`router config <路由> --diff <备份名或时间戳>`（在中控逐行比较，凭据换成 `<已隐去·标记>`：同值同标记、值变了标记不同）；只列来源 IP 分流用 `router rules <路由>`。只读，但会登录路由读，记审计 `router.config_read` |
 | 供应商（缩写、账单时区、流量计量与重置、提前提醒、套餐数） | `fleetctl --json provider ls` |
 | 套餐（供应商、规格、价格 / 周期、在用机器数） | `fleetctl --json plan ls [--provider <供应商>] [--all 含已归档]` |
 | 三网 PING：线路机往外到各目标（默认武汉电信 / 联通 / 移动）的延迟与丢包 | `fleetctl --json ping <线路机>`（`current[]`：`name target mode cur_ms cur_loss`，`cur_loss` 是 %；`show <线路机>` 的 `ping` 字段相同）；全局目标 `fleetctl --json ping-targets` |
@@ -93,12 +95,14 @@ fleetctl ssh router <名称> [-- 'logread | tail -50']        # 软路由（Open
 ```
 fleetctl logs <机器> --unit fleet-agent|fleet-xray|fleet-singbox|ssserver --lines 200   # fleet-singbox：线路机的 AnyTLS（sing-box）
 fleetctl server-logs --lines 200
+fleetctl server-stats [--all] [--top 20]                    # 中控慢不慢、慢在哪：连接池占用与取连接耗时、各接口 p50/p90/p99、慢的与 5xx
 fleetctl exec <机器> -- systemctl is-active fleet-agent
 fleetctl exec <机器> -- 'df -h | tail -5'                   # 单个参数原样当脚本，可含管道
 fleetctl exec --team 团队1 --timeout 30 -- uptime           # 多台并发 4，汇总每台退出码
 ```
 
 - 多个参数会逐个加引号；要管道、重定向，把整条命令写成一个带引号的参数。
+- 面板卡、agent 日志报「拉取期望状态失败：等待响应超时」「上报失败」：先 `server-stats` 看是不是中控慢（连接池「取连接」耗时、占满次数；哪个接口 p99 高、有没有 5xx），再到 `server-logs` 里找「慢请求」「请求出错」（带路由模板、状态码、耗时，agent 接口带机器 id）。都正常就是慢在中控之外（边缘机、网络）。
 - 输出每个流最多 256 KiB（`truncated`）；超时 `timed_out=true`。
 - 执行只读命令（systemctl status、journalctl、df、ss、cat 日志）。会改动机器状态的命令先向用户确认。
 - 命令全文进审计，所以命令里不放密码或令牌。
@@ -247,6 +251,9 @@ fleetctl router switch <路由> <组> <出口> [--for 4h]   # 临时切换出口
 fleetctl router switch <路由> <组> --back               # 切回第一次切之前的出口
 fleetctl router remove-exits <路由> --exit <出口>[,<出口>…] [--force] [--yes] [--follow]   # 删出口：出口连同指向它的分流规则、策略组里的引用一起从配置里删掉（备份、重启 OpenClash、确认生效，失败整份换回）。不加 --yes 只预览
 fleetctl router sync <路由> [--exit <出口>]… [--force] --yes [--follow]   # 同步出口参数：参数和对应入口不一致的出口改成入口现在的凭据（server:port 不变；备份、重启 OpenClash、测延迟，失败自动改回）。不加 --yes 只预览
+fleetctl router restart <路由> [--yes] [--wait]   # 只重启 OpenClash（配置不动；断开经它的全部连接）：后台重启、等 API、测面板出口，--wait 等隧道回连、写明哪些出口回来了（重启前通、重启后不通的有就退出码 1）。不加 --yes 只预览
+fleetctl router rename-exits <路由> --follow-fleet [--exit <出口>]… [--force] [--yes] [--follow]   # 出口名跟上面板编号（编号压缩后 节点07 → 节点04；组成员、规则一起改；备份、重启 OpenClash、核对，失败整份换回）。不加 --yes 只预览
+fleetctl router rules <路由> --assign <CIDR 或 IP 段>=<出口> [--assign …] [--yes] [--follow]   # 来源 IP 分流：同网段的改目标，没有的加在最后一条 SRC-IP-CIDR 后面（备份、重启 OpenClash、目标出口测通且规则生效，失败整份换回）。不加 --yes 只预览；不给 --assign 只列出
 fleetctl router protocol <路由> --to anytls|reality [--exit <出口>]… [--yes] [--follow]   # 切出口协议：指向面板入口的出口整块改写成 AnyTLS（或 Reality），同一个入口、同名，分组规则不变；不加 --yes 只预览（要切的、经哪台线路机、跳过的及原因）
 fleetctl repoint <旧入口> --to <新入口> [--router <路由>]… [--exit <出口>]… --yes [--follow]   # 改出口指向：软路由上指向旧入口的出口（--exit 只改点名的）改成新入口（同替换的改路由：备份、重启 OpenClash、测延迟，失败全部换回），两个入口都不动、不改编号。不加 --yes 只预览
 fleetctl provision ...                                     # 先 check，再确认，再提交
@@ -281,6 +288,9 @@ fleetctl plan rm <套餐> --yes                               # 还有机器（�
 - 替换节点（用户说「把 团队2-01 换成新机器」「替换下来的放备用」）：**一律用 `fleetctl replace`，不要手改软路由的 OpenClash 配置、不要 `fleetctl ssh router` 去改、不要直接写数据库，也不要用 rename + retire 拼**。新节点先上架（同团队拿到临时编号、入口生效）；`fleetctl replace 团队2-01 --with 团队2-20` 先看预览（新节点 → 旧编号、旧节点 → 备用团队的哪个号、要改哪些软路由的哪些出口、编号压缩、阻断原因），告诉用户，同意后加 `--yes --follow`。作业先改软路由（同团队几台路由都改；备份 → 只改那个出口的 server/port/uuid/servername/public-key/short-id → 重启 OpenClash → 测延迟，任何一台失败全部换回原配置），再交换编号（同 rename，旧节点进备用团队，同退役的默认去向，到期满 1 天由中控自动回收）。阻断里有「软路由「X」现在离线」：等路由在线（`fleetctl routers`）或用户同意只换编号（`--no-routers`，路由上的出口就还指向旧节点）。旧节点默认去备用团队，用户要放别处再加 `--to`。作业失败：把 `fleetctl job <id>` 的错误告诉用户（改路由失败时路由都已换回、编号没动；写「需要人工处理」的是回滚也失败了，备份路径在错误里），处理后 `fleetctl retry <id>`；开始改路由之后不能取消。
 - 节点被打、临时让客户走备用出口、过几小时切回（用户说「节点11 被打了，客户先切到备用」）：先看 `fleetctl --json router show <路由>` 的 `detail.groups`（哪个 select 组现在选着它、组里还有哪些出口），用 `fleetctl router switch <路由> <组> <备用出口> --for 4h`：只改 mihomo 当前的选择，不重启 OpenClash、不断已有连接，到时自动切回（不确定多久就不带 `--for`，恢复后 `--back`）。只能选组里已有的出口；url-test / fallback 组中控会拒绝（由 mihomo 自己选），这时才用下面的 repoint（会重启 OpenClash）。OpenClash 重启后 mihomo 一般会保留当前选择（实测：选择记在缓存里），到时照样由中控切回；只有组的选择被改成别的（有人手动改、换了配置）时记录才结束（审计「临时切换被路由改回」）。`fleetctl --json incidents` 里 `egress_fail` / `router_exits_down` 的 `suggested` 已经算好了切到哪个出口，照着执行前告诉用户。
 - 删出口（用户说「客户不要 EXIT_5–10 了」「这几个出口不需要了」，或客户退掉一批节点、只留一部分设备）：`fleetctl router remove-exits <路由> --exit EXIT_5,EXIT_6,…` 先看预览（出口上还有几个客户端、策略组里去掉谁、删完自动回收的备用机器），告诉用户：这些出口的分流规则一起删，那些来源 IP 的设备之后走兜底规则（多半上不了网），会重启 OpenClash；同意后 `--yes --follow`。客户退掉节点的完整顺序：要保留的设备先 `repoint` 到留下的节点 → 不要的出口 `router remove-exits` → 不要的节点 `retire`（同一团队的好几台写成一条 `fleetctl retire A,B,C`，不要一台台退——每退一台后面的名字就前移，原名会丢；顺序反过来也行：退役后出口还指着的备用机器不自动回收，删完出口就会回收）。对不上面板入口的出口要 `--force`（先确认是不是客户自己加的）。作业失败写「还引用出口」「兜底规则」「策略组…删完就空了」的，是路由配置里别处还用着它：转告用户，不要手改路由配置。
+- 重启软路由的 OpenClash（用户说「重启一下 OpenClash」「路由卡了，重启试试」）：`fleetctl router restart <路由>` 先看预览，告诉用户会断开经这台路由的全部连接（预览里有此刻的连接数和在线客户端），同意后 `--yes --wait`：中控在路由上后台重启（隧道断了也照样跑完，不要在路由上手敲 `/etc/init.d/openclash restart`，busybox ash 没有 nohup，连接一断就停在半路），等隧道回连、测完面板出口，转告用户哪些出口回来了；作业失败写「重启前是通的」的出口是重启后没回来的，先 `router show`、`incidents` 看是不是节点本身的问题，不要再连着重启。
+- 编号压缩后出口名和面板名对不上（用户说「退役了几台，路由上的节点名错位了」「把路由上的出口名改成和面板一样」；退役 / 改团队 / 替换的预览提醒「出口名不跟着改」时末尾给的就是这条）：`fleetctl router rename-exits <路由> --follow-fleet` 先看预览（哪些改成什么、要改的行、不改的及原因），告诉用户会重启 OpenClash，同意后 `--yes --follow`。从没对上过入口、指向别的团队 / 直出 / 备用团队节点的不点名不改，点名还要 `--force`，先问用户；预览报「还提到」「流式写法」「策略组也叫」的是配置里有中控认不出的写法：转告用户，不要手改路由配置；报「正在临时切换」的先 `router switch … --back`。
+- 按来源 IP 把一段设备分到某个出口（用户说「10.31.5.0/24 走节点04」「B101–B200 走节点05」）：先 `fleetctl router rules <路由>` 看现有的来源 IP 分流，再 `fleetctl router rules <路由> --assign 10.31.5.0/24=节点04`（IP 段写 `10.31.6.101-10.31.6.200=节点05`，可以给几个 `--assign`）看预览，告诉用户会重启 OpenClash，同意后 `--yes --follow`。用户给的是设备编号（B101–B200）：面板里没有设备编号到 IP 的对应，问用户这些设备的 IP 段，不要自己推算；预览报「重叠」「还没有 SRC-IP-CIDR 规则」「不连在一起」的转告用户，由用户决定，不要手改。
 - 改出口指向（用户说「把软路由的直连 / 默认出口换成线路机3」）：`fleetctl repoint 线路机1-直出 --to 线路机3-直出 [--router 团队2-老办公室]`。同一个入口被几个出口指着、只挪其中一个（如「节点20」和「节点07」都指着团队2-07 的入口，只把节点20 改到团队2-20）：加 `--exit 节点20`（可重复），没点到的出口不动；点名的出口不指向旧入口会报错。入口写入口 id、`线路机名:端口` 或节点显示名（直出入口是「线路机名-直出」）；目标线路机还没有直出入口就先 `fleetctl entry add-direct <线路机> --yes --follow`。旧入口照常在用（别的客户端、个人订阅还能用它），不要的话另行停用。不要手改路由的 OpenClash 配置、不要用 router-swap 一类脚本。
 - 改名：`fleetctl rename <机器> --team 团队2 --number 3`。换团队（或预览里有别的机器连带改名）时不加 `--yes` 只打印预览：谁 → 谁、原团队连带改号的节点（原团队剩下的会自动压缩成连续编号，后面的全部改号）、一起走的同机 IP 节点、还指着的软路由出口、`注意：` 提醒。**把预览原样告诉用户，同意后再加 `--yes`**；有「面板名和出口名就对不上了」的提醒要特别说明：客户软路由的出口名（「节点08」）不跟着改，执行后面板名和出口名会错位，只能一台台挪回去。用户其实是想换掉这台机器的，用 `replace`（新节点接它的编号，团队里谁都不改名），不要用 rename 把它挪走。只改 `--label` / `--note` / `--country`、团队内改到空号的直接执行。
 - 国家（名字旁的国旗）：默认按 IP 查离线库自动定；查错了或想固定就 `fleetctl rename <机器> --country JP`（ISO 3166-1 两位代码，英国是 GB），`--country auto` 改回自动；上架时也可以 `fleetctl provision … --country US`。

@@ -4,8 +4,11 @@
 //! 测试并发安全：每个测试在库里建一个自己的 schema（`t_<建立时的 Unix 秒>_<随机>`），连接池的每条连接都把
 //! search_path 设成它，迁移（含 _sqlx_migrations）、分区和数据都落在里面，测试之间互不可见，按 cargo test 默认的并发跑即可。
 //! 测试结束（含断言失败）时删掉自己的 schema；进程被杀等原因留下的，下一次运行时删掉建立超过 30 分钟的。
-//! 每个测试的连接池最多 5 条连接；cargo test 默认按 CPU 核数并发（6 核的 fleet-dev 最多约 30 条），在 PostgreSQL 默认的
-//! 100 条上限之内。核数很多、库又和别的服务共用时，用 `-- --test-threads=N` 压一下并发。
+//! 同时开着的测试库有上限（[`slot`]）：每个测试的 AppState 有三个连接池（主池最多 5 条、视图池 2 条、访问监控池 4 条）加会话撤销的监听，
+//! 最多约 12 条连接；建 schema 跑迁移、删 schema 各在一个事务里锁住 schema 里的全部对象（几百个，含分区），
+//! 都占 PostgreSQL 共享的锁表（max_locks_per_transaction × max_connections）。不限的话 cargo test 按核数并发（32 核就是 32 个），
+//! 默认配置的 PostgreSQL 会报 too many clients 与 out of shared memory。上限按库的 max_connections 算（默认 100 时是 7），
+//! 环境变量 FLEET_TEST_DB_SLOTS 可以改；cargo test 的并发照默认，多出来的测试在拿到名额之前等着（不连库）。
 //! 离线 IP 库指向测试自己的临时目录（默认是空的，走降级），不读机器上装好的真实库。
 //!
 //! 集成测试都在 tests/it 这一个测试目标里（只链接一次）。只跑某个套件：`cargo test -p fleet-server --test it telemetry::`；
@@ -27,8 +30,11 @@ use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{Connection, PgConnection, PgPool};
+use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::{OnceCell, OwnedSemaphorePermit, Semaphore};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -104,10 +110,52 @@ impl T {
     }
 }
 
-/// 本测试的 schema，drop 时删掉。测试的运行时里不能等异步操作：另起一个线程和运行时，用一条新连接去删
+/// 本测试的 schema，drop 时删掉。测试的运行时里不能等异步操作：另起一个线程和运行时，用一条新连接去删。
+/// 名额（`_slot`）在删完之后才还（字段在 drop 之后才释放）：删 schema 也要锁住它的全部对象
 pub struct Schema {
     url: String,
     name: String,
+    _slot: Slot,
+}
+
+/// 同时开着的测试库的名额，见模块注释。按库的 max_connections 算：留 10 条给别的（超级用户保留、各测试删 schema 的连接、手动连进来看的），
+/// 每个测试按 12 条算
+static SLOTS: OnceCell<Arc<Semaphore>> = OnceCell::const_new();
+
+thread_local! {
+    /// 本线程手里的名额数：同一个测试里再建一个环境（测试中途起第二个 `setup`）不再排队，否则名额满时这个测试等自己
+    static HELD: Cell<usize> = const { Cell::new(0) };
+}
+
+/// 一个测试库的名额；同一线程（测试体）里第二个起不占名额
+pub struct Slot(Option<OwnedSemaphorePermit>);
+
+impl Drop for Slot {
+    fn drop(&mut self) { HELD.with(|h| h.set(h.get().saturating_sub(1))); }
+}
+
+async fn slot(url: &str) -> Slot {
+    if HELD.with(|h| h.get()) > 0 {
+        HELD.with(|h| h.set(h.get() + 1));
+        return Slot(None);
+    }
+    let sem = SLOTS
+        .get_or_init(|| async {
+            let n = match std::env::var("FLEET_TEST_DB_SLOTS").ok().and_then(|v| v.parse::<usize>().ok()) {
+                Some(n) => n,
+                None => {
+                    let mut c = PgConnection::connect(url).await.unwrap();
+                    let max: String = sqlx::query_scalar("show max_connections").fetch_one(&mut c).await.unwrap();
+                    let _ = c.close().await;
+                    max.parse::<usize>().unwrap_or(100).saturating_sub(10) / 12
+                }
+            };
+            Arc::new(Semaphore::new(n.max(1)))
+        })
+        .await;
+    let p = sem.clone().acquire_owned().await.unwrap();
+    HELD.with(|h| h.set(h.get() + 1));
+    Slot(Some(p))
 }
 
 impl Drop for Schema {
@@ -159,6 +207,7 @@ pub async fn db_until(version: i64) -> (PgPool, Schema) {
 
 /// 建本测试的 schema，跑迁移（`upto` 见 [`migrator`]；跑全了才建分区），返回 search_path 指向它的连接池
 async fn test_db(url: &str, upto: Option<i64>) -> (PgPool, Schema) {
+    let slot = slot(url).await;
     let mut c = PgConnection::connect(url).await.unwrap();
     if !SWEPT.swap(true, Ordering::Relaxed) {
         let old: Vec<String> = sqlx::query_scalar(
@@ -177,7 +226,7 @@ async fn test_db(url: &str, upto: Option<i64>) -> (PgPool, Schema) {
     let name = format!("t_{secs}_{}", &Uuid::new_v4().simple().to_string()[..8]);
     sqlx::query(&format!("create schema {name}")).execute(&mut c).await.unwrap();
     let _ = c.close().await;
-    let schema = Schema { url: url.to_string(), name: name.clone() };
+    let schema = Schema { url: url.to_string(), name: name.clone(), _slot: slot };
 
     let opts: PgConnectOptions = url.parse().unwrap();
     // 等空闲连接的超时与 db::connect 相同（5 秒）

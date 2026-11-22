@@ -1,5 +1,6 @@
 //! 软路由：routers（列表）、router show / exits（出口历史统计）/ add / bootstrap / deploy / edit / rm，
-//! 以及 router sync（出口参数同步到入口当前参数）/ protocol（出口切 AnyTLS / Reality）/ switch（select 组临时切换出口，可到时自动切回）。
+//! 以及 router sync（出口参数同步到入口当前参数）/ protocol（出口切 AnyTLS / Reality）/ switch（select 组临时切换出口，可到时自动切回）/
+//! restart（只重启 OpenClash）/ config（看配置、备份、和备份比较，只读）/ rename-exits（出口名跟上面板编号）/ rules（来源 IP 分流规则）。
 //! 接入有两种：`router add` 不给 --host 打印接入命令（在路由上用 root 执行，路由在 NAT 后面、中控连不到它时用）；
 //! 给 --host 就一键部署（中控能直接连到路由的 SSH 时用：中控登录上去装好隧道；密码只从标准输入读）。
 
@@ -926,11 +927,360 @@ pub fn switch(ctx: &Ctx, q: &str, group: &str, to: Option<&str>, dur: Option<&st
         } else if let Some(t) = d["back_at"].as_str() {
             s.push_str(&format!("，{} 自动切回 {}", table::ts(t), st(&d, "/original")));
         } else {
-            s.push_str(&format!("。不会自动切回：要切回时 fleetctl router switch {} {} --back", crate::ops::shell_quote(&name), crate::ops::shell_quote(&group)));
+            s.push_str(&format!("。不会自动切回：要切回时 fleetctl router switch {} {} --back", crate::ops::shell_quote(&name), crate::ops::shell_quote(group)));
         }
         s.push_str("。已有的连接不受影响，新连接走新出口；OpenClash 重启后一般保留当前选择，到时仍由中控切回");
         s
     });
+    Ok(0)
+}
+
+
+// ── 只重启 OpenClash / 看配置 / 出口改名 / 来源 IP 分流规则 ──────────────────────
+
+/// 要登录路由读配置的接口（中控经隧道读几百 KB，比较时读两份）：等久一点
+const LIVE_TIMEOUT: Duration = Duration::from_secs(90);
+
+fn get_live(ctx: &Ctx, path: &str, query: &[(&str, String)]) -> anyhow::Result<Value> { ctx.c.call(reqwest::Method::GET, path, query, None, LIVE_TIMEOUT) }
+
+/// 预览之后：有 blocker 退出（`what` 是「现在不能 … 」的动作），没加 --yes 提示怎么执行
+fn preview_gate(ctx: &Ctx, pv: &Value, what: &str, yes: bool) -> anyhow::Result<bool> {
+    if pv["ok"] != true {
+        bail!("现在不能{what}：{}", crate::lifecycle::blockers(pv));
+    }
+    if !yes {
+        if !ctx.json {
+            outln("以上是预览，没有改动。确认无误后加 --yes 执行（--follow 跟进度）");
+        }
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+fn warnings_out(pv: &Value) {
+    for w in pv["warnings"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+        outln(format!("注意：{w}"));
+    }
+}
+
+/// 要改的行（中控按路由此刻的配置算的；名字、规则行，没有凭据）
+fn lines_out(pv: &Value) {
+    let ls = pv["lines"].as_array().cloned().unwrap_or_default();
+    if ls.is_empty() {
+        return;
+    }
+    outln("要改的行（按路由此刻的配置算的；执行时配置又变了就不改）：");
+    for l in &ls {
+        let now = st(l, "/now").replace('\n', "\n        + ");
+        outln(format!("  第 {} 行  - {}\n        + {now}", st(l, "/line"), st(l, "/was")));
+    }
+}
+
+/// `router restart` 预览的文字：要测的出口（现在通不通）
+fn restart_human(pv: &Value) -> String {
+    let rows: Vec<Vec<String>> = pv["exits"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|e| {
+            let now = if e["alive"] == false { "不通".to_string() } else { e["delay_ms"].as_i64().map_or("通".to_string(), |d| format!("通 {d}ms")) };
+            vec![st(e, "/exit"), e["entry"].as_str().unwrap_or("-").to_string(), now]
+        })
+        .collect();
+    let mut out = vec![format!("「{}」只重启 OpenClash（配置一行不动），重启后等 API 起来、逐个测面板出口的延迟：", st(pv, "/router/name"))];
+    if rows.is_empty() {
+        out.push("（没有对应面板入口的出口，重启后只等 API 起来）".into());
+    } else {
+        out.push(table::render(&["出口", "对应入口", "现在"], &rows));
+    }
+    out.join("\n")
+}
+
+/// 重启作业结束后：哪些出口回来了（作业输出），没回来的作业失败时已经写在错误里
+fn restart_result(ctx: &Ctx, job: &str) -> anyhow::Result<()> {
+    let j = ctx.c.get(&format!("/jobs/{job}"))?;
+    let o = &j["steps"][0]["output"];
+    let back: Vec<String> = o["back"].as_array().into_iter().flatten().map(|x| format!("{} {}ms", st(x, "/exit"), st(x, "/delay_ms"))).collect();
+    let down: Vec<&str> = o["down"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+    if j["state"] == "succeeded" {
+        outln(format!("隧道已回连，重启后测通的出口：{}", if back.is_empty() { "（没有面板出口）".to_string() } else { back.join("，") }));
+        if !down.is_empty() {
+            outln(format!("重启前就不通、现在还不通：{}", down.join("、")));
+        }
+    }
+    Ok(())
+}
+
+/// `router restart <路由> [--yes] [--follow|--wait]`：只重启 OpenClash（作业 router_restart）。断开经它的全部连接：先 GET 预览，不加 --yes 只打印预览；
+/// --wait 等到隧道回连、面板出口测完，写明哪些回来了（有出口重启前通、重启后不通时退出码 1）
+pub fn restart(ctx: &Ctx, q: &str, yes: bool, follow: bool) -> anyhow::Result<u8> {
+    let r = find(&ctx.list("/routers")?, q)?;
+    let id = st(&r, "/id");
+    let pv = ctx.c.get(&format!("/routers/{id}/restart"))?;
+    if !ctx.json || !yes {
+        if ctx.json {
+            ctx.emit(&pv, String::new);
+        } else {
+            outln(restart_human(&pv));
+            warnings_out(&pv);
+        }
+    }
+    if !preview_gate(ctx, &pv, "重启", yes)? {
+        return Ok(0);
+    }
+    let d = ctx.c.post(&format!("/routers/{id}/restart"), &json!({}))?;
+    let job = st(&d, "/job_id");
+    ctx.emit(&d, || format!("已提交重启作业 {job}（{}）\n看进度：fleetctl job {job} --follow", st(&r, "/name")));
+    if follow {
+        let code = crate::cmds::follow_job(ctx, &job)?;
+        if !ctx.json {
+            restart_result(ctx, &job)?;
+        }
+        return Ok(code);
+    }
+    Ok(0)
+}
+
+fn config_human(v: &Value) -> String {
+    let mut out = vec![format!("{} 的 OpenClash 源配置（{}，{} 字节）", st(v, "/router/name"), v["config_path"].as_str().unwrap_or("?"), st(v, "/bytes"))];
+    let px: Vec<Vec<String>> = v["proxies"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|p| {
+            let addr = match (p["server"].as_str(), p["port"].as_u64()) {
+                (Some(s), Some(n)) => format!("{s}:{n}"),
+                _ => "-".into(),
+            };
+            let sync = p["sync"].as_str().map(sync_cn).unwrap_or("-").to_string();
+            let sync = if p["linked"] == false && p["sync"] == "drift" { format!("{sync}（没建立对应）") } else { sync };
+            vec![st(p, "/name"), st(p, "/type"), addr, p["entry"]["name"].as_str().unwrap_or("-").into(), sync]
+        })
+        .collect();
+    out.push(format!("\n出口（{} 个）\n{}", px.len(), table::render(&["出口", "类型", "地址", "对应入口", "参数"], &px)));
+    let gs: Vec<Vec<String>> = v["groups"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|g| {
+            let mut members: Vec<String> = g["proxies"].as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from).collect();
+            members.extend(g["use"].as_array().into_iter().flatten().filter_map(Value::as_str).map(|u| format!("[订阅 {u}]")));
+            vec![st(g, "/name"), st(g, "/type"), g["now"].as_str().unwrap_or("-").into(), members.join(" ")]
+        })
+        .collect();
+    if !gs.is_empty() {
+        out.push(format!("\n策略组\n{}", table::render(&["组", "类型", "现在选的", "成员"], &gs)));
+    }
+    let kind = |k: &str| match k {
+        "exit" => "出口",
+        "group" => "策略组",
+        "builtin" => "内置",
+        _ => "（配置里没有）",
+    };
+    let rs: Vec<Vec<String>> = v["rule_targets"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|t| {
+            let types: Vec<String> = t["types"].as_object().into_iter().flatten().map(|(k, n)| format!("{k}×{n}")).collect();
+            let src: Vec<&str> = t["src_cidrs"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+            vec![st(t, "/target"), kind(&st(t, "/kind")).into(), st(t, "/rules"), types.join(" "), src.join(" ")]
+        })
+        .collect();
+    out.push(format!(
+        "\n规则 → 出口（共 {} 条，兜底 MATCH → {}）\n{}",
+        st(v, "/rules_total"),
+        v["match"].as_str().unwrap_or("没有"),
+        table::render(&["目标", "是什么", "规则数", "类型", "来源 IP（SRC-IP-CIDR）"], &rs)
+    ));
+    for k in ["proxy_providers", "rule_providers"] {
+        let xs: Vec<&str> = v[k].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+        if !xs.is_empty() {
+            out.push(format!("{}：{}", if k == "proxy_providers" { "出口订阅" } else { "规则集" }, xs.join("、")));
+        }
+    }
+    out.push("凭据不出路由；备份：--backups；和某份备份比较：--diff <备份>".into());
+    out.join("\n")
+}
+
+/// `router config <路由> [--backups] [--diff <备份>]`：只读。中控登录路由读源配置（记审计），给出出口 / 策略组 / 规则 → 出口；
+/// --backups 列路由上的备份；--diff 现在的配置和这份备份逐行比较（在中控算，凭据隐去：同值同标记，值变了标记不同）
+pub fn config(ctx: &Ctx, q: &str, diff: Option<&str>, backups: bool) -> anyhow::Result<u8> {
+    let r = find(&ctx.list("/routers")?, q)?;
+    let id = st(&r, "/id");
+    if backups {
+        let d = get_live(ctx, &format!("/routers/{id}/config/backups"), &[])?;
+        ctx.emit(&d, || {
+            let rows: Vec<Vec<String>> = d["backups"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|b| vec![st(b, "/name"), bytes(b["size"].as_f64().unwrap_or(0.0)), stamp_ts(&st(b, "/stamp")), if b["current"] == true { "是".into() } else { "不是（别的配置文件的）".into() }])
+                .collect();
+            if rows.is_empty() {
+                return format!("{} 上还没有备份（中控作业改配置前才备份，在 /etc/fleet-backup/openclash/）", st(&r, "/name"));
+            }
+            format!(
+                "{} 上的备份（中控作业改配置前留的，新的在前；现在的源配置：{}）\n{}\n和现在比较：fleetctl router config {} --diff <备份名或时间戳>",
+                st(&r, "/name"),
+                d["config_path"].as_str().unwrap_or("?"),
+                table::render(&["备份", "大小", "时间", "是现在这份配置的"], &rows),
+                crate::ops::shell_quote(&st(&r, "/name"))
+            )
+        });
+        return Ok(0);
+    }
+    if let Some(b) = diff {
+        let d = get_live(ctx, &format!("/routers/{id}/config/diff"), &[("backup", b.to_string())])?;
+        ctx.emit(&d, || {
+            if d["identical"] == true {
+                return format!("{} 现在的配置和备份 {b} 一样（凭据隐去后逐行比较）", st(&r, "/name"));
+            }
+            format!(
+                "{} 备份 {b} → 现在：多了 {} 行、少了 {} 行（凭据隐去，<已隐去·…> 同值同标记）\n{}",
+                st(&r, "/name"),
+                st(&d, "/added"),
+                st(&d, "/removed"),
+                st(&d, "/text").trim_end()
+            )
+        });
+        return Ok(0);
+    }
+    let d = get_live(ctx, &format!("/routers/{id}/config"), &[])?;
+    ctx.emit(&d, || config_human(&d));
+    Ok(0)
+}
+
+/// 备份名里的时间戳（20261023-073012Z，UTC）→ 显示用的时间
+fn stamp_ts(s: &str) -> String {
+    let b = s.as_bytes();
+    if b.len() != 16 {
+        return s.to_string();
+    }
+    table::ts(&format!("{}-{}-{}T{}:{}:{}Z", &s[..4], &s[4..6], &s[6..8], &s[9..11], &s[11..13], &s[13..15]))
+}
+
+fn rename_human(pv: &Value, force: bool) -> String {
+    let mut out = vec![];
+    let rows: Vec<Vec<String>> = pv["renames"].as_array().into_iter().flatten().map(|x| vec![st(x, "/exit"), st(x, "/to"), st(x, "/node"), st(x, "/entry")]).collect();
+    if !rows.is_empty() {
+        out.push(format!(
+            "「{}」要改名的出口（跟上面板现在的编号；策略组成员、分流规则里的引用一起改；备份后改，改完重启 OpenClash 并核对，失败整份换回）：\n{}",
+            st(pv, "/router/name"),
+            table::render(&["出口", "改成", "指向的节点", "对应入口"], &rows)
+        ));
+    }
+    for s in pv["skipped"].as_array().into_iter().flatten() {
+        out.push(format!("不改 {}（{}）：{}", st(s, "/exit"), st(s, "/entry"), st(s, "/why")));
+    }
+    for u in pv["untrusted"].as_array().into_iter().flatten() {
+        out.push(format!("未自动改名（从没对上过这个入口，可能是路由上有人加的；确认是自己的就 --exit 点名并加 --force）：{}（{}，该叫 {}）", st(u, "/exit"), st(u, "/entry"), st(u, "/to")));
+    }
+    for u in pv["need_force"].as_array().into_iter().flatten() {
+        out.push(format!("{}（{}）{}：{}", st(u, "/exit"), st(u, "/entry"), st(u, "/why"), if force { "已加 --force，照改" } else { "要改加 --force" }));
+    }
+    out.join("\n")
+}
+
+/// `router rename-exits <路由> --follow-fleet [--exit <出口>]… [--force]`：编号压缩后出口名跟上面板（作业 router_rename）。先 GET 预览；不加 --yes 只打印预览
+pub fn rename_exits(ctx: &Ctx, q: &str, exits: &[String], force: bool, yes: bool, follow: bool) -> anyhow::Result<u8> {
+    let r = find(&ctx.list("/routers")?, q)?;
+    let id = st(&r, "/id");
+    let mut query = vec![("exits", exits.join(","))];
+    if force {
+        query.push(("force", "true".into()));
+    }
+    let pv = get_live(ctx, &format!("/routers/{id}/rename-exits"), &query)?;
+    if !ctx.json || !yes {
+        if ctx.json {
+            ctx.emit(&pv, String::new);
+        } else {
+            let s = rename_human(&pv, force);
+            if !s.is_empty() {
+                outln(s);
+            }
+            lines_out(&pv);
+            warnings_out(&pv);
+        }
+    }
+    if !preview_gate(ctx, &pv, "改名", yes)? {
+        return Ok(0);
+    }
+    let d = ctx.c.call(reqwest::Method::POST, &format!("/routers/{id}/rename-exits"), &[], Some(&json!({"exits": exits, "force": force})), LIVE_TIMEOUT)?;
+    ctx.emit(&d, || format!("已提交出口改名作业 {}（{}）\n看进度：fleetctl job {} --follow", st(&d, "/job_id"), st(&r, "/name"), st(&d, "/job_id")));
+    if follow {
+        return crate::cmds::follow_job(ctx, &st(&d, "/job_id"));
+    }
+    Ok(0)
+}
+
+/// `--assign <来源>=<出口>` 的来源：CIDR、单个 IP、IP 段（10.31.5.101-10.31.5.200）
+pub(crate) fn parse_assign(s: &str) -> anyhow::Result<Value> {
+    let (spec, to) = s.split_once('=').ok_or_else(|| anyhow!("--assign 写成 <CIDR、IP 或 IP 段>=<出口>，如 10.31.5.0/24=节点04（给的是「{s}」）"))?;
+    let (spec, to) = (spec.trim(), to.trim());
+    if spec.is_empty() || to.is_empty() || spec.contains(',') || to.contains(',') {
+        bail!("--assign 写成 <CIDR、IP 或 IP 段>=<出口>，一条一个 --assign（给的是「{s}」）");
+    }
+    Ok(json!({"spec": spec, "to": to}))
+}
+
+fn src_rules_table(v: &Value) -> String {
+    let rows: Vec<Vec<String>> = v["src_rules"].as_array().into_iter().flatten().map(|x| vec![st(x, "/index"), st(x, "/cidr"), st(x, "/to")]).collect();
+    if rows.is_empty() {
+        return "没有 SRC-IP-CIDR 规则".into();
+    }
+    table::render(&["第几条", "来源", "出口"], &rows)
+}
+
+/// `router rules <路由>`：列出来源 IP → 出口（SRC-IP-CIDR 规则）；`--assign <来源>=<出口>`（可重复）改：同网段的改目标，没有的加在最后一条 SRC-IP-CIDR 后面
+/// （作业 router_rules：备份、改、重启 OpenClash、目标出口测通且规则生效，不行整份换回）。先 GET 预览；不加 --yes 只打印预览
+pub fn rules(ctx: &Ctx, q: &str, assigns: &[String], yes: bool, follow: bool) -> anyhow::Result<u8> {
+    let r = find(&ctx.list("/routers")?, q)?;
+    let id = st(&r, "/id");
+    let list: Vec<Value> = assigns.iter().map(|a| parse_assign(a)).collect::<anyhow::Result<_>>()?;
+    if list.is_empty() {
+        let d = get_live(ctx, &format!("/routers/{id}/rules"), &[])?;
+        ctx.emit(&d, || {
+            format!(
+                "{} 的来源 IP 分流（共 {} 条规则，兜底 MATCH → {}）\n{}\n改：fleetctl router rules {} --assign <CIDR 或 IP 段>=<出口>",
+                st(&r, "/name"),
+                st(&d, "/rules_total"),
+                d["match"].as_str().unwrap_or("没有"),
+                src_rules_table(&d),
+                crate::ops::shell_quote(&st(&r, "/name"))
+            )
+        });
+        return Ok(0);
+    }
+    let q_assign: Vec<String> = list.iter().map(|a| format!("{}={}", st(a, "/spec"), st(a, "/to"))).collect();
+    let pv = get_live(ctx, &format!("/routers/{id}/rules"), &[("assign", q_assign.join(","))])?;
+    if !ctx.json || !yes {
+        if ctx.json {
+            ctx.emit(&pv, String::new);
+        } else {
+            let op = |x: &Value| match x["op"].as_str() {
+                Some("add") => "新加（在最后一条 SRC-IP-CIDR 后面）".to_string(),
+                Some("retarget") => format!("改目标（原来 → {}）", st(x, "/from")),
+                Some("same") => "已经是，不动".to_string(),
+                _ => "-".into(),
+            };
+            let rows: Vec<Vec<String>> = pv["rows"].as_array().into_iter().flatten().map(|x| vec![st(x, "/spec"), st(x, "/cidr"), st(x, "/to"), op(x)]).collect();
+            outln(format!("「{}」现在的来源 IP 分流：\n{}", st(&r, "/name"), src_rules_table(&pv)));
+            if !rows.is_empty() {
+                outln(format!("要改的（备份后改，改完重启 OpenClash，目标出口测通、规则生效才算，不行整份换回）：\n{}", table::render(&["给的", "网段", "出口", "做什么"], &rows)));
+            }
+            lines_out(&pv);
+            warnings_out(&pv);
+        }
+    }
+    if !preview_gate(ctx, &pv, "改规则", yes)? {
+        return Ok(0);
+    }
+    let d = ctx.c.call(reqwest::Method::POST, &format!("/routers/{id}/rules"), &[], Some(&json!({"assign": list})), LIVE_TIMEOUT)?;
+    ctx.emit(&d, || format!("已提交改分流规则作业 {}（{}）\n看进度：fleetctl job {} --follow", st(&d, "/job_id"), st(&r, "/name"), st(&d, "/job_id")));
+    if follow {
+        return crate::cmds::follow_job(ctx, &st(&d, "/job_id"));
+    }
     Ok(0)
 }
 
@@ -1114,5 +1464,44 @@ mod tests {
         let h = exits_report("7d", &json!({"step_s": 3600, "exits": [{"name": "节点01", "points": [{"alive": true, "tests": 12, "tests_ok": 12, "delay_ms": 80.0}]}]}), &[]).unwrap();
         assert_eq!((h["exits"][0]["fail_streaks"].is_null(), h["total"]["fail_streaks"].is_null(), h["total"]["success_pct"].as_f64()), (true, true, Some(100.0)));
         assert!(exits_human(&h, false).contains("看不出先后"));
+    }
+
+    /// --assign：来源=出口，一条一个；格式不对说清楚怎么写
+    #[test]
+    fn assign_args() {
+        assert_eq!(parse_assign(" 10.31.5.0/24 = 节点04 ").unwrap(), json!({"spec": "10.31.5.0/24", "to": "节点04"}));
+        assert_eq!(parse_assign("10.31.5.101-10.31.5.200=节点05").unwrap()["spec"], "10.31.5.101-10.31.5.200");
+        for bad in ["10.31.5.0/24", "=节点04", "10.0.0.1=", "10.0.0.1,10.0.0.2=节点04"] {
+            assert!(parse_assign(bad).unwrap_err().to_string().contains("--assign"), "{bad}");
+        }
+    }
+
+    /// 重启预览：只列面板出口、写现在通不通；改名预览：要改的、不改的、没建立对应的、要 --force 的各一行
+    #[test]
+    fn restart_and_rename_preview_text() {
+        let pv = json!({"router": {"name": "团队2-路由A"}, "exits": [{"exit": "节点01", "entry": "团队2-01 · 线路机2:20003", "alive": true, "delay_ms": 80}, {"exit": "节点02", "entry": null, "alive": false}]});
+        let s = restart_human(&pv);
+        assert!(s.starts_with("「团队2-路由A」只重启 OpenClash（配置一行不动）") && s.contains("通 80ms") && s.contains("不通"), "{s}");
+        let pv = json!({"router": {"name": "R"}, "renames": [{"exit": "节点07", "to": "节点04", "node": "团队2-04", "entry": "e"}],
+            "skipped": [{"exit": "节点11", "entry": "e2", "why": "指向的 团队2备用-01 在备用团队"}], "untrusted": [{"exit": "节点09", "entry": "e3", "to": "节点06"}],
+            "need_force": [{"exit": "节点12", "entry": "e4", "to": "节点09", "why": "别的团队的入口"}]});
+        let s = rename_human(&pv, false);
+        assert!(s.contains("节点07") && s.contains("节点04") && s.contains("不改 节点11（e2）：指向的 团队2备用-01 在备用团队"), "{s}");
+        assert!(s.contains("未自动改名") && s.contains("节点09（e3，该叫 节点06）") && s.contains("节点12（e4）别的团队的入口：要改加 --force"), "{s}");
+        assert_eq!(stamp_ts("bad"), "bad");
+    }
+
+    /// 配置结构：出口、策略组、规则按目标汇总（来源 IP 全列），兜底规则；凭据本来就不在数据里
+    #[test]
+    fn config_text() {
+        let v = json!({"router": {"name": "R"}, "config_path": "/etc/openclash/config/c.yaml", "bytes": 1234,
+            "proxies": [{"name": "节点01", "type": "vless", "server": "relay.test", "port": 20003, "entry": {"name": "团队2-01 · 线路机2:20003"}, "sync": "ok", "linked": true}],
+            "groups": [{"name": "选", "type": "select", "proxies": ["节点01", "DIRECT"], "use": ["机场"], "now": "节点01"}],
+            "rules_total": 3, "match": "选",
+            "rule_targets": [{"target": "节点01", "kind": "exit", "rules": 2, "types": {"SRC-IP-CIDR": 2}, "src_cidrs": ["10.31.1.1/32", "10.31.1.2/32"]}, {"target": "选", "kind": "group", "rules": 1, "types": {"MATCH": 1}, "src_cidrs": []}],
+            "proxy_providers": ["机场"], "rule_providers": []});
+        let s = config_human(&v);
+        assert!(s.contains("relay.test:20003") && s.contains("团队2-01 · 线路机2:20003") && s.contains("一致"), "{s}");
+        assert!(s.contains("节点01 DIRECT [订阅 机场]") && s.contains("共 3 条，兜底 MATCH → 选") && s.contains("10.31.1.1/32 10.31.1.2/32") && s.contains("出口订阅：机场"), "{s}");
     }
 }

@@ -108,6 +108,8 @@ pub struct Inner {
     /// 进程要退出了（main 收到退出信号、作业 drain 之后、停止接新连接之前置 true）：线路机的期望状态长轮询、实时流 WebSocket 订阅它，
     /// 收到就马上结束（长轮询回 204、WebSocket 以 1012 关闭），让客户端重连到新进程，不用等优雅退出的 10 秒到点
     pub shutdown: watch::Sender<bool>,
+    /// 接口耗时与连接池采样（selfmon/http.rs）
+    pub http: crate::selfmon::http::Stats,
 }
 
 /// 等到进程要退出（`Inner::shutdown` 置位；已经置位立刻返回）。不把 `watch::Ref` 带出去：它不是 Send，不能活过 select! 的 await
@@ -168,6 +170,7 @@ impl AppState {
             routers_refresh: Default::default(),
             tunnel_host: Default::default(),
             shutdown: watch::channel(false).0,
+            http: Default::default(),
         }))
     }
 

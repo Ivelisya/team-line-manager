@@ -65,7 +65,7 @@ impl ReportGaps {
         let saved: Option<Value> = sqlx::query_scalar("select value from app_setting where key = $1").bind(GAPS_KEY).fetch_optional(db).await?;
         let now = OffsetDateTime::now_utc();
         {
-            let mut g = self.0.lock().unwrap();
+            let mut g = crate::lock(&self.0);
             let rfc = |v: &Value| OffsetDateTime::parse(v.as_str()?, &time::format_description::well_known::Rfc3339).ok();
             for p in saved.as_ref().and_then(Value::as_array).into_iter().flatten() {
                 if let (Some(from), Some(to)) = (rfc(&p[0]), rfc(&p[1])) {
@@ -83,7 +83,7 @@ impl ReportGaps {
 
     /// 把最近一小时的时段存进库里（启动时、库中断恢复后）
     pub async fn save(&self, db: &sqlx::PgPool) -> sqlx::Result<()> {
-                let v: Vec<[String; 2]> = self.0.lock().unwrap().done.iter().map(|(f, t)| [crate::meta::fmt_ts(*f), crate::meta::fmt_ts(*t)]).collect();
+                let v: Vec<[String; 2]> = crate::lock(&self.0).done.iter().map(|(f, t)| [crate::meta::fmt_ts(*f), crate::meta::fmt_ts(*t)]).collect();
         sqlx::query(
             "insert into app_setting (key, value, updated_by) values ($1, $2, 'fleet-server')
              on conflict (key) do update set value = excluded.value, updated_at = now(), updated_by = excluded.updated_by",
@@ -97,7 +97,7 @@ impl ReportGaps {
 
     /// 告警循环每轮调：把「中控此刻还在跑」记进库里（和上次写的相差满 `ALIVE_EVERY_S` 才写），下次启动时 `started` 从这里补中断
     pub async fn alive(&self, db: &sqlx::PgPool, now: OffsetDateTime) -> sqlx::Result<()> {
-        if self.0.lock().unwrap().alive_saved.is_some_and(|t| (now - t).whole_seconds() < ALIVE_EVERY_S) {
+        if crate::lock(&self.0).alive_saved.is_some_and(|t| (now - t).whole_seconds() < ALIVE_EVERY_S) {
             return Ok(());
         }
         let at = crate::meta::fmt_ts(now);
@@ -109,13 +109,13 @@ impl ReportGaps {
         .bind(json!(at))
         .execute(db)
         .await?;
-        self.0.lock().unwrap().alive_saved = Some(now);
+        crate::lock(&self.0).alive_saved = Some(now);
         Ok(())
     }
 
     /// 一份上报入库了：之前在失败的，从上次入库到现在算一段（够 `GAP_MIN_S` 的话）。记了新的一段返回 true（调用方存进库里）
     pub fn ok(&self, now: OffsetDateTime) -> bool {
-        let mut g = self.0.lock().unwrap();
+        let mut g = crate::lock(&self.0);
         let mut added = false;
         if let (Some(from), Some(_)) = (g.last_ok, g.last_fail.take()) {
             if (now - from).whole_seconds() >= GAP_MIN_S {
@@ -130,18 +130,18 @@ impl ReportGaps {
     }
 
     /// agent 的请求因库不可用没能处理
-    pub fn failed(&self, now: OffsetDateTime) { self.0.lock().unwrap().last_fail = Some(now); }
+    pub fn failed(&self, now: OffsetDateTime) { crate::lock(&self.0).last_fail = Some(now); }
 
     /// 中控刚启动、或刚从收不到上报里恢复（最近一段中断结束不到 `AGENT_OFFLINE_S`）：各 agent 退避中的重发、线路机连通性的头 3 轮还在陆续到，
     /// 一部分机器的健康暂时判不出（未知）或还是中断前的。总览带上 `settling`，网页的健康计数先显示加载态，不先出一个不准的数
-    pub fn settling(&self, now: OffsetDateTime) -> bool { self.0.lock().unwrap().done.iter().any(|(_, to)| (now - *to).whole_seconds() < AGENT_OFFLINE_S) }
+    pub fn settling(&self, now: OffsetDateTime) -> bool { crate::lock(&self.0).done.iter().any(|(_, to)| (now - *to).whole_seconds() < AGENT_OFFLINE_S) }
 
     /// 上次上报在 `last` 的 agent 到 `now` 算不算在线：沉默的时长（`silent_s`）不到 `AGENT_OFFLINE_S`
     pub fn online(&self, last: OffsetDateTime, now: OffsetDateTime) -> bool { self.silent_s(last, now) < AGENT_OFFLINE_S }
 
     /// 从 `last` 到 `now` 沉默了多少秒：扣掉其间中控收不到上报的时段（还没恢复的这一段算到最近一次失败）
     pub fn silent_s(&self, last: OffsetDateTime, now: OffsetDateTime) -> i64 {
-        let g = self.0.lock().unwrap();
+        let g = crate::lock(&self.0);
         let open = g.last_ok.zip(g.last_fail).filter(|(from, to)| (*to - *from).whole_seconds() >= GAP_MIN_S);
         let deaf: i64 = g.done.iter().copied().chain(open).filter(|(_, to)| *to > last).map(|(from, to)| (to - from.max(last)).whole_seconds()).sum();
         (now - last).whole_seconds() - deaf
@@ -160,7 +160,7 @@ mod tests {
         // 中控停了 0–300 秒（进程启动时补记的那段）：停之前 20 秒报过的，恢复后 99 秒还算在线、101 秒算离线
         let g = ReportGaps::default();
         {
-            let mut x = g.0.lock().unwrap();
+            let mut x = crate::lock(&g.0);
             x.done.push((s(0), s(300)));
             x.last_ok = Some(s(300));
         }
@@ -185,7 +185,7 @@ mod tests {
                 h.failed(s(i));
             }
         }
-        assert!(h.0.lock().unwrap().done.is_empty());
+        assert!(crate::lock(&h.0).done.is_empty());
         assert!(!h.online(s(-120), s(41)));
     }
 }

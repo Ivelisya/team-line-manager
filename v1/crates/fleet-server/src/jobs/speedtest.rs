@@ -42,8 +42,25 @@ pub fn plan(t: &Target, size_mb: u32) -> (String, u64) {
 }
 
 /// 网页 / meta 用：可选的下载量与目标
-pub fn meta() -> Value {
-    json!({"sizes_mb": SIZES_MB, "default_mb": DEFAULT_MB, "targets": TARGETS.iter().map(|t| json!({"key": t.key, "name": t.name})).collect::<Vec<_>>()})
+pub fn meta() -> Meta {
+    Meta { sizes_mb: SIZES_MB, default_mb: DEFAULT_MB, targets: TARGETS.iter().map(|t| TargetRef { key: t.key, name: t.name }).collect() }
+}
+
+/// `GET /meta` 的 `speedtest`
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+#[ts(rename = "SpeedtestMeta")]
+pub struct Meta {
+    pub sizes_mb: [u32; 3],
+    pub default_mb: u32,
+    pub targets: Vec<TargetRef>,
+}
+
+/// 测速目标（不带主机名）
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+#[ts(rename = "SpeedtestTarget")]
+pub struct TargetRef {
+    pub key: &'static str,
+    pub name: &'static str,
 }
 
 /// 远端脚本，变量 URL、LAST（Range 末字节）、MAX_TIME。输出 `curl_rc`、`result`（curl -w 的几项）、`curl_err`

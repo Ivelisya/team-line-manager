@@ -49,13 +49,13 @@ pub async fn brief(st: &AppState, scope: Scope) -> sqlx::Result<Value> {
     .await
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct Ref {
     pub id: Uuid,
     pub name: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct PlanRef {
     pub id: Uuid,
     pub name: String,
@@ -64,11 +64,12 @@ pub struct PlanRef {
 }
 
 /// 订阅的生效值（库里的 subscription_eff）：价格、币种、周期、流量上限没单独设置的跟随套餐，账单时区、流量重置日跟随供应商
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct Subscription {
     pub price_cents: i32,
     pub currency: String,
     pub cycle: String,
+    #[ts(type = "string")]
     pub due_date: Date,
     /// 账单日（每月几号，1–31）：直接设到期日时记下，按周期续费不变；续费的新到期日、按账单日重置的流量重置日都落在这一天（小月按月末）
     pub billing_day: i32,
@@ -93,13 +94,14 @@ pub struct Subscription {
     pub price_usd_cents: Option<i64>,
     pub usd_per_unit: Option<f64>,
     /// 到期日再推一个周期（落在账单日，小月按月末）：登记续费的默认新到期日
+    #[ts(type = "string")]
     pub next_due: Date,
     /// 当前这一期的天数（到期日往前推一个周期到到期日）：网页算剩余价值
     pub period_days: i64,
 }
 
 /// 机器的订阅模板（库里的 sub_template）：订阅没单独设置的项取这里。没有套餐时 price_cents 为 null（订阅要单独设置价格）
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct SubTemplate {
     pub price_cents: Option<i32>,
     pub currency: String,
@@ -113,10 +115,11 @@ pub struct SubTemplate {
     pub traffic_rule: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct Agent {
     pub version: Option<String>,
     #[serde(with = "time::serde::rfc3339::option")]
+    #[ts(type = "string | null")]
     pub last_report_at: Option<OffsetDateTime>,
     pub online: bool,
     /// agent 最近一次报告的 Xray 是否在运行（仅线路机；没报过为 None）
@@ -145,9 +148,10 @@ pub struct Sustained {
     pub disk_min: Option<f32>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct HostNow {
     #[serde(with = "time::serde::rfc3339")]
+    #[ts(type = "string")]
     pub ts: OffsetDateTime,
     pub cpu_pct: Option<f32>,
     pub load1: Option<f32>,
@@ -160,12 +164,13 @@ pub struct HostNow {
     pub tcp_conns: Option<i32>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct Probe {
     pub ok: bool,
     pub latency_ms: Option<f32>,
     pub detail: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
+    #[ts(type = "string")]
     pub ts: OffsetDateTime,
     /// TCP 探测：近 1 小时成功样本延迟的中位数（卡片读数；单次的 SYN 重发尖刺不左右它）。出口探测为 None
     pub median_ms: Option<f32>,
@@ -175,10 +180,11 @@ pub struct Probe {
 }
 
 /// 主探测来源（中控或探测点，见 probe_points/）→ 线路机上这个入口端口的最近一次 TCP 建连（reach.rs，轮流连各端口，所以每个口隔 N 轮才更新一次）
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct Reach {
     pub ok: bool,
     #[serde(with = "time::serde::rfc3339")]
+    #[ts(type = "string")]
     pub ts: OffsetDateTime,
     pub detail: Option<String>,
     /// 这个端口到最近一次为止连续连不上的次数（通的为 0）。告警按同一个端口连续 3 次算（reach::unreachable_sql），界面同一口径；
@@ -186,7 +192,7 @@ pub struct Reach {
     pub fails: i32,
 }
 
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Debug, Clone, Serialize, Default, ts_rs::TS)]
 pub struct Traffic {
     pub today_up: i64,
     pub today_down: i64,
@@ -196,7 +202,7 @@ pub struct Traffic {
 
 /// 有自己 agent 的机器（非家宽代理、非同机 IP 节点）按网卡计的今天 / 本月流量（字节，组织时区，同入口的今天 / 本月）：
 /// rx = 下行（本机收），tx = 上行（本机发）。来自 host_metric_hourly
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Debug, Clone, Serialize, Default, ts_rs::TS)]
 pub struct NicTraffic {
     pub today_rx: i64,
     pub today_tx: i64,
@@ -206,7 +212,7 @@ pub struct NicTraffic {
 
 /// 流量额度周期：有订阅的按账单时区里最近一次（生效的）重置日起算，没有订阅的是模板时区（供应商的，没填为组织时区）的本月；
 /// 供应商按滚动 30 天（rolling30）且订阅没单独设置重置日的：账单时区的今天往前 29 天起（含今天共 30 个日历日）
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct Quota {
     /// 生效的流量上限（GB，十进制）；没有上限为 None。告警、网页、fleetctl 都读它，不各自再算
     pub limit_gb: Option<i32>,
@@ -215,14 +221,17 @@ pub struct Quota {
     /// 周期内已用（字节）：有 agent 的机器按网卡流量、照生效的计量规则（订阅单独设置的，或供应商的）算（宿主机含同机 IP 节点）；
     /// 家宽代理与同机 IP 节点没有自己的网卡读数，是业务流量（下载 + 上传，含已移除的入口）
     pub used: i64,
+    #[ts(type = "string")]
     pub period_start: Date,
     /// 下次重置日（账单时区，这一天 0 点起是新周期）；滚动 30 天没有重置日，为 None
+    #[ts(type = "string | null")]
     pub period_end: Option<Date>,
     /// monthly = 每月重置日起算；rolling30 = 近 30 天（滚动）
     pub mode: &'static str,
     /// 本周期的数据从这一刻才有：机器首次上架完成（activated_at）晚于周期起点、且没有接入前读数时为它，之前的用量不在 used 里；
     /// 否则为 None
     #[serde(with = "time::serde::rfc3339::option")]
+    #[ts(type = "string | null")]
     pub counted_from: Option<OffsetDateTime>,
     /// 网卡计量规则（min / max / sum / out / in，没有供应商按 max）；按业务流量算的为 None
     pub rule: Option<&'static str>,
@@ -230,11 +239,13 @@ pub struct Quota {
     /// 不在当前周期内的不算，为 None——进入下一个周期自动失效
     pub base: Option<i64>,
     #[serde(with = "time::serde::rfc3339::option")]
+    #[ts(type = "string | null")]
     pub base_at: Option<OffsetDateTime>,
     /// 近 7 天日均用量（字节 / 天；周期不足 7 天按已有天数，不足 1 天为 None），口径同 `used`（不含接入前读数）
     pub daily_avg: Option<i64>,
     /// 按 `daily_avg` 预计用满的时刻（早于下次重置日才有；已用满、没有上限、没有重置日（滚动 30 天）为 None）。精确到小时
     #[serde(with = "time::serde::rfc3339::option")]
+    #[ts(type = "string | null")]
     pub forecast_full_at: Option<OffsetDateTime>,
     /// 周期起点时刻与日均所取窗口的起点（搬迁建议按它们汇总各入口的流量，不对外输出）
     #[serde(skip)]
@@ -264,7 +275,7 @@ pub fn next_reset(start: Date, reset_day: u8) -> Date {
     Date::from_calendar_date(y, m, reset_day.min(m.length(y))).expect("合法日期")
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct EntryView {
     pub id: Uuid,
     pub relay: Ref,
@@ -298,14 +309,14 @@ pub struct EntryView {
     pub traffic: Traffic,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct JobRef {
     pub id: Uuid,
     pub kind: String,
     pub state: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct MachineView {
     pub id: Uuid,
     pub kind: String,
@@ -316,9 +327,11 @@ pub struct MachineView {
     /// 进备用团队前的显示名（「团队2-07」）与进备用的时刻（即退役时间）；不在备用团队为 null
     pub spare_from: Option<String>,
     #[serde(with = "time::serde::rfc3339::option")]
+    #[ts(type = "string | null")]
     pub spare_since: Option<OffsetDateTime>,
     /// 备用团队里在用、有订阅的机器自动回收的日子（账单时区，到期日 + 2 天，见 spare::recycle_on）；其余为 null。
     /// 还被软路由出口指着的（`router_exits` 非空）、上面还有在用的同机 IP 节点的（`live_ip_nodes` 非空）、上面有开着自动续费的备用同机 IP 节点的（`renewing_ip_nodes` 非空）、开着自动续费的不自动回收，这里为 null、`recycle_held` 为 true
+    #[ts(type = "string | null")]
     pub recycle_on: Option<Date>,
     /// 备用团队里在用的机器，因为软路由出口还指着它（`router_exits`）、上面还有在用的同机 IP 节点（`live_ip_nodes`）、上面有开着自动续费的备用同机 IP 节点
     /// （`renewing_ip_nodes`，宿主机退役会连带它）或自己开着自动续费（订阅的 `auto_renew`：一直续下去，永远到不了回收日）所以不自动回收：
@@ -377,10 +390,13 @@ pub struct MachineView {
     pub note: String,
     pub revision: i32,
     #[serde(with = "time::serde::rfc3339")]
+    #[ts(type = "string")]
     pub created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339::option")]
+    #[ts(type = "string | null")]
     pub activated_at: Option<OffsetDateTime>,
     #[serde(with = "time::serde::rfc3339::option")]
+    #[ts(type = "string | null")]
     pub retired_at: Option<OffsetDateTime>,
     pub subscription: Option<Subscription>,
     pub sub_template: SubTemplate,
@@ -395,6 +411,7 @@ pub struct MachineView {
     /// 本月（组织时区）的数据从这一刻才有：首次上架完成（activated_at）晚于本月 1 号 0 点时为它，否则为 null。
     /// 网卡与业务的本月流量都适用
     #[serde(with = "time::serde::rfc3339::option")]
+    #[ts(type = "string | null")]
     pub month_counted_from: Option<OffsetDateTime>,
     /// 流量额度：周期里已用（网卡按供应商规则，或业务流量）
     pub quota: Quota,
@@ -440,11 +457,12 @@ impl MachineView {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct TuneInfo {
     /// 最近一次成功应用的调优档；null = 没调优过（迁移前上线的机器）
     pub profile: Option<String>,
     #[serde(with = "time::serde::rfc3339::option")]
+    #[ts(type = "string | null")]
     pub at: Option<OffsetDateTime>,
     /// 机器上的档就是中控当前的档（`jobs::tune::PROFILE`）；false = 旧档或没调优过
     pub current: bool,
@@ -453,15 +471,17 @@ pub struct TuneInfo {
     pub params: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct RelayInfo {
     pub public_host: String,
     pub generation: i64,
     pub applied_generation: i64,
     #[serde(with = "time::serde::rfc3339::option")]
+    #[ts(type = "string | null")]
     pub applied_at: Option<OffsetDateTime>,
     /// 期望代数最近一次变化的时间（配置未应用告警从这里起算）
     #[serde(with = "time::serde::rfc3339::option")]
+    #[ts(type = "string | null")]
     pub generation_at: Option<OffsetDateTime>,
     pub apply_error: Option<String>,
     pub port_min: i32,
@@ -699,24 +719,24 @@ impl LiveCache {
 
     /// 视图从什么时候起一直算不出来、最近一次的错误（`cached` 失败或超时时记下，算成一次就清掉）
     pub fn failing(&self) -> Option<(OffsetDateTime, String)> {
-        self.failing.lock().unwrap().clone()
+        crate::lock(&self.failing).clone()
     }
 
     /// 最近一次算成的视图，不管多旧、之后变过没有（上报入库时比对探测结果、在线与 Xray 状态变没变，决定要不要唤醒告警评估）
     pub fn latest(&self) -> Option<Arc<Vec<MachineView>>> {
-        self.last.lock().unwrap().as_ref().map(|l| l.4.clone())
+        crate::lock(&self.last).as_ref().map(|l| l.4.clone())
     }
 
     fn settled(&self, at: Instant, gen: u64, rolled: u64, touched: u64, v: &Arc<Vec<MachineView>>) {
-        *self.last.lock().unwrap() = Some((at, gen, rolled, touched, v.clone()));
-        *self.failing.lock().unwrap() = None;
+        *crate::lock(&self.last) = Some((at, gen, rolled, touched, v.clone()));
+        *crate::lock(&self.failing) = None;
     }
 
     /// 上一份视图，旧不过 `STALE_MAX`、之后没有资源变更才给（变更之后还给变更前的，改完马上重取的会一直看到旧的）；
     /// `rolled`：还要求之后没有新的小时汇总（只差随上报变的指标）；
     /// `touched`：还要求之后没有作业推进、告警或静默的变化（开维护、静默之后马上重取的要看到它们；`cached` 回上一份顶的不要求，那里本就不等补指标）
     pub(crate) fn stale(&self, rolled: bool, touched: bool) -> Option<Arc<Vec<MachineView>>> {
-        let last = self.last.lock().unwrap();
+        let last = crate::lock(&self.last);
         let (at, gen, r, t, v) = last.as_ref()?;
         let unchanged = *gen == self.gen.load(Ordering::SeqCst)
             && (!rolled || *r == self.rolled.load(Ordering::SeqCst))
@@ -766,7 +786,7 @@ async fn cached(st: &AppState, ttl: std::time::Duration, synced: bool) -> sqlx::
         Err(_) => sqlx::Error::PoolTimedOut,
     };
     let msg = if matches!(e, sqlx::Error::PoolTimedOut) { format!("{} 秒内没算出来", VIEW_WAIT.as_secs()) } else { e.to_string() };
-    c.failing.lock().unwrap().get_or_insert((OffsetDateTime::now_utc(), String::new())).1 = msg;
+    crate::lock(&c.failing).get_or_insert((OffsetDateTime::now_utc(), String::new())).1 = msg;
     match c.stale(false, false).filter(|_| !synced) {
         Some(v) => {
             tracing::warn!("机器视图没算出来，先用上一份：{e}");
@@ -806,7 +826,7 @@ async fn fill(st: &AppState, mut slot: tokio::sync::MutexGuard<'_, Option<Snap>>
 /// `GET /machines` 的响应体 `{"data": [...]}`：同一份缓存视图只序列化一次，接连、并发的请求直接回这份字节
 pub async fn live_json(st: &AppState) -> sqlx::Result<axum::body::Bytes> {
     let v = live(st).await?;
-    if let Some((of, b)) = &*st.live.json.lock().unwrap() {
+    if let Some((of, b)) = &*crate::lock(&st.live.json) {
         if Arc::ptr_eq(of, &v) {
             return Ok(b.clone());
         }
@@ -816,7 +836,7 @@ pub async fn live_json(st: &AppState) -> sqlx::Result<axum::body::Bytes> {
         data: &'a [MachineView],
     }
     let b = axum::body::Bytes::from(serde_json::to_vec(&Data { data: &v }).expect("机器视图可序列化"));
-    *st.live.json.lock().unwrap() = Some((v, b.clone()));
+    *crate::lock(&st.live.json) = Some((v, b.clone()));
     Ok(b)
 }
 
@@ -1725,10 +1745,13 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
 }
 
 /// 总览 KPI（`GET /overview`、实时指标推送）
-pub async fn overview(st: &AppState) -> sqlx::Result<Value> {
+pub async fn overview(st: &AppState) -> sqlx::Result<Value> { Ok(serde_json::to_value(overview_typed(st).await?).expect("总览可序列化")) }
+
+/// 同 `overview`（GET /overview）：带 `settling` 的总览
+pub async fn overview_typed(st: &AppState) -> sqlx::Result<Overview> {
     let ms = live(st).await?;
-    let mut v = overview_of(&ms, &*traffic(st).await?);
-    settling(st, &mut v);
+    let mut v = overview_data(&ms, &*traffic(st).await?);
+    v.settling = Some(st.report_gaps.settling(OffsetDateTime::now_utc()));
     Ok(v)
 }
 
@@ -1738,18 +1761,65 @@ pub fn settling(st: &AppState, v: &mut Value) {
 }
 
 /// 总览里节点、线路机、闲置备用各一份的健康计数
-#[derive(Default, Serialize)]
-struct Bucket {
-    total: i64,
-    ok: i64,
-    degraded: i64,
-    down: i64,
-    unknown: i64,
-    maintenance: i64,
+#[derive(Debug, Clone, Default, Serialize, ts_rs::TS)]
+pub struct Bucket {
+    pub total: i64,
+    pub ok: i64,
+    pub degraded: i64,
+    pub down: i64,
+    pub unknown: i64,
+    pub maintenance: i64,
 }
 
+/// 总览 KPI（GET /overview，实时推送的 `overview` 同一份，字段见 docs/API.md）
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+pub struct Overview {
+    pub nodes: Bucket,
+    pub relays: Bucket,
+    pub provisioning: i64,
+    pub retiring: i64,
+    pub failed: i64,
+    pub due_soon: i64,
+    pub overdue: i64,
+    pub online: i64,
+    pub offline: i64,
+    pub no_agent: i64,
+    pub ip_nodes: i64,
+    pub spare: i64,
+    pub spare_health: Bucket,
+    pub monthly_usd: crate::fx::Total,
+    pub paid_machines: i64,
+    pub monthly_usd_spare: SpareTotal,
+    pub traffic_month: TrafficMonth,
+    pub net_rx_bps: f64,
+    pub net_tx_bps: f64,
+    /// 中控刚启动或刚恢复收上报（`ReportGaps::settling`）：只有 GET /overview 与实时推送带（`overview_typed`、live.rs），`overview_of` 不带
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub settling: Option<bool>,
+}
+
+/// 不续费的备用机的月费小计：合计同 `monthly_usd`，另带台数
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+pub struct SpareTotal {
+    #[serde(flatten)]
+    pub total: crate::fx::Total,
+    pub count: i64,
+}
+
+/// 本月业务流量合计（字节）；`counted_from`：本月数据从这一刻才有（RFC 3339），完整的为 null
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+pub struct TrafficMonth {
+    pub up: i64,
+    pub down: i64,
+    pub counted_from: Option<String>,
+}
+
+/// 同 `overview_data`，转成 JSON（实时推送、月报、测试按键取值）
+pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Value { serde_json::to_value(overview_data(ms, traffic)).expect("总览可序列化") }
+
 /// 总览 KPI，只统计 active 的机器；本月业务流量是全部入口（`traffic`）的合计，数据不完整时带起点（`traffic_month.counted_from`）
-pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Value {
+pub fn overview_data(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Overview {
     let (mut nodes, mut relays) = (Bucket::default(), Bucket::default());
     let (mut provisioning, mut retiring, mut failed, mut spare, mut rx, mut tx) = (0, 0, 0, 0, 0f64, 0f64);
     // 闲置备用按同一套健康口径另数（spare_health）：备用池里有几台此刻能顶上（正常 / 降级），几台故障、不通——挑替换用的新节点时一眼看出，不用去查库
@@ -1846,12 +1916,28 @@ pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Valu
             tx += h.net_tx_bps.unwrap_or(0.0);
         }
     }
-    let mut usd_spare = serde_json::to_value(usd_spare).expect("月费合计可序列化");
-    usd_spare["count"] = json!(spare_paid);
-    json!({
-        "nodes": nodes, "relays": relays, "provisioning": provisioning, "retiring": retiring, "failed": failed, "due_soon": due_soon, "overdue": overdue, "online": online, "offline": offline,
-        "no_agent": no_agent, "ip_nodes": ip_nodes, "spare": spare, "spare_health": spare_health, "monthly_usd": usd, "paid_machines": paid_machines, "monthly_usd_spare": usd_spare, "traffic_month": {"up": up, "down": down, "counted_from": counted_from.map(crate::meta::fmt_ts)}, "net_rx_bps": rx, "net_tx_bps": tx,
-    })
+    Overview {
+        nodes,
+        relays,
+        provisioning,
+        retiring,
+        failed,
+        due_soon,
+        overdue,
+        online,
+        offline,
+        no_agent,
+        ip_nodes,
+        spare,
+        spare_health,
+        monthly_usd: usd,
+        paid_machines,
+        monthly_usd_spare: SpareTotal { total: usd_spare, count: spare_paid },
+        traffic_month: TrafficMonth { up, down, counted_from: counted_from.map(crate::meta::fmt_ts) },
+        net_rx_bps: rx,
+        net_tx_bps: tx,
+        settling: None,
+    }
 }
 
 #[cfg(test)]
@@ -2038,5 +2124,50 @@ mod tests {
         assert_eq!(ov3["monthly_usd"], json!({"cents": 100 + 4200 + 14,
             "by_currency": [{"currency": "CNY", "cents": 30099, "usd_cents": 4214, "usd_per_unit": 0.14}, {"currency": "USD", "cents": 100, "usd_cents": 100, "usd_per_unit": 1.0}],
             "unconverted": [{"currency": "XYZ", "cents": 500}]}));
+    }
+    /// 总览改成类型（Overview）前后：同一份数据，接口里的 `{"data": …}` 逐字节相同（带不带 settling、有没有本月起点、各种币种与备用小计）。
+    /// 快照是改写前的 json! 拼法输出的
+    #[test]
+    fn overview_typed_matches_old_json() {
+        let with = |due: i64, auto: bool| {
+            let mut m = base("vps");
+            m.subscription = Some(crate::health::tests::sub_with(due, auto));
+            m
+        };
+        let cny = |cents: i64, usd: Option<i64>| {
+            let mut m = with(30, false);
+            let s = m.subscription.as_mut().unwrap();
+            (s.currency, s.monthly_cents, s.monthly_usd_cents, s.usd_per_unit) = ("CNY".into(), cents, usd, usd.map(|_| 0.14));
+            m
+        };
+        let mut xyz = cny(500, None);
+        xyz.subscription.as_mut().unwrap().currency = "XYZ".into();
+        let (mut spare_soon, mut by_exit) = (with(3, false), with(-2, false));
+        (spare_soon.spare, by_exit.spare) = (true, true);
+        by_exit.router_exits = vec!["办公室2 · 美国".into()];
+        let mut relay = base("relay");
+        relay.month_counted_from = Some(OffsetDateTime::from_unix_timestamp(1_793_000_000).unwrap());
+        let traffic = HashMap::from([(Uuid::nil(), Traffic { today_up: 1, today_down: 2, month_up: 30, month_down: 40 })]);
+        let sets: Vec<(Vec<MachineView>, HashMap<Uuid, Traffic>)> = vec![
+            (vec![], HashMap::new()),
+            (vec![with(30, false), cny(29999, Some(4200)), cny(100, Some(14)), xyz], HashMap::new()),
+            (vec![spare_soon.settle_spare(), by_exit.settle_spare(), relay, base("proxy")], traffic),
+        ];
+        // 改成类型之前（json! 拼的）同一份数据的输出：改写时逐字节比对过新旧两种，旧的拼法随后删掉，留下这几份做快照
+        let snaps = [
+            r#"{"data":{"due_soon":0,"failed":0,"ip_nodes":0,"monthly_usd":{"by_currency":[],"cents":0,"unconverted":[]},"monthly_usd_spare":{"by_currency":[],"cents":0,"count":0,"unconverted":[]},"net_rx_bps":0.0,"net_tx_bps":0.0,"no_agent":0,"nodes":{"degraded":0,"down":0,"maintenance":0,"ok":0,"total":0,"unknown":0},"offline":0,"online":0,"overdue":0,"paid_machines":0,"provisioning":0,"relays":{"degraded":0,"down":0,"maintenance":0,"ok":0,"total":0,"unknown":0},"retiring":0,"spare":0,"spare_health":{"degraded":0,"down":0,"maintenance":0,"ok":0,"total":0,"unknown":0},"traffic_month":{"counted_from":null,"down":0,"up":0}}}"#,
+            r#"{"data":{"due_soon":0,"failed":0,"ip_nodes":0,"monthly_usd":{"by_currency":[{"cents":30099,"currency":"CNY","usd_cents":4214,"usd_per_unit":0.14},{"cents":100,"currency":"USD","usd_cents":100,"usd_per_unit":1.0}],"cents":4314,"unconverted":[{"cents":500,"currency":"XYZ"}]},"monthly_usd_spare":{"by_currency":[],"cents":0,"count":0,"unconverted":[]},"net_rx_bps":0.0,"net_tx_bps":0.0,"no_agent":0,"nodes":{"degraded":0,"down":0,"maintenance":0,"ok":0,"total":4,"unknown":4},"offline":0,"online":4,"overdue":0,"paid_machines":4,"provisioning":0,"relays":{"degraded":0,"down":0,"maintenance":0,"ok":0,"total":0,"unknown":0},"retiring":0,"spare":0,"spare_health":{"degraded":0,"down":0,"maintenance":0,"ok":0,"total":0,"unknown":0},"traffic_month":{"counted_from":null,"down":0,"up":0}}}"#,
+            r#"{"data":{"due_soon":0,"failed":0,"ip_nodes":0,"monthly_usd":{"by_currency":[{"cents":100,"currency":"USD","usd_cents":100,"usd_per_unit":1.0}],"cents":100,"unconverted":[]},"monthly_usd_spare":{"by_currency":[{"cents":100,"currency":"USD","usd_cents":100,"usd_per_unit":1.0}],"cents":100,"count":1,"unconverted":[]},"net_rx_bps":0.0,"net_tx_bps":0.0,"no_agent":0,"nodes":{"degraded":0,"down":0,"maintenance":0,"ok":0,"total":2,"unknown":2},"offline":0,"online":3,"overdue":1,"paid_machines":1,"provisioning":0,"relays":{"degraded":0,"down":0,"maintenance":0,"ok":0,"total":1,"unknown":1},"retiring":0,"spare":1,"spare_health":{"degraded":0,"down":0,"maintenance":0,"ok":0,"total":1,"unknown":1},"traffic_month":{"counted_from":"2026-10-26T07:33:20Z","down":40,"up":30}}}"#,
+        ];
+        for ((ms, tr), snap) in sets.iter().zip(snaps) {
+            assert_eq!(crate::api::body(overview_data(ms, tr)).unwrap(), snap);
+            assert_eq!(overview_of(ms, tr), serde_json::from_str::<Value>(snap).unwrap()["data"]);
+            // GET /overview 与实时推送带 settling（旧的是在拼好的 JSON 上补一个键）
+            let mut typed = overview_data(ms, tr);
+            typed.settling = Some(true);
+            let mut legacy = serde_json::from_str::<Value>(snap).unwrap()["data"].clone();
+            legacy["settling"] = json!(true);
+            assert_eq!(crate::api::body(typed).unwrap(), crate::api::body(legacy).unwrap());
+        }
     }
 }

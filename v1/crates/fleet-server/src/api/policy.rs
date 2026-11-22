@@ -447,7 +447,7 @@ async fn record_version(
 /// `rows_before` 是改挂之前的规则行。线路机名单按改名后的团队算（改名本身已刷新过一次代数，这里再 +1 只让版本记下它）。
 /// 审计的 detail 另记 `{from, to, rewritten_seqs, dropped_seqs}`：旧 / 新节点，被改写快照的历史版本号，其中丢掉了新节点原有项的版本号。返回被 +1 的线路机
 pub(crate) async fn record_replace(tx: &mut Tx<'_>, actor: &str, rows_before: &[Row], from: Uuid, to: Uuid, moved: &policy::NodeMoved) -> ApiResult<Vec<Uuid>> {
-    let names = policy::scope_names_in(&mut **tx).await?;
+    let names = policy::scope_names_in(tx).await?;
     let nodes = policy::live_nodes(&mut **tx).await?;
     let after = policy::set_current(&policy::load_rows(&mut **tx, false).await?);
     let extra = json!({"from": from, "to": to, "rewritten_seqs": moved.rewritten_seqs, "dropped_seqs": moved.dropped_seqs});

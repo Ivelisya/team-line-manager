@@ -40,6 +40,10 @@ use serde_json::{json, Value};
 /// `{"data": …}`
 pub fn ok<T: Serialize>(v: T) -> axum::Json<Value> { axum::Json(json!({ "data": v })) }
 
+/// 接口响应的正文（`ok` 包好的 `{"data": …}` 序列化成的字节）：测试比较改写前后的输出用
+#[cfg(test)]
+pub(crate) fn body<T: Serialize>(v: T) -> serde_json::Result<String> { serde_json::to_string(&ok(v).0) }
+
 /// 分页列表的统一形状 `{items, total, next_offset}`：`next_offset` 只在后面还有数据时给出
 pub fn paged<T: Serialize>(items: Vec<T>, total: i64, offset: i64) -> axum::Json<Value> {
     let end = offset + items.len() as i64;
@@ -155,6 +159,8 @@ pub fn router() -> Router<AppState> {
         .route("/machines/{id}/logs", get(exec::machine_logs))
         .route("/machines/{id}/diag-plan", get(exec::diag_plan))
         .route("/server/logs", get(exec::server_logs))
+        // 中控自己的接口耗时与连接池（selfmon/http.rs），只读
+        .route("/server/stats", get(misc::server_stats))
         // 网页终端（只给会话用户）
         .route("/terminal/tickets", post(terminal::create_ticket))
         .route("/terminal/ws", get(terminal::ws))
@@ -221,6 +227,13 @@ pub fn router() -> Router<AppState> {
         .route("/routers/{id}/exits/remove", get(router_ops::remove_preview).post(router_ops::remove))
         .route("/routers/{id}/switch", post(router_ops::switch_to))
         .route("/routers/{id}/switch/back", post(router_ops::switch_back))
+        // 只重启 OpenClash（GET 预览，POST 建作业 router_restart）；看配置（只读，登录路由读，记审计）；出口改名跟上面板、来源 IP 分流规则（GET 预览，POST 建作业）
+        .route("/routers/{id}/restart", get(router_ops::restart_preview).post(router_ops::restart))
+        .route("/routers/{id}/config", get(router_ops::config))
+        .route("/routers/{id}/config/backups", get(router_ops::config_backups))
+        .route("/routers/{id}/config/diff", get(router_ops::config_diff))
+        .route("/routers/{id}/rename-exits", get(router_ops::rename_preview).post(router_ops::rename))
+        .route("/routers/{id}/rules", get(router_ops::rules_preview).post(router_ops::rules))
         .route("/router-bootstrap/{token}", get(routers::bootstrap_script))
         // 探测点（probe-bootstrap 是给探测点取安装脚本的，不要登录，靠一次性令牌）
         .route("/probe-points", get(probe_points::list).post(probe_points::create))

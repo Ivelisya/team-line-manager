@@ -771,7 +771,7 @@ impl Refresh {
     /// 马上采这几台，不等它做完（隧道连上、断开时，见 [`watch_tunnels`]）。返回这次请求的序号
     pub fn ask(&self, ids: impl IntoIterator<Item = Uuid>) -> u64 {
         let seq = {
-            let mut d = self.due.lock().unwrap();
+            let mut d = crate::lock(&self.due);
             d.0 += 1;
             d.1.extend(ids);
             d.0
@@ -781,7 +781,7 @@ impl Refresh {
     }
 
     fn take(&self) -> (u64, Vec<Uuid>) {
-        let mut d = self.due.lock().unwrap();
+        let mut d = crate::lock(&self.due);
         (d.0, d.1.drain().collect())
     }
 }

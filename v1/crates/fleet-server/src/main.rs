@@ -1,6 +1,6 @@
 use anyhow::{bail, Context};
 use axum::serve::ListenerExt;
-use fleet_server::{auth, config::Config, crypto::SecretBox, db, jobs, local_admin, state::AppState};
+use fleet_server::{auth, config::Config, crypto::SecretBox, db, jobs, local_admin, ops, state::AppState};
 use std::future::IntoFuture;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -16,6 +16,13 @@ const USAGE: &str = "用法：
                                          root 在中控上执行：建或修复中控本机 fleetctl 的全权密钥 central-local，
                                          写进 root 的 fleetctl 配置（默认 /root/.config/fleetctl/config.toml）；
                                          仍有效就不换，--rotate 才换（旧的立即失效）
+  fleet-server backup -c <配置>           root 在中控上执行：做一份备份到 [selfmon] backup_dir（默认 /var/backups/fleet）并轮换
+                                         （fleet-backup.timer 每天跑；docs/OPS.md §10）
+  fleet-server restore -c <配置> <备份> [--dry-run] [--yes] [--identity <age 私钥>] [--skip-sha256]
+                                         root 在中控上执行：从备份恢复库与密钥（docs/OPS.md §10）。先核对 sha256、解密、检查内容与迁移；
+                                         --dry-run 只打出将要做的；真正恢复要 --yes，且 fleet-server 已停；先做安全备份，失败全部换回
+  fleet-server ipintel-fetch -c <配置> [目录]  以 fleet 用户执行：下载 / 更新 IP 情报离线库（默认 [ipintel] db_dir），
+                                         校验和与加载都通过才原子换上（fleet-ipintel-fetch.timer 每月跑）
   fleet-server gen-key  <路径>            生成 32 字节密钥文件（0600）
   fleet-server version                  打印版本（0.1.0+<提交哈希>，同 fleet-agent version）";
 
@@ -112,6 +119,84 @@ async fn main() -> anyhow::Result<()> {
             let pool = db::connect(&cfg.database_url).await?;
             println!("{}", local_admin::ensure(&pool, &url, &out, rotate).await?.summary());
         }
+        "backup" => {
+            // 取代 deploy/backup/fleet-backup.sh（fleet-backup.service，root）。收到 SIGTERM / Ctrl-C：子进程被杀、临时目录删掉，以失败退出
+            require_root("backup", "pg_dump 经 runuser 以 postgres 身份连库，打包 /etc/fleet 里只有 root 读得了的密钥")?;
+            if !rest.is_empty() {
+                bail!("{USAGE}");
+            }
+            let cfg = Config::load(&cfg_path)?;
+            let (db, _) = ops::db_and_user(&cfg.database_url)?;
+            let plan = ops::backup::Plan::system(cfg.selfmon.backup_dir.clone(), db);
+            let done = tokio::select! {
+                r = ops::backup::run(&plan, time::OffsetDateTime::now_utc()) => r?,
+                s = ops::stop_signal() => bail!("收到 {s}，中止：这次没有备份（临时目录已删，旧备份不动）"),
+            };
+            println!("{}", done.summary());
+        }
+        "restore" => {
+            require_root("restore", "要以 postgres 身份换库、以 fleet / root 属主放回密钥")?;
+            let mut opts = ops::restore::Opts::default();
+            let (mut dry, mut yes, mut archive) = (false, false, None);
+            let mut it = rest.into_iter();
+            while let Some(a) = it.next() {
+                match a.as_str() {
+                    "--dry-run" => dry = true,
+                    "--yes" => yes = true,
+                    "--skip-sha256" => opts.skip_sha256 = true,
+                    "--identity" => opts.identity = Some(it.next().map(PathBuf::from).context("--identity 后面要跟 age 私钥文件")?),
+                    s if s.starts_with('-') => bail!("不认识的参数 {s}\n{USAGE}"),
+                    _ if archive.is_none() => archive = Some(PathBuf::from(a)),
+                    _ => bail!("{USAGE}"),
+                }
+            }
+            opts.archive = archive.context(USAGE)?;
+            let cfg = Config::load(&cfg_path)?;
+            let env = ops::restore::Env::system(&cfg)?;
+            let now = time::OffsetDateTime::now_utc();
+            // 准备阶段被 Ctrl-C：丢弃任务，暂存目录（里面有解开的密钥）由守卫删掉
+            let p = tokio::select! {
+                r = ops::restore::prepare(&opts, &env, now) => r?,
+                s = ops::stop_signal() => bail!("收到 {s}，中止：什么都没改，暂存目录已删"),
+            };
+            print!("{}", p.describe(&env));
+            if dry {
+                println!("（--dry-run：到此为止，什么都没改；暂存目录已删）");
+                return Ok(());
+            }
+            if !yes {
+                bail!("没有加 --yes：以上是将要做的，什么都还没改。确认后先 systemctl stop fleet-server，再加 --yes 重跑");
+            }
+            let r = ops::restore::apply(&p, &env, now).await?;
+            println!("== 恢复完成：库与密钥是备份时的了（恢复前的安全备份 {}）", r.safety_backup.display());
+            println!("剩下的步骤要人做（docs/OPS.md §10）：\n{}", ops::restore::manual_steps(&r, &p));
+        }
+        "ipintel-fetch" => {
+            // 取代 deploy/ipintel/fetch-dbs.sh（fleet-ipintel-fetch.service，User=fleet）
+            #[cfg(unix)]
+            if unsafe { libc::geteuid() } == 0 {
+                bail!("不要以 root 跑 ipintel-fetch：换上的库归 root、fleet-server（fleet 用户）读不了。用 systemctl start fleet-ipintel-fetch，或 runuser -u fleet -- /opt/fleet/fleet-server ipintel-fetch -c /etc/fleet/fleet.toml");
+            }
+            if rest.len() > 1 {
+                bail!("{USAGE}");
+            }
+            let cfg = Config::load(&cfg_path)?;
+            let dest = rest.first().map(PathBuf::from).unwrap_or_else(|| cfg.ipintel.db_dir.clone());
+            let (src, lim) = (ops::ipintel_fetch::Sources::default(), ops::ipintel_fetch::Limits::default());
+            let rep = tokio::select! {
+                r = ops::ipintel_fetch::run(&dest, &src, &lim, time::OffsetDateTime::now_utc()) => r?,
+                s = ops::stop_signal() => bail!("收到 {s}，中止：已换上的库不动，没下完的删掉"),
+            };
+            if !rep.failed.is_empty() {
+                bail!("{} 项没更新（旧文件保留，其余照常）：\n  {}", rep.failed.len(), rep.failed.join("\n  "));
+            }
+            println!(
+                "完成：更新 {}，已是最新 {}{}",
+                rep.updated.len(),
+                rep.current.len(),
+                if rep.unverified.is_empty() { String::new() } else { format!("（{} 的来源不公布校验和，只做了格式检查）", rep.unverified.join("、")) }
+            );
+        }
         "serve" => {
             let cfg = Config::load(&cfg_path)?;
             let secrets = SecretBox::from_key_file(&cfg.secret_key_file)?;
@@ -181,6 +266,16 @@ async fn main() -> anyhow::Result<()> {
         }
         _ => bail!("{USAGE}"),
     }
+    Ok(())
+}
+
+/// 只许 root 执行的子命令
+fn require_root(cmd: &str, why: &str) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    if unsafe { libc::geteuid() } != 0 {
+        bail!("{cmd} 只能由 root 在中控上执行：{why}");
+    }
+    let _ = (cmd, why);
     Ok(())
 }
 

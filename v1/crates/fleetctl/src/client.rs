@@ -216,14 +216,19 @@ impl Client {
             HandshakeError::Failure(tungstenite::Error::Http(r)) => anyhow::Error::from(api_error(r.status().as_u16(), &String::from_utf8_lossy(r.body().as_deref().unwrap_or_default()))),
             e => fail(&e),
         })?;
-        let tcp = match ws.get_ref() {
-            MaybeTlsStream::Plain(s) => s,
-            MaybeTlsStream::Rustls(s) => s.get_ref(),
-            _ => unreachable!("只启用了 rustls"),
-        };
-        tcp.set_read_timeout(Some(Duration::from_secs(45)))?;
+        set_ws_read_timeout(&ws, Duration::from_secs(45))?;
         Ok(ws)
     }
+}
+
+/// 改实时流的读超时（`ws.read()` 等这么久没数据就返回 WouldBlock / TimedOut，连接照常可用）
+pub fn set_ws_read_timeout(ws: &WebSocket<MaybeTlsStream<TcpStream>>, d: Duration) -> std::io::Result<()> {
+    let tcp = match ws.get_ref() {
+        MaybeTlsStream::Plain(s) => s,
+        MaybeTlsStream::Rustls(s) => s.get_ref(),
+        _ => unreachable!("只启用了 rustls"),
+    };
+    tcp.set_read_timeout(Some(d))
 }
 
 /// 把 `{"error":{"code","message"}}` 解析成 ApiError；不是这个格式时给出前 200 字符

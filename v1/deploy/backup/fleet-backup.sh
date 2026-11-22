@@ -1,4 +1,5 @@
 #!/bin/bash
+# 已由 `fleet-server backup`（crates/fleet-server/src/ops/backup.rs）取代，fleet-backup.service 不再调用本脚本；留作回退，实验室跑通新命令后删除。
 # 中控每天的备份（fleet-backup.timer 触发，root 执行；也可手动 systemctl start fleet-backup）。装在 /opt/fleet/backup/。
 # 一份备份是一个 tar：fleet.dump（pg_dump -Fc）+ etc/fleet（secret.key、fleet.toml、中控 SSH 密钥等）+ var/lib/fleet/known_hosts，
 # 再加中控 sshd 的 ed25519 主机密钥（软路由隧道按它的公钥做 StrictHostKeyChecking，新机器上换了就全连不上）与 Caddy 的带外配置

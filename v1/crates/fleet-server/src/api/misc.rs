@@ -7,21 +7,30 @@ use crate::views;
 use axum::extract::State;
 use axum::Json;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 pub async fn overview(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
-    Ok(ok(views::overview(&st).await?))
+    Ok(ok(views::overview_typed(&st).await?))
+}
+
+/// `GET /meta`：meta.rs 的常量与中文名，另带中控公钥
+#[derive(Serialize, ts_rs::TS)]
+pub struct MetaOut {
+    #[serde(flatten)]
+    pub meta: crate::meta::Meta,
+    pub ssh_public_key: Option<String>,
 }
 
 /// 共用的枚举中文名、常量、阈值、默认值与组织时区（见 meta.rs）：网页启动时取一次，fleetctl 每次命令需要时取一次。
 /// 另带中控公钥全文 `ssh_public_key`（读不到为 null）：上架页「复制中控公钥」，供应商面板录入它之后上架可以不填 root 密码
 pub async fn meta(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
-    let mut v = crate::meta::to_json();
-    v["ssh_public_key"] = json!(crate::ssh::public_key(&st.cfg.ssh_key).await);
-    Ok(ok(v))
+    Ok(ok(MetaOut { meta: crate::meta::typed(), ssh_public_key: crate::ssh::public_key(&st.cfg.ssh_key).await }))
 }
+
+/// 中控自己的接口耗时（按路由模板：启动以来、最近 15 分钟）与连接池采样，见 selfmon/http.rs
+pub async fn server_stats(_a: Actor, State(st): State<AppState>) -> Json<Value> { ok(crate::selfmon::http::stats_json(&st)) }
 
 #[derive(Deserialize)]
 pub struct DailyQ {
@@ -43,9 +52,10 @@ pub struct SeriesQ {
     minutes: Option<i64>,
 }
 
-#[derive(Serialize, sqlx::FromRow)]
-struct RatePoint {
+#[derive(Serialize, sqlx::FromRow, ts_rs::TS)]
+pub struct RatePoint {
     #[serde(with = "time::serde::rfc3339")]
+    #[ts(type = "string")]
     ts: OffsetDateTime,
     net_rx_bps: f64,
     net_tx_bps: f64,
@@ -77,11 +87,22 @@ pub async fn overview_series(_a: Actor, State(st): State<AppState>, ApiQuery(q):
     .bind(n)
     .fetch_all(&st.db)
     .await?;
-    Ok(ok(json!({"points": v})))
+    Ok(ok(OverviewSeries { points: v }))
+}
+
+/// `GET /overview/series`
+#[derive(Serialize, ts_rs::TS)]
+pub struct OverviewSeries {
+    pub points: Vec<RatePoint>,
 }
 
 /// 心跳条的一格：(次数, 成功次数, 延迟中位数, SYN 重发过的次数)
-type Bucket = (i64, i64, Option<f64>, i64);
+pub type Bucket = (i64, i64, Option<f64>, i64);
+
+/// `GET /probe-beats`：`{<机器 id>: [Bucket × 20]}`（见 `probe_beats`）
+#[derive(Serialize, ts_rs::TS)]
+#[serde(transparent)]
+pub struct ProbeBeats(pub std::collections::HashMap<Uuid, Vec<Bucket>>);
 
 /// 探测心跳条：每台在用机器按墙钟 3 分钟整格（date_bin 对齐 epoch）共 20 格，旧→新，最后一格是当前这格（还没走完）；
 /// 每格 [次数, 成功次数, 成功的延迟中位数 ms 或 null, 建连时 SYN 重发过的次数]；这 20 格里没有数据的机器不出现。
@@ -122,5 +143,31 @@ pub async fn probe_beats(_a: Actor, State(st): State<AppState>) -> ApiResult<Jso
     for (m, i, n, okn, ms, re) in rows {
         out.entry(m).or_insert_with(|| vec![(0, 0, None, 0); BUCKETS])[i as usize] = (n, okn, ms, re);
     }
-    Ok(ok(out))
+    Ok(ok(ProbeBeats(out)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// 总览曲线、心跳条改成类型前后：`{"data": …}` 逐字节相同
+    #[test]
+    fn series_probe_beats_and_meta_match_old_json() {
+        let at = OffsetDateTime::from_unix_timestamp(1_793_000_040).unwrap();
+        let pts = || vec![RatePoint { ts: at, net_rx_bps: 0.0, net_tx_bps: 1234.5 }, RatePoint { ts: at + time::Duration::minutes(1), net_rx_bps: 8e9, net_tx_bps: 0.25 }];
+        // 改之前是 json!({"points": v})、HashMap 原样：比对过之后留下输出做快照
+        let old = r#"{"data":{"points":[{"net_rx_bps":0.0,"net_tx_bps":1234.5,"ts":"2026-10-26T07:34:00Z"},{"net_rx_bps":8000000000.0,"net_tx_bps":0.25,"ts":"2026-10-26T07:35:00Z"}]}}"#;
+        assert_eq!(crate::api::body(OverviewSeries { points: pts() }).unwrap(), old);
+        let beats = || std::collections::HashMap::from([(Uuid::nil(), vec![(3, 2, Some(41.5), 1), (0, 0, None, 0)]), (Uuid::max(), vec![(1, 1, None, 0)])]);
+        let old_b = r#"{"data":{"00000000-0000-0000-0000-000000000000":[[3,2,41.5,1],[0,0,null,0]],"ffffffff-ffff-ffff-ffff-ffffffffffff":[[1,1,null,0]]}}"#;
+        assert_eq!(crate::api::body(ProbeBeats(beats())).unwrap(), old_b);
+        // meta：改之前是在 meta::to_json() 上补 ssh_public_key（读不到为 null）
+        for key in [Some("ssh-ed25519 AAAA fleet@central".to_string()), None] {
+            let mut v = crate::meta::to_json();
+            v["ssh_public_key"] = json!(key);
+            let typed = MetaOut { meta: crate::meta::typed(), ssh_public_key: key };
+            assert_eq!(crate::api::body(typed).unwrap(), crate::api::body(v).unwrap());
+        }
+    }
 }

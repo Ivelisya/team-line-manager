@@ -26,9 +26,11 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// 假 ssh：参数里 `root@` 后面是 IP，最后一个参数是远端命令（`bash -s` 时脚本从 stdin 来，推文件时 stdin 是文件内容）
+/// 远端命令的 PATH 只有桩（bin/）和 sys/（测试机 PATH 里的程序，去掉 HIDDEN 里的），不看测试机上装了什么
 const SSH: &str = r#"#!/bin/sh
 for a; do last=$a; case $a in root@*) ip=${a#root@};; esac; done
 export R="$FAKE_ROOT/$ip"
+export PATH="$FAKE_ROOT/bin:$FAKE_ROOT/sys"
 [ -e "$R/refuse" ] && { echo "root@$ip: Permission denied (publickey)." >&2; exit 255; }
 mkdir -p "$R/etc/systemd/system" "$R/run"
 fix() { sed "s#/run/#$R/run/#g; s#/usr/local/bin/#$R/usr/local/bin/#g; s#/etc/#$R/etc/#g; s#/var/lib/#$R/var/lib/#g; s#^PS=/proc/sys\$#PS=$R/proc/sys#; s#^MI=/proc/meminfo\$#MI=$R/proc/meminfo#"; }
@@ -68,7 +70,8 @@ const STUBS: &[(&str, &str)] = &[
     // 调优脚本：不是容器、时间已同步
     ("systemd-detect-virt", "#!/bin/sh\nexit 1\n"),
     ("timedatectl", "#!/bin/sh\necho yes\n"),
-    ("apt-get", "#!/bin/sh\n"),
+    // 什么都不装，只记下调用
+    ("apt-get", "#!/bin/sh\necho \"$*\" >> \"$R/apt-get.log\"\n"),
     ("sshd", "#!/bin/sh\n[ \"$1\" = -T ] && echo 'passwordauthentication no'\nexit 0\n"),
     // 调优脚本采样已建立的连接：机器根目录里的 ss-established；其余是节点脚本查监听
     ("ss", "#!/bin/sh\ncase \"$*\" in *established*) cat \"$R/ss-established\" 2>/dev/null ;; *) echo 'LISTEN 0 4096 0.0.0.0:8388 0.0.0.0:*' ;; esac\n"),
@@ -82,7 +85,11 @@ exit 0
     ("install", INSTALL),
 ];
 
-/// bin/ 下是假 ssh、systemctl 等桩，各机器的根目录按 IP 放在旁边。整个进程只装一次（目录留在 /tmp，进程结束也不删）
+/// 假机器上没有的程序：测试机装没装都一样（基线脚本 `command -v mtr`，测试机装了 mtr 时会报 mtr=ok）
+const HIDDEN: &[&str] = &["mtr"];
+
+/// bin/ 下是假 ssh、systemctl 等桩，sys/ 下是测试机 PATH 里各程序的符号链接（同名取 PATH 里靠前的，HIDDEN 里的不放），
+/// 远端命令只在这两处找程序；各机器的根目录按 IP 放在旁边。整个进程只装一次（目录留在 /tmp，进程结束也不删）
 static FAKE: LazyLock<tempfile::TempDir> = LazyLock::new(|| {
     let dir = tempfile::tempdir().unwrap();
     let bin = dir.path().join("bin");
@@ -91,7 +98,21 @@ static FAKE: LazyLock<tempfile::TempDir> = LazyLock::new(|| {
     for (name, body) in STUBS {
         exe(&bin.join(name), body);
     }
-    std::env::set_var("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default()));
+    let path = std::env::var("PATH").unwrap_or_default();
+    let sys = dir.path().join("sys");
+    std::fs::create_dir_all(&sys).unwrap();
+    for d in std::env::split_paths(&path) {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.filter_map(Result::ok) {
+            let name = e.file_name();
+            if e.file_type().is_ok_and(|t| t.is_dir()) || name.to_str().is_some_and(|n| HIDDEN.contains(&n)) {
+                continue;
+            }
+            // 已有同名的（PATH 里靠前的那个）跳过
+            let _ = std::os::unix::fs::symlink(e.path(), sys.join(&name));
+        }
+    }
+    std::env::set_var("PATH", format!("{}:{path}", bin.display()));
     std::env::set_var("FAKE_ROOT", dir.path());
     dir
 });
@@ -450,6 +471,7 @@ async fn baseline_restarts_sshd_older_than_its_config() {
     assert_eq!((o.code, o.kv("sshd_password"), restarts()), (0, Some("no"), 1), "{o:?}");
     // 桩 apt-get 什么都不装：mtr 装不上只报出来，基线照样成功
     assert_eq!(o.kv("mtr"), Some("missing"), "{o:?}");
+    assert!(read(&root.join("apt-get.log")).contains("install -y -qq mtr-tiny"), "{}", read(&root.join("apt-get.log")));
     assert!(read(&conf[1]).starts_with("Include "), "{}", read(&conf[1]));
     // sshd 在配置改过之后启动：不重启
     for f in &conf {

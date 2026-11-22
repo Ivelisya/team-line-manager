@@ -113,7 +113,7 @@ pub fn convert(fx: &Stored, cents: i64, currency: &str) -> (Option<i64>, Option<
 }
 
 /// 合计里的一个币种
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, ts_rs::TS)]
 pub struct Part {
     pub currency: String,
     /// 原币种的合计（分）
@@ -125,14 +125,14 @@ pub struct Part {
 }
 
 /// 没有汇率、没折算的币种
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, ts_rs::TS)]
 pub struct Unconverted {
     pub currency: String,
     pub cents: i64,
 }
 
 /// 月费合计（USD）：总览的 `monthly_usd`、团队的 `monthly_usd`
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, ts_rs::TS)]
 pub struct Total {
     /// 能折算的部分的 USD 合计（分）；不含 `unconverted`
     pub cents: i64,

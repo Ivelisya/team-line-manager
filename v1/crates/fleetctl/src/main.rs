@@ -1,10 +1,11 @@
 //! fleetctl：团队线路管理的运维命令行。人看表格，AI 加 `--json` 拿 JSON。
-//! 退出码：0 成功；1 失败（错误信息在 stderr）；2 命令行参数不对。exec 单台时沿用远端命令的退出码。
+//! 退出码：0 成功；1 失败（错误信息在 stderr）；2 命令行参数不对（带 --json 时 stderr 是 code 为 usage 的错误 JSON）。exec 单台时沿用远端命令的退出码。
 
 mod access;
 mod batches;
 mod billing;
 mod catalog;
+mod clihelp;
 mod client;
 mod cmds;
 mod config;
@@ -21,6 +22,7 @@ mod recycle;
 mod report;
 mod resolve;
 mod routers;
+mod server_stats;
 mod settings;
 mod silence;
 mod ssh;
@@ -38,7 +40,7 @@ use std::process::ExitCode;
     name = "fleetctl",
     version,
     about = "团队线路管理 运维命令行",
-    after_help = "连接配置：环境变量 FLEET_URL、FLEET_TOKEN，或 `fleetctl login` 写入的配置文件。\n<机器> 可以写 机器 id、显示名（团队1-06）、线路机名、IP。\n加 --json 输出一行 JSON：ls / entries / incidents / policy ls / silence 是与表格同列的精简对象（单台完整视图用 show、policy show），billing 是订阅、流量额度与最近续费记录合成的对象，router exits 是按出口算好的统计，router changes 是配置变更记录（新的在前），provider / plan 的 add、set 是改完后的那一项（同 ls 的一项），其余是 API 返回的 data 原样；错误一律走 stderr 且退出码非 0。"
+    after_help = "连接配置：环境变量 FLEET_URL、FLEET_TOKEN，或 `fleetctl login` 写入的配置文件。\n<机器> 可以写 机器 id、显示名（团队1-06）、线路机名、IP。\n加 --json 输出一行 JSON：ls / entries / incidents / policy ls / silence 是与表格同列的精简对象（单台完整视图用 show、policy show），billing 是订阅、流量额度与最近续费记录合成的对象，router exits 是按出口算好的统计，router changes 是配置变更记录（新的在前），provider / plan 的 add、set 是改完后的那一项（同 ls 的一项），其余是 API 返回的 data 原样；错误一律走 stderr 且退出码非 0。\n全部命令与参数一次列出：fleetctl help --all [--json]。"
 )]
 struct Cli {
     /// 输出 JSON（给脚本和 AI）
@@ -702,6 +704,15 @@ enum Cmd {
         #[arg(long, default_value_t = 200)]
         lines: u32,
     },
+    /// 中控自己慢不慢、慢在哪：各连接池的占用与取连接耗时，各接口最近 15 分钟与启动以来的耗时分布（p50 / p90 / p99、慢的、5xx）
+    ServerStats {
+        /// 只列最近 15 分钟占用时间最多的前几个接口
+        #[arg(long, default_value_t = 20)]
+        top: usize,
+        /// 列出全部接口（含最近 15 分钟没有请求的）
+        #[arg(long)]
+        all: bool,
+    },
     /// API 密钥管理
     Keys {
         #[command(subcommand)]
@@ -838,7 +849,7 @@ enum Cmd {
         #[arg(long)]
         team: Option<String>,
     },
-    /// 软路由：详情、接入（接入命令或一键部署）、重新生成接入命令、改名、删除、同步出口参数、临时切换出口
+    /// 软路由：详情、接入（接入命令或一键部署）、重新生成接入命令、改名、删除、同步出口参数、临时切换出口、只重启 OpenClash、看配置与备份、出口改名跟上面板、来源 IP 分流规则
     Router {
         #[command(subcommand)]
         cmd: RouterCmd,
@@ -1079,6 +1090,58 @@ enum RouterCmd {
         #[arg(long)]
         back: bool,
     },
+    /// 只重启 OpenClash（配置一行不动）：断开经这台路由的全部连接，客户端马上重连。不加 --yes 只打印预览（要测的出口、此刻的连接数）；
+    /// --wait（同 --follow）等到隧道回连、面板出口测完延迟，写明哪些回来了（重启前通、重启后不通的有就退出码 1）。不要在路由上手动重启
+    Restart {
+        router: String,
+        #[arg(long)]
+        yes: bool,
+        #[arg(long, visible_alias = "wait")]
+        follow: bool,
+    },
+    /// 看配置（只读，中控登录路由读，记审计）：出口、策略组、规则 → 出口（来源 IP 分流）；--backups 列路由上的备份；
+    /// --diff <备份> 现在的配置和那份备份逐行比较（在中控算，凭据隐去）。不要去路由上 cat / diff
+    Config {
+        router: String,
+        /// 和这份备份比较：备份名（c.yaml.20261023-073012Z）或只写时间戳（20261023-073012Z），见 --backups
+        #[arg(long, conflicts_with = "backups")]
+        diff: Option<String>,
+        /// 列路由上 /etc/fleet-backup/openclash/ 里的备份（中控作业改配置前留的）
+        #[arg(long)]
+        backups: bool,
+    },
+    /// 出口名跟上面板：编号压缩（退役、改团队后后面的前移补号）之后，出口名末尾的编号改成它指向的节点现在的编号（节点07 → 节点04），
+    /// 策略组成员、分流规则里的引用一起改，select 组改完按新名字选回原来那个出口。只动「已建立对应」的面板出口（同 router sync），
+    /// 备份后改，改完重启 OpenClash 并核对，失败整份换回。不加 --yes 只打印预览（改哪些、要改的行、不改的及原因）。不要手改路由配置
+    RenameExits {
+        router: String,
+        /// 改成跟面板现在的编号（目前只有这一种改法，必须写）
+        #[arg(long, required = true)]
+        follow_fleet: bool,
+        /// 只改这个出口（可重复，也可逗号分隔；不给 = 全部已建立对应、名字对不上面板的）
+        #[arg(long = "exit", value_delimiter = ',')]
+        exits: Vec<String>,
+        /// 点名的出口从没对上过入口、或指向直出 / 备用团队 / 别的团队的节点，仍要改
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        follow: bool,
+    },
+    /// 来源 IP 分流（SRC-IP-CIDR → 出口）：不给 --assign 列出现有的；--assign <CIDR、IP 或 IP 段>=<出口>（可重复）改——同网段已有规则的改目标，
+    /// 没有的加在最后一条 SRC-IP-CIDR 规则后面；和现有规则重叠的、配置里还没有 SRC-IP-CIDR 规则的拒绝。设备编号段（B001-B100）面板里没有对应的地址，写成 IP 段。
+    /// 备份后改，改完重启 OpenClash、目标出口测通且规则生效才算，失败整份换回。不加 --yes 只打印预览。不要手改路由配置
+    Rules {
+        router: String,
+        /// <来源>=<出口>，如 10.31.5.0/24=节点04、10.31.5.101-10.31.5.200=节点05
+        #[arg(long)]
+        assign: Vec<String>,
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        follow: bool,
+    },
     /// 删除：撤销隧道公钥，状态与指标一起删掉；路由上中控加的东西要在路由上自己清（会打印命令）
     Rm {
         router: String,
@@ -1261,6 +1324,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Diag(o) => diag::run(x, o),
         Cmd::Logs { machine, unit, lines } => cmds::logs(x, &machine, &unit, lines),
         Cmd::ServerLogs { lines } => cmds::server_logs(x, lines),
+        Cmd::ServerStats { top, all } => server_stats::server_stats(x, top, all),
         Cmd::Keys { cmd } => {
             let ka = |a: KeyAuthArgs| ops::KeyAuth { user: a.user, password_stdin: a.password_stdin };
             match cmd {
@@ -1313,6 +1377,10 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             RouterCmd::Protocol { router, to, exits, yes, follow } => routers::protocol(x, &router, &to, &exits, yes, follow),
             RouterCmd::RemoveExits { router, exits, force, yes, follow } => routers::remove_exits(x, &router, &exits, force, yes, follow),
             RouterCmd::Switch { router, group, to, dur, back } => routers::switch(x, &router, &group, to.as_deref(), dur.as_deref(), back),
+            RouterCmd::Restart { router, yes, follow } => routers::restart(x, &router, yes, follow),
+            RouterCmd::Config { router, diff, backups } => routers::config(x, &router, diff.as_deref(), backups),
+            RouterCmd::RenameExits { router, follow_fleet: _, exits, force, yes, follow } => routers::rename_exits(x, &router, &exits, force, yes, follow),
+            RouterCmd::Rules { router, assign, yes, follow } => routers::rules(x, &router, &assign, yes, follow),
         },
         Cmd::Probe { cmd } => match cmd {
             ProbeCmd::Ls => probe::ls(x),
@@ -1343,7 +1411,16 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    // `help --all`：全部命令的一览（clap 的 help 子命令不收选项，先认出来）
+    if let Some(code) = clihelp::catalogue_request(&argv, <Cli as clap::CommandFactory>::command) {
+        return code;
+    }
+    // 参数写错：带 --json 时 stderr 也是错误 JSON（code = usage），退出码仍是 2
+    let cli = match Cli::try_parse_from(&argv) {
+        Ok(c) => c,
+        Err(e) => return clihelp::usage_error(e, &argv),
+    };
     let json = cli.json;
     match run(cli) {
         Ok(code) => ExitCode::from(code),

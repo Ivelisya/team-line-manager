@@ -1,7 +1,7 @@
 //! 软路由：记录与接入命令、一次性接入脚本、重新接入换密钥与端口、删除撤销、改名、采集一轮（假 ssh 回一份采集结果）、告警、
 //! 指标曲线与保留期、一键部署（假 ssh / sshpass / ssh-keyscan）。需要 PostgreSQL（见 common）。
 //!
-//! 路由是假的：PATH 最前面放假 ssh、sshpass、ssh-keyscan。远端按 `-p <端口>` 分「路由根目录」`<临时目录>/<端口>/`，脚本经 stdin 来，
+//! 路由是假的：PATH 最前面放假 ssh、sshpass、ssh-keyscan。远端按测试与 `-p <端口>` 分「路由根目录」`<测试临时目录>/fake-routers/<端口>/`（见 NS），脚本经 stdin 来，
 //! 把 /etc/ 换到根目录里再用本机 sh 跑（/usr/bin/ssh 用本机的 OpenSSH）；采集脚本（含 FLEET_UC）回根目录里的 collect.json，
 //! 延迟测试脚本（MODE='delay'）回 delay.json（没有时回「没测成」），取配置文件（含 head -c）回 config.yaml，临时切换脚本（MODE='switch'）把组名记进 switch.log、选中的出口写进 group.now（回读的「切之前」是它原来的内容）。根目录里有 refuse-key 时中控密钥登录被拒、有 down 时连不上、有 hostkey 时 keyscan 回它。
 //! sshpass 核对 SSHPASS（环境变量）是不是根目录里的 password，并记下有没有拿到、参数里有什么。PATH 是整个进程共用的，所以单独一个测试文件。
@@ -37,9 +37,10 @@ for a; do
   if [ "${next:-}" = 1 ]; then port=$a; next=; fi
   [ "$a" = -p ] && next=1
   [ "$a" = -O ] && exit 0
+  case $a in UserKnownHostsFile=*) kh=${a#UserKnownHostsFile=} ;; esac
   last=$a
 done
-R="$FAKE_ROOT/${port:-22}"
+R="$(ns "${kh:-}")/${port:-22}"
 mkdir -p "$R"
 [ -e "$R/down" ] && { echo "ssh: connect to host 127.0.0.1 port $port: Connection refused" >&2; exit 255; }
 case " $* " in *PubkeyAuthentication=no*) ;; *) [ -e "$R/refuse-key" ] && { echo "root@127.0.0.1: Permission denied (publickey)." >&2; exit 255; } ;; esac
@@ -65,12 +66,21 @@ const SSHPASS: &str = r#"#!/bin/sh
 for a; do
   if [ "${next:-}" = 1 ]; then port=$a; next=; fi
   [ "$a" = -p ] && next=1
+  case $a in UserKnownHostsFile=*) kh=${a#UserKnownHostsFile=} ;; esac
 done
-R="$FAKE_ROOT/$port"
+R="$(ns "${kh:-}")/$port"
 mkdir -p "$R"
 printf 'env=%s args=%s\n' "${SSHPASS:+set}" "$*" >> "$R/sshpass.log"
 [ "${SSHPASS:-}" = "$(cat "$R/password" 2>/dev/null)" ] || exit 5
 exec "$@"
+"#;
+
+/// 路由根目录按测试分开：隧道端口是中控在 23000–23999 里随机分的（各测试的库互不相干，并行的两个测试会分到同一个），
+/// 测试里改成的端口也落在这个范围里。假 ssh / sshpass 从参数里的 UserKnownHostsFile（测试临时目录里的 router_known_hosts，
+/// 一键部署是 ssh-ctl/ 下的临时文件）认出是哪个测试，根目录是 `<测试临时目录>/fake-routers/<端口>/`（见 `root`）。
+/// ssh-keyscan 的参数里认不出测试：一键部署的端口是本机现占的（`fake_router`），在 `<FAKE>/<端口>` 放一个指向根目录的符号链接
+const NS: &str = r#"
+ns() { case $1 in '') echo "$FAKE_ROOT" ;; *) d=$(dirname "$1"); echo "${d%/ssh-ctl}/fake-routers" ;; esac; }
 "#;
 
 /// 回「[主机]:端口 ssh-ed25519 公钥」：根目录里有 hostkey 用它，有 no-sshd 什么都不回，否则用固定的一把
@@ -90,8 +100,10 @@ echo "[$host]:$port ssh-ed25519 $k"
 static FAKE: LazyLock<tempfile::TempDir> = LazyLock::new(|| {
     let dir = tempfile::tempdir().unwrap();
     let bin = dir.path().join("bin");
-    exe(&bin.join("ssh"), SSH);
-    exe(&bin.join("sshpass"), SSHPASS);
+    // ns() 插在 shebang 之后
+    let with_ns = |body: &str| body.replacen('\n', &format!("\n{}", NS.trim_start()), 1);
+    exe(&bin.join("ssh"), &with_ns(SSH));
+    exe(&bin.join("sshpass"), &with_ns(SSHPASS));
     exe(&bin.join("ssh-keyscan"), KEYSCAN);
     std::env::set_var("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default()));
     std::env::set_var("FAKE_ROOT", dir.path());
@@ -104,8 +116,8 @@ fn exe(p: &Path, body: &str) {
     std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
-/// 某个端口的「路由根目录」
-fn root(port: i64) -> PathBuf { FAKE.path().join(port.to_string()) }
+/// 本测试某个端口的「路由根目录」（见 NS）
+fn root(t: &T, port: i64) -> PathBuf { t.dir.path().join("fake-routers").join(port.to_string()) }
 
 fn read(p: &Path) -> String { std::fs::read_to_string(p).unwrap_or_default() }
 
@@ -352,7 +364,7 @@ async fn one_collection_round() {
     let entry = seed_entry(&t).await;
     let (id, _) = create(&t, "团队1-路由").await;
     let port = issue_key(&t, &id).await;
-    let r = root(port);
+    let r = root(&t, port);
     std::fs::create_dir_all(&r).unwrap();
     let now = OffsetDateTime::now_utc().unix_timestamp();
     std::fs::write(r.join("collect.json"), collect_json(now, 1_000_000).to_string()).unwrap();
@@ -413,7 +425,7 @@ async fn collect_error_is_not_offline() {
     // 各测试的库是分开的、分到的隧道端口都从段首起，假路由的根目录按端口分：换一个别的测试不用的
     let port = 23950;
     sqlx::query("update router set tunnel_port = $2 where id = $1::uuid").bind(&id).bind(port as i32).execute(&t.st.db).await.unwrap();
-    let r = root(port);
+    let r = root(&t, port);
     std::fs::create_dir_all(&r).unwrap();
     let now = OffsetDateTime::now_utc().unix_timestamp();
     std::fs::write(r.join("collect.json"), collect_json(now, 1_000_000).to_string()).unwrap();
@@ -478,7 +490,7 @@ async fn config_changes_timeline() {
     issue_key(&t, &id).await;
     let port = 23951;
     sqlx::query("update router set tunnel_port = $2 where id = $1::uuid").bind(&id).bind(port as i32).execute(&t.st.db).await.unwrap();
-    let r = root(port);
+    let r = root(&t, port);
     std::fs::create_dir_all(&r).unwrap();
     let now = OffsetDateTime::now_utc().unix_timestamp();
     let with_sha = |n: i64, sha: &str| { let mut c = collect_json(now + n, 1_000_000 + n as u64); c["oc"]["config_sha256"] = json!(sha); c.to_string() };
@@ -541,7 +553,7 @@ async fn config_fetch_failure_is_retried() {
     issue_key(&t, &id).await;
     let port = 23952;
     sqlx::query("update router set tunnel_port = $2 where id = $1::uuid").bind(&id).bind(port as i32).execute(&t.st.db).await.unwrap();
-    let r = root(port);
+    let r = root(&t, port);
     std::fs::create_dir_all(&r).unwrap();
     let now = OffsetDateTime::now_utc().unix_timestamp();
     let with_sha = |n: i64, sha: &str| { let mut c = collect_json(now + n, 1_000_000 + n as u64); c["oc"]["config_sha256"] = json!(sha); c.to_string() };
@@ -1256,10 +1268,14 @@ async fn metrics_rollup_and_retention() {
 // ── 一键部署 ──────────────────────────────────────────────────────────────
 
 /// 一个「路由」：本机监听一个端口（中控要先连得上 SSH 端口），根目录里备好 dropbear 目录、rc.common 桩、密码
-fn fake_router(password: &str) -> (std::net::TcpListener, i64, PathBuf) {
+fn fake_router(t: &T, password: &str) -> (std::net::TcpListener, i64, PathBuf) {
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = l.local_addr().unwrap().port() as i64;
-    let r = root(port);
+    let r = root(t, port);
+    // ssh-keyscan 认不出测试，按端口找（端口是本机现占的，别的测试拿不到同一个；上一次运行留下的同名链接换掉）
+    let link = FAKE.path().join(port.to_string());
+    let _ = std::fs::remove_file(&link);
+    std::os::unix::fs::symlink(&r, &link).unwrap();
     std::fs::create_dir_all(r.join("etc/dropbear")).unwrap();
     std::fs::create_dir_all(r.join("etc/init.d")).unwrap();
     // dropbear 监听 0.0.0.0:22（删掉这个文件 = 没有监听）
@@ -1283,7 +1299,7 @@ async fn wait_deploy(t: &T, id: &str) -> Value {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_click_deploy() {
     let t = setup().await;
-    let (_l, sport, r) = fake_router("pw-test-123");
+    let (_l, sport, r) = fake_router(&t, "pw-test-123");
     let d = t.post("/api/v1/routers", json!({"name": "部署的", "ssh": {"host": "127.0.0.1", "port": sport, "user": "root", "password": "pw-test-123"}})).await;
     assert!(d.get("bootstrap").is_none(), "一键部署不发接入命令：{d}");
     let id = d["id"].as_str().unwrap().to_string();
@@ -1372,7 +1388,7 @@ async fn one_click_deploy() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn redeploy_restore_skips_taken_port() {
     let t = setup().await;
-    let (_l, sport, r) = fake_router("pw");
+    let (_l, sport, r) = fake_router(&t, "pw");
     let (id, _) = create(&t, "部署A").await;
     let (other, _) = create(&t, "路由B").await;
     let old = issue_key(&t, &id).await;
@@ -1397,7 +1413,7 @@ async fn switch_and_auto_back() {
     issue_key(&t, &id).await;
     let port = 23940;
     sqlx::query("update router set tunnel_port = $2 where id = $1::uuid").bind(&id).bind(port).execute(&t.st.db).await.unwrap();
-    let r = root(port.into());
+    let r = root(&t, port.into());
     let _ = std::fs::remove_dir_all(&r);
     std::fs::create_dir_all(&r).unwrap();
     std::fs::write(r.join("group.now"), "节点01").unwrap();
@@ -1454,7 +1470,7 @@ async fn due_skips_record_changed_while_waiting() {
     issue_key(&t, &id).await;
     let port = 23942;
     sqlx::query("update router set tunnel_port = $2 where id = $1::uuid").bind(&id).bind(port).execute(&t.st.db).await.unwrap();
-    let r = root(port.into());
+    let r = root(&t, port.into());
     let _ = std::fs::remove_dir_all(&r);
     std::fs::create_dir_all(&r).unwrap();
     std::fs::write(r.join("group.now"), "节点01").unwrap();
@@ -1497,7 +1513,7 @@ async fn switch_unused_group_and_deferred_back() {
     issue_key(&t, &id).await;
     let port = 23941;
     sqlx::query("update router set tunnel_port = $2 where id = $1::uuid").bind(&id).bind(port).execute(&t.st.db).await.unwrap();
-    let r = root(port.into());
+    let r = root(&t, port.into());
     let _ = std::fs::remove_dir_all(&r);
     std::fs::create_dir_all(&r).unwrap();
     std::fs::write(r.join("group.now"), "节点01").unwrap();

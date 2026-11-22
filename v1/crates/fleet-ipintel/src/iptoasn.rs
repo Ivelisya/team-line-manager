@@ -36,7 +36,7 @@ impl IpToAsn {
         // SAFETY: 同 xdb，替换走 rename，映射期间文件内容不变。
         let map = unsafe { Mmap::map(&f) }.map_err(|e| format!("{}: mmap: {e}", path.display()))?;
         if map.len() >= 2 && map[0] == 0x1f && map[1] == 0x8b {
-            return Err(format!("{}: 是 gzip 压缩文件，请先解压（fetch-dbs.sh 会解压）", path.display()));
+            return Err(format!("{}: 是 gzip 压缩文件，请先解压（fleet-server ipintel-fetch 会解压）", path.display()));
         }
         // 只存行偏移（u32）；iptoasn 本身按起始地址排好序，顺手核对，乱序时才按解析出的地址重排。
         let mut v4: Vec<u32> = Vec::with_capacity(600_000);

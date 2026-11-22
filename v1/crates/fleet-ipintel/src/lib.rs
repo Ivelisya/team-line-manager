@@ -14,8 +14,9 @@ pub mod lookup;
 pub mod service;
 pub mod xdb;
 
-#[cfg(test)]
-mod testutil;
+/// 构造库（xdb、iptoasn TSV）：本 crate 的单元测试用；`testutil` 特性打开时给别的 crate 的测试用（fleet-server ipintel-fetch 的假下载源）
+#[cfg(any(test, feature = "testutil"))]
+pub mod testutil;
 
 pub use classify::ConnType;
 pub use lists::Lists;

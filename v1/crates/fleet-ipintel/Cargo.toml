@@ -16,5 +16,9 @@ maxminddb = { version = "=0.32.0", features = ["mmap"] }
 memmap2 = "=0.9.11"
 regex = "=1.13.1"
 
+[features]
+# 测试用的构造库（testutil 模块）给 fleet-server 的测试用；正式构建不打开
+testutil = []
+
 [dev-dependencies]
 tempfile = "=3.27.0"

@@ -10,6 +10,13 @@
 //! - 删出口（`GET` 预览 / `POST /routers/{id}/exits/remove`，`exits` 点名）：客户不要了的出口连同指向它的分流规则、策略组里的引用一起从配置里删掉，
 //!   作业 router_exit_rm（jobs/steps/router_exits.rs）。对不上面板入口的出口要 `force`；指着的备用机器删完不再被扣住，到期后自动回收。
 //! - 临时切换（`POST /routers/{id}/switch`、`POST /routers/{id}/switch/back`）：select 组经 mihomo API 切到组里另一个出口，不重启，可到时自动切回（routers/switch.rs）。
+//! - 只重启 OpenClash（`GET` 预览 / `POST /routers/{id}/restart`）：配置不动，作业 router_restart（重启、等 API、测 fleet 出口；隧道断了等回连再取结果）。
+//! - 看配置（只读：`GET /routers/{id}/config`、`/config/backups`、`/config/diff?backup=`）：经隧道读路由上的源配置 / 备份，结构、备份列表、
+//!   与某份备份的逐行比较（凭据隐去，routers::ops::mask）。这几个会登录路由读东西，记审计 `router.config_read`（同 `fleetctl ssh` 登录前记 ssh.login；
+//!   `router show` 只读中控里的快照，不记）。
+//! - 出口改名跟上面板（`GET` 预览 / `POST /routers/{id}/rename-exits`）：编号压缩后出口名末尾的编号改成节点现在的编号，作业 router_rename。
+//! - 来源 IP 分流规则（`GET /routers/{id}/rules[?assign=…]` 列出 / 预览，`POST` 改）：SRC-IP-CIDR → 出口，作业 router_rules。
+//!   改名、规则都按路由此刻的配置算要改的行（预览就读一次配置），执行时再读一次、对不上就不改（routers::ops 的说明）。
 
 use super::ok;
 use super::replace::{routers_view, ExitPlan, RouterPlan};
@@ -533,4 +540,358 @@ pub struct BackIn {
 /// 切回第一次切之前的出口
 pub async fn switch_back(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<BackIn>) -> ApiResult<Json<Value>> {
     Ok(ok(switch::back(&st, &a.name, id, &b.group).await?))
+}
+
+// ── 只重启 OpenClash ───────────────────────────────────────────────────────
+
+/// 这台路由已经有没做完的作业（改出口、重启…）：409
+async fn not_busy(tx: &mut crate::db::Tx<'_>, id: Uuid) -> ApiResult<()> {
+    let busy: Option<Uuid> = sqlx::query_scalar("select id from job where target_id = $1 and state in ('queued', 'running', 'waiting', 'cancelling')").bind(id).fetch_optional(&mut **tx).await?;
+    if let Some(j) = busy {
+        return Err(ApiError::conflict(format!("这台软路由已经有一个作业没做完（{j}）：等它结束再发起")).with_detail(json!({"job_id": j})));
+    }
+    Ok(())
+}
+
+/// 重启的预览：会断开多少连接、重启后测哪些出口（现在通不通）
+fn restart_plan(r: &routers::Row) -> Value {
+    let snap = r.snapshot().unwrap_or_default();
+    let mut blockers = vec![];
+    if r.state() != "online" {
+        blockers.push(format!("软路由「{}」现在不在线：等它在线再重启", r.name));
+    } else if !snap.openclash.enabled {
+        blockers.push(format!("软路由「{}」的 OpenClash 没有启用：重启会把它停掉，不归这里做", r.name));
+    }
+    let exits: Vec<Value> = snap
+        .exits
+        .iter()
+        .filter(|x| x.sync != "unmanaged")
+        .map(|x| json!({"exit": x.name, "entry": x.entry.as_ref().map(|e| e.name.clone()), "alive": routers::collect::usable(x), "delay_ms": x.delay_ms}))
+        .collect();
+    let mut warnings = vec![format!(
+        "重启 OpenClash 会断开经这台路由的全部连接（此刻 {} 个连接、{} 个在线客户端），客户端马上重连；路由自身流量走 OpenClash 的话隧道也会断一下，中控等它回连",
+        snap.openclash.conns.unwrap_or(0),
+        snap.clients.iter().filter(|c| c.online).count()
+    )];
+    let dead: Vec<&str> = exits.iter().filter(|x| x["alive"] == false).filter_map(|x| x["exit"].as_str()).collect();
+    if !dead.is_empty() {
+        warnings.push(format!("这些出口现在就不通，重启后不通不算重启出的问题：{}", dead.join("、")));
+    }
+    json!({
+        "router": {"id": r.id, "name": r.name},
+        "ok": blockers.is_empty(),
+        "blockers": blockers,
+        "openclash": {"running": snap.openclash.running, "version": snap.openclash.version, "conns": snap.openclash.conns},
+        "exits": exits,
+        "warnings": warnings,
+    })
+}
+
+/// 预览：重启会断开什么、重启后测哪些出口
+pub async fn restart_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
+    let r = row(&st, id).await?;
+    Ok(ok(restart_plan(&r)))
+}
+
+/// 有 blocker 时 409（`detail.blockers`）
+fn blocked(v: &Value) -> ApiResult<()> {
+    if v["ok"] == true {
+        return Ok(());
+    }
+    let b: Vec<String> = serde_json::from_value(v["blockers"].clone()).unwrap_or_default();
+    Err(ApiError::conflict(b.join("；")).with_detail(json!({"blockers": b})))
+}
+
+/// 发起：建 router_restart 作业（重启 OpenClash、等 API、测 fleet 出口；配置不动）
+pub async fn restart(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
+    let r = row(&st, id).await?;
+    let mut v = restart_plan(&r);
+    blocked(&v)?;
+    let mut tx = st.db.begin().await?;
+    not_busy(&mut tx, id).await?;
+    let job = jobs::enqueue(&mut tx, "router_restart", Some(id), json!({"router_name": r.name}), &a.name).await?;
+    audit(&mut tx, &a.name, "router.restart", "router", Some(id), json!({"name": r.name, "job_id": job})).await?;
+    tx.commit().await?;
+    st.wake_jobs();
+    st.emit(Event::Job { id: job, target: Some(id) });
+    v["job_id"] = json!(job);
+    Ok(ok(v))
+}
+
+// ── 看配置（只读） ────────────────────────────────────────────────────────
+
+/// 经隧道读路由上的东西：不在线、连不上、脚本说读不了 409（写明原因）；没有那份备份 404
+async fn read_live(st: &AppState, r: &routers::Row, script: &str) -> ApiResult<String> {
+    if r.state() != "online" {
+        return Err(ApiError::conflict(format!("软路由「{}」现在不在线，读不了它的配置", r.name)));
+    }
+    routers::ops::read_remote(st, r.id, r.tunnel_port, script).await.map_err(|(code, why)| {
+        if code == routers::ops::NO_BACKUP {
+            ApiError::not_found(format!("软路由「{}」：{why}", r.name))
+        } else {
+            ApiError::conflict(format!("软路由「{}」：{why}", r.name))
+        }
+    })
+}
+
+/// 读了路由上的东西：记审计 router.config_read（`view` 是读的什么）
+async fn audit_read(st: &AppState, a: &Actor, r: &routers::Row, view: &str, extra: Value) -> ApiResult<()> {
+    let mut detail = json!({"name": r.name, "view": view});
+    if let (Some(d), Some(e)) = (detail.as_object_mut(), extra.as_object()) {
+        d.extend(e.clone());
+    }
+    let mut tx = st.db.begin().await?;
+    audit(&mut tx, &a.name, "router.config_read", "router", Some(r.id), detail).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// `GET /routers/{id}/config`：现在的源配置的结构（出口、策略组、规则 → 出口；凭据不给）
+pub async fn config(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
+    let r = row(&st, id).await?;
+    let text = read_live(&st, &r, &routers::replace::read_script()).await?;
+    audit_read(&st, &a, &r, "config", json!({})).await?;
+    let snap = r.snapshot();
+    let mut v = routers::ops::structure(&text, snap.as_ref()).map_err(|e| ApiError::conflict(format!("软路由「{}」：{e}", r.name)))?;
+    let oc = snap.as_ref().map(|s| &s.openclash);
+    v["router"] = json!({"id": r.id, "name": r.name});
+    v["config_path"] = json!(oc.and_then(|o| o.config_path.clone()));
+    v["config_mtime"] = json!(oc.and_then(|o| o.config_mtime).map(crate::meta::fmt_ts));
+    v["bytes"] = json!(text.len());
+    Ok(ok(v))
+}
+
+/// `GET /routers/{id}/config/backups`：路由上 /etc/fleet-backup/openclash/ 里的备份（中控作业改配置前留的），新的在前
+pub async fn config_backups(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
+    let r = row(&st, id).await?;
+    let out = read_live(&st, &r, &routers::ops::backups_script()).await?;
+    audit_read(&st, &a, &r, "backups", json!({})).await?;
+    let (backups, path) = routers::ops::parse_backups(&out);
+    Ok(ok(json!({"router": {"id": r.id, "name": r.name}, "config_path": path, "backups": backups})))
+}
+
+#[derive(Deserialize)]
+pub struct DiffQ {
+    /// 备份的文件名，或只写时间戳（20261023-073012Z）
+    backup: String,
+}
+
+/// `GET /routers/{id}/config/diff?backup=`：现在的源配置和这份备份逐行比较（在中控算；两边先隐去凭据，同一次比较里同值同标记）
+pub async fn config_diff(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<DiffQ>) -> ApiResult<Json<Value>> {
+    let name = q.backup.trim();
+    if !routers::ops::backup_name_ok(name) {
+        return Err(ApiError::bad_request("backup 写备份的文件名（c.yaml.20261023-073012Z）或时间戳（20261023-073012Z）：fleetctl router config <路由> --backups 看有哪些"));
+    }
+    let r = row(&st, id).await?;
+    let old = read_live(&st, &r, &routers::ops::backup_read_script(name)).await?;
+    let cur = read_live(&st, &r, &routers::replace::read_script()).await?;
+    audit_read(&st, &a, &r, "diff", json!({"backup": name})).await?;
+    let salt = crate::crypto::random_token(32);
+    let (old, cur) = (routers::ops::mask(&old, salt.as_bytes()), routers::ops::mask(&cur, salt.as_bytes()));
+    let mut v = routers::ops::diff(&old, &cur, &format!("备份 {name}"), "现在").map_err(ApiError::conflict)?;
+    v["router"] = json!({"id": r.id, "name": r.name});
+    v["backup"] = json!(name);
+    Ok(ok(v))
+}
+
+// ── 出口改名跟上面板 ──────────────────────────────────────────────────────
+
+#[derive(Deserialize, Default)]
+pub struct RenameIn {
+    /// 只改这几个出口（空 = 全部已建立对应、名字对不上面板的）
+    #[serde(default)]
+    exits: Vec<String>,
+    /// 点名的出口从没对上过入口、或指向直出 / 备用团队 / 别的团队的节点，仍要改
+    #[serde(default)]
+    force: bool,
+}
+
+/// 改名的计划（按最近一次采集定改哪些，再按路由此刻的配置算要改的行）：(预览, 改名表, 读没读路由的配置)
+async fn rename_plan(st: &AppState, r: &routers::Row, only: &[String], force: bool) -> ApiResult<(Value, Vec<routers::ops::Rename>, bool)> {
+    let snap = r.snapshot().unwrap_or_default();
+    let node_ids: Vec<Uuid> = snap.exits.iter().filter_map(|x| x.entry.as_ref().map(|e| e.node_id)).collect();
+    let rows: Vec<(Uuid, String, Option<i32>, bool)> = sqlx::query_as(
+        "select m.id, display_name(m.kind::text, m.label, t.name, m.number), m.number, coalesce(t.spare, false) from machine m left join team t on t.id = m.team_id where m.id = any($1)",
+    )
+    .bind(&node_ids)
+    .fetch_all(&st.db)
+    .await?;
+    let direct: std::collections::HashSet<Uuid> = snap.exits.iter().filter_map(|x| x.entry.as_ref().filter(|e| e.node_id == e.relay_id).map(|e| e.node_id)).collect();
+    let nodes: HashMap<Uuid, routers::ops::NodeNum> =
+        rows.into_iter().map(|(id, name, number, spare)| (id, routers::ops::NodeNum { name, number, spare, direct: direct.contains(&id) })).collect();
+    let ids: Vec<Uuid> = snap.exits.iter().filter_map(|x| x.entry.as_ref().map(|e| e.id)).collect();
+    let foreign = foreign_why(&st.db, r, &ids).await?;
+    let mut p = routers::ops::rename_plan(&snap, &nodes, &foreign, only, force);
+    // 临时切换的记录按出口名记：改名后对不上，先切回
+    let involved: Vec<&str> = p.map.iter().flat_map(|m| [m.old.as_str(), m.new.as_str()]).collect();
+    for s in switch::active(&st.db, Some(r.id)).await? {
+        if involved.contains(&s.from_exit.as_str()) || involved.contains(&s.to_exit.as_str()) {
+            p.blockers.push(format!("策略组「{}」正在临时切换（{} → {}），记录按出口名记：先切回（fleetctl router switch {} {} --back）再改名", s.grp, s.from_exit, s.to_exit, r.name, s.grp));
+        }
+    }
+    if r.state() != "online" {
+        p.blockers.push(format!("软路由「{}」现在不在线：等它在线再改", r.name));
+    }
+    if p.map.is_empty() && p.blockers.is_empty() {
+        p.blockers.push(format!("软路由「{}」没有要改名的出口（名字都已经和面板的编号对上，或都不归这里改，见 skipped / untrusted）", r.name));
+    }
+    let (mut lines, mut groups, mut read) = (vec![], vec![], false);
+    if p.blockers.is_empty() {
+        let text = read_live(st, r, &routers::replace::read_script()).await?;
+        read = true;
+        match routers::ops::rename_patch(&text, &p.map) {
+            Ok((patch, sel)) => {
+                lines = patch.edits.iter().map(|e| json!({"line": e.line, "was": e.was, "now": e.now})).collect();
+                groups = sel;
+            }
+            Err(e) => p.blockers.extend(e),
+        }
+    }
+    let mut warnings = vec!["改完要重启 OpenClash：经这台路由的连接会全部断开、马上重连".to_string()];
+    if !groups.is_empty() {
+        warnings.push(format!("select 组（{}）现在选着要改名的出口的，改完按新名字选回同一个出口", groups.join("、")));
+    }
+    warnings.push("出口的历史指标、「已建立的对应」跟着改到新名字下".into());
+    let v = json!({
+        "router": {"id": r.id, "name": r.name},
+        "ok": p.blockers.is_empty(),
+        "blockers": p.blockers,
+        "renames": p.rows,
+        "skipped": p.skipped,
+        "untrusted": p.untrusted,
+        "need_force": p.need_force,
+        "lines": lines,
+        "warnings": warnings,
+    });
+    Ok((v, p.map, read))
+}
+
+/// 预览：哪些出口改成什么、要改的行、跳过的及原因
+pub async fn rename_preview(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<SyncQ>) -> ApiResult<Json<Value>> {
+    let r = row(&st, id).await?;
+    let (v, _, read) = rename_plan(&st, &r, &names(q.exits.as_deref()), q.force.unwrap_or(false)).await?;
+    if read {
+        audit_read(&st, &a, &r, "rename_preview", json!({})).await?;
+    }
+    Ok(ok(v))
+}
+
+/// 发起：建 router_rename 作业（备份 → 改名 → 重启 OpenClash → 核对、select 组选回，不行整份换回）
+pub async fn rename(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<RenameIn>) -> ApiResult<Json<Value>> {
+    let r = row(&st, id).await?;
+    let (mut v, map, _) = rename_plan(&st, &r, &b.exits, b.force).await?;
+    blocked(&v)?;
+    let mut tx = st.db.begin().await?;
+    not_busy(&mut tx, id).await?;
+    let params = json!({"map": map, "router_name": r.name, "plan": v["renames"], "force": b.force});
+    let job = jobs::enqueue(&mut tx, "router_rename", Some(id), params, &a.name).await?;
+    let renames: Vec<Value> = map.iter().map(|m| json!({"from": m.old, "to": m.new})).collect();
+    audit(&mut tx, &a.name, "router.rename_exits", "router", Some(id), json!({"name": r.name, "renames": renames, "force": b.force, "job_id": job})).await?;
+    tx.commit().await?;
+    st.wake_jobs();
+    st.emit(Event::Job { id: job, target: Some(id) });
+    v["job_id"] = json!(job);
+    Ok(ok(v))
+}
+
+// ── 来源 IP 分流规则 ──────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct RulesQ {
+    /// 逗号分隔的「来源=出口」（来源是 CIDR、IP 或 IP 段 a-b）；不给只列出现有的
+    assign: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct RulesIn {
+    assign: Vec<routers::ops::Assign>,
+}
+
+fn parse_assign(s: &str) -> ApiResult<Vec<routers::ops::Assign>> {
+    s.split(',')
+        .map(str::trim)
+        .filter(|x| !x.is_empty())
+        .map(|x| {
+            let (spec, to) = x.split_once('=').ok_or_else(|| ApiError::bad_request(format!("「{x}」要写成 来源=出口（10.31.5.0/24=节点04）")))?;
+            Ok(routers::ops::Assign { spec: spec.trim().to_string(), to: to.trim().to_string() })
+        })
+        .collect()
+}
+
+/// 规则的计划（按路由此刻的配置）：(预览, 计划明细)。`assign` 空 = 只列出现有的 SRC-IP-CIDR 规则
+async fn rules_plan(st: &AppState, a: &Actor, r: &routers::Row, assign: &[routers::ops::Assign]) -> ApiResult<(Value, Vec<Value>)> {
+    let text = read_live(st, r, &routers::replace::read_script()).await?;
+    audit_read(st, a, r, "rules", json!({"assign": assign.len()})).await?;
+    let snap = r.snapshot().unwrap_or_default();
+    let view = routers::ops::structure(&text, Some(&snap)).map_err(|e| ApiError::conflict(format!("软路由「{}」：{e}", r.name)))?;
+    let mut v = json!({
+        "router": {"id": r.id, "name": r.name},
+        "src_rules": view["src_rules"], "rules_total": view["rules_total"], "match": view["match"], "rule_targets": view["rule_targets"],
+    });
+    if assign.is_empty() {
+        return Ok((v, vec![]));
+    }
+    let mut blockers: Vec<String> = vec![];
+    let (mut rows, mut lines) = (vec![], vec![]);
+    match routers::ops::rules_patch(&text, assign) {
+        Ok((p, rs)) => {
+            lines = p.edits.iter().map(|e| json!({"line": e.line, "was": e.was, "now": e.now})).collect();
+            rows = rs;
+        }
+        Err(e) => blockers.extend(e),
+    }
+    // 目标出口现在就不通：改完核对测不通会整份换回，先说
+    for t in assign.iter().map(|x| x.to.as_str()).collect::<std::collections::BTreeSet<_>>() {
+        if let Some(x) = snap.exits.iter().find(|x| x.name == t).filter(|x| !routers::collect::usable(x)) {
+            blockers.push(format!("出口「{t}」现在不通（连续 {} 次测延迟不通）：改完核对测不通会整份换回，先让它恢复", x.fail_streak));
+        }
+    }
+    if blockers.is_empty() && !rows.is_empty() && rows.iter().all(|x| x["op"] == "same") {
+        blockers.push("这些来源已经都指向给的出口了，没有要改的".into());
+    }
+    let mut warnings = vec!["改完要重启 OpenClash：经这台路由的连接会全部断开、马上重连".to_string()];
+    let moved: Vec<String> = rows
+        .iter()
+        .filter(|x| x["op"] == "retarget")
+        .map(|x| format!("{}（{} → {}）", x["cidr"].as_str().unwrap_or(""), x["from"].as_str().unwrap_or(""), x["to"].as_str().unwrap_or("")))
+        .collect();
+    if !moved.is_empty() {
+        warnings.push(format!("这些来源现在有规则指着别的出口，改完换出口：{}", moved.join("、")));
+    }
+    if r.state() != "online" {
+        blockers.push(format!("软路由「{}」现在不在线：等它在线再改", r.name));
+    }
+    v["ok"] = json!(blockers.is_empty());
+    v["blockers"] = json!(blockers);
+    v["rows"] = json!(rows);
+    v["lines"] = json!(lines);
+    v["warnings"] = json!(warnings);
+    Ok((v, rows))
+}
+
+/// `GET /routers/{id}/rules[?assign=来源=出口,…]`：不给 assign 列出现有的 SRC-IP-CIDR 规则（来源 IP → 出口）；给了是改规则的预览
+pub async fn rules_preview(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<RulesQ>) -> ApiResult<Json<Value>> {
+    let assign = parse_assign(q.assign.as_deref().unwrap_or(""))?;
+    let r = row(&st, id).await?;
+    Ok(ok(rules_plan(&st, &a, &r, &assign).await?.0))
+}
+
+/// 发起：建 router_rules 作业（备份 → 加 / 改规则 → 重启 OpenClash → 目标出口测通、规则生效，不行整份换回）
+pub async fn rules(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<RulesIn>) -> ApiResult<Json<Value>> {
+    if b.assign.is_empty() {
+        return Err(ApiError::bad_request("没有给要改的规则（assign）"));
+    }
+    let r = row(&st, id).await?;
+    let (mut v, rows) = rules_plan(&st, &a, &r, &b.assign).await?;
+    blocked(&v)?;
+    let mut tx = st.db.begin().await?;
+    not_busy(&mut tx, id).await?;
+    let params = json!({"assign": b.assign, "rows": rows, "router_name": r.name});
+    let job = jobs::enqueue(&mut tx, "router_rules", Some(id), params, &a.name).await?;
+    audit(&mut tx, &a.name, "router.rules", "router", Some(id), json!({"name": r.name, "assign": b.assign, "rows": rows, "job_id": job})).await?;
+    tx.commit().await?;
+    st.wake_jobs();
+    st.emit(Event::Job { id: job, target: Some(id) });
+    v["job_id"] = json!(job);
+    Ok(ok(v))
 }

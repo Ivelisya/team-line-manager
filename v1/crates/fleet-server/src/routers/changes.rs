@@ -41,7 +41,7 @@ impl Claims {
     /// 作业要在这台路由上动手了（改配置或改回，脚本跑之前调用）
     pub fn editing(&self, router: Uuid, job: Uuid, kind: &str) {
         let now = Instant::now();
-        let mut m = self.0.lock().unwrap();
+        let mut m = crate::lock(&self.0);
         let v = m.entry(router).or_default();
         v.retain(|c| c.until > now);
         match v.iter_mut().find(|c| c.job == job) {
@@ -52,7 +52,7 @@ impl Claims {
 
     /// 脚本回话了（成功、自己改回了、改回了都算）：`sha` 是它报的改完后配置的 sha256，没拿到为 None
     pub fn edited(&self, router: Uuid, job: Uuid, sha: Option<&str>) {
-        let mut m = self.0.lock().unwrap();
+        let mut m = crate::lock(&self.0);
         if let Some(c) = m.get_mut(&router).and_then(|v| v.iter_mut().find(|c| c.job == job)) {
             (c.sha, c.until) = (sha.map(String::from), Instant::now() + DONE_WINDOW);
         }
@@ -61,7 +61,7 @@ impl Claims {
     /// 新 sha 是不是某个作业改出来的：sha 一致的优先，其次是脚本还在跑 / 没拿到 sha 的。返回 (作业 id, 作业类型)
     fn find(&self, router: Uuid, sha: &str) -> Option<(Uuid, String)> {
         let now = Instant::now();
-        let m = self.0.lock().unwrap();
+        let m = crate::lock(&self.0);
         let live: Vec<&Claim> = m.get(&router)?.iter().rev().filter(|c| c.until > now).collect();
         live.iter().find(|c| c.sha.as_deref() == Some(sha)).or_else(|| live.iter().find(|c| c.sha.is_none())).map(|c| (c.job, c.kind.clone()))
     }

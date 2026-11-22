@@ -9,6 +9,7 @@ pub mod config;
 pub mod country;
 pub mod crypto;
 pub mod db;
+pub mod dist_agent;
 pub mod entries;
 pub mod error;
 pub mod fx;
@@ -22,6 +23,7 @@ pub mod local_admin;
 pub mod meta;
 pub mod names;
 pub mod notify;
+pub mod ops;
 pub mod ping;
 pub mod placement;
 pub mod policy;
@@ -79,6 +81,8 @@ pub fn app(st: AppState) -> Router {
     r.layer(axum::middleware::from_fn_with_state(https, response_headers))
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
+        // 最外层：耗时含压缩与响应头；慢请求与 5xx 记 INFO（selfmon/http.rs）
+        .layer(axum::middleware::from_fn_with_state(st.clone(), selfmon::http::track))
         .with_state(st)
 }
 
@@ -138,7 +142,7 @@ async fn response_headers(State(https): State<bool>, req: axum::extract::Request
     res
 }
 
-/// 后台任务：作业、告警、实时指标、访问汇总、来源画像、通知发送、分区维护、小时汇总、软路由采集（含它的告警）、软路由临时切换到时切回（routers/switch.rs）、中控到线路机的连通性、汇率更新、探测点（离线告警、主来源切换）、三网 PING（小时汇总与保留期）、持续握手丢包（tcp_loss.rs）、计费对账（ledger.rs）。
+/// 后台任务：作业、告警、实时指标、访问汇总、来源画像、通知发送、分区维护、小时汇总、软路由采集（含它的告警）、软路由临时切换到时切回（routers/switch.rs）、中控到线路机的连通性、汇率更新、探测点（离线告警、主来源切换）、三网 PING（小时汇总与保留期）、持续握手丢包（tcp_loss.rs）、计费对账（ledger.rs）、连接池采样（selfmon/http.rs）。
 /// 都在 `supervise` 下跑：panic 或意外返回时记 error、10 秒后原地重启（这些循环的状态在库里，内存里的去抖计数、缓存重启后重新累计）。
 /// 作业引擎也一样：清旧租约只在 main 启动时做一次，本进程还在推进的作业不会被再领（`jobs::Running`），原地重启不会让两个执行者推进同一个作业
 pub fn spawn_background(st: &AppState) {
@@ -167,6 +171,7 @@ pub fn spawn_background(st: &AppState) {
     supervise(st, "放置矩阵", placement::run_forever);
     supervise(st, "持续握手丢包", tcp_loss::run_forever);
     supervise(st, "计费对账", ledger::run_forever);
+    supervise(st, "连接池采样", selfmon::http::run_forever);
 }
 
 /// 命令行（user-set 重设密码）在别的进程里删会话：经 NOTIFY 转来，实时流的连接马上复核。

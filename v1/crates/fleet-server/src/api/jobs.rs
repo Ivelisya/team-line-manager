@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-#[derive(Serialize, sqlx::FromRow)]
+#[derive(Serialize, sqlx::FromRow, ts_rs::TS)]
 pub struct JobOut {
     id: Uuid,
     kind: String,
@@ -28,10 +28,13 @@ pub struct JobOut {
     error: Option<String>,
     created_by: String,
     #[serde(with = "time::serde::rfc3339")]
+    #[ts(type = "string")]
     created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339::option")]
+    #[ts(type = "string | null")]
     started_at: Option<OffsetDateTime>,
     #[serde(with = "time::serde::rfc3339::option")]
+    #[ts(type = "string | null")]
     finished_at: Option<OffsetDateTime>,
     /// 参数里的 routers_stuck（改软路由出口改回失败的路由）：算 `manual`
     #[serde(skip)]
@@ -107,14 +110,16 @@ pub async fn list(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<L
     Ok(paged(v.iter().map(job_json).collect(), total, offset))
 }
 
-#[derive(Serialize, sqlx::FromRow)]
-struct StepOut {
+#[derive(Serialize, sqlx::FromRow, ts_rs::TS)]
+pub struct StepOut {
     idx: i32,
     key: String,
     state: String,
     #[serde(with = "time::serde::rfc3339::option")]
+    #[ts(type = "string | null")]
     started_at: Option<OffsetDateTime>,
     #[serde(with = "time::serde::rfc3339::option")]
+    #[ts(type = "string | null")]
     finished_at: Option<OffsetDateTime>,
     output: Option<Value>,
     error: Option<String>,
@@ -160,10 +165,11 @@ pub struct LogQ {
 /// tail 最多这么多行（网页内存里最多留 5000 行）
 const TAIL_MAX: i64 = 5000;
 
-#[derive(Serialize, sqlx::FromRow)]
-struct LogOut {
+#[derive(Serialize, sqlx::FromRow, ts_rs::TS)]
+pub struct LogOut {
     id: i64,
     #[serde(with = "time::serde::rfc3339")]
+    #[ts(type = "string")]
     ts: OffsetDateTime,
     level: String,
     msg: String,

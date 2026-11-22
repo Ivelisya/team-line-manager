@@ -134,6 +134,10 @@ const ROUTER_SYNC: &[StepDef] = &[s("routers", "改软路由出口", 1800)];
 const ROUTER_PROTOCOL: &[StepDef] = &[s("routers", "改软路由出口", 1800)];
 // 删软路由出口（api/router_ops.rs、steps/router_exits.rs）：出口连同指向它的规则、策略组里的引用一起删，入口不动；一台路由，脚本最多约 7 分钟
 const ROUTER_EXIT_RM: &[StepDef] = &[s("remove_exits", "删软路由出口", 900)];
+// 只重启 OpenClash / 出口改名 / 来源 IP 分流规则（api/router_ops.rs、steps/router_ops.rs）：一台路由一步，脚本最多约 7 分钟（同删出口）
+const ROUTER_RESTART: &[StepDef] = &[s("restart_openclash", "重启 OpenClash", 900)];
+const ROUTER_RENAME: &[StepDef] = &[s("patch_config", "改软路由出口名", 900)];
+const ROUTER_RULES: &[StepDef] = &[s("patch_config", "改软路由分流规则", 900)];
 // 推送时旧程序留成 .prev；起不来、或 2 分钟内等不到新版本上报，就换回去并让作业失败（见 steps::agent / wait_report）。重试从推送重来
 // 线路机升级 agent 时顺带推 sing-box（约 30 MB，推送上限 300 s）
 const UPGRADE_AGENT: &[StepDef] = &[s("agent", "推送并重启 agent", 900), s("wait_report", "等待新版本上报", 180)];
@@ -163,6 +167,9 @@ pub fn defs(kind: &str) -> &'static [StepDef] {
         "router_sync" => ROUTER_SYNC,
         "router_protocol" => ROUTER_PROTOCOL,
         "router_exit_rm" => ROUTER_EXIT_RM,
+        "router_restart" => ROUTER_RESTART,
+        "router_rename" => ROUTER_RENAME,
+        "router_rules" => ROUTER_RULES,
         "tune" => TUNE,
         "ss_refresh" => SS_REFRESH,
         "speedtest" => SPEEDTEST,
@@ -178,7 +185,7 @@ pub fn title_of(kind: &str, key: &str) -> &'static str {
 /// 上架类作业：目标机器处于上架中，失败时机器标为上架失败
 pub fn provisions(kind: &str) -> bool { kind.starts_with("provision_") }
 
-pub fn cancellable(kind: &str) -> bool { provisions(kind) || matches!(kind, "attach_entry" | "move_entry" | "upgrade_agent" | "replace" | "repoint" | "router_sync" | "router_protocol" | "router_exit_rm" | "tune" | "ss_refresh" | "speedtest" | "reverse") }
+pub fn cancellable(kind: &str) -> bool { provisions(kind) || matches!(kind, "attach_entry" | "move_entry" | "upgrade_agent" | "replace" | "repoint" | "router_sync" | "router_protocol" | "router_exit_rm" | "router_restart" | "router_rename" | "router_rules" | "tune" | "ss_refresh" | "speedtest" | "reverse") }
 
 /// 停在「改软路由出口」这一步
 fn at_routers(kind: &str, step: i32) -> bool { (matches!(kind, "replace" | "repoint" | "router_sync" | "router_protocol") && step == 0) || (kind == "move_entry" && step == MOVE_ROUTERS) }
@@ -223,6 +230,10 @@ pub fn cancel_blocker(kind: &str, step: i32, state: &str, params: &Value) -> Opt
     // 删软路由出口：脚本在路由上跑的时候不能取消（删到一半会自己换回，等它结束）；排队、等锁、失败停着的可以
     if kind == "router_exit_rm" && state == "running" {
         return Some("正在改软路由，不能取消：等它结束（没删成会自己换回原配置）");
+    }
+    // 重启 OpenClash、出口改名、分流规则：同删出口，脚本在路由上跑的时候不能取消
+    if matches!(kind, "router_restart" | "router_rename" | "router_rules") && state == "running" {
+        return Some("正在改软路由，不能取消：等它结束（改配置的没改成会自己换回原配置）");
     }
     if !matches!(kind, "upgrade_agent" | "tune" | "ss_refresh" | "speedtest") || state == "queued" {
         return None;
@@ -367,7 +378,10 @@ pub fn clip(s: &str) -> std::borrow::Cow<'_, str> {
 pub async fn log(st: &AppState, job: Uuid, level: &str, msg: impl AsRef<str>) {
     let m = msg.as_ref();
     tracing::info!(%job, level, "{m}");
-    let _ = sqlx::query("insert into job_log (job_id, level, msg) values ($1, $2, $3)").bind(job).bind(level).bind(m).execute(&st.db).await;
+    if let Err(e) = sqlx::query("insert into job_log (job_id, level, msg) values ($1, $2, $3)").bind(job).bind(level).bind(m).execute(&st.db).await {
+        // 作业日志只是记录，不因此让作业失败；上面那行进程日志里已经有这条内容
+        tracing::warn!(%job, "写作业日志失败：{e:#}");
+    }
 }
 
 /// 这台机器（线路机：还有经它的入口所属的节点）上在等待的作业提前到现在，并唤醒引擎。
@@ -398,7 +412,7 @@ pub struct Running {
 }
 
 impl Running {
-    fn ids(&self) -> Vec<Uuid> { self.ids.lock().unwrap().iter().copied().collect() }
+    fn ids(&self) -> Vec<Uuid> { crate::lock(&self.ids).iter().copied().collect() }
     fn stopping(&self) -> bool { self.stopping.load(Ordering::SeqCst) }
 }
 
@@ -409,12 +423,12 @@ struct Entered {
 }
 
 impl Drop for Entered {
-    fn drop(&mut self) { self.st.jobs_running.ids.lock().unwrap().remove(&self.id); }
+    fn drop(&mut self) { crate::lock(&self.st.jobs_running.ids).remove(&self.id); }
 }
 
 /// 记下本进程开始推进 `id`：在返回值 drop 之前 `claim` 不会再领它
 fn enter(st: &AppState, id: Uuid) -> Entered {
-    st.jobs_running.ids.lock().unwrap().insert(id);
+    crate::lock(&st.jobs_running.ids).insert(id);
     Entered { st: st.clone(), id }
 }
 
@@ -439,7 +453,7 @@ pub async fn drain(st: &AppState, max: Duration) -> usize {
     st.jobs_running.stopping.store(true, Ordering::SeqCst);
     let until = tokio::time::Instant::now() + max;
     loop {
-        let n = st.jobs_running.ids.lock().unwrap().len();
+        let n = crate::lock(&st.jobs_running.ids).len();
         if n == 0 || tokio::time::Instant::now() >= until {
             return n;
         }
@@ -965,6 +979,10 @@ fn view_change(kind: &str) -> ViewChange {
         "router_protocol" => ViewChange::Quiet,
         // 删软路由出口：指着的机器不再被出口指着（备用机器的 router_exits / idle_spare、在用节点的 no_router_exits 变）
         "router_exit_rm" => ViewChange::View,
+        // 只重启 OpenClash、改来源 IP 分流规则：出口 → 入口的对应不变
+        "router_restart" | "router_rules" => ViewChange::Quiet,
+        // 出口改名：备用机器的 router_exits（「路由 · 出口名」）跟着变
+        "router_rename" => ViewChange::View,
         // 退役完成：生命周期 → retired（移出列表）、同团队压缩编号；清除数据：机器与入口删除
         "retire" | "purge" => ViewChange::Names,
         // 上架 / 补入口 / 换线路机 / 改出口指向：生命周期、入口增删与归属、备用机器的 router_exits 变；名字、团队、编号不动
@@ -975,12 +993,6 @@ fn view_change(kind: &str) -> ViewChange {
         // 没有归类的类型：保持现状
         _ => ViewChange::Names,
     }
-}
-
-/// dist 里 agent 程序的 sha256（十六进制）
-pub async fn dist_agent_sha256(st: &AppState) -> std::io::Result<String> {
-    let data = tokio::fs::read(st.cfg.dist_dir.join("fleet-agent")).await?;
-    Ok(hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&data)))
 }
 
 /// 「全部升级」发起之后 dist 里的 agent 换了（中途重新部署过中控）：接着推，后面的机器装上的是金丝雀没验过的版本
@@ -995,7 +1007,9 @@ async fn halted(st: &AppState, job: &JobRow) -> sqlx::Result<Option<String>> {
         return Ok(Some(why));
     }
     let Some(want) = job.params["rollout"]["sha256"].as_str() else { return Ok(None) };
-    Ok((dist_agent_sha256(st).await.ok().as_deref() != Some(want)).then(|| rollout_changed(&job.params)))
+    // 按文件的 (mtime, 大小) 缓存（crate::dist_agent）：「全部升级」每台一个作业，不必每台都把整个程序读一遍
+    let now = crate::dist_agent::get(&st.cfg.dist_dir).await.ok().map(|d| d.sha256);
+    Ok((now.as_deref() != Some(want)).then(|| rollout_changed(&job.params)))
 }
 
 /// 要等的作业（参数 `after`）在推送之后失败了（新版本起不来、没上报、线路机检查没通过）或被取消，返回这个作业不再开始的原因。
@@ -1280,10 +1294,10 @@ mod tests {
     fn view_change_by_kind() {
         use ViewChange::*;
         // 不改视图字段的作业结束只发 Job 事件
-        for k in ["upgrade_agent", "ss_refresh", "tune", "speedtest", "router_sync", "router_protocol"] {
+        for k in ["upgrade_agent", "ss_refresh", "tune", "speedtest", "router_sync", "router_protocol", "router_restart", "router_rules"] {
             assert_eq!(view_change(k), Quiet, "{k}");
         }
-        for k in ["provision_vps", "provision_proxy", "provision_relay", "provision_ip", "attach_entry", "move_entry", "repoint", "replace", "reverse", "router_exit_rm"] {
+        for k in ["provision_vps", "provision_proxy", "provision_relay", "provision_ip", "attach_entry", "move_entry", "repoint", "replace", "reverse", "router_exit_rm", "router_rename"] {
             assert_eq!(view_change(k), View, "{k}");
         }
         for k in ["retire", "purge", "不认识的类型"] {
@@ -1294,7 +1308,7 @@ mod tests {
     #[test]
     fn outer_timeout_covers_step_timeout() {
         for k in [
-            "provision_vps", "provision_proxy", "provision_relay", "provision_ip", "attach_entry", "retire", "purge", "upgrade_agent", "move_entry", "replace", "repoint", "router_sync", "router_protocol", "router_exit_rm", "tune", "ss_refresh", "speedtest", "reverse",
+            "provision_vps", "provision_proxy", "provision_relay", "provision_ip", "attach_entry", "retire", "purge", "upgrade_agent", "move_entry", "replace", "repoint", "router_sync", "router_protocol", "router_exit_rm", "router_restart", "router_rename", "router_rules", "tune", "ss_refresh", "speedtest", "reverse",
         ] {
             for d in defs(k) {
                 assert!(outer_timeout(d).as_secs() as i64 >= d.timeout_s + 120);

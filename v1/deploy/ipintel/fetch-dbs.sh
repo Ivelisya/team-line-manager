@@ -1,4 +1,5 @@
 #!/bin/sh
+# 已由 `fleet-server ipintel-fetch`（crates/fleet-server/src/ops/ipintel_fetch.rs）取代，fleet-ipintel-fetch.service 不再调用本脚本；留作回退，实验室跑通新命令后删除。
 # fetch-dbs.sh — 下载 / 更新 IP 情报离线库（fleet-server 的 ipintel）。
 #
 #   sh fetch-dbs.sh [DEST]          默认 DEST=/var/lib/fleet/ipintel

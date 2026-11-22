@@ -250,7 +250,7 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
             return Err(ApiError::conflict(format!("同机 IP 节点 {name} 有进行中的作业（{}）：等它结束再改团队", meta::job_kind_label(&k))));
         }
         for (ip, rev, _, dest) in ips {
-            let n = free_number(&mut *tx, Some(dest)).await?;
+            let n = free_number(&mut tx, Some(dest)).await?;
             patch_nobump(&mut tx, &a.name, ip, PatchIn::rename(rev, dest, n)).await?;
             renamed.push(ip);
             ip_moved = true;
@@ -343,7 +343,8 @@ pub struct RenamePreviewQ {
 /// 没换团队、线路机：renames / ip_nodes / router_exits / warnings 都为空，spare_blocked、held 为 null
 pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<RenamePreviewQ>) -> ApiResult<Json<Value>> {
     let mut conn = st.db.acquire().await?;
-    let (kind, label, team, number, spare_since, spare_from_team): (String, Option<String>, Option<Uuid>, Option<i32>, Option<OffsetDateTime>, Option<Uuid>) =
+    type Cur = (String, Option<String>, Option<Uuid>, Option<i32>, Option<OffsetDateTime>, Option<Uuid>);
+    let (kind, label, team, number, spare_since, spare_from_team): Cur =
         sqlx::query_as("select kind::text, label, team_id, number, spare_since, spare_from_team_id from machine where id = $1 and lifecycle <> 'retired'")
             .bind(id)
             .fetch_optional(&mut *conn)
@@ -373,7 +374,9 @@ pub async fn rename_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
             let from_name = team_name(&st.db, Some(from)).await?.unwrap_or_default();
             let to_spare = sqlx::query_scalar::<_, bool>("select spare from team where id = $1").bind(to).fetch_optional(&mut *conn).await?.unwrap_or(false);
             // 随宿主机走的同机 IP 节点：去向团队见 IP_DEST（撤销退役时跟宿主机走，或各回进备用前的团队）；去向团队里宿主机先占 n，它们依次取剩下的最小空号
-            let ips: Vec<(Uuid, String, Option<Uuid>, Option<String>, Uuid)> = sqlx::query_as(&format!(
+            // (id, 现在的名字, 现在的团队, 现在的团队名, 去向团队)
+            type IpNode = (Uuid, String, Option<Uuid>, Option<String>, Uuid);
+            let ips: Vec<IpNode> = sqlx::query_as(&format!(
                 "select m.id, display_name(m.kind::text, m.label, t.name, m.number), m.team_id, t.name, {IP_DEST} from machine m left join team t on t.id = m.team_id
                  where {IP_WITH_HOST} and ({IP_DEST}) is not null order by t.sort_order nulls first, t.name, m.number, m.id"
             ))
@@ -532,7 +535,7 @@ pub async fn patch_nobump(tx: &mut crate::db::Tx<'_>, actor: &str, id: Uuid, b: 
         None
     } else if b.number.is_none() && team_id != cur.2 {
         // 换团队没给编号：排到新团队的最小空号（原编号在新团队里多半已经有人，「移出备用」照提示只给团队也能成）
-        Some(free_number(&mut **tx, team_id).await?)
+        Some(free_number(tx, team_id).await?)
     } else {
         b.number.or(cur.3)
     };
@@ -1739,14 +1742,9 @@ pub async fn speedtest(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPat
 /// 中途重新部署过中控时，后面的机器不能装上金丝雀没验过的版本
 async fn dist_agent(st: &AppState) -> ApiResult<Value> {
     let path = st.cfg.dist_dir.join("fleet-agent");
-    let sha = jobs::dist_agent_sha256(st).await.map_err(|e| ApiError::conflict(format!("中控上没有可推送的 agent 程序（{}：{e}）", path.display())))?;
-    let out = tokio::time::timeout(std::time::Duration::from_secs(10), tokio::process::Command::new(&path).arg("--version").output()).await;
-    let version = match out {
-        Ok(Ok(o)) if o.status.success() => String::from_utf8_lossy(&o.stdout).split_whitespace().nth(1).map(String::from),
-        _ => None,
-    };
-    let version = version.ok_or_else(|| ApiError::conflict(format!("中控上的 agent 程序（{}）读不出版本号", path.display())))?;
-    Ok(json!({"sha256": sha, "version": version}))
+    let d = crate::dist_agent::get(&st.cfg.dist_dir).await.map_err(|e| ApiError::conflict(format!("中控上没有可推送的 agent 程序（{}：{e}）", path.display())))?;
+    let version = d.version.ok_or_else(|| ApiError::conflict(format!("中控上的 agent 程序（{}）读不出版本号", path.display())))?;
+    Ok(json!({"sha256": d.sha256, "version": version}))
 }
 
 /// 全部在用的线路机与 VPS 节点（同机 IP 节点没有自己的 agent，不算）。不一起升：先升一台做金丝雀（有线路机先挑线路机），
@@ -2099,16 +2097,11 @@ pub async fn renumber_preview(_a: Actor, State(st): State<AppState>, ApiPath(tea
         .iter()
         .map(|(id, o, n)| json!({"machine_id": id, "old_name": node_name(&team, *o), "new_name": node_name(&team, *n)}))
         .collect();
-    // 软路由的出口名是路由上自己起的（「节点05」），不跟着改：指向要改名的节点的列出来，对不上的自己去改
-    let ids: Vec<Uuid> = changes.iter().map(|c| c.0).collect();
-    let exits = crate::routers::exits_using(&st.db, &ids).await?;
-    let notes: Vec<String> = changes
-        .iter()
-        .flat_map(|(id, o, n)| {
-            let (from, to) = (node_name(&team, *o), node_name(&team, *n));
-            exits.get(id).into_iter().flatten().map(move |(_, r, x)| format!("软路由「{r}」的出口「{x}」指向 {from}，改名为 {to} 后出口名不跟着改"))
-        })
-        .collect();
+    // 软路由的出口名是路由上自己起的（「节点05」），不跟着改：指向要改名的节点的同退役、改团队、替换预览一句列出，
+    // 末尾给每台路由的 fleetctl router rename-exits <路由> --follow-fleet（routers::compact_exits_note）
+    let renames: Vec<(Uuid, String, String)> = changes.iter().map(|(id, o, n)| (*id, node_name(&team, *o), node_name(&team, *n))).collect();
+    let tail = "不想错位就先别重新编号";
+    let notes: Vec<String> = crate::routers::compact_exits_note(&st.db, &renames, tail).await?.into_iter().collect();
     Ok(ok(json!({"changes": list, "notes": notes, "token": plan_token(&changes)})))
 }
 

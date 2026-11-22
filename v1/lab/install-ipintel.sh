@@ -1,5 +1,7 @@
 #!/bin/bash
-# 在 fleet-dev 上安装 IP 情报离线库的下载脚本和每月定时器，并立即下载一次（约 190 MB，落盘约 230 MB，需要几分钟）。
+# 在 fleet-dev 上安装 IP 情报离线库的每月定时器，并立即下载一次（约 190 MB，落盘约 230 MB，需要几分钟）。
+# 单元执行 /opt/fleet/fleet-server ipintel-fetch（先用 lab/deploy-server.sh 部署带这个子命令的 fleet-server）；
+# fetch-dbs.sh 照旧装到 /opt/fleet/ipintel/ 作回退，单元不再调用它。
 # 不动 fleet-server.service；库下载完 5 分钟内 fleet-server 自动重新加载（比对文件 mtime），不用重启。
 # 幂等：重复运行会再下载一次（已是最新的库会跳过）。
 # 用法：lab/install-ipintel.sh
@@ -14,9 +16,10 @@ $SSH 'bash -s' <<'REMOTE'
 set -euo pipefail
 trap 'rm -rf /root/ipintel-install' EXIT   # 装完（或失败）就删传上来的文件
 cd /root/ipintel-install
-# fetch-dbs.sh 需要的工具（Debian/Ubuntu 自带，缺了才装）
+# 回退用的 fetch-dbs.sh 需要的工具（Debian/Ubuntu 自带，缺了才装）；fleet-server ipintel-fetch 不需要它们
 for t in curl gzip sha1sum sha256sum od awk; do command -v "$t" >/dev/null || { apt-get install -y -qq curl coreutils gzip gawk >/dev/null; break; }; done
 id fleet >/dev/null 2>&1 || { echo "没有 fleet 用户：先跑 lab/deploy-server.sh"; exit 1; }
+[ -x /opt/fleet/fleet-server ] || { echo "没有 /opt/fleet/fleet-server：先跑 lab/deploy-server.sh"; exit 1; }
 install -d -m 755 /opt/fleet/ipintel
 install -m 644 fetch-dbs.sh /opt/fleet/ipintel/fetch-dbs.sh
 install -d -m 750 -o fleet -g fleet /var/lib/fleet /var/lib/fleet/ipintel

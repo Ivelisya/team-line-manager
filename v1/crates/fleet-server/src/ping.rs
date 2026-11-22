@@ -334,7 +334,46 @@ pub async fn cleanup(db: &sqlx::PgPool, r: &crate::config::Retention) -> sqlx::R
 /// 卡片：每台在用线路机、每个在测的目标（按此刻合成的槽位，目标改了之后旧目标的数据不算）近 1 小时 20 格（3 分钟一格，墙钟对齐，同 /probe-beats），
 /// 每格 `[延迟中位数 ms | null, 丢包 %| null]`（没有数据为 null），另给最近一次的读数 `cur_ms`、`cur_loss`（%）与时间。
 /// `{<线路机 id>: [{slot, name, target, mode, cur_ms, cur_loss, cur_ts, cells}]}`；没有目标的线路机不出现。`only` 给了就只算这一台（查询里就过滤，不扫全部线路机）
-pub async fn beats(db: &sqlx::PgPool, only: Option<Uuid>) -> sqlx::Result<Value> {
+/// 心跳条的一格：[延迟中位数 ms, 丢包 %]，没有数据的为 null
+pub type Cell = (Option<f64>, Option<f64>);
+
+/// `GET /ping-beats` 的一个槽位（见 `beats`）
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+pub struct PingBeat {
+    pub slot: u8,
+    pub name: String,
+    pub target: String,
+    /// 最近一次读数的方式（icmp / tcp），没有读数时是此刻合成的方式
+    pub mode: String,
+    pub cur_ms: Option<f32>,
+    /// 丢包 %（一位小数）
+    pub cur_loss: Option<f64>,
+    /// RFC 3339
+    pub cur_ts: Option<String>,
+    /// 20 格，旧→新
+    pub cells: Vec<Cell>,
+}
+
+/// `GET /ping-beats`：`{<线路机 id>: [PingBeat]}`
+#[derive(Debug, Clone, Default, Serialize, ts_rs::TS)]
+#[serde(transparent)]
+pub struct PingBeats(pub std::collections::BTreeMap<String, Vec<PingBeat>>);
+
+/// 一个槽位的心跳格：`c` 是它最近一次读数，`cells` 是它的 20 格（没有数据为 None，补成 20 个空格）
+fn beat_of(s: &Merged, mode: &str, c: Option<&CurRow>, cells: Option<Vec<Cell>>, buckets: usize) -> PingBeat {
+    PingBeat {
+        slot: s.slot,
+        name: s.name.clone(),
+        target: s.target.clone(),
+        mode: c.map(|c| c.0.clone()).unwrap_or_else(|| mode.to_string()),
+        cur_ms: c.and_then(|c| c.1),
+        cur_loss: c.filter(|c| c.2 > 0).map(|c| (c.3 as f64 * 1000.0 / c.2 as f64).round() / 10.0),
+        cur_ts: c.map(|c| crate::meta::fmt_ts(c.4)),
+        cells: cells.unwrap_or_else(|| vec![(None, None); buckets]),
+    }
+}
+
+pub async fn beats(db: &sqlx::PgPool, only: Option<Uuid>) -> sqlx::Result<PingBeats> {
     const BUCKETS: usize = 20;
     let g = global(db).await?;
     let relays: Vec<(Uuid, Option<Value>)> = sqlx::query_as(
@@ -360,37 +399,31 @@ pub async fn beats(db: &sqlx::PgPool, only: Option<Uuid>) -> sqlx::Result<Value>
     .bind(only)
     .fetch_all(db)
     .await?;
-    let mut cells: HashMap<(Uuid, i16, String), Vec<Value>> = HashMap::new();
+    let mut cells: HashMap<(Uuid, i16, String), Vec<Cell>> = HashMap::new();
     for (r, s, t, i, ms, sent, lost) in rows {
-        if let Some(c) = cells.entry((r, s, t)).or_insert_with(|| vec![json!([null, null]); BUCKETS]).get_mut(i as usize) {
-            *c = json!([ms.map(|m| (m * 10.0).round() / 10.0), (sent > 0).then(|| (lost as f64 * 1000.0 / sent as f64).round() / 10.0)]);
+        if let Some(c) = cells.entry((r, s, t)).or_insert_with(|| vec![(None, None); BUCKETS]).get_mut(i as usize) {
+            *c = (ms.map(|m| (m * 10.0).round() / 10.0), (sent > 0).then(|| (lost as f64 * 1000.0 / sent as f64).round() / 10.0));
         }
     }
     let cur: HashMap<(Uuid, i16, String), CurRow> =
         last.into_iter().map(|(r, s, t, m, ms, sent, lost, ts)| ((r, s, t), (m, ms, sent, lost, ts))).collect();
-    let mut out = serde_json::Map::new();
+    let mut out = PingBeats::default();
     for (id, ov) in relays {
         let o: Option<Override> = ov.and_then(|v| serde_json::from_value(v).ok());
         let (mode, slots) = merge(&g, o.as_ref());
-        let list: Vec<Value> = slots
+        let list: Vec<PingBeat> = slots
             .iter()
             .filter(|s| !s.target.is_empty())
             .map(|s| {
                 let k = (id, s.slot as i16, s.target.clone());
-                let c = cur.get(&k);
-                json!({
-                    "slot": s.slot, "name": s.name, "target": s.target, "mode": c.map(|c| c.0.clone()).unwrap_or_else(|| mode.clone()),
-                    "cur_ms": c.and_then(|c| c.1), "cur_loss": c.filter(|c| c.2 > 0).map(|c| (c.3 as f64 * 1000.0 / c.2 as f64).round() / 10.0),
-                    "cur_ts": c.map(|c| crate::meta::fmt_ts(c.4)),
-                    "cells": cells.remove(&k).unwrap_or_else(|| vec![json!([null, null]); BUCKETS]),
-                })
+                beat_of(s, &mode, cur.get(&k), cells.remove(&k), BUCKETS)
             })
             .collect();
         if !list.is_empty() {
-            out.insert(id.to_string(), Value::Array(list));
+            out.0.insert(id.to_string(), list);
         }
     }
-    Ok(Value::Object(out))
+    Ok(out)
 }
 
 /// 一台线路机的全局、覆盖与合成后的方式、槽位；不是线路机 404
@@ -408,7 +441,7 @@ async fn merged_of(db: &sqlx::PgPool, relay: Uuid) -> ApiResult<(Global, Option<
 pub async fn machine_view(db: &sqlx::PgPool, relay: Uuid) -> ApiResult<Value> {
     let (g, o, mode, slots) = merged_of(db, relay).await?;
     let beats = beats(db, Some(relay)).await?;
-    Ok(json!({"mode": mode, "slots": slots, "override": o, "global": g, "current": beats.get(relay.to_string()).cloned().unwrap_or(json!([]))}))
+    Ok(json!({"mode": mode, "slots": slots, "override": o, "global": g, "current": beats.0.get(&relay.to_string()).map(|v| json!(v)).unwrap_or(json!([]))}))
 }
 
 /// 抽屉里的曲线：range 1h / 6h / 24h 用每分钟的原始点，7d / 30d 用小时汇总。
@@ -448,6 +481,27 @@ pub async fn series(db: &sqlx::PgPool, relay: Uuid, range: &str) -> ApiResult<Va
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 心跳格改成类型（PingBeat）前后：同样的槽位、读数与格子，`{"data": {线路机: [...]}}` 逐字节相同
+    #[test]
+    fn ping_beats_typed_matches_old_json() {
+        let slot = |n: u8, name: &str, t: &str| Merged { slot: n, name: name.into(), target: t.into(), source: "global" };
+        let at = OffsetDateTime::from_unix_timestamp(1_793_000_000).unwrap();
+        let cur: CurRow = ("icmp".into(), Some(12.3), 10, 1, at);
+        let zero: CurRow = ("tcp".into(), None, 0, 0, at);
+        let mut cells: Vec<Cell> = vec![(None, None); 20];
+        cells[3] = (Some(15.2), Some(0.0));
+        cells[19] = (None, Some(33.3));
+        let (a, b, c) = (slot(0, "电信", "1.1.1.1"), slot(3, "Node 1", "a.example.com:443"), slot(7, "移动", "[2001:db8::1]:80"));
+        let id = Uuid::nil().to_string();
+        let new = PingBeats(std::collections::BTreeMap::from([(
+            id.clone(),
+            vec![beat_of(&a, "tcp", Some(&cur), Some(cells.clone()), 20), beat_of(&b, "tcp", Some(&zero), None, 20), beat_of(&c, "icmp", None, None, 20)],
+        )]));
+        // 改成类型之前（json! 拼的）同样输入的输出：改写时逐字节比对过，旧的拼法随后删掉，留下它做快照
+        let old = r#"{"data":{"00000000-0000-0000-0000-000000000000":[{"cells":[[null,null],[null,null],[null,null],[15.2,0.0],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,33.3]],"cur_loss":10.0,"cur_ms":12.300000190734863,"cur_ts":"2026-10-26T07:33:20Z","mode":"icmp","name":"电信","slot":0,"target":"1.1.1.1"},{"cells":[[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null]],"cur_loss":null,"cur_ms":null,"cur_ts":"2026-10-26T07:33:20Z","mode":"tcp","name":"Node 1","slot":3,"target":"a.example.com:443"},{"cells":[[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null]],"cur_loss":null,"cur_ms":null,"cur_ts":null,"mode":"icmp","name":"移动","slot":7,"target":"[2001:db8::1]:80"}]}}"#;
+        assert_eq!(crate::api::body(new).unwrap(), old);
+    }
 
     #[test]
     fn defaults_and_validation() {
