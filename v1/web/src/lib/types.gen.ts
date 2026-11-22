@@ -347,7 +347,7 @@ export type ProbeBeats = { [key in string]: Array<[number, number, number | null
 
 /**
  * 流量额度周期：有订阅的按账单时区里最近一次（生效的）重置日起算，没有订阅的是模板时区（供应商的，没填为组织时区）的本月；
- * 供应商按滚动 30 天（rolling30）且订阅没单独设置重置日的：账单时区的今天往前 29 天起（含今天共 30 个日历日）
+ * 供应商按滚动 30 天（rolling30）且订阅没单独设置重置日的：此刻往前整 30 天（720 小时，quota::rolling_start；同供应商面板的 last 30 days，和时区无关）
  */
 export type Quota = { 
 /**
@@ -362,13 +362,17 @@ limit_source: string,
  * 周期内已用（字节）：有 agent 的机器按网卡流量、照生效的计量规则（订阅单独设置的，或供应商的）算（宿主机含同机 IP 节点）；
  * 家宽代理与同机 IP 节点没有自己的网卡读数，是业务流量（下载 + 上传，含已移除的入口）
  */
-used: number, period_start: string, 
+used: number, 
+/**
+ * 周期起点的日期（账单时区）：每月重置的是重置日；滚动 30 天是窗口起点时刻（`period_start_at`）落在账单时区的哪一天，只用来显示「X 起」
+ */
+period_start: string, 
 /**
  * 下次重置日（账单时区，这一天 0 点起是新周期）；滚动 30 天没有重置日，为 None
  */
 period_end: string | null, 
 /**
- * monthly = 每月重置日起算；rolling30 = 近 30 天（滚动）
+ * monthly = 每月重置日起算；rolling30 = 近 30 天（滚动，整 720 小时）
  */
 mode: string, 
 /**

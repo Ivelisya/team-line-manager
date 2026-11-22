@@ -279,7 +279,7 @@ pub fn billed(rule: &str, rx: i64, tx: i64) -> i64 {
     }
 }
 /// 供应商的流量重置方式：month = 账单时区的自然月（每月 1 号），billing = 每个账单日（到期日几号），
-/// rolling30 = 滚动 30 天（账单时区的今天往前 29 天起，没有重置日）
+/// rolling30 = 滚动 30 天（此刻往前整 30 天 = 720 小时，同供应商面板的 last 30 days，没有重置日；见 quota::rolling_start）
 pub const TRAFFIC_RESETS: Labels = &[("month", "自然月"), ("billing", "账单日"), ("rolling30", "滚动 30 天")];
 pub const DEFAULT_TRAFFIC_RESET: &str = "month";
 

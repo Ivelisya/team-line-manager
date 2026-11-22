@@ -41,20 +41,34 @@ pub fn forecast(used: i64, limit_bytes: Option<i64>, window_used: i64, window_st
     (Some(daily), full)
 }
 
-/// 滚动 30 天的面板读数覆盖录入时刻往前多少天（同 `ROLLING_DAYS`）：过了这么久读数里的量全部滚出窗口
-const CALIBRATE_ROLLING_S: f64 = ROLLING_DAYS * DAY_S;
+/// 滚动 30 天的窗口：整 30 × 24 小时（同供应商面板的 last 30 days），不按日历日、和时区无关
+pub const ROLLING_HOURS: i64 = 720;
+/// 滚动 30 天的面板读数覆盖录入时刻往前多少秒（同窗口长度）：过了这么久读数里的量全部滚出窗口
+const CALIBRATE_ROLLING_S: f64 = (ROLLING_HOURS * 3600) as f64;
+
+/// 滚动 30 天的窗口起点：此刻所在整点往前 `ROLLING_HOURS` 小时。计入小时汇总表里 `hour >= 起点` 的桶：最近 720 个完整的整点桶，
+/// 加上当前这个没过完的小时（小时汇总每 5 分钟把当前小时也汇总一遍，表里一般有它的部分数据）。覆盖的是 [起点, now]，
+/// 比整 30 天多出 now 在本小时里过去的那几分钟（不少于 30 天，多算不超过 1 小时）。同一个整点内起点不变（视图的缓存键用它）
+pub fn rolling_start(now: OffsetDateTime) -> OffsetDateTime {
+    let h = OffsetDateTime::from_unix_timestamp(now.unix_timestamp().div_euclid(3600) * 3600).unwrap_or(now);
+    h - Duration::hours(ROLLING_HOURS)
+}
+
+/// 滚动 30 天的校准读数还没滚出窗口（录入不满 30 天）；满 30 天起就不再算，也不再按录入时刻起算实测（views.rs 的缓存键随之去掉它）
+pub fn rolling_calibration_live(base_at: OffsetDateTime, now: OffsetDateTime) -> bool { (now - base_at).as_seconds_f64() < CALIBRATE_ROLLING_S }
 
 /// 按面板校准的读数（`base` 字节，`base_at` 录入）此刻还算在已用里多少；None = 已失效、已用回到纯实测。
 /// 只管衰减，「录入时刻在不在当前周期里」由调用方先判断（views.rs，月度周期进入下一个周期就失效）。
 /// 月度周期（`rolling` = false）原样全算：读数是本周期开头到录入时刻的量，到重置前一直在周期里。
-/// 滚动 30 天：读数是录入时刻往前 30 天的量，按均匀分布，过了 d 天（小数天）还留在窗口里的是 base × (1 − d/30)，满 30 天为 None。
+/// 滚动 30 天：读数是录入时刻往前 30 天的量，按均匀分布，过了 d 天（小数天）还留在窗口里的是 base × (1 − d/30)，满 30 天为 None
+/// （窗口也正好 30 天：录入时刻滚出窗口与读数衰减到 0 是同一刻）。
 /// 实测从录入时刻往后另算（不衰减），所以 used = 这部分 + 录入之后的实测。录入时刻晚于 now（时钟差）按刚录入算
 pub fn calibrated(base: i64, base_at: OffsetDateTime, now: OffsetDateTime, rolling: bool) -> Option<i64> {
     if !rolling {
         return Some(base);
     }
     let elapsed = (now - base_at).as_seconds_f64().max(0.0);
-    (elapsed < CALIBRATE_ROLLING_S).then(|| (base as f64 * (1.0 - elapsed / CALIBRATE_ROLLING_S)).round() as i64)
+    rolling_calibration_live(base_at, now).then(|| (base as f64 * (1.0 - elapsed / CALIBRATE_ROLLING_S)).round() as i64)
 }
 
 /// 搬走一部分入口后，该线路机每天少多少：从 `rates`（各入口每天的流量，字节）里选出最少的入口，让 `daily - 搬走的` ≤ `allowed`。
@@ -199,6 +213,21 @@ mod tests {
         // 录入时刻在 now 之后（时钟差）按刚录入算，不放大
         assert_eq!(calibrated(base, at, at - Duration::hours(1), true), Some(base));
         assert_eq!(calibrated(0, at, at + Duration::days(3), true), Some(0));
+        assert!(rolling_calibration_live(at, at + Duration::days(30) - Duration::seconds(1)) && !rolling_calibration_live(at, at + Duration::days(30)));
+    }
+
+    #[test]
+    fn rolling_window_is_720_hours_back_from_the_current_hour() {
+        // 起点 = 此刻所在整点往前 720 小时：同一个整点里不变；和时区、日历日无关（洛杉矶零点刚过时也是整 30 天，不是 29 天）
+        let now = datetime!(2026-11-22 08:41:07 UTC);
+        assert_eq!(rolling_start(now), datetime!(2026-10-23 08:00 UTC));
+        assert_eq!(rolling_start(datetime!(2026-11-22 08:00 UTC)), rolling_start(datetime!(2026-11-22 08:59:59 UTC)));
+        assert_eq!(rolling_start(datetime!(2026-11-22 09:00 UTC)), datetime!(2026-10-23 09:00 UTC));
+        // 覆盖 [起点, now]：不少于 30 天，多出的不到 1 小时
+        let span = now - rolling_start(now);
+        assert!(span >= Duration::days(30) && span < Duration::days(30) + Duration::hours(1), "{span}");
+        // 以前的口径：洛杉矶今天（11-22，刚过零点）往前 29 天的零点 = 10-24 00:00 PDT = 10-24 07:00 UTC，只有 29 天 1 小时 41 分
+        assert!(rolling_start(now) < datetime!(2026-10-24 07:00 UTC));
     }
 
     #[test]
