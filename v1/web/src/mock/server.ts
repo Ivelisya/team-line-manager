@@ -8,7 +8,7 @@ import { makeDefaultCompare } from '@/lib/sort';
 import { cycleMonths, META, subCalc } from './meta';
 
 const LIFECYCLE_LABEL = META.lifecycles;
-import { billingDay, buildDb, countryOf, hashStr, IP_STEPS, refreshFollowers, rng, SUB_FIELDS, syncSub, templateOf, trafficOf, type Db } from './fixtures';
+import { billingDay, buildDb, countryOf, hashStr, IP_STEPS, OPENING, OPENING_AT, refreshFollowers, rng, SUB_FIELDS, syncSub, templateOf, trafficOf, type Db } from './fixtures';
 import { installAccessMock } from './access';
 import { installReportsMock } from './reports';
 import { installTrafficMock, mockIdle, mockMonthly, mockPerGb, mockUsage } from './traffic';
@@ -430,7 +430,7 @@ function createMachine(it: ProvisionItem, c: MockCheck): MachineView {
     plan: plan ? { id: plan.id, name: plan.name, bandwidth_mbps: plan.bandwidth_mbps, traffic_gb: plan.traffic_gb } : null, service_ref: it.service_ref ?? null,
     sub_template: templateOf(plan ?? undefined, pv ?? undefined), lifecycle: 'provisioning', lifecycle_reason: null, note: it.note ?? '', revision: 1, created_at: iso(), activated_at: null, retired_at: null, spare_from: null, spare_since: null, router_exits: [], recycle_on: null, recycle_held: false, idle_spare: false, spare_unbilled: false, live_ip_nodes: [], renewing_ip_nodes: [], billing_exempt: false, no_router_exits: false,
     subscription: it.subscription?.due_date ? subCalc({ price_cents: it.subscription.price_cents ?? plan?.price_cents ?? 0, currency: plan?.currency ?? META.defaults.currency, cycle: it.subscription.cycle ?? plan?.cycle ?? META.defaults.cycle, due_date: it.subscription.due_date, due_days: 0, billing_tz: it.subscription.billing_tz ?? pv?.timezone ?? META.org_timezone, auto_renew: false, remind_days: pv?.remind_days ?? META.defaults.remind_days, traffic_gb: plan?.traffic_gb || null, traffic_reset_day: 1, traffic_rule: pv?.traffic_rule ?? META.defaults.traffic_rule } as NonNullable<MachineView['subscription']>) : null,
-    agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, nic: null, month_counted_from: null, quota: { used: 0, period_start: '', period_end: null, mode: 'monthly', counted_from: null, rule: null, base: null, limit_gb: null, limit_source: 'none', daily_avg: null, forecast_full_at: null }, health: { status: 'unknown', reasons: [{ key: 'provisioning', severity: 'info', text: '上架作业进行中' }] }, active_job: null, failed_job: null, open_incidents: 0, maintenance: false,
+    agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, nic: null, month_counted_from: null, quota: { used: 0, period_start: '', period_end: null, mode: 'monthly', counted_from: null, rule: null, base: null, base_at: null, limit_gb: null, limit_source: 'none', daily_avg: null, forecast_full_at: null }, health: { status: 'unknown', reasons: [{ key: 'provisioning', severity: 'info', text: '上架作业进行中' }] }, active_job: null, failed_job: null, open_incidents: 0, maintenance: false,
     relay: it.kind === 'relay' ? { public_host: it.ip, generation: 1, applied_generation: 0, applied_at: null, apply_error: null, port_min: 20001, port_max: 20999 } : null,
     tune: it.kind === 'proxy' || h ? null : { profile: null, at: null, current: false, params: null },
   };
@@ -770,7 +770,10 @@ R('POST', '/machines/([^/]+)/retire', ({ params, body }) => {
 });
 R('PUT', '/machines/([^/]+)/subscription', ({ params, body }) => {
   const m = machine(params[0]);
-  if (body.traffic_used_gb !== undefined) throw bad('流量已用改为由 agent 按网卡统计，不再按面板校准', 400, 'bad_request');
+  // 按面板校准（同服务端）：数值 = 此刻面板上本周期已用 GB，null = 清掉，没传不动
+  const g = body.traffic_used_gb;
+  if (g != null && !(typeof g === 'number' && isFinite(g) && g >= 0 && g <= 1e6)) throw bad('按面板校准的已用要在 0–1000000 GB 之间（供应商面板上的十进制 GB，可带小数）', 400, 'bad_request');
+  if (g === null) { delete OPENING[m.id]; delete OPENING_AT[m.id]; } else if (g !== undefined) { OPENING[m.id] = Math.round(g * 1e9); OPENING_AT[m.id] = new Date().toISOString(); }
   // 单独设置的带值，null = 跟随：先按套餐 / 供应商的值填上，再由 syncSub 判定哪些算单独设置（和跟随值相同的按跟随，同服务端）
   const s = { auto_renew: false, ...(m.subscription ?? {}), due_date: body.due_date, billing_day: billingDay(String(body.due_date), m.subscription?.billing_day), due_days: 0 } as any;
   if (body.auto_renew !== undefined) s.auto_renew = body.auto_renew;

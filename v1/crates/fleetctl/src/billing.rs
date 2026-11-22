@@ -130,9 +130,25 @@ pub(crate) fn nic_cn(m: &Value) -> String {
     if m["quota"]["rule"].is_null() || names.is_empty() { String::new() } else { format!("，按 {} 计", names.join(" + ")) }
 }
 
-/// 有额度时的已用：`1035.3 GB / 2000 GB（51%），2026-10-13 → 2026-11-13，按 ens3 网卡，单向：取下行和上行中较小的；接入后实测 71.2 GB，加上接入前的面板读数 964.1 GB（2026-11-13 重置后只算实测）`。
-/// 周期中途上架、没有接入前读数的写「从 2026-10-22 开始统计，之前的没算进来」；滚动 30 天写起点
-fn used_cn(m: &Value, limit: Option<i64>, pct: Option<i64>, incl: &str) -> String {
+/// 滚动 30 天的面板读数覆盖录入时刻往前多少秒（同中控 quota::calibrated）
+const ROLLING_S: f64 = 30.0 * 86400.0;
+
+/// 按面板校准的读数此刻还算在已用里多少（字节）：月度原样全算；滚动 30 天按均匀分布逐日线性衰减 base × (1 − 录入后天数 / 30)。
+/// 同中控 quota::calibrated（中控只给原始读数 quota.base，算进 used 的这部分这里照同一公式现算，用来拆出录入后的实测）
+fn calibrated_now(q: &Value, now: time::OffsetDateTime) -> Option<f64> {
+    let b = num(q, "/base")?;
+    if q["mode"] != "rolling30" {
+        return Some(b);
+    }
+    let at = time::OffsetDateTime::parse(q["base_at"].as_str()?, &time::format_description::well_known::Rfc3339).ok()?;
+    Some(b * (1.0 - ((now - at).as_seconds_f64().max(0.0) / ROLLING_S)).max(0.0))
+}
+
+/// 有额度时的已用：`1035.3 GB / 2000 GB（51%），2026-10-13 → 2026-11-13，按 ens3 网卡，单向：取下行和上行中较小的；录入后实测 71.2 GB，加上按面板校准的读数 964.1 GB（2026-10-22 录入，2026-11-13 重置后只算实测）`；
+/// 滚动 30 天的校准读数逐日衰减，写还算进来多少、哪天完全失效。周期中途上架、没有校准读数的写「从 2026-10-22 开始统计，之前的没算进来」；滚动 30 天写起点
+fn used_cn(m: &Value, limit: Option<i64>, pct: Option<i64>, incl: &str) -> String { used_cn_at(m, limit, pct, incl, time::OffsetDateTime::now_utc()) }
+
+fn used_cn_at(m: &Value, limit: Option<i64>, pct: Option<i64>, incl: &str, now: time::OffsetDateTime) -> String {
     let q = &m["quota"];
     let lim = limit.map(|g| format!(" / {g} GB")).unwrap_or_default();
     let p = pct.map(|p| format!("（{p}%）")).unwrap_or_default();
@@ -140,15 +156,32 @@ fn used_cn(m: &Value, limit: Option<i64>, pct: Option<i64>, incl: &str) -> Strin
         Some(e) => format!("{} → {e}", st(q, "/period_start")),
         None => format!("{} 起", st(q, "/period_start")),
     };
-    let note = match (num(q, "/base"), q["counted_from"].as_str()) {
-        // used = 接入前读数 + 接入后网卡实测：拆开写，免得和只统计接入后的本月流量对不上
-        (Some(b), _) => format!(
-            "；接入后实测 {}，加上接入前的面板读数 {}{}",
-            gb(num(q, "/used").unwrap_or(0.0) - b),
+    let at = q["base_at"].as_str().map(table::day).unwrap_or_default();
+    let note = match (num(q, "/base"), calibrated_now(q, now), q["counted_from"].as_str()) {
+        // used = 校准读数（滚动 30 天是衰减后还在窗口里的部分）+ 录入后的网卡实测：拆开写，免得和网卡的本月流量对不上
+        (Some(b), Some(c), _) if q["mode"] == "rolling30" => {
+            // 失效日按组织时区写（同录入日）
+            let rfc = &time::format_description::well_known::Rfc3339;
+            let gone = q["base_at"]
+                .as_str()
+                .and_then(|t| time::OffsetDateTime::parse(t, rfc).ok())
+                .and_then(|t| (t + time::Duration::days(30)).format(rfc).ok())
+                .map(|t| table::day(&t))
+                .unwrap_or_default();
+            format!(
+                "；录入后实测 {}，加上按面板校准的读数 {}（{at} 录入，近 30 天滚动：逐日衰减，现在还算 {}，{gone} 起完全失效）",
+                gb(num(q, "/used").unwrap_or(0.0) - c),
+                gb(b),
+                gb(c)
+            )
+        }
+        (Some(b), Some(c), _) => format!(
+            "；录入后实测 {}，加上按面板校准的读数 {}（{at} 录入{}）",
+            gb(num(q, "/used").unwrap_or(0.0) - c),
             gb(b),
-            q["period_end"].as_str().map(|e| format!("（{e} 重置后只算实测）")).unwrap_or_default()
+            q["period_end"].as_str().map(|e| format!("，{e} 重置后只算实测")).unwrap_or_default()
         ),
-        (None, Some(t)) => format!("；从 {} 开始统计，之前的没算进来", table::day(t)),
+        (None, _, Some(t)) => format!("；从 {} 开始统计，之前的没算进来", table::day(t)),
         _ => String::new(),
     };
     // 有网卡名时先说按哪块网卡，再说怎么取（同网页）：「按 ens3 网卡，单向：取下行和上行中较小的」
@@ -571,6 +604,10 @@ pub struct SubSetOpts {
     /// 流量怎么计费：sum（双向，入 + 出）| max（单向，取入出较大的）| min（单向，取较小的）| out（单向，只算出站）| in（单向，只算入站）；none = 跟随供应商。只对按网卡计量的机器有用
     #[arg(long)]
     pub traffic_rule: Option<String>,
+    /// 按供应商面板校准已用：此刻面板上本周期已用多少 GB（十进制，可带小数，如 266.1）；none = 清掉校准。
+    /// 面板和中控差得多、且确认计量网卡与计费方式没配错之后才用。月度周期到下次重置自动失效；滚动 30 天逐日衰减、30 天后失效
+    #[arg(long)]
+    pub used: Option<String>,
     #[arg(long)]
     pub yes: bool,
 }
@@ -620,7 +657,30 @@ pub(crate) fn sub_patch(o: &SubSetOpts) -> anyhow::Result<Map<String, Value>> {
     if let Some(r) = &o.traffic_rule {
         p.insert("traffic_rule".into(), if is_none(r) { Value::Null } else { json!(r.trim()) });
     }
+    if let Some(u) = &o.used {
+        let bad = || anyhow!("--used 写面板上本周期已用的 GB 数（十进制，可带小数，如 266.1），或 none（清掉校准）：「{u}」");
+        p.insert(
+            "traffic_used_gb".into(),
+            match is_none(u) {
+                true => Value::Null,
+                false => json!(u.trim().parse::<f64>().ok().filter(|g| g.is_finite()).ok_or_else(bad)?),
+            },
+        );
+    }
     Ok(p)
+}
+
+/// 按面板校准的确认语（给了 --used 才写）：`已用校准 无 → 266.1 GB（按面板，此刻起）`。旧值取机器视图的 quota.base
+/// （已失效的中控给 null，算「无」），新值是中控预览回来的 traffic_used_base；滚动 30 天注明逐日衰减。都是「无」时没有变化，为 None
+fn used_change(m: &Value, eff: &Value) -> Option<String> {
+    let q = &m["quota"];
+    let old = num(q, "/base").map(|b| format!("{}（{} 录入）", gb(b), q["base_at"].as_str().map(table::day).unwrap_or_default()));
+    let tail = if q["mode"] == "rolling30" { "，逐日衰减、30 天后失效" } else { "，下次重置后失效" };
+    let new = num(eff, "/traffic_used_base").map(|b| format!("{}（按面板，此刻起{tail}）", gb(b)));
+    match (old, new) {
+        (None, None) => None,
+        (o, n) => Some(format!("已用校准 {} → {}", o.as_deref().unwrap_or("无"), n.as_deref().unwrap_or("无"))),
+    }
 }
 
 /// PUT 是整份替换：以现有订阅为底、只改给了的字段；单独设置过的照旧提交，跟随的提交 null（不把套餐的值抄进订阅）。
@@ -658,15 +718,18 @@ fn sub_changes(m: &Value, eff: &Value) -> Vec<String> {
 pub fn subscription_set(ctx: &Ctx, o: SubSetOpts) -> anyhow::Result<u8> {
     let patch = sub_patch(&o)?;
     if patch.is_empty() {
-        bail!("没有要改的内容：给 --price / --currency / --cycle / --due / --auto-renew / --remind-days / --tz / --traffic-gb / --reset-day / --traffic-rule 之一");
+        bail!("没有要改的内容：给 --price / --currency / --cycle / --due / --auto-renew / --remind-days / --tz / --traffic-gb / --reset-day / --traffic-rule / --used 之一");
     }
+    let calibrate = patch.contains_key("traffic_used_gb");
     let (id, name) = ctx.find_id(&o.machine, Want::Live)?;
     let m = ctx.c.get(&format!("/machines/{id}"))?;
     let cur = &m["subscription"];
     let body = merge_sub(cur, patch)?;
     // 先让中控预览：校验与规整都在中控（不通过就是中控的报错），回来的是改完之后的生效值
     let eff = ctx.c.post(&format!("/machines/{id}/subscription/preview"), &body)?["effective"].clone();
-    let changes = sub_changes(&m, &eff).join("；");
+    let mut changes = sub_changes(&m, &eff);
+    changes.extend(used_change(&m, &eff).filter(|_| calibrate));
+    let changes = changes.join("；");
     if changes.is_empty() {
         ctx.emit(cur, || format!("{name} 的订阅没有变化，未提交"));
         return Ok(0);
@@ -862,6 +925,32 @@ mod tests {
     }
 
     #[test]
+    fn subscription_set_used_calibrates() {
+        // --used：GB 原样交给中控（范围由中控校验），none = null 清掉；不给就不带这个字段（中控不动现有的校准）
+        let m = machine();
+        let p = sub_patch(&sopts(|o| o.used = Some(" 266.1 ".into()))).unwrap();
+        assert_eq!(Value::Object(p.clone()), json!({"traffic_used_gb": 266.1}));
+        let b = merge_sub(&m["subscription"], p).unwrap();
+        assert_eq!((b["traffic_used_gb"].as_f64(), b["price_cents"].as_i64()), (Some(266.1), Some(4200)));
+        assert!(!merge_sub(&m["subscription"], sub_patch(&sopts(|o| o.traffic_gb = Some("500".into()))).unwrap()).unwrap().as_object().unwrap().contains_key("traffic_used_gb"));
+        assert_eq!(Value::Object(sub_patch(&sopts(|o| o.used = Some("None".into()))).unwrap()), json!({"traffic_used_gb": null}));
+        for bad in ["", "abc", "1,5", "NaN", "inf"] {
+            assert!(sub_patch(&sopts(|o| o.used = Some(bad.into()))).is_err(), "{bad}");
+        }
+        // 确认语：旧值取视图的 quota.base（失效的为 null），新值取预览回来的 traffic_used_base
+        let eff_with = |b: Value| eff(&m["subscription"], json!({"traffic_used_base": b}));
+        assert_eq!(used_change(&m, &eff_with(json!(266_100_000_000i64))).as_deref(), Some("已用校准 无 → 266.1 GB（按面板，此刻起，下次重置后失效）"));
+        let mut had = machine();
+        had["quota"] = json!({"mode": "rolling30", "base": 869_700_000_000i64, "base_at": "2026-10-22T07:30:00Z"});
+        assert_eq!(used_change(&had, &eff_with(Value::Null)).as_deref(), Some("已用校准 869.7 GB（2026-10-22 录入） → 无"));
+        assert_eq!(
+            used_change(&had, &eff_with(json!(100_000_000_000i64))).as_deref(),
+            Some("已用校准 869.7 GB（2026-10-22 录入） → 100 GB（按面板，此刻起，逐日衰减、30 天后失效）")
+        );
+        assert_eq!(used_change(&m, &eff_with(Value::Null)), None, "本来就没有，清掉不算变化");
+    }
+
+    #[test]
     fn billing_fields_show_source() {
         let m = machine();
         let f = sub_fields(&m["subscription"], &m);
@@ -893,12 +982,19 @@ mod tests {
         assert_eq!(limit_cn(&m, traffic_limit(&m)), "与宿主机「团队1-03」共用");
         let m = q(Value::Null, "none");
         assert_eq!(limit_cn(&m, traffic_limit(&m)), "不限");
-        // 已用同供应商面板：十进制 GB；写起止、规则、按哪块网卡；有接入前读数的注明到哪天为止
+        // 已用同供应商面板：十进制 GB；写起止、规则、按哪块网卡；有按面板校准的读数的注明哪天录的、到哪天为止
         let q = json!({"agent": {"nic_ifaces": ["ens3"]}, "quota": {"used": 901_600_000_000i64, "period_start": "2026-10-13", "period_end": "2026-11-13", "rule": "min",
-            "base": 869_700_000_000i64, "base_at": "2026-10-22T07:30:00Z", "counted_from": null}});
+            "mode": "monthly", "base": 869_700_000_000i64, "base_at": "2026-10-22T07:30:00Z", "counted_from": null}});
         assert_eq!(
             used_cn(&q, Some(2000), Some(45), ""),
-            "901.6 GB / 2000 GB（45%），2026-10-13 → 2026-11-13，按 ens3 网卡，单向：取下行和上行中较小的；接入后实测 31.9 GB，加上接入前的面板读数 869.7 GB（2026-11-13 重置后只算实测）"
+            "901.6 GB / 2000 GB（45%），2026-10-13 → 2026-11-13，按 ens3 网卡，单向：取下行和上行中较小的；录入后实测 31.9 GB，加上按面板校准的读数 869.7 GB（2026-10-22 录入，2026-11-13 重置后只算实测）"
+        );
+        // 滚动 30 天：读数逐日衰减，录入 15 天后还算一半（300 GB → 150 GB），30 天后（组织时区的日期）完全失效；实测 = used − 还算的部分
+        let q = json!({"agent": {"nic_ifaces": ["ens3"]}, "quota": {"used": 162_000_000_000i64, "period_start": "2026-10-24", "period_end": null, "rule": "max",
+            "mode": "rolling30", "base": 300_000_000_000i64, "base_at": "2026-11-07T04:00:00Z", "counted_from": null}});
+        assert_eq!(
+            used_cn_at(&q, Some(1000), Some(16), "", time::macros::datetime!(2026-11-22 04:00 UTC)),
+            "162 GB / 1000 GB（16%），2026-10-24 起，按 ens3 网卡，单向：取下行和上行中较大的；录入后实测 12 GB，加上按面板校准的读数 300 GB（2026-11-07 录入，近 30 天滚动：逐日衰减，现在还算 150 GB，2026-12-07 起完全失效）"
         );
         // 滚动 30 天、周期中途上架（日期按组织时区）；业务流量不写网卡
         let q = json!({"agent": {"nic_ifaces": ["eth0"]}, "quota": {"used": 31_900_000, "period_start": "2026-09-24", "period_end": null, "rule": null, "base": null, "counted_from": "2026-10-21T17:10:00Z"}});

@@ -372,7 +372,7 @@ period_end: string | null,
  */
 mode: string, 
 /**
- * 本周期的数据从这一刻才有：机器首次上架完成（activated_at）晚于周期起点、且没有接入前读数时为它，之前的用量不在 used 里；
+ * 本周期的数据从这一刻才有：机器首次上架完成（activated_at）晚于周期起点、且没有按面板校准的读数时为它，之前的用量不在 used 里；
  * 否则为 None
  */
 counted_from: string | null, 
@@ -381,12 +381,13 @@ counted_from: string | null,
  */
 rule: string | null, 
 /**
- * 接入前读数（割接时按供应商面板录的，只读保留：接口已不收新值）：录入时面板上的已用（字节）与录入时间，used 已含它。
- * 不在当前周期内的不算，为 None——进入下一个周期自动失效
+ * 按供应商面板校准（`PUT …/subscription` 的 `traffic_used_gb`）：录入时面板上本周期已用的原始读数（字节）与录入时间。
+ * 月度周期 used = base + 录入之后的实测，进入下一个周期失效；滚动 30 天的读数按均匀分布逐日线性衰减（quota::calibrated），
+ * used = base × (1 − 录入后天数 / 30) + 录入之后的实测，满 30 天失效。这里始终是原始读数，不是衰减后的；失效了两个都为 None
  */
 base: number | null, base_at: string | null, 
 /**
- * 近 7 天日均用量（字节 / 天；周期不足 7 天按已有天数，不足 1 天为 None），口径同 `used`（不含接入前读数）
+ * 近 7 天日均用量（字节 / 天；周期不足 7 天按已有天数，不足 1 天为 None），只算实测（不含按面板校准的读数）
  */
 daily_avg: number | null, 
 /**

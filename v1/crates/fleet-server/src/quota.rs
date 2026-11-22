@@ -41,6 +41,22 @@ pub fn forecast(used: i64, limit_bytes: Option<i64>, window_used: i64, window_st
     (Some(daily), full)
 }
 
+/// 滚动 30 天的面板读数覆盖录入时刻往前多少天（同 `ROLLING_DAYS`）：过了这么久读数里的量全部滚出窗口
+const CALIBRATE_ROLLING_S: f64 = ROLLING_DAYS * DAY_S;
+
+/// 按面板校准的读数（`base` 字节，`base_at` 录入）此刻还算在已用里多少；None = 已失效、已用回到纯实测。
+/// 只管衰减，「录入时刻在不在当前周期里」由调用方先判断（views.rs，月度周期进入下一个周期就失效）。
+/// 月度周期（`rolling` = false）原样全算：读数是本周期开头到录入时刻的量，到重置前一直在周期里。
+/// 滚动 30 天：读数是录入时刻往前 30 天的量，按均匀分布，过了 d 天（小数天）还留在窗口里的是 base × (1 − d/30)，满 30 天为 None。
+/// 实测从录入时刻往后另算（不衰减），所以 used = 这部分 + 录入之后的实测。录入时刻晚于 now（时钟差）按刚录入算
+pub fn calibrated(base: i64, base_at: OffsetDateTime, now: OffsetDateTime, rolling: bool) -> Option<i64> {
+    if !rolling {
+        return Some(base);
+    }
+    let elapsed = (now - base_at).as_seconds_f64().max(0.0);
+    (elapsed < CALIBRATE_ROLLING_S).then(|| (base as f64 * (1.0 - elapsed / CALIBRATE_ROLLING_S)).round() as i64)
+}
+
 /// 搬走一部分入口后，该线路机每天少多少：从 `rates`（各入口每天的流量，字节）里选出最少的入口，让 `daily - 搬走的` ≤ `allowed`。
 /// 先拿最大的，直到剩下的缺口某一个入口就能补上，再换成能补上的最小的那个（少搬一点）。
 /// 返回 (选中的下标, 搬走的合计, 是否达到目标)
@@ -163,6 +179,26 @@ mod tests {
         assert_eq!(forecast(2100 * GB, Some(2000 * GB), 672 * GB, now - Duration::days(7), now, Some(reset)).1, None);
         assert_eq!(forecast(1051 * GB, None, 672 * GB, now - Duration::days(7), now, Some(reset)), (Some(96 * GB), None));
         assert_eq!(forecast(1051 * GB, Some(2000 * GB), 672 * GB, now - Duration::days(7), now, None).1, None);
+    }
+
+    #[test]
+    fn calibrated_monthly_stays_rolling30_decays_linearly() {
+        let at = datetime!(2026-11-01 08:00 UTC);
+        let base = 300 * GB;
+        // 月度：到重置前原样全算（周期内外由 views 判断），隔多久都一样
+        assert_eq!(calibrated(base, at, at + Duration::days(29), false), Some(base));
+        // 滚动 30 天：刚录入全算；15 天剩一半；按小数天算（7.5 天剩 3/4）；29 天剩 1/30
+        assert_eq!(calibrated(base, at, at, true), Some(base));
+        assert_eq!(calibrated(base, at, at + Duration::days(15), true), Some(150 * GB));
+        assert_eq!(calibrated(base, at, at + Duration::hours(180), true), Some(225 * GB));
+        assert_eq!(calibrated(base, at, at + Duration::days(29), true), Some(10 * GB));
+        // 满 30 天及以后完全失效；30 天差 1 秒还剩一点点
+        assert_eq!(calibrated(base, at, at + Duration::days(30), true), None);
+        assert_eq!(calibrated(base, at, at + Duration::days(45), true), None);
+        assert!(calibrated(base, at, at + Duration::days(30) - Duration::seconds(1), true).is_some_and(|v| v > 0 && v < GB));
+        // 录入时刻在 now 之后（时钟差）按刚录入算，不放大
+        assert_eq!(calibrated(base, at, at - Duration::hours(1), true), Some(base));
+        assert_eq!(calibrated(0, at, at + Duration::days(3), true), Some(0));
     }
 
     #[test]

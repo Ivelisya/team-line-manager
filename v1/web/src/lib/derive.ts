@@ -231,11 +231,24 @@ export function quotaCycleText(m: MachineView) {
   const from = isOverridden(m.subscription, 'traffic_reset_day') ? '单独设置' : inheritSource(m, 'traffic_reset_day');
   return `每月 ${m.subscription?.traffic_reset_day ?? Number(q.start.slice(8))} 号重置${from && `，${from}`} · ${mmdd(q.start)} 至 ${mmdd(q.end!)}`;
 }
-/** 已用的补充说明（各一句）：接入后实测 + 接入前读数（已用 = 两者之和）、数据不完整（之前的用量不在内） */
-export function quotaNotes(m: MachineView) {
-  const q = quota(m);
+/** 滚动 30 天的面板读数覆盖录入时刻往前多少毫秒（同服务端 quota::calibrated） */
+const ROLLING_MS = 30 * 86400e3;
+/** 按面板校准的读数此刻还算在已用里多少（字节）：月度原样全算；滚动 30 天逐日线性衰减 base × (1 − 录入后天数 / 30)，同服务端 quota::calibrated
+ *  （服务端只给原始读数 quota.base，这里照同一公式现算，用来拆出录入后的实测） */
+export function quotaCalibrated(m: MachineView, now = Date.now()): number | null {
+  const { base, base_at: at, mode } = m.quota;
+  if (base == null) return null;
+  if (mode !== 'rolling30' || !at) return base;
+  return base * Math.max(0, 1 - Math.max(0, now - Date.parse(at)) / ROLLING_MS);
+}
+/** 已用的补充说明（各一句）：录入后实测 + 按面板校准的读数（已用 = 两者之和；滚动 30 天的读数逐日衰减）、数据不完整（之前的用量不在内） */
+export function quotaNotes(m: MachineView, now = Date.now()) {
+  const q = quota(m); const at = m.quota.base_at; const c = quotaCalibrated(m, now);
+  const cal = q.base != null && c != null && (q.rolling
+    ? `录入后实测 ${F.str(quotaGb(q.used - c))}，加上按面板校准的读数 ${F.str(quotaGb(q.base))}（${at ? `${mmdd(at)} ` : ''}录入）\n近 30 天滚动：逐日衰减，现在还算 ${F.str(quotaGb(c))}${at ? `，${mmdd(new Date(Date.parse(at) + ROLLING_MS).toISOString())} 起完全失效` : ''}`
+    : `录入后实测 ${F.str(quotaGb(q.used - c))}，加上按面板校准的读数 ${F.str(quotaGb(q.base))}（${at ? `${mmdd(at)} ` : ''}录入）\n${q.end ? `${mmdd(q.end)} ` : ''}重置后只算实测`);
   return [
-    q.base != null && `接入后实测 ${F.str(quotaGb(q.used - q.base))}，加上接入前的面板读数 ${F.str(quotaGb(q.base))}\n${mmdd(q.end!)} 重置后只算实测`,
+    cal,
     q.from && `从 ${fromLabel(q.from, q.start)} 开始统计，之前的没算进来，实际剩余可能更少`,
   ].filter((x): x is string => !!x);
 }

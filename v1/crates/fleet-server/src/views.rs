@@ -228,20 +228,21 @@ pub struct Quota {
     pub period_end: Option<Date>,
     /// monthly = 每月重置日起算；rolling30 = 近 30 天（滚动）
     pub mode: &'static str,
-    /// 本周期的数据从这一刻才有：机器首次上架完成（activated_at）晚于周期起点、且没有接入前读数时为它，之前的用量不在 used 里；
+    /// 本周期的数据从这一刻才有：机器首次上架完成（activated_at）晚于周期起点、且没有按面板校准的读数时为它，之前的用量不在 used 里；
     /// 否则为 None
     #[serde(with = "time::serde::rfc3339::option")]
     #[ts(type = "string | null")]
     pub counted_from: Option<OffsetDateTime>,
     /// 网卡计量规则（min / max / sum / out / in，没有供应商按 max）；按业务流量算的为 None
     pub rule: Option<&'static str>,
-    /// 接入前读数（割接时按供应商面板录的，只读保留：接口已不收新值）：录入时面板上的已用（字节）与录入时间，used 已含它。
-    /// 不在当前周期内的不算，为 None——进入下一个周期自动失效
+    /// 按供应商面板校准（`PUT …/subscription` 的 `traffic_used_gb`）：录入时面板上本周期已用的原始读数（字节）与录入时间。
+    /// 月度周期 used = base + 录入之后的实测，进入下一个周期失效；滚动 30 天的读数按均匀分布逐日线性衰减（quota::calibrated），
+    /// used = base × (1 − 录入后天数 / 30) + 录入之后的实测，满 30 天失效。这里始终是原始读数，不是衰减后的；失效了两个都为 None
     pub base: Option<i64>,
     #[serde(with = "time::serde::rfc3339::option")]
     #[ts(type = "string | null")]
     pub base_at: Option<OffsetDateTime>,
-    /// 近 7 天日均用量（字节 / 天；周期不足 7 天按已有天数，不足 1 天为 None），口径同 `used`（不含接入前读数）
+    /// 近 7 天日均用量（字节 / 天；周期不足 7 天按已有天数，不足 1 天为 None），只算实测（不含按面板校准的读数）
     pub daily_avg: Option<i64>,
     /// 按 `daily_avg` 预计用满的时刻（早于下次重置日才有；已用满、没有上限、没有重置日（滚动 30 天）为 None）。精确到小时
     #[serde(with = "time::serde::rfc3339::option")]
@@ -663,7 +664,7 @@ pub struct LiveCache {
     rolled: AtomicU64,
     /// 流量（入口的、网卡的）只在小时汇总后（或跨天、跨月）才变：按汇总轮次缓存，到库里时钟的下一个组织时区零点过期
     traffic: tokio::sync::Mutex<Option<((u64, Instant), Flows)>>,
-    /// 机器的周期已用（不含接入前读数）、接入前读数是否在周期内、周期起点时刻，同样只在汇总后作废
+    /// 机器的周期已用（只有实测，不含按面板校准的读数、也不衰减：不随时间变）、校准读数的录入时刻是否在周期内、周期起点时刻，同样只在汇总后作废
     quota: tokio::sync::Mutex<(u64, HashMap<QuotaKey, QuotaUsed>)>,
     /// 每日流量（traffic.rs）的按天聚合，键 (组织时区的今天, 天数)，同样只在汇总后作废
     pub(crate) daily: tokio::sync::Mutex<crate::traffic::Cache>,
@@ -673,13 +674,13 @@ pub struct LiveCache {
     tcp_loss: std::sync::Mutex<Option<crate::tcp_loss::Map>>,
 }
 
-/// (周期内下行之和, 上行之和, 接入前读数在周期内, 周期起点时刻, 近 7 天窗口内下行之和, 上行之和, 窗口起点时刻)；
+/// (周期内下行之和, 上行之和, 校准读数的录入时刻在周期内, 周期起点时刻, 近 7 天窗口内下行之和, 上行之和, 窗口起点时刻)；
 /// 业务流量（没有网卡的机器）下载 + 上传合在下行里、上行为 0。计费量在 `quota_used` 出口按规则套（meta::billed），缓存里只存和
 type QuotaUsed = (i64, i64, bool, OffsetDateTime, i64, i64, OffsetDateTime);
 /// `quota_used` 查询的一行：机器 id + `QuotaUsed`
 type QuotaRow = (Uuid, i64, i64, bool, OffsetDateTime, i64, i64, OffsetDateTime);
 
-/// (机器, 周期起点, 周期时区, 网卡计量规则（None = 业务流量）, 接入前读数的录入时间)
+/// (机器, 周期起点, 周期时区, 网卡计量规则（None = 业务流量）, 按面板校准的录入时间)
 type QuotaKey = (Uuid, Date, String, Option<&'static str>, Option<OffsetDateTime>);
 
 /// 生效的网卡计量规则（订阅单独设置的，或供应商的）；不认识的按 max
@@ -1233,7 +1234,7 @@ async fn flows(st: &AppState) -> sqlx::Result<Flows> {
     Ok((v, n))
 }
 
-/// 这些机器各自周期里（有接入前读数的从录入时刻起）的计费量、接入前读数是否在周期内、周期起点时刻、近 7 天窗口内的计费量与窗口起点时刻，
+/// 这些机器各自周期里（有按面板校准的从录入时刻起）的计费量、校准读数是否在周期内、周期起点时刻、近 7 天窗口内的计费量与窗口起点时刻，
 /// 走 `LiveCache.quota`（缓存里是下行、上行之和），缺的才查
 async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<Uuid, (i64, bool, OffsetDateTime, i64, OffsetDateTime)>> {
     if keys.is_empty() {
@@ -1249,7 +1250,7 @@ async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<
     if !miss.is_empty() {
         // 小时表按 UTC 整点分桶：周期起点所在的那一桶整桶算进来（半小时时区如 Asia/Kolkata 多算起点前至多 30 分钟，
         // 不漏算周期开头）；整点时区（北京、洛杉矶）起点正好是桶边界，和今天 / 本月的算法一致。
-        // 接入前读数的录入时刻在周期内的从录入时刻所在整点的下一桶算起：那一小时里录入之后的流量不计（至多差 1 小时）。
+        // 按面板校准的录入时刻在周期内的从录入时刻所在整点的下一桶算起：那一小时里录入之后的流量不计（至多差 1 小时）。
         // 网卡：逐台按 host_metric_hourly 主键区间求本周期入、出总量，再按规则取小 / 取大 / 相加 / 只取出站。
         // 业务流量（家宽代理、同机 IP 节点）：先展开「机器 → 入口」，再逐个入口按小时表主键求和
         // （子查询放在 OR 连接条件里时规划器会先连出全部小时行，实验室 64 台要 11 s；入口连接本身也不写 OR：
@@ -1612,7 +1613,10 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
             let (start, rule) = period_of[&r.id];
             let mode = modes[&r.id];
             let (after, cal, s0, recent, w0) = period_used[&r.id];
-            let base = r.s_base.filter(|_| cal);
+            // 按面板校准：录入时刻在当前周期内（cal）才算；月度原样全算，滚动 30 天按 now 逐日衰减、满 30 天失效（quota::calibrated）。
+            // 缓存里（LiveCache.quota）只有录入之后的实测，不随时间变；衰减每次取视图时现算。`base` 对外仍是原始读数，`counted` 是算进 used 的部分
+            let counted = r.s_base.zip(r.s_base_at).filter(|_| cal).and_then(|(b, at)| crate::quota::calibrated(b, at, now, mode == "rolling30"));
+            let base = r.s_base.filter(|_| counted.is_some());
             // 生效的流量上限与来源：订阅的（单独设置的或跟随套餐的），没有订阅按套餐的；都没有时同机 IP 节点是与宿主机共用
             let (limit_gb, limit_source) = match &subscription {
                 Some(s) => (s.traffic_gb, if s.overrides.iter().any(|k| k == "traffic_gb") { "subscription" } else { "plan" }),
@@ -1629,7 +1633,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
             let now_h = OffsetDateTime::from_unix_timestamp(now.unix_timestamp() / 3600 * 3600).unwrap_or(now);
             let window_start = r.activated_at.map_or(w0, |a| a.max(w0));
             let (daily_avg, forecast_full_at) = crate::quota::forecast(
-                base.unwrap_or(0).saturating_add(after),
+                counted.unwrap_or(0).saturating_add(after),
                 limit_gb.map(|g| g as i64 * 1_000_000_000),
                 recent,
                 window_start,
@@ -1639,16 +1643,16 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
             let quota = Quota {
                 limit_gb,
                 limit_source,
-                used: base.unwrap_or(0).saturating_add(after),
+                used: counted.unwrap_or(0).saturating_add(after),
                 period_start: start,
                 // 每月：订阅的生效重置日，没有订阅按 1 号
                 period_end,
                 mode,
-                // 有接入前读数的，周期开头那段已由读数补上
+                // 有按面板校准的读数，周期开头那段已由读数补上
                 counted_from: r.activated_at.filter(|a| *a > s0 && base.is_none()),
                 rule,
                 base,
-                base_at: r.s_base_at.filter(|_| cal),
+                base_at: r.s_base_at.filter(|_| base.is_some()),
                 daily_avg,
                 forecast_full_at,
                 period_start_at: s0,
