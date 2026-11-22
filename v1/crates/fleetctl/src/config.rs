@@ -65,21 +65,33 @@ pub fn save(url: &str, token: &str) -> anyhow::Result<PathBuf> {
     Ok(p)
 }
 
-/// 写含密钥的文件：unix 上新建即 0600（不经过 umask 决定的宽权限）；已有的文件先收紧权限再写
-#[cfg(unix)]
+/// 写含密钥的文件：先写同目录的临时文件（unix 上新建即 0600，不经过 umask 决定的宽权限），落盘后 rename 换上去。
+/// 中途失败（磁盘满、被杀）原来的配置原样留着，不会只剩半个文件；换上去的文件总是 0600（原来宽的也随之收紧）
 fn write_private(p: &std::path::Path, body: &str) -> std::io::Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    match std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o600)) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
-        _ => {}
+    let dir = p.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
+    let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
+    let tmp = dir.join(format!(".{name}.tmp.{}.{nanos}", std::process::id()));
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+    let written = o.open(&tmp).and_then(|mut f| {
+        f.write_all(body.as_bytes())?;
+        f.sync_all()
+    });
+    if let Err(e) = written.and_then(|_| std::fs::rename(&tmp, p)) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
     }
-    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(p)?;
-    f.write_all(body.as_bytes())
+    // rename 本身落盘（目录项）；打不开目录的平台（Windows）跳过
+    #[cfg(unix)]
+    if let Ok(d) = std::fs::File::open(dir) {
+        let _ = d.sync_all();
+    }
+    Ok(())
 }
-
-#[cfg(not(unix))]
-fn write_private(p: &std::path::Path, body: &str) -> std::io::Result<()> { std::fs::write(p, body) }
 
 #[cfg(test)]
 mod tests {
@@ -120,6 +132,33 @@ mod tests {
         std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o644)).unwrap();
         write_private(&old, "b").unwrap();
         assert_eq!((mode(&old), std::fs::read_to_string(&old).unwrap().as_str()), (0o600, "b"));
+        // 临时文件不留在目录里
+        let left: Vec<_> = std::fs::read_dir(&d).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert!(left.iter().all(|n| !n.contains(".tmp.")), "{left:?}");
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// 写失败（目标是目录，rename 换不上去）时原来的东西不动、临时文件删掉
+    #[test]
+    fn failed_write_keeps_old_and_cleans_tmp() {
+        let d = std::env::temp_dir().join(format!("fleetctl-cfg-fail-{}", std::process::id()));
+        let target = d.join("config.toml");
+        std::fs::create_dir_all(target.join("sub")).unwrap();
+        assert!(write_private(&target, "x").is_err());
+        assert!(target.join("sub").is_dir());
+        let left: Vec<_> = std::fs::read_dir(&d).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(left, vec!["config.toml".to_string()]);
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn rewrite_replaces_content() {
+        let d = std::env::temp_dir().join(format!("fleetctl-cfg-rw-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("config.toml");
+        write_private(&p, "url = \"a\"\n").unwrap();
+        write_private(&p, "url = \"b\"\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "url = \"b\"\n");
         std::fs::remove_dir_all(&d).unwrap();
     }
 }

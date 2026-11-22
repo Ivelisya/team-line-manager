@@ -1,7 +1,7 @@
 // 抽屉“管理”页：改名/改编号（带实时预览）、国家与备注、入口操作、同机 IP 节点、agent、退役（移入备用）/ 立即回收（备用里的机器）。
 // 操作类的行按苹果设置页的分组列表排：一组一个圆角容器（.mgroup），行之间细线分隔，只有行标签，没有重复的小节标题。
 import * as React from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { ArrowRight } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
 import { maintOwner, useAddEntry, useEndMaintenance, usePatchMachine, useJob, useLastSpeedtest, useMachines, useRelayChoices, useRenamePreview, useSilences, useSpeedtest, useSsRefresh, useTeams, useTune } from '@/lib/queries';
@@ -26,12 +26,17 @@ import { ConfirmDialog } from '@/components/app/dialogs';
 import { tuneBufText, tuneParamsText } from '@/components/app/TuneResult';
 import { isSpeedtestOutput, speedtestLine } from '@/components/app/SpeedtestResult';
 import { PingOverrideSection } from './PingTab';
-import { RetireDialog } from '@/components/app/RetireDialog';
 import { EntryMenuButton, EntryMenus, entryLabel } from '@/components/app/EntryActions';
-import { EvacuateDialog, MoveDialog, movableEntries } from '@/components/app/LifecycleDialogs';
-import { ReplaceDialog, RenameNote, canReplace } from '@/components/app/ReplaceDialog';
+import { canReplace, movableEntries, RenameNote } from '@/components/app/lifecycle-bits';
+import { LazyMount } from '@/lib/useHeld';
 import { CountrySelect } from '@/components/app/CountrySelect';
 import { countryName } from '@/lib/flags';
+
+// 换线、搬空、替换、退役的对话框（连同它们的预览与软路由清单）在第一次打开时才下载，打开抽屉不背这份体积
+const MoveDialog = React.lazy(() => import('@/components/app/LifecycleDialogs').then((m) => ({ default: m.MoveDialog })));
+const EvacuateDialog = React.lazy(() => import('@/components/app/LifecycleDialogs').then((m) => ({ default: m.EvacuateDialog })));
+const ReplaceDialog = React.lazy(() => import('@/components/app/ReplaceDialog').then((m) => ({ default: m.ReplaceDialog })));
+const RetireDialog = React.lazy(() => import('@/components/app/RetireDialog').then((m) => ({ default: m.RetireDialog })));
 
 /** 备注长度上限（同服务端 MAX_NOTE_CHARS） */
 const NOTE_MAX = 2000;
@@ -230,8 +235,8 @@ function EntrySection({ m }: { m: MachineView }) {
           )}
         </div>
       )}
-      <MoveDialog m={m} open={dlg === 'move'} onOpenChange={(o) => !o && setDlg(null)} onDone={() => setDlg(null)} />
-      <EvacuateDialog relay={m} open={dlg === 'evacuate'} onOpenChange={(o) => !o && setDlg(null)} onDone={() => setDlg(null)} />
+      <LazyMount when={dlg === 'move'}><MoveDialog m={m} open={dlg === 'move'} onOpenChange={(o) => !o && setDlg(null)} onDone={() => setDlg(null)} /></LazyMount>
+      <LazyMount when={dlg === 'evacuate'}><EvacuateDialog relay={m} open={dlg === 'evacuate'} onOpenChange={(o) => !o && setDlg(null)} onDone={() => setDlg(null)} /></LazyMount>
     </Section>
   );
 }
@@ -245,7 +250,7 @@ function ReplaceRow({ m }: { m: MachineView }) {
         <div className="t">替换为另一台节点 <InfoTip text={'新节点沿用这台的编号，软路由上指向这台的出口也会改成新节点\n这台移到备用团队，到期满 1 天后自动回收'} /></div>
         <Button variant="outline" disabled={!!m.active_job} onClick={() => setOpen(true)}>替换为…</Button>
       </div>
-      <ReplaceDialog m={m} open={open} onOpenChange={setOpen} onDone={() => setOpen(false)} />
+      <LazyMount when={open}><ReplaceDialog m={m} open={open} onOpenChange={setOpen} onDone={() => setOpen(false)} /></LazyMount>
     </>
   );
 }
@@ -444,7 +449,7 @@ function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }
         )}
       </div>
 
-      <RetireDialog m={m} open={open} onOpenChange={setOpen} onDone={onClosed} />
+      <LazyMount when={open}><RetireDialog m={m} open={open} onOpenChange={setOpen} onDone={onClosed} /></LazyMount>
     </Section>
   );
 }

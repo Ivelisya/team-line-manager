@@ -16,7 +16,7 @@ const CITY: Record<string, string> = {
 };
 
 /** 现在的 UTC 偏移：UTC+8、UTC−7（减号用 U+2212）、UTC+5:30；不认识的时区名为 null */
-export function utcOffset(tz: string, at = new Date()): string | null {
+function utcOffset(tz: string, at = new Date()): string | null {
   try {
     const p = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'shortOffset' }).formatToParts(at).find((x) => x.type === 'timeZoneName')?.value;
     if (!p) return null;

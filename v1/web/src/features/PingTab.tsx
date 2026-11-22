@@ -73,7 +73,7 @@ function OverrideForm({ id, global, over }: { id: string; global: { mode: string
   const [mode, setMode] = React.useState<string>(over?.mode ?? 'global');
   const [slots, setSlots] = React.useState<(PingSlot | null)[]>(init);
   const dirty = mode !== (over?.mode ?? 'global') || JSON.stringify(slots) !== JSON.stringify(init);
-  const toggle = (i: number, on: boolean) => setSlots((l) => l.map((s, j) => (j === i ? (on ? { ...global.slots[i] } : null) : s)));
+  const toggle = (i: number, on: boolean) => setSlots((l) => l.map((s, j) => (j === i ? (on ? { name: '', target: '', ...global.slots[i] } : null) : s)));
   const set = (i: number, k: keyof PingSlot, v: string) => setSlots((l) => l.map((s, j) => (j === i && s ? { ...s, [k]: v } : s)));
   const submit = () => {
     const o: PingOverride = { mode: mode === 'global' ? null : (mode as 'tcp' | 'icmp'), slots };

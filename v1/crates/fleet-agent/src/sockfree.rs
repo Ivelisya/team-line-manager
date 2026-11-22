@@ -56,13 +56,14 @@ async fn ss(args: &[&str]) -> anyhow::Result<(String, String)> {
     Ok((String::from_utf8_lossy(&out.stdout).to_string(), String::from_utf8_lossy(&out.stderr).trim().to_string()))
 }
 
-/// 这些端口里有哪些正在被监听；`ss` 用不了返回 None（调用方当「不知道」处理）
+/// 这些端口里有哪些正在被监听；读 /proc/net/tcp{,6}（同 `ss -tlnH`，不起子进程：singbox_task 每 10 秒要看一次），
+/// 两张表都读不了返回 None（调用方当「不知道」处理）
 pub async fn listening(ports: &[u16]) -> Option<Vec<u16>> {
     if ports.is_empty() {
         return Some(vec![]);
     }
-    let (out, _) = ss(&["-tlnH", &filter(ports)]).await.ok()?;
-    Some(parse_ss(&out).into_iter().map(|s| s.port).collect())
+    let ports = ports.to_vec();
+    tokio::task::spawn_blocking(move || crate::xray::conns::listening_now(&ports)).await.ok().flatten()
 }
 
 async fn connected(ports: &[u16]) -> anyhow::Result<Vec<Sock>> {

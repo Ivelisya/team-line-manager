@@ -1,6 +1,6 @@
 // 机器详情抽屉：概览 / 连接质量 / 流量 / 主机 / 费用 / 管理。开关由 URL 的 ?m= 控制。
 import * as React from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/sheet';
@@ -32,6 +32,8 @@ import { MachineTags } from '@/components/app/MachineTags';
 import { ManageTab } from './ManageTab';
 import { BillingTab } from './BillingTab';
 import { EntriesTable, entriesMeta } from './EntriesTable';
+// 抽屉标题（.m-drawer-head）、入口旁的软路由标记（.rt-mark）、补号表（.rx-tbl）的样式在这份里；原先随替换对话框一起静态带进来，对话框改成懒加载后由抽屉自己引
+import '@/styles/routers.css';
 
 // 带图表的页签（图表库 bklit）按需加载
 const QualityTab = React.lazy(() => import('./DrawerCharts').then((m) => ({ default: m.QualityTab })));

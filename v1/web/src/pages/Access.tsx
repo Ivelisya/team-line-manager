@@ -22,7 +22,7 @@ import { Empty, ErrorNote, PageHead, Panel, Pill, SortHead, Stat, TableWrap } fr
 import { AccessViewSwitch } from '@/components/app/AccessViewSwitch';
 import { HostCell, ResultPill, fmtN } from '@/features/AccessBits';
 import { CursorPager, Pagination } from '@/components/app/Pagination';
-import { scrollBackTo, usePage } from '@/lib/usePage';
+import { scrollBackTo, usePage, type PageSizes } from '@/lib/usePage';
 import { parseSort, useUrlSearch, useUrlState } from '@/lib/urlState';
 import { CONN_FILTER_OPTIONS, ConnCell, IpIntelHint, IpIntelStatusChip, IspPlace } from '@/features/IpIntelBits';
 import '@/styles/access.css';
@@ -40,7 +40,7 @@ const ACT_OPTS = [{ value: 'routed', label: '已转发' }, { value: 'blocked', l
 const SORT_ITEMS: { value: TargetSort; label: string }[] = [{ value: 'conns', label: '连接数' }, { value: 'last', label: '最近' }, { value: 'first', label: '首次出现' }];
 const isTargetSort = (v: string | null): v is TargetSort => SORT_ITEMS.some((x) => x.value === v);
 // 每页条数各页签一样（原始记录是服务端固定的一页 EVENTS_PAGE 条）
-const SIZES = [50, 100, 200];
+const SIZES: PageSizes = [50, 100, 200];
 const SIZE = 100;
 /** 「首次出现」不受时间范围限制：合并行是各节点里最早的一次，展开的节点行是这个节点自己的 */
 const FIRST_SEEN_TIP = '第一次访问它的时间，不受时间范围限制。展开可看各节点自己的';
@@ -61,7 +61,7 @@ export function AccessPage() {
   const node = sp.get('node') ?? '';
   const search = sp.get('q') ?? '';
   const f = React.useMemo<AccessFilter>(() => ({
-    window: isAccessWindow(w) ? (WINDOW_DAYS[w] <= maxDays ? w : windowItems[windowItems.length - 1].value) : '24h', team, node, search,
+    window: isAccessWindow(w) ? (WINDOW_DAYS[w] <= maxDays ? w : windowItems.at(-1)?.value ?? '24h') : '24h', team, node, search,
     kind: kind === 'domain' || kind === 'ip' ? kind : '', action: act === 'routed' || act === 'blocked' ? act : '',
   }), [w, team, node, search, kind, act, maxDays, windowItems]);
   const tab: View = isView(view) ? view : 'targets';
@@ -92,10 +92,10 @@ export function AccessPage() {
   // 接入方式（?conn=）只在「来源地址」页签有：换页签时清掉，生效时也给「清除筛选」
   const conn = tab === 'sources' && CONN_FILTER_OPTIONS.some((o) => o.value === sp.get('conn')) ? sp.get('conn')! : '';
   const filtered = !!(f.team || f.node || f.search || f.kind || f.action || conn);
-  const clear = React.useCallback(() => { setText(''); upd({ team: '', node: '', q: '', kind: '', act: '', conn: '' }); }, [upd]);
+  const clear = React.useCallback(() => { setText(''); upd({ team: '', node: '', q: '', kind: '', act: '', conn: '' }); }, [upd, setText]);
   // 点目标名：搜索框直接换成它（不等防抖）。合并的「*.域名」搜「.域名」：原始记录里是真实的子域名，
   // 去掉「*」后各页签（汇总里的合并名、原始记录里的子域名）都按包含匹配到同一批
-  const pick = React.useCallback((host: string) => { const q = host.startsWith('*.') ? host.slice(1) : host; setText(q); upd({ q }); }, [upd]);
+  const pick = React.useCallback((host: string) => { const q = host.startsWith('*.') ? host.slice(1) : host; setText(q); upd({ q }); }, [upd, setText]);
 
   return (
     <div className="stack">
@@ -378,7 +378,7 @@ const EventsView = React.memo(function EventsView({ f, filtered, onClear, open }
   const [st, setSt] = React.useState({ fk, cur: [''] });
   if (st.fk !== fk) setSt({ fk, cur: [''] });
   const cur = st.fk === fk ? st.cur : [''];
-  const q = useAccessEvents(f, cur[cur.length - 1]);
+  const q = useAccessEvents(f, cur.at(-1) ?? ''); // cur 从 [''] 起只增不减
   const rows = q.data?.items ?? [];
   const older = q.data?.next_before;
   const top = React.useRef<HTMLElement>(null);

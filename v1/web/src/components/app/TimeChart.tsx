@@ -45,28 +45,31 @@ function timeTicks(min: number, max: number, range: string): number[] | undefine
  *  （这一行没有任何序列值，提示不出来），不会吸到很远的那个真实点上；曲线也在空段断开，不把两头连成一条斜线。
  *  「空段」= 比常见点距的 3 倍还长；垫点的间隔不小于常见点距、整个范围最多约 240 个 */
 function withGaps<T extends { t: number }>(pts: T[], span: [number, number] | null): (T | { t: number })[] {
-  if (pts.length < 2 || !span) return pts;
-  const diffs = pts.slice(1).map((p, i) => p.t - pts[i].t).sort((a, b) => a - b);
-  const typical = diffs[diffs.length >> 1];
+  const first = pts[0], last = pts.at(-1);
+  if (pts.length < 2 || !span || !first || !last) return pts;
+  const typical = typicalStep(pts);
   if (!(typical > 0)) return pts;
   const step = Math.max(typical, (span[1] - span[0]) / 240);
   const out: (T | { t: number })[] = [];
   // (from, to) 之间隔 step 垫点，两头各让出半步
   const fill = (from: number, to: number) => { if (to - from > 3 * typical) for (let t = from + step / 2; t < to - step / 2; t += step) out.push({ t }); };
-  fill(span[0] - step / 2, pts[0].t);
-  pts.forEach((p, i) => { if (i) fill(pts[i - 1].t, p.t); out.push(p); });
-  fill(pts[pts.length - 1].t, span[1] + step / 2);
+  fill(span[0] - step / 2, first.t);
+  let prev: number | undefined;
+  for (const p of pts) { if (prev !== undefined) fill(prev, p.t); out.push(p); prev = p.t; }
+  fill(last.t, span[1] + step / 2);
   return out;
 }
 
 /** 常见点距（相邻点间隔的中位数）；比它的 3 倍还长的空档算「没有数据」 */
 function typicalStep(pts: { t: number }[]): number {
-  if (pts.length < 2) return 0;
-  const diffs = pts.slice(1).map((p, i) => p.t - pts[i].t).sort((a, b) => a - b);
-  return diffs[diffs.length >> 1];
+  const diffs: number[] = [];
+  let prev: number | undefined;
+  for (const p of pts) { if (prev !== undefined) diffs.push(p.t - prev); prev = p.t; }
+  diffs.sort((a, b) => a - b);
+  return diffs[diffs.length >> 1] ?? 0; // 不到两个点：没有点距
 }
 /** 第 q 分位数（0–1） */
-const quantile = (sorted: number[], q: number) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * q))];
+const quantile = (sorted: number[], q: number) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * q))] ?? 0; // 空数组按 0（调用处不会传空的）
 const MAX_OUT = 40;
 export interface Line { key: string; label: string; color: string }
 /** 面积填充的顶端不透明度：第一条 0.1 左右的观感（带向下渐隐，顶端取高一点），其余更淡 */
@@ -112,13 +115,13 @@ export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 
   // 横轴：full 时是 [现在 − 所选范围, 现在]（数据取回时算一次，不随每次重渲染挪动），数据晚于范围起点时改从第一条数据（减去左边那条斜纹）画起；否则数据首尾。
   // lead：左边斜纹的时长（0 = 没有）；first：第一条数据的时刻
   const { span, lead, first, typical } = useMemo(() => {
-    const typical = typicalStep(real); const first = real[0]?.t ?? 0;
+    const typical = typicalStep(real); const first = real[0]?.t ?? 0; const last = real.at(-1)?.t;
     if (full && RANGE_MS[range]) {
-      const end = Math.max(Date.now(), real[real.length - 1]?.t ?? 0); const start = end - RANGE_MS[range];
+      const end = Math.max(Date.now(), last ?? 0); const start = end - RANGE_MS[range];
       const lead = real.length > 1 && first - start > 3 * typical ? Math.min(first - start, (end - first) * 0.16) : 0;
       return { span: [lead ? first - lead : start, end] as [number, number], lead, first, typical };
     }
-    return { span: real.length > 1 ? [first, real[real.length - 1].t] as [number, number] : null, lead: 0, first, typical };
+    return { span: real.length > 1 && last !== undefined ? [first, last] as [number, number] : null, lead: 0, first, typical };
   }, [real, full, range]);
   const data = useMemo(() => withGaps(real, span), [real, span]);
   // 数据里的空档（斜纹）：左边的 lead，中间的、末尾的（比常见点距的 3 倍还长）
@@ -126,15 +129,15 @@ export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 
     const out: { a: number; b: number; label: string }[] = [];
     if (!span || !(typical > 0)) return out;
     if (lead) out.push({ a: span[0], b: first, label: '暂无数据' });
-    real.forEach((p, i) => { if (i && p.t - real[i - 1].t > 3 * typical) out.push({ a: real[i - 1].t, b: p.t, label: holeLabel }); });
-    const last = real[real.length - 1].t;
-    if (full && span[1] - last > 3 * typical) out.push({ a: last, b: span[1], label: holeLabel });
+    let last: number | undefined;
+    for (const p of real) { if (last !== undefined && p.t - last > 3 * typical) out.push({ a: last, b: p.t, label: holeLabel }); last = p.t; }
+    if (full && last !== undefined && span[1] - last > 3 * typical) out.push({ a: last, b: span[1], label: holeLabel });
     return out;
   }, [span, lead, first, typical, real, full, holeLabel]);
   const xRange = full && !lead ? range : span ? spanRange(span[1] - span[0] - lead) : range;
   // 数据很短（刚上架）时 timeTicks 给不出刻度：用 d3 的本地时间刻度取 3–5 个，仍走 xFmt（不落到图表库默认的 en-US「Nov 5」）；只有一个点时标它自己
   const xTicks = useMemo(() => {
-    if (!span) return real.length ? [real[0].t] : undefined;
+    if (!span) return real[0] ? [real[0].t] : undefined;
     const t = timeTicks(span[0] + lead, span[1], xRange);
     if (t) return t;
     const d = scaleTime().domain([new Date(span[0] + lead), new Date(span[1])]).ticks(4).map((x) => x.getTime());

@@ -29,7 +29,7 @@ cargo build -p fleet-agent --release --target x86_64-unknown-linux-musl   # 约 
 | `/etc/fleet-agent/agent.toml` `token` | 配置、令牌（均 0600） |
 | `/etc/fleet-agent/xray.json` | **由 agent 全权生成**（0600，含 REALITY 私钥与出站密码）；没有其他写者 |
 | `/var/lib/fleet-agent/` (0700) | `state.json`（seq）、`queue/`（离线队列，`queue/dead/` 是被服务端永久拒绝的报告）、`stats.json`（流量基线）、`access.json`（访问日志游标）、`applied.json`（上次成功应用的期望状态）、`pending_ack.json`、`tmp/` |
-| `/var/log/fleet-xray/access.log` | Xray 访问日志（agent 只读）；用 `deploy/logrotate/fleet-xray`（copytruncate，按天、超过 200M 提前；线路机上架、升级 agent 时由中控装到 `/etc/logrotate.d/fleet-xray`，连同每小时只跑这一份的 `fleet-xray-logrotate.timer`；`lab/agent/fleet-xray.logrotate` 是同一份） |
+| `/var/log/fleet-xray/access.log` | Xray 访问日志（agent 只读）；用 `deploy/logrotate/fleet-xray`（copytruncate，按天、超过 200M 提前；线路机上架、升级 agent 时由中控装到 `/etc/logrotate.d/fleet-xray`，连同每小时只跑这一份的 `fleet-xray-logrotate.timer`） |
 
 **运行身份（v1 的取舍）**：agent 以 root 运行，但 `CapabilityBoundingSet=` 只留 `CAP_DAC_READ_SEARCH`（读 Xray 访问日志）与 `CAP_NET_RAW`（系统 ping）、`ProtectSystem=strict`（只有 `/var/lib/fleet-agent`、`/etc/fleet-agent` 可写）、`NoNewPrivileges`、`PrivateTmp`、`PrivateDevices`、`RestrictAddressFamilies`。原因：线路机上要 `systemctl restart fleet-xray`（仅 Xray 没在运行/骨架变更时）并读写 0600 的 xray.json；专用用户 + polkit 在 v1 里得不偿失。`/etc/fleet-agent` 必须事先存在（单元的 ReadWritePaths 依赖它）。Xray 单元同样加固，只保留 `CAP_NET_BIND_SERVICE`；它也是 uid 0，属主是 root 的文件照样读得到，所以用 `InaccessiblePaths` 藏起 `/etc/ssh`、agent 令牌与 `/var/lib/fleet-agent`、`/etc/shadow` 等。单元在上架和升级 agent 时收敛，变了只 `daemon-reload`、不重启 Xray，等它下次重启才生效。
 
@@ -66,9 +66,7 @@ cargo build -p fleet-agent --release --target x86_64-unknown-linux-musl   # 约 
 
 接入真实中控时：写入 `/etc/fleet-agent/token`（0600），`systemctl enable --now fleet-agent`（relay 上 agent 会先写骨架再拉起 `fleet-xray`）。
 
-## 联调工具
+## 联调注意
 
-- `fake_server.py`：假中控（标准库）。`--port --token --dir --hold`；`DIR/desired.json` 作为下发内容；`DIR/fail` 写 `503`/`400` 注入故障、`DIR/revoke` 注入 401；上报记 `reports.jsonl`、回报记 `applied.jsonl`。
-- `desired-add.json.tmpl` / `desired-remove.json.tmpl`：占位符 `__REALITY_PRIVATE_KEY__`、`__SS_PASSWORD__`。
-- `lab-test.sh`：端到端（加入口 → 真实 REALITY 客户端经线路机和 lab-node1 访问外网 → 停 ssserver 证明确实走节点 → 幂等 → 删入口 → 无残留 → Xray 没重启）。
-- 注意：lab-relay1 与 lab-node1 同一个公网出口 IP（家宽 NAT），egress 探测因此不能区分「走了节点」和「直连」；`lab-test.sh` 用「停 ssserver 后客户端失败」来证明路径。`geoip:private` 规则使得经入口访问 192.168.x.x 会被 blocked（访问日志里 `blocked=true`），测试用公网目标。
+- 早期的假中控 `fake_server.py`、期望状态模板与端到端脚本 `lab-test.sh` 已删除（端到端走 `lab/e2e.sh` 与真实中控；旧文件在 git 历史里）。
+- lab-relay1 与 lab-node1 同一个公网出口 IP（家宽 NAT），egress 探测因此不能区分「走了节点」和「直连」；要证明路径，就停掉 lab-node1 的 ssserver 看客户端是否失败。`geoip:private` 规则使得经入口访问 192.168.x.x 会被 blocked（访问日志里 `blocked=true`），测试用公网目标。

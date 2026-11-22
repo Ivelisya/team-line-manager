@@ -12,7 +12,7 @@ import { ConfirmDialog } from '@/components/app/dialogs';
 import { ErrorNote, Note, Panel } from '@/components/app/primitives';
 import { SkeletonRows } from '@/components/app/SkeletonRows';
 
-export const ENTRY_MODE_OPTIONS = [
+const ENTRY_MODE_OPTIONS = [
   { value: 'reverse', label: '穿透：节点主动连入口' },
   { value: 'normal', label: '普通：线路机连节点' },
 ];

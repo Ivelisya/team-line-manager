@@ -156,4 +156,4 @@ function IconButton({
   )
 }
 
-export { Button, IconButton, buttonVariants }
+export { Button, IconButton }

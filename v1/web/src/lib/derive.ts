@@ -20,19 +20,18 @@ export const healthLabel = (k: string) => lbl(meta().healths, k);
 export const entryLabel = (k: string) => lbl(meta().entry_states, k);
 export const jobKindLabel = (k: string) => lbl(meta().job_kinds, k);
 export const jobStateLabel = (k: string) => lbl(meta().job_states, k);
-export const stepLabel = (k: string) => lbl(meta().step_states, k);
 /** 网卡计量规则（供应商的「流量计量」） */
 export const trafficRuleLabel = (k: string) => lbl(meta().traffic_rules, k);
 /** 按生效的规则从下行、上行算计费量（取小 / 取大 / 相加 / 只算上行 / 只算下行，没有规则取大）：流量页线路机的区间合计先求下行之和、上行之和再套它，和额度已用同口径 */
 export const nicBilled = (rule: string, rx: number, tx: number) => (rule === 'min' ? Math.min(rx, tx) : rule === 'sum' ? rx + tx : rule === 'out' ? tx : rule === 'in' ? rx : Math.max(rx, tx));
 /** 网卡计量规则（费用页签「本周期已用」旁的 (i)、额度悬停）：「按网卡流量：下行、上行取较大值」（名字同供应商对话框，来自 /meta） */
-export const trafficRulePlain = (k: string) => `按网卡，${trafficRuleLabel(k)}`;
+const trafficRulePlain = (k: string) => `按网卡，${trafficRuleLabel(k)}`;
 /** 网卡计量规则的下拉选项（供应商对话框、订阅编辑器共用，来自 /meta）：/meta 的键按字母序，这里双向在前、单向随后 */
 const RULE_ORDER = ['sum', 'max', 'min', 'out', 'in'];
 const ruleRank = (k: string) => { const i = RULE_ORDER.indexOf(k); return i < 0 ? RULE_ORDER.length : i; };
 export const trafficRuleOptions = () => Object.entries(meta().traffic_rules).sort(([a], [b]) => ruleRank(a) - ruleRank(b)).map(([value, label]) => ({ value, label }));
 /** 流量重置方式：自然月 / 账单日 / 滚动 30 天 */
-export const trafficResetLabel = (k: string) => lbl(meta().traffic_resets, k);
+const trafficResetLabel = (k: string) => lbl(meta().traffic_resets, k);
 /** 流量重置方式的说法：按自然月、按账单日、滚动 30 天 */
 export const trafficResetText = (k: string) => (k === 'rolling30' ? trafficResetLabel(k) : `按${trafficResetLabel(k)}`);
 /** 计费周期的那个字：月 / 季 / 半年 / 年 */
@@ -132,11 +131,11 @@ export const errText = (s: string) => ERR_ZH.reduce<string>((t, [re, to]) => t.r
  *  「28 个端口超时 10 秒」，两个以内照旧写端口号；括号外的文字不动。parts：逐个端口的明细（展开看），没有可合并的为 null */
 const PORT_LIST = /（((?:端口 \d+：[^；（）]+)(?:；端口 \d+：[^；（）]+)+)）/;
 export function compactPorts(s: string): { text: string; parts: string[] | null } {
-  const m = PORT_LIST.exec(s);
-  if (!m) return { text: s, parts: null };
-  const parts = m[1].split('；');
+  const m = PORT_LIST.exec(s); const list = m?.[1];
+  if (!m || !list) return { text: s, parts: null };
+  const parts = list.split('；');
   const by = new Map<string, string[]>();
-  for (const p of parts) { const x = /^端口 (\d+)：(.+)$/.exec(p)!; by.set(x[2], [...(by.get(x[2]) ?? []), x[1]]); }
+  for (const p of parts) { const [, port, why] = /^端口 (\d+)：(.+)$/.exec(p) ?? []; if (port == null || why == null) continue; by.set(why, [...(by.get(why) ?? []), port]); } // 外层正则已保证每段都匹配
   if ([...by.values()].every((ps) => ps.length <= 2)) return { text: s, parts: null };
   const short = [...by].map(([why, ps]) => (ps.length > 2 ? `${ps.length} 个端口${why}` : `端口 ${ps.join('、')}：${why}`)).join('；');
   return { text: s.replace(m[0], `（${short}）`), parts };
@@ -144,7 +143,7 @@ export function compactPorts(s: string): { text: string; parts: string[] | null 
 /** 原因的显示文字：英文换中文，逐个端口的合并（卡片胶囊悬停、告警说明用；抽屉里另可展开明细） */
 export const reasonText = (s: string) => compactPorts(errText(s)).text;
 /** 入口探测失败的悬停：常见的连接错误先写成一句人话（端口拒绝连接 / 连接超时 / 网络不可达），原文放第二行；其它原样（英文换成中文） */
-const PROBE_ERR: [RegExp, string][] = [[/拒绝|refused|os error 111/i, '端口拒绝连接'], [/超时|time[d ]?-?out|os error 110/i, '连接超时'], [/不可达|unreachable|os error 11[13]/i, '网络不可达']];
+const PROBE_ERR: [RegExp, string][] = [[/拒绝|refused|os error 111/i, '端口拒绝连接'], [/超时|timed? ?-?out|os error 110/i, '连接超时'], [/不可达|unreachable|os error 11[13]/i, '网络不可达']];
 export function probeErr(detail: string | null | undefined) {
   if (!detail) return undefined;
   const raw = errText(detail); const hit = PROBE_ERR.find(([re]) => re.test(detail));
@@ -165,7 +164,7 @@ export const tcpDir = (es: EntryView[]) => {
   return rv === 0 ? '线路机 → 节点' : rv === t.length ? '节点 → 线路机' : '线路机 ↔ 节点';
 };
 /** 没有线路机 → 节点的 TCP 探测：直出（没有节点）、穿透（线路机不连节点；它的 TCP 是节点 → 线路机，不进「节点通」连通数与告警） */
-export const noTcp = (e: EntryView) => e.direct || isReverse(e);
+const noTcp = (e: EntryView) => e.direct || isReverse(e);
 export const probeFail = (e: EntryView) => (e.lifecycle !== 'active' || !e.applied ? null : !noTcp(e) && e.tcp && !e.tcp.ok ? e.tcp : e.egress && !e.egress.ok ? e.egress : null);
 /** 入口状态列的「不通」写明是哪一段：TCP 连不上入口，还是连上了但出口验收失败（抽屉的「入口探测 N/M 连通」只算 TCP） */
 export const probeFailLabel = (e: EntryView) => (probeFail(e) === e.tcp ? 'TCP 不通' : '出口不通');
@@ -251,7 +250,7 @@ export function quotaTip(m: MachineView) {
 }
 
 /** 订阅各项跟随谁：价格、币种、周期、流量上限跟随套餐，账单时区、提前提醒、流量重置日、流量计费跟随供应商（同服务端 sub_template） */
-export const SUB_FROM: Record<SubField, 'plan' | 'provider'> = {
+const SUB_FROM: Record<SubField, 'plan' | 'provider'> = {
   price_cents: 'plan', currency: 'plan', cycle: 'plan', traffic_gb: 'plan', billing_tz: 'provider', remind_days: 'provider', traffic_reset_day: 'provider', traffic_rule: 'provider',
 };
 /** 这一项单独设置了 */
@@ -263,6 +262,7 @@ export function inheritedValue(m: MachineView, k: SubField, due?: string): strin
   if (k === 'traffic_reset_day') {
     if (t.traffic_reset !== 'billing' || !/^\d{4}-\d{2}-\d{2}$/.test(due ?? '')) return 1;
     const [y, mo, d] = due!.split('-').map(Number);
+    if (y == null || mo == null || d == null) return 1; // 上面的正则已保证三段
     const cur = m.subscription?.billing_day;
     return cur && d === Math.min(cur, new Date(Date.UTC(y, mo, 0)).getUTCDate()) ? cur : d;
   }
@@ -271,7 +271,7 @@ export function inheritedValue(m: MachineView, k: SubField, due?: string): strin
 /** 跟随的来源：「跟随套餐」「跟随供应商」，机器没有套餐 / 供应商时是「默认」 */
 export const inheritSource = (m: MachineView, k: SubField) => (SUB_FROM[k] === 'plan' ? (m.plan ? '跟随套餐' : '默认') : (m.provider ? '跟随供应商' : '默认'));
 /** 一项的值写成文字（订阅表单「跟随套餐：2000 GB」、上架页的跟随摘要共用）；currency 给价格配币种 */
-export function subValueText(k: SubField, v: string | number | null, currency?: string, reset?: TrafficReset): string {
+function subValueText(k: SubField, v: string | number | null, currency?: string, reset?: TrafficReset): string {
   if (v == null) return k === 'traffic_gb' ? '不限' : '—';
   switch (k) {
     case 'price_cents': return F.money(Number(v), currency ?? meta().defaults.currency);
@@ -396,7 +396,7 @@ export const AVAIL_LEGEND = '绿：99% 以上 · 黄：80%–99% · 红：不到
 const RELAY_COLORS = '绿：都连上 · 黄：断过 1 次 · 红：断 2 次以上 · 灰：没有数据';
 /** 线路机的格子是主探测来源 → 线路机的连通性（每 30 秒连一次，轮流连它的各个入口端口），不是它名下入口的合计：入口通不通是各节点的事。
  *  主探测来源是中控或放在靠近客户的地方的探测点（设置「探测点」，GET /settings/reach-source），说明随来源变；还没取到时按中控 */
-export const BEAT_LEGEND_RELAY = `中控定时连线路机的各个入口，只看通不通\n${RELAY_COLORS}`;
+const BEAT_LEGEND_RELAY = `中控定时连线路机的各个入口，只看通不通\n${RELAY_COLORS}`;
 export function beatLegendRelay(src: ReachEffective | undefined): string {
   switch (src?.state) {
     case 'probe': return `${src.label}定时连线路机的入口，看通不通；悬停可以看延迟\n${RELAY_COLORS}`;
@@ -417,8 +417,9 @@ export const reachWho = (src: ReachEffective | undefined) => (src?.state === 'pr
 export function relayRttMs(buckets: ProbeBucket[] | undefined): number | null {
   const v = (buckets ?? []).map((b) => b[2]).filter((x): x is number => x != null).sort((a, b) => a - b);
   if (!v.length) return null;
-  const m = v.length >> 1;
-  return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
+  const m = v.length >> 1; const hi = v[m], lo = v[m - 1];
+  if (hi == null) return null; // v 非空，必有中位
+  return v.length % 2 || lo == null ? hi : (lo + hi) / 2;
 }
 /** 探测桶 → 心跳格（20 格 = 近 1 小时，旧→新）。节点按桶内成功比例定色；线路机按断了几次（同 BEAT_LEGEND_RELAY）：
  *  当前这一格还没满 6 次时，按比例会把断 1 次标成红 */
@@ -531,7 +532,7 @@ export type TagColor = (typeof TAG_COLORS)[number] | 'gray' | 'teal' | 'violet' 
 export function tagColor(text: string): TagColor {
   let h = 0;
   for (const ch of text) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-  return TAG_COLORS[h % TAG_COLORS.length];
+  return TAG_COLORS[h % TAG_COLORS.length] ?? 'slate'; // 取模必在范围内
 }
 
 /** 带价格的订阅或套餐（套餐没有 monthly_cents，USD 字段也是可选的） */

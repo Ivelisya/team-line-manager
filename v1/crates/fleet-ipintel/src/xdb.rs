@@ -28,7 +28,7 @@ pub struct Xdb {
 impl Xdb {
     pub fn open(path: &Path) -> Result<Xdb, String> {
         let f = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        // SAFETY: 库文件由 fetch-dbs.sh 以“写临时文件 + rename”方式替换，已映射的旧 inode 不会被截断或改写。
+        // SAFETY: 库文件由 fleet-server ipintel-fetch（与原来的 fetch-dbs.sh）以“写临时文件 + rename”方式替换，已映射的旧 inode 不会被截断或改写。
         let map = unsafe { Mmap::map(&f) }.map_err(|e| format!("{}: mmap: {e}", path.display()))?;
         if map.len() < HEADER + VEC_COLS * VEC_COLS * VEC_SIZE {
             return Err(format!("{}: 文件太短，不是 xdb", path.display()));

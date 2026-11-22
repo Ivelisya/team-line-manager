@@ -12,9 +12,23 @@ pub type Tx<'a> = Transaction<'a, Postgres>;
 /// 遥测类写入（agent / 探测点上报、各小时汇总）的事务：本事务 `synchronous_commit = off`，提交不等 WAL 落盘。
 /// 虚拟盘偶发 fsync 卡顿时，这类写入不再跟着卡住上报和鉴权；只有 PostgreSQL 或宿主机崩溃时会丢最后约几百毫秒已确认的写入（agent 不会重发；汇总下一轮重算），中控进程崩溃不丢。
 /// 任务、审计、计费、配置写入不要用它。
-pub async fn begin_async(db: &PgPool) -> sqlx::Result<Tx<'static>> {
+pub async fn begin_async(db: &PgPool) -> sqlx::Result<Tx<'static>> { begin_async_timeout(db, None).await }
+
+/// 同 [`begin_async`]，`timeout` 给了时本事务里每条语句最多跑这么久（`statement_timeout`，按毫秒取整），超时取消、报错
+pub async fn begin_async_timeout(db: &PgPool, timeout: Option<std::time::Duration>) -> sqlx::Result<Tx<'static>> {
     let mut tx = db.begin().await?;
-    sqlx::query("set local synchronous_commit = off").execute(&mut *tx).await?;
+    match timeout {
+        // 一次往返设两项：set local 不能带参数，用 set_config(…, true)（只在本事务内有效）
+        Some(t) => {
+            sqlx::query("select set_config('statement_timeout', $1, true), set_config('synchronous_commit', 'off', true)")
+                .bind(format!("{}ms", t.as_millis().max(1)))
+                .execute(&mut *tx)
+                .await?;
+        }
+        None => {
+            sqlx::query("set local synchronous_commit = off").execute(&mut *tx).await?;
+        }
+    }
     Ok(tx)
 }
 
@@ -265,7 +279,11 @@ pub async fn ensure_partitions(db: &PgPool, table: &str, days: &BTreeSet<Date>) 
     .bind(&names)
     .fetch_all(db)
     .await
-    .unwrap_or_default();
+    .unwrap_or_else(|e| {
+        // 查不出来不等于都没有：照样逐天建（create table if not exists，已有的不动），建不出的再逐个核对
+        tracing::warn!("查 {table} 已有的分区失败，逐天按需建：{e:#}");
+        vec![]
+    });
     let existing: BTreeSet<String> = existing.into_iter().map(|(n,)| n).collect();
     let mut failed = vec![];
     for d in days {
@@ -275,16 +293,23 @@ pub async fn ensure_partitions(db: &PgPool, table: &str, days: &BTreeSet<Date>) 
         }
         if let Err(e) = create_partition(db, table, *d).await {
             // 并发的另一份上报可能刚建好
-            let again: Option<(String,)> = sqlx::query_as(&format!(
+            let again: sqlx::Result<Option<(String,)>> = sqlx::query_as(&format!(
                 "select c.relname::text from pg_class c join pg_inherits i on i.inhrelid = c.oid where c.relname = $1 and c.relnamespace = {OWN_SCHEMA}"
             ))
             .bind(&n)
             .fetch_optional(db)
-            .await
-            .unwrap_or(None);
-            if again.is_none() {
-                tracing::warn!("按需建分区 {n} 失败：{e:#}");
-                failed.push(*d);
+            .await;
+            match again {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    tracing::warn!("按需建分区 {n} 失败：{e:#}");
+                    failed.push(*d);
+                }
+                // 核对不了有没有：按没有算（丢这一天的样本，不让整份上报写进可能不存在的分区而整份失败）
+                Err(q) => {
+                    tracing::warn!("按需建分区 {n} 失败：{e:#}；核对它是否已被别的上报建好也失败：{q:#}");
+                    failed.push(*d);
+                }
             }
         }
     }
@@ -640,7 +665,7 @@ pub async fn preview_compaction(
 /// 写审计；返回 (改动列表 (id, 旧号, 新号), 需要刷新的线路机)。
 pub async fn compact_team(tx: &mut Tx<'_>, team_id: Uuid, actor: &str, why: &str) -> sqlx::Result<(Vec<(Uuid, i32, i32)>, Vec<Uuid>)> {
     let (team,): (String,) = sqlx::query_as("select name from team where id = $1 for update").bind(team_id).fetch_one(&mut **tx).await?;
-    if has_retiring(&mut **tx, team_id).await? {
+    if has_retiring(tx, team_id).await? {
         return Ok((vec![], vec![]));
     }
     let nodes: Vec<(Uuid, i32)> = sqlx::query_as(

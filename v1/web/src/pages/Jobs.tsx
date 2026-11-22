@@ -3,7 +3,7 @@
 import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
 import * as React from 'react';
-import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router';
 import { ArrowLeft, ArrowDownToLine, Check, CircleDashed, Copy, ListChecks, Minus, Pause, Play, RotateCw, CircleStop, TriangleAlert, Undo2, X } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { fetchAllLogs, fetchTailLogs, pruneJobsPreview, useCancelJob, useJob, useJobs, useMachine, usePruneJobs, useRetryJob } from '@/lib/queries';
@@ -31,7 +31,7 @@ import { NodeHover } from '@/components/app/NodeHover';
 import { toast } from '@/components/ui/toast';
 import { copyNewShareLink } from '@/lib/moveShare';
 import { Pagination } from '@/components/app/Pagination';
-import { usePage } from '@/lib/usePage';
+import { usePage, type PageSizes } from '@/lib/usePage';
 import { Empty, ErrorNote, LabelValue, LabelValueGrid, Note, PageHead, Panel, Pill, useCopied, type Tone } from '@/components/app/primitives';
 import '@/styles/jobs.css';
 
@@ -42,7 +42,9 @@ const STATE: Record<string, { tone: Tone; dot?: 'pulse' }> = {
   failed: { tone: 'bad' }, cancelled: { tone: 'neutral' },
 };
 /** 作业列表每页条数：列表在窄栏里，固定一档，不给每页条数下拉 */
-const JOB_PAGE = [20];
+const JOB_PAGE: PageSizes = [20];
+// 还没取回时的空列表：固定一份，滚到选中项的 effect 不因每次新建的 [] 白跑
+const NONE: never[] = [];
 /** 页签记在 URL（?view=running / done，缺省全部；首页「上架中 · 退役中」链到 ?view=running），对应列表接口的 state */
 type View = 'all' | 'running' | 'done';
 const VIEWS: { value: View; label: string }[] = [{ value: 'all', label: '全部' }, { value: 'running', label: '进行中' }, { value: 'done', label: '已结束' }];
@@ -95,7 +97,7 @@ export function JobsPage() {
   const pg = usePage({ total, sizes: JOB_PAGE, reset: [filter, kind] });
   const jobs = useJobs(filter, pg.offset, pg.size, kind);
   if (jobs.data && jobs.data.total !== total) setTotal(jobs.data.total);
-  const list = jobs.data?.items ?? [];
+  const list = jobs.data?.items ?? NONE;
   const selected = id ?? null;
   // 地址里没有作业时，右栏默认显示最近 24 小时内第一条失败的（没有就第一条）：更早的失败在列表里看不到，右栏却先展示它会让人摸不着头脑；
   // 窄屏（单栏）仍先看列表，所以 data-detail 只认地址
@@ -349,8 +351,9 @@ const LogPanel = React.memo(function LogPanel({ jobId, state }: { jobId: string;
           : { logs: await fetchAllLogs(jobId, last.current, ac.signal), skipped: 0 };
         if (stop) return;
         setErr(null); setLoaded(true);
-        if (more.length) {
-          last.current = more[more.length - 1].id;
+        const tail = more.at(-1);
+        if (tail) {
+          last.current = tail.id;
           const merged = all.current.concat(more);
           const over = Math.max(0, merged.length - KEEP_MAX);
           all.current = over ? merged.slice(over) : merged;
@@ -367,7 +370,7 @@ const LogPanel = React.memo(function LogPanel({ jobId, state }: { jobId: string;
   const shown = React.useMemo(() => {
     if (frozen == null) return logs;
     let n = logs.length;
-    while (n > 0 && logs[n - 1].id > frozen) n--;
+    while (n > 0 && (logs[n - 1]?.id ?? frozen) > frozen) n--;
     return logs.slice(0, n);
   }, [logs, frozen]);
   const view = shown.length > SHOW_MAX ? shown.slice(-SHOW_MAX) : shown;
@@ -382,7 +385,7 @@ const LogPanel = React.memo(function LogPanel({ jobId, state }: { jobId: string;
         {live && frozen == null && <Pill tone="info" dot="pulse">实时</Pill>}
         {!stuck && frozen == null && <Button size="sm" variant="ghost" onClick={jump}><ArrowDownToLine />跳到最新</Button>}
         {/* 已结束的作业不会再有新日志，不给暂停；结束前暂停着的仍可点“继续”看到最后几行 */}
-        {(live || frozen != null) && <Button size="sm" variant="outline" aria-pressed={frozen != null} onClick={() => { if (frozen == null) setFrozen(logs.length ? logs[logs.length - 1].id : 0); else { setFrozen(null); setStuck(true); } }}>
+        {(live || frozen != null) && <Button size="sm" variant="outline" aria-pressed={frozen != null} onClick={() => { if (frozen == null) setFrozen(logs.at(-1)?.id ?? 0); else { setFrozen(null); setStuck(true); } }}>
           {frozen == null ? <><Pause />暂停滚动</> : <><Play />继续</>}
         </Button>}
         <IconButton label="复制全部日志" size="icon-sm" onClick={copy} disabled={!logs.length}>{cp.done ? <Check size={14} className="copied-ic" /> : <Copy size={14} />}</IconButton>

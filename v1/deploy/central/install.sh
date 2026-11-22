@@ -180,7 +180,8 @@ fi
 srv_changed=1
 if [ -f /opt/fleet/fleet-server ] && cmp -s /opt/fleet/fleet-server.new /opt/fleet/fleet-server; then srv_changed=0; fi
 
-# IP 情报离线库：每月更新；首次下载约 190 MB，后台进行，fleet-server 5 分钟内自动加载
+# IP 情报离线库：每月更新（单元执行 /opt/fleet/fleet-server ipintel-fetch）；首次下载约 190 MB，在下面换上新版之后后台进行，
+# fleet-server 5 分钟内自动加载。fetch-dbs.sh 已不被单元调用，仍装着作回退（单元里的 ExecStart 改回它即可）
 install -m 644 "$PKG/fetch-dbs.sh" /opt/fleet/ipintel/fetch-dbs.sh
 runuser -u fleet -- install -d -m 750 /var/lib/fleet/ipintel
 install -m 644 "$PKG/fleet-ipintel-fetch.service" "$PKG/fleet-ipintel-fetch.timer" /etc/systemd/system/
@@ -192,6 +193,11 @@ install -m 644 "$PKG/fleet-ipintel-fetch.service" "$PKG/fleet-ipintel-fetch.time
 id fleet-backup >/dev/null 2>&1 || useradd --system --home-dir /var/lib/fleet-backup --shell /bin/sh fleet-backup
 # 目录 0755：fleet-server 要看得到最新一份的时间（超过 26 小时开告警 central_backup_stale）；每份备份本身仍是 0640 root:fleet-backup
 install -d -m 755 -o root -g fleet-backup /var/backups/fleet
+# 备份由 fleet-server backup 做（fleet-backup.service）：单元执行这里的一份新版二进制，因为下面的上线前备份在换上新版之前做，
+# 那时 /opt/fleet/fleet-server 还是旧版（可能还没有 backup 子命令）。先放成 .new 再 mv：正在跑的备份不受影响。
+# fleet-backup.sh 已不被单元调用，仍装着作回退
+install -m 755 "$PKG/bin/fleet-server" /opt/fleet/backup/fleet-server.new
+mv -f /opt/fleet/backup/fleet-server.new /opt/fleet/backup/fleet-server
 install -m 644 "$PKG/fleet-backup.sh" /opt/fleet/backup/fleet-backup.sh
 install -m 755 "$PKG/fleet-backup-latest.sh" /opt/fleet/backup/fleet-backup-latest.sh
 install -m 644 "$PKG/fleet-backup.service" "$PKG/fleet-backup.timer" /etc/systemd/system/
@@ -204,7 +210,6 @@ fi
 systemctl daemon-reload
 systemctl enable -q fleet-server fleet-ipintel-fetch.timer fleet-backup.timer
 systemctl start fleet-ipintel-fetch.timer fleet-backup.timer
-[ -n "$(ls -A /var/lib/fleet/ipintel)" ] || systemctl start --no-block fleet-ipintel-fetch.service
 # 上线前的回滚点：换上新版之前同步做一份备份（新版启动会自动跑迁移，旧库只能靠它回去，docs/OPS.md §9）。放在这里：备份脚本与单元
 # 上面刚装好并 daemon-reload，库此时还是旧版的；失败就 exit 1 停在换版之前（fleet-server、前端、dist 不动）。
 # 首次安装（还没有 fleet-server，库是空的）跳过：装完后面会再做第一份；二进制没变就没有新迁移，也跳过
@@ -228,6 +233,8 @@ if [ -f /opt/fleet/fleet-server ] && [ "$srv_changed" = 1 ]; then
   cp -p /opt/fleet/fleet-server /opt/fleet/fleet-server.prev
 fi
 mv -f /opt/fleet/fleet-server.new /opt/fleet/fleet-server
+# 库目录还是空的（首次安装）：现在才有带 ipintel-fetch 的 /opt/fleet/fleet-server，后台下载第一份
+[ -n "$(ls -A /var/lib/fleet/ipintel)" ] || systemctl start --no-block fleet-ipintel-fetch.service
 if [ -f /etc/systemd/system/fleet-server.service.new ]; then
   mv -f /etc/systemd/system/fleet-server.service.new /etc/systemd/system/fleet-server.service
   systemctl daemon-reload

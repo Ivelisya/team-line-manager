@@ -20,6 +20,10 @@
 //!
 //!   不去抖（条件本身带了时长或余量），恢复后再出现新开一条；被静默的不开、不发通知；严重的每 4 小时提醒一次（同机器的告警）。
 //!   对象是「中控」：subject_id 是全零 uuid（渠道连续失败是渠道 id），接口里这类告警的 subject / subject_id 为 null、subject_name 是「中控」。
+//! - 接口耗时与连接池（`http`）：每个请求按路由模板记耗时分布，慢的、5xx 记 INFO 日志；连接池每 5 秒采样。
+//!   `GET /api/v1/server/stats`、`fleetctl server-stats` 读它
+
+pub mod http;
 
 use crate::alerts;
 use crate::incident::{self, Close, Engine, Want};

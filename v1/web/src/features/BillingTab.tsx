@@ -15,13 +15,15 @@ import { useUsdPreview } from '@/lib/fx';
 import { inheritedValue, inheritSource, inheritText, inheritValueText, isOverridden, limitGb, monthFlow, monthFlowTip, quota, quotaCycleText, quotaForecast, quotaGb, quotaNotes, quotaRuleText, quotaUsedLabel, recycleOn, remainingValue, cycleLabel, feeView, priceHint, currencyOptions, cycleOptions, meta, trafficRuleOptions, trafficRuleTag } from '@/lib/derive';
 import { OptionSelect } from '@/components/ui/option-select';
 import { toast } from '@/components/ui/toast';
-import { resetOnOpen } from '@/lib/useHeld';
+import { LazyMount, resetOnOpen } from '@/lib/useHeld';
 import { Due, DueDate, ErrorNote, FromTag, LabelValue, LabelValueGrid, Note, Num, Section, SectionHeader, SpareDue } from '@/components/app/primitives';
 import { FormDialog } from '@/components/app/dialogs';
-import { RebalanceDialog } from '@/components/app/RebalanceDialog';
 import { TzInput } from '@/components/app/TzInput';
 import { Tag } from '@/components/app/viz';
 import { scrollBehavior } from '@/lib/utils';
+
+// 线路机的搬迁建议（连同它打开的换线对话框）在第一次打开时才下载
+const RebalanceDialog = React.lazy(() => import('@/components/app/RebalanceDialog').then((m) => ({ default: m.RebalanceDialog })));
 
 export function BillingTab({ m }: { m: MachineView }) {
   const s = m.subscription;
@@ -76,7 +78,7 @@ export function BillingTab({ m }: { m: MachineView }) {
             {!editing && <Button variant="outline" onClick={() => setEditing(true)}><Pencil />修改订阅</Button>}
             {m.kind === 'relay' && q.limit > 0 && !q.rolling && <Button variant="outline" onClick={() => setRebalance(true)}><Scale />搬迁建议</Button>}
           </div>
-          {m.kind === 'relay' && <RebalanceDialog relay={m} open={rebalance} onOpenChange={setRebalance} />}
+          {m.kind === 'relay' && <LazyMount when={rebalance}><RebalanceDialog relay={m} open={rebalance} onOpenChange={setRebalance} /></LazyMount>}
         </Section>
       )}
       {(!s || editing) && (

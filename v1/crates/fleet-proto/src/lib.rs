@@ -111,6 +111,7 @@ pub struct PingSample {
 
 /// Agent 自身的健康数据：离线队列、访问日志尾读、最近一次应用失败、写盘失败。服务端存进 agent_state.info。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct AgentHealth {
     /// 离线队列里待发送的报告数
     #[serde(default)]
@@ -236,6 +237,7 @@ pub struct XrayStatus {
 /// 线路机上 sing-box（只做 AnyTLS 外壳，见 fleet-agent 的 singbox.rs）的状态。中控存进 agent_state.info.singbox；
 /// 入口的 AnyTLS 链接、订阅里的 AnyTLS 条目只在 `running` 时才给（没在跑时链接是坏的）
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct SingboxStatus {
     /// 线路机上有 sing-box 程序（没有 = 未安装，agent 跳过 AnyTLS，Xray 那一侧照常）
     pub installed: bool,

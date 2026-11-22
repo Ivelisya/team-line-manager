@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Navigate, useLocation, useNavigate } from 'react-router-dom';
+import { Navigate, useLocation, useNavigate } from 'react-router';
 import { Boxes } from 'lucide-react';
 import { useMe, useLogin } from '@/lib/queries';
 import { ApiError } from '@/lib/api';

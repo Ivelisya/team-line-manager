@@ -1,6 +1,6 @@
 // 写在地址参数里的页面状态（筛选、排序、页签）：按补丁改写参数、?sort= 的解析与写回，各页面共用一份
 import * as React from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router';
 import type { SortState } from '@/components/app/primitives';
 
 /** ?sort= 的原值（列 id，「-」开头为降序）→ 排序；空 = 默认顺序 */

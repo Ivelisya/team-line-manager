@@ -8,7 +8,7 @@ use serde::Serialize;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Default, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
     Ok,
@@ -21,10 +21,11 @@ pub enum Status {
     Inactive,
 }
 
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Debug, Clone, Serialize, Default, ts_rs::TS)]
 pub struct Health {
     pub status: Status,
     /// 机器可读的原因键（告警规则名同名）
+    #[ts(as = "Vec<ReasonOut>")]
     pub reasons: Vec<Reason>,
     /// 有在用入口 15 分钟内没有探测结果（线路机 agent 离线、探测停了）：出口 / TCP 判不出好坏，
     /// 告警引擎不能把这两条规则的原因消失当成恢复（只给告警用，不对外输出）
@@ -70,6 +71,17 @@ pub struct Reason {
     pub key: &'static str,
     pub severity: &'static str,
     pub text: String,
+}
+
+/// `Reason` 序列化出来的样子（手写的 Serialize 带上 `rule_name`），只给 TypeScript 导出用（tests/types_gen.rs）
+#[derive(ts_rs::TS)]
+#[ts(rename = "Reason")]
+#[allow(dead_code)]
+pub struct ReasonOut {
+    key: String,
+    rule_name: String,
+    severity: String,
+    text: String,
 }
 
 /// 序列化时带上规则中文名 `rule_name`（同通知、告警列表）

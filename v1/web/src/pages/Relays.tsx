@@ -18,7 +18,7 @@ import { Waypoints } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { EntryMenuButton, EntryMenus } from '@/components/app/EntryActions';
 import { openEvacuate } from '@/lib/nodeActions';
-import { movableEntries } from '@/components/app/LifecycleDialogs';
+import { movableEntries } from '@/components/app/lifecycle-bits';
 import { ShowAll } from '@/components/app/Pagination';
 import { scrollBackTo } from '@/lib/usePage';
 import { ENTRY_CAP, ReverseMark, RouterMark, activeEntries, entryStatus, probeCell, tcpCell } from '@/features/EntriesTable';

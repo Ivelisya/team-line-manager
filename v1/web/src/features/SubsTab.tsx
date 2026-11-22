@@ -23,6 +23,8 @@ const INTRO = '给自己的客户端用：Clash Verge、OpenClash 填链接，v2
 const PROTOS: { value: SubProtocols; label: string }[] = [{ value: 'reality', label: 'Reality' }, { value: 'both', label: 'Reality + AnyTLS' }, { value: 'anytls', label: '只 AnyTLS' }];
 const protoLabel = (p: SubProtocols | undefined) => PROTOS.find((x) => x.value === p)?.label ?? 'Reality';
 const MODES = [{ value: 'all', label: '全部团队（不含备用团队）' }, { value: 'except', label: '全部团队，除了…' }, { value: 'only', label: '只要这些团队' }];
+// 还没取回时的空列表：固定一份，下面的 useMemo 不因每次新建的 [] 白算
+const NONE: never[] = [];
 
 export function SubsTab() {
   const q = useClientSubs();
@@ -147,7 +149,7 @@ function MachinePicks({ label, info, ids, onChange, options }: { label: string; 
 /** 新建 / 编辑订阅。每次打开重新挂载（resetOnOpen）：字段直接按这次的订阅初始化 */
 const SubDialog = resetOnOpen(function SubDialog({ target, open, onClose, onCreated }: { target: ClientSub | 'new'; open: boolean; onClose: () => void; onCreated: (s: ClientSubWithUrl) => void }) {
   const create = useCreateClientSub(); const patch = usePatchClientSub();
-  const teams = useTeams().data ?? []; const machines = useMachineBriefs().data ?? [];
+  const teams = useTeams().data ?? []; const machines = useMachineBriefs().data ?? NONE;
   const cur = target === 'new' ? null : target;
   const [name, setName] = React.useState(cur?.name ?? ''); const [rule, setRule] = React.useState<SubRule>(cur?.rule ?? DEFAULT_RULE);
   const [protocols, setProtocols] = React.useState<SubProtocols>(cur?.protocols ?? 'reality');

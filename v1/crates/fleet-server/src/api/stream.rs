@@ -113,7 +113,12 @@ pub async fn stream(a: Actor, State(st): State<AppState>, jar: CookieJar, header
     let rx = st.events.subscribe();
     let db = st.db.clone();
     let down = st.shutdown.subscribe();
-    ws.on_upgrade(move |socket| serve_ws(socket, rx, down, db, cred))
+    // 连着的期间计数，打开、关闭各一条 DEBUG（selfmon/http.rs）
+    let open = crate::selfmon::http::StreamGuard::new(&st, "/api/v1/stream");
+    ws.on_upgrade(move |socket| async move {
+        let _open = open;
+        serve_ws(socket, rx, down, db, cred).await
+    })
 }
 
 async fn serve_ws(mut ws: WebSocket, mut rx: broadcast::Receiver<Event>, mut down: watch::Receiver<bool>, db: sqlx::PgPool, cred: Option<Cred>) {

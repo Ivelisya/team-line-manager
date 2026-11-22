@@ -142,6 +142,7 @@ const ReachQualitySection = React.memo(function ReachQualitySection({ id }: { id
 });
 
 const PING_COLORS = ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)', 'var(--m-cpu)', 'var(--m-mem)', 'var(--m-disk)', 'var(--m-load)', 'var(--fg-3)'];
+const pingColor = (slot: number) => PING_COLORS[slot % PING_COLORS.length] ?? 'var(--fg-3)'; // 序号 0–7，取模必在范围内
 /** 线路机的三网 PING 曲线：延迟（各目标一条线，1h–24h 每分钟的中位数，7d / 30d 每小时平均）与丢包率。
  *  同一轮各目标的时刻相同，按时刻合成一组点（s<槽位> 延迟、l<槽位> 丢包） */
 /** after：同一组图卡里排在后面的卡（线路机的 TCP 延迟），让三张同类卡之间间距一致 */
@@ -157,8 +158,8 @@ const PingSection = React.memo(function PingSection({ id, range, after }: { id: 
     const ser = q.data?.series ?? [];
     return {
       points: [...by.values()].sort((a, b) => a.ts.localeCompare(b.ts)),
-      ms: ser.map((s) => ({ key: `s${s.slot}`, label: s.name, color: PING_COLORS[s.slot % PING_COLORS.length] })),
-      loss: ser.map((s) => ({ key: `l${s.slot}`, label: s.name, color: PING_COLORS[s.slot % PING_COLORS.length] })),
+      ms: ser.map((s) => ({ key: `s${s.slot}`, label: s.name, color: pingColor(s.slot) })),
+      loss: ser.map((s) => ({ key: `l${s.slot}`, label: s.name, color: pingColor(s.slot) })),
     };
   }, [q.data]);
   if (q.data && !q.data.series.length) return <Section>{after}</Section>;
@@ -193,7 +194,7 @@ export function QualityTab({ m }: { m: MachineView }) {
         <TimeChart full points={s.data?.points} range={s.data?.range ?? range} kind="line" lines={L_PROBE} yFmt={yMs} valueFmt={vMs} clip />
       </ChartFrame>
     </ChartCard>
-  ), [s, range, m.kind, m.entries, m.lifecycle, m.activated_at, dir]);
+  ), [s, range, m.kind, m.entries, m.lifecycle, m.activated_at, dir]); // eslint-disable-line react-hooks/exhaustive-deps -- 只依赖用到的字段：m 每条推送都换身份
   return (
     <>
       {/* 可用率（近 30 天）与入口连通性（24 小时 / 7 天 / 30 天）是固定时间段，不跟时间范围走：放在时间范围条上面，下面的曲线才归它管 */}

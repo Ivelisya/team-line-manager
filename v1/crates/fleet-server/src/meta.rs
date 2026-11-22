@@ -3,7 +3,9 @@
 
 use crate::{rlock, wlock};
 use anyhow::Context;
-use serde_json::{json, Map, Value};
+use serde::Serialize;
+use serde_json::Value;
+use std::collections::BTreeMap;
 use sqlx::PgPool;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::RwLock;
@@ -232,6 +234,9 @@ pub const JOB_KINDS: Labels = &[
     ("router_sync", "同步软路由出口"),
     ("router_protocol", "切软路由出口协议"),
     ("router_exit_rm", "删软路由出口"),
+    ("router_restart", "重启软路由 OpenClash"),
+    ("router_rename", "软路由出口改名"),
+    ("router_rules", "改软路由分流规则"),
     ("reverse", "切换穿透"),
 ];
 
@@ -340,56 +345,171 @@ pub fn rule_label_of<'a>(k: &'a str, severity: &str) -> &'a str {
 /// 告警级别的中文名；不认识的按「提示」
 pub fn severity_label(s: &str) -> &'static str { SEVERITIES.iter().find(|x| x.0 == s).map_or("提示", |x| x.1) }
 
-fn map(t: Labels) -> Value { Value::Object(t.iter().map(|(k, v)| (k.to_string(), json!(v))).collect::<Map<_, _>>()) }
 
 /// `GET /meta` 的内容（组织时区取当前值，其余是常量）
-pub fn to_json() -> Value {
+pub fn to_json() -> Value { serde_json::to_value(typed()).expect("meta 可序列化") }
+
+/// 中文名表：键 → 名
+pub type LabelMap = BTreeMap<String, String>;
+
+fn labels(t: Labels) -> LabelMap { t.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect() }
+
+/// `GET /meta`（见 `to_json`；接口另带 `ssh_public_key`，见 api/misc.rs）
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+pub struct Meta {
+    pub org_timezone: String,
+    pub org_timezone_label: String,
+    pub org_utc_offset_s: i32,
+    pub timezones: Vec<String>,
+    pub currencies: &'static [&'static str],
+    pub cycles: Vec<CycleOut>,
+    pub kinds: LabelMap,
+    pub ip_node_label: &'static str,
+    pub lifecycles: LabelMap,
+    pub healths: LabelMap,
+    pub severities: BTreeMap<String, SeverityOut>,
+    pub job_kinds: LabelMap,
+    pub job_states: LabelMap,
+    pub step_states: LabelMap,
+    pub entry_states: LabelMap,
+    pub traffic_rules: LabelMap,
+    pub traffic_rule_short: LabelMap,
+    pub traffic_resets: LabelMap,
+    pub due_states: LabelMap,
+    pub policy_modes: LabelMap,
+    pub policy_sync_states: LabelMap,
+    pub rules: LabelMap,
+    pub thresholds: Thresholds,
+    pub defaults: MetaDefaults,
+    pub terminal: crate::terminal::Meta,
+    pub speedtest: crate::jobs::speedtest::Meta,
+}
+
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[ts(rename = "MetaCycle")]
+pub struct CycleOut {
+    pub key: &'static str,
+    pub label: &'static str,
+    pub months: u32,
+}
+
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[ts(rename = "MetaSeverity")]
+pub struct SeverityOut {
+    pub label: &'static str,
+    pub tone: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[ts(rename = "MetaThresholds")]
+pub struct Thresholds {
+    pub traffic_quota_warn_pct: f64,
+    pub traffic_quota_over_pct: f64,
+    pub usage: UsageThresholds,
+}
+
+/// 主机读数的两档：warn 起黄、bad 起红（同健康判定）
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[ts(rename = "MetaUsageLevel")]
+pub struct UsageLevel {
+    pub warn: f32,
+    pub bad: f32,
+}
+
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[ts(rename = "MetaUsage")]
+pub struct UsageThresholds {
+    pub cpu: UsageLevel,
+    pub mem: UsageLevel,
+    pub disk: UsageLevel,
+    pub load: UsageLevel,
+}
+
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+pub struct MetaDefaults {
+    pub currency: &'static str,
+    pub cycle: &'static str,
+    pub remind_days: i32,
+    pub traffic_rule: &'static str,
+    pub traffic_reset: &'static str,
+    pub ss_method: &'static str,
+    pub ss_port: u16,
+}
+
+/// 同 `to_json`，类型化的
+pub fn typed() -> Meta {
     let tz = org_tz();
     let mut tzs: Vec<String> = TIMEZONES.iter().map(|z| z.to_string()).collect();
     if !tzs.contains(&tz) {
         tzs.insert(0, tz.clone());
     }
-    let usage = |bad: f32| json!({"warn": USAGE_WARN_PCT, "bad": bad});
-    json!({
-        "org_timezone": tz,
-        "org_timezone_label": tz_label(&tz),
-        "org_utc_offset_s": org_offset().whole_seconds(),
-        "timezones": tzs,
-        "currencies": CURRENCIES,
-        "cycles": CYCLES.iter().map(|c| json!({"key": c.key, "label": c.label, "months": c.months})).collect::<Vec<_>>(),
-        "kinds": map(KINDS),
-        "ip_node_label": IP_NODE,
-        "lifecycles": map(LIFECYCLES),
-        "healths": map(HEALTHS),
-        "severities": SEVERITIES.iter().map(|(k, l, t)| (k.to_string(), json!({"label": l, "tone": t}))).collect::<Map<_, _>>(),
-        "job_kinds": map(JOB_KINDS),
-        "job_states": map(JOB_STATES),
-        "step_states": map(STEP_STATES),
-        "entry_states": map(ENTRY_STATES),
-        "traffic_rules": map(TRAFFIC_RULES),
-        "traffic_rule_short": map(TRAFFIC_RULE_SHORT),
-        "traffic_resets": map(TRAFFIC_RESETS),
-        "due_states": map(DUE_STATES),
-        "policy_modes": map(POLICY_MODES),
-        "policy_sync_states": map(POLICY_SYNC_STATES),
-        "rules": map(RULES),
-        "thresholds": {
-            "traffic_quota_warn_pct": QUOTA_WARN_PCT,
-            "traffic_quota_over_pct": QUOTA_OVER_PCT,
-            "usage": {"cpu": usage(CPU_HIGH_PCT), "mem": usage(MEM_HIGH_PCT), "disk": usage(DISK_HIGH_PCT), "load": usage(LOAD_HIGH_PCT)},
+    let usage = |bad: f32| UsageLevel { warn: USAGE_WARN_PCT, bad };
+    Meta {
+        org_timezone_label: tz_label(&tz),
+        org_timezone: tz,
+        org_utc_offset_s: org_offset().whole_seconds(),
+        timezones: tzs,
+        currencies: CURRENCIES,
+        cycles: CYCLES.iter().map(|c| CycleOut { key: c.key, label: c.label, months: c.months }).collect(),
+        kinds: labels(KINDS),
+        ip_node_label: IP_NODE,
+        lifecycles: labels(LIFECYCLES),
+        healths: labels(HEALTHS),
+        severities: SEVERITIES.iter().map(|(k, l, t)| (k.to_string(), SeverityOut { label: l, tone: t })).collect(),
+        job_kinds: labels(JOB_KINDS),
+        job_states: labels(JOB_STATES),
+        step_states: labels(STEP_STATES),
+        entry_states: labels(ENTRY_STATES),
+        traffic_rules: labels(TRAFFIC_RULES),
+        traffic_rule_short: labels(TRAFFIC_RULE_SHORT),
+        traffic_resets: labels(TRAFFIC_RESETS),
+        due_states: labels(DUE_STATES),
+        policy_modes: labels(POLICY_MODES),
+        policy_sync_states: labels(POLICY_SYNC_STATES),
+        rules: labels(RULES),
+        thresholds: Thresholds {
+            traffic_quota_warn_pct: QUOTA_WARN_PCT,
+            traffic_quota_over_pct: QUOTA_OVER_PCT,
+            usage: UsageThresholds { cpu: usage(CPU_HIGH_PCT), mem: usage(MEM_HIGH_PCT), disk: usage(DISK_HIGH_PCT), load: usage(LOAD_HIGH_PCT) },
         },
-        "defaults": {
-            "currency": DEFAULT_CURRENCY, "cycle": DEFAULT_CYCLE, "remind_days": DEFAULT_REMIND_DAYS,
-            "traffic_rule": DEFAULT_TRAFFIC_RULE, "traffic_reset": DEFAULT_TRAFFIC_RESET, "ss_method": SS_METHOD, "ss_port": SS_PORT,
+        defaults: MetaDefaults {
+            currency: DEFAULT_CURRENCY,
+            cycle: DEFAULT_CYCLE,
+            remind_days: DEFAULT_REMIND_DAYS,
+            traffic_rule: DEFAULT_TRAFFIC_RULE,
+            traffic_reset: DEFAULT_TRAFFIC_RESET,
+            ss_method: SS_METHOD,
+            ss_port: SS_PORT,
         },
-        "terminal": crate::terminal::meta(),
-        "speedtest": crate::jobs::speedtest::meta(),
-    })
+        terminal: crate::terminal::meta(),
+        speedtest: crate::jobs::speedtest::meta(),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    /// meta 改成类型（Meta）时逐字节比对过旧的 json! 拼法（旧的随后删掉）。中文名表随功能增减，不整份做快照：这里钉住各层的键
+    #[test]
+    fn meta_shape() {
+        let v = serde_json::to_value(typed()).unwrap();
+        let keys = |v: &Value| v.as_object().unwrap().keys().cloned().collect::<Vec<_>>().join(",");
+        assert_eq!(
+            keys(&v),
+            "currencies,cycles,defaults,due_states,entry_states,healths,ip_node_label,job_kinds,job_states,kinds,lifecycles,org_timezone,org_timezone_label,org_utc_offset_s,\
+             policy_modes,policy_sync_states,rules,severities,speedtest,step_states,terminal,thresholds,timezones,traffic_resets,traffic_rule_short,traffic_rules"
+        );
+        assert_eq!(keys(&v["defaults"]), "currency,cycle,remind_days,ss_method,ss_port,traffic_reset,traffic_rule");
+        assert_eq!(keys(&v["thresholds"]), "traffic_quota_over_pct,traffic_quota_warn_pct,usage");
+        assert_eq!(v["thresholds"]["usage"]["cpu"], json!({"bad": 90.0, "warn": 75.0}));
+        assert_eq!(keys(&v["terminal"]), "global,idle_s,max_age_s,max_dim,max_message,per_user,ticket_ttl_s,verify_ttl_s");
+        assert_eq!(keys(&v["speedtest"]), "default_mb,sizes_mb,targets");
+        assert_eq!((v["cycles"][0].to_string(), v["severities"]["critical"].to_string()), (r#"{"key":"monthly","label":"月","months":1}"#.to_string(), r#"{"label":"严重","tone":"bad"}"#.to_string()));
+        assert_eq!(v["kinds"]["relay"], "线路机");
+    }
+
     use time::macros::date;
 
     #[test]

@@ -8,7 +8,7 @@ mk() { # id host ip cores mem disk
   pct create "$id" "$T" --hostname "$host" --cores "$cores" --memory "$mem" --swap 512 \
     --rootfs "local-lvm:$disk" --net0 "name=eth0,bridge=vmbr0,ip=192.168.31.$ip/24,gw=192.168.31.2" \
     --nameserver 192.168.31.2 --unprivileged 1 --features nesting=1 --onboot 0 \
-    --ssh-public-keys /root/fleetlab.pub --tags fleetlab --description "fleet v3 lab (Claude)"
+    --ssh-public-keys /root/fleetlab.pub --tags fleetlab --description "fleet v1 lab (Claude)"
   pct start "$id"
   echo "created $id $host 192.168.31.$ip"
 }

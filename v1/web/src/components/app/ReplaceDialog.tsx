@@ -1,9 +1,8 @@
 // 替换节点：新节点接替旧节点——软路由上指向旧节点的出口改成新节点的入口，编号交换（新节点接旧编号，旧节点去备用团队）。
 // 抽屉「管理」页与卡片菜单（经 LifecycleDialogsHost）共用；选了新节点就拉预览（只读库），确认后建 replace 作业并跳到作业详情。
 import { FieldTitle } from '@/components/ui/field';
-import { Button } from '@/components/ui/button';
 import * as React from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { ArrowRight, Check, ChevronDown } from 'lucide-react';
 import type { MachineView, RouterExitPlan } from '@/lib/types';
 import { useMachines, useReplace, useReplacePreview, useTeams } from '@/lib/queries';
@@ -23,9 +22,7 @@ import { cn } from '@/lib/utils';
 import { resetOnOpen } from '@/lib/useHeld';
 import { ErrorNote, Note, Pill } from './primitives';
 import { ConfirmDialog } from './dialogs';
-
-/** 能接替的节点：在用、不是线路机、不是自己 */
-export const canReplace = (m: MachineView) => m.kind !== 'relay' && m.lifecycle === 'active';
+import { canReplace, RenameNote } from './lifecycle-bits';
 
 /** 搜索：名称或 IP 以输入开头的排最前，其次是连着出现的（同上架页的宿主机选择） */
 const nodeFilter = (_: string, search: string, keywords?: string[]) => prefixScore(keywords ?? [], search.trim().toLowerCase());
@@ -126,32 +123,6 @@ export function RouterExitList({ routers, title }: { routers: { node?: string; p
         </table>
       </div>
     </div>
-  );
-}
-
-/** 编号压缩（后面的节点前移补号）：正常的副作用，收成一行，要看逐台再展开成两列表格（替换、退役共用） */
-/** bare：不套提示条（放进别的提示条的列表里，和其它几条说明合成一块时用） */
-export function RenameNote({ renames, tip, bare }: { renames: { machine_id: string; old_name: string; new_name: string }[]; tip: string; bare?: boolean }) {
-  const [open, setOpen] = React.useState(false);
-  if (renames.length === 0) return null;
-  const first = renames[0]; const last = renames[renames.length - 1];
-  const Wrap = bare ? 'div' : Note;
-  return (
-    <Wrap style={bare ? { flex: 1, minWidth: 0 } : undefined}>
-      <div className="row row-between" style={{ gap: 8 }}>
-        {/* 一行说完：只写台数（一台时写 旧名 → 新名），改了哪几个名放进 (i) */}
-        <span>补号：{renames.length > 1 ? `${renames.length} 台节点前移` : `${first.old_name} → ${first.new_name}`} <InfoTip text={renames.length > 1 ? `${tip}\n${first.old_name} … ${last.old_name}` : tip} /></span>
-        {renames.length > 1 && <Button variant="link" size="inline-sm" aria-expanded={open} onClick={() => setOpen((v) => !v)}>{open ? '收起' : '展开'}</Button>}
-      </div>
-      {open && (
-        <div style={{ maxHeight: 200, overflow: 'auto', marginTop: 6 }}>
-          <table className="rx-tbl">
-            <thead><tr><th>原名</th><th>补号后</th></tr></thead>
-            <tbody>{renames.map((r) => <tr key={r.machine_id}><td className="num">{r.old_name}</td><td className="num"><b>{r.new_name}</b></td></tr>)}</tbody>
-          </table>
-        </div>
-      )}
-    </Wrap>
   );
 }
 

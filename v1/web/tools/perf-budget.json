@@ -1,0 +1,234 @@
+{
+  "_说明": [
+    "pnpm perf:check（tools/perf.mjs --check）的预算：键是「机器台数/CPU 降速倍数」→ 场景 → 指标，测到的中位数超过就失败。",
+    "按本机两遍完整测量里较大的那份往上放：毫秒类 ×1.6 + 60（就绪 ×1.6 + 300），堆 ×1.3 + 2 MB，CLS 至少 0.01，请求次数 +2，同一路径重复取 0 次不放宽。",
+    "本机是 32 线程的工作站；CI 的机器慢一些，留的余量为的是它不误报。真变慢了（比如回首页又是整页卡片一起排版）会超出。",
+    "改了这里的数，在提交说明里写为什么（优化之后可以收紧，变慢了先查原因）。"
+  ],
+  "budgets": {
+    "18/1": {
+      "cold-home": {
+        "ltMax": 180,
+        "ltTotal": 180,
+        "inp": 60,
+        "maxFrame": 140,
+        "cls": 0.01,
+        "ready": 1750,
+        "heap": 17,
+        "api": 15,
+        "apiDup": 0
+      },
+      "route-change": {
+        "ltMax": 60,
+        "ltTotal": 60,
+        "inp": 120,
+        "maxFrame": 120,
+        "cls": 0.01,
+        "ready": 2700,
+        "heap": 20,
+        "api": 4,
+        "apiDup": 0
+      },
+      "drawer": {
+        "ltMax": 150,
+        "ltTotal": 150,
+        "inp": 130,
+        "maxFrame": 120,
+        "cls": 0.01,
+        "ready": 950,
+        "heap": 22,
+        "api": 6,
+        "apiDup": 0
+      },
+      "palette": {
+        "ltMax": 150,
+        "ltTotal": 150,
+        "inp": 230,
+        "maxFrame": 140,
+        "cls": 0.01,
+        "ready": 900,
+        "heap": 23,
+        "api": 3,
+        "apiDup": 0
+      },
+      "scroll-home": {
+        "ltMax": 60,
+        "ltTotal": 60,
+        "inp": 60,
+        "maxFrame": 90,
+        "cls": 0.01,
+        "heap": 24,
+        "api": 2,
+        "apiDup": 0
+      }
+    },
+    "18/4": {
+      "cold-home": {
+        "ltMax": 640,
+        "ltTotal": 1740,
+        "inp": 60,
+        "maxFrame": 650,
+        "cls": 0.01,
+        "ready": 3550,
+        "heap": 17,
+        "api": 15,
+        "apiDup": 0
+      },
+      "route-change": {
+        "ltMax": 360,
+        "ltTotal": 1250,
+        "inp": 120,
+        "maxFrame": 440,
+        "cls": 0.01,
+        "ready": 3000,
+        "heap": 21,
+        "api": 4,
+        "apiDup": 0
+      },
+      "drawer": {
+        "ltMax": 570,
+        "ltTotal": 1990,
+        "inp": 170,
+        "maxFrame": 600,
+        "cls": 0.01,
+        "ready": 1450,
+        "heap": 23,
+        "api": 7,
+        "apiDup": 0
+      },
+      "palette": {
+        "ltMax": 560,
+        "ltTotal": 990,
+        "inp": 240,
+        "maxFrame": 570,
+        "cls": 0.01,
+        "ready": 1300,
+        "heap": 23,
+        "api": 2,
+        "apiDup": 0
+      },
+      "scroll-home": {
+        "ltMax": 60,
+        "ltTotal": 60,
+        "inp": 60,
+        "maxFrame": 140,
+        "cls": 0.01,
+        "heap": 24,
+        "api": 2,
+        "apiDup": 0
+      }
+    },
+    "150/1": {
+      "cold-home": {
+        "ltMax": 180,
+        "ltTotal": 180,
+        "inp": 60,
+        "maxFrame": 140,
+        "cls": 0.01,
+        "ready": 1700,
+        "heap": 20,
+        "api": 15,
+        "apiDup": 0
+      },
+      "route-change": {
+        "ltMax": 170,
+        "ltTotal": 170,
+        "inp": 120,
+        "maxFrame": 220,
+        "cls": 0.01,
+        "ready": 2700,
+        "heap": 24,
+        "api": 4,
+        "apiDup": 0
+      },
+      "drawer": {
+        "ltMax": 160,
+        "ltTotal": 240,
+        "inp": 120,
+        "maxFrame": 140,
+        "cls": 0.01,
+        "ready": 950,
+        "heap": 26,
+        "api": 6,
+        "apiDup": 0
+      },
+      "palette": {
+        "ltMax": 160,
+        "ltTotal": 160,
+        "inp": 220,
+        "maxFrame": 140,
+        "cls": 0.01,
+        "ready": 900,
+        "heap": 27,
+        "api": 3,
+        "apiDup": 0
+      },
+      "scroll-home": {
+        "ltMax": 60,
+        "ltTotal": 60,
+        "inp": 60,
+        "maxFrame": 120,
+        "cls": 0.01,
+        "heap": 28,
+        "api": 2,
+        "apiDup": 0
+      }
+    },
+    "150/4": {
+      "cold-home": {
+        "ltMax": 730,
+        "ltTotal": 1950,
+        "inp": 60,
+        "maxFrame": 760,
+        "cls": 0.01,
+        "ready": 3750,
+        "heap": 20,
+        "api": 15,
+        "apiDup": 0
+      },
+      "route-change": {
+        "ltMax": 610,
+        "ltTotal": 2170,
+        "inp": 130,
+        "maxFrame": 760,
+        "cls": 0.01,
+        "ready": 3450,
+        "heap": 24,
+        "api": 4,
+        "apiDup": 0
+      },
+      "drawer": {
+        "ltMax": 670,
+        "ltTotal": 2450,
+        "inp": 180,
+        "maxFrame": 730,
+        "cls": 0.01,
+        "ready": 1650,
+        "heap": 26,
+        "api": 7,
+        "apiDup": 0
+      },
+      "palette": {
+        "ltMax": 660,
+        "ltTotal": 1550,
+        "inp": 420,
+        "maxFrame": 700,
+        "cls": 0.01,
+        "ready": 1450,
+        "heap": 27,
+        "api": 2,
+        "apiDup": 0
+      },
+      "scroll-home": {
+        "ltMax": 180,
+        "ltTotal": 800,
+        "inp": 60,
+        "maxFrame": 200,
+        "cls": 0.01,
+        "heap": 28,
+        "api": 2,
+        "apiDup": 0
+      }
+    }
+  }
+}

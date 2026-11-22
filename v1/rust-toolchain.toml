@@ -1,0 +1,4 @@
+# 工作区的 Rust 版本：与 docker 编译方式的镜像（lab/build-lib.sh 的 rust:1.98.1-alpine / rust:1.98.1-slim-trixie）一致，
+# CI 也用它。升级时三处一起改。不列 components：编译镜像里没有的组件不在构建时临时下载，CI 自己装 clippy。
+[toolchain]
+channel = "1.98.1"

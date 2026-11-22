@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { toast } from '@/components/ui/toast';
 
 interface Props { children: React.ReactNode; resetKey?: string; compact?: boolean; silent?: boolean; onError?: (error: Error) => void }
-interface State { error: Error | null }
+interface State { error: Error | null; key: string | undefined }
 
 /** 懒加载的块拉取失败（多半是发版后旧文件已被删除） */
 function isChunkError(e: unknown): boolean {
@@ -16,14 +16,15 @@ function isChunkError(e: unknown): boolean {
 }
 
 export class ErrorBoundary extends React.Component<Props, State> {
-  state: State = { error: null };
-  static getDerivedStateFromError(error: Error): State { return { error }; }
+  state: State = { error: null, key: this.props.resetKey };
+  static getDerivedStateFromError(error: Error): Partial<State> { return { error }; }
+  // resetKey 变了（换了页面）：渲染前就清掉错误，不先画一遍错误卡片再重画
+  static getDerivedStateFromProps(p: Props, s: State): Partial<State> | null { return p.resetKey === s.key ? null : { error: null, key: p.resetKey }; }
   componentDidCatch(error: Error, info: React.ErrorInfo) {
     console.error('[ErrorBoundary]', error, info.componentStack);
     if (this.props.silent) toast.err(isChunkError(error) ? '页面已更新，请刷新页面后再试' : `界面出错：${error.message || '未知错误'}`);
     this.props.onError?.(error);
   }
-  componentDidUpdate(prev: Props) { if (this.state.error && prev.resetKey !== this.props.resetKey) this.setState({ error: null }); }
   render() {
     const { error } = this.state;
     if (!error) return this.props.children;

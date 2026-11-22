@@ -147,5 +147,9 @@ pub async fn ws(a: Actor, State(st): State<AppState>, ClientIp(ip): ClientIp, ja
     let events = st.events.subscribe();
     ws.max_message_size(terminal::MAX_MESSAGE)
         .max_frame_size(terminal::MAX_MESSAGE)
-        .on_upgrade(move |socket| terminal::serve(socket, st, who, events, waiting))
+        .on_upgrade(move |socket| async move {
+            // 连着的期间计数（selfmon/http.rs）；打开、断开的 INFO 由 terminal::serve 记
+            let _open = crate::selfmon::http::StreamGuard::new(&st, "/api/v1/terminal/ws");
+            terminal::serve(socket, st, who, events, waiting).await
+        })
 }

@@ -47,17 +47,18 @@ pub fn router() -> Router<AppState> {
 struct Probe {
     id: Uuid,
     enabled: bool,
-    upgrade: Option<String>,
+    /// 要它升级到的 sha256 与版本号（发起升级时一起记下的 upgrade_sha256 / upgrade_version）
+    upgrade: Option<(String, Option<String>)>,
 }
 
 async fn authenticate(st: &AppState, h: &HeaderMap) -> ApiResult<Probe> {
     let tok = h.get("authorization").and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer ")).ok_or_else(ApiError::unauthorized)?;
-    let row: Option<(Uuid, bool, Option<String>)> = sqlx::query_as("select id, enabled, upgrade_sha256 from probe_point where token_hash = $1")
+    let row: Option<(Uuid, bool, Option<String>, Option<String>)> = sqlx::query_as("select id, enabled, upgrade_sha256, upgrade_version from probe_point where token_hash = $1")
         .bind(sha256(tok.trim().as_bytes()))
         .fetch_optional(&st.db)
         .await?;
-    let (id, enabled, upgrade) = row.ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "token_revoked", "令牌无效或已撤销（探测点被删除或重装过）"))?;
-    Ok(Probe { id, enabled, upgrade })
+    let (id, enabled, sha, version) = row.ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "token_revoked", "令牌无效或已撤销（探测点被删除或重装过）"))?;
+    Ok(Probe { id, enabled, upgrade: sha.map(|s| (s, version)) })
 }
 
 async fn targets(State(st): State<AppState>, h: HeaderMap) -> ApiResult<Json<ProbeTargets>> {
@@ -88,18 +89,14 @@ async fn targets(State(st): State<AppState>, h: HeaderMap) -> ApiResult<Json<Pro
     } else {
         vec![]
     };
+    // 版本号用发起升级时记下的（与 sha256 是同一个程序的），不再每次取目标都去跑一遍 dist 里程序的 `--version`；
+    // 没记的（旧数据）才看 dist 里现在的（按文件缓存，见 crate::dist_agent）
     let upgrade = match p.upgrade {
-        Some(sha) => Some(ProbeUpgrade { sha256: sha, version: dist_version(&st).await.unwrap_or_default() }),
+        Some((sha, Some(version))) => Some(ProbeUpgrade { sha256: sha, version }),
+        Some((sha, None)) => Some(ProbeUpgrade { sha256: sha, version: crate::dist_agent::get(&st.cfg.dist_dir).await.ok().and_then(|d| d.version).unwrap_or_default() }),
         None => None,
     };
     Ok(Json(ProbeTargets { interval_s: INTERVAL_S, controls: reach::CONTROLS.iter().map(|s| s.to_string()).collect(), relays, upgrade }))
-}
-
-/// dist 里 fleet-agent 的版本号（`--version` 的第二段）；读不出为 None
-pub(crate) async fn dist_version(st: &AppState) -> Option<String> {
-    let path = st.cfg.dist_dir.join("fleet-agent");
-    let out = tokio::time::timeout(std::time::Duration::from_secs(10), tokio::process::Command::new(&path).arg("--version").output()).await.ok()?.ok()?;
-    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).split_whitespace().nth(1).map(String::from)).flatten()
 }
 
 async fn report(State(st): State<AppState>, ClientIp(ip): ClientIp, h: HeaderMap, ApiJson(r): ApiJson<ProbeReport>) -> ApiResult<Response> {

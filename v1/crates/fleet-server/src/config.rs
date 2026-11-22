@@ -140,12 +140,16 @@ pub struct SelfmonConfig {
     /// 死人开关：告警评估每轮成功后，最多每分钟 GET 一次这个地址（healthchecks.io 之类的 ping URL）。
     /// 中控挂了、卡住、告警循环一直失败时那边收不到 ping，由它报警；不填不发
     pub heartbeat_url: Option<String>,
-    /// 每日备份所在的目录（deploy/backup/fleet-backup.sh 的 D）：最新一份 fleet-*.tar（.tar.age）超过 26 小时开告警；
+    /// 每日备份所在的目录（`fleet-server backup` 写到这里，ops/backup.rs）：最新一份 fleet-*.tar（.tar.age）超过 26 小时开告警；
     /// 目录不存在（没装备份，如实验室）不检查
     pub backup_dir: PathBuf,
+    /// 接口请求超过这么多毫秒算慢：记一条 INFO 日志（selfmon/http.rs），`server-stats` 里计入 slow
+    pub slow_request_ms: u64,
+    /// 同上，agent 的接口（上报、应用回报）；期望状态的长轮询本来挂 30 秒，超过 30 秒 + 这个才算慢
+    pub slow_agent_ms: u64,
 }
 impl Default for SelfmonConfig {
-    fn default() -> Self { Self { heartbeat_url: None, backup_dir: PathBuf::from("/var/backups/fleet") } }
+    fn default() -> Self { Self { heartbeat_url: None, backup_dir: PathBuf::from("/var/backups/fleet"), slow_request_ms: 500, slow_agent_ms: 2000 } }
 }
 
 /// `[ipintel]`：全部有默认值，老配置文件不用改（以前有的 `learn_days`、`alert_ttl_hours` 已经是 ipintel.rs 里的常量，文件里还写着也只是被忽略）
@@ -153,7 +157,7 @@ impl Default for SelfmonConfig {
 pub struct IpintelConfig {
     #[serde(default = "d_true")]
     pub enabled: bool,
-    /// 离线库目录（deploy/ipintel/fetch-dbs.sh 的 DEST）；缺失或不全时降级，不影响服务
+    /// 离线库目录（`fleet-server ipintel-fetch` 的默认目录，ops/ipintel_fetch.rs）；缺失或不全时降级，不影响服务
     #[serde(default = "d_ipintel_dir")]
     pub db_dir: PathBuf,
     /// 可选的 ASN 分类覆盖文件（见 crates/fleet-ipintel/data/asn-lists.toml 的写法）；文件不存在就只用内置默认

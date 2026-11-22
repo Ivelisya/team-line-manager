@@ -8,9 +8,10 @@ Vite + React 19 + TypeScript（strict）+ Tailwind CSS 4（迁移中：shadcn/ui
 
 ```bash
 pnpm install
-pnpm dev:mock      # 浏览器内 mock（= VITE_MOCK=1 pnpm dev），不需要后端，登录任意用户名密码
+pnpm dev:mock      # 浏览器内 mock（vite --mode mock，vite.config.ts 把 VITE_MOCK 定成 1；也可 VITE_MOCK=1 pnpm dev），不需要后端，登录任意用户名密码
 pnpm dev           # 连真实后端：/api 与 /echo 代理到 http://192.168.31.60:8080（见 vite.config.ts）
 pnpm build         # tsc -b + vite build，输出 dist/
+pnpm build:mock    # 带 mock 的生产构建，输出 dist-mock/（pnpm preview:mock 预览；e2e 与性能测量用它，正式的 dist/ 里没有 mock，check:customer 会查）
 ```
 
 客户页使用固定查看密码，链接和密码持续有效，可手动换新或停用。
@@ -25,12 +26,23 @@ Mock 的客户页链接和计费台账保存在当前站点的浏览器 localSto
 
 ## 检查
 
-先开 `pnpm dev:mock`，再：
+```bash
+pnpm lint          # oxlint：正确性 + React Hooks 规则（.oxlintrc.json）。React Compiler 没开，只对编译器有意义的几条规则关着（理由写在配置里）
+pnpm typecheck     # tsc -b
+pnpm test          # vitest（tests/）
+pnpm knip          # 没人用的文件、依赖、导出
+pnpm check:customer  # 客户页包体守卫 + 正式构建里没有 mock
+pnpm size          # 管理端首屏 / 客户页 / 第一次开抽屉的静态闭包体积
+pnpm e2e           # Playwright 冒烟（e2e/，退役、批量上架、Esc 先后、并排表单项、?silence= / ?host= 参数）：自己构建 mock 包并起预览
+pnpm perf          # 流畅度测量（tools/perf.mjs）：两种规模 × 两档 CPU，结果写 perf-results/；perf:check 按 tools/perf-budget.json 判超没超
+pnpm format        # oxfmt（.oxfmtrc.json）：只对改到的文件跑，整库还没统一格式化
+```
+
+截图先开 `pnpm dev:mock`，再：
 
 ```bash
 pnpm shots         # tools/shoot.mjs：各页面 1440 / 390 截图到 shots/ + 卡片分段对齐检查（输出 misaligned=0 才算通过）
 pnpm shots:ui      # tools/shoot-ui.mjs：交互态截图（命令面板、悬浮卡、右键菜单、作业进度、设置页、通知、深色）；BASE=… OUT=<目录> node tools/shoot-ui.mjs [场景名片段]
-pnpm smoke         # tools/smoke.mjs：退役确认流程、批量上架（粘贴 → 检查 → 唯一确认 → 作业）
 ```
 
 `CLIP=x,y,w,h pnpm shots <场景名片段>` 只截局部。需要本机装有 Chrome 或 Edge（`CHROME` 环境变量可指定）。
@@ -49,7 +61,8 @@ src/
   features/                  NodeDrawer（6 个页签）、ManageTab、BillingTab、provision-model（上架行模型/粘贴解析）
   pages/                     Home Nodes Relays Provision Jobs Catalog Incidents Login
   mock/                      fixtures.ts（27 台机器，IP 仅用 203.0.113.0/24、198.51.100.0/24）、server.ts（fetch 拦截 + mock 实时流，有状态）
-tools/                       shoot.mjs、smoke.mjs（puppeteer-core）
+tools/                       shoot.mjs、shoot-ui.mjs（截图，puppeteer-core）、perf.mjs（流畅度测量，Playwright）、bundle-budget.mjs、customer-sources.mjs
+e2e/                         Playwright 冒烟（pnpm e2e）
 ```
 
 ## 设计要点

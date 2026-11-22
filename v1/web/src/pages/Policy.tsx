@@ -2,7 +2,7 @@
 // 流程：编辑只存草稿 → 预览（最近 24 小时每个节点会被阻止多少连接）→ 发布（所有草稿一起生效，线路机热加载路由规则）→ 发布记录里可回滚。
 import { Field } from '@/components/ui/field';
 import * as React from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router';
 import { ChevronRight, Eye, Save, ShieldBan, ShieldCheck, Trash2, Undo2 } from 'lucide-react';
 import {
   MODE_INFO, modeLabel, useDiscardPolicies, usePolicies, usePolicyPreview, usePolicyVersions, usePublishPolicies, useRollbackPolicy, useRollbackPreview, useSavePolicy,
@@ -41,8 +41,8 @@ function ModePill({ mode }: { mode: PolicyMode }) {
 
 type Sel = { scope: 'team' | 'node'; id: string };
 const parseSel = (s: string | null): Sel | null => {
-  const m = /^(team|node):([\w-]+)$/.exec(s ?? '');
-  return m ? { scope: m[1] as Sel['scope'], id: m[2] } : null;
+  const [, scope, id] = /^(team|node):([\w-]+)$/.exec(s ?? '') ?? [];
+  return (scope === 'team' || scope === 'node') && id ? { scope, id } : null;
 };
 const NO_TEAMS: PolicyTeam[] = [];
 
@@ -93,12 +93,13 @@ export function PolicyPage() {
       return hit || nodes.length ? [{ t, nodes }] : [];
     })), [teams, needle]);
   const [initOpen, setInitOpen] = React.useState(false);
-  React.useEffect(() => {
-    if (initOpen || !teams.length) return;
+  // 团队第一次到手时展开选中项所在的团队（渲染时调整，不经 effect 多画一轮）
+  if (!initOpen && teams.length) {
     const t = sel?.scope === 'node' ? teams.find((x) => x.nodes.some((n) => n.id === sel.id)) : teams.find((x) => x.id === sel?.id);
-    setOpenTeams(new Set(t ? [t.id] : [teams[0].id]));
+    const open = t ?? teams[0]; // teams 非空（见条件）
+    setOpenTeams(new Set(open ? [open.id] : []));
     setInitOpen(true);
-  }, [teams, sel, initOpen]);
+  }
 
   const target = React.useMemo(() => {
     for (const t of teams) {

@@ -4,7 +4,7 @@
 // - 删除出口：连同指向它的规则和策略组成员一起删（作业 router_exit_rm，会重启 OpenClash）。
 // 抽屉里的「策略组」一段（GroupsSection）也在这里：组 → 当前出口，select 组每组一个「临时切换…」，切换中的可以切回。
 import * as React from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { ConfirmDialog, FormDialog } from '@/components/app/dialogs';
 import { ErrorNote, Note, Section, SectionHeader } from '@/components/app/primitives';
 import { Button } from '@/components/ui/button';

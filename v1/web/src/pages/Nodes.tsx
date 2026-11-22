@@ -22,7 +22,7 @@ import { NodeHover } from '@/components/app/NodeHover';
 import { MachineGrid, byNum, byStr, sortByCol, type Col } from '@/components/app/MachineGrid';
 import { Pagination } from '@/components/app/Pagination';
 import { RecycleBin } from './RecycleBin';
-import { usePage } from '@/lib/usePage';
+import { usePage, type PageSizes } from '@/lib/usePage';
 import { NODE_FILTERS, useUrlSearch, useUrlSort, useUrlState } from '@/lib/urlState';
 
 type Scope = 'live' | 'recycle';
@@ -31,7 +31,7 @@ const never = () => false;
 // 筛选下拉的固定选项与空列表兜底用模块常量：页面随实时推送重渲染时，memo 的下拉（Select）不被新数组击穿。
 // 选项的中文名来自 /meta（模块加载时还没取回），第一次用时算好留着
 const EMPTY: MachineView[] = [];
-const PAGE_SIZES = [25, 50, 100];
+const PAGE_SIZES: PageSizes = [25, 50, 100];
 type Opt = { value: string; label: string };
 let opts: { kind: Opt[]; status: Opt[] } | null = null;
 const filterOpts = () => (opts ??= {

@@ -224,7 +224,9 @@ pub async fn diag_plan(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPat
     .fetch_one(&st.db)
     .await?;
     // 在用线路机，带上这台节点挂没挂在它上面、它的一个在用入口端口（节点往线路机建连的目标：入口端口对外开放）
-    let relays: Vec<(Uuid, Option<String>, String, bool, Option<i32>)> = sqlx::query_as(
+    // (id, label, 主 IP, 这台节点挂在它上面, 一个在用入口端口)
+    type RelayRow = (Uuid, Option<String>, String, bool, Option<i32>);
+    let relays: Vec<RelayRow> = sqlx::query_as(
         "select r.id, r.label, host(r.primary_ip),
                 exists (select 1 from entry e where e.relay_id = r.id and e.node_id = $1 and e.lifecycle = 'active'),
                 (select min(e.port) from entry e where e.relay_id = r.id and e.lifecycle = 'active')

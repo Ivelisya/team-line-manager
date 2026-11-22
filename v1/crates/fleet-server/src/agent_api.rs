@@ -5,10 +5,10 @@ use crate::crypto::sha256;
 use crate::db::floor_hour;
 use crate::entries;
 use crate::error::ApiJson;
-use crate::error::{ApiError, ApiResult};
+use crate::error::{ApiError, ApiQuery, ApiResult};
 use crate::lock;
 use crate::state::{AppState, Event};
-use axum::extract::{ConnectInfo, FromRequest, Query, Request, State};
+use axum::extract::{ConnectInfo, FromRequest, Request, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -166,7 +166,11 @@ async fn authenticate(st: &AppState, h: &HeaderMap, ip: Option<IpAddr>) -> Resul
     let hash = sha256(tok.trim().as_bytes());
     let now = Instant::now();
     match st.agent_auth.cached(&hash, now) {
-        Some(Some(a)) => return Ok(a),
+        Some(Some(a)) => {
+            // 请求日志带上机器（selfmon/http.rs）
+            crate::selfmon::http::set_machine(a.machine_id);
+            return Ok(a);
+        }
         Some(None) => return Err(revoked()),
         None => {}
     }
@@ -208,6 +212,9 @@ async fn authenticate(st: &AppState, h: &HeaderMap, ip: Option<IpAddr>) -> Resul
     })?;
     let a = row.map(|(machine_id, kind)| AgentId { machine_id, kind });
     st.agent_auth.remember(hash, a.clone(), gen, ip, now);
+    if let Some(a) = &a {
+        crate::selfmon::http::set_machine(a.machine_id);
+    }
     a.ok_or_else(revoked)
 }
 
@@ -544,11 +551,10 @@ async fn ingest(st: &AppState, a: AgentId, ip: Option<std::net::IpAddr>, mut r: 
     // 访问记录单独标脏（access_dirty，由访问汇总循环消费），和遥测的 rollup_dirty 互不干扰
     let access_dirty: Vec<OffsetDateTime> = ac.iter().map(|(_, t)| floor_hour(*t)).filter(|h| *h < cur_hour).collect::<BTreeSet<_>>().into_iter().collect();
 
-    let mut tx = st.db.begin().await?;
     // 主连接池不设语句超时：一条卡住的语句（如插分区表时排在建 / 摘分区的父表锁后面）会让这份一直占着处理位置，
     // 这台机器之后的上报就一直 429。10 秒（加上等连接最多 5 秒，在 agent 的 15 秒超时以内）没完就取消、回 503，agent 退避重发
     // 上报是遥测：异步提交（见 db::begin_async），库盘 fsync 卡顿时不拖住上报
-    sqlx::query("select set_config('statement_timeout', '10s', true), set_config('synchronous_commit', 'off', true)").execute(&mut *tx).await?;
+    let mut tx = crate::db::begin_async_timeout(&st.db, Some(Duration::from_secs(10))).await?;
     let prev: Option<(i64, bool, Option<OffsetDateTime>)> = sqlx::query_as(
         "select last_seq, coalesce(last_report_at > now() - interval '30 seconds', false), last_report_at from agent_state where machine_id = $1 for update",
     )
@@ -785,7 +791,7 @@ struct DesiredQ {
     after: Option<u64>,
 }
 
-async fn desired(State(st): State<AppState>, ClientIp(ip): ClientIp, h: HeaderMap, Query(q): Query<DesiredQ>) -> ApiResult<Response> {
+async fn desired(State(st): State<AppState>, ClientIp(ip): ClientIp, h: HeaderMap, ApiQuery(q): ApiQuery<DesiredQ>) -> ApiResult<Response> {
     let a = match authenticate(&st, &h, ip).await {
         Ok(a) => a,
         Err(resp) => return Ok(resp),

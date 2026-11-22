@@ -93,15 +93,21 @@ fn parse_version(out: &str) -> Option<String> {
 }
 
 /// 进程已经活了多少秒（/proc/<pid>/stat 的 starttime 是自开机的时钟数，和 CLOCK_BOOTTIME 同一把尺；不用 /proc/uptime：
-/// 容器里它被虚拟成容器自己的开机时间，对不上）。时钟频率按 Linux 通用的 100；读不到返回 None
-fn unit_age_s(pid: u32) -> Option<u64> {
-    let start = ctl::proc_start_ticks(pid)? / 100;
+/// 容器里它被虚拟成容器自己的开机时间，对不上）。`start_ticks` 是 starttime，时钟频率按 Linux 通用的 100；读不到时钟返回 None
+fn age_s(start_ticks: u64) -> Option<u64> {
+    let start = start_ticks / 100;
     let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
     // SAFETY: ts 是本地变量，clock_gettime 只写它
     if unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut ts) } != 0 {
         return None;
     }
     Some((ts.tv_sec as u64).saturating_sub(start))
+}
+
+/// 缓存的主进程 (pid, starttime) 还是不是那个进程：`start_of` 读 pid 现在的 starttime（/proc/<pid>/stat）。
+/// 进程没了、pid 被别的进程复用（starttime 对不上）都返回 None，调用方再去问 systemctl
+fn still_same(cached: Option<(u32, u64)>, start_of: impl Fn(u32) -> Option<u64>) -> Option<(u32, u64)> {
+    cached.filter(|&(p, t)| start_of(p) == Some(t))
 }
 
 pub struct Singbox {
@@ -116,11 +122,13 @@ pub struct Singbox {
     desired: Mutex<Option<DesiredState>>,
     /// (程序的修改时间, 版本)：换了程序才重新问
     version: Mutex<Option<(std::time::SystemTime, String)>>,
+    /// 缓存的单元主进程 (MainPID, starttime)：/proc 里还是同一个进程就不再问 systemctl（同 collect.rs 的 stats_task）
+    main: Mutex<Option<(u32, u64)>>,
 }
 
 impl Singbox {
     pub fn new(cfg: Arc<Config>) -> Self {
-        Self { cfg, lock: tokio::sync::Mutex::new(()), last_error: Mutex::new(None), ports: Mutex::new(vec![]), desired: Mutex::new(None), version: Mutex::new(None) }
+        Self { cfg, lock: tokio::sync::Mutex::new(()), last_error: Mutex::new(None), ports: Mutex::new(vec![]), desired: Mutex::new(None), version: Mutex::new(None), main: Mutex::new(None) }
     }
 
     fn dir(&self) -> &Path { &self.cfg.singbox_dir }
@@ -222,16 +230,31 @@ impl Singbox {
         Ok(())
     }
 
-    /// 单元 active 且活过 MIN_UPTIME_S，最近一次应用要监听的端口都在听（`ss` 用不了时不看端口）
+    /// 单元 active 且活过 MIN_UPTIME_S，最近一次应用要监听的端口都在听（/proc/net/tcp 读不了时不看端口）
     async fn is_running(&self) -> bool {
         if !self.is_active().await {
             return false;
         }
-        if ctl::main_pid(&self.cfg.singbox_service).await.and_then(unit_age_s).is_some_and(|a| a < MIN_UPTIME_S) {
+        if self.main_start_ticks().await.and_then(age_s).is_some_and(|a| a < MIN_UPTIME_S) {
             return false;
         }
         let ports = self.ports.lock().unwrap().clone();
         sockfree::listening(&ports).await.is_none_or(|l| ports.iter().all(|p| l.contains(p)))
+    }
+
+    /// 单元主进程的 starttime：缓存的主进程在 /proc 里还是同一个就直接用（单元 active 时每 10 秒看一次，不必每次起 systemctl），
+    /// 对不上（重启过、停过）才问 `systemctl show MainPID`。取不到（没有主进程、/proc 读不了）返回 None
+    async fn main_start_ticks(&self) -> Option<u64> {
+        let cached = *self.main.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((_, t)) = still_same(cached, ctl::proc_start_ticks) {
+            return Some(t);
+        }
+        let cur = match ctl::main_pid(&self.cfg.singbox_service).await {
+            Some(p) => ctl::proc_start_ticks(p).map(|t| (p, t)),
+            None => None,
+        };
+        *self.main.lock().unwrap_or_else(|e| e.into_inner()) = cur;
+        cur.map(|c| c.1)
     }
 
     async fn is_active(&self) -> bool {
@@ -346,5 +369,35 @@ mod tests {
         assert_eq!(split_keypair(KEY), None);
         assert_eq!(split_keypair(&format!("junk\n{CERT}")), None);
         assert_eq!(parse_version("sing-box version 1.14.4\n\nEnvironment: go1.25.3 linux/amd64\n").as_deref(), Some("1.14.4"));
+    }
+
+    /// 缓存的主进程：/proc/<pid>/stat 的 starttime 对得上才算同一个进程（还在跑）；进程没了、pid 被复用都对不上，要重新问 systemctl
+    #[test]
+    fn cached_main_pid_checked_against_proc_stat() {
+        // 假的 /proc：pid → stat 的内容
+        let stat = |pid: u32| -> Option<u64> {
+            let s = match pid {
+                812 => "812 (sing-box) S 1 812 812 0 -1 4194560 100 0 0 0 5 3 0 0 20 0 9 0 424242 1000 2 18446744073709551615",
+                // 同一个 pid 换成了别的进程（sing-box 重启后 pid 被复用）
+                900 => "900 (sh) S 1 900 900 0 -1 4194560 100 0 0 0 5 3 0 0 20 0 1 0 500000 1000 2 18446744073709551615",
+                _ => return None,
+            };
+            ctl::parse_stat_starttime(s)
+        };
+        assert_eq!(still_same(Some((812, 424242)), stat), Some((812, 424242)), "还是那个进程：直接用缓存");
+        assert_eq!(still_same(Some((900, 424242)), stat), None, "pid 复用：starttime 对不上");
+        assert_eq!(still_same(Some((777, 424242)), stat), None, "进程没了");
+        assert_eq!(still_same(None, stat), None, "没缓存");
+        // 本机实测：自己这个进程对得上，starttime 改一下就对不上；活了多久不会超过一年
+        let me = std::process::id();
+        let t = ctl::proc_start_ticks(me).unwrap();
+        assert_eq!(still_same(Some((me, t)), ctl::proc_start_ticks), Some((me, t)));
+        assert_eq!(still_same(Some((me, t + 1)), ctl::proc_start_ticks), None);
+        assert!(age_s(t).is_some_and(|a| a < 365 * 86400));
+        // 刚起来的进程（starttime = 现在）活了 0 秒 < MIN_UPTIME_S：不算在跑
+        let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        // SAFETY: 同 age_s
+        assert_eq!(unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut ts) }, 0);
+        assert!(age_s(ts.tv_sec as u64 * 100).is_some_and(|a| a < MIN_UPTIME_S));
     }
 }

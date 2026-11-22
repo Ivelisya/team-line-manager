@@ -259,8 +259,9 @@ pub async fn delete(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<U
 /// 探测点报过这个版本是坏的（换上后没能上报、自己换回来了，bad_sha256）时 409：它不会再换成这个版本，要修好后发新版本（或重装探测点）
 pub async fn upgrade(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
     let path = st.cfg.dist_dir.join("fleet-agent");
-    let sha = crate::jobs::dist_agent_sha256(&st).await.map_err(|e| ApiError::conflict(format!("中控上没有可推送的 fleet-agent（{}：{e}）", path.display())))?;
-    let version = probe_points::agent::dist_version(&st).await.ok_or_else(|| ApiError::conflict(format!("中控上的 fleet-agent（{}）读不出版本号", path.display())))?;
+    let d = crate::dist_agent::get(&st.cfg.dist_dir).await.map_err(|e| ApiError::conflict(format!("中控上没有可推送的 fleet-agent（{}：{e}）", path.display())))?;
+    let version = d.version.ok_or_else(|| ApiError::conflict(format!("中控上的 fleet-agent（{}）读不出版本号", path.display())))?;
+    let sha = d.sha256;
     let mut tx = st.db.begin().await?;
     let bad: Option<(String, Option<String>)> = sqlx::query_as("select name, bad_sha256 from probe_point where id = $1 for update").bind(id).fetch_optional(&mut *tx).await?;
     if let Some((name, Some(b))) = &bad {

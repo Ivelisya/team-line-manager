@@ -4,6 +4,7 @@
 import { useRef, useSyncExternalStore } from 'react';
 import { notifyManager, useQuery, type QueryClient } from '@tanstack/react-query';
 import { get } from './api';
+import { afterSubscribed } from './streamGate';
 import type { EntryView, HostMetrics, MachineView, Overview, OverviewSeries, ProbeResult } from './types';
 import { isQuiet } from './derive';
 
@@ -138,7 +139,7 @@ export async function refreshMachine(qc: QueryClient, id: string): Promise<boole
   sinks.add(got);
   let fresh: MachineView;
   try {
-    fresh = await qc.fetchQuery({ queryKey: ['machine', id], queryFn: ({ signal }) => get<MachineView>(`/machines/${id}`, signal), staleTime: 0 });
+    fresh = await qc.fetchQuery({ queryKey: ['machine', id], queryFn: ({ signal, queryKey }) => afterSubscribed(queryKey, () => get<MachineView>(`/machines/${id}`, signal)), staleTime: 0 });
   } finally {
     sinks.delete(got);
   }
@@ -203,6 +204,9 @@ export function useLiveSeries(key: string, paused?: { readonly current: boolean 
   return useSyncExternalStore(subscribe, () => (paused?.current && last.current ? last.current : (last.current = series.get(key) ?? EMPTY)), () => EMPTY);
 }
 
+/** 不订阅、直接读一份迹线的当前值（单元测试用；组件里用 useLiveSeries） */
+export const peekLiveSeries = (key: string): readonly LivePoint[] => series.get(key) ?? EMPTY;
+
 /** 全站总速率：第一次用时取近 30 分钟的每分钟历史（t 为分钟起点）垫在实时点前面（只取一次），之后由实时推送接着记 */
 export function useFleetSeries(): readonly LivePoint[] {
   useQuery({ queryKey: ['overview-series'], queryFn: () => get<OverviewSeries>('/overview/series?minutes=30').then(seedFleet), staleTime: Infinity, gcTime: Infinity });
@@ -210,7 +214,8 @@ export function useFleetSeries(): readonly LivePoint[] {
 }
 function seedFleet(d: OverviewSeries) {
   const buf = series.get(FLEET) ?? EMPTY;
-  const old = d.points.map((p) => ({ t: Date.parse(p.ts), rx: p.net_rx_bps, tx: p.net_tx_bps })).filter((p) => !buf.length || Math.floor(p.t / MIN) < Math.floor(buf[0].t / MIN));
+  const t0 = buf[0]?.t; // 已有实时点：只补比第一个实时点更早的那几分钟
+  const old = d.points.map((p) => ({ t: Date.parse(p.ts), rx: p.net_rx_bps, tx: p.net_tx_bps })).filter((p) => t0 === undefined || Math.floor(p.t / MIN) < Math.floor(t0 / MIN));
   series.set(FLEET, [...old, ...buf].slice(-SERIES_N));
   subs.forEach((f) => f());
   return true;

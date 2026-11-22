@@ -2,7 +2,7 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { QueryClientProvider } from '@tanstack/react-query';
-import { BrowserRouter } from 'react-router-dom';
+import { BrowserRouter } from 'react-router';
 // 样式入口：层的安排、各份样式的先后都在 styles/admin.css 里（覆盖层 overrides.css 的说明也在那里）
 import './styles/admin.css';
 import { App } from './App';
@@ -13,7 +13,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <QueryClientProvider client={qc}>
       <TooltipProvider>
-        <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><App /></BrowserRouter>
+        <BrowserRouter><App /></BrowserRouter>
       </TooltipProvider>
     </QueryClientProvider>
   </React.StrictMode>,

@@ -8,6 +8,7 @@ export function useCountUp(target: number): number {
   const from = useRef(target);
   const raf = useRef(0);
   useEffect(() => {
+    // eslint-disable-next-line react/set-state-in-effect -- 逐帧动画（rAF）本来就在 effect 里，跳变的几种情况同一处处理
     if (!Number.isFinite(target)) { setShown(target); from.current = target; return; }
     if (from.current === target) return;
     // 之前没有有效值（数据刚到）：直接显示，不从 0 数起

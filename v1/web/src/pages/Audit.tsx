@@ -28,8 +28,9 @@ function byDay(rows: AuditEntry[]) {
   const out: { key: string; label: string; items: AuditEntry[] }[] = [];
   for (const a of rows) {
     const d = new Date(a.ts); const k = dayKey(d);
-    if (out[out.length - 1]?.key !== k) out.push({ key: k, label: k === today ? '今天' : k === yday ? '昨天' : `${d.getMonth() + 1}月${d.getDate()}日 周${WEEK[d.getDay()]}`, items: [] });
-    out[out.length - 1].items.push(a);
+    let g = out.at(-1);
+    if (g?.key !== k) { g = { key: k, label: k === today ? '今天' : k === yday ? '昨天' : `${d.getMonth() + 1}月${d.getDate()}日 周${WEEK[d.getDay()]}`, items: [] }; out.push(g); }
+    g.items.push(a);
   }
   return out;
 }

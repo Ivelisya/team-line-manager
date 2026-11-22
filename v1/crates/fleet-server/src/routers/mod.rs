@@ -17,6 +17,7 @@ pub mod changes;
 pub mod clash;
 pub mod collect;
 pub mod deploy;
+pub mod ops;
 pub mod replace;
 pub mod scripts;
 pub mod selfcheck;
@@ -369,9 +370,33 @@ pub fn compact_exits_text(changes: &[(Uuid, String, String)], exits: &HashMap<Uu
             Some(format!("{from}（{}）→ {to}", xs.iter().map(|(_, r, x)| format!("{r} · {x}")).collect::<Vec<_>>().join("、")))
         })
         .collect();
+    // 改完之后让出口名跟上面板：每台路由一条命令（不会自动改路由：要重启 OpenClash，先看预览）
+    let mut rs: Vec<&str> = vec![];
+    for (id, _, _) in changes {
+        for (_, r, _) in exits.get(id).into_iter().flatten() {
+            if !rs.contains(&r.as_str()) {
+                rs.push(r);
+            }
+        }
+    }
+    let cmds: Vec<String> = rs.iter().map(|r| format!("fleetctl router rename-exits {} --follow-fleet", shell_word(r))).collect();
     (!list.is_empty()).then(|| {
-        format!("编号压缩会给软路由出口指着的节点改名，出口名不跟着改，改完面板名和出口名就对不上了：{}。{tail}", list.join("；"))
+        format!(
+            "编号压缩会给软路由出口指着的节点改名，出口名不跟着改，改完面板名和出口名就对不上了：{}。{}。照样做的话，做完用 {} 让出口名跟上面板（先看预览，要重启 OpenClash）",
+            list.join("；"),
+            tail.trim_end_matches('。'),
+            cmds.join("、")
+        )
     })
+}
+
+/// 命令行里的一个参数：只有字母、数字、中文和 `_ . -` 的原样，别的加单引号
+fn shell_word(s: &str) -> String {
+    if !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '-')) {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
 }
 
 /// 宿主机被软路由出口指着的一条：出口直接指向宿主机，或指向它上面没退役的同机 IP 节点（`via` = 那个 IP 节点的名字）
@@ -477,7 +502,10 @@ mod tests {
         ]);
         assert_eq!(
             compact_exits_text(&changes, &exits, "要换机器用替换。").as_deref(),
-            Some("编号压缩会给软路由出口指着的节点改名，出口名不跟着改，改完面板名和出口名就对不上了：团队2-09（团队2 新办公室 · 节点09、路由B · 节点09）→ 团队2-08；团队2-11（团队2 新办公室 · 节点11）→ 团队2-10。要换机器用替换。")
+            Some(
+                "编号压缩会给软路由出口指着的节点改名，出口名不跟着改，改完面板名和出口名就对不上了：团队2-09（团队2 新办公室 · 节点09、路由B · 节点09）→ 团队2-08；团队2-11（团队2 新办公室 · 节点11）→ 团队2-10。要换机器用替换。\
+                 照样做的话，做完用 fleetctl router rename-exits '团队2 新办公室' --follow-fleet、fleetctl router rename-exits 路由B --follow-fleet 让出口名跟上面板（先看预览，要重启 OpenClash）"
+            )
         );
         assert_eq!(compact_exits_text(&changes, &HashMap::new(), ""), None);
     }

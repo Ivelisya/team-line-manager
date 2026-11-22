@@ -18,7 +18,7 @@ const BIN_U = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
 function scaleOf(n: number, base: number, units: string[]): Scale {
   let i = 0; let x = Math.abs(n);
   while (x >= base && i < units.length - 1) { x /= base; i++; }
-  return { div: base ** i, u: units[i] };
+  return { div: base ** i, u: units[i] ?? '' }; // i 不超过末位
 }
 export const bytesScale = (n: number): Scale => scaleOf(n, 1000, BYTE_U);
 export function rateScale(bps: number): Scale {
@@ -111,8 +111,6 @@ export function dt(iso: string | number | null | undefined): string {
   const d = new Date(iso);
   return `${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${hm(d.getTime())}`;
 }
-/** 月-日（MM-DD） */
-export const md = (iso: string | null | undefined): string => (iso ? dt(iso).slice(0, 5) : '—');
 export function dtFull(iso: string | null | undefined): string {
   if (!iso) return '—';
   const d = new Date(iso);
@@ -154,7 +152,7 @@ export const displayName = (team: string, n: number) => `${team}-${p2(n)}`;
 /** YYYY-MM-DD 加 n 个月（n 可为负）；目标月没有那一天时落到月末。
  *  只给日期选择器翻月用（components/ui/date-field）：续费的新到期日、每期天数等账单日期由服务端算（next_due、period_days），不在这里算 */
 export function addMonths(date: string, n: number): string {
-  const [y, m, d] = date.split('-').map(Number);
+  const [y = NaN, m = NaN, d = NaN] = date.split('-').map(Number); // 缺段同 Number(undefined)：NaN
   const t = new Date(Date.UTC(y, m - 1 + n, 1));
   const last = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth() + 1, 0)).getUTCDate();
   t.setUTCDate(Math.min(d, last));
@@ -162,7 +160,7 @@ export function addMonths(date: string, n: number): string {
 }
 
 /** YYYY-MM-DD 加减天数（UTC 计算，避免夏令时把一天算成 23 小时） */
-export const addDays = (s: string, n: number) => { const [y, m, d] = s.split('-').map(Number); return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10); };
+export const addDays = (s: string, n: number) => { const [y = NaN, m = NaN, d = NaN] = s.split('-').map(Number); return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10); };
 
 /** 实时速率的提示档：空闲（< 100 Kbps）、常态、接近套餐带宽（≥ 80%，只有知道套餐带宽时才判）。颜色不当状态用：常态读数用正文色，只有接近套餐带宽才换成提示色 */
 export type Speed = 'idle' | 'ok' | 'near';

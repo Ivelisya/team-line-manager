@@ -1,5 +1,5 @@
 //! 已知地址抽查（公共 DNS、国内运营商 DNS、云厂商、VPN 网络）——用真实离线库。
-//! 库目录来自环境变量 IPINTEL_DB_DIR（由 deploy/ipintel/fetch-dbs.sh 下载）；没设置或目录里没有库时整组跳过，
+//! 库目录来自环境变量 IPINTEL_DB_DIR（由 fleet-server ipintel-fetch 下载）；没设置或目录里没有库时整组跳过，
 //! 不影响没装库的机器上的 `cargo test`。构造数据的单元测试在各模块的 `#[cfg(test)]` 里，不依赖真实库。
 use fleet_ipintel::classify::ConnType;
 use fleet_ipintel::{Dbs, Intel, Lists};

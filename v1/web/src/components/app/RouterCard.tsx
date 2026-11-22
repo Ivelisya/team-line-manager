@@ -37,7 +37,7 @@ export function RouterStatePill({ r }: { r: Pick<RouterView, 'id' | 'state' | 'e
   return issues.length ? <Pill tone="warn" tip={issues.join('\n')} tabIndex={0}>降级</Pill> : <Pill tone="ok">在线</Pill>;
 }
 /** 卡片描边：离线红、在线但有毛病黄（同机器卡的故障 / 降级）；维护中同机器卡的维护（不描红黄） */
-export const routerHealth = (r: RouterView) => (r.maintenance ? 'maintenance' : r.state === 'offline' || (r.state === 'pending' && r.deploy?.state === 'failed') ? 'down' : r.state === 'online' && (r.error || routerIssues(r.summary).length) ? 'degraded' : 'ok');
+const routerHealth = (r: RouterView) => (r.maintenance ? 'maintenance' : r.state === 'offline' || (r.state === 'pending' && r.deploy?.state === 'failed') ? 'down' : r.state === 'online' && (r.error || routerIssues(r.summary).length) ? 'degraded' : 'ok');
 
 /** 资源四项格条（CPU / 内存 / 存储 / 连接表）：卡片与抽屉「当前」共用 */
 export function RouterMeters({ s }: { s: RouterSummary }) {
@@ -73,7 +73,8 @@ export function DeployTimeline({ r, max }: { r: RouterView; max?: number }) {
   if (d.state === 'running' && !steps.length) items.push({ key: 'wait', tone: 'run', text: '准备中' });
   if (d.state === 'failed') {
     if (!steps.length) items.push({ key: 'fail', tone: 'bad', text: '部署' });
-    items[items.length - 1].extra = <>
+    const tail = items.at(-1); // 至少有「开始部署」
+    if (tail) tail.extra = <>
       {d.error && <span className="rt-tl-err" data-tip={d.error}>{d.error}</span>}
       <span className="row rt-tl-acts">
         <Button variant="outline" size="sm" loading={boot.pending} onClick={() => void boot.run(r)} data-tip="中控连不上路由时用。生成一条命令，到路由的 SSH 里执行"><Terminal size={13} />改用在路由上执行命令</Button>

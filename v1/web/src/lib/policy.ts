@@ -5,7 +5,7 @@ import { get, post, put } from './api';
 import { meta } from './derive';
 
 export type PolicyMode = 'observe' | 'allowlist' | 'denylist' | 'blocked' | 'inherit';
-export type EffectiveMode = Exclude<PolicyMode, 'inherit'>;
+type EffectiveMode = Exclude<PolicyMode, 'inherit'>;
 
 /** 模式的中文名（/meta 的 policy_modes）；下面的说明是界面文案，放进模式旁的「(i)」 */
 export const modeLabel = (m: string) => meta().policy_modes[m] ?? m;
@@ -25,7 +25,7 @@ export interface ScopePolicy extends PolicyBody {
   /** 乐观锁；还没有记录的范围为 0 */
   revision: number; updated_by: string | null; updated_at: string | null;
 }
-export interface EffectivePolicy { mode: EffectiveMode; domains: string[]; note: string; source: 'node' | 'team' | 'default' }
+interface EffectivePolicy { mode: EffectiveMode; domains: string[]; note: string; source: 'node' | 'team' | 'default' }
 export interface PolicyNode {
   id: string; name: string; number: number | null; has_entry: boolean;
   policy: ScopePolicy; effective: EffectivePolicy; draft_effective: EffectivePolicy;

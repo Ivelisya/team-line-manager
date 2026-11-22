@@ -77,26 +77,36 @@ impl RealityGuard {
     }
 }
 
+/// `nft -f -` 整个交互（起进程、写标准输入、等退出）最多这么久
+const NFT_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// `nft -f -`，脚本从标准输入给
 async fn nft(script: &str) -> std::io::Result<()> {
-    let mut child = Command::new("nft")
-        .args(["-f", "-"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()?;
-    let mut stdin = child.stdin.take().expect("stdin 是 piped");
-    stdin.write_all(script.as_bytes()).await?;
-    drop(stdin);
-    let out = tokio::time::timeout(Duration::from_secs(10), child.wait_with_output())
-        .await
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "nft 超时"))??;
+    let out = run_with_stdin(Command::new("nft").args(["-f", "-"]), script, NFT_TIMEOUT)
+        .await?
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::TimedOut, "nft 超时"))?;
     if out.status.success() {
         Ok(())
     } else {
         let msg = String::from_utf8_lossy(&out.stderr).trim().chars().take(400).collect::<String>();
         Err(std::io::Error::other(format!("nft 失败（{}）：{msg}", out.status)))
+    }
+}
+
+/// 起子进程、把 `input` 写进它的标准输入（写完关掉）、等它退出并收齐输出，写和等整个限时 `timeout`；超时返回 `Ok(None)`。
+/// 子进程不读标准输入（管道写满卡住）、不退出都算超时：`Child` 在超时丢掉的 future 里，随之被杀（kill_on_drop）。
+/// 启动失败（NotFound = 没装）、写标准输入失败原样返回错误
+async fn run_with_stdin(cmd: &mut Command, input: &str, timeout: Duration) -> std::io::Result<Option<std::process::Output>> {
+    let mut child = cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true).spawn()?;
+    let mut stdin = child.stdin.take().expect("stdin 是 piped");
+    let io = async move {
+        stdin.write_all(input.as_bytes()).await?;
+        drop(stdin);
+        child.wait_with_output().await
+    };
+    match tokio::time::timeout(timeout, io).await {
+        Ok(r) => r.map(Some),
+        Err(_) => Ok(None),
     }
 }
 
@@ -173,6 +183,25 @@ table inet fleet_reality_guard {
         assert!(guarded(&desired(vec![reverse(2, 20002)])).is_empty());
         assert!(guarded(&anytls_only(vec![entry(1, 20001, true)])).is_empty());
         assert_eq!(script(&[]), "table inet fleet_reality_guard\ndelete table inet fleet_reality_guard\n");
+    }
+
+    /// 写标准输入也在限时里：子进程不读输入（管道写满）时到时返回超时，子进程被杀（不会再做后面的事）；正常的照常收齐输出
+    #[tokio::test]
+    async fn stdin_write_is_bounded_and_child_killed() {
+        let out = run_with_stdin(&mut Command::new("cat"), "table inet x\n", Duration::from_secs(10)).await.unwrap().unwrap();
+        assert!(out.status.success() && out.stdout == b"table inet x\n");
+        let d = std::env::temp_dir().join(format!("fa-nft-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&d).unwrap();
+        let mark = d.join("ran");
+        let big = "x".repeat(1 << 20);
+        let t = std::time::Instant::now();
+        let r = run_with_stdin(Command::new("sh").arg("-c").arg(format!("sleep 1; touch {}", mark.display())), &big, Duration::from_millis(300)).await.unwrap();
+        assert!(r.is_none() && t.elapsed() < Duration::from_secs(1), "超时应在写标准输入时就生效");
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert!(!mark.exists(), "超时后子进程应已被杀");
+        let _ = std::fs::remove_dir_all(&d);
+        // 没装：启动失败原样返回 NotFound（apply 里据此判断）
+        assert_eq!(run_with_stdin(&mut Command::new("/nonexistent/nft"), "", Duration::from_secs(1)).await.unwrap_err().kind(), std::io::ErrorKind::NotFound);
     }
 
     /// 切回 both / 入口切回普通 / 入口删掉：下一次写的脚本只删表，规则跟着去掉

@@ -59,7 +59,7 @@ const IdlePill = ({ ms }: { ms: DueMachine[] }) => (ms.length ? <Pill className=
 function DueWhen({ g, short }: { g: DueGroup; short?: boolean }) {
   return (
     <span data-tip={dueTzTip(g.billing_tz)}>
-      <span className="num">{short ? g.due_date.slice(5) : g.due_date}</span>{g.billing_tz && g.billing_tz !== meta().org_timezone && <span className="t-muted"> {tzCity(g.billing_tz)}</span>} <Due days={g.machines[0].due_days} state={dueState(g.machines[0].due_days)} />
+      <span className="num">{short ? g.due_date.slice(5) : g.due_date}</span>{g.billing_tz && g.billing_tz !== meta().org_timezone && <span className="t-muted"> {tzCity(g.billing_tz)}</span>} {g.machines[0] && <Due days={g.machines[0].due_days} state={dueState(g.machines[0].due_days)} />}
     </span>
   );
 }
@@ -162,7 +162,7 @@ const PayForm = resetOnOpen(function PayForm({ g, open, onClose }: { g: DueGroup
   const pv = useQuery({ queryKey: ['renew-batch-preview', items], queryFn: () => renewBatchPreview(items), staleTime: 0, gcTime: 0 });
   const [amounts, setAmounts] = React.useState<Record<string, string>>(() => Object.fromEntries(g.machines.map((m) => [m.id, String(m.price_cents / 100)])));
   const [ref, setRef] = React.useState('');
-  const bad = g.machines.some((m) => { const a = amounts[m.id]; return a.trim() === '' || !(isFinite(Number(a)) && Number(a) >= 0); });
+  const bad = g.machines.some((m) => { const a = amounts[m.id] ?? ''; return a.trim() === '' || !(isFinite(Number(a)) && Number(a) >= 0); });
   const submit = () => run.mutate(
     { items: g.machines.map((m) => ({ machine_id: m.id, amount_cents: Math.round(Number(amounts[m.id]) * 100) })), ref: ref.trim() || undefined },
     { onSuccess: (r) => { toast.ok(`已登记 ${r.items.length} 台续费`); onClose(); }, onError: toast.err },
@@ -181,7 +181,7 @@ const PayForm = resetOnOpen(function PayForm({ g, open, onClose }: { g: DueGroup
             <tr key={m.id}><td className="strong num">{m.name} {m.idle && <Pill className="pill-sm" tip={IDLE_TIP(m)}>闲置</Pill>}{m.spare_hold && <Pill className="pill-sm" tip={HOLD_TIP(m)}>备用</Pill>}
                 <span className="sub" style={{ fontWeight: 'var(--fw-regular)' }}>近 30 天 {F.usdPerGb(m.usd_per_gb)}/GB · 出口成功率 {F.str(F.pct(m.avail_pct, 1))}</span></td>
               <td className="num">{m.due_date} <ArrowRight size={12} style={{ color: 'var(--fg-3)' }} /> {newDue(m.id) ?? <span className="t-muted">…</span>}</td>
-              <td><AmountCell currency={m.currency} value={amounts[m.id]} onChange={(v) => setAmounts((a) => ({ ...a, [m.id]: v }))} /></td></tr>
+              <td><AmountCell currency={m.currency} value={amounts[m.id] ?? ''} onChange={(v) => setAmounts((a) => ({ ...a, [m.id]: v }))} /></td></tr>
           ))}</tbody></table>
       </div>
       <FormField label="账单号 / 备注（选填）"><Input value={ref} onChange={(e) => setRef(e.target.value)} placeholder="例如：账单 #2041" maxLength={64} /></FormField>

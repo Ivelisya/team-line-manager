@@ -1055,31 +1055,51 @@ pub fn follow_jobs<'a>(ctx: &Ctx, jobs: impl IntoIterator<Item = &'a Value>) -> 
     Ok(code)
 }
 
-/// 轮询作业日志直到结束；成功退出码 0，失败/取消为 1
-pub fn follow_job(ctx: &Ctx, id: &str) -> anyhow::Result<u8> {
-    let mut after = 0i64;
-    let mut last = String::new();
-    let mut errs = 0u32;
-    loop {
-        let polled = ctx.c.get(&format!("/jobs/{id}")).and_then(|j| Ok((j, ctx.c.get_q(&format!("/jobs/{id}/logs"), &[("after", after.to_string())])?)));
+/// 用实时流跟作业时，这么久没取过进度就主动取一次：中控只在作业状态 / 步骤变化时推事件，步骤中间写的日志靠它及时打出来
+const FOLLOW_IDLE: Duration = Duration::from_secs(3);
+
+/// 取一次作业进度的结果
+enum Polled {
+    /// 作业结束，带退出码
+    Done(u8),
+    /// 还在跑
+    Pending,
+    /// 这次没取到（可重试的错误，已在 stderr 说明），等 `backoff` 再取
+    Retry,
+}
+
+/// 跟一个作业：已打印到的日志 id、上次打印的状态、连续失败次数。实时流和轮询两种跟法共用它取进度、打印，输出完全一样
+struct JobFollow<'a> {
+    ctx: &'a Ctx,
+    id: &'a str,
+    after: i64,
+    last: String,
+    errs: u32,
+}
+
+impl JobFollow<'_> {
+    /// 取作业与它 `after` 之后的日志，打印新日志与状态变化；作业结束时打印结果并给出退出码
+    fn poll(&mut self) -> anyhow::Result<Polled> {
+        let (ctx, id) = (self.ctx, self.id);
+        let polled = ctx.c.get(&format!("/jobs/{id}")).and_then(|j| Ok((j, ctx.c.get_q(&format!("/jobs/{id}/logs"), &[("after", self.after.to_string())])?)));
         let (j, logs) = match polled {
             Ok(x) => {
-                errs = 0;
+                self.errs = 0;
                 x
             }
             Err(e) => {
                 // 作业在服务端照常跑，一次网络抖动不该让命令退出、让用户以为作业没了
-                errs += 1;
+                self.errs += 1;
+                let errs = self.errs;
                 if !follow_error_is_transient(&e) || errs >= FOLLOW_MAX_ERRORS {
                     return Err(e.context(format!("取作业进度失败（连续 {errs} 次）；作业在服务端不受影响，可稍后用 fleetctl job {id} --follow 继续看")));
                 }
                 eprintln!("取作业进度失败（第 {errs}/{FOLLOW_MAX_ERRORS} 次），稍后重试：{e:#}");
-                std::thread::sleep(Duration::from_secs(2 * errs as u64));
-                continue;
+                return Ok(Polled::Retry);
             }
         };
         for l in logs.as_array().cloned().unwrap_or_default() {
-            after = after.max(l["id"].as_i64().unwrap_or(0));
+            self.after = self.after.max(l["id"].as_i64().unwrap_or(0));
             if ctx.json {
                 outln(json!({"log": l}).to_string());
             } else {
@@ -1087,11 +1107,11 @@ pub fn follow_job(ctx: &Ctx, id: &str) -> anyhow::Result<u8> {
             }
         }
         let state = st(&j, "/state");
-        if state != last {
+        if state != self.last {
             if !ctx.json {
                 outln(format!("── 状态 {}  步骤 {}/{}", job_state_cn(&state), st(&j, "/step"), st(&j, "/step_count")));
             }
-            last = state.clone();
+            self.last = state.clone();
         }
         if matches!(state.as_str(), "succeeded" | "failed" | "cancelled") {
             if ctx.json {
@@ -1099,9 +1119,71 @@ pub fn follow_job(ctx: &Ctx, id: &str) -> anyhow::Result<u8> {
             } else if state != "succeeded" {
                 outln(format!("作业{}：{}", if state == "failed" { "失败" } else { "已取消" }, st(&j, "/error")));
             }
-            return Ok(job_end(ctx, &j));
+            return Ok(Polled::Done(job_end(ctx, &j)));
         }
-        std::thread::sleep(Duration::from_secs(1));
+        Ok(Polled::Pending)
+    }
+
+    fn backoff(&self) -> Duration { Duration::from_secs(2 * self.errs as u64) }
+}
+
+/// 跟作业直到结束；成功退出码 0，失败/取消为 1。先连实时流（作业有变化时中控推 `{"type":"job","id":…}`，收到才取进度）；
+/// 连不上（旧中控、代理不放 WebSocket）或中途断开，改回每秒轮询接着跟（已打印的日志不重复）
+pub fn follow_job(ctx: &Ctx, id: &str) -> anyhow::Result<u8> {
+    let mut f = JobFollow { ctx, id, after: 0, last: String::new(), errs: 0 };
+    if let Ok(ws) = ctx.c.ws("/stream") {
+        if let Some(code) = follow_stream(&mut f, ws)? {
+            return Ok(code);
+        }
+    }
+    loop {
+        match f.poll()? {
+            Polled::Done(code) => return Ok(code),
+            Polled::Pending => std::thread::sleep(Duration::from_secs(1)),
+            Polled::Retry => std::thread::sleep(f.backoff()),
+        }
+    }
+}
+
+/// 实时流跟作业：连上后先取一次（订阅在前，之后的变化不会漏）；之后收到这个作业的事件或 `resync`（中控丢过事件）就取，
+/// 超过 [`FOLLOW_IDLE`] 没取也取一次。作业结束返回 Some(退出码)；流断开（读错误、中控关闭）返回 None
+fn follow_stream(f: &mut JobFollow, mut ws: tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>) -> anyhow::Result<Option<u8>> {
+    use std::time::Instant;
+    // 读超时 = 空闲多久主动取一次（读超时后连接照常可用）
+    if crate::client::set_ws_read_timeout(&ws, FOLLOW_IDLE).is_err() {
+        return Ok(None);
+    }
+    let start = Instant::now();
+    let (mut hold_until, mut idle_at, mut pending) = (start, start, true);
+    loop {
+        let now = Instant::now();
+        if now >= hold_until && (pending || now >= idle_at) {
+            pending = false;
+            match f.poll()? {
+                Polled::Done(code) => {
+                    let _ = ws.close(None);
+                    let _ = ws.flush();
+                    return Ok(Some(code));
+                }
+                Polled::Pending => hold_until = now,
+                Polled::Retry => hold_until = now + f.backoff(),
+            }
+            idle_at = Instant::now() + FOLLOW_IDLE;
+        }
+        match ws.read() {
+            Ok(tungstenite::Message::Text(t)) => {
+                // metrics（约 3 秒一条）、hb 心跳、别的资源变化都不管，只看这个作业的
+                if let Ok(ev) = serde_json::from_str::<Value>(&t) {
+                    if (ev["type"] == "job" && ev["id"].as_str().is_some_and(|x| x.eq_ignore_ascii_case(f.id))) || ev["type"] == "resync" {
+                        pending = true;
+                    }
+                }
+            }
+            Ok(tungstenite::Message::Close(_)) => return Ok(None),
+            Ok(_) => {}
+            Err(tungstenite::Error::Io(e)) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
+            Err(_) => return Ok(None),
+        }
     }
 }
 
@@ -1433,5 +1515,142 @@ mod tests {
         assert_eq!(lines[0], "团队1-06 近 2 天：出口 - · TCP 99.93%");
         assert_eq!(lines[2].split_whitespace().collect::<Vec<_>>(), ["2026-10-21", "-", "-", "-", "-"]);
         assert_eq!(lines[3].split_whitespace().collect::<Vec<_>>(), ["2026-10-22（今天）", "-", "-", "99.93%", "1439/1440"]);
+    }
+}
+
+/// `follow_job` 的两种跟法，对着本机的假中控（一个端口同时答 REST 与实时流）跑
+#[cfg(test)]
+mod follow_tests {
+    use super::*;
+    use std::io::{BufRead, BufReader, Read};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    const JOB: &str = "0190f3a2-0000-7000-8000-000000000001";
+
+    /// 实时流这一侧怎么做
+    #[derive(Clone, Copy)]
+    enum Ws {
+        /// 握手回 404（旧中控 / 代理不放 WebSocket）
+        Refuse,
+        /// 等第一次取进度后把作业改成失败，先推一条无关的 metrics，再推这个作业的事件
+        Push,
+        /// 等第一次取进度后直接断开（之后作业结束，只能靠轮询看到）
+        Drop,
+    }
+
+    #[derive(Default)]
+    struct Fake {
+        gets: AtomicUsize,
+        streams: AtomicUsize,
+        /// 0 = 运行中；1 = 失败；2 = 成功
+        state: AtomicUsize,
+    }
+
+    fn respond(mut s: TcpStream, status: &str, body: &str) {
+        let _ = write!(s, "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+    }
+
+    fn rest(f: &Fake, s: TcpStream, path: &str, after_drop_finish: bool) {
+        let n = f.gets.fetch_add(1, Ordering::SeqCst);
+        // 轮询的场景：第二轮起作业成功
+        if after_drop_finish && n >= 2 {
+            f.state.store(2, Ordering::SeqCst);
+        }
+        let state = ["running", "failed", "succeeded"][f.state.load(Ordering::SeqCst)];
+        let body = if path.contains("/logs") {
+            let after: i64 = path.split("after=").nth(1).and_then(|x| x.parse().ok()).unwrap_or(0);
+            let all = if state == "running" { vec![1] } else { vec![1, 2] };
+            let logs: Vec<Value> = all.into_iter().filter(|i| *i > after).map(|i| json!({"id": i, "ts": "2026-11-22T00:00:00Z", "level": "info", "msg": format!("第 {i} 行")})).collect();
+            json!({"data": logs})
+        } else {
+            json!({"data": {"id": JOB, "state": state, "step": 1, "step_count": 2, "error": if state == "failed" { "坏了" } else { "" }}})
+        };
+        respond(s, "200 OK", &body.to_string());
+    }
+
+    /// 起假中控，返回地址；线程随测试进程结束
+    fn serve(ws: Ws) -> (String, Arc<Fake>) {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", l.local_addr().unwrap());
+        let f = Arc::new(Fake::default());
+        let f2 = f.clone();
+        std::thread::spawn(move || {
+            for s in l.incoming() {
+                let Ok(s) = s else { continue };
+                let f = f2.clone();
+                std::thread::spawn(move || {
+                    let mut line = String::new();
+                    let mut buf = [0u8; 2048];
+                    let n = s.peek(&mut buf).unwrap_or(0);
+                    BufReader::new(&buf[..n]).read_line(&mut line).unwrap();
+                    let path = line.split_whitespace().nth(1).unwrap_or("").to_string();
+                    if path.starts_with("/api/v1/stream") {
+                        f.streams.fetch_add(1, Ordering::SeqCst);
+                        if matches!(ws, Ws::Refuse) {
+                            let mut s = s;
+                            let _ = s.read(&mut buf);
+                            return respond(s, "404 Not Found", r#"{"error":{"code":"not_found","message":"没有"}}"#);
+                        }
+                        let mut w = tungstenite::accept(s).unwrap();
+                        while f.gets.load(Ordering::SeqCst) < 2 {
+                            std::thread::sleep(Duration::from_millis(20));
+                        }
+                        match ws {
+                            Ws::Push => {
+                                std::thread::sleep(Duration::from_millis(200));
+                                f.state.store(1, Ordering::SeqCst);
+                                let _ = w.send(tungstenite::Message::text(r#"{"type":"metrics","machines":{}}"#));
+                                let _ = w.send(tungstenite::Message::text(format!(r#"{{"type":"job","id":"{JOB}"}}"#)));
+                                // 客户端关掉之前一直读（回 pong 等）
+                                while w.read().is_ok() {}
+                            }
+                            _ => drop(w),
+                        }
+                    } else {
+                        // 读掉请求头再答
+                        let mut s = s;
+                        let mut r = BufReader::new(s.try_clone().unwrap());
+                        let mut h = String::new();
+                        while r.read_line(&mut h).is_ok_and(|n| n > 2) {
+                            h.clear();
+                        }
+                        let _ = s.flush();
+                        rest(&f, s, &path, matches!(ws, Ws::Refuse | Ws::Drop));
+                    }
+                });
+            }
+        });
+        (base, f)
+    }
+
+    fn ctx(base: &str) -> Ctx { Ctx::new(Client::new(base, crate::client::Cred::Bearer("t".into())).unwrap(), base.to_string(), true) }
+
+    #[test]
+    fn stream_wakes_follow_without_polling() {
+        let (base, f) = serve(Ws::Push);
+        let t = Instant::now();
+        // 作业失败：退出码 1（job_failed）
+        assert_eq!(follow_job(&ctx(&base), JOB).unwrap(), 1);
+        // 连上先取一次（作业 + 日志 = 2 个 GET），收到事件再取一次：共 4 个；没有等到空闲刷新（3 秒），也不是每秒轮询
+        assert_eq!((f.gets.load(Ordering::SeqCst), f.streams.load(Ordering::SeqCst)), (4, 1));
+        assert!(t.elapsed() < FOLLOW_IDLE, "{:?}", t.elapsed());
+    }
+
+    #[test]
+    fn falls_back_to_polling_when_stream_refused() {
+        let (base, f) = serve(Ws::Refuse);
+        assert_eq!(follow_job(&ctx(&base), JOB).unwrap(), 0);
+        assert_eq!(f.streams.load(Ordering::SeqCst), 1);
+        assert!(f.gets.load(Ordering::SeqCst) >= 4);
+    }
+
+    #[test]
+    fn falls_back_to_polling_when_stream_drops() {
+        let (base, f) = serve(Ws::Drop);
+        assert_eq!(follow_job(&ctx(&base), JOB).unwrap(), 0);
+        assert!(f.gets.load(Ordering::SeqCst) >= 4);
     }
 }

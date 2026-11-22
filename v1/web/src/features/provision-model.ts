@@ -19,7 +19,7 @@ export interface Row {
   /** 粘贴时没匹配上的文本：字段 → 原文，用于本地报错 */
   unresolved: Record<string, string>;
 }
-export type Field = Exclude<keyof Row, 'id' | 'unresolved' | 'kind' | 'add_ip'>;
+type Field = Exclude<keyof Row, 'id' | 'unresolved' | 'kind' | 'add_ip'>;
 
 let rowSeq = 0;
 export const newRow = (p?: Partial<Row>): Row => ({
@@ -27,7 +27,7 @@ export const newRow = (p?: Partial<Row>): Row => ({
   login_pw: '', country: '', up_protocol: 'socks5', up_host: '', up_port: '', up_user: '', up_pw: '', ss_port: '', due_date: '', price: '', add_ip: false, host_id: '', unresolved: {}, ...p,
 });
 
-export type ColType = 'text' | 'num' | 'date' | 'kind' | 'host' | 'team' | 'relay' | 'provider' | 'plan' | 'proto' | 'secret' | 'country';
+type ColType = 'text' | 'num' | 'date' | 'kind' | 'host' | 'team' | 'relay' | 'provider' | 'plan' | 'proto' | 'secret' | 'country';
 export interface Col { key: 'kind' | Field; label: string; w: number; type: ColType; kinds: Kind[]; ph?: string }
 const ALL: Kind[] = ['relay', 'vps', 'proxy'];
 /** 表格上的列。不带表头粘贴时按 PASTE_COLS 的顺序（同「复制表头」）；后加的列（宿主机、国家）排在最后：按旧表头整理的表格粘进来不会整体错一列；
@@ -67,7 +67,7 @@ const KIND_ALIAS: Record<string, Kind> = { relay: 'relay', 线路机: 'relay', �
 export interface Ctx { teams: Team[]; relays: { id: string; name: string }[]; hosts: HostChoice[]; providers: Provider[]; plans: Plan[] }
 
 /** 把一个粘贴来的文本单元格写进行：选择型字段按名称匹配 */
-export function setCell(row: Row, col: Col, raw: string, ctx: Ctx): Row {
+function setCell(row: Row, col: Col, raw: string, ctx: Ctx): Row {
   const v = raw.trim();
   const r = { ...row, unresolved: { ...row.unresolved } };
   delete r.unresolved[col.key];

@@ -1,0 +1,12 @@
+// 浏览器内 mock（src/mock，别人维护）单独检查：同主程序的选项，只是不开 noUncheckedIndexedAccess（开了有约 200 处要改）。pnpm typecheck 两份一起跑
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noUncheckedIndexedAccess": false,
+    "tsBuildInfoFile": "./tsconfig.mock.tsbuildinfo"
+  },
+  "include": [
+    "src/mock"
+  ],
+  "exclude": []
+}

@@ -37,7 +37,7 @@ function litFill(colorOf: (i: number) => string, f: number) {
 export const Cells = React.memo(function Cells({ pct, color, colors, n = CELL_N, className }: { pct: number | null; color?: string; colors?: readonly string[]; n?: number; className?: string }) {
   const f = pct == null ? 0 : clamp01(pct / 100) * n;
   const s: Vars = { '--n': n };
-  if (f > 0) s.backgroundImage = litFill(colors ? (i) => colors[i] : () => color ?? 'var(--accent)', f);
+  if (f > 0) s.backgroundImage = litFill(colors ? (i) => colors[i] ?? 'var(--accent)' : () => color ?? 'var(--accent)', f);
   return <div className={cn('cells', className)} style={s} aria-hidden />;
 });
 
@@ -94,7 +94,7 @@ export const DotTrace = React.memo(function DotTrace({ values, n = SERIES_N }: {
   const max = Math.max(1, ...shown);
   const pad = n - shown.length;
   const layers = Array.from({ length: n }, (_, i) => {
-    const v = i < pad ? 0 : shown[i - pad];
+    const v = i < pad ? 0 : shown[i - pad] ?? 0;
     const l = v > 0 ? clamp01(v / max) : -1;
     const r = l < 0 ? 1.5 : 2 * (0.8 + l * 0.7);
     const c = l < 0 ? 'var(--cell-off)' : `color-mix(in srgb, var(--spd, var(--accent)) ${Math.round((0.35 + l * 0.65) * 100)}%, transparent)`;
@@ -123,29 +123,30 @@ export function AreaSpark({ points, pick, tone }: { points: readonly LivePoint[]
   const x0 = vals.length > 1 ? 0 : W;
   const xy = vals.map((v, i) => [x0 + i * step, H - (v / max) * H] as const);
   const line = xy.map(([x, y], i) => `${i ? 'L' : 'M'}${x.toFixed(1)} ${y.toFixed(1)}`).join('');
-  const last = xy[xy.length - 1];
+  const last = xy.at(-1); const lastPt = points.at(-1);
   const dot = (p: readonly [number, number]) => ({ left: `${(p[0] / W) * 100}%`, top: `${(p[1] / H) * 100}%` });
   const onMove = (e: React.PointerEvent<HTMLDivElement>) => {
     if (vals.length < 2) return;
     const r = e.currentTarget.getBoundingClientRect();
     setHover(Math.max(0, Math.min(vals.length - 1, Math.round(((e.clientX - r.left) / r.width) * (vals.length - 1)))));
   };
-  const h = hover != null && hover < xy.length ? hover : null;
-  const hx = h != null ? (xy[h][0] / W) * 100 : 0;
+  // 越界（点变少了）= 不悬停；xy 与 points 一一对应
+  const hp = hover != null ? xy[hover] : undefined; const hpt = hover != null ? points[hover] : undefined;
+  const hx = hp ? (hp[0] / W) * 100 : 0;
   return (
     <div className="spark" data-tone={tone}>
       <div className="spark-axis" aria-hidden>{[max, max / 2, 0].map((v) => <span key={v}>{v ? F.str(F.rate(v, true)) : '0'}</span>)}</div>
       <div className="spark-plot" onPointerMove={onMove} onPointerLeave={() => setHover(null)}>
         <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" aria-hidden>
           {[0, H / 2, H].map((y) => <line key={y} className="spark-grid" x1={0} x2={W} y1={y} y2={y} vectorEffect="non-scaling-stroke" />)}
-          {xy.length > 1 && <path className="spark-area" d={`${line}L${last[0]} ${H}L${x0} ${H}Z`} />}
+          {xy.length > 1 && last && <path className="spark-area" d={`${line}L${last[0]} ${H}L${x0} ${H}Z`} />}
           {xy.length > 1 && <path className="spark-line" d={line} vectorEffect="non-scaling-stroke" />}
-          {h != null && <line className="spark-cursor" x1={xy[h][0]} x2={xy[h][0]} y1={0} y2={H} vectorEffect="non-scaling-stroke" />}
+          {hp && <line className="spark-cursor" x1={hp[0]} x2={hp[0]} y1={0} y2={H} vectorEffect="non-scaling-stroke" />}
         </svg>
-        {last && <i className="spark-dot" style={dot(h != null ? xy[h] : last)} />}
-        {h != null && <span className="spark-tip" style={{ left: `${hx}%`, translate: hx < 25 ? '0 0' : hx > 75 ? '-100% 0' : '-50% 0' }}>{F.hm(points[h].t)} · {F.str(F.rate(vals[h]))}</span>}
+        {last && <i className="spark-dot" style={dot(hp ?? last)} />}
+        {hpt && <span className="spark-tip" style={{ left: `${hx}%`, translate: hx < 25 ? '0 0' : hx > 75 ? '-100% 0' : '-50% 0' }}>{F.hm(hpt.t)} · {F.str(F.rate(pick(hpt)))}</span>}
       </div>
-      <div className="spark-time" aria-hidden><span>{points.length > 1 ? F.hm(points[0].t) : ''}</span><span>{last ? F.hm(points[points.length - 1].t) : '等待数据…'}</span></div>
+      <div className="spark-time" aria-hidden><span>{points.length > 1 && points[0] ? F.hm(points[0].t) : ''}</span><span>{lastPt ? F.hm(lastPt.t) : '等待数据…'}</span></div>
     </div>
   );
 }

@@ -22,6 +22,7 @@ mod probe;
 mod reports;
 mod retention;
 mod reverse;
+mod server_stats;
 mod spare;
 mod subs;
 mod tcp_loss;

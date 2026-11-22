@@ -51,7 +51,7 @@ pub const BUSY: i32 = 7;
 pub const LOCK_STALE: u32 = 900;
 
 /// 改配置、改回脚本外层的锁用的参数（变量名里不能有 `WAIT='`：tests/replace.rs 的假 ssh 按它认出取结果的脚本）
-fn lock_vars() -> String { vars(&[("LOCK_SECS", &LOCK_WAIT.to_string()), ("LOCK_AGE", &LOCK_STALE.to_string()), ("BUSY", &BUSY.to_string())]) }
+pub(crate) fn lock_vars() -> String { vars(&[("LOCK_SECS", &LOCK_WAIT.to_string()), ("LOCK_AGE", &LOCK_STALE.to_string()), ("BUSY", &BUSY.to_string())]) }
 
 /// 一个出口要改成的样子。`old_*` 是它现在应当指向的旧入口（核对用，不改）。
 /// 写进路由的那组也记在作业参数里（jobs/steps/replace.rs 的 `Applied`），改回时照它核对
@@ -169,7 +169,7 @@ pub fn read_script() -> String {
         )
 }
 
-/// 每份改配置的脚本共用的外层（改出口 SCRIPT、删出口 REMOVE_SCRIPT）：前面是各自的 `main()`，这里拿路由上的锁、在后台跑 main、
+/// 每份改配置的脚本共用的外层（改出口 SCRIPT、删出口 REMOVE_SCRIPT，以及 routers::ops 的重启、改配置行）：前面是各自的 `main()`，这里拿路由上的锁、在后台跑 main、
 /// 输出写进结果文件（中控连接断了用 [`fetch_script`] 取回）。宏只为了在编译期把两段拼成一个 &str（concat!）
 macro_rules! wrapper {
     () => {
@@ -219,6 +219,9 @@ exit "$(cat "$RES.rc" 2>/dev/null || echo 1)"
 "#
     };
 }
+
+/// 外层本身（routers::ops 的脚本在运行时拼上自己的 `main()`）
+pub(crate) const WRAPPER: &str = wrapper!();
 
 /// 路由上的脚本。整段包在函数里（sh 读完整个函数才执行，里面的命令读 stdin 吃不到后面的脚本），见 collect.rs 的 WRAPPER
 pub const SCRIPT: &str = concat!(
@@ -850,7 +853,7 @@ exit "$rc"
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     const UUID_NEW: &str = "22222222-2222-4222-8222-222222222222";
@@ -874,7 +877,7 @@ mod tests {
     fn edit2() -> Edit { Edit { exit: "节点02".into(), old_server: "relay.test".into(), old_port: 20004, server: "relay.test".into(), port: 20021, ..edit("节点02") } }
 
     /// 时间戳（[`stamp`] 的格式）对应的时间
-    fn at(s: &str) -> time::OffsetDateTime {
+    pub(crate) fn at(s: &str) -> time::OffsetDateTime {
         let n = |a: usize, b: usize| s[a..b].parse::<u8>().unwrap();
         let y: i32 = s[..4].parse().unwrap();
         time::Date::from_calendar_date(y, time::Month::try_from(n(4, 6)).unwrap(), n(6, 8)).unwrap().with_hms(n(9, 11), n(11, 13), n(13, 15)).unwrap().assume_utc()
@@ -917,14 +920,14 @@ rules:\n- MATCH,节点01组\n";
 
     /// 在本机 sh（+ 本机 awk，或 busybox）里真跑：uci / curl 是桩，/etc 与 /tmp/fleet-replace 换到临时目录，OpenClash 的 init 脚本记下调用
     #[cfg(unix)]
-    struct Fake {
+    pub(crate) struct Fake {
         dir: tempfile::TempDir,
         busybox: bool,
     }
 
     #[cfg(unix)]
     impl Fake {
-        fn new(config: &str, busybox: bool) -> Self {
+        pub(crate) fn new(config: &str, busybox: bool) -> Self {
             use std::os::unix::fs::PermissionsExt;
             let dir = tempfile::tempdir().unwrap();
             let p = |s: &str| dir.path().join(s);
@@ -938,7 +941,7 @@ rules:\n- MATCH,节点01组\n";
         }
 
         /// 脚本退出后，临时工作目录与配置旁的临时文件都不留（结果文件 w.res.* 是有意留给中控取的，另查）
-        fn assert_no_leftovers(&self) {
+        pub(crate) fn assert_no_leftovers(&self) {
             let names = |d: std::path::PathBuf| std::fs::read_dir(d).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect::<Vec<_>>();
             assert_eq!(names(self.path("etc/openclash/config")), ["c.yaml"]);
             assert!(!names(self.dir.path().to_path_buf()).iter().any(|n| n.starts_with("w.") && !n.starts_with("w.res.")), "工作目录没删");
@@ -950,16 +953,22 @@ rules:\n- MATCH,节点01组\n";
             v
         }
 
-        fn path(&self, s: &str) -> std::path::PathBuf { self.dir.path().join(s) }
-        fn read(&self, s: &str) -> String { std::fs::read_to_string(self.path(s)).unwrap_or_default() }
+        pub(crate) fn path(&self, s: &str) -> std::path::PathBuf { self.dir.path().join(s) }
+        pub(crate) fn read(&self, s: &str) -> String { std::fs::read_to_string(self.path(s)).unwrap_or_default() }
 
         /// 跑一段脚本。`delay`：出口名 → 延迟（不在里面的测不通）
-        fn run(&self, script: &str, delay: &[(&str, u32)]) -> crate::ssh::Output {
-            let d = self.dir.path().display().to_string();
+        pub(crate) fn run(&self, script: &str, delay: &[(&str, u32)]) -> crate::ssh::Output {
             let cases: String = delay.iter().map(|(n, ms)| {
                 let enc: String = n.bytes().map(|b| format!("%{b:02X}")).collect();
                 format!("*/proxies/{enc}/delay*) echo '{{\"delay\":{ms}}}';;\n")
             }).collect();
+            self.run_curl(script, &cases)
+        }
+
+        /// 同 `run`，curl 桩的 `case $u in`（$u 是最后一个参数：地址）里另加这几行（`$*` 是全部参数，`@D@` 换成临时目录）
+        pub(crate) fn run_curl(&self, script: &str, cases: &str) -> crate::ssh::Output {
+            let d = self.dir.path().display().to_string();
+            let cases = cases.replace("@D@", &d);
             let stubs = format!(
                 "uci() {{ case \"$3\" in openclash.config.config_path) echo {d}/etc/openclash/config/c.yaml;; openclash.config.cn_port) echo 9090;; openclash.config.dashboard_password) echo s3cret;; esac; }}\n\
                  curl() {{ for a; do u=$a; done; echo \"$u\" >> {d}/curl.log; case $u in */version) echo '{{\"version\":\"alpha\"}}';;\n{cases} *) echo '{{\"message\":\"timeout\"}}';; esac; }}\n\
@@ -974,7 +983,7 @@ rules:\n- MATCH,节点01组\n";
     }
 
     #[cfg(unix)]
-    fn shells() -> Vec<bool> {
+    pub(crate) fn shells() -> Vec<bool> {
         let bb = std::process::Command::new("busybox").arg("awk").arg("BEGIN{}").output().is_ok_and(|o| o.status.success());
         if bb { vec![false, true] } else { vec![false] }
     }

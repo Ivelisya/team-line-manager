@@ -15,10 +15,10 @@ import { SkeletonRows } from '@/components/app/SkeletonRows';
 import { Chip, CopyButton, Empty, ErrorNote, LabelValue, LabelValueGrid, Num, PageHead, Panel, SortHead, TableWrap, type SortState } from '@/components/app/primitives';
 import { Pagination } from '@/components/app/Pagination';
 import { collator } from '@/lib/sort';
-import { usePage } from '@/lib/usePage';
+import { usePage, type PageSizes } from '@/lib/usePage';
 import { useUrlSearch } from '@/lib/urlState';
 
-const PAGE_SIZES = [25, 50, 100];
+const PAGE_SIZES: PageSizes = [25, 50, 100];
 const SOURCE_LABEL: Record<string, string> = { fleet: '本面板', legacy: '旧面板' };
 const SOURCE_OPTS = Object.entries(SOURCE_LABEL).map(([value, label]) => ({ value, label }));
 type ColDef = { id: string; header: string; width?: number; r?: boolean; first?: 'asc' | 'desc' };
@@ -57,7 +57,8 @@ function sentences(s: string): string[] {
 function reasonParts(s: string): { main: string; sub?: string } {
   const t = reasonFull(s).replace(LEGACY_PREFIX, '');
   const q = QUOTED.exec(t);
-  if (q) return { main: q[1], sub: t.slice(q[0].length) || undefined };
+  const main = q?.[1];
+  if (q && main !== undefined) return { main, sub: t.slice(q[0].length) || undefined };
   return { main: sentences(t).find((x) => x.includes('推断')) ?? t };
 }
 

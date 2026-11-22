@@ -23,7 +23,7 @@ export const orgMonth = () => new Date(Date.now() + meta().org_utc_offset_s * 10
 /** 滚动窗口：地址里写 month=7d / 30d，请求时换成 days=N（月初也能看「这一周」） */
 const DAY_OPTS = [{ value: '7d', label: '近 7 天' }, { value: '30d', label: '近 30 天' }];
 const monthOptions = (cur: string) => [...DAY_OPTS, ...Array.from({ length: MONTHS_BACK }, (_, i) => {
-  const [y, m] = cur.split('-').map(Number);
+  const [y = NaN, m = NaN] = cur.split('-').map(Number); // 缺段同 Number(undefined)：NaN
   const d = new Date(Date.UTC(y, m - 1 - i, 1));
   return { value: d.toISOString().slice(0, 7), label: `${d.getUTCFullYear()} 年 ${d.getUTCMonth() + 1} 月${i === 0 ? '（本月）' : ''}` };
 })];
@@ -45,7 +45,7 @@ const OUTAGE_TIP = '一个整点小时里出口探测失败 3 次以上算断线
 const INC_TIP = '选中的时间范围内这台机器上与可用性相关的告警次数：出口 / 线路机到节点不通、agent 离线、没有入口\n30 分钟内复发合并进原告警的也计入；续费、额度、流量异常不算';
 
 export function UptimeTab({ month, onMonth }: { month: string; onMonth: (m: string) => void }) {
-  const cur = React.useMemo(orgMonth, []);
+  const cur = React.useMemo(() => orgMonth(), []);
   const opts = React.useMemo(() => monthOptions(cur), [cur]);
   const shown = opts.some((o) => o.value === month) ? month : cur;
   const q = useUptime(shown, shown === cur || shown.endsWith('d'));

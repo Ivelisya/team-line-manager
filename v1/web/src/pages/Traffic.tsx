@@ -164,9 +164,9 @@ const NodesTable = React.memo(function NodesTable({ nodes, days, idle, spare, lo
       return s.desc ? y - x : x - y;
     });
   }, [nodes, days, sort, spareIds]);
-  const dates = rows[0]?.daily.map((x) => x.date) ?? [];
+  const dates = React.useMemo(() => rows[0]?.daily.map((x) => x.date) ?? [], [rows]);
   const max = React.useMemo(() => Math.max(0, ...rows.flatMap((r) => r.daily.map((x) => total(x)))), [rows]);
-  const foot = React.useMemo(() => dates.map((_, i) => rows.reduce((a, r) => a + total(r.daily[i]), 0)), [rows, dates]);
+  const foot = React.useMemo(() => dates.map((_, i) => rows.reduce((a, r) => { const d = r.daily[i]; return d ? a + total(d) : a; }, 0)), [rows, dates]);
   // 底行的月费与 USD/GB 只算有月费、不是不续费的备用机的节点（月费与流量对得上）
   const cost = React.useMemo(() => rows.reduce((a, r) => (r.n.monthly_usd_cents == null || r.sp ? a : { cents: a.cents + r.n.monthly_usd_cents, bytes: a.bytes + r.sum }), { cents: 0, bytes: 0 }), [rows]);
   const wrap = useScrollEnd(`${days}:${dates.length}`);
@@ -199,7 +199,7 @@ const NodesTable = React.memo(function NodesTable({ nodes, days, idle, spare, lo
                     </div>
                   </td>
                   {daily.map((x, i) => <td key={x.date} className="r" style={heat(total(x), max)} data-tip={total(x) || nic ? `${md(x.date)} · ↓ 下载 ${F.str(F.bytes(x.down))} · ↑ 上传 ${F.str(F.bytes(x.up))}${nic ? `
-网卡计费 ${F.str(F.bytes(nic.daily[i].billed))}（${trafficRuleShort(nic.rule)}）` : ''}` : undefined}>{cell(total(x))}</td>)}
+网卡计费 ${F.str(F.bytes(nic.daily[i]?.billed ?? 0))}（${trafficRuleShort(nic.rule)}）` : ''}` : undefined}>{cell(total(x))}</td>)}
                   {/* 有自己网卡的节点（VPS）副行写网卡计费量（同流量额度的口径） */}
                   <td className="r strong">{cell(sum)}{nic && <span className="sub" data-tip={`网卡计费 · ${trafficRuleLabel(nic.rule)}
 ${days} 天 ↓ 下行 ${F.str(F.bytes(nic.rx))} · ↑ 上行 ${F.str(F.bytes(nic.tx))}，先加总再按规则算`}>计费 {cell(nic.billed)}</span>}</td>
@@ -300,7 +300,7 @@ const RelaysTable = React.memo(function RelaysTable({ relays, days, stale, teamN
 ${days} 天合计 = 先加总下行、上行，再按规则算`}>{trafficRuleShort(r.rule)}{r.lifecycle === 'retired' ? ' · 已退役' : ''}</span></div>
                     </div>
                   </td>
-                  {daily.map((x, i) => <td key={x.date} className="r" style={heat(x.billed, max)} data-tip={`${md(x.date)} · ↓ 下行 ${F.str(F.bytes(x.rx))} · ↑ 上行 ${F.str(F.bytes(x.tx))}\n计费 ${F.str(F.bytes(x.billed))} · ${teamName ? `其中${teamName}经过` : '经过'}的业务流量 ${F.str(F.bytes(total(business[i])))}`}>{cell(x.billed)}</td>)}
+                  {daily.map((x, i) => <td key={x.date} className="r" style={heat(x.billed, max)} data-tip={`${md(x.date)} · ↓ 下行 ${F.str(F.bytes(x.rx))} · ↑ 上行 ${F.str(F.bytes(x.tx))}\n计费 ${F.str(F.bytes(x.billed))} · ${teamName ? `其中${teamName}经过` : '经过'}的业务流量 ${F.str(F.bytes(business[i] ? total(business[i]) : 0))}`}>{cell(x.billed)}</td>)}
                   <td className="r strong">{cell(sum)}<span className="sub">日均 {cell(sum / days)}</span></td>
                 </tr>
               ))}

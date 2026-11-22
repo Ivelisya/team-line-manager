@@ -190,7 +190,7 @@ impl Dbs {
                 errors.push(format!("{}: 找不到 {prefix}*.mmdb", dir.display()));
                 return None;
             };
-            // SAFETY: fetch-dbs.sh 用 rename 原子替换，映射着的旧文件不会被改写或截断。
+            // SAFETY: fleet-server ipintel-fetch（与原来的 fetch-dbs.sh）用 rename 原子替换，映射着的旧文件不会被改写或截断。
             match unsafe { Reader::open_mmap(&p) } {
                 Ok(r) => {
                     let (b, m) = file_meta(&p);

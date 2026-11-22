@@ -25,7 +25,7 @@ export const useClearFxRate = () => useFxWrite((currency: string) => del<FxRates
 export const useRefreshFx = () => useFxWrite(() => post<FxRates>('/settings/fx-rates/refresh'));
 
 /** 录入价格时的预览：「≈ $42.13」；USD 本身、空值不提示；没有汇率时说明不折算 */
-export function usdPreview(rates: FxRates | undefined, cents: number | null, currency: string): string | null {
+function usdPreview(rates: FxRates | undefined, cents: number | null, currency: string): string | null {
   if (cents == null || !isFinite(cents) || !rates || currency === 'USD') return null;
   const r = rates.rates.find((x) => x.currency === currency)?.usd_per_unit;
   return r != null ? `≈ ${F.money(Math.round(cents * r), 'USD')}（${F.fxRate(currency, r)}）` : `没有 ${currency} 的汇率，费用不会折成美元（设置 → 汇率）`;

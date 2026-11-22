@@ -2,7 +2,7 @@
 // 机器（卡片 / 表格的菜单、抽屉「管理」页）：外壳里挂一份，按 nodeActions 的目标打开；软路由（抽屉「管理」页）、探测点（设置里的探测点行）就地渲染一份。
 import { Button } from '@/components/ui/button';
 import * as React from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { ArrowRight } from 'lucide-react';
 import { useAddSilence, useMachine } from '@/lib/queries';
 import { closeMaint, useMaintTarget } from '@/lib/nodeActions';

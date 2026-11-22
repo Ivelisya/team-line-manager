@@ -14,7 +14,7 @@
 
 ## fleetctl：已经配好
 
-本机 fleetctl 用全权密钥 central-local（部署时生成），直接用，不用 login。完整用法在 fleet-ops 技能 /root/.claude/skills/fleet-ops/SKILL.md（Claude Code 自动加载；别的 agent 先读它；要解析 `--json` 字段时再读同目录的 json-fields.md）。一律加 `--json`；失败退出码 1，错误 JSON 在 stderr。`<机器>` 写显示名（团队1-03）、线路机名、IP 或 id。
+本机 fleetctl 用全权密钥 central-local（部署时生成），直接用，不用 login。完整用法在 fleet-ops 技能 /root/.claude/skills/fleet-ops/SKILL.md（Claude Code 自动加载；别的 agent 先读它；要解析 `--json` 字段时再读同目录的 json-fields.md）。一律加 `--json`；失败退出码 1，错误 JSON 在 stderr；参数写错退出码 2（`code` 为 `usage`）。全部命令与参数：`fleetctl --json help --all`，不用逐个 `--help`。`<机器>` 写显示名（团队1-03）、线路机名、IP 或 id。
 
 | 要做什么 | 命令 |
 |---|---|
@@ -45,7 +45,8 @@
 - 中控：日志 `journalctl -u fleet-server`；配置 /etc/fleet/fleet.toml；程序 /opt/fleet/fleet-server（上一版 fleet-server.prev），前端 /opt/fleet/web，推给机器的程序 /opt/fleet/dist。
 - HTTPS 反代 Caddy：`journalctl -u caddy`。/etc/caddy/Caddyfile 每次部署重写，别改它：边缘机 PROXY 配置在 /etc/caddy/global.d/，别的站点块放 /etc/caddy/sites.d/（docs/OPS.md §11）。
 - 主机指纹：/var/lib/fleet/known_hosts（机器）、/var/lib/fleet/router_known_hosts（软路由，按 router-<id> 记）。
-- 备份：每天 03:30（北京时间）/var/backups/fleet/fleet-<时间>.tar（加密的是 .tar.age），留最近 14 天（每天最后一份）；部署换版前 install.sh 自动同步做一份；`journalctl -u fleet-backup`，手动做一份 `systemctl start fleet-backup`。从备份恢复要用户在场（仓库 v1/docs/OPS.md §10）。
+- 备份：每天 03:30（北京时间）/var/backups/fleet/fleet-<时间>.tar（加密的是 .tar.age），留最近 14 天（每天最后一份）；部署换版前 install.sh 自动同步做一份；由 `fleet-server backup` 做（fleet-backup.service），`journalctl -u fleet-backup`，手动做一份 `systemctl start fleet-backup`。从备份恢复要用户在场：`/opt/fleet/fleet-server restore -c /etc/fleet/fleet.toml <备份> --dry-run` 只核对、打出将要做的，不改东西；真正恢复要停 fleet-server、加 `--yes`，只在用户明确要求时做（仓库 v1/docs/OPS.md §10）。
+- IP 情报离线库：每月 `fleet-server ipintel-fetch`（fleet-ipintel-fetch.service，User=fleet），`journalctl -u fleet-ipintel-fetch -n 30` 看哪个库没更新；校验和拿不到时不换、保留旧库，下次再试。不要以 root 跑。
 
 ## central-local 密钥
 

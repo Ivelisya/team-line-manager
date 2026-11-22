@@ -5,14 +5,14 @@
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import * as React from 'react';
-import { useParams, useSearchParams } from 'react-router-dom';
+import { useParams, useSearchParams } from 'react-router';
 import { ArrowRight, Check, Eye, EyeOff, Link2Off, LockKeyhole, RotateCw } from 'lucide-react';
 import { ApiError } from '@/lib/api';
 import { usePublicCustomer } from '@/lib/publicCustomer';
 import { Button } from '@/components/ui/button';
 import { TipHost } from '@/components/ui/tooltip';
 import { compareBillingEffectiveDate } from '@/lib/sort';
-import { Panel } from '@/components/app/primitives';
+import { Panel } from '@/components/app/panel';
 import { Empty } from '@/components/app/empty';
 import { BillingNodeRow, MonthSummary, MonthSwitch, OutstandingHeading, PeriodLegend, cnMonth } from '@/features/billing';
 
@@ -29,7 +29,7 @@ function CustomerView({ token }: { token: string }) {
   const [sp, setSp] = useSearchParams();
   const want = /^\d{4}-\d{2}$/.test(sp.get('month') ?? '') ? sp.get('month')! : '';
   const q = usePublicCustomer(token, want, access);
-  React.useEffect(() => { if (q.data) setVerified(true); }, [q.data]);
+  if (q.data && !verified) setVerified(true); // 渲染时就记下（不经 effect 多画一轮）
   const resolvedMonth = q.data?.month;
   React.useEffect(() => {
     if (!want && resolvedMonth && !q.isPlaceholderData) {

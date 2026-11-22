@@ -17,9 +17,9 @@ export interface PingSeries { range: string; step_s: number; series: { slot: num
 export const PING_PLACEHOLDER: Record<number, string> = { 3: 'ip.zstaticcdn.com' };
 
 // 延迟分档：跨境线路 150–200 ms 是常态，不按国内的标准标红。≤ 220 绿、≤ 320 黄、更高红；丢包 0 绿、≤ 10% 黄、更高红
-export const PING_MS_OK = 220;
-export const PING_MS_WARN = 320;
-export const PING_LOSS_WARN = 10;
+const PING_MS_OK = 220;
+const PING_MS_WARN = 320;
+const PING_LOSS_WARN = 10;
 export const pingMsTone = (ms: number | null): BeatCell => (ms == null ? null : ms <= PING_MS_OK ? 'ok' : ms <= PING_MS_WARN ? 'warn' : 'bad');
 export const pingLossTone = (loss: number | null): BeatCell => (loss == null ? null : loss <= 0 ? 'ok' : loss <= PING_LOSS_WARN ? 'warn' : 'bad');
 export const PING_LEGEND = `线路机定时测各目标。左边是延迟，右边是丢包，每格 3 分钟，共近 1 小时\n延迟：≤ ${PING_MS_OK} ms 绿 · ≤ ${PING_MS_WARN} ms 黄 · 更高红（跨境 150–200 ms 属正常）\n丢包：0 绿 · ≤ ${PING_LOSS_WARN}% 黄 · 更高红 · 灰：没有数据`;

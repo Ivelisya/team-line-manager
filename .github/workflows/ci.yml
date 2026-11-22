@@ -1,0 +1,137 @@
+# fleet 的 CI：Rust 工作区（v1/）的 clippy、测试（带 PostgreSQL），前端（v1/web）构建，shell 脚本 shellcheck，
+# fleet-server 的取锁检查。每一步都能在本机照着跑（命令与本文件一致）。
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  rust-lint:
+    name: clippy + 取锁检查
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: v1
+    steps:
+      - uses: actions/checkout@v4
+      # 版本只写在 v1/rust-toolchain.toml（与 lab/build-lib.sh 的编译镜像一致）
+      - name: 工具链
+        run: |
+          tc=$(sed -nE 's/^channel *= *"([^"]+)".*/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$tc" --profile minimal --component clippy
+          rustc --version && cargo clippy --version
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: v1
+      - name: 取锁检查（std 的锁不许 unwrap / expect）
+        run: bash ci/check-lock-unwrap.sh
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: 生成类型检查（web/src/lib/types.gen.ts 跟上 Rust 响应类型）
+        run: bash ci/check-types-gen.sh
+
+  # TODO(fmt)：没有 cargo fmt --check。仓库没有 rustfmt 配置，代码也不是按默认 rustfmt 排的版（默认配置下 6297 处差异）；
+  # 等定好 rustfmt.toml、统一排一次版之后，在 rust-lint 里加 `cargo fmt --all --check`（工具链那步再装 rustfmt 组件）。
+
+  rust-test:
+    name: cargo test（PostgreSQL）
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: v1
+    services:
+      # 集成测试（crates/fleet-server/tests/it/common/mod.rs）：连 FLEET_TEST_DB，每个测试 create schema 自建、drop schema 自删，
+      # 结束时 pg_terminate_backend 自己连接池的连接。所以这个角色要能在库里建 schema（库的属主即可），不需要建库、装扩展。
+      # 生产中控是 Debian 13 的 PostgreSQL 17。
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: fleet
+          POSTGRES_PASSWORD: fleet
+          POSTGRES_DB: fleet_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U fleet -d fleet_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      FLEET_TEST_DB: postgres://fleet:fleet@127.0.0.1:5432/fleet_test
+    steps:
+      - uses: actions/checkout@v4
+      - name: 工具链
+        run: |
+          tc=$(sed -nE 's/^channel *= *"([^"]+)".*/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$tc" --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: v1
+      # 每个测试的连接池最多 5 条连接，各建一个 schema 跑全部迁移：并发固定 4（20 条连接）。按核数并发在多核机器上会撞
+      # PostgreSQL 默认的 max_connections = 100（too many clients）与 max_locks_per_transaction = 64（out of shared memory），
+      # 本机 32 核默认并发时两样都撞上过；4 线程时默认配置全部通过
+      - run: cargo test --workspace --locked
+
+  web:
+    name: 前端构建
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: v1/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.28.5 # 同写 pnpm-lock.yaml 的版本（本机 pnpm 11），--frozen-lockfile 不因换大版本而拒绝
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: pnpm
+          cache-dependency-path: v1/web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      # e2e 与 perf:check 用 Playwright 自带的 Chromium（连同系统依赖）
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm run knip
+      - run: pnpm check:customer
+      - run: pnpm build
+      # 冒烟（e2e/smoke.spec.ts）：mock 模式的生产构建 + vite preview
+      - run: pnpm e2e
+      # 流畅度预算（tools/perf.mjs --check，预算在 tools/perf-budget.json）：超出就失败；结果留作产物，失败时对照
+      - run: pnpm perf:check
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-perf
+          path: |
+            v1/web/perf-results/
+            v1/web/test-results/
+          if-no-files-found: ignore
+
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      # 只挡 error 级（现在 0 条）；warning 级现有 12 条、info 及以下 54 条，先不挡。
+      # lab/build-lib.sh 只被 source、没有 shebang，单独按 bash 查。
+      - name: shellcheck -S error
+        run: |
+          shellcheck --version
+          git ls-files -z '*.sh' ':!:v1/lab/build-lib.sh' | xargs -0 shellcheck -S error
+          shellcheck -S error -s bash v1/lab/build-lib.sh

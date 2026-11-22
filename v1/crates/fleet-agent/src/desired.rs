@@ -8,7 +8,7 @@ use crate::util::{backoff, load_json, save_json};
 use crate::xray::apply::Applier;
 use fleet_proto::ApplyReport;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
@@ -114,7 +114,7 @@ async fn startup_align(sh: &Shared, applier: &Applier, sb: &Singbox, guard: &mut
 /// `written`：上一次对齐修复失败时写进 last_apply_error 的那条。之后检查通过（比如那次只是 Xray API 偶发查询失败）就把它清掉；
 /// 只在 last_apply_error 还是这一条时才清，期间长轮询应用写了别的（真实的应用失败）就留着
 async fn periodic_align(sh: &Shared, applier: &Applier, sb: &Singbox, guard: &mut RealityGuard, gate: &mut RestartGate, written: &mut Option<String>) {
-    let Some(d) = sh.applied.read().unwrap().clone() else { return };
+    let Some(d) = sh.applied.read().unwrap_or_else(PoisonError::into_inner).clone() else { return };
     sb.apply(&d).await;
     if let Err(e) = guard.apply(&d, true).await {
         tracing::error!(generation = d.generation, "{e}");
@@ -158,7 +158,7 @@ async fn periodic_align(sh: &Shared, applier: &Applier, sb: &Singbox, guard: &mu
 pub fn restore(sh: &Shared) {
     if let Some(a) = load_applied(&sh.cfg) {
         tracing::info!(generation = a.generation, entries = a.desired.entries.len(), "恢复已应用的期望状态");
-        *sh.applied.write().unwrap() = Some(Arc::new(a.desired));
+        *sh.applied.write().unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(a.desired));
     }
 }
 
@@ -278,7 +278,7 @@ pub async fn desired_task(sh: Arc<Shared>, applier: Arc<Applier>, sb: Arc<Singbo
                     let d = Arc::new(d);
                     let (cfg, d2) = (sh.cfg.clone(), d.clone());
                     let _ = tokio::task::spawn_blocking(move || save_applied(&cfg, &d2)).await;
-                    *sh.applied.write().unwrap() = Some(d);
+                    *sh.applied.write().unwrap_or_else(PoisonError::into_inner) = Some(d);
                     sh.applied_gen.store(generation, Ordering::Relaxed);
                     unreadable = 0;
                     fails = 0;

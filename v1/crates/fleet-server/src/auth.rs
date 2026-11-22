@@ -142,17 +142,25 @@ impl FromRequestParts<AppState> for Actor {
         // API 密钥
         if let Some(h) = parts.headers.get("authorization").and_then(|v| v.to_str().ok()) {
             if let Some(k) = h.strip_prefix("Bearer ") {
-                // 最近使用时间一分钟内不重复写
-                let row: Option<(String, Vec<String>)> = sqlx::query_as(
-                    "with k as (select name, scopes from api_key where key_hash = $1 and revoked_at is null and (expires_at is null or expires_at > now())),
-                          _u as (update api_key set last_used_at = now() where key_hash = $1 and revoked_at is null and (expires_at is null or expires_at > now())
-                                 and (last_used_at is null or last_used_at < now() - interval '1 minute'))
-                     select name, scopes from k",
+                // 先只读核对密钥；最近使用时间落后超过一分钟才写，写走异步提交（同 agent 令牌）：库盘 fsync 卡顿时不拖住读请求
+                let hash = sha256(k.as_bytes());
+                let row: Option<(String, Vec<String>, bool)> = sqlx::query_as(
+                    "select name, scopes, last_used_at is null or last_used_at < now() - interval '1 minute' from api_key
+                     where key_hash = $1 and revoked_at is null and (expires_at is null or expires_at > now())",
                 )
-                .bind(sha256(k.as_bytes()))
+                .bind(&hash)
                 .fetch_optional(&st.db)
                 .await?;
-                let (name, scopes) = row.ok_or_else(ApiError::unauthorized)?;
+                let (name, scopes, stale) = row.ok_or_else(ApiError::unauthorized)?;
+                if stale {
+                    touch(
+                        &st.db,
+                        "update api_key set last_used_at = now() where key_hash = $1 and revoked_at is null and (expires_at is null or expires_at > now())
+                         and (last_used_at is null or last_used_at < now() - interval '1 minute')",
+                        &hash,
+                    )
+                    .await?;
+                }
                 // nest 会剥掉前缀，原始路径在 OriginalUri 里
                 let path = parts.extensions.get::<OriginalUri>().map(|u| u.0.path().to_string()).unwrap_or_else(|| parts.uri.path().to_string());
                 match needed(&parts.method, &path) {
@@ -169,22 +177,33 @@ impl FromRequestParts<AppState> for Actor {
         // 会话
         let jar = CookieJar::from_headers(&parts.headers);
         let c = jar.get(COOKIE).ok_or_else(ApiError::unauthorized)?;
-        let row: Option<(Uuid, String)> = sqlx::query_as(
-            "with u as (select u.id, u.username from session s join app_user u on u.id = s.user_id
-                        where s.id_hash = $1 and s.expires_at > now() and u.disabled_at is null),
-                  _s as (update session set last_seen_at = now() where id_hash = $1 and expires_at > now() and last_seen_at < now() - interval '1 minute'
-                         and exists (select 1 from u))
-             select id, username from u",
+        // 同 API 密钥：先只读核对会话，最近活跃时间落后超过一分钟才另写（异步提交）
+        let hash = sha256(c.value().as_bytes());
+        let row: Option<(Uuid, String, bool)> = sqlx::query_as(
+            "select u.id, u.username, s.last_seen_at < now() - interval '1 minute' from session s join app_user u on u.id = s.user_id
+             where s.id_hash = $1 and s.expires_at > now() and u.disabled_at is null",
         )
-        .bind(sha256(c.value().as_bytes()))
+        .bind(&hash)
         .fetch_optional(&st.db)
         .await?;
-        let (id, name) = row.ok_or_else(ApiError::unauthorized)?;
+        let (id, name, stale) = row.ok_or_else(ApiError::unauthorized)?;
+        if stale {
+            touch(&st.db, "update session set last_seen_at = now() where id_hash = $1 and expires_at > now() and last_seen_at < now() - interval '1 minute'", &hash).await?;
+        }
         if write && parts.headers.get("x-fleet-request").and_then(|v| v.to_str().ok()) != Some("1") {
             return Err(ApiError::forbidden("写请求缺少 X-Fleet-Request 头"));
         }
         Ok(Actor { name, user_id: Some(id), scopes: ALL_SCOPES.iter().map(|s| s.to_string()).collect() })
     }
+}
+
+/// 读路径上记「最近使用 / 活跃」（API 密钥、会话；`sql` 只带 $1 = 哈希，自带「落后超过一分钟」的条件，并发的几个请求只有一个真写）。
+/// 异步提交（db::begin_async）：提交不等 WAL 落盘，库盘 fsync 卡一两秒时不拖住这个请求，也不让同一会话并发的请求排在这一行的行锁后面；
+/// 库崩溃时最多丢这一次时间戳（下一个请求再写）。核对（吊销、过期、停用）仍在调用方的只读查询里，每个请求都做
+async fn touch(db: &sqlx::PgPool, sql: &'static str, hash: &[u8]) -> sqlx::Result<()> {
+    let mut tx = crate::db::begin_async(db).await?;
+    sqlx::query(sql).bind(hash).execute(&mut *tx).await?;
+    tx.commit().await
 }
 
 /// 请求来源 IP：`trust` 时取 X-Forwarded-For 的最后一项（多行头取最后一行的最后一项：反代追加的那一项；客户端或沿途 HTTP 代理塞的在前面，不可信），
@@ -455,18 +474,22 @@ pub const REVOKED_CHANNEL: &str = "fleet_revoked";
 /// 旧来源可能是盗用密码的人的，不再免于「同一用户名不分来源」的上限）
 pub async fn upsert_user(db: &sqlx::PgPool, username: &str, password: &str) -> anyhow::Result<()> {
     let h = hash_password(password)?;
-    sqlx::query(
+    // 一个事务：中途失败不会留下密码已改、旧会话还在（或旧来源还免于上限）的半截状态
+    let mut tx = db.begin().await?;
+    let uid: Uuid = sqlx::query_scalar(
         "insert into app_user (id, username, password_hash) values ($1, $2, $3)
-         on conflict (username) do update set password_hash = excluded.password_hash, disabled_at = null",
+         on conflict (username) do update set password_hash = excluded.password_hash, disabled_at = null
+         returning id",
     )
     .bind(Uuid::now_v7())
     .bind(username)
     .bind(h)
-    .execute(db)
+    .fetch_one(&mut *tx)
     .await?;
-    sqlx::query("delete from session where user_id = (select id from app_user where username = $1)").bind(username).execute(db).await?;
-    sqlx::query("delete from login_source where user_id = (select id from app_user where username = $1)").bind(username).execute(db).await?;
-    sqlx::query("delete from login_failure where username = $1").bind(username).execute(db).await?;
+    sqlx::query("delete from session where user_id = $1").bind(uid).execute(&mut *tx).await?;
+    sqlx::query("delete from login_source where user_id = $1").bind(uid).execute(&mut *tx).await?;
+    sqlx::query("delete from login_failure where username = $1").bind(username).execute(&mut *tx).await?;
+    tx.commit().await?;
     sqlx::query("select pg_notify($1, '')").bind(REVOKED_CHANNEL).execute(db).await?;
     Ok(())
 }

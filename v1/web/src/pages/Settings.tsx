@@ -3,7 +3,7 @@
 import { Field } from '@/components/ui/field';
 import { Skeleton } from '@/components/ui/skeleton';
 import * as React from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router';
 import { Ban, Bell, BellOff, Eye, EyeOff, Feather, FlaskConical, KeyRound, Pencil, Plus, Send, ShieldAlert, Trash2 } from 'lucide-react';
 import { RetentionTab } from '@/features/RetentionTab';
 import { EntryModeTab } from '@/features/EntryModeTab';
@@ -301,7 +301,7 @@ const ChannelDialog = resetOnOpen(function ChannelDialog({ target, open, onClose
   const [touched, setTouched] = React.useState(false); // 动过配置字段后才提示“填写完整”，不一打开就标红
   const [reveal, setReveal] = React.useState(false);
   const [clearSecret, setClearSecret] = React.useState(false); // 编辑飞书渠道时勾上：清除签名密钥（`secret: null`）
-  const k = KINDS[kind];
+  const k = KINDS[kind] ?? { label: kind, icon: <Bell />, fields: [] }; // 不认得的类型（服务端新加的）：没有可填的配置，只改名称、级别等
   const filled = k.fields.filter((f) => (cfg[f.key] ?? '').trim() !== '').length;
   const required = k.fields.filter((f) => !f.optional);
   const requiredFilled = required.filter((f) => (cfg[f.key] ?? '').trim() !== '').length;

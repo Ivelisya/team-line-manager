@@ -14,12 +14,12 @@ let afterClose: (() => void) | undefined;
 let handedOff = false;
 export const runAfterMenuClosed = (fn: () => void) => { afterClose = fn; };
 /** 菜单关完时调用（下拉和右键菜单各一处）：有登记的回调就执行并返回 true */
-export const flushAfterMenuClosed = () => { const run = afterClose; afterClose = undefined; run?.(); if (run) handedOff = true; return !!run; };
+const flushAfterMenuClosed = () => { const run = afterClose; afterClose = undefined; run?.(); if (run) handedOff = true; return !!run; };
 /** 菜单的 finalFocus（Base UI 在弹层卸载时调，也会在 effect 清理时调——严格模式、依赖变了都会，所以必须是纯函数，不在这里执行回调）：
  *  登记了关闭后执行的回调（还没执行）就不还焦点；焦点已被别处接走（菜单项弹出的对话框 / 面板）也不还——只在焦点还在菜单里或已落在 body 上时才还：
  *  函数形式的 finalFocus 在 Base UI 眼里是「明确指定的返回目标」，会跳过它自己的「焦点已移走就不抢」检查，得在这里自己做。
  *  target：要还给谁（“⋯”按钮）；不给就走 Base UI 默认（返回 true） */
-export function menuReturnFocus(popup: React.RefObject<HTMLElement | null>, target?: () => HTMLElement | null | undefined): boolean | HTMLElement {
+function menuReturnFocus(popup: React.RefObject<HTMLElement | null>, target?: () => HTMLElement | null | undefined): boolean | HTMLElement {
   if (afterClose || handedOff) return false;
   const f = document.activeElement;
   if (f && f !== document.body && !popup.current?.contains(f)) return false;
@@ -28,9 +28,9 @@ export function menuReturnFocus(popup: React.RefObject<HTMLElement | null>, targ
   return t?.isConnected ? t : false;
 }
 /** 菜单的 onOpenChangeComplete：关闭动画播完（弹层卸载前）执行登记的回调，再由对话框 / 面板接走焦点 */
-export const menuClosed = (open: boolean) => { if (!open) flushAfterMenuClosed(); };
+const menuClosed = (open: boolean) => { if (!open) flushAfterMenuClosed(); };
 /** 菜单打开时调用：丢掉上一次没执行掉的回调（菜单没关完整个容器就卸载了，onOpenChangeComplete 不会触发），免得它在之后别的菜单关闭时打开旧对象的面板 */
-export const dropAfterMenuClosed = () => { afterClose = undefined; handedOff = false; };
+const dropAfterMenuClosed = () => { afterClose = undefined; handedOff = false; };
 
 /** 菜单「关完再交接」的全部接线收在这一处，新菜单照着用，不会漏掉其中一件：
  *  - rootProps：onOpenChange（打开时丢掉上次没执行的回调）、onOpenChangeComplete（关完执行登记的回调，menuClosed）→ 展开到 Menu / ContextMenu 根上；

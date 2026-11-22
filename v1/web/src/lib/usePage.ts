@@ -2,7 +2,7 @@
 // 筛选 / 排序 / 视图（reset）一变就回到第 1 页；列表变短时夹到最后一页。换页后若列表顶部已滚出视口，平滑滚回去。
 // 每个页面只有一个分页器在用这两个参数（抽屉用 m / tab，设置页用 section，不冲突）。
 import { useCallback, useEffect, useMemo, useRef } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router';
 import { scrollBehavior } from './utils';
 
 export interface PageState {
@@ -14,8 +14,10 @@ export interface PageState {
   anchor: (el: HTMLElement | null) => void;
 }
 
+/** 可选的每页条数：至少一档（没给 size 时默认第一档） */
+export type PageSizes = readonly [number, ...number[]];
 /** sizes 传模块常量：返回值按值缓存（分页器是 memo 的），每次新数组会让它每次都换引用 */
-export function usePage({ total, sizes, size: def = sizes[0], reset }: { total: number | undefined; sizes: readonly number[]; size?: number; reset: readonly unknown[] }): PageState {
+export function usePage({ total, sizes, size: def = sizes[0], reset }: { total: number | undefined; sizes: PageSizes; size?: number; reset: readonly unknown[] }): PageState {
   const [sp, setSp] = useSearchParams();
   // setSearchParams 每次地址变化都换身份；用 ref 兜住，回调才稳定（同 lib/drawer.ts）
   const setRef = useRef(setSp); setRef.current = setSp;

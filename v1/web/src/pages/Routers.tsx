@@ -13,6 +13,8 @@ import { RouterCard } from '@/components/app/RouterCard';
 import { AddRouterDialog } from '@/features/RouterDialogs';
 
 const NO_TEAM = '__none__';
+// 还没取回时的空列表：固定一份，下面的 useMemo 不因每次新建的 [] 白算
+const NONE: never[] = [];
 /** 页头的 KPI：各状态的台数，在线的那些出口、客户端与代理速率的合计（离线的读数是旧的，不算） */
 function summarize(list: RouterView[]) {
   const o = { online: 0, offline: 0, pending: 0, alive: 0, total: 0, drift: 0, clients: 0, down_bps: 0, up_bps: 0 };
@@ -32,7 +34,7 @@ export function RoutersPage() {
   const { id: openId, open } = useRouterDrawer();
   const [team, setTeam] = React.useState('all');
   const [adding, setAdding] = React.useState(false);
-  const all = q.data ?? [];
+  const all = q.data ?? NONE;
   const sum = React.useMemo(() => summarize(all), [all]);
   // 分组只列有路由的团队（大多数团队没有软路由），另加「未分团队」
   const groups = React.useMemo(() => {

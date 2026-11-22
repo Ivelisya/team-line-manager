@@ -1,5 +1,5 @@
 // 访问监控的两个视图：节点行为（/access）与访问规则（/access/policy）。两个页面的页头共用这一个分段切换。
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { Segmented } from '@/components/ui/segmented';
 
 export function AccessViewSwitch({ value }: { value: 'behavior' | 'policy' }) {

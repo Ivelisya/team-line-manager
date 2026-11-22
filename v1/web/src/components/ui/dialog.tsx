@@ -64,7 +64,7 @@ export function useRestoreFocus(panel: React.RefObject<HTMLElement | null>) {
 export function RememberFocus({ focus }: { focus: { remember: () => void } }) {
   // 只记一次：开发模式的严格模式会把 effect 跑两遍，第二遍时输入框已被 autoFocus 抢到焦点，会把「打开前的元素」盖成面板自己的输入框
   const done = React.useRef(false)
-  React.useLayoutEffect(() => { if (!done.current) { done.current = true; focus.remember() } }, [])
+  React.useLayoutEffect(() => { if (!done.current) { done.current = true; focus.remember() } }, []) // eslint-disable-line react-hooks/exhaustive-deps -- 只在挂载时记一次（见上）
   return null
 }
 
@@ -78,7 +78,7 @@ function TouchBlur({ panel, enabled }: { panel: React.RefObject<HTMLElement | nu
       const a = document.activeElement as HTMLElement | null
       if (a && panel.current?.contains(a) && a.matches("input, textarea")) panel.current.focus({ preventScroll: true })
     })
-  }, [])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps -- 只在面板挂载（打开）时看一次
   return null
 }
 
@@ -101,7 +101,7 @@ const useDialogContext = () => {
 
 /** 点遮罩 / Esc 想关、却被拦下：面板轻轻回弹一下（1 → 1.02 → 1，--dur-2 + --ease-out），告诉用户“点到了，但不会关”，不再毫无反应。
  *  减弱动效时 --dur-2 为 0，不弹。缩放用独立的 scale 属性，与居中的 translate、进出场的动画互不干扰 */
-export function bounce(panel: HTMLElement | null) {
+function bounce(panel: HTMLElement | null) {
   const ms = durMs("--dur-2")
   if (ms > 0) panel?.animate([{ scale: "1" }, { scale: "1.02" }, { scale: "1" }], { duration: ms, easing: getComputedStyle(document.documentElement).getPropertyValue("--ease-out").trim() })
 }
@@ -152,17 +152,11 @@ function Dialog({
   )
 }
 
-function DialogTrigger({ ...props }: DialogPrimitive.Trigger.Props) {
-  return <DialogPrimitive.Trigger data-slot="dialog-trigger" {...props} />
-}
 
 function DialogPortal({ ...props }: DialogPrimitive.Portal.Props) {
   return <DialogPrimitive.Portal data-slot="dialog-portal" {...props} />
 }
 
-function DialogClose({ ...props }: DialogPrimitive.Close.Props) {
-  return <DialogPrimitive.Close data-slot="dialog-close" {...props} />
-}
 
 /** 毛玻璃遮罩（对话框、命令面板共用）。forceRender：Base UI 对嵌套的对话框默认不渲染子级遮罩，我们要它（抽屉上再开对话框、对话框上再开确认框，
  *  第二层遮罩只轻压 --scrim-stacked，见 components.css），计数照样加上。外观与进出场在 components.css 的 [data-slot=dialog-overlay] */
@@ -258,7 +252,6 @@ function DialogDescription({ className, ...props }: DialogPrimitive.Description.
 
 export {
   Dialog,
-  DialogClose,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -266,5 +259,4 @@ export {
   DialogOverlay,
   DialogPortal,
   DialogTitle,
-  DialogTrigger,
 }

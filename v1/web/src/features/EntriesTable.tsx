@@ -11,7 +11,7 @@ import { openRouterDrawer, useEntryRouters } from '@/lib/routers';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Button } from '@/components/ui/button';
 import { Trunc } from '@/components/ui/tooltip';
-import { MovesDialog, movableEntries } from '@/components/app/LifecycleDialogs';
+import { movableEntries } from '@/components/app/lifecycle-bits';
 
 /** 入口表先露的条数（抽屉入口表、线路机页共用） */
 export const ENTRY_CAP = 10;
@@ -22,6 +22,9 @@ export const entriesMeta = (m: MachineView) => {
   const bad = m.entries.filter(entryBad).length; const on = activeEntries(m.entries);
   return `${m.entries.length} 条${on !== m.entries.length ? ` · ${on} 条在用` : ''}${bad ? ` · ${bad} 条异常` : ''}`;
 };
+
+// 批量换线对话框在点「换线」时才下载（抽屉打开时不背它）
+const MovesDialog = React.lazy(() => import('@/components/app/LifecycleDialogs').then((m) => ({ default: m.MovesDialog })));
 
 const failCell = (p: NonNullable<EntryView['tcp']>) => <span style={{ color: 'var(--bad-text)' }} data-tip={probeErr(p.detail)}>失败</span>;
 /** 出口单元格（线路机页共用）：只写通不通，悬停给出口 IP 与这次出口验证的耗时（经节点去中控，不是线路延迟）；
@@ -100,7 +103,7 @@ export function EntriesTable({ m, traffic, onlyBad, pick }: { m: MachineView; tr
       </table>
       <ShowAll total={sorted.length} cap={cap} open={all} onToggle={() => setAll((v) => !v)} />
     </div>
-    {moving && <MovesDialog nodes={picked.map((e) => ({ id: e.node.id, name: e.node.name, port: e.port }))} from={m} open onOpenChange={(o) => { if (!o) setMoving(false); }} onDone={() => { setMoving(false); setSel([]); }} />}
+    {moving && <React.Suspense fallback={null}><MovesDialog nodes={picked.map((e) => ({ id: e.node.id, name: e.node.name, port: e.port }))} from={m} open onOpenChange={(o) => { if (!o) setMoving(false); }} onDone={() => { setMoving(false); setSel([]); }} /></React.Suspense>}
     </>
   );
 }
@@ -110,7 +113,7 @@ export const ReverseMark = () => <span className="rt-mark" data-tip={REVERSE_TIP
 
 /** 被软路由的出口用着的入口：小标「软路由 N」，悬停列出是哪台的哪个出口，点开那台软路由的出口页签 */
 export function RouterMark({ users }: { users: { id: string; name: string; exit: string }[] }) {
-  return <button type="button" className="rt-mark" data-tip={users.map((u) => `${u.name} · ${u.exit}`).join('\n')} onClick={() => openRouterDrawer(users[0].id, 'exits')}>软路由 {users.length}</button>;
+  return <button type="button" className="rt-mark" data-tip={users.map((u) => `${u.name} · ${u.exit}`).join('\n')} onClick={() => { const u = users[0]; if (u) openRouterDrawer(u.id, 'exits'); }}>软路由 {users.length}</button>;
 }
 
 /** 一行一个 memo：实时推送只换变了的入口（live.ts 的入口补丁把没变的原样返回），线路机展开全部的上百行不跟着重画。

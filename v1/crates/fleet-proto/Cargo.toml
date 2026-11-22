@@ -9,3 +9,8 @@ publish.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
+# 只有中控（导出面板的 TypeScript 类型）打开；agent 不带
+ts-rs = { version = "=12.0.1", optional = true, features = ["no-serde-warnings"] }
+
+[features]
+ts = ["dep:ts-rs"]

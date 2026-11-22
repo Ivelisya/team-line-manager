@@ -4,6 +4,7 @@
 import { useCallback, useMemo } from 'react';
 import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { del, get, patch, post, put } from './api';
+import { afterSubscribed } from './streamGate';
 import { collator, makeDefaultCompare } from './sort';
 import { nextDue, nodeKpiWho, offlineNames, quotaTight, setMeta } from './derive';
 import type { BillingEvent, BillingMonth, CustomerPage, RelayProtocols } from './types';
@@ -17,10 +18,13 @@ export const useMeta = (enabled: boolean) => useQuery({
 // 团队、套餐带着由机器算出来的台数（node_count / machine_count），机器增减不发 catalog 事件，仍按时间过期；供应商只随 catalog 事件变
 export const useTeams = () => useQuery({ queryKey: ['teams'], queryFn: () => get<Team[]>('/teams'), staleTime: 60_000 });
 export const useProviders = () => useQuery({ queryKey: ['providers'], queryFn: () => get<Provider[]>('/providers'), staleTime: Infinity });
-export const usePlans = () => useQuery({ queryKey: ['plans'], queryFn: () => get<Plan[]>('/plans'), staleTime: 60_000 });
-export const useOverview = () => useQuery({ queryKey: ['overview'], queryFn: ({ signal }) => get<Overview>('/overview', signal) });
+/** 套餐（机器页、上架页、目录页）：查询选项单独拿出来，侧栏悬停预取（lib/prefetch）共用同一份 */
+export const plansQuery = { queryKey: ['plans'], queryFn: () => get<Plan[]>('/plans'), staleTime: 60_000 };
+export const usePlans = () => useQuery(plansQuery);
+// 机器类查询（实时流的 metrics 直接写的几类：总览、机器列表、单台、线路机）的 queryFn 先过 streamGate 的闸门：首屏等实时流连上再取（见 streamGate.ts）
+export const useOverview = () => useQuery({ queryKey: ['overview'], queryFn: ({ signal, queryKey }) => afterSubscribed(queryKey, () => get<Overview>('/overview', signal)) });
 
-const machinesQuery = { queryKey: ['machines', 'live'], queryFn: ({ signal }: { signal: AbortSignal }) => get<MachineView[]>('/machines?scope=live', signal) };
+const machinesQuery = { queryKey: ['machines', 'live'], queryFn: ({ signal, queryKey }: { signal: AbortSignal; queryKey: readonly unknown[] }) => afterSubscribed(queryKey, () => get<MachineView[]>('/machines?scope=live', signal)) };
 /** 默认顺序只看这几个字段（makeDefaultCompare：类型、团队、编号、名称）；id 在前，同样的签名说明是同一批机器、同样的先后 */
 const sortSig = (m: MachineView) => `${m.id}\u0001${m.kind}\u0001${m.team?.id ?? ''}\u0001${m.team?.name ?? ''}\u0001${m.number ?? ''}\u0001${m.name}`;
 let sorted: { raw: MachineView[]; teams: Team[] | undefined; sig: string; ids: string[]; list: MachineView[] } | null = null;
@@ -115,7 +119,7 @@ function fromLists(qc: QueryClient, id: string | null) {
 export function useMachine(id: string | null) {
   const qc = useQueryClient();
   return useQuery<MachineView>({
-    queryKey: ['machine', id], queryFn: ({ signal }) => get<MachineView>(`/machines/${id}`, signal), enabled: !!id,
+    queryKey: ['machine', id], queryFn: ({ signal, queryKey }) => afterSubscribed(queryKey, () => get<MachineView>(`/machines/${id}`, signal)), enabled: !!id,
     initialData: () => fromLists(qc, id)?.m,
     initialDataUpdatedAt: () => fromLists(qc, id)?.at,
   });
@@ -123,7 +127,7 @@ export function useMachine(id: string | null) {
 const byName = (a: { name: string }, b: { name: string }) => collator.compare(a.name, b.name);
 const sortRelays = (d: MachineView[]) => [...d].sort(byName);
 const relayChoices = (d: MachineView[]) => d.filter((m) => m.lifecycle === 'active').map((m) => ({ id: m.id, name: m.name })).sort(byName);
-const relaysQuery = { queryKey: ['relays'], queryFn: ({ signal }: { signal: AbortSignal }) => get<MachineView[]>('/relays', signal) };
+export const relaysQuery = { queryKey: ['relays'], queryFn: ({ signal, queryKey }: { signal: AbortSignal; queryKey: readonly unknown[] }) => afterSubscribed(queryKey, () => get<MachineView[]>('/relays', signal)) };
 export const useRelays = () => useQuery({ ...relaysQuery, select: sortRelays });
 /** 只要“已上线线路机的 id 和名称”（上架页的下拉和名称匹配用）。select 的结果会做结构共享：机器的探测、流量等字段每次推送都在变，但 id/名称不变时引用不变，批量网格的 memo 才不会被击穿 */
 export const useRelayChoices = () => useQuery({ ...relaysQuery, select: relayChoices });
@@ -158,7 +162,7 @@ export const useAuditLog = (cat: string, q: string) => useInfiniteQuery({
     if (q) p.set('q', q);
     return get<AuditEntry[]>(`/audit?${p}`, signal);
   },
-  getNextPageParam: (last) => (last.length < AUDIT_PAGE ? undefined : String(last[last.length - 1].id)),
+  getNextPageParam: (last) => { const tail = last.at(-1); return last.length < AUDIT_PAGE || !tail ? undefined : String(tail.id); },
 });
 /** 作业列表一页（按创建先后倒序）；kind：作业类型（provision 是大类，其余是作业类型原值，'' = 全部）。换页时先留着上一页，不闪骨架 */
 export const useJobs = (state: 'active' | 'done' | 'all' = 'all', offset = 0, limit = 100, kind = '') =>
@@ -260,7 +264,7 @@ export const useMoveEntry = () => useWrite(({ id, ...b }: { id: string; to_relay
 export const useMoves = () => useWrite((b: { machine_ids: string[]; to_relay_id: string; from_relay_id?: string; routers: boolean }) => post<MovesResult>('/moves', b), [...M, ['jobs']]);
 export const useEvacuate = () => useWrite(({ id, ...b }: { id: string; to_relay_id: string; routers: boolean }) => post<EvacuateResult>(`/relays/${id}/evacuate`, b), [...M, ['jobs']]);
 /** 换线路机 / 搬空预览（只读库）：要改的软路由出口、不能换的原因 */
-const lifecyclePreview = <T,>(key: string, path: string | null, o: Record<string, string | undefined>, routers: boolean) =>
+const useLifecyclePreview = <T,>(key: string, path: string | null, o: Record<string, string | undefined>, routers: boolean) =>
   useQuery<T>({
     queryKey: [key, path, o, routers], enabled: !!path && !!o.to_relay_id,
     staleTime: 0, gcTime: 0, placeholderData: (p) => p, refetchOnWindowFocus: false,
@@ -271,16 +275,17 @@ const lifecyclePreview = <T,>(key: string, path: string | null, o: Record<string
     },
   });
 export const useMovePreview = (id: string | null, open: boolean, o: { to_relay_id: string; from_relay_id?: string; routers: boolean }) =>
-  lifecyclePreview<MovePreview>('move-preview', open && id ? `/machines/${id}/move` : null, { to_relay_id: o.to_relay_id, from_relay_id: o.from_relay_id }, o.routers);
+  useLifecyclePreview<MovePreview>('move-preview', open && id ? `/machines/${id}/move` : null, { to_relay_id: o.to_relay_id, from_relay_id: o.from_relay_id }, o.routers);
 export const useMovesPreview = (open: boolean, o: { machine_ids: string[]; to_relay_id: string; from_relay_id?: string; routers: boolean }) =>
-  lifecyclePreview<MovesResult>('moves-preview', open && o.machine_ids.length ? '/moves' : null, { machine_ids: o.machine_ids.join(','), to_relay_id: o.to_relay_id, from_relay_id: o.from_relay_id }, o.routers);
+  useLifecyclePreview<MovesResult>('moves-preview', open && o.machine_ids.length ? '/moves' : null, { machine_ids: o.machine_ids.join(','), to_relay_id: o.to_relay_id, from_relay_id: o.from_relay_id }, o.routers);
 /** 放置矩阵（只读）：agent 每 5 分钟测一轮，跟着 5 分钟取一次 */
 /** 每日流量（GET /traffic/daily）：team / machine 过滤（machine = 节点只看它自己的入口，线路机看经过它的）。小时汇总 5 分钟一轮，跟着 5 分钟重取 */
+export const trafficDailyQuery = (days: number, team = '', machine = '') => ({
+  queryKey: ['traffic-daily', days, team, machine], staleTime: 300_000,
+  queryFn: ({ signal }: { signal: AbortSignal }) => get<TrafficDaily>(`/traffic/daily?${new URLSearchParams({ days: String(days), ...(team && { team }), ...(machine && { machine }) })}`, signal),
+});
 export const useTrafficDaily = (days: number, team = '', machine = '') =>
-  useQuery({
-    queryKey: ['traffic-daily', days, team, machine], placeholderData: keepPreviousData, staleTime: 300_000, refetchInterval: 300_000,
-    queryFn: ({ signal }) => get<TrafficDaily>(`/traffic/daily?${new URLSearchParams({ days: String(days), ...(team && { team }), ...(machine && { machine }) })}`, signal),
-  });
+  useQuery({ ...trafficDailyQuery(days, team, machine), placeholderData: keepPreviousData, refetchInterval: 300_000 });
 export const usePlacement = () => useQuery({ queryKey: ['placement'], queryFn: ({ signal }) => get<PlacementView>('/placement', signal), staleTime: 300_000, refetchInterval: 300_000 });
 /** 搬迁建议（只读）：exclude = 不动的节点 id */
 export const useRebalance = (id: string | null, open: boolean, exclude: string[]) =>
@@ -289,7 +294,7 @@ export const useRebalance = (id: string | null, open: boolean, exclude: string[]
     queryFn: ({ signal }) => get<RebalancePlan>(`/relays/${id}/rebalance${exclude.length ? `?exclude=${exclude.join(',')}` : ''}`, signal),
   });
 export const useEvacuatePreview = (id: string | null, open: boolean, o: { to_relay_id: string; routers: boolean }) =>
-  lifecyclePreview<EvacuateResult>('evacuate-preview', open && id ? `/relays/${id}/evacuate` : null, { to_relay_id: o.to_relay_id }, o.routers);
+  useLifecyclePreview<EvacuateResult>('evacuate-preview', open && id ? `/relays/${id}/evacuate` : null, { to_relay_id: o.to_relay_id }, o.routers);
 /** 替换节点：预览（只读库，不登录机器）与提交（建 replace 作业：改软路由出口 → 交换编号） */
 export const useReplacePreview = (id: string | null, enabled: boolean, o: { new_machine_id: string; team_id?: string; number?: number; routers: boolean }) =>
   useQuery<ReplacePreview>({
@@ -405,8 +410,9 @@ export async function fetchAllLogs(jobId: string, after: number, signal?: AbortS
   for (let guard = 0; guard < 200; guard++) {
     const page = await fetchLogs(jobId, after, signal);
     all.push(...page);
-    if (page.length < LOG_PAGE) break;
-    after = page[page.length - 1].id;
+    const tail = page.at(-1);
+    if (page.length < LOG_PAGE || !tail) break;
+    after = tail.id;
   }
   return all;
 }
@@ -487,7 +493,7 @@ export const useBillingEvents = (teamId: string) => useInfiniteQuery({
   queryFn: async ({ pageParam, signal }) => {
     // 多取一条判断是否还有下一页，避免记录数刚好是 10 的倍数时翻到空白页。
     const rows = await get<BillingEvent[]>(`/teams/${teamId}/billing-events?limit=${BILLING_EVENT_PAGE_SIZE + 1}${pageParam ? `&before=${pageParam}` : ''}`, signal);
-    return { items: rows.slice(0, BILLING_EVENT_PAGE_SIZE), next: rows.length > BILLING_EVENT_PAGE_SIZE ? rows[BILLING_EVENT_PAGE_SIZE - 1].id : undefined };
+    return { items: rows.slice(0, BILLING_EVENT_PAGE_SIZE), next: rows.length > BILLING_EVENT_PAGE_SIZE ? rows[BILLING_EVENT_PAGE_SIZE - 1]?.id : undefined };
   },
   getNextPageParam: (last) => last.next,
   // 换团队时先留着上一个团队的（调用方按 isPlaceholderData 调淡、不可操作），不塌成骨架
