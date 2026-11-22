@@ -12,7 +12,7 @@ try {
     var p = localStorage.getItem('fleet:palette');
     if (p) document.documentElement.dataset.palette = p;
   }
-} catch (e) {}
+} catch {}
 // 首屏就是白底（html.is-cx，样式在 base.css）和中性标题，不先闪一下管理端的底色与「团队线路管理」
 if (cx) {
   document.documentElement.classList.add('is-cx');

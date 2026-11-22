@@ -36,7 +36,7 @@ export function Hotkeys({ theme }: { theme: { pref: ThemePref; setPref: (p: Them
   // 不订阅机器列表（订阅会让每个页面都跟着取 /machines）：按 [ ] 时才读缓存
   const qc = useQueryClient();
   const [loaded, setLoaded] = React.useState(false);
-  React.useEffect(() => { if (overlay === 'palette') setLoaded(true); }, [overlay]);
+  if (overlay === 'palette' && !loaded) setLoaded(true); // 第一次打开面板时挂上，之后一直挂着
 
   // 事件处理里读最新值，避免每次变化都重新绑定监听
   const ref = React.useRef({ id, switchTo, overlay });

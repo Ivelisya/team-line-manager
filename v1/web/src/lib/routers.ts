@@ -2,7 +2,7 @@
 // 中控经反向隧道每 30 秒在路由上跑一次只读采集，结果随 {"type":"routers"} 事件推来（eventKeys 让 ['routers'] 下的列表与详情一起重取），
 // 所以列表与详情 staleTime 都是 Infinity；曲线不推，抽屉开着时按范围轮询（同机器抽屉的曲线）。形状见 r21 设计稿「API」。
 import { useCallback, useMemo, useRef } from 'react';
-import { useSearchParams, type SetURLSearchParams } from 'react-router-dom';
+import { useSearchParams, type SetURLSearchParams } from 'react-router';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { del, get, patch, post } from './api';
 import { useRelays, useTeams, useWrite } from './queries';
@@ -14,7 +14,7 @@ import { chartPoll, RANGE_MS } from './chart';
 import * as F from './format';
 
 /** pending = 建了记录、路由还没连上过（或重新接入后还没连上）；offline = 连上过、现在隧道不通（连得上但采集出错算 online，带 error） */
-export type RouterState = 'pending' | 'online' | 'offline';
+type RouterState = 'pending' | 'online' | 'offline';
 /** 列表里的摘要：最近一次采集成功的快照，从没采集成功过为 null。速率是 bit/s，内存 / 存储是字节 */
 export interface RouterSummary {
   uptime_s: number; cpu_pct: number; load1: number; cores: number; mem_used: number; mem_total: number; disk_used: number; disk_total: number;
@@ -43,9 +43,9 @@ export interface RouterView {
 export interface RouterSwitch { group: string; from: string; to: string; back_at: string | null; by: string; switched_at: string; defer_why?: string | null; deferred_at?: string | null }
 /** 策略组：type 是 mihomo 的类型，只有 Selector（select）能手动切换；now 是当前选中的；used === false 是没有规则用它（切了不影响流量，不给切换），没有这个字段 = 不知道（旧快照、没取到规则） */
 export interface RouterGroup { name: string; type: string; now: string | null; all: string[]; used?: boolean }
-export interface RouterIface { name: string; device: string; up: boolean; proto: string; ip: string | null; uptime_s: number | null; rx_bps: number; tx_bps: number; rx_bytes: number; tx_bytes: number }
+interface RouterIface { name: string; device: string; up: boolean; proto: string; ip: string | null; uptime_s: number | null; rx_bps: number; tx_bps: number; rx_bytes: number; tx_bytes: number }
 /** ok：参数与 fleet 入口一致；drift：server:port 对上了，但 uuid / reality 参数不一致；unmanaged：没对上任何 fleet 入口 */
-export type ExitSync = 'ok' | 'drift' | 'unmanaged';
+type ExitSync = 'ok' | 'drift' | 'unmanaged';
 export interface RouterExit {
   name: string; type: string; server: string; port: number;
   /** 协议一个词：reality（VLESS Reality）/ anytls，配置里读到的 fleet 协议才有；别的协议、旧中控为空。AnyTLS 出口的 port 是入口的 AnyTLS 端口 */
@@ -84,8 +84,10 @@ const sortRouters = (teams: Team[]) => {
 export function useRouters() {
   const teams = useTeams().data;
   const select = useCallback((d: RouterView[]) => [...d].sort(sortRouters(teams ?? [])), [teams]);
-  return useQuery({ queryKey: ['routers', 'list'], queryFn: ({ signal }) => get<RouterView[]>('/routers', signal), staleTime: Infinity, select });
+  return useQuery({ ...routersQuery, select });
 }
+/** 软路由列表的查询选项（侧栏悬停预取共用，见 lib/prefetch） */
+export const routersQuery = { queryKey: ['routers', 'list'], queryFn: ({ signal }: { signal: AbortSignal }) => get<RouterView[]>('/routers', signal), staleTime: Infinity };
 export const useRouter = (id: string | null) =>
   useQuery({ queryKey: ['routers', id], queryFn: ({ signal }) => get<RouterFull>(`/routers/${id}`, signal), enabled: !!id, staleTime: Infinity });
 /** 曲线的轮询间隔随范围放大（`chartPoll`，同机器抽屉）；换范围时先留着上一段（调用方按 isPlaceholderData 调淡），换了路由不沿用 */
@@ -93,7 +95,7 @@ export const useRouterMetrics = (id: string, range: string) =>
   useQuery({ queryKey: ['router-metrics', id, range], queryFn: ({ signal }) => get<RouterMetrics>(`/routers/${id}/metrics?range=${range}`, signal).then((d) => ({ ...d, range })), staleTime: chartPoll(range), refetchInterval: chartPoll(range), refetchOnWindowFocus: false, placeholderData: (prev, pq) => (pq?.queryKey[1] === id ? keepPreviousData(prev) : undefined) });
 /** 配置变更（GET /routers/{id}/changes，新的在前，最多 200 条）：source = job 是中控作业改的（job_id / job_kind），router 是路由上改的；
  *  diff 是出口的增删改（changed 在 server:port 变了时带 from / to，凭据变了 creds = true，凭据本身不出）；note 是比不出差异的原因 */
-export interface RouterChangeItem { exit: string; op: 'added' | 'removed' | 'changed'; from?: string; to?: string; creds?: boolean }
+interface RouterChangeItem { exit: string; op: 'added' | 'removed' | 'changed'; from?: string; to?: string; creds?: boolean }
 export interface RouterChange { id: string; at: string; old_sha: string; new_sha: string; source: 'job' | 'router'; job_id: string | null; job_kind: string | null; diff: RouterChangeItem[]; note: string | null }
 /** 变更随 ['routers'] 的实时事件重取（配置变了采集会推一次） */
 export const useRouterChanges = (id: string) =>
@@ -156,7 +158,7 @@ export function routerSiblings(list: readonly { id: string }[] | undefined, id: 
   if (!id) return undefined;
   const ids = order?.includes(id) ? order : list?.map((r) => r.id);
   const i = ids ? ids.indexOf(id) : -1;
-  return !ids || i < 0 ? undefined : { prev: i > 0 ? ids[i - 1] : null, next: i < ids.length - 1 ? ids[i + 1] : null };
+  return !ids || i < 0 ? undefined : { prev: i > 0 ? ids[i - 1] ?? null : null, next: i < ids.length - 1 ? ids[i + 1] ?? null : null };
 }
 // 同 lib/drawer.ts：useRouterDrawer 渲染时记下地址参数的写函数，模块级的 openRouterDrawer 用它（入口行的「软路由」小标等成批的小按钮不必各自订阅地址）
 let setLatest: { current: SetURLSearchParams } | null = null;
@@ -205,13 +207,13 @@ export const useSwitchTarget = switchT.use;
 // ---- 接入命令 / 删除后的说明：页面、卡片、抽屉都能弹，由外壳里那一份 RouterDialogs 渲染 ----
 /** issued_at：拿到命令的时刻，路由在这之后连上才算「已接入」（重新生成时旧隧道之前也是在线的）；
  *  replaced：这台连上过，旧隧道密钥随之作废（对话框里提醒原来的 fleet-tunnel 会断开） */
-export interface BootTarget { id: string; name: string; cmd: string; expires_at: string; issued_at: string; replaced: boolean }
+interface BootTarget { id: string; name: string; cmd: string; expires_at: string; issued_at: string; replaced: boolean }
 const boot = createStore<BootTarget | null>(null);
 export const showBootstrap = boot.set;
 export const closeBootstrap = () => boot.set(null);
 export const useBootTarget = boot.use;
 /** 一键部署对话框（重新部署）：SSH 地址预填这个浏览器上次给这台填的（中控不回传地址，密码从不保存） */
-export interface DeployTarget { id: string; name: string }
+interface DeployTarget { id: string; name: string }
 const deploy = createStore<DeployTarget | null>(null);
 export const showDeploy = deploy.set;
 export const closeDeploy = () => deploy.set(null);
@@ -279,8 +281,8 @@ export function exitBeats(points: SeriesPoint[], range: string, bins: number, en
   const acc = Array.from({ length: bins }, () => ({ n: 0, ok: 0, sum: 0, sumN: 0 }));
   for (const p of points) {
     const i = Math.min(bins - 1, Math.floor((Date.parse(p.ts) - start) / width));
-    if (i < 0) continue;
-    const b = acc[i]; const ok = typeof p.alive_pct === 'number' ? p.alive_pct / 100 : typeof p.delay_ms === 'number' ? 1 : 0;
+    const b = acc[i]; if (!b) continue; // i < 0（早于起点），或时间解析不出（NaN）
+    const ok = typeof p.alive_pct === 'number' ? p.alive_pct / 100 : typeof p.delay_ms === 'number' ? 1 : 0;
     b.n++; b.ok += ok;
     if (typeof p.delay_ms === 'number') { b.sum += p.delay_ms; b.sumN++; }
   }

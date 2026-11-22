@@ -2,7 +2,7 @@
 // 抽屉“管理”页、线路页、卡片/表格的右键菜单、命令面板共用；菜单触发的（连同退役）走 LifecycleDialogsHost（外壳里只渲染一份）。
 import { FieldTitle } from '@/components/ui/field';
 import * as React from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import type { MachineView, PlacementCell, PlacementNode, PlacementView } from '@/lib/types';
 import { useEvacuate, useEvacuatePreview, useMachine, useMoveEntry, useMovePreview, useMoves, useMovesPreview, usePlacement, useRelays } from '@/lib/queries';
 import { HEALTH_TONE } from '@/lib/sort';
@@ -20,6 +20,7 @@ import { resetOnOpen, useHeld } from '@/lib/useHeld';
 import { Due, entryState, ErrorNote, Note } from './primitives';
 import { ConfirmDialog } from './dialogs';
 import { RetireDialog } from './RetireDialog';
+import { movableEntries } from './lifecycle-bits';
 
 const SHARE_WARN = <Note tone="warn">换线后入口的线路机和端口都会变 <InfoTip text={'用订阅链接的客户端，更新订阅后自动换成新入口\n用分享链接的，要把新的分享链接发给客户端。作业完成时的通知里，可以直接复制新链接'} /></Note>;
 
@@ -72,9 +73,6 @@ function placementFor(p: PlacementView | undefined, nodeId: string, ids: string[
   return { cell, suggested: best?.relay_id ?? '' };
 }
 
-/** 节点当前在用的入口（可以被换走的）。线路机的直出入口不搬：退役线路机时随之摘除 */
-export const movableEntries = (m: MachineView) => m.entries.filter((e) => e.lifecycle === 'active' && !e.direct);
-
 // ── 换线路机 ────────────────────────────────────────────────────────────
 
 // 三个对话框都每次打开重新挂载（resetOnOpen）：表单状态直接从 props 初始化，关闭动画期间不变
@@ -84,7 +82,7 @@ export const MoveDialog = resetOnOpen(function MoveDialog({ m, open, onOpenChang
   const relays = useRelays().data ?? [];
   const cur = movableEntries(m);
   const [picked, setTo] = React.useState(initialTo ?? '');
-  const [from, setFrom] = React.useState(() => (cur.length === 1 ? cur[0].relay.id : initialFrom ?? ''));
+  const [from, setFrom] = React.useState(() => (cur.length === 1 && cur[0] ? cur[0].relay.id : initialFrom ?? ''));
   const used = new Set(m.entries.map((e) => e.relay.id));
   const pl = placementFor(usePlacement().data, m.id, relays.filter((r) => r.lifecycle === 'active' && !used.has(r.id)).map((r) => r.id));
   const opts = targetOptions(relays, (r) => !used.has(r.id), pl);

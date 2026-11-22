@@ -1,7 +1,7 @@
 // 上架：单台表单 + 批量可编辑网格（可从表格软件粘贴）。两步：1 检查（不落库，显示每行错误与分配到的名称/端口）→ 2 开始（唯一一次确认）。
 // VPS 节点可以「在已有机器上添加 IP」：同机 IP 节点（host_id），SSH、agent、供应商沿用宿主机的；抽屉里宿主机的「添加 IP 节点」跳来时带 ?host=<id> 预填。
 import * as React from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router';
 import { Check, CheckCircle2, ChevronDown, ClipboardPaste, Info, KeyRound, ListChecks, Plus, Trash2, TriangleAlert } from 'lucide-react';
 import { useEntryModeSetting, useHostChoices, usePlans, useProviders, useProvision, useProvisionCheck, useRelayChoices, useTeams, type HostChoice } from '@/lib/queries';
 import type { EntryMode, Kind, ProvisionCheckItem } from '@/lib/types';
@@ -75,21 +75,27 @@ export function ProvisionPage() {
   const hostParam = sp.get('host');
   // 宿主机候选取自整份机器列表，订阅着时列表随实时推送最多每 2 秒整表重取（批量上架期间一直在推）：只在用得到时订阅——
   // 单台开了「在已有机器上添加 IP」、批量（哪一行都能填宿主机）；带着 ?host= 等预填时总要取（停在「已开始上架」面板时从抽屉点「添加 IP 节点…」也要能预填）
-  const hosts = useHostChoices(hostParam != null || (!created && (mode === 'batch' || rows[0].add_ip))).data ?? NONE_HOSTS;
+  const hosts = useHostChoices(hostParam != null || (!created && (mode === 'batch' || !!rows[0]?.add_ip))).data ?? NONE_HOSTS;
   const ctx: Ctx = React.useMemo(() => ({ teams, relays, hosts, providers, plans }), [teams, relays, hosts, providers, plans]);
 
   // ?host=<宿主机 id>：宿主机候选到了之后预填——单台、VPS 节点、打开「在已有机器上添加 IP」，团队与线路机带出宿主机的；预填完把参数从地址里删掉
-  // （替换当前历史）。抽屉开在上架页时点「添加 IP 节点」只换地址参数、页面不重挂，跟着参数走，同一台宿主机再点一次也会再预填
-  React.useEffect(() => {
-    const h = hosts.find((x) => x.id === hostParam);
-    if (!h) return;
-    const pre = newRow({ kind: 'vps', add_ip: true, host_id: h.id, team_id: h.team_id, relay_id: h.relay_id });
+  // （替换当前历史）。抽屉开在上架页时点「添加 IP 节点」只换地址参数、页面不重挂，跟着参数走，同一台宿主机再点一次也会再预填。
+  // 预填在渲染时按参数调整状态（不经 effect 先画一遍旧表再重画）；took 记着已预填的这次参数与随后要写回的模式，参数删掉后清空，下一次同一台也算新的
+  const [took, setTook] = React.useState<{ host: string; mode: 'single' | 'batch' } | null>(null);
+  const hostRow = hostParam != null && hostParam !== took?.host ? hosts.find((x) => x.id === hostParam) : undefined;
+  if (hostRow) {
+    const pre = newRow({ kind: 'vps', add_ip: true, host_id: hostRow.id, team_id: hostRow.team_id, relay_id: hostRow.relay_id });
+    const filled = rows.some((r) => !isBlank(r));
     setResults(null); setLocalErrs(null); setCreated(null);
     // 表里已有填好的（离开过又回来的草稿）：不覆盖，切到批量、把这台接在后面（顶掉末尾的空行）
-    if (rows.some((r) => !isBlank(r))) setRows((rs) => (isBlank(rs[rs.length - 1]) ? [...rs.slice(0, -1), pre] : [...rs, pre]));
+    if (filled) setRows((rs) => { const last = rs.at(-1); return last && isBlank(last) ? [...rs.slice(0, -1), pre] : [...rs, pre]; });
     else setRows([pre]);
-    setSp((p) => { const n = new URLSearchParams(p); n.delete('host'); n.set('mode', rows.some((r) => !isBlank(r)) ? 'batch' : 'single'); return n; }, { replace: true });
-  }, [hostParam, hosts, setSp]); // eslint-disable-line react-hooks/exhaustive-deps -- 只在宿主机参数到达时预填一次，rows 读当时的值
+    setTook({ host: hostRow.id, mode: filled ? 'batch' : 'single' });
+  } else if (hostParam == null && took) setTook(null);
+  React.useEffect(() => {
+    if (!took || hostParam !== took.host) return;
+    setSp((p) => { const n = new URLSearchParams(p); n.delete('host'); n.set('mode', took.mode); return n; }, { replace: true });
+  }, [took, hostParam, setSp]);
 
   // 草稿随改随存进模块；上架成功（created）后清掉，再进来是空表
   React.useEffect(() => { draft = created ? null : { mode, rows, results, localErrs, checked, sig }; }, [created, mode, rows, results, localErrs, checked, sig]);
@@ -209,7 +215,7 @@ export function ProvisionPage() {
       </div>
 
       {mode === 'single'
-        ? <SingleForm key={rows[0].id} row={rows[0]} onChange={(p) => setRow(0, p)} ctx={ctx} result={resOf(rows[0].id)} errors={errOf(rows[0].id)} stale={stale} />
+        ? rows[0] && <SingleForm key={rows[0].id} row={rows[0]} onChange={(p) => setRow(0, p)} ctx={ctx} result={resOf(rows[0].id)} errors={errOf(rows[0].id)} stale={stale} />
         : <BatchGrid rows={rows} setRows={setRows} ctx={ctx} resOf={resOf} errOf={errOf} checkedAny={results != null} stale={stale} />}
 
       <StickyBar narrow={single}>
@@ -228,11 +234,11 @@ export function ProvisionPage() {
         description={confirmDesc}
         onConfirm={start}>
         <ul className="reason-list" style={{ maxHeight: 220, overflow: 'auto' }}>
-          {results?.map((r, i) => (
+          {results?.map((r, i) => { const a = active[i]; return ( // 检查结果与 active 逐行对应
             <li key={i}><span className="dot" /><span><b>{r.name}</b> <span className="t-sub">
-              {isIpNode(active[i]) ? `同机 · ${hostName(active[i].host_id)}` : kindLabel(active[i].kind)} · {active[i].ip}{r.ss_port ? ` · SS 端口暂定 ${r.ss_port}` : ''}{r.entry_mode ? ` · ${r.entry_mode === 'reverse' ? '穿透' : '普通'}` : ''}
+              {a && <>{isIpNode(a) ? `同机 · ${hostName(a.host_id)}` : kindLabel(a.kind)} · {a.ip}</>}{r.ss_port ? ` · SS 端口暂定 ${r.ss_port}` : ''}{r.entry_mode ? ` · ${r.entry_mode === 'reverse' ? '穿透' : '普通'}` : ''}
             </span></span></li>
-          ))}
+          ); })}
         </ul>
       </ConfirmDialog>
     </div>
@@ -437,8 +443,9 @@ function BatchGrid({ rows, setRows, ctx, resOf, errOf, checkedAny, stale }: { ro
     e.preventDefault();
     const all = parseTsv(text);
     // 带表头（「复制表头」做的模板）按列名对上，列顺序随意；不带表头从光标所在的列起按表头顺序
-    const head = all.length ? headerCols(all[0]) : null;
-    const cols = head ?? PASTE_COLS.slice(PASTE_COLS.indexOf(COLS[ci]));
+    const head = all[0] ? headerCols(all[0]) : null;
+    const col = COLS[ci];
+    const cols = head ?? PASTE_COLS.slice(col ? PASTE_COLS.indexOf(col) : -1);
     const grid = head ? all.slice(1) : all;
     const ri = Math.max(0, rowsRef.current.findIndex((r) => r.id === rowId));
     setRows((rs) => {
@@ -446,7 +453,8 @@ function BatchGrid({ rows, setRows, ctx, resOf, errOf, checkedAny, stale }: { ro
       grid.forEach((line, dy) => {
         const idx = ri + dy;
         while (next.length <= idx) next.push(newRow());
-        next[idx] = pasteLine(next[idx], line, cols, ctx);
+        const cur = next[idx]; // 上面已补足到 idx
+        if (cur) next[idx] = pasteLine(cur, line, cols, ctx);
       });
       return next;
     });

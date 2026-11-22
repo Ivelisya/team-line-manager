@@ -95,7 +95,7 @@ function isIp(s: string): boolean {
   return s.includes(':') && /^[0-9a-f:.]+$/.test(s) && s.split(':').length >= 3;
 }
 
-export interface LineIssue { line: number; token: string; error: string }
+interface LineIssue { line: number; token: string; error: string }
 export interface ParsedDomains {
   /** 规范化、去重、排序后的域名（与服务端一致） */
   domains: string[];

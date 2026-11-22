@@ -14,8 +14,7 @@ import { Button } from '@/components/ui/button';
 import { ErrorNote, Note } from './primitives';
 import { resetOnOpen } from '@/lib/useHeld';
 import { TypedConfirmDialog } from './dialogs';
-import { canReplace, RenameNote } from './ReplaceDialog';
-import { movableEntries } from './LifecycleDialogs';
+import { canReplace, movableEntries, RenameNote } from './lifecycle-bits';
 
 type Mode = 'spare' | 'now';
 

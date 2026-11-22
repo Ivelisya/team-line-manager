@@ -50,7 +50,7 @@ export function ProbeTab() {
     save.mutate({ order, ...(order.length ? {} : { central_enabled: true }) }, { onSuccess: () => toast.ok('探测顺序已保存'), onError: toast.err, onSettled: () => setDraft(null) });
   const ids = s?.order.map((o) => o.id) ?? [];
   const rows = s && draft ? draft.flatMap((id) => s.order.find((o) => o.id === id) ?? []) : s?.order ?? [];
-  const move = (i: number, d: -1 | 1) => { const n = [...ids]; [n[i], n[i + d]] = [n[i + d], n[i]]; setDraft(n); setOrder(n); };
+  const move = (i: number, d: -1 | 1) => { const n = [...ids]; const a = n[i], b = n[i + d]; if (a === undefined || b === undefined) return; n[i] = b; n[i + d] = a; setDraft(n); setOrder(n); }; // 到头的按钮是禁用的
   // 能加进顺序的：启用的、还不在顺序里的
   const addable = list.filter((p) => p.enabled && !ids.includes(p.id));
   // 此刻在用的那一路（null = 中控；标灰时谁都不是）

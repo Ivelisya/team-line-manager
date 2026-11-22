@@ -36,9 +36,9 @@ export interface HostMetrics {
 }
 /** median_ms：TCP 探测近 1 小时成功样本的延迟中位数（卡片读数）；出口探测为 null */
 export interface ProbeResult { ok: boolean; latency_ms: number | null; detail: string | null; ts: string; median_ms?: number | null }
-export interface EntryTraffic { today_up: number; today_down: number; month_up: number; month_down: number }
+interface EntryTraffic { today_up: number; today_down: number; month_up: number; month_down: number }
 /** 网卡口径的今日 / 本月流量（字节）：rx = 本机收（下行）、tx = 本机发（上行）。只有自己有 agent 的机器有 */
-export interface NicTraffic { today_rx: number; today_tx: number; month_rx: number; month_tx: number }
+interface NicTraffic { today_rx: number; today_tx: number; month_rx: number; month_tx: number }
 export type EntryMode = 'normal' | 'reverse';
 export interface EntryView {
   id: string; relay: { id: string; name: string }; node: { id: string; name: string };
@@ -61,7 +61,7 @@ export type RelayProtocols = 'both' | 'reality' | 'anytls';
 /** 线路机的 AnyTLS 外壳（sing-box）：installed = 有 sing-box 程序；running = fleet-singbox 在跑；last_error = 最近一次应用配置的错误 */
 export interface AnytlsStatus { installed: boolean; running: boolean; version?: string | null; last_error?: string | null }
 
-export interface AgentHealth {
+interface AgentHealth {
   queue_len: number; queue_dropped: number; queue_dead: number;
   access_unparsed: number; access_dropped_lines: number; access_rotation_gaps: number; access_truncations: number; last_apply_error?: string | null;
   disk_write_error?: string | null;
@@ -260,11 +260,11 @@ export interface Meta {
   /** 按需测速（服务端 jobs/speedtest.rs）：可选的下载量（MB）、默认值、目标（第一个是默认） */
   speedtest: SpeedtestMeta;
 }
-export interface SpeedtestMeta { sizes_mb: number[]; default_mb: number; targets: { key: string; name: string }[] }
+interface SpeedtestMeta { sizes_mb: number[]; default_mb: number; targets: { key: string; name: string }[] }
 export type UsageMetric = 'cpu' | 'mem' | 'disk' | 'load';
 
-export type JobState = 'queued' | 'running' | 'waiting' | 'cancelling' | 'succeeded' | 'failed' | 'cancelled';
-export type JobKind = 'provision_vps' | 'provision_proxy' | 'provision_relay' | 'provision_ip' | 'attach_entry' | 'move_entry' | 'retire' | 'purge' | 'upgrade_agent' | 'replace' | 'tune' | 'ss_refresh' | 'speedtest' | 'router_sync' | 'router_protocol' | 'router_exit_rm';
+type JobState = 'queued' | 'running' | 'waiting' | 'cancelling' | 'succeeded' | 'failed' | 'cancelled';
+type JobKind = 'provision_vps' | 'provision_proxy' | 'provision_relay' | 'provision_ip' | 'attach_entry' | 'move_entry' | 'retire' | 'purge' | 'upgrade_agent' | 'replace' | 'tune' | 'ss_refresh' | 'speedtest' | 'router_sync' | 'router_protocol' | 'router_exit_rm';
 /** 步骤 state 文档未列全，前端按 pending/running/waiting/succeeded(done)/failed/skipped(cancelled) 宽松处理 */
 export interface JobStep { idx: number; key: string; title: string; state: string; started_at: string | null; finished_at: string | null; output: Record<string, unknown> | null; error: string | null; error_kind?: string | null }
 /** 作业列表（GET /jobs）的一项：不带 steps。step = 当前（或失败的）步骤下标，step_title 为它的标题，做完为 null */
@@ -281,7 +281,7 @@ export interface Job extends JobSummary {
   /** 换线路机作业（move_entry）才有：新入口 id 与「分享链接已变」的提示 */
   result?: JobResult | null;
 }
-export interface JobResult { new_entry_id: string | null; old_entry_id: string | null; from_relay_id: string | null; to_relay_id: string | null; share_changed: boolean; note: string }
+interface JobResult { new_entry_id: string | null; old_entry_id: string | null; from_relay_id: string | null; to_relay_id: string | null; share_changed: boolean; note: string }
 export interface JobLog { id: number; ts: string; level: 'info' | 'warn' | 'error' | string; msg: string }
 
 export interface ProvisionItem {
@@ -364,7 +364,7 @@ export interface RenumberPreview { changes: { machine_id: string; old_name: stri
 export interface RouterExitPlan { id: string; name: string; state: 'online' | 'offline' | 'pending' | string; exits: { exit: string; old_entry_id: string; new_entry_id: string | null; from: string; to: string | null; error?: string | null; proto?: 'reality' | 'anytls' }[] }
 /** 换线路机 / 搬空线路机（API.md「生命周期操作」）：GET 是预览（没有 job_id），POST 的响应同样的内容加 job_id */
 /** 换走的入口（线路机和端口都会变；新入口的端口作业建好时才分配） */
-export interface OldEntry { id: string; relay: string; port: number }
+interface OldEntry { id: string; relay: string; port: number }
 export interface MovePreview { name?: string; from?: string; to?: string; old_entry?: OldEntry; routers_enabled: boolean; routers: RouterExitPlan[]; ok: boolean; blockers: string[]; warnings: string[]; share_changed: boolean; note: string }
 /** 搬迁建议（GET /relays/{id}/rebalance，只读）：重置前会用满时，搬走哪些入口、搬去哪台；daily_bytes 是搬走后这台每天少的流量 */
 export interface RebalancePlan {
@@ -397,13 +397,14 @@ export interface EvacuateResult { from: string; to: string; /** job_id 只在真
   router_restarts?: { id: string; name: string; times: number; nodes: number }[];
   /** 因软路由不在线（offline）/ 还没接入（pending）而被跳过的节点的出口，按软路由合并（每台一条；这些节点不计入 router_restarts） */
   offline_routers?: OfflineRouter[]; share_changed: boolean; note: string }
+/** @public mock/server.ts 用 import('@/lib/types').OfflineRouter 引它，knip 认不出这种写法 */
 export interface OfflineRouter { id: string; name: string; state: string; error: string | null; exits: { node: string; exit: string }[] }
 /** 批量换线路机（GET / POST /moves）：同搬空；有一个节点不能换（都在 skipped 里）就 ok 为 false、整批不能提交。
  *  blockers 是别的原因（带节点名）；因软路由不在线不能换的不在 blockers 里，列在 offline_routers */
 export interface MovesResult extends EvacuateResult { ok: boolean; blockers: string[] }
 /** 替换节点预览（GET /machines/{old}/replace）：新节点接旧编号（new_name），旧节点去 old_to（默认同团队的备用团队）；
  *  routers：出口指向旧节点、会改成新节点入口的软路由（state 不是 online 时 blockers 里有原因）；renames：新节点原来的团队压缩编号 */
-export interface ReplaceSide { id: string; name: string; kind: Kind; team: { id: string; name: string } | null }
+interface ReplaceSide { id: string; name: string; kind: Kind; team: { id: string; name: string } | null }
 export interface ReplacePreview {
   old: ReplaceSide; new: ReplaceSide; new_name: string;
   old_to: { team: { id: string; name: string; spare: boolean } | null; number: number | null; name: string };
@@ -446,7 +447,7 @@ export interface RecycleItem {
   traffic_up: number | null; traffic_down: number | null; nic_rx: number | null; nic_tx: number | null; actor: string;
 }
 /** 回收时的快照（fleet 来源）：机器行（不含秘密）、订阅、续费、入口历史、出口；legacy 来源是导入时的原始 JSON，结构不定，所以字段都可缺 */
-export interface RecycleSnapshot {
+interface RecycleSnapshot {
   machine?: { note?: string | null } & Record<string, unknown>; name?: string; team?: string | null; host?: string | null; provider?: string | null; plan?: string | null;
   subscription?: object | null;
   renewals?: { id?: string; old_due: string; new_due: string; amount_cents: number; currency: string; note: string; actor: string; created_at: string }[];
@@ -457,10 +458,10 @@ export interface RecycleSnapshot {
 export interface RecycleDetail extends RecycleItem { snapshot: RecycleSnapshot }
 
 // ---- 设置页：API 密钥、告警通知渠道（契约见 COMMON.md） ----
-export type ApiScope = 'read' | 'write' | 'secrets' | 'exec';
+type ApiScope = 'read' | 'write' | 'secrets' | 'exec';
 export interface ApiKey { id: string; name: string; prefix: string; scopes: ApiScope[] | string[]; created_at: string; expires_at: string | null; last_used_at: string | null; revoked_at: string | null }
-export type NotifyKind = 'telegram' | 'feishu';
-export type NotifySeverity = 'info' | 'warning' | 'critical';
+type NotifyKind = 'telegram' | 'feishu';
+type NotifySeverity = 'info' | 'warning' | 'critical';
 export interface NotifyChannel { id: string; name: string; kind: NotifyKind | string; min_severity: NotifySeverity | string; enabled: boolean; /** 收每月 1 号发的上月摘要 */ monthly_report: boolean; created_at: string; config_hint: string }
 /** channel_name：渠道删了之后为 null（发送记录还留着） */
 export interface NotifyLogEntry { id: string; channel_id: string; channel_name: string | null; incident_id: string | null; ts: string; ok: boolean; error: string | null;

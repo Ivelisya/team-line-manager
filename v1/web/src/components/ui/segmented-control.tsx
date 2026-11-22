@@ -12,7 +12,7 @@ export type SegmentedControlSize = "default" | "lg" | "sm";
    轨道 --h-lg（sm 是 --h-sm）、内边距 --seg-pad、底色 --track、药丸形；项高 --seg-item（sm 是 --seg-item-sm），触屏随令牌上调；
    选中块是 --thumb + --shadow-thumb 的药丸，换项时 width / translate 用 --dur-2 + --ease-out 滑过去；按下缩放在 components.css「交互状态」。
    选中判定沿用 coss 的三个属性：data-checked（Radio）、data-pressed（Toggle）、aria-current=page。 */
-export const segmentedControlItemSizeClassNames: Record<
+const segmentedControlItemSizeClassNames: Record<
   SegmentedControlSize,
   string
 > = {
@@ -21,10 +21,10 @@ export const segmentedControlItemSizeClassNames: Record<
   sm: "h-(--seg-item-sm) px-2.5 text-label",
 };
 
-export const segmentedControlItemLayoutClassName =
+const segmentedControlItemLayoutClassName =
   "gap-1.5 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-(--icon-sm)";
 
-export const segmentedControlIndicatorSurfaceClassName =
+const segmentedControlIndicatorSurfaceClassName =
   "rounded-pill bg-(--thumb) [box-shadow:var(--shadow-thumb),inset_0_1px_0_color-mix(in_srgb,white_35%,transparent)]";
 
 const segmentedControlRootSize: Record<SegmentedControlSize, string> = {
@@ -199,8 +199,8 @@ function SegmentedControlIndicator(): React.ReactElement {
       setRect((previous) => (isSameRect(previous, next) ? previous : next));
     };
 
-    update();
-
+    // 挂载时不当场量：layout effect 里读尺寸会在提交途中逼浏览器把整页排一遍（首页回来时这一下实测约 100ms，卡片还没排完版），
+    // 下面 ResizeObserver 开始观察时会在这一帧排版之后、绘制之前送来第一条，那时再量（不另加一次排版）。量出来之前选中项自己垫着底（见上面的项样式），看不出差别
     // 尺寸观察走全站共用的 ResizeObserver（lib/sharedObserver），不每个实例各建一个；MutationObserver 没有共用版本，照旧每实例一个
     let stopSize: (() => void)[] = [];
     const mutationObserver = new MutationObserver((records) => {

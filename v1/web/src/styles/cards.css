@@ -29,6 +29,14 @@
 }
 .ncard[data-view="small"] { --rows: 7; }
 .ncard[data-view="compact"] { --rows: 6; }
+/* 还没排过的远处的卡（NodeCard 写 data-far：挂载时在上下 200px 余量之外，靠近或首屏之后空闲时摘掉）跳过样式与排版：回到首页时 18 张详细卡的样式计算与排版约 150ms，首屏只看得见两三张。
+   content-visibility 带布局包含，生效期间这张卡不跟同一行对齐（不参与 subgrid），所以只给远处的卡，靠近就摘掉。
+   占位高度按实测卡高（内容盒 = 卡高 − 上下边框 2）：详细约 732、标准约 471、紧凑约 370（带三网 PING 的线路机高一些）。
+   contain-intrinsic-size 写在所有卡上（没有包含时它不起作用）：auto 让浏览器一直记着每张卡最近一次的实际高度，变远时按它占位，滚动条不跳 */
+.ncard { contain-intrinsic-size: auto 730px; }
+.ncard[data-view="small"] { contain-intrinsic-size: auto 469px; }
+.ncard[data-view="compact"] { contain-intrinsic-size: auto 368px; }
+.ncard[data-far] { content-visibility: auto; }
 /* 悬停上浮 2px 写在 components.css「交互状态」。卡片本身不可点（点里面的读数、按钮），不做按下缩放。
    出现时不各自淡入：翻页 / 换视图由网格容器整块淡入一次（Home 的 .page-in），一页几十张卡不再各起一条动画 */
 /* 故障描红边（节点卡与环形卡共用）；降级照常服务、算正常，不描边，只在状态胶囊上体现。

@@ -11,7 +11,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
    单选用 Base UI 的 ToggleGroup（单值，role=group + aria-label，项 aria-pressed）：Tab 进组、方向键只移动焦点、Enter / 空格才选中——手动激活，同改前的 Radix ToggleGroup，也是 macOS 的习惯；
    不用 RadioGroup：它方向键一按就选中，首页的视图 / 密度、时间范围会随方向键反复重排 / 重取数，访问页的视图切换按一下 → 就跳走了，键盘过不去。再按一下已选中的项不取消（始终选着一项）。
    选中块是轨道里的一个滑块，换项时 width / translate 过渡滑过去（--dur-2 + --ease-out）。 */
-export interface SegItem<T extends string> { value: T; label: React.ReactNode; count?: number }
+interface SegItem<T extends string> { value: T; label: React.ReactNode; count?: number }
 /** memo：父页面随实时推送重渲染时，items / onChange 稳定（模块常量、useMemo、useCallback）的分段控件不跟着重画 */
 /** disabled：整组置灰（如首页的卡片密度在表格 / 环形视图下），仍占位、不让工具栏跳动 */
 type SegProps<T extends string> = { value: T; onChange: (v: T) => void; items: readonly SegItem<T>[]; label: string; sm?: boolean; disabled?: boolean; className?: string };
@@ -55,7 +55,9 @@ export const SegmentedOverflow = React.memo(function SegmentedOverflow<T extends
       const avail = r.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
       const els = [...ms.children] as HTMLElement[];
       const widths = els.slice(0, -1).map((e) => e.getBoundingClientRect().width);
-      const more = els[els.length - 1].getBoundingClientRect().width;
+      const moreEl = els.at(-1); // 副本的最后一项是「更多」
+      if (!moreEl) return;
+      const more = moreEl.getBoundingClientRect().width;
       const gap = parseFloat(getComputedStyle(ms).columnGap) || 0;
       setDim((o) => (o && o.avail === avail && o.more === more && o.widths.join() === widths.join() ? o : { avail, widths, more, gap }));
     };
@@ -70,7 +72,7 @@ export const SegmentedOverflow = React.memo(function SegmentedOverflow<T extends
   const sel = items.findIndex((it) => it.value === value);
   let shown = items.map((_, i) => i);
   if (dim && dim.widths.length === items.length) {
-    const sum = (ix: number[]) => ix.reduce((a, i) => a + dim.widths[i], 0) + dim.gap * Math.max(0, ix.length - 1);
+    const sum = (ix: number[]) => ix.reduce((a, i) => a + (dim.widths[i] ?? 0), 0) + dim.gap * Math.max(0, ix.length - 1);
     if (sum(shown) > dim.avail + 0.5) {
       let k = items.length - 1;
       const pickShown = (k: number) => { const ix = shown.slice(0, k); return sel >= k && sel >= 0 ? [...ix.slice(0, Math.max(0, k - 1)), sel] : ix; };
@@ -82,7 +84,7 @@ export const SegmentedOverflow = React.memo(function SegmentedOverflow<T extends
   return (
     <div className={cn('seg-ovf', className)}>
       <ToggleGroup ref={root} value={[value]} onValueChange={pick(onChange)} aria-label={label} render={<SegmentedControl className="min-w-0 flex-1 basis-0 max-w-none [&>[data-slot=segmented-control-item]]:grow" />}>
-        {shown.map((i) => <Item key={items[i].value} it={items[i]} />)}
+        {shown.map((i) => { const it = items[i]; return it && <Item key={it.value} it={it} />; })}
         {hidden.length > 0 && (
           <DropdownMenu>
             <DropdownMenuTrigger aria-label={`更多${label}`} render={<SegmentedControlItem className="flex-none! gap-0.5 data-popup-open:bg-hover data-popup-open:text-fg" />}>更多<ChevronDown size={14} className="text-fg-3" /></DropdownMenuTrigger>

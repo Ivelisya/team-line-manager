@@ -2,7 +2,7 @@
 // 骨架同机器抽屉：头部是名称 + 状态 + 上一台 / 下一台，基本信息是「标签在上、值在下」的网格，操作都在最后的「管理」页签（改名是页签里的表单）。
 // 总览数字不带框，出口关系画成「出口 → 线路机 → 节点」，部署进度是时间线。
 import * as React from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { ChevronLeft, ChevronRight, CircleX, MoreHorizontal, Router as RouterIcon, TriangleAlert, Users, Waypoints, XCircle } from 'lucide-react';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/sheet';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';

@@ -18,6 +18,7 @@ import { installRoutersMock } from './routers';
 import { installTerminalMock } from './terminal';
 import { installClientSubsMock, subNamesOfMachine } from './clientSubs';
 import { installCustomerMock } from './customer';
+import { scaleMachines, scaleTarget, streamOpenDelay } from './scale';
 
 const db: Db = buildDb();
 const DAY = 86400_000;
@@ -40,7 +41,7 @@ class MockStream {
   private hb = setInterval(() => this.fn({ type: 'hb' }), 15_000);
   constructor() {
     listeners.add(this.fn);
-    setTimeout(() => { if (this.readyState === 0) { this.readyState = 1; this.onopen?.(); } }, 50);
+    setTimeout(() => { if (this.readyState === 0) { this.readyState = 1; this.onopen?.(); } }, streamOpenDelay());
   }
   send() {}
   close() { this.readyState = 3; listeners.delete(this.fn); clearInterval(this.hb); }
@@ -1774,6 +1775,9 @@ function jitter() {
 }
 
 export function installMock() {
+  // 性能测试的规模（tools/perf.mjs 设 sessionStorage 的 mock:machines）：没设时不动
+  const n = scaleTarget();
+  if (n) { scaleMachines(db, n); refreshCounts(); }
   bootFixtures();
   const realFetch = window.fetch.bind(window);
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {

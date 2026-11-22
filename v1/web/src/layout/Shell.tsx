@@ -1,7 +1,7 @@
 // 外壳：56px 顶栏 + 240px 侧栏 + 内容区。选中项是软色胶囊。≤1023px 侧栏收成抽屉。
 import { Kbd } from '@/components/ui/kbd';
 import * as React from 'react';
-import { NavLink, Navigate, Outlet, useLocation, useNavigationType } from 'react-router-dom';
+import { NavLink, Navigate, Outlet, useLocation, useNavigationType } from 'react-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { Boxes, LogOut, Menu, Monitor, Moon, RotateCw, Sun } from 'lucide-react';
 import { NAV } from '@/lib/nav';
@@ -21,6 +21,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Toaster } from '@/components/ui/toast';
 import { useDrawer } from '@/lib/drawer';
 import { setOverlay } from '@/lib/palette';
+import { prefetchHandlers } from '@/lib/prefetch';
 import { useBootTarget, useDeployTarget, useRemoved, useRemoveExitsTarget, useRouterDrawer, useSwitchTarget, useSyncTarget } from '@/lib/routers';
 import { Hotkeys, PaletteTrigger } from '@/features/Hotkeys';
 import { AlertsIndicator } from '@/features/AlertsIndicator';
@@ -28,6 +29,7 @@ import { JobsIndicator } from '@/features/JobsIndicator';
 import { ErrorBoundary } from '@/components/app/ErrorBoundary';
 import { Note, Pill } from '@/components/app/primitives';
 import { MotionProvider } from '@/lib/motion';
+import { useEver } from '@/lib/useHeld';
 
 // 抽屉（含各页签、图表、对话框）和生命周期对话框（换线路机、搬空、替换、退役）只在第一次用到时才下载，登录页和首屏不背这份体积。
 // 加载失败（发版后旧块 404）由外面的 silent ErrorBoundary 接住并提示刷新。
@@ -46,13 +48,6 @@ const TerminalHost = React.lazy(() => import('@/features/Terminal').then((m) => 
 /** 浏览器是否联网（断网时顶栏写「已断开」而不是「重连中…」） */
 const onlineSub = (f: () => void) => { window.addEventListener('online', f); window.addEventListener('offline', f); return () => { window.removeEventListener('online', f); window.removeEventListener('offline', f); }; };
 const useOnline = () => React.useSyncExternalStore(onlineSub, () => navigator.onLine);
-
-/** 一旦为真就一直为真：懒加载的浮层第一次需要时挂载，之后保持挂载（关闭动画、再次打开都不用重来） */
-function useEver(v: boolean) {
-  const r = React.useRef(false);
-  if (v) r.current = true;
-  return r.current;
-}
 
 /** 本会话里进入过的页面（路由第一段）。第一次进入时主要区块依次淡入上移，再进来只整块淡入（base.css .page-in） */
 const enteredSections = new Set<string>();
@@ -161,6 +156,8 @@ export function Shell() {
   const loc = useLocation();
   const [navOpen, setNavOpen] = React.useState(false);
   const theme = useTheme();
+  // 侧栏链接的预取（悬停 / 聚焦 / 按下时先取目标页的代码和主查询，见 lib/prefetch）：每项一份，外壳重渲染不重建
+  const pre = React.useMemo(() => new Map(NAV.map((n) => [n.to, prefetchHandlers(qc, n.to)])), [qc]);
   const stream = useStream(!!me.data);
   const online = useOnline();
   // 标签页标题同顶栏告警胶囊：进行中、还没确认的条数
@@ -168,7 +165,9 @@ export function Shell() {
   const firing = inc ? inc.total - inc.acked : 0;
   useTitleAlerts(firing);
 
-  React.useEffect(() => { setNavOpen(false); }, [loc.pathname]);
+  // 换了页面就收起窄屏侧栏：渲染时按地址调整（不经 effect 先画一帧开着的）
+  const [navPath, setNavPath] = React.useState(loc.pathname);
+  if (navPath !== loc.pathname) { setNavPath(loc.pathname); setNavOpen(false); }
   // 窄屏侧栏（左侧抽屉）开着时 Esc 收起，焦点回到汉堡按钮；上面叠着对话框、命令面板或节点抽屉时 Esc 归它们
   const navBtn = React.useRef<HTMLButtonElement>(null);
   React.useEffect(() => {
@@ -269,7 +268,7 @@ export function Shell() {
           <nav><ul className="nav-list">
             {NAV.map((n) => (
               <li key={n.to}>
-                <NavLink to={n.to} end={n.end} className="nav-item">
+                <NavLink to={n.to} end={n.end} className="nav-item" {...pre.get(n.to)}>
                   {() => <>
                     <n.icon size={16} /><span className="nav-label">{n.label}</span>
                     {n.badge && firing > 0 && <span className="count-badge">{firing}</span>}

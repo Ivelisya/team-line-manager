@@ -3,7 +3,7 @@
 // 排序只有一份：工具栏的下拉与表格表头改的是同一个状态（下拉列常用的几种，表头点出来的其它排序在下拉里显示「自定义」），卡片 / 环形视图同样按它排。
 // 默认排序：线路机 → 团队 → 编号；故障/离线不下沉。分组、排序、仅看异常、视图、密度都写在地址里（刷新、分享后不变），没写时用上次的选择（本地偏好），视图、密度、排序随即补进地址。
 import * as React from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { AlertTriangle, CircleGauge, CloudUpload, Inbox, LayoutGrid, Server, Table2 } from 'lucide-react';
 import { useMachines, useOverview, useProbeBeatsPoll, useTeams } from '@/lib/queries';
 import { usePingBeatsPoll } from '@/lib/ping';
@@ -22,7 +22,7 @@ import { Button } from '@/components/ui/button';
 import { Pagination } from '@/components/app/Pagination';
 import { HomeSection, OverviewSection } from '@/features/HomeOverview';
 import { MachineTable, sortTable } from '@/features/MachineTable';
-import { usePage } from '@/lib/usePage';
+import { usePage, type PageSizes } from '@/lib/usePage';
 import { useStableOrder } from '@/lib/sort';
 import { watchSize } from '@/lib/sharedObserver';
 
@@ -47,7 +47,7 @@ const LAYOUT_ITEMS: { value: Layout; label: React.ReactNode }[] = [
 /** 一页超过这么多张卡就不做筛选 / 排序 / 换密度时的弹簧重排：几十张卡同时量位置、逐帧变换，比直接换位更卡 */
 const LAYOUT_ANIM_MAX = 24;
 /** 每页条数：卡片与环形都是 2、3、4、6 的倍数，常见列数下最后一行是满的；中间那档是默认 */
-const PAGE_SIZES: Record<CardView | 'table' | 'ring', number[]> = { large: [12, 24, 48], small: [18, 36, 72], compact: [24, 48, 96], table: [25, 50, 100], ring: [24, 48, 96] };
+const PAGE_SIZES: Record<CardView | 'table' | 'ring', PageSizes> = { large: [12, 24, 48], small: [18, 36, 72], compact: [24, 48, 96], table: [25, 50, 100], ring: [24, 48, 96] };
 const EMPTY_MACHINES: MachineView[] = [];
 // 本地偏好的键（没写在地址里时用上次的选择）
 const P_LAYOUT = 'fleet:layout'; const P_VIEW = 'fleet:view'; const P_SORT = 'fleet:home-sort';

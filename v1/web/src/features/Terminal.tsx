@@ -51,7 +51,7 @@ const CLOSE_REASON: Record<number, string> = { 1009: '一次发送的内容太�
 const PILL: Record<Exclude<Phase['s'], 'closed'>, [Tone, string]> = { auth: ['info', '正在验证'], cred: ['warn', '待验证'], connecting: ['info', '正在连接'], open: ['ok', '已连接'] };
 
 /** 一个终端窗口。kind：machine 机器 / router 软路由 */
-export function Terminal({ kind, id, name }: TermTarget) {
+function Terminal({ kind, id, name }: TermTarget) {
   const host = useMachine(kind === 'machine' ? id : null).data?.host_machine;
   const box = React.useRef<HTMLDivElement>(null);
   const term = React.useRef<XTerm | null>(null);
@@ -71,7 +71,7 @@ export function Terminal({ kind, id, name }: TermTarget) {
     const fitNow = () => { if (el.clientWidth > 0 && el.clientHeight > 0) f.fit(); };
     const raf = requestAnimationFrame(fitNow);
     const enc = new TextEncoder();
-    const send = (d: Uint8Array | string) => { const ws = sock.current; if (ws?.readyState === WebSocket.OPEN) ws.send(d); };
+    const send = (d: Uint8Array<ArrayBuffer> | string) => { const ws = sock.current; if (ws?.readyState === WebSocket.OPEN) ws.send(d); };
     // 一条消息有上限（超了服务端以 1009 断开）：大段粘贴切成几条发，终端按字节拼回去
     const max = meta().terminal.max_message;
     t.onData((d) => { const b = enc.encode(d); for (let i = 0; i < b.length; i += max) send(b.subarray(i, i + max)); });
@@ -137,7 +137,9 @@ export function Terminal({ kind, id, name }: TermTarget) {
   }, [kind, id]);
 
   React.useEffect(() => {
+    // eslint-disable-next-line react/set-state-in-effect -- 连接网页终端（外部系统），connect 当场把状态设成「连接中」
     void connect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 卸载时要关的正是那一刻的连接（重连会换掉 sock.current）
     return () => { gen.current++; const ws = sock.current; sock.current = null; ws?.close(); };
   }, [connect]);
 

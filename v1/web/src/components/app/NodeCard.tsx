@@ -284,17 +284,29 @@ function flushTags() {
   const reads = jobs.flatMap((j) => {
     const el = j.list();
     if (!el?.isConnected) return [];
+    // 远处的卡（content-visibility 跳过中）不量：读它的排版会逼浏览器把整张卡算一遍。先记下，卡片靠近、摘掉 data-far 时再排进来（requeueTags）
+    if (el.closest('[data-far]')) { tagsWaiting.add(j); return []; }
     if (!el.firstElementChild) return [{ j, n: 0, dx: 0 }];
     const top = (el.firstElementChild as HTMLElement).offsetTop;
     let n = 0;
     for (const t of el.children) if ((t as HTMLElement).offsetTop > top) n++;
-    const last = el.children[el.children.length - 1 - n];
-    return [{ j, n, dx: last.getBoundingClientRect().right - el.getBoundingClientRect().right }];
+    const last = el.children[el.children.length - 1 - n]; // 第一枚在首行、不计入 n，下标不会越界
+    return [{ j, n, dx: last ? last.getBoundingClientRect().right - el.getBoundingClientRect().right : 0 }];
   });
   // 写：收起数变了的重渲染（之后的 layout effect 会再排一轮队、量出新的平移）；没变的直接写平移
   const changed = reads.filter((r) => r.n !== r.j.cut);
   for (const r of reads) { const more = r.j.more(); if (more && r.n === r.j.cut) more.style.translate = `${r.dx}px`; }
   if (changed.length) flushSync(() => changed.forEach((r) => r.j.setCut(r.n)));
+}
+/** 因为卡片在远处没量的标签行 */
+const tagsWaiting = new Set<TagsJob>();
+/** 卡片靠近了：它里面等着的标签行排进队列（同一轮微任务里量） */
+function requeueTags(card: Element) {
+  for (const j of tagsWaiting) {
+    const el = j.list();
+    if (!el?.isConnected) tagsWaiting.delete(j);
+    else if (card.contains(el)) { tagsWaiting.delete(j); queueTags(j); }
+  }
 }
 function queueTags(j: TagsJob) {
   if (!tagsQueue.size) queueMicrotask(flushTags);
@@ -354,7 +366,48 @@ function showOf(m: MachineView, show: CardShow | undefined, view: CardView): { t
 
 // 视口（上下各留 200px，滚动时先一步换上最新）之外的卡片冻结：推送照常改 m，但卡片主体收到的还是滚出去时的那一份（memo 挡住整张卡），
 // 回到视口时换成最新的。一页 96 张紧凑卡，一条推送原来要把视口外的几十张一起重画
-const watchNear = sharedObserver<IntersectionObserverEntry>((cb) => new IntersectionObserver(cb, { rootMargin: '200px 0px' }));
+const NEAR = 200;
+const watchNear = sharedObserver<IntersectionObserverEntry>((cb) => new IntersectionObserver(cb, { rootMargin: `${NEAR}px 0px` }));
+
+// 离视口远的卡（在 NEAR 余量之外）不算样式、不排版：卡片上挂 data-far，cards.css 给它 content-visibility: auto（按密度估的高度，渲染过一次后记住实际高度）。
+// 回到首页时 18 张详细卡一起挂载，实测长任务里约 150ms 是这些卡的样式计算与排版、脚本只占约 20ms；首屏其实只看得见两三张。
+// content-visibility 带布局包含，卡片在它生效期间不参与网格的 subgrid（同一行的槽位对齐），所以只给还没排过的远处的卡：靠近（watchNear 进入余量）就摘掉，
+// 进视口之前已经按 subgrid 排好；首屏之后空闲时也逐行摘掉（scheduleIdleUnFar）。同一行的卡上下沿相同，总是一起靠近，不会一半对齐一半不对齐。
+// 挂载时每张卡一律带着 data-far 出生（写在 JSX 里、值恒为空串，之后 React 不会再动这个属性，远近只由这里的代码切换）：同一轮提交里别的 layout effect
+// （如工具栏分段控件 Base UI 的 ToggleGroup）读排版时，卡片已经被跳过，不会逼浏览器把整页卡片算一遍。这一轮所有 layout effect 跑完后的微任务里
+// 统一量一次位置，余量内的当场摘掉——都在绘制之前，首屏看不到半成品
+const farQueue = new Set<HTMLElement>();
+function flushFar() {
+  const tall = innerHeight + NEAR;
+  // 先读后写：所有位置在同一次排版里读出来
+  const near = [...farQueue].filter((el) => { const r = el.getBoundingClientRect(); return r.bottom > -NEAR && r.top < tall; });
+  farQueue.clear();
+  for (const el of near) unFar(el);
+  scheduleIdleUnFar();
+}
+function unFar(el: Element) {
+  if (!el.hasAttribute('data-far')) return;
+  el.removeAttribute('data-far');
+  requeueTags(el);
+}
+// 首屏之后，浏览器空闲时一次摘一行（按文档顺序取 IDLE_BATCH 张），一两秒内整页都排好：之后滚动时卡片已经是排好的，不在滚动途中算样式。
+// 摘掉的不再挂回去（滚远了也不挂）：卡片的数据本来就冻结着（见上），挂回去省不下什么，来回切反而让滚动时反复排版
+const IDLE_BATCH = 4;
+let idleId = 0;
+const idle = (f: () => void) => (typeof requestIdleCallback === 'function' ? requestIdleCallback(f, { timeout: 1000 }) : window.setTimeout(f, 50));
+function scheduleIdleUnFar() {
+  if (idleId) return;
+  idleId = idle(() => {
+    idleId = 0;
+    const far = document.querySelectorAll('.ncard[data-far]');
+    for (let i = 0; i < Math.min(IDLE_BATCH, far.length); i++) unFar(far[i]!);
+    if (far.length > IDLE_BATCH) scheduleIdleUnFar();
+  });
+}
+function queueFar(el: HTMLElement) {
+  if (!farQueue.size) queueMicrotask(flushFar);
+  farQueue.add(el);
+}
 
 type CardProps = { m: MachineView; view: CardView; current?: boolean; onOpen: (id: string, tab?: DrawerTab) => void; layoutKey: string | null; show?: CardShow; recovered?: boolean };
 /** 卡片只吃稳定的 props（onOpen 回调不随地址变化），配合 memo，抽屉开关时只有变了的那张重渲染。
@@ -364,7 +417,13 @@ function NodeCardImpl(p: CardProps) {
   const ref = useRef<HTMLElement>(null);
   const [near, setNear] = useState(true);
   const paused = useRef(false);
-  useEffect(() => watchNear(ref.current!, (e) => { paused.current = !e.isIntersecting; setNear(e.isIntersecting); }), []);
+  // 远近直接改元素上的 data-far（不经 React 的状态，切换不重渲染整张卡）；挂载时它带着 data-far 出生（CardBody），这里排进队列量一次
+  useLayoutEffect(() => queueFar(ref.current!), []);
+  useEffect(() => watchNear(ref.current!, (e) => {
+    paused.current = !e.isIntersecting;
+    if (e.isIntersecting) unFar(e.target);
+    setNear(e.isIntersecting);
+  }), []);
   const held = useRef(p.m);
   if (near) held.current = p.m;
   return <CardBody {...p} m={held.current} cardRef={ref} paused={paused} />;
@@ -387,7 +446,7 @@ const CardBody = memo(function CardBody({ m, view, current, onOpen: open, layout
   const flow = proxy ? <ProbePair m={m} onOpen={onOpen} /> : <Flow m={m} onOpen={onOpen} totals={view === 'large'} compact={view === 'compact'} paused={paused} />;
 
   return (
-    <mo.article ref={cardRef} layout={layoutKey == null ? false : 'position'} layoutDependency={layoutKey} transition={SPRING} className={cn('ncard', current && 'is-current', quiet && 'is-quiet')} data-view={view} data-id={m.id} data-kind={m.kind} data-health={m.health.status} data-offline={quiet ? '1' : undefined}>
+    <mo.article ref={cardRef} data-far="" layout={layoutKey == null ? false : 'position'} layoutDependency={layoutKey} transition={SPRING} className={cn('ncard', current && 'is-current', quiet && 'is-quiet')} data-view={view} data-id={m.id} data-kind={m.kind} data-health={m.health.status} data-offline={quiet ? '1' : undefined}>
       <Head name={m.name} from={m.spare_from} country={m.country} manual={!!m.country_set} ip={m.ip} view={view} onOpen={onOpen} />
 
       {view === 'large' && <>

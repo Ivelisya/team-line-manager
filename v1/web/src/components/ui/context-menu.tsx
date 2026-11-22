@@ -3,8 +3,8 @@
 import * as React from "react"
 import { ContextMenu as ContextMenuPrimitive } from "@base-ui/react/context-menu"
 import { cn } from "@/lib/utils"
-import { ChevronRightIcon, CheckIcon } from "lucide-react"
-import { floatCheck, floatGlass, floatItem, floatItemDanger, floatLabel, floatPositioner, floatSep, guardEscape } from "@/components/ui/float"
+import { ChevronRightIcon } from "lucide-react"
+import { floatGlass, floatItem, floatItemDanger, floatPositioner, floatSep, guardEscape } from "@/components/ui/float"
 
 /* shadcn base-mira 的 ContextMenu（Base UI）。外观与下拉菜单（dropdown-menu.tsx）同一套（float.ts），同一份菜单定义可以同时渲染成两种。
    和 shadcn 原版的差别：触发区不加 select-none（NodeMenus 的触发区是整张卡片网格 / 表格，不能禁掉里面的文字选择）；离视口边留 8px；
@@ -14,11 +14,6 @@ function ContextMenu({ onOpenChange, ...props }: ContextMenuPrimitive.Root.Props
   return <ContextMenuPrimitive.Root data-slot="context-menu" onOpenChange={guardEscape(onOpenChange)} {...props} />
 }
 
-function ContextMenuPortal({ ...props }: ContextMenuPrimitive.Portal.Props) {
-  return (
-    <ContextMenuPrimitive.Portal data-slot="context-menu-portal" {...props} />
-  )
-}
 
 function ContextMenuTrigger({
   ...props
@@ -64,24 +59,7 @@ function ContextMenuContent({
   )
 }
 
-function ContextMenuGroup({ ...props }: ContextMenuPrimitive.Group.Props) {
-  return (
-    <ContextMenuPrimitive.Group data-slot="context-menu-group" {...props} />
-  )
-}
 
-function ContextMenuLabel({
-  className,
-  ...props
-}: ContextMenuPrimitive.GroupLabel.Props) {
-  return (
-    <ContextMenuPrimitive.GroupLabel
-      data-slot="context-menu-label"
-      className={cn(floatLabel, className)}
-      {...props}
-    />
-  )
-}
 
 function ContextMenuItem({
   className,
@@ -142,58 +120,8 @@ function ContextMenuSubContent({
   )
 }
 
-function ContextMenuCheckboxItem({
-  className,
-  children,
-  checked,
-  ...props
-}: ContextMenuPrimitive.CheckboxItem.Props) {
-  return (
-    <ContextMenuPrimitive.CheckboxItem
-      data-slot="context-menu-checkbox-item"
-      className={cn(floatItem, className)}
-      checked={checked}
-      {...props}
-    >
-      {children}
-      <ContextMenuPrimitive.CheckboxItemIndicator className={floatCheck}>
-        <CheckIcon />
-      </ContextMenuPrimitive.CheckboxItemIndicator>
-    </ContextMenuPrimitive.CheckboxItem>
-  )
-}
 
-function ContextMenuRadioGroup({
-  ...props
-}: ContextMenuPrimitive.RadioGroup.Props) {
-  return (
-    <ContextMenuPrimitive.RadioGroup
-      data-slot="context-menu-radio-group"
-      {...props}
-    />
-  )
-}
 
-function ContextMenuRadioItem({
-  className,
-  children,
-  closeOnClick = true,
-  ...props
-}: ContextMenuPrimitive.RadioItem.Props) {
-  return (
-    <ContextMenuPrimitive.RadioItem
-      data-slot="context-menu-radio-item"
-      closeOnClick={closeOnClick}
-      className={cn(floatItem, className)}
-      {...props}
-    >
-      {children}
-      <ContextMenuPrimitive.RadioItemIndicator className={floatCheck}>
-        <CheckIcon className="[stroke-width:var(--icon-stroke-strong)]" />
-      </ContextMenuPrimitive.RadioItemIndicator>
-    </ContextMenuPrimitive.RadioItem>
-  )
-}
 
 function ContextMenuSeparator({
   className,
@@ -208,33 +136,14 @@ function ContextMenuSeparator({
   )
 }
 
-function ContextMenuShortcut({
-  className,
-  ...props
-}: React.ComponentProps<"span">) {
-  return (
-    <span
-      data-slot="context-menu-shortcut"
-      className={cn("ml-auto text-micro text-fg-3", className)}
-      {...props}
-    />
-  )
-}
 
 export {
   ContextMenu,
   ContextMenuTrigger,
   ContextMenuContent,
   ContextMenuItem,
-  ContextMenuCheckboxItem,
-  ContextMenuRadioItem,
-  ContextMenuLabel,
   ContextMenuSeparator,
-  ContextMenuShortcut,
-  ContextMenuGroup,
-  ContextMenuPortal,
   ContextMenuSub,
   ContextMenuSubContent,
   ContextMenuSubTrigger,
-  ContextMenuRadioGroup,
 }

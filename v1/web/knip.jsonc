@@ -1,0 +1,18 @@
+// knip：找没人用的文件、依赖、导出（pnpm knip）。入口由插件自己认：vite（index.html → src/main.tsx）、vitest（*.test.ts）、package.json 的 scripts（tools/*.mjs）。
+// 已知的误报写在这里，别的一律当真问题处理：删掉没人用的导出，或只在本文件用的去掉 export。
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "ignore": [
+    // 图表库（bklit 整套搬进来的）另有替换计划，不在这里逐个删它的导出
+    "src/components/ui/charts/**",
+    // 浏览器内 mock（VITE_MOCK=1）由别人维护，里面的导出不在这里清
+    "src/mock/**",
+    // 由 Rust 端（ts-rs）生成的响应类型，面板还没改用它（lib/types.ts 仍是手写的），先不算没人用
+    "src/lib/types.gen.ts"
+  ],
+  "ignoreDependencies": [
+    // 国旗 SVG 由 lib/flags.ts 的 import.meta.glob('/node_modules/flag-icons/flags/4x3/*.svg') 取，knip 看不到这种引用
+    "flag-icons"
+  ]
+  // 不用列的：tailwindcss、tw-animate-css 由 styles/*.css 的 @import 引（knip 的 CSS 解析认得），public/theme-init.js 由 index.html 的 <script> 引（public/ 不在扫描范围）
+}

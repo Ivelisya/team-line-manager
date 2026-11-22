@@ -6,7 +6,7 @@ import { LabelRow, UnitInput } from '@/components/ui/form';
 
 export type DurationItem = { min: number; label: string };
 /** 共用的常用时长（分钟）：静默与维护窗口两个对话框一份，别的时长用「自定义」填分钟数 */
-export const DURATIONS: DurationItem[] = [
+const DURATIONS: DurationItem[] = [
   { min: 30, label: '30 分钟' }, { min: 60, label: '1 小时' }, { min: 120, label: '2 小时' }, { min: 240, label: '4 小时' }, { min: 1440, label: '24 小时' },
 ];
 /** 默认时长（分钟）：1 小时 */
@@ -36,7 +36,9 @@ export function DurationField({ d, items = DURATIONS }: { d: ReturnType<typeof u
     if (!step) return;
     e.preventDefault();
     const i = (opts.indexOf(d.dur) + step + opts.length) % opts.length;
-    pick(opts[i]);
+    const v = opts[i];
+    if (v === undefined) return;
+    pick(v);
     (e.currentTarget.children[i] as HTMLElement).focus();
   };
   const chip = (v: number | 'custom', label: string) => (

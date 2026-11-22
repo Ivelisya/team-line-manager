@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Link, Route, Routes } from 'react-router-dom';
+import { Link, Route, Routes } from 'react-router';
 import { Compass, House } from 'lucide-react';
 import { Shell } from './layout/Shell';
 import { HomePage } from './pages/Home';
@@ -7,23 +7,24 @@ import { NodesPage } from './pages/Nodes';
 import { LoginPage } from './pages/Login';
 import { Empty } from './components/app/primitives';
 import { Button } from './components/ui/button';
+import { pageLoaders as L } from './lib/prefetch';
 
-// 首页 / 节点 / 登录常驻主包；其余页面按需加载（Shell 里有 Suspense）
+// 首页 / 节点 / 登录常驻主包；其余页面按需加载（Shell 里有 Suspense）。import 在 lib/prefetch（侧栏悬停预取共用）
 const lazyPage = <K extends string>(load: () => Promise<Record<K, React.ComponentType>>, name: K) =>
   React.lazy(() => load().then((m) => ({ default: m[name] })));
-const RelaysPage = lazyPage(() => import('./pages/Relays'), 'RelaysPage');
-const RoutersPage = lazyPage(() => import('./pages/Routers'), 'RoutersPage');
-const ProvisionPage = lazyPage(() => import('./pages/Provision'), 'ProvisionPage');
-const JobsPage = lazyPage(() => import('./pages/Jobs'), 'JobsPage');
-const CatalogPage = lazyPage(() => import('./pages/Catalog'), 'CatalogPage');
-const TeamsPage = lazyPage(() => import('./pages/Catalog'), 'TeamsPage');
-const ProvidersPage = lazyPage(() => import('./pages/Catalog'), 'ProvidersPage');
-const IncidentsPage = lazyPage(() => import('./pages/Incidents'), 'IncidentsPage');
-const SettingsPage = lazyPage(() => import('./pages/Settings'), 'SettingsPage');
-const TrafficPage = lazyPage(() => import('./pages/Traffic'), 'TrafficPage');
-const AccessPage = lazyPage(() => import('./pages/Access'), 'AccessPage');
-const PolicyPage = lazyPage(() => import('./pages/Policy'), 'PolicyPage');
-const AuditPage = lazyPage(() => import('./pages/Audit'), 'AuditPage');
+const RelaysPage = lazyPage(L.relays, 'RelaysPage');
+const RoutersPage = lazyPage(L.routers, 'RoutersPage');
+const ProvisionPage = lazyPage(L.provision, 'ProvisionPage');
+const JobsPage = lazyPage(L.jobs, 'JobsPage');
+const CatalogPage = lazyPage(L.catalog, 'CatalogPage');
+const TeamsPage = lazyPage(L.catalog, 'TeamsPage');
+const ProvidersPage = lazyPage(L.catalog, 'ProvidersPage');
+const IncidentsPage = lazyPage(L.incidents, 'IncidentsPage');
+const SettingsPage = lazyPage(L.settings, 'SettingsPage');
+const TrafficPage = lazyPage(L.traffic, 'TrafficPage');
+const AccessPage = lazyPage(L.access, 'AccessPage');
+const PolicyPage = lazyPage(L.policy, 'PolicyPage');
+const AuditPage = lazyPage(L.audit, 'AuditPage');
 
 /** 没有这个页面（手输错的地址、旧书签）：说清楚，给一个回首页的按钮，不静默跳回首页 */
 function NotFound() {

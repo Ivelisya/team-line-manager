@@ -1,8 +1,7 @@
-import * as React from "react"
 import { Select as SelectPrimitive } from "@base-ui/react/select"
 import { cn } from "@/lib/utils"
-import { ChevronDownIcon, CheckIcon, ChevronUpIcon } from "lucide-react"
-import { floatCheck, floatItem, floatLabel, floatPositioner, floatSep, floatSolid, guardEscape } from "@/components/ui/float"
+import { ChevronDownIcon, CheckIcon } from "lucide-react"
+import { floatCheck, floatItem, floatPositioner, floatSolid, guardEscape } from "@/components/ui/float"
 
 /* shadcn base-mira 的 Select（Base UI），复合导出保持原名（reui 的 data-grid 会用）；页面里的「options 数组」写法见 option-select.tsx。
    和 shadcn 原版的差别（都是为了守住改前的行为）：
@@ -16,15 +15,6 @@ function Select<Value, Multiple extends boolean | undefined = false>({ onOpenCha
   return <SelectPrimitive.Root onOpenChange={guardEscape(onOpenChange)} {...props} />
 }
 
-function SelectGroup({ className, ...props }: SelectPrimitive.Group.Props) {
-  return (
-    <SelectPrimitive.Group
-      data-slot="select-group"
-      className={cn("scroll-my-1", className)}
-      {...props}
-    />
-  )
-}
 
 function SelectValue({ className, ...props }: SelectPrimitive.Value.Props) {
   return (
@@ -109,18 +99,6 @@ function SelectContent({
   )
 }
 
-function SelectLabel({
-  className,
-  ...props
-}: SelectPrimitive.GroupLabel.Props) {
-  return (
-    <SelectPrimitive.GroupLabel
-      data-slot="select-label"
-      className={cn(floatLabel, className)}
-      {...props}
-    />
-  )
-}
 
 function SelectItem({
   className,
@@ -145,66 +123,13 @@ function SelectItem({
   )
 }
 
-function SelectSeparator({
-  className,
-  ...props
-}: SelectPrimitive.Separator.Props) {
-  return (
-    <SelectPrimitive.Separator
-      data-slot="select-separator"
-      className={cn("pointer-events-none", floatSep, className)}
-      {...props}
-    />
-  )
-}
 
-function SelectScrollUpButton({
-  className,
-  ...props
-}: React.ComponentProps<typeof SelectPrimitive.ScrollUpArrow>) {
-  return (
-    <SelectPrimitive.ScrollUpArrow
-      data-slot="select-scroll-up-button"
-      className={cn(
-        "top-0 z-10 flex w-full cursor-default items-center justify-center bg-raised py-1 [&_svg:not([class*='size-'])]:size-(--icon-sm)",
-        className
-      )}
-      {...props}
-    >
-      <ChevronUpIcon
-      />
-    </SelectPrimitive.ScrollUpArrow>
-  )
-}
 
-function SelectScrollDownButton({
-  className,
-  ...props
-}: React.ComponentProps<typeof SelectPrimitive.ScrollDownArrow>) {
-  return (
-    <SelectPrimitive.ScrollDownArrow
-      data-slot="select-scroll-down-button"
-      className={cn(
-        "bottom-0 z-10 flex w-full cursor-default items-center justify-center bg-raised py-1 [&_svg:not([class*='size-'])]:size-(--icon-sm)",
-        className
-      )}
-      {...props}
-    >
-      <ChevronDownIcon
-      />
-    </SelectPrimitive.ScrollDownArrow>
-  )
-}
 
 export {
   Select,
   SelectContent,
-  SelectGroup,
   SelectItem,
-  SelectLabel,
-  SelectScrollDownButton,
-  SelectScrollUpButton,
-  SelectSeparator,
   SelectTrigger,
   SelectValue,
 }

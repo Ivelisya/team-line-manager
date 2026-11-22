@@ -1,0 +1,29 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  // oxlint（pnpm lint）：正确性规则 + React Hooks 与 React Compiler 的规则（oxlint 原生移植的 eslint-plugin-react-hooks v7：purity、refs、immutability、set-state-in-render……）。
+  // 只开「肯定是错」的一档（correctness）和几条 React 规则；风格交给 oxfmt，不在这里管。
+  // 图表库（bklit 整套搬进来的）与 mock（别人维护）不在这里查，同 knip.jsonc
+  "plugins": ["react", "typescript", "oxc", "unicorn", "import"],
+  "categories": { "correctness": "error" },
+  "ignorePatterns": ["src/components/ui/charts/**", "src/mock/**", "dist/**", "dist-mock/**"],
+  "settings": { "react": { "version": "19.3" } },
+  "rules": {
+    "react/rules-of-hooks": "error",
+    "react/exhaustive-deps": "warn",
+    "react/jsx-key": "error",
+    // React Compiler 的规则：违反的组件编译器会跳过不优化（不报错）。编译器眼下没开（见 README「检查」），下面关掉的几条只是在说「编译器会跳过谁」，
+    // 照着改会动到手调过的地方；开编译器时改回 warn 逐个看。
+    "react/purity": "off", // 渲染时读 Date.now()：这些页面靠 useNow 的走表定时重渲染，要的就是渲染这一刻的时间
+    "react/refs": "off", // 渲染时读写 ref 是有意的：useHeld / useEver、NodeCard 的视口外冻结、useStableOrder 都靠它在渲染里「留住上一份」
+    "react/immutability": "off", // 只报了两处有意的写法：首页把本地偏好记在 useState 的对象里、上架页按供应商缓存的套餐选项（都不参与渲染比较）
+    "react/set-state-in-render": "warn",
+    "react/static-components": "warn",
+    "react/globals": "off", // drawer / routers 在渲染里把最新的 setSearchParams 交给模块级的 setLatest（给组件外的调用用），有意的
+    "react/use-memo": "warn",
+    "react/unsupported-syntax": "warn",
+    "react/preserve-manual-memoization": "off", // 只对编译器有意义（它能不能保住手写的 useMemo）；编译器没开
+    "react/incompatible-library": "warn",
+    "typescript/consistent-type-imports": ["error", { "fixStyle": "inline-type-imports" }],
+    "typescript/no-explicit-any": "error"
+  }
+}

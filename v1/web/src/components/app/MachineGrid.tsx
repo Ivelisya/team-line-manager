@@ -34,7 +34,7 @@ const droppable = (cols: Col[], sortId: string | undefined) => cols.filter((c) =
 function fitCols(cols: Col[], order: Col[], width: number) {
   let w = cols.reduce((s, c) => s + c.size, 0);
   let n = 0;
-  while (w > width && n < order.length) w -= order[n++].size;
+  for (const c of order) { if (w <= width) break; w -= c.size; n++; }
   return { n, fit: w <= width };
 }
 

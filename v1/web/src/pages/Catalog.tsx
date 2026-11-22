@@ -2,7 +2,7 @@
 import { Skeleton } from '@/components/ui/skeleton';
 import * as React from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Link, Navigate, useLocation, useSearchParams } from 'react-router-dom';
+import { Link, Navigate, useLocation, useSearchParams } from 'react-router';
 import { ArrowRight, ExternalLink, MoreHorizontal, Plus } from 'lucide-react';
 import { fetchRenumber, type TeamNodeCounts, useAddPlan, useAddProvider, useAddTeam, useDelPlan, useDelProvider, useDelTeam, usePatchPlan, usePatchProvider, usePatchTeam, usePlans, useProviders, useRelaysMonthlyUsd, useRenumber, useTeamNodeCounts, useTeams, useTeamsCompact } from '@/lib/queries';
 import type { Plan, Provider, Team, TrafficReset, TrafficRule } from '@/lib/types';
@@ -29,7 +29,9 @@ import { TzInput } from '@/components/app/TzInput';
 import { DueTab } from '@/features/DueTab';
 import { CustomerTab } from '@/features/CustomerTab';
 
-const GROUPS = {
+type Section = { value: string; label: string; Content: () => React.ReactNode };
+/** 每组至少一个页签（地址里没有或不认得的 section 落到第一个） */
+const GROUPS: Record<'teams' | 'providers', { title: string; sections: readonly [Section, ...Section[]] }> = {
   teams: { title: '团队', sections: [
     { value: 'teams', label: '团队', Content: TeamsTab },
     { value: 'customer', label: '台账', Content: CustomerTab },

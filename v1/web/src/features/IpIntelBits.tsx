@@ -14,7 +14,7 @@ const CONF: Record<string, string> = { high: '高', medium: '中', low: '低' };
 const INSTALL_CMD = '在中控运行 lab/install-ipintel.sh 安装';
 
 /** 境外地点「US · Dallas」的国家代码换成中文国名「美国 · Dallas」（国内的本来就是中文「河南省郑州市」） */
-export const placeZh = (place: string) => place.replace(/^([A-Z]{2})(?= · |$)/, (cc) => countryName(cc));
+const placeZh = (place: string) => place.replace(/^([A-Z]{2})(?= · |$)/, (cc) => countryName(cc));
 
 /** 接入方式徽标：住宅 / 移动 / 机房 / VPN / 未知各一个色调，悬停看判定理由 */
 function ConnPill({ intel }: { intel: Pick<IpIntel, 'conn_type' | 'conn_label' | 'confidence' | 'reason'> }) {

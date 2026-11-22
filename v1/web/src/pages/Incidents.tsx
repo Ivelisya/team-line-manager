@@ -1,12 +1,12 @@
 // 告警：三个下划线页签（换成另一类数据）——告警事件列表（确认 / 查看机器，服务端分页；下面再用分段控件筛 进行中 / 已恢复 / 全部）、静默与维护窗口（可预约开始时间）、月度可用率。列表都保持服务端顺序（告警严重度优先，静默按开始时间），前端不重排。
 import { Field } from '@/components/ui/field';
 import * as React from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router';
 import { BellOff, CalendarPlus, Check, CheckCircle2, ChevronDown, ChevronRight, Trash2, Wrench } from 'lucide-react';
 import { RenewDialog } from '@/features/BillingTab';
 import { UptimeTab, orgMonth } from '@/features/UptimeTab';
 import { INCIDENT_PAGE, useAck, useAckMany, useAddSilence, useDelSilence, useIncidents, useMachineBriefs, useNotifyChannels, useSilences } from '@/lib/queries';
-import { usePage } from '@/lib/usePage';
+import { usePage, type PageSizes } from '@/lib/usePage';
 import { Pagination } from '@/components/app/Pagination';
 import { useDrawer } from '@/lib/drawer';
 import { isRouterIncident, routerIncidentTab, showSwitch, showSync, useRouterDrawer, useRouters } from '@/lib/routers';
@@ -37,7 +37,9 @@ import { NodeHover } from '@/components/app/NodeHover';
 import { RecentCount, SuggestedCmds } from '@/components/app/IncidentBits';
 import { Empty, ErrorNote, Note, PageHead, Panel, Pill, TableWrap } from '@/components/app/primitives';
 
-const PAGE_SIZES = [20, INCIDENT_PAGE, 100];
+const PAGE_SIZES: PageSizes = [20, INCIDENT_PAGE, 100];
+// 还没取回时的空列表：固定一份，折叠批次的 useMemo 不因每次新建的 [] 白算
+const NONE: never[] = [];
 /** 级别一直按原级别（严重 / 警告）写；已恢复的灰掉（不再是要处理的红黄），状态写在说明下面 */
 const SEV = (i: Incident) => { const s = severityOf(i.severity); return i.state === 'resolved' ? <Pill tone="neutral" className="is-past">{s.label}</Pill> : <Pill tone={s.tone}>{s.label}</Pill>; };
 /** 说明列：摘要以「对象名：」开头（通知要能单独看懂），对象列已有名字，去掉不重复；英文原始错误换成中文（同顶栏预览与抽屉） */
@@ -59,14 +61,14 @@ function IncidentOps({ i }: { i: Incident }) {
 }
 
 const batchKey = (i: Incident) => `${i.rule}|${i.opened_at.slice(0, 16)}`;
-function foldBatches(list: Incident[]): (Incident | Incident[])[] {
-  const out: (Incident | Incident[])[] = [];
-  for (let a = 0; a < list.length;) {
-    let b = a + 1;
-    while (b < list.length && list[b].state === list[a].state && batchKey(list[b]) === batchKey(list[a])) b++;
-    if (b - a >= BATCH_MIN) out.push(list.slice(a, b)); else out.push(...list.slice(a, b));
-    a = b;
-  }
+/** 一批：至少一条（折叠行的级别、规则、开始时间取第一条） */
+type Batch = [Incident, ...Incident[]];
+function foldBatches(list: Incident[]): (Incident | Batch)[] {
+  // 先切成连续的同状态、同批次段，够 BATCH_MIN 条的折叠
+  const runs: Batch[] = [];
+  for (const i of list) { const run = runs.at(-1); if (run && i.state === run[0].state && batchKey(i) === batchKey(run[0])) run.push(i); else runs.push([i]); }
+  const out: (Incident | Batch)[] = [];
+  for (const run of runs) if (run.length >= BATCH_MIN) out.push(run); else out.push(...run);
   return out;
 }
 type State = 'firing' | 'resolved' | 'all';
@@ -104,7 +106,7 @@ export function IncidentsPage() {
   const alertN = q.data ? q.data.total - acked : undefined;
   const { open } = useDrawer();
   const { open: openRouter } = useRouterDrawer();
-  const list = q.data?.items ?? [];
+  const list = q.data?.items ?? NONE;
   const rows = React.useMemo(() => foldBatches(list), [list]);
   const [opened, setOpened] = React.useState<ReadonlySet<string>>(new Set()); // 展开了的批（以第一条的 id 为键）
   const toggle = (k: string) => setOpened((o) => { const n = new Set(o); if (!n.delete(k)) n.add(k); return n; });
@@ -114,7 +116,7 @@ export function IncidentsPage() {
   // 关闭后沿用最近的机器，对话框常驻挂载、播完退场动画
   const renewM = useHeld(renewId, machines?.find((m) => m.id === renewId));
   // 折叠行的对象列写「6 台线路机」：这一批的对象类型（软路由、线路机、节点；混着的写机器）
-  const foldNoun = (r: Incident[]) => {
+  const foldNoun = (r: Batch) => {
     if (isRouterIncident(r[0])) return '软路由';
     const kinds = new Set(r.map((i) => machines?.find((m) => m.id === (i.subject?.id ?? i.subject_id))?.kind));
     return kinds.size === 1 ? (kinds.has('relay') ? '线路机' : kinds.has(undefined) ? '机器' : '节点') : '机器';
@@ -216,13 +218,15 @@ function Silences({ show }: { show: boolean }) {
   const [preset, setPreset] = React.useState(''); // 新建静默预选的对象（'' = 不预选）
   const [askDel, setAskDel] = React.useState<Silence | null>(null);
   const delHeld = useHeld(askDel?.id, askDel);
-  // 命令面板 / 右键菜单：/incidents?silence=<机器id> 直接打开“新建静默”并选好对象；silence=new 不预选
+  // 命令面板 / 右键菜单：/incidents?silence=<机器id> 直接打开“新建静默”并选好对象；silence=new 不预选。
+  // 渲染时按参数打开（不经 effect 多画一轮），随后的 effect 只把参数从地址里删掉；参数删掉后 took 清空，同一台再点一次也会再打开
+  const want = sp.get('silence');
+  const [took, setTook] = React.useState<string | null>(null);
+  if (want && want !== took) { setTook(want); setPreset(want === 'new' ? '' : want); setOpen(true); }
+  else if (!want && took) setTook(null);
   React.useEffect(() => {
-    const want = sp.get('silence');
-    if (!want) return;
-    setPreset(want === 'new' ? '' : want); setOpen(true);
-    setSp((p) => { const n = new URLSearchParams(p); n.delete('silence'); return n; }, { replace: true });
-  }, [sp, setSp]);
+    if (want && want === took) setSp((p) => { const n = new URLSearchParams(p); n.delete('silence'); return n; }, { replace: true });
+  }, [want, took, setSp]);
   // 走表（有静默时每 10 秒重渲染）：到点「已预约」变「进行中」、到期的不再列出——静默开始、到期都没有事件，查询仍按时间过期，下次重取时中控也不再给它。
   // 时刻取渲染这一刻的，不用表上的：刚建的「从现在开始」不会因为表慢了几秒先显示成「已预约」
   useNow(!!q.data?.length, 10_000);

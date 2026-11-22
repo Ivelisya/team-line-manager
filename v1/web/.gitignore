@@ -1,4 +1,8 @@
 node_modules
 dist
+dist-mock
 shots
+perf-results
+test-results
+playwright-report
 *.tsbuildinfo

@@ -2,7 +2,7 @@
 // 集群状态：在线率大读数 + 格条、在线/离线/总计、状态胶囊；网卡速率（实时）+ 上行 / 下行两张小折线（全站速率环形缓冲：开场垫近 30 分钟历史，之后实时流喂，见 lib/live）。
 // 网卡速率只在集群状态里出现（KPI 原先也有一张，与它重复），KPI 那一格换成流量额度
 import * as React from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { Activity, AlertTriangle, ArrowDown, ArrowUp, CalendarClock, ChevronRight, CircleDollarSign, CloudUpload, Database, LayoutDashboard, Router as RouterIcon, Server, TrendingUp, Waypoints } from 'lucide-react';
 import type { Overview } from '@/lib/types';
 import * as F from '@/lib/format';

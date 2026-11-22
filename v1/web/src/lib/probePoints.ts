@@ -12,7 +12,7 @@ export const primaryIssue = (e: ReachEffective) => e.primary_issue ?? `${e.prima
 export const substituteOf = (e: ReachEffective) => e.substitute ?? '中控';
 /** order：探测顺序（第一个是主探测来源；空 = 主来源是中控）；primary_name：主来源的名字 */
 export interface ReachSource { order: { id: string; name: string; label: string }[]; primary_name: string; central_enabled: boolean; effective: ReachEffective; offline_after_s: number }
-export interface ProbeRelayStat { relay_id: string; name: string; avg_ms: number | null; median_ms: number | null; total: number; ok: number }
+interface ProbeRelayStat { relay_id: string; name: string; avg_ms: number | null; median_ms: number | null; total: number; ok: number }
 /** 到各线路机的统计窗口：1h 读原始记录，其余读小时汇总 */
 export type ProbeWindow = '1h' | '24h' | '7d' | '30d';
 /** blind：在线、但最近 3 分钟的探测都无效（对照目标连不上，discard_reason），同离线处理；界面叫「探测无效」 */

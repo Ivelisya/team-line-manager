@@ -2,7 +2,7 @@
 // 整个文件按需加载（首次打开时才下载 cmdk）。
 import { Kbd } from '@/components/ui/kbd';
 import * as React from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { ArrowUpCircle, BellOff, BellRing, Briefcase, CalendarPlus, Clipboard, CloudUpload, Moon, PackageOpen, ShieldCheck, Settings, SquareTerminal, Sun, Users, Waypoints, type LucideIcon } from 'lucide-react';
 import { NAV, type NavItem } from '@/lib/nav';
 import { useMachineLabels, useTeams, useUpgradeAllAgents } from '@/lib/queries';

@@ -1,7 +1,7 @@
 // 通用展示原件：每种只有一份实现（状态 pill / 圆点、KPI 卡、到期读数、表头排序、标签/值、段标题、面板、页头…）。
 import { Skeleton } from '@/components/ui/skeleton';
 import * as React from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { ArrowDownUp, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Copy, Globe, RotateCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { bytes, dueFmt, str, type Fmt } from '@/lib/format';
@@ -113,7 +113,7 @@ export function DueDate({ sub }: { sub: { due_date: string; billing_tz?: string 
 export const SPARE_TIP = '备用团队的机器，到期满 1 天后自动清理并移入回收站。\n续费后到期日顺延，就不会回收。\n被软路由出口指着、宿主机上还有在用同机 IP 节点、宿主机上有开着自动续费的备用同机 IP 节点、或自己开着自动续费的不自动回收，照常续费。';
 /** 软路由出口还指着的备用机器（服务端 recycle_held 的原因之一）：不自动回收。同机 IP 节点还在用、开着自动续费的原因见 heldNote */
 export const HELD_TEXT = '软路由出口还指着，不自动回收';
-export const HELD_TIP = '到期后也不会自动回收，回收会让客户的出口断掉。\n要回收，先把出口改指别处，或确认后立即回收。';
+const HELD_TIP = '到期后也不会自动回收，回收会让客户的出口断掉。\n要回收，先把出口改指别处，或确认后立即回收。';
 type HeldView = Pick<MachineView, 'router_exits' | 'live_ip_nodes' | 'renewing_ip_nodes' | 'subscription'>;
 type RecycleView = Pick<MachineView, 'lifecycle' | 'recycle_on' | 'recycle_held'> & HeldView;
 /** 不自动回收的原因（短句 + 悬停）：软路由出口还指着、同机 IP 节点还在用、同机 IP 节点开着自动续费、开着自动续费，有几样写几样 */
@@ -168,7 +168,7 @@ type HostTagProps = { id: string; host: MachineView['host_machine']; nodes: Mach
 export const HostTag = (p: HostTagProps) => (p.host || p.nodes.length ? <HostTagButton {...p} /> : null);
 function HostTagButton({ id, host, nodes, short, tabIndex }: HostTagProps) {
   const r = hostRel(host, nodes, short)!;
-  const to = host ? host.id : nodes.length === 1 ? nodes[0].id : id;
+  const to = host ? host.id : nodes.length === 1 && nodes[0] ? nodes[0].id : id;
   const act = host ? '点击打开宿主机' : nodes.length === 1 ? '点击打开它' : '点击在这台机器的详情里查看';
   return <button type="button" className="tag" data-c="violet" data-tip={`${r.tip}。${act}`} tabIndex={tabIndex} onClick={(e) => { e.stopPropagation(); openDrawer(to); }}>{r.text}</button>;
 }
@@ -256,22 +256,7 @@ export const SectionHeader = ({ title, meta, children }: { title: React.ReactNod
 );
 export const Section = ({ children, className }: { children: React.ReactNode; className?: string }) => <section className={cn('sec', className)}>{children}</section>;
 
-/** ref 落在 section 上（分页器换页后滚回面板顶部用） */
-export const Panel = React.forwardRef<HTMLElement, { title?: React.ReactNode; count?: React.ReactNode; sub?: React.ReactNode; tools?: React.ReactNode; children?: React.ReactNode; flush?: boolean; className?: string }>(function Panel({ title, count, sub, tools, children, flush, className }, ref) {
-  return (
-    <section ref={ref} className={cn('panel', className)}>
-      {(title || tools) && (
-        <header className="panel-head">
-          {title && <h2 className="panel-title">{title}</h2>}
-          {count != null && <span className="panel-count">{count}</span>}
-          {sub && <span className={cn('panel-sub', typeof sub === 'string' && 'ellipsis')}>{sub}</span>}
-          <div className="panel-tools">{tools}</div>
-        </header>
-      )}
-      {children != null && <div className={cn('panel-body', flush && 'is-flush')}>{children}</div>}
-    </section>
-  );
-});
+export { Panel } from './panel';
 
 /** 页面里的表格容器：表放得下（不用横滑）时写上 data-fit，表头吸顶在顶栏下方（table.css）；放不下时照常横滑、不吸顶。
  *  抽屉、对话框里的表不用它：那里的滚动容器不是页面，吸顶的位置不对 */

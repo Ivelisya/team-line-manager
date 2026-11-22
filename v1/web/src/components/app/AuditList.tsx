@@ -40,7 +40,7 @@ function describe(a: AuditEntry): Desc {
     : d.timed_out ? { text: '超时', tone: 'warn' } : code != null ? (code === 0 ? { text: '退出码 0' } : { text: `退出码 ${code}`, tone: 'warn' }) : { text: '失败', tone: 'bad' };
   const more: [string, string][] = [['命令', cmd], ['结果', d.error ? `${res.text}：${str(d.error)}` : res.text]];
   if (typeof d.duration_ms === 'number') more.push(['耗时', secs(d.duration_ms)]);
-  return { ...base, rest: cmd.split('\n')[0], res, more };
+  return { ...base, rest: cmd.split('\n')[0] ?? '', res, more };
 }
 
 const isToday = (iso: string) => new Date(iso).toDateString() === new Date().toDateString();

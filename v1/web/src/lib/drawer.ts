@@ -1,6 +1,6 @@
 // 机器详情抽屉的开关由 URL 控制：?m=<机器id>&tab=<页签>&range=<曲线时间范围>。任何页面都可以打开它，后退键关闭。
 import { useCallback, useRef } from 'react';
-import { useSearchParams, type SetURLSearchParams } from 'react-router-dom';
+import { useSearchParams, type SetURLSearchParams } from 'react-router';
 import type { QueryClient } from '@tanstack/react-query';
 import { readMachines } from './queries';
 
@@ -49,9 +49,9 @@ export const setDrawerOrder = (ids: readonly string[] | null) => { order = ids; 
  *  到头为 null，不绕回。不订阅列表（订阅会让每个页面都跟着取 /machines），用时读缓存；列表没取过、或这台不在在用列表里（已回收）时返回 undefined */
 export function drawerSiblings(qc: QueryClient, id: string | null): { prev: string | null; next: string | null } | undefined {
   if (!id) return undefined;
-  const at = (n: number, i: number, idAt: (k: number) => string) => (i < 0 ? undefined : { prev: i > 0 ? idAt(i - 1) : null, next: i < n - 1 ? idAt(i + 1) : null });
+  const at = (n: number, i: number, idAt: (k: number) => string | undefined) => (i < 0 ? undefined : { prev: i > 0 ? idAt(i - 1) ?? null : null, next: i < n - 1 ? idAt(i + 1) ?? null : null });
   const ids = order; const oi = ids ? ids.indexOf(id) : -1;
   if (ids && oi >= 0) return at(ids.length, oi, (k) => ids[k]);
   const list = readMachines(qc);
-  return list && at(list.length, list.findIndex((m) => m.id === id), (k) => list[k].id);
+  return list && at(list.length, list.findIndex((m) => m.id === id), (k) => list[k]?.id);
 }

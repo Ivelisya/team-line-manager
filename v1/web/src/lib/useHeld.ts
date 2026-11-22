@@ -1,4 +1,4 @@
-import { createElement, useRef, useState, type ComponentType } from 'react';
+import { createElement, Suspense, useRef, useState, type ComponentType, type ReactNode } from 'react';
 
 /** 对话框/抽屉的关闭动画期间还要继续渲染内容：id 清空后返回最近一次有数据时的值，直到下次打开 */
 export function useHeld<T>(id: string | null | undefined, data: T | null | undefined): T | undefined {
@@ -21,4 +21,16 @@ export function resetOnOpen<P extends { open: boolean }>(Dialog: ComponentType<P
   return function ResetOnOpen(p: P) {
     return createElement(Dialog, { ...p, key: useOpenCount(p.open) });
   };
+}
+
+/** 一旦为真就一直为真：懒加载的浮层第一次需要时挂载，之后保持挂载（关闭动画、再次打开都不用重来） */
+export function useEver(v: boolean) {
+  const r = useRef(false);
+  if (v) r.current = true;
+  return r.current;
+}
+
+/** 懒加载的对话框（React.lazy）：第一次打开时才挂载、才下载代码，之后一直挂着；下载期间什么也不显示，同外壳里的各个浮层 */
+export function LazyMount({ when, children }: { when: boolean; children: ReactNode }) {
+  return useEver(when) ? createElement(Suspense, { fallback: null }, children) : null;
 }

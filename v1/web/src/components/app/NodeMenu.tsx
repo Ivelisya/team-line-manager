@@ -2,7 +2,7 @@
 // 菜单内容只在打开时挂载，所以这里的 hook（mutation、路由）不会给每张卡片增加开销。
 // 菜单本身由 NodeMenus 按网格 / 表格挂一份，卡片和行里不放菜单根。
 import * as React from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { ArrowUpCircle, BellOff, CalendarPlus, Copy, Link2, PanelRightOpen, PencilLine, Power, Repeat2, Replace, SquareTerminal, Wrench } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
 import { fetchShare, mainShare, maintOwner, useEndMaintenance, useSilences } from '@/lib/queries';
@@ -17,7 +17,7 @@ import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator,
 import { DropdownMenuItem, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger } from '@/components/ui/dropdown-menu';
 import { runAfterMenuClosed, useAnchoredDropdown, useMenuHandoff } from './AnchoredDropdown';
 
-export type MenuEntry =
+type MenuEntry =
   | { key: string; sep: true }
   | { key: string; label: string; icon?: React.ReactNode; onSelect?: () => void; danger?: boolean; disabled?: boolean; why?: string; children?: MenuEntry[]; filter?: string };
 /** 子菜单超过这么多项时顶上给一个筛选框（线路机的分享链接一台几十条） */
@@ -46,7 +46,7 @@ function useNodeMenu(m: MachineView): MenuEntry[] {
   const shareItem: MenuEntry = shareable.length > 1
     ? { key: 'share', label: '复制分享链接', icon: <Link2 />, filter: shareable.length > FILTER_MIN ? '筛选节点…' : undefined,
       children: shareable.map((e) => ({ key: `share-${e.id}`, label: shareLabel(e), onSelect: () => void share(e.id) })).sort((a, b) => collator.compare(a.label, b.label)) }
-    : { key: 'share', label: '复制分享链接', icon: <Link2 />, disabled: shareable.length === 0 || retired, why: '没有可分享的入口', onSelect: () => void share(shareable[0].id) };
+    : { key: 'share', label: '复制分享链接', icon: <Link2 />, disabled: shareable.length === 0 || retired, why: '没有可分享的入口', onSelect: () => { const e = shareable[0]; if (e) void share(e.id); } };
   const items: MenuEntry[] = [
     { key: 'open', label: '打开详情', icon: <PanelRightOpen />, onSelect: () => open(m.id) },
     ...group('copy', '复制', <Copy />, [

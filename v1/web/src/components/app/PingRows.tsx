@@ -9,7 +9,7 @@ const ms = (v: number | null) => (v == null ? '—' : F.str(F.ms(v)));
 const pct = (v: number | null) => (v == null ? '—' : `${Math.round(v)}%`);
 
 function Row({ r }: { r: PingRow }) {
-  const tip = (i: number) => { const [m, l] = r.cells[i]; return m == null && l == null ? '没有数据' : `延迟 ${ms(m)} · 丢包 ${pct(l)}`; };
+  const tip = (i: number) => { const c = r.cells[i]; if (!c) return '没有数据'; const [m, l] = c; return m == null && l == null ? '没有数据' : `延迟 ${ms(m)} · 丢包 ${pct(l)}`; };
   const lossCur = r.cur_loss;
   return (
     <div className="nc-ping-row" data-tip={`${r.name}：${r.target}（${r.mode === 'icmp' ? 'ICMP' : 'TCP'}）`}>

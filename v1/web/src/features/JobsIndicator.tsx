@@ -1,6 +1,6 @@
 // 顶栏的“进行中作业”小徽标：有作业在跑时显示数量，点开浮层看每个作业的进度；作业结束时弹通知（带“查看”）。
 import * as React from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router';
 import { ListChecks } from 'lucide-react';
 import { useJobs } from '@/lib/queries';
 import { currentStepTitle, jobKindLabel, jobProgress } from '@/lib/jobs';

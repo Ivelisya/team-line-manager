@@ -1,7 +1,7 @@
 // 复制到剪贴板。http（非安全上下文）下 navigator.clipboard 不可用，退回 execCommand。
 import { toast } from '@/components/ui/toast';
 
-export async function writeClipboard(text: string): Promise<boolean> {
+async function writeClipboard(text: string): Promise<boolean> {
   try {
     if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(text); return true; }
   } catch { /* 退回旧方法 */ }
