@@ -279,7 +279,7 @@ async fn quota_period_in_half_hour_tz_counts_start_bucket() {
 
 /// 有 agent 的机器按网卡计量：本周期入、出总量按供应商的规则取小 / 取大 / 相加 / 只算出站（没有供应商取大）；
 /// 按面板校准（traffic_used_gb）的设置、保留与清除；校准后 used = 读数 + 录入时刻所在整点之后的网卡用量，录在周期之前的不算；上限按十进制 GB 告警；
-/// 周期中途上架的标 counted_from；滚动 30 天的起点是今天往前 29 天、没有重置日；总览本月业务流量含已退役机器的入口
+/// 周期中途上架的标 counted_from；滚动 30 天是此刻所在整点往前整 720 小时、没有重置日；总览本月业务流量含已退役机器的入口
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn quota_by_nic_rule_periods_and_opening_reading() {
     let t = setup(false).await;
@@ -385,8 +385,8 @@ async fn quota_by_nic_rule_periods_and_opening_reading() {
     let rfc = &time::format_description::well_known::Rfc3339;
     let act = start + time::Duration::hours(2);
     sqlx::query("update machine set activated_at = $2 where id = $1").bind(relay).bind(act).execute(db).await.unwrap();
-    let (today, next): (time::Date, time::Date) =
-        sqlx::query_as("select (now() at time zone 'America/Los_Angeles')::date, ((now() at time zone 'America/Los_Angeles')::date + interval '1 month')::date")
+    let next: time::Date =
+        sqlx::query_scalar("select ((now() at time zone 'America/Los_Angeles')::date + interval '1 month')::date")
             .fetch_one(db)
             .await
             .unwrap();
@@ -394,8 +394,10 @@ async fn quota_by_nic_rule_periods_and_opening_reading() {
     assert_eq!((q["mode"].as_str(), q["period_end"].as_str()), (Some("monthly"), Some(next.to_string().as_str())), "{q}");
     assert_eq!(q["counted_from"].as_str().map(|s| time::OffsetDateTime::parse(s, rfc).unwrap()), Some(act), "{q}");
 
-    // 供应商按滚动 30 天、订阅跟随供应商（不单独设重置日）：起点 = 今天往前 29 天，再前一天的那桶不算，没有重置日。
-    // 窗口里还有前面放的三桶（起点前一桶 5000 / 5000 这时也在窗口里）：入 5357、出 5409，取小
+    // 供应商按滚动 30 天、订阅跟随供应商（不单独设重置日）：窗口 = 此刻所在整点往前整 720 小时（hour >= 起点的桶），和时区无关，没有重置日。
+    // 719 小时前的那桶（入 7 出 9）在整 30 天里——它也早于以前的起点「洛杉矶今天往前 29 天的零点」（除非此刻正是洛杉矶的 23 点那一小时），
+    // 旧口径不算、新口径要算；722 小时前（30 天 + 2 小时）的那桶不算。窗口里还有前面放的三桶（起点前一桶 5000 / 5000 这时也在窗口里）：
+    // 入 5357、出 5409，取小
     set_base(None).await;
     let (s, v) = t.req("PATCH", &pv_path, Some(json!({"traffic_reset": "rolling30"})), None).await;
     assert_eq!(s, StatusCode::OK, "{v}");
@@ -403,27 +405,29 @@ async fn quota_by_nic_rule_periods_and_opening_reading() {
     follow.as_object_mut().unwrap().remove("traffic_reset_day");
     let (s, v) = t.req("PUT", &sub_path, Some(follow), None).await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    for (d, rx, tx) in [(30, 90_000i64, 90_000i64), (29, 7, 9)] {
-        sqlx::query(
-            "insert into host_metric_hourly (machine_id, hour, net_rx, net_tx)
-             values ($1, ((now() at time zone 'America/Los_Angeles')::date - $2)::timestamp at time zone 'America/Los_Angeles', $3, $4)",
-        )
-        .bind(relay)
-        .bind(d)
-        .bind(rx)
-        .bind(tx)
-        .execute(db)
+    for (h, rx, tx) in [(722, 90_000i64, 90_000i64), (719, 7, 9)] {
+        sqlx::query("insert into host_metric_hourly (machine_id, hour, net_rx, net_tx) values ($1, date_trunc('hour', now()) - make_interval(hours => $2), $3, $4)")
+            .bind(relay)
+            .bind(h)
+            .bind(rx)
+            .bind(tx)
+            .execute(db)
+            .await
+            .unwrap();
+    }
+    // 对外的 period_start 是窗口起点落在账单时区的日期
+    let start_day: time::Date = sqlx::query_scalar("select ((date_trunc('hour', now()) - interval '720 hours') at time zone 'America/Los_Angeles')::date")
+        .fetch_one(db)
         .await
         .unwrap();
-    }
     t.st.live.rolled_up();
     let m = t.get(&format!("/api/v1/machines/{relay}")).await;
     let q = &m["quota"];
-    assert_eq!((q["mode"].as_str(), q["period_start"].as_str(), q["period_end"].clone()), (Some("rolling30"), Some((today - time::Duration::days(29)).to_string().as_str()), Value::Null), "{q}");
+    assert_eq!((q["mode"].as_str(), q["period_start"].as_str(), q["period_end"].clone()), (Some("rolling30"), Some(start_day.to_string().as_str()), Value::Null), "{q}");
     assert_eq!((q["used"].as_i64(), m["subscription"]["traffic_reset_day"].clone()), (Some(5357), Value::Null), "{m}");
 
     // 滚动 30 天按面板校准：读数是录入时刻往前 30 天的量，按均匀分布逐日衰减。15 天前录的 300 GB 还算一半，
-    // 加上录入之后的实测（今天那三桶：入 5350、出 5400，取小；29、30 天前的两桶在录入之前，不算）。衰减按请求时刻算，留几分钟的余量
+    // 加上录入之后的实测（今天那三桶：入 5350、出 5400，取小；719、722 小时前的两桶在录入之前，不算）。衰减按请求时刻算，留几分钟的余量
     let set_at = |ago: &'static str| async move {
         sqlx::query("update subscription set traffic_used_base = 300000000000, traffic_used_base_at = now() - $2::interval where machine_id = $1")
             .bind(relay)
@@ -437,8 +441,14 @@ async fn quota_by_nic_rule_periods_and_opening_reading() {
     let used = q["used"].as_i64().unwrap_or_default();
     assert!((used - (150_000_000_000 + 5350)).abs() < 100_000_000, "{q}");
     assert_eq!((q["base"].as_i64(), q["base_at"].is_string(), q["counted_from"].clone()), (Some(300_000_000_000), true, Value::Null), "base 是原始读数：{q}");
-    // 满 30 天完全失效：回到纯实测，base / base_at 为 null
-    set_at("30 days 1 hour").await;
+    // 窗口与衰减都是整 30 天，失效边界正好在 30 天：29 天 23 小时前录的还算 1/720（约 0.42 GB），实测从录入所在整点之后算（719 小时那桶不算）
+    set_at("29 days 23 hours").await;
+    let q = quota().await;
+    let used = q["used"].as_i64().unwrap_or_default();
+    assert!((used - (416_666_667 + 5350)).abs() < 100_000_000, "{q}");
+    assert_eq!(q["base"].as_i64(), Some(300_000_000_000), "{q}");
+    // 满 30 天（多 1 分钟）完全失效：回到纯实测（从窗口起点算，719 小时那桶又算进来），base / base_at 为 null
+    set_at("30 days 1 minute").await;
     let q = quota().await;
     assert_eq!((q["used"].as_i64(), q["base"].clone(), q["base_at"].clone()), (Some(5357), Value::Null, Value::Null), "{q}");
     set_base(None).await;

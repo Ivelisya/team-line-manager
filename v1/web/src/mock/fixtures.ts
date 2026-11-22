@@ -39,7 +39,7 @@ export function nicOf(m: MachineView, all: MachineView[]): MachineView['nic'] {
 const countedFrom = (m: MachineView, since: string) => (m.activated_at && dateOnly(Date.parse(m.activated_at)) > since ? dateOnly(Date.parse(m.activated_at)) : null);
 
 /** 流量额度周期（同服务端 views::period_start）：有重置日取今天或之前最近一次（月份没有这一天按月末），否则本月 1 号；搬瓦工的机器（没单独设置重置日的）是滚动 30 天，
- *  起点 = 今天往前 29 天、没有下次重置日。已用：有网卡读数的机器按供应商规则从网卡算，家宽代理与同机 IP 节点是业务流量（宿主机连同它的同机 IP 节点含已退役的一起算）；
+ *  起点 = 此刻所在整点往前 720 小时（整 30 天）、没有下次重置日。已用：有网卡读数的机器按供应商规则从网卡算，家宽代理与同机 IP 节点是业务流量（宿主机连同它的同机 IP 节点含已退役的一起算）；
  *  加上按面板校准的读数（OPENING） */
 /** 近 7 天日均与预计用满（服务端算法的简化：用周期内已过的天数求日均，不足 1 天不预测） */
 function forecastOf(used: number, limit: number | null | undefined, start: string, end: Date | null): Pick<MachineView['quota'], 'daily_avg' | 'forecast_full_at'> {
@@ -58,7 +58,8 @@ export function quotaOf(m: MachineView, all: MachineView[]): MachineView['quota'
   let s = at(d.getFullYear(), d.getMonth());
   if (s.getUTCDate() > d.getDate()) s = at(d.getFullYear(), d.getMonth() - 1);
   const rolling = m.provider?.id === 'p1' && day === 1;
-  if (rolling) s = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate() - 29));
+  // 滚动 30 天（同服务端 quota::rolling_start）：此刻所在整点往前 720 小时
+  if (rolling) s = new Date(Math.floor(d.getTime() / 36e5) * 36e5 - 720 * 36e5);
   const nic = nicOf(m, all);
   let used = 0;
   if (nic && rule) used = rule === 'min' ? Math.min(nic.month_rx, nic.month_tx) : rule === 'max' ? Math.max(nic.month_rx, nic.month_tx) : rule === 'out' ? nic.month_tx : rule === 'in' ? nic.month_rx : nic.month_rx + nic.month_tx;

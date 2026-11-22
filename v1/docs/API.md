@@ -61,7 +61,7 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
 | POST | `/teams` | `{name,sort_order?}`（建不了备用团队，`spare` 不收） |
 | PATCH | `/teams/{id}` | `{name?,sort_order?}`（改团队名 = 该团队所有节点显示名一起变；备用团队也能改名，如「团队2 备用」→「备用」；不能取消备用） |
 | DELETE | `/teams/{id}` | 备用团队 409（不能删）。还有机器（含已退役的、回收站里等待清除的）或软路由时 409（写明各有几台）；没有才删，团队自己的访问规则一起删。审计 `team.delete` |
-| GET | `/providers` | `[{id,name,code,panel_url,timezone,traffic_rule,traffic_reset,remind_days}]`；`traffic_rule` 是这家怎么计量流量额度（网卡本周期入、出总量）：`sum` 双向（入 + 出）；单向只记其中一个：`max` 取大 / `min` 取小（如 GOMAMI）/ `out` 只算出站 / `in` 只算入站。每台机器的订阅可单独设置（见 `PUT /machines/{id}/subscription`），没设置的跟随这里。供应商同时是名下机器订阅的**模板**：`timezone`（账单时区）、`traffic_reset`（流量周期：`month` 账单时区的自然月、每月 1 号起；`billing` 账单日，即每台机器到期日是几号就几号起，月份没有这一天按月末；`rolling30` 滚动 30 天，账单时区的今天往前 29 天起、没有重置日，如 Blossom）、`remind_days`（到期前几天提醒，0–60）——订阅没单独设置这几项的跟随它，改了立即生效 |
+| GET | `/providers` | `[{id,name,code,panel_url,timezone,traffic_rule,traffic_reset,remind_days}]`；`traffic_rule` 是这家怎么计量流量额度（网卡本周期入、出总量）：`sum` 双向（入 + 出）；单向只记其中一个：`max` 取大 / `min` 取小（如 GOMAMI）/ `out` 只算出站 / `in` 只算入站。每台机器的订阅可单独设置（见 `PUT /machines/{id}/subscription`），没设置的跟随这里。供应商同时是名下机器订阅的**模板**：`timezone`（账单时区）、`traffic_reset`（流量周期：`month` 账单时区的自然月、每月 1 号起；`billing` 账单日，即每台机器到期日是几号就几号起，月份没有这一天按月末；`rolling30` 滚动 30 天，此刻往前整 30 天（720 小时）、没有重置日，如 Blossom）、`remind_days`（到期前几天提醒，0–60）——订阅没单独设置这几项的跟随它，改了立即生效 |
 | POST | `/providers` | `{name,code,panel_url?,timezone?,traffic_rule?,traffic_reset?,remind_days?}`；`traffic_rule` 不传 = `max`（不知道的供应商按取大，不会少算），`traffic_reset` 不传 = `month`，`remind_days` 不传 = 7，别的值 400；`panel_url` 须是 http(s) 地址（400）；`timezone` 不传 / null / 空串 = 存 null、跟随组织时区（`/meta` 的 org_timezone），否则须是 `at time zone` 认的时区（400）；名称或缩写重复 409 |
 | PATCH | `/providers/{id}` | `{name?,code?,panel_url?,timezone?,traffic_rule?,traffic_reset?,remind_days?}`：没传的不改（`traffic_rule` 改了立即影响这家机器的 `quota.used`；`timezone` / `traffic_reset` / `remind_days` 改了立即影响没单独设置这几项的订阅）；`panel_url` null / 空串 = 清空；`timezone` null / 空串 = 改回跟随组织时区（null）。校验同 POST（`panel_url` 和库里现有的一样时不校验：加 http(s) 校验之前存下的旧值不挡改别的字段）。写审计 `provider.update` |
 | DELETE | `/providers/{id}` | 还有套餐（含已归档的）或机器（含已退役的）时 409；没有才删。审计 `provider.delete` |
@@ -152,11 +152,12 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
                                 // used = base × (1 − 录入后天数 / 30) + 录入之后的用量（base 仍是原始读数，衰减后的部分不单独给），满 30 天二者为 null。
                                 // mode：monthly = 按月重置：有订阅时是账单时区里今天或之前最近一次（生效的）重置日起（月份没有这一天按月末，
                                 // 如 31 号在 9 月是 30 号、2 月是 28 / 29 号），从该日账单时区零点累计；没有订阅：sub_template.billing_tz 的本月。
-                                // rolling30 = 滚动 30 天（供应商 traffic_reset = rolling30 且订阅没单独设置重置日）：period_start = 账单时区的今天往前 29 天
-                                // （含今天共 30 个日历天），每天往前挪一天，界面写「近 30 天已用」。
+                                // rolling30 = 滚动 30 天（供应商 traffic_reset = rolling30 且订阅没单独设置重置日）：窗口 = 此刻所在整点往前 720 小时
+                                // （hour >= 起点的小时桶：最近 720 个整点桶加当前这个没过完的小时，不少于整 30 天、多算不到 1 小时；同供应商面板的 last 30 days，
+                                // 和时区无关），每小时往前挪一小时；period_start 是起点落在账单时区的日期，界面写「近 30 天已用」。
                                 // period_end：下次重置日（这一天账单时区零点起是新周期）；rolling30 为 null。
                                 // counted_from：本周期的数据从这一刻才有——首次上架完成（activated_at）晚于周期起点、且没有按面板校准的读数时为它，否则 null；
-                                // 之前的用量不在 used 里，实际剩余可能更少（rolling30 的新机器头 30 天都带）。来自小时汇总表，每次汇总后更新。
+                                // 之前的用量不在 used 里，实际剩余可能更少（rolling30 的新机器头 30 天都带：上架晚于窗口起点）。来自小时汇总表，每次汇总后更新。
                                 // daily_avg：近 7 天日均用量（字节 / 天，只算实测，不含按面板校准的读数；周期或上架不足 7 天按已有天数，不足 1 天为 null）。
                                 // forecast_full_at：按 daily_avg 预计用满的时刻（精确到小时），只在早于 period_end 时给出——已用满、没有上限、日均为 0、
                                 // 滚动 30 天（没有重置日）、daily_avg 为 null 时为 null。界面写「预计 11-02 用满（重置 11-13）」，fleetctl billing / show 同一句

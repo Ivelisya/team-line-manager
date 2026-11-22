@@ -154,7 +154,8 @@ fn used_cn_at(m: &Value, limit: Option<i64>, pct: Option<i64>, incl: &str, now: 
     let p = pct.map(|p| format!("（{p}%）")).unwrap_or_default();
     let span = match q["period_end"].as_str() {
         Some(e) => format!("{} → {e}", st(q, "/period_start")),
-        None => format!("{} 起", st(q, "/period_start")),
+        // 滚动 30 天：此刻往前整 30 天（720 小时，中控 quota::rolling_start），起点只写到日期（账单时区）
+        None => format!("{} 起（此刻往前整 30 天）", st(q, "/period_start")),
     };
     let at = q["base_at"].as_str().map(table::day).unwrap_or_default();
     let note = match (num(q, "/base"), calibrated_now(q, now), q["counted_from"].as_str()) {
@@ -994,11 +995,11 @@ mod tests {
             "mode": "rolling30", "base": 300_000_000_000i64, "base_at": "2026-11-07T04:00:00Z", "counted_from": null}});
         assert_eq!(
             used_cn_at(&q, Some(1000), Some(16), "", time::macros::datetime!(2026-11-22 04:00 UTC)),
-            "162 GB / 1000 GB（16%），2026-10-24 起，按 ens3 网卡，单向：取下行和上行中较大的；录入后实测 12 GB，加上按面板校准的读数 300 GB（2026-11-07 录入，近 30 天滚动：逐日衰减，现在还算 150 GB，2026-12-07 起完全失效）"
+            "162 GB / 1000 GB（16%），2026-10-24 起（此刻往前整 30 天），按 ens3 网卡，单向：取下行和上行中较大的；录入后实测 12 GB，加上按面板校准的读数 300 GB（2026-11-07 录入，近 30 天滚动：逐日衰减，现在还算 150 GB，2026-12-07 起完全失效）"
         );
         // 滚动 30 天、周期中途上架（日期按组织时区）；业务流量不写网卡
         let q = json!({"agent": {"nic_ifaces": ["eth0"]}, "quota": {"used": 31_900_000, "period_start": "2026-09-24", "period_end": null, "rule": null, "base": null, "counted_from": "2026-10-21T17:10:00Z"}});
-        assert_eq!(used_cn(&q, Some(1000), Some(0), ""), "0.03 GB / 1000 GB（0%），2026-09-24 起，按业务流量，下载加上传；从 2026-10-22 开始统计，之前的没算进来");
+        assert_eq!(used_cn(&q, Some(1000), Some(0), ""), "0.03 GB / 1000 GB（0%），2026-09-24 起（此刻往前整 30 天），按业务流量，下载加上传；从 2026-10-22 开始统计，之前的没算进来");
         // 不限流量只写本月：有 agent 按网卡，家宽代理按业务（含已移除入口）
         let m = json!({"nic": {"month_rx": 1_044_400_000_000i64, "month_tx": 108_000_000_000i64}, "month_counted_from": "2026-10-21T17:10:00Z"});
         assert_eq!(month_cn(&m), "网卡 ↓ 1.0 TB / ↑ 108.0 GB（2026-10-22 起）");

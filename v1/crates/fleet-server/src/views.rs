@@ -211,7 +211,7 @@ pub struct NicTraffic {
 }
 
 /// 流量额度周期：有订阅的按账单时区里最近一次（生效的）重置日起算，没有订阅的是模板时区（供应商的，没填为组织时区）的本月；
-/// 供应商按滚动 30 天（rolling30）且订阅没单独设置重置日的：账单时区的今天往前 29 天起（含今天共 30 个日历日）
+/// 供应商按滚动 30 天（rolling30）且订阅没单独设置重置日的：此刻往前整 30 天（720 小时，quota::rolling_start；同供应商面板的 last 30 days，和时区无关）
 #[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct Quota {
     /// 生效的流量上限（GB，十进制）；没有上限为 None。告警、网页、fleetctl 都读它，不各自再算
@@ -221,12 +221,13 @@ pub struct Quota {
     /// 周期内已用（字节）：有 agent 的机器按网卡流量、照生效的计量规则（订阅单独设置的，或供应商的）算（宿主机含同机 IP 节点）；
     /// 家宽代理与同机 IP 节点没有自己的网卡读数，是业务流量（下载 + 上传，含已移除的入口）
     pub used: i64,
+    /// 周期起点的日期（账单时区）：每月重置的是重置日；滚动 30 天是窗口起点时刻（`period_start_at`）落在账单时区的哪一天，只用来显示「X 起」
     #[ts(type = "string")]
     pub period_start: Date,
     /// 下次重置日（账单时区，这一天 0 点起是新周期）；滚动 30 天没有重置日，为 None
     #[ts(type = "string | null")]
     pub period_end: Option<Date>,
-    /// monthly = 每月重置日起算；rolling30 = 近 30 天（滚动）
+    /// monthly = 每月重置日起算；rolling30 = 近 30 天（滚动，整 720 小时）
     pub mode: &'static str,
     /// 本周期的数据从这一刻才有：机器首次上架完成（activated_at）晚于周期起点、且没有按面板校准的读数时为它，之前的用量不在 used 里；
     /// 否则为 None
@@ -248,7 +249,7 @@ pub struct Quota {
     #[serde(with = "time::serde::rfc3339::option")]
     #[ts(type = "string | null")]
     pub forecast_full_at: Option<OffsetDateTime>,
-    /// 周期起点时刻与日均所取窗口的起点（搬迁建议按它们汇总各入口的流量，不对外输出）
+    /// 周期起点的准确时刻（滚动 30 天是 quota::rolling_start 的整点）与日均所取窗口的起点（搬迁建议按它们汇总各入口的流量，不对外输出）
     #[serde(skip)]
     pub period_start_at: OffsetDateTime,
     #[serde(skip)]
@@ -674,14 +675,22 @@ pub struct LiveCache {
     tcp_loss: std::sync::Mutex<Option<crate::tcp_loss::Map>>,
 }
 
-/// (周期内下行之和, 上行之和, 校准读数的录入时刻在周期内, 周期起点时刻, 近 7 天窗口内下行之和, 上行之和, 窗口起点时刻)；
+/// (周期内下行之和, 上行之和, 校准读数的录入时刻在周期内, 周期起点时刻, 近 7 天窗口内下行之和, 上行之和, 窗口起点时刻, 周期起点在周期时区的日期)；
 /// 业务流量（没有网卡的机器）下载 + 上传合在下行里、上行为 0。计费量在 `quota_used` 出口按规则套（meta::billed），缓存里只存和
-type QuotaUsed = (i64, i64, bool, OffsetDateTime, i64, i64, OffsetDateTime);
+type QuotaUsed = (i64, i64, bool, OffsetDateTime, i64, i64, OffsetDateTime, Date);
 /// `quota_used` 查询的一行：机器 id + `QuotaUsed`
-type QuotaRow = (Uuid, i64, i64, bool, OffsetDateTime, i64, i64, OffsetDateTime);
+type QuotaRow = (Uuid, i64, i64, bool, OffsetDateTime, i64, i64, OffsetDateTime, Date);
 
-/// (机器, 周期起点, 周期时区, 网卡计量规则（None = 业务流量）, 按面板校准的录入时间)
-type QuotaKey = (Uuid, Date, String, Option<&'static str>, Option<OffsetDateTime>);
+/// 流量周期的起点：每月重置的是周期时区里的一个日期（那天零点起）；滚动 30 天是一个整点时刻（`quota::rolling_start`：此刻所在整点往前 720 小时），
+/// 同一个整点内不变，跨整点换一个键——缓存在小时汇总（每 5 分钟一轮，`rolled` 变）后整体清空，旧键不会越攒越多
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum PeriodStart {
+    Day(Date),
+    At(OffsetDateTime),
+}
+
+/// (机器, 周期起点, 周期时区, 网卡计量规则（None = 业务流量）, 按面板校准的录入时间（已失效的滚动 30 天读数不带）)
+type QuotaKey = (Uuid, PeriodStart, String, Option<&'static str>, Option<OffsetDateTime>);
 
 /// 生效的网卡计量规则（订阅单独设置的，或供应商的）；不认识的按 max
 pub(crate) fn nic_rule(r: Option<&str>) -> &'static str {
@@ -1234,9 +1243,9 @@ async fn flows(st: &AppState) -> sqlx::Result<Flows> {
     Ok((v, n))
 }
 
-/// 这些机器各自周期里（有按面板校准的从录入时刻起）的计费量、校准读数是否在周期内、周期起点时刻、近 7 天窗口内的计费量与窗口起点时刻，
-/// 走 `LiveCache.quota`（缓存里是下行、上行之和），缺的才查
-async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<Uuid, (i64, bool, OffsetDateTime, i64, OffsetDateTime)>> {
+/// 这些机器各自周期里（有按面板校准的从录入时刻起）的计费量、校准读数是否在周期内、周期起点时刻、近 7 天窗口内的计费量与窗口起点时刻、
+/// 周期起点在周期时区的日期，走 `LiveCache.quota`（缓存里是下行、上行之和），缺的才查
+async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<Uuid, (i64, bool, OffsetDateTime, i64, OffsetDateTime, Date)>> {
     if keys.is_empty() {
         return Ok(HashMap::new());
     }
@@ -1250,6 +1259,8 @@ async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<
     if !miss.is_empty() {
         // 小时表按 UTC 整点分桶：周期起点所在的那一桶整桶算进来（半小时时区如 Asia/Kolkata 多算起点前至多 30 分钟，
         // 不漏算周期开头）；整点时区（北京、洛杉矶）起点正好是桶边界，和今天 / 本月的算法一致。
+        // 起点 s0：每月重置的是起点日期在周期时区的零点（start::timestamp at time zone tz）；滚动 30 天直接给整点时刻 start_at
+        // （quota::rolling_start，hour >= s0 的桶：最近 720 个整点桶 + 当前小时），日期 start 为 null。起点在周期时区的日期一并带回（Quota.period_start）。
         // 按面板校准的录入时刻在周期内的从录入时刻所在整点的下一桶算起：那一小时里录入之后的流量不计（至多差 1 小时）。
         // 网卡：逐台按 host_metric_hourly 主键区间求本周期入、出总量，再按规则取小 / 取大 / 相加 / 只取出站。
         // 业务流量（家宽代理、同机 IP 节点）：先展开「机器 → 入口」，再逐个入口按小时表主键求和
@@ -1261,15 +1272,15 @@ async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<
         // 日均 / 预计用满由 quota::forecast 算
         // SQL 只返回下行（rx）、上行（tx）的和（业务流量合在下行里），计费量在下面按规则套（meta::billed，和每日流量同一处）
         let sql =
-            "with q as (select q.mid, q.rule, q.base_at >= s.s0 cal, s.s0, n.since, greatest(n.since, date_trunc('hour', now()) - interval '7 days') w
-                        from unnest($1::uuid[], $2::date[], $3::text[], $4::text[], $5::timestamptz[]) q(mid, start, tz, rule, base_at)
-                        cross join lateral (select q.start::timestamp at time zone q.tz s0) s
+            "with q as (select q.mid, q.rule, q.base_at >= s.s0 cal, s.s0, (s.s0 at time zone q.tz)::date d0, n.since, greatest(n.since, date_trunc('hour', now()) - interval '7 days') w
+                        from unnest($1::uuid[], $2::date[], $3::text[], $4::text[], $5::timestamptz[], $6::timestamptz[]) q(mid, start, tz, rule, base_at, start_at)
+                        cross join lateral (select coalesce(q.start_at, q.start::timestamp at time zone q.tz) s0) s
                         cross join lateral (select case when q.base_at >= s.s0 then date_trunc('hour', q.base_at) else s.s0 - interval '1 hour' end since) n),
              qe as (select q.mid, q.since, q.w, e.id eid from q join entry e on e.node_id = q.mid where q.rule is null
                     union
                     select q.mid, q.since, q.w, e.id from q join entry e on e.relay_id = q.mid where q.rule is null)
              select q.mid, least(t.rx, 9e18)::bigint, least(t.tx, 9e18)::bigint, coalesce(q.cal, false), q.s0,
-                    least(t.rx7, 9e18)::bigint, least(t.tx7, 9e18)::bigint, q.w + interval '1 hour'
+                    least(t.rx7, 9e18)::bigint, least(t.tx7, 9e18)::bigint, q.w + interval '1 hour', q.d0
              from q cross join lateral (
                select coalesce(sum(h.net_rx), 0) rx, coalesce(sum(h.net_tx), 0) tx,
                       coalesce(sum(h.net_rx) filter (where h.hour > q.w), 0) rx7, coalesce(sum(h.net_tx) filter (where h.hour > q.w), 0) tx7
@@ -1278,26 +1289,39 @@ async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<
              where q.rule is not null
              union all
              select q.mid, least(coalesce(sum(t.b), 0), 9e18)::bigint, 0::bigint, coalesce(q.cal, false), q.s0,
-                    least(coalesce(sum(t.b7), 0), 9e18)::bigint, 0::bigint, q.w + interval '1 hour'
+                    least(coalesce(sum(t.b7), 0), 9e18)::bigint, 0::bigint, q.w + interval '1 hour', q.d0
              from q left join qe on qe.mid = q.mid left join lateral (
                select sum(h.up_bytes::numeric + h.down_bytes) b, sum(h.up_bytes::numeric + h.down_bytes) filter (where h.hour > qe.w) b7
                from entry_traffic_hourly h where h.entry_id = qe.eid and h.hour > qe.since) t on true
              where q.rule is null
-             group by q.mid, q.cal, q.s0, q.w";
+             group by q.mid, q.cal, q.s0, q.w, q.d0";
+        let day = |k: &QuotaKey| match k.1 {
+            PeriodStart::Day(d) => Some(d),
+            PeriodStart::At(_) => None,
+        };
+        let at = |k: &QuotaKey| match k.1 {
+            PeriodStart::At(t) => Some(t),
+            PeriodStart::Day(_) => None,
+        };
         let rows: Vec<QuotaRow> = sqlx::query_as(sql)
         .bind(miss.iter().map(|k| k.0).collect::<Vec<_>>())
-        .bind(miss.iter().map(|k| k.1).collect::<Vec<_>>())
+        .bind(miss.iter().map(|k| day(k)).collect::<Vec<_>>())
         .bind(miss.iter().map(|k| k.2.clone()).collect::<Vec<_>>())
         .bind(miss.iter().map(|k| k.3).collect::<Vec<_>>())
         .bind(miss.iter().map(|k| k.4).collect::<Vec<_>>())
+        .bind(miss.iter().map(|k| at(k)).collect::<Vec<_>>())
         .fetch_all(&st.view_db)
         .await?;
-        let got: HashMap<Uuid, QuotaUsed> = rows.into_iter().map(|(m, rx, tx, cal, s0, rx7, tx7, w)| (m, (rx, tx, cal, s0, rx7, tx7, w))).collect();
+        let got: HashMap<Uuid, QuotaUsed> = rows.into_iter().map(|(m, rx, tx, cal, s0, rx7, tx7, w, d0)| (m, (rx, tx, cal, s0, rx7, tx7, w, d0))).collect();
         for k in miss {
             // 每个键都有一行（q 是 unnest 出来的，两支都按 q 聚合）；缺了是 SQL 的 bug：记下机器 id 并按 0 算，不让一台打断整个视图与实时推送
             let used = got.get(&k.0).copied().unwrap_or_else(|| {
                 tracing::warn!(machine = %k.0, "流量额度查询没有返回这台机器的一行，按已用 0 算");
-                (0, 0, false, k.1.midnight().assume_utc(), 0, 0, k.1.midnight().assume_utc())
+                let s0 = match k.1 {
+                    PeriodStart::Day(d) => d.midnight().assume_utc(),
+                    PeriodStart::At(t) => t,
+                };
+                (0, 0, false, s0, 0, 0, s0, s0.date())
             });
             slot.1.insert(k.clone(), used);
         }
@@ -1307,8 +1331,8 @@ async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<
     Ok(keys
         .into_iter()
         .map(|k| {
-            let (rx, tx, cal, s0, rx7, tx7, w) = slot.1[&k];
-            (k.0, (bill(k.3, rx, tx), cal, s0, bill(k.3, rx7, tx7), w))
+            let (rx, tx, cal, s0, rx7, tx7, w, d0) = slot.1[&k];
+            (k.0, (bill(k.3, rx, tx), cal, s0, bill(k.3, rx7, tx7), w, d0))
         })
         .collect())
 }
@@ -1361,22 +1385,24 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
     let intel_q = async { Ok::<_, sqlx::Error>(if auto_ips.is_empty() { HashMap::new() } else { st.ipintel.enrich(db, &auto_ips, true).await }) };
     // 流量额度周期：有订阅的按账单时区里的今天和生效的重置日（单独设置的，或供应商按账单日 / 自然月）算周期起点，
     // 没有订阅的是模板时区（供应商的，供应商没填为组织时区）的本月；供应商按滚动 30 天、订阅没单独设置重置日的（生效重置日为 null）
-    // 是账单时区的今天往前 29 天。键里含起点日期，滚动 30 天每天自动换一份缓存。
+    // 是此刻所在整点往前整 720 小时（quota::rolling_start，同供应商面板的 last 30 days；不按日历日，和时区无关——以前按账单时区的
+    // 今天往前 29 天零点起，一天里大部分时间不足 30 天，比面板少算最多一天）。键里含起点：每月重置的是日期，滚动 30 天是整点时刻，每小时换一个键。
+    // 滚动 30 天的校准读数满 30 天就失效（quota::calibrated）：键里不再带它的录入时刻，实测回到从窗口起点算
     // 有自己 agent 的机器按网卡计量（规则取订阅单独设置的，否则供应商的），家宽代理、同机 IP 节点按业务流量
+    let rolling_at = crate::quota::rolling_start(now);
     let mut modes: HashMap<Uuid, &'static str> = HashMap::new();
     let periods: Vec<QuotaKey> = rows
         .iter()
         .map(|r| {
             let (start, tz, mode) = match (r.s_today, r.s_reset, &r.s_tz) {
-                (Some(t), Some(d), Some(tz)) => (period_start(t, d as u8), tz.clone(), "monthly"),
-                _ if r.t_reset == "rolling30" => {
-                    (r.s_today.unwrap_or(r.t_today) - time::Duration::days(29), r.s_tz.clone().unwrap_or_else(|| r.t_tz.clone()), "rolling30")
-                }
-                _ => (period_start(r.t_today, 1), r.t_tz.clone(), "monthly"),
+                (Some(t), Some(d), Some(tz)) => (PeriodStart::Day(period_start(t, d as u8)), tz.clone(), "monthly"),
+                _ if r.t_reset == "rolling30" => (PeriodStart::At(rolling_at), r.s_tz.clone().unwrap_or_else(|| r.t_tz.clone()), "rolling30"),
+                _ => (PeriodStart::Day(period_start(r.t_today, 1)), r.t_tz.clone(), "monthly"),
             };
             modes.insert(r.id, mode);
             let rule = (r.kind != "proxy" && r.host_id.is_none()).then(|| nic_rule(Some(r.s_rule.as_deref().unwrap_or(&r.t_rule))));
-            (r.id, start, tz, rule, r.s_base_at)
+            let base_at = r.s_base_at.filter(|at| mode != "rolling30" || crate::quota::rolling_calibration_live(*at, now));
+            (r.id, start, tz, rule, base_at)
         })
         .collect();
 
@@ -1451,7 +1477,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
     let exits_q = crate::routers::exits_using_with_ip_nodes(db, &spare_ids);
     // 团队里的节点有没有出口指着（no_router_exits）
     let pointed_q = crate::routers::pointed_nodes(db);
-    let period_of: HashMap<Uuid, (Date, Option<&'static str>)> = periods.iter().map(|k| (k.0, (k.1, k.3))).collect();
+    let rule_of: HashMap<Uuid, Option<&'static str>> = periods.iter().map(|k| (k.0, k.3)).collect();
     let (intel, host, (es, probes, reach), (traffic, nic, removed), (live_jobs, failed_jobs), inc, silences, sustained, policies, period_used, ipn, mut exits, (seen_teams, pointed)) = tokio::try_join!(
         intel_q,
         host_now(db, &hids),
@@ -1610,9 +1636,9 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
             });
             let entries = entries_by.remove(&r.id).unwrap_or_default();
             let removed_traffic = removed_by.remove(&r.id).unwrap_or_default();
-            let (start, rule) = period_of[&r.id];
+            let rule = rule_of[&r.id];
             let mode = modes[&r.id];
-            let (after, cal, s0, recent, w0) = period_used[&r.id];
+            let (after, cal, s0, recent, w0, start) = period_used[&r.id];
             // 按面板校准：录入时刻在当前周期内（cal）才算；月度原样全算，滚动 30 天按 now 逐日衰减、满 30 天失效（quota::calibrated）。
             // 缓存里（LiveCache.quota）只有录入之后的实测，不随时间变；衰减每次取视图时现算。`base` 对外仍是原始读数，`counted` 是算进 used 的部分
             let counted = r.s_base.zip(r.s_base_at).filter(|_| cal).and_then(|(b, at)| crate::quota::calibrated(b, at, now, mode == "rolling30"));

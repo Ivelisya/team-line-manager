@@ -227,7 +227,7 @@ ${from}` };
 /** 流量周期（费用页签）：「每月 13 号重置（跟随供应商：按账单日）· 10-13 → 11-13」，滚动 30 天「滚动 30 天（跟随供应商）」 */
 export function quotaCycleText(m: MachineView) {
   const q = quota(m);
-  if (q.rolling) return '最近 30 天滚动，跟随供应商';
+  if (q.rolling) return '最近 30 天滚动（此刻往前整 30 天），跟随供应商';
   const from = isOverridden(m.subscription, 'traffic_reset_day') ? '单独设置' : inheritSource(m, 'traffic_reset_day');
   return `每月 ${m.subscription?.traffic_reset_day ?? Number(q.start.slice(8))} 号重置${from && `，${from}`} · ${mmdd(q.start)} 至 ${mmdd(q.end!)}`;
 }
@@ -256,7 +256,7 @@ export function quotaNotes(m: MachineView, now = Date.now()) {
 export function quotaTip(m: MachineView) {
   const q = quota(m);
   return [
-    q.rolling ? '最近 30 天' : `${mmdd(q.start)} 至 ${mmdd(q.end!)}，每月 ${m.subscription?.traffic_reset_day ?? Number(q.start.slice(8))} 号重置`,
+    q.rolling ? '最近 30 天（此刻往前整 720 小时）' : `${mmdd(q.start)} 至 ${mmdd(q.end!)}，每月 ${m.subscription?.traffic_reset_day ?? Number(q.start.slice(8))} 号重置`,
     quotaRuleText(m),
     ...quotaNotes(m),
   ].join('\n');
