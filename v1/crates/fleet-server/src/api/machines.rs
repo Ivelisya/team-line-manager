@@ -1831,7 +1831,7 @@ impl SubOverrides {
         Ok(())
     }
 
-    /// 写订阅：到期日 + 这些单独设置（整份替换，流量计费方式没传的保留现值；自动续费、接入前读数不动），再把和模板相同的改回跟随。
+    /// 写订阅：到期日 + 这些单独设置（整份替换，流量计费方式没传的保留现值；自动续费、按面板校准的读数不在这里写，upsert 不碰这两列），再把和模板相同的改回跟随。
     /// 账单日（billing_day）按 meta::billing_day：到期日落在现有账单日上（含原样带回的到期日、31 号账单日的 2-28）不动，否则改成新到期日几号
     pub async fn write(&self, db: &mut sqlx::PgConnection, id: Uuid, due: Date) -> ApiResult<()> {
         let cur: Option<i16> = sqlx::query_scalar("select billing_day from subscription where machine_id = $1").bind(id).fetch_optional(&mut *db).await?.flatten();
@@ -1872,10 +1872,22 @@ pub struct SubIn {
     /// 没传 = 不改（新建为否）
     #[serde(skip_serializing_if = "Option::is_none")]
     auto_renew: Option<bool>,
-    /// 已不支持（流量已用改由 agent 按网卡统计）：带了就 400，旧 fleetctl 的 --used 明确报错而不是静默忽略。
-    /// 割接时录的接入前读数只读保留，进入下一个周期自动失效（views::Quota.base）
-    #[serde(default, deserialize_with = "super::some", skip_serializing)]
+    /// 按供应商面板校准已用（面板读数和中控实测对不上时用）：数值 = 此刻面板上本周期已用多少 GB（十进制，可带小数），
+    /// 录成 traffic_used_base = round(GB × 1e9)、traffic_used_base_at = now()；null = 清掉校准；没传 = 不动（整份替换的订阅修改不冲掉它）。
+    /// 只是个偏移量：没有网卡读数的、不限流量的机器照样收。怎么算进已用见 views::Quota.base
+    #[serde(default, deserialize_with = "super::some", skip_serializing_if = "Option::is_none")]
     traffic_used_gb: Option<Option<f64>>,
+}
+
+/// 按面板校准的已用最多这么多 GB（1 PB）：再大多半是单位写错，也离 bigint 字节数溢出还远
+const CALIBRATE_MAX_GB: f64 = 1_000_000.0;
+
+/// 面板读数（GB）→ 字节：负数、NaN / 无穷、超过 `CALIBRATE_MAX_GB` 的报错
+fn calibrate_bytes(gb: f64) -> ApiResult<i64> {
+    if !gb.is_finite() || !(0.0..=CALIBRATE_MAX_GB).contains(&gb) {
+        return Err(ApiError::bad_request(format!("按面板校准的已用要在 0–{CALIBRATE_MAX_GB} GB 之间（供应商面板上的十进制 GB，可带小数）")));
+    }
+    Ok((gb * 1e9).round() as i64)
 }
 
 /// 时区（账单时区、供应商时区）必须能被 `at time zone` 接受：views 里的 local_date 就这么用，不再兜底。
@@ -1889,21 +1901,23 @@ pub async fn check_tz(db: &mut sqlx::PgConnection, tz: &str) -> ApiResult<()> {
     }
 }
 
-/// 改订阅审计里记的生效值（改动前后各一份）
+/// 改订阅审计里记的生效值（改动前后各一份）；按面板校准的读数记库里的原值（录入时刻一并记，同值重录也看得出）
 const SUB_AUDIT: &str = "select jsonb_build_object('due_date', due_date, 'price_cents', price_cents, 'currency', currency, 'cycle', cycle, 'billing_tz', billing_tz,
-    'remind_days', remind_days, 'traffic_gb', traffic_gb, 'traffic_reset_day', traffic_reset_day, 'traffic_rule', traffic_rule, 'auto_renew', auto_renew)
+    'remind_days', remind_days, 'traffic_gb', traffic_gb, 'traffic_reset_day', traffic_reset_day, 'traffic_rule', traffic_rule, 'auto_renew', auto_renew,
+    'traffic_used_base', traffic_used_base, 'traffic_used_base_at', traffic_used_base_at)
     from subscription_eff where machine_id = $1";
 
-/// 订阅按 `subscription_eff` 算出的生效值，带 `overrides`（单独设置了哪几项）：改订阅预览的返回
+/// 订阅按 `subscription_eff` 算出的生效值，带 `overrides`（单独设置了哪几项）与按面板校准的原值（`traffic_used_base` / `_at`，
+/// 在不在当前周期里不管，确认语的「旧」取机器视图的 quota.base）：改订阅预览的返回
 const SUB_EFFECTIVE: &str = "select jsonb_build_object('due_date', due_date, 'price_cents', price_cents, 'currency', currency, 'cycle', cycle, 'billing_tz', billing_tz,
-    'remind_days', remind_days, 'traffic_gb', traffic_gb, 'traffic_reset_day', traffic_reset_day, 'traffic_rule', traffic_rule, 'auto_renew', auto_renew, 'overrides', to_jsonb(overrides))
+    'remind_days', remind_days, 'traffic_gb', traffic_gb, 'traffic_reset_day', traffic_reset_day, 'traffic_rule', traffic_rule, 'auto_renew', auto_renew, 'overrides', to_jsonb(overrides),
+    'traffic_used_base', traffic_used_base, 'traffic_used_base_at', traffic_used_base_at)
     from subscription_eff where machine_id = $1";
 
 /// 校验、写入、规整订阅（`put_subscription` 与预览共用，都在调用方的事务里），返回改动前的生效值（审计用）
 async fn write_subscription(tx: &mut sqlx::PgConnection, id: Uuid, b: &mut SubIn) -> ApiResult<Option<Value>> {
-    if b.traffic_used_gb.is_some() {
-        return Err(ApiError::bad_request("流量已用改为由 agent 按网卡统计，不再按面板校准"));
-    }
+    // 先校验面板读数：不合法的不该写进任何东西
+    let base = b.traffic_used_gb.map(|g| g.map(calibrate_bytes).transpose()).transpose()?;
     b.ov.check(tx).await?;
     let (template_price,): (Option<i32>,) = sqlx::query_as("select price_cents from sub_template where machine_id = $1")
         .bind(id)
@@ -1917,6 +1931,14 @@ async fn write_subscription(tx: &mut sqlx::PgConnection, id: Uuid, b: &mut SubIn
     b.ov.write(tx, id, b.due_date).await?;
     if let Some(auto) = b.auto_renew {
         sqlx::query("update subscription set auto_renew = $2 where machine_id = $1").bind(id).bind(auto).execute(&mut *tx).await?;
+    }
+    // 按面板校准：给了数值录「此刻」的读数（库里的 now()，同视图判周期、算衰减的时钟），null 两列一起清（表上约束两列同空同不空）；没给不动
+    if let Some(base) = base {
+        sqlx::query("update subscription set traffic_used_base = $2, traffic_used_base_at = case when $2::bigint is null then null else now() end where machine_id = $1")
+            .bind(id)
+            .bind(base)
+            .execute(&mut *tx)
+            .await?;
     }
     Ok(before)
 }

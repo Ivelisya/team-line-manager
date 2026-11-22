@@ -278,7 +278,7 @@ async fn quota_period_in_half_hour_tz_counts_start_bucket() {
 }
 
 /// 有 agent 的机器按网卡计量：本周期入、出总量按供应商的规则取小 / 取大 / 相加 / 只算出站（没有供应商取大）；
-/// 接口不再收面板校准值；已录的接入前读数 = 读数 + 录入时刻所在整点之后的网卡用量，录在周期之前的不算；上限按十进制 GB 告警；
+/// 按面板校准（traffic_used_gb）的设置、保留与清除；校准后 used = 读数 + 录入时刻所在整点之后的网卡用量，录在周期之前的不算；上限按十进制 GB 告警；
 /// 周期中途上架的标 counted_from；滚动 30 天的起点是今天往前 29 天、没有重置日；总览本月业务流量含已退役机器的入口
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn quota_by_nic_rule_periods_and_opening_reading() {
@@ -326,17 +326,42 @@ async fn quota_by_nic_rule_periods_and_opening_reading() {
     assert_eq!(t.req("PATCH", &pv_path, Some(json!({"traffic_rule": "MIN"})), None).await.0, StatusCode::BAD_REQUEST);
     assert_eq!(t.get("/api/v1/providers").await[0]["traffic_rule"], "min", "坏规则不改");
 
-    // 不再按面板校准：带 traffic_used_gb（数值或 null）一律 400，旧 fleetctl 的 --used 明确报错
-    for g in [json!(901.6), Value::Null] {
+    // 按面板校准：负数、超大值、不是数 400，什么都不写
+    let db = &t.st.db;
+    let with_used = |g: Value| {
         let mut b = sub.clone();
         b["traffic_used_gb"] = g;
-        let (s, v) = t.req("PUT", &sub_path, Some(b), None).await;
-        assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
-        assert!(v.to_string().contains("不再按面板校准"), "{v}");
+        b
+    };
+    let stored = || async { sqlx::query_as::<_, (Option<i64>, Option<time::OffsetDateTime>)>("select traffic_used_base, traffic_used_base_at from subscription where machine_id = $1").bind(relay).fetch_one(db).await.unwrap() };
+    for bad in [json!(-0.1), json!(1e7), json!("901.6")] {
+        let (s, v) = t.req("PUT", &sub_path, Some(with_used(bad.clone())), None).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{bad}: {v}");
     }
-    // 割接时录的接入前读数（SQL 预置）只读保留：录入时刻在起点后半小时，只加之后整点起的那桶（入 50 出 300 取小 = 50）；
-    // 上限 1000 GB 已用 90%（按 GiB 算只有 84%）；有接入前读数的不标 counted_from
-    let db = &t.st.db;
+    assert_eq!(stored().await, (None, None));
+    // 预览带上新值（生效值里有 traffic_used_base / _at），但整个回滚
+    let p = t.post(&format!("/api/v1/machines/{relay}/subscription/preview"), with_used(json!(901.6))).await;
+    assert_eq!(p["effective"]["traffic_used_base"].as_i64(), Some(901_600_000_000), "{p}");
+    assert!(!p["effective"]["traffic_used_base_at"].is_null(), "{p}");
+    assert_eq!(stored().await, (None, None), "预览不留");
+    // 数值 = 此刻面板上本周期已用（十进制 GB）：录成 round(GB × 1e9) 与录入时刻 now()；审计里写出「已用校准 无 → 901.6 GB」
+    let (s, v) = t.req("PUT", &sub_path, Some(with_used(json!(901.6))), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (b, at) = stored().await;
+    assert_eq!(b, Some(901_600_000_000));
+    assert!(at.is_some_and(|at| (time::OffsetDateTime::now_utc() - at).abs() < time::Duration::minutes(5)), "{at:?}");
+    let au: Value = sqlx::query_scalar("select detail from audit_log where action = 'subscription.set' order by id desc limit 1").fetch_one(db).await.unwrap();
+    assert_eq!((au["traffic_used_gb"].as_f64(), au["before"]["traffic_used_base"].clone(), au["after"]["traffic_used_base"].as_i64()), (Some(901.6), Value::Null, Some(901_600_000_000)), "{au}");
+    // 普通的订阅修改（整份替换、不带 traffic_used_gb）不冲掉校准
+    let (s, v) = t.req("PUT", &sub_path, Some(sub.clone()), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(stored().await, (b, at), "不带 traffic_used_gb = 不动");
+    // null = 清掉
+    let (s, v) = t.req("PUT", &sub_path, Some(with_used(Value::Null)), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(stored().await, (None, None));
+    // 录入时刻挪到起点后半小时（读回的 used 才确定）：只加之后整点起的那桶（入 50 出 300 取小 = 50）；
+    // 上限 1000 GB 已用 90%（按 GiB 算只有 84%）；有校准读数的不标 counted_from
     let set_base = |at: Option<time::OffsetDateTime>| async move {
         sqlx::query("update subscription set traffic_used_base = case when $2::timestamptz is null then null else 901600000000 end, traffic_used_base_at = $2 where machine_id = $1")
             .bind(relay)
@@ -396,6 +421,27 @@ async fn quota_by_nic_rule_periods_and_opening_reading() {
     let q = &m["quota"];
     assert_eq!((q["mode"].as_str(), q["period_start"].as_str(), q["period_end"].clone()), (Some("rolling30"), Some((today - time::Duration::days(29)).to_string().as_str()), Value::Null), "{q}");
     assert_eq!((q["used"].as_i64(), m["subscription"]["traffic_reset_day"].clone()), (Some(5357), Value::Null), "{m}");
+
+    // 滚动 30 天按面板校准：读数是录入时刻往前 30 天的量，按均匀分布逐日衰减。15 天前录的 300 GB 还算一半，
+    // 加上录入之后的实测（今天那三桶：入 5350、出 5400，取小；29、30 天前的两桶在录入之前，不算）。衰减按请求时刻算，留几分钟的余量
+    let set_at = |ago: &'static str| async move {
+        sqlx::query("update subscription set traffic_used_base = 300000000000, traffic_used_base_at = now() - $2::interval where machine_id = $1")
+            .bind(relay)
+            .bind(ago)
+            .execute(db)
+            .await
+            .unwrap();
+    };
+    set_at("15 days").await;
+    let q = quota().await;
+    let used = q["used"].as_i64().unwrap_or_default();
+    assert!((used - (150_000_000_000 + 5350)).abs() < 100_000_000, "{q}");
+    assert_eq!((q["base"].as_i64(), q["base_at"].is_string(), q["counted_from"].clone()), (Some(300_000_000_000), true, Value::Null), "base 是原始读数：{q}");
+    // 满 30 天完全失效：回到纯实测，base / base_at 为 null
+    set_at("30 days 1 hour").await;
+    let q = quota().await;
+    assert_eq!((q["used"].as_i64(), q["base"].clone(), q["base_at"].clone()), (Some(5357), Value::Null, Value::Null), "{q}");
+    set_base(None).await;
 
     // 总览本月业务流量 = 全部入口本月合计：含已退役节点的已移除入口
     let team = seed_team(&t, "团队1").await;

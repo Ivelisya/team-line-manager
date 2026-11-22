@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input';
 import { Segmented } from '@/components/ui/segmented';
 import { DateField } from '@/components/ui/date-field';
 import { useUsdPreview } from '@/lib/fx';
-import { inheritedValue, inheritSource, inheritText, inheritValueText, isOverridden, limitGb, monthFlow, monthFlowTip, quota, quotaCycleText, quotaForecast, quotaGb, quotaNotes, quotaRuleText, quotaUsedLabel, recycleOn, remainingValue, cycleLabel, feeView, priceHint, currencyOptions, cycleOptions, meta, trafficRuleOptions, trafficRuleTag } from '@/lib/derive';
+import { inheritedValue, inheritSource, inheritText, inheritValueText, isOverridden, limitGb, monthFlow, monthFlowTip, quota, quotaCycleText, quotaForecast, quotaGb, quotaNotes, quotaRuleText, quotaUsedLabel, mmdd, recycleOn, remainingValue, cycleLabel, feeView, priceHint, currencyOptions, cycleOptions, meta, trafficRuleOptions, trafficRuleTag } from '@/lib/derive';
 import { OptionSelect } from '@/components/ui/option-select';
 import { toast } from '@/components/ui/toast';
 import { LazyMount, resetOnOpen } from '@/lib/useHeld';
@@ -167,6 +167,11 @@ function SubForm({ m }: { m: MachineView }) {
   const [resetDay, setResetDay] = React.useState(() => init('traffic_reset_day'));
   const [rule, setRule] = React.useState(() => init('traffic_rule'));
   const [auto, setAuto] = React.useState(s?.auto_renew ?? false);
+  // 按面板校准已用（GB）：留空 = 不动现有的校准，「清除校准」= 提交 null；面板读数和中控实测差得多、确认计量网卡与计费方式没配错之后才用
+  const [used, setUsed] = React.useState('');
+  const [clearUsed, setClearUsed] = React.useState(false);
+  const usedNum = Number(used);
+  const usedBad = used.trim() !== '' && !(isFinite(usedNum) && usedNum >= 0);
   const priceNum = Number(price);
   // 保存按钮不可用时要能看出原因：空着提示必填，填错了标红（只看单独设置的项）
   const priceBad = ov.price_cents && (price.trim() === '' || !(isFinite(priceNum) && priceNum >= 0));
@@ -175,19 +180,22 @@ function SubForm({ m }: { m: MachineView }) {
   const trafficBad = ov.traffic_gb && traffic === '';
   const tzBad = ov.billing_tz && tz === '';
   const dueBad = dueDate !== '' && !/^\d{4}-\d{2}-\d{2}$/.test(dueDate);
-  const valid = dueDate !== '' && !dueBad && !priceBad && !remindBad && !resetBad && !trafficBad && !tzBad;
+  const valid = dueDate !== '' && !dueBad && !priceBad && !remindBad && !resetBad && !trafficBad && !tzBad && !usedBad;
   const val: Record<SubField, string | number> = {
     price_cents: Math.round(priceNum * 100), currency, cycle, billing_tz: tz, remind_days: Number(remind), traffic_gb: Number(traffic), traffic_reset_day: Number(resetDay), traffic_rule: rule,
   };
-  // 没改动时不能保存：和上一次保存（或打开时）提交的内容比
-  const sig = JSON.stringify([dueDate, auto, OV_FIELDS.map((k) => (ov[k] ? val[k] : null))]);
+  // 没改动时不能保存：和上一次保存（或打开时）提交的内容比；校准是一次性的动作，保存后输入清空，比较时按「没填」算
+  const sigOf = (u: string, c: boolean) => JSON.stringify([dueDate, auto, OV_FIELDS.map((k) => (ov[k] ? val[k] : null)), u.trim(), c]);
+  const sig = sigOf(used, clearUsed);
   const saved = React.useRef(sig);
   const submit = () => {
     const body: SubscriptionBody = {
       due_date: dueDate, auto_renew: auto, ...Object.fromEntries(OV_FIELDS.map((k) => [k, ov[k] ? val[k] : null])),
+      ...(clearUsed ? { traffic_used_gb: null } : used.trim() !== '' ? { traffic_used_gb: usedNum } : {}),
     };
-    save.mutate({ id: m.id, ...body }, { onSuccess: () => { saved.current = sig; toast.ok('订阅已保存'); }, onError: toast.err });
+    save.mutate({ id: m.id, ...body }, { onSuccess: () => { saved.current = sigOf('', false); setUsed(''); setClearUsed(false); toast.ok('订阅已保存'); }, onError: toast.err });
   };
+  const q = quota(m);
   // 费用框里的单位：生效的币种 / 周期（单独设置的取输入，跟随的取套餐 / 供应商的）
   const priceCur = ov.currency ? currency : m.sub_template.currency;
   const priceUnit = `${priceCur} / ${cycleLabel(ov.cycle ? cycle : m.sub_template.cycle)}`;
@@ -208,6 +216,12 @@ function SubForm({ m }: { m: MachineView }) {
       {o('traffic_reset_day', '流量重置日', <Input inputMode="numeric" maxLength={2} value={resetDay} onChange={(e) => setResetDay(e.target.value.replace(/\D/g, ''))} placeholder="1–31" />, resetBad ? '填 1–31' : undefined, '每月几号重置，按账单时区；月份没有这一天按月末')}
       {/* 只有按网卡计量的机器（quota.rule 非空）才用得上；家宽代理、同机 IP 节点按业务流量，不显示 */}
       {m.quota.rule && o('traffic_rule', '流量计费', <OptionSelect value={rule} onChange={setRule} options={trafficRuleOptions()} />, undefined, '双向是下行加上行；单向只记其中一个。以供应商面板的计费口径为准')}
+      {/* 已有订阅才显示：留空不动；有校准时给「清除校准」 */}
+      {s && <FormField label="按面板校准已用（GB）" className="span-2" info={`填此刻供应商面板上${q.rolling ? '近 30 天' : '本周期'}已用多少 GB，从这一刻起已用 = 这个读数 + 之后的实测。${q.rolling ? '滚动 30 天的读数逐日衰减，30 天后失效。' : '到下次重置日自动失效。'}\n面板和这里差得多、且确认计量网卡与计费方式没配错之后再用；留空不改`}
+        error={usedBad ? '应为 0 或正数' : undefined}
+        hint={q.base != null && <>当前校准 {F.str(quotaGb(q.base))}{m.quota.base_at && `（${mmdd(m.quota.base_at)} 录入）`} · <Button variant="link" size="inline-sm" onClick={() => setClearUsed((c) => !c)}>{clearUsed ? '不清除' : '清除校准'}</Button>{clearUsed && '（保存后清除）'}</>}>
+        <UnitInput width="full" unit="GB" inputMode="decimal" value={used} disabled={clearUsed} onChange={(e) => setUsed(e.target.value)} placeholder="留空 = 不改" aria-invalid={usedBad || undefined} />
+      </FormField>}
       <div className="row span-2" style={{ gap: 4 }}><CheckRow switch checked={auto} onChange={setAuto}>到期自动续费</CheckRow><InfoTip text="只用于提醒口径，不会真的扣款" /></div>
       <div className="span-2 row" style={{ justifyContent: 'flex-end' }}><Button disabled={!valid || sig === saved.current || save.isPending} loading={save.isPending} onClick={submit}>保存订阅</Button></div>
     </div>

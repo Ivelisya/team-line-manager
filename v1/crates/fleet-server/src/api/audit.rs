@@ -678,7 +678,7 @@ fn sub_changes(d: &Value) -> String {
         ("billing_tz", "账单时区", &val),
         ("auto_renew", "自动续费", &onoff),
     ];
-    fields
+    let mut out: Vec<String> = fields
         .iter()
         .filter(|(k, ..)| b[*k] != a[*k])
         .map(|(k, label, f)| match *k {
@@ -689,8 +689,16 @@ fn sub_changes(d: &Value) -> String {
             },
             _ => format!("{label} {} → {}", f(&b[*k]), f(&a[*k])),
         })
-        .collect::<Vec<_>>()
-        .join("，")
+        .collect();
+    // 按面板校准：读数或录入时刻变了都算（同一个数重录也是一次校准）；这一版之前的记录没有这两项，两边都是 null 不写
+    if b["traffic_used_base"] != a["traffic_used_base"] || b["traffic_used_base_at"] != a["traffic_used_base_at"] {
+        let cal = |v: &Value| v.as_i64().map_or("无".into(), |n| format!("{:.1} GB", n as f64 / 1e9));
+        out.push(match b["traffic_used_base"] == a["traffic_used_base"] {
+            true => format!("已用校准 {}（重新录入）", cal(&a["traffic_used_base"])),
+            false => format!("已用校准 {} → {}", cal(&b["traffic_used_base"]), cal(&a["traffic_used_base"])),
+        });
+    }
+    out.join("，")
 }
 
 /// 访问规则版本里的一处变更（同前端发布记录的写法）：模式变了写「团队1：黑名单 → 仅观察」，没变写域名、备注改了什么：
@@ -901,6 +909,15 @@ mod tests {
         a["currency"] = json!("CNY");
         assert_eq!(sub(b.clone(), a), "C-01 · 价格 5.00 USD → 40.00 CNY，币种 USD → CNY", "旧价格用旧币种");
         assert_eq!(t("subscription.set", json!({"due_date": "2026-11-01"})).1, "", "旧记录没有改动前后");
+        // 按面板校准：无 → 读数；同一个数重录（录入时刻变了）也写出来；清掉写「→ 无」
+        let mut a = b.clone();
+        a["traffic_used_base"] = json!(266_100_000_000i64);
+        a["traffic_used_base_at"] = json!("2026-11-22T08:00:00+00:00");
+        assert_eq!(sub(b.clone(), a.clone()), "C-01 · 已用校准 无 → 266.1 GB");
+        let mut again = a.clone();
+        again["traffic_used_base_at"] = json!("2026-11-23T08:00:00+00:00");
+        assert_eq!(sub(a.clone(), again), "C-01 · 已用校准 266.1 GB（重新录入）");
+        assert_eq!(sub(a, b.clone()), "C-01 · 已用校准 266.1 GB → 无");
         assert_eq!(t("agent.upgrade", json!({"count": 12, "skipped": 1})).1, "12 台，跳过 1 台");
         assert_eq!(t("agent.upgrade", json!({"count": 1, "skipped": 0, "names": ["团队1-03"]})).1, "团队1-03");
         let three = json!(["团队1-03", "团队1-04", "线路机2"]);

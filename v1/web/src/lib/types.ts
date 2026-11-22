@@ -130,9 +130,10 @@ export interface MachineView {
   /** 流量额度周期：起点（YYYY-MM-DD，有流量重置日按它，否则本月 1 号）与周期内已用（字节）。有 agent 的机器按网卡、照供应商的
    *  rule 算；家宽代理与同机 IP 节点 rule 为 null，是业务流量。
    *  period_end：下次重置日（滚动 30 天为 null）；mode：monthly 按重置日、rolling30 滚动 30 天；counted_from：数据不完整时从哪天起才有；
-   *  base：接入前的面板读数（字节，割接遗留、只读，下个周期起不再使用），没有为 null；
+   *  base / base_at：按供应商面板校准的原始读数（字节）与录入时刻，已失效（月度进入下个周期、滚动 30 天满 30 天）为 null；月度 used = base + 录入后实测，
+   *  滚动 30 天的读数逐日线性衰减（used = base × (1 − 录入后天数 / 30) + 录入后实测，见 derive.ts quotaCalibrated）；
    *  limit_gb / limit_source：生效的流量上限（GB，没有为 null）与来源——subscription 单独设置、plan 跟随套餐、host 同机 IP 节点与宿主机共用、none 不限 */
-  quota: { used: number; period_start: string; period_end: string | null; mode: 'monthly' | 'rolling30'; counted_from: string | null; rule: TrafficRule | null; base: number | null; limit_gb: number | null; limit_source: 'subscription' | 'plan' | 'host' | 'none';
+  quota: { used: number; period_start: string; period_end: string | null; mode: 'monthly' | 'rolling30'; counted_from: string | null; rule: TrafficRule | null; base: number | null; base_at: string | null; limit_gb: number | null; limit_source: 'subscription' | 'plan' | 'host' | 'none';
     /** 近 7 天日均用量（字节 / 天；周期不足 1 天为 null）与按它预计用满的时刻（早于下次重置日才有，否则 null） */
     daily_avg: number | null; forecast_full_at: string | null };
   health: { status: HealthStatus; reasons: HealthReason[] };

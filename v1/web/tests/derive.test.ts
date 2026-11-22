@@ -2,7 +2,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
   beatCells, beatRate, compactPorts, entryBad, errText, nextDue, nodeKpiWho, probeErr, probeFail, probeFailLabel, probeSummary,
-  quotaTight, reachFail, reachFlaky, relayRttMs, setMeta, statusRank, successPct, uptimeTone,
+  quotaCalibrated, quotaNotes, quotaTight, reachFail, reachFlaky, relayRttMs, setMeta, statusRank, successPct, uptimeTone,
 } from '@/lib/derive';
 import { entry, machine, META, probe } from './fixtures';
 
@@ -139,6 +139,18 @@ describe('首页 KPI 的列表归纳', () => {
     expect(t.n).toBe(3);
     expect(t.top).toMatchObject({ id: 'd', pct: 120, over: true, full: null });
     expect(quotaTight(list.slice(0, 1))).toEqual({ n: 0, top: null });
+  });
+  it('按面板校准：月度原样全算；滚动 30 天逐日线性衰减，拆出录入后的实测，30 天后完全失效', () => {
+    const at = '2026-11-07T04:00:00Z'; const now = Date.parse('2026-11-22T04:00:00Z');
+    const q = (mode: string, used_gb: number, period_end: string | null) => machine({ quota: { ...machine().quota, mode, used: used_gb * 1e9, period_end, base: 300e9, base_at: at } } as never);
+    const monthly = q('monthly', 320, '2026-12-01');
+    expect(quotaCalibrated(monthly, now)).toBe(300e9);
+    expect(quotaNotes(monthly, now)[0]).toBe('录入后实测 20 GB，加上按面板校准的读数 300 GB（11-07 录入）\n12-01 重置后只算实测');
+    const rolling = q('rolling30', 162, null);
+    expect(quotaCalibrated(rolling, now)).toBe(150e9);
+    expect(quotaNotes(rolling, now)[0]).toBe('录入后实测 12 GB，加上按面板校准的读数 300 GB（11-07 录入）\n近 30 天滚动：逐日衰减，现在还算 150 GB，12-07 起完全失效');
+    expect(quotaCalibrated(rolling, Date.parse('2026-12-08T00:00:00Z'))).toBe(0);
+    expect(quotaCalibrated(machine(), now)).toBeNull();
   });
 });
 

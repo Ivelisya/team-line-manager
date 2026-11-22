@@ -23,7 +23,7 @@ export function machine(p: Partial<MachineView> = {}): MachineView {
     spare: false, idle_spare: false, spare_unbilled: false, router_exits: [], entries: [],
     agent: { version: '1.0.0', last_report_at: null, online: true, xray_running: true, cores: 2, health: null },
     health: { status: 'ok', reasons: [] }, maintenance: false, host: null, subscription: null, plan: null,
-    quota: { used: 0, period_start: '2026-01-01', period_end: null, mode: 'monthly', counted_from: null, rule: null, base: null, limit_gb: null, limit_source: 'none', forecast_full_at: null },
+    quota: { used: 0, period_start: '2026-01-01', period_end: null, mode: 'monthly', counted_from: null, rule: null, base: null, base_at: null, limit_gb: null, limit_source: 'none', forecast_full_at: null },
     ...p,
   } as unknown as MachineView;
 }
