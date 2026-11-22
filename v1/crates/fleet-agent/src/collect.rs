@@ -9,7 +9,7 @@ use crate::xray::{conns, ctl, render, stats};
 use fleet_proto::{tags, DesiredEntry, DesiredState, XrayStatus};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError};
 use std::time::Duration;
 use tokio::sync::{watch, Semaphore};
 use tokio::time::{interval_at, Instant, MissedTickBehavior};
@@ -84,13 +84,13 @@ pub async fn host_task(sh: Arc<Shared>, mut sd: watch::Receiver<bool>) {
 
 /// 当前启用的入口 (id, 端口, AnyTLS 公网端口)
 fn enabled_entries(sh: &Shared) -> Vec<(uuid::Uuid, u16, Option<u16>)> {
-    let g = sh.applied.read().unwrap();
+    let g = sh.applied.read().unwrap_or_else(PoisonError::into_inner);
     let Some(d) = g.as_ref() else { return vec![] };
     let at = render::anytls_ports(&d.entries);
     d.entries.iter().filter(|e| e.enabled).map(|e| (e.id, e.port, at.get(&e.id).map(|p| p.0))).collect()
 }
 
-/// sing-box 多久查一次状态（systemctl 与 ss 子进程）。状态决定界面显示和「订阅里给不给 AnyTLS」，恢复后错误要尽快消掉，所以不放太长
+/// sing-box 多久查一次状态（一个 `systemctl is-active` 子进程；主进程号缓存着、监听端口读 /proc，见 singbox.rs 的 is_running）。状态决定界面显示和「订阅里给不给 AnyTLS」，恢复后错误要尽快消掉，所以不放太长
 const SINGBOX_STATUS_EVERY: Duration = Duration::from_secs(10);
 
 /// sing-box 没在跑时，隔这么久自己再应用一次（带关占端口连接、reset-failed），不等配置变化
@@ -242,7 +242,7 @@ pub async fn stats_task(sh: Arc<Shared>, cli: XrayCli, mut sd: watch::Receiver<b
 
 /// 已应用的期望状态里启用的穿透入口
 fn reverse_entries(sh: &Shared) -> Vec<uuid::Uuid> {
-    let a = sh.applied.read().unwrap();
+    let a = sh.applied.read().unwrap_or_else(PoisonError::into_inner);
     a.as_ref().map(|d| d.entries.iter().filter(|e| e.enabled && matches!(e.outbound, fleet_proto::Outbound::Reverse { .. })).map(|e| e.id).collect()).unwrap_or_default()
 }
 
@@ -369,7 +369,7 @@ pub async fn probe_task(sh: Arc<Shared>, direct: reqwest::Client, mut sd: watch:
             _ = sd.changed() => return,
         }
         // Arc 克隆很轻；端口表只在期望状态换代（Arc 变了）时重算：仍在的端口沿用客户端，新端口新建，去掉的随旧表丢掉
-        let Some(d) = sh.applied.read().unwrap().clone() else { continue };
+        let Some(d) = sh.applied.read().unwrap_or_else(PoisonError::into_inner).clone() else { continue };
         let tcp_every = Duration::from_secs(d.relay.probe_interval_s.clamp(5, 3600) as u64);
         let egress_every = tcp_every * 2;
         let now = Instant::now();

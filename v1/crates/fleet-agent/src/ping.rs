@@ -30,7 +30,7 @@ pub async fn ping_task(sh: Arc<Shared>, mut sd: watch::Receiver<bool>) {
             _ = tokio::time::sleep_until(next) => {}
             _ = sd.changed() => return,
         }
-        let cfg = sh.applied.read().unwrap().as_ref().and_then(|d| d.ping.clone());
+        let cfg = sh.applied.read().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().and_then(|d| d.ping.clone());
         let Some(cfg) = cfg.filter(|c| !c.targets.is_empty()) else {
             next = Instant::now() + Duration::from_secs(60);
             continue;

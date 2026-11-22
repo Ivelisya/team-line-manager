@@ -9,8 +9,8 @@
 //!    对照目标通、三台以上线路机却全部连不上：照常带结果上报，标上 `all_down`（`fleet_proto::all_down`：多半是线路机那边一起出了问题，中控照记）；
 //! 4. `POST /agent/v1/probe/report` 上报。发不出去就丢掉（不排队补发：迟到的结果没有用，下一轮照常）。
 //!
-//! 中控要它升级时（`ProbeTargets::upgrade`）：下载 `/agent/v1/probe/binary`，sha256 对上、`--version` 跑得起来才换，
-//! 旧的留成同目录的 `fleet-agent.prev`，写下试运行标记（[`TRIAL`]），然后退出（退出码 0），由服务管理器（supervise-daemon / systemd）拉起新的。
+//! 中控要它升级时（`ProbeTargets::upgrade`）：下载 `/agent/v1/probe/binary`，sha256 对上、`--version` 跑得起来（30 秒内退出码 0）才换，
+//! 旧的硬链接成同目录的 `fleet-agent.prev`、新的一次原子 rename 换上（程序路径上始终有一个完整的程序），写下试运行标记（[`TRIAL`]），然后退出（退出码 0），由服务管理器（supervise-daemon / systemd）拉起新的。
 //! 新的启动后看到标记就是在试运行：[`TRIAL_WINDOW`] 内有一次上报成功就删掉标记；到时候一次都没成功（起来了但连不上中控、
 //! 读不了配置等启动就失败被反复拉起）就把 `.prev` 换回来、记下这个版本的 sha256（[`BAD`]，之后中控再要它升级到这个版本时不换），
 //! 以非 0 退出，由服务管理器拉起旧版本。之后的上报都带上这个 sha256（`ProbeReport::bad_sha256`），中控据此马上记成升级失败、不再下发。标记在启动的第一步（读配置之前）看，所以任何启动失败都算在试运行里；
@@ -324,23 +324,60 @@ async fn upgrade(c: &Client, u: &ProbeUpgrade, exe: &Path) -> Result<()> {
         return Err(cleanup(anyhow::anyhow!("下载的程序 sha256 是 {got}，中控说的是 {}", u.sha256)));
     }
     std::fs::set_permissions(&new, std::fs::Permissions::from_mode(0o755)).map_err(|e| cleanup(e.into()))?;
-    let ok = tokio::process::Command::new(&new).arg("--version").output().await.map(|o| o.status.success()).unwrap_or(false);
-    if !ok {
-        return Err(cleanup(anyhow::anyhow!("下载的程序跑不起来（--version 失败）")));
-    }
+    trial_run(&new, TRIAL_RUN_TIMEOUT).await.map_err(cleanup)?;
     swap(exe, &new).map_err(cleanup)
+}
+
+/// 试跑新程序 `--version` 最多等这么久：卡住的程序不能把探测循环一起卡住
+const TRIAL_RUN_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// 试跑 `<程序> --version`：退出码 0 才算跑得起来。超时（卡住）也算失败，子进程随之杀掉（kill_on_drop）
+async fn trial_run(new: &Path, timeout: Duration) -> Result<()> {
+    let mut cmd = tokio::process::Command::new(new);
+    cmd.arg("--version").stdin(std::process::Stdio::null()).kill_on_drop(true);
+    match tokio::time::timeout(timeout, cmd.output()).await {
+        Ok(Ok(o)) if o.status.success() => Ok(()),
+        Ok(_) => bail!("下载的程序跑不起来（--version 失败）"),
+        Err(_) => bail!("下载的程序跑不起来（--version {} 秒没退出）", timeout.as_secs()),
+    }
 }
 
 fn prev_of(exe: &Path) -> PathBuf { exe.with_file_name(format!("{}.prev", exe.file_name().and_then(|n| n.to_str()).unwrap_or("fleet-agent"))) }
 
-/// 旧的改名成 `.prev`，新的换上，写下试运行标记（[`Trial`]）；换上失败时换回去
-fn swap(exe: &Path, new: &Path) -> Result<()> {
+/// 把现在的程序留一份成 `.prev`：先硬链接（同一文件系统上不行就复制）成临时名，再原子改名成 `.prev`（换掉已有的）。
+/// 程序本身一直在原处：任何一步中断，`<程序>` 都还是旧的那个，最多留下一个临时文件（下次先删）
+fn keep_prev(exe: &Path) -> Result<()> {
     let prev = prev_of(exe);
-    std::fs::rename(exe, &prev).with_context(|| format!("把 {} 改名成 {}", exe.display(), prev.display()))?;
-    if let Err(e) = std::fs::rename(new, exe) {
-        let _ = std::fs::rename(&prev, exe);
-        bail!("换上新程序失败：{e}");
+    // 已经是同一个文件（例如上一次升级在这一步之后、换上新程序之前中断过）：不用再动。
+    // 同一个文件的两个名字之间 rename 什么都不做，临时名会留下来，所以先看
+    if same_file(exe, &prev) {
+        return Ok(());
     }
+    let tmp = exe.with_file_name(".fleet-agent.prev.tmp");
+    let _ = std::fs::remove_file(&tmp);
+    if std::fs::hard_link(exe, &tmp).is_err() {
+        std::fs::copy(exe, &tmp).with_context(|| format!("把 {} 复制成 {}", exe.display(), tmp.display()))?;
+    }
+    std::fs::rename(&tmp, &prev).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        anyhow::anyhow!("把 {} 改名成 {}：{e}", tmp.display(), prev.display())
+    })
+}
+
+/// 两个路径是不是同一个文件（同设备同 inode）；有一个不在就不是
+fn same_file(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::metadata(a), std::fs::metadata(b)) {
+        (Ok(x), Ok(y)) => x.dev() == y.dev() && x.ino() == y.ino(),
+        _ => false,
+    }
+}
+
+/// 旧的留成 `.prev`（[`keep_prev`]），新的一次原子 rename 换上，写下试运行标记（[`Trial`]）。
+/// 程序路径上任何时刻都有一个完整的程序：rename 之前是旧的，之后是新的；换上失败时旧的原样在，不用换回
+fn swap(exe: &Path, new: &Path) -> Result<()> {
+    keep_prev(exe)?;
+    std::fs::rename(new, exe).map_err(|e| anyhow::anyhow!("换上新程序失败：{e}"))?;
     // 写不了标记（磁盘满）也照样用新的：只是少了运行期回滚
     if let Err(e) = std::fs::write(exe.with_file_name(TRIAL), b"") {
         tracing::warn!("写升级试运行标记失败（换上后起不来不会自动换回）：{e}");
@@ -374,7 +411,8 @@ impl Trial {
     fn roll_back(&self, exe: &Path) -> Result<()> {
         let prev = prev_of(exe);
         let _ = std::fs::remove_file(&self.path);
-        if !prev.exists() {
+        // `.prev` 和程序是同一个文件（硬链接）：换上新程序之前就中断了，跑的本来就是旧的，没什么可换回
+        if !prev.exists() || same_file(&prev, exe) {
             tracing::warn!("升级后 {} 秒内没能上报，但没有 {} 可换回：照旧用现在的版本", TRIAL_WINDOW.as_secs(), prev.display());
             return Ok(());
         }
@@ -507,6 +545,83 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&exe).unwrap(), "new");
         assert_eq!(std::fs::read_to_string(d.join("fleet-agent.prev")).unwrap(), "old");
         assert!(!new.exists());
+        // 已有 .prev：换成这次的旧程序，不留临时文件；程序与 .prev 是两个文件
+        std::fs::write(&new, "new2").unwrap();
+        swap(&exe, &new).unwrap();
+        assert_eq!(std::fs::read_to_string(&exe).unwrap(), "new2");
+        assert_eq!(std::fs::read_to_string(d.join("fleet-agent.prev")).unwrap(), "new");
+        assert!(!same_file(&exe, &d.join("fleet-agent.prev")) && !d.join(".fleet-agent.prev.tmp").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 换上之前中断：只做了留 .prev（链接 / 改名）这一步，程序还是旧的、完整的；起来后照常跑、不换回，下次升级照常换
+    #[test]
+    fn swap_interrupted_before_rename_is_recoverable() {
+        let d = std::env::temp_dir().join(format!("fa-swap-cut-{}", Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&d).unwrap();
+        let (exe, new, prev, tmp) = (d.join("fleet-agent"), d.join(".fleet-agent.new"), d.join("fleet-agent.prev"), d.join(".fleet-agent.prev.tmp"));
+        std::fs::write(&exe, "old").unwrap();
+        std::fs::write(&prev, "older").unwrap();
+        std::fs::write(&new, "new").unwrap();
+        // 断在链接之后、改名成 .prev 之前：留下临时文件，程序和旧 .prev 都不动
+        std::fs::hard_link(&exe, &tmp).unwrap();
+        assert_eq!(std::fs::read_to_string(&exe).unwrap(), "old");
+        assert_eq!(std::fs::read_to_string(&prev).unwrap(), "older");
+        // 断在改名成 .prev 之后、换上新程序之前：程序和 .prev 是同一个文件，程序完整
+        keep_prev(&exe).unwrap();
+        assert!(same_file(&exe, &prev) && !tmp.exists());
+        assert_eq!(std::fs::read_to_string(&exe).unwrap(), "old");
+        // 没写试运行标记：起来后不进试运行；就算有残留标记到时，也不把「旧的」当坏版本记下
+        assert!(Trial::load(&exe).is_none());
+        std::fs::write(d.join(TRIAL), b"").unwrap();
+        std::fs::File::options().write(true).open(d.join(TRIAL)).unwrap().set_modified(std::time::SystemTime::now() - TRIAL_WINDOW).unwrap();
+        Trial::load(&exe).unwrap().roll_back(&exe).unwrap();
+        assert!(bad_sha(&exe).is_none() && Trial::load(&exe).is_none());
+        assert_eq!(std::fs::read_to_string(&exe).unwrap(), "old");
+        // 重新升级：残留的 .new 被覆盖重下；这次换上，.prev 是旧的，新旧是两个文件
+        std::fs::write(&new, "new").unwrap();
+        swap(&exe, &new).unwrap();
+        assert_eq!(std::fs::read_to_string(&exe).unwrap(), "new");
+        assert_eq!(std::fs::read_to_string(&prev).unwrap(), "old");
+        assert!(!same_file(&exe, &prev) && !tmp.exists());
+        // 试运行没过：换回 .prev
+        std::fs::File::options().write(true).open(d.join(TRIAL)).unwrap().set_modified(std::time::SystemTime::now() - TRIAL_WINDOW).unwrap();
+        assert!(Trial::load(&exe).unwrap().roll_back(&exe).is_err());
+        assert_eq!(std::fs::read_to_string(&exe).unwrap(), "old");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 换不上（新程序不在）：程序原样在，.prev 是它的一份，不写试运行标记
+    #[test]
+    fn swap_failure_leaves_exe_in_place() {
+        let d = std::env::temp_dir().join(format!("fa-swap-fail-{}", Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&d).unwrap();
+        let exe = d.join("fleet-agent");
+        std::fs::write(&exe, "old").unwrap();
+        assert!(swap(&exe, &d.join(".fleet-agent.new")).unwrap_err().to_string().contains("换上新程序失败"));
+        assert_eq!(std::fs::read_to_string(&exe).unwrap(), "old");
+        assert!(Trial::load(&exe).is_none());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 试跑：退出码 0 才算；非 0、卡住（超时，子进程被杀）都算失败
+    #[tokio::test]
+    async fn trial_run_bounded() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("fa-trial-run-{}", Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&d).unwrap();
+        let script = |name: &str, body: &str| {
+            let p = d.join(name);
+            std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            p
+        };
+        let (ok, bad, hang) = (script("ok", "echo fleet-agent 1.0"), script("bad", "exit 3"), script("hang", "exec sleep 30"));
+        assert!(trial_run(&ok, Duration::from_secs(10)).await.is_ok());
+        assert!(trial_run(&bad, Duration::from_secs(10)).await.unwrap_err().to_string().contains("--version 失败"));
+        let t = Instant::now();
+        let e = trial_run(&hang, Duration::from_millis(300)).await.unwrap_err();
+        assert!(e.to_string().contains("秒没退出") && t.elapsed() < Duration::from_secs(5), "{e}");
         let _ = std::fs::remove_dir_all(&d);
     }
 
