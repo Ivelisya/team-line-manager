@@ -577,16 +577,17 @@ pub struct RenameOpts<'a> {
     pub note: Option<&'a str>,
     pub country: Option<&'a str>,
     pub egress_ip: Option<&'a str>,
+    pub provider: Option<&'a str>,
     pub yes: bool,
 }
 
-/// 改团队 / 编号 / 线路机名 / 备注 / 国家。给了 --team 或 --number 先取 rename-preview：换团队（原团队剩下的压缩编号、同机 IP 节点一起走），
+/// 改团队 / 编号 / 线路机名 / 备注 / 国家 / 供应商。给了 --team 或 --number 先取 rename-preview：换团队（原团队剩下的压缩编号、同机 IP 节点一起走），
 /// 或预览里有别的机器要连带改名（renames / ip_nodes 非空）时，不加 --yes 只打印预览（同 replace / repoint 的确认方式）——
 /// 压缩会让团队后面的节点全部改号，而客户软路由的出口名（「节点08」）是固定的，执行完才看到就只能一台台挪回去。
 /// 只改线路机名 / 备注 / 国家、团队内改到空号（不连带别人）的照旧直接执行
 pub fn rename(ctx: &Ctx, machine: &str, o: RenameOpts) -> anyhow::Result<u8> {
-    if o.team.is_none() && o.number.is_none() && o.label.is_none() && o.note.is_none() && o.country.is_none() && o.egress_ip.is_none() {
-        bail!("没有要改的内容：给 --team / --number / --label / --note / --country / --egress-ip 之一");
+    if o.team.is_none() && o.number.is_none() && o.label.is_none() && o.note.is_none() && o.country.is_none() && o.egress_ip.is_none() && o.provider.is_none() {
+        bail!("没有要改的内容：给 --team / --number / --label / --note / --country / --egress-ip / --provider 之一");
     }
     let (id, _) = ctx.find_id(machine, Want::Live)?;
     let cur = ctx.c.get(&format!("/machines/{id}"))?;
@@ -632,6 +633,10 @@ pub fn rename(ctx: &Ctx, machine: &str, o: RenameOpts) -> anyhow::Result<u8> {
     if let Some(e) = o.egress_ip {
         body["egress_ip"] = if e.eq_ignore_ascii_case("none") { Value::Null } else { json!(e) };
     }
+    // 供应商：none = 清掉；写 id、id 前缀、名称或缩写（同 provision --provider）。有套餐的机器供应商跟套餐走，给了别家中控会拒绝
+    if let Some(p) = o.provider {
+        body["provider_id"] = if p.eq_ignore_ascii_case("none") { Value::Null } else { json!(st(crate::catalog::find_provider(&ctx.list("/providers")?, p)?, "/id")) };
+    }
     // PATCH 返回改完后的完整视图，新名字直接从里面取；预览里的连带改动一并带上（--json 同名字段）
     let mut d = ctx.c.patch(&format!("/machines/{id}"), &body)?;
     let list = |k: &str| -> Vec<String> { pv[k].as_array().into_iter().flatten().map(|r| format!("{} → {}", st(r, "/old_name"), st(r, "/new_name"))).collect() };
@@ -648,12 +653,15 @@ pub fn rename(ctx: &Ctx, machine: &str, o: RenameOpts) -> anyhow::Result<u8> {
     if let Some(h) = pv["held"].as_str() {
         d["held"] = json!(h);
     }
-    let egress = if o.egress_ip.is_some() {
+    let mut egress = if o.egress_ip.is_some() {
         let now = if d["egress_dynamic"] == true { "动态" } else { d["egress_ip"].as_str().unwrap_or("无（跟随 IP）") };
         format!("\n出口 IP：{now}")
     } else {
         String::new()
     };
+    if o.provider.is_some() {
+        egress += &format!("\n供应商：{}", d.pointer("/provider/name").and_then(Value::as_str).unwrap_or("未设置"));
+    }
     ctx.emit(&d, || format!("{} → {}{}{egress}", st(&cur, "/name"), st(&d, "/name"), rename_details(&pv, to_spare, false)));
     Ok(0)
 }
