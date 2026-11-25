@@ -160,11 +160,11 @@ export const REVERSE_TIP = '穿透：节点上的 bridge 主动连这个入口�
 /** TCP 延迟的方向：普通入口是线路机 → 节点（线路机量），穿透入口是节点 → 线路机（节点主动连线路机，节点上的 agent 量）；直出入口没有 TCP；
  *  有穿透也有普通的混着写「↔」。入口表、卡片、图卡共用 */
 export const tcpDir = (es: EntryView[]) => {
-  const t = es.filter((e) => !e.direct); const rv = t.filter(isReverse).length;
+  const t = es.filter((e) => !e.direct && !e.local); const rv = t.filter(isReverse).length;
   return rv === 0 ? '线路机 → 节点' : rv === t.length ? '节点 → 线路机' : '线路机 ↔ 节点';
 };
-/** 没有线路机 → 节点的 TCP 探测：直出（没有节点）、穿透（线路机不连节点；它的 TCP 是节点 → 线路机，不进「节点通」连通数与告警） */
-const noTcp = (e: EntryView) => e.direct || isReverse(e);
+/** 没有线路机 → 节点的 TCP 探测：直出（没有节点）、本机节点（就在线路机上）、穿透（线路机不连节点；它的 TCP 是节点 → 线路机，不进「节点通」连通数与告警） */
+const noTcp = (e: EntryView) => e.direct || e.local || isReverse(e);
 export const probeFail = (e: EntryView) => (e.lifecycle !== 'active' || !e.applied ? null : !noTcp(e) && e.tcp && !e.tcp.ok ? e.tcp : e.egress && !e.egress.ok ? e.egress : null);
 /** 入口状态列的「不通」写明是哪一段：TCP 连不上入口，还是连上了但出口验收失败（抽屉的「入口探测 N/M 连通」只算 TCP） */
 export const probeFailLabel = (e: EntryView) => (probeFail(e) === e.tcp ? 'TCP 不通' : '出口不通');
@@ -329,7 +329,8 @@ export const limitGb = (gb: number | null | undefined): F.Fmt => (gb && gb > 0 ?
  *  宿主机「+N IP」；没有同机关系为 null */
 export function hostRel(host: MachineView['host_machine'], nodes: MachineView['ip_nodes'], short?: boolean) {
   if (host) return { text: short ? '同机' : `同机 · ${host.name}`, tip: `和宿主机「${host.name}」是同一台机器，CPU、内存、磁盘和网卡读数都共用` };
-  if (nodes.length) return { text: `+${nodes.length} IP`, tip: `还有 ${nodes.length} 个同机 IP 节点：${nodes.map((x) => x.name).join('、')}` };
+  // 宿主机是 VPS 节点时是同机 IP 节点，是线路机时是本机节点（从线路机自己的 IP 出去）：都是这台机器上的节点
+  if (nodes.length) return { text: `+${nodes.length} 节点`, tip: `这台机器上还有 ${nodes.length} 个节点（同机 IP 节点 / 本机节点）：${nodes.map((x) => x.name).join('、')}` };
   return null;
 }
 /** 流量额度吃紧（首页 KPI，同额度告警）：本周期已用 ≥ meta 的 traffic_quota_warn_pct，或预计 7 天内用满（forecast_full_at）的台数（没设额度的不计），
@@ -495,7 +496,7 @@ export function probeSummary(m: MachineView) {
   const viaNode = es.filter((e) => !noTcp(e));
   const tcpOk = viaNode.filter((e) => e.tcp?.ok).length;
   const egOk = es.filter((e) => e.egress?.ok).length;
-  const timed = es.filter((e) => !e.direct);
+  const timed = es.filter((e) => !e.direct && !e.local);
   const lat = timed.flatMap((e) => { const ms = tcpMs(e.tcp); return ms == null ? [] : [{ name: `${e.relay.name}:${e.port}`, ms, e }]; });
   const dir = tcpDir(lat.map((x) => x.e));
   const each = lat.length > 1 ? lat.map((x) => `\n${x.name} ${Math.round(x.ms)} ms${dir === '线路机 ↔ 节点' ? `（${isReverse(x.e) ? '节点 → 线路机' : '线路机 → 节点'}）` : ''}`).join('') : '';

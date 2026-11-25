@@ -74,6 +74,15 @@ const PROVISION_IP: &[StepDef] = &[
     s("verify", "出口验收", 300),
     s("activate", "上线", 30),
 ];
+// 本机节点（宿主机是线路机，入口从线路机自己的 IP 出去）：不登录、不装任何东西，只在宿主线路机上建入口。
+// 线路机带团队上架时本作业和线路机的上架作业同时建：第一步等线路机上线（线路机收敛最长约 45 分钟，给足 1 小时）
+const PROVISION_LOCAL: &[StepDef] = &[
+    s("wait_host", "等线路机上线", 3600),
+    s("attach", "接入线路机", 60),
+    s("wait_applied", "等待线路机应用", 300),
+    s("verify", "出口验收", 300),
+    s("activate", "上线", 30),
+];
 const PROVISION_PROXY: &[StepDef] = &[
     s("attach", "接入线路机", 60),
     s("wait_applied", "等待线路机应用", 300),
@@ -157,6 +166,7 @@ pub fn defs(kind: &str) -> &'static [StepDef] {
         "provision_proxy" => PROVISION_PROXY,
         "provision_relay" => PROVISION_RELAY,
         "provision_ip" => PROVISION_IP,
+        "provision_local" => PROVISION_LOCAL,
         "attach_entry" => ATTACH_ENTRY,
         "move_entry" => MOVE_ENTRY,
         "retire" => RETIRE,
@@ -1266,6 +1276,9 @@ mod tests {
         assert!(provisions("provision_ip") && cancellable("provision_ip"));
         let keys = |k: &str| defs(k).iter().map(|d| d.key).collect::<Vec<_>>();
         assert_eq!(keys("provision_ip"), ["ip_check", "converge", "attach", "wait_applied", "verify", "activate"]);
+        // 本机节点：不登录，只等线路机上线、建入口、验收
+        assert_eq!(keys("provision_local"), ["wait_host", "attach", "wait_applied", "verify", "activate"]);
+        assert!(provisions("provision_local") && cancellable("provision_local") && check_target("provision_local", Some("provisioning")).is_ok());
         let zh = crate::meta::job_kind_label;
         assert_eq!((zh("provision_ip"), zh("provision_vps")), ("上架同机 IP 节点", "上架 VPS 节点"));
     }
@@ -1297,7 +1310,7 @@ mod tests {
         for k in ["upgrade_agent", "ss_refresh", "tune", "speedtest", "router_sync", "router_protocol", "router_restart", "router_rules"] {
             assert_eq!(view_change(k), Quiet, "{k}");
         }
-        for k in ["provision_vps", "provision_proxy", "provision_relay", "provision_ip", "attach_entry", "move_entry", "repoint", "replace", "reverse", "router_exit_rm", "router_rename"] {
+        for k in ["provision_vps", "provision_proxy", "provision_relay", "provision_ip", "provision_local", "attach_entry", "move_entry", "repoint", "replace", "reverse", "router_exit_rm", "router_rename"] {
             assert_eq!(view_change(k), View, "{k}");
         }
         for k in ["retire", "purge", "不认识的类型"] {
@@ -1308,7 +1321,7 @@ mod tests {
     #[test]
     fn outer_timeout_covers_step_timeout() {
         for k in [
-            "provision_vps", "provision_proxy", "provision_relay", "provision_ip", "attach_entry", "retire", "purge", "upgrade_agent", "move_entry", "replace", "repoint", "router_sync", "router_protocol", "router_exit_rm", "router_restart", "router_rename", "router_rules", "tune", "ss_refresh", "speedtest", "reverse",
+            "provision_vps", "provision_proxy", "provision_relay", "provision_ip", "provision_local", "attach_entry", "retire", "purge", "upgrade_agent", "move_entry", "replace", "repoint", "router_sync", "router_protocol", "router_exit_rm", "router_restart", "router_rename", "router_rules", "tune", "ss_refresh", "speedtest", "reverse",
         ] {
             for d in defs(k) {
                 assert!(outer_timeout(d).as_secs() as i64 >= d.timeout_s + 120);

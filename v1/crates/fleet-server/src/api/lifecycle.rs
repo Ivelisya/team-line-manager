@@ -102,6 +102,13 @@ async fn plan_move(
     if lc != "active" {
         return Ok(Err(format!("「{name}」现在是「{}」，只有在用的节点能换线路机", meta::lifecycle_label(&lc))));
     }
+    // 本机节点就在线路机上、从它的 IP 出去：换了线路机就不是这个出口了
+    let local: bool = sqlx::query_scalar("select relay_local from machine where id = $1").bind(node_id).fetch_one(&mut **tx).await?;
+    if local {
+        return Ok(Err(format!(
+            "「{name}」是本机节点，从它所在线路机自己的 IP 出去，不能换线路机（线路机回收时它一并回收；要换出口就另上架一台节点再用「替换」）"
+        )));
+    }
     let target: Option<(String, String)> =
         sqlx::query_as("select coalesce(label, ''), lifecycle::text from machine where id = $1 and kind = 'relay' for share").bind(to).fetch_optional(&mut **tx).await?;
     let Some((to_name, to_lc)) = target else { return Ok(Err("目标线路机不存在".into())) };
@@ -687,7 +694,7 @@ pub async fn rebalance(_a: Actor, State(st): State<AppState>, ApiPath(relay): Ap
     // 搬去 `t` 的方案：能搬的 = 在用的非直出入口，节点没被排除、在 t 上还没有入口。(能搬的入口, 各自每天的流量, 选中的下标, 搬走后每天少的流量, 撑不撑得到重置日)
     let plan_for = |t: &MachineView| {
         let on_target: HashSet<Uuid> = t.entries.iter().map(|e| e.node.id).collect();
-        let cands: Vec<&EntryView> = live.iter().copied().filter(|e| !e.direct && !exclude.contains(&e.node.id) && !on_target.contains(&e.node.id)).collect();
+        let cands: Vec<&EntryView> = live.iter().copied().filter(|e| !e.freedom() && !exclude.contains(&e.node.id) && !on_target.contains(&e.node.id)).collect();
         let rates: Vec<f64> = cands.iter().map(|e| rate(e) * k).collect();
         let (picked, cut, reached) = pick_moves(sq.daily, allowed, &rates);
         (cands, rates, picked, cut, reached)

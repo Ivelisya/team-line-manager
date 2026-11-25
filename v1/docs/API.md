@@ -89,6 +89,8 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
   country|null, country_set|null, // 国家的 ISO 3166-1 两位代码（"US"），网页在名字旁显示国旗。country_set 是上架 / 修改时手动指定的；
                                 // 没指定时 country 按 ip 查中控离线 IP 库，内网地址、家宽代理填的域名、库里查不到的为 null
   billing_exempt,               // 标了不计费（PUT /machines/{id}/billing-exempt）：计费对账当它不在团队里（见「计费台账」）
+  relay_local:bool,             // 本机节点（kind 仍是 vps）：节点就在线路机上（host_machine 是那台线路机），从线路机自己的 IP 出去，ip 同线路机的；
+                                // 机器上没有它自己的服务，入口只能在这台线路机上、只能是普通模式（入口的 local 为 true，没有 TCP 探测）
   host_machine:{id,name}|null,  // 同机 IP 节点（kind 仍是 vps）：它所在的宿主机；它没有自己的 agent 和 SSH，下面的 agent、host 就是宿主机的，
                                 // ssh_port 是宿主机的（只展示），provider 取宿主机的、plan 为 null；其它机器为 null
   egress_ip|null,               // 端口转发型 NAT 节点（入口 IP 与出站 IP 不同）：它的出口 IP；ip 是线路机连的入口（SSH 也走它）。出口探测 / 出口验收期望的是 coalesce(egress_ip, ip)；null = 出口就是 ip（或 egress_dynamic = true）
@@ -168,10 +170,12 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
                                                        // lifecycle = retiring 且退役作业失败时：该 retire 作业（等重试）；其它情况 null
   open_incidents, maintenance,   // maintenance：同机 IP 节点在宿主机维护时也为 true
   relay: {public_host,generation,applied_generation,applied_at,apply_error,port_min,port_max}|null }
-EntryView = { id, relay:{id,name}, node:{id,name}, direct, port, lifecycle, applied, apply_error,
+EntryView = { id, relay:{id,name}, node:{id,name}, direct, local, port, lifecycle, applied, apply_error,
   tcp:{ok,latency_ms,detail,ts,median_ms}|null, egress:{…}|null, reach:{ok,ts,detail,fails}|null, traffic:{today_up,today_down,month_up,month_down} }
 // direct：线路机直出入口——节点就是线路机自己（node.id = relay.id，node.name =「线路机名-直出」），出口是线路机自己的 IP；
 //   只出现在线路机的 entries 里（一次）；没有 TCP 探测（tcp 恒为 null），出口不通时线路机自己报 egress_fail
+// local：本机节点的入口——节点是放在这台线路机上的本机节点（MachineView.relay_local），同样从线路机自己的 IP 出去、没有 TCP 探测；
+//   node 是那台节点（名字是节点名），出口不通由节点报 egress_fail；不能穿透、不能换线路机。direct 与 local 至多一个为 true
 // tcp：线路机 → 节点出站地址的 TCP 建连，latency_ms 是最近一次（新 agent 报内核量的往返时间，不含 SYN 重发等待），
 //   median_ms 是近 1 小时成功样本的中位数（卡片读数）；egress：经入口访问 /echo 核对出口 IP，只判通不通、IP 对不对，
 //   latency_ms 是这次出口验证的耗时（经节点去中控），不是线路延迟，median_ms 恒为 null
@@ -236,9 +240,16 @@ ProvisionItem = {
   // 同机 IP 节点（kind 必须是 vps）：加在这台 VPS 节点（宿主机）上，ip 是它自己的出口 IP（要已直接配在宿主机网卡上，EIP / NAT 映射的不行）。
   // 宿主机必须存在、是在用的普通 VPS 节点（不是线路机、家宽代理或同机 IP 节点）。这时 ssh_port / login / ss_port / provider_id / plan_id / reset_host_key
   // 不适用（忽略）：SSH 端口与供应商取宿主机的、不带套餐、不收 root 密码；SS 端口由中控在宿主机上分配（8389 起，同批依次递增，跳过宿主机上未退役同机节点已占的）。
-  // 作业是 provision_ip；费用默认不记（subscription 照常可给，要带 price_cents）
+  // 作业是 provision_ip；费用默认不记（subscription 照常可给，要带 price_cents）。
+  // 本机节点：host_id 是一台在用的线路机时，节点就在这台线路机上、从线路机自己的 IP 出去（团队直接用机房 IP）。ip 不填或填线路机的 IP，
+  // relay_id 不填或填这台线路机；不登录、不装东西、不分 SS 端口，入口一律普通模式。作业是 provision_local（等线路机上线 → 建入口 → 等应用 → 出口验收 → 上线）。
+  // 一台线路机上可以有几台（各团队一台），IP 查重不含它。检查结果里这台的 `local` 为 true
   host_id?: uuid
 }
+```
+线路机带团队上架：`kind: "relay"` 的条目给了 `team_id`（可带 `number`）= 这台线路机同时是这个团队的节点。同一个事务里建线路机和它的本机节点（上架中），
+`jobs` 里多一条本机节点的 `provision_local` 作业（第一步等线路机上线；线路机上架取消 / 退役了它就失败）；检查结果里 `node` 是那台节点的名字。线路机自己仍然没有团队。
+```
 ```
 校验时先锁团队行再锁宿主机行：同一台宿主机上的端口分配一次一个事务，和退役宿主机互斥。
 

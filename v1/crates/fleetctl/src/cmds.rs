@@ -561,7 +561,10 @@ pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
             rows.push(("出口 IP", format!("动态（{}）", m["egress_seen"].as_str().map_or("暂无成功的出口探测".to_string(), |s| format!("最近 {s}")))));
         }
         // 同机关系：同机 IP 节点的 SSH、agent、主机读数都是宿主机的；宿主机列出它上面的同机 IP 节点
-        if !m["host_machine"].is_null() {
+        if m["relay_local"] == true {
+            // 本机节点：就在线路机上，从线路机自己的 IP 出去（上面的 IP 就是线路机的）
+            rows.push(("本机节点", format!("在线路机 {} 上，从它自己的 IP 出去（不经 ssserver；SSH、agent、主机读数都是线路机的）", st(&m, "/host_machine/name"))));
+        } else if !m["host_machine"].is_null() {
             rows.push(("宿主机", format!("{}（SSH、agent、主机读数都用它的）", st(&m, "/host_machine/name"))));
             // 1:1 NAT 映射的附加 IP：ssserver 监听并从这个本地地址出站，线路机连的仍是上面的 IP
             if let Some(b) = m["bind_ip"].as_str() {
@@ -569,7 +572,9 @@ pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
             }
         }
         if let Some(xs) = m["ip_nodes"].as_array().filter(|a| !a.is_empty()) {
-            rows.push(("同机 IP 节点", xs.iter().map(|x| st(x, "/name")).collect::<Vec<_>>().join("、")));
+            // 线路机上的是本机节点（从线路机自己的 IP 出去），VPS 节点上的是同机 IP 节点
+            let label = if m["kind"] == "relay" { "本机节点" } else { "同机 IP 节点" };
+            rows.push((label, xs.iter().map(|x| st(x, "/name")).collect::<Vec<_>>().join("、")));
         }
         rows.extend([
             ("供应商/套餐", format!("{} / {}", st(&m, "/provider/name"), st(&m, "/plan/name"))),
@@ -682,6 +687,8 @@ fn entry_item(e: &Value) -> Value {
         "mode": e.get("mode").and_then(Value::as_str).unwrap_or("normal"),
         // 穿透入口的 bridge 端口（节点连线路机的这个端口；没指定为 null = 连入口端口）
         "bridge_port": e.get("bridge_port").cloned().unwrap_or(Value::Null),
+        // 本机节点的入口（节点就在这台线路机上，从线路机自己的 IP 出去，没有 TCP 探测）；旧中控没有这个字段，按 false
+        "local": e.get("local").and_then(Value::as_bool).unwrap_or(false),
         "tcp_ok": e.pointer("/tcp/ok"), "egress_ok": e.pointer("/egress/ok"),
         "today_down": e.pointer("/traffic/today_down"), "today_up": e.pointer("/traffic/today_up"),
     })
@@ -705,6 +712,8 @@ fn entry_table(items: &[Value]) -> String {
                 match (e["mode"] == "reverse", e["bridge_port"].as_u64()) {
                     (true, Some(p)) => format!("穿透（桥 {p}）"),
                     (true, None) => "穿透".into(),
+                    // 本机节点：从线路机自己的 IP 出去，不连别的机器
+                    _ if e["local"] == true => "本机".into(),
                     _ => "普通".into(),
                 },
                 // 普通 = 线路机 → 节点；穿透 = 节点 → 线路机（旧版本节点 agent 没有，显示 -）

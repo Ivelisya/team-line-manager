@@ -1,5 +1,5 @@
 // 上架：单台表单 + 批量可编辑网格（可从表格软件粘贴）。两步：1 检查（不落库，显示每行错误与分配到的名称/端口）→ 2 开始（唯一一次确认）。
-// VPS 节点可以「在已有机器上添加 IP」：同机 IP 节点（host_id），SSH、agent、供应商沿用宿主机的；抽屉里宿主机的「添加 IP 节点」跳来时带 ?host=<id> 预填。
+// VPS 节点可以「加在已有机器上」：同机 IP 节点（host_id），SSH、agent、供应商沿用宿主机的；抽屉里宿主机的「添加 IP 节点」跳来时带 ?host=<id> 预填。
 import * as React from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { Check, CheckCircle2, ChevronDown, ClipboardPaste, Info, KeyRound, ListChecks, Plus, Trash2, TriangleAlert } from 'lucide-react';
@@ -74,11 +74,11 @@ export function ProvisionPage() {
   const check = useProvisionCheck(); const provision = useProvision();
   const hostParam = sp.get('host');
   // 宿主机候选取自整份机器列表，订阅着时列表随实时推送最多每 2 秒整表重取（批量上架期间一直在推）：只在用得到时订阅——
-  // 单台开了「在已有机器上添加 IP」、批量（哪一行都能填宿主机）；带着 ?host= 等预填时总要取（停在「已开始上架」面板时从抽屉点「添加 IP 节点…」也要能预填）
+  // 单台开了「加在已有机器上」、批量（哪一行都能填宿主机）；带着 ?host= 等预填时总要取（停在「已开始上架」面板时从抽屉点「添加 IP 节点…」也要能预填）
   const hosts = useHostChoices(hostParam != null || (!created && (mode === 'batch' || !!rows[0]?.add_ip))).data ?? NONE_HOSTS;
   const ctx: Ctx = React.useMemo(() => ({ teams, relays, hosts, providers, plans }), [teams, relays, hosts, providers, plans]);
 
-  // ?host=<宿主机 id>：宿主机候选到了之后预填——单台、VPS 节点、打开「在已有机器上添加 IP」，团队与线路机带出宿主机的；预填完把参数从地址里删掉
+  // ?host=<宿主机 id>：宿主机候选到了之后预填——单台、VPS 节点、打开「加在已有机器上」，团队与线路机带出宿主机的；预填完把参数从地址里删掉
   // （替换当前历史）。抽屉开在上架页时点「添加 IP 节点」只换地址参数、页面不重挂，跟着参数走，同一台宿主机再点一次也会再预填。
   // 预填在渲染时按参数调整状态（不经 effect 先画一遍旧表再重画）；took 记着已预填的这次参数与随后要写回的模式，参数删掉后清空，下一次同一台也算新的
   const [took, setTook] = React.useState<{ host: string; mode: 'single' | 'batch' } | null>(null);
@@ -314,7 +314,8 @@ function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; o
   const ip = isIpNode(row);
   const host = ip ? ctx.hosts.find((h) => h.id === row.host_id) : undefined;
   // 选了宿主机：团队与线路机带出宿主机的（之后可改）
-  const pickHost = (v: string) => { const h = ctx.hosts.find((x) => x.id === v); onChange(h ? { host_id: v, team_id: h.team_id, relay_id: h.relay_id } : { host_id: v }); };
+  // 宿主机是线路机 = 本机节点（从线路机自己的 IP 出去）：IP 与线路机定成它自己，团队不带（线路机没有团队，保留已选的）
+  const pickHost = (v: string) => { const h = ctx.hosts.find((x) => x.id === v); onChange(!h ? { host_id: v } : h.relay ? { host_id: v, relay_id: h.id, ip: h.ip } : { host_id: v, team_id: h.team_id, relay_id: h.relay_id }); };
   // 上次检查有本地错误时，把错误按字段标在字段旁（按当前内容重算，改对了就消失）；服务端检查没通过的，按错误文字对回字段（结果过期就不标）。
   // IP、端口失焦即查格式与范围，不等点「检查」
   const [blurred, setBlurred] = React.useState<ReadonlySet<keyof Row>>(() => new Set());
@@ -348,14 +349,14 @@ function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; o
           <Segmented label="类型" value={k} onChange={(v) => onChange({ kind: v })} items={KIND_OPTS} />
           {k === 'vps' && (
             <div className="row" style={{ gap: 4 }}>
-              <CheckRow switch checked={row.add_ip} onChange={(v) => onChange(v ? { add_ip: true } : { add_ip: false, host_id: '' })}>在已有机器上添加 IP</CheckRow>
-              <InfoTip text="VPS 节点上另配的公网 IP，每个都可以上架成独立节点" />
+              <CheckRow switch checked={row.add_ip} onChange={(v) => onChange(v ? { add_ip: true } : { add_ip: false, host_id: '' })}>加在已有机器上</CheckRow>
+              <InfoTip text={'同机 IP 节点：VPS 节点上另配的公网 IP，每个都可以上架成独立节点。\n本机节点：宿主机选一台线路机，节点就在线路机上、从线路机自己的机房 IP 出去（不另开机器，一台线路机上各团队可以各有一台）'} />
             </div>
           )}
           <div className="form-grid">
-            {ip && <div className="span-2"><FormField label="宿主机" info="这个 IP 所在的 VPS 节点。SSH、agent 和供应商沿用它的，团队与线路机默认也跟它一样（可以改）" error={fe.host_id}><HostSelect value={row.host_id} onChange={pickHost} hosts={ctx.hosts} /></FormField></div>}
+            {ip && <div className="span-2"><FormField label="宿主机" info="这个 IP 所在的 VPS 节点：SSH、agent 和供应商沿用它的，团队与线路机默认也跟它一样（可以改）。选线路机就是本机节点：IP 与线路机都是它自己，不登录、不装东西" error={fe.host_id}><HostSelect value={row.host_id} onChange={pickHost} hosts={ctx.hosts} /></FormField></div>}
             {/* 连着填的放一行：IP | SSH 端口、团队 | 编号、挂在线路机 | 国家、SS 端口 | root 密码（家宽代理没有 SSH，国家跟在 IP 后面） */}
-            {T('ip', k === 'proxy' ? '出口 IP' : 'IP', { ph: '198.51.100.20', info: ip ? '必须直接配在宿主机网卡上，EIP 或 NAT 映射的不行。检查时会登录宿主机核对' : undefined, check: true })}
+            {T('ip', k === 'proxy' ? '出口 IP' : 'IP', { ph: '198.51.100.20', info: ip ? (host?.relay ? '本机节点的 IP 就是线路机自己的 IP' : '必须直接配在宿主机网卡上，EIP 或 NAT 映射的不行。检查时会登录宿主机核对') : undefined, check: true })}
             {k === 'proxy' ? country : ip ? Fixed('SSH 端口', '经宿主机登录，用宿主机的 SSH 端口', host ? String(host.ssh_port) : '') : T('ssh_port', 'SSH 端口', { ph: '22', num: true, check: true })}
             {k === 'relay' ? <div className="span-2">{T('label', '线路机名', { ph: '线路机3' })}</div> : (
               <>

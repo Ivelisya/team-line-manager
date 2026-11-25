@@ -82,7 +82,7 @@ test('地址参数打开：?silence= 打开新建静默、?host= 预填宿主机
   await page.keyboard.press('Escape');
   await expect(topDialog(page)).toHaveCount(0);
   await page.goto('/provision?host=m-t1-03', { waitUntil: 'networkidle' });
-  await expect(page.getByRole('switch', { name: '在已有机器上添加 IP' })).toBeChecked();
+  await expect(page.getByRole('switch', { name: '加在已有机器上' })).toBeChecked();
   await expect(page).not.toHaveURL(/host=/);
   await expect(page).toHaveURL(/mode=single/);
 });

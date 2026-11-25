@@ -14,6 +14,7 @@ mod ip_nodes;
 mod ipintel;
 mod jobs;
 mod lifecycle;
+mod local_nodes;
 mod ops;
 mod ping;
 mod placement;

@@ -28,6 +28,8 @@ struct Ent {
     relay_name: String,
     relay_ip: String,
     direct: bool,
+    /// 本机节点的入口（从线路机自己的 IP 出去，同样不能穿透）
+    local: bool,
     egress_dynamic: bool,
     bridge_port: Option<i32>,
 }
@@ -52,7 +54,7 @@ async fn plan(st: &AppState, conn: &mut PgConnection, id: Uuid, on: bool, bridge
         return Err(ApiError::bad_request("bridge 端口只在开启穿透时指定（关闭穿透会清掉它）"));
     }
     let e: Option<Ent> = sqlx::query_as(
-        "select e.id, e.node_id, e.relay_id, e.port, e.lifecycle::text lifecycle, e.mode, e.node_id = e.relay_id direct,
+        "select e.id, e.node_id, e.relay_id, e.port, e.lifecycle::text lifecycle, e.mode, e.node_id = e.relay_id direct, n.relay_local local,
                 display_name(n.kind::text, n.label, t.name, n.number) node_name, n.lifecycle::text node_lifecycle, n.egress_dynamic, e.bridge_port,
                 coalesce(rm.label, '') relay_name, host(rm.primary_ip) relay_ip
          from entry e join machine n on n.id = e.node_id join machine rm on rm.id = e.relay_id left join team t on t.id = n.team_id
@@ -71,6 +73,9 @@ async fn plan(st: &AppState, conn: &mut PgConnection, id: Uuid, on: bool, bridge
     if e.direct {
         blockers.push("线路机直出入口没有落地节点，用不着穿透".into());
     }
+    if e.local {
+        blockers.push(reverse::LOCAL_NO_REVERSE.into());
+    }
     if e.lifecycle != "active" {
         blockers.push(format!("入口现在是「{}」：只有在用的入口能切换（停用的先启用）", crate::entries::state_zh(&e.lifecycle)));
     }
@@ -80,7 +85,7 @@ async fn plan(st: &AppState, conn: &mut PgConnection, id: Uuid, on: bool, bridge
     if e.mode == to {
         blockers.push(format!("入口已经是{}模式", mode_zh(to)));
     }
-    if on && !e.direct {
+    if on && !e.direct && !e.local {
         if let Some(why) = reverse::unsupported(&mut *conn, e.node_id, e.relay_id).await? {
             blockers.push(why);
         }

@@ -149,7 +149,7 @@ fn correlate(me: &Peer, firing: &[&Peer]) -> String {
 fn judged(m: &MachineView) -> bool { m.lifecycle == "active" && m.kind != "relay" && !m.maintenance }
 
 /// 有线路机 → 节点 TCP 探测的入口：在用、不是直出、不是穿透（穿透是节点主动连线路机，没有这项探测，入站握手丢包也不影响它）
-fn probed(e: &views::EntryView) -> bool { e.lifecycle == "active" && !e.direct && e.mode != reverse::REVERSE }
+fn probed(e: &views::EntryView) -> bool { e.lifecycle == "active" && !e.freedom() && e.mode != reverse::REVERSE }
 
 /// 计入统计的入口：有 TCP 探测的；经离线、维护中、Xray 停了的线路机的不算（同 health.rs probe_reasons）
 fn counted(e: &views::EntryView) -> bool { probed(e) && !e.relay_offline && !e.relay_maint && !e.relay_xray_down }

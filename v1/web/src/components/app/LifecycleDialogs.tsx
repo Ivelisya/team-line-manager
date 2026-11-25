@@ -197,7 +197,8 @@ export const EvacuateDialog = resetOnOpen(function EvacuateDialog({ relay, open,
   const q = useEvacuatePreview(relay.id, open, { to_relay_id: to, routers });
   const pv = q.isFetchedAfterMount && to ? q.data : undefined;
   const opts = targetOptions(relays, (r) => r.id !== relay.id);
-  const list = relay.entries.filter((e) => e.lifecycle !== 'removing' && e.lifecycle !== 'removed' && !e.direct);
+  // 直出入口、本机节点的入口都是从这台线路机自己的 IP 出去的：不搬，线路机回收时随之摘除（本机节点一并回收）
+  const list = relay.entries.filter((e) => e.lifecycle !== 'removing' && e.lifecycle !== 'removed' && !e.direct && !e.local);
   const movable = list.filter((e) => e.lifecycle === 'active');
   const hasDirect = relay.entries.some((e) => e.direct);
   // 实际会建几个作业以预览为准（软路由不在线、有别的作业的节点会被跳过）；还没选目标时按在用入口数

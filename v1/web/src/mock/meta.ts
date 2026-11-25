@@ -9,7 +9,7 @@ export const META: Meta = {
     'Europe/London', 'Europe/Berlin', 'Europe/Amsterdam', 'America/Los_Angeles', 'America/Chicago', 'America/New_York', 'UTC'],
   currencies: ['CNY', 'USD', 'EUR', 'HKD', 'JPY', 'GBP'],
   cycles: [{ key: 'monthly', label: '月', months: 1 }, { key: 'quarterly', label: '季', months: 3 }, { key: 'semiannual', label: '半年', months: 6 }, { key: 'yearly', label: '年', months: 12 }],
-  kinds: { vps: 'VPS 节点', proxy: '家宽代理', relay: '线路机' }, ip_node_label: '同机 IP 节点',
+  kinds: { vps: 'VPS 节点', proxy: '家宽代理', relay: '线路机' }, ip_node_label: '同机 IP 节点', local_node_label: '本机节点',
   lifecycles: { draft: '草稿', provisioning: '上架中', active: '运行中', retiring: '退役中', retired: '已退役', failed: '上架失败' },
   healths: { ok: '正常', degraded: '降级', down: '故障', unknown: '未知', maintenance: '维护', inactive: '未启用' },
   job_kinds: {

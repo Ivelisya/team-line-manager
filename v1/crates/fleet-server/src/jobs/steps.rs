@@ -50,6 +50,8 @@ struct M {
     own_ip: String,
     /// 同机 IP 节点的公网 IP 是 1:1 NAT 映射的：映射到的宿主机本地地址（ssserver 监听并从它出站）；在网卡上的、其它机器为 None
     bind_ip: Option<String>,
+    /// 本机节点（宿主机是线路机）：机器上没有它的任何东西（没有 ssserver 实例、防火墙表），步骤里不登录
+    relay_local: bool,
 }
 
 /// 等外部事件的步骤（首次上报、线路机回报应用 / 摘除）的兜底重查间隔。事件到了由 `jobs::wake_for` 把作业提前并唤醒引擎，
@@ -69,7 +71,7 @@ impl Ctx<'_> {
     async fn machine_of(&self, id: Uuid) -> anyhow::Result<M> {
         Ok(sqlx::query_as(
             "select m.id, m.kind::text kind, host(coalesce(h.primary_ip, m.primary_ip)) ip, coalesce(h.ssh_port, m.ssh_port) ssh_port,
-                    m.lifecycle::text lifecycle, m.host_id, host(m.primary_ip) own_ip, host(m.bind_ip) bind_ip
+                    m.lifecycle::text lifecycle, m.host_id, host(m.primary_ip) own_ip, host(m.bind_ip) bind_ip, m.relay_local
              from machine m left join machine h on h.id = m.host_id where m.id = $1",
         )
         .bind(id)
@@ -141,6 +143,7 @@ impl Ctx<'_> {
 pub async fn run(c: &Ctx<'_>, key: &str) -> anyhow::Result<Outcome> {
     match key {
         "preflight" => preflight(c).await,
+        "wait_host" => wait_host(c).await,
         "ip_check" => ip_check(c).await,
         "bootstrap" => bootstrap(c).await,
         "converge" => converge_node(c).await,
@@ -201,6 +204,25 @@ impl Ctx<'_> {
 }
 
 // ── 上架 ──────────────────────────────────────────────────────────────────
+
+/// 本机节点上架的第一步：等宿主线路机上线。加在已经在用的线路机上时立刻通过；线路机带团队上架时两个作业同时建，这里等它的上架作业做完。
+/// 线路机上架失败停着的照等（重试成功后接着做）；线路机上架取消、退役了就失败（这台节点没有地方放了，取消本作业即可）
+async fn wait_host(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
+    let m = c.machine().await?;
+    let host = m.host_id.filter(|_| m.relay_local).ok_or_else(|| anyhow!("这台机器不是本机节点"))?;
+    let row: Option<(String, String, String)> = sqlx::query_as("select kind::text, lifecycle::text, coalesce(label, '') from machine where id = $1").bind(host).fetch_optional(&c.st.db).await?;
+    match row {
+        Some((kind, lc, name)) if kind == "relay" && lc == "active" => Ok(Outcome::Done(json!({"relay": name}))),
+        Some((kind, lc, name)) if kind == "relay" && matches!(lc.as_str(), "provisioning" | "failed" | "draft") => {
+            if c.first {
+                c.log(format!("线路机 {name} 还在上架（{}），等它上线后再建入口", crate::meta::lifecycle_label(&lc))).await;
+            }
+            Ok(Outcome::Wait(EVENT_POLL_S * 2))
+        }
+        Some((kind, lc, name)) if kind == "relay" => Err(remote(format!("线路机 {name} 现在是「{}」，本机节点没有地方放了：取消这个作业", crate::meta::lifecycle_label(&lc)))),
+        _ => Err(remote("宿主机不是线路机（或已不存在），本机节点没有地方放了：取消这个作业")),
+    }
+}
 
 async fn preflight(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let m = c.machine().await?;
@@ -963,6 +985,7 @@ async fn attach(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
 async fn firewall(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let m = c.machine().await?;
     match m.kind.as_str() {
+        "vps" if m.relay_local => return Ok(Outcome::Skipped("本机节点从线路机自己的 IP 出去，没有防火墙要改".into())),
         "vps" => {}
         "relay" => return Ok(Outcome::Skipped("线路机直出入口没有节点，不用改防火墙".into())),
         _ => return Ok(Outcome::Skipped("家宽代理没有防火墙要改".into())),
@@ -1171,6 +1194,9 @@ async fn cleanup(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     if m.kind == "proxy" {
         return Ok(Outcome::Skipped("家宽代理没有要清理的服务".into()));
     }
+    if m.relay_local {
+        return Ok(Outcome::Skipped("本机节点在线路机上没有自己的服务，不用清理（线路机照常运行）".into()));
+    }
     if c.job.params["cleanup"] == json!(false) {
         return Ok(Outcome::Skipped("选择了不清理机器".into()));
     }
@@ -1375,7 +1401,9 @@ pub async fn compensate(st: &AppState, job: &JobRow, owner: &str) {
     let (Some(id), Some(m)) = (job.target_id, machine) else { return };
     // 只有本作业的预检（同机 IP 节点是核对 IP）通过了，才能认定这台机器是本次要装的：没通过的（例如 agent 登记的是另一台机器）
     // 机器上跑的可能是别的在用节点，清理会把它停掉删掉。读不到结果按没通过算
-    let checked = m.kind != "proxy"
+    // 本机节点在线路机上没有装任何东西，没有可清理的
+    let nothing_installed = m.kind == "proxy" || m.relay_local;
+    let checked = !nothing_installed
         && note(
             st,
             job.id,
@@ -1387,7 +1415,7 @@ pub async fn compensate(st: &AppState, job: &JobRow, owner: &str) {
         )
         .await
         .unwrap_or(false);
-    if m.kind != "proxy" && !checked {
+    if !nothing_installed && !checked {
         log(st, job.id, "warn", "没有清理机器上的服务：本作业的预检还没通过，机器上跑的不一定是这次装的（可能是另一台在用的节点），不去动它").await;
     }
     if checked && ssh::ssh_probe(&m.ip, m.ssh_port as u16, Duration::from_secs(5)).await.is_ok() {

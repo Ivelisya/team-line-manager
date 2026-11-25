@@ -426,7 +426,7 @@ function createMachine(it: ProvisionItem, c: MockCheck): MachineView {
   if (h) db.ssPorts[id] = c.ss_port!;
   const m: MachineView = {
     id, kind: it.kind, name: c.name, team: team ? { id: team.id, name: team.name } : null, spare: team?.spare ?? false, number: it.kind === 'relay' ? null : c.number, label: it.kind === 'relay' ? it.label ?? null : null,
-    ip: it.ip, ssh_port: h?.ssh_port ?? it.ssh_port ?? 22, country: it.country ?? countryOf(it.ip), country_set: it.country ?? null, host_machine: h && { id: h.id, name: h.name }, bind_ip: null, egress_ip: null, egress_dynamic: false, egress_seen: null, ip_nodes: [], provider: pv ? { id: pv.id, name: pv.name } : null, provider_code: pv?.code ?? null,
+    ip: it.ip, ssh_port: h?.ssh_port ?? it.ssh_port ?? 22, country: it.country ?? countryOf(it.ip), country_set: it.country ?? null, host_machine: h && { id: h.id, name: h.name }, relay_local: h?.kind === 'relay', bind_ip: null, egress_ip: null, egress_dynamic: false, egress_seen: null, ip_nodes: [], provider: pv ? { id: pv.id, name: pv.name } : null, provider_code: pv?.code ?? null,
     plan: plan ? { id: plan.id, name: plan.name, bandwidth_mbps: plan.bandwidth_mbps, traffic_gb: plan.traffic_gb } : null, service_ref: it.service_ref ?? null,
     sub_template: templateOf(plan ?? undefined, pv ?? undefined), lifecycle: 'provisioning', lifecycle_reason: null, note: it.note ?? '', revision: 1, created_at: iso(), activated_at: null, retired_at: null, spare_from: null, spare_since: null, router_exits: [], recycle_on: null, recycle_held: false, idle_spare: false, spare_unbilled: false, live_ip_nodes: [], renewing_ip_nodes: [], billing_exempt: false, no_router_exits: false,
     subscription: it.subscription?.due_date ? subCalc({ price_cents: it.subscription.price_cents ?? plan?.price_cents ?? 0, currency: plan?.currency ?? META.defaults.currency, cycle: it.subscription.cycle ?? plan?.cycle ?? META.defaults.cycle, due_date: it.subscription.due_date, due_days: 0, billing_tz: it.subscription.billing_tz ?? pv?.timezone ?? META.org_timezone, auto_renew: false, remind_days: pv?.remind_days ?? META.defaults.remind_days, traffic_gb: plan?.traffic_gb || null, traffic_reset_day: 1, traffic_rule: pv?.traffic_rule ?? META.defaults.traffic_rule } as NonNullable<MachineView['subscription']>) : null,
@@ -437,7 +437,7 @@ function createMachine(it: ProvisionItem, c: MockCheck): MachineView {
   if (h) borrowHost(m, h);
   if (m.kind !== 'relay') {
     const relay = machine(it.relay_id!);
-    const e: EntryView = { id: `e${db.seq++}`, relay: { id: relay.id, name: relay.name }, node: { id, name: m.name }, direct: false, mode: c.entry_mode ?? 'normal', port: c.relay_port ?? 20999, lifecycle: 'pending', applied: false, apply_error: null, tcp: null, egress: null, reach: null, traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 } };
+    const e: EntryView = { id: `e${db.seq++}`, relay: { id: relay.id, name: relay.name }, node: { id, name: m.name }, direct: false, local: m.relay_local, mode: c.entry_mode ?? 'normal', port: c.relay_port ?? 20999, lifecycle: 'pending', applied: false, apply_error: null, tcp: null, egress: null, reach: null, traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 } };
     m.entries = [e]; relay.entries.push(e);
   }
   recomputeDue(m); Object.assign(m, trafficOf(m, db.machines));
@@ -903,7 +903,7 @@ R('POST', '/machines/([^/]+)/entries', ({ params, body }) => {
   const want: EntryMode = body.mode ?? ENTRY_MODE.default;
   const why = want !== 'reverse' ? null : direct ? '线路机直出入口没有落地节点，用不着穿透' : m.kind === 'proxy' ? '家宽代理没有 SSH 和 agent，装不了穿透要的 bridge' : m.host_machine ? '同机 IP 节点暂不支持穿透（bridge 要从它自己的 IP 出站，第一版没做）' : null;
   const mode: EntryMode = why ? 'normal' : want;
-  const e: EntryView = { id: `e${db.seq++}`, relay: { id: relay.id, name: relay.name }, node: { id: m.id, name: direct ? `${m.name}-直出` : m.name }, direct, mode, port, lifecycle: 'pending', applied: false, apply_error: null, tcp: null, egress: null, reach: null, traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 } };
+  const e: EntryView = { id: `e${db.seq++}`, relay: { id: relay.id, name: relay.name }, node: { id: m.id, name: direct ? `${m.name}-直出` : m.name }, direct, local: m.relay_local, mode, port, lifecycle: 'pending', applied: false, apply_error: null, tcp: null, egress: null, reach: null, traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 } };
   if (!direct) m.entries.push(e);
   relay.entries.push(e);
   const job = newJob('attach_entry', { id: m.id, name: m.name }, [['apply', '等待线路机应用'], ['verify', '出口验收']]);
@@ -1372,7 +1372,7 @@ function planMove(m: MachineView, toId: string, fromId?: string): { old: EntryVi
 }
 function startMove(m: MachineView, plan: { old: EntryView; to: MachineView }) {
   const { old, to } = plan;
-  const ne: EntryView = { id: `e${db.seq++}`, relay: { id: to.id, name: to.name }, node: { id: m.id, name: m.name }, direct: false, mode: 'normal', port: Math.max(20000, ...to.entries.map((x) => x.port)) + 1, lifecycle: 'pending', applied: false, apply_error: null, tcp: null, egress: null, reach: null, traffic: blankTraffic() };
+  const ne: EntryView = { id: `e${db.seq++}`, relay: { id: to.id, name: to.name }, node: { id: m.id, name: m.name }, direct: false, local: false, mode: 'normal', port: Math.max(20000, ...to.entries.map((x) => x.port)) + 1, lifecycle: 'pending', applied: false, apply_error: null, tcp: null, egress: null, reach: null, traffic: blankTraffic() };
   m.entries.push(ne); to.entries.push(ne);
   const job = newJob('move_entry', { id: m.id, name: m.name }, MOVE_STEPS);
   job.result = { new_entry_id: ne.id, old_entry_id: old.id, from_relay_id: old.relay.id, to_relay_id: to.id, share_changed: true, note: '客户端需要换成新的分享链接' };

@@ -82,6 +82,11 @@ node: Ref,
  */
 direct: boolean, 
 /**
+ * 本机节点的入口：节点是放在这台线路机上的本机节点（`MachineView.relay_local`），同样从线路机自己的 IP 出去、没有 TCP 探测；
+ * 和 `direct` 的差别是它属于团队里的一台节点（`node` 是那台节点）。两者至多一个为 true
+ */
+local: boolean, 
+/**
  * normal / reverse（穿透：节点主动连这个入口，线路机不连节点，见 crate::reverse）。
  * tcp 的方向跟着模式：普通 = 线路机 → 节点（线路机 agent 量），穿透 = 节点 → 线路机（节点 agent 量，只画图，不进告警，见 health.rs）
  */
@@ -192,9 +197,14 @@ country_set: string | null,
  */
 billing_exempt: boolean, ssh_port: number, 
 /**
- * 同机 IP 节点：它所在的宿主机（SSH、agent、主机读数都是宿主机的，`agent` / `host` 就是宿主机的）；其它机器为 null
+ * 同机 IP 节点、本机节点：它所在的宿主机（SSH、agent、主机读数都是宿主机的，`agent` / `host` 就是宿主机的）；其它机器为 null
  */
 host_machine: Ref | null, 
+/**
+ * 本机节点：节点就在线路机上（`host_machine` 是那台线路机），从线路机自己的 IP 出去，`ip` 同线路机的；
+ * 机器上没有它自己的服务（不经 ssserver），入口只能在这台线路机上
+ */
+relay_local: boolean, 
 /**
  * 同机 IP 节点的公网 IP 是 1:1 NAT 映射的：它在宿主机网卡上的本地地址（ssserver 监听并从它出站）；公网 IP 就在网卡上的、其它机器为 null
  */
@@ -256,7 +266,11 @@ export type MetaDefaults = { currency: string, cycle: string, remind_days: numbe
 /**
  * `GET /meta`：meta.rs 的常量与中文名，另带中控公钥
  */
-export type MetaOut = { ssh_public_key: string | null, org_timezone: string, org_timezone_label: string, org_utc_offset_s: number, timezones: Array<string>, currencies: Array<string>, cycles: Array<MetaCycle>, kinds: { [key in string]: string }, ip_node_label: string, lifecycles: { [key in string]: string }, healths: { [key in string]: string }, severities: { [key in string]: MetaSeverity }, job_kinds: { [key in string]: string }, job_states: { [key in string]: string }, step_states: { [key in string]: string }, entry_states: { [key in string]: string }, traffic_rules: { [key in string]: string }, traffic_rule_short: { [key in string]: string }, traffic_resets: { [key in string]: string }, due_states: { [key in string]: string }, policy_modes: { [key in string]: string }, policy_sync_states: { [key in string]: string }, rules: { [key in string]: string }, thresholds: MetaThresholds, defaults: MetaDefaults, terminal: TerminalMeta, speedtest: SpeedtestMeta, };
+export type MetaOut = { ssh_public_key: string | null, org_timezone: string, org_timezone_label: string, org_utc_offset_s: number, timezones: Array<string>, currencies: Array<string>, cycles: Array<MetaCycle>, kinds: { [key in string]: string }, ip_node_label: string, 
+/**
+ * 本机节点（`MachineView.relay_local`）的叫法
+ */
+local_node_label: string, lifecycles: { [key in string]: string }, healths: { [key in string]: string }, severities: { [key in string]: MetaSeverity }, job_kinds: { [key in string]: string }, job_states: { [key in string]: string }, step_states: { [key in string]: string }, entry_states: { [key in string]: string }, traffic_rules: { [key in string]: string }, traffic_rule_short: { [key in string]: string }, traffic_resets: { [key in string]: string }, due_states: { [key in string]: string }, policy_modes: { [key in string]: string }, policy_sync_states: { [key in string]: string }, rules: { [key in string]: string }, thresholds: MetaThresholds, defaults: MetaDefaults, terminal: TerminalMeta, speedtest: SpeedtestMeta, };
 
 export type MetaSeverity = { label: string, tone: string, };
 

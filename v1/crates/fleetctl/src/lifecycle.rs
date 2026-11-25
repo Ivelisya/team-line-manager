@@ -253,10 +253,11 @@ fn restart_lines(pv: &Value) -> Vec<String> {
         .collect()
 }
 
-/// 线路机视图里将被搬走的入口：在用、待应用、停用的。直出入口不搬：退役线路机时随之摘除
+/// 线路机视图里将被搬走的入口：在用、待应用、停用的。直出入口、本机节点的入口不搬（都是从这台线路机自己的 IP 出去的）：
+/// 退役线路机时随之摘除，本机节点一并回收
 fn moving_entries(relay: &Value) -> Vec<Value> {
     let es = relay["entries"].as_array().map(Vec::as_slice).unwrap_or_default();
-    es.iter().filter(|e| matches!(e["lifecycle"].as_str(), Some("active" | "pending" | "disabled")) && e["direct"] != true).cloned().collect()
+    es.iter().filter(|e| matches!(e["lifecycle"].as_str(), Some("active" | "pending" | "disabled")) && e["direct"] != true && e["local"] != true).cloned().collect()
 }
 
 /// `fleetctl evacuate <线路机> --to <线路机>`
@@ -681,6 +682,8 @@ mod tests {
             {"port": 20002, "lifecycle": "disabled", "direct": false},
             {"port": 20003, "lifecycle": "removing", "direct": false},
             {"port": 20004, "lifecycle": "active", "direct": true},
+            // 本机节点的入口：留在这台线路机上
+            {"port": 20005, "lifecycle": "active", "direct": false, "local": true, "node": {"name": "MENG-01"}},
         ]});
         let ports: Vec<i64> = moving_entries(&relay).iter().filter_map(|e| e["port"].as_i64()).collect();
         assert_eq!(ports, [20000, 20001, 20002]);

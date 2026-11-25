@@ -200,6 +200,8 @@ type Labels = &'static [(&'static str, &'static str)];
 /// 机器类型（库里的 machine_kind）。同机 IP 节点是加在宿主机上的 vps，叫「同机 IP 节点」；泛说「节点」= VPS 节点 / 家宽代理
 pub const KINDS: Labels = &[("vps", "VPS 节点"), ("proxy", "家宽代理"), ("relay", "线路机")];
 pub const IP_NODE: &str = "同机 IP 节点";
+/// 本机节点：节点就在线路机上（`machine.relay_local`，宿主机是线路机），从线路机自己的 IP 出去
+pub const LOCAL_NODE: &str = "本机节点";
 
 pub const LIFECYCLES: Labels = &[
     ("draft", "草稿"),
@@ -221,6 +223,7 @@ pub const JOB_KINDS: Labels = &[
     ("provision_proxy", "上架家宽代理"),
     ("provision_relay", "上架线路机"),
     ("provision_ip", "上架同机 IP 节点"),
+    ("provision_local", "上架本机节点"),
     ("attach_entry", "添加入口"),
     ("move_entry", "换线路机"),
     ("retire", "退役"),
@@ -365,6 +368,8 @@ pub struct Meta {
     pub cycles: Vec<CycleOut>,
     pub kinds: LabelMap,
     pub ip_node_label: &'static str,
+    /// 本机节点（`MachineView.relay_local`）的叫法
+    pub local_node_label: &'static str,
     pub lifecycles: LabelMap,
     pub healths: LabelMap,
     pub severities: BTreeMap<String, SeverityOut>,
@@ -453,6 +458,7 @@ pub fn typed() -> Meta {
         cycles: CYCLES.iter().map(|c| CycleOut { key: c.key, label: c.label, months: c.months }).collect(),
         kinds: labels(KINDS),
         ip_node_label: IP_NODE,
+        local_node_label: LOCAL_NODE,
         lifecycles: labels(LIFECYCLES),
         healths: labels(HEALTHS),
         severities: SEVERITIES.iter().map(|(k, l, t)| (k.to_string(), SeverityOut { label: l, tone: t })).collect(),
@@ -498,7 +504,7 @@ mod tests {
         let keys = |v: &Value| v.as_object().unwrap().keys().cloned().collect::<Vec<_>>().join(",");
         assert_eq!(
             keys(&v),
-            "currencies,cycles,defaults,due_states,entry_states,healths,ip_node_label,job_kinds,job_states,kinds,lifecycles,org_timezone,org_timezone_label,org_utc_offset_s,\
+            "currencies,cycles,defaults,due_states,entry_states,healths,ip_node_label,job_kinds,job_states,kinds,lifecycles,local_node_label,org_timezone,org_timezone_label,org_utc_offset_s,\
              policy_modes,policy_sync_states,rules,severities,speedtest,step_states,terminal,thresholds,timezones,traffic_resets,traffic_rule_short,traffic_rules"
         );
         assert_eq!(keys(&v["defaults"]), "currency,cycle,remind_days,ss_method,ss_port,traffic_reset,traffic_rule");

@@ -50,6 +50,8 @@ pub struct SubIn {
 #[derive(Deserialize, Clone)]
 pub struct Item {
     kind: String,
+    /// 本机节点（`host_id` 是线路机）可以不填：就是那台线路机的 IP
+    #[serde(default)]
     ip: String,
     ssh_port: Option<u16>,
     team_id: Option<Uuid>,
@@ -72,7 +74,9 @@ pub struct Item {
     /// 机器重装过、主机指纹变了：允许预检时覆盖已记录的指纹
     reset_host_key: Option<bool>,
     /// 同机 IP 节点：加在这台 VPS 节点（宿主机）上，SSH 与 agent 用宿主机的；`ip` 是它自己的出口 IP，要已配在宿主机网卡上。
-    /// 这时 ssh_port、login、ss_port、provider_id、plan_id、reset_host_key 不适用（忽略）：SSH 端口与供应商取宿主机的、不带套餐，SS 端口由中控分配
+    /// 这时 ssh_port、login、ss_port、provider_id、plan_id、reset_host_key 不适用（忽略）：SSH 端口与供应商取宿主机的、不带套餐，SS 端口由中控分配。
+    /// 本机节点：`host_id` 是一台在用的线路机时，节点就在这台线路机上、从线路机自己的 IP 出去（入口的出站同直出，不经 ssserver）：
+    /// `ip` 不填或填线路机的 IP，`relay_id` 不填或填这台线路机，其余同同机 IP 节点；一台线路机上可以有几台本机节点（各团队一台）
     host_id: Option<Uuid>,
     /// 入口模式 normal / reverse（穿透，见 crate::reverse）；不填 = 面板设置的新入口默认模式。家宽代理、同机 IP 节点不支持穿透，
     /// 自动按普通建（预览的 warnings、作业日志里写明）；线路机 agent 太旧等作业到建入口时才知道的，同样退回普通并记日志
@@ -93,6 +97,7 @@ struct HostRow {
     host_id: Option<Uuid>,
     provider_id: Option<Uuid>,
     name: String,
+    ip: String,
 }
 
 struct Checked {
@@ -100,8 +105,12 @@ struct Checked {
     ip: IpAddr,
     number: Option<i32>,
     name: String,
-    /// 同机 IP 节点：宿主机的供应商
+    /// 同机 IP 节点、本机节点：宿主机的供应商
     host: Option<Option<Uuid>>,
+    /// 本机节点（宿主机是线路机）：不登录、不装 ssserver，入口直接从线路机的 IP 出去
+    local: bool,
+    /// 线路机带团队上架：线路机上线后在它上面建一台这个团队的本机节点，(团队, 编号, 节点显示名)；编号在校验末尾定
+    with_node: Option<(Uuid, Option<i32>, String)>,
     /// 同机 IP 节点暂定的 SS 端口（作业在宿主机上核对时发现被占用会改）
     ss_port: Option<u16>,
     /// 规范化后的出口 IP 设置（Follow = 出口就是 ip；Auto = 动态）
@@ -133,6 +142,11 @@ async fn entry_modes(st: &AppState, v: &mut [Checked]) -> ApiResult<()> {
             None => default,
         };
         let mut why: Option<String> = None;
+        // 本机节点的入口同直出（从线路机自己的 IP 出去），没有穿透一说：一律普通，不用提醒
+        if c.local {
+            c.entry_mode = Some(crate::reverse::NORMAL);
+            continue;
+        }
         if want == crate::reverse::REVERSE {
             why = crate::reverse::kind_unsupported(&c.item.kind, c.item.host_id).map(String::from);
             if why.is_none() {
@@ -175,14 +189,14 @@ async fn validate(tx: &mut Tx<'_>, items: &[Item]) -> ApiResult<Vec<Checked>> {
     let host_ids: Vec<Uuid> = items.iter().filter_map(|i| i.host_id).collect::<HashSet<_>>().into_iter().collect();
     let host_rows: Vec<HostRow> = sqlx::query_as(
         "select m.id, m.kind::text kind, m.lifecycle::text lifecycle, m.host_id, m.provider_id,
-                display_name(m.kind::text, m.label, t.name, m.number) name
+                display_name(m.kind::text, m.label, t.name, m.number) name, host(m.primary_ip) ip
          from machine m left join team t on t.id = m.team_id where m.id = any($1) order by m.id for update of m",
     )
     .bind(&host_ids)
     .fetch_all(&mut **tx)
     .await?;
     let mut host_ports: HashMap<Uuid, HashSet<u16>> = HashMap::new();
-    for h in &host_rows {
+    for h in host_rows.iter().filter(|h| h.kind != "relay") {
         host_ports.insert(h.id, crate::db::ip_node_ports(tx, h.id, None).await?);
     }
     let hosts: HashMap<Uuid, HostRow> = host_rows.into_iter().map(|h| (h.id, h)).collect();
@@ -200,7 +214,7 @@ async fn validate(tx: &mut Tx<'_>, items: &[Item]) -> ApiResult<Vec<Checked>> {
     // 未退役机器的 IP → 机器显示名（被占用时告诉用户是哪台）
     let live_ips: Vec<(String, String)> = sqlx::query_as(
         "select host(m.primary_ip), display_name(m.kind::text, m.label, t.name, m.number)
-         from machine m left join team t on t.id = m.team_id where m.lifecycle <> 'retired'",
+         from machine m left join team t on t.id = m.team_id where m.lifecycle <> 'retired' and not m.relay_local",
     )
     .fetch_all(&mut **tx)
     .await?;
@@ -221,19 +235,35 @@ async fn validate(tx: &mut Tx<'_>, items: &[Item]) -> ApiResult<Vec<Checked>> {
     let mut out: Vec<Checked> = vec![];
     for it in items {
         let mut errors = vec![];
-        let ip = match it.ip.trim().parse::<IpAddr>() {
+        // 本机节点：宿主机是线路机，IP 就是线路机的（不填取它的），不参加 IP 查重
+        let local_host = it.host_id.and_then(|h| hosts.get(&h)).filter(|h| h.kind == "relay" && it.kind == "vps");
+        let raw_ip = match local_host {
+            Some(h) if it.ip.trim().is_empty() => h.ip.as_str(),
+            _ => it.ip.trim(),
+        };
+        let ip = match raw_ip.parse::<IpAddr>() {
             Ok(ip) => ip,
             Err(_) => {
                 errors.push(format!("IP「{}」不合法", it.ip));
                 IpAddr::from([0, 0, 0, 0])
             }
         };
-        if let Some(owner) = live_ips.get(&ip.to_string()) {
-            errors.push(format!("这个 IP 已经属于 {owner}"));
+        match local_host {
+            Some(h) if ip.to_string() != h.ip => errors.push(format!(
+                "本机节点从线路机「{}」自己的 IP（{}）出去：IP 不用填，或填这个 IP；要用线路机上另外的 IP 出去，现在还不支持",
+                h.name, h.ip
+            )),
+            Some(_) => {}
+            None => {
+                if let Some(owner) = live_ips.get(&ip.to_string()) {
+                    errors.push(format!("这个 IP 已经属于 {owner}"));
+                }
+                if !batch_ips.insert(ip) {
+                    errors.push("这一批里 IP 重复".into());
+                }
+            }
         }
-        if !batch_ips.insert(ip) {
-            errors.push("这一批里 IP 重复".into());
-        }
+        let mut with_node = None;
         // 节点防火墙的放行集合是 ipv4_addr、ssserver 只监听 0.0.0.0：线路机和 VPS 节点目前只支持 IPv4
         // （家宽代理不受限，它的出站地址另填）
         if ip.is_ipv6() && matches!(it.kind.as_str(), "vps" | "relay") {
@@ -245,9 +275,13 @@ async fn validate(tx: &mut Tx<'_>, items: &[Item]) -> ApiResult<Vec<Checked>> {
                     Some(t) if team_name.contains_key(&t) => {}
                     _ => errors.push("要选团队".into()),
                 }
-                match it.relay_id {
-                    Some(r) if relays.contains(&r) => {}
-                    _ => errors.push("要选一台在用的线路机".into()),
+                match (it.relay_id, local_host) {
+                    // 本机节点的线路机就是宿主机：不用选，选了别的不行
+                    (None, Some(_)) => {}
+                    (Some(r), Some(h)) if r == h.id => {}
+                    (Some(_), Some(h)) => errors.push(format!("本机节点只能挂在它所在的线路机「{}」上（线路机不用选）", h.name)),
+                    (Some(r), None) if relays.contains(&r) => {}
+                    _ => errors.push("要选一台在用的线路机（节点要自己当线路机时：按线路机上架并选团队，或加 --host <线路机> 建本机节点）".into()),
                 }
                 if it.kind == "proxy" {
                     match &it.upstream {
@@ -271,6 +305,21 @@ async fn validate(tx: &mut Tx<'_>, items: &[Item]) -> ApiResult<Vec<Checked>> {
                     errors.push("线路机要填名称".into());
                 } else if !labels.insert(l) {
                     errors.push("线路机名称重复".into());
+                }
+                // 带了团队：这台线路机同时是这个团队的节点（上线后在它上面建一台本机节点）
+                if let Some(t) = it.team_id {
+                    if !team_name.contains_key(&t) {
+                        errors.push("团队不存在".into());
+                    } else if let Some(n) = it.number {
+                        if !(1..=999).contains(&n) {
+                            errors.push("编号范围 1–999".into());
+                        } else if !taken.entry(t).or_default().insert(n) {
+                            errors.push(format!("编号 {n} 已被占用"));
+                        }
+                    }
+                    with_node = Some((t, it.number, String::new()));
+                } else if it.number.is_some() {
+                    errors.push("线路机没有编号：要同时当某个团队的节点就选上团队".into());
                 }
             }
             k => errors.push(format!("类型「{k}」不对（vps / proxy / relay）")),
@@ -313,13 +362,21 @@ async fn validate(tx: &mut Tx<'_>, items: &[Item]) -> ApiResult<Vec<Checked>> {
             }
             sp.rollback().await?;
         }
-        let (mut host, mut ss_port) = (None, None);
+        let (mut host, mut ss_port, mut local) = (None, None, false);
         if let Some(hid) = it.host_id {
             match hosts.get(&hid) {
                 None => errors.push("宿主机不存在".into()),
                 Some(_) if it.kind != "vps" => errors.push("只有 VPS 节点能加在宿主机上".into()),
+                // 宿主机是线路机 = 本机节点：不登录、不装 ssserver、不分 SS 端口
+                Some(h) if h.kind == "relay" => {
+                    if h.lifecycle != "active" {
+                        errors.push(format!("线路机「{}」现在是「{}」，本机节点只能加在运行中的线路机上", h.name, crate::meta::lifecycle_label(&h.lifecycle)));
+                    }
+                    host = Some(h.provider_id);
+                    local = true;
+                }
                 Some(h) if h.kind != "vps" || h.host_id.is_some() => {
-                    errors.push(format!("「{}」不能当宿主机：宿主机要是普通 VPS 节点（不能是线路机、家宽代理或同机 IP 节点）", h.name))
+                    errors.push(format!("「{}」不能当宿主机：宿主机要是普通 VPS 节点或线路机（不能是家宽代理、同机 IP 节点或本机节点）", h.name))
                 }
                 Some(h) if h.lifecycle != "active" => {
                     errors.push(format!("宿主机「{}」现在是「{}」，只能加在运行中的 VPS 节点上", h.name, crate::meta::lifecycle_label(&h.lifecycle)))
@@ -341,7 +398,7 @@ async fn validate(tx: &mut Tx<'_>, items: &[Item]) -> ApiResult<Vec<Checked>> {
         let egress = match it.egress_ip.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             None => Egress::Follow,
             Some(_) if it.kind != "vps" || it.host_id.is_some() => {
-                errors.push("出口 IP 只用于 VPS 节点（线路机、家宽代理、同机 IP 节点不用）".into());
+                errors.push("出口 IP 只用于 VPS 节点（线路机、家宽代理、同机 IP 节点、本机节点不用）".into());
                 Egress::Follow
             }
             Some(raw) => super::machines::parse_egress(raw, &ip.to_string()).unwrap_or_else(|e| {
@@ -350,11 +407,31 @@ async fn validate(tx: &mut Tx<'_>, items: &[Item]) -> ApiResult<Vec<Checked>> {
             }),
         };
         let plan_provider = plan.and_then(|p| plans.get(&p).copied());
-        out.push(Checked { item: it.clone(), ip, number: it.number, name: String::new(), host, ss_port, egress, plan_provider, country, errors, warnings: vec![], entry_mode: None, entry_mode_note: None });
+        // 线路机自己不占编号（number 只给它的本机节点）
+        let number = it.number.filter(|_| it.kind != "relay");
+        out.push(Checked { item: it.clone(), ip, number, name: String::new(), host, local, with_node, ss_port, egress, plan_provider, country, errors, warnings: vec![], entry_mode: None, entry_mode_note: None });
     }
     for c in out.iter_mut() {
         if c.item.kind == "relay" {
             c.name = c.item.label.clone().unwrap_or_default().trim().to_string();
+            // 带团队的线路机：给它的本机节点定编号与名字
+            if let Some((t, num, node)) = c.with_node.as_mut() {
+                if let Some(tn) = team_name.get(t) {
+                    if num.is_none() {
+                        let set = taken.entry(*t).or_default();
+                        match (1..=999).find(|n| !set.contains(n)) {
+                            Some(n) => {
+                                set.insert(n);
+                                *num = Some(n);
+                            }
+                            None => c.errors.push("这个团队的编号用完了".into()),
+                        }
+                    }
+                    if let Some(n) = *num {
+                        *node = node_name(tn, n);
+                    }
+                }
+            }
             continue;
         }
         let Some(t) = c.item.team_id else { continue };
@@ -380,7 +457,9 @@ async fn validate(tx: &mut Tx<'_>, items: &[Item]) -> ApiResult<Vec<Checked>> {
 fn report(v: &[Checked]) -> Value {
     json!({"items": v.iter().map(|c| json!({
         "ok": c.errors.is_empty(), "errors": c.errors, "warnings": c.warnings, "name": c.name, "number": c.number, "ss_port": c.ss_port,
-        "entry_mode": c.entry_mode,
+        "entry_mode": c.entry_mode, "local": c.local,
+        // 线路机带团队上架：一并建的本机节点的名字
+        "node": c.with_node.as_ref().map(|(_, _, n)| n).filter(|n| !n.is_empty()),
     })).collect::<Vec<_>>()})
 }
 
@@ -445,7 +524,8 @@ pub async fn check(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Bat
     }
     // 同机 IP 节点：登录宿主机看这个 IP 配没配在它的网卡上、不在时是不是 1:1 NAT 映射到哪个本机地址上（同上架作业的第一步，同一段脚本），不用等作业失败。
     // 每台宿主机只登录一次，拿到的本机 IP 对照它上面的全部条目；每台宿主机也算一次探测
-    let on_host: Vec<usize> = (0..v.len()).filter(|&i| v[i].errors.is_empty() && v[i].host.is_some()).collect();
+    // 本机节点不登录：IP 就是线路机的，入口从线路机直接出去，没有要核对的
+    let on_host: Vec<usize> = (0..v.len()).filter(|&i| v[i].errors.is_empty() && v[i].host.is_some() && !v[i].local).collect();
     let host_ids: Vec<Uuid> = on_host.iter().filter_map(|&i| v[i].item.host_id).collect::<HashSet<_>>().into_iter().collect();
     if let Err(wait) = take_probes(&mut lock(&PROBE_BUDGET), &a.name, probe.len() + host_ids.len(), Instant::now()) {
         return Err(ApiError::new(
@@ -596,8 +676,8 @@ pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Ba
             None => (Some(it.ssh_port.unwrap_or(22) as i32), c.plan_provider.or(it.provider_id), it.plan_id),
         };
         sqlx::query(
-            "insert into machine (id, kind, team_id, number, label, primary_ip, ssh_port, provider_id, plan_id, service_ref, note, host_id, country, egress_ip, egress_dynamic, lifecycle)
-             values ($1, $2::machine_kind, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'provisioning')",
+            "insert into machine (id, kind, team_id, number, label, primary_ip, ssh_port, provider_id, plan_id, service_ref, note, host_id, country, egress_ip, egress_dynamic, relay_local, lifecycle)
+             values ($1, $2::machine_kind, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 'provisioning')",
         )
         .bind(id)
         .bind(kind)
@@ -614,9 +694,12 @@ pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Ba
         .bind(&c.country)
         .bind(c.egress.ip().map(|ip| ipnetwork::IpNetwork::from(IpAddr::V4(ip))))
         .bind(c.egress.is_auto())
+        .bind(c.local)
         .execute(&mut *tx)
         .await?;
         match kind {
+            // 本机节点没有出站参数：入口的出站是 freedom（同直出），由入口的形状决定
+            "vps" if c.local => {}
             "vps" => {
                 sqlx::query(
                     "insert into node_outbound (machine_id, protocol, host, port, method, secret_enc) values ($1, 'shadowsocks', $2, $3, $5, $4)",
@@ -664,7 +747,8 @@ pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Ba
             ov.check(&mut tx).await?;
             ov.write(&mut tx, id, s.due_date).await?;
         }
-        let mut params = json!({"relay_id": it.relay_id});
+        // 本机节点的线路机就是宿主机
+        let mut params = json!({"relay_id": if c.local { it.host_id } else { it.relay_id }});
         // 入口模式（建入口那一步再按线路机 / 节点 agent 核一次，用不了穿透时退回普通）
         if let Some(m) = c.entry_mode {
             params["entry_mode"] = json!(m);
@@ -682,7 +766,13 @@ pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Ba
                 params["login"] = json!({"password_enc": enc});
             }
         }
-        let job_kind = if c.host.is_some() { "provision_ip".to_string() } else { format!("provision_{kind}") };
+        let job_kind = if c.local {
+            "provision_local".to_string()
+        } else if c.host.is_some() {
+            "provision_ip".to_string()
+        } else {
+            format!("provision_{kind}")
+        };
         let job = jobs::enqueue(&mut tx, &job_kind, Some(id), params, &a.name).await?;
         audit(
             &mut tx,
@@ -690,10 +780,39 @@ pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Ba
             "machine.provision",
             "machine",
             Some(id),
-            json!({"name": c.name, "ip": c.ip.to_string(), "kind": kind, "job_id": job, "host_id": it.host_id, "egress_ip": c.egress.label()}),
+            json!({"name": c.name, "ip": c.ip.to_string(), "kind": kind, "job_id": job, "host_id": it.host_id, "egress_ip": c.egress.label(), "local": c.local}),
         )
         .await?;
         created.push(json!({"machine_id": id, "job_id": job, "name": c.name, "entry_mode": c.entry_mode, "entry_mode_note": c.entry_mode_note}));
+        // 线路机带团队上架：同一个事务里再建它的本机节点（上架中），作业第一步等线路机上线。
+        // 供应商取线路机的、不带套餐、不记费用（同同机 IP 节点：钱记在线路机上）；国家跟线路机填的
+        if let Some((team, Some(number), node)) = &c.with_node {
+            let nid = new_id();
+            sqlx::query(
+                "insert into machine (id, kind, team_id, number, primary_ip, ssh_port, provider_id, host_id, country, relay_local, lifecycle)
+                 values ($1, 'vps', $2, $3, $4, null, $5, $6, $7, true, 'provisioning')",
+            )
+            .bind(nid)
+            .bind(team)
+            .bind(number)
+            .bind(ipnetwork::IpNetwork::from(c.ip))
+            .bind(provider)
+            .bind(id)
+            .bind(&c.country)
+            .execute(&mut *tx)
+            .await?;
+            let njob = jobs::enqueue(&mut tx, "provision_local", Some(nid), json!({"relay_id": id, "entry_mode": crate::reverse::NORMAL}), &a.name).await?;
+            audit(
+                &mut tx,
+                &a.name,
+                "machine.provision",
+                "machine",
+                Some(nid),
+                json!({"name": node, "ip": c.ip.to_string(), "kind": "vps", "job_id": njob, "host_id": id, "local": true, "with_relay": c.name}),
+            )
+            .await?;
+            created.push(json!({"machine_id": nid, "job_id": njob, "name": node, "entry_mode": crate::reverse::NORMAL, "entry_mode_note": Value::Null}));
+        }
     }
     tx.commit().await?;
     st.wake_jobs();

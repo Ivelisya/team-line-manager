@@ -44,6 +44,9 @@ export interface EntryView {
   id: string; relay: { id: string; name: string }; node: { id: string; name: string };
   /** 线路机直出：节点就是线路机自己（node.id = relay.id，node.name =「线路机名-直出」），从线路机自己的 IP 出去；没有 TCP 探测，不能换线路机 / 搬空 */
   direct: boolean;
+  /** 本机节点的入口：节点是放在这台线路机上的本机节点（MachineView.relay_local），同样从线路机自己的 IP 出去——没有 TCP 探测，不能穿透、不能换线路机 / 搬空；
+   *  和 direct 的差别是它属于团队里的一台节点（node 是那台节点）。两者至多一个为 true */
+  local: boolean;
   /** 穿透（reverse）：节点上的 bridge 主动连这个入口，线路机不连节点——tcp 是节点 → 线路机的建连（节点 agent 量，只画图、不告警；agent 版本旧时为 null），健康只看出口 */
   mode: EntryMode;
   port: number;
@@ -99,6 +102,9 @@ export interface MachineView {
   /** 同机 IP 节点（kind 仍是 vps）：它所在的宿主机。它没有自己的 agent 和 SSH——agent、host（主机读数）、ssh_port 都是宿主机的，
    *  plan 为 null，宿主机维护时 maintenance 也为 true；其它机器为 null */
   host_machine: { id: string; name: string } | null;
+  /** 本机节点（kind 仍是 vps）：节点就在线路机上（host_machine 是那台线路机），从线路机自己的 IP 出去，ip 同线路机的；
+   *  机器上没有它自己的服务（不经 ssserver），入口只能在这台线路机上 */
+  relay_local: boolean;
   /** 同机 IP 节点的公网 IP 是 1:1 NAT 映射的：它在宿主机网卡上的本地地址（ssserver 监听并从它出站，线路机连的仍是 ip）；
    *  公网 IP 直接配在网卡上的、其它机器为 null */
   bind_ip: string | null;
@@ -239,7 +245,7 @@ export interface Meta {
   timezones: string[];
   currencies: string[];
   cycles: { key: string; label: string; months: number }[];
-  kinds: Record<string, string>; ip_node_label: string;
+  kinds: Record<string, string>; ip_node_label: string; local_node_label: string;
   lifecycles: Record<string, string>; healths: Record<string, string>;
   job_kinds: Record<string, string>; job_states: Record<string, string>; step_states: Record<string, string>; entry_states: Record<string, string>;
   traffic_rules: Record<string, string>;

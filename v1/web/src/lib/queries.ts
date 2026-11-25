@@ -68,11 +68,14 @@ export const useMachineBriefs = () => useMachinesPicked(brief);
 const relaysUsd = (d: MachineView[]) => d.reduce((s, m) => s + (m.kind === 'relay' && m.lifecycle === 'active' ? m.subscription?.monthly_usd_cents ?? 0 : 0), 0);
 export const useRelaysMonthlyUsd = () => useQuery({ ...machinesQuery, select: relaysUsd });
 export const useMachineLabels = () => useMachinesPicked(label);
-/** 上架页「在已有机器上添加 IP」的宿主机候选：在用、自身不是同机 IP 节点的 VPS 节点，带出它的团队、线路机（第一个入口的）、SSH 端口与供应商。
+/** 上架页「加在已有机器上」的宿主机候选：在用、自身不是同机 IP 节点的 VPS 节点（同机 IP 节点），带出它的团队、线路机（第一个入口的）、SSH 端口与供应商；
+ *  和在用的线路机（本机节点：`relay`，节点就在线路机上、从线路机自己的 IP 出去，IP 与线路机都定死成它自己）。
  *  同一份机器列表缓存，结果做结构共享：推送只改读数时引用不变（批量网格的 memo 不被击穿） */
-export interface HostChoice { id: string; name: string; ip: string; team_id: string; relay_id: string; ssh_port: number; provider: string | null }
-const hostChoices = (d: MachineView[]) => d.filter((m) => m.kind === 'vps' && m.lifecycle === 'active' && !m.host_machine)
-  .map((m): HostChoice => ({ id: m.id, name: m.name, ip: m.ip, team_id: m.team?.id ?? '', relay_id: m.entries[0]?.relay.id ?? '', ssh_port: m.ssh_port, provider: m.provider?.name ?? null }))
+export interface HostChoice { id: string; name: string; ip: string; team_id: string; relay_id: string; ssh_port: number; provider: string | null; relay: boolean }
+const hostChoices = (d: MachineView[]) => d.filter((m) => m.lifecycle === 'active' && !m.host_machine && (m.kind === 'vps' || m.kind === 'relay'))
+  .map((m): HostChoice => (m.kind === 'relay'
+    ? { id: m.id, name: m.name, ip: m.ip, team_id: '', relay_id: m.id, ssh_port: m.ssh_port, provider: m.provider?.name ?? null, relay: true }
+    : { id: m.id, name: m.name, ip: m.ip, team_id: m.team?.id ?? '', relay_id: m.entries[0]?.relay.id ?? '', ssh_port: m.ssh_port, provider: m.provider?.name ?? null, relay: false }))
   .sort((a, b) => collator.compare(a.name, b.name));
 export const useHostChoices = (enabled: boolean) => useQuery({ ...machinesQuery, select: hostChoices, enabled });
 /** 团队与套餐页：各团队的编号是否已经连续（01..N），已连续时「重新编号」不可点。范围同服务端重新编号：团队里未退役的非线路机 */

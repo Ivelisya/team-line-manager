@@ -36,6 +36,7 @@ export const probeCell = (p: EntryView['egress']) => (p == null ? <span classNam
 export const tcpCell = (e: EntryView) => {
   const p = e.tcp;
   if (e.direct) return <span className="t-muted" data-tip="直出入口不经节点，不做 TCP 探测">—</span>;
+  if (e.local) return <span className="t-muted" data-tip="本机节点就在线路机上，从线路机自己的 IP 出去，不做 TCP 探测">—</span>;
   if (p == null) return isReverse(e) ? <span className="t-muted" data-tip={REVERSE_TIP}>—</span> : <span className="t-muted">—</span>;
   if (!p.ok) return failCell(p);
   const rev = isReverse(e) ? '穿透：节点 → 线路机（节点主动连线路机入口端口）\n' : '';

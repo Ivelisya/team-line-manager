@@ -2,6 +2,10 @@
 //!
 //! 直出入口：节点就是线路机自己（`relay_id = node_id`），出站是 freedom，从线路机自己的公网 IP 出去。
 //! 不需要 node_outbound 行，「直出」完全由入口的形状决定；(node_id, relay_id) 的唯一索引保证每台线路机至多一条在用的直出入口。
+//!
+//! 本机节点的入口：节点是放在这台线路机上的本机节点（`machine.relay_local`，`host_id` = 这台线路机），出站同样是 freedom，
+//! 也没有 node_outbound 行；和直出入口的差别只在归属——它是某个团队的节点（名字、访问策略、计费、订阅按节点走）。
+//! 下面两种合称「从线路机直接出去」（SQL 里的 `direct`）；只指线路机自己那条时写 `node_id = relay_id`。
 
 use crate::crypto::{short_id, SecretBox};
 use crate::db::{bump_relay, new_id, Tx};
@@ -40,15 +44,18 @@ pub async fn create_with(tx: &mut Tx<'_>, relay_id: Uuid, node_id: Uuid, mode: &
     .await?
     .ok_or_else(|| ApiError::conflict("线路机不存在或不在用"))?;
     // 节点机器行也加共享锁：和退役（对机器行 for update）互斥，退役开始后就不会再有新入口挂上来
-    let node: Option<(String, String)> = sqlx::query_as("select lifecycle::text, kind::text from machine where id = $1 for share")
+    let node: Option<(String, String, bool, Option<Uuid>)> = sqlx::query_as("select lifecycle::text, kind::text, relay_local, host_id from machine where id = $1 for share")
         .bind(node_id)
         .fetch_optional(&mut **tx)
         .await?;
     match node {
         None => return Err(ApiError::not_found("没有这台节点")),
-        Some((lc, _)) if lc == "retiring" || lc == "retired" => return Err(ApiError::conflict("节点正在退役或已退役，不能再加入口")),
+        Some((lc, ..)) if lc == "retiring" || lc == "retired" => return Err(ApiError::conflict("节点正在退役或已退役，不能再加入口")),
         // 线路机只能当自己的「节点」（直出入口），不能挂到别的线路机上
-        Some((_, kind)) if kind == "relay" && node_id != relay_id => return Err(ApiError::conflict("线路机不能当别的线路机的节点：线路机上只能加它自己的直出入口")),
+        Some((_, kind, ..)) if kind == "relay" && node_id != relay_id => return Err(ApiError::conflict("线路机不能当别的线路机的节点：线路机上只能加它自己的直出入口")),
+        // 本机节点从它所在线路机的 IP 出去：入口只能在那台线路机上，也不能是穿透
+        Some((_, _, true, host)) if host != Some(relay_id) => return Err(ApiError::conflict("本机节点只能在它所在的线路机上有入口，不能挂到别的线路机")),
+        Some((_, _, true, _)) if mode != crate::reverse::NORMAL => return Err(ApiError::conflict("本机节点的入口从线路机自己的 IP 出去，没有穿透一说")),
         Some(_) => {}
     }
     // 端口永不复用（含已删除、已随机器物理删除的入口）：分过的端口记在 relay.port_next（迁移 0050），不看现有入口的 max(port)。
@@ -147,7 +154,10 @@ pub async fn desired_state(db: &PgPool, secrets: &SecretBox, relay_id: Uuid, ech
         label: Option<String>,
         ip: String,
         egress_dynamic: bool,
+        /// 从线路机直接出去（freedom）：线路机自己的直出入口，或它上面的本机节点的入口
         direct: bool,
+        /// 线路机自己的直出入口（备注「线路机名-直出」）；本机节点的入口备注是节点名
+        self_entry: bool,
         protocol: Option<String>,
         host: Option<String>,
         oport: Option<i32>,
@@ -161,14 +171,15 @@ pub async fn desired_state(db: &PgPool, secrets: &SecretBox, relay_id: Uuid, ech
     // 期望出口 IP = 机器的出口 IP（端口转发型 NAT 节点入口与出站 IP 不同，见 machine.egress_ip），没填就是 primary_ip；
     // 出口动态（machine.egress_dynamic，供应商的出口会变）的取 agent 最近上报的来源 IP（machine.agent_seen_ip，变了会刷新线路机代数），没有再退到 egress_ip / primary_ip，
     // 另带 egress_any，新 agent 的出口探测不比对 IP，旧 agent 照旧比对；这个 IP 用来给只留 AnyTLS 的线路机放行穿透入口的节点（见 fleet-agent reality_guard）
-    // 直出入口没有 node_outbound 行（节点就是线路机自己）；节点入口缺出站参数（或秘密已在退役时清掉）的照旧不下发
+    // 直出入口、本机节点的入口没有 node_outbound 行（从线路机自己出去）；其余节点入口缺出站参数（或秘密已在退役时清掉）的照旧不下发。
+    // 本机节点的期望出口 IP 是它的 primary_ip，也就是线路机的 IP（上架时定的，同一个值）
     let rows: Vec<Row> = sqlx::query_as(
         "select e.id, e.node_id, m.team_id, e.port, e.lifecycle::text lifecycle, e.client_uuid, e.short_id, m.kind::text kind, t.name team, m.number,
-                m.label, host(case when m.egress_dynamic then coalesce(m.agent_seen_ip, m.egress_ip, m.primary_ip) else coalesce(m.egress_ip, m.primary_ip) end) ip, m.egress_dynamic, e.node_id = e.relay_id direct, o.protocol, o.host, o.port oport, o.method, o.username, o.secret_enc,
+                m.label, host(case when m.egress_dynamic then coalesce(m.agent_seen_ip, m.egress_ip, m.primary_ip) else coalesce(m.egress_ip, m.primary_ip) end) ip, m.egress_dynamic, (e.node_id = e.relay_id or m.relay_local) direct, e.node_id = e.relay_id self_entry, o.protocol, o.host, o.port oport, o.method, o.username, o.secret_enc,
                 e.mode, e.bridge_uuid, e.bridge_port
          from entry e join machine m on m.id = e.node_id left join team t on t.id = m.team_id
          left join node_outbound o on o.machine_id = e.node_id
-         where e.relay_id = $1 and e.lifecycle in ('pending', 'active', 'disabled') and (e.node_id = e.relay_id or o.secret_enc is not null)
+         where e.relay_id = $1 and e.lifecycle in ('pending', 'active', 'disabled') and (e.node_id = e.relay_id or m.relay_local or o.secret_enc is not null)
          order by e.port",
     )
     .bind(relay_id)
@@ -197,7 +208,7 @@ pub async fn desired_state(db: &PgPool, secrets: &SecretBox, relay_id: Uuid, ech
             id: r.id,
             port: r.port as u16,
             enabled: r.lifecycle != "disabled",
-            remark: entry_name(r.direct, &r.kind, r.label.as_deref(), r.team.as_deref(), r.number),
+            remark: entry_name(r.self_entry, &r.kind, r.label.as_deref(), r.team.as_deref(), r.number),
             client_uuid: r.client_uuid,
             short_id: r.short_id,
             outbound,
@@ -323,7 +334,7 @@ pub async fn anytls_ports_on(db: &PgPool, relays: &[Uuid], running: bool) -> sql
         "select e.relay_id, e.id, e.port from entry e left join agent_state a on a.machine_id = e.relay_id
          left join node_outbound o on o.machine_id = e.node_id
          where (cardinality($1::uuid[]) = 0 or e.relay_id = any($1)) and e.lifecycle in ('pending', 'active')
-           and (e.node_id = e.relay_id or o.secret_enc is not null) and (not $2 or (coalesce((a.info->'singbox'->>'running')::bool, false) and a.info->'singbox'->>'last_error' is null))
+           and (e.node_id = e.relay_id or o.secret_enc is not null or exists (select 1 from machine n where n.id = e.node_id and n.relay_local)) and (not $2 or (coalesce((a.info->'singbox'->>'running')::bool, false) and a.info->'singbox'->>'last_error' is null))
            and exists (select 1 from relay r where r.machine_id = e.relay_id and r.protocols <> 'reality')",
     )
     .bind(relays)

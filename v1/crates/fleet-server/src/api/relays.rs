@@ -256,7 +256,7 @@ pub struct AddEntryIn {
 /// 给已在用的节点再挂一条入口（作业：建入口 → 等线路机应用 → 等出口探测通过）。
 /// 线路机给自己加（`relay_id` 就是它自己）= 直出入口：从线路机自己的 IP 出去，每台线路机至多一条
 pub async fn add_entry(a: Actor, State(st): State<AppState>, ApiPath(node_id): ApiPath<Uuid>, ApiJson(b): ApiJson<AddEntryIn>) -> ApiResult<Json<Value>> {
-    let (kind, lifecycle): (String, String) = sqlx::query_as("select kind::text, lifecycle::text from machine where id = $1")
+    let (kind, lifecycle, local, host_id): (String, String, bool, Option<Uuid>) = sqlx::query_as("select kind::text, lifecycle::text, relay_local, host_id from machine where id = $1")
         .bind(node_id)
         .fetch_optional(&st.db)
         .await?
@@ -264,6 +264,10 @@ pub async fn add_entry(a: Actor, State(st): State<AppState>, ApiPath(node_id): A
     let direct = kind == "relay";
     if direct && b.relay_id != node_id {
         return Err(ApiError::conflict("线路机上只能加它自己的直出入口（relay_id 填这台线路机自己）"));
+    }
+    // 本机节点从它所在线路机的 IP 出去：入口只能在那台线路机上（入口被删掉后可以在原线路机上再加回来）
+    if local && host_id != Some(b.relay_id) {
+        return Err(ApiError::conflict("本机节点只能在它所在的线路机上有入口：它就是从那台线路机自己的 IP 出去的，不能挂到别的线路机"));
     }
     if lifecycle != "active" {
         return Err(ApiError::conflict(if direct { "只能给在用的线路机加直出入口" } else { "只能给在用的节点加入口" }));
@@ -294,7 +298,8 @@ pub async fn add_entry(a: Actor, State(st): State<AppState>, ApiPath(node_id): A
         Some(m) => crate::reverse::parse_mode(m).map_err(ApiError::bad_request)?,
         None => crate::reverse::default_mode(&st.db).await?.0,
     };
-    let host_id: Option<Uuid> = sqlx::query_scalar("select host_id from machine where id = $1").bind(node_id).fetch_one(&st.db).await?;
+    // 本机节点一律普通（没有穿透一说，不用提醒）
+    let want = if local { crate::reverse::NORMAL } else { want };
     let why: Option<String> = match (want == crate::reverse::REVERSE, direct) {
         (false, _) => None,
         (true, true) => Some("线路机直出入口没有落地节点，用不着穿透".into()),
@@ -311,7 +316,7 @@ pub async fn add_entry(a: Actor, State(st): State<AppState>, ApiPath(node_id): A
     }
     let mut tx = st.db.begin().await?;
     let job = jobs::enqueue(&mut tx, "attach_entry", Some(node_id), params, &a.name).await?;
-    audit(&mut tx, &a.name, "entry.add", "machine", Some(node_id), json!({"relay_id": b.relay_id, "job_id": job, "direct": direct, "mode": mode})).await?;
+    audit(&mut tx, &a.name, "entry.add", "machine", Some(node_id), json!({"relay_id": b.relay_id, "job_id": job, "direct": direct, "local": local, "mode": mode})).await?;
     tx.commit().await?;
     st.wake_jobs();
     st.emit(Event::Job { id: job, target: Some(node_id) });

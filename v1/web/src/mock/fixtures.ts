@@ -171,7 +171,7 @@ export function buildDb(): Db {
     };
   };
   const base = (o: Partial<MachineView> & Pick<MachineView, 'id' | 'kind' | 'name' | 'ip'>): MachineView => ({
-    team: null, spare: false, number: null, label: null, ssh_port: 22, country: countryOf(o.ip), country_set: null, host_machine: null, bind_ip: null, egress_ip: null, egress_dynamic: false, egress_seen: null, ip_nodes: [], provider: null, provider_code: null, plan: null, service_ref: null,
+    team: null, spare: false, number: null, label: null, ssh_port: 22, country: countryOf(o.ip), country_set: null, host_machine: null, relay_local: false, bind_ip: null, egress_ip: null, egress_dynamic: false, egress_seen: null, ip_nodes: [], provider: null, provider_code: null, plan: null, service_ref: null,
     lifecycle: 'active', lifecycle_reason: null, note: '', revision: 1, created_at: iso(now() - 120 * DAY), activated_at: iso(now() - 100 * DAY), retired_at: null, spare_from: null, spare_since: null, recycle_on: null, recycle_held: false, idle_spare: false, spare_unbilled: false, live_ip_nodes: [], renewing_ip_nodes: [], router_exits: [], billing_exempt: false, no_router_exits: false,
     subscription: null, sub_template: templateOf(undefined, undefined), agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, nic: null, month_counted_from: null, quota: { used: 0, period_start: '', period_end: null, mode: 'monthly', counted_from: null, rule: null, base: null, base_at: null, limit_gb: null, limit_source: 'none', daily_avg: null, forecast_full_at: null }, health: { status: 'ok', reasons: [] },
     active_job: null, failed_job: null, open_incidents: 0, maintenance: false, relay: null,
@@ -229,7 +229,7 @@ export function buildDb(): Db {
     // 几台 VPS 节点是穿透入口（节点主动连入口）：TCP 延迟是节点 → 线路机的
     const reverse = d.kind === 'vps' && d.n % 4 === 2 && !offline;
     const entry: EntryView = {
-      id: `e${eSeq++}`, relay: { id: relay.id, name: relay.name }, node: { id, name }, direct: false, mode: reverse ? 'reverse' : 'normal', port,
+      id: `e${eSeq++}`, relay: { id: relay.id, name: relay.name }, node: { id, name }, direct: false, local: false, mode: reverse ? 'reverse' : 'normal', port,
       lifecycle: lifecycle === 'retiring' ? 'disabled' : 'active', applied: true, apply_error: null, reach: REACH_OK(),
       tcp: { ok: !offline, latency_ms: offline ? null : Math.round(18 + r() * 160), detail: offline ? '连接超时' : null, ts: iso(now() - 20_000) },
       egress: { ok: !down, latency_ms: down ? null : Math.round(120 + r() * 220), detail: down ? '出口探测失败' : null, ts: iso(now() - 40_000) },
@@ -261,7 +261,7 @@ export function buildDb(): Db {
   {
     const p = plan('pl1'); const team = teams[0];
     const id = 'm-t1-13p';
-    const e: EntryView = { id: `e${eSeq++}`, relay: { id: 'r1', name: '线路机1' }, node: { id, name: displayName(team.name, 13) }, direct: false, mode: 'normal', port: 20000 + entriesByRelay.r1.length + 1, lifecycle: 'pending', applied: false, apply_error: null, tcp: null, egress: null, reach: null, traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 } };
+    const e: EntryView = { id: `e${eSeq++}`, relay: { id: 'r1', name: '线路机1' }, node: { id, name: displayName(team.name, 13) }, direct: false, local: false, mode: 'normal', port: 20000 + entriesByRelay.r1.length + 1, lifecycle: 'pending', applied: false, apply_error: null, tcp: null, egress: null, reach: null, traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 } };
     entriesByRelay.r1.push(e);
     machines.push(base({
       id, kind: 'vps', name: displayName(team.name, 13), team: { id: team.id, name: team.name }, number: 13, ip: '198.51.100.77', lifecycle: 'provisioning', activated_at: null, created_at: iso(now() - 6 * 60_000),
@@ -284,7 +284,7 @@ export function buildDb(): Db {
     const team = teams.find((t) => t.id === tid)!; const spare = teams.find((t) => t.spare)!; const p = plan('pl2'); const rid = tid === 't1' ? 'r1' : 'r2'; const relay = machines.find((x) => x.id === rid)!;
     const id = `m-ts-${i + 1}`; const name = displayName(spare.name, i + 1); const sb = sub('pl2', due as number, p.traffic_gb || null);
     const e: EntryView = {
-      id: `e${eSeq++}`, relay: { id: relay.id, name: relay.name }, node: { id, name }, direct: false, mode: 'normal', port: 20000 + entriesByRelay[rid].length + 1, lifecycle: 'active', applied: true, apply_error: null, reach: REACH_OK(),
+      id: `e${eSeq++}`, relay: { id: relay.id, name: relay.name }, node: { id, name }, direct: false, local: false, mode: 'normal', port: 20000 + entriesByRelay[rid].length + 1, lifecycle: 'active', applied: true, apply_error: null, reach: REACH_OK(),
       tcp: { ok: true, latency_ms: Math.round(30 + r() * 120), detail: null, ts: iso(now() - 20_000) }, egress: { ok: true, latency_ms: Math.round(120 + r() * 200), detail: null, ts: iso(now() - 40_000) },
       traffic: { today_up: Math.round(r() * GiB), today_down: Math.round(r() * 3 * GiB), month_up: Math.round(r() * 30 * GiB), month_down: Math.round(r() * 90 * GiB) },
     };
@@ -304,7 +304,7 @@ export function buildDb(): Db {
     const h = machines.find((m) => m.id === 'm-t1-03')!; const team = teams[0];
     const id = 'm-t1-14'; const name = displayName(team.name, 14);
     const e: EntryView = {
-      id: `e${eSeq++}`, relay: { id: 'r1', name: '线路机1' }, node: { id, name }, direct: false, mode: 'normal', port: 20000 + entriesByRelay.r1.length + 1, lifecycle: 'active', applied: true, apply_error: null, reach: REACH_OK(),
+      id: `e${eSeq++}`, relay: { id: 'r1', name: '线路机1' }, node: { id, name }, direct: false, local: false, mode: 'normal', port: 20000 + entriesByRelay.r1.length + 1, lifecycle: 'active', applied: true, apply_error: null, reach: REACH_OK(),
       tcp: { ok: true, latency_ms: 47, detail: null, ts: iso(now() - 20_000) }, egress: { ok: true, latency_ms: 214, detail: null, ts: iso(now() - 40_000) },
       traffic: { today_up: Math.round(1.1 * GiB), today_down: Math.round(3.6 * GiB), month_up: Math.round(46 * GiB), month_down: Math.round(128 * GiB) },
     };

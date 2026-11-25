@@ -98,8 +98,8 @@ export function EntryMenus({ entries, children }: { entries: EntryView[]; childr
           ? <DropdownMenuItem disabled={enabling} closeOnClick={false} onClick={() => { act.mutate({ id: cur.id, action: 'enable' }, { onSuccess: () => { dd.close(); toast.ok(`入口 ${entryLabel(cur)} 已启用`); }, onError: toast.err }); }}>
             {enabling ? <Spinner /> : <Power />}{enabling ? '正在启用…' : '启用入口'}</DropdownMenuItem>
           : <DropdownMenuItem onClick={() => show('disable', cur)} disabled={!canAct}><PowerOff />停用入口…</DropdownMenuItem>}
-        {/* 穿透：只有节点入口（直出没有节点），停用的先启用 */}
-        {!cur.direct && <DropdownMenuItem onClick={() => show('reverse', cur)} disabled={cur.lifecycle !== 'active'}><ArrowLeftRight />{isReverse(cur) ? '关闭穿透…' : '开启穿透…'}</DropdownMenuItem>}
+        {/* 穿透：只有经节点的入口（直出没有节点，本机节点就在线路机上），停用的先启用 */}
+        {!cur.direct && !cur.local && <DropdownMenuItem onClick={() => show('reverse', cur)} disabled={cur.lifecycle !== 'active'}><ArrowLeftRight />{isReverse(cur) ? '关闭穿透…' : '开启穿透…'}</DropdownMenuItem>}
         <DropdownMenuSeparator />
         <DropdownMenuItem danger onClick={() => show('rotate', cur)} disabled={!canAct}><KeyRound />轮换凭据…</DropdownMenuItem>
       </>)}
