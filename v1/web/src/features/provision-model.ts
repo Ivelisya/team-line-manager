@@ -14,7 +14,7 @@ export interface Row {
   country: string;
   up_protocol: string; up_host: string; up_port: string; up_user: string; up_pw: string;
   ss_port: string; due_date: string; price: string;
-  /** 同机 IP 节点：add_ip 是单台表单的「在已有机器上添加 IP」开关（批量里随「宿主机」格填没填），host_id 是宿主机 */
+  /** 同机 IP 节点：add_ip 是单台表单的「加在已有机器上」开关（批量里随「宿主机」格填没填），host_id 是宿主机 */
   add_ip: boolean; host_id: string;
   /** 粘贴时没匹配上的文本：字段 → 原文，用于本地报错 */
   unresolved: Record<string, string>;
@@ -56,7 +56,7 @@ export const COLS: Col[] = [
   { key: 'host_id', label: '宿主机', w: 116, type: 'host', kinds: ['vps'] },
   { key: 'country', label: '国家', w: 132, type: 'country', kinds: ALL },
 ];
-/** 同机 IP 节点：VPS 节点行打开了「在已有机器上添加 IP」（批量里是填了宿主机） */
+/** 同机 IP 节点：VPS 节点行打开了「加在已有机器上」（批量里是填了宿主机） */
 export const isIpNode = (r: Pick<Row, 'kind' | 'add_ip'>) => r.kind === 'vps' && r.add_ip;
 /** 同机 IP 节点不适用的列：SSH 端口、首次登录与供应商取宿主机的，SS 端口由中控在宿主机上分配，不带套餐 */
 const HOST_NA = new Set<Col['key']>(['ssh_port', 'login_pw', 'ss_port', 'provider_id', 'plan_id']);
@@ -74,7 +74,12 @@ function setCell(row: Row, col: Col, raw: string, ctx: Ctx): Row {
   const find = <T,>(list: T[], pick: (t: T) => string[]) => list.find((t) => pick(t).some((s) => s && s.toLowerCase() === v.toLowerCase()));
   switch (col.type) {
     case 'kind': { const k = KIND_ALIAS[v.toLowerCase()] ?? KIND_ALIAS[v]; if (k) r.kind = k; else if (v) r.unresolved.kind = v; break; }
-    case 'host': { const t = find(ctx.hosts, (x) => [x.name, x.id]); r.host_id = t?.id ?? ''; r.add_ip = !!v; if (v && !t) r.unresolved.host_id = v; break; }
+    case 'host': {
+      const t = find(ctx.hosts, (x) => [x.name, x.id]); r.host_id = t?.id ?? ''; r.add_ip = !!v; if (v && !t) r.unresolved.host_id = v;
+      // 宿主机是线路机 = 本机节点：IP 与线路机就是它自己
+      if (t?.relay) { r.ip = t.ip; r.relay_id = t.id; delete r.unresolved.relay_id; }
+      break;
+    }
     case 'team': { const t = find(ctx.teams, (x) => [x.name, x.id]); r.team_id = t?.id ?? ''; if (v && !t) r.unresolved.team_id = v; break; }
     case 'relay': { const t = find(ctx.relays, (x) => [x.name, x.id]); r.relay_id = t?.id ?? ''; if (v && !t) r.unresolved.relay_id = v; break; }
     case 'provider': { const t = find(ctx.providers, (x) => [x.name, x.code, x.id]); r.provider_id = t?.id ?? ''; if (v && !t) r.unresolved.provider_id = v; break; }

@@ -36,7 +36,7 @@ pub const KEEP_DAYS: i32 = 7;
 pub async fn targets(db: &sqlx::PgPool) -> sqlx::Result<Vec<RttTarget>> {
     let rows: Vec<(Uuid, String)> = sqlx::query_as(
         "select m.id, host(m.primary_ip) from machine m left join team t on t.id = m.team_id
-         where m.kind = 'vps' and m.lifecycle = 'active' and m.primary_ip is not null and not coalesce(t.spare, false) order by m.id",
+         where m.kind = 'vps' and m.lifecycle = 'active' and m.primary_ip is not null and not coalesce(t.spare, false) and not m.relay_local order by m.id",
     )
     .fetch_all(db)
     .await?;
@@ -312,7 +312,7 @@ pub async fn view(st: &AppState, team: Option<&str>, node: Option<&str>) -> ApiR
 
     // 入口状态口径同换线规划（api/lifecycle.rs 的 plan_move）：待应用、在用、停用都算节点的入口
     let live = |m: &MachineView| -> Vec<(Uuid, i32, bool)> {
-        m.entries.iter().filter(|e| !e.direct && matches!(e.lifecycle.as_str(), "pending" | "active" | "disabled")).map(|e| (e.relay.id, e.port, e.lifecycle == "active")).collect()
+        m.entries.iter().filter(|e| !e.freedom() && matches!(e.lifecycle.as_str(), "pending" | "active" | "disabled")).map(|e| (e.relay.id, e.port, e.lifecycle == "active")).collect()
     };
     // 当前线路机：恰有一条入口、而且在用；否则不给批量建议（`move A,B --to X` 会被整组拒绝）
     let current = |m: &MachineView| {

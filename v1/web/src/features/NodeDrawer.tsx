@@ -232,7 +232,7 @@ function OverviewTab({ m }: { m: MachineView }) {
       <Section>
         <SectionHeader title="基本信息" />
         <LabelValueGrid>
-          <LabelValue label="类型">{`${kindLabel(m.kind)}${h ? ` · ${meta().ip_node_label}` : ''}`}</LabelValue>
+          <LabelValue label="类型">{`${kindLabel(m.kind)}${h ? ` · ${m.relay_local ? meta().local_node_label : meta().ip_node_label}` : ''}`}</LabelValue>
           {m.kind !== 'relay' && <LabelValue label="团队 / 编号">{m.team ? `${m.team.name} / ${m.number != null ? F.pad2(m.number) : '—'}` : '—'}</LabelValue>}
           <LabelValue label="IP"><span className="row" style={{ gap: 4, flexWrap: 'nowrap', minWidth: 0 }}><Trunc className="num">{m.ip}</Trunc><CopyButton text={m.ip} label=" IP" size={13} show /></span></LabelValue>
           {h && <LabelValue label="宿主机"><Button variant="link" size="inline" onClick={() => open(h.id)}>{h.name}</Button></LabelValue>}

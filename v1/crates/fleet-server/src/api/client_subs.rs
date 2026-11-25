@@ -107,6 +107,8 @@ struct Cand {
     team_id: Option<Uuid>,
     spare: bool,
     direct: bool,
+    /// 本机节点的入口（按节点的团队规则选，名字里写「机房」）
+    local: bool,
     port: i32,
     client_uuid: Uuid,
     short_id: String,
@@ -164,7 +166,7 @@ fn expand<'a>(items: Vec<(&'a Cand, String)>, protocols: &str) -> Vec<Item<'a>> 
 /// 全部候选入口，按线路机直出在前、团队、编号、线路机排（同机器列表）。`country`：没手动指定国家的按 IP 查画像（同名字旁的国旗）
 async fn candidates(st: &AppState, country: bool) -> ApiResult<Vec<Cand>> {
     let mut cs: Vec<Cand> = sqlx::query_as(
-        "select e.id entry_id, e.node_id, n.team_id, coalesce(t.spare, false) spare, e.node_id = e.relay_id direct, e.port, e.client_uuid, e.short_id,
+        "select e.id entry_id, e.node_id, n.team_id, coalesce(t.spare, false) spare, e.node_id = e.relay_id direct, n.relay_local local, e.port, e.client_uuid, e.short_id,
                 r.public_host host, r.reality_sni sni, r.reality_public_key pbk, n.kind::text kind, t.name team, n.number, n.label,
                 host(n.primary_ip) ip, n.country, p.name provider, rm.label relay, r.protocols relay_proto
          from entry e join relay r on r.machine_id = e.relay_id join machine rm on rm.id = e.relay_id join machine n on n.id = e.node_id
@@ -202,7 +204,7 @@ fn pick<'a>(cs: &'a [Cand], rule: &Rule) -> Vec<(&'a Cand, String)> {
         .map(|c| {
             let who = names::display_name(&c.kind, c.label.as_deref(), c.team.as_deref(), c.number);
             let via = (per_node[&c.node_id] > 1).then_some(c.relay.as_str());
-            (c, names::sub_name(c.country.as_deref(), c.provider.as_deref(), &who, c.direct, via, &c.ip))
+            (c, names::sub_name(c.country.as_deref(), c.provider.as_deref(), &who, c.direct, c.local, via, &c.ip))
         })
         .collect()
 }

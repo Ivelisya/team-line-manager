@@ -523,7 +523,7 @@ pub async fn patch_nobump(tx: &mut crate::db::Tx<'_>, actor: &str, id: Uuid, b: 
         Some(v) => {
             let e = parse_egress(v.as_deref().unwrap_or(""), &cur.8).map_err(ApiError::bad_request)?;
             if e != Egress::Follow && (cur.1 != "vps" || cur.10.is_some()) {
-                return Err(ApiError::bad_request("只有 VPS 节点能设出口 IP（线路机、家宽代理、同机 IP 节点不用）"));
+                return Err(ApiError::bad_request("只有 VPS 节点能设出口 IP（线路机、家宽代理、同机 IP 节点、本机节点不用）"));
             }
             Some(e)
         }
@@ -1408,7 +1408,7 @@ async fn retire_blockers(conn: &mut sqlx::PgConnection, id: Uuid, kind: &str, li
     if kind == "relay" {
         let (n,): (i64,) = sqlx::query_as(
             "select count(*) from entry e join machine m on m.id = e.node_id
-             where e.relay_id = $1 and e.lifecycle <> 'removed' and m.id <> $1",
+             where e.relay_id = $1 and e.lifecycle <> 'removed' and m.id <> $1 and not (m.relay_local and m.host_id = $1)",
         )
         .bind(id)
         .fetch_one(&mut *conn)
@@ -1627,7 +1627,7 @@ async fn brief_of(st: &AppState, id: Uuid) -> ApiResult<(String, String, String,
 pub async fn upgrade_agent(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
     let (kind, lc, name, host) = brief_of(&st, id).await?;
     if let Some(h) = host {
-        return Err(ApiError::conflict(format!("同机 IP 节点没有自己的 agent，用的是宿主机「{h}」的：升级宿主机的 agent")));
+        return Err(ApiError::conflict(format!("同机 IP 节点、本机节点没有自己的 agent，用的是宿主机「{h}」的：升级宿主机的 agent")));
     }
     if kind == "proxy" || lc != "active" {
         return Err(ApiError::conflict("只有在用的线路机和 VPS 节点有 agent"));
@@ -1649,7 +1649,7 @@ pub struct TuneIn {
 pub async fn tune(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<TuneIn>) -> ApiResult<Json<Value>> {
     let (kind, lc, name, host) = brief_of(&st, id).await?;
     if let Some(h) = host {
-        return Err(ApiError::conflict(format!("同机 IP 节点和宿主机共用系统设置：对宿主机「{h}」调优")));
+        return Err(ApiError::conflict(format!("同机 IP 节点、本机节点和宿主机共用系统设置：对宿主机「{h}」调优")));
     }
     if kind == "proxy" {
         return Err(ApiError::conflict("家宽代理没有我们的机器"));
@@ -1678,6 +1678,10 @@ pub async fn tune(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uui
 pub async fn ss_refresh(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
     let (kind, lc, name, host) = brief_of(&st, id).await?;
     if let Some(h) = host {
+        let local: bool = sqlx::query_scalar("select relay_local from machine where id = $1").bind(id).fetch_one(&st.db).await?;
+        if local {
+            return Err(ApiError::conflict(format!("本机节点从线路机「{h}」自己的 IP 出去，不经 ssserver，没有 SS 配置可下发")));
+        }
         return Err(ApiError::conflict(format!("同机 IP 节点和宿主机共用 ssserver 的黑名单文件：对宿主机「{h}」下发，同机的实例一起刷")));
     }
     match kind.as_str() {
@@ -1721,7 +1725,7 @@ pub async fn speedtest(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPat
     let target = sp::target(b.target.as_deref()).ok_or_else(|| ApiError::bad_request(format!("target 只能是 {}", sp::TARGETS.iter().map(|t| t.key).collect::<Vec<_>>().join(" / "))))?;
     let (kind, lc, name, host) = brief_of(&st, id).await?;
     if let Some(h) = host {
-        return Err(ApiError::conflict(format!("同机 IP 节点和宿主机共用网络：对宿主机「{h}」测速")));
+        return Err(ApiError::conflict(format!("同机 IP 节点、本机节点和宿主机共用网络：对宿主机「{h}」测速")));
     }
     if kind == "proxy" {
         return Err(ApiError::conflict("家宽代理没有我们的机器"));

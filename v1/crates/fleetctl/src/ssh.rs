@@ -107,7 +107,8 @@ pub fn run(ctx: &Ctx, target: &[String], command: &[String]) -> anyhow::Result<u
             let host = m["host_machine"]["id"].as_str().map(|h| ctx.c.get(&format!("/machines/{h}"))).transpose()?;
             let (ip, port) = endpoint(&m, host.as_ref())?;
             if let (Some(h), false) = (&host, ctx.json) {
-                eprintln!("{name} 是同机 IP 节点，登录的是宿主机 {}（{ip}）", s(h, "name"));
+                let what = if m["relay_local"] == true { "本机节点" } else { "同机 IP 节点" };
+                eprintln!("{name} 是{what}，登录的是宿主机 {}（{ip}）", s(h, "name"));
             }
             audit(ctx, "machine", &id, command.is_some())?;
             machine_args(&ip, port, command.as_deref())

@@ -32,13 +32,13 @@ impl Scope {
     }
 }
 
-/// 精简列表（`GET /machines?view=brief`）：id、类型、显示名、线路机名、IP、生命周期、团队、宿主机 id，排序同完整视图。
+/// 精简列表（`GET /machines?view=brief`）：id、类型、显示名、线路机名、IP、生命周期、团队、宿主机 id、是不是本机节点（IP 同宿主线路机），排序同完整视图。
 /// fleetctl 按名字 / IP 找机器只要这些：一条查询，不为解析一个名字组装全部机器（含已退役）的完整视图
 pub async fn brief(st: &AppState, scope: Scope) -> sqlx::Result<Value> {
     sqlx::query_scalar(&format!(
         "select coalesce(json_agg(json_build_object(
                     'id', m.id, 'kind', m.kind, 'name', display_name(m.kind::text, m.label, t.name, m.number), 'label', m.label,
-                    'ip', host(m.primary_ip), 'lifecycle', m.lifecycle, 'host_id', m.host_id,
+                    'ip', host(m.primary_ip), 'lifecycle', m.lifecycle, 'host_id', m.host_id, 'relay_local', m.relay_local,
                     'team', case when t.id is not null then json_build_object('id', t.id, 'name', t.name) end)
                   order by m.kind = 'relay' desc, t.sort_order nulls first, t.name, m.number, m.label, m.id), '[]')
          from machine m left join team t on t.id = m.team_id
@@ -277,6 +277,12 @@ pub fn next_reset(start: Date, reset_day: u8) -> Date {
     Date::from_calendar_date(y, m, reset_day.min(m.length(y))).expect("合法日期")
 }
 
+impl EntryView {
+    /// 从线路机直接出去（Xray freedom）：线路机自己的直出入口，或它上面本机节点的入口。没有落地机可连，
+    /// 所以没有线路机 → 节点的 TCP 探测、不能穿透、不能换线路机；通不通只看出口探测
+    pub fn freedom(&self) -> bool { self.direct || self.local }
+}
+
 #[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct EntryView {
     pub id: Uuid,
@@ -285,6 +291,9 @@ pub struct EntryView {
     pub node: Ref,
     /// 线路机直出：从线路机自己的 IP 出去，没有落地节点，也就没有 TCP 探测（tcp 恒为 null）
     pub direct: bool,
+    /// 本机节点的入口：节点是放在这台线路机上的本机节点（`MachineView.relay_local`），同样从线路机自己的 IP 出去、没有 TCP 探测；
+    /// 和 `direct` 的差别是它属于团队里的一台节点（`node` 是那台节点）。两者至多一个为 true
+    pub local: bool,
     /// normal / reverse（穿透：节点主动连这个入口，线路机不连节点，见 crate::reverse）。
     /// tcp 的方向跟着模式：普通 = 线路机 → 节点（线路机 agent 量），穿透 = 节点 → 线路机（节点 agent 量，只画图，不进告警，见 health.rs）
     pub mode: String,
@@ -371,8 +380,11 @@ pub struct MachineView {
     /// 标了不计费（PUT /machines/{id}/billing-exempt）：计费对账把它当不在团队里（ledger.rs）
     pub billing_exempt: bool,
     pub ssh_port: i32,
-    /// 同机 IP 节点：它所在的宿主机（SSH、agent、主机读数都是宿主机的，`agent` / `host` 就是宿主机的）；其它机器为 null
+    /// 同机 IP 节点、本机节点：它所在的宿主机（SSH、agent、主机读数都是宿主机的，`agent` / `host` 就是宿主机的）；其它机器为 null
     pub host_machine: Option<Ref>,
+    /// 本机节点：节点就在线路机上（`host_machine` 是那台线路机），从线路机自己的 IP 出去，`ip` 同线路机的；
+    /// 机器上没有它自己的服务（不经 ssserver），入口只能在这台线路机上
+    pub relay_local: bool,
     /// 同机 IP 节点的公网 IP 是 1:1 NAT 映射的：它在宿主机网卡上的本地地址（ssserver 监听并从它出站）；公网 IP 就在网卡上的、其它机器为 null
     pub bind_ip: Option<String>,
     /// 端口转发型 NAT 节点（入口 IP 与出站 IP 不同）：它的出口 IP；`ip` 是线路机连的入口。null = 出口就是 `ip`
@@ -516,6 +528,7 @@ struct MRow {
     ssh_port: i32,
     host_id: Option<Uuid>,
     host_name: Option<String>,
+    relay_local: bool,
     bind_ip: Option<String>,
     egress_ip: Option<String>,
     egress_dynamic: bool,
@@ -1345,7 +1358,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
     // 同机 IP 节点没有自己的 agent：agent 状态取宿主机的
     let sql = format!(
         "select m.id, m.kind::text kind, m.team_id, t.name team_name, t.spare team_spare, m.spare_from, m.spare_since, m.number, m.label, host(m.primary_ip) ip, coalesce(hm.ssh_port, m.ssh_port) ssh_port,
-                m.host_id, display_name(hm.kind::text, hm.label, ht.name, hm.number) host_name, host(m.bind_ip) bind_ip, host(m.egress_ip) egress_ip, m.egress_dynamic,
+                m.host_id, display_name(hm.kind::text, hm.label, ht.name, hm.number) host_name, m.relay_local, host(m.bind_ip) bind_ip, host(m.egress_ip) egress_ip, m.egress_dynamic,
                 p.id provider_id, p.name provider_name, p.code provider_code, m.plan_id, pl.name plan_name,
                 pl.bandwidth_mbps plan_bw, pl.traffic_gb plan_traffic, m.service_ref, m.country, exists (select 1 from billing_exempt be where be.machine_id = m.id) billing_exempt, m.lifecycle::text lifecycle,
                 m.lifecycle_reason, m.note, m.revision, m.created_at, m.activated_at, m.retired_at,
@@ -1416,6 +1429,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
         node_label: Option<String>,
         node_team: Option<String>,
         node_number: Option<i32>,
+        node_local: bool,
         port: i32,
         lifecycle: String,
         applied: bool,
@@ -1428,7 +1442,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
     // 下面这些查询互不依赖（探测要等入口列表），并发跑
     let entries_q = async {
         let es: Vec<E> = sqlx::query_as(
-            "select e.id, e.relay_id, rm.label relay_label, e.node_id, nm.label node_label, t.name node_team, nm.number node_number, e.port,
+            "select e.id, e.relay_id, rm.label relay_label, e.node_id, nm.label node_label, t.name node_team, nm.number node_number, nm.relay_local node_local, e.port,
                     e.lifecycle::text lifecycle, r.applied_generation >= e.changed_gen applied, e.apply_error,
                     coalesce((ra.info->'xray'->>'running')::bool = false and ra.last_report_at > now() - make_interval(secs => $2), false) relay_xray_down,
                     ra.last_report_at relay_last, e.mode, case when e.mode = 'reverse' then e.bridge_port end bridge_port
@@ -1539,6 +1553,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 },
             },
             direct,
+            local: e.node_local,
             port: e.port,
             lifecycle: e.lifecycle,
             applied: e.applied,
@@ -1726,6 +1741,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 ip: r.ip,
                 ssh_port: r.ssh_port,
                 host_machine: r.host_id.map(|id| Ref { id, name: r.host_name.clone().unwrap_or_default() }),
+                relay_local: r.relay_local,
                 bind_ip: r.bind_ip,
                 egress_ip: r.egress_ip,
                 egress_dynamic: r.egress_dynamic,

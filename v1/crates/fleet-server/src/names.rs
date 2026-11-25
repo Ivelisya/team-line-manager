@@ -28,13 +28,14 @@ pub fn entry_name(direct: bool, kind: &str, label: Option<&str>, team: Option<&s
 
 /// 客户端订阅里的入口名（自己的客户端用，带出口 IP）：`US · ATTVPS 家宽 · 团队1-06 · 203.0.113.5 · VLESS Reality`，
 /// 直出 `US · GOMAMI 线路机1 直出 · 198.51.100.1 · VLESS Reality`。没有国家、供应商的省掉那一段；
+/// 本机节点（`local`：节点就在线路机上，从机房 IP 出去）中间那段写「机房」而不是「家宽」：`RU · MISAKA 机房 · MENG-01 · 198.51.100.9 · VLESS Reality`。
 /// `via`：节点在几台线路机上都有入口时写上走哪台（`团队1-06（线路机3）`），客户端里名字不能重复
-pub fn sub_name(country: Option<&str>, provider: Option<&str>, who: &str, direct: bool, via: Option<&str>, ip: &str) -> String {
+pub fn sub_name(country: Option<&str>, provider: Option<&str>, who: &str, direct: bool, local: bool, via: Option<&str>, ip: &str) -> String {
     let who = match via {
         Some(v) => format!("{who}（{v}）"),
         None => who.to_string(),
     };
-    let mid = if direct { [provider, Some(who.as_str()), Some("直出")] } else { [provider, Some("家宽"), None] };
+    let mid = if direct { [provider, Some(who.as_str()), Some("直出")] } else { [provider, Some(if local { "机房" } else { "家宽" }), None] };
     let mid = mid.iter().flatten().copied().collect::<Vec<_>>().join(" ");
     let mut parts: Vec<&str> = country.into_iter().collect();
     parts.push(&mid);
@@ -79,9 +80,11 @@ mod tests {
         assert_eq!(display_name("vps", None, Some("团队1"), Some(3)), "团队1-03");
         assert_eq!(entry_name(true, "relay", Some("线路机2"), None, None), "线路机2-直出");
         assert_eq!(entry_name(false, "vps", None, Some("团队1"), Some(3)), "团队1-03");
-        assert_eq!(sub_name(Some("US"), Some("ATTVPS"), "团队1-06", false, None, "203.0.113.5"), "US · ATTVPS 家宽 · 团队1-06 · 203.0.113.5 · VLESS Reality");
-        assert_eq!(sub_name(Some("US"), Some("GOMAMI"), "线路机1", true, None, "198.51.100.1"), "US · GOMAMI 线路机1 直出 · 198.51.100.1 · VLESS Reality");
-        assert_eq!(sub_name(None, None, "团队1-06", false, Some("线路机3"), "203.0.113.5"), "家宽 · 团队1-06（线路机3） · 203.0.113.5 · VLESS Reality");
+        assert_eq!(sub_name(Some("US"), Some("ATTVPS"), "团队1-06", false, false, None, "203.0.113.5"), "US · ATTVPS 家宽 · 团队1-06 · 203.0.113.5 · VLESS Reality");
+        assert_eq!(sub_name(Some("US"), Some("GOMAMI"), "线路机1", true, false, None, "198.51.100.1"), "US · GOMAMI 线路机1 直出 · 198.51.100.1 · VLESS Reality");
+        assert_eq!(sub_name(None, None, "团队1-06", false, false, Some("线路机3"), "203.0.113.5"), "家宽 · 团队1-06（线路机3） · 203.0.113.5 · VLESS Reality");
+        // 本机节点：机房 IP，不写「家宽」
+        assert_eq!(sub_name(Some("RU"), Some("MISAKA"), "MENG-01", false, true, None, "198.51.100.9"), "RU · MISAKA 机房 · MENG-01 · 198.51.100.9 · VLESS Reality");
     }
 
     #[test]

@@ -7,7 +7,7 @@ import { InfoTip } from '@/components/ui/info-tip';
 import { Note } from './primitives';
 
 /** 节点当前在用的入口（可以被换走的）。线路机的直出入口不搬：退役线路机时随之摘除 */
-export const movableEntries = (m: MachineView) => m.entries.filter((e) => e.lifecycle === 'active' && !e.direct);
+export const movableEntries = (m: MachineView) => m.entries.filter((e) => e.lifecycle === 'active' && !e.direct && !e.local);
 
 /** 能接替的节点：在用、不是线路机、不是自己 */
 export const canReplace = (m: MachineView) => m.kind !== 'relay' && m.lifecycle === 'active';

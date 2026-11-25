@@ -84,7 +84,9 @@ fn find_in<'a>(cands: &[&'a Value], q: &str) -> Vec<&'a Value> {
     for t in tiers {
         let hits: Vec<&Value> = cands.iter().copied().filter(|m| t(m)).collect();
         if !hits.is_empty() {
-            return hits;
+            // 本机节点的 IP 就是它所在线路机的 IP：按 IP 找到几台时指的是那台线路机（机器本身），本机节点用名字找
+            let machines: Vec<&Value> = hits.iter().copied().filter(|m| m.get("relay_local").and_then(Value::as_bool) != Some(true)).collect();
+            return if machines.is_empty() { hits } else { machines };
         }
     }
     vec![]
@@ -174,6 +176,15 @@ mod tests {
     }
 
     fn id_tail(v: &Value) -> String { v["id"].as_str().unwrap()[34..].to_string() }
+
+    /// 本机节点和它所在的线路机同一个 IP：按 IP 找到的是线路机，本机节点按名字找
+    #[test]
+    fn by_ip_prefers_the_relay_over_its_local_nodes() {
+        let mut f = fleet();
+        f.push(json!({"id": "dddddddd-0000-0000-0000-000000000006", "name": "MENG-01", "label": null, "ip": "10.0.0.2", "kind": "vps", "lifecycle": "active", "relay_local": true}));
+        assert_eq!(id_tail(machine(&f, "10.0.0.2", Want::Live).unwrap()), "02");
+        assert_eq!(id_tail(machine(&f, "MENG-01", Want::Live).unwrap()), "06");
+    }
 
     #[test]
     fn by_name_prefers_live() {

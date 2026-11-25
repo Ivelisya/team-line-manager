@@ -45,12 +45,15 @@ pub struct ProvisionOpts {
     #[arg(long)]
     pub ip: Option<String>,
     /// 同机 IP 节点：加在这台已有的 VPS 节点（宿主机）上，用它的 SSH 与 agent；--ip 是新的出口 IP（要已配在宿主机网卡上），
-    /// 不用填 --ssh-port / --ssh-password-env / --ss-port（SS 端口由中控分配），供应商取宿主机的
+    /// 不用填 --ssh-port / --ssh-password-env / --ss-port（SS 端口由中控分配），供应商取宿主机的。
+    /// 本机节点：--host 写一台线路机，节点就在这台线路机上、从线路机自己的 IP 出去（团队直接用机房 IP）：
+    /// 不用 --ip、--relay（就是这台线路机），不登录、不装东西，只在线路机上建一条入口；一台线路机上各团队可以各有一台
     #[arg(long)]
     pub host: Option<String>,
     #[arg(long)]
     pub ssh_port: Option<u16>,
-    /// 团队名（节点）
+    /// 团队名（节点）。--kind relay 时也可以给：这台线路机同时是这个团队的节点（上线后自动在它上面建一台本机节点，
+    /// 从线路机自己的 IP 出去），--number 是那台节点的编号
     #[arg(long)]
     pub team: Option<String>,
     /// 团队内编号（不填取最小空号）
@@ -171,8 +174,9 @@ fn normalize_item(ctx: &Ctx, item: &mut Value, cache: &mut Cache) -> anyhow::Res
     }
     if let Some(h) = o.remove("host").and_then(|v| v.as_str().map(String::from)) {
         let m = ctx.find(&h, Want::Live)?;
-        if m["kind"] != "vps" || !m["host_id"].is_null() {
-            bail!("「{h}」不能当宿主机：宿主机要是普通 VPS 节点（不能是线路机、家宽代理或同机 IP 节点）");
+        // 线路机当宿主机 = 本机节点（从线路机自己的 IP 出去）；其余要是普通 VPS 节点
+        if m["kind"] != "relay" && (m["kind"] != "vps" || !m["host_id"].is_null()) {
+            bail!("「{h}」不能当宿主机：宿主机要是普通 VPS 节点或线路机（不能是家宽代理、同机 IP 节点或本机节点）");
         }
         o.insert("host_id".into(), m["id"].clone());
     }
@@ -221,7 +225,12 @@ pub(crate) fn items_from_file(path: &Path) -> anyhow::Result<Vec<Value>> {
 
 fn single_item(o: &ProvisionOpts) -> anyhow::Result<Value> {
     let kind = o.kind.clone().ok_or_else(|| anyhow!("缺少 --kind（vps / proxy / relay），或用 --file 批量"))?;
-    let ip = o.ip.clone().ok_or_else(|| anyhow!("缺少 --ip"))?;
+    // 本机节点（--host 是线路机）不用 --ip：中控取线路机的；别的情况缺 IP 由中控的校验报「IP 不合法」之前在这里先说清
+    let ip = match (&o.ip, &o.host) {
+        (Some(ip), _) => ip.clone(),
+        (None, Some(_)) => String::new(),
+        (None, None) => bail!("缺少 --ip（本机节点：--host <线路机>，不用 --ip）"),
+    };
     let mut m = Map::new();
     m.insert("kind".into(), json!(kind));
     m.insert("ip".into(), json!(ip));
@@ -279,6 +288,23 @@ fn entry_mode_cn(r: &Value) -> &'static str {
     }
 }
 
+/// 校验结果里这台的名字：线路机带团队上架时写上一并建的本机节点（「线路机5 + MENG-01」）
+fn check_name(r: &Value) -> String {
+    match r["node"].as_str() {
+        Some(n) => format!("{} + {n}（本机节点）", st(r, "/name")),
+        None => st(r, "/name"),
+    }
+}
+
+/// 条目的 IP；本机节点没填 IP（用线路机的）时写「线路机的 IP」
+fn item_ip(item: &Value, r: &Value) -> String {
+    match item["ip"].as_str().filter(|s| !s.trim().is_empty()) {
+        Some(ip) => ip.to_string(),
+        None if r["local"] == true => "线路机的 IP".into(),
+        None => "-".into(),
+    }
+}
+
 /// JSON 字符串数组里的各项（不是数组为空）
 fn strs(v: &Value) -> Vec<&str> { v.as_array().map(|a| a.iter().filter_map(|e| e.as_str()).collect()).unwrap_or_default() }
 
@@ -326,7 +352,7 @@ pub fn provision(ctx: &Ctx, o: ProvisionOpts) -> anyhow::Result<u8> {
                         (true, false) => "通过（有提醒，见下）",
                         (true, true) => "通过",
                     };
-                    vec![(i + 1).to_string(), st(&items[i], "/ip"), st(r, "/name"), st(r, "/number"), entry_mode_cn(r).into(), verdict.into()]
+                    vec![(i + 1).to_string(), item_ip(&items[i], r), check_name(r), st(r, "/number"), entry_mode_cn(r).into(), verdict.into()]
                 })
                 .collect();
             format!(
@@ -339,7 +365,7 @@ pub fn provision(ctx: &Ctx, o: ProvisionOpts) -> anyhow::Result<u8> {
         return Ok(if all_ok { 0 } else { 1 });
     }
     if !ctx.json {
-        let names: Vec<String> = res.iter().zip(&items).map(|(r, it)| format!("{}（{}，{}模式）", st(r, "/name"), st(it, "/ip"), entry_mode_cn(r))).collect();
+        let names: Vec<String> = res.iter().zip(&items).map(|(r, it)| format!("{}（{}，{}模式）", check_name(r), item_ip(it, r), entry_mode_cn(r))).collect();
         outln(format!("{}校验通过，将上架 {} 台：{}", check_notes(&res), res.len(), names.join("、")));
     }
     confirm(&format!("确认上架这 {} 台机器？会登录机器安装软件", res.len()), o.yes)?;

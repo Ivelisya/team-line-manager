@@ -207,7 +207,7 @@ fn probe_reasons(live: &[&EntryView], now: OffsetDateTime, rs: &mut Vec<Reason>,
         }
         // 15 分钟内没有探测结果（视图只取这么久的）：这条入口通不通不知道。直出入口本来就没有 TCP 探测
         // 直出入口没有 TCP 探测；穿透入口的 TCP 是节点连线路机量的，只画图不告警（见下）：这两种只看出口
-        if e.egress.is_none() || (e.tcp.is_none() && !e.direct && e.mode != crate::reverse::REVERSE) {
+        if e.egress.is_none() || (e.tcp.is_none() && !e.freedom() && e.mode != crate::reverse::REVERSE) {
             undecided.push(e.relay.id);
         }
         match &e.egress {
@@ -412,6 +412,7 @@ pub(crate) mod tests {
             billing_exempt: false,
             ssh_port: 22,
             host_machine: None,
+            relay_local: false,
             bind_ip: None,
             egress_ip: None,
             egress_dynamic: false,
@@ -528,6 +529,7 @@ pub(crate) mod tests {
             relay: Ref { id: Uuid::now_v7(), name: "线路机1".into() },
             node: Ref { id: Uuid::now_v7(), name: "n".into() },
             direct: false,
+            local: false,
             mode: "normal".into(),
             bridge_port: None,
             port: 20000,

@@ -140,15 +140,18 @@ pub async fn relay_unsupported(db: impl sqlx::PgExecutor<'_>, relay: Uuid) -> sq
 /// - 线路机 agent 太旧：不认识期望状态里的穿透出站，整份解析失败（整台线路机的配置停在旧代数）；
 /// - 节点 agent 太旧：不会按中控的要求重启 bridge（隧道挂不上时没法自动恢复，见 `kick_for`）
 pub async fn unsupported(conn: &mut PgConnection, node: Uuid, relay: Uuid) -> sqlx::Result<Option<String>> {
-    let n: Option<(String, Option<Uuid>, String)> = sqlx::query_as(
-        "select m.kind::text, m.host_id, display_name(m.kind::text, m.label, t.name, m.number) from machine m left join team t on t.id = m.team_id where m.id = $1",
+    let n: Option<(String, Option<Uuid>, String, bool)> = sqlx::query_as(
+        "select m.kind::text, m.host_id, display_name(m.kind::text, m.label, t.name, m.number), m.relay_local from machine m left join team t on t.id = m.team_id where m.id = $1",
     )
     .bind(node)
     .fetch_optional(&mut *conn)
     .await?;
-    let Some((kind, host, name)) = n else { return Ok(Some("节点不存在".into())) };
+    let Some((kind, host, name, local)) = n else { return Ok(Some("节点不存在".into())) };
     if kind == "relay" {
         return Ok(Some("线路机直出入口没有落地节点，用不着穿透".into()));
+    }
+    if local {
+        return Ok(Some(LOCAL_NO_REVERSE.into()));
     }
     if let Some(why) = kind_unsupported(&kind, host) {
         return Ok(Some(why.into()));
@@ -177,7 +180,11 @@ pub async fn resolve_new(conn: &mut PgConnection, node: Uuid, relay: Uuid, reque
     })
 }
 
-/// 只看机器类型就知道不支持的（上架预览、作业建立时还没有 agent 上报可看）：家宽代理、同机 IP 节点
+/// 本机节点为什么不用穿透：它就在线路机上，入口直接从线路机自己的 IP 出去，线路机和节点之间没有要穿的连接
+pub const LOCAL_NO_REVERSE: &str = "本机节点就在线路机上、从线路机自己的 IP 出去，用不着穿透";
+
+/// 只看机器类型就知道不支持的（上架预览、作业建立时还没有 agent 上报可看）：家宽代理、同机 IP 节点。
+/// 本机节点（宿主机是线路机）调用方先按 `machine.relay_local` 分出去（原因见 [`LOCAL_NO_REVERSE`]），不到这里
 pub fn kind_unsupported(kind: &str, host_id: Option<Uuid>) -> Option<&'static str> {
     match (kind, host_id) {
         ("proxy", _) => Some("家宽代理没有 SSH 和 agent，装不了穿透要的 bridge"),
