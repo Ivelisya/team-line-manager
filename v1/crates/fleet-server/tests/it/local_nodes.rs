@@ -65,9 +65,11 @@ async fn local_node_on_relay_end_to_end() {
     let steps: Vec<&str> = job["steps"].as_array().unwrap().iter().map(|s| s["key"].as_str().unwrap()).collect();
     assert_eq!(steps, ["wait_host", "attach", "wait_applied", "verify", "activate"]);
     // 库里：VPS 节点、宿主机是线路机、IP 同线路机、供应商取线路机的、不带套餐、没有 SSH 端口和出站参数
-    let row: (String, Option<Uuid>, bool, String, Option<i32>, Option<Uuid>, Option<Uuid>) =
-        sqlx::query_as("select kind::text, host_id, relay_local, host(primary_ip), ssh_port, provider_id, plan_id from machine where id = $1").bind(x).fetch_one(&t.st.db).await.unwrap();
-    assert_eq!(row, ("vps".to_string(), Some(relay), true, RELAY_IP.to_string(), None, Some(pv), None));
+    let row: (String, Option<Uuid>, bool, String) =
+        sqlx::query_as("select kind::text, host_id, relay_local, host(primary_ip) from machine where id = $1").bind(x).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(row, ("vps".to_string(), Some(relay), true, RELAY_IP.to_string()));
+    let row: (Option<i32>, Option<Uuid>, Option<Uuid>) = sqlx::query_as("select ssh_port, provider_id, plan_id from machine where id = $1").bind(x).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(row, (None, Some(pv), None));
     assert_eq!(sqlx::query_scalar::<_, i64>("select count(*) from node_outbound where machine_id = $1").bind(x).fetch_one(&t.st.db).await.unwrap(), 0);
 
     drive(&t, &mut sim, j["job_id"].as_str().unwrap(), "succeeded").await;
